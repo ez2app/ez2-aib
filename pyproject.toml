@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ez2-aib"
+version = "0.1.0"
+description = "Run only the tests your change affects; ship only when nothing new is red."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+aib = "aib.cli:main"
+
+[tool.setuptools]
+packages = ["aib"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+aib = ["**/*"]
+
+[tool.setuptools.exclude-package-data]
+aib = ["**/__pycache__/*", "**/*.pyc"]

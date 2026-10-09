@@ -1,0 +1,129 @@
+#!/bin/bash
+# aib-grokbot — 登入主機一鍵把 Cursor Grok Bot 橋接席開進「現在活著的艙」
+#
+# 用法:
+#   aib-grokbot                  # = aib grokbot dgrs root --again（自動掛活艙）
+#   aib-grokbot dgrs pm          # 指定 mode + role
+#   aib-grokbot dgrs root new    # 真的開新艙（少用）
+#   aib-grokbot --dry-run ...
+#
+# 為什麼需要這支:
+#   裸跑 `aib grokbot dgrs root` 在沒有 EZ2_AIHUB_SOCKET 時會被 aib 預設成 new 艙。
+#   登入 shell 不在 cockpit 裡,所以要先找到活艙 hub 再 --again。
+set -euo pipefail
+
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AIB="$HERE/aib"
+PY3="${EZ2_PY3:-python3}"
+# 狀態根 / hub 名一律向 cabin_resolve 要,不在這裡重造優先序或 aihub-%s。
+# shellcheck source=cabin_resolve.sh
+. "$HERE/cabin_resolve.sh"
+STATE_ROOT="$(aib_cabin_state_root)"
+
+pick_live_hub() {
+  preferred="${EZ2_AIB_PREFERRED_CABIN:-20260914-164422-d1dd}"
+  preferred_hub=""
+  if [ -n "$preferred" ]; then
+    preferred_hub="$(aib_cabin_hub_name "$preferred")" || preferred_hub=""
+  fi
+  "$PY3" - "$STATE_ROOT" "$preferred" "$preferred_hub" <<'PY'
+import json, os, sys, glob, subprocess
+root = sys.argv[1]
+preferred = sys.argv[2].strip()
+preferred_hub = sys.argv[3].strip()
+
+def sock_alive(hub: str) -> bool:
+    try:
+        r = subprocess.run(
+            ["tmux", "-L", hub, "list-windows"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+def seat_count(inst: str) -> int:
+    seats = os.path.join(root, "instances", inst, "seats")
+    if not os.path.isdir(seats):
+        return 0
+    return sum(1 for n in os.listdir(seats) if n.startswith("w") and n.endswith(".json"))
+
+if preferred and preferred_hub:
+    if sock_alive(preferred_hub) and os.path.isdir(os.path.join(root, "instances", preferred)):
+        print(preferred_hub)
+        sys.exit(0)
+
+cands = []
+uid = os.getuid()
+sockdir = os.environ.get("TMUX_TMPDIR") or ("/tmp/tmux-%d" % uid)
+try:
+    names = [n for n in os.listdir(sockdir) if n.startswith("aihub-") and len(n) > 6]
+except FileNotFoundError:
+    names = []
+for n in names:
+    inst = n[len("aihub-"):]
+    if not os.path.isdir(os.path.join(root, "instances", inst)):
+        continue
+    if not sock_alive(n):
+        continue
+    hb = os.path.join(root, "instances", inst, "watch-heartbeat.json")
+    m = os.path.getmtime(hb) if os.path.isfile(hb) else 0
+    cands.append((seat_count(inst), m, n))
+if cands:
+    cands.sort(reverse=True)
+    print(cands[0][2])
+    sys.exit(0)
+
+sys.stderr.write("aib-bridge: 找不到活艙 hub\n")
+sys.exit(2)
+PY
+}
+
+MODE="dgrs"
+ROLE="root"
+NEW=0
+AGAIN=1
+EXTRA=()
+
+# parse: [dgrs|safe] [role] [new] [--dry-run] [--reports-to X] ...
+while [ $# -gt 0 ]; do
+  case "$1" in
+    dgrs|safe) MODE="$1"; shift ;;
+    new) NEW=1; AGAIN=0; shift ;;
+    --again) AGAIN=1; shift ;;
+    --dry-run) EXTRA+=(--dry-run); shift ;;
+    --reports-to) EXTRA+=(--reports-to "$2"); shift 2 ;;
+    --model) EXTRA+=(--model "$2"); shift 2 ;;
+    -h|--help)
+      sed -n '2,14p' "$0" | tr -d '#'
+      exit 0
+      ;;
+    -*)
+      echo "aib-grokbot: 不認得的旗標: $1" >&2
+      exit 2
+      ;;
+    *)
+      # role
+      ROLE="$1"; shift
+      ;;
+  esac
+done
+
+export AIB_NO_ATTACH="${AIB_NO_ATTACH:-1}"
+
+if [ "$NEW" = "1" ]; then
+  echo "aib-grokbot: 開新艙 → aib grokbot $MODE $ROLE new" >&2
+  exec bash "$AIB" grokbot "$MODE" "$ROLE" new "${EXTRA[@]}"
+fi
+
+if [ -z "${EZ2_AIHUB_SOCKET:-}" ]; then
+  EZ2_AIHUB_SOCKET="$(pick_live_hub)"
+  export EZ2_AIHUB_SOCKET
+fi
+
+echo "aib-grokbot: hub=$EZ2_AIHUB_SOCKET → aib grokbot $MODE $ROLE --again" >&2
+if [ "$AGAIN" = "1" ]; then
+  exec bash "$AIB" grokbot "$MODE" "$ROLE" --again "${EXTRA[@]}"
+else
+  exec bash "$AIB" grokbot "$MODE" "$ROLE" "${EXTRA[@]}"
+fi

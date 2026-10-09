@@ -1,0 +1,16 @@
+{
+ "_repin": "先看 diff 再重釘:git -C ~/ez2-ai diff <舊sha> <新sha> -- <檔>;確認語意沒變才更新本檔並在 commit 訊息寫明看過什麼。",
+ "_why": "ez2-ai 的 rev=main 是會動的標籤;釘住指紋讓上游改版/force-push 變成事前拒絕而不是事後對帳(qa@00000 08-18 對抗審 punch4)。",
+ "record": "note-format-pins-v1",
+ "sha256": {
+  "samples/ez2-metadata/category-registry.valid.example.json": "5011cd0c2efdb8f1b6f9cc4f4dc32f25747898a5b66d6a770ac55c602b809e07",
+  "shared/ez2-note-format.js": "91bfa68b4f039b9f3648ccfe6ce58589aaf5a96a94f83ffda4e93ce082afd672",
+  "shared/ez2-route-category-resolver.js": "159cc59e2d451a5de23fba1eae7dedb45a8cc8c231db7ee1bac26dc2ebac684d"
+ },
+ "source": {
+  "pinned_at": "2026-09-02 (cap2@00000 a6b2e;重釘自上游 f4cb6d16「登記 7 條 canonical routeKey」,diff +112 純新增、無刪改;前一釘 2026-08-18 dev4@00000)",
+  "repo": "~/ez2-ai",
+  "rev": "main",
+  "upstream_commit": "f4cb6d16"
+ }
+}

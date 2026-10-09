@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Suggestion / 建議
+description: An idea or a missing feature / 想法或缺的功能
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help / 什麼會有幫助
+      description: The problem first, then the idea. / 先講遇到的問題,再講想法。
+    validations:
+      required: true

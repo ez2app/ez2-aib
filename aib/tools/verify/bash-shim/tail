@@ -1,0 +1,3 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+exec "$(dirname "$0")/_shim" tail "$@"

@@ -1,0 +1,25 @@
+{
+  "schema_version": "0.1.0-draft",
+  "cards": {
+    "P10/ROOT-架構總管": {
+      "persona_uid": "root-arch",
+      "route_key": "core.handoff",
+      "display_name": "架構總管"
+    },
+    "P10/PM-專案經理": {
+      "persona_uid": "pm-main",
+      "route_key": "core.refine",
+      "display_name": "專案經理"
+    },
+    "P10/DEV1-開發工程師": {
+      "persona_uid": "dev1-eng",
+      "route_key": "product.expert.draft",
+      "display_name": "開發工程師"
+    },
+    "P10/QA-品保": {
+      "persona_uid": "qa-main",
+      "route_key": "product.expert.output",
+      "display_name": "品保"
+    }
+  }
+}

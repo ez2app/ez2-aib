@@ -1,0 +1,15 @@
+{
+ "schema_version": "0.1.0-draft",
+ "cards": {
+  "P10/PM-專案經理": {
+   "persona_uid": "pm-main",
+   "route_key": "product.expert.agent_library",
+   "display_name": "主管"
+  },
+  "P10/DEV1-開發工程師": {
+   "persona_uid": "dev1-main",
+   "route_key": "product.expert.agent_library",
+   "display_name": "資深開發工程師"
+  }
+ }
+}

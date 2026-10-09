@@ -1,0 +1,184 @@
+{
+  "schema_version": "1",
+  "level_order": [
+    "red",
+    "yellow",
+    "green",
+    "blue"
+  ],
+  "rules": [
+    {
+      "id": "red.signal",
+      "level": "red",
+      "field": "signal_type",
+      "match": "exact",
+      "values": [
+        "pane_dead",
+        "authority_failure",
+        "security_event",
+        "incident",
+        "blocked",
+        "p1",
+        "interrupt"
+      ]
+    },
+    {
+      "id": "red.event",
+      "level": "red",
+      "field": "kind",
+      "match": "exact",
+      "values": [
+        "identity.degraded",
+        "authority.failed",
+        "pane.dead",
+        "system.interrupt"
+      ]
+    },
+    {
+      "id": "red.text",
+      "level": "red",
+      "field": "text",
+      "match": "regex",
+      "values": [
+        "(?<![A-Za-z0-9_])BLOCKED(?![A-Za-z0-9_])",
+        "(?<![A-Za-z0-9_])P1(?![A-Za-z0-9_])",
+        "事故",
+        "安全(?:事件|事故)?",
+        "authority\\s*(?:失敗|failure|failed)",
+        "pane\\s*(?:死亡|dead|died)",
+        "login\\s+expired"
+      ]
+    },
+    {
+      "id": "yellow.signal",
+      "level": "yellow",
+      "field": "signal_type",
+      "match": "exact",
+      "values": [
+        "decision_required",
+        "approval_required",
+        "human_request",
+        "mention"
+      ]
+    },
+    {
+      "id": "yellow.event",
+      "level": "yellow",
+      "field": "kind",
+      "match": "exact",
+      "values": [
+        "decision.requested",
+        "approval.requested",
+        "human.requested"
+      ]
+    },
+    {
+      "id": "yellow.human",
+      "level": "yellow",
+      "field": "actor_kind",
+      "match": "exact",
+      "values": [
+        "human"
+      ]
+    },
+    {
+      "id": "yellow.action",
+      "level": "yellow",
+      "field": "needs_action",
+      "match": "truthy",
+      "values": []
+    },
+    {
+      "id": "yellow.text",
+      "level": "yellow",
+      "field": "text",
+      "match": "regex",
+      "values": [
+        "\\[人類\\]",
+        "候決",
+        "請示",
+        "驗收",
+        "裁決(?:請求)?",
+        "需處理\\s*[:：]\\s*是",
+        "@艦長"
+      ]
+    },
+    {
+      "id": "green.signal",
+      "level": "green",
+      "field": "signal_type",
+      "match": "exact",
+      "values": [
+        "task_verified",
+        "ci_success",
+        "completed"
+      ]
+    },
+    {
+      "id": "green.event",
+      "level": "green",
+      "field": "kind",
+      "match": "exact",
+      "values": [
+        "task.verified",
+        "task.completed",
+        "ci.succeeded",
+        "decision.resolved"
+      ]
+    },
+    {
+      "id": "green.text",
+      "level": "green",
+      "field": "text",
+      "match": "regex",
+      "values": [
+        "完成",
+        "收官",
+        "全綠",
+        "入庫",
+        "CI\\s+success"
+      ]
+    },
+    {
+      "id": "blue.default",
+      "level": "blue",
+      "field": "always",
+      "match": "truthy",
+      "values": []
+    }
+  ],
+  "actions": {
+    "red": {
+      "system_notification": true,
+      "sound": "Basso",
+      "flash": true,
+      "duration_ms": 8000,
+      "flash_background": 196,
+      "flash_foreground": 231
+    },
+    "yellow": {
+      "system_notification": true,
+      "sound": "Tink",
+      "flash": true,
+      "duration_ms": 6000,
+      "flash_background": 220,
+      "flash_foreground": 16
+    },
+    "green": {
+      "system_notification": false,
+      "sound": null,
+      "flash": true,
+      "duration_ms": 4000,
+      "flash_background": 34,
+      "flash_foreground": 231
+    },
+    "blue": {
+      "system_notification": false,
+      "sound": null,
+      "flash": false,
+      "duration_ms": 0,
+      "flash_background": null,
+      "flash_foreground": null
+    }
+  }
+}

@@ -1,0 +1,158 @@
+#!/bin/bash
+# aib-codexbot — 把 Codex 桌面「已載入」的對話橋進現在活著的艙
+#
+# 用法:
+#   aib-codexbot                         # dgrs root --again（自動找活艙）
+#   aib-codexbot dgrs pm
+#   aib-codexbot --check                 # 只驗 THREAD＋ENDPOINT，不開席
+#   aib-codexbot dgrs root new           # 真的開新艙（少用）
+#
+# 必備環境（正名；舊名 AIB_CODEXAPP_* 也可）:
+#   export AIB_CODEXBOT_THREAD_ID='<桌面 thread UUID>'
+#   export AIB_CODEXBOT_ENDPOINT='ws://127.0.0.1:…'   # 或 unix:///…
+#
+# 永不新開 Codex CLI；只綁桌面已載入的 thread。
+# 裸跑 `aib codexbot …` 若沒設 EZ2_AIHUB_SOCKET 會被當成開新艙，所以這支會先找活艙。
+set -euo pipefail
+
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AIB="$HERE/aib"
+PY3="${EZ2_PY3:-python3}"
+# shellcheck source=identity-env.sh
+. "$HERE/identity-env.sh"
+# 狀態根 / hub 名一律向 cabin_resolve 要，不在這裡重造優先序或 aihub-%s。
+# shellcheck source=cabin_resolve.sh
+. "$HERE/cabin_resolve.sh"
+STATE_ROOT="$(aib_cabin_state_root)"
+
+aib_normalize_codexbot_env
+
+pick_live_hub() {
+  preferred="${EZ2_AIB_PREFERRED_CABIN:-}"
+  preferred_hub=""
+  if [ -n "$preferred" ]; then
+    preferred_hub="$(aib_cabin_hub_name "$preferred")" || preferred_hub=""
+  fi
+  "$PY3" - "$STATE_ROOT" "$preferred" "$preferred_hub" <<'PY'
+import os, sys, subprocess
+root = sys.argv[1]
+preferred = sys.argv[2].strip()
+preferred_hub = sys.argv[3].strip()
+
+def sock_alive(hub: str) -> bool:
+    try:
+        r = subprocess.run(
+            ["tmux", "-L", hub, "list-windows"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+def seat_count(inst: str) -> int:
+    seats = os.path.join(root, "instances", inst, "seats")
+    if not os.path.isdir(seats):
+        return 0
+    return sum(1 for n in os.listdir(seats) if n.startswith("w") and n.endswith(".json"))
+
+if preferred and preferred_hub:
+    if sock_alive(preferred_hub) and os.path.isdir(os.path.join(root, "instances", preferred)):
+        print(preferred_hub)
+        sys.exit(0)
+
+cands = []
+uid = os.getuid()
+sockdir = os.environ.get("TMUX_TMPDIR") or ("/tmp/tmux-%d" % uid)
+try:
+    names = [n for n in os.listdir(sockdir) if n.startswith("aihub-") and len(n) > 6]
+except FileNotFoundError:
+    names = []
+for n in names:
+    inst = n[len("aihub-"):]
+    if not os.path.isdir(os.path.join(root, "instances", inst)):
+        continue
+    if not sock_alive(n):
+        continue
+    hb = os.path.join(root, "instances", inst, "watch-heartbeat.json")
+    m = os.path.getmtime(hb) if os.path.isfile(hb) else 0
+    cands.append((seat_count(inst), m, n))
+if cands:
+    cands.sort(reverse=True)
+    print(cands[0][2])
+    sys.exit(0)
+
+sys.stderr.write("aib-codexbot: 找不到活艙 hub\n")
+sys.exit(2)
+PY
+}
+
+MODE="dgrs"
+ROLE="root"
+NEW=0
+AGAIN=1
+CHECK_ONLY=0
+EXTRA=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    dgrs|safe) MODE="$1"; shift ;;
+    new) NEW=1; AGAIN=0; shift ;;
+    --again) AGAIN=1; shift ;;
+    --check) CHECK_ONLY=1; shift ;;
+    --dry-run) EXTRA+=(--dry-run); shift ;;
+    --reports-to) EXTRA+=(--reports-to "$2"); shift 2 ;;
+    --model) EXTRA+=(--model "$2"); shift 2 ;;
+    -h|--help)
+      sed -n '2,16p' "$0" | tr -d '#'
+      exit 0
+      ;;
+    -*)
+      echo "aib-codexbot: 不認得的旗標: $1" >&2
+      exit 2
+      ;;
+    *) ROLE="$1"; shift ;;
+  esac
+done
+
+if [ -z "${AIB_CODEXBOT_THREAD_ID:-}" ] || [ -z "${AIB_CODEXBOT_ENDPOINT:-}" ]; then
+  cat >&2 <<'HINT'
+aib-codexbot: 還少桌面綁定資料。
+
+請先在 Codex 桌面打開要接的對話，再設：
+  export AIB_CODEXBOT_THREAD_ID='<thread UUID>'
+  export AIB_CODEXBOT_ENDPOINT='ws://127.0.0.1:… 或 unix:///…'
+（舊名 AIB_CODEXAPP_* 也可。）
+或寫進 ~/.ez2-aib/secrets/codexbot.env（KEY=value，0600），就不用每次 export。
+HINT
+  exit 2
+fi
+
+echo "aib-codexbot: thread=${AIB_CODEXBOT_THREAD_ID} endpoint=${AIB_CODEXBOT_ENDPOINT}" >&2
+if ! "$PY3" "$HERE/codexbot_bridge.py" --check; then
+  echo "aib-codexbot: --check 失敗（桌面對話沒載入或 endpoint 不對）" >&2
+  exit 2
+fi
+
+if [ "$CHECK_ONLY" = "1" ]; then
+  echo "aib-codexbot: check OK" >&2
+  exit 0
+fi
+
+export AIB_NO_ATTACH="${AIB_NO_ATTACH:-1}"
+
+if [ "$NEW" = "1" ]; then
+  echo "aib-codexbot: 開新艙 → aib codexbot $MODE $ROLE new" >&2
+  exec bash "$AIB" codexbot "$MODE" "$ROLE" new "${EXTRA[@]}"
+fi
+
+if [ -z "${EZ2_AIHUB_SOCKET:-}" ]; then
+  EZ2_AIHUB_SOCKET="$(pick_live_hub)"
+  export EZ2_AIHUB_SOCKET
+fi
+
+echo "aib-codexbot: hub=$EZ2_AIHUB_SOCKET → aib codexbot $MODE $ROLE --again" >&2
+if [ "$AGAIN" = "1" ]; then
+  exec bash "$AIB" codexbot "$MODE" "$ROLE" --again "${EXTRA[@]}"
+else
+  exec bash "$AIB" codexbot "$MODE" "$ROLE" "${EXTRA[@]}"
+fi

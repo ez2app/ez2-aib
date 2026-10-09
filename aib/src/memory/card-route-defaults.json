@@ -1,0 +1,9 @@
+{
+ "_comment": "uid → default_route_key。只放從舊登記表(src/memory/persona-card-registry.json,4 卡)一次遷移的預設大腦;其餘卡一律 null=「無預設大腦(待 E 新建/手選)」,不得替卡發明預設(艦長 08-17 22:22 裁(4))。key 是角色庫 角色.md frontmatter uid,不是目錄名。",
+ "defaults": {
+  "d65bc6": "core.handoff",
+  "9def2f": "core.refine",
+  "6036d1": "product.expert.draft",
+  "5e452e": "product.expert.output"
+ }
+}

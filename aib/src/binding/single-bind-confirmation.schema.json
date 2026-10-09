@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ez2.invalid/schema/single-bind-confirmation-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "confirmation_id",
+    "pending_id",
+    "subject",
+    "scope",
+    "plan_sha256",
+    "target_fingerprint",
+    "expires_at_ms",
+    "max_effects"
+  ],
+  "properties": {
+    "confirmation_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[^*?\\[\\]\\u0000]+$"
+    },
+    "pending_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[^*?\\[\\]\\u0000]+$"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principal_id",
+        "seat_id",
+        "session_uuid"
+      ],
+      "properties": {
+        "principal_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]\\u0000]+$"
+        },
+        "seat_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]\\u0000]+$"
+        },
+        "session_uuid": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]\\u0000]+$"
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_triggers",
+        "checkpoint_generation",
+        "checkpoint_relpath",
+        "checkpoint_sha256",
+        "fleet_generation",
+        "fleet_id",
+        "fleet_member_id",
+        "fleet_member_sha256",
+        "lease_generation",
+        "lease_id",
+        "memory_schema_version",
+        "memory_scope_id",
+        "memory_store_ref_sha256",
+        "native_root_id",
+        "native_root_receipt_generation",
+        "native_root_receipt_sha256",
+        "persona_catalog_generation",
+        "persona_sha256",
+        "persona_uid",
+        "project_generation",
+        "project_id",
+        "root_generation",
+        "root_sha256"
+      ],
+      "properties": {
+        "allowed_triggers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "ctx_threshold",
+              "content"
+            ]
+          },
+          "description": "只准三個 exact array:[ctx_threshold] / [content] / [ctx_threshold,content];順序錯即拒(由 bind_target.validate_authority_scope 判)。"
+        },
+        "checkpoint_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "checkpoint_relpath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checkpoint_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "fleet_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fleet_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fleet_member_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fleet_member_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lease_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "memory_schema_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "memory_scope_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "memory_store_ref_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "native_root_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "native_root_receipt_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "native_root_receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "persona_catalog_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "persona_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "persona_uid": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "root_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "root_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "description": "B authority scope = bind_target target 去掉 schema 再加 allowed_triggers;鍵集合由 src/fleet_identity/bind_target.SCOPE_KEYS 唯一導出,本檔不另抄一份。"
+    },
+    "plan_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "target_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "expires_at_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "max_effects": {
+      "const": 1
+    }
+  }
+}

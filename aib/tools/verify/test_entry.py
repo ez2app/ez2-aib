@@ -1,0 +1,1436 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""`aib test <test files…>` — the one entry for running tests (docs/DESIGN-aib-test-entry-shadow-0929.md §3).
+
+the maintainer 09-29: "running tests must (1) enable shadow resume, (2) confirm it is really enabled; only when (1) cannot be
+enabled, run the old way."  Every call does three steps:
+
+  1. self-check   shadow_gate.check on the tracer this entry will use (this file's own tree), once per process.
+  2. run          self-check passed ⇒ per test: reuse the last green row (reuse_index.decide, with the exact
+                  environment the test would get), or run it under the tracer (runner._traced_run, which appends
+                  a row to the reuse pool).  Afterwards the pool is *re-read* and the new rows are counted:
+                  every test that really ran must have left one.  Claimed on but rows missing ⇒ the run failed.
+  3. fall back    only when step 1 failed: run every test plainly (no tracer, nothing recorded) and say why.
+
+Line 1 of the output is always exactly one of three (design §3 table; the words live in i18n `aib.test.line1_*`):
+  enabled   shadow resume on and confirmed (reused N / ran M, new rows M)
+  fallback  shadow resume not enabled — <stage>: <reason>; everything runs
+  short     shadow resume claimed on, but M ran and only K rows were left — failed
+
+Exit codes: 0 all green · 1 at least one red (line 1 still names a row shortfall) · 2 usage ·
+            3 all green but rows missing (the run is not trusted: next time these tests cannot be reused).
+
+What is deliberately NOT here (first package): the host lease is not taken (same as a seat running one test
+directly today; a batch prints that on line 2); the Claude-seat hook that blocks direct `python3 tests/…`;
+the tripwire table of product programs that start tests; the six API seats (design §7 cells 4 and 6).
+
+No off switch for tracing.  `--strict` and `--fresh` both still trace and record; AIB_SEAT_TEST_REUSE=0 and
+AIB_WITNESS_SHADOW=0 are ignored here (and say so on stderr).
+10-04 (the maintainer approved): a reuse kill switch that still traces/records — AIB_TEST_NO_REUSE=1 acts like --fresh for every
+test (why code no-reuse-env); and a per-test marker — a line `# aib: always-run` in the first 40 lines of a test file
+means that test is never reused (why code always-run).
+
+Rows are marked source="aib-test" (runner._traced_run row_source=, da0c85c98).  `--timeout N` limits each test to
+N seconds (default: runner.DEFAULT_TIMEOUT_S, 30 minutes); a timed-out test is red with rc 124.
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import jsonl_safe  # 10-04:jsonl 行界只認 "\n"(見該檔)
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ENTRY_ROOT = HERE.parents[1]
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+import runner          # noqa: E402  _traced_run / _run_one / isolated_test_env / _pool_file / TMP_ROOT
+import resume_policy   # noqa: E402  quick | strict
+import reuse_index     # noqa: E402  decide
+import shadow_gate     # noqa: E402  check
+import i18n_lib        # noqa: E402  (runner put src/cockpit on sys.path)
+from slow_warn import SLOW_RATIO, SLOW_MIN_EXTRA_S, slow_threshold  # noqa: E402
+
+LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+# Switches that used to turn shadow resume off.  They are read only to say "this no longer turns it off".
+ROW_SOURCE = "aib-test"
+RETIRED_SWITCHES = (("AIB_SEAT_TEST_REUSE", "0"), ("AIB_WITNESS_SHADOW", "0"))
+
+_GATE = {}   # one self-check per process (package_trial calls run_tests once per test)
+
+# ★ the maintainer 10-02 常設令:每支測試都記耗時;開跑前先知道它平常多久;超過平常 10% 立即示警、去找問題。
+#   平常 = 同一個倉庫(所有工作樹共用的影子紀錄池)最近 BASELINE_RUNS 次「綠、沒逾時」實跑的平均。
+#   10% 之外再要求多 SLOW_MIN_EXTRA_S 秒:0.3 秒的測試慢 10% 是 0.03 秒,那是雜訊不是問題。
+#   起因:test-verify-bash-child-96b 平常 5–6 秒,10-02 跑了 1093 秒(兩份 bash 轉接器互叫到逾時),
+#   整批跑完一個半小時後才有人發現。
+BASELINE_RUNS = 5
+# 即時計時器從「準備跑這一支」開始算(含建追蹤沙箱),紀錄裡的耗時只算測試本身;差約 1 秒。
+# 不補這段,短測試會在跑的當下被誤報(10-02 實測:96 支即時示警 11 次,結尾真慢只有 3 支)。
+# 補法:這一批最近幾支量到的「牆鐘 − 紀錄耗時」取最大值,第一支先用預設值。
+SETUP_ALLOWANCE_DEFAULT_S = 1.5
+
+
+def baselines(pool: Path, names):
+    """{test: 平均秒};只算綠、沒逾時、真的有跑的列,每支取最近 BASELINE_RUNS 次。讀不到的支不出現。"""
+    want, hist = set(names), {}
+    try:
+        with open(pool, encoding="utf-8") as fh:
+            for ln in fh:
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                if not isinstance(r, dict):
+                    continue
+                t = r.get("test")
+                d = r.get("duration_s")
+                if t not in want or r.get("rc") != 0 or r.get("timed_out") or not isinstance(d, (int, float)):
+                    continue
+                hist.setdefault(t, []).append(float(d))
+    except OSError:
+        return {}
+    return {t: sum(v[-BASELINE_RUNS:]) / len(v[-BASELINE_RUNS:]) for t, v in hist.items() if v}
+
+
+def _why_text(code, detail=""):
+    """影子續跑不能沿用的原因代碼 → 白話(四語);字典沒有的代碼原樣顯示,不吞掉。"""
+    if code == "index-degraded" and detail in ("no-rows-files", "no-usable-rows"):
+        code, detail = "no-records", ""                  # 還沒跑過 ≠ 紀錄池壞了(第一次在這個倉庫跑)
+    if code == "env-fp-changed" and detail:              # 10-06:說得出是哪幾項變了
+        code = "env-fp-changed-items"
+    key = "aib.test.why." + code.replace("-", "_")      # 字典鍵不收連字號
+    txt = i18n_lib.t(key, {"detail": detail}, locale=LOC)
+    missing = (not txt) or txt == key or (txt.startswith("!!") and txt.endswith("!!"))
+    return code if missing else txt
+
+
+class _SlowWatch:
+    """跑一支測試時在旁邊計時:一過門檻就呼叫 on_slow 一次(即時,不等整批跑完)。"""
+
+    def __init__(self, threshold, on_slow):
+        self.threshold, self.on_slow = threshold, on_slow
+        self._stop = threading.Event()
+        self._t = None
+        self.fired = False
+
+    def __enter__(self):
+        if self.threshold is not None and self.on_slow is not None:
+            self._t = threading.Thread(target=self._wait, daemon=True)
+            self._t.start()
+        return self
+
+    def _wait(self):
+        if not self._stop.wait(self.threshold):
+            self.fired = True
+            try:
+                self.on_slow()
+            except Exception:  # noqa: BLE001 — 示警壞了不能讓測試結果壞
+                pass
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._t is not None:
+            self._t.join(timeout=1)
+        return False
+
+
+def T(key, params=None):
+    return i18n_lib.t("aib.test." + key, params, locale=LOC)
+
+
+def all_tests(repo):
+    """--all:跟推前檢查同一個母體(pushgate.all_tests:aib 自己的倉只算 tests/test-*.py;一般專案照通用找法,
+    但不在 tests/ 底下、檔裡一個測試都沒有的不算 —— 不會把 tools/verify/test_entry.py 這種「檔名像測試」的當測試跑)。
+    只帶 tools/verify 的精簡安裝沒有設定那一層 ⇒ []。"""
+    try:
+        import pushgate
+        return sorted(pushgate.all_tests(str(repo)))
+    except ImportError:
+        return []
+
+
+def step_summary(lines, path=None):
+    """GitHub Actions:把「沒有 aib → 有 aib」那幾行附到這次執行的摘要頁(GITHUB_STEP_SUMMARY),用戶在網頁上就看得到省了多少。
+    沒有那個環境變數 ⇒ 不寫;寫不進去不影響這一輪。"""
+    path = path or os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path or not lines:
+        return False
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("```\n" + "\n".join(lines) + "\n```\n")
+        return True
+    except OSError:
+        return False
+
+
+def summary_extra(vs, tests, top=20):
+    """只給 GitHub 執行摘要頁的幾行(終端不印):計費分鐘(GitHub 每個工作進位到整分鐘,這裡只算測試那段)、
+    給不認識 aib 的貢獻者看的「沿用是什麼意思」、這次實跑的是哪幾支。"""
+    import math
+    out = [T("vs_billed", {"total": int(math.ceil(vs["without_s"] / 60.0)), "actual": int(math.ceil(vs["with_s"] / 60.0))}),
+           T("vs_meaning")]
+    ran = [r["name"] for r in tests if not r.get("reused") and not r.get("unverified")]
+    if ran:
+        more = len(ran) - top
+        out.append(T("vs_ran_list", {"n": len(ran), "items": "、".join(ran[:top]) + (" …(+%d)" % more if more > 0 else "")}))
+    return out
+
+
+def versus(tests, wall_s):
+    """10-07 the maintainer:讓用戶看到「沒有 aib → 有 aib」省了多少。沒有 aib = 每支實跑秒數相加(這一輪實跑的用這一輪的、
+    沿用的用它被沿用那一列的實跑秒數;都是 aib 底下量的,含追蹤的額外時間);有 aib = 這一輪實際牆鐘。
+    沿用的沒有秒數 ⇒ 不算進「沒有 aib」(只會少算,不會多算),另回支數。沒驗的不算。"""
+    without, unknown, ran, reused = 0.0, 0, 0, 0
+    for r in tests:
+        if r.get("unverified"):
+            continue
+        if r.get("reused"):
+            reused += 1
+            d = r.get("prev_duration_s")
+        else:
+            ran += 1
+            d = r.get("elapsed_s")
+        if isinstance(d, (int, float)) and d > 0:
+            without += float(d)
+        else:
+            unknown += int(bool(r.get("reused")))
+    wall = max(0.0, float(wall_s or 0))
+    return {"without_s": round(without, 1), "with_s": round(wall, 1), "saved_s": round(max(0.0, without - wall), 1),
+            "ran": ran, "reused": reused, "unknown": unknown}
+
+
+def _test_stats_path():
+    import shadow_tracer
+    return shadow_tracer.shadow_dir_default() / "test-stats.jsonl"
+
+
+def record_versus(repo, vs, path=None):
+    """這一輪記一行(累計用);寫不進去不影響這一輪。回這個專案在這一行之前的紀錄(由舊到新)。"""
+    path = Path(path) if path else _test_stats_path()
+    rid = reuse_index.repo_identity(str(repo)) or ""
+    before = []
+    try:
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("repo") == rid:
+                before.append(r)
+    except OSError:
+        pass
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(dict(vs, repo=rid, utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+                                ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    return before
+
+
+def dur_text(seconds):
+    s = float(seconds or 0)
+    if s < 60:
+        return i18n_lib.t("aib.pushgate.unit_s", {"n": "%.1f" % s}, locale=LOC)
+    if s < 3600:
+        return i18n_lib.t("aib.pushgate.unit_min", {"n": ("%.1f" % (s / 60)).rstrip("0").rstrip(".")}, locale=LOC)
+    return i18n_lib.t("aib.pushgate.unit_h", {"n": ("%.1f" % (s / 3600)).rstrip("0").rstrip(".")}, locale=LOC)
+
+
+def versus_lines(vs, before):
+    """跑完印的那幾行(純函式,好測):沒有 aib 要等多久 → 有 aib 實際多久、少等多少,再加從第一次到現在的累計。"""
+    if vs["without_s"] <= 0:
+        return []
+    # 版面同回報的樹(aib-report):第一項 ╭▸、中間 ├▸、最後 ╰▸、子項掛在 │ 底下;每行一個圖示(the maintainer 10-07:要曲線與圖示)
+    out = [T("vs_head"), T("vs_without", {"total": dur_text(vs["without_s"]), "count": vs["ran"] + vs["reused"]})]
+    if vs["unknown"]:
+        out.append(T("vs_unknown", {"count": vs["unknown"]}))
+    if vs["with_s"] > vs["without_s"]:      # the maintainer 10-07:沒省到就只呈現時間與描述,不印「少等 0 秒」、不寫「多花」
+        first = not before and not vs["reused"]
+        out.append(T("vs_first" if first else "vs_plain", {"actual": dur_text(vs["with_s"])}))
+    else:
+        pct = 100.0 * vs["saved_s"] / vs["without_s"]
+        out.append(T("vs_with", {"actual": dur_text(vs["with_s"]), "seconds": dur_text(vs["saved_s"]), "pct": "%.0f" % pct}))
+    last = before[-1] if before else {}
+    if vs.get("tracer") and last.get("tracer") and last["tracer"] != vs["tracer"] and not vs["reused"]:
+        # aib 換版(追蹤器程式不同)⇒ 舊紀錄全部作廢、這一輪全部實跑;不說的話用戶只看到「這次怎麼沒省」
+        out.append(T("vs_aib_changed"))
+    out.append(T("vs_split", {"count": vs["reused"], "n": vs["ran"]}))
+    rows = [r for r in before if isinstance(r.get("without_s"), (int, float))] + [vs]
+    tot = sum(float(r["without_s"]) for r in rows)
+    act = sum(float(r.get("with_s") or 0) for r in rows)
+    out.append(T("vs_total" if tot >= act else "vs_total_plain", {"n": len(rows), "total": dur_text(tot), "actual": dur_text(act),
+                                                                  "seconds": dur_text(max(0.0, tot - act))}))
+    return out
+
+
+def self_check():
+    """shadow_gate.check on the tracer the runs will load: runner/shadow_tracer of ENTRY_ROOT."""
+    if "res" not in _GATE:
+        try:
+            _GATE["res"] = shadow_gate.check(ENTRY_ROOT)
+        except Exception as exc:  # a crashing gate is a failed gate, never a passed one
+            _GATE["res"] = {"ok": False, "stage": "setup", "reason": "%s: %s" % (type(exc).__name__, exc)}
+    return _GATE["res"]
+
+
+def _pool_rows_after(pool: Path, offset: int):
+    """Rows appended to the pool file after byte `offset` (an unreadable pool = no rows)."""
+    try:
+        with open(pool, "rb") as f:
+            f.seek(offset)
+            data = f.read()
+    except OSError:
+        return []
+    out = []
+    for line in jsonl_safe.split_lines(data.decode("utf-8", "replace")):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+    return out
+
+
+def _pool_size(pool: Path) -> int:
+    try:
+        return pool.stat().st_size
+    except OSError:
+        return 0
+
+
+def would_reuse(repo, name):
+    """True when run_tests would hand back the last green row for `name` without running it.  For callers that
+    must decide whether to take the host lease first (API seats).  Same self-check, mode and environment as
+    run_tests; the pool can still change between this answer and the run (then run_tests really runs it)."""
+    repo = Path(repo).resolve()
+    mode, _source, _path = resume_policy.current_mode(str(repo))
+    if mode == "strict" or not self_check().get("ok"):
+        return False
+    home = Path(tempfile.mkdtemp(prefix="aib-test-home-", dir=runner.TMP_ROOT))
+    try:
+        env = runner.isolated_test_env(home, repo)
+        idx = reuse_index.build_index([], repo=str(repo))
+        verdict, _why, _detail = idx.decide(str(repo), name, changed=[], environ=env)
+        return verdict == "reuse"
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+_RESUME_NAME_RE = __import__("re").compile(r"[A-Za-z0-9._-]{1,64}")
+_JOURNAL_FIELDS = ("test", "rc", "tree", "fresh")
+
+
+def _journal_path(repo, name):
+    """--resume 的批次日誌:跟紀錄池放在同一個目錄,`batch-<名>.jsonl`。"""
+    return runner._pool_file(repo).parent / ("batch-%s.jsonl" % name)
+
+
+def load_journal(path, tree, fresh):
+    """10-04 the maintainer「把可接續做成程式化」:讀批次日誌,回 (上次已跑綠的測試集合, 問題或 None)。
+    判準照 tools/governance/suite_resume.py:同一棵樹、上次綠、同一種跑法(--fresh 與否)才算;
+    同一支多筆以最後一筆為準(後來紅了就不算)。任何一行壞掉 ⇒ 整份不用(回空集合 + 問題),全部重跑 —— 安全的一側。
+    現樹 sha 量不到(空字串)⇒ 一律不接續。"""
+    if not tree:
+        return set(), "tree-unknown"
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return set(), None
+    except OSError as exc:
+        return set(), "unreadable: %s" % exc
+    last = {}
+    for n, line in enumerate(jsonl_safe.split_lines(text), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            return set(), "bad-line %d" % n
+        if not isinstance(row, dict) or any(k not in row for k in _JOURNAL_FIELDS):
+            return set(), "bad-line %d" % n
+        if row["tree"] == tree and bool(row["fresh"]) == bool(fresh):
+            last[row["test"]] = row["rc"]
+    return {t for t, rc in last.items() if rc == 0}, None
+
+
+def append_journal(path, row):
+    import fcntl
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(jsonl_safe.dumps(row) + "\n")
+        f.flush()
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _tracked_dirty(repo):
+    """被 git 追蹤、內容跟 HEAD 不同的檔 → {路徑: 內容雜湊}(刪掉的記 None)。量不到回 None。"""
+    try:
+        p = subprocess.run(["git", "-C", str(repo), "diff", "--name-only", "HEAD"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if p.returncode != 0:
+        return None
+    out = {}
+    for rel in [x for x in p.stdout.splitlines() if x.strip()]:
+        f = Path(repo) / rel
+        try:
+            out[rel] = __import__("hashlib").sha256(f.read_bytes()).hexdigest()
+        except OSError:
+            out[rel] = None
+    return out
+
+
+def _batch_dir(repo):
+    """同一棵工作樹上正在跑的 aib test 批次登記處(用工作樹的實際路徑分,不用倉庫身分 —— 各工作樹共用倉庫身分)。"""
+    import hashlib
+    tag = hashlib.sha256(str(Path(repo).resolve()).encode("utf-8")).hexdigest()[:16]
+    return Path(runner.TMP_ROOT) / "aib-test-batches" / tag
+
+
+_TMP_LEAKS = []      # 10-08:[(測試, 留下幾項)] —— 跑完還留在它自己暫存資料夾裡的東西(總表列出,幫使用者找會漏檔的測試)
+
+
+RUN_PREFIX = "aibt-"   # 每支測試自己的暫存資料夾(aib tmp 的 PREFIXES 也列它)
+
+
+def own_tmp_root():
+    """aib 自己在暫存區的根(<tmp>/ez2-aib-tmp-<uid>/);aib tmp 清的就是這裡。
+    名字刻意不是 aib-<數字>:那是駕駛艙艙名的格式(test-cabin-resolution R8:全倉不准第二處自己拼艙名)。"""
+    d = Path(runner.TMP_ROOT) / ("ez2-aib-tmp-%d" % os.getuid())
+    d.mkdir(exist_ok=True)
+    # 0711:別人走得進去、列不出內容。測試常切成一般身分(nobody)跑被測程式,治具在這底下要走得到 ——
+    #   以前治具直接放在 /tmp(1777,還列得出來),這樣只比以前嚴,不會讓那些測試多紅(10-08 fail-open-lint 實踩)
+    os.chmod(d, 0o711)
+    return d
+
+
+@contextlib.contextmanager
+def _own_home(repo, env, name=None):
+    """每支測試自己一個全新的 HOME(10-05)。
+    10-08(/tmp 方案第 1 層):也給它自己一個暫存資料夾(TMPDIR,AIB_TEST_TMPDIR 給寫死 /tmp 的治具),跑完就刪;
+      刪之前數一下裡面還剩什麼 —— 測試自己沒清的,記在它名下(總表列出)。TMPDIR 本來就不進環境指紋,換掉不會讓鑰匙變。
+    以前一批共用一個 HOME:前一支留在 HOME 的東西會改變後一支的結果(推前檢查裡 b184 第 8 格時紅時綠 ——
+    前面的測試建了 ~/.ez2-aib,它就讀到「有狀態根、沒有席位」)。更糟的是那個綠會被記下來沿用,
+    而鑰匙裡沒有「前面跑了誰」。HOME 本來就不進環境指紋,所以換掉不會讓鑰匙變。"""
+    home = Path(tempfile.mkdtemp(prefix="aib-test-home-", dir=runner.TMP_ROOT))
+    # 直接放在暫存根、名字盡量短(/tmp/aibt-xxxxxxxx):Unix socket 路徑有長度上限(Linux 108、Mac 104),
+    #   10-08 放在 <tmp>/ez2-aib-tmp-<uid>/run-* 底下多了 27 字,grokbot 信箱測試的 dm socket 就連不上。aib tmp 照名字開頭認它。
+    tmp = Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=runner.TMP_ROOT))
+    os.chmod(tmp, 0o711)
+    reaped_before = len(runner.REAPED)
+    try:
+        runner.isolated_test_env(home, repo)
+        yield dict(env, HOME=str(home), TMUX_TMPDIR=str(home), TMPDIR=str(tmp), AIB_TEST_TMPDIR=str(tmp))
+    finally:
+        # 10-08 實踩:測試開了真的 tmux 沒關 ⇒ 伺服器在背景跑了 13 小時、吃掉約 8 GB,推前檢查兩次被系統砍(OOM)。
+        #   追蹤那條跑法已經照追蹤檔路徑收(runner._traced_run);這裡再照「這支自己的暫存資料夾」收一次 ——
+        #   兩條跑法(含自檢沒過的備援跑法)都涵蓋,路徑是隨機的,不會碰到別支、別人的程序。收掉幾個,記在它名下。
+        runner.reap_leftovers(str(tmp), var="AIB_TEST_TMPDIR")
+        procs = len(runner.REAPED) - reaped_before
+        if procs and name:
+            _TMP_LEAKS.append((name + " " + T("tmp_leak_procs"), procs))
+        shutil.rmtree(home, ignore_errors=True)
+        try:
+            names = sorted(os.listdir(tmp))
+        except OSError:
+            names = []
+        left = len(names)
+        if left and name:
+            _TMP_LEAKS.append((name, left))
+            _note_leak(name, names, repo)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+LEAK_LOG_MAX = 512 * 1024
+
+
+def _note_leak(name, names, repo=None):
+    """10-08:總表只說「留了 3 項」查不出是哪 3 項 ⇒ 把名字記到 ~/.ez2-aib/test-leaks.jsonl(每支最多 10 個,檔超過 512 KB 只留後半)。
+    repo = 哪個工作區跑的(推包與手動同時跑時分得出來)。記不下來不影響測試結果。"""
+    log = Path.home() / ".ez2-aib" / "test-leaks.jsonl"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        if log.exists() and log.stat().st_size > LEAK_LOG_MAX:
+            data = log.read_bytes()
+            log.write_bytes(data[len(data) // 2:].split(b"\n", 1)[-1])
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": int(time.time()), "repo": str(repo or ""), "test": name, "n": len(names), "names": names[:10]},
+                                ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _register_batch(repo):
+    d = _batch_dir(repo)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        marker = d / str(os.getpid())
+        marker.write_text(str(os.getpid()), encoding="utf-8")
+        return marker
+    except OSError:
+        return None
+
+
+def _other_batches(repo):
+    """同一棵樹上還有別的活著的批次?(登記檔的 pid 還活著才算;當掉留下的登記檔不算)"""
+    try:
+        names = [f.name for f in _batch_dir(repo).iterdir()]
+    except OSError:
+        return False
+    for n in names:
+        if not n.isdigit() or int(n) == os.getpid():
+            continue
+        try:
+            os.kill(int(n), 0)
+            return True
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            return True
+    return False
+
+
+def _backup_before_restore(repo, rels):
+    """10-07(雲端實踩:aib test 跑的時候在同一棵樹改檔,被當成測試弄髒的、整段還原掉):還原前先把現在的內容抄一份到
+    ~/.ez2-aib/tree-guard-backup/<樹名>-<時間>-<pid>/,路徑照倉內相對路徑。被判成「測試弄髒」的,可能是使用者自己同時間改的。
+    刪掉的檔沒有內容可抄(git 裡還有)。抄不了 ⇒ 回 None,呼叫端就不還原(寧可後面的測試在改過的樹上跑,也不丟人家的改動)。"""
+    dest = Path.home() / ".ez2-aib" / "tree-guard-backup" / ("%s-%s-%d" % (Path(repo).resolve().name,
+                                                                         time.strftime("%Y%m%d-%H%M%S"), os.getpid()))
+    try:
+        for rel in rels:
+            src = Path(repo) / rel
+            if not src.is_file():
+                continue
+            out = dest / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(src), str(out))
+    except OSError:
+        return None
+    return dest
+
+
+def _tree_guard(repo, baseline, result, live):
+    """10-04:測試跑完,被追蹤的檔多了改動(批次開始時沒有、或內容又變了)⇒ 這支判紅、說出是哪些檔,並當場還原,
+    免得後面的測試都在測被改壞的樹(雲端實踩:自刀直接改寫真樹、跑到一半容器重開,finally 沒跑)。
+    baseline 量不到(不是 git 倉)⇒ 不檢查。只還原「批次開始時乾淨」的檔;開始前就有改動的只報不動。"""
+    if baseline is None:
+        return
+    now = _tracked_dirty(repo)
+    if now is None:
+        return
+    changed = sorted(rel for rel, h in now.items() if baseline.get(rel, "<clean>") != h)
+    if not changed:
+        return
+    files = ", ".join(changed[:5]) + (" …" if len(changed) > 5 else "")
+    if _other_batches(repo):
+        # ★ 10-04(full4 三份並行實踩):同一棵樹上別批的「原地落刀」測試正在改檔,剛好這支跑完 ⇒ 被算到這支頭上、
+        #   還被還原 ⇒ 誤紅這支、又弄壞那支的刀。同樹有別批在跑時歸咎不了 ⇒ 不判紅、不還原;
+        #   但這支跑的時候樹被改過,它的綠不能當證據 ⇒ 照樣作廢池裡那列綠(下次重跑)。
+        reuse_index.write_void(runner._pool_file(repo), {"test": result.get("name", "?"), "green_only": True},
+                               "tree-changed-shared:" + files, slack_s=2)
+        result["output"] = (result.get("output") or "") + "\n" + T("tree_shared", {"files": files}) + "\n"
+        result["tree_shared"] = changed
+        if live is not None:
+            live("tree_shared", {"test": result.get("name", "?"), "files": files})
+        return
+    restorable = [rel for rel in changed if rel not in baseline]
+    backup = None
+    if restorable:
+        backup = _backup_before_restore(repo, restorable)
+        if backup is not None:
+            subprocess.run(["git", "-C", str(repo), "checkout", "--"] + restorable, capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+    result["rc"] = result.get("rc") or 1
+    result["output"] = (result.get("output") or "") + "\n" + T("tree_dirtied", {"files": files}) + "\n"
+    if restorable:
+        result["output"] += (T("tree_backup", {"dir": str(backup)}) if backup is not None else T("tree_backup_failed")) + "\n"
+        result["tree_backup"] = str(backup) if backup is not None else None
+    result["tree_dirtied"] = changed
+    # ★ 10-04(full4 第二輪實踩):執行器在測試跑完當下就把這支的列寫進紀錄池(rc=0 綠);這裡才判紅 ⇒ 池裡那列
+    #   還是綠 ⇒ 下一輪沿用 = 把紅藏成綠(social-context-callpoint 改了 src/routing/an internal service.py)。
+    #   ⇒ 同一支追加一筆作廢列(只打綠列);時間戳只到秒,剛寫的列可能同一秒 ⇒ 作廢點往後留 2 秒(多重跑的方向)。
+    #   寫不進去就讓整批炸(不准靜默留下那列綠)。
+    reuse_index.write_void(runner._pool_file(repo), {"test": result.get("name", "?"), "green_only": True},
+                           "tree-dirtied:" + files, slack_s=2)
+    if live is not None:
+        live("tree_dirtied", {"test": result.get("name", "?"), "files": files})
+        if restorable:
+            if backup is not None:
+                live("tree_backup", {"dir": str(backup)})
+            else:
+                live("tree_backup_failed", {})
+
+
+_SKIP_UNITTEST = re.compile(r"\bskipped=(\d+)")
+_SKIP_PYTEST = re.compile(r"\b(\d+) skipped\b")
+
+
+def skipped_cells(output):
+    """10-04:綠燈裡被跳過的格數(unittest「OK (skipped=N)」/ pytest「N skipped」);看不到 ⇒ 0。
+    雲端實量:835 支綠裡 46 支帶跳過、共 183 格,以前畫面只寫「綠」—— 沒驗的要跟驗過的一樣顯眼。"""
+    text = output or ""
+    m = _SKIP_UNITTEST.findall(text) or _SKIP_PYTEST.findall(text)
+    return int(m[-1]) if m else 0
+
+
+def _live_done(live, r):
+    """10-04 the maintainer「為什麼不能一紅就知」:每支實跑一結束就即時說綠或紅(以前要等整批跑完才印總表)。"""
+    # ★ 10-06 a seat(Mini 推 v0.71.0 第一包被擋):全部格跳過的那支在這裡 rc 已是 None、unverified 已是 True
+    #   (_mark_all_skipped 先跑),舊寫法照樣印「✗ 紅 … rc=None」—— 總表後來會改成「⊘ 沒驗」,但 pushgate --fail-fast
+    #   盯的是這一行,看到就把三份全停(EARLY_RED),ship.py 再把它判成「只在這次紅」拒推。沒驗的要印成沒驗,不是紅。
+    if r.get("unverified"):
+        live("unverified", {"test": r.get("name", "?"), "what": " ".join(r.get("needs") or [])})
+        return
+    el = r.get("elapsed_s")
+    params = {"test": r.get("name", "?"), "rc": r.get("rc"),
+              "elapsed": "%.1f" % el if isinstance(el, (int, float)) else "?"}
+    live("done_green" if r.get("rc") == 0 else "done_red", params)
+
+
+ALWAYS_RUN_MARK = re.compile(r"^\s*#\s*aib:\s*always-run\b", re.M)
+
+
+def _always_run_marked(repo, name):
+    """測試檔前 40 行有 `# aib: always-run` ⇒ 永遠實跑(讀不到檔 ⇒ 當作沒標,照一般規則)。"""
+    try:
+        with open(Path(repo) / name, encoding="utf-8", errors="replace") as fh:
+            head = "".join(next(fh, "") for _ in range(40))
+    except OSError:
+        return False
+    return bool(ALWAYS_RUN_MARK.search(head))
+
+
+def _no_reuse_env(environ=None):
+    """總開關 AIB_TEST_NO_REUSE=1:這一輪全部實跑(照樣追蹤、照樣留紀錄)。"""
+    return str((environ if environ is not None else os.environ).get("AIB_TEST_NO_REUSE") or "") == "1"
+
+
+def explain(repo, tests, *, strict=None, environ=None):
+    """aib test --why(10-04):每支測試「這一輪會不會沿用、不沿用卡在哪個輸入」。不跑測試、不寫紀錄池。
+    判準與 run_tests 同序:嚴格 ⇒ 自檢 ⇒ 總開關 ⇒ always-run 標記 ⇒ 紀錄池(reuse_index.explain,即 decide)。"""
+    repo = Path(repo).resolve()
+    if strict is None:
+        mode, _source, _path = resume_policy.current_mode(str(repo))
+        strict = mode == "strict"
+    gate = self_check()
+    out = []
+    home = Path(tempfile.mkdtemp(prefix="aib-test-home-", dir=runner.TMP_ROOT))
+    try:
+        env = runner.isolated_test_env(home, repo)
+        idx = reuse_index.build_index([], repo=str(repo)) if (gate.get("ok") and not strict) else None
+        for name in tests:
+            e = {"test": name, "verdict": "must-run", "why": "", "detail": "", "time": None,
+                 "changed": [], "unmeasured": [], "more": 0}
+            if strict:
+                e["why"] = "strict"
+            elif not gate.get("ok"):
+                e["why"], e["detail"] = "gate-fail", "%s: %s" % (gate.get("stage", "?"), gate.get("reason", ""))
+            elif _unmet_needs(repo, name):
+                e["why"], e["detail"] = "needs-unmet", " ".join(_unmet_needs(repo, name))
+            elif _no_reuse_env(environ):
+                e["why"] = "no-reuse-env"
+            elif _always_run_marked(repo, name):
+                e["why"] = "always-run"
+            else:
+                e.update(idx.explain(str(repo), name, environ=env))
+            out.append(e)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    return out
+
+
+def _cells(repo, names, as_json=False):
+    """aib test --cells(10-06,開發檔 §13 C1):量每一格讀了什麼、執行了哪些函式、花幾秒、有沒有暗中相依。只量,不寫沿用紀錄。"""
+    import cell_probe
+    outs = [cell_probe.probe(repo, n) for n in names]
+    if as_json:
+        print(json.dumps({"cells": outs}, ensure_ascii=False))
+        return 0
+    for o in outs:
+        print(T("cells_head", {"test": o["test"], "n": len(o["cells"]), "seconds": "%.1f" % o["seconds"],
+                               "what": len(o["shared"])}))
+        for c in sorted(o["cells"], key=lambda c: -(c["seconds"] or 0))[:10]:
+            print(T("cells_row", {"name": c["cell"], "seconds": "%.2f" % (c["seconds"] or 0), "n": len(c["own"]),
+                                  "count": len(c["funcs"]), "what": c["outcome"] or "?"}))
+        if o["order_dependent"]:
+            print(T("cells_coupled", {"what": ", ".join(o["order_dependent"][:5])}))
+        if o["static_state"]:
+            print(T("cells_static", {"what": ", ".join(o["static_state"])}))
+        if o["shared_unmeasured"] or any(c["unmeasured"] for c in o["cells"]):
+            print(T("cells_unmeasured"))
+        print(T("cells_ok" if o["separable"] else "cells_not"))
+        if o.get("tail"):
+            print(o["tail"])
+    return 0
+
+
+def _print_explain(entries):
+    for e in entries:
+        if e["verdict"] == "reuse":
+            print(T("why_reuse", {"test": e["test"], "when": e.get("time") or "?", "key": e.get("detail") or "?"}))
+            continue
+        print(T("why_mustrun", {"test": e["test"], "why": _why_text(e["why"], e.get("detail") or "")}))
+        for it in e.get("changed") or ():
+            print(T("why_changed_item", {"item": it}))
+        for it in e.get("unmeasured") or ():
+            print(T("why_unmeasured_item", {"item": it}))
+        if e.get("more"):
+            print(T("why_more", {"n": e["more"]}))
+        if e["why"] == "env-fp-changed" and not e.get("detail"):   # 10-06:說得出哪幾項就不再叫人自己去比
+            print(T("why_env_hint"))
+
+
+# ---- 10-04:測試要的機器條件(`# aib: needs <條件…>`)--------------------------------------------------
+# 有些測試在某台機器上根本做不到(要 Mac 的 plutil、要旁邊的 ez2-ai 倉、要 IPv6)。以前它們在雲端每次都紅,
+# 混在真的紅裡要人一支支辨認。現在測試檔前 40 行寫一行條件;這台不符合 ⇒ **不跑、不算綠也不算紅**,
+# 結果標「沒驗」(rc=None, unverified=True),總表另列一行、跟紅燈一樣顯眼,整批結束碼 4(有紅仍是 1)。
+# ★ 條件必須是「做這件事的前提」,不可以是測試要驗的那件事本身(否則缺的時候不跑 = 藏紅)。
+# ★ 看不懂的條件 ⇒ 照跑(不准因為打錯字就變成沒驗)。註解寫法 # 或 // 都認(之後其他語言的測試同一套)。
+NEEDS_MARK = re.compile(r"^\s*(?:#|//)\s*aib:\s*needs\s+([A-Za-z0-9_:./,\- ]+)", re.M)
+
+
+def _needs_of(repo, name):
+    try:
+        with open(Path(repo) / name, encoding="utf-8", errors="replace") as fh:
+            head = "".join(next(fh, "") for _ in range(40))
+    except OSError:
+        return []
+    out = []
+    for m in NEEDS_MARK.finditer(head):
+        out += [c for c in re.split(r"[,\s]+", m.group(1).strip()) if c]
+    return out
+
+
+def _sibling_repo(repo, name):
+    """旁邊的倉:EZ2_MAIN_REPO(只對 ez2-ai)、git 共用目錄的上上層、家目錄底下;任一處是 git 倉就算有。"""
+    cands = []
+    if name == "ez2-ai" and os.environ.get("EZ2_MAIN_REPO"):
+        cands.append(Path(os.environ["EZ2_MAIN_REPO"]).expanduser())
+    try:
+        common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--git-common-dir"], capture_output=True,
+                                text=True, stdin=subprocess.DEVNULL, timeout=10)
+        if common.returncode == 0:
+            cands.append((Path(repo) / common.stdout.strip()).resolve().parent.parent / name)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    cands.append(Path.home() / name)
+    for c in cands:
+        try:
+            if subprocess.run(["git", "-C", str(c), "rev-parse", "--git-dir"], capture_output=True,
+                              stdin=subprocess.DEVNULL, timeout=10).returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return False
+
+
+def _need_met(repo, cond):
+    """回 True(符合)/ False(不符合)/ None(看不懂 ⇒ 呼叫端照跑)。"""
+    import socket
+    if cond in ("darwin", "linux"):
+        return sys.platform.startswith(cond)
+    if cond == "ipv6":
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as so:
+                so.bind(("::1", 0))
+            return True
+        except OSError:
+            return False
+    kind, _, arg = cond.partition(":")
+    if kind == "tool" and arg:
+        return shutil.which(arg) is not None
+    if kind == "repo" and re.fullmatch(r"[A-Za-z0-9_.-]+", arg or ""):
+        return _sibling_repo(repo, arg)
+    return None
+
+
+def _unmet_needs(repo, name):
+    return [c for c in _needs_of(repo, name) if _need_met(repo, c) is False]
+
+
+def _unverified(name, unmet):
+    """缺條件 ⇒ 每個條件寫成「這台缺 X」;別種沒驗(全部跳過、一支都沒收集到)的原因自己寫,不冠「這台缺」(10-08)。"""
+    return {"name": name, "rc": None, "unverified": True, "needs": [T("need_missing", {"what": c}) for c in unmet], "reused": False,
+            "elapsed_s": 0.0, "output": ""}
+
+
+# 10-05 a seat:unittest 每一格都 skip 時 rc 仍是 0 —— 一格都沒真的驗,不得算綠(20feb 10-02 抓)。
+# 從輸出尾段(實跑的 output、沿用的 pool tail 都有)讀最後一組「Ran N tests」與「OK (skipped=K)」。
+_RAN_RE = re.compile(r"^Ran (\d+) tests? in ", re.M)
+_SKIP_RE = re.compile(r"^OK \((?:[^)]*?, )?skipped=(\d+)", re.M)
+
+
+# 10-07(外部專案 Ruby / Go / JS / PHP 實測):別的語言的總結行。只依測試檔的副檔名挑格式 ——
+#   Python 測試自己印出「0 passing」之類的字不會被誤認(誤認會把綠判成沒驗)。回 (跑了幾格, 跳過幾格) 或 None。
+_MINITEST_RE = re.compile(r"^(\d+) runs?, \d+ assertions?, \d+ failures?, \d+ errors?, (\d+) skips?", re.M)
+_RSPEC_RE = re.compile(r"^(\d+) examples?, \d+ failures?(?:, (\d+) pending)?", re.M)
+_JEST_RE = re.compile(r"^Tests:\s+(.*?)(\d+) total\s*$", re.M)
+_VITEST_RE = re.compile(r"^\s*Tests\s+(.*?)\((\d+)\)\s*$", re.M)
+_MOCHA_RE = re.compile(r"^\s*(\d+) (passing|pending|failing)\b", re.M)
+
+
+def _other_lang_cells(output, name):
+    text = output or ""
+    n = str(name or "")
+    if n.endswith(".rb"):
+        m = _MINITEST_RE.findall(text)
+        if m:
+            return int(m[-1][0]), int(m[-1][1])
+        m = _RSPEC_RE.findall(text)
+        if m:
+            return int(m[-1][0]), int(m[-1][1] or 0)
+        return None
+    if n.endswith(".php"):
+        if re.search(r"^No tests executed!", text, re.M):
+            return 0, 0
+        m = re.findall(r"^OK \((\d+) tests?, \d+ assertions?\)", text, re.M)
+        if m:
+            return int(m[-1]), 0
+        m = re.findall(r"^Tests: (\d+), Assertions: \d+(.*)$", text, re.M)
+        if m:
+            total, rest = m[-1]
+            sk = sum(int(x) for x in re.findall(r"(?:Skipped|Incomplete): (\d+)", rest))
+            return int(total), sk
+        return None
+    if n.endswith("_test.go"):
+        if re.search(r"\[no test files\]|\[no tests to run\]", text) and not re.search(r"^--- (PASS|FAIL)", text, re.M):
+            return 0, 0
+        return None
+    if n.endswith((".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx")):
+        m = _JEST_RE.findall(text) or _VITEST_RE.findall(text)
+        if m:
+            head, total = m[-1]
+            sk = re.search(r"(\d+) (?:skipped|todo)", head)
+            return int(total), int(sk.group(1)) if sk else 0
+        m = _MOCHA_RE.findall(text)
+        if m:
+            got = {k: int(v) for v, k in m}
+            return sum(got.values()), got.get("pending", 0)
+    return None
+
+
+def ran_cells(output, name=None):
+    """unittest 總結最後一組「Ran N tests」的 N;讀不到 ⇒ None(不判,照原 rc)。跳過格數用主線的 skipped_cells。
+    10-07:給了測試檔名、而且是 Ruby / Go / JS ⇒ 認那個語言的總結行(minitest、rspec、go test、jest、vitest、mocha)。"""
+    other = _other_lang_cells(output, name)
+    if other is not None:
+        return other[0]
+    ran = _RAN_RE.findall(output or "")
+    return int(ran[-1]) if ran else None
+
+
+# pytest 結束碼 5 = 一支都沒收集到(全部被 -m / -k / addopts 排除,或檔裡沒有測試)。只認 pytest 自己的最後一行,
+#   別的程式自己 exit(5) 是真的失敗,照樣紅。
+PYTEST_NONE_RC = 5
+PYTEST_NONE_RE = re.compile(r"^=*\s*(?:no tests ran|\d+ deselected)(?: in [\d.]+s)?\b[^\n]*$", re.M)
+
+
+def _mark_all_skipped(r):
+    """rc=0 但全部格跳過(或 Ran 0)⇒ 改成「沒驗」(整批 rc 4);部分跳過由主線 row_skipped/skipped_summary 顯示。
+    10-08(packaging 實測:31 支有 20 支被當紅):pytest rc=5 而且最後一行是「N deselected」或「no tests ran」⇒ 也是「沒驗」。"""
+    if r.get("rc") == PYTEST_NONE_RC and not r.get("unverified"):
+        tail = (r.get("output") or "").rstrip().splitlines()[-1:] or [""]
+        if PYTEST_NONE_RE.search(tail[0]):
+            r.update(rc=None, unverified=True, needs=[T("need_none_collected")])
+            return r
+    if r.get("rc") != 0 or r.get("unverified"):
+        return r
+    ran = ran_cells(r.get("output"), r.get("name"))
+    if ran is None:
+        return r
+    other = _other_lang_cells(r.get("output"), r.get("name"))
+    skipped = other[1] if other is not None else skipped_cells(r.get("output"))
+    if ran == 0 or skipped >= ran:
+        r.update(rc=None, unverified=True, needs=[T("need_all_skipped", {"n": ran})])
+    return r
+
+
+def lease_note(env=None):
+    """這台現在誰拿著機器租約(真的去讀,不是固定句)。讀不到工具 ⇒ None(不印、不假裝)。
+
+    ★ 10-05 a seat(第 24d 項實踩):**不在行程內 import host_lease**。本檔被幾十支測試 in-process 載入,
+      只要這裡 import 一次,第 24d 項的遞移閉包就把它們全圈進「碰得到機器租約」的母體(候選 90 支紅)。
+      改走子行程 `host_lease.py status --json`:落點照 AIB_HOST_LEASE_FILE(子行程繼承 env),
+      治具搬走的落點一樣生效;讀的內容與原本 in-process 同一份。"""
+    tool = ENTRY_ROOT / "tools" / "governance" / "host_lease.py"
+    if not tool.is_file():
+        return None
+    try:
+        p = subprocess.run([sys.executable, str(tool), "status", "--json"],
+                           env=(dict(env) if env is not None else None),
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+        d = json.loads(p.stdout)
+        state, cur = d.get("state"), d.get("lease")
+    except Exception:
+        return None
+    if state == "held" and cur:
+        params = {"name": cur.get("owner", "?"), "what": cur.get("what", "?")}   # 佔位名用既有的 {name}(annotate-i2-guard 母體 268 不長)
+        mine = _holder_is_ancestor(cur)
+        if mine is True:
+            return T("lease_mine", params)
+        if mine is False:
+            # 10-05 a seat:兩次實際踩到 —— 租約在別人手上,這批照跑、跟它並跑。要大聲說,不是只報誰拿著。
+            return T("lease_other", params)
+        return T("lease_held", params)
+    return T("no_lease_batch")
+
+
+def _holder_is_ancestor(cur):
+    """持有者的 pid 是不是這支程式的祖先(= 這一批是在拿著租約的那個殼裡跑的)。
+    True / False / None(量不到:別台機器、沒記 pid、ps 讀不到)。"""
+    import socket
+    pid = cur.get("pid")
+    if not pid or cur.get("host") != socket.gethostname():
+        return None
+    try:
+        want = int(pid)
+    except (TypeError, ValueError):
+        return None
+    p = os.getpid()
+    for _ in range(64):
+        if p == want:
+            return True
+        if p <= 1:
+            return False
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=", "-p", str(p)], capture_output=True, text=True,
+                                 timeout=5, stdin=subprocess.DEVNULL).stdout.strip()
+            p = int(out)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+    return False
+
+
+JOBS_MAX = 4
+
+
+def _default_jobs(a, names):
+    """10-08(attrs / click 實測):一支一支跑,第一次比 pytest 慢 2~4 倍 ⇒ --all 預設分份同時跑。
+    只有 --all、不是 --json / --resume(推前檢查自己會分份)才自動;AIB_TEST_JOBS 可以指定。"""
+    env = os.environ.get("AIB_TEST_JOBS", "")
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    if not a.all or a.json or a.resume:
+        return 1
+    return max(1, min(JOBS_MAX, os.cpu_count() or 1, len(names)))
+
+
+def run_sharded(repo, names, jobs, a):
+    """分成 jobs 份(依上次秒數平均),每份一個子行程跑 run_tests(--shard-out),合併成跟 run_tests 同形狀的結果。
+    同一棵樹同時有幾批在跑 ⇒ 工作樹守衛不歸咎、不還原(_other_batches),跟推前檢查分份一樣。"""
+    base = baselines(runner._pool_file(repo), names)
+    shards, load = [[] for _ in range(jobs)], [0.0] * jobs
+    units = {}                          # 同一個 Go 套件的檔分到同一份(那一份只跑一次 go test)
+    for t in names:
+        units.setdefault(runner.go_package_key(t) or ("\0" + t), []).append(t)
+    for unit in sorted(units.values(), key=lambda u: (-max(base.get(x) or 1.0 for x in u), u[0])):
+        i = load.index(min(load))
+        shards[i].extend(unit)
+        load[i] += max(base.get(x) or 1.0 for x in unit)
+    shards = [s for s in shards if s]
+    procs = []
+    for i, s in enumerate(shards):
+        fd, out = tempfile.mkstemp(prefix="aib-test-shard-", suffix=".json", dir=runner.TMP_ROOT)
+        os.close(fd)
+        cmd = [sys.executable, str(Path(__file__).resolve()), "--repo", str(repo), "--jobs", "1", "--shard-out", out]
+        cmd += (["--strict"] if a.strict else []) + (["--fresh"] if a.fresh else [])
+        cmd += (["--timeout", str(a.timeout)] if a.timeout else []) + s
+        procs.append((subprocess.Popen(cmd, cwd=str(repo), stdout=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                       env=dict(os.environ, AIB_TEST_SHARD=str(i))), out))
+    parts = []
+    for p, out in procs:
+        rc = p.wait()
+        try:
+            parts.append(json.loads(Path(out).read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            parts.append({"state": "short", "gate": {}, "tests": [], "ran": 0, "reused": 0, "kept": 0, "rc": rc or 1,
+                          "line1": T("line1_short", {"ran": 0, "kept": 0})})
+        finally:
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
+    for part in parts:
+        _TMP_LEAKS.extend(tuple(x) for x in part.get("tmp_leaks") or [])
+    order = {n: i for i, n in enumerate(names)}
+    tests = sorted((r for part in parts for r in part.get("tests") or []), key=lambda r: order.get(r.get("name"), 1 << 30))
+    ran, reused, kept = (sum(int(part.get(k) or 0) for part in parts) for k in ("ran", "reused", "kept"))
+    reds = [r for r in tests if r.get("rc") != 0 and not r.get("unverified")]
+    unv = [r for r in tests if r.get("unverified")]
+    states = {part.get("state") for part in parts}
+    lost = len(tests) < len(names)            # 有一份沒交回結果 ⇒ 不能當全綠
+    if "fallback" in states:
+        fb = next(part for part in parts if part.get("state") == "fallback")
+        return dict(fb, tests=tests, ran=ran, reused=reused, kept=kept, rc=1 if reds or lost else (4 if unv else 0))
+    if "short" in states or kept < ran or lost:
+        return {"state": "short", "gate": parts[0].get("gate", {}), "tests": tests, "ran": ran, "reused": reused, "kept": kept,
+                "rc": 1 if reds or lost else 3, "line1": T("line1_short", {"ran": ran, "kept": kept})}
+    return {"state": "enabled", "gate": parts[0].get("gate", {}), "tests": tests, "ran": ran, "reused": reused, "kept": kept,
+            "rc": 1 if reds else (4 if unv else 0), "line1": T("line1_enabled", {"reused": reused, "ran": ran, "kept": kept})}
+
+
+def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=None, live=None, resume=None):
+    """Run `tests` (repo-relative paths) in `repo` through the entry.  Returns a result dict:
+    {"line1", "state": enabled|fallback|short, "rc", "tests": [{test, rc, reused, elapsed_s, output}],
+     "ran", "reused", "kept", "gate"}.  Nothing is printed here (main() prints) except through `live`:
+    live(kind, params) is called as each test starts ("start"/"start_nobase"), the moment a running
+    test passes 10% over its usual time ("slow"), and as each real run ends ("done_green"/"done_red");
+    None (package_trial etc.) = silent."""
+    repo = Path(repo).resolve()
+    if strict is None:
+        mode, _source, _path = resume_policy.current_mode(str(repo))
+        strict = mode == "strict"
+    gate = self_check()
+    # 10-04 可接續:--resume <批次名> ⇒ 這一批上次已跑綠(同樹、同跑法)的不重跑;紅的、沒跑完的照跑
+    journal, resumed_ok, tree_now = None, set(), ""
+    if resume:
+        journal = _journal_path(repo, resume)
+        try:
+            tree_now = runner.st.tree_sha(repo)
+        except BaseException:   # noqa: BLE001  tree_sha 失敗會 SystemExit;量不到 ⇒ 不接續
+            tree_now = ""
+        resumed_ok, problem = load_journal(journal, tree_now, fresh)
+        if live is not None:
+            if problem:
+                live("resume_unusable", {"name": resume, "why": problem})
+            else:
+                live("resume_on", {"name": resume, "n": len([t for t in tests if t in resumed_ok])})
+    home = Path(tempfile.mkdtemp(prefix="aib-test-home-", dir=runner.TMP_ROOT))
+    trace_dir = Path(tempfile.mkdtemp(prefix="aib-test-trace-", dir=runner.TMP_ROOT))
+    tree_base = _tracked_dirty(repo)
+    batch_marker = _register_batch(repo)
+    results = []
+    try:
+        env = runner.isolated_test_env(home, repo)
+        _tp = runner.st.test_python(repo, env)
+        _quiet = os.environ.get("AIB_TEST_SHARD", "0") != "0"   # 分份同時跑:開頭這兩行只第 0 份印(失敗照印)
+        if live is not None and _tp != sys.executable and not _quiet:
+            # 10-04 晚:用的不是 aib 自己的 python(專案的虛擬環境)⇒ 開頭講清楚用哪一支、從哪來
+            _ver, _pyt = runner.st.python_id(_tp)
+            # 佔位名用母體裡已有的(path/version/pkg/source):新名字會改動 annotate-i2 test_40 凍結的母體數字
+            live("test_python", {"path": _tp, "version": _ver, "pkg": _pyt or "-",
+                                 "source": "AIB_TEST_PYTHON" if env.get("AIB_TEST_PYTHON") and os.path.abspath(env["AIB_TEST_PYTHON"]) == os.path.abspath(_tp)
+                                 else ("VIRTUAL_ENV" if env.get("VIRTUAL_ENV") and _tp.startswith(env["VIRTUAL_ENV"]) else "repo venv")})
+        if live is not None:
+            # ★ the maintainer 10-02:每一支顯示時間之前,先講影子續跑有沒有載入、有沒有啟用。
+            if gate.get("ok"):
+                if not _quiet:
+                    live("gate_ok", {})
+            else:
+                live("gate_fail", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")})
+        if not gate.get("ok"):
+            for name in tests:
+                if name in resumed_ok:
+                    if live is not None:
+                        live("resumed", {"test": name, "name": resume})
+                    results.append({"name": name, "rc": 0, "reused": False, "resumed": True, "elapsed_s": 0.0, "output": ""})
+                    continue
+                unmet = _unmet_needs(repo, name)
+                if unmet:
+                    results.append(_unverified(name, unmet))
+                    if live is not None:
+                        live("unverified", {"test": name, "what": " ".join(results[-1]["needs"])})
+                    continue
+                if live is not None:
+                    live("start_fallback", {"test": name})
+                runner.wait_for_memory(None if live is None else (lambda g: live("mem_wait", {"limit": "%.1f" % g})))
+                with _own_home(repo, env, name) as tenv:
+                    results.append(_mark_all_skipped(dict(runner._run_one(repo, name, tenv, timeout=timeout), reused=False)))
+                _tree_guard(repo, tree_base, results[-1], live)
+                if live is not None:
+                    _live_done(live, results[-1])
+                if journal is not None:
+                    append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
+                                             "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+            reds = [r for r in results if r["rc"] != 0 and not r.get("unverified")]
+            unv = [r for r in results if r.get("unverified")]
+            return {"state": "fallback", "gate": gate, "tests": results, "ran": len(results) - len(unv), "reused": 0,
+                    "kept": 0, "rc": 1 if reds else (4 if unv else 0),
+                    "line1": T("line1_fallback", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")})}
+        idx = reuse_index.build_index([], repo=str(repo))
+        pool = runner._pool_file(repo)
+        base = baselines(pool, tests)
+        offset = _pool_size(pool)
+        started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        ran_names = []
+        go_done = {}                       # Go 套件 ⇒ 這一批跑那個套件的結果(同一套件只跑一次)
+        overheads = []                     # 這一批每支的「牆鐘 − 紀錄耗時」,給即時計時器補準備時間
+        for name in tests:
+            if name in resumed_ok:
+                if live is not None:
+                    live("resumed", {"test": name, "name": resume})
+                results.append({"name": name, "rc": 0, "reused": False, "resumed": True, "elapsed_s": 0.0, "output": ""})
+                continue
+            unmet = _unmet_needs(repo, name)
+            if unmet:
+                results.append(_unverified(name, unmet))
+                if live is not None:
+                    live("unverified", {"test": name, "what": " ".join(results[-1]["needs"])})
+                continue
+            verdict, why, detail = "must-run", ("strict" if strict else "fresh"), ""
+            if not strict and not fresh and _no_reuse_env():
+                why = "no-reuse-env"
+            elif not strict and not fresh and _always_run_marked(repo, name):
+                why = "always-run"
+            elif not strict and not fresh:
+                verdict, why, detail = idx.decide(str(repo), name, changed=[], environ=env)
+            if verdict == "reuse":
+                prev = idx.row_for(name, detail) or {}   # 被沿用的那一列,不一定是最新一列
+                if live is not None:
+                    pd = prev.get("duration_s")
+                    live("reuse", {"test": name, "prev": "%.1f" % pd if isinstance(pd, (int, float)) else "?"})
+                results.append({"name": name, "rc": 0, "reused": True, "elapsed_s": 0.0,
+                                "output": prev.get("tail", "") or "", "prev_time": prev.get("time"),
+                                "prev_duration_s": prev.get("duration_s"),
+                                "prev_inputs": len(prev.get("inputs") or [])})
+                _mark_all_skipped(results[-1])
+                if journal is not None:
+                    append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
+                                             "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                continue
+            gk = runner.go_package_key(name)
+            if gk is not None and gk in go_done:
+                # 10-08(pflag 實測:32 個測試檔同一個套件 ⇒ 以前 go test 同一包跑 32 次):同一套件這一批已經跑過 ⇒ 用那次的結果。
+                #   不算實跑(紀錄池沒有它的列,不進 ran_names);紅綠跟那次一樣(同一個 go test ./pkg)。
+                first = go_done[gk]
+                results.append(dict(first, name=name, reused=False, elapsed_s=0.0, same_package=first["name"],
+                                    baseline_s=None, slow=False))
+                if live is not None:
+                    live("same_package", {"test": name, "name": first["name"]})
+                if journal is not None:
+                    append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
+                                             "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                continue
+            b = base.get(name)
+            limit = slow_threshold(b)
+            if live is not None:
+                live("start" if b is not None else "start_nobase",
+                     {"test": name, "base": "%.1f" % (b or 0), "why": _why_text(why, detail)})
+            on_slow = None
+            if live is not None and limit is not None:
+                on_slow = lambda n=name, bb=b: live("slow", {"test": n, "base": "%.1f" % bb,
+                                                             "limit": "%.1f" % slow_threshold(bb)})
+            allowance = max(overheads[-5:]) if overheads else SETUP_ALLOWANCE_DEFAULT_S
+            t0 = time.monotonic()
+            runner.wait_for_memory(None if live is None else (lambda g: live("mem_wait", {"limit": "%.1f" % g})))
+            with _SlowWatch(None if limit is None else limit + allowance, on_slow), _own_home(repo, env, name) as tenv:
+                actual = runner._traced_run(repo, repo, name, tenv, trace_dir, row_source=ROW_SOURCE, timeout=timeout)
+            el = actual.get("elapsed_s")
+            if isinstance(el, (int, float)):
+                overheads.append(max(0.0, time.monotonic() - t0 - el))
+            slow = limit is not None and isinstance(el, (int, float)) and el > limit
+            results.append(_mark_all_skipped(dict(actual, reused=False, baseline_s=b, slow=slow)))
+            _tree_guard(repo, tree_base, results[-1], live)
+            if live is not None:
+                _live_done(live, results[-1])
+            if journal is not None:
+                append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
+                                         "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+            ran_names.append(name)
+            if gk is not None:
+                go_done[gk] = results[-1]
+        # Step 2's second half: count what really landed in the pool, not what _traced_run said it did.
+        here = str(repo)
+        landed = {r.get("test") for r in _pool_rows_after(pool, offset)
+                  if r.get("repo") == here and r.get("key")}
+        kept = sum(1 for n in set(ran_names) if n in landed)
+        if kept < len(set(ran_names)):
+            # 10-07(第 14 包實踩):同時跑的另一份觸發紀錄池自動壓縮 ⇒ 池檔原地改寫變小,開跑時記的位置已超過檔尾
+            #   ⇒ 從那裡往後數到 0 列,三份全綠卻判成「沒留下紀錄」。數不夠時改成整檔掃一次:
+            #   只數這一輪開跑之後(time_utc)寫進來、這個倉、有鑰匙、而且是這一批實跑的測試。只影響這個自我檢查,不影響紅綠。
+            # 10-07 Mac 第五輪實踩(899 支只留 898):壓縮把「這一輪開跑後才寫的列」搬進 <池>.archive(另一棵工作樹同時
+            #   重跑同一支,每支只留最新 3 把鑰匙)⇒ 只掃池檔會少那一列。整檔重掃時封存檔一起掃;仍只數這一輪之後寫的。
+            wanted = set(ran_names)
+            for src in (pool, Path(str(pool) + ".archive")):
+                landed |= {r.get("test") for r in _pool_rows_after(src, 0)
+                           if r.get("repo") == here and r.get("key") and r.get("test") in wanted
+                           and str(r.get("time_utc") or "") >= started_utc}
+            kept = sum(1 for n in wanted if n in landed)
+        ran = len(set(ran_names))
+        reused = sum(1 for r in results if r["reused"])
+        reds = [r for r in results if r["rc"] != 0 and not r.get("unverified")]
+        unv = [r for r in results if r.get("unverified")]
+        if kept < ran:
+            return {"state": "short", "gate": gate, "tests": results, "ran": ran, "reused": reused, "kept": kept,
+                    "rc": 1 if reds else 3, "line1": T("line1_short", {"ran": ran, "kept": kept})}
+        return {"state": "enabled", "gate": gate, "tests": results, "ran": ran, "reused": reused, "kept": kept,
+                "rc": 1 if reds else (4 if unv else 0), "line1": T("line1_enabled", {"reused": reused, "ran": ran, "kept": kept})}
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        if batch_marker is not None:
+            try:
+                batch_marker.unlink()
+            except OSError:
+                pass
+
+
+def _repo_of(path):
+    try:
+        p = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    top = (p.stdout or "").strip()
+    return Path(top) if p.returncode == 0 and top else None
+
+
+def _normalize(repo: Path, arg: str, also_repo: bool = False):
+    """A test argument (relative to cwd, or absolute) ⇒ repo-relative path, or None when it is not a file in repo.
+    also_repo(10-05,給了 --repo):相對路徑在目前目錄底下找不到倉裡的檔,就改從倉根找
+    —— 說明書寫 `aib test --repo ~/my-project tests/test_x.py`,原本會回「不是這個倉裡的檔案」。"""
+    p = Path(arg)
+    if p.is_absolute():
+        return _rel_file(repo, p)
+    return _rel_file(repo, Path.cwd() / p) or (_rel_file(repo, repo / p) if also_repo else None)
+
+
+def _rel_file(repo: Path, p: Path):
+    try:
+        p = p.resolve()
+        rel = p.relative_to(repo.resolve())
+    except (OSError, ValueError):
+        return None
+    return rel.as_posix() if p.is_file() else None
+
+
+def _estimate(where, as_json=False):
+    """aib test --estimate(10-05):拿這個倉最近 50 個提交回放它自己的紀錄,估每個提交能省多少;不跑任何測試。"""
+    repo = _repo_of(where)
+    if repo is None:
+        print(T("no_repo", {"path": where}), file=sys.stderr)
+        return 2
+    import replay_savings
+    s, tests, total = replay_savings.estimate(str(repo), n=50)
+    if as_json:
+        print(json.dumps({"estimate": s, "tests": tests, "full_run_s": round(total, 1)}, ensure_ascii=False))
+        return 0 if s else 3
+    if not s:
+        print(T("estimate_none", {"path": str(repo)}))
+        return 3
+    print(T("estimate", {"n": s["commits"], "tests": tests, "seconds": "%.0f" % total, "v1": s["mean_pct"],
+                         "v2": s["median_pct"], "v3": s["best_pct"], "v4": s["worst_pct"]}))
+    print(T("estimate_note"))
+    return 0
+
+
+def overhead(repo, names, timeout=None, plain=None, traced=None):
+    """--overhead(10-08 §27.1):「沒有 aib 要等」是在 aib 底下量的秒數(含追蹤)⇒ 偏高多少?
+    每支跑兩次:不經追蹤的原樣執行(不記紀錄,只量時間)與照常(有追蹤、記紀錄,--fresh 不沿用)。
+    回 [{"name", "traced_s", "plain_s", "rc_traced", "rc_plain"}]。plain / traced 可替換(測試用)。"""
+    plain = plain or (lambda name: runner._run_one(Path(repo), name, dict(os.environ), timeout=timeout))
+    traced = traced or (lambda name: run_tests(repo, [name], fresh=True, timeout=timeout)["tests"][0])
+    rows = []
+    for name in names:
+        t0 = time.monotonic()
+        pr = plain(name)
+        plain_s = time.monotonic() - t0
+        tr = traced(name)
+        rows.append({"name": name, "traced_s": float(tr.get("elapsed_s") or 0.0), "plain_s": plain_s,
+                     "rc_traced": tr.get("rc"), "rc_plain": pr.get("rc")})
+    return rows
+
+
+def print_overhead(rows):
+    for r in rows:
+        pct = 100.0 * (r["traced_s"] - r["plain_s"]) / r["plain_s"] if r["plain_s"] > 0 else 0.0
+        print(T("overhead_row", {"test": r["name"], "elapsed": "%.1f" % r["traced_s"], "seconds": "%.1f" % r["plain_s"],
+                                 "pct": "%+.0f" % pct}))
+        if r["rc_traced"] != r["rc_plain"]:
+            print(T("overhead_rc", {"test": r["name"], "rc": r["rc_traced"], "code": r["rc_plain"]}))
+    same = [r for r in rows if r["rc_traced"] == r["rc_plain"]]     # 兩次結果不同的不比(例:有追蹤那次被判沒驗、0 秒)
+    tr, pl = sum(r["traced_s"] for r in same), sum(r["plain_s"] for r in same)
+    if same and pl > 0:
+        print(T("overhead_total", {"count": len(same), "elapsed": "%.1f" % tr, "seconds": "%.1f" % pl,
+                                   "pct": "%+.0f" % (100.0 * (tr - pl) / pl)}))
+    if len(same) < len(rows):
+        print(T("overhead_left_out", {"n": len(rows) - len(same)}))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="aib test", add_help=True, usage=T("usage"))
+    ap.add_argument("tests", nargs="*")
+    ap.add_argument("--all", action="store_true")      # 10-07:CI 用 —— 照 aib ship 的找法跑這個專案全部測試
+    ap.add_argument("--repo", default="")
+    ap.add_argument("--strict", action="store_true", default=None)
+    ap.add_argument("--fresh", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--timeout", type=int, default=None)
+    ap.add_argument("--resume", default=None, metavar="NAME")
+    ap.add_argument("--why", action="store_true")
+    ap.add_argument("--estimate", action="store_true")
+    ap.add_argument("--cells", action="store_true")
+    ap.add_argument("--jobs", type=int, default=None)          # 10-08:同時跑幾份(--all 預設 min(4, 核心數);1 = 一支一支跑)
+    ap.add_argument("--shard-out", default=None, help=argparse.SUPPRESS)   # 分份的子行程:結果寫成 JSON 到這個檔
+    ap.add_argument("--overhead", action="store_true")   # 10-08:量追蹤讓每支慢多少(每支跑兩次)
+    a = ap.parse_args(argv)
+    if a.estimate:
+        return _estimate(a.repo or os.getcwd(), a.json)
+    if a.resume is not None and not _RESUME_NAME_RE.fullmatch(a.resume):
+        print(T("resume_badname", {"name": a.resume}), file=sys.stderr)
+        return 2
+    if not a.tests and not a.all:
+        print(T("usage"), file=sys.stderr)
+        return 2
+    repo = _repo_of(a.repo or os.getcwd())
+    if repo is None:
+        print(T("no_repo", {"path": a.repo or os.getcwd()}), file=sys.stderr)
+        return 2
+    if a.all:
+        found = all_tests(repo)
+        if not found:                      # 找不到任何測試 ⇒ 紅,不能讓 CI 在「沒測到東西」時亮綠
+            print(T("all_none", {"path": str(repo)}), file=sys.stderr)
+            return 2
+        a.tests = list(a.tests) + [t for t in found if t not in a.tests]
+    names = []
+    for arg in a.tests:
+        rel = _normalize(repo, arg, also_repo=bool(a.repo))
+        if rel is None:
+            print(T("not_a_test", {"path": arg}), file=sys.stderr)
+            return 2
+        names.append(rel)
+    if a.cells:
+        return _cells(repo, names, a.json)
+    if a.overhead:
+        print_overhead(overhead(repo, names, timeout=a.timeout))
+        return 0
+    if a.why:
+        entries = explain(repo, names, strict=a.strict)
+        if a.fresh:
+            for e in entries:
+                e.update(verdict="must-run", why="fresh", detail="", changed=[], unmeasured=[], more=0)
+        if a.json:
+            print(json.dumps({"why": entries}, ensure_ascii=False))
+        else:
+            _print_explain(entries)
+        return 0
+    for var, val in RETIRED_SWITCHES:
+        if os.environ.get(var) == val:
+            print(T("switch_ignored", {"what": "%s=%s" % (var, val)}), file=sys.stderr)
+    for rep in reuse_index.auto_compact():
+        print(T("pool_compacted", {"n": "%d" % reuse_index.AUTO_COMPACT_KEEP,
+                                   "what": "%s %d → %d%s" % (Path(rep["file"]).name, rep["rows"], rep["kept"],
+                                                             (" (" + rep["refused"] + ")") if rep["refused"] else "")}),
+              file=sys.stderr)
+    started = time.monotonic()
+
+    def live(kind, params):
+        sys.stderr.write(T("live_" + kind, params) + "\n")
+        sys.stderr.flush()
+
+    if a.shard_out:      # 分份的子行程:進度照常即時印(stderr),結果交給主行程合併印(一份總結、一筆統計)
+        res = run_tests(repo, names, strict=a.strict, fresh=a.fresh, timeout=a.timeout, live=live, resume=a.resume)
+        res["tmp_leaks"] = list(_TMP_LEAKS)   # 10-09:交回主行程,總表才印得出「哪支留了東西」(以前分份跑這行永遠不見)
+        Path(a.shard_out).write_text(json.dumps(res, ensure_ascii=False, default=str), encoding="utf-8")
+        return res["rc"]
+    jobs = a.jobs if a.jobs is not None else _default_jobs(a, names)
+    if jobs > 1 and len(names) > 1:
+        res = run_sharded(repo, names, jobs, a)
+    else:
+        res = run_tests(repo, names, strict=a.strict, fresh=a.fresh, timeout=a.timeout,
+                        live=None if a.json else live, resume=a.resume)
+    if a.json:
+        print(json.dumps({k: v for k, v in res.items() if k != "tests"} | {
+            "tests": [{k: r.get(k) for k in ("name", "rc", "reused", "elapsed_s", "baseline_s", "slow")}
+                      for r in res["tests"]],
+            "unverified": [{"name": r["name"], "needs": r.get("needs")} for r in res["tests"] if r.get("unverified")],
+            "skipped": {r["name"]: skipped_cells(r.get("output")) for r in res["tests"]
+                        if r["rc"] == 0 and skipped_cells(r.get("output"))}},
+            ensure_ascii=False))
+        return res["rc"]
+    print(res["line1"])
+    if len(names) > 1:
+        note = lease_note()
+        if note:
+            print(note)
+    if a.strict or a.fresh:
+        print(T("no_reuse_this_run"))
+    elif _no_reuse_env():
+        print(T("no_reuse_env_on"))
+    for r in res["tests"]:
+        if r.get("unverified"):
+            print(T("row_unverified", {"test": r["name"], "what": " ".join(r.get("needs") or ())}))
+        elif r.get("resumed"):
+            print(T("row_resumed", {"test": r["name"], "name": a.resume}))
+        elif r.get("same_package"):
+            print(T("row_same_package", {"test": r["name"], "name": r["same_package"], "rc": r["rc"]}))
+        elif r["reused"]:
+            line = T("row_reused", {"test": r["name"]})
+            if skipped_cells(r.get("output")):
+                line += T("row_skipped", {"n": skipped_cells(r.get("output"))})
+            print(line)
+        else:
+            line = T("row_ran", {"test": r["name"], "rc": r["rc"], "elapsed": r.get("elapsed_s", 0)})
+            if r.get("slow"):
+                base = r.get("baseline_s")
+                el = r.get("elapsed_s")
+                if isinstance(base, (int, float)) and base > 0 and isinstance(el, (int, float)):
+                    line += T("row_slow", {"base": "%.1f" % base,
+                                           "pct": "%d" % round((el / base - 1) * 100)})
+                else:
+                    line += T("row_slow", {"base": "%.1f" % (base or 0), "pct": "?"})
+            if r["rc"] == 0 and skipped_cells(r.get("output")):
+                line += T("row_skipped", {"n": skipped_cells(r.get("output"))})
+            print(line)
+        if r["rc"] != 0 and not r.get("unverified") and r.get("output") and not r.get("same_package"):
+            sys.stderr.write(T("output_banner", {"test": r["name"]}) + "\n" + r["output"])
+            if not r["output"].endswith("\n"):
+                sys.stderr.write("\n")
+    green = sum(1 for r in res["tests"] if r["rc"] == 0)
+    unv = [r for r in res["tests"] if r.get("unverified")]
+    print(T("summary", {"total": len(res["tests"]), "green": green, "red": len(res["tests"]) - green - len(unv),
+                        "elapsed": "%.1f" % (time.monotonic() - started)}))
+    if not a.resume:      # 推前檢查的分片由 pushgate 自己對帳(ship-stats),這裡不重記
+        vs = versus(res["tests"], time.monotonic() - started)
+        try:
+            import shadow_tracer
+            vs["tracer"] = shadow_tracer.tracer_code_digest()      # 記在這一輪的統計列(不進紀錄池),下一輪比對 aib 有沒有換版
+        except Exception:  # noqa: BLE001
+            pass
+        lines = versus_lines(vs, record_versus(repo, vs) if vs["without_s"] > 0 else [])
+        for ln in lines:
+            print(ln)
+        step_summary(lines + (summary_extra(vs, res["tests"]) if lines else []))
+    sk = [(r["name"], skipped_cells(r.get("output"))) for r in res["tests"] if r["rc"] == 0]
+    sk = [(n, c) for n, c in sk if c]
+    if sk:       # ★ 綠燈裡跳過的格子:跟沒驗的同一個顯眼程度
+        print(T("skipped_summary", {"n": sum(c for _n, c in sk), "items": "、".join(
+            "%s(%d)" % (n, c) for n, c in sorted(sk, key=lambda x: -x[1]))}))
+    if _TMP_LEAKS:   # 10-08:跑完還在自己暫存資料夾裡留東西的測試(aib 已經替它刪了;這是告訴你哪支沒清)
+        print(T("tmp_leak_summary", {"n": len(_TMP_LEAKS), "items": "、".join(
+            "%s(%d)" % (t, k) for t, k in sorted(_TMP_LEAKS, key=lambda x: -x[1])[:10])}))
+    if unv:      # ★ 沒驗的要跟紅燈一樣顯眼:總表下一行就列,每支附原因
+        print(T("unverified_summary", {"n": len(unv), "items": "、".join(
+            "%s(%s)" % (r["name"], " ".join(r.get("needs") or ())) for r in unv)}))
+    slow = [r for r in res["tests"] if r.get("slow")]
+    if res.get("state") != "fallback":
+        nobase = sum(1 for r in res["tests"] if not r["reused"] and not r.get("unverified") and r.get("baseline_s") is None)
+        print(T("slow_summary", {"slow": len(slow), "nobase": nobase}))
+    return res["rc"]
+
+
+def _on_term(signum, _frame):
+    """10-09:被 kill(SIGTERM)時照樣走收尾(刪這批的 HOME、追蹤資料夾、每支自己的暫存資料夾,收它的背景程式)。
+    以前直接死 ⇒ /tmp 留下 aib-test-trace-* 與還在跑的測試(推前檢查的 fail-fast 送 SIGINT,本來就會收尾)。"""
+    raise SystemExit(128 + signum)
+
+
+if __name__ == "__main__":
+    import signal
+    signal.signal(signal.SIGTERM, _on_term)
+    sys.exit(main())

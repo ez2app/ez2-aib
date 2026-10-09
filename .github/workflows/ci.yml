@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: install (pip)
+        run: python -m pip install .
+      - name: installed entry point
+        run: aib || test $? -eq 2
+      - name: smoke test
+        run: python -m unittest discover -s tests -v
+      - name: core safety tests (each file on its own, like aib test does)
+        shell: bash
+        run: |
+          python -m pip install pytest
+          git config --global user.name ci && git config --global user.email ci@example.com
+          rc=0
+          for f in aib/tests/test-*.py; do
+            echo "::group::$f"; python "$f" || { echo "::error::$f failed"; rc=1; }; echo "::endgroup::"
+          done
+          exit $rc

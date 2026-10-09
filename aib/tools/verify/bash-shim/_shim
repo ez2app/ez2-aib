@@ -1,0 +1,81 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# PATH shim: record child argv, then exec the real command.
+# 96b:#!/bin/sh 不是 #!/bin/bash——POSIX 模式的 sh 不讀 BASH_ENV,墊片自己才不會被 _trace.bash 追成一個 bash 子行程。
+set -e
+NAME="$1"
+shift
+TRACE="${EZ2_VERIFY_TRACE:-}"
+# 96b:bash 不在這裡記 argv——python 父行程的 Popen 審計、或 bash 父行程的 xtrace 已經記了;而且這裡起 python
+# 會多一個子行程(tests/test-panel-load-at.py 在數 exec,觀測者不得改變被觀測物)。
+# 10-08:算雜湊用追蹤器給的那支真的 python(EZ2_VERIFY_PY),不用 PATH 上的 python3 —— 測試放在 PATH 最前面的假 python3
+#   (bash 寫的、裡面又 cat)會讓墊片 → 假 python3 → cat → 墊片 … 無限遞迴。另加防重入:墊片自己起的那個 python 底下
+#   再碰到墊片(EZ2_VERIFY_IN_SHIM)⇒ 那是墊片自己的事,不是測試讀的,不記、直接執行真的命令。
+if [ -n "$TRACE" ] && [ "$NAME" != bash ] && [ -z "${EZ2_VERIFY_IN_SHIM:-}" ]; then
+  EZ2_VERIFY_IN_SHIM=1 "${EZ2_VERIFY_PY:-python3}" - "$TRACE" "$NAME" "$@" <<'PY'
+import hashlib, json, os, sys
+path, name, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+with open(path, "a", encoding="utf-8") as fh:
+    ev = {"ch": "argv", "argv": [name] + args, "via": "shim", "pid": os.getppid()}
+    if name == "bash":
+        ev.update({"shell": "bash", "hooked": True})   # 96b:墊片自己會掛 BASH_ENV,所以這個 bash 是帶鉤子的
+    fh.write(json.dumps(ev, ensure_ascii=False, sort_keys=True) + "\n")
+    if name in ("cat", "cp", "head", "tail"):
+        for a in args:
+            if a.startswith("-") or a == "--":
+                continue
+            ap = os.path.abspath(a)   # 96b:記絕對路徑(以前記相對的,分析端用自己的 cwd 解析會認錯目錄)
+            if not os.path.isfile(a):
+                if not os.path.exists(a):
+                    fh.write(json.dumps({"ch": "missing", "path": ap, "pid": os.getppid()},
+                                        ensure_ascii=False, sort_keys=True) + "\n")
+                continue
+            h = hashlib.sha256()
+            with open(a, "rb") as src:
+                while True:
+                    chunk = src.read(65536)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+            fh.write(json.dumps({"ch": "open", "path": ap, "sha256": h.hexdigest(), "pid": os.getppid()},
+                                ensure_ascii=False, sort_keys=True) + "\n")
+PY
+fi
+SHIM_DIR="$(cd "$(dirname "$0")" && pwd)"
+NEW_PATH=""
+IFS=':'
+for p in $PATH; do
+  [ "$p" = "$SHIM_DIR" ] && continue
+  [ -d "$p" ] && [ "$(cd "$p" 2>/dev/null && pwd)" = "$SHIM_DIR" ] && continue   # 96b:非正規寫法(a/../b)也要剝掉,否則 exec 又走回墊片
+  if [ -z "$NEW_PATH" ]; then NEW_PATH="$p"; else NEW_PATH="$NEW_PATH:$p"; fi
+done
+unset IFS
+# 真正的執行檔用「剝掉墊片目錄的 PATH」找(否則 exec 又走回墊片自己)。
+# 96b 實測(tests/test-panel-load-at.py):測試自己造的計數殼寫 `#!$(which bash)`,而 which 在追蹤模式下回的是**本墊片**
+# ⇒ 那個殼 → 本墊片 → command -v 又找到那個殼 → 無限遞迴到逾時。所以候選若是「開頭指回 bash-shim 的腳本」就跳過。
+# ★ 這一段不准呼叫任何外部命令(head/grep 也被墊了、測試自己的計數殼又會指回這裡 ⇒ 無限遞迴,09-14 實踩兩次):
+#   只用 sh 內建的 read 看第一行。
+ORIG_PATH="$PATH"
+REAL=""
+IFS=':'
+for p in $NEW_PATH; do
+  c="$p/$NAME"
+  [ -f "$c" ] && [ -x "$c" ] || continue
+  # 10-08:別棵樹的墊片目錄也跳過(aib test 用 main 的追蹤器跑工作樹的測試、測試裡又掛工作樹自己的追蹤器 ⇒ PATH 上兩個墊片目錄;
+  # bash 墊片第一行是 #!/bin/sh 認不出來 ⇒ 兩邊互相 exec 到逾時,test-i18n-keyed-reuse-1006 M6 實踩)。只用內建 [ -f ]。
+  [ -f "$p/_shim" ] && [ -f "$p/_trace.bash" ] && continue
+  first=""
+  IFS= read -r first < "$c" 2>/dev/null || :
+  case "$first" in *bash-shim*) continue ;; esac
+  REAL="$c"; break
+done
+unset IFS
+[ -n "$REAL" ] || { echo "shim: $NAME not found" >&2; exit 127; }
+if [ "$NAME" = bash ]; then
+  # 96b:交給真 bash 之前掛上追蹤(BASH_ENV 只在非互動 bash 啟動時讀;exec 保住 pid,inherit/exit 對得上)。
+  # PATH 要**保留墊片目錄**給 bash 的子命令(cat/head/bash 再被叫到才會走墊片);只有 exec 的目標用絕對路徑避免遞迴。
+  [ -n "$TRACE" ] && export BASH_ENV="$SHIM_DIR/_trace.bash"
+else
+  export PATH="$NEW_PATH"
+fi
+exec "$REAL" "$@"

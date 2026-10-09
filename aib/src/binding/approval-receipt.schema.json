@@ -1,0 +1,350 @@
+{
+  "$defs": {
+    "candidateBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_content_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "candidate_uid": {
+          "$ref": "#/$defs/candidateUid"
+        },
+        "exact_patch_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "high_risk": {
+          "type": "boolean"
+        },
+        "write_receipt": {
+          "$ref": "#/$defs/writeReceipt"
+        }
+      },
+      "required": [
+        "candidate_uid",
+        "candidate_content_hash",
+        "exact_patch_hash",
+        "high_risk"
+      ],
+      "type": "object"
+    },
+    "candidateUid": {
+      "pattern": "^cand_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "confirmation": {
+      "additionalProperties": false,
+      "properties": {
+        "challenge_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "confirmation_uid": {
+          "$ref": "#/$defs/confirmationUid"
+        },
+        "confirmed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "hmac_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "nonce_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "payload_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "step": {
+          "enum": [
+            "primary",
+            "high_risk_second"
+          ]
+        }
+      },
+      "required": [
+        "confirmation_uid",
+        "step",
+        "nonce_hash",
+        "challenge_hash",
+        "confirmed_at",
+        "expires_at",
+        "payload_hash",
+        "hmac_sha256"
+      ],
+      "type": "object"
+    },
+    "confirmationUid": {
+      "pattern": "^cnf_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "confirmationUidOrNull": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/confirmationUid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "packageUid": {
+      "pattern": "^pkg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "personaUid": {
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$",
+      "type": "string"
+    },
+    "timestamp": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$",
+      "type": "string"
+    },
+    "writeReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "approved_at_ms": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "hmac": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "maker": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "receipt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reviewer": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reviewer_kind": {
+          "const": "human"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "reviewer",
+        "reviewer_kind",
+        "maker",
+        "approved_at_ms",
+        "content_sha256",
+        "hmac"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://ez2.local/schemas/ez2-persona-approval-receipt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Closed, DB-free dormant contract. It can prove immutable bindings and HMAC integrity, but cannot establish owner authority or authorize formal persona writes until the Main-native adapter exists.",
+  "properties": {
+    "authority_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "authority_generation": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "authority_receipt_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "key_id": {
+          "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+          "type": "string"
+        },
+        "owner_subject_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "source": {
+          "const": "main_native_owner_adapter"
+        }
+      },
+      "required": [
+        "source",
+        "authority_receipt_sha256",
+        "owner_subject_hash",
+        "key_id",
+        "authority_generation"
+      ],
+      "type": "object"
+    },
+    "candidate_bindings": {
+      "items": {
+        "$ref": "#/$defs/candidateBinding"
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "type": "array"
+    },
+    "confirmations": {
+      "items": {
+        "$ref": "#/$defs/confirmation"
+      },
+      "maxItems": 2,
+      "minItems": 1,
+      "type": "array"
+    },
+    "decision": {
+      "enum": [
+        "approved",
+        "rejected"
+      ]
+    },
+    "expires_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "high_risk_second_confirmation": {
+      "additionalProperties": false,
+      "properties": {
+        "first_confirmation_uid": {
+          "$ref": "#/$defs/confirmationUidOrNull"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "second_confirmation_uid": {
+          "$ref": "#/$defs/confirmationUidOrNull"
+        },
+        "status": {
+          "enum": [
+            "not_required",
+            "pending",
+            "completed"
+          ]
+        }
+      },
+      "required": [
+        "required",
+        "status",
+        "first_confirmation_uid",
+        "second_confirmation_uid"
+      ],
+      "type": "object"
+    },
+    "issued_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "package_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "base_persona_sha": {
+          "$ref": "#/$defs/hash"
+        },
+        "exact_patch_set_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "expected_generation": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "package_file_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "package_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "package_uid": {
+          "$ref": "#/$defs/packageUid"
+        },
+        "persona_uid": {
+          "$ref": "#/$defs/personaUid"
+        }
+      },
+      "required": [
+        "package_uid",
+        "package_hash",
+        "package_file_sha256",
+        "persona_uid",
+        "base_persona_sha",
+        "expected_generation",
+        "exact_patch_set_hash"
+      ],
+      "type": "object"
+    },
+    "receipt_hash": {
+      "$ref": "#/$defs/hash"
+    },
+    "receipt_kind": {
+      "const": "persona_owner_approval"
+    },
+    "receipt_uid": {
+      "pattern": "^apr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "risk_level": {
+      "enum": [
+        "normal",
+        "high"
+      ]
+    },
+    "schema_version": {
+      "const": "2026-07-20.ez2-persona-approval-receipt.v1"
+    },
+    "truth_ceiling": {
+      "additionalProperties": false,
+      "properties": {
+        "authority_level": {
+          "enum": [
+            "checker_hint",
+            "owner_attested"
+          ]
+        },
+        "formal_eligible": {
+          "type": "boolean"
+        },
+        "formal_writes": {
+          "const": 0
+        },
+        "main_adapter_connected": {
+          "type": "boolean"
+        },
+        "owner_authority_status": {
+          "enum": [
+            "owner_authority_source_unconfigured",
+            "owner_authority_source_bound",
+            "owner_authority_source_rejected"
+          ]
+        }
+      },
+      "required": [
+        "owner_authority_status",
+        "authority_level",
+        "formal_eligible",
+        "formal_writes",
+        "main_adapter_connected"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "receipt_uid",
+    "receipt_kind",
+    "decision",
+    "risk_level",
+    "authority_binding",
+    "package_binding",
+    "candidate_bindings",
+    "confirmations",
+    "high_risk_second_confirmation",
+    "issued_at",
+    "expires_at",
+    "truth_ceiling",
+    "receipt_hash"
+  ],
+  "title": "Ez2 Persona Owner Approval Receipt v1",
+  "type": "object"
+}

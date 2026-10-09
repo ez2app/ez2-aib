@@ -1,0 +1,49 @@
+{
+  "_readme": "E2.15 ai-hub 方向鍵選 AI 綁定表。格式照 E2.5 keymap spec(spec_version/bindings/scope/tmux_keys/commands),但獨立成檔不動 E2.5 keymap.json 正本(那是 KEYS-REVIEWED 領域);是否併入正本由艦長裁。落點檔複用 E2.13 的 ai-rowmap.json(鍵鼠同源)。",
+  "spec_version": "0.1.0-draft",
+  "_conflict_note": "為何不用 M-方向鍵:M-Up/M-Down/M-Left/M-Right 四鍵已被 E2.5 page_switch(M-Left/M-Right)+view_depth(M-Up/M-Down)全數佔用,再綁會靜默覆蓋分頁切換與景深。為何不用裸方向鍵:中欄跑真 AI 對話,裸 ↑↓←→ 要留給它。解法=tmux key-table:M-a 進入 ai-nav 選取模式,該模式內裸方向鍵只在 key-table 有效,Enter 跳轉/Esc/Left 退出後即回歸方向鍵原義,全域行為零改動。",
+  "_modifier_note": "顯示名隨平台變(macOS=Option、其他=Alt),tmux 綁定名永遠 M-。進入鍵 M-a 經查不在 E2.5 keymap.json 既有 tmux_keys 集合內(pane_focus/page_switch/bottom_tab/brain_toggle/view_depth/send_message/help 皆非 M-a),無衝突。",
+  "bindings": [
+    {
+      "id": "ai_nav_enter",
+      "scope": "root",
+      "display": "{mod}+a",
+      "tmux_keys": ["M-a"],
+      "commands": ["switch-client -T ai-nav"]
+    },
+    {
+      "id": "ai_nav_up",
+      "scope": "ai-nav",
+      "display": "↑",
+      "tmux_keys": ["Up"],
+      "commands": [
+        "run-shell '{nav}/ai-nav-ctl.sh --move up'",
+        "switch-client -T ai-nav"
+      ]
+    },
+    {
+      "id": "ai_nav_down",
+      "scope": "ai-nav",
+      "display": "↓",
+      "tmux_keys": ["Down"],
+      "commands": [
+        "run-shell '{nav}/ai-nav-ctl.sh --move down'",
+        "switch-client -T ai-nav"
+      ]
+    },
+    {
+      "id": "ai_nav_focus_right",
+      "scope": "ai-nav",
+      "display": "→ / Enter",
+      "tmux_keys": ["Right", "Enter"],
+      "commands": ["run-shell '{nav}/ai-nav-ctl.sh --focus'"]
+    },
+    {
+      "id": "ai_nav_cancel",
+      "scope": "ai-nav",
+      "display": "← / Esc",
+      "tmux_keys": ["Left", "Escape"],
+      "commands": ["run-shell '{nav}/ai-nav-ctl.sh --cancel'"]
+    }
+  ]
+}

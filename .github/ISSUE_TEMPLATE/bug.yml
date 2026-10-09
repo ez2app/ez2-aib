@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Bug report / 回報問題
+description: Something in aib is wrong / aib 有地方不對
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / 發生什麼事
+      description: What you ran, what you expected, what you got. / 你跑了什麼、預期什麼、實際得到什麼。
+    validations:
+      required: true
+  - type: textarea
+    id: pack
+    attributes:
+      label: Support pack / 回報資料包
+      description: >-
+        Optional. Run `aib support`, check the output, then `aib support --confirm` and attach the file it prints.
+        It is de-identified, but read it before attaching. / 選填。先跑 `aib support` 看內容,再跑 `aib support --confirm`,
+        把它印出的檔案附上來。已去識別化,附之前請自己看過。
+  - type: input
+    id: env
+    attributes:
+      label: aib version, OS, Python / aib 版本、作業系統、Python
+      placeholder: "aib 0.1.0, macOS 15, Python 3.12"

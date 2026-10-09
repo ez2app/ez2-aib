@@ -1,0 +1,93 @@
+{
+  "_readme": "E2.5 快鍵定版:本檔是『真正會被綁上去的鍵』的唯一正本;人看的總表文字正本在 i18n 的 aib.keys.*。兩邊由 tests/test-keymap.py 逐條對帳(id 集合相等 + display 與 tmux_key 機械對應),任一邊改了另一邊沒跟上就紅——這正是 E2.5 之前的實況:浮層列了鍵,repo 卻一個都沒綁。",
+  "spec_version": "0.1.0-draft",
+  "_modifier_note": "顯示名隨平台變(macOS=Option、其他=Alt),tmux 綁定名永遠是 M-。顯示與綁定分開,才不會有人把 Option-o 寫進 bind-key 然後整組靜默失效。",
+  "bindings": [
+    {
+      "id": "pane_focus",
+      "scope": "root",
+      "display": "{mod}+1 … {mod}+4",
+      "tmux_keys": ["M-1", "M-2", "M-3", "M-4"],
+      "commands": [
+        "run-shell '{cockpit}/pane-focus.sh left'",
+        "run-shell '{cockpit}/pane-focus.sh hub'",
+        "run-shell '{cockpit}/pane-focus.sh right'",
+        "run-shell '{cockpit}/pane-focus.sh bottom'"
+      ]
+    },
+    {
+      "id": "page_switch",
+      "scope": "root",
+      "display": "{mod}+← / {mod}+→",
+      "tmux_keys": ["M-Left", "M-Right"],
+      "commands": ["previous-window", "next-window"]
+    },
+    {
+      "id": "bottom_tab",
+      "scope": "root",
+      "display": "{mod}+0",
+      "tmux_keys": ["M-0"],
+      "commands": ["run-shell '{cockpit}/ctl-bottom-tab.sh \"#{{session_name}}\"'"]
+    },
+    {
+      "id": "left_tab",
+      "scope": "root",
+      "display": "{mod}+Shift+Q",
+      "tmux_keys": ["M-Q"],
+      "commands": ["run-shell '{cockpit}/pane-tab-toggle.sh left \"#{{session_name}}\"'"]
+    },
+    {
+      "id": "right_tab",
+      "scope": "root",
+      "display": "{mod}+Shift+E",
+      "tmux_keys": ["M-E"],
+      "commands": ["run-shell '{cockpit}/pane-tab-toggle.sh right \"#{{session_name}}\"'"]
+    },
+    {
+      "id": "brain_toggle",
+      "scope": "root",
+      "display": "{mod}+Shift+O",
+      "tmux_keys": ["M-O"],
+      "commands": ["run-shell '{cockpit}/ctl-brain-depth.sh \"#{{session_name}}\"'"]
+    },
+    {
+      "id": "view_depth",
+      "scope": "root",
+      "display": "{mod}+↑ / {mod}+↓",
+      "tmux_keys": ["M-Up", "M-Down"],
+      "commands": [
+        "run-shell '{cockpit}/ctl-view-depth.sh more \"#{{session_name}}\"'",
+        "run-shell '{cockpit}/ctl-view-depth.sh less \"#{{session_name}}\"'"
+      ]
+    },
+    {
+      "id": "send_message",
+      "scope": "root",
+      "display": "{mod}+m",
+      "tmux_keys": ["M-m"],
+      "commands": ["run-shell 'bash {messaging}/ctl-send-message.sh --compose'"]
+    },
+    {
+      "id": "notify_toggle",
+      "scope": "root",
+      "display": "{mod}+n",
+      "tmux_keys": ["M-n"],
+      "commands": ["run-shell 'bash {cockpit}/ctl-notify.sh toggle \"#{{session_name}}\"'"]
+    },
+    {
+      "id": "help",
+      "scope": "root",
+      "display": "{mod}+?",
+      "tmux_keys": ["M-?"],
+      "commands": ["run-shell 'bash {cockpit}/help/help-overlay.sh'"]
+    },
+    {
+      "id": "hub_switch",
+      "scope": "hub",
+      "_scope_note": "內層 ai-hub 的 prefix 鍵(C-a),由 cockpit-upgrade.sh 建 hub 時設定;本安裝器不碰內層,避免兩處各綁一次互相覆蓋。",
+      "display": "C-a 0/1/2",
+      "tmux_keys": [],
+      "commands": []
+    }
+  ]
+}

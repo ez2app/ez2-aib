@@ -1,0 +1,2370 @@
+#!/bin/bash
+set -euo pipefail
+# EYE-141:啟動器不是過濾器。發版/測試把 stdout 管線關掉時,預設 SIGPIPE
+# 會把已經開好的艙判成失敗(rc=141)。忽略訊號後寫入變 EPIPE,由各 printf
+# 自己消化;艙有沒有留下來才是成敗。內部短路管線仍要先落值再比對,
+# 不能靠這條 trap 當修法。
+trap '' PIPE  # EYE-141-sigpipe-on
+_AIB_PARITY_MODE=0
+if [ -n "${EZ2_AIB_RUNTIME_PARITY_NONCE:-}" ]; then
+  _AIB_PARITY_NONCE="$EZ2_AIB_RUNTIME_PARITY_NONCE"
+  _AIB_PARITY_OBSERVED_FD="${EZ2_AIB_RUNTIME_PARITY_OBSERVED_FD:-}"
+  _AIB_PARITY_GATE_FD="${EZ2_AIB_RUNTIME_PARITY_GATE_FD:-}"
+  _AIB_PARITY_ENTRY_FD="${EZ2_AIB_VERIFIED_ENTRY_FD:-}"
+  case "$_AIB_PARITY_NONCE" in
+    *[!0-9a-f]*|'') echo "aib: invalid runtime parity nonce" >&2; exit 72 ;;
+  esac
+  case "$_AIB_PARITY_OBSERVED_FD" in
+    *[!0-9]*|'') echo "aib: invalid runtime parity observed fd" >&2; exit 72 ;;
+  esac
+  case "$_AIB_PARITY_GATE_FD" in
+    *[!0-9]*|'') echo "aib: invalid runtime parity gate fd" >&2; exit 72 ;;
+  esac
+  case "$_AIB_PARITY_ENTRY_FD" in
+    *[!0-9]*|'') echo "aib: invalid verified entry fd" >&2; exit 72 ;;
+  esac
+  case "${EZ2_AIB_VERIFIED_CABIN_FD:-}" in
+    *[!0-9]*|'') echo "aib: invalid verified cabin fd" >&2; exit 72 ;;
+  esac
+  case "${EZ2_AIB_VERIFIED_IDENTITY_FD:-}" in
+    *[!0-9]*|'') echo "aib: invalid verified identity fd" >&2; exit 72 ;;
+  esac
+  case "${EZ2_AIB_VERIFIED_VERSION_FD:-}" in
+    *[!0-9]*|'') echo "aib: invalid verified VERSION fd" >&2; exit 72 ;;
+  esac
+  printf 'entry:%s\n' "$_AIB_PARITY_NONCE" >&$_AIB_PARITY_OBSERVED_FD
+  IFS= read -r _AIB_PARITY_GATE <&$_AIB_PARITY_GATE_FD || {
+    echo "aib: runtime parity gate closed before acknowledgement" >&2
+    exit 72
+  }
+  if [ "$_AIB_PARITY_GATE" != "go:$_AIB_PARITY_NONCE" ]; then
+    echo "aib: runtime parity acknowledgement mismatch" >&2
+    exit 72
+  fi
+  eval "exec ${_AIB_PARITY_OBSERVED_FD}>&-"
+  eval "exec ${_AIB_PARITY_GATE_FD}<&-"
+  eval "exec ${_AIB_PARITY_ENTRY_FD}<&-"
+  unset EZ2_AIB_RUNTIME_PARITY_NONCE EZ2_AIB_RUNTIME_PARITY_OBSERVED_FD
+  unset EZ2_AIB_RUNTIME_PARITY_GATE_FD EZ2_AIB_VERIFIED_ENTRY_FD
+  _AIB_PARITY_MODE=1
+fi
+# P1A-00 verified pre-source boundary
+
+# aib - Ez2 AIB cockpit launcher (E2.9/E2.17/ED.11 直起+E2.19 席位紀錄).
+#
+#   aib <provider> <dgrs|safe> <role> [new] [--model MODEL] [--dry-run]
+#
+# `new` is deliberately positional because that is the human-facing command
+# the maintainer approved.  `--new` remains an exact compatibility alias.
+#
+# The exact prelude above is checked byte-for-byte by the installer.  It waits
+# for the standalone verifier before either bootstrap module can be sourced.
+# Direct source-tree execution has no nonce and keeps legacy behavior.
+
+if [ "$_AIB_PARITY_MODE" = "1" ]; then
+  AIB_SOURCE_ROOT="${EZ2_AIB_VERIFIED_ROOT:-}"
+  case "$AIB_SOURCE_ROOT" in
+    /*) ;;
+    *) echo "aib: verified runtime root is not absolute" >&2; exit 72 ;;
+  esac
+  SOURCE="$AIB_SOURCE_ROOT/src/cockpit/aib"
+  HERE="$AIB_SOURCE_ROOT/src/cockpit"
+  _AIB_BOOTSTRAP_CABIN_PATH="/dev/fd/$EZ2_AIB_VERIFIED_CABIN_FD"
+  _AIB_BOOTSTRAP_IDENTITY_PATH="/dev/fd/$EZ2_AIB_VERIFIED_IDENTITY_FD"
+  unset EZ2_AIB_VERIFIED_ROOT
+else
+  # Resolve every symlink in the launcher chain.  A source checkout may still
+  # be called through a compatibility symlink or wrapper.
+  SOURCE="${BASH_SOURCE[0]}"
+  while [ -h "$SOURCE" ]; do
+    SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    LINK="$(readlink "$SOURCE")"
+    case "$LINK" in
+      /*) SOURCE="$LINK" ;;
+      *) SOURCE="$SOURCE_DIR/$LINK" ;;
+    esac
+  done
+  HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  _AIB_BOOTSTRAP_CABIN_PATH="$HERE/cabin_resolve.sh"
+  _AIB_BOOTSTRAP_IDENTITY_PATH="$HERE/identity-env.sh"
+fi
+# 刀 A:艙名字面的唯一住址。這裡先載入是因為下面 `new` 配號那段跑在
+# `. cockpit-env.sh` **之前**,而它也需要艙名——那正是它原本自己拼一份的原因。
+. "$_AIB_BOOTSTRAP_CABIN_PATH"
+CALLER_CWD="$(pwd -P)"
+. "$_AIB_BOOTSTRAP_IDENTITY_PATH"
+if [ "$_AIB_PARITY_MODE" = "1" ]; then
+  eval "exec ${EZ2_AIB_VERIFIED_CABIN_FD}<&-"
+  eval "exec ${EZ2_AIB_VERIFIED_IDENTITY_FD}<&-"
+  unset EZ2_AIB_VERIFIED_CABIN_FD EZ2_AIB_VERIFIED_IDENTITY_FD
+fi
+unset _AIB_BOOTSTRAP_CABIN_PATH _AIB_BOOTSTRAP_IDENTITY_PATH
+
+# VERSION is the only product-version truth source.  Outline, schema and
+# protocol versions are independent and must never be substituted here.
+if [ "$_AIB_PARITY_MODE" != "1" ]; then
+  AIB_SOURCE_ROOT="$(cd "$HERE/../.." && pwd)"
+fi
+# A launcher and its runtime must consume the same checkout.  Do not let an
+# ambient EZ2_AIB_ROOT mix this executable with another tree's VERSION/assets.
+export EZ2_AIB_ROOT="$AIB_SOURCE_ROOT"
+# BC(2026-09-03,the maintainer 令艦長 a6b2e 改):呼叫者在**家目錄**開席,席位不得落在家目錄。
+#   那是 HANDOFF 陷阱「run-shell 的 cwd 是家目錄」的另一個入口:家目錄未被 Claude Code 信任
+#   ⇒ 新席停在信任提示;子 AI 產物落到家目錄的專案槽。實例:2dd9 艙兩席 cwd=/Users/user。
+#   改用本執行檔所在的 repo(AIB_SOURCE_ROOT)並出聲;只判「等於家目錄」不判「非 git 樹」,
+#   免得把刻意開在非 git 專案的席也搬走。★ 失效值不得等於安全值:沒有 HOME 就不判,不猜。
+# ★ BC 刀錨,必須全檔恰好一次。
+if [ -n "${HOME:-}" ] && [ "$CALLER_CWD" = "$(cd "$HOME" 2>/dev/null && pwd -P)" ]; then
+  # 真開席且這個終端會被接走:這行會停在畫面上像錯誤。dry-run 仍印(BC 臂要看見)。
+  if [ "${AIB_DRY_RUN:-0}" = "1" ] || [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ ! -t 0 ]; then
+    printf 'aib: 席位目錄由呼叫者 cwd(%s)改為專案目錄（家目錄不開席）\n' "$CALLER_CWD" >&2
+  fi
+  CALLER_CWD="$AIB_SOURCE_ROOT"
+fi
+AIB_VERSION_FILE="$AIB_SOURCE_ROOT/VERSION"
+if [ "$_AIB_PARITY_MODE" = "1" ]; then
+  case "${EZ2_AIB_VERIFIED_VERSION_FD:-}" in
+    *[!0-9]*|'') echo "aib: invalid verified VERSION fd" >&2; exit 72 ;;
+  esac
+  IFS= read -r EZ2_AIB_VERSION <&$EZ2_AIB_VERIFIED_VERSION_FD || true
+  eval "exec ${EZ2_AIB_VERIFIED_VERSION_FD}<&-"
+  unset EZ2_AIB_VERIFIED_VERSION_FD
+else
+  if [ ! -f "$AIB_VERSION_FILE" ] || [ -L "$AIB_VERSION_FILE" ]; then
+    echo "AIB VERSION is missing or unsafe: $AIB_VERSION_FILE" >&2
+    exit 2
+  fi
+  IFS= read -r EZ2_AIB_VERSION < "$AIB_VERSION_FILE" || true
+fi
+if [[ ! "$EZ2_AIB_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "AIB VERSION is invalid: $EZ2_AIB_VERSION" >&2
+  exit 2
+fi
+export EZ2_AIB_VERSION
+unset _AIB_PARITY_MODE _AIB_PARITY_NONCE _AIB_PARITY_OBSERVED_FD \
+  _AIB_PARITY_GATE_FD _AIB_PARITY_ENTRY_FD _AIB_PARITY_GATE
+
+# 09-30 the maintainer 令拿掉 teamo、teamoclaude(TeamoRouter 一律 HTTP 400);providers.json 標 retired,程式檔留著
+PROVIDERS="claude codex agy copilot grok deepseek kiosapi nvidia openrouter typesafe openrouterjev grokbot codexbot claudebot musebot"
+MODES="dgrs safe"
+ROLE_RE='^[a-z0-9-]+$'
+INSTANCE_RE='^[a-z0-9][a-z0-9-]*$'
+REPORTS_TO_RE='^[0-9a-z]{4,8}$'
+
+DRY="${AIB_DRY_RUN:-0}"
+NEW=0
+AGAIN=0
+REPORTS_TO=""
+INSTANCE=""
+INSTANCE_TOKEN=""
+MODEL_REQUESTED=""
+MODEL_FROM_FLAG=0
+RESET_SESSION_IDENTITY=0
+AIB_SEAT_REREGISTER=0   # 工單 AS:`aib seat re-register` 的旗標,見下面兩段
+REREG_ARGS=()
+POS=()
+
+# i18n must work before cockpit-env is sourced: parsing and validation happen
+# before a new instance is reserved, so malformed commands have zero writes.
+T_PY3="${EZ2_PY3:-}"
+if [ -z "$T_PY3" ]; then
+  for p in /opt/homebrew/bin/python3 /usr/bin/python3; do
+    if [ -x "$p" ]; then T_PY3="$p"; break; fi
+  done
+fi
+T_PY3="${T_PY3:-python3}"
+# O1 開席碼表(大綱 §85.5):「人按下 Enter」的 wall 時刻在這裡量(能量到的最早一點);
+#   attempt 本體要等艙身份解析出來才建(檔住在 $EZ2_AIB_INSTANCE_HOME 底下)。碼表不擋開席。
+AIB_PRESSED_MS="$("$T_PY3" -c 'import time;print(int(time.time()*1000))' 2>/dev/null || echo "")"
+ATTEMPT_ID=""
+# 09-14 踢右欄:席位檔寫好就把 nonce 寫進 right-kick,pane-right-tabs.sh 每 0.1 秒看它、變了立刻重畫。
+# 定義放這裡(呼叫點在 window_built 之前,函式要先於呼叫點被讀到)。
+aib_kick_right_pane() {
+  [ "$DRY" != "1" ] || return 0
+  local f="$EZ2_COCKPIT_STATE_DIR/right-kick"
+  mkdir -p "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null || true
+  printf '%s-%s-%s\n' "$$" "$(date +%s)" "${1:-}" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f" 2>/dev/null || true
+  return 0
+}
+aib_attempt_mark() {   # $1=event $2=window(可空) $3=note(可空)
+  [ "$DRY" != "1" ] && [ "${AIB_NO_OPEN_ATTEMPT:-0}" != "1" ] && [ -n "$ATTEMPT_ID" ] || return 0
+  "$T_PY3" "$HERE/open_attempt.py" mark --home "$EZ2_AIB_INSTANCE_HOME" --attempt "$ATTEMPT_ID" \
+    --event "$1" ${2:+--window "$2"} ${3:+--note "$3"} --provider "$PROVIDER" --role "$ROLE" \
+    || echo "aib: 開席碼表寫不進去(事件 $1;不擋開席)" >&2
+  return 0
+}
+
+# ED.2 子命令(終審掛載,08-13):`aib init` 直通首跑建置器,argv 原樣透傳
+# (--state-root/--json),exit code 直傳。放在 provider 解析之前——init 不是
+# provider,不進席位/tmux 任何路徑。
+if [ "${1:-}" = "init" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/src/bootstrap/aib_init.py" "$@"
+fi
+
+# 09-26 晚班(the maintainer 18:2x「發」;排程 pending/DISPATCH-1857a-evening-0926.md):
+#   各包只交子命令腳本,入口分派只在這裡(寫集互斥:本檔只有主線 a seat 動)。
+#   aib project show …            -> tools/project/show.py          (A 計畫樹;project 其餘子命令照舊走 project_callpoint)
+#   aib task …                    -> src/cockpit/seat_task_fields.py(B 頂行四欄)
+#   aib persona 來源|狀態|sources|status … -> tools/entitlement/aib-persona-sources(D 資格與開關;persona 其餘子命令照舊)
+# ★ 腳本還沒到就說一句話 rc=2 —— 不得掉進下面的開席參數解析(那裡會把 task 當 provider 報「不認得」,指錯方向)。
+# ★ 放在 provider 解析之前,與 init/bot/verify 同形:不進席位、不碰 tmux。
+aib_delegate_subcommand() {   # $1=py|exe $2=腳本絕對路徑,其餘原樣透傳
+  local kind="$1" path="$2"
+  shift 2
+  if [ ! -f "$path" ]; then
+    echo "aib: 這個指令還沒裝好(找不到 $path)" >&2
+    exit 2
+  fi
+  if [ "$kind" = "py" ]; then
+    exec "$T_PY3" "$path" "$@"
+  fi
+  if [ ! -x "$path" ]; then
+    echo "aib: 這個指令還沒裝好($path 不是可執行檔)" >&2
+    exit 2
+  fi
+  exec "$path" "$@"
+}
+if [ "${1:-}" = "project" ] && [ "${2:-}" = "show" ]; then
+  shift 2
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/tools/project/show.py" "$@"
+fi
+if [ "${1:-}" = "task" ]; then
+  shift
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/seat_task_fields.py" "$@"
+fi
+if [ "${1:-}" = "persona" ]; then
+  case "${2:-}" in
+    來源|狀態|sources|status)
+      shift
+      aib_delegate_subcommand exe "$AIB_SOURCE_ROOT/tools/entitlement/aib-persona-sources" "$@"
+      ;;
+  esac
+fi
+# aib newrole … -> src/identity/create_and_bind_persona.py(09-29 a seat,the maintainer「做成 aib newrole」):
+#   建人格卡+綁席位一步做完;與 tools/aib-create-persona 是同一支程式,這裡只掛不實作。
+if [ "${1:-}" = "newrole" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1 AIB_NEWROLE_PROG="aib newrole"
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/identity/create_and_bind_persona.py" "$@"
+fi
+# aib memory … -> src/memory/aib_memory.py(09-30 a seat,the maintainer「用 uuid 寫到 aib 對應的資料夾,用 obs 多維屬性寫,標題只顯示」):
+#   AI 工作記憶寫成第二大腦的一則筆記;認東西只用 uid,標題只顯示,標籤/分類英文、顯示走 i18n。
+if [ "${1:-}" = "memory" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1 AIB_MEMORY_PROG="aib memory"
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/memory/aib_memory.py" "$@"
+fi
+# aib handoff collect|write|status -> src/cockpit/aib_handoff.py(10-01 a seat,the maintainer「85% 或準備 clear 必做三步收尾,全部 AI、不可跳過」):
+#   collect 量機器事實出草稿;write 驗三段後寫席位記憶+第二大腦+交接檔+收據;下一輪開始時沒收據 ⇒ 自動補抓並提醒。
+if [ "${1:-}" = "handoff" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1 AIB_HANDOFF_PROG="aib handoff"
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/aib_handoff.py" "$@"
+fi
+# aib genes status|on [1,2,6]|off -> src/cockpit/ez2_genes.py(09-30 19:5x the maintainer「首要基因要到全部 AI,要有開關」):
+#   一個開關管全部席(API 席的系統說明、CLI 席的開場、Claude 壓縮後補回、橋接席的第一則);寫 ~/.ez2-aib/genes.json。
+if [ "${1:-}" = "genes" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/ez2_genes.py" "$@"
+fi
+# aib newproj … -> tools/project/new_project.py --entry newproj(09-29 a seat,the maintainer「再新增一個 新建+綁定 專案」):
+#   建專案卡+綁席位。與右欄選單「新開專案」是同一支程式;與 `aib project`(下面,查狀態與排程)不是同一件事。
+if [ "${1:-}" = "newproj" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1 AIB_NEWPROJ_PROG="aib newproj"
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/tools/project/new_project.py" --entry newproj "$@"
+fi
+
+# CodexBot one-time desktop binding.  This is deliberately outside provider
+# parsing: it verifies the already-loaded desktop thread before persisting any
+# value and never opens a cockpit window.
+if [ "${1:-}" = "bot" ]; then
+  if [ "${2:-}" = "connect" ] && [ "${3:-}" = "codexbot" ]; then
+    shift 3
+    exec "$T_PY3" "$HERE/codexbot_config.py" "$@"
+  fi
+  if [ "${2:-}" = "connect" ] && [ "${3:-}" = "grokbot" ]; then
+    # 09-25 a seat:一個 Grok Bot agent 綁一組 webhook(跳一個視窗貼網址與金鑰;金鑰不走 argv)
+    shift 3
+    exec "$T_PY3" "$HERE/grokbot_threads.py" connect "$@"
+  fi
+  if [ "${2:-}" = "reap" ]; then
+    # 10-07 a seat:收掉行程已死、status.json 還寫活著的橋接席(預設只列出,--apply 才改)
+    shift 2
+    exec "$T_PY3" "$HERE/bot_reap.py" "$@"
+  fi
+  if [ "${2:-}" = "ping" ]; then
+    # 10-07 a seat:一鍵檢查一隻 bot 席通不通、卡在哪一段(會真的叫醒 AI 一輪)
+    shift 2
+    exec "$T_PY3" "$HERE/bot_ping.py" "$@"
+  fi
+  if [ "${2:-}" = "list" ]; then
+    # 09-24 the maintainer:「我如何判斷每個對話的 uuid?」—— 列桌面對話:uuid ↔ 側欄標題 ↔ 最後更新 ↔ 誰綁著。
+    shift 2
+    exec "$T_PY3" "$HERE/bot_threads.py" "$@"
+  fi
+  echo "usage: aib bot list [--provider codexbot|--all] [--limit N] [--json]" >&2
+  echo "       aib bot connect codexbot --thread <UUID> [--endpoint <local ws://|unix://>]" >&2
+  echo "       aib bot connect grokbot --agent <agentId>   (跳視窗貼 webhook 網址與金鑰)" >&2
+  echo "       aib bot ping @席碼 [--timeout 秒] [--json]   (一鍵檢查通不通;會真的叫醒 AI 一輪)" >&2
+  echo "       aib bot reap [--apply]   (收掉行程已死、狀態還寫活著的橋接席;預設只列出)" >&2
+  exit 2
+fi
+
+# aib claudebot relay up|down|status|token|sessions — 雲端橋本機中繼(v0.70.0 #16 第二顆;the maintainer 09-27 裁本機中繼)
+# aib claudebot hook install|uninstall|status [--repo DIR] — hook 安裝器(--repo 寫倉庫層,雲端 session 只吃那層)
+# ★ 只攔 `claudebot relay|hook`:`aib claudebot <mode> <role>` 是開席的位置參數形,照走下面。
+if [ "${1:-}" = "claudebot" ]; then
+  case "${2:-}" in
+    relay) shift 2; exec "$T_PY3" "$HERE/claudebot_relay.py" "$@" ;;
+    hook)  shift 2; exec "$T_PY3" "$HERE/claudebot_hook.py" "$@" ;;
+  esac
+fi
+
+# aib verify-outside request <本機分支> [tests/…] | status [編號] — 請 launchd 在 tmux 外跑真 tmux 測試(10-08 a seat;
+#   排程要先裝:bash tools/outside-verify/install.sh)。艙內不起真 tmux(艙規),所以交給艙外。
+if [ "${1:-}" = "verify-outside" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/outside-verify/request.py" "$@"
+fi
+
+# aib install — 把 aib 專有 CLI 裝進 ~/.local/bin（grokbot 一鍵開席（sand 已自開席選單退役；舊 Cursor codexbot id 已刪，Desktop 橋用 codexbot））
+if [ "${1:-}" = "install" ]; then
+  shift
+  INSTALL="$AIB_SOURCE_ROOT/tools/aib-install-path"
+  if [ ! -x "$INSTALL" ]; then
+    echo "aib: 找不到 tools/aib-install-path" >&2
+    exit 2
+  fi
+  # 預設連 launcher 一起裝，使「安裝 aib」後 grokbot 可用
+  case " $* " in
+    *" --no-launcher "*) exec bash "$INSTALL" "$@" ;;
+    *) exec bash "$INSTALL" --launcher "$@" ;;
+  esac
+fi
+
+# aib update —— 公開版的更新指令在套件入口(aib/cli.py,10-09 a seat);走到這裡 = 開發用倉庫(私有正本、工作樹)。
+#   不替它更新(正本只准讀;推包推成後 aib ship 會自己快轉正本),只說怎麼辦。
+if [ "${1:-}" = "update" ]; then
+  echo "aib update: 這份 aib($AIB_SOURCE_ROOT)是開發用倉庫,aib update 只更新公開版的安裝。" >&2
+  echo "  → 怎麼辦:開發用倉庫請自己用 git 更新(正本在推包推成後會自動跟上);要另外裝一份公開版:curl -fsSL https://aib.ez2.app/install.sh | bash" >&2
+  exit 2
+fi
+
+# Social operations have one Python product callpoint.  The shell only routes
+# argv and the exact checkout; it does not duplicate credential or policy
+# checks.  This branch runs before provider parsing and never opens tmux.
+if [ "${1:-}" = "social" ]; then
+  shift
+  export PYTHONPATH="$AIB_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  exec "$T_PY3" -m src.social_gateway.callpoint "$@"
+fi
+
+# Project intent has a fixed rescue callpoint that remains usable when a
+# natural-language classifier is unavailable.  Read-only status and intent
+# parsing never enter the provider/tmux path; develop delegates all binding
+# authority to fleet_identity.project_entry and never applies its fleet plan.
+if [ "${1:-}" = "project" ]; then
+  shift
+  export PYTHONPATH="$AIB_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  exec "$T_PY3" -m src.fleet_identity.project_callpoint "$@"
+fi
+
+# aib profile check|explain(第 113 項;艦長 09-13 21:1x 定名):
+#   profile = 專案宣告檔(客戶 repo 的 .aib/verify.json,告訴 AIB 測試怎麼跑)。
+#   只轉呼叫,邏輯全在 src/verify_profile/;不進 provider 解析、不碰 tmux。
+# ★ 用檔案路徑叫,不用 `-m src.…`:`-m` 先從**目前目錄**找 `src`,而客戶就是在自己的 repo 裡
+#   打這個指令 —— 客戶 repo 有 `src/__init__.py` 時匯入整個失敗,目前目錄是另一份 ez2-aib 時
+#   跑的是那一份的碼。第一版是 `-m`,產品刀在複本樹上抓到入口格仍綠才發現。
+if [ "${1:-}" = "profile" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/src/verify_profile/callpoint.py" "$@"
+fi
+
+# aib verify 快驗|嚴格|關閉|狀態(＝quick|strict|off|status;verify-p1,由 255(a) 的 resume on|off 擴成三模式):
+#   邏輯在 tools/verify/resume_policy.py,不進 tmux。設計稿 docs/DESIGN-aib-verify-0926.md §2。
+if [ "${1:-}" = "verify" ]; then
+  shift
+  if [ "${1:-}" = "--changed" ]; then
+    exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/verify/runner.py" "$@"
+  fi
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/verify/resume_policy.py" "$@"
+fi
+
+# aib test <測試檔…>(09-29,the maintainer「跑測試時 1 啟用暗影預載、2 確認它正式啟用,除非 1 沒啟用才用原來的」):
+#   唯一合法的跑測試入口。邏輯在 tools/verify/test_entry.py(自檢 → 沿用或追蹤實跑 → 數新紀錄),不進 tmux。
+#   設計稿 docs/DESIGN-aib-test-entry-shadow-0929.md。受測的倉 = 目前目錄所在的 git 倉(或 --repo)。
+if [ "${1:-}" = "test" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/verify/test_entry.py" "$@"
+fi
+
+# aib ship package|release|check(10-06,the maintainer「每包推主線、每批發一次版號」給所有 aib 用戶):
+#   邏輯在 tools/release/ship.py;受測的倉 = 目前目錄(或 --repo)。設定 .aib/ship.toml,沒有就自動偵測。
+#   設計稿 docs/DESIGN-aib-ship-for-all-users-1006.md。
+if [ "${1:-}" = "ship" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/release/ship.py" "$@"
+fi
+
+# aib plaza …(協作廣場 collab-plaza,the maintainer 09-28:「使用 aib 或 aib 的 api 之下,就可以用同個規範來全球協作」):
+#   名錄、任務版、貼文、私訊、dm 專線、check。邏輯在 tools/collab/collab_plaza.py,不進 provider 解析、不碰 tmux。
+#   規格 docs/collab/SPEC-plaza-schema-0928.md;在目前所在的 git repo 上讀寫(分支 collab-plaza/*)。
+if [ "${1:-}" = "plaza" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/collab/collab_plaza.py" "$@"
+fi
+
+# Formal seven-section reports use a closed render -> lint -> verify -> send
+# forcepoint.  Ordinary `aib dm` remains available for short acknowledgements.
+if [ "${1:-}" = "report" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/src/report_forcepoint/callpoint.py" "$@"
+fi
+
+# Structured durable work always enters through dispatch.  A DM may notify a
+# person, but it never creates, leases or closes task truth.
+if [ "${1:-}" = "work" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/src/dispatch/dispatch.py" work "$@"
+fi
+
+t() {
+  local key="$1"; shift
+  local args=(--param "version=$EZ2_AIB_VERSION")
+  local kv
+  for kv in "$@"; do args=("${args[@]+"${args[@]}"}" --param "$kv"); done
+  "$T_PY3" "$HERE/i18n_lib.py" ${args[@]+"${args[@]}"} "$key"
+}
+
+usage() {
+  local loc
+  for loc in zh-TW en ja ko; do
+    "$T_PY3" "$HERE/i18n_lib.py" --locale "$loc" \
+      --param "version=$EZ2_AIB_VERSION" \
+      aib.help.title aib.help.usage aib.help.providers \
+      aib.help.modes aib.help.role aib.help.new aib.help.again \
+      aib.help.reports_to aib.help.dry_run aib.help.example
+    echo
+  done
+}
+
+die() {
+  echo "$1" >&2
+  exit "${2:-2}"
+}
+
+# --instance=new 是「真新艙」的明示,不是艙名。
+aib_take_instance_flag() {
+  local v="$1"
+  [ -n "$v" ] || die "$(t aib.err.usage)"
+  if [ "$v" = "new" ]; then
+    NEW=1
+    INSTANCE=""
+  else
+    INSTANCE="$v"
+  fi
+}
+
+# 工單 AQ:開席艙別由 socket 導出;矛盾與指向不存在的艙都具名擋。
+# ★ 不准安靜二選一。失效值不得等於安全值(今天的洞=有 socket 沒 instance 就默默 new)。
+# 只認 EZ2_AIHUB_SOCKET 形如 aihub-<id>(不是裸 aihub)。艙目錄用 cabin_resolve 的狀態根。
+# 10-09 a seat(D3,the maintainer 10-09 02:4x「好」):人在艙的窗格裡、卻沒說要開在哪一艙 ⇒ 擋下,不默默開新艙。
+#   為什麼會發生:provider-launch.sh 的 AIB_CARRIER_SCRUB_VARS **刻意**把艙變數從每個 AI 行程洗掉
+#   (防 pm 窗開新席時繼承身分),加上 the maintainer 08-27「不帶第四參數 = new」。兩條各自對,疊起來 =
+#   任何 AI 在席裡打 `aib claude dgrs dev` 都會在外面開出一個孤兒艙(10-09 dry-run 實量:目標 hub 是新艙佔位)。
+#   兩條裁定都不動:不在艙裡(一般終端機)照舊預設開新艙;在艙裡則要說清楚 —— 本艙寫艙號或 --again,新艙寫 new。
+#   判「人在艙裡」只看 tmux 自己帶的 $TMUX(洗單上沒有它)指向 aihub / aihub-<艙>;解不出來就不擋(不猜)。
+#   右鍵開席(--again)、aib-grokbot/aib-codexbot(先補 EZ2_AIHUB_SOCKET)、aib <N>sits(帶三個艙變數)都不走這格。
+aib_refuse_silent_new_in_cabin() {
+  local sock hub cab
+  sock="${TMUX:-}"
+  sock="${sock%%,*}"
+  [ -n "$sock" ] || return 0
+  hub="${sock##*/}"
+  cab="$(aib_cabin_instance_from_hub "$hub" 2>/dev/null)" || return 0
+  [ -n "$cab" ] || return 0
+  die "$(t aib.err.silent_new_in_cabin "instance=$cab")" 2
+}
+
+aib_apply_socket_instance() {
+  local hub derived root instdir explicit
+  hub="${EZ2_AIHUB_SOCKET-}"
+  [ -n "$hub" ] || return 0
+  derived="$(aib_cabin_instance_from_hub "$hub" 2>/dev/null || true)"
+  [ -n "$derived" ] || return 0
+  # ★ AQ-h 刀錨,必須全檔恰好一次:裸 aihub 不准在這裡 return。
+  aib_cabin_is_primary "$derived" || true
+
+  explicit="${INSTANCE:-${EZ2_AIB_INSTANCE-}}"
+  root="$(aib_cabin_state_root)"
+
+  # 明示 new(--new / --instance=new / 第四參 new)准開新,即使帶著舊艙 socket。
+  [ "$NEW" = "1" ] && return 0
+
+  if [ -n "$explicit" ]; then
+    if [ "$explicit" != "$derived" ]; then
+      die "aib: 艙解析衝突:明示 instance=${explicit} 與 EZ2_AIHUB_SOCKET=${hub} 指向不同的艙(${explicit} vs ${derived})。不准安靜二選一。
+要進 socket 那艙帶 --instance=${derived}
+要真新艙先 unset EZ2_AIHUB_SOCKET 或 --instance=new" 2
+    fi
+    return 0
+  fi
+
+  # 主艙家在狀態根,不在 instances/main;具名艙才查 instances/<id>。
+  if ! aib_cabin_is_primary "$derived"; then
+    instdir="$root/instances/$derived"
+    if [ ! -d "$instdir" ]; then
+      die "aib: EZ2_AIHUB_SOCKET=${hub} 指向不存在的艙(instances/${derived} 不在)。不准默默開新艙。
+要進該艙:先讓 instances/${derived} 存在。
+要真新艙先 unset EZ2_AIHUB_SOCKET 或 --instance=new" 2
+    fi
+  fi
+
+  INSTANCE="$derived"
+  printf 'instance 由 socket 導出=%s\n' "$derived" >&2
+  return 0
+}
+
+# aib dm 子命令(2026-08-14 the maintainer 核准,異質艦隊 DM 通道):整段委派 dm-ctl,
+# 本檔只掛不實作(啟動器與訊息域分離)。必須在位置參數解析前攔。
+if [ "${1:-}" = "dm" ]; then
+  shift
+  # ★ 第 159 項(dev1 a seat 09-14):`aib dm` 這個入口把「收據說可安全重送就自動重送一次」打開
+  #   (AIB_DM_AUTO_RESEND=1;已明示設定的不蓋)。開關住在入口不住 dm-ctl:dm-ctl 被 43 支尺直接叫,
+  #   它們量的是單次投遞的契約;排空器重投(dm_queue drain)自己有 attempts 語意,也是直接叫 dm-ctl。
+  #   真人與 AI 打 `aib dm` 才是「沒人替寄件人重送」那個洞所在的路徑(艦長 12:16 更正 04:56 那則)。
+  # ★ the maintainer 09-28「aib dm 一律要含艙位碼」「立刻切換新法,舊的停用」:入口一律要求 <艙位碼>/<席碼>,
+  #   不給關(故意不讀呼叫端的值)。拆法與建議寫法在 dm_address.py / dm-ctl.sh 那一段。
+  exec env AIB_DM_REQUIRE_CABIN=1 AIB_DM_AUTO_RESEND="${AIB_DM_AUTO_RESEND:-1}" bash "$HERE/dm-ctl.sh" "$@"   # cockpit-env 在後段才 source,用 HERE
+fi
+if [ "${1:-}" = "dm-queue" ]; then
+  shift
+  exec "$T_PY3" "$HERE/dm_queue.py" "$@"
+fi
+
+# aib page 子命令(262(c),RL-015 the maintainer 09-16 23:2x「建立我的頁面…能由 Ez2 AIB 直接對話 ai 更新」):
+# 把 ez2.page 的頁面交給一席 AI 改**草稿**,整段委派 page/cli.py,本檔只掛不實作(與 dm / dm-queue 同形)。
+# ★ 三條線在 page/ 裡面守(艦長 a seat 09-17 判準):未綁只讀不寫、程式裡沒有 publish 呼叫、
+#   每次寫草稿的 operation key 帶席碼與時刻。這裡只負責「必須在位置參數解析前攔」。
+if [ "${1:-}" = "page" ]; then
+  shift
+  exec "$T_PY3" "$HERE/page/cli.py" "$@"
+fi
+
+# aib idle 子命令(2026-08-17 機況清理席交付,the maintainer 直令整合):艙級閒置/
+# 殘留偵測與收艙,整段委派 idle_reaper.py(scan/close/reap/watch/policy)。
+# 四條結構紅線在 reaper 內:unknown 不自動/有人接著不自動/cli:* 不自動/
+# 艙齡<60s 不自動;只殺自己盤點到的正數 PID。watch 常駐方式候 the maintainer。
+if [ "${1:-}" = "idle" ]; then
+  shift
+  exec "$T_PY3" "$HERE/idle_reaper.py" "$@"
+fi
+
+# aib major 子命令(2026-09-13 第 102 項,the maintainer 令「大項迴圈寫成程式、變成預設執行方針」):
+# 大綱 §89.15 的七步——現查/計畫/派工/完成閘/收尾/單輪——整段委派 tools/governance/major_loop.py。
+# 預設全是乾跑(只印、只落檔);--send 才送 dm、--execute 才跑 check-fast;發版與記憶回寫仍由人按。
+if [ "${1:-}" = "major" ]; then
+  shift
+  exec "$T_PY3" "$HERE/../../tools/governance/major_loop.py" "$@"
+fi
+
+# aib ff 子命令(2026-09-11 大綱 §88.2 第 3 條「主樹閘」):只在正本樹、只快轉、只艦長;
+# 席位只交 sha。整段委派 ff_ctl.py;rc 0=快轉 1=不是快轉 2=樹不合法 3=席位非艦長。
+if [ "${1:-}" = "ff" ]; then
+  shift
+  exec "$T_PY3" "$HERE/ff_ctl.py" "$@"
+fi
+
+# aib deliver 子命令(2026-09-11 大綱 §88.2 第 2 條「交件前三步機器化」,共構席 a seat 交 94f01157):
+# 交件前自跑驗證同組母體 + 到達性掃描,紅不准說已交。整段委派 deliver.py;rc 0=可交 1=有紅 2=樹不合法。
+if [ "${1:-}" = "deliver" ]; then
+  shift
+  exec "$T_PY3" "$HERE/deliver.py" "$@"
+fi
+
+# aib seat_exit 子命令(§88.2 第 7 條,共構席交 7bc9ff9e):record 在開席收尾自動呼叫(見 LAUNCH_CMD),sweep 補漏。
+if [ "${1:-}" = "seat_exit" ]; then
+  shift
+  exec "$T_PY3" "$HERE/seat_exit.py" "$@"
+fi
+
+# aib persona 子命令(2026-08-18 L5 B 提取人格程式化,the maintainer @5 核准、艦長 01:03 方案核准):
+# SOP v3.5 draft 輪可執法——precheck(前提分軌/自動降軌)等,整段委派
+# src/persona_extract/persona_extract.py。零寫入人格資產;工具位置不給預設不猜(rc=2)。
+if [ "${1:-}" = "persona" ]; then
+  shift
+  exec "$T_PY3" "$HERE/../persona_extract/persona_extract.py" "$@"
+fi
+
+# aib ai 子命令(the maintainer 2026-09-05 直令:右欄兩行的顯示開關):
+#   aib ai role on|off  = 第二行(綁定的人格,the maintainer 口語叫「角色」)
+#   aib ai sb   on|off  = 第三行(第二大腦資料夾)
+#   aib ai              = 印目前值與設定檔路徑
+# 設定住檔案(狀態根/ai-view.json),下次開艙不必做任何事就套用;整段委派
+# ai_view.py,本檔只掛不實作(與 dm/idle/persona/appoint 同形)。
+if [ "${1:-}" = "ai" ]; then
+  shift
+  exec "$T_PY3" "$HERE/ai_view.py" "$@"
+fi
+
+# aib left|center|right|footer|panes 子命令(the maintainer 2026-09-05:座艙四格的顯示開關):
+#   aib left|center|right|footer on|off = 開關那一格,設定持久(狀態根/panes.json)
+#   aib panes                            = 印四格現值與設定檔路徑
+# ★ CLI 字面照 the maintainer 的用字(center/footer),tmux 的 @aib_role 仍是 hub/bottom,
+#   對映住 panes.py 的 ROLE_OF 一處,這裡不重寫第二份。
+# ★ 攔在位置參數解析前:`left` 之類不是 provider,掉進去會被當 provider 報錯。
+case "${1:-}" in
+  left|center|right|footer|panes)
+    exec "$T_PY3" "$HERE/panes.py" "$@"
+    ;;
+esac
+
+# aib appoint 子命令(the maintainer 2026-08-18 直令「所有任命/指派只能這樣做」):
+# 任命=寫席位檔的動作,口頭/dm/回報都不構成任命。整段委派 appoint.py。
+if [ "${1:-}" = "appoint" ]; then
+  shift
+  exec "$T_PY3" "$HERE/appoint.py" "$@"
+fi
+
+# aib seat 子命令(08-14 the maintainer 立葉「啟用新席位=完整 aib 程式化」):
+#   aib seat open <provider> <mode> <role> [--again]  = 開席正名(等同位置參數形)
+#   aib seat detect [--all|--window @N] [--apply]     = session_uuid 程式偵測
+#   aib seat onboard [--window @N|--missing]          = 開席單投遞+回執/補投
+# open 正名不另起路徑——剝掉 seat open 前綴後走同一條位置參數流,單一實作。
+if [ "${1:-}" = "seat" ]; then
+  case "${2:-}" in
+    open) shift 2 ;;
+    detect) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/seat-detect.py" "$@" ;;
+    onboard) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/seat_onboard.py" "$@" ;;
+    # 只轉呼叫,邏輯全在 seat_socket_backfill.py(cap 04:50 裁的檔案域)
+    socket-backfill) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/seat_socket_backfill.py" "$@" ;;
+    # 工單 AS(2026-09-02):席位重生後重登記。這裡只收參數:解析排在 seat-env 之後
+    # (要 T_PY3 與 HUB),寫入排在 write_seat_record 定義之後(bash 函式先定義才叫得到,
+    # 而它住在開席主流程裡;寫入端仍只有那一支,不另造)。
+    # 10-07 a seat(3f999 報):要 export —— write_seat_record 的 python 子行程讀 os.environ["AIB_SEAT_REREGISTER"]
+    #   (_archive_same_uuid_exit)。以前只設 bash 變數 ⇒ 子行程永遠看到沒設 ⇒ 同窗重開的席退出欄清不掉,一直被判死。
+    re-register) shift 2; export AIB_SEAT_REREGISTER=1; REREG_ARGS=("$@"); set -- ;;
+    auto-rotate) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/codex_rotate_live.py" seat "$@" ;;
+    *) echo "aib seat: open|detect|onboard|socket-backfill|re-register|auto-rotate" >&2; exit 2 ;;
+  esac
+fi
+
+# aib <N>sits — 批次開席(08-21 the maintainer 直令,指令形狀由他指定:`aib 5sits`,
+# 前面的數字=要開幾席)。實作在 seats_batch.sh,它逐席回頭呼叫本檔的位置
+# 參數形,不重寫開席邏輯。
+#
+# ★ 這個分派必須排在下面的參數迴圈**之前**:第一個位置參數在那條路上會被
+#   當成 <provider> 去比對 PROVIDERS,`5sits` 當然不在表裡,於是使用者拿到
+#   的是「不認得的 provider」——一個把人指向完全錯誤方向的錯誤訊息。
+case "${1:-}" in
+  [0-9]*sits)
+    exec bash "$HERE/seats_batch.sh" "$@" ;;
+esac
+
+# Codex 帳號管理 + 自動續跑是同一套。關了就回到原本的 codex 命令列。
+if [ "${1:-}" = "codex-pack" ]; then
+  shift
+  case "${1:-}" in
+    on|off)
+      _pack_on="$1"
+      shift
+      ;;
+    "")
+      _pack_on=""
+      ;;
+    *)
+      die "aib codex-pack: 用 on、off，或不帶參數看狀態"
+      ;;
+  esac
+  "${EZ2_PY3:-python3}" -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import codex_pack
+if sys.argv[2] == "on":
+    codex_pack.set_enabled(True)
+elif sys.argv[2] == "off":
+    codex_pack.set_enabled(False)
+print(codex_pack.status_line())' "$HERE" "${_pack_on:-status}"
+  exit $?
+fi
+
+# aib list-codex：已綁定的 Codex 帳、額度、更新時間。
+# 其他 AI 以後加 aib list-<provider>，不要把名單塞進開席參數。
+if [ "${1:-}" = "list-codex" ]; then
+  shift
+  if [ "${1:-}" = "--instance" ]; then
+    shift
+    [ -n "${1:-}" ] || die "aib list-codex: 需要艙編號"
+    export EZ2_AIB_INSTANCE="$1"
+    shift
+  elif [[ "${1:-}" == --instance=* ]]; then
+    export EZ2_AIB_INSTANCE="${1#--instance=}"
+    shift
+  fi
+  if [ -z "${EZ2_COCKPIT_STATE_DIR:-}" ] && [ -n "${EZ2_AIB_INSTANCE:-}" ]; then
+    export EZ2_COCKPIT_STATE_DIR="${EZ2_AIB_HOME:-$HOME/.ez2-aib}/instances/${EZ2_AIB_INSTANCE}/cockpit"
+  fi
+  exec "${EZ2_PY3:-python3}" "$HERE/codex_account_recover.py" --list
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -V|--version) printf 'Ez2 AIB v%s\n' "$EZ2_AIB_VERSION"; exit 0 ;;
+    --dry-run) DRY=1 ;;
+    --new) NEW=1 ;;
+    --again) AGAIN=1 ;;
+    --reports-to)
+      shift
+      [ "$#" -gt 0 ] && [ -n "$1" ] || die "$(t aib.err.usage)"
+      REPORTS_TO="$1"
+      ;;
+    --reports-to=*)
+      REPORTS_TO="${1#--reports-to=}"
+      [ -n "$REPORTS_TO" ] || die "$(t aib.err.usage)"
+      ;;
+    --probe-live) AIB_PROBE_LIVE=1 ;;
+    --thread|--thread=*)
+      # 09-24 the maintainer:一席一綁 —— 這一席要接的桌面對話 uuid(只影響這次開席;活 export 優先於 codexbot.env)。
+      #   查 uuid:aib bot list。只認 UUID 形狀,不猜席碼/窗號。
+      if [ "$1" = "--thread" ]; then shift; [ "$#" -gt 0 ] && [ -n "$1" ] || die "$(t aib.err.usage)"; _thr="$1"; else _thr="${1#--thread=}"; fi
+      case "$_thr" in
+        [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+        *) die "aib: --thread 要 UUID(查法:aib bot list),不是:$_thr" 2 ;;
+      esac
+      export AIB_CODEXBOT_THREAD_ID="$_thr" AIB_CODEXAPP_THREAD_ID="$_thr" CODEX_THREAD_ID="$_thr"
+      AIB_CODEXBOT_THREAD_OVERRIDE="$_thr"   # 開席鏈後段會洗身份變數再重讀 codexbot.env;這個不洗,用來重套
+      ;;   # 右欄用量格准自動探(會拉真 CLI,可能撞登入牆);預設不開
+    --model)
+      shift
+      [ "$#" -gt 0 ] && [ -n "$1" ] || die "$(t aib.err.usage)"
+      MODEL_REQUESTED="$1"
+      MODEL_FROM_FLAG=1
+      ;;
+    --model=*)
+      MODEL_REQUESTED="${1#--model=}"
+      [ -n "$MODEL_REQUESTED" ] || die "$(t aib.err.usage)"
+      MODEL_FROM_FLAG=1
+      ;;
+    --instance)
+      shift
+      [ "$#" -gt 0 ] && [ -n "$1" ] || die "$(t aib.err.usage)"
+      aib_take_instance_flag "$1"
+      ;;
+    --instance=*)
+      aib_take_instance_flag "${1#--instance=}"
+      ;;
+    -*) die "$(t aib.err.usage)" ;;
+    *) POS=("${POS[@]+"${POS[@]}"}" "$1") ;;
+  esac
+  shift
+done
+
+# Owner-facing batch form: aib <provider> <mode> <root-role> <N>sits [new].
+# It enters the ordinary new-instance resolver once, then seats_batch calls the
+# existing single-seat launcher N times inside that resolved cabin.
+BATCH_COUNT=""
+if [ "${#POS[@]}" -eq 5 ] && [ "${POS[4]}" = "new" ] \
+    && [[ "${POS[3]}" =~ ^([1-9][0-9]*)sits$ ]]; then
+  BATCH_COUNT="${BASH_REMATCH[1]}"
+  NEW=1
+  unset 'POS[4]' 'POS[3]'
+elif [ "${#POS[@]}" -eq 4 ] \
+    && [[ "${POS[3]}" =~ ^([1-9][0-9]*)sits$ ]]; then
+  BATCH_COUNT="${BASH_REMATCH[1]}"
+  unset 'POS[3]'
+fi
+
+# 刀 C 的觀測口(2026-08-23):`aib seat-env` 印出席位 shell 會帶的定位變數。
+# ★ 必須排在下面 provider/mode/role 三參驗證**之前**——它不是開席指令,
+#   走那條路會拿到「參數錯誤」rc=2,而那個錯誤訊息跟本子指令毫無關係。
+# ★ 為什麼需要它:沒有它的話,「席位帶了 instance」只能靠讀碼確認,
+#   而讀碼證明不了實際跑起來的那個 shell 裡有什麼。
+if [ "${POS[0]-}" = "seat-env" ]; then
+  [ "$DRY" != "1" ] || export AIB_NO_STATE_WRITE=1
+  [ -z "$INSTANCE" ] || export EZ2_AIB_INSTANCE="$INSTANCE"
+  . "$HERE/cockpit-env.sh"
+  printf 'EZ2_AIB_INSTANCE=%s\nEZ2_TMUX_SESSION=%s\nEZ2_AIHUB_SOCKET=%s\nEZ2_AIB_INSTANCE_HOME=%s\n' \
+    "$EZ2_AIB_INSTANCE" "$EZ2_TMUX_SESSION" "$EZ2_AIHUB_SOCKET" "$EZ2_AIB_INSTANCE_HOME"
+  exit 0
+fi
+
+# ── 工單 AS(2026-09-02):`aib seat re-register <窗>` 的前置解析 ─────────────
+#   aib seat re-register @N [--provider P --mode M --role R --cwd DIR --model X --session-uuid U]
+# 兩個入口共用這一條:
+#   甲 啟動指令自登記——LAUNCH_CMD 開頭帶全部旗標(值就是開席當下組進去的那幾個),
+#      所以 tmux 不管用什麼方式重跑那條指令(裸 respawn-pane、右鍵選單 Respawn),
+#      pane 一起來就自己登記,不依賴任何 hook 有沒有裝。
+#   乙 人工入口——不帶身份旗標時從既有席位檔讀 provider/mode/role/cwd/model。
+# 兩者的 session_uuid **都不從舊檔沿用**:由 seat_launch_evidence.py 從 pane 行程樹的
+# 指令列現讀,量不到就寫 pending(HANDOFF 未結案 3b:窗號重用會給格式正確的錯答案)。
+# ★ 為什麼這段擺在這裡而不是子指令那格:下面的三參驗證要 POS 是真值,而 HUB/T_PY3
+#   到這裡才在手上;把 POS 填成佔位符讓驗證過關,失效形狀是佔位符被寫進席位檔。
+if [ "$AIB_SEAT_REREGISTER" = "1" ]; then
+  REREG_WID=""; REREG_UUID=""
+  _rr_provider=""; _rr_mode=""; _rr_role=""; _rr_cwd=""; _rr_model=""
+  set -- "${REREG_ARGS[@]+"${REREG_ARGS[@]}"}"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --provider) shift; _rr_provider="${1:-}" ;;
+      --mode) shift; _rr_mode="${1:-}" ;;
+      --role) shift; _rr_role="${1:-}" ;;
+      --cwd) shift; _rr_cwd="${1:-}" ;;
+      --model) shift; _rr_model="${1:-}" ;;
+      --session-uuid) shift; REREG_UUID="${1:-}" ;;
+      @*) [ -z "$REREG_WID" ] || die "aib seat re-register: 只收一個窗,收到第二個:$1" 2
+          REREG_WID="$1" ;;
+      *) die "aib seat re-register: 不認得的參數:$1(用法:aib seat re-register @N [--provider P --mode M --role R --cwd DIR --model X --session-uuid U])" 2 ;;
+    esac
+    [ "$#" -gt 0 ] && shift
+  done
+  [[ "$REREG_WID" =~ ^@[0-9]+$ ]] || \
+    die "用法:aib seat re-register @N [--provider P --mode M --role R --cwd DIR --model X --session-uuid U]" 2
+  # fail-closed:hub 與艙都要顯式在手上。不猜主艙(主艙與艙內同檔名同窗號,猜錯的
+  # 樣子是「登記成功了」);沒有 EZ2_AIB_INSTANCE 的話下面的預設會把這次當成開新艙。
+  [ -n "${EZ2_AIHUB_SOCKET:-}" ] || \
+    die "aib seat re-register: EZ2_AIHUB_SOCKET 未設,量不到席位活在哪個 hub,拒絕(席位殼帶四元組,見 aib seat-env)" 2
+  [ -n "${EZ2_AIB_INSTANCE:-}" ] || \
+    die "aib seat re-register: EZ2_AIB_INSTANCE 未設,拒絕(沒有它會被當成開新艙;見 aib seat-env)" 2
+  if [ -z "$_rr_provider" ] || [ -z "$_rr_mode" ] || [ -z "$_rr_role" ]; then
+    # 乙:從既有登記讀身份。登記簿由 HUB 導出——seats_dir_lib 是 aib_seats_dir 的 Python
+    # 單源(同一條順位:HUB 導出 > EZ2_AIB_INSTANCE_HOME > 狀態根),讀端用它、寫端仍走
+    # aib_seats_dir;兩者分岔的失效形狀是這裡讀不到既有登記而拒絕——吵的那一種。
+    _rr_rec="$("$T_PY3" - "$HERE" "$EZ2_AIHUB_SOCKET" "$REREG_WID" <<'PYRR'
+import json, os, sys
+here, hub, wid = sys.argv[1:4]
+sys.path.insert(0, here)
+from seats_dir_lib import seats_dir
+path = os.path.join(seats_dir(hub=hub), "w%s.json" % wid.lstrip("@"))
+try:
+    rec = json.load(open(path, encoding="utf-8"))
+except (OSError, ValueError):
+    sys.exit(3)
+print("\t".join(str(rec.get(k) or "") for k in
+                ("provider", "mode", "role", "cwd", "model_requested")))
+PYRR
+)" || die "aib seat re-register: $REREG_WID 在 hub '$EZ2_AIHUB_SOCKET' 沒有既有登記,無從得知 provider/mode/role;開新席請走 aib <provider> <mode> <role>,或明給 --provider/--mode/--role" 2
+    IFS=$'\t' read -r _f_provider _f_mode _f_role _f_cwd _f_model <<<"$_rr_rec"
+    _rr_provider="${_rr_provider:-$_f_provider}"
+    _rr_mode="${_rr_mode:-$_f_mode}"
+    _rr_role="${_rr_role:-$_f_role}"
+    _rr_cwd="${_rr_cwd:-$_f_cwd}"
+    _rr_model="${_rr_model:-$_f_model}"
+  fi
+  POS=("$_rr_provider" "$_rr_mode" "$_rr_role")
+  [ -z "$_rr_model" ] || MODEL_REQUESTED="$_rr_model"
+  # cwd 只認旗標或既有登記;都沒有就留空,write_seat_record 對空值不寫該欄——
+  # 不拿操作者此刻站的目錄冒充席位的專案目錄。
+  CALLER_CWD="$_rr_cwd"
+  NEW=0; AGAIN=0; INSTANCE=""
+fi
+
+# the maintainer 2026-08-27 03:5x 三裁定(一)(二):第四參數收 new|main|<流水號>|<艙 UUID>;
+# **不帶第四參數 = new**,不再預設主艙。
+# ★ 舊行為保留給「顯式」的兩條路:參數寫 main,或 EZ2_AIB_INSTANCE=main。
+#   兩條都不是預設——預設從此是「開一艙新的」,因為預設值悄悄接管既有艙
+#   正是 08-15 殺錯艙那類事故的前提。
+# ★ --again(同 hub 次席)不吃這條預設:它的語意本來就是「回到已經在的那艙」,
+#   若也變成 new,`--again` 這個字就沒有任何輸入能表達它原本的意思。
+if [ "${#POS[@]}" -eq 4 ]; then
+  if [ "${POS[3]}" = "new" ]; then
+    NEW=1
+  else
+    [ -z "$INSTANCE" ] || die "$(t aib.err.usage)"
+    INSTANCE="${POS[3]}"
+    # fail-closed:直接吃 cabin_resolve 已有的驗證器(rc=2 且點名該值),
+    # 不在這裡再寫一份近似的判斷。
+    aib_cabin_check_name "instance" "$INSTANCE" || exit 2
+  fi
+  unset 'POS[3]'
+fi
+# ★ 工單 AQ 刀錨,必須全檔恰好一次。
+aib_apply_socket_instance || exit $?
+if false; then
+  :
+elif [ "${#POS[@]}" -eq 3 ] && [ "$NEW" = "0" ] && [ "$AGAIN" = "0" ] \
+     && [ -z "$INSTANCE" ] && [ -z "${EZ2_AIB_INSTANCE:-}" ]; then
+  aib_refuse_silent_new_in_cabin
+  NEW=1
+fi
+[ "${#POS[@]}" -eq 3 ] || { usage >&2; die "$(t aib.err.usage)"; }
+[ "$NEW" = "0" ] || [ -z "$INSTANCE" ] || die "$(t aib.err.usage)"
+# --again(同 hub 次席)與 --new(新 instance)是兩個正交語意,同給=意圖不明
+[ "$NEW" = "0" ] || [ "$AGAIN" = "0" ] || die "$(t aib.err.usage)"
+
+PROVIDER="${POS[0]}"
+MODE="${POS[1]}"
+ROLE="${POS[2]}"
+
+case " $PROVIDERS " in *" $PROVIDER "*) ;; *) die "$(t aib.err.provider "provider=$PROVIDER")" ;; esac
+# Desktop binding is explicit and checked before creating any cockpit window.
+if [ "$PROVIDER" = "codexbot" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
+  # CODEXBOT 正名；CODEXAPP／CODEX_THREAD_ID 當別名（右鍵另開 AI 常只帶其一）
+  aib_normalize_codexbot_env
+  if [ -n "${AIB_CODEXBOT_THREAD_OVERRIDE:-}" ]; then
+    export AIB_CODEXBOT_THREAD_ID="$AIB_CODEXBOT_THREAD_OVERRIDE" AIB_CODEXAPP_THREAD_ID="$AIB_CODEXBOT_THREAD_OVERRIDE" CODEX_THREAD_ID="$AIB_CODEXBOT_THREAD_OVERRIDE"
+  fi
+  # 09-24 a seat:以前 ensure_server 只在 `aib bot connect` 時被叫,整機重開後直接右鍵開席會因為
+  #   server 沒起而 --check 失敗。這裡在 --check 前先確保它活著(冪等:活著就直接回位址)。
+  #   只在「沒設位址」或「位址就是 AIB 管的那顆 socket」時做;自訂 ws:// 位址不動。
+  _managed_ep="unix://${EZ2_AIB_HOME:-$HOME/.ez2-aib}/run/codexbot/app-server.sock"
+  if [ -z "${AIB_CODEXBOT_ENDPOINT:-}" ] || [ "${AIB_CODEXBOT_ENDPOINT:-}" = "$_managed_ep" ]; then
+    if _ep="$("${EZ2_PY3:-python3}" "$HERE/codexbot_server.py" ensure 2>/dev/null)" && [ -n "$_ep" ]; then
+      export AIB_CODEXBOT_ENDPOINT="$_ep" AIB_CODEXAPP_ENDPOINT="$_ep"
+    else
+      echo "aib: CodexBot 的本機 App Server 起不來(python3 $HERE/codexbot_server.py ensure 失敗);--check 會接著擋。" >&2
+    fi
+  fi
+  # 09-24 the maintainer:右鍵新增時先列已知對話讓人選;30 秒沒選=沿用上次綁定(codexbot.env)。
+  #   清單由 bot_threads.py 供(一家一後端;grokbot/未來的本地對話 AI 加後端即可);沒清單=不跳選單。
+  #   要在 ensure 之後(列清單要 server)、--check 之前(check 用選到的那條)。
+  . "$HERE/bot-thread-menu.sh"
+  aib_bot_thread_menu "$PROVIDER" || die "aib: ${PROVIDER} 開席取消(上次綁的對話已不在且沒選新的)" 2
+  if [ -z "${AIB_CODEXBOT_THREAD_ID:-}" ] || [ -z "${AIB_CODEXBOT_ENDPOINT:-}" ]; then
+    cat >&2 <<'HINT'
+aib: CodexBot 還不能開席。
+
+它要綁「Codex 桌面裡已經打開的對話」，不是再開一顆 CLI。
+請先在 Codex 桌面打開要接的對話，再設：
+
+  export AIB_CODEXBOT_THREAD_ID='<桌面 thread UUID>'
+  export AIB_CODEXBOT_ENDPOINT='ws://127.0.0.1:… 或 unix:///…'
+
+（舊名 AIB_CODEXAPP_* 也可以，會自動對齊。）
+或寫進 ~/.ez2-aib/secrets/codexbot.env（一行一個 KEY=value，權限 0600），右鍵就不用再 export。
+設好後可先跑：aib-codexbot --check
+或右鍵「另開 AI → CodexBot」再試一次。
+HINT
+    exit 2
+  fi
+  # P6(09-25,多隻 CodexBot):這條對話已被另一隻活橋占著 ⇒ 在開窗、登記之前就擋,講人話。
+  #   以前要等橋啟動 flock 失敗才死(窗已開、席已登記、錯誤是英文)。選單與 --thread 兩條路都經過這裡。
+  aib_bot_thread_held_guard "$PROVIDER" || die "aib: ${PROVIDER} 開席取消(那條對話已被另一隻占用)" 2
+  if ! "${EZ2_PY3:-python3}" "$HERE/codexbot_bridge.py" --check; then
+    cat >&2 <<'HINT'
+aib: CodexBot 連不上桌面對話（--check 失敗）。
+
+常見原因：
+  1) Codex 桌面沒開，或那個 thread 沒載入
+  2) AIB_CODEXBOT_ENDPOINT 不是這次桌面 App Server 的位址
+  3) THREAD_ID 打錯（必須是 UUID，不能猜席碼／窗號）
+
+請確認桌面對話仍開著，再檢查：
+  echo "$AIB_CODEXBOT_THREAD_ID"
+  echo "$AIB_CODEXBOT_ENDPOINT"
+HINT
+    exit 2
+  fi
+fi
+# 09-25 a seat(a seat 派,接 a seat G5):右鍵開 grokbot 席要綁一個 Grok Bot agent,沒綁 bot 收不到這一席的信。
+#   預設=環境已帶的 AIB_GROKBOT_AGENT_ID;沒帶且恰好一個 agent 綁過 webhook(aib bot connect grokbot)就用它。
+#   接著走跟 codexbot 同一個 30 秒選單(清單=app 本機名冊)與同一道占用關卡。
+#   選到的 agent 只寫進這一席的啟動命令(下面 AIB_SEAT_ENV),艙門白名單(AIB_ENV_DOOR_*)洗的是伺服器環境,洗不到它。
+#   都沒有 ⇒ 照開(舊行為),但講清楚這一席沒綁 agent。整段在 bot-thread-menu.sh 的 aib_grokbot_agent_preflight。
+if [ "$PROVIDER" = "grokbot" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
+  . "$HERE/bot-thread-menu.sh"
+  aib_grokbot_agent_preflight || die "aib: grokbot 開席取消(那個 agent 已被另一席占用)" 2
+fi
+# 09-26 ClaudeBot:右鍵開 claudebot 席要綁一條本機 Claude 對話(清單=~/.claude/projects),同一條選單與占用關卡。
+if [ "$PROVIDER" = "claudebot" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
+  . "$HERE/bot-thread-menu.sh"
+  aib_claudebot_session_preflight || die "aib: claudebot 開席取消(那條 Claude 對話已被另一席占用,或 id 形狀不對)" 2
+fi
+# 2026-10-05 MuseBot:右鍵開 musebot 席——可綁一個 Muse 對話(AIB_MUSEBOT_CONVERSATION_ID),沒綁照開(排程喚醒制,信箱照常運作)。
+if [ "$PROVIDER" = "musebot" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
+  . "$HERE/bot-thread-menu.sh"
+  aib_musebot_preflight || die "aib: musebot 開席取消" 2
+fi
+
+case " $MODES " in *" $MODE "*) ;; *) die "$(t aib.err.mode "mode=$MODE")" ;; esac
+# 10-08:dgrs = 這一席的 AI 改檔、跑指令都不問人。照常開,但先在畫面上說清楚、告訴使用者怎麼換(每一席自己選)。
+if [ "$MODE" = "dgrs" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
+  printf '%s\n' "$(t aib.launch.dgrs_note "provider=$PROVIDER" "role=$ROLE")" >&2
+fi
+[[ "$ROLE" =~ $ROLE_RE ]] || die "$(t aib.err.role "role=$ROLE")"
+[ -z "$REPORTS_TO" ] || [[ "$REPORTS_TO" =~ $REPORTS_TO_RE ]] || \
+  die "$(t aib.err.reports_to "seat=$REPORTS_TO")"
+[ -z "$INSTANCE" ] || [[ "$INSTANCE" =~ $INSTANCE_RE ]] || die "$(t aib.err.instance "instance=$INSTANCE")"
+if [ -z "$MODEL_REQUESTED" ]; then
+  MODEL_REQUESTED="$("$T_PY3" -c 'import json,sys
+rows=json.load(open(sys.argv[1], encoding="utf-8")).get("providers", [])
+match=[r for r in rows if r.get("id")==sys.argv[2] and r.get("status")=="supported"]
+value=match[0].get("default_requested_model", "") if len(match)==1 else ""
+print(value)' "$HERE/providers.json" "$PROVIDER")" || MODEL_REQUESTED=""
+fi
+# 沒有手指定型號的 Codex 席：用本機清單裡版本號最大、而且有列出來的 gpt-*-luna。
+# 清單不在就維持登記簿的後備型號。推理等級不在這裡帶，這版 Codex 沒有 --effort。
+_codex_pack_on=1
+if [ "$PROVIDER" = "codex" ]; then
+  _codex_pack_raw="$("$T_PY3" -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import codex_pack
+print("1" if codex_pack.enabled() else "0")' "$HERE" 2>/dev/null || printf '1')"
+  _codex_pack_on="$(printf '%s' "$_codex_pack_raw" | tr -d '[:space:]')"
+  [ "$_codex_pack_on" = "0" ] || _codex_pack_on=1
+fi
+if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$_codex_pack_on" = "1" ]; then
+  _luna="$("$T_PY3" -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import codex_luna_model
+print(codex_luna_model.latest_luna_slug())' "$HERE" 2>/dev/null || true)"
+  if [ -n "$_luna" ]; then
+    MODEL_REQUESTED="$_luna"
+  fi
+fi
+[[ "$MODEL_REQUESTED" =~ ^[~]?[0-9A-Za-z][0-9A-Za-z._:/-]*$ ]] || \
+  die "aib: requested model is missing or invalid" 2
+
+# `new` is a hard namespace boundary.  Clear every derived cockpit value that
+# could have been inherited from the pane where this command was typed.
+if [ "$NEW" = "1" ]; then
+  aib_scrub_carrier_env
+
+  # ED.1:instances/ 掛在狀態根之下(EZ2_AIB_STATE_ROOT > EZ2_AIB_HOME > $HOME/.ez2-aib)。
+  INSTANCE_ROOT="${AIB_INSTANCE_ROOT:-$(aib_cabin_state_root)/instances}"   # 刀 A:狀態根單源,不再手抄 env 鏈
+  if [ "$DRY" = "1" ]; then
+    INSTANCE="${AIB_FAKE_NEW_INSTANCE:-2}"
+    [[ "$INSTANCE" =~ $INSTANCE_RE ]] || die "$(t aib.err.instance "instance=$INSTANCE")"
+    INSTANCE_TOKEN="${AIB_FAKE_INSTANCE_TOKEN:-00000000000000000000000000000002}"
+  else
+    command -v tmux >/dev/null 2>&1 || die "$(t aib.err.tmux_missing)" 127
+    OLD_UMASK="$(umask)"
+    umask 077
+    mkdir -p "$INSTANCE_ROOT"
+    # the maintainer 三裁定(三):新艙一律發艙 UUID(規格 §二/§三)。撞號的處置是
+    # **重生一個**,不是 +1——流水號的 +1 會走到別人正在用的號上,而那正是
+    # 「new 靜默接管舊 AI」的入口。重試有上限:16 bit 亂數同秒撞 64 次代表
+    # 發號器壞了,那時要出聲不是繼續轉(規格 §七-1「零重試死循環」)。
+    # 紅10(2026-08-27):保留迴圈搬進 cabin_resolve.sh 的 aib_cabin_reserve。
+    # 搬的理由不是整潔,是**它是唯一性的保證面而原本沒有人能單獨呼叫它**——
+    # 判準只好去斷言裸發號器「不會撞」,而那是產生器從未承諾的事。
+    # 回傳走 stdout:成功印 id、失敗印出事的路徑,所以下面兩行共用一個 $n。
+    # ★ 不走全域變數 —— 呼叫端讀 resolver 擁有的識別字就是把兩個檔綁在一起,
+    #   `test_no_constant_leaks_outside_resolver` 擋得對。
+    if n="$(aib_cabin_reserve "$INSTANCE_ROOT")"; then
+      INSTANCE="$n"
+    else
+      die "$(t aib.err.instance_reserve "path=$n")" 1
+    fi
+    INSTANCE_TOKEN="$(LC_ALL=C od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    if [ "${#INSTANCE_TOKEN}" -ne 32 ] || [[ "$INSTANCE_TOKEN" == *[!0-9a-f]* ]]; then
+      rmdir "$INSTANCE_ROOT/$INSTANCE" 2>/dev/null || true
+      die "$(t aib.err.instance_token "instance=$INSTANCE")" 1
+    fi
+    if ! printf '%s\n' "$INSTANCE_TOKEN" > "$INSTANCE_ROOT/$INSTANCE/instance-token"; then
+      rmdir "$INSTANCE_ROOT/$INSTANCE" 2>/dev/null || true
+      die "$(t aib.err.instance_token "instance=$INSTANCE")" 1
+    fi
+    chmod 600 "$INSTANCE_ROOT/$INSTANCE/instance-token"
+    umask "$OLD_UMASK"
+    # ★ 09-14(the maintainer 19:5x 在新艙看到三燈「量不到:沒有中間那位」):待審區開關是每艙一檔、只有真人能開,
+    #   新艙沒有那一檔=關 ⇒ 待審框不長、三燈全 ?。從**一個已開的艙裡**開新艙時,真人已經在舊艙做過
+    #   那個決定,把開關檔**複製**過去(不是改預設、不是自動開:沒有父艙或父艙沒開就照舊關著)。
+    _parent_home="${EZ2_AIB_INSTANCE_HOME:-}"
+    if [ -n "$_parent_home" ] && [ -f "$_parent_home/state/dm-queue-policy.json" ]; then
+      mkdir -p "$INSTANCE_ROOT/$INSTANCE/state" 2>/dev/null && \
+        cp -p "$_parent_home/state/dm-queue-policy.json" "$INSTANCE_ROOT/$INSTANCE/state/dm-queue-policy.json" 2>/dev/null && \
+        echo "aib: 待審區開關沿用父艙 ${_parent_home##*/} 的設定" >&2 || true
+    fi
+  fi
+  export EZ2_AIB_INSTANCE="$INSTANCE"
+  export EZ2_AIB_INSTANCE_HOME="$INSTANCE_ROOT/$INSTANCE"
+  export EZ2_AIB_INSTANCE_TOKEN="$INSTANCE_TOKEN"
+elif [ -n "$INSTANCE" ]; then
+  # 08-28:這裡原本**手列六個**,漏 AIB_DM_SOCKET / AIB_DM_TMUX /
+  # EZ2_AIB_SEAT_DISPLAY / EZ2_ROUTE_REGISTRY —— 換艙時舊艙的那四個會**跟著進新艙**,
+  # 而 AIB_DM_SOCKET 在七個消費者裡排第一順位 ⇒ 新艙用舊艙的 hub 解席位目錄。
+  # 這是同一份知識散在三處的第三處(另兩處:抽取器的 EZ2_* 前綴、消費者各自讀原始 env)。
+  # ⇒ 向單源要,不再手列。子集 = 全集 − 狀態根輸入(狀態根不隨艙變,清掉是行為變更)。
+  aib_cabin_env_wash_scoped
+  export EZ2_AIB_INSTANCE="$INSTANCE"
+fi
+
+if [ "$DRY" = "1" ]; then export AIB_NO_STATE_WRITE=1; fi
+. "$HERE/cockpit-env.sh"
+S="$EZ2_TMUX_SESSION"
+HUB="$EZ2_AIHUB_SOCKET"
+# 09-11 b21 真紅:開席鏈的脫離行程(碼表守望、回執守望)在呼叫端治具收掉之後還活著,
+# 那時 `tmux` 這個名字會解析到 PATH 上下一支——真的那支,對一個不存在的艙 socket 下指令。
+# ⇒ 在這裡把 tmux 綁成絕對路徑並輸出,子孫全部沿用;綁到的那支不見了就是「不見了」,不換一支。
+: "${AIB_TMUX_BIN:=$(command -v tmux 2>/dev/null || printf 'tmux')}"
+export AIB_TMUX_BIN
+
+if [ -n "$BATCH_COUNT" ]; then
+  export AIB_SITS_MODE_OVERRIDE="$MODE"
+  export AIB_SITS_NEW_INSTANCE="$NEW"
+  if [ "$DRY" = "1" ]; then
+    [ "$NEW" != "1" ] || export AIB_SITS_ASSUME_EMPTY=1
+    exec bash "$HERE/seats_batch.sh" "${BATCH_COUNT}sits" \
+      "${ROLE}:${PROVIDER}:${MODEL_REQUESTED}" --dry-run
+  fi
+  exec bash "$HERE/seats_batch.sh" "${BATCH_COUNT}sits" \
+    "${ROLE}:${PROVIDER}:${MODEL_REQUESTED}"
+fi
+
+# 刀 B(2026-08-23):執行前把四元組印在 stderr。
+# ★ 理由不是「多一行 log」:今天抓得到開錯艙**只因為 --dry-run 會印指令**,
+#   真跑時什麼都不印——「開對了艙」在機器上不是可觀測事實。印在 stderr 是
+#   為了不污染任何吃 stdout 的呼叫端;AIB_QUIET=1 可關。
+aib_print_cabin_tuple() {
+  [ "${AIB_QUIET:-0}" = "1" ] && return 0
+  # 這個終端即將被指揮艙接走時,四元組會停在畫面上像當掉。
+  # dry-run / 不接入仍印(測試與腳本要能看見開了哪一艙)。
+  if [ "$DRY" != "1" ] && [ "${AIB_NO_ATTACH:-0}" != "1" ] && [ -t 0 ]; then
+    return 0
+  fi
+  printf 'aib: instance=%s session=%s hub=%s state=%s\n' \
+    "$EZ2_AIB_INSTANCE" "$EZ2_TMUX_SESSION" "$EZ2_AIHUB_SOCKET" "$EZ2_AIB_INSTANCE_HOME" >&2
+  return 0
+}
+aib_print_cabin_tuple
+
+run() {
+  if [ "$DRY" = "1" ]; then
+    { printf '+ '; printf '%q ' "$@"; printf '\n'; } || true
+  else
+    "$@"
+  fi
+}
+
+# the maintainer 18:2x:aib 開的席預設無底色;聚焦用邊框,不用實心底。
+aib_apply_seat_plain_style() {
+  local tgt="$1"
+  [ -n "$tgt" ] || return 0
+  run env -u TMUX tmux -L "$HUB" set-option -w -t "$tgt" window-style 'fg=default,bg=default'
+  run env -u TMUX tmux -L "$HUB" set-option -w -t "$tgt" window-active-style 'fg=default,bg=default'
+  run env -u TMUX tmux -L "$HUB" set-option -w -t "$tgt" pane-active-border-style 'fg=colour75,bold'
+  run env -u TMUX tmux -L "$HUB" set-option -w -t "$tgt" pane-border-style 'fg=colour240'
+}
+
+find_provider_window() {
+  [ "$DRY" != "1" ] || return 1
+  # 先落值再比對:awk 一命中就 exit 會關管線,tmux 還沒寫完就吃 SIGPIPE。
+  local _rows
+  _rows="$(env -u TMUX tmux -L "$HUB" list-windows -t aihub \
+    -F '#{window_id}|#{@aib_provider}|#{@aib_role}' 2>/dev/null || true)"
+  awk -F '|' -v p="$PROVIDER" -v r="$ROLE" \
+    '$2 == p && $3 == r { print $1; exit }' <<<"$_rows"
+}
+
+# E2.19 資料源:席位紀錄(2026-08-13)。原規格要求 registry_verified,但那個
+# 狀態隨 ACB 拆除永遠不會再出現;繼任資料源=AIB 自己的席位檔,**trust 一律
+# self_reported 且絕不混進 verified 欄位**(無身份層過渡期紅線)。
+# 一窗一檔,檔名綁 window_id 故重開同窗冪等;dry-run 零寫入。
+# ★ 席位登記簿的**唯一**解析:順位 HUB 導出 > EZ2_AIB_INSTANCE_HOME > 主艙。
+#   同一支檔裡原本有三個各寫一份的 env-only 版本,而 HUB 一直都在手上——
+#   「同一個 bug 幾個呼叫點只修一個」今天已發作五次,所以這裡收成函式,不是逐處貼。
+aib_seats_dir() {
+  # 刀 A 單源(R8 第四項,2026-08-23):狀態根與艙名一律向 cabin_resolve 要,
+  # 不在這裡再抄一份 env 鏈、也不自己拆 `aihub-` 前綴。
+  # ★ 行為與先前逐位元組相同(交付附四環境對拍):hub 導出得到具名艙時走
+  #   <狀態根>/instances/<艙>/seats;導不出(主艙 aihub、未設、壞形狀)時
+  #   仍以 EZ2_AIB_INSTANCE_HOME 優先,退回狀態根。
+  local _root _inst="" _home=""
+  _root="$(aib_cabin_state_root)"
+  _inst="$(aib_cabin_instance_from_hub "${HUB:-}" 2>/dev/null || true)"
+  case "$_inst" in *[!0-9a-zA-Z-]*) _inst="" ;; esac
+  [ -z "$_inst" ] || _home="$(aib_cabin_home "$_inst" "$_root")"
+  # ★ 不比對 resolver 的內部常數(那是識別字外流,design 93a5694 的掃描守這一格),
+  #   改問「這個艙的家是不是就等於狀態根」——主艙的定義就是這個,由 aib_cabin_home 回答。
+  if [ -n "$_home" ] && [ "$_home" != "$_root" ]; then
+    printf '%s/seats\n' "$_home"
+  else
+    printf '%s/seats\n' "${EZ2_AIB_INSTANCE_HOME:-$_root}"
+  fi
+}
+
+# ── 派工單第 3 條:身份改寫守衛 ────────────────────────────────────────────
+# 目標窗的席位檔既有 role/provider 與**當次呼叫**不同 ⇒ 拒寫具名 rc,不靜默合併。
+#
+# ★★ 這道守衛**擋不住缺陷二十二**,而且那是設計上的:D22 走的就是
+#    `aib seat re-register`,也就是下面第一個豁免。真正的修法是 LAUNCH_CMD
+#    的兩處取窗改帶 `-t "$TMUX_PANE"`(見該行註解)。這裡是第二道網,
+#    擋的是**別的**呼叫路徑把身份寫到別人頭上。
+#    只加這道守衛而不改取窗,D22 會原樣復發 —— tests/…-d22.py test_40 釘住這句話。
+#
+# 兩個豁免都用**碼裡已經有名字的縫**,不新造旗標:
+#   AIB_SEAT_REREGISTER=1   人工/自登記的明示重登記
+#   RESET_SESSION_IDENTITY=1 死 pane 復活成別的席(aib:941 那條路自己會設)
+seat_guard_conflict() {
+  local wid="$1" seats_dir="$2"
+  local f="$seats_dir/w${wid#@}.json"
+  [ -f "$f" ] || return 0
+  [ "${AIB_SEAT_REREGISTER:-0}" != "1" ] || return 0
+  [ "${RESET_SESSION_IDENTITY:-0}" != "1" ] || return 0
+  local old
+  old="$("$T_PY3" -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)          # 檔壞掉 = 判不出來,交給 _mutate 重種,不在這裡擋
+print("%s\t%s" % (d.get("role") or "", d.get("provider") or ""))' "$f" 2>/dev/null || true)"
+  [ -n "$old" ] || return 0
+  local old_role="${old%%	*}" old_provider="${old##*	}"
+  # 既有欄位為空 = 舊格式席位檔,沒有可比的身份,不擋。
+  [ -n "$old_role" ] && [ -n "$old_provider" ] || return 0
+  if [ "$old_role" != "$ROLE" ] || [ "$old_provider" != "$PROVIDER" ]; then
+    printf 'aib: 拒寫席位檔 %s —— 既有身份 %s/%s 與當次 %s/%s 不同,而這不是明示的重登記。\n' \
+      "$f" "$old_role" "$old_provider" "$ROLE" "$PROVIDER" >&2
+    printf 'aib: 要真的換人請走 `aib seat re-register %s --role … --provider …`(它會留痕)。\n' \
+      "$wid" >&2
+    return 9
+  fi
+  return 0
+}
+
+write_seat_record() {
+  local window_id="$1" pane_id="$2"
+  local strict="${3:-0}"
+  [ "$DRY" != "1" ] || return 0
+  # ★ 同族第六個呼叫點:登記簿由 HUB 導出,不是只認 env(見 dm-ctl.sh 同段註解)。
+  #   開席寫進錯的登記簿,後面每一個讀它的人都會歸錯席。
+  local seats_dir; seats_dir="$(aib_seats_dir)"
+  seat_guard_conflict "$window_id" "$seats_dir" || return 9
+  if ! mkdir -p "$seats_dir"; then
+    [ "$strict" = "1" ] && return 1
+    return 0                           # 一般顯示資料維持既有 best effort
+  fi
+  local pane_pid=""
+  pane_pid="$(env -u TMUX tmux -L "$HUB" display-message -p -t "$pane_id" '#{pane_pid}' 2>/dev/null || true)"
+  local write_rc=0
+  AIB_SEAT_FORKED_FROM="${_aib_fork_src:-}" \
+  "$T_PY3" - "$seats_dir" "$window_id" "$ROLE" "$PROVIDER" "$MODE" "${pane_pid:-0}" "$HERE" "${SEAT_SESSION_UUID:-}" "$CALLER_CWD" "$MODEL_REQUESTED" "$RESET_SESSION_IDENTITY" "${EZ2_AIB_INSTANCE:-}" \
+    "${HUB:-}" "${REPORTS_TO:-}" <<'PYSEAT' 2>/dev/null || write_rc=$?
+import os, re, sys, time
+# ★ EH.3(2026-08-21):第 9 參 caller_cwd。**顯式傳,不用 os.getcwd()**——
+#   本區塊是 aib 的子行程,確實會繼承 cwd,但「靠繼承」正是本 repo 反覆
+#   付過代價的形狀(run-shell 的執行情境三連)。顯式傳的另一個好處:
+#   tests/test-seat-open-uuid.py 那套「抽真碼出來跑」的治具可以注入不同值。
+(seats, wid, role, provider, mode, pid, cockpit, seat_uuid, caller_cwd,
+ requested_model, reset_session, cabin_id, socket, reports_to) = sys.argv[1:15]
+if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._:/-]*", requested_model):
+    raise SystemExit("invalid requested model for seat record")
+sys.path.insert(0, cockpit)              # atomic_json/seat_ident 就在 src/cockpit/
+from atomic_json import update_json      # noqa: E402
+import seat_ident                        # noqa: E402  EG.3 發號唯一函式
+path = os.path.join(seats, "w%s.json" % wid.lstrip("@"))
+now = int(time.time())
+
+
+def _seed():
+    # EG.3:發號走 seat_ident 唯一函式——先掃登記簿全域已用號,撞則加鹽
+    # 重derive(帳留 seat_id_retry),窮盡 raise;絕不靜默共用。舊版
+    # sha256(窗|秒)[:5] 零檢查,1000 席生日碰撞 37.9%,撞了=兩席共用
+    # 人格綁定而無人發現。retry=0 公式與舊版逐位元組同(冪等不變)。
+    sid, retry = seat_ident.derive_seat_id(
+        wid, now, seat_ident.taken_seat_ids(seats))
+    rec = {
+        "schema": "aib-seat/v1",
+        "seat_id": sid,
+        "started_epoch": now,
+        # 紅線:這個欄位永遠是 self_reported。verified 需要 EH grant 模型,
+        # 在那之前寫任何別的值都是冒充。
+        "trust": "self_reported",
+    }
+    if retry:
+        rec["seat_id_retry"] = retry   # 撞過號的機器收據(EG.3 誠實留痕)
+    return rec
+
+
+# 重新登記成功才清退出欄。心跳重寫不設 AIB_SEAT_REREGISTER,不准清。
+_EXIT_FIELDS = ("exited_at_epoch", "exit_reason", "exit_rc",
+                "exit_evidence", "exit_recorded_by")
+
+
+def _pid_alive(raw):
+    try:
+        n = int(raw or 0)
+    except (TypeError, ValueError):
+        return False
+    if n <= 0:
+        return False
+    try:
+        os.kill(n, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _archive_same_uuid_exit(rec):
+    # 同一個 session_uuid、新 pid 活著:五欄搬進 prior_exits 再刪。
+    # uuid 不同(含量不到而 reset)留在頂層,死席紀錄不能被另一次登記擦掉。
+    if os.environ.get("AIB_SEAT_REREGISTER") != "1":
+        return
+    if not _pid_alive(pid):
+        return
+    if not seat_uuid or rec.get("session_uuid") != seat_uuid:
+        return
+    if not any(k in rec for k in _EXIT_FIELDS):
+        return
+    snap = {k: rec.get(k) for k in _EXIT_FIELDS if k in rec}
+    snap["archived_at_epoch"] = now
+    prior = rec.get("prior_exits")
+    if not isinstance(prior, list):
+        prior = []
+    prior.append(snap)
+    rec["prior_exits"] = prior
+    for k in _EXIT_FIELDS:
+        rec.pop(k, None)
+
+
+def _mutate(rec):
+    # 空 dict = 檔不存在或壞掉 → 種一份新的(seat_id 只在這時產生一次)
+    if not rec.get("schema"):
+        rec = _seed()
+    # 必須在覆寫 session_uuid 之前比對,否則「同一個 uuid」永遠為真。
+    _archive_same_uuid_exit(rec)
+    # ★ socket:席位活在哪個 tmux -L 上。**無條件寫**,不學下面 cabin_id 的
+    #   `if cabin_id:` —— 條件寫入會讓「沒設定」與「欄位不存在」共用一個表現,
+    #   而那正是本次要修的洞:window_id 跨 socket 會撞(六個 socket 的窗號都從
+    #   @1 起算),讀端只憑 window_id 解席位就會投到另一個 hub 的同號窗,
+    #   收據仍回 rc=0。空字串也要寫進去 —— 讀端把「空」與「缺」一律當缺,
+    #   fail-closed 拒投;讓「寫不出值」在讀端有形狀,而不是靜靜消失。
+    rec.update({"window_id": wid, "role": role, "provider": provider,
+                "mode": mode, "pid": int(pid or 0), "last_used_epoch": now,
+                "model_requested": requested_model, "socket": socket})
+    if provider == "codexbot":
+        rec["desktop_thread_id"] = (os.environ.get("AIB_CODEXBOT_THREAD_ID") or os.environ.get("AIB_CODEXAPP_THREAD_ID") or "")
+    if provider == "claudebot":
+        # v0.70.0 #15:右欄要印「綁 Claude 對話 <前 8 碼>」;空字串 = 開席時沒綁(選單逾時預設不綁)
+        rec["claude_session_id"] = (os.environ.get("AIB_CLAUDEBOT_SESSION_ID") or "")
+    # A seat can attest only to launch intent.  Runtime/effective identity is
+    # emitted by the repo-owned session observation adapter, never this file.
+    for key in list(rec):
+        if "model" in key.casefold() and key != "model_requested":
+            rec.pop(key, None)
+    # ★ EH.3:cwd = 開席當下的工作目錄,也就是那個 AI 真正的專案目錄
+    #   (aib:22 CALLER_CWD="$(pwd -P)",同一個值在 :395 當 PROJECT_DIR
+    #   傳給 provider-launch.sh —— 兩者不會分岔)。
+    #   放 _mutate 不放 _seed:同一個窗在別的目錄重開,那一席**真的**換了
+    #   專案,cwd 要跟著走;seat_id 才是不變的身份。
+    #   為什麼需要它:沒有 cwd,「這席屬於哪個專案」只能用 role 當鍵,
+    #   而 role 在第二個專案就會撞,且撞了不報錯(EH.4 的硬前置)。
+    if caller_cwd:
+        rec["cwd"] = caller_cwd
+    # 09-11 the maintainer:另開 AI 選完角色後可掛在指定艦長底下。缺欄=右欄預設第一
+    # 艦長。心跳重寫不得把已寫的掛點抹掉(旗標空=不動,不是清掉)。
+    if reports_to and re.fullmatch(r"[0-9a-z]{4,8}", reports_to):
+        rec["reports_to"] = reports_to
+    # DESIGN-cabin-uuid-20260826 §四:三層身分一次寫清,席位檔是唯一正本。
+    # ★ 放 _mutate 不放 _seed:既有席位檔(種在本規格之前)重寫時也要補齊,
+    #   否則「欄位齊備」對舊檔永遠是假的,而假的那一格不會紅。
+    if cabin_id:
+        rec["cabin_id"] = cabin_id
+        rec["fleet_id"] = "f-%s" % cabin_id
+        # born_at 由 cabin_id 前 15 字展開;判別式照 §二 判**兩個連字號**,
+        # 不判長度。舊艙(main / 17)沒有出生時間,就不要寫一個編出來的。
+        parts = cabin_id.split("-")
+        if len(parts) == 3 and len(parts[0]) == 8 and len(parts[1]) == 6 \
+                and parts[0].isdigit() and parts[1].isdigit():
+            d, t = parts[0], parts[1]
+            rec["born_at"] = "%s-%s-%sT%s:%s:%s+08:00" % (
+                d[0:4], d[4:6], d[6:8], t[0:2], t[2:4], t[4:6])
+        else:
+            rec.pop("born_at", None)
+    # 09-24(a seat):分出新席記前身 uuid(dm 轉信與巡查靠它找「誰接續了誰」)。
+    #   非空才寫、永不清掉:心跳重寫與 re-register 不帶它,不能把血緣抹掉。
+    _fork = os.environ.get("AIB_SEAT_FORKED_FROM", "")
+    if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", _fork):
+        rec["forked_from"] = _fork
+    # 10-07 a seat:這一席跑的是哪棵樹的碼(= aib 腳本所在樹)。今晚三件事同根:server 目錄、滑鼠綁定、側欄
+    #   都被「從工作樹開」的人帶偏,樹一砍就死,而事後沒有任何紀錄說它是從哪棵樹開的。每次寫入都更新(重開換樹看得到)。
+    rec["source_root"] = os.path.realpath(os.path.join(cockpit, "..", ".."))
+    # claude 開席帶入的權威 session uuid：非空才寫，空值（非 claude / dry-run）
+    # 一律不碰既有欄位——留給 seat-detect 的 artifact 偵測，且心跳重寫不會抹掉。
+    if reset_session == "1":
+        previous = rec.pop("session_uuid", None)
+        if previous:
+            rec["previous_session_uuid"] = previous
+        rec.pop("session_uuid_source", None)
+        rec["session_uuid_pending"] = \
+            "respawn 後等待新 session(provider=%s),候 seat-detect 回填" % provider
+    elif seat_uuid:
+        rec["session_uuid"] = seat_uuid
+        rec.pop("session_uuid_pending", None)      # 互斥(ED.13)
+    elif not rec.get("session_uuid"):
+        # ★ ED.13(2026-08-22,艦長 12:35 登記格):「席位檔必有 session_uuid,否則必有
+        #   session_uuid_pending: <reason>——鍵整個不存在即紅」。種檔那一刻就寫,
+        #   不等 seat-detect:它若沒跑到(被 `|| true` 吞、或 retry 用盡),檔裡也要
+        #   看得出「還在等、為什麼」。seat-detect 量到會填 uuid 並清掉這個鍵。
+        rec.setdefault("session_uuid_pending",
+                       "開席時無 uuid(provider=%s),候 seat-detect 回填" % provider)
+    # B15:合法位址只在讀取時由 session_uuid 導出。舊的持久化快取每次
+    # 重寫席位檔都主動清掉,避免兩個欄位各自保留一半事實。
+    rec.pop("seat" + "_code", None)
+    return rec
+
+
+# ★★ 2026-08-16:改走 atomic_json.update_json(全程持目錄鎖的
+#   read-modify-write)。舊寫法是「讀→改→寫固定的 .tmp→rename」,三個問題:
+#     ① 固定的 `.tmp` 檔名:兩席同時寫會用同一個中繼檔,後到的蓋掉先到的
+#     ② 沒有鎖:讀舊值到 rename 之間有競態窗,更新會被安靜地吃掉
+#     ③ 沒有 fsync:當機時 rename 過去的可能是空檔
+#   而席位檔正是**多寫者**的:開席寫一次、艦長列心跳每 5 秒寫一次。
+#   ★ 機制自 ACB session-beat.sh 重構(the maintainer 直令),只取寫入健壯性那一層;
+#     它的身份模型(binding schema / registry_verified)刻意不搬——那套已判
+#     廢除,且牴觸本檔上面那條 self_reported 紅線。理由全文見 atomic_json.py。
+try:
+    update_json(path, _mutate)
+except seat_ident.SeatIdCollisionError as err:
+    # EG.3 報錯而非靜默:stderr 被外層 2>/dev/null 吃掉,所以走 stdout 上
+    # 畫面;席位檔一 byte 不寫——缺檔在 seat_who 是看得見的 UNRESOLVED,
+    # 靜默共用是誰都看不見的錯帳。
+    print("aib: 席位發號中止:%s" % err)
+    sys.exit(4)
+PYSEAT
+  if [ "$strict" = "1" ] && [ "$write_rc" != "0" ]; then
+    echo "aib: failed to fence stale seat session before respawn" >&2
+    return "$write_rc"
+  fi
+  return 0
+}
+
+# ── 工單 AS:重登記的寫入端(前置解析在上面 seat-env 之後那段)────────────────
+# 唯一寫入仍是 write_seat_record;本函式只負責三件事:量 pane(死 pane 不登記——
+# 登記死 pid 只是把今天的洞再挖一次)、量 session uuid 證據、寫後讀回核 pid。
+seat_reregister() {
+  local wid="$REREG_WID" pane_dead="" pane_pid="" seats_file="" old_pid="" new_pid=""
+  pane_dead="$(env -u TMUX tmux -L "$HUB" display-message -p -t "$wid" '#{pane_dead}' 2>/dev/null)" || \
+    die "aib seat re-register: hub '$HUB' 裡沒有窗 $wid(或 tmux 連不上)" 2
+  [ "$pane_dead" = "0" ] || \
+    die "aib seat re-register: 窗 $wid 的 pane 是死的(pane_dead=$pane_dead):先重生它再登記,登記死 pane 只會把死 pid 寫進去" 2
+  pane_pid="$(env -u TMUX tmux -L "$HUB" display-message -p -t "$wid" '#{pane_pid}' 2>/dev/null || true)"
+  [[ "$pane_pid" =~ ^[0-9]+$ ]] && [ "$pane_pid" -gt 0 ] && kill -0 "$pane_pid" 2>/dev/null || \
+    die "aib seat re-register: 窗 $wid 的 pane_pid 量不到或已死:'$pane_pid'" 2
+  seats_file="$(aib_seats_dir)/w${wid#@}.json"
+  old_pid="$("$T_PY3" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("pid",""))' "$seats_file" 2>/dev/null || true)"
+  # session uuid:只認 pane 行程樹此刻的指令列。rc 0 量到 / 3 量不到 / 4 自報≠實跑 / 其他=工具壞。
+  local ev="" ev_rc=0
+  ev="$("$T_PY3" "$HERE/seat_launch_evidence.py" --pane-pid "$pane_pid" ${REREG_UUID:+--expect "$REREG_UUID"})" || ev_rc=$?
+  case "$ev_rc" in
+    0) SEAT_SESSION_UUID="$ev"; RESET_SESSION_IDENTITY=0 ;;
+    3) SEAT_SESSION_UUID=""; RESET_SESSION_IDENTITY=1 ;;   # 量不到 ⇒ 舊值退 previous、標 pending,不沿用
+    *) die "aib seat re-register: session uuid 證據不成立(rc=$ev_rc),拒寫:$seats_file" 3 ;;
+  esac
+  write_seat_record "$wid" "$wid" 1 || die "aib seat re-register: 席位檔寫入失敗:$seats_file" 1
+  new_pid="$("$T_PY3" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("pid",""))' "$seats_file" 2>/dev/null || true)"
+  [ "$new_pid" = "$pane_pid" ] || \
+    die "aib seat re-register: 寫後讀回 pid=$new_pid ≠ pane_pid=$pane_pid:$seats_file" 1
+  if [ "${AIB_QUIET:-0}" != "1" ]; then
+    printf 'aib: re-registered %s pid %s→%s session_uuid=%s seats=%s\n' \
+      "$wid" "${old_pid:-∅}" "$pane_pid" "${SEAT_SESSION_UUID:-pending}" "$seats_file" >&2
+  fi
+}
+if [ "$AIB_SEAT_REREGISTER" = "1" ]; then
+  seat_reregister
+  exit 0
+fi
+
+# One idempotent orchestrator owns the eye-verified interface.  The historical
+# layout -> destructive upgrade chain is intentionally not part of this path.
+# ★ 09-10 14:3x:--probe-live 一律帶是錯的 —— the maintainer 開 5 艙被 Gemini 登入牆彈 OAuth 頁(缺陷三十九當初就為此關預設)。
+#   M7 的裁定是「aib 顯式帶旗才開」:AIB_PROBE_LIVE=1 或參數 --probe-live 才傳,否則被動(右欄只讀舊檔,[重驗] 仍可手動探)。
+if [ "$DRY" != "1" ] && [ "${AIB_NO_OPEN_ATTEMPT:-0}" != "1" ]; then
+  ATTEMPT_ID="$("$T_PY3" "$HERE/open_attempt.py" start --home "$EZ2_AIB_INSTANCE_HOME" \
+    --provider "$PROVIDER" --role "$ROLE" ${AIB_PRESSED_MS:+--pressed-ms "$AIB_PRESSED_MS"} \
+    $( [ "$NEW" = "1" ] && printf -- '--new' ) 2>/dev/null)" || ATTEMPT_ID=""
+  [ -n "$ATTEMPT_ID" ] || echo "aib: 開席碼表起不來(這一次開席沒有讀數;不擋開席)" >&2
+fi
+# 開席畫面:logo 左到右一顆顆亮,下方 Ez2 進度與句子跟著走;艙好了等這段播完再接入。
+_AIB_SPLASH_PID=""
+_AIB_SPLASH_FLAG=""
+aib_splash_start() {
+  [ "$DRY" != "1" ] || return 0
+  [ "${AIB_NO_ATTACH:-0}" != "1" ] || return 0
+  [ "${AIB_QUIET:-0}" != "1" ] || return 0
+  [ "${AIB_NO_CLIENT_SWITCH:-0}" != "1" ] || return 0
+  [ -t 2 ] || return 0
+  _AIB_SPLASH_FLAG="$(mktemp "${TMPDIR:-/tmp}/aibsplash.XXXXXX")" || return 0
+  "$T_PY3" "$HERE/login_splash.py" --flag "$_AIB_SPLASH_FLAG" &
+  _AIB_SPLASH_PID=$!
+}
+aib_splash_stop() {
+  [ -n "$_AIB_SPLASH_FLAG" ] || return 0
+  rm -f "$_AIB_SPLASH_FLAG"
+  _AIB_SPLASH_FLAG=""
+  if [ -n "$_AIB_SPLASH_PID" ]; then
+    # 艙已好:讓左到右那幾顆跑完再接入;最多約三秒,超了就清掉,避免卡住進不去。
+    _n=0
+    while [ "$_n" -lt 30 ] && kill -0 "$_AIB_SPLASH_PID" 2>/dev/null; do
+      sleep 0.1
+      _n=$((_n + 1))
+    done
+    kill "$_AIB_SPLASH_PID" 2>/dev/null || true
+    wait "$_AIB_SPLASH_PID" 2>/dev/null || true
+    _AIB_SPLASH_PID=""
+  fi
+  printf '\r\033[K' >&2 || true
+}
+trap 'aib_splash_stop' EXIT
+aib_splash_start
+# ★ 09-12 第 59 項:ensure 鏈裡任何一支非零(例:theme-ctl 判版面不合)以前是 set -e 直接死,
+#   終端只剩右欄「等待逾時」;現在印出是哪一步、rc 多少,原因由那支自己印在上方 stderr。
+# ★★ 09-14(the maintainer 直令「aib 一開席第一要義要先開席並在右方完成,只有右方開席顯示完成、
+#   才載入下一步」):ensure 那一段實量 p50 4.2 秒(127 次開席;艙已存在也 4.33 秒),
+#   佔「按下→可打字」6.3 秒的三分之二,而它跑完之前 hub 窗還沒建、右欄沒有任何東西可畫。
+#   艙已經在(hub 伺服器活著 + 外層 session 在)時,建窗只需要 hub 伺服器,
+#   所以 ensure 改排到「右欄畫出這一席」之後的 post-frame 段(aib_post_frame_work 第一步)。
+#   新艙仍走原路:沒有艙就沒有右欄,先建艙。
+#   ★ 判準是「兩個伺服器都答有」,不是席位檔或 state 目錄在不在 —— 後兩者在艙死了之後仍會留著。
+aib_cabin_is_up() {
+  [ "$DRY" != "1" ] || return 1
+  [ "${AIB_FORCE_ENSURE_FIRST:-0}" != "1" ] || return 1
+  env -u TMUX tmux -L "$HUB" has-session -t aihub 2>/dev/null || return 1
+  env -u TMUX tmux has-session -t "$S" 2>/dev/null || return 1
+  return 0
+}
+aib_run_ensure() {   # 起訖都記進碼表;rc 原樣回給呼叫端。note=deferred(右欄畫到之後)/ cabin-first(新艙先建艙)
+  aib_attempt_mark ensure_start "${WINDOW_ID:-}" "$([ "$AIB_ENSURE_DEFERRED" = "1" ] && printf deferred || printf cabin-first)"
+  run bash "$HERE/cockpit-full.sh" --ensure ${AIB_PROBE_LIVE:+--probe-live}
+  _ensure_rc=$?
+  aib_attempt_mark ensure_done "${WINDOW_ID:-}" "rc=$_ensure_rc"
+  return "$_ensure_rc"
+}
+AIB_ENSURE_DEFERRED=0
+if aib_cabin_is_up; then
+  AIB_ENSURE_DEFERRED=1
+else
+  aib_run_ensure || {
+    _ensure_rc=$?
+    echo "aib: 開席中止:cockpit-full.sh --ensure 回 rc=$_ensure_rc(原因在上方 stderr;查:tail ~/.ez2-aib/instances/<艙>/cockpit/*.log)" >&2
+    exit "$_ensure_rc"
+  }
+  aib_attempt_mark cabin_ready
+fi
+
+WINDOW_ID=""
+# --again=顯式開次席(整合席 08-14 裁:次席是編制決定,不由「剛好有活窗」
+# 隱式觸發)——跳過重用查找,一律走新窗分支。
+if [ "$DRY" != "1" ] && [ "$AGAIN" != "1" ]; then WINDOW_ID="$(find_provider_window || true)"; fi
+if [ "$DRY" = "1" ] && [ "$AGAIN" != "1" ] && [ "${AIB_FAKE_WINDOW:-0}" = "1" ]; then WINDOW_ID='@fake'; fi
+
+# ★ 身份綁定(2026-08-17 起;2026-09-01 擴 grok):開席當下產一個 session uuid,
+#   經 provider-launch 以 `--session-id` 餵給 CLI,並由 write_seat_record 寫進
+#   席位檔(權威值,非事後猜)。
+#   ★ 這個集合是**實測出來的**,不是猜的:CLI 接受指派且落檔真的用那個 id。
+#     claude(2.1.233)、grok(1.0.13,2026-09-01 現查)。
+#     grokbot/sand:sand_bridge 與 codexbot_bridge 必填 --session-id
+#     (空字串會 invalid 或 missing 直接死席)。
+#     其餘 provider 的 CLI 不接受指派新 id,留空走各自 artifact 偵測。
+#   ★ 集合寫死在兩處(本檔與 provider-launch.sh)是已知重複:兩邊不同步的失效形狀是
+#     「aib 產了 uuid 而 launch 不注入」——席位檔會寫進一個**沒有任何行程採用的 uuid**,
+#     那正是「假資料比缺資料毒」。臂 test_grok_gets_session_id_when_uuid_passed 與
+#     test_session_id_provider_set_is_the_same_in_both_files 各守一半。
+#   dry-run 不產(保持測試確定性);集合外的 provider 留空(provider-launch 收空第 5 參=舊行為)。
+# ★★ 2026-09-24(a seat 開 codexbot 席時 --dry-run 抓到):AIB_RESUME_SESSION_UUID 會從
+#   開席者**自己的席位殼**繼承進來(下面 AIB_SEAT_ENV 把它塞進每一席的環境),於是
+#   「從席裡開席」= 把開席者的 uuid 交給新席登記 ⇒ 新席用開席者的碼上線、開席者被蓋掉。
+#   判準不是「有沒有設」(每一席都有),是「這顆 uuid 是否已有**活席**持有」
+#   (席位檔同 uuid、無 exit_reason、pid 活著)。已被持有 ⇒ 洗掉、落回本檔預設流。
+#   09-14 那條「接回既有對話」不受影響:接回的對象是**死掉的**席,pid 不在 ⇒ 不算持有。
+#   硬要接回一顆活席的 uuid(等於刻意複製位址):AIB_RESUME_FORCE=1。dry-run 也洗:
+#   不洗的話 dry-run 印出的命令列就會帶著開席者的 uuid,看的人以為那是設計。
+# ★★ 2026-09-24 21:xx(a seat)開席取碼段重寫——設計 docs/DESIGN-seat-fork-unique-0924.md。
+#   裁定史(這是**裁定變更**,不是 bug;四次都照抄,後人別只看最後一次):
+#     09-14 事故復原:接回既有對話 = 同 uuid 同碼(「原地復活」)——保留,只准舊席已死
+#     09-21 the maintainer:新開/右鍵新開預設接回原對話,不要空白新 session
+#     09-24 20:4x the maintainer:開席跳選單列舊席位,30 秒未選 ⇒ 空白開席(推翻 09-21 的「逾時接回」)
+#     09-24 21:xx the maintainer 澄清:接回 = **新開獨一無二的席位**,載入舊對話/舊人格/舊第二大腦重新運行
+#   事故:09-21 的實作把「接回」做成原地復活(新席登記舊 uuid、`claude --resume 舊`)
+#   ⇒ 同一段對話被 6 個窗用過、2 個活行程共用、`aib dm 9a2be` 指向兩席。
+#   兩個名字、兩種做法,不得再共用一套:
+#     原地復活 AIB_REVIVE_SESSION_UUID(舊名 AIB_RESUME_SESSION_UUID 相容) 同碼 `--resume X`  持有者須為空
+#     分出新席 AIB_FORK_FROM_SESSION_UUID 或選單選的                        新碼 `--resume X --fork-session --session-id 新`
+#   持有判準一律 seat_liveness(跨艙登記簿 + 全機行程表),不在這裡另寫一份。
+_aib_all_cabins="${EZ2_AIB_HOME:-$HOME/.ez2-aib}"
+if [ -n "${AIB_REVIVE_SESSION_UUID:-}" ]; then
+  # 明確要原地復活:持有者不空就**大聲拒絕**(不再像繼承那條一樣靜默洗掉改走別條)。
+  _revive_owner="$("$T_PY3" "$HERE/seat_resume_guard.py" "${EZ2_AIB_INSTANCE_HOME:-}/seats" "$AIB_REVIVE_SESSION_UUID" --all-cabins "$_aib_all_cabins" 2>/dev/null || true)"
+  if [ -n "$_revive_owner" ] && [ "${AIB_RESUME_FORCE:-0}" != "1" ]; then
+    die "aib: 不能原地復活 ${AIB_REVIVE_SESSION_UUID}——它還活著:${_revive_owner}。要載入它的內容請改用分出新席:AIB_FORK_FROM_SESSION_UUID=$AIB_REVIVE_SESSION_UUID(新碼);硬要同碼:AIB_RESUME_FORCE=1" 2
+  fi
+  export AIB_RESUME_SESSION_UUID="$AIB_REVIVE_SESSION_UUID"
+elif [ -n "${AIB_RESUME_SESSION_UUID:-}" ] && [ "${AIB_RESUME_FORCE:-0}" != "1" ]; then
+  # 舊名多半是從開席者席位殼**繼承**來的(AIB_SEAT_ENV 把它塞進每一席):持有者不空 ⇒ 洗掉。
+  _resume_owner="$("$T_PY3" "$HERE/seat_resume_guard.py" "${EZ2_AIB_INSTANCE_HOME:-}/seats" "$AIB_RESUME_SESSION_UUID" --all-cabins "$_aib_all_cabins" 2>/dev/null || true)"
+  if [ -n "$_resume_owner" ]; then
+    echo "aib: 環境裡的 AIB_RESUME_SESSION_UUID=$AIB_RESUME_SESSION_UUID 已由活席 $_resume_owner 持有——這是從席裡開席繼承來的,不是要接回它;已洗掉(真要複製位址:AIB_RESUME_FORCE=1)" >&2
+    unset AIB_RESUME_SESSION_UUID AIB_RESUME_UUID
+  fi
+fi
+AIB_SESSION_ID_PROVIDERS=" claude grok deepseek kiosapi nvidia teamo teamoclaude openrouter typesafe openrouterjev grokbot sand codexbot claudebot musebot "
+SEAT_SESSION_UUID=""
+_aib_fork_src=""; _aib_fork_launch_env=""
+_aib_fork_menu=0
+case "$AIB_SESSION_ID_PROVIDERS" in
+  *" $PROVIDER "*) _AIB_ASSIGNS_SESSION_ID=1 ;;
+  *)               _AIB_ASSIGNS_SESSION_ID=0 ;;
+esac
+if [ "$_AIB_ASSIGNS_SESSION_ID" = "1" ] && [ "$DRY" != "1" ] && [ -n "${AIB_RESUME_SESSION_UUID:-}" ]; then
+  # 原地復活(09-14):席位檔登記那個 uuid、CLI 用 --resume(provider-launch 讀 AIB_RESUME_UUID=1)。
+  SEAT_SESSION_UUID="$AIB_RESUME_SESSION_UUID"
+  export AIB_RESUME_UUID=1
+elif [ "$_AIB_ASSIGNS_SESSION_ID" = "1" ] && [ "$DRY" != "1" ]; then
+  # 分出新席或空白:**新席一律新 uuid**。來源只決定「載入什麼」,不決定「我是誰」。
+  _aib_fork_src="${AIB_FORK_FROM_SESSION_UUID:-}"
+  # ★ 2026-09-26 the maintainer:「應該是先啟動,然後才選、或倒數」⇒ 先起空白;右欄五項正確、整備之後才跳開席選單
+  #   (舊席位 + 開席單)。選了舊席位 ⇒ 背景段 aib_load_old_seat 載入(所有 AI 同一函式,家別差異在 seat_load.py;
+  #   claude 是同一格帶分出參數重起,新 uuid 不變 ⇒ 席碼不變)。資格 _aib_fork_menu 在 LAUNCH_CMD 組法前面定。
+  unset AIB_FORK_FROM_SESSION_UUID          # 不得留在本殼環境:之後起的任何子行程都不該看到它
+  case "$_aib_fork_src" in
+    ""|[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "aib: AIB_FORK_FROM_SESSION_UUID 不是 uuid:$_aib_fork_src" 2 ;;
+  esac
+  # 新 uuid;五碼尾(dm 位址)撞到別顆已登記的 uuid 就重抽(09-24 量:59 碼 0 撞,每百席約 0.6%)。
+  for _aib_try in 1 2 3 4 5; do
+    SEAT_SESSION_UUID="$("$T_PY3" -c 'import uuid;print(uuid.uuid4())' 2>/dev/null || true)"
+    [ -n "$SEAT_SESSION_UUID" ] || break
+    _aib_t5_rc=0; "$T_PY3" "$HERE/seat_liveness.py" tail5 "$SEAT_SESSION_UUID" >/dev/null 2>&1 || _aib_t5_rc=$?
+    [ "$_aib_t5_rc" = "3" ] || {
+      # 0=沒撞;其他=檢查工具自己壞了——不能因此丟掉 uuid(那會退回「未編制 ❓」),但要出聲
+      [ "$_aib_t5_rc" = "0" ] || echo "aib: warning: 五碼尾撞號檢查失敗(rc=$_aib_t5_rc),未檢查就用 ${SEAT_SESSION_UUID: -5}" >&2
+      break; }
+    echo "aib: 新 uuid 的五碼尾 ${SEAT_SESSION_UUID: -5} 已被別席用過,重抽($_aib_try/5)" >&2
+    SEAT_SESSION_UUID=""
+  done
+  # $T_PY3=本檔已驗的直譯器(非裸 python3);產不出來就大聲警告——這一步靜默
+  # 失敗正好會退回本功能要修的那個「未編制 ❓」,不能吞。
+  [ -n "$SEAT_SESSION_UUID" ] ||       echo "aib: warning: 產生 session uuid 失敗,此 $PROVIDER 席位可能顯示未編制 ❓" >&2
+  if [ -n "$_aib_fork_src" ] && [ -n "$SEAT_SESSION_UUID" ]; then
+    _aib_fork_json="$("$T_PY3" "$HERE/seat_fork.py" prepare --from "$_aib_fork_src" --to "$SEAT_SESSION_UUID" \
+                        --aib-home "$_aib_all_cabins" 2>&1)" || die "aib: 分出新席的準備失敗:$_aib_fork_json" 1
+    _aib_fork_line="$(printf '%s' "$_aib_fork_json" | "$T_PY3" -c '
+import json, shlex, sys
+d = json.load(sys.stdin)
+print("%s\t%s\t%s\t%s" % (d["mode"], d["fork_from"], d["preamble_file"], d["reason"]))')" || die "aib: 讀不懂 seat_fork 的回覆:$_aib_fork_json" 1
+    IFS=$'\t' read -r _aib_fork_mode _aib_fork_from _aib_fork_pre _aib_fork_why <<< "$_aib_fork_line"
+    # 只接在 provider-launch 那一段命令前(不進 AIB_SEAT_ENV:那會讓這席裡再開的每一席都繼承它);
+    # provider-launch 讀完就 unset,不流進 CLI 的環境。
+    printf -v _aib_fork_launch_env ' AIB_FORK_FROM_SESSION_UUID=%q AIB_FORK_PREAMBLE_FILE=%q' "$_aib_fork_from" "$_aib_fork_pre"
+    echo "aib: 分出新席 @${SEAT_SESSION_UUID: -5},自 @${_aib_fork_src: -5}(${_aib_fork_mode}:${_aib_fork_why})" >&2
+  fi
+fi
+# ── 最後一道關卡(L3):不論從哪條路走到這裡,同碼開席時持有者必須為空 ──────────────
+#   今天兩條路(原地復活 / 分出新席)各自檢查過;這一格是給**明天第三條路**的:它不用記得要掛守衛。
+if [ "$DRY" != "1" ] && [ "${AIB_RESUME_FORCE:-0}" != "1" ] && [ -n "${AIB_RESUME_SESSION_UUID:-}" ]; then
+  _aib_gate_owner="$("$T_PY3" "$HERE/seat_resume_guard.py" "${EZ2_AIB_INSTANCE_HOME:-}/seats" "$AIB_RESUME_SESSION_UUID" --all-cabins "$_aib_all_cabins" 2>/dev/null || true)"
+  [ -z "$_aib_gate_owner" ] || die "aib: 開席關卡:$AIB_RESUME_SESSION_UUID 已由活席持有($_aib_gate_owner),拒絕同碼開席。要載入它請用 AIB_FORK_FROM_SESSION_UUID(新碼)" 2
+fi
+
+# ── API 家開發席的專屬工作目錄(the maintainer 09-28 00:4x:「右鍵新開席就能寫程式」)─────────────────
+#   API 席的寫檔與 git 只准落在 AIB_API_WORKTREE(deepseek_cli.LocalWorkspace);以前這棵樹要人手建、
+#   手設,沒設 ⇒ 席只能讀。這裡用開席當下已定的 uuid 建 <樹根>/ds-<碼>(分支 ds/<碼>-<月日>),
+#   **只有 provider 段**的 cwd(provider-run-relogin 第 4 參)改指它;CALLER_CWD 不動 —— 席位檔 cwd、
+#   re-register --cwd、開席選單都照舊用開席目錄,專案身分(persona_index 的 project、第二大腦)不被拆成一席一個
+#   (a seat r2 中 1)。AIB_API_WORKTREE 只接在 provider-launch 那一段命令前(同 _aib_fork_launch_env:
+#   不進 AIB_SEAT_ENV,不讓這席裡再開的席繼承)。deepseek 另帶舊名 AIB_DEEPSEEK_WORKTREE(舊版 CLI 只認它);
+#   其他家只帶新名(NVIDIA r1 低:繼承到 DeepSeek 的樹就錯寫)。
+#   建不起來(開席目錄不是 git 倉、路徑被別的東西佔)⇒ 出聲、照開只讀席,不擋席起來。
+#   沒建成的每一條路(關掉、dry-run、沒 uuid、失敗)都**明寫兩個變數為空**:艙伺服器若是從 API 席的殼起的,
+#   環境裡可能帶著別席的 AIB_API_WORKTREE,不清掉就會寫進別席的樹(外殼把空值當沒設)。
+#   關掉:AIB_API_AUTO_WORKTREE=0。樹根:AIB_API_WORKTREE_ROOT(預設 $_aib_all_cabins/worktrees——狀態根只准一處算,
+#   test-cabin-resolution 釘著;不自己再組一次 EZ2_AIB_HOME 優先序)。
+AIB_API_WT_PROVIDERS=" deepseek nvidia openrouter kiosapi teamo teamoclaude "
+_aib_api_wt_env=""
+_aib_provider_cwd=""
+aib_api_seat_worktree() {
+  _aib_api_wt_env=""
+  _aib_provider_cwd=""
+  case "$AIB_API_WT_PROVIDERS" in *" $PROVIDER "*) ;; *) return 0 ;; esac
+  _aib_api_wt_env=' AIB_API_WORKTREE= AIB_DEEPSEEK_WORKTREE='
+  [ "${AIB_API_AUTO_WORKTREE:-1}" != "0" ] || return 0
+  if [ "$DRY" = "1" ] || [ -z "$SEAT_SESSION_UUID" ]; then
+    echo "aib: API 開發席會在開席時建專屬工作目錄 ds-<碼>(dry-run 或沒有 uuid:不建)" >&2
+    return 0
+  fi
+  local _wt _rc=0
+  _wt="$("$T_PY3" "$HERE/api_seat_worktree.py" ensure --repo "$CALLER_CWD" --uuid "$SEAT_SESSION_UUID" \
+          --root "${AIB_API_WORKTREE_ROOT:-$_aib_all_cabins/worktrees}")" || _rc=$?
+  if [ "$_rc" != "0" ] || [ -z "$_wt" ] || [ ! -d "$_wt" ]; then
+    echo "aib: warning: $PROVIDER 席的專屬工作目錄沒建成(rc=$_rc),這一席只能讀、不能寫檔與 git" >&2
+    return 0
+  fi
+  _aib_provider_cwd="$_wt"
+  printf -v _aib_api_wt_env ' AIB_API_WORKTREE=%q' "$_wt"
+  if [ "$PROVIDER" = "deepseek" ]; then
+    printf -v _aib_api_wt_env '%s AIB_DEEPSEEK_WORKTREE=%q' "$_aib_api_wt_env" "$_wt"
+  else
+    _aib_api_wt_env="$_aib_api_wt_env AIB_DEEPSEEK_WORKTREE="   # 非 deepseek 也蓋掉繼承的舊名(r2 低 a)
+  fi
+  echo "aib: $PROVIDER 席 @${SEAT_SESSION_UUID: -5} 的專屬工作目錄:$_wt" >&2
+}
+aib_api_seat_worktree
+
+# 集合外的 provider(SEAT_SESSION_UUID 空)一律走 4 參,與本功能上線前逐位元組相同——
+# codex/agy/copilot 的啟動完全不受影響;只有 AIB_SESSION_ID_PROVIDERS 內的多帶第 5 參 uuid。
+# 刀 C(2026-08-23):席位自己的 shell 帶四元組。
+# ★ 兩條腿缺一不可:刀 A 治「有 socket」,刀 C 治「什麼都沒帶」——席位裡隨手跑的
+#   指令兩者都沒有,今天靠的是 tmux session environment 有沒有被設對,那是**運氣**。
+#   工法沿用 cockpit-full.sh:pane_command 的 `exec env VAR=%q ...`,不另創第二種。
+# the maintainer 2026-09-22:新開／右鍵新開席一律預設開真 CLI。
+# 接回舊對話時原本就會設 IGNORE;空白新開／找不到 resume 時以前會掉保活席。
+# 真要額度保活:AIB_FORCE_QUOTA_HOLD=1。
+if [ "${AIB_FORCE_QUOTA_HOLD:-0}" = "1" ]; then
+  export AIB_IGNORE_USAGE=0
+elif [ "${AIB_IGNORE_USAGE:-}" = "" ]; then
+  export AIB_IGNORE_USAGE=1
+fi
+
+AIB_SEAT_ENV=""
+printf -v AIB_SEAT_ENV 'env AIB_QUIET=1 EZ2_AIB_INSTANCE=%q EZ2_TMUX_SESSION=%q EZ2_AIHUB_SOCKET=%q EZ2_AIB_INSTANCE_HOME=%q AIB_RESUME_UUID=%q AIB_RESUME_SESSION_UUID=%q AIB_IGNORE_USAGE=%q' \
+  "$EZ2_AIB_INSTANCE" "$EZ2_TMUX_SESSION" "$EZ2_AIHUB_SOCKET" "$EZ2_AIB_INSTANCE_HOME" "${AIB_RESUME_UUID:-0}" "${AIB_RESUME_SESSION_UUID:-}" "${AIB_IGNORE_USAGE:-0}"
+if [ "$PROVIDER" = "codexbot" ]; then
+  aib_normalize_codexbot_env
+  if [ -n "${AIB_CODEXBOT_THREAD_OVERRIDE:-}" ]; then   # --thread 一席一綁:蓋回 codexbot.env 的預設
+    export AIB_CODEXBOT_THREAD_ID="$AIB_CODEXBOT_THREAD_OVERRIDE" AIB_CODEXAPP_THREAD_ID="$AIB_CODEXBOT_THREAD_OVERRIDE" CODEX_THREAD_ID="$AIB_CODEXBOT_THREAD_OVERRIDE"
+  fi
+  printf -v _desktop_env ' AIB_CODEXBOT_THREAD_ID=%q AIB_CODEXBOT_ENDPOINT=%q AIB_CODEXAPP_THREAD_ID=%q AIB_CODEXAPP_ENDPOINT=%q' \
+    "${AIB_CODEXBOT_THREAD_ID:-}" "${AIB_CODEXBOT_ENDPOINT:-}" \
+    "${AIB_CODEXAPP_THREAD_ID:-}" "${AIB_CODEXAPP_ENDPOINT:-}"
+  AIB_SEAT_ENV="${AIB_SEAT_ENV}${_desktop_env}"
+fi
+if [ "$PROVIDER" = "grokbot" ] && [ -n "${AIB_GROKBOT_AGENT_ID:-}" ]; then
+  # 選到的 agent 跟著這一席的啟動命令走(sand_bridge 讀 AIB_GROKBOT_AGENT_ID;同 codexbot 的 _desktop_env)
+  printf -v _gb_env ' AIB_GROKBOT_AGENT_ID=%q' "$AIB_GROKBOT_AGENT_ID"
+  AIB_SEAT_ENV="${AIB_SEAT_ENV}${_gb_env}"
+fi
+if [ "$PROVIDER" = "claudebot" ] && [ -n "${AIB_CLAUDEBOT_SESSION_ID:-}" ]; then
+  # 選到的 Claude 對話跟著這一席的啟動命令走(sand_bridge 讀 AIB_CLAUDEBOT_SESSION_ID;同 grokbot 的 _gb_env)
+  printf -v _cb_env ' AIB_CLAUDEBOT_SESSION_ID=%q' "$AIB_CLAUDEBOT_SESSION_ID"
+  AIB_SEAT_ENV="${AIB_SEAT_ENV}${_cb_env}"
+fi
+if [ "$PROVIDER" = "musebot" ] && [ -n "${AIB_MUSEBOT_CONVERSATION_ID:-}" ]; then
+  # 10-09 a seat(D7):Muse 對話跟著這一席的啟動命令走(sand_bridge 讀 AIB_MUSEBOT_CONVERSATION_ID;同上兩段)。
+  #   以前沒有這一段 ⇒ preflight 印「這一席綁 Muse 對話 <id>」但值從沒到橋,bridge/*/status.json 的
+  #   agent_id 歷來全是 None(10-09 實量 4 筆)。形狀在 sand_bridge.bound_agent 用 musebot_threads 驗。
+  printf -v _mb_env ' AIB_MUSEBOT_CONVERSATION_ID=%q' "$AIB_MUSEBOT_CONVERSATION_ID"
+  AIB_SEAT_ENV="${AIB_SEAT_ENV}${_mb_env}"
+fi
+if [ "$PROVIDER" = "codex" ] && [ "${_codex_pack_on:-1}" = "0" ]; then
+  AIB_SEAT_ENV="${AIB_SEAT_ENV} AIB_CODEX_PACK=0 AIB_CODEX_AUTO_ROTATE_ARM=0 AIB_NO_ONBOARD=1"
+elif [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ]; then
+  AIB_SEAT_ENV="${AIB_SEAT_ENV} AIB_CODEX_LUNA_AUTO=1"
+fi
+if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" = "1" ]; then
+  AIB_SEAT_ENV="${AIB_SEAT_ENV} AIB_CODEX_MODEL_EXPLICIT=1"
+fi
+LAUNCH_CMD=""
+# ★ B10:`exec` 拿掉了。`exec` 會用 provider 取代這層 shell,**後面接不了任何東西**
+#   ——而死席畫面要的那一行,定義上就是「provider 結束之後」才印得出來。
+#   代價是 pane 裡多一層 bash;那是為了讓「最後一眼看到的東西」可控而付的。
+# ★ 窗 id 在**執行期**由 pane 自己問 tmux 取($TMUX 已指向本 hub,不需要 -L),
+#   因為新開窗這條路在組這個字串的當下還沒有窗 id。
+# ★ 工單 AS(2026-09-02):啟動指令**開頭**先自登記(`aib seat re-register`),再起 provider。
+#   09-02 12:12 一條裸 `tmux respawn-pane -t %14` 讓 pane 換了 pid 而席位檔沒跟上,dm 從此
+#   拒投 stale;aib 自己的兩條開席路徑都有登記,漏的是「tmux 重跑同一條指令」——
+#   而那正是這條指令本身。放在指令裡,任何重生方式都經過它;不依賴 hook 有沒有裝。
+#   旗標值逐字就是下面 provider-launch 拿到的那幾個(同一次 printf 組進去,不會分岔);
+#   路徑用 $HERE/aib 不用 $SOURCE:後者是呼叫時打的相對路徑,pane 的 cwd 不是這裡。
+#   那句失敗訊息刻意是 ASCII:/bin/bash 3.2 的 `printf %q`(dry-run 的 run() 用它印計畫)
+#   會把 UTF-8 拆成「部分原始位元組+部分八進位逃逸」,計畫文字從此不是合法 UTF-8。
+#   uuid 由 re-register 拿 pane 行程樹的指令列**核對**,自報不等於實跑就拒寫。
+#   失敗不擋 provider 起來(席位起不來比登記不到更糟),但要出聲:那一行留在 pane 上,
+#   dm 端則照舊拒投 stale——兩處都看得到,不會靜默。
+# 開席選單能不能「載入舊席位」(the maintainer 09-26:所有 AI 同一流程,家別差異只在 seat_load.py)。
+#   先啟動、後選;選了由 aib_load_old_seat 交給 seat_load.py。明示來源(AIB_FORK_FROM_SESSION_UUID)
+#   與 AIB_FRESH_SESSION=1 不跳這一段;AIB_SEAT_RESUME_MENU=0 整段關。
+_aib_fork_menu=0
+if [ "$DRY" != "1" ] && [ -z "${_aib_fork_src:-}" ] && [ "${AIB_FRESH_SESSION:-0}" != "1" ] \
+   && [ "${AIB_SEAT_RESUME_MENU:-1}" != "0" ]; then
+  _aib_fork_menu=1
+fi
+# 組法只准一處(test-seat-open-writes-own-window-d22 釘);包成函式是因為開席選單選了舊席位時,
+#   背景段要帶 _aib_fork_launch_env 再組一次、重生同一格(aib_load_old_seat)。
+# 10-07 a seat:從不是入口(~/.local/bin/aib 指的那棵)的工作樹開席 ⇒ 開席時印一行。只警告不擋:
+#   測工作樹就是要從工作樹開。但那棵樹被砍時這一席的入口跟著死,所以要看得見(席位檔另記 source_root)。
+aib_warn_non_entry_tree() {
+  local entry="${AIB_ENTRY_BIN:-$HOME/.local/bin/aib}" root=""
+  [ -f "$entry" ] || return 0
+  root="$(sed -n 's/^exec "\(.*\)\/src\/cockpit\/aib" .*/\1/p' "$entry" 2>/dev/null | head -1)"
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+  local here_root; here_root="$(cd "$HERE/../.." 2>/dev/null && pwd -P)" || return 0
+  root="$(cd "$root" 2>/dev/null && pwd -P)" || return 0
+  [ "$here_root" = "$root" ] && return 0
+  echo "aib: 注意:這一席從工作樹 $here_root 開(入口是 $root);那棵樹被砍時這一席跟著死。測完記得回主線重開。" >&2
+  return 0
+}
+
+aib_build_launch_cmd() {
+  printf -v LAUNCH_CMD '[ -t 1 ] && printf "%%s AI loading...\\n" %q; %s bash %q seat re-register "$(tmux display-message -p -t "$TMUX_PANE" "#{window_id}")" --provider %q --mode %q --role %q --cwd %q --model %q --session-uuid %q || echo "aib: seat self-register FAILED (dm will refuse stale; fix: aib seat re-register <window>)" >&2; %s bash %q %q %q %q %q %q %q; aib_provider_rc=$?; %q %q/seat_exit.py record --reason cli-exit --rc "$aib_provider_rc" --evidence "provider-launch returned" || echo "aib: seat_exit record FAILED (no exit trace; run: aib seat_exit sweep)" >&2; %q %q/activity_probe.py --window "$(tmux display-message -p -t "$TMUX_PANE" "#{window_id}")" --resume-command; exit "$aib_provider_rc"' \
+    "$PROVIDER" "$AIB_SEAT_ENV" "$HERE/aib" "$PROVIDER" "$MODE" "$ROLE" "$CALLER_CWD" "$MODEL_REQUESTED" "$SEAT_SESSION_UUID" \
+    "$AIB_SEAT_ENV$_aib_fork_launch_env""${_aib_api_wt_env:-}" \
+    "$HERE/provider-run-relogin.sh" "$PROVIDER" "$MODE" "$ROLE" "${_aib_provider_cwd:-$CALLER_CWD}" \
+    "$SEAT_SESSION_UUID" "$MODEL_REQUESTED" \
+    "$T_PY3" "$HERE" \
+    "$T_PY3" "$HERE"
+}
+[ "${DRY:-0}" = "1" ] || aib_warn_non_entry_tree
+aib_build_launch_cmd
+
+if [ -n "$WINDOW_ID" ]; then
+  # 實測 08-13 第一分鐘抓到的缺口:remain-on-exit 讓 A 類死因留下死 pane,
+  # 重用分支只 select 不 respawn=使用者永遠面對同一具屍體。死了就復活。
+  # 08-14 整合席裁:**活窗同 role 不再隱式重用**——重開指令撞到活席=rc2
+  # 提示加 --again 開次席;隱式重用曾把「開主管2」變成只刷新舊席(實案)。
+  if [ "$DRY" != "1" ]; then
+    PANE_DEAD="$(env -u TMUX tmux -L "$HUB" display-message -p -t "$WINDOW_ID" '#{pane_dead}' 2>/dev/null || echo 0)"
+    if [ "$PANE_DEAD" = "1" ]; then
+      run env -u TMUX tmux -L "$HUB" select-window -t "$WINDOW_ID"
+      # Fail closed before the destructive respawn: no concurrent restore may
+      # keep treating the dead holder's still-fresh observation as current.
+      # This fence covers Claude too; its newly allocated UUID is published
+      # only after the provider process has actually been launched.
+      RESET_SESSION_IDENTITY=1
+      write_seat_record "$WINDOW_ID" "$WINDOW_ID" 1
+      RESET_SESSION_IDENTITY=0
+      env -u TMUX tmux -L "$HUB" respawn-pane -k -t "$WINDOW_ID" "$LAUNCH_CMD"
+      aib_apply_seat_plain_style "$WINDOW_ID"
+    else
+      _sid="$("$T_PY3" -c "import json,sys;print(json.load(open(sys.argv[1])).get('seat_id','?'))" \
+        "$(aib_seats_dir)/w${WINDOW_ID#@}.json" 2>/dev/null || echo '?')"
+      die "$(t aib.err.live_seat "seat=$_sid" "window=$WINDOW_ID")" 2
+    fi
+  else
+    run env -u TMUX tmux -L "$HUB" select-window -t "$WINDOW_ID"
+  fi
+  # 復活死窗也要補/更新席位紀錄——舊窗可能生於本功能上線前。
+  write_seat_record "$WINDOW_ID" "$WINDOW_ID"
+else
+  WINDOW_NAME="$ROLE-$PROVIDER"
+  # --again:次席窗名=role2-provider 起找空號(root2/pm2 手動先例收編);
+  # dry-run 給確定性名 role2 供測試斷言。@aib_role 仍=原 role(樹按 role 分組)。
+  if [ "$AGAIN" = "1" ]; then
+    if [ "$DRY" = "1" ]; then
+      WINDOW_NAME="${ROLE}2-${PROVIDER}"
+    else
+      _names="$(env -u TMUX tmux -L "$HUB" list-windows -t aihub -F '#{window_name}' 2>/dev/null || true)"
+      if grep -qx "$WINDOW_NAME" <<<"$_names"; then
+        _n=2
+        while grep -qx "${ROLE}${_n}-${PROVIDER}" <<<"$_names"; do _n=$((_n+1)); done
+        WINDOW_NAME="${ROLE}${_n}-${PROVIDER}"
+      fi
+    fi
+  fi
+  HOLD_CMD=""
+  printf -v HOLD_CMD 'exec bash %q' "$HERE/hub-lobby.sh"
+  if [ "$DRY" = "1" ]; then
+    run env -u TMUX tmux -L "$HUB" new-window -d -t aihub -n "$WINDOW_NAME" "$HOLD_CMD"
+    run env -u TMUX tmux -L "$HUB" set-option -w -t "aihub:$WINDOW_NAME" remain-on-exit on
+    run env -u TMUX tmux -L "$HUB" set-option -w -t "aihub:$WINDOW_NAME" @aib_provider "$PROVIDER"
+    run env -u TMUX tmux -L "$HUB" set-option -w -t "aihub:$WINDOW_NAME" @aib_role "$ROLE"
+    aib_apply_seat_plain_style "aihub:$WINDOW_NAME"
+    run env -u TMUX tmux -L "$HUB" respawn-pane -k -t "aihub:$WINDOW_NAME.0" "$LAUNCH_CMD"
+    run env -u TMUX tmux -L "$HUB" select-window -t "aihub:$WINDOW_NAME"
+  else
+    WINDOW_META="$(env -u TMUX tmux -L "$HUB" new-window -d -t aihub -n "$WINDOW_NAME" \
+      -P -F '#{window_id}|#{pane_id}' "$HOLD_CMD")"
+    WINDOW_ID="${WINDOW_META%%|*}"
+    PROVIDER_PANE="${WINDOW_META#*|}"
+    [ -n "$WINDOW_ID" ] && [ -n "$PROVIDER_PANE" ] && [ "$WINDOW_ID" != "$PROVIDER_PANE" ] || \
+      die "$(t aib.err.provider_window "provider=$PROVIDER")" 1
+    env -u TMUX tmux -L "$HUB" set-option -w -t "$WINDOW_ID" remain-on-exit on
+    env -u TMUX tmux -L "$HUB" set-option -w -t "$WINDOW_ID" @aib_provider "$PROVIDER"
+    env -u TMUX tmux -L "$HUB" set-option -w -t "$WINDOW_ID" @aib_role "$ROLE"
+    aib_apply_seat_plain_style "$WINDOW_ID"
+    env -u TMUX tmux -L "$HUB" respawn-pane -k -t "$PROVIDER_PANE" "$LAUNCH_CMD"
+    env -u TMUX tmux -L "$HUB" select-window -t "$WINDOW_ID"
+    write_seat_record "$WINDOW_ID" "$PROVIDER_PANE"
+
+    # Remove only the neutral lobby created and explicitly marked by this AIB
+    # instance.  Existing provider windows and conversations are never killed.
+    while IFS='|' read -r wid lobby; do
+      [ "$lobby" = "1" ] || continue
+      [ "$wid" = "$WINDOW_ID" ] && continue
+      # ★★ 2026-09-25(a seat 全倉盤點同形洞時抓到):`|| true` 不可省。
+      #   這一步是**開席成功之後**的收尾:席已經建好也登記了。那個 lobby 窗如果在
+      #   list-windows 與 kill-window 之間消失(另一個開席先收掉了),kill 非零 ⇒ set -e
+      #   當場砍掉 aib ⇒ `run-shell` 回報 returned 1,而**席其實已經開起來了**。
+      #   v0.64.2 把右鍵開席改成 `run-shell -b` 之後兩個開席可以重疊,這個競態更容易中。
+      env -u TMUX tmux -L "$HUB" kill-window -t "$wid" 2>/dev/null || true
+    done < <(env -u TMUX tmux -L "$HUB" list-windows -t aihub -F '#{window_id}|#{@aib_lobby}')
+  fi
+fi
+
+aib_kick_right_pane "$WINDOW_ID"      # 席位檔剛寫好:踢右欄立刻重畫,不等 4 秒輪詢
+aib_attempt_mark window_built "$WINDOW_ID"
+# 09-24(a seat)分出新席:席位檔寫好(有 seat_id)才能把前身的人格卡與大腦路由綁過來
+#   (bind_one 以 seat_id 找席、以新 uuid 末五碼當 agent)。綁不成不擋開席,但要出聲。
+aib_fork_bind_carry() {   # $1=前身 uuid。人格卡 + 大腦路由綁到本席(開窗前指定來源、開席選單選了舊席位,兩條路共用)
+  local src="$1" sid out
+  sid="$("$T_PY3" -c "import json,sys;print(json.load(open(sys.argv[1])).get('seat_id',''))" \
+    "$(aib_seats_dir)/w${WINDOW_ID#@}.json" 2>/dev/null || true)"
+  if [ -z "$sid" ]; then
+    echo "aib: warning: 讀不到新席 seat_id,前身 @${src: -5} 的人格/大腦沒綁過來" >&2
+    return 0
+  fi
+  out="$("$T_PY3" "$HERE/seat_fork.py" bind-carry --from "$src" --to "$SEAT_SESSION_UUID" \
+    --seat-id "$sid" --aib-home "$_aib_all_cabins" 2>&1)" \
+    || echo "aib: warning: 前身 @${src: -5} 的人格/大腦沒綁到新席(可右鍵手動綁):$out" >&2
+  return 0
+}
+if [ "$DRY" != "1" ] && [ -n "$_aib_fork_src" ] && [ -n "$WINDOW_ID" ]; then
+  aib_fork_bind_carry "$_aib_fork_src"
+fi
+if [ "$DRY" = "1" ]; then
+  run env AIB_DRY_RUN="$DRY" bash "$HERE/nav/captains-ctl.sh" --sync || true
+  run env AIB_DRY_RUN="$DRY" bash "$HERE/nav/border-hints-ctl.sh" --install || true
+fi
+# ED.13 seat detect(the maintainer 08-14 裁「uuid 程式偵測不靠 AI」):開席尾段自動
+# 對本窗偵測 session_uuid 並回填(--retry 5:冷啟 CLI 要幾秒才開檔/建
+# transcript)。偵測失敗不擋開席(rc 3 屬誠實未解,operator 可 aib seat
+# detect --all 重跑);dry-run 零接觸。
+# ★ ED.13(2026-08-22):這裡原本 `|| true` 整段靜音。非 claude 的 artifact
+#   (codex rollout / agy presence lock)常在 12 秒之後才生出來(實測 agy 88 秒),
+#   失敗是常態不是例外——但「常態」不等於「不用講」:一句話說清楚誰會接手
+#   (aib idle watch 每輪回填,seat_uuid_backfill.py)與時間窗,而不是假裝沒事。
+# O3(§85.5):這四步不再擋住切畫面。函式仍保留同一段 if(test-ed13 錨),
+# 切畫面之前用背景叫它,exec attach 才不會把人留在「視窗已建好卻還沒切」。
+# 右欄畫出這一席=the maintainer 說的「右方開席顯示完成」;18:0x 定案再收緊成「右方顯示**正確**的席位資訊
+# = 開席成功」:右欄自己落的 ai-rowmap.json 裡這一席那一列**五項同時對**(席碼/角色/引擎模型/
+# 人格名正確/狀態活,判準住 open_right_check.py)才記 right_painted_ok;第一次出現先記 right_painted。
+# ★ 不等 4–5 秒輪詢:寫完席位檔就踢右欄(right-kick 檔,pane-right-tabs.sh 每 0.1 秒看),
+#   所以上限預設 5 秒就夠;到了照樣往下走,note 寫缺哪幾項(未確認 ≠ 綠,也 ≠ 擋住開席)。
+# ★ 右欄關著(panes 預設沒有 right)時它永遠不會出現:直接記 right_pane_off,不等。
+aib_right_pane_expected() {   # rc0=預設會建右欄
+  # 先落值再比對(EYE-141:接 grep 靜默比對的管線,機器忙時上游會吃 SIGPIPE,把會建右欄判成不會建)
+  local _roles
+  _roles="$("$T_PY3" "$HERE/panes.py" --expected-roles 2>/dev/null)" || _roles=""
+  case $'\n'"$_roles"$'\n' in
+    *$'\n'right$'\n'*) return 0 ;;
+  esac
+  return 1
+}
+AIB_RIGHT_OK_NOTE="not_measured"
+aib_wait_right_painted() {
+  local wid="$1" rowmap="$EZ2_COCKPIT_STATE_DIR/ai-rowmap.json"
+  local limit="${AIB_RIGHT_PAINTED_TIMEOUT_S:-5}" waited=0 step=2   # step 單位 0.1 秒
+  local seat_file="$(aib_seats_dir)/w${wid#@}.json" out found missing painted=0
+  [ -n "$wid" ] || return 0
+  if ! aib_right_pane_expected; then
+    AIB_RIGHT_OK_NOTE="right_pane_off"
+    aib_attempt_mark right_painted_ok "$wid" "$AIB_RIGHT_OK_NOTE"
+    return 0
+  fi
+  while :; do
+    out="$("$T_PY3" "$HERE/open_right_check.py" --rowmap "$rowmap" --window "$wid" \
+            --seat-file "$seat_file" --role "$ROLE" --provider "$PROVIDER" 2>/dev/null || true)"
+    found="$("$T_PY3" -c 'import json,sys;d=json.loads(sys.argv[1]);print(1 if d.get("found") else 0)' "$out" 2>/dev/null || echo 0)"
+    missing="$("$T_PY3" -c 'import json,sys;d=json.loads(sys.argv[1]);print(",".join(d.get("missing") or []))' "$out" 2>/dev/null || echo unreadable)"
+    if [ "$found" = "1" ] && [ "$painted" = "0" ]; then
+      painted=1
+      aib_attempt_mark right_painted "$wid" "waited_ms=$((waited * 100))"
+    fi
+    if [ "$found" = "1" ] && [ -z "$missing" ]; then
+      AIB_RIGHT_OK_NOTE="waited_ms=$((waited * 100))"
+      aib_attempt_mark right_painted_ok "$wid" "$AIB_RIGHT_OK_NOTE"
+      return 0
+    fi
+    if [ "$waited" -ge "$((limit * 10))" ]; then
+      if [ "$painted" = "0" ]; then
+        aib_attempt_mark right_painted "$wid" "timeout_s=$limit"
+      fi
+      AIB_RIGHT_OK_NOTE="timeout_s=$limit missing=${missing:-unreadable}"
+      aib_attempt_mark right_painted_ok "$wid" "$AIB_RIGHT_OK_NOTE"
+      echo "aib: 右欄 $limit 秒內沒畫出正確的席位列(缺:${missing:-unreadable});席位照常可用,列上會標未確認" >&2
+      return 0
+    fi
+    sleep 0.2
+    waited=$((waited + step))
+  done
+}
+# ★ 這一段是**有序清單**:右欄畫到 → (艙已在時)ensure → 艦長列/邊框提示 → 碼表守望 →
+#   uuid 回填 → 續綁 → (舊路:自動投開席單)→ watch 健康 → **最後:投遞開席選單選的開席單**。
+#   (09-26 起開席選單本身搬到整備之後,見 aib_open_menu_after_right。)
+# ★ 09-14 搬到 aib_post_frame_work 外面:巢狀函式的 `}` 頂在欄位 0,會讓「取函式整段」的尺在這裡截斷。
+# G2 冠位旗:整段搬成函式,讓下面守衛→續綁呼叫的原始碼距離回到 400 字內
+#   (test-seat-rebind-on-reopen 釘 dry-run 守衛必須緊鄰呼叫)。內容與 grok a170777a 逐字同。
+aib_directed_first_captain_flag() {
+    # 冠位判定:開席鏈剛跑過 captains-ctl --sync,正本是本窗 @aib_captain_icon
+    # (captains-ctl.sh:452 👑 / 465 寫入)。右欄 rowmap 檔 的 👑 是右欄稍後才畫,
+    # 開席當下可能還是舊人——兩源不一致以 tmux 窗選項為準,不讀 rowmap。
+    # HUB 空時不叫 tmux(測試抽段沒有假 tmux,也避免打到活艙 default socket)。
+    _crown=""
+    if [ -n "${HUB:-}" ]; then
+      _crown="$(env -u TMUX "${AIB_TMUX_BIN:-tmux}" -L "$HUB" show-option -wv -t "$WINDOW_ID" @aib_captain_icon 2>/dev/null || true)"
+    fi
+    # 字面 👑 與 captains-ctl.sh:452 同一顆;macOS bash 3.2 沒有 $'\U...'。
+    # 空旗標不進引號,否則會變成一個空參數。
+    _rebind_flag=""
+    [ "$_crown" = "👑" ] && _rebind_flag="--directed-first-captain"
+  printf "%s" "$_rebind_flag"
+}
+
+# post-frame 每一步的時戳(落在 cockpit/post-frame.log):the maintainer 18:3x 實測 claude 席 can_type 9.4s 而
+# 選單 33.2s 才跳,中間 24 秒沒有任何一格說得出花在哪一步。只印時戳與步名,不擋任何事。
+# 開席選單(the maintainer 09-26 00:0x 併成一個,所有 AI 同一個時點):右欄五項正確 + 整備之後,在那一席的窗上跳。
+#   內容:開席單 1 全部 / 2 只鐵則 / 3 不載入;能分出新席的家(claude)再列舊席位 a–i。
+#   CLI 已經先起好(the maintainer 09-26:先啟動,然後才選或倒數);30 秒沒選 = 維持空白 + 不載入。
+#   選了舊席位 ⇒ aib_load_old_seat 載入它的人格/第二大腦/上一場紀錄(所有 AI 同一函式)。
+#   ★ 未確認的席(右欄五項沒齊)不跳 —— 沿用舊開席單選單的規矩。
+#   開席單記下來,清單最後等 CLI 能打字才投(分出新席重起時,CLI 剛重生,要等它)。
+AIB_ONBOARD_PENDING=""
+aib_open_menu_after_right() {
+  local wid="${WINDOW_ID:-}" with_onboard=1 with_fork=0 from=""
+  [ "$DRY" != "1" ] && [ -n "$wid" ] || return 0
+  [ "${AIB_NO_ONBOARD:-0}" != "1" ] && [ "${AIB_ONBOARD_AUTO:-0}" != "1" ] || with_onboard=0
+  [ "${_aib_fork_menu:-0}" = "1" ] && with_fork=1
+  if [ "$with_onboard" = "1" ] || [ "$with_fork" = "1" ]; then
+    case "${AIB_RIGHT_OK_NOTE:-}" in
+      waited_ms=*)                                    # 五項全對才跳
+        local AIB_CLI_SESSION_MENU_TARGET="$wid" AIB_CLI_SESSION_MENU_EXCLUDE="$SEAT_SESSION_UUID"
+        . "$HERE/cli-session-menu.sh"
+        aib_cli_session_menu "$PROVIDER" "$CALLER_CWD" "${EZ2_AIB_INSTANCE_HOME:+$EZ2_AIB_INSTANCE_HOME/seats}" "$ROLE" \
+          "$with_onboard" "$with_fork" </dev/null || true
+        from="${AIB_FORK_FROM_SESSION_UUID:-}"; unset AIB_FORK_FROM_SESSION_UUID
+        case "$AIB_OPEN_MENU_CHOICE" in
+          fork)    aib_attempt_mark menu_choice "$wid" "fork:@${from: -5}" ;;
+          timeout) aib_attempt_mark menu_choice "$wid" "timeout->skip" ;;
+          none|noviewer) ;;
+          *)       aib_attempt_mark menu_choice "$wid" "$AIB_OPEN_MENU_CHOICE" ;;
+        esac
+        if [ "$with_onboard" = "1" ]; then
+          case "$AIB_OPEN_MENU_CHOICE" in
+            1) AIB_ONBOARD_PENDING="full" ;;
+            2) AIB_ONBOARD_PENDING="rules" ;;
+            3) AIB_ONBOARD_PENDING="skipped" ;;
+            timeout) AIB_ONBOARD_PENDING="timeout" ;;
+            # 外層艙沒人接著(AIB_NO_ATTACH、AI 代開不切畫面):不跳、不等,但照舊留一行「已自動不載入、要載入怎麼做」
+            #   ——舊選單在這種情況是 30 秒後逾時投這一行(the maintainer 09-20:不然那席什麼都不知道)。
+            noviewer) AIB_ONBOARD_PENDING="timeout" ;;
+          esac
+        fi ;;
+      *) if [ "$with_onboard" = "1" ]; then
+           echo "aib: 席 $wid 未確認(${AIB_RIGHT_OK_NOTE:-}),不跳開席選單;確認後可手動:aib seat onboard --window $wid --profile full" >&2
+         fi ;;
+    esac
+  fi
+  [ "$with_fork" = "1" ] && [ -n "$from" ] || return 0
+  aib_load_old_seat "$from"
+  return 0
+}
+# 清單最後:把選單選的開席單/提示行投進去。先等 CLI 能打字(碼表守望落 can_type),最多 90 秒;
+#   等不到照投 —— dm 那條路自己會排隊,只是不保證先後。hub 伺服器外投遞,艙變數由 AIB_SEAT_ENV 帶。
+aib_onboard_deliver_pending() {
+  local wid="${WINDOW_ID:-}" onboard="${AIB_SEAT_ONBOARD:-$HERE/seat_onboard.py}"
+  local limit="${AIB_SEAT_RESUME_MENU_TIMEOUT_S:-${AIB_ONBOARD_MENU_TIMEOUT_S:-30}}"
+  [ -n "${AIB_ONBOARD_PENDING:-}${AIB_LOAD_DELIVER_FILE:-}" ] && [ -n "$wid" ] || return 0
+  if [ -n "${ATTEMPT_ID:-}" ] && [ -n "${EZ2_AIB_INSTANCE_HOME:-}" ]; then
+    local waited=0 got=""
+    while [ "$waited" -lt "${AIB_ONBOARD_WAIT_CAN_TYPE_S:-90}" ]; do
+      got="$("$T_PY3" -c 'import json,sys
+seen=set()
+try:
+    for l in open(sys.argv[1], encoding="utf-8"):
+        try: seen.add(json.loads(l).get("event"))
+        except ValueError: pass
+except OSError: pass
+print(next((e for e in ("can_type","pane_dead","watch_timeout") if e in seen), ""))' \
+        "$EZ2_AIB_INSTANCE_HOME/cockpit/open-attempts/$ATTEMPT_ID.jsonl" 2>/dev/null || true)"
+      [ -z "$got" ] || break
+      sleep 1; waited=$((waited + 1))
+    done
+    [ "$got" = "can_type" ] || echo "aib: 等不到 $wid 能打字(${got:-逾時}),照投開席選單的結果" >&2
+  fi
+  if [ -n "${AIB_LOAD_DELIVER_FILE:-}" ]; then
+    _nrc=0; "$T_PY3" "$onboard" --window "$wid" --notice-file "$AIB_LOAD_DELIVER_FILE" || _nrc=$?
+    # review r17:5 = 字已在對方框內、沒送出(dm 4,絕不重送);3 才是真的投不進
+    if [ "$_nrc" = "5" ]; then
+      echo "aib: 載入舊席位的開場說明已貼進 $wid 的輸入框但沒送出;不重送,請到那一格按 Enter" >&2
+    elif [ "$_nrc" != "0" ]; then
+      echo "aib: 載入舊席位的開場說明投不進 $wid(內容在 $AIB_LOAD_DELIVER_FILE)" >&2
+    fi
+  fi
+  case "${AIB_ONBOARD_PENDING:-}" in
+    full|rules)
+      bash -c "$AIB_SEAT_ENV \"\$@\"" _ "$T_PY3" "$onboard" --window "$wid" --role "$ROLE" --detach-ack \
+        --profile "$AIB_ONBOARD_PENDING" || \
+        echo "aib: 開席單投不進 $wid(可手動 aib seat onboard --window $wid --profile $AIB_ONBOARD_PENDING)" >&2 ;;
+    skipped)
+      # review r18:5 = 已貼進對方框但沒送出(dm 4,絕不重送)——不能說「投不進」又教人重下開席單(會疊一整份上去)
+      _nrc=0; "$T_PY3" "$onboard" --window "$wid" --skipped-notice || _nrc=$?
+      if [ "$_nrc" = "5" ]; then
+        echo "aib: 「不載入」提示已貼進 $wid 的輸入框但沒送出;不重送,請到那一格按 Enter" >&2
+      elif [ "$_nrc" != "0" ]; then
+        echo "aib: 「不載入」提示投不進 $wid(可手動 aib seat onboard --window $wid --profile full)" >&2
+      fi ;;
+    timeout)
+      _nrc=0; "$T_PY3" "$onboard" --window "$wid" --timeout-notice "$limit" || _nrc=$?
+      # review r17:只有 3(一個字都沒進去)才補送「不載入」那一則;5 = 第一則已卡在對方框內,絕不再疊一份
+      if [ "$_nrc" = "5" ]; then
+        echo "aib: 選單逾時提示已貼進 $wid 的輸入框但沒送出;不補送,請到那一格按 Enter" >&2
+      elif [ "$_nrc" != "0" ]; then
+        _src=0; "$T_PY3" "$onboard" --window "$wid" --skipped-notice || _src=$?
+        if [ "$_src" = "5" ]; then
+          echo "aib: 選單逾時後補的「不載入」提示已貼進 $wid 的輸入框但沒送出;不重送,請到那一格按 Enter" >&2
+        elif [ "$_src" != "0" ]; then
+          echo "aib: 選單逾時「不載入」提示投不進 $wid(可手動 aib seat onboard --window $wid --profile full)" >&2
+        fi
+      fi ;;
+  esac
+  return 0
+}
+aib_pf_stamp() { printf '%s pf %s @%s\n' "$(date +%H:%M:%S)" "$1" "${WINDOW_ID:-}"; return 0; }
+aib_post_frame_work() {
+aib_pf_stamp wait_right_pane
+aib_wait_right_painted "${WINDOW_ID:-}"
+aib_pf_stamp ensure_deferred
+if [ "$AIB_ENSURE_DEFERRED" = "1" ]; then
+  aib_run_ensure || echo "aib: 右欄畫到之後的 cockpit-full.sh --ensure 回 rc=$?(席位已可用,不擋;查:tail ~/.ez2-aib/instances/<艙>/cockpit/*.log)" >&2
+fi
+# 艦長列 / 邊框提示 / 開席碼表守望:不得擋這個終端接入指揮艙。
+# ★ the maintainer 09-26 00:0x:右欄五項正確(+ 艙已在時的整備)之後,**一個**開席選單(舊席位 + 開席單三選一)。
+#   排在整備之後:碼表判準 order_violations 規定選單不得早於 ensure(整備會重排版面)。
+aib_pf_stamp open_menu
+aib_open_menu_after_right
+aib_pf_stamp captains_border
+run env AIB_DRY_RUN="$DRY" bash "$HERE/nav/captains-ctl.sh" --sync || true
+run env AIB_DRY_RUN="$DRY" bash "$HERE/nav/border-hints-ctl.sh" --install || true
+if [ "$DRY" != "1" ] && [ "${AIB_NO_OPEN_ATTEMPT:-0}" != "1" ] && [ -n "$ATTEMPT_ID" ] && [ -n "${WINDOW_ID:-}" ]; then
+  "$T_PY3" "$HERE/open_attempt.py" watch --detach --home "$EZ2_AIB_INSTANCE_HOME" --attempt "$ATTEMPT_ID" \
+    --window "$WINDOW_ID" --provider "$PROVIDER" || echo "aib: 開席碼表守望起不來(不擋開席)" >&2
+fi
+aib_pf_stamp seat_detect     # 放 if 外面:test-ed13 會把下面這個 if 區塊抽出來單跑,區塊裡不能有本檔的助手
+if [ "$DRY" != "1" ] && [ -n "${WINDOW_ID:-}" ]; then
+  "$T_PY3" "$HERE/seat-detect.py" --window "$WINDOW_ID" --apply --retry 5 || \
+    echo "aib: ED.13 窗 $WINDOW_ID 的 session_uuid 尚未落檔(誠實未解,不擋開席;席位檔留 session_uuid_pending;aib idle watch 每輪回填,時間窗 ${EZ2_AIB_UUID_SETTLE_S:-600}s;手動:aib seat detect --window $WINDOW_ID --apply)" >&2
+fi
+# L2-04 重開自動續綁(總綱 §二-D):同窗重開=新 uuid=新 agent,人格會歸零。
+# seat-detect 回填 uuid 之後,依 identity/seat-continuity/<seat_id>.json(L2-02 執行器
+# 每次成功綁定都寫)對新 agent 重綁同一張卡(釘舊 sha,升版會亮「卡已更新」)+同一個
+# 大腦,並自動重投影。沒延續檔/沒 uuid=什麼都不做;被拒不擋開席。AIB_NO_REBIND=1 可關。
+# 契約走 EZ2_ROUTE_CONTRACT_SPEC(cockpit-env:git show main,艦外 08-17 裁)。
+
+# 09-26 the maintainer R4:--menu-choice 把開席選單的選擇傳給續綁(不載入 ⇒ 非艦長席不續綁;載入舊席位 ⇒ 以 seat_load
+#   帶過來的人格為準、沒帶到就維持未綁)。判斷全在 seat_rebind.py(a seat);選單沒跳傳 none = 舊行為。
+if [ "$DRY" != "1" ] && [ -n "${WINDOW_ID:-}" ] && [ "${AIB_NO_REBIND:-0}" != "1" ]; then
+  aib_pf_stamp seat_rebind
+  _rebind_flag="$(aib_directed_first_captain_flag)"   # 冠位 → --directed-first-captain;空旗不進引號
+  # stdout=JSON,給機器;stderr 只在 action=suggest 時印「請人挑」那一行。
+  # 成功續綁/自動綁仍不吵。不可 2>&1,否則建議又被丟進垃圾桶。
+  "$T_PY3" "$HERE/../identity/seat_rebind.py" --window "$WINDOW_ID" \
+    --seats-dir "$(aib_seats_dir)" --menu-choice "${AIB_OPEN_MENU_CHOICE:-none}" $_rebind_flag >/dev/null || \
+    echo "aib: 重開續綁未完成(不擋開席);可 python3 src/identity/seat_rebind.py --window $WINDOW_ID 查原因" >&2
+fi
+# ED.13 onboarding:開席單投遞。AIB_NO_ONBOARD=1 可關。
+# ★ 2026-08-16 改:原本這裡是一段 inline heredoc python(渲染)+ 直接
+#   `| dm-ctl.sh`,終點是 dm 的 rc——而 dm 的 rc0 只證明「按鍵落進輸入框」
+#   (aib-dm.sh 檔頭明寫不證明對方已讀)。開席單尾段要求的那句「已就緒」
+#   沒有任何東西在收,於是投遞失敗(如 aihub-7/8 那次 session 名查錯)
+#   看起來就只是「rc3,CLI 可能在冷啟」,沒有人去查。
+#   現在整段委派 seat_onboard.py:同一份渲染(補投也用它,不再兩處各一份)、
+#   等回執、入帳。投不進去=帳上留白,面板據帳本掛提示,不再靜默。
+#
+# ★★ `--detach-ack` 不是可選的優化,是這一刀的一個實測缺陷修正:第一版
+#   在這裡**同步等回執**,於是開席被卡住最多 90 秒——test-eye-ui-launch 的
+#   RealTmuxIsolationTest 立刻紅(開席鏈後面還有事要做,outer client 沒切
+#   過去)。**開席的成敗與「對方讀完沒」是兩件事**,而且那一席還沒開起來
+#   的時候它當然不會回話。投遞與入帳照樣同步做完(那段快、rc 有意義),
+#   只有「等回執」交給脫離的守望者。
+# ★★ 09-14(the maintainer 18:0x 定案,pm a seat 裁):開席單**預設不投**。全部載好後在該席的窗
+#   跳 tmux display-menu 三選一「1 全部 / 2 只鐵則 / 3 不載入」,選了才投
+#   (`aib seat onboard --window @N --profile full|rules`);30 秒沒選=預設不載入(the maintainer 09-20);
+#   **未確認的席(右欄五項沒齊)不跳選單**;root 不例外。
+#   舊變數相容:AIB_NO_ONBOARD=1 ⇒ 不投也不跳;AIB_ONBOARD_AUTO=1 ⇒ 走舊路直接投 full(自動化/尺用)。
+#   09-26 起選單併進開席選單(aib_open_menu_after_right,整備之後),投遞在清單最後一項;這裡只留舊路。
+if [ "$DRY" != "1" ] && [ -n "${WINDOW_ID:-}" ] && [ "${AIB_NO_ONBOARD:-0}" != "1" ] && [ "${AIB_ONBOARD_AUTO:-0}" = "1" ]; then
+  "$T_PY3" "$HERE/seat_onboard.py" --window "$WINDOW_ID" --role "$ROLE" \
+    --detach-ack --profile full || \
+    echo "aib: 開席單投遞失敗——可稍後 aib seat onboard --missing 補投" >&2
+fi
+
+# ---- W1:開席尾段驗一次 watch 心跳(the maintainer 08-18 直令,交付 3 的第二個掛點)----
+# ★ 為什麼掛在這裡:開席是**操作者最會盯著看畫面**的時刻。一個死掉的 watch 不會
+#   自己喊,而 cockpit --ensure 可能好幾天才跑一次;把「監控已失效」印在開席尾段,
+#   是讓它被人看到的最便宜的位置。
+# ★ 只報不修:這裡**不重生 watch**(重生是 cockpit-full --ensure 的職責,那裡有
+#   flock 與完整的 WATCH_CMD)。開席鏈上多一個會 kill/new-window 的動作,等於在
+#   別人開席時動別人的窗——那是本 repo 已經付過錢的形狀。
+# ★ 不擋開席:任何 rc 都不影響開席成敗(與續綁/開席單同紀律)。AIB_NO_WATCH_CHECK=1 可關。
+if [ "$DRY" != "1" ] && [ "${AIB_NO_WATCH_CHECK:-0}" != "1" ]; then
+  aib_pf_stamp watch_status
+  _hb="$("$T_PY3" "$HERE/idle_reaper.py" watch-status 2>&1 >/dev/null || true)"
+  case "$_hb" in
+    "") : ;;                                  # rc0 新鮮:安靜(開席已經夠吵了)
+    *自己驗自己*) : ;;                        # rc2:我們站錯位置,不是 watch 的問題
+    *) echo "aib: ⚠ 閒置收艙 watch 可能已停(${_hb#aib idle watch-status: })" >&2
+       echo "aib:   查:aib idle watch-status  ·  復活:cockpit-full.sh --ensure" >&2 ;;
+  esac
+fi
+aib_pf_stamp onboard_deliver
+aib_onboard_deliver_pending
+aib_pf_stamp done   # 清單最後一項:CLI 能打字之後才投選單選的開席單/提示行
+}
+# 開席選單選了舊席位 ⇒ 載入它的人格、第二大腦、上一場紀錄(the maintainer 09-26)。**所有 AI 走這一個函式**,
+#   家別差異全在 seat_load.py(KINDS 表):這裡只做 tmux 與啟動指令這兩件 aib 才有的事。
+#   ① 新席 uuid(開席就指派的家有;codex 等要等 seat-detect 回填)② seat_load plan:要不要重起、能不能載
+#   ③ 要重起:先停下那一格、等行程真的結束(claude 在被停的那一刻才寫出空白對話檔)④ seat_load apply
+#   ⑤ 要重起:帶 apply 給的環境重組啟動指令、重生同一格;不重起:開場說明記下來,清單最後等能打字才投。
+AIB_LOAD_DELIVER_FILE=""
+aib_load_old_seat() {
+  local src="$1" new="${SEAT_SESSION_UUID:-}" seat_file plan restart blocked sid out ppid cpids="" p waited=0 envs k v
+  [ -n "${WINDOW_ID:-}" ] && [ -n "$src" ] || return 0
+  seat_file="$(aib_seats_dir)/w${WINDOW_ID#@}.json"
+  if [ -z "$new" ]; then
+    "$T_PY3" "$HERE/seat-detect.py" --window "$WINDOW_ID" --apply --retry 5 >/dev/null 2>&1 || true
+    new="$("$T_PY3" -c "import json,sys;print(json.load(open(sys.argv[1])).get('session_uuid',''))" "$seat_file" 2>/dev/null || true)"
+  fi
+  if [ -z "$new" ]; then
+    echo "aib: 這一席的 uuid 還沒落檔,載入不了 @${src: -5}(等它落檔後另開一席再選)" >&2
+    aib_attempt_mark menu_choice "$WINDOW_ID" "load_refused:no_uuid"
+    return 0
+  fi
+  # ★ stdout 只接 JSON;stderr 留在背景段日誌。混進來的話任何一行警告都會讓 JSON 解析失敗 ⇒
+  #   claude 不帶分出參數重起成空白、畫面卻印「已載入」(09-26 審查抓到的靜默失敗)。
+  plan="$("$T_PY3" "$HERE/seat_load.py" plan --provider "$PROVIDER" --to "$new" --aib-home "$_aib_all_cabins")" \
+    || { echo "aib: 載入舊席位判斷失敗(rc≠0,見上方訊息)" >&2; return 0; }
+  restart="$("$T_PY3" -c 'import json,sys;print(1 if json.loads(sys.argv[1]).get("restart") else 0)' "$plan" 2>/dev/null || echo 0)"
+  blocked="$("$T_PY3" -c 'import json,sys;print(json.loads(sys.argv[1]).get("blocked",""))' "$plan" 2>/dev/null || true)"
+  if [ -n "$blocked" ]; then
+    echo "aib: $blocked" >&2
+    aib_attempt_mark menu_choice "$WINDOW_ID" "load_refused:has_conversation"
+    return 0
+  fi
+  sid="$("$T_PY3" -c "import json,sys;print(json.load(open(sys.argv[1])).get('seat_id',''))" "$seat_file" 2>/dev/null || true)"
+  if [ "$restart" = "1" ]; then
+    ppid="$(env -u TMUX "${AIB_TMUX_BIN:-tmux}" -L "$HUB" display-message -p -t "$WINDOW_ID" '#{pane_pid}' 2>/dev/null || true)"
+    [ -z "$ppid" ] || cpids="$(ps -Ao pid=,ppid= 2>/dev/null | "$T_PY3" -c 'import sys
+kids = {}
+for l in sys.stdin:
+    f = l.split()
+    if len(f) == 2: kids.setdefault(f[1], []).append(f[0])
+out, todo = [], [sys.argv[1]]
+while todo:
+    for k in kids.get(todo.pop(), []):
+        out.append(k); todo.append(k)
+print(" ".join(out))' "$ppid" 2>/dev/null || true)"
+    env -u TMUX "${AIB_TMUX_BIN:-tmux}" -L "$HUB" respawn-pane -k -t "$WINDOW_ID" \
+      "printf '載入舊席位 @%s(人格/第二大腦/上一場紀錄)…\\n' ${src: -5}; exec sleep 60" 2>/dev/null || {
+      echo "aib: 停不下這一格,不載入舊席位" >&2; return 0; }
+    for p in $cpids; do
+      while kill -0 "$p" 2>/dev/null && [ "$waited" -lt 50 ]; do sleep 0.2; waited=$((waited + 1)); done
+    done
+    sleep 0.3
+  fi
+  out="$("$T_PY3" "$HERE/seat_load.py" apply --provider "$PROVIDER" --from "$src" --to "$new" \
+          --window "$WINDOW_ID" --seat-id "$sid" --aib-home "$_aib_all_cabins")" || {
+    echo "aib: 載入舊席位失敗(rc≠0,見上方訊息);這一席維持空白" >&2
+    out=""
+  }
+  if [ -n "$out" ] && ! printf '%s' "$out" | "$T_PY3" -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+    echo "aib: 載入舊席位的回覆讀不懂,這一席維持空白:$out" >&2
+    out=""
+  fi
+  envs="$(printf '%s' "$out" | "$T_PY3" -c 'import json,sys
+try: d = json.load(sys.stdin)
+except ValueError: sys.exit(0)
+for k, v in (d.get("launch_env") or {}).items(): print("%s\t%s" % (k, v))' 2>/dev/null || true)"
+  AIB_LOAD_DELIVER_FILE="$(printf '%s' "$out" | "$T_PY3" -c 'import json,sys
+try: print(json.load(sys.stdin).get("deliver_file",""))
+except ValueError: pass' 2>/dev/null || true)"
+  printf '%s' "$out" | "$T_PY3" -c 'import json,sys
+try: d = json.load(sys.stdin)
+except ValueError: sys.exit(0)
+if d.get("binding") == "failed": print("aib: warning: 人格沒綁上:%s" % d.get("binding_detail", ""), file=sys.stderr)' || true
+  if [ "$restart" = "1" ]; then
+    _aib_fork_launch_env=""
+    while IFS=$'\t' read -r k v; do
+      [ -n "$k" ] || continue
+      printf -v _aib_fork_launch_env '%s %s=%q' "$_aib_fork_launch_env" "$k" "$v"
+    done <<< "$envs"
+    aib_build_launch_cmd
+    _aib_fork_launch_env=""
+    env -u TMUX "${AIB_TMUX_BIN:-tmux}" -L "$HUB" respawn-pane -k -t "$WINDOW_ID" "$LAUNCH_CMD" 2>/dev/null \
+      || { echo "aib: 載入舊席位後重起失敗(窗 $WINDOW_ID);可手動 respawn" >&2; return 0; }
+  fi
+  [ -z "$out" ] || echo "aib: 已載入舊席位 @${src: -5} ⇒ @${new: -5}($PROVIDER)" >&2
+  return 0
+}
+
+# O3:視窗+CLI+席位檔好了就切畫面;seat-detect/續綁/開席單/watch-status 背景做。
+# ★ 背景輸出必須離開 tty:attach 之後再寫 stderr,字會直接蓋在座艙上
+#   (黑底暴版;人眼看到的是 seat-detect 那行「候選不唯一」+ ED.13 尚未落檔)。
+#   那些話要留在艙內日誌,不是印在畫面中間。
+_pf_pid=""
+if [ "$DRY" != "1" ] && [ -n "${WINDOW_ID:-}" ]; then
+  _pf_log="/dev/null"
+  if [ -n "${EZ2_AIB_INSTANCE_HOME:-}" ]; then
+    mkdir -p "$EZ2_AIB_INSTANCE_HOME/cockpit" 2>/dev/null || true
+    _pf_log="$EZ2_AIB_INSTANCE_HOME/cockpit/post-frame.log"
+  fi
+  aib_post_frame_work >>"$_pf_log" 2>&1 &
+  _pf_pid=$!
+fi
+# 09-11 b21 真紅:後台那段(邊框提示/續綁/開席單/碼表守望)原本一律 disown,啟動器**不接入**
+# 就直接退出(AIB_NO_ATTACH、非終端、治具),於是它活得比呼叫端久,治具收掉後還對艙下 tmux 指令。
+# ⇒ 只有真的要把這個終端交出去(attach / switch)才放手;其他出口等它做完再退。
+aib_post_frame_release() { [ -n "${_pf_pid:-}" ] && { disown "$_pf_pid" 2>/dev/null || true; }; return 0; }
+aib_post_frame_join() { [ -n "${_pf_pid:-}" ] && { wait "$_pf_pid" 2>/dev/null || true; }; return 0; }
+
+# O1:切畫面的時刻(三格碼表的第二格終點、第三格起點);函式定義只是文字,執行序仍在 attach 之前。
+aib_attempt_mark switch "${WINDOW_ID:-}"
+
+switch_to_outer() {
+  # ★ 2026-08-29 a seat:AI 席位從艙內代開新艦時,這裡抓到的「最近活躍客戶端」
+  #   是 the maintainer 正在看的那個終端——把人的眼睛切去新艙(實測 02:4x,the maintainer 得手動 attach 切回)。
+  #   代開者帶 AIB_NO_CLIENT_SWITCH=1 → 不動任何客戶端,只印 attach 指令。
+  #   人自己在終端跑 aib 的路徑不變。驗收臂記欠 qa(兩態:帶旗標=零 switch-client 呼叫)。
+  if [ "${AIB_NO_CLIENT_SWITCH:-0}" = "1" ]; then
+    printf 'AIB_NO_CLIENT_SWITCH=1:不切換任何客戶端;看畫面:tmux attach -t %s\n' "$S" >&2
+    return 0
+  fi
+  local current_socket="" outer_socket="" inner_tty=""
+  local container_session="" outer_client="" _panes="" _clients=""
+  current_socket="$(tmux display-message -p '#{socket_path}' 2>/dev/null || true)"
+  outer_socket="$(env -u TMUX tmux display-message -p -t "$S" '#{socket_path}' 2>/dev/null || true)"
+
+  if [ -n "$current_socket" ] && [ "$current_socket" = "$outer_socket" ]; then
+    exec tmux switch-client -t "$S"
+  fi
+
+  # Nested ai-hub case: the inner client's tty is the containing outer pane's
+  # tty.  Find that session, then switch its most recently active real client.
+  inner_tty="$(tmux display-message -p '#{client_tty}' 2>/dev/null || true)"
+  if [ -n "$inner_tty" ]; then
+    _panes="$(env -u TMUX tmux list-panes -a \
+      -F '#{pane_tty}|#{session_name}' 2>/dev/null || true)"
+    container_session="$(awk -F '|' -v tty="$inner_tty" \
+      '$1 == tty { print $2; exit }' <<<"$_panes")"
+  fi
+  if [ -n "$container_session" ]; then
+    _clients="$(env -u TMUX tmux list-clients \
+      -F '#{client_activity}|#{client_tty}|#{session_name}' 2>/dev/null || true)"
+    outer_client="$(awk -F '|' -v s="$container_session" \
+      '$3 == s && $1 >= best { best=$1; tty=$2 } END { print tty }' <<<"$_clients")"
+  fi
+  if [ -n "$outer_client" ]; then
+    env -u TMUX tmux switch-client -c "$outer_client" -t "$S"
+    return 0
+  fi
+
+  echo "$(t aib.msg.attach "session=$S")" >&2
+  return 1
+}
+
+if [ "$DRY" = "1" ]; then
+  run env -u TMUX tmux attach -t "$S"
+elif [ "${AIB_NO_ATTACH:-0}" = "1" ]; then
+  aib_post_frame_join
+  printf 'AIB_UI_READY session=%s hub=%s instance=%s provider_liveness=unverified\n' \
+    "$S" "$HUB" "$EZ2_AIB_INSTANCE" || true
+else
+  # 這個終端要進指揮艙。殘留 TMUX= 時 switch 失敗不得整段結束
+  # (set -e 會讓人只看到兩行內部說明、艙已開卻沒接進來)。
+  aib_splash_stop
+  if [ -n "${TMUX:-}" ]; then
+    aib_post_frame_release
+    switch_to_outer && exit 0
+  fi
+  if [ -t 0 ]; then
+    aib_post_frame_release
+    exec env -u TMUX tmux attach -t "$S"
+  fi
+  # exec 失敗或非終端:艙已在,印接入指令,不得把成功誤報成 rc=1。後台段等完再退。
+  aib_post_frame_join
+  printf 'AIB_UI_READY session=%s hub=%s instance=%s provider_liveness=unverified (attach: tmux attach -t %s)\n' \
+    "$S" "$HUB" "$EZ2_AIB_INSTANCE" "$S" || true
+fi

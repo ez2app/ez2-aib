@@ -1,0 +1,252 @@
+{
+  "_comment": [
+    "AI 引擎(provider)登記簿。2026-08-21 the maintainer 直令『要兼容之後的新 AI』。",
+    "",
+    "★ 這份檔**不是**新的真相源,它是一張對帳表。今天全庫有七處各自寫著一份",
+    "  provider 清單,而它們已經互相對不上(實測:aib 四個、bind_queue 五個含",
+    "  gemini、aib_doctor 只有兩個)。加一個新 AI 要改七處,漏掉的那幾處**不會",
+    "  報錯**——新 AI 開得起來、席位檔寫得出來,只是引擎字母變 `--`、身份探針",
+    "  沒有它、doctor 看不到它、艦隊組序把它排到最後。",
+    "",
+    "★ 所以本檔的用途只有一個:讓『漏掉』變成會響的。tests/test-provider-registry.py",
+    "  逐處比對;新增一個 provider 而沒登記 → 紅;登記了而某處沒跟上 → 紅並指名",
+    "  是哪一處少了哪一個。",
+    "",
+    "★ known_gaps 是**現況的誠實快照**,不是許可證。它存在是為了讓測試今天就能綠",
+    "  (否則一支恆紅的測試會在一週內被所有人忽略),但它是 append 禁止、只准縮短的",
+    "  清單:縮短要改這裡,而變長會被測試擋下。"
+  ],
+  "providers": [
+    {
+      "id": "claude",
+      "letter": "CLA",
+      "status": "supported",
+      "default_requested_model": "claude-opus-5",
+      "identity": "assigned-session-id",
+      "identity_note": "能被指派新 session id 的 CLI 之一(與 grok 同一集合);aib 開席前產 uuid 用 --session-id 餵進去,席位檔那個值是權威值不是事後猜。",
+      "menu_label": "Claude",
+      "menu_group": "native"
+    },
+    {
+      "id": "codex",
+      "letter": "CDX",
+      "status": "supported",
+      "default_requested_model": "gpt-6-luna",
+      "identity": "probe:lsof-rollout-meta",
+      "identity_note": "讀開檔中的 ~/.codex/sessions/rollout-*.jsonl meta 首行的 payload.session_id。★ 檔名的 uuid 是 thread id 不是 session id,fork/resume 下用檔名猜必錯(seat-detect.py 檔頭 08-14 實錯)。",
+      "menu_label": "Codex",
+      "menu_group": "native"
+    },
+    {
+      "id": "agy",
+      "letter": "AGY",
+      "status": "supported",
+      "default_requested_model": "gemini-3.1-pro-high",
+      "identity": "probe:lsof-presence-lock",
+      "identity_note": "~/.gemini/antigravity-cli/presence/<uuid>.lock",
+      "menu_label": "AGY",
+      "menu_group": "native"
+    },
+    {
+      "id": "copilot",
+      "letter": "CPT",
+      "status": "supported",
+      "default_requested_model": "kimi-k3",
+      "default_effort": "high",
+      "identity": "probe:env-scan",
+      "identity_note": "走通用探針一(掃行程 env 的 SESSION/THREAD/CONVERSATION 鍵),COPILOT_AGENT_SESSION_ID 命中。★ 探針一在『該席此刻沒有子行程』時必定量不到,所以開席當下常落空,要靠事後重跑。",
+      "menu_label": "Copilot",
+      "menu_group": "native"
+    },
+    {
+      "id": "grok",
+      "letter": "GRK",
+      "status": "supported",
+      "default_requested_model": "grok-4.6",
+      "identity": "assigned-session-id",
+      "identity_note": "與 claude 同一集合:aib 開席前產 uuid,經 provider-launch --session-id 餵入。實測 grok 1.0.13(2026-09-01)落檔 ~/.grok/sessions/<cwd>/<uuid>/,席位檔那個值是權威值不是事後猜。",
+      "menu_label": "Grok",
+      "menu_group": "native"
+    },
+    {
+      "id": "deepseek",
+      "letter": "DSK",
+      "status": "supported",
+      "default_requested_model": "deepseek-v4-pro",
+      "identity": "assigned-session-id",
+      "identity_note": "API-key 終端席（非 OAuth CLI）。aib 開席前產 uuid，經 provider-launch --session-id 餵入 deepseek_cli；席位檔那個值是權威值。金鑰讀 DEEPSEEK_API_KEY（ai.env / env），缺 key 具名失敗，不走 ED.4。",
+      "auth": "api_key",
+      "menu_label": "DeepSeek",
+      "menu_group": "api_key"
+    },
+    {
+      "id": "kiosapi",
+      "letter": "KIO",
+      "status": "supported",
+      "default_requested_model": "deepseek-v4.1-flash-free",
+      "identity": "assigned-session-id",
+      "identity_note": "API-key 終端席（OpenAI-compat；非 OAuth CLI）。aib 開席前產 uuid，經 provider-launch --session-id 餵入 kiosapi_cli；席位檔那個值是權威值。金鑰讀 KIOSAPI_API_KEY（api-key-kiosapi.env / env）；可選 KIOSAPI_BASE_URL（預設 https://kiosapi.com）。缺 key 具名失敗，不走 ED.4。 已自「另開 AI」選單隱藏（2026-09-20）；CLI `aib kiosapi …` 仍可用。",
+      "auth": "api_key",
+      "in_new_ai_menu": false,
+      "menu_label": "KiosAPI",
+      "menu_group": "api_key"
+    },
+    {
+      "id": "nvidia",
+      "letter": "NVD",
+      "status": "supported",
+      "default_requested_model": "meta/llama-3.2-11b-vision-instruct",
+      "identity": "assigned-session-id",
+      "identity_note": "API-key 終端席（NVIDIA NIM OpenAI-compat；非 OAuth CLI）。aib 開席前產 uuid，經 provider-launch --session-id 餵入 nvidia_cli；席位檔那個值是權威值。金鑰讀 NVIDIA_API_KEY（api-key-nvidia.env / env）；可選 NVIDIA_BASE_URL（預設 https://integrate.api.nvidia.com）。缺 key 具名失敗，不走 ED.4。",
+      "auth": "api_key",
+      "menu_label": "NVIDIA",
+      "menu_group": "api_key"
+    },
+    {
+      "id": "teamo",
+      "letter": "TCX",
+      "status": "retired",
+      "default_requested_model": "deepseek-v4-flash",
+      "identity": "assigned-session-id",
+      "identity_note": "2026-09-30 the maintainer 令從 AIB 拿掉(退役):TeamoRouter 每次呼叫都回 HTTP 400(舊版程式同樣 400,不是 AIB 改動造成)。aib 不再能開;程式檔與金鑰留著,恢復=status 改回 supported 並加回 aib 的 PROVIDERS。 舊說明:API-key 終端席 **Teamo-Codex**（TeamoRouter OpenAI-compat；非 OAuth CLI）。顯示名 Teamo-Codex；引擎 id 仍為 teamo。aib 開席前產 uuid，經 provider-launch --session-id 餵入 teamo_cli；金鑰 TEAMO_API_KEY（api-key-teamo.env）。OpenAI base 預設 https://api.teamorouter.com/v1。Claude 原生根網址見 SOP。缺 key 具名失敗，不走 ED.4。 已自「另開 AI」選單隱藏（2026-09-20）；CLI `aib teamo …` 仍可用。",
+      "auth": "api_key",
+      "in_new_ai_menu": false,
+      "menu_label": "Teamo-Codex",
+      "menu_group": "api_key"
+    },
+    {
+      "id": "teamoclaude",
+      "letter": "TCL",
+      "status": "retired",
+      "default_requested_model": "claude-sonnet-4-6",
+      "identity": "assigned-session-id",
+      "identity_note": "2026-09-30 the maintainer 令從 AIB 拿掉(退役):TeamoRouter 每次呼叫都回 HTTP 400(舊版程式同樣 400,不是 AIB 改動造成)。aib 不再能開;程式檔與金鑰留著,恢復=status 改回 supported 並加回 aib 的 PROVIDERS。 舊說明:API-key 終端席 **Teamo-Claude**（TeamoRouter Anthropic native；非 OAuth CLI）。顯示名 Teamo-Claude；引擎 id=teamoclaude。aib 開席前產 uuid，經 provider-launch --session-id 餵入 teamoclaude_cli；金鑰 TEAMO_API_KEY／TEAMCLAUDE_API_KEY（api-key-teamo.env 或 api-key-teamoclaude.env）。Anthropic base 預設 https://api.teamorouter.com。缺 key 具名失敗，不走 ED.4。 已自「另開 AI」選單隱藏（2026-09-20）；CLI `aib teamoclaude …` 仍可用。",
+      "auth": "api_key",
+      "in_new_ai_menu": false,
+      "menu_label": "Teamo-Claude",
+      "menu_group": "api_key"
+    },
+    {
+      "id": "openrouter",
+      "letter": "ORR",
+      "status": "supported",
+      "default_requested_model": "openai/gpt-4o-mini",
+      "identity": "assigned-session-id",
+      "identity_note": "API-key 終端席 **OpenRouter**（OpenRouter OpenAI-compat；非 OAuth CLI）。顯示名 OpenRouter；引擎 id=openrouter。aib 開席前產 uuid，經 provider-launch --session-id 餵入 openrouter_cli；金鑰 OPENROUTER_API_KEY（api-key-openrouter.env）。OpenAI base 預設 https://openrouter.ai/api/v1。可選 OPENROUTER_HTTP_REFERER／OPENROUTER_APP_TITLE。缺 key 具名失敗，不走 ED.4。",
+      "auth": "api_key",
+      "menu_label": "OpenRouter",
+      "menu_group": "api_key"
+    },
+    {
+      "id": "typesafe",
+      "letter": "TSF",
+      "status": "supported",
+      "default_requested_model": "jev-latest",
+      "identity": "assigned-session-id",
+      "identity_note": "API-key 終端席 **TypeSafe**（System One 原生；非 OpenAI-chat／非 Anthropic Messages）。顯示名 TypeSafe；引擎 id=typesafe。aib 開席前產 uuid，經 provider-launch --session-id 餵入 typesafe_cli；金鑰 TYPESAFE_API_KEY（api-key-typesafe.env）。Base 預設 https://api.typesafe.ai。缺 key 具名失敗，不走 ED.4。",
+      "auth": "api_key",
+      "menu_label": "TypeSafe jev",
+      "menu_group": "api_key"
+    },
+    {
+      "id": "openrouterjev",
+      "letter": "ORJ",
+      "status": "supported",
+      "default_requested_model": "jev-latest",
+      "identity": "assigned-session-id",
+      "identity_note": "API-key 終端席 **OpenRouter jev**(System One 問答介面;走 OpenRouter 原生決策端點 https://openrouter.ai/api/alpha/decisions,**不是** chat/completions,那裡拒收 jev)。顯示名 OpenRouter jev;引擎 id=openrouterjev。aib 開席前產 uuid,經 provider-launch --session-id 餵入 typesafe_cli --route openrouter;金鑰 OPENROUTER_API_KEY(api-key-openrouter.env,與 openrouter 席共用)。TypeSafe 對外開放前,jev 只在這裡;缺 key 具名失敗。",
+      "auth": "api_key",
+      "menu_label": "OpenRouter jev",
+      "menu_group": "api_key"
+    },
+    {
+      "id": "gemini",
+      "letter": "AGY",
+      "status": "alias-only",
+      "identity": "none",
+      "identity_note": "只是 agy 的顯示別名(共用 AGY 字母),不是可開席的 provider——所以它刻意不在 aib.PROVIDERS 裡。",
+      "menu_label": "Gemini",
+      "menu_group": "native",
+      "in_new_ai_menu": false
+    },
+    {
+      "id": "sand",
+      "letter": "SND",
+      "status": "retired",
+      "default_requested_model": "sand-bridge",
+      "identity": "assigned-session-id",
+      "identity_note": "Grok Bot.app（Electron,內部代號 sand;Anysphere——也就是做 Cursor 的公司——出品,走 Cursor 後端 api2.cursor.sh;這台沒有 Cursor 編輯器）橋接席已自「另開 AI」選單退役（2026-09-18）。宿主 /Applications/Grok Bot.app,讀取走 ~/Library/Application Support/Grok Bot/。後端仍與 grokbot 共用 sand_bridge.py，勿刪；舊席顯示可留，新開請用 grokbot 或 codexbot。這是廠商沒承諾的介面,升版可能斷。",
+      "menu_label": "Sand",
+      "menu_group": "bot",
+      "in_new_ai_menu": false
+    },
+    {
+      "id": "grokbot",
+      "letter": "GBT",
+      "status": "supported",
+      "default_requested_model": "grokbot",
+      "identity": "assigned-session-id",
+      "identity_note": "Grok Bot.app（Electron,內部代號 sand;Anysphere——也就是做 Cursor 的公司——出品,走 Cursor 後端 api2.cursor.sh;這台沒有 Cursor 編輯器）橋接席（與 sand 同後端 sand_bridge.py）。宿主 /Applications/Grok Bot.app,讀取走 ~/Library/Application Support/Grok Bot/。登入主機一鍵：aib-grokbot 或 aib grokbot dgrs <role> --again。不是 xAI grok CLI（provider=grok）。這是廠商沒承諾的介面,升版可能斷。",
+      "menu_label": "GrokBot",
+      "menu_group": "bot"
+    },
+    {
+      "id": "claudebot",
+      "letter": "CBT",
+      "status": "supported",
+      "default_requested_model": "claudebot",
+      "identity": "assigned-session-id",
+      "identity_note": "Claude app / Claude Code 的本機對話橋接席(與 grokbot 同後端 sand_bridge.py;docs/CLAUDEBOT-DESKTOP.md)。綁定 = 一條本機 Claude session(AIB_CLAUDEBOT_SESSION_ID,完整 UUID),AIB 席 uuid 與它分開。收信回信走 Claude Code hook(src/cockpit/claudebot_hook.py install),沒有 webhook。雲端 session 綁不了(hook 不跑在雲端)。不是 claude CLI 席(provider=claude)。",
+      "menu_label": "ClaudeBot",
+      "menu_group": "bot"
+    },
+    {
+      "id": "musebot",
+      "letter": "MSB",
+      "status": "supported",
+      "default_requested_model": "musebot",
+      "identity": "assigned-session-id",
+      "identity_note": "Meta Muse 桌面橋接席（Muse 側經配對 Mac 檔案信箱收信、回信；排程喚醒，無 webhook／socket——廠商未承諾介面，升版可能斷）。綁定 = 一個 Muse 對話（AIB_MUSEBOT_CONVERSATION_ID，可空）。不是 claude CLI 席（provider=claude）。",
+      "menu_label": "MuseBot",
+      "menu_group": "bot"
+    },
+    {
+      "id": "codexbot",
+      "letter": "BOT",
+      "status": "supported",
+      "default_requested_model": "codexbot",
+      "identity": "assigned-session-id",
+      "identity_note": "Codex Desktop bridge (formerly codexapp). AIB bridge UUID is separate from desktop_thread_id and desktop_session_id. Connect only to the existing desktop App Server. Never launches CLI or Cursor. Cursor bridge id deleted 2026-09-18.",
+      "menu_label": "CodexBot",
+      "menu_group": "bot"
+    }
+  ],
+  "consumers": {
+    "aib.PROVIDERS": "src/cockpit/aib — 開席時的 provider 驗證閘",
+    "provider-launch.case": "src/cockpit/provider-launch.sh — 逐 provider 的啟動指令",
+    "render_lib.ENGINE_LETTERS": "src/cockpit/render/render_lib.py — 右欄引擎字母",
+    "render_lib.ENGINE_LETTER_COLORS": "同上 — 字母配色",
+    "render_lib.ENGINE_ICONS": "同上 — 引擎徽章 icon(R6;R8 第 8 處消費面)",
+    "pane-right.ENGINE_ORDER": "src/cockpit/pane-right-ai.sh — 艦隊組序預設值",
+    "bind_queue.PROVIDERS": "src/binding/bind_queue.py — 人格綁定佇列",
+    "aib_doctor.default": "src/bootstrap/aib_doctor.py — doctor 預設檢查對象"
+  },
+  "known_gaps": {
+    "pane-right.ENGINE_ORDER": [
+      "gemini",
+      "sand"
+    ],
+    "aib_doctor.default": [
+      "gemini"
+    ],
+    "provider-launch.case": [
+      "gemini"
+    ],
+    "aib.PROVIDERS": [
+      "gemini",
+      "sand",
+      "teamo",
+      "teamoclaude"
+    ]
+  }
+}

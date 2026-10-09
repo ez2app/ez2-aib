@@ -1,0 +1,70 @@
+{
+  "rules_version": "0.1.0-draft",
+  "_readme": "E2.8 許可政策唯一資料正本;policy.py 是直譯器,不是第二份真相。pattern 一律以 re.IGNORECASE 編譯(macOS 檔案系統不分大小寫,路徑類樣式必須跟著不分)。改政策=改本檔+tests/test-policy.py 補正反例。_ 開頭的 key 是註解,直譯器忽略。",
+  "classes": {
+    "readonly": { "mode": "readonly", "_zh": "唯讀類:乾淨即自動批;夾寫入樣式=自報矛盾 deny;靜態看不透 escalate" },
+    "write": { "mode": "write", "_zh": "寫入類:目標在執行者檔案域內 allow,域外 escalate;多段指令/域外重導向 escalate" }
+  },
+  "deny_rules": [
+    {
+      "id": "vault_role_direct_write",
+      "pattern": "(^|[^A-Za-z0-9_-])vault/[^\\s;|&]*\\.md\\b",
+      "zh-TW": "vault 角色檔絕不允許直寫(整檔 hash,一 byte=全艦隊掉驗證;合法路徑只有 writeback-gateway)",
+      "en": "Direct writes to vault role files are never allowed (whole-file hash; the only legal path is the writeback-gateway)"
+    }
+  ],
+  "dangerous_rules": [
+    {
+      "id": "sudo",
+      "pattern": "(^|[\\s;|&(])(sudo|doas)\\b",
+      "zh-TW": "特權提升(sudo/doas)一律上呈",
+      "en": "Privilege escalation (sudo/doas) always escalates"
+    },
+    {
+      "id": "git_push",
+      "pattern": "\\bgit\\b[^;|&\\n]*\\bpush\\b",
+      "zh-TW": "git push 屬對外發布,一律上呈",
+      "en": "git push publishes outward and always escalates"
+    },
+    {
+      "id": "rm_recursive_force",
+      "pattern": "\\brm\\b(?=[^;|&\\n]*\\s-[A-Za-z-]*r)(?=[^;|&\\n]*\\s-[A-Za-z-]*f)",
+      "zh-TW": "遞迴強制刪除(rm -rf 族)一律上呈",
+      "en": "Recursive force delete (rm -rf family) always escalates"
+    },
+    {
+      "id": "pipe_to_shell",
+      "pattern": "\\|\\s*(ba|z|da)?sh\\b",
+      "zh-TW": "管線餵給 shell 執行,一律上呈",
+      "en": "Piping into a shell interpreter always escalates"
+    },
+    {
+      "id": "credentials",
+      "pattern": "(\\.ssh(/|\\b)|id_rsa|id_ed25519|\\.aws/credentials|\\.netrc|\\.npmrc|\\.env(\\.[A-Za-z0-9_-]+)?\\b|secrets?\\.(json|ya?ml)|credentials?\\.json|private[_-]?key|api[_-]?key|access[_-]?token)",
+      "zh-TW": "觸及憑證/金鑰樣式,一律上呈",
+      "en": "Touches credential/secret patterns and always escalates"
+    }
+  ],
+  "write_indicator_rules": [
+    { "id": "redirect", "pattern": ">{1,2}" },
+    { "id": "tee", "pattern": "\\btee\\b" },
+    { "id": "file_mutators", "pattern": "\\b(mv|cp|dd|rsync|install|shred|truncate|mkdir|rmdir|touch|ln|unlink|rm)\\b" },
+    { "id": "perm_mutators", "pattern": "\\b(chmod|chown|chgrp)\\b" },
+    { "id": "sed_inplace", "pattern": "\\bsed\\b[^;|&\\n]*\\s-[A-Za-z]*i" },
+    { "id": "net_download", "pattern": "\\bwget\\b|\\bcurl\\b[^;|&\\n]*\\s(-[A-Za-z]*[oO]\\b|--output\\b)" },
+    { "id": "git_mutation", "pattern": "\\bgit\\b[^;|&\\n]*\\b(commit|add|checkout|restore|reset|merge|rebase|apply|stash|clean|cherry-pick|tag)\\b" }
+  ],
+  "opaque_rules": [
+    { "id": "subshell", "pattern": "\\$\\(" },
+    { "id": "backtick", "pattern": "`" },
+    { "id": "eval", "pattern": "\\beval\\b" },
+    { "id": "shell_dash_c", "pattern": "\\b(ba|z|da)?sh\\s+-c\\b" },
+    { "id": "xargs", "pattern": "\\bxargs\\b" },
+    { "id": "exec", "pattern": "\\bexec\\b" },
+    { "id": "source", "pattern": "\\bsource\\b" },
+    { "id": "interp_inline", "pattern": "\\b(python[0-9.]*|perl|ruby|node)\\s+-[ce]\\b" },
+    { "id": "var_expansion", "pattern": "\\$[A-Za-z_{]" }
+  ],
+  "chain_pattern": "[;\\n|&]",
+  "harmless_sinks": ["/dev/null", "/dev/stdout", "/dev/stderr"]
+}
