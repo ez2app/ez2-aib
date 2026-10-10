@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""aib — run only the tests your change affects, and ship only when nothing new is red.
+"""aib — many AIs, one workspace: AI seats from any vendor side by side, each with its own persona and memory;
+only the affected tests rerun, and nothing ships while something new is red.
 
     aib test <test files…>      run tests; reuse earlier green results whose inputs did not change
     aib test --all              run the whole suite that way

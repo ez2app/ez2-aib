@@ -1,2 +1,2 @@
 # SPDX-License-Identifier: Apache-2.0
-"""aib — run only the tests your change affects; ship only when nothing new is red."""
+"""aib — many AIs, one workspace; only the affected tests rerun, and nothing ships while something new is red."""

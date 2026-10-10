@@ -411,7 +411,24 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   else say "== 開始安裝 Ez2 AIB(會裝在 $shown_dir)$( [ "$DRY" = 1 ] && echo ' 【試跑,不改任何東西】') =="; fi
 
   # 1. 系統、管理員密碼(只問這一次)
-  [ "$(uname -s)" = Darwin ] || { fail "目前只支援 Mac(macOS)" "請在 Mac 上執行"; return 3; }
+  # 10-10(the maintainer「在另一個 linux 測試」):公開版在 Linux 上不再直接拒絕 ⇒ 只裝測試安全網(clone + 連結 aib),
+  #   跳過 Mac 才有的步驟(開發者工具、Homebrew、tmux、AI 工具、管理員密碼)。私有來源 / 簽章套件仍只支援 Mac。
+  local LINUX=0
+  if [ "$(uname -s)" != Darwin ]; then
+    # 公開來源 = 不是 ssh 的那種(私有倉一律走 ssh;測試與自架鏡像用本機路徑 / https)
+    if case "$SOURCE" in ssh://*|git@*) false ;; *) true ;; esac && [ -z "$PACKAGE_BASE$PACKAGE_BUNDLE" ]; then
+      LINUX=1
+      say "… 這台不是 Mac:只裝測試安全網(aib test、aib ship);駕駛艙需要 macOS,所以不裝 AI 工具、Homebrew、tmux"
+      command -v git >/dev/null 2>&1 || { fail "這台沒有 git" "先用系統的套件管理裝好 git(例如 sudo apt install git)再跑同一行"; return 3; }
+      python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null \
+        || { fail "需要 Python 3.9 以上" "先裝好 Python 3.9 以上的版本,再跑同一行"; return 3; }
+      case "$SOURCE" in https://*) [ "$DRY" = 1 ] || git ls-remote -q "$SOURCE" HEAD >/dev/null 2>&1 ;; *) true ;; esac \
+        || { fail "連不上網路,或網路擋住了 github.com" "確認這台有連上網路;在公司網路請問網管是否擋住 github.com"; return 3; }
+    else
+      fail "目前只支援 Mac(macOS)" "請在 Mac 上執行"; return 3
+    fi
+  fi
+  if [ "$LINUX" = 0 ]; then
   # 10-04 a seat P2-7(已查證 Homebrew 文件):Apple 晶片上 macOS 15~27 正式支援;11~14 不支援但可能可用;Intel 是第三級
   local osv osmaj; osv="$(sw_vers -productVersion)"; osmaj="${osv%%.*}"
   [ "$osmaj" -ge 11 ] 2>/dev/null || { fail "你的 macOS 是 $osv,太舊了(至少要 11,建議 15 以上)" "到「系統設定 → 一般 → 軟體更新」升級後再跑"; return 3; }
@@ -618,6 +635,8 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     [ "${#miss[@]}" -eq 0 ]; return $?
   fi
 
+  fi   # LINUX=0:Mac 才有的步驟到這裡為止
+
   # 3b. 公開 git(預設 https://github.com/ez2app/ez2-aib.git)或管理者指定的 --source
   case "$SOURCE" in
     ssh://*|git@*)
@@ -712,8 +731,10 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     run bash "$DIR/tools/aib-install-path" --launcher || miss+=("aib-install-path 失敗")
     run bash "$DIR/tools/aib-install-skills" --all || miss+=("aib-install-skills 失敗")
   fi
-  if ! grep -q 'aib-bootstrap: PATH' "$HOME/.zprofile" 2>/dev/null; then
-    run sh -c 'printf "\n# aib-bootstrap: PATH\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n" >> "$HOME/.zprofile"'
+  local PROFILE="$HOME/.zprofile"
+  [ "$LINUX" = 1 ] && PROFILE="$HOME/.profile"   # Linux 多半是 bash:登入殼讀 ~/.profile
+  if ! grep -q 'aib-bootstrap: PATH' "$PROFILE" 2>/dev/null; then
+    run sh -c 'printf "\n# aib-bootstrap: PATH\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n" >> "$1"' sh "$PROFILE"
   fi
 
   # 6. 自檢
@@ -734,7 +755,9 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   say "== 完成(全部花了 $(took "$T_ALL"))。缺的:${#miss[@]} 項"
   for m in "${miss[@]+"${miss[@]}"}"; do say "  ✗ $m"; done
   for m in "${note[@]+"${note[@]}"}"; do say "  · $m"; done
-  if [ -n "$AI_LOGIN" ]; then
+  if [ "$LINUX" = 1 ]; then
+    say "  · Linux:目前只有測試安全網(aib test、aib ship);駕駛艙與 AI 席位需要 macOS"
+  elif [ -n "$AI_LOGIN" ]; then
     say "  · 各家 AI 要各自登入一次(在終端機輸入):"
     local pair; local IFS_OLD="$IFS"; IFS='|'
     for pair in ${AI_LOGIN#|}; do say "      ${pair%%:*}:${pair#*:}"; done
@@ -742,11 +765,12 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   else
     say "  · 之後要加裝 AI 工具:curl -fsSL https://aib.ez2.app/install.sh | bash -s -- --tools"
   fi
-  say "  · 登入後用 aib <provider> safe <role> 開席"
+  [ "$LINUX" = 1 ] || say "  · 登入後用 aib <provider> safe <role> 開席"
   if [ "$DRY" = 1 ]; then
     say "" "試跑完成:上面只顯示預計動作,沒有安裝 Ez2 AIB 或其他工具。"
   elif [ "${#miss[@]}" -eq 0 ]; then
-    say "" "現在就能用:在這個視窗輸入下面這行(之後開新視窗就不用再打):" "  source ~/.zprofile && aib --version"
+    if [ "$LINUX" = 1 ]; then say "" "現在就能用:在這個視窗輸入下面這行(之後開新視窗就不用再打):" "  . ~/.profile && aib --help"
+    else say "" "現在就能用:在這個視窗輸入下面這行(之後開新視窗就不用再打):" "  source ~/.zprofile && aib --version"; fi
   fi
   [ "${#miss[@]}" -eq 0 ]
 }

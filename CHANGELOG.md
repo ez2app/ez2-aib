@@ -1,8 +1,17 @@
-[English](CHANGELOG.md) | [繁體中文](CHANGELOG.zh-TW.md)
+[English](https://github.com/ez2app/ez2-aib/blob/main/CHANGELOG.md) | [繁體中文](https://github.com/ez2app/ez2-aib/blob/main/CHANGELOG.zh-TW.md) | [日本語](https://github.com/ez2app/ez2-aib/blob/main/CHANGELOG.ja.md) | [한국어](https://github.com/ez2app/ez2-aib/blob/main/CHANGELOG.ko.md)
 
 # Changelog
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
+
+## 0.1.1
+
+- Docs in four languages: README, CHANGELOG, CONTRIBUTING, SECURITY and both guides now come in English, 繁體中文, 日本語 and 한국어.
+- The language links at the top of each document point to GitHub, so they also work on PyPI (they returned 404 there in 0.1.0).
+- `aib --help` now opens with what aib is for: many AIs, one workspace.
+- One-line install now works on Linux too: it installs the test safety net (`aib test`, `aib ship`); the cockpit still needs macOS.
+- README shows how to get pipx first if you do not have it.
+- CI also tests Python 3.14 and 3.15.
 
 ## 0.1.0 — first public release
 

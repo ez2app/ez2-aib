@@ -1,4 +1,4 @@
-[English](AIB-SHIP-FOR-USERS.md) | [繁體中文](AIB-SHIP-FOR-USERS.zh-TW.md)
+[English](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-SHIP-FOR-USERS.md) | [繁體中文](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-SHIP-FOR-USERS.zh-TW.md) | [日本語](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-SHIP-FOR-USERS.ja.md) | [한국어](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-SHIP-FOR-USERS.ko.md)
 
 # aib 幫你推版省多少時間:給用戶的說明
 

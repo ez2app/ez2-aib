@@ -1,4 +1,4 @@
-[English](AIB-TEST-QUICKSTART.md) | [繁體中文](AIB-TEST-QUICKSTART.zh-TW.md)
+[English](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-TEST-QUICKSTART.md) | [繁體中文](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-TEST-QUICKSTART.zh-TW.md) | [日本語](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-TEST-QUICKSTART.ja.md) | [한국어](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-TEST-QUICKSTART.ko.md)
 
 # `aib test` 入門:只重跑有變的測試
 

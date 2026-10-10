@@ -1,4 +1,4 @@
-[English](CONTRIBUTING.md) | [繁體中文](CONTRIBUTING.zh-TW.md)
+[English](https://github.com/ez2app/ez2-aib/blob/main/CONTRIBUTING.md) | [繁體中文](https://github.com/ez2app/ez2-aib/blob/main/CONTRIBUTING.zh-TW.md) | [日本語](https://github.com/ez2app/ez2-aib/blob/main/CONTRIBUTING.ja.md) | [한국어](https://github.com/ez2app/ez2-aib/blob/main/CONTRIBUTING.ko.md)
 
 # 參與開發
 
