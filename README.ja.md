@@ -259,9 +259,10 @@ Linux では、PATH 上に C コンパイラ（`cc`、`gcc`、`clang` のいず�
 ## アンインストール
 
 ```sh
-rm -rf ~/ez2-aib ~/.local/bin/aib        # ワンライナーインストールを使った場合
+aib uninstall                            # 削除される内容を一覧表示（何も変更しません）
+aib uninstall --yes                      # この aib（ワンライナーでインストールしたもの）を削除。同じコンピューター上の別の aib には触れません
+aib uninstall --all --yes                # aib の記録とキャッシュも削除（~/.ez2-aib は先に ~/ez2-aib-backup-<時刻>.tar.gz へバックアップ）
 pipx uninstall ez2-aib                   # pipx でインストールした場合
-rm -rf ~/.ez2-aib ~/.cache/ez2-aib       # aib の記録とキャッシュ（aib がプロジェクト外に書き込むのはこれらと、システムの一時フォルダ内の一時ファイルだけです）
 rm -rf your-project/.aib                 # `aib ship` が作成したもので、もう不要な場合のみ
 ```
 

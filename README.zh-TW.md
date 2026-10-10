@@ -240,9 +240,10 @@ aib 不會把你的程式碼、測試結果或任何資料傳給我們。紀錄�
 ## 移除
 
 ```sh
-rm -rf ~/ez2-aib ~/.local/bin/aib        # 用一行安裝裝的話
+aib uninstall                            # 先列出會刪哪些(什麼都不動)
+aib uninstall --yes                      # 刪掉這份 aib(一行安裝的);同一台電腦上另一個 aib 不會被動到
+aib uninstall --all --yes                # 連 aib 的紀錄與快取一起刪(~/.ez2-aib 會先備份成 ~/ez2-aib-backup-<時間>.tar.gz)
 pipx uninstall ez2-aib                   # 用 pipx 裝的話
-rm -rf ~/.ez2-aib ~/.cache/ez2-aib       # aib 的紀錄與快取(專案以外只寫這兩處,外加系統暫存資料夾裡的暫存檔)
 rm -rf your-project/.aib                 # 只有 `aib ship` 建過、而且你不要了才刪
 ```
 

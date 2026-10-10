@@ -192,6 +192,10 @@ install_main() {
   fi
   # 10-09 a seat(the maintainer「開源版要一行可以直接更新」):公開版預設裝到 ~/ez2-aib —— 不碰 ~/ez2-aib(開發機上的私有正本)。
   #   管理者走 --source 舊路徑時預設仍是 ~/ez2-aib;--dir / AIB_DIR 照舊優先。
+  # 10-11(the maintainer FishMac 實裝):提示裡的「重跑這行」要是一定連得到的網址 ⇒ 公開來源(不是 ssh)指 GitHub 上的 install.sh;
+  #   私有倉 / 簽章套件照舊用網站。
+  local SELF_URL="https://aib.ez2.app/install.sh"
+  case "$SOURCE" in ""|ssh://*|git@*) ;; *) SELF_URL="https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh" ;; esac
   if [ -z "$DIR" ]; then
     if [ "$SOURCE" = "$PUBLIC_SOURCE" ]; then DIR="$HOME/ez2-aib"; else DIR="$HOME/ez2-aib"; fi
   fi
@@ -209,7 +213,7 @@ install_main() {
     local have; have="$(git -C "$DIR" remote get-url origin 2>/dev/null || true)"
     if [ "$(_norm_src "$have")" != "$(_norm_src "$SOURCE")" ]; then
       fail "$DIR 已經有一份程式,但它不是從 $SOURCE 裝的(它的來源是 ${have:-沒有設定}),這次沒有動它" \
-           "這份若是你自己的開發用倉庫,就別讓安裝程式碰它;要另外裝一份公開版,重跑時指定別的位置:curl -fsSL https://aib.ez2.app/install.sh | bash -s -- --dir \"\$HOME/ez2-aib-public\""
+           "這份若是你自己的開發用倉庫,就別讓安裝程式碰它;要另外裝一份公開版,重跑時指定別的位置:curl -fsSL $SELF_URL | bash -s -- --dir \"\$HOME/ez2-aib-public\""
       return 2
     fi
     UPDATE=1
@@ -398,7 +402,8 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     done
   }
   # 一開始就判來源(不先問密碼、不先裝東西);macOS 沒裝開發者工具時 git 會跳安裝視窗 ⇒ 那時留到第 4 步再判
-  if xcode-select -p >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then same_source || return 2; fi
+  #   Linux 沒有 xcode-select:有 git 就判(10-11 雲端 Linux 實測:不判的話重跑標題寫「開始安裝」而不是「開始更新」)
+  if { [ "$(uname -s)" != Darwin ] || xcode-select -p >/dev/null 2>&1; } && command -v git >/dev/null 2>&1; then same_source || return 2; fi
   # 預設走公開 git,裝在 $DIR(公開版 ~/ez2-aib;--source 舊路徑 ~/ez2-aib);簽章套件要明確指定才落到 ~/.local/share/ez2-aib/current/repo。
   local shown_dir
   if [ -n "$PACKAGE_BASE" ] || [ -n "$PACKAGE_BUNDLE" ]; then
@@ -465,7 +470,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   fi
   if [ "$DRY" = 0 ]; then
     if ask_ai; then choose_ai || return $?
-    else say "… 這台已經裝過 aib:這次只更新,不再問要裝哪些 AI 工具(要加裝:curl -fsSL https://aib.ez2.app/install.sh | bash -s -- --tools)"; fi
+    else say "… 這台已經裝過 aib:這次只更新,不再問要裝哪些 AI 工具(要加裝:curl -fsSL $SELF_URL | bash -s -- --tools)"; fi
   fi
   # 1a. Apple 開發者工具:用軟體更新在背景裝,不跳視窗
   local t_step; t_step=$(date +%s); local clt_new=0
@@ -549,7 +554,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     case " $AI_PICK " in *" codex "*) need_node=1 ;; esac
     [ "$need_node" = 0 ] || brew_dep node "Node.js(Codex 席位顯示模型名稱用)" "Codex 席位會少顯示模型名稱,其他照常"
   fi
-  note+=("bash:照已排定的第 3 步再升級,這裡不動")
+  [ "$SELF_URL" = "https://aib.ez2.app/install.sh" ] && note+=("bash:照已排定的第 3 步再升級,這裡不動")
   install_ai
 
   # 把官方安裝器拉下來。英文錯誤進暫存檔不給使用者看;404/410 說「還沒放到下載區」,不要說成網路壞了。
@@ -675,13 +680,22 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
       git -C "$1" rev-parse --short HEAD
     fi
   }
+  # 10-11(the maintainer「照你的建議」):公開版裝「最新的正式版本標籤」(v*),不是 main 最新 ⇒ PR 合併後要等維護者核准發版,
+  #   一行安裝的人才拿得到,跟 PyPI 同一版。來源沒有 v* 標籤(自架鏡像、測試)或私有來源 ⇒ 照舊用 main。
+  release_ref() {
+    local tag=""
+    if [ "$SELF_URL" != "https://aib.ez2.app/install.sh" ]; then
+      tag="$(git -C "$1" tag -l 'v[0-9]*' --sort=-v:refname 2>/dev/null | head -n 1)"
+    fi
+    if [ -n "$tag" ]; then printf '%s' "$tag"; else printf '%s' "origin/main"; fi
+  }
   t_step=$(date +%s)
   same_source || { show_miss; return 2; }
   if [ -d "$DIR/.git" ]; then
     say "… 已有 $DIR,只快轉到來源最新"
     if [ "$DRY" = 1 ]; then
       say "  (試跑)git fetch && 沒有本機改動才 git merge --ff-only"
-    elif ! git -C "$DIR" fetch -q origin; then
+    elif ! git -C "$DIR" fetch -q --tags origin; then
       miss+=("快轉失敗(連不上來源),請稍後重跑同一行")
     else
       local dirty before after ver
@@ -689,17 +703,19 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
       #   沒追蹤的檔快轉本來就不會蓋;真的會撞到時 git merge --ff-only 自己會拒絕。
       dirty="$(git -C "$DIR" status --porcelain --untracked-files=no)"
       before="$(git -C "$DIR" rev-parse HEAD)"
-      after="$(git -C "$DIR" rev-parse origin/main 2>/dev/null || true)"
+      local want; want="$(release_ref "$DIR")"
+      after="$(git -C "$DIR" rev-parse "$want^{commit}" 2>/dev/null || true)"
       if [ -n "$dirty" ]; then
         say "✗ 這份安裝裡有你改過、還沒提交的檔,沒有覆蓋"
         say "  → 怎麼辦:先把改動從安裝目錄移走或另外存好,再重跑同一行。重跑只會快轉,不會整份重抓,也不會蓋掉你的檔。"
         miss+=("有本機改動,沒有覆蓋")
       elif [ -z "$after" ]; then
         miss+=("快轉失敗(來源沒有 main)")
-      elif [ "$before" = "$after" ]; then
+      elif [ "$before" = "$after" ] || git -C "$DIR" merge-base --is-ancestor "$after" "$before" 2>/dev/null; then
+        # 已在這版、或比最新正式版還新(以前從 main 裝的)⇒ 不往回退
         ver="$(repo_ver "$DIR")"
         say "✓ 已是最新($ver)"
-      elif git -C "$DIR" merge -q --ff-only origin/main; then
+      elif git -C "$DIR" merge -q --ff-only "$after"; then
         ver="$(repo_ver "$DIR")"
         say "✓ 已更新到 $ver($(git -C "$DIR" rev-parse --short "$before") → $(git -C "$DIR" rev-parse --short HEAD))"   # 版號沒變也看得出有更新
       else
@@ -708,6 +724,11 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     fi
   else
     run env GIT_TERMINAL_PROMPT=0 git clone -q "$SOURCE" "$DIR" || { fail "下載 aib 程式失敗" "確認這台可連 github.com 後重跑同一行"; show_miss; return 5; }
+    if [ "$DRY" = 0 ]; then
+      local first; first="$(release_ref "$DIR")"
+      # 剛 clone、還沒有任何本機改動 ⇒ 直接停在最新正式版
+      [ "$first" = "origin/main" ] || git -C "$DIR" reset -q --hard "$first^{commit}" || miss+=("切到正式版 $first 失敗")
+    fi
   fi
   run mkdir -p "$HOME/.ez2-aib"
 
@@ -719,10 +740,16 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     #   ~/.local/bin/aib 直接連到 checkout 的 bin/aib(README「免安裝」那條路)。更新 = 上面第 4 步的快轉,連結不用動。
     #   那個位置已經是別的 aib(開發機的包裝檔、pipx 裝的…)⇒ 不蓋,說怎麼辦。
     PUB=1
-    local link="$HOME/.local/bin/aib" cur=""
+    local link="$HOME/.local/bin/aib" cur="" KEEP=0
     [ -L "$link" ] && cur="$(readlink "$link")"
     if [ -e "$link" ] || [ -L "$link" ]; then
-      [ "$cur" = "$DIR/bin/aib" ] || miss+=("$link 已經是別的 aib(${cur:-一般檔案}),沒有蓋掉;要改用這份公開版:ln -sfn \"$DIR/bin/aib\" \"$link\"")
+      # 10-11 the maintainer FishMac 實裝:那裡是正在用的 aib ⇒ 不蓋,也不叫人自己蓋(蓋了就換掉正在用的駕駛艙);不算「缺」。
+      if [ "$cur" != "$DIR/bin/aib" ]; then
+        KEEP=1
+        note+=("這台已經有另一個 aib($link),沒有動它:你原本的 aib 照常可用" \
+               "公開版放在 $DIR,要看說明直接跑:$DIR/bin/aib --help" \
+               "兩個 aib 共用 ~/.ez2-aib(席位、記憶);要真的試公開版的駕駛艙,請用另一個使用者帳號")
+      fi
     else
       run mkdir -p "$HOME/.local/bin"
       run ln -s "$DIR/bin/aib" "$link" || miss+=("沒能建立 $link")
@@ -742,6 +769,8 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     # 10-03 FishMac a seat:自檢要走**路徑上**的 aib(開新視窗後使用者打的就是它);直跑倉庫那支,aib 沒進路徑也會過。
     #   直接執行 ~/.local/bin/aib(不靠 PATH 順序,免得別處另一支 aib 冒充);結束碼與輸出分開看(不經管線,rc 不被吃掉)。
     local abin="$HOME/.local/bin/aib" vout vrc v=""
+    [ "${KEEP:-0}" = 1 ] && abin="$DIR/bin/aib"   # 路徑上那支是別的 aib ⇒ 驗這份公開版本身
+    local shown="$abin"; case "$abin" in "$HOME"/*) shown="~/${abin#"$HOME"/}" ;; esac
     if [ "$PUB" = 1 ]; then
       # 公開版:aib --help 印用法、結束碼 2(核心套件的約定);有「aib test」那行才算跑得起來
       if [ -x "$abin" ]; then vout="$(cd "$DIR" && "$abin" --help 2>&1)"; vrc=$?; else vout=""; vrc=127; fi
@@ -750,7 +779,9 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
       if [ -x "$abin" ]; then vout="$(cd "$DIR" && "$abin" --version 2>&1)"; vrc=$?; else vout=""; vrc=127; fi
       [ "$vrc" = 0 ] && v="$(printf '%s\n' "$vout" | grep -m1 'Ez2 AIB')"
     fi
-    if [ -n "$v" ]; then say "✓ $v(~/.local/bin/aib,花了 $(took "$t_step"))"; else miss+=("aib 指令不在 ~/.local/bin 或跑不起來(rc=$vrc)"); fi
+    if [ -n "$v" ]; then say "✓ $v($shown,花了 $(took "$t_step"))"
+    elif [ "$vrc" = 127 ]; then miss+=("$shown 不見了或不能執行")
+    else miss+=("$shown 跑不起來(結束碼 $vrc)"); fi
   fi
   say "== 完成(全部花了 $(took "$T_ALL"))。缺的:${#miss[@]} 項"
   for m in "${miss[@]+"${miss[@]}"}"; do say "  ✗ $m"; done
@@ -763,11 +794,13 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     for pair in ${AI_LOGIN#|}; do say "      ${pair%%:*}:${pair#*:}"; done
     IFS="$IFS_OLD"
   else
-    say "  · 之後要加裝 AI 工具:curl -fsSL https://aib.ez2.app/install.sh | bash -s -- --tools"
+    say "  · 之後要加裝 AI 工具:curl -fsSL $SELF_URL | bash -s -- --tools"
   fi
   [ "$LINUX" = 1 ] || say "  · 登入後用 aib <provider> safe <role> 開席"
   if [ "$DRY" = 1 ]; then
     say "" "試跑完成:上面只顯示預計動作,沒有安裝 Ez2 AIB 或其他工具。"
+  elif [ "${#miss[@]}" -eq 0 ] && [ "${KEEP:-0}" = 1 ]; then
+    say "" "公開版裝好了(和你原本的 aib 並存,沒有取代它)。"
   elif [ "${#miss[@]}" -eq 0 ]; then
     if [ "$LINUX" = 1 ]; then say "" "現在就能用:在這個視窗輸入下面這行(之後開新視窗就不用再打):" "  . ~/.profile && aib --help"
     else say "" "現在就能用:在這個視窗輸入下面這行(之後開新視窗就不用再打):" "  source ~/.zprofile && aib --version"; fi
