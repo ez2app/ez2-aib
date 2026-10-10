@@ -1002,12 +1002,35 @@ fi
 [ -z "$REPORTS_TO" ] || [[ "$REPORTS_TO" =~ $REPORTS_TO_RE ]] || \
   die "$(t aib.err.reports_to "seat=$REPORTS_TO")"
 [ -z "$INSTANCE" ] || [[ "$INSTANCE" =~ $INSTANCE_RE ]] || die "$(t aib.err.instance "instance=$INSTANCE")"
+# 10-10(the maintainer):原地復活沒帶 --model 時,**先拿回原來在用的模型**,不是 providers.json 預設。
+#   三層:① 對話紀錄最後用的(席內 /model 換過的只有這裡知道)② 舊席位檔 model_requested ③ 預設。
+#   退到哪一層都印一行到 stderr——不印的話模型被換掉是無聲的(10-10 a seat:Fable 5.1 復活後變 Opus 5,
+#   席碼/人格/CTX 全對、右欄沒警報)。判定正本在 seat_fork.revive_model,這裡只呼叫。
+MODEL_FROM_REVIVE=0
+_revive_layer=""
+if [ -z "$MODEL_REQUESTED" ] && [ -n "${AIB_REVIVE_SESSION_UUID:-}" ]; then
+  _revive_pick="$("$T_PY3" -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import seat_fork
+m, layer = seat_fork.revive_model(sys.argv[2], sys.argv[3], sys.argv[4])
+print(m + "\t" + layer)' "$HERE" "$PROVIDER" "$AIB_REVIVE_SESSION_UUID" "${EZ2_AIB_HOME:-$HOME/.ez2-aib}" 2>/dev/null || true)"
+  _revive_model="${_revive_pick%%$'\t'*}"
+  _revive_layer="${_revive_pick#*$'\t'}"
+  if [ -n "$_revive_model" ]; then
+    MODEL_REQUESTED="$_revive_model"
+    MODEL_FROM_REVIVE=1
+    printf '%s\n' "$(t "aib.launch.revive_model_${_revive_layer}" "value=$MODEL_REQUESTED" "session=$AIB_REVIVE_SESSION_UUID")" >&2
+  fi
+fi
 if [ -z "$MODEL_REQUESTED" ]; then
   MODEL_REQUESTED="$("$T_PY3" -c 'import json,sys
 rows=json.load(open(sys.argv[1], encoding="utf-8")).get("providers", [])
 match=[r for r in rows if r.get("id")==sys.argv[2] and r.get("status")=="supported"]
 value=match[0].get("default_requested_model", "") if len(match)==1 else ""
 print(value)' "$HERE/providers.json" "$PROVIDER")" || MODEL_REQUESTED=""
+  if [ -n "${AIB_REVIVE_SESSION_UUID:-}" ]; then
+    printf '%s\n' "$(t aib.launch.revive_model_default "value=$MODEL_REQUESTED" "session=$AIB_REVIVE_SESSION_UUID")" >&2
+  fi
 fi
 # 沒有手指定型號的 Codex 席：用本機清單裡版本號最大、而且有列出來的 gpt-*-luna。
 # 清單不在就維持登記簿的後備型號。推理等級不在這裡帶，這版 Codex 沒有 --effort。
@@ -1020,7 +1043,7 @@ print("1" if codex_pack.enabled() else "0")' "$HERE" 2>/dev/null || printf '1')"
   _codex_pack_on="$(printf '%s' "$_codex_pack_raw" | tr -d '[:space:]')"
   [ "$_codex_pack_on" = "0" ] || _codex_pack_on=1
 fi
-if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$_codex_pack_on" = "1" ]; then
+if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$MODEL_FROM_REVIVE" != "1" ] && [ "$_codex_pack_on" = "1" ]; then
   _luna="$("$T_PY3" -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import codex_luna_model

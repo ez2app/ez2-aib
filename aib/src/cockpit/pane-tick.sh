@@ -183,6 +183,39 @@ pane_reexec_if_changed() {
   exec bash "$PANE_SELF_SCRIPT" ${PANE_SELF_ARGS+"${PANE_SELF_ARGS[@]}"}
 }
 
+# ── 組字停火(2026-10-10,the maintainer 第 2 項):終端機裡有一段還沒送出的中文時,不渲染 ──────────
+# 為什麼:macOS 27 Terminal.app 2.15 的瑕疵——視窗裡有組字區(IME marked text)時,tmux 每送一批新畫面進來,
+#   Terminal 就把組字區重釘回原位(-[TTView setMarkedText:…] → -[TTLogicalScreen displayPositionForUnicharOffset:]),
+#   釘到已不存在的行就丟 NSRangeException:走重畫路徑 ⇒ AppKit 當場殺掉整個 Terminal(10-05 ×3、10-09 18:57 的 .ips,
+#   所有艙的視窗一起沒);走收資料路徑 ⇒ 只記錯、那批資料解到一半被丟 ⇒ 畫面壞/視窗不見(10-10 13:40:39–50 六發,
+#   931e 艙的視窗就是那十秒沒的;當天 04:52–14:28 共 17 發,每一發當下鼠鬚管都在 Setting marked text)。
+#   Terminal 改不了、鼠鬚管沒 Xcode 重編不了;能動的是「組字期間少送畫面」。這不是根治(AI 席串流中的輸出
+#   管不到),是把面板這一側的曝險拿掉;成效用 `log show --predicate 'process == "Terminal" AND
+#   eventMessage CONTAINS "NSRangeException"'` 每小時幾發來量。
+# 旗標:$EZ2_IME_COMPOSING_FLAG(預設 ~/.ez2-aib/state/ime-composing),由鼠鬚管的 lua/liu_aib_quiet.lua 寫
+#   (只在 app_options 標了 aib_terminal 的 app 組字時寫;內容 = 最後更新的 epoch 秒;送出/取消/切走就刪)。
+# 失效側一律「照畫」:旗標不在、內容不是數字、超過 EZ2_IME_QUIET_MAX 秒(預設 5;lua 每個鍵都重寫,所以打字中不會過期,停手 5 秒或 lua 漏清就恢復畫面)沒更新 ⇒ 回 rc1 當沒在組字。
+#   理由同 pane_attached:量不到當沒人組字,代價只是多一次曝險;反過來會讓看得見的面板凍住,那才是缺陷。
+# 成本:旗標不在時零 fork(一個 [ -f ]);旗標在時每拍一支 date(只在組字那幾秒)。
+# 用法:主迴圈 `pane_wait_if_composing && continue`,放在 pane_wait_if_detached 後面。
+PANE_COMPOSING_SEEN=0
+pane_wait_if_composing() {
+  local f="${EZ2_IME_COMPOSING_FLAG:-$HOME/.ez2-aib/state/ime-composing}" t="" now max tick
+  if [ ! -f "$f" ]; then
+    PANE_COMPOSING_SEEN=0
+    return 1
+  fi
+  pane_read_file t "$f"
+  case "$t" in ''|*[!0-9]*) return 1 ;; esac
+  max="${EZ2_IME_QUIET_MAX:-5}"; case "$max" in ''|*[!0-9]*|0) max=5 ;; esac
+  now="$(date +%s 2>/dev/null)"; case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  [ $(( now - t )) -le "$max" ] || return 1
+  PANE_COMPOSING_SEEN=1
+  tick="${EZ2_IME_QUIET_TICK:-0.25}"
+  pane_tick_sleep "$tick"
+  return 0
+}
+
 PANE_DETACHED_WAIT=""
 pane_wait_if_detached() {
   if pane_attached; then

@@ -300,6 +300,7 @@ while true; do
   pane_reexec_if_changed                # BF:腳本換了就 exec 自己(每 ~30 秒問一次)
   pane_cooldown_ticks                   # 降溫:熱了就放慢自己的輪詢
   pane_wait_if_detached && continue     # 沒人看:不渲染,維持運作(§59)
+  pane_wait_if_composing && continue    # 終端機組字中:不渲染(10-10,避開 Terminal 重釘組字區的崩潰;見 pane-tick.sh)
   PANE_GEOM_DIRTY=0
   pane_read_file TAB "$TABF"
   pane_read_file KICK "$KICKF"

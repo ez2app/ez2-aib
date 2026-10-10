@@ -21,7 +21,7 @@
       "id": "claude",
       "letter": "CLA",
       "status": "supported",
-      "default_requested_model": "claude-opus-5",
+      "default_requested_model": "claude-opus-5-5",
       "identity": "assigned-session-id",
       "identity_note": "能被指派新 session id 的 CLI 之一(與 grok 同一集合);aib 開席前產 uuid 用 --session-id 餵進去,席位檔那個值是權威值不是事後猜。",
       "menu_label": "Claude",
