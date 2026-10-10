@@ -4,6 +4,15 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.2
+
+- New `aib uninstall`: lists what it would remove first; `--yes` removes this aib, `--all` also removes its records (backed up first). Another aib on the same computer is never touched.
+- One-line install on a computer that already has another aib: it no longer reports a failure or tells you to replace it. Your existing aib keeps working; the open-source copy sits next to it.
+- The installer's hints now point to the GitHub address that works, and no longer show developer-only lines.
+- Re-running the one-line install on Linux now says "updating" instead of "installing".
+- The one-line install now installs the latest release (the newest `v*` tag), the same version as PyPI, instead of whatever was last merged; re-running it moves to a newer release once one is published, and never goes back.
+- Releases: one workflow run creates the tag and the GitHub release (its notes are the CHANGELOG section) and, after a maintainer approves, uploads to PyPI; only one release runs at a time. CI runs on pull requests and on main only.
+
 ## 0.1.1
 
 - Docs in four languages: README, CHANGELOG, CONTRIBUTING, SECURITY and both guides now come in English, 繁體中文, 日本語 and 한국어.

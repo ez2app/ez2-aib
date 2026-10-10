@@ -261,9 +261,10 @@ aib가 그 이유를 알려 줍니다. **이 경우 위에서 설명한 빈틈�
 ## 제거
 
 ```sh
-rm -rf ~/ez2-aib ~/.local/bin/aib        # 한 줄 설치를 사용한 경우
+aib uninstall                            # 삭제될 항목을 먼저 보여 줍니다(아무것도 바꾸지 않음)
+aib uninstall --yes                      # 이 aib(한 줄 설치)를 삭제합니다. 같은 컴퓨터의 다른 aib는 건드리지 않습니다
+aib uninstall --all --yes                # aib의 기록과 캐시도 삭제합니다(~/.ez2-aib는 먼저 ~/ez2-aib-backup-<시각>.tar.gz로 백업)
 pipx uninstall ez2-aib                   # pipx로 설치한 경우
-rm -rf ~/.ez2-aib ~/.cache/ez2-aib       # aib의 기록과 캐시(프로젝트 밖에서 aib가 쓰는 곳은 이 두 곳과 시스템 임시 폴더의 임시 파일뿐입니다)
 rm -rf your-project/.aib                 # `aib ship`이 만들었고 더 이상 필요 없을 때만
 ```
 

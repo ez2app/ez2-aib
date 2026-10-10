@@ -8,6 +8,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib support [--confirm]     collect a de-identified bug report pack (nothing is sent; you attach it to an issue)
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
+    aib uninstall [--all] [--yes]   remove aib from this computer (lists first; --yes removes; --all also records)
     aib <provider> <dgrs|safe> <role>   open an AI seat in the cockpit (macOS + tmux; see `aib --help-cockpit`)
     aib <other commands> …      everything else goes to the cockpit (seats, fleet, handoff, new project / role)
 """
@@ -19,7 +20,8 @@ HERE = os.path.dirname(os.path.realpath(__file__))     # 套件資料夾本身 =
 TARGETS = {"test": os.path.join(HERE, "tools", "verify", "test_entry.py"),
            "ship": os.path.join(HERE, "tools", "release", "ship.py"),
            "support": os.path.join(HERE, "tools", "support", "collect.py"),
-           "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py")}
+           "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py"),
+           "uninstall": os.path.join(HERE, "tools", "support", "uninstall.py")}
 
 
 def _locale():

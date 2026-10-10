@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 name: ci
+# 10-11:只在 PR 和 main 上跑(推發佈分支不再另跑一批,PR 頁上只剩一批結果)
 on:
   push:
+    branches: [main]
   pull_request:
 permissions:
   contents: read

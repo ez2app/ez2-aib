@@ -262,9 +262,10 @@ runs only what changed too. Pull requests<sup>[52]</sup> from forks<sup>[53]</su
 ## Uninstall
 
 ```sh
-rm -rf ~/ez2-aib ~/.local/bin/aib        # if you used the one-line install
+aib uninstall                            # list what would be removed (nothing is touched)
+aib uninstall --yes                      # remove this aib (one-line install); another aib on the same computer is left alone
+aib uninstall --all --yes                # also remove aib's records and cache (~/.ez2-aib is backed up to ~/ez2-aib-backup-<time>.tar.gz first)
 pipx uninstall ez2-aib                   # if you installed it with pipx
-rm -rf ~/.ez2-aib ~/.cache/ez2-aib       # aib's records and cache (outside your project aib writes only these, plus temporary files in the system temp folder)
 rm -rf your-project/.aib                 # only if `aib ship` created it and you no longer want it
 ```
 
