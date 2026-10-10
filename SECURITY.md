@@ -1,4 +1,4 @@
-[English](SECURITY.md) | [繁體中文](SECURITY.zh-TW.md)
+[English](https://github.com/ez2app/ez2-aib/blob/main/SECURITY.md) | [繁體中文](https://github.com/ez2app/ez2-aib/blob/main/SECURITY.zh-TW.md) | [日本語](https://github.com/ez2app/ez2-aib/blob/main/SECURITY.ja.md) | [한국어](https://github.com/ez2app/ez2-aib/blob/main/SECURITY.ko.md)
 
 # Security
 

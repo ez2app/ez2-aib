@@ -1,4 +1,4 @@
-[English](AIB-SHIP-FOR-USERS.md) | [繁體中文](AIB-SHIP-FOR-USERS.zh-TW.md)
+[English](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-SHIP-FOR-USERS.md) | [繁體中文](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-SHIP-FOR-USERS.zh-TW.md) | [日本語](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-SHIP-FOR-USERS.ja.md) | [한국어](https://github.com/ez2app/ez2-aib/blob/main/docs/AIB-SHIP-FOR-USERS.ko.md)
 
 # How much time aib saves when you push: a guide for users
 

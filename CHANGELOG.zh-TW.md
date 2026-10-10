@@ -1,8 +1,17 @@
-[English](CHANGELOG.md) | [繁體中文](CHANGELOG.zh-TW.md)
+[English](https://github.com/ez2app/ez2-aib/blob/main/CHANGELOG.md) | [繁體中文](https://github.com/ez2app/ez2-aib/blob/main/CHANGELOG.zh-TW.md) | [日本語](https://github.com/ez2app/ez2-aib/blob/main/CHANGELOG.ja.md) | [한국어](https://github.com/ez2app/ez2-aib/blob/main/CHANGELOG.ko.md)
 
 # 版本紀錄
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
+
+## 0.1.1
+
+- 說明文件四種語言:README、CHANGELOG、CONTRIBUTING、SECURITY 和兩份使用說明,都有 English、繁體中文、日本語、한국어。
+- 每份文件最上面的語言切換改指向 GitHub,在 PyPI 上也點得到(0.1.0 在 PyPI 上會 404)。
+- `aib --help` 第一行改成說明 aib 的用途:多個 AI 在同一個工作空間協作。
+- 一行安裝在 Linux 上也能用:只裝測試安全網(`aib test`、`aib ship`);駕駛艙仍需要 macOS。
+- README 補上沒有 pipx 時要先怎麼裝。
+- CI 加測 Python 3.14、3.15。
 
 ## 0.1.0 —— 第一個公開版
 

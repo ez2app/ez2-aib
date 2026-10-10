@@ -1,4 +1,4 @@
-[English](README.md) | [繁體中文](README.zh-TW.md)
+[English](https://github.com/ez2app/ez2-aib/blob/main/README.md) | [繁體中文](https://github.com/ez2app/ez2-aib/blob/main/README.zh-TW.md) | [日本語](https://github.com/ez2app/ez2-aib/blob/main/README.ja.md) | [한국어](https://github.com/ez2app/ez2-aib/blob/main/README.ko.md)
 
 # aib
 
@@ -50,9 +50,10 @@
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash
-# macOS:裝到 ~/ez2-aib;之後隨時再跑同一行就是更新
+# 裝到 ~/ez2-aib;之後隨時再跑同一行就是更新(Linux 只裝測試安全網;駕駛艙需要 macOS)
 aib update                                          # 裝好之後也可以這樣更新(aib update --tools 會再問要加裝哪些 AI 工具)
-# 其他裝法:pipx install git+https://github.com/ez2app/ez2-aib
+# 其他裝法:pipx install ez2-aib    (還沒有 pipx?macOS:brew install pipx / Linux:python3 -m pip install --user pipx,
+#                                    再跑 pipx ensurepath、開一個新的終端機)
 #          git clone https://github.com/ez2app/ez2-aib ~/ez2-aib && export PATH="$HOME/ez2-aib/bin:$PATH"
 
 cd your-project

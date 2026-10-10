@@ -11,13 +11,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+          allow-prereleases: true   # 3.15 剛出時 setup-python 可能只有預覽版
       - name: newer bash on macOS (aib traces bash 4.1+; the system /bin/bash 3.2 is reported as not measured)
         if: runner.os == 'macOS'
         run: brew install bash && echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
