@@ -175,6 +175,27 @@ class LiveTracker:
             return "↳ 已排隊:Claude 這一輪結束後讀(待讀 %d 則)" % n
         return "claudebot> …"
 
+    def seed_backlog(self, files) -> int:
+        """10-09 a seat(第 26 件):開席或 /bind **之前**就躺在 inbox 的信也算進來,以檔案 mtime 起算。
+
+        以前 pending 只記本行程 note_sent 過的信 ⇒ 橋一重開就歸零:10-09 18:46 a seat 重開時信箱有 2 封
+        (16:19 開席包、18:40「你在嗎」)沒人收,health 仍是 ok、席上沒說門鈴過期。files 由呼叫端用
+        claudebot_mailbox.waking_files 篩過(門鈴本來就不為它叫醒的 dm 不算)。回補進來的封數。"""
+        n = 0
+        with self._lock:
+            known = {str(p) for p, _t, _h in self.pending}
+            for f in files:
+                f = Path(f)
+                if str(f) in known:
+                    continue
+                try:
+                    t = f.stat().st_mtime
+                except OSError:
+                    continue
+                self.pending.append((f, t, "(開席前就在)"))
+                n += 1
+        return n
+
     # ── 一拍 ──────────────────────────────────────────
     def tick(self, now: float | None = None) -> None:
         now = time.time() if now is None else now

@@ -443,6 +443,13 @@ EOF_W
 }
 ensure_watch_window
 
+# ---- 截圖小幫手(10-09 the maintainer):AIB 開著時,Mac 任何地方按 Control+Shift+S 截圖 ----
+#   背景跑、不等它、失敗不擋開艙(它第一次要編譯,還可能跳視窗問要不要關輸入法的截圖)。
+#   不是 macOS / AIB_SHOT=0 / 不是真座艙(測試、截幀)時 shot_helper.py 自己略過;
+#   艙全關時小幫手自己結束(每 30 秒問一次 `shot_helper.py alive`)。紀錄在 ~/.ez2-aib/shot/shot.log。
+( EZ2_AIB_INSTANCE="${EZ2_AIB_INSTANCE:-}" "$EZ2_PY3" "$C/shot_helper.py" ensure \
+    </dev/null >/dev/null 2>&1 & ) || true
+
 pane_by_role() {
   local role="$1" _rows
   _rows="$(outer_tmux list-panes -t "$S:cockpit" -F '#{pane_id}|#{@aib_role}' 2>/dev/null || true)"
@@ -814,20 +821,26 @@ outer_tmux set-hook -t "$S" client-resized "run-shell -b '$RESIZE_CMD'"
 outer_tmux set-hook -t "$S" client-attached "run-shell -b 'env AIB_RESIZE_EVENT=client-attached $RESIZE_CMD'"
 outer_tmux set-hook -w -t "$S:cockpit" window-resized "run-shell -b '$RESIZE_CMD'"
 
-env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
-  bash "$C/keys/install-keys.sh" --install
-env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
-  EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
-  bash "$C/nav/region-nav-ctl.sh" --install
-env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
-  EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
-  bash "$C/mouse/mouse-ctl.sh" --install
-# E2.16:視圖標籤導航(Tab/BTab/滑鼠點標籤)。★08-13 實測抓到的回退:這支
-# 從來不在 ensure 鏈裡——E2.16 lane 當年手裝一次,cockpit 重建(今晨 A 類
-# 死因後全新開艙)綁定就蒸發,「左上 1.人格 2.大腦 點不動」即此。裝進鏈=根治。
-env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
-  EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
-  bash "$C/nav/view-nav-ctl.sh" --install
+# 10-09 a seat:下面四支綁的是**全機共用**的外層 tmux 表(所有艙一份),指令寫的是這棵樹的絕對路徑。
+# 從開發 worktree 開艙會把每一艙的按鍵/滑鼠都改指向那棵樹(10-09 4f8d「無法打字」即此)。
+# ⇒ 只有正本樹、安裝版、或隔離的測試 tmux 才裝;門在 global_bind_gate.sh。
+. "$C/global_bind_gate.sh"
+if aib_global_bind_ok "$C"; then
+  env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
+    bash "$C/keys/install-keys.sh" --install
+  env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
+    EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
+    bash "$C/nav/region-nav-ctl.sh" --install
+  env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
+    EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
+    bash "$C/mouse/mouse-ctl.sh" --install
+  # E2.16:視圖標籤導航(Tab/BTab/滑鼠點標籤)。★08-13 實測抓到的回退:這支
+  # 從來不在 ensure 鏈裡——E2.16 lane 當年手裝一次,cockpit 重建(今晨 A 類
+  # 死因後全新開艙)綁定就蒸發,「左上 1.人格 2.大腦 點不動」即此。裝進鏈=根治。
+  env -u TMUX EZ2_TMUX_SESSION="$S" EZ2_AIHUB_SOCKET="$HUB" \
+    EZ2_COCKPIT_STATE_DIR="$EZ2_COCKPIT_STATE_DIR" \
+    bash "$C/nav/view-nav-ctl.sh" --install
+fi
 # E2.19:內層 status bar 改造成艦長選擇器(冪等;原本那行是預設樣式的
 # session 名+主機+時鐘,即 08-13 截圖紅框——資訊零價值,還被誤讀成壞掉)。
 # rc=3=degraded sync(documented,三輪審中2):hub 短暫不可讀時 ensure

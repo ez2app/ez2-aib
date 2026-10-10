@@ -19,6 +19,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHIM = ROOT / "tools" / "verify" / "bash-shim"
+
+
+def _bash_traceable(bash):
+    """aib 追蹤 bash 要 4.1 以上(BASH_XTRACEFD);macOS 內建 /bin/bash 是 3.2 ⇒ 照設計判量不到(bash-version-no-xtrace)。"""
+    try:
+        out = subprocess.run([bash, "-c", 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"'], capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=10).stdout.split()
+        return (int(out[0]), int(out[1])) >= (4, 1)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return False
+
+
+SYS_BASH_OK = _bash_traceable("/bin/bash")     # run.sh 用 /bin/bash 起
 sys.path.insert(0, str(ROOT / "tools" / "verify"))
 sys.path.insert(0, str(ROOT / "tests"))
 import shadow_tracer as st  # noqa: E402
@@ -68,6 +81,7 @@ class FakePython(unittest.TestCase):
             else:
                 os.environ["EZ2_VERIFY_TRACE_DIR"] = old
 
+    @unittest.skipUnless(SYS_BASH_OK, "這台的 bash 低於 4.1(macOS 內建 /bin/bash 是 3.2):aib 追蹤不了 bash,照設計判量不到;這格只在 bash ≥ 4.1 驗")
     def test_f1_fake_python_on_path(self):
         row = self._keep(lambda: st.run_one(self.repo, "tests/t_fake.py", environ=self._env(), timeout=90))
         self.assertEqual(row["rc"], 0, row.get("tail"))
@@ -96,6 +110,7 @@ class Knives(unittest.TestCase):
                                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
         self.assertIn(cell.split(".")[-1], set(re.findall(r"^(?:FAIL|ERROR): (test_\w+)", p.stderr, re.M)), p.stderr[-2000:])
 
+    @unittest.skipUnless(SYS_BASH_OK, "這台的 bash 低於 4.1(macOS 內建 /bin/bash 是 3.2):aib 追蹤不了 bash,照設計判量不到;這格只在 bash ≥ 4.1 驗")
     def test_k1_path_python_reds_f1(self):
         self._red('EZ2_VERIFY_IN_SHIM=1 "${EZ2_VERIFY_PY:-python3}" -', 'EZ2_VERIFY_IN_SHIM=1 python3 -',
                   "FakePython.test_f1_fake_python_on_path")

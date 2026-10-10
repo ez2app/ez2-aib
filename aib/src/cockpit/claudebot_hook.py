@@ -330,7 +330,9 @@ def _deliver(session_id: str) -> str:
     rc, msgs, code = cm.pull(session_id)
     if rc != cm.RC_OK or not msgs:
         return ""
-    return cm.render(msgs, code, session_id, cm.token_of(session_id))
+    found = cm.seat(session_id)
+    return cm.render(msgs, code, session_id, cm.token_of(session_id),
+                     rules=cm.rules_for(found[0] if found else None, session_id))   # 10-09:同一條對話規則只送一次完整版
 
 
 def _reinject(session_id: str, source: str) -> str:
@@ -351,6 +353,11 @@ def _reinject(session_id: str, source: str) -> str:
 
 def on_session_start(payload: dict) -> int:
     sid = payload.get("session_id") or ""
+    if str(payload.get("source") or "") in ("compact", "clear"):
+        # 10-09:壓縮/清除後 Claude 不記得規則 ⇒ 下一封(含這一次 _deliver)給完整版
+        import claudebot_mailbox as cm
+        found = cm.seat(sid)
+        cm.forget_rules_sent(found[0] if found else None)
     pack = _reinject(sid, str(payload.get("source") or ""))
     if pack:
         sys.stdout.write(pack + "\n")
@@ -441,12 +448,19 @@ def post_reply(payload: dict, seat_dir: Path, post_fn=None) -> None:
         last_uuid = ("sha1:" + hashlib.sha1(text.encode("utf-8")).hexdigest()) if text.strip() else ""
     if last_uuid and last_uuid == last:
         return
+    # 10-09 真機(a seat 16:03):兩支 Stop hook 相隔 51 毫秒各 post 一次同一段 —— claim_once 的鍵帶 transcript 大小,
+    #   Claude Code 還在寫 transcript,兩份看到的大小不同 ⇒ 鍵不同、都放行;claude-last-posted 又是 post 完才寫。
+    #   這裡再用「這一段的 uuid(或內容雜湊)」搶一次記號:同一段 CLAIM_WINDOW_S 內只 post 一份。
+    if text.strip() and not claim_once("stop-post", last_uuid or text, now=time.time()):
+        log("stop", sid, "skipped-duplicate-post", chars=len(text))
+        return
     if text.strip():
         rc = post_fn(text)
         log("stop", sid, "posted-reply" if rc == cm.RC_OK else "post-failed", rc=rc, chars=len(text))
         if rc != cm.RC_OK:
             # r1-fix N1(a seat 18:58):送失敗(中繼暫時連不上、沒綁席)不寫「已送」標記,下一次 Stop 再送;
-            #   寫了就永遠不補送。
+            #   寫了就永遠不補送。10-09:同理把「stop-post」記號放掉,不然 5 秒內的重送會被當成重複
+            release_claim("stop-post", last_uuid or text)
             return
     if last_uuid:
         tmp = seat_dir / (MARK_POSTED + ".%d.tmp" % os.getpid())
@@ -787,6 +801,19 @@ CLAIM_DIR = "claudebot-bindings/hook-claims"
 CLAIM_WINDOW_S = 5.0
 
 
+def _claim_key(event: str, raw: str, size: str = "") -> str:
+    import hashlib
+    return hashlib.sha256((event + "\0" + size + "\0" + (raw or "")).encode("utf-8", "replace")).hexdigest()[:32]
+
+
+def release_claim(event: str, raw: str) -> None:
+    """搶到記號但事情沒做成(post 失敗)⇒ 把記號放掉,下一次 Stop 才能重送(test-claudebot-relay H3:中繼掛掉時要補送)。"""
+    try:
+        (_state_root() / CLAIM_DIR / _claim_key(event, raw)).unlink()
+    except OSError:
+        pass
+
+
 def claim_once(event: str, raw: str, now: float | None = None, transcript=None) -> bool:
     """同一個事件、同一份 stdin 在 CLAIM_WINDOW_S 秒內只處理一次。回 True = 這一份搶到了,照做。
 
@@ -810,7 +837,7 @@ def claim_once(event: str, raw: str, now: float | None = None, transcript=None) 
             size = str(Path(transcript).stat().st_size)
         except OSError:
             size = ""
-    key = hashlib.sha256((event + "\0" + size + "\0" + (raw or "")).encode("utf-8", "replace")).hexdigest()[:32]
+    key = _claim_key(event, raw, size)
     path = d / key
     for _ in range(2):
         try:

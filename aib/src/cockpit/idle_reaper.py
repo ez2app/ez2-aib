@@ -1360,6 +1360,10 @@ def watch_round(policy, dry_run=False, out=sys.stdout):
         exit_sweep_tick(out)
     except Exception as exc:                      # noqa: BLE001
         out.write("aib idle watch: 本輪退出痕補記失敗(仍存活):%s\n" % exc)
+    try:
+        cabin_snapshot_tick()
+    except Exception as exc:                      # noqa: BLE001
+        out.write("aib idle watch: 本輪艙快照失敗(仍存活):%s\n" % exc)
     if policy is None:
         out.write(t("aib.idle.watch.scan_only", path=POLICY_PATH) + "\n")
         out.flush()
@@ -1410,6 +1414,16 @@ def _unexited_seat_files(sdir):
         if isinstance(rec, dict) and "exited_at_epoch" not in rec:
             out.append(raw)
     return out
+
+
+def cabin_snapshot_tick():
+    """10-09 a seat:watch 每輪順手把「在線的艙與每艙的席」寫進這次開機的快照(aib restart 停電/重開機復原用)。
+    按開機分檔,重開機後新艙的 watch 不會蓋掉停電前那一份;多艙的 watch 同一分鐘只寫一次;
+    沒有在線的艙不寫。不印任何東西(沒事不刷屏)。關閉:EZ2_AIB_RESTART_SNAPSHOT=0。回寫入路徑或 None。"""
+    import cabin_restart
+    if os.environ.get(cabin_restart.SNAPSHOT_DISABLE_ENV) == "0":
+        return None
+    return cabin_restart.write_snapshot()
 
 
 def exit_sweep_tick(out=sys.stdout):

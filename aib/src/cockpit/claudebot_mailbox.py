@@ -102,14 +102,22 @@ def pending_wake(session_id: str, base=None, env=None, seat_dir=None) -> bool:
         if not found:
             return False
         seat_dir = found[0]
+    return bool(waking_files(seat_dir, env, first_only=True))
+
+
+def waking_files(seat_dir, env=None, first_only: bool = False) -> list:
+    """inbox 裡值得叫醒 Claude 的信(檔案路徑,舊到新)。門鈴與橋的 claudebot_live 用同一把尺。"""
+    out = []
     for f in sorted((Path(seat_dir) / "inbox").glob("*.json")):
         try:
             body = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue   # 被別人搶先搬走,或正在寫
         if worth_waking(gm.classify(body, f.name), env):
-            return True
-    return False
+            out.append(f)
+            if first_only:
+                break
+    return out
 
 
 def pull(session_id: str, base=None):
@@ -124,12 +132,53 @@ def send_dm(session_id: str, to: str, text: str, token: str = "", base=None):
     return gm.send_dm(session_id, to, text, token=token, base=base, provider=PROVIDER)
 
 
-def render(msgs: list, code: str, session_id: str, token: str) -> str:
-    """交給 Claude 看的那一段:誰綁著、規則、按來源分區的信、dm 指令。"""
+RULES_SAME = ("規則(AIB 定的):同這條對話第一次收信時給你的那份,沒有變;照那份做。"
+              "(對話被壓縮或清除後會再給一次完整版。)")
+RULES_SENT_MARK = "claude-rules-sent"   # 席目錄裡記「這條對話收過哪一版規則」:<session id>\t<規則指紋>
+
+
+def rules_fingerprint() -> str:
+    import hashlib
+    return hashlib.sha256(RULES.encode("utf-8")).hexdigest()[:16]
+
+
+def rules_for(seat_dir, session_id: str) -> str:
+    """10-09 a seat(a seat 即時化建議第 4 點):每封信都附約六百字規則,吃對話容量、讓 85% 交接提早到。
+    同一條對話、同一版規則 ⇒ 只給一行 RULES_SAME;換了對話、規則改了、或標記被清掉(壓縮/清除後)⇒ 給完整版並記下。
+    seat_dir 是 None(找不到席)⇒ 一律完整版。"""
+    if seat_dir is None:
+        return RULES
+    mark = Path(seat_dir) / RULES_SENT_MARK
+    want = "%s\t%s" % (session_id, rules_fingerprint())
+    try:
+        if mark.read_text(encoding="utf-8").strip() == want:
+            return RULES_SAME
+    except OSError:
+        pass
+    try:
+        mark.write_text(want + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return RULES
+
+
+def forget_rules_sent(seat_dir) -> None:
+    """壓縮/清除後 Claude 忘了規則 ⇒ 清掉標記,下一封給完整版。"""
+    if seat_dir is None:
+        return
+    try:
+        (Path(seat_dir) / RULES_SENT_MARK).unlink()
+    except OSError:
+        pass
+
+
+def render(msgs: list, code: str, session_id: str, token: str, rules: str | None = None) -> str:
+    """交給 Claude 看的那一段:誰綁著、規則、按來源分區的信、dm 指令。rules 沒給 = 完整版(雲端中繼照舊)。"""
     head = ("[AIB ClaudeBot] 這條對話綁在 AIB 席 @%s。要 dm 別的席:\n"
             "%s dm %s %s --token %s --to @五碼 <<'AIB_EOF'\n<正文>\nAIB_EOF\n"
             % (code, STABLE_CMD, ID_FLAG, session_id, token or "<這一席沒有通行碼,dm 會被拒>"))
-    return head + gm.render_pull(msgs, code, session_id, token, rules=RULES, stable_cmd=STABLE_CMD, id_flag=ID_FLAG)
+    return head + gm.render_pull(msgs, code, session_id, token, rules=RULES if rules is None else rules,
+                                 stable_cmd=STABLE_CMD, id_flag=ID_FLAG)
 
 
 def main(argv=None) -> int:

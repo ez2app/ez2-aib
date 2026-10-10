@@ -17,7 +17,9 @@
   - 框線用 ╭│╰ 與 ─;composer_state 會先剝掉 SGR 再看文字,卡裡**永遠不出現 ❯**(提示符只認 ❯),所以不會被當成輸入列。
   - 顏色是 256 色 SGR(跟 dm_queue 的 priority_sgr 同一套);NO_COLOR 或 EZ2_AIB_BRIDGE_COLOR=0 ⇒ 只畫框不上色。
 """
+import json
 import os
+from pathlib import Path
 import re
 import shutil
 import sys
@@ -210,7 +212,88 @@ class ReplFrame:
         if not (self.enabled and self._open):
             return
         o = self.out or sys.stdout
-        o.write(frame_bottom(self.kind, cols=term_cols(), color=self.color) + "\n")
+        # 回覆標籤(`nvidia> `)印了但回覆是空的 / 失敗時,游標還停在那一行:先回行首清掉,底線才不會接在標籤後面
+        o.write("\r\x1b[2K" + frame_bottom(self.kind, cols=term_cols(), color=self.color) + "\n")
         o.flush()
         self._open = False
 
+
+
+# ── 開席重放(10-09 the maintainer 看了六席截圖:「grokbot 這看起來對,其他的不對」—— 只有橋接席有重放,API 席 / codexbot 開席
+#    什麼都沒有,看起來像沒套上)。三種席共用這一份:rows = [(who, text, when)],who 是 "human" 或品牌 kind;
+#    空 ⇒ 印一行說「沒有舊訊息可重放」,人才知道功能有開、只是沒東西。只畫,不動任何檔。
+REPLAY_N = 5
+REPLAY_MAX_CHARS = 300   # 一張重放卡最多幾字:nvidia 席重放的第一則是整份開席信,一張卡 70 多行把畫面塞滿(10-09 真機看到)
+
+
+def _clip(text: str, limit: int = REPLAY_MAX_CHARS) -> str:
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…(共 %d 字,只重放前 %d 字)" % (len(text), limit)
+
+
+def replay_lines(kind: str, rows, *, seat: str = "", human: str = "", cols: int = 0, color: bool = True,
+                 n: int = REPLAY_N, source: str = "") -> list:
+    """開席時把最近 n 則重放成卡,回要印的行(每張卡一個多行字串)。rows 依時間舊→新;只取最後 n 則。
+    who == "human" ⇒ 真人卡(名字 = human);其餘 ⇒ 品牌卡(kind)。when 空 ⇒ 標「重放」而不是現在時間。"""
+    rows = [r for r in (rows or []) if r and str(r[1] or "").strip()][-max(0, int(n)):]
+    src = ("(%s)" % source) if source else ""
+    if not rows:
+        return ["— 重開前沒有舊訊息可重放%s —" % src]
+    out = ["— 重開前的最近 %d 則(重放,不是新信)%s —" % (len(rows), src)]
+    cols = cols or term_cols()
+    for who, text, when in rows:
+        k = "human" if who == "human" else (who if who in BRANDS else kind)
+        label = human if k == "human" else ""
+        out.append(card(k, label, _clip(text), cols=cols, when=(when or "重放"), color=color,
+                        seat=("" if k == "human" else seat)))
+    return out
+
+
+def print_replay(kind: str, rows, *, seat: str = "", human: str = "", out=None, n: int = REPLAY_N, source: str = "") -> int:
+    """*_cli.py / codexbot 開席用:TTY 且沒關卡片才印;回印了幾則(非 TTY ⇒ 0,畫面與以前逐位元組相同)。"""
+    o = out or sys.stdout
+    try:
+        tty = o.isatty()
+    except (AttributeError, OSError):
+        tty = False
+    if not cards_enabled(tty):
+        return 0
+    lines = replay_lines(kind, rows, seat=seat, human=human, color=(color_enabled() and tty), n=n, source=source)
+    o.write("\n".join(lines) + "\n")
+    o.flush()
+    return max(0, len(lines) - 1)
+
+
+def history_rows(hist_path, kind: str):
+    """API 席的 history.jsonl ⇒ 重放用 [(who, text, when)]。ts(10-09 起 append_history 才寫)有就印 HH:MM,舊紀錄沒有 ⇒ 標「重放」。
+    壞行跳過;檔不存在 ⇒ 空。"""
+    rows = []
+    try:
+        lines = Path(hist_path).read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return rows
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("role") not in ("user", "assistant") or not isinstance(row.get("content"), str):
+            continue
+        ts = row.get("ts")
+        when = time.strftime("%H:%M", time.localtime(ts)) if isinstance(ts, (int, float)) and ts > 0 else ""
+        rows.append(("human" if row["role"] == "user" else kind, row["content"], when))
+    return rows
+
+
+def replay_history_file(sess_dir, kind: str, out=None) -> int:
+    """*_cli.py 開席用:讀 <sess>/history.jsonl 重放最近幾則(席碼 = session uuid 末五碼,走 seat_address 不自切)。失敗不擋開席。"""
+    try:
+        from seat_address import uuid_tail5
+        from human_attest import human_display_name
+        sess_dir = Path(sess_dir)
+        return print_replay(kind, history_rows(sess_dir / "history.jsonl", kind), seat=uuid_tail5(sess_dir.name) or "",
+                            human=human_display_name(), out=out, source="history.jsonl")
+    except Exception:  # noqa: BLE001
+        return 0

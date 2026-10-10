@@ -65,6 +65,8 @@ aib --help-cockpit         # 所有選項
 
 - **需要:**macOS 和 tmux。每家 AI 自己的命令列工具要先裝好、登入好(`claude`、`codex`、`grok`…),aib 不幫你裝也不幫你登入。
   駕駛艙還沒在 Linux 上試過。
+- **macOS 上的 bash 測試:** aib 追蹤 bash 腳本要 bash 4.1 以上。macOS 內建的是 3.2,跑 bash 腳本的測試會判「量不到」、每次重跑
+  (安全,只是比較慢)。`brew install bash` 之後就能沿用。
 - **權限模式,每席自己選:**`safe` 保留 AI 工具原本的保護(改檔、跑指令前會問你);`dgrs` **只對那一席**關掉這些保護,
   AI 不問就做,開席時 aib 會印警告和改用 `safe` 重開的指令。開每一席時自己決定。
 - **Claude** 是 Anthropic 的商標;Codex 是 OpenAI 的;Grok 是 xAI 的。aib 與它們沒有關係。

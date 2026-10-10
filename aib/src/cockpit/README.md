@@ -277,3 +277,36 @@ pane 子樹 argv 自辨不算席。沒有安全名單時 watch 只掃不收並�
 `render_lib.render_engine_badge(provider, fallback, truecolor, mode)`:`letters`(3 格,**函式預設**;落檔與任何被引用的輸出鎖此態)/ `icon`(1 格)/ `both`(4 格)。mode 由採集端 `render/engine_badge_mode.py:resolve_badge_mode` 判後注入(`EZ2_AIB_ENGINE_BADGE` 預設 both;非即時 TTY ⇒ letters;即時 TTY 由 `pane-right-ai.sh` 的 `[ -t 1 ]` 注入 `EZ2_AIB_BADGE_TTY`,採集端 python 的 stdout 被重導到檔案、自己 `isatty()` 恆 False)。渲染器不讀環境。
 字碼:claude U+EC82 / codex U+EC81 / copilot U+EC1E 是官方標;agy U+EBAE(cod-magnet)與 grok U+F0B1F(md-alpha_x_box)是**語意選字**,不是官方標。
 ★ **已知未做(R6-legend)**:字型缺字/缺檔退回 letters 的理由**目前只到 stderr(`$_ai_out.err`)**,不是人在看的面;右欄圖例未加。再開條件=圖例 i18n 四語與寬度先定。在那之前「退回並說出來」那一格只滿足了一半。
+
+## aib restart(艙的清單與恢復,含停電/重開機;10-09)
+
+`aib restart` 列兩區:**在線的艙**、**上次開機時還在、現在斷掉的艙**;每艙上方 `[編號] ▶ 恢復:…`,艙間分隔線。
+在 AIB 艙裡會跳 tmux 選單(點一艙就在彈出視窗跑恢復),不在艙裡(剛開機)就問編號。實作 `cabin_restart.py`。
+
+| 指令 | 做什麼 |
+|---|---|
+| `aib restart` / `--no-menu` / `--json` | 列表(只查不動) |
+| `aib restart --restore <艙碼>` | 在線 ⇒ 開新 Terminal 視窗 `tmux attach -d`(有人在看要 `--force` 並再確認);斷掉 ⇒ 先列計畫、按 y,原艙號開回、每席 `AIB_REVIVE_SESSION_UUID` 同碼復活 |
+| `aib restart --restore-all` | 停電/重開機後:上次開機時的艙全部恢復,一艙對一艙,問一次 |
+| `aib restart snapshot` | 手動補一份快照 |
+
+- **快照**:watch 每輪寫 `<狀態根>/state/cabin-snapshots/boot-<開機時間>.json`(按開機分檔,重開機後新艙不會蓋掉停電前那份;留 10 次;`EZ2_AIB_RESTART_SNAPSHOT=0` 關)。超過 15 分鐘沒更新,列表最上面警告。
+- **每席走哪條**:對話檔與工作資料夾都在 ⇒ 同碼復活;缺一樣 ⇒ 開新席並用 `bind_one.py` 移植人格與大腦;bot 席帶回 `agent_id` 綁定;codex 復活後直接 `seat-detect` 補席碼。
+- **中途斷掉可重跑**:已經回來的席標 ✅ 跳過;只回來一部分的艙列成 🧩,只補缺的席。
+- **重開機後 pid 被重用**:`seat_liveness` 把「開席早於這次開機」的席當成已死,否則同碼復活會被擋。
+- 窗名(root-claude / root2-claude)可能對調;席碼、對話、人格不變。
+
+## aib cli(五家 AI CLI 版本、開席倒數更新;10-09)
+
+開席動畫每家 logo 名字下三行「本機 x / 最新 y / 更新日 月-日」(更新日 = 這台電腦最後一次安裝/更新那一家的日子)(↑ 有新版、✓ 已最新;找不到最新版就寫「找不到」);動畫播完、接入指揮艙前,有新版就倒數 30 秒,
+時間到自動更新(`s` 跳過、Enter 馬上更新)。只在真人終端開席時出現(AI 代開 `AIB_QUIET` 不查不擋);`AIB_CLI_UPDATE=0` 整段關。實作 `cli_versions.py`。
+
+| 指令 | 做什麼 |
+|---|---|
+| `aib cli` | 看 claude/codex/grok/copilot/agy/gemini 本機、最新、最後更新(這台電腦最後一次安裝/更新的時間)、上一版 |
+| `aib cli update [家…]` | 現在更新(不倒數);agy 跑自己的 `agy update`(已是最新就不動) |
+| `aib cli rollback <家> [--to 版本]` | 退回上一次更新前的版本;退掉的那一版開席不再催 |
+
+- 怎麼查/怎麼更新逐家實查:claude 官方安裝程式(`claude update` / `claude install <版>`)、codex/copilot/gemini npm 全域、grok `grok update --check`、agy 沒有只查不裝。
+- 最新版快取 1 小時(`state/cli-versions.json`),沒網路 10 分鐘不重試;更新鎖 `state/cli-update.lock`(同時只准一個視窗更新)。
+- 更新後連 `--version` 都跑不起來 ⇒ 自動裝回原版。gemini 只在 `aib cli`,不在開席五家。

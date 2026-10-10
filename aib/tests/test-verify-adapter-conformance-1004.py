@@ -254,6 +254,21 @@ class Conformance(unittest.TestCase):
         self.assertEqual(self.why("a12")["why"], "date-crossed")
 
 
+def _bash_traceable(bash="bash"):
+    """aib 追蹤 bash 要 4.1 以上;aib test 用 PATH 上的 bash 跑 .sh 測試。macOS 內建是 3.2 ⇒ 照設計判量不到。"""
+    try:
+        out = subprocess.run([bash, "-c", 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"'], capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=10).stdout.split()
+        return (int(out[0]), int(out[1])) >= (4, 1)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return False
+
+
+PATH_BASH_OK = _bash_traceable()
+OLD_BASH = "PATH 上的 bash 低於 4.1(macOS 內建 3.2;brew install bash 就有新版):aib 追蹤不了 bash,照設計判量不到;這張表只在 bash ≥ 4.1 驗"
+
+
+@unittest.skipUnless(PATH_BASH_OK, OLD_BASH)
 class BashConformance(Conformance):
     """同一張表,bash 寫的測試。"""
     LANG = BASH
@@ -307,11 +322,13 @@ class Knives(unittest.TestCase):
         self.assertIn("test_a5_same_language_child", red, p.stderr[-2000:])
 
 
+    @unittest.skipUnless(PATH_BASH_OK, OLD_BASH)
     def test_bk1_bash_no_dev_tcp_event_reds_a8(self):
         p, red = self._red('  case $cmd in *"/dev/tcp/"*|*"/dev/udp/"*) _ez2_bt_emit', '  case $cmd in ZZ_NEVER) _ez2_bt_emit',
                            "BashConformance.test_a8_network", rel="tools/verify/bash-shim/_trace.bash")
         self.assertIn("test_a8_network", red, p.stderr[-2000:])
 
+    @unittest.skipUnless(PATH_BASH_OK, OLD_BASH)
     def test_bk2_ls_transparent_again_reds_a4(self):
         # 修之前:ls 在「不讀檔」、不在「讀參數路徑」;bash 那條路兩份名單都會看 ⇒ 兩處一起還原
         p, red = self._red('    "echo", "printf", "mktemp", "rm", "rmdir", "mkdir", "touch", "chmod", "mv", "ln", "df",',

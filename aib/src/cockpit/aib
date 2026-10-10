@@ -563,6 +563,21 @@ if [ "${1:-}" = "idle" ]; then
   exec "$T_PY3" "$HERE/idle_reaper.py" "$@"
 fi
 
+# aib restart 子命令(the maintainer 2026-10-09 直令):列出 AIB 艙(在線的 + 上次開機時還在、現在斷掉的),每艙的 AI 席、
+# AI 種類與最後活動時間;--restore <艙碼> / --restore-all 恢復(在線 ⇒ 接回來;斷掉 ⇒ 原艙號開回、每席同碼復活)。
+# 停電/重開機靠 watch 每輪寫的快照(按開機分檔)。整段委派 cabin_restart.py。
+if [ "${1:-}" = "restart" ]; then
+  shift
+  exec "$T_PY3" "$HERE/cabin_restart.py" "$@"
+fi
+
+# aib cli 子命令(the maintainer 2026-10-09):五家 AI CLI 版本。aib cli = 看本機/最新;aib cli update = 現在更新;
+# aib cli rollback <家> [--to 版本] = 退回上一版。開席時的倒數更新也是同一支(cli_versions.py),整段委派。
+if [ "${1:-}" = "cli" ]; then
+  shift
+  exec "$T_PY3" "$HERE/cli_versions.py" "$@"
+fi
+
 # aib major 子命令(2026-09-13 第 102 項,the maintainer 令「大項迴圈寫成程式、變成預設執行方針」):
 # 大綱 §89.15 的七步——現查/計畫/派工/完成閘/收尾/單輪——整段委派 tools/governance/major_loop.py。
 # 預設全是乾跑(只印、只落檔);--send 才送 dm、--execute 才跑 check-fast;發版與記憶回寫仍由人按。
@@ -1473,6 +1488,10 @@ fi
 # 開席畫面:logo 左到右一顆顆亮,下方 Ez2 進度與句子跟著走;艙好了等這段播完再接入。
 _AIB_SPLASH_PID=""
 _AIB_SPLASH_FLAG=""
+# 10-09 the maintainer 直令:開席動畫每家 logo 下面顯示本機/最新版本;有新版就在接入前倒數 30 秒預設更新。
+# 查版本在背景跟動畫一起跑(寫 _AIB_CLIVER_FILE),動畫讀到就畫;倒數在 aib_cli_gate(接入前、前景)。
+# 條件同動畫(真人終端才有);AIB_CLI_UPDATE=0 整段關掉。實作全在 cli_versions.py。
+_AIB_CLIVER_FILE=""
 aib_splash_start() {
   [ "$DRY" != "1" ] || return 0
   [ "${AIB_NO_ATTACH:-0}" != "1" ] || return 0
@@ -1480,7 +1499,13 @@ aib_splash_start() {
   [ "${AIB_NO_CLIENT_SWITCH:-0}" != "1" ] || return 0
   [ -t 2 ] || return 0
   _AIB_SPLASH_FLAG="$(mktemp "${TMPDIR:-/tmp}/aibsplash.XXXXXX")" || return 0
-  "$T_PY3" "$HERE/login_splash.py" --flag "$_AIB_SPLASH_FLAG" &
+  _cliver_arg=()
+  if [ "${AIB_CLI_UPDATE:-1}" != "0" ] && _AIB_CLIVER_FILE="$(mktemp "${TMPDIR:-/tmp}/aibcliver.XXXXXX")"; then
+    rm -f "$_AIB_CLIVER_FILE"            # 檔不在 = 還沒查完(動畫與倒數都靠「檔出現」判斷)
+    "$T_PY3" "$HERE/cli_versions.py" check --out "$_AIB_CLIVER_FILE" >/dev/null 2>&1 &
+    _cliver_arg=(--versions "$_AIB_CLIVER_FILE")
+  fi
+  "$T_PY3" "$HERE/login_splash.py" --flag "$_AIB_SPLASH_FLAG" ${_cliver_arg[@]+"${_cliver_arg[@]}"} &
   _AIB_SPLASH_PID=$!
 }
 aib_splash_stop() {
@@ -1500,7 +1525,14 @@ aib_splash_stop() {
   fi
   printf '\r\033[K' >&2 || true
 }
-trap 'aib_splash_stop' EXIT
+aib_cli_gate() {
+  [ -n "$_AIB_CLIVER_FILE" ] || return 0
+  [ -t 0 ] && [ -t 2 ] || { rm -f "$_AIB_CLIVER_FILE"; _AIB_CLIVER_FILE=""; return 0; }
+  "$T_PY3" "$HERE/cli_versions.py" gate --in "$_AIB_CLIVER_FILE" || true
+  rm -f "$_AIB_CLIVER_FILE"
+  _AIB_CLIVER_FILE=""
+}
+trap 'aib_splash_stop; [ -z "$_AIB_CLIVER_FILE" ] || rm -f "$_AIB_CLIVER_FILE"' EXIT
 aib_splash_start
 # ★ 09-12 第 59 項:ensure 鏈裡任何一支非零(例:theme-ctl 判版面不合)以前是 set -e 直接死,
 #   終端只剩右欄「等待逾時」;現在印出是哪一步、rc 多少,原因由那支自己印在上方 stderr。
@@ -2355,6 +2387,7 @@ else
   # 這個終端要進指揮艙。殘留 TMUX= 時 switch 失敗不得整段結束
   # (set -e 會讓人只看到兩行內部說明、艙已開卻沒接進來)。
   aib_splash_stop
+  aib_cli_gate
   if [ -n "${TMUX:-}" ]; then
     aib_post_frame_release
     switch_to_outer && exit 0

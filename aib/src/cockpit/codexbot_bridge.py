@@ -1049,6 +1049,37 @@ def queue_submit(rpc, thread_id, text):
     return ((r or {}).get("queuedSubmission") or {}).get("id")
 
 
+def thread_replay_rows(thread, kind: str = "codexbot"):
+    """桌面對話(thread/read)⇒ 重放用的 [(who, text, when)]:userMessage 是真人、agentMessage 是 Codex;工具項目不放。
+    userMessage 的字在 content[*].text(桌面 app-server 的形狀),保守也認 text 欄。"""
+    rows = []
+    for turn in (thread or {}).get("turns") or []:
+        for it in turn.get("items") or []:
+            t = it.get("type")
+            if t == "agentMessage":
+                rows.append((kind, str(it.get("text") or ""), ""))
+            elif t == "userMessage":
+                c = it.get("content")
+                txt = it.get("text") if isinstance(it.get("text"), str) else ""
+                if isinstance(c, list):
+                    txt = "\n".join(str(x.get("text") or "") for x in c if isinstance(x, dict) and x.get("type") in ("text", "input_text"))
+                elif isinstance(c, str):
+                    txt = c
+                rows.append(("human", txt, ""))
+    return rows
+
+
+def replay_thread(thread, session_id: str, human: str, out=None) -> int:
+    """開席重放(10-09):TTY 且卡片沒關才印;失敗不擋綁定。回印了幾則。"""
+    try:
+        import bridge_cards as _bc
+        from seat_address import uuid_tail5
+        return _bc.print_replay("codexbot", thread_replay_rows(thread), seat=uuid_tail5(session_id) or "", human=human,
+                                out=out, source="桌面對話")
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def tool_card_line(item):
     """C2(09-24):桌面工具卡的一行字(queue 模式從 thread/read 讀回的項目)。不是工具項目回 None。
     模型只叫工具沒說話時,AIB 席原本什麼都看不到;現在至少看得到「叫了什麼、跑到哪」。"""
@@ -1754,6 +1785,7 @@ def main(argv=None):
             print(ux.title_text, flush=True)     # 第一個提示符上面也有標題行
         print("模型自主 dm：整則回覆只放 <aib_tool>{…aib_dm…}</aib_tool>,橋代送並印收據(%s=0 關閉)" % MODEL_DM_ENV, flush=True)
         print("模式：%s（writer=AIB 持有寫入權;queue=不搶寫入權、佇列投遞、桌面可同時打字。/handoff 放手轉 queue,/attach 接回轉 writer）" % mode, flush=True)
+        replay_thread(thread, args.session_id, human_label)   # 10-09 開席重放:桌面對話最近幾則畫成卡(橋接席已有,codexbot 補齊)
         save(mode=mode)
         supervisor = QueueSupervisor(rpc, args.thread_id,
                                      takeover_secs=float(os.environ.get(TAKEOVER_ENV, "20") or 20),
@@ -1800,7 +1832,8 @@ def main(argv=None):
                 new_title = str((supervisor.poller.last_thread or {}).get("name") or (supervisor.poller.last_thread or {}).get("preview") or "").strip()[:60]
                 refresh_title(new_title)
         mode_box = [mode]
-        threading.Thread(target=poll_loop, name="codexbot-queue-poll", daemon=True).start()
+        poll_thread = threading.Thread(target=poll_loop, name="codexbot-queue-poll", daemon=True)
+        poll_thread.start()
         model_dm_enabled = os.environ.get(MODEL_DM_ENV, "1") != "0"
         header_sent = not header_needed(base, args.thread_id)   # 每條對話只送一次(記號在 codexbot-bindings/)
         held_dms = []   # 10-07:沒叫醒的 dm(dm_should_wake),下一次說話時一起送
@@ -2033,6 +2066,11 @@ def main(argv=None):
     finally:
         try:
             poll_stop.set()
+            # 10-09 a seat:等輪詢執行緒真的停(最多 5 秒)再往下收尾 —— 以前只設旗號就走,
+            #   在同一個行程裡叫 main() 的測試(codexbot-bridge、bridge-persona-pack)收暫存夾時它還在寫 state/,
+            #   機器忙時撞成「Directory not empty」,推包閘門上時紅時綠。正式環境行程結束它就沒了,行為不變。
+            if poll_thread is not None:
+                poll_thread.join(timeout=5)
         except NameError:
             pass
         # the maintainer 09-25:關席取消舊碼 ⇒ 桌面對話名稱改成「原名 ( 未綁定AIB席位 )」。要在關連線之前做;失敗不擋關閉。

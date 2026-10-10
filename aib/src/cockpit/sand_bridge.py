@@ -106,7 +106,38 @@ class DockedUI:
         else:
             self.say(_bc.legacy(label, text), redraw=redraw)
 
+    def _style_notice(self, text: str) -> str:
+        """通知類的一行(忙碌標記 `xxx> …`、`AIB 系統> …`、`xxx: …` 橋的提示、`✓ …`、`⚠ …`)在 TTY 上畫成跟卡片同一套的
+        一行小籤:品牌圖示 + 顏色。只有畫面變,信箱/紀錄/非 TTY 的輸出都是原字(claudebot_live 與 composer 的測試認字面)。"""
+        if not getattr(self, "cards", False) or not text or text.startswith("\x1b"):
+            return text
+        try:
+            import bridge_cards as _bc
+        except Exception:  # noqa: BLE001
+            return text
+        color = getattr(self, "color", False)
+        def sgr(col):
+            return ("\x1b[38;5;%dm" % col) if (color and col is not None) else ""
+        R = "\x1b[0m" if color else ""
+        DIM = "\x1b[2m" if color else ""
+        t = text.lstrip()
+        if t.startswith("✓ "):
+            return "%s  %s%s" % (sgr(78), text.strip(), R)
+        if t.startswith("⚠ "):
+            return "%s  %s%s" % (sgr(220), text.strip(), R)
+        if t.startswith("AIB 系統> "):
+            _, icon, col = _bc.BRANDS.get("system", ("", "⚙", 245))
+            return "%s  %s AIB 系統 · %s%s" % (sgr(col), icon, t[len("AIB 系統> "):], R)
+        for pid in ("claudebot", "grokbot", "musebot", "codexbot"):
+            name, icon, col = _bc.BRANDS.get(pid, (pid, "", None))
+            if t == pid + "> …":
+                return "%s  %s %s 正在想…%s" % (sgr(col), icon, name, R)
+            if t.startswith(pid + ": "):
+                return "%s%s  %s %s · %s%s" % (DIM, sgr(col), icon, pid, t[len(pid) + 2:], R)
+        return text
+
     def say(self, text: str = "", *, redraw: bool = True) -> None:
+        text = self._style_notice(text)
         with self._lock:
             if text is not None and text != "":
                 self.append(text)
@@ -137,6 +168,71 @@ def ensure_dirs(root: Path) -> None:
 
 HEARTBEAT_WRITE_S = 2.0   # status.json 內容沒變時多久寫一次(心跳);bot_ping 認 10 秒內為新鮮
 
+# ── 10-09 the maintainer「每推一包就要手動重開 bot 席」:橋自己盯程式檔(與右欄 idle_reaper 同一套指紋),碼變了、席閒夠久就 exec 自己。
+#    同一條 argv、同一個 pid(flock 在 exec 時釋放、新程式再拿);EZ2_AIB_BRIDGE_REEXEC=0 關掉。留痕同 pane-reexec.log。
+REEXEC_CHECK_S = 30.0
+REEXEC_IDLE_S = 600.0          # 席(tmux 窗)至少閒這麼久才重跑:正在打字 / 剛收信不動
+_reexec = {"fp": "", "next": 0.0}
+
+
+def _own_pane() -> str:
+    # tmux 自己設的,不是艙單源要洗的名字;另包一層,免得跟 AIB_TMUX_BIN 同函式被算進艙解析讀取集
+    return os.environ.get("TMUX_PANE") or ""
+
+
+def pane_idle_seconds() -> float | None:
+    """本席 tmux 窗多久沒動(秒);量不到回 None(⇒ 不重跑,失效側選舊碼繼續跑)。"""
+    pane = _own_pane()
+    tmux = os.environ.get("AIB_TMUX_BIN", "tmux")
+    if not pane:
+        return None
+    try:
+        r = subprocess.run([tmux, "display-message", "-p", "-t", pane, "#{window_activity}"],
+                           capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+        act = r.stdout.strip()
+        return time.time() - int(act) if r.returncode == 0 and act.isdigit() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def should_reexec(now: float, fp: str, idle_s, enabled: bool = True) -> bool:
+    """純判斷(測試用):指紋第一次看到只記住;之後變了、而且席閒 ≥ REEXEC_IDLE_S 才 True。"""
+    if not enabled or not fp:
+        return False
+    if not _reexec["fp"]:
+        _reexec["fp"] = fp
+        return False
+    if fp == _reexec["fp"]:
+        return False
+    return idle_s is not None and idle_s >= REEXEC_IDLE_S
+
+
+def maybe_reexec(now: float | None = None) -> bool:
+    """heartbeat 每 REEXEC_CHECK_S 秒問一次;真的重跑時本函式不回來。"""
+    now = time.monotonic() if now is None else now
+    if now < _reexec["next"]:
+        return False
+    _reexec["next"] = now + REEXEC_CHECK_S
+    enabled = (os.environ.get("EZ2_AIB_BRIDGE_REEXEC") or "1").strip().lower() not in ("0", "false", "no", "off")
+    try:
+        import idle_reaper as _ir
+        fp = _ir.reexec_fingerprint()
+    except Exception:  # noqa: BLE001
+        return False
+    if not should_reexec(now, fp, pane_idle_seconds(), enabled):
+        return False
+    me = os.path.abspath(__file__)
+    if not os.path.isfile(me):
+        return False
+    try:
+        _ir.reexec_log(me, _reexec["fp"], fp)
+    except Exception:  # noqa: BLE001
+        pass
+    print("sand-bridge: 程式已更新、席閒著,重跑自己載新碼(綁定不變)", file=sys.stderr, flush=True)
+    sys.stdout.flush()
+    os.execv(sys.executable, [sys.executable, me] + sys.argv[1:])
+    return False
+
 
 def write_status(root: Path, payload: dict) -> None:
     path = root / "status.json"
@@ -165,14 +261,108 @@ def short_code(session_uuid: str) -> str:
     return uuid_tail5(session_uuid) or (session_uuid or "")
 
 
-def _seat_tail() -> str:
-    """卡片標題列用的席碼(session uuid 末五碼);量不到回空字串,卡片就不帶。"""
+def _seat_tail(session_uuid: str = "") -> str:
+    """卡片標題列用的席碼(本席 session uuid 末五碼;橋自己的 --session-id,不讀環境:claudebot 席的 AIB_RESUME_SESSION_UUID 是空的)。
+    量不到回空字串,卡片就不帶。"""
     try:
         from seat_address import uuid_tail5
-        u = os.environ.get("AIB_RESUME_SESSION_UUID") or os.environ.get("EZ2_AIB_SESSION_UUID") or ""
-        return uuid_tail5(u) if u else ""
+        return uuid_tail5(session_uuid) if session_uuid else ""
     except Exception:  # noqa: BLE001
         return ""
+
+
+def outbox_card_args(body, provider_id: str, human: str):
+    """outbox 一則 ⇒ 卡片的 (kind, label)。heartbeat 即時畫與開席時重放「之前的」都用這一份判法。"""
+    if isinstance(body, dict) and body.get("role") == "user" and body.get("source") == "system":
+        return "system", "AIB 系統"
+    if isinstance(body, dict) and body.get("role") == "user":
+        return "human", "%s(%s)" % (human, "app" if body.get("source") == "app" else "bot 轉述")
+    if isinstance(body, dict) and str(body.get("to") or "") not in ("", "human", "cursor"):
+        return provider_id, "%s → %s" % (title_for(provider_id), body.get("to"))
+    return provider_id, title_for(provider_id)
+
+
+REPLAY_N = 5   # 開席時把 outbox 最近幾則重放成卡(the maintainer 10-09「舊的不會套用嗎」):只重放,不動檔、不算新信
+REPLAY_FOLDERS = ("inbox", "claimed", "delivered", "outbox")   # 10-09 the maintainer「musebot 沒完成」:它的信在 claimed(收到的)與 delivered(寄出的),outbox 永遠空
+
+
+def inbox_card_args(body, provider_id: str, human: str):
+    """inbox / claimed 一則(寄給本席 bot 的)⇒ 卡片 (kind, label):真人打的 ⇒ 真人卡;aib-system ⇒ 系統卡;別席 dm ⇒ dm 卡(標寄件人)。"""
+    frm = str((body or {}).get("from") or "") if isinstance(body, dict) else ""
+    if frm == "human":
+        return "human", human
+    if frm in ("aib-system", "system"):
+        return "system", "AIB 系統"
+    return "dm", (frm or "dm")
+
+
+def replay_recent(ui, root: Path, provider_id: str, session_uuid: str) -> int:
+    """開席重放(10-09 第二版):四個資料夾合起來依檔名毫秒排序,取最近 REPLAY_N 則;只讀檔,不動任何狀態。
+    inbox/claimed = 寄給 bot 的(真人 / 系統 / 別席 dm);outbox/delivered = bot 說的(回真人 / 寄給別席)。"""
+    if not getattr(ui, "cards", False):
+        return 0
+    cands = []
+    for folder in REPLAY_FOLDERS:
+        try:
+            for pth in (root / folder).glob("*.json"):
+                try:
+                    ms = int(pth.name.split("-", 1)[0])
+                except ValueError:
+                    continue
+                cands.append((ms, folder, pth))
+        except OSError:
+            continue
+    picked = []
+    for ms, folder, pth in sorted(cands, key=lambda x: (x[0], x[2].name), reverse=True):
+        if len(picked) >= REPLAY_N:
+            break
+        try:
+            b = json.loads(pth.read_text(encoding="utf-8"))
+            t = OUTBOX_CTRL_RE.sub("", str(b.get("text") or b.get("body") or ""))
+        except Exception:
+            continue
+        if not t.strip():
+            continue
+        when = time.strftime("%H:%M", time.localtime(ms / 1000)) if ms > 0 else ""
+        picked.append((b, t, when, folder))
+    human = human_display_name()
+    if picked:
+        ui.say("— 重開前的最近 %d 則(重放,不是新信)—" % len(picked), redraw=False)
+    else:
+        ui.say("— 重開前沒有舊訊息可重放(inbox/claimed/delivered/outbox 都空)—", redraw=False)
+    for b, t, when, folder in reversed(picked):
+        if folder in ("inbox", "claimed"):
+            k, l = inbox_card_args(b, provider_id, human)
+        else:
+            k, l = outbox_card_args(b, provider_id, human)
+        import bridge_cards as _bc
+        ui.message(k, l, _bc._clip(t), seat=_seat_tail(session_uuid) if k in (provider_id, "system") else "", when=when, redraw=False)
+    return len(picked)
+
+
+def replay_recent_outbox(ui, root: Path, provider_id: str, session_uuid: str, names) -> int:
+    """開席時把 outbox 最近 REPLAY_N 則重放成卡;只在開卡時;回重放了幾則。只讀檔,不動任何狀態。"""
+    if not getattr(ui, "cards", False):
+        return 0
+    picked = []                                   # 從最新往回挑,壞檔跳過不占名額,湊滿 REPLAY_N 則
+    for name in sorted(names, reverse=True):
+        if len(picked) >= REPLAY_N:
+            break
+        try:
+            b = json.loads((root / "outbox" / name).read_text(encoding="utf-8"))
+            t = OUTBOX_CTRL_RE.sub("", str(b.get("text") or b.get("body") or ""))
+            ms = int(name.split("-", 1)[0]); when = time.strftime("%H:%M", time.localtime(ms / 1000)) if ms > 0 else ""
+        except Exception:
+            continue
+        picked.append((b, t, when))
+    if picked:
+        ui.say("— 重開前的最近 %d 則(重放,不是新信)—" % len(picked), redraw=False)
+    else:   # 10-09 the maintainer 看 musebot 截圖「不對」:其實是 outbox 空(0 封)沒東西可放;印一行說清楚,不然像沒套上
+        ui.say("— 重開前沒有舊訊息可重放(outbox 空)—", redraw=False)
+    for b, t, when in reversed(picked):           # 舊的先印,最新的最靠近提示符
+        k, l = outbox_card_args(b, provider_id, human_display_name())
+        ui.message(k, l, t, seat=_seat_tail(session_uuid) if k in (provider_id, "system") else "", when=when, redraw=False)
+    return len(picked)
 
 
 def title_for(provider_id: str) -> str:
@@ -767,6 +957,37 @@ def sync_seat_claude_session(session_uuid: str, session_id: str, base=None) -> b
     return False
 
 
+BIND_OVERRIDE_NAME = "bind-override.json"
+
+
+def save_bind_override(root: Path, launch_id: str, chosen: str) -> None:
+    """10-09 a seat:席上 /bind、/unbind 的選擇要撐過橋重啟。真機:a seat 席上換綁到 the maintainer 桌面 app 的對話 eccd6bf3,
+    橋 14:25 重啟後照開席命令的 AIB_CLAUDEBOT_SESSION_ID 綁回 bc1d9ade,沒有任何人知道;之後的 dm 全進了舊那條。
+    記「開席時帶的那條(launch)」與「席上選的(chosen,空 = 解綁)」。"""
+    try:
+        (root / BIND_OVERRIDE_NAME).write_text(json.dumps({"launch": launch_id or "", "chosen": chosen or "",
+                                                           "at": int(time.time())}, ensure_ascii=False) + "\n",
+                                               encoding="utf-8")
+    except OSError:
+        pass
+
+
+def load_bind_override(root: Path, launch_id: str):
+    """回 (有沒有可沿用的選擇, 選的那條)。開席帶的那條跟記錄時不同 = 有人明確用新的一條重開 ⇒ 照新的,並刪掉舊紀錄。"""
+    f = root / BIND_OVERRIDE_NAME
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, ""
+    if not isinstance(d, dict) or (d.get("launch") or "") != (launch_id or ""):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+        return False, ""
+    return True, str(d.get("chosen") or "")
+
+
 def _spawn_claude_closer(agent: str, session_uuid: str):
     """claudebot 收尾小幫手(bot_closer close_claudebot);起不來回 None,不擋開席。AIB_CLAUDEBOT_RENAME=0 關掉(同 grokbot/codexbot)。"""
     if (os.environ.get("AIB_CLAUDEBOT_RENAME") or "1") == "0":
@@ -939,6 +1160,17 @@ def main(argv: list[str] | None = None) -> int:
             and not agent:
         print(f"sand-bridge: {bound_env(args.provider_id)} 形狀不對,不開席", file=sys.stderr)
         return 2
+    launch_agent = agent      # 開席命令帶的那條;席上 /bind、/unbind 的選擇以它為鍵記下,橋重啟時沿用(10-09)
+    if cap.bind_in_seat:
+        _has, _chosen = load_bind_override(bridge_dir(session_uuid), launch_agent)
+        if _has:
+            import claudebot_threads as _ct0
+            if _chosen and _ct0.valid_session_id(_chosen):
+                agent = _chosen
+                print(f"sand-bridge: 沿用席上 /bind 選的 Claude 對話 {_chosen}(開席命令帶的是 {launch_agent or '(無)'})", file=sys.stderr)
+            elif not _chosen:
+                agent = ""
+                print("sand-bridge: 沿用席上 /unbind:這一席維持不綁", file=sys.stderr)
     if agent:
         agent_lock, err, rc = claim_bound_agent(agent, args.provider_id)
         if agent_lock is None:
@@ -1038,6 +1270,8 @@ def main(argv: list[str] | None = None) -> int:
     ]
     for line in banner:
         ui.append(line)
+    # 10-09:重放放在橫幅**後面**(原本在橫幅前,被橫幅捲掉,the maintainer 以為沒套上);離提示符最近,打開席第一眼就看到
+    replay_recent(ui, root, args.provider_id, session_uuid)
     write_status(root, status_payload("ready"))
     try_bridge_onboard_ack(session_uuid, args.provider_id)
     if cap.wake == "schedule":
@@ -1095,6 +1329,8 @@ def main(argv: list[str] | None = None) -> int:
 
     _hb = {"last": None, "at": 0.0}
 
+    _last_shown = {"key": None, "at": 0.0}   # 10-09:同一段被 post 兩次(兩支 Stop hook 同時跑,相隔 50 毫秒)畫面只留一張
+
     def heartbeat():
         while not stop["flag"]:
             try:
@@ -1105,6 +1341,10 @@ def main(argv: list[str] | None = None) -> int:
                 if _p != _hb["last"] or _now - _hb["at"] >= HEARTBEAT_WRITE_S:
                     write_status(root, _p)
                     _hb["last"], _hb["at"] = _p, _now
+            except Exception:
+                pass
+            try:
+                maybe_reexec()
             except Exception:
                 pass
             try:
@@ -1122,19 +1362,13 @@ def main(argv: list[str] | None = None) -> int:
                         text = p.name
                     # 對面寫的字會印在人的終端機上 ⇒ 濾控制字元(ESC 等),只留換行與 tab
                     text = OUTBOX_CTRL_RE.sub("", str(text))
+                    _key = ((body.get("role") if isinstance(body, dict) else ""), text)
+                    if _key == _last_shown["key"] and time.time() - _last_shown["at"] < 5.0:
+                        continue   # 重複的那一份不畫(檔還在,信箱/紀錄不動;只是畫面不重複)
+                    _last_shown["key"], _last_shown["at"] = _key, time.time()
                     # 即時重畫；input 內的編輯緩衝仍由 readline 保留。
-                    if isinstance(body, dict) and body.get("role") == "user" and body.get("source") == "system":
-                        # 10-07:AIB 替你送進對話的句子(代開的第一句、門鈴過期的叫醒)——不是你說的,不標成你
-                        ui.message("system", "AIB 系統", text, seat=_seat_tail())
-                    elif isinstance(body, dict) and body.get("role") == "user":
-                        # 兩邊同時對話:the maintainer 在 app 裡說的話,由 bot 每回合回報過來
-                        where = "app" if body.get("source") == "app" else "bot 轉述"
-                        ui.message("human", f"{human_display_name()}({where})", text)
-                    elif isinstance(body, dict) and str(body.get("to") or "") not in ("", "human", "cursor"):
-                        # 10-06:收件人是別席 ⇒ 這是 bot 要寄的 dm(musebot 排水器會送),席上照樣看得到寄了什麼給誰
-                        ui.message(args.provider_id, f"{title_for(args.provider_id)} → {body.get('to')}", text, seat=_seat_tail())
-                    else:
-                        ui.message(args.provider_id, title_for(args.provider_id), text, seat=_seat_tail())
+                    _kind, _label = outbox_card_args(body, args.provider_id, human_display_name())
+                    ui.message(_kind, _label, text, seat=_seat_tail(session_uuid) if _kind == args.provider_id or _kind == "system" else "")
             except Exception:
                 pass
             time.sleep(0.1)
@@ -1164,6 +1398,12 @@ def main(argv: list[str] | None = None) -> int:
             tracker = _live.LiveTracker(root, sid, ui.say, ui.set_status,
                                         on_health=lambda h: _live_health.__setitem__("override", h),
                                         spawn_record=_cbs2.record_of(sid))
+            # 10-09 a seat(第 26 件):開席/換綁前就堆著的信也要等,橋重開不得把「門鈴過期」歸零
+            try:
+                import claudebot_mailbox as _cbm2
+                tracker.seed_backlog(_cbm2.waking_files(root))
+            except Exception:  # noqa: BLE001 —— 回補失敗只是少一次警示,不能讓狀態列起不來
+                pass
             _live.start_thread(tracker, _EitherStop(stop, live_stop))
             return tracker
         except Exception as exc:  # noqa: BLE001 —— 狀態列起不來不能讓橋停,但要說
@@ -1304,6 +1544,7 @@ def main(argv: list[str] | None = None) -> int:
                 closer.done()
                 closer = None
             sync_seat_claude_session(session_uuid, "")   # 10-09:席位檔那一欄也清掉(待修清單第 11 件)
+            save_bind_override(root, launch_agent, "")    # 10-09:橋重啟後維持不綁
             try:
                 import bridge_persona as _bp
                 _mark = root / _bp.SENT_MARK
@@ -1369,6 +1610,7 @@ def main(argv: list[str] | None = None) -> int:
             start_pack_delivery(root, session_uuid, args.provider_id, ui.say, wake_and_report,
                                 last_ring, wake_threads, stop)   # 與開席同一條(那一行是人格包測試 Z1 的刀錨,這裡刻意換行)
             sync_seat_claude_session(session_uuid, agent)   # 10-09:席位檔那一欄對上新綁的(待修清單第 11 件)
+            save_bind_override(root, launch_agent, agent)   # 10-09:橋重啟後沿用這次選的
             if closer is None:
                 closer = _spawn_claude_closer(agent, session_uuid)   # 10-09:席上綁的也要有關席收尾
             ui.say(f"claudebot: 已綁 Claude 對話 {agent}(席不用重開)")
@@ -1428,7 +1670,7 @@ def main(argv: list[str] | None = None) -> int:
         local = try_local_reply(text, args.provider_id, args.cwd)
         if local:
             enqueue(root, "outbox", local, session_uuid, args.provider_id, "assistant")
-            ui.message(args.provider_id, title_for(args.provider_id), local, seat=_seat_tail())
+            ui.message(args.provider_id, title_for(args.provider_id), local, seat=_seat_tail(session_uuid))
 
     stop["flag"] = True
     # 關席把 app 名稱改回「( 未綁定AIB席位 )」一律交給收尾小幫手(bot_closer.py):

@@ -28,6 +28,10 @@
   pid 活著、子樹裡的 CLI 明確持有**別的** uuid  ⇒ 不持有(席位檔過期或 pid 已換人)
   pid 活著、子樹裡沒有任何 CLI                  ⇒ **持有**(開席中那幾秒 CLI 還沒起;
       pid 被無關行程重用也落在這裡——寧可多擋一次,真要過用 FORCE,不可放行撞號)
+  ★ 唯一例外(10-09 a seat,停電/重開機復原):席位檔的開席時間**早於這次開機** ⇒ 不持有。
+      任何行程都活不過重開機,那個 pid 現在一定是別人。這不是猜,是開機時間這個硬事實;
+      不加這條,重開機後 pid 被重用的席會被當成「還有人」,同碼復活被擋,只能 FORCE。
+      量不到開機時間 ⇒ 不套這條(退回上面的保守規則)。行程表是注入的(尺)⇒ 也不讀真機開機時間。
 """
 from __future__ import annotations
 
@@ -88,6 +92,43 @@ def _pid_alive(pid) -> bool:
     except PermissionError:
         return True
     return int(pid) > 0
+
+
+def boot_epoch() -> float | None:
+    """本機這次開機的 epoch 秒;量不到回 None。macOS:sysctl kern.boottime;Linux:/proc/stat btime。"""
+    try:
+        out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True,
+                             timeout=5, stdin=subprocess.DEVNULL).stdout
+        if "sec =" in out:
+            return float(out.split("sec =", 1)[1].split(",", 1)[0].strip())
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    try:
+        with open("/proc/stat", encoding="utf-8") as fh:
+            for ln in fh:
+                if ln.startswith("btime "):
+                    return float(ln.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+#: 早於這個時刻(2001-09-09)的開席時間不是真的量到的(治具的 1000、壞檔的 0),當成量不到,不套開機例外。
+PLAUSIBLE_EPOCH = 1_000_000_000
+
+
+def started_before_boot(seat: dict, boot) -> bool:
+    """席位檔記的開席時間早於這次開機 ⇒ True(那一席不可能還活著)。量不到任一邊 ⇒ False。
+    ★ 10-09 守門紅(test-dm-sender-identity-0927):治具寫 started_epoch=1000 + 自己的活 pid 當「活席」,
+      第一版直接比開機時間把它判死。開席時間不像真的 ⇒ 量不到 ⇒ 退回檔頭的保守規則。"""
+    if not boot:
+        return False
+    t = seat.get("started_epoch") or seat.get("born_at")
+    try:
+        t = float(t)
+    except (TypeError, ValueError):
+        return False
+    return PLAUSIBLE_EPOCH <= t < float(boot)
 
 
 def proc_table() -> list[tuple[int, int, str]]:
@@ -167,7 +208,7 @@ def _load(p: str) -> dict:
         return {}
 
 
-def registry_holders(uuid: str, seat_dirs, procs) -> list[dict]:
+def registry_holders(uuid: str, seat_dirs, procs, boot=None) -> list[dict]:
     out = []
     for sd in seat_dirs:
         for f in sorted(glob.glob(os.path.join(sd, "w*.json"))):
@@ -177,6 +218,8 @@ def registry_holders(uuid: str, seat_dirs, procs) -> list[dict]:
             pid = s.get("pid")
             if not _pid_alive(pid):
                 continue
+            if started_before_boot(s, boot):
+                continue            # 開席早於這次開機 ⇒ pid 已是別人(檔頭「唯一例外」)
             clis = [r for r in _subtree(int(pid), procs) if _is_cli(r[2])]
             held = set().union(*(held_uuids(r[2]) for r in clis)) if clis else set()
             if clis and uuid not in held and held:
@@ -194,7 +237,7 @@ def process_holders(uuid: str, procs) -> list[dict]:
             for pid, ppid, cmd in procs if pid != me and uuid in held_uuids(cmd)]
 
 
-def holders(uuid: str, aib_home: str | None = None, seat_dirs=None, procs=None) -> dict:
+def holders(uuid: str, aib_home: str | None = None, seat_dirs=None, procs=None, boot=None) -> dict:
     """{"registry": [...], "process": [...]}。uuid 空 ⇒ 兩個都空。
 
     seat_dirs 沒給 ⇒ aib_home 底下所有艙;aib_home 也沒給 ⇒ 預設家目錄。
@@ -204,9 +247,11 @@ def holders(uuid: str, aib_home: str | None = None, seat_dirs=None, procs=None) 
         return {"registry": [], "process": []}
     if procs is None:
         procs = proc_table()
+        if boot is None:
+            boot = boot_epoch()      # 只在讀真機行程表時才讀真機開機時間(注入的尺不混真機)
     if seat_dirs is None:
         seat_dirs = all_seat_dirs(aib_home if aib_home is not None else default_aib_home())
-    reg = registry_holders(uuid, seat_dirs, procs)
+    reg = registry_holders(uuid, seat_dirs, procs, boot)
     proc = process_holders(uuid, procs)
     parent = {r[0]: r[1] for r in procs}
     reg_pids = {r["pid"] for r in reg}

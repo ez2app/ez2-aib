@@ -67,6 +67,8 @@ aib --help-cockpit         # every option
 
 - **Requirements:** macOS and tmux. Each AI's own command-line tool must already be installed and logged in
   (`claude`, `codex`, `grok`, …); aib does not install or log in for you. The cockpit has not been tried on Linux yet.
+- **bash tests on macOS:** aib traces bash scripts with bash 4.1 or newer. macOS ships bash 3.2, so tests that run bash scripts
+  are reported as "not measured" and always rerun (safe, just slower). `brew install bash` makes them reusable.
 - **Permission modes, per seat:** `safe` keeps the AI tool's normal protections (it asks before editing files or running
   commands). `dgrs` turns those protections off **for that seat only**, so the AI acts without asking; aib prints a
   warning with the command to reopen the seat in `safe`. You choose for each seat when you open it.

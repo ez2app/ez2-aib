@@ -22,6 +22,19 @@ sys.path.insert(0, str(ROOT / "tools" / "verify"))
 sys.path.insert(0, str(ROOT / "tests"))
 import shadow_tracer as st  # noqa: E402
 
+
+def _bash_traceable(bash):
+    """aib 追蹤 bash 要 4.1 以上(BASH_XTRACEFD);macOS 內建 /bin/bash 是 3.2 ⇒ 照設計判量不到(bash-version-no-xtrace)。"""
+    try:
+        out = subprocess.run([bash, "-c", 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"'], capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=10).stdout.split()
+        return (int(out[0]), int(out[1])) >= (4, 1)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return False
+
+
+SYS_BASH_OK = _bash_traceable("/bin/bash")     # 替身與 run.sh 的 #! 都是 /bin/bash
+
 MAKE_STUB = '''import atexit, os, shutil, tempfile
 _td = tempfile.mkdtemp(prefix="fakebin-")          # 跟真的測試一樣:替身放暫存、測完就刪 ⇒ 分析時讀不到它的 #! 那一行
 atexit.register(shutil.rmtree, _td, True)
@@ -91,6 +104,7 @@ class Stub(unittest.TestCase):
         self.assertEqual(row["rc"], 0, row.get("tail"))
         return row
 
+    @unittest.skipUnless(SYS_BASH_OK, "這台的 bash 低於 4.1(macOS 內建 /bin/bash 是 3.2):aib 追蹤不了 bash,照設計判量不到;這格只在 bash ≥ 4.1 驗")
     def test_s1_popen_stub_measured(self):
         row = self._run("t_popen.py")
         self.assertIs(row["measured"], True, row["why"])
@@ -98,9 +112,17 @@ class Stub(unittest.TestCase):
         self.assertIsNone(self._keep(lambda: st.reuse_row(self.repo, "tests/t_popen.py", row, environ=self._env())),
                           "替身讀的檔改了 ⇒ 一定重跑")
 
+    @unittest.skipUnless(SYS_BASH_OK, "這台的 bash 低於 4.1(macOS 內建 /bin/bash 是 3.2):aib 追蹤不了 bash,照設計判量不到;這格只在 bash ≥ 4.1 驗")
     def test_s2_bash_stub_measured(self):
         row = self._run("t_bash.py")
         self.assertIs(row["measured"], True, row["why"])
+
+    @unittest.skipIf(SYS_BASH_OK, "這格只在 bash 低於 4.1 的機器(macOS 內建 /bin/bash)驗")
+    def test_s4_old_bash_is_honestly_unmeasured(self):
+        # 10-10 公開倉 Mac CI:bash 3.2 追蹤不了 ⇒ 要照實判量不到(不准假裝量到、拿去沿用)
+        row = self._run("t_bash.py")
+        self.assertIsNot(row["measured"], True, row["why"])
+        self.assertTrue(any(str(w).startswith("bash-version-no-xtrace") for w in row["why"]), row["why"])
 
     def test_s3_real_untraced_python_still_unmeasured(self):
         row = self._run("t_real_untraced.py")
@@ -108,6 +130,7 @@ class Stub(unittest.TestCase):
 
 
 class Knives(unittest.TestCase):
+    @unittest.skipUnless(SYS_BASH_OK, "這台的 bash 低於 4.1(macOS 內建 /bin/bash 是 3.2):aib 追蹤不了 bash,照設計判量不到;這格只在 bash ≥ 4.1 驗")
     def test_k1_no_bash_rule_reds_s2(self):
         from aib_knife_copy import knife_copy
         name = Path(__file__).name

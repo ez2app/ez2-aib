@@ -113,12 +113,12 @@ ENGINE_LETTERS = {
 #   不用 emoji 的理由就是 emoji 是「模糊寬」字,同一字在不同終端佔 1 或 2 欄。
 # ★ R8:grok 的 icon。定義排在 ENGINE_ICONS **之前** —— 表裡引用它,
 #   放在表後會是 NameError(而那個錯在 import 時就炸,不會安靜)。
-GROK_ICON = "\U000f0b1f"   # md-alpha_x_box U+F0B1F 語意選字(xAI 無可用字型標)
+GROK_ICON = "\U0001d54f"   # 𝕏 MATHEMATICAL DOUBLE-STRUCK CAPITAL X(the maintainer 10-09 定:xAI 無字型標,用 𝕏;舊 md-alpha_x_box 退役)
 SAND_ICON = "\U000f0b1c"   # md-alpha_s_box U+F0B1C 語意選字(Sand/Cursor 無官方標)
 CODEXBOT_ICON = "\uec81"  # OpenAI 標（Desktop bridge；Cursor 橋 id 已刪）
-GROKBOT_ICON = SAND_ICON  # 與 sand 同標；字母 GBT 區分（≠ xAI grok）
+GROKBOT_ICON = GROK_ICON  # the maintainer 10-09:Grok 品牌一律 𝕏(以前與 sand 同標;字母 GBT 仍區分 ≠ grok CLI)
 CLAUDEBOT_ICON = "\uec82"  # cod-claude Anthropic 官方標(與 claude CLI 同標;字母 CBT 區分)
-MUSEBOT_ICON = "\U000f0b0d"  # md-alpha_m_box U+F0B0D 語意選字(Meta Muse 無 Nerd Font 官方標;與 SAND_ICON 同家族)
+MUSEBOT_ICON = "\u221e"  # ∞ INFINITY(the maintainer 10-09 定:Meta 的無限環;Nerd Font 無 Meta 官方標。east_asian_width=A,終端設 ambiguous=wide 會占 2 格)
 AGY_ICON = "\U000f0b08"    # md-alpha_a_box U+F0B08 語意選字(Antigravity 無可用字型標;與 GROK_ICON 同家族)
 DEEPSEEK_ICON = "\U000f0b0b"  # md-alpha_d_box U+F0B0B 語意選字(DeepSeek 無 Nerd Font 官方標)
 KIOSAPI_ICON = "\U000f0b12"  # md-alpha_k_box U+F0B12 語意選字(KiosAPI 無 Nerd Font 官方標)

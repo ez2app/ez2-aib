@@ -16,6 +16,7 @@ _repl_rl.enable_repl_readline()
 import argparse
 import json
 import os
+import time
 import sys
 import urllib.error
 import urllib.request
@@ -185,7 +186,7 @@ def load_history(path: Path):
 def append_history(path: Path, role: str, content: str):
     hist_path = path / "history.jsonl"
     with open(hist_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"role": role, "content": content}, ensure_ascii=False) + "\n")
+        fh.write(json.dumps({"role": role, "content": content, "ts": int(time.time())}, ensure_ascii=False) + "\n")   # ts:10-09 重放卡要印時間
     try:
         os.chmod(hist_path, 0o600)
     except OSError:
@@ -498,9 +499,25 @@ def list_models(*, base_url: str, api_key: str):
         out.append((mid, ts))
     return out
 
+def _bc_seat(sess: Path) -> str:
+    try:
+        from seat_address import uuid_tail5
+        return uuid_tail5(sess.name) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _bc_replay(sess: Path, kind: str) -> int:
+    try:
+        import bridge_cards as _bc
+        return _bc.replay_history_file(sess, kind)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
     from bridge_cards import ReplFrame
-    _frame = ReplFrame("teamoclaude")
+    _frame = ReplFrame("teamoclaude", seat=_bc_seat(sess))   # 10-09:標題列帶席碼,跟橋接席的卡一致
     sys.stdout.write(
         "Teamo-Claude · model=%s · session=%s\n"
         "（API key；/models [關鍵字] 列模型（新→舊＋日期）、/model <id> 切換、/model 看現用；"
@@ -510,6 +527,7 @@ def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
     )
     sys.stdout.flush()
     _api_model_gauge.record(sess.name, model, "teamoclaude")  # 開 REPL:蓋掉上一個行程切過的模型
+    _bc_replay(sess, "teamoclaude")                               # 10-09:開席重放 history.jsonl 最近幾則(橋接席已有,API 席補齊)
     while True:
         try:
             _frame.close()

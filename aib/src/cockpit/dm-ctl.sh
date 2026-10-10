@@ -2346,6 +2346,12 @@ case "$RC" in
     else
       emit_json 0 delivered "傳輸已驗證 -> $T_WID" "$VERIFIED_LABEL"
     fi
+    # 10-09 a seat(第 26 件寄件端):目標是 claudebot 席時,信進了它的信箱不等於有人讀 —— 門鈴過期、沒綁對話等
+    #   由 claudebot_receipt.py 從橋的 status.json 與門鈴行程判;量不到就不說。stage 仍 delivered(信確實進了信箱)。
+    if [ "${T_PROVIDER:-}" = "claudebot" ] && [ -n "${_Q_UUID:-}" ] && [ -f "$HERE/claudebot_receipt.py" ]; then
+      _CBR_NOTE="$("$PY3" "$HERE/claudebot_receipt.py" "$_Q_UUID" 2>/dev/null || true)"
+      if [ -n "$_CBR_NOTE" ]; then echo "aib-dm-ctl: ⚠ 對方 @${T_CODE} 是 ClaudeBot 席,${_CBR_NOTE}" >&2; fi
+    fi
     if [ "$VERIFY" = "1" ]; then
       # 探針取**正文**(跳過抬頭)且要求「貼前沒有、貼後有」——抬頭前 24 字
       # 對同一對席位每封恆等,拿它當探針等於恆真(dev1 I3)。
