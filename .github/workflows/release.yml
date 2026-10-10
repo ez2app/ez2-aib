@@ -1,14 +1,49 @@
 # SPDX-License-Identifier: Apache-2.0
-# Publish to PyPI when a maintainer pushes a version tag (v0.1.0 …). Tags are created by a human only.
+# Publish to PyPI. Two ways in, one gate:
+#   - a maintainer pushes a version tag (v0.1.0 …), or
+#   - a maintainer runs this workflow by hand on main ("Run workflow" / workflow_dispatch): the `tag` job reads the
+#     version from pyproject.toml, creates the tag v<version> and the GitHub release, then starts this workflow again
+#     on that tag (a dispatch made with GITHUB_TOKEN does start a run; a tag push made with it would not).
+# Publishing always runs on a tag ref, so the `pypi` environment's "tags v*" rule applies, and the upload waits for a
+# human to approve that environment before anything reaches PyPI.
 # Uses PyPI trusted publishing: no API token is stored in this repository.
 name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
+  tag:
+    if: github.event_name == 'workflow_dispatch' && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: refuse anything but main
+        run: test "$GITHUB_REF_NAME" = main || { echo "::error::run this on main (got $GITHUB_REF_NAME)"; exit 1; }
+      - name: create the tag and the release for the version on main, then publish from the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          t="v$v"
+          if git rev-parse -q --verify "refs/tags/$t" >/dev/null; then
+            echo "::error::tag $t already exists; bump the version in pyproject.toml first"; exit 1
+          fi
+          head -n 20 CHANGELOG.md | grep -q "^## $v" || { echo "::error::CHANGELOG.md has no '## $v' section at the top"; exit 1; }
+          git tag "$t" "$GITHUB_SHA"
+          git push origin "refs/tags/$t"
+          gh release create "$t" --verify-tag --title "$t" --generate-notes
+          gh workflow run release.yml --ref "$t"
+          echo "created $t at $GITHUB_SHA; the publish run on $t waits for approval of the pypi environment"
   pypi:
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
