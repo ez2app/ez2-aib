@@ -187,6 +187,28 @@ def handoff_notice(source: str, payload: dict) -> str:
         return ""
 
 
+# 10-10 the maintainer「席位恢復的第一件事是,重新總結所有記憶,並用白話標題,加白話總結 150 字,告訴用戶這席上一次在做什麼,
+#   現在可以接著做的有那些?AI 建議的下一步選項有那些?」:只認 AIB 原地復活(aib 開席時 export 的
+#   AIB_RESUME_SESSION_UUID 等於這一席的 session_uuid)。席內自己打 /resume 接別的對話、或環境裡殘留別席的 uuid ⇒ 不印。
+REVIVE_ASK = """[AIB 席位剛復活] 你的第一則回答,先做這件事,再做別的(包括回應別席的訊息):
+重新總結這一席所有記憶 —— 上面帶回的記憶、席位記憶(~/.ez2-aib/memory/<席碼>/context.md)、這條對話裡最後一次交接 —— 照下面格式回給用戶,全部用國三生聽得懂的白話:
+1. 白話標題:一行,說這一席在忙什麼。
+2. 白話總結:約 150 字,說這一席上一次在做什麼、做到哪裡、有什麼東西還在跑或在等人。
+3. 現在可以接著做的:條列,每項一句。
+4. AI 建議的下一步選項:條列 2~4 個,標出推薦哪一個,最後寫「你不回我就走哪一條」。
+沒查到的寫「沒查到」,不要猜。"""
+
+
+def revive_text(source: str) -> str:
+    if source != RESUME_SOURCE or os.environ.get("AIB_REVIVE_BRIEF") == "0":
+        return ""
+    want = (os.environ.get("AIB_RESUME_SESSION_UUID") or "").strip()
+    uuid = seat_session_uuid()
+    if not want or not uuid or want != uuid:
+        return ""
+    return _with_genes(_persona_text(uuid, source), source) + "\n\n" + REVIVE_ASK
+
+
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] != ["session-start"]:
@@ -204,6 +226,11 @@ def main(argv=None) -> int:
     if os.environ.get("AIB_PERSONA_REINJECT") != "0" and source in wanted:
         try:
             text = reinject_text(source)
+        except Exception:  # noqa: BLE001 —— hook 絕不擋住對話
+            text = ""
+    if not text:
+        try:
+            text = revive_text(source)
         except Exception:  # noqa: BLE001 —— hook 絕不擋住對話
             text = ""
     if text:                         # r17 M2:人格/基因先印出去,後面的交接檢查就算出事也不會把它拖走

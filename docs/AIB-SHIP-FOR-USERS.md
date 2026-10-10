@@ -69,15 +69,9 @@ and how many of your pushes fell into the "everything reruns" cases.
 2. **"Unverified" is not green.** Tests this machine lacks a tool for (e.g. a Mac-only command), or that can't be measured, are honestly listed as "unverified" and never counted as passing.
 3. **To check that reuse is correct**: `aib ship audit` really reruns a sample of "reused" tests, compares results, and records them in the totals.
 
-## 6. Advanced (paid add-on): running on several machines
-
-- If you have idle machines, one pre-push check can be split across several of them. This is a **plugin**, off by default; you must install the plugin, enable it in `.aib/ship.toml`, and have a license that includes it.
-- If any of these is missing, the pre-push check runs on this machine as before and tells you which one is missing — it never blocks your push.
-- Results coming back from other machines must have a matching signature and come from your trust list; for each green shard, 2 tests are also rerun locally to cross-check.
-- `aib ship plugins` shows which plugins are installed, whether they're enabled, and whether they're licensed.
-
-## 7. Not yet supported
+## 6. Not yet supported
 
 - Windows.
 - Languages other than Python: how far support goes is in the language table in `AIB-TEST-QUICKSTART.md` (tested with Node, jest/mocha, Go and PHP; vitest runs correctly but reruns every time; Ruby, Rust, Java etc. need the command declared yourself and really run every time).
 - Time-dependent tests that only look at the clock and read no files (e.g. "older than 30 days counts as expired") are covered only by record expiry, so they may not rerun until up to 14 days later.
+

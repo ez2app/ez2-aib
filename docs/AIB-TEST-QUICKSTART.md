@@ -106,13 +106,6 @@ aib ship stats                    # running totals since the first run (total te
 # The pre-push check starts by comparing: how long without aib (one test after another), how long with aib on this machine (and what time it will finish), and a projection with more machines;
 #   when done it reconciles (savings from running side by side / extra savings from shadow resume)
 aib ship stats --all              # one line per project on this machine (total tests/cases, number of pushes, savings) + grand total
-# Running on several machines is a paid add-on plugin: it must be installed (plugins/farm or ~/.ez2-aib/plugins/farm), enabled in .aib/ship.toml with
-#   [plugins] farm = true, and the license file's addons must include "farm"; if any one is missing ⇒ the pre-push check runs on this machine as before and says which one is missing
-aib ship plugins                    # which plugins are installed, whether they're enabled, whether they're licensed
-aib ship stats --team --me @<name>  # (farm plugin) post this machine's totals to the shared board and collect totals from trusted senders: one line per machine + team total
-# Start workers on idle machines; on the pushing machine set AIB_SHIP_FARM=@<your-name> — shard 1 runs locally, the rest go to workers;
-#   only results from the trust list (AIB_VERIFY_TRUST=@name=key-fingerprint) with a valid signature and an exactly matching list are accepted; for each green shard from another machine, 2 tests are rerun locally; if nobody answers, it runs them itself
-aib ship worker --me @<name>        # keep running on an idle machine (checks the shared board every 15 s)
 aib ship audit                    # really rerun a sample of "reused" tests and compare results (is reuse correct?); results go into the totals and are listed under each week
 aib ship stale [--run]            # tests not really run for over 7 days (the pre-push check only picks affected tests, so untouched ones can go a long time without running, and reds hide there);
                                   #   --run runs them all at once. Recommended weekly (in one catch-up run, 5 tests turned out to have been red all along and 14 had never run in the cloud)

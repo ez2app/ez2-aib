@@ -5,7 +5,6 @@
     aib test --all              run the whole suite that way
     aib ship <subcommand> …     pre-push check, package, release (see `aib ship --help`)
     aib support [--confirm]     collect a de-identified bug report pack (nothing is sent; you attach it to an issue)
-    aib license status|device-id|activate|deactivate   paid plugins: show / bind / activate this machine
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
     aib <provider> <dgrs|safe> <role>   open an AI seat in the cockpit (macOS + tmux; see `aib --help-cockpit`)
@@ -32,13 +31,16 @@ def _locale():
 
 
 INSTALL_URLS = ("https://aib.ez2.app/install.sh", "https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh")
+PUBLIC_MARK = "github.com/ez2app/ez2-aib.git"   # 公開版安裝程式的預設來源;舊的私有版安裝程式沒有這一串
 
 
 def _update(args):
     """aib update(10-09 the maintainer「aib update 指令也做」):下載最新的一行安裝程式,裝在這份 aib 所在的 checkout。
     = 重跑 curl -fsSL https://aib.ez2.app/install.sh | bash:只快轉、不蓋本機改動、不再問 AI 工具(--tools 再問)。
     AIB_INSTALL_URL:自架/測試用的安裝程式網址(curl 讀得到的都行,含 file://);可以給好幾個(空白分隔),依序試。
-    10-09(the maintainer「第一種有就用第一種,沒有自動第二種備用」):預設先試網站,下載不到就用公開倉裡的 install.sh。"""
+    10-09(the maintainer「第一種有就用第一種,沒有自動第二種備用」):預設先試網站,下載不到就用公開倉裡的 install.sh。
+    10-10(Mac a seat 實測):網站還在回舊的私有版安裝程式 ⇒「下載得到」不夠,還要是公開版(內含 PUBLIC_MARK);
+    不是 ⇒ 當成這個網址不能用,換下一個。"""
     root = os.path.dirname(HERE)          # 從 checkout 跑(bin/aib):HERE = <checkout>/aib
     if not os.path.isdir(os.path.join(root, ".git")):
         sys.stderr.write("aib update: this aib (%s) is not a git checkout, so it was not installed by the one-line "
@@ -46,10 +48,12 @@ def _update(args):
         return 2
     urls = os.environ.get("AIB_INSTALL_URL", " ".join(INSTALL_URLS))
     # 先下載完整再跑(下載不完整不會跑半截);每個網址都下載不到要講清楚,不能被管線吃掉
-    script = ('s=""; for u in $0; do s="$(curl -fsSL "$u")" && [ -n "$s" ] && break; s=""; done; '
+    script = ('m="$1"; shift; s=""; for u in $0; do s="$(curl -fsSL "$u")" && case "$s" in *"$m"*) break;; esac; '
+              'if [ -n "$s" ]; then echo "aib update: $u is not the open-source installer; trying the next one" >&2; fi; '
+              's=""; done; '
               '[ -n "$s" ] || { echo "aib update: could not download the installer from: $0" >&2; exit 5; }; '
               'exec bash -c "$s" aib-install "$@"')
-    os.execv("/bin/bash", ["bash", "-c", script, urls, "--dir", root] + list(args))
+    os.execv("/bin/bash", ["bash", "-c", script, urls, PUBLIC_MARK, "--dir", root] + list(args))
 
 
 def main():

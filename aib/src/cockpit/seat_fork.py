@@ -137,6 +137,8 @@ def record_model(provider: str, path: Path | None) -> str:
     for d in _rows(path):
         m = ""
         if provider == "claude":
+            if d.get("isSidechain"):                       # 子代理那一列:模型可能不同,不算這一席的(10-10)
+                continue
             msg = d.get("message") if isinstance(d.get("message"), dict) else {}
             m = msg.get("model") or ""
             if m.startswith("<"):                          # <synthetic> 不是模型
@@ -155,6 +157,52 @@ def record_model(provider: str, path: Path | None) -> str:
         if isinstance(m, str) and m:
             last = m
     return last
+
+
+REVIVE_LAYER_RECORD = "record"          # 對話紀錄最後用的
+REVIVE_LAYER_SEAT_FILE = "seat_file"    # 舊席位檔開席時要求的
+
+
+def seat_record_for(uuid: str, aib_home: str) -> dict:
+    """登記簿裡這個 uuid 最後一份席位檔(所有艙的活席登記簿 + retired/);沒有回 {}。
+    「最後」以 started_epoch 判,沒有就用檔案 mtime。只讀,不碰持有判定(那是 seat_liveness 的事)。"""
+    if not UUID_RE.fullmatch(uuid or "") or not aib_home:
+        return {}
+    best, best_when = {}, -1.0
+    for sd in seat_liveness.all_seat_dirs(aib_home):
+        for f in glob.glob(os.path.join(sd, "w*.json")) + glob.glob(os.path.join(sd, "retired", "*.json")):
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    rec = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(rec, dict) or rec.get("session_uuid") != uuid:
+                continue
+            try:
+                when = float(rec.get("started_epoch") or 0) or os.path.getmtime(f)
+            except (TypeError, ValueError, OSError):
+                when = 0.0
+            if when >= best_when:
+                best, best_when = rec, when
+    return best
+
+
+def revive_model(provider: str, uuid: str, aib_home: str, config_dir: Path | None = None) -> tuple[str, str]:
+    """原地復活沒帶 --model 時該開哪一個模型(the maintainer 10-10:用戶把原席復活要拿回**原來在用的**,不是 providers.json 預設)。
+
+    三層,回 (模型, 來源層):
+      ① 對話紀錄最後用的(席內 /model 換過也在這裡;AIB 自己的檔案不記這件事)→ (m, "record")
+      ② 舊席位檔 model_requested(開席時要求的)                              → (m, "seat_file")
+      ③ 兩層都沒有 → ("", "")——呼叫端自己退到 providers.json 預設,並且要印出來退到了哪一層。
+    10-10 實踩:a seat 席內換到 Fable 5.1,同碼復活後無聲變回 Opus 5(預設),席碼/人格/CTX 全對只有模型錯。"""
+    m = record_model(provider, find_record(provider, uuid, aib_home, config_dir))
+    if m:
+        return m, REVIVE_LAYER_RECORD
+    rec = seat_record_for(uuid, aib_home)
+    m = rec.get("model_requested") if isinstance(rec, dict) else ""
+    if isinstance(m, str) and m.strip():
+        return m.strip(), REVIVE_LAYER_SEAT_FILE
+    return "", ""
 
 
 def excerpt_any(provider: str, path: Path | None, n: int = 6, width: int = 400) -> list[str]:
@@ -553,8 +601,16 @@ def main(argv=None) -> int:
     b.add_argument("--seat-id", required=True)
     b.add_argument("--aib-home", default="")
     b.add_argument("--dry-run", action="store_true")
+    rm = sub.add_parser("revive-model")        # 10-10:原地復活該開哪個模型(三層;aib 內部用 -c 直接呼叫同一個函數)
+    rm.add_argument("--provider", required=True)
+    rm.add_argument("--uuid", required=True)
+    rm.add_argument("--aib-home", default="")
     a = ap.parse_args(argv)
     home = a.aib_home or seat_liveness.default_aib_home()
+    if a.cmd == "revive-model":
+        m, layer = revive_model(a.provider, a.uuid, home)
+        print(json.dumps({"model": m, "layer": layer}, ensure_ascii=False))
+        return 0
     if a.cmd == "prepare":
         print(json.dumps(prepare(a.old, a.new, home, a.window, a.state_dir, provider=a.provider,
                                  model=a.model), ensure_ascii=False))

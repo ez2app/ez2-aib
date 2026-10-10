@@ -6,6 +6,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/cockpit-env.sh"
+. "$HERE/pane-tick.sh"            # 只借 pane_wait_if_composing(10-10);不叫 pane_tick_init,等待仍是原本的 sleep 1
 PY3="${EZ2_PY3:-python3}"
 
 _paint() {
@@ -310,6 +311,7 @@ _loop() {
     fi
 
     # 高度停火：迴圈內禁止鎖 hub。≡N 只在 --ensure／人工切換時設定一次。
+    pane_wait_if_composing && continue    # 終端機組字中:不渲染(10-10;見 pane-tick.sh)
     sleep 1
   done
 }
@@ -468,6 +470,7 @@ PZ
       printf '\033[H%s\033[J' "$cur"
       last="$cur"
     fi
+    pane_wait_if_composing && continue    # 終端機組字中:不渲染(10-10;見 pane-tick.sh)
     sleep 1
   done
 }
@@ -663,6 +666,7 @@ PY
       printf '\033[H%s' "$cur"
       last="$cur"
     fi
+    pane_wait_if_composing && continue    # 終端機組字中:不渲染(10-10;見 pane-tick.sh)
     sleep 1
   done
 }

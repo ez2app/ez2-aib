@@ -851,10 +851,137 @@ def ask_number(view, *, out=sys.stdout, ask=input):
     return restore(c["cabin"], force=bool(c.get("clients")) and not c.get("dead"), out=out, view=view, ask=ask)
 
 
+# ───────────────────────────── 開機選單 ─────────────────────────────
+# the maintainer 10-10「開機選單也加」:登入後上次開機時的艙有沒回來的,才開一個 Terminal 跑 aib restart(只顯示選單,不自己恢復)。
+# 只做 macOS(launchd 的 LaunchAgent,登入時跑一次);拆掉:aib restart uninstall-boot。
+
+BOOT_LABEL = "com.ez2.aib-boot-restore"
+BOOT_DELAY_S = 20                       # 等登入、網路、Terminal 都起來
+BOOT_LOG_NAME = "boot-restore-menu.log"
+_BOOT_PATH_EXTRA = ("/opt/homebrew/bin", "/usr/local/bin")   # launchd 的 PATH 沒有 Homebrew ⇒ 找不到 tmux
+
+
+def boot_plist_path(home=None):
+    return os.path.join(home or os.path.expanduser("~"), "Library", "LaunchAgents", BOOT_LABEL + ".plist")
+
+
+def _boot_log_path(state_root=None):
+    return os.path.join(state_root or seats_dir_lib.state_root()[0], "logs", BOOT_LOG_NAME)
+
+
+def boot_plist(*, python=None, script=None, path_env=None, log=None):
+    """LaunchAgent 內容(dict,給 plistlib)。PATH 用安裝當下的 PATH:登入時 launchd 只給 /usr/bin:/bin。"""
+    parts = [d for d in (path_env if path_env is not None else os.environ.get("PATH", "")).split(os.pathsep) if d]
+    for extra in (os.path.join(os.path.expanduser("~"), ".local", "bin"),) + _BOOT_PATH_EXTRA:
+        if extra not in parts:
+            parts.append(extra)
+    return {"Label": BOOT_LABEL,
+            "ProgramArguments": [python or sys.executable, script or os.path.abspath(__file__), "boot-check"],
+            "RunAtLoad": True,
+            "EnvironmentVariables": {"PATH": os.pathsep.join(parts)},
+            "StandardOutPath": log or _boot_log_path(),
+            "StandardErrorPath": log or _boot_log_path()}
+
+
+def _launchctl(*args):
+    try:
+        p = subprocess.run(["launchctl"] + list(args), capture_output=True, text=True, timeout=20,
+                           stdin=subprocess.DEVNULL)
+        return p.returncode, (p.stderr or p.stdout).strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, str(exc)
+
+
+def _dev_worktree(here=HERE):
+    """這支程式在開發 worktree 裡 ⇒ 回那棵樹的路徑;正本樹、不是 git 樹、量不到 ⇒ None。
+    同 global_bind_gate.sh:開機設定指到 worktree,worktree 一刪,開機那一步就壞了。"""
+    def git(*a):
+        try:
+            p = subprocess.run(["git", "-C", here] + list(a), capture_output=True, text=True, timeout=10,
+                               stdin=subprocess.DEVNULL)
+            return p.stdout if p.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+    top = (git("rev-parse", "--show-toplevel") or "").strip()
+    lst = git("worktree", "list", "--porcelain") or ""
+    canon = next((ln[len("worktree "):] for ln in lst.splitlines() if ln.startswith("worktree ")), "")
+    if not top or not canon:
+        return None
+    return None if os.path.realpath(top) == os.path.realpath(canon) else top
+
+
+def install_boot(*, home=None, platform=None, launchctl=_launchctl, out=sys.stdout, plist=None, dev_tree=None):
+    import plistlib
+    if (platform or sys.platform) != "darwin":
+        out.write("開機選單目前只支援 macOS(launchd);這台不裝。\n")
+        return 2
+    dev = _dev_worktree() if dev_tree is None else dev_tree
+    if dev and os.environ.get("AIB_ALLOW_FOREIGN_BINDINGS") != "1":
+        out.write("✗ 這支是開發樹 %s 裡的程式;開機設定要指向正本樹,請用正本的 aib 裝。要硬裝:AIB_ALLOW_FOREIGN_BINDINGS=1\n"
+                  % dev)
+        return 1
+    path = boot_plist_path(home)
+    data = plist or boot_plist()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(data["StandardOutPath"]), exist_ok=True)
+    with open(path, "wb") as fh:
+        plistlib.dump(data, fh)
+    domain = "gui/%d" % os.getuid()
+    launchctl("bootout", "%s/%s" % (domain, BOOT_LABEL))          # 舊的先拿掉(沒裝過會失敗,不管)
+    rc, err = launchctl("bootstrap", domain, path)
+    if rc != 0:
+        out.write("✗ 寫好 %s,但 launchctl bootstrap 失敗:%s\n" % (path, err))
+        return 1
+    out.write("✅ 開機選單裝好了:%s\n" % path)
+    out.write("   登入後等 %d 秒,上次開機時的艙有沒回來的,才開一個 Terminal 跑 aib restart(只顯示選單,不自己恢復)。\n"
+              % BOOT_DELAY_S)
+    out.write("   紀錄:%s;拆掉:aib restart uninstall-boot\n" % data["StandardOutPath"])
+    return 0
+
+
+def uninstall_boot(*, home=None, launchctl=_launchctl, out=sys.stdout):
+    path = boot_plist_path(home)
+    launchctl("bootout", "gui/%d/%s" % (os.getuid(), BOOT_LABEL))
+    if os.path.exists(path):
+        os.remove(path)
+        out.write("✅ 開機選單拆掉了:%s\n" % path)
+    else:
+        out.write("本來就沒裝開機選單(%s 不在)\n" % path)
+    return 0
+
+
+def boot_check(*, delay=None, view=None, opener=None, out=sys.stdout, now=None):
+    """LaunchAgent 登入時跑的那一步。回 0 一律(登入流程不該因為它報錯)。"""
+    if delay is None:
+        try:
+            delay = float(os.environ.get("AIB_BOOT_MENU_DELAY", BOOT_DELAY_S))
+        except ValueError:
+            delay = BOOT_DELAY_S
+    if delay > 0:
+        time.sleep(delay)
+    stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(now))
+    try:
+        v = view if view is not None else build_view()
+    except Exception as exc:                # noqa: BLE001 —— 量不到就不跳,寫一行紀錄
+        out.write("%s 量不到艙(%s),不跳選單\n" % (stamp, exc))
+        return 0
+    dead = v.get("dead") or []
+    if not dead:
+        out.write("%s 上次開機的艙都在,或沒有快照 ⇒ 不跳選單\n" % stamp)
+        return 0
+    cmd = " ".join(shlex.quote(a) for a in _aib_bin() + ["restart"])
+    ok = (opener or _open_terminal)(cmd)
+    out.write("%s 上次開機有 %d 個艙沒回來(%s)⇒ 開 Terminal 跑 %s:%s\n"
+              % (stamp, len(dead), " ".join(c["cabin"] for c in dead), cmd, "成功" if ok else "osascript 失敗"))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="aib restart",
                                  description="列出 AIB 艙(在線的 + 上次開機時還在的)、每艙的 AI 席、種類與最後活動,並恢復")
-    ap.add_argument("action", nargs="?", choices=["snapshot"], help="snapshot = 手動寫一次快照")
+    ap.add_argument("action", nargs="?", choices=["snapshot", "install-boot", "uninstall-boot", "boot-check"],
+                    help="snapshot = 手動寫一次快照;install-boot / uninstall-boot = 裝/拆開機選單(macOS);"
+                         "boot-check = 開機選單登入時跑的那一步")
     ap.add_argument("--json", action="store_true", help="印 JSON")
     ap.add_argument("--restore", metavar="艙碼", help="恢復那一艙(艙號後四碼即可)")
     ap.add_argument("--restore-all", action="store_true", help="停電/重開機後:上次開機時的艙全部恢復(一艙對一艙)")
@@ -867,6 +994,12 @@ def main(argv=None):
         p = write_snapshot(min_interval_s=0)
         print(p or "沒寫:沒有在線的艙,或量不到開機時間")
         return 0 if p else 1
+    if args.action == "install-boot":
+        return install_boot()
+    if args.action == "uninstall-boot":
+        return uninstall_boot()
+    if args.action == "boot-check":
+        return boot_check()
     if args.restore_all:
         return restore_all(yes=args.yes, attach=not args.no_attach)
     if args.restore:

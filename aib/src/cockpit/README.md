@@ -289,6 +289,7 @@ pane 子樹 argv 自辨不算席。沒有安全名單時 watch 只掃不收並�
 | `aib restart --restore <艙碼>` | 在線 ⇒ 開新 Terminal 視窗 `tmux attach -d`(有人在看要 `--force` 並再確認);斷掉 ⇒ 先列計畫、按 y,原艙號開回、每席 `AIB_REVIVE_SESSION_UUID` 同碼復活 |
 | `aib restart --restore-all` | 停電/重開機後:上次開機時的艙全部恢復,一艙對一艙,問一次 |
 | `aib restart snapshot` | 手動補一份快照 |
+| `aib restart install-boot` / `uninstall-boot` | 開機選單(macOS,10-10):登入後等 20 秒,上次開機時的艙有沒回來的,才開一個 Terminal 跑 `aib restart`(只顯示選單,不自己恢復);LaunchAgent `com.ez2.aib-boot-restore`,紀錄 `<狀態根>/logs/boot-restore-menu.log`。要用正本的 aib 裝(開發 worktree 會被擋) |
 
 - **快照**:watch 每輪寫 `<狀態根>/state/cabin-snapshots/boot-<開機時間>.json`(按開機分檔,重開機後新艙不會蓋掉停電前那份;留 10 次;`EZ2_AIB_RESTART_SNAPSHOT=0` 關)。超過 15 分鐘沒更新,列表最上面警告。
 - **每席走哪條**:對話檔與工作資料夾都在 ⇒ 同碼復活;缺一樣 ⇒ 開新席並用 `bind_one.py` 移植人格與大腦;bot 席帶回 `agent_id` 綁定;codex 復活後直接 `seat-detect` 補席碼。

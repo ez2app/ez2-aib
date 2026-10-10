@@ -520,6 +520,7 @@ case "$MODE" in
           fi
         fi
       fi
+      pane_wait_if_composing && continue    # 終端機組字中:不改標題(改標題也是送資料給 Terminal;10-10,見 pane-tick.sh)
       TITLE="$(sample 0)"
       write_title "$TITLE"
       sleep "$INTERVAL"

@@ -222,6 +222,21 @@ OPENING_FAIL_WHYS = frozenset(("timeout", "pane_dead", "capture_unavailable",
 OPENING_REAPER_GRACE_S = ONBOARD_LOADING_WINDOW_S
 
 
+def _usable_after(rows, verdict_row):
+    """判決列之後,事件鏈有沒有走到 can_type(= 這一席已經能打字)。純函式,不讀檔。
+
+    用 identity 找位置(同一份 rows 裡的同一個 dict),不比內容:兩筆判決可以一模一樣。
+    """
+    seen = False
+    for r in rows:
+        if r is verdict_row:
+            seen = True
+            continue
+        if seen and isinstance(r, dict) and r.get("event") == "can_type":
+            return True
+    return False
+
+
 def opening_attempt_state(rows, ack_fail_why=None, pane_dead=False):
     """一份 attempt 的事件列 → {mode, stage?, fail?} 或 None。
 
@@ -244,9 +259,17 @@ def opening_attempt_state(rows, ack_fail_why=None, pane_dead=False):
         if note.startswith("waited_ms="):
             return None                                        # O2-right-ok-done
         if "missing=" in note:
-            miss = note.split("missing=", 1)[1].split()[0]
-            return {"mode": "unconfirmed",
-                    "missing": [m for m in miss.split(",") if m]}
+            # ★ 10-10(the maintainer 直令,a seat 實踩):那一筆是**當下畫面的快照**,不是永久判決。
+            #   新艙第一席常在右欄自己都還沒畫好時就被量到 ⇒ 記下「五項全缺」;
+            #   但事件鏈接著走到 can_type(CLI 能打字=這一席可用,v0.70.0 第 9 條)。
+            #   快照在 can_type **之前**就代表它已經過期,再畫「未確認 · 缺…」是假警報,
+            #   而且永遠不會自己消失(實例:艙 931e 的 a seat 掛了 40 分鐘)。
+            #   往下掉到 can_type 那一條即可——窗死仍然蓋過一切,複判(新的 right_painted_ok)
+            #   因為排在 can_type 之後,照樣算數。
+            if not _usable_after(rows, _ok_rows[-1]):
+                miss = note.split("missing=", 1)[1].split()[0]
+                return {"mode": "unconfirmed",
+                        "missing": [m for m in miss.split(",") if m]}
     # ★ v0.70.0 第 9 條:CLI 已經能打字(can_type)⇒ 這一席**可用**。之後唯一算失敗的是窗死;
     #   回執逾時/讀不到畫面/額度用完都只是「開席單沒回」,名字後掛 `*`(與額度後綴),畫普通席。
     #   can_type 之前的行為一個字都不變(碼表逾時、帳本 ack_fail 照舊畫失敗)。
