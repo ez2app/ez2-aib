@@ -4,6 +4,15 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.4
+
+- The cockpit color theme (`themes/aib-default.json`) is now included; earlier versions left it out, so the cockpit could not find its theme.
+- `aib_dm` MCP gains three read-only tools for AI seats: `aib_inbox`, `aib_team`, `aib_tasks` (writing still goes through `aib_dm`).
+- ClaudeBot read receipts: a message is marked read once it reaches Claude, instead of staying "delivered" forever.
+- Bot bindings come back when a cabin restarts; bot title lines filter control characters; a GrokBot that fails while closing no longer stays stuck.
+- Two small verify tools: `sync_receipt` (a receipt per host when syncing a fleet, failures loud) and `classify_env_blocked` (separates reds caused by a missing environment from real ones).
+- The old ACB board backend is removed from `outline-to-tasks`.
+
 ## 0.1.3
 
 - `aib killswitch on|off|status`: an emergency stop. While it is on, no AI can open a new seat, send `aib dm` or ship; if the switch cannot be read, it counts as on.

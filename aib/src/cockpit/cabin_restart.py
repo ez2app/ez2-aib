@@ -542,7 +542,10 @@ def _child_env(extra):
     return env
 
 
-def _bot_binding(prov, code, state_root):
+def _bot_binding(prov, uuid, state_root):
+    """重開 bot 席時要帶回去的綁定:(環境變數名, 值)。
+    10-11 a seat(第 15 件第 1 步):以前拿 5 碼席碼去找 bridge/<碼>/status.json,但橋的資料夾是完整 session uuid
+    ⇒ 永遠讀不到,艙重開從沒把 bot 綁定帶回去;codexbot 的狀態檔欄位也不叫 agent_id。改走 bot_binding.bound_id。"""
     try:
         import bot_caps
         benv = bot_caps.caps(prov).bind_env or ""
@@ -551,9 +554,9 @@ def _bot_binding(prov, code, state_root):
     if not benv:
         return "", ""
     try:
-        with open(os.path.join(state_root, "bridge", code, "status.json"), encoding="utf-8") as fh:
-            return benv, json.load(fh).get("agent_id") or ""
-    except (OSError, ValueError):
+        import bot_binding
+        return benv, bot_binding.bound_id(prov, uuid, base=state_root)[0]
+    except Exception:  # noqa: BLE001
         return benv, ""
 
 
@@ -699,7 +702,7 @@ def revive_cabin(c, *, state_root=None, out=sys.stdout, log_dir=None, wait_s=30)
         model = s.get("model") or ""
         margs = ["--model", model] if model and model != prov else []
         extra = {}
-        benv, bval = _bot_binding(prov, code, root)
+        benv, bval = _bot_binding(prov, uuid, root)
         if benv and bval:
             extra[benv] = bval
         if plan == "revive":

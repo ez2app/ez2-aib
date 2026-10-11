@@ -166,7 +166,11 @@ def last_bound_map(instances_root: str | None = None, provider: str = "codexbot"
 
 
 # 席位檔裡記「這一席綁哪條」的欄位(aib 開席時寫);grokbot/musebot 只寫在橋的 status.json。
-SEAT_BIND_FIELD = {"codexbot": "desktop_thread_id", "claudebot": "claude_session_id"}
+#   10-11 a seat(第 15 件第 1 步):對照表只留一份,在 bot_binding。
+try:
+    from bot_binding import SEAT_FIELD as SEAT_BIND_FIELD
+except ImportError:  # pragma: no cover —— 單獨拷走這支時的退路
+    SEAT_BIND_FIELD = {"codexbot": "desktop_thread_id", "claudebot": "claude_session_id"}
 
 
 def _binds_in_bridge_status(provider: str) -> bool:
@@ -181,13 +185,8 @@ def _binds_in_bridge_status(provider: str) -> bool:
 
 def _bridge_agent_id(session_uuid) -> str:
     """橋的 status.json 裡這一席現在綁的 id;讀不到回 ""。"""
-    if not isinstance(session_uuid, str) or not session_uuid or "/" in session_uuid or ".." in session_uuid:
-        return ""
-    root = Path(os.environ.get("EZ2_AIB_STATE_ROOT") or os.environ.get("EZ2_AIB_HOME") or Path.home() / ".ez2-aib").expanduser()
-    try:
-        d = json.loads((root / "bridge" / session_uuid / "status.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ""
+    import bot_binding   # 10-11 第 15 件第 1 步:讀狀態檔走同一支
+    d = bot_binding.read_status(session_uuid)
     v = d.get("agent_id") if isinstance(d, dict) else None
     return v if isinstance(v, str) else ""
 

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""給 Codex 桌面(ChatGPT App)用的 MCP server:只暴露一個工具 `aib_dm`。
+"""給 Codex 桌面(ChatGPT App)用的 MCP server:寫入只有一個工具 `aib_dm`。
+
+10-11(the maintainer 直令「只加唯讀」):另掛三個唯讀工具 aib_inbox / aib_team / aib_tasks(aib_mcp_readonly.py),
+它們沒有任何會改狀態的路徑;回覆、標已讀、派工一律還是走 aib_dm(= aib dm)。
 
 the maintainer 2026-09-24:桌面對話裡出現生的 `<aib_tool>{…}</aib_tool>` —— 因為桌面模型沒有真的 aib_dm 工具,
 只能用文字後備。登記這支到 ~/.codex/config.toml 的 [mcp_servers.aib_dm] 之後,模型呼叫的是真工具,
@@ -26,6 +29,7 @@ sys.path.insert(0, str(HERE))
 import aib_dm_tool as dmt  # noqa: E402
 import codexbot_dm_socket as dms  # noqa: E402
 import codexbot_rules as rules  # noqa: E402
+import aib_mcp_readonly as ro  # noqa: E402
 
 PROTOCOL = "2024-11-05"
 LOG_ENV = "AIB_DM_MCP_LOG"          # B3:每筆 tools/call 落這裡(稽核:誰、何時、送給誰、走哪條路、結果)
@@ -262,6 +266,8 @@ def tool_schema():
 
 
 def call_tool(name, args, runner=None, log=None, meta=None):
+    if name in ro.TOOLS:      # 唯讀三工具:不經節流/白名單(那是管「送出去」的),也不落送信稽核日誌
+        return ro.call(name, args, caller_session_uuid(meta))
     if name != dmt.DM_TOOL_NAME:
         return {"content": [{"type": "text", "text": "unknown tool: %s" % name}], "isError": True}
     args = args or {}
@@ -335,7 +341,7 @@ def handle(msg):
     if method == "ping":
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": [tool_schema()]}}
+        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": [tool_schema()] + ro.schemas()}}
     if method == "tools/call":
         p = msg.get("params") or {}
         log_meta("tools/call", p)

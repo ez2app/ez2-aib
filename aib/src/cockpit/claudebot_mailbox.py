@@ -132,6 +132,61 @@ def send_dm(session_id: str, to: str, text: str, token: str = "", base=None):
     return gm.send_dm(session_id, to, text, token=token, base=base, provider=PROVIDER)
 
 
+def mark_queue_read(code: str, msgs, env=None) -> int:
+    """10-11 a seat(待修清單第 19 件收信端):信交到 Claude 手上時,把 dm 佇列裡對應那一筆標成已讀(read_by 收件席)。
+
+    以前 claudebot 席收信只在席上印「✓ Claude 已讀走」,dm 佇列那一筆永遠停在 delivered、read_at 空
+    (10-09 a seat 六封 dm Claude 都讀了,佇列六筆全是「沒讀」)⇒ 誰去查那一席都以為沒人讀。
+    對法:佇列裡 status=delivered、還沒讀的那一筆,正文(空白收成一格)是某封信全文的**結尾**
+    (dm-ctl 貼進席位的是「抬頭 + 正文」,佇列存正文)。只認結尾,不認中間出現 —— 短正文才不會誤標別封。
+    任何一步失敗回 0,不擋交信。回標了幾筆。"""
+    texts = [" ".join(str(m.get("text") or "").split()) for m in (msgs or []) if isinstance(m, dict)]
+    texts = [t for t in texts if t]
+    if not code or not texts:
+        return 0
+    try:
+        import dm_queue as dq
+        items = dq.history_items(code, env=env)   # 已送達的信已離開送信佇列(list_items 只列還在排隊的)
+    except Exception:  # noqa: BLE001 —— 佇列讀不到只是少一筆已讀,不能讓信交不出去
+        return 0
+    import re
+    def head_re(sender):
+        # 從信開頭整段認抬頭:IP:…@寄件席 >> IP:…@收件席 MM-DD HH:MM(時區);兩方段內不容空白 ⇒ 正文裡引用的假抬頭吞不進來
+        return re.compile(r"^IP:[^ ]+@%s >> IP:[^ ]+@%s \d{2}-\d{2} \d{2}:\d{2}\([^() ]*\) $"
+                          % (re.escape(sender), re.escape(code)))
+    used = set()   # 一封信最多對到一筆(同正文重寄兩次 ⇒ 兩封信各標一筆,不是一封標兩筆)
+    n = 0
+    for it in items:
+        if it.get("status") != "delivered" or it.get("read_at") is not None:
+            continue
+        body = " ".join(str(it.get("msg") or "").split())
+        sender = str(it.get("sender_seat") or "")
+        if not sender:
+            continue   # 寄件席不明就不猜(寧可少標一筆已讀,不誤標)
+        pat = head_re(sender)
+        hit = None
+        for k, t in enumerate(texts):
+            if k in used or not body or not t.endswith(body):
+                continue
+            prefix = t[:-len(body)]
+            # 抬頭之後緊接就是正文(「驗證完成,收到」不算「收到」那封);寄件席、收件席都對得上才算。
+            # 已知限制:同一封信被交兩次(兩次呼叫)會各標一筆同正文的信 —— 要穩定的信編號才擋得住,hook 一封只交一次
+            if not pat.match(prefix):
+                continue
+            hit = k
+            break
+        if hit is None:
+            continue
+        try:
+            r = dq.mark_read(code, it["id"], "seat:%s" % code, env=env, if_rev=dq.item_rev(it))
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(r, dict) and r.get("ok"):
+            used.add(hit)
+            n += 1
+    return n
+
+
 RULES_SAME = ("規則(AIB 定的):同這條對話第一次收信時給你的那份,沒有變;照那份做。"
               "(對話被壓縮或清除後會再給一次完整版。)")
 RULES_SENT_MARK = "claude-rules-sent"   # 席目錄裡記「這條對話收過哪一版規則」:<session id>\t<規則指紋>

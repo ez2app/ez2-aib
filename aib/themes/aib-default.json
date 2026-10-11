@@ -1,0 +1,141 @@
+{
+  "schema_version": "aib-theme/v1",
+  "theme_id": "aib-default",
+  "name_key": "theme.aib_default.name",
+  "default": true,
+  "regions": {
+    "left": {
+      "name_key": "theme.region.left.name",
+      "normal": {
+        "background": 95,
+        "foreground": 252,
+        "attributes": []
+      },
+      "focused": {
+        "background": 132,
+        "foreground": 231,
+        "attributes": [
+          "bold"
+        ]
+      }
+    },
+    "center": {
+      "name_key": "theme.region.center.name",
+      "normal": {
+        "background": 236,
+        "foreground": 252,
+        "attributes": []
+      },
+      "focused": {
+        "background": 238,
+        "foreground": 252,
+        "attributes": [
+          "bold"
+        ]
+      }
+    },
+    "right": {
+      "name_key": "theme.region.right.name",
+      "normal": {
+        "background": 24,
+        "foreground": 252,
+        "attributes": []
+      },
+      "focused": {
+        "background": 31,
+        "foreground": 231,
+        "attributes": [
+          "bold"
+        ]
+      }
+    },
+    "bottom": {
+      "name_key": "theme.region.bottom.name",
+      "normal": {
+        "background": 130,
+        "foreground": 231,
+        "attributes": []
+      },
+      "focused": {
+        "background": 136,
+        "foreground": 231,
+        "attributes": [
+          "bold"
+        ]
+      }
+    }
+  },
+  "palette": [
+    {
+      "id": "midnight",
+      "name_key": "theme.palette.midnight.name",
+      "codes": [
+        17
+      ]
+    },
+    {
+      "id": "space_gray",
+      "name_key": "theme.palette.space_gray.name",
+      "codes": [
+        236
+      ]
+    },
+    {
+      "id": "graphite",
+      "name_key": "theme.palette.graphite.name",
+      "codes": [
+        238
+      ]
+    },
+    {
+      "id": "dark_green",
+      "name_key": "theme.palette.dark_green.name",
+      "codes": [
+        23
+      ]
+    },
+    {
+      "id": "pacific_blue",
+      "name_key": "theme.palette.pacific_blue.name",
+      "codes": [
+        24
+      ]
+    },
+    {
+      "id": "summit_blue",
+      "name_key": "theme.palette.summit_blue.name",
+      "codes": [
+        67
+      ]
+    },
+    {
+      "id": "dark_purple",
+      "name_key": "theme.palette.dark_purple.name",
+      "codes": [
+        54
+      ]
+    },
+    {
+      "id": "rose_gold",
+      "name_key": "theme.palette.rose_gold.name",
+      "codes": [
+        95
+      ]
+    },
+    {
+      "id": "gold",
+      "name_key": "theme.palette.gold.name",
+      "codes": [
+        94,
+        130
+      ]
+    },
+    {
+      "id": "red",
+      "name_key": "theme.palette.red.name",
+      "codes": [
+        88
+      ]
+    }
+  ]
+}

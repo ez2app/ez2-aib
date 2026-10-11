@@ -4,6 +4,15 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.4
+
+- 補上駕駛艙配色檔(`themes/aib-default.json`);之前的版本漏帶,駕駛艙會找不到配色。
+- `aib_dm` MCP 多三個給 AI 席用的唯讀工具:`aib_inbox`、`aib_team`、`aib_tasks`(寫入仍一律走 `aib_dm`)。
+- ClaudeBot 已讀回條:信交到 Claude 手上就標已讀,不再永遠停在「已送達」。
+- 艙重開會帶回 bot 綁定;bot 標題行會濾掉控制字元;GrokBot 收尾中途出錯不再卡住。
+- 兩支驗證小工具:`sync_receipt`(艦隊同步逐台留收據、失敗大聲說)、`classify_env_blocked`(把「環境缺東西」造成的紅和真的紅分開)。
+- `outline-to-tasks` 拿掉舊的 ACB 看板後端。
+
 ## 0.1.3
 
 - `aib killswitch on|off|status` 一鍵急停:打開後,所有 AI 都不能開新席、不能發 `aib dm`、不能推版;急停檔讀不到也當成急停中。

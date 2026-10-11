@@ -342,8 +342,12 @@ def _deliver(session_id: str) -> str:
     if rc != cm.RC_OK or not msgs:
         return ""
     found = cm.seat(session_id)
-    return cm.render(msgs, code, session_id, cm.token_of(session_id),
+    text = cm.render(msgs, code, session_id, cm.token_of(session_id),
                      rules=cm.rules_for(found[0] if found else None, session_id))   # 10-09:同一條對話規則只送一次完整版
+    n = cm.mark_queue_read(code, msgs)   # 10-11 第 19 件:交到 Claude 手上 ⇒ dm 佇列那一筆標已讀
+    if n:
+        log("deliver", session_id, "queue-read", n=n)
+    return text
 
 
 def _reinject(session_id: str, source: str) -> str:
