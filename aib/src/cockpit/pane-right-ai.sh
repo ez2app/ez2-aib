@@ -1036,16 +1036,12 @@ def _claudebot_session_of(rec):
     ⇒ 開席就綁的席解綁或換綁後,右欄一直印舊那條。status.json 有 agent_id 這一欄(值可為 None = 解綁了)就信它。"""
     if not isinstance(rec, dict) or (rec.get('provider') or '') != 'claudebot':
         return None
+    # 10-11 a seat(第 15 件第 1 步):判準搬到 bot_binding.bound_id,四家讀綁定走同一支(判法不變)
     try:
-        _home = os.environ.get('EZ2_AIB_STATE_ROOT') or os.environ.get('EZ2_AIB_HOME') or os.path.expanduser('~/.ez2-aib')
-        with open(os.path.join(_home, 'bridge', str(rec.get('session_uuid') or ''), 'status.json'), encoding='utf-8') as _fh:
-            _st = json.load(_fh)
-        if isinstance(_st, dict) and 'agent_id' in _st:
-            return str(_st.get('agent_id') or '')
-    except (OSError, ValueError):
-        pass
-    sid = rec.get('claude_session_id')
-    return sid if isinstance(sid, str) else ''
+        import bot_binding
+        return bot_binding.bound_id('claudebot', str(rec.get('session_uuid') or ''), rec)[0]
+    except Exception:  # noqa: BLE001 —— 右欄量不到就當沒綁,不讓整欄掛
+        return ''
 
 
 

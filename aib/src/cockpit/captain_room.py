@@ -44,6 +44,7 @@ SEAT_INFO = os.path.join(REPO, "tools", "claude-mods", "aib-seat", "bin", "seat-
 sys.path.insert(0, COCKPIT)
 import cabin_restart   # noqa: E402  single source for the hub socket name (aihub-<cabin>) and the TMUX read
 import captain_contacts   # noqa: E402  通訊錄:四來源合併、在線狀態、好友/分組/封鎖(純函式 + 本機存檔)
+import dm_queue   # noqa: E402  C2:回信帶 --thread/--kind 時照佇列的 KINDS / THREAD_RE 驗,不另抄一份
 try:
     from seats_dir_lib import state_root
     HOME = state_root()[0]
@@ -847,6 +848,82 @@ INBOX_TABS = ("all", "decide", "unread", "plaza", "say")
 _inbox_cache = [0.0, None]
 
 
+# ── C2 訊息卡片:要你決定的信畫成有選項按鈕的卡 ──
+# 真佇列裡幾乎沒有 kind=decide(10-11 量到艦長席 127 封全是 other),所以 kind 之外也從內文認:
+# 回報規則(docs/REPORTING-RULES.md)要人裁的一律附選項與「你不回我就走哪一條」。從內文認出來的標 inferred=True,頁面掛 ❓(推的,不是量到的)。
+# 審查(10-11,真佇列 502 封實跑):\bdecide\b / \bchoose\b 幾乎只命中指令說明文字,拿掉;「不回…走」要接「哪條 / 保守 / 預設 / 第 N」才算
+DECIDE_HINT_RE = re.compile(r"要你(?:決定|裁|選)|要人裁|請(?:你)?(?:裁|決定|選一)|不回(?:我)?(?:就)?走(?:哪(?:一)?條|保守|預設|\s*第?\s*[1-9A-Da-d甲乙丙丁])|預設(?:動作)?(?:是|為|[:：])|二選一|選哪(?:一)?[條個]|which (?:one|option) do you", re.I)
+# 數字編號只收 1. / 2) / 3、(不收 10:30 那種時間、也不收 1.5 那種小數);字母與甲乙丙丁多收冒號
+OPTION_LINE_RE = re.compile(r"^\s*(?:[-*•]\s*)?(?:\(?(?:([1-9]\d?)[.)）、](?!\d)|([A-Da-d甲乙丙丁])[.)）、:：])|[(（]([1-9]\d?|[A-Da-d])[)）])\s*(\S.{0,199}?)\s*$")
+DEFAULT_RE = re.compile(r"(?:不回(?:我)?(?:就)?走|預設(?:動作)?(?:是|為|[:：])|\bdefault[:：]?)\s*[「『\"]?([^」』\"\n;;。]{1,120})", re.I)
+DEADLINE_RE = re.compile(r"(?:截止|期限|deadline)[:：\s]*([^\n,,;;。]{1,40})", re.I)
+
+
+DECIDE_NEGATIONS = ("沒有", "不用", "不需", "無需", "無須", "不必", "沒", "不是", "先不")   # 「不需要你選」匹配從「要」起算,前面只剩「不需」
+DECIDE_NOT_NEGATION = ("要不", "特別", "分別", "個別", "不得不")   # 「要不要你決定」「特別要你裁」:前一字是不/別,卻不是否定(第二輪審查)
+
+
+def _decide_hint(text):
+    """內文裡有沒有「在等你決定」的字眼;「沒有要你決定」「不用你裁」這種否定句不算(10-11 測試抓到的誤判)"""
+    for m in DECIDE_HINT_RE.finditer(text):
+        before = text[max(0, m.start() - 4):m.start()]
+        if any(before.endswith(n) for n in DECIDE_NEGATIONS):
+            continue
+        # 「不要你決定」「別要你裁」:匹配從「要」起算,否定字只剩前一個字;但「要不要」「特別」那種不是否定
+        if m.group(0).startswith("要") and before.endswith(("不", "別")) and not before.endswith(DECIDE_NOT_NEGATION):
+            continue
+        return True
+    return False
+
+
+def dm_card(kind, text):
+    """一封信的內文 → 卡片 {question, options:[{n,label}], default, deadline, inferred},認不出 → None。
+    kind=decide 一定給卡(選項可能是空的);其他 kind 要內文有「要你決定」那類字眼(否定句不算)**而且抓得到選項**才給,且 inferred=True
+    (審查:只有字眼沒有選項的,多半是在講規則或引用別人的話,不是一張能按的卡)。
+    選項 = 行首 1. / 2) / A) / (a) / 甲、 那種行,只拿第一組(編號重複就停,免得把後面的待辦清單也當選項)。"""
+    text = str(text or "")
+    inferred = kind != "decide"
+    if inferred and not _decide_hint(text):
+        return None
+    options, seen = [], set()
+    for line in text.split("\n"):
+        m = OPTION_LINE_RE.match(line)
+        if not m:
+            continue
+        n = (m.group(1) or m.group(2) or m.group(3)).upper()
+        if n in seen:
+            break
+        seen.add(n); options.append({"n": n, "label": m.group(4)[:200]})
+        if len(options) >= 8:
+            break
+    if inferred and not options:
+        return None
+    dft, dl = DEFAULT_RE.search(text), DEADLINE_RE.search(text)
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    # 問句 = 第一行「在等決定」又不是選項、也不是在講預設/截止的那一行;沒有就第一行
+    qline = next((ln for ln in lines if _decide_hint(ln) and not OPTION_LINE_RE.match(ln) and not DEFAULT_RE.search(ln) and not DEADLINE_RE.search(ln)), lines[0] if lines else "")
+    return {"question": qline[:200], "options": options, "default": (dft.group(1).strip() if dft else None),
+            "deadline": (dl.group(1).strip() if dl else None), "inferred": inferred}
+
+
+def inbox_mark_done(captain, qid, rev):
+    """把艦長席的一封標已處理:走 aib dm-queue done(動作者 seat:<艦長席>、證據是一個真的檔、帶 rev 防蓋寫)。
+    /api/inbox/done 與 C2 的 /api/inbox/reply(回完順手標)都走這裡"""
+    os.makedirs(os.path.join(ROOM_DIR, "done"), exist_ok=True)
+    ev = os.path.join(ROOM_DIR, "done", qid + ".txt")
+    with open(ev, "w", encoding="utf-8") as fh:
+        fh.write("captain marked done in the captain-room inbox at %s\n" % time.strftime("%Y-%m-%dT%H:%M:%S"))
+    argv = [aib_bin(), "dm-queue", "done", "--seat", captain, "--id", qid, "--by", "seat:" + captain, "--evidence", ev]
+    argv += ["--if-rev", str(_int(rev))] if rev is not None else ["--no-rev-check"]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=clean_env())
+    except Exception as e:
+        return {"ok": False, "err": str(e)[:160]}
+    _inbox_cache[0] = 0.0
+    log_action("inbox-done", id=qid, rc=r.returncode)
+    return {"ok": r.returncode == 0, "rc": r.returncode, "out": (r.stdout or "").strip()[-300:], "errout": (r.stderr or "").strip()[-300:]}
+
+
 def _dm_items(code):
     """艦長那一席的 dm 佇列(state/dm-queue/<席>/q_*.json);只讀這一席,不讀別席"""
     out = []
@@ -868,9 +945,13 @@ def _dm_items(code):
                   else "hold" if st.startswith("hold") else "queued" if st in ("queued", "claimed") else "delivered")   # 審查:status 欄位優先,排空器手上的不算已讀
         kind = str(q.get("kind") or "other")
         text = str(q.get("msg") or "")
+        card = dm_card(kind, text)   # C2:kind=decide 或內文像在等決定 → 卡片;後者 kind 改成 decide 並標 inferred(推的)
+        if card and card["inferred"]:
+            kind = "decide"
         out.append({"src": "dm", "id": q.get("id"), "rev": q.get("rev"), "from": {"code": q.get("sender_seat"), "label": q.get("sender_label") or q.get("sender_origin"), "host": None},
                     "kind": kind, "subject": text.split("\n", 1)[0][:120], "body": text[:1500], "at": _int(q.get("ts") or q.get("sent_at")),
                     "status": status, "need_reply": kind in ("decide", "human") or status == "hold", "thread": q.get("thread"),
+                    "card": card, "inferred": bool(card and card["inferred"]),
                     "reliability": {"live": True, "receipt": True}})
     return out
 
@@ -1635,19 +1716,27 @@ def make_handler(state):
                 if not DM_ID_RE.match(qid) or not CODE_RE.match(cap):
                     return self._send(200, {"ok": False, "err": "bad-args"})
                 # dm 佇列只認 seat:<收件席> 當動作者、證據要是一個真的檔(10-11 審查:之前永遠 rc 7);只有 delivered/read 能標 done
-                os.makedirs(os.path.join(ROOM_DIR, "done"), exist_ok=True)
-                ev = os.path.join(ROOM_DIR, "done", qid + ".txt")
-                with open(ev, "w", encoding="utf-8") as fh:
-                    fh.write("captain marked done in the captain-room inbox at %s\n" % time.strftime("%Y-%m-%dT%H:%M:%S"))
-                argv = [aib_bin(), "dm-queue", "done", "--seat", cap, "--id", qid, "--by", "seat:" + cap, "--evidence", ev]
-                argv += ["--if-rev", str(_int(rev))] if rev is not None else ["--no-rev-check"]
-                try:
-                    r = subprocess.run(argv, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=clean_env())
-                except Exception as e:
-                    return self._send(200, {"ok": False, "err": str(e)[:160]})
-                _inbox_cache[0] = 0.0
-                log_action("inbox-done", id=qid, rc=r.returncode)
-                return self._send(200, {"ok": r.returncode == 0, "rc": r.returncode, "out": (r.stdout or "").strip()[-300:], "errout": (r.stderr or "").strip()[-300:]})
+                return self._send(200, inbox_mark_done(cap, qid, rev))
+            if path == "/api/inbox/reply":   # C2:卡片按鈕 —— 回一封 dm 給寄件席(同 thread、kind report),done=true 時回完順手標已處理;要 PIN(跟寄信一樣)
+                if not pin_ok(self.headers):
+                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": "pin"})
+                qid, text, done = str(req.get("id") or ""), str(req.get("text") or "").strip(), bool(req.get("done"))
+                cap = str(state.snapshot().get("captain") or "")
+                if not DM_ID_RE.match(qid) or not CODE_RE.match(cap) or not text or len(text) > 2000:
+                    return self._send(200, {"ok": False, "err": "bad-args"})
+                m = next((x for x in _dm_items(cap) if x.get("id") == qid), None)   # 只認艦長席佇列裡真有的那一封(不信頁面帶來的 to/thread)
+                if not m:
+                    return self._send(200, {"ok": False, "err": "unknown-msg"})
+                to = (m.get("from") or {}).get("code")
+                if not to or to not in state.live_codes():
+                    return self._send(200, {"ok": False, "err": "sender-gone", "to": to})
+                body = "回覆你的信「%s」(%s):%s" % ((m.get("subject") or "")[:40], qid, text)
+                r = self.dm({"to": [to], "text": body, "thread": m.get("thread"), "kind": "report"})
+                res = {"ok": bool(r.get("ok")), "dm": r, "to": to}   # ok = 信有沒有寄出;標已處理另外回 done(審查:寄出了但標不了 ≠ 沒寄出,不然頁面會讓人重寄)
+                if res["ok"] and done and m.get("status") in ("delivered", "read"):   # 佇列的規矩:只有 delivered/read 能標 done
+                    res["done"] = inbox_mark_done(cap, qid, m.get("rev"))
+                log_action("inbox-reply", id=qid, to=to, ok=res["ok"], done=done)
+                return self._send(200, res)
             if path == "/api/positions":   # C0:頁面每 5 秒回報每個人在哪一層(喊話只送同一層);只收這一艙活著的席
                 live = state.live_codes()
                 given = req.get("codes")
@@ -1879,7 +1968,7 @@ def make_handler(state):
             to = [to] if isinstance(to, str) else (to or [])
             text = str(req.get("text") or "").strip()
             live = state.live_codes()
-            if not text or len(text) > 4000:
+            if not text or len(text) > 4000 or text.startswith("-"):   # 開頭 - 會被 aib dm 當選項(審查:text 若剛好是 --file 會吃掉後面的 --thread)
                 return {"ok": False, "err": "bad-text"}
             if not to or any(c not in live or not CODE_RE.match(c) for c in to):
                 return {"ok": False, "err": "unknown-seat"}
@@ -1887,10 +1976,16 @@ def make_handler(state):
             blocked = [c for c in to if store.is_blocked(f"seat:{state.cabin4}/{c}")]
             if blocked:
                 return {"ok": False, "err": "blocked", "blocked": blocked}
+            extra = []   # C2:回信可帶 --thread / --kind;照 dm_queue 的規矩驗,不合格就不帶(不擋信)
+            thread, kind = req.get("thread"), req.get("kind")
+            if isinstance(thread, str) and dm_queue.THREAD_RE.fullmatch(thread.strip()):
+                extra += ["--thread", thread.strip()]
+            if kind in dm_queue.KINDS:
+                extra += ["--kind", kind]
             out = []
             for c in to:
                 try:
-                    r = subprocess.run([aib_bin(), "dm", f"{state.cabin4}/{c}", text], capture_output=True, text=True,
+                    r = subprocess.run([aib_bin(), "dm", f"{state.cabin4}/{c}", text] + extra, capture_output=True, text=True,
                                        timeout=90, stdin=subprocess.DEVNULL, env=clean_env())
                     m = re.search(r"^RESULT stage=(\S+)(?: id=(\S+))?", r.stdout, re.M)
                     qid = m.group(2) if m and m.group(2) and m.group(2) != "-" else None

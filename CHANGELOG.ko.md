@@ -4,6 +4,15 @@
 
 버전은 `pyproject.toml`의 `version`을 따릅니다. 릴리스는 `v<version>` 태그이며, 관리자가 만듭니다.
 
+## 0.1.4
+
+- 콕핏 색상 테마 파일(`themes/aib-default.json`)을 포함했습니다. 이전 버전에는 빠져 있어 콕핏이 테마를 찾지 못했습니다.
+- `aib_dm` MCP에 AI 자리용 읽기 전용 도구 3개 추가: `aib_inbox`, `aib_team`, `aib_tasks` (쓰기는 여전히 `aib_dm`으로만).
+- ClaudeBot 읽음 확인: 메시지가 Claude에게 전달되면 읽음으로 표시되어, 더 이상 "전달됨"에 머물지 않습니다.
+- 콕핏을 다시 시작하면 bot 연결이 돌아옵니다. bot 제목 줄은 제어 문자를 걸러 내고, GrokBot이 종료 중 실패해도 멈춰 있지 않습니다.
+- 작은 검증 도구 2개: `sync_receipt`(플릿 동기화 시 호스트별 영수증, 실패는 크게 알림), `classify_env_blocked`(환경 부족으로 생긴 실패와 진짜 실패를 구분).
+- `outline-to-tasks`에서 예전 ACB 보드 백엔드를 제거했습니다.
+
 ## 0.1.3
 
 - `aib killswitch on|off|status`: 비상 정지. 켜져 있는 동안 어떤 AI도 새 자리를 열거나 `aib dm`을 보내거나 릴리스할 수 없습니다. 스위치를 읽을 수 없으면 켜진 것으로 봅니다.

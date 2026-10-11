@@ -637,11 +637,16 @@ TITLE_REFRESH_EVERY = 10   # writer 模式:每 N 次輪詢(N×POLL_SECS,預設 3
 BORING_TITLE_PREFIX = re.compile(r"^(Continuing from|延續自|接續)[^:：]{0,40}[:：]\s*")
 
 
+# 模型那邊來的字(回覆、對話標題、工具卡)印上席位前濾掉的控制字元;與 sand_bridge.OUTBOX_CTRL_RE 同一個判準。
+#   10-11 a seat(DIAG §9 #3 後半,the maintainer「第 3、14 條也修」):以前只濾回覆,標題行與工具卡沒濾。
+MODEL_CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]")
+
+
 def title_line(title, thread_id):
     """提示符上面那一行:對話標題(截到 TITLE_MAX 字)+ uuid 前 8 碼。the maintainer 09-24 23:0x「codexbot> 帶出名稱適當的字數」。
     ★ 不能塞進 `codexbot> ` 本身:dm 引擎以「行首 codexbot>」找提示符、把它後面的字當草稿(composer_state)。
     標題行以 `codexbot: ` 開頭,與其他通知同形(busy marker 只在沒有提示符行時才算數)。"""
-    t = str(title or "").strip().replace("\n", " ")
+    t = MODEL_CTRL_RE.sub("", str(title or "").replace("\n", " ")).strip()
     # ★ 09-25 the maintainer:「codexbot> 還沒有取得對話名稱」——名字其實有,但**截在共同前綴上**:
     #   桌面每條都叫「Continuing from ChatGPT席位設定: …」,截 24 字後每條長得一模一樣 = 等於沒有名字。
     #   先剝掉這類樣板前綴(「Continuing from …:」),留下真正能分辨的那一段再截。剝完是空的就用原字串。
@@ -1119,7 +1124,8 @@ def tool_card_line(item):
         head, tail, status = "搜尋 %s" % str(item.get("query") or "")[:80], "", status or "done"
     else:
         return None
-    return "codexbot: [桌面工具] %s · %s%s" % (head, status or "?", tail)
+    line = "%s · %s%s" % (head, status or "?", tail)
+    return "codexbot: [桌面工具] " + MODEL_CTRL_RE.sub("", line.replace("\n", " "))
 
 
 class ReadPoller:
@@ -1459,7 +1465,7 @@ class TurnUX:
 
     # 10-07 a seat(各 bot 比對):模型的字會直接印在人的終端機上 ⇒ 濾控制字元(ESC 等),只留換行與 tab。
     #   與 sand_bridge.OUTBOX_CTRL_RE 同一個判準(信箱橋三家早就濾了,只有這裡沒濾)。只濾模型的字,不濾我們自己的提示符。
-    MODEL_CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]")
+    MODEL_CTRL_RE = MODEL_CTRL_RE   # 與模組層同一個(標題行、工具卡也用)
 
     def _render_delta(self, item_id, delta):
         if not item_id or not isinstance(delta, str) or not delta:
