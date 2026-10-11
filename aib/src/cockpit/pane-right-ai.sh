@@ -496,8 +496,10 @@ if x and os.path.isdir(x):
       "$EZ2_PY3" "$EZ2_COCKPIT_DIR/composer_notice.py" sync-bind \
         --snapshot "$_bind_notice_cache" 2>/dev/null || true
     else
-      if "$EZ2_PY3" -c 'import subprocess,sys; r=subprocess.run(sys.argv[1:],timeout=0.4); raise SystemExit(r.returncode)' \
-          "$EZ2_PY3" "$EZ2_COCKPIT_DIR/fleet_patrol.py" bind-notices \
+      # 10-11:牆鐘上限可由 AIB_BIND_NOTICES_TIMEOUT 調(預設照舊 0.4 秒)。機器忙時 python 起不來 0.4 秒就逾時,
+      #   第一幀沒有提醒 ⇒ test-attention-on-screen-fd 時紅時綠;治具放寬,產品預設不變。
+      if "$EZ2_PY3" -c 'import subprocess,sys; r=subprocess.run(sys.argv[2:],timeout=float(sys.argv[1])); raise SystemExit(r.returncode)' \
+          "${AIB_BIND_NOTICES_TIMEOUT:-0.4}" "$EZ2_PY3" "$EZ2_COCKPIT_DIR/fleet_patrol.py" bind-notices \
           --hub "$EZ2_AIHUB_SOCKET" --json > "$_bind_notice_snapshot" 2>/dev/null; then
         cp -f "$_bind_notice_snapshot" "$_bind_notice_cache" 2>/dev/null || true
         "$EZ2_PY3" "$EZ2_COCKPIT_DIR/composer_notice.py" sync-bind \
@@ -1375,7 +1377,8 @@ for path in sorted(glob.glob(os.path.join(seats_dir, 'w*.json'))):
     if sess and provider == 'grok':
         grok_ctx_refresh(sess, cwd=rec.get('cwd'))
     # copilot 也沒有 statusline 寫端:探針從它自己的 session-store.db 讀「這一回合真的
-    # 打到哪個模型」寫進同一把量尺。pct 量不到就寫 None(不編),模型是觀測值。
+    # 打到哪個模型」寫進同一把量尺。pct 從 events.jsonl 的 usage_record(inputTokens/maxPromptTokens,
+    # 10-11)算;量不到就寫 None(不編),模型是觀測值。
     if sess and provider == 'copilot':
         copilot_ctx_refresh(sess)
     # Native Codex can run without a statusline hook (including fresh cabins).

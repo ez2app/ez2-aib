@@ -316,6 +316,21 @@ PROFILES = ("full", "rules")
 _SECTION_MARK_RE = re.compile(r"^<!-- aib:section ([a-z]+) -->[ \t]*\n?", re.M)
 
 
+def now_rule_line():
+    """鐵則九(aib now)的一行版,給選「不載入」/逾時的通知用(那些席讀不到鐵則段)。"""
+    try:
+        sys.path.insert(0, HERE)
+        from i18n_lib import Translator
+        text = Translator().t("aib.onboard.now_rule", {})
+    except Exception:
+        text = "!!aib.onboard.now_rule!!"
+    if text.startswith("!!"):
+        text = ('[鐵則九 · 回報主項目] 每一席開工、換主項目、換狀態、每做完一步、每次回報時都要跑:'
+                'aib now "主項目" 做完幾步/總共幾步(進度 % 由步數算);'
+                '等別席加 --state reply,等 the maintainer 決定加 --state decide;做完或沒事做 aib now --clear(【我很閒】)。')
+    return text
+
+
 def apply_profile(template_text, profile):
     """09-14(the maintainer 選單三選一「全部 / 只鐵則 / 不載入」):模板以
     `<!-- aib:section NAME -->` 行分段;`rules` 只留 rules 段,`full` 全留。
@@ -1864,6 +1879,9 @@ def main(argv=None):
         #   aib 每次都印「提示投不進」(活艙 143 次選單 83 次假警報)。同檔其他呼叫處都經 unpack_deliver_rc。
         # 09-30 19:5x:選「不載入」或逾時的席也要拿到基因(開關開著才接;攤成一行,API 席/橋接席上面已擋掉)
         line = genes_line(line)
+        # 10-10 the maintainer「加進開席規則,所有席都要跑 aib now」:選「不載入」或逾時的席讀不到鐵則段,
+        #   鐵則九(回報主項目)照樣接在這一行後面
+        line = lint_safe(INLINE_SEP.join([line, now_rule_line()]))
         # 10-01:選「不載入」也跳不過交接檢查 —— 前身沒交接的提醒照樣接在這一行後面(攤成一行、過出站檢查)
         _handoff = handoff_notice_block(args.window, base)
         if _handoff:

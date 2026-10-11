@@ -162,7 +162,14 @@ _drain_scroll_nudge() {
   [ "$found" = 1 ] || return 0
   lock="$EZ2_COCKPIT_STATE_DIR/.scroll-wheel.lock"
   if ! mkdir "$lock" 2>/dev/null; then
-    return 0
+    # 同 mouse-ctl.sh:拿鎖的人死了、或鎖超過 1 分鐘(停電/重開機留下的)⇒ 接手;否則讓它做完。
+    wpid=""
+    [ -f "$lock/pid" ] && IFS= read -r wpid < "$lock/pid" || true
+    if [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && [ -n "$(find "$lock" -maxdepth 0 -mmin -1 2>/dev/null)" ]; then
+      return 0
+    fi
+    rm -rf "$lock" 2>/dev/null || return 0
+    mkdir "$lock" 2>/dev/null || return 0
   fi
   printf '%s\n' "$$" > "$lock/pid" || true
   "$EZ2_PY3" "$EZ2_COCKPIT_DIR/mouse/scroll_nudge.py" "$EZ2_COCKPIT_STATE_DIR" >/dev/null 2>&1 || true

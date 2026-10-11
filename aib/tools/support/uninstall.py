@@ -68,12 +68,19 @@ def plan(home, package_dir, want_all):
     checkout = Path(package_dir).resolve().parent
     link = home / ".local" / "bin" / "aib"
     ours_link = link.is_symlink() and Path(os.path.realpath(link)) == (checkout / "bin" / "aib").resolve()
-    other_aib = (link.exists() or link.is_symlink()) and not ours_link
+    # 10-11(0.1.2 實裝抓到):pip / pipx 裝的 ⇒ 套件在 site-packages,不是 checkout;別說成「開發版」,說用哪個指令移除。
+    #   pipx 會把 ~/.local/bin/aib 連到它自己 venv 裡的 aib ⇒ 那支是這份自己的,不算「另一個 aib」。
     in_pipx = "/pipx/venvs/" in str(checkout) or "/pipx/venvs/" in sys.prefix
+    pip_installed = in_pipx or checkout.name in ("site-packages", "dist-packages")
+    pipx_link = pip_installed and link.is_symlink() and \
+        Path(os.path.realpath(link)).parent == (Path(sys.prefix) / "bin").resolve()
+    other_aib = (link.exists() or link.is_symlink()) and not ours_link and not pipx_link
     if _is_public_checkout(checkout):
         remove.append((checkout, "this aib (the copy the one-line installer put here)"))
     elif in_pipx:
         hints.append("this aib was installed with pipx: remove it with `pipx uninstall ez2-aib`")
+    elif pip_installed:
+        hints.append("this aib was installed with pip: remove it with `python3 -m pip uninstall ez2-aib`")
     else:
         keep.append("%s: not an open-source aib checkout (a developer copy?), left as is" % checkout)
     if ours_link:

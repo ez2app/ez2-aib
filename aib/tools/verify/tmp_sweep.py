@@ -120,7 +120,8 @@ def paths_in_use():
             except OSError:
                 pass
         return used
-    lsof = shutil.which("lsof")
+    # 10-11:Mac 的 lsof 在 /usr/sbin;排程/開機自動跑的 PATH 常只有 /usr/bin:/bin ⇒ which 找不到就整個不敢刪
+    lsof = shutil.which("lsof") or next((p for p in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.access(p, os.X_OK)), None)
     if not lsof:
         return None
     try:

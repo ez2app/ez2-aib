@@ -50,7 +50,7 @@
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash
-# 裝到 ~/ez2-aib;之後隨時再跑同一行就是更新(Linux 只裝測試安全網;駕駛艙需要 macOS)
+# 把最新正式版裝到 ~/ez2-aib;之後隨時再跑同一行就是更新(Linux 只裝測試安全網;駕駛艙需要 macOS)
 aib update                                          # 裝好之後也可以這樣更新(aib update --tools 會再問要加裝哪些 AI 工具)
 # 其他裝法:pipx install ez2-aib    (還沒有 pipx?macOS:brew install pipx / Linux:python3 -m pip install --user pipx,
 #                                    再跑 pipx ensurepath、開一個新的終端機)

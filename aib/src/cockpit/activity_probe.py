@@ -53,6 +53,7 @@ _COCKPIT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _COCKPIT_DIR not in sys.path:
     sys.path.insert(0, _COCKPIT_DIR)
 import grok_ctx_probe  # noqa: E402  CTX 與活動共用 grok session 目錄查找
+import bg_fork  # noqa: E402  10-10:Claude Code 背景分身的對話檔併入原席
 from ctx_by_seat import resolve_live_session  # noqa: E402  D41:/clear 後現任 session
 
 # [X] 門檻:與右欄同一常數(EZ2_AIB_SUB_DONE_S 家族語意,the maintainer 08-14 拍板
@@ -309,8 +310,10 @@ def bridge_activity_mtime(sess):
     return None
 
 
-def activity_age(provider, sess, now=None, proj=None):
-    """該席真活動距今秒數;None=無訊號(誠實不亮/拒殺,絕不退席位檔自報)。"""
+def activity_age(provider, sess, now=None, proj=None, procs=None):
+    """該席真活動距今秒數;None=無訊號(誠實不亮/拒殺,絕不退席位檔自報)。
+    `procs`:呼叫端手上已有的行程表(idle_reaper 的 collect_procs 字典或 (pid, ppid, cmd) 列表)——
+    有就用它找背景分身,不再 `ps` 一次(idle_reaper 的尺數 ps 次數,多一次就紅)。"""
     if not sess:
         return None
     now = time.time() if now is None else now
@@ -337,7 +340,16 @@ def activity_age(provider, sess, now=None, proj=None):
         base = proj if proj is not None else projects_dir()
         # proj 注入能力保留:它仍是第一候選(治具靠它)。新增的是「同一個
         # uuid 也可能落在別的 project 目錄」——見 claude_transcript_paths。
-        mtime = _newest_mtime(claude_transcript_paths(sess, base))
+        # ★ 10-10 a seat(the maintainer 裁「算進原席」):這一席交給 Claude Code 背景工作跑的**分身**
+        #   (命令列 --fork-session --resume <這一席的 jsonl>)在另一個 uuid 的 transcript 寫字,
+        #   原席那支停著 ⇒ 只看原席會把「等背景工作的席」判成閒置(真機 44ed3:49 分鐘)。
+        #   分身的 transcript 一併取最新;閒置收艙/活動燈/CTX 走的都是這一條。
+        paths = list(claude_transcript_paths(sess, base))
+        _forks = bg_fork.forks_by_origin(rows=bg_fork.rows_from_procs(procs)) \
+            if procs is not None else bg_fork.forks_by_origin()
+        for _fork in _forks.get(sess, ()):
+            paths.extend(claude_transcript_paths(_fork, base))
+        mtime = _newest_mtime(paths)
     elif provider == "grok":
         mtime = grok_ctx_probe.activity_mtime(sess)
     elif provider in BRIDGE_BOT_PROVIDERS:

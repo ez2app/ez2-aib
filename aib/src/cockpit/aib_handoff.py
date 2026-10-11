@@ -709,6 +709,30 @@ def collect(seat: dict, repo: str = "", since_hours: float = DEFAULT_SINCE_HOURS
         _DEADLINE[0] = prev_dl
 
 
+def _bindme():
+    """aib bindme 的判斷(src/identity/bindme.py)。lazy:交接不能因為它載不起來而壞。"""
+    ident = str(Path(__file__).resolve().parents[1] / "identity")
+    if ident not in sys.path:
+        sys.path.insert(0, ident)
+    import bindme  # noqa: E402
+    return bindme
+
+
+def binding_state(code: str, home=None) -> dict:
+    """10-11 the maintainer:交接一開始就要知道這一席有沒有人格/專案。回 {persona, project, problem, why}。
+    problem ∈ ok / no_project / no_persona / none / crown_persona / bot / gone;量不到 ⇒ {"unmeasured": why}。"""
+    try:
+        bm = _bindme()
+        root = str(_home(home))
+        st = next((x for x in bm.status(root) if x["code"] == code), None)
+    except Exception as exc:  # noqa: BLE001 —— 交接優先,綁定檢查壞了只記下來
+        return {"unmeasured": repr(exc)[:160]}
+    if not st:
+        return {"problem": "gone", "persona": "", "project": "", "why": ""}
+    return {"problem": st["problem"], "persona": st.get("persona_name") or "",
+            "project": st.get("project_title") or "", "why": st.get("hint") or ""}
+
+
 def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
     code = seat.get("code") or ""
     rec = seat.get("record") or {}
@@ -720,6 +744,7 @@ def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
         "repo": {}, "worktrees": {}, "unmerged": {}, "lease": {}, "pending_box": {}, "review": {},
         "background": [], "unmeasured": []}
     miss = facts["unmeasured"]
+    facts["binding"] = binding_state(code, home)
 
     def over(item):
         if time.time() > deadline:
@@ -954,9 +979,14 @@ def render_draft(facts: dict, auto: bool = False) -> str:
     lines.append("- %s: %s/%s (%s %s) session_uuid=%s" % (
         T("aib.handoff.fact.seat"), s.get("cabin") or "?", s.get("code") or "?", s.get("provider") or "?",
         s.get("role") or "?", s.get("session_uuid") or "?"))
-    if s.get("project_uid") or s.get("persona_uid"):
-        lines.append("- %s: %s %s" % (T("aib.handoff.fact.binding"), s.get("project_uid") or "-",
-                                      s.get("persona_uid") or "-"))
+    bd = facts.get("binding") or {}
+    if bd.get("problem") or s.get("project_uid") or s.get("persona_uid"):
+        lines.append("- %s: %s %s" % (T("aib.handoff.fact.binding"),
+                                      bd.get("project") or s.get("project_uid") or "-",
+                                      bd.get("persona") or s.get("persona_uid") or "-"))
+    if bd.get("problem") and bd["problem"] not in ("ok", "bot", "gone"):
+        # 10-11 the maintainer:交接一開始就要確認有沒有人格/專案;缺了在第三步寫完前擬提案(不擋交接、不自動綁)
+        lines.append("  " + T("aib.handoff.fact.binding_todo", why=bd.get("why") or bd["problem"]))
     r = facts.get("repo") or {}
     if r:
         lines.append("- %s: %s" % (T("aib.handoff.fact.repo"), r.get("path")))
@@ -1343,6 +1373,63 @@ def _seat_memory_append(code: str, step_label: str, body: str, home=None) -> dic
         return {"ok": False, "why": str(exc)[:300], "path": str(p)}
 
 
+def binding_proposal(seat: dict, text: str, now: float, home=None, menu=None, menu_apply=None) -> dict:
+    """第三步寫交接檔之前:這一席人格/專案不齊 ⇒ 用交接內容擬綁定提案(與 aib bindme 調查同格式,
+    `aib bindme apply <sid> --me <席碼> --accept` 就能套)。**不擋交接、不自動綁**;任何失敗回 {}。
+    - 交接檔本身就是這一輪的總結 ⇒ 不另發問卷(10-11 the maintainer:交接時就該確認並綁)
+    - 第三段若寫了「建議人格: / 建議專案:」就照它;沒寫 ⇒ 人格擬新卡草稿、專案標要人決定"""
+    code = seat.get("code") or ""
+    try:
+        bm = _bindme()
+        root = str(_home(home))
+        st = next((x for x in bm.status(root) if x["code"] == code), None)
+        if not st or st["problem"] in ("ok", "bot"):
+            return {}
+        f = bm.parse_reply(text)
+        if not f.get("主項目"):
+            body = section_body(parse_draft(text).get("s3", "") or "")
+            f["主項目"] = next((ln.strip(" -*#") for ln in body.splitlines() if ln.strip(" -*#")), "")[:80]
+        sid = "handoff-%s-%s" % (time.strftime("%m%d-%H%M", time.localtime(now)), code)
+        cards = bm.persona_cards(root)
+        per = bm.match_persona(f.get("建議人格"), st, cards, f.get("人格理由") or "")
+        if per["how"] == "draft_new":
+            per["draft_path"] = bm.write_persona_draft(root, sid, code, f)
+        if st.get("project_uid"):
+            prj = {"uid": st["project_uid"], "title": st.get("project_title") or "", "how": "keep"}
+        else:
+            u, t, h = bm.match_project(f.get("建議專案"), bm.project_cards(root))
+            prj = {"uid": u, "title": t, "how": h}
+        addr = "%s/%s" % (st["cabin4"], code)
+        row = {"code": code, "seat_id": st["seat_id"], "addr": addr, "replied": True, "cabin": st.get("cabin") or "",
+               "summary": bm.summarize(f), "fields": f, "persona": per, "project": prj}
+        rec = {"sid": sid, "me": code, "hours": 0, "created": _iso(now), "source": "handoff",
+               "token": "", "targets": [{"code": code, "addr": addr, "seat_id": st["seat_id"], "stage": "handoff"}],
+               "proposals": [row]}
+        os.makedirs(bm.survey_dir(root), exist_ok=True)
+        Path(bm.survey_path(root, sid)).write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        what = "人格 %s〔%s〕/ 專案 %s〔%s〕" % (per.get("name") or per.get("draft_path") or "-",
+                                             bm.HOW_TEXT.get(per["how"], per["how"]),
+                                             prj.get("title") or "-", bm.HOW_TEXT.get(prj["how"], prj["how"]))
+        cmd = "aib bindme apply %s --me %s --accept" % (sid, code)
+        # the maintainer 10-11 02:2x:建議要倒數 30 秒,沒選就照預設。倒數在**寫交接檔之前**跑,結果寫進檔 ⇒ 檔記的是實際發生的事;
+        # 綁的是自己這一席 ⇒ 不寄接手包。選單跳不出來(人沒看到)⇒ 不綁、留提案。
+        res = (menu_apply or bm.apply)(root, sid, bm._actor(root, code, None), ask=True, deliver=False,
+                                       **({"menu": menu} if menu else {}))
+        r0 = res[0] if res else {}
+        bound = [d["kind"] for d in r0.get("done", []) if d.get("rc") == 0]
+        outcome = "、".join({"persona": "人格", "project": "專案"}.get(k, k) for k in bound) if bound else "-"
+        notes = ";".join(r0.get("skipped") or []) or "-"
+        lines = [T("aib.handoff.proposal.now", why=bm.PROBLEM_TEXT.get(st["problem"], st["problem"])),
+                 T("aib.handoff.proposal.what", what=what), T("aib.handoff.proposal.done", what=outcome, why=notes)]
+        if not bound:                                   # 已經綁了就不再寫「同意就跑」(10-11 示範實見:會誤導)
+            lines.append(T("aib.handoff.proposal.cmd", cmd=cmd))
+        block = "\n\n## %s\n%s\n" % (T("aib.handoff.proposal.title"), "\n".join("- " + x for x in lines))
+        return {"sid": sid, "what": what, "cmd": cmd, "block": block, "bound": bound, "notes": notes}
+    except Exception as exc:  # noqa: BLE001
+        _log("binding_proposal_failed", home, seat=code, why=repr(exc)[:200])
+        return {}
+
+
 def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None, writer: str = "") -> dict:
     """驗 → 寫。回 {"step","brain","seat_memory","file","receipt"}。
     r17 M1:一定要給 step(沒有「三步一次做完」);草稿頭要是這一席、這一輪最後一次 collect 的那一份;
@@ -1390,6 +1477,10 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
         if facts.get("nonce") != stamp["nonce"]:
             facts = {"seat": {"code": code}, "unmeasured": [{"item": "repo", "why": T("aib.handoff.why.facts_gone")}]}
         target = _unique(pd / ("HANDOFF-%s-%s.md" % (code, time.strftime("%m%d-%H%M", time.localtime(now)))))
+        prop = binding_proposal(seat, text, now, home)
+        if prop.get("block"):
+            out["binding_proposal"] = {k: prop[k] for k in ("sid", "what", "cmd", "bound", "notes")}
+        text = text + prop.get("block", "")            # 提案接在本文後面;下一行一字不改(Z24 刀錨)
         target.write_text(with_fields(text, facts, home), encoding="utf-8")
         sha = hashlib.sha256(target.read_bytes()).hexdigest()
         receipt = {"schema": SCHEMA, "seat": code, "cabin": seat.get("cabin") or "",
@@ -1534,6 +1625,10 @@ def main(argv=None) -> int:
             b = res["brain"]
             _out(T("aib.handoff.write.brain_ok", uid=b.get("uid") or "", path=b.get("path") or "") if b["ok"]
                  else T("aib.handoff.write.brain_fail", why=b.get("why") or ""))
+            if res.get("binding_proposal"):
+                bp = res["binding_proposal"]
+                _out(T("aib.handoff.write.binding_proposal", what=bp["what"], cmd=bp["cmd"]))
+                _out(T("aib.handoff.proposal.done", what="、".join(bp.get("bound") or []) or "-", why=bp.get("notes") or "-"))
             if res.get("receipt"):
                 _out(T("aib.handoff.write.receipt", file=res["file"], path=res["receipt"]))
                 _out(T("aib.handoff.write.ready"))

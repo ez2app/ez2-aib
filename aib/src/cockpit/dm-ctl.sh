@@ -769,6 +769,9 @@ S_TAGGED="$("$PY3" "$HERE/sender_origin.py" --tagged 2>/dev/null || true)"
 S_ORIGIN_KIND=""
 S_ORIGIN=""
 case "$S_TAGGED" in
+  # bgfork(10-10 a seat,the maintainer 裁):寄件行程是 Claude Code 的背景分身,五碼是它 --resume 的**原席**;
+  #   鏈上認到分身就停,不往上爬到「生守護程式的那一席」(真機:44ed3 的分身被記成 a seat)。
+  bgfork:*)  S_ORIGIN_KIND="bgfork"; S_ORIGIN="${S_TAGGED#bgfork:}" ;;
   seat:*)    S_ORIGIN_KIND="seat";   S_ORIGIN="${S_TAGGED#seat:}" ;;
   script:*)  S_ORIGIN_KIND="script"; S_ORIGIN="${S_TAGGED#script:}" ;;
 esac
@@ -840,6 +843,7 @@ fi
 #   不是靠措辭 —— 兩者混同的代價見未結案 27(甲乙兩態只靠措辭分開,守得住相同守不住相近)。
 _V2_ARGS=()
 [ "$S_ORIGIN_KIND" = "seat" ] && [ -n "$S_ORIGIN" ] && _V2_ARGS+=(--sender-seat "$S_ORIGIN" --sender-source pane_pid_chain)
+[ "$S_ORIGIN_KIND" = "bgfork" ] && [ -n "$S_ORIGIN" ] && _V2_ARGS+=(--sender-seat "$S_ORIGIN" --sender-source bg_fork_chain)
 # ★★ 自稱那條的兩個欄位**不在這裡填**,填在抬頭那條 if/elif 鏈裡真正決定用自稱的那一格。
 #   a seat 09-27 抓到的缺陷就是這一格:原本在這裡獨立算一次,而抬頭走的是另一條鏈
 #   (送信端帶 CLAUDECODE / EZ2_AIB_AGENT 時會先被判成 agent:offhub)⇒ 同一則信
@@ -855,7 +859,7 @@ _V2_ARGS=()
 # human_id 只在真人時有值(接口 §1:空=量不到)。排空器重投與階段 A 再入不量(它們永遠不是人)。
 # 冒用:非真人的正文以「真人<…>:」開頭 ⇒ 改「AI 自稱真人:」照送並留痕(the maintainer 09-12 14:3x 裁「不擋」)。
 HUMAN_ID=""; HUMAN_ATTEST_JSON=""
-if [ "$RESOLVE_ONLY" != "1" ] && [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ] && [ "$S_ORIGIN_KIND" != "seat" ]; then
+if [ "$RESOLVE_ONLY" != "1" ] && [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ] && [ "$S_ORIGIN_KIND" != "seat" ] && [ "$S_ORIGIN_KIND" != "bgfork" ]; then
   HUMAN_ATTEST_JSON="$("$PY3" "$HERE/human_attest.py" --pid "$$" 2>/dev/null || true)"
   HUMAN_ID="$("$PY3" -c 'import json,sys
 try:
@@ -963,16 +967,18 @@ if [ "$RESOLVE_ONLY" != "1" ] && [ "$AIB_DM_RELAY_BYTES" -gt 0 ]; then
       emit_json 2 relay-verify-failed "長訊落檔後讀回位元組數不符(寫 ${_RELAY_N}、讀 ${_RELAY_BACK:-取不到}):未送出"
       die "長訊落檔驗證不符,未送出:$_RELAY_FILE" 2
     fi
-    _RELAY_SEAT=""
+    _RELAY_SEAT=""; _RELAY_BGFORK=0
     if [ "$S_ORIGIN_KIND" = "seat" ]; then
       _RELAY_SEAT="$S_ORIGIN"
+    elif [ "$S_ORIGIN_KIND" = "bgfork" ]; then
+      _RELAY_SEAT="$S_ORIGIN"; _RELAY_BGFORK=1     # 指標寫「來自 @五碼 的背景分身」,讀的人分得出不是本人
     fi
     MSG="$("$PY3" -c '
 import sys
 sys.path.insert(0, sys.argv[1])
 import sender_origin as so
-print(so.relay_pointer_line(int(sys.argv[2]), sys.argv[3], sys.argv[4] or None))
-' "$HERE" "$_RELAY_N" "$_RELAY_FILE" "$_RELAY_SEAT")"
+print(so.relay_pointer_line(int(sys.argv[2]), sys.argv[3], sys.argv[4] or None, bg_fork_of=(sys.argv[5] == "1")))
+' "$HERE" "$_RELAY_N" "$_RELAY_FILE" "$_RELAY_SEAT" "$_RELAY_BGFORK")"
     [ -n "$MSG" ] || die "長訊指標組不出來,未送出" 2
     _RESULT_RELAY="$_RELAY_FILE"
     _relay_index_append long "$_RELAY_FILE" "$_RELAY_N" \
@@ -1855,6 +1861,12 @@ for path in sorted(glob.glob(os.path.join(seats_dir, "w*.json"))):
 print(label if sa.code_in_label(label) == code else "")' "$HERE" "$S_ORIGIN" "$SEATS_DIR" 2>/dev/null || true)"
       case "$_S_NAMED" in "@$S_ORIGIN("*")") S_LABEL="$_S_NAMED" ;; esac
       S_ORIGIN_SOURCE="pane_pid_chain"
+    elif [ "$S_ORIGIN_KIND" = "bgfork" ] && [ -n "${S_ORIGIN//[[:space:]]/}" ]; then
+      # ★ 10-10 a seat(the maintainer 裁):Claude Code 背景分身寄的信,抬頭標「@原席五碼(背景分身)」——
+      #   五碼是機器從分身命令列的 --resume 量出來的(不是自報),回信回到原席;括號是結構性標記,
+      #   讀的人分得出不是那一席本人在 pane 裡寫的。白名單形狀 `@五碼(…)` 本來就准,不必動白名單。
+      S_LABEL="@$S_ORIGIN(背景分身)"
+      S_ORIGIN_SOURCE="bg_fork_chain"
     elif [ -n "$S_CLAIMED_SEAT" ]; then
       # ★ 弱態要**結構性標記**,不是換個說法:「自稱」兩個字必須在,強態不得有。
       #   只讓兩種字樣「不一樣」守不住 —— 下一個改字樣的人會把它改成相近的另一句,

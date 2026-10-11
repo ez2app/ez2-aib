@@ -472,11 +472,43 @@ def _ps_env_pids(marker: str, ps_text: str | None = None, var: str = "EZ2_VERIFY
     return sorted(out)
 
 
-def leftover_pids(marker: str, proc: str = "/proc", ps_text: str | None = None, var: str = "EZ2_VERIFY_TRACE") -> list[int]:
+def _lsof_dir_pids(dirs, lsof_text: str | None = None) -> list[int]:
+    """開著 dirs 底下的檔(含工作目錄)的行程(不含自己)。10-11:macOS 27 起 `ps -E` 與 sysctl procargs2 都不給
+    別的行程的環境變數(實測 0 筆)⇒ 照環境認不出殘留;改認「還抓著這支測試專用資料夾裡東西的」。
+    dirs 是每支測試隨機建的暫存資料夾 / HOME,碰不到別支、別人的。lsof 跑不了 ⇒ []。"""
+    roots = set()
+    for d in dirs or ():
+        if d:
+            roots.update({str(d).rstrip("/"), os.path.realpath(str(d)).rstrip("/")})
+    if not roots:
+        return []
+    if lsof_text is None:
+        lsof = shutil.which("lsof") or next((p for p in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.access(p, os.X_OK)), None)
+        if not lsof:
+            return []
+        try:
+            lsof_text = subprocess.run([lsof, "-n", "-P", "-w", "-F", "pn", "-u", str(os.getuid())], capture_output=True,
+                                       text=True, errors="replace", stdin=subprocess.DEVNULL, timeout=60).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+    out, pid, me = set(), None, os.getpid()
+    for line in lsof_text.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid = int(line[1:])
+        elif line.startswith("n") and pid is not None and pid != me:
+            name = line[1:]
+            if any(name == r or name.startswith(r + "/") for r in roots):
+                out.add(pid)
+    return sorted(out)
+
+
+def leftover_pids(marker: str, proc: str = "/proc", ps_text: str | None = None, var: str = "EZ2_VERIFY_TRACE",
+                  dirs=(), lsof_text: str | None = None) -> list[int]:
     """環境變數裡帶著 marker(這支測試的追蹤檔路徑)、而且還活著的行程(不含自己)。
-    Linux 讀 /proc;沒有 /proc(macOS,10-08 CI 改到 Mac mini)⇒ 改讀 `ps -E`。"""
+    Linux 讀 /proc;沒有 /proc(macOS,10-08 CI 改到 Mac mini)⇒ 改讀 `ps -E`,
+    再加上抓著 dirs 底下東西的(10-11:macOS 27 的 ps -E 不給環境變數)。"""
     if not os.path.isdir(proc):
-        return _ps_env_pids(marker, ps_text, var)
+        return sorted(set(_ps_env_pids(marker, ps_text, var)) | set(_lsof_dir_pids(dirs, lsof_text)))
     want = ("%s=%s" % (var, marker)).encode("utf-8")
     out = []
     try:
@@ -531,12 +563,13 @@ def wait_for_memory(on_wait=None, min_gb=MEM_WAIT_GB, max_wait_s=MEM_WAIT_MAX_S,
 REAPED = []          # 10-08:這個行程到目前收掉的殘留 pid(aib test 用前後差算每支測試留了幾個,總表列出)
 
 
-def reap_leftovers(marker: str, grace_s: float = 2.0, proc: str = "/proc", var: str = "EZ2_VERIFY_TRACE") -> list[int]:
+def reap_leftovers(marker: str, grace_s: float = 2.0, proc: str = "/proc", var: str = "EZ2_VERIFY_TRACE",
+                   dirs=()) -> list[int]:
     """測試結束後還活著、帶著它追蹤檔路徑的行程 = 它開出來沒收的(例:tmux 伺服器)⇒ 先 SIGTERM,等 grace_s 再 SIGKILL。
     10-08 a CI machine 實踩:兩組這種殘留跑了 8.5 與 5 小時,一直往已刪掉的追蹤檔寫 ⇒ /tmp(放在記憶體裡)被吃掉 11G + 6.7G。
     回收掉的 pid。只碰帶著這一支追蹤檔路徑的行程,別支、別人的都不碰。Linux 讀 /proc、macOS 讀 ps -E。"""
     import signal
-    pids = leftover_pids(marker, proc, var=var)
+    pids = leftover_pids(marker, proc, var=var, dirs=dirs)
     REAPED.extend(pids)
     for pid in pids:
         try:
@@ -544,9 +577,9 @@ def reap_leftovers(marker: str, grace_s: float = 2.0, proc: str = "/proc", var: 
         except OSError:
             pass
     deadline = time.monotonic() + grace_s
-    while pids and time.monotonic() < deadline and leftover_pids(marker, proc, var=var):
+    while pids and time.monotonic() < deadline and leftover_pids(marker, proc, var=var, dirs=dirs):
         time.sleep(0.1)
-    for pid in leftover_pids(marker, proc, var=var):
+    for pid in leftover_pids(marker, proc, var=var, dirs=dirs):
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:

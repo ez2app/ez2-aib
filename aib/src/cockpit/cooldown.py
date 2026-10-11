@@ -43,6 +43,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import machine_status as ms  # noqa: E402
+import flap_guard  # noqa: E402
 
 OK, WARN, HOT, CRIT, UNKNOWN = "ok", "warn", "hot", "critical", "unknown"
 ORDER = {OK: 0, WARN: 1, HOT: 2, CRIT: 3}
@@ -610,6 +611,38 @@ def flag_path():
     return os.path.join(state, "heavy-work-nogo") if state else None
 
 
+# 10-10 the maintainer「守衛互推偵測」:旗標沒有遲滯 —— 負載在 HOT 門檻附近時,每 20 秒寫一次、刪一次,
+#   重活一下被擋、一下放行。10 分鐘內翻滿 6 次 ⇒ 先留著旗標(往安全的那邊停),等負載真的穩下來
+#   (翻轉紀錄滑出 10 分鐘)才刪。紀錄在 <狀態根>/flap/cooldown-nogo.jsonl(flap_guard)。
+NOGO_FLAP_ACTION = "cooldown-nogo"
+NOGO_FLAP_LIMIT = 6
+NOGO_FLAP_WINDOW_S = 10 * 60
+
+
+def set_nogo_flag(path, hot, text, now=None):
+    """寫或刪 heavy-work-nogo。回 on / off / kept(本來就是那樣)/ hold(翻太多次,先留著)/ error。"""
+    try:
+        existed = os.path.exists(path)
+        if hot:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            if existed:
+                return "kept"
+            flap_guard.record(NOGO_FLAP_ACTION, path, note="on", now=now)
+            return "on"
+        if not existed:
+            return "kept"
+        if flap_guard.held(NOGO_FLAP_ACTION, path, NOGO_FLAP_LIMIT, NOGO_FLAP_WINDOW_S, now=now,
+                           why="降溫旗標在門檻附近來回"):
+            return "hold"
+        os.remove(path)
+        flap_guard.record(NOGO_FLAP_ACTION, path, note="off", now=now)
+        return "off"
+    except OSError:
+        return "error"
+
+
 def live_cabin(environ=None, home=None):
     """這一輪是不是真的座艙在畫(10-08)。★ 活右欄每一幀也是 EZ2_ONESHOT,所以不能拿 ONESHOT 判;
     真座艙一定帶 EZ2_AIB_INSTANCE,而且家目錄底下有那個艙的資料夾。測試洗掉艙變數、換了 HOME ⇒ 兩條都不成立。"""
@@ -643,15 +676,7 @@ def apply(cells, dry_run=None):
     if not path:
         out["label"] = LABEL[lv] + "(座艙狀態目錄不明,旗標未落)"
         return out
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        if ORDER[lv] >= ORDER[HOT]:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write("%s %s\n" % (lv, "; ".join(reasons)))
-        elif os.path.exists(path):
-            os.remove(path)
-    except OSError:
-        pass
+    out["flag"] = set_nogo_flag(path, ORDER[lv] >= ORDER[HOT], "%s %s\n" % (lv, "; ".join(reasons)))
     if thermal_lv == CRIT:
         out["reap"] = reap(dry_run=dry)
     did, need, fyi = plan(lv, reasons, out["reap"])

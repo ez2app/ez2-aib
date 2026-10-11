@@ -54,7 +54,7 @@
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash
-# ~/ez2-aib にインストールします。同じ行をいつ再実行しても更新になります(Linux ではテストの安全網のみ。コックピットには macOS が必要です)
+# 最新リリースを ~/ez2-aib にインストールします。同じ行をいつ再実行しても更新になります(Linux ではテストの安全網のみ。コックピットには macOS が必要です)
 aib update                                          # aib のインストール後は同じことをこれで実行できます（aib update --tools では AI CLI の追加も提案します）
 # その他の方法: pipx install ez2-aib    (pipx がない場合は macOS: brew install pipx / Linux: python3 -m pip install --user pipx、
 #                                        続けて pipx ensurepath を実行し、新しいターミナルを開く)

@@ -154,6 +154,9 @@ REPORTS_TO_RE='^[0-9a-z]{4,8}$'
 DRY="${AIB_DRY_RUN:-0}"
 NEW=0
 AGAIN=0
+MAIN_EXPLICIT=0   # 10-11:main 是人親手寫的(第四參數 / --instance=main)才算;從環境導出的不算
+MAIN_FROM=""
+_AIB_ENV_INSTANCE_AT_START="${EZ2_AIB_INSTANCE-}"   # 判 main 從哪來:呼叫端環境帶的,還是 aib 自己的預設
 REPORTS_TO=""
 INSTANCE=""
 INSTANCE_TOKEN=""
@@ -193,6 +196,31 @@ aib_attempt_mark() {   # $1=event $2=window(可空) $3=note(可空)
     || echo "aib: 開席碼表寫不進去(事件 $1;不擋開席)" >&2
   return 0
 }
+
+# 10-11 一鍵急停(the maintainer「把 ACB 能用的搬回 AIB」A2;源自 ACB lib/core.sh kill-switch + test-killflag-failopen):
+#   <狀態根>/state/kill-switch 存在 ⇒ 擋「會動到別人或對外」的三類:開席、aib dm 送信、aib ship 推包。
+#   其他(status、memory、handoff、test、killswitch 本身…)照常,才能查狀況、收尾、解除。
+#   ★ 檔在但讀不到(權限壞、是資料夾)⇒ 一樣當成急停中,而且說出讀不到 —— 不准悄悄放行(fail-closed)。
+aib_killswitch_file() { printf '%s/state/kill-switch\n' "$(aib_cabin_state_root)"; }
+aib_killswitch_guard() {
+  local f r
+  f="$(aib_killswitch_file)"
+  [ -e "$f" ] || [ -L "$f" ] || return 0
+  if [ -f "$f" ] && [ -r "$f" ]; then r="$(head -c 300 "$f" 2>/dev/null | tr '\n' ' ')"; else r="UNREADABLE $f"; fi
+  echo "$("$T_PY3" "$HERE/i18n_lib.py" --param "value=${r:-—}" --param "path=$f" aib.err.killswitch)" >&2
+  exit 3
+}
+if [ "${1:-}" = "killswitch" ]; then
+  _ks="$(aib_killswitch_file)"
+  case "${2:-status}" in
+    on)  mkdir -p "$(dirname "$_ks")" && { shift 2; printf '%s %s\n' "$(date '+%F %T')" "$*" > "$_ks"; } \
+           && "$T_PY3" "$HERE/i18n_lib.py" --param "path=$_ks" aib.killswitch.on; exit $? ;;
+    off) rm -f "$_ks" && "$T_PY3" "$HERE/i18n_lib.py" --param "path=$_ks" aib.killswitch.off; exit $? ;;
+    status) if [ -e "$_ks" ] || [ -L "$_ks" ]; then aib_killswitch_guard; fi
+            "$T_PY3" "$HERE/i18n_lib.py" aib.killswitch.clear; exit 0 ;;
+    *) "$T_PY3" "$HERE/i18n_lib.py" aib.killswitch.usage >&2; exit 2 ;;
+  esac
+fi
 
 # ED.2 子命令(終審掛載,08-13):`aib init` 直通首跑建置器,argv 原樣透傳
 # (--state-root/--json),exit code 直傳。放在 provider 解析之前——init 不是
@@ -275,6 +303,38 @@ if [ "${1:-}" = "newproj" ]; then
   shift
   export PYTHONDONTWRITEBYTECODE=1 AIB_NEWPROJ_PROG="aib newproj"
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/tools/project/new_project.py" --entry newproj "$@"
+fi
+# 10-11 aib bindme(the maintainer 01:0x):一次看清、補齊各席的人格與專案綁定;先問各席 24 小時做了什麼再提建議。
+if [ "${1:-}" = "bindme" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1 AIB_BINDME_PROG="aib bindme"
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/identity/bindme.py" "$@"
+fi
+
+# 10-10 a seat(the maintainer「4 件都做」):機器健康的三個小指令,只讀或只動自己的狀態檔,不進席位、不碰 tmux。
+#   aib top [--seconds N]        誰在吃這台機器(CPU 前幾名 + 每秒新開程式 + 誰在開)
+#   aib proc find|kill <字樣>    用字樣找/停行程,自動排除自己那條樹(pgrep -f / pkill -f 會比對到自己)
+#   aib logcap status|sweep      <狀態根>/logs 的紀錄檔上限
+#   aib flap status              防互推紀錄(哪個動作對哪個目標做了幾次、停手幾次)
+if [ "${1:-}" = "top" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1 AIB_TOP_PROG="aib top"
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/machine_top.py" "$@"
+fi
+if [ "${1:-}" = "proc" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1 AIB_PROC_PROG="aib proc"
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/proc_find.py" "$@"
+fi
+if [ "${1:-}" = "logcap" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1 AIB_LOGCAP_PROG="aib logcap"
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/log_cap.py" "$@"
+fi
+if [ "${1:-}" = "flap" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/flap_guard.py" "$@"
 fi
 
 # CodexBot one-time desktop binding.  This is deliberately outside provider
@@ -405,6 +465,7 @@ fi
 #   邏輯在 tools/release/ship.py;受測的倉 = 目前目錄(或 --repo)。設定 .aib/ship.toml,沒有就自動偵測。
 #   設計稿 docs/DESIGN-aib-ship-for-all-users-1006.md。
 if [ "${1:-}" = "ship" ]; then
+  aib_killswitch_guard
   shift
   exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/release/ship.py" "$@"
 fi
@@ -465,6 +526,7 @@ aib_take_instance_flag() {
     INSTANCE=""
   else
     INSTANCE="$v"
+    ! aib_cabin_is_primary "$v" || MAIN_EXPLICIT=1
   fi
 }
 
@@ -524,6 +586,7 @@ aib_apply_socket_instance() {
   fi
 
   INSTANCE="$derived"
+  ! aib_cabin_is_primary "$derived" || MAIN_FROM="EZ2_AIHUB_SOCKET=$hub"
   printf 'instance 由 socket 導出=%s\n' "$derived" >&2
   return 0
 }
@@ -531,6 +594,7 @@ aib_apply_socket_instance() {
 # aib dm 子命令(2026-08-14 the maintainer 核准,異質艦隊 DM 通道):整段委派 dm-ctl,
 # 本檔只掛不實作(啟動器與訊息域分離)。必須在位置參數解析前攔。
 if [ "${1:-}" = "dm" ]; then
+  aib_killswitch_guard
   shift
   # ★ 第 159 項(dev1 a seat 09-14):`aib dm` 這個入口把「收據說可安全重送就自動重送一次」打開
   #   (AIB_DM_AUTO_RESEND=1;已明示設定的不蓋)。開關住在入口不住 dm-ctl:dm-ctl 被 43 支尺直接叫,
@@ -569,6 +633,20 @@ fi
 if [ "${1:-}" = "restart" ]; then
   shift
   exec "$T_PY3" "$HERE/cabin_restart.py" "$@"
+fi
+
+# aib now 子命令(the maintainer 2026-10-10):每一席回報「主項目 | 完成%」,顯示在輸入框下方 CTX 那一行的上面。
+# aib now "主項目" 80 / aib now / aib now --clear。整段委派 seat_now.py。
+if [ "${1:-}" = "now" ]; then
+  shift
+  exec "$T_PY3" "$HERE/seat_now.py" "$@"
+fi
+
+# aib room 子命令(the maintainer 2026-10-10):艦長室網頁。aib room = 確定它在跑、開瀏覽器;aib room status;
+# aib room install-boot / uninstall-boot = 開機自動啟動(macOS launchd)。整段委派 captain_room.py。
+if [ "${1:-}" = "room" ]; then
+  shift
+  exec "$T_PY3" "$HERE/captain_room.py" "$@"
 fi
 
 # aib cli 子命令(the maintainer 2026-10-09):五家 AI CLI 版本。aib cli = 看本機/最新;aib cli update = 現在更新;
@@ -889,6 +967,7 @@ if [ "${#POS[@]}" -eq 4 ]; then
   else
     [ -z "$INSTANCE" ] || die "$(t aib.err.usage)"
     INSTANCE="${POS[3]}"
+    ! aib_cabin_is_primary "$INSTANCE" || MAIN_EXPLICIT=1
     # fail-closed:直接吃 cabin_resolve 已有的驗證器(rc=2 且點名該值),
     # 不在這裡再寫一份近似的判斷。
     aib_cabin_check_name "instance" "$INSTANCE" || exit 2
@@ -909,6 +988,7 @@ fi
 # --again(同 hub 次席)與 --new(新 instance)是兩個正交語意,同給=意圖不明
 [ "$NEW" = "0" ] || [ "$AGAIN" = "0" ] || die "$(t aib.err.usage)"
 
+aib_killswitch_guard   # 10-11 一鍵急停:開席(含 --again、批次 <N>sits)一律在這裡擋
 PROVIDER="${POS[0]}"
 MODE="${POS[1]}"
 ROLE="${POS[2]}"
@@ -1124,6 +1204,23 @@ if [ "$DRY" = "1" ]; then export AIB_NO_STATE_WRITE=1; fi
 . "$HERE/cockpit-env.sh"
 S="$EZ2_TMUX_SESSION"
 HUB="$EZ2_AIHUB_SOCKET"
+# 10-11 the maintainer(00:34 帶 CODEX_THREAD_ID 的程式在 EZ2_AIB_INSTANCE=main / 裸 aihub 下跑 aib codexbot,開出舊式 main 主艙 acb131):
+#   aib 不再「新建」main 主艙。只有第四參數寫 main、--instance=main,或 AIB_ALLOW_MAIN_CABIN=1 才准;
+#   從環境(EZ2_AIB_INSTANCE=main、裸 EZ2_AIHUB_SOCKET=aihub)導出的 main,主艙已經在(任一個 tmux 伺服器答有)照舊進,不在就擋。
+aib_refuse_implicit_main_cabin() {
+  aib_cabin_is_primary "${EZ2_AIB_INSTANCE:-}" || return 0
+  [ "$MAIN_EXPLICIT" = "1" ] && return 0
+  [ "${AIB_ALLOW_MAIN_CABIN:-0}" = "1" ] && return 0
+  [ "$DRY" != "1" ] || return 0   # 演練不建艙,也不准碰 tmux(test-aib-cli 契約)
+  if [ -z "$MAIN_FROM" ]; then
+    if aib_cabin_is_primary "$_AIB_ENV_INSTANCE_AT_START"; then MAIN_FROM="EZ2_AIB_INSTANCE=$_AIB_ENV_INSTANCE_AT_START"
+    else MAIN_FROM="aib default (no cabin given)"; fi
+  fi
+  env -u TMUX tmux has-session -t "$S" >/dev/null 2>&1 && return 0
+  env -u TMUX tmux -L "$HUB" has-session -t aihub >/dev/null 2>&1 && return 0
+  die "$(t aib.err.implicit_main_cabin "value=$MAIN_FROM")" 2
+}
+aib_refuse_implicit_main_cabin
 # 09-11 b21 真紅:開席鏈的脫離行程(碼表守望、回執守望)在呼叫端治具收掉之後還活著,
 # 那時 `tmux` 這個名字會解析到 PATH 上下一支——真的那支,對一個不存在的艙 socket 下指令。
 # ⇒ 在這裡把 tmux 綁成絕對路徑並輸出,子孫全部沿用;綁到的那支不見了就是「不見了」,不換一支。
@@ -1168,6 +1265,19 @@ run() {
 }
 
 # the maintainer 18:2x:aib 開的席預設無底色;聚焦用邊框,不用實心底。
+# 2026-10-10 the maintainer:「Codex 和 agy 席也要顯示,全部的 ai 席都要」—— Claude / agy 席由自己的狀態列畫
+#   「📌 主項目 | 完成%」與「模型 | @席位 | CTX」;Codex / Grok / Copilot 的狀態列只能挑內建項目、放不了自訂字
+#   ⇒ 開席時在它的 hub 窗開底部邊框,每次刷新跑 seat_now.py --border(窗 id + socket ⇒ 席位檔 ⇒ 席位碼)。
+aib_apply_now_border() {
+  local tgt="$1" fmt
+  [ -n "$tgt" ] || return 0
+  case "$PROVIDER" in claude) return 0 ;; esac   # agy 也開(它的狀態列不會定時重跑;邊框只畫 📌,the maintainer 10-10)
+  fmt="$("$T_PY3" "$HERE/seat_now.py" --border-format "$PROVIDER" 2>/dev/null)" || return 0
+  [ -n "$fmt" ] || return 0
+  run env -u TMUX tmux -L "$HUB" set-option -w -t "$tgt" pane-border-status bottom
+  run env -u TMUX tmux -L "$HUB" set-option -w -t "$tgt" pane-border-format "$fmt"
+}
+
 aib_apply_seat_plain_style() {
   local tgt="$1"
   [ -n "$tgt" ] || return 0
@@ -1908,6 +2018,7 @@ else
     run env -u TMUX tmux -L "$HUB" set-option -w -t "aihub:$WINDOW_NAME" @aib_provider "$PROVIDER"
     run env -u TMUX tmux -L "$HUB" set-option -w -t "aihub:$WINDOW_NAME" @aib_role "$ROLE"
     aib_apply_seat_plain_style "aihub:$WINDOW_NAME"
+    aib_apply_now_border "aihub:$WINDOW_NAME"
     run env -u TMUX tmux -L "$HUB" respawn-pane -k -t "aihub:$WINDOW_NAME.0" "$LAUNCH_CMD"
     run env -u TMUX tmux -L "$HUB" select-window -t "aihub:$WINDOW_NAME"
   else
@@ -1921,6 +2032,7 @@ else
     env -u TMUX tmux -L "$HUB" set-option -w -t "$WINDOW_ID" @aib_provider "$PROVIDER"
     env -u TMUX tmux -L "$HUB" set-option -w -t "$WINDOW_ID" @aib_role "$ROLE"
     aib_apply_seat_plain_style "$WINDOW_ID"
+    aib_apply_now_border "$WINDOW_ID"
     env -u TMUX tmux -L "$HUB" respawn-pane -k -t "$PROVIDER_PANE" "$LAUNCH_CMD"
     env -u TMUX tmux -L "$HUB" select-window -t "$WINDOW_ID"
     write_seat_record "$WINDOW_ID" "$PROVIDER_PANE"

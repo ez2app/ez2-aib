@@ -156,6 +156,22 @@ def record_model(provider: str, path: Path | None) -> str:
             m = d.get("model_id") or d.get("model") or ""
         if isinstance(m, str) and m:
             last = m
+    if provider == "grok":
+        last = _grok_event_model(path) or last
+    return last
+
+
+def _grok_event_model(path: Path) -> str:
+    """10-11:grok chat_history 的 model_id 是後端組建名(grok-4.6-build),`grok -m` 不收;
+    同資料夾 events.jsonl 每回合 turn_started 記的才是選用名(grok-4.6;中途換模型也記得到)。沒有就回 ""。"""
+    ev = Path(path).with_name("events.jsonl")
+    if not ev.is_file():
+        return ""
+    last = ""
+    for d in _rows(ev):
+        m = d.get("model_id") if d.get("type") == "turn_started" else ""
+        if isinstance(m, str) and m:
+            last = m
     return last
 
 

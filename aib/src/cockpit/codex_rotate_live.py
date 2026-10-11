@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import flap_guard
 import usage_accounts as ua
 import usage_failover as uf
 
@@ -799,6 +800,26 @@ def _pane_pid(tmux_bin: str, socket: str, session: str, window_id: str) -> int:
     return int(text) if text.isdigit() else 0
 
 
+# 10-10 the maintainer「守衛互推偵測」:換號成功後會自動再掛看守(_rearm_after_respawn),新帳號若馬上又額度用完,
+#   就會一直換到沒有帳號為止 —— 每次都合理,合起來是打轉。同一席 30 分鐘內換滿 3 次 ⇒ 先停手,
+#   標在席位檔與右欄,等人看。紀錄在 <狀態根>/flap/codex-rotate.jsonl(flap_guard)。
+ROTATE_FLAP_ACTION = "codex-rotate"
+ROTATE_FLAP_LIMIT = 3
+ROTATE_FLAP_WINDOW_S = 30 * 60
+
+
+def rotate_flap_held(window_id: str, now: float | None = None) -> dict[str, Any] | None:
+    """這一席最近換太多次 ⇒ 回停手結果(不再換);否則 None。"""
+    if not window_id:
+        return None
+    if not flap_guard.held(ROTATE_FLAP_ACTION, window_id, ROTATE_FLAP_LIMIT, ROTATE_FLAP_WINDOW_S,
+                           now=now, why="codex 額度換號"):
+        return None
+    line = "%d 分鐘內已換 %d 次帳號,先停手,請人看一下" % (ROTATE_FLAP_WINDOW_S // 60, ROTATE_FLAP_LIMIT)
+    mark_seat_quota(window_id, line=line)
+    return {"ok": False, "reason": "flap_hold", "did_logout": False, "line": line}
+
+
 def _rearm_after_respawn(result: dict[str, Any], window_id: str, old_pid: int) -> None:
     """原席程序被換掉後，看守要改盯新程序。"""
     home = str((result.get("open") or {}).get("codex_home") or "")
@@ -1023,6 +1044,9 @@ def _watch_parent(parent_pid: int, resume: str, codex_home: str, window_id: str 
         held = pre_rotate_guard(window_id, message=chunk, after_id=after_id or None)
         if held is not None:
             return held
+        flapped = rotate_flap_held(window_id)
+        if flapped is not None:
+            return flapped
         lock = _acquire_lock(log_dir)
         if lock is False:
             return {
@@ -1049,6 +1073,8 @@ def _watch_parent(parent_pid: int, resume: str, codex_home: str, window_id: str 
                 env_source=str(Path.home() / ".codex"),
             )
             if result.get("ok") and window_id:
+                flap_guard.record(ROTATE_FLAP_ACTION, window_id,
+                                  note="%s -> %s" % (result.get("old_email") or "", result.get("new_email") or ""))
                 _rearm_after_respawn(result, window_id, parent_pid)
             return result
         finally:

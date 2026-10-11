@@ -11,10 +11,13 @@
 ★ 讀什麼:`assistant_usage_events` 每一回合一列,`model` 欄是那一回合真的打到的模型。
   取 `turn_index` 最大的那列(同回合多列取 id 最大)。只讀不寫,`mode=ro`。
 
-★ pct 刻意寫 `None`:那張表只有 input_tokens,沒有 context window 大小,算不出百分比。
-  照 ez2-ctx-core 的慣例,pct 為 None 時 `authority="unknown"`、`tier="unknown"`;
-  讀端 `ctx_of` 對 None 走 except 回 `--`,`model_of` 只讀 model —— 兩者各自誠實。
-  ★ 不編一個 pct:編出來的百分比與量到的在畫面上逐字同形。
+★ pct:用量表只有 input_tokens,沒有 context window 大小,單靠它算不出百分比。
+  10-11(7bb3f,the maintainer 問 Copilot 席 CTX 為什麼是「?」)量到:新版 copilot 每次呼叫模型都在
+  events.jsonl 寫一列 `session.usage_record`,`data.usage` 同時有 `inputTokens`(這次送出去的整段,
+  含快取)和 `maxPromptTokens`(這個模型能收的上限)⇒ pct = inputTokens / maxPromptTokens。
+  只認主對話那一列(`interactionType=conversation-agent`),模型也要跟寫進去的那個一樣;
+  量不到(舊版沒有這列、換了模型還沒跑下一回合)就照舊寫 None —— `authority="unknown"`、
+  `tier="unknown"`,讀端 `ctx_of` 回 `--`。★ 不編一個 pct:編出來的百分比與量到的在畫面上逐字同形。
 
 ★ 與 grok 探針同一條紀律:失敗(缺 db、缺列、壞 uuid)保持現況 —— 不刪既有 `.pct`、
   不丟例外;schema / 原子寫入直接引用 grok_ctx_probe,不抄第二份。
@@ -108,6 +111,46 @@ def latest_model_change(uuid, base=None):
     return None
 
 
+USAGE_EVENT = "session.usage_record"
+MAIN_INTERACTION = "conversation-agent"     # 主對話;子代理 / 起標題那種旁支呼叫不算這一席的用量
+
+
+def latest_usage(uuid, base=None):
+    """回 (inputTokens, maxPromptTokens, model, timestamp) 或 None。只讀 events.jsonl 尾巴,
+    從最後一列往回找第一列主對話的 `session.usage_record`;兩個數字缺一個、上限不是正數都不算。"""
+    if not _UUID_RE.fullmatch(str(uuid or "")):
+        return None
+    path = os.path.join(base or state_dir(), uuid, "events.jsonl")
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - EVENTS_TAIL_BYTES))
+            blob = fh.read()
+    except OSError:
+        return None
+    for raw in reversed(blob.split(b"\n")):
+        if USAGE_EVENT.encode() not in raw:
+            continue
+        try:
+            event = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != USAGE_EVENT:
+            continue
+        data = event.get("data")
+        usage = data.get("usage") if isinstance(data, dict) else None
+        if not isinstance(usage, dict) or usage.get("interactionType") != MAIN_INTERACTION:
+            continue
+        used, cap, model = usage.get("inputTokens"), usage.get("maxPromptTokens"), usage.get("model")
+        if (isinstance(used, int) and not isinstance(used, bool) and used >= 0
+                and isinstance(cap, int) and not isinstance(cap, bool) and cap > 0
+                and isinstance(model, str) and model.strip()):
+            return used, cap, model.strip(), event.get("timestamp")
+        return None                 # 最新一列主對話量不到 ⇒ 不往更舊的借
+    return None
+
+
 def _when(stamp):
     """ISO 時間 → 可比較字串(copilot 兩處都寫 `…T…Z`;`datetime('now')` 的空白也收)。"""
     return str(stamp or "").replace(" ", "T")[:23]
@@ -124,25 +167,29 @@ def _observed_at(created_at):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def gauge_from_turn(uuid, model, created_at, source=SOURCE):
+def gauge_from_turn(uuid, model, created_at, source=SOURCE, used=None, size=None):
+    pct = None
+    if used is not None and size:
+        pct = int(round(min(100.0, max(0.0, used * 100.0 / size))))
     return {
         "schema": _gauge.SCHEMA,
         "gauge_version": _gauge.GAUGE_VERSION,
         "engine": "copilot",
         "session_id": uuid,
         "model": model,
-        "pct": None,
-        "used": None,
-        "size": None,
-        "tier": "unknown",
-        "authority": "unknown",
+        "pct": pct,
+        "used": used if pct is not None else None,
+        "size": size if pct is not None else None,
+        "tier": _gauge._tier(pct),
+        "authority": "provider_observed" if pct is not None else "unknown",
         "source": source,
         "observed_at": _observed_at(created_at),
     }
 
 
 def refresh(uuid, ctx_dir=None, db=None, events_dir=None):
-    """讀最近一回合與最近一次換模型,時間較新的那個寫進 `$EZ2_CTX_DIR/<uuid>.pct`。回 model 或 None。"""
+    """讀最近一回合與最近一次換模型,時間較新的那個寫進 `$EZ2_CTX_DIR/<uuid>.pct`;
+    同一個模型的主對話用量量得到就一併寫 pct。回 model 或 None。"""
     turn = latest_turn(uuid, db=db)
     change = latest_model_change(uuid, base=events_dir)
     source = SOURCE
@@ -154,7 +201,11 @@ def refresh(uuid, ctx_dir=None, db=None, events_dir=None):
         ctx_dir = os.environ.get("EZ2_CTX_DIR") or os.path.expanduser("~/.ez2/ctx")
     if not isinstance(ctx_dir, str) or not os.path.isabs(ctx_dir):
         return None
-    record = gauge_from_turn(uuid, turn[0], turn[1], source=source)
+    used = size = None
+    usage = latest_usage(uuid, base=events_dir)
+    if usage is not None and usage[2] == turn[0]:      # 換了模型還沒跑下一回合 ⇒ 舊模型的數字不套給新模型
+        used, size = usage[0], usage[1]
+    record = gauge_from_turn(uuid, turn[0], turn[1], source=source, used=used, size=size)
     dest = os.path.join(ctx_dir, uuid + ".pct")
     try:
         _gauge._atomic_write(dest, json.dumps(record, ensure_ascii=False) + "\n")

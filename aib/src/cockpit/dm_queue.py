@@ -95,7 +95,10 @@ SENDER_KINDS = ("seat", "seat_claimed", "human", "system", "unknown")
 # 寄件身分的來源(帳本用;弱強度必須在欄位上分得出來,不能只靠措辭)。
 # codex_thread_env(09-30):codex 席從 shell 工具打 `aib dm`,證據是 codex 放進工具行程環境的
 # CODEX_THREAD_ID;強度與 codex_session_meta 相同(都只到 seat_claimed),分開記是為了讀帳分得出哪條路。
-SENDER_SOURCES = ("pane_pid_chain", "ppid_chain", "codex_session_meta", "codex_thread_env")
+# bg_fork_chain(10-10 a seat,the maintainer 裁):寄件行程是 Claude Code 的背景分身(--fork-session 掛在全機共用的
+# 守護程式下),祖先鏈認到分身就停,席碼取分身 --resume 的**原席**;不走 pane_pid_chain 是因為那條會爬到
+# 「生守護程式的那一席」(真機:44ed3 的分身被記成 a seat)。強度同 seat(機器從命令列量出,不是自報)。
+SENDER_SOURCES = ("pane_pid_chain", "ppid_chain", "codex_session_meta", "codex_thread_env", "bg_fork_chain")
 THREAD_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,31}/[^\s/]{1,64}$")
 ARCHIVE_DAYS_DEFAULT = 7          # 備存天數,艦長 09-12 17:52 裁;可用 --days 改,真人另裁才改預設
 STALE_MINUTES_DEFAULT = 30        # 第 149 項:未讀超過幾分鐘算「卡住」
