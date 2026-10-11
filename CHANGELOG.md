@@ -4,6 +4,10 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.4
+
+- The cockpit color theme (`themes/aib-default.json`) is now included; earlier versions left it out, so the cockpit could not find its theme.
+
 ## 0.1.3
 
 - `aib killswitch on|off|status`: an emergency stop. While it is on, no AI can open a new seat, send `aib dm` or ship; if the switch cannot be read, it counts as on.

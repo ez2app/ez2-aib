@@ -4,6 +4,10 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.4
+
+- 補上駕駛艙配色檔(`themes/aib-default.json`);之前的版本漏帶,駕駛艙會找不到配色。
+
 ## 0.1.3
 
 - `aib killswitch on|off|status` 一鍵急停:打開後,所有 AI 都不能開新席、不能發 `aib dm`、不能推版;急停檔讀不到也當成急停中。

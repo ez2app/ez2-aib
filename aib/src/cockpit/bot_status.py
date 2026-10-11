@@ -146,6 +146,9 @@ def state_of(seat, status):
     if isinstance(status, dict):
         st = status.get("state")
         if isinstance(st, str) and st.strip():
+            # 10-11 a seat(DIAG §9 #14):收尾小幫手中途被殺 ⇒ 停在 closing、pid 是死掉的小幫手 ⇒ 實際已停
+            if st.strip() == "closing" and status.get("pid") not in (None, "") and not pid_alive(status.get("pid")):
+                return "stopped"
             return st.strip()
     if isinstance(exit_reason, str) and exit_reason.strip():
         return exit_reason.strip()

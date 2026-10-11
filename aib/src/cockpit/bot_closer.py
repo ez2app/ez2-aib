@@ -241,31 +241,37 @@ def close_grokbot(p: dict, root: Path) -> str:
             return "already_unbound"
         # bot 收信時要找得到「活席」:由小幫手頂替(pid 換成自己、狀態 closing)
         _mark_status(st, state="closing", pid=os.getpid(), agent_id=agent, closed_by="bot_closer")
-        inbox = seat / "inbox"
-        inbox.mkdir(parents=True, exist_ok=True)
-        ts = time.time()
-        name = "%013d-aib-system.json" % int(ts * 1000)
-        code = st.exists() and json.loads(st.read_text(encoding="utf-8")).get("code") or session[-5:]
-        (inbox / (name + ".tmp")).write_text(json.dumps({
-            "schema": "aib-sand-bridge-msg/v1", "from": "aib-system", "to": "cursor", "provider": "grokbot",
-            "code": code, "session_uuid": session,
-            "text": "[AIB 系統] 這一席 @%s 已關閉。請用 update_state(target: profile) 把你在 Grok Bot app 裡的"
-                    "名稱改成「%s」。改好不用回覆。" % (code, wanted),
-            "created_epoch": int(ts)}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(inbox / (name + ".tmp"), inbox / name)
-        os.environ["AIB_GROKBOT_AGENT_ID"] = agent
-        import sand_bridge
-        res = sand_bridge.wake_cursor_chat(session, code, "[AIB 系統] 關席改名", "grokbot")
-        _log(root, kind="grokbot", event="rang", status=res.get("status"), reason=res.get("reason"))
+        # 10-11 a seat(DIAG §9 #14,the maintainer「第 3、14 條也修」):以前中途丟例外(寫信、叫醒、等待)就停在 closing、
+        #   pid 是已死的小幫手 ⇒ 狀態檔說謊(a seat、a seat、a seat)。finally 一定寫 stopped;被 SIGKILL 由讀端
+        #   bot_status.state_of 把「closing + pid 死」當 stopped。
+        claimed = None
         try:
-            wait_s = max(0.0, float(os.environ.get("AIB_GROKBOT_CLOSE_WAIT_S") or GROK_CLOSE_WAIT_S))
-        except ValueError:
-            wait_s = GROK_CLOSE_WAIT_S
-        claimed = inbox / "claimed" / name
-        deadline = time.time() + wait_s
-        while time.time() < deadline and not claimed.exists():
-            time.sleep(0.2)
-        _mark_status(st, state="stopped", closed_by="bot_closer")
+            inbox = seat / "inbox"
+            inbox.mkdir(parents=True, exist_ok=True)
+            ts = time.time()
+            name = "%013d-aib-system.json" % int(ts * 1000)
+            code = st.exists() and json.loads(st.read_text(encoding="utf-8")).get("code") or session[-5:]
+            (inbox / (name + ".tmp")).write_text(json.dumps({
+                "schema": "aib-sand-bridge-msg/v1", "from": "aib-system", "to": "cursor", "provider": "grokbot",
+                "code": code, "session_uuid": session,
+                "text": "[AIB 系統] 這一席 @%s 已關閉。請用 update_state(target: profile) 把你在 Grok Bot app 裡的"
+                        "名稱改成「%s」。改好不用回覆。" % (code, wanted),
+                "created_epoch": int(ts)}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(inbox / (name + ".tmp"), inbox / name)
+            os.environ["AIB_GROKBOT_AGENT_ID"] = agent
+            import sand_bridge
+            res = sand_bridge.wake_cursor_chat(session, code, "[AIB 系統] 關席改名", "grokbot")
+            _log(root, kind="grokbot", event="rang", status=res.get("status"), reason=res.get("reason"))
+            try:
+                wait_s = max(0.0, float(os.environ.get("AIB_GROKBOT_CLOSE_WAIT_S") or GROK_CLOSE_WAIT_S))
+            except ValueError:
+                wait_s = GROK_CLOSE_WAIT_S
+            claimed = inbox / "claimed" / name
+            deadline = time.time() + wait_s
+            while time.time() < deadline and not claimed.exists():
+                time.sleep(0.2)
+        finally:
+            _mark_status(st, state="stopped", closed_by="bot_closer")
         return "asked_bot" if claimed.exists() else "bot_did_not_collect"
     finally:
         lock.close()

@@ -89,11 +89,11 @@ def _bridge_agent_id(provider: str, uuid: str, home: str) -> str:
         return ""
     try:
         import bot_status
+        import bot_binding   # 10-11 第 15 件第 1 步:判準走同一支
         st = bot_status.read_status(home, uuid) or {}
+        return bot_binding.bound_id(provider, uuid, status=st)[0] if st else ""
     except Exception:
         return ""
-    aid = st.get("agent_id") if isinstance(st, dict) else None
-    return aid if isinstance(aid, str) and aid else ""
 
 
 def _grokbot_agent_names() -> dict[str, str]:

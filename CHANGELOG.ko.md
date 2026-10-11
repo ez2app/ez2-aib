@@ -4,6 +4,10 @@
 
 버전은 `pyproject.toml`의 `version`을 따릅니다. 릴리스는 `v<version>` 태그이며, 관리자가 만듭니다.
 
+## 0.1.4
+
+- 콕핏 색상 테마 파일(`themes/aib-default.json`)을 포함했습니다. 이전 버전에는 빠져 있어 콕핏이 테마를 찾지 못했습니다.
+
 ## 0.1.3
 
 - `aib killswitch on|off|status`: 비상 정지. 켜져 있는 동안 어떤 AI도 새 자리를 열거나 `aib dm`을 보내거나 릴리스할 수 없습니다. 스위치를 읽을 수 없으면 켜진 것으로 봅니다.

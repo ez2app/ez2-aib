@@ -6,7 +6,7 @@
 清單來源 = `~/.claude/projects/<專案>/<session>.jsonl`(Claude Code 本機對話紀錄;Desktop app 的本機 session 也寫這裡)。
 雲端 session 不在這台 Mac 上;v0.70.0 #16 起改由中繼站的報到名冊列進來(list_sessions_with_cloud),綁法與本機同。
 
-- 只讀:每個檔只讀開頭 READ_HEAD_LINES 行找標題與 cwd,不讀整條對話、不落任何內容。
+- 只讀:每個檔只讀開頭 READ_HEAD_LINES 行找標題與 cwd,另讀檔尾 TITLE_TAIL_BYTES 找最後一次改名;不讀整條對話、不落任何內容。
 - 占用判法與 grokbot_threads.held_by 同一種:對橋會拿的那把鎖試一次 LOCK_EX|LOCK_NB;鎖檔不存在 ⇒ 沒被占且不建檔。
 """
 from __future__ import annotations
@@ -132,7 +132,7 @@ def describe(path: Path) -> dict | None:
     sid = path.stem
     if not valid_session_id(sid):
         return None
-    title = first_user = cwd = entrypoint = ""
+    title = custom = first_user = cwd = entrypoint = ""
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for i, line in enumerate(fh):
@@ -149,18 +149,45 @@ def describe(path: Path) -> dict | None:
                 if not entrypoint and isinstance(d.get("entrypoint"), str):
                     entrypoint = d["entrypoint"]
                 kind = d.get("type")
-                if kind in ("custom-title", "summary") and not title:
-                    title = d.get("customTitle") or d.get("title") or d.get("summary") or ""
+                if kind == "custom-title":
+                    custom = d.get("customTitle") or custom
+                elif kind == "summary" and not title:
+                    title = d.get("title") or d.get("summary") or ""
                 elif kind == "user" and not first_user and not d.get("isMeta"):
                     t = _text_of(d.get("message"))
                     if t and not t.lstrip().startswith("<"):   # 跳過系統包起來的東西(指令輸出、提醒)
                         first_user = t
+        # 10-11 a seat:改名(/rename、ensure_title)是在檔尾追加 custom-title,Claude Code 取最後一筆;
+        #   以前只讀開頭、取第一筆 ⇒ 改過名的對話在清單上永遠是舊名。檔尾再找一次,最後一筆為準。
+        custom = _last_custom_title(path) or custom
+        title = custom or title
         updated = int(path.stat().st_mtime)
     except OSError:
         return None
     if not (title or first_user):
         return None
     return {"id": sid, "name": _one_line(title or first_user), "updated": updated, "cwd": cwd, "entrypoint": entrypoint}
+
+
+TITLE_TAIL_BYTES = 256 * 1024
+
+
+def _last_custom_title(path: Path) -> str:
+    """檔尾 TITLE_TAIL_BYTES 內最後一筆 custom-title;沒有回空字串。"""
+    found = ""
+    with path.open("rb") as fh:
+        size = fh.seek(0, os.SEEK_END)
+        fh.seek(max(0, size - TITLE_TAIL_BYTES))
+        for raw in fh.read().splitlines():
+            if b'"custom-title"' not in raw:
+                continue
+            try:
+                d = json.loads(raw.decode("utf-8", errors="replace"))
+            except ValueError:
+                continue
+            if isinstance(d, dict) and d.get("type") == "custom-title" and isinstance(d.get("customTitle"), str):
+                found = d["customTitle"] or found
+    return found
 
 
 # 10-07 a seat:綁上之後,別席的 dm 會叫醒這條對話 ⇒ 它用什麼權限模式,決定那封信能不能直接讓它改檔、跑指令。
