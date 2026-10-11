@@ -359,9 +359,16 @@ def rebind(state_root, seats_dir, window_id, cards_path=None, contract_spec=None
                        why="載入舊席位沒有帶到人格(舊席沒綁,或帶的時候失敗/被擋);這一席維持未綁,"
                            "不拿同一窗上一位的卡頂替")
         return 0, out
+    # ★ 10-11 the maintainer 直令「改冠位規則,只給真正的艦長席」:👑 是排序的結果(受派優先、其次最早開),
+    #   新開的艙裡最早開的那一席**自動**戴冠。只戴冠就指名綁 a persona card,會讓每個新艙的第一席都變成
+    #   the maintainer 的代言人格,歸隊到別艙後冠沒了、人格還在(10-11 實量:6 席工程師頂著代言卡)。
+    #   真正的艦長 = 經任命入口寫進席位檔的受派艦長(`aib appoint captain`,`captain_assigned: true`,
+    #   appoint.py:任命=寫席位檔的動作)。只戴冠沒受派 ⇒ 不指名綁,交給候選器,並把原因寫進 why。
+    appointed = rec.get("captain_assigned") is True
+    crowned_not_appointed = bool(directed_first_captain and not appointed)
     if cont is None:
         # G2:冠位席首綁指名 71c97a,連候選器都不叫。卡不在不得退回唯一命中。
-        if directed_first_captain:
+        if directed_first_captain and appointed:
             rc_ab, ab = directed_first_captain_bind(
                 state_root, seat_id, rec, cards_path=cards_path,
                 contract_spec=contract_spec, dry_run=dry_run, now_ms=now_ms,
@@ -375,6 +382,8 @@ def rebind(state_root, seats_dir, window_id, cards_path=None, contract_spec=None
                 contract_spec=contract_spec, dry_run=dry_run, now_ms=now_ms,
                 ledger_path=ledger_path)
         out.update(ab)
+        if crowned_not_appointed:
+            ab["why"] = "戴冠但不是受派艦長(只是最早開),不指名綁首席人格、交給候選器;%s" % ab.get("why", "")
         # ★ 「沒有延續檔」這句不能被自動綁的理由蓋掉:既有消費者
         #   (`tests/test-seat-rebind-on-reopen.py` 的 NothingToDo)讀的就是它,
         #   而兩件事**同時為真**——把後來的理由接在後面,不是換掉前面那句。

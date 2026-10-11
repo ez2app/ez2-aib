@@ -454,7 +454,7 @@ def deliver_persona(seat_id, seat_rec, instance, name, vault_dir, dry_run=False)
         result["reason"] = "aib dm rc=%d:已送出或已進對方框但沒能確認,不要重跑;等對方回「%s」" % (
             rc, result["expect_reply"])
     elif rc != 0:
-        result["reason"] = (err.strip().splitlines() or ["?"])[-1][-200:]
+        result["reason"] = dm_fail_reason(rc, out, err)
     elif stage != "delivered":
         # ★ review r7 M1:rc=0 但還沒真的送進去(codexbot 席 queue 模式 stage=queued:排在桌面佇列等持有者;
         #   sort-queued:排進待審區等排空器)⇒ 不先寫「人格包送過了」記號。橋那時照常補送,人格包多一份可以接受;
@@ -510,6 +510,35 @@ def dm_inline_text(text, seat_rec):
     except Exception:  # noqa: BLE001 —— 判不出家別:照舊(落檔)
         pass
     return text, False
+
+
+def dm_fail_reason(rc, out, err):
+    """aib dm 失敗的原因 ⇒ 一行字。
+
+    ★ 2026-10-11 the maintainer:寄失敗要印出原因。以前只取 stderr 最後一行,而 aib dm 被擋(rc=2,例如對方輸入框有
+      沒送出的字)時原因只寫在 stdout 那行 JSON 的 detail,stderr 是空的 ⇒ 回報只剩「?」,人以為沒寄到又重寄,
+      對方框裡疊兩份。順序:stderr 最後一行 → stdout JSON 的 detail → stdout 最後一行(RESULT 行除外)
+      → 都沒有就明講沒印原因。"""
+    lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+    reason = lines[-1] if lines else ""
+    if not reason:
+        for ln in reversed((out or "").splitlines()):
+            ln = ln.strip()
+            if ln.startswith("{"):
+                try:
+                    detail = json.loads(ln).get("detail")
+                except (ValueError, AttributeError):
+                    detail = None
+                if detail:
+                    reason = str(detail)
+                    break
+    if not reason:
+        rest = [ln.strip() for ln in (out or "").splitlines() if ln.strip() and not ln.startswith("RESULT ")]
+        reason = rest[-1] if rest else "aib dm 沒印任何原因"
+    reason = "aib dm rc=%d:%s" % (rc, reason[-200:])
+    if rc == 2:
+        reason += "(這一則沒送進對方框,可以安全重送)"
+    return reason
 
 
 def dm_send_body(address, body, seat_rec):

@@ -647,7 +647,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     ssh://*|git@*)
       # 10-04 FishMac a seat:新機第一次連來源會停在英文的「Are you sure you want to continue connecting (yes/no)?」等人回答
       #   (乾淨虛擬機實撞)⇒ 第一次自動接受主機指紋(之後指紋若被換掉仍會擋),而且絕不停下來問。
-      export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=15"
+      export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=15 -o ForwardAgent=no -o ClearAllForwardings=yes"   # 10-11 ssh 加固(ACB 搬回 A3)
       if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
         say "… 這台沒有 ssh 金鑰,建一把 ~/.ssh/id_ed25519(不設密碼)"
         run mkdir -p "$HOME/.ssh"; run ssh-keygen -q -t ed25519 -N "" -C "ez2-bootstrap-$(hostname -s)" -f "$HOME/.ssh/id_ed25519"

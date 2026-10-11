@@ -135,6 +135,9 @@ SYSTEM_LABELS = ("開席通知", "排序暫存", "系統", "巡查", "aib-system
                  "艦隊狀態", "指令訊息轉送", "開啟六席艦隊", "AI 啟動器", "CodexBot活檢")
 HUMAN_ORIGINS = ("mouse_ctl",)          # 待審區真人送出:是 the maintainer 按的
 BOT_ORIGINS = {"grokbot": "GrokBot"}
+# 艦長室網頁(src/cockpit/captain_room.py)寄的 dm:抬頭寫「艦長室@room」,不混進「系統@aib」——
+#   那是艦長在網頁上按的指令,收件席要看得出是誰(the maintainer 10-10)。白話名與 i18n aib.sender.origin.captain_room 同一個字。
+ROOM_ORIGIN, ROOM_CODE, ROOM_NAME = "captain-room", "room", "艦長室"
 
 
 def _strip_place(token: str) -> tuple[str, str, str]:
@@ -163,6 +166,8 @@ def party_from_label(label: str, origin: str = "") -> dict:
         return party(HUMAN_CODE, HUMAN_NAME, addr=addr, cabin=cabin)
     if origin in BOT_ORIGINS or token.startswith("GrokBot"):
         return party("grokbot", BOT_ORIGINS.get("grokbot"), addr=addr, cabin=cabin)
+    if origin == ROOM_ORIGIN or token.startswith("unattested:" + ROOM_ORIGIN):   # 只認來源,不認字面(10-11 審查:人格叫「艦長室」的席會被當成艦長室)
+        return party(ROOM_CODE, ROOM_NAME, addr=addr, cabin=cabin)
     if token.startswith("seat_claimed:"):
         # Codex 席自稱的席碼(dm-ctl 從 codex 對話檔讀到、沒有 pane 鏈證明)。名字固定寫「自稱」,
         # 讓收件席看得出是弱態,但席碼要留著,它才回得了頭(09-30 搬 2ad9b2348 進 main 時補)。

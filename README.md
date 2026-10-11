@@ -57,7 +57,7 @@ that works on its own too (Linux or macOS):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash
-# installs into ~/ez2-aib; run the same line again any time to update (Linux: the test safety net only; the cockpit needs macOS)
+# installs the latest release into ~/ez2-aib; run the same line again any time to update (Linux: the test safety net only; the cockpit needs macOS)
 aib update                                          # same thing, once aib is installed (aib update --tools also offers AI CLIs)
 # other ways: pipx install ez2-aib    (no pipx yet? macOS: brew install pipx / Linux: python3 -m pip install --user pipx,
 #                                      then pipx ensurepath and open a new terminal)

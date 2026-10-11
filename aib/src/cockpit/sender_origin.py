@@ -36,6 +36,8 @@ import os
 import re
 import subprocess
 
+import bg_fork
+
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 MAX_DEPTH = 12                      # 祖先鏈上限;夠深又不會在壞掉的鏈上繞
 SCRIPT_SUFFIXES = (".py", ".sh")
@@ -306,16 +308,21 @@ def _code_of(rec):
 
 
 def map_seat_five(pid=None, max_depth=MAX_DEPTH, read_ppid=None,
-                  panes=None, seats=None, hub=None, seats_dir=None):
+                  panes=None, seats=None, hub=None, seats_dir=None, read_cmd=None):
     """祖先鏈上第一個「恰好對到一個活 pane」的 pid → 席位 uuid 末五碼。
 
     `panes` / `seats` 是具名拆除縫:臂餵合成快照,不必真開 tmux。
     `panes is None` 才現查;`panes=()` 是「查過了,沒有」——兩者不得同形。
+
+    ★ 10-10 a seat(the maintainer 裁):鏈上先碰到 Claude Code 的**背景分身**或它的宿主/守護程式就停、
+      回 None —— 守護程式是全機共用的,再往上爬到的是「第一個用背景工作的席」,不是寄件人
+      (真機:44ed3 的分身被記成 a seat)。分身本身由 `map_bg_fork` 認,這裡只負責不冒認。
     """
     enabled = True  # HDR-seat-map-on
     if not enabled:
         return None
     read_ppid = read_ppid or _read_ppid
+    read_cmd = read_cmd or _read_cmd
     if panes is None:
         panes = _live_pane_rows(hub)
     if seats is None:
@@ -333,6 +340,9 @@ def map_seat_five(pid=None, max_depth=MAX_DEPTH, read_ppid=None,
         if cur_pid <= 1 or cur_pid in seen:
             return None
         seen.add(cur_pid)
+        _cmd = read_cmd(cur_pid) or ""
+        if bg_fork.fork_of(_cmd) or bg_fork.is_bg_host(_cmd):
+            return None               # 分身/宿主:停,不往上認「生守護程式的那一席」
         wids = pid_to_wids.get(cur_pid)
         if wids is not None:
             uniq = []
@@ -350,12 +360,34 @@ def map_seat_five(pid=None, max_depth=MAX_DEPTH, read_ppid=None,
     return None
 
 
+def map_bg_fork(pid=None, max_depth=MAX_DEPTH, read_ppid=None, read_cmd=None):
+    """祖先鏈上先碰到的 Claude Code 背景分身 → **原席**的 uuid 末五碼(分身是那一席的工人,
+    回信要回到那一席);鏈上沒有分身、或先碰到宿主,回 None。分身 uuid 不當席碼(它不在任何 pane)。"""
+    read_ppid = read_ppid or _read_ppid
+    read_cmd = read_cmd or _read_cmd
+    start = pid if pid is not None else os.getppid()
+    fk = bg_fork.walk_to_fork(start, read_ppid, read_cmd, max_depth=max_depth)
+    if not fk:
+        return None
+    try:
+        import seat_address as sa
+        code = sa.uuid_tail5(fk[1])
+    except Exception:
+        return None
+    return code if code and SEAT_CODE_RE.match(code) else None
+
+
 def derive_origin(pid=None, repo_root=None, max_depth=MAX_DEPTH,
                   read_ppid=None, read_cmd=None,
                   panes=None, seats=None, hub=None, seats_dir=None):
-    """回 `(kind, name)`:`seat` 五碼優先,否則 `script` 腳本莖,都沒有就 `(None, None)`。"""
+    """回 `(kind, name)`:`bgfork`(原席五碼)> `seat` 五碼 > `script` 腳本莖,都沒有就 `(None, None)`。
+    bgfork 排最前:分身的鏈再往上會爬到別席的 pane,先認分身才不會冒認。"""
+    code = map_bg_fork(pid=pid, max_depth=max_depth, read_ppid=read_ppid, read_cmd=read_cmd)
+    if code:
+        return "bgfork", code
     code = map_seat_five(pid=pid, max_depth=max_depth, read_ppid=read_ppid,
-                         panes=panes, seats=seats, hub=hub, seats_dir=seats_dir)
+                         panes=panes, seats=seats, hub=hub, seats_dir=seats_dir,
+                         read_cmd=read_cmd)
     if code:
         return "seat", code
     name = derive_sender_name(pid=pid, repo_root=repo_root, max_depth=max_depth,
@@ -365,21 +397,25 @@ def derive_origin(pid=None, repo_root=None, max_depth=MAX_DEPTH,
     return None, None
 
 
-def relay_pointer_line(nbytes, path, seat_five=None):
-    """長訊指標。有席碼就寫進「來自 @五碼」,沒有就維持舊字面(短訊測試仍綠)。"""
+def relay_pointer_line(nbytes, path, seat_five=None, bg_fork_of=False):
+    """長訊指標。有席碼就寫進「來自 @五碼」,沒有就維持舊字面(短訊測試仍綠);
+    `bg_fork_of=True` ⇒ 「來自 @五碼 的背景分身」(讀的人要分得出不是那一席本人寫的)。"""
     try:
         n = str(int(nbytes))
     except (TypeError, ValueError):
         n = "0"
     path = "" if path is None else str(path)
     if seat_five and SEAT_CODE_RE.match(str(seat_five)):
-        return "長訊已落檔(%s 位元組,來自 @%s),請讀:%s" % (n, seat_five, path)
+        who = "@%s 的背景分身" % seat_five if bg_fork_of else "@%s" % seat_five
+        return "長訊已落檔(%s 位元組,來自 %s),請讀:%s" % (n, who, path)
     return "長訊已落檔(%s 位元組),請讀:%s" % (n, path)
 
 
 def tagged_origin(pid=None, repo_root=None, **kwargs):
-    """CLI / dm-ctl 用:`seat:五碼` 或 `script:莖` 或空字串。"""
+    """CLI / dm-ctl 用:`bgfork:原席五碼`、`seat:五碼`、`script:莖` 或空字串。"""
     kind, name = derive_origin(pid=pid, repo_root=repo_root, **kwargs)
+    if kind == "bgfork" and name:
+        return "bgfork:%s" % name
     if kind == "seat" and name:
         return "seat:%s" % name
     if kind == "script" and name:

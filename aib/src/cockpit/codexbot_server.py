@@ -89,7 +89,7 @@ def _pid_cwd(pid: int):
             return str(proc_link.resolve())
         except OSError:
             return None
-    lsof = shutil.which("lsof")
+    lsof = shutil.which("lsof") or next((p for p in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.access(p, os.X_OK)), None)   # 10-11:Mac 的 lsof 在 /usr/sbin,PATH 不一定有
     if not lsof:
         return None
     try:

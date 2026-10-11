@@ -17,12 +17,14 @@ import json
 import os
 import time
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 import aib_dm_tool as _aib_dm
 import api_persona as _api_persona
 import api_model_gauge as _api_model_gauge  # 10-01:右欄顯示這一席現在送出去的模型
+import nvidia_auto as _auto  # 10-02:/model auto 依時段自動切換模型
 
 DEFAULT_BASE = "https://integrate.api.nvidia.com"  # 官方 docs: nvidia.com/v1/chat/completions
 DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"   # 09-27 23:3x 實測:寫程式任務 7 秒完成;kimi-k3/glm-5.3 讀取逾時;舊 llama-3.2-11b-vision 只會亂打 dm
@@ -180,7 +182,10 @@ def append_history(path: Path, role: str, content: str):
         pass
 
 
-def chat_completion(*, base_url: str, api_key: str, model: str, messages, stream: bool, tools=None):
+AUTO_STATE = _auto.AutoState()
+
+
+def chat_completion(*, base_url: str, api_key: str, model: str, messages, stream: bool, tools=None, timeout: float = 120):
     # Docs 給 SDK 的是 …/v1/；本 CLI 自己加 /v1/chat/completions。
     # 兩邊都收：有尾 /v1 就只加 /chat/completions，避免 /v1/v1/…
     root = base_url.rstrip("/")
@@ -209,7 +214,7 @@ def chat_completion(*, base_url: str, api_key: str, model: str, messages, stream
             "User-Agent": USER_AGENT,
         },
     )
-    return urllib.request.urlopen(req, timeout=120)
+    return urllib.request.urlopen(req, timeout=timeout)
 
 
 def stream_assistant(resp) -> str:
@@ -271,6 +276,95 @@ def one_shot_message(resp):
     }
 
 
+class RequestFailed(Exception):
+    """送出請求那一步就失敗(連不上、HTTP 錯誤)。assistant_turn 照舊轉成 turn_error;
+    讀回覆時的錯誤不包這層,照舊往上丟(REPL 印紅字、--prompt 失敗退出)——審查 nvauto r1 seat 重大-1。"""
+
+    def __init__(self, err):
+        super().__init__(str(err))
+        self.err = err
+
+
+def completion_message(*, base_url: str, api_key: str, model: str, messages, tools=None):
+    """(回覆, 實際用的模型)。model 是 auto 時依時段表依序試;逾時、429、5xx、空回應、沒這個模型 ⇒ 換下一個並印一行;
+    金鑰被拒、請求被拒、其他錯誤 ⇒ 照舊丟出去(換模型只會蓋掉真正的錯)。全部失敗 ⇒ _auto.Exhausted。"""
+    if model != _auto.AUTO:
+        t0 = time.monotonic()
+        try:
+            resp = chat_completion(base_url=base_url, api_key=api_key, model=model,
+                                   messages=messages, stream=False, tools=tools)
+        except Exception as err:  # noqa: BLE001
+            _usage("fixed", model, _auto.failure_kind(err), t0)
+            raise RequestFailed(err) from err
+        try:
+            with resp:
+                reply = one_shot_message(resp)
+        except Exception as err:  # noqa: BLE001
+            _usage("fixed", model, _auto.failure_kind(err), t0)
+            raise
+        _usage("fixed", model, "ok" if _has_answer(reply) else "empty", t0, reply)
+        return reply, model
+    chain, _note = _auto.load_chain(DEFAULT_MODEL)
+    order = AUTO_STATE.order(chain)
+    failed = []
+    for candidate in order:
+        t0 = time.monotonic()
+        stage = "request"
+        try:
+            resp = chat_completion(base_url=base_url, api_key=api_key, model=candidate, messages=messages,
+                                   stream=False, tools=tools, timeout=_auto.PER_MODEL_TIMEOUT_S)
+            stage = "read"
+            with resp:
+                reply = one_shot_message(resp)
+            kind = "" if _has_answer(reply) else "empty"
+            _usage("auto", candidate, kind or "ok", t0, reply)
+        except Exception as err:  # noqa: BLE001
+            kind = _auto.failure_kind(err)
+            _usage("auto", candidate, kind, t0)
+            if kind not in _auto.SWITCH:
+                AUTO_STATE.log({"event": "stop", "model": candidate, "kind": kind})
+                if stage == "request":
+                    raise RequestFailed(err) from err
+                raise
+        if kind:
+            failed.append((candidate, kind))
+            AUTO_STATE.log({"event": "fail", "model": candidate, "kind": kind})
+            continue
+        if failed:
+            sys.stdout.write("（%s,這一回合改用 %s）\n" % (
+                "、".join("%s %s" % (_auto.short(m), _auto.KIND_WORDS.get(k, k)) for m, k in failed), _auto.short(candidate)))
+            sys.stdout.flush()
+            AUTO_STATE.log({"event": "switch", "to": candidate, "failed": failed})
+        if AUTO_STATE.session and candidate != AUTO_STATE.shown:
+            _gauge(AUTO_STATE.session, candidate)   # 右欄跟著實際回答的模型
+        AUTO_STATE.mark_ok(candidate, switched=bool(failed))
+        return reply, candidate
+    AUTO_STATE.log({"event": "exhausted", "failed": failed})
+    raise _auto.Exhausted("（模型回合失敗[exhausted]：這個時段 %d 個候選都沒回應:%s。請稍後再試,或用 /model <模型> 指定）" % (
+        len(failed), "、".join("%s %s" % (_auto.short(m), _auto.KIND_WORDS.get(k, k)) for m, k in failed)))
+
+
+def _gauge(session_name: str, model: str) -> None:
+    _api_model_gauge.record(session_name, model, "nvidia")
+    AUTO_STATE.shown = model
+
+
+def _has_answer(reply) -> bool:
+    return bool((reply.get("content") or "").strip() or reply.get("tool_calls"))
+
+
+def _usage(mode: str, model: str, kind: str, t0: float, reply=None) -> None:
+    """每一次呼叫記一行給報表(哪一席、哪個模型、成敗、幾秒、工具指令與用字)。
+    沒有席位身分(沒帶 --session-id,例如測試直接呼叫)不記,免得假資料混進真報表。"""
+    if not AUTO_STATE.session_id or AUTO_STATE.session_id == "anon":
+        return
+    row = {"mode": mode, "model": model, "ok": kind == "ok", "kind": kind,
+           "latency_s": round(time.monotonic() - t0, 3)}
+    if reply is not None:
+        row.update(_auto.reply_traits(reply))
+    _auto.record_usage(AUTO_STATE.session_id, row)
+
+
 def assistant_turn(*, base_url: str, api_key: str, model: str, messages) -> str:
     """One model turn with native aib_dm tool calls (non-stream)."""
     wire = [_api_persona.with_persona(DM_SYSTEM)] + list(messages)   # 09-30:人格每一輪都在系統說明裡
@@ -284,13 +378,15 @@ def assistant_turn(*, base_url: str, api_key: str, model: str, messages) -> str:
         tools = ([_aib_dm.dm_tool(), LOCAL_TOOL] if dm_fails < DM_FAIL_DROP_TOOLS
                  else [LOCAL_TOOL] if dm_fails < DM_FAIL_DROP_TOOLS + 2 else None)   # 停用後還硬打 ⇒ 連工具都不給
         try:
-            resp = chat_completion(
+            reply, _used = completion_message(
                 base_url=base_url, api_key=api_key, model=model,
-                messages=_dev.compact_wire(wire), stream=False, tools=tools)
-        except Exception as err:  # noqa: BLE001
-            return _dev.turn_error(err)   # 觀察 10:標出失敗種類
-        with resp:
-            reply = one_shot_message(resp)
+                messages=_dev.compact_wire(wire), tools=tools)
+        except _auto.Exhausted as gone:
+            sys.stdout.write(str(gone) + "\n")
+            sys.stdout.flush()
+            return str(gone)
+        except RequestFailed as failed:
+            return _dev.turn_error(failed.err)   # 觀察 10:標出失敗種類(只包送出那一步,和改版前一樣)
         content = reply.get("content") or ""
         calls = reply.get("tool_calls") or []
         if not calls:
@@ -491,8 +587,16 @@ def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
         % (model, sess.name, _aib_dm.dm_boot_banner() + _aib_dm.gene_banner())
     )
     sys.stdout.flush()
-    _api_model_gauge.record(sess.name, model, "nvidia")  # 開 REPL:蓋掉上一個行程切過的模型
-    _bc_replay(sess, "nvidia")                               # 10-09:開席重放 history.jsonl 最近幾則(橋接席已有,API 席補齊)
+    AUTO_STATE.session = sess.name
+    AUTO_STATE.log_dir = sess
+    _bc_replay(sess, "nvidia")                               # 10-09:開席重放 history.jsonl 最近幾則(橋接席已有,API 席補齊);先重放、再印換模型提示(10-11)
+    if model == _auto.AUTO:
+        sys.stdout.write("自動切換模型:已開啟 · %s\n" % _auto.load_chain(DEFAULT_MODEL)[1])
+    else:
+        # the maintainer 10-02:開席不跳詢問(會被自動貼進來的開席單搶答),只印一行提示
+        sys.stdout.write("打 /model auto 開啟自動切換(依時段挑最穩的模型,沒回應自動換備援)\n")
+    sys.stdout.flush()
+    _gauge(sess.name, _auto.load_chain(DEFAULT_MODEL)[0][0] if model == _auto.AUTO else model)  # 開 REPL:蓋掉上一個行程切過的模型
     while True:
         try:
             _frame.close()
@@ -518,17 +622,28 @@ def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
         if text == "/model" or text.startswith("/model "):
             parts = text.split(None, 1)
             if len(parts) == 1:
-                sys.stdout.write("現用模型：%s\n" % model)
+                if model == _auto.AUTO:
+                    sys.stdout.write("現用模型：auto(自動切換)· %s\n" % _auto.load_chain(DEFAULT_MODEL)[1])
+                else:
+                    sys.stdout.write("現用模型：%s(打 /model auto 改成依時段自動切換)\n" % model)
                 sys.stdout.flush()
                 continue
             new_m = parts[1].strip()
+            if new_m.lower() == _auto.AUTO:
+                new_m = _auto.AUTO
             if not new_m:
                 sys.stdout.write("用法：/model <id>\n")
                 sys.stdout.flush()
                 continue
             model = new_m
-            _api_model_gauge.record(sess.name, model, "nvidia")  # /model 切換:右欄跟著變
-            sys.stdout.write("已切換模型 → %s（之後回合都用這個）\n" % model)
+            if model == _auto.AUTO:
+                chain, note = _auto.load_chain(DEFAULT_MODEL)
+                _gauge(sess.name, AUTO_STATE.order(chain)[0])
+                sys.stdout.write("已啟動自動切換 · %s\n" % note)
+                sys.stdout.flush()
+                continue
+            _gauge(sess.name, model)  # /model 切換:右欄跟著變
+            sys.stdout.write("已切換模型 → %s（之後回合都用這個;自動切換已停）\n" % model)
             sys.stdout.flush()
             continue
         if text == "/models" or text.startswith("/models "):
@@ -611,7 +726,7 @@ def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
 
 def build_parser():
     p = argparse.ArgumentParser(prog="nvidia", description="NVIDIA API-key AIB seat")
-    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--model", default=DEFAULT_MODEL, help="模型 id;auto = 依時段表自動切換")
     p.add_argument("--session-id", default="")
     p.add_argument("--cwd", default="")
     p.add_argument("--role", default="")
@@ -635,6 +750,17 @@ def main(argv=None):
     sid = args.session_id.strip() or "anon"
     _api_persona.set_session(sid)   # 09-30:這一席綁的人格(鍵是 sid 尾五碼)
     sess = session_dir(sid)
+    AUTO_STATE.session_id = sid      # 回報用;--prompt 不碰右欄,所以 AUTO_STATE.session 只在 REPL 設
+    AUTO_STATE.log_dir = sess
+    try:
+        return _main_body(args, api_key, base_url, sess)
+    finally:
+        # 審查 nvauto r1 seat 次要-4:同一個行程裡之後的呼叫(例如測試)不能沿用這一席的身分去寫回報
+        AUTO_STATE.session_id = ""
+        AUTO_STATE.session = ""
+
+
+def _main_body(args, api_key, base_url, sess):
     messages = load_history(sess)
     if args.prompt:
         messages.append({"role": "user", "content": args.prompt})

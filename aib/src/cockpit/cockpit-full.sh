@@ -370,7 +370,8 @@ hub_tmux set-option -g prefix C-a
 hub_tmux unbind-key C-b 2>/dev/null || true
 hub_tmux bind-key C-a send-prefix
 hub_tmux set-option -g status-style "$(cockpit_status_style 'bg=colour24,fg=colour255')"
-hub_tmux set-option -g status-left "[$AIB_TITLE] "
+# 10-10(the maintainer 眼驗令):status-left 前補 2 格,與 Claude 輸入框下方那三行(固定縮 2 格)對齊;hub 艦長列(captains-ctl.sh)同令。
+hub_tmux set-option -g status-left "  [$AIB_TITLE] "
 # The nested hub must own mouse routing so its status tabs remain clickable.
 # Providers commonly request terminal mouse reporting; tmux would then forward
 # a drag to the provider instead of entering copy-mode. Override only Drag so
@@ -448,6 +449,10 @@ ensure_watch_window
 #   不是 macOS / AIB_SHOT=0 / 不是真座艙(測試、截幀)時 shot_helper.py 自己略過;
 #   艙全關時小幫手自己結束(每 30 秒問一次 `shot_helper.py alive`)。紀錄在 ~/.ez2-aib/shot/shot.log。
 ( EZ2_AIB_INSTANCE="${EZ2_AIB_INSTANCE:-}" "$EZ2_PY3" "$C/shot_helper.py" ensure \
+    </dev/null >/dev/null 2>&1 & ) || true
+# 紀錄檔上限(10-10 the maintainer「紀錄檔清理」):<狀態根>/logs 超過 8MB 的檔壓成 .1.gz,留 3 份。
+#   claim-gate-runs.jsonl 有自己的輪替,log_cap 跳過它。不在真座艙裡(測試)不動手。
+( EZ2_AIB_INSTANCE="${EZ2_AIB_INSTANCE:-}" "$EZ2_PY3" "$C/log_cap.py" sweep \
     </dev/null >/dev/null 2>&1 & ) || true
 
 pane_by_role() {
@@ -756,7 +761,21 @@ if [ -z "$WAR_ID" ]; then
 fi
 
 outer_tmux set-option -t "$S" status-style "$(cockpit_status_style 'bg=colour235,fg=colour245')"
-outer_tmux set-option -t "$S" status-left "[$AIB_TITLE] "
+# 10-10(the maintainer 眼驗令):最下面那行不再放 [Ez2 AIB v…],改成給使用者的提示(四語字典 aib.cockpit.footer_hint);
+#   字典讀不到(印 !!key!! 或空)就退回中文字面,不讓狀態列空掉。前補 2 格與 Claude 輸入框下方三行對齊(同 hub 艦長列)。
+#   版號仍在視窗標題與 @aib_title;title-beat.sh --install 會把帶顏色的更新狀態接在這句後面。
+_footer_hint="$("$EZ2_PY3" "$C/i18n_lib.py" aib.cockpit.footer_hint 2>/dev/null || true)"
+case "$_footer_hint" in ''|'!!'*) _footer_hint='若有任何想法,請訪問:aib.ez2.app' ;; esac
+outer_tmux set-option -t "$S" status-left-length 40
+outer_tmux set-option -t "$S" status-left "  $_footer_hint "
+# 10-10(the maintainer 眼驗令):最下面那行不列視窗分頁(0:cockpit* 1:war-room),只留提示句。
+#   ★ 逐窗設 window 選項,不動全域:預設 socket 是全機共用的,全域一改,別艙與使用者自己的 tmux 都跟著掉分頁。
+#   cockpit 與 war-room 兩個窗到這裡都已存在(war-room 在上面剛建);分頁本來就只有這兩個。
+for _w in $(outer_tmux list-windows -t "$S" -F '#{window_id}' 2>/dev/null || true); do
+  outer_tmux set-option -w -t "$_w" window-status-format ''
+  outer_tmux set-option -w -t "$_w" window-status-current-format ''
+  outer_tmux set-option -w -t "$_w" window-status-separator ''
+done
 
 # ★★ 終端機視窗標題:接管它,並且第一個字就是**這是哪一艙**(the maintainer 08-16
 #   直令:「aib 執行後最上方要有一個獨一無二的 aib 專屬 uuid,用來方便所有

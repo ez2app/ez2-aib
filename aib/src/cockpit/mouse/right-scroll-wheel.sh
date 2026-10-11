@@ -29,9 +29,17 @@ ticket="$qdir/.$$-$RANDOM"
 printf '%s\n' "$step" > "$ticket"
 mv -f "$ticket" "$qdir/s-$$-$RANDOM"
 if ! mkdir "$lockdir" 2>/dev/null; then
-  exit 0
+  # 同 mouse-ctl.sh:拿鎖的人死了、或鎖超過 1 分鐘(停電/重開機留下的)⇒ 接手;否則讓它做完。
+  wpid=""
+  [ -f "$lockdir/pid" ] && IFS= read -r wpid < "$lockdir/pid" || true
+  if [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && [ -n "$(find "$lockdir" -maxdepth 0 -mmin -1 2>/dev/null)" ]; then
+    exit 0
+  fi
+  rm -rf "$lockdir" 2>/dev/null || exit 0
+  mkdir "$lockdir" 2>/dev/null || exit 0
 fi
-trap 'rmdir "$lockdir" 2>/dev/null || true' EXIT
+printf '%s\n' "$$" > "$lockdir/pid" || true
+trap 'rm -rf "$lockdir" 2>/dev/null || true' EXIT
 while true; do
   steps=0
   found=0

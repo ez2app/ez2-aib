@@ -514,6 +514,25 @@ class RPC:
             self.reader.join(timeout=2)
 
 
+def desktop_account(rpc):
+    """這顆 Codex app-server 登入的帳號,一行人話(例 `human@x.com(plus)`);讀不到回 ""。
+    10-10 a seat(待修清單第 22 件):ClaudeBot 10-09 搞混過帳號 ⇒ 開 bot 席都要說用的是哪個帳號。
+    問 server 自己的 `account/read`(不帶 refreshToken,不換權杖、不讀任何憑證檔);舊版沒這個方法、逾時、怪格式 ⇒ 空,不擋開席。"""
+    try:
+        acct = (rpc.call("account/read", {}, timeout=10) or {}).get("account")
+    except Exception:  # noqa: BLE001 —— 顯示帳號是附加的,任何失敗都不得擋綁定
+        return ""
+    if not isinstance(acct, dict):
+        return ""
+    if acct.get("type") == "apiKey":
+        return "API 金鑰(不是 ChatGPT 帳號)"
+    email = acct.get("email")
+    if not (isinstance(email, str) and "@" in email and len(email) < 200):
+        return ""
+    plan = acct.get("planType")
+    return email.strip() + ("(%s)" % plan if isinstance(plan, str) and plan and plan != "unknown" else "")
+
+
 def server_version(init_result):
     """F1:從 initialize 回的 userAgent(`ez2_aib_codexbot/0.156.1 (…)`)取 app-server 版本;拿不到回 'unknown'。"""
     ua = (init_result or {}).get("userAgent") if isinstance(init_result, dict) else None
@@ -1750,6 +1769,9 @@ def main(argv=None):
             start_device_login(ux.notice, save)
         print("AIB Codex desktop bridge -> " + args.thread_id + "(app-server %s)" % desktop.server_version
               + (" 對話「%s」" % title if title else ""), flush=True)   # B4:席上看得到綁的是哪條對話
+        account = desktop_account(rpc)                          # 第 22 件:席上看得到用的是哪個 Codex 帳號
+        save(codex_account=account or None)
+        print("codexbot: 這條對話用的 Codex 帳號:%s" % (account or "讀不到"), flush=True)
         ux.title_text = title_line(title, args.thread_id)       # 提示符上面那一行;改名時 poll_loop 更新
 
         def refresh_title(new_title):

@@ -365,6 +365,19 @@ def self_seat_uuid(home=None):
          schema 也要對。交叉驗不過寧可回 None。
     """
     wid, sock = self_pane_facts()
+    return seat_uuid_for_window(wid, sock, home=home)
+
+
+def seat_uuid_for_window(wid, sock, home=None):
+    """給定 (窗 id, hub socket 路徑) ⇒ 那一窗席位檔的 session_uuid;同 self_seat_uuid 的第 2、3 格檢查。
+    10-10 拆出來:Codex 席的底部邊框由 tmux 帶 #{window_id}/#{socket_path} 來問(aib now --border)。"""
+    rec = seat_record_for_window(wid, sock, home=home)
+    uuid = rec.get("session_uuid") if rec else None
+    return uuid if isinstance(uuid, str) and uuid.strip() else None
+
+
+def seat_record_for_window(wid, sock, home=None):
+    """同上,回整份席位檔(dict;要 provider 等欄位的呼叫端用);任何一格不過回 None。"""
     if not wid:
         return None
     inst = instance_of_socket(sock)
@@ -381,8 +394,7 @@ def self_seat_uuid(home=None):
     # 交叉驗:檔名推出的窗號必須與檔裡自稱的一致。
     if str(rec.get("window_id") or "") != wid:
         return None
-    uuid = rec.get("session_uuid")
-    return uuid if isinstance(uuid, str) and uuid.strip() else None
+    return rec
 
 
 def resolve(code, home=None):

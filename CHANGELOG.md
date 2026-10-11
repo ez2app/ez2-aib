@@ -4,6 +4,29 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.3
+
+- `aib killswitch on|off|status`: an emergency stop. While it is on, no AI can open a new seat, send `aib dm` or ship; if the switch cannot be read, it counts as on.
+- The pre-push check runs the whole suite and then lists everything at once: new reds, tests that were already red, and tests that could not be verified here. `--fail-fast` brings back stopping at the first red.
+- Captain's contacts: one list from four sources (who is online, search, your ten most frequent contacts), friends, groups, block and mute, delivery / read / handled / replying states for messages, sending to a group, and `aib room contacts`. `aib room say` speaks to the seats in the same room.
+- Translation now uses the AI bound to the seat.
+- `aib bindme`: see every seat's persona binding at once and fill in what is missing.
+- Each seat's status line shows what it is working on (`aib now`): step, progress and a colored state.
+- The screen stops refreshing while you are composing text with an input method.
+- An old "main" cabin is no longer brought back by itself; it opens only when you ask for main.
+- Connections to other hosts use safe ssh settings: your keys are not forwarded and all forwarding is off.
+- Keys are masked before code is sent to an external AI for review.
+- A cabin reconnects by itself when Terminal crashes or its window disappears, and a window that is stuck spewing errors is replaced with a new one. While an AI is writing, the input area says so, and you are warned when Terminal recently crashed during input-method typing.
+- `aib top`: what is using this machine (top CPU users, which programs started each second and who started them). Log files are capped at 8 MB, compressed, three kept.
+- A seat that switches Codex accounts three times in 30 minutes stops and waits; stopping programs by name never stops aib itself; the idle cleanup records what it stops.
+- `aib handoff` checks the persona and project first and proposes a binding if one is missing; `aib bindme` reuses a fitting persona card before creating a new one.
+- `aib test --guard` / `--scan`: the checks every push must pass are worked out from the rules instead of a hand-kept list.
+- NVIDIA seats can rank models hourly and switch to the next model when one stops answering.
+- Fixed: Grok seats come back with their own model; `lsof` not found on some Macs; leftover-process cleanup on macOS 27.
+- `aib room` (the Captain's Room web page) is not in this version yet; `aib room contacts` and `aib room say` work in the terminal.
+- Fixed: handoff receipts across midnight, `seat-info` crashing, a pinned cabin reopening after you closed it, and a flaky screen test.
+- `aib uninstall` on a pip or pipx install now names the command that removes it (`pipx uninstall ez2-aib` / `python3 -m pip uninstall ez2-aib`) instead of calling it a developer copy.
+
 ## 0.1.2
 
 - New `aib uninstall`: lists what it would remove first; `--yes` removes this aib, `--all` also removes its records (backed up first). Another aib on the same computer is never touched.

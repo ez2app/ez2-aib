@@ -93,7 +93,8 @@ _wheel_drop() {
   if ! mkdir "$lock" 2>/dev/null; then
     wpid=""
     [ -f "$lock/pid" ] && IFS= read -r wpid < "$lock/pid" || true
-    if [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null; then
+    # 拿鎖的人還活著、鎖也不到 1 分鐘 ⇒ 讓它做完。超過 1 分鐘算舊鎖:停電/重開機後 pid 可能被別的行程用掉(10-10)。
+    if [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && [ -n "$(find "$lock" -maxdepth 0 -mmin -1 2>/dev/null)" ]; then
       return 0
     fi
     rm -rf "$lock" 2>/dev/null || return 0
@@ -1793,12 +1794,13 @@ print("usage" if s in ("用量","usage") else ("codex" if s=="codex" else "usage
         ;;
       usage-add-codex-oauth)
         # [+] 才開登入。名單裡已有的信箱不新增、也不改舊列。
+        # 清殘留 login/proxy 用 proc_find kill(10-10):pkill -f 會連「指令列剛好含這幾個字」的上層 shell 一起殺。
         if [ "$DRY" = "1" ]; then
           run "$EZ2_PY3" "$COCKPIT/usage_accounts.py" login-start
           exit 0
         fi
-        pkill -f "codex login" 2>/dev/null || true
-        pkill -f "localhost_ipv6_proxy.py --port 1455" 2>/dev/null || true
+        "$EZ2_PY3" "$COCKPIT/proc_find.py" kill "codex login" >/dev/null 2>&1 || true
+        "$EZ2_PY3" "$COCKPIT/proc_find.py" kill "localhost_ipv6_proxy.py --port 1455" >/dev/null 2>&1 || true
         sleep 0.2
         START="$("$EZ2_PY3" "$COCKPIT/usage_accounts.py" login-start 2>>"$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" || true)"
         printf '%s\n' "$START" >> "$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" 2>/dev/null || true
@@ -2101,8 +2103,8 @@ print(email or aid)' "$ACCT" 2>/dev/null || true)"
           run "$EZ2_PY3" "$COCKPIT/usage_accounts.py" login-start
         else
           # 清掉上次沒關乾淨的 login/proxy，避免對話框殘留、1455 佔住、點擊像死掉
-          pkill -f "codex login" 2>/dev/null || true
-          pkill -f "localhost_ipv6_proxy.py --port 1455" 2>/dev/null || true
+          "$EZ2_PY3" "$COCKPIT/proc_find.py" kill "codex login" >/dev/null 2>&1 || true
+          "$EZ2_PY3" "$COCKPIT/proc_find.py" kill "localhost_ipv6_proxy.py --port 1455" >/dev/null 2>&1 || true
           sleep 0.2
           START="$("$EZ2_PY3" "$COCKPIT/usage_accounts.py" login-start 2>>"$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" || true)"
           printf '%s\n' "$START" >> "$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" 2>/dev/null || true

@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -407,9 +408,15 @@ def rerun_same(repo, tests, prof):
     return gate_reds(p.stdout + p.stderr)
 
 
-def refuse(repo, rc, new, prof):
+def refuse(repo, rc, new, prof, old=(), unverified=()):
     """不推。新的紅先在同一份程式上再跑一次:這次綠了 ⇒ 標「時紅時綠」(還是不推,但說清楚多半不是這一包弄壞的)。
-    10-08:擋下這包的測試記下來,下一次推前檢查一律最先跑(pushgate.add_blockers / tiers)。"""
+    10-08:擋下這包的測試記下來,下一次推前檢查一律最先跑(pushgate.add_blockers / tiers)。
+    10-11(the maintainer「遇紅不停 程式化」):拒推時把整套跑出來的**全部**列出 —— 新的紅(refuse_push)之外,
+      主線上也紅的舊紅、沒驗的也各印一行,修的人一次看到全部,不用一輪修一支。"""
+    if old:
+        print(T("refuse_also_old", {"what": sorted(old)}))
+    if unverified:
+        print(T("refuse_also_unverified", {"what": sorted(unverified)}))
     if new:
         try:
             sys.path.insert(0, str(ROOT / "tools" / "verify"))
@@ -439,12 +446,14 @@ def base_reds(repo, base, reds, prof):
     return reds_on(repo, base, reds, prof=prof)
 
 
-def gate_then_push(repo, branches, base, prof=None, gate_base=None, before_push=None):
-    """10-06:先用 --fail-fast 跑(會紅的排最前,一紅就停)。
-    停在新的紅 ⇒ 馬上拒推;停在主線上也紅的舊紅 ⇒ 其餘沒驗,整套再跑一次(沿用剛才跑綠的),照原規則判。"""
+def gate_then_push(repo, branches, base, prof=None, gate_base=None, before_push=None, fail_fast=False):
+    """10-11(the maintainer「遇紅不停 程式化」):預設整套跑完,再用全部的紅 / 主線舊紅 / 沒驗判能不能推(may_push 規則不變),
+      拒推時一次列出全部。以前預設 --fail-fast:一紅就停、其餘沒跑 ⇒ 10-11 一個 158 筆的包連紅三輪、每輪只看到一支。
+    fail_fast=True(ship.py package/release --fail-fast,明示才開):照舊先一紅就停 ——
+      停在新的紅 ⇒ 馬上拒推;停在主線上也紅的舊紅 ⇒ 其餘沒驗,整套再跑一次(沿用剛才跑綠的),照原規則判。"""
     prof = prof or sp.load(repo)
     gk = {"gate_base": gate_base} if gate_base else {}
-    rc, out = run_gate(repo, fail_fast=True, prof=prof, **gk)
+    rc, out = run_gate(repo, fail_fast=fail_fast, prof=prof, **gk)
     if rc == EARLY_RED:
         reds = gate_reds(out)
         on_base = base_reds(repo, base, reds, prof)
@@ -459,7 +468,7 @@ def gate_then_push(repo, branches, base, prof=None, gate_base=None, before_push=
     if prof.gate_mode == "aib":
         save_known_base_reds(repo, on_base)    # 下一包一紅就停時不為這幾支停(照樣跑、照樣報、照樣重新確認)
     if not may_push(rc, reds, on_base, unv, machine_unverified_ok=(prof.gate_mode == "aib")):
-        refuse(repo, rc, sorted(reds - on_base), prof)
+        refuse(repo, rc, sorted(reds - on_base), prof, old=reds & on_base, unverified=unv)
     if reds:
         print(T("allow_base_red", {"what": _with_evidence(sorted(reds))}))
     if unv:
@@ -854,6 +863,73 @@ def cmd_package(a):
             HL.cmd_release(argparse.Namespace(run_id=run_id), time.time(), lease_file, ledger)
 
 
+# 10-11 the maintainer 02:2x(經守望官 a seat 發派):推前檢查一輪 50 分鐘,雲端席 30–60 分推一次 main ⇒ Mac 這邊
+#   10-10 晚上三輪全綠卻三輪都輸給「檢查期間主線動了」。解法:檢查期間在 GitHub 上一把鎖,雲端推 main 前
+#   ls-remote 看到就等。鎖 = 一顆不碰工作樹的空提交(commit-tree,父=候選 HEAD),訊息寫誰、哪包、起訖時刻。
+#   只在 aib 自己的倉做(ship 也給別的專案用,不能在別人的 GitHub 倉放鎖);上鎖失敗只警告、不擋推包。
+LOCK_REF = "refs/heads/lock/mac-ship"
+LOCK_TTL_S = 3 * 3600
+
+
+def _git_raw(repo, *args, timeout=60):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=timeout)
+
+
+def github_lock_take(repo, branches, now=None):
+    """上鎖;回鎖那顆提交的 sha,失敗回 ""(印一行警告,推包照走)。"""
+    now = int(now or time.time())
+    try:
+        tree = _git_raw(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+        head = _git_raw(repo, "rev-parse", "HEAD").stdout.strip()
+        msg = ("mac-ship lock\n\nowner: %s\nhost: %s\nbranch: %s\nstarted: %d\nexpires: %d\n"
+               % (os.environ.get("AIB_SHIP_OWNER") or "ship.py", socket.gethostname(),
+                  " ".join(branches), now, now + LOCK_TTL_S))
+        p = _git_raw(repo, "commit-tree", tree, "-p", head, "-m", msg)
+        sha = p.stdout.strip()
+        if p.returncode != 0 or not sha:
+            raise RuntimeError(p.stderr.strip()[:160])
+        p = _git_raw(repo, "push", "-q", "-f", "origin", "%s:%s" % (sha, LOCK_REF))
+        if p.returncode != 0:
+            raise RuntimeError(p.stderr.strip()[:160])
+    except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+        print(T("lock_take_failed", {"why": str(e) or type(e).__name__}))
+        return ""
+    print(T("lock_taken", {"what": LOCK_REF, "n": str(LOCK_TTL_S // 3600)}))
+    return sha
+
+
+def github_lock_drop(repo, sha):
+    """撤鎖:只撤自己那一把(遠端那把已經不是自己的 sha ⇒ 不動,印一行)。"""
+    if not sha:
+        return False
+    try:
+        p = _git_raw(repo, "ls-remote", "origin", LOCK_REF)
+        remote = (p.stdout.split() or [""])[0]
+        if remote != sha:
+            print(T("lock_not_mine", {"what": LOCK_REF}))
+            return False
+        p = _git_raw(repo, "push", "-q", "origin", ":%s" % LOCK_REF)
+        if p.returncode != 0:
+            raise RuntimeError(p.stderr.strip()[:160])
+    except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+        print(T("lock_drop_failed", {"why": str(e) or type(e).__name__, "n": str(LOCK_TTL_S // 3600)}))
+        return False
+    print(T("lock_dropped", {"what": LOCK_REF}))
+    return True
+
+
+def with_github_lock(repo, prof, branches, fn):
+    """fn 前上鎖、之後一定撤(推成、推紅、拒推、例外、SystemExit 都撤)。不是 aib 自己的倉 ⇒ 不上鎖直接跑。"""
+    if prof.gate_mode != "aib":
+        return fn()
+    sha = github_lock_take(repo, branches)
+    try:
+        return fn()
+    finally:
+        github_lock_drop(repo, sha)
+
+
 def _cmd_package_body(a):
     if tree_busy(a.repo):                       # 10-08:推前檢查會在這棵樹跑測試、合併會改檔 ⇒ 別的批次在跑就不開始
         raise SystemExit(T("tree_busy_package"))
@@ -917,7 +993,9 @@ def _cmd_package_body(a):
         def mark():
             git(a.repo, "commit", "-q", "--allow-empty", "-m",
                 "ship: emergency pushes verified by this package's pre-push check\n\n%s%s" % (VERIFIED_TRAILER, " ".join(pending)))
-    got = gate_then_push(a.repo, branches, base, a.prof, gate_base=gate_base, before_push=mark if pending else None) or {}
+    got = with_github_lock(a.repo, a.prof, branches, lambda: gate_then_push(
+        a.repo, branches, base, a.prof, gate_base=gate_base, before_push=mark if pending else None,
+        fail_fast=getattr(a, "fail_fast", False))) or {}
     print(T("package_done", {"n": len(shas)}))
     sys.path.insert(0, str(ROOT / "tools" / "verify"))
     print_ledger_brief(a.repo)                  # 10-06 the maintainer:總計 → 這一次 → 從第一次到現在
@@ -1021,7 +1099,7 @@ def cmd_release(a):
     bad = check_commit(a.repo, head, a.prof)
     if bad:
         raise SystemExit(T("release_shape_bad", {"reason": bad}))
-    gate_then_push(a.repo, a.branch, base, a.prof)
+    gate_then_push(a.repo, a.branch, base, a.prof, fail_fast=getattr(a, "fail_fast", False))
     print(T("released", {"version": a.version, "n": len(items)}))
     return 0
 
@@ -1059,7 +1137,8 @@ def cmd_release_generic(a):
     bad = check_commit(a.repo, head, a.prof)
     if bad:
         raise SystemExit(T("release_shape_bad", {"reason": bad}))
-    gate_then_push(a.repo, a.branch + list(getattr(a.prof, "also_branches", [])), base, a.prof)
+    gate_then_push(a.repo, a.branch + list(getattr(a.prof, "also_branches", [])), base, a.prof,
+                   fail_fast=getattr(a, "fail_fast", False))
     print(T("released", {"version": a.version, "n": len(items)}))
     return 0
 
@@ -1727,12 +1806,16 @@ def main(argv=None):
     pk.add_argument("--branch", action="append", default=[])
     pk.add_argument("--emergency", action="store_true", help="human at a terminal only: skip the pre-push check once")
     pk.add_argument("--preview", action="store_true", help="do not run: show the forecast, the main causes and hot files")
+    pk.add_argument("--fail-fast", action="store_true",
+                    help="stop the pre-push check at the first new red (default: run everything and list every red)")
     r = sub.add_parser("release")
     r.add_argument("--version", required=True)
     r.add_argument("--date")
     r.add_argument("--title")
     r.add_argument("--branch", action="append", default=[])
     r.add_argument("--preview", action="store_true", help="print the preview only, change nothing")
+    r.add_argument("--fail-fast", action="store_true",
+                   help="stop the pre-push check at the first new red (default: run everything and list every red)")
     ini = sub.add_parser("init")
     ini.add_argument("--no-run", action="store_true", help="detect and check only; do not run the tests")
     stp = sub.add_parser("stats")

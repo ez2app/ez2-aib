@@ -577,9 +577,21 @@ install_status() {
   cur='#{?#{==:#{@aib_captain},1},#['"$cur_attr"'] #{@aib_captain_icon} #{@aib_persona}@#{@aib_seat} #[default],}'
   run hub_tmux set-option -t aihub status on
   run hub_tmux set-option -t aihub status-position bottom
+  # 10-10(the maintainer 眼驗令):艦長列與上面 Claude 的權限列之間空一行——status 改兩行,第 0 行空、第 1 行放
+  #   原本的第 0 行(艦長分頁那一行)。原格式從全域讀,不手抄 tmux 預設字串;讀不到(dry-run 治具沒 tmux)
+  #   就只設空行、不猜第 1 行。a seat 10-10 已在 931e/9668 活艙照這組選項套過,the maintainer 眼驗過。
+  _fmt0="$(hub_tmux show-option -gv 'status-format[0]' 2>/dev/null || true)"
+  run hub_tmux set-option -t aihub status 2
+  run hub_tmux set-option -t aihub 'status-format[0]' ''
+  if [ -n "$_fmt0" ]; then
+    run hub_tmux set-option -t aihub 'status-format[1]' "$_fmt0"
+  fi
   run hub_tmux set-option -t aihub status-interval 5
-  run hub_tmux set-option -t aihub status-left '艦長: '
-  run hub_tmux set-option -t aihub status-left-length 8
+  # 10-10(the maintainer 眼驗令):艦長列與 Claude 輸入框下方那三行(📌 / CTX / 權限列)對齊——
+  #   Claude Code 把那三行固定縮 2 格,tmux status 從第 0 欄起畫,所以這裡補 2 格;長度 8 → 10 跟著加。
+  #   外層座艙的 status-left(cockpit-full.sh / title-beat.sh)同一條令、同樣補 2 格。
+  run hub_tmux set-option -t aihub status-left '  艦長: '
+  run hub_tmux set-option -t aihub status-left-length 10
   run hub_tmux set-option -t aihub status-right ''
     run hub_tmux set-option -w -g window-status-format "$fmt"
   run hub_tmux set-option -w -g window-status-current-format "$cur"

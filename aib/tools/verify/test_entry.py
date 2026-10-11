@@ -159,6 +159,48 @@ def all_tests(repo):
         return []
 
 
+# --guard / --scan(10-11 a seat,the maintainer「每席出貨前 5 分鐘先過守衛」):推前檢查最常紅在「守衛」—— 棘輪、單源、lint、
+# hygiene 這類掃整棵樹的測試,改了別處也會被它們抓。清單用規則算、不手抄(新加的棘輪自動進來):
+#   守衛類(快,約 5–10 分鐘):檔名含 tests-*/ratchet/guard/lint/hygiene/single-source/sst/cabin/isolation/read-set/
+#                                seat-address/population/portability/callers/-scan
+#   掃樹類(慢,新增 src/ tools/ 檔案時才需要):檔裡 rglob( 或 os.walk( 且提到 tools(登記簿、可攜性那種)
+GUARD_NAME_RE = re.compile(r"^test-(tests-|.*(ratchet|guard|lint|hygiene|single-source|-sst|cabin|isolation|read-set|seat-address"
+                           r"|population|portability|callers|-scan)).*\.py$")
+_SCAN_WALK_RE = re.compile(r"(rglob\(|os\.walk\()")
+_SCAN_TOOLS_RE = re.compile(r"(\"tools\"|'tools'|tools/)")
+
+
+def _test_files(repo):
+    """母體沿用推前檢查的找法(pushgate.all_tests):這支檔自己不點名測試檔,仍是「別人交清單的執行器」(test-test-runner-callers t5)。
+    回 (相對路徑, Path):相對路徑照 all_tests 給的,不自己重組(子目錄的測試才找得到)"""
+    out = []
+    for rel in all_tests(repo):
+        p = Path(repo, rel)
+        if p.is_file() and re.match(r"^test-.*\.py$", p.name):
+            out.append((rel, p))
+    return sorted(out)
+
+
+def guard_tests(repo):
+    """守衛類:只看檔名(規則 GUARD_NAME_RE)"""
+    return [rel for rel, p in _test_files(repo) if GUARD_NAME_RE.match(p.name)]
+
+
+def scan_tests(repo):
+    """掃樹類:檔裡走整棵樹(rglob / os.walk)且提到 tools 的;不含已在守衛類的"""
+    out = []
+    for rel, p in _test_files(repo):
+        if GUARD_NAME_RE.match(p.name):
+            continue
+        try:
+            s = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _SCAN_WALK_RE.search(s) and _SCAN_TOOLS_RE.search(s):
+            out.append(rel)
+    return out
+
+
 def step_summary(lines, path=None):
     """GitHub Actions:把「沒有 aib → 有 aib」那幾行附到這次執行的摘要頁(GITHUB_STEP_SUMMARY),用戶在網頁上就看得到省了多少。
     沒有那個環境變數 ⇒ 不寫;寫不進去不影響這一輪。"""
@@ -440,7 +482,7 @@ def _own_home(repo, env, name=None):
         # 10-08 實踩:測試開了真的 tmux 沒關 ⇒ 伺服器在背景跑了 13 小時、吃掉約 8 GB,推前檢查兩次被系統砍(OOM)。
         #   追蹤那條跑法已經照追蹤檔路徑收(runner._traced_run);這裡再照「這支自己的暫存資料夾」收一次 ——
         #   兩條跑法(含自檢沒過的備援跑法)都涵蓋,路徑是隨機的,不會碰到別支、別人的程序。收掉幾個,記在它名下。
-        runner.reap_leftovers(str(tmp), var="AIB_TEST_TMPDIR")
+        runner.reap_leftovers(str(tmp), var="AIB_TEST_TMPDIR", dirs=(tmp, home))   # 10-11:macOS 27 改認抓著這兩個資料夾的
         procs = len(runner.REAPED) - reaped_before
         if procs and name:
             _TMP_LEAKS.append((name + " " + T("tmp_leak_procs"), procs))
@@ -1200,6 +1242,21 @@ def _normalize(repo: Path, arg: str, also_repo: bool = False):
     return _rel_file(repo, Path.cwd() / p) or (_rel_file(repo, repo / p) if also_repo else None)
 
 
+def _why_not(repo: Path, arg: str) -> str:
+    """10-11:「不是這個倉裡的檔案」說出是哪一種 —— 10-10 有席把 18 支併成一個參數(換行隔開)丟進來,
+    只看到這句,誤以為是「一次超過 7 支就壞」。回 i18n 鍵尾。"""
+    if len(arg.split()) > 1:
+        return "not_a_test_joined"
+    p = Path(arg) if Path(arg).is_absolute() else Path.cwd() / arg
+    if not p.exists() and not (repo / arg).exists():
+        return "not_a_test_missing"
+    try:
+        p.resolve().relative_to(repo.resolve())
+    except (OSError, ValueError):
+        return "not_a_test_outside"
+    return "not_a_test"
+
+
 def _rel_file(repo: Path, p: Path):
     try:
         p = p.resolve()
@@ -1266,6 +1323,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="aib test", add_help=True, usage=T("usage"))
     ap.add_argument("tests", nargs="*")
     ap.add_argument("--all", action="store_true")      # 10-07:CI 用 —— 照 aib ship 的找法跑這個專案全部測試
+    ap.add_argument("--guard", action="store_true")    # 10-11:守衛類(棘輪/單源/lint/hygiene,檔名規則 GUARD_NAME_RE),出貨前先過
+    ap.add_argument("--scan", action="store_true")     # 10-11:掃樹類(rglob/os.walk 且提到 tools),新增 src/ tools/ 檔案時加跑
     ap.add_argument("--repo", default="")
     ap.add_argument("--strict", action="store_true", default=None)
     ap.add_argument("--fresh", action="store_true")
@@ -1284,7 +1343,7 @@ def main(argv=None):
     if a.resume is not None and not _RESUME_NAME_RE.fullmatch(a.resume):
         print(T("resume_badname", {"name": a.resume}), file=sys.stderr)
         return 2
-    if not a.tests and not a.all:
+    if not a.tests and not a.all and not a.guard and not a.scan:
         print(T("usage"), file=sys.stderr)
         return 2
     repo = _repo_of(a.repo or os.getcwd())
@@ -1297,11 +1356,19 @@ def main(argv=None):
             print(T("all_none", {"path": str(repo)}), file=sys.stderr)
             return 2
         a.tests = list(a.tests) + [t for t in found if t not in a.tests]
+    for flag, finder, key in (("guard", guard_tests, "guard_list"), ("scan", scan_tests, "scan_list")):
+        if getattr(a, flag):
+            picked = finder(repo)   # (變數不叫 found:test-aib-ship-ci 的刀錨 `if not found:` 要在這支檔裡恰好一次)
+            if not picked:
+                print(T("all_none", {"path": str(repo)}), file=sys.stderr)
+                return 2
+            print(T(key, {"n": "%d" % len(picked)}), file=sys.stderr)
+            a.tests = list(a.tests) + [t for t in picked if t not in a.tests]
     names = []
     for arg in a.tests:
         rel = _normalize(repo, arg, also_repo=bool(a.repo))
         if rel is None:
-            print(T("not_a_test", {"path": arg}), file=sys.stderr)
+            print(T(_why_not(repo, arg), {"path": arg, "value": str(repo)}), file=sys.stderr)
             return 2
         names.append(rel)
     if a.cells:

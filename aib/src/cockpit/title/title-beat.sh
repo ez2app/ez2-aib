@@ -471,9 +471,14 @@ case "$MODE" in
       # ★ status-left-length 一起設:全域預設是 **10**,而這串遠超過——
       #   在此之前 `[Ez2 AIB v0.42.1-alpha.1]` 實際只顯示到 `[Ez2 AIB v`,
       #   版號一直是被截掉的。**那是既有缺陷,不是本次改動造成的。**
-      run env -u TMUX tmux set-option -t "$EZ2_TMUX_SESSION" status-left-length 40
+      # 10-10(the maintainer 眼驗令):這一行開頭先放給使用者的提示(四語字典 aib.cockpit.footer_hint,與 cockpit-full.sh 同一句,
+      #   前補 2 格與 Claude 輸入框下方那三行對齊),帶顏色的版號更新狀態接在後面——那是更新提示(↑ ⟳ ?)的唯一彩色出口,不拿掉。
+      #   長度 40 → 80 裝得下兩段;字典讀不到(!!key!! 或空)退回中文字面。
+      _tb_hint="$("$EZ2_PY3" "$HERE/../i18n_lib.py" aib.cockpit.footer_hint 2>/dev/null || true)"
+      case "$_tb_hint" in ''|'!!'*) _tb_hint='若有任何想法,請訪問:aib.ez2.app' ;; esac
+      run env -u TMUX tmux set-option -t "$EZ2_TMUX_SESSION" status-left-length 80
       run env -u TMUX tmux set-option -t "$EZ2_TMUX_SESSION" status-left \
-        '#{?#{==:#{@aib_ver_state},ok},#[fg=colour71][AIB v#{@aib_ver}]#[default] ,#{?#{==:#{@aib_ver_state},behind},#[fg=colour178][AIB v#{@aib_ver} ↑]#[default] ,#{?#{==:#{@aib_ver_state},stale},#[fg=colour208][AIB v#{@aib_ver} ⟳]#[default] ,#[fg=colour167][AIB v#{@aib_ver} ?]#[default] }}}'
+        "  $_tb_hint  "'#{?#{==:#{@aib_ver_state},ok},#[fg=colour71][AIB v#{@aib_ver}]#[default] ,#{?#{==:#{@aib_ver_state},behind},#[fg=colour178][AIB v#{@aib_ver} ↑]#[default] ,#{?#{==:#{@aib_ver_state},stale},#[fg=colour208][AIB v#{@aib_ver} ⟳]#[default] ,#[fg=colour167][AIB v#{@aib_ver} ?]#[default] }}}'
       # 狀態列右側也掛一份:標題在某些終端機看不到(tmux 內、或標題被 shell 蓋掉),
       # 狀態列是艙內永遠看得見的那一行。兩處同源,都讀 @aib_title。
       run env -u TMUX tmux set-option -t "$EZ2_TMUX_SESSION" status-right '#{@aib_title}  '

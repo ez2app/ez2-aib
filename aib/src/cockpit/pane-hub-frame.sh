@@ -217,8 +217,15 @@ if rt_on:
 
 # 下：訊息輸入區頂蓋（正文=下方 hub；底蓋+艦長掛待審頂）
 if rt_on:
+    # 第 4 項(10-10):焦點席正在輸出(對話檔 3 秒內動過)就在抬頭提醒「先別打中文」;量不到一律不提示。
+    try:
+        import seat_busy as SB
+        import seats_dir_lib as SDL   # 席位登記簿一律向單源要(HUB 導出 > 艙家),不自己拼
+        _busy = SB.busy_notice(seat, SDL.seats_dir())
+    except Exception:
+        _busy = ""
     il, im = PC.render_input_header(cols, size_mark=ih, identity="", seat=seat, shine=shine,
-                                    show_hub_io_toggle=_may_close, hub_io_open=rt_on)
+                                    show_hub_io_toggle=_may_close, hub_io_open=rt_on, notice=_busy)
     off = len(lines)
     lines.extend(il)
     for row in im or []:

@@ -197,8 +197,19 @@ TITLE_MARK = "claude-titled"
 UNBOUND_TITLE_FMT = "%s ( 未綁定AIB席位 )"   # 與 bot_seat_name.UNBOUND_TEXT 同字(codexbot/grokbot 關席收尾同一句)
 
 
+def bound_title(project: str, code: str) -> str:
+    """綁定後的標題:「項目名稱 ( 🔗 @席碼 )」,與 codexbot / grokbot 同一支 bot_seat_name.with_seat_tag。
+    10-10 a seat(待修清單第 20 件,the maintainer「第 20 件改,三家統一」):以前 claudebot 寫「項目名稱 @席碼」,
+    三家格式不一,在各 app 搜席碼容易漏。席碼形狀不合 with_seat_tag(4–8 位小寫英數)⇒ 退回舊寫法,不讓標題整個不寫。"""
+    try:
+        import bot_seat_name
+        return bot_seat_name.with_seat_tag(project, code, fallback="aib")
+    except (ImportError, ValueError):
+        return "%s @%s" % (project, code)
+
+
 def release_title(sid: str, state_dir: Path, transcript_path: str = "") -> bool:
-    """10-09 a seat(the maintainer 令「關席時標題改回未綁定,一起做」):把 ensure_title 寫的「項目名稱 @席碼」改回
+    """10-09 a seat(the maintainer 令「關席時標題改回未綁定,一起做」):把 ensure_title 寫的「項目名稱 ( 🔗 @席碼 )」改回
     「項目名稱 ( 未綁定AIB席位 )」。codexbot、grokbot 關席都會改回,claudebot 以前不改 ⇒ 關席後標題一直掛著死席碼。
     只在這一席真的替它改過標題時做(state_dir/claude-titled 有席碼);改完把標記的席碼清空,下次再綁同一席也會重寫。
     transcript 找不到(雲端 session、檔被刪)就不做。由收尾小幫手(bot_closer close_claudebot)與席上 /unbind 呼叫。"""
@@ -270,7 +281,7 @@ def desktop_title_note(title: str) -> str:
 
 def ensure_title(sid: str, code: str, cwd: str, transcript_path: str, state_dir: Path, project: str = "",
                  want_note: bool = False):
-    """綁定後把對話標題改成「項目名稱 @席碼」(the maintainer 09-27 15:2x;三家 bot 同一規則 #366)。
+    """綁定後把對話標題改成「項目名稱 ( 🔗 @席碼 )」(the maintainer 09-27 15:2x;三家 bot 同一規則 #366;10-10 起與另兩家同格式,見 bound_title)。
     /rename 的落點(09-27 實測):transcript 尾巴兩行 custom-title / agent-name + <project>/<sid>/custom-title.json。
     同一個標題只寫一次(state_dir/claude-titled 記上次寫的標題);換綁到別的席(席碼變了)就再寫一次(r1 L4 後半)。
     transcript 不在就不做。項目名稱 v1 = 工作目錄名。"""
@@ -294,7 +305,7 @@ def ensure_title(sid: str, code: str, cwd: str, transcript_path: str, state_dir:
         # r11 低:上次是綁的專案、現在解除綁定 ⇒ 退回(這次的)資料夾名,不留舊專案
     except (OSError, ValueError, IndexError):
         pass
-    title = "%s @%s" % (project, code)
+    title = bound_title(project, code)
     tp = Path(transcript_path) if transcript_path else None
     if not tp or not tp.exists():
         return False

@@ -686,12 +686,14 @@ def fetch_captain_marks(sock=""):
 
 
 def render_input_header(width, size_mark=1, identity="", seat="", shine=None,
-                        show_hub_io_toggle=False, hub_io_open=True):
-    """訊息輸入區頂蓋（正文=下方 hub 打字框）：╭─ [標題] [≡N] ─╮。"""
+                        show_hub_io_toggle=False, hub_io_open=True, notice=""):
+    """訊息輸入區頂蓋（正文=下方 hub 打字框）：╭─ [標題] [≡N] ─╮。
+    notice(10-10 第 4 項):非空就接在標題後面(例「✍ 輸出中,先別打中文」),空字串=跟以前逐字同。"""
     tog = "hub-io-toggle" if show_hub_io_toggle else None
     mark = "[−]" if hub_io_open else "[+]"
+    title = INPUT_TITLE if not notice else "%s · %s" % (INPUT_TITLE, notice)
     return render_chrome_header(
-        INPUT_TITLE, width, size_mark=size_mark,
+        title, width, size_mark=size_mark,
         hot_action="input-visible-cycle",
         identity=identity, seat=seat,
         borderless=False,

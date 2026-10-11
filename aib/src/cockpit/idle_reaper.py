@@ -522,9 +522,10 @@ def sockets_of(pids):
     會讓「工具缺席」變成「每台 server 都是孤兒」→ reap 一輪殺光所有 tmux。"""
     if not pids:
         return {}
-    if not shutil.which("lsof"):
+    lsof = shutil.which("lsof") or next((p for p in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.access(p, os.X_OK)), None)   # 10-11:Mac 的 lsof 在 /usr/sbin,PATH 不一定有
+    if not lsof:
         return None
-    out = _run(["lsof", "-a", "-U", "-p", ",".join(str(p) for p in pids), "-Fpn"],
+    out = _run([lsof, "-a", "-U", "-p", ",".join(str(p) for p in pids), "-Fpn"],
                timeout=20)
     if out is None:
         return None
@@ -764,7 +765,8 @@ def _seat_rows(snap, inner_srv, seats_dir, threshold):
                     continue
                 alive = (not pane["dead"]) and pane["pid"] in snap["procs"]
                 prov, uuid = activity_probe.seat_for_window(wid, seats_dir)
-                idle = activity_probe.activity_age(prov, uuid, snap["now"]) if alive else None
+                # 10-10 a seat:行程表已在 snap 裡,交給探針找背景分身,不再多叫一次 ps(本檔的尺數 ps 次數)。
+                idle = activity_probe.activity_age(prov, uuid, snap["now"], procs=snap["procs"]) if alive else None
                 sample = pane.get("activity_sample") or {}
                 activity_state = sample.get("state", "unknown")
                 if activity_state == "active":
@@ -1034,9 +1036,25 @@ def _pid_alive(pid):
         return True
 
 
+ARGV_KEEP = 200
+
+
+def argv_of(pid):
+    """殺之前問一次這個 PID 現在是什麼(ps -o args=),回字串;查不到回 ""。
+    為什麼:10-09 18:48 reaper 把 7019/7020 當孤兒伺服器殺了,事後只剩 PID,查不到它們是什麼
+    (a seat 10-10 交接建議三)。紀錄只截前 ARGV_KEEP 字,夠認人、不塞爆 log。"""
+    try:
+        out = subprocess.run(["ps", "-o", "args=", "-p", str(int(pid))], capture_output=True,
+                             text=True, timeout=5, stdin=subprocess.DEVNULL).stdout
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+    return out.strip()[:ARGV_KEEP]
+
+
 def execute(target, dry_run=False, grace_s=1.5):
-    """回 dict(steps_run, killed, survivors)。只碰 target 自己盤點到的 PID。"""
-    ran, killed = [], []
+    """回 dict(steps_run, killed, survivors, argv)。只碰 target 自己盤點到的 PID。
+    argv:{"<pid>": "<殺之前量到的指令列>"},dry-run 也量(讓 --dry-run 的紀錄說得出會殺到什麼)。"""
+    ran, killed, argv = [], [], {}
     for step in target["steps"]:
         if step[0] == "kill-server":
             cmd = [TMUX, "-S", step[1], "kill-server"]
@@ -1050,19 +1068,21 @@ def execute(target, dry_run=False, grace_s=1.5):
     for pid in target["kill_pids"]:
         if pid <= 1:
             continue                              # 紅線:絕不碰 0/1/負數
+        if not _pid_alive(pid):
+            continue
+        argv[str(pid)] = argv_of(pid)             # 先記它是什麼,再動手(dry-run 也記)
         if dry_run:
             continue
-        if _pid_alive(pid):
-            try:
-                os.kill(pid, signal.SIGTERM)
-                killed.append(pid)
-            except (ProcessLookupError, PermissionError):
-                pass
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed.append(pid)
+        except (ProcessLookupError, PermissionError):
+            pass
     survivors = []
     if not dry_run and target["kill_pids"]:
         time.sleep(grace_s)
         survivors = [p for p in target["kill_pids"] if p > 1 and _pid_alive(p)]
-    return {"steps_run": ran, "killed": killed, "survivors": survivors}
+    return {"steps_run": ran, "killed": killed, "survivors": survivors, "argv": argv}
 
 
 def log_line(record, path=LOG_PATH):
@@ -1553,6 +1573,14 @@ def cmd_watch(args, policy):
     每輪(watch_round 內)順手回填缺 uuid 的席(uuid_backfill_tick;ED.13)。"""
     interval = max(30, int(args.interval))
     rounds = 0
+    # 艙的自動接回守衛(10-10 the maintainer 第 1 項):5 秒一拍的 daemon 執行緒,跟著 watch 活、跟著 watch 重生。
+    # 起不來只印一行,不影響 watch;邏輯與開關見 cabin_guard.py 檔頭。
+    try:
+        import cabin_guard  # noqa: E402
+        _g_ok, _g_why = cabin_guard.start_thread()
+        print("aib idle watch: %s" % _g_why, file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print("aib idle watch: cabin-guard 沒起來(仍存活):%s" % exc, file=sys.stderr)
     while True:
         # BL:碼換了就重跑自己(每輪頂端問一次,受 EZ2_IDLE_REEXEC_INTERVAL 節流)。
         # 放在 watch_round 之前:重跑掉的那一輪不會留心跳,而重跑後第一輪馬上補一個 ——

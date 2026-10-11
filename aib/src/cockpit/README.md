@@ -278,6 +278,18 @@ pane 子樹 argv 自辨不算席。沒有安全名單時 watch 只掃不收並�
 字碼:claude U+EC82 / codex U+EC81 / copilot U+EC1E 是官方標;agy U+EBAE(cod-magnet)與 grok U+F0B1F(md-alpha_x_box)是**語意選字**,不是官方標。
 ★ **已知未做(R6-legend)**:字型缺字/缺檔退回 letters 的理由**目前只到 stderr(`$_ai_out.err`)**,不是人在看的面;右欄圖例未加。再開條件=圖例 i18n 四語與寬度先定。在那之前「退回並說出來」那一格只滿足了一半。
 
+## aib now(每一席的主項目 | 完成%;10-10)
+
+`aib now "主項目" 2/5` ⇒ 輸入框下方、CTX 那一行的**上面**多一行 `📌【忙碌中】主項目 | 2/5 STEP > 進度:40%`(進度 % 由步數算,不自己填;`--state reply|decide` 換狀態欄);同時 CTX 那一行變成 `模型 | @席位 | 💧 Ez2 CTX …`。
+`aib now` 看自己掛著什麼,`aib now --clear` 拿掉。存在 `<狀態根>/state/seat-now/<席位碼>.{json,line}`(席位碼為鍵:/clear 後對話 id 換、席位碼不換)。
+席位碼一律從席位檔來(`seat_who.seat_uuid_for_window` → `seat_address.uuid_tail5`,非艦長席也有);超過 1 小時沒更新標「N 小時前」。
+畫在哪(全部的 AI 席):Claude 席 = 狀態列 `statusline-ez2-v215.sh`;agy 席 = `agy/statusline-ez2-ctx.js`(艙內量得到 CTX 才印那一行,同 Claude);
+Codex / Grok / Copilot 席(狀態列只能挑內建項目)= 開席時 hub 窗開底部邊框,跑 `seat_now.py --border`。已經開著的席不用重開:`aib now --apply-borders`(先 `--dry-run` 看會補哪些)。開席規則鐵則九:每一席回報時都要跑 `aib now`。
+
+已經不在的席(沒有席位檔、已退席、已收工)留下的 📌 紀錄:每次有席跑 `aib now` 回報就順手掃掉;也可以直接 `aib now --sweep`。一席都認不到時一筆都不掃。
+
+心跳(跟主項目的更新時間分開):Claude 席狀態列每次重跑、Codex / Grok / Copilot / agy 底框每次重畫,都寫 `state/seat-now/<碼>.beat`(最多一分鐘一次)。查:`aib now --beat-age <席位碼>` 印「秒數 來源」;程式裡用 `seat_now.beat_age(碼)`。來源 `statusline` = 程式活著才會跳;`border` = 只證明窗還在。
+
 ## aib restart(艙的清單與恢復,含停電/重開機;10-09)
 
 `aib restart` 列兩區:**在線的艙**、**上次開機時還在、現在斷掉的艙**;每艙上方 `[編號] ▶ 恢復:…`,艙間分隔線。
@@ -311,3 +323,21 @@ pane 子樹 argv 自辨不算席。沒有安全名單時 watch 只掃不收並�
 - 怎麼查/怎麼更新逐家實查:claude 官方安裝程式(`claude update` / `claude install <版>`)、codex/copilot/gemini npm 全域、grok `grok update --check`、agy 沒有只查不裝。
 - 最新版快取 1 小時(`state/cli-versions.json`),沒網路 10 分鐘不重試;更新鎖 `state/cli-update.lock`(同時只准一個視窗更新)。
 - 更新後連 `--version` 都跑不起來 ⇒ 自動裝回原版。gemini 只在 `aib cli`,不在開席五家。
+
+## 組字停火(Terminal 打中文時當掉/視窗不見;10-10)
+
+症狀:在 Terminal.app 裡打中文時,整個 Terminal 突然消失(所有艙的視窗一起沒)、或一扇視窗自己不見、或畫面卡住——tmux 與席位都還活著。
+病因是 macOS 27 Terminal.app 2.15 的瑕疵:視窗裡有組字區(IME marked text)時,tmux 每送一批新畫面進來,Terminal 就把組字區重釘回原位
+(`-[TTView setMarkedText:…]` → `-[TTLogicalScreen displayPositionForUnicharOffset:]` → `expandUnicharOffsetCacheToLine:`),釘到已不存在的行就丟
+NSRangeException;走重畫路徑 AppKit 當場殺 app,走收資料路徑只記錯、畫面壞/視窗沒。**沒有組字區就不會走到這條路,所以只在打中文時發生。**
+
+座艙這邊做的(不是根治,是把面板這一側的曝險拿掉):`pane-tick.sh` 的 `pane_wait_if_composing` 讀旗標 `~/.ez2-aib/state/ime-composing`
+(鼠鬚管的 `lua/liu_aib_quiet.lua` 在 Terminal 組字中寫,內容 = 最後更新 epoch 秒),5 秒內更新過就不渲染;旗標不在/亂碼/過期一律照畫。
+掛點:warroom/left/right/bottom 四支面板緊接 `pane_wait_if_detached`、`pane-hub-frame.sh` 三個迴圈、`title/title-beat.sh` 改標題前。
+測試:`tests/test-pane-idle-tick-p59.py` 的 `ComposingFlagPausesRender`。
+
+完整的來龍去脈(症狀時間表、崩潰報告怎麼還原方法名、組語證據、統一日誌對時法、撞車場怎麼開、鼠鬚管端三個條件各自為什麼、
+還沒做到的與徹底解的方向、怎麼量有沒有效)寫在**輸入法安裝包**的說明裡,不在這個 repo:
+`~/嘸蝦米鼠鬚管安裝包/說明.md` →「終端機打字當掉的來龍去脈」一章(10-10)。Apple 回報包在 `~/.ez2-aib/pending/apple-terminal-report-1010/`。
+量法:`/usr/bin/log show --last 24h --predicate 'process == "Terminal" AND eventMessage CONTAINS "NSRangeException"'` 每小時幾發
+(★ 要寫 `/usr/bin/log`,zsh 的內建 `log` 會撈到空的);基線 2026-10-10 04:52–14:28 共 17 發(座艙端尚未上線)。
