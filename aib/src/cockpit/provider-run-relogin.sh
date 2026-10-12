@@ -95,14 +95,32 @@ paint_ai_seat_top_line
 # 這裡把那一招程式化:橋自己判斷「是斷線不是別的錯」才回 3;這裡只在 3 時重開,其他 rc 照舊結束。
 # 退避 1,2,4,8,15 秒,最多 AIB_CODEXBOT_RECONNECT_MAX(預設 5)次;=0 關掉(治具)。重開前橋會自己 ensure server。
 codexbot_reconnect_loop() {
-  local rc="$1" max n=0 delay
+  local rc="$1" max n=0 delay r5=0 r5max
+  r5max="${AIB_CODEXBOT_RELOAD_MAX:-3}"
+  case "$r5max" in ''|*[!0-9]*) r5max=3 ;; esac
   max="${AIB_CODEXBOT_RECONNECT_MAX:-5}"
   case "$max" in ''|*[!0-9]*) max=5 ;; esac
-  while [ "$rc" -eq 3 ] && [ "$n" -lt "$max" ]; do
-    n=$((n + 1))
-    case "$n" in 1) delay=1 ;; 2) delay=2 ;; 3) delay=4 ;; 4) delay=8 ;; *) delay=15 ;; esac
-    echo "aib: CodexBot 與本機 Codex server 斷線,${delay} 秒後重連同一席(第 ${n}/${max} 次)" >&2
-    sleep "$delay"
+  # 10-11 a seat(P1b):rc=4 = 席上 /bind 換綁(橋已記下選的那條、已把舊的那條改回未綁定)⇒ 馬上重開同一席,不退避、不算斷線次數
+  # 10-11 a seat(P6):rc=5 = 程式更新、席閒著,橋自己收掉要載新碼 ⇒ 同 rc=4 馬上重開同一席
+  while { [ "$rc" -eq 3 ] && [ "$n" -lt "$max" ]; } || [ "$rc" -eq 4 ] || [ "$rc" -eq 5 ]; do
+    if [ "$rc" -eq 4 ]; then
+      r5=0
+      echo "aib: CodexBot 席上換綁,重開同一席接新的那條(席碼不變)" >&2
+    elif [ "$rc" -eq 5 ]; then
+      # 10-11 a seat(review 建議):載新碼連續太多次 = 判斷「碼變了」的那段可能壞了 ⇒ 停,不無限重開
+      r5=$((r5 + 1))
+      if [ "$r5" -gt "$r5max" ]; then
+        echo "aib: CodexBot 連續 ${r5max} 次載新碼後又要重開,停下來不再自動重開(可能是程式有問題;右鍵重開可再試)" >&2
+        break
+      fi
+      echo "aib: CodexBot 程式已更新,重開同一席載新碼(綁定不變)" >&2
+    else
+      r5=0
+      n=$((n + 1))
+      case "$n" in 1) delay=1 ;; 2) delay=2 ;; 3) delay=4 ;; 4) delay=8 ;; *) delay=15 ;; esac
+      echo "aib: CodexBot 與本機 Codex server 斷線,${delay} 秒後重連同一席(第 ${n}/${max} 次)" >&2
+      sleep "$delay"
+    fi
     paint_ai_seat_top_line
     run_launch "$SESSION_UUID"
     rc=$?

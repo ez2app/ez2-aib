@@ -265,12 +265,13 @@ def main(argv=None):
     else:
         mark = {CREATED: "建立", FIXED: "修正", OK: "OK  ", FAIL: "FAIL"}
         for i in items:
+            # 10-12 新用戶全面檢查:金鑰櫃 / 桌面捷徑回的項目不一定有 mode/detail/remedy ⇒ 用 get,不在最後一步崩
             line = "%s %s" % (mark[i["action"]], i["path"])
-            if i["mode"]:
+            if i.get("mode"):
                 line += " (%s)" % i["mode"]
-            if i["detail"]:
+            if i.get("detail"):
                 line += " — %s" % i["detail"]
-            if i["action"] == FAIL and i["remedy"]:
+            if i["action"] == FAIL and i.get("remedy"):
                 line += "\n     -> %s" % i["remedy"]
             print(line)
         print("\ncreated=%d fixed=%d ok=%d fail=%d"

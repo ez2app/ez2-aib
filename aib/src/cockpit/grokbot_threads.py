@@ -66,6 +66,38 @@ def _decode(filename: str):
         return None
 
 
+ACCOUNT_SLOT_LOGICAL = "sand.client.slice.client-meta.account-slot"
+_LOGIN_NAMES = {"github": "GitHub", "google": "Google", "apple": "Apple", "x": "X", "email": "email"}
+
+
+def app_account(app_dir=None) -> str:
+    """Grok Bot.app 本機登入的帳號,一行人話(例「GitHub 登入,帳號編號尾碼 EZRX(讀不到 email)」);讀不到回 ""。
+    10-11 a seat(待修清單第 22 件):app 本機只記 client-meta.account-slot = "<登入方式>|user_<編號>",沒有 email ⇒
+    只講登入方式與編號尾 4 碼,讓人對得上是哪個帳號;不碰任何憑證檔(sand-secrets.json 不讀)。"""
+    pers = persistence_dir(app_dir)
+    try:
+        names = os.listdir(pers)
+    except OSError:
+        return ""
+    for fn in names:
+        if _decode(fn) != ACCOUNT_SLOT_LOGICAL:
+            continue
+        try:
+            value = json.loads((pers / fn).read_text(encoding="utf-8")).get("value")
+        except (OSError, ValueError, AttributeError):
+            return ""
+        if not isinstance(value, str) or "|" not in value or len(value) > 200:
+            return ""
+        how, _, uid = value.partition("|")
+        tail = re.sub(r"[^A-Za-z0-9]", "", uid)[-4:]
+        if not tail:
+            return ""
+        how = how.strip().lower()
+        label = _LOGIN_NAMES.get(how) or (how if re.fullmatch(r"[a-z0-9_-]{1,20}", how) else "不明方式")
+        return "%s 登入,帳號編號尾碼 %s(讀不到 email)" % (label, tail)
+    return ""
+
+
 def _epoch_s(v) -> int:
     try:
         n = int(v)
@@ -284,6 +316,28 @@ class DialogAborted(RuntimeError):
 ENV_OPEN = "AIB_GROKBOT_OPEN"   # 尺用:換成假的 open
 
 
+ENV_PBCOPY = "AIB_GROKBOT_PBCOPY"   # 尺用:換成假的 pbcopy
+
+
+def routine_request(agent_id: str) -> str:
+    """貼給 bot 的那一句:請它自己建 Webhook 觸發的例行任務(app 規定例行任務要在聊天裡請 bot 建,沒有新增按鈕)。
+    指示照 docs/GROKBOT-DESKTOP.md §9.4 真機打通那一版:門鈴只是叫醒,內容要它自己用 pull 拿、用 post 回。"""
+    return ("請幫我建立一個例行任務,觸發方式選 Webhook,名稱「AIB 收信」。指示:每次被觸發時,用 local-exec 執行 "
+            "~/.local/bin/aib-grokbot-mail pull --agent %s 收信,照輸出裡的說明處理每一則,"
+            "回覆一律用輸出裡給的 post / dm 指令寫回(通行碼也在輸出裡)。建好後告訴我建好了。" % agent_id)
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """放進 macOS 剪貼簿(pbcopy);失敗回 False,不擋 connect。"""
+    import subprocess
+    try:
+        r = subprocess.run([os.environ.get(ENV_PBCOPY) or "pbcopy"], input=text, text=True,
+                           capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
 def open_routines(agent_id: str) -> bool:
     """用 app 自己的深層連結切到這個 agent 的「例行任務」頁(路徑表見設計頁 §8.1 R3)。失敗不擋 connect。"""
     import subprocess
@@ -421,7 +475,12 @@ def main(argv=None) -> int:
     cp.add_argument("--stdin", action="store_true",
                     help="從 stdin 讀(與對話框同一套拆法);沒給就跳 macOS 對話框(預設、the maintainer 定的必要流程)")
     sub.add_parser("connected")
+    ap_acct = sub.add_parser("account")
+    ap_acct.add_argument("--dir", default="")
     args = ap.parse_args(argv)
+    if args.cmd == "account":
+        print(app_account(args.dir or None) or "讀不到")
+        return RC_OK
     if args.cmd == "connected":
         print(json.dumps({"connected": connected_agents()}, ensure_ascii=False))
         return RC_OK
@@ -436,14 +495,18 @@ def main(argv=None) -> int:
             except (RosterSchemaChanged, RosterUnreadable):
                 names = {}
             label = names.get(args.agent) or args.agent[:8]
+            # 10-11 a seat(Bot 開發 P4):請 bot 建例行任務那一句先放進剪貼簿,人只要貼給它,不用自己想怎麼講
+            copied = copy_to_clipboard(routine_request(args.agent))
             open_routines(args.agent)
             try:
                 pasted = ask_two_fields(
                     "AIB 綁定 Grok Bot「%s」" % label,
                     "app 已切到這個 agent 的「例行任務」頁。點進觸發方式是 Webhook 的那個例行任務,"
                     "把「POST 到」和「金鑰」兩格分別複製到下面。\n\n"
-                    "還沒有例行任務:先在跟它的聊天裡請它建一個 Webhook 觸發的例行任務"
-                    "(app 規定例行任務要在聊天裡請 bot 建)。")
+                    + ("還沒有例行任務:剪貼簿已經放好一句話 —— 到跟它的聊天裡貼上送出,它會幫你建;"
+                       "建好後回例行任務頁複製兩格。" if copied else
+                       "還沒有例行任務:先在跟它的聊天裡請它建一個 Webhook 觸發的例行任務"
+                       "(app 規定例行任務要在聊天裡請 bot 建)。"))
             except DialogAborted as exc:
                 print("沒綁定:" + str(exc), file=sys.stderr)
                 return RC_USAGE

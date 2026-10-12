@@ -127,7 +127,8 @@ def durations(repo, tests=None, will_reuse=None):
 
 
 def changed_files(repo, base):
-    p = subprocess.run(["git", "-C", str(repo), "diff", "--name-only", base + "...HEAD"], capture_output=True,
+    # --no-renames:同 select_changed.changed_from_git(10-11),改名的舊路徑也算改到
+    p = subprocess.run(["git", "-C", str(repo), "diff", "--name-only", "--no-renames", base + "...HEAD"], capture_output=True,
                        text=True, stdin=subprocess.DEVNULL)
     return [x for x in p.stdout.splitlines() if x.strip()] if p.returncode == 0 else []
 
@@ -781,6 +782,8 @@ def record_stats(repo, sv, rc, path=None):
         row = {k: v for k, v in sv.items() if not k.startswith("_")}
         row.update(repo=reuse_index.repo_identity(str(repo)) or "", rc=rc, time=time.strftime("%Y-%m-%dT%H:%M:%S"),
                    name=project_label(repo))
+        if os.environ.get("AIB_GATE_RUN_ID"):          # 10-12 P13:交件檢查認得出「這一筆是我這輪的」(同倉別棵樹的不算)
+            row["run_id"] = os.environ["AIB_GATE_RUN_ID"]
         with open(f, "a", encoding="utf-8") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             fh.write(json.dumps(row, sort_keys=True) + "\n")

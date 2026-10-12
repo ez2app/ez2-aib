@@ -27,13 +27,18 @@ BACKENDS = {
     "grokbot": (lambda limit: _grok.list_agents(limit), "Grok Bot.app 的 agent(本機名冊)"),
     # 09-26 ClaudeBot:本機 Claude 對話(~/.claude/projects)+ 09-27 #16:中繼站報到過的雲端 session(☁ 雲端 · 分支 · 目錄)
     "claudebot": (lambda limit: _claude.list_sessions_with_cloud(limit), "Claude 對話:本機 session / claude CLI + 雲端(向中繼報到過的)"),
+    # 10-11 a seat(Bot 開發 P3):MuseBot 也跳選單。Muse 沒有本機名冊 ⇒ 只列得出 AIB 綁過的(musebot_threads.history,
+    #   與開席沿用 pick_default、席上 /bind 清單同一份);第一次綁新的一段:選單選「先開席」,席上打 /bind <id>。
+    "musebot": (lambda limit: _muse_rows(limit), "綁過的 Muse 對話(Muse 沒有本機名冊,只列得出 AIB 綁過的)"),
 }
 UNSUPPORTED = {
     "sand": "sand(Cursor 橋)沒有可列的桌面對話",
-    # 2026-10-05 MuseBot:Meta Muse 對話清單後端尚未實作。排程喚醒制——開席不需要先選對話,
-    #   綁定用 AIB_MUSEBOT_CONVERSATION_ID(可空)。後端實作後搬到 BACKENDS。
-    "musebot": "MuseBot(Meta Muse 橋)還沒有可列的對話清單;開席不需選對話",
 }
+
+
+def _muse_rows(limit: int) -> list:
+    return [{"id": conv, "name": "Muse 對話 " + conv[:20], "updated": int(mt), "cwd": ""}
+            for conv, mt in _muse.history()[: max(0, int(limit))]]
 
 
 def _held_by(provider: str, item_id: str) -> list:
@@ -117,7 +122,7 @@ def main(argv=None) -> int:
             for r in entry["rows"]:
                 r["bound"] = bound.get(r["id"], []); r["last_bound"] = lb.get(r["id"], 0); r["provider"] = entry["provider"]
                 r["tail"] = _codex.tail_label(r["id"], bound, lb, entry["provider"])   # 選單直接用這個字面
-                r["held_by"] = _held_by(entry["provider"], r["id"]) if entry["provider"] in ("codexbot", "grokbot", "claudebot") else []   # P6:選單把被占的列變不可選
+                r["held_by"] = _held_by(entry["provider"], r["id"]) if entry["provider"] in ("codexbot", "grokbot", "claudebot", "musebot") else []   # P6:選單把被占的列變不可選
         print(json.dumps(out if args.all else out[0], ensure_ascii=False))
         return 0
     for entry in out:

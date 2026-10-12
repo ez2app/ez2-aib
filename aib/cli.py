@@ -62,6 +62,8 @@ def _update(args):
 def main():
     """pip / pipx 裝好之後的 `aib` 指令進到這裡(pyproject.toml 的 project.scripts)。"""
     os.environ.setdefault("EZ2_AIB_LOCALE", _locale())
+    # 10-12 新用戶全面檢查:Python 編譯快取不寫進安裝資料夾(看起來像被改過、也會擋 aib update);放 ~/.cache/ez2-aib
+    os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(os.path.expanduser("~"), ".cache", "ez2-aib", "pycache"))
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         sys.stdout.write(__doc__)
         return 2

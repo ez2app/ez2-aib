@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+These brand marks are from Simple Icons v16.34.0 (openai.svg from v15.22.0: v16 no longer ships it) (https://simpleicons.org), released under CC0 1.0.
+Each file is the unmodified upstream SVG (24×24 viewBox, single path). Brand names and logos belong to their owners.
+Used by tools/captain-room (the captain's room web page) so every AI seat shows its real brand mark on the web;
+the terminal right pane keeps Nerd Font glyphs (src/cockpit/render/render_lib.py ENGINE_ICONS), which has no mark for NVIDIA / DeepSeek / Meta / OpenRouter.
+Mapping provider → file lives in src/cockpit/captain_room.py LOGO_SVG.

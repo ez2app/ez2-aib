@@ -18,12 +18,13 @@ aib_bot_thread_menu() {
   local provider="$1"
   [ "${AIB_BOT_THREAD_MENU:-1}" != "0" ] || return 0            # 自動化/測試關掉
   [ "${DRY:-0}" != "1" ] || return 0
-  [ -z "${AIB_CODEXBOT_THREAD_OVERRIDE:-}" ] || [ "$provider" = "grokbot" ] || [ "$provider" = "claudebot" ] || return 0   # 已經 --thread 指定
+  [ -z "${AIB_CODEXBOT_THREAD_OVERRIDE:-}" ] || [ "$provider" = "grokbot" ] || [ "$provider" = "claudebot" ] || [ "$provider" = "musebot" ] || return 0   # 已經 --thread 指定
   [ -z "${AIB_GROKBOT_AGENT_OVERRIDE:-}" ] || [ "$provider" != "grokbot" ] || return 0
   [ -z "${AIB_CLAUDEBOT_SESSION_OVERRIDE:-}" ] || [ "$provider" != "claudebot" ] || return 0
   local ask="要接哪條桌面對話?"
   [ "$provider" != "grokbot" ] || ask="要綁哪個 Grok agent?"
   [ "$provider" != "claudebot" ] || ask="要綁哪條本機 Claude 對話?"
+  [ "$provider" != "musebot" ] || ask="要綁哪段 Muse 對話?"
   local py="${T_PY3:-${EZ2_PY3:-python3}}" here="${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
   local state_dir="${EZ2_COCKPIT_STATE_DIR:-${TMPDIR:-/tmp}}"; mkdir -p "$state_dir" 2>/dev/null
   local json list_err="" _lrc=0
@@ -44,6 +45,7 @@ aib_bot_thread_menu() {
   local _pick_exclude="${AIB_CODEXBOT_THREAD_ID:-}"
   [ "$provider" != "grokbot" ] || _pick_exclude="${AIB_GROKBOT_AGENT_ID:-}"
   [ "$provider" != "claudebot" ] || _pick_exclude="${AIB_CLAUDEBOT_SESSION_ID:-}"
+  [ "$provider" != "musebot" ] || _pick_exclude="${AIB_MUSEBOT_MENU_DEFAULT:-}"   # P3:aib_musebot_preflight 先算好的沿用那段
   local rows; rows="$(printf '%s' "$json" | "$py" -c '
 import sys, json, time
 try:
@@ -92,11 +94,12 @@ for r in rows:
   local default_id="${AIB_CODEXBOT_THREAD_ID:-}"
   [ "$provider" != "grokbot" ] || default_id="${AIB_GROKBOT_AGENT_ID:-}"
   [ "$provider" != "claudebot" ] || default_id="${AIB_CLAUDEBOT_SESSION_ID:-}"
+  [ "$provider" != "musebot" ] || default_id="${AIB_MUSEBOT_MENU_DEFAULT:-}"
   # A4(09-24):預設對話被刪/歸檔時,「沿用上次」會綁到不存在的 thread(--check 才發現)。先問 server 它還在不在;
   #   不在 ⇒ 不給「沿用」,逾時=不開席(回 1,aib 端 die)。連不上(unknown)照舊沿用:量不到 ≠ 不在。
   local default_state="${AIB_BOT_THREAD_DEFAULT_STATE:-}"          # 尺的注入點:yes|no|unknown
   if [ -z "$default_state" ] && [ -n "$default_id" ]; then
-    if [ "$provider" = "grokbot" ] || [ "$provider" = "claudebot" ]; then
+    if [ "$provider" = "grokbot" ] || [ "$provider" = "claudebot" ] || [ "$provider" = "musebot" ]; then
       default_state="unknown"      # --exists 問的是 Codex server;grokbot 的名冊是快取、claudebot 沒有 server,量不到 ≠ 不在
     else
       default_state="$("$py" "$here/bot_threads.py" --exists "$default_id" 2>/dev/null)" || default_state="unknown"
@@ -169,6 +172,17 @@ for r in rows:
   else
     items+=("0. 沿用上次綁定(預設;${limit} 秒沒選也是這個)" "0" "$cmd")
   fi
+  if [ "$provider" = "grokbot" ]; then
+    # P4(10-11 a seat):名冊是 app 的快取,剛建的 agent 要在 app 點一下才寫進來 ⇒ 選單上直接講(停用列,點不到)
+    items+=("-剛建的 agent 不在這裡:先在 Grok Bot app 點它一下,再右鍵重開" "" "")
+  fi
+  if [ "$provider" = "musebot" ]; then
+    # P3(10-11 a seat):Muse 沒有本機名冊,新的一段列不出來 ⇒ 給「先開席」,席上 /bind <id> 綁(P1 起不用重開)
+    local m_later_sh m_later_cmd
+    printf -v m_later_sh '[ -e %q ] || printf %%s %q > %q' "$choice_f" "__later__" "$choice_f"
+    printf -v m_later_cmd 'run-shell -b %q' "$m_later_sh"
+    items+=("b. 綁新的一段:先開席,之後在席上打 /bind <Muse 對話 id>" "b" "$m_later_cmd")
+  fi
   if [ -z "$rows" ]; then
     _aib_bot_thread_fallback "$provider" "清單拿不到"; return $?
   fi
@@ -213,10 +227,18 @@ for r in rows:
     ""|__default__)
        _aib_bot_thread_fallback "$provider" "${limit} 秒沒選" || return $? ;;
     __later__)
-       unset AIB_CLAUDEBOT_SESSION_ID AIB_CLAUDEBOT_SESSION_OVERRIDE
-       AIB_CLAUDEBOT_BIND_LATER=1
-       echo "aib: claudebot 先開席不綁(選單選的);席上打 /bind 列出能綁的對話,/bind new 讓 AIB 代開一條" >&2 ;;
-    *) if [ "$provider" = "grokbot" ]; then
+       if [ "$provider" = "musebot" ]; then
+         AIB_MUSEBOT_BIND_LATER=1
+         echo "aib: musebot 先開席不綁(選單選的);席上打 /bind 列出綁過的、/bind <Muse 對話 id> 綁新的一段" >&2
+       else
+         unset AIB_CLAUDEBOT_SESSION_ID AIB_CLAUDEBOT_SESSION_OVERRIDE
+         AIB_CLAUDEBOT_BIND_LATER=1
+         echo "aib: claudebot 先開席不綁(選單選的);席上打 /bind 列出能綁的對話,/bind new 讓 AIB 代開一條" >&2
+       fi ;;
+    *) if [ "$provider" = "musebot" ]; then
+         AIB_MUSEBOT_PICKED=1
+         export AIB_MUSEBOT_CONVERSATION_ID="$choice"
+       elif [ "$provider" = "grokbot" ]; then
          AIB_GROKBOT_AGENT_OVERRIDE="$choice"
          export AIB_GROKBOT_AGENT_ID="$choice"
        elif [ "$provider" = "claudebot" ]; then
@@ -256,6 +278,8 @@ _aib_bot_thread_fallback() {
     _aib_claudebot_nopick_note "${reason:-沒選對話}"
     return 0
   fi
+  # P3(10-11 a seat):musebot 沒選 ⇒ 回去走 aib_musebot_preflight 原本的沿用規則(pick_default:新到舊第一段沒被占的;都被占不開席)
+  [ "$provider" != "musebot" ] || return 0
   local why=""
   if [ "${default_state:-}" = "no" ]; then
     why="上次綁的對話 ${default_id:-(無)} 已不在 server 上(被刪或歸檔)"
@@ -329,8 +353,27 @@ aib_grokbot_agent_preflight() {
   fi
   aib_bot_thread_menu grokbot || return 1
   aib_bot_thread_held_guard grokbot || return 1
+  # P4(10-11 a seat,the maintainer「最少步驟串成 bot」):選到的 agent 還沒接門鈴 ⇒ 開席前直接跳貼兩格的視窗
+  #   (同 aib bot connect grokbot:切到 app 例行任務頁、請 bot 建例行任務那句已放剪貼簿)。
+  #   取消或失敗不擋開席:席照開,席上打 /connect 再接。試跑、AIB_GROKBOT_AUTO_CONNECT=0 不跳。
+  if [ -n "${AIB_GROKBOT_AGENT_ID:-}" ] && [ "${DRY:-0}" != "1" ] && [ "${AIB_DRY_RUN:-0}" != "1" ] \
+     && [ "${AIB_GROKBOT_AUTO_CONNECT:-1}" != "0" ]; then
+    local _gb_conn=""
+    _gb_conn="$("$py" "$here/grokbot_threads.py" connected 2>/dev/null)" || _gb_conn=""
+    case "$_gb_conn" in
+      *"\"${AIB_GROKBOT_AGENT_ID}\""*) ;;
+      "") ;;   # 量不到 ≠ 沒接:不跳
+      *)
+        echo "aib: grokbot agent ${AIB_GROKBOT_AGENT_ID} 還沒接門鈴 ⇒ 跳視窗讓你貼「POST 到」與「金鑰」(請 bot 建例行任務那句已放剪貼簿)" >&2
+        if "$py" "$here/grokbot_threads.py" connect --agent "$AIB_GROKBOT_AGENT_ID" >&2; then
+          echo "aib: grokbot 門鈴接好了" >&2
+        else
+          echo "aib: grokbot 門鈴沒接上(取消或貼錯);席照開,之後在席上打 /connect 再接" >&2
+        fi ;;
+    esac
+  fi
   if [ -z "${AIB_GROKBOT_AGENT_ID:-}" ]; then
-    echo "aib: grokbot 這一席沒有綁 Grok Bot agent(沒選,也沒有唯一一個綁過 webhook 的);席照開,但 bot 收不到這一席的信。綁法:aib bot connect grokbot --agent <agentId>,再重開。" >&2
+    echo "aib: grokbot 這一席沒有綁 Grok Bot agent(沒選,也沒有唯一一個綁過 webhook 的);席照開,但 bot 收不到這一席的信。綁法:席上打 /bind 列出 agent、/bind <編號> 綁上(不用重開);agent 還沒接門鈴要先 aib bot connect grokbot --agent <agentId>。" >&2
   else
     echo "aib: grokbot 這一席綁 agent ${AIB_GROKBOT_AGENT_ID}" >&2
   fi
@@ -348,6 +391,12 @@ aib_claudebot_session_preflight() {
   fi
   aib_bot_thread_menu claudebot || return 1
   aib_bot_thread_held_guard claudebot || return 1
+  # P5(10-11 a seat,the maintainer 點頭):全域沒裝 ClaudeBot hook(或裝了會壞)⇒ 自動 install(先備份 ~/.claude/settings.json)。
+  #   要在代開對話之前:hook 是 Claude 對話啟動時載入的,先開對話再裝,那條要重開才吃得到。失敗不擋開席(橋開起來會再標「⚠沒裝hook」)。
+  #   試跑不動;AIB_CLAUDEBOT_AUTO_HOOK=0 關掉。
+  if [ "${DRY:-0}" != "1" ] && [ "${AIB_DRY_RUN:-0}" != "1" ]; then
+    "${EZ2_PY3:-python3}" "${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/bot_ready.py" ensure-claude-hook || true
+  fi
   # 10-07 the maintainer 令「把 claudebot 整合進來」(一鍵開席自帶對話):沒選到對話 ⇒ AIB 自己在 tmux -L claudebot 開一條本機 claude
   #   對話並綁上(src/cockpit/claudebot_spawn.py;背景等橋綁好再替你送第一句,門鈴才會掛上)。
   #   AIB_CLAUDEBOT_AUTOSPAWN=0 關掉(回到「沒選就不綁」);試跑(--dry-run)不開。對話開在 AIB 倉庫根(已受信任,不卡信任提示)。
@@ -366,7 +415,7 @@ aib_claudebot_session_preflight() {
   if [ -z "${AIB_CLAUDEBOT_SESSION_ID:-}" ]; then
     echo "aib: claudebot 這一席沒有綁 Claude 對話(沒選);席照開,但訊息只會進信箱。綁法:席上打 /bind(不用重開),或 AIB_CLAUDEBOT_SESSION_ID=<本機 Claude session UUID> 再重開。" >&2
   else
-    echo "aib: claudebot 這一席綁 Claude 對話 ${AIB_CLAUDEBOT_SESSION_ID}(那條對話要裝好 hook:python3 src/cockpit/claudebot_hook.py install)" >&2
+    echo "aib: claudebot 這一席綁 Claude 對話 ${AIB_CLAUDEBOT_SESSION_ID}" >&2
   fi
   return 0
 }
@@ -388,6 +437,21 @@ aib_musebot_preflight() {
     _mb_here="${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
     _pk="$("${T_PY3:-${EZ2_PY3:-python3}}" "${_mb_here}/musebot_threads.py" pick-default 2>/dev/null)" || _pk=""
     IFS=$'\x1f' read -r _pk_conv _pk_hist _pk_skip <<< "$_pk"
+    # P3(10-11 a seat,the maintainer「最少步驟串成 bot」):綁過、而且有沒被占的 ⇒ 跟另三家一樣跳選單讓人點;
+    #   沒選(逾時/選 0/選單跳不出來)⇒ 照下面原本的沿用規則。全部被占 ⇒ 不跳(沒得選),照原本說明並不開席。
+    if [ -n "$_pk_conv" ]; then
+      AIB_MUSEBOT_MENU_DEFAULT="$_pk_conv" AIB_MUSEBOT_PICKED=0 AIB_MUSEBOT_BIND_LATER=0
+      aib_bot_thread_menu musebot || return 1
+      unset AIB_MUSEBOT_MENU_DEFAULT
+      if [ "${AIB_MUSEBOT_BIND_LATER:-0}" = "1" ]; then
+        unset AIB_MUSEBOT_CONVERSATION_ID
+        return 0
+      fi
+      if [ "${AIB_MUSEBOT_PICKED:-0}" = "1" ] && [ -n "${AIB_MUSEBOT_CONVERSATION_ID:-}" ]; then
+        conv="$AIB_MUSEBOT_CONVERSATION_ID"
+        _pk_conv=""; _pk_hist=0     # 選了就不再印沿用那幾句
+      fi
+    fi
     if [ -n "$_pk_conv" ]; then
       conv="$_pk_conv"
       export AIB_MUSEBOT_CONVERSATION_ID="$conv"
@@ -402,7 +466,7 @@ aib_musebot_preflight() {
     fi
   fi
   if [ -z "$conv" ]; then
-    echo "aib: musebot 這一席沒有綁 Muse 對話(AIB_MUSEBOT_CONVERSATION_ID 沒帶,也沒有綁過的可沿用);席照開,訊息進信箱等排程喚醒 —— Muse 側看守若只認綁定,收不到這一席的信。綁法:AIB_MUSEBOT_CONVERSATION_ID=<Muse 對話 id> 再重開。" >&2
+    echo "aib: musebot 這一席沒有綁 Muse 對話(AIB_MUSEBOT_CONVERSATION_ID 沒帶,也沒有綁過的可沿用);席照開,訊息進信箱等排程喚醒 —— Muse 側看守若只認綁定,收不到這一席的信。綁法:席上打 /bind <Muse 對話 id>(不用重開)。" >&2
   else
     # 明帶的 id 也要過占用關卡:以前只有沿用那條避開了被占的,明帶被占的 ⇒ 窗開了、席登記了,橋搶不到鎖才 rc=3 死
     aib_bot_thread_held_guard musebot || return 1

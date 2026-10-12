@@ -7,7 +7,7 @@ with its task, steps, CTX (more tired as it fills), unread mail, persona (editab
 second-brain notes (read only), talk to a seat from the page, and switch languages.
 A terminal pane cannot drag, hover or draw faces, so this is a page served from this Mac.
 
-Run:  python3 tools/captain-room/server.py --cabin 931e [--port 8770] [--ship-seat 04e0a]
+Run:  python3 tools/captain-room/server.py --cabin <cabin> [--port 8770] [--ship-seat <seat>]
 Then open the printed URL (it carries no secret; the page gets a per-run token).
 
 Safety:
@@ -27,6 +27,7 @@ Data (all read with the readers AIB already has, nothing guessed):
 Output strings are machine keys; the page owns all display text (tools i18n ratchet).
 """
 import argparse, glob, hashlib, html, json, os, re, secrets, shutil, subprocess, sys, tempfile, threading, time
+import stat as stat_mod
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode
@@ -40,6 +41,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 COCKPIT = HERE
 PAGE_DIR = os.path.join(REPO, "tools", "captain-room")
+# 10-12 免費版(公開版):匯出時放 tools/captain-room/edition.json {"edition":"free"} ⇒ 跨主機街景、廣場、網頁開席/關席
+#   在伺服器端就擋(頁面另外藏;就算有人改頁面也叫不動)。私有倉沒有這個檔 = 完整版。
+FREE_BLOCKED_API = ("/api/fleet/probe", "/api/plaza/refresh", "/api/plaza/read", "/api/plaza/dm", "/api/seat/open", "/api/seat/close")
+FREE_BLOCKED_CLI = ("add-host", "remove-host", "hosts", "set-plaza-me")
+
+
+def edition(page_dir=None):
+    try:
+        with open(os.path.join(page_dir or PAGE_DIR, "edition.json"), encoding="utf-8") as fh:
+            return "free" if (json.load(fh) or {}).get("edition") == "free" else "full"
+    except (OSError, ValueError, AttributeError):
+        return "full"
 SEAT_INFO = os.path.join(REPO, "tools", "claude-mods", "aib-seat", "bin", "seat-info.py")
 sys.path.insert(0, COCKPIT)
 import cabin_restart   # noqa: E402  single source for the hub socket name (aihub-<cabin>) and the TMUX read
@@ -104,10 +117,17 @@ def brand_table():
     except Exception:
         return {}
     out, svgs = {}, logo_paths()
+    try:   # 10-12 免費版:供應商名稱與「用 API 金鑰」不再寫死在頁面(私有供應商不能出現在公開頁),由這一台的 providers.json 給
+        with open(os.path.join(HERE, "providers.json"), encoding="utf-8") as fh:
+            provs = {x.get("id"): x for x in (json.load(fh) or {}).get("providers") or [] if isinstance(x, dict)}
+    except (OSError, ValueError, AttributeError):
+        provs = {}
     for eng, icon in ENGINE_ICONS.items():
         cols = ENGINE_LETTER_COLORS.get(eng) or ()
         rgb = cols[0][0] if cols else None
-        out[eng] = {"icon": icon, "color": ("#%02x%02x%02x" % tuple(rgb)) if rgb else None, "svg": svgs.get(eng)}
+        pv = provs.get(eng) or {}
+        out[eng] = {"icon": icon, "color": ("#%02x%02x%02x" % tuple(rgb)) if rgb else None, "svg": svgs.get(eng),
+                    "name": pv.get("menu_label"), "key": pv.get("menu_group") == "api_key"}
     return out
 
 
@@ -145,7 +165,15 @@ _KEEP_NAMES = ("AIB_COLLAB_REMOTE", "AIB_COLLAB_STATE", "AIB_COLLAB_BRANCH", "AI
 
 
 def clean_env():
-    return {k: v for k, v in os.environ.items() if not k.startswith(_SCRUB_PREFIXES) or k in _KEEP_NAMES}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(_SCRUB_PREFIXES) or k in _KEEP_NAMES}
+    if env.get("XPC_SERVICE_NAME") == "com.ez2.aib-captain-room":   # 開機項的名牌不往下傳(第三輪審查:開席重建 hub 會把它帶進每一席,席上跑示範 serve 就被當成開機那台)
+        env.pop("XPC_SERVICE_NAME")
+    return env
+
+
+def is_boot_server():
+    """這一支是不是 launchd 開機項:名牌對、而且父行程是 launchd(pid 1)。兩個都要 —— 名牌可能被繼承,父行程不會"""
+    return os.environ.get("XPC_SERVICE_NAME") == "com.ez2.aib-captain-room" and os.getppid() == 1
 
 
 def cabin_dir(code4):
@@ -239,20 +267,81 @@ def log_action(kind, **fields):
         pass
 
 
-def pin_ok(req_headers):
+# 10-11 資安檢查(公開版前):PIN 不再明碼存 —— 存加鹽 PBKDF2;連錯 PIN_MAX_FAILS 次就鎖 PIN_LOCK_S 秒(擋窮舉 4 位數);
+#   config.json 只有本人讀得到(0600)。舊的明碼 PIN 第一次比對成功時換成雜湊。
+PIN_SCHEME = "pbkdf2_sha256"
+PIN_ITERS = 200_000
+PIN_MAX_FAILS = 5
+PIN_LOCK_S = 30
+_PIN_FAILS = {"n": 0, "until": 0.0}
+_PIN_LOCK = threading.Lock()   # 第二輪審查:ThreadingHTTPServer 兩個錯 PIN 同時進來,沒鎖會只算一次
+
+
+def pin_hash(pin, salt=None, iters=PIN_ITERS):
+    salt = salt or secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", str(pin).encode("utf-8"), bytes.fromhex(salt), int(iters))
+    return "%s$%d$%s$%s" % (PIN_SCHEME, int(iters), salt, dk.hex())
+
+
+def _pin_matches(given, stored):
+    """(相符?, 要不要換成雜湊)。given / stored 任何字元都不丟例外(非 ASCII 標頭也一樣)。"""
+    given_b = str(given).encode("utf-8")
+    if stored.startswith(PIN_SCHEME + "$"):
+        try:
+            _, iters, salt, _hex = stored.split("$")
+            want = pin_hash(given, salt, int(iters))
+        except (ValueError, TypeError):
+            return False, False
+        return secrets.compare_digest(want.encode("utf-8"), stored.encode("utf-8")), False
+    ok = secrets.compare_digest(given_b, stored.encode("utf-8"))
+    return ok, ok
+
+
+def pin_err(now=None):
+    """403 時回給頁面的錯誤碼:鎖住中 = pin-locked(頁面說「錯太多次,等 30 秒」,不清掉已存的 PIN),否則 pin(問 PIN)。"""
+    return "pin-locked" if (time.time() if now is None else now) < _PIN_FAILS["until"] else "pin"
+
+
+def pin_ok(req_headers, now=None):
+    with _PIN_LOCK:
+        return _pin_ok(req_headers, now)
+
+
+def _pin_ok(req_headers, now=None):
     """PIN gate for the actions that spend money or touch other seats; no PIN configured = open (the page says so)."""
-    pin = str(read_config().get("pin") or "")
-    if not pin:
+    cfg = read_config()
+    stored = str(cfg.get("pin") or "")
+    if not stored:
         return True
+    now = time.time() if now is None else now
+    if now < _PIN_FAILS["until"]:
+        return False
     given = req_headers.get("X-Captain-Pin") or ""
-    return secrets.compare_digest(given, pin)
+    if not given:   # 10-12 審查:頁面第一次沒帶 PIN 是「還沒問」,不是猜錯;算進去的話一開頁幾個請求就把 5 次用掉
+        return False
+    ok, upgrade = _pin_matches(given, stored)
+    if ok:
+        _PIN_FAILS["n"] = 0
+        if upgrade:
+            cfg["pin"] = pin_hash(stored)
+            write_config(cfg)
+        return True
+    _PIN_FAILS["n"] += 1
+    if _PIN_FAILS["n"] >= PIN_MAX_FAILS:
+        _PIN_FAILS["n"] = 0
+        _PIN_FAILS["until"] = now + PIN_LOCK_S
+        log_action("pin-locked", seconds=PIN_LOCK_S)
+    return False
 
 
 def write_config(cfg):
     os.makedirs(ROOM_DIR, exist_ok=True)
-    with open(CONFIG_PATH + ".tmp", "w", encoding="utf-8") as fh:
+    tmp = CONFIG_PATH + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # PIN 雜湊在裡面:只有本人讀得到
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, ensure_ascii=False, indent=1)
-    os.replace(CONFIG_PATH + ".tmp", CONFIG_PATH)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CONFIG_PATH)
 
 
 def server_alive():
@@ -435,7 +524,7 @@ def probe_host(hst, timeout=FLEET_TIMEOUT_S):
     except OSError as e:
         return {"ok": False, "kind": "bad", "err": "ssh: %s" % e, "took_s": round(time.time() - t0, 1)}
     took = round(time.time() - t0, 1)
-    body = (r.stdout or "").strip()
+    body = (r.stdout or "")[:2 * 1024 * 1024].strip()   # 別台回的量設上限
     se = (r.stderr or "").strip()
     if r.returncode == 255 or not body:
         # unreachable (asleep / off / no route) vs refused (key not installed, permission): the page words them differently (design §8 #6)
@@ -449,8 +538,46 @@ def probe_host(hst, timeout=FLEET_TIMEOUT_S):
         return {"ok": False, "kind": "bad", "err": "bad-json", "took_s": took}
     if d.get("err") == "refused":
         return {"ok": False, "kind": "refused", "err": "refused by fleet-cmd.sh", "took_s": took}
+    d = remote_probe_clean(d)
     d["took_s"] = took
     return d
+
+
+_SLUG_RE = re.compile(r"[A-Za-z0-9._-]{1,40}")
+
+
+def _slug(v):
+    v = "" if v is None else str(v)
+    return v if _SLUG_RE.fullmatch(v) else None
+
+
+def _text(v, cap=120):
+    if v is None:
+        return None
+    return re.sub(r"[\x00-\x1f\x7f<>]", "", str(v))[:cap]
+
+
+def remote_probe_clean(d):
+    """10-11 資安檢查:別台主機回的 JSON 一律當外來資料 —— 席碼要合 CODE_RE、代號類只准安全字元、文字截長並拿掉 <>,
+    數字欄位要是數字;不合的席整筆丟掉。頁面上的街景/走進別台都只吃這份清過的。"""
+    num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    seats = []
+    for s in (d.get("seats") or [])[:200] if isinstance(d.get("seats"), list) else []:
+        if not isinstance(s, dict) or not CODE_RE.match(str(s.get("code") or "")):
+            continue
+        seats.append({"code": str(s["code"]), "provider": _slug(s.get("provider")), "role": _slug(s.get("role")),
+                      "captain": bool(s.get("captain")), "ship": bool(s.get("ship")), "bot": bool(s.get("bot")),
+                      "ctx": num(s.get("ctx")), "unread": num(s.get("unread")), "idle_s": num(s.get("idle_s")),
+                      "handoff_done": bool(s.get("handoff_done")), "state": _slug(s.get("state")),
+                      "item": _text(s.get("item")), "persona": _text(s.get("persona"), 60)})
+    out = {"ok": bool(d.get("ok")), "host": _text(d.get("host"), 40), "cabin": _slug(d.get("cabin")),
+           "captain": _slug(d.get("captain")), "aib_version": _text(d.get("aib_version"), 40), "at": num(d.get("at")),
+           "err": [_text(e, 160) for e in (d.get("err") or [])[:3]] if isinstance(d.get("err"), list) else [],
+           "seats": seats}
+    for k in ("refused_24h",):
+        if num(d.get(k)) is not None:
+            out[k] = d[k]
+    return out
 
 
 def refused_24h(log_path=None):
@@ -747,6 +874,18 @@ def contacts_view(st, q="", online_only=False, group=None, include_blocked=False
             "blocked": sum(1 for c in contacts.values() if c.get("blocked")), "total": len(contacts), "at": int(time.time())}
 
 
+def _iso_ts(iso):
+    """ISO 時間 → epoch 秒(解析不了 = None);沒時區當 UTC"""
+    try:
+        from datetime import datetime, timezone
+        t = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return int(t.timestamp())
+    except Exception:
+        return None
+
+
 def _iso_age_s(iso, now=None):
     try:
         from datetime import datetime, timezone
@@ -762,6 +901,8 @@ def _iso_age_s(iso, now=None):
 # 一艙一個現場對話檔 room-chat.jsonl(誰、哪一層、說什麼、時間);艦長在頁面喊、AI 席用 `aib room say` 喊;
 # 頁面每 5 秒回報每個人在哪一層(positions.json),喊話只送給同一層的人;頁面沒開時退回「角色規則」猜樓層。
 ROOM_CHAT = os.path.join(ROOM_DIR, "room-chat.jsonl")
+SENT_LOG = os.path.join(ROOM_DIR, "sent.jsonl")   # D1:艦長室自己寄出去的信(內文只在這裡留;不讀別席的佇列)
+_sent_lock = threading.Lock()   # 審查:群發 / 喊話同時寫,換檔與長行(> 8 KB 會被拆成幾次 write)都要鎖
 POSITIONS = os.path.join(ROOM_DIR, "positions.json")
 SCENES = ("f1", "f2", "f3", "street")
 _chat_lock = threading.Lock()
@@ -846,6 +987,8 @@ def shout_text(by, scene, text):
 # ── C1 統一收件匣(設計 §11):同艙 dm 佇列(艦長那一席)+ 別台未讀數 + 廣場 + 喊話,統一成一個 msg 形狀,每封標來源與可靠度
 INBOX_TABS = ("all", "decide", "unread", "plaza", "say")
 _inbox_cache = [0.0, None]
+_reply_seen = {}   # C3:nonce → 上次 /api/inbox/reply 的結果(最多 200 筆,記憶體;重開伺服器就忘)
+_reply_lock = threading.Lock()   # 審查:查與存之間隔著幾秒的 subprocess,同 nonce 併發要先佔位
 
 
 # ── C2 訊息卡片:要你決定的信畫成有選項按鈕的卡 ──
@@ -906,6 +1049,29 @@ def dm_card(kind, text):
             "deadline": (dl.group(1).strip() if dl else None), "inferred": inferred}
 
 
+NOTIFY_TIERS = ("muted", "decide", "friend", "normal")   # C4 通知分級:靜音的永遠不跳;要你決定 > 好友 > 一般
+
+
+def notify_tier(entry, need_reply):
+    """一封信的通知等級(純函式)。entry = ContactStore.entry(key) 或 None(不在通訊錄)。
+    靜音最大(艦長說安靜就安靜,連要決定的也不跳,只記未讀);其次要你決定;再來好友;其他一般。"""
+    e = entry or {}
+    if e.get("muted"):
+        return "muted"
+    if need_reply:
+        return "decide"
+    if e.get("friend"):
+        return "friend"
+    return "normal"
+
+
+def muted_codes(snap):
+    """這一艙被艦長靜音的席碼(通訊錄 key = seat:<艙>/<席>,跟封鎖、寄信同一種寫法)"""
+    store = captain_contacts.cached_store(CONTACTS_PATH)
+    cab = snap.get("cabin")
+    return [s.get("code") for s in snap.get("seats") or [] if s.get("code") and cab and store.entry(f"seat:{cab}/{s.get('code')}").get("muted")]
+
+
 def inbox_mark_done(captain, qid, rev):
     """把艦長席的一封標已處理:走 aib dm-queue done(動作者 seat:<艦長席>、證據是一個真的檔、帶 rev 防蓋寫)。
     /api/inbox/done 與 C2 的 /api/inbox/reply(回完順手標)都走這裡"""
@@ -922,6 +1088,51 @@ def inbox_mark_done(captain, qid, rev):
     _inbox_cache[0] = 0.0
     log_action("inbox-done", id=qid, rc=r.returncode)
     return {"ok": r.returncode == 0, "rc": r.returncode, "out": (r.stdout or "").strip()[-300:], "errout": (r.stderr or "").strip()[-300:]}
+
+
+RELAY_MAX = 64 * 1024
+_relay_cache = {}
+RELAY_NAME_RE = re.compile(r"RELAY-dm-[0-9A-Za-z._-]+\.txt")
+
+
+def relay_text(msg):
+    """10-12:「長訊已落檔(N 位元組),請讀:路徑」指標信 → 落檔的內文(收件匣、搜尋、卡片、時間線原本都只看到指標那一行)。
+    指標信是別席寄來的,路徑不能照單全收:只讀 AIB 家目錄底下、檔名 RELAY-dm-*.txt 的檔,最多 64 KB;不是指標信或讀不到 → None(照舊顯示那一行)。"""
+    try:
+        import dm_relay
+        path = dm_relay.relay_path_of(msg)
+    except Exception:
+        return None
+    if not path:
+        return None
+    real = os.path.realpath(path)
+    roots = {os.path.realpath(HOME), os.path.realpath(os.path.expanduser("~/.ez2-aib"))}
+    if not RELAY_NAME_RE.fullmatch(os.path.basename(real)) or not any(real.startswith(r + os.sep) for r in roots):
+        return None
+    try:   # 審查:不跟捷徑、不等待(別席做一個具名管道 FIFO 會把收件匣卡死)、只讀一般檔、硬連結不讀(繞過檔名檢查)
+        fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink > 1:
+            return None
+        key = (real, st.st_mtime_ns, st.st_size)
+        if key in _relay_cache:
+            return _relay_cache[key]
+        raw = os.read(fd, RELAY_MAX)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    data = raw.decode("utf-8", "replace")
+    if len(raw) >= RELAY_MAX:
+        data = data.rstrip("\ufffd")   # 截在 64 KB 切到半個字:只去掉尾巴那半個;中間的壞字照樣顯示 �
+    data = data.strip() or None
+    if len(_relay_cache) > 300:   # 收件匣每 15 秒刷一次,落檔不會改 → 記住;太多就整個清掉重來
+        _relay_cache.clear()
+    _relay_cache[key] = data
+    return data
 
 
 def _dm_items(code):
@@ -941,22 +1152,212 @@ def _dm_items(code):
         st = str(q.get("status") or "")
         if st in ("deleted", "superseded"):
             continue
+        expired = bool(q.get("expired") or q.get("expired_at"))
         status = ("done" if st == "done" or q.get("done_at") else "archived" if st == "archived" or q.get("archived_at") else "read" if st == "read" or q.get("read_at")
-                  else "hold" if st.startswith("hold") else "queued" if st in ("queued", "claimed") else "delivered")   # 審查:status 欄位優先,排空器手上的不算已讀
+                  else "hold" if st.startswith("hold") else "expired" if expired and st in ("queued", "claimed") else "queued" if st in ("queued", "claimed") else "delivered")   # 審查:status 欄位優先,排空器手上的不算已讀;C3:過期的排隊信另標
         kind = str(q.get("kind") or "other")
         text = str(q.get("msg") or "")
-        card = dm_card(kind, text)   # C2:kind=decide 或內文像在等決定 → 卡片;後者 kind 改成 decide 並標 inferred(推的)
+        full = relay_text(text)   # 長訊指標信 → 換成落檔的內文(卡片選項、搜尋也才抓得到)
+        if full:
+            text = full
+        card = dm_card(kind, text) if (not full or kind == "decide") else None   # 審查:長訊只在寄件人明確標「要你決定」才做卡片(整篇報告裡的「要你決定」字眼不要猜成卡片) —— C2:kind=decide 或內文像在等決定 → 卡片;後者 kind 改成 decide 並標 inferred(推的)
         if card and card["inferred"]:
             kind = "decide"
-        out.append({"src": "dm", "id": q.get("id"), "rev": q.get("rev"), "from": {"code": q.get("sender_seat"), "label": q.get("sender_label") or q.get("sender_origin"), "host": None},
+        label = q.get("sender_label") or q.get("sender_origin")
+        code_from = q.get("sender_seat")
+        code_inferred = False
+        if not code_from and isinstance(label, str):   # C3 真機驗抓到:背景程式寄的信 sender_seat 是空的,只有標籤「a seat(角色)」;從標籤取席碼當退路,標成推的(回信前仍要在活席清單)
+            mm = re.match(r"@([0-9a-z]{5})\(", label)
+            if mm:
+                code_from, code_inferred = mm.group(1), True
+        out.append({"src": "dm", "id": q.get("id"), "rev": q.get("rev"), "from": {"code": code_from, "label": label, "host": None, "code_inferred": code_inferred},
                     "kind": kind, "subject": text.split("\n", 1)[0][:120], "body": text[:1500], "at": _int(q.get("ts") or q.get("sent_at")),
                     "status": status, "need_reply": kind in ("decide", "human") or status == "hold", "thread": q.get("thread"),
-                    "card": card, "inferred": bool(card and card["inferred"]),
+                    "card": card, "inferred": bool(card and card["inferred"]), "relayed": bool(full),
+                    # C3:讀/處理兩個勾各自的時間(量到的)、重送次數、停手原因、過期 —— 頁面畫兩個勾與排隊細節,不再只有一格字
+                    "read_at": _int(q.get("read_at")) or None, "done_at": _int(q.get("done_at")) or None, "attempts": _int(q.get("attempts")),
+                    "hold_why": q.get("hold_why"), "hold_rc": q.get("hold_rc"), "held_at": _int(q.get("held_at")) or None, "expired": expired, "claimed_at": _int(q.get("claimed_at")) or None,
                     "reliability": {"live": True, "receipt": True}})
     return out
 
 
-def inbox_items(st, tab="all", limit=200):
+INBOX_DATE_RE = re.compile(r"^(?:(\d{4})-)?(\d{1,2})-(\d{1,2})$")
+
+
+def parse_inbox_query(text, now=None):
+    """D3 搜尋框一格三種條件(純函式):一般字 = 關鍵字(全部要符合);@誰 = 寄件人;10-11 / 2026-10-11 = 那一天(本機時區)。
+    回 {words, who, days:[(起, 迄)]};日期寫錯(13-40)就當關鍵字,不擋。"""
+    words, who, days = [], [], []
+    lt = time.localtime(now if now is not None else time.time())
+    year = lt.tm_year
+    for tok in str(text or "")[:120].split():
+        if tok.startswith("@") and len(tok) > 1:
+            who.append(tok[1:].lower()); continue
+        m = INBOX_DATE_RE.match(tok)
+        if m:
+            try:
+                mon, day = int(m.group(2)), int(m.group(3))
+                y = int(m.group(1)) if m.group(1) else (year - 1 if (mon, day) > (lt.tm_mon, lt.tm_mday) else year)   # 沒寫年:還沒到的日子當去年(一月搜 12-31 = 去年那天)
+                start = time.mktime((y, mon, day, 0, 0, 0, 0, 0, -1))
+                if time.localtime(start).tm_mon == mon:   # mktime 會把 2-30 滾成 3-2:滾過的不算日期
+                    end = time.mktime((y, mon, day + 1, 0, 0, 0, 0, 0, -1))   # 下一天零點(有日光節約的時區也對),不用固定 +86400
+                    days.append((int(start), int(end))); continue
+            except (OverflowError, ValueError):
+                pass
+        words.append(tok.lower())
+    return {"words": words, "who": who, "days": days}
+
+
+def inbox_match(m, query):
+    """一封信符不符合(純函式)。關鍵字比主旨、內文、寄件人、席碼、id、thread;@誰 比寄件人與席碼;日期比 at。"""
+    f = m.get("from") or {}
+    sender = " ".join(str(x) for x in (f.get("label"), f.get("code")) if x).lower()
+    hay = " ".join(str(x) for x in (m.get("subject"), m.get("body"), sender, m.get("id"), m.get("thread")) if x).lower()
+    if any(w not in hay for w in query["words"]):
+        return False
+    if any(w not in sender for w in query["who"]):
+        return False
+    if query["days"] and not any(a <= (m.get("at") or 0) < b for a, b in query["days"]):
+        return False
+    return True
+
+
+def sent_append(cabin, code, text, res, thread=None, kind=None, via=None, cid=None):
+    """D1:記一筆艦長室寄出的信(成功失敗都記,失敗的頁面標出來)。檔過 5 MB 換成 .1(只留一份舊的)。
+    via = say(喊話給同一層的副本)/ group(群發)/ None(一對一)。一整行先編好、鎖住、一次 write。"""
+    row = {"at": int(time.time()), "cabin": cabin, "to": code, "text": str(text)[:4000], "id": res.get("id"), "rc": res.get("rc"),
+           "stage": res.get("stage"), "thread": thread, "kind": kind, "via": via, "cid": cid}
+    data = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+    with _sent_lock:
+        try:
+            os.makedirs(ROOM_DIR, exist_ok=True)
+            if os.path.exists(SENT_LOG) and os.path.getsize(SENT_LOG) > 5 * 1024 * 1024:
+                os.replace(SENT_LOG, SENT_LOG + ".1")
+            fd = os.open(SENT_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+
+
+def sent_read(cabin, code, limit=500):
+    """這一艙、寄給這一席的紀錄(新的在後);回 (rows, 紀錄從哪一刻開始)。讀檔尾 2 MB 就夠"""
+    rows, first = [], None
+    try:
+        with open(SENT_LOG, "rb") as fh:
+            fh.seek(0, 2); size = fh.tell(); fh.seek(max(0, size - 2 * 1024 * 1024))
+            data = fh.read().decode("utf-8", "replace").split("\n")
+        if size > 2 * 1024 * 1024:
+            data = data[1:]   # 第一行可能被切半
+        for ln in data:
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if not isinstance(r, dict):
+                continue
+            first = first if first is not None else _int(r.get("at"))
+            if r.get("cabin") == cabin and r.get("to") == code:
+                rows.append(r)
+    except OSError:
+        pass
+    return rows[-limit:], first
+
+
+def timeline(st, code, limit=200):
+    """D1 一個人一條時間線:他寄給艦長席的信 + 艦長室寄給他的信 + 他的喊話 + 名片指到這一席的廣場信,依時間排(舊→新)。
+    只讀艦長席的佇列、艦長室自己的寄件紀錄、現場對話檔、廣場快照 —— 不讀別席的信箱。"""
+    d = st.snapshot()
+    cab, cap = str(d.get("cabin") or ""), str(d.get("captain") or "")
+    out = []
+    for m in _dm_items(cap):
+        if (m.get("from") or {}).get("code") == code:
+            out.append({"dir": "in", "src": "dm", "at": m.get("at") or 0, "text": m.get("body") or m.get("subject") or "", "id": m.get("id"),
+                        "status": m.get("status"), "kind": m.get("kind"), "thread": m.get("thread")})
+    sent, since = sent_read(cab, code)
+    for r in sent:
+        out.append({"dir": "out", "src": "dm", "at": _int(r.get("at")), "text": r.get("text") or "", "id": r.get("id"),
+                    "ok": r.get("rc") == 0, "stage": r.get("stage"), "thread": r.get("thread"), "kind": r.get("kind"), "via": r.get("via"), "cid": r.get("cid")})
+    for e in chat_tail(0, 500):
+        if e.get("by") == code:
+            out.append({"dir": "in", "src": "say", "at": _int(e.get("at")), "text": e.get("text") or "", "scene": e.get("scene")})
+    pz = d.get("plaza") or {}
+    # 審查:名片鍵是 "agent"(plaza_strip_agent);dm_seat 是對方自己填的,只認自己的名片或驗證過的(不然誰都能自稱是這一席)
+    names = {a.get("agent") for a in pz.get("agents") or [] if isinstance(a, dict) and a.get("dm_seat") == f"{cab}/{code}" and (a.get("local") or a.get("dm_verified"))}
+    for m in pz.get("inbox") or []:
+        if m.get("by") in names:
+            # 審查:用信上的時間,不用「現在 − 時間差」(對方時鐘快時差被夾成 0,每次都等於現在,畫面一直重畫)
+            out.append({"dir": "in", "src": "plaza", "at": _iso_ts(m.get("at")) or 0, "text": ((m.get("subject") or "") + "\n" + (m.get("body") or "")).strip(),
+                        "id": m.get("id"), "by": m.get("by"), "private": bool(m.get("private"))})
+    out.sort(key=lambda x: x.get("at") or 0)
+    return {"ok": True, "code": code, "items": out[-limit:], "total": len(out), "sent_since": since, "at": int(time.time())}
+
+
+def timeline_export(st, req):
+    """D6:to=file → <state root>/pending/TIMELINE-<艙>-<席>-<MMDD-HHMM>.md(0600);to=brain → aib memory write --kind note
+    (只寫第二大腦 core.handoff,不帶 --seat:不碰任何席位記憶)。內容是頁面組的 Markdown(顯示文字歸頁面管)。"""
+    code, to = str(req.get("code") or ""), str(req.get("to") or "")
+    body, title = str(req.get("body") or ""), str(req.get("title") or "").strip()
+    try:
+        nbytes = len(body.encode("utf-8"))
+    except UnicodeError:   # 單獨的代理字元(手工送的請求才會有)
+        return {"ok": False, "err": "bad-args"}
+    if not CODE_RE.match(code) or to not in ("file", "brain") or not body.strip() or nbytes > 760 * 1024 or not title or len(title) > 120 or title.startswith("-"):
+        return {"ok": False, "err": "bad-args"}
+    stamp = time.strftime("%m%d-%H%M%S")
+    if to == "file":
+        data = body if body.endswith("\n") else body + "\n"
+        try:
+            d = os.path.join(HOME, "pending")
+            os.makedirs(d, exist_ok=True)
+            for n in range(1, 20):   # 審查:同一秒按兩次(兩個分頁)不能撞檔斷線,加尾碼
+                path = os.path.join(d, f"TIMELINE-{st.cabin4 or 'nocabin'}-{code}-{stamp}{'' if n == 1 else '-' + str(n)}.md")
+                try:
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                return {"ok": False, "err": "name-taken"}
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(data)
+        except OSError as e:   # 目錄寫不進去等:回錯誤,不讓連線直接斷
+            return {"ok": False, "err": str(e)[:160]}
+        log_action("timeline-export", to=to, code=code, chars=len(body), path=path)
+        return {"ok": True, "to": to, "path": path}
+    tmp = None
+    try:
+        os.makedirs(ROOM_DIR, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=ROOM_DIR, prefix=f".export-{code}-", suffix=".md")   # 審查:同一秒按兩次不能共用暫存檔
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        r = subprocess.run([aib_bin(), "memory", "write", "--kind", "note", "--title", title, "--body-file", tmp,
+                            "--tags", f"captain-room,timeline,seat-{code}", "--route", "core.handoff", "--json"],
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=clean_env())
+    except Exception as e:
+        return {"ok": False, "err": str(e)[:160]}
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    out, so = {}, r.stdout or ""
+    for i in [m.start() for m in re.finditer(r"\{", so)]:   # 審查:前後多印幾行也找得到那段 JSON(找不到 uid 不代表沒寫進去,所以輸出尾巴也帶回)
+        try:
+            cand, _ = json.JSONDecoder().raw_decode(so[i:])
+        except ValueError:
+            continue
+        if isinstance(cand, dict) and cand.get("uid"):
+            out = cand; break
+    log_action("timeline-export", to=to, code=code, chars=len(body), rc=r.returncode, uid=out.get("uid"))
+    return {"ok": r.returncode == 0 and bool(out.get("uid")), "to": to, "uid": out.get("uid"), "path": out.get("path"), "rc": r.returncode,
+            "errout": ((r.stderr or "").strip() or ("" if out.get("uid") else so.strip()))[-300:]}
+
+
+def inbox_items(st, tab="all", limit=200, q=""):
     """merged, newest first; cached 5 s so page polls do not rescan the queue directory"""
     now = time.time()
     if _inbox_cache[1] is not None and now - _inbox_cache[0] < 5:
@@ -980,12 +1381,23 @@ def inbox_items(st, tab="all", limit=200):
                 items.append({"src": "say", "id": "say:%s" % e.get("id"), "rev": None, "from": {"code": e.get("by"), "label": "@" + str(e.get("by")), "host": None},
                               "kind": "say", "subject": e.get("text") or "", "body": "", "at": _int(e.get("at")), "status": "unknown", "need_reply": False,
                               "thread": None, "scene": e.get("scene"), "reliability": {"live": True, "receipt": False}})
+        store = captain_contacts.cached_store(CONTACTS_PATH)   # C4:每封信帶通訊錄 key 與通知等級(頁面照等級決定跳不跳桌面通知)
+        cab = str(d.get("cabin") or "")
+        for m in items:
+            code = (m.get("from") or {}).get("code")
+            by = str((m.get("from") or {}).get("label") or "")
+            key = (("plaza:" + by) if by else None) if m["src"] == "plaza" else (f"seat:{cab}/{code}" if code and cab else None)   # 廣場名字空的不給 key
+            m["contact_key"] = key
+            m["tier"] = notify_tier(store.entry(key) if key else None, bool(m.get("need_reply")))
         items.sort(key=lambda m: -(m.get("at") or 0))
         counts = {"dm": sum(1 for m in items if m["src"] == "dm" and m["status"] in ("delivered", "read", "hold")),
                   "unread": sum(1 for m in items if m["src"] == "dm" and m["status"] in ("delivered", "hold")),
                   "decide": sum(1 for m in items if m["src"] == "dm" and m["need_reply"] and m["status"] not in ("done", "archived")),
                   "fleet": sum(m["reliability"].get("count", 0) for m in items if m["src"] == "fleet"),
-                  "plaza": sum(1 for m in items if m["src"] == "plaza"), "say": sum(1 for m in items if m["src"] == "say")}
+                  "plaza": sum(1 for m in items if m["src"] == "plaza"), "say": sum(1 for m in items if m["src"] == "say"),
+                  # expired 只算「還在排隊就過期」的;dm_queue 的 expired_now 連 delivered/hold 的過期也算,這裡刻意不同(頁面只需要知道哪些排隊信死了)
+                  "queued": sum(1 for m in items if m["src"] == "dm" and m["status"] == "queued"), "hold": sum(1 for m in items if m["src"] == "dm" and m["status"] == "hold"),
+                  "expired": sum(1 for m in items if m["src"] == "dm" and m["status"] == "expired")}
         _inbox_cache[:] = [now, (items, counts)]
     if tab == "decide":
         rows = [m for m in items if m["src"] == "dm" and m["need_reply"] and m["status"] not in ("done", "archived")]
@@ -993,9 +1405,14 @@ def inbox_items(st, tab="all", limit=200):
         rows = [m for m in items if m["src"] == "dm" and m["status"] in ("delivered", "hold")]
     elif tab in ("plaza", "say"):
         rows = [m for m in items if m["src"] == tab]
+    elif q:
+        rows = list(items)   # D3:搜尋時「全部」連已處理 / 封存的也找(要找回的常常就是處理過的那封)
     else:
         rows = [m for m in items if not (m["src"] == "dm" and m["status"] in ("done", "archived"))]
-    return {"ok": True, "tab": tab, "items": rows[:limit], "counts": counts, "captain": st.snapshot().get("captain"), "at": int(time.time())}
+    query = parse_inbox_query(q) if q else None
+    if query and (query["words"] or query["who"] or query["days"]):
+        rows = [m for m in rows if inbox_match(m, query)]
+    return {"ok": True, "tab": tab, "items": rows[:limit], "matched": len(rows), "q": q or "", "counts": counts, "captain": st.snapshot().get("captain"), "at": int(time.time())}
 
 
 def plaza_filtered(p):
@@ -1019,7 +1436,7 @@ def plaza_strip_agent(name, card, mine, now=None):
     return {"agent": name, "owner": card.get("owner"), "region": card.get("region"), "skills": list(card.get("skills") or [])[:12],
             "dm_seat": card.get("dm_seat"), "at": card.get("at"), "local": name in mine,
             "dm_verified": bool(card.get("dm_verified_with")),
-            "fp": hashlib.sha256(pk.encode("utf-8")).hexdigest()[:16] if isinstance(pk, str) and pk else None,
+            "fp": hashlib.sha256(pk.strip().encode("utf-8")).hexdigest()[:16] if isinstance(pk, str) and pk.strip() else None,   # 跟 collab_plaza.key_fp 同一算法(先去頭尾空白)
             "hb_age_s": min(ages) if ages else None,
             "seats": sum(1 for _ in seats), "online": sum(1 for s in seats.values() if isinstance(s, dict) and s.get("online"))}
 
@@ -1029,6 +1446,21 @@ def plaza_strip_msg(m):
     return {"id": m.get("id"), "by": m.get("by"), "to": m.get("to"), "subject": str(m.get("subject") or "")[:160],
             "private": bool(m.get("private")), "need_reply": bool(m.get("need_reply")), "at": m.get("at"),
             "body": body[:600], "more": len(body) > 600}
+
+
+def plaza_trust_check(card_fp, pinned_fp, known, confirm):
+    """E1 安全預設(純函式):寄廣場私訊前。回 None = 可以寄;否則回擋下的理由。
+    釘過指紋的:名片找不到指紋 → fp-unknown(證不了是同一個人,擋);指紋不同 → fp-changed(擋,不是只警告)。
+    沒釘過、也沒往來過(沒寄過、沒收過他的信)的:第一次要艦長確認 → first-contact(帶 confirm 再送才寄)。"""
+    if pinned_fp:
+        if not card_fp:
+            return {"err": "fp-unknown", "pinned": pinned_fp}
+        if card_fp != pinned_fp:
+            return {"err": "fp-changed", "pinned": pinned_fp, "now": card_fp}
+        return None
+    if not known and not confirm:
+        return {"err": "first-contact", "now": card_fp}
+    return None
 
 
 class Plaza:
@@ -1159,7 +1591,7 @@ class Plaza:
                     "age_s": None if self.at is None else int(time.time() - self.at), "took_s": self.took_s,
                     "fails": self.fails, "retry_s": max(0, int(self.next_at - self.now())) if self.err else 0}
 
-    def send(self, to, subject, body):
+    def send(self, to, subject, body, confirm=False, seen_fp=None):
         """aib plaza dm: encrypted to the recipient's published key, pushed to git; no delivery or read receipt"""
         me = self.snapshot()["me"]
         if not me or me not in self.snapshot()["mine"]:
@@ -1172,10 +1604,32 @@ class Plaza:
         subject, body = str(subject or "").strip(), str(body or "").strip()
         if not subject or len(subject) > 120 or len(body) > 4000:
             return {"ok": False, "err": "bad-text"}
+        # E1:釘過的指紋寄前比對(變了 / 找不到就擋);從沒往來過的第一次要確認。釘在廣場名字上或名片指到的那一席上都算
+        snap = self.snapshot()
+        agent = to.split("#", 1)[0]   # 審查:廣場名字本身可含 /(@owner/name),只切 #
+        card = next((a for a in snap.get("agents") or [] if isinstance(a, dict) and a.get("agent") == agent), None)
+        keys = [f"plaza:{agent}"] + ([f"seat:{card.get('dm_seat')}"] if card and card.get("dm_seat") else [])
+        entries = [store.entry(k) for k in dict.fromkeys(keys)]
+        pinned = next((e.get("pinned_fp") for e in entries if e.get("pinned_fp")), None)
+        known = any(e.get("talks") for e in entries) or any(m.get("by") == agent for m in snap.get("inbox") or [])
+        stop = plaza_trust_check((card or {}).get("fp"), pinned, known, bool(confirm))
+        if stop:
+            log_action("plaza-dm-held", to=to, why=stop["err"])
+            return dict(stop, ok=False, to=to)
+        # 審查:快照可能舊 3 分鐘,寄信工具會自己抓新名片加密 —— 把「比對過 / 艦長確認過」的那個指紋交給它,加密前再比一次,不一樣就不寄
+        seen_fp = seen_fp if isinstance(seen_fp, str) and re.fullmatch(r"[0-9a-f]{16}", seen_fp) else None
+        expect = pinned or (seen_fp if confirm and seen_fp else None) or (card or {}).get("fp")
+        if confirm and not known and not expect:   # 第二輪審查:第一次寄、名片不在快照、頁面只看到「?」—— 沒有任何可比對的指紋就不寄
+            return {"ok": False, "err": "fp-unknown", "to": to, "pinned": None}
+        if confirm and seen_fp and card and card.get("fp") and seen_fp != card.get("fp"):
+            return {"ok": False, "err": "fp-moved", "to": to, "now": card.get("fp")}
         try:
-            rc, out, err = self._run("dm", "--me", me, "--to", to, "--subject", subject, "--body", body, timeout=120)
+            rc, out, err = self._run("dm", "--me", me, "--to", to, "--subject", subject, "--body", body, *(["--expect-fp", expect] if expect else []), timeout=120)
         except Exception as e:
             rc, out, err = None, "", str(e)[:200]
+        if rc != 0 and "fp-mismatch" in (err or ""):
+            log_action("plaza-dm-held", to=to, why="fp-moved")
+            return {"ok": False, "err": "fp-moved", "to": to, "errout": (err or "").strip()[-300:]}
         mid = (out.strip().splitlines() or [""])[0] if rc == 0 else None
         log_action("plaza-dm", me=me, to=to, chars=len(body), rc=rc, id=mid)
         if rc == 0:
@@ -1412,7 +1866,8 @@ class State:
                 with self.lock:
                     self.data = {"ok": False, "err": [f"refresh: {e}"]}
             try:
-                self.fleet.tick()
+                if edition() != "free":   # 10-12 審查:免費版不去探別台(就算 config 裡早就登記了主機)
+                    self.fleet.tick()
             except Exception as e:
                 with self.lock:
                     self.data = dict(self.data, fleet_err=f"fleet: {e}")
@@ -1606,11 +2061,13 @@ def make_handler(state):
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")                              # 別的網站不能把這頁藏在框裡騙你點(clickjacking)
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
             self.end_headers()
             self.wfile.write(body)
 
         def _authed(self):
-            return secrets.compare_digest(self.headers.get("X-Captain-Token") or "", TOKEN)
+            return secrets.compare_digest((self.headers.get("X-Captain-Token") or "").encode("utf-8"), TOKEN.encode("utf-8"))
 
         def do_GET(self):
             if not self._host_ok():
@@ -1633,7 +2090,11 @@ def make_handler(state):
                 return self._send(401, {"ok": False, "err": "no-token"})
             q = parse_qs(u.query)
             if u.path == "/api/state":
-                return self._send(200, state.snapshot())
+                d = state.snapshot()
+                d["mail_decide"] = inbox_items(state)["counts"].get("decide", 0)   # C3:頁首晶片的第二個數 = 艦長席佇列裡要你決定的信(量到的);席數那個是席位自己回報的
+                d["muted_codes"] = muted_codes(d)
+                d["edition"] = edition()   # 10-12:頁面看到 free 就藏街景 / 廣場 / 開席關席   # C4:靜音的席進入等決定也不跳桌面通知
+                return self._send(200, d)
             if u.path == "/api/persona":
                 uid = (q.get("uid") or [""])[0]
                 card, body = persona_body(uid)
@@ -1659,7 +2120,12 @@ def make_handler(state):
                 return self._send(200, {"ok": True, "layout": load(LAYOUT_PATH, None)})
             if u.path == "/api/inbox":   # C1:?tab=all|decide|unread|plaza|say
                 tab = (q.get("tab") or ["all"])[0]
-                return self._send(200, inbox_items(state, tab if tab in INBOX_TABS else "all"))
+                return self._send(200, inbox_items(state, tab if tab in INBOX_TABS else "all", q=(q.get("q") or [""])[0][:120].strip()))   # D3:?q= 搜尋
+            if u.path == "/api/timeline":   # D1:?code=<席> → 這個人的往來,合成一條
+                code = (q.get("code") or [""])[0]
+                if not CODE_RE.match(code):
+                    return self._send(400, {"ok": False, "err": "bad-code"})
+                return self._send(200, timeline(state, code))
             if u.path == "/api/chat":   # C0:?since=<id> → 之後的現場對話(全艙,頁面自己依樓層分)
                 try:
                     since = int((q.get("since") or ["0"])[0])
@@ -1693,8 +2159,12 @@ def make_handler(state):
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 return self._send(400, {"ok": False, "err": "bad-length"})
+            if n < 0:   # 負的長度會讓 rfile.read 一直讀到連線斷
+                return self._send(400, {"ok": False, "err": "bad-length"})
             path = urlparse(self.path).path
-            if n > (400 * 1024 if path == "/api/thumb" else 64 * 1024):
+            if path in FREE_BLOCKED_API and edition() == "free":
+                return self._send(403, {"ok": False, "err": "not-in-free-edition"})
+            if n > (400 * 1024 if path == "/api/thumb" else 800 * 1024 if path == "/api/timeline/export" else 64 * 1024):   # D6 審查:匯出 200 則中文訊息會超過 64 KB
                 return self._send(413, {"ok": False, "err": "too-big"})
             try:
                 req = json.loads(self.rfile.read(n) or b"{}")
@@ -1710,32 +2180,73 @@ def make_handler(state):
                 return self._send(200, {"ok": True, "plaza": plaza_filtered(state.plaza.snapshot())})
             if path == "/api/inbox/done":   # C1:把艦長席的一封標已處理(走 aib dm-queue done,帶 rev 防蓋寫);要 PIN
                 if not pin_ok(self.headers):
-                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": "pin"})
+                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": pin_err()})
                 qid, rev = str(req.get("id") or ""), req.get("rev")
                 cap = str(state.snapshot().get("captain") or "")
                 if not DM_ID_RE.match(qid) or not CODE_RE.match(cap):
                     return self._send(200, {"ok": False, "err": "bad-args"})
                 # dm 佇列只認 seat:<收件席> 當動作者、證據要是一個真的檔(10-11 審查:之前永遠 rc 7);只有 delivered/read 能標 done
                 return self._send(200, inbox_mark_done(cap, qid, rev))
+            if path == "/api/timeline/export":   # D6:把一個人的時間線存成檔(pending/)或第二大腦筆記;內容由頁面用目前語系組好,伺服器只寫;要 PIN
+                if not pin_ok(self.headers):
+                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": pin_err()})
+                return self._send(200, timeline_export(state, req))
+            if path == "/api/inbox/requeue":   # C3:停手等人的信放回佇列(走 aib dm-queue requeue;它只收 human 類動作者,艦長按鈕就是人);要 PIN
+                # 審查:dm_queue.requeue 對不是 hold_human 的信「原樣回」且 rc=0 —— 過期的排隊信按了會假成功,所以只放行 hold,跑完再重讀狀態才算 ok
+                if not pin_ok(self.headers):
+                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": pin_err()})
+                qid, cap = str(req.get("id") or ""), str(state.snapshot().get("captain") or "")
+                if not DM_ID_RE.match(qid) or not CODE_RE.match(cap):
+                    return self._send(200, {"ok": False, "err": "bad-args"})
+                m = next((x for x in _dm_items(cap) if x.get("id") == qid), None)
+                if not m or m.get("status") != "hold":
+                    return self._send(200, {"ok": False, "err": "not-held", "status": (m or {}).get("status")})
+                argv = [aib_bin(), "dm-queue", "requeue", "--seat", cap, "--id", qid, "--by", "human:captain-room"]
+                try:
+                    r = subprocess.run(argv, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=clean_env())
+                except Exception as e:
+                    return self._send(200, {"ok": False, "err": str(e)[:160]})
+                _inbox_cache[0] = 0.0
+                after = next((x for x in _dm_items(cap) if x.get("id") == qid), None)   # 成功 = 真的回到 queued,不信 rc
+                ok = r.returncode == 0 and bool(after) and after.get("status") == "queued"
+                log_action("inbox-requeue", id=qid, rc=r.returncode, ok=ok, after=(after or {}).get("status"))
+                return self._send(200, {"ok": ok, "rc": r.returncode, "after": (after or {}).get("status"), "err": (None if ok else "noop"),
+                                        "out": (r.stdout or "").strip()[-300:], "errout": (r.stderr or "").strip()[-300:]})
             if path == "/api/inbox/reply":   # C2:卡片按鈕 —— 回一封 dm 給寄件席(同 thread、kind report),done=true 時回完順手標已處理;要 PIN(跟寄信一樣)
                 if not pin_ok(self.headers):
-                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": "pin"})
+                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": pin_err()})
                 qid, text, done = str(req.get("id") or ""), str(req.get("text") or "").strip(), bool(req.get("done"))
+                nonce = str(req.get("nonce") or "")[:64]   # C3:同一次按鈕重送(例如寄出後網路才斷、頁面重試)只寄一次,回上次的結果
+                if nonce:
+                    with _reply_lock:
+                        if nonce in _reply_seen:
+                            return self._send(200, dict(_reply_seen[nonce], dup=True))
+                        _reply_seen[nonce] = {"ok": False, "pending": True}   # 先佔位:同 nonce 第二筆在這封寄完前到,也只回「處理中」不再寄
                 cap = str(state.snapshot().get("captain") or "")
+                def fail(res):   # 驗不過就把佔位拿掉,不然同 nonce 永遠回「處理中」
+                    if nonce:
+                        with _reply_lock:
+                            _reply_seen.pop(nonce, None)
+                    return self._send(200, res)
                 if not DM_ID_RE.match(qid) or not CODE_RE.match(cap) or not text or len(text) > 2000:
-                    return self._send(200, {"ok": False, "err": "bad-args"})
+                    return fail({"ok": False, "err": "bad-args"})
                 m = next((x for x in _dm_items(cap) if x.get("id") == qid), None)   # 只認艦長席佇列裡真有的那一封(不信頁面帶來的 to/thread)
                 if not m:
-                    return self._send(200, {"ok": False, "err": "unknown-msg"})
+                    return fail({"ok": False, "err": "unknown-msg"})
                 to = (m.get("from") or {}).get("code")
                 if not to or to not in state.live_codes():
-                    return self._send(200, {"ok": False, "err": "sender-gone", "to": to})
+                    return fail({"ok": False, "err": "sender-gone", "to": to})
                 body = "回覆你的信「%s」(%s):%s" % ((m.get("subject") or "")[:40], qid, text)
                 r = self.dm({"to": [to], "text": body, "thread": m.get("thread"), "kind": "report"})
                 res = {"ok": bool(r.get("ok")), "dm": r, "to": to}   # ok = 信有沒有寄出;標已處理另外回 done(審查:寄出了但標不了 ≠ 沒寄出,不然頁面會讓人重寄)
                 if res["ok"] and done and m.get("status") in ("delivered", "read"):   # 佇列的規矩:只有 delivered/read 能標 done
                     res["done"] = inbox_mark_done(cap, qid, m.get("rev"))
                 log_action("inbox-reply", id=qid, to=to, ok=res["ok"], done=done)
+                if nonce:
+                    with _reply_lock:
+                        _reply_seen[nonce] = res
+                        while len(_reply_seen) > 200:
+                            _reply_seen.pop(next(iter(_reply_seen)))
                 return self._send(200, res)
             if path == "/api/positions":   # C0:頁面每 5 秒回報每個人在哪一層(喊話只送同一層);只收這一艙活著的席
                 live = state.live_codes()
@@ -1749,7 +2260,7 @@ def make_handler(state):
                 return self._send(200, {"ok": True, "n": len(codes)})
             if path == "/api/say":   # C0:艦長對這一層喊話 —— 泡泡 + 現場對話檔 + 同一層的席各收一封短 dm(要 PIN,跟寄信一樣)
                 if not pin_ok(self.headers):
-                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": "pin"})
+                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": pin_err()})
                 scene, text = str(req.get("scene") or ""), str(req.get("text") or "").strip()
                 if scene not in SCENES or not text or len(text) > 500:
                     return self._send(200, {"ok": False, "err": "bad-args"})
@@ -1760,23 +2271,24 @@ def make_handler(state):
                 store = captain_contacts.cached_store(CONTACTS_PATH)
                 codes = [c for c in seats_on_scene(seats, scene) if not (next((s for s in seats if s.get("code") == c), {}) or {}).get("bot")
                          and not store.is_blocked(f"seat:{state.cabin4}/{c}")]   # 封鎖的不送,也不讓他害整層收不到
-                r = self.dm({"to": codes, "text": shout_text("艦長", scene, entry["text"])}) if codes else {"ok": True, "results": []}   # 送清過的字,不送原文
+                r = self.dm({"to": codes, "text": shout_text("艦長", scene, entry["text"]), "via": "say"}) if codes else {"ok": True, "results": []}   # 送清過的字,不送原文
                 heard = [o["to"] for o in (r.get("results") or []) if o.get("rc") == 0]
                 log_action("say", scene=scene, chars=len(text), to=codes, heard=heard, ok=bool(r.get("ok")))
                 return self._send(200, {"ok": True, "entry": entry, "to": codes, "heard": heard, "dm": r})
             if path == "/api/contacts/set":   # 好友 / 分組 / 封鎖 / 靜音 / 備註:只動本機 contacts.json,對方不知道
                 if req.get("pin_fp") is not None and not pin_ok(self.headers):   # 釘/解釘公鑰指紋 = 信任決定,跟寄信一樣要 PIN
-                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": "pin"})
+                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": pin_err()})
                 store = captain_contacts.ContactStore(CONTACTS_PATH)
                 flag = lambda k: (None if req.get(k) is None else bool(req.get(k)))
                 r = store.set(str(req.get("key") or ""), friend=flag("friend"), group=(None if req.get("group") is None else str(req.get("group"))[:16]),
                               block=flag("block"), mute=flag("mute"), note=(None if req.get("note") is None else str(req.get("note"))),
                               pin_fp=(None if req.get("pin_fp") is None else str(req.get("pin_fp"))[:16]))
                 log_action("contact", key=req.get("key"), friend=req.get("friend"), group=req.get("group"), block=req.get("block"), mute=req.get("mute"), pin_fp=req.get("pin_fp"))
+                _inbox_cache[0] = 0.0   # C4 審查:剛按靜音/好友,收件匣的通知等級要馬上跟著變
                 return self._send(200, r)
             if path == "/api/contacts/send":   # 分期 B 群組發送:同一句話寄給這一組每個人(席位走 aib dm、廣場名字走 plaza dm);要 PIN
                 if not pin_ok(self.headers):
-                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": "pin"})
+                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": pin_err()})
                 store = captain_contacts.ContactStore(CONTACTS_PATH)
                 group, text = str(req.get("group") or "")[:16], str(req.get("text") or "").strip()
                 members = store.members(group)
@@ -1785,7 +2297,7 @@ def make_handler(state):
                 results = []
                 codes = [k.split(":", 1)[1].split("/", 1)[1] for k in members if k.startswith("seat:" + state.cabin4 + "/")]
                 if codes:   # one batch dm for every seat of this cabin (dm() already takes a list and validates once)
-                    r = self.dm({"to": codes, "text": text})
+                    r = self.dm({"to": codes, "text": text, "via": "group"})
                     per = {o["to"]: o for o in r.get("results") or []}
                     for c in codes:
                         o = per.get(c)
@@ -1794,7 +2306,9 @@ def make_handler(state):
                     kind, ident = key.split(":", 1)
                     if kind == "seat" and ident.startswith(state.cabin4 + "/"):
                         continue
-                    if kind == "plaza":
+                    if kind == "plaza" and edition() == "free":   # 10-12 免費版沒有廣場:群發也不碰 git
+                        results.append({"key": key, "ok": False, "via": None, "err": "not-in-free-edition"})
+                    elif kind == "plaza":
                         r = state.plaza.send(ident, text[:120].splitlines()[0], text); results.append({"key": key, "ok": bool(r.get("ok")), "via": "plaza dm", "err": r.get("err") or r.get("errout")})
                     else:
                         results.append({"key": key, "ok": False, "via": None, "err": "other-host"})   # 別台的席要等第 3 包 b 的 SSH 對話
@@ -1803,7 +2317,7 @@ def make_handler(state):
             if path == "/api/translate":   # only what the captain ticked the translate box for; content is not logged
                 engine = str(req.get("engine") or "google")
                 if engine == "ai" and not pin_ok(self.headers):   # the AI engine spends the captain's subscription: PIN like a dm
-                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": "pin"})
+                    log_action("pin-refused", path=path); return self._send(403, {"ok": False, "err": pin_err()})
                 return self._send(200, translate_text(req.get("text"), str(req.get("to") or ""), src=req.get("src"), engine=engine))
             if path == "/api/plaza/read":   # decrypt + mark read on this machine (nothing leaves the machine)
                 return self._send(200, state.plaza.read(str(req.get("id") or "")))
@@ -1821,11 +2335,11 @@ def make_handler(state):
                 return self._send(200, {"ok": True})
             if path in ("/api/dm", "/api/persona", "/api/seat/open", "/api/seat/close", "/api/plaza/dm") and not pin_ok(self.headers):
                 log_action("pin-refused", path=path)
-                return self._send(403, {"ok": False, "err": "pin"})
+                return self._send(403, {"ok": False, "err": pin_err()})
             if path == "/api/dm":
                 return self._send(200, self.dm(req))
             if path == "/api/plaza/dm":   # a private plaza message: pushed to git, no read receipt (the page says so)
-                return self._send(200, state.plaza.send(str(req.get("to") or ""), req.get("subject"), req.get("body")))
+                return self._send(200, state.plaza.send(str(req.get("to") or ""), req.get("subject"), req.get("body"), confirm=bool(req.get("confirm")), seen_fp=(str(req.get("fp"))[:16] if req.get("fp") else None)))
             if path == "/api/persona":
                 return self._send(200, self.persona(req))
             if path == "/api/look":
@@ -1965,17 +2479,26 @@ def make_handler(state):
 
         def dm(self, req):
             to = req.get("to")
-            to = [to] if isinstance(to, str) else (to or [])
+            to = [to] if isinstance(to, str) else (to if isinstance(to, list) else [])   # 審查:數字之類的 to 不能讓下面 for 迴圈炸掉
             text = str(req.get("text") or "").strip()
             live = state.live_codes()
+
+            def refused(err, out, bad=None):   # 10-12:伺服器這裡就擋下的也記進寄件紀錄(原本不記 → 時間線看不到「這封沒寄出」,之後寄成功一封,前面那行還會從畫面消失)
+                if text:   # 審查:去重、一次最多 50 筆(不然一個請求能灌爆寄件紀錄、把舊的換檔洗掉);bad = 真正出問題的席,其他人標 batch-refused(整批沒寄,不是他的問題)
+                    codes = list(dict.fromkeys(c for c in to if isinstance(c, str) and CODE_RE.match(c)))[:50]
+                    for c in codes:
+                        stage = err if bad is None or c in bad else "batch-refused"
+                        sent_append(state.cabin4, c, text, {"rc": None, "stage": stage, "id": None},
+                                        via=(req.get("via") if req.get("via") in ("say", "group") else None), cid=(str(req.get("cid"))[:40] if req.get("cid") else None))
+                return out
             if not text or len(text) > 4000 or text.startswith("-"):   # 開頭 - 會被 aib dm 當選項(審查:text 若剛好是 --file 會吃掉後面的 --thread)
-                return {"ok": False, "err": "bad-text"}
-            if not to or any(c not in live or not CODE_RE.match(c) for c in to):
-                return {"ok": False, "err": "unknown-seat"}
+                return refused("bad-text", {"ok": False, "err": "bad-text"})
+            if not to or any(not isinstance(c, str) or c not in live or not CODE_RE.match(c) for c in to):
+                return refused("unknown-seat", {"ok": False, "err": "unknown-seat"}, bad={c for c in to if not isinstance(c, str) or c not in live or not CODE_RE.match(c)})
             store = captain_contacts.ContactStore(CONTACTS_PATH)
             blocked = [c for c in to if store.is_blocked(f"seat:{state.cabin4}/{c}")]
             if blocked:
-                return {"ok": False, "err": "blocked", "blocked": blocked}
+                return refused("blocked", {"ok": False, "err": "blocked", "blocked": blocked}, bad=set(blocked))
             extra = []   # C2:回信可帶 --thread / --kind;照 dm_queue 的規矩驗,不合格就不帶(不擋信)
             thread, kind = req.get("thread"), req.get("kind")
             if isinstance(thread, str) and dm_queue.THREAD_RE.fullmatch(thread.strip()):
@@ -1992,6 +2515,9 @@ def make_handler(state):
                     out.append({"to": c, "rc": r.returncode, "stage": m.group(1) if m else None, "id": qid})
                 except Exception as e:
                     out.append({"to": c, "rc": None, "stage": None, "err": str(e)[:120]})
+                sent_append(state.cabin4, c, text, out[-1], thread=(thread.strip() if "--thread" in extra else None), kind=(kind if "--kind" in extra else None),
+                            via=(req.get("via") if req.get("via") in ("say", "group") else None),
+                            cid=(str(req.get("cid"))[:40] if req.get("cid") else None))   # D1;cid = 頁面這一筆的流水號(寄失敗沒有佇列 id 也能配對)
             log_action("dm", to=to, chars=len(text), results=out, cabin=state.cabin4)
             for o in out:
                 if o["rc"] == 0:
@@ -2063,6 +2589,23 @@ def make_handler(state):
     return H
 
 
+def should_persist_choice(action, a):
+    """要不要把這次的 --cabin / --port / --ship-seat 寫回 config.json(艦長的選擇)。
+    只有 install-boot 與 open 記;serve 是被叫起來跑的(launchd 開機項、開發時的示範伺服器),一律不寫 ——
+    開機項的參數本來就是 install-boot 當下從設定檔抄的,serve 再寫一次沒有用;反過來,開發時順手跑一個
+    serve --port 8772 就會把正式設定改掉,開機那台下次重啟撞埠起不來(10-11 撞過,the maintainer 令修)。"""
+    return action in ("install-boot", "open") and bool(a.cabin or a.port or a.ship_seat is not None)
+
+
+def should_claim_server_json(existing, existing_alive, my_port, my_pid=None, boot=False):
+    """serve 起來時要不要把 server.json 換成自己。server.json 是面板與 aib room open 找「正式那台」的地方。
+    另一台還活著、而且在別的埠 = 我是旁邊多跑的(開發時的示範伺服器),不蓋;沒有活的、同一埠(開機那台重啟)、或就是我,才寫。
+    (10-11 審查:示範 serve 蓋掉 server.json → 面板開到示範那台;示範停掉後 aib room open 用 config 的埠再起一台,撞開機那台。)"""
+    if boot or not existing_alive:   # 開機那台一律寫(第二輪審查:它掛掉、launchd 10 秒內重開前有示範搶先寫,回來後要拿回來)
+        return True
+    return existing.get("port") == my_port or (my_pid is not None and existing.get("pid") == my_pid)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Captain's Room local web page (aib room)")
     ap.add_argument("action", nargs="?", default="open", choices=["open", "serve", "status", "install-boot", "uninstall-boot", "set-pin", "clear-pin", "set-company",
@@ -2094,6 +2637,9 @@ def main(argv=None):
     if a.action in ("open", "serve", "install-boot") and not os.path.isfile(os.path.join(PAGE_DIR, "index.html")):
         print("aib room: the Captain's Room web page is not part of this version yet; "
               "`aib room contacts` and `aib room say` work in the terminal")
+        return 2
+    if a.action in FREE_BLOCKED_CLI and edition() == "free":
+        print("aib room %s: cross-host rooms and the plaza are not part of the free edition" % a.action)
         return 2
     cfg = read_config()
     if a.action == "add-host":
@@ -2195,15 +2741,15 @@ def main(argv=None):
     if a.action in ("set-pin", "clear-pin"):
         if a.action == "set-pin" and not re.fullmatch(r"[0-9]{4,12}", a.pin or ""):
             print(json.dumps({"ok": False, "err": "pin must be 4-12 digits (--pin)"})); return 2
-        cfg["pin"] = a.pin if a.action == "set-pin" else ""
+        cfg["pin"] = pin_hash(a.pin) if a.action == "set-pin" else ""
         write_config(cfg); log_action("pin-" + ("set" if cfg["pin"] else "cleared"))
         print(json.dumps({"ok": True, "pin": bool(cfg["pin"])})); return 0
     cabin = a.cabin or cfg.get("cabin") or "auto"
     port = a.port or int(cfg.get("port") or 8770)
     ship = a.ship_seat if a.ship_seat is not None else (cfg.get("ship_seat") or "")
     serve_args = ["--cabin", cabin, "--port", str(port)] + (["--ship-seat", ship] if ship else [])
-    if a.action in ("install-boot", "open", "serve") and (a.cabin or a.port or a.ship_seat is not None):
-        write_config(dict(cfg, cabin=cabin, port=port, ship_seat=ship))    # remember what the captain chose — merge: pin / company / hosts must survive every restart (10-11 bug: launchd's --cabin --port wiped them)
+    if should_persist_choice(a.action, a):
+        write_config(dict(cfg, cabin=cabin, port=port, ship_seat=ship))    # remember what the captain chose — merge: pin / company / hosts must survive every restart (10-11 bug: launchd's --cabin --port wiped them); serve never writes (see should_persist_choice)
     if a.action == "install-boot":
         return install_boot(serve_args)
     if a.action == "uninstall-boot":
@@ -2233,22 +2779,28 @@ def main(argv=None):
         cabin = "auto"
     st = State(cabin, ship or None)
     threading.Thread(target=st.loop, args=(a.every,), daemon=True).start()
-    threading.Thread(target=st.plaza.loop, daemon=True).start()   # plaza fetches git: its own thread, never in the seat loop
+    if edition() != "free":   # 免費版沒有廣場:不去抓 git
+        threading.Thread(target=st.plaza.loop, daemon=True).start()   # plaza fetches git: its own thread, never in the seat loop
     srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(st))
     url = f"http://127.0.0.1:{port}/"
     # tell the aib-seat pane where we are (url, pid, how to start us again); the pane shows the thumbnail + an open button
     info = {"url": url, "port": port, "cabin": cabin, "pid": os.getpid(), "script": os.path.abspath(__file__),
             "argv": ["serve"] + serve_args, "started": int(time.time()), "token": TOKEN}   # token: so `aib room contacts` on this Mac can ask the live server (file is 0600)
     os.makedirs(ROOM_DIR, exist_ok=True)
-    try:
-        os.unlink(SERVER_JSON + ".tmp")   # a stale 0644 tmp from a crash would keep its mode under O_CREAT
-    except OSError:
-        pass
-    fd = os.open(SERVER_JSON + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # 0600 from the first byte, then swap in
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(info, fh)
-    os.replace(SERVER_JSON + ".tmp", SERVER_JSON)
+    old_info, old_alive = server_alive()
+    if should_claim_server_json(old_info, old_alive, port, os.getpid(), boot=is_boot_server()):   # launchd 起的開機項:帶 XPC_SERVICE_NAME = 開機項名稱、父行程 = launchd
+        try:
+            os.unlink(SERVER_JSON + ".tmp")   # a stale 0644 tmp from a crash would keep its mode under O_CREAT
+        except OSError:
+            pass
+        fd = os.open(SERVER_JSON + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # 0600 from the first byte, then swap in
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(info, fh)
+        os.replace(SERVER_JSON + ".tmp", SERVER_JSON)
+    else:   # 旁邊多跑的一台:正式那台的 server.json 不動,自己的網址印在終端機
+        log_action("serve-side-run", port=port, keeps=old_info.get("port"))
+        print(json.dumps({"ok": True, "side_run": True, "keeps_server_json_of_port": old_info.get("port")}), flush=True)
     print(json.dumps({"ok": True, "url": url, "cabin": st.cabin4, "auto": st.auto}), flush=True)
     try:
         srv.serve_forever()

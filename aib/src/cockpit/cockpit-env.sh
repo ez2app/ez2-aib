@@ -194,6 +194,22 @@ if [ -z "${EZ2_ROUTE_REGISTRY:-}" ]; then
     fi
   done
 fi
+# 10-12 新用戶:vault 預設照 route_register.default_vault(EZ2_VAULT_DIR > EZ2_VAULT_ROOT > ~/Desktop/Obsidian/Ez2 有才算
+#   > ~/.ez2-aib/vault);契約都找不到、vault 又是 aib 自己的預設 ⇒ 用套件附的預設契約(有自己 vault 的照舊不猜)。
+if [ -z "${EZ2_VAULT_DIR:-}" ]; then
+  if [ -n "${EZ2_VAULT_ROOT:-}" ]; then EZ2_VAULT_DIR="$EZ2_VAULT_ROOT"
+  elif [ -d "$HOME/Desktop/Obsidian/Ez2" ]; then EZ2_VAULT_DIR="$HOME/Desktop/Obsidian/Ez2"
+  else EZ2_VAULT_DIR="${EZ2_AIB_HOME:-$HOME/.ez2-aib}/vault"; fi
+fi
+export EZ2_VAULT_DIR
+# 10-12 the maintainer「一併修正」:團隊新機(有 Ez2 知識庫、沒有 ez2-ai)⇒ 私有倉隨附的 ez2-ai 正本副本(公開版沒有這個檔)
+if [ -z "${EZ2_ROUTE_REGISTRY:-}" ] && [ -f "$COCKPIT_DIR/../persona_route/vendor/obsidian-route-registry-contract.json" ]; then
+  EZ2_ROUTE_REGISTRY="$COCKPIT_DIR/../persona_route/vendor/obsidian-route-registry-contract.json"
+fi
+if [ -z "${EZ2_ROUTE_REGISTRY:-}" ] && [ "$EZ2_VAULT_DIR" = "${EZ2_AIB_HOME:-$HOME/.ez2-aib}/vault" ] \
+   && [ -f "$COCKPIT_DIR/../persona_route/default-route-contract.json" ]; then
+  EZ2_ROUTE_REGISTRY="$COCKPIT_DIR/../persona_route/default-route-contract.json"
+fi
 export EZ2_ROUTE_REGISTRY="${EZ2_ROUTE_REGISTRY:-}"
 # ★ 08-17 艦外裁決(L2-00 對清):全機 69 份同名契約四種版本,**D lane(人格/大腦
 #   綁定)讀契約一律 `git show main:samples/…`,不走工作樹檔案系統**。
@@ -210,7 +226,7 @@ if [ -z "${EZ2_ROUTE_CONTRACT_SPEC:-}" ]; then
   fi
 fi
 export EZ2_ROUTE_CONTRACT_SPEC
-export EZ2_VAULT_DIR="${EZ2_VAULT_DIR:-$HOME/Desktop/Obsidian/Ez2}"
+export EZ2_VAULT_DIR   # 已在上面照 default_vault 的規則定好(10-12)
 
 # 其餘外部路徑一起過同一道閘。★ 只擋 INSTANCE_HOME/STATE_DIR 是不夠的
 # (e5300 08-17 指出):同樣的錯從別的變數進來時,**下游不同、症狀會長得

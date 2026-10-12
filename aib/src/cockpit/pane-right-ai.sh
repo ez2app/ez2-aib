@@ -1053,6 +1053,8 @@ _BRIDGE_HEALTH_SHORT = {
     'lock-held': '對話被占', 'thread-status': '對話未載入',
     'unbound': '沒綁對話', 'doorbell-expired': '門鈴過期',   # 10-07 @00000:claudebot/grokbot 沒綁對話(sand_bridge status_payload)
     'wake-failed': '門鈴失敗', 'not-collecting': '沒來收信',   # 10-07 @00000:grokbot 門鈴打不通、grokbot/musebot 久久不收信
+    'no-doorbell': '沒接門鈴', 'no-hook': '沒裝hook', 'agent-missing': '名冊沒這隻',   # 10-11 @00000 P2:bot_ready 就緒檢查
+    'no-mail-tool': '沒收信工具',
 }
 _BRIDGE_PROVIDERS = ('codexbot', 'sand', 'grokbot', 'claudebot', 'musebot')
 _HEARTBEAT_PROVIDERS = ('sand', 'grokbot', 'claudebot', 'musebot')   # sand_bridge 每 2 秒寫一次心跳(HEARTBEAT_WRITE_S)

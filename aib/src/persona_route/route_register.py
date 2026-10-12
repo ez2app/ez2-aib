@@ -179,7 +179,7 @@ def read_contract_bytes(spec=None):
     - `git:<repo>#<rev>:<relpath>`:`git -C <repo> show <rev>:<relpath>`,**不走工作樹檔案系統**
       (艦外 08-17 23:42 裁:全機 69 份同名檔四種版本,D lane 一律讀 git main 正本)。
     讀不到回 None。"""
-    p = spec or os.environ.get("EZ2_ROUTE_REGISTRY")
+    p = spec or os.environ.get("EZ2_ROUTE_REGISTRY") or fallback_contract()   # 10-12 新機器 / 團隊新機
     if not p:
         return None
     git = _parse_git_spec(p)
@@ -226,7 +226,48 @@ def default_contract_spec(env=None, repo_has_main=None):
             has_main = False
     if has_main:
         return "git:%s#main:%s" % (repo, DEFAULT_CONTRACT_REL)
-    return env.get("EZ2_ROUTE_REGISTRY") or None
+    return env.get("EZ2_ROUTE_REGISTRY") or fallback_contract(env)
+
+
+# 10-12 新用戶全面檢查(the maintainer「讓用戶在用時不會有這個問題」):新機器沒有 ez2-ai、也沒設契約 ⇒ aib newrole / 第二大腦
+#   全卡死。套件附一份預設契約,**只在 vault 也是 aib 自己的預設(~/.ez2-aib/vault)時**才用 —— 有自己 vault 的人
+#   (設了 EZ2_VAULT_DIR / EZ2_VAULT_ROOT,或有 ~/Desktop/Obsidian/Ez2)照舊不猜,不會把資料夾開進別人的庫。
+BUNDLED_CONTRACT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "default-route-contract.json")
+
+
+def aib_default_vault(env=None):
+    env = os.environ if env is None else env
+    aib_home = env.get("EZ2_AIB_HOME") or os.path.join(os.path.expanduser("~"), ".ez2-aib")
+    return os.path.join(aib_home, "vault")
+
+
+def default_vault(env=None):
+    """vault 位置,全套件同一條規則:EZ2_VAULT_DIR > EZ2_VAULT_ROOT > ~/Desktop/Obsidian/Ez2(有才算)> ~/.ez2-aib/vault。"""
+    env = os.environ if env is None else env
+    for var in ("EZ2_VAULT_DIR", "EZ2_VAULT_ROOT"):
+        if env.get(var):
+            return os.path.expanduser(env[var])
+    legacy = os.path.join(os.path.expanduser("~"), "Desktop", "Obsidian", "Ez2")
+    return legacy if os.path.isdir(legacy) else aib_default_vault(env)
+
+
+# 10-12 the maintainer「一併修正」:團隊成員的 Mac(有 Ez2 的知識庫、沒有 ez2-ai)⇒ 私有倉隨附一份 ez2-ai 正本的副本
+#   (src/persona_route/vendor/obsidian-route-registry-contract.json,只在私有倉;公開版不帶 —— export_aib EXCLUDE)。
+#   順序:顯式 > ez2-ai git main > EZ2_ROUTE_REGISTRY > 私有倉隨附正本 > 套件預設(只在 aib 預設 vault)。
+VENDORED_CONTRACT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "obsidian-route-registry-contract.json")
+
+
+def fallback_contract(env=None):
+    if os.path.isfile(VENDORED_CONTRACT):
+        return VENDORED_CONTRACT
+    return bundled_contract_if_default_vault(env)
+
+
+def bundled_contract_if_default_vault(env=None):
+    env = os.environ if env is None else env
+    if os.path.abspath(default_vault(env)) == os.path.abspath(aib_default_vault(env)) and os.path.isfile(BUNDLED_CONTRACT):
+        return BUNDLED_CONTRACT
+    return None
 
 
 def resolve_route_folder(route_key, spec=None, contract=None, use_index=True):

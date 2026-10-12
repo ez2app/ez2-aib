@@ -4,6 +4,19 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.5
+
+- The Captain's Room web page (`aib room`) — free edition: your cabin drawn as an office, every seat's state, the cabin's inbox, persona and second-brain tabs, alerts when something waits for your call. Cross-host street view, the collaboration plaza and opening/closing seats from the page are not in the free edition (the server refuses them too).
+- Captain's Room security: the PIN is stored salted and hashed and locks for 30 s after 5 wrong tries; the page cannot be framed by other sites; data from other hosts is cleaned before it is shown.
+- A brand-new computer no longer gets stuck: aib ships a default route contract and keeps its own vault in `~/.ez2-aib/vault` (created on first use), so `aib newrole` and the second-brain pane work without any extra setup. If you have your own vault, nothing changes.
+- The one-line install runs `aib init` for you.
+- Commands that only exist in the full edition now say so instead of showing a Python error.
+- `aib doctor` is now reachable: it lists what this computer still lacks and how to fix it, checks only the AI tools you installed, and covers the second brain (vault, route contract, note-format modules).
+- A mistyped command says "there is no … command" in your language and lists the common ones, instead of printing the full usage in four languages.
+- The public repository's CI now installs aib into an empty home on Linux and macOS and runs a new user's first commands, so these dead ends cannot come back unnoticed.
+- The ledger's event schemas ship with aib (earlier versions left them out, so anything that writes the ledger refused to run).
+- `aib init` no longer crashes on its last step; Python cache files go to `~/.cache/ez2-aib` instead of the install folder.
+
 ## 0.1.4
 
 - The cockpit color theme (`themes/aib-default.json`) is now included; earlier versions left it out, so the cockpit could not find its theme.

@@ -176,7 +176,7 @@ class ContactStore:
             if not isinstance(d, dict):
                 raise ValueError("not a dict")
             for k in self.data:
-                if k in d:
+                if k in d and isinstance(d[k], type(self.data[k])):   # 型別不對的欄位用預設值(C4 審查:dict 欄被寫成 list 會讓 entry() 炸到 /api/state)
                     self.data[k] = d[k]
         except FileNotFoundError:
             pass

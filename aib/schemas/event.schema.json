@@ -1,0 +1,822 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ez2.shop/schemas/aib/event.schema.json",
+  "title": "Ez2 AIB 帳本事件 / Ledger Event (draft)",
+  "description": "單一事件脊椎(ADR-0001 原理 4):一切是事件進同一本 append-only 帳本,看板/任務/收件匣皆為投影。重 payload 不進事件本體——依原理 3(檔案即真相)以 body.data_ref 的 hash 指標外置,事件本身保持封閉結構(additionalProperties:false)、可簽章、可重放(原理 7:HLC+簽章)。事件種類固定 15 種,新增種類必須走 ADR。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "kind",
+    "hlc",
+    "actor",
+    "body",
+    "causation",
+    "integrity"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "本 schema 版本;草案期為 0.1.0-draft,定版時改 semver 並凍結。",
+      "const": "0.1.0-draft"
+    },
+    "event_id": {
+      "description": "事件唯一識別:ev_ + 事件 canonical body 的 SHA-256(內容定址,天然防改寫、可去重)。",
+      "type": "string",
+      "pattern": "^(?:ev|st)_[0-9a-f]{64}$"
+    },
+    "kind": {
+      "description": "事件種類(封閉集合,恰 15 種,≤15 上限)。task.claimed 獨立於 task.status_changed 是為了幽靈認領警示(E3.2)可直接投影。",
+      "enum": [
+        "task.created",
+        "task.claimed",
+        "task.status_changed",
+        "task.verified",
+        "evidence.recorded",
+        "message.outbound",
+        "message.inbound",
+        "presence.heartbeat",
+        "identity.bound",
+        "identity.degraded",
+        "decision.requested",
+        "decision.resolved",
+        "memory.checkpoint",
+        "memory.distilled",
+        "system.note"
+      ]
+    },
+    "hlc": {
+      "$ref": "#/$defs/hlc"
+    },
+    "actor": {
+      "$ref": "#/$defs/actor"
+    },
+    "body": {
+      "description": "事件內容。summary 是給人看的一句話(i18n 雙語,原理 11);機器可讀細節一律外置成檔案,以 data_ref 的 path+sha256 指過去。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary"
+      ],
+      "properties": {
+        "summary": {
+          "$ref": "#/$defs/i18n_text"
+        },
+        "subject": {
+          "description": "本事件作用的對象(任務節點/訊息/身份/決策等),供投影引擎跳轉(E1.3)。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "worktree_node",
+                "message",
+                "identity",
+                "decision",
+                "memory",
+                "evidence",
+                "other"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        "data_ref": {
+          "description": "外置 payload 指標:repo 內相對路徑 + 內容 SHA-256。投影不得依賴未入帳 hash 的檔案內容。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "media_type": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail"
+          ],
+          "description": "機器判定欄:task.verified 專用;文字 summary 無權威,消費者只信此欄(E1.5 codex 審 2026-08-10)"
+        },
+        "approval_ref": {
+          "description": "核准來源指標(ADR-0004 §3-2)。只用於 decision.resolved 的葉子核准事件。★刻意不重用 data_ref:data_ref 的語意是「整檔內容雜湊」,拿它裝單行雜湊是語意造假;而真的裝整檔雜湊,則大綱任何一次編輯都會作廢全部核准,與 ADR-0004 §6 第五條守衛「純排版重排不得改變任何一葉的 approval」直接打架。outline_line_sha256 必須是**正規化語意**的雜湊(編號/approval/優先級/標題四欄,去除前後與欄間空白差異),不是原始位元組——要綁的是人表達了什麼,不是他的編輯器怎麼排版。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outline_path",
+            "node_id",
+            "outline_line_sha256",
+            "source_commit"
+          ],
+          "properties": {
+            "outline_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "node_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "outline_line_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "source_commit": {
+              "type": "string",
+              "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+            },
+            "normalization": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "正規化演算法識別字,例如 outline-leaf-v1。改演算法必須改此值,否則舊事件會被誤判為仍然有效。"
+            }
+          }
+        },
+        "assignee": {
+          "$ref": "#/$defs/work_item_lane",
+          "description": "裁決工作項的持久車道。只可與 source=ruling 的 task.created 一起出現。"
+        },
+        "assignee_seat": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{5}$",
+          "description": "指派當下的暫時席位五碼；比對工作歸屬時不得代替 assignee。"
+        },
+        "source": {
+          "const": "ruling",
+          "description": "工作項母體標記；大綱卡不帶此欄。"
+        },
+        "work_item": {
+          "$ref": "#/$defs/ruling_work_item_ref"
+        },
+        "task_lease": {
+          "$ref": "#/$defs/task_lease"
+        },
+        "task_transition": {
+          "$ref": "#/$defs/task_transition"
+        }
+      }
+    },
+    "evidence_refs": {
+      "description": "本事件宣稱所附的證據(evidence.schema.json 的 evidence_id)。無證據的宣稱依原理 1 只是待驗證宣稱。",
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "pattern": "^evd_[0-9a-f]{64}$"
+      }
+    },
+    "causation": {
+      "description": "因果鏈:causation_id=直接引發本事件的事件(根事件為 null);correlation_id=同一 lane/工作流的關聯鍵;chain=由根到本事件的祖先摘要(定長上限,防無限增長)。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "causation_id"
+      ],
+      "properties": {
+        "causation_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:ev|st)_[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "chain": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "pattern": "^(?:ev|st)_[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "integrity": {
+      "description": "完整性三件套:body_sha256(canonical body 雜湊)、prev_event_hash(append-only 鏈,創世事件為 null)、signature(actor 簽章)。任一驗不過=整條事件不可信,fail-closed(原理 10:此閘門可擋,但投影/回饋器讀取永不因單筆壞事件癱瘓全域)。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "body_sha256",
+        "prev_event_hash",
+        "signature"
+      ],
+      "properties": {
+        "body_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "prev_event_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "alg",
+            "key_id",
+            "value"
+          ],
+          "properties": {
+            "alg": {
+              "description": "unsigned_draft 僅限自舉期,投影必須把它降級顯示為未簽章;定版後移除。",
+              "enum": [
+                "ed25519",
+                "hmac_sha256",
+                "unsigned_draft"
+              ]
+            },
+            "key_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "value": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "work_item_lane": {
+      "enum": [
+        "root",
+        "pm",
+        "dev1",
+        "design",
+        "qa",
+        "monitor"
+      ]
+    },
+    "ruling_work_item_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "identity_sha256",
+        "status",
+        "ruling_ref"
+      ],
+      "properties": {
+        "schema": {
+          "const": "ez2-aib/ruling-work-item-ref/v1"
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "status": {
+          "const": "in_progress"
+        },
+        "ruling_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source_id",
+            "source_sha256"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+            },
+            "source_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "source_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "建立投影所需的原始標題；新 producer 必填，舊事件可缺。"
+        },
+        "priority": {
+          "enum": [
+            "p0",
+            "p1",
+            "p2",
+            "p3"
+          ],
+          "description": "建立投影所需的原始優先級；新 producer 必填，舊事件可缺。"
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "建立投影所需的來源時間；新 producer 必填，舊事件可缺。"
+        }
+      }
+    },
+    "task_lease": {
+      "description": "裁決工作項的持久 lease 效果。只准出現在 task.claimed；lock 不是此狀態的真相源。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "operation",
+        "lease_id",
+        "owner",
+        "lease_generation",
+        "idempotency_key",
+        "request_sha256",
+        "observed_at_ms",
+        "expires_at_ms"
+      ],
+      "properties": {
+        "schema": {
+          "const": "ez2-aib/work-item-task-lease/v1"
+        },
+        "operation": {
+          "enum": [
+            "acquired",
+            "renewed",
+            "released"
+          ]
+        },
+        "lease_id": {
+          "type": "string",
+          "pattern": "^lease-[0-9a-f]{32}$"
+        },
+        "owner": {
+          "$ref": "#/$defs/work_item_lane"
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "observed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expires_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "task_transition": {
+      "description": "工作項的獨立狀態軸轉移。只准出現在 task.status_changed，lease CAS 只授權本次轉移，不合併各狀態軸。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "axis",
+        "from_state",
+        "to_state",
+        "task_generation",
+        "owner",
+        "lease_id",
+        "lease_generation",
+        "idempotency_key",
+        "request_sha256",
+        "observed_at_ms"
+      ],
+      "properties": {
+        "schema": {
+          "const": "ez2-aib/work-item-task-transition/v1"
+        },
+        "axis": {
+          "enum": [
+            "execution",
+            "review",
+            "verification",
+            "approval"
+          ]
+        },
+        "from_state": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "to_state": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "task_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "owner": {
+          "$ref": "#/$defs/work_item_lane"
+        },
+        "lease_id": {
+          "type": "string",
+          "pattern": "^lease-[0-9a-f]{32}$"
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "observed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "hlc": {
+      "description": "Hybrid Logical Clock:wall_ms(實體毫秒)+ counter(同毫秒序)+ node_id(產生節點)。全帳本可全序排序、可重放(原理 7)。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wall_ms",
+        "counter",
+        "node_id"
+      ],
+      "properties": {
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "counter": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "source_wall_ms": {
+          "description": "來源時戳(回填時餵進來的 wall_ms)。夾制時 wall_ms 會被抬到鏈尾,這一格保留原值。**選填**:舊事件沒有它,設成必填會讓既有帳本全部開不起來。",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "actor": {
+      "description": "事件產生者。engine/model 為自由字串(原理 2 廠商中立:核心不 enum 任何廠商,廠商特定驗證活在 adapter);kind=human 的事件是人類裁決入帳的載體(原理 13)。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ai_id",
+        "sig",
+        "kind"
+      ],
+      "properties": {
+        "ai_id": {
+          "description": "完整身份:engine:host:uuid(承重欄位,不得只留末五碼——末五碼是顯示層決策)。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sig": {
+          "description": "顯示簽名,如 pm@00000/Claude。",
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,32}@[0-9a-f]{4,8}/[A-Za-z0-9._-]{1,32}$"
+        },
+        "kind": {
+          "enum": [
+            "human",
+            "main",
+            "sub_agent",
+            "system"
+          ]
+        },
+        "engine": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "lineage": {
+          "description": "血緣:sub_agent 必填其 spawner 的 ai_id(血緣律,對齊 E2.7)。",
+          "type": "string",
+          "maxLength": 256
+        },
+        "trust": {
+          "description": "入帳當下的信任分級快照(E4.3 T0-T3);registry 未驗證者記 t0_unbound。",
+          "enum": [
+            "t0_unbound",
+            "t1_bound",
+            "t2_examined",
+            "t3_trusted"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "sub_agent"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai_id",
+          "sig",
+          "kind",
+          "lineage"
+        ]
+      }
+    },
+    "i18n_text": {
+      "description": "雙語文字(原理 11:i18n 是地基)。zh-TW 必填,en 定版前補齊。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zh-TW"
+      ],
+      "properties": {
+        "zh-TW": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "en": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "task.verified"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "else": {
+        "properties": {
+          "body": {
+            "not": {
+              "required": [
+                "verdict"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "task.claimed",
+              "task.status_changed"
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "body": {
+            "required": [
+              "subject"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "body": {
+            "required": [
+              "source"
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "task.created"
+          },
+          "body": {
+            "required": [
+              "source",
+              "assignee",
+              "work_item"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "body": {
+            "required": [
+              "assignee"
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "task.created"
+          },
+          "body": {
+            "required": [
+              "source",
+              "assignee",
+              "work_item"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "body": {
+            "required": [
+              "assignee_seat"
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "task.created"
+          },
+          "body": {
+            "required": [
+              "source",
+              "assignee",
+              "assignee_seat",
+              "work_item"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "body": {
+            "required": [
+              "work_item"
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "task.created"
+          },
+          "body": {
+            "required": [
+              "source",
+              "assignee",
+              "work_item"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "body": {
+            "required": [
+              "task_lease"
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "task.claimed"
+          },
+          "body": {
+            "required": [
+              "subject",
+              "task_lease"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "body": {
+            "required": [
+              "task_transition"
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "task.status_changed"
+          },
+          "body": {
+            "required": [
+              "subject",
+              "task_transition"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

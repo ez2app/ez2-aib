@@ -584,7 +584,58 @@ def check_cabin_env(repo_root, env=None):
                    "python3 src/cockpit/cabin_env_audit.py --socket %s" % sock)
 
 
-def run_all(state_root, repo_root, providers):
+def check_second_brain(repo_root):
+    """10-12 新用戶全面檢查:第二大腦三件事 —— vault 在哪、路由契約讀得到、筆記格式模組拿得到(ez2-ai 或隨附副本)。"""
+    out = []
+    try:
+        sys.path.insert(0, str(Path(repo_root) / "src" / "persona_route"))
+        import route_register as RR
+    except Exception as err:  # noqa: BLE001
+        return [_result("brain_contract", FAIL, "載入 route_register 失敗:%s" % err, "確認安裝完整")]
+    vault = RR.default_vault()
+    default = os.path.abspath(vault) == os.path.abspath(RR.aib_default_vault())
+    out.append(_result("brain_vault", OK, "%s%s" % (vault, "(aib 預設,第一次用時自動建立)" if default else "")))
+    spec = RR.default_contract_spec()
+    if RR.read_contract_bytes(spec) is None:
+        out.append(_result("brain_contract", FAIL, "路由契約讀不到(你有自己的知識庫:%s)" % vault,
+                           "把 EZ2_ROUTE_REGISTRY 指到你的路由契約檔;或拿掉 EZ2_VAULT_DIR,改用 aib 自己的 ~/.ez2-aib/vault"))
+    else:
+        out.append(_result("brain_contract", OK, str(spec)))
+    vendor = Path(repo_root) / "src" / "memory" / "vendor"
+    ez2ai = Path(os.path.expanduser(os.environ.get("EZ2_AI_REPO") or "~/ez2-ai"))
+    if ez2ai.is_dir():
+        out.append(_result("brain_note_format", OK, "讀 %s" % ez2ai))
+    elif (vendor / "shared" / "ez2-note-format.js").is_file():
+        out.append(_result("brain_note_format", OK, "用隨附副本 %s" % vendor))
+    else:
+        out.append(_result("brain_note_format", FAIL, "筆記格式模組拿不到(沒有 ez2-ai,也沒有隨附副本)",
+                           "更新 aib(aib update)取得隨附副本"))
+    if not shutil.which("node"):
+        out.append(_result("brain_node", FAIL, "找不到 node(寫第二大腦要用)", "安裝 Node.js(macOS:brew install node)"))
+    return out
+
+
+def provider_checks(providers, explicit):
+    """預設(沒給 --provider)只檢查**裝了的** AI 工具;沒裝的合成一行「可選、沒裝」,一個都沒裝才算缺。
+    明給 --provider 的照舊逐一檢查(沒裝就 FAIL)。"""
+    if explicit:
+        out = []
+        for name in providers:
+            out += [check_provider_cli(name), check_provider_login(name)]
+        return out
+    have = [n for n in providers if shutil.which(n)]
+    out = []
+    for name in have:
+        out += [check_provider_cli(name), check_provider_login(name)]
+    if not have:
+        out.append(_result("provider_any", FAIL, "一個 AI 工具都沒裝", "至少裝一個:重跑安裝指令並加 --tools,或 aib update --tools"))
+    missing = [n for n in providers if n not in have]
+    if missing:
+        out.append(_result("provider_optional", OK, "沒裝(可選,要用再裝):%s" % "、".join(missing)))
+    return out
+
+
+def run_all(state_root, repo_root, providers, explicit_providers=True):
     checks = [check_python(), check_git(),
               check_state_root(state_root), check_state_root_perms(state_root),
               check_writable(state_root), check_ledger(state_root),
@@ -602,9 +653,8 @@ def run_all(state_root, repo_root, providers):
         checks.append(_result("secrets_perms", FAIL,
                               "載入金鑰櫃失敗:%s" % err,
                               "確認 src/bootstrap/aib_secrets.py"))
-    for name in providers:
-        checks.append(check_provider_cli(name))
-        checks.append(check_provider_login(name))
+    checks += check_second_brain(repo_root)
+    checks += provider_checks(providers, explicit_providers)
     checks.append(check_dm_latency(state_root, repo_root))
     return checks
 
@@ -628,7 +678,7 @@ def main(argv=None):
         # 漏掉會紅並指名是這一處。刻意保持字面值:對帳閘的解析器讀
         # 的是字面 list,改成動態讀登記簿會讓它解不到而誤判成儀器壞掉。
         "claude", "codex", "agy", "copilot", "grok", "deepseek", "kiosapi", "nvidia", "teamo", "teamoclaude", "openrouter", "typesafe", "openrouterjev", "sand", "grokbot", "codexbot", "claudebot", "musebot"]
-    checks = run_all(args.state_root, args.repo_root, providers)
+    checks = run_all(args.state_root, args.repo_root, providers, explicit_providers=args.provider is not None)
 
     counts = {OK: 0, FAIL: 0, MANUAL: 0}
     for c in checks:

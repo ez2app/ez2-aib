@@ -259,6 +259,16 @@ runs only what changed too. Pull requests<sup>[52]</sup> from forks<sup>[53]</su
 - [52] Pull request (PR): a request asking the project owner to merge your changes.
 - [53] Fork: someone's own copy of your project under their account.
 
+## Troubleshooting
+
+| You see | What it means / what to do |
+|---|---|
+| `aib: there is no "…" command` | A typo or a command this version does not have. `aib --help` lists them all. |
+| `… this copy of aib does not include this feature` | The command belongs to the full edition (cross-host fleet, plaza, reports…). The open-source edition works without it. |
+| `aib newrole` / the second brain asks for `EZ2_ROUTE_REGISTRY` | You set your own vault (`EZ2_VAULT_DIR`, or you have `~/Desktop/Obsidian/Ez2`), so aib will not guess its folders. Either point `EZ2_ROUTE_REGISTRY` to your route contract, or unset `EZ2_VAULT_DIR` to use aib's own vault in `~/.ez2-aib/vault`. |
+| The installer says another `aib` is already in `~/.local/bin` | Your existing aib keeps working; the open-source copy sits next to it in `~/ez2-aib`. To try the cockpit with it, use a separate macOS user account. |
+| Anything else | `aib support` collects a de-identified report (nothing is sent); attach it to a GitHub issue. |
+
 ## Uninstall
 
 ```sh

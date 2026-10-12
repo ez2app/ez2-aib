@@ -1051,10 +1051,58 @@ def argv_of(pid):
     return out.strip()[:ARGV_KEEP]
 
 
+DRAFT_TAIL_LINES = 40
+DRAFTS_DIR = os.environ.get("EZ2_AIB_IDLE_DRAFTS") or os.path.join(AIB_MAIN_HOME, "pending")
+
+
+def save_pane_tails(target, out_dir=None, now=None):
+    """收艙前把要收的每個 tmux 伺服器裡每個窗格的最後 DRAFT_TAIL_LINES 行存成一個檔(10-12 a seat):
+    10-11 關 eda4 艙時,6 席輸入框裡打好沒送出的字跟著消失,找不回來。輸入框就在窗格最底下,存尾巴就存到了。
+    只讀(list-panes / capture-pane),不動任何東西。回檔案路徑;沒有窗格或存不了 ⇒ None(不擋收艙,呼叫端照常收)。"""
+    socks = [st[1] for st in target.get("steps") or [] if st[0] == "kill-server"]
+    chunks = []
+    for sock in socks:
+        out = _run([TMUX, "-S", sock, "list-panes", "-a", "-F",
+                    "#{pane_id}\t#{session_name}\t#{window_id}\t#{window_name}"], timeout=5)
+        if out is None:
+            continue
+        for ln in out.splitlines():
+            parts = ln.split("\t")
+            if len(parts) != 4:
+                continue
+            text = _run([TMUX, "-S", sock, "capture-pane", "-p", "-t", parts[0], "-S", "-%d" % DRAFT_TAIL_LINES],
+                         timeout=5)
+            if text is None:
+                continue
+            body = "\n".join(text.rstrip("\n").splitlines()[-DRAFT_TAIL_LINES:])
+            chunks.append("===== %s %s %s(%s)\n%s\n" % (sock.rsplit("/", 1)[-1], parts[2], parts[3], parts[1], body))
+    if not chunks:
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(target.get("id") or "target"))
+    base = os.path.join(out_dir or DRAFTS_DIR, "CLOSED-PANES-%s-%s" % (safe, stamp))
+    try:
+        os.makedirs(os.path.dirname(base), exist_ok=True)
+        for n in range(100):                      # 同一秒同名(不同目標清洗後撞名)⇒ 加 -N,不覆寫(審查)
+            path = base + ("-%d" % n if n else "") + ".txt"
+            try:                                  # 一建立就是 0600:輸入框可能有人打到一半的東西,只給自己看(審查:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # 先寫再 chmod 有一段可被別人讀)
+            except FileExistsError:
+                continue
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write("".join(chunks))
+            return path
+    except OSError:
+        return None
+    return None
+
+
 def execute(target, dry_run=False, grace_s=1.5):
-    """回 dict(steps_run, killed, survivors, argv)。只碰 target 自己盤點到的 PID。
-    argv:{"<pid>": "<殺之前量到的指令列>"},dry-run 也量(讓 --dry-run 的紀錄說得出會殺到什麼)。"""
+    """回 dict(steps_run, killed, survivors, argv, drafts)。只碰 target 自己盤點到的 PID。
+    argv:{"<pid>": "<殺之前量到的指令列>"},dry-run 也量(讓 --dry-run 的紀錄說得出會殺到什麼)。
+    drafts:真的收之前存下的窗格尾巴檔(save_pane_tails);dry-run 不存。"""
     ran, killed, argv = [], [], {}
+    drafts = None if dry_run else save_pane_tails(target)
     for step in target["steps"]:
         if step[0] == "kill-server":
             cmd = [TMUX, "-S", step[1], "kill-server"]
@@ -1082,7 +1130,7 @@ def execute(target, dry_run=False, grace_s=1.5):
     if not dry_run and target["kill_pids"]:
         time.sleep(grace_s)
         survivors = [p for p in target["kill_pids"] if p > 1 and _pid_alive(p)]
-    return {"steps_run": ran, "killed": killed, "survivors": survivors, "argv": argv}
+    return {"steps_run": ran, "killed": killed, "survivors": survivors, "argv": argv, "drafts": drafts}
 
 
 def log_line(record, path=LOG_PATH):
@@ -1315,6 +1363,8 @@ def cmd_close(args, policy):
               "forced": bool(args.force), **res})
     print(t("aib.idle.close.done", target=tg["id"], n=len(res["killed"]),
             survivors=len(res["survivors"])))
+    if res.get("drafts"):
+        print(t("aib.idle.close.drafts_saved", path=res["drafts"]))
     return 0
 
 

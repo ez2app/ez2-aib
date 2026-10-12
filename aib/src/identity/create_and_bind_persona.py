@@ -46,11 +46,21 @@ from pathlib import Path
 LIBRARY_ROUTE_KEY = "product.expert.agent_library"
 
 AIB_HOME = Path(os.environ.get("EZ2_AIB_HOME", os.path.expanduser("~/.ez2-aib")))
-DEFAULT_VAULT = Path(os.environ.get("EZ2_VAULT_DIR", os.path.expanduser("~/Ez2/Vault")))
-if not DEFAULT_VAULT.is_dir():
-    alt_vault = Path(os.path.expanduser("~/Desktop/Obsidian/Ez2"))
-    if alt_vault.is_dir():
-        DEFAULT_VAULT = alt_vault
+# 10-12 新用戶全面檢查:vault 預設跟全套件同一條規則(route_register.default_vault):
+#   EZ2_VAULT_DIR > EZ2_VAULT_ROOT > ~/Desktop/Obsidian/Ez2(有才算)> ~/.ez2-aib/vault。以前的 ~/Ez2/Vault 沒有人有。
+def _aib_default_vault():
+    return Path(os.environ.get("EZ2_AIB_HOME") or os.path.expanduser("~/.ez2-aib")) / "vault"
+
+
+def _default_vault():   # 與 route_register.default_vault 同一條規則(這裡不在載入時 import 它)
+    for var in ("EZ2_VAULT_DIR", "EZ2_VAULT_ROOT"):
+        if os.environ.get(var):
+            return Path(os.path.expanduser(os.environ[var]))
+    legacy = Path(os.path.expanduser("~/Desktop/Obsidian/Ez2"))
+    return legacy if legacy.is_dir() else _aib_default_vault()
+
+
+DEFAULT_VAULT = _default_vault()
 
 REPO_ROOT = Path(os.environ.get("EZ2_AIB_REPO", str(Path(__file__).resolve().parents[2])))
 
@@ -656,6 +666,9 @@ def main():
         log("錯誤: 路由契約裡查不到 %s(角色庫在哪),不猜" % LIBRARY_ROUTE_KEY, prefix="[x]")
         sys.exit(2)
     role_lib_dir = vault_dir / lib_rel
+    # aib 自己的預設 vault(新機器)⇒ 角色庫資料夾第一次用時建起來;別人的 vault 照舊不動、不猜
+    if not role_lib_dir.is_dir() and str(vault_dir) == os.path.realpath(_aib_default_vault()):
+        role_lib_dir.mkdir(parents=True, exist_ok=True)
 
     if not role_lib_dir.is_dir():
         log(f"錯誤: 找不到 Vault 角色庫路徑: {role_lib_dir}", prefix="[x]")
@@ -763,6 +776,10 @@ def main():
             log(str(exc), prefix="[x]")
             return 5
 
+    # 10-12 新用戶:狀態樹還沒建(沒跑過 aib init)⇒ 先建,不讓卡已寫進 vault 卻在掃描那步卡住
+    if not (AIB_HOME / "identity").is_dir():
+        subprocess.run([sys.executable, str(REPO_ROOT / "src" / "bootstrap" / "aib_init.py")],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
     # 3. 重新掃描卡庫投影 (card_registry.py scan)
     log("2. 執行 card_registry scan 同步卡片索引...")
     scan_script = REPO_ROOT / "src" / "memory" / "card_registry.py"

@@ -1,0 +1,14 @@
+{
+  "contract": "aib-default-route-contract",
+  "version": 1,
+  "note": "Default routes for a new install. Used only when no route contract is configured AND the vault is aib's own default (~/.ez2-aib/vault). To use your own vault and routes, set EZ2_VAULT_DIR and EZ2_ROUTE_REGISTRY.",
+  "routes": [
+    {"routeKey": "core.inbox", "module": "C", "folder": "00-Inbox", "dataLevel": "一般", "aiReadable": true, "aiWritable": true},
+    {"routeKey": "core.refine", "module": "C", "folder": "01-Refine", "dataLevel": "一般", "aiReadable": true, "aiWritable": true},
+    {"routeKey": "core.handoff", "module": "C", "folder": "02-Handoff", "dataLevel": "一般", "aiReadable": true, "aiWritable": true},
+    {"routeKey": "core.blueprint", "module": "C", "folder": "03-Blueprint", "dataLevel": "一般", "aiReadable": true, "aiWritable": false},
+    {"routeKey": "product.expert.agent_library", "module": "P", "folder": "10-Roles", "dataLevel": "一般", "aiReadable": true, "aiWritable": true},
+    {"routeKey": "product.expert.draft", "module": "P", "folder": "11-Drafts", "dataLevel": "一般", "aiReadable": true, "aiWritable": true},
+    {"routeKey": "product.expert.output", "module": "P", "folder": "12-Outputs", "dataLevel": "一般", "aiReadable": true, "aiWritable": true}
+  ]
+}

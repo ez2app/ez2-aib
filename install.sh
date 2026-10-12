@@ -331,6 +331,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     if [ -n "${AIB_AI:-}" ]; then   # 不能互動時用環境變數指定,例:AIB_AI=claude,codex
       AI_PICK=""
       for w in $(printf '%s' "$AIB_AI" | tr ',' ' '); do
+        [ "$w" = none ] && continue   # 10-12:AIB_AI=none = 不裝任何 AI 工具(CI 的全新電腦那關;之後要裝再 --tools)
         ok=0; for id in "${ids[@]}"; do [ "$id" = "$w" ] && ok=1; done
         [ "$ok" = 1 ] || { fail "AIB_AI 裡的「${w}」不認得" "只能填這些(用逗號分隔):${ids[*]}"; return 2; }
         AI_PICK="$AI_PICK $w"
@@ -780,6 +781,12 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
       [ "$vrc" = 0 ] && v="$(printf '%s\n' "$vout" | grep -m1 'Ez2 AIB')"
     fi
     if [ -n "$v" ]; then say "✓ $v($shown,花了 $(took "$t_step"))"
+      # 10-12 新用戶全面檢查(the maintainer「新安裝的 aib 也要解決這個問題」):裝完就建好狀態樹(aib init,可重跑);
+      #   第二大腦的預設 vault 與預設路由契約在第一次用時自動就緒。已有別的 aib(共用 ~/.ez2-aib)⇒ 不碰。
+      if [ "${KEEP:-0}" != 1 ]; then
+        if (cd "$DIR" && "$abin" init >/dev/null 2>&1); then say "✓ aib 狀態目錄就緒(~/.ez2-aib)"
+        else note+=("aib init 沒跑成:開第一席前請自己跑一次 aib init"); fi
+      fi
     elif [ "$vrc" = 127 ]; then miss+=("$shown 不見了或不能執行")
     else miss+=("$shown 跑不起來(結束碼 $vrc)"); fi
   fi
