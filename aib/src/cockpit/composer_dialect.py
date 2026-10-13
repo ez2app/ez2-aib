@@ -145,26 +145,6 @@ _DIALECTS = {
         "prompt_chars": ("DeepSeek>", "you>"),
         "folded_lines": None,
     },
-    "kiosapi": {
-        "composer": "prompt",
-        "input_repl": True,
-        # `you>` 只供已在更新前啟動的行程判讀；新行程一律由 kiosapi_cli.py
-        # 顯示 `DeepSeek>`。保留它可避免升級當下把活席變成 unknown。
-        "prompt_chars": ("DeepSeek>", "you>"),
-        "folded_lines": None,
-    },
-    "teamo": {
-        "composer": "prompt",
-        "input_repl": True,
-        "prompt_chars": ("Teamo-Codex>", "Teamo>", "you>"),
-        "folded_lines": None,
-    },
-    "teamoclaude": {
-        "composer": "prompt",
-        "input_repl": True,
-        "prompt_chars": ("Teamo-Claude>", "you>"),
-        "folded_lines": None,
-    },
     "openrouter": {
         "composer": "prompt",
         "input_repl": True,

@@ -242,6 +242,10 @@ def insert_handoff_pack(
         asked_at=stamp,
     )
     _write_open_ack(aib_home, seat_id or seat_fork.tail5(new_uuid), ack)
+    # 開席接上專案 ⇒ 寫進「席綁專案」唯一正本(docs/DESIGN-project-sweep-1012.md §2);寫不進去不擋開席
+    import project_seats  # noqa: E402 —— 鍵是 seat_id(一席長期的身分),不是席碼
+    project_seats.bind_quietly(str(card.get("project_uid") or ""), seat_id or str((seat_record or {}).get("seat_id") or ""),
+                               title=str(card.get("title") or ""), by="seat_load", root=aib_home or None)
     return {
         "status": "ok",
         "delivered": True,

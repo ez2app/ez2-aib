@@ -104,6 +104,13 @@ def find_command(cmd, env=None):
     return None, None, "no-plugin"
 
 
+def overrides_builtin(name):
+    """外掛說明檔 "overrides_builtin": true ⇒ 它的指令蓋過 aib 內建的同名指令;不能跑時(沒授權)呼叫端照舊跑內建的,
+    不擋(10-12:例如 `aib room`,外掛不能跑時內建的 contacts / say 照常可用)。"""
+    m = discover(Path.home(), home_only=True).get(name) or {}
+    return m.get("overrides_builtin") is True
+
+
 def status(repo, env=None):
     """每個外掛:{name, version, where, on, licensed, why}(aib ship plugins 用)。"""
     rows = []

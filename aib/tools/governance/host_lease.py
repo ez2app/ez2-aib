@@ -29,10 +29,13 @@
 """
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import pathlib
+import shutil
 import socket
 import subprocess
 import sys
@@ -66,6 +69,7 @@ SCHEMA = "aib-host-lease/v1"
 # ★ 這只是**退路**,不是「發版凍結上限」:第 52 項起上限由實測導出、只會長大(tools/governance/freeze_cap.py),
 #   呼叫端要把導出值傳進 --ttl,長跑再配 renew。寫死一個數當上限,失效方向是「持有者還在跑就過期」——危險的那一邊。
 DEFAULT_TTL_S = 5400
+SHORT_TTL_FLOOR_S = 3 * 3600   # 10-13 a seat 審:給了 --pid 卻量不到起始時刻時,TTL 不准短於這個
 
 
 def lease_path(env=None):
@@ -285,7 +289,44 @@ def describe(d):
                                   "id": d.get("run_id", "?")})
 
 
+@contextlib.contextmanager
+def _mutex(path):
+    """讀 → 判斷 → 寫 整段只准一個行程(10-12 a seat 審:接管過期租約原本是「判過期」再「覆寫」兩步,
+    大批 aib test 被系統砍掉留下死 pid 時,推包與另一個排隊大批會同一輪一起接管、一起跑 —— 正是要防的記憶體尖峰)。
+    鎖檔在租約旁(<租約>.lock),跟著 AIB_HOST_LEASE_FILE 搬;拿不到鎖就等(每個持有者只鎖幾毫秒)。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path) + ".lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _locked_call(fn, a, now, path, ledger):
+    """鎖檔建不出來(資料夾不能寫、權限壞掉)⇒ 照舊回「讀不到」rc=3,不丟例外
+    (推包在 finally 放租約,丟例外會蓋掉原本的錯誤訊息 —— 審查第三輪)。"""
+    try:
+        with _mutex(path):
+            return fn(a, now, path, ledger)
+    except OSError as e:        # 拿鎖 / 寫租約時的檔案錯誤 ⇒ 沒拿到(fail-closed),不是例外
+        print(T("aib.lease.unreadable", {"path": str(path) + ".lock", "err": e}))
+        return RC_UNREADABLE
+
+
 def cmd_acquire(a, now, path, ledger):
+    return _locked_call(_cmd_acquire, a, now, path, ledger)
+
+
+def cmd_release(a, now, path, ledger):
+    return _locked_call(_cmd_release, a, now, path, ledger)
+
+
+def cmd_renew(a, now, path, ledger):
+    return _locked_call(_cmd_renew, a, now, path, ledger)
+
+
+def _cmd_acquire(a, now, path, ledger):
     cur, why = read_lease(path)
     if why:
         print(why); return RC_UNREADABLE
@@ -296,6 +337,20 @@ def cmd_acquire(a, now, path, ledger):
            "pid_start": (proc_start(a.pid) if a.pid else None),   # 身份第二件:起始時刻(pid 重用時對不上)
            "acquired_epoch": int(now), "acquired_at": iso(now),
            "expiry_epoch": int(now + a.ttl), "expiry_at": iso(now + a.ttl)}
+    if a.pid and new["pid_start"] is None and a.ttl < SHORT_TTL_FLOOR_S:
+        # a seat 審 1:量不到起始時刻 ⇒ holder_alive 回 None、只看時間;短 TTL 會讓還在跑的持有者被接管 ⇒ 至少 3 小時(以前的值)
+        new["expiry_epoch"], new["expiry_at"] = int(now + SHORT_TTL_FLOOR_S), iso(now + SHORT_TTL_FLOOR_S)
+    if getattr(a, "exclusive", False):
+        new["exclusive"] = True     # 10-13:持有者在量耗時(推包、耗時對照)⇒ 小批 aib test 不准並跑(test_entry 看這一欄)
+    free_now = cur is None or (cur.get("run_id") != a.run_id and is_expired(cur, now))
+    if free_now and not getattr(a, "priority", False):
+        ahead = queue_ahead(path, a.run_id, now)
+        if ahead:                   # 排隊名單有人排在前面 ⇒ 不准插隊(推包 priority 例外)
+            log_event(ledger, "denied", now, owner=a.owner, what=a.what, run_id=a.run_id, holder=None,
+                      queue_ahead=len(ahead), queue_head=ahead[0].get("run_id"))
+            print(T("aib.lease.queue_behind", {"n": len(ahead), "name": ahead[0].get("owner", "?"),
+                                                "what": ahead[0].get("what", "?")}))
+            return RC_HELD
     if cur is None:
         # 空機:O_EXCL 原子建檔,兩個同時來的只有一個會成功
         try:
@@ -310,7 +365,8 @@ def cmd_acquire(a, now, path, ledger):
         else:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(new, ensure_ascii=False, indent=2) + "\n")
-            log_event(ledger, "acquire", now, owner=a.owner, what=a.what, run_id=a.run_id, expiry=new["expiry_at"])
+            log_event(ledger, "acquire", now, owner=a.owner, what=a.what, run_id=a.run_id, expiry=new["expiry_at"],
+                      exclusive=bool(new.get("exclusive")), waited_s=_queue_leave(path, ledger, a.run_id, now, "acquired"))
             print(T("aib.lease.acquired", {"what": a.what, "at": new["expiry_at"]})); return RC_OK
     if cur.get("run_id") == a.run_id:
         new["acquired_epoch"], new["acquired_at"] = cur.get("acquired_epoch"), cur.get("acquired_at")
@@ -323,6 +379,7 @@ def cmd_acquire(a, now, path, ledger):
         why = takeover_why(cur, now)
         write_lease(path, new)
         log_event(ledger, "takeover", now, owner=a.owner, what=a.what, run_id=a.run_id,
+                  exclusive=bool(new.get("exclusive")), waited_s=_queue_leave(path, ledger, a.run_id, now, "acquired"),
                   prev_owner=cur.get("owner"), prev_what=cur.get("what"), prev_run_id=cur.get("run_id"),
                   prev_expiry=cur.get("expiry_at"), prev_holder_alive=holder_alive(cur), why=why)
         key = "aib.lease.took_over" if why == "expired" else "aib.lease.took_over_live"
@@ -336,7 +393,7 @@ def cmd_acquire(a, now, path, ledger):
     return RC_HELD
 
 
-def cmd_release(a, now, path, ledger):
+def _cmd_release(a, now, path, ledger):
     cur, why = read_lease(path)
     if why:
         print(why); return RC_UNREADABLE
@@ -349,11 +406,16 @@ def cmd_release(a, now, path, ledger):
         path.unlink()
     except OSError as e:
         print(T("aib.lease.unreadable", {"path": str(path), "err": e})); return RC_UNREADABLE
-    log_event(ledger, "release", now, owner=cur.get("owner"), what=cur.get("what"), run_id=a.run_id)
-    print(T("aib.lease.released", {"what": cur.get("what", "?")})); return RC_OK
+    head = (queue_live(path, now) or [None])[0]
+    log_event(ledger, "release", now, owner=cur.get("owner"), what=cur.get("what"), run_id=a.run_id,
+              held_s=int(now - float(cur.get("acquired_epoch") or now)), next=(head or {}).get("run_id"))
+    print(T("aib.lease.released", {"what": cur.get("what", "?")}))
+    if head and head.get("notify"):
+        _notify_next(head, cur, ledger, now)
+    return RC_OK
 
 
-def cmd_renew(a, now, path, ledger):
+def _cmd_renew(a, now, path, ledger):
     cur, why = read_lease(path)
     if why:
         print(why); return RC_UNREADABLE
@@ -365,6 +427,203 @@ def cmd_renew(a, now, path, ledger):
     # ★ 24b-3(a seat 09-12 14:19 實測):renew 不寫留痕。證詞逐支消費者續期一次,一輪 89–169 列、一天 300–600 KB,
     #   而讀留痕的只有 recent_denied(排隊只看 denied),renew 列對它零貢獻;續期狀態在租約檔的 expiry_at 本身就讀得到。
     print(T("aib.lease.renewed", {"at": cur["expiry_at"]})); return RC_OK
+
+
+# ── 排隊名單(10-13 a seat,a seat 准):想用機器的先登記,機器空時只准隊頭拿(推包 priority 例外),
+#   放鎖時通知隊頭(有登記 notify 的才 aib dm);登記到拿到之間的秒數寫進 ledger(waited_s),等待才量得出來。
+#   一筆登記怎樣算「還在排」:記了 pid ⇒ 那個行程活著(pid + 起始時刻,同 holder_alive);沒記 pid ⇒ 到 until 為止
+#   (預設登記後 QUEUE_TTL_S),要續就再 add 一次。死掉 / 過期的登記讀的時候直接略過並清掉,不擋人。
+QUEUE_TTL_S = 30 * 60
+QUEUE_NOPID_MAX_S = 10 * 60    # 審查 M1:沒記 pid 的登記(AI 的 Bash 殼一回來就死,給不了長跑 pid)最多擋 10 分鐘,忘了拿也不會卡死空機器
+
+
+def queue_path(path):
+    return pathlib.Path(str(path) + ".queue.json")
+
+
+def _queue_read(path):
+    try:
+        d = json.loads(queue_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(d, list):
+        return []
+    out = []
+    for e in d:     # 審查 L3:手改壞的登記(時刻不是數字、pid 不是整數)直接略過,不讓 acquire / release / status 當掉
+        if not isinstance(e, dict) or not isinstance(e.get("run_id"), str):
+            continue
+        try:
+            float(e.get("since_epoch")); float(e.get("until_epoch"))
+        except (TypeError, ValueError):
+            continue
+        if e.get("pid") is not None and not isinstance(e.get("pid"), int):
+            continue
+        out.append(e)
+    return out
+
+
+def _queue_write(path, rows):
+    p = queue_path(path)
+    try:
+        if not rows:
+            p.unlink(missing_ok=True)
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
+        tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError as e:
+        sys.stderr.write(T("aib.lease.ledger_failed", {"path": str(p), "err": e}) + "\n")
+
+
+def _queue_entry_live(e, now):
+    """記了 pid:那個行程死了 ⇒ 不算;活著也要沒過 until 才算(a seat 審 2:拿長壽殼登記會擋到殼結束)——
+    aib test 等待迴圈每輪再登記一次續期。沒記 pid:只看 until。"""
+    if e.get("pid") and holder_alive(e) is False:
+        return False
+    try:
+        return float(now) < float(e.get("until_epoch"))
+    except (TypeError, ValueError):
+        return False
+
+
+def queue_live(path, now):
+    """還在排的登記,照順序(推包 priority 的排最前,其餘照登記先後)。只讀,不清檔(清檔在 add / leave 時做)。"""
+    rows = [e for e in _queue_read(path) if _queue_entry_live(e, now)]
+    return sorted(rows, key=lambda e: (not e.get("priority"), float(e.get("since_epoch") or 0)))
+
+
+def queue_ahead(path, run_id, now):
+    """排在 run_id 前面的登記(run_id 不在名單裡 ⇒ 整個名單都在它前面)。"""
+    rows = queue_live(path, now)
+    for i, e in enumerate(rows):
+        if e.get("run_id") == run_id:
+            return rows[:i]
+    return rows
+
+
+def _queue_leave(path, ledger, run_id, now, why):
+    """從名單拿掉 run_id;回它排了幾秒(不在名單 ⇒ None)。順手清掉死掉 / 過期的登記。"""
+    rows = _queue_read(path)
+    keep, waited = [], None
+    for e in rows:
+        if e.get("run_id") == run_id:
+            waited = int(float(now) - float(e.get("since_epoch") or now))
+            log_event(ledger, "queue_leave", now, run_id=run_id, owner=e.get("owner"), why=why, waited_s=waited)
+        elif _queue_entry_live(e, now):
+            keep.append(e)
+        else:
+            log_event(ledger, "queue_leave", now, run_id=e.get("run_id"), owner=e.get("owner"), why="gone",
+                      waited_s=int(float(now) - float(e.get("since_epoch") or now)))
+    if keep != rows:
+        _queue_write(path, keep)
+    return waited
+
+
+def _cmd_queue(a, now, path, ledger):
+    if a.queue_cmd == "add":
+        rows = [e for e in _queue_read(path) if _queue_entry_live(e, now)]
+        old = next((e for e in rows if e.get("run_id") == a.run_id), None)
+        e = {"run_id": a.run_id, "owner": a.owner, "what": a.what, "pid": a.pid, "host": socket.gethostname(),
+             "pid_start": (proc_start(a.pid) if a.pid else None), "notify": a.notify or None, "priority": bool(a.priority),
+             "since_epoch": (old or {}).get("since_epoch") or int(now),
+             "until_epoch": int(now + (a.ttl if a.pid else min(a.ttl, QUEUE_NOPID_MAX_S)))}
+        rows = [x for x in rows if x.get("run_id") != a.run_id] + [e]
+        _queue_write(path, rows)
+        if old is None:
+            log_event(ledger, "queue_add", now, run_id=a.run_id, owner=a.owner, what=a.what, priority=bool(a.priority))
+        ids = [x.get("run_id") for x in queue_live(path, now)]
+        if a.run_id not in ids:          # 給的 pid 已經不在 ⇒ 這筆登記一寫進去就不算數;講清楚,不要假裝排上了
+            print(T("aib.lease.queue_not_in", {"id": a.run_id})); return RC_USAGE
+        print(T("aib.lease.queue_added", {"n": ids.index(a.run_id) + 1, "what": a.what})); return RC_OK
+    if a.queue_cmd == "remove":
+        w = _queue_leave(path, ledger, a.run_id, now, "removed")
+        print(T("aib.lease.queue_removed", {"id": a.run_id}) if w is not None else T("aib.lease.queue_not_in", {"id": a.run_id}))
+        return RC_OK
+    rows = queue_live(path, now)
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+    elif not rows:
+        print(T("aib.lease.queue_empty"))
+    else:
+        for i, e in enumerate(rows, 1):
+            print(T("aib.lease.queue_row", {"n": i, "name": e.get("owner", "?"), "what": e.get("what", "?"),
+                                            "waited": int(float(now) - float(e.get("since_epoch") or now))}))
+    return RC_OK
+
+
+def cmd_queue(a, now, path, ledger):
+    return _locked_call(_cmd_queue, a, now, path, ledger)
+
+
+def _notify_next(head, cur, ledger, now):
+    """放鎖時叫隊頭:背景跑 aib dm(不等它、失敗只記不擋;放鎖本身已經成功)。
+    ★ 沒做(審查 L8):前面那位離隊 / 死掉 / 租約過期被接管時不另外叫 —— 大批 aib test 自己每 30 秒看一次,
+      只靠 dm 等的人(手動登記)要自己再看 status。"""
+    msg = T("aib.lease.notify_next", {"what": cur.get("what", "?"), "job": head.get("what", "?")})   # 參數名用既有的 {job},不替佔位名母體加新名(test-annotate-i2-guard)
+    ok = _send_dm(head["notify"], msg)
+    log_event(ledger, "notify", now, to=head["notify"], run_id=head.get("run_id"), ok=ok)
+
+
+def _send_dm(to, msg):
+    aib = shutil.which("aib")
+    if not aib:
+        return False
+    try:
+        subprocess.Popen([aib, "dm", "--to", to, msg], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError:
+        return False
+
+
+# ── 推包優先(10-12 a seat 裁):推包在等一席的大批 aib test 放租約時,在租約旁寫一個「推包在等」記號;
+#   新的大批 aib test 看到(而且等的那個推包還活著)就不拿租約、排在推包後面。正在跑的那批照跑完。
+def ship_wait_path(path):
+    return pathlib.Path(str(path) + ".ship-waiting")
+
+
+def ship_wait_mark(path, pid, what=""):
+    p = ship_wait_path(path)
+    d = {"pid": int(pid), "pid_start": proc_start(pid), "host": socket.gethostname(), "what": what,
+         "since": iso(time.time()), "since_epoch": int(time.time())}
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
+        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def ship_wait_clear(path, pid):
+    """只清自己寫的(pid 對得上)。"""
+    p = ship_wait_path(path)
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        if int(d.get("pid") or 0) == int(pid):
+            p.unlink()
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+SHIP_WAIT_MAX_S = 50 * 60      # 推包最多等 45 分鐘就放棄;記號超過 50 分鐘一律不算(a seat 審:pid 重用時不會永遠擋人)
+
+
+def ship_waiting(path, now=None):
+    """還活著的「推包在等」記號 ⇒ dict;沒有 / 寫的人已經死了 / 超過 50 分鐘 ⇒ None(留下的不擋人)。"""
+    try:
+        d = json.loads(ship_wait_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(d, dict) or holder_alive(d) is False:
+        return None
+    try:
+        if float(now if now is not None else time.time()) - float(d.get("since_epoch")) > SHIP_WAIT_MAX_S:
+            return None
+    except (TypeError, ValueError):
+        return None        # 沒有時刻(舊格式 / 壞掉)⇒ 不算
+    return d
 
 
 def status(path, now):
@@ -435,7 +694,9 @@ def cmd_status(a, now, path, ledger):
     denied = recent_denied(ledger, now)
     if a.json:
         print(json.dumps({"state": st, "lease": cur, "why": why, "path": str(path),
-                          "queued_recent": denied, "measured_at": iso(now)}, ensure_ascii=False, indent=2))
+                          "queued_recent": denied, "queue": queue_live(path, now), "measured_at": iso(now),
+                          "ship_waiting": ship_waiting(path)},
+                         ensure_ascii=False, indent=2))
     elif st == "unreadable":
         print(why)
     elif st == "free":
@@ -445,6 +706,9 @@ def cmd_status(a, now, path, ledger):
     else:
         print(describe(cur))
         _say_dead_but_shipping(cur)
+    q = [] if a.json else queue_live(path, now)
+    if q:
+        print(T("aib.lease.queue_summary", {"n": len(q), "name": q[0].get("owner", "?"), "what": q[0].get("what", "?")}))
     if not a.json and denied:
         print(T("aib.lease.queued", {"n": len(denied), "name": denied[0].get("owner", "?"),
                                      "what": denied[0].get("what", "?"), "at": denied[0].get("ts", "?")}))
@@ -460,9 +724,18 @@ def main(argv=None):
     p = sub.add_parser("acquire"); p.add_argument("--owner", required=True); p.add_argument("--what", required=True)
     p.add_argument("--run-id", required=True); p.add_argument("--ttl", type=int, default=DEFAULT_TTL_S)
     p.add_argument("--pid", type=int, default=None, help=T("aib.lease.cli_pid"))
+    p.add_argument("--exclusive", action="store_true", help=T("aib.lease.cli_exclusive"))
+    p.add_argument("--priority", action="store_true", help=T("aib.lease.cli_priority"))
     p = sub.add_parser("release"); p.add_argument("--run-id", required=True)
     p = sub.add_parser("renew"); p.add_argument("--run-id", required=True); p.add_argument("--ttl", type=int, default=DEFAULT_TTL_S)
     p = sub.add_parser("status"); p.add_argument("--json", action="store_true")
+    p = sub.add_parser("queue"); qs = p.add_subparsers(dest="queue_cmd", required=True)
+    q = qs.add_parser("add"); q.add_argument("--owner", required=True); q.add_argument("--what", required=True)
+    q.add_argument("--run-id", required=True); q.add_argument("--pid", type=int, default=None, help=T("aib.lease.cli_pid"))
+    q.add_argument("--notify", default=None, help=T("aib.lease.cli_notify")); q.add_argument("--priority", action="store_true")
+    q.add_argument("--ttl", type=int, default=QUEUE_TTL_S)
+    q = qs.add_parser("remove"); q.add_argument("--run-id", required=True)
+    q = qs.add_parser("list"); q.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     if a.locale:
         os.environ["EZ2_AIB_LOCALE"] = a.locale
@@ -473,7 +746,8 @@ def main(argv=None):
         sys.stderr.write(T("aib.lease.err_ttl") + "\n"); return RC_USAGE
     now = time.time() if a.now is None else a.now
     path, ledger = lease_path(), ledger_path()
-    return {"acquire": cmd_acquire, "release": cmd_release, "renew": cmd_renew, "status": cmd_status}[a.cmd](a, now, path, ledger)
+    return {"acquire": cmd_acquire, "release": cmd_release, "renew": cmd_renew, "status": cmd_status,
+            "queue": cmd_queue}[a.cmd](a, now, path, ledger)
 
 
 if __name__ == "__main__":

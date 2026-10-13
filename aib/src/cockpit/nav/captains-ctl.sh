@@ -461,7 +461,7 @@ EOF2
       case "$_cap_prov" in
         sand|grokbot|codexbot|claudebot|musebot) _cap_icon="🤖" ;;
         # API-key 次位戴 🔑(與 pane-right / list_captains 同裁;providers.json auth=api_key)
-        deepseek|kiosapi|nvidia|teamo|teamoclaude|openrouter|typesafe|openrouterjev)
+        deepseek|nvidia|openrouter|typesafe|openrouterjev)
           if [ "$_cap_idx" -eq 0 ]; then _cap_icon="👑"; else _cap_icon="🔑"; fi ;;
         *) if [ "$_cap_idx" -eq 0 ]; then _cap_icon="👑"; else _cap_icon="⚓"; fi ;;
       esac

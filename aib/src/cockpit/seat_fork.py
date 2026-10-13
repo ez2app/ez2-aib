@@ -46,8 +46,7 @@ LARGE_WINDOW = 1_000_000
 #     history  API-key 席(本倉自己的 REPL):舊 history.jsonl 複製給新席,最後補一列 system 說明
 #     pack     codex/grok/copilot/agy:CLI 不收「分出成新 id」⇒ 不重起,投一則開場說明(含最近幾輪)
 #     persona  橋接 bot:對話在桌面 App,沿用它自己的「綁哪條對話」選單;只帶人格與第二大腦
-API_SESSIONS = {"deepseek": "deepseek-sessions", "kiosapi": "kiosapi-sessions", "nvidia": "nvidia-sessions",
-                "teamo": "teamo-sessions", "teamoclaude": "teamoclaude-sessions",
+API_SESSIONS = {"deepseek": "deepseek-sessions", "nvidia": "nvidia-sessions",
                 "openrouter": "openrouter-sessions", "typesafe": "typesafe-sessions",
                 "openrouterjev": "typesafe-sessions"}          # openrouterjev 跑的是 typesafe_cli.py --route openrouter
 BOT_PROVIDERS = frozenset(("grokbot", "codexbot", "sand", "claudebot", "musebot"))

@@ -114,12 +114,10 @@ def held_by(conv: str, base=None) -> list[str]:
     return held_by_names(conv, base) or ["(占用者名字查不到)"]
 
 
-def pick_default(base=None) -> dict:
-    """10-09 a seat(the maintainer 採「四家同一套」):右鍵開 musebot 沒帶 id 時要綁哪一段。
-    歷史 = bridge/*/status.json 裡 provider=musebot、形狀合法的 agent_id,每段取最新那份,新的在前。
-    從新到舊挑第一段**沒被占**的;以前只看最新那一段,它被占就整席不綁(信沒人收)。
-    回 {"conv": 選到的 id 或 "", "history": 歷史段數, "held": [(id, [占用者…]), …](跳過的,新的在前)}。
-      conv 非空 = 綁它;conv 空且 history>0 = 每一段都被占(呼叫端不開席);history==0 = 從沒綁過(呼叫端照開不綁)。"""
+def history(base=None) -> list[tuple[str, float]]:
+    """綁過的 Muse 對話,新的在前:[(id, 最後一次出現的 status.json 時間)]。
+    來源 = bridge/*/status.json 裡 provider=musebot、形狀合法的 agent_id(每段取最新那份)。
+    pick_default(右鍵開席沿用)與席上 /bind 清單(10-11 a seat)共用這一份,不各掃一次。"""
     newest: dict[str, float] = {}
     for st in (_state_root(base) / "bridge").glob("*/status.json"):
         try:
@@ -128,12 +126,21 @@ def pick_default(base=None) -> dict:
         except (OSError, ValueError):
             continue
         conv = (d.get("agent_id") or "") if isinstance(d, dict) else ""
-        if d.get("provider") != PROVIDER or not valid_conversation_id(conv):
+        if not isinstance(d, dict) or d.get("provider") != PROVIDER or not valid_conversation_id(conv):
             continue
         conv = conv.strip()
         if mt > newest.get(conv, -1.0):
             newest[conv] = mt
-    order = sorted(newest, key=lambda c: (-newest[c], c))
+    return [(c, newest[c]) for c in sorted(newest, key=lambda c: (-newest[c], c))]
+
+
+def pick_default(base=None) -> dict:
+    """10-09 a seat(the maintainer 採「四家同一套」):右鍵開 musebot 沒帶 id 時要綁哪一段。
+    歷史 = bridge/*/status.json 裡 provider=musebot、形狀合法的 agent_id,每段取最新那份,新的在前。
+    從新到舊挑第一段**沒被占**的;以前只看最新那一段,它被占就整席不綁(信沒人收)。
+    回 {"conv": 選到的 id 或 "", "history": 歷史段數, "held": [(id, [占用者…]), …](跳過的,新的在前)}。
+      conv 非空 = 綁它;conv 空且 history>0 = 每一段都被占(呼叫端不開席);history==0 = 從沒綁過(呼叫端照開不綁)。"""
+    order = [c for c, _mt in history(base)]
     held = []
     for conv in order:
         who = held_by(conv, base)

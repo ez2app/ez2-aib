@@ -127,7 +127,8 @@ def durations(repo, tests=None, will_reuse=None):
 
 
 def changed_files(repo, base):
-    p = subprocess.run(["git", "-C", str(repo), "diff", "--name-only", base + "...HEAD"], capture_output=True,
+    # --no-renames:同 select_changed.changed_from_git(10-11),改名的舊路徑也算改到
+    p = subprocess.run(["git", "-C", str(repo), "diff", "--name-only", "--no-renames", base + "...HEAD"], capture_output=True,
                        text=True, stdin=subprocess.DEVNULL)
     return [x for x in p.stdout.splitlines() if x.strip()] if p.returncode == 0 else []
 
@@ -222,9 +223,14 @@ def split(tests, jobs, dur):
     return [s for s in shards if s]
 
 
+RC_EXCLUSIVE = 5     # aib test「沒跑:別人在獨佔量耗時」(tools/verify/test_entry.py 同名常數);不是紅,也不能當綠
+
+
 def combine(rcs, allow_unverified=False):
-    if any(rc not in (0, 4) for rc in rcs):
+    if any(rc not in (0, 4, RC_EXCLUSIVE) for rc in rcs):
         return 1
+    if any(rc == RC_EXCLUSIVE for rc in rcs):     # 10-13 a seat:有一份沒跑 ⇒ 整輪說「沒跑(別人獨佔)」,不印成紅
+        return RC_EXCLUSIVE
     if any(rc == 4 for rc in rcs) and not allow_unverified:
         return 4
     return 0
@@ -616,6 +622,52 @@ def saved_by_feature(repo, sv, prev, selected, changed):
     return {"select": sec(unselected), "resume": sec(resumed), "keyed": sec(keyed), "reuse": sec(reused - resumed - keyed)}
 
 
+def _keys_unchanged(repo, idx, test, path):
+    """這支測試以字串為單位讀 path 時用到的那些鍵,值跟上次實跑時一樣嗎(拿現在的檔重算摘要比)。
+    算不出來 ⇒ False(不算進「少跑」;審查 10-12:不能把用到改過字串、照樣要重跑的也算成少跑)。"""
+    import shadow_tracer
+    found = False
+    for it in (idx.latest.get(test) or {}).get("inputs") or ():
+        kind, _, rest = str(it).partition(":")
+        if kind != "i18nkeys" or rest.partition(":")[0].lstrip("./") != path:
+            continue
+        found = True
+        item_path, _, tail = rest.partition(":")
+        kj, _, old = tail.rpartition(":")
+        try:
+            now = shadow_tracer.i18n_keys_digest(str(repo), item_path, json.loads(kj))
+        except (ValueError, TypeError):
+            now = None
+        if not now or now != old:
+            return False
+    return found
+
+
+def keyed_notes(repo, changed):
+    """10-12 a seat(a seat 派):改到的 JSON 字典 ——
+    ("saved", 檔, M):以字串為單位在用(宣告或自動偵測),讀它的測試裡 M 支用到的字串這次都沒改 ⇒ 這些不因這個檔重跑;
+    ("hint", 檔, 0):沒在用、但內容看起來是翻譯字典(鍵 → 字串)⇒ 教怎麼在 .aib/ship.toml 宣告。"""
+    import fnmatch
+    import runner
+    out = []
+    try:
+        globs = runner._keyed_files(Path(repo))
+        idx = _index(str(repo))
+    except Exception:  # noqa: BLE001
+        return out
+    for f in sorted(set(changed or ())):
+        if not f.endswith(".json") or not (Path(repo) / f).is_file():
+            continue
+        if any(fnmatch.fnmatch(f, g) for g in globs):
+            readers = idx.reverse.get(f, ())
+            m = sum(1 for t in readers if not _reads_whole(idx, t, f) and _keys_unchanged(repo, idx, t, f))
+            if m:
+                out.append(("saved", f, m))
+        elif runner.is_translation_dict(Path(repo) / f):
+            out.append(("hint", f, 0))
+    return out
+
+
 def rerun_causes(repo, changed, fc):
     """§20 第 4 項:這一輪為什麼很多要重跑 —— 寫進總計帳。只記會讓大批測試重跑的原因:
     first(第一次建紀錄)、tracer(改到 aib 追蹤器 ⇒ 所有紀錄作廢)、deps(套件鎖檔)、wide(改到很多測試都會讀的檔:[檔, 幾支讀])。"""
@@ -756,6 +808,8 @@ def print_forecast(repo, base, tests, shards, dur, prev, changed):
             print(T("cause_row", {"file": f, "tests": n}))
             if is_hot(repo, _all):
                 print(T("hot_warn", {"file": f, "tests": _all}))
+    for kind, f, m in keyed_notes(repo, changed):      # 10-12:翻譯字典以字串為單位 —— 在用就說少跑幾支,沒用就教怎麼開
+        print(T("keyed_saved" if kind == "saved" else "keyed_hint", {"file": f, "tests": m}))
     return fc
 
 
@@ -781,6 +835,8 @@ def record_stats(repo, sv, rc, path=None):
         row = {k: v for k, v in sv.items() if not k.startswith("_")}
         row.update(repo=reuse_index.repo_identity(str(repo)) or "", rc=rc, time=time.strftime("%Y-%m-%dT%H:%M:%S"),
                    name=project_label(repo))
+        if os.environ.get("AIB_GATE_RUN_ID"):          # 10-12 P13:交件檢查認得出「這一筆是我這輪的」(同倉別棵樹的不算)
+            row["run_id"] = os.environ["AIB_GATE_RUN_ID"]
         with open(f, "a", encoding="utf-8") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             fh.write(json.dumps(row, sort_keys=True) + "\n")
@@ -969,7 +1025,7 @@ def main(argv=None):
         rc = EARLY_RED
         print(T("early_red"))
     record_stats(repo, sv, rc)
-    print(T("ok") if rc == 0 else T("red", {"reason": rc}))
+    print(T("ok") if rc == 0 else T("exclusive_skipped") if rc == RC_EXCLUSIVE else T("red", {"reason": rc}))
     return rc
 
 

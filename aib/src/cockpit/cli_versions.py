@@ -12,6 +12,9 @@
   grok     ~/.grok/downloads                              最新:grok update --check --json        更新:grok update
   copilot  npm 全域 @github/copilot                       最新:npm view @github/copilot          更新:npm i -g @github/copilot@latest
   agy      ~/.local/bin/agy                               最新:**量不到**(agy update 沒有只查不裝)  ⇒ 只顯示本機,不自動更新
+  aib      這份 aib 自己(套件根的 VERSION)               10-12 the maintainer「也加入 aib 判斷,一併進入一樣的自動更新流程」:
+           公開版(一行安裝 / pipx)  最新:公開倉 main 的 aib/VERSION   更新:aib update / pipx upgrade ez2-aib
+           私有版(ez2-aib 開發倉)  最新:origin/main 的 VERSION      更新:**不自動**(正本樹只由 aib ship 快轉,the maintainer 10-09)
 
 ★ 最新版本快取 1 小時(<狀態根>/state/cli-versions.json);沒網路/找不到 ⇒ 照實寫「最新 找不到」,不擋開席。
 ★ 每家都顯示「最後更新」= 這台電腦上那一家最後一次安裝/更新的時間(npm 看套件資料夾、其他看程式檔的建立時間;
@@ -46,6 +49,28 @@ if HERE not in sys.path:
 
 import seats_dir_lib  # noqa: E402
 
+REPO = os.path.dirname(os.path.dirname(HERE))      # 私有倉根;公開版 = 套件資料夾(aib/,VERSION 也在這)
+PUBLIC_LATEST_URL = "https://raw.githubusercontent.com/ez2app/ez2-aib/main/aib/VERSION"
+
+
+def aib_edition(repo=None):
+    """這份 aib 是哪一種:"private"(ez2-aib 開發倉:有匯出工具)/ "public"(開源版)。"""
+    repo = repo or REPO
+    return "private" if os.path.isfile(os.path.join(repo, "tools", "oss", "export_aib.py")) else "public"
+
+
+def aib_update_cmd(repo=None, prefix=None):
+    """公開版怎麼更新:一行安裝的 checkout(套件上一層有 .git)⇒ aib update;pipx ⇒ pipx upgrade;私有版 / 判不出 ⇒ None。"""
+    repo = repo or REPO
+    if aib_edition(repo) == "private":
+        return None
+    if os.path.isdir(os.path.join(os.path.dirname(repo), ".git")) and os.path.isfile(os.path.join(repo, "cli.py")):
+        return [sys.executable, os.path.join(repo, "cli.py"), "update"]
+    if "/pipx/venvs/" in repo or "/pipx/venvs/" in (prefix or sys.prefix):
+        return ["pipx", "upgrade", "ez2-aib"]
+    return None
+
+
 #: 順序 = 開席動畫的 logo 順序(login_splash.HOUSES)。
 TOOLS = (
     {"key": "claude", "bin": "claude", "latest": ("npm", "@anthropic-ai/claude-code"), "update": ["claude", "update"],
@@ -60,9 +85,13 @@ TOOLS = (
     # gemini:不在開席動畫五家裡(那格 AGY 是 Antigravity),只在 aib cli 看/更新/退版(the maintainer 10-09 20:2x)
     {"key": "gemini", "bin": "gemini", "latest": ("npm", "@google/gemini-cli"),
      "update": ["npm", "install", "-g", "@google/gemini-cli@latest"], "pin": ["npm", "install", "-g", "@google/gemini-cli@{v}"]},
+    # aib 自己(10-12):不是 logo,開席倒數照樣算它(GATE_KEYS)
+    {"key": "aib", "bin": None, "latest": ("aib",), "update": aib_update_cmd(), "pin": None},
 )
 #: 開席動畫與倒數只管這五家(順序 = login_splash.HOUSES);其他家只在 aib cli。
 SPLASH_KEYS = ("claude", "codex", "grok", "copilot", "agy")
+#: 開席倒數要管的 = 五家 + aib 自己(aib 沒有 logo,倒數畫面另寫一行)。
+GATE_KEYS = SPLASH_KEYS + ("aib",)
 CACHE_TTL_S = 3600
 FAIL_TTL_S = 600                 # 找不到(沒網路)10 分鐘內不再試,不拖慢連開好幾席
 DISABLE_ENV = "AIB_CLI_UPDATE"   # =0 整段不查不擋
@@ -92,7 +121,34 @@ def newer(latest, local):
     return tuple(int(x) for x in a.groups()) > tuple(int(x) for x in b.groups())
 
 
+def aib_local_version(repo=None):
+    try:
+        with open(os.path.join(repo or REPO, "VERSION"), encoding="utf-8") as fh:
+            return parse_version(fh.read())
+    except OSError:
+        return None
+
+
+def aib_latest_version(repo=None):
+    """公開版:公開倉 main 的 aib/VERSION(AIB_LATEST_URL 可換);私有版:fetch 後 origin/main 的 VERSION。拿不到 ⇒ None。"""
+    repo = repo or REPO
+    if aib_edition(repo) == "private":
+        rc, _out = _run(["git", "-C", repo, "fetch", "-q", "origin", "main"], 20)
+        if rc != 0:
+            return None
+        rc, out = _run(["git", "-C", repo, "show", "origin/main:VERSION"], 10)
+        return parse_version(out) if rc == 0 else None
+    import urllib.request
+    try:
+        with urllib.request.urlopen(os.environ.get("AIB_LATEST_URL") or PUBLIC_LATEST_URL, timeout=5) as r:
+            return parse_version(r.read(64).decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 - 沒網路 / 逾時 ⇒ 照實「找不到」,不擋開席
+        return None
+
+
 def local_version(tool):
+    if tool.get("key") == "aib":
+        return aib_local_version()
     if not shutil.which(tool["bin"]):
         return None
     _rc, out = _run([tool["bin"], "--version"], 15)
@@ -106,6 +162,8 @@ def latest_version(tool):
     if src[0] == "npm":
         rc, out = _run(["npm", "view", src[1], "version"], 20)
         return parse_version(out) if rc == 0 else None
+    if src[0] == "aib":
+        return aib_latest_version()
     if src[0] == "grok":
         rc, out = _run(["grok", "update", "--check", "--json"], 20)
         try:
@@ -141,6 +199,12 @@ def _save(path, data):
 
 def installed_at(tool):
     """這一家在這台電腦最後一次安裝/更新的時間(epoch);量不到回 None。"""
+    if tool.get("key") == "aib":
+        try:
+            st = os.stat(os.path.join(REPO, "VERSION"))
+        except OSError:
+            return None
+        return int(getattr(st, "st_birthtime", 0) or st.st_mtime)
     w = shutil.which(tool["bin"])
     if not w:
         return None
@@ -391,7 +455,7 @@ def _getkey(timeout):
 def gate(rows, *, seconds=30, out=sys.stderr, getkey=None, run=None, sleep=time.sleep, cache=None,
          version_fn=None, lock=None):
     """有要催的新版 ⇒ 畫 logo+版本+倒數;回 "none" / "skipped" / "updated"。"""
-    todo = [r for r in rows if r["nag"] and r["key"] in SPLASH_KEYS]
+    todo = [r for r in rows if r["nag"] and r["key"] in GATE_KEYS]
     if not todo:
         return "none"
     import login_splash as L
@@ -399,6 +463,7 @@ def gate(rows, *, seconds=30, out=sys.stderr, getkey=None, run=None, sleep=time.
     busy = old_seats()
     note = ["%s 有 %d 席正在跑舊版(不會被打斷,下次開席才用新版)" % (r["key"], busy[r["key"]])
             for r in todo if busy.get(r["key"])]
+    note += ["aib 本機 %s → 最新 %s(這一席已經開好,下次開席才用新版)" % (r["local"], r["latest"]) for r in todo if r["key"] == "aib"]
 
     def paint(tail):
         L.paint(L.frame(L.N, False, version_rows(rows))[:-1] + [L.status_line(tail, 214)]
@@ -471,7 +536,7 @@ def status(out=sys.stdout):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="aib cli", description="五家 AI CLI 的本機/最新版本、更新、退版")
+    ap = argparse.ArgumentParser(prog="aib cli", description="五家 AI CLI 與 aib 自己的本機/最新版本、更新、退版")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("status", help="(預設)看五家本機/最新版本")
     u = sub.add_parser("update", help="現在就更新(不倒數);不寫家名 = 有新版的全部")

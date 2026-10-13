@@ -27,7 +27,7 @@ API_KEY_VICE_ICON = "\U0001F511"  # 🔑；與 pane-right-ai API_KEY_VICE_MARK �
 AIBOT_ICON = "\U0001F916"  # 🤖
 AIBOT_PROVIDERS = frozenset(("sand", "grokbot", "codexbot", "claudebot", "musebot"))
 # 與 providers.json auth=api_key / pane-right-ai API_KEY_PROVIDERS 對齊
-API_KEY_PROVIDERS = frozenset(("deepseek", "kiosapi", "nvidia", "teamo", "teamoclaude", "openrouter", "typesafe", "openrouterjev"))
+API_KEY_PROVIDERS = frozenset(("deepseek", "nvidia", "openrouter", "typesafe", "openrouterjev"))
 
 
 def role_family(role):

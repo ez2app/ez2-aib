@@ -35,3 +35,43 @@ def iter_lines(path):
     with open(path, "r", encoding="utf-8", errors="replace", newline="\n") as f:
         for line in f:
             yield line[:-1] if line.endswith("\n") else line
+
+
+def append_locked(path, data, tries=5):
+    """在池檔尾端整筆追加 data(bytes),跟所有寫池的人用同一把檔鎖(flock)。
+    M1 合池(pool_merge --apply)會在鎖裡原子換掉整個池檔:拿到鎖時手上這份若已不是路徑上那份,
+    寫進去就等於寫進被換掉的舊檔(那一列不見)⇒ 重開再寫。tries 次都對不上 ⇒ OSError(呼叫端照舊當「這次沒記到」)。"""
+    import fcntl
+    import os
+    for _ in range(tries):
+        with open(path, "ab") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                try:
+                    same = os.fstat(f.fileno()).st_ino == os.stat(path).st_ino
+                except OSError:
+                    same = False
+                if not same:
+                    continue
+                f.write(data)
+                f.flush()     # 放鎖之前一定要整列寫進檔案(10-04:緩衝留到關檔才寫 ⇒ 一列被切兩半)
+                return
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    raise OSError(_T("replaced_too_often", {"path": path, "n": tries}))
+
+
+def _T(key, params):
+    """出錯才用到的字串走四語字典(tests/test-tools-i18n-ratchet.py);字典載不到也照樣 raise,只是退回鍵名。
+    放在函式裡才 import:這支是寫列的底層,平常路徑不該多載一份字典。"""
+    import os
+    import sys
+    from pathlib import Path
+    cockpit = str(Path(__file__).resolve().parents[2] / "src" / "cockpit")
+    if cockpit not in sys.path:
+        sys.path.append(cockpit)
+    try:
+        import i18n_lib
+        return i18n_lib.t("aib.verify.jsonl_safe." + key, params, locale=os.environ.get("EZ2_AIB_LOCALE", "zh-TW"))
+    except Exception:
+        return "aib.verify.jsonl_safe.%s %r" % (key, params)

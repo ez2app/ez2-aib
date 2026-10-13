@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """API 家開發席的專屬工作目錄(the maintainer 09-28 00:4x:「右鍵新開席就能寫程式」)。
 
-API 席(deepseek/nvidia/openrouter/kiosapi/teamo/teamoclaude)的寫檔與 git 只准落在
+API 席(deepseek/nvidia/openrouter)的寫檔與 git 只准落在
 AIB_API_WORKTREE 指的那棵樹(deepseek_cli.LocalWorkspace)。以前這棵樹要人手建、手設,
 沒設 ⇒ 席只能讀,寫檔回「此席未在自己的 worktree 中」。本檔讓 aib 開席當下自動備好:
 

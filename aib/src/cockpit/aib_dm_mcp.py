@@ -121,7 +121,11 @@ def live_bridges(env=None):
             d = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if d.get("provider") != "codexbot" or d.get("exit_reason") or not d.get("desktop_thread_id"):
+        if d.get("provider") != "codexbot" or d.get("exit_reason"):
+            continue
+        import bot_binding   # 10-12 第 15 件第 2 步:現在綁哪條走同一支
+        tid = bot_binding.bound_id("codexbot", d.get("session_uuid"), d, base=base)[0]
+        if not tid:
             continue
         try:
             os.kill(int(d.get("pid")), 0)
@@ -129,9 +133,9 @@ def live_bridges(env=None):
             continue
         except PermissionError:
             pass
-        sock = dms.socket_path(base, d["desktop_thread_id"])
+        sock = dms.socket_path(base, tid)
         if sock.exists():
-            out[d["desktop_thread_id"]] = sock
+            out[tid] = sock
     return out
 
 
@@ -241,12 +245,24 @@ def resolve_hub_from_binding(secrets_file=None, instances_root=None):
     if not thread:
         return ""
     root = Path(instances_root or os.environ.get("EZ2_AIB_INSTANCES_ROOT") or Path.home() / ".ez2-aib" / "instances")
-    for f in glob.glob(str(root / "*" / "seats" / "w*.json")):
+    # 10-12 a seat 審查低 1:橋的 status.json 跟席位檔同一個狀態根(instances 的上一層),不另讀真機 ~/.ez2-aib;
+    #   本艙(HUB 導出的席位目錄)的席先看,同一條對話別艙也有活席時取本艙那隻。
+    base = root.parent
+    files = glob.glob(str(root / "*" / "seats" / "w*.json"))
+    try:
+        import seats_dir_lib
+        here = os.path.realpath(seats_dir_lib.seats_dir())
+        files.sort(key=lambda f: os.path.dirname(os.path.realpath(f)) != here)
+    except Exception:  # noqa: BLE001 —— 認不出本艙就照原順序
+        pass
+    import bot_binding   # 10-12 第 15 件第 2 步:現在綁哪條走同一支
+    for f in files:
         try:
             d = json.load(open(f, encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if d.get("provider") != "codexbot" or d.get("exit_reason") or d.get("desktop_thread_id") != thread:
+        if d.get("provider") != "codexbot" or d.get("exit_reason") \
+                or bot_binding.bound_id("codexbot", d.get("session_uuid"), d, base=base)[0] != thread:
             continue
         try:
             os.kill(int(d.get("pid")), 0)

@@ -59,6 +59,7 @@ from role_model import (  # noqa: E402
 from binding_projection import load_card_registry, ProjectionError  # noqa: E402
 from card_registry import resolve_card, UID_RE as CARD_UID_RE  # noqa: E402
 from route_register import check_against_contract, default_contract_spec, load_contract  # noqa: E402
+import persona_fit  # noqa: E402
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 ACTOR_RE = re.compile(r"[a-z0-9-]{1,32}@[0-9a-f]{4,8}/[A-Za-z0-9._-]{1,32}")
@@ -844,6 +845,15 @@ def bind_seat(state_root, seat_id, card, actor, brain=None, rebind_persona=False
             "session_uuid": session_uuid, "agent_uid": agent_uid,
             "persona_uid": persona_uid, "persona_sha": persona_sha,
             "display_name": entry.get("display_name"), "brain_route_key": brain}
+    # 10-12 Bot 開發第 16 件:卡寫給別家 bot ⇒ 只警告(不擋綁、不改卡);試跑也帶
+    try:
+        # entry 是正規化過的(沒有 code / card_path_rel)⇒ 改拿 cards.json 原本那一筆來認(10-13 f3 紅實查)
+        raw = persona_fit.raw_entry(cards_path, persona_uid) or entry
+        fit = persona_fit.fit_warning(rec.get("provider"), raw, persona_fit.card_text(cards_path, raw))
+    except Exception:  # noqa: BLE001 —— 警告量不到不准擋綁
+        fit = None
+    if fit:
+        plan["provider_warning"] = fit
     if dry_run:
         plan["dry_run"] = True
         return plan
@@ -976,11 +986,17 @@ def main(argv=None):
         print("bind-one: %s" % err, file=sys.stderr)
         return 2
     sys.stdout.write(_dump(out))
+    fit = out.get("provider_warning")
+    rc = 0
     if out.get("reproject") and out["reproject"]["rc"] != 0:
         print("bind-one: ⚠ 綁定已寫入,但重投影 rc=%d(畫面可能沒更新):%s"
               % (out["reproject"]["rc"], out["reproject"]["log_tail"][-200:]), file=sys.stderr)
-        return 1
-    return 0
+        rc = 1
+    if fit:   # 排在重投影錯誤後面:右鍵失敗訊息取第一行 bind-one:,不能被這行警告蓋掉
+        print("bind-one: ⚠ 人格卡「%s」(%s)是寫給 %s 的,這一席是 %s;已照綁,請確認卡上寫的能力跟這一席相符"
+              % (fit.get("display_name") or "?", fit.get("card_uid") or "?", fit["card_kind"], fit["seat_provider"]),
+              file=sys.stderr)
+    return rc
 
 
 if __name__ == "__main__":

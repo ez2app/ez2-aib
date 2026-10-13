@@ -8,6 +8,7 @@ _IN_HOOK blocks recursion when the hook itself reads files to hash them.
 from __future__ import annotations
 
 import hashlib
+import io       # 直譯器啟動就載入了(sys.stdout 用它),不算多 import
 import json
 import os
 import re
@@ -15,6 +16,8 @@ import sys
 
 _IN_HOOK = False
 from _thread import get_ident as _get_ident   # 內建模組,不多 import threading(觀測者不改被觀測物的 sys.modules)
+from _thread import _local as _ThreadLocal   # 同上:每執行緒一份,不 import threading
+from _weakref import ref as _weakref          # 同上:seek 鉤子只弱參照檔案物件
 _DIRFD_CTX = {}   # 執行緒 id -> os.open(..., dir_fd=d) 呼叫期間 d 的絕對路徑(見 _DirFdOpenWrapper)
 _GIT_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
                  "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT",
@@ -182,7 +185,7 @@ def _record_path(path, channel="open", copy_to=None):
         except (OSError, ValueError):
             pass
         if channel == "open" and _KEYED_SPEC and _keyed_declared(rec):
-            _KEYED_SHAS[digest] = rec                 # §15.3c 第 2 項:宣告過的 JSON 字典,之後 json.loads 認得出是它
+            _KEYED_SHAS.setdefault(digest, set()).add(os.path.realpath(rec))   # §15.3c 第 2 項;同內容多檔都記(審查低 4)
         if channel == "open" and isinstance(rec, str) and rec.startswith(_TMP_PREFIXES):
             # 10-03 產物規則:暫存檔記開檔當下的 mtime(跟過 symlink = 目標的時間);分析端拿它比這次追蹤的開始時間
             try:
@@ -585,6 +588,52 @@ def _note_bind(sock):
         _OWN_SOCKETS[sock.fileno()] = (sock.family, sock.type)
     except Exception:  # noqa: BLE001
         pass
+    _wrap_listen(type(sock))
+
+
+def _fmt_addr(addr):
+    """socket 位址 ⇒ 字串:Unix socket 是路徑,TCP/UDP 是 host:port。"""
+    if isinstance(addr, (str, bytes)):
+        return "unix:" + os.fsdecode(addr)
+    if isinstance(addr, tuple) and len(addr) >= 2:
+        return "%s:%s" % (addr[0], addr[1])
+    return repr(addr)[:120]
+
+
+def _wrap_listen(cls):
+    """10-12 P17(a seat 派,the maintainer 同意):只多記資料 —— 這個行程真的開始聽的位址(bind 用埠 0 時,埠要 listen 之後才知道)。
+    第一次 bind 時才換掉那個類別的 listen(沒 bind 的行程不碰 socket 模組);包裝回原函式的結果、原封不動丟原例外。"""
+    try:
+        orig = cls.listen
+        if getattr(orig, "_aib_listen_wrapped", False):
+            return
+
+        def listen(self, *a, **k):
+            r = orig(self, *a, **k)
+            try:
+                _emit({"ch": "listen", "addr": _fmt_addr(self.getsockname())})
+            except Exception:  # noqa: BLE001 —— 多記資料失敗不影響被測物
+                pass
+            return r
+        listen._aib_listen_wrapped = True
+        cls.listen = listen
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _net_dest(args):
+    """socket.connect 的目的地:{"dest": 位址字串, "local": 是不是本機(loopback / localhost / Unix socket)}。判不出 ⇒ {}。"""
+    try:
+        addr = args[1]
+        if isinstance(addr, (str, bytes)):
+            return {"dest": _fmt_addr(addr), "local": True}
+        if isinstance(addr, tuple) and len(addr) >= 2:
+            host = str(addr[0])
+            local = host in _LOOPBACK or host in ("localhost", "0.0.0.0", "::") or host.startswith("127.")   # 127.x 整段都是本機(審查)
+            return {"dest": _fmt_addr(addr), "local": local}
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
 
 
 def _to_own_listener(args):
@@ -595,10 +644,18 @@ def _to_own_listener(args):
     try:
         addr = args[1]
         for fd, (fam, typ) in list(_OWN_SOCKETS.items()):
+            # 10-12(a seat 派,a seat 入口檢查撞到):不用 sk.fromfd —— 它先 dup 再建 socket,建失敗(這個 fd 號碼已被重用成
+            #   一般檔,例如鎖檔 ⇒ ENOTSOCK)時 dup 出來那份沒人關,鎖就放不掉、下一輪整輪跳過。自己 dup,建失敗一定關。
             try:
-                dup = sk.fromfd(fd, fam, typ)
+                nfd = os.dup(fd)
             except OSError:
                 _OWN_SOCKETS.pop(fd, None)          # 已經關了
+                continue
+            try:
+                dup = sk.socket(fam, typ, 0, nfd)
+            except Exception:  # noqa: BLE001 —— 不是 socket 了(號碼被重用)或建不起來
+                os.close(nfd)
+                _OWN_SOCKETS.pop(fd, None)
                 continue
             try:
                 mine = dup.getsockname()
@@ -808,7 +865,8 @@ def _audit(event, args):
                 _note_bind(args[0])
         elif event == "socket.connect":
             if not _to_own_listener(args):
-                _emit({"ch": "external", "why": "network"})
+                # 10-12 P17:順便記連到哪(只多記資料,沿用判斷照舊:external)
+                _emit(dict({"ch": "external", "why": "network"}, **_net_dest(args)))
     except Exception:
         _emit({"ch": "unmeasured", "why": "hook-error"})
     finally:
@@ -1456,6 +1514,9 @@ def _install_gettext_keys():
 #   先改過內容、用別的解析器)⇒ 不換、不記 ⇒ 分析端照整檔(安全側)。只看最外層:取到的鍵底下整棵值都算進摘要。
 _KEYED_SPEC = None
 _KEYED_SHAS = {}
+_KEYED_AUTO = False      # 10-12:自動偵測到的(沒宣告)⇒ 只認 json.load(檔) 這條,見下
+_KEYED_TLS = _ThreadLocal()   # .fp_path:這個執行緒正在 json.load(真檔案) 裡面、那個檔的實體路徑(a seat 審查低 3:每執行緒各一份)
+_LOOSE_KW = ("strict",)   # 只有這個不影響「看過整份沒有」;其餘任何參數有值(cls、object_hook、array_hook…)= 嚴格解析
 
 
 def _keyed_declared(path):
@@ -1468,31 +1529,171 @@ def _keyed_declared(path):
         return False
 
 
+def _aib_count(f):
+    if getattr(_KEYED_TLS, "fp_path", None) is None:   # None = 不在 json.load 裡;load 外面的讀才算
+        f._aib_n = getattr(f, "_aib_n", 0) + 1
+
+
+class _CountedText(io.TextIOWrapper):
+    """字典檔(文字模式)的讀取計數。用子類別不用實例屬性:for line in f 走型別的 __next__,實例上掛不到(a seat 23:3x);
+    也不會有「實例 → 閉包 → 綁定方法 → 實例」的循環,檔照常即時關。"""
+
+    def read(self, *a, **k):
+        _aib_count(self)
+        return io.TextIOWrapper.read(self, *a, **k)
+
+    def readline(self, *a, **k):
+        _aib_count(self)
+        return io.TextIOWrapper.readline(self, *a, **k)
+
+    def readlines(self, *a, **k):
+        _aib_count(self)
+        return io.TextIOWrapper.readlines(self, *a, **k)
+
+    # 不覆寫 __next__:C 的 TextIOWrapper.__next__ 對子類別一律改叫 self.readline() ⇒ 逐行已經經由上面的 readline 計數
+    #   (審查 r8 實測;刀因此落在 readline)。
+
+
+class _CountedBuffered(io.BufferedReader):
+    """字典檔(二進位模式)的讀取計數;peek / read1 / readinto 也算(peek 拿到原文卻不動位置)。"""
+
+
+for _name in ("read", "read1", "readline", "readlines", "readinto", "readinto1", "peek", "__next__"):
+    def _counting(self, *a, _base=getattr(io.BufferedReader, _name), **k):
+        _aib_count(self)
+        return _base(self, *a, **k)
+    _counting.__name__ = _name
+    setattr(_CountedBuffered, _name, _counting)
+
+
+def _counted_file(f, mode, a, kw):
+    """open 剛開好的檔 → 同一個底層、會計數的子類別;換不上 ⇒ 原檔(先建新的、成功才拆舊的,失敗不弄壞原檔)。"""
+    if type(f) is io.TextIOWrapper:
+        args = dict(zip(("buffering", "encoding", "errors", "newline", "closefd", "opener"), a))
+        args.update(kw)
+        g = _CountedText(f.buffer, encoding=f.encoding, errors=f.errors, newline=args.get("newline"),
+                         line_buffering=f.line_buffering)
+        g.mode = mode                         # open() 在文字檔上設的屬性
+        f.detach()
+        return g
+    if type(f) is io.BufferedReader:
+        g = _CountedBuffered(f.raw)
+        f.detach()
+        return g
+    return f
+
+
 def _install_keyed_json():
     global _KEYED_SPEC
     raw = os.environ.get("AIB_KEYED_FILES") or ""
     if not raw:
         return
+    global _KEYED_AUTO
     try:
         spec = json.loads(raw)
         _KEYED_SPEC = (os.path.realpath(str(spec["root"])), [str(g) for g in spec["globs"]])
+        _KEYED_AUTO = bool(spec.get("auto"))
     except Exception:  # noqa: BLE001
         return
     orig = json.loads
+    orig_load = json.load
+
+    # 10-12 a seat(a seat 裁 B):自動偵測等於所有用戶預設都開 ⇒ 不能帶著「錯沿用」的洞出去。
+    #   測試自己 read() 出原文再 json.loads ⇒ 原文在它手上,可能拿去比快照、交給 node、寫出去 —— 那些用到的是整份,
+    #   而這裡只看得到解析後取了哪些鍵 ⇒ 會被縮成只看那幾個鍵,改別的鍵時錯沿用。
+    #   自動模式只認 json.load(檔):原文只在 json.load 裡經 fp.read() 交給解析器,測試拿不到 ⇒ 縮成看鍵才安全;
+    #   其餘(json.loads(原文))⇒ 不換、不記 ⇒ 照整檔。宣告制(.aib/ship.toml)是用戶自己選的,照舊兩條都認。
+    #   10-12 a seat 審查(中/中低/低,每條有刀):
+    #   · 嚴格解析(cls、object_hook、object_pairs_hook、parse_*)在解析當下看過整份(例:拒絕重複鍵)⇒ 不換、不記;
+    #     json.load 轉呼 loads 時這幾個一律帶著(值 None)⇒ 看值不看有沒有帶;反過來寫成白名單(審查 r2:3.15 多了 array_hook,
+    #     以後 Python 再加參數也不漏);
+    #   · json.load 只認「真檔案」而且就是開到的那個檔(StringIO 之類原文在測試手上 ⇒ 整份);
+    #     load 完同一個 fp 又 seek(要重讀就得先倒回去)⇒ 記 @whole;
+    #   · 同內容的檔不只一個:在 load 裡照 fp 的路徑認;不在 load 裡(宣告制的 loads(原文))認不出是哪個 ⇒ 不換。
+    #   · load **之前**同一個 fp 已經讀過(raw = f.read(); f.seek(0)、for line in f 再 seek(0))、或讀取位置不在開頭
+    #     ⇒ @whole(a seat 23:2x / 23:3x:這兩種寫法都不少見)。開宣告/偵測到的字典檔(純讀模式)時交回會計數的
+    #     子類別(_CountedText / _CountedBuffered,見 _counted_file),load 裡的讀不算。
+    #   已知沒擋到(很少見,寫明):文字檔的 fp.buffer.*(底下那層沒換)、os.lseek(fp.fileno())、os.read(fd) 繞過 fp;
+    #     用 bytes 路徑開、buffering=0 開的檔不計數。
+    #   副作用(寫明):追蹤中的測試行程裡 open 是這裡的區域函式 ⇒ pickle.dumps(open) 會失敗(把 open 當參數交給
+    #     spawn 子行程才會碰到);字典檔的 type(f) 是子類別(isinstance 照舊成立,type(f) is io.TextIOWrapper 不成立;
+    #     repr / ResourceWarning 裡的型別名是 _CountedText / _CountedBuffered)。
+    def load(fp, *a, **kw):
+        prev = getattr(_KEYED_TLS, "fp_path", None)
+        name = getattr(fp, "name", None)
+        real = isinstance(fp, io.IOBase) and not isinstance(fp, (io.StringIO, io.BytesIO)) and isinstance(name, str)
+        read_before = True       # 不是真檔案 ⇒ 不去碰它(mock_open 會記下多出來的 tell 呼叫,審查 r4);被換了也算整份
+        if real:
+            try:
+                read_before = getattr(fp, "_aib_n", 0) > 0 or fp.tell() != 0
+            except Exception:  # noqa: BLE001 —— 量不到位置 ⇒ 當作讀過(安全側)
+                pass
+        _KEYED_TLS.fp_path = os.path.realpath(name) if real else ""
+        try:
+            obj = orig_load(fp, *a, **kw)
+        finally:
+            _KEYED_TLS.fp_path = prev
+        if type(obj) is _KeyedCatalog and read_before:
+            _i18n_key("@whole")                    # load 之前原文已經到過測試手上 ⇒ 整份
+        if type(obj) is _KeyedCatalog:
+            try:
+                # seek 鉤子可以只弱參照:能呼叫 fp.seek 就表示有人拿著 fp(load 前後同一個物件)。極罕見的例外:
+                #   某函式交出 fp 時自己已放掉、又在運算式裡直接 .seek ⇒ wfp() 為 None(寫明,不處理)。
+                inner_seek = fp.__dict__.get("seek")
+                wfp = _weakref(fp)
+
+                def _seek_whole(*sa, **skw):
+                    _i18n_key("@whole")            # load 完又倒回去 ⇒ 要重讀原文 ⇒ 整份
+                    if inner_seek is not None:
+                        return inner_seek(*sa, **skw)
+                    obj = wfp()
+                    return type(obj).seek(obj, *sa, **skw)
+                fp.seek = _seek_whole
+            except (AttributeError, TypeError):
+                return dict(obj)                    # 掛不上 ⇒ 不縮(安全側)
+        return obj
 
     def loads(s, *a, **kw):
         obj = orig(s, *a, **kw)
-        if _KEYED_SHAS and type(obj) is dict:
-            try:
-                b = s.encode("utf-8") if isinstance(s, str) else bytes(s)
-                path = _KEYED_SHAS.get(hashlib.sha256(b).hexdigest())
-            except Exception:  # noqa: BLE001
-                path = None
-            if path:
-                _emit({"ch": "i18nload", "path": path})
-                return _KeyedCatalog(obj)
+        if not _KEYED_SHAS or type(obj) is not dict or a or any(v is not None for k, v in kw.items() if k not in _LOOSE_KW):
+            return obj
+        in_load = getattr(_KEYED_TLS, "fp_path", None)
+        if _KEYED_AUTO and not in_load:
+            return obj
+        try:
+            b = s.encode("utf-8") if isinstance(s, str) else bytes(s)
+            paths = _KEYED_SHAS.get(hashlib.sha256(b).hexdigest()) or set()
+        except Exception:  # noqa: BLE001
+            paths = set()
+        if in_load:
+            path = in_load if in_load in paths else None
+        else:
+            path = next(iter(paths)) if len(paths) == 1 else None
+        if path:
+            _emit({"ch": "i18nload", "path": path})
+            return _KeyedCatalog(obj)
         return obj
     json.loads = loads
+    json.load = load
+
+    import builtins
+    orig_open = builtins.open
+
+    def keyed_open(file, mode="r", *a, **kw):
+        f = orig_open(file, mode, *a, **kw)
+        try:
+            m = str(mode)
+            if isinstance(file, (str, os.PathLike)) and "r" in m and set(m) <= set("rtb") \
+                    and _keyed_declared(os.fspath(file)):
+                return _counted_file(f, m, a, kw)
+        except Exception:  # noqa: BLE001 —— 換不上就用原本的檔:load 時量不到讀取次數,還有 tell 一道
+            pass
+        return f
+    builtins.open = keyed_open
+    # 10-13:Python 3.10 的 pathlib 在類別裡存 `open = io.open`(_NormalAccessor)⇒ 換成一般函式會被綁成方法,
+    #   Path.read_text 把路徑塞進 mode(公開倉 CI smoke 3.10 紅)。functools.partial 不是描述器,不會被綁。
+    import functools
+    io.open = functools.partial(keyed_open)
 
 
 def start():

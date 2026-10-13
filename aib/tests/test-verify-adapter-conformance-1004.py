@@ -304,7 +304,8 @@ class Knives(unittest.TestCase):
         return p, set(re.findall(r"^(?:FAIL|ERROR): (test_\w+)", p.stderr, re.M))
 
     def test_k2_no_network_event_reds_a8(self):
-        p, red = self._red('            _emit({"ch": "external", "why": "network"})\n', "            pass\n",
+        # 10-12 P17:外部事件多帶連線目標,刀錨跟著換到那一行;刀的意思不變 —— 連線一律不發外部事件
+        p, red = self._red('                _emit(dict({"ch": "external", "why": "network"}, **_net_dest(args)))\n', "                pass\n",
                            "test_a8_network")
         self.assertIn("test_a8_network", red, p.stderr[-2000:])
 

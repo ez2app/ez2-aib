@@ -892,8 +892,42 @@ def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
             if BG_RE.search(cmd) and "worktrees/" in cmd:
                 facts["background"].append({"pid": pid, "etime": etime, "cmd": cmd[:200]})
         _seat_children(facts, procs, rec.get("pid"), me)
+    facts["sweep"] = run_sweep(code, facts["seat"]["project_uid"], home)
     facts["took_s"] = round(time.time() - t0, 2)
     return facts
+
+
+SWEEP_TIMEOUT_S = 15
+
+
+def run_sweep(code: str, project_uid: str = "", home=None) -> dict:
+    """專案清查(docs/DESIGN-project-sweep-1012.md §3 第一版:交接前必跑)。跑了就算數:失敗 / 逾時只記狀態,
+    **絕不擋交接**(a seat 審:對話快滿時被 sweep 自己的毛病擋住最危險)。回 {state, at, counts, top}。
+    state ∈ ok / failed / timeout / no_project。"""
+    at = _iso(time.time())
+    args = [sys.executable, str(HERE / "project_sweep.py"), "--json"]
+    if project_uid:
+        args += ["--project", project_uid]
+    env = dict(os.environ, AIB_SEAT_CODE=code) if code else None
+    if home is not None:
+        env = dict(env or os.environ, EZ2_AIB_STATE_ROOT=str(_home(home)))
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=SWEEP_TIMEOUT_S, stdin=subprocess.DEVNULL, env=env)
+    except subprocess.TimeoutExpired:
+        return {"state": "timeout", "at": at}
+    except OSError as exc:
+        return {"state": "failed", "at": at, "why": repr(exc)[:120]}
+    if p.returncode == 2:
+        return {"state": "no_project", "at": at}
+    try:
+        res = json.loads(p.stdout)
+    except ValueError:
+        return {"state": "failed", "at": at, "why": (p.stderr or "")[-120:]}
+    counts = {}
+    for it in res.get("items") or []:
+        counts[str(it.get("class"))] = counts.get(str(it.get("class")), 0) + 1
+    top = [{k: it.get(k) for k in ("class", "owner", "what")} for it in (res.get("items") or [])[:5]]
+    return {"state": "ok", "at": at, "counts": counts, "top": top, "missed": res.get("missed") or []}
 
 
 # 10-05 a seat:Claude 用背景殼起的長迴圈(盯標籤、排隊等租約)都是 `zsh -c 'source …shell-snapshots… && eval …'`,
@@ -1476,6 +1510,9 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
         facts = _read_json(collect_facts_path(code, home)) or {}
         if facts.get("nonce") != stamp["nonce"]:
             facts = {"seat": {"code": code}, "unmeasured": [{"item": "repo", "why": T("aib.handoff.why.facts_gone")}]}
+        sweep = facts.get("sweep") if isinstance(facts.get("sweep"), dict) else None
+        if not sweep:          # 收集那一步沒跑到(舊版收集 / 事實檔不見)⇒ 這裡補跑:交接一定有嘗試過 sweep
+            sweep = run_sweep(code, str((facts.get("seat") or {}).get("project_uid") or seat.get("project_uid") or ""), home)
         target = _unique(pd / ("HANDOFF-%s-%s.md" % (code, time.strftime("%m%d-%H%M", time.localtime(now)))))
         prop = binding_proposal(seat, text, now, home)
         if prop.get("block"):
@@ -1489,7 +1526,8 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
                    "collect_ts": stamp["ts"], "collect_nonce": stamp["nonce"],
                    "writer_seat": writer, "seat_mismatch": bool(writer) and writer != code,
                    "brain": out["brain"], "seat_memory": out["seat_memory"],
-                   "steps": {k: v["ts"] for k, v in steps.items()}}
+                   "steps": {k: v["ts"] for k, v in steps.items()},
+                   "sweep": sweep.get("state"), "sweep_at": sweep.get("at")}
         _write_json(receipt_path(code, home), receipt)
         _append_jsonl(receipts_log(code, home), receipt)
         out["file"], out["receipt"] = str(target), str(receipt_path(code, home))

@@ -397,13 +397,7 @@ def _append_row(path: Path, row: dict) -> None:
     # 10-04:放鎖之前一定要整列寫進檔案(先 flush)。以前寫完就放鎖,緩衝剩下的關檔時才寫,
     # 多份同時跑就把一列切成兩半夾別人的列 ⇒ 隔離工具認不出是哪支 ⇒ 整池作廢(雲端實踩)。
     data = (jsonl_safe.dumps(row) + "\n").encode("utf-8")
-    with open(path, "ab") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.write(data)
-            f.flush()
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    jsonl_safe.append_locked(path, data)   # 同一把鎖;池檔被合池換掉就重開(M1 二審)
     try:
         os.chmod(path, 0o600)
     except OSError:
@@ -442,14 +436,102 @@ def _keylog_path(repo: Path, name: str):
         return None
 
 
-def _keyed_files(repo: Path):
-    """.aib/ship.toml 的 [test] keyed_files(字串清單,相對倉根的樣式)。沒有 / 寫壞 ⇒ []。"""
+# 10-12 a seat(a seat 派、the maintainer 17:1x 加令「翻譯重跑優化也要能讓其他 aib 用戶在自己的專案上套用」):
+#   沒宣告 keyed_files ⇒ 自動認常見翻譯字典位置;aib 自己的倉 i18n/*.json 只是其中一例,不寫特例。
+AUTO_KEYED_DIRS = ("locales", "i18n", "lang", "messages", "translations")
+AUTO_KEYED_MAX_BYTES = 8 * 1024 * 1024     # 比這大的不當翻譯字典(解析成本;也不像)
+
+
+_DICT_VERDICT = {}     # (路徑, mtime_ns, 大小) ⇒ 是不是翻譯字典:每支測試都會問一次,檔沒變就不重新解析(審查 10-12)
+
+
+def is_translation_dict(path) -> bool:
+    """「鍵 → 字串」的字典:最外層是非空物件,每個葉子都是字串(可以巢狀物件,像 i18next 的 {"menu": {"a": "A"}})。
+    package.json、設定檔(數字、布林、陣列、null)⇒ 不是(§3:誤中不算)。讀不到 / 不是 JSON ⇒ 不是。"""
     try:
-        text = (Path(repo) / ".aib" / "ship.toml").read_text(encoding="utf-8")
+        st_ = os.stat(path)
+    except OSError:
+        return False
+    key = (str(path), st_.st_mtime_ns, st_.st_size)
+    if key not in _DICT_VERDICT:
+        _DICT_VERDICT[key] = _is_translation_dict_uncached(path, st_.st_size)
+    return _DICT_VERDICT[key]
+
+
+def _is_translation_dict_uncached(path, size) -> bool:
+    try:
+        if size > AUTO_KEYED_MAX_BYTES:
+            return False
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict) or not data:
+        return False
+    stack, leaves = [data], 0
+    while stack:
+        d = stack.pop()
+        for k, v in d.items():
+            if not isinstance(k, str):
+                return False
+            if isinstance(v, dict):
+                if not v:
+                    return False
+                stack.append(v)
+            elif isinstance(v, str):
+                leaves += 1
+            else:
+                return False
+    return leaves > 0
+
+
+def _auto_keyed_files(repo: Path):
+    """常見翻譯資料夾底下(含一層子資料夾,如 locales/en/*.json)、內容是翻譯字典的 *.json ⇒ 相對倉根的路徑清單。"""
+    root = Path(repo)
+    out = set()
+    for d in AUTO_KEYED_DIRS:
+        base = root / d
+        if not base.is_dir() or base.is_symlink():
+            continue
+        for f in list(base.glob("*.json")) + list(base.glob("*/*.json")):
+            if f.is_file() and not f.is_symlink() and is_translation_dict(f):
+                out.add(f.relative_to(root).as_posix())
+    return sorted(out)
+
+
+def _declared_keyed_files(repo: Path):
+    """.aib/ship.toml 的 [test] keyed_files:沒有這個檔 / 沒寫這一項 ⇒ None(交給自動偵測);
+    寫了(含 [] = 關掉)⇒ 字串清單,倉外樣式(.. 或絕對路徑)不收;寫壞 ⇒ [](不猜)。"""
+    path = Path(repo) / ".aib" / "ship.toml"
+    if not path.is_file():
+        return None
+    try:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "release"))
         import ship_profile
-        val = (ship_profile.parse_toml(text).get("test") or {}).get("keyed_files") or []
-        return [str(g) for g in val if isinstance(g, str) and g and not g.startswith("/") and ".." not in g]
+        test = ship_profile.parse_toml(path.read_text(encoding="utf-8")).get("test") or {}
+    except Exception:  # noqa: BLE001
+        return []
+    if "keyed_files" not in test:
+        return None
+    val = test.get("keyed_files") or []
+    if not isinstance(val, list):
+        return []
+    return [str(g) for g in val if isinstance(g, str) and g and not g.startswith("/") and ".." not in g]
+
+
+def keyed_env(repo: Path, globs):
+    """AIB_KEYED_FILES 的值。auto = 沒宣告、自動偵測來的 ⇒ 鉤子端只認 json.load(檔)(sitecustomize_audit,a seat 裁 B)。"""
+    return json.dumps({"root": str(repo), "globs": list(globs), "auto": _declared_keyed_files(repo) is None})
+
+
+def _keyed_files(repo: Path):
+    """以鍵為單位的 JSON 字典(相對倉根的樣式)。.aib/ship.toml 宣告了就照宣告(蓋過自動、[] = 關掉);
+    沒宣告 ⇒ 自動偵測常見翻譯位置。出錯 ⇒ [](照整檔重跑,安全側)。"""
+    try:
+        declared = _declared_keyed_files(repo)
+        if declared is not None:
+            return declared
+        return _auto_keyed_files(repo)
     except Exception:  # noqa: BLE001
         return []
 
@@ -587,6 +669,9 @@ def reap_leftovers(marker: str, grace_s: float = 2.0, proc: str = "/proc", var: 
     return pids
 
 
+NET_TARGETS_MAX = 20     # 10-12 P17:紀錄池每列最多記幾個網路目標
+
+
 def _traced_run(repo: Path, snapshot: Path, name: str, env: dict[str, str], trace_dir: Path,
                 row_source: str = ROW_SOURCE, timeout: float | None = None) -> dict:
     """在追蹤下跑一支,跑完把量到的輸入寫進沿用池。量不到照實寫 measured="unmeasured"(下次必跑)。
@@ -599,9 +684,9 @@ def _traced_run(repo: Path, snapshot: Path, name: str, env: dict[str, str], trac
     keylog = _keylog_path(repo, name)                 # 10-06 §15.3:順便記這支用到哪些翻譯鍵(只量,不影響沿用)
     if keylog is not None:
         tenv["AIB_I18N_KEYLOG"] = str(keylog)
-    keyed = _keyed_files(snapshot)                    # §15.3c 第 2 項:.aib/ship.toml 宣告的 JSON 字典
+    keyed = _keyed_files(snapshot)                    # §15.3c 第 2 項:.aib/ship.toml 宣告的 JSON 字典;10-12 起沒宣告就自動偵測
     if keyed:
-        tenv["AIB_KEYED_FILES"] = json.dumps({"root": str(snapshot), "globs": keyed})
+        tenv["AIB_KEYED_FILES"] = keyed_env(snapshot, keyed)
     actual = _run_one(snapshot, name, tenv, timeout=timeout)
     reap_leftovers(str(trace))                        # 10-08:測試開出來沒收的背景行程(tmux 伺服器等)一併收掉
     try:
@@ -638,7 +723,12 @@ def _traced_run(repo: Path, snapshot: Path, name: str, env: dict[str, str], trac
             "time": time.strftime("%Y-%m-%d %H:%M", time.localtime()), "source": row_source,
             "time_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        _append_row(_pool_file(repo), reuse_index.stamp_row(row, str(repo)))
+        net = st.network_targets(events)
+        if net:                       # 10-12 P17:連了哪些網路目標(只多記資料;沿用判斷看 external/why,不看這欄)
+            row["net"] = net[:NET_TARGETS_MAX]       # 上限:一支測試連很多埠時這一列不會無限長(會推到共用池 —— 審查)
+            if len(net) > NET_TARGETS_MAX:
+                row["net_more"] = len(net) - NET_TARGETS_MAX
+        _append_row(_pool_file(repo), reuse_index.stamp_row(row, str(repo)))   # M1 合池是另一支一次性指令,不在寫列路上
         actual["recorded"] = True
     except Exception as e:  # 量不到只是下次必跑;不准讓驗證本身失敗
         actual["recorded"] = False

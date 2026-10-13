@@ -1,0 +1,19 @@
+{
+  "_comment_zh-TW": "EH.28 · CTX 門檻單一資料源(root@00000 09:07 裁、09:16 四問裁)。讀者一律經 src/rotation/ctx_policy.py 取值,不得在碼裡另寫字面。stage_* 是生命週期階段,action_* 是動作門檻——值相等不等於同一個鍵。",
+  "schema_version": "1",
+  "stages": {
+    "ok": 0,
+    "scout_successor": 50,
+    "should_checkpoint": 60,
+    "co_rule": 75,
+    "should_converge": 85,
+    "must_handoff": 90,
+    "advisor_stop": 96,
+    "claude_final": 97
+  },
+  "actions": {
+    "prepare_compact": 80,
+    "captain_compact": 85,
+    "final_clear_advice_floor": 85
+  }
+}

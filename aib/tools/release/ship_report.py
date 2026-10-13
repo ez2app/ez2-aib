@@ -145,15 +145,25 @@ def lifetime_lines(T, dur, rows):
         ([T("rp_life_unsplit", {"n": lt["unsplit"]})] if lt["unsplit"] else []) + [T("rp_life_cmd")]
 
 
-def write(repo, T, dur, row, commits, old_reds, unverified, out_dir=None, history=None):
-    """寫草稿 JSON,再用 aib-report 渲染(台北時區)。回 (txt 路徑或 None, json 路徑, aib-report 結束碼)。"""
+def write(repo, T, dur, row, commits, old_reds, unverified, out_dir=None, history=None, flaky=(), notes=()):
+    """寫草稿 JSON,再用 aib-report 渲染(台北時區)。回 (txt 路徑或 None, json 路徑, aib-report 結束碼)。
+    flaky(10-12 P1):這次放行的不穩定測試 ⇒ 回報最上面一行大字寫出來(JSON 草稿也帶 flaky_allowed)。
+    notes(10-12 P9):推成後各台更新的結果(「Pro:已快轉到 …」),接在最上面那幾行(JSON 也帶 after_push)。"""
     tool = Path(repo) / "tools" / "report" / "aib-report.py"
     out_dir = Path(out_dir) if out_dir else Path.home() / ".ez2-aib" / "pending"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now(TPE).strftime("%m%d-%H%M")
     jpath = out_dir / ("REPORT-DRAFT-ship-%s.json" % stamp)
-    jpath.write_text(json.dumps(draft(T, dur, row, commits, old_reds, unverified), ensure_ascii=False, indent=1),
-                     encoding="utf-8")
+    d = draft(T, dur, row, commits, old_reds, unverified)
+    top = T("rp_flaky_top", {"what": ", ".join(sorted(flaky))}) if flaky else ""
+    if flaky:
+        d["flaky_allowed"] = sorted(flaky)
+        d["summary"] = top + "\n" + d["summary"]
+    if notes:
+        d["after_push"] = list(notes)
+        d["summary"] = "\n".join(list(notes) + [d["summary"]])
+        top = "\n".join(([top] if top else []) + list(notes))
+    jpath.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
     if not tool.exists():
         return None, jpath, None
     env = dict(os.environ, TZ="Asia/Taipei")
@@ -163,5 +173,6 @@ def write(repo, T, dur, row, commits, old_reds, unverified, out_dir=None, histor
         return None, jpath, p.returncode
     tpath = out_dir / ("REPORT-DRAFT-ship-%s.txt" % stamp)
     life = lifetime_lines(T, dur, history if history is not None else [row])
-    tpath.write_text(p.stdout.rstrip("\n") + ("\n\n" + "\n".join(life) + "\n" if life else "\n"), encoding="utf-8")
+    tpath.write_text((top + "\n\n" if top else "") + p.stdout.rstrip("\n") + ("\n\n" + "\n".join(life) + "\n" if life else "\n"),
+                     encoding="utf-8")
     return tpath, jpath, 0

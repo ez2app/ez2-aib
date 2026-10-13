@@ -4,6 +4,20 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.5
+
+- Opening a seat now also checks aib itself: if a newer aib is out, it is updated in the same 30-second countdown as the AI tools (press s to skip); the new version is used from the next seat. `aib cli` lists aib too. `AIB_CLI_UPDATE=0` turns the check off.
+- A brand-new computer no longer gets stuck: aib ships a default route contract and keeps its own vault in `~/.ez2-aib/vault` (created on first use), so `aib newrole` and the second-brain pane work without any extra setup.
+- Your own vault (`EZ2_VAULT_DIR`) works too: `aib newrole` uses the default route contract when that vault is new or empty, has its own index, or already has `10-Roles`; otherwise it tells you the two ways to set it up instead of just failing.
+- The one-line install runs `aib init` for you.
+- Commands that are still in development now say so instead of showing a Python error.
+- `aib doctor` is now reachable: it lists what this computer still lacks and how to fix it, checks only the AI tools you installed, and covers the second brain (vault, route contract, note-format modules).
+- A mistyped command says "there is no … command" in your language and lists the common ones, instead of printing the full usage in four languages.
+- The public repository's CI now installs aib into an empty home on Linux and macOS and runs a new user's first commands, so these dead ends cannot come back unnoticed.
+- The ledger's event schemas ship with aib (earlier versions left them out, so anything that writes the ledger refused to run).
+- `aib init` no longer crashes on its last step; Python cache files go to `~/.cache/ez2-aib` instead of the install folder.
+- `aib room` (the Captain's Room, including `aib room contacts` and `aib room say`) is no longer in the open-source version; it is still in development and not open to the public yet.
+
 ## 0.1.4
 
 - The cockpit color theme (`themes/aib-default.json`) is now included; earlier versions left it out, so the cockpit could not find its theme.

@@ -56,6 +56,7 @@ for _p in ("memory", "persona_route"):
     sys.path.insert(0, str(_SRC / _p))
 
 from route_register import check_against_contract, load_contract, contract_digest  # noqa: E402
+import route_register as _RR  # noqa: E402  10-12:預設 vault / 預設契約同一條規則
 
 SCHEMA_VERSION = "aib-cards/v2"
 LIBRARY_ROUTE_KEY = "product.expert.agent_library"
@@ -276,7 +277,7 @@ def _strip_trailing_parenthetical(name):
 # ---- 來源解析 ------------------------------------------------------------------
 
 def resolve_vault(explicit=None):
-    root = explicit or os.environ.get("EZ2_VAULT_DIR") or DEFAULT_VAULT
+    root = explicit or os.environ.get("EZ2_VAULT_DIR") or _RR.default_vault()   # 10-12:全套件同一條 vault 規則
     root = os.path.expanduser(root)
     if not os.path.isabs(root):
         raise CardRegistryError("vault 路徑必須是絕對路徑:%r" % (root,))
@@ -537,7 +538,8 @@ def main(argv=None):
 
     try:
         vault = resolve_vault(args.vault)
-        contract_path = args.contract or os.environ.get("EZ2_ROUTE_REGISTRY")
+        # 10-12:新機器(vault 是 aib 預設)沒有契約 ⇒ 套件附的預設契約;有自己 vault 的照舊要明給
+        contract_path = args.contract or os.environ.get("EZ2_ROUTE_REGISTRY") or _RR.fallback_contract()
         contract = load_contract(contract_path)
         if contract is None:
             raise CardRegistryError("路由契約讀不到(--contract 或 EZ2_ROUTE_REGISTRY);"

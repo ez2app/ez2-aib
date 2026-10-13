@@ -14,7 +14,7 @@
   對不到、對到兩個、檔沒有 uuid,一律不猜,退回腳本名(舊行為)。
   不讀 `EZ2_AIB_SEAT` / `EZ2_AIB_AGENT` —— 那是自報,本模組不開那個冒充面。
 
-★ 腳本名仍只認**產品碼**:`<倉根>/src/` 底下的 `.py` / `.sh`。理由有二 ——
+★ 腳本名仍只認**產品碼**:`<倉根>/src/` 底下的 `.py` / `.sh`(10-12 加:裝好的外掛資料夾,見 plugins_root)。理由有二 ——
   (一)這一格要回答的問題是「本倉哪一支自動化送的」,測試 harness 不是自動化;
   (二)`tests/` 底下的臂送 dm 時**必須**仍落在「推導不出身分」那一格,
        因為它們驗的正是那一格;把 tests/ 也認進來會讓那三支臂改成驗別的東西。
@@ -119,6 +119,13 @@ def name_from_command(cmd, src_root):
     return None
 
 
+def plugins_root():
+    """裝好的外掛(`${EZ2_AIB_HOME:-~/.ez2-aib}/plugins`,aib_plugins 同一條)也算產品碼:
+    艦長室網頁 10-12 改成外掛後,從頁面寄的 dm 抬頭仍要是「艦長室」。
+    外掛是使用者自己裝的,信任等同本倉 src/;kind 照舊 unattested,不升權。"""
+    return os.path.join(os.environ.get("EZ2_AIB_HOME") or os.path.join(os.path.expanduser("~"), ".ez2-aib"), "plugins")
+
+
 def derive_sender_name(pid=None, repo_root=None, max_depth=MAX_DEPTH,
                        read_ppid=None, read_cmd=None):
     """走祖先鏈,回**最近**一支本倉 `src/` 產品腳本的名字;沒有就回 None。
@@ -129,14 +136,19 @@ def derive_sender_name(pid=None, repo_root=None, max_depth=MAX_DEPTH,
     read_ppid = read_ppid or _read_ppid
     read_cmd = read_cmd or _read_cmd
     root = repo_root or repo_root_from(os.path.dirname(os.path.abspath(__file__)))
-    src_root = os.path.join(root, "src")
+    roots = (os.path.join(root, "src"), plugins_root())
     seen = set()
     cur = pid if pid is not None else os.getppid()
     for _ in range(max_depth):
         if cur is None or cur <= 1 or cur in seen:
             return None
         seen.add(cur)
-        name = name_from_command(read_cmd(cur), src_root)
+        cmd = read_cmd(cur)
+        name = None
+        for src_root in roots:
+            name = name_from_command(cmd, src_root)
+            if name is not None:
+                break
         if name is UNNAMEABLE:
             return None                   # 是來源但叫不出名字 ⇒ 誠實回 unknown
         if name:

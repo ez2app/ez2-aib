@@ -207,7 +207,20 @@ install_main() {
   fail() { say "✗ $1"; [ -n "${2:-}" ] && say "  → 怎麼辦:$2"; return 0; }
   # same_source:安裝位置已有一份時,它必須是從同一個來源裝的才准快轉更新(10-09 a seat)。
   #   不是 ⇒ 一律不碰(多半是開發者自己的倉庫,例如 ~/ez2-aib 正本),回 2 並說怎麼辦;是 ⇒ UPDATE=1(這次是更新)。
-  _norm_src() { local x="${1%/}"; printf '%s' "${x%.git}"; }
+  # 10-12 Pro 實裝抓到(a seat 1459fa8a7 找到原因、a seat a336ddb30 補完整,a seat 取後者合併):
+  #   git 全域 url.git@github.com:.insteadOf https://github.com/ 時,https 裝的那份 remote get-url 會回 ssh 寫法
+  #   ⇒ 一行安裝/更新把同一個倉庫當成「別的來源」整個擋掉(Pro install-20261012-231841)。
+  #   網址一律化成 https://<主機>/<擁有者>/<倉庫>(小寫):git@、ssh://(含 :22)、https、http、git:// 都算;
+  #   別的主機、別的倉照舊不同;本機路徑照舊不動(不改大小寫)。測試照函式開頭那行與結尾單獨一行的右大括號抽出整個函式(說明裡別寫出開頭那行的原字)。
+  _norm_src() {
+    local x="${1%/}"; x="${x%.git}"
+    case "$x" in
+      git@*:*) x="${x#git@}"; x="${x%%:*}/${x#*:}" ;;
+      ssh://*|https://*|http://*|git://*) x="${x#*://}"; x="${x#*@}"; x="${x/:22\//\/}" ;;
+      *) printf '%s' "$x"; return 0 ;;
+    esac
+    printf 'https://%s' "$x" | tr '[:upper:]' '[:lower:]'
+  }
   same_source() {
     [ -n "$SOURCE" ] && [ -d "$DIR/.git" ] || return 0
     local have; have="$(git -C "$DIR" remote get-url origin 2>/dev/null || true)"
@@ -331,6 +344,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     if [ -n "${AIB_AI:-}" ]; then   # 不能互動時用環境變數指定,例:AIB_AI=claude,codex
       AI_PICK=""
       for w in $(printf '%s' "$AIB_AI" | tr ',' ' '); do
+        [ "$w" = none ] && continue   # 10-12:AIB_AI=none = 不裝任何 AI 工具(CI 的全新電腦那關;之後要裝再 --tools)
         ok=0; for id in "${ids[@]}"; do [ "$id" = "$w" ] && ok=1; done
         [ "$ok" = 1 ] || { fail "AIB_AI 裡的「${w}」不認得" "只能填這些(用逗號分隔):${ids[*]}"; return 2; }
         AI_PICK="$AI_PICK $w"
@@ -620,6 +634,10 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
         AIB_PATH_BIN="$HOME/.local/bin" bash "$DIR/tools/aib-install-path" || miss+=("aib-install-path 失敗")
       AIB_SKILLS_LINK_ROOT="${AIB_PACKAGE_ROOT:-$HOME/.local/share/ez2-aib}/current/repo" \
         bash "$DIR/tools/aib-install-skills" --all || miss+=("aib-install-skills 失敗")
+      # 10-12 a seat:無頭 Chrome 收屍排程(每 5 分鐘;這一版只觀察、不砍,下一版驗過才改 --enforce)
+      if [ -f "$DIR/tools/chrome-reaper/install.sh" ]; then
+        bash "$DIR/tools/chrome-reaper/install.sh" --root "$DIR" >/dev/null || miss+=("無頭 Chrome 收屍排程沒裝上")
+      fi
     fi
     if ! grep -q 'aib-bootstrap: PATH' "$HOME/.zprofile" 2>/dev/null; then
       run sh -c 'printf "\n# aib-bootstrap: PATH\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n" >> "$HOME/.zprofile"'
@@ -757,6 +775,10 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   else
     run bash "$DIR/tools/aib-install-path" --launcher || miss+=("aib-install-path 失敗")
     run bash "$DIR/tools/aib-install-skills" --all || miss+=("aib-install-skills 失敗")
+    # 10-12 a seat:無頭 Chrome 收屍排程(Mac 才有 launchd;這一版只觀察、不砍,下一版驗過才改 --enforce)
+    if [ "$LINUX" != 1 ] && { [ -f "$DIR/tools/chrome-reaper/install.sh" ] || [ "$DRY" = 1 ]; }; then
+      run bash "$DIR/tools/chrome-reaper/install.sh" --root "$DIR" || miss+=("無頭 Chrome 收屍排程沒裝上")
+    fi
   fi
   local PROFILE="$HOME/.zprofile"
   [ "$LINUX" = 1 ] && PROFILE="$HOME/.profile"   # Linux 多半是 bash:登入殼讀 ~/.profile
@@ -780,6 +802,12 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
       [ "$vrc" = 0 ] && v="$(printf '%s\n' "$vout" | grep -m1 'Ez2 AIB')"
     fi
     if [ -n "$v" ]; then say "✓ $v($shown,花了 $(took "$t_step"))"
+      # 10-12 新用戶全面檢查(the maintainer「新安裝的 aib 也要解決這個問題」):裝完就建好狀態樹(aib init,可重跑);
+      #   第二大腦的預設 vault 與預設路由契約在第一次用時自動就緒。已有別的 aib(共用 ~/.ez2-aib)⇒ 不碰。
+      if [ "${KEEP:-0}" != 1 ]; then
+        if (cd "$DIR" && "$abin" init >/dev/null 2>&1); then say "✓ aib 狀態目錄就緒(~/.ez2-aib)"
+        else note+=("aib init 沒跑成:開第一席前請自己跑一次 aib init"); fi
+      fi
     elif [ "$vrc" = 127 ]; then miss+=("$shown 不見了或不能執行")
     else miss+=("$shown 跑不起來(結束碼 $vrc)"); fi
   fi

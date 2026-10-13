@@ -216,12 +216,13 @@ def record_audit(repo, out, path=None):
 
 
 def read_audits(repo, path=None, rid=None):
-    mine = rid if rid is not None else (ri.repo_identity(str(repo)) or "")
+    # M1(10-13):身分換成專案身分後,舊身分記的抽查照樣算(不歸零)
+    mine = {rid} if rid is not None else {x for x in (ri.repo_identity(str(repo)), ri.legacy_identity(str(repo))) if x} or {""}
     try:
         rows = _load_jsonl(_audits_path(path))
     except OSError:
         return []
-    return [r for r in rows if isinstance(r, dict) and r.get("repo") == mine]
+    return [r for r in rows if isinstance(r, dict) and r.get("repo") in mine]
 
 
 def predict(repo, tests=None, environ=None):

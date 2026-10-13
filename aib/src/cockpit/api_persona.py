@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """API 席的人格:每一輪都放在系統說明裡(the maintainer 09-30「確認全部種類 AI 都能真正的套用到人格」)。
 
-09-30 測試艙 b1af 實測:deepseek / kiosapi / nvidia / teamo / teamoclaude / openrouter 綁了人格卡、抬頭也是那個名字,
+09-30 測試艙 b1af 實測:deepseek / nvidia / openrouter 等 API 席綁了人格卡、抬頭也是那個名字,
 但模型本身說「沒有載入具名人格」。原因:人格包只用 aib dm 寄一次,而且太長會落檔成「請讀:<路徑>」,
 API 席的讀檔工具不准讀專案外的路徑 ⇒ 永遠讀不到;固定的系統說明(DM_SYSTEM / TOOL_SYSTEM)裡沒有人格。
 

@@ -797,9 +797,17 @@ bind_menu_layer() {
       _out="$("${_cmd[@]}" 2>&1)"; _rc=$?
       printf '%s bind-menu %s seat=%s arg=%s rc=%s\n%s\n' "$(date '+%F %T')" "$BIND_KIND" \
         "$BIND_SEAT" "$BIND_ARG" "$_rc" "$_out" >> "$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" 2>/dev/null || true
+      local _fit=""
+      printf '%s' "$_out" | grep -q 'bind-one: ⚠ 人格卡' && _fit=1
       if [ "$_rc" -ne 0 ]; then
+        # 審查低 3:重投影失敗(rc=1)時卡已綁上,人格卡不合也要說一聲(兩則提示會互蓋,併成一行)
         env -u TMUX tmux display-message -d 4000 ${_target[@]+"${_target[@]}"} \
-          "綁定未完成(rc=$_rc):$(printf '%s' "$_out" | grep -m1 'bind-one:' | cut -c1-120)" >/dev/null 2>&1 || true
+          "綁定未完成(rc=$_rc):$(printf '%s' "$_out" | grep -v 'bind-one: ⚠ 人格卡' | grep -m1 'bind-one:' | cut -c1-120 | sed 's/#/##/g')${_fit:+;另:人格卡跟這一席的 bot 種類不合(見 mouse-errors.log)}" >/dev/null 2>&1 || true
+      elif [ -n "$_fit" ]; then
+        # 10-12 Bot 開發第 16 件:卡寫給別家 bot ⇒ 照綁,但要讓人看得到(只警告)
+        # 審查低 2:不用 cut -c 切(C locale 會切半中文字),只拿掉開頭的「bind-one: 」
+        env -u TMUX tmux display-message -d 6000 ${_target[@]+"${_target[@]}"} \
+          "$(printf '%s' "$_out" | grep -m1 'bind-one: ⚠ 人格卡' | sed 's/^bind-one: //' | sed 's/#/##/g')" >/dev/null 2>&1 || true
       fi
       return 0
       ;;
@@ -2017,7 +2025,7 @@ except Exception:
         else
           LKEY="ALL"
           LCOUNT="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("count") or 0)' "$ACTION")"
-          TITLE="收掉全部離艙席(${LCOUNT} 席,只剩紀錄與死窗;還在跑的不收)?"
+          TITLE="收掉全部離艙席(${LCOUNT} 個席位檔,只剩紀錄與死窗;還在跑的不收)?"
           YES="確定全收"
         fi
         printf '%s %s key=%s dry=%s\n' "$(date '+%H:%M:%S')" "$KIND" "$LKEY" "${DRY:-0}" >> "$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" 2>/dev/null || true
