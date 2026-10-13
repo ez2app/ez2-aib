@@ -30,7 +30,7 @@ PROJECT_DIR="$4"
 SESSION_UUID="${5:-}"
 REQUESTED_MODEL="${6:-}"
 
-case "$PROVIDER" in claude|codex|agy|copilot|grok|deepseek|kiosapi|nvidia|teamo|teamoclaude|openrouter|typesafe|openrouterjev|sand|grokbot|codexbot|claudebot|musebot) ;; *) echo "provider-launch: unsupported native provider: $PROVIDER" >&2; exit 2 ;; esac
+case "$PROVIDER" in claude|codex|agy|copilot|grok|deepseek|nvidia|openrouter|typesafe|openrouterjev|sand|grokbot|codexbot|claudebot|musebot) ;; *) echo "provider-launch: unsupported native provider: $PROVIDER" >&2; exit 2 ;; esac
 case "$MODE" in safe|dgrs) ;; *) echo "provider-launch: invalid mode: $MODE" >&2; exit 2 ;; esac
 # Codex 帳號管理與自動續跑是同一套。0＝這一席走原本的命令列。
 _codex_pack=1
@@ -118,16 +118,6 @@ if [ "$PROVIDER" = "deepseek" ]; then
   exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/deepseek_cli.py" "${DS_ARGS[@]}"
 fi
 
-# --- kiosapi (API-key 終端席；OpenAI-compat；非 OAuth CLI / ED.4) ----------
-# 不依賴 PATH 上的同名 CLI；直接 exec 本倉 kiosapi_cli.py。
-# 缺 KIOSAPI_API_KEY 由 CLI 具名退出，訊息不指向 ED.4。
-if [ "$PROVIDER" = "kiosapi" ]; then
-  PY3="${EZ2_PY3:-python3}"
-  KS_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE")
-  [ -n "$SESSION_UUID" ] && KS_ARGS+=(--session-id "$SESSION_UUID")
-  exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/kiosapi_cli.py" "${KS_ARGS[@]}"
-fi
-
 # --- nvidia (API-key 終端席；NVIDIA NIM OpenAI-compat；非 OAuth CLI / ED.4) ---
 # 不依賴 PATH 上的同名 CLI；直接 exec 本倉 nvidia_cli.py。
 # 缺 NVIDIA_API_KEY 由 CLI 具名退出，訊息不指向 ED.4。
@@ -136,26 +126,6 @@ if [ "$PROVIDER" = "nvidia" ]; then
   NV_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE")
   [ -n "$SESSION_UUID" ] && NV_ARGS+=(--session-id "$SESSION_UUID")
   exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/nvidia_cli.py" "${NV_ARGS[@]}"
-fi
-
-# --- teamo (API-key 終端席；TeamoRouter OpenAI-compat；非 OAuth CLI / ED.4) ---
-# 不依賴 PATH 上的同名 CLI；直接 exec 本倉 teamo_cli.py。
-# 缺 TEAMO_API_KEY 由 CLI 具名退出，訊息不指向 ED.4。
-if [ "$PROVIDER" = "teamo" ]; then
-  PY3="${EZ2_PY3:-python3}"
-  TM_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE")
-  [ -n "$SESSION_UUID" ] && TM_ARGS+=(--session-id "$SESSION_UUID")
-  exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/teamo_cli.py" "${TM_ARGS[@]}"
-fi
-
-# --- teamoclaude (API-key 終端席；TeamoRouter Anthropic native；非 OAuth CLI / ED.4) ---
-# 不依賴 PATH 上的同名 CLI；直接 exec 本倉 teamoclaude_cli.py。
-# 缺 TEAMO_API_KEY／TEAMCLAUDE_API_KEY 由 CLI 具名退出，訊息不指向 ED.4。
-if [ "$PROVIDER" = "teamoclaude" ]; then
-  PY3="${EZ2_PY3:-python3}"
-  TCL_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE")
-  [ -n "$SESSION_UUID" ] && TCL_ARGS+=(--session-id "$SESSION_UUID")
-  exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/teamoclaude_cli.py" "${TCL_ARGS[@]}"
 fi
 
 # --- openrouter (API-key 終端席；OpenRouter OpenAI-compat；非 OAuth CLI / ED.4) ---
@@ -303,6 +273,14 @@ aib_claude_session_exists() {
   done
   return 1
 }
+# 10-12 a seat(the maintainer「如何確保我的要求是程式化必要流程」→「開始」):開 Claude 席前確認 aib now 狀態檢查
+#   (src/policy/hooks/aib-now-gate.py 的 Stop / SessionStart hook)有裝在 ~/.claude/settings.json;
+#   已裝好不動、沒裝才裝(先備份);失敗不擋開席;AIB_NOW_GATE=0 關。要不要真的擋人另由試跑名單 gate-seats.txt 決定。
+#   只在有終端機時([ -t 0 ]):真的開席一定有;測試跑本檔一律 stdin=DEVNULL(subprocess-stdin 棘輪),
+#   不然沒換 HOME 的舊測試會改到真的 ~/.claude/settings.json(P5 ClaudeBot 自動裝 hook 同一個理由不放橋裡)。
+if [ "$PROVIDER" = "claude" ] && [ -t 0 ] && [ -f "$HERE/../policy/hooks/aib-now-gate.py" ]; then
+  "${EZ2_PY3:-python3}" "$HERE/../policy/hooks/aib-now-gate.py" ensure </dev/null || true
+fi
 case "$PROVIDER" in
   claude|grok)
     if [ -n "$SESSION_UUID" ]; then

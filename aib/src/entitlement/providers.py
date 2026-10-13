@@ -20,10 +20,7 @@ KNOWN_PROVIDERS: tuple[str, ...] = (
     "copilot",
     "grok",
     "deepseek",
-    "kiosapi",
     "nvidia",
-    "teamo",
-    "teamoclaude",
     "openrouter",
     "typesafe",
     "openrouterjev",
@@ -36,7 +33,7 @@ KNOWN_PROVIDERS: tuple[str, ...] = (
 
 # 免費態可開的 provider（寫進程式）。
 # ★ the maintainer 2026-09-27 09:1x 裁(逐字「claudebot 算付費,其他照艦長預設」):免費態只有 claude 一家;
-#   claudebot、teamoclaude 與其餘 bots 各自獨立、算付費。艦長 03:59「claudebot 算 Claude 家族」的預設作廢。
+#   claudebot 與其餘 bots 各自獨立、算付費。艦長 03:59「claudebot 算 Claude 家族」的預設作廢。
 #   改這裡就夠,消費者一律讀這個集合。
 # ★ 刻意**不保留**單數的 FREE_ALLOWED_PROVIDER 別名:同一件事兩個名字,
 #   兩邊遲早分岔而且失效是靜的(共用記憶 one-observation-two-sources-same-handling)。

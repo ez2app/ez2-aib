@@ -226,9 +226,9 @@ def find_composer_line(screen, provider=None):
             t = t[1:].lstrip()
         return t
 
-    # 09-30 測試艙 b1af:API 席的 CLI 出錯時印了回覆標籤卻沒換行(`teamo-codex> ` 後面直接接 `Teamo-Codex> `),
+    # 09-30 測試艙 b1af:API 席的 CLI 出錯時印了回覆標籤卻沒換行(`xxx-codex> ` 後面直接接 `Xxx-Codex> `),
     #   提示符不在行首 ⇒ 這一行被略過、往上抓到「已經送出的上一行」⇒ 判成別人的稿 ⇒ 全艙私訊被擋。
-    #   多字元提示符(DeepSeek>、Teamo-Codex> 這種)夠特別,出現在行中也算提示行;單字元的 ❯ › 仍只認行首。
+    #   多字元提示符(DeepSeek>、OpenRouter> 這種)夠特別,出現在行中也算提示行;單字元的 ❯ › 仍只認行首。
     _long = tuple(ch for ch in chars if len(ch) > 1)
     idx = [i for i, ln in enumerate(lines)
            if _norm(ln).startswith(chars) or (_long and any(c in _norm(ln) for c in _long))]

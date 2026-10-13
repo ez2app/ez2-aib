@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ez2.shop/schemas/aib/evidence.schema.json",
+  "title": "Ez2 AIB 證據 / Evidence (draft)",
+  "description": "truth contract 七級證據優先序(ADR-0001 原理 12;正本沿革見 ez2-ai godview-spine 七級真相優先序):tier 1 人類收據 > 2 真實 exit code > 3 origin refs > 4 執行證明 > 5 訊息 > 6 文件 > 7 AI 敘述。class 與 tier 由 schema 機器綁定,content 形狀隨 class 封閉切換——證據自己不能報高自己的等級(原理 1 不信自報)。TTL 過期 fail-closed:預設直接失效,最多只能降為 ai_narration 等級的 checker_hint。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_id",
+    "class",
+    "tier",
+    "subject",
+    "observed",
+    "content",
+    "content_sha256",
+    "ttl"
+  ],
+  "properties": {
+    "schema_version": { "const": "0.1.0-draft" },
+    "evidence_id": {
+      "description": "evd_ + 證據 canonical content 的 SHA-256(內容定址,同 content 必同 id,天然去重)。",
+      "type": "string",
+      "pattern": "^evd_[0-9a-f]{64}$"
+    },
+    "class": {
+      "description": "七級證據類別(高→低)。",
+      "enum": [
+        "human_receipt",
+        "exit_code",
+        "origin_ref",
+        "execution_proof",
+        "message",
+        "document",
+        "ai_narration"
+      ]
+    },
+    "tier": {
+      "description": "1=最高、7=最低。由 allOf 與 class 綁死,填錯即 schema 不合法。",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 7
+    },
+    "subject": {
+      "description": "本證據支持的宣稱與其對象。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim", "ref"],
+      "properties": {
+        "claim": { "$ref": "#/$defs/i18n_text" },
+        "ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id"],
+          "properties": {
+            "kind": { "enum": ["worktree_node", "event", "lane", "identity", "other"] },
+            "id": { "type": "string", "minLength": 1, "maxLength": 256 }
+          }
+        }
+      }
+    },
+    "observed": {
+      "description": "誰在何時觀測到本證據。collector=machine 表示由收集器機器採集;self_report 表示宣稱者自己提交——投影必須把 self_report 的有效等級視同下修(對齊 ez2-ai 三重上限取最小的做法)。event_id=對應的 evidence.recorded 帳本事件,證據未入帳等於不存在。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collector", "hlc"],
+      "properties": {
+        "collector": { "enum": ["machine", "human", "self_report"] },
+        "collector_id": { "type": "string", "maxLength": 256 },
+        "hlc": { "$ref": "#/$defs/hlc" },
+        "event_id": { "type": "string", "pattern": "^ev_[0-9a-f]{64}$" }
+      }
+    },
+    "content_sha256": {
+      "description": "content 物件 canonical JSON 的 SHA-256;與外置檔案的 hash 分開(檔案 hash 在各 content 變體內)。",
+      "$ref": "#/$defs/sha256"
+    },
+    "ttl": {
+      "description": "有效期。expires_at=null 表示永久(如 origin commit sha 這類不可變事實);有期限者過期 fail-closed。issued_at/expires_at 為 epoch 毫秒,與 HLC wall_ms 同刻度。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issued_at_ms", "expires_at_ms", "on_expiry"],
+      "properties": {
+        "issued_at_ms": { "type": "integer", "minimum": 0 },
+        "expires_at_ms": {
+          "oneOf": [ { "type": "integer", "minimum": 0 }, { "type": "null" } ]
+        },
+        "on_expiry": {
+          "description": "invalid=過期即作廢(預設);downgrade_to_narration=過期後最多當 tier 7 checker_hint 用,不得再供正式計分。",
+          "enum": ["invalid", "downgrade_to_narration"]
+        }
+      }
+    },
+    "content": {
+      "description": "隨 class 切換的封閉內容;形狀由下方 allOf 綁定。",
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "class": { "const": "human_receipt" } } },
+      "then": {
+        "properties": {
+          "tier": { "const": 1 },
+          "content": { "$ref": "#/$defs/content_human_receipt" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "class": { "const": "exit_code" } } },
+      "then": {
+        "properties": {
+          "tier": { "const": 2 },
+          "content": { "$ref": "#/$defs/content_exit_code" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "class": { "const": "origin_ref" } } },
+      "then": {
+        "properties": {
+          "tier": { "const": 3 },
+          "content": { "$ref": "#/$defs/content_origin_ref" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "class": { "const": "execution_proof" } } },
+      "then": {
+        "properties": {
+          "tier": { "const": 4 },
+          "content": { "$ref": "#/$defs/content_execution_proof" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "class": { "const": "message" } } },
+      "then": {
+        "properties": {
+          "tier": { "const": 5 },
+          "content": { "$ref": "#/$defs/content_message" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "class": { "const": "document" } } },
+      "then": {
+        "properties": {
+          "tier": { "const": 6 },
+          "content": { "$ref": "#/$defs/content_document" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "class": { "const": "ai_narration" } } },
+      "then": {
+        "properties": {
+          "tier": { "const": 7 },
+          "content": { "$ref": "#/$defs/content_ai_narration" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hlc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wall_ms", "counter", "node_id"],
+      "properties": {
+        "wall_ms": { "type": "integer", "minimum": 0 },
+        "counter": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "node_id": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "i18n_text": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["zh-TW"],
+      "properties": {
+        "zh-TW": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "en": { "type": "string", "minLength": 1, "maxLength": 2000 }
+      }
+    },
+    "file_ref": {
+      "description": "外置檔案指標:相對路徑+內容 SHA-256(原理 3 檔案即真相)。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "content_human_receipt": {
+      "description": "tier 1:人類確認收據。裁決必須同時存在於系統內(原理 13),故要求 decision_event_id。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approver", "channel", "decision_event_id"],
+      "properties": {
+        "approver": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "channel": {
+          "description": "收據載體:決策收件匣/ACB 訊息/當面口頭(需補入帳)等。",
+          "enum": ["decision_inbox", "acb_message", "receipt_file", "verbal_logged"]
+        },
+        "decision_event_id": { "type": "string", "pattern": "^ev_[0-9a-f]{64}$" },
+        "receipt_ref": { "$ref": "#/$defs/file_ref" },
+        "statement": { "$ref": "#/$defs/i18n_text" }
+      }
+    },
+    "content_exit_code": {
+      "description": "tier 2:真實 exit code。紀律:絕不接 pipe 讀 rc,拆兩段取 rc(HANDOFF 血淚 10);log 檔必附 hash。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "exit_code", "log_ref"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "exit_code": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "log_ref": { "$ref": "#/$defs/file_ref" },
+        "cwd": { "type": "string", "maxLength": 512 },
+        "duration_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "content_origin_ref": {
+      "description": "tier 3:git origin refs(以 origin 最新 commit 為真相,不得在 stale worktree 上宣稱)。commit sha 不可變,ttl.expires_at_ms 通常為 null。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "ref", "commit_sha"],
+      "properties": {
+        "repo": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "ref": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+        "path": { "type": "string", "maxLength": 512 }
+      }
+    },
+    "content_execution_proof": {
+      "description": "tier 4:執行證明——工具產出的結構化 receipt(如 rdl receipt、ship final、attestation),非單一 rc 但可稽核。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "receipt_ref"],
+      "properties": {
+        "tool": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "receipt_ref": { "$ref": "#/$defs/file_ref" },
+        "attestation": {
+          "description": "receipt 自帶的簽章或指紋(有則填,採集器負責驗)。",
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "content_message": {
+      "description": "tier 5:經身份驗證的訊息(如 ACB authenticated event)。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message_id", "sender_sig", "body_sha256"],
+      "properties": {
+        "message_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sender_sig": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "body_sha256": { "$ref": "#/$defs/sha256" },
+        "channel": { "type": "string", "maxLength": 128 }
+      }
+    },
+    "content_document": {
+      "description": "tier 6:正本文件/記憶(檔案+hash;quote 為引用段落,供人覆核)。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["doc_ref"],
+      "properties": {
+        "doc_ref": { "$ref": "#/$defs/file_ref" },
+        "quote": { "type": "string", "maxLength": 2000 }
+      }
+    },
+    "content_ai_narration": {
+      "description": "tier 7:AI 敘述。永遠只能標 checker_hint(const true,無法造出非 hint 的敘述證據),不得供正式計分。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "engine", "checker_hint"],
+      "properties": {
+        "statement": { "$ref": "#/$defs/i18n_text" },
+        "engine": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "checker_hint": { "const": true }
+      }
+    }
+  }
+}

@@ -4,13 +4,14 @@
 
 三個工具,全部只讀,寫入一律走 aib_dm(本檔沒有任何會改狀態的路徑):
   aib_inbox  某一席的待審框:數量摘要 + 待處理那一頁的前幾筆   ← dm_queue.py list
-  aib_team   這一艙的團隊狀態:每席角色、CTX、未讀、交接        ← seat-info.py --fleet
+  aib_team   某一席所在那一艙的團隊狀態:每席角色、CTX、未讀、交接 ← seat-info.py <session_uuid> --fleet
   aib_tasks  某一席的任務:席位檔主任務四欄 + 任務板指派給它的 ← seat_task_fields / seats_dir_lib.tasks_dir
              (帶 project_uid 才另讀計畫樹 tools/project/show.py --json --mine;10-11 實查這台沒有任何計畫樹資料)
 
 ★ 都是呼叫既有的唯讀指令(固定 argv、不經 shell、有逾時),不在這裡重寫第二份判定。
 ★ 席碼:args 給的(5 碼 hex)優先;沒給就用 codex 蓋在 _meta 的 session_id 推本席(seat_address.uuid_tail5);
   兩者都沒有就回錯,不猜。模型自己在 args 裡寫的 session id 不採用(自報身分)。
+  aib_team 也一樣(10-11 Codex 實測:原本不收席碼,從艙外叫回一包全空、還標成功;現在認不出艙一律回錯)。
 ★ 輸出截到 MAX_CHARS,截了會說。
 """
 from __future__ import annotations
@@ -38,8 +39,9 @@ TOOLS = {
     },
     "aib_team": {
         "title": "AIB 團隊狀態(唯讀)",
-        "description": "Read-only: the team in this AIB cabin — each seat's role, captain, context use, unread count, handoff.",
-        "props": {},
+        "description": "Read-only: the team in an AIB seat's cabin — each seat's role, captain, context use, unread count, "
+                       "handoff.",
+        "props": {"seat": "5-char seat code whose cabin to show; omit = the seat this conversation sits in"},
     },
     "aib_tasks": {
         "title": "AIB 任務(唯讀)",
@@ -118,18 +120,30 @@ def inbox(seat):
     return True, json.dumps(out, ensure_ascii=False)
 
 
-def team(session_uuid):
-    argv = [sys.executable or "python3", str(REPO / "tools" / "claude-mods" / "aib-seat" / "bin" / "seat-info.py")]
-    if session_uuid:
-        argv.append(session_uuid)
-    argv.append("--fleet")
-    ok, text = _run(argv)
+def team(seat, session_uuid=""):
+    """seat 有給 ⇒ 用它最新席位檔的 session_uuid 去問;沒給 ⇒ 用 _meta 的 session_uuid。認不出艙就回錯,不回空殼。"""
+    if seat:
+        f = _seat_file(seat)
+        try:
+            session_uuid = json.loads(f.read_text(encoding="utf-8")).get("session_uuid") if f else ""
+        except (OSError, ValueError):
+            session_uuid = ""
+        if not session_uuid:
+            return False, "找不到 %s 的席位檔(或席位檔沒記 session_uuid),認不出它在哪一艙,所以不猜。" % seat
+    if not session_uuid:
+        return False, "要哪一席?帶 seat(5 碼席碼,例 04e0a);這條對話認不出是哪一席,所以不猜。"
+    argv = [sys.executable or "python3", str(REPO / "tools" / "claude-mods" / "aib-seat" / "bin" / "seat-info.py"),
+            session_uuid, "--fleet"]
+    env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE", "AIB_RESUME_SESSION_UUID")}
+    ok, text = _run(argv, env=env)     # 只准用對話 id 對席位檔;不准退回「呼叫端在哪個 tmux 窗格」去猜(10-11 實測猜成別席)
     if not ok:
         return False, "團隊狀態讀不到:" + text
     try:
         d = json.loads(text)
     except ValueError:
         return False, "團隊狀態回的不是 JSON"
+    if not d.get("cabin"):
+        return False, "認不出%s在哪一艙(席位檔對不上這條對話),所以不猜。" % (seat or "這條對話")
     keep = ("cabin", "cabin_code", "code", "role", "captain", "captain_addr", "roster", "fleet", "err")
     return True, json.dumps({k: d.get(k) for k in keep}, ensure_ascii=False)
 
@@ -199,7 +213,11 @@ def call(name, args, session_uuid=""):
     if name not in TOOLS:
         return None
     if name == "aib_team":
-        ok, text = team(session_uuid)
+        raw = str((args or {}).get("seat") or "").strip()
+        seat = _seat(args, "") if raw else ""
+        if raw and not seat:
+            return {"content": [{"type": "text", "text": "seat 要 5 碼席碼(例 04e0a),所以不猜。"}], "isError": True}
+        ok, text = team(seat, session_uuid)
     else:
         seat = _seat(args, session_uuid)
         if not seat:

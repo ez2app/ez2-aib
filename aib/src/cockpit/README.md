@@ -281,7 +281,7 @@ pane 子樹 argv 自辨不算席。沒有安全名單時 watch 只掃不收並�
 ## aib now(每一席的主項目 | 完成%;10-10)
 
 `aib now "主項目" 2/5` ⇒ 輸入框下方、CTX 那一行的**上面**多一行 `📌【忙碌中】主項目 | 2/5 STEP > 進度:40%`(進度 % 由步數算,不自己填;`--state reply|decide` 換狀態欄);同時 CTX 那一行變成 `模型 | @席位 | 💧 Ez2 CTX …`。
-`aib now` 看自己掛著什麼,`aib now --clear` 拿掉。存在 `<狀態根>/state/seat-now/<席位碼>.{json,line}`(席位碼為鍵:/clear 後對話 id 換、席位碼不換)。
+`aib now` 看自己掛著什麼,`aib now --clear` 拿掉。`aib now --all` 一次列出所有還在的席的 📌 那一行,【忙碌中】超過 30 分鐘沒更新的列首標 ⚠、排最前面;過期的那一行自己也帶 📌⚠(the maintainer 10-12)。存在 `<狀態根>/state/seat-now/<席位碼>.{json,line}`(席位碼為鍵:/clear 後對話 id 換、席位碼不換)。
 席位碼一律從席位檔來(`seat_who.seat_uuid_for_window` → `seat_address.uuid_tail5`,非艦長席也有);超過 1 小時沒更新標「N 小時前」。
 畫在哪(全部的 AI 席):Claude 席 = 狀態列 `statusline-ez2-v215.sh`;agy 席 = `agy/statusline-ez2-ctx.js`(艙內量得到 CTX 才印那一行,同 Claude);
 Codex / Grok / Copilot 席(狀態列只能挑內建項目)= 開席時 hub 窗開底部邊框,跑 `seat_now.py --border`。已經開著的席不用重開:`aib now --apply-borders`(先 `--dry-run` 看會補哪些)。開席規則鐵則九:每一席回報時都要跑 `aib now`。

@@ -277,9 +277,11 @@ def note_delivered_by_dm(seat_rec: dict, persona_sha8: str, home: Path | None = 
     root = Path(home) if home else _state_root()
     if seat_rec.get("provider") == "codexbot":
         dirs = []
-        thread = str(seat_rec.get("desktop_thread_id") or "")
-        if thread:
-            dirs.append(codexbot_marker_dir(root, thread, session_uuid))
+        import bot_binding   # 10-12 第 15 件第 2 步:開席那條 + 橋現在綁的那條都算(席上 /bind 後兩者不同)
+        for thread in dict.fromkeys((str(seat_rec.get("desktop_thread_id") or ""),
+                                     bot_binding.bound_id("codexbot", session_uuid, seat_rec, base=root)[0])):
+            if thread:
+                dirs.append(codexbot_marker_dir(root, thread, session_uuid))
         bindings = root / "codexbot-bindings"
         if bindings.is_dir():
             dirs += sorted(d for d in bindings.glob("*." + _code5(session_uuid)) if d.is_dir())

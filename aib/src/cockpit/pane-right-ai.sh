@@ -1053,6 +1053,8 @@ _BRIDGE_HEALTH_SHORT = {
     'lock-held': '對話被占', 'thread-status': '對話未載入',
     'unbound': '沒綁對話', 'doorbell-expired': '門鈴過期',   # 10-07 @00000:claudebot/grokbot 沒綁對話(sand_bridge status_payload)
     'wake-failed': '門鈴失敗', 'not-collecting': '沒來收信',   # 10-07 @00000:grokbot 門鈴打不通、grokbot/musebot 久久不收信
+    'no-doorbell': '沒接門鈴', 'no-hook': '沒裝hook', 'agent-missing': '名冊沒這隻',   # 10-11 @00000 P2:bot_ready 就緒檢查
+    'no-mail-tool': '沒收信工具',
 }
 _BRIDGE_PROVIDERS = ('codexbot', 'sand', 'grokbot', 'claudebot', 'musebot')
 _HEARTBEAT_PROVIDERS = ('sand', 'grokbot', 'claudebot', 'musebot')   # sand_bridge 每 2 秒寫一次心跳(HEARTBEAT_WRITE_S)
@@ -1672,7 +1674,7 @@ AIBOT_MARK = '\U0001F916'  # 🤖
 # API-key 終端席(providers.json auth=api_key):次位艦長不用 ⚓(⚓=OAuth/訂閱艦隊次位語彙),
 # 改戴 🔑。第一艦長仍走下方 _crown_given → 👑,與引擎無關。
 # 鍵集必須跟 providers.json 的 auth=api_key 對齊;新加 API-key 引擎時兩處一起改。
-API_KEY_PROVIDERS = frozenset(('deepseek', 'kiosapi', 'nvidia', 'teamo', 'teamoclaude', 'openrouter', 'typesafe', 'openrouterjev'))
+API_KEY_PROVIDERS = frozenset(('deepseek', 'nvidia', 'openrouter', 'typesafe', 'openrouterjev'))
 API_KEY_VICE_MARK = '\U0001F511'  # 🔑
 
 
@@ -1740,13 +1742,13 @@ def advisor_letter(role):
 # AG 掛 AG,跨引擎不混掛;各引擎首位活艦長=該艦隊樹根(組內 👑,次位 ⚓);
 # 該引擎有成員無艦長=組頂佔位列(placeholder 偽列,沿用佔位件,不入 rowmap)
 # +成員平列(誠實不假造從屬)。組內段位序照舊:艦長→顧問→主管→開發→設計。
-# 組序=EZ2_AIB_ENGINE_ORDER(預設 claude codex agy copilot grok deepseek kiosapi nvidia teamo teamoclaude openrouter typesafe openrouterjev grokbot codexbot claudebot; sand 已退役；Cursor codexbot id 已刪),
+# 組序=EZ2_AIB_ENGINE_ORDER(預設 claude codex agy copilot grok deepseek nvidia openrouter typesafe openrouterjev grokbot codexbot claudebot; sand 已退役；Cursor codexbot id 已刪),
 # 未列引擎殿後按名。留白/樹軌規則不變(level 0 邊界天然成組間分隔)。
 _ph_label = tr.t('aib.fleet.no_captain')
 if not _ph_label or _ph_label.startswith('!!'):
     _ph_label = None
 _eng_order = (os.environ.get('EZ2_AIB_ENGINE_ORDER')
-              or 'claude codex agy copilot grok deepseek kiosapi nvidia teamo teamoclaude openrouter typesafe openrouterjev grokbot codexbot claudebot musebot').split()
+              or 'claude codex agy copilot grok deepseek nvidia openrouter typesafe openrouterjev grokbot codexbot claudebot musebot').split()
 _eng_rank = {e: i for i, e in enumerate(_eng_order)}
 
 _groups = {}

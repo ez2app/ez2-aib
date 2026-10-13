@@ -194,6 +194,31 @@ if [ -z "${EZ2_ROUTE_REGISTRY:-}" ]; then
     fi
   done
 fi
+# 10-12 新用戶:vault 預設照 route_register.default_vault(EZ2_VAULT_DIR > EZ2_VAULT_ROOT > ~/Desktop/Obsidian/Ez2 有才算
+#   > ~/.ez2-aib/vault);契約都找不到、vault 又是 aib 自己的預設 ⇒ 用套件附的預設契約(有自己 vault 的照舊不猜)。
+if [ -z "${EZ2_VAULT_DIR:-}" ]; then
+  if [ -n "${EZ2_VAULT_ROOT:-}" ]; then EZ2_VAULT_DIR="$EZ2_VAULT_ROOT"
+  elif [ -d "$HOME/Desktop/Obsidian/Ez2" ]; then EZ2_VAULT_DIR="$HOME/Desktop/Obsidian/Ez2"
+  else EZ2_VAULT_DIR="${EZ2_AIB_HOME:-$HOME/.ez2-aib}/vault"; fi
+fi
+export EZ2_VAULT_DIR
+# 10-12 the maintainer「一併修正」:團隊新機(有 Ez2 知識庫、沒有 ez2-ai)⇒ 私有倉隨附的 ez2-ai 正本副本(公開版沒有這個檔)
+if [ -z "${EZ2_ROUTE_REGISTRY:-}" ] && [ -f "$COCKPIT_DIR/../persona_route/vendor/obsidian-route-registry-contract.json" ]; then
+  EZ2_ROUTE_REGISTRY="$COCKPIT_DIR/../persona_route/vendor/obsidian-route-registry-contract.json"
+fi
+# 10-12 a seat(Pro 的 vault 是 ~/Ez2/Vault,公開版 newrole 一律 rc=2):自訂 vault 也用預設契約,但只在安全時 ——
+#   還沒有 / 空的、有自己的 uid 索引、已有 10-Roles。同 route_register.bundled_ok_for_vault。
+_aib_bundled_ok() {
+  [ -d "$1" ] || return 0
+  [ -z "$(ls -A "$1" 2>/dev/null | grep -v '^\.')" ] && return 0
+  [ -f "$1/.ez2/index/route-key-index.json" ] && grep -q '"uid_layout"' "$1/.ez2/migration-state.json" 2>/dev/null && return 0
+  [ -d "$1/10-Roles" ]
+}
+if [ -z "${EZ2_ROUTE_REGISTRY:-}" ] && [ -f "$COCKPIT_DIR/../persona_route/default-route-contract.json" ] \
+   && { [ "$EZ2_VAULT_DIR" = "${EZ2_AIB_HOME:-$HOME/.ez2-aib}/vault" ] || _aib_bundled_ok "$EZ2_VAULT_DIR"; }; then
+  EZ2_ROUTE_REGISTRY="$COCKPIT_DIR/../persona_route/default-route-contract.json"
+fi
+unset -f _aib_bundled_ok
 export EZ2_ROUTE_REGISTRY="${EZ2_ROUTE_REGISTRY:-}"
 # ★ 08-17 艦外裁決(L2-00 對清):全機 69 份同名契約四種版本,**D lane(人格/大腦
 #   綁定)讀契約一律 `git show main:samples/…`,不走工作樹檔案系統**。
@@ -210,7 +235,7 @@ if [ -z "${EZ2_ROUTE_CONTRACT_SPEC:-}" ]; then
   fi
 fi
 export EZ2_ROUTE_CONTRACT_SPEC
-export EZ2_VAULT_DIR="${EZ2_VAULT_DIR:-$HOME/Desktop/Obsidian/Ez2}"
+export EZ2_VAULT_DIR   # 已在上面照 default_vault 的規則定好(10-12)
 
 # 其餘外部路徑一起過同一道閘。★ 只擋 INSTANCE_HOME/STATE_DIR 是不夠的
 # (e5300 08-17 指出):同樣的錯從別的變數進來時,**下游不同、症狀會長得

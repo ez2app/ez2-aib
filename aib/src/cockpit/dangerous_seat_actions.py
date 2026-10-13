@@ -22,7 +22,7 @@ from typing import Iterable, Sequence
 # ── 否決表(具名,加一列要寫為什麼危險)────────────────────────────────
 # tmux send-keys 名稱或字面。
 DENIED_SEND_KEYS = frozenset({
-    "C-c",      # SIGINT: nvidia/deepseek/kiosapi 等 line-CLI 直接結束(本次事故)
+    "C-c",      # SIGINT: nvidia/deepseek 等 line-CLI 直接結束(本次事故)
     "C-d",      # EOF: 同上,input() 丟 EOFError 後 exit
     "C-z",      # SIGTSTP: 席掛起,看起來像死
     "C-\\",   # SIGQUIT

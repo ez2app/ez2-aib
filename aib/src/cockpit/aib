@@ -144,8 +144,7 @@ export EZ2_AIB_VERSION
 unset _AIB_PARITY_MODE _AIB_PARITY_NONCE _AIB_PARITY_OBSERVED_FD \
   _AIB_PARITY_GATE_FD _AIB_PARITY_ENTRY_FD _AIB_PARITY_GATE
 
-# 09-30 the maintainer 令拿掉 teamo、teamoclaude(TeamoRouter 一律 HTTP 400);providers.json 標 retired,程式檔留著
-PROVIDERS="claude codex agy copilot grok deepseek kiosapi nvidia openrouter typesafe openrouterjev grokbot codexbot claudebot musebot"
+PROVIDERS="claude codex agy copilot grok deepseek nvidia openrouter typesafe openrouterjev grokbot codexbot claudebot musebot"
 MODES="dgrs safe"
 ROLE_RE='^[a-z0-9-]+$'
 INSTANCE_RE='^[a-z0-9][a-z0-9-]*$'
@@ -229,6 +228,11 @@ if [ "${1:-}" = "init" ]; then
   shift
   exec "$T_PY3" "$AIB_SOURCE_ROOT/src/bootstrap/aib_init.py" "$@"
 fi
+# aib doctor(10-12 新用戶全面檢查:體檢工具早就寫好,但 aib 指令叫不到它)—— 唯讀,逐項列出這台還缺什麼、怎麼補。
+if [ "${1:-}" = "doctor" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/src/bootstrap/aib_doctor.py" "$@"
+fi
 
 # 09-26 晚班(the maintainer 18:2x「發」;排程 pending/DISPATCH-1857a-evening-0926.md):
 #   各包只交子命令腳本,入口分派只在這裡(寫集互斥:本檔只有主線 a seat 動)。
@@ -237,6 +241,15 @@ fi
 #   aib persona 來源|狀態|sources|status … -> tools/entitlement/aib-persona-sources(D 資格與開關;persona 其餘子命令照舊)
 # ★ 腳本還沒到就說一句話 rc=2 —— 不得掉進下面的開席參數解析(那裡會把 task 當 provider 報「不認得」,指錯方向)。
 # ★ 放在 provider 解析之前,與 init/bot/verify 同形:不進席位、不碰 tmux。
+# 10-12 新用戶全面檢查:公開版沒附的子指令(私有倉才有的程式)不准掉成 Python 錯誤 —— 說清楚、rc 2。
+#   tests/test-aib-launcher-targets-1012.py 核對:匯出樹裡不存在的執行目標,前一行一定要有 aib_need。
+aib_need() {   # $1=檔案或資料夾 $2=指令名
+  [ -e "$1" ] && return 0
+  "$T_PY3" "$HERE/i18n_lib.py" --param "cmd=$2" aib.edition.missing >&2 2>/dev/null \
+    || echo "aib $2: this copy of aib does not include this feature" >&2
+  exit 2
+}
+
 aib_delegate_subcommand() {   # $1=py|exe $2=腳本絕對路徑,其餘原樣透傳
   local kind="$1" path="$2"
   shift 2
@@ -256,6 +269,15 @@ aib_delegate_subcommand() {   # $1=py|exe $2=腳本絕對路徑,其餘原樣透�
 if [ "${1:-}" = "project" ] && [ "${2:-}" = "show" ]; then
   shift 2
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/tools/project/show.py" "$@"
+fi
+# aib project sweep(10-12,docs/DESIGN-project-sweep-1012.md):專案清查,只讀;aib project seats = 席綁專案正本
+if [ "${1:-}" = "project" ] && [ "${2:-}" = "sweep" ]; then
+  shift 2
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/project_sweep.py" "$@"
+fi
+if [ "${1:-}" = "project" ] && [ "${2:-}" = "seats" ]; then
+  shift 2
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/project_seats.py" "$@"
 fi
 if [ "${1:-}" = "task" ]; then
   shift
@@ -282,6 +304,13 @@ if [ "${1:-}" = "memory" ]; then
   shift
   export PYTHONDONTWRITEBYTECODE=1 AIB_MEMORY_PROG="aib memory"
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/memory/aib_memory.py" "$@"
+fi
+# aib records add|remove|list|remote|push -> src/memory/aib_records.py(10-13 a seat,the maintainer 經 a seat「有 git 的用戶,
+#   自己挑重要的人格與專案紀錄更新到 git」):用戶自己挑、自己推;公開倉拒推、推前掃金鑰;不自動拍、不裝排程。
+if [ "${1:-}" = "records" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1 AIB_RECORDS_PROG="aib records"
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/memory/aib_records.py" "$@"
 fi
 # aib handoff collect|write|status -> src/cockpit/aib_handoff.py(10-01 a seat,the maintainer「85% 或準備 clear 必做三步收尾,全部 AI、不可跳過」):
 #   collect 量機器事實出草稿;write 驗三段後寫席位記憶+第二大腦+交接檔+收據;下一輪開始時沒收據 ⇒ 自動補抓並提醒。
@@ -387,6 +416,7 @@ fi
 #   排程要先裝:bash tools/outside-verify/install.sh)。艙內不起真 tmux(艙規),所以交給艙外。
 if [ "${1:-}" = "verify-outside" ]; then
   shift
+  aib_need "$AIB_SOURCE_ROOT/tools/outside-verify/request.py" verify-outside
   exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/outside-verify/request.py" "$@"
 fi
 
@@ -394,10 +424,7 @@ fi
 if [ "${1:-}" = "install" ]; then
   shift
   INSTALL="$AIB_SOURCE_ROOT/tools/aib-install-path"
-  if [ ! -x "$INSTALL" ]; then
-    echo "aib: 找不到 tools/aib-install-path" >&2
-    exit 2
-  fi
+  aib_need "$INSTALL" install
   # 預設連 launcher 一起裝，使「安裝 aib」後 grokbot 可用
   case " $* " in
     *" --no-launcher "*) exec bash "$INSTALL" "$@" ;;
@@ -419,6 +446,7 @@ fi
 if [ "${1:-}" = "social" ]; then
   shift
   export PYTHONPATH="$AIB_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  aib_need "$AIB_SOURCE_ROOT/src/social_gateway/callpoint.py" social
   exec "$T_PY3" -m src.social_gateway.callpoint "$@"
 fi
 
@@ -440,6 +468,7 @@ fi
 #   跑的是那一份的碼。第一版是 `-m`,產品刀在複本樹上抓到入口格仍綠才發現。
 if [ "${1:-}" = "profile" ]; then
   shift
+  aib_need "$AIB_SOURCE_ROOT/src/verify_profile/callpoint.py" profile
   exec "$T_PY3" "$AIB_SOURCE_ROOT/src/verify_profile/callpoint.py" "$@"
 fi
 
@@ -475,6 +504,7 @@ fi
 #   規格 docs/collab/SPEC-plaza-schema-0928.md;在目前所在的 git repo 上讀寫(分支 collab-plaza/*)。
 if [ "${1:-}" = "plaza" ]; then
   shift
+  aib_need "$AIB_SOURCE_ROOT/tools/collab/collab_plaza.py" plaza
   exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/collab/collab_plaza.py" "$@"
 fi
 
@@ -482,6 +512,7 @@ fi
 # forcepoint.  Ordinary `aib dm` remains available for short acknowledgements.
 if [ "${1:-}" = "report" ]; then
   shift
+  aib_need "$AIB_SOURCE_ROOT/src/report_forcepoint/callpoint.py" report
   exec "$T_PY3" "$AIB_SOURCE_ROOT/src/report_forcepoint/callpoint.py" "$@"
 fi
 
@@ -489,6 +520,7 @@ fi
 # person, but it never creates, leases or closes task truth.
 if [ "${1:-}" = "work" ]; then
   shift
+  aib_need "$AIB_SOURCE_ROOT/src/dispatch/dispatch.py" work
   exec "$T_PY3" "$AIB_SOURCE_ROOT/src/dispatch/dispatch.py" work "$@"
 fi
 
@@ -646,7 +678,16 @@ fi
 # aib room install-boot / uninstall-boot = 開機自動啟動(macOS launchd)。整段委派 captain_room.py。
 if [ "${1:-}" = "room" ]; then
   shift
+  aib_need "$HERE/captain_room.py" room   # 10-13:公開版不帶艦長室程式 ⇒ 只說「開發中」
   exec "$T_PY3" "$HERE/captain_room.py" "$@"
+fi
+
+# aib entry-probe 子命令(10-12 a seat 派工):每小時從外面量對外入口(install.sh 跟 GitHub 一不一樣、官網、短網址),
+# 壞了 / 好了才寄要你決定的卡片。run --once / status / install-boot / uninstall-boot。整段委派 entry_probe.py;
+# 公開版不帶那支檔 ⇒ aib_delegate_subcommand 會說「還沒裝好」。
+if [ "${1:-}" = "entry-probe" ]; then
+  shift
+  aib_delegate_subcommand py "$HERE/entry_probe.py" "$@"
 fi
 
 # aib cli 子命令(the maintainer 2026-10-09):五家 AI CLI 版本。aib cli = 看本機/最新;aib cli update = 現在更新;
@@ -982,6 +1023,11 @@ elif [ "${#POS[@]}" -eq 3 ] && [ "$NEW" = "0" ] && [ "$AGAIN" = "0" ] \
      && [ -z "$INSTANCE" ] && [ -z "${EZ2_AIB_INSTANCE:-}" ]; then
   aib_refuse_silent_new_in_cabin
   NEW=1
+fi
+# 10-12 新用戶全面檢查:第一個字不是任何指令也不是 AI 名稱(打錯字)⇒ 用你的語言說「沒有這個指令」+常用清單,
+#   不再倒四種語言的 44 行用法。是 AI 名稱但參數不夠 ⇒ 照舊印用法。
+if [ "${#POS[@]}" -ge 1 ] && [ "${#POS[@]}" -ne 3 ]; then
+  case " $PROVIDERS " in *" ${POS[0]} "*) ;; *) die "$(t aib.err.unknown_cmd "cmd=${POS[0]}")" ;; esac
 fi
 [ "${#POS[@]}" -eq 3 ] || { usage >&2; die "$(t aib.err.usage)"; }
 [ "$NEW" = "0" ] || [ -z "$INSTANCE" ] || die "$(t aib.err.usage)"
@@ -1757,7 +1803,7 @@ elif [ -n "${AIB_RESUME_SESSION_UUID:-}" ] && [ "${AIB_RESUME_FORCE:-0}" != "1" 
     unset AIB_RESUME_SESSION_UUID AIB_RESUME_UUID
   fi
 fi
-AIB_SESSION_ID_PROVIDERS=" claude grok deepseek kiosapi nvidia teamo teamoclaude openrouter typesafe openrouterjev grokbot sand codexbot claudebot musebot "
+AIB_SESSION_ID_PROVIDERS=" claude grok deepseek nvidia openrouter typesafe openrouterjev grokbot sand codexbot claudebot musebot "
 SEAT_SESSION_UUID=""
 _aib_fork_src=""; _aib_fork_launch_env=""
 _aib_fork_menu=0
@@ -1829,7 +1875,7 @@ fi
 #   環境裡可能帶著別席的 AIB_API_WORKTREE,不清掉就會寫進別席的樹(外殼把空值當沒設)。
 #   關掉:AIB_API_AUTO_WORKTREE=0。樹根:AIB_API_WORKTREE_ROOT(預設 $_aib_all_cabins/worktrees——狀態根只准一處算,
 #   test-cabin-resolution 釘著;不自己再組一次 EZ2_AIB_HOME 優先序)。
-AIB_API_WT_PROVIDERS=" deepseek nvidia openrouter kiosapi teamo teamoclaude "
+AIB_API_WT_PROVIDERS=" deepseek nvidia openrouter "
 _aib_api_wt_env=""
 _aib_provider_cwd=""
 aib_api_seat_worktree() {

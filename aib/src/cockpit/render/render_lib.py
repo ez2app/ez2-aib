@@ -85,10 +85,7 @@ ENGINE_LETTERS = {
     "copilot": "CPT",
     "grok": "GRK",
     "deepseek": "DSK",
-    "kiosapi": "KIO",
     "nvidia": "NVD",
-    "teamo": "TCX",
-    "teamoclaude": "TCL",
     "openrouter": "ORR",
     "typesafe": "TSF",
     "openrouterjev": "ORJ",
@@ -121,11 +118,9 @@ CLAUDEBOT_ICON = "\uec82"  # cod-claude Anthropic 官方標(與 claude CLI 同�
 MUSEBOT_ICON = "\u221e"  # ∞ INFINITY(the maintainer 10-09 定:Meta 的無限環;Nerd Font 無 Meta 官方標。east_asian_width=A,終端設 ambiguous=wide 會占 2 格)
 AGY_ICON = "\U000f0b08"    # md-alpha_a_box U+F0B08 語意選字(Antigravity 無可用字型標;與 GROK_ICON 同家族)
 DEEPSEEK_ICON = "\U000f0b0b"  # md-alpha_d_box U+F0B0B 語意選字(DeepSeek 無 Nerd Font 官方標)
-KIOSAPI_ICON = "\U000f0b12"  # md-alpha_k_box U+F0B12 語意選字(KiosAPI 無 Nerd Font 官方標)
 NVIDIA_ICON = "\uec19"  # cod-chip
 TYPESAFE_ICON = ""  # fa-shield
 OPENROUTER_ICON = ""  # fa-globe
-TEAMO_ICON = ""  # fa-users 語意選字（Teamo-Codex／TeamoRouter；無官方 Nerd Font 標）
 ENGINE_ICONS = {
     "claude": "\uec82",    # cod-claude   U+EC82 Anthropic 官方標
     "codex": "\uec81",     # cod-openai   U+EC81 OpenAI 官方標
@@ -134,10 +129,7 @@ ENGINE_ICONS = {
     "agy": AGY_ICON,       # md-alpha_a_box U+F0B08 語意選字(Antigravity 無官方標)
     "grok": GROK_ICON,     # md-alpha_x_box U+F0B1F 語意選字(xAI 無可用字型標)
     "deepseek": DEEPSEEK_ICON,
-    "kiosapi": KIOSAPI_ICON,
     "nvidia": NVIDIA_ICON,
-    "teamo": TEAMO_ICON,
-    "teamoclaude": TEAMO_ICON,
     "openrouter": OPENROUTER_ICON,
     "typesafe": TYPESAFE_ICON,
     "openrouterjev": TYPESAFE_ICON,   # 同一套 System One 問答介面,鑰是 OpenRouter 的
@@ -188,11 +180,7 @@ ENGINE_LETTER_COLORS = {
     "grok": (),
     # DeepSeek 藍 #4D6BFE；256≈69
     "deepseek": (((77, 107, 254), 69),) * 3,
-    # KiosAPI 青綠 #14B8A6；256≈43
-    "kiosapi": (((20, 184, 166), 43),) * 3,
     "nvidia": (((118, 185, 0), 70),) * 3,  # NVIDIA green #76B900
-    "teamo": (((14, 165, 233), 70),) * 3,  # sky/teal #0EA5E9
-    "teamoclaude": (((139, 92, 246), 70),) * 3,  # violet #8B5CF6
     "openrouter": (((16, 185, 129), 70),) * 3,  # emerald #10B981
     "typesafe": (((20, 184, 166), 73),) * 3,  # teal #14B8A6 TypeSafe
     "openrouterjev": (((16, 185, 129), 35),) * 3,  # emerald #10B981(OpenRouter 色);256≈35,與 openrouter(70)/codexbot(36) 分開

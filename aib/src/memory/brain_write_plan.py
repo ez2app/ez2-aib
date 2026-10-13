@@ -72,6 +72,7 @@ from note_forward_links import (  # noqa: E402
 
 PLAN_RECORD = "brain-write-plan-v1"
 RUNNER = Path(__file__).resolve().parent / "note_format_runner.js"
+VENDOR_DIR = Path(__file__).resolve().parent / "vendor"   # 10-12:ez2-ai 三個模組的隨附副本(新機器用;指紋同 pins)
 DEFAULT_EZ2_AI = "~/ez2-ai"
 DEFAULT_REV = "main"
 
@@ -250,7 +251,11 @@ def materialize(ez2_ai=None, rev=DEFAULT_REV, dest=None, pins=PINS_DEFAULT):
     """把 note-format 正本從 ez2-ai(本機是 bare repo,無工作樹)取到 dest。
     回 (dest, {相對路徑: sha256}, rev)。任一檔取不到、或指紋對不上 = raise(不半套)。"""
     repo = os.path.expanduser(ez2_ai or os.environ.get("EZ2_AI_REPO") or DEFAULT_EZ2_AI)
-    if not os.path.isdir(repo):
+    # 10-12 新用戶全面檢查(the maintainer「新安裝的 aib 也要解決這個問題」):新機器沒有 ez2-ai ⇒ 用套件隨附的同一份
+    #   (src/memory/vendor/,指紋與 note-format-pins.json 相同才收);有 ez2-ai 的照舊讀它的 git main。
+    use_vendor = (not ez2_ai and not os.path.isdir(repo)
+                  and all((VENDOR_DIR / rel).is_file() for rel in MODULE_FILES))
+    if not use_vendor and not os.path.isdir(repo):
         raise WritePlanError("ez2-ai repo 不存在:%s(note-format 正本在那裡,沒有它 F 不能動)" % repo)
     dest = Path(dest or (state_root()[0] / "cache" / "note-format" / rev))
     # 閘〇同樣管這裡:materialize 也是「拿使用者給的路徑落檔」,三個模組檔一樣能落進 vault。
@@ -259,6 +264,18 @@ def materialize(ez2_ai=None, rev=DEFAULT_REV, dest=None, pins=PINS_DEFAULT):
     pin_table = load_pins(pins)
     shas = {}
     for rel in MODULE_FILES:
+        if use_vendor:
+            data = (VENDOR_DIR / rel).read_bytes()
+            got = _sha256_bytes(data)
+            check_pin(rel, got, pin_table)
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(target.name + ".tmp.%d" % os.getpid())
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            os.replace(str(tmp), str(target))
+            shas[rel] = got
+            continue
         try:
             proc = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (rev, rel)],
                                   capture_output=True, timeout=30)

@@ -7,6 +7,7 @@
     aib now "AIB 停電恢復" 2/5    # 做完 2 步 / 共 5 步 ⇒ 進度：40%(由步數算);狀態預設【忙碌中】;啟動時間沿用
     aib now "等 a seat 推版" 4/5 --state reply   # 【等回應】;--state decide =【等你決定】
     aib now                       # 看自己這一席現在掛著什麼
+    aib now --all                 # 所有還在的席各一行;【忙碌中】超過 30 分鐘沒更新的列首標 ⚠(只讀)
     aib now --clear               # 沒在做事 ⇒ 顯示「📌 等待指派新工作」(從沒跑過 ⇒「📌 尚未回報主項目」)
     aib now --apply-borders [--dry-run]   # 已經開著的 Codex / Grok / Copilot 席補上底部那一行
 
@@ -358,6 +359,63 @@ def sweep_dead(*, state_root=None, records=None):
 
 
 STALE_S = 3600
+STALE_MARK = "⚠"
+GATE_MISSING = " ⚠狀態檢查沒裝"
+GATE_MISSING_SHORT = " ⚠"            # 視窗太窄放不下整句時(第二輪審查)   # 10-12:Claude 席狀態列自查 aib-now-gate 有沒有掛上(沒裝 = 規定靠記性,要看得到)
+
+
+def now_gate_missing(settings_path=None):
+    """Claude 的全域 settings.json 裡有沒有 aib-now-gate 的 Stop hook,而且那支檔案還在。
+    回 True = 確定沒裝好(沒那條、或 test -f 指的檔不在 ⇒ hook 會安靜放行);讀不到 settings ⇒ False(不亂叫)。"""
+    if not os.path.isfile(os.path.join(HERE, "..", "policy", "hooks", "aib-now-gate.py")):
+        return False          # 這份程式沒帶這支閘(例如公開版)⇒ 裝不起來,叫了也修不好(審查第 4 條)
+    path = settings_path or os.path.expanduser("~/.claude/settings.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    hooks = cfg.get("hooks") if isinstance(cfg, dict) else None
+    if not isinstance(hooks, dict):
+        return True
+    for g in hooks.get("Stop") or []:
+        for h in (g.get("hooks") or []) if isinstance(g, dict) else []:
+            cmd = str((h or {}).get("command") or "") if isinstance(h, dict) else ""
+            if "aib-now-gate.py" in cmd and cmd.rstrip().endswith(" stop"):
+                import shlex
+                try:
+                    words = shlex.split(cmd.split("||", 1)[0])     # test -f '<路徑>'(路徑有空格時帶引號)
+                except ValueError:
+                    words = []
+                script = words[2] if len(words) >= 3 and words[:2] == ["test", "-f"] else ""
+                return bool(script) and not os.path.isfile(script)
+    return True
+STALE_BUSY_S = 30 * 60   # aib now --all:【忙碌中】超過這麼久沒更新 ⇒ 標 ⚠(10-12 a seat;等回應 / 等你決定本來就可能等很久,不標)
+
+
+def is_stale_busy(rec, now=None):
+    """這筆紀錄是不是「說在忙、卻很久沒回報」。只看畫面上會顯示成【忙碌中】的:idle / 沒回報 / 等回應 / 等你決定都不算。
+    跟 shown_line 同一套判法(審查):狀態值不認得 ⇒ 畫成忙碌中 ⇒ 這裡也算;沒有主項目 ⇒ 畫成【未回報】⇒ 不算。"""
+    if not rec or rec.get("idle") or not rec.get("item") or (rec.get("state") or "busy") in ("reply", "decide"):
+        return False
+    try:
+        at = int(rec.get("at") or 0)
+    except (TypeError, ValueError):
+        return False
+    now = now if now is not None else time.time()
+    return bool(at) and now - at > STALE_BUSY_S
+
+
+def overview(*, state_root=None, records=None, now=None):
+    """aib now --all:所有還在的席各一列 (碼, 那一行, 是否過期);過期的排前面,其餘照碼排。
+    那一行就是 shown_line(各席自己狀態列上的同一行;過期的那行自己也帶 📌⚠,the maintainer 10-12),列首 ⚠ 讓總覽好掃。"""
+    now = now if now is not None else time.time()
+    rows = []
+    for c in live_codes(records):
+        rec = read(c, state_root=state_root)
+        rows.append((c, shown_line(c, state_root=state_root, now=now, color=False), is_stale_busy(rec, now)))
+    rows.sort(key=lambda r: (not r[2], r[0]))
+    return rows
 
 
 def _parts(code, rec, color, now):
@@ -368,6 +426,9 @@ def _parts(code, rec, color, now):
         return "%s%s" % (PIN, state_tag("idle", color)), IDLE_TEXT, "", ""
     st = rec.get("state") or "busy"
     head = "%s%s" % (PIN, state_tag(st, color))   # 📌【狀態】主項目:中間不留空(the maintainer 10-10)
+    if is_stale_busy(rec, now):
+        # the maintainer 10-12「加」:【忙碌中】超過 30 分鐘沒更新 ⇒ 📌⚠【忙碌中】…(只加這一個記號;更新時間照舊,不另標 N 小時前)
+        head = "%s%s%s" % (PIN, STALE_MARK, state_tag(st, color))
     item = rec["item"]
     started, at = rec.get("started_at"), rec.get("at")
     tint = (lambda x: TIME_SGR + x + RESET) if color else (lambda x: x)
@@ -394,7 +455,7 @@ def _parts(code, rec, color, now):
 def shown_line(code, *, state_root=None, now=None, color=True, width=None):
     """畫面上那一行:📌【狀態】主項目 | 2/5 STEP > 進度:40% | 更新時間:10-10 17:05 | 啟動時間:10-10 16:04。
     沒回報 ⇒ 📌【未回報】尚未回報主項目;--clear ⇒ 📌【我很閒】等待指派新工作。
-    新舊看「更新時間」。沒有席位碼 ⇒ ""(不是席,不畫)。
+    新舊看「更新時間」;【忙碌中】超過 30 分鐘沒更新 ⇒ 📌⚠【忙碌中】(the maintainer 10-12)。沒有席位碼 ⇒ ""(不是席,不畫)。
     width(那一席視窗寬):完整那行放不下 ⇒ 短寫法(📌【狀態】主項目 | 2/5 > 40% | 更新 17:05 | 啟動 16:04);
     還放不下 ⇒ 主項目截短加「…」,步數、% 與啟動時間不截。"""
     if not code:
@@ -566,7 +627,7 @@ def apply_borders(*, hubs=None, tmux=None, code_for=None, dry_run=False, out=sys
     return done, unreachable
 
 
-def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=None):
+def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=None, gate_check=None):
     ap = argparse.ArgumentParser(prog="aib now", description="回報這一席現在的主項目與步數(進度 % 由步數算),顯示在 CTX 那一行上面")
     ap.add_argument("item", nargs="?", help="主項目(一句話)")
     ap.add_argument("steps", nargs="?", help="做完幾步/總共幾步,例 2/5(進度 %% 由它算,不自己填)")
@@ -590,6 +651,8 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--apply-borders", action="store_true",
                     help="已經開著的 Codex / Grok / Copilot 席補上底部那一行(不用重開)")
     ap.add_argument("--dry-run", action="store_true", help="跟 --apply-borders 一起用:只列出會補哪些席")
+    ap.add_argument("--all", action="store_true",
+                    help="列出所有還在的席的 📌 那一行;【忙碌中】超過 30 分鐘沒更新的標 ⚠ 排最前面")
     ap.add_argument("--sweep", action="store_true",
                     help="掃掉已經不在的席(沒有席位檔、已退席或已收工)留下的 📌 紀錄;每次 aib now 回報也會順手掃")
     ap.add_argument("--beat-age", metavar="席位碼",
@@ -601,6 +664,20 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
             out.write("沒有心跳\n")
             return 1
         out.write("%d %s\n" % got)
+        return 0
+    if args.all:
+        if args.item is not None or args.clear:
+            err.write("aib now: --all 只用來看,不能同時回報或 --clear(那一句沒寫進去)\n")
+            return 2
+        rows = overview(state_root=state_root)
+        if not rows:
+            out.write("量不到任何還在的席(席位檔讀不到)\n")
+            return 1
+        for c, line, stale in rows:
+            out.write("%s @%s %s\n" % ("⚠" if stale else " ", c, line))
+        n = sum(1 for r in rows if r[2])
+        out.write("共 %d 席;%s\n" % (len(rows), ("%d 席【忙碌中】超過 %d 分鐘沒更新(⚠)" % (n, STALE_BUSY_S // 60))
+                                      if n else "沒有過期的"))
         return 0
     if args.sweep:
         gone = sweep_dead(state_root=state_root)
@@ -623,8 +700,22 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
             beat(c, "statusline", state_root=state_root)
         prov = args.provider or (self_provider(c) if c else "")
         w = args.width or (_self_width() if c else None)
-        out.write(SEP.join([c, shown_line(c, state_root=state_root, width=w) if c else "",
-                            logo_of(prov) if c else ""]) + "\n")
+        line = ""
+        if c:
+            # gate_check 預設:正式跑(state_root=None)才查真的 settings.json;測試注入 state_root 時不查,
+            #   不然同一格測試在裝了 / 沒裝的機器上結果不同(10-12 審查)。
+            missing = (state_root is None if gate_check is None else gate_check) and now_gate_missing()
+            mark = GATE_MISSING
+            if missing and w:
+                sys.path.insert(0, os.path.join(HERE, "render"))
+                from render_lib import visible_width
+                if w - visible_width(GATE_MISSING) < 40:
+                    mark = GATE_MISSING_SHORT
+                w = max(10, w - visible_width(mark))
+            line = shown_line(c, state_root=state_root, width=w)
+            if missing:
+                line += mark
+        out.write(SEP.join([c, line, logo_of(prov) if c else ""]) + "\n")
         return 0
     if args.seat and not code:
         want = args.seat.strip().lstrip("@").lower()

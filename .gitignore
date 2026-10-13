@@ -1,0 +1,5 @@
+# Python 執行時自動產生的快取(10-12 @00000:Pro 裝完 git status 冒 16 個 __pycache__/)
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store

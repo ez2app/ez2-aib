@@ -383,6 +383,16 @@ def ledger_rows(home=None):
     return out
 
 
+def _ids(repo_id):
+    """repo_id 可以是一個身分或一組(M1 過渡:新的專案身分 + 本樹舊的 git 目錄身分,累計不歸零)。"""
+    return {repo_id} if isinstance(repo_id, str) else set(repo_id)
+
+
+def _ids_of(repo):
+    """這棵樹算累計要認的身分:M1 專案身分 + 舊身分。"""
+    return tuple(dict.fromkeys(x for x in (resume_store.repo_id(repo), resume_store.legacy_repo_id(repo)) if x))
+
+
 def totals(home=None, now=None, repo_id=None):
     """今天/本週(週一起)/本月累計省下秒數,台北時間。建立基準那幾列(saved_s=null)不算。"""
     now = (now or datetime.now(TAIPEI)).astimezone(TAIPEI)
@@ -391,7 +401,7 @@ def totals(home=None, now=None, repo_id=None):
     month0 = day0.replace(day=1)
     t = {"today": 0.0, "week": 0.0, "month": 0.0}
     for row in ledger_rows(home):
-        if repo_id is not None and row.get("repo") != repo_id:
+        if repo_id is not None and row.get("repo") not in _ids(repo_id):
             continue
         s = _num(row.get("saved_s"))
         at = _parse_at(row.get("at"))
@@ -463,14 +473,15 @@ def status_lines(repo, home=None, now=None):
     rid = resume_store.repo_id(repo) if repo else None
     pool = len(resume_store.last_run_durations(repo, home=str(_home(home)))) if repo else 0
     lines.append(T("aib.verify.status_pool", {"n": pool}))
-    last = [r for r in ledger_rows(home) if rid is None or r.get("repo") == rid]
+    ids = set(_ids_of(repo)) if repo else None
+    last = [r for r in ledger_rows(home) if ids is None or r.get("repo") in ids]
     if last:
         s = _num(last[-1].get("saved_s"))
         lines.append(T("aib.verify.status_last", {"value": fmt_dur(s)}) if s is not None
                      else T("aib.verify.status_last_baseline"))
     else:
         lines.append(T("aib.verify.status_last_none"))
-    tot = totals(home, now=now, repo_id=rid)
+    tot = totals(home, now=now, repo_id=_ids_of(repo) if repo else rid)
     lines.append(T("aib.verify.status_totals", {"v1": fmt_dur(tot["today"]),
                                                 "v2": fmt_dur(tot["week"]),
                                                 "v3": fmt_dur(tot["month"])}))

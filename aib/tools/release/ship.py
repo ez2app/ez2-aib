@@ -247,6 +247,48 @@ def _known_base_reds_file(repo):
     return Path.home() / ".ez2-aib" / "ship" / ("known-base-reds-%s.json" % tag)
 
 
+def _ship_result_file(repo, kind):
+    """10-13 清查補強 2:推包結果留一份給 aib project sweep 讀(以前拒推只印一行就結束,事後看不到卡在哪)。
+    跟主線舊紅同一個資料夾、同一個倉標籤:~/.ez2-aib/ship/last-<push|refuse>-<標籤>.json。"""
+    return _known_base_reds_file(repo).with_name(_known_base_reds_file(repo).name.replace("known-base-reds-", "last-%s-" % kind))
+
+
+def _record_tag_index(repo):
+    """ship/tag-<倉標籤>.json = {repo, roots}:讓 aib project sweep 從正本也找得到推包樹(另一個 clone、標籤不同)
+    留的檔 —— 清查拿自己的根提交比對,同專案的標籤都讀(審查 10-13)。寫不了不影響推包。"""
+    try:
+        f = _known_base_reds_file(repo).with_name(_known_base_reds_file(repo).name.replace("known-base-reds-", "tag-"))
+        roots = sorted(git(repo, "rev-list", "--max-parents=0", "HEAD", check=False).split())
+        if not roots:
+            return
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(f.name + ".tmp")
+        tmp.write_text(json.dumps({"repo": str(Path(repo).resolve()), "roots": roots}) + "\n", encoding="utf-8")
+        os.replace(tmp, f)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def record_result(repo, kind, **fields):
+    """寫 last-<kind>-<標籤>.json(at=現在 epoch、branch、head,加上 fields)。寫不了不影響推包。"""
+    try:
+        f = _ship_result_file(repo, kind)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        d = {"at": time.time(), "repo": str(repo), "kind": kind}
+        try:
+            d["branch"] = git(repo, "rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+            d["head"] = git(repo, "rev-parse", "HEAD", check=False).strip()
+        except Exception:  # noqa: BLE001
+            pass
+        d.update(fields)
+        _record_tag_index(repo)
+        tmp = f.with_name(f.name + ".tmp")
+        tmp.write_text(json.dumps(d, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, f)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def load_known_base_reds(repo):
     """上一次推包確認過「主線上也紅」的測試(10-07)。讀不到 ⇒ []。只拿來讓一紅就停不為它停;能不能推照樣每次重新確認。"""
     try:
@@ -257,6 +299,7 @@ def load_known_base_reds(repo):
 
 
 def save_known_base_reds(repo, tests):
+    _record_tag_index(repo)
     f = _known_base_reds_file(repo)
     try:
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -338,11 +381,103 @@ def _stream(cmd, out=None):
     return p.wait(), "".join(lines)
 
 
-def push(repo, branches, expect_remote):
-    git(repo, "fetch", "-q", "origin", "main")
-    remote = git(repo, "rev-parse", "origin/main").strip()
-    if remote != expect_remote:
-        raise SystemExit(T("remote_moved", {"what": "%s != %s" % (remote[:8], expect_remote[:8])}))
+MOVED_ROUNDS = 3      # 10-11 the maintainer「主線動了也能放行」:推之前主線又動了,最多追 3 次,之後照舊停
+
+
+def _is_doc(path):
+    """只認 .md。docs/ 底下也有 .py/.sh/.json(掃描工具、治具、MANIFEST,有測試在讀),不能整個目錄當文件(10-11 審查第二輪)。"""
+    return path.endswith(".md")
+
+
+def _rerun_selected(repo, tests, prof):
+    """把挑出來的測試在疊好的樹上重跑。回 (rc, 紅的集合);rc≠0 而列不出紅 ⇒ 呼叫端當紅看(沒證據不算過)。"""
+    cmd = ["bash", str(Path(repo) / "src" / "cockpit" / "aib"), "test"]
+    p = subprocess.run(cmd + sorted(tests), cwd=str(repo), capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                       timeout=7200)
+    sys.stdout.write((p.stdout or "")[-3000:])
+    return p.returncode, gate_reds(p.stdout + p.stderr)
+
+
+def _select_tests(repo, base, head):
+    """base..head 會影響哪些測試:用要推的那份程式自己的 select_changed(同一套挑選規則,不另寫)。
+    回 (rc, 測試清單);量不到(rc≠0 或印出 unmeasurable)⇒ rc 非 0。"""
+    p = subprocess.run([sys.executable, str(Path(repo) / "tools" / "verify" / "select_changed.py"), "--repo", str(repo),
+                        "--base", base, "--head", head, "--print-tests"],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=900)
+    if p.returncode != 0 or "unmeasurable" in p.stdout:
+        return (p.returncode or 1), []
+    return 0, [l.strip() for l in p.stdout.splitlines() if l.strip().startswith("tests/")]
+
+
+def catch_up_docs_only(repo, branches, expect_remote, remote, prof):
+    """推前發現主線從 expect_remote 動到 remote。新來的全是文件(*.md、docs/)⇒ 疊上去、只重跑受影響的測試,綠了回 None
+    (呼叫端照推);任何一步不符合或量不到 ⇒ 回一句為什麼,呼叫端照舊停(10-11 the maintainer 令,設計稿 DESIGN-ship-remote-moved)。
+    ★ 為什麼不是「無交集就直接推」:10-11 實量,主線只多一份 docs/*.md,影響挑選也有 44 支(掃全倉的閘、量到讀過它的),
+      所以一律重跑挑出來的那些,不靠「應該沒關係」放行。
+    ★ 程式檔一律不追:兩邊改不同程式檔也可能合起來壞(改名、改介面),那要整輪重跑,照舊停給人。"""
+    if prof is None or prof.gate_mode != "aib":
+        return T("moved_why_generic")
+    if os.environ.get("AIB_SHIP_MOVED_STRICT") == "1":
+        return T("moved_why_off")
+    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", expect_remote, remote],
+                      stdin=subprocess.DEVNULL, capture_output=True).returncode != 0:
+        return T("moved_why_rewritten")
+    # --no-renames:改名只印新路徑 ⇒ 把 tools/x.py 搬成 docs/x.py 會被當成「只動文件」(10-11 審查抓到);拆成刪 + 加,舊路徑算程式
+    files = [f for f in git(repo, "diff", "--name-only", "--no-renames", expect_remote, remote).splitlines() if f]
+    code = [f for f in files if not _is_doc(f)]
+    if code:
+        return T("moved_why_not_docs", {"what": code[:5]})
+    if git(repo, "rev-list", "--merges", "%s..HEAD" % expect_remote).strip():
+        return T("moved_why_merges")                # 包裡有合併提交:rebase 會把它攤平,改了主線的形狀,不自動做
+    on_remote = [b for b in branches if git(repo, "ls-remote", "--heads", "origin", b, check=False).strip()]
+    if on_remote:                                  # 疊過之後同名分支推不上去(不是快轉);不硬推
+        return T("moved_why_branch_on_remote", {"what": on_remote})
+    try:
+        rc, tests = _select_tests(repo, expect_remote, remote)
+    except subprocess.TimeoutExpired:
+        rc, tests = -1, []
+    if rc != 0:
+        return T("moved_why_unmeasurable", {"rc": rc})
+    orig = git(repo, "rev-parse", "HEAD").strip()
+    r = subprocess.run(["git", "-C", str(repo), "rebase", "-q", remote], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
+    if r.returncode != 0:
+        subprocess.run(["git", "-C", str(repo), "rebase", "--abort"], capture_output=True, stdin=subprocess.DEVNULL)
+        return T("moved_why_conflict")
+    print(T("moved_rerun", {"n": len(files), "sha": remote[:9], "what": len(tests)}))
+    if tests:
+        try:
+            rc, reds = _rerun_selected(repo, tests, prof)
+        except subprocess.TimeoutExpired:
+            rc, reds = -1, set()
+        if rc != 0 or reds:
+            git(repo, "reset", "-q", "--hard", orig)      # 不推就退回疊之前的樣子,不留一棵疊了一半的樹給人猜
+            return T("moved_why_red", {"rc": rc, "what": sorted(reds)})
+    print(T("moved_caught_up", {"n": len(files), "sha": remote[:9], "what": len(tests)}))
+    return None
+
+
+def push(repo, branches, expect_remote, prof=None, pushed_base=None):
+    """prof 有給(推前檢查跑完的那條路)⇒ 主線動了、新來的全是文件時,疊上去重跑受影響的測試再推;
+    沒給(緊急推)⇒ 照舊一動就停。pushed_base(list)有給 ⇒ 推成後放進最後疊上的主線 sha(回報草稿要用疊後的編號)。"""
+    pushed_base = pushed_base if pushed_base is not None else []
+    start = git(repo, "rev-parse", "HEAD").strip() if prof is not None else ""
+    for attempt in range(MOVED_ROUNDS + 1):
+        git(repo, "fetch", "-q", "origin", "main")
+        remote = git(repo, "rev-parse", "origin/main").strip()
+        if remote == expect_remote:
+            break
+        what = "%s != %s" % (remote[:8], expect_remote[:8])
+        if prof is None:
+            raise SystemExit(T("remote_moved", {"what": what}))
+        why = catch_up_docs_only(repo, branches, expect_remote, remote, prof) if attempt < MOVED_ROUNDS \
+            else T("moved_why_rounds", {"n": MOVED_ROUNDS})
+        if why:
+            if start and git(repo, "rev-parse", "HEAD").strip() != start:
+                git(repo, "reset", "-q", "--hard", start)   # 前幾輪已經疊過 ⇒ 退回最一開始,不留疊到中途的樹(審查第三輪)
+            raise SystemExit(T("remote_moved", {"what": what}) + "\n" + why)
+        expect_remote = remote
+    pushed_base[:] = [expect_remote]
     refs = ["HEAD:main"] + ["HEAD:%s" % b for b in branches]
     for d in (0, 2, 4, 8, 16):
         time.sleep(d)
@@ -357,6 +492,24 @@ def push(repo, branches, expect_remote):
 def _norm_url(u):
     u = (u or "").strip().rstrip("/")
     return u[:-4] if u.endswith(".git") else u
+
+
+def ensure_canonical_guard(canon):
+    """P8:正本快轉後順手確認「正本 main 禁直接提交」掛勾裝著(裝的是正本自己那份,剛快轉到最新)。
+    只在有變化或被別的掛勾佔著時印一行;任何錯都不影響推包。回安裝器的結束碼(-1 = 沒跑)。"""
+    tool = Path(canon) / "src" / "policy" / "hooks" / "install-canonical-guard.sh"
+    if not tool.exists():
+        return -1
+    try:
+        p = subprocess.run(["bash", str(tool), "install"], cwd=str(canon), capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return -1
+    if p.returncode == 3:
+        print(T("canon_guard_foreign", {"path": canon, "what": p.stdout.strip().replace("\t", " ").replace("\n", "; ")}))
+    elif "installed" in p.stdout:
+        print(T("canon_guard_installed", {"path": canon}))
+    return p.returncode
 
 
 def sync_canonical(repo, canon=None):
@@ -390,6 +543,7 @@ def sync_canonical(repo, canon=None):
         before = git(canon, "rev-parse", "--short", "HEAD").strip()
         git(canon, "merge", "-q", "--ff-only", target)
         after = git(canon, "rev-parse", "--short", "HEAD").strip()
+        ensure_canonical_guard(canon)
         if before == after:
             return "same"
         print(T("canon_synced", {"path": canon, "sha": after}))
@@ -408,11 +562,61 @@ def rerun_same(repo, tests, prof):
     return gate_reds(p.stdout + p.stderr)
 
 
-def refuse(repo, rc, new, prof, old=(), unverified=()):
+def judge_flaky(repo, new, flaky, out, base, sha):
+    """P1(docs/DESIGN-ship-merge-queue-1011.md §4 P1):每支新紅判一次能不能窄放行,重跑綠的那些記帳。
+    回 {test: (allowed, why)}。任何一步出錯 ⇒ 該支不放行(why=error)。"""
+    sys.path.insert(0, str(ROOT / "tools" / "verify"))
+    import flaky_ledger as fl
+    try:
+        import pushgate
+        import reuse_index as ri
+        idx = ri.build_index([], repo=str(repo))       # 剛跑完推前檢查,最新一列就是這一輪量到的讀檔
+        changed = fl.changed_files(repo, base)         # git 失敗/空 ⇒ None ⇒ 每支都「量不到讀了什麼」⇒ 不放行
+        pkg = fl.package_id(repo, base)
+        banner = pushgate._line_re("output_banner")    # 跟 red_outputs 同一個判準:只認整行的「--- X 的輸出 ---」
+        blocks, cur = {}, None                          # (第三輪審查:測試自己印「--- tests/y.py …」會把輸出歸到別支頭上)
+        for ln in pushgate.red_outputs(out or ""):
+            m = re.search(r"([^\s(（]+\.(?:py|sh))", ln) if banner.fullmatch(ln) else None
+            if m:
+                cur = m.group(1)
+                blocks[cur] = []
+            elif cur:
+                blocks[cur].append(ln)
+    except Exception:  # noqa: BLE001 - 量不到 ⇒ 全部不放行
+        return {t: (False, "error") for t in new}
+    got = {}
+    for t in new:
+        text = "\n".join(blocks.get(t, []))
+        reads = fl.reads_changed(idx, t, changed) if changed is not None else None
+        ok, why = fl.judge(t, t in flaky, text, reads, pkg=pkg)
+        got[t] = (ok, why)
+        if t in flaky and not fl.record(t, sha, ok, why, text, pkg=pkg):
+            print(T("flaky_ledger_unwritable", {"path": fl.ledger_path()}))
+    return got
+
+
+def notify_flaky(repo, tests):
+    """放行的不穩定測試,aib dm 退給最近改它的那一席;查不到就請推包席轉告。送不出去不擋推包。"""
+    sys.path.insert(0, str(ROOT / "tools" / "verify"))
+    import flaky_ledger as fl
+    for t in tests:
+        code = fl.author_seat(repo, t)
+        addr = fl.seat_address(code) if code else None
+        if not addr:
+            print(T("flaky_dm_none", {"test": t}))
+            continue
+        n = fl.marks(t, fl.LIMIT_DAYS)
+        rc = fl.notify(addr, T("flaky_dm", {"test": t, "n": n, "path": fl.ledger_path()}))
+        print(T("flaky_dm_sent" if rc == 0 else "flaky_dm_failed", {"what": addr, "rc": rc}))
+
+
+def refuse(repo, rc, new, prof, old=(), unverified=(), out="", base=None, allow=False):
     """不推。新的紅先在同一份程式上再跑一次:這次綠了 ⇒ 標「時紅時綠」(還是不推,但說清楚多半不是這一包弄壞的)。
     10-08:擋下這包的測試記下來,下一次推前檢查一律最先跑(pushgate.add_blockers / tiers)。
     10-11(the maintainer「遇紅不停 程式化」):拒推時把整套跑出來的**全部**列出 —— 新的紅(refuse_push)之外,
-      主線上也紅的舊紅、沒驗的也各印一行,修的人一次看到全部,不用一輪修一支。"""
+      主線上也紅的舊紅、沒驗的也各印一行,修的人一次看到全部,不用一輪修一支。
+    10-12 P1(allow=True,只有 aib 自己的倉、整套跑完 rc=1 那條路):新紅**每一支**都三條全中(judge_flaky)⇒
+      不推改成放行:回放行的清單給呼叫端照推,並記帳、退給作者。有一支不中 ⇒ 照舊不推。"""
     if old:
         print(T("refuse_also_old", {"what": sorted(old)}))
     if unverified:
@@ -430,6 +634,16 @@ def refuse(repo, rc, new, prof, old=(), unverified=()):
             flaky = []
         if flaky:
             print(T("flaky", {"what": flaky}))
+        if allow and base and flaky:
+            verdicts = judge_flaky(repo, new, set(flaky), out, base, git(repo, "rev-parse", "HEAD").strip())
+            for t in sorted(verdicts):
+                print(T("flaky_verdict", {"test": t, "what": T("flaky_why_" + verdicts[t][1].replace("-", "_"))}))
+            if all(ok for ok, _ in verdicts.values()):
+                allowed = sorted(verdicts)
+                print(T("flaky_allowed", {"what": allowed}))
+                notify_flaky(repo, allowed)
+                return allowed
+    record_result(repo, "refuse", rc=rc, new=sorted(new or []), old=sorted(old or []), unverified=sorted(unverified or []))
     raise SystemExit(T("refuse_push", {"rc": rc, "what": new or T("no_red_rc")}))
 
 
@@ -446,7 +660,7 @@ def base_reds(repo, base, reds, prof):
     return reds_on(repo, base, reds, prof=prof)
 
 
-def gate_then_push(repo, branches, base, prof=None, gate_base=None, before_push=None, fail_fast=False):
+def gate_then_push(repo, branches, base, prof=None, gate_base=None, before_push=None, fail_fast=False, catch_up=True):
     """10-11(the maintainer「遇紅不停 程式化」):預設整套跑完,再用全部的紅 / 主線舊紅 / 沒驗判能不能推(may_push 規則不變),
       拒推時一次列出全部。以前預設 --fail-fast:一紅就停、其餘沒跑 ⇒ 10-11 一個 158 筆的包連紅三輪、每輪只看到一支。
     fail_fast=True(ship.py package/release --fail-fast,明示才開):照舊先一紅就停 ——
@@ -467,16 +681,21 @@ def gate_then_push(repo, branches, base, prof=None, gate_base=None, before_push=
     on_base = base_reds(repo, base, reds, prof) if rc == 1 else set()
     if prof.gate_mode == "aib":
         save_known_base_reds(repo, on_base)    # 下一包一紅就停時不為這幾支停(照樣跑、照樣報、照樣重新確認)
+    allowed = []
     if not may_push(rc, reds, on_base, unv, machine_unverified_ok=(prof.gate_mode == "aib")):
-        refuse(repo, rc, sorted(reds - on_base), prof, old=reds & on_base, unverified=unv)
-    if reds:
-        print(T("allow_base_red", {"what": _with_evidence(sorted(reds))}))
+        allowed = refuse(repo, rc, sorted(reds - on_base), prof, old=reds & on_base, unverified=unv, out=out, base=base,
+                         allow=(rc == 1 and prof.gate_mode == "aib"))
+    if reds & on_base:                     # 放行的不穩定測試不是「主線舊紅」,不混在這一行(上面 flaky_allowed 已大字列出)
+        print(T("allow_base_red", {"what": _with_evidence(sorted(reds & on_base))}))
     if unv:
         print(T("allow_unverified", {"what": sorted(unv)}))
     if before_push is not None:
         before_push()
-    push(repo, branches, base)
-    return {"old_reds": sorted(on_base & set(reds)), "unverified": sorted(unv)}
+    final = []
+    push(repo, branches, base, prof=prof if catch_up else None, pushed_base=final)   # 發版不追:疊進來的文件會掉出發版說明
+    record_result(repo, "push", old=sorted(on_base & set(reds)), unverified=sorted(unv))
+    return {"old_reds": sorted(on_base & set(reds)), "unverified": sorted(unv), "flaky_allowed": list(allowed or []),
+            "pushed_base": final[0] if final else base}
 
 
 # ---- 發版提交 ----------------------------------------------------------------------------------------
@@ -656,7 +875,103 @@ def confirmed_by_human(ver, stdin=None, stdout=None):
 
 
 # ---- 指令 ----------------------------------------------------------------------------------------------
+def _check_base(repo):
+    """交件檢查的底 = 推包時的底:最新的 GitHub main。推包那棵 clone 的 origin 就是 GitHub;各席的工作樹在 Mini 上
+    origin 是 Pro 鏡像、github 才是 GitHub ⇒ 有 github 遠端用它,否則 origin。先 fetch 再用(推包也是推前才抓最新)。
+    回 (ref, 錯誤字串);抓不到 ⇒ (None, 原因)。"""
+    remotes = git(repo, "remote", check=False).split()
+    rem = "github" if "github" in remotes else ("origin" if "origin" in remotes else None)
+    if rem is None:
+        return None, "no remote"
+    p = subprocess.run(["git", "-C", str(repo), "fetch", "-q", rem, "+refs/heads/main:refs/remotes/%s/main" % rem],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if p.returncode != 0:
+        return None, (p.stderr or "fetch rc=%d" % p.returncode).strip()[-200:]
+    return "%s/main" % rem, ""
+
+
+def _gate_counts(repo, since, run_id=""):
+    """推前檢查自己記的這一輪統計(pushgate.record_stats,分到別台跑的也算在裡面)⇒ (實跑, 沿用);
+    取 since 之後最新那一筆,沒有 ⇒ (None, None)(不從畫面文字猜:成功時畫面上沒有逐批那一行,第二輪審查實測)。"""
+    try:
+        sys.path.insert(0, str(ROOT / "tools" / "verify"))
+        import pushgate
+        rows = pushgate.read_stats(repo, since=since)
+    except Exception:  # noqa: BLE001
+        return None, None
+    if run_id:                                       # 同一個倉的別棵樹同時直接跑 pushgate 也會寫一筆;只認自己這輪
+        rows = [r for r in rows if r.get("run_id") == run_id]
+    if not rows:
+        return None, None
+    return rows[-1].get("ran"), rows[-1].get("reused")
+
+
+def cmd_check_gate(a):
+    """P13(docs/DESIGN-ship-merge-queue-1011.md §4b;the maintainer 10-11 核准):交件前跑一次**跟推包一樣**的推前檢查,不推。
+    一樣的意思(第二輪審查逐條對齊 cmd_package):
+      底   = 最新 GitHub main(先 fetch);有還沒補驗的緊急推 ⇒ 選測試從第一次緊急推之前算起(emergency_base)
+      判準 = may_push:紅都在主線上也紅 ⇒ 算過(推包也會放行),跟推包同一條
+      租約 = 呼叫自己的殼已拿著 ⇒ 沿用,不重拿也不放;否則自己拿、跑完放
+    ★ 比推包嚴一處(安全方向,第二輪審查):推包有 P1 的「不穩定測試窄放行」,這裡沒有 ——
+      交件前遇到時紅時綠就先修或重跑,不在交件時就拿放行。
+    分支沒疊在底上 ⇒ rc 2,不跑。最後印一行給交件信原樣帶。結束碼:0 推得過 / 推前檢查的 rc。"""
+    if a.base:
+        base, why = a.base, ""
+    else:
+        base, why = _check_base(a.repo)
+    if not base:
+        print(T("check_gate_no_base", {"what": why}))
+        return 2
+    if subprocess.run(["git", "-C", str(a.repo), "merge-base", "--is-ancestor", base, "HEAD"], capture_output=True,
+                      stdin=subprocess.DEVNULL).returncode != 0:
+        print(T("check_gate_not_rebased", {"what": base}))
+        return 2
+    pending = pending_emergencies(a.repo, rev=base)
+    gate_base = emergency_base(a.repo, pending[0]) if pending else base
+    HL = _host_lease()
+    lease_file, ledger = HL.lease_path(), HL.ledger_path()
+    cur, _why = HL.read_lease(lease_file)
+    mine = bool(cur) and cur.get("host") == HL.socket.gethostname() and \
+        int(cur.get("pid") or 0) in _ancestors(os.getpid())
+    run_id = None
+    if not mine:
+        run_id = "check-%d-%d" % (os.getpid(), int(time.time()))
+        ns = argparse.Namespace(owner=os.environ.get("AIB_SHIP_OWNER") or "ship.py", what="ship.py check --gate",
+                                run_id=run_id, ttl=3 * 3600, pid=os.getpid(), cwd=os.path.abspath(a.repo),
+                                exclusive=True, priority=True)   # 10-13:推包在量耗時 ⇒ 獨佔;排隊名單有人也照拿(推包優先)
+        if acquire_after_test_batches(HL, ns, lease_file, ledger) != HL.RC_OK:
+            raise SystemExit(T("lease_denied"))
+    since = time.strftime("%Y-%m-%dT%H:%M:%S")
+    gate_id = "check-%d-%d" % (os.getpid(), int(time.time()))
+    old_id = os.environ.get("AIB_GATE_RUN_ID")
+    os.environ["AIB_GATE_RUN_ID"] = gate_id            # pushgate 記統計時帶上,_gate_counts 只認這一筆
+    try:
+        rc, out = run_gate(a.repo, prof=a.prof, gate_base=gate_base)
+        reds = gate_reds(out)
+        unv = gate_unverified(out)
+        on_base = base_reds(a.repo, base, reds, a.prof) if rc == 1 else set()
+    finally:
+        if old_id is None:
+            os.environ.pop("AIB_GATE_RUN_ID", None)
+        else:
+            os.environ["AIB_GATE_RUN_ID"] = old_id
+        if run_id:
+            HL.cmd_release(argparse.Namespace(run_id=run_id), time.time(), lease_file, ledger)
+    ok = may_push(rc, reds, on_base, unv, machine_unverified_ok=(a.prof.gate_mode == "aib"))
+    ran, reused = _gate_counts(a.repo, since, run_id=gate_id)
+    out_rc = 0 if ok else (rc or 1)
+    print(T("check_gate_line", {"rc": out_rc, "n": "?" if ran is None else ran, "count": "?" if reused is None else reused,
+                                "what": base, "sha": git(a.repo, "rev-parse", "--short=9", "HEAD").strip()}))
+    if reds - on_base:
+        print(T("check_gate_reds", {"what": sorted(reds - on_base)}))
+    if on_base:
+        print(T("check_gate_old_reds", {"what": sorted(on_base)}))
+    return out_rc
+
+
 def cmd_check(a):
+    if getattr(a, "gate", False):
+        return cmd_check_gate(a)
     since = a.since or policy_start(a.repo, a.rev, a.prof)
     if since is None:
         print(T("no_start", {"path": a.prof.policy_start_file}))
@@ -794,6 +1109,47 @@ def cmd_sync(a):
     return 0
 
 
+TEST_BATCH_POLL_S = 30
+TEST_BATCH_LONG_S = 45 * 60      # 推包等滿這麼久 ⇒ 印出誰拿著、照舊拒推(a seat 10-12 16:17:不無限等)
+
+
+def acquire_after_test_batches(HL, ns, lease_file, ledger, sleep=time.sleep, say=print):
+    """拿機器租約;被某一席的 aib test 大批拿著(run_id aib-test-…,10-12 起大批會拿租約排隊)⇒ 等它跑完再拿,
+    每 30 秒看一次、印一行。被別的(另一個推包、發版…)拿著 ⇒ 照舊回被拒,由呼叫端停下。
+    先看再拿:等的時候不去 acquire,免得每 30 秒在租約紀錄寫一筆被拒。
+    推包優先:開始等就在租約旁寫「推包在等」記號(拿到或離開時清掉),新的大批 aib test 看到就排在推包後面;
+    等滿 45 分鐘 ⇒ 印出誰拿著(席、pid、開始時間)並照舊回被拒,不無限等(a seat 16:17)。"""
+    def test_batch(cur):
+        return bool(cur) and str(cur.get("run_id") or "").startswith("aib-test-") and not HL.is_expired(cur, time.time())
+
+    waited, marked = 0, False
+    try:
+        while True:
+            cur, _why = HL.read_lease(lease_file)
+            if not test_batch(cur):
+                rc = HL.cmd_acquire(ns, time.time(), lease_file, ledger)
+                if rc == HL.RC_OK and waited:
+                    say(T("lease_test_batch_done", {"waited": waited}))
+                cur, _why = HL.read_lease(lease_file)
+                if rc == HL.RC_OK or not test_batch(cur):
+                    return rc
+            if not marked:          # 推包優先:新的大批看到這個記號就排在推包後面(正在跑的那批照跑完)
+                HL.ship_wait_mark(lease_file, os.getpid(), ns.what)
+                marked = True
+            if waited >= TEST_BATCH_LONG_S:    # 上限(a seat 16:17):印出誰拿著,照舊拒推,不無限等
+                say(T("lease_test_batch_long", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"),
+                                                "waited": waited, "pid": cur.get("pid", "?"),
+                                                "since": cur.get("acquired_at", "?")}))
+                return HL.RC_HELD
+            say(T("lease_test_batch_wait", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"), "waited": waited,
+                                            "n": TEST_BATCH_POLL_S}))
+            sleep(TEST_BATCH_POLL_S)
+            waited += TEST_BATCH_POLL_S
+    finally:
+        if marked:
+            HL.ship_wait_clear(lease_file, os.getpid())
+
+
 def _host_lease():
     sys.path.insert(0, str(ROOT / "tools" / "governance"))
     import host_lease
@@ -842,6 +1198,9 @@ def cmd_package(a):
         o = others[0]
         raise SystemExit(T("another_ship_running", {"pid": o.get("pid"), "what": o.get("branch") or "?",
                                                     "at": o.get("at") or "?"}))
+    if getattr(getattr(a, "prof", None), "gate_mode", None) == "aib" and not getattr(a, "emergency", False):
+        github_lock_wait_free(a.repo)       # 10-12:先等 GitHub 推包鎖空(不佔機器),等到了才拿機器租約、才算底;
+        #                                     緊急推是人在終端機上要馬上推,原本就不看鎖,不在這裡等(審查)
     lease_file, ledger = HL.lease_path(), HL.ledger_path()
     cur, _why = HL.read_lease(lease_file)
     mine = bool(cur) and cur.get("host") == HL.socket.gethostname() and \
@@ -851,8 +1210,9 @@ def cmd_package(a):
         run_id = "ship-%d-%d" % (os.getpid(), int(time.time()))
         ns = argparse.Namespace(owner=os.environ.get("AIB_SHIP_OWNER") or "ship.py",
                                 what="ship.py package %s" % " ".join(a.branch), run_id=run_id, ttl=3 * 3600,
-                                pid=os.getpid(), cwd=os.path.abspath(a.repo))
-        if HL.cmd_acquire(ns, time.time(), lease_file, ledger) != HL.RC_OK:
+                                pid=os.getpid(), cwd=os.path.abspath(a.repo),
+                                exclusive=True, priority=True)   # 10-13:推包在量耗時 ⇒ 獨佔;排隊名單有人也照拿(推包優先)
+        if acquire_after_test_batches(HL, ns, lease_file, ledger) != HL.RC_OK:
             raise SystemExit(T("lease_denied"))
     HL.ship_register(a.repo, " ".join(a.branch))
     try:
@@ -876,8 +1236,122 @@ def _git_raw(repo, *args, timeout=60):
                           stdin=subprocess.DEVNULL, timeout=timeout)
 
 
-def github_lock_take(repo, branches, now=None):
-    """上鎖;回鎖那顆提交的 sha,失敗回 ""(印一行警告,推包照走)。"""
+LOCK_POLL_S = 60
+LOCK_PEEK_REF = "refs/aib/lock-peek"
+
+
+def github_lock_holder(repo):
+    """遠端現在那把鎖:None = 沒有鎖;否則 {"sha", "host", "owner", "branch", "expires"(int 或 None), "parent", "landed"}。
+    landed = 上鎖當時的那顆候選(鎖提交的父)已經在 origin/main 裡 ⇒ 那次推包早推完了,鎖只是沒撤掉(雲端刪不掉分支,
+    鎖會留到 3 小時後;docs/handoff/cloud-1002/HANDOFF-cloud-self-1010.md §七 A)。讀不到內容 ⇒ host/expires 為空。"""
+    p = _git_raw(repo, "ls-remote", "origin", LOCK_REF)
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr.strip()[:160] or "ls-remote rc=%d" % p.returncode)
+    sha = (p.stdout.split() or [""])[0]
+    if not sha:
+        return None
+    info = {"sha": sha, "host": "", "owner": "", "branch": "", "expires": None, "parent": "", "landed": False}
+    if _git_raw(repo, "fetch", "-q", "origin", "+%s:%s" % (LOCK_REF, LOCK_PEEK_REF)).returncode != 0:
+        return info
+    body = _git_raw(repo, "log", "-1", "--format=%P%n%B", LOCK_PEEK_REF).stdout
+    lines = body.splitlines()
+    info["parent"] = (lines[0].split() or [""])[0] if lines else ""
+    for ln in lines[1:]:
+        k, sep, v = ln.partition(":")
+        if sep and k.strip() in ("host", "owner", "branch"):
+            info[k.strip()] = v.strip()
+        elif sep and k.strip() == "expires":
+            try:
+                info["expires"] = int(v.strip())
+            except ValueError:
+                pass
+    if info["parent"] and _git_raw(repo, "fetch", "-q", "origin", "main").returncode == 0:
+        info["landed"] = _git_raw(repo, "merge-base", "--is-ancestor", info["parent"], "origin/main").returncode == 0
+    return info
+
+
+def _lock_blocks(info, now, first_seen):
+    """這把鎖要不要等:別台的、沒過期、那次推包還沒落地 ⇒ 等。讀不出到期時間 ⇒ 從第一次看到起最多等 LOCK_TTL_S。"""
+    if info is None or info["landed"] or info["host"] == socket.gethostname():
+        return False
+    return now < _lock_expiry(info, first_seen)
+
+
+def _lock_expiry(info, first_seen):
+    """寫的到期時間不全信:最多算到第一次看到後 LOCK_TTL_S(時鐘不準或寫錯成很遠的未來,不能等無限久;審查)。"""
+    cap = first_seen + LOCK_TTL_S
+    return min(info["expires"], cap) if info["expires"] is not None else cap
+
+
+LOCK_RACE_RETRIES = 5
+_LOCK_FIRST_SEEN = {}                # 鎖 sha → 第一次看到的時刻;wait_free 與 take 共用,同一把鎖只有一個 3 小時上限(審查)
+
+
+def _first_seen(info, t_now):
+    if info is None:
+        return t_now
+    return _LOCK_FIRST_SEEN.setdefault(info["sha"], t_now)
+LOCK_WAITED = {"waited": False}      # 這一次上鎖有沒有等過別台(with_github_lock 用來判斷要不要重看主線)
+
+
+def github_lock_wait_free(repo, sleep=time.sleep, clock=time.time):
+    """只看不上鎖:別台的鎖還有效(_lock_blocks)就等,每 LOCK_POLL_S 秒看一次。回有沒有等過。
+    10-12(a seat 排,審查提的):github_lock_take 是在拿了機器租約、算好底之後才跑的 ⇒ 等鎖時白佔機器最多 3 小時、
+      等完主線多半已動。cmd_package 先在這裡等,等到了才拿租約、才 fetch 算底;之後 take 正常會馬上拿到
+      (看完到上鎖之間又被搶先 ⇒ take 照舊會等,with_github_lock 也照舊會在主線動了時停)。讀不到遠端 ⇒ 不等(交給 take)。"""
+    waited = False
+    while True:
+        try:
+            info = github_lock_holder(repo)
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            return waited
+        t_now = int(clock())
+        first_seen = _first_seen(info, t_now)
+        if not _lock_blocks(info, t_now, first_seen):
+            return waited
+        waited = True
+        print(T("lock_wait", {"what": "%s %s %s" % (info["host"] or "?", info["owner"], info["branch"]),
+                              "at": time.strftime("%m-%d %H:%M", time.localtime(_lock_expiry(info, first_seen))),
+                              "n": LOCK_POLL_S}))
+        sleep(LOCK_POLL_S)
+
+
+def github_lock_take(repo, branches, now=None, sleep=time.sleep, clock=time.time):
+    """上鎖;回鎖那顆提交的 sha,失敗回 ""(印一行警告,推包照走)。
+    10-12(a seat 派,10-11 23:53 Mac 蓋掉雲端的鎖、兩邊各推各的):不再直接 -f 蓋 ——
+      先看遠端那把:別台的、沒過期、那次推包還沒落地 ⇒ 等(每 LOCK_POLL_S 秒看一次,印誰在推、到期時間);
+      過期 / 自己這台留的 / 那次推包已落地 ⇒ 蓋。蓋的時候用 --force-with-lease=<剛看到的那顆>,
+      看完到推之間別台搶先上鎖 ⇒ 推不上去 ⇒ 回頭再看一次(不會蓋掉剛上的鎖)。"""
+    races = 0
+    LOCK_WAITED["waited"] = False
+    while True:
+        try:
+            info = github_lock_holder(repo)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+            print(T("lock_take_failed", {"why": str(e) or type(e).__name__}))
+            return ""
+        t_now = int(clock())
+        first_seen = _first_seen(info, t_now)
+        if _lock_blocks(info, t_now, first_seen):
+            LOCK_WAITED["waited"] = True
+            exp = _lock_expiry(info, first_seen)
+            print(T("lock_wait", {"what": "%s %s %s" % (info["host"] or "?", info["owner"], info["branch"]),
+                                  "at": time.strftime("%m-%d %H:%M", time.localtime(exp)), "n": LOCK_POLL_S}))
+            sleep(LOCK_POLL_S)
+            continue
+        seen = info["sha"] if info else ""
+        sha = _github_lock_push(repo, branches, now, seen)
+        if sha is None:                               # 看完到推之間鎖變了 ⇒ 再看一次(有上限,不無限重推)
+            races += 1
+            if races >= LOCK_RACE_RETRIES:
+                print(T("lock_take_failed", {"why": "lock changed %d times while taking it" % races}))
+                return ""
+            continue
+        return sha
+
+
+def _github_lock_push(repo, branches, now, seen):
+    """推一把新鎖;只在遠端還是剛才看到的那顆(seen,空字串 = 沒有鎖)時才蓋。回 sha / ""(失敗,推包照走)/ None(被搶先,要重看)。"""
     now = int(now or time.time())
     try:
         tree = _git_raw(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
@@ -889,8 +1363,10 @@ def github_lock_take(repo, branches, now=None):
         sha = p.stdout.strip()
         if p.returncode != 0 or not sha:
             raise RuntimeError(p.stderr.strip()[:160])
-        p = _git_raw(repo, "push", "-q", "-f", "origin", "%s:%s" % (sha, LOCK_REF))
+        p = _git_raw(repo, "push", "-q", "--force-with-lease=%s:%s" % (LOCK_REF, seen), "origin", "%s:%s" % (sha, LOCK_REF))
         if p.returncode != 0:
+            if "stale info" in p.stderr:              # 只有「遠端那把不是剛才看到的」才算被搶先;
+                return None                           # 權限/掛勾拒絕([remote rejected])照失敗處理,不重推
             raise RuntimeError(p.stderr.strip()[:160])
     except (OSError, subprocess.SubprocessError, RuntimeError) as e:
         print(T("lock_take_failed", {"why": str(e) or type(e).__name__}))
@@ -911,6 +1387,8 @@ def github_lock_drop(repo, sha):
             return False
         p = _git_raw(repo, "push", "-q", "origin", ":%s" % LOCK_REF)
         if p.returncode != 0:
+            if _github_lock_release(repo, sha):
+                return True
             raise RuntimeError(p.stderr.strip()[:160])
     except (OSError, subprocess.SubprocessError, RuntimeError) as e:
         print(T("lock_drop_failed", {"why": str(e) or type(e).__name__, "n": str(LOCK_TTL_S // 3600)}))
@@ -919,12 +1397,37 @@ def github_lock_drop(repo, sha):
     return True
 
 
-def with_github_lock(repo, prof, branches, fn):
-    """fn 前上鎖、之後一定撤(推成、推紅、拒推、例外、SystemExit 都撤)。不是 aib 自己的倉 ⇒ 不上鎖直接跑。"""
+def _github_lock_release(repo, sha, now=None):
+    """刪不掉(雲端代理擋刪分支,HTTP 403)⇒ 把自己那把改寫成「已到期」:別台的 _lock_blocks 看到到期就不等。
+    10-12(a seat:雲端 18:02 / 19:22 / 21:57 推完都留鎖,Mini 白等):上鎖那種推送雲端推得上去,刪除推不上去。
+    只在遠端還是自己那把時才蓋(--force-with-lease=<自己的 sha>)。"""
+    now = int(now or time.time())
+    tree = _git_raw(repo, "rev-parse", "%s^{tree}" % sha).stdout.strip()
+    msg = ("mac-ship lock\n\nowner: %s\nhost: %s\nbranch: released\nstarted: %d\nexpires: %d\n"
+           "released: %s\n" % (os.environ.get("AIB_SHIP_OWNER") or "ship.py", socket.gethostname(), now, now, sha))
+    p = _git_raw(repo, "commit-tree", tree, "-p", sha, "-m", msg) if tree else None
+    rel = p.stdout.strip() if p is not None and p.returncode == 0 else ""
+    if not rel:
+        return False
+    p = _git_raw(repo, "push", "-q", "--force-with-lease=%s:%s" % (LOCK_REF, sha), "origin", "%s:%s" % (rel, LOCK_REF))
+    if p.returncode != 0:
+        return False
+    print(T("lock_released", {"what": LOCK_REF}))
+    return True
+
+
+def with_github_lock(repo, prof, branches, fn, base=None):
+    """fn 前上鎖、之後一定撤(推成、推紅、拒推、例外、SystemExit 都撤)。不是 aib 自己的倉 ⇒ 不上鎖直接跑。
+    10-12(審查):上鎖時等過別台 ⇒ 對方多半推了 ⇒ 主線動了;給了 base 就重看,動了就撤鎖停下(請疊新主線再推),
+      不跑一整輪推前檢查之後才在 push() 被 remote_moved 擋下。"""
     if prof.gate_mode != "aib":
         return fn()
     sha = github_lock_take(repo, branches)
     try:
+        if base and LOCK_WAITED["waited"] and _git_raw(repo, "fetch", "-q", "origin", "main").returncode == 0:
+            now_main = _git_raw(repo, "rev-parse", "origin/main").stdout.strip()
+            if now_main and now_main != base:
+                raise SystemExit(T("lock_waited_main_moved", {"what": "%s != %s" % (now_main[:8], base[:8])}))
         return fn()
     finally:
         github_lock_drop(repo, sha)
@@ -993,7 +1496,7 @@ def _cmd_package_body(a):
         def mark():
             git(a.repo, "commit", "-q", "--allow-empty", "-m",
                 "ship: emergency pushes verified by this package's pre-push check\n\n%s%s" % (VERIFIED_TRAILER, " ".join(pending)))
-    got = with_github_lock(a.repo, a.prof, branches, lambda: gate_then_push(
+    got = with_github_lock(a.repo, a.prof, branches, base=base, fn=lambda: gate_then_push(
         a.repo, branches, base, a.prof, gate_base=gate_base, before_push=mark if pending else None,
         fail_fast=getattr(a, "fail_fast", False))) or {}
     print(T("package_done", {"n": len(shas)}))
@@ -1001,7 +1504,12 @@ def _cmd_package_body(a):
     print_ledger_brief(a.repo)                  # 10-06 the maintainer:總計 → 這一次 → 從第一次到現在
     print_scenarios(a.repo)                     # 10-06 the maintainer:推完告訴客戶什麼情況下推會省最多、要做什麼
     print_stale_hint(a.repo)                    # 10-07:很久沒跑的測試提醒一行(紅藏在沒被挑到裡)
+    if a.prof.gate_mode == "aib":               # 10-12 P9:推成後把艦長室名冊上的另一台(Pro)快轉、重啟艦長室;不能快轉不動
+        got["after_push"] = after_push_lines(a.repo)
     if a.prof.gate_mode == "aib":               # 10-08 the maintainer:回報不能靠記憶 ⇒ 推完自動產生七段回報草稿
+        if got.get("pushed_base") and got["pushed_base"] != base:     # 主線動過、疊上去才推 ⇒ 回報要列推上去的編號
+            shas = [h for h in git(a.repo, "rev-list", "--reverse", "%s..HEAD" % got["pushed_base"]).split()
+                    if VERIFIED_TRAILER not in git(a.repo, "log", "-1", "--format=%B", h)] or shas
         report_draft(a.repo, shas, got)
     return 0
 
@@ -1037,6 +1545,37 @@ def print_tracer_split(repo, shas):
             print("    %s %s" % (sha[:9], title[:60]))
 
 
+def after_push_lines(repo, run=None, config=None):
+    """P9:對每台跑 after_push,印一行並回那幾行(寫進推包回報)。出任何錯都不影響「推成了」。"""
+    try:
+        import after_push
+    except ImportError:          # 10-13:公開版不帶這支(艦長室主機名冊、跨主機重啟)⇒ 沒有這一步,不印錯
+        return []
+    try:
+        res = after_push.run_all(repo, run=run, config=config)
+    except Exception as e:  # noqa: BLE001
+        line = T("after_push_error", {"what": str(e)[-200:]})
+        print(line)
+        return [line]
+    lines = []
+    for r in res:
+        if r["state"] in ("synced", "same"):
+            room = T("after_push_room_" + (r.get("room") or "none")) if r["state"] == "synced" else ""
+            line = T("after_push_" + r["state"], {"name": r["name"], "sha": r["sha"][:9], "what": room})
+        else:
+            why = T("after_push_why_" + r["state"], {"n": r.get("ahead") or "?", "rc": r.get("rc")})
+            line = T("after_push_skip", {"name": r["name"], "what": why})
+        if r.get("via"):                          # 主位址連不上,走 ssh_fallback 成功
+            line += T("after_push_via_fallback", {"host": r["via"]})
+        if r.get("fb_off"):                       # 名冊設了 ssh_fallback 但用不了(主位址是別名 / 格式不對)
+            line += T("after_push_fallback_off_" + r["fb_off"])
+        if r.get("guard") == "3":                 # P8:那台的提交前/合併前槽被別的掛勾佔著,沒裝,要人看
+            line += T("after_push_guard_foreign")
+        print(line)
+        lines.append(line)
+    return lines
+
+
 def report_draft(repo, shas, got):
     """推完一包:用這一輪的統計紀錄產生回報草稿(tools/release/ship_report.py)。失敗只印一行,不影響推包。"""
     try:
@@ -1047,7 +1586,8 @@ def report_draft(repo, shas, got):
             return
         commits = [(sha, git(repo, "log", "-1", "--format=%s", sha).strip()) for sha in shas]
         txt, js, rc = ship_report.write(repo, T, pushgate.dur_text, rows[-1], commits,
-                                        got.get("old_reds") or [], got.get("unverified") or [], history=rows)
+                                        got.get("old_reds") or [], got.get("unverified") or [], history=rows,
+                                        flaky=got.get("flaky_allowed") or [], notes=got.get("after_push") or [])
         print(T("rp_saved", {"path": str(txt or js), "rc": "0" if txt else str(rc)}))
     except Exception as e:  # noqa: BLE001
         print(T("rp_failed", {"reason": "%s: %s" % (type(e).__name__, e)}))
@@ -1099,7 +1639,7 @@ def cmd_release(a):
     bad = check_commit(a.repo, head, a.prof)
     if bad:
         raise SystemExit(T("release_shape_bad", {"reason": bad}))
-    gate_then_push(a.repo, a.branch, base, a.prof, fail_fast=getattr(a, "fail_fast", False))
+    gate_then_push(a.repo, a.branch, base, a.prof, fail_fast=getattr(a, "fail_fast", False), catch_up=False)
     print(T("released", {"version": a.version, "n": len(items)}))
     return 0
 
@@ -1138,7 +1678,7 @@ def cmd_release_generic(a):
     if bad:
         raise SystemExit(T("release_shape_bad", {"reason": bad}))
     gate_then_push(a.repo, a.branch + list(getattr(a.prof, "also_branches", [])), base, a.prof,
-                   fail_fast=getattr(a, "fail_fast", False))
+                   fail_fast=getattr(a, "fail_fast", False), catch_up=False)
     print(T("released", {"version": a.version, "n": len(items)}))
     return 0
 
@@ -1802,6 +2342,9 @@ def main(argv=None):
     c = sub.add_parser("check")
     c.add_argument("--since")
     c.add_argument("--rev", default="HEAD")
+    c.add_argument("--gate", action="store_true",
+                   help="before handing a package over: run the same selection the pre-push check runs, without pushing")
+    c.add_argument("--base", help="--gate: the main to measure against (default: fetch the GitHub remote — github, else origin — and use its main)")
     pk = sub.add_parser("package")
     pk.add_argument("--branch", action="append", default=[])
     pk.add_argument("--emergency", action="store_true", help="human at a terminal only: skip the pre-push check once")

@@ -326,11 +326,36 @@ def _clip(s, w):
     return out
 
 
+def departed_count(data):
+    """(離艙席數, 舊席位檔數)。10-13 清查補強 1:以前直接數列數(68),同一個五碼留在好幾艙的重複算、
+    已經在別艙續開還活著的五碼也算 ⇒ 跟專案清查對不上。席數 = 不同五碼、而且不在 live_codes(沒五碼的列各算一席);
+    列數照舊是「可以收的席位檔」。"""
+    rows = (data or {}).get("rows") or []
+    live = set((data or {}).get("live_codes") or [])
+    codes, nocode = set(), 0
+    for r in rows:
+        c = r.get("code")
+        if not c:
+            nocode += 1
+        elif c not in live:
+            codes.add(c)
+    return len(codes) + nocode, len(rows)
+
+
+def _count_text(data):
+    seats, files = departed_count(data)
+    if files == seats:
+        return "離艙未收 %d 席" % seats
+    if seats == 0:
+        return "舊席位檔 %d 個(那幾席已在別艙續開)" % files
+    return "離艙未收 %d 席(%d 檔)" % (seats, files)     # 審查:右欄窄,長說明會被截掉;說明寫在第 3 頁內文
+
+
 def summary_line(data):
     rows = (data or {}).get("rows") or []
     if not rows:
         return ""
-    return "離艙未收 %d 席 → 看第 3 頁" % len(rows)
+    return _count_text(data) + " → 看第 3 頁"
 
 
 SIDE = 2          # 左右各留兩格,與分頁列「  1.AI」、1.AI 頁的通知區同一條邊(the maintainer 09-30「右左邊要留白、對齊」)
@@ -411,12 +436,12 @@ def render(width, row_offset, data, stale=False, height=0):
             _wrap_parts(["艙已經關掉、但席位紀錄或窗格還留著的,會列在這裡"]
                        + (["每一席右邊有 <X> 可以收掉"] if close_enabled() else []), inner, ind), []
     closable = [r for r in rows if r["kind"] in ("record", "dead_pane")]
-    head = ind + "離艙未收 %d 席" % len(rows)
+    head = ind + _count_text(data)
     can_close = close_enabled()
     if closable and can_close:
         with_button(head, "<全收>", {"action": CLOSE_ALL_ACTION, "count": len(closable)})
     else:
-        lines.append(head)
+        lines.append(_clip(head, inner))
     if not can_close:
         lines.extend(_wrap_parts(["這一版先只顯示,不能在這裡收掉", "下一版開放"], inner, ind))
     lines.append("")                  # 說明行上方空一行(the maintainer 09-30)

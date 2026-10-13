@@ -43,6 +43,7 @@ CAPS = {
                     reply_from="回覆來自：Cursor 助手寫 outbox（預設）；或 EZ2_BRIDGE_LOCAL_REPLY=1 本地 CLI。"),
     "grokbot": BotCaps("grokbot", "mailbox", bind_env="AIB_GROKBOT_AGENT_ID", threads_module="grokbot_threads",
                        bind_what="agent", wake="webhook", rename_in_app=True, unbound_is_fault=True,
+                       bind_in_seat=True,          # 10-11 a seat(P1):席上 /bind、/unbind,不用重開
                        read_marks_stale_s=300.0,   # 門鈴幾秒就該叫醒;5 分鐘還沒收 = 門鈴或 bot 有事
                        reply_from="回覆來自：Cursor 助手寫 outbox（預設）；或 EZ2_BRIDGE_LOCAL_REPLY=1 本地 CLI。"),
     "claudebot": BotCaps("claudebot", "mailbox", bind_env="AIB_CLAUDEBOT_SESSION_ID", threads_module="claudebot_threads",
@@ -50,10 +51,12 @@ CAPS = {
                          reply_from="回覆來自:綁定的 Claude 對話(Claude 的 hook 收信、回信)。"),
     "musebot": BotCaps("musebot", "mailbox", bind_env="AIB_MUSEBOT_CONVERSATION_ID", threads_module="musebot_threads",
                        bind_what="Muse 對話", wake="schedule", mail_without_bind=True, outbox_drainer=True,
+                       bind_in_seat=True,          # 10-11 a seat(P1)
                        read_marks_stale_s=900.0,   # 排程約 3 分鐘一次;15 分鐘(約 5 輪)還沒收 = 排程停了
                        reply_from="回覆來自:綁定的 Muse 對話(Meta Muse 經檔案信箱收信、回信;排程喚醒)。"),
     "codexbot": BotCaps("codexbot", "rpc", bind_env="AIB_CODEXBOT_THREAD_ID", threads_module="codexbot_threads",
                         bind_what="Codex thread", wake="rpc", unbound_is_fault=True,
+                        bind_in_seat=True,          # 10-11 a seat(P1b):席上 /bind 換綁(記下選擇、同一席自動重開;不能只 /unbind)
                         reply_from="回覆來自:Codex 桌面 App Server(直接開 turn,沒有信箱)。"),
 }
 

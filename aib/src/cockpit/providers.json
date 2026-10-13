@@ -80,18 +80,6 @@
       "menu_group": "api_key"
     },
     {
-      "id": "kiosapi",
-      "letter": "KIO",
-      "status": "supported",
-      "default_requested_model": "deepseek-v4.1-flash-free",
-      "identity": "assigned-session-id",
-      "identity_note": "API-key 終端席（OpenAI-compat；非 OAuth CLI）。aib 開席前產 uuid，經 provider-launch --session-id 餵入 kiosapi_cli；席位檔那個值是權威值。金鑰讀 KIOSAPI_API_KEY（api-key-kiosapi.env / env）；可選 KIOSAPI_BASE_URL（預設 https://kiosapi.com）。缺 key 具名失敗，不走 ED.4。 已自「另開 AI」選單隱藏（2026-09-20）；CLI `aib kiosapi …` 仍可用。",
-      "auth": "api_key",
-      "in_new_ai_menu": false,
-      "menu_label": "KiosAPI",
-      "menu_group": "api_key"
-    },
-    {
       "id": "nvidia",
       "letter": "NVD",
       "status": "supported",
@@ -100,30 +88,6 @@
       "identity_note": "API-key 終端席（NVIDIA NIM OpenAI-compat；非 OAuth CLI）。aib 開席前產 uuid，經 provider-launch --session-id 餵入 nvidia_cli；席位檔那個值是權威值。金鑰讀 NVIDIA_API_KEY（api-key-nvidia.env / env）；可選 NVIDIA_BASE_URL（預設 https://integrate.api.nvidia.com）。缺 key 具名失敗，不走 ED.4。",
       "auth": "api_key",
       "menu_label": "NVIDIA",
-      "menu_group": "api_key"
-    },
-    {
-      "id": "teamo",
-      "letter": "TCX",
-      "status": "retired",
-      "default_requested_model": "deepseek-v4-flash",
-      "identity": "assigned-session-id",
-      "identity_note": "2026-09-30 the maintainer 令從 AIB 拿掉(退役):TeamoRouter 每次呼叫都回 HTTP 400(舊版程式同樣 400,不是 AIB 改動造成)。aib 不再能開;程式檔與金鑰留著,恢復=status 改回 supported 並加回 aib 的 PROVIDERS。 舊說明:API-key 終端席 **Teamo-Codex**（TeamoRouter OpenAI-compat；非 OAuth CLI）。顯示名 Teamo-Codex；引擎 id 仍為 teamo。aib 開席前產 uuid，經 provider-launch --session-id 餵入 teamo_cli；金鑰 TEAMO_API_KEY（api-key-teamo.env）。OpenAI base 預設 https://api.teamorouter.com/v1。Claude 原生根網址見 SOP。缺 key 具名失敗，不走 ED.4。 已自「另開 AI」選單隱藏（2026-09-20）；CLI `aib teamo …` 仍可用。",
-      "auth": "api_key",
-      "in_new_ai_menu": false,
-      "menu_label": "Teamo-Codex",
-      "menu_group": "api_key"
-    },
-    {
-      "id": "teamoclaude",
-      "letter": "TCL",
-      "status": "retired",
-      "default_requested_model": "claude-sonnet-4-6",
-      "identity": "assigned-session-id",
-      "identity_note": "2026-09-30 the maintainer 令從 AIB 拿掉(退役):TeamoRouter 每次呼叫都回 HTTP 400(舊版程式同樣 400,不是 AIB 改動造成)。aib 不再能開;程式檔與金鑰留著,恢復=status 改回 supported 並加回 aib 的 PROVIDERS。 舊說明:API-key 終端席 **Teamo-Claude**（TeamoRouter Anthropic native；非 OAuth CLI）。顯示名 Teamo-Claude；引擎 id=teamoclaude。aib 開席前產 uuid，經 provider-launch --session-id 餵入 teamoclaude_cli；金鑰 TEAMO_API_KEY／TEAMCLAUDE_API_KEY（api-key-teamo.env 或 api-key-teamoclaude.env）。Anthropic base 預設 https://api.teamorouter.com。缺 key 具名失敗，不走 ED.4。 已自「另開 AI」選單隱藏（2026-09-20）；CLI `aib teamoclaude …` 仍可用。",
-      "auth": "api_key",
-      "in_new_ai_menu": false,
-      "menu_label": "Teamo-Claude",
       "menu_group": "api_key"
     },
     {
@@ -244,9 +208,7 @@
     ],
     "aib.PROVIDERS": [
       "gemini",
-      "sand",
-      "teamo",
-      "teamoclaude"
+      "sand"
     ]
   }
 }

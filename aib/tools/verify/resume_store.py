@@ -12,7 +12,63 @@ import subprocess
 from pathlib import Path
 
 
+def _git_out(repo, *args):
+    try:
+        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=8,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (p.stdout or "").strip() if p.returncode == 0 else None
+
+
+def _norm_url(u):
+    """同一個遠端倉的各種寫法化成 https://<主機>/<擁有者>/<倉>(小寫);本機路徑照舊。
+    認得:git@host:o/r、host:o/r(scp 寫法沒帶使用者)、ssh://[user@]host[:port]/o/r、https://…、git://…。"""
+    x = u.strip().rstrip("/")
+    x = x[:-4] if x.endswith(".git") else x
+    if "://" in x:
+        x = x.split("://", 1)[1]
+        head, _, rest = x.partition("/")
+        head = head.rsplit("@", 1)[-1].split(":", 1)[0]       # 去使用者、去埠號(:22、:2222 都一樣)
+        x = head + "/" + rest
+    elif ":" in x and not x.startswith(("/", ".", "~")) and "/" not in x.split(":", 1)[0]:
+        host, _, path = x.partition(":")                       # scp 寫法:[user@]host:owner/repo
+        x = host.rsplit("@", 1)[-1] + "/" + path.lstrip("/")
+    else:
+        return x
+    return ("https://" + x).lower()
+
+
+def project_key(repo):
+    """M1(10-13):「這個專案」的身分 = 最舊的根提交 + 遠端網址(正規化)。同一個專案不同 clone(Mini 正本、推包用的
+    ~/wt-ship-*)⇒ 同一個鍵 ⇒ 同一個沿用池。下列一律回 None(退回舊的 git 目錄身分):沒有根提交、沒有任何遠端、
+    淺複製(CI 的「根」是淺複製邊界,每次 fetch 都會變 —— 審查)。遠端多個時優先 github.com 的、其次字母序第一個。
+    只取最舊的一個根:別條歷史併進來不會換身分(審查)。"""
+    if _git_out(repo, "rev-parse", "--is-shallow-repository") == "true":
+        return None
+    roots = _git_out(repo, "log", "--max-parents=0", "--format=%ct %H", "HEAD")
+    urls = _git_out(repo, "config", "--get-regexp", r"^remote\..*\.url$")
+    if not roots or not urls:
+        return None
+    root = sorted((int(t), h) for t, h in (line.split() for line in roots.splitlines() if len(line.split()) == 2))[0][1]
+    norm = sorted({_norm_url(line.split(None, 1)[1]) for line in urls.splitlines() if len(line.split(None, 1)) == 2})
+    if not norm:
+        return None
+    gh = [u for u in norm if u.startswith("https://github.com/")]
+    return "%s|%s" % (root, (gh or norm)[0])
+
+
 def repo_id(repo):
+    """沿用池 / 收據的倉身分。M1(10-13):有 project_key ⇒ 專案身分(各 clone 共用);沒有 ⇒ legacy_repo_id。"""
+    key = project_key(repo)
+    if key:
+        return hashlib.sha256(("project:" + key).encode("utf-8")).hexdigest()[:16]
+    return legacy_repo_id(repo)
+
+
+def legacy_repo_id(repo):
+    """M1 之前的身分:git common dir 的路徑雜湊(同一個 clone 的工作樹共用;不同 clone 各一個)。
+    合池時拿來認舊池、過渡期收舊列。"""
     repo = str(repo)
     common = None
     try:

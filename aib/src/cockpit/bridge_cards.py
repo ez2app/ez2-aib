@@ -41,8 +41,8 @@ BRANDS = {
 }
 BRAND_NAMES = {"claudebot": "Claude", "codexbot": "Codex", "grokbot": "Grok", "musebot": "Muse",
                # API-key 終端席(另開 AI 選單第三段;the maintainer 10-09「這些都要有」):圖示/色號同右欄
-               "deepseek": "DeepSeek", "kiosapi": "KiosAPI", "nvidia": "NVIDIA", "openrouter": "OpenRouter",
-               "typesafe": "TypeSafe", "openrouterjev": "OpenRouter jev", "teamo": "Teamo-Codex", "teamoclaude": "Teamo-Claude"}
+               "deepseek": "DeepSeek", "nvidia": "NVIDIA", "openrouter": "OpenRouter",
+               "typesafe": "TypeSafe", "openrouterjev": "OpenRouter jev"}
 
 
 def _load_engine_table():

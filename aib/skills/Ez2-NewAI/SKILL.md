@@ -2,7 +2,7 @@
 name: Ez2-NewAI
 description: >-
   When the user wants to add a new API-key AI seat to Ez2 AIB (OpenAI-compat
-  or Anthropic native, e.g. OpenRouter / Teamo / self-hosted gateway). Do not
+  or Anthropic native, e.g. OpenRouter / self-hosted gateway). Do not
   use for OAuth subscription CLIs (claude / codex / grok).
 ---
 
@@ -21,7 +21,7 @@ description: >-
 3. **協議**：OpenAI-compat（`/v1/chat/completions`）或 Anthropic native（`/v1/messages`）
 4. **預設 base URL** 與 **預設 model id**（OpenRouter 部分 id 以 `~` 開頭；開席鏈勿讓 shell 展開 `~`）
 5. **環境變數名**：例 `OPENROUTER_API_KEY`（可選 BASE／Referer／Title）
-6. **範本席**：通常抄 `teamo_cli.py`（OpenAI）或 `teamoclaude_cli.py`（Anthropic）
+6. **範本席**：OpenAI-compat 通常抄 `openrouter_cli.py`；Anthropic native 目前沒有現役範本席，照 SOP 改走 `x-api-key` + messages
 
 **禁止**在聊天裡貼／回顯真 API key。只指引寫入 `~/.ez2-aib/secrets/api-key-<id>.env`。
 
@@ -37,7 +37,7 @@ description: >-
    - 設合理 `max_tokens` 預設（避免供應商用超大 max 導致 402 且席內像沒回應）；錯誤打到**席窗 stdout**
 3. **掛載清單**（漏一項席選單就看不到）：
    - `src/cockpit/providers.json`
-   - `src/cockpit/provider-launch.sh`（argv 對齊既有 teamo）
+   - `src/cockpit/provider-launch.sh`（argv 對齊既有 openrouter）
    - `src/cockpit/aib` 的 `PROVIDERS` 與 `AIB_SESSION_ID_PROVIDERS`
    - `composer_dialect`／`render_lib` letter+色／`list_captains`／`pane-right-ai`／`captains-ctl`／`bind_queue`／`routing/table.json`／`title_beat`／`aib_doctor`
 4. **測試**：`tests/test-<id>-cli.py`；把 `<id>_cli.py` 加進 `tests/test-repl-readline-required.py`；更新 launch-direct／routing 白名單若有。

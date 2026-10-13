@@ -40,7 +40,7 @@ STATUS_APPROVED = "approved_pending_ea1"   # 刻意沒有 bound:真綁需 EA.1 �
 STATUS_REJECTED = "rejected"
 STATUSES = (STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED)
 
-PROVIDERS = ("claude", "codex", "gemini", "agy", "copilot", "grok", "deepseek", "kiosapi", "nvidia", "teamo", "teamoclaude", "openrouter", "typesafe", "openrouterjev", "sand", "grokbot", "codexbot", "claudebot", "musebot")
+PROVIDERS = ("claude", "codex", "gemini", "agy", "copilot", "grok", "deepseek", "nvidia", "openrouter", "typesafe", "openrouterjev", "sand", "grokbot", "codexbot", "claudebot", "musebot")
 _ROLE_RE = re.compile(r"^[a-z0-9-]{1,32}$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 # 人類核可者一律 human: 開頭;AI 的 sig 形如 role@hex/Engine,擋在正則之外
