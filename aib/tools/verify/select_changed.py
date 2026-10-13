@@ -485,7 +485,9 @@ def identifier_hits(repo, tests, idents):
 
 
 def changed_from_git(repo, base, head):
-    res = _git(repo, ["diff", "--name-only", base] + ([head] if head else []))
+    # --no-renames(10-11 a seat):改名預設只印新路徑 ⇒ 把 tools/x.py 搬成 docs/x.py,舊路徑的消費者(import 它的測試)
+    #   一支都挑不到,而漏挑的樣子是綠的。拆成「刪舊 + 加新」,兩條路徑都進規則①~⑤。
+    res = _git(repo, ["diff", "--name-only", "--no-renames", base] + ([head] if head else []))
     if res.returncode != 0:
         raise Unmeasurable("git diff rc=%d: %s" % (res.returncode,
                                                    (res.stderr or "").strip()))
@@ -581,7 +583,7 @@ def select(repo, changed, rows=None, use_reverse=True, idents=None):
         add(t, "r0-changed-test", t)
 
     # ── ④ 殼 source 殼往上展開,展開後才餵①②③ ─────────────────────
-    expanded, expand_note = products, ""
+    expanded, expand_note, deleted = products, "", []
     if products:
         try:
             import consumer_scope as cs
@@ -615,7 +617,9 @@ def select(repo, changed, rows=None, use_reverse=True, idents=None):
     #   而是用性質圈:「是不是消費者」交給規則一二三去判 —— 有尺提到它,它就有消費者;
     #   沒有尺提到它,掃了也是零命中。掃描的成本只是幾條 git grep。
     #   PRODUCT_DIR 只剩一個用途:決定誰進規則四的殼展開(那張圖只畫 src|tools|bin)。
-    scanned = sorted(set(expanded) | set(helpers) | set(others))
+    # ★ 10-11 a seat:被刪的產品檔(含改名的舊路徑)不展開(④沒有下游可算),但**照樣餵①②③** ——
+    #   寫著它路徑、import 它的那些尺正是要跑的(它們現在多半會紅)。以前整個丟掉 ⇒ 改名/刪檔一支都挑不到。
+    scanned = sorted(set(expanded) | set(deleted) | set(helpers) | set(others))
 
     # ── ①② ────────────────────────────────────────────────────────────
     if scanned:

@@ -463,8 +463,8 @@ class LocalWorkspace:
                 if not path.is_file():
                     return "測試未執行：找不到指定測試檔。"
                 import seat_test_reuse as _str
-                # 09-29(設計稿 docs/DESIGN-aib-test-entry-shadow-0929.md 第四節):六家 API 席(deepseek、kiosapi、nvidia、
-                #   openrouter、teamo、teamoclaude)都用這個 LocalWorkspace,跑測試一律走 aib test 的入口:先自檢影子續跑、
+                # 09-29(設計稿 docs/DESIGN-aib-test-entry-shadow-0929.md 第四節):API 席(deepseek、nvidia、
+                #   openrouter)都用這個 LocalWorkspace,跑測試一律走 aib test 的入口:先自檢影子續跑、
                 #   能沿用就沿用(不拿租約、不排隊)、實跑一定留紀錄。實跑照舊拿機器租約(a seat 09-29 Q3)。
                 verify_dir = str(Path(__file__).resolve().parents[2] / "tools" / "verify")
                 if verify_dir not in sys.path:

@@ -94,7 +94,10 @@ def load_dict(locale, i18n_dir=None, _keyed=False, _quiet=False):
         raise I18nError("i18n dictionary must be a regular non-symlink file: %s" % path)
     try:
         with open(path, encoding="utf-8") as fh:
-            data = json.load(fh, object_pairs_hook=_reject_duplicate_keys)
+            # 10-12 a seat:不經 json.load / json.loads —— 測試沿用以鍵為單位時(AIB_KEYED_FILES,aib 自己的倉自動偵測到
+            #   i18n/*.json)那兩個會被換成「會記帳的字典」,下面的整份檢查就會被記成整份用到,Translator 的以鍵沿用整個失效。
+            #   JSONDecoder.decode 與 json.load 解出來一模一樣;以鍵的紀錄由本支自己的 i18nload / i18nkey 負責。
+            data = json.JSONDecoder(object_pairs_hook=_reject_duplicate_keys).decode(fh.read())
     except OSError as err:
         raise I18nError("i18n dictionary unreadable: %s (%s)" % (path, err))
     except ValueError as err:
@@ -130,7 +133,7 @@ def prefixed(prefix, locale, i18n_dir=None):
     _keylog("@prefix:" + prefix)
     try:
         with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+            data = json.JSONDecoder().decode(fh.read())     # 同 load_dict:不經會被換掉的 json.loads
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):

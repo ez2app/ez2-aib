@@ -2168,6 +2168,24 @@ def _tmux_wrapper_env(argv, tt, tx):
     return tt, tx, None
 
 
+def tmux_external_reason(fake_tmux, tmux_calls, tmux_seen, written_any):
+    """external:tmux 的細分原因(只用來記;判斷照 own_serverless)。照檢查順序取第一個:
+    fake-mixed(假 tmux 跟真的混用)/ tmux-file-written(測試寫過名叫 tmux 的檔)/ calls-unaccounted(呼叫數對不上)/
+    tmux_socket_problem 的原因(socket 不在自己的暫存、TMUX 有設、-c …)/ server-started(條件都符合,但開了伺服器)。"""
+    if fake_tmux:
+        return "fake-mixed"
+    if any(os.path.basename(str(w)) == "tmux" for w in written_any):
+        return "tmux-file-written"
+    if len(tmux_seen) != tmux_calls:
+        return "calls-unaccounted"
+    for p, _s in tmux_seen:
+        if p:
+            return str(p)
+    if any(s for _p, s in tmux_seen):
+        return "server-started"
+    return "unknown"
+
+
 def tmux_socket_problem(inner, cwd, tt, tx, exe, repo, written_any, uid=None):
     """一次 tmux 呼叫不是「測試自己的、確定沒伺服器的」⇒ 回原因;是 ⇒ None(伺服器有沒有開由呼叫端看整份追蹤)。"""
     uid = os.getuid() if uid is None else uid
@@ -2198,6 +2216,43 @@ def tmux_socket_problem(inner, cwd, tt, tx, exe, repo, written_any, uid=None):
     if not any(str(w).startswith(root) for w in written_any):
         return "tmux-socket-not-own-tmp"
     return None
+
+
+_LOCAL_LISTEN_HOSTS = ("127.0.0.1", "::1", "0.0.0.0", "::", "localhost", "")
+
+
+def network_targets(events):
+    """10-12 P17(只多記資料,不影響沿用判斷):這支測試連了哪些網路目標,每個分三種 ——
+    local-own   本機,而且這支測試(任何一個行程)在聽那個位址(listen 事件;同一行程連自己的早就不算網路、不會出現)
+    local-other 本機,但不是這支測試在聽(別的程式、使用者的服務)
+    remote      不是本機
+    unknown     判不出目的地(舊格式事件)
+    回 [{"dest", "kind"}](同一個目標只列一次)。紀錄池存成 net 欄,`aib ship why` / P17 表照它分。"""
+    listens = {str(e.get("addr")) for e in events if e.get("ch") == "listen" and e.get("addr")}
+    ports = set()
+    for a in listens:
+        if not a.startswith("unix:"):
+            host, _, port = a.rpartition(":")
+            if host.strip("[]") in _LOCAL_LISTEN_HOSTS:
+                ports.add(port)
+    out, seen = [], set()
+    for e in events:
+        if e.get("ch") != "external" or e.get("why") != "network":
+            continue
+        dest = str(e.get("dest") or "?")
+        if dest in seen:
+            continue
+        seen.add(dest)
+        if "local" not in e:
+            kind = "unknown"          # 舊格式 / 判不出目的地:照實寫不知道,不猜
+        elif not e.get("local"):
+            kind = "remote"
+        elif dest in listens or (not dest.startswith("unix:") and dest.rpartition(":")[2] in ports):
+            kind = "local-own"
+        else:
+            kind = "local-other"
+        out.append({"dest": dest, "kind": kind})
+    return out
 
 
 def inputs_from_events(events, repo=None):
@@ -2639,6 +2694,10 @@ def inputs_from_events(events, repo=None):
         if fake_tmux != tmux_calls and not own_serverless:
             external = True
             why.append("external:tmux")
+            # 10-12(a seat 同意,DESIGN-tmux-own-server-1012 甲):只多記資料 —— 是哪一條不符合「自己的、沒開伺服器的 tmux」。
+            #   external:tmux 那筆照舊(既有測試與統計看它);這一筆用 external: 開頭,統計(rerun_reasons / measurability_report)
+            #   自動歸到「外部」、不會被當成量不到的原因(審查第二輪);逐支分類讀紀錄池的 why。不影響沿用判斷。
+            why.append("external:tmux:" + tmux_external_reason(fake_tmux, tmux_calls, tmux_seen, written_any))
     # ★ ef56b 第 6 條:os._exit / 信號 / 致命錯誤不跑 atexit ⇒ 沒有 selfwrite 也沒有 exit 紀錄;
     #   每個 inherit 的行程都要有對應的 exit 紀錄,缺 ⇒ unmeasured(完成證據不能用 rc=0 或看過 inherit 代替)。
     for _p, _n in bash_direct.items():

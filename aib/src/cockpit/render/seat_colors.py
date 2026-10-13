@@ -44,10 +44,7 @@ _KNOWN_SEAT_RGB: dict[str, RGB] = {
     "copilot": (0, 100, 180),       # deep azure
     "grok": (120, 80, 180),         # violet (bg; CLI 前景可無色)
     "deepseek": (60, 80, 220),      # royal blue
-    "kiosapi": (40, 140, 160),      # teal-cyan
     "nvidia": (50, 100, 160),       # steel blue (NOT nvidia green)
-    "teamo": (30, 140, 200),        # sky
-    "teamoclaude": (120, 70, 210),  # violet
     "openrouter": (40, 130, 150),   # teal
     "typesafe": (50, 140, 160),
     "openrouterjev": (45, 125, 155),

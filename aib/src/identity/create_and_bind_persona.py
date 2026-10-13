@@ -46,11 +46,21 @@ from pathlib import Path
 LIBRARY_ROUTE_KEY = "product.expert.agent_library"
 
 AIB_HOME = Path(os.environ.get("EZ2_AIB_HOME", os.path.expanduser("~/.ez2-aib")))
-DEFAULT_VAULT = Path(os.environ.get("EZ2_VAULT_DIR", os.path.expanduser("~/Ez2/Vault")))
-if not DEFAULT_VAULT.is_dir():
-    alt_vault = Path(os.path.expanduser("~/Desktop/Obsidian/Ez2"))
-    if alt_vault.is_dir():
-        DEFAULT_VAULT = alt_vault
+# 10-12 新用戶全面檢查:vault 預設跟全套件同一條規則(route_register.default_vault):
+#   EZ2_VAULT_DIR > EZ2_VAULT_ROOT > ~/Desktop/Obsidian/Ez2(有才算)> ~/.ez2-aib/vault。以前的 ~/Ez2/Vault 沒有人有。
+def _aib_default_vault():
+    return Path(os.environ.get("EZ2_AIB_HOME") or os.path.expanduser("~/.ez2-aib")) / "vault"
+
+
+def _default_vault():   # 與 route_register.default_vault 同一條規則(這裡不在載入時 import 它)
+    for var in ("EZ2_VAULT_DIR", "EZ2_VAULT_ROOT"):
+        if os.environ.get(var):
+            return Path(os.path.expanduser(os.environ[var]))
+    legacy = Path(os.path.expanduser("~/Desktop/Obsidian/Ez2"))
+    return legacy if legacy.is_dir() else _aib_default_vault()
+
+
+DEFAULT_VAULT = _default_vault()
 
 REPO_ROOT = Path(os.environ.get("EZ2_AIB_REPO", str(Path(__file__).resolve().parents[2])))
 
@@ -81,15 +91,27 @@ def T(key, params=None):
 
 # Equivalent to ez2-ai tools/persona-card.js appendix F. Validate in memory,
 # before writing either the vault card or any AIB projection.
+# 金鑰三條抽到 src/identity/secret_patterns.py 共用(紀錄倉也掃,10-13)。測試副本樹常只放本檔一支 ⇒ 載不到共用表時
+# 用同樣三條的內建版(刀與複本照舊能跑);這裡照舊只用原本三條,不因紀錄倉多掃而變嚴。
+try:
+    _here = str(Path(__file__).resolve().parent)
+    if _here not in sys.path:
+        sys.path.append(_here)
+    import secret_patterns  # noqa: E402
+    _SECRET_BASE = secret_patterns.BASE
+except (ImportError, AttributeError):
+    _SECRET_BASE = (
+        ("secret-apikey", r"sk-[A-Za-z0-9]{20,}"),
+        ("secret-aws", r"AKIA[0-9A-Z]{16}"),
+        ("secret-pem", r"-----BEGIN"),
+    )
+
 LINT_RULES = (
     ("越權-忽略指令", r"忽略(先前|以上|你的)(指令|規則)"),
     ("越權-身份覆蓋", r"你現在是(?!.*角色)"),
     ("越權-隱匿", r"不要(告訴|回報)"),
     ("越權-繞過閘門", r"(繞過|停用)[^\n]{0,10}(閘門|hook|紅線)"),
-    ("secret-apikey", r"sk-[A-Za-z0-9]{20,}"),
-    ("secret-aws", r"AKIA[0-9A-Z]{16}"),
-    ("secret-pem", r"-----BEGIN"),
-)
+) + _SECRET_BASE
 
 
 def lint_card(text):
@@ -650,12 +672,21 @@ def main():
     vault_dir = Path(args.vault).expanduser().resolve()
     # 角色庫位置從路由契約現查(the maintainer 08-27 第二鐵律;09-26 R9 資料夾要改 uid,改的是契約,這裡不動)
     sys.path.insert(0, str(REPO_ROOT / "src" / "persona_route"))   # 其他零件一律從 REPO_ROOT(EZ2_AIB_REPO)找
-    from route_register import resolve_route_folder
+    from route_register import resolve_route_folder, default_contract_spec, BUNDLED_CONTRACT
     lib_rel = resolve_route_folder(LIBRARY_ROUTE_KEY)
     if not lib_rel:
         log("錯誤: 路由契約裡查不到 %s(角色庫在哪),不猜" % LIBRARY_ROUTE_KEY, prefix="[x]")
+        # 10-12(a seat Pro):自訂 vault 有內容、看不出版面 ⇒ 說清楚兩條路,不只說「不猜」
+        log("  知識庫 %s 已經有東西,aib 看不出角色庫該放哪。二選一:\n"
+            "  1) 在知識庫裡建一個 10-Roles 資料夾(mkdir \"%s/10-Roles\"),aib 就用預設版面\n"
+            "  2) 把 EZ2_ROUTE_REGISTRY 指到你自己的路由契約檔" % (vault_dir, vault_dir), prefix="  ")
         sys.exit(2)
     role_lib_dir = vault_dir / lib_rel
+    # aib 自己的預設 vault(新機器)⇒ 角色庫資料夾第一次用時建起來;別人的 vault 照舊不動、不猜。
+    # 10-12(a seat:Pro 的 ~/Ez2/Vault):用的是套件預設契約 = route_register 判過這個 vault 安全(空的 / 有索引 / 已有 10-Roles)⇒ 也建
+    if not role_lib_dir.is_dir() and (str(vault_dir) == os.path.realpath(_aib_default_vault())
+                                      or default_contract_spec() == BUNDLED_CONTRACT):
+        role_lib_dir.mkdir(parents=True, exist_ok=True)
 
     if not role_lib_dir.is_dir():
         log(f"錯誤: 找不到 Vault 角色庫路徑: {role_lib_dir}", prefix="[x]")
@@ -763,6 +794,10 @@ def main():
             log(str(exc), prefix="[x]")
             return 5
 
+    # 10-12 新用戶:狀態樹還沒建(沒跑過 aib init)⇒ 先建,不讓卡已寫進 vault 卻在掃描那步卡住
+    if not (AIB_HOME / "identity").is_dir():
+        subprocess.run([sys.executable, str(REPO_ROOT / "src" / "bootstrap" / "aib_init.py")],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
     # 3. 重新掃描卡庫投影 (card_registry.py scan)
     log("2. 執行 card_registry scan 同步卡片索引...")
     scan_script = REPO_ROOT / "src" / "memory" / "card_registry.py"
@@ -850,6 +885,7 @@ def main():
         "--actor", actor,
         "--rebind-persona"
     ] + (["--brain", brain] if brain else [])
+    fit_warn = None
     if args.dry_run:
         log(f"   -> [DRY-RUN] 模擬綁定席位 {seat_id} 至新卡 {target_card_uid} (大腦: {brain or '不綁'})")
     else:
@@ -858,6 +894,15 @@ def main():
             log(f"錯誤: bind_one.py 失敗 (rc={rc}):\n{err}", prefix="[x]")
             sys.exit(rc)
         log("   -> 席位綁定完成")
+        # 10-12 Bot 開發第 16 件:bind_one 收據裡的 provider_warning ⇒ 只警告,照綁、不改卡
+        try:
+            fit_warn = (json.loads(out) or {}).get("provider_warning")
+        except (ValueError, AttributeError):
+            fit_warn = None
+        if fit_warn:
+            log(T("aib.newrole.provider_mismatch", {
+                "name": fit_warn.get("display_name") or name, "uid": fit_warn.get("card_uid") or target_card_uid,
+                "card_kind": fit_warn.get("card_kind"), "seat_provider": fit_warn.get("seat_provider")}), prefix="[!]")
 
     # 5. 寫入席位記憶 context.md
     # 席位記憶的資料夾用**席碼**(session_uuid 尾五碼):人格包告訴那一席的就是 memory/<席碼>/context.md,
@@ -920,6 +965,8 @@ def main():
         "memory_file": str(mem_file),
         "header": hdr_text
     }
+    if fit_warn:
+        result["provider_warning"] = fit_warn
     if args.deliver:
         log("6. 把人格包寄給那一席(aib dm)...")
         if args.new_seat and args.dry_run:

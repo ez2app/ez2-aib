@@ -67,6 +67,32 @@ class Disconnected(BaseException):
 
 
 RECONNECT_RC = 3                     # 開席器看到就重連(provider-run-relogin.sh);與 codex 席的 BACK_RC=3 不同路、不相撞
+# 10-11 a seat(Bot 開發 P1b):席上 /bind 選了別條 Codex 對話 ⇒ 記下選擇(bridge/<席>/bind-override.json,與 sand_bridge 同一份格式)、
+#   照正常關席把這一條的桌面名稱改回未綁定、以 REBIND_RC 結束;開席器馬上重開同一席(同 session uuid、席碼不變),
+#   橋起來時讀到那份選擇就接新的那條。不在行程裡換:thread id 掛在鎖、dm socket、訂閱、人格記號、收據等 30 幾處。
+REBIND_RC = 4
+# 10-11 a seat(Bot 開發 P6,待修清單第 24 件的 CodexBot 那一半):推版後長跑的 CodexBot 橋還跑舊碼。sand_bridge(另三家)
+#   閒著時會 exec 自己;這支握著 app-server 連線、訂閱、鎖,exec 不乾淨 ⇒ 改成「盯程式檔(與 idle_reaper 同一套指紋),
+#   碼變了、席閒夠久 ⇒ 以 RELOAD_RC 結束,開席器馬上重開同一席」。不把桌面名稱改回未綁定(重開幾秒就接回同一條)。
+#   EZ2_AIB_BRIDGE_REEXEC=0 關掉(同 sand_bridge)。
+RELOAD_RC = 5
+RELOAD_CHECK_S = 30.0
+RELOAD_IDLE_S = 600.0          # 最後一次打字 / 回合結束後至少閒這麼久才重開
+
+
+class Reload(BaseException):
+    """看守執行緒用 SIGUSR2 把主執行緒從 input() 叫出來。繼承 BaseException:送字那條路的 except Exception 不能吃掉它。"""
+
+
+def reload_enabled() -> bool:
+    return (os.environ.get("EZ2_AIB_BRIDGE_REEXEC") or "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def reload_due(fp0: str, fp: str, idle_s: float, prompt_up: bool, turn_active: bool) -> bool:
+    """純判斷(測試用):指紋兩次都量得到、變了;提示符在等字、沒有回合在跑;閒 ≥ RELOAD_IDLE_S。"""
+    return bool(fp0 and fp and fp != fp0 and prompt_up and not turn_active and idle_s >= RELOAD_IDLE_S)
+BIND_LIST_LIMIT = 9
+_BIND_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 try:  # 401 的判準沿用 codex 席換帳流程那一把尺(the maintainer 09-28「太敏感」修過:1401、行號 401 都不算)
     from codex_account_recover import _READ_FAILURE_RE as _AUTH_401_RE  # noqa: E402
@@ -372,6 +398,76 @@ def wait_for_own_closer(lock_file, marker, limit=None, sleep=time.sleep, clock=t
         if clock() - t0 >= limit:
             return False
         sleep(0.2)
+
+
+def _state_base() -> Path:
+    return Path(os.environ.get("EZ2_AIB_STATE_ROOT") or os.environ.get("EZ2_AIB_HOME") or Path.home() / ".ez2-aib")
+
+
+def apply_bind_override(base: Path, session_id: str, launch_thread: str):
+    """開席時:這一席上次在席上 /bind 選過別條 ⇒ 回 (那一條, 一句話);沒有、或開席命令已換成別條 ⇒ (launch_thread, "")。
+    選的那條現在被別席占著 ⇒ 不用它(用了橋會起不來、席就死了),退回開席命令那條並說一聲。"""
+    if not session_id or not launch_thread:
+        return launch_thread, ""
+    from sand_bridge import load_bind_override
+    has, chosen = load_bind_override(Path(base) / "bridge" / session_id, launch_thread)
+    if not has or not chosen or chosen == launch_thread:
+        return launch_thread, ""
+    try:
+        uuid.UUID(chosen)
+    except (ValueError, TypeError, AttributeError):
+        return launch_thread, ""
+    import codexbot_threads as _cbt
+    held = _cbt.held_by(chosen, base)
+    if held:
+        return launch_thread, ("codexbot: 席上 /bind 選的 Codex 對話 %s 正被 %s 使用,這次先接開席命令那條 %s"
+                               % (chosen[:8], "、".join(held), launch_thread[:8]))
+    return chosen, "codexbot: 沿用席上 /bind 選的 Codex 對話 %s(開席命令帶的是 %s)" % (chosen, launch_thread)
+
+
+def codex_bind_rows(rpc, endpoint: str, current: str, base: Path, limit: int = BIND_LIST_LIMIT) -> list:
+    """席上 /bind 的清單:Codex 桌面的對話(新的在前),不列現在綁的這一條;held 用右鍵選單同一把尺(codexbot_threads.held_by)。"""
+    import codexbot_threads as _cbt
+    rows = []
+    for r in _cbt.list_threads(endpoint, limit + 1, rpc=rpc):
+        if not r.get("id") or r["id"] == current:
+            continue
+        rows.append(dict(r, held="、".join(_cbt.held_by(r["id"], base))))
+    return rows[:limit]
+
+
+def render_codex_bind_list(rows: list, current: str) -> list:
+    if not rows:
+        return ["codexbot: Codex 桌面沒有別的對話可換;先在 ChatGPT 桌面開一條新對話,再打 /bind"]
+    out = ["codexbot: 現在綁 %s;能換的 Codex 對話(打 /bind <編號>,或 /bind <完整 UUID>):" % current[:8]]
+    for i, r in enumerate(rows, 1):
+        when = time.strftime("%m-%d %H:%M", time.localtime(r.get("updated") or 0))
+        name = _BIND_CTRL_RE.sub("", str(r.get("name") or ""))[:50]
+        held = "  [正被 %s 使用,不能選]" % r["held"] if r.get("held") else ""
+        out.append("  %d. %s  (%s · %s)%s" % (i, name or "(沒名字)", when, r["id"][:8], held))
+    out.append("  換綁會先把現在這條的桌面名稱改回未綁定,再重開這一席接新的那條(席碼不變,幾秒)")
+    return out
+
+
+def resolve_codex_bind_arg(arg: str, rows: list, current: str):
+    """/bind 後面那段 ⇒ (thread UUID, 錯誤句)。"""
+    arg = arg.strip().lower()
+    if arg.isdigit():
+        n = int(arg)
+        if not rows:
+            return "", "先打 /bind 看清單,再打 /bind <編號>"
+        if not 1 <= n <= len(rows):
+            return "", "編號 %d 不在清單裡(1–%d)" % (n, len(rows))
+        if rows[n - 1].get("held"):
+            return "", "第 %d 條正被 %s 使用,不能綁" % (n, rows[n - 1]["held"])
+        return rows[n - 1]["id"], ""
+    try:
+        want = str(uuid.UUID(arg))
+    except (ValueError, TypeError, AttributeError):
+        return "", "看不懂「%s」:/bind 列清單、/bind <編號>、/bind <完整 UUID>" % arg[:40]
+    if want == str(current).lower():
+        return "", "這一席本來就綁這一條"
+    return want, ""
 
 
 def validate_target(thread_id, endpoint):
@@ -1611,6 +1707,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.silence_timeout < 0:
         ap.error("--silence-timeout must be 0 or greater")
+    launch_thread = args.thread_id      # 開席命令帶的那條;席上 /bind 的選擇以它為鍵記下(與 sand_bridge 同)
+    rebind_to = [None]
+    if not args.check and args.session_id and args.thread_id:
+        args.thread_id, _bind_note = apply_bind_override(_state_base(), args.session_id, args.thread_id)
+        if _bind_note:
+            print(_bind_note, file=sys.stderr, flush=True)
     rpc, lock_file, root, dm_server = None, None, None, None
     closer = None   # 收尾小幫手:橋突然死時由它把桌面名稱改回未綁定
     if not args.check and threading.current_thread() is threading.main_thread():
@@ -1623,6 +1725,14 @@ def main(argv=None):
         def _on_usr1(signum, frame):
             raise Disconnected("與本機 Codex server 斷線")
         signal.signal(signal.SIGUSR1, _on_usr1)
+
+        def _on_usr2(signum, frame):
+            # P6:只在提示符等字時才丟(看守送訊號前判過一次,這裡再判一次:中間有人按了 Enter 就不丟,下一輪再說)
+            # review r1:只在主執行緒真的卡在 input() 裡才丟 —— 貼上多行時 input() 已回、還在吸後面幾行(prompt_up 仍 True),
+            #   這時丟會把已讀到的那則(例如一封貼進來的 dm)整則丟掉
+            if reload_armed[0] and in_input[0] and not ux.active:
+                raise Reload()
+        signal.signal(signal.SIGUSR2, _on_usr2)
     # 10-07 a seat:記下本行程 pid —— 以前沒有,行程死了 status.json 仍停在 connected,右欄與 aib bot reap 都判不了
     #   (真機 10-07:一隻 codexbot 卡 connected 8 小時以上)。
     state = {"schema": "aib-codexbot/v1", "provider": "codexbot",
@@ -1638,6 +1748,10 @@ def main(argv=None):
                 atomic_json(root / "status.json", state)
 
     reconnecting = [False]
+    reload_armed = [False]       # P6:看守判定該重開了才 True(訊號處理器只認這個)
+    in_input = [False]           # 主執行緒此刻在 input() 裡(read_message 第一行)
+    reloading = [False]
+    last_input_at = [time.monotonic()]
 
     def health_bad(exc):
         """任何一步失敗 ⇒ status.json health=degraded + 人話。state 維持 connected(連線確實在)。
@@ -1865,6 +1979,43 @@ def main(argv=None):
         model_dm_enabled = os.environ.get(MODEL_DM_ENV, "1") != "0"
         header_sent = not header_needed(base, args.thread_id)   # 每條對話只送一次(記號在 codexbot-bindings/)
         held_dms = []   # 10-07:沒叫醒的 dm(dm_should_wake),下一次說話時一起送
+        bind_rows = []   # 席上 /bind 上一次列出的清單(/bind <編號> 照它挑)
+
+        def reload_watch():
+            try:
+                import idle_reaper as _ir
+            except Exception:  # noqa: BLE001 —— 看守是附加的
+                return
+            fp0 = _ir.reexec_fingerprint()
+            while not rpc.closed.wait(RELOAD_CHECK_S):
+                if not reload_enabled():
+                    continue
+                fp = _ir.reexec_fingerprint()
+                if not fp0:
+                    fp0 = fp
+                    continue
+                busy_until = max(last_input_at[0], ux.completed_at or 0.0, ux.last_activity_at or 0.0) \
+                    if ux.clock is time.monotonic else last_input_at[0]
+                if reload_due(fp0, fp, time.monotonic() - busy_until, ux.prompt_up, ux.active):
+                    if not reload_armed[0]:
+                        try:
+                            _ir.reexec_log(os.path.abspath(__file__), fp0, fp)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    reload_armed[0] = True
+                    # review r1:處理器當下不在 input() 裡就不丟(例如剛好按了 Enter);不 return,下一輪再送,不然這個行程永遠不重開
+                    os.kill(os.getpid(), signal.SIGUSR2)
+
+        if threading.current_thread() is threading.main_thread():
+            threading.Thread(target=reload_watch, name="codexbot-reload-watch", daemon=True).start()
+
+        def guarded_input(prompt):
+            _inp = globals().get("input", input)   # 與 read_message 同一種查法(測試換 builtins.input 也吃得到)
+            in_input[0] = True
+            try:
+                return _inp(prompt)
+            finally:
+                in_input[0] = False
         persona_sent = _bridge_persona is None   # 基因+人格包:每條對話 × 每一席一次(記號在 codexbot-bindings/<對話>.<席碼>/)
         my_code = (args.session_id or "")[-5:]
         try:
@@ -1874,12 +2025,13 @@ def main(argv=None):
         while not rpc.closed.is_set():
             ux.prompt_up = True
             try:
-                raw = read_message(PROMPT)
+                raw = read_message(PROMPT, _input=guarded_input)
             except EOFError:
                 break
             finally:
                 ux.prompt_up = False
             ux.last_input = raw.split("\n", 1)[0]    # notice() 認 readline 殘留用(只有第一行經過 readline)
+            last_input_at[0] = time.monotonic()
             line = raw.strip()
             if line and not getattr(read_message, "prebuffered", False):
                 rewrite_echo(PROMPT, raw, prefix=echo_prefix_for(raw, human_label))
@@ -1907,6 +2059,38 @@ def main(argv=None):
                 mode_box[0] = mode = "writer"; save(mode=mode)
                 print("codexbot: 已接回寫入權,writer 模式。", flush=True)
                 continue
+            if line == "/unbind":
+                print("codexbot: CodexBot 席一定要綁一條 Codex 對話,不能只解除;要換別條打 /bind", flush=True)
+                continue
+            if line == "/bind" or line.startswith("/bind "):
+                arg = line[len("/bind"):].strip()
+                if not arg:
+                    try:
+                        bind_rows = codex_bind_rows(rpc, args.endpoint, args.thread_id, base)
+                    except Exception as exc:  # noqa: BLE001
+                        print("codexbot: 清單讀不到(%s);可以直接打 /bind <完整 UUID>" % str(exc)[:120], flush=True)
+                        continue
+                    for ln in render_codex_bind_list(bind_rows, args.thread_id):
+                        print(ln, flush=True)
+                    continue
+                want, err = resolve_codex_bind_arg(arg, bind_rows, args.thread_id)
+                if not want:
+                    print("codexbot: " + err, flush=True)
+                    continue
+                import codexbot_threads as _cbt2
+                _held = _cbt2.held_by(want, base)     # 先擋:重開後才發現被占,橋起不來、席就死了
+                if _held:
+                    print("codexbot: 綁不上:這條正被 %s 使用" % "、".join(_held), flush=True)
+                    continue
+                if _cbt2.thread_exists(args.endpoint, want, rpc=rpc) is False:
+                    print("codexbot: 綁不上:Codex 桌面找不到 %s" % want[:8], flush=True)
+                    continue
+                from sand_bridge import save_bind_override
+                save_bind_override(root, launch_thread, want)
+                rebind_to[0] = want
+                print("codexbot: 換綁到 Codex 對話 %s:先把現在這條的桌面名稱改回未綁定,再重開這一席接新的那條(席碼不變)…"
+                      % want, flush=True)
+                break
             if not line:
                 continue
             if is_system_notice(line):
@@ -2079,7 +2263,15 @@ def main(argv=None):
                         mode_box[0] = mode = "queue"; supervisor.holding = False; save(mode=mode)
                         ux.notice("codexbot: 已放手讓桌面可接回,改 queue 模式;問題排除後 /attach 接回寫入權")
             atomic_json(path, message)
+        if rebind_to[0]:
+            save(state="rebinding", rebind_to=rebind_to[0])
+            return REBIND_RC
         return 0
+    except Reload:
+        reloading[0] = True
+        save(state="reloading")
+        print("codexbot: 程式已更新、席閒著 ⇒ 重開同一席載新碼(綁定不變,幾秒)", file=sys.stderr, flush=True)
+        return RELOAD_RC
     except Disconnected as exc:
         reconnecting[0] = True
         save(state="disconnected", health="down", last_error_kind="disconnected", last_error=HUMAN_ERRORS["disconnected"],
@@ -2102,7 +2294,7 @@ def main(argv=None):
         except NameError:
             pass
         # the maintainer 09-25:關席取消舊碼 ⇒ 桌面對話名稱改成「原名 ( 未綁定AIB席位 )」。要在關連線之前做;失敗不擋關閉。
-        if rpc and root and not args.check and os.environ.get(RENAME_ENV, "1") != "0" \
+        if rpc and root and not args.check and os.environ.get(RENAME_ENV, "1") != "0" and not reloading[0] \
                 and not rpc.closed.is_set():
             try:
                 th = rpc.call("thread/read", {"threadId": args.thread_id, "includeTurns": False}, timeout=10)["thread"]
@@ -2126,7 +2318,7 @@ def main(argv=None):
             dm_server.stop()
         if root and state.get("state") not in ("failed", "disconnected"):
             save(state="stopped")
-        if closer is not None and reconnecting[0]:
+        if closer is not None and (reconnecting[0] or reloading[0]):
             # 重連路:開席器幾秒後重開同一席,桌面名稱不改回未綁定(不然每次重連名稱閃一下「未綁定」)
             try:
                 closer.done()

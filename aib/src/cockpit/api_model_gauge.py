@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""API 席(deepseek / nvidia / kiosapi / openrouter / teamo / teamoclaude)的模型寫端。
+"""API 席(deepseek / nvidia / openrouter)的模型寫端。
 
 ★ 為什麼要有這一支(10-01 the maintainer:nvidia 席 `/model` 換模型後右欄不變):
   API 席的現用模型**只活在 REPL 行程的一個區域變數裡**(`/model <id>` 只改那個變數),

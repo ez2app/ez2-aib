@@ -58,8 +58,12 @@ def _dm_socket_of(rec, bindings=None):
     if not isinstance(rec, dict):
         return None
     prov = rec.get("provider")
-    if prov == "codexbot" and rec.get("desktop_thread_id"):
-        return os.path.join(_bindings_base(bindings), "codexbot-bindings", "%s.dm.sock" % rec["desktop_thread_id"])
+    if prov == "codexbot":
+        # 10-12 第 15 件第 2 步:socket 用橋現在綁的那條命名(席上 /bind 後席位檔還是開席那條)
+        import bot_binding
+        base = _bindings_base(bindings)
+        tid = bot_binding.bound_id("codexbot", rec.get("session_uuid"), rec, base=base)[0]
+        return os.path.join(base, "codexbot-bindings", "%s.dm.sock" % tid) if tid else None
     if prov in ("grokbot", "claudebot", "musebot") and rec.get("session_uuid"):
         return os.path.join(_bindings_base(bindings), "%s-bindings" % prov, "%s.dm.sock" % rec["session_uuid"])
     return None

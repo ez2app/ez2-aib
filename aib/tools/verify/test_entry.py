@@ -408,6 +408,29 @@ def load_journal(path, tree, fresh):
     return {t for t, rc in last.items() if rc == 0}, None
 
 
+JOURNAL_MAX_BYTES = 16 * 1024 * 1024     # 10-13:日誌多記重跑理由 ⇒ 加上限輪替(以前從不輪替,已 4.7MB)
+
+
+def _rotate_journal(f, path):
+    """持鎖中:超過上限 ⇒ 只留後半段(從一行開頭切),原檔就地改寫(不換 inode,等鎖的別人寫進來的列不會掉)。
+    --resume 只看同一棵樹最後幾筆,砍舊的只會讓更早那批不能接續 —— 安全的一側(多跑)。"""
+    try:
+        size = os.fstat(f.fileno()).st_size
+        if size <= JOURNAL_MAX_BYTES:
+            return
+        with open(path, "rb") as r:
+            r.seek(size - JOURNAL_MAX_BYTES // 2)
+            tail = r.read()
+        cut = tail.find(b"\n")
+        tail = tail[cut + 1:] if cut >= 0 else b""
+        with open(path, "r+b") as w:
+            w.seek(0)
+            w.write(tail)
+            w.truncate()
+    except OSError:
+        pass
+
+
 def append_journal(path, row):
     import fcntl
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -415,6 +438,7 @@ def append_journal(path, row):
         fcntl.flock(f, fcntl.LOCK_EX)
         f.write(jsonl_safe.dumps(row) + "\n")
         f.flush()
+        _rotate_journal(f, path)
         fcntl.flock(f, fcntl.LOCK_UN)
 
 
@@ -958,6 +982,205 @@ def _holder_is_ancestor(cur):
     return False
 
 
+# ── 10-12 記憶體與大批排隊(a seat 派,the maintainer 15:0x「依照你的建議開始」)────────────────────────────
+#   起因:10-11 19:58 Mini(16G)JetsamEvent —— 19 個 Python 9.7G(各席 aib test + 推包三份同時跑)、13 個 Claude 4.2G,
+#   系統砍了 8 個服務。A:起跑前看記憶體,不夠就等(有上限,等滿照跑並註明);B:大批(超過 N 支)拿同一把機器租約,
+#   跟推包排隊不同時跑;小批不拿。兩件都只在最外層的 aib test 做(分份的子行程、拿著租約的殼底下都不做)。
+MEM_MIN_MB = 3072          # 可用 + 可回收低於這個就等(AIB_TEST_MEM_MIN_MB 可改;0 = 不看)
+MEM_POLL_S = 30
+MEM_WAIT_MAX_S = 600       # 大批最多等這麼久,之後照跑(AIB_TEST_MEM_WAIT_MAX_S 可改)
+MEM_WAIT_SMALL_S = 30      # 小批(≤ BIG_BATCH)最多等這麼久:AI 席的 Bash 工具 2~10 分鐘就逾時,等久了只看到逾時、沒有紅綠(a seat 審)
+BIG_BATCH = 30             # 超過這麼多支算大批(AIB_TEST_BIG_BATCH 可改;0 = 都不排隊)
+LEASE_POLL_S = 30
+LEASE_WAIT_MAX_S = 3600    # 大批排隊最多等這麼久(推包一輪約 50 分鐘),之後不拿租約照跑並註明(AIB_TEST_LEASE_WAIT_MAX_S 可改)
+
+
+def _env_int(name, default):
+    v = os.environ.get(name, "").strip()
+    return int(v) if v.isdigit() else default
+
+
+def free_mb():
+    """可用 + 可回收的記憶體(MiB);量不到 ⇒ None(不等、不假裝)。
+    macOS:vm_stat 的 free + inactive + speculative + purgeable 頁 × 頁大小(跟「記憶體壓力」算可用的那幾類同);
+    Linux:/proc/meminfo 的 MemAvailable。"""
+    try:
+        txt = Path("/proc/meminfo").read_text(encoding="utf-8")
+        m = re.search(r"^MemAvailable:\s+(\d+) kB", txt, re.M)
+        if m:
+            return int(m.group(1)) // 1024
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"page size of (\d+) bytes", out)
+    if not m:
+        return None
+    page = int(m.group(1))
+    pages = 0
+    for key in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
+        k = re.search(r"^%s:\s+(\d+)\." % key, out, re.M)
+        if k:
+            pages += int(k.group(1))
+    return pages * page // (1024 * 1024)
+
+
+def wait_for_memory(say, free=free_mb, sleep=time.sleep, clock=time.monotonic, big=True):
+    """記憶體不夠就等,每 MEM_POLL_S 秒看一次(小批每 10 秒);回 {"waited": 秒, "gave_up": bool, "free": 最後一次 MiB 或 None}。
+    big=False(小批)最多等 MEM_WAIT_SMALL_S 秒就照跑。"""
+    need = _env_int("AIB_TEST_MEM_MIN_MB", MEM_MIN_MB)
+    cap = _env_int("AIB_TEST_MEM_WAIT_MAX_S", MEM_WAIT_MAX_S) if big else MEM_WAIT_SMALL_S
+    poll = MEM_POLL_S if big else 10
+    t0 = clock()
+    got = free()
+    while need and got is not None and got < need:
+        waited = int(clock() - t0)
+        if waited >= cap:
+            say(T("mem_gave_up", {"waited": waited, "count": got, "limit": need}))
+            return {"waited": waited, "gave_up": True, "free": got}
+        say(T("mem_wait", {"count": got, "limit": need, "n": poll, "waited": waited}))
+        sleep(poll)
+        got = free()
+    return {"waited": int(clock() - t0), "gave_up": False, "free": got}
+
+
+def _lease_tool(*args, env=None):
+    """跟 lease_note 一樣走子行程(不 import host_lease,見那裡的 24d 說明)。回 (rc, stdout)。"""
+    tool = ENTRY_ROOT / "tools" / "governance" / "host_lease.py"
+    if not tool.is_file():
+        return None, ""
+    try:
+        p = subprocess.run([sys.executable, str(tool), *args], env=(dict(env) if env is not None else None),
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None, ""
+    return p.returncode, p.stdout
+
+
+def _lease_now(env=None, with_ship=False):
+    """(state, lease);with_ship ⇒ 多回一個「推包在等」記號(活著才有)。"""
+    rc, out = _lease_tool("status", "--json", env=env)
+    try:
+        d = json.loads(out)
+    except (TypeError, ValueError):
+        return (None, None, None) if with_ship else (None, None)
+    if with_ship:
+        return d.get("state"), d.get("lease"), d.get("ship_waiting")
+    return d.get("state"), d.get("lease")
+
+
+LEASE_TTL_FALLBACK_S = 3 * 3600
+RC_EXCLUSIVE = 5    # 沒跑:別人在獨佔量耗時(rc 4 已經是「全部跳過 = 沒驗」,不能共用 —— 審查 L6)
+
+
+def lease_ttl(repo, names):
+    """大批租約的到期:上次紀錄的秒數加總 × 1.5 + 10 分鐘(10-13 a seat 准)。紀錄缺一半以上 ⇒ 退回 3 小時。
+    ★ 活著的持有者本來就不會被接管(host_lease.is_expired),TTL 只影響「用到幾點」顯示,和持有者死掉後多久可接。"""
+    try:
+        base = baselines(runner._pool_file(repo), names)
+    except Exception:
+        base = {}
+    known = [base[t] for t in names if t in base]
+    if not names or len(known) * 2 < len(names):
+        return LEASE_TTL_FALLBACK_S
+    est = sum(known) + 10.0 * (len(names) - len(known))
+    return int(min(LEASE_TTL_FALLBACK_S, max(15 * 60, est * 1.5 + 600)))
+
+
+def exclusive_block(cur):
+    """別人拿著、標了獨佔(在量耗時)⇒ 這把租約;否則 None。拿著租約的殼底下(祖先)不算別人。"""
+    if not cur or not cur.get("exclusive"):
+        return None
+    return cur if _holder_is_ancestor(cur) is False else None    # 審查 L6:量不到(ps 失敗)⇒ 放行,不誤擋推包底下的測試
+
+
+def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, env=None, force=False, exclusive=False,
+                    names=None):
+    """大批(> BIG_BATCH 支)⇒ 拿機器租約,被別人拿著就排隊(每 LEASE_POLL_S 秒試一次,沒有上限:推包一輪約 50 分鐘,
+    就是要等它)。回 {"run_id": 要放的租約 id 或 None, "waited": 秒, "why": big|small|inherited|unavailable}。
+    租約已在呼叫自己的殼手上(推包、ship check --gate)⇒ 沿用,不重拿也不放。工具讀不到 ⇒ 不拿、照跑、說一聲。"""
+    big = _env_int("AIB_TEST_BIG_BATCH", BIG_BATCH)
+    if not force and (not big or n_tests <= big):
+        return {"run_id": None, "waited": 0, "why": "small"}
+    state, cur, ship_wait = _lease_now(env, with_ship=True)
+    if state == "held" and cur and _holder_is_ancestor(cur) is True:
+        return {"run_id": None, "waited": 0, "why": "inherited"}
+    run_id = "aib-test-%d-%d" % (os.getpid(), int(time.time()))
+    owner = "aib test" + ((" @" + os.environ["AIB_SEAT_CODE"]) if os.environ.get("AIB_SEAT_CODE") else "")
+    what = "aib test %d %s" % (n_tests, Path(repo).name)
+    t0 = clock()
+    cap = _env_int("AIB_TEST_LEASE_WAIT_MAX_S", LEASE_WAIT_MAX_S)
+    ttl = lease_ttl(repo, names or [])
+    first, queued, said = True, False, False
+
+    def leave(why):
+        if queued:
+            _lease_tool("queue", "remove", "--run-id", run_id, env=env)
+        return {"run_id": None, "waited": int(clock() - t0), "why": why}
+
+    while True:
+        # 排隊上限(a seat 審):不拿租約照跑,結果註明。第一輪一定先試(上限設 0 也會在機器空時拿到 —— 審查第三輪)
+        if not first and clock() - t0 >= cap:
+            if state == "held" and exclusive_block(cur) is not None:   # 審查 M2:等滿了對方還在獨佔量耗時 ⇒ 不並跑
+                say(T("lease_exclusive_blocked", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"),
+                                                  "at": cur.get("expiry_at", "?")}))
+                return leave("exclusive_held")
+            say(T("lease_queue_gave_up", {"waited": int(clock() - t0)}))
+            return leave("gave_up")
+        first = False
+        # 先看再拿:被拿著就不去 acquire(每次被拒都會在租約紀錄寫一筆,排一輪推包會寫上百筆 —— 審查)
+        if state != "held" and not ship_wait:
+            args = ["acquire", "--owner", owner, "--what", what, "--run-id", run_id, "--ttl", str(ttl), "--pid", str(os.getpid())]
+            rc, _out = _lease_tool(*(args + (["--exclusive"] if exclusive else [])), env=env)
+            if rc == 0:
+                waited = int(clock() - t0)
+                if waited:
+                    say(T("lease_queue_done", {"waited": waited}))
+                return {"run_id": run_id, "waited": waited, "why": "big"}
+            if rc != 4:
+                say(T("lease_queue_unavailable", {"rc": rc}))
+                return leave("unavailable")
+            state, cur, ship_wait = _lease_now(env, with_ship=True)
+            if state != "held":           # 剛好被放掉又被搶 / 排隊名單有人在前面 / 讀不到:下一輪再看
+                state, behind = "held", (_out or "").strip()
+                if behind:                # 機器空著(或租約過期)但前面有人排:照 host_lease 那句講,不印過期的持有者(審查 L5)
+                    say(behind); said = True
+        # 10-13:要等 ⇒ 登記排隊名單(登記到拿到的秒數記進 ledger;機器空時只准隊頭拿)。每輪都再登記一次 = 續期,
+        #   位置不變(審查 L4:ps 量不到起始時刻時登記退回只看到期,一次登記 30 分鐘後會悄悄掉出名單)
+        qrc, _o = _lease_tool("queue", "add", "--owner", owner, "--what", what, "--run-id", run_id,
+                              "--pid", str(os.getpid()), env=env)
+        queued = queued or qrc == 0
+        if said:                              # 上面已經講過排在誰後面
+            said = False
+        elif ship_wait and state != "held":     # 機器空著但推包在等:讓它先(推包優先,a seat 10-12)
+            say(T("lease_queue_ship_first", {"what": ship_wait.get("what") or "ship.py", "waited": int(clock() - t0),
+                                             "n": LEASE_POLL_S}))
+        else:
+            cur = cur or {}
+            say(T("lease_queue_wait", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"),
+                                       "waited": int(clock() - t0), "n": LEASE_POLL_S}))
+        sleep(LEASE_POLL_S)
+        state, cur, ship_wait = _lease_now(env, with_ship=True)
+        if state is None:
+            say(T("lease_queue_unavailable", {"rc": "status"}))
+            return leave("unavailable")
+
+
+def _ci_or_fixture_home():
+    if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+        return True
+    home = os.path.realpath(os.path.expanduser("~"))
+    tmps = {os.path.realpath(p) for p in (runner.TMP_ROOT, tempfile.gettempdir(), "/tmp")}
+    return any(home == t or home.startswith(t + os.sep) for t in tmps)
+
+
+def release_batch_lease(run_id, env=None):
+    if run_id:
+        _lease_tool("release", "--run-id", run_id, env=env)
+
+
 JOBS_MAX = 4
 
 
@@ -1098,7 +1321,9 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                     _live_done(live, results[-1])
                 if journal is not None:
                     append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
-                                             "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                                             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                             "verdict": "fallback", "why": str(gate.get("stage") or "?"),
+                                             "detail": str(gate.get("reason") or "")[:200]})
             reds = [r for r in results if r["rc"] != 0 and not r.get("unverified")]
             unv = [r for r in results if r.get("unverified")]
             return {"state": "fallback", "gate": gate, "tests": results, "ran": len(results) - len(unv), "reused": 0,
@@ -1143,7 +1368,8 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                 _mark_all_skipped(results[-1])
                 if journal is not None:
                     append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
-                                             "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                                             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                             "verdict": "reuse", "why": why})
                 continue
             gk = runner.go_package_key(name)
             if gk is not None and gk in go_done:
@@ -1156,7 +1382,8 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                     live("same_package", {"test": name, "name": first["name"]})
                 if journal is not None:
                     append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
-                                             "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                                             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                             "verdict": "same-package", "why": why, "detail": str(detail or "")[:200]})
                 continue
             b = base.get(name)
             limit = slow_threshold(b)
@@ -1182,7 +1409,8 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                 _live_done(live, results[-1])
             if journal is not None:
                 append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
-                                         "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                                         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                         "verdict": "must-run", "why": why, "detail": str(detail or "")[:200]})
             ran_names.append(name)
             if gk is not None:
                 go_done[gk] = results[-1]
@@ -1337,6 +1565,8 @@ def main(argv=None):
     ap.add_argument("--jobs", type=int, default=None)          # 10-08:同時跑幾份(--all 預設 min(4, 核心數);1 = 一支一支跑)
     ap.add_argument("--shard-out", default=None, help=argparse.SUPPRESS)   # 分份的子行程:結果寫成 JSON 到這個檔
     ap.add_argument("--overhead", action="store_true")   # 10-08:量追蹤讓每支慢多少(每支跑兩次)
+    ap.add_argument("--exclusive", action="store_true")  # 10-13:要量耗時 ⇒ 不管幾支都拿租約並標獨佔(小批也不准並跑)
+    ap.add_argument("--wait", action="store_true")       # 10-13:小批遇到別人的獨佔租約 ⇒ 排隊等,不是直接停
     a = ap.parse_args(argv)
     if a.estimate:
         return _estimate(a.repo or os.getcwd(), a.json)
@@ -1400,11 +1630,53 @@ def main(argv=None):
         sys.stderr.write(T("live_" + kind, params) + "\n")
         sys.stderr.flush()
 
-    if a.shard_out:      # 分份的子行程:進度照常即時印(stderr),結果交給主行程合併印(一份總結、一筆統計)
-        res = run_tests(repo, names, strict=a.strict, fresh=a.fresh, timeout=a.timeout, live=live, resume=a.resume)
-        res["tmp_leaks"] = list(_TMP_LEAKS)   # 10-09:交回主行程,總表才印得出「哪支留了東西」(以前分份跑這行永遠不見)
-        Path(a.shard_out).write_text(json.dumps(res, ensure_ascii=False, default=str), encoding="utf-8")
-        return res["rc"]
+    if a.shard_out:      # 分份的子行程:記憶體與租約由主行程管過了
+        return _run_shard(repo, names, a, live)
+
+    def say(line):
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+
+    # 測試裡面又叫 aib test(AIB_TEST_TMPDIR 是外層 aib test 給每支測試的):外層已經管過,不等也不排隊,免得測試逾時
+    nested = bool(os.environ.get("AIB_TEST_TMPDIR"))
+    state, cur = (None, None) if nested else _lease_now()
+    inherited = state == "held" and bool(cur) and _holder_is_ancestor(cur) is True
+    # 先等記憶體、再排隊:拿著租約等記憶體會連推包一起擋住(審查)。
+    #   不等的:測試裡面(nested)、推包 / 交件檢查的殼底下(機器是它的)、CI(runner 每支測試前自己會等)、
+    #   HOME 在暫存區(多半是測試治具直接跑的 aib test,AIB_TEST_TMPDIR 不在時的退路)
+    skip_mem = nested or inherited or _ci_or_fixture_home()
+    big = len(names) > _env_int("AIB_TEST_BIG_BATCH", BIG_BATCH)
+    mem = {"waited": 0, "gave_up": False, "free": None} if skip_mem else wait_for_memory(say, big=big)
+    if nested:
+        lease = {"run_id": None, "waited": 0, "why": "nested"}
+    elif inherited:
+        lease = {"run_id": None, "waited": 0, "why": "inherited"}
+    else:
+        excl = None if (big or a.exclusive) else exclusive_block(cur if state == "held" else None)
+        if excl is not None and not a.wait:
+            # 10-13:別人在量耗時(標了獨佔)⇒ 小批不並跑、不默默等(AI 的 Bash 2~10 分鐘就逾時);講持有者、到幾點、怎麼排
+            say(T("lease_exclusive_blocked", {"name": excl.get("owner", "?"), "what": excl.get("what", "?"),
+                                              "at": excl.get("expiry_at", "?")}))
+            return RC_EXCLUSIVE
+        lease = big_batch_lease(len(names), repo, say, force=bool(a.exclusive or excl is not None),
+                                exclusive=bool(a.exclusive), names=names)
+        if lease["why"] == "exclusive_held":
+            return RC_EXCLUSIVE
+    try:
+        return _main_run(repo, names, a, live, started, lease, mem)
+    finally:
+        release_batch_lease(lease["run_id"])
+
+
+def _run_shard(repo, names, a, live):
+    """分份的子行程:進度照常即時印(stderr),結果交給主行程合併印(一份總結、一筆統計)。"""
+    res = run_tests(repo, names, strict=a.strict, fresh=a.fresh, timeout=a.timeout, live=live, resume=a.resume)
+    res["tmp_leaks"] = list(_TMP_LEAKS)   # 10-09:交回主行程,總表才印得出「哪支留了東西」(以前分份跑這行永遠不見)
+    Path(a.shard_out).write_text(json.dumps(res, ensure_ascii=False, default=str), encoding="utf-8")
+    return res["rc"]
+
+
+def _main_run(repo, names, a, live, started, lease, mem):
     jobs = a.jobs if a.jobs is not None else _default_jobs(a, names)
     if jobs > 1 and len(names) > 1:
         res = run_sharded(repo, names, jobs, a)
@@ -1413,6 +1685,7 @@ def main(argv=None):
                         live=None if a.json else live, resume=a.resume)
     if a.json:
         print(json.dumps({k: v for k, v in res.items() if k != "tests"} | {
+            "mem_wait": mem, "lease_wait": {k: lease[k] for k in ("waited", "why")}} | {
             "tests": [{k: r.get(k) for k in ("name", "rc", "reused", "elapsed_s", "baseline_s", "slow")}
                       for r in res["tests"]],
             "unverified": [{"name": r["name"], "needs": r.get("needs")} for r in res["tests"] if r.get("unverified")],
@@ -1422,9 +1695,17 @@ def main(argv=None):
         return res["rc"]
     print(res["line1"])
     if len(names) > 1:
-        note = lease_note()
+        note = lease_note() if lease["why"] != "big" else T("lease_batch_mine", {"n": len(names)})
         if note:
             print(note)
+    if lease["why"] == "gave_up":
+        print(T("lease_queue_gave_up_note", {"waited": lease["waited"]}))
+    elif lease["waited"]:
+        print(T("lease_queue_note", {"waited": lease["waited"]}))
+    if mem["gave_up"]:       # 等滿還是不夠、照跑了:結果可能被別的程式擠到,要寫在結果裡(跟沒驗的一樣顯眼)
+        print(T("mem_gave_up_note", {"waited": mem["waited"], "count": mem["free"], "limit": _env_int("AIB_TEST_MEM_MIN_MB", MEM_MIN_MB)}))
+    elif mem["waited"]:
+        print(T("mem_waited_note", {"waited": mem["waited"]}))
     if a.strict or a.fresh:
         print(T("no_reuse_this_run"))
     elif _no_reuse_env():

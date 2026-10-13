@@ -62,6 +62,8 @@ def _update(args):
 def main():
     """pip / pipx 裝好之後的 `aib` 指令進到這裡(pyproject.toml 的 project.scripts)。"""
     os.environ.setdefault("EZ2_AIB_LOCALE", _locale())
+    # 10-12 新用戶全面檢查:Python 編譯快取不寫進安裝資料夾(看起來像被改過、也會擋 aib update);放 ~/.cache/ez2-aib
+    os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(os.path.expanduser("~"), ".cache", "ez2-aib", "pycache"))
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         sys.stdout.write(__doc__)
         return 2
@@ -81,9 +83,10 @@ def main():
         if script is not None:
             runner = [sys.executable] if str(script).endswith(".py") else ["/bin/bash"]
             os.execv(runner[0], runner + [str(script)] + sys.argv[2:])
-        if plugin is not None:
+        if plugin is not None and not aib_plugins.overrides_builtin(plugin):
             sys.stderr.write("aib: '%s' comes from plugin '%s', which cannot run here (%s)\n" % (sys.argv[1], plugin, why))
             return 3
+        # 10-12:外掛蓋過的是內建指令(例如 `aib room`)⇒ 外掛不能跑就照舊跑內建的
         # 駕駛艙(開源內建,10-08):其他子指令都交給它的啟動器 —— 跟私有倉的 aib 指令同一支
         cockpit = os.path.join(HERE, "src", "cockpit", "aib")
         args = ["--help"] if sys.argv[1] == "--help-cockpit" else sys.argv[1:]

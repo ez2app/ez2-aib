@@ -214,7 +214,7 @@ def seat_record(seat, pid_alive=False, transcript_age_s=None, now_s=None,
         # 無右欄 hint 時的保守自判:API-key 席次位語彙是 🔑 不是 ⚓
         # (the maintainer 2026-09-20);provider 不明仍走 ⚓。
         _prov = (seat.get("provider") or "").strip().lower()
-        if _prov in ("deepseek", "kiosapi", "nvidia", "teamo", "teamoclaude", "openrouter", "typesafe", "openrouterjev"):
+        if _prov in ("deepseek", "nvidia", "openrouter", "typesafe", "openrouterjev"):
             rank = "🔑 "
         else:
             rank = "⚓ "

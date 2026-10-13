@@ -23,7 +23,8 @@ _SKIP_TOP = (".git", "tests")
 
 
 @contextlib.contextmanager
-def knife_copy(root, rel, needle, replacement, tests=()):
+def knife_copy(root, rel, needle, replacement, tests=(), drop=()):
+    """drop:複本裡要拿掉的路徑(相對樹根;例:aib_vendor_variants.VENDOR_PATHS ⇒ 刀落在「沒有 vendor 副本」的那一種)。"""
     root = Path(root)
     real = root / rel
     real_sha = hashlib.sha256(real.read_bytes()).hexdigest()
@@ -42,6 +43,8 @@ def knife_copy(root, rel, needle, replacement, tests=()):
         for f in (root / "tests").glob("*.py"):
             if not f.name.startswith("test-") or f.name in tests:
                 shutil.copy2(f, dst / "tests" / f.name)
+        for d in drop:
+            shutil.rmtree(dst / d, ignore_errors=True)
         layer = dst / rel
         text = layer.read_text(encoding="utf-8")
         if text.count(needle) != 1:

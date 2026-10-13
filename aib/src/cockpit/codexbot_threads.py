@@ -92,9 +92,18 @@ def bindings_dir(base=None) -> Path:
     return Path(root) / "codexbot-bindings"
 
 
-def _seat_json_files(instances_root=None):
-    """席位檔清單。參數或 EZ2_AIB_INSTANCES_ROOT 明寫覆寫優先;沒設才走 HUB 導出,不回退主艙。"""
+def _seat_json_files(instances_root=None, all_cabins=False):
+    """席位檔清單。參數或 EZ2_AIB_INSTANCES_ROOT 明寫覆寫優先;沒設才走 HUB 導出,不回退主艙。
+    all_cabins(10-12 Bot 開發第 5 件,the maintainer 核准):沒明寫時看狀態根底下**所有艙**(含退役席)再加本艙 ——
+    選單「上次綁定」要看得到舊艙綁過的(09-25 搬到 seats_dir_lib 時縮成只看本艙,換艙就全不見)。"""
     root = instances_root or os.environ.get("EZ2_AIB_INSTANCES_ROOT")
+    if not root and all_cabins:
+        files = []
+        for pat in ("*/seats/w*.json", "*/seats/retired/*.json"):
+            files.extend(glob.glob(os.path.join(_seats.state_root()[0], "instances", pat)))
+        here = Path(_seats.seats_dir())
+        files += glob.glob(str(here / "w*.json")) + glob.glob(str(here / "retired" / "*.json"))
+        return list(dict.fromkeys(os.path.realpath(f) for f in files))
     if root:
         root = Path(root)
         files = []
@@ -140,15 +149,35 @@ def gc_bindings(stale: list[Path]) -> tuple[list[Path], list[Path]]:
     return removed, skipped
 
 
+def cabin_of(seat_file) -> str:
+    """席位檔在哪一艙:instances/<艙>/seats/… 的 <艙>;不在 instances 底下(舊主艙)⇒ ""。"""
+    parts = Path(str(seat_file)).parts
+    idx = [i for i, p in enumerate(parts) if p == "instances"]
+    return parts[idx[-1] + 1] if idx and idx[-1] + 2 < len(parts) else ""
+
+
+def current_cabin() -> str:
+    """本艙 id(由 seats_dir_lib 導出的席位目錄反推;認不出 ⇒ "")。"""
+    return cabin_of(Path(_seats.seats_dir()) / "x.json")
+
+
 def last_bound_map(instances_root: str | None = None, provider: str = "codexbot") -> dict[str, int]:
+    """thread_id → 上次綁過它的席的起席 epoch(最大);細節見 last_bound_where。"""
+    return {k: v[0] for k, v in last_bound_where(instances_root, provider).items()}
+
+
+def last_bound_where(instances_root: str | None = None, provider: str = "codexbot") -> dict[str, tuple[int, str]]:
     """thread_id → 上次綁過它的席(含退役席)的起席 epoch(最大)。the maintainer 09-24:選單尾端要帶「上次綁定的月日時分(舊席位)」。
 
     10-09 a seat:以前只讀 desktop_thread_id(只有 codexbot 寫)⇒ claudebot 選單永遠沒有「上次」字樣。
     claudebot 讀席位檔 claude_session_id(開席那一刻),再加橋的 status.json agent_id(席上 /bind 只寫那裡)。
-    grokbot/musebot 席位檔沒有綁定欄,只讀橋的 status.json agent_id(信箱橋三家都寫這一欄;哪幾家問 bot_caps)。"""
-    out: dict[str, int] = {}
+    grokbot/musebot 席位檔沒有綁定欄,只讀橋的 status.json agent_id(信箱橋三家都寫這一欄;哪幾家問 bot_caps)。
+    10-12(Bot 開發第 5 件 + 第 15 件第 2 步,the maintainer 核准):回 thread_id → (epoch, 那一席在哪一艙);沒明寫根 ⇒ 看所有艙;
+    開席那條(席位檔欄)與橋現在綁的(bot_binding.bound_id,codexbot 也算席上 /bind 換的)都算。"""
+    import bot_binding
+    out: dict[str, tuple[int, str]] = {}
     field = SEAT_BIND_FIELD.get(provider, "")
-    for f in _seat_json_files(instances_root):
+    for f in _seat_json_files(instances_root, all_cabins=True):
         try:
             d = json.load(open(f, encoding="utf-8"))
         except (OSError, ValueError):
@@ -157,11 +186,10 @@ def last_bound_map(instances_root: str | None = None, provider: str = "codexbot"
             continue
         ts = int(d.get("started_epoch") or d.get("last_used_epoch") or 0)
         ids = [d.get(field)] if field else []
-        if _binds_in_bridge_status(provider):
-            ids.append(_bridge_agent_id(d.get("session_uuid")))
+        ids.append(bot_binding.bound_id(provider, d.get("session_uuid"), d)[0])
         for tid in ids:
-            if isinstance(tid, str) and tid and ts > out.get(tid, 0):
-                out[tid] = ts
+            if isinstance(tid, str) and tid and ts > out.get(tid, (0, ""))[0]:
+                out[tid] = (ts, cabin_of(f))
     return out
 
 
@@ -171,24 +199,6 @@ try:
     from bot_binding import SEAT_FIELD as SEAT_BIND_FIELD
 except ImportError:  # pragma: no cover —— 單獨拷走這支時的退路
     SEAT_BIND_FIELD = {"codexbot": "desktop_thread_id", "claudebot": "claude_session_id"}
-
-
-def _binds_in_bridge_status(provider: str) -> bool:
-    """信箱橋(sand_bridge)會把這一席綁的 id 寫進 status.json agent_id 的那幾家:claudebot/grokbot/musebot。"""
-    try:
-        import bot_caps
-    except ImportError:
-        return provider == "claudebot"
-    c = bot_caps.caps(provider)
-    return c.bridge == "mailbox" and bool(c.bind_env)
-
-
-def _bridge_agent_id(session_uuid) -> str:
-    """橋的 status.json 裡這一席現在綁的 id;讀不到回 ""。"""
-    import bot_binding   # 10-11 第 15 件第 1 步:讀狀態檔走同一支
-    d = bot_binding.read_status(session_uuid)
-    v = d.get("agent_id") if isinstance(d, dict) else None
-    return v if isinstance(v, str) else ""
 
 
 def bound_map(secrets_file: str | None = None, instances_root: str | None = None) -> dict[str, list[str]]:
@@ -210,7 +220,8 @@ def bound_map(secrets_file: str | None = None, instances_root: str | None = None
             continue
         if d.get("provider") != "codexbot" or d.get("exit_reason"):
             continue
-        tid = d.get("desktop_thread_id")
+        import bot_binding   # 10-12 第 15 件第 2 步(the maintainer 核准):現在綁哪條走同一支(席上 /bind 後席位檔是舊的)
+        tid = bot_binding.bound_id("codexbot", d.get("session_uuid"), d)[0]
         if not tid:
             continue
         pid = d.get("pid")
@@ -305,12 +316,17 @@ def held_by(thread_id: str, base=None, instances_root: str | None = None) -> lis
     return names
 
 
-def tail_label(thread_id: str, bound: dict[str, list[str]], last_bound: dict[str, int], provider: str = "codexbot") -> str:
-    """列尾:「上次 MM-DD HH:MM · <bot>」+ 誰綁著。選單與 aib bot list 同一個字面來源。"""
+def tail_label(thread_id: str, bound: dict[str, list[str]], last_bound: dict[str, int], provider: str = "codexbot",
+               where: dict[str, tuple[int, str]] | None = None, here: str | None = None) -> str:
+    """列尾:「上次 MM-DD HH:MM · <bot>」+ 誰綁著。選單與 aib bot list 同一個字面來源。
+    where/here(10-12 Bot 開發第 5 件):上次綁它的席不在本艙 ⇒ 時間後面加「(舊艙 <艙位碼>)」。"""
     parts = []
     ts = last_bound.get(thread_id)
     if ts:
         parts.append("上次 " + time.strftime("%m-%d %H:%M", time.localtime(ts)))
+        cabin = ((where or {}).get(thread_id) or (0, ""))[1]
+        if cabin and here and cabin != here:   # 認不出本艙(不在任何艙裡跑)⇒ 不標,免得每一條都變舊艙
+            parts.append("(舊艙 %s)" % cabin.rsplit("-", 1)[-1][-4:])
     parts.append("· " + provider)
     b = bound.get(thread_id) or []
     if b:
@@ -318,14 +334,16 @@ def tail_label(thread_id: str, bound: dict[str, list[str]], last_bound: dict[str
     return " ".join(parts)
 
 
-def render(rows: list[dict], bound: dict[str, list[str]], now=None, last_bound: dict[str, int] | None = None, provider: str = "codexbot") -> str:
+def render(rows: list[dict], bound: dict[str, list[str]], now=None, last_bound: dict[str, int] | None = None, provider: str = "codexbot",
+           where: dict[str, tuple[int, str]] | None = None, here: str | None = None) -> str:
     now = time.time() if now is None else now
     last_bound = last_bound if last_bound is not None else {}
     lines = ["%-36s  %-11s  %-44s  %s" % ("thread uuid", "最後更新", "桌面側欄標題", "上次綁定 · bot [誰綁著]")]
     for r in rows:
         when = time.strftime("%m-%d %H:%M", time.localtime(r["updated"])) if r["updated"] else "-"
         name = r["name"][:44]
-        lines.append("%-36s  %-11s  %-44s  %s" % (r["id"], when, name, tail_label(r["id"], bound, last_bound, provider)))
+        lines.append("%-36s  %-11s  %-44s  %s" % (r["id"], when, name,
+                                                   tail_label(r["id"], bound, last_bound, provider, where, here)))
     lines.append("")
     lines.append(BIND_HINTS.get(provider, BIND_HINTS["codexbot"]))
     return "\n".join(lines)

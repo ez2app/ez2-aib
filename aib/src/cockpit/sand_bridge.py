@@ -167,6 +167,7 @@ def ensure_dirs(root: Path) -> None:
 
 
 HEARTBEAT_WRITE_S = 2.0   # status.json 內容沒變時多久寫一次(心跳);bot_ping 認 10 秒內為新鮮
+READY_RECHECK_S = 30.0   # P2(10-11):還沒就緒時多久再查一次(只讀設定檔)
 
 # ── 10-09 the maintainer「每推一包就要手動重開 bot 席」:橋自己盯程式檔(與右欄 idle_reaper 同一套指紋),碼變了、席閒夠久就 exec 自己。
 #    同一條 argv、同一個 pid(flock 在 exec 時釋放、新程式再拿);EZ2_AIB_BRIDGE_REEXEC=0 關掉。留痕同 pane-reexec.log。
@@ -222,15 +223,31 @@ def maybe_reexec(now: float | None = None) -> bool:
     if not should_reexec(now, fp, pane_idle_seconds(), enabled):
         return False
     me = os.path.abspath(__file__)
-    if not os.path.isfile(me):
+    if not os.path.isfile(me) or not os.access(sys.executable, os.X_OK):
+        # review r3:python 本身不在了(brew 升級刪掉舊 Cellar)⇒ exec 必失敗;不先跟收尾小幫手說 done(說了它就走了,之後席死沒人收尾)
         return False
     try:
         _ir.reexec_log(me, _reexec["fp"], fp)
     except Exception:  # noqa: BLE001
         pass
+    _before = _reexec.get("before")
+    if callable(_before):
+        # review r2(10-11 a seat):收尾小幫手的管子在 exec 時會被關掉 ⇒ 它以為席死了,去把 app 名稱 / Claude 標題改回未綁定、
+        #   還搶走那條的鎖(新程式起來搶不到就死)。exec 前先跟它說「我自己收好了」,新程式起來會再生一隻。
+        try:
+            _before()
+        except Exception:  # noqa: BLE001
+            pass
     print("sand-bridge: 程式已更新、席閒著,重跑自己載新碼(綁定不變)", file=sys.stderr, flush=True)
     sys.stdout.flush()
-    os.execv(sys.executable, [sys.executable, me] + sys.argv[1:])
+    try:
+        os.execv(sys.executable, [sys.executable, me] + sys.argv[1:])
+    except OSError as exc:
+        # review r3:exec 還是失敗 ⇒ 認了這份指紋,不要每 REEXEC_CHECK_S 秒再試一次、再印一次;席照舊碼跑下去
+        _reexec["fp"] = fp
+        print(f"sand-bridge: 重跑自己失敗({type(exc).__name__}),照舊碼繼續跑;關席時 app 名稱可能不會改回未綁定",
+              file=sys.stderr, flush=True)
+        return False
     return False
 
 
@@ -544,6 +561,10 @@ ENV_CLAUDE_SESSION = "AIB_CLAUDEBOT_SESSION_ID"
 # MuseBot(docs/MUSEBOT-DESKTOP.md):這一席綁哪一個 Muse 對話(可空)。排程喚醒制——
 #   沒有 webhook,訊息由 Muse 側經檔案信箱拉/回寫。AIB_ 前綴自動過 env 艙門(identity-env.sh)。
 ENV_MUSEBOT_CONVERSATION = "AIB_MUSEBOT_CONVERSATION_ID"
+
+
+OWN_CLOSER_WAIT_S = 50.0   # 開席時選的那條被「自己這一席剛關的收尾小幫手」握著:最多等這麼久(它最多 45 秒)
+LAUNCH_ENV = "AIB_BRIDGE_LAUNCH_BIND"   # "<session>=<開席命令帶的綁定 id>";自我重跑時認開席那條(10-11 review r1)
 
 
 def bound_env(provider_id: str) -> str:
@@ -911,7 +932,7 @@ def _speaker_label(text: str) -> str:
 
 _OK_HEALTH = {"health": "ok", "last_error_kind": None, "last_error": None}
 _UNBOUND_HEALTH = {"health": "degraded", "last_error_kind": "unbound",
-                   "last_error": "沒綁對話:信只進信箱,沒有人收;claudebot 在席上打 /bind,其他右鍵重開這一席並在選單選一條對話"}
+                   "last_error": "沒綁對話:信只進信箱,沒有人收;在席上打 /bind 綁一條(不用重開)"}
 
 
 class _EitherStop:
@@ -1106,6 +1127,74 @@ def resolve_bind_arg(arg: str, rows: list[dict]) -> tuple[str, str]:
     return "", "看不懂「%s」:/bind 列清單、/bind <編號>、/bind <完整 uuid>、/bind new" % arg[:40]
 
 
+# 10-11 a seat(Bot 開發 P1,the maintainer「最少步驟串成 bot」):GrokBot、MuseBot 也能席上 /bind、/unbind,不用關席重開。
+#   ClaudeBot 那一條(上面幾支 + 主迴圈 claudebot 分支)原封不動;另兩家走下面這幾支,差別只問 bot_caps。
+#   已綁的席不准直接 /bind 別條(同 ClaudeBot):先 /unbind 再 /bind,兩行、席不關。
+def valid_bind_id(provider_id: str, value: str) -> bool:
+    """席上 /bind、橋重啟沿用時,這個 id 形狀對不對(形狀錯的值會變成鎖檔名,不能放過)。"""
+    v = (value or "").strip()
+    if provider_id == "claudebot":
+        import claudebot_threads
+        return claudebot_threads.valid_session_id(v)
+    if provider_id == "musebot":
+        import musebot_threads
+        return musebot_threads.valid_conversation_id(v)
+    import grokbot_threads
+    return bool(v and grokbot_threads.AGENT_ID_RE.match(v))
+
+
+def other_bind_candidates(provider_id: str, limit: int = BIND_LIST_LIMIT) -> list[dict]:
+    """GrokBot = app 本機名冊的 agent(新的在前);MuseBot = 綁過的 Muse 對話(Muse 沒有本機名冊,只列得出綁過的)。
+    每列 {id, name, updated, held, wake};held 以鎖為準(同右鍵選單);wake 只有 GrokBot 有意義(這個 agent 接了門鈴沒)。"""
+    out = []
+    if provider_id == "grokbot":
+        import grokbot_threads as _gt
+        for r in _gt.list_agents(limit):
+            url, _key = _gt.read_agent_wake(r["id"], state_root())
+            out.append({"id": r["id"], "name": r.get("name") or "", "updated": r.get("updated") or 0,
+                        "held": "、".join(_gt.held_by(r["id"], state_root())), "wake": bool(url)})
+    elif provider_id == "musebot":
+        import musebot_threads as _mt
+        for conv, mt in _mt.history(state_root())[: max(0, int(limit))]:
+            out.append({"id": conv, "name": "", "updated": int(mt),
+                        "held": "、".join(_mt.held_by(conv, state_root())), "wake": True})
+    return out
+
+
+def render_other_bind_list(provider_id: str, bind_what: str, rows: list[dict]) -> list[str]:
+    if not rows:
+        if provider_id == "grokbot":
+            return ["grokbot: Grok Bot 名冊裡沒有 agent;剛建的要先在 Grok Bot app 點它一下才會出現,再打 /bind"]
+        return [f"{provider_id}: 還沒綁過任何{bind_what};第一次請打 /bind <{bind_what} id>"]
+    out = [f"{provider_id}: 能綁的{bind_what}(打 /bind <編號>,或 /bind <完整 id>):"]
+    for i, r in enumerate(rows, 1):
+        when = time.strftime("%m-%d %H:%M", time.localtime(r.get("updated") or 0))
+        name = OUTBOX_CTRL_RE.sub("", str(r.get("name") or ""))[:50]
+        held = f"  [正被 {r['held']} 使用,不能選]" if r.get("held") else ""
+        bell = "" if r.get("wake") else "  [沒接門鈴]"
+        out.append(f"  {i}. {(name + '  ') if name else ''}({when} · {r['id'][:8]}){bell}{held}")
+    if provider_id == "musebot":
+        out.append("  不在清單裡的(第一次綁):/bind <Muse 對話 id>")
+    return out
+
+
+def resolve_other_bind_arg(provider_id: str, arg: str, rows: list[dict]) -> tuple[str, str]:
+    """/bind 後面那段 ⇒ (id, 錯誤句)。不轉小寫:Grok agent id 與 Muse 對話 id 大小寫照原樣。"""
+    arg = arg.strip()
+    if arg.isdigit():
+        n = int(arg)
+        if not rows:
+            return "", "先打 /bind 看清單,再打 /bind <編號>"
+        if not 1 <= n <= len(rows):
+            return "", f"編號 {n} 不在清單裡(1–{len(rows)})"
+        if rows[n - 1].get("held"):
+            return "", f"第 {n} 條正被 {rows[n - 1]['held']} 使用,不能綁"
+        return rows[n - 1]["id"], ""
+    if valid_bind_id(provider_id, arg):
+        return arg, ""
+    return "", "看不懂「%s」:/bind 列清單、/bind <編號>、/bind <完整 id>" % arg[:40]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="sand-bridge")
     ap.add_argument("--session-id", default="")
@@ -1161,16 +1250,49 @@ def main(argv: list[str] | None = None) -> int:
         print(f"sand-bridge: {bound_env(args.provider_id)} 形狀不對,不開席", file=sys.stderr)
         return 2
     launch_agent = agent      # 開席命令帶的那條;席上 /bind、/unbind 的選擇以它為鍵記下,橋重啟時沿用(10-09)
+    # 10-11 a seat(review r1):grokbot/musebot 席上換綁會改寫 bound_env 那個環境變數(門鈴要跟),而閒時自我重跑(maybe_reexec)
+    #   用 execv 帶著改過的環境 ⇒ 重跑後讀到的「開席那條」變成選的那條,bind-override 的 launch 對不上被刪,之後艙重開就默默綁回舊的。
+    #   ⇒ 開席那條另記在 LAUNCH_ENV(值帶席的 session,別的席繼承到也不認),重跑時以它為準。
+    _launch_mark = (os.environ.get(LAUNCH_ENV) or "").split("=", 1)
+    if len(_launch_mark) == 2 and _launch_mark[0] == session_uuid \
+            and (not _launch_mark[1] or valid_bind_id(args.provider_id, _launch_mark[1])):
+        launch_agent = _launch_mark[1]
+    os.environ[LAUNCH_ENV] = f"{session_uuid}={launch_agent}"
     if cap.bind_in_seat:
         _has, _chosen = load_bind_override(bridge_dir(session_uuid), launch_agent)
+        if _has and _chosen and _chosen != launch_agent and valid_bind_id(args.provider_id, _chosen):
+            # review r1:選的那條現在被別席占著 ⇒ 這次先接開席那條(用了它橋搶不到鎖、席當場死);紀錄留著,下次空了再沿用
+            try:
+                import importlib
+                _held = importlib.import_module(cap.threads_module).held_by(_chosen, state_root())
+            except Exception:  # noqa: BLE001 —— 量不到 ≠ 被占;真被占的話下面搶鎖還會擋
+                _held = []
+            _own = "@" + short_code(session_uuid)
+            if _held and all(h == _own for h in _held):
+                # review r2:只有自己這一席(剛被關掉的那隻的收尾小幫手,改名時握著鎖,最多 bot_closer.GROK_CLOSE_WAIT_S)⇒ 等它放手,
+                #   不等的話下面搶鎖必失敗、席當場死
+                _deadline = time.time() + OWN_CLOSER_WAIT_S
+                while _held and time.time() < _deadline:
+                    time.sleep(0.5)
+                    try:
+                        _held = importlib.import_module(cap.threads_module).held_by(_chosen, state_root())
+                    except Exception:  # noqa: BLE001
+                        _held = []
+            if _held:
+                print(f"sand-bridge: 席上 /bind 選的 {cap.bind_what} {_chosen[:8]} 正被 {'、'.join(_held)} 使用,"
+                      f"這次先接開席命令那條 {launch_agent[:8] or '(無)'}", file=sys.stderr)
+                _has = False
+                agent = launch_agent       # review r2:自我重跑時環境變數已是選的那條 ⇒ 要明確退回開席那條
         if _has:
-            import claudebot_threads as _ct0
-            if _chosen and _ct0.valid_session_id(_chosen):
+            if _chosen and valid_bind_id(args.provider_id, _chosen):
                 agent = _chosen
-                print(f"sand-bridge: 沿用席上 /bind 選的 Claude 對話 {_chosen}(開席命令帶的是 {launch_agent or '(無)'})", file=sys.stderr)
+                print(f"sand-bridge: 沿用席上 /bind 選的 {cap.bind_what} {_chosen}(開席命令帶的是 {launch_agent or '(無)'})", file=sys.stderr)
             elif not _chosen:
                 agent = ""
                 print("sand-bridge: 沿用席上 /unbind:這一席維持不綁", file=sys.stderr)
+        if not is_claude:
+            # 10-11 a seat:門鈴(load_wake_config → bound_agent)讀的是環境變數 ⇒ 沿用的選擇也寫回去,門鈴才叫對 agent
+            os.environ[bound_env(args.provider_id)] = agent
     if agent:
         agent_lock, err, rc = claim_bound_agent(agent, args.provider_id)
         if agent_lock is None:
@@ -1193,6 +1315,11 @@ def main(argv: list[str] | None = None) -> int:
         #   (席在自己快死時收尾不可靠)。小幫手只動標題與 status,搶不到那條對話的鎖(新席已綁)就不動。
         closer = _spawn_claude_closer(agent, session_uuid)
     stop = {"flag": False}
+
+    def _closer_done_before_exec() -> None:
+        if closer is not None:     # 讀當下那一隻(席上 /bind、/unbind 會換)
+            closer.done()
+    _reexec["before"] = _closer_done_before_exec
     seen_out = set(p.name for p in (root / "outbox").glob("*.json"))
 
     def _stop(signum, frame):
@@ -1262,7 +1389,8 @@ def main(argv: list[str] | None = None) -> int:
     banner = [
         f"Ez2 AIB · {title_for(args.provider_id)} bridge  @{code}",
         f"session {session_uuid}",
-        "輸入對齊 grok CLI（❯）。Enter 送出。/dm <@席> <訊> · /status 重繪 · /quit 結束" + (" · /bind 綁對話 · /unbind 解除" if cap.bind_in_seat else ""),
+        "輸入對齊 grok CLI（❯）。Enter 送出。/dm <@席> <訊> · /status 重繪 · /quit 結束" + (" · /bind 綁對話 · /unbind 解除" if cap.bind_in_seat else "")
+        + (" · /connect 接門鈴" if args.provider_id == "grokbot" else ""),
         _aib_dm.dm_boot_banner(),
         cap.reply_from or "回覆來自：Cursor 助手寫 outbox（預設）；或 EZ2_BRIDGE_LOCAL_REPLY=1 本地 CLI。",
         "",
@@ -1283,6 +1411,12 @@ def main(argv: list[str] | None = None) -> int:
             ui.say("wake 設定:" + ";".join(problems) + "(只驗設定,沒有試打)", redraw=False)
         else:
             ui.say("wake 設定:正常(只驗設定,沒有試打)", redraw=False)
+        try:   # 第 22 件(10-11 a seat):開席講清楚 Grok Bot app 用哪個帳號;讀不到照實說,不擋開席
+            import grokbot_threads as _gt22
+            _acct = _gt22.app_account()
+        except Exception:  # noqa: BLE001 —— 顯示帳號是附加的
+            _acct = ""
+        ui.say("grokbot: 這台 Grok Bot app 登入的帳號:%s" % (_acct or "讀不到"), redraw=False)
         _mode = wake_on_dm_mode()
         ui.say({WAKE_DM_OFF: f"別席 dm 進來不叫醒 bot({ENV_WAKE_ON_DM}=seats 讓 AIB 席的 dm 叫醒)",
                 WAKE_DM_SEATS: "別席 dm:已驗證的 AIB 席寄的會叫醒 bot(協作);未驗證的只進信箱",
@@ -1325,6 +1459,33 @@ def main(argv: list[str] | None = None) -> int:
             ui.say("雲端環境變數:量不到(%s)" % type(_exc).__name__, redraw=False)
     if agent and cap.rename_in_app and (os.environ.get("AIB_GROKBOT_RENAME") or "1") != "0" and closer is None:
         ui.say("grokbot: 收尾小幫手起不來;關席時 app 名稱不會改回未綁定")
+    # 10-11 a seat(Bot 開發 P2):就緒檢查(bot_ready.py,只讀設定、不寫信、不花額度)。開席、席上 /bind 各查一次;
+    #   查不過 ⇒ health 標那一種原因,右欄名字後面出現「⚠沒接門鈴」「⚠沒裝hook」;還沒好時心跳每 READY_RECHECK_S 秒再查,
+    #   人在別處修好(例如跑了 aib bot connect)⇒ 自己拿掉 ⚠ 並在席上說一聲,不用重開。
+    _ready = {"bad": False, "at": 0.0}
+
+    def check_ready(say_it: bool = True) -> None:
+        _ready["at"] = time.time()
+        try:
+            import bot_ready as _br
+            rows = _br.check(args.provider_id, agent)
+        except Exception:  # noqa: BLE001 —— 就緒檢查是附加的,壞了不能讓橋停
+            return
+        bad = _br.first_problem(rows)
+        flipped = _ready["bad"] != bool(bad)
+        _ready["bad"] = bool(bad)
+        _mine = (_br.KIND_NO_AGENT, _br.KIND_NO_DOORBELL, _br.KIND_NO_HOOK, _br.KIND_NO_MAIL_TOOL)
+        for _k in _mine:
+            set_health_for(_k, None)
+        _cur = _live_health.get("override")
+        if bad and (not isinstance(_cur, dict) or _cur.get("last_error_kind") in _mine):
+            # 優先權最低:門鈴失敗、沒來收信、門鈴過期是「真的發生了」,比「設定看起來不對」更該先讓人看到,不蓋掉
+            set_health_for(bad["kind"], {"health": "degraded", "last_error_kind": bad["kind"], "last_error": bad["fix"]})
+        line = _br.summary(args.provider_id, rows)
+        if line and (say_it or flipped):
+            ui.say(line)
+
+    check_ready()
     ui.say(redraw=True)
 
     _hb = {"last": None, "at": 0.0}
@@ -1347,6 +1508,8 @@ def main(argv: list[str] | None = None) -> int:
                 maybe_reexec()
             except Exception:
                 pass
+            if _ready["bad"] and time.time() - _ready["at"] >= READY_RECHECK_S:
+                check_ready(say_it=False)   # P2:還沒就緒時定時再查,修好了自己拿掉 ⚠
             try:
                 for p in sorted((root / "outbox").glob("*.json")):
                     if p.name in seen_out:
@@ -1376,9 +1539,12 @@ def main(argv: list[str] | None = None) -> int:
     thr = threading.Thread(target=heartbeat, name="sand-bridge-hb", daemon=True)
     thr.start()
 
+    mirror = None
     if args.provider_id == "grokbot":
         import grokbot_mirror
-        grokbot_mirror.start_thread(ui.say, stop, human_label=human_display_name(), pin_agent=agent or None)
+        # 10-11 a seat:鏡射物件留在手上,席上 /bind、/unbind 換它盯的 agent
+        mirror = grokbot_mirror.Mirror(human_label=human_display_name(), pin_agent=agent or None)
+        grokbot_mirror.start_thread(ui.say, stop, human_label=human_display_name(), pin_agent=agent or None, mirror=mirror)
 
     dm_server = None
     if args.provider_id in SAND_BOT_PROVIDERS:
@@ -1457,31 +1623,45 @@ def main(argv: list[str] | None = None) -> int:
             if line:
                 ui.say(line)
 
-    if agent and cap.rename_in_app and (os.environ.get("AIB_GROKBOT_RENAME") or "1") != "0":
-        # the maintainer 09-25:綁定後把席碼寫回 app 裡 agent 的名稱(例 `AIB ( @xxxxx )`)。
-        # 沒有 token 改不了名 ⇒ 請 bot 自己用 update_state(target: profile) 改(09-25 真機問過它有這個工具)。
-        # 走的是同一個信箱 + 門鈴:放一則系統訊息進 inbox,bot 收信時照做。
+    rename_on = cap.rename_in_app and (os.environ.get("AIB_GROKBOT_RENAME") or "1") != "0"
+
+    def ask_app_rename(release: bool = False):
+        """the maintainer 09-25:綁定後把席碼寫回 app 裡 agent 的名稱(例 `AIB ( @xxxxx )`)。
+        沒有 token 改不了名 ⇒ 請 bot 自己用 update_state(target: profile) 改(09-25 真機問過它有這個工具)。
+        走的是同一個信箱 + 門鈴:放一則系統訊息進 inbox,bot 收信時照做。
+        release=True(10-11 a seat,席上 /unbind):請它改回「( 未綁定AIB席位 )」,門鈴同步響(呼叫端還綁著舊 agent),
+        回那封信的路徑讓呼叫端等它被收走;沒寄回 None。"""
         import bot_seat_name
         import grokbot_threads
         try:
             current = {r["id"]: r["name"] for r in grokbot_threads.list_agents(10 ** 6)}.get(agent)
         except (grokbot_threads.RosterSchemaChanged, grokbot_threads.RosterUnreadable) as exc:
-            current = None
             ui.say(f"grokbot: 名冊讀不到({exc}),沒請 bot 改名")
-        if current is not None:
-            wanted = bot_seat_name.with_seat_tag(current, short_code(session_uuid))
-            if current == wanted:
-                ui.say(f"grokbot: app 裡的名稱已經是「{wanted}」")
-            else:
-                enqueue(root, "inbox",
-                        f"[AIB 系統] 這一席 @{short_code(session_uuid)} 已綁定你。請用 update_state(target: profile) "
-                        f"把你在 Grok Bot app 裡的名稱改成「{wanted}」。改好不用回覆。",
-                        session_uuid, args.provider_id, "aib-system")
-                last_ring["ts"] = time.time()
-                rt = threading.Thread(target=wake_and_report, args=("[AIB 系統] 改名", "system"), daemon=True)
-                rt.start()
-                wake_threads.append(rt)
-                ui.say(f"grokbot: 已請 bot 把 app 裡的名稱改成「{wanted}」(bot 下次收信時改)")
+            return None
+        if current is None:
+            return None
+        code = short_code(session_uuid)
+        wanted = bot_seat_name.with_unbound(current) if release else bot_seat_name.with_seat_tag(current, code)
+        if current == wanted:
+            ui.say(f"grokbot: app 裡的名稱已經是「{wanted}」")
+            return None
+        lead = f"這一席 @{code} 要解除綁定你了" if release else f"這一席 @{code} 已綁定你"
+        path = enqueue(root, "inbox",
+                       f"[AIB 系統] {lead}。請用 update_state(target: profile) "
+                       f"把你在 Grok Bot app 裡的名稱改成「{wanted}」。改好不用回覆。",
+                       session_uuid, args.provider_id, "aib-system")
+        last_ring["ts"] = time.time()
+        if release:
+            wake_and_report("[AIB 系統] 解除綁定改名", "system")
+        else:
+            rt = threading.Thread(target=wake_and_report, args=("[AIB 系統] 改名", "system"), daemon=True)
+            rt.start()
+            wake_threads.append(rt)
+        ui.say(f"grokbot: 已請 bot 把 app 裡的名稱改成「{wanted}」(bot 下次收信時改)")
+        return path
+
+    if agent and rename_on:
+        ask_app_rename()
 
     if (agent or cap.mail_without_bind) and args.provider_id in SAND_BOT_PROVIDERS:
         # the maintainer 09-30 19:5x:橋接席開席也要收到人格包(與基因);沒有系統說明可塞 ⇒ 當第一則 aib-system 信放進 inbox。
@@ -1515,6 +1695,132 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if text in ("/quit", "/exit", ":q"):
             break
+        if args.provider_id == "grokbot" and text == "/connect":
+            # 10-11 a seat(P4):席上接門鈴,不用另開終端機打 aib bot connect。對話框最多等 10 分鐘 ⇒ 放背景,席上照常打字;
+            #   接好就重查就緒(P2),右欄「⚠沒接門鈴」當場拿掉。
+            if not agent:
+                ui.say("grokbot: 先打 /bind 綁一個 agent,再 /connect 接門鈴")
+                continue
+
+            def _do_connect(aid: str = agent) -> None:
+                try:
+                    r = subprocess.run([sys.executable, str(Path(__file__).resolve().with_name("grokbot_threads.py")),
+                                        "connect", "--agent", aid],
+                                       stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    ui.say(f"grokbot: 接門鈴沒跑完({type(exc).__name__})")
+                    return
+                if r.returncode == 0:
+                    ui.say("grokbot: 門鈴接好了(只驗設定,沒有試打)")
+                    check_ready()
+                else:
+                    last = (r.stderr or "").strip().splitlines()
+                    ui.say("grokbot: 門鈴沒接上:" + (last[-1][:200] if last else "rc=%s" % r.returncode))
+
+            threading.Thread(target=_do_connect, name="grokbot-connect", daemon=True).start()
+            ui.say("grokbot: 已跳視窗讓你貼「POST 到」與「金鑰」(請 bot 建例行任務那句已放剪貼簿);席上照常可以打字")
+            continue
+        # 10-11 a seat(P1):GrokBot、MuseBot 席上 /unbind、/bind。ClaudeBot 走下面原本那兩段(不動)。
+        if cap.bind_in_seat and not is_claude and text == "/unbind":
+            pid = args.provider_id
+            if not agent:
+                ui.say(f"{pid}: 這一席本來就沒綁{cap.bind_what};打 /bind 綁一條")
+                continue
+            old = agent
+            if rename_on:
+                # 席還綁著舊 agent:先請它把 app 名稱改回未綁定,等它收走那封信再放手 ——
+                #   bot 收信靠 status.json 的 agent_id 找席,放手之後它就找不到這一席、那封信永遠沒人收。
+                asked = ask_app_rename(release=True)
+                if asked is not None:
+                    try:
+                        wait_s = max(0.0, float(os.environ.get("AIB_GROKBOT_CLOSE_WAIT_S") or 45.0))
+                    except ValueError:
+                        wait_s = 45.0
+                    ui.say(f"grokbot: 等 bot 收走改名信(最多 {int(wait_s)} 秒;同關席收尾)…")
+                    claimed = asked.parent / "claimed" / asked.name
+                    deadline = time.time() + wait_s
+                    while time.time() < deadline and not claimed.exists():
+                        time.sleep(0.2)
+                    if not claimed.exists():
+                        ui.say("grokbot: bot 沒來收改名信;app 裡的名稱可能還帶 @席碼,要在 app 手動改回")
+            if closer is not None:
+                closer.done()              # 改回未綁定這件事席上已做(或已請過),關席小幫手不用再做一次
+                closer = None
+            agent = ""                     # status_payload 是閉包:下一次心跳 agent_id=None
+            os.environ[bound_env(pid)] = ""   # 門鈴讀環境變數 ⇒ 之後不再叫醒舊 agent
+            if mirror is not None:
+                mirror.pin_agent = None    # 跟開席沒綁時一樣:看 app 目前選中的那條
+                mirror.last_full = None
+            if agent_lock is not None:
+                try:
+                    agent_lock.close()     # 放掉鎖,舊的那條可以給別席綁
+                except OSError:
+                    pass
+                agent_lock = None
+            write_mail_token(root)         # 換通行碼:舊的那條手上那組不能再回信到這一席
+            save_bind_override(root, launch_agent, "")
+            check_ready(say_it=False)      # P2:解綁 ⇒ 拿掉就緒警示(沒綁另有「⚠沒綁對話」)
+            try:
+                import bridge_persona as _bp
+                _mark = root / _bp.SENT_MARK
+                if _mark.exists():
+                    _mark.replace(root / (_bp.SENT_MARK + ".prev-" + old[:8]))
+            except Exception:  # noqa: BLE001
+                pass
+            write_status(root, status_payload("alive"))
+            _left = len(list((root / "inbox").glob("*.json")))
+            ui.say(f"{pid}: 已解除綁定{cap.bind_what} {old[:8]}(席沒關);打 /bind 綁新的"
+                   + (f"。信箱還有 {_left} 則沒被收,綁上新的後會給新的那條" if _left else ""))
+            continue
+        if cap.bind_in_seat and not is_claude and (text == "/bind" or text.startswith("/bind ")):
+            pid = args.provider_id
+            arg = text[len("/bind"):].strip()
+            if agent:
+                ui.say(f"{pid}: 這一席已綁{cap.bind_what} {agent[:8]};要換,先打 /unbind 再 /bind")
+                continue
+            if not arg:
+                try:
+                    bind_rows = other_bind_candidates(pid)
+                except Exception as exc:  # noqa: BLE001
+                    ui.say(f"{pid}: 清單讀不到({type(exc).__name__}: {str(exc)[:120]});可以直接打 /bind <完整 id>")
+                    continue
+                for ln in render_other_bind_list(pid, cap.bind_what, bind_rows):
+                    ui.say(ln)
+                continue
+            chosen, err = resolve_other_bind_arg(pid, arg, bind_rows)
+            if not chosen:
+                ui.say(f"{pid}: {err}")
+                continue
+            new_lock, err, _rc = claim_bound_agent(chosen, pid)
+            if new_lock is None:
+                ui.say(f"{pid}: 綁不上:{err}")
+                continue
+            agent_lock = new_lock
+            write_mail_token(root)
+            agent = chosen                 # 下一次心跳起 status.json agent_id 就是它(bot 收信靠它找席)
+            os.environ[bound_env(pid)] = chosen   # 門鈴(load_wake_config)叫這個 agent
+            write_status(root, status_payload("alive"))
+            save_bind_override(root, launch_agent, agent)   # 橋重啟後沿用這次選的
+            if mirror is not None:
+                mirror.pin_agent = agent
+                mirror.last_full = None
+            if rename_on:
+                if closer is None:
+                    import bot_closer
+                    closer = bot_closer.spawn("grokbot", {"agent_id": agent, "session_id": session_uuid}, state_root())
+                    if closer is None:
+                        ui.say("grokbot: 收尾小幫手起不來;關席時 app 名稱不會改回未綁定")
+                ask_app_rename()
+            if pid == "grokbot":
+                import grokbot_threads as _gt6
+                if not _gt6.read_agent_wake(agent, state_root())[0]:
+                    ui.say(f"grokbot: 這個 agent 還沒接門鈴(webhook),bot 收不到叫醒;"
+                           f"接法:打 /connect(或 aib bot connect grokbot --agent {agent}),接好就生效,不用重開")
+            start_pack_delivery(root, session_uuid, pid, ui.say, wake_and_report,
+                                last_ring, wake_threads, stop)
+            ui.say(f"{pid}: 已綁{cap.bind_what} {agent}(席不用重開)")
+            check_ready()                  # P2:綁上就查一次就緒
+            continue
         if cap.bind_in_seat and text == "/unbind":
             # 10-07 a seat(the maintainer 令「換綁」):解掉現在這條,席不關。之後 /bind 綁新的。
             if not agent:
@@ -1545,6 +1851,7 @@ def main(argv: list[str] | None = None) -> int:
                 closer = None
             sync_seat_claude_session(session_uuid, "")   # 10-09:席位檔那一欄也清掉(待修清單第 11 件)
             save_bind_override(root, launch_agent, "")    # 10-09:橋重啟後維持不綁
+            check_ready(say_it=False)      # P2:解綁 ⇒ 拿掉就緒警示
             try:
                 import bridge_persona as _bp
                 _mark = root / _bp.SENT_MARK
@@ -1614,6 +1921,7 @@ def main(argv: list[str] | None = None) -> int:
             if closer is None:
                 closer = _spawn_claude_closer(agent, session_uuid)   # 10-09:席上綁的也要有關席收尾
             ui.say(f"claudebot: 已綁 Claude 對話 {agent}(席不用重開)")
+            check_ready()                  # P2:綁上就查一次就緒
             if spawned:
                 _cbs3.spawn_kicker(agent)   # 背景等綁好再替你送第一句(門鈴才會掛上),與一鍵開席同一條
                 ui.say(f"claudebot: 要進去打字:{_cbs3.attach_command(agent)}(離開按 Ctrl-b d)")

@@ -40,3 +40,36 @@ jobs:
             echo "::group::$f"; python "$f" || { echo "::error::$f failed"; rc=1; }; echo "::endgroup::"
           done
           exit $rc
+  # 10-12:「全新電腦」—— 空的家目錄、沒有任何設定,照 README 的一行安裝裝起來,再跑新用戶最先會打的指令。
+  #   任何一步卡住(要你設環境變數、噴 Python 錯誤)這關就紅。
+  fresh-machine:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: one-line install into an empty home, then a new user's first commands
+        shell: bash
+        run: |
+          set -u
+          git config --global user.name ci && git config --global user.email ci@example.com
+          export HOME="$RUNNER_TEMP/fresh-home"; mkdir -p "$HOME"
+          export AIB_SOURCE="$GITHUB_WORKSPACE" AIB_AI=none LANG=C.UTF-8
+          unset EZ2_VAULT_DIR EZ2_VAULT_ROOT EZ2_ROUTE_REGISTRY EZ2_ROUTE_CONTRACT_SPEC
+          bash install.sh --dir "$HOME/ez2-aib" </dev/null
+          AIB="$HOME/.local/bin/aib"
+          test -d "$HOME/.ez2-aib/identity" || { echo "::error::install did not run aib init"; exit 1; }
+          "$AIB" --help >/dev/null || [ $? -eq 2 ]
+          printf '# Tester\n\n## 職責\nwrite tests\n\n## 紅線\nnever delete data\n\n## 知識域\nPython\n' > "$RUNNER_TEMP/role.md"
+          "$AIB" newrole --name Tester --prompt-file "$RUNNER_TEMP/role.md" </dev/null
+          test -f "$HOME/.ez2-aib/vault/10-Roles/Tester/角色.md" || { echo "::error::newrole did not create the role card"; exit 1; }
+          set +e
+          out="$("$AIB" plaza 2>&1)"; rc=$?
+          set -e
+          [ "$rc" = 2 ] && ! printf '%s' "$out" | grep -q Traceback || { echo "::error::aib plaza: rc=$rc $out"; exit 1; }
+          "$AIB" room contacts </dev/null >/dev/null

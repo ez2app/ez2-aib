@@ -152,6 +152,23 @@ def item_path(item):
     return kind, None
 
 
+def changed_items(was, now):
+    """前一列的 inputs 裡、這次重算對不上的那幾項 → ["kind:路徑", …](沒有路徑語意的項照原字,過長截斷)。
+    decide() 的 input-fp-changed 細節用它(10-13 a seat 裁:記下是哪個輸入項對不上);
+    explain() 那段同樣的比對刻意不改(test-aib-test-entry-0929 k22 刀錨在那裡),兩邊由 test-rerun-why 對拍。"""
+    now_set = set(map(str, now or []))
+    found = []
+    for it in was or []:
+        it = str(it)
+        if it in now_set:
+            continue
+        kind, path = item_path(it)
+        label = "%s:%s" % (kind, path) if path else (it if len(it) <= 160 else it[:157] + "...")
+        if label not in found:
+            found.append(label)
+    return found
+
+
 def _input_paths(items):
     """一組 inputs 項 → 它們涉及的 (kind, 路徑) 集合;沒有路徑語意的項不進來。
 
@@ -242,7 +259,8 @@ class Index(object):
         self.foreign_rows = 0        # 列自己說它是別棵樹的 ⇒ 丟掉
         self.unknown_origin_rows = 0 # 列沒寫是哪棵樹的(舊格式)⇒ 收下但報出來
         self.rows_default_dir = False   # 沒帶 --rows,讀的是全機共用的預設目錄
-        self.repo_id = None           # 本樹所屬 repo 的身分(同一個 git common dir 的工作樹共用)
+        self.repo_id = None           # 本樹所屬 repo 的身分(M1 起 = 專案身分:同專案各 clone、各工作樹共用)
+        self.repo_id_legacy = None    # M1 過渡期:本樹舊身分(git common dir)寫的列也收
         self.cross_tree_rows = 0      # 同一個 repo、別的工作樹量到的列(收下)
         self._item_rel = {}       # inputs 項字串 -> (只存一份的字串, kind, repo 相對路徑或 None);值只由字串決定
         self._lock_cache = {}     # repo -> lock_fp(對同一棵樹是同一個值)
@@ -281,7 +299,7 @@ class Index(object):
         #   沒有 repo_id 的舊列照舊比路徑。收下之後每支仍由 decide 對**本樹**重算輸入指紋,對不上就必跑。
         rid = row.get("repo_id")
         if rid and self.repo_id:
-            if str(rid) != str(self.repo_id):
+            if str(rid) not in (str(self.repo_id), str(self.repo_id_legacy or self.repo_id)):
                 self.foreign_rows += 1
                 return
             if origin and self.repo and str(origin) != str(self.repo):
@@ -519,7 +537,10 @@ class Index(object):
             return "must-run", "fingerprint-shrink", "、".join(sorted(
                 "%s:%s" % (k, v) for k, v in gone)[:3])
         if input_fp_now != (prev.get("input_fp") or ""):
-            return "must-run", "input-fp-changed", ""
+            # 10-13:細節帶「哪幾項對不上」(最多 3 項,≤ 200 字);只多說,不改判斷
+            found = changed_items(prev.get("inputs") or [], items_now)
+            detail = "、".join(found[:3]) + ("…+%d" % (len(found) - 3) if len(found) > 3 else "")
+            return "must-run", "input-fp-changed", detail[:200]
         if "env_fp" not in cache:      # 同一次判斷裡環境只算一次(它要跑 node/tmux --version)
             try:
                 env = st.child_env(Path(repo), Path("/tmp/.ez2-verify-reuse-probe"), environ)
@@ -846,7 +867,6 @@ def _utc_now(slack_s=0):
 
 def write_void(path, cond, reason, now=None, slack_s=0):
     """在列檔尾端追加一筆作廢列(與執行器同一把檔鎖)。條件不合法 ⇒ ValueError,什麼都不寫。"""
-    import fcntl
     import time as _time
     obj = {"void": dict(cond), "before": now or _time.strftime("%Y-%m-%d %H:%M:%S"),
            "before_utc": _utc_now(slack_s) if now is None else None, "reason": reason or ""}
@@ -857,13 +877,7 @@ def write_void(path, cond, reason, now=None, slack_s=0):
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     data = (jsonl_safe.dumps(obj) + "\n").encode("utf-8")
-    with open(p, "ab") as f:   # 放鎖前整列寫完(見 runner._append_row 10-04 註)
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            f.write(data)
-            f.flush()
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    jsonl_safe.append_locked(p, data)   # 與執行器同一把鎖;池檔被合池換掉就重開(M1 三審)
     return obj
 
 
@@ -1036,6 +1050,7 @@ def build_index(paths, repo=None):
     idx = Index()
     idx.repo = str(Path(repo).resolve()) if repo else None
     idx.repo_id = repo_identity(repo) if repo else None
+    idx.repo_id_legacy = legacy_identity(repo) if repo else None
 
     def _mark_default():
         idx.rows_default_dir = True
@@ -1113,8 +1128,17 @@ def build_index(paths, repo=None):
     return idx
 
 
+def legacy_identity(repo):
+    """M1 之前的身分(resume_store.legacy_repo_id);取不到回 None。"""
+    try:
+        import resume_store  # noqa: E402 - same folder
+        return resume_store.legacy_repo_id(repo)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def repo_identity(repo):
-    """同一個 repo 的所有工作樹共用的身分(resume_store.repo_id:git common dir 的指紋);取不到回 None。"""
+    """同一個專案的所有 clone 與工作樹共用的身分(resume_store.repo_id;M1 起看根提交 + 遠端);取不到回 None。"""
     try:
         import resume_store  # noqa: E402 - same folder
         return resume_store.repo_id(repo)

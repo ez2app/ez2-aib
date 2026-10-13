@@ -384,7 +384,14 @@ def _update_seat_file(
     if title:
         rec["project_title"] = title
     _atomic_write_json(path, rec)
+    _registry(state_root).bind_quietly(project_uid, seat, title=title, by="newproj", root=state_root)
     return path
+
+
+def _registry(state_root: Path):
+    """席綁專案的唯一正本(src/cockpit/project_seats.py,docs/DESIGN-project-sweep-1012.md §2)。"""
+    import project_seats  # noqa: E402 —— _COCKPIT 已在 sys.path
+    return project_seats
 
 
 def create_project(
@@ -769,6 +776,7 @@ def run_newproj(args) -> int:
             seat_path, _ = BO.find_seat(root, seat_id)
             _drop_project_fields(Path(seat_path))
             _drop_project_fields(root / "identity" / "seat-continuity" / ("%s.json" % seat_id))
+            _registry(root).unbind_quietly(seat_id, by="newproj --unbind", root=root)
             _say(T("aib.newproj.unbound", {"uid": bound, "seat": seat_id, "path": card_path_of(root, bound)}))
         print(json.dumps(base, ensure_ascii=False, sort_keys=True))
         return 0

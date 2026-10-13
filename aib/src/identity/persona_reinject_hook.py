@@ -209,6 +209,62 @@ def revive_text(source: str) -> str:
     return _with_genes(_persona_text(uuid, source), source) + "\n\n" + REVIVE_ASK
 
 
+# 10-12 專案清查(docs/DESIGN-project-sweep-1012.md §3 第一版):開工 / 清對話 / 復活時附這一席專案的清查表前 10 筆。
+#   只讀;最多等 10 秒,逾時印「這次沒算完」;任何錯都不擋對話。AIB_SWEEP_BRIEF=0 關。
+SWEEP_BRIEF_SOURCES = ("startup", "clear", RESUME_SOURCE)
+SWEEP_BRIEF_TIMEOUT_S = 10
+
+
+def _seat_has_project(uuid: str) -> bool:
+    """行程內快查:這個對話的席位檔有綁專案(席位檔 project_uid,或席綁專案正本裡有它的 seat_id)。
+    任何形狀不對都當沒有(hook 絕不因為它當掉 —— 審查第二輪)。"""
+    try:
+        return _seat_has_project_raw(uuid)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _seat_has_project_raw(uuid: str) -> bool:
+    import glob as _glob
+    home = aib_home()
+    try:
+        reg = json.loads((home / "state" / "project-seats.json").read_text(encoding="utf-8")).get("projects") or {}
+    except (OSError, ValueError, AttributeError):
+        reg = {}
+    bound = {sid for proj in reg.values() for sid, r in (proj.get("seats") or {}).items() if not r.get("until")}
+    for f in _glob.glob(str(home / "instances" / "*" / "seats" / "*.json")):
+        try:
+            rec = json.loads(Path(f).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("session_uuid") == uuid:
+            if rec.get("project_uid") or rec.get("seat_id") in bound:
+                return True
+    return False
+
+
+def sweep_brief(source: str) -> str:
+    if source not in SWEEP_BRIEF_SOURCES or os.environ.get("AIB_SWEEP_BRIEF") == "0":
+        return ""
+    uuid = seat_session_uuid()
+    if not uuid or not _seat_has_project(uuid):
+        return ""          # 沒綁專案的席(含測試治具)不起子行程:每次開工省一支 python(審查實量:多叫幾次就慢 26%)
+    try:
+        sys.path.insert(0, str(HERE.parent / "cockpit"))
+        import seat_address
+        code = seat_address.uuid_tail5(uuid) or ""
+        tool = HERE.parent / "cockpit" / "project_sweep.py"
+        p = subprocess.run([sys.executable, str(tool), "--brief", "--limit", "10"], capture_output=True, text=True,
+                           timeout=SWEEP_BRIEF_TIMEOUT_S, stdin=subprocess.DEVNULL, env=dict(os.environ, AIB_SEAT_CODE=code))
+    except subprocess.TimeoutExpired:
+        return "[AIB 專案清查] 這次沒算完(超過 %d 秒);要看就跑 aib project sweep" % SWEEP_BRIEF_TIMEOUT_S
+    except Exception:  # noqa: BLE001 —— hook 絕不擋住對話
+        return ""
+    if p.returncode != 0 or not p.stdout.strip():
+        return ""
+    return "[AIB 專案清查] 這一席專案現在手上的事(照順序;只讀,全文 aib project sweep)\n" + p.stdout.strip()
+
+
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] != ["session-start"]:
@@ -238,6 +294,9 @@ def main(argv=None) -> int:
     notice = handoff_notice(source, payload)
     if notice:
         print(("\n" if text else "") + notice, flush=True)
+    brief = sweep_brief(source)
+    if brief:
+        print(("\n" if (text or notice) else "") + brief, flush=True)
     return 0
 
 

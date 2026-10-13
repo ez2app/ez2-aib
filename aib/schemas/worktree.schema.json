@@ -1,0 +1,673 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ez2.shop/schemas/aib/worktree.schema.json",
+  "title": "Ez2 AIB 工作樹節點 / Worktree Node (draft)",
+  "description": "大綱條目與任務的機器可讀形狀(L3 調度層)。工作樹是帳本的投影(ADR-0001 原理 4):本 schema 描述投影後每個節點的完整狀態,所有狀態變遷欄位都必須回指帳本 event_id——沒有事件背書的狀態是自報,不可信(原理 1)。節點編號沿用大綱正本(E0、E0.2、EA.1、EM)。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "node_id",
+    "kind",
+    "title",
+    "priority",
+    "approval",
+    "status",
+    "verification"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.1.0-draft"
+    },
+    "node_id": {
+      "description": "大綱編號:大寫字母軸名+可選點分層,如 E0、E0.2、EA.1、EM。",
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9]{0,3}(\\.[0-9]{1,3})*$"
+    },
+    "parent_id": {
+      "description": "父節點編號;軸級節點為 null。",
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]{0,3}(\\.[0-9]{1,3})*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "description": "axis=軸(E0)、group=中間層、leaf=可認領葉子。只有 leaf 可被認領與執行。",
+      "enum": [
+        "axis",
+        "group",
+        "leaf"
+      ]
+    },
+    "title": {
+      "$ref": "#/$defs/i18n_text"
+    },
+    "notes": {
+      "$ref": "#/$defs/i18n_text"
+    },
+    "priority": {
+      "enum": [
+        "p0",
+        "p1",
+        "p2",
+        "p3"
+      ]
+    },
+    "approval": {
+      "description": "核准狀態。只有 approved 且無人認領的 leaf 可開工(HANDOFF §1)。approved 必須帶 decision_event_id(decision.resolved 事件)——人類裁決必須在系統內(原理 13),躺在系統外的核准等於不存在。【2026-08-14 修訂:對齊 ADR-0004 三態裁決(艦長 08-11:approved/legacy_unverified/stale 混成同格會讓人不知道該做哪件事),enum 補投影態、新增投影溯源欄。本欄是投影(ADR-0004 §3),無裁決者=不出鍵,不是 null——decided_by/decision_event_id 只在有真實裁決時存在。】",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "draft",
+            "approved",
+            "rejected",
+            "superseded",
+            "legacy_unverified",
+            "stale"
+          ]
+        },
+        "decided_by": {
+          "description": "裁決者,如 human:the maintainer;AI 不得核准自己的節點。無裁決者時本欄不出現。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "decision_event_id": {
+          "$ref": "#/$defs/event_id"
+        },
+        "content_sha256": {
+          "description": "投影當下大綱該葉的正規化語意雜湊(ADR-0004 §6:綁語意不綁位元組)。",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "source_commit": {
+          "description": "decision 事件所記的大綱來源 commit;僅 approved 且事件有記時出現。完整 40 hex(SHA-1)或 64 hex(SHA-256),拒縮寫——縮寫在 repo 成長後會歧義。",
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "note": {
+          "description": "投影對人的一句話處置說明(如 stale=需重發 decision 事件)。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "approved"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "state",
+              "decided_by",
+              "decision_event_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "legacy_unverified",
+                  "stale"
+                ]
+              }
+            }
+          },
+          "then": {
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "decided_by"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "decision_event_id"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "claim": {
+      "description": "認領狀態。claimed 必須帶 task.claimed 事件;心跳斷聯逾期由調度器標 stale 並發幽靈認領警示(E3.2),不由認領者自報維持。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "unclaimed",
+            "claimed",
+            "released",
+            "stale"
+          ]
+        },
+        "owner_ai_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "owner_sig": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,32}@[0-9a-f]{4,8}/[A-Za-z0-9._-]{1,32}$"
+        },
+        "claim_event_id": {
+          "$ref": "#/$defs/event_id"
+        },
+        "lane": {
+          "description": "worklane 名稱,同時作事件 correlation_id。",
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "const": "claimed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "state",
+          "owner_ai_id",
+          "owner_sig",
+          "claim_event_id"
+        ]
+      }
+    },
+    "status": {
+      "description": "執行狀態。done=執行者宣稱完成(仍是宣稱);verified=通過本節點 verification 政策並有 task.verified 事件背書,才是系統認定的完成。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "pending",
+            "in_progress",
+            "blocked",
+            "done",
+            "verified",
+            "abandoned"
+          ]
+        },
+        "last_event_id": {
+          "$ref": "#/$defs/event_id"
+        },
+        "blocked_reason": {
+          "$ref": "#/$defs/i18n_text"
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "const": "verified"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "state",
+          "last_event_id"
+        ]
+      }
+    },
+    "verification": {
+      "description": "驗證政策(L4)。預設 cross_engine:驗證者引擎廠商必須與執行者不同(原理 9 異質性是資產;E4.2 verify 強制 cross-engine)。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy"
+      ],
+      "properties": {
+        "policy": {
+          "description": "none 僅限文件類節點且需在 notes 說明理由。",
+          "enum": [
+            "cross_engine",
+            "single_engine",
+            "human_only",
+            "none"
+          ]
+        },
+        "cross_engine": {
+          "description": "異質審證據(E4.2 verify 強制 cross-engine 的機器面):engine=審核引擎(不得與 claim.owner_sig 的引擎段相同,同質=假異質);review_path=審單檔路徑;review_rc=審單產出時的真實 exit code(0=審過,非 0=審紅=驗收紅)。高風險三域(帳本 src/ledger/政策 src/policy/身份 src/exam)或 policy=cross_engine 的節點,終審時 tools/aib-verify.py 強制檢查本欄位與審單檔在場,缺=契約問題 rc=2。 E4.2(2026-08-10)強化:artifacts_sha256=審查當下的交付物內容指紋(沒有它,審單審過一次就永久有效);fingerprint_verified_at_review=true 表示指紋為審查當下記錄,fingerprint_backfilled=true 表示為導入時補記(誠實區分,兩者都仍強制「之後變動即紅」);exemption 必須帶 reason/expires_at_epoch/granted_by,過期或形狀不合一律回強制路徑。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine",
+            "review_path",
+            "review_rc"
+          ],
+          "properties": {
+            "engine": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "審查時明示鎖定的底層模型。agy 等多供應商 wrapper 必須靠本欄才能判定真正供應商；舊收據可缺。"
+            },
+            "review_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "review_rc": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "repro": {
+              "description": "終審會重跑的可重現指令與其期望 rc(R2-1,§五『終審未驗可重現性』)。刻意**不進 required**:設成必填會讓既有收據回溯變非法,那是對既有資料契約加嚴等於對全部歷史加嚴。強制力落在產生端(bind-cross-engine-review.py 缺 --repro-cmd 即拒絕產生),消費端對缺 repro 的舊收據只記 note 不判紅。本欄位是純放寬,55 份既有契約維持合法。 【E0.2 codex 08-22 收緊】cmd 至少一個非空白字元且 ≤1024(與 acceptance_command.commands[].cmd 同上限);rc 限 0..255(既有 22 筆 repro.rc 全為 0,無回溯影響)。",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "cmd",
+                "rc"
+              ],
+              "properties": {
+                "cmd": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024,
+                  "pattern": "\\S"
+                },
+                "rc": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              }
+            },
+            "reviewed_by": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "artifacts_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "交付物內容指紋(排序後逐檔 sha256 再合成)"
+            },
+            "fingerprint_verified_at_review": {
+              "type": "boolean",
+              "description": "指紋為審查當下記錄(非補記)"
+            },
+            "fingerprint_backfilled": {
+              "type": "boolean",
+              "description": "指紋為 E4.2 導入時補記,非審查當下記錄"
+            },
+            "exemption": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason",
+                "expires_at_epoch",
+                "granted_by"
+              ],
+              "description": "具名且有到期日的豁免;無到期日的豁免會變成永久後門",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 8,
+                  "maxLength": 500,
+                  "pattern": "\\S"
+                },
+                "expires_at_epoch": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "granted_by": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "pattern": "\\S"
+                }
+              }
+            },
+            "review_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "審單檔內容 hash:審單被改過即收據失效"
+            },
+            "asserted_by": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "主張此審單覆蓋此節點的具名席位(2026-08-10 加入,選用)。審單與節點的對應無法由機器可靠推斷——reviews/ 曾有 8 份 session 逐字稿,其中一份提及 60 個節點編號,任何 grep 式比對都會量產偽證據。故覆蓋由人具名主張並留痕,機器只驗可驗的部分。"
+            },
+            "verdict_red_markers": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "description": "審單中偵測到的高嚴重度裁決標記(2026-08-10 加入,選用)。review_rc 是審查者的裁決,不是引擎程序的 exit code——引擎只要成功產出審單就回 0,即使審單列滿高危。本欄使 rc 與審單內容的一致性可被事後稽核。"
+            },
+            "verdict_justification": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 500,
+              "description": "審單有高嚴重度標記卻仍主張 review_rc=0 時的具名理由(2026-08-10 加入,選用)。讓「判為誤報」這個判斷落檔,而不是消失在對話裡。"
+            },
+            "residual_risks": {
+              "type": "array",
+              "maxItems": 30,
+              "description": "逐條剩餘風險具名(the maintainer 2026-08-10 拍板,選用)。把「知道但現在不修」與「不知道」明確分開:前者是有承擔者、有期限的決定,後者是缺口。四段皆必填——沒有期限的風險會變成永久後門(同 exemption 的教訓)。缺此機制時,只要審查者還能找出一條高危,該葉就永遠到不了 approval。",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "finding",
+                  "reason",
+                  "expires_at",
+                  "accepted_by"
+                ],
+                "properties": {
+                  "finding": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "pattern": "\\S"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 500,
+                    "pattern": "\\S"
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+                  },
+                  "accepted_by": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "\\S"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "min_verifiers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 1
+        },
+        "require_distinct_vendor": {
+          "type": "boolean",
+          "default": true
+        },
+        "verify_event_ids": {
+          "description": "已通過的 task.verified 事件清單。",
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/event_id"
+          }
+        },
+        "acceptance_command": {
+          "description": "驗收自動化契約(E3.5):本節點『完成』的機器判準。工具 tools/aib-verify.py 見到 ready_marker 就逐條跑 commands 並讀真 exit code,rc 不符 expect_rc 即紅。存在理由是原理 12(證據優先序):真實 exit code 高於 AI 敘述,所以結案判準必須是可重跑的命令,不是執行者的一句『我做完了』。紀律:commands 不得接 pipe 讀 rc(pipe 會回傳最後一段的 rc,吃掉真正的失敗)。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "commands",
+            "defined_by"
+          ],
+          "properties": {
+            "commands": {
+              "description": "逐條驗收命令。全部符合 expect_rc 才算過;工具跑完全部才報總結,不早退(一次看到所有紅點)。",
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "cmd"
+                ],
+                "properties": {
+                  "cmd": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024,
+                    "pattern": "\\S"
+                  },
+                  "expect_rc": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255,
+                    "default": 0
+                  },
+                  "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3600,
+                    "default": 300
+                  },
+                  "note": {
+                    "$ref": "#/$defs/i18n_text"
+                  }
+                }
+              }
+            },
+            "artifacts": {
+              "description": "交付物清單(檔案齊的機器判準)。預設 must_exist=true;列出即檢查,缺一即紅。",
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "must_exist": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "min_bytes": {
+                    "description": "非空判準:交付一個 0 byte 的檔案不算交付。",
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "ready_marker": {
+              "description": "執行者宣告完工的空檔路徑(如 src/verify/DRAFT-READY)。它只是『請來驗』的信號,本身不是通過證據——marker 在而 commands 紅,結論是紅。",
+              "type": "string",
+              "maxLength": 512
+            },
+            "workdir": {
+              "description": "commands 的執行目錄(repo 相對路徑);預設 repo 根。",
+              "type": "string",
+              "maxLength": 512
+            },
+            "defined_by": {
+              "description": "出題者(如 human:the maintainer 或 pm@00000/Claude)。必填且工具會比對:出題者不得是本節點的認領執行者——自己出考題等於自我認證,那是 maker=checker(原理 1 不信自報的直接推論)。",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "defined_event_id": {
+              "description": "寫定本驗收契約的帳本事件;契約變更必須留痕,否則可事後改題就過。",
+              "$ref": "#/$defs/event_id"
+            },
+            "artifact_exclusions": {
+              "description": "R3-c 漏列偵測的具名出口。驗收指令會執行、但刻意不列為交付物的檔,逐筆具名說明。★這個欄位存在的意義是讓『過報』能被一句話關掉,而『真漏』被逼出來——所以 reason 空字串不算數、granted_by 必填(具名才承重)。expires_at 選填但填了就必須是真實可到期的日曆日期,由機器驗證會過期;不填代表主張『這個檔永遠不該是交付物』,那是比有期限更強的宣稱,審查時要問。欄位形狀對齊 tools/aib-verify.py 的執法碼,兩者不一致時以執法碼為準並回報。",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "reason",
+                  "granted_by"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000,
+                    "pattern": "\\S"
+                  },
+                  "granted_by": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "\\S"
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+                    "description": "真實可到期的日曆日(YYYY-MM-DD),由 aib-verify 到期執法;E0.2 codex 08-22 收緊(既有契約零筆 exclusions,無回溯影響)"
+                  }
+                }
+              },
+              "maxItems": 100
+            }
+          }
+        }
+      }
+    },
+    "budget": {
+      "description": "預算與已耗(E3.3 配額氣象圖的資料源)。上限缺席=不設限;spent 由成本收集器機器記帳,不由執行者自報。",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tokens_max": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost_usd_max": {
+          "type": "number",
+          "minimum": 0
+        },
+        "wall_clock_minutes_max": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "spent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "as_of_event_id"
+          ],
+          "properties": {
+            "tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cost_usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "wall_clock_minutes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "as_of_event_id": {
+              "$ref": "#/$defs/event_id"
+            }
+          }
+        }
+      }
+    },
+    "depends_on": {
+      "description": "依賴的其他節點(如 E1 依賴 E0)。",
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9]{0,3}(\\.[0-9]{1,3})*$"
+      }
+    },
+    "evidence_refs": {
+      "description": "結案證據(evidence.schema.json)。",
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "pattern": "^evd_[0-9a-f]{64}$"
+      }
+    },
+    "created_event_id": {
+      "$ref": "#/$defs/event_id"
+    },
+    "updated_event_id": {
+      "description": "最近一次影響本節點的事件;投影新鮮度以此對帳,不得引用投影自己證明自己是新的。",
+      "$ref": "#/$defs/event_id"
+    }
+  },
+  "$defs": {
+    "event_id": {
+      "type": "string",
+      "pattern": "^ev_[0-9a-f]{64}$"
+    },
+    "i18n_text": {
+      "description": "雙語文字(原理 11)。zh-TW 必填,en 定版前補齊。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zh-TW"
+      ],
+      "properties": {
+        "zh-TW": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "en": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      }
+    }
+  }
+}
