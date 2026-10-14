@@ -708,11 +708,13 @@ def main():
     role_lib_dir = vault_dir / lib_rel
     # aib 自己的預設 vault(新機器)⇒ 角色庫資料夾第一次用時建起來;別人的 vault 照舊不動、不猜。
     # 10-12(a seat:Pro 的 ~/Ez2/Vault):用的是套件預設契約 = route_register 判過這個 vault 安全(空的 / 有索引 / 已有 10-Roles)⇒ 也建
-    if not role_lib_dir.is_dir() and (str(vault_dir) == os.path.realpath(_aib_default_vault())
-                                      or default_contract_spec() == BUNDLED_CONTRACT):
+    # 10-14 新用戶走查:--dry-run 一個檔都不寫 ⇒ 試跑時只判「會建」,不真的建(下面的存在檢查也跟著放過)。
+    would_create_lib = not role_lib_dir.is_dir() and (str(vault_dir) == os.path.realpath(_aib_default_vault())
+                                                      or default_contract_spec() == BUNDLED_CONTRACT)
+    if would_create_lib and not args.dry_run:
         role_lib_dir.mkdir(parents=True, exist_ok=True)
 
-    if not role_lib_dir.is_dir():
+    if not role_lib_dir.is_dir() and not (args.dry_run and would_create_lib):
         log(f"錯誤: 找不到 Vault 角色庫路徑: {role_lib_dir}", prefix="[x]")
         sys.exit(2)
 
@@ -824,7 +826,8 @@ def main():
             return 5
 
     # 10-12 新用戶:狀態樹還沒建(沒跑過 aib init)⇒ 先建,不讓卡已寫進 vault 卻在掃描那步卡住
-    if not (AIB_HOME / "identity").is_dir():
+    #   試跑不建(aib_init 會種 secrets 範本、帳本、說明檔;--dry-run 一個檔都不寫)。
+    if not (AIB_HOME / "identity").is_dir() and not args.dry_run:
         subprocess.run([sys.executable, str(REPO_ROOT / "src" / "bootstrap" / "aib_init.py")],
                        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
     # 3. 重新掃描卡庫投影 (card_registry.py scan)
@@ -834,11 +837,15 @@ def main():
     if args.dry_run:
         scan_cmd.append("--dry-run")
 
-    rc, out, err = run_cmd(scan_cmd, cwd=REPO_ROOT)
-    if rc != 0:
-        log(f"錯誤: card_registry.py scan 失敗 (rc={rc}):\n{err}", prefix="[x]")
-        sys.exit(rc)
-    log("   -> 卡片索引掃描完成")
+    if args.dry_run and not vault_dir.is_dir():
+        # 新機器試跑:知識庫還沒建(試跑也不建)⇒ 沒有東西可掃,新卡試跑本來就不寫 ⇒ 跳過,不當成失敗
+        log("   -> [DRY-RUN] 知識庫還沒建立,跳過索引掃描")
+    else:
+        rc, out, err = run_cmd(scan_cmd, cwd=REPO_ROOT)
+        if rc != 0:
+            log(f"錯誤: card_registry.py scan 失敗 (rc={rc}):\n{err}", prefix="[x]")
+            sys.exit(rc)
+        log("   -> 卡片索引掃描完成")
 
     if not bind_target:
         # the maintainer 10-01:沒指定席位 ⇒ 到此為止:卡建好、索引掃好,不綁席、不寫席位記憶、不寄人格包
