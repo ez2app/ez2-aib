@@ -6,6 +6,7 @@ what it was or whether it should be there. Runs the real watcher in a temp HOME 
 Standard library only.
 """
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -25,18 +26,22 @@ class MenuWindowExplains(unittest.TestCase):
                "EZ2_AIB_INSTANCE_HOME": str(td / ".ez2-aib" / "instances" / "x"), "EZ2_AIB_STATE_ROOT": str(td / ".ez2-aib"),
                "EZ2_AIHUB_SOCKET": "aib-test-none"}
         p = subprocess.Popen([sys.executable, str(MENU), "watch", "--interval", "3"], cwd=td, env=env,
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True)
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, bufsize=0)
         try:
-            deadline, out = time.time() + 20, ""
-            while time.time() < deadline and "AIB_MENU_PICK=0" not in out:
-                line = p.stdout.readline()
-                if not line:
-                    break
-                out += line
-            return out
+            # Raw reads with select and a deadline: a watcher that prints nothing (the old behaviour) must make the
+            # test fail at the deadline, not block; reading raw bytes avoids lines hiding in a text buffer.
+            fd, deadline, raw = p.stdout.fileno(), time.time() + 10, b""
+            while time.time() < deadline and b"AIB_MENU_PICK=0" not in raw:
+                ready, _, _ = select.select([fd], [], [], 0.5)
+                if ready:
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        break
+                    raw += chunk
+            return raw.decode("utf-8", "replace")
         finally:
-            p.kill()
-            p.wait(timeout=10)
+            p.kill()                     # only this test's own process (never a pattern match: a live cabin runs
+            p.wait(timeout=10)           # the same command line)
             p.stdout.close()
             shutil.rmtree(td, ignore_errors=True)
 
