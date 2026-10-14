@@ -61,9 +61,12 @@ class WarroomNoOutline(unittest.TestCase):
 
     def test_present_outline_renders_tree(self):
         outline = self.td / "outline.md"
-        outline.write_text("# 1 Ship it\n", encoding="utf-8")
+        # The exact line format the no-outline notice tells users to write.
+        outline.write_text("[1] approved p1 | Ship v1\n  [1.1] approved p1 | Write the README\n", encoding="utf-8")
         out = self.board("en", outline)
         self.assertIn("outline.md", out)
+        self.assertIn("1 Ship v1", out)
+        self.assertIn("1.1 Write the README", out)
         self.assertNotIn("no project outline yet", out)
 
 

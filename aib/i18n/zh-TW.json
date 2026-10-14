@@ -1972,6 +1972,6 @@
   "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
   "aib.captains_ctl.unmeasured": "量不到",
   "aib.captains_ctl.status_label": "艦長:",
-  "aib.warroom.no_outline": "戰情室:還沒有專案大綱。把 EZ2_OUTLINE 設成你的大綱檔(Markdown),就會顯示在這裡。",
+  "aib.warroom.no_outline": "戰情室:還沒有專案大綱。把 EZ2_OUTLINE 設成大綱檔,一行一項,例如 `[1] approved p1 | 發第一版`(每深一層縮 2 格),就會顯示在這裡。",
   "aib.warroom.outline_unreadable": "戰情室:大綱讀取失敗 {path}"
 }
