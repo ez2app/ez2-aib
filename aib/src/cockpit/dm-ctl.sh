@@ -809,7 +809,15 @@ _xhost_send() {
     die "連不上 $host($_XH_OUT_IP)的 SSH,一個字都沒送" 2
   fi
   # 推導那一輪失敗時 stdout 會是解析失敗的 JSON:rc 不是 0、或不是純 token 字元 ⇒ 都當推不出來。
-  ident="$(env AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
+  # 推導要問寄件人**自己那一艙**:沒指定艙時 HUB 是預設名,這台不一定有 ⇒ 從自己 pane 的 $TMUX 認 aihub 形的 socket。
+  #   (cockpit-env.sh 一定會 export 預設名,所以看的是呼叫端有沒有真的指定:_DM_SOCKET_WAS_SET。)
+  local own_hub="" tmux_sock
+  [ "$_DM_SOCKET_WAS_SET" = "1" ] && own_hub="${EZ2_AIHUB_SOCKET:-}"
+  if [ -z "$own_hub" ] && [ -n "${TMUX:-}" ]; then
+    tmux_sock="$(basename "${TMUX%%,*}")"
+    case "$tmux_sock" in aihub|aihub-*) case "$tmux_sock" in *[!0-9A-Za-z-]*) ;; *) own_hub="$tmux_sock" ;; esac ;; esac
+  fi
+  ident="$(env ${own_hub:+EZ2_AIHUB_SOCKET="$own_hub"} AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
   ident="${ident##*$'\n'}"
   case "$ident" in *[!A-Za-z0-9_=-]*) ident="" ;; esac
   if [ -z "$ident" ]; then

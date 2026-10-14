@@ -135,6 +135,16 @@ class Unit(unittest.TestCase):
         same = HD.build_from_labels("@8f366(第二艦長)", "@cc203(心+指揮官)", env={"AIB_DM_ADDR": "10.0.0.5"}, when=0)
         self.assertTrue(same.startswith("IP:10.0.0.5//第二艦長@8f366 >> "), same)
 
+    def test_U5b_unknown_sender_cabin_is_blank_not_receivers(self):
+        """真機第一封抓到:寄件機推不出艙(hub 空)時,抬頭寫成收件機自己的艙號 ⇒ 讀的人以為同艙。"""
+        import dm_header as HD
+        env = {"AIB_DM_ADDR": "100.64.0.2", "EZ2_AIB_INSTANCE": "20261010-125119-931e"}
+        for sock, cabin in (("", ""), ("dmtest", ""), ("aihub", "main"), ("aihub-20261014-133230-6ddf", "6ddf")):
+            h = HD.build_from_labels("unattested:unknown", "@8f366(第二艦長)", s_socket=sock,
+                                     t_socket="aihub-20261010-125119-931e", s_addr="100.64.0.1",
+                                     s_note="跨主機·經SSH", env=env, when=0)
+            self.assertTrue(h.startswith("IP:100.64.0.1/%s/" % cabin), (sock, h))
+
     def test_U6_remote_cmd_quotes_every_arg(self):
         X = _xh()
         self.assertEqual(X.remote_cmd(["aib", "dm", "--thread", "24/租約 鎖", "ab12/1857a"]),
@@ -241,6 +251,12 @@ class DmCtl(unittest.TestCase):
         self.assertTrue(self.read(self.ssh_cmd).startswith("bash /opt/aib/src/cockpit/aib dm --xhost-ident "),
                         self.read(self.ssh_cmd))
         self.assertEqual(sum(l.startswith("RESULT ") for l in p.stdout.splitlines()), 1)
+
+    def test_X1b_whoami_asks_senders_own_cabin_from_tmux(self):
+        """真機第一封抓到:殼裡沒有 EZ2_AIHUB_SOCKET ⇒ 推導問預設名的艙(不存在)⇒ 落未認證。要從自己 pane 的 $TMUX 認艙。"""
+        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", TMUX="/tmp/tmux-501/aihub-%s,123,0" % INST, TMUX_PANE="%5")
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("-L aihub-" + INST, self.read(self.calls), "推導那一輪要問寄件人自己那一艙")
 
     def test_X5_receiver_refuses_ident_outside_sshd(self):
         """本機行程自己帶 --xhost-ident(或設個 SSH_CONNECTION 假裝)⇒ rc 2,一個字都沒進艙。"""

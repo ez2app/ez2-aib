@@ -251,6 +251,10 @@ def build_from_labels(s_label: str, t_label: str, *, s_origin: str = "", s_socke
     s = party_from_label(s_label, s_origin)
     r = party_from_label(t_label)
     s["addr"], s["cabin"] = s_addr or addr, cabin_of_socket(s_socket, env)
+    if s_addr:
+        # 跨主機:寄件方的艙不能拿收件機自己的艙號來補(cabin_of_socket 的退路);主艙寫 main,認不出就空著。
+        sock = (s_socket or "").strip()
+        s["cabin"] = "main" if sock == "aihub" else (cabin_tail(sock[len("aihub-"):]) if sock.startswith("aihub-") else "")
     r["addr"], r["cabin"] = addr, cabin_of_socket(t_socket or s_socket, env)
     if s_note:
         s["name"] = "%s(%s)" % (s["name"], s_note)
