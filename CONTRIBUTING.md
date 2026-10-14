@@ -2,11 +2,11 @@
 
 # Contributing
 
-This repository is a **mirror**: aib is developed in a private repository and exported here at each release
-(the layout differs, so changes cannot be merged here directly).
+This repository is **the source of truth** for aib: development happens here, and pull requests are reviewed
+and merged by the maintainer.
 
 - **Issues are welcome** — bugs, questions, ideas. Please include the `aib` command you ran and its output.
-- **Pull requests are welcome too**, but they are ported by hand into the main repository and arrive here with
-  the next release; your PR will be closed with a link to the release that contains it. Small, focused changes
-  with a test are the easiest to port.
+- **Pull requests are welcome too.** Branch from `main` and open the PR against `main`; the maintainer reviews and
+  merges it. Small, focused changes with a test are the easiest to review. Run the tests before you push:
+  `python3 -m unittest discover -s tests -v`
 - Code comments are mostly in Traditional Chinese for historical reasons; English is fine in issues and PRs.
