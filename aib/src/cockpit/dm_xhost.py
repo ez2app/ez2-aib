@@ -9,13 +9,13 @@ SSH 行程沒有席 ⇒ 抬頭落 `IP:<收件機自己>/…/未認證@unknown`,�
 流程(dm-ctl.sh 兩端各一段,本檔只做「編碼、找主機、收件端驗」):
   寄件機:地址的 IP 不是本機 ⇒ dm-ctl 用 AIB_DM_XHOST_WHOAMI=1 再入自己一次,跑**同一套**寄件人推導
           (席位 pane / 行程鏈 / 背景分身 / codex 自稱 / 未認證),印出身分 token ⇒
-          ssh <收件機> aib dm --xhost-ident <token> <艙位碼>/<席碼>,正文走 stdin。
+          經 SSH 在收件機跑 aib dm --xhost-ident <token> <艙位碼>/<席碼>,正文走 stdin。
   收件機:dm-ctl 看到 --xhost-ident ⇒ 先過 verify(下面三條),過了才把抬頭寄件方換成 token 裡的人,
           位址用 sshd 量到的對方 IP(SSH_CONNECTION 第一欄),名字後面掛「(跨主機·經SSH)」。
 
 收件端三條(任一不成立 ⇒ rc 2,一個字都沒送):
   1. 祖先鏈上有 uid 0 的 sshd / sshd-session(本機一般使用者造不出 root 行程;設環境變數假裝沒用);
-  2. SSH_CONNECTION 的對方 IP 不是本機自己(ssh localhost 繞回來的不算跨主機);
+  2. SSH_CONNECTION 的對方 IP 不是本機自己(SSH 連 localhost 繞回來的不算跨主機);
   3. token 的寄件方過抬頭白名單,且不是 human:(真人憑證是本機三條件量的,隔一台機器量不到)。
 ★ 能力邊界(寫清楚免得有人以為比實際強):能 SSH 進收件機的人本來就能在那台跑任何指令,
   token 是寄件機**自己說**的,收件機驗不到寄件機上的推導過程;這裡擋的是「本機行程設個參數就改抬頭」。
@@ -23,8 +23,8 @@ SSH 行程沒有席 ⇒ 抬頭落 `IP:<收件機自己>/…/未認證@unknown`,�
 
 CLI(dm-ctl.sh 用):
     dm_xhost.py encode <label> <origin> <origin_kind> <hub>   ⇒ token
-    dm_xhost.py ssh-target <ip>                               ⇒ ssh 要連的主機名
-    dm_xhost.py remote-cmd <aib 指令> <參數...>               ⇒ 給 ssh 的一行(每個參數單引號包好)
+    dm_xhost.py ssh-target <ip>                               ⇒ SSH 要連的主機名
+    dm_xhost.py remote-cmd <aib 指令> <參數...>               ⇒ 給 SSH 的一行(每個參數單引號包好)
     dm_xhost.py accept <token>                                ⇒ label \\x1f origin \\x1f hub \\x1f 對方IP;rc 2 + stderr 理由
 """
 from __future__ import annotations
@@ -70,7 +70,7 @@ def decode(token: str) -> Optional[dict]:
 def ssh_target(ip: str, env: Optional[Mapping] = None, ssh_config: Optional[str] = None) -> str:
     """順位:~/.ez2-aib/user/dm-hosts.json {"IP": "主機"} > ~/.ssh/config 裡 HostName 等於這個 IP 的 Host 名 > IP 本身。
 
-    要找 Host 名是因為 ssh 用「你打的名字」對 Host 區塊,打 IP 對不到 alias 上的 User / IdentityFile
+    要找 Host 名是因為 SSH 用「你打的名字」對 Host 區塊,打 IP 對不到 alias 上的 User / IdentityFile
     (別台帳號不同時,直接 ssh <IP> 會用本機帳號登入而失敗)。"""
     env = os.environ if env is None else env
     home = env.get("HOME") or os.path.expanduser("~")

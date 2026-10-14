@@ -804,7 +804,8 @@ fi
 #   投不進的兩種:連不上(先 ssh true 試過)或收件機自己拒 ⇒ rc 2;ssh 中途斷 ⇒ 不知道對方收到沒 ⇒ rc 4(勿重送)。
 _xhost_send() {
   local ident host cmd out rc ssh_bin="${AIB_DM_XHOST_SSH:-ssh}"
-  local -a sshopt=(-o BatchMode=yes -o ConnectTimeout="${AIB_DM_XHOST_TIMEOUT:-8}") rargs
+  # ForwardAgent=no / ClearAllForwardings=yes:不把本機金鑰代理借給收件機、不開轉發(tests/test-ssh-hardening-1011.py 同一條)
+  local -a sshopt=(-o BatchMode=yes -o ConnectTimeout="${AIB_DM_XHOST_TIMEOUT:-8}" -o ForwardAgent=no -o ClearAllForwardings=yes) rargs
   host="$("$PY3" "$HERE/dm_xhost.py" ssh-target "$_XH_OUT_IP")" || host="$_XH_OUT_IP"
   # 先試連線再推導:連不上就什麼都不碰(推導那一輪會讀本機艙)。
   if ! "$ssh_bin" "${sshopt[@]}" "$host" true </dev/null >/dev/null 2>&1; then
