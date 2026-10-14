@@ -9,7 +9,7 @@
 F1 新 HOME、新專案第一次 aib test:原因是「還沒有任何紀錄,第一次跑」,不提紀錄池讀不了、不叫人 quarantine
 F2 跑過一次後把紀錄池弄壞一行再跑:原因是「紀錄池讀不了:bad-jsonl:…」,冒號後面不是空的
 F3 rerun_causes:同原因同類合併計數(兩支都是第一次 ⇒ 一句、(2))
-刀(複本):K1 rerun_causes 不帶 detail ⇒ F1、F2 紅;K2 結果列不記 detail ⇒ F1、F2 紅
+刀(複本):K1 rerun_causes 不帶 detail ⇒ F1、F2、F3 紅;K2 結果列不記 detail ⇒ F1、F2 紅
 """
 import os
 import re

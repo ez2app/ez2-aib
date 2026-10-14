@@ -372,10 +372,13 @@ def versus_lines(vs, before):
 
 def rerun_causes(tests, top=3):
     """這一輪實跑的那幾支「為什麼不能沿用」:原因白話(支數),多的在前。"""
+    # 10-14 公開版新用戶走查:以前只拿 why 去翻、不帶 detail ⇒ 新機器第一次跑(index-degraded:no-rows-files)
+    #   印成「紀錄池讀不了:,…quarantine」(冒號後空白、還叫人修壞列)。紀錄池那一類要帶 detail 才分得出
+    #   「還沒有紀錄」與「真的讀壞了(附原因)」;其他原因的 detail 每支不同(哪個檔改了),照舊只按原因合併。
     import collections
-    c = collections.Counter(r.get("why") for r in tests
-                            if not r.get("reused") and not r.get("unverified") and r.get("why"))
-    return ["%s(%d)" % (_why_text(code), n) for code, n in c.most_common(top)]
+    c = collections.Counter((r.get("why"), str(r.get("why_detail") or "") if r.get("why") == "index-degraded" else "")
+                            for r in tests if not r.get("reused") and not r.get("unverified") and r.get("why"))
+    return ["%s(%d)" % (_why_text(code, detail), n) for (code, detail), n in c.most_common(top)]
 
 
 def shadow_explain_emit(vs, tests, fresh=False):
@@ -1475,7 +1478,8 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
             if isinstance(el, (int, float)):
                 overheads.append(max(0.0, time.monotonic() - t0 - el))
             slow = limit is not None and isinstance(el, (int, float)) and el > limit
-            results.append(_mark_all_skipped(dict(actual, reused=False, baseline_s=b, slow=slow, why=why)))
+            results.append(_mark_all_skipped(dict(actual, reused=False, baseline_s=b, slow=slow, why=why,
+                                                  why_detail=str(detail or ""))))
             _tree_guard(repo, tree_base, results[-1], live)
             if live is not None:
                 _live_done(live, results[-1])
