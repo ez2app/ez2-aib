@@ -14,7 +14,7 @@ is yours to delete); the AI tools and Homebrew.
 """
 # 10-11(the maintainer「有完整移除舊 aib 或所有 aib 的方式嗎」→「照你的建議」):先列出會刪什麼、自動備份記憶、確認(--yes)才刪。
 #   FishMac 實裝:同一個帳號可能同時有開發版 aib(~/.local/bin/aib 是它)和公開版(~/ez2-aib)⇒ 只刪公開版自己的東西;
-#   兩者共用 ~/.ez2-aib ⇒ 還有別的 aib 時 --all 一律不刪。輸出用英文(工具輸出不寫死中文)。
+#   兩者共用 ~/.ez2-aib ⇒ 還有別的 aib 時 --all 一律不刪。輸出走 aib/i18n 四語鍵(10-14 起;原本固定英文)。
 from __future__ import annotations
 
 import argparse
@@ -29,6 +29,16 @@ from pathlib import Path
 PUBLIC_REPO = "github.com/ez2app/ez2-aib"
 BOOT_LABEL = "com.ez2.aib-boot-restore"
 PATH_MARK = "# aib-bootstrap: PATH"
+
+
+def _t(key, **params):
+    """aib/i18n 四語鍵(10-14 新用戶走查第 12 條:LANG=zh_TW 也整段英文);字典出事就印鍵名。"""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "cockpit"))
+        from i18n_lib import t
+        return t(key, params)
+    except Exception:
+        return key
 
 
 def _origin(checkout):
@@ -76,22 +86,22 @@ def plan(home, package_dir, want_all):
         Path(os.path.realpath(link)).parent == (Path(sys.prefix) / "bin").resolve()
     other_aib = (link.exists() or link.is_symlink()) and not ours_link and not pipx_link
     if _is_public_checkout(checkout):
-        remove.append((checkout, "this aib (the copy the one-line installer put here)"))
+        remove.append((checkout, _t("aib.uninstall.what_checkout")))
     elif in_pipx:
-        hints.append("this aib was installed with pipx: remove it with `pipx uninstall ez2-aib`")
+        hints.append(_t("aib.uninstall.hint_pipx"))
     elif pip_installed:
-        hints.append("this aib was installed with pip: remove it with `python3 -m pip uninstall ez2-aib`")
+        hints.append(_t("aib.uninstall.hint_pip"))
     else:
-        keep.append("%s: not an open-source aib checkout (a developer copy?), left as is" % checkout)
+        keep.append(_t("aib.uninstall.keep_devcopy", path=checkout))
     if ours_link:
-        remove.append((link, "the `aib` command (a link to this copy)"))
+        remove.append((link, _t("aib.uninstall.what_link")))
     elif other_aib:
-        keep.append("%s: another aib, left as is (it keeps working)" % link)
+        keep.append(_t("aib.uninstall.keep_other_link", path=link))
     plist = home / "Library" / "LaunchAgents" / (BOOT_LABEL + ".plist")
     if plist.exists() and not other_aib:
-        remove.append((plist, "the boot menu (aib restart install-boot)"))
+        remove.append((plist, _t("aib.uninstall.what_boot")))
     elif plist.exists():
-        keep.append("%s: the boot menu may belong to the other aib, left as is" % plist)
+        keep.append(_t("aib.uninstall.keep_boot", path=plist))
     if not other_aib:
         for name in (".zprofile", ".profile"):
             p = home / name
@@ -103,15 +113,13 @@ def plan(home, package_dir, want_all):
     state, cache = home / ".ez2-aib", home / ".cache" / "ez2-aib"
     if want_all:
         if other_aib:
-            refuse.append("--all: another aib on this machine (%s) shares %s (seats, personas, memory); "
-                          "it was not removed. Remove that aib first, the way it was installed." % (link, state))
+            refuse.append(_t("aib.uninstall.refuse_all_other", link=link, state=state))
         else:
-            for p, what in ((state, "aib's records: seats, personas, memory, handoffs, settings (backed up first)"),
-                            (cache, "aib's cache")):
+            for p, what in ((state, _t("aib.uninstall.what_state")), (cache, _t("aib.uninstall.what_cache"))):
                 if p.exists():
                     remove.append((p, what))
     elif state.exists():
-        keep.append("%s: aib's records (seats, personas, memory); add --all to remove them too" % state)
+        keep.append(_t("aib.uninstall.keep_state", path=state))
     return remove, profiles, keep, refuse, hints
 
 
@@ -123,35 +131,35 @@ def _backup(state, home):
 
 
 def main(argv=None, home=None, package_dir=None):
-    ap = argparse.ArgumentParser(prog="aib uninstall", description=__doc__.split("\n")[0])
-    ap.add_argument("--yes", action="store_true", help="really remove (without it, only list)")
-    ap.add_argument("--all", action="store_true", help="also remove aib's records and cache (backed up first)")
+    ap = argparse.ArgumentParser(prog="aib uninstall", description=_t("aib.uninstall.desc"))
+    ap.add_argument("--yes", action="store_true", help=_t("aib.uninstall.opt_yes"))
+    ap.add_argument("--all", action="store_true", help=_t("aib.uninstall.opt_all"))
     a = ap.parse_args(argv)
     home = Path(home or Path.home())
     package_dir = package_dir or os.environ.get("AIB_PACKAGE_DIR") or str(Path(__file__).resolve().parents[2])
     remove, profiles, keep, refuse, hints = plan(home, package_dir, a.all)
     for r in refuse:
-        print("aib uninstall: refused: " + r)
+        print(_t("aib.uninstall.refused", reason=r))
     if refuse:
         return 3
     if not remove and not profiles:
-        print("aib uninstall: nothing of this aib to remove here")
+        print(_t("aib.uninstall.nothing"))
     for p, what in remove:
-        print("  remove  %s  (%s)" % (p, what))
+        print(_t("aib.uninstall.row_remove", path=p, what=what))
     for p in profiles:
-        print("  edit    %s  (drop the PATH line the installer added)" % p)
+        print(_t("aib.uninstall.row_edit", path=p))
     for k in keep:
-        print("  keep    " + k)
+        print(_t("aib.uninstall.row_keep", text=k))
     for h in hints:
-        print("  note    " + h)
+        print(_t("aib.uninstall.row_note", text=h))
     if not a.yes:
-        print("aib uninstall: nothing was removed; run `aib uninstall%s --yes` to do it" % (" --all" if a.all else ""))
+        print(_t("aib.uninstall.dry_done", cmd="aib uninstall%s --yes" % (" --all" if a.all else "")))
         return 0
     if not remove and not profiles:
         return 0
     state = home / ".ez2-aib"
     if any(p == state for p, _ in remove):
-        print("aib uninstall: saved your records to %s" % _backup(state, home))
+        print(_t("aib.uninstall.backed_up", path=_backup(state, home)))
     if sys.platform == "darwin" and any(p.name == BOOT_LABEL + ".plist" for p, _ in remove):
         subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), BOOT_LABEL)], capture_output=True,
                        stdin=subprocess.DEVNULL, timeout=30)
@@ -162,7 +170,7 @@ def main(argv=None, home=None, package_dir=None):
             p.unlink()
         elif p.is_dir():
             shutil.rmtree(p)
-    print("aib uninstall: done. Open a new terminal window so the old `aib` is forgotten.")
+    print(_t("aib.uninstall.done"))
     return 0
 
 

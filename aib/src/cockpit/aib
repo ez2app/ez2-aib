@@ -116,8 +116,14 @@ export EZ2_AIB_ROOT="$AIB_SOURCE_ROOT"
 # ★ BC 刀錨,必須全檔恰好一次。
 if [ -n "${HOME:-}" ] && [ "$CALLER_CWD" = "$(cd "$HOME" 2>/dev/null && pwd -P)" ]; then
   # 真開席且這個終端會被接走:這行會停在畫面上像錯誤。dry-run 仍印(BC 臂要看見)。
-  if [ "${AIB_DRY_RUN:-0}" = "1" ] || [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ ! -t 0 ]; then
-    printf 'aib: 席位目錄由呼叫者 cwd(%s)改為專案目錄（家目錄不開席）\n' "$CALLER_CWD" >&2
+  # 只看說明(-h / --help、aib --help-cockpit)不開席,不印這行(10-14 新用戶走查第 12 條)。
+  _aib_help_only=0
+  for _a in "$@"; do case "$_a" in -h|--help) _aib_help_only=1 ;; esac; done
+  if [ "$_aib_help_only" = "0" ] && \
+     { [ "${AIB_DRY_RUN:-0}" = "1" ] || [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ ! -t 0 ]; }; then
+    # 這裡還沒設 T_PY3,直接叫字典;字典出事就印鍵名,這行不消失。
+    { "${EZ2_PY3:-python3}" "$HERE/i18n_lib.py" aib.launch.home_cwd_moved --param "cwd=$CALLER_CWD" 2>/dev/null \
+        || printf '%s\n' aib.launch.home_cwd_moved; } >&2
   fi
   CALLER_CWD="$AIB_SOURCE_ROOT"
 fi
@@ -556,15 +562,12 @@ t() {
 }
 
 usage() {
-  local loc
-  for loc in zh-TW en ja ko; do
-    "$T_PY3" "$HERE/i18n_lib.py" --locale "$loc" \
-      --param "version=$EZ2_AIB_VERSION" \
-      aib.help.title aib.help.usage aib.help.providers \
-      aib.help.modes aib.help.role aib.help.new aib.help.again \
-      aib.help.reports_to aib.help.dry_run aib.help.example
-    echo
-  done
+  # 只印使用者的語系(10-14 新用戶走查第 12 條:原本四種語言各印一遍)。
+  "$T_PY3" "$HERE/i18n_lib.py" \
+    --param "version=$EZ2_AIB_VERSION" \
+    aib.help.title aib.help.usage aib.help.providers \
+    aib.help.modes aib.help.role aib.help.new aib.help.again \
+    aib.help.reports_to aib.help.dry_run aib.help.example
 }
 
 die() {
