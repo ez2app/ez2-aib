@@ -413,11 +413,20 @@ def cards_outside_library(vault_root, library_folder, limit=OUTSIDE_LIMIT):
     用戶以為建過的角色怎麼綁不上。不收進來(收哪裡由路由契約定),只列出來讓人知道、知道怎麼搬。
     略過 . 開頭的資料夾(.obsidian、.git、.trash)與角色庫本身。"""
     root = Path(vault_root)
-    lib = (root / library_folder).resolve()
+    lib = root / library_folder
+
+    def is_library(path):
+        # 比「是不是同一個資料夾」,不比路徑字面(審查抓到):macOS 不分大小寫、中文名可能 NFC / NFD 兩種寫法,
+        # 契約寫 10-roles 也開得到 10-Roles —— 比字面會把角色庫本身當成「庫外」。
+        try:
+            return os.path.samefile(str(path), str(lib))
+        except OSError:
+            return False
+
     found = []
     for dirpath, dirnames, filenames in os.walk(str(root)):
         here = Path(dirpath)
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and (here / d).resolve() != lib)
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and not is_library(here / d))
         if CARD_FILE in filenames:
             found.append(str((here / CARD_FILE).relative_to(root)))
     found.sort()

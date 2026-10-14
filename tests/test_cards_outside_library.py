@@ -47,6 +47,21 @@ class CardsOutsideLibrary(unittest.TestCase):
         self.assertIn("06-Work/Old agent/角色.md", text)
         self.assertNotIn(".obsidian", text)
 
+    def test_library_named_in_another_case_is_still_the_library(self):
+        # macOS: the contract may say "10-roles" while the folder is "10-Roles"; both open the same folder, so the
+        # library's own cards must not be reported as outside (review catch).
+        probe = self.vault / "CaseProbe"
+        probe.mkdir()
+        case_insensitive = (self.vault / "caseprobe").exists()
+        probe.rmdir()
+        if not case_insensitive:
+            self.skipTest("case-sensitive file system")
+        sys.path.insert(0, str(ROOT / "aib" / "src" / "memory"))
+        import card_registry
+        paths, total = card_registry.cards_outside_library(self.vault, "10-roles")
+        self.assertEqual(paths, ["06-Work/Old agent/角色.md"])
+        self.assertEqual(total, 1)
+
     def test_scan_summary_lists_them(self):
         r = self.run_([sys.executable, str(SCAN), "scan", "--vault", str(self.vault), "--dry-run"])
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
