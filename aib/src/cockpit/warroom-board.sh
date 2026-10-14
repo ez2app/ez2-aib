@@ -16,11 +16,29 @@ from render.render_lib import clean_data
 # 而那個來源最後一筆停在 08-11 18:41 —— 燈死了 11 天,畫面上恆顯示「⚠ 查無心跳」。
 # 留字面不留功能等於留一顆下次掃描會再長回來的 P,所以整段拔掉,不改預設值。
 OUTLINE = os.environ['EZ2_OUTLINE']
-try:
-    items = parse_outline_file(OUTLINE)
-except Exception:
-    print(' 戰情室:大綱讀取失敗 ' + OUTLINE)
-    raise SystemExit
+
+
+def _t(key, **params):
+    # 走 aib/i18n 四語鍵;字典出事就印鍵名,畫面不因翻譯失敗變空。
+    try:
+        import sys
+        sys.path.insert(0, os.environ.get('EZ2_COCKPIT_DIR', ''))
+        from i18n_lib import t
+        return t(key, params)
+    except Exception:
+        return key
+
+
+# 大綱檔不在(公開版沒附開發大綱、使用者也還沒設 EZ2_OUTLINE)是正常狀態,不是錯誤:
+# 說一句怎麼設,下面的裁示任務照樣列。檔在但讀不了才是錯誤,照舊報錯停在這。
+if os.path.exists(OUTLINE):
+    try:
+        items = parse_outline_file(OUTLINE)
+    except Exception:
+        print(' ' + _t('aib.warroom.outline_unreadable', path=OUTLINE))
+        raise SystemExit
+else:
+    items = None
 
 tasks = {}
 ruling_tasks = []
@@ -52,9 +70,13 @@ except Exception:
 view = min(3, max(1, view))
 
 TREE, WHO, ST = 50, 10, 8
-print(f' 戰情室:{os.path.basename(OUTLINE)}    展開 {view}/3')
-print(' ' + pad('', TREE) + pad('認領', WHO) + pad('板上', ST) + '實況')
-print(' ' + '-' * 100)
+if items is None:
+    print(' ' + _t('aib.warroom.no_outline'))
+    items = []
+else:
+    print(f' 戰情室:{os.path.basename(OUTLINE)}    展開 {view}/3')
+    print(' ' + pad('', TREE) + pad('認領', WHO) + pad('板上', ST) + '實況')
+    print(' ' + '-' * 100)
 
 def parent_of(x):
     return x['id'].rsplit('.', 1)[0] if '.' in x['id'] else None

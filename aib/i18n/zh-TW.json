@@ -1971,5 +1971,7 @@
   "aib.captains_ctl.unique_schema": "無法確認受派艦長唯一性:{file} schema 不符",
   "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
   "aib.captains_ctl.unmeasured": "量不到",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.warroom.no_outline": "戰情室:還沒有專案大綱。把 EZ2_OUTLINE 設成你的大綱檔(Markdown),就會顯示在這裡。",
+  "aib.warroom.outline_unreadable": "戰情室:大綱讀取失敗 {path}"
 }
