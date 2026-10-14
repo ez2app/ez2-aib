@@ -189,8 +189,19 @@ if [ -z "$BIN" ] && [ "$PROVIDER" = "codex" ]; then
   BIN="$(type -P ez2-codex 2>/dev/null || true)"   # 本機 alias 的真身
 fi
 [ -n "$BIN" ] && [ -x "$BIN" ] || {
-  echo "provider-launch: 找不到 provider CLI:$PROVIDER(PATH 內無執行檔)" >&2
-  echo "  這是 ED.4 的前置條件:provider 是訂閱 OAuth CLI,必須真人先安裝並登入。" >&2
+  # 10-14 公開版新用戶走查:講人話(以前寫內部代號 ED.4 / 訂閱 OAuth CLI);說法跟 aib 開席前檢查同一句。
+  #   結束碼 6 = 沒裝:開席那一行看到 6 就不印 --resume(接回一個沒裝的工具沒有意義)。
+  case "$PROVIDER" in
+    claude) _pl_name="Claude Code"; _pl_login="claude" ;;
+    codex) _pl_name="Codex"; _pl_login="codex login" ;;
+    agy) _pl_name="Antigravity"; _pl_login="agy" ;;
+    copilot) _pl_name="GitHub Copilot"; _pl_login="copilot + /login" ;;
+    grok) _pl_name="Grok"; _pl_login="grok login" ;;
+    *) _pl_name="$PROVIDER"; _pl_login="$PROVIDER" ;;
+  esac
+  "${EZ2_PY3:-python3}" "$HERE/i18n_lib.py" --param "provider=$PROVIDER" --param "name=$_pl_name" \
+    --param "login=$_pl_login" aib.err.cli_missing >&2 2>/dev/null \
+    || echo "provider-launch: $PROVIDER is not installed (no '$PROVIDER' command found)" >&2
   exit 6
 }
 
