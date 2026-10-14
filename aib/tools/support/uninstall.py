@@ -165,12 +165,14 @@ def main(argv=None, home=None, package_dir=None):
                        stdin=subprocess.DEVNULL, timeout=30)
     for p in profiles:
         p.write_text(_profile_without_path_line(p.read_text(encoding="utf-8")), encoding="utf-8")
+    # 先翻好再刪:刪的通常就是這份 aib 本身(連字典一起),刪完再查只剩鍵名。
+    done = _t("aib.uninstall.done")
     for p, _ in remove:
         if p.is_symlink() or p.is_file():
             p.unlink()
         elif p.is_dir():
             shutil.rmtree(p)
-    print(_t("aib.uninstall.done"))
+    print(done)
     return 0
 
 

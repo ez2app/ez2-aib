@@ -51,6 +51,24 @@ class HelpUninstallLocale(unittest.TestCase):
         self.assertIn("nothing was removed; run `aib uninstall --yes` to do it", r.stdout)
         self.assertTrue((ROOT / "bin" / "aib").exists())
 
+    def test_uninstall_yes_last_line_still_translated(self):
+        # The real removal deletes this checkout, dictionaries included, before the final "done" line.
+        # Run it on a throwaway copy that looks like a one-line-installer checkout; the real tree is not touched.
+        copy = self.home / "ez2-aib"
+        copy.mkdir()
+        shutil.copytree(ROOT / "aib", copy / "aib", ignore=shutil.ignore_patterns("__pycache__", "tests"))
+        shutil.copytree(ROOT / "bin", copy / "bin")
+        for git in (["init", "-q"], ["remote", "add", "origin", "https://github.com/ez2app/ez2-aib.git"]):
+            subprocess.run(["git"] + git, cwd=copy, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(self.home), "EZ2_AIB_LOCALE": "zh-TW"}
+        r = subprocess.run([sys.executable, str(copy / "bin" / "aib"), "uninstall", "--yes"], cwd=self.home,
+                           env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(copy.exists(), r.stdout)
+        self.assertIn("完成", r.stdout.strip().splitlines()[-1])
+        self.assertNotIn("aib.uninstall.", r.stdout)
+        self.assertTrue((ROOT / "bin" / "aib").exists())
+
     def test_install_header_url_matches_readme(self):
         readme = re.findall(r"curl -fsSL (\S+/install\.sh) \| bash", (ROOT / "README.md").read_text(encoding="utf-8"))
         header = re.findall(r"curl -fsSL (\S+/install\.sh) \| bash", "".join(
