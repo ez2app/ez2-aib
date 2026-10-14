@@ -1506,6 +1506,8 @@
   "aib.ship.prompt": "要發版請打出版號 {version} 後按 Enter(其他任何輸入都取消):",
   "aib.ship.cancel": "取消:輸入的不是 {version}",
   "aib.ship.no_start": "找不到規則起點({path} 的加入顆);淺複本請先 git fetch --unshallow",
+  "aib.ship.no_commits": "這個專案還沒有任何提交:先 git add 與 git commit 一次,再跑 aib ship",
+  "aib.ship.no_origin": "這個專案還沒有設定遠端 origin(推上去的地方):先 git remote add origin <網址>,再跑 aib ship package",
   "aib.ship.check_summary": "形狀檢查:{n} 顆提交,違規 {total}",
   "aib.ship.check_gate_no_base": "抓不到最新主線({what});用 --base 指定",
   "aib.ship.check_gate_not_rebased": "這個分支沒疊在 {what} 上:先 git rebase {what} 再檢查(推包時會在最新主線上跑)",

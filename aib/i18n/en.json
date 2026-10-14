@@ -1506,6 +1506,8 @@
   "aib.ship.prompt": "to release, type the version {version} and press Enter (anything else cancels): ",
   "aib.ship.cancel": "cancelled: the input was not {version}",
   "aib.ship.no_start": "cannot find where the rule starts (the commit adding {path}); for a shallow clone run git fetch --unshallow first",
+  "aib.ship.no_commits": "this project has no commits yet: run git add and git commit once, then run aib ship again",
+  "aib.ship.no_origin": "this project has no remote named origin (where packages are pushed): run git remote add origin <url>, then aib ship package",
   "aib.ship.check_summary": "shape check: {n} commits, {total} violations",
   "aib.ship.check_gate_no_base": "could not fetch the latest main ({what}); pass --base",
   "aib.ship.check_gate_not_rebased": "this branch is not on top of {what}: run git rebase {what} first (the push runs on the latest main)",

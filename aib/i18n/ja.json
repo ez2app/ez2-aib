@@ -1506,6 +1506,8 @@
   "aib.ship.prompt": "リリースするにはバージョン {version} を入力して Enter(それ以外はキャンセル):",
   "aib.ship.cancel": "キャンセル:入力が {version} ではありません",
   "aib.ship.no_start": "ルールの起点が見つかりません({path} を追加したコミット);浅いクローンは先に git fetch --unshallow",
+  "aib.ship.no_commits": "このプロジェクトにはまだコミットがありません:先に git add と git commit を一度行ってから aib ship を実行してください",
+  "aib.ship.no_origin": "このプロジェクトにはリモート origin(プッシュ先)がありません:git remote add origin <URL> の後に aib ship package を実行してください",
   "aib.ship.check_summary": "形チェック:コミット {n} 件、違反 {total}",
   "aib.ship.check_gate_no_base": "最新の main を取得できません({what})。--base で指定してください",
   "aib.ship.check_gate_not_rebased": "このブランチは {what} の上にありません:先に git rebase {what} してください(プッシュは最新の main で走ります)",

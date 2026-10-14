@@ -1506,6 +1506,8 @@
   "aib.ship.prompt": "릴리스하려면 버전 {version}을 입력하고 Enter(다른 입력은 취소): ",
   "aib.ship.cancel": "취소: 입력이 {version}이 아님",
   "aib.ship.no_start": "규칙 시작점을 찾을 수 없음({path}를 추가한 커밋); 얕은 복제는 먼저 git fetch --unshallow",
+  "aib.ship.no_commits": "이 프로젝트에는 아직 커밋이 없습니다: 먼저 git add 와 git commit 을 한 번 한 뒤 aib ship 을 다시 실행하세요",
+  "aib.ship.no_origin": "이 프로젝트에는 원격 origin(푸시할 곳)이 없습니다: git remote add origin <URL> 후 aib ship package 를 실행하세요",
   "aib.ship.check_summary": "형태 점검: 커밋 {n}개, 위반 {total}",
   "aib.ship.check_gate_no_base": "최신 main 을 가져오지 못했습니다({what}). --base 로 지정하세요",
   "aib.ship.check_gate_not_rebased": "이 브랜치는 {what} 위에 있지 않습니다: 먼저 git rebase {what} 하세요(푸시는 최신 main 에서 돕니다)",

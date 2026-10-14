@@ -124,9 +124,16 @@ def policy_start(repo, rev="HEAD", prof=None):
     return out[-1] if out else None
 
 
+def has_commits(repo):
+    """這個倉有沒有任何提交(新專案 git init 完還沒 commit ⇒ False)。"""
+    return bool(git(repo, "rev-parse", "-q", "--verify", "HEAD", check=False).strip())
+
+
 def first_parent(repo, since_incl, rev="HEAD"):
-    shas = git(repo, "rev-list", "--first-parent", "--reverse", "%s^..%s" % (since_incl, rev)).split()
-    return shas
+    # 10-14 新用戶走查:規則起點是根提交(第一顆就加了 .aib/ship.toml)⇒ 沒有 since^,從根算起
+    if git(repo, "rev-parse", "-q", "--verify", since_incl + "^", check=False).strip():
+        return git(repo, "rev-list", "--first-parent", "--reverse", "%s^..%s" % (since_incl, rev)).split()
+    return git(repo, "rev-list", "--first-parent", "--reverse", rev).split()
 
 
 def check_range(repo, since_incl, rev="HEAD", prof=None):
@@ -1041,6 +1048,9 @@ def cmd_check_gate(a):
 def cmd_check(a):
     if getattr(a, "gate", False):
         return cmd_check_gate(a)
+    if not has_commits(a.repo):
+        print(T("no_commits"))
+        return 2
     since = a.since or policy_start(a.repo, a.rev, a.prof)
     if since is None:
         print(T("no_start", {"path": a.prof.policy_start_file}))
@@ -1253,6 +1263,13 @@ def cmd_package(a):
     A) 自己拿機器租約、綁自己的 pid(外層殼死了租約不跟著死),結束一定放;
        租約已被「自己或呼叫自己的殼」拿著 ⇒ 沿用,不重拿也不放(相容先拿鎖再起 ship 的排隊腳本);
     登記 <git dir>/aib-ship-running/<pid>,讓 host_lease 在持有者死了時看得到「這棵樹還有推包在跑」而不准接管(提案 C)。"""
+    # 10-14 新用戶走查:新專案還沒提交 / 還沒設遠端 ⇒ 說一句人話,不噴 git 的 traceback
+    if not has_commits(a.repo):
+        print(T("no_commits"))
+        return 2
+    if not git(a.repo, "remote", "get-url", "origin", check=False).strip():
+        print(T("no_origin"))
+        return 2
     if getattr(a, "preview", False):
         return _cmd_package_body(a)
     # 10-09 D11(a seat 提的第 1 種撞法):有人在共用 clone 的 tests/ 暫放沒追蹤的檔,推前檢查照樣撿去跑、打到別人的閘。
