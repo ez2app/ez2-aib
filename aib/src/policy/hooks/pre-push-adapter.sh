@@ -51,6 +51,10 @@ if [ -n "$RELEASE_GATE" ]; then
     if [ -n "${AIB_B8_MAIN_PUSH_RECEIPT:-}" ]; then
       B8_ARGS+=(--receipt "$AIB_B8_MAIN_PUSH_RECEIPT")
     fi
+    # 推包收據(10-14):ship.py 推 main 前寫、只帶給這一次 git push;B8 收據優先,閘裡驗綁定
+    if [ -n "${AIB_B8_SHIP_RECEIPT:-}" ]; then
+      B8_ARGS+=(--ship-receipt "$AIB_B8_SHIP_RECEIPT")
+    fi
     # GATE_NEW_UNLABELED_PINNED
     B8_ARGS+=(--gate-new-unlabeled-pinned)
     python3 "$B8_GATE" "${B8_ARGS[@]}" < "$REF_INPUT"

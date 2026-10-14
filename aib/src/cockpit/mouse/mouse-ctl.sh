@@ -1250,7 +1250,7 @@ MOUSE_CONDITION='#{&&:#{!=:#{@aib_role},hub},#{&&:#{==:#{@aib_cockpit},1},#{||:#
       #   目錄在且寫得進去才 `exec >>紀錄檔 2>&1`,否則把 stdout 關掉(run-shell 有輸出會把格切進 view-mode;
       #   不准 /dev/null,見 test-mouse);主指令**一定跑**,再 exit 0。
       #   (先判「寫得進去」再 exec:/bin/sh 是 POSIX 模式,exec 的重導失敗會讓整個殼直接結束。)
-      # ★ review r4 m2:上面「狀態根 + instances/<session 名去掉 aib->/cockpit」對主艙(session acb131,狀態目錄 $r/cockpit)
+      # ★ review r4 m2:上面「狀態根 + instances/<session 名去掉 aib->/cockpit」對主艙(session aib-main,狀態目錄 $r/cockpit)
       #   與設了 EZ2_COCKPIT_STATE_DIR 的艙都是錯的目錄 ⇒ 佇列寫不進、紀錄檔開不了。改讀那一艙自己的 session 選項
       #   @aib_state_dir(cockpit-full.sh 建艙時設,right-scroll-wheel.sh 早就讀它):佇列與紀錄檔都在那個目錄。
       #   沒設(非 AIB 艙)⇒ d 是空字串 ⇒ 不重導(關 stdout)、佇列那句寫不進(stderr 已關,不印),主指令照跑。
@@ -1272,7 +1272,7 @@ MOUSE_CONDITION='#{&&:#{!=:#{@aib_role},hub},#{&&:#{==:#{@aib_cockpit},1},#{||:#
       #   後面的往前遞補(待審框沒設 @aib_role 時 scroll-hub-wheel.sh 會把 pending-review 讀成 role)。
       #   `role=` 就算值是空的也佔一格;scroll-hub-wheel.sh 兩種寫法都認(舊的位置式呼叫照舊)。
       WHEEL_AIB_MARKED_CONDITION='#{&&:#{==:#{@aib_cockpit},1},#{||:#{!=:#{@aib_pane},},#{!=:#{@aib_role},}}}'   # r6-m1-aib-marked
-      WHEEL_OTHER_CMD="if-shell -F -t= '$WHEEL_HUB_CONDITION' { run-shell -b -t= '$WHEEL_RUNSHELL_REDIR; bash $SCROLL_HUB_Q $_wlower #{q:session_name} role=#{q:@aib_role} pane=#{q:@aib_pane}; exit 0' } { if-shell -F -t= '$WHEEL_AIB_MARKED_CONDITION' { run-shell -b true } { $_wfallback } }"
+      WHEEL_OTHER_CMD="if-shell -F -t= '$WHEEL_HUB_CONDITION' { run-shell -b -t= '$WHEEL_RUNSHELL_REDIR; bash $SCROLL_HUB_Q $_wlower #{q:session_name} role=#{q:@aib_role} pane=#{q:@aib_pane} mx=#{mouse_x} my=#{mouse_y}; exit 0' } { if-shell -F -t= '$WHEEL_AIB_MARKED_CONDITION' { run-shell -b true } { $_wfallback } }"
       run env -u TMUX tmux bind-key -n "Wheel${_wdir}Pane" \
         if-shell -F -t= "#{&&:#{==:#{@aib_cockpit},1},#{==:#{@aib_pane},ai-list}}" \
           "run-shell -b -t= '$WHEEL_RUNSHELL_REDIR; printf \"%s\\n\" $_wlower > \"\$d/.scroll-wheel.q/e-\$\$-\$RANDOM\"; exit 0'" \

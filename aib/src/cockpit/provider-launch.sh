@@ -281,6 +281,33 @@ aib_claude_session_exists() {
 if [ "$PROVIDER" = "claude" ] && [ -t 0 ] && [ -f "$HERE/../policy/hooks/aib-now-gate.py" ]; then
   "${EZ2_PY3:-python3}" "$HERE/../policy/hooks/aib-now-gate.py" ensure </dev/null || true
 fi
+# 10-13 a seat(the maintainer「10/30/50/70 自動精煉人格與專案第二大腦」,a seat 13:56 准照 aib-now-gate 做法):
+#   同一個條件下確認依用量自動精煉的 UserPromptSubmit hook 有裝;AIB_AUTO_DISTILL=0 關。
+if [ "$PROVIDER" = "claude" ] && [ -t 0 ] && [ -f "$HERE/../identity/auto_distill_hook.py" ]; then
+  "${EZ2_PY3:-python3}" "$HERE/../identity/auto_distill_hook.py" ensure </dev/null || true
+fi
+# 非 Claude 席:一輪結束 hook(各家格式不同;a seat / a seat 10-13 實測)。Codex 新 hook 要 the maintainer 在 /hooks 信任一次。
+case "$PROVIDER" in
+  grok|copilot|agy|codex)
+    if [ -t 0 ] && [ -f "$HERE/../identity/auto_distill_hook.py" ]; then
+      "${EZ2_PY3:-python3}" "$HERE/../identity/auto_distill_hook.py" "ensure-$PROVIDER" </dev/null || true
+    fi ;;
+esac
+# 10-13 a seat(the maintainer「所有的ai只要選單有選項,都應該自動判斷選擇」「五家都要做第一層」):選單一出現就觸發 AI 選
+#   (Claude / Grok 的 Notification permission_prompt;Grok 也讀 ~/.claude/settings.json,重複觸發 2 秒內只算一次)。
+#   同一個條件:只在有終端機時裝;AIB_MENU_PICK=0 關。
+if { [ "$PROVIDER" = "claude" ] || [ "$PROVIDER" = "grok" ]; } && [ -t 0 ] && [ -f "$HERE/menu_pick.py" ]; then
+  "${EZ2_PY3:-python3}" "$HERE/menu_pick.py" ensure </dev/null || true
+fi
+# Codex:PermissionRequest(核准提示出現前就讓 AI 決定);新 hook 要 the maintainer 在 Codex /hooks 信任一次才會跑。
+if { [ "$PROVIDER" = "agy" ] || [ "$PROVIDER" = "copilot" ] || [ "$PROVIDER" = "codex" ]; } && [ -t 0 ] && [ -f "$HERE/menu_pick.py" ]; then
+  "${EZ2_PY3:-python3}" "$HERE/menu_pick.py" "ensure-$PROVIDER" </dev/null || true
+fi
+# 10-14 a seat(the maintainer 02:3x「Codex /hooks 信任要自動」):上面兩段裝完,AIB 自己的掛點還沒信任 ⇒ Mac 彈窗
+#   [同意][不要],30 秒沒按 = 同意;同意才寫 config.toml 的 trusted_hash(先備份)。別人的掛點不碰;AIB_CODEX_HOOK_TRUST=0 關。
+if [ "$PROVIDER" = "codex" ] && [ -t 0 ] && [ -f "$HERE/codex_hook_trust.py" ]; then
+  "${EZ2_PY3:-python3}" "$HERE/codex_hook_trust.py" ensure </dev/null || true
+fi
 case "$PROVIDER" in
   claude|grok)
     if [ -n "$SESSION_UUID" ]; then

@@ -12,7 +12,7 @@ server 變成連不上的孤兒。當時 61 支輪詢腳本,只有 8 支是給�
 「一艙」與「艙外」:
 
   目標種類(target kind)與判決(verdict):
-    inst:<N>       AIB instance(外殼 session aib-N / main=acb131 + 內艙 -L aihub-N)
+    inst:<N>       AIB instance(外殼 session aib-N / main=aib-main + 內艙 -L aihub-N)
                    active        有人接著(外殼有 client、或內艙有人直接 attach)或
                                  有席位在工作
                    unknown       detach 但至少一席量不到活動訊號 → **fail-closed 不收**
@@ -212,7 +212,7 @@ def reexec_if_changed(argv=None, now=None):
     os.execv(sys.executable, [sys.executable, me] + args)
     return False                    # execv 不回來;留著讓「它回來了」不會靜靜往下走
 
-MAIN_SESSION = "acb131"      # cockpit-env.sh 的 _AIB_DEFAULT_SESSION(main)
+MAIN_SESSION = "aib-main"    # 主艙外殼 session(與艙解析器同一字)
 MAIN_HUB = "aihub"
 
 COCKPIT_SCRIPT_RE = re.compile(
@@ -225,7 +225,7 @@ RESIDUE_CLASSES = ("test_residue", "orphan_server", "orphan_script", "dead_inner
 IDLE_CLASSES = ("detached_idle",)
 AUTO_CLASSES = RESIDUE_CLASSES + IDLE_CLASSES     # cli 永不在此
 AUTO_MIN_AGE_FLOOR_S = 60                          # 自動路徑硬地板,名單壓不破
-WATCH_ARGS_RE = re.compile(r"idle_reaper\.py\s+watch(\s|$)")   # 常駐窗自我辨識
+WATCH_ARGS_RE = re.compile(r"(idle_reaper|menu_pick)\.py\s+watch(\s|$)")   # 常駐窗自我辨識(10-13 加 sys.menu 選單自動選窗)
 LOCK_PATH = os.environ.get("EZ2_AIB_IDLE_LOCK") \
     or os.path.join(AIB_MAIN_HOME, "idle-reaper.lock")
 

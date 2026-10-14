@@ -141,10 +141,73 @@ def prefixed(prefix, locale, i18n_dir=None):
     return {k: v for k, v in data.items() if isinstance(k, str) and k.startswith(prefix)}
 
 
-def resolve_locale(explicit=None, env=None):
+# 10-14 aib-languages(the maintainer「所有介面即時切換語言」):語系多兩層**設定檔**,排在環境變數之下、預設之上。
+#   艙檔 $EZ2_AIB_INSTANCE_HOME/locale(這一艙)> 人檔 <狀態根>/locale(這台全部艙;狀態根向 seats_dir_lib 單源要)。
+#   檔內一行語系代碼。不合法的值**具名拒收**(stderr 一行,每行程每檔一次)退回下一層,不靜默當預設 ——
+#   打錯字跟沒設過在畫面上不得同形。環境變數仍在檔案之上:測試與明示覆蓋靠它;所以 `aib lang` 不碰 tmux 全域環境。
+LOCALE_FILE_NAME = "locale"
+_LOCALE_FILE_WARNED = set()
+
+
+def _state_root_for_locale(env):
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))     # python3 -I 不把腳本目錄放進 sys.path(mod 與 pane 都用 -I 叫本檔)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import seats_dir_lib
+        return seats_dir_lib.state_root(env)[0]
+    except Exception:  # noqa: BLE001 - 公開版若沒帶 seats_dir_lib:只認預設根,不另抄一份 env 順位
+        return os.path.expanduser("~/.ez2-aib")
+
+
+def locale_file_candidates(env=None):
+    """[(層名, 路徑)],高到低:cabin(艙檔)、user(人檔)。純函數,不碰檔案系統。"""
     env = os.environ if env is None else env
-    selected = explicit or env.get("EZ2_AIB_LOCALE") or DEFAULT_LOCALE
-    return normalize_locale(selected) or DEFAULT_LOCALE
+    out = []
+    inst = env.get("EZ2_AIB_INSTANCE_HOME")
+    if inst:
+        out.append(("cabin", os.path.join(inst, LOCALE_FILE_NAME)))
+    out.append(("user", os.path.join(_state_root_for_locale(env), LOCALE_FILE_NAME)))
+    return out
+
+
+def _locale_from_files(env):
+    for layer, path in locale_file_candidates(env):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = fh.readline().strip()
+        except OSError:
+            continue
+        loc = normalize_locale(raw)
+        if loc:
+            return loc, layer, path
+        if path not in _LOCALE_FILE_WARNED:
+            _LOCALE_FILE_WARNED.add(path)
+            print("i18n: locale file %s has an unsupported value %r; ignored, falling back"
+                  % (path, raw[:40]), file=sys.stderr)
+    return None, None, None
+
+
+def resolve_locale_source(explicit=None, env=None):
+    """(語系, 來源)。來源 ∈ explicit / env / cabin / user / default;`aib lang` 要答得出「現在這個語系從哪來」。"""
+    env = os.environ if env is None else env
+    if explicit:
+        return normalize_locale(explicit) or DEFAULT_LOCALE, "explicit"
+    if env.get("EZ2_AIB_LOCALE"):
+        return normalize_locale(env.get("EZ2_AIB_LOCALE")) or DEFAULT_LOCALE, "env"
+    loc, layer, _path = _locale_from_files(env)
+    if loc:
+        return loc, layer
+    # 系統語言提示(a seat 10-14 04:41 提案):公開版 cli 從 LANG 猜到的值放這裡,排在設定檔**之後**、預設之前 ——
+    #   放 EZ2_AIB_LOCALE 的話 env 永遠壓著設定檔,之後 aib lang 怎麼切都切不動。只認合法值;不合法當沒設。
+    system = normalize_locale(env.get("EZ2_AIB_LOCALE_SYSTEM"))
+    if system:
+        return system, "system"
+    return DEFAULT_LOCALE, "default"
+
+
+def resolve_locale(explicit=None, env=None):
+    return resolve_locale_source(explicit, env)[0]
 
 
 def interpolate(template, params):
@@ -281,12 +344,24 @@ def t(key, params=None, locale=None, i18n_dir=None):
 
 
 def _main(argv):
+    """--json:鍵值印成一個 JSON object(mod 一次拿整組);--prefix P:拿這個前綴底下全部鍵(配 --json);
+    --resolve:印 {locale, source, files}(mod / 網頁問「現在是哪個語系、從哪來」)。"""
     locale, params, keys = None, {}, []
+    as_json, prefix, resolve_only = False, None, False
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == "--locale" and i + 1 < len(argv):
             locale = argv[i + 1]
+            i += 2
+        elif a == "--json":
+            as_json = True
+            i += 1
+        elif a == "--resolve":
+            resolve_only = True
+            i += 1
+        elif a == "--prefix" and i + 1 < len(argv):
+            prefix = argv[i + 1]
             i += 2
         elif a == "--param" and i + 1 < len(argv):
             k, _, v = argv[i + 1].partition("=")
@@ -295,8 +370,21 @@ def _main(argv):
         else:
             keys.append(a)
             i += 1
+    if resolve_only:
+        loc, src = resolve_locale_source(locale)
+        print(json.dumps({"locale": loc, "source": src, "choices": list(CANONICAL_LOCALES),
+                          "files": {layer: path for layer, path in locale_file_candidates()}},
+                         ensure_ascii=False, sort_keys=True))
+        return 0
+    if prefix:
+        loc = resolve_locale(locale)
+        data = prefixed(prefix, loc)
+        if loc != FALLBACK_LOCALE:                      # 缺譯補 en,同 t() 的 fallback
+            data = dict(prefixed(prefix, FALLBACK_LOCALE), **data)
+        print(json.dumps(data, ensure_ascii=False, sort_keys=True))
+        return 0
     if not keys:
-        print("usage: i18n_lib.py [--locale L] [--param k=v]... KEY [KEY...]",
+        print("usage: i18n_lib.py [--locale L] [--param k=v]... [--json] KEY [KEY...] | --prefix P --json | --resolve",
               file=sys.stderr)
         return 2
     try:
@@ -304,6 +392,9 @@ def _main(argv):
     except I18nError as err:
         print(str(err), file=sys.stderr)
         return 1
+    if as_json:
+        print(json.dumps({key: tr.t(key, params) for key in keys}, ensure_ascii=False, sort_keys=True))
+        return 0
     for key in keys:
         print(tr.t(key, params))
     return 0

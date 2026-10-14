@@ -2,6 +2,19 @@
 
 # aib
 
+### AI Basic to AI Best
+
+**Every great AI starts from a good foundation.**
+
+aib stands for *AI Basic*, and that is the whole idea: be the best foundation for AI. Every vendor's AI keeps getting stronger,
+but putting them to real work still needs common ground: AIs that work side by side, each with its own persona and memory,
+handing over without losing a beat, with a safety net under every change. aib is that ground. On it, you build your own best AI.
+
+Our goal is **the easiest-to-use, most human-friendly foundation for AI tools**: one line to install, no architecture to learn.
+Talk to your AIs the way you already do, and let aib handle the rest. We also want leading a team of AIs to feel like a game:
+every AI is a virtual buddy you can see, so you can tell what it is busy with and how tired it is, and hand it work with a click
+(virtual buddies will come first as a Claude Code mod; still in development and not open to the public yet).
+
 **Many AIs, one workspace: bring in AI tools from any vendor for free, give every seat its own persona, expertise and
 project memory, and let any AI pick up where another left off — even after a sudden disconnect.**
 

@@ -181,6 +181,59 @@ def _test_files(repo):
     return sorted(out)
 
 
+def _git_out(repo, *args):
+    p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+    return p.returncode, p.stdout
+
+
+def changed_base(repo, base=""):
+    """--changed 的比較基準:給了就用;沒給 ⇒ HEAD 與遠端 main(origin/main,沒有再試 github/main)的分岔點。解不出 ⇒ None。"""
+    for ref in ([base] if base else ["origin/main", "github/main"]):
+        rc, out = _git_out(repo, "merge-base", "HEAD", ref)
+        if rc == 0 and out.strip():
+            return out.strip(), ref
+    return None, base or "origin/main"
+
+
+def changed_tests(repo, base=""):
+    """aib test --changed(10-13 the maintainer 裁,取代 aib deliver):依改動挑測試,挑法與推包推前檢查同一支 select_changed.py。
+    改動 = 基準到「工作樹」(已追蹤的,提交了沒都算;select_changed 也比對改到的函式名)∪ 還沒追蹤的新檔(另送一次補挑;
+    select_changed 只看 git diff,新加的測試 / 產品檔它看不到 —— 漏挑的樣子是綠的)。
+    ★ 走子行程,不 import select_changed(同 lease_note 的 24d 說明:本檔被幾十支測試 in-process 載入)。
+    回 (清單, 說明 dict);挑不出來 ⇒ (None, 說明),呼叫端 rc 2,不偷偷跑全套也不偷偷跑窄集合。"""
+    mb, ref = changed_base(repo, base)
+    info = {"ref": ref, "base": (mb or "")[:9], "untracked": 0, "picked": 0}
+    if mb is None:
+        info["why"] = "no-base"
+        return None, info
+    tool = ENTRY_ROOT / "tools" / "verify" / "select_changed.py"
+    if not tool.is_file():
+        info["why"] = "no-selector"
+        return None, info
+
+    def pick(*args, stdin=None):
+        p = subprocess.run([sys.executable, str(tool), "--repo", str(repo), "--print-tests", *args], input=stdin,
+                           capture_output=True, text=True, timeout=1800, **({} if stdin is not None else {"stdin": subprocess.DEVNULL}))
+        if p.returncode != 0:
+            raise RuntimeError((p.stderr or p.stdout).strip()[-300:])
+        return [ln.strip() for ln in p.stdout.splitlines() if ln.strip().startswith("tests/")]
+
+    try:
+        names = pick("--base", mb)                       # --head 不給 = 跟工作樹比(含沒提交的追蹤檔)
+        rc, out = _git_out(repo, "ls-files", "--others", "--exclude-standard")
+        new = [l.strip() for l in out.splitlines() if l.strip()] if rc == 0 else []
+        info["untracked"] = len(new)
+        if new:
+            names += pick("--changed", "-", stdin="\n".join(new) + "\n")
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        info["why"] = "select-failed: %s" % e
+        return None, info
+    have = set(all_tests(repo))
+    picked = sorted(dict.fromkeys(n for n in names if n in have))
+    info["picked"] = len(picked)
+    return picked, info
+
+
 def guard_tests(repo):
     """守衛類:只看檔名(規則 GUARD_NAME_RE)"""
     return [rel for rel, p in _test_files(repo) if GUARD_NAME_RE.match(p.name)]
@@ -315,6 +368,25 @@ def versus_lines(vs, before):
     out.append(T("vs_total" if tot >= act else "vs_total_plain", {"n": len(rows), "total": dur_text(tot), "actual": dur_text(act),
                                                                   "seconds": dur_text(max(0.0, tot - act))}))
     return out
+
+
+def rerun_causes(tests, top=3):
+    """這一輪實跑的那幾支「為什麼不能沿用」:原因白話(支數),多的在前。"""
+    import collections
+    c = collections.Counter(r.get("why") for r in tests
+                            if not r.get("reused") and not r.get("unverified") and r.get("why"))
+    return ["%s(%d)" % (_why_text(code), n) for code, n in c.most_common(top)]
+
+
+def shadow_explain_emit(vs, tests, fresh=False):
+    """the maintainer 10-13 19:4x:「如果開影子續跑,一定要列出說明」—— 收尾一定印、一定記(tools/verify/shadow_explain.py)。
+    推前檢查的分片(--resume)不走這裡,由 pushgate 自己印整輪的那一段。"""
+    try:
+        import shadow_explain
+        shadow_explain.emit("aib test", dur_text, reused=vs["reused"], skipped=0, ran=vs["ran"],
+                            without_s=vs["without_s"], actual_s=vs["with_s"], causes=rerun_causes(tests), fresh=fresh)
+    except Exception as e:  # noqa: BLE001
+        print("shadow-explain: %s: %s" % (type(e).__name__, e))
 
 
 def self_check():
@@ -1110,9 +1182,9 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
     run_id = "aib-test-%d-%d" % (os.getpid(), int(time.time()))
     owner = "aib test" + ((" @" + os.environ["AIB_SEAT_CODE"]) if os.environ.get("AIB_SEAT_CODE") else "")
     what = "aib test %d %s" % (n_tests, Path(repo).name)
-    t0 = clock()
     cap = _env_int("AIB_TEST_LEASE_WAIT_MAX_S", LEASE_WAIT_MAX_S)
-    ttl = lease_ttl(repo, names or [])
+    ttl = lease_ttl(repo, names or [])     # 讀歷史秒數要幾秒(紀錄大時 2 秒多)⇒ 先算好再起表,不然沒等也說「等了 2 秒」(10-14)
+    t0 = clock()
     first, queued, said = True, False, False
 
     def leave(why):
@@ -1403,7 +1475,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
             if isinstance(el, (int, float)):
                 overheads.append(max(0.0, time.monotonic() - t0 - el))
             slow = limit is not None and isinstance(el, (int, float)) and el > limit
-            results.append(_mark_all_skipped(dict(actual, reused=False, baseline_s=b, slow=slow)))
+            results.append(_mark_all_skipped(dict(actual, reused=False, baseline_s=b, slow=slow, why=why)))
             _tree_guard(repo, tree_base, results[-1], live)
             if live is not None:
                 _live_done(live, results[-1])
@@ -1567,13 +1639,16 @@ def main(argv=None):
     ap.add_argument("--overhead", action="store_true")   # 10-08:量追蹤讓每支慢多少(每支跑兩次)
     ap.add_argument("--exclusive", action="store_true")  # 10-13:要量耗時 ⇒ 不管幾支都拿租約並標獨佔(小批也不准並跑)
     ap.add_argument("--wait", action="store_true")       # 10-13:小批遇到別人的獨佔租約 ⇒ 排隊等,不是直接停
+    ap.add_argument("--changed", action="store_true")    # 10-13(取代 aib deliver):依改動挑測試,挑法同推包 select_changed
+    ap.add_argument("--base", default="")                # --changed 的比較基準(預設 HEAD 與遠端 main 的分岔點)
+    ap.add_argument("--dry", action="store_true")        # 只列出要跑哪些、幾支、估計幾秒,不跑
     a = ap.parse_args(argv)
     if a.estimate:
         return _estimate(a.repo or os.getcwd(), a.json)
     if a.resume is not None and not _RESUME_NAME_RE.fullmatch(a.resume):
         print(T("resume_badname", {"name": a.resume}), file=sys.stderr)
         return 2
-    if not a.tests and not a.all and not a.guard and not a.scan:
+    if not a.tests and not a.all and not a.guard and not a.scan and not a.changed:
         print(T("usage"), file=sys.stderr)
         return 2
     repo = _repo_of(a.repo or os.getcwd())
@@ -1586,6 +1661,17 @@ def main(argv=None):
             print(T("all_none", {"path": str(repo)}), file=sys.stderr)
             return 2
         a.tests = list(a.tests) + [t for t in found if t not in a.tests]
+    if a.changed:
+        sel, info = changed_tests(repo, a.base)
+        if sel is None:
+            print(T("changed_failed", {"what": info.get("why", "?"), "ref": info["ref"]}), file=sys.stderr)
+            return 2
+        print(T("changed_list", {"n": "%d" % len(sel), "ref": info["ref"], "sha": info["base"], "count": "%d" % info["untracked"]}),
+              file=sys.stderr)
+        if not sel and not a.tests and not a.guard and not a.scan and not a.all:
+            print(T("changed_none"), file=sys.stderr)    # 改動挑不到任何測試 ≠ 綠:說清楚,rc 0 但不假裝跑過
+            return 0
+        a.tests = list(a.tests) + [t for t in sel if t not in a.tests]
     for flag, finder, key in (("guard", guard_tests, "guard_list"), ("scan", scan_tests, "scan_list")):
         if getattr(a, flag):
             picked = finder(repo)   # (變數不叫 found:test-aib-ship-ci 的刀錨 `if not found:` 要在這支檔裡恰好一次)
@@ -1601,6 +1687,16 @@ def main(argv=None):
             print(T(_why_not(repo, arg), {"path": arg, "value": str(repo)}), file=sys.stderr)
             return 2
         names.append(rel)
+    if a.dry:
+        # 10-13:只列不跑。估計 = 紀錄池每支上次實跑秒數(沒有紀錄的照 10 秒算、另外點名);沿用的會更快,這是上限
+        base = baselines(runner._pool_file(repo), names)
+        unknown = [n for n in names if n not in base]
+        est = sum(base.get(n, 10.0) for n in names)
+        for n in names:
+            print(("%7.1f  " % base[n] if n in base else "      ?  ") + n)
+        print(T("dry_summary", {"n": "%d" % len(names), "s": "%.0f" % est, "count": "%d" % len(unknown),
+                                "limit": "%d" % _env_int("AIB_TEST_BIG_BATCH", BIG_BATCH)}))
+        return 0
     if a.cells:
         return _cells(repo, names, a.json)
     if a.overhead:
@@ -1754,6 +1850,7 @@ def _main_run(repo, names, a, live, started, lease, mem):
         for ln in lines:
             print(ln)
         step_summary(lines + (summary_extra(vs, res["tests"]) if lines else []))
+        shadow_explain_emit(vs, res["tests"], fresh=bool(a.fresh))
     sk = [(r["name"], skipped_cells(r.get("output"))) for r in res["tests"] if r["rc"] == 0]
     sk = [(n, c) for n, c in sk if c]
     if sk:       # ★ 綠燈裡跳過的格子:跟沒驗的同一個顯眼程度

@@ -17,6 +17,8 @@ import json
 import os
 import time
 import sys
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "memory"))
+import api_tidy as _api_tidy  # noqa: E402  10-13 依用量自動精煉(API 席每 20 輪)
 import time
 import urllib.error
 import urllib.request
@@ -722,6 +724,18 @@ def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
         if content:
             messages.append({"role": "assistant", "content": content})
             append_history(sess, "assistant", content)
+            # 10-13 a seat(the maintainer「API 席和 Bot 也要能自動更新」「每 20 輪」):這一席的模型不能跑指令 ⇒ 程式代跑整理記憶
+            #   (草稿只帶要改的段 + 最後幾則對話;不帶工具的單次呼叫;填壞就丟、不重試、不擋下一則;src/memory/api_tidy.py)
+            if _api_tidy.tick(sess.name):
+                sys.stdout.write(_api_tidy.run(lambda p: _api_tidy.text_of(completion_message(
+                    base_url=base_url, api_key=api_key, model=model,
+                    messages=_api_tidy.recent(messages) + [{"role": "user", "content": p}])[0])) + "\n")
+                sys.stdout.flush()
+            # 10-13 a seat 第 2 層影子續跑說明:這一席跑過 aib test / 推包還沒回報 ⇒ 程式把那段印在回覆下面(不靠模型抄)
+            _ship = _api_tidy.ship_segment()
+            if _ship:
+                sys.stdout.write(_ship + "\n")
+                sys.stdout.flush()
 
 
 def build_parser():

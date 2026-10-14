@@ -240,6 +240,37 @@ def _persona_mark_sent(base, thread_id, session_uuid, ux, what="codexbot"):
 DELIVERY_UNCERTAIN = "delivery uncertain"     # DesktopRPC.call 逾時那一句;與下面 raise 的字面同一個
 
 
+def _codexbot_distill(session_id):
+    """CodexBot 一輪完成 ⇒ 每 20 輪回一段「請替這一席整理記憶」(桌面對話量不到用量 %;the maintainer 10-13 照 A)。錯 ⇒ 空字串。"""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        ident = os.path.join(here, "..", "identity")
+        if ident not in sys.path:
+            sys.path.append(ident)
+        import auto_distill_hook as adh
+        from seat_address import uuid_tail5
+        import grokbot_mailbox as gm                     # 開席器洗掉 EZ2_AIB_INSTANCE ⇒ 用登記簿反查本席艙位碼
+        cabin = (os.environ.get("AIB_BRIDGE_CABIN") or "").strip() or gm.own_cabin(session_id)
+        return adh.bot_turn(uuid_tail5(session_id) or "", cabin)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _codexbot_ship(session_id):
+    """10-13 a seat 第 2 層影子續跑說明(the maintainer 19:5x「所有 AI 都必要列出」):這一席跑過 aib test / 推包還沒回報
+    ⇒ 回那段,由橋直接印在這一輪回覆下面(程式代補,不靠模型抄)並記成已回報。錯 ⇒ 空字串。"""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        ident = os.path.join(here, "..", "identity")
+        if ident not in sys.path:
+            sys.path.append(ident)
+        import auto_distill_hook as adh
+        from seat_address import uuid_tail5
+        return adh.ship_append(uuid_tail5(session_id) or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _send_maybe_delivered(exc):
     """送出時的錯是不是「可能已經送進去了」(rpc 逾時,契約:勿自動重送)。其他錯(no input sent 等)= 沒送出去。"""
     return DELIVERY_UNCERTAIN in str(exc)
@@ -2016,6 +2047,7 @@ def main(argv=None):
                 return _inp(prompt)
             finally:
                 in_input[0] = False
+        _distill_pending = ""                     # 10-13 依用量自動精煉:要接在下一則前面的整理指示
         persona_sent = _bridge_persona is None   # 基因+人格包:每條對話 × 每一席一次(記號在 codexbot-bindings/<對話>.<席碼>/)
         my_code = (args.session_id or "")[-5:]
         try:
@@ -2142,6 +2174,10 @@ def main(argv=None):
                 if prefix:
                     outgoing = prefix + "\n\n" + outgoing
                     persona_attached = True
+            distill_attached = bool(_distill_pending)
+            if distill_attached:
+                # 10-13 a seat(the maintainer「Bot 也要能自動更新」「每 20 輪」):跟人格包同一招,接在下一則前面,不另開一輪燒額度
+                outgoing = _distill_pending + "\n\n" + outgoing
             if mode == "queue":
                 try:
                     qid = queue_submit(rpc, args.thread_id, outgoing)
@@ -2154,6 +2190,9 @@ def main(argv=None):
                     print("codexbot: 排入佇列失敗:%s(%s)" % (human, str(exc)[:160]), flush=True); continue
                 if persona_attached:
                     persona_sent = _persona_mark_sent(base, args.thread_id, args.session_id or "", ux, pack_what)
+                if distill_attached:
+                    _distill_pending = ""
+                _distill_pending = _codexbot_distill(args.session_id or "") or _distill_pending   # 佇列模式:排進去就算一輪
                 if supervisor.takeover_secs > 0:
                     print("codexbot: 已排入桌面佇列(%s)。持有者閒下來就會執行;%d 秒沒人吃 AIB 會暫時接手。" % (qid, int(supervisor.takeover_secs)), flush=True)
                 else:
@@ -2173,6 +2212,8 @@ def main(argv=None):
                     raise
                 if persona_attached:
                     persona_sent = _persona_mark_sent(base, args.thread_id, args.session_id or "", ux, pack_what)
+                if distill_attached:
+                    _distill_pending = ""                   # 送成功才清(送失敗下一則再接)
                 turn_id = ux.bind_result(result)
                 message.update(state="accepted", result=result, turn_id=turn_id,
                                accepted_epoch=time.time())
@@ -2235,9 +2276,14 @@ def main(argv=None):
                      last_turn_completed_ms=progress["completed_ms"])
                 if turn_status == "completed":
                     health_ok()
+                    _distill_pending = _codexbot_distill(args.session_id or "") or _distill_pending
                 elif turn_status == "failed":
                     health_bad(BridgeError(str((progress.get("turn_error") or {}).get("message") or progress.get("turn_error") or "turn failed")))
                 ux.cancel()
+                if turn_status == "completed":
+                    _ship = _codexbot_ship(args.session_id or "")
+                    if _ship:
+                        ux.notice(_ship)
                 if model_dm_enabled and turn_status == "completed":
                     with ux.condition:
                         finals = [ux.item_text.get(i, "") for i in sorted(ux.final_items)]

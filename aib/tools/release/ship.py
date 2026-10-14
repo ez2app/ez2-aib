@@ -385,8 +385,10 @@ MOVED_ROUNDS = 3      # 10-11 the maintainer「主線動了也能放行」:推�
 
 
 def _is_doc(path):
-    """只認 .md。docs/ 底下也有 .py/.sh/.json(掃描工具、治具、MANIFEST,有測試在讀),不能整個目錄當文件(10-11 審查第二輪)。"""
-    return path.endswith(".md")
+    """只認 .md。docs/ 底下也有 .py/.sh/.json(掃描工具、治具、MANIFEST,有測試在讀),不能整個目錄當文件(10-11 審查第二輪)。
+    10-14:src/ tools/ bin/ 底下的 .md 不算 —— pre-push 的 B8 閘把這三個目錄底下一律當碼(推包收據要求檢查那顆到推的那顆
+    碼類零差),這裡放行疊上去會在推的那一步才被擋、白等重試;兩邊同一把尺,在這裡就說清楚停。"""
+    return path.endswith(".md") and not path.startswith(("src/", "tools/", "bin/"))
 
 
 def _rerun_selected(repo, tests, prof):
@@ -457,9 +459,38 @@ def catch_up_docs_only(repo, branches, expect_remote, remote, prof):
     return None
 
 
-def push(repo, branches, expect_remote, prof=None, pushed_base=None):
+def ship_receipt_env(repo, base, gate, caught_up=False):
+    """10-14(a seat 派):推包樹裝了 pre-push 之後,ship.py 推 main 被 B8 閘擋(碼類 main push 缺收據)。
+    推前寫一張推包收據(b8-machine-rules.ship_receipt_record,落在 B8 證據落點),只帶給這一次 git push。
+    用的是被推那棵樹自己的 b8 程式(pre-push 掛勾驗的也是那一份)。寫不出來 ⇒ 印一行、回 None 照推,讓掛勾照規矩擋。"""
+    f = Path(repo) / "tools" / "governance" / "b8-machine-rules.py"
+    if not f.is_file():
+        return None
+    saved_path = list(sys.path)          # b8 檔頭會把它那棵樹的 src/cockpit、tests 插到最前面,用完還原
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("b8_machine_rules_ship", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        path = mod.ship_receipt_record(git(repo, "rev-parse", "HEAD").strip(), base, gate["head"], gate["rc"],
+                                       gate.get("old_reds", ()), gate.get("unverified", ()),
+                                       gate.get("flaky_allowed", ()), caught_up=caught_up)
+    except Exception as e:  # noqa: BLE001 - 收據寫不出來不擋在這裡,交給 pre-push 掛勾擋
+        print(T("ship_receipt_failed", {"reason": str(e)[:300]}))
+        return None
+    finally:
+        sys.path[:] = saved_path
+    print(T("ship_receipt_written", {"path": path}))
+    env = dict(os.environ, AIB_B8_SHIP_RECEIPT=str(Path(path).resolve()))   # 掛勾的工作目錄不同,給絕對路徑
+    env.pop("AIB_B8_MAIN_PUSH_RECEIPT", None)    # 殼裡留著的舊 B8 收據會蓋過推包收據、驗不過而擋
+    return env
+
+
+def push(repo, branches, expect_remote, prof=None, pushed_base=None, gate=None):
     """prof 有給(推前檢查跑完的那條路)⇒ 主線動了、新來的全是文件時,疊上去重跑受影響的測試再推;
-    沒給(緊急推)⇒ 照舊一動就停。pushed_base(list)有給 ⇒ 推成後放進最後疊上的主線 sha(回報草稿要用疊後的編號)。"""
+    沒給(緊急推)⇒ 照舊一動就停。pushed_base(list)有給 ⇒ 推成後放進最後疊上的主線 sha(回報草稿要用疊後的編號)。
+    gate 有給(推前檢查放行的結果:head / rc / old_reds / unverified / flaky_allowed)⇒ 推前寫推包收據給 pre-push 的 B8 閘;
+    沒給(緊急推)不寫,碼類推 main 照樣被掛勾擋(緊急推要人自己決定)。"""
     pushed_base = pushed_base if pushed_base is not None else []
     start = git(repo, "rev-parse", "HEAD").strip() if prof is not None else ""
     for attempt in range(MOVED_ROUNDS + 1):
@@ -477,12 +508,14 @@ def push(repo, branches, expect_remote, prof=None, pushed_base=None):
                 git(repo, "reset", "-q", "--hard", start)   # 前幾輪已經疊過 ⇒ 退回最一開始,不留疊到中途的樹(審查第三輪)
             raise SystemExit(T("remote_moved", {"what": what}) + "\n" + why)
         expect_remote = remote
+    caught_up = bool(start) and git(repo, "rev-parse", "HEAD").strip() != start
     pushed_base[:] = [expect_remote]
     refs = ["HEAD:main"] + ["HEAD:%s" % b for b in branches]
+    env = ship_receipt_env(repo, expect_remote, gate, caught_up=caught_up) if gate is not None else None
     for d in (0, 2, 4, 8, 16):
         time.sleep(d)
         p = subprocess.run(["git", "-C", str(repo), "push", "origin", *refs], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, env=env)
         if p.returncode == 0:
             sync_canonical(repo)
             return
@@ -610,6 +643,36 @@ def notify_flaky(repo, tests):
         print(T("flaky_dm_sent" if rc == 0 else "flaky_dm_failed", {"what": addr, "rc": rc}))
 
 
+def gate_savings(repo):
+    """這一輪推前檢查省了多少(pushgate 寫在 ship-stats.jsonl 的最後一列):{ran, reused, serial, actual, less, pct}(秒);
+    讀不到 ⇒ None。10-14 the maintainer「為什麼沒有程式化成必要?為什麼能跳過?」:省多少只印在中間那段報表,
+      轉述的人只抓最後的結論行就漏掉 ⇒ 結論行(推成 / 不推)一律帶這一段,也寫進 last-push / last-refuse。"""
+    try:
+        sys.path.insert(0, str(ROOT / "tools" / "verify"))
+        import pushgate
+        rows = [r for r in pushgate.read_stats(repo) if r.get("files_total")]
+        r = rows[-1] if rows else None
+    except Exception:  # noqa: BLE001 - 讀不到就照實說讀不到
+        r = None
+    if not r:
+        return None
+    serial, actual = float(r.get("full_s") or 0), float(r.get("wall_s") or 0)
+    ran = int(r.get("files_ran") or 0)
+    less = max(0.0, serial - actual)
+    return {"ran": ran, "reused": max(0, int(r.get("files_total") or 0) - ran), "serial": serial, "actual": actual,
+            "less": less, "pct": (100.0 * less / serial) if serial > 0 else 0.0}
+
+
+def savings_text(repo, sv=None):
+    sv = sv if sv is not None else gate_savings(repo)
+    if not sv:
+        return T("verdict_savings_none")
+    import pushgate
+    return T("verdict_savings", {"ran": sv["ran"], "reused": sv["reused"], "serial": pushgate.dur_text(sv["serial"]),
+                                 "actual": pushgate.dur_text(sv["actual"]), "seconds": pushgate.dur_text(sv["less"]),
+                                 "pct": "%.0f" % sv["pct"]})
+
+
 def refuse(repo, rc, new, prof, old=(), unverified=(), out="", base=None, allow=False):
     """不推。新的紅先在同一份程式上再跑一次:這次綠了 ⇒ 標「時紅時綠」(還是不推,但說清楚多半不是這一包弄壞的)。
     10-08:擋下這包的測試記下來,下一次推前檢查一律最先跑(pushgate.add_blockers / tiers)。
@@ -643,8 +706,10 @@ def refuse(repo, rc, new, prof, old=(), unverified=(), out="", base=None, allow=
                 print(T("flaky_allowed", {"what": allowed}))
                 notify_flaky(repo, allowed)
                 return allowed
-    record_result(repo, "refuse", rc=rc, new=sorted(new or []), old=sorted(old or []), unverified=sorted(unverified or []))
-    raise SystemExit(T("refuse_push", {"rc": rc, "what": new or T("no_red_rc")}))
+    sv = gate_savings(repo)
+    record_result(repo, "refuse", rc=rc, new=sorted(new or []), old=sorted(old or []), unverified=sorted(unverified or []),
+                  savings=sv)
+    raise SystemExit(T("refuse_push", {"rc": rc, "what": new or T("no_red_rc")}) + " | " + savings_text(repo, sv))
 
 
 def base_reds(repo, base, reds, prof):
@@ -668,6 +733,7 @@ def gate_then_push(repo, branches, base, prof=None, gate_base=None, before_push=
     prof = prof or sp.load(repo)
     gk = {"gate_base": gate_base} if gate_base else {}
     rc, out = run_gate(repo, fail_fast=fail_fast, prof=prof, **gk)
+    gate_head = git(repo, "rev-parse", "HEAD", check=False).strip()    # 推包收據要記檢查跑在哪一顆上
     if rc == EARLY_RED:
         reds = gate_reds(out)
         on_base = base_reds(repo, base, reds, prof)
@@ -692,8 +758,11 @@ def gate_then_push(repo, branches, base, prof=None, gate_base=None, before_push=
     if before_push is not None:
         before_push()
     final = []
-    push(repo, branches, base, prof=prof if catch_up else None, pushed_base=final)   # 發版不追:疊進來的文件會掉出發版說明
-    record_result(repo, "push", old=sorted(on_base & set(reds)), unverified=sorted(unv))
+    gate = {"head": gate_head, "rc": rc, "old_reds": sorted(on_base & set(reds)), "unverified": sorted(unv),
+            "flaky_allowed": list(allowed or [])}
+    push(repo, branches, base, prof=prof if catch_up else None, pushed_base=final,   # 發版不追:疊進來的文件會掉出發版說明
+         gate=gate)
+    record_result(repo, "push", old=sorted(on_base & set(reds)), unverified=sorted(unv), savings=gate_savings(repo))
     return {"old_reds": sorted(on_base & set(reds)), "unverified": sorted(unv), "flaky_allowed": list(allowed or []),
             "pushed_base": final[0] if final else base}
 
@@ -1236,6 +1305,9 @@ def _git_raw(repo, *args, timeout=60):
                           stdin=subprocess.DEVNULL, timeout=timeout)
 
 
+# 10-14:鎖那顆提交自帶作者 —— 沒設過 git 名字的機器(新電腦、測試用的暫存家目錄)commit-tree 會失敗 ⇒ 鎖上不成
+#   (aib test 底下 test-ship-github-lock-* 四支紅的原因)。鎖不是誰的作品,不需要用人的名字。
+LOCK_IDENT = ("-c", "user.name=aib ship", "-c", "user.email=aib-ship@localhost")
 LOCK_POLL_S = 60
 LOCK_PEEK_REF = "refs/aib/lock-peek"
 
@@ -1359,7 +1431,7 @@ def _github_lock_push(repo, branches, now, seen):
         msg = ("mac-ship lock\n\nowner: %s\nhost: %s\nbranch: %s\nstarted: %d\nexpires: %d\n"
                % (os.environ.get("AIB_SHIP_OWNER") or "ship.py", socket.gethostname(),
                   " ".join(branches), now, now + LOCK_TTL_S))
-        p = _git_raw(repo, "commit-tree", tree, "-p", head, "-m", msg)
+        p = _git_raw(repo, *LOCK_IDENT, "commit-tree", tree, "-p", head, "-m", msg)
         sha = p.stdout.strip()
         if p.returncode != 0 or not sha:
             raise RuntimeError(p.stderr.strip()[:160])
@@ -1405,7 +1477,7 @@ def _github_lock_release(repo, sha, now=None):
     tree = _git_raw(repo, "rev-parse", "%s^{tree}" % sha).stdout.strip()
     msg = ("mac-ship lock\n\nowner: %s\nhost: %s\nbranch: released\nstarted: %d\nexpires: %d\n"
            "released: %s\n" % (os.environ.get("AIB_SHIP_OWNER") or "ship.py", socket.gethostname(), now, now, sha))
-    p = _git_raw(repo, "commit-tree", tree, "-p", sha, "-m", msg) if tree else None
+    p = _git_raw(repo, *LOCK_IDENT, "commit-tree", tree, "-p", sha, "-m", msg) if tree else None
     rel = p.stdout.strip() if p is not None and p.returncode == 0 else ""
     if not rel:
         return False
@@ -1511,6 +1583,10 @@ def _cmd_package_body(a):
             shas = [h for h in git(a.repo, "rev-list", "--reverse", "%s..HEAD" % got["pushed_base"]).split()
                     if VERIFIED_TRAILER not in git(a.repo, "log", "-1", "--format=%B", h)] or shas
         report_draft(a.repo, shas, got)
+        announce_savings(a.repo, shas, got)    # 10-13 the maintainer:省多少不靠 AI 記性 ⇒ 推包工具自己送(通知 + 艦長室紀錄 + 待回報記號)
+    # 10-14:最後一行 = 結論 + 省多少(轉述只看最後一行也帶得到;the maintainer「為什麼能跳過?」)
+    print(T("verdict_pushed", {"n": len(shas), "sha": git(a.repo, "rev-parse", "--short", "HEAD").strip(),
+                               "savings": savings_text(a.repo)}))
     return 0
 
 
@@ -1591,6 +1667,96 @@ def report_draft(repo, shas, got):
         print(T("rp_saved", {"path": str(txt or js), "rc": "0" if txt else str(rc)}))
     except Exception as e:  # noqa: BLE001
         print(T("rp_failed", {"reason": "%s: %s" % (type(e).__name__, e)}))
+
+
+def update_result(repo, kind, **fields):
+    """在 record_result 寫好的 last-<kind>-<標籤>.json 上加欄位(讀不到就當空的)。寫不了不影響推包。"""
+    try:
+        f = _ship_result_file(repo, kind)
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            d = {"at": time.time(), "repo": str(repo), "kind": kind}
+        d.update(fields)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(f.name + ".tmp")
+        tmp.write_text(json.dumps(d, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, f)
+        return f
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _pusher_seat():
+    """跑這次推包的是哪一席(TMUX_PANE ⇒ 窗號 ⇒ 席位檔;同 aib-now-gate 的認席)。認不出 ⇒ None。"""
+    try:
+        sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+        import seat_now
+        return seat_now.self_code()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def notify_mac(title, text, runner=None):
+    """Mac 通知(osascript;文字走 argv,不拼進 AppleScript 原始碼)。沒有 osascript / AIB_SHIP_NOTIFY=0 / 失敗 ⇒ 略過,回 False。"""
+    if os.environ.get("AIB_SHIP_NOTIFY") == "0":
+        return False
+    if runner is None:
+        if not shutil.which("osascript"):
+            return False
+        runner = subprocess.run
+    script = "on run argv\n display notification (item 2 of argv) with title (item 1 of argv)\nend run"
+    try:
+        p = runner(["osascript", "-e", script, title, text], capture_output=True, text=True, timeout=10,
+                   stdin=subprocess.DEVNULL)
+        return getattr(p, "returncode", 1) == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def captain_ship_log():
+    """艦長室推包紀錄(一筆一列 JSON):<狀態根>/state/captain-room/ship-log.jsonl。"""
+    root = os.environ.get("EZ2_AIB_STATE_ROOT") or str(Path.home() / ".ez2-aib")
+    return Path(root) / "state" / "captain-room" / "ship-log.jsonl"
+
+
+def announce_savings(repo, shas, got, notifier=None):
+    """10-13 the maintainer「推版前後沒照影子續跑說明可以省的部份,如何程式化讓任何 AI 都不能跳過」(a seat 派工):
+    推成就由推包工具自己把 G2「省多少」四行送出去,不經 AI —— (a) Mac 通知;(b) 艦長室推包紀錄一列;
+    (c) last-push 檔加 reported:false + pusher + savings,讓回報守門(src/policy/hooks/ship_report_gate.py)
+    要求推的那一席在回覆裡原樣貼出。任何一步失敗只印一行,不影響推包。回 {notified, logged, marked}。"""
+    out = {"notified": False, "logged": False, "marked": False}
+    try:
+        import pushgate
+        import ship_report
+        rows = pushgate.read_stats(repo)
+        if not rows:
+            return out
+        row = rows[-1]
+        lines = ship_report.savings_lines(T, pushgate.dur_text, row)
+        head = git(repo, "rev-parse", "HEAD", check=False).strip()
+        rec = {"reported": False, "pusher": _pusher_seat(), "savings": lines,
+               "numbers": ship_report.savings_numbers(row), "stats_utc": row.get("utc"),
+               "commits": len(shas or []), "base": got.get("pushed_base"), "head": head}
+        out["marked"] = update_result(repo, "push", **rec) is not None
+        try:
+            log = captain_ship_log()
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(dict(rec, at=time.time(), repo=str(repo)), ensure_ascii=False) + "\n")
+            out["logged"] = True
+        except OSError:
+            pass
+        out["notified"] = (notifier or notify_mac)(T("notify_title", {"n": len(shas or [])}), "\n".join(lines[:2]))
+        try:
+            import shadow_explain
+            shadow_explain.show_in_pane([""] + list(lines))      # 推的那一席視窗也顯示一行(不靠各家 hook)
+        except Exception:  # noqa: BLE001
+            pass
+        print(T("announce_done", {"what": ", ".join(k for k, v in out.items() if v) or "-"}))
+    except Exception as e:  # noqa: BLE001
+        print(T("announce_failed", {"reason": "%s: %s" % (type(e).__name__, e)}))
+    return out
 
 
 def print_stale_hint(repo, days=7):

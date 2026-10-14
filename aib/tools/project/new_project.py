@@ -82,9 +82,16 @@ class NewProjectError(RuntimeError):
 
 
 def state_root_of(explicit: Optional[str] = None) -> Path:
+    """狀態根:--state-root > EZ2_AIB_STATE_ROOT > EZ2_AIB_HOME > ~/.ez2-aib(跟 seats_dir_lib 單源同一條順序)。
+    10-13 a seat 准:以前只認 EZ2_AIB_HOME,跟 aib memory tidy(先認 EZ2_AIB_STATE_ROOT)只設 STATE_ROOT 時拿到不同的卡與卡鎖。
+    只設 EZ2_AIB_HOME 的舊行為不變(測試釘著)。"""
     if explicit:
         return Path(explicit).expanduser().resolve()
-    return Path(os.path.expanduser(os.environ.get("EZ2_AIB_HOME", "~/.ez2-aib"))).resolve()
+    for name in ("EZ2_AIB_STATE_ROOT", "EZ2_AIB_HOME"):
+        v = os.environ.get(name)
+        if v:
+            return Path(os.path.expanduser(v)).resolve()
+    return Path(os.path.expanduser("~/.ez2-aib")).resolve()
 
 
 def new_project_uid() -> str:
@@ -134,6 +141,53 @@ def _load_json(path: Path) -> Optional[dict]:
     except (OSError, ValueError, UnicodeDecodeError):
         return None
     return raw if isinstance(raw, dict) else None
+
+
+class _card_lock:
+    """專案卡讀改寫的鎖(<卡資料夾>/card.lock,fcntl,10 秒拿不到就丟例外);aib memory tidy 用同一把。"""
+
+    def __init__(self, card_path: Path):
+        self.path = Path(card_path).parent / "card.lock"
+
+    def __enter__(self):
+        import fcntl
+        import time as _t
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.f = open(self.path, "a")
+        end = _t.time() + 10
+        while True:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if _t.time() > end:
+                    self.f.close()
+                    raise
+                _t.sleep(0.1)
+
+    def __exit__(self, *a):
+        import fcntl
+        fcntl.flock(self.f, fcntl.LOCK_UN)
+        self.f.close()
+
+
+def _archive_snapshot(path: Path, kind: str, key: str) -> dict:
+    """改卡前快照(src/memory/memory_archive.py,記憶整理第 1 包)。檔不在 ⇒ skipped;
+    找不到 memory_archive.py(測試副本樹)⇒ skipped 並記一句;檔在但載入或拍壞 ⇒ failed(呼叫端不准寫)。"""
+    if not Path(path).exists():
+        return {"status": "skipped", "error": "no file yet"}
+    found = Path(__file__).resolve().parents[2] / "src" / "memory" / "memory_archive.py"
+    if not found.is_file():
+        print(T("aib.newproj.archive_unavailable"), file=sys.stderr)
+        return {"status": "skipped", "error": "memory_archive unavailable"}
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("memory_archive_for_newproj", str(found))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.snapshot(path, kind, key)
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "error": "memory_archive: %s" % exc}
 
 
 def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
@@ -854,11 +908,24 @@ def run_newproj(args) -> int:
             note(existing_uid, card_title)
             if route_key and not card_route:
                 # 卡本來沒有記資料夾 ⇒ 補記這兩欄;其餘欄位一個位元組都不動
-                raw = _load_json(card_path_of(root, existing_uid)) or {}
-                raw.update({"route_key": route_key, "folder": folder})
-                _atomic_write_json(card_path_of(root, existing_uid), raw)
-                card = load_card(root, existing_uid)
-                _say(T("aib.newproj.card_folder_added", {"path": folder, "key": route_key}))
+                # 記憶整理第 3 包(10-13):讀改寫跟 aib memory tidy 用同一把卡鎖(<卡資料夾>/card.lock),兩邊同時改不互蓋
+                wrote, busy = False, False
+                try:
+                    with _card_lock(card_path_of(root, existing_uid)):
+                        raw = _load_json(card_path_of(root, existing_uid)) or {}
+                        raw.update({"route_key": route_key, "folder": folder})
+                        # 記憶整理第 1 包(10-13):改卡前先快照;拍不成就不補記(卡維持原樣,綁定照做)
+                        wrote = _archive_snapshot(card_path_of(root, existing_uid), "project", existing_uid).get("status") != "failed"
+                        if wrote:
+                            _atomic_write_json(card_path_of(root, existing_uid), raw)
+                except OSError:                            # 卡鎖 10 秒拿不到(別席正在整理)或鎖檔開不了:這次不補記,綁定照做
+                    wrote, busy = False, True
+                if wrote:
+                    card = load_card(root, existing_uid)
+                    _say(T("aib.newproj.card_folder_added", {"path": folder, "key": route_key}))
+                else:
+                    _say(T("aib.newproj.card_folder_skipped_busy" if busy else "aib.newproj.card_folder_skipped_backup",
+                           {"path": folder}))
             bind_folder()
             _update_continuity(root, seat_id, existing_uid, card_title, now_ms)
             _update_seat_file(root, seat_id, existing_uid, card_title)

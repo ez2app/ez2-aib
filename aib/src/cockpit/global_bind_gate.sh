@@ -9,7 +9,7 @@
 # 錯誤訊息開在中間格的 view-mode 裡,之後打的字全被吃掉(「4f8d 又掛了,無法打字」)。
 #
 # 規則(回 0 = 可以裝,1 = 不裝):
-#   正本樹(git worktree list 第一列,同 ff_ctl.canonical_tree)開的艙   ⇒ 裝
+#   正本樹(git worktree list 第一列;舊 ff_ctl.canonical_tree 10-13 已隨 aib ff 刪除)開的艙   ⇒ 裝
 #   不是 git 樹(安裝版)                                              ⇒ 裝
 #   外層 tmux 是隔離的(TMUX_TMPDIR 指到 /tmp 以外 —— 測試沙箱)        ⇒ 裝(各席在 worktree 跑測試要能裝)
 #   AIB_ALLOW_FOREIGN_BINDINGS=1                                      ⇒ 裝(明說要)

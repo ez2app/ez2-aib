@@ -17,11 +17,15 @@ sess="${2:-}"
 #   沒帶 key= 的照舊按位置讀(第一個是 role、第二個是 pane)—— 舊綁定與既有呼叫者不用改。
 role=""
 tag=""
+mx=""   # 10-14 the maintainer「左邊的對話框無法上下滾動」:外層綁定帶滑鼠在中欄的位置(#{mouse_x} #{mouse_y},相對中欄格、0 起算)
+my=""
 _npos=0
 for _a in "${@:3}"; do
   case "$_a" in
     role=*) role="${_a#role=}" ;;
     pane=*) tag="${_a#pane=}" ;;
+    mx=*) mx="${_a#mx=}" ;;
+    my=*) my="${_a#my=}" ;;
     *)
       _npos=$((_npos + 1))
       if [ "$_npos" -eq 1 ]; then role="$_a"; elif [ "$_npos" -eq 2 ]; then tag="$_a"; fi
@@ -72,6 +76,11 @@ _errlog="$burst/errors.log"
 trap '_rc=$?; printf "%s rc=%s line=%s cmd=%s\n" "$(date +%m-%d_%H:%M:%S)" "$_rc" "$LINENO" "$BASH_COMMAND" >> "$_errlog" 2>/dev/null' ERR
 if [ "$dir" != "drain" ]; then
   printf '%s\n' "$dir" >> "$burst/q" 2>/dev/null || exit 0
+  # 滑鼠位置記下來,收成一筆(含 drain 那次)時用最後一格的位置;量不到(空或不是數字)就清掉 ⇒ 退回送正中央
+  case "$mx$my" in
+    ''|*[!0-9]*) rm -f "$burst/pos" 2>/dev/null || true ;;
+    *) printf '%s %s\n' "$mx" "$my" > "$burst/pos.$$" 2>/dev/null && mv -f "$burst/pos.$$" "$burst/pos" 2>/dev/null || true ;;
+  esac
 fi
 # 鎖 = 指向自己 pid 的 symlink(建立與寫 pid 是同一個原子動作,沒有「有鎖沒 pid」的窗口)。
 rm -rf "$burst/lock" 2>/dev/null || true   # 只清舊版留下的目錄鎖;symlink 不是目錄,-d 判斷在下面
@@ -146,17 +155,32 @@ hub="$(env -u TMUX tmux show-option -qv -t "$sess" @aib_hub_socket 2>/dev/null |
 pane="$(env -u TMUX tmux -L "$hub" list-clients -F '#{pane_id}' 2>/dev/null | awk 'NF{print; exit}')"
 [ -n "$pane" ] || pane="$(env -u TMUX tmux -L "$hub" display-message -p -t aihub: '#{pane_id}' 2>/dev/null || true)"
 [ -n "$pane" ] || exit 0
-info="$(env -u TMUX tmux -L "$hub" display-message -p -t "$pane" '#{pane_in_mode} #{mouse_any_flag} #{alternate_on} #{mouse_sgr_flag} #{pane_width} #{pane_height}' 2>/dev/null || true)"
-read -r in_mode mouse_flag alt_flag sgr_flag pw ph _ <<<"$info"
+info="$(env -u TMUX tmux -L "$hub" display-message -p -t "$pane" '#{pane_in_mode} #{mouse_any_flag} #{alternate_on} #{mouse_sgr_flag} #{pane_width} #{pane_height} #{pane_left} #{pane_top}' 2>/dev/null || true)"
+read -r in_mode mouse_flag alt_flag sgr_flag pw ph pl pt _ <<<"$info"
 case "$pw" in ''|*[!0-9]*) pw=80 ;; esac
 case "$ph" in ''|*[!0-9]*) ph=24 ;; esac
+case "$pl" in ''|*[!0-9]*) pl=0 ;; esac
+case "$pt" in ''|*[!0-9]*) pt=0 ;; esac
+# 事件座標(1 起算):有記到滑鼠位置 ⇒ 換算成內層這一格的座標(扣掉這一格在內層視窗的左上角),夾在格子裡;
+#   沒記到 ⇒ 格子正中央(舊行為)。★ 10-14:一律送正中央時,Claude 全螢幕把 mod 面板停在右邊佔 70%,
+#   正中央落在面板上 ⇒ 不管滑鼠在哪滾,捲的都是面板、左邊對話永遠滾不動。
+ev_x=$(( pw / 2 + 1 )); ev_y=$(( ph / 2 + 1 ))
+if [ -f "$burst/pos" ]; then
+  read -r _px _py _ < "$burst/pos" 2>/dev/null || true
+  case "$_px$_py" in
+    ''|*[!0-9]*) ;;
+    *) ev_x=$(( _px - pl + 1 )); ev_y=$(( _py - pt + 1 ))
+       [ "$ev_x" -lt 1 ] && ev_x=1; [ "$ev_x" -gt "$pw" ] && ev_x=$pw
+       [ "$ev_y" -lt 1 ] && ev_y=1; [ "$ev_y" -gt "$ph" ] && ev_y=$ph ;;
+  esac
+fi
 # 全螢幕又自己收滑鼠的程式(Claude Code 2.1 全螢幕、Codex):一格送一個滾輪事件給它,它自己捲一行。
 #   ★ the maintainer 09-30 16:2x「我要所有的滾動都一行一行很絲滑的」。09-30 測試艙 b1af 實量:Claude Code 2.1.285
 #     收一個 SGR 滾輪事件 = 捲 1 行,不進 copy-mode、輸入框不出字。
 #   ★ 只在 mouse_any 與 SGR 兩旗都開時送:沒開滑鼠的程式收到這串會當成打字(舊「黃字 syntax error」那一族),
 #     那種照舊 PageUp。事件座標落在格子正中(1 起算)。
 wheel_events() {   # $1=64(上)|65(下)
-  local i=0 x=$(( pw / 2 + 1 )) y=$(( ph / 2 + 1 ))
+  local i=0 x=$ev_x y=$ev_y
   while [ "$i" -lt "$lines" ]; do
     env -u TMUX tmux -L "$hub" send-keys -t "$pane" -l "$(printf '\033[<%s;%s;%sM' "$1" "$x" "$y")" >/dev/null 2>&1 || return 0
     i=$((i + 1))

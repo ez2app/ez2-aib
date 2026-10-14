@@ -470,6 +470,15 @@ def collect_budget() -> float:
     return v if v > 0 else DEFAULT_COLLECT_BUDGET_S
 
 
+def _spawn_archive_sweep() -> None:
+    """背景跑 memory_archive archive-sweep(DESIGN-memory-tidy-1013 §5.4);任何失敗都吞掉,不影響交接。"""
+    try:
+        import memory_archive
+        memory_archive.spawn_background()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def spawn_auto_collect(code: str, repo: str, out_file: str, home=None) -> int:
     """在背景(脫離呼叫端、不等它)跑 `aib_handoff.py collect --auto`,把機器事實存成 out_file。回 pid;起不來 ⇒ 0。
     stdin/stdout/stderr 都接 /dev/null、自己一個 session(呼叫端的 hook 結束、終端關掉都不影響它)。"""
@@ -799,6 +808,7 @@ def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
                 for w in rows:
                     w["touched"] = _wt_touched(w["path"])
                     mine = bool(code) and code in (w.get("branch") or "") + w["path"]
+                    w["mine"] = mine                       # §8e 對帳只算本席工作樹(a seat 17:55)
                     if w["path"] == top or mine or w["touched"] >= since:
                         picked.append(w)
                     else:
@@ -857,6 +867,9 @@ def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
             b = dm_queue.brief_payload(code)
             facts["pending_box"] = {k: b.get(k) for k in ("unread", "hold", "decide", "human", "expired",
                                                           "oldest_when", "errors")}
+            rows = dm_queue.tabs_payload(code)["tabs"]["waiting"]["rows"]    # §8e:未讀逐封預填、對帳
+            facts["unread"] = [{"id": r.get("id"), "from": r.get("sender"), "summary": str(r.get("msg") or "")[:80]}
+                               for r in rows if r.get("status") in ("delivered", "queued") and not r.get("read_at")][:20]
         except Exception as exc:  # noqa: BLE001
             miss.append({"item": "pending_box", "why": repr(exc)[:200]})
     # review 帳
@@ -1005,9 +1018,12 @@ def render_draft(facts: dict, auto: bool = False) -> str:
              head + (" auto=1" if auto else "") + " -->"]
     if auto:
         lines += ["", "> " + T("aib.handoff.draft.auto_note"), ""] + fields_block(facts, auto=True)
+    import handoff_check
     for key in SECTIONS:
         lines += ["", "## %s <!-- handoff:%s -->" % (T("aib.handoff.section.%s" % key), key),
                   "%s: %s" % (TODO_PREFIX, T("aib.handoff.todo.%s" % key))]
+        if not auto:                                    # §8e 固定欄位 + 機器預填(the maintainer 10-13 17:5x「過於馬虎」)
+            lines += handoff_check.section_template(key, facts)
     lines += ["", "## %s <!-- handoff:facts -->" % T("aib.handoff.section.facts"), ""]
     lines.append("- %s: %s" % (T("aib.handoff.fact.time"), facts.get("iso") or ""))
     lines.append("- %s: %s/%s (%s %s) session_uuid=%s" % (
@@ -1184,7 +1200,11 @@ def section_body(raw: str) -> str:
         if s.startswith(TODO_PREFIX) or (s.startswith("<!--") and s.endswith("-->")):
             continue
         keep.append(ln)
-    return "\n".join(keep).strip()
+    try:                                                # §8e:欄位標題與 [機器] 預填行不算 AI 寫的字(審查 2)
+        import handoff_check
+        return handoff_check.strip_template("\n".join(keep)).strip()
+    except Exception:  # noqa: BLE001
+        return "\n".join(keep).strip()
 
 
 def _thin(body: str) -> bool:
@@ -1232,6 +1252,11 @@ def prompt_pieces() -> list:
     if _PROMPT_PIECES:
         return _PROMPT_PIECES
     keys = ["aib.handoff.todo.%s" % k for k in SECTIONS] + ["aib.handoff.section.%s" % k for k in SECTIONS]
+    try:
+        import handoff_check
+        keys += handoff_check.field_keys()                # 欄位標題也是提示字,不算自己寫的字
+    except Exception:  # noqa: BLE001
+        pass
     texts = [TODO_PREFIX]
     try:
         from i18n_lib import CANONICAL_LOCALES, load_dict
@@ -1407,9 +1432,30 @@ def _seat_memory_append(code: str, step_label: str, body: str, home=None) -> dic
         return {"ok": False, "why": str(exc)[:300], "path": str(p)}
 
 
+def round_checks(code: str) -> dict:
+    """本輪有沒有整理記憶(aib memory tidy)、有沒有給 the maintainer 總結(aib summary)。只記,不擋交接
+    (DESIGN-memory-tidy-1013 §2:整理失敗不擋交接,下一輪開頭補;沒總結只提醒)。任何錯 ⇒ 記「量不到」。"""
+    try:
+        import aib_summary
+        tidy = aib_summary.tidy_this_round(code)
+        summ = aib_summary.summary_this_round(code)
+    except Exception as exc:  # noqa: BLE001
+        why = "量不到:%r" % (exc,)
+        return {"tidy": why, "summary": why, "block": ""}
+    t = (tidy.get("status") or "?") if tidy else "沒做"
+    sm = "有(%s)" % (summ.get("file") or "?") if summ else "沒做"
+    lines = [T("aib.handoff.round.tidy", status=t), T("aib.handoff.round.summary", status=sm)]
+    if not tidy:
+        lines.append(T("aib.handoff.round.tidy_next"))
+    block = "\n\n## %s\n%s\n" % (T("aib.handoff.round.title"), "\n".join("- " + x for x in lines))
+    return {"tidy": t, "summary": "沒做" if not summ else "有", "block": block}
+
+
 def binding_proposal(seat: dict, text: str, now: float, home=None, menu=None, menu_apply=None) -> dict:
     """第三步寫交接檔之前:這一席人格/專案不齊 ⇒ 用交接內容擬綁定提案(與 aib bindme 調查同格式,
-    `aib bindme apply <sid> --me <席碼> --accept` 就能套)。**不擋交接、不自動綁**;任何失敗回 {}。
+    `aib bindme apply <sid> --me <席碼> --accept` 就能套)。**不擋交接**;任何失敗回 {}。
+    自動綁(the maintainer 10-13 01:5x 在 a seat 窗裡確認):真的狀態根 ⇒ 背景跑 `bindme auto`(找到就綁、沒有就 30 秒彈窗後建),
+    交接檔與收據先寫、不等它;開關 bindme.auto_enabled(AIB_AUTO_BIND / config/auto-bind.json,預設開)。
     - 交接檔本身就是這一輪的總結 ⇒ 不另發問卷(10-11 the maintainer:交接時就該確認並綁)
     - 第三段若寫了「建議人格: / 建議專案:」就照它;沒寫 ⇒ 人格擬新卡草稿、專案標要人決定"""
     code = seat.get("code") or ""
@@ -1445,17 +1491,37 @@ def binding_proposal(seat: dict, text: str, now: float, home=None, menu=None, me
                                              bm.HOW_TEXT.get(per["how"], per["how"]),
                                              prj.get("title") or "-", bm.HOW_TEXT.get(prj["how"], prj["how"]))
         cmd = "aib bindme apply %s --me %s --accept" % (sid, code)
-        # the maintainer 10-11 02:2x:建議要倒數 30 秒,沒選就照預設。倒數在**寫交接檔之前**跑,結果寫進檔 ⇒ 檔記的是實際發生的事;
-        # 綁的是自己這一席 ⇒ 不寄接手包。選單跳不出來(人沒看到)⇒ 不綁、留提案。
-        res = (menu_apply or bm.apply)(root, sid, bm._actor(root, code, None), ask=True, deliver=False,
-                                       **({"menu": menu} if menu else {}))
-        r0 = res[0] if res else {}
+        # the maintainer 10-13 01:5x 在 a seat 窗裡確認「同意自動綁」(記憶整理第 2 包):自己這一席走 bindme.auto_apply ——
+        #   找到合適的既有卡直接綁 + 「已綁 X」通知;沒有合適的 Mac 彈窗 30 秒、沒選照預設建立並綁;
+        #   沒畫面也等滿 30 秒照預設,另送決定卡。冠位人格永不自動綁、bot 席不跑。結果寫進交接檔 ⇒ 檔記實際發生的事。
+        #   綁的是自己這一席 ⇒ 不寄接手包。測試可用 menu_apply 換掉整段。
+        row["provider"] = st.get("provider") or ""
+        auto_note, spawned = "", False
+        if menu_apply:
+            res = menu_apply(root, sid, bm._actor(root, code, None), ask=True, deliver=False,
+                             **({"menu": menu} if menu else {}))
+            r0 = res[0] if res else {}
+        else:
+            r0 = {}
+            # 調查檔先寫(背景那支要讀),再起背景;交接不等它(視窗最多約 1~3 分鐘)
+            rec["proposals"][0]["provider"] = row["provider"]
+            Path(bm.survey_path(root, sid)).write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+            if bm.auto_enabled(root):
+                pid = bm.spawn_auto(root, sid, code)
+                spawned = bool(pid)
+                auto_note = T("aib.handoff.proposal.auto_bg", path=bm.survey_path(root, sid)) if pid else \
+                    T("aib.handoff.proposal.auto_fail")
+            else:
+                auto_note = T("aib.handoff.proposal.auto_off")
         bound = [d["kind"] for d in r0.get("done", []) if d.get("rc") == 0]
         outcome = "、".join({"persona": "人格", "project": "專案"}.get(k, k) for k in bound) if bound else "-"
-        notes = ";".join(r0.get("skipped") or []) or "-"
+        notes = ";".join([x for x in [auto_note] + list(r0.get("skipped") or []) if x]) or "-"
         lines = [T("aib.handoff.proposal.now", why=bm.PROBLEM_TEXT.get(st["problem"], st["problem"])),
                  T("aib.handoff.proposal.what", what=what), T("aib.handoff.proposal.done", what=outcome, why=notes)]
-        if not bound:                                   # 已經綁了就不再寫「同意就跑」(10-11 示範實見:會誤導)
+        if spawned:
+            # 背景已在綁 ⇒ 不再給「同意就跑」那行(手動再跑會重複綁);要換掉用 repick
+            lines.append(T("aib.handoff.proposal.cmd", cmd="aib bindme repick --me %s" % code))
+        elif not bound:                                 # 已經綁了就不再寫「同意就跑」(10-11 示範實見:會誤導)
             lines.append(T("aib.handoff.proposal.cmd", cmd=cmd))
         block = "\n\n## %s\n%s\n" % (T("aib.handoff.proposal.title"), "\n".join("- " + x for x in lines))
         return {"sid": sid, "what": what, "cmd": cmd, "block": block, "bound": bound, "notes": notes}
@@ -1496,7 +1562,15 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
     now = time.time()
     label = str(need)
     k = SECTIONS[need - 1]
-    body = "## %s\n\n%s" % (T("aib.handoff.section.%s" % k), secs[k])
+    try:                                                # 寫進記憶要留欄位標題(下一個 AI 才分得出「等誰」「踩到的坑」;二輪審查)
+        import handoff_check
+        keep = section_body(handoff_check.drop_machine(parse_draft(text).get(k, ""))) or secs[k]
+        keep_lines = [ln for ln in handoff_check.drop_machine(parse_draft(text).get(k, "")).splitlines()
+                      if not ln.strip().startswith(TODO_PREFIX)]
+        keep = "\n".join(keep_lines).strip() or secs[k]
+    except Exception:  # noqa: BLE001
+        keep = secs[k]
+    body = "## %s\n\n%s" % (T("aib.handoff.section.%s" % k), keep)
     out = {"step": label, "brain": _brain_write(seat, label, body, seat_arg),
            "seat_memory": _seat_memory_append(code, label, body, home)}
     steps = {k: v for k, v in _steps_doc(code, home).items() if k in done}
@@ -1514,6 +1588,10 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
         if not sweep:          # 收集那一步沒跑到(舊版收集 / 事實檔不見)⇒ 這裡補跑:交接一定有嘗試過 sweep
             sweep = run_sweep(code, str((facts.get("seat") or {}).get("project_uid") or seat.get("project_uid") or ""), home)
         target = _unique(pd / ("HANDOFF-%s-%s.md" % (code, time.strftime("%m%d-%H%M", time.localtime(now)))))
+        checks = round_checks(code)                    # 第 5 包:本輪整理 / 總結有沒有做(只記,不擋交接)
+        text = text + checks["block"]
+        warns = []
+        incomplete = _incomplete(parse_draft(text), facts, checks, warns)   # §8e:標不完整,不硬擋;只進收據(審查 3)
         prop = binding_proposal(seat, text, now, home)
         if prop.get("block"):
             out["binding_proposal"] = {k: prop[k] for k in ("sid", "what", "cmd", "bound", "notes")}
@@ -1528,6 +1606,11 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
                    "brain": out["brain"], "seat_memory": out["seat_memory"],
                    "steps": {k: v["ts"] for k, v in steps.items()},
                    "sweep": sweep.get("state"), "sweep_at": sweep.get("at")}
+        receipt["tidy"], receipt["summary"] = checks["tidy"], checks["summary"]
+        receipt["incomplete"] = incomplete
+        receipt["warnings"] = warns
+        if out.get("binding_proposal"):                 # 審查 5:verify 第 8 項要讀得到
+            receipt["binding_proposal"] = out["binding_proposal"]
         _write_json(receipt_path(code, home), receipt)
         _append_jsonl(receipts_log(code, home), receipt)
         out["file"], out["receipt"] = str(target), str(receipt_path(code, home))
@@ -1539,7 +1622,33 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
                     missed_path(code, home).unlink()
                 except OSError as exc:
                     _log("missed_clear_failed", home, seat=code, why=repr(exc)[:200])
+    if need == 3:
+        try:                                            # §8e.4:第 3 步寫完自動 verify 一次,結果進收據
+            import handoff_check
+            items = handoff_check.verify(code, home)
+            out["verify"] = [{"item": n, "ok": ok, "detail": d} for n, ok, d in items]
+            rec = _read_json(receipt_path(code, home)) or {}
+            rec["verify"] = {"ok": all(ok for _n, ok, _d in items), "items": out["verify"], "at": _iso(time.time())}
+            _write_json(receipt_path(code, home), rec)
+        except Exception as exc:  # noqa: BLE001 —— verify 壞了不影響交接本身
+            out["verify_error"] = repr(exc)[:200]
     _log("write", home, seat=code, step=label, brain_ok=out["brain"]["ok"], seat_memory_ok=out["seat_memory"]["ok"])
+    return out
+
+
+def _incomplete(raw, facts, checks, warns=None):
+    """§8e:交接哪裡不完整(固定欄位缺、機器對帳不齊、本輪沒整理)。raw = parse_draft 的原段(要欄位標題)。量不到不算缺。"""
+    out = []
+    try:
+        import handoff_check
+        secs = {k: raw.get(k, "") for k in SECTIONS}
+        out += [T("aib.handoff.incomplete.field", what=x) for x in handoff_check.missing_fields(secs)]
+        out += handoff_check.reconcile(facts, secs, warnings=warns)
+    except Exception as exc:  # noqa: BLE001
+        _log("incomplete_check_failed", None, why=repr(exc)[:200])
+    t = str(checks.get("tidy") or "")
+    if t.startswith("沒做") or t.startswith("failed"):
+        out.append(T("aib.handoff.incomplete.tidy", status=t))
     return out
 
 
@@ -1611,6 +1720,10 @@ def auto_collect_main(code: str, repo: str, out: str, since_hours: float = DEFAU
 
 
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["review"]:                         # §8e.7 遺漏回顧(the maintainer 10-13 17:5x)
+        import handoff_review
+        return handoff_review.main(argv[1:])
     ap = argparse.ArgumentParser(prog=os.environ.get("AIB_HANDOFF_PROG") or "aib handoff",
                                  description=T("aib.handoff.help.desc"))
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1626,6 +1739,9 @@ def main(argv=None) -> int:
     w.add_argument("--step", type=int, choices=(1, 2, 3), required=True)
     w.add_argument("--file", required=True)
     w.add_argument("--json", action="store_true")
+    v = sub.add_parser("verify", help=T("aib.handoff.help.verify"))
+    v.add_argument("--seat", default="")
+    v.add_argument("--json", action="store_true")
     s = sub.add_parser("status", help=T("aib.handoff.help.status"))
     s.add_argument("--seat", default="")
     s.add_argument("--json", action="store_true")
@@ -1635,6 +1751,7 @@ def main(argv=None) -> int:
     try:
         seat = resolve_seat(a.seat)
         if a.cmd == "collect":
+            _spawn_archive_sweep()   # 記憶整理第 1 包:背景清 90 天備存(一天一次、不等、不印)
             repo = a.repo or os.getcwd()
             facts = collect(seat, repo=repo, since_hours=a.since_hours)
             record_collect(seat["code"], facts)
@@ -1669,10 +1786,23 @@ def main(argv=None) -> int:
                 _out(T("aib.handoff.proposal.done", what="、".join(bp.get("bound") or []) or "-", why=bp.get("notes") or "-"))
             if res.get("receipt"):
                 _out(T("aib.handoff.write.receipt", file=res["file"], path=res["receipt"]))
+                if res.get("verify"):
+                    import handoff_check
+                    txt, _done = handoff_check.render([(x["item"], x["ok"], x["detail"]) for x in res["verify"]])
+                    _out(txt)                             # 不完整照樣交得出來(a seat 17:55 不硬擋),✗ 那幾項列在上面
                 _out(T("aib.handoff.write.ready"))
             else:
                 _out(T("aib.handoff.write.next", label=str(int(res["step"]) + 1)))
             return RC_OK
+        if a.cmd == "verify":
+            import handoff_check
+            items = handoff_check.verify(seat["code"])
+            if a.json:
+                _out(json.dumps([{"item": n, "ok": ok, "detail": d} for n, ok, d in items], ensure_ascii=False, indent=1))
+                return RC_OK if all(ok for _n, ok, _d in items) else 1
+            txt, done = handoff_check.render(items)
+            _out(txt)
+            return RC_OK if done else 1                 # 1 = 還缺(跟用法錯 2 分開;審查 12)
         st = status(seat["code"])
         _out(json.dumps(st, ensure_ascii=False, indent=1) if a.json else render_status(st))
         return RC_OK

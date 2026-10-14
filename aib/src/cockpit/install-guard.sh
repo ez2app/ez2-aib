@@ -6,7 +6,7 @@
 #   dev6 的 knife2.py 把整棵樹 copytree 到 $TMPDIR/knife2-*/tree,K1 刀拿掉
 #   `cockpit_pane_plan; exit 0` 那個 exit,於是 test-cockpit-print-plan.py 每一個
 #   `--print-plan` 格都**落進真的 --ensure**:HOME=mkdtemp、PATH 上是真 tmux、
-#   **沒有 TMUX_TMPDIR** ⇒ 外層 acb131 建在活的 default、內層 aihub 伺服器
+#   **沒有 TMUX_TMPDIR** ⇒ 外層 aib-main 建在活的 default、內層 aihub 伺服器
 #   建在 /private/tmp/tmux-501/aihub、21 條綁定釘住砍刀樹的路徑與稍後被清掉的
 #   state 目錄。各艙右欄從此點什麼都跳出別席的文字。
 #

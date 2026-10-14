@@ -3,7 +3,8 @@ name: aib-handoff
 description: >-
   MANDATORY wrap-up for every Ez2 AIB seat (the maintainer 2026-10-01): when the
   conversation's context reaches 85%, or the maintainer says 準備交接／準備 clear／收尾／
-  要 clear 了／交接一下, run `aib handoff` — collect machine facts, then write
+  要 clear 了／交接一下, first `aib memory tidy` and `aib summary write`
+  (summary for the maintainer, the maintainer 2026-10-13), then run `aib handoff` — collect machine facts, then write
   the three steps (一、沒想到/想建議 → 二、下一個 AI 會不知道的 → 三、怎麼重新開始),
   each step updating seat memory and the second brain, the last one writing
   the handoff file and the receipt. It cannot be skipped: the next round
@@ -26,7 +27,23 @@ the maintainer 2026-10-01 令:**對話用量到 85%(或 the maintainer 說「準
 
 不確定到了沒有 ⇒ 做。做了多一份交接不會壞事;沒做,下一輪會被機器抓到。
 
-## 三步(照順序,一步都不能少)
+## 先整理、再總結,最後交接(the maintainer 2026-10-13「收尾也先總結再交接」)
+
+總結(寫給 the maintainer)與交接(寫給下一個 AI)分開,兩個都做。85% 與 the maintainer 說收尾 / 準備 clear 一樣照這個順序:
+
+```bash
+# A. 整理記憶(專案卡本席列、席位記憶精簡、進度筆記、人格卡 12 維;第一艦長卡大改這次跳窗給 the maintainer 按)
+aib memory tidy collect --out /private/tmp/tidy-<席碼>.md      # 照草稿說明填
+aib memory tidy apply --file /private/tmp/tidy-<席碼>.md
+
+# B. 給 the maintainer 的總結(七段總回報;本輪沒整理會 rc 2)
+aib summary write --file <總回報輸入.json>
+```
+
+整理或總結失敗**不擋交接**:照下面三步交接,交接檔與收據會記下「本輪整理 / 總結有沒有做」,
+沒做的寫成下一輪開頭補。95% 時間不夠 ⇒ 先交接,有餘裕再補總結。
+
+## 交接三步(照順序,一步都不能少)
 
 ```bash
 # 0. 量機器事實,得到草稿(倉、分支、worktree、沒合的分支、租約、待審框、review 帳、背景程式)

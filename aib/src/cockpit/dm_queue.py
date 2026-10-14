@@ -39,6 +39,7 @@ import feature_policy as FP  # noqa: E402
 # ★ the maintainer 09-30 17:2x 待審區程式歸納:本檔 → dm_triage,**單向**(dm_triage 不 import 本檔;
 #   分組規則住那一支、讀寫哪個檔與何時叫醒住這一支)。
 import dm_triage as TR  # noqa: E402
+import dm_relay as DR  # noqa: E402
 
 POLICY_SCHEMA = "aib-dm-queue-policy/v1"
 ORDER_SCHEMA = "aib-dm-queue-order/v1"
@@ -85,7 +86,7 @@ ACTIVE_STATUSES = ("queued", "claimed", HOLD_STATUS)
 WAITING_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered")
 # 用途:只有 order/rule/pipeline(順位/規矩/管線起停)這三種廣播可被同 thread 的新版取代;
 # deliver/decide/report(交件/要裁/自報)永遠追加。沒帶 = other(也永遠追加)。
-KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other")
+KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "notice")   # notice:10-13 S7-2 知會,讀過即備存
 BROADCAST_KINDS = frozenset(("order", "rule", "pipeline"))
 # 寄件端量到的來源;v1 的 "ai" 讀進來當 seat。human 只在送信端三條件全量到時才會出現(dm-ctl 那一刀)。
 SENDER_KINDS = ("seat", "seat_claimed", "human", "system", "unknown")
@@ -145,13 +146,13 @@ TRANSITIONS[("archived", "deleted")] = ("human", "system")
 AUTO_READ_WHY = "auto_notice"
 TRANSITIONS[("queued", "read")] = ("seat", "system")
 TRANSITIONS[("delivered", "read")] = ("seat", "system")
-ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY)
+ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping", "notice_read")   # 後兩個:stage-tidy 機器層(10-13)
 TRANSITION_REASON = {
     "ok": "",
     "transition": "這個狀態不能這樣改",
     "actor": "這個動作不是你能做的",
     "actor_missing": "要帶 --by(收件席讀完請用 read,不要 delete)",
-    "evidence": "完成要帶存在的交件單或收據路徑",
+    "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit),或用 --why 寫結案理由",
     "not_found": "這封信已經不在了",
 }
 ACTOR_FORMAT_HINT = "--by 格式不對(收到 %(given)s):收件席寫 seat:%(seat)s,真人寫 human:<名字>,系統寫 system"
@@ -909,7 +910,7 @@ def item_origin(item, seat=None):
 def _new_item(seat, msg, sender_label, sender_kind="unknown", session_uuid="", wid="",
               provider="", priority="normal", env=None, now=None, origin=None,
               thread=None, kind=None, sender_seat=None, human_id=None, expires=None, status="queued",
-              sender_source=None, hub=None, sender_hub=None, sender_origin=None):
+              sender_source=None, hub=None, sender_hub=None, sender_origin=None, closes=None):
     if not SEAT_RE.fullmatch(seat or ""):
         raise ValueError("seat")
     body = msg if isinstance(msg, str) else ""
@@ -983,6 +984,8 @@ def _new_item(seat, msg, sender_label, sender_kind="unknown", session_uuid="", w
         lab = (sender_label or "").strip()
         if lab.startswith("@") and SEAT_RE.fullmatch(lab[1:]):
             item["sender_seat"] = lab[1:]
+    if isinstance(closes, str) and ITEM_RE.fullmatch(closes.strip()):
+        item["closes"] = closes.strip()   # S7-3:送達後要結掉的原信(只在有帶時才有這欄,舊列形狀不變)
     return item
 
 
@@ -990,11 +993,12 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
             session_uuid="", wid="", provider="", priority="normal",
             env=None, now=None, origin=None,
             thread=None, kind=None, sender_seat=None, human_id=None, expires=None,
-            sender_source=None, hub=None, sender_hub=None, sender_origin=None, no_relay=False):
+            sender_source=None, hub=None, sender_hub=None, sender_origin=None, no_relay=False, closes=None):
     item = _new_item(seat, msg, sender_label, sender_kind=sender_kind, session_uuid=session_uuid,
                      wid=wid, provider=provider, priority=priority, env=env, now=now, origin=origin,
                      thread=thread, kind=kind, sender_seat=sender_seat, human_id=human_id, expires=expires,
-                     sender_source=sender_source, hub=hub, sender_hub=sender_hub, sender_origin=sender_origin)
+                     sender_source=sender_source, hub=hub, sender_hub=sender_hub, sender_origin=sender_origin,
+                     closes=closes)
     if no_relay:
         # review r13 M1:寄件端明說「整行貼、不落檔」(AIB_DM_RELAY_BYTES=0:給讀不到落檔的家的人格包/交接/開席單)
         #   ⇒ 排進佇列也記著;排空時 _dmctl_env 看到這個鍵才把門檻設 0,不然排空用預設 600 又換成指標
@@ -1044,7 +1048,7 @@ def _order_remove(seat, item_id, env=None):
 
 
 def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence=None,
-                if_rev=None, no_rev_check=None):
+                if_rev=None, no_rev_check=None, expect_status=None):
     """狀態機的唯一入口(接口 §2)。回 {ok, reason, rev, item, message}。
     不在 TRANSITIONS 上的 (from,to,actor類別) 一律拒;seat 類還要是收件席本人;done 要存在的憑據路徑;
     准與拒都寫一行 audit.jsonl。離開 ACTIVE_STATUSES 就從 order.json 拿掉(檔留著當歷史)。
@@ -1076,6 +1080,8 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
             # 10-05 a seat:有帶 --by 但格式不對時,原訊息說「要帶 --by」像是沒帶 ⇒ 指錯方向。reason 不變(消費端認它)。
             out["message"] = ACTOR_FORMAT_HINT % {"given": actor.strip(), "seat": seat}
         return out
+    if expect_status is not None and frm != expect_status:
+        return refuse("transition")   # 審查:rev 只在改內容時加,狀態被別人改過(剛讀 / 剛結)rev 看不出來 ⇒ 呼叫端帶它期望的狀態
     allowed = TRANSITIONS.get((frm, to))
     if not allowed:
         return refuse("transition")
@@ -1087,9 +1093,16 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         return refuse("actor")        # 系統只准刪「備存滿 30 天」那一種(the maintainer 09-30 17:1x)
     if to == "read" and cls == "system" and why != AUTO_READ_WHY:
         return refuse("actor")        # 系統只准代標「通知」組已讀(the maintainer 09-30 18:2x)
+    done_kind = None
     if to == "done":
-        if not isinstance(evidence, str) or not evidence.strip() or not Path(evidence).expanduser().is_file():
-            return refuse("evidence")
+        # 10-13 S7-1(the maintainer 准;kimi / grok / gpt 三家都說「只收存在的檔」是進行中只進不出的主因):
+        #   證據收 檔案 / 本席寄出的回信 id / 查得到的 commit;都不是但有 why ⇒ 憑理由結案(另記 done_kind=reason)。
+        done_kind = evidence_kind(seat, evidence, env)
+        if done_kind is None:
+            if isinstance(why, str) and why.strip():
+                done_kind = "reason"
+            else:
+                return refuse("evidence")
     if to == "archived" and why not in ARCHIVE_WHYS:
         return refuse("transition")
     if to == "archived" and frm in ACTIVE_STATUSES and why != "superseded":
@@ -1107,7 +1120,10 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
             item["read_why"] = why
     elif to == "done":
         item["done_at"] = now
-        item["done_evidence"] = str(evidence)
+        item["done_evidence"] = str(evidence) if done_kind != "reason" else None
+        item["done_kind"] = done_kind
+        if done_kind == "reason":
+            item["done_why"] = why.strip()[:500]
         if item.get("read_at") is None:
             item["read_at"] = now
     elif to == "archived":
@@ -1142,14 +1158,145 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
     return {"ok": True, "reason": "ok", "rev": item_rev(item), "item": item, "message": ""}
 
 
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+MEASURED_SOURCES = ("pane_pid_chain", "bg_fork_chain")
+
+
+def evidence_kind(seat, evidence, env=None):
+    """完成證據的種類:file(存在的檔)/ dm(這一席寄出、某一席佇列裡查得到的信)/ commit(本倉查得到)/ None。"""
+    ev = evidence.strip() if isinstance(evidence, str) else ""
+    if not ev:
+        return None
+    if ITEM_RE.fullmatch(ev):
+        for other in iter_queue_seats(env):
+            it = _load_item(other, ev, env)
+            if it and it.get("sender_seat") == seat and it.get("sender_source") in MEASURED_SOURCES:
+                return "dm"           # 審查:只認量到的寄件身分(label 推出來的 @席碼不算)
+        return None
+    if _SHA_RE.fullmatch(ev):
+        try:
+            r = subprocess.run(["git", "-C", str(_HERE.parents[1]), "cat-file", "-e", ev + "^{commit}"],
+                               capture_output=True, timeout=10)
+            if r.returncode == 0:
+                return "commit"
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        if Path(ev).expanduser().is_file():
+            return "file"
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _after_read(seat, item_id, env=None, now=None):
+    """S7-2:寄件人標成知會(kind=notice)的信,讀過就備存(kimi:不必等 12 小時)。回備存結果或 None。"""
+    it = _load_item(seat, item_id, env)
+    if not it or it.get("kind") != "notice" or it.get("status") != "read":
+        return None
+    return _transition(seat, item_id, "archived", "system", env=env, now=now, why="notice_read")
+
+
 def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_check=None):
-    return _transition(seat, item_id, "read", actor, env=env, now=now, if_rev=if_rev,
-                       no_rev_check=no_rev_check)
+    out = _transition(seat, item_id, "read", actor, env=env, now=now, if_rev=if_rev,
+                      no_rev_check=no_rev_check)
+    if out.get("ok"):
+        _after_read(seat, item_id, env=env, now=now)
+    return out
 
 
-def mark_done(seat, item_id, actor, evidence, env=None, now=None, if_rev=None, no_rev_check=None):
-    return _transition(seat, item_id, "done", actor, env=env, now=now, evidence=evidence,
+def mark_done(seat, item_id, actor, evidence, env=None, now=None, if_rev=None, no_rev_check=None, why=None):
+    return _transition(seat, item_id, "done", actor, env=env, now=now, evidence=evidence, why=why,
                        if_rev=if_rev, no_rev_check=no_rev_check)
+
+
+def read_done(seat, item_id, actor, evidence, env=None, now=None, if_rev=None, no_rev_check=None, why=None):
+    """S7-1 `read --done`:讀和結案一步做完(排隊 / 已送達 ⇒ read ⇒ done;已讀的直接 done)。"""
+    it = _load_item(seat, item_id, env)
+    if it and it.get("status") in ("queued", "delivered", HOLD_STATUS):
+        r = _transition(seat, item_id, "read", actor, env=env, now=now, if_rev=if_rev, no_rev_check=no_rev_check)
+        if not r.get("ok"):
+            return r
+        if_rev, no_rev_check = None, True
+    return mark_done(seat, item_id, actor, evidence, env=env, now=now, if_rev=if_rev,
+                     no_rev_check=no_rev_check, why=why)
+
+
+def group_of(seat, item_id, env=None, now=None):
+    """S7-1 `done --group`:這封所在的合併組(與 stage-tidy 同一個 merge_groups;只看待審與進行中)。回 id 清單(舊→新)。"""
+    t = tabs_payload(seat, env=env, now=now)
+    # 審查:跟 stage-tidy 交給 AI 的那一組同一個母體(待審頁、未到期);不含進行中(那些 AI 這次沒看到),
+    #   排隊中的算進組但不會被結(還沒送到眼前)
+    rows = [r for r in t["tabs"]["waiting"]["rows"]
+            if r.get("status") in ("queued", "claimed", "delivered") and not r.get("expired_now")]
+    for g in TR.merge_groups(rows, relay_text=_relay_text):
+        ids = [str(r["id"]) for r in g]
+        if item_id in ids:
+            return ids
+    return [item_id]
+
+
+def done_group(seat, item_id, actor, evidence, env=None, now=None, if_rev=None, no_rev_check=None, why=None):
+    """代表那封照 if_rev 驗;組內其他封同一份證據 / 理由一起結(每封各寫稽核)。回 {ok, done:[...], failed:[...]}。"""
+    members = group_of(seat, item_id, env=env, now=now)    # 先算組:代表結掉之後它就不在待審 / 進行中,再算會找不到組
+    first = read_done(seat, item_id, actor, evidence, env=env, now=now, if_rev=if_rev,
+                      no_rev_check=no_rev_check, why=why)
+    if not first.get("ok"):
+        return dict(first, done=[], failed=[item_id])
+    done, failed = [item_id], []
+    for other in members:
+        if other == item_id:
+            continue
+        cur = (_load_item(seat, other, env) or {}).get("status")
+        if cur != "delivered":
+            failed.append(other)            # 排隊中(還沒送到)/ 已經被改過的不代結
+            continue
+        r = read_done(seat, other, actor, evidence, env=env, now=now, no_rev_check=True, why=why)
+        (done if r.get("ok") else failed).append(other)
+    return {"ok": True, "reason": "ok", "done": done, "failed": failed, "rev": first.get("rev")}
+
+
+def reclass(seat, item_id, kind, actor, env=None, now=None, if_rev=None):
+    """S7-2:收件席把寄件人的分類改掉(知會 → 工作 / 要裁…);只有收件席本人、只改已送達 / 已讀的;
+    改了 rev+1(審查:不加的話 triage / stage-tidy 先前拿的 if_rev 擋不住,升成要裁的信還會被代標讀)。"""
+    now = int(time.time() if now is None else now)
+    cls, ident = parse_actor(actor)
+    if cls != "seat" or ident != seat or kind not in KINDS:
+        return {"ok": False, "reason": "actor" if kind in KINDS else "kind"}
+    ok, reason, _cur = rev_check(seat, item_id, if_rev, env, no_rev_check=if_rev is None)
+    if not ok:
+        return {"ok": False, "reason": reason}
+    it = _load_item(seat, item_id, env)
+    if not it:
+        return {"ok": False, "reason": "not_found"}
+    if it.get("status") not in ("delivered", "read"):
+        return {"ok": False, "reason": "transition"}
+    old = it.get("kind")
+    it["kind"] = kind
+    it["rev"] = item_rev(it) + 1
+    _write_item(seat, it, env)
+    _audit(seat, env, ts=now, id=item_id, to="reclass", actor=actor, ok=True, reason="ok", old=old, kind=kind)
+    return {"ok": True, "reason": "ok", "old": old, "kind": kind}
+
+
+def _close_original(item, env=None, now=None):
+    """S7-3 `aib dm --close <原信 id>`:回信**送達**(delivered)之後才把寄件席自己佇列裡的原信結掉,證據 = 回信 id。
+    只信量到的寄件身分(pane_pid_chain / bg_fork_chain);原信要是已送達或已讀。回 _transition 結果或 None。"""
+    orig = item.get("closes")
+    who = item.get("sender_seat")
+    if not orig or not who or item.get("status") != "delivered":
+        return None
+    if item.get("sender_source") not in MEASURED_SOURCES:
+        return None
+    try:
+        it = _load_item(who, orig, env)
+        if not it or it.get("status") not in ("delivered", "read"):
+            return None
+        if it.get("sender_seat") and it.get("sender_seat") != item.get("seat"):
+            return None       # 審查:回信要回給原信的寄件人,才算結了那一封
+        return mark_done(who, orig, "seat:%s" % who, item["id"], env=env, now=now, no_rev_check=True)
+    except Exception:  # noqa: BLE001 —— 審查:結原信失敗不得讓投遞 / record 變失敗(信已送到)
+        return None
 
 
 def archive_item(seat, item_id, actor="system", why="days", env=None, now=None):
@@ -1292,10 +1439,20 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     由 triage_tick 放掉鎖之後呼叫 _triage_deliver。deliver_fn 參數保留相容,不用。"""
     path = triage_path(seat, env)
     prev = TR.load(path)
+    # 10-13 與 a seat 定案(17:12):那一席開了 auto_tidy ⇒ 這一拍先做 stage-tidy 機器層,
+    #   叫醒條件改成「有新信 + 閒下來」(不要求超過三封),叫醒那句換成完整處理指示(TR.tidy_wake_text)。
+    tidy_on = tidy_enabled(seat, env)[0]
+    if tidy_on:
+        # 審查:那一席所在的艙沒開信件排隊 ⇒ 不替它清(以前只在叫醒成功後才代標,不該因為新功能就動別艙的信)
+        hubs = [r[2] for r in _seat_records_all_cabins(seat, env) if r[2]]
+        if hubs and all(_cabin_queue_enabled(h, env) is False for h in hubs):
+            tidy_on = False
+    tidy_res = stage_tidy(seat, env=env, now=now) if tidy_on else None
+    cleaned = tidy_res["cleaned"] if tidy_res else 0
     rows = tabs_payload(seat, env=env, now=now)["tabs"]["waiting"]["rows"]
     unread = TR.unread_ids(rows)
-    if prev is None and len(unread) <= TR.TRIAGE_MIN_UNREAD:
-        return None                        # 從沒超過三封:不建檔、不叫
+    if prev is None and len(unread) <= (0 if tidy_on else TR.TRIAGE_MIN_UNREAD):
+        return None                        # 從沒超過三封(auto_tidy:一封都沒有):不建檔、不叫
     cur = TR.batch_key(r["id"] for r in TR.eligible_rows(rows))
     # ★ review r12 M1:分類器換過(指紋不同)也重算 —— 不然舊版分類器認定的「通知」會被照舊代標已讀
     if prev is None or prev.get("batch") != cur or prev.get("classifier") != TR.CLASSIFIER_FP:
@@ -1308,11 +1465,17 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
         if [str(i) for i in (prev.get("unread_ids") or [])] != unread:
             rec["unread_ids"] = unread
             TR.write(path, rec)
-    if not TR.should_wake(rec, now=now):
-        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "no-new-batch-or-cooldown"}
-    gate_ok, gate_why = _wake_gate(seat, rec, env, now)
+    if not (TR.should_wake_tidy(rec, now=now, cooldown_s=TIDY_WAKE_COOLDOWN_S) if tidy_on else TR.should_wake(rec, now=now)):
+        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "no-new-batch-or-cooldown",
+                "cleaned": cleaned}
+    gate_ok, gate_why = _wake_gate(seat, rec, env, now, idle_cap=not tidy_on)
     if not gate_ok:
-        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": gate_why}
+        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": gate_why, "cleaned": cleaned}
+    if tidy_on:
+        quiet, rec = _screen_quiet(seat, rec, env, now)
+        TR.write(path, rec)
+        if quiet is False:
+            return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "screen-moving", "cleaned": cleaned}
     # 判忙與排空器同一個判準(drain_hold:登記表現查那一席在哪一艙哪個窗);忙就下一拍再試,不記 woke
     #   探針用**信檔本身**(帶 provider / hub;待審列沒有這兩欄),登記表查得到那一席時 drain_hold 會以登記表為準
     probe = next((r for r in rows if r.get("wid")), None) or (rows[0] if rows else {})
@@ -1330,9 +1493,14 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     # review r2 m5:引擎以登記表(那一席現在的席位檔)為準;信上蓋的 provider 是寄信當下抄的,查不到登記才退回它
     reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
     mode = _triage_mode(reg_prov or probe.get("provider"))
-    text = TR.wake_text(seat, rec.get("counts") or {}, len(rec.get("ids") or []), str(_HERE / "dm_queue.py"),
-                        mode=mode, digest=TR.human_lines(rec, rows) if mode == "digest" else None,
-                        notes=[(by_id.get(i) or {}).get("msg") or "" for i in notes])
+    if tidy_on:
+        notes = []                         # 通知已在機器層代標過,不再列
+        st = tidy_res                      # 審查:不再跑第二次(相似度合併很花時間,而且在排空鎖裡)
+        text = TR.tidy_wake_text(seat, st["need_ai"], st["todo"], str(_HERE / "dm_queue.py"), mode=mode)
+    else:
+        text = TR.wake_text(seat, rec.get("counts") or {}, len(rec.get("ids") or []), str(_HERE / "dm_queue.py"),
+                            mode=mode, digest=TR.human_lines(rec, rows) if mode == "digest" else None,
+                            notes=[(by_id.get(i) or {}).get("msg") or "" for i in notes])
     text = _one_line_for_line_reader(text, reg_prov or probe.get("provider"))
     # id 故意不合 ITEM_RE:投遞器看到不是佇列 id 就不帶 AIB_DM_QUEUED_ITEM_ID,dm-ctl 也就不回佇列找它
     # no_relay:叫醒那句整段貼進去,不讓 dm-ctl 換成「去讀某檔」的指標(見 _dmctl_env)
@@ -1442,6 +1610,8 @@ def _triage_deliver(seat, plan, env, deliver_fn=None, hold_fn=None):
                  if rc == 0 and _still_notice(seat, i, env)
                  and _transition(seat, i, "read", "system", env=env, now=now, why=AUTO_READ_WHY,
                                  if_rev=note_revs.get(i), no_rev_check=False).get("ok")]
+    for i in auto_read:
+        _after_read(seat, i, env=env, now=now)    # 審查:kind=notice 讀過即備存,這條代標路也要一致
     # review r2 m4:寫回/回滾在 triage 小鎖裡做(讀-改-寫);等不到 ⇒ 不寫回,保持「已叫過」(寧可少叫不重貼)
     tl = _seat_deliver_lock(seat, env, wait_s=SEAT_TRIAGE_WAIT_S, name=SEAT_TRIAGE_LOCK)
     if tl is None:
@@ -1565,7 +1735,7 @@ def _cabin_queue_enabled(hub, env=None):
     return bool(pol.get("enabled")) if how == "ok" else False
 
 
-def _wake_gate(seat, rec, env, now):
+def _wake_gate(seat, rec, env, now, idle_cap=True):
     """叫醒前的三道閘(the maintainer 09-30 18:4x,預設照 a seat 建議):
     1. 那一席所在的艙要**有開信件排隊** —— 佇列是整台機器共用的,別艙沒開就別替它叫(以前開一艙就全機都叫);
     2. 那一席真活動(activity_probe,不是 tmux 重繪時戳)閒置超過 1 小時不叫(閒很久的席每叫一次就花一次額度;
@@ -1587,9 +1757,51 @@ def _wake_gate(seat, rec, env, now):
         return False, "cabin-queue-off"
     # 量不到(未知引擎 / 找不到席位檔 / 探針壞)⇒ 放行,但照樣算進每日上限(叫醒成功才記 wake_log)
     idle = _seat_activity_age(seat, wid, hub, env, now=now)
-    if idle is not None and idle > WAKE_IDLE_MAX_S:
+    # auto_tidy(idle_cap=False):the maintainer 要「閒下來就處理」,閒很久也算閒;花費由每日上限擋
+    if idle_cap and idle is not None and idle > WAKE_IDLE_MAX_S:
         return False, "idle-over-1h"
     return True, ""
+
+
+TIDY_WAKE_COOLDOWN_S = 120       # auto_tidy 叫醒冷卻(有新信才叫,不必等舊的 10 分鐘)
+TIDY_QUIET_S = 120               # the maintainer 10-13 17:0x:畫面 2 分鐘沒變才算閒
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_TICK_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:ms|s|m|h|秒|分鐘?|小時)\b|\d+:\d+(?::\d+)?|\d+%|\d+\s*分前")
+QUIET_TAIL_LINES = 8
+
+
+def _quiet_text(screen):
+    """判「畫面沒變」用的內容(審查:整窗雜湊會被狀態列每 15 秒刷新的分鐘數、時鐘、用量 % 弄成永遠在變 ⇒ 永遠不叫):
+    去色碼、拿掉最後 QUIET_TAIL_LINES 行(輸入框下方的狀態列區)、再拿掉計時 / 時鐘 / 百分比(同 a seat pane_idle_state 的作法)。"""
+    lines = _ANSI_RE.sub("", screen or "").rstrip("\n").split("\n")
+    body = "\n".join(lines[:-QUIET_TAIL_LINES] if len(lines) > QUIET_TAIL_LINES else lines)
+    return _TICK_RE.sub("", body)
+
+
+def _screen_quiet(seat, rec, env, now, screen_fn=None):
+    """畫面連續 TIDY_QUIET_S 秒沒變 ⇒ True;還在變 ⇒ False;量不到(登記表查不到 / 擷取失敗)⇒ None(交給判忙那一道)。
+    畫面雜湊與「從何時起沒變」記在分組檔(screen_sha / screen_since),每拍比一次。回 (結果, 新的 rec)。"""
+    recs = _seat_records_all_cabins(seat, env)
+    if not recs:
+        return None, rec
+    wid, _prov, hub, _cur = recs[0]
+    for r in recs:                      # 審查:跟 _wake_gate 同一個挑法(第一個活窗),不拿死掉 / 舊的那一筆
+        if pane_is_dead(r[0], r[2], env=env) is False:
+            wid, _prov, hub, _cur = r
+            break
+    grab = screen_fn or (lambda w, h: capture_screen(w, h, env=env))
+    screen = grab(wid, hub)
+    if screen is None:
+        return None, rec
+    sha = hashlib.sha1(_quiet_text(screen).encode("utf-8")).hexdigest()[:16]
+    rec = dict(rec)
+    if rec.get("screen_sha") != sha:
+        rec["screen_sha"], rec["screen_since"] = sha, now
+        return False, rec
+    try:
+        return now - int(rec.get("screen_since") or now) >= TIDY_QUIET_S, rec
+    except (TypeError, ValueError):
+        return None, rec
 
 
 def _one_line_for_line_reader(text, provider):
@@ -1682,6 +1894,214 @@ def triage_tick(env=None, now=None, hold_fn=None, deliver_fn=None, force=False):
     return out
 
 
+# ── 待審區自動處理 stage-tidy(a seat × a seat 10-13,設計稿 DESIGN-dm-waiting-unify-1013 §S6)──
+#   機器層只動四種已送達的信:重複(留最新)/ 被取代的舊版 / 純回執 / 超過 1 小時的驗證信;其餘交 AI(need_ai)。
+#   絕不碰:要裁(decide)、真人寄的、人審、交件(deliver)、自報(report)、還沒送到的(queued/claimed)。
+#   開關:每席 <佇列>/<席>/tidy.json 優先,其次全艦 <佇列>/tidy-policy.json,都沒有 = 關(備選版;原版預設開)。
+#   全艦檔刻意不併進 policy.json:write_policy 會整份重寫、load_policy 對形狀很嚴,併進去會互相蓋掉。
+TIDY_SCHEMA = "aib-dm-tidy/v1"
+TIDY_DEFAULT = False   # 10-13 a seat 備選:預設關(真席沒試前不改所有席的叫醒行為);要開:aib dm-queue tidy-switch on --fleet
+TIDY_NEED_AI_MAX = 10
+TIDY_SUMMARY_CHARS = 80
+TIDY_TEST_PING_AGE_S = 3600
+TIDY_NEVER_KINDS = ("decide", "deliver", "report")
+# 驗證信只認兩種寫死的形狀(e2e 代號、新機開席驗收);ping 這類口語不猜
+TIDY_TEST_PING_RES = (
+    re.compile(r"^\s*\[e2e e2e-\d{6}-\d{3,5}\]"),
+    re.compile(r"^\s*\S{0,12}請只回覆 AIB-SEAT-READY\s*$"),   # 審查:整封就是那句才算,引用到這句的真信不收
+)
+
+
+def tidy_seat_path(seat, env=None):
+    return seat_dir(seat, env) / "tidy.json"
+
+
+def tidy_fleet_path(env=None):
+    return queue_root(env) / "tidy-policy.json"
+
+
+def _read_tidy_flag(path):
+    """回 True / False / None(檔不在、壞檔、形狀不對 = None,交給下一層)。"""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != TIDY_SCHEMA or not isinstance(data.get("auto_tidy"), bool):
+        return None
+    return data["auto_tidy"]
+
+
+def tidy_enabled(seat, env=None):
+    """(開不開, 來源)。來源 = seat / fleet / default。"""
+    v = _read_tidy_flag(tidy_seat_path(seat, env))
+    if v is not None:
+        return v, "seat"
+    v = _read_tidy_flag(tidy_fleet_path(env))
+    if v is not None:
+        return v, "fleet"
+    return TIDY_DEFAULT, "default"
+
+
+def tidy_switch(value, seat=None, env=None):
+    """value = on / off / default。seat=None ⇒ 全艦檔;default ⇒ 拿掉那一層的檔。回寫完之後的 tidy_enabled。"""
+    path = tidy_fleet_path(env) if seat is None else tidy_seat_path(seat, env)
+    if value == "default":
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        AJ.write_json(str(path), {"schema": TIDY_SCHEMA, "auto_tidy": value == "on"})
+    if seat is not None:
+        return tidy_enabled(seat, env)
+    flag = _read_tidy_flag(path)
+    return (TIDY_DEFAULT, "default") if flag is None else (flag, "fleet")
+
+
+def _tidy_untouchable(row):
+    return (row.get("status") != "delivered" or row.get("kind") in TIDY_NEVER_KINDS
+            or row.get("sender_kind") == "human")
+
+
+def _is_test_ping(row, now):
+    try:
+        old = int(now) - int(row.get("sent_at") or row.get("ts") or now) >= TIDY_TEST_PING_AGE_S
+    except (TypeError, ValueError):
+        return False
+    return old and any(r.search(str(row.get("msg") or "")) for r in TIDY_TEST_PING_RES)
+
+
+def tidy_plan(rows, now):
+    """純函式:待審列 ⇒ [(id, rev, why)]。why = duplicate / superseded / notice / test_ping。"""
+    plan, seen = [], set()
+    cls = TR.classify(rows)
+    by_id = {str(r.get("id")): r for r in rows}
+
+    def add(rid, why):
+        r = by_id.get(rid)
+        if r is None or rid in seen or _tidy_untouchable(r):
+            return
+        seen.add(rid)
+        plan.append((rid, r.get("rev"), why))
+
+    for grp in cls["groups"]["duplicate"]:
+        for rid in grp["ids"]:
+            if rid != grp["rep"]:
+                add(rid, "duplicate")
+    for r in rows:
+        if r.get("superseded_by"):
+            add(str(r.get("id")), "superseded")
+    for rid in cls["groups"]["notice"]:
+        if TR.is_notice((by_id.get(rid) or {}).get("msg")):
+            add(rid, "notice")
+    for r in rows:
+        if r.get("kind") == "notice":
+            add(str(r.get("id")), "notice")   # S7-2:寄件人標知會的,機器層代標讀(讀過即備存)
+    for r in rows:
+        if _is_test_ping(r, now):
+            add(str(r.get("id")), "test_ping")
+    return plan
+
+
+def _tidy_summary(msg):
+    text = " ".join(str(msg or "").split())
+    return text[:TIDY_SUMMARY_CHARS]
+
+
+TIDY_MARK_WOKE_WAIT_S = 2.0     # --mark-woke 等 triage 小鎖的上限:呼叫端是 hook,不能陪 triage_tick 等 30 秒
+
+
+def _tidy_mark_woke(seat, env, now):
+    """a seat 10-13 17:20:用量提醒已把待審清單交給那一席 ⇒ 記成「叫過了」,triage_tick 的冷卻與「新信」都從這裡算。
+    只寫 woke_at / woke_ids(= 現在的未讀),不動 wake_log(每日上限只算 triage 自己的叫醒)。回 (記了沒, 原因)。"""
+    tl = _seat_deliver_lock(seat, env, wait_s=TIDY_MARK_WOKE_WAIT_S, name=SEAT_TRIAGE_LOCK)
+    if tl is None:
+        return False, "triage-lock-busy"
+    try:
+        path = triage_path(seat, env)
+        rows = tabs_payload(seat, env=env, now=now)["tabs"]["waiting"]["rows"]
+        rec = TR.build_record(seat, rows, prev=TR.load(path), now=now)
+        rec.update({"woke_at": now, "woke_ids": list(rec.get("unread_ids") or []), "woke_by": "stage-tidy"})
+        return (True, "ok") if TR.write(path, rec) else (False, "triage-write-failed")
+    finally:
+        _seat_deliver_unlock(tl)
+
+
+TIDY_RELAY_MAX_BYTES = 200_000
+
+
+def _relay_text(msg):
+    """merge_groups 用:不是長訊指標 ⇒ False;是指標 ⇒ 落檔內容(讀不到 / 太大 ⇒ None,不參與相近合併)。"""
+    path = DR.relay_path_of(msg)
+    if not path:
+        return False
+    try:
+        p = Path(path)
+        if p.stat().st_size > TIDY_RELAY_MAX_BYTES:
+            return None
+        return p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def stage_tidy(seat, env=None, now=None, dry=False, mark_woke=False):
+    """`aib dm-queue stage-tidy`:先做機器層(遵守開關),回該交 AI 的信。介面與 a seat 10-13 17:11 定案。
+    mark_woke(17:20):need_ai 不空、不是 dry ⇒ 記進 triage.json 的叫醒時間(_tidy_mark_woke)。"""
+    now = int(time.time() if now is None else now)
+    on, src = tidy_enabled(seat, env)
+    q_ok, q_why = admit(env)
+    t = tabs_payload(seat, env=env, now=now)
+    rows = t["tabs"]["waiting"]["rows"]
+    out = {"enabled": bool(on and q_ok), "switch": src, "queue": q_why if not q_ok else "ok", "dry": bool(dry),
+           "cleaned": 0, "cleaned_ids": [], "need_ai": [], "hold": t["badges"]["hold"],
+           "expired": t["badges"]["expired"], "todo": 0, "source_rev": t["source_rev"]}
+    cleaned = set()
+    if out["enabled"]:
+        for rid, rev, why in tidy_plan(rows, now):
+            if dry:
+                ok = True
+            elif why == "notice":
+                ok = _transition(seat, rid, "read", "system", env=env, now=now, why=AUTO_READ_WHY,
+                                 if_rev=rev, no_rev_check=False, expect_status="delivered")["ok"]
+                if ok:
+                    _after_read(seat, rid, env=env, now=now)
+            else:
+                ok = _transition(seat, rid, "archived", "system", env=env, now=now, why=why,
+                                 if_rev=rev, no_rev_check=False, expect_status="delivered")["ok"]
+            if ok:
+                cleaned.add(rid)
+                out["cleaned_ids"].append({"id": rid, "why": why})
+        out["cleaned"] = len(cleaned)
+        if cleaned and not dry:
+            out["source_rev"] = source_rev(seat, env)
+    todo = [r for r in rows if r.get("id") not in cleaned
+            and r.get("status") in ("queued", "claimed", "delivered") and not r.get("expired_now")]
+    out["todo"] = len(todo)
+    # the maintainer 10-13 17:3x「一樣的內容、或相近的一樣要先合併,然後再處理」:同寄件人同 thread 或正文相近 ⇒ 一組,
+    #   need_ai 一列 = 一組(代表 = 最新那封,merged = 組內其他封);信本身不動(相近 ≠ 一樣,舊的可能有細節)。
+    groups = TR.merge_groups(todo, relay_text=_relay_text)
+    out["groups"] = len(groups)
+    for g in groups[:TIDY_NEED_AI_MAX]:
+        r = g[-1]
+        try:
+            age = max(0, now - int(g[0].get("sent_at") or g[0].get("ts") or now))
+        except (TypeError, ValueError):
+            age = None
+        out["need_ai"].append({"id": r.get("id"), "rev": r.get("rev"), "from": r.get("sender"),
+                               "sender_kind": r.get("sender_kind"), "kind": r.get("kind"),
+                               "summary": _tidy_summary(r.get("msg")),
+                               "relay_path": DR.relay_path_of(r.get("msg")), "age_s": age,
+                               "merged": [{"id": m.get("id"), "rev": m.get("rev"), "when": m.get("when")}
+                                          for m in g[:-1]]})
+    if mark_woke:
+        if dry or not out["need_ai"]:
+            out["marked_woke"], out["mark_why"] = False, ("dry" if dry else "nothing-for-ai")
+        else:
+            out["marked_woke"], out["mark_why"] = _tidy_mark_woke(seat, env, now)
+    return out
+
+
 def _replaceable(item):
     """只有廣播型(order/rule/pipeline)且帶 thread、帶寄件席的信才參與「取代」;新舊兩邊都用這一個判準。
     ★ 還原刀錨:test-dm-queue-v2-70.py 把 BROADCAST_KINDS 那截拿掉 ⇒ 交件/要裁/自報也會被合併,對應格必紅。"""
@@ -1758,6 +2178,8 @@ def record(seat, msg, sender_label, status="delivered", rc=None, env=None, now=N
             item["hold_why"] = (HOLD_WHY["rc3"] if rc == 3 else HOLD_WHY["rc4"] if rc == 4
                                 else HOLD_WHY["rc_other"] % int(rc or 0))
     _write_item(seat, item, env)
+    if status == "delivered":
+        _close_original(item, env=env, now=now)   # S7-3:直送那條送達才結原信
     if status == HOLD_STATUS:
         # hold 的信人要看得到、要能 requeue ⇒ 留在 order.json。
         _order_append(seat, item["id"], env)
@@ -3178,7 +3600,7 @@ def intercept(seat, msg, sender_label, sender_kind="unknown",
               session_uuid="", wid="", provider="", hub="",
               priority="normal", hold=None, env=None, now=None,
               origin=None, thread=None, kind=None, sender_seat=None, human_id=None, expires=None,
-              sender_source=None, sender_hub=None, sender_origin=None):
+              sender_source=None, sender_hub=None, sender_origin=None, closes=None):
     """admit 且忙碌 → 入列;否則交給既有貼稿。"""
     ok, reason = admit(env)
     if not ok:
@@ -3205,6 +3627,7 @@ def intercept(seat, msg, sender_label, sender_kind="unknown",
         priority=priority, env=env, now=now, origin=origin,
         thread=thread, kind=kind, sender_seat=sender_seat, human_id=human_id, expires=expires,
         sender_source=sender_source, hub=hub, sender_hub=sender_hub, sender_origin=sender_origin,
+        closes=closes,
         no_relay=(str(_env(env).get("AIB_DM_RELAY_BYTES") or "") == "0"))
     return {
         "take": "queue",
@@ -3240,6 +3663,8 @@ def _settle_delivery(seat, claimed, rc, env, sent, now=None):
         # 第 70 項 P2:送達不刪、改標 delivered(離開 order.json、檔留著當歷史;收件席 read/done 才再動)。
         res = _transition(seat, item_id, "delivered", "system", env=env, now=now)
         sent.append(res["item"] if res.get("ok") else claimed)
+        if res.get("ok") and res.get("item"):
+            _close_original(res["item"], env=env, now=now)   # S7-3:排隊那條送達才結原信
         return
     if rc == 2:
         attempts = int(claimed.get("attempts") or 0) + 1
@@ -3522,7 +3947,8 @@ def _v2_kw(args):
             "sender_source": getattr(args, "sender_source", None),
             "sender_hub": getattr(args, "sender_hub", None),
             "sender_origin": getattr(args, "sender_origin", None),
-            "expires": getattr(args, "expires", None)}
+            "expires": getattr(args, "expires", None),
+            "closes": getattr(args, "closes", None)}
 
 
 def main(argv=None, env=None):
@@ -3547,6 +3973,7 @@ def main(argv=None, env=None):
         # the maintainer 09-30 15:3x(收件匣 A 項 2):寄件人那一艙與來源機器名,排隊投遞時抬頭照它寫原寄件人
         sp.add_argument("--sender-hub", default=None)
         sp.add_argument("--sender-origin", default=None)
+        sp.add_argument("--closes", default=None)    # S7-3:這封回信送達後要結掉的原信 id(寄件席自己佇列裡)
 
     def _sender_args(sp):
         sp.add_argument("--seat", required=True)
@@ -3587,8 +4014,17 @@ def main(argv=None, env=None):
         sp.add_argument("--by", required=True)       # seat:<收件席>
         sp.add_argument("--if-rev", type=int, default=None)
         sp.add_argument("--no-rev-check", action="store_true")
-        if name == "done":
-            sp.add_argument("--evidence", required=True)
+        sp.add_argument("--evidence", default=None)
+        sp.add_argument("--why", default=None)       # S7-1:沒有證據時的結案理由(記成 done_kind=reason)
+        if name == "read":
+            sp.add_argument("--done", action="store_true")    # S7-1:讀和結案一步
+        else:
+            sp.add_argument("--group", action="store_true")   # S7-1:同一合併組一起結
+    rcl = sub.add_parser("reclass")
+    rcl.add_argument("--seat", required=True)
+    rcl.add_argument("--id", required=True)
+    rcl.add_argument("--by", required=True)
+    rcl.add_argument("--kind", required=True, choices=KINDS)
 
     ar = sub.add_parser("archive")
     ar.add_argument("--seat", default=None)
@@ -3717,6 +4153,17 @@ def main(argv=None, env=None):
     tri.add_argument("--json", action="store_true")
     tri.add_argument("--apply", action="store_true")
 
+    stid = sub.add_parser("stage-tidy")
+    stid.add_argument("--seat", required=True)
+    stid.add_argument("--json", action="store_true")
+    stid.add_argument("--dry", action="store_true")
+    stid.add_argument("--mark-woke", action="store_true")
+    tsw = sub.add_parser("tidy-switch")
+    tsw.add_argument("value", choices=("on", "off", "default"))
+    tsw_who = tsw.add_mutually_exclusive_group(required=True)
+    tsw_who.add_argument("--seat")
+    tsw_who.add_argument("--fleet", action="store_true")
+
     ptst = sub.add_parser("purge-test")
     ptst.add_argument("--dry-run", action="store_true")
     sub.add_parser("list-test")
@@ -3785,14 +4232,29 @@ def main(argv=None, env=None):
             return 6
         if args.no_rev_check and args.if_rev is None:
             note_rev_bypass(env, args.cmd, args.seat, args.id)
-        if args.cmd == "read":
+        closing = args.cmd == "done" or getattr(args, "done", False)
+        if closing and not (args.evidence or args.why):
+            _print_json({"ok": False, "reason": "evidence", "message": TRANSITION_REASON["evidence"]})
+            return _TRANSITION_RC["evidence"]
+        if args.cmd == "read" and not args.done:
             out = mark_read(args.seat, args.id, args.by, env=env, if_rev=args.if_rev,
                             no_rev_check=bool(args.no_rev_check))
+        elif args.cmd == "read":
+            out = read_done(args.seat, args.id, args.by, args.evidence, env=env, if_rev=args.if_rev,
+                            no_rev_check=bool(args.no_rev_check), why=args.why)
+        elif args.group:
+            out = done_group(args.seat, args.id, args.by, args.evidence, env=env, if_rev=args.if_rev,
+                             no_rev_check=bool(args.no_rev_check), why=args.why)
         else:
             out = mark_done(args.seat, args.id, args.by, args.evidence, env=env, if_rev=args.if_rev,
-                            no_rev_check=bool(args.no_rev_check))
+                            no_rev_check=bool(args.no_rev_check), why=args.why)
         _print_json({k: v for k, v in out.items() if k != "item"})
         return 0 if out["ok"] else _TRANSITION_RC.get(out["reason"], 4)
+
+    if args.cmd == "reclass":
+        out = reclass(args.seat, args.id, args.kind, args.by, env=env)
+        _print_json(out)
+        return 0 if out["ok"] else _TRANSITION_RC.get(out["reason"], 2)
 
     if args.cmd == "archive":
         if getattr(args, "retention", False):
@@ -3996,6 +4458,21 @@ def main(argv=None, env=None):
             args.wid, args.hub or env.get("EZ2_AIHUB_SOCKET") or "")
         busy, why = hold_from_screen(screen or "", provider=args.provider or None)
         _print_json({"hold": busy, "reason": why})
+        return 0
+
+    if args.cmd == "stage-tidy":
+        if not SEAT_RE.fullmatch(args.seat or ""):
+            _print_json({"ok": False, "reason": "seat", "seat": args.seat})
+            return 2
+        _print_json(stage_tidy(args.seat, env=env, dry=args.dry, mark_woke=args.mark_woke))
+        return 0
+
+    if args.cmd == "tidy-switch":
+        if args.seat is not None and not SEAT_RE.fullmatch(args.seat):
+            _print_json({"ok": False, "reason": "seat", "seat": args.seat})
+            return 2
+        on, src = tidy_switch(args.value, seat=args.seat, env=env)
+        _print_json({"ok": True, "seat": args.seat, "fleet": bool(args.fleet), "auto_tidy": on, "switch": src})
         return 0
 
     if args.cmd == "triage":

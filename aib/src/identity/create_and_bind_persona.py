@@ -114,6 +114,30 @@ LINT_RULES = (
 ) + _SECRET_BASE
 
 
+def _archive_snapshot(path, kind, key):
+    """改卡前快照(src/memory/memory_archive.py,記憶整理第 1 包)。
+    檔還不在(新卡)⇒ 不用拍,skipped。
+    找不到 memory_archive.py 這支檔(測試副本樹只放了本檔)⇒ skipped 並記一句。
+    檔在、但載入或拍的時候出錯 ⇒ failed,呼叫端不准寫(正式安裝一定帶 src/memory,載不起來就是壞了)。
+    先找本檔所在那棵樹,再找 EZ2_AIB_REPO;用找到的那一支檔載入(不靠 sys.path 順序)。"""
+    if not Path(path).exists():
+        return {"status": "skipped", "error": "no file yet"}
+    found = next((m / "memory_archive.py" for m in (Path(__file__).resolve().parents[1] / "memory",
+                                                    REPO_ROOT / "src" / "memory")
+                  if (m / "memory_archive.py").is_file()), None)
+    if found is None:
+        log("提醒: 找不到 memory_archive.py,這次改卡沒有備份")
+        return {"status": "skipped", "error": "memory_archive unavailable"}
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("memory_archive_for_newrole", str(found))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.snapshot(path, kind, key)
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "error": "memory_archive: %s" % exc}
+
+
 def lint_card(text):
     failures = []
     if len(text.encode("utf-8")) > 20 * 1024:
@@ -785,6 +809,11 @@ def main():
             log("[DRY-RUN] 跳過寫入檔案")
     else:
         target_role_dir.mkdir(parents=True, exist_ok=True)
+        # 記憶整理第 1 包(10-13):--overwrite 會蓋掉舊卡 ⇒ 先拍快照到 <狀態根>/archive/persona/<uid>/;拍不成就不寫
+        snap = _archive_snapshot(target_role_file, "persona", target_card_uid)
+        if snap.get("status") == "failed":
+            log("錯誤: 改卡前備份失敗(%s);卡沒動" % snap.get("error"), prefix="[x]")
+            return 2
         with open(target_role_file, "w", encoding="utf-8") as f:
             f.write(card_markdown)
         log("   -> Vault 檔案已寫入")

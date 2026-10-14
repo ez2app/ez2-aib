@@ -198,9 +198,8 @@ AI 列表由 `render_ai_list_with_map` 同時產出畫面與行對映;兩者在�
 `$EZ2_COCKPIT_STATE_DIR`(預設 `~/.ez2-aib/cockpit`),不再寫腳本目錄,
 repo 保持乾淨。
 
-## 已知過渡依賴(EM 絞殺者遷移時逐一拔除)
+## 已知過渡依賴
 
-- `$EZ2_ACB_HOME`(sessions/inbox/logs/role-policy):ACB 現行狀態,唯讀。
 - `$EZ2_FLEET_BOARD`:share/claude-ui 的艦隊看板。
 - `$EZ2_CODEX_SESSIONS_ROOT` 預設為 `~/.codex/sessions`；子 AI 只接受父、子
   rollout 雙向驗證的 Codex child thread UUID。Claude temporary tasks 混有背景
@@ -226,7 +225,7 @@ rc:0 正常 / 2 用法或名單缺 / 3 目標拒收(有人接著)
 
 | target | 判決 | 意思 |
 |---|---|---|
-| `inst:<N>`(main=acb131/aihub;N=aib-N/aihub-N) | `active` | 有人接著(外殼有 client、或內艙 client 的 tty 不屬外殼任何 pane=有人直接 attach)或有席在工作 |
+| `inst:<N>`(main=aib-main/aihub;N=aib-N/aihub-N) | `active` | 有人接著(外殼有 client、或內艙 client 的 tty 不屬外殼任何 pane=有人直接 attach)或有席在工作 |
 | | `unknown` | detach 但至少一席量不到活動訊號 → **fail-closed 不收** |
 | | `detached_idle` | 無人 + 每一席 idle ≥ `idle_threshold_s` + 艙齡 ≥ `min_age_s` |
 | | `dead_inner` | 內艙不存在或內艙所有 pane 已死,只剩外殼四支腳本在燒 |

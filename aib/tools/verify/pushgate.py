@@ -60,21 +60,24 @@ def T(key, params=None):
     return i18n_lib.t("aib.pushgate." + key, params, locale=LOC)
 
 
-def all_tests(repo):
-    t = Path(repo) / "tests"
-    return sorted("tests/" + p.name for p in list(t.glob("test-*.py")) + list(t.glob("test_*.py")))
+_DIRECT = {}   # repo → 正本挑選標成「直接用到改動檔」的測試(select 填、tiers 讀;排序用)
 
 
 def select(repo, base):
-    """回 (測試清單, 是否全套)。"""
+    """回 (測試清單, 是否全套)。順便記下正本的 direct 旗標給 tiers 排序(不再自己用子字串猜一次)。"""
     p = subprocess.run([sys.executable, str(HERE / "select_changed.py"), "--repo", str(repo), "--base", base,
-                        "--head", "HEAD", "--print-tests"], capture_output=True, text=True,
+                        "--head", "HEAD"], capture_output=True, text=True,
                        stdin=subprocess.DEVNULL, timeout=1800)
-    names = [ln.strip() for ln in p.stdout.splitlines() if ln.strip().startswith("tests/")]
-    if p.returncode != 0:
+    try:
+        rows = json.loads(p.stdout).get("selected") if p.returncode == 0 else None
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list):
+        _DIRECT.pop(str(repo), None)
         return all_tests(repo), True
+    _DIRECT[str(repo)] = {r["test"] for r in rows if any(w.get("direct") for w in r.get("why") or [])}
     have = set(all_tests(repo))
-    return [n for n in names if n in have], False
+    return [r["test"] for r in rows if r.get("test") in have], False
 
 
 REUSE_COST_S = 0.5
@@ -187,9 +190,11 @@ def add_blockers(repo, tests):
         pass
 
 
-def tiers(repo, tests, changed, reds):
-    """-1 = 便宜守門與擋過推包的測試;0 = 上次紅或這次改到的測試檔本身;1 = 測試原始碼寫到改動檔的路徑或檔名;2 = 其他。"""
-    keys = [k for c in changed for k in (c, os.path.basename(c)) if len(k) >= 6]
+def tiers(repo, tests, changed, reds, direct=None):
+    """-1 = 便宜守門與擋過推包的測試;0 = 上次紅或這次改到的測試檔本身;1 = 正本挑選標 direct(直接用到改動檔);2 = 其他。
+    10-14:第 1 層原本自己讀測試原始碼找改動檔的路徑 / 檔名(子字串),跟正本 select_changed 的直接三條重複又判法不同 ⇒ 改讀正本的 direct;
+    沒有正本結果(全套 / 一般專案)就沒有第 1 層,只影響先後、不影響挑哪些。"""
+    direct = _DIRECT.get(str(repo), set()) if direct is None else set(direct)
     blockers = set(load_blockers(repo))
     out = {}
     for t in tests:
@@ -199,11 +204,7 @@ def tiers(repo, tests, changed, reds):
         if t in reds or t in changed:      # 10-08:這次新增 / 改的測試檔本身最可能紅,跟上次紅的同一層
             out[t] = 0
             continue
-        try:
-            src = (Path(repo) / t).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            src = ""
-        out[t] = 1 if any(k in src for k in keys) else 2
+        out[t] = 1 if t in direct else 2
     return out
 
 
@@ -777,6 +778,35 @@ def print_versus_done(repo, sv, shards_n, prev):
                               "seconds": dur_text(max(0.0, tot_serial - tot_wall))}))
 
 
+def cause_texts(causes):
+    """sv["causes"](rerun_causes 的結果)⇒ 說明那一行的白話清單。"""
+    import shadow_explain as SE
+    out = []
+    c = causes or {}
+    if c.get("first"):
+        out.append(SE.T("cause_first"))
+    for key in ("tracer", "deps"):
+        if c.get(key):
+            out.append(SE.T("cause_" + key, {"what": SE.T("sep").join(os.path.basename(str(f)) for f in c[key][:3])}))
+    if c.get("wide"):
+        out.append(SE.T("cause_wide", {"what": SE.T("sep").join("%s(%s)" % (os.path.basename(str(f)), n)
+                                                              for f, n in c["wide"][:3])}))
+    return out
+
+
+def shadow_explain_emit(repo, sv, prev):
+    """推前檢查收尾的影子續跑說明(tools/verify/shadow_explain.py)。算不出來只印一行原因,不影響結束碼。"""
+    try:
+        import shadow_explain
+        serial, _known, _unknown, _slow = without_aib(repo, prev, sv.get("_ran"))
+        reused, ran = int(sv.get("reused") or 0), int(sv.get("ran") or 0)
+        total = int(sv.get("files_total") or (reused + ran))
+        shadow_explain.emit("aib ship", dur_text, reused=reused, skipped=max(0, total - reused - ran), ran=ran,
+                            without_s=serial, actual_s=float(sv.get("wall_s") or 0), causes=cause_texts(sv.get("causes")))
+    except Exception as e:  # noqa: BLE001
+        print("shadow-explain: %s: %s" % (type(e).__name__, e))
+
+
 def print_forecast(repo, base, tests, shards, dur, prev, changed):
     fc = forecast(tests, shards, dur, prev)
     try:
@@ -1020,6 +1050,7 @@ def main(argv=None):
             print_versus_done(repo, sv, len(shards), prev)
         except Exception:  # noqa: BLE001
             pass
+    shadow_explain_emit(repo, sv, prev)                  # 10-13 the maintainer:影子續跑說明一定印、一定記(提早停那一輪也印實際數字)
     rc = combine([r[0] for r in results], a.allow_unverified)
     if early:
         rc = EARLY_RED

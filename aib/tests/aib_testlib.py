@@ -17,6 +17,9 @@ import tokenize
 #   只 setdefault:格子自己設了 AIB_GENES(要量「開」的那幾支)照舊贏;子行程繼承 os.environ 一起關。
 #   ★ 放在測試共用檔、不改 ez2_genes 的檔案位置:真使用者的開關語意一個字都不動。
 os.environ.setdefault("AIB_GENES", "0")
+# 10-13 記憶整理第 2 包(a seat 11:36):交接第三步的背景自動綁預設開 ⇒ 測試預設**關**(不在 the maintainer 螢幕跳真視窗、不真建卡)。
+#   同樣只 setdefault:要驗自動綁的格自己明確開(AIB_AUTO_BIND=1);子行程繼承 os.environ 一起關。
+os.environ.setdefault("AIB_AUTO_BIND", "0")
 
 
 # ★ AR(2026-09-02,the maintainer 眼驗選 A):子 AI 列自帶彎角 `├--⚙`/`╰--⚙`(舊形 `---⚙` 退役)。

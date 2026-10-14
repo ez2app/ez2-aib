@@ -16,10 +16,15 @@
     repair   人格不見但延續檔還記得的席,把那張人格接回來
 
 ## 紅線
-- **不猜。** 專案比不出唯一一張就標「要人決定」,不挑一張湊數;倉指紋共用很常見(10-11 實量:
-  3 張 SEO 卡共用同一個指紋),所以本工具**不用倉指紋自動綁**。
+- **不猜。** 合不合適由那一席自己從清單挑、程式驗「清單裡剛好一張對得上」;專案比不出唯一一張就不直接綁
+  (自動模式改成跳選擇視窗);倉指紋共用很常見(10-11 實量:3 張 SEO 卡共用同一個指紋),所以本工具
+  **不用倉指紋自動綁**。
 - **不另寫綁定檔。** 一律呼叫 `aib newrole` / `aib newproj`(帳本、投影、接手包都走它們)。
-- **沒講 --create-missing 不建新卡。** 建議裡出現「新建」的列,apply 預設跳過。
+- **手動 apply:沒講 --create-missing 不建新卡。** 建議裡出現「新建」的列,apply 預設跳過。
+- **自動模式(auto_apply,交接 / 整理記憶時對自己這一席)—— the maintainer 10-13 01:5x 在 a seat 窗裡確認「同意自動綁」:**
+  找到合適的既有卡 ⇒ 直接綁,另發「已綁 X」通知(可換掉);沒有合適的 ⇒ Mac 彈窗 30 秒,沒選照預設建立並綁;
+  彈窗叫不起來(沒人看著畫面)⇒ 一樣等 30 秒照預設,另送一張決定卡當事後通知(取代舊規則「人沒看到不能當成沒選」)。
+  **冠位人格(CROWN_PERSONA)永遠不自動綁;bot 席整段不跑(bot 綁定照舊讀不到就問人)。**
 - **bot 席不碰**(claudebot/codexbot/grokbot/musebot 的「綁定」是另一回事)。
 - 席位用席碼(session uuid 末五碼,走 seat_address.uuid_tail5),輸出同時印 seat_id。
 - 不讀任何艙環境變數:「我是哪一席」用 --me 明講(從工具子行程認不出窗格)。
@@ -31,6 +36,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import time
 import sys
@@ -46,7 +52,7 @@ BOT_PROVIDERS = {"claudebot", "codexbot", "grokbot", "musebot"}
 CODE_RE = re.compile(r"^[0-9a-z]{5}$")
 UID_RE = re.compile(r"proj:[0-9a-f]{16}")
 RELAY_RE = re.compile(r"請讀[::]\s*(\S+\.txt)")
-FIELD_RE = re.compile(r"^\s*(席碼|主項目|24\s*小時做了|做了|建議專案|建議人格|人格理由)\s*[::]\s*(.+?)\s*$", re.M)
+FIELD_RE = re.compile(r"^\s*(席碼|主項目|24\s*小時做了|做了|建議專案|建議人格|人格理由|新人格名稱)\s*[::]\s*(.+?)\s*$", re.M)
 UNKNOWN = {"", "不知道", "沒有", "無", "none", "n/a", "-"}
 
 
@@ -435,7 +441,8 @@ def countdown_menu(cabin, title, items, default_id, timeout=MENU_TIMEOUT_S, stat
       picked  有人選了
       timeout 浮窗跳出來、倒數到 0 沒人選 ⇒ default_id
       closed  倒數沒到就被關掉(沒選)⇒ 當成「不要」:人主動關掉不算「沒選」
-      no_menu 跳不出來(那一艙沒人接著、socket 不在…)⇒ **None**:人沒看到就不能當成「沒選」"""
+      no_menu 跳不出來(那一艙沒人接著、socket 不在…)⇒ **None**:手動 apply 照舊「人沒看到就不能當成沒選」;
+              自動模式(auto_apply)依 the maintainer 10-13 01:5x 確認改成等滿時間照預設,另送決定卡通知"""
     import cabin_restart   # R8:hub 名一律向單源要(cabin_resolve.sh --hub),不在這裡自己拼
     sock = cabin_restart._hub_of(cabin) or ""
     env = {k: v for k, v in os.environ.items() if not k.startswith("TMUX")}
@@ -502,6 +509,392 @@ def ask_row(row, menu=None, timeout=MENU_TIMEOUT_S, state_root=None):
     if choice is None:
         return None, how
     return choice == "yes", how
+
+
+# ── 自動綁定(記憶整理第 2 包;the maintainer 10-13 01:5x 在 a seat 窗裡確認「同意自動綁」)────────────
+
+MAC_TIMEOUT_S = 30
+_OSA_GAVE_UP = re.compile(r"gave up:\s*true")
+_OSA_BUTTON = re.compile(r"button returned:([^,\n]*)")
+_OSA_TEXT = re.compile(r"text returned:(.*?)(?:, gave up:|$)", re.S)
+
+
+def _osa_quote(text):
+    return '"%s"' % str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _osa(script, timeout, runner=None):
+    """跑一段 AppleScript。回 (rc, stdout, stderr);叫不起來(不是 macOS、沒 osascript、逾時)⇒ (None, "", 原因)。"""
+    if runner:
+        return runner(script, timeout)
+    if sys.platform != "darwin" or not shutil.which("osascript"):
+        return None, "", "no osascript"
+    try:
+        p = subprocess.run(["osascript", "-e", script], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=timeout + 5)
+    except subprocess.TimeoutExpired:
+        return None, "", "timeout"
+    except OSError as exc:
+        return None, "", str(exc)
+    return p.returncode, p.stdout, p.stderr
+
+
+def mac_dialog(title, message, buttons, default, cancel, timeout=MAC_TIMEOUT_S, runner=None):
+    """Mac 跳出視窗(最多 3 顆按鈕)。回 (按了哪顆或預設, how):
+      picked  有人按了 ⇒ 那顆
+      timeout 逾時(gave up:true)⇒ default
+      closed  按了 cancel 那顆或 Esc(osascript 錯誤 -128)⇒ cancel
+      no_menu 叫不起來(沒有畫面、不是 macOS…)⇒ None"""
+    script = ("display dialog %s with title %s buttons {%s} default button %s cancel button %s giving up after %d"
+              % (_osa_quote(message), _osa_quote(title), ", ".join(_osa_quote(b) for b in buttons),
+                 _osa_quote(default), _osa_quote(cancel), int(timeout)))
+    rc, out, err = _osa(script, timeout, runner)
+    if rc is None:
+        # 視窗跳出來了、只是 osascript 本身被逾時砍掉(機器忙)⇒ 跟 gave up 一樣算逾時,不是「沒畫面」
+        return (default, "timeout") if err == "timeout" else (None, "no_menu")
+    if rc != 0:
+        return (cancel, "closed") if "-128" in (err or "") else (None, "no_menu")
+    if _OSA_GAVE_UP.search(out or ""):
+        return default, "timeout"
+    m = _OSA_BUTTON.search(out or "")
+    btn = (m.group(1).strip() if m else "") or default
+    return btn, ("closed" if btn == cancel else "picked")
+
+
+def mac_text(title, prompt, default, timeout=MAC_TIMEOUT_S, runner=None):
+    """輸入框(預填 default)。回字串;逾時、取消、叫不起來 ⇒ default。"""
+    script = ('display dialog %s with title %s default answer %s buttons {"取消", "好"} default button "好" '
+              'cancel button "取消" giving up after %d' % (_osa_quote(prompt), _osa_quote(title), _osa_quote(default),
+                                                          int(timeout)))
+    rc, out, _err = _osa(script, timeout, runner)
+    if rc != 0 or _OSA_GAVE_UP.search(out or ""):
+        return default
+    m = _OSA_TEXT.search(out or "")
+    got = (m.group(1).strip() if m else "")
+    return got or default
+
+
+def mac_choose(title, prompt, items, timeout=MAC_TIMEOUT_S, runner=None):
+    """清單挑一個(choose from list 沒有 giving up ⇒ 靠逾時砍掉)。回 (選到的字串或 None, how):
+    picked 選了;closed 按了取消(回 false);timeout 逾時被砍;no_menu 叫不起來或清單是空的。"""
+    if not items:
+        return None, "no_menu"
+    script = "choose from list {%s} with title %s with prompt %s" % (
+        ", ".join(_osa_quote(i) for i in items[:9]), _osa_quote(title), _osa_quote(prompt))
+    rc, out, err = _osa(script, timeout, runner)
+    if rc is None:
+        return None, ("timeout" if err == "timeout" else "no_menu")
+    got = (out or "").strip()
+    if rc != 0:
+        return None, ("closed" if "-128" in (err or "") else "no_menu")
+    if not got or got == "false":
+        return None, "closed"
+    return (got, "picked") if got in items else (None, "closed")
+
+
+def new_persona_name(fields, cards):
+    """新卡名稱:回覆的「新人格名稱」> 主項目前 12 字;和既有卡同名 ⇒ 加序號(不覆蓋既有卡)。"""
+    base = (fields.get("新人格名稱") or fields.get("主項目") or "").strip()
+    base = re.sub(r"[\\/:*?\"<>|\n\r\t]", " ", base).strip()[:12].strip() or "新角色"
+    taken = set(cards.values())
+    name, n = base, 1
+    while name in taken:
+        n += 1
+        name = "%s-%d" % (base, n)
+    return name
+
+
+def finalize_draft(path, name):
+    """草稿的「(待取名)」換成名稱,回新路徑(newrole --prompt-file 用)。"""
+    text = Path(path).read_text(encoding="utf-8").replace("(待取名)", name)
+    out = path.replace("-persona-draft.md", "-persona-final.md")
+    Path(out).write_text(text, encoding="utf-8")
+    return out
+
+
+def _candidates(row, cards, kind, projects=()):
+    """「改綁其他候選」的清單(最多 9 個):人格 = 既有卡(不含冠位);專案 = 對到的那幾張,沒有就列全部專案。"""
+    if kind == "persona":
+        return [n for u, n in sorted(cards.items(), key=lambda x: x[1]) if u != CROWN_PERSONA][:9]
+    prj = row.get("project") or {}
+    hit = [t for t in (prj.get("title") or "").split("、") if t] if prj.get("how") == "ambiguous" else []
+    return (hit or [p["title"] for p in projects if p.get("title")])[:9]
+
+
+def _ask(row, msg, label, timeout, dialog, menu, sleep, out):
+    """一個「照預設 / 改… / 先不要」問題。Mac 彈窗 → 叫不起來退回那一艙的 tmux 倒數浮窗(沒有「改…」)→
+    都叫不起來:等滿 timeout 照預設,記 out["card"](事後送決定卡)。回 (按鈕, how)。"""
+    btn, asked = dialog("AIB 綁定", msg, ["先不要", "改…", label], label, "先不要", timeout)
+    if asked != "no_menu":
+        return btn, asked
+    choice, how = (menu or countdown_menu)(row.get("cabin") or "", msg.split("\n")[0],
+                                           [("yes", label + "(預設)"), ("no", "先不要")], "yes", timeout=timeout)
+    if choice is not None:
+        return (label if choice == "yes" else "先不要"), how
+    (sleep or time.sleep)(timeout)
+    out["card"] = True
+    return label, "no_menu"
+
+
+def auto_decide(row, cards, timeout=MAC_TIMEOUT_S, dialog=None, text=None, choose=None, sleep=None, projects=(),
+                menu=None):
+    """一列 → 自動模式的決定。回 dict:
+      persona: {"act": "keep"|"bind"|"create"|"skip", "name", "how"}
+      project: {"act": "keep"|"bind"|"create"|"skip", "uid"|"title", "how"}
+      asked:   picked / timeout / closed / no_menu / none
+      notice:  True ⇒ 要發「已綁 X」通知;card: True ⇒ 要送事後決定卡(沒畫面時)"""
+    dialog, text, choose = dialog or mac_dialog, text or mac_text, choose or mac_choose
+    per, prj = row.get("persona") or {}, row.get("project") or {}
+    out = {"persona": {"act": "skip"}, "project": {"act": "skip"}, "asked": "none", "notice": False, "card": False}
+    how = per.get("how")
+    if how == "keep":
+        out["persona"] = {"act": "keep", "how": how}
+    elif how in ("ask_existing", "continuity") and per.get("name") and per.get("uid") != CROWN_PERSONA \
+            and row.get("confirm"):
+        # 10-13 a seat(the maintainer 16:5x「應該彈出對話,並倒數30秒,如果用戶沒有做選擇,就照你的預設更新」):
+        #   綁定檢查(已綁、但跟最近 4 小時不合)要換成既有卡 ⇒ 也問,30 秒沒選照預設換
+        msg = "@%s 最近 4 小時做的事跟現在的人格「%s」不合,要換成「%s」嗎?\n\n%d 秒後自動換" % (
+            row["code"], row.get("old_persona") or "-", per["name"], timeout)
+        btn, asked = _ask(row, msg, "換成這張", timeout, dialog, menu, sleep, out)
+        out["asked"] = asked
+        if btn == "改…":
+            pick, pick_how = choose("AIB 綁定", "改綁哪一張?", _candidates(row, cards, "persona"), timeout)
+            btn = None
+            if pick:
+                out["persona"] = {"act": "bind", "name": pick, "how": "picked"}
+            elif pick_how != "closed":
+                btn = "換成這張"
+        if btn == "換成這張":
+            out["persona"] = {"act": "bind", "name": per["name"], "how": how}
+        elif out["persona"]["act"] == "skip":
+            out["persona"] = {"act": "keep", "how": "kept-by-human"}      # 先不要 = 留著現在那張
+    elif how in ("ask_existing", "continuity") and per.get("name") and per.get("uid") != CROWN_PERSONA:
+        out["persona"] = {"act": "bind", "name": per["name"], "how": how}
+        out["notice"] = True
+    elif how == "draft_new":
+        name = new_persona_name(row.get("fields") or {}, cards)
+        msg = "@%s 沒有合適的人格,要建一張新的\n\n名字:%s\n\n%d 秒後自動建立" % (row["code"], name, timeout)
+        btn, asked = _ask(row, msg, "照這樣建立", timeout, dialog, menu, sleep, out)
+        out["asked"] = asked
+        if btn == "改…":
+            sub, sub_how = dialog("AIB 綁定", "要改什麼?", ["取消", "改綁其他候選", "改名字"], "改名字", "取消", timeout)
+            if sub_how == "timeout":
+                btn = "照這樣建立"
+            elif sub == "改名字":
+                name = new_persona_name({"新人格名稱": text("AIB 綁定", "新人格名稱", name, timeout)}, cards)
+                btn = "照這樣建立"
+            elif sub == "改綁其他候選":
+                pick, pick_how = choose("AIB 綁定", "改綁哪一張?", _candidates(row, cards, "persona"), timeout)
+                if pick:
+                    out["persona"] = {"act": "bind", "name": pick, "how": "picked"}
+                    btn = None
+                else:
+                    btn = "先不要" if pick_how == "closed" else "照這樣建立"   # 取消 = 不要;逾時 / 叫不起來 = 照預設
+            else:
+                btn = "先不要"
+        if btn == "照這樣建立":
+            out["persona"] = {"act": "create", "name": name, "how": how}
+    persona_ready = out["persona"]["act"] in ("keep", "bind", "create")
+    if not persona_ready and out["persona"]["act"] == "skip":
+        out.setdefault("why", []).append("沒有人格 ⇒ 專案先不綁(newproj 要先有人格)")
+    phow = prj.get("how")
+    if phow == "keep":
+        out["project"] = {"act": "keep", "how": phow}
+    elif phow in ("uid", "title") and prj.get("uid") and persona_ready and row.get("confirm"):
+        msg = "@%s 最近 4 小時做的事跟現在的專案「%s」不合,要換成「%s」嗎?\n\n%d 秒後自動換" % (
+            row["code"], row.get("old_project") or "-", prj.get("title") or prj["uid"], timeout)
+        btn, asked = _ask(row, msg, "換成這個", timeout, dialog, menu, sleep, out)
+        if out["asked"] in ("none", "picked"):
+            out["asked"] = asked
+        if btn == "改…":
+            pick, pick_how = choose("AIB 綁定", "改綁哪一個專案?", _candidates(row, cards, "project", projects), timeout)
+            btn = None
+            if pick:
+                out["project"] = {"act": "bind_title", "title": pick, "how": "picked"}
+            elif pick_how != "closed":
+                btn = "換成這個"
+        if btn == "換成這個":
+            out["project"] = {"act": "bind", "uid": prj["uid"], "title": prj.get("title"), "how": phow}
+        elif out["project"]["act"] == "skip":
+            out["project"] = {"act": "keep", "how": "kept-by-human"}
+    elif phow in ("uid", "title") and prj.get("uid") and persona_ready:
+        out["project"] = {"act": "bind", "uid": prj["uid"], "title": prj.get("title"), "how": phow}
+        out["notice"] = True
+    elif phow in ("contains", "ambiguous", "new", "unknown") and persona_ready:
+        title = prj.get("title") or ""
+        if phow == "contains":
+            label, msg = "綁這張", "@%s 專案部分對到「%s」,要綁它嗎?\n\n%d 秒後自動綁" % (row["code"], title, timeout)
+        else:
+            label, msg = "照這樣建立", "@%s 沒有合適的專案,要建一個新的\n\n名稱:%s\n\n%d 秒後自動建立" % (
+                row["code"], title if phow == "new" else (row.get("fields") or {}).get("主項目", "")[:24], timeout)
+        btn, asked = _ask(row, msg, label, timeout, dialog, menu, sleep, out)
+        if out["asked"] in ("none", "picked"):
+            out["asked"] = asked
+        if btn == "改…":
+            pick, pick_how = choose("AIB 綁定", "改綁哪一個專案?", _candidates(row, cards, "project", projects), timeout)
+            btn = None
+            if pick:
+                out["project"] = {"act": "bind_title", "title": pick, "how": "picked"}
+            elif pick_how != "closed":
+                btn = label                                   # 逾時 / 叫不起來 ⇒ 照第一層預設
+        if btn == label:
+            if phow == "contains" and prj.get("uid"):
+                out["project"] = {"act": "bind", "uid": prj["uid"], "title": title, "how": phow}
+            else:
+                t = title if phow == "new" else ((row.get("fields") or {}).get("主項目") or "")[:24]
+                if t:
+                    out["project"] = {"act": "create", "title": t, "how": phow}
+    return out
+
+
+def auto_actions(row, decision, draft_path=None):
+    """決定 → (要跑的 aib 指令清單 [(kind, args_without_actor)], 跳過原因)。人格先、專案後(newproj 要先有人格)。"""
+    acts = []
+    per, prj = decision["persona"], decision["project"]
+    if per["act"] == "bind":
+        acts.append(("persona", ["newrole", "--name", per["name"], "--seat", row["addr"], "--brain", "none"]))
+    elif per["act"] == "create":
+        if not draft_path or not os.path.isfile(draft_path):
+            return acts, ["要建新人格「%s」但沒有草稿可當人設(newrole 不准綁空範本)⇒ 不建" % per["name"]]
+        acts.append(("persona", ["newrole", "--name", per["name"], "--seat", row["addr"], "--brain", "none",
+                                 "--prompt-file", finalize_draft(draft_path, per["name"])]))
+    if prj["act"] == "bind":
+        acts.append(("project", ["newproj", "--seat", row["addr"], "--project-uid", prj["uid"]]))
+    elif prj["act"] == "create":
+        acts.append(("project", ["newproj", "--seat", row["addr"], "--title", prj["title"]]))
+    return acts, []
+
+
+def notify_bound(row, names, runner=None):
+    """「已綁 X」通知:Mac 右上角通知(不擋流程);要換掉照通知上的指令。叫不起來就算了。"""
+    if not names:
+        return False
+    msg = "@%s 已綁:%s(不對就跑 aib bindme repick --me %s)" % (row["code"], "、".join(names), row["code"])
+    rc, _out, _err = _osa("display notification %s with title %s" % (_osa_quote(msg), _osa_quote("AIB 綁定")), 10, runner)
+    return rc == 0
+
+
+def captain_addr(state_root):
+    """艦長室收件匣讀的是艦長席的佇列(state/captain-room/last-state.json 的 cabin / captain);讀不到回 None。"""
+    d = _load(os.path.join(state_root, "state", "captain-room", "last-state.json"), {}) or {}
+    cab, cap = str(d.get("cabin") or ""), str(d.get("captain") or "")
+    cab4 = cab.rsplit("-", 1)[-1] if cab else ""
+    return "%s/%s" % (cab4, cap) if cab4 and CODE_RE.match(cap) else None
+
+
+def send_decide(addr, body, thread):
+    p = subprocess.run(["bash", str(AIB), "dm", addr, "--kind", "decide", "--thread", thread, body],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+    m = re.search(r"stage=([a-z-]+)", p.stdout + p.stderr)
+    return m.group(1) if m else "rc=%d" % p.returncode
+
+
+def decide_card(row, summary, sender=None, state_root=None):
+    """沒畫面時照預設建了 ⇒ 送一張艦長室決定卡當事後通知(行首編號選項才有按鈕);讀不到艦長席就不送。"""
+    addr = captain_addr(state_root or os.path.expanduser("~/.ez2-aib"))
+    if not addr and not sender:
+        return None
+    body = ("@%s 綁定:沒有人看著畫面,30 秒後已照預設%s。\n1. 照這樣\n2. 換掉(@%s 會跑 aib bindme repick)\n"
+            "你不回我就走 1。" % (row["code"], summary, row["code"]))
+    try:
+        if sender:
+            return sender(addr or row["addr"], body)
+        return send_decide(addr, body, "decide/bind-%s" % row["code"])
+    except Exception:  # noqa: BLE001 —— 通知失敗不影響已經做好的綁定
+        return None
+
+
+def auto_apply(state_root, row, actor, runner=None, dialog=None, text=None, choose=None, sleep=None,
+               notifier=None, sender=None, timeout=MAC_TIMEOUT_S, menu=None):
+    """自動模式:決定 → 綁 / 建 → 通知。回 {"decision", "done", "skipped"}。bot 席不跑。"""
+    if row.get("provider") in BOT_PROVIDERS:
+        return {"decision": None, "done": [], "skipped": ["bot 席不碰"]}
+    cards = persona_cards(state_root)
+    projects = project_cards(state_root)
+    d = auto_decide(row, cards, timeout, dialog, text, choose, sleep, projects, menu)
+    if d["project"]["act"] == "bind_title":            # 從清單挑的是標題 ⇒ 換回 uid(綁既有,不新建)
+        uid = next((p["uid"] for p in projects if p["title"] == d["project"]["title"]), None)
+        d["project"] = ({"act": "bind", "uid": uid, "title": d["project"]["title"], "how": "picked"} if uid
+                        else {"act": "skip", "how": "picked_missing"})
+    acts, why = auto_actions(row, d, (row.get("persona") or {}).get("draft_path"))
+    why = list(d.get("why") or []) + why
+    done = []
+    for kind, args in acts:
+        rc, out = (runner or run_aib)(args + ["--actor", actor])
+        done.append({"kind": kind, "rc": rc, "tail": out.strip().splitlines()[-1:] if out else []})
+        if rc != 0:
+            why.append("%s 失敗 rc=%d,後面不做" % (kind, rc))
+            break
+    ok = {r["kind"] for r in done if r["rc"] == 0}
+    names = [x for x in ((d["persona"].get("name") if "persona" in ok else None),
+                         (d["project"].get("title") if "project" in ok else None)) if x]
+    if d["notice"] and names:
+        (notifier or notify_bound)(row, names)
+    card_note = ""
+    if d["card"]:
+        if names:
+            stage = decide_card(row, "建立並綁上「%s」" % "、".join(names), sender, state_root)
+            if stage in ("delivered", "queued", "sort-queued"):      # sort-queued = 艦長席忙、已排進佇列會自動送
+                card_note = "已送決定卡"
+            elif stage == "sent-unverified":
+                card_note = "決定卡已送、沒驗到"
+            else:
+                card_note = "決定卡沒送出(%s)" % (stage or "讀不到艦長席")
+        else:
+            card_note = "沒有綁成,不送決定卡"
+    if d["asked"] != "none":
+        why.insert(0, {"picked": "視窗:有人選了", "timeout": "視窗:30 秒沒選,照預設",
+                       "closed": "視窗:按了先不要",
+                       "no_menu": "沒有畫面:等滿 30 秒照預設;%s" % card_note}.get(d["asked"], d["asked"]))
+    return {"decision": d, "done": done, "skipped": why}
+
+
+def auto_enabled(state_root=None):
+    """自動綁開不開 —— 只看明確的開關,不看路徑長得像不像真家目錄(a seat 10-13 11:34):
+    環境變數 AIB_AUTO_BIND=0/1 優先;沒設看 <狀態根>/config/auto-bind.json {"enabled": false} ;都沒有 ⇒ 開(預設開)。
+    在暫存狀態根跑交接的測試要自己設 AIB_AUTO_BIND=0,不然背景會跳真視窗、真的建卡。"""
+    v = os.environ.get("AIB_AUTO_BIND")
+    if v in ("0", "1"):
+        return v == "1"
+    cfg = _load(os.path.join(state_root or os.path.expanduser("~/.ez2-aib"), "config", "auto-bind.json"), {}) or {}
+    return cfg.get("enabled", True) is not False
+
+
+def spawn_auto(state_root, sid, me):
+    """交接第三步不等:背景跑 `bindme.py auto <sid> --me <席碼>`(視窗最多約 1~3 分鐘),結果寫回調查檔。
+    輸入輸出接 /dev/null、自成一組行程;任何失敗回 None。"""
+    try:
+        log = os.path.join(survey_dir(state_root), "%s-auto.log" % sid)     # 背景出錯要有痕跡可查
+        os.makedirs(survey_dir(state_root), exist_ok=True)
+        with open(os.devnull, "rb") as fin, open(log, "ab") as ferr:
+            p = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--state-root", state_root,
+                                  "auto", sid, "--me", me], stdin=fin, stdout=ferr, stderr=ferr,
+                                 start_new_session=True, env=dict(os.environ), close_fds=True)
+        return p.pid
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def repick(state_root, me, actor, runner=None, choose=None):
+    """「不對,換掉」:列既有人格卡(不含冠位)讓人挑,改綁所選那張;專案同樣列出可挑。回 [(kind, rc)]。"""
+    choose = choose or mac_choose
+    addr = next(("%s/%s" % (st["cabin4"], st["code"]) for st in status(state_root) if st["code"] == me), None)
+    if not addr:
+        raise SystemExit("認不出 --me %s 是哪一席" % me)
+    out = []
+    cards = persona_cards(state_root)
+    pick, _how = choose("AIB 換掉", "改綁哪一張人格?(取消 = 人格不換)",
+                        [n for u, n in sorted(cards.items(), key=lambda x: x[1]) if u != CROWN_PERSONA][:9], 120)
+    if pick:
+        rc, _ = (runner or run_aib)(["newrole", "--name", pick, "--seat", addr, "--brain", "none", "--actor", actor])
+        out.append(("persona", rc))
+    projects = project_cards(state_root)
+    pick, _how = choose("AIB 換掉", "改綁哪一個專案?(取消 = 專案不換)", [p["title"] for p in projects][:9], 120)
+    uid = next((p["uid"] for p in projects if p["title"] == pick), None) if pick else None
+    if uid:
+        rc, _ = (runner or run_aib)(["newproj", "--seat", addr, "--project-uid", uid, "--actor", actor])
+        out.append(("project", rc))
+    return out
 
 
 # ── 綁(apply / repair)──────────────────────────────────────────────
@@ -672,6 +1065,12 @@ def main(argv=None):
     a.add_argument("--accept", action="store_true", help="同意建議裡「綁既有人格」的那些(沒給就只問不綁)")
     a.add_argument("--ask", action="store_true", help="逐席在那一艙跳倒數選單;%d 秒沒選 = 照建議綁" % MENU_TIMEOUT_S)
     a.add_argument("--dry-run", action="store_true")
+    au = sub.add_parser("auto", help="(交接背景用)自動模式綁自己這一席:找到就綁、沒有就 30 秒彈窗後建立")
+    au.add_argument("sid")
+    au.add_argument("--me", required=True)
+    rp = sub.add_parser("repick", help="「不對,換掉」:彈清單改綁人格 / 專案")
+    rp.add_argument("--me", required=True)
+    rp.add_argument("--actor")
     r = sub.add_parser("repair", help="從延續檔把人格接回")
     r.add_argument("--me", required=True)
     r.add_argument("--actor")
@@ -709,7 +1108,36 @@ def main(argv=None):
         print(json.dumps(rec["proposals"], ensure_ascii=False, indent=2)) if o.json else print_proposals(rec)
         return 0
     only = set(o.only.split(",")) if getattr(o, "only", None) else None
-    actor = _actor(root, o.me, o.actor)
+    try:
+        actor = _actor(root, o.me, getattr(o, "actor", None))
+    except SystemExit as exc:
+        if o.cmd == "auto":                                  # 背景跑的:認不出席也要寫回調查檔
+            rec = _load(survey_path(root, o.sid)) or {}
+            if rec:
+                rec["auto_result"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "asked": None, "done": [],
+                                      "skipped": ["認不出這一席:%s" % exc]}
+                Path(survey_path(root, o.sid)).write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        raise
+    if o.cmd == "auto":
+        rec = _load(survey_path(root, o.sid))
+        if not rec or not rec.get("proposals"):
+            raise SystemExit("調查 %s 沒有提案" % o.sid)
+        row = next((r for r in rec["proposals"] if r.get("code") == o.me), None)
+        if not row:
+            raise SystemExit("調查 %s 裡沒有 @%s" % (o.sid, o.me))
+        try:
+            res = auto_apply(root, row, actor)
+        except Exception as exc:  # noqa: BLE001 —— 背景跑的,出錯要寫回調查檔,不能無聲
+            res = {"decision": None, "done": [], "skipped": ["自動綁定出錯:%r" % (exc,)]}
+        rec["auto_result"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "asked": (res["decision"] or {}).get("asked"),
+                              "done": res["done"], "skipped": res["skipped"]}
+        Path(survey_path(root, o.sid)).write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(rec["auto_result"], ensure_ascii=False, indent=2))
+        return 1 if any(d.get("rc") for d in res["done"]) else 0
+    if o.cmd == "repick":
+        res = repick(root, o.me, actor)
+        print(json.dumps(res, ensure_ascii=False))
+        return 1 if any(rc for _k, rc in res) else 0
     if o.cmd == "apply":
         res = apply(root, o.sid, actor, only, o.create_missing, o.dry_run, accept=o.accept, ask=o.ask)
     else:

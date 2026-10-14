@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.6
+
+- The README now opens with where aib comes from and its slogan, **AI Basic to AI Best**: the easiest-to-use, most human foundation for AI tools. It also previews virtual buddies (a Claude Code mod first), which are still in development.
+- Maintainer-only workflow tools are no longer shipped in the open-source version. Commands that rely on them say they are still in development instead of failing.
+- The translation files only carry strings for features that ship with aib (about 600 unused strings removed).
+- Every release is now checked for parts that should become plugins before it is published.
+
 ## 0.1.5
 
 - Opening a seat now also checks aib itself: if a newer aib is out, it is updated in the same 30-second countdown as the AI tools (press s to skip); the new version is used from the next seat. `aib cli` lists aib too. `AIB_CLI_UPDATE=0` turns the check off.

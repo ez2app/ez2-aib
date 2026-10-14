@@ -113,7 +113,9 @@ def seat_context(seat: str = "") -> dict:
                 rec = {}
     uuid = str(rec.get("session_uuid") or "")
     out = {"seat_uid": uuid if UUID_RE.fullmatch(uuid) else "", "code": uuid[-5:] if uuid else "",
-           "cabin": cabin, "persona_uid": "", "project_uid": str(rec.get("project_uid") or ""), "route_key": ""}
+           "cabin": cabin, "persona_uid": "", "project_uid": str(rec.get("project_uid") or ""), "route_key": "",
+           # 10-13 記憶整理第 3 包:每筆更新記「哪個模型、哪一席」;讀不到留空,由呼叫端寫「讀不到」
+           "seat_id": str(rec.get("seat_id") or ""), "model": str(rec.get("model_requested") or rec.get("model") or "")}
     if uuid:
         code = uuid[-5:]
         for name, key in (("bindings.json", "bindings"), ("seat-display.json", "display")):
@@ -152,7 +154,7 @@ def _used_uids() -> list[str]:
         return []
 
 
-def build_note(kind, title, body, tags, about, ctx, route_key):
+def build_note(kind, title, body, tags, about, ctx, route_key, supersedes="", model=""):
     import brain_write_plan as B
     if kind not in KINDS:
         raise MemoryError_("--kind 只能是 %s" % "|".join(KINDS))
@@ -181,6 +183,9 @@ def build_note(kind, title, body, tags, about, ctx, route_key):
         "custom.aib.project_uid": ctx.get("project_uid") or "",
         "custom.aib.persona_uid": ctx.get("persona_uid") or "",
         "custom.aib.related_uids": related,
+        "custom.aib.supersedes": supersedes or "",
+        "custom.aib.model": model or "",
+        "custom.aib.seat": ctx.get("code") or "",
     }
     extra = {k: v for k, v in extra.items() if v not in ("", [])}
     B._assert_custom_prefixed(extra)
@@ -201,7 +206,8 @@ def build_note(kind, title, body, tags, about, ctx, route_key):
     return out, route, category_uid, clean_tags, related
 
 
-def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="", dry_run=False) -> dict:
+def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="", dry_run=False,
+          supersedes="", model="") -> dict:
     import brain_write_plan as B
     ctx = seat_context(seat)
     if project:
@@ -209,7 +215,8 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
             raise MemoryError_("--project 要寫 proj:<16 碼>")
         ctx["project_uid"] = project
     route_key = route_key or DEFAULT_ROUTE
-    out, route, category_uid, tags_out, related = build_note(kind, title, body, list(tags), list(about), ctx, route_key)
+    out, route, category_uid, tags_out, related = build_note(kind, title, body, list(tags), list(about), ctx, route_key,
+                                                             supersedes, model)
     note = out["note"]
     vault = B.vault_root()
     if vault is None:
@@ -222,7 +229,9 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
     rec = {"uid": note["uid"], "title": " ".join(title.split()), "kind": kind, "tags": tags_out,
            "category_uid": category_uid, "route_key": route_key, "related_uids": related,
            "seat_uid": ctx.get("seat_uid"), "project_uid": ctx.get("project_uid"),
-           "persona_uid": ctx.get("persona_uid"), "path": str(target), "created_ms": int(time.time() * 1000)}
+           "persona_uid": ctx.get("persona_uid"), "path": str(target), "created_ms": int(time.time() * 1000),
+           # 10-13 第 3 包:索引也記取代關係(seat_brief 讀索引不讀 frontmatter)
+           "supersedes": supersedes or "", "model": model or "", "seat": ctx.get("code") or ""}
     if dry_run:
         return dict(rec, dry_run=True)
     if target.exists():
@@ -254,8 +263,11 @@ def entries() -> list[dict]:
     return out
 
 
-def related_to(uid: str, kind: str = "", limit: int = 20) -> list[dict]:
-    hits = [r for r in entries()
+def related_to(uid: str, kind: str = "", limit: int = 20, skip_superseded: bool = False) -> list[dict]:
+    rows = entries()
+    gone = {r.get("supersedes") for r in rows if r.get("supersedes")} if skip_superseded else set()
+    hits = [r for r in rows if r.get("uid") not in gone]   # 只有開席帶回(brief)跳過被取代的;手動 list 照列
+    hits = [r for r in hits
             if uid in (r.get("related_uids") or []) or uid in (r.get("seat_uid"), r.get("project_uid"),
                                                               r.get("persona_uid"), r.get("uid"))]
     if kind:
@@ -275,7 +287,7 @@ def note_text(rec: dict) -> str:
 
 def brief(uid: str, limit: int = 5) -> str:
     """換席用:跟這個 uid 有關的最新幾則,每則標題(顯示用)+種類(i18n)+uid+內文。"""
-    rows = related_to(uid, limit=limit)
+    rows = related_to(uid, limit=limit, skip_superseded=True)   # 10-13 第 3 包:開席帶回不帶已被取代的進度
     if not rows:
         return ""
     out = ["[AIB 記憶] 跟 %s 有關的最新 %d 則(新→舊;標題只供顯示,找東西用 uid)" % (uid, len(rows))]
@@ -307,6 +319,13 @@ def seat_brief(session_uuid: str, limit: int = 3) -> str:
 
 
 def main(argv=None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] in (["snapshot"], ["archive-sweep"]):   # 記憶整理第 1 包(10-13):備存與 90 天
+        import memory_archive
+        return memory_archive.main(args)
+    if args[:1] == ["tidy"]:                             # 記憶整理第 3 包(10-13):整理記憶
+        import memory_tidy
+        return memory_tidy.main(args[1:])
     ap = argparse.ArgumentParser(prog=os.environ.get("AIB_MEMORY_PROG") or "aib memory",
                                  description="AI 工作記憶 → 第二大腦(uid 為鍵,標題只顯示)")
     sub = ap.add_subparsers(dest="cmd", required=True)
