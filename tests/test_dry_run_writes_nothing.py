@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`--dry-run` writes nothing under HOME.
+"""`--dry-run` writes nothing under HOME (or in the working directory).
 
 New-user walkthrough (10-14): `aib newrole … --dry-run` on a new machine created ~/.ez2-aib with ~60 secrets
 templates, a ledger and readme files (it ran the state-tree bootstrap and created the role-library folder even when
@@ -35,7 +35,7 @@ class DryRunWritesNothing(unittest.TestCase):
 
     def snapshot(self):
         seen = {}
-        for dirpath, dirnames, filenames in os.walk(self.home):
+        for dirpath, dirnames, filenames in os.walk(self.td):   # HOME and the working directory
             rel = os.path.relpath(dirpath, self.home)
             if rel == PYCACHE or rel.startswith(PYCACHE + os.sep):
                 dirnames[:] = []
@@ -73,6 +73,14 @@ class DryRunWritesNothing(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         r = self.assert_dry_run_clean("newrole", "--name", "Second", "--prompt", PERSONA, "--dry-run")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_newrole_with_an_empty_vault(self):
+        # The vault folder exists but has no role library yet: a real run would create it, so a dry run must
+        # succeed too (and still create nothing).
+        (self.home / ".ez2-aib" / "vault").mkdir(parents=True)
+        r = self.assert_dry_run_clean("newrole", "--name", "Reviewer", "--prompt", PERSONA, "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("dry run, nothing written", r.stderr)
 
     def test_other_dry_runs(self):
         self.assert_dry_run_clean("newproj", "--title", "My blog", "--dry-run")

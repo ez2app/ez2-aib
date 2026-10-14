@@ -837,9 +837,9 @@ def main():
     if args.dry_run:
         scan_cmd.append("--dry-run")
 
-    if args.dry_run and not vault_dir.is_dir():
-        # 新機器試跑:知識庫還沒建(試跑也不建)⇒ 沒有東西可掃,新卡試跑本來就不寫 ⇒ 跳過,不當成失敗
-        log("   -> [DRY-RUN] 知識庫還沒建立,跳過索引掃描")
+    if args.dry_run and (not vault_dir.is_dir() or would_create_lib):
+        # 試跑而知識庫或角色庫還沒建(真跑會建、試跑不建)⇒ 沒有東西可掃,新卡試跑本來就不寫 ⇒ 跳過,不當成失敗
+        log("   -> [DRY-RUN] 角色庫還沒建立,跳過索引掃描")
     else:
         rc, out, err = run_cmd(scan_cmd, cwd=REPO_ROOT)
         if rc != 0:
