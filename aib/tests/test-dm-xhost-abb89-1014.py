@@ -37,7 +37,7 @@ last="${@: -1}"
 if [ "$last" = "true" ]; then exit "${SSH_PROBE_RC:-0}"; fi
 printf '%s' "$last" > "$SSH_CMD"
 cat > "$SSH_STDIN"
-[ "${SSH_CMD_RC:-0}" = "255" ] || echo "RESULT stage=delivered id=q_0000000000000000 relay=- thread=-"
+[ "${SSH_CMD_RC:-0}" = "255" ] || [ -n "${SSH_NO_RESULT:-}" ] || echo "RESULT stage=delivered id=q_0000000000000000 relay=- thread=-"
 exit "${SSH_CMD_RC:-0}"
 """
 
@@ -194,7 +194,9 @@ class DmCtl(unittest.TestCase):
     def test_X1_remote_address_goes_over_ssh_with_derived_identity(self):
         p = self.run_dm("100.1.2.3/ab12/1857a", "你好,跨主機", "--thread", "24/租約")
         self.assertEqual(p.returncode, 0, p.stderr[-600:])
-        self.assertIn("RESULT stage=delivered", p.stdout, "收件機的 RESULT 行要原樣帶回")
+        results = [l for l in p.stdout.splitlines() if l.startswith("RESULT ")]
+        self.assertEqual(results, ["RESULT stage=delivered id=q_0000000000000000 relay=- thread=-"],
+                         "收件機的 RESULT 行原樣帶回,本機不再多印一行")
         calls = self.read(self.ssh_calls).splitlines()
         self.assertEqual(len(calls), 2, calls)
         self.assertTrue(calls[0].endswith("far-box true"), "先試連線:%r" % calls[0])
@@ -224,11 +226,21 @@ class DmCtl(unittest.TestCase):
     def test_X3_ssh_drops_midway_is_rc4_do_not_resend(self):
         p = self.run_dm("100.1.2.3/ab12/1857a", "hi", SSH_CMD_RC="255")
         self.assertEqual(p.returncode, 4, p.stderr[-400:])
-        self.assertIn("RESULT stage=xhost-unknown", p.stdout)
+        self.assertIn("RESULT stage=xhost-unknown", p.stdout.splitlines()[-1])
 
     def test_X4_receiver_rc_passes_through(self):
         p = self.run_dm("100.1.2.3/ab12/1857a", "hi", SSH_CMD_RC="3")
         self.assertEqual(p.returncode, 3, p.stderr[-400:])
+
+    def test_X4b_remote_aib_missing_is_rc2(self):
+        """收件機叫不起 aib(rc 127、沒有 RESULT 行)⇒ 沒進任何艙 ⇒ rc 2;叫法可寫成多個字。"""
+        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", SSH_CMD_RC="127", SSH_NO_RESULT="1",
+                        AIB_DM_XHOST_REMOTE_AIB="bash /opt/aib/src/cockpit/aib")
+        self.assertEqual(p.returncode, 2, p.stderr[-400:])
+        self.assertIn("一個字都沒送", p.stderr)
+        self.assertTrue(self.read(self.ssh_cmd).startswith("bash /opt/aib/src/cockpit/aib dm --xhost-ident "),
+                        self.read(self.ssh_cmd))
+        self.assertEqual(sum(l.startswith("RESULT ") for l in p.stdout.splitlines()), 1)
 
     def test_X5_receiver_refuses_ident_outside_sshd(self):
         """本機行程自己帶 --xhost-ident(或設個 SSH_CONNECTION 假裝)⇒ rc 2,一個字都沒進艙。"""

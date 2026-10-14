@@ -817,7 +817,9 @@ _xhost_send() {
     ident="$("$PY3" "$HERE/dm_xhost.py" encode "unattested:${S_ORIGIN_FALLBACK:-unknown}" "" "" "")" \
       || die "跨主機身分 token 組不出來,未送出" 2
   fi
-  rargs=("${AIB_DM_XHOST_REMOTE_AIB:-aib}" dm --xhost-ident "$ident" "$_XH_OUT_ADDR")
+  # AIB_DM_XHOST_REMOTE_AIB:收件機上 aib 的叫法(預設 aib;可寫成「bash /路徑/aib」,照空白拆成多個字)
+  read -r -a rargs <<<"${AIB_DM_XHOST_REMOTE_AIB:-aib}"
+  rargs+=(dm --xhost-ident "$ident" "$_XH_OUT_ADDR")
   [ -n "$DM_THREAD" ] && rargs+=(--thread "$DM_THREAD")
   [ -n "$DM_KIND" ] && rargs+=(--kind "$DM_KIND")
   [ -n "$DM_CLOSE" ] && rargs+=(--close "$DM_CLOSE")
@@ -827,12 +829,20 @@ _xhost_send() {
   cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
   out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd")"; rc=$?
   [ -n "$out" ] && printf '%s\n' "$out"
-  if [ "$rc" = "255" ]; then
-    emit_json 4 xhost-unknown "SSH 中途斷線,收件機收到沒有不知道;勿重送,先到那台看"
-    printf 'RESULT stage=xhost-unknown id=- relay=- thread=%s\n' "${DM_THREAD:--}"
-    return 4
+  # 收件機的 dm-ctl 有跑到 ⇒ 它自己印了 RESULT 行;本機不再印第二行(最後一行要是收件機那一則的)。
+  local remote_ran=0
+  case $'\n'"$out" in *$'\nRESULT '*) remote_ran=1; _RESULT_DONE=1 ;; esac
+  case "$rc" in
+    0|2|3|4) return "$rc" ;;
+    255) emit_json 4 xhost-unknown "SSH 中途斷線,收件機收到沒有不知道;勿重送,先到那台看"; return 4 ;;
+  esac
+  if [ "$remote_ran" = "0" ]; then
+    # 收件機的 aib dm 根本沒跑起來(找不到指令、舊版不認 --xhost-ident 以外的錯…):沒進任何艙。
+    emit_json 2 resolve "xhost:remote-rc-$rc"
+    die "收件機 $host 跑不起 aib dm(rc=$rc),一個字都沒送;看上面那台印的錯" 2
   fi
-  return "$rc"
+  emit_json 4 xhost-unknown "收件機回了契約外的 rc=$rc;勿重送,先到那台看"
+  return 4
 }
 if [ -n "$_XH_OUT_IP" ]; then
   [ "${RETRY_UNTIL_GIVEN}" = "1" ] && die "跨主機還不支援 --retry-until" 2
