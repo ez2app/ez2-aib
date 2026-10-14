@@ -888,8 +888,15 @@ def run_newproj(args) -> int:
     def bind_folder() -> None:
         """席位的資料夾綁成專案的資料夾。要在寫延續檔的專案欄位**之前**做:它會整檔重寫延續檔。"""
         if route_key and route_key != current_route and not args.dry_run:
-            BO.bind_seat(root, seat_id, None, actor, brain=route_key, contract_spec=_spec)
+            plan = BO.bind_seat(root, seat_id, None, actor, brain=route_key, contract_spec=_spec)
             _say(T("aib.newproj.folder_bound", {"seat": seat_id, "path": folder, "key": route_key}))
+            # K2(10-14):綁上了但投影把這一席擋下 ⇒ 右欄 / bindme status 看不到;照實說,不讓人以為「缺人格」
+            dropped = ((plan or {}).get("reproject") or {}).get("seat_unresolved") or []
+            for d in dropped:
+                _say(T("aib.newproj.seat_dropped", {"seat": seat_id, "reason": d.get("reason"),
+                                                    "detail": d.get("detail"), "contract": _spec or "-"}))
+            if dropped:
+                base["seat_unresolved"] = dropped
 
     def note(project_uid: str, card_title: str) -> None:
         _ledger_note(root, agent_uid, actor,

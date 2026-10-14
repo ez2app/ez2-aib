@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "無法確認受派艦長唯一性:{file} schema 不符",
   "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
   "aib.captains_ctl.unmeasured": "量不到",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.newproj.seat_dropped": "⚠ 席 {seat} 已綁好,但綁定投影把它擋下({reason}:{detail};路由契約 {contract}),右欄與 aib bindme status 會看不到"
 }
