@@ -114,11 +114,11 @@ export EZ2_AIB_ROOT="$AIB_SOURCE_ROOT"
 #   改用本執行檔所在的 repo(AIB_SOURCE_ROOT)並出聲;只判「等於家目錄」不判「非 git 樹」,
 #   免得把刻意開在非 git 專案的席也搬走。★ 失效值不得等於安全值:沒有 HOME 就不判,不猜。
 # ★ BC 刀錨,必須全檔恰好一次。
+_AIB_HOME_CWD_NOTE=""
 if [ -n "${HOME:-}" ] && [ "$CALLER_CWD" = "$(cd "$HOME" 2>/dev/null && pwd -P)" ]; then
-  # 真開席且這個終端會被接走:這行會停在畫面上像錯誤。dry-run 仍印(BC 臂要看見)。
-  if [ "${AIB_DRY_RUN:-0}" = "1" ] || [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ ! -t 0 ]; then
-    printf 'aib: 席位目錄由呼叫者 cwd(%s)改為專案目錄（家目錄不開席）\n' "$CALLER_CWD" >&2
-  fi
+  # 提示只在真的開席時印(下面 PROVIDER/MODE/ROLE 解析完那裡):寫在這裡的話,aib dm / bindme / now… 從家目錄叫
+  #   (AI 叫的指令 stdin 都不是終端機)每一次都多一行看不懂的話(10-14 公開版走查)。改目錄照舊在這裡做。
+  _AIB_HOME_CWD_NOTE="$CALLER_CWD"
   CALLER_CWD="$AIB_SOURCE_ROOT"
 fi
 AIB_VERSION_FILE="$AIB_SOURCE_ROOT/VERSION"
@@ -1076,6 +1076,11 @@ MODE="${POS[1]}"
 ROLE="${POS[2]}"
 
 case " $PROVIDERS " in *" $PROVIDER "*) ;; *) die "$(t aib.err.provider "provider=$PROVIDER")" ;; esac
+# 家目錄開席的提示(BC,上面改目錄那段記下的):真開席且這個終端會被接走時這行會停在畫面上像錯誤 ⇒ 只在
+#   dry-run / 不接走 / 不是終端機時印(dry-run 仍印,BC 臂要看見)。
+if [ -n "$_AIB_HOME_CWD_NOTE" ] && { [ "${AIB_DRY_RUN:-0}" = "1" ] || [ "$DRY" = "1" ] || [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ ! -t 0 ]; }; then
+  printf 'aib: 席位目錄由呼叫者 cwd(%s)改為專案目錄（家目錄不開席）\n' "$_AIB_HOME_CWD_NOTE" >&2
+fi
 # 10-13(盤點「先修」第 1 件):typesafe / openrouterjev 開席要 typesafe_cli.py,公開版不帶(System One)⇒ 開席前就說「開發中」,
 #   不要開到一半才失敗
 case "$PROVIDER" in typesafe|openrouterjev) aib_need "$HERE/typesafe_cli.py" "$PROVIDER" ;; esac
