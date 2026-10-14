@@ -13,6 +13,7 @@ U1–U6 單元;X1–X6 走 dm-ctl.sh(假 ssh 記下參數與 stdin、假 tmux �
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -159,6 +160,20 @@ def _sandbox_home(base, env):
     for k in ("AIB_COMPOSER_NOTICE_DIR", "EZ2_AIB_STATE_ROOT", "EZ2_AIB_INSTANCE_HOME"):
         env.pop(k, None)
     return home
+
+
+class ReentryKeepsIdent(unittest.TestCase):
+    """真機 Mini→Pro 抓到:收件席忙 ⇒ 第一輪 rc 2 ⇒ 第 159 項自動重送 30 秒後重進本檔,
+    重組參數時沒帶 --xhost-ident ⇒ 第二輪抬頭與佇列紀錄退回「未認證@unknown」。
+    自己重組參數再進 dm-ctl 的每一支函式都要把跨主機身分帶下去(照原參數 exec 的那幾條本來就帶著)。"""
+
+    def test_R1_rebuilt_argv_carries_xhost_ident(self):
+        text = CTL.read_text(encoding="utf-8")
+        for fn in ("_auto_resend", "_retry_until_loop"):
+            m = re.search(r"(?ms)^%s\(\) \{[^\n]*\n(.*?)^\}" % fn, text)
+            self.assertIsNotNone(m, fn)
+            code = "\n".join(l for l in m.group(1).splitlines() if not l.lstrip().startswith("#"))
+            self.assertIn("--xhost-ident", code, "%s 重組參數沒帶跨主機身分" % fn)
 
 
 class DmCtl(unittest.TestCase):

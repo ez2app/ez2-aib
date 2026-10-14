@@ -242,6 +242,8 @@ _auto_resend() {   # $1=stage(收據的 stage,只給 stderr 用);回來 = 本輪
   [ -n "${DM_EXPIRES:-}" ] && _argv+=(--expires "$DM_EXPIRES")
   [ -n "${DM_TTL_MIN:-}" ] && _argv+=(--ttl-min "$DM_TTL_MIN")
   [ "${VERIFY:-0}" = "1" ] && _argv+=(--verify)
+  # 跨主機收件那一則:重送輪也要帶寄件機的身分(子輪自己再驗一次;不帶就退回未認證,真機 Mini→Pro 量到)
+  [ -n "${XHOST_IDENT:-}" ] && _argv+=(--xhost-ident "$XHOST_IDENT")
   [ -n "${_ENG_LOG:-}" ] && rm -f "$_ENG_LOG"
   _RESULT_DONE=1                                           # 父輪不印 RESULT、不 record;子輪的算數
   # env -u:父輪引擎 export 的貼前佔位符不得帶進子輪(子輪要自己抓;帶進去的是另一幀的事實)
@@ -296,6 +298,7 @@ _retry_until_loop() {
   [ -z "${DM_TTL_MIN:-}" ] && [ -n "${DM_EXPIRES:-}" ] && _argv+=(--expires "$DM_EXPIRES")
   [ "${VERIFY:-0}" = "1" ] && _argv+=(--verify)
   [ "${DRYRUN:-0}" = "1" ] && _argv+=(--dry-run)
+  [ -n "${XHOST_IDENT:-}" ] && _argv+=(--xhost-ident "$XHOST_IDENT")   # 跨主機收件:每一輪都帶寄件機身分
   _RESULT_DONE=1
   _outf="$(_dm_ctl_tmp aib-dm-retry-out)" || die "--retry-until 暫存檔開不了" 2
   _errf="$(_dm_ctl_tmp aib-dm-retry-err)" || die "--retry-until 暫存檔開不了" 2
