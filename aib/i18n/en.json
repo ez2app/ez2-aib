@@ -1971,5 +1971,8 @@
   "aib.captains_ctl.unique_schema": "cannot confirm there is only one assigned captain: {file} has the wrong schema",
   "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
   "aib.captains_ctl.unmeasured": "unknown",
-  "aib.captains_ctl.status_label": "Captain:"
+  "aib.captains_ctl.status_label": "Captain:",
+  "aib.persona.heading_aliases.duties": "Duties|Responsibilities",
+  "aib.persona.heading_aliases.red_lines": "Red lines|Boundaries",
+  "aib.persona.heading_aliases.knowledge": "Knowledge|Knowledge domain|Expertise"
 }

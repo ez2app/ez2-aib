@@ -1971,5 +1971,8 @@
   "aib.captains_ctl.unique_schema": "지정된 함장이 한 명뿐인지 확인할 수 없습니다: {file}의 스키마가 맞지 않습니다",
   "aib.captains_ctl.captain_exists": "이미 함장이 지정되어 있습니다: 창 {window}, 좌석 코드={code}; 먼저 그 좌석을 --unassign한 뒤 새 좌석을 지정하세요",
   "aib.captains_ctl.unmeasured": "알 수 없음",
-  "aib.captains_ctl.status_label": "함장:"
+  "aib.captains_ctl.status_label": "함장:",
+  "aib.persona.heading_aliases.duties": "역할|직책",
+  "aib.persona.heading_aliases.red_lines": "금지선|레드라인",
+  "aib.persona.heading_aliases.knowledge": "지식 범위|지식 영역"
 }

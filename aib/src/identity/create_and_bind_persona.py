@@ -138,6 +138,41 @@ def _archive_snapshot(path, kind, key):
         return {"status": "failed", "error": "memory_archive: %s" % exc}
 
 
+# 10-14 新用戶走查:三個必填標題接受四語寫法(## Duties / ## 役割 / ## 역할 …),寫卡前換成中文正本標題。
+#   只換標題、不動內文;下游 7 處(persona_pack 打包時紅線排第一、seat_screen、bindme、persona_check …)
+#   都認中文正本標題,所以在入口統一,不讓英文卡的紅線在後面被認不出來。
+#   各語的寫法在 aib/i18n 的 aib.persona.heading_aliases.*(| 分隔),四語全部都收,不看當下語系。
+HEADING_CANON = (("duties", "職責"), ("red_lines", "紅線"), ("knowledge", "知識域"))
+
+
+def _heading_aliases():
+    tree = _i18n_tree()
+    aliases = {}
+    for path in sorted((tree / "i18n").glob("*.json")):
+        try:
+            table = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for key, canon in HEADING_CANON:
+            for alias in str(table.get("aib.persona.heading_aliases." + key) or "").split("|"):
+                if alias.strip():
+                    aliases[alias.strip().casefold()] = canon
+    return aliases
+
+
+def normalize_headings(text):
+    """把三個必填標題的各語寫法換成中文正本(只認 `## 標題` 整行,可帶結尾冒號);其他行一字不動。"""
+    aliases = _heading_aliases()
+    if not aliases:
+        return text
+    out = []
+    for line in text.split("\n"):
+        m = re.match(r"^(##[ \t]*)(.+?)[ \t]*[:：]?[ \t]*$", line)
+        canon = aliases.get(m.group(2).strip().casefold()) if m else None
+        out.append("## " + canon if canon else line)
+    return "\n".join(out)
+
+
 def lint_card(text):
     failures = []
     if len(text.encode("utf-8")) > 20 * 1024:
@@ -647,6 +682,8 @@ def main():
         if not args.prompt.strip():
             log("--prompt-file 是空的:%s。未建卡、未綁定" % args.prompt_file, prefix="[x]")
             return 2
+    if args.prompt:
+        args.prompt = normalize_headings(args.prompt)
 
     seat_id, seat_rec, seat_instance = None, None, ""
     # the maintainer 10-01:有明講席位(--seat)或明講開新席(--new-seat)才綁;都沒有 ⇒ 只建卡,不開席、不綁、不猜當前席
