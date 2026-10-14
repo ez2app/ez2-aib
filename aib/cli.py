@@ -7,6 +7,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib ship <subcommand> …     pre-push check, package, release (see `aib ship --help`)
     aib support [--confirm]     collect a de-identified bug report pack (nothing is sent; you attach it to an issue)
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
+    aib lease                   who holds this machine's test lease, until when, and who is queued (read-only)
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
     aib uninstall [--all] [--yes]   remove aib from this computer (lists first; --yes removes; --all also records)
     aib <provider> <dgrs|safe> <role>   open an AI seat in the cockpit (macOS + tmux; see `aib --help-cockpit`)
@@ -59,6 +60,19 @@ def _update(args):
     os.execv("/bin/bash", ["bash", "-c", script, urls, PUBLIC_MARK, "--dir", root] + list(args))
 
 
+def _lease(args):
+    """aib lease(10-14 新用戶走查:aib test 說「大批要排隊拿機器租約」,用戶卻查不到租約在誰手上、等到幾點)。
+    不帶參數 = 唯讀:host_lease.py status(誰拿著、從幾點到幾點)+ queue list(誰在排、等多久);rc 跟 status 一樣
+    (0 機器空、4 被佔、3 讀不到)。帶參數 = 原樣交給 host_lease.py(acquire / release / renew / queue …,給腳本用)。"""
+    tool = os.path.join(HERE, "tools", "governance", "host_lease.py")
+    if args:
+        os.execv(sys.executable, [sys.executable, tool] + list(args))
+    import subprocess
+    rc = subprocess.run([sys.executable, tool, "status"], stdin=subprocess.DEVNULL).returncode
+    subprocess.run([sys.executable, tool, "queue", "list"], stdin=subprocess.DEVNULL)
+    return rc
+
+
 def main():
     """pip / pipx 裝好之後的 `aib` 指令進到這裡(pyproject.toml 的 project.scripts)。"""
     os.environ.setdefault("EZ2_AIB_LOCALE", _locale())
@@ -69,6 +83,8 @@ def main():
         return 2
     if sys.argv[1] == "update":
         return _update(sys.argv[2:])
+    if sys.argv[1] == "lease":
+        return _lease(sys.argv[2:])
     if sys.argv[1] == "license":
         # 授權(10-08):status / device-id / activate / deactivate —— entitlement 是套件(相對 import),用 run_module
         sys.path.insert(0, os.path.join(HERE, "src"))

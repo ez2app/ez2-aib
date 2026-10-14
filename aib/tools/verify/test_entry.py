@@ -1232,7 +1232,7 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
         else:
             cur = cur or {}
             say(T("lease_queue_wait", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"),
-                                       "waited": int(clock() - t0), "n": LEASE_POLL_S}))
+                                       "at": cur.get("expiry_at", "?"), "waited": int(clock() - t0), "n": LEASE_POLL_S}))
         sleep(LEASE_POLL_S)
         state, cur, ship_wait = _lease_now(env, with_ship=True)
         if state is None:
