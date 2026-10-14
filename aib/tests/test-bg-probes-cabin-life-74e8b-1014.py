@@ -75,8 +75,8 @@ class Watch(Base):
         return subprocess.Popen([sys.executable, str(OPEN_ATTEMPT), "watch", "--home", self.cabin,
                                  "--attempt", "a1", "--window", window, "--provider", "claude",
                                  "--timeout", str(timeout), "--interval", "0.2", "--tmux-bin", TMUX],
-                                env=self.env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True)
+                                env=self.env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
 
     def events(self):
         out = []
@@ -134,15 +134,16 @@ class Seats(Base):
         if with_agy:
             self.seat("w2", "agy")
         calls = []
-        old_env, old_spawn = dict(os.environ), up._spawn_agy_print_refresh
+        old_env, old_spawn, old_probe = dict(os.environ), up._spawn_agy_print_refresh, up._spawn_probe
         os.environ.clear()
         os.environ.update(self.env)
-        up._spawn_agy_print_refresh = lambda dest, now, popen=None: calls.append(dest)
+        up._spawn_agy_print_refresh = lambda dest, now, popen=None: calls.append(("print", dest))
+        up._spawn_probe = lambda engines, *a, **k: calls.extend(("probe", e) for e in engines)
         try:
             up.refresh_all(now=time.time(), dest_dir=os.path.join(self.tmp, "usage"), enable_cli={"agy"},
                            throttle_s=0)
         finally:
-            up._spawn_agy_print_refresh = old_spawn
+            up._spawn_agy_print_refresh, up._spawn_probe = old_spawn, old_probe
             os.environ.clear()
             os.environ.update(old_env)
         return calls
@@ -151,7 +152,7 @@ class Seats(Base):
         self.assertEqual(self.spawned(with_agy=False), [])
 
     def test_b4_control_agy_seat_probes(self):
-        self.assertEqual(len(self.spawned(with_agy=True)), 1)
+        self.assertIn("print", [c[0] for c in self.spawned(with_agy=True)])
 
 
 @unittest.skipUnless(TMUX, "needs tmux")
