@@ -45,7 +45,9 @@ if [ "$MODE" = "install" ] && [ "$DRY" != "1" ]; then
     . "$COCKPIT/install-guard.sh"
     aib_refuse_tmp_install help-overlay.sh "$HERE" || exit $?
   else
-    echo "help-overlay.sh: 缺陷十九守衛檔缺席($COCKPIT/install-guard.sh);非 dry 安裝一律 fail-closed 拒裝" >&2
+    # 報錯走 aib/i18n 四語鍵;字典或 python 出事就印鍵名,報錯不能因翻譯失敗而消失。
+    { python3 "$COCKPIT/i18n_lib.py" aib.install_guard.missing --param script=help-overlay.sh \
+        --param "path=$COCKPIT/install-guard.sh" 2>/dev/null || printf '%s\n' aib.install_guard.missing; } >&2
     exit 6
   fi
 fi
