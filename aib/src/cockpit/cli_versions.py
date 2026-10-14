@@ -42,6 +42,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -220,8 +221,40 @@ def installed_at(tool):
     return int(getattr(st, "st_birthtime", 0) or st.st_mtime)
 
 
-def check(*, refresh=False, now=None, cache=None, local_fn=local_version, latest_fn=latest_version, installed_fn=None):
-    """五家一起查(平行)。回 [{"key","local","latest","update","can_update","nag","installed_at"}…],順序同 TOOLS。"""
+def cabin_live_providers(environ=None):
+    """這一艙(本艙 seats 目錄)還沒退的席是哪幾家。問不出艙 / 兩個來源對不上 / 讀不到 ⇒ 空集合。"""
+    try:
+        import seats_dir_lib
+        seats, _src, conflict = seats_dir_lib.cabin_seats_dir_with_source(environ)
+    except Exception:  # noqa: BLE001
+        return set()
+    if not seats or conflict:
+        return set()
+    out = set()
+    try:
+        files = sorted(Path(seats).glob("*.json"))
+    except OSError:
+        return out
+    for f in files:
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("provider") and not rec.get("exited_at_epoch"):
+            out.add(str(rec["provider"]))
+    return out
+
+
+def seat_open_keys(provider, environ=None):
+    """開席時要查的家 = 這次開的那一家 + 這一艙還有活席的家(10-14 公開版新用戶走查第 10 條延伸:
+    沒在用的家不跑它的 --version —— agy / gemini 一跑就在 ~/.gemini 留檔)。aib 自己由 check 照查。"""
+    return {provider} | cabin_live_providers(environ)
+
+
+def check(*, refresh=False, now=None, cache=None, local_fn=local_version, latest_fn=latest_version, installed_fn=None,
+          only=None):
+    """五家一起查(平行)。回 [{"key","local","latest","update","can_update","nag","installed_at"}…],順序同 TOOLS。
+    only = 只查這幾家(加 aib 自己);其他家照樣有一列,但 skipped=True、不跑它的 CLI、不催更新。"""
     installed_fn = installed_fn or installed_at
     now = time.time() if now is None else now
     cache = cache_path() if cache is None else cache
@@ -230,6 +263,8 @@ def check(*, refresh=False, now=None, cache=None, local_fn=local_version, latest
     def one(tool):
         k = tool["key"]
         ent = memo.get(k) or {}
+        if only is not None and k != "aib" and k not in only:
+            return k, None, None, ent
         fresh = ent.get("checked_at", 0) and now - ent["checked_at"] < (CACHE_TTL_S if ent.get("latest") else FAIL_TTL_S)
         loc = local_fn(tool)
         if not tool["latest"]:
@@ -244,6 +279,10 @@ def check(*, refresh=False, now=None, cache=None, local_fn=local_version, latest
     out = []
     for tool, (k, loc, lat, ent) in zip(TOOLS, rows):
         memo[k] = ent
+        if only is not None and k != "aib" and k not in only:
+            out.append({"key": k, "local": None, "latest": None, "update": False, "can_update": False, "nag": False,
+                        "installed_at": None, "skipped": True})
+            continue
         upd = newer(lat, loc)
         quiet = ent.get("quiet_for") == lat and now < ent.get("quiet_until", 0)
         out.append({"key": k, "local": loc, "latest": lat, "update": upd,
@@ -282,6 +321,11 @@ def version_rows(rows):
     loc, lat, upd_at = [], [], []
     by = {r["key"]: r for r in rows}
     for r in [by[k] for k in SPLASH_KEYS if k in by]:
+        if r.get("skipped"):          # 這一艙沒在用這一家:沒查,不能寫「沒裝」
+            loc.append([("本機 ", tag), ("沒開席", 241)])
+            lat.append([("最新 ", tag), ("沒查", 241)])
+            upd_at.append([("更新日 ", tag), ("—", 241)])
+            continue
         loc.append([("本機 ", tag), (r["local"] or "沒裝", val if r["local"] else 241)])
         if not r["latest"]:
             lat.append([("最新 ", tag), ("找不到", 241)])
@@ -547,9 +591,11 @@ def main(argv=None):
     c = sub.add_parser("check")
     c.add_argument("--out")
     c.add_argument("--refresh", action="store_true")
+    c.add_argument("--provider", help="開席用:只查這一家與這一艙有活席的家")
     g = sub.add_parser("gate")
     g.add_argument("--in", dest="inp")
     g.add_argument("--seconds", type=int, default=30)
+    g.add_argument("--provider", help="同 check --provider(背景那份沒查完、自己補查時用)")
     args = ap.parse_args(argv)
     if args.cmd in (None, "status"):
         return status()
@@ -568,8 +614,9 @@ def main(argv=None):
         return rollback(args.key, args.to)
     if os.environ.get(DISABLE_ENV) == "0":
         return 0
+    only = seat_open_keys(args.provider) if getattr(args, "provider", None) else None
     if args.cmd == "check":
-        rows = check(refresh=args.refresh)
+        rows = check(refresh=args.refresh, only=only)
         data = json.dumps(rows, ensure_ascii=False)
         if args.out:
             tmp = args.out + ".tmp"
@@ -591,7 +638,7 @@ def main(argv=None):
             except (OSError, ValueError):
                 time.sleep(0.2)
     if rows is None:
-        rows = check()
+        rows = check(only=only)
     gate(rows, seconds=args.seconds)
     return 0
 

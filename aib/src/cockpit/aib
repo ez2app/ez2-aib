@@ -1708,7 +1708,7 @@ aib_splash_start() {
   _cliver_arg=()
   if [ "${AIB_CLI_UPDATE:-1}" != "0" ] && _AIB_CLIVER_FILE="$(mktemp "${TMPDIR:-/tmp}/aibcliver.XXXXXX")"; then
     rm -f "$_AIB_CLIVER_FILE"            # 檔不在 = 還沒查完(動畫與倒數都靠「檔出現」判斷)
-    "$T_PY3" "$HERE/cli_versions.py" check --out "$_AIB_CLIVER_FILE" >/dev/null 2>&1 &
+    "$T_PY3" "$HERE/cli_versions.py" check --provider "$PROVIDER" --out "$_AIB_CLIVER_FILE" >/dev/null 2>&1 &
     _cliver_arg=(--versions "$_AIB_CLIVER_FILE")
   fi
   "$T_PY3" "$HERE/login_splash.py" --flag "$_AIB_SPLASH_FLAG" ${_cliver_arg[@]+"${_cliver_arg[@]}"} &
@@ -1734,7 +1734,7 @@ aib_splash_stop() {
 aib_cli_gate() {
   [ -n "$_AIB_CLIVER_FILE" ] || return 0
   [ -t 0 ] && [ -t 2 ] || { rm -f "$_AIB_CLIVER_FILE"; _AIB_CLIVER_FILE=""; return 0; }
-  "$T_PY3" "$HERE/cli_versions.py" gate --in "$_AIB_CLIVER_FILE" || true
+  "$T_PY3" "$HERE/cli_versions.py" gate --provider "$PROVIDER" --in "$_AIB_CLIVER_FILE" || true
   rm -f "$_AIB_CLIVER_FILE"
   _AIB_CLIVER_FILE=""
 }
