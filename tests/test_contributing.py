@@ -10,7 +10,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ["CONTRIBUTING.md", "CONTRIBUTING.zh-TW.md", "CONTRIBUTING.ja.md", "CONTRIBUTING.ko.md"]
-STALE = re.compile(r"mirror|ported|private repository|鏡像|移植|私有倉|ミラー|移植され|非公開のリポジトリ|미러|비공개 저장소|옮겨", re.I)
+# Only the stale claims themselves; "supported" or the Korean verb 옮기다 must not trip it.
+STALE = re.compile(r"\b(mirror|ported by hand|private repository)\b|鏡像|私有倉|手動移植|ミラー|非公開のリポジトリ|미러|비공개 저장소", re.I)
 
 
 class Contributing(unittest.TestCase):
