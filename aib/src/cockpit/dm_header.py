@@ -240,20 +240,26 @@ def cabin_of_socket(socket: str, env: Optional[Mapping] = None) -> str:
 
 
 def build_from_labels(s_label: str, t_label: str, *, s_origin: str = "", s_socket: str = "",
-                      t_socket: str = "", when=None, env: Optional[Mapping] = None) -> str:
-    """dm-ctl 用:它內部的寄件/收件 token ⇒ 新式抬頭。位址一律本機(同機投遞);艙號看各自的 socket。"""
+                      t_socket: str = "", when=None, env: Optional[Mapping] = None,
+                      s_addr: str = "", s_note: str = "") -> str:
+    """dm-ctl 用:它內部的寄件/收件 token ⇒ 新式抬頭。位址一律本機(同機投遞);艙號看各自的 socket。
+
+    跨主機(dm_xhost.py):s_addr = sshd 量到的對方 IP,s_note 掛在寄件方名字後面(半形括號),
+    讀的人一眼分得出這封是隔一台機器、經 SSH 進來的;席碼欄不動,抄地址回信照樣回得到。"""
     import time
     addr = local_addr(env)
     s = party_from_label(s_label, s_origin)
     r = party_from_label(t_label)
-    s["addr"], s["cabin"] = addr, cabin_of_socket(s_socket, env)
+    s["addr"], s["cabin"] = s_addr or addr, cabin_of_socket(s_socket, env)
     r["addr"], r["cabin"] = addr, cabin_of_socket(t_socket or s_socket, env)
+    if s_note:
+        s["name"] = "%s(%s)" % (s["name"], s_note)
     return build(s, r, time.time() if when is None else when)
 
 
 def main(argv=None) -> int:
     """殼腳本用:dm_header.py build <寄件席> <寄件名> <收件席> <收件名> [epoch]
-                 dm_header.py from-labels <S_LABEL> <T_LABEL> [S_ORIGIN] [S_SOCKET] [T_SOCKET]
+                 dm_header.py from-labels <S_LABEL> <T_LABEL> [S_ORIGIN] [S_SOCKET] [T_SOCKET] [S_ADDR] [S_NOTE]
                  dm_header.py parse < 文字   ⇒ JSON(認不出 rc=1)"""
     import json
     import sys
@@ -264,9 +270,10 @@ def main(argv=None) -> int:
         print(build(local_party(args[1], args[2]), local_party(args[3], args[4]), when))
         return 0
     if args[:1] == ["from-labels"] and len(args) >= 3:
-        # from-labels <S_LABEL> <T_LABEL> [S_ORIGIN] [S_SOCKET] [T_SOCKET]
-        rest = args[3:] + [""] * 3
-        print(build_from_labels(args[1], args[2], s_origin=rest[0], s_socket=rest[1], t_socket=rest[2]))
+        # from-labels <S_LABEL> <T_LABEL> [S_ORIGIN] [S_SOCKET] [T_SOCKET] [S_ADDR] [S_NOTE]
+        rest = args[3:] + [""] * 5
+        print(build_from_labels(args[1], args[2], s_origin=rest[0], s_socket=rest[1], t_socket=rest[2],
+                                s_addr=rest[3], s_note=rest[4]))
         return 0
     if args[:1] == ["parse"]:
         got = parse(sys.stdin.read())

@@ -572,7 +572,7 @@ TARGET=""; FILE=""; DRYRUN=0; VERIFY=0; MSG_ARGV=()
 TO_RAW=""; TO_GIVEN=0; RESOLVE_ONLY=0
 DM_THREAD=""; DM_KIND=""; DM_EXPIRES=""; DM_TTL_MIN=""; DM_CLOSE=""
 RETRY_UNTIL=""; RETRY_EVERY=""; RETRY_UNTIL_GIVEN=0
-PROBE_BOX=0; PARK_ON_DRAFT=0
+PROBE_BOX=0; PARK_ON_DRAFT=0; XHOST_IDENT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --to) TO_RAW="${2:-}"; TO_GIVEN=1; shift 2 ;;
@@ -605,6 +605,9 @@ while [ $# -gt 0 ]; do
     #   祖先鏈**結構上**永遠回不到任何一席的 pane ⇒ 沒有這個入口就永遠不具名。
     --codex-session-uuid) DM_CODEX_SESSION_UUID="${2:-}"; shift 2 ;;
     --codex-session-uuid=*) DM_CODEX_SESSION_UUID="${1#--codex-session-uuid=}"; shift ;;
+    # 跨主機收件端(dm_xhost.py):寄件機推導好的身分 token。只在 sshd 底下才收,驗不過 rc=2;見下面「跨主機」兩段。
+    --xhost-ident) XHOST_IDENT="${2:-}"; shift 2 ;;
+    --xhost-ident=*) XHOST_IDENT="${1#--xhost-ident=}"; shift ;;
     --human-id*|--sender-seat*)
       die "sender_seat / human_id 只可推導不可指定($1):那是身份欄,自填=冒充" 2 ;;
     --sender*|--as*)
@@ -644,6 +647,26 @@ if [ "$TO_GIVEN" != "1" ]; then
   [ -n "$TARGET" ] || die "用法:aib dm <目標> [訊息...] [--file F] [--dry-run] [--verify]" 2
 fi
 
+# ── 跨主機(the maintainer 10-14 20:5x「先修這個」;拆法、驗法、能力邊界在 dm_xhost.py 檔頭)─────────────
+#   寄件機:地址的 IP 不是本機 ⇒ 下面完整地址那段記下 _XH_OUT_*,讀完稿後 _xhost_send 用 ssh 交給收件機。
+#     寄件人用 AIB_DM_XHOST_WHOAMI=1 再入本檔推導 —— 同一套規則,不另抄一份;那一輪只印 token、不送、不留痕。
+#   收件機:--xhost-ident 驗過(sshd 底下、對方不是本機、寄件方過白名單)才換抬頭寄件方;驗不過 rc=2,一個字都沒送。
+_XH_WHOAMI=0; _XH_OUT_IP=""; _XH_IN=0; _XH_LABEL=""; _XH_ORIGIN=""; _XH_HUB=""; _XH_IP=""
+if [ "${AIB_DM_XHOST_WHOAMI:-0}" = "1" ] && [ -z "$XHOST_IDENT" ] && [ "$TO_GIVEN" != "1" ]; then
+  # 只推導寄件人:跳過完整地址、取稿、真人三條件、留痕(RESOLVE_ONLY 那條路),下面目標閘整段跳過。
+  _XH_WHOAMI=1; RESOLVE_ONLY=1; AIB_DM_ADDR_DONE=1; TARGET="${TARGET:-@xhost}"
+fi
+if [ -n "$XHOST_IDENT" ]; then
+  [ "$TO_GIVEN" = "1" ] && die "--xhost-ident 不得與 --to 併用" 2
+  if ! _xh_line="$("$PY3" "$HERE/dm_xhost.py" accept "$XHOST_IDENT" 2>&1)"; then
+    emit_json 2 resolve "xhost:${_xh_line}"
+    die "跨主機投遞拒收:${_xh_line}" 2
+  fi
+  IFS=$'\x1f' read -r _XH_LABEL _XH_ORIGIN _XH_HUB _XH_IP <<<"$_xh_line"
+  _XH_IN=1
+fi
+
+
 # ── 完整地址(the maintainer 09-28:aib dm 一律含艙位碼;跨主機再加 IP)──────────────────
 #   艙位碼/席碼、IP/艙位碼/席碼、或從抬頭抄下的 IP:位址/艙位碼/名@席碼(拆法只在 dm_address.py)。
 #   艙位碼 = 艙 id 最後一個 `-` 之後的四碼。寫了艙 ⇒ 換到那一艙、目標改回 @席碼後重進本檔一次,
@@ -663,6 +686,13 @@ if [ "$TO_GIVEN" != "1" ] && [ -z "${AIB_DM_ADDR_DONE:-}" ]; then
   # 認不出的寫法(窗號、角色名…)不在這裡拒:交給下面既有的具名拒投,理由才講得準。
   if [ "$_addr_rc" != "0" ] && [ "$(_addr_get reason)" = "bad" ]; then
     _addr_line="kind=other"; _addr_rc=0
+  fi
+  if [ "$_addr_rc" != "0" ] && [ "$(_addr_get reason)" = "remote" ] && [ "$_XH_IN" != "1" ]; then
+    # 跨主機:這裡不送,讀完稿再交給 _xhost_send(要先有稿;身分也在那裡推)。
+    [ -n "$(_addr_get cabin)" ] || { emit_json 2 resolve "address:remote-no-cabin"; die "跨主機要寫 IP/艙位碼/席碼" 2; }
+    if [ "$RESOLVE_ONLY" = "1" ]; then _resolve_fail invalid; exit 2; fi
+    _XH_OUT_IP="$(_addr_get ip)"; _XH_OUT_ADDR="$(_addr_get cabin)/$(_addr_get seat)"
+    _addr_line="kind=xhost"; _addr_rc=0
   fi
   if [ "$_addr_rc" != "0" ]; then
     _addr_detail="$(printf '%s\n' "$_addr_line" | tr ' ' '\n' | sed -n 's/^detail=//p' | sed 's/\xc2\xa0/ /g')"
@@ -766,6 +796,49 @@ elif [ ! -t 0 ]; then
 fi
 if [ "$RESOLVE_ONLY" != "1" ] && [ "$PROBE_BOX" != "1" ]; then
   [ -n "${MSG//[[:space:]]/}" ] || die "訊息不得為空白" 2
+fi
+# 跨主機寄件(上面「跨主機」那段):推導寄件人 ⇒ ssh 交給收件機的 aib dm;rc 與 RESULT 行照收件機的。
+#   投不進的兩種:連不上(先 ssh true 試過)或收件機自己拒 ⇒ rc 2;ssh 中途斷 ⇒ 不知道對方收到沒 ⇒ rc 4(勿重送)。
+_xhost_send() {
+  local ident host cmd out rc ssh_bin="${AIB_DM_XHOST_SSH:-ssh}"
+  local -a sshopt=(-o BatchMode=yes -o ConnectTimeout="${AIB_DM_XHOST_TIMEOUT:-8}") rargs
+  host="$("$PY3" "$HERE/dm_xhost.py" ssh-target "$_XH_OUT_IP")" || host="$_XH_OUT_IP"
+  # 先試連線再推導:連不上就什麼都不碰(推導那一輪會讀本機艙)。
+  if ! "$ssh_bin" "${sshopt[@]}" "$host" true </dev/null >/dev/null 2>&1; then
+    emit_json 2 resolve "xhost:ssh-unreachable"
+    die "連不上 $host($_XH_OUT_IP)的 SSH,一個字都沒送" 2
+  fi
+  # 推導那一輪失敗時 stdout 會是解析失敗的 JSON:rc 不是 0、或不是純 token 字元 ⇒ 都當推不出來。
+  ident="$(env AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
+  ident="${ident##*$'\n'}"
+  case "$ident" in *[!A-Za-z0-9_=-]*) ident="" ;; esac
+  if [ -z "$ident" ]; then
+    # 推導那一輪自己死掉(hub 不可達之類):退回最低權格,照實寫推不出來,不猜。
+    ident="$("$PY3" "$HERE/dm_xhost.py" encode "unattested:${S_ORIGIN_FALLBACK:-unknown}" "" "" "")" \
+      || die "跨主機身分 token 組不出來,未送出" 2
+  fi
+  rargs=("${AIB_DM_XHOST_REMOTE_AIB:-aib}" dm --xhost-ident "$ident" "$_XH_OUT_ADDR")
+  [ -n "$DM_THREAD" ] && rargs+=(--thread "$DM_THREAD")
+  [ -n "$DM_KIND" ] && rargs+=(--kind "$DM_KIND")
+  [ -n "$DM_CLOSE" ] && rargs+=(--close "$DM_CLOSE")
+  [ -n "$DM_EXPIRES" ] && rargs+=(--expires "$DM_EXPIRES")
+  [ "$DRYRUN" = "1" ] && rargs+=(--dry-run)
+  [ "$VERIFY" = "1" ] && rargs+=(--verify)
+  cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
+  out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd")"; rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out"
+  if [ "$rc" = "255" ]; then
+    emit_json 4 xhost-unknown "SSH 中途斷線,收件機收到沒有不知道;勿重送,先到那台看"
+    printf 'RESULT stage=xhost-unknown id=- relay=- thread=%s\n' "${DM_THREAD:--}"
+    return 4
+  fi
+  return "$rc"
+}
+if [ -n "$_XH_OUT_IP" ]; then
+  [ "${RETRY_UNTIL_GIVEN}" = "1" ] && die "跨主機還不支援 --retry-until" 2
+  S_ORIGIN_FALLBACK="$("$PY3" "$HERE/sender_origin.py" 2>/dev/null | tr -cd '0-9A-Za-z_.:-' || true)"
+  _xhost_send
+  exit $?
 fi
 # --retry-until:稿已讀完再進迴圈,子輪走 stdin,不會第二輪讀到空稿。
 if [ "${RETRY_UNTIL_GIVEN}" = "1" ] && [ "${AIB_DM_RETRY_INNER:-0}" != "1" ] \
@@ -871,7 +944,8 @@ _V2_ARGS=()
 # human_id 只在真人時有值(接口 §1:空=量不到)。排空器重投與階段 A 再入不量(它們永遠不是人)。
 # 冒用:非真人的正文以「真人<…>:」開頭 ⇒ 改「AI 自稱真人:」照送並留痕(the maintainer 09-12 14:3x 裁「不擋」)。
 HUMAN_ID=""; HUMAN_ATTEST_JSON=""
-if [ "$RESOLVE_ONLY" != "1" ] && [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ] && [ "$S_ORIGIN_KIND" != "seat" ] && [ "$S_ORIGIN_KIND" != "bgfork" ]; then
+if [ "$RESOLVE_ONLY" != "1" ] && [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ] && [ "$S_ORIGIN_KIND" != "seat" ] && [ "$S_ORIGIN_KIND" != "bgfork" ] \
+   && [ "$_XH_IN" != "1" ]; then
   HUMAN_ATTEST_JSON="$("$PY3" "$HERE/human_attest.py" --pid "$$" 2>/dev/null || true)"
   HUMAN_ID="$("$PY3" -c 'import json,sys
 try:
@@ -984,6 +1058,11 @@ if [ "$RESOLVE_ONLY" != "1" ] && [ "$AIB_DM_RELAY_BYTES" -gt 0 ]; then
       _RELAY_SEAT="$S_ORIGIN"
     elif [ "$S_ORIGIN_KIND" = "bgfork" ]; then
       _RELAY_SEAT="$S_ORIGIN"; _RELAY_BGFORK=1     # 指標寫「來自 @五碼 的背景分身」,讀的人分得出不是本人
+    fi
+    if [ "$_XH_IN" = "1" ]; then                   # 跨主機:指標寫寄件機那一席(驗過的 token),不是 SSH 行程
+      _RELAY_SEAT=""; _RELAY_BGFORK=0
+      case "$_XH_LABEL" in @*) _RELAY_SEAT="${_XH_LABEL#@}"; _RELAY_SEAT="${_RELAY_SEAT%%(*}" ;; esac
+      [ "$_XH_ORIGIN" = "bgfork" ] && _RELAY_BGFORK=1
     fi
     MSG="$("$PY3" -c '
 import sys
@@ -1554,6 +1633,8 @@ PY
 )" || die "解析器失敗" 2
 unset DM_LIVE_IDS
 
+# 跨主機推導那一輪(_XH_WHOAMI)沒有本機目標:目標閘到 provider 那段整段跳過(縮排不動,範圍到「發送席推導」之前)。
+if [ "$_XH_WHOAMI" != "1" ]; then
 REFUSAL_KIND="$("$PY3" -c 'import json,sys; print((json.loads(sys.argv[1]).get("refusal") or {}).get("kind") or "")' "$RESOLVED")"
 if [ -n "$REFUSAL_KIND" ]; then
   REFUSAL_DETAIL="$("$PY3" -c 'import json,sys; print((json.loads(sys.argv[1]).get("refusal") or {}).get("message") or "量不到")' "$RESOLVED")"
@@ -1713,6 +1794,7 @@ export AIB_DM_STRICT_UNKNOWN=1
 case "$T_PROVIDER" in
   codex|agy|copilot|grok) export AIB_DM_DRAFT_RE='a^' ;;
 esac
+fi   # _XH_WHOAMI 跳過的目標閘到這裡
 
 # 發送席推導(不可偽填):hub 窗內=自己的席位檔;hub 外=human 委託人。
 # 席位=經機器驗證的綁定(schema+檔名交叉+活窗)而無人證,對映血緣閘的
@@ -1925,6 +2007,13 @@ print(json.dumps({
   fi
 fi
 
+# 跨主機推導那一輪到這裡為止:寄件人已照上面同一套規則推完,印 token 給寄件那一輪,不送。
+if [ "$_XH_WHOAMI" = "1" ]; then
+  _xh_kind="$S_ORIGIN_KIND"; case "$S_LABEL" in *"(背景分身)") _xh_kind="bgfork" ;; esac
+  exec "$PY3" "$HERE/dm_xhost.py" encode "$S_LABEL" "${S_ORIGIN:-}" "$_xh_kind" "${_SENDER_HUB:-$HUB}"
+fi
+
+
 # ── 排隊投遞保留原寄件人(the maintainer 09-30 15:3x,收件匣 A 項 2)────────────────────
 #   災情:佇列只存正文不存抬頭,排空器(或真人按「立刻送出」)重投時,上面那一大段是從**投遞者自己的**
 #   行程鏈推寄件人 ⇒ 排空器送的抬頭變「系統@aib」、滑鼠送的變「the maintainer」,收件席看不出是誰寄的、也回錯人。
@@ -1938,10 +2027,18 @@ fi
 #   ★ 只改抬頭的寄件方;SENDER_JSON(帳本/血緣閘看的那筆)仍記**實際貼稿的行程**,權限一格不動。
 #   ★ 自填寄件身分的旗標(--sender / --as / --sender-seat / --human-id)仍一律 die,這裡沒有開那扇門。
 # 寄件端把自己那一艙與來源機器名交給佇列(入列/留歷史時記下),日後排隊投遞才寫得出原寄件人的艙位碼。
+# 跨主機收件(上面驗過):抬頭寄件方換成寄件機推導的那一席;來源記成 xhost:<sshd 量到的對方 IP>,
+#   忙碌入列後排空重投也認得出是跨主機(下面排隊那段)。帳本 SENDER_JSON 不動:仍是實際貼稿的 SSH 行程,低權格。
+if [ "$_XH_IN" = "1" ]; then
+  S_LABEL="$_XH_LABEL"; S_ORIGIN="xhost:$_XH_IP"
+  [ -n "$_XH_HUB" ] && _SENDER_HUB="$_XH_HUB"
+fi
 [ -n "${_SENDER_HUB:-$HUB}" ] && _V2_ARGS+=("--sender-hub=${_SENDER_HUB:-$HUB}")
 [ -n "${S_ORIGIN:-}" ] && _V2_ARGS+=("--sender-origin=${S_ORIGIN}")
 
-_HDR_S_LABEL="$S_LABEL"; _HDR_S_ORIGIN="${S_ORIGIN:-}"
+_HDR_S_LABEL="$S_LABEL"; _HDR_S_ORIGIN="${S_ORIGIN:-}"; _HDR_S_ADDR=""; _HDR_S_NOTE=""
+_xh_hdr() { _HDR_S_ADDR="${1#xhost:}"; _HDR_S_NOTE="跨主機·經SSH"; }
+if [ "$_XH_IN" = "1" ]; then _xh_hdr "$_XH_IP"; fi
 # review r2 m6:那一則住在哪一席的佇列 = 投遞者說的(AIB_DM_QUEUED_SEAT;轉給後繼席時由上面帶過來),沒說才用收件席
 _Q_SEAT="${AIB_DM_QUEUED_SEAT:-${T_CODE:-}}"
 if [ "${AIB_DM_SORT_DELIVER:-0}" = "1" ] && [ -n "${AIB_DM_QUEUED_ITEM_ID:-}" ] && [ -n "$_Q_SEAT" ]; then
@@ -1971,6 +2068,7 @@ sa.assert_address_whitelist(sys.argv[1], "dm 抬頭")' "[$_q_lab > $T_LABEL / �
        && "$PY3" "$HERE/dm_header.py" from-labels "$_q_lab" "$T_LABEL" "$_q_org" "${_q_hub:-$HUB}" "" >/dev/null 2>&1; then
       # 艙位碼也換成原寄件人那一艙(_SENDER_HUB 在這之後只剩抬頭這一個讀者);信上沒記艙 ⇒ 不動
       _HDR_S_LABEL="$_q_lab"; _HDR_S_ORIGIN="$_q_org"; [ -n "$_q_hub" ] && _SENDER_HUB="$_q_hub"
+      case "$_q_org" in xhost:*) _xh_hdr "$_q_org" ;; esac      # 跨主機那一則排隊後重投:位址與標記照入列時的
     else
       echo "aib-dm-ctl: 排隊那一則的原寄件人($_q_lab)組不出合格抬頭,照舊用投遞者推導的寄件人" >&2
     fi
@@ -1998,7 +2096,7 @@ fi
 _T_SOCKET="$("$PY3" -c 'import json,sys
 m=json.loads(sys.argv[1])["matches"][0]
 print((m.get("rec") or {}).get("socket") or "")' "$RESOLVED" 2>/dev/null || true)"
-if ! HEADER="$("$PY3" "$HERE/dm_header.py" from-labels "$_HDR_S_LABEL" "$T_LABEL" "$_HDR_S_ORIGIN" "${_SENDER_HUB:-$HUB}" "$_T_SOCKET")" \
+if ! HEADER="$("$PY3" "$HERE/dm_header.py" from-labels "$_HDR_S_LABEL" "$T_LABEL" "$_HDR_S_ORIGIN" "${_SENDER_HUB:-$HUB}" "$_T_SOCKET" "$_HDR_S_ADDR" "$_HDR_S_NOTE")" \
    || [ -z "$HEADER" ]; then
   emit_json 2 header "抬頭產生失敗(dm_header.py from-labels)"
   die "抬頭產生失敗:[$S_LABEL > $T_LABEL]" 2
