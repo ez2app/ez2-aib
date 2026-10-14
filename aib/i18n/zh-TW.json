@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "無法確認受派艦長唯一性:{file} schema 不符",
   "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
   "aib.captains_ctl.unmeasured": "量不到",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.newproj.persona_first": "席 {seat} 還沒綁人格;專案資料夾要先有人格才能綁。先綁人格,再重跑這個指令:\n  aib newrole --name \"<角色名>\" --prompt-file <人設.md> --seat {seat} --actor {actor}\n(已有的角色只要 --name;新角色還要給人設)"
 }

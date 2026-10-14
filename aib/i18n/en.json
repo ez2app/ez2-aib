@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "cannot confirm there is only one assigned captain: {file} has the wrong schema",
   "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
   "aib.captains_ctl.unmeasured": "unknown",
-  "aib.captains_ctl.status_label": "Captain:"
+  "aib.captains_ctl.status_label": "Captain:",
+  "aib.newproj.persona_first": "Seat {seat} has no persona yet, and a project folder can only be bound after the persona. Bind one first, then rerun this command:\n  aib newrole --name \"<persona name>\" --prompt-file <persona.md> --seat {seat} --actor {actor}\n(an existing persona only needs --name; a new one also needs the persona text)"
 }

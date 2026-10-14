@@ -71,6 +71,11 @@ class BindError(Exception):
     """來源不合/拒綁 —— 呼叫端回 rc 2,一個位元組都不寫。"""
 
 
+class NoPersonaError(BindError):
+    """這一席還沒綁人格,不能先綁大腦 / 資料夾。另立一類,讓 newproj 等呼叫端能說「先綁人格」那一行指令,
+    不靠比對訊息字面(10-14 6ddf 走查 K5)。"""
+
+
 def agent_uid_of(session_uuid):
     """末五碼(整串最後五個字元;uuid 最後一段 12 hex 所以等同去連字號後末五)。"""
     return session_uuid[-5:]
@@ -822,7 +827,8 @@ def bind_seat(state_root, seat_id, card, actor, brain=None, rebind_persona=False
                 raise BindError("狀態不可讀:%s" % err)
         card = (current or {}).get("persona_card")
         if not card:
-            raise BindError("這席還沒綁人格,不能先綁大腦(先 [綁定人格])")
+            raise NoPersonaError("這席還沒綁人格,不能先綁大腦:先綁人格(右鍵 [綁定人格],或 aib newrole --name <角色> "
+                                 "--seat %s --actor <你的署名>),再綁大腦" % seat_id)
     persona_uid, persona_sha, entry = resolve_card_ref(cards, card)
     if pin_sha is not None:
         if not SHA256_RE.fullmatch(pin_sha):

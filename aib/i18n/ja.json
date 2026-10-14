@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "任命された艦長が 1 人だけか確認できません:{file} のスキーマが違います",
   "aib.captains_ctl.captain_exists": "すでに艦長が任命されています:ウィンドウ {window}、席コード={code};先にその席を --unassign してから新しい席を任命してください",
   "aib.captains_ctl.unmeasured": "不明",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.newproj.persona_first": "席 {seat} にはまだペルソナがありません。プロジェクトのフォルダはペルソナを紐付けてからでないと紐付けられません。先にペルソナを紐付けてから、このコマンドを再実行してください:\n  aib newrole --name \"<ペルソナ名>\" --prompt-file <persona.md> --seat {seat} --actor {actor}\n(既存のペルソナは --name だけ、新しいペルソナは本文も必要です)"
 }

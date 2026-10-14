@@ -879,6 +879,9 @@ def run_newproj(args) -> int:
             try:                                   # 預演:這一席綁得上這個資料夾嗎(沒綁人格就綁不上)
                 BO.bind_seat(root, seat_id, None, actor, brain=route_key, dry_run=True,
                              contract_spec=_spec)
+            except BO.NoPersonaError:
+                # K5(10-14):以前只轉述「不能先綁大腦(先 [綁定人格])」—— 那是右鍵選單的字;命令列的人要的是那一行指令
+                return _refuse(T("aib.newproj.persona_first", {"seat": seat_arg, "actor": sig}), seat_arg)
             except BO.BindError as exc:
                 return _refuse(T("aib.newproj.folder_unbindable", {"key": route_key, "err": exc}), seat_arg)
         base.update({"route_key": route_key, "folder": folder})
