@@ -200,20 +200,23 @@ def parse_legacy(text: str) -> Optional[dict]:
 
 # ── 本機這一方 ──
 def local_addr(env: Optional[Mapping] = None) -> str:
-    """位址:AIB_DM_ADDR(治具)> Tailscale 100.x > 區網 IPv4 > 127.0.0.1。"""
+    """位址:AIB_DM_ADDR(治具)> Tailscale IPv4 > 區網 IPv4 > 127.0.0.1(挑法在 host_ip,與 dm_address.local_ips 同一套;
+    10-14:tailscale 不在 PATH 時也找 App 固定安裝路徑,ssh 進來的殼才不會退回區網 IP)。"""
     env = os.environ if env is None else env
     if env.get("AIB_DM_ADDR"):
         return env["AIB_DM_ADDR"]
-    for argv in (["tailscale", "ip", "-4"], ["ipconfig", "getifaddr", "en0"], ["hostname", "-I"]):
-        try:
-            out = subprocess.run(argv, capture_output=True, text=True, timeout=2,
-                                 stdin=subprocess.DEVNULL).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        for tok in out.split():
-            if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", tok) and not tok.startswith("127."):
-                return tok
-    return LOOPBACK
+    return _host_ip().preferred_ipv4(env)
+
+
+def _host_ip():
+    """同目錄的 host_ip(抬頭與跨主機判斷同一套挑 IP 法);從別處 import 本檔時目錄不一定在 sys.path。"""
+    try:
+        import host_ip
+    except ImportError:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import host_ip
+    return host_ip
 
 
 def local_cabin(env: Optional[Mapping] = None) -> str:

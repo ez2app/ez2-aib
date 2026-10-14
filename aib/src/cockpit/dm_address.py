@@ -69,15 +69,20 @@ def local_ips(env=None) -> set:
     ips = set(LOOPBACKS)
     if env.get("AIB_DM_ADDR"):
         ips.add(env["AIB_DM_ADDR"])
-    for argv in (["tailscale", "ip"], ["hostname", "-I"],
-                 ["ipconfig", "getifaddr", "en0"], ["ipconfig", "getifaddr", "en1"]):
-        try:
-            out = subprocess.run(argv, capture_output=True, text=True, timeout=2,
-                                 stdin=subprocess.DEVNULL).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        ips.update(out.split())
+    # 挑法在 host_ip,與 dm_header.local_addr 同一套(10-14:tailscale 不在 PATH 時也找 App 固定安裝路徑)
+    ips.update(_host_ip().all_ips(env))
     return ips
+
+
+def _host_ip():
+    """同目錄的 host_ip(抬頭與跨主機判斷同一套挑 IP 法);從別處 import 本檔時目錄不一定在 sys.path。"""
+    try:
+        import host_ip
+    except ImportError:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import host_ip
+    return host_ip
 
 
 def cabins(state_root: str, primary: str) -> list:
