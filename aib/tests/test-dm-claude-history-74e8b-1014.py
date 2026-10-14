@@ -15,7 +15,7 @@ C5 退出 History(真 tmux + 假 TUI,要按 3 次 ↓ 才回空框):只按 ↓�
 C6 畫面在動(有人正在操作):一次都不按,回非 0
 C7 怎麼按都不離開:按到上限就停,回非 0、說原因
 C8 dm-ctl 認得引擎的 block_kind=history(分到 history-mode,不是 foreign-draft)
-刀(複本):K1 拿掉框頂線判斷 ⇒ C1、C2 紅;K2 退出不檢查畫面靜止 ⇒ C6 紅;K3 dm-ctl 不認 history ⇒ C8 紅
+刀(複本):K1 拿掉框頂線判斷 ⇒ C1、C2 紅(退出也認不出 ⇒ C5–C7 一起紅);K2 退出不檢查畫面靜止 ⇒ C6 紅;K3 dm-ctl 不認 history ⇒ C8 紅
 """
 import os
 import shutil

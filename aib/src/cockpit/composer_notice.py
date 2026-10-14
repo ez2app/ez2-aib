@@ -42,7 +42,7 @@ import time
 
 SCHEMA = "aib-composer-blocked/v1"
 STALE_S_DEFAULT = 3600
-REASONS = ("foreign-draft", "window-alias", "browse-mode")   # browse-mode:第 55 項,TUI 瀏覽模式不是卡稿
+REASONS = ("foreign-draft", "window-alias", "browse-mode", "history-mode")   # browse-mode:第 55 項,TUI 瀏覽模式不是卡稿
 BIND_SNAPSHOT_SCHEMA = "aib-fleet-bind-notices/v1"
 BIND_NOTICE_KINDS = {
     "bind-attention": "ctx",
@@ -301,6 +301,8 @@ def render(seat, directory=None, stale_s=None):
         head = "⚠ 有人用窗號當位址送給你(不是位址,已拒投)"
     elif data.get("reason") == "browse-mode":
         head = "⚠ 你的 TUI 在瀏覽模式(底列 ←:collapse / Enter:open),dm 送不進來:按 Esc 回輸入列"
+    elif data.get("reason") == "history-mode":
+        head = "⚠ 你的輸入框停在輸入歷史(框頂線 History n/m),dm 送不進來:按 ↓ 直到 History 消失"
     else:
         head = "⚠ 你的輸入框裡有一封 @%s 送進來、**沒有送出**的稿" % owner
     body = "在你送出或清掉它之前,全艙送不進任何 dm(已被擋 %d 次,來自 %d 席)" % (n, m)

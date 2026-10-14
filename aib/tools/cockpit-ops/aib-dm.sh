@@ -330,6 +330,16 @@ DEAD="$("$TMUX_BIN" -L "$SOCKET" display-message -p -t "$PANE" '#{pane_dead}' 2>
 #   ★ 不對稱使「兩次一起失敗所以互相抵銷」不成立::141 帶 `-e`、:241 不帶,
 #     旗標面不同不保證同時失敗,而 fail-open 需要的正是「BEFORE 空、AFTER 有值」。
 #   同一句話今晚已對 `git status` 講過一次(N1 v2.1),這是同一個病的第二個工具。
+# 10-14 交接單 K8:Claude 輸入框停在輸入歷史(框頂線 History n/m)時框裡是別席的舊訊息,不是草稿。
+#   貼前先試著退回空框:只按 ↓、每按一次重讀、畫面在動就一個鍵都不按(composer_history.py);
+#   退不出來就照常往下 —— 守衛會判成 history,擋下時說原因與解法(不是「請對方清稿」)。
+#   只有 claude 方言宣告了歷史框頂線;別家 composer_history 一定回 history=no,不按任何鍵。
+if [ "${AIB_DM_SKIP_HISTORY_LEAVE:-0}" != "1" ]; then
+  _HIST_PROVIDER="${AIB_DM_TARGET_PROVIDER:-$("$TMUX_BIN" -L "$SOCKET" show-options -w -qv -t "$PANE" @aib_provider 2>/dev/null)}"
+  _HIST_OUT="$("${EZ2_PY3:-python3}" "$(dirname "${BASH_SOURCE[0]}")/../../src/cockpit/composer_history.py" leave \
+                 --socket "$SOCKET" --pane "$PANE" --provider "${_HIST_PROVIDER:-claude}" --tmux "$TMUX_BIN" 2>&1)"
+  [ "$_HIST_OUT" = "history=no" ] || echo "aib-dm: 輸入歷史:${_HIST_OUT:-(沒有回應)}"
+fi
 BEFORE_E="$("$TMUX_BIN" -L "$SOCKET" capture-pane -e -p -t "$PANE" 2>/dev/null)"; _cap_rc=$?
 [ "$_cap_rc" = "0" ] || die 3 "讀不到目標畫面(capture-pane -e rc=$_cap_rc):**取不到畫面不等於畫面乾淨**,拒絕投遞。"
 BEFORE="$(printf '%s' "$BEFORE_E" | LC_ALL=C sed $'s/\033\[[0-9;]*m//g')"

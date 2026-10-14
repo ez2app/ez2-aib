@@ -438,7 +438,7 @@ def composer_notice_lines(width):
                 continue
             reason = data.get("reason")
             if reason in ("bind-attention", "bind-candidates",
-                          "foreign-draft", "window-alias", "browse-mode"):
+                          "foreign-draft", "window-alias", "browse-mode", "history-mode"):
                 # 輸入框裡那封沒送出的稿仍擋得住信，只是不佔 AI 清單上方。
                 continue
             text = cnotice.render(data.get("blocked_seat") or "")
