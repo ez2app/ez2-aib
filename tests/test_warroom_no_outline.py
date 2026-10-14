@@ -69,6 +69,20 @@ class WarroomNoOutline(unittest.TestCase):
         self.assertIn("1.1 Write the README", out)
         self.assertNotIn("no project outline yet", out)
 
+    def test_english_board_has_no_chinese(self):
+        outline = self.td / "outline.md"
+        outline.write_text("[1] approved p1 | Ship v1\n[2] draft p2 | Maybe later\n", encoding="utf-8")
+        (self.td / "tasks" / "t1.json").write_text(json.dumps(
+            {"id": "T-1", "outline": "1", "status": "in_progress", "assignee": "ann"}), encoding="utf-8")
+        (self.td / "tasks" / "r1.json").write_text(json.dumps(
+            {"id": "R-1", "source": "ruling", "status": "open", "title": "pick"}), encoding="utf-8")
+        out = self.board("en", outline)
+        for want in ("War room: outline.md", "Owner", "Board", "Working", "awaiting approval", "Ruling work:",
+                     "switch tab"):
+            self.assertIn(want, out)
+        self.assertIsNone(re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", out), out)
+        self.assertIn("戰情室:outline.md", self.board("zh-TW", outline))
+
 
 if __name__ == "__main__":
     unittest.main()

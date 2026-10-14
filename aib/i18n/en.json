@@ -1973,5 +1973,15 @@
   "aib.captains_ctl.unmeasured": "unknown",
   "aib.captains_ctl.status_label": "Captain:",
   "aib.warroom.no_outline": "War room: no project outline yet. Set EZ2_OUTLINE to an outline file with one item per line, like `[1] approved p1 | Ship v1` (indent 2 spaces per level), and it will show here.",
-  "aib.warroom.outline_unreadable": "War room: cannot read the outline {path}"
+  "aib.warroom.outline_unreadable": "War room: cannot read the outline {path}",
+  "aib.warroom.st_open": "Open",
+  "aib.warroom.st_done": "Done",
+  "aib.warroom.st_working": "Working",
+  "aib.warroom.header": "War room: {file}    depth {view}/3",
+  "aib.warroom.col_who": "Owner",
+  "aib.warroom.col_board": "Board",
+  "aib.warroom.col_live": "Live",
+  "aib.warroom.awaiting_approval": " (awaiting approval)",
+  "aib.warroom.rulings": "Ruling work:",
+  "aib.warroom.footer": "Board = what the task board says | ✅ = done | Opt-←→ switch tab  Opt-↑↓ switch column"
 }

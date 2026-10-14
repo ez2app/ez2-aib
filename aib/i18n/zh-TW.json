@@ -1973,5 +1973,15 @@
   "aib.captains_ctl.unmeasured": "量不到",
   "aib.captains_ctl.status_label": "艦長:",
   "aib.warroom.no_outline": "戰情室:還沒有專案大綱。把 EZ2_OUTLINE 設成大綱檔,一行一項,例如 `[1] approved p1 | 發第一版`(每深一層縮 2 格),就會顯示在這裡。",
-  "aib.warroom.outline_unreadable": "戰情室:大綱讀取失敗 {path}"
+  "aib.warroom.outline_unreadable": "戰情室:大綱讀取失敗 {path}",
+  "aib.warroom.st_open": "待認領",
+  "aib.warroom.st_done": "完成",
+  "aib.warroom.st_working": "進行中",
+  "aib.warroom.header": "戰情室:{file}    展開 {view}/3",
+  "aib.warroom.col_who": "認領",
+  "aib.warroom.col_board": "板上",
+  "aib.warroom.col_live": "實況",
+  "aib.warroom.awaiting_approval": "(候拍板)",
+  "aib.warroom.rulings": "裁示任務:",
+  "aib.warroom.footer": "板上=任務板宣稱 | 完成打 ✅ | Opt-←→ 切分頁 Opt-↑↓ 切欄"
 }

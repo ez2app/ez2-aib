@@ -1973,5 +1973,15 @@
   "aib.captains_ctl.unmeasured": "알 수 없음",
   "aib.captains_ctl.status_label": "함장:",
   "aib.warroom.no_outline": "상황실: 아직 프로젝트 개요가 없습니다. EZ2_OUTLINE을 한 줄에 한 항목씩 쓴 개요 파일(예: `[1] approved p1 | v1 출시`, 한 단계마다 2칸 들여쓰기)로 설정하면 여기에 표시됩니다.",
-  "aib.warroom.outline_unreadable": "상황실: 개요를 읽을 수 없습니다 {path}"
+  "aib.warroom.outline_unreadable": "상황실: 개요를 읽을 수 없습니다 {path}",
+  "aib.warroom.st_open": "미배정",
+  "aib.warroom.st_done": "완료",
+  "aib.warroom.st_working": "진행 중",
+  "aib.warroom.header": "상황실: {file}    펼침 {view}/3",
+  "aib.warroom.col_who": "담당",
+  "aib.warroom.col_board": "보드",
+  "aib.warroom.col_live": "현황",
+  "aib.warroom.awaiting_approval": "(승인 대기)",
+  "aib.warroom.rulings": "결정 작업:",
+  "aib.warroom.footer": "보드=작업 보드에 적힌 상태 | 완료는 ✅ | Opt-←→ 탭 전환  Opt-↑↓ 열 전환"
 }

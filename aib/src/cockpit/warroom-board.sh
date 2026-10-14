@@ -56,11 +56,11 @@ def task_live(t):
     who = t.get('assignee') or '-'
     st = t.get('status')
     if st == 'open':
-        return who, '待認領', ''
+        return who, _t('aib.warroom.st_open'), ''
     if st == 'done':
-        return who, '完成', '✅'
+        return who, _t('aib.warroom.st_done'), '✅'
     # in_progress 不再標心跳:唯一的心跳來源(ACB P-2)已拔,見上方。
-    return who, '進行中', ''
+    return who, _t('aib.warroom.st_working'), ''
 
 depth_path = os.path.join(os.environ['EZ2_COCKPIT_STATE_DIR'], 'view-depth')
 try:
@@ -74,8 +74,9 @@ if items is None:
     print(' ' + _t('aib.warroom.no_outline'))
     items = []
 else:
-    print(f' 戰情室:{os.path.basename(OUTLINE)}    展開 {view}/3')
-    print(' ' + pad('', TREE) + pad('認領', WHO) + pad('板上', ST) + '實況')
+    print(' ' + _t('aib.warroom.header', file=os.path.basename(OUTLINE), view=view))
+    print(' ' + pad('', TREE) + pad(_t('aib.warroom.col_who'), WHO) + pad(_t('aib.warroom.col_board'), ST)
+          + _t('aib.warroom.col_live'))
     print(' ' + '-' * 100)
 
 def parent_of(x):
@@ -102,7 +103,7 @@ for i, it in enumerate(items):
         row = pad(trunc(label, TREE - 1), TREE) + pad('', WHO) + pad(f'{done}/{total}', ST)
         print(' ' + row)
         continue
-    mark = '' if it['approval'] == 'approved' else '(候拍板)'
+    mark = '' if it['approval'] == 'approved' else _t('aib.warroom.awaiting_approval')
     print(' ' + pad(trunc(ind + label + mark, TREE - 1), TREE))
     if it['leaf'] and it['approval'] == 'approved' and view >= it['depth'] + 2:
         t = tasks.get(it['id'])
@@ -115,13 +116,13 @@ active_rulings = [t for t in ruling_tasks if t.get('status') not in
                   {'done', 'cancelled', 'closed', 'abandoned'}]
 if active_rulings:
     print()
-    print(' Ruling work:')
+    print(' ' + _t('aib.warroom.rulings'))
     for task in sorted(active_rulings, key=lambda value: str(value.get('id', ''))):
         print(' * %s %s %s' % (
             task.get('id') or '?', task.get('status') or 'unknown',
             task.get('title') or ''))
 print()
-print(' 板上=任務板宣稱 | 完成打 ✅ | Opt-←→ 切分頁 Opt-↑↓ 切欄')
+print(' ' + _t('aib.warroom.footer'))
 PY
 }
 

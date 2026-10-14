@@ -1973,5 +1973,15 @@
   "aib.captains_ctl.unmeasured": "不明",
   "aib.captains_ctl.status_label": "艦長:",
   "aib.warroom.no_outline": "作戦室:プロジェクトのアウトラインはまだありません。EZ2_OUTLINE に 1 行 1 項目のアウトラインファイル(例:`[1] approved p1 | v1 を出す`、1 階層ごとに 2 スペース字下げ)を設定すると、ここに表示されます。",
-  "aib.warroom.outline_unreadable": "作戦室:アウトラインを読み込めません {path}"
+  "aib.warroom.outline_unreadable": "作戦室:アウトラインを読み込めません {path}",
+  "aib.warroom.st_open": "未着手",
+  "aib.warroom.st_done": "完了",
+  "aib.warroom.st_working": "進行中",
+  "aib.warroom.header": "作戦室:{file}    展開 {view}/3",
+  "aib.warroom.col_who": "担当",
+  "aib.warroom.col_board": "ボード",
+  "aib.warroom.col_live": "実況",
+  "aib.warroom.awaiting_approval": "(承認待ち)",
+  "aib.warroom.rulings": "裁定タスク:",
+  "aib.warroom.footer": "ボード=タスクボードの記載 | 完了は ✅ | Opt-←→ タブ切替  Opt-↑↓ 列切替"
 }
