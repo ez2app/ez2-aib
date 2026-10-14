@@ -1110,13 +1110,13 @@ def run_card_only(args, root: Path) -> int:
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog=os.environ.get("AIB_NEWPROJ_PROG") or None,
-                                 description="新開專案:專案卡 + 憲法候選 + 綁席")
+                                 description=T("aib.newproj.help_desc"))
     ap.add_argument("--seat", default="", help=T("aib.newproj.help_seat"))
-    ap.add_argument("--title", default="", help="專案標題(預設=cwd basename)")
-    ap.add_argument("--cwd", default="", help="用來算倉指紋的工作目錄(預設 pwd)")
-    ap.add_argument("--state-root", default="", help="狀態根(預設 EZ2_AIB_HOME / ~/.ez2-aib)")
-    ap.add_argument("--persona-uid", default="", help="覆寫人格 uid(預設讀延續檔)")
-    ap.add_argument("--dry-run", action="store_true", help="只印結果,不落檔")
+    ap.add_argument("--title", default="", help=T("aib.newproj.help_title"))
+    ap.add_argument("--cwd", default="", help=T("aib.newproj.help_cwd"))
+    ap.add_argument("--state-root", default="", help=T("aib.newproj.help_state_root"))
+    ap.add_argument("--persona-uid", default="", help=T("aib.newproj.help_persona_uid"))
+    ap.add_argument("--dry-run", action="store_true", help=T("aib.newproj.help_dry_run"))
     ap.add_argument("--actor", default="", help=T("aib.newproj.help_actor"))
     ap.add_argument("--project-uid", default="", help=T("aib.newproj.help_project_uid"))
     ap.add_argument("--deliver", action="store_true", help=T("aib.newproj.help_deliver"))
