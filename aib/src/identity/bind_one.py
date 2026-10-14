@@ -1016,7 +1016,7 @@ def main(argv=None):
         rc = 1
     for d in (out.get("reproject") or {}).get("seat_unresolved") or []:
         # K2:綁定寫進去了,但投影把這一席擋下 ⇒ 右欄 / bindme status 不會顯示它;照實說原因與用了哪份契約
-        print("bind-one: ⚠ 綁定已寫入,但這一席在投影裡被擋下(右欄與 bindme status 看不到):%s —— %s(路由契約:%s)"
+        print("bind-one: ⚠ 綁定 / 解綁已寫入,但這一席在投影裡被擋下(右欄與 bindme status 看不到):%s —— %s(路由契約:%s)"
               % (d.get("reason"), d.get("detail"), out["reproject"].get("contract_spec") or "內建"), file=sys.stderr)
         rc = 1
     if fit:   # 排在重投影錯誤後面:右鍵失敗訊息取第一行 bind-one:,不能被這行警告蓋掉
