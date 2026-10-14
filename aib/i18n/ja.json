@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "任命された艦長が 1 人だけか確認できません:{file} のスキーマが違います",
   "aib.captains_ctl.captain_exists": "すでに艦長が任命されています:ウィンドウ {window}、席コード={code};先にその席を --unassign してから新しい席を任命してください",
   "aib.captains_ctl.unmeasured": "不明",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.cards.outside_library": "ナレッジベースのペルソナカード(角色.md){n} 件がロールライブラリ({lib})の外にあり、索引に入っていないため紐付けできません:{paths}。含めるにはそのフォルダを {lib}/ の下へ移してください"
 }

@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "cannot confirm there is only one assigned captain: {file} has the wrong schema",
   "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
   "aib.captains_ctl.unmeasured": "unknown",
-  "aib.captains_ctl.status_label": "Captain:"
+  "aib.captains_ctl.status_label": "Captain:",
+  "aib.cards.outside_library": "{n} persona card(s) (角色.md) in your knowledge base are outside the role library ({lib}) and were not indexed, so they cannot be bound: {paths}. To include one, move its folder under {lib}/"
 }

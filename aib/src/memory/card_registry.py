@@ -404,6 +404,38 @@ def scan(vault_root, library_folder, contract, route_defaults=None):
     return {"cards": cards, "skipped": skipped}
 
 
+OUTSIDE_LIMIT = 50
+
+
+def cards_outside_library(vault_root, library_folder, limit=OUTSIDE_LIMIT):
+    """知識庫裡、角色庫以外的 角色.md(相對知識庫的路徑,排序,最多 limit 筆)+ 總數。
+    10-14(6ddf 走查 K6):scan 只收角色庫那一層,別處的舊卡(例 06-工作區/…/角色.md)安靜地不在索引裡,
+    用戶以為建過的角色怎麼綁不上。不收進來(收哪裡由路由契約定),只列出來讓人知道、知道怎麼搬。
+    略過 . 開頭的資料夾(.obsidian、.git、.trash)與角色庫本身。"""
+    root = Path(vault_root)
+    lib = (root / library_folder).resolve()
+    found = []
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        here = Path(dirpath)
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and (here / d).resolve() != lib)
+        if CARD_FILE in filenames:
+            found.append(str((here / CARD_FILE).relative_to(root)))
+    found.sort()
+    return found[:limit], len(found)
+
+
+def _say_outside(paths, total, library_folder):
+    """stderr 一行(走 aib/i18n 四語;字典讀不到就印鍵名)。"""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cockpit"))
+        from i18n_lib import t
+        text = t("aib.cards.outside_library", {"n": total, "lib": library_folder,
+                                                "paths": ", ".join(paths[:5]) + (" …" if total > 5 else "")})
+    except Exception:
+        text = "aib.cards.outside_library"
+    print("card-registry: " + text, file=sys.stderr)
+
+
 # ---- 落檔 / 收據 ----------------------------------------------------------------
 
 def _digest_bytes(b):
@@ -571,6 +603,12 @@ def main(argv=None):
     }
     summary = {"cards": len(doc["cards"]), "skipped": doc["skipped"],
                "fingerprint": cards_fingerprint(doc), "out": str(out_path)}
+    outside, outside_total = cards_outside_library(vault, library_folder)
+    if outside_total:
+        summary["library_folder"] = str(library_folder)
+        summary["outside_library"] = outside
+        summary["outside_library_count"] = outside_total
+        _say_outside(outside, outside_total, library_folder)
 
     if args.command == "check":
         try:

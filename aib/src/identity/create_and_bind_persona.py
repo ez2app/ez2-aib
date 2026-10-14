@@ -839,6 +839,17 @@ def main():
         log(f"錯誤: card_registry.py scan 失敗 (rc={rc}):\n{err}", prefix="[x]")
         sys.exit(rc)
     log("   -> 卡片索引掃描完成")
+    # K6(10-14):知識庫裡有角色庫以外的 角色.md ⇒ 照實說沒收進索引、怎麼搬(scan 的摘要帶回來)
+    try:
+        summary = json.loads(out) if out.strip().startswith("{") else {}
+    except ValueError:
+        summary = {}
+    if summary.get("outside_library_count"):
+        paths = summary.get("outside_library") or []
+        log(T("aib.cards.outside_library", {"n": summary["outside_library_count"],
+                                            "lib": summary.get("library_folder") or lib_rel,
+                                            "paths": ", ".join(paths[:5]) + (" …" if summary["outside_library_count"] > 5 else "")}),
+            prefix="[!]")
 
     if not bind_target:
         # the maintainer 10-01:沒指定席位 ⇒ 到此為止:卡建好、索引掃好,不綁席、不寫席位記憶、不寄人格包
