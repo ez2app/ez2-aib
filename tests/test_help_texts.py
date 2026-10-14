@@ -48,9 +48,13 @@ class HelpTexts(unittest.TestCase):
                     r = self.aib(loc, "newrole", "--help", COLUMNS=cols)
                     self.assertEqual(r.returncode, 0, r.stderr)
                     lines = r.stdout.splitlines()
-                    for heading in ("## 職責", "## 紅線", "## 知識域"):
-                        self.assertTrue(any(heading in line for line in lines), (heading, r.stdout))
-                    self.assertFalse(any(line.rstrip().endswith("##") for line in lines), r.stdout)
+                    with_marks = [line.strip() for line in lines if "##" in line]
+                    # Exactly three lines carry "##", and each starts with one whole heading.
+                    self.assertEqual(len(with_marks), 3, r.stdout)
+                    for heading, line in zip(("## 職責", "## 紅線", "## 知識域"), with_marks):
+                        self.assertTrue(line == heading or line.startswith(heading + " "), (heading, line))
+                    if loc == "en":   # English wraps at spaces, so nothing should overflow the terminal width
+                        self.assertLessEqual(max(len(line) for line in lines), int(cols), r.stdout)
                     self.assertIsNone(INTERNAL.search(r.stdout), r.stdout)
         en = self.aib("en", "newrole", "--help").stdout
         self.assertIn("Create a persona card", en)

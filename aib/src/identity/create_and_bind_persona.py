@@ -613,13 +613,26 @@ def dm_send_body(address, body, seat_rec):
             pass
 
 
+class _HeadingsKeptFormatter(argparse.HelpFormatter):
+    """縮排的行(epilog 裡那三個標題)原樣保留;其他文字照常依寬度換行。"""
+
+    def _fill_text(self, text, width, indent):
+        out = []
+        for line in text.splitlines():
+            if line.startswith("  "):
+                out.append(indent + line)
+            else:
+                out.append(super()._fill_text(line, width, indent))
+        return "\n".join(out)
+
+
 def main():
-    # 三個必填標題放在 epilog、各佔一行且原樣輸出:argparse 只在空白處斷行,CJK 說明裡唯一的空白就是
+    # 三個必填標題放在 epilog、各佔一行且原樣輸出(_HeadingsKeptFormatter;其餘文字照常換行):argparse 只在空白處斷行,CJK 說明裡唯一的空白就是
     #   「## 職責」中間那格 ⇒ 放在選項說明裡會被斷成兩行,照抄就過不了 lint(10-14 審查抓到)。
     parser = argparse.ArgumentParser(prog=os.environ.get("AIB_NEWROLE_PROG") or None,
                                      description=T("aib.newrole.help_desc"),
                                      epilog=T("aib.newrole.help_epilog"),
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+                                     formatter_class=_HeadingsKeptFormatter)
     parser.add_argument("--name", required=True, help=T("aib.newrole.help_name"))
     parser.add_argument("--code", help=T("aib.newrole.help_code"))
     parser.add_argument("--emoji", default="", help=T("aib.newrole.help_emoji"))
