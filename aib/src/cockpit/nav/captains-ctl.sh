@@ -26,6 +26,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COCKPIT="$(cd "$HERE/.." && pwd)"
+# 報錯訊息走 aib/i18n 四語鍵;字典或 python 出事就印鍵名,報錯本身不能因翻譯失敗而消失。
+_t() { python3 "$COCKPIT/i18n_lib.py" "$@" 2>/dev/null || printf '%s\n' "$1"; }
 # ★ 在 source 之前先記下「哪些是呼叫端**明示**的」。source 完之後兩者一定都有值
 #   (cabin_resolve 會補上推導值),那時就再也分不出「他說的」與「我算的」——
 #   而底下的艙一致性閘要判的正是這個差別。
@@ -61,7 +63,7 @@ if [ "$MODE" = "install" ] && [ "$DRY" != "1" ]; then
     . "$COCKPIT/install-guard.sh"
     aib_refuse_tmp_install captains-ctl.sh "$HERE" || exit $?
   else
-    echo "captains-ctl.sh: 缺陷十九守衛檔缺席($COCKPIT/install-guard.sh);非 dry 安裝一律 fail-closed 拒裝" >&2
+    _t aib.install_guard.missing --param script=captains-ctl.sh --param "path=$COCKPIT/install-guard.sh" >&2
     exit 6
   fi
 fi
@@ -103,7 +105,7 @@ CABIN_WHY=""
 if [ "$(type -t aib_cabin_home 2>/dev/null)" != "function" ]; then
   # 解析器不在=判不出艙,**不猜**。fail-closed 只擋清理,不擋渲染。
   CABIN_OK=0
-  CABIN_WHY="cabin_resolve 不可用,無法確認席位檔與窗清單同艙"
+  CABIN_WHY="$(_t aib.captains_ctl.cabin_resolver_missing)"
 else
   _CABIN_FROM=""
   _CABIN_SRC=""
@@ -122,7 +124,8 @@ else
     _CABIN_EXPECT_HOME="$(aib_cabin_home "$_CABIN_FROM" "$(aib_cabin_state_root)")"
     if [ "$_CABIN_EXPECT_HOME" != "$_PRE_HOME" ]; then
       CABIN_OK=0
-      CABIN_WHY="兩邊都明示且矛盾:$_CABIN_SRC 指艙 $_CABIN_FROM(席位檔應在 $_CABIN_EXPECT_HOME/seats),但 EZ2_AIB_INSTANCE_HOME=$_PRE_HOME"
+      CABIN_WHY="$(_t aib.captains_ctl.cabin_conflict --param "src=$_CABIN_SRC" --param "cabin=$_CABIN_FROM" \
+        --param "expect=$_CABIN_EXPECT_HOME" --param "home=$_PRE_HOME")"
     fi
   fi
 fi
@@ -160,6 +163,16 @@ path, field, action, cockpit = sys.argv[1:5]
 sys.path.insert(0, cockpit)
 import atomic_json
 import seat_address
+
+
+def _t(key, **params):
+    try:
+        import i18n_lib
+        return i18n_lib.t(key, params)
+    except Exception:
+        return key
+
+
 try:
     json.load(open(path, encoding='utf-8'))
 except Exception as err:
@@ -185,21 +198,20 @@ def mutate(rec):
                 with open(other_path, encoding='utf-8') as handle:
                     other = json.load(handle)
             except Exception as err:
-                raise atomic_json.AtomicWriteError(
-                    '無法確認受派艦長唯一性:%s 不可讀(%s)'
-                    % (os.path.basename(other_path), err.__class__.__name__))
+                raise atomic_json.AtomicWriteError(_t(
+                    'aib.captains_ctl.unique_unreadable',
+                    file=os.path.basename(other_path), err=err.__class__.__name__))
             if not isinstance(other, dict) \
                     or other.get('schema') != 'aib-seat/v1':
-                raise atomic_json.AtomicWriteError(
-                    '無法確認受派艦長唯一性:%s schema 不符'
-                    % os.path.basename(other_path))
+                raise atomic_json.AtomicWriteError(_t(
+                    'aib.captains_ctl.unique_schema', file=os.path.basename(other_path)))
             if other.get('captain_assigned') is True:
                 raw_wid = str(other.get('window_id') or '')
-                window = raw_wid[1:] if raw_wid.startswith('@') else '量不到'
-                code = seat_address.code_of(other) or '量不到'
-                raise atomic_json.AtomicWriteError(
-                    '已有受派艦長:窗 %s 正確座位碼=%s;'
-                    '請先明示 --unassign 舊席，再任命新席' % (window, code))
+                unmeasured = _t('aib.captains_ctl.unmeasured')
+                window = raw_wid[1:] if raw_wid.startswith('@') else unmeasured
+                code = seat_address.code_of(other) or unmeasured
+                raise atomic_json.AtomicWriteError(_t(
+                    'aib.captains_ctl.captain_exists', window=window, code=code))
     if action == 'true':
         rec[field] = True
     else:
@@ -491,7 +503,7 @@ EOF3
   # ★ 艙不一致時**一律不刪**,並且出聲(不是靜默跳過:靜默會讓「守衛沒跑」
   #   與「沒有死席」長得一樣)。rc 維持 0——清理是輔助動作,不得擋住渲染。
   if [ "$CABIN_OK" != "1" ]; then
-    echo "captains-ctl: 跨艙,拒絕清理席位檔($CABIN_WHY)" >&2
+    _t aib.captains_ctl.cross_cabin_no_cleanup --param "why=$CABIN_WHY" >&2
   fi
   if [ "$DRY" != "1" ] && [ "$snapshot_ok" = "1" ] && [ "$CABIN_OK" = "1" ] && [ -d "$SEATS_DIR" ]; then
     # 活窗集合=ids 快照(LIVE_IDS),不是 alive 行:role 被整筆拒的窗
@@ -590,8 +602,11 @@ install_status() {
   # 10-10(the maintainer 眼驗令):艦長列與 Claude 輸入框下方那三行(📌 / CTX / 權限列)對齊——
   #   Claude Code 把那三行固定縮 2 格,tmux status 從第 0 欄起畫,所以這裡補 2 格;長度 8 → 10 跟著加。
   #   外層座艙的 status-left(cockpit-full.sh / title-beat.sh)同一條令、同樣補 2 格。
-  run hub_tmux set-option -t aihub status-left '  艦長: '
-  run hub_tmux set-option -t aihub status-left-length 10
+  #   標籤走四語鍵;英文比中文寬,長度照顯示寬度算(全形算 2 格)再留 2 格,不寫死 10。
+  _label="  $(_t aib.captains_ctl.status_label) "
+  _label_w="$(python3 -c 'import sys, unicodedata as u; print(sum(2 if u.east_asian_width(c) in "WF" else 1 for c in sys.argv[1]))' "$_label" 2>/dev/null || echo 8)"
+  run hub_tmux set-option -t aihub status-left "$_label"
+  run hub_tmux set-option -t aihub status-left-length "$((_label_w + 2))"
   run hub_tmux set-option -t aihub status-right ''
     run hub_tmux set-option -w -g window-status-format "$fmt"
   run hub_tmux set-option -w -g window-status-current-format "$cur"

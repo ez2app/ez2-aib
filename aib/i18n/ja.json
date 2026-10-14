@@ -1962,5 +1962,14 @@
   "codex_trust.result.failed": "Codex の信頼の書き込みに失敗し、config.toml を元に戻しました({n} 個未信頼)",
   "codex_trust.result.unreadable": "Codex の config.toml を読めなかったため変更していません",
   "codex_trust.result.untrusted": "Codex に未信頼の AIB フックが {n} 個あります",
-  "codex_trust.result.unsupported": "Codex に未信頼の AIB フックが {n} 個あります:config.toml の書き方をこのツールでは安全に編集できないため変更していません。Codex で /hooks から信頼してください"
+  "codex_trust.result.unsupported": "Codex に未信頼の AIB フックが {n} 個あります:config.toml の書き方をこのツールでは安全に編集できないため変更していません。Codex で /hooks から信頼してください",
+  "aib.install_guard.missing": "{script}: インストールガードファイルがありません({path});dry 以外のインストールはすべて拒否します(fail-closed)",
+  "aib.captains_ctl.cabin_resolver_missing": "cabin_resolve が使えないため、席ファイルとウィンドウ一覧が同じキャビンか確認できません",
+  "aib.captains_ctl.cabin_conflict": "明示された 2 つの指定が矛盾しています:{src} はキャビン {cabin} を指します(席ファイルは {expect}/seats にあるはず)が、EZ2_AIB_INSTANCE_HOME={home} です",
+  "aib.captains_ctl.cross_cabin_no_cleanup": "captains-ctl: キャビンが一致しないため、席ファイルを片付けません({why})",
+  "aib.captains_ctl.unique_unreadable": "任命された艦長が 1 人だけか確認できません:{file} を読めません({err})",
+  "aib.captains_ctl.unique_schema": "任命された艦長が 1 人だけか確認できません:{file} のスキーマが違います",
+  "aib.captains_ctl.captain_exists": "すでに艦長が任命されています:ウィンドウ {window}、席コード={code};先にその席を --unassign してから新しい席を任命してください",
+  "aib.captains_ctl.unmeasured": "不明",
+  "aib.captains_ctl.status_label": "艦長:"
 }

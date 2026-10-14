@@ -1962,5 +1962,14 @@
   "codex_trust.result.failed": "Writing Codex trust failed; config.toml restored ({n} hook(s) not trusted)",
   "codex_trust.result.unreadable": "Could not parse Codex config.toml; left it untouched",
   "codex_trust.result.untrusted": "{n} AIB hook(s) in Codex are not trusted yet",
-  "codex_trust.result.unsupported": "{n} AIB hook(s) in Codex are not trusted: this tool cannot safely edit the way config.toml is written, so it left it untouched; trust them with /hooks in Codex"
+  "codex_trust.result.unsupported": "{n} AIB hook(s) in Codex are not trusted: this tool cannot safely edit the way config.toml is written, so it left it untouched; trust them with /hooks in Codex",
+  "aib.install_guard.missing": "{script}: install guard file is missing ({path}); refusing any non-dry install (fail-closed)",
+  "aib.captains_ctl.cabin_resolver_missing": "cabin_resolve is unavailable, so the seat files and the window list cannot be confirmed to be in the same cabin",
+  "aib.captains_ctl.cabin_conflict": "two explicit sources disagree: {src} points to cabin {cabin} (seat files should be in {expect}/seats), but EZ2_AIB_INSTANCE_HOME={home}",
+  "aib.captains_ctl.cross_cabin_no_cleanup": "captains-ctl: cabin mismatch, not cleaning up seat files ({why})",
+  "aib.captains_ctl.unique_unreadable": "cannot confirm there is only one assigned captain: {file} is unreadable ({err})",
+  "aib.captains_ctl.unique_schema": "cannot confirm there is only one assigned captain: {file} has the wrong schema",
+  "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
+  "aib.captains_ctl.unmeasured": "unknown",
+  "aib.captains_ctl.status_label": "Captain:"
 }

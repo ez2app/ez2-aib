@@ -1962,5 +1962,14 @@
   "codex_trust.result.failed": "寫入 Codex 信任失敗,config.toml 已還原({n} 個沒信任)",
   "codex_trust.result.unreadable": "讀不懂 Codex 的 config.toml,沒有動它",
   "codex_trust.result.untrusted": "Codex 有 {n} 個 AIB 掛點還沒信任",
-  "codex_trust.result.unsupported": "Codex 有 {n} 個 AIB 掛點還沒信任:config.toml 的寫法這支程式改不了,沒有動它;請在 Codex 打 /hooks 信任"
+  "codex_trust.result.unsupported": "Codex 有 {n} 個 AIB 掛點還沒信任:config.toml 的寫法這支程式改不了,沒有動它;請在 Codex 打 /hooks 信任",
+  "aib.install_guard.missing": "{script}: 缺陷十九守衛檔缺席({path});非 dry 安裝一律 fail-closed 拒裝",
+  "aib.captains_ctl.cabin_resolver_missing": "cabin_resolve 不可用,無法確認席位檔與窗清單同艙",
+  "aib.captains_ctl.cabin_conflict": "兩邊都明示且矛盾:{src} 指艙 {cabin}(席位檔應在 {expect}/seats),但 EZ2_AIB_INSTANCE_HOME={home}",
+  "aib.captains_ctl.cross_cabin_no_cleanup": "captains-ctl: 跨艙,拒絕清理席位檔({why})",
+  "aib.captains_ctl.unique_unreadable": "無法確認受派艦長唯一性:{file} 不可讀({err})",
+  "aib.captains_ctl.unique_schema": "無法確認受派艦長唯一性:{file} schema 不符",
+  "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
+  "aib.captains_ctl.unmeasured": "量不到",
+  "aib.captains_ctl.status_label": "艦長:"
 }
