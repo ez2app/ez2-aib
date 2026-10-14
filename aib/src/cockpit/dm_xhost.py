@@ -67,6 +67,12 @@ def decode(token: str) -> Optional[dict]:
 
 
 # ── 寄件機:IP ⇒ ssh 主機 ──
+def _state_root(env: Mapping, home: str) -> str:
+    """狀態根。單獨一支:讀單源(cabin_resolve.sh)名字的函式裡不混讀別的 env,
+    否則 test-cabin-single-source-names 會把 HOME 等一起算進「艙解析路徑要登記的名字」。"""
+    return env.get("EZ2_AIB_STATE_ROOT") or os.path.join(home, ".ez2-aib")
+
+
 def ssh_target(ip: str, env: Optional[Mapping] = None, ssh_config: Optional[str] = None) -> str:
     """順位:~/.ez2-aib/user/dm-hosts.json {"IP": "主機"} > ~/.ssh/config 裡 HostName 等於這個 IP 的 Host 名 > IP 本身。
 
@@ -74,8 +80,7 @@ def ssh_target(ip: str, env: Optional[Mapping] = None, ssh_config: Optional[str]
     (別台帳號不同時,直接 ssh <IP> 會用本機帳號登入而失敗)。"""
     env = os.environ if env is None else env
     home = env.get("HOME") or os.path.expanduser("~")
-    hosts_file = env.get("AIB_DM_XHOST_HOSTS") or os.path.join(
-        env.get("EZ2_AIB_STATE_ROOT") or os.path.join(home, ".ez2-aib"), "user", "dm-hosts.json")
+    hosts_file = env.get("AIB_DM_XHOST_HOSTS") or os.path.join(_state_root(env, home), "user", "dm-hosts.json")
     try:
         with open(hosts_file, encoding="utf-8") as fh:
             m = json.load(fh)
