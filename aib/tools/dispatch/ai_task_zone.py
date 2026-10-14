@@ -1795,10 +1795,36 @@ def render_lines(seat, width, max_lines, now=None, mode="compact", color=None, *
         if isinstance(e, KeyboardInterrupt):
             raise
         return [_clip(T("aib.taskzone.render_failed", {"err": "%s: %s" % (type(e).__name__, e)}), width)]
+    shadow = shadow_explain_line(seat, now)
+    if shadow:
+        lines = [_clip(shadow, width)] + list(lines)
     if len(lines) > max_lines:
         hidden = len(lines) - (max_lines - 1)
         lines = lines[:max_lines - 1] + [_clip(T("aib.taskzone.more_lines", {"n": hidden}), width)]
     return list(lines)
+
+
+SHADOW_LINE_MAX_AGE_S = 3600
+
+
+def shadow_explain_line(seat, now=None):
+    """10-13 the maintainer 20:0x「所有家直接印、寫進右欄一格」:這一席一小時內最近一次的影子續跑說明 ⇒ 任務區最上面一列
+    (<狀態根>/state/shadow-explain/<席>.json,tools/verify/shadow_explain.py 寫的)。沒有 / 讀不到 ⇒ ""。不進節流快取。"""
+    try:
+        root = os.environ.get("EZ2_AIB_STATE_ROOT") or os.path.join(os.path.expanduser("~"), ".ez2-aib")
+        with open(os.path.join(root, "state", "shadow-explain", "%s.json" % seat), encoding="utf-8") as fh:
+            d = json.load(fh)
+        at = float(d.get("at") or 0)
+        now = time.time() if now is None else float(now)
+        if now - at > SHADOW_LINE_MAX_AGE_S:
+            return ""
+        parts = [str(x) for x in (d.get("savings") or [])[1:5]]
+        if not parts:
+            return ""
+        return T("aib.taskzone.shadow_line", {"when": time.strftime("%H:%M", time.localtime(at)),
+                                              "what": " · ".join(parts)})
+    except Exception:  # noqa: BLE001 —— 輔助資訊,讀壞了不得讓頁簽變錯誤列
+        return ""
 
 
 def lamps(seat, now=None, **paths):

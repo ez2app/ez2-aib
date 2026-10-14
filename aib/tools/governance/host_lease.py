@@ -6,6 +6,19 @@
     python3 tools/governance/host_lease.py release --run-id <本次 id>
     python3 tools/governance/host_lease.py renew   --run-id <本次 id> [--ttl 秒]
     python3 tools/governance/host_lease.py status  [--json]
+    python3 tools/governance/host_lease.py queue add    --owner <誰> --what <什麼> --run-id <id> [--pid <pid>] [--notify <艙位碼/席碼>]
+    python3 tools/governance/host_lease.py queue remove --run-id <id>
+    python3 tools/governance/host_lease.py queue list   [--json]
+
+  acquire 另有:--pid <長跑那個殼的 pid>(它死了租約立刻可接管,活著絕不可接管;沒給只看時間)、
+  --exclusive(在量耗時,連小批 aib test 也不准並跑)、--priority(推包用,機器空時不必排名單)。
+
+★ 背景批次腳本的寫法(10-12 踩過:release 只吃 --run-id;acquire 沒給 --pid 會被當成只看時間):
+    rid="batch-$$"
+    python3 tools/governance/host_lease.py acquire --owner <席> --what <批名> --run-id "$rid" --pid $$ || exit
+    trap 'python3 tools/governance/host_lease.py release --run-id "$rid"' EXIT
+  等機器空:迴圈判 `status >/dev/null 2>&1` 的 rc(0 = 空),連續空一段時間再搶,別在推包兩輪之間插隊;
+  發「機器用完了」的訊息前,先跑一次 status 確認真的空了。
 
 ★ 為什麼要有它(09-11/12 兩晚的實例,不是理論):同一台機器同時跑兩份驗證,量到的紅是「機器此刻在跑什麼」,
   不是候選的性質(三次假紅同根)。今晚艦長用 dm 手動排「一次一席」;本檔把那件事機器化——

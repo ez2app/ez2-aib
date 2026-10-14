@@ -146,6 +146,14 @@ def known_code(code):
     return False
 
 
+def claude_clamps_256(env=None):
+    """Claude Code 在 tmux 裡會把 24-bit 色自己降成 256 色(粗算:Claude 橘 #D97757 變 174 偏粉),
+    除非設了 CLAUDE_CODE_TMUX_TRUECOLOR(Claude Code 原始碼:TMUX && level>2 ⇒ level=2)。
+    這時改給色表自己指定的 256 色號(Claude = 173),畫出來才是原廠色(the maintainer 10-14「CTX 狀態列的標誌也改原廠色」)。"""
+    env = os.environ if env is None else env
+    return bool(env.get("TMUX")) and not env.get("CLAUDE_CODE_TMUX_TRUECOLOR")
+
+
 def logo_of(provider):
     """右欄同一個 AI 標誌(Nerd Font 圖示 + 品牌色,render_lib.render_engine_badge icon 態)。
     the maintainer 10-10「最前面要加上對應的 AI logo,比照右方 ai 席的 logo」。字型缺字 / 沒登記 ⇒ ""(不退字母:後面就是模型名)。"""
@@ -160,6 +168,25 @@ def logo_of(provider):
         return R.render_engine_badge(provider, truecolor=True, mode="icon")
     except Exception:          # noqa: BLE001 —— 狀態列每次刷新都跑,畫不出圖就不畫
         return ""
+
+
+def statusline_logo(provider):
+    """Claude Code 狀態列用的標誌:tmux 裡(claude_clamps_256)把 24-bit 色換成色表自己指定的 256 色號;
+    tmux 自己畫的框線不經 Claude Code,照樣用 logo_of 的 24-bit。"""
+    logo = logo_of(provider)
+    if not logo or not claude_clamps_256():
+        return logo
+    try:
+        sys.path.insert(0, os.path.join(HERE, "render"))
+        from render_lib import ENGINE_LETTER_COLORS  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return logo
+    table = {tuple(rgb): c256 for rgb, c256 in (ENGINE_LETTER_COLORS.get(str(provider or "").lower()) or ())}   # 只查這個引擎自己的(同色不同號的引擎不互相蓋)
+
+    def to256(m):
+        c256 = table.get((int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        return "\x1b[38;5;%dm" % c256 if c256 is not None else m.group(0)
+    return re.sub(r"\x1b\[38;2;(\d+);(\d+);(\d+)m", to256, logo)
 
 
 SEP = "\x1f"   # --statusline 欄位分隔:不能用 tab —— bash read 會把連續 tab 併成一個,空的 📌 欄會讓標誌跑到錯的欄
@@ -390,6 +417,42 @@ def now_gate_missing(settings_path=None):
                 script = words[2] if len(words) >= 3 and words[:2] == ["test", "-f"] else ""
                 return bool(script) and not os.path.isfile(script)
     return True
+SHADOW_L2_MARK = {"ok": " 🪞②✓", "missing": " 🪞②✗", "patrol": " 🪞②巡查"}
+
+
+def shadow_layer2(provider, settings_path=None, hook_path=None):
+    """10-13 the maintainer:狀態列顯示這一席有沒有裝上「影子續跑說明」第 2 層(回合結束 hook)。
+    claude ⇒ settings 裡 aib-now-gate 的 Stop 與 PostToolUse(post-tool)都在 ⇒ ok;缺 ⇒ missing。
+    其他家 ⇒ a seat 的回合結束掛點(src/identity/auto_distill_hook.py)有接 ship_report_gate ⇒ ok;沒接 ⇒ patrol(只靠第 3 層巡查)。
+    讀不到 / 不認得 ⇒ None(不顯示,不亂叫)。"""
+    prov = (provider or "").strip().lower()
+    if not prov:
+        return None
+    if prov == "claude":
+        if not os.path.isfile(os.path.join(HERE, "..", "policy", "hooks", "aib-now-gate.py")):
+            return None        # 審查:公開版沒帶這支閘 ⇒ 裝不起來,不顯示(不然永遠 ✗)
+        if now_gate_missing(settings_path):
+            return "missing"
+        path = settings_path or os.path.expanduser("~/.claude/settings.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        for g in ((cfg.get("hooks") or {}).get("PostToolUse") or []) if isinstance(cfg, dict) else []:
+            for h in (g.get("hooks") or []) if isinstance(g, dict) else []:
+                cmd = str((h or {}).get("command") or "") if isinstance(h, dict) else ""
+                if "aib-now-gate.py" in cmd and cmd.rstrip().endswith(" post-tool"):
+                    return "ok"
+        return "missing"
+    try:
+        with open(hook_path or os.path.join(HERE, "..", "identity", "auto_distill_hook.py"), encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError:
+        return None            # 審查:沒有掛點那支檔(還沒上主線 / 公開版)⇒ 不顯示,不讓每一席永遠掛著「巡查」
+    return "ok" if "ship_report_gate" in src else "patrol"
+
+
 STALE_BUSY_S = 30 * 60   # aib now --all:【忙碌中】超過這麼久沒更新 ⇒ 標 ⚠(10-12 a seat;等回應 / 等你決定本來就可能等很久,不標)
 
 
@@ -627,6 +690,10 @@ def apply_borders(*, hubs=None, tmux=None, code_for=None, dry_run=False, out=sys
     return done, unreachable
 
 
+USAGE_LINE = ("aib now: 用法 aib now \"主項目\" 做完幾步/總共幾步,例:aib now \"AIB 停電恢復\" 2/5"
+              "(進度 % 由步數算,不自己填)\n")
+
+
 def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=None, gate_check=None):
     ap = argparse.ArgumentParser(prog="aib now", description="回報這一席現在的主項目與步數(進度 % 由步數算),顯示在 CTX 那一行上面")
     ap.add_argument("item", nargs="?", help="主項目(一句話)")
@@ -657,6 +724,10 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
                     help="掃掉已經不在的席(沒有席位檔、已退席或已收工)留下的 📌 紀錄;每次 aib now 回報也會順手掃")
     ap.add_argument("--beat-age", metavar="席位碼",
                     help="那一席離上次心跳幾秒(Claude 狀態列 / 底框定時跳,跟主項目的更新時間分開);從沒跳過印「沒有心跳」、回 1")
+    # 10-14:負的步數(-1/3)在 Python 3.13 以前會被 argparse 當成不認得的選項而直接結束 ⇒ 先當成步數寫錯,回用法、rc 2
+    if any(re.fullmatch(r"-\d+(?:\.\d+)?/\d+", a or "") for a in (sys.argv[1:] if argv is None else argv)):
+        err.write(USAGE_LINE)
+        return 2
     args = ap.parse_args(argv)
     if args.beat_age:
         got = beat_age(args.beat_age.strip().lstrip("@").lower(), state_root=state_root)
@@ -712,10 +783,17 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
                 if w - visible_width(GATE_MISSING) < 40:
                     mark = GATE_MISSING_SHORT
                 w = max(10, w - visible_width(mark))
+            l2 = shadow_layer2(prov) if (state_root is None if gate_check is None else gate_check) and c else None
+            l2_mark = SHADOW_L2_MARK.get(l2, "")
+            if l2_mark and w:
+                sys.path.insert(0, os.path.join(HERE, "render"))
+                from render_lib import visible_width
+                w = max(10, w - visible_width(l2_mark))
             line = shown_line(c, state_root=state_root, width=w)
             if missing:
                 line += mark
-        out.write(SEP.join([c, line, logo_of(prov) if c else ""]) + "\n")
+            line += l2_mark
+        out.write(SEP.join([c, line, statusline_logo(prov) if c else ""]) + "\n")
         return 0
     if args.seat and not code:
         want = args.seat.strip().lstrip("@").lower()
@@ -747,8 +825,7 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     item = clean_item(args.item)
     steps = parse_steps(args.steps)
     if not item or steps is None:
-        err.write("aib now: 用法 aib now \"主項目\" 做完幾步/總共幾步,例:aib now \"AIB 停電恢復\" 2/5"
-                  "(進度 % 由步數算,不自己填)\n")
+        err.write(USAGE_LINE)
         return 2
     started = None
     if args.started:

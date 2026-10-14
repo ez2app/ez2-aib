@@ -2777,6 +2777,10 @@ def child_env(repo: Path, trace: Path, environ=None):
     if str(NODE_AUDIT) not in _no:      # 10-04:node(含它的子行程,繼承 NODE_OPTIONS)也掛接頭
         environ["NODE_OPTIONS"] = ("%s --require %s" % (_no, NODE_AUDIT)).strip()
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    # 10-14 aib-languages:語系多了設定檔這一層(<狀態根>/locale),而測試沒換 HOME ⇒ 人把機器切成 en,整套斷言中文的測試就紅。
+    #   測試一律在 zh-TW(i18n_lib.DEFAULT_LOCALE,tests/test-aib-lang 釘兩邊相等)下跑;測試自己設了就照它的。
+    #   這一行進環境指紋(env_digest)⇒ 落地那一次沿用全部重跑一輪,之後穩定。
+    environ.setdefault("EZ2_AIB_LOCALE", "zh-TW")
     if "AIB_HOOK_CACHE" not in environ:           # 10-08:掛鉤編譯一次、快取在真正使用者的快取資料夾(測試的 HOME 每支都換)
         _hc = hook_cache_dir()
         if _hc:

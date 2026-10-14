@@ -13,7 +13,8 @@
   dialog_height                只允許 1|3|5|10 ([≡N],預設 1)
   realtime_height              回應顯示區只允許 30|40|50 ([≡N],預設 40)
   input_height                 訊息輸入區只允許 1|3|5|10 ([≡N],預設 5)
-  realtime_open                中帶回應顯示區(預設 True;夹在私訊對話與待審之間)
+  realtime_open                中帶回應顯示區(預設 False;夹在私訊對話與待審之間。
+                               the maintainer 10-13:待審 [≡N] 以前會預設把 [AIB 回應顯示區] [≡40] [−] 長出來,改關)
   input_open                   與 realtime_open 成對(同開同關;存檔時強制同步)
 
 本檔只回答狀態與有效可見性,不畫圓角框(畫在 render / pane 殼)。
@@ -58,8 +59,8 @@ def default_layout():
         "schema": SCHEMA,
         "dialog_open": True,
         "pending_open": True,
-        "realtime_open": True,
-        "input_open": True,
+        "realtime_open": False,
+        "input_open": False,
         "stack_mode": "split",
         "order": "dialog_above",
         "dialog_height": DEFAULT_DIALOG_HEIGHT,
@@ -117,7 +118,7 @@ def load_layout(env=None):
     # 回應顯示 + 訊息輸入成對：以 realtime_open 為準；舊檔缺 input_open 時跟它走
     if "input_open" in raw and "realtime_open" not in raw:
         out["realtime_open"] = bool(raw["input_open"])
-    out["input_open"] = bool(out.get("realtime_open", True))
+    out["input_open"] = bool(out.get("realtime_open", False))
     if raw.get("stack_mode") in STACK_MODES:
         out["stack_mode"] = raw["stack_mode"]
     if raw.get("order") in ORDERS:
@@ -152,7 +153,7 @@ def save_layout(layout, env=None):
         cur["stack_mode"] = "split"
     if cur["order"] not in ORDERS:
         cur["order"] = "dialog_above"
-    cur["input_open"] = bool(cur.get("realtime_open", True))
+    cur["input_open"] = bool(cur.get("realtime_open", False))
     cur["schema"] = SCHEMA
     AJ.write_json(path, cur)
     return cur
@@ -523,7 +524,7 @@ def effective_open(panel, env=None, provider_id=None):
     if panel in ("realtime", "input", "hub_io"):
         if hub_io_force_open(provider_id):
             return True, "non_native_forced"
-        on = bool(lay.get("realtime_open", True))
+        on = bool(lay.get("realtime_open", False))
         return on, ("ok" if on else "user_closed")
     ok, why = entitled(panel, env=env)
     if not ok:

@@ -265,6 +265,19 @@ def sweep_brief(source: str) -> str:
     return "[AIB 專案清查] 這一席專案現在手上的事(照順序;只讀,全文 aib project sweep)\n" + p.stdout.strip()
 
 
+def _spawn_archive_sweep():
+    """背景跑 90 天備存清理(src/memory/memory_archive.py)。這支 hook 的 stdout 會直接進對話 ⇒
+    背景行程輸入輸出全接 /dev/null(spawn_background 自己處理);任何例外都吞掉,開席輸出一字不變。"""
+    try:
+        mem = str(HERE.parent / "memory")
+        if mem not in sys.path:
+            sys.path.append(mem)
+        import memory_archive
+        memory_archive.spawn_background()
+    except Exception:  # noqa: BLE001 —— hook 絕不擋住對話
+        pass
+
+
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] != ["session-start"]:
@@ -294,6 +307,7 @@ def main(argv=None) -> int:
     notice = handoff_notice(source, payload)
     if notice:
         print(("\n" if text else "") + notice, flush=True)
+    _spawn_archive_sweep()           # 記憶整理第 1 包:人格與基因印完之後、同步的清查簡報之前;背景、不印、吞例外
     brief = sweep_brief(source)
     if brief:
         print(("\n" if (text or notice) else "") + brief, flush=True)

@@ -291,8 +291,8 @@ while IFS=$'\t' read -r role prov mode icon requested_model; do
   fi
   echo "aib sits: 開 $role($prov)…"
   # ★ EZ2_TMUX_SESSION 一併帶上:少了它,aib 會把外層 session 算成 `main`
-  #   (instance=main → session acb131),於是 attach/switch 會把操作者的畫面
-  #   切到**另一個艙**。實測付過:我的畫面被切到 acb131,而那個艙的中央格
+  #   (instance=main → session aib-main),於是 attach/switch 會把操作者的畫面
+  #   切到**另一個艙**。實測付過:畫面被切到主艙外殼,而那個艙的中央格
   #   attach 的是 aihub-15,看起來像「面板顯示了別人的艦隊」。
   #   AIB_NO_ATTACH=1 已經擋掉切換動作,這一行是第二道:算對它,而不是
   #   只靠「反正不會用到」。

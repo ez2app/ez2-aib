@@ -444,6 +444,45 @@ EOF_W
 }
 ensure_watch_window
 
+# ---- 選單自動選常駐窗(10-13 a seat,the maintainer「所有的ai只要選單有選項,都應該自動判斷選擇」「五家都要做第一層」;
+#   這是第二層:每 3 秒看本艙各席底部,卡在選單就叫 AI 選;建議 3「每艙開艙自帶一支」)----
+#   與 sys.watch 同三條約束:不標 @aib_lobby、標 @aib_role=sys.menu、冪等(有就留、死了 respawn、沒有才建、不殺窗)。
+#   menu_pick watch 自己 flock 單飛(每艙一把鎖);AIB_MENU_PICK=0 ⇒ 不建。
+MENU_CMD=""
+printf -v MENU_CMD 'exec %s EZ2_AIB_INSTANCE=%q EZ2_AIB_INSTANCE_HOME=%q EZ2_AIHUB_SOCKET=%q EZ2_AIB_ROOT=%q %q %q watch --interval %q' \
+  "$CARRIER_ENV_PREFIX" "$EZ2_AIB_INSTANCE" "$EZ2_AIB_INSTANCE_HOME" "$HUB" \
+  "$EZ2_AIB_ROOT" "$EZ2_PY3" "$C/menu_pick.py" "${EZ2_AIB_MENU_PICK_INTERVAL:-3}"
+ensure_menu_window() {
+  [ "${AIB_MENU_PICK:-1}" = "0" ] && return 0
+  [ -f "$C/menu_pick.py" ] || return 0
+  local ids wid role dead found=""
+  ids="$(hub_tmux list-windows -t aihub -F '#{window_id}' 2>/dev/null)" || return 0
+  while IFS= read -r wid; do
+    [ -n "$wid" ] || continue
+    case "$wid" in @*[!0-9]*|@|[!@]*) continue ;; esac
+    role="$(hub_tmux show-options -wqv -t "$wid" @aib_role 2>/dev/null || true)"
+    [ "$role" = "sys.menu" ] || continue
+    [ -z "$found" ] || continue
+    found="$wid"
+    dead="$(hub_tmux display-message -p -t "$wid" '#{pane_dead}' 2>/dev/null || printf '0')"
+    if [ "$dead" = "1" ]; then
+      hub_tmux respawn-pane -k -t "$wid" "$MENU_CMD" 2>/dev/null || \
+        echo "cockpit-full: menu window respawn failed ($wid)" >&2
+    fi
+  done <<EOF_M
+$ids
+EOF_M
+  if [ -z "$found" ]; then
+    wid="$(hub_tmux new-window -d -t aihub -n menu -P -F '#{window_id}' "$MENU_CMD" 2>/dev/null)" || {
+      echo "cockpit-full: menu window create failed" >&2
+      return 0
+    }
+    hub_tmux set-option -w -t "$wid" @aib_role sys.menu
+    hub_tmux set-option -w -t "$wid" remain-on-exit on
+  fi
+}
+ensure_menu_window
+
 # ---- 截圖小幫手(10-09 the maintainer):AIB 開著時,Mac 任何地方按 Control+Shift+S 截圖 ----
 #   背景跑、不等它、失敗不擋開艙(它第一次要編譯,還可能跳視窗問要不要關輸入法的截圖)。
 #   不是 macOS / AIB_SHOT=0 / 不是真座艙(測試、截幀)時 shot_helper.py 自己略過;

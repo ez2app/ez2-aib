@@ -287,6 +287,7 @@ if [ "${1:-}" = "persona" ]; then
   case "${2:-}" in
     來源|狀態|sources|status)
       shift
+      aib_need "$AIB_SOURCE_ROOT/tools/entitlement/aib-persona-sources" "persona $1"   # 10-13:公開版沒帶 ⇒ 同一套「開發中」
       aib_delegate_subcommand exe "$AIB_SOURCE_ROOT/tools/entitlement/aib-persona-sources" "$@"
       ;;
   esac
@@ -311,6 +312,20 @@ if [ "${1:-}" = "records" ]; then
   shift
   export PYTHONDONTWRITEBYTECODE=1 AIB_RECORDS_PROG="aib records"
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/memory/aib_records.py" "$@"
+fi
+# aib summary write|status -> src/cockpit/aib_summary.py(10-13 a seat 記憶整理第 5 包,the maintainer「總結與交接分開,兩個都做」):
+#   給 the maintainer 的七段總回報;先確認本輪整理過(aib memory tidy)才寫,留總結收據。
+if [ "${1:-}" = "summary" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/aib_summary.py" "$@"
+fi
+# aib menu-pick once|watch|log -> src/cockpit/menu_pick.py(10-13 a seat,the maintainer「把所有選項做出一個自動由AI選擇的功能,
+#   不需人按,未來選單變更也要自動能用」「自動判斷情境需要,危險也可以」):各席底部卡選單 ⇒ 小模型讀、依情境選、按、記帳。
+if [ "${1:-}" = "menu-pick" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/menu_pick.py" "$@"
 fi
 # aib handoff collect|write|status -> src/cockpit/aib_handoff.py(10-01 a seat,the maintainer「85% 或準備 clear 必做三步收尾,全部 AI、不可跳過」):
 #   collect 量機器事實出草稿;write 驗三段後寫席位記憶+第二大腦+交接檔+收據;下一輪開始時沒收據 ⇒ 自動補抓並提醒。
@@ -418,6 +433,14 @@ if [ "${1:-}" = "verify-outside" ]; then
   shift
   aib_need "$AIB_SOURCE_ROOT/tools/outside-verify/request.py" verify-outside
   exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/outside-verify/request.py" "$@"
+fi
+
+# aib boards [--seat <席碼>] [--close] — 這一席的電腦開成 tmux 右邊一格(設計稿 seat-screen §23,the maintainer 10-14 05:0x 核准):
+#   不是 Claude 的席(Codex / Copilot / grok / Gemini)也看得到 今天 / 專案 / 對話 / 圖表 / 自訂;Claude 席照用 /aib-boards 面板
+if [ "${1:-}" = "boards" ]; then
+  shift
+  aib_need "$AIB_SOURCE_ROOT/tools/claude-mods/aib-boards/tui/open.sh" boards
+  exec bash "$AIB_SOURCE_ROOT/tools/claude-mods/aib-boards/tui/open.sh" "$@"
 fi
 
 # aib install — 把 aib 專有 CLI 裝進 ~/.local/bin（grokbot 一鍵開席（sand 已自開席選單退役；舊 Cursor codexbot id 已刪，Desktop 橋用 codexbot））
@@ -674,6 +697,12 @@ if [ "${1:-}" = "now" ]; then
   exec "$T_PY3" "$HERE/seat_now.py" "$@"
 fi
 
+# 10-14 aib-languages:看 / 切整台 AIB 的語言(設定檔,所有每輪重算的畫面跟著換;不碰 tmux 環境)
+if [ "${1:-}" = "lang" ]; then
+  shift
+  exec "$T_PY3" "$HERE/aib_lang.py" "$@"
+fi
+
 # aib room 子命令(the maintainer 2026-10-10):艦長室網頁。aib room = 確定它在跑、開瀏覽器;aib room status;
 # aib room install-boot / uninstall-boot = 開機自動啟動(macOS launchd)。整段委派 captain_room.py。
 if [ "${1:-}" = "room" ]; then
@@ -687,6 +716,7 @@ fi
 # 公開版不帶那支檔 ⇒ aib_delegate_subcommand 會說「還沒裝好」。
 if [ "${1:-}" = "entry-probe" ]; then
   shift
+  aib_need "$HERE/entry_probe.py" entry-probe
   aib_delegate_subcommand py "$HERE/entry_probe.py" "$@"
 fi
 
@@ -697,27 +727,21 @@ if [ "${1:-}" = "cli" ]; then
   exec "$T_PY3" "$HERE/cli_versions.py" "$@"
 fi
 
-# aib major 子命令(2026-09-13 第 102 項,the maintainer 令「大項迴圈寫成程式、變成預設執行方針」):
-# 大綱 §89.15 的七步——現查/計畫/派工/完成閘/收尾/單輪——整段委派 tools/governance/major_loop.py。
-# 預設全是乾跑(只印、只落檔);--send 才送 dm、--execute 才跑 check-fast;發版與記憶回寫仍由人按。
-if [ "${1:-}" = "major" ]; then
+# aib knife(10-13 the maintainer 裁):試刀 —— 在拋棄式副本上落刀、跑測試,證明測試真的會紅;判準沿用 knife-contract.py。
+if [ "${1:-}" = "knife" ]; then
   shift
-  exec "$T_PY3" "$HERE/../../tools/governance/major_loop.py" "$@"
+  aib_need "$HERE/../../tools/dispatch/knife-contract.py" knife   # 判準檔公開版不帶(維護者流程)⇒ 說「開發中」
+  exec "$T_PY3" "$HERE/../../tools/verify/knife.py" "$@"
 fi
 
-# aib ff 子命令(2026-09-11 大綱 §88.2 第 3 條「主樹閘」):只在正本樹、只快轉、只艦長;
-# 席位只交 sha。整段委派 ff_ctl.py;rc 0=快轉 1=不是快轉 2=樹不合法 3=席位非艦長。
-if [ "${1:-}" = "ff" ]; then
-  shift
-  exec "$T_PY3" "$HERE/ff_ctl.py" "$@"
-fi
-
-# aib deliver 子命令(2026-09-11 大綱 §88.2 第 2 條「交件前三步機器化」,共構席 a seat 交 94f01157):
-# 交件前自跑驗證同組母體 + 到達性掃描,紅不准說已交。整段委派 deliver.py;rc 0=可交 1=有紅 2=樹不合法。
-if [ "${1:-}" = "deliver" ]; then
-  shift
-  exec "$T_PY3" "$HERE/deliver.py" "$@"
-fi
+# aib major / ff / deliver(10-13 the maintainer 裁刪,沒有呼叫者、沒有排程、對話紀錄 0 次執行):
+#   major → a seat 組包派工 + aib project sweep;ff → 推包 / 發版推成後自動快轉正本(ship.py sync_canonical);
+#   deliver → aib test --changed(與推包同一套挑法 select_changed)。打舊指令印一行改用什麼,rc 2。
+case "${1:-}" in
+  major|ff|deliver)
+    "$T_PY3" "$HERE/i18n_lib.py" "aib.removed_cmd.$1" >&2
+    exit 2 ;;
+esac
 
 # aib seat_exit 子命令(§88.2 第 7 條,共構席交 7bc9ff9e):record 在開席收尾自動呼叫(見 LAUNCH_CMD),sweep 補漏。
 if [ "${1:-}" = "seat_exit" ]; then
@@ -1040,6 +1064,9 @@ MODE="${POS[1]}"
 ROLE="${POS[2]}"
 
 case " $PROVIDERS " in *" $PROVIDER "*) ;; *) die "$(t aib.err.provider "provider=$PROVIDER")" ;; esac
+# 10-13(盤點「先修」第 1 件):typesafe / openrouterjev 開席要 typesafe_cli.py,公開版不帶(System One)⇒ 開席前就說「開發中」,
+#   不要開到一半才失敗
+case "$PROVIDER" in typesafe|openrouterjev) aib_need "$HERE/typesafe_cli.py" "$PROVIDER" ;; esac
 # Desktop binding is explicit and checked before creating any cockpit window.
 if [ "$PROVIDER" = "codexbot" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
   # CODEXBOT 正名；CODEXAPP／CODEX_THREAD_ID 當別名（右鍵另開 AI 常只帶其一）
@@ -1250,7 +1277,7 @@ if [ "$DRY" = "1" ]; then export AIB_NO_STATE_WRITE=1; fi
 . "$HERE/cockpit-env.sh"
 S="$EZ2_TMUX_SESSION"
 HUB="$EZ2_AIHUB_SOCKET"
-# 10-11 the maintainer(00:34 帶 CODEX_THREAD_ID 的程式在 EZ2_AIB_INSTANCE=main / 裸 aihub 下跑 aib codexbot,開出舊式 main 主艙 acb131):
+# 10-11 the maintainer(00:34 帶 CODEX_THREAD_ID 的程式在 EZ2_AIB_INSTANCE=main / 裸 aihub 下跑 aib codexbot,開出舊式 main 主艙):
 #   aib 不再「新建」main 主艙。只有第四參數寫 main、--instance=main,或 AIB_ALLOW_MAIN_CABIN=1 才准;
 #   從環境(EZ2_AIB_INSTANCE=main、裸 EZ2_AIHUB_SOCKET=aihub)導出的 main,主艙已經在(任一個 tmux 伺服器答有)照舊進,不在就擋。
 aib_refuse_implicit_main_cabin() {

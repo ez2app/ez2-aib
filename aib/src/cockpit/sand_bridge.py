@@ -303,6 +303,47 @@ REPLAY_N = 5   # 開席時把 outbox 最近幾則重放成卡(the maintainer 10-
 REPLAY_FOLDERS = ("inbox", "claimed", "delivered", "outbox")   # 10-09 the maintainer「musebot 沒完成」:它的信在 claimed(收到的)與 delivered(寄出的),outbox 永遠空
 
 
+def _bridge_distill(root, session_uuid, provider_id, body=None):
+    """10-13 a seat(the maintainer「Bot 也要能自動更新」「量不到 % 每 20 輪」):GrokBot / MuseBot 每回一則算一輪,
+    到點放一則 aib-system 信進本席 inbox(跟改名、人格包同一條路),bot 下次收信時替這一席整理記憶。
+    ClaudeBot 在 claudebot_hook 的 Stop 做(那邊量得到用量 %),這裡不算。任何錯 ⇒ 略過。"""
+    if provider_id not in ("grokbot", "musebot"):
+        return None
+    if isinstance(body, dict) and (str(body.get("role") or "") == "user"
+                                   or str(body.get("to") or "human") not in ("human", "cursor", "")):
+        return None                                    # 只算 bot 回真人的(轉貼的真人話、寄給別席的 dm 不算)
+    try:
+        ident = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "identity")
+        if ident not in sys.path:
+            sys.path.append(ident)
+        import auto_distill_hook as adh
+        cabin = (os.environ.get("AIB_BRIDGE_CABIN") or "").strip() or _dm_header.local_cabin()   # 開席器洗掉 EZ2_AIB_INSTANCE
+        text = adh.bot_turn(short_code(session_uuid), cabin)
+        if text:
+            return enqueue(root, "inbox", text, session_uuid, provider_id, "aib-system")
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _bridge_ship(session_uuid, provider_id, body=None):
+    """10-13 a seat 第 2 層影子續跑說明:GrokBot / MuseBot 回真人的那一則畫完 ⇒ 這一席跑過 aib test / 推包還沒回報
+    就回那段,由橋補畫一張系統卡(程式代補,不靠模型抄)並記成已回報。條件跟 _bridge_distill 同。錯 ⇒ ""。"""
+    if provider_id not in ("grokbot", "musebot"):
+        return ""
+    if isinstance(body, dict) and (str(body.get("role") or "") == "user"
+                                   or str(body.get("to") or "human") not in ("human", "cursor", "")):
+        return ""
+    try:
+        ident = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "identity")
+        if ident not in sys.path:
+            sys.path.append(ident)
+        import auto_distill_hook as adh
+        return adh.ship_append(short_code(session_uuid))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def inbox_card_args(body, provider_id: str, human: str):
     """inbox / claimed 一則(寄給本席 bot 的)⇒ 卡片 (kind, label):真人打的 ⇒ 真人卡;aib-system ⇒ 系統卡;別席 dm ⇒ dm 卡(標寄件人)。"""
     frm = str((body or {}).get("from") or "") if isinstance(body, dict) else ""
@@ -1529,9 +1570,14 @@ def main(argv: list[str] | None = None) -> int:
                     if _key == _last_shown["key"] and time.time() - _last_shown["at"] < 5.0:
                         continue   # 重複的那一份不畫(檔還在,信箱/紀錄不動;只是畫面不重複)
                     _last_shown["key"], _last_shown["at"] = _key, time.time()
+                    _bridge_distill(root, session_uuid, args.provider_id, body)
                     # 即時重畫；input 內的編輯緩衝仍由 readline 保留。
                     _kind, _label = outbox_card_args(body, args.provider_id, human_display_name())
                     ui.message(_kind, _label, text, seat=_seat_tail(session_uuid) if _kind == args.provider_id or _kind == "system" else "")
+                    _ship = _bridge_ship(session_uuid, args.provider_id, body)
+                    if _ship:
+                        _sk, _sl = outbox_card_args({"role": "user", "source": "system"}, args.provider_id, "")
+                        ui.message(_sk, _sl, _ship, seat=_seat_tail(session_uuid))
             except Exception:
                 pass
             time.sleep(0.1)

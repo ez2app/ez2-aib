@@ -8,7 +8,7 @@
 #
 # 匯出的對外契約(釘子釘的是這四個值,不是檔名):
 #     EZ2_AIB_INSTANCE       艙號        main | <N>
-#     EZ2_TMUX_SESSION       外層 session acb131 | aib-<N>
+#     EZ2_TMUX_SESSION       外層 session aib-main | aib-<N>
 #     EZ2_AIHUB_SOCKET       內層 socket  aihub | aihub-<N>
 #     EZ2_AIB_INSTANCE_HOME  狀態家       <狀態根> | <狀態根>/instances/<N>
 # 附帶給消費者的述詞(**不要再自己比對 "main"**):
@@ -44,7 +44,7 @@
 # ★ 這個數字與底下五行由 tests/test-cabin-resolution.py 逐字比對:改字面必須同時改測試。
 #   (原本寫「四行」而底下是五行——會腐爛的數字要嘛被機器比對,要嘛不要寫。)
 AIB_CABIN_PRIMARY="main"
-_AIB_CABIN_SESSION_PRIMARY="acb131"
+_AIB_CABIN_SESSION_PRIMARY="aib-main"
 _AIB_CABIN_SESSION_PREFIX="aib-"
 _AIB_CABIN_HUB_PRIMARY="aihub"
 _AIB_CABIN_HUB_PREFIX="aihub-"

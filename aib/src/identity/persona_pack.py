@@ -46,7 +46,7 @@ MAIN_CONFIG = ("identity", "user-main-persona.json")   # {"persona_uid": "..."};
 MEMORY_KEEP = 5
 HEADER = "[AIB 人格包 v1]"
 # 卡片段落的保留優先序:數字小的最後才丟。沒列到的段(含開頭那句定位)排在知識域前面。
-SECTION_KEEP = {"紅線": 0, "職責": 1, "": 2, "語氣與口癖": 3, "知識域": 5}
+SECTION_KEEP = {"紅線": 0, "職責": 1, "": 2, "語氣與口癖": 3, "身分": 3, "寫作規則(12 維)": 4, "知識域": 5}
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n?", re.S)
 # 會改變終端機或貼上行為的控制字元一律拿掉;換行與 tab 保留
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f  ]")
@@ -99,6 +99,31 @@ def sections(body: str) -> list[tuple[str, str]]:
             buf.append(line)
     if "\n".join(buf).strip():
         out.append((name, "\n".join(buf).strip()))
+    return out
+
+
+def card_sections(raw_text: str) -> list[tuple[str, str]]:
+    """卡片段落 → 人格包用的段落(記憶整理第 4 包,DESIGN-memory-tidy-1013 §8.1 ①):
+    「身分」段換成一行(年紀、星座由生日算;全部未設定就整段不印);
+    「寫作規則(12 維)」每維只帶最新一條、去掉〔來源〕尾巴(完整內容留在卡上);沒內容的維度不印。"""
+    if str(HERE) not in sys.path:
+        sys.path.append(str(HERE))
+    try:
+        import persona_card_edit as pce
+    except ImportError:                     # 副本樹只帶了本檔 ⇒ 照舊整段帶
+        return sections(body_of(raw_text))
+    out = []
+    for name, text in sections(body_of(raw_text)):
+        if name == pce.ID_SECTION:
+            line = pce.identity_line(raw_text)
+            if line:
+                out.append((name, "## %s\n%s" % (name, line)))
+        elif name == pce.DIM_SECTION:
+            rules = pce.pack_rules(raw_text)
+            if rules:
+                out.append((name, "## %s\n%s" % (name, "\n".join(rules))))
+        else:
+            out.append((name, text))
     return out
 
 
@@ -357,7 +382,8 @@ def render_pack(session_uuid: str, home: Path, vault: str = "", contract: str = 
     blocks = main_persona_blocks(root) if is_main else []
     read_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     base = base_fingerprint(blocks) if blocks else sha
-    text, parts = assemble(name, uid, sha[:8], sections(body), handoff, memories, route_key, folder, code, max_bytes,
+    text, parts = assemble(name, uid, sha[:8], card_sections(clean(raw.decode("utf-8", "replace"))), handoff, memories,
+                           route_key, folder, code, max_bytes,
                            main_blocks=blocks, read_at=read_at, base8=base[:8])
     return {"status": "ok", "text": text, "code": code, "persona_uid": uid, "persona_sha8": sha[:8],
             "persona_sha": sha, "projection_sha_matches": sha == card.get("persona_sha"),

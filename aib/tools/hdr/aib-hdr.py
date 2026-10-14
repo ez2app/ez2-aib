@@ -477,15 +477,35 @@ def _engine_letter(provider, home=None):
     return None
 
 
+def _label_zone():
+    """標籤是預設的「台北」(沒設 EZ2_TZ_LABEL)⇒ Asia/Taipei;自己設了別的標籤 ⇒ None(照舊用機器時間,不猜它是哪一區)。
+    EZ2_TZ_NAME 可以指定時區名(IANA)。讀不到時區資料 ⇒ None。"""
+    name = os.environ.get("EZ2_TZ_NAME") or ("Asia/Taipei" if "EZ2_TZ_LABEL" not in os.environ else "")
+    if not name:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - 沒有時區資料 ⇒ 退回機器時間
+        return None
+
+
 def gather(now=None, home=None, ctx_dir=None):
     """量所有格子。每一格獨立;任何一格量不到都不影響其他格,也不沿用舊值。"""
     now = now if now is not None else time.time()
     seat_why = {}
     seat = resolve_seat(home=home, why=seat_why)
     f = {}
-    lt = time.localtime(now)
-    f["time"] = time.strftime("%Y-%m-%d %H:%M", lt)
-    f["tz_offset"] = time.strftime("%z", lt)               # 留在收據裡:標籤說謊時查得出來
+    tz = _label_zone()
+    if tz is not None:                                      # 10-14:標「台北」就照台北算,不跟機器時鐘(雲端是 UTC,標頭曾差 8 小時)
+        import datetime
+        dt = datetime.datetime.fromtimestamp(now, tz)
+        f["time"] = dt.strftime("%Y-%m-%d %H:%M")
+        f["tz_offset"] = dt.strftime("%z")
+    else:
+        lt = time.localtime(now)
+        f["time"] = time.strftime("%Y-%m-%d %H:%M", lt)
+        f["tz_offset"] = time.strftime("%z", lt)           # 留在收據裡:標籤說謊時查得出來
     f["tz_label"] = TZ_LABEL                                # the maintainer 指定字面
     # 人格三態:判定條件全在 read_persona 檔頭。
     f["role"] = (seat or {}).get("role") or UNKNOWN

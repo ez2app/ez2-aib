@@ -40,6 +40,23 @@ def split(row):
     return full, wall, aib, par
 
 
+def savings_numbers(row):
+    """推成通知與回報守門用的四個數字(秒;跟 draft 的 G2 同一套 split)。"""
+    full, wall, aib, par = split(row)
+    return {"without_s": full, "actual_s": wall, "aib_s": aib, "par_s": par,
+            "shards": int(row.get("shards") or 1), "less_s": full - wall - par}
+
+
+def savings_lines(T, dur, row):
+    """G2「省多少」那四行,字面跟 draft 的 G2.1~G2.4 標題逐字相同(10-13 a seat:推成自動送給 the maintainer、
+    回報守門要求推的那一席原樣貼出前兩行)。draft 也改用這裡,兩邊不會各寫各的。"""
+    n = savings_numbers(row)
+    return [T("rp_without", {"total": dur(n["without_s"])}),
+            T("rp_actual", {"actual": dur(n["actual_s"]), "n": n["shards"]}),
+            T("rp_aib", {"seconds": dur(n["aib_s"]), "n": n["shards"], "total": dur(n["less_s"])}),
+            T("rp_par", {"seconds": dur(n["par_s"]), "n": n["shards"]})]
+
+
 def at_command(row):
     """回報裡每個數字的查證指令:指到這一輪(10-08 §27.4),不是「aib ship stats」那種只給累計的。"""
     return 'aib ship stats --at "%s"' % taipei(row.get("utc"))
@@ -77,16 +94,16 @@ def draft(T, dur, row, commits, old_reds, unverified):
            # 打勾的那一行一定要帶憑據(report-lint:只有 ✅ 沒有 sha / 數字 ⇒ 硬擋)⇒ 帶第一顆的 sha
            "evidence": T("rp_pushed_ev", {"what": ("%s %s" % (commits[0][0][:9], commits[0][1]) if commits else "-")[:70]}),
            "evidence_command": "git log --oneline origin/main -%d" % max(1, len(commits))}]
-    g2 = [{"id": "G2.1", "title": T("rp_without", {"total": dur(full)}), "status": "done",
+    sv = savings_lines(T, dur, row)
+    g2 = [{"id": "G2.1", "title": sv[0], "status": "done",
            "evidence": T("rp_without_ev", {"n": int(row.get("files_total") or 0) - int(row.get("full_unknown") or 0),
                                            "count": int(row.get("full_unknown") or 0)}), "evidence_command": cmd},
-          {"id": "G2.2", "title": T("rp_actual", {"actual": dur(wall), "n": int(row.get("shards") or 1)}), "status": "done",
+          {"id": "G2.2", "title": sv[1], "status": "done",
            "evidence": src, "evidence_command": cmd},
-          {"id": "G2.3", "title": T("rp_aib", {"seconds": dur(aib), "n": int(row.get("shards") or 1),
-                                               "total": dur(full - wall - par)}), "status": "done",
+          {"id": "G2.3", "title": sv[2], "status": "done",
            "evidence": T("rp_aib_ev", {"total": dur(bf.get("select")), "actual": dur(bf.get("reuse")),
                                        "seconds": dur(bf.get("keyed"))}), "evidence_command": cmd},
-          {"id": "G2.4", "title": T("rp_par", {"seconds": dur(par), "n": int(row.get("shards") or 1)}), "status": "done",
+          {"id": "G2.4", "title": sv[3], "status": "done",
            "evidence": src, "evidence_command": cmd}]
     tracer = (row.get("causes") or {}).get("tracer")
     if tracer:

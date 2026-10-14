@@ -3,7 +3,8 @@
 # aib dm — 異質艦隊 DM CLI(2026-08-14 the maintainer 核准;E2.7 咽喉+v3 引擎接線)
 #
 #   aib dm <目標> [訊息...] [--file F] [--dry-run] [--verify]
-#              [--thread <項號>/<字串>] [--kind order|rule|pipeline|deliver|decide|report|other]
+#              [--thread <項號>/<字串>] [--kind order|rule|pipeline|deliver|decide|report|other|notice]
+#              [--close <原信 q_ id>](10-13 S7-3:這封回信送達後,把自己佇列裡的原信標完成,證據 = 這封的 id)
 #              [--expires <epoch> | --ttl-min <分鐘>]          ← 第 70 項 P3(接口 IFACE-dm-queue-v2 §1/§3)
 #              [--retry-until <秒>] [--retry-every <秒>]       ← 被擋(rc=2)時重試;沒給 --retry-until 則行為與從前逐位元組相同
 #              [--probe-box]                                  ← 只讀對方輸入框,印 box=empty|draft|placeholder|unknown,不貼不送
@@ -237,6 +238,7 @@ _auto_resend() {   # $1=stage(收據的 stage,只給 stderr 用);回來 = 本輪
   local _argv=("$TARGET")
   [ -n "${DM_THREAD:-}" ] && _argv+=(--thread "$DM_THREAD")
   [ -n "${DM_KIND:-}" ] && _argv+=(--kind "$DM_KIND")
+  [ -n "${DM_CLOSE:-}" ] && _argv+=(--close "$DM_CLOSE")
   [ -n "${DM_EXPIRES:-}" ] && _argv+=(--expires "$DM_EXPIRES")
   [ -n "${DM_TTL_MIN:-}" ] && _argv+=(--ttl-min "$DM_TTL_MIN")
   [ "${VERIFY:-0}" = "1" ] && _argv+=(--verify)
@@ -289,6 +291,7 @@ _retry_until_loop() {
   fi
   [ -n "${DM_THREAD:-}" ] && _argv+=(--thread "$DM_THREAD")
   [ -n "${DM_KIND:-}" ] && _argv+=(--kind "$DM_KIND")
+  [ -n "${DM_CLOSE:-}" ] && _argv+=(--close "$DM_CLOSE")
   [ -n "${DM_TTL_MIN:-}" ] && _argv+=(--ttl-min "$DM_TTL_MIN")
   [ -z "${DM_TTL_MIN:-}" ] && [ -n "${DM_EXPIRES:-}" ] && _argv+=(--expires "$DM_EXPIRES")
   [ "${VERIFY:-0}" = "1" ] && _argv+=(--verify)
@@ -567,7 +570,7 @@ emit_json() {  # 機器可讀結果行(seat open 刀 debug 用),不取代人話�
 
 TARGET=""; FILE=""; DRYRUN=0; VERIFY=0; MSG_ARGV=()
 TO_RAW=""; TO_GIVEN=0; RESOLVE_ONLY=0
-DM_THREAD=""; DM_KIND=""; DM_EXPIRES=""; DM_TTL_MIN=""
+DM_THREAD=""; DM_KIND=""; DM_EXPIRES=""; DM_TTL_MIN=""; DM_CLOSE=""
 RETRY_UNTIL=""; RETRY_EVERY=""; RETRY_UNTIL_GIVEN=0
 PROBE_BOX=0; PARK_ON_DRAFT=0
 while [ $# -gt 0 ]; do
@@ -590,6 +593,8 @@ while [ $# -gt 0 ]; do
     --thread=*) DM_THREAD="${1#--thread=}"; shift ;;
     --kind) DM_KIND="${2:-}"; shift 2 ;;
     --kind=*) DM_KIND="${1#--kind=}"; shift ;;
+    --close) DM_CLOSE="${2:-}"; shift 2 ;;
+    --close=*) DM_CLOSE="${1#--close=}"; shift ;;
     --expires) DM_EXPIRES="${2:-}"; shift 2 ;;
     --expires=*) DM_EXPIRES="${1#--expires=}"; shift ;;
     --ttl-min) DM_TTL_MIN="${2:-}"; shift 2 ;;
@@ -722,8 +727,14 @@ if [ -n "$DM_THREAD" ]; then
 fi
 if [ -n "$DM_KIND" ]; then
   case "$DM_KIND" in
-    order|rule|pipeline|deliver|decide|report|other) ;;
-    *) die "--kind 只認 order/rule/pipeline/deliver/decide/report/other(接口 §1):$DM_KIND" 2 ;;
+    order|rule|pipeline|deliver|decide|report|other|notice) ;;
+    *) die "--kind 只認 order/rule/pipeline/deliver/decide/report/other/notice(接口 §1):$DM_KIND" 2 ;;
+  esac
+fi
+if [ -n "$DM_CLOSE" ]; then
+  case "$DM_CLOSE" in
+    q_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "--close 要原信的佇列 id(q_ 加 16 碼):$DM_CLOSE" 2 ;;
   esac
 fi
 if [ -n "$DM_EXPIRES" ] && [ -n "$DM_TTL_MIN" ]; then
@@ -852,6 +863,7 @@ _V2_ARGS=()
 [ -n "$DM_THREAD" ] && _V2_ARGS+=(--thread "$DM_THREAD")
 [ -n "$DM_KIND" ] && _V2_ARGS+=(--kind "$DM_KIND")
 [ -n "$DM_EXPIRES" ] && _V2_ARGS+=(--expires "$DM_EXPIRES")
+[ -n "$DM_CLOSE" ] && _V2_ARGS+=(--closes "$DM_CLOSE")   # S7-3:送達(直送 record / 排隊投遞 settle)時才結原信,由 dm_queue 做
 
 # ── 真人三條件(第 70 項 P3 第三包;OPT §六、§八 4;human_attest.py 檔頭有能力邊界)────────────
 # 08-18 EG.5 第一刀把 human 從兜底拿掉,說「human 要回來必須帶正面憑證,那是第二刀」——這就是第二刀。

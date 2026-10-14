@@ -493,15 +493,61 @@ def on_stop(payload: dict) -> int:
                      _seat_project(found[1].get("code")))
     post_reply(payload, found[0])
     if payload.get("stop_hook_active"):
-        # 已經是被 hook 擋下來續跑的那一輪:不再擋(避免迴圈);之後來的信交給門鈴
+        # 已經是被 hook 擋下來續跑的那一輪:不再擋(避免迴圈);之後來的信交給門鈴。
+        #   影子續跑說明照樣比對一次:這一輪就是叫它貼的那一輪,貼了要記成已回報(審查第 1 條),結果不擋
+        _ship_report(sid, found[1], payload, passive=True)
         return 0
     if not cm.pending_wake(sid):
+        return 2 if _ship_report(sid, found[1], payload) else _auto_distill(sid, found[1])
+    text = _deliver(sid)                               # 等著送的信先送(審查第 9 條),影子續跑提醒排後面
+    if not text:
+        return 2 if _ship_report(sid, found[1], payload) else _auto_distill(sid, found[1])
+    _ship_report(sid, found[1], payload, passive=True)   # 送信這一輪的回覆也比對(貼了要算;審查第二輪)
+    sys.stderr.write(text)
+    log("stop", sid, "delivered-continue", chars=len(text))
+    return 2
+
+
+def _ship_report(sid, rec, payload, passive=False) -> bool:
+    """10-13 a seat 第 2 層影子續跑說明(the maintainer 19:5x「所有 AI 都必要列出」):ClaudeBot 的回覆在 Claude app 裡,
+    程式補不進去 ⇒ 跟 Claude 席同一招:回覆漏了那段 ⇒ rc 2 續一輪叫它原樣貼上(a seat ship_report_gate check)。
+    要有這一輪原文(新版 Claude Code 的 Stop 帶 last_assistant_message);沒有 / 任何錯 ⇒ 放行。"""
+    try:
+        here = Path(__file__).resolve().parent
+        if str(here.parent / "identity") not in sys.path:
+            sys.path.append(str(here.parent / "identity"))
+        import auto_distill_hook as adh
+        reply = adh.reply_of(payload)
+        code = str(rec.get("code") or "")
+        if not reply or not code:
+            return False
+        rc, out = adh.ship_gate(["check", "--seat", code], reply)   # 貼了 ⇒ check 自己記成已回報
+        if passive or rc != 2 or not out or not adh.ship_told_once(code, out):
+            return False                               # 同一段只叫它續跑一次;之後交給第 3 層巡查
+    except Exception:  # noqa: BLE001
+        return False
+    sys.stderr.write(out)
+    log("stop", sid, "ship-report-continue", chars=len(out))
+    return True
+
+
+def _auto_distill(sid, rec) -> int:
+    """10-13 a seat(the maintainer「Bot 也要能自動更新」):綁定的 Claude 對話用量跨 10/30/50/70(量不到就每 20 輪)⇒
+    用同一招(rc 2 續一輪)叫它替這一席整理記憶(src/identity/auto_distill_hook.py bot_turn)。任何錯 ⇒ 放行。"""
+    try:
+        here = Path(__file__).resolve().parent
+        if str(here.parent / "identity") not in sys.path:
+            sys.path.append(str(here.parent / "identity"))
+        import auto_distill_hook as adh
+        import grokbot_mailbox as gm
+        cabin = str(rec.get("cabin") or "") or gm.own_cabin(str(rec.get("session") or ""), status=rec)
+        text = adh.bot_turn(str(rec.get("code") or ""), cabin, gauge_sid=sid)
+    except Exception:  # noqa: BLE001
         return 0
-    text = _deliver(sid)
     if not text:
         return 0
     sys.stderr.write(text)
-    log("stop", sid, "delivered-continue", chars=len(text))
+    log("stop", sid, "auto-distill-continue", chars=len(text))
     return 2
 
 

@@ -27,7 +27,7 @@ export EZ2_COCKPIT_DIR="$COCKPIT_DIR"
 #   可接受的輸入;靜靜替它補一個 $HOME 只會把「哪一次 cwd 不對」藏得更深。
 # ★ 之所以必須擋在**進來的那一刻**:cockpit-full.sh:117 用 `printf '%q'`
 #   把這些值烘進 relaunch 字串,壞值會一路傳染,重啟不會自癒。
-# 上游拒收非絕對值之後換上的毒值標記(見下面 EZ2_ACB_HOME 那段)。
+# 上游拒收非絕對值之後換上的毒值標記。
 # ★ 08-21 艦長讀 diff 時提的問題,實查後補的加固:毒值本身是**絕對路徑**,
 #   所以任何「是不是絕對路徑」的下游守衛都會對它回答「是」。本庫實查:
 #   `os.path.isabs` 七個呼叫點全部取自別的變數,毒值到不了它們(目前沒有洞);
@@ -160,12 +160,12 @@ if [ "${AIB_NO_STATE_WRITE:-0}" != "1" ]; then
   mkdir -p "$EZ2_COCKPIT_STATE_DIR"
 fi
 
-# 沙盒任務板(demo 的 acb-sandbox/tasks;E3.1 才接真 acb 任務板)
+# 沙盒任務板
 export EZ2_TASKS_DIR="${EZ2_TASKS_DIR:-$EZ2_COCKPIT_STATE_DIR/sandbox-tasks}"
 _aib_require_abs EZ2_TASKS_DIR "$EZ2_TASKS_DIR" || { return 2 2>/dev/null || exit 2; }
 
-# 舊目錄 ~/.acb 已關。沒有人另外指定時,指到 AIB 的家,不再指到 ACB。
-export EZ2_ACB_HOME="${EZ2_ACB_HOME:-$HOME/.ez2-aib}"
+# the maintainer 2026-10-13:EZ2_ACB_HOME 別名已撤。繼承到的值清掉。
+unset EZ2_ACB_HOME EZ2_ACB_HOME_REJECTED AIB_REQUIRE_ACB_HOME 2>/dev/null || true
 
 # 艦隊看板正本(share/claude-ui)
 export EZ2_FLEET_BOARD="${EZ2_FLEET_BOARD:-$HOME/.claude/ez2-fleet-board.py}"
@@ -185,14 +185,10 @@ if [ -z "${EZ2_ROUTE_REGISTRY:-}" ]; then
   # 有人把這種 AND 串挪成本檔的最後一句,source 的回傳值就是 1,而 `. file`
   # 在呼叫端是簡單命令,set -e 就會讓呼叫端整支退出。顯式 if 讓這個陷阱
   # 不存在,也比 AND 串好讀。
-  for r in \
-    "$HOME/worktrees/ez2ai-acb-gateway/samples/obsidian/obsidian-route-registry-contract.json" \
-    "$HOME/ez2-ai/samples/obsidian/obsidian-route-registry-contract.json"; do
-    if [ -f "$r" ]; then
-      EZ2_ROUTE_REGISTRY="$r"
-      break
-    fi
-  done
+  r="$HOME/ez2-ai/samples/obsidian/obsidian-route-registry-contract.json"
+  if [ -f "$r" ]; then
+    EZ2_ROUTE_REGISTRY="$r"
+  fi
 fi
 # 10-12 新用戶:vault 預設照 route_register.default_vault(EZ2_VAULT_DIR > EZ2_VAULT_ROOT > ~/Desktop/Obsidian/Ez2 有才算
 #   > ~/.ez2-aib/vault);契約都找不到、vault 又是 aib 自己的預設 ⇒ 用套件附的預設契約(有自己 vault 的照舊不猜)。
@@ -240,52 +236,6 @@ export EZ2_VAULT_DIR   # 已在上面照 default_vault 的規則定好(10-12)
 # 其餘外部路徑一起過同一道閘。★ 只擋 INSTANCE_HOME/STATE_DIR 是不夠的
 # (e5300 08-17 指出):同樣的錯從別的變數進來時,**下游不同、症狀會長得
 # 完全不一樣**,沒有人會聯想到是同一顆病。
-# ★ 08-21 車道 B(a seat 交付):EZ2_ACB_HOME 從「source 時斷言」改為「取值時檢查」。
-#   原本這一行是**連坐閘**——source 本檔的每一支都會 exit 2,包含一個 byte 的
-#   ACB 資料都不讀的右欄(pane-right-ai.sh:14 就是 source 這裡)。排障時會被
-#   誤判成「右欄還依賴 ACB」,而右欄的 ACB 依賴 E2.19 就拆光了。
-#   ★ 保護沒有拿掉,只是移到真的要用它的那一端,而且分三段落地:
-#     ① 非絕對值**不原封往下傳**:相對路徑會在消費端相對 cwd 解析,而 run-shell
-#        的 cwd 是家目錄不是 repo——那會讀到**另一個目錄而且不報錯**。所以改成
-#        一個自我描述的不存在絕對路徑:任何讀取都失敗,錯誤訊息本身寫著原因。
-#        原值保留在 EZ2_ACB_HOME_REJECTED 供診斷(空=沒被拒過)。
-#     ② 真要用它的消費端呼叫 aib_acb_home,在**自己那一端** fail-closed:
-#            ACB="$(aib_acb_home)" || exit 2
-#        非絕對時它一個字元的路徑都不吐,只回 rc=2——拿不到路徑就走不下去。
-#     ③ 需要舊行為(source 當下就擋)的消費端:source 前設 AIB_REQUIRE_ACB_HOME=1。
-#     ★ 給下游的機器可讀述詞是 EZ2_ACB_HOME_REJECTED 非空,**不是**「路徑看起來怪」。
-#       理由:毒值是絕對路徑,`isabs` 對它回答「是」;而它的診斷只在 stderr,
-#       而 pane-bottom-tabs.sh:77 那條路徑帶著 2>/dev/null 會把 stderr 吞掉
-#       (實測:毒值與相對值在那一支的 stdout 逐字相同,都是全零)。
-# ★ E2.1 codex 審「高」(2026-08-22 修):這裡原本無條件 `export EZ2_ACB_HOME_REJECTED=""`
-#   ——第二次 source(或子行程繼承後重載)時,上一輪換進去的拒絕標記是**絕對路徑**,
-#   `/*` 那臂放行,REJECTED 被清空,aib_acb_home 把標記當真路徑印出且 rc=0:
-#   宣稱的 fail-closed 被自己的重載繞過(實測:第一次 rc=2、第二次 rc=0 印標記)。
-#   修法:標記路徑自己就是「曾被拒」的證據,重載時認得它、不洗白;只有真正的
-#   絕對路徑才把 REJECTED 清空。原值若已隨環境繼承就保留,沒繼承到就寫「(繼承到
-#   拒絕標記,原值不詳)」——寧可診斷不精確,不可放行。
-case "$EZ2_ACB_HOME" in
-  "${_AIB_REJECT_MARK_PREFIX}"*)
-    [ -n "${EZ2_ACB_HOME_REJECTED:-}" ] || \
-      export EZ2_ACB_HOME_REJECTED="(inherited reject marker; original value unknown)"
-    ;;
-  /*) export EZ2_ACB_HOME_REJECTED="" ;;
-  *)
-    echo "AIB: EZ2_ACB_HOME 不是絕對路徑,已改為不可用路徑(消費端 fail-closed):$EZ2_ACB_HOME" >&2
-    export EZ2_ACB_HOME_REJECTED="$EZ2_ACB_HOME"
-    export EZ2_ACB_HOME="${_AIB_REJECT_MARK_PREFIX}EZ2_ACB_HOME"
-    ;;
-esac
-if [ "${AIB_REQUIRE_ACB_HOME:-0}" = "1" ] && [ -n "$EZ2_ACB_HOME_REJECTED" ]; then
-  _aib_require_abs EZ2_ACB_HOME "$EZ2_ACB_HOME_REJECTED" || { return 2 2>/dev/null || exit 2; }   # aib-guard: selective(AIB_REQUIRE_ACB_HOME=1)
-fi
-aib_acb_home() {   # 取值即檢查:絕對→印路徑 rc0;曾被拒→診斷到 stderr、不印路徑、rc2
-  if [ -n "${EZ2_ACB_HOME_REJECTED:-}" ]; then
-    echo "AIB path must be absolute: EZ2_ACB_HOME=$EZ2_ACB_HOME_REJECTED" >&2
-    return 2
-  fi
-  printf '%s\n' "$EZ2_ACB_HOME"
-}
 _aib_require_abs EZ2_FLEET_BOARD "$EZ2_FLEET_BOARD" || { return 2 2>/dev/null || exit 2; }
 _aib_require_abs EZ2_CODEX_SESSIONS_ROOT "$EZ2_CODEX_SESSIONS_ROOT" || \
   { return 2 2>/dev/null || exit 2; }

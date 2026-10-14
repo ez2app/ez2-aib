@@ -64,10 +64,14 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 COCKPIT = os.path.normpath(os.path.join(HERE, "..", "..", "cockpit"))
 sys.path.insert(0, COCKPIT)
+sys.path.insert(0, HERE)   # 同資料夾的 ship_report_gate(10-13)
 
 MARKER = "aib-now-gate.py"
-HOOK_TIMEOUT_S = {"SessionStart": 10, "Stop": 10}
-EVENT_MODE = {"SessionStart": "session-start", "Stop": "stop"}
+HOOK_TIMEOUT_S = {"SessionStart": 10, "Stop": 10, "PostToolUse": 10}
+# PostToolUse(10-13 the maintainer 20:0x「如何程式化直接印出來」):Bash 剛跑完 aib test / 推包 ⇒ 用 systemMessage 把影子續跑說明
+#   直接顯示在畫面上(不經 AI;10-13 a seat 在隔離的 claude 2.1.296 實測:畫面出現「⎿ PostToolUse:Bash says: …」)
+EVENT_MODE = {"SessionStart": "session-start", "Stop": "stop", "PostToolUse": "post-tool"}
+EVENT_MATCHER = {"PostToolUse": "Bash"}
 DEFAULT_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 
 
@@ -175,7 +179,17 @@ def _turn_facts(transcript_path, stats=None):
     return tools, since
 
 
+_PROC_CACHE = []
+
+
 def _proc_table():
+    """同一個 hook 行程只跑一次 ps(審查:ship 守門與 now 守門各叫一次 ⇒ 每次 Stop 兩次 ps)。"""
+    if not _PROC_CACHE:
+        _PROC_CACHE.append(_proc_table_raw())
+    return _PROC_CACHE[0]
+
+
+def _proc_table_raw():
     """{pid: (ppid, args)};ps 跑不起來 ⇒ None。一次 ps 全拿,不逐層叫(上溯十幾層也只花一次)。"""
     import subprocess
     try:
@@ -413,9 +427,22 @@ def add_ours(cfg, script=None):
     cfg = strip_ours(cfg)
     hooks = cfg.setdefault("hooks", {})
     for ev, mode in EVENT_MODE.items():
-        hooks.setdefault(ev, []).append({"hooks": [{"type": "command", "command": hook_command(mode, script),
-                                                    "timeout": HOOK_TIMEOUT_S[ev]}]})
+        if mode == "post-tool" and not _supports_post_tool(script):
+            continue                           # 審查:裝的是正本那支,正本還沒有 post-tool ⇒ 每次 Bash 都會跳用法錯誤
+        group = {"hooks": [{"type": "command", "command": hook_command(mode, script), "timeout": HOOK_TIMEOUT_S[ev]}]}
+        if ev in EVENT_MATCHER:
+            group = dict({"matcher": EVENT_MATCHER[ev]}, **group)
+        hooks.setdefault(ev, []).append(group)
     return cfg
+
+
+def _supports_post_tool(script):
+    """要裝進去的那支腳本認不認得 post-tool(版本落差:從工作樹開席時 ensure 寫的是正本路徑)。讀不到 ⇒ 不裝那條。"""
+    try:
+        with open(script or os.path.abspath(__file__), encoding="utf-8") as fh:
+            return '"post-tool"' in fh.read()
+    except OSError:
+        return False
 
 
 def is_installed(cfg, script):
@@ -534,14 +561,35 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = argv[0] if argv else "stop"
     if mode == "stop":
+        payload = _read_payload()
+        # 10-13 the maintainer:推包「省多少」回報守門搭這支的 Stop(已 ensure 在每一席),不另加 settings 條目;壞了照樣 fail-open
         try:
-            block, msg = decide(_read_payload())
+            import ship_report_gate
+            sblock, smsg = ship_report_gate.check(payload, lambda: None if _nested() else self_seat())
+        except Exception as e:  # noqa: BLE001
+            _note("FAILOPEN ship-report-gate:%s" % e)
+            sblock, smsg = False, ""
+        try:
+            block, msg = decide(payload)
         except Exception as e:  # noqa: BLE001 —— 最後一道 fail-open
             _note("FAILOPEN 未預期:%s" % e)
-            return 0
+            block, msg = False, ""
+        # 兩道一起判、一起說(審查:先回 ship 那道的話,續跑那次帶 stop_hook_active,now 那道就被放掉了)
+        if sblock:
+            block, msg = True, (smsg + "\n\n" + msg) if block else smsg
         if block:
             print(msg, file=sys.stderr)
             return 2
+        return 0
+    if mode == "post-tool":
+        try:
+            import ship_report_gate
+            out = ship_report_gate.post_tool(_read_payload(), lambda: None if _nested() else self_seat())
+        except Exception as e:  # noqa: BLE001
+            _note("FAILOPEN post-tool:%s" % e)
+            return 0
+        if out:
+            sys.stdout.write(json.dumps({"systemMessage": out}, ensure_ascii=False) + "\n")
         return 0
     if mode == "session-start":
         try:
