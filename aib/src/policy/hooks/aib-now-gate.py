@@ -562,24 +562,25 @@ def main(argv=None):
     mode = argv[0] if argv else "stop"
     if mode == "stop":
         payload = _read_payload()
-        # 10-13 the maintainer:推包「省多少」回報守門搭這支的 Stop(已 ensure 在每一席),不另加 settings 條目;壞了照樣 fail-open
-        try:
-            import ship_report_gate
-            sblock, smsg = ship_report_gate.check(payload, lambda: None if _nested() else self_seat())
-        except Exception as e:  # noqa: BLE001
-            _note("FAILOPEN ship-report-gate:%s" % e)
-            sblock, smsg = False, ""
         try:
             block, msg = decide(payload)
         except Exception as e:  # noqa: BLE001 —— 最後一道 fail-open
             _note("FAILOPEN 未預期:%s" % e)
             block, msg = False, ""
-        # 兩道一起判、一起說(審查:先回 ship 那道的話,續跑那次帶 stop_hook_active,now 那道就被放掉了)
-        if sblock:
-            block, msg = True, (smsg + "\n\n" + msg) if block else smsg
         if block:
+            # now 那道要擋 ⇒ 這一輪先不動影子續跑說明(rc 2 時 stdout 不會顯示);續跑那一輪 Stop 再顯示
             print(msg, file=sys.stderr)
             return 2
+        # 10-13 the maintainer:推包 / aib test 的影子續跑說明搭這支的 Stop(已 ensure 在每一席),不另加 settings 條目。
+        # 10-14:不再擋、不要 AI 再貼(擋的訊息含整段 + AI 照貼 ⇒ 畫面兩次);hook 自己用 systemMessage 顯示一次。壞了 fail-open。
+        try:
+            import ship_report_gate
+            show = ship_report_gate.stop_show(payload, lambda: None if _nested() else self_seat())
+        except Exception as e:  # noqa: BLE001
+            _note("FAILOPEN ship-report-gate:%s" % e)
+            show = ""
+        if show:
+            sys.stdout.write(json.dumps({"systemMessage": show}, ensure_ascii=False) + "\n")
         return 0
     if mode == "post-tool":
         try:
