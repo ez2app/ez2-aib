@@ -2670,7 +2670,6 @@
   "aib.reinject.revive": "[AIB 석이 방금 부활함] 첫 답변에서 다른 일(다른 석에 답하기 포함)보다 먼저 이것을 하세요:\n이 석의 모든 기억을 다시 요약 — 위에서 되살린 기억, 석 기억(~/.ez2-aib/memory/<석 코드>/context.md), 이 대화의 마지막 인계 — 아래 형식으로, 중학생도 알아들을 쉬운 말로 사용자에게 답하기:\n1. 쉬운 제목: 한 줄, 이 석이 무엇을 하고 있는지.\n2. 쉬운 요약: 약 150자, 지난번에 무엇을 했고 어디까지 했으며 아직 돌거나 사람을 기다리는 것이 무엇인지.\n3. 지금 이어서 할 수 있는 것: 목록, 항목마다 한 문장.\n4. AI 가 권하는 다음 선택지: 2~4개, 추천을 표시하고 마지막에 \"답이 없으면 이걸로 진행합니다\" 라고 쓰기.\n확인하지 않은 것은 \"확인 안 함\" 이라고 쓰고 추측하지 않기.",
   "aib.reinject.sweep_timeout": "[AIB 프로젝트 점검] 이번에는 다 계산하지 못함({seconds}초 초과); 보려면 aib project sweep 실행",
   "aib.reinject.sweep_head": "[AIB 프로젝트 점검] 이 석의 프로젝트가 지금 맡은 일(순서대로; 읽기 전용, 전문은 aib project sweep)",
-  "aib.cockpit.hub_captain_label": "함장:",
   "aib.ship.ext_rebuilt": "확장 {name}({kind} {version})의 파일이 이번에 바뀌었습니다 ⇒ {path} 에 다시 빌드했습니다",
   "aib.ship.ext_same_version": "확장 {name}({kind}) 내용이 바뀌었는데 버전은 아직 {version} 입니다 ⇒ {path} 에 다시 빌드했습니다. 사용자가 구분할 수 있게 spec 의 version 을 올려 주세요",
   "aib.ship.ext_rebuild_failed": "확장 {name} 다시 빌드 실패(푸시 자체는 완료): {why}",
@@ -2767,5 +2766,14 @@
   "aib.ship.preflight_red": "사전 점검 실패(rc={rc}): {what} —— 먼저 고치세요. 대기열에 들어가지 않았고 잠금도 잡지 않았습니다",
   "aib.ship.preflight_skip": "출하 전 빠른 검사를 이번에는 실행하지 못했습니다(rc={rc}: 다른 사람이 머신을 독점 중이거나 모두 건너뜀) — 실패가 아니며, 평소대로 대기열에 들어가고 전체 검사는 그대로 실행합니다",
   "aib.ship.submit_done": "이 머신은 제출 담당입니다(main 에 푸시하지 않음): {sha} 를 {what} 에 제출했습니다. 주 담당이 다음 패키지에 넣습니다",
-  "aib.ship.submit_failed": "제출 실패(브랜치를 GitHub 에 푸시하지 못했습니다): {why}"
+  "aib.ship.submit_failed": "제출 실패(브랜치를 GitHub 에 푸시하지 못했습니다): {why}",
+  "aib.install_guard.missing": "{script}: 설치 가드 파일이 없습니다({path}); dry가 아닌 설치는 모두 거부합니다(fail-closed)",
+  "aib.captains_ctl.cabin_resolver_missing": "cabin_resolve를 사용할 수 없어 좌석 파일과 창 목록이 같은 캐빈인지 확인할 수 없습니다",
+  "aib.captains_ctl.cabin_conflict": "명시된 두 값이 서로 모순됩니다: {src}는 캐빈 {cabin}을(를) 가리키지만(좌석 파일은 {expect}/seats에 있어야 함) EZ2_AIB_INSTANCE_HOME={home}입니다",
+  "aib.captains_ctl.cross_cabin_no_cleanup": "captains-ctl: 캐빈이 일치하지 않아 좌석 파일을 정리하지 않습니다({why})",
+  "aib.captains_ctl.unique_unreadable": "지정된 함장이 한 명뿐인지 확인할 수 없습니다: {file}을(를) 읽을 수 없습니다({err})",
+  "aib.captains_ctl.unique_schema": "지정된 함장이 한 명뿐인지 확인할 수 없습니다: {file}의 스키마가 맞지 않습니다",
+  "aib.captains_ctl.captain_exists": "이미 함장이 지정되어 있습니다: 창 {window}, 좌석 코드={code}; 먼저 그 좌석을 --unassign한 뒤 새 좌석을 지정하세요",
+  "aib.captains_ctl.unmeasured": "알 수 없음",
+  "aib.captains_ctl.status_label": "함장:"
 }

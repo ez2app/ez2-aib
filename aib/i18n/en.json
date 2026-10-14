@@ -2670,7 +2670,6 @@
   "aib.reinject.revive": "[AIB seat just revived] In your first reply, do this before anything else (including answering other seats):\nre-summarise all of this seat's memory — the memory restored above, the seat memory (~/.ez2-aib/memory/<seat code>/context.md), and the last handoff in this conversation — and reply to the user in this format, all in plain words a 15-year-old can follow:\n1. Plain title: one line on what this seat is busy with.\n2. Plain summary: about 150 words on what this seat was doing last time, how far it got, and what is still running or waiting on someone.\n3. What can be continued now: a list, one sentence each.\n4. AI's suggested next options: 2–4 items, mark the recommended one, and end with \"if you don't reply I'll take option ...\".\nWrite \"not checked\" for anything you did not check; do not guess.",
   "aib.reinject.sweep_timeout": "[AIB project sweep] did not finish this time (over {seconds} s); run aib project sweep to see it",
   "aib.reinject.sweep_head": "[AIB project sweep] what this seat's project has on hand now (in order; read-only, full text via aib project sweep)",
-  "aib.cockpit.hub_captain_label": "Captain:",
   "aib.ship.ext_rebuilt": "extension {name} ({kind} {version}) changed in this push ⇒ rebuilt at {path}",
   "aib.ship.ext_same_version": "extension {name} ({kind}) changed but its version is still {version} ⇒ rebuilt at {path}; bump version in its spec so users can tell the new one apart",
   "aib.ship.ext_rebuild_failed": "rebuilding extension {name} failed (the push itself is done): {why}",
@@ -2767,5 +2766,14 @@
   "aib.ship.preflight_red": "pre-ship quick check failed (rc={rc}): {what} — fix these first; nothing was queued and no lock was taken",
   "aib.ship.preflight_skip": "pre-ship quick check could not run this time (rc={rc}: machine held exclusively by someone else, or everything skipped) — not a failure; queuing as usual, the full check still runs",
   "aib.ship.submit_done": "this machine submits instead of pushing main: {sha} was handed in at {what} for the primary to include in its next package",
-  "aib.ship.submit_failed": "submit failed (could not push the branch to GitHub): {why}"
+  "aib.ship.submit_failed": "submit failed (could not push the branch to GitHub): {why}",
+  "aib.install_guard.missing": "{script}: install guard file is missing ({path}); refusing any non-dry install (fail-closed)",
+  "aib.captains_ctl.cabin_resolver_missing": "cabin_resolve is unavailable, so the seat files and the window list cannot be confirmed to be in the same cabin",
+  "aib.captains_ctl.cabin_conflict": "two explicit sources disagree: {src} points to cabin {cabin} (seat files should be in {expect}/seats), but EZ2_AIB_INSTANCE_HOME={home}",
+  "aib.captains_ctl.cross_cabin_no_cleanup": "captains-ctl: cabin mismatch, not cleaning up seat files ({why})",
+  "aib.captains_ctl.unique_unreadable": "cannot confirm there is only one assigned captain: {file} is unreadable ({err})",
+  "aib.captains_ctl.unique_schema": "cannot confirm there is only one assigned captain: {file} has the wrong schema",
+  "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
+  "aib.captains_ctl.unmeasured": "unknown",
+  "aib.captains_ctl.status_label": "Captain:"
 }

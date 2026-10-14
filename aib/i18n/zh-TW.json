@@ -2670,7 +2670,6 @@
   "aib.reinject.revive": "[AIB 席位剛復活] 你的第一則回答,先做這件事,再做別的(包括回應別席的訊息):\n重新總結這一席所有記憶 —— 上面帶回的記憶、席位記憶(~/.ez2-aib/memory/<席碼>/context.md)、這條對話裡最後一次交接 —— 照下面格式回給用戶,全部用國三生聽得懂的白話:\n1. 白話標題:一行,說這一席在忙什麼。\n2. 白話總結:約 150 字,說這一席上一次在做什麼、做到哪裡、有什麼東西還在跑或在等人。\n3. 現在可以接著做的:條列,每項一句。\n4. AI 建議的下一步選項:條列 2~4 個,標出推薦哪一個,最後寫「你不回我就走哪一條」。\n沒查到的寫「沒查到」,不要猜。",
   "aib.reinject.sweep_timeout": "[AIB 專案清查] 這次沒算完(超過 {seconds} 秒);要看就跑 aib project sweep",
   "aib.reinject.sweep_head": "[AIB 專案清查] 這一席專案現在手上的事(照順序;只讀,全文 aib project sweep)",
-  "aib.cockpit.hub_captain_label": "艦長:",
   "aib.ship.ext_rebuilt": "擴充包 {name}({kind} {version})的程式這次改了 ⇒ 已重建到 {path}",
   "aib.ship.ext_same_version": "擴充包 {name}({kind})內容變了但版號還是 {version} ⇒ 已重建到 {path};請把說明檔的 version 加一,不然使用者分不出新舊",
   "aib.ship.ext_rebuild_failed": "擴充包 {name} 重建失敗(推送本身已完成):{why}",
@@ -2767,5 +2766,14 @@
   "aib.ship.preflight_red": "推前預檢紅了(rc={rc}):{what} —— 先修再推,沒有進排隊、沒有佔鎖",
   "aib.ship.preflight_skip": "推前預檢這次沒跑成(rc={rc}:機器被別人獨佔或全被跳過)—— 不算紅,照常進排隊,整套檢查照跑",
   "aib.ship.submit_done": "這台是交件機(不推主線):已把 {sha} 交到 {what},等主推合進下一包",
-  "aib.ship.submit_failed": "交件失敗(推分支到 GitHub 沒成功):{why}"
+  "aib.ship.submit_failed": "交件失敗(推分支到 GitHub 沒成功):{why}",
+  "aib.install_guard.missing": "{script}: 缺陷十九守衛檔缺席({path});非 dry 安裝一律 fail-closed 拒裝",
+  "aib.captains_ctl.cabin_resolver_missing": "cabin_resolve 不可用,無法確認席位檔與窗清單同艙",
+  "aib.captains_ctl.cabin_conflict": "兩邊都明示且矛盾:{src} 指艙 {cabin}(席位檔應在 {expect}/seats),但 EZ2_AIB_INSTANCE_HOME={home}",
+  "aib.captains_ctl.cross_cabin_no_cleanup": "captains-ctl: 跨艙,拒絕清理席位檔({why})",
+  "aib.captains_ctl.unique_unreadable": "無法確認受派艦長唯一性:{file} 不可讀({err})",
+  "aib.captains_ctl.unique_schema": "無法確認受派艦長唯一性:{file} schema 不符",
+  "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
+  "aib.captains_ctl.unmeasured": "量不到",
+  "aib.captains_ctl.status_label": "艦長:"
 }

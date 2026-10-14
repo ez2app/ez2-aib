@@ -2670,7 +2670,6 @@
   "aib.reinject.revive": "[AIB 席が復活した] 最初の返答では、ほかのこと(他の席への返事を含む)より先にこれをやる:\nこの席の記憶をすべて要約し直す —— 上で戻した記憶、席の記憶(~/.ez2-aib/memory/<席コード>/context.md)、この会話の最後の引き継ぎ —— 次の形式で、中学生にも分かる言葉でユーザーに返す:\n1. 平易な題:一行、この席が何をしているか。\n2. 平易な要約:約 150 字、前回何をしていたか、どこまで進んだか、まだ動いている・人を待っているものは何か。\n3. 今すぐ続けられること:箇条書き、各一文。\n4. AI が勧める次の選択肢:2~4 個、推奨を明示し、最後に「返事がなければこれで進めます」と書く。\n調べていないものは「未確認」と書き、推測しない。",
   "aib.reinject.sweep_timeout": "[AIB プロジェクト点検] 今回は計算が終わらなかった({seconds} 秒超);見るなら aib project sweep",
   "aib.reinject.sweep_head": "[AIB プロジェクト点検] この席のプロジェクトが今抱えていること(順番どおり;読むだけ、全文は aib project sweep)",
-  "aib.cockpit.hub_captain_label": "艦長:",
   "aib.ship.ext_rebuilt": "拡張 {name}({kind} {version})のファイルが今回変わりました ⇒ {path} に再ビルドしました",
   "aib.ship.ext_same_version": "拡張 {name}({kind})の内容が変わりましたが版は {version} のままです ⇒ {path} に再ビルド。利用者が新旧を区別できるよう spec の version を上げてください",
   "aib.ship.ext_rebuild_failed": "拡張 {name} の再ビルドに失敗しました(プッシュ自体は完了):{why}",
@@ -2767,5 +2766,14 @@
   "aib.ship.preflight_red": "事前チェック失敗(rc={rc}):{what} —— 先に直してください。キューにも入らず、ロックも取っていません",
   "aib.ship.preflight_skip": "出荷前の簡易チェックは今回実行できませんでした(rc={rc}:他の人がマシンを占有中、またはすべてスキップ)—— 失敗扱いにせず、通常どおり順番待ちに入り、本チェックは実行します",
   "aib.ship.submit_done": "このマシンは提出役です(main にはプッシュしません):{sha} を {what} に提出しました。主担当が次のパッケージに入れます",
-  "aib.ship.submit_failed": "提出失敗(ブランチを GitHub にプッシュできませんでした):{why}"
+  "aib.ship.submit_failed": "提出失敗(ブランチを GitHub にプッシュできませんでした):{why}",
+  "aib.install_guard.missing": "{script}: インストールガードファイルがありません({path});dry 以外のインストールはすべて拒否します(fail-closed)",
+  "aib.captains_ctl.cabin_resolver_missing": "cabin_resolve が使えないため、席ファイルとウィンドウ一覧が同じキャビンか確認できません",
+  "aib.captains_ctl.cabin_conflict": "明示された 2 つの指定が矛盾しています:{src} はキャビン {cabin} を指します(席ファイルは {expect}/seats にあるはず)が、EZ2_AIB_INSTANCE_HOME={home} です",
+  "aib.captains_ctl.cross_cabin_no_cleanup": "captains-ctl: キャビンが一致しないため、席ファイルを片付けません({why})",
+  "aib.captains_ctl.unique_unreadable": "任命された艦長が 1 人だけか確認できません:{file} を読めません({err})",
+  "aib.captains_ctl.unique_schema": "任命された艦長が 1 人だけか確認できません:{file} のスキーマが違います",
+  "aib.captains_ctl.captain_exists": "すでに艦長が任命されています:ウィンドウ {window}、席コード={code};先にその席を --unassign してから新しい席を任命してください",
+  "aib.captains_ctl.unmeasured": "不明",
+  "aib.captains_ctl.status_label": "艦長:"
 }
