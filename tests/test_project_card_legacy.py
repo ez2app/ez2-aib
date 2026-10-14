@@ -74,6 +74,11 @@ class ProjectCardLegacy(unittest.TestCase):
         msg = self.np._uid_refusal(self.root, UID)
         self.assertIn("no project card with this uid", msg)
 
+    def test_malformed_uid_is_not_called_an_existing_card(self):
+        msg = self.np._uid_refusal(self.root, "../../etc")
+        self.assertIn("no project card with this uid", msg)
+        self.assertNotIn("exists", msg)
+
 
 if __name__ == "__main__":
     unittest.main()

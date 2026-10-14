@@ -593,6 +593,10 @@ def card_problem(state_root: Path, project_uid: str) -> str:
 
 def _uid_refusal(state_root: Path, project_uid: str) -> str:
     """--project-uid 用不了時說哪一種:卡不在,或卡在但哪裡不合(10-14 走查 K1:以前兩種同一句)。"""
+    try:
+        PC.validate_project_uid(project_uid)
+    except PC.ProjectCardError:
+        return T("aib.newproj.uid_unknown", {"uid": project_uid})   # 形狀不對 = 不會有這張卡,不說「卡在」
     why = card_problem(state_root, project_uid)
     if not why:
         return T("aib.newproj.uid_unknown", {"uid": project_uid})
