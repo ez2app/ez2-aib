@@ -44,7 +44,7 @@ TAIPEI = timezone(timedelta(hours=8))
 
 
 def T(key, params=None):
-    return i18n_lib.t(key, params, locale=os.environ.get("EZ2_AIB_LOCALE", "zh-TW"))
+    return i18n_lib.t(key, params, locale=i18n_lib.resolve_locale())
 
 
 def _home(home=None):

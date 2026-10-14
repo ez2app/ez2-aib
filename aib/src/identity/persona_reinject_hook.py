@@ -31,7 +31,27 @@ sys.path.insert(0, str(HERE))
 if str(HERE.parent / "cockpit") not in sys.path:
     sys.path.append(str(HERE.parent / "cockpit"))      # seats_dir_lib:席位目錄與狀態根的單源;ez2_genes:基因開關
 
-SOURCE_WORD = {"compact": "壓縮", "clear": "清除", "resume": "接回", "startup": "開啟"}
+SOURCES = ("compact", "clear", "resume", "startup")
+_TR = {}
+
+
+def T(key, **params):
+    """補回時給 AI 看的開頭句走 aib.reinject.* 四語鍵(語系盤查第 17 條,10-14);每次照 i18n_lib.resolve_locale() 取,
+    讀不到印鍵名。"""
+    try:
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
+
+def source_word(source: str) -> str:
+    """compact / clear / resume / startup 的白話(壓縮 / 清除 / 接回 / 開啟);不認得的原樣。"""
+    return T("aib.reinject.src." + source) if source in SOURCES else source
 
 
 def aib_home() -> Path:
@@ -116,7 +136,7 @@ def _with_genes(text: str, source: str) -> str:
         return text
     if not block or ez2_genes.has_genes(text):      # review r4 m5:與 with_genes / seat_load 同一個判準
         return text
-    head = "[AIB 對話剛被%s,自動補回 AIB 基因;照它做事,和開席鐵則或 the maintainer 當次指令衝突時以後者為準]" % SOURCE_WORD.get(source, source)
+    head = T("aib.reinject.genes_head", verb=source_word(source))
     return head + "\n" + block + ("\n\n" + text if text else "")
 
 
@@ -135,9 +155,8 @@ def _persona_text_raw(uuid: str, source: str) -> str:
     pack = persona_pack.render_pack(uuid, aib_home())
     if pack.get("status") != "ok" or not pack.get("text"):
         mem = _memory_brief(uuid)             # 沒綁人格也要把記憶帶回來
-        return ("[AIB 對話剛被%s,自動補回這一席的記憶]%s" % (SOURCE_WORD.get(source, source), mem)) if mem else ""
-    text = ("[AIB 對話剛被%s,自動補回這一席綁定的人格包;照它做事,和開席鐵則或 the maintainer 當次指令衝突時以後者為準]\n%s"
-            % (SOURCE_WORD.get(source, source), pack["text"]))
+        return (T("aib.reinject.memory_head", verb=source_word(source)) + mem) if mem else ""
+    text = T("aib.reinject.pack_head", verb=source_word(source)) + "\n" + pack["text"]
     return text + _memory_brief(uuid)
 
 
@@ -190,13 +209,9 @@ def handoff_notice(source: str, payload: dict) -> str:
 # 10-10 the maintainer「席位恢復的第一件事是,重新總結所有記憶,並用白話標題,加白話總結 150 字,告訴用戶這席上一次在做什麼,
 #   現在可以接著做的有那些?AI 建議的下一步選項有那些?」:只認 AIB 原地復活(aib 開席時 export 的
 #   AIB_RESUME_SESSION_UUID 等於這一席的 session_uuid)。席內自己打 /resume 接別的對話、或環境裡殘留別席的 uuid ⇒ 不印。
-REVIVE_ASK = """[AIB 席位剛復活] 你的第一則回答,先做這件事,再做別的(包括回應別席的訊息):
-重新總結這一席所有記憶 —— 上面帶回的記憶、席位記憶(~/.ez2-aib/memory/<席碼>/context.md)、這條對話裡最後一次交接 —— 照下面格式回給用戶,全部用國三生聽得懂的白話:
-1. 白話標題:一行,說這一席在忙什麼。
-2. 白話總結:約 150 字,說這一席上一次在做什麼、做到哪裡、有什麼東西還在跑或在等人。
-3. 現在可以接著做的:條列,每項一句。
-4. AI 建議的下一步選項:條列 2~4 個,標出推薦哪一個,最後寫「你不回我就走哪一條」。
-沒查到的寫「沒查到」,不要猜。"""
+def revive_ask() -> str:
+    """復活提示(四語鍵 aib.reinject.revive;內容照 the maintainer 10-10 那段)。"""
+    return T("aib.reinject.revive")
 
 
 def revive_text(source: str) -> str:
@@ -206,7 +221,7 @@ def revive_text(source: str) -> str:
     uuid = seat_session_uuid()
     if not want or not uuid or want != uuid:
         return ""
-    return _with_genes(_persona_text(uuid, source), source) + "\n\n" + REVIVE_ASK
+    return _with_genes(_persona_text(uuid, source), source) + "\n\n" + revive_ask()
 
 
 # 10-12 專案清查(docs/DESIGN-project-sweep-1012.md §3 第一版):開工 / 清對話 / 復活時附這一席專案的清查表前 10 筆。
@@ -257,12 +272,12 @@ def sweep_brief(source: str) -> str:
         p = subprocess.run([sys.executable, str(tool), "--brief", "--limit", "10"], capture_output=True, text=True,
                            timeout=SWEEP_BRIEF_TIMEOUT_S, stdin=subprocess.DEVNULL, env=dict(os.environ, AIB_SEAT_CODE=code))
     except subprocess.TimeoutExpired:
-        return "[AIB 專案清查] 這次沒算完(超過 %d 秒);要看就跑 aib project sweep" % SWEEP_BRIEF_TIMEOUT_S
+        return T("aib.reinject.sweep_timeout", seconds=SWEEP_BRIEF_TIMEOUT_S)
     except Exception:  # noqa: BLE001 —— hook 絕不擋住對話
         return ""
     if p.returncode != 0 or not p.stdout.strip():
         return ""
-    return "[AIB 專案清查] 這一席專案現在手上的事(照順序;只讀,全文 aib project sweep)\n" + p.stdout.strip()
+    return T("aib.reinject.sweep_head") + "\n" + p.stdout.strip()
 
 
 def _spawn_archive_sweep():

@@ -61,7 +61,7 @@ import shadow_gate     # noqa: E402  check
 import i18n_lib        # noqa: E402  (runner put src/cockpit on sys.path)
 from slow_warn import SLOW_RATIO, SLOW_MIN_EXTRA_S, slow_threshold  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 # Switches that used to turn shadow resume off.  They are read only to say "this no longer turns it off".
 ROW_SOURCE = "aib-test"
 RETIRED_SWITCHES = (("AIB_SEAT_TEST_REUSE", "0"), ("AIB_WITNESS_SHADOW", "0"))
@@ -272,7 +272,8 @@ def summary_extra(vs, tests, top=20):
     """只給 GitHub 執行摘要頁的幾行(終端不印):計費分鐘(GitHub 每個工作進位到整分鐘,這裡只算測試那段)、
     給不認識 aib 的貢獻者看的「沿用是什麼意思」、這次實跑的是哪幾支。"""
     import math
-    out = [T("vs_billed", {"total": int(math.ceil(vs["without_s"] / 60.0)), "actual": int(math.ceil(vs["with_s"] / 60.0))}),
+    out = [T("vs_billed", {"total": int(math.ceil(vs["without_s"] / 60.0)),
+                           "actual": int(math.ceil(vs.get("wall_s", vs["with_s"]) / 60.0))}),
            T("vs_meaning")]
     ran = [r["name"] for r in tests if not r.get("reused") and not r.get("unverified")]
     if ran:
@@ -281,13 +282,16 @@ def summary_extra(vs, tests, top=20):
     return out
 
 
-def versus(tests, wall_s):
+def versus(tests, wall_s, lease_wait_s=0, mem_wait_s=0):
     """10-07 the maintainer:讓用戶看到「沒有 aib → 有 aib」省了多少。沒有 aib = 每支實跑秒數相加(這一輪實跑的用這一輪的、
     沿用的用它被沿用那一列的實跑秒數;都是 aib 底下量的,含追蹤的額外時間);有 aib = 這一輪實際牆鐘。
-    沿用的沒有秒數 ⇒ 不算進「沒有 aib」(只會少算,不會多算),另回支數。沒驗的不算。"""
-    without, unknown, ran, reused = 0.0, 0, 0, 0
+    沿用的沒有秒數 ⇒ 不算進「沒有 aib」(只會少算,不會多算),另回支數。沒驗的不算(支數另回 unverified)。
+    10-14(a seat 派):with_s = 牆鐘扣掉排隊等機器與等記憶體(那段沒在跑測試,算進去看起來像 aib 變慢);
+    含等待的牆鐘另回 wall_s。"""
+    without, unknown, ran, reused, unverified = 0.0, 0, 0, 0, 0
     for r in tests:
         if r.get("unverified"):
+            unverified += 1
             continue
         if r.get("reused"):
             reused += 1
@@ -300,8 +304,12 @@ def versus(tests, wall_s):
         else:
             unknown += int(bool(r.get("reused")))
     wall = max(0.0, float(wall_s or 0))
-    return {"without_s": round(without, 1), "with_s": round(wall, 1), "saved_s": round(max(0.0, without - wall), 1),
-            "ran": ran, "reused": reused, "unknown": unknown}
+    # 不到 1 秒的等待不印也不扣(跟 ⏳ 那行同一個門檻,印的跟算的一致)
+    lw, mw = (w if w >= 1 else 0.0 for w in (max(0.0, float(lease_wait_s or 0)), max(0.0, float(mem_wait_s or 0))))
+    run = max(0.0, wall - lw - mw)
+    return {"without_s": round(without, 1), "with_s": round(run, 1), "saved_s": round(max(0.0, without - run), 1),
+            "wall_s": round(wall, 1), "lease_wait_s": round(lw, 1), "mem_wait_s": round(mw, 1),
+            "ran": ran, "reused": reused, "unknown": unknown, "unverified": unverified}
 
 
 def _test_stats_path():
@@ -310,7 +318,8 @@ def _test_stats_path():
 
 
 def record_versus(repo, vs, path=None):
-    """這一輪記一行(累計用);寫不進去不影響這一輪。回這個專案在這一行之前的紀錄(由舊到新)。"""
+    """這一輪記一行(累計用);寫不進去不影響這一輪。回這個專案在這一行之前的紀錄(由舊到新)。
+    ★ 10-14 起 with_s 扣掉排隊等機器 / 等記憶體(含等待的另記 wall_s);之前的列 with_s 含等待 ⇒ 📈 累計的「實際」只會偏高。"""
     path = Path(path) if path else _test_stats_path()
     rid = reuse_index.repo_identity(str(repo)) or ""
     before = []
@@ -343,30 +352,56 @@ def dur_text(seconds):
     return i18n_lib.t("aib.pushgate.unit_h", {"n": ("%.1f" % (s / 3600)).rstrip("0").rstrip(".")}, locale=LOC)
 
 
-def versus_lines(vs, before):
-    """跑完印的那幾行(純函式,好測):沒有 aib 要等多久 → 有 aib 實際多久、少等多少,再加從第一次到現在的累計。"""
+def versus_lines(vs, before, who=None, causes=None, required=None):
+    """跑完印的 🧮 樹狀(純函式,好測)。10-14 v2(the maintainer 看過的示意 ~/.ez2-aib/pending/MOCK-shadow-explain-v2-8f366-1014.md):
+    頂行寫誰跑的、哪棵樹;⚡ 是含等待的牆鐘,底下拆排隊等機器 / 等記憶體 / 真正在跑;🔁 母體單一(整支跳過的另註明不算);
+    📊 扣掉排隊再比,沒省到就寫多花多少(那是 aib 追蹤讀檔的額外負擔)。
+    who = 「@席碼 · ~/樹」(認不出 ⇒ None,頂行不寫);causes = 已翻好的重跑原因(最多前三);
+    required 給清單 ⇒ 把回報裡必須原樣出現的行(🐢 ⚡ ▶ 📊 ⇒)放進去(守門用)。"""
     if vs["without_s"] <= 0:
         return []
+    req = required if required is not None else []
     # 版面同回報的樹(aib-report):第一項 ╭▸、中間 ├▸、最後 ╰▸、子項掛在 │ 底下;每行一個圖示(the maintainer 10-07:要曲線與圖示)
-    out = [T("vs_head"), T("vs_without", {"total": dur_text(vs["without_s"]), "count": vs["ran"] + vs["reused"]})]
+    out = [T("vs_head_who", {"who": who}) if who else T("vs_head")]
+    out.append(T("vs_without", {"total": dur_text(vs["without_s"]), "count": vs["ran"] + vs["reused"]}))
+    req.append(out[-1])
     if vs["unknown"]:
         out.append(T("vs_unknown", {"count": vs["unknown"]}))
-    if vs["with_s"] > vs["without_s"]:      # the maintainer 10-07:沒省到就只呈現時間與描述,不印「少等 0 秒」、不寫「多花」
-        first = not before and not vs["reused"]
-        out.append(T("vs_first" if first else "vs_plain", {"actual": dur_text(vs["with_s"])}))
-    else:
-        pct = 100.0 * vs["saved_s"] / vs["without_s"]
-        out.append(T("vs_with", {"actual": dur_text(vs["with_s"]), "seconds": dur_text(vs["saved_s"]), "pct": "%.0f" % pct}))
+    wall = vs.get("wall_s", vs["with_s"])
+    out.append(T("vs_actual", {"actual": dur_text(wall)}))
+    req.append(out[-1])
+    waits = [(k, vs.get(f) or 0) for k, f in (("vs_wait_lease", "lease_wait_s"), ("vs_wait_mem", "mem_wait_s"))
+             if (vs.get(f) or 0) >= 1]
+    for k, w in waits:      # 10-14:排隊的時間沒在跑測試,拆開寫,下面 📊 扣掉再比
+        ahead = vs.get("lease_ahead") if k == "vs_wait_lease" else None
+        out.append(T(k + ("_ahead" if ahead else ""), {"t": dur_text(w), "ahead": ahead}))
+    if waits:
+        out.append(T("vs_run", {"t": dur_text(vs["with_s"])}))
+        req.append(out[-1])
     last = before[-1] if before else {}
     if vs.get("tracer") and last.get("tracer") and last["tracer"] != vs["tracer"] and not vs["reused"]:
         # aib 換版(追蹤器程式不同)⇒ 舊紀錄全部作廢、這一輪全部實跑;不說的話用戶只看到「這次怎麼沒省」
         out.append(T("vs_aib_changed"))
-    out.append(T("vs_split", {"count": vs["reused"], "n": vs["ran"]}))
+    split = {"count": vs["reused"], "n": vs["ran"], "total": vs["reused"] + vs["ran"], "u": vs.get("unverified") or 0}
+    out.append(T("vs_split_unverified" if split["u"] else "vs_split", split))   # 母體單一:整支跳過的另註明不算
+    if causes:
+        out.append(T("vs_causes", {"what": T("vs_wait_sep").join(causes[:3])}))
     rows = [r for r in before if isinstance(r.get("without_s"), (int, float))] + [vs]
     tot = sum(float(r["without_s"]) for r in rows)
     act = sum(float(r.get("with_s") or 0) for r in rows)
     out.append(T("vs_total" if tot >= act else "vs_total_plain", {"n": len(rows), "total": dur_text(tot), "actual": dur_text(act),
                                                                   "seconds": dur_text(max(0.0, tot - act))}))
+    out.append(T("vs_compare_waited" if waits else "vs_compare",
+                 {"without": dur_text(vs["without_s"]), "actual": dur_text(vs["with_s"])}))
+    req.append(out[-1])
+    if not before and not vs["reused"]:
+        out.append(T("vs_first"))
+    elif vs["with_s"] > vs["without_s"]:      # the maintainer 10-07:沒省到只講沒省到,不寫「多花」(a seat 10-14 裁:照舊)
+        out.append(T("vs_nosave"))
+    else:
+        pct = 100.0 * vs["saved_s"] / vs["without_s"]
+        out.append(T("vs_saved", {"seconds": dur_text(vs["saved_s"]), "pct": "%.0f" % pct}))
+    req.append(out[-1])
     return out
 
 
@@ -378,13 +413,58 @@ def rerun_causes(tests, top=3):
     return ["%s(%d)" % (_why_text(code), n) for code, n in c.most_common(top)]
 
 
-def shadow_explain_emit(vs, tests, fresh=False):
+_LAST_ADVICE = {}
+
+
+def _who(repo):
+    """🧮 頂行:「@席碼 · ~/樹」;認不出席 ⇒ 只寫樹。"""
+    try:
+        import shadow_explain
+        seat = shadow_explain._seat()
+    except Exception:  # noqa: BLE001
+        seat = None
+    tree = str(repo)
+    home = str(Path.home())
+    if tree == home or tree.startswith(home + os.sep):
+        tree = "~" + tree[len(home):]
+    return ("@%s · %s" % (seat, tree)) if seat else tree
+
+
+def _prev_actions():
+    """這一席上一輪留下的 💡 建議(next_actions);讀不到 ⇒ []。"""
+    try:
+        import shadow_explain
+        d = shadow_explain.load()
+        return [x for x in (d or {}).get("next_actions") or [] if isinstance(x, dict)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _advice(tests, lease, a, prev_actions):
+    """📋 上一輪建議逐條判 + 💡 這一輪的建議(v2.1)。壞了只印一行原因,不影響結果。"""
+    try:
+        import shadow_advice
+        flag = "--strict" if a.strict else "--fresh" if a.fresh else ("AIB_TEST_NO_REUSE=1" if _no_reuse_env() else None)
+        ctx = {"lease_wait_s": lease.get("waited") or 0, "lease_why": lease.get("why"), "ahead": lease.get("ahead"),
+               "tests": tests, "no_reuse": flag}
+        acts = shadow_advice.build(ctx, dur_text)
+        _LAST_ADVICE["acts"] = acts
+        return shadow_advice.judge_lines(shadow_advice.judge(prev_actions, ctx, dur_text)) + shadow_advice.advice_lines(acts)
+    except Exception as e:  # noqa: BLE001
+        return ["shadow-advice: %s: %s" % (type(e).__name__, e)]
+
+
+def shadow_explain_emit(vs, tests, fresh=False, tree=None, required=None, next_actions=None):
     """the maintainer 10-13 19:4x:「如果開影子續跑,一定要列出說明」—— 收尾一定印、一定記(tools/verify/shadow_explain.py)。
     推前檢查的分片(--resume)不走這裡,由 pushgate 自己印整輪的那一段。"""
     try:
         import shadow_explain
         shadow_explain.emit("aib test", dur_text, reused=vs["reused"], skipped=0, ran=vs["ran"],
-                            without_s=vs["without_s"], actual_s=vs["with_s"], causes=rerun_causes(tests), fresh=fresh)
+                            without_s=vs["without_s"], actual_s=vs.get("wall_s", vs["with_s"]),
+                            lease_wait_s=vs.get("lease_wait_s") or 0, mem_wait_s=vs.get("mem_wait_s") or 0,
+                            unverified=vs.get("unverified") or 0, causes=rerun_causes(tests), fresh=fresh, tree=tree,
+                            required=required, next_actions=next_actions,
+                            printer=(lambda _ln: None) if tree and not fresh else print)   # v2:有 🧮 樹狀就不再印純文字那段(樹狀已全包);--fresh 那行照印
     except Exception as e:  # noqa: BLE001
         print("shadow-explain: %s: %s" % (type(e).__name__, e))
 
@@ -1186,11 +1266,12 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
     ttl = lease_ttl(repo, names or [])     # 讀歷史秒數要幾秒(紀錄大時 2 秒多)⇒ 先算好再起表,不然沒等也說「等了 2 秒」(10-14)
     t0 = clock()
     first, queued, said = True, False, False
+    ahead = []      # 10-14 v2:排在誰後面(最後看到的那一個),收尾 ⏳ 那行寫出來
 
     def leave(why):
         if queued:
             _lease_tool("queue", "remove", "--run-id", run_id, env=env)
-        return {"run_id": None, "waited": int(clock() - t0), "why": why}
+        return {"run_id": None, "waited": int(clock() - t0), "why": why, "ahead": ahead[-1] if ahead else None}
 
     while True:
         # 排隊上限(a seat 審):不拿租約照跑,結果註明。第一輪一定先試(上限設 0 也會在機器空時拿到 —— 審查第三輪)
@@ -1210,7 +1291,7 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
                 waited = int(clock() - t0)
                 if waited:
                     say(T("lease_queue_done", {"waited": waited}))
-                return {"run_id": run_id, "waited": waited, "why": "big"}
+                return {"run_id": run_id, "waited": waited, "why": "big", "ahead": ahead[-1] if ahead else None}
             if rc != 4:
                 say(T("lease_queue_unavailable", {"rc": rc}))
                 return leave("unavailable")
@@ -1227,10 +1308,12 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
         if said:                              # 上面已經講過排在誰後面
             said = False
         elif ship_wait and state != "held":     # 機器空著但推包在等:讓它先(推包優先,a seat 10-12)
+            ahead.append(ship_wait.get("what") or "ship.py")
             say(T("lease_queue_ship_first", {"what": ship_wait.get("what") or "ship.py", "waited": int(clock() - t0),
                                              "n": LEASE_POLL_S}))
         else:
             cur = cur or {}
+            ahead.append("%s · %s" % (cur.get("owner", "?"), cur.get("what", "?")))
             say(T("lease_queue_wait", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"),
                                        "waited": int(clock() - t0), "n": LEASE_POLL_S}))
         sleep(LEASE_POLL_S)
@@ -1475,7 +1558,8 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
             if isinstance(el, (int, float)):
                 overheads.append(max(0.0, time.monotonic() - t0 - el))
             slow = limit is not None and isinstance(el, (int, float)) and el > limit
-            results.append(_mark_all_skipped(dict(actual, reused=False, baseline_s=b, slow=slow, why=why)))
+            results.append(_mark_all_skipped(dict(actual, reused=False, baseline_s=b, slow=slow, why=why,
+                                                  why_detail=str(detail or "")[:200])))
             _tree_guard(repo, tree_base, results[-1], live)
             if live is not None:
                 _live_done(live, results[-1])
@@ -1773,6 +1857,9 @@ def _run_shard(repo, names, a, live):
 
 
 def _main_run(repo, names, a, live, started, lease, mem):
+    prev_actions = [] if a.resume else _prev_actions()
+    if prev_actions:      # v2.1:開跑先讀上一輪的建議,跑完逐條判
+        sys.stderr.write(i18n_lib.t("aib.advice.prev_loaded", {"n": len(prev_actions)}, locale=LOC) + "\n")
     jobs = a.jobs if a.jobs is not None else _default_jobs(a, names)
     if jobs > 1 and len(names) > 1:
         res = run_sharded(repo, names, jobs, a)
@@ -1840,17 +1927,23 @@ def _main_run(repo, names, a, live, started, lease, mem):
     print(T("summary", {"total": len(res["tests"]), "green": green, "red": len(res["tests"]) - green - len(unv),
                         "elapsed": "%.1f" % (time.monotonic() - started)}))
     if not a.resume:      # 推前檢查的分片由 pushgate 自己對帳(ship-stats),這裡不重記
-        vs = versus(res["tests"], time.monotonic() - started)
+        vs = versus(res["tests"], time.monotonic() - started,
+                    lease_wait_s=lease.get("waited") or 0, mem_wait_s=mem.get("waited") or 0)
+        vs["lease_ahead"] = lease.get("ahead")
         try:
             import shadow_tracer
             vs["tracer"] = shadow_tracer.tracer_code_digest()      # 記在這一輪的統計列(不進紀錄池),下一輪比對 aib 有沒有換版
         except Exception:  # noqa: BLE001
             pass
-        lines = versus_lines(vs, record_versus(repo, vs) if vs["without_s"] > 0 else [])
-        for ln in lines:
+        req = []
+        lines = versus_lines(vs, record_versus(repo, vs) if vs["without_s"] > 0 else [], who=_who(repo),
+                             causes=rerun_causes(res["tests"]), required=req)
+        advice = _advice(res["tests"], lease, a, prev_actions) if lines else []
+        for ln in lines + advice:
             print(ln)
         step_summary(lines + (summary_extra(vs, res["tests"]) if lines else []))
-        shadow_explain_emit(vs, res["tests"], fresh=bool(a.fresh))
+        shadow_explain_emit(vs, res["tests"], fresh=bool(a.fresh), tree=(lines + advice) or None, required=req or None,
+                            next_actions=_LAST_ADVICE.get("acts"))
     sk = [(r["name"], skipped_cells(r.get("output"))) for r in res["tests"] if r["rc"] == 0]
     sk = [(n, c) for n, c in sk if c]
     if sk:       # ★ 綠燈裡跳過的格子:跟沒驗的同一個顯眼程度

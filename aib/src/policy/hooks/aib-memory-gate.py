@@ -147,6 +147,25 @@ def sig_ok(ledger):
     return "[sig::" in "\n".join(block)
 
 
+_TR = {}
+
+
+def T(key, **params):
+    """人和 AI 會讀到的字走四語鍵(語系盤查第 16 條);每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名。"""
+    try:
+        cockpit = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "cockpit"))
+        if cockpit not in sys.path:
+            sys.path.insert(0, cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
+
 def check_missing(cfg, commit_epoch):
     """回缺的那幾本的名字(list);全部有回寫回 []。"""
     missing = []
@@ -157,7 +176,7 @@ def check_missing(cfg, commit_epoch):
             missing.append("[%s]" % name)
             continue
         if mem.get("sig_required") and not sig_ok(find_ledger(mem)):
-            missing.append("[%s 最新條目缺 [sig::]" % name)
+            missing.append(T("aib.memgate.missing_sig", name=name))
     return missing
 
 
@@ -227,29 +246,27 @@ def run(argv):
     sig = (os.environ.get("EZ2_SESSION_SIG")
            or os.environ.get("CLAUDE_SESSION_ID", "")[:5] or "unbound")
     if commit_epoch == 0:
-        return 0, "三記憶閘門: 無監看 commit"
+        return 0, T("aib.memgate.no_commit")
     stamp = time.strftime("%m-%d %H:%M", time.localtime(commit_epoch))
     missing = check_missing(cfg, commit_epoch)
     if status_mode:
         if missing:
-            return 0, "三記憶閘門: 🔴 欠回寫(最新commit %s):%s" % (stamp, " ".join(missing))
-        return 0, "三記憶閘門: 🟢 各層皆新於最新 commit(%s)" % stamp
+            return 0, T("aib.memgate.status_red", when=stamp, detail=" ".join(missing))
+        return 0, T("aib.memgate.status_green", when=stamp)
     ok, note = autocommit(cfg, sig)
     if not ok:
         log("autocommit failed: %s" % note)
         block = bool((cfg.get("autocommit") or {}).get("block_on_failure"))
         if block:
-            return 2, "三記憶閘門: 🔴 vault 快照失敗且設定要求擋人:%s" % note
-        print("三記憶閘門: ⚠️ vault 快照失敗(不擋):%s" % note, file=sys.stderr)
+            return 2, T("aib.memgate.snap_block", detail=note)
+        print(T("aib.memgate.snap_warn", detail=note), file=sys.stderr)
     age = now - commit_epoch
     if age < int(cfg.get("min_age_s", 600)):
         return 0, None                      # 緩衝窗:剛 commit 完,連續作業不打斷
     if age > int(cfg.get("max_age_s", 86400)):
         return 0, None                      # 非本輪,不追溯
     if missing:
-        return 2, ("三記憶閘門: repo 有新 commit(%s) 但欠:%s"
-                   " -- 請完成三記憶回寫(最新條目要含 [sig:: 署名欄位)再結束回合。"
-                   % (stamp, " ".join(missing)))
+        return 2, T("aib.memgate.block", when=stamp, detail=" ".join(missing))
     return 0, None
 
 
@@ -259,7 +276,7 @@ def main(argv=None):
         rc, msg = run(argv)
     except Exception as exc:                                   # noqa: BLE001
         # fail-open:這支掛在 Stop 上,它自己壞掉不得把每一席鎖在回合裡。
-        print("三記憶閘門: ⚠️ 閘自身異常,已放行:%s" % exc, file=sys.stderr)
+        print(T("aib.memgate.self_fault", err=exc), file=sys.stderr)
         log("gate exception: %s" % exc)
         return 0
     if msg:

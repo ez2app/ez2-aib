@@ -32,7 +32,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "src" / "cockpit"))
 import i18n_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 # aib 與它的測試在暫存區用的名稱開頭(10-08 盤點 /tmp:13,236 項幾乎全是這些)。只有開頭對得上才算 aib 的。
 PREFIXES = ("aib-", "aib_", "aibt-", "ez2-aib-", "e320-knife-", "p2-knife", "dgrs-note-", "cabin-aq-", "taskzone-", "outline-arm",
             "host-lease-arm", "term-notes-arm", "presence-arm", "known-gaps-arm", "pending-arm", "knife-contract-arm",

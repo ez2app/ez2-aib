@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ez2.shop/schemas/aib/brain-restore.schema.json",
+  "title": "AIB local rehearsal restore report",
+  "description": "Local-only backup metadata; contains no rejected source contents.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "aib-brain-restore/v1"
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "rewrite_rules_version": {
+      "type": "string"
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "original_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "restored_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "original_sha256",
+          "restored_sha256"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "cards_rebuild": {
+      "type": "object",
+      "properties": {
+        "matched": {
+          "type": "boolean"
+        },
+        "uids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "body_relations": {
+          "type": "boolean"
+        },
+        "project_references": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "matched",
+        "uids",
+        "body_relations",
+        "project_references"
+      ],
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "previous_rejected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "kind",
+          "line"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "snapshot_id",
+    "rewrite_rules_version",
+    "files",
+    "cards_rebuild",
+    "warnings",
+    "complete"
+  ],
+  "additionalProperties": false
+}

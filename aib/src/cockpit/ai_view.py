@@ -52,7 +52,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import pane_view  # noqa: E402  設定的讀寫機制:與往後的 panes.py 共用同一份
-from i18n_lib import Translator  # noqa: E402
+from i18n_lib import Translator, resolve_locale  # noqa: E402
 
 SCHEMA = "aib-ai-view/v1"
 #: 兩個開關的鍵。順序=CLI 說明與 `aib ai` 輸出的順序,不另抄第二份清單。
@@ -101,7 +101,7 @@ def main(argv, env=None, out=None, err=None):
     env = os.environ if env is None else env
     out = sys.stdout if out is None else out
     err = sys.stderr if err is None else err
-    tr = Translator(env.get("EZ2_AIB_LOCALE"))
+    tr = Translator(resolve_locale(env=env))
     path = config_path(env)
 
     if not argv:

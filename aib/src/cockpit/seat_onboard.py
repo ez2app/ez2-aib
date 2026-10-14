@@ -316,6 +316,25 @@ PROFILES = ("full", "rules")
 _SECTION_MARK_RE = re.compile(r"^<!-- aib:section ([a-z]+) -->[ \t]*\n?", re.M)
 
 
+_TR = {}
+
+
+def T(key, **params):
+    """CLI 給人看的字走 aib.onboardcli.* 四語鍵(語系盤查第 15 條,10-14);每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名。
+    開席單正文(模板)另有自己的語系路,不在這裡。"""
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
+
 def now_rule_line():
     """鐵則九(aib now)的一行版,給選「不載入」/逾時的通知用(那些席讀不到鐵則段)。"""
     try:
@@ -953,8 +972,7 @@ def snapshot_stuck_frame(window, seat_id, frame, frame_sgr=None):
                 fh.write("%r\n" % (ln,))
         return path
     except Exception as err:              # noqa: BLE001 見 docstring:留不成要出聲
-        print("seat-onboard: stuck 畫面留檔失敗(證據沒留下,只剩帳上那一筆):%s"
-              % (err,), file=sys.stderr)
+        print("seat-onboard: " + T("aib.onboardcli.stuck_frame_fail", err=err), file=sys.stderr)
         return None
 
 
@@ -1118,16 +1136,16 @@ def load_seats(base):
             with open(path, encoding="utf-8") as fh:
                 rec = json.load(fh)
         except (OSError, ValueError):
-            print("seat-onboard: 壞席位檔跳過:%s" % name, file=sys.stderr)
+            print("seat-onboard: " + T("aib.onboardcli.bad_seat_file", name=name), file=sys.stderr)
             continue
         legible, why = record_legible(rec, name)
         if not legible:
-            print("seat-onboard: 席位檔認不出跳過:%s(%s)" % (name, why),
+            print("seat-onboard: " + T("aib.onboardcli.seat_file_unknown", name=name, why=why),
                   file=sys.stderr)
             continue
         seat_id = rec.get("seat_id")
         if not isinstance(seat_id, str) or not seat_id:
-            print("seat-onboard: 無 seat_id 跳過:%s" % name, file=sys.stderr)
+            print("seat-onboard: " + T("aib.onboardcli.no_seat_id", name=name), file=sys.stderr)
             continue
         role = rec.get("role") if isinstance(rec.get("role"), str) else "?"
         out.append((rec["window_id"], seat_id, role))
@@ -1145,17 +1163,17 @@ def target_code_for_window(base, window):
         with open(path, encoding="utf-8") as fh:
             rec = json.load(fh)
     except (OSError, ValueError) as err:
-        print("seat-onboard: 座位碼量不到:%s(%s)" % (path, err),
+        print("seat-onboard: " + T("aib.onboardcli.onboard_code_unknown", path=path, why=err),
               file=sys.stderr)
         return None
     legible, why = record_legible(rec, os.path.basename(path))
     if not legible or rec.get("window_id") != window:
-        print("seat-onboard: 座位碼量不到:%s(%s)" % (path, why),
+        print("seat-onboard: " + T("aib.onboardcli.onboard_code_unknown", path=path, why=why),
               file=sys.stderr)
         return None
     code = seat_address.code_of(rec)
     if not code:
-        print("seat-onboard: 座位碼量不到:%s(session_uuid 缺失或不合法)" % path,
+        print("seat-onboard: " + T("aib.onboardcli.onboard_code_bad_uuid", path=path),
               file=sys.stderr)
     return code
 
@@ -1394,8 +1412,7 @@ def spawn_ack_watcher(window, seat_id, sha, baseline, ledger_path,
                 os.remove(baseline_file)          # 守望者沒起來 ⇒ 沒人會讀,當場刪(第二審 r6)
             except OSError:
                 pass
-        print("seat-onboard: 回執守望者起不來(%s)——已投遞但這一席會停在"
-              "未回執,可稍後 aib seat onboard --missing 補" % err,
+        print("seat-onboard: " + T("aib.onboardcli.watcher_fail", err=err),
               file=sys.stderr)
         return False
 
@@ -1644,16 +1661,12 @@ def onboard_one(window, seat_id, role, template_text, sha, ledger_path,
             try:
                 record(ledger_path, STUCK_LOGICAL_KIND, seat_id, window, sha)
             except Exception as err:          # noqa: BLE001 帳本寫失敗要自成一態出聲,不壓回 undelivered
-                print("seat-onboard: ledger_write_failed(stuck_in_composer 已發生但未入帳,"
-                      "下一輪 --missing 可能誤判為未投遞;請人工確認 %s 的框):%s"
-                      % (window, err), file=sys.stderr)
+                print("seat-onboard: " + T("aib.onboardcli.ledger_write_failed", window=window, err=err), file=sys.stderr)
             # ★ 讓它現形:stuck 與 undelivered 的處置**相反**,而開席鏈那一行
             #   只說「可稍後 --missing 補投」—— 對 stuck 而言那是錯的指示
             #   (rc=4 絕不重送;補投會在對方框裡疊第二份)。
-            print("seat-onboard: ★ %s 卡在輸入框(stuck_in_composer)—— **不要**用 "
-                  "--missing 補投,那會疊第二份。先看那一席的框、清稿,再 "
-                  "`aib seat onboard --window %s`。現場已留:%s"
-                  % (window, window, frame_path or "(留檔失敗,見上一行)"),
+            print("seat-onboard: " + T("aib.onboardcli.stuck_in_composer", window=window,
+                                          path=frame_path or T("aib.onboardcli.frame_save_failed")),
                   file=sys.stderr)
         return "stuck_in_composer"
     if rc != 0:
@@ -1779,7 +1792,7 @@ def main(argv=None):
     #   不是靠後面每一個寫入點各自記得判旗標(那種寫法會在新增第 N 個寫入點時破)。
     if getattr(args, "prepare_self_fetch", False):
         if not args.window or not _WID_RE.fullmatch(args.window):
-            print("seat-onboard: --prepare-self-fetch 需要合法 --window",
+            print("seat-onboard: " + T("aib.onboardcli.need_window_self_fetch"),
                   file=sys.stderr)
             return 2
         provider = (args.provider or "").strip() or "claude"
@@ -1790,7 +1803,7 @@ def main(argv=None):
             with open(tmpl, "rb") as fh:
                 raw = fh.read()
         except OSError as err:
-            print("seat-onboard: 模板讀不到(fail-closed):%s" % err,
+            print("seat-onboard: " + T("aib.onboardcli.template_unreadable", err=err),
                   file=sys.stderr)
             return 2
         sha = template_sha256(raw)
@@ -1826,7 +1839,7 @@ def main(argv=None):
         # 逾時 ⇒ 送出「N 秒未選,已自動不載入」。走同一條 deliver(dm-ctl),不入開席帳本
         # (帳本語意是「投了開席單」,這兩行不是開席單)。
         if not args.window or not _WID_RE.fullmatch(args.window):
-            print("seat-onboard: --skipped-notice/--timeout-notice 需要合法 --window", file=sys.stderr)
+            print("seat-onboard: " + T("aib.onboardcli.need_window_notice"), file=sys.stderr)
             return 2
         base = args.seats or seats_dir()
         code = target_code_for_window(base, args.window)
@@ -1842,15 +1855,15 @@ def main(argv=None):
         _prov = provider_of_window(base, args.window)
         _api_key = api_key_provider_ids()
         if _prov in AIBOT_PROVIDERS or _prov in _api_key:
-            _kind = "橋接席" if _prov in AIBOT_PROVIDERS else "API-key 席"
-            print("seat-onboard: %s 是%s(%s),選單通知不投進對話(系統通知不轉給模型)" % (args.window, _kind, _prov))
+            _kind = T("aib.onboardcli.kind_bridge") if _prov in AIBOT_PROVIDERS else T("aib.onboardcli.kind_api_key")
+            print("seat-onboard: " + T("aib.onboardcli.notice_not_for_bridge", window=args.window, kind=_kind, provider=_prov))
             return 0
         if getattr(args, "notice_file", ""):
             try:
                 with open(args.notice_file, encoding="utf-8") as fh:
                     note = fh.read().strip()
             except OSError as err:
-                print("seat-onboard: 讀不到 --notice-file:%s" % err, file=sys.stderr)
+                print("seat-onboard: " + T("aib.onboardcli.notice_file_unreadable", err=err), file=sys.stderr)
                 return 2
             # review r4 M1:這一份是「載入舊席位」的多行開場說明(人格包/交接/最近幾輪,常數 KB),
             #   整段多行直接貼會被 CLI 當成多次 Enter ⇒ 能自己讀檔的家(SELF_FETCH)照舊落檔給席去讀。
@@ -1895,19 +1908,18 @@ def main(argv=None):
         try:
             gap = list_missing(ledger_path=args.ledger or None)
         except onboard_gap.Undetermined as err:
-            print("seat-onboard --list-missing: 判不出來 —— %s" % err, file=sys.stderr)
+            print("seat-onboard --list-missing: " + T("aib.onboardcli.list_missing_unknown", err=err), file=sys.stderr)
             return 3
         rows = gap["no_ack"]
         if args.json:
             print(json.dumps(gap, ensure_ascii=False))
         else:
-            print("開席單缺口(投了而沒有回執):%d 席;帳本壞行 %d"
-                  % (len(rows), gap.get("bad_lines", 0)))
+            print(T("aib.onboardcli.gap_head", n=len(rows), bad=gap.get("bad_lines", 0)))
             for r in rows:
                 print("  %-10s %-5s %s" % (r.get("cabin") or "?",
                                            r.get("window") or "?", r["seat_id"]))
             if not rows:
-                print("  (無)")
+                print("  " + T("aib.onboardcli.none"))
         return 1 if rows else 0
 
     if getattr(args, "tmux_bin", ""):
@@ -1915,7 +1927,7 @@ def main(argv=None):
         BOUND_TMUX = args.tmux_bin
     if args.await_ack:
         if not (args.window and args.seat_id and args.sha):
-            print("seat-onboard: --await-ack 需要 --window/--seat-id/--sha",
+            print("seat-onboard: " + T("aib.onboardcli.need_await"),
                   file=sys.stderr)
             return 2
         led = args.ledger or default_ledger_path()
@@ -1962,7 +1974,7 @@ def main(argv=None):
         with open(tmpl, "rb") as fh:
             raw = fh.read()
     except OSError as err:
-        print("seat-onboard: 模板讀不到(fail-closed):%s" % err,
+        print("seat-onboard: " + T("aib.onboardcli.template_unreadable", err=err),
               file=sys.stderr)
         return 2
     sha = template_sha256(raw)
@@ -1974,7 +1986,7 @@ def main(argv=None):
     try:
         if args.window:
             if not _WID_RE.fullmatch(args.window):
-                print("seat-onboard: --window 形狀不合:%r" % args.window,
+                print("seat-onboard: " + T("aib.onboardcli.bad_window", value=repr(args.window)),
                       file=sys.stderr)
                 return 2
             seat_id, role = "?", args.role or "?"
@@ -1996,12 +2008,12 @@ def main(argv=None):
             results.append(row)
         else:
             if not os.path.isdir(base):
-                print("seat-onboard: seats 目錄不存在:%s" % base,
+                print("seat-onboard: " + T("aib.onboardcli.no_seats_dir", path=base),
                       file=sys.stderr)
                 return 2
             index, bad = load_index(ledger_path)
             if bad:
-                print("seat-onboard: 帳本壞行 %d(已跳過)" % bad,
+                print("seat-onboard: " + T("aib.onboardcli.bad_ledger_lines", n=bad),
                       file=sys.stderr)
             want = {ONBOARD_NEVER, ONBOARD_STALE}
             if args.retry_no_ack:
@@ -2041,7 +2053,7 @@ def main(argv=None):
     for r in results:
         print(format_onboard_final_line(r))
     if not results:
-        print("seat-onboard: 無待處理席位(冪等)")
+        print("seat-onboard: " + T("aib.onboardcli.nothing_pending"))
         return 0
     # rc 0 = 每一席都已回執,或已投遞且回執交給守望者(detach 模式的正常
     # 結局)。rc 3 只留給**真的出事**:投不進去,或同步等待逾時。

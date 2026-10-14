@@ -102,7 +102,7 @@ if str(_COCKPIT_FALLBACK) not in sys.path:
     sys.path.append(str(_COCKPIT_FALLBACK))
 import i18n_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 
 
 def T(key, params=None):
@@ -753,6 +753,19 @@ _TEST_IN_RAW = re.compile(r'"test"\s*:\s*"([^"\\]+)"')
 
 
 def quarantine(path, apply=False, now=None):
+    """見 _quarantine。整段(讀、判、改寫)拿池檔的獨佔檔鎖,跟寫列(jsonl_safe.append_locked)、壓縮(compact)同一把:
+    10-14 Mini 三份並行推前檢查實踩 —— 不拿鎖時,讀完到換檔之間別份追加的列會寫進被換掉的舊檔,那一列不見。"""
+    import fcntl
+    p = Path(path)
+    with open(p, "ab") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        try:
+            return _quarantine(p, apply=apply, now=now)
+        finally:
+            fcntl.flock(lockf, fcntl.LOCK_UN)
+
+
+def _quarantine(path, apply=False, now=None):
     """Move damaged lines of one rows file to `<file>.bad` and append a must-run tombstone per affected test.
 
     Why tombstones and not just dropping the bad line: the bad line may have been the newest (red) result
@@ -769,7 +782,16 @@ def quarantine(path, apply=False, now=None):
     for n, line in enumerate(raw, start=1):
         if not line.strip():
             continue
-        row = _parse_row(line.strip())
+        # 作廢列是好列(build_index / compact 都先認它):10-14 Mini 那份 18:05 搬進 .bad 的 4 列全是合法作廢列,
+        #   搬走 = 作廢失效。壞掉的作廢列(_parse_void 回 False)照舊算壞列。
+        try:
+            v = _parse_void(json.loads(line.strip()))
+        except ValueError:
+            v = None
+        if v:
+            good.append((line, None))
+            continue
+        row = None if v is False else _parse_row(line.strip())
         if row is None:
             bad.append((n, line))
             m = _TEST_IN_RAW.search(line)
@@ -780,8 +802,8 @@ def quarantine(path, apply=False, now=None):
         else:
             good.append((line, row))
     if unknown:
-        names |= {row["test"] for _, row in good}
-    template = next((row for _, row in reversed(good)), {})
+        names |= {row["test"] for _, row in good if row}
+    template = next((row for _, row in reversed(good) if row), {})
     stamp = now or _time.strftime("%Y-%m-%d %H:%M")
     tombs = [{"test": t, "rc": -1, "inputs": [], "measured": "unmeasured", "external": False,
               "why": ["quarantined-bad-row"], "time": stamp,
@@ -1046,6 +1068,19 @@ def auto_compact(paths=None, environ=None):
     return out
 
 
+def _shared_lock(path):
+    """讀池檔前拿共用檔鎖,回開著的檔(關掉就放鎖)。寫列與壓縮拿同一把的獨佔鎖 ⇒ 別份正在追加一列(一列常 200KB)
+    或壓縮正在原地改寫時,讀的這邊等它寫完才讀。10-14 Mini 三份並行推前檢查:不等就讀到半列 ⇒ bad-jsonl ⇒ 整份降級全跑。"""
+    import fcntl
+    f = open(path, "rb")
+    try:
+        fcntl.flock(f, fcntl.LOCK_SH)
+    except OSError:
+        f.close()
+        raise
+    return f
+
+
 def build_index(paths, repo=None):
     idx = Index()
     idx.repo = str(Path(repo).resolve()) if repo else None
@@ -1060,6 +1095,11 @@ def build_index(paths, repo=None):
         idx.degraded = "no-rows-files"
         return idx
     for f in files:
+        try:
+            lockf = _shared_lock(f)
+        except OSError as err:
+            idx.degraded = "unreadable:%s:%s" % (f, err)
+            return idx
         try:
             for line_number, line in enumerate(jsonl_safe.iter_lines(f), start=1):
                 line = line.strip()
@@ -1094,6 +1134,8 @@ def build_index(paths, repo=None):
         except OSError as err:
             idx.degraded = "unreadable:%s:%s" % (f, err)
             return idx
+        finally:
+            lockf.close()       # 關檔即放鎖
     # 第 3 步:抽查抓到「真的沿用錯了」⇒ 寫停用旗標;旗標在 ⇒ 別台機器的列一律不用(沒有 host_id 的舊列視為本機)
     flag_dirs = [Path(p) for p in (paths or [])] or [Path(st.shadow_dir_default()) if st is not None else None]
     for d in flag_dirs:

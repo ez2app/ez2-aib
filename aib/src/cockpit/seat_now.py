@@ -48,12 +48,13 @@ PIN = "📌"
 #   「顏色要對應狀態的字意」「忙碌中應該是橙色,待指派改成【我很閒】亮灰色」)。
 #   橙 = 忙碌中、黃 = 停下來等別人、紅 = 要你動作(加粗)、亮灰 = 我很閒、紫 = 不知道(沒回報)。
 #   等你決定對應訊息佇列 dm kind=decide / 待人處理。
+#   10-14 語系盤查第 13 條:字改走四語鍵 aib.now.state.*(含括號,en 用 [ ]),每次畫都照 i18n_lib.resolve_locale() 取。
 STATES = {
-    "busy":       ("忙碌中",   "\x1b[38;5;208m"),
-    "reply":      ("等回應",   "\x1b[38;5;220m"),
-    "decide":     ("等你決定", "\x1b[1;38;5;196m"),
-    "idle":       ("我很閒",   "\x1b[38;5;252m"),
-    "unreported": ("未回報",   "\x1b[38;5;141m"),
+    "busy":       ("aib.now.state.busy",       "\x1b[38;5;208m"),
+    "reply":      ("aib.now.state.reply",      "\x1b[38;5;220m"),
+    "decide":     ("aib.now.state.decide",     "\x1b[1;38;5;196m"),
+    "idle":       ("aib.now.state.idle",       "\x1b[38;5;252m"),
+    "unreported": ("aib.now.state.unreported", "\x1b[38;5;141m"),
 }
 SETTABLE_STATES = ("busy", "reply", "decide")    # idle 走 --clear;unreported 是沒有紀錄,不能設
 RESET = "\x1b[0m"
@@ -62,9 +63,26 @@ STEP_SGR = "\x1b[38;5;40m"    # 步數與進度綠色(the maintainer 10-10「步
 TIME_SGR = "\x1b[38;5;245m"   # 更新時間 / 啟動時間灰色(the maintainer 10-10「更新時間和啟動時間改用灰色」)
 
 
+_TR = {}
+
+
+def T(key, **params):
+    """狀態列的字:每次照 i18n_lib.resolve_locale() 取(切語系後下一次重畫就換);同一行程每種語系的字典只載一次。
+    字典讀不到 ⇒ 印鍵名(可見即可抓),不擋狀態列。"""
+    try:
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
+
 def state_tag(state, color=True):
-    label, sgr = STATES.get(state, STATES["busy"])
-    tag = "【%s】" % label
+    key, sgr = STATES.get(state, STATES["busy"])
+    tag = T(key)
     return (sgr + tag + RESET) if color else tag
 
 
@@ -229,12 +247,13 @@ def _stamp(epoch, now=None, short=False):
 
 def started_text(started_at):
     """啟動時間(the maintainer 10-10)。舊紀錄沒有 ⇒「不明」,不編一個時間。"""
-    return "啟動時間：%s" % (_stamp(started_at) if started_at else "不明")
+    return T("aib.now.started", when=_stamp(started_at) if started_at else T("aib.now.unknown_time"))
 
 
 def times_text(at, started_at):
     """| 更新時間:… | 啟動時間:…(the maintainer 10-10 定的順序)。更新時間就是新不新的證據,不再另標「N 小時前」。"""
-    return "更新時間：%s | %s" % (_stamp(at) if at else "不明", started_text(started_at))
+    return "%s | %s" % (T("aib.now.updated", when=_stamp(at) if at else T("aib.now.unknown_time")),
+                        started_text(started_at))
 
 
 def parse_started(text, now=None):
@@ -252,7 +271,7 @@ def parse_started(text, now=None):
 
 def steps_text(done, total):
     """2/5 STEP > 進度:40%(the maintainer 10-10 定的寫法)。"""
-    return "%d/%d STEP > 進度:%d%%" % (done, total, progress_pct(done, total))
+    return T("aib.now.steps", value="%d/%d" % (done, total), pct=progress_pct(done, total))
 
 
 def line_of(item, done, total, state="busy", color=False, started_at=None, at=None):
@@ -263,7 +282,8 @@ def line_of(item, done, total, state="busy", color=False, started_at=None, at=No
 
 def legacy_line_of(item, pct, state="busy", color=False):
     """步數上線前留下的紀錄只有自己估的 %:照實標「自估」,不裝成照步數算的。"""
-    return "%s%s%s | 進度：%d%%(自估) | %s" % (PIN, state_tag(state, color), item, pct, times_text(None, None))
+    return "%s%s%s | %s | %s" % (PIN, state_tag(state, color), item, T("aib.now.self_pct", pct=pct),
+                                 times_text(None, None))
 
 
 def write(code, item, done, total, *, state="busy", state_root=None, now=None, started_at=None, new=False):
@@ -299,8 +319,23 @@ def read(code, *, state_root=None):
         return None
 
 
-IDLE_TEXT = "等待指派新工作"         # aib now --clear:這一席自己說沒事做(狀態欄【我很閒】)
-UNREPORTED_TEXT = "尚未回報主項目"    # 從沒跑過 aib now:不知道在做什麼 —— 不能說成「沒事做」(the maintainer 10-10 問 a seat)
+# aib now --clear:這一席自己說沒事做(狀態欄【我很閒】)= aib.now.idle_text;
+# 從沒跑過 aib now:不知道在做什麼 —— 不能說成「沒事做」(the maintainer 10-10 問 a seat)= aib.now.unreported_text。
+#   舊名 IDLE_TEXT / UNREPORTED_TEXT 照讀得到(模組 __getattr__,當下語系)。
+def idle_text():
+    return T("aib.now.idle_text")
+
+
+def unreported_text():
+    return T("aib.now.unreported_text")
+
+
+def __getattr__(name):
+    if name == "IDLE_TEXT":
+        return idle_text()
+    if name == "UNREPORTED_TEXT":
+        return unreported_text()
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
 def clear(code, *, state_root=None, now=None):
@@ -312,7 +347,7 @@ def clear(code, *, state_root=None, now=None):
     atomic_json.write_json(os.path.join(d, code + ".json"), rec)
     tmp = os.path.join(d, ".%s.line.%d" % (code, os.getpid()))
     with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write("%s%s%s\n" % (PIN, state_tag("idle", False), IDLE_TEXT))
+        fh.write("%s%s%s\n" % (PIN, state_tag("idle", False), idle_text()))
     os.replace(tmp, os.path.join(d, code + ".line"))
     return True
 
@@ -484,9 +519,9 @@ def overview(*, state_root=None, records=None, now=None):
 def _parts(code, rec, color, now):
     """(開頭 📌【狀態】, 主項目, 完整尾巴, 短尾巴);短尾巴給窄視窗(the maintainer 10-10「窄視窗改成短的寫法」)。"""
     if not rec:
-        return "%s%s" % (PIN, state_tag("unreported", color)), UNREPORTED_TEXT, "", ""
+        return "%s%s" % (PIN, state_tag("unreported", color)), unreported_text(), "", ""
     if rec.get("idle"):
-        return "%s%s" % (PIN, state_tag("idle", color)), IDLE_TEXT, "", ""
+        return "%s%s" % (PIN, state_tag("idle", color)), idle_text(), "", ""
     st = rec.get("state") or "busy"
     head = "%s%s" % (PIN, state_tag(st, color))   # 📌【狀態】主項目:中間不留空(the maintainer 10-10)
     if is_stale_busy(rec, now):
@@ -503,13 +538,13 @@ def _parts(code, rec, color, now):
         short = " | %s" % green("%d/%d > %d%%" % (done, total, pct))
     else:
         pct = int(rec.get("pct") or 0)
-        full = " | 進度：%d%%(自估) | %s" % (pct, tint(times_text(at, None)))
-        short = " | %d%%(自估)" % pct
+        full = " | %s | %s" % (T("aib.now.self_pct", pct=pct), tint(times_text(at, None)))
+        short = " | %s" % T("aib.now.self_pct_short", pct=pct)
     stamps = []
     if at:
-        stamps.append("更新 %s" % _stamp(at, now, short=True))
+        stamps.append(T("aib.now.updated_short", when=_stamp(at, now, short=True)))
     if started:
-        stamps.append("啟動 %s" % _stamp(started, now, short=True))
+        stamps.append(T("aib.now.started_short", when=_stamp(started, now, short=True)))
     if stamps:
         short += " | " + tint(" | ".join(stamps))
     return head, item, full, short

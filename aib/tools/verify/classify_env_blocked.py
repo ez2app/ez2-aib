@@ -65,7 +65,7 @@ import i18n_lib  # noqa: E402
 
 
 def T(key, params=None):
-    return i18n_lib.t("aib.env_blocked." + key, params, locale=os.environ.get("EZ2_AIB_LOCALE", "zh-TW"))
+    return i18n_lib.t("aib.env_blocked." + key, params, locale=i18n_lib.resolve_locale())
 
 RESULT_RE = re.compile(r"^\s*(PASS|FAIL)\s+(.+?)(?:\s+\(exp:.*)?$")
 

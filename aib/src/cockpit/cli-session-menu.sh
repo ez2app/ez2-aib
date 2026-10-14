@@ -35,6 +35,16 @@
 #     ⇒ AIB_OPEN_MENU_CHOICE = fork(並 export AIB_FORK_FROM_SESSION_UUID)| blank | 1 | 2 | 3 | timeout
 #       | noviewer(外層艙沒人接著,沒跳)| none(沒得選/跳不出來)
 
+# 畫面字走四語字典(語系盤查第 14 條,10-14):_csm <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取。
+#   本檔被 aib(set -euo pipefail)載入:python 起不來 ⇒ 印鍵名、rc 照 0。
+_csm() {
+  local key="$1"; shift
+  local args=() kv
+  for kv in "$@"; do args+=(--param "$kv"); done
+  "${T_PY3:-${EZ2_PY3:-python3}}" "${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/i18n_lib.py" \
+    ${args[@]+"${args[@]}"} "$key" 2>/dev/null || printf '%s\n' "$key"
+}
+
 aib_cli_session_menu() {
   local provider="$1" cwd="$2" seats_dir="$3" role="$4" with_onboard="${5:-0}" with_fork="${6:-1}"
   AIB_OPEN_MENU_CHOICE="none"
@@ -80,7 +90,7 @@ for r in d.get("rows") or []:
   fi
   if [ "${viewers:-0}" = "0" ]; then
     AIB_OPEN_MENU_CHOICE="noviewer"
-    echo "aib: ${provider} 沒有終端看得到開席選單,不跳(空白開席、不投開席單)" >&2
+    echo "aib: $(_csm aib.climenu.no_terminal provider="${provider}")" >&2
     return 0
   fi
   local state_dir="${EZ2_COCKPIT_STATE_DIR:-${TMPDIR:-/tmp}}"; mkdir -p "$state_dir" 2>/dev/null
@@ -91,27 +101,28 @@ for r in d.get("rows") or []:
   local keys="abcdefghi"
   _aib_menu_item() { items_tsv="${items_tsv}$2"$'\t'"$1"$'\t'"$3"$'\t'"${4:-0}"$'\n'; }   # $1=標籤 $2=鍵 $3=值 $4=dim(1=已綁灰階)
   if [ "$with_onboard" = "1" ]; then
-    _aib_menu_item "開席單全部(鐵則+席位記憶+交接+注意事項)" 1 1
-    _aib_menu_item "開席單只鐵則" 2 2
-    _aib_menu_item "不載入(預設)" 3 3
+    _aib_menu_item "$(_csm aib.climenu.onboard_full)" 1 1
+    _aib_menu_item "$(_csm aib.climenu.onboard_rules)" 2 2
+    _aib_menu_item "$(_csm aib.climenu.onboard_none)" 3 3
     [ -z "$rows" ] || items_tsv="${items_tsv}"$'\t\t\n'           # 分隔線
-    title="${provider} 開席"; note="沒選=不載入${rows:+、不帶舊席位}"
+    title="$(_csm aib.climenu.title_open provider="${provider}")"; note="$(_csm aib.climenu.note_none)${rows:+$(_csm aib.climenu.note_no_old)}"
   else
-    title="${provider}:要載入哪個舊席位?(選了=分出新席、新碼)"; note="沒選=空白開席"
+    title="$(_csm aib.climenu.title_pick_old provider="${provider}")"; note="$(_csm aib.climenu.note_blank)"
   fi
   # ★ the maintainer 09-26:「每一欄的最左邊要帶入上一次的 AI 模型」⇒ 有 bot_name(側欄名)用它,否則用 model。
   # ★ the maintainer 09-26 灰階:已連 Grok Bot agent(bound=1)列 dim;「未綁」字樣仍=無 persona(資料層分開)。
   # ★ TSV 欄序 id/code/star/tail/model/bound/bot_name —— bound 不可接在空 bot 後面(bash 吞空欄)。
+  local load_word=""; [ "$with_onboard" = "1" ] && load_word="$(_csm aib.climenu.load)"   # 迴圈外取一次(每列叫一次 python 會讓彈窗慢)
   while IFS=$'\t' read -r id code star tail model bound bot_name; do
     [ -n "$id" ] || continue; n=$((n+1)); [ "$n" -le 9 ] || break
     if [ "$with_onboard" = "1" ]; then key="${keys:$((n-1)):1}"; else key="$n"; fi
-    name="${bot_name:-${model:-模型不明}}"
+    name="${bot_name:-${model:-$(_csm aib.climenu.model_unknown)}}"
     label="〔${name}〕 @${code}"
     [ "$star" = "1" ] && label="$label ★"
-    [ "$with_onboard" = "1" ] && label="$label 載入"
+    [ "$with_onboard" = "1" ] && label="$label $load_word"
     _aib_menu_item "$label  $tail" "$key" "$id" "${bound:-0}"
   done <<< "$rows"
-  [ "$with_onboard" = "1" ] || _aib_menu_item "空白開席(預設)" 0 __blank__
+  [ "$with_onboard" = "1" ] || _aib_menu_item "$(_csm aib.climenu.blank_default)" 0 __blank__
   unset -f _aib_menu_item
   # ★ the maintainer 09-26:「這個清單必需要有選擇,或倒數完成才能消失」⇒ 不用 display-menu(q/Esc/點外面就關、逾時後殘留),
   #   改 display-popup -E 跑 open_menu_popup.py:只有選了或倒數到 0 才結束,結束=彈窗關。截止時刻由這裡定,兩邊同一個。
@@ -134,7 +145,7 @@ for line in sys.stdin.read().split("\n"):
         items.append(it)
 json.dump({"title": title, "note": note, "deadline": int(deadline), "choice_file": cf, "items": items},
           open(out, "w", encoding="utf-8"), ensure_ascii=False)
-' "$title" "$note" "$deadline" "$choice_f" "$spec" 2>/dev/null || { echo "aib: 開席選單規格寫不出來,空白開席、不投開席單" >&2; return 0; }
+' "$title" "$note" "$deadline" "$choice_f" "$spec" 2>/dev/null || { echo "aib: $(_csm aib.climenu.spec_fail)" >&2; return 0; }
   nlines="$(printf '%s' "$items_tsv" | grep -c '' || true)"
   local popup_cmd; printf -v popup_cmd '%q %q %q' "$py" "$here/open_menu_popup.py" "$spec"
   env -u TMUX "${AIB_TMUX_BIN:-tmux}" -L "$hub_sock" display-popup -E -t "$target" -x C -y C \
@@ -145,7 +156,7 @@ json.dump({"title": title, "note": note, "deadline": int(deadline), "choice_file
     # 彈窗 0.5 秒內就結束:rc≠0=跳不出來;rc=0 可能是已經選了(自動選/秒選)——看選擇檔
     if [ "$_menu_rc" != "0" ] && [ ! -f "$choice_f" ]; then
       rm -f "$spec" 2>/dev/null || true
-      echo "aib: 開席選單跳不出來(display-popup rc=$_menu_rc),空白開席、不投開席單" >&2; return 0
+      echo "aib: $(_csm aib.climenu.popup_fail rc="$_menu_rc")" >&2; return 0
     fi
   fi
   AIB_OPEN_MENU_CHOICE="timeout"
@@ -167,12 +178,12 @@ json.dump({"title": title, "note": note, "deadline": int(deadline), "choice_file
   # 逾時:佔住選擇檔 ⇒ 彈窗萬一還沒關,之後再選也不落檔(O_EXCL)
   [ -n "$choice" ] || printf '__timeout__' > "$choice_f" 2>/dev/null || true
   case "$choice" in
-    "") if [ "$with_onboard" = "1" ]; then echo "aib: ${provider} 開席選單逾時 ${limit} 秒:空白開席、不載入開席單" >&2
-        else echo "aib: ${provider} 空白開席(選單逾時 ${limit} 秒)" >&2; fi ;;
-    __blank__) AIB_OPEN_MENU_CHOICE="blank"; echo "aib: ${provider} 空白開席(選單選 0)" >&2 ;;
-    1|2|3) AIB_OPEN_MENU_CHOICE="$choice"; echo "aib: ${provider} 開席選單選 $choice" >&2 ;;
+    "") if [ "$with_onboard" = "1" ]; then echo "aib: $(_csm aib.climenu.timeout_onboard provider="${provider}" seconds="${limit}")" >&2
+        else echo "aib: $(_csm aib.climenu.timeout_blank provider="${provider}" seconds="${limit}")" >&2; fi ;;
+    __blank__) AIB_OPEN_MENU_CHOICE="blank"; echo "aib: $(_csm aib.climenu.picked_blank provider="${provider}")" >&2 ;;
+    1|2|3) AIB_OPEN_MENU_CHOICE="$choice"; echo "aib: $(_csm aib.climenu.picked provider="${provider}" value="$choice")" >&2 ;;
     *) AIB_OPEN_MENU_CHOICE="fork"; export AIB_FORK_FROM_SESSION_UUID="$choice"
-       echo "aib: ${provider} 從 ${choice} 分出新席(選單選的)" >&2 ;;
+       echo "aib: $(_csm aib.climenu.forked provider="${provider}" value="${choice}")" >&2 ;;
   esac
   return 0
 }

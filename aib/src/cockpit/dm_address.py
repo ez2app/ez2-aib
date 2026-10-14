@@ -103,8 +103,8 @@ def resolve(target: str, state_root: str, primary: str, env=None) -> tuple:
         return 2, {"reason": "bad", "detail": "認不出地址:%s(寫法:艙位碼/席碼,跨主機 IP/艙位碼/席碼)" % target}
     if p["ip"] and p["ip"] not in local_ips(env):
         return 2, {"reason": "remote", "seat": p["seat"], "cabin": p["cabin"], "ip": p["ip"],
-                   "detail": "%s 不是這台機器。aib dm 還不會直送別台;先用 aib plaza dm 轉,"
-                             "或到那台機器上送。" % p["ip"]}
+                   "detail": "%s 不是這台機器(dm-ctl 會經 SSH 交給那台,見 dm_xhost.py;"
+                             "已經是跨主機收件端就不再轉第二次)" % p["ip"]}
     if not p["cabin"]:
         return 0, {"kind": "bare", "seat": p["seat"]}
     hits = match_cabin(p["cabin"], cabins(state_root, primary))

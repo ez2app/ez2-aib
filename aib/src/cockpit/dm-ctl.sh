@@ -61,6 +61,14 @@ _DM_ORIG_ARGS=("$@")
 . "$HERE/cockpit-env.sh"
 
 PY3="${EZ2_PY3:-python3}"
+# 畫面字走四語字典(語系盤查第 14 條,10-14):_dmt <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取。
+#   python 起不來 ⇒ 印鍵名(可見即可抓),不讓投遞因為印不出字而失敗。
+_dmt() {
+  local key="$1"; shift
+  local args=() kv
+  for kv in "$@"; do args+=(--param "$kv"); done
+  "$PY3" "$HERE/i18n_lib.py" ${args[@]+"${args[@]}"} "$key" 2>/dev/null || printf '%s\n' "$key"
+}
 HUB="${EZ2_AIHUB_SOCKET:-aihub}"
 # ★★ 席位登記簿由**上一行已經有的 HUB** 導出,不是只認 env(aihub-9 的 a seat
 #   找到、the maintainer 08-18 17:36 親自查證;同族第五個呼叫點)。
@@ -168,7 +176,7 @@ _record_delivery() {   # $1=rc
     _RESULT_ID="$qid"
   else
     _RESULT_ID="FAILED"
-    echo "aib-dm-ctl: 直送後 record 進歷史失敗(status=$status):信已送到、rc 不變,但待審區的歷史少這一則" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.record_fail status="$status")" >&2
   fi
   # 私訊對話區：只記真人發出且 delivered 的 DM（AI→AI 不寫）
   if [ "$status" = "delivered" ] && [ -n "${HUMAN_ID:-}" ]; then
@@ -227,13 +235,13 @@ _auto_resend() {   # $1=stage(收據的 stage,只給 stderr 用);回來 = 本輪
   [ -n "${TARGET:-}" ] && [ -n "${MSG:-}" ] || return 0
   local _wait="${AIB_DM_RESEND_WAIT_S:-$AIB_DM_RESEND_WAIT_S_DEFAULT}"
   case "$_wait" in ''|*[!0-9]*) _wait="$AIB_DM_RESEND_WAIT_S_DEFAULT" ;; esac
-  echo "aib-dm-ctl: 第 159 項:收據=可安全重送(stage=$1,目標端零新增);${_wait} 秒後自動重送一次(上限 1),再失敗轉待人處理" >&2
+  echo "aib-dm-ctl: $(_dmt aib.dmctl.auto_resend stage="$1" seconds="${_wait}")" >&2
   # 留痕在 session 之外(艦長 12:16 那課:證據只活在寄件人 session 裡等於沒有):一行 JSON 進 state/dm-resend.jsonl;寫不進只吵不擋。
   local _rlog="${AIB_DM_RESEND_LOG:-${_STATE_ROOT:-$_AIB_ROOT}/state/dm-resend.jsonl}"
   mkdir -p "$(dirname "$_rlog")" 2>/dev/null
   printf '{"ts":%s,"target":"%s","stage":"%s","wait_s":%s,"relay":"%s","pid":%s}\n' \
     "$(date +%s)" "$TARGET" "$1" "$_wait" "${_RESULT_RELAY:--}" "$$" >> "$_rlog" 2>/dev/null \
-    || echo "aib-dm-ctl: 重送留痕寫入失敗($_rlog):照樣重送" >&2
+    || echo "aib-dm-ctl: $(_dmt aib.dmctl.resend_log_fail path="$_rlog")" >&2
   [ "$_wait" = "0" ] || sleep "$_wait"
   local _argv=("$TARGET")
   [ -n "${DM_THREAD:-}" ] && _argv+=(--thread "$DM_THREAD")
@@ -242,6 +250,8 @@ _auto_resend() {   # $1=stage(收據的 stage,只給 stderr 用);回來 = 本輪
   [ -n "${DM_EXPIRES:-}" ] && _argv+=(--expires "$DM_EXPIRES")
   [ -n "${DM_TTL_MIN:-}" ] && _argv+=(--ttl-min "$DM_TTL_MIN")
   [ "${VERIFY:-0}" = "1" ] && _argv+=(--verify)
+  # 跨主機收件那一則:重送輪也要帶寄件機的身分(子輪自己再驗一次;不帶就退回未認證,真機 Mini→Pro 量到)
+  [ -n "${XHOST_IDENT:-}" ] && _argv+=(--xhost-ident "$XHOST_IDENT")
   [ -n "${_ENG_LOG:-}" ] && rm -f "$_ENG_LOG"
   _RESULT_DONE=1                                           # 父輪不印 RESULT、不 record;子輪的算數
   # env -u:父輪引擎 export 的貼前佔位符不得帶進子輪(子輪要自己抓;帶進去的是另一幀的事實)
@@ -296,6 +306,7 @@ _retry_until_loop() {
   [ -z "${DM_TTL_MIN:-}" ] && [ -n "${DM_EXPIRES:-}" ] && _argv+=(--expires "$DM_EXPIRES")
   [ "${VERIFY:-0}" = "1" ] && _argv+=(--verify)
   [ "${DRYRUN:-0}" = "1" ] && _argv+=(--dry-run)
+  [ -n "${XHOST_IDENT:-}" ] && _argv+=(--xhost-ident "$XHOST_IDENT")   # 跨主機收件:每一輪都帶寄件機身分
   _RESULT_DONE=1
   _outf="$(_dm_ctl_tmp aib-dm-retry-out)" || die "--retry-until 暫存檔開不了" 2
   _errf="$(_dm_ctl_tmp aib-dm-retry-err)" || die "--retry-until 暫存檔開不了" 2
@@ -332,7 +343,7 @@ for ln in text.splitlines():
 print(stage)
 ' < "$_outf" 2>/dev/null)" || _stage="-"
     [ -n "$_stage" ] || _stage="-"
-    echo "aib-dm-ctl: 第 ${_n} 次 rc=${_once_rc} stage=${_stage}" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.try_n n="${_n}" rc="${_once_rc}" stage="${_stage}")" >&2
     case "$_once_rc" in
       0)
         cat "$_outf"
@@ -348,14 +359,14 @@ print(stage)
     _now="$(date +%s)"
     if [ "$_now" -ge "$_deadline" ]; then
       if [ "${PARK_ON_DRAFT:-0}" = "1" ]; then
-        echo "aib-dm-ctl: 重試 ${_n} 次仍被擋,改入排序暫存" >&2
+        echo "aib-dm-ctl: $(_dmt aib.dmctl.retry_park n="${_n}")" >&2
         rm -f "$_outf" "$_errf"
         printf '%s' "$MSG" | env -u AIB_DM_BEFORE_PLACEHOLDERS -u AIB_DM_RETRY_ONCE_CMD \
           AIB_DM_RETRY_INNER=1 AIB_DM_AUTO_RESEND=0 AIB_DM_PARK_NOW=1 \
           bash "$0" "${_argv[@]}"
         exit $?
       fi
-      echo "重試 ${_n} 次仍被擋,放棄" >&2
+      echo "$(_dmt aib.dmctl.retry_give_up n="${_n}")" >&2
       cat "$_outf"
       rm -f "$_outf" "$_errf"
       exit 2
@@ -445,10 +456,10 @@ for ln in raw.splitlines():
         break
 ' "$_q_raw" 2>/dev/null || true)"
   if [ "$_q_take" != "queue" ] || [ -z "$_q_id" ]; then
-    echo "aib-dm-ctl: 排序暫存未收下(take=${_q_take:-none}):$_q_raw" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.queue_not_taken state="${_q_take:-none}" raw="$_q_raw")" >&2
     die "重試後仍被擋,且排序暫存未收下" 2
   fi
-  echo "aib-dm-ctl: 已排入暫存,尚未送到對方輸入框。queue_id=$_q_id" >&2
+  echo "aib-dm-ctl: $(_dmt aib.dmctl.queued_id id="$_q_id")" >&2
   printf '%s\n' "$_q_raw" | grep -v '^{' || true
   emit_json 0 sort-queued "已排入暫存,尚未送到對方輸入框"
   _RESULT_STAGE="sort-queued"
@@ -483,7 +494,7 @@ _notice_blocked() {   # $1=被擋席五碼 $2=reason $3=可選 卡稿主五碼
   [ -n "${3:-}" ] && _owner=(--draft-owner "$3")
   "$PY3" "$_COMPOSER_NOTICE" write --seat "$1" --reason "$2" \
       --sender "${AIB_DM_SELF_CODE:-unknown}" ${_owner[@]+"${_owner[@]}"} 2>/dev/null || \
-      echo "aib-dm-ctl: [L8b] 通知檔寫不進去(不影響本次 rc)" >&2
+      echo "aib-dm-ctl: $(_dmt aib.dmctl.notice_write_fail)" >&2
   return 0
 }
 # 第 55 項:從引擎 log 讀機器可讀的擋下種類。回 browse-mode / foreign-draft / 空(不是被框擋的)。
@@ -572,7 +583,7 @@ TARGET=""; FILE=""; DRYRUN=0; VERIFY=0; MSG_ARGV=()
 TO_RAW=""; TO_GIVEN=0; RESOLVE_ONLY=0
 DM_THREAD=""; DM_KIND=""; DM_EXPIRES=""; DM_TTL_MIN=""; DM_CLOSE=""
 RETRY_UNTIL=""; RETRY_EVERY=""; RETRY_UNTIL_GIVEN=0
-PROBE_BOX=0; PARK_ON_DRAFT=0
+PROBE_BOX=0; PARK_ON_DRAFT=0; XHOST_IDENT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --to) TO_RAW="${2:-}"; TO_GIVEN=1; shift 2 ;;
@@ -605,6 +616,9 @@ while [ $# -gt 0 ]; do
     #   祖先鏈**結構上**永遠回不到任何一席的 pane ⇒ 沒有這個入口就永遠不具名。
     --codex-session-uuid) DM_CODEX_SESSION_UUID="${2:-}"; shift 2 ;;
     --codex-session-uuid=*) DM_CODEX_SESSION_UUID="${1#--codex-session-uuid=}"; shift ;;
+    # 跨主機收件端(dm_xhost.py):寄件機推導好的身分 token。只在 sshd 底下才收,驗不過 rc=2;見下面「跨主機」兩段。
+    --xhost-ident) XHOST_IDENT="${2:-}"; shift 2 ;;
+    --xhost-ident=*) XHOST_IDENT="${1#--xhost-ident=}"; shift ;;
     --human-id*|--sender-seat*)
       die "sender_seat / human_id 只可推導不可指定($1):那是身份欄,自填=冒充" 2 ;;
     --sender*|--as*)
@@ -644,6 +658,27 @@ if [ "$TO_GIVEN" != "1" ]; then
   [ -n "$TARGET" ] || die "用法:aib dm <目標> [訊息...] [--file F] [--dry-run] [--verify]" 2
 fi
 
+# ── 跨主機(the maintainer 10-14 20:5x「先修這個」;拆法、驗法、能力邊界在 dm_xhost.py 檔頭)─────────────
+#   寄件機:地址的 IP 不是本機 ⇒ 下面完整地址那段記下 _XH_OUT_*,讀完稿後 _xhost_send 用 ssh 交給收件機。
+#     寄件人用 AIB_DM_XHOST_WHOAMI=1 再入本檔推導 —— 同一套規則,不另抄一份;那一輪只印 token、不送、不留痕。
+#   收件機:--xhost-ident 驗過(sshd 底下、對方不是本機、寄件方過白名單)才換抬頭寄件方;驗不過 rc=2,一個字都沒送。
+_XH_WHOAMI=0; _XH_OUT_IP=""; _XH_IN=0; _XH_LABEL=""; _XH_ORIGIN=""; _XH_HUB=""; _XH_IP=""
+if [ "${AIB_DM_XHOST_WHOAMI:-0}" = "1" ] && [ -z "$XHOST_IDENT" ] && [ "$TO_GIVEN" != "1" ]; then
+  # 只推導寄件人:跳過完整地址、取稿、真人三條件、留痕(RESOLVE_ONLY 那條路),下面目標閘整段跳過。
+  _XH_WHOAMI=1; RESOLVE_ONLY=1; AIB_DM_ADDR_DONE=1; TARGET="${TARGET:-@xhost}"
+fi
+if [ -n "$XHOST_IDENT" ]; then
+  [ "$TO_GIVEN" = "1" ] && die "--xhost-ident 不得與 --to 併用" 2
+  if ! _xh_line="$("$PY3" "$HERE/dm_xhost.py" accept "$XHOST_IDENT" 2>&1)"; then
+    emit_json 2 resolve "xhost:${_xh_line}"
+    die "跨主機投遞拒收:${_xh_line}" 2
+  fi
+  IFS=$'\x1f' read -r _XH_LABEL _XH_ORIGIN _XH_HUB _XH_IP <<<"$_xh_line"
+  _XH_IN=1
+fi
+
+
+
 # ── 完整地址(the maintainer 09-28:aib dm 一律含艙位碼;跨主機再加 IP)──────────────────
 #   艙位碼/席碼、IP/艙位碼/席碼、或從抬頭抄下的 IP:位址/艙位碼/名@席碼(拆法只在 dm_address.py)。
 #   艙位碼 = 艙 id 最後一個 `-` 之後的四碼。寫了艙 ⇒ 換到那一艙、目標改回 @席碼後重進本檔一次,
@@ -664,6 +699,13 @@ if [ "$TO_GIVEN" != "1" ] && [ -z "${AIB_DM_ADDR_DONE:-}" ]; then
   if [ "$_addr_rc" != "0" ] && [ "$(_addr_get reason)" = "bad" ]; then
     _addr_line="kind=other"; _addr_rc=0
   fi
+  if [ "$_addr_rc" != "0" ] && [ "$(_addr_get reason)" = "remote" ] && [ "$_XH_IN" != "1" ]; then
+    # 跨主機:這裡不送,讀完稿再交給 _xhost_send(要先有稿;身分也在那裡推)。
+    [ -n "$(_addr_get cabin)" ] || { emit_json 2 resolve "address:remote-no-cabin"; die "跨主機要寫 IP/艙位碼/席碼" 2; }
+    if [ "$RESOLVE_ONLY" = "1" ]; then _resolve_fail invalid; exit 2; fi
+    _XH_OUT_IP="$(_addr_get ip)"; _XH_OUT_ADDR="$(_addr_get cabin)/$(_addr_get seat)"
+    _addr_line="kind=xhost"; _addr_rc=0
+  fi
   if [ "$_addr_rc" != "0" ]; then
     _addr_detail="$(printf '%s\n' "$_addr_line" | tr ' ' '\n' | sed -n 's/^detail=//p' | sed 's/\xc2\xa0/ /g')"
     if [ "$RESOLVE_ONLY" = "1" ]; then _resolve_fail invalid; exit 2; fi
@@ -679,7 +721,7 @@ if [ "$TO_GIVEN" != "1" ] && [ -z "${AIB_DM_ADDR_DONE:-}" ]; then
           [ -n "$_s_sock" ] || continue
           _s_inst="$(aib_cabin_instance_from_hub "$_s_sock" 2>/dev/null)" || continue
           _s_tail="${_s_inst##*-}"; [ "${#_s_tail}" -gt 4 ] && _s_tail="${_s_tail:${#_s_tail}-4}"
-          _addr_hint="${_addr_hint}  aib dm ${_s_tail}/${_addr_seat}$([ "$_s_live" = "1" ] && echo "   ← 活著" || echo "   (沒在跑)")"$'\n'
+          _addr_hint="${_addr_hint}  aib dm ${_s_tail}/${_addr_seat}   $([ "$_s_live" = "1" ] && _dmt aib.dmctl.alive || _dmt aib.dmctl.not_running)"$'\n'
         done < <("$PY3" "$HERE/dm_address.py" lookup "$_addr_seat" "$(aib_cabin_state_root)" 2>/dev/null)
         if [ "$RESOLVE_ONLY" = "1" ]; then _resolve_fail invalid; exit 2; fi
         emit_json 2 resolve "address:no-cabin-given"
@@ -766,6 +808,67 @@ elif [ ! -t 0 ]; then
 fi
 if [ "$RESOLVE_ONLY" != "1" ] && [ "$PROBE_BOX" != "1" ]; then
   [ -n "${MSG//[[:space:]]/}" ] || die "訊息不得為空白" 2
+fi
+# 跨主機寄件(上面「跨主機」那段):推導寄件人 ⇒ ssh 交給收件機的 aib dm;rc 與 RESULT 行照收件機的。
+#   投不進的兩種:連不上(先 ssh true 試過)或收件機自己拒 ⇒ rc 2;ssh 中途斷 ⇒ 不知道對方收到沒 ⇒ rc 4(勿重送)。
+_xhost_send() {
+  local ident host cmd out rc ssh_bin="${AIB_DM_XHOST_SSH:-ssh}"
+  local -a sshopt=(-o BatchMode=yes -o ConnectTimeout="${AIB_DM_XHOST_TIMEOUT:-8}" -o ForwardAgent=no -o ClearAllForwardings=yes) rargs
+  host="$("$PY3" "$HERE/dm_xhost.py" ssh-target "$_XH_OUT_IP")" || host="$_XH_OUT_IP"
+  # 先試連線再推導:連不上就什麼都不碰(推導那一輪會讀本機艙)。
+  if ! "$ssh_bin" "${sshopt[@]}" "$host" true </dev/null >/dev/null 2>&1; then
+    emit_json 2 resolve "xhost:ssh-unreachable"
+    die "連不上 $host($_XH_OUT_IP)的 SSH,一個字都沒送" 2
+  fi
+  # 推導那一輪失敗時 stdout 會是解析失敗的 JSON:rc 不是 0、或不是純 token 字元 ⇒ 都當推不出來。
+  # 推導要問寄件人**自己那一艙**:沒指定艙時 HUB 是預設名,這台不一定有 ⇒ 從自己 pane 的 $TMUX 認 aihub 形的 socket。
+  #   (cockpit-env.sh 一定會 export 預設名,所以看的是呼叫端有沒有真的指定:_DM_SOCKET_WAS_SET。)
+  local own_hub="" tmux_sock
+  [ "$_DM_SOCKET_WAS_SET" = "1" ] && own_hub="${EZ2_AIHUB_SOCKET:-}"
+  if [ -z "$own_hub" ] && [ -n "${TMUX:-}" ]; then
+    tmux_sock="$(basename "${TMUX%%,*}")"
+    case "$tmux_sock" in aihub|aihub-*) case "$tmux_sock" in *[!0-9A-Za-z-]*) ;; *) own_hub="$tmux_sock" ;; esac ;; esac
+  fi
+  ident="$(env ${own_hub:+EZ2_AIHUB_SOCKET="$own_hub"} AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
+  ident="${ident##*$'\n'}"
+  case "$ident" in *[!A-Za-z0-9_=-]*) ident="" ;; esac
+  if [ -z "$ident" ]; then
+    # 推導那一輪自己死掉(hub 不可達之類):退回最低權格,照實寫推不出來,不猜。
+    ident="$("$PY3" "$HERE/dm_xhost.py" encode "unattested:${S_ORIGIN_FALLBACK:-unknown}" "" "" "")" \
+      || die "跨主機身分 token 組不出來,未送出" 2
+  fi
+  # AIB_DM_XHOST_REMOTE_AIB:收件機上 aib 的叫法(預設 aib;可寫成「bash /路徑/aib」,照空白拆成多個字)
+  read -r -a rargs <<<"${AIB_DM_XHOST_REMOTE_AIB:-aib}"
+  rargs+=(dm --xhost-ident "$ident" "$_XH_OUT_ADDR")
+  [ -n "$DM_THREAD" ] && rargs+=(--thread "$DM_THREAD")
+  [ -n "$DM_KIND" ] && rargs+=(--kind "$DM_KIND")
+  [ -n "$DM_CLOSE" ] && rargs+=(--close "$DM_CLOSE")
+  [ -n "$DM_EXPIRES" ] && rargs+=(--expires "$DM_EXPIRES")
+  [ "$DRYRUN" = "1" ] && rargs+=(--dry-run)
+  [ "$VERIFY" = "1" ] && rargs+=(--verify)
+  cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
+  out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd")"; rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out"
+  # 收件機的 dm-ctl 有跑到 ⇒ 它自己印了 RESULT 行;本機不再印第二行(最後一行要是收件機那一則的)。
+  local remote_ran=0
+  case $'\n'"$out" in *$'\nRESULT '*) remote_ran=1; _RESULT_DONE=1 ;; esac
+  case "$rc" in
+    0|2|3|4) return "$rc" ;;
+    255) emit_json 4 xhost-unknown "SSH 中途斷線,收件機收到沒有不知道;勿重送,先到那台看"; return 4 ;;
+  esac
+  if [ "$remote_ran" = "0" ]; then
+    # 收件機的 aib dm 根本沒跑起來(找不到指令、舊版不認 --xhost-ident 以外的錯…):沒進任何艙。
+    emit_json 2 resolve "xhost:remote-rc-$rc"
+    die "收件機 $host 跑不起 aib dm(rc=$rc),一個字都沒送;看上面那台印的錯" 2
+  fi
+  emit_json 4 xhost-unknown "收件機回了契約外的 rc=$rc;勿重送,先到那台看"
+  return 4
+}
+if [ -n "$_XH_OUT_IP" ]; then
+  [ "${RETRY_UNTIL_GIVEN}" = "1" ] && die "跨主機還不支援 --retry-until" 2
+  S_ORIGIN_FALLBACK="$("$PY3" "$HERE/sender_origin.py" 2>/dev/null | tr -cd '0-9A-Za-z_.:-' || true)"
+  _xhost_send
+  exit $?
 fi
 # --retry-until:稿已讀完再進迴圈,子輪走 stdin,不會第二輪讀到空稿。
 if [ "${RETRY_UNTIL_GIVEN}" = "1" ] && [ "${AIB_DM_RETRY_INNER:-0}" != "1" ] \
@@ -871,7 +974,8 @@ _V2_ARGS=()
 # human_id 只在真人時有值(接口 §1:空=量不到)。排空器重投與階段 A 再入不量(它們永遠不是人)。
 # 冒用:非真人的正文以「真人<…>:」開頭 ⇒ 改「AI 自稱真人:」照送並留痕(the maintainer 09-12 14:3x 裁「不擋」)。
 HUMAN_ID=""; HUMAN_ATTEST_JSON=""
-if [ "$RESOLVE_ONLY" != "1" ] && [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ] && [ "$S_ORIGIN_KIND" != "seat" ] && [ "$S_ORIGIN_KIND" != "bgfork" ]; then
+if [ "$RESOLVE_ONLY" != "1" ] && [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ] && [ "$S_ORIGIN_KIND" != "seat" ] && [ "$S_ORIGIN_KIND" != "bgfork" ] \
+   && [ "$_XH_IN" != "1" ]; then
   HUMAN_ATTEST_JSON="$("$PY3" "$HERE/human_attest.py" --pid "$$" 2>/dev/null || true)"
   HUMAN_ID="$("$PY3" -c 'import json,sys
 try:
@@ -893,7 +997,7 @@ new, changed = ha.rewrite_impersonation(sys.stdin.read())
 sys.stdout.write(("1" if changed else "0") + "\n" + new)' "$HERE" <<<"$MSG" 2>/dev/null || printf '0\n%s' "$MSG")"
   if [ "${_IMP%%$'\n'*}" = "1" ]; then
     MSG="${_IMP#*$'\n'}"
-    echo "aib-dm-ctl: 正文以「真人…:」開頭但寄件端不是真人:已改標「AI 自稱真人:」照送,並留痕" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.fake_human)" >&2
     _IMP_LOG="$_STATE_ROOT_EARLY/state/dm-impersonation.jsonl"
     mkdir -p "$(dirname "$_IMP_LOG")" 2>/dev/null && "$PY3" -c 'import json,sys,time,os
 print(json.dumps({"ts": int(time.time()), "sender_origin": sys.argv[1] or None, "target": sys.argv[2] or None,
@@ -985,6 +1089,11 @@ if [ "$RESOLVE_ONLY" != "1" ] && [ "$AIB_DM_RELAY_BYTES" -gt 0 ]; then
     elif [ "$S_ORIGIN_KIND" = "bgfork" ]; then
       _RELAY_SEAT="$S_ORIGIN"; _RELAY_BGFORK=1     # 指標寫「來自 @五碼 的背景分身」,讀的人分得出不是本人
     fi
+    if [ "$_XH_IN" = "1" ]; then                   # 跨主機:指標寫寄件機那一席(驗過的 token),不是 SSH 行程
+      _RELAY_SEAT=""; _RELAY_BGFORK=0
+      case "$_XH_LABEL" in @*) _RELAY_SEAT="${_XH_LABEL#@}"; _RELAY_SEAT="${_RELAY_SEAT%%(*}" ;; esac
+      [ "$_XH_ORIGIN" = "bgfork" ] && _RELAY_BGFORK=1
+    fi
     MSG="$("$PY3" -c '
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -994,7 +1103,7 @@ print(so.relay_pointer_line(int(sys.argv[2]), sys.argv[3], sys.argv[4] or None, 
     [ -n "$MSG" ] || die "長訊指標組不出來,未送出" 2
     _RESULT_RELAY="$_RELAY_FILE"
     _relay_index_append long "$_RELAY_FILE" "$_RELAY_N" \
-      || echo "aib-dm-ctl: 留痕索引寫入失敗($_RELAY_INDEX):檔已落、照送;稽核母體少這一筆" >&2
+      || echo "aib-dm-ctl: $(_dmt aib.dmctl.relay_index_fail path="$_RELAY_INDEX")" >&2
   elif [ "${AIB_DM_RESEND:-0}" = "1" ]; then
     _RESULT_RELAY="${AIB_DM_RESEND_RELAY:--}"     # 第 159 項:重送輪不再留痕,RESULT 指第一輪那份
   elif [ -z "${EZ2_DM_MULTI_DEPTH:-}" ] && [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ]; then
@@ -1009,12 +1118,12 @@ print(so.relay_pointer_line(int(sys.argv[2]), sys.argv[3], sys.argv[4] or None, 
     if [ "${_RELAY_BACK:-}" = "$_RELAY_N" ]; then
       _RESULT_RELAY="$_RELAY_FILE"
       _relay_index_append short "$_RELAY_FILE" "$_RELAY_N" \
-        || echo "aib-dm-ctl: 留痕索引寫入失敗($_RELAY_INDEX):檔已落、照送;稽核母體少這一筆" >&2
+        || echo "aib-dm-ctl: $(_dmt aib.dmctl.relay_index_fail path="$_RELAY_INDEX")" >&2
     else
       _RESULT_RELAY="FAILED"
       # ★ 變數後面緊接全形字要用 ${…}:bash 會把 `$_RELAY_N、` 的第一個位元組當成名字的一部分
       #   (set -u ⇒ 未綁定變數 ⇒ 整支 exit 1,而且 stderr 是半個 UTF-8 字)—— HANDOFF §六 那一條的鏡像
-      echo "aib-dm-ctl: 短訊留痕失敗(${_RELAY_FILE},寫 ${_RELAY_N}、讀 ${_RELAY_BACK:-取不到}):照送,但這一則稽核找不到" >&2
+      echo "aib-dm-ctl: $(_dmt aib.dmctl.relay_short_fail file="${_RELAY_FILE}" n="${_RELAY_N}" got="${_RELAY_BACK:-$(_dmt aib.dmctl.not_readable)}")" >&2
     fi
   fi
 fi
@@ -1144,7 +1253,7 @@ for s, r, raw_detail in zip(sels, reasons, details):
 print(json.dumps({"stage": "preflight", "invalid_selectors": bad,
                   "body_reject": None}, ensure_ascii=False))' \
       "$_NSEL" "${_SELS[@]}" "${_REASON[@]}" "${_DETAIL[@]}"
-    echo "aib-dm-ctl: 階段 A 未全數通過 —— **整批未開始,零投遞,可安全重送整批**。" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.batch_a_fail)" >&2
     _RESULT_STAGE="preflight"
     exit 2
   fi
@@ -1169,7 +1278,7 @@ print(json.dumps({"stage": "preflight", "invalid_selectors": [],
                                   "lint_rc": int(sys.argv[3]),
                                   "detail": sys.argv[4]}}, ensure_ascii=False))' \
         "$_VL_KIND" "$_NSEL" "$_VL_RC" "$_VL_ERR"
-      echo "aib-dm-ctl: 多收件人正文擋下($_VL_KIND;$_VL_ERR)——零投遞,改成 @五碼後重送整批。" >&2
+      echo "aib-dm-ctl: $(_dmt aib.dmctl.multi_body_blocked kind="$_VL_KIND" err="$_VL_ERR")" >&2
       _RESULT_STAGE="preflight"
       exit 2
     fi
@@ -1227,8 +1336,8 @@ import json, sys
 print(json.dumps({"stage": "batch", "process_rc": int(sys.argv[1]),
                   "receipts": int(sys.argv[2])}, ensure_ascii=False))' "$_PRC" "$_NSEL"
   if [ "$_PRC" = "5" ]; then
-    echo "aib-dm-ctl: 行程 rc=5 —— 有席非 0。**答案在逐席收據裡,不在這個數字裡**;" >&2
-    echo "aib-dm-ctl: 只挑 rc_contract==2 的 canonical 席重送,rc_contract==4 的絕不重送。" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.rc5_head)" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.rc5_rule)" >&2
   fi
   _RESULT_STAGE="batch"    # 逐席的 RESULT 行已由子行程各印一行透出;本行是整批的收尾
   exit "$_PRC"
@@ -1291,13 +1400,13 @@ PY
 )" || sock=""
   case "$sock" in
     AMBIGUOUS*)
-      echo "aib-dm-ctl: 這個座位碼在多個指揮艙都活著,沒有猜。${sock#AMBIGUOUS }" >&2
+      echo "aib-dm-ctl: $(_dmt aib.dmctl.ambiguous_cabin detail="${sock#AMBIGUOUS }")" >&2
       exit 2
       ;;
   esac
   [ -n "$sock" ] || return 1
   [ "$sock" = "$HUB" ] && return 1
-  echo "aib-dm-ctl: 這席活在 ${sock} ,已改用這一艙,不用自己設 socket。" >&2
+  echo "aib-dm-ctl: $(_dmt aib.dmctl.hop_cabin target="${sock}")" >&2
   # 外層已經把預設艙寫進環境。不拿掉的話,內層會當成「兩個艙打架」而拒絕。
   exec env -u EZ2_AIB_INSTANCE -u EZ2_AIB_INSTANCE_HOME -u EZ2_TMUX_SESSION \
     EZ2_AIHUB_SOCKET="$sock" AIB_DM_HOPPED=1 bash "$SOURCE" "${_DM_ORIG_ARGS[@]}"
@@ -1312,7 +1421,7 @@ _dm_forward_to_successor() {
   line="$("$PY3" "$HERE/seat_liveness.py" successors "$old" 2>/dev/null)" || rc=$?
   case "$rc" in
     0) ;;
-    4) echo "aib-dm-ctl: @$old 已不在,但從它分出的活席不只一個,沒有猜:$(printf '%s' "$line" | tr '\n' ' ')" >&2; return 1 ;;
+    4) echo "aib-dm-ctl: $(_dmt aib.dmctl.fork_ambiguous old="$old" detail="$(printf '%s' "$line" | tr '\n' ' ')")" >&2; return 1 ;;
     *) return 1 ;;
   esac
   local -a args=(); local a replaced=0
@@ -1324,7 +1433,7 @@ _dm_forward_to_successor() {
     fi
   done
   [ "$replaced" = "1" ] || return 1
-  echo "aib-dm-ctl: @$old 已不在,由 @$line 接續(分出新席);改投 @${line}。" >&2
+  echo "aib-dm-ctl: $(_dmt aib.dmctl.fork_hop old="$old" new="$line")" >&2
   # review r2 m6:排隊投遞轉給後繼席之後,T_CODE 變成後繼席,而那一則還住在**舊席**的佇列底下 ⇒
   #   把舊席碼帶過去(投遞者已帶就不蓋),原寄件人那一段拿它回佇列找
   if [ -n "${AIB_DM_QUEUED_ITEM_ID:-}" ]; then
@@ -1339,7 +1448,7 @@ _AIB_DANGEROUS_PY="${HERE}/dangerous_seat_actions.py"
 hub_tmux_send_keys() {
   # argv: -t TARGET KEY...  或 KEY...
   if ! /usr/bin/env python3 "$_AIB_DANGEROUS_PY" guard-tmux -- send-keys "$@"; then
-    echo "aib-dm-ctl: DENY 危險 send-keys($*)——不送(見 dangerous_seat_actions)" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.deny_keys args="$*")" >&2
     return 2
   fi
   hub_tmux send-keys "$@"
@@ -1554,6 +1663,8 @@ PY
 )" || die "解析器失敗" 2
 unset DM_LIVE_IDS
 
+# 跨主機推導那一輪(_XH_WHOAMI)沒有本機目標:目標閘到 provider 那段整段跳過(縮排不動,範圍到「發送席推導」之前)。
+if [ "$_XH_WHOAMI" != "1" ]; then
 REFUSAL_KIND="$("$PY3" -c 'import json,sys; print((json.loads(sys.argv[1]).get("refusal") or {}).get("kind") or "")' "$RESOLVED")"
 if [ -n "$REFUSAL_KIND" ]; then
   REFUSAL_DETAIL="$("$PY3" -c 'import json,sys; print((json.loads(sys.argv[1]).get("refusal") or {}).get("message") or "量不到")' "$RESOLVED")"
@@ -1588,7 +1699,7 @@ fi
 if [ "$N_MATCH" != "1" ]; then
   if [ "$RESOLVE_ONLY" = "1" ]; then _resolve_fail ambiguous; exit 2; fi
   emit_json 2 resolve "座位碼多重命中,拒投"
-  echo "aib-dm-ctl: 座位碼不唯一,候選如下:" >&2
+  echo "aib-dm-ctl: $(_dmt aib.dmctl.code_ambiguous)" >&2
   "$PY3" -c 'import json,sys
 for m in json.loads(sys.argv[1])["matches"]:
     print("  window=%s role=%s 座位碼=%s" % (
@@ -1713,6 +1824,7 @@ export AIB_DM_STRICT_UNKNOWN=1
 case "$T_PROVIDER" in
   codex|agy|copilot|grok) export AIB_DM_DRAFT_RE='a^' ;;
 esac
+fi   # _XH_WHOAMI 跳過的目標閘到這裡
 
 # 發送席推導(不可偽填):hub 窗內=自己的席位檔;hub 外=human 委託人。
 # 席位=經機器驗證的綁定(schema+檔名交叉+活窗)而無人證,對映血緣閘的
@@ -1729,8 +1841,8 @@ print(s.get("code") or "unknown")' "$RESOLVED" 2>/dev/null || echo unknown)"
 if [ "$AIB_DM_SELF_CODE" != "unknown" ] && [ -f "$_COMPOSER_NOTICE" ]; then
   _SELF_NOTICE="$("$PY3" "$_COMPOSER_NOTICE" render --seat "$AIB_DM_SELF_CODE" 2>/dev/null || true)"
   if [ -n "$_SELF_NOTICE" ]; then
-    echo "aib-dm-ctl: [L8b 給你自己] 這不是這次送信的結果。$_SELF_NOTICE" >&2
-    echo "aib-dm-ctl: 這次送沒送成,只看最後一行 RESULT。" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.self_notice text="$_SELF_NOTICE")" >&2
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.self_notice_tail)" >&2
   fi
 fi
 if [ "$SENDER_HAS_SEAT" = "1" ]; then
@@ -1925,6 +2037,14 @@ print(json.dumps({
   fi
 fi
 
+# 跨主機推導那一輪到這裡為止:寄件人已照上面同一套規則推完,印 token 給寄件那一輪,不送。
+if [ "$_XH_WHOAMI" = "1" ]; then
+  _xh_kind="$S_ORIGIN_KIND"; case "$S_LABEL" in *"(背景分身)") _xh_kind="bgfork" ;; esac
+  exec "$PY3" "$HERE/dm_xhost.py" encode "$S_LABEL" "${S_ORIGIN:-}" "$_xh_kind" "${_SENDER_HUB:-$HUB}"
+fi
+
+
+
 # ── 排隊投遞保留原寄件人(the maintainer 09-30 15:3x,收件匣 A 項 2)────────────────────
 #   災情:佇列只存正文不存抬頭,排空器(或真人按「立刻送出」)重投時,上面那一大段是從**投遞者自己的**
 #   行程鏈推寄件人 ⇒ 排空器送的抬頭變「系統@aib」、滑鼠送的變「the maintainer」,收件席看不出是誰寄的、也回錯人。
@@ -1938,10 +2058,18 @@ fi
 #   ★ 只改抬頭的寄件方;SENDER_JSON(帳本/血緣閘看的那筆)仍記**實際貼稿的行程**,權限一格不動。
 #   ★ 自填寄件身分的旗標(--sender / --as / --sender-seat / --human-id)仍一律 die,這裡沒有開那扇門。
 # 寄件端把自己那一艙與來源機器名交給佇列(入列/留歷史時記下),日後排隊投遞才寫得出原寄件人的艙位碼。
+# 跨主機收件(上面驗過):抬頭寄件方換成寄件機推導的那一席;來源記成 xhost:<sshd 量到的對方 IP>,
+#   忙碌入列後排空重投也認得出是跨主機(下面排隊那段)。帳本 SENDER_JSON 不動:仍是實際貼稿的 SSH 行程,低權格。
+if [ "$_XH_IN" = "1" ]; then
+  S_LABEL="$_XH_LABEL"; S_ORIGIN="xhost:$_XH_IP"
+  [ -n "$_XH_HUB" ] && _SENDER_HUB="$_XH_HUB"
+fi
 [ -n "${_SENDER_HUB:-$HUB}" ] && _V2_ARGS+=("--sender-hub=${_SENDER_HUB:-$HUB}")
 [ -n "${S_ORIGIN:-}" ] && _V2_ARGS+=("--sender-origin=${S_ORIGIN}")
 
-_HDR_S_LABEL="$S_LABEL"; _HDR_S_ORIGIN="${S_ORIGIN:-}"
+_HDR_S_LABEL="$S_LABEL"; _HDR_S_ORIGIN="${S_ORIGIN:-}"; _HDR_S_ADDR=""; _HDR_S_NOTE=""
+_xh_hdr() { _HDR_S_ADDR="${1#xhost:}"; _HDR_S_NOTE="跨主機·經SSH"; }
+if [ "$_XH_IN" = "1" ]; then _xh_hdr "$_XH_IP"; fi
 # review r2 m6:那一則住在哪一席的佇列 = 投遞者說的(AIB_DM_QUEUED_SEAT;轉給後繼席時由上面帶過來),沒說才用收件席
 _Q_SEAT="${AIB_DM_QUEUED_SEAT:-${T_CODE:-}}"
 if [ "${AIB_DM_SORT_DELIVER:-0}" = "1" ] && [ -n "${AIB_DM_QUEUED_ITEM_ID:-}" ] && [ -n "$_Q_SEAT" ]; then
@@ -1971,8 +2099,9 @@ sa.assert_address_whitelist(sys.argv[1], "dm 抬頭")' "[$_q_lab > $T_LABEL / �
        && "$PY3" "$HERE/dm_header.py" from-labels "$_q_lab" "$T_LABEL" "$_q_org" "${_q_hub:-$HUB}" "" >/dev/null 2>&1; then
       # 艙位碼也換成原寄件人那一艙(_SENDER_HUB 在這之後只剩抬頭這一個讀者);信上沒記艙 ⇒ 不動
       _HDR_S_LABEL="$_q_lab"; _HDR_S_ORIGIN="$_q_org"; [ -n "$_q_hub" ] && _SENDER_HUB="$_q_hub"
+      case "$_q_org" in xhost:*) _xh_hdr "$_q_org" ;; esac      # 跨主機那一則排隊後重投:位址與標記照入列時的
     else
-      echo "aib-dm-ctl: 排隊那一則的原寄件人($_q_lab)組不出合格抬頭,照舊用投遞者推導的寄件人" >&2
+      echo "aib-dm-ctl: $(_dmt aib.dmctl.queued_sender_fallback label="$_q_lab")" >&2
     fi
   fi
 fi
@@ -1998,7 +2127,7 @@ fi
 _T_SOCKET="$("$PY3" -c 'import json,sys
 m=json.loads(sys.argv[1])["matches"][0]
 print((m.get("rec") or {}).get("socket") or "")' "$RESOLVED" 2>/dev/null || true)"
-if ! HEADER="$("$PY3" "$HERE/dm_header.py" from-labels "$_HDR_S_LABEL" "$T_LABEL" "$_HDR_S_ORIGIN" "${_SENDER_HUB:-$HUB}" "$_T_SOCKET")" \
+if ! HEADER="$("$PY3" "$HERE/dm_header.py" from-labels "$_HDR_S_LABEL" "$T_LABEL" "$_HDR_S_ORIGIN" "${_SENDER_HUB:-$HUB}" "$_T_SOCKET" "$_HDR_S_ADDR" "$_HDR_S_NOTE")" \
    || [ -z "$HEADER" ]; then
   emit_json 2 header "抬頭產生失敗(dm_header.py from-labels)"
   die "抬頭產生失敗:[$S_LABEL > $T_LABEL]" 2
@@ -2149,7 +2278,7 @@ for ln in raw.splitlines():
   if [ "$_Q_TAKE" = "queue" ]; then
     "$PY3" -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["receipt"], ensure_ascii=False))' \
       "$_Q_OUT"
-    echo "aib-dm-ctl: 已排入暫存,尚未送到對方輸入框。"
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.queued)"
     _RESULT_STAGE="sort-queued"
     _RESULT_ID="$("$PY3" -c 'import json,sys; print((json.loads(sys.argv[1]).get("receipt") or {}).get("queue_id") or "-")' "$_Q_OUT" 2>/dev/null || echo "-")"
     exit 0
@@ -2243,9 +2372,9 @@ _aib_emit_engine_log() {
       #     (與「談論被過濾的字元時用碼位描述」同一條)。
       case "$_l" in
         *重送*|*重貼*)
-          printf 'aib-dm-ctl: [引擎中間觀測已作廢:有一行含重新投遞指示,因本次已送達而整行不印]\n' ;;
+          printf 'aib-dm-ctl: %s\n' "$(_dmt aib.dmctl.engine_obs_void)" ;;
         *)
-          printf 'aib-dm-ctl: [引擎中間觀測,已被本次執行的結局取代] %s\n' "$_l" ;;
+          printf 'aib-dm-ctl: %s\n' "$(_dmt aib.dmctl.engine_obs_superseded line="$_l")" ;;
       esac
     done < "$_ENG_LOG"
   else
@@ -2344,14 +2473,14 @@ case "$RC" in
         stuck-mine|stuck-after-repress|repress-failed|changed-before-repress)
           _aib_emit_engine_log superseded
           emit_json 4 landed-unsubmitted "長稿(${_LP_KB}KB)已落進對方輸入框、已按 Enter,但等待後框裡仍是本稿(${_LP_V}):進了沒送出,**絕不重送**,請該席自己按 Enter 或清掉" "none"
-          echo "aib-dm-ctl: 長稿已在對方框內但未送出(${_LP_V})——不再投,請該席處理。" >&2
+          echo "aib-dm-ctl: $(_dmt aib.dmctl.long_in_box state="${_LP_V}")" >&2
           exit 4 ;;
         repressed-clear)
           _aib_emit_engine_log superseded
           _notice_clear "$T_CODE"
           emit_json 0 delivered "長稿(${_LP_KB}KB)Enter 後框未清、整框恰為本稿;等待後重按一次,回讀確認框已清 -> $T_WID" "auto-enter-repress"
-          echo "aib-dm-ctl: 長稿第一次 Enter 沒送出,已重按一次並確認框已清 -> $T_WID"
-          echo "aib-dm-ctl: 本收據只證明按鍵落入目標 pane,不證明對方已讀或已執行。"
+          echo "aib-dm-ctl: $(_dmt aib.dmctl.long_reenter_ok window="$T_WID")"
+          echo "aib-dm-ctl: $(_dmt aib.dmctl.receipt_scope)"
           exit 0 ;;
       esac
     fi
@@ -2365,7 +2494,7 @@ case "$RC" in
       _CB_MODE="$("$PY3" "$HERE/codexbot_receipt.py" "$_Q_UUID" 2>/dev/null || true)"
     fi
     if [ "$_CB_MODE" = "queue" ]; then
-      echo "aib-dm-ctl: 已排入 codexbot 席的桌面佇列(queue 模式):等桌面持有者閒下來才執行;桌面關著就一直等。" >&2
+      echo "aib-dm-ctl: $(_dmt aib.dmctl.codexbot_queued)" >&2
       emit_json 0 queued "已排入桌面佇列,等桌面持有者執行(桌面關著就一直等)-> $T_WID" "$VERIFIED_LABEL"
     else
       emit_json 0 delivered "傳輸已驗證 -> $T_WID" "$VERIFIED_LABEL"
@@ -2374,7 +2503,7 @@ case "$RC" in
     #   由 claudebot_receipt.py 從橋的 status.json 與門鈴行程判;量不到就不說。stage 仍 delivered(信確實進了信箱)。
     if [ "${T_PROVIDER:-}" = "claudebot" ] && [ -n "${_Q_UUID:-}" ] && [ -f "$HERE/claudebot_receipt.py" ]; then
       _CBR_NOTE="$("$PY3" "$HERE/claudebot_receipt.py" "$_Q_UUID" 2>/dev/null || true)"
-      if [ -n "$_CBR_NOTE" ]; then echo "aib-dm-ctl: ⚠ 對方 @${T_CODE} 是 ClaudeBot 席,${_CBR_NOTE}" >&2; fi
+      if [ -n "$_CBR_NOTE" ]; then echo "aib-dm-ctl: $(_dmt aib.dmctl.claudebot_note code="${T_CODE}" text="${_CBR_NOTE}")" >&2; fi
     fi
     if [ "$VERIFY" = "1" ]; then
       # 探針取**正文**(跳過抬頭)且要求「貼前沒有、貼後有」——抬頭前 24 字
@@ -2383,13 +2512,13 @@ case "$RC" in
       _probe="${_vbody:0:24}"
       _tail="$(hub_tmux capture-pane -p -t "$T_WID" 2>/dev/null | tr -d '[:space:]')"
       if [ -z "$_probe" ]; then
-        echo "aib-dm-ctl: --verify:正文指紋為空,無法判別(不宣稱已見)"
+        echo "aib-dm-ctl: $(_dmt aib.dmctl.verify_empty)"
       else
         case "$_VBEFORE" in
-          *"$_probe"*) echo "aib-dm-ctl: --verify:**無法判別**——正文指紋在送出前就已在畫面(重送同句/對方引述),不作為送達證據" ;;
+          *"$_probe"*) echo "aib-dm-ctl: $(_dmt aib.dmctl.verify_preexisting)" ;;
           *) case "$_tail" in
-               *"$_probe"*) echo "aib-dm-ctl: --verify:正文指紋為貼後新出現(仍≠對方已讀)" ;;
-               *) echo "aib-dm-ctl: --verify:畫面未見正文指紋(可能已摺疊或捲動;投遞驗證以引擎回讀為準)" ;;
+               *"$_probe"*) echo "aib-dm-ctl: $(_dmt aib.dmctl.verify_new)" ;;
+               *) echo "aib-dm-ctl: $(_dmt aib.dmctl.verify_not_seen)" ;;
              esac ;;
         esac
       fi
@@ -2507,7 +2636,7 @@ case "$RC" in
         if [ "$_AE_CONF_RC" != "0" ]; then
           _aib_emit_engine_log superseded
           emit_json 3 sent-unverified "已自動補 Enter($_AE_DETAIL),但確認回讀失敗(capture rc=$_AE_CONF_RC):**勿重貼**" "auto-enter"
-          echo "aib-dm-ctl: 已補 Enter,但確認回讀失敗——勿重貼。"
+          echo "aib-dm-ctl: $(_dmt aib.dmctl.enter_readback_fail)"
           exit 3
         fi
         # ★ 2026-09-24(a seat 實測):Enter 送出後 pty 要幾毫秒重畫,首次回讀常抓到
@@ -2602,7 +2731,7 @@ case "$RC" in
               if [ "$_AE_ENTER2_RC" != "0" ]; then
                 _aib_emit_engine_log superseded
                 emit_json 4 repress-enter-failed "本次稿卡住,重按時 send-keys rc=$_AE_ENTER2_RC:稿仍在對方框內,**絕不重送**" "auto-enter-repress"
-                echo "aib-dm-ctl: 本次稿卡住,重按失敗(send-keys rc=$_AE_ENTER2_RC)——勿重貼。" >&2
+                echo "aib-dm-ctl: $(_dmt aib.dmctl.stuck_reenter_fail rc="$_AE_ENTER2_RC")" >&2
                 exit 4
               fi
               _AE_CONFIRM2="$(hub_tmux capture-pane -e -p -t "$T_WID" 2>/dev/null)"
@@ -2610,7 +2739,7 @@ case "$RC" in
               if [ "$_AE_CONF2_RC" != "0" ]; then
                 _aib_emit_engine_log superseded
                 emit_json 4 repress-unverified "本次稿卡住,已重按一次,但確認回讀失敗(capture rc=$_AE_CONF2_RC):**勿重貼**" "auto-enter-repress"
-                echo "aib-dm-ctl: 本次稿卡住,已重按一次;確認回讀失敗——勿重貼。" >&2
+                echo "aib-dm-ctl: $(_dmt aib.dmctl.stuck_readback_fail)" >&2
                 exit 4
               fi
               _AE_CSTATE2="$("$PY3" "$HERE/composer_state.py" --stdin <<< "$_AE_CONFIRM2" 2>/dev/null)"
@@ -2619,13 +2748,13 @@ case "$RC" in
                 empty|suggestion)
                   _aib_emit_engine_log superseded
                   emit_json 0 "$_AE_STAGE" "自動補 Enter 後框未清($_AE_RP_DETAIL);等待後重按一次,回讀確認框已清" "auto-enter-repress"
-                  echo "aib-dm-ctl: 本次稿曾卡住,已重按一次並確認框已清 -> $T_WID"
-                  echo "aib-dm-ctl: 本收據只證明按鍵落入目標 pane,不證明對方已讀或已執行。"
+                  echo "aib-dm-ctl: $(_dmt aib.dmctl.stuck_reenter_ok window="$T_WID")"
+                  echo "aib-dm-ctl: $(_dmt aib.dmctl.receipt_scope)"
                   exit 0 ;;
                 *)
                   _aib_emit_engine_log superseded
                   emit_json 4 stuck-after-repress "本次稿卡住,已重按一次;框仍未清(composer_state=${_AE_CSTATE2}):稿在對方框內,**絕不重送**,請該席自己處理" "auto-enter-repress"
-                  echo "aib-dm-ctl: 本次稿卡住,已重按一次;框仍判為 ${_AE_CSTATE2}——勿重貼。" >&2
+                  echo "aib-dm-ctl: $(_dmt aib.dmctl.stuck_still state="${_AE_CSTATE2}")" >&2
                   exit 4 ;;
               esac
             fi
@@ -2641,17 +2770,17 @@ case "$RC" in
             #     上一行接 `)` 完全正常,所以「它剛才明明有值」不是反證。
             #   ★ 而它只在走到這條路徑時才發作:八格裡只有一格會走到這裡,
             #     其餘全綠——**這個缺陷的可見度等於那條路徑被走到的機率。**
-            echo "aib-dm-ctl: 已補 Enter,但送出後的框判為 ${_AE_CSTATE}——勿重貼,請人工確認。" >&2
+            echo "aib-dm-ctl: $(_dmt aib.dmctl.enter_box_state state="${_AE_CSTATE}")" >&2
             exit 3 ;;
         esac
         _aib_emit_engine_log superseded
         emit_json 0 "$_AE_STAGE" "自動補 Enter 已送出($_AE_DETAIL);Enter 後回讀確認佔位符已消失" "auto-enter"
         if [ "$_AE_STAGE" = "queued" ]; then
-          echo "aib-dm-ctl: 已自動補 Enter;對方忙碌,稿**已入佇列**(正常成功,不是失敗)。"
+          echo "aib-dm-ctl: $(_dmt aib.dmctl.enter_queued)"
         else
-          echo "aib-dm-ctl: 已自動補 Enter 並確認框已清 -> $T_WID"
+          echo "aib-dm-ctl: $(_dmt aib.dmctl.enter_ok window="$T_WID")"
         fi
-        echo "aib-dm-ctl: 本收據只證明按鍵落入目標 pane,不證明對方已讀或已執行。"
+        echo "aib-dm-ctl: $(_dmt aib.dmctl.receipt_scope)"
         exit 0 ;;
       unverified)
         # 貼進去了、框上看不見佔位符、未按 Enter。舊契約落 rc=3 勿重貼,
@@ -2681,13 +2810,13 @@ case "$RC" in
           [ "$_CH_STATE" != "unknown" ] || _CH_STATE="$(_ch_read "")"
           _CH_WHAT="composer=${_CH_STATE:-unreadable};未按 C-c"
           if [ "$_CH_STATE" = "draft" ]; then
-            hub_tmux_send_keys -t "$T_WID" C-c >/dev/null 2>&1 || echo "aib-dm-ctl: C-c 已否決(護席)" >&2
+            hub_tmux_send_keys -t "$T_WID" C-c >/dev/null 2>&1 || echo "aib-dm-ctl: $(_dmt aib.dmctl.cc_denied)" >&2
             _CH_AFTER="$(_ch_read "$T_PROVIDER")"
             [ "$_CH_AFTER" != "unknown" ] || _CH_AFTER="$(_ch_read "")"
             if [ "$_CH_AFTER" = "draft" ]; then _CH_WHAT="已按 C-c 但框仍是 draft(沒清掉)"; else _CH_WHAT="已按 C-c,框=${_CH_AFTER:-unreadable}(已清)"; fi
           fi
           emit_json 4 cleared-hold "貼後看不見佔位符、未送出(排空器路徑):${_CH_WHAT};轉待人處理,**絕不重送**($_AE_DETAIL)" "none"
-          echo "aib-dm-ctl: 排空器送信貼後未送出(${_CH_WHAT});這則轉待人處理,不重送。" >&2
+          echo "aib-dm-ctl: $(_dmt aib.dmctl.drainer_unsent what="${_CH_WHAT}")" >&2
           exit 4
         fi
         _aib_emit_engine_log final
@@ -2725,7 +2854,7 @@ case "$RC" in
         fi
         if [ -n "$_LP_SEEN" ]; then
           emit_json 4 landed-unsubmitted "貼後引擎沒驗到,但對方畫面上看得見本稿(頭或尾指紋):進了沒送出,**絕不重送**、不改排暫存;請該席自己按 Enter 或清掉($_AE_DETAIL)" "none"
-          echo "aib-dm-ctl: 稿已在對方畫面上但未確認送出——不再投、不改排,請該席處理。" >&2
+          echo "aib-dm-ctl: $(_dmt aib.dmctl.draft_on_screen)" >&2
           exit 4
         fi
         if [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ] && [ -n "$T_CODE" ] \
@@ -2746,10 +2875,10 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
             "$_Q_OUT" 2>/dev/null || true)"
           if [ "$_Q_TAKE" = "queue" ]; then
             # 剛貼的是我們的稿、未送出。C-c 清輸入,避免待審稍後再送時疊兩份。
-            hub_tmux_send_keys -t "$T_WID" C-c >/dev/null 2>&1 || echo "aib-dm-ctl: C-c 已否決(護席)" >&2
+            hub_tmux_send_keys -t "$T_WID" C-c >/dev/null 2>&1 || echo "aib-dm-ctl: $(_dmt aib.dmctl.cc_denied)" >&2
             "$PY3" -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["receipt"], ensure_ascii=False))' \
               "$_Q_OUT"
-            echo "aib-dm-ctl: 貼後看不見佔位符、未送出;已改排入暫存,並試圖清掉對方框裡剛貼的稿。"
+            echo "aib-dm-ctl: $(_dmt aib.dmctl.no_placeholder_parked)"
             _RESULT_STAGE="sort-queued"
             _RESULT_ID="$("$PY3" -c 'import json,sys; print((json.loads(sys.argv[1]).get("receipt") or {}).get("queue_id") or "-")' "$_Q_OUT" 2>/dev/null || echo "-")"
             _RECORD_ELIGIBLE=0      # 這則已在佇列裡,不再 record
@@ -2762,7 +2891,7 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
       *)
         _aib_emit_engine_log final
         emit_json 4 "$_AE_STAGE" "$_AE_DETAIL" "none"
-        echo "aib-dm-ctl: 未自動補 Enter——$_AE_DETAIL" >&2
+        echo "aib-dm-ctl: $(_dmt aib.dmctl.no_auto_enter detail="$_AE_DETAIL")" >&2
         exit 4 ;;
     esac ;;
   *)
@@ -2812,7 +2941,7 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
     if [ -n "${_ENG_LOG:-}" ] && grep -qF "aib-dm: 已貼入目標(paste-buffer rc=0)" "$_ENG_LOG" 2>/dev/null; then
       _aib_emit_engine_log final
       emit_json 4 pasted-then-stopped "引擎已把稿貼進對方輸入框之後才停下(原 rc=$RC):稿可能在對方框內,**絕不重送**,請 capture 人工確認"
-      echo "aib-dm-ctl: 稿已貼進對方框之後引擎才停下(原 rc=$RC)——不再投,請人工確認。" >&2
+      echo "aib-dm-ctl: $(_dmt aib.dmctl.engine_stopped_after_paste rc="$RC")" >&2
       exit 4
     fi
     if [ "$_AE_BLOCK_KIND" = "browse-mode" ]; then

@@ -5,6 +5,18 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/cockpit-env.sh"
+# 畫面字走四語字典(語系盤查第 14 條,10-14):_tct <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取。
+#   python 起不來 ⇒ 印鍵名、rc 照 0(set -e 底下也不會中斷)。
+_tct() {
+  local key="$1"; shift
+  local args=() kv
+  for kv in "$@"; do args+=(--param "$kv"); done
+  # 字典庫先找 $HERE(測試替身會把 HERE 指到假目錄 ⇒ 退回本檔所在目錄);EZ2_PY3 起不來 ⇒ 再用 python3 試一次,都不行才印鍵名
+  local lib="$HERE/i18n_lib.py"
+  [ -f "$lib" ] || lib="$(dirname "${BASH_SOURCE[0]:-$0}")/i18n_lib.py"
+  "${EZ2_PY3:-python3}" "$lib" ${args[@]+"${args[@]}"} "$key" 2>/dev/null \
+    || python3 "$lib" ${args[@]+"${args[@]}"} "$key" 2>/dev/null || printf '%s\n' "$key"
+}
 
 MODE=""
 SESSION=""
@@ -88,9 +100,9 @@ fi
 
 case "$MODE" in
   set-override|clear-override)
-    [ -n "$OVR_ROLE" ] || { echo "theme-ctl: 需要 ROLE" >&2; exit 2; }
+    [ -n "$OVR_ROLE" ] || { echo "theme-ctl: $(_tct aib.themectl.need_role)" >&2; exit 2; }
     [ "$MODE" != "set-override" ] || [ -n "$OVR_PALETTE" ] || {
-      echo "theme-ctl: --set-override 需要 PALETTE_ID" >&2; exit 2; }
+      echo "theme-ctl: $(_tct aib.themectl.need_palette)" >&2; exit 2; }
     ;;
 esac
 
@@ -191,10 +203,10 @@ validate_rows() {
   #   已經排除它,這裡沒排 ⇒ 三格 vs 期望兩格 ⇒ 靜默 exit 3 ⇒ --ensure 中斷 ⇒ 任何新席都開不了
   #   (a seat「開席失敗・等待逾時」與艦長四席開不出來都是它)。與 cockpit-full 同一個排除。
   expected="$("$EZ2_PY3" "$HERE/panes.py" --expected-roles 2>/dev/null)" || {
-    echo "theme-ctl: 讀不到座艙設定(panes.py --expected-roles),不判版面" >&2
+    echo "theme-ctl: $(_tct aib.themectl.layout_unread)" >&2
     return 1
   }
-  [ -n "$expected" ] || { echo "theme-ctl: 座艙設定是空的" >&2; return 1; }
+  [ -n "$expected" ] || { echo "theme-ctl: $(_tct aib.themectl.layout_empty)" >&2; return 1; }
   # ★ 09-12 第 59 項第二半:版面不對時**說出來**(之前 install-hooks 路徑 `|| exit 3` 一個字不印,
   #   開席只剩右欄「等待逾時」)。印「量到幾格/哪些 role」與「期望幾格/哪些 role」,讓人一眼分得出
   #   是多了一格、少了一格、還是 role 標記掉了。
@@ -204,20 +216,20 @@ validate_rows() {
   # 不是「版面不合」的 1;呼叫端兩者都不套色,但人看得出是等一下再來還是真壞了(qa 09-12 裁請)。
   blank="$(printf '%s\n' "$rows" | awk -F '|' 'NF && $2 == "" { printf "%s%s", (n++ ? "," : ""), $1 }')"
   [ -z "$blank" ] || {
-    echo "theme-ctl: 座艙有格還沒有 @aib_role($blank)—— 量不到,不判版面(格還在啟動?稍後重試)" >&2
+    echo "theme-ctl: $(_tct aib.themectl.role_blank detail="$blank")" >&2
     return 2
   }
   count="$(printf '%s\n' "$rows" | awk -F '|' 'NF { n++ } END { print n+0 }')"
   want="$(printf '%s\n' "$expected" | awk 'NF { n++ } END { print n+0 }')"
-  got_roles="$(printf '%s\n' "$rows" | awk -F '|' 'NF { printf "%s%s", (n++ ? "," : ""), ($2 == "" ? "(無 @aib_role)" : $2) }')"
+  got_roles="$(printf '%s\n' "$rows" | awk -F '|' 'NF { printf "%s%s", (n++ ? "," : ""), ($2 == "" ? nr : $2) }' nr="$(_tct aib.themectl.no_role)")"
   [ "$count" -eq "$want" ] || {
-    echo "theme-ctl: 座艙版面不合:量到 $count 格($got_roles),設定期望 $want 格($(printf '%s' "$expected" | tr '\n' ','))(待審框 review 不計)" >&2
+    echo "theme-ctl: $(_tct aib.themectl.layout_count n="$count" got="$got_roles" total="$want" expected="$(printf '%s' "$expected" | tr '\n' ',')")" >&2
     return 1
   }
   for role in $expected; do
     count="$(printf '%s\n' "$rows" | awk -F '|' -v r="$role" '$2 == r { n++ } END { print n+0 }')"
     [ "$count" -eq 1 ] || {
-      echo "theme-ctl: 座艙版面不合:role=$role 有 $count 格(要恰好 1;量到:$got_roles)" >&2
+      echo "theme-ctl: $(_tct aib.themectl.layout_role role="$role" n="$count" got="$got_roles")" >&2
       return 1
     }
   done
@@ -286,7 +298,7 @@ effective_style() {  # $1=region $2=state
   local pid style
   if cockpit_no_bg; then
     theme_cli style "$1" "$2" --no-bg && return 0
-    echo "theme-ctl: 無底色樣式取值失敗($1/$2),回預設" >&2
+    echo "theme-ctl: $(_tct aib.themectl.nobg_fail value="$1/$2")" >&2
     snapshot_style "$1" "$2"
     return 0
   fi
@@ -296,7 +308,7 @@ effective_style() {  # $1=region $2=state
       printf '%s\n' "$style"
       return 0
     fi
-    echo "theme-ctl: 覆寫色 $pid($1)無效,回預設" >&2
+    echo "theme-ctl: $(_tct aib.themectl.override_bad id="$pid" value="$1")" >&2
   fi
   snapshot_style "$1" "$2"
 }
@@ -473,7 +485,7 @@ print(json.dumps(data, ensure_ascii=False, sort_keys=True,
 write_override() {  # $1=region $2=palette id(空=清除)
   case "$1" in
     _*)
-      echo "theme-ctl: region 名不得以 _ 開頭(與覆寫檔保留鍵相撞):$1" >&2
+      echo "theme-ctl: $(_tct aib.themectl.region_underscore name="$1")" >&2
       return 2
       ;;
   esac
@@ -515,23 +527,23 @@ EOF
     ;;
   set-override|clear-override)
     REGION="$(theme_role "$OVR_ROLE")" || {
-      echo "theme-ctl: 未知 role:$OVR_ROLE" >&2
+      echo "theme-ctl: $(_tct aib.themectl.unknown_role role="$OVR_ROLE")" >&2
       exit 2
     }
     # palette id 在**寫入前**驗:壞值不落盤(被拒一 byte 不寫,同 rotation
     # 的產生端紀律)。驗法=真的算一次該色的 style,合法才有輸出。
     if [ "$MODE" = "set-override" ]; then
       theme_cli style "$REGION" normal --palette "$OVR_PALETTE" >/dev/null || {
-        echo "theme-ctl: 未知 palette id:$OVR_PALETTE(色只認 themes/*.json)" >&2
+        echo "theme-ctl: $(_tct aib.themectl.unknown_palette id="$OVR_PALETTE")" >&2
         exit 2
       }
       write_override "$REGION" "$OVR_PALETTE" || {
-        echo "theme-ctl: 覆寫寫入失敗" >&2
+        echo "theme-ctl: $(_tct aib.themectl.override_write_fail)" >&2
         exit 3
       }
     else
       write_override "$REGION" "" || {
-        echo "theme-ctl: 覆寫清除失敗" >&2
+        echo "theme-ctl: $(_tct aib.themectl.override_clear_fail)" >&2
         exit 3
       }
     fi
@@ -543,7 +555,7 @@ EOF
     }
     TARGET_PANE="$(pane_of_role "$ROWS" "$OVR_ROLE")"
     [ -n "$TARGET_PANE" ] || {
-      echo "theme-ctl: 找不到 role=$OVR_ROLE 的 pane" >&2
+      echo "theme-ctl: $(_tct aib.themectl.no_pane role="$OVR_ROLE")" >&2
       exit 3
     }
     record_pane_contract "$TARGET_PANE" "$OVR_ROLE"
@@ -554,12 +566,12 @@ EOF
     # 由那支自己讀覆寫,見該檔內註解。
     if [ "$MODE" = "set-no-bg" ]; then
       write_override_key "$COCKPIT_KEY" "$COCKPIT_NO_BG_VALUE" || {
-        echo "theme-ctl: 無底色寫入失敗" >&2
+        echo "theme-ctl: $(_tct aib.themectl.nobg_write_fail)" >&2
         exit 3
       }
     else
       write_override_key "$COCKPIT_KEY" "$COCKPIT_PALETTE_VALUE" || {
-        echo "theme-ctl: 切回可自定底色失敗" >&2
+        echo "theme-ctl: $(_tct aib.themectl.bg_back_fail)" >&2
         exit 3
       }
     fi

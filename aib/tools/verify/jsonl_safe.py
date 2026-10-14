@@ -72,6 +72,6 @@ def _T(key, params):
         sys.path.append(cockpit)
     try:
         import i18n_lib
-        return i18n_lib.t("aib.verify.jsonl_safe." + key, params, locale=os.environ.get("EZ2_AIB_LOCALE", "zh-TW"))
+        return i18n_lib.t("aib.verify.jsonl_safe." + key, params, locale=i18n_lib.resolve_locale())
     except Exception:
         return "aib.verify.jsonl_safe.%s %r" % (key, params)

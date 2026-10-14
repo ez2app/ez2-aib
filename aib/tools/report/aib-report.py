@@ -67,7 +67,7 @@ if str(_tests_fallback) not in sys.path:
 from aib_tmp_root import aib_tmp_root  # noqa: E402
 
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 
 
 def T(key, params=None):

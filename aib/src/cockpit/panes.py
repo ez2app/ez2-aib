@@ -44,7 +44,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import pane_view  # noqa: E402  設定的讀寫機制:與 ai_view 共用同一份
-from i18n_lib import Translator  # noqa: E402
+from i18n_lib import Translator, resolve_locale  # noqa: E402
 
 SCHEMA = "aib-panes/v1"
 FILENAME = "panes.json"
@@ -114,7 +114,7 @@ def main(argv, env=None, out=None, err=None):
     env = os.environ if env is None else env
     out = sys.stdout if out is None else out
     err = sys.stderr if err is None else err
-    tr = Translator(env.get("EZ2_AIB_LOCALE"))
+    tr = Translator(resolve_locale(env=env))
     path = config_path(env)
 
     if argv and argv[0] == "--expected-roles":

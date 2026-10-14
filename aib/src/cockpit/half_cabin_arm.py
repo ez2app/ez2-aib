@@ -41,7 +41,7 @@ if str(_HERE) not in sys.path:
 import i18n_lib  # noqa: E402
 import seats_dir_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 HUB_PREFIX = "aihub-"
 OUTER_PREFIX = "aib-"
 HEALTHY_MODE = 0o770

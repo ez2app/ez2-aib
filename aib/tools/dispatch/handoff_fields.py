@@ -33,7 +33,7 @@ try:
 except Exception:  # pragma: no cover - 主庫不在時仍要能印 JSON
     i18n_lib = None
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale() if i18n_lib else None   # 主庫不在 ⇒ 用不到(T 也走不到 i18n_lib)
 # ★ 字典預設讀**自己這棵樹**的 i18n/(閘跑的是你站的那棵樹那一版);沒有才退 i18n_lib 預設(主庫)。治具可用環境變數指。
 _own_i18n = pathlib.Path(__file__).resolve().parents[2] / "i18n"
 I18N_DIR = os.environ.get("AIB_HANDOFF_FIELDS_I18N_DIR") or (str(_own_i18n) if _own_i18n.is_dir() else None)

@@ -299,6 +299,12 @@ if [ "${1:-}" = "newrole" ]; then
   export PYTHONDONTWRITEBYTECODE=1 AIB_NEWROLE_PROG="aib newrole"
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/identity/create_and_bind_persona.py" "$@"
 fi
+# Local one-way brain backup; never restores into live state.
+if [ "${1:-}" = "brain" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/aib_brain.py" "$@"
+fi
 # aib memory … -> src/memory/aib_memory.py(09-30 a seat,the maintainer「用 uuid 寫到 aib 對應的資料夾,用 obs 多維屬性寫,標題只顯示」):
 #   AI 工作記憶寫成第二大腦的一則筆記;認東西只用 uid,標題只顯示,標籤/分類英文、顯示走 i18n。
 if [ "${1:-}" = "memory" ]; then
@@ -701,6 +707,12 @@ fi
 if [ "${1:-}" = "lang" ]; then
   shift
   exec "$T_PY3" "$HERE/aib_lang.py" "$@"
+fi
+
+# 10-14(the maintainer「除了外掛,也要有佈景、skill 之類的」「全都要做」):一個入口管所有擴充;aib theme 換佈景。
+if [ "${1:-}" = "ext" ] || [ "${1:-}" = "theme" ]; then
+  [ "${1:-}" = "ext" ] && shift
+  exec "$T_PY3" "$HERE/aib_ext.py" "$@"
 fi
 
 # aib room 子命令(the maintainer 2026-10-10):艦長室網頁。aib room = 確定它在跑、開瀏覽器;aib room status;

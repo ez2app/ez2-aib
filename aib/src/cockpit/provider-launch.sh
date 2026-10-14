@@ -16,6 +16,17 @@
 set -euo pipefail
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 畫面字走四語字典(語系盤查第 14 條,10-14):_plt <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取,python 起不來印鍵名。
+_plt() {
+  local key="$1"; shift
+  local args=() kv
+  for kv in "$@"; do args+=(--param "$kv"); done
+  # 字典庫先找 $HERE(測試替身會把 HERE 指到假目錄 ⇒ 退回本檔所在目錄);EZ2_PY3 起不來 ⇒ 再用 python3 試一次,都不行才印鍵名
+  local lib="$HERE/i18n_lib.py"
+  [ -f "$lib" ] || lib="$(dirname "${BASH_SOURCE[0]:-$0}")/i18n_lib.py"
+  "${EZ2_PY3:-python3}" "$lib" ${args[@]+"${args[@]}"} "$key" 2>/dev/null \
+    || python3 "$lib" ${args[@]+"${args[@]}"} "$key" 2>/dev/null || printf '%s\n' "$key"
+}
 . "$HERE/identity-env.sh"
 
 # 第 5 參 session_uuid 是 optional；第 6 參是 requested model。舊的 4/5 參
@@ -77,7 +88,7 @@ fi
 #   靜默變成「這一家沒寫深度」—— 而註解上一段才剛宣稱「寫錯字大聲擋」。
 #   **讀不到不是沒有**:登記簿壞掉要出聲,不能靠一個空字串把它變成正常路徑。
 if [ "$REQUESTED_EFFORT" = "__READ_FAILED__" ]; then
-  echo "provider-launch: 讀不到 providers.json 的 default_effort(登記簿壞了?)" >&2
+  echo "provider-launch: $(_plt aib.plaunch.no_default_effort)" >&2
   exit 2
 fi
 case "$REQUESTED_EFFORT" in
@@ -103,7 +114,7 @@ fi
 
 if [ "${EZ2_AIB_CARRIER:-direct}" = "acb" ]; then
   # ACB 已關。就算 acb 執行檔還在,也不再交給它開席。
-  echo "provider-launch: ACB 載體已關閉,不執行 acb" >&2
+  echo "provider-launch: $(_plt aib.plaunch.acb_off)" >&2
   exit 127
 fi
 
@@ -166,10 +177,10 @@ if [ "$PROVIDER" = "sand" ] || [ "$PROVIDER" = "grokbot" ] || [ "$PROVIDER" = "c
   if [ -z "$SESSION_UUID" ]; then
     SESSION_UUID="$("$PY3" -c 'import uuid;print(uuid.uuid4())' 2>/dev/null || true)"
     [ -n "$SESSION_UUID" ] || {
-      echo "provider-launch: $PROVIDER 需要 session uuid,產生失敗" >&2
+      echo "provider-launch: $(_plt aib.plaunch.uuid_fail provider="$PROVIDER")" >&2
       exit 2
     }
-    echo "provider-launch: $PROVIDER 未帶 session uuid,已補發 $SESSION_UUID" >&2
+    echo "provider-launch: $(_plt aib.plaunch.uuid_filled provider="$PROVIDER" session="$SESSION_UUID")" >&2
   fi
   SAND_ARGS=(--session-id "${SESSION_UUID}" --role "$ROLE" --cwd "$PROJECT_DIR" --mode "$MODE" --model "$REQUESTED_MODEL" --provider-id "$PROVIDER")
   [ -n "$REQUESTED_EFFORT" ] && SAND_ARGS+=(--effort "$REQUESTED_EFFORT")
@@ -189,8 +200,8 @@ if [ -z "$BIN" ] && [ "$PROVIDER" = "codex" ]; then
   BIN="$(type -P ez2-codex 2>/dev/null || true)"   # 本機 alias 的真身
 fi
 [ -n "$BIN" ] && [ -x "$BIN" ] || {
-  echo "provider-launch: 找不到 provider CLI:$PROVIDER(PATH 內無執行檔)" >&2
-  echo "  這是 ED.4 的前置條件:provider 是訂閱 OAuth CLI,必須真人先安裝並登入。" >&2
+  echo "provider-launch: $(_plt aib.plaunch.cli_missing provider="$PROVIDER")" >&2
+  echo "  $(_plt aib.plaunch.cli_missing_hint)" >&2
   exit 6
 }
 
@@ -431,13 +442,13 @@ print("%s\t%s" % (v, why))' "$HERE" "$PROVIDER" 2>/dev/null || printf 'unknown\t
   USAGE_STATE="${USAGE_VERDICT%%	*}"
   USAGE_WHY="${USAGE_VERDICT#*	}"
   if [ "$USAGE_STATE" = "exhausted" ]; then
-    echo "provider-launch: 這一家的額度已經用完,開席會是白工 —— $USAGE_WHY" >&2
-    echo "  要照開真 CLI:AIB_IGNORE_USAGE=1 <原指令>(理由會留在這一行訊息裡)" >&2
+    echo "provider-launch: $(_plt aib.plaunch.quota_out why="$USAGE_WHY")" >&2
+    echo "  $(_plt aib.plaunch.quota_out_hint)" >&2
     # the maintainer 2026-09-21:沒額度也要能對話。exit 7 會讓 tmux pane 變死窗,
     # 輸入區整塊 Pane is dead。有 TTY(或 AIB_QUOTA_HOLD=1)時改 exec 保活 REPL;
     # 無 TTY(單測/管線)仍 exit 7,行為與舊測試契約一致。
     if [ "${AIB_QUOTA_HOLD:-auto}" != "0" ] && { [ -t 1 ] || [ "${AIB_QUOTA_HOLD:-}" = "1" ]; }; then
-      echo "provider-launch: 改開額度席保活(可對話/排隊,不起真 CLI)" >&2
+      echo "provider-launch: $(_plt aib.plaunch.quota_seat)" >&2
       exec "$PY3" "$HERE/quota_hold_repl.py" --provider "$PROVIDER" --why "$USAGE_WHY"
     fi
     exit 7
@@ -719,7 +730,7 @@ if not codex_luna_model.model_rejected(seen):
 print(codex_luna_model.previous_luna_slug(sys.argv[2]))' "$HERE" "$REQUESTED_MODEL" <<<"$_codex_seen" 2>/dev/null || true)"
     fi
     if [ -n "$_older" ]; then
-      echo "provider-launch: ${REQUESTED_MODEL} 開不起來，改用舊一版 ${_older}" >&2
+      echo "provider-launch: $(_plt aib.plaunch.model_older value="${REQUESTED_MODEL}" old="${_older}")" >&2
       _swapped=()
       _prev=""
       for _a in ${ARGS[@]+"${ARGS[@]}"}; do
@@ -758,7 +769,7 @@ print(codex_luna_model.previous_luna_slug(sys.argv[2]))' "$HERE" "$REQUESTED_MOD
       else
         ARGS=(resume ${_back_args[@]+"${_back_args[@]}"} --last)
       fi
-      echo "provider-launch: 回到本對話,不換帳(${AIB_CODEX_RECOVER_SNOOZE_S:-600} 秒內不再自動跳換帳號頁)" >&2
+      echo "provider-launch: $(_plt aib.plaunch.codex_back seconds="${AIB_CODEX_RECOVER_SNOOZE_S:-600}")" >&2
       continue
     fi
     if [ "$_offer_rc" -ne 0 ]; then

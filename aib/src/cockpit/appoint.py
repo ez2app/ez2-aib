@@ -131,15 +131,13 @@ def appoint_flag(kind, wid, by, reason):
     """captain/advisor:委派 captains-ctl 寫席位檔,寫完**回讀驗證**。"""
     rec = read_seat(wid)
     if rec is None:
-        print("appoint: 找不到席位檔 %s(任命對象必須是已編制席位)" % seat_file(wid),
+        print("appoint: " + _ui("aib.appoint.no_seat_file", path=seat_file(wid)),
               file=sys.stderr)
         log_appointment(kind, wid, by, reason, False, "seat_not_found")
         return 2
     field = "captain_assigned" if kind == "captain" else "advisor"
     if kind == "captain":
-        print("★ 注意:受派艦長的語意是**取代現任**(顯式指派勝過 started 預設)。\n"
-              "  若你要的是「第二艦長」,不需要這個欄位——同 role 第二席自然排 ⚓。\n"
-              "  誤用會把現任擠下去(08-18 實際發生過並已撤銷)。", file=sys.stderr)
+        print(_ui("aib.appoint.captain_warning"), file=sys.stderr)
     flag = "--assign" if kind == "captain" else "--advisor"
     extra = () if kind == "captain" else ("on",)
     rc, out = run_captains_ctl(flag, wid, *extra)
@@ -148,10 +146,10 @@ def appoint_flag(kind, wid, by, reason):
     # ★ 寫完必回讀:工具 rc=0 不等於欄位真的落檔(本 repo 記過的「訊息自證清白」)
     log_appointment(kind, wid, by, reason, ok, "ctl_rc=%d" % rc)
     if not ok:
-        print("appoint: 任命未落檔(%s 仍非 true);ctl rc=%d %s" % (field, rc, out),
+        print("appoint: " + _ui("aib.appoint.not_saved", name=field, rc=rc, detail=out),
               file=sys.stderr)
         return 3
-    print("已任命:%s %s → %s=true(已回讀驗證,留痕 %s)" % (kind, wid, field, LOG))
+    print(_ui("aib.appoint.appointed", kind=kind, window=wid, name=field, log=LOG))
     return 0
 
 
@@ -166,14 +164,12 @@ def appoint_fleet(wid, to, by, reason):
     退回 provider——所以「取消編組」=把值設回預設,不是刪欄,見下)。
     編組也是一種指派(任命唯一入口鐵則),不得手改席位檔。"""
     if not isinstance(to, str) or not FLEET_RE.fullmatch(to)             or "verified" in to.lower():
-        print("appoint: fleet_id 形狀不合(收 [0-9a-z][0-9a-z_-]{0,15},"
-              "且不得含 verified):%r" % (to,), file=sys.stderr)
+        print("appoint: " + _ui("aib.appoint.bad_fleet_id", text="[0-9a-z][0-9a-z_-]{0,15}", value=repr(to)), file=sys.stderr)
         log_appointment("fleet", wid, by, reason, False, "bad_fleet_id:%r" % (to,))
         return 2
     rec = read_seat(wid)
     if rec is None:
-        print("appoint: 找不到席位檔 %s(編組對象必須是已編制席位)"
-              % seat_file(wid), file=sys.stderr)
+        print("appoint: " + _ui("aib.appoint.no_seat_file_fleet", path=seat_file(wid)), file=sys.stderr)
         log_appointment("fleet", wid, by, reason, False, "seat_not_found")
         return 2
     # ★席位檔是多寫者(開席寫+captains-ctl 5 秒心跳)。裸 read-modify-write
@@ -194,7 +190,7 @@ def appoint_fleet(wid, to, by, reason):
     try:
         update_json(str(seat_file(wid)), _mutate)
     except (AtomicWriteError, OSError) as e:
-        print("appoint: 席位檔寫入失敗:%s" % e, file=sys.stderr)
+        print("appoint: " + _ui("aib.appoint.write_fail", err=e), file=sys.stderr)
         log_appointment("fleet", wid, by, reason, False, "write_failed:%s" % e)
         return 3
     # ★ 寫完必回讀(與 captain/advisor 同紀律):工具沒炸不等於欄位落檔
@@ -202,24 +198,19 @@ def appoint_fleet(wid, to, by, reason):
     ok = after.get("fleet_id") == to
     log_appointment("fleet", wid, by, reason, ok, "to=%s" % to)
     if not ok:
-        print("appoint: 編組未落檔(fleet_id 回讀 %r ≠ %r)"
-              % (after.get("fleet_id"), to), file=sys.stderr)
+        print("appoint: " + _ui("aib.appoint.fleet_not_saved", got=repr(after.get("fleet_id")), value=repr(to)), file=sys.stderr)
         return 3
-    print("已編組:%s → fleet %s(已回讀驗證,留痕 %s)" % (wid, to, LOG))
+    print(_ui("aib.appoint.fleeted", window=wid, value=to, log=LOG))
     return 0
 
 
 def appoint_successor(seat, to_role, by, reason):
     if not is_eligible_lead(to_role)[0]:
-        print("appoint: 繼任者只能是主管角色(收:%s);%r 不是——"
-              "dev 席會被 rotation 閘拒 rc2(dev3 08-18 踩過)。"
-              % ("/".join(SUCCESSOR_ROLES), to_role), file=sys.stderr)
+        print("appoint: " + _ui("aib.appoint.successor_role", items="/".join(SUCCESSOR_ROLES), value=repr(to_role)), file=sys.stderr)
         log_appointment("successor", seat, by, reason, False,
                         "role_not_allowed:%s" % to_role)
         return 3
-    print("appoint: 繼任者登記請由該席自己執行 rotation scout(帳要落在它自己的\n"
-          "  rotation/<seat>/scout.jsonl,且 ctx_source 必須是 machine)。\n"
-          "  本工具只做角色白名單前置檢查,不代寫別席的帳。", file=sys.stderr)
+    print("appoint: " + _ui("aib.appoint.successor_self"), file=sys.stderr)
     log_appointment("successor", seat, by, reason, True, "precheck_passed")
     return 0
 
@@ -228,9 +219,7 @@ def verify(wid):
     """『你宣布過但做了嗎』——沒有落檔的任命=沒有任命。"""
     rec = read_seat(wid)
     if rec is None:
-        print("verify: 找不到席位檔 %s\n"
-              "  (找的是這個目錄——若你要查別艙,帶 --instance <N> 或 "
-              "EZ2_AIB_INSTANCE_HOME)" % seat_file(wid), file=sys.stderr)
+        print("verify: " + _ui("aib.appoint.verify_no_seat", path=seat_file(wid)), file=sys.stderr)
         return 2
     cap = rec.get("captain_assigned") is True
     adv = rec.get("advisor") is True
@@ -242,6 +231,25 @@ def verify(wid):
                                   else "無任命紀錄——口頭/dm 宣布不算")},
                      ensure_ascii=False, indent=2))
     return 0 if (cap or adv) else 3
+
+
+_UI_TR = {}
+
+
+def _ui(key, **params):
+    """畫面字走四語鍵(語系盤查,10-14);每次照 i18n_lib.resolve_locale() 取(長駐程式切語系也跟得上),讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.dirname(os.path.abspath(__file__))
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _UI_TR.get(loc)
+        if tr is None:
+            tr = _UI_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓程式停
+        return key
 
 
 def main(argv=None):
@@ -262,17 +270,17 @@ def main(argv=None):
     if args.command == "verify":
         return verify(args.target)
     if not args.by:
-        print("appoint: 任命必須具名(--by),留痕沒有署名等於沒有課責",
+        print("appoint: " + _ui("aib.appoint.need_by"),
               file=sys.stderr)
         return 2
     if args.command == "fleet":
         if not args.to:
-            print("appoint: fleet 需要 --to <fleet_id>", file=sys.stderr)
+            print("appoint: " + _ui("aib.appoint.need_fleet_to"), file=sys.stderr)
             return 2
         return appoint_fleet(args.target, args.to, args.by, args.reason)
     if args.command == "successor":
         if not args.to:
-            print("appoint: successor 需要 --to <role>", file=sys.stderr)
+            print("appoint: " + _ui("aib.appoint.need_successor_to"), file=sys.stderr)
             return 2
         return appoint_successor(args.target, args.to, args.by, args.reason)
     return appoint_flag(args.command, args.target, args.by, args.reason)

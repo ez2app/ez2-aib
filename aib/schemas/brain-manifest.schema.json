@@ -1,0 +1,376 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ez2.shop/schemas/aib/brain-manifest.schema.json",
+  "title": "AIB local brain snapshot manifest",
+  "description": "Local-only backup metadata; contains no rejected source contents.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "aib-brain/v1"
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "tool_version": {
+      "type": "string"
+    },
+    "host": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "group": {
+            "enum": [
+              "persona",
+              "project",
+              "memory",
+              "vault"
+            ]
+          },
+          "current": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "size",
+          "group",
+          "current"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "path",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "quarantined": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "not_updated",
+              "previous_rejected"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "kind",
+          "line",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "groups": {
+      "type": "object",
+      "properties": {
+        "persona": {
+          "type": "object",
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "missing": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "quarantined": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "complete",
+            "files",
+            "missing"
+          ],
+          "additionalProperties": false
+        },
+        "project": {
+          "type": "object",
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "missing": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "quarantined": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "complete",
+            "files",
+            "missing"
+          ],
+          "additionalProperties": false
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "missing": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "quarantined": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "complete",
+            "files",
+            "missing"
+          ],
+          "additionalProperties": false
+        },
+        "vault": {
+          "type": "object",
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "missing": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "quarantined": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "complete",
+            "files",
+            "missing"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "persona",
+        "project",
+        "memory",
+        "vault"
+      ],
+      "additionalProperties": false
+    },
+    "prev_snapshot_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deleted_ratio": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "contract": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "enum": [
+            "explicit",
+            "explicit_environment",
+            "git_main",
+            "registry_environment",
+            "vendor",
+            "bundled"
+          ]
+        },
+        "path": {
+          "const": "metadata/route-contract.json"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "source",
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "source_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "missing_required": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scan_rules_version": {
+      "type": "string"
+    },
+    "source_roots": {
+      "type": "object",
+      "properties": {
+        "vault": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "vault",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "baseline_warning": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "baseline_applied": {
+      "type": "boolean"
+    },
+    "previous_rejected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "kind",
+          "line"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "snapshot_id",
+    "tool_version",
+    "host",
+    "created_at",
+    "files",
+    "excluded",
+    "quarantined",
+    "groups",
+    "prev_snapshot_id",
+    "deleted_ratio",
+    "contract",
+    "source_files",
+    "missing_required"
+  ],
+  "additionalProperties": false
+}

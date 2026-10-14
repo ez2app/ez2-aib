@@ -142,6 +142,13 @@ def pending(code, now=None, for_stop=False):
     return out
 
 
+def shown_lines(d):
+    """要給人看、要 AI 貼的那段。aib test 的說明檔有 tree(🧮 樹狀 + 📋 上一輪建議 + 💡 下次怎麼更省,10-14 v2)
+    ⇒ 就是它,取代純文字段(a seat 示意:「gate 要求貼的內容 = 這個樹狀」);推包檔沒有 tree ⇒ 照舊 savings。"""
+    tree = [str(x) for x in (d.get("tree") or [])]
+    return tree or [str(x) for x in (d.get("savings") or [])]
+
+
 def _norm(text):
     return "".join(str(text or "").split())
 
@@ -215,10 +222,10 @@ def check(payload, code, now=None):
             lines.append("推包 %s(%s 顆):" % (str(d.get("head") or "")[:9], d.get("commits")))
         else:
             lines.append("%s 的影子續跑說明:" % (d.get("kind") or "aib test"))
-        lines.extend("  " + ln for ln in d["savings"])
+        lines.extend("  " + ln for ln in shown_lines(d))
     _log("BLOCK @%s %s" % (code, ",".join(os.path.basename(p) for p, _ in missing)))
     return True, ("ship-report-gate:@%s 這一回合跑了推包 / aib test,但回覆沒有原樣附上影子續跑說明的數字"
-                  "(the maintainer 10-13:如果開影子續跑,一定要列出說明)。請把下面那段貼進回覆,數字一字不改:\n%s"
+                  "(the maintainer 10-13:如果開影子續跑,一定要列出說明)。請把下面那段原樣貼進回覆(有 🧮 樹狀與 💡 的整段照貼;走七段總回報時放在 S0 省時間),數字一字不改:\n%s"
                   % (code, "\n".join(lines)))
 
 
@@ -253,7 +260,7 @@ def post_tool(payload, code, now=None):
         except (TypeError, ValueError):
             continue
         if _update(path, {"shown_at": now}):
-            parts.append("\n".join(str(x) for x in d.get("savings") or []))
+            parts.append("\n".join(shown_lines(d)))
     return "\n".join(p for p in parts if p)
 
 
@@ -270,7 +277,7 @@ def segment(code, now=None):
     """這一席待回報的那幾段(要附在回覆後面的字);沒有 ⇒ 空字串。"""
     out = []
     for _p, d in pending(code, now):
-        out.extend(str(x) for x in d.get("savings") or [])
+        out.extend(shown_lines(d))
     return "\n".join(out)
 
 

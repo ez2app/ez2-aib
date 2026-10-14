@@ -39,7 +39,7 @@ SSH_SAFE = ["-o", "ConnectTimeout=8", "-o", "BatchMode=yes", "-o", "ForwardAgent
 
 
 def T(key, params=None):
-    return i18n_lib.t("aib.sync_receipt." + key, params, locale=os.environ.get("EZ2_AIB_LOCALE", "zh-TW"))
+    return i18n_lib.t("aib.sync_receipt." + key, params, locale=i18n_lib.resolve_locale())
 
 
 def state_root():

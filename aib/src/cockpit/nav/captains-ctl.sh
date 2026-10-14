@@ -590,7 +590,11 @@ install_status() {
   # 10-10(the maintainer 眼驗令):艦長列與 Claude 輸入框下方那三行(📌 / CTX / 權限列)對齊——
   #   Claude Code 把那三行固定縮 2 格,tmux status 從第 0 欄起畫,所以這裡補 2 格;長度 8 → 10 跟著加。
   #   外層座艙的 status-left(cockpit-full.sh / title-beat.sh)同一條令、同樣補 2 格。
-  run hub_tmux set-option -t aihub status-left '  艦長: '
+  #   10-14 語系盤查:「艦長:」走四語字典 aib.cockpit.hub_captain_label(開艙 / --install 時取一次;切語系後下次 --install 換);
+  #   字典讀不到(印 !!key!! 或空)退回中文字面。長度 10 裝得下 2 格 + 「Captain:」(英文尾端空格被截,不影響)。
+  _cap_label="$("${EZ2_PY3:-python3}" -I "$COCKPIT/i18n_lib.py" aib.cockpit.hub_captain_label 2>/dev/null || true)"
+  case "$_cap_label" in ''|'!!'*) _cap_label='艦長:' ;; esac
+  run hub_tmux set-option -t aihub status-left "  $_cap_label "
   run hub_tmux set-option -t aihub status-left-length 10
   run hub_tmux set-option -t aihub status-right ''
     run hub_tmux set-option -w -g window-status-format "$fmt"

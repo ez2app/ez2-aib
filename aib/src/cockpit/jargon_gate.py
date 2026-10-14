@@ -187,11 +187,33 @@ _I18N_DIR = __import__("pathlib").Path(__file__).resolve().parents[2] / "i18n"
 _FALLBACK_HEAD = "【名詞解釋】"   # ★ 不能用框線字元 ─:R-30 禁字會擋整份回報
 
 
+_I18N_LIB = []
+
+
+def _locale(locale=None):
+    """語系來源只認 i18n_lib.resolve_locale(明給 > env > 設定檔 > zh-TW)。照檔案路徑載入那一支,不動 sys.path;
+    載不到才退回「明給的值(限四語原樣)或 zh-TW」。結果一定是四語之一 ⇒ 拼進檔名也安全。"""
+    import sys
+    try:
+        if not _I18N_LIB:
+            mod = sys.modules.get("i18n_lib")
+            if mod is None:
+                import importlib.util as _ilu
+                spec = _ilu.spec_from_file_location("_jargon_gate_i18n_lib",
+                                                    str(__import__("pathlib").Path(__file__).with_name("i18n_lib.py")))
+                mod = _ilu.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+            _I18N_LIB.append(mod)
+        return _I18N_LIB[0].resolve_locale(locale)
+    except Exception:  # noqa: BLE001 —— 閘壞不准癱瘓算繪;退路也只收四語,怪值不拼進檔名
+        return locale if locale in ("zh-TW", "en", "ja", "ko") else "zh-TW"
+
+
 def load_terms(locale=None):
     """回 {slug: (詞, 白話)} —— 直接讀 i18n/<locale>.json,不經 i18n_lib,所以不動 sys.path。
     ★ 讀不到 ⇒ 回空 dict 並讓呼叫端自己決定;這裡不吞也不擋(閘壞不准癱瘓算繪)。"""
-    import json, os
-    loc = locale or os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+    import json
+    loc = _locale(locale)
     try:
         d = json.loads((_I18N_DIR / ("%s.json" % loc)).read_text(encoding="utf-8"))
     except Exception:
@@ -206,8 +228,8 @@ def load_terms(locale=None):
 
 def notes_head(locale=None):
     """「名詞解釋」那一行的字面,從字典的 aib.notes.header 讀;讀不到用內建同一字面。"""
-    import json, os
-    loc = locale or os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+    import json
+    loc = _locale(locale)
     try:
         return json.loads((_I18N_DIR / ("%s.json" % loc)).read_text(encoding="utf-8"))["aib.notes.header"]
     except Exception:

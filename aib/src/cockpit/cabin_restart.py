@@ -50,6 +50,22 @@ import tempfile
 import time
 from urllib.parse import quote
 
+_TR = {}
+
+
+def T(key, **params):
+    """畫面字走 aib.restart.* 四語鍵(語系盤查第 15 條,10-14);每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名。"""
+    try:
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -511,15 +527,15 @@ def attach_cabin(c, *, out=sys.stdout):
     tmux_bin = subprocess.run(["sh", "-c", "command -v tmux"], capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout.strip() or "tmux"
     cmd = "%s -L default attach -d -t %s" % (tmux_bin, shlex.quote(session))
     if not _open_terminal(cmd):
-        out.write("✗ 艙 %s:叫不動 Terminal(osascript 失敗,可能是沒給自動化權限)。自己開視窗打:%s\n" % (c["cabin"], cmd))
+        out.write(T("aib.restart.no_terminal", instance=c["cabin"], cmd=cmd) + "\n")
         return False
     for _ in range(10):
         time.sleep(0.5)
         cl = (seat_pool._tmux("default", "list-clients", "-t", session, "-F", "#{client_tty}") or "").split()
         if cl:
-            out.write("✅ 艙 %s 接回來了:新 Terminal 視窗 %s\n" % (c["cabin"], " ".join(cl)))
+            out.write(T("aib.restart.reattached", instance=c["cabin"], window=" ".join(cl)) + "\n")
             return True
-    out.write("✗ 艙 %s:開了 Terminal 視窗,但 5 秒內沒看到它接上。自己打:%s\n" % (c["cabin"], cmd))
+    out.write(T("aib.restart.attach_timeout", instance=c["cabin"], cmd=cmd) + "\n")
     return False
 
 
@@ -592,7 +608,7 @@ def _transplant(cabin, prov, role, old_code, root, out):
                 best = d
     nid = (best or {}).get("seat_id") or ""
     if not nid:
-        out.write("  🔴 量不到新席 seat_id,人格 %s 沒移植(手動:bind_one.py bind --seat <id> --card %s)\n" % (persona, persona))
+        out.write("  " + T("aib.restart.no_seat_id", name=persona) + "\n")
         return
     cmd = [sys.executable, os.path.join(REPO, "src", "identity", "bind_one.py"), "bind", "--seat", nid, "--card", persona,
            "--actor", "restart@%s/aib" % old_code, "--actor-kind", "system", "--state-root", root]
@@ -600,8 +616,9 @@ def _transplant(cabin, prov, role, old_code, root, out):
         cmd += ["--brain", route]
     p = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
     tail = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()[-1:] or [""]
-    out.write("  %s 移植人格 %s%s rc=%d %s\n" % ("✅" if p.returncode == 0 else "🔴", persona,
-                                              ("+大腦 " + route) if route else "", p.returncode, tail[0]))
+    out.write("  " + T("aib.restart.persona_moved", mark="✅" if p.returncode == 0 else "🔴", name=persona,
+                        extra=T("aib.restart.brain_plus", path=route) if route else "", rc=p.returncode,
+                        tail=tail[0]) + "\n")
 
 
 def _ledger_path(root, cabin):
@@ -640,14 +657,14 @@ def _codex_register(hub, cabin, root, out):
     listing = seat_pool._tmux(hub, "list-windows", "-F", "#{window_id} #{window_name}") or ""
     wins = [ln.split()[0] for ln in listing.splitlines() if ln.strip().endswith("-codex")]
     if not wins:
-        out.write("  ⚠ 找不到 codex 的窗,席碼沒補登記(watch 會在 5 分鐘內自己補)\n")
+        out.write("  " + T("aib.restart.codex_no_window") + "\n")
         return
     env = _child_env({"EZ2_AIHUB_SOCKET": hub, "EZ2_AIB_INSTANCE": cabin,
                       "EZ2_AIB_INSTANCE_HOME": os.path.join(root, "instances", cabin)})
     p = subprocess.run([sys.executable, os.path.join(HERE, "seat-detect.py"), "--window", wins[-1], "--apply"],
                        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=60)
     tail = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()[-1:] or [""]
-    out.write("  %s codex 席碼補登記 rc=%d %s\n" % ("✅" if p.returncode == 0 else "⚠", p.returncode, tail[0]))
+    out.write("  " + T("aib.restart.codex_registered", mark="✅" if p.returncode == 0 else "⚠", rc=p.returncode, tail=tail[0]) + "\n")
 
 
 def revive_cabin(c, *, state_root=None, out=sys.stdout, log_dir=None, wait_s=30):
@@ -656,7 +673,7 @@ def revive_cabin(c, *, state_root=None, out=sys.stdout, log_dir=None, wait_s=30)
     cabin = c["cabin"]
     hub = _hub_of(cabin)
     if not hub:
-        out.write("✗ 量不到艙 %s 的 hub 名(cabin_resolve.sh --hub 不收),不猜,停手。\n" % cabin)
+        out.write(T("aib.restart.no_hub", instance=cabin) + "\n")
         return 0, len(c["seats"])
     log_dir = log_dir or os.path.join(root, "instances", cabin, "cockpit")
     os.makedirs(log_dir, exist_ok=True)
@@ -669,13 +686,13 @@ def revive_cabin(c, *, state_root=None, out=sys.stdout, log_dir=None, wait_s=30)
     done = _ledger_load(ledger)
     for s in sorted(c["seats"], key=lambda s: int(s.get("window") or 0)):
         code, prov, plan = s.get("code") or "?", s.get("provider") or "", s.get("plan")
-        out.write("\n▶ @%s(%s/%s,窗 %s)\n" % (code, prov or "?", s.get("role") or "-", s.get("window")))
+        out.write("\n" + T("aib.restart.seat_head", code=code, provider=prov or "?", role=s.get("role") or "-", window=s.get("window")) + "\n")
         if plan == "skip":
-            out.write("  跳過:%s\n" % s.get("why"))
+            out.write("  " + T("aib.restart.skip", why=s.get("why")) + "\n")
             continue
         uuid = s.get("uuid") or ""
         if plan == "new" and code in done and done[code].get("snap") == c.get("snapshot_at"):
-            out.write("  ✅ 上一輪已經開過新席了(%s),不再開第二個\n" % time.strftime("%H:%M", time.localtime(done[code]["at"])))
+            out.write("  " + T("aib.restart.already_opened", when=time.strftime("%H:%M", time.localtime(done[code]["at"]))) + "\n")
             ok += 1
             continue
         if plan == "revive":
@@ -689,11 +706,11 @@ def revive_cabin(c, *, state_root=None, out=sys.stdout, log_dir=None, wait_s=30)
                     break
                 time.sleep(2)
             if not free and _already_back(h, cabin):
-                out.write("  ✅ 已經回來了(上一輪恢復開好的),跳過\n")
+                out.write("  " + T("aib.restart.already_back") + "\n")
                 ok += 1
                 continue
             if not free:
-                out.write("  🔴 這段對話還有人拿著(%s),不硬開,這一席跳過\n" % seat_liveness.describe(h))
+                out.write("  " + T("aib.restart.session_held", detail=seat_liveness.describe(h)) + "\n")
                 bad += 1
                 continue
         win_names = (seat_pool._tmux(hub, "list-windows", "-F", "#{window_name}") or "").split()
@@ -717,13 +734,13 @@ def revive_cabin(c, *, state_root=None, out=sys.stdout, log_dir=None, wait_s=30)
             except subprocess.TimeoutExpired:
                 rc = 124
         if rc != 0:
-            out.write("  🔴 開席失敗 rc=%d(紀錄 %s)\n" % (rc, log))
+            out.write("  " + T("aib.restart.open_failed", rc=rc, log=log) + "\n")
             bad += 1
             continue
-        out.write("  ✅ %s rc=0%s\n" % ("同碼復活" if plan == "revive" else "開新席(%s)" % s.get("why"),
-                                       ",帶回機器人綁定" if extra.get(benv) else ""))
+        out.write("  " + T("aib.restart.opened", what=T("aib.restart.revived") if plan == "revive" else T("aib.restart.opened_new", why=s.get("why")),
+                        extra=T("aib.restart.bot_carried") if extra.get(benv) else "") + "\n")
         if benv and not bval:
-            out.write("  ⚠ 機器人綁定量不到(bridge/%s/status.json 沒有 agent_id),要問人\n" % code)
+            out.write("  " + T("aib.restart.bot_unknown", code=code) + "\n")
         if prov == "codex":
             time.sleep(3)
             _codex_register(hub, cabin, root, out)
@@ -739,22 +756,21 @@ def restore(code, *, yes=False, force=False, attach=True, out=sys.stdout, view=N
     view = view or build_view()
     hits = _find(view, code)
     if not hits:
-        out.write("找不到艙 %s。先打 aib restart 看清單。\n" % code)
+        out.write(T("aib.restart.no_cabin", code=code) + "\n")
         return 2
     if len(hits) > 1:
-        out.write("艙碼 %s 對到不只一艙:%s,請寫長一點。\n" % (code, " ".join(c["cabin"] for c in hits)))
+        out.write(T("aib.restart.ambiguous", code=code, items=" ".join(c["cabin"] for c in hits)) + "\n")
         return 2
     c = hits[0]
     if c.get("here"):
-        out.write("📍 你就在艙 %s 裡,不用恢復。\n" % c["cabin"])
+        out.write(T("aib.restart.inside", instance=c["cabin"]) + "\n")
         return 0
     if not c.get("dead"):
         if not c.get("cockpit_alive"):
-            out.write("艙 %s 的座艙畫面不在、AI 還在:打 aib claude dgrs root %s 重組座艙(不用搬)。\n" % (c["cabin"], c["cabin"]))
+            out.write(T("aib.restart.regroup", instance=c["cabin"]) + "\n")
             return 1
         if c.get("clients") and not force:
-            out.write("艙 %s 已經有人在看(%s)。接回來會把那個視窗踢掉;確定要的話加 --force。\n"
-                      % (c["cabin"], " ".join(c["clients"])))
+            out.write(T("aib.restart.watched", instance=c["cabin"], who=" ".join(c["clients"])) + "\n")
             return 1
         if c.get("clients") and not yes:
             try:
@@ -762,10 +778,10 @@ def restore(code, *, yes=False, force=False, attach=True, out=sys.stdout, view=N
             except EOFError:
                 a = ""
             if a.strip().lower() not in ("y", "yes"):
-                out.write("取消,什麼都沒動。\n")
+                out.write(T("aib.restart.cancelled") + "\n")
                 return 1
         if not attach:
-            out.write("(--no-attach:艙 %s 活著,沒開視窗。要看:tmux attach -d -t %s)\n" % (c["cabin"], c.get("session")))
+            out.write(T("aib.restart.no_attach_alive", instance=c["cabin"], session=c.get("session")) + "\n")
             return 0
         return 0 if attach_cabin(c, out=out) else 1
     return restore_dead([c], yes=yes, attach=attach, out=out, ask=ask)
@@ -774,11 +790,11 @@ def restore(code, *, yes=False, force=False, attach=True, out=sys.stdout, view=N
 def restore_dead(cabins, *, yes=False, attach=True, out=sys.stdout, ask=input):
     """一艙或多艙斷掉的艙:全部計畫先列出來、問一次,再照快照順序一艙一艙開回來(一艙對一艙)。"""
     total = sum(len(c["seats"]) for c in cabins)
-    out.write("要恢復斷掉的艙 %d 個(都用原艙號開回來),共 %d 席:\n" % (len(cabins), total))
+    out.write(T("aib.restart.plan_head", n=len(cabins), total=total) + "\n")
     for c in cabins:
-        out.write("\n  ■ 艙 %s\n" % c["cabin"])
+        out.write("\n  " + T("aib.restart.cabin_label", instance=c["cabin"]) + "\n")
         for s in sorted(c["seats"], key=lambda s: int(s.get("window") or 0)):
-            out.write("     窗 %-3s @%-6s %-14s %-8s → %s\n" % (s.get("window"), s.get("code") or "?",
+            out.write("     %s %-3s @%-6s %-14s %-8s → %s\n" % (T("aib.restart.window_word"), s.get("window"), s.get("code") or "?",
                                                            s.get("provider") or "?", s.get("role") or "-", s.get("why")))
     if not yes:
         try:
@@ -786,27 +802,27 @@ def restore_dead(cabins, *, yes=False, attach=True, out=sys.stdout, ask=input):
         except EOFError:
             a = ""
         if a not in ("y", "yes"):
-            out.write("取消,什麼都沒動。\n")
+            out.write(T("aib.restart.cancelled") + "\n")
             return 1
     all_ok = True
     for c in cabins:
-        out.write("\n══════ 艙 %s ══════\n" % c["cabin"])
+        out.write("\n" + T("aib.restart.cabin_banner", instance=c["cabin"]) + "\n")
         ok, bad = revive_cabin(c, out=out)
-        out.write("\n════ 艙 %s:成功 %d 席,出問題 %d 席 ════\n" % (c["cabin"], ok, bad))
+        out.write("\n" + T("aib.restart.cabin_result", instance=c["cabin"], ok=ok, bad=bad) + "\n")
         all_ok = all_ok and bad == 0
         if ok and attach:
             attach_cabin(dict(c, session=_session_of(c["cabin"])), out=out)
         elif ok:
-            out.write("(--no-attach:沒開視窗。要看:tmux attach -d -t %s)\n" % _session_of(c["cabin"]))
-    out.write("\n提醒:接回來的 AI 不知道剛剛斷過。請跟它們說一聲「剛剛中斷過,先檢查做到一半的東西」。\n")
-    out.write("中途斷掉可以再跑一次同一個指令:已經回來的席會標 ✅ 跳過,不會開第二個。\n")
+            out.write(T("aib.restart.no_attach", session=_session_of(c["cabin"])) + "\n")
+    out.write("\n" + T("aib.restart.remind") + "\n")
+    out.write(T("aib.restart.rerun_ok") + "\n")
     return 0 if all_ok else 1
 
 
 def restore_all(*, yes=False, attach=True, out=sys.stdout, view=None, ask=input):
     view = view or build_view()
     if not view.get("dead"):
-        out.write("沒有斷掉的艙要恢復。%s\n" % (view.get("snapshot_note") or ""))
+        out.write(T("aib.restart.nothing", detail=view.get("snapshot_note") or "") + "\n")
         return 0
     return restore_dead(view["dead"], yes=yes, attach=attach, out=out, ask=ask)
 
@@ -848,7 +864,7 @@ def ask_number(view, *, out=sys.stdout, ask=input):
         return restore_all(out=out, view=view, ask=ask)
     pick = [c for n, c, _ in items if str(n) == a]
     if not pick:
-        out.write("沒有編號 %s。\n" % a)
+        out.write(T("aib.restart.no_number", value=a) + "\n")
         return 2
     c = pick[0]
     return restore(c["cabin"], force=bool(c.get("clients")) and not c.get("dead"), out=out, view=view, ask=ask)
@@ -916,12 +932,11 @@ def _dev_worktree(here=HERE):
 def install_boot(*, home=None, platform=None, launchctl=_launchctl, out=sys.stdout, plist=None, dev_tree=None):
     import plistlib
     if (platform or sys.platform) != "darwin":
-        out.write("開機選單目前只支援 macOS(launchd);這台不裝。\n")
+        out.write(T("aib.restart.boot_mac_only") + "\n")
         return 2
     dev = _dev_worktree() if dev_tree is None else dev_tree
     if dev and os.environ.get("AIB_ALLOW_FOREIGN_BINDINGS") != "1":
-        out.write("✗ 這支是開發樹 %s 裡的程式;開機設定要指向正本樹,請用正本的 aib 裝。要硬裝:AIB_ALLOW_FOREIGN_BINDINGS=1\n"
-                  % dev)
+        out.write(T("aib.restart.boot_dev_tree", path=dev) + "\n")
         return 1
     path = boot_plist_path(home)
     data = plist or boot_plist()
@@ -933,12 +948,11 @@ def install_boot(*, home=None, platform=None, launchctl=_launchctl, out=sys.stdo
     launchctl("bootout", "%s/%s" % (domain, BOOT_LABEL))          # 舊的先拿掉(沒裝過會失敗,不管)
     rc, err = launchctl("bootstrap", domain, path)
     if rc != 0:
-        out.write("✗ 寫好 %s,但 launchctl bootstrap 失敗:%s\n" % (path, err))
+        out.write(T("aib.restart.boot_bootstrap_fail", path=path, err=err) + "\n")
         return 1
-    out.write("✅ 開機選單裝好了:%s\n" % path)
-    out.write("   登入後等 %d 秒,上次開機時的艙有沒回來的,才開一個 Terminal 跑 aib restart(只顯示選單,不自己恢復)。\n"
-              % BOOT_DELAY_S)
-    out.write("   紀錄:%s;拆掉:aib restart uninstall-boot\n" % data["StandardOutPath"])
+    out.write(T("aib.restart.boot_installed", path=path) + "\n")
+    out.write("   " + T("aib.restart.boot_wait", seconds=BOOT_DELAY_S) + "\n")
+    out.write("   " + T("aib.restart.boot_log", log=data["StandardOutPath"]) + "\n")
     return 0
 
 
@@ -947,9 +961,9 @@ def uninstall_boot(*, home=None, launchctl=_launchctl, out=sys.stdout):
     launchctl("bootout", "gui/%d/%s" % (os.getuid(), BOOT_LABEL))
     if os.path.exists(path):
         os.remove(path)
-        out.write("✅ 開機選單拆掉了:%s\n" % path)
+        out.write(T("aib.restart.boot_removed", path=path) + "\n")
     else:
-        out.write("本來就沒裝開機選單(%s 不在)\n" % path)
+        out.write(T("aib.restart.boot_not_installed", path=path) + "\n")
     return 0
 
 
@@ -966,16 +980,16 @@ def boot_check(*, delay=None, view=None, opener=None, out=sys.stdout, now=None):
     try:
         v = view if view is not None else build_view()
     except Exception as exc:                # noqa: BLE001 —— 量不到就不跳,寫一行紀錄
-        out.write("%s 量不到艙(%s),不跳選單\n" % (stamp, exc))
+        out.write(T("aib.restart.boot_no_cabins", when=stamp, err=exc) + "\n")
         return 0
     dead = v.get("dead") or []
     if not dead:
-        out.write("%s 上次開機的艙都在,或沒有快照 ⇒ 不跳選單\n" % stamp)
+        out.write(T("aib.restart.boot_all_back", when=stamp) + "\n")
         return 0
     cmd = " ".join(shlex.quote(a) for a in _aib_bin() + ["restart"])
     ok = (opener or _open_terminal)(cmd)
-    out.write("%s 上次開機有 %d 個艙沒回來(%s)⇒ 開 Terminal 跑 %s:%s\n"
-              % (stamp, len(dead), " ".join(c["cabin"] for c in dead), cmd, "成功" if ok else "osascript 失敗"))
+    out.write(T("aib.restart.boot_missing", when=stamp, n=len(dead), items=" ".join(c["cabin"] for c in dead), cmd=cmd,
+                status=T("aib.restart.boot_ok") if ok else T("aib.restart.boot_osa_fail")) + "\n")
     return 0
 
 
@@ -995,7 +1009,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.action == "snapshot":
         p = write_snapshot(min_interval_s=0)
-        print(p or "沒寫:沒有在線的艙,或量不到開機時間")
+        print(p or T("aib.restart.boot_not_written"))
         return 0 if p else 1
     if args.action == "install-boot":
         return install_boot()

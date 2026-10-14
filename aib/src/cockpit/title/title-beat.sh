@@ -474,8 +474,13 @@ case "$MODE" in
       # 10-10(the maintainer 眼驗令):這一行開頭先放給使用者的提示(四語字典 aib.cockpit.footer_hint,與 cockpit-full.sh 同一句,
       #   前補 2 格與 Claude 輸入框下方那三行對齊),帶顏色的版號更新狀態接在後面——那是更新提示(↑ ⟳ ?)的唯一彩色出口,不拿掉。
       #   長度 40 → 80 裝得下兩段;字典讀不到(!!key!! 或空)退回中文字面。
-      _tb_hint="$("$EZ2_PY3" "$HERE/../i18n_lib.py" aib.cockpit.footer_hint 2>/dev/null || true)"
-      case "$_tb_hint" in ''|'!!'*) _tb_hint='若有任何想法,請訪問:aib.ez2.app' ;; esac
+      #   10-14 語系盤查第 23 條:改成 tmux #(…) 每次重畫狀態列重算(切語系不用重開艙);寫法限制同 cockpit-full.sh(不能有 ")" 與 "%")。
+      #   tmux #(…) 只給 server 全域環境 ⇒ 艙檔 / 狀態根寫死進指令(同 cockpit-full.sh)。
+      _tb_env=""
+      for _v in EZ2_AIB_INSTANCE_HOME EZ2_AIB_STATE_ROOT EZ2_AIB_HOME; do
+        [ -n "${!_v:-}" ] && _tb_env="$_tb_env$(printf '%s=%q ' "$_v" "${!_v}")"
+      done
+      _tb_hint="#(v=\`$_tb_env$(printf '%q -I %q' "$EZ2_PY3" "$HERE/../i18n_lib.py") aib.cockpit.footer_hint 2>/dev/null\`; echo \"\$v\" | grep -q '^!!' && v=; [ -n \"\$v\" ] || v='若有任何想法,請訪問:aib.ez2.app'; echo \"\$v\")"
       run env -u TMUX tmux set-option -t "$EZ2_TMUX_SESSION" status-left-length 80
       run env -u TMUX tmux set-option -t "$EZ2_TMUX_SESSION" status-left \
         "  $_tb_hint  "'#{?#{==:#{@aib_ver_state},ok},#[fg=colour71][AIB v#{@aib_ver}]#[default] ,#{?#{==:#{@aib_ver_state},behind},#[fg=colour178][AIB v#{@aib_ver} ↑]#[default] ,#{?#{==:#{@aib_ver_state},stale},#[fg=colour208][AIB v#{@aib_ver} ⟳]#[default] ,#[fg=colour167][AIB v#{@aib_ver} ?]#[default] }}}'

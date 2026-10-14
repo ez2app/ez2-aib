@@ -13,6 +13,18 @@
 # (tests/test-eye-ui-launch.py ~925–928). Paint failure must not block open.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# 畫面字走四語字典(語系盤查第 14 條,10-14):_prl <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取。
+#   python 起不來 ⇒ 印鍵名、rc 照 0(set -e 底下也不會中斷)。
+_prl() {
+  local key="$1"; shift
+  local args=() kv
+  for kv in "$@"; do args+=(--param "$kv"); done
+  # 字典庫先找 $HERE(測試替身會把 HERE 指到假目錄 ⇒ 退回本檔所在目錄);EZ2_PY3 起不來 ⇒ 再用 python3 試一次,都不行才印鍵名
+  local lib="$HERE/i18n_lib.py"
+  [ -f "$lib" ] || lib="$(dirname "${BASH_SOURCE[0]:-$0}")/i18n_lib.py"
+  "${EZ2_PY3:-python3}" "$lib" ${args[@]+"${args[@]}"} "$key" 2>/dev/null \
+    || python3 "$lib" ${args[@]+"${args[@]}"} "$key" 2>/dev/null || printf '%s\n' "$key"
+}
 PROVIDER="${1:-}"
 MODE="${2:-}"
 ROLE="${3:-}"
@@ -78,11 +90,11 @@ self_register_seat() {
   local tmux_bin wid aib_bin
   tmux_bin="${AIB_TMUX_BIN:-tmux}"
   wid="$("$tmux_bin" display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)" || wid=""
-  case "$wid" in @[0-9]*) ;; *) echo "aib: 席位自我登記跳過:讀不到窗號(TMUX_PANE=$TMUX_PANE)" >&2; return 0 ;; esac
+  case "$wid" in @[0-9]*) ;; *) echo "aib: $(_prl aib.relogin.reg_no_window window="$TMUX_PANE")" >&2; return 0 ;; esac
   aib_bin="${AIB_SEAT_REGISTER_AIB:-$HERE/aib}"
   if ! bash "$aib_bin" seat re-register "$wid" --provider "$PROVIDER" --mode "$MODE" --role "$ROLE" \
         --cwd "$CALLER_CWD" --model "$MODEL_REQUESTED" --session-uuid "$SESSION_UUID" >/dev/null 2>&1; then
-    echo "aib: 席位自我登記失敗($wid;dm 可能判連不到;修:aib seat re-register $wid)" >&2
+    echo "aib: $(_prl aib.relogin.reg_fail window="$wid")" >&2
   fi
   return 0
 }
@@ -105,20 +117,20 @@ codexbot_reconnect_loop() {
   while { [ "$rc" -eq 3 ] && [ "$n" -lt "$max" ]; } || [ "$rc" -eq 4 ] || [ "$rc" -eq 5 ]; do
     if [ "$rc" -eq 4 ]; then
       r5=0
-      echo "aib: CodexBot 席上換綁,重開同一席接新的那條(席碼不變)" >&2
+      echo "aib: $(_prl aib.relogin.rebind_restart)" >&2
     elif [ "$rc" -eq 5 ]; then
       # 10-11 a seat(review 建議):載新碼連續太多次 = 判斷「碼變了」的那段可能壞了 ⇒ 停,不無限重開
       r5=$((r5 + 1))
       if [ "$r5" -gt "$r5max" ]; then
-        echo "aib: CodexBot 連續 ${r5max} 次載新碼後又要重開,停下來不再自動重開(可能是程式有問題;右鍵重開可再試)" >&2
+        echo "aib: $(_prl aib.relogin.reload_loop n="${r5max}")" >&2
         break
       fi
-      echo "aib: CodexBot 程式已更新,重開同一席載新碼(綁定不變)" >&2
+      echo "aib: $(_prl aib.relogin.reload)" >&2
     else
       r5=0
       n=$((n + 1))
       case "$n" in 1) delay=1 ;; 2) delay=2 ;; 3) delay=4 ;; 4) delay=8 ;; *) delay=15 ;; esac
-      echo "aib: CodexBot 與本機 Codex server 斷線,${delay} 秒後重連同一席(第 ${n}/${max} 次)" >&2
+      echo "aib: $(_prl aib.relogin.reconnect seconds="${delay}" n="${n}" total="${max}")" >&2
       sleep "$delay"
     fi
     paint_ai_seat_top_line
@@ -126,7 +138,7 @@ codexbot_reconnect_loop() {
     rc=$?
   done
   if [ "$rc" -eq 3 ]; then
-    echo "aib: CodexBot 重連 ${max} 次仍斷線,不再自動重連(右鍵「重開」或 tmux respawn-pane 可再試)" >&2
+    echo "aib: $(_prl aib.relogin.reconnect_give_up n="${max}")" >&2
   fi
   return "$rc"
 }
@@ -156,8 +168,8 @@ rc=$?
 codex_missing=0
 if [ "$rc" -eq 127 ] && ! command -v "${AIB_CODEX_CLI:-codex}" >/dev/null 2>&1; then
   codex_missing=1
-  echo "aib: 這台找不到 codex 指令(沒裝,或不在 PATH)—— 不是沒登入,不重開。" >&2
-  echo "aib: 裝法:npm install -g @openai/codex,裝好跑 codex login 登入,再按 Enter 重開這一席" >&2
+  echo "aib: $(_prl aib.relogin.no_codex)" >&2
+  echo "aib: $(_prl aib.relogin.install_codex)" >&2
 fi
 
 # /logout deletes auth.json and exits. Re-open fresh CLI → Sign in menu.
@@ -171,15 +183,15 @@ case "$relogin_max" in ''|*[!0-9]*) relogin_max=3 ;; esac
 relogin_n=0
 while [ "$codex_missing" = 0 ] && [ ! -f "$AUTH" ]; do
   if [ "$relogin_n" -ge "$relogin_max" ]; then
-    echo "aib: Codex 重開 ${relogin_max} 次仍未登入,不再自動重開(有人看的窗格會停在選單:l 可在這一格登入)" >&2
+    echo "aib: $(_prl aib.relogin.relogin_give_up n="${relogin_max}")" >&2
     [ "$rc" -eq 0 ] && rc=1      # 讓下面的選單接手(它只在非 0 結束時停住)
     break
   fi
   relogin_n=$((relogin_n + 1))
   if [ "$had_auth" = "1" ]; then
-    echo "aib: 偵測到 Codex /logout，重開真 CLI 接登入畫面" >&2
+    echo "aib: $(_prl aib.relogin.logout_seen)" >&2
   else
-    echo "aib: Codex 尚未登入，重開真 CLI 接登入畫面" >&2
+    echo "aib: $(_prl aib.relogin.not_logged_in)" >&2
   fi
   had_auth=0
   unset AIB_RESUME_SESSION_UUID AIB_RESUME_UUID || true
@@ -223,14 +235,14 @@ print((json.load(open(sys.argv[1], encoding="utf-8")).get("session_uuid") or "")
 
 while [ "$rc" -ne 0 ] && codex_hold_wanted; do
   _hold_uuid="$(codex_resume_uuid)"
-  printf '\n這一席的 Codex 結束了(代碼 %s)。窗格先留著,對話沒有丟。\n' "$rc"
+  printf '\n%s\n' "$(_prl aib.relogin.hold_head rc="$rc")"
   if [ -n "$_hold_uuid" ]; then
-    printf '  Enter  把原對話開回來(對話編號 %s)\n' "${_hold_uuid:0:8}"
+    printf '  %s\n' "$(_prl aib.relogin.hold_resume id="${_hold_uuid:0:8}")"
   else
-    printf '  Enter  重開 Codex(找不到原對話編號,會是一段新對話)\n'
+    printf '  %s\n' "$(_prl aib.relogin.hold_new)"
   fi
-  printf '  l      在這一格登入 Codex\n'
-  printf '  q      真的關閉這一席\n> '
+  printf '  %s\n' "$(_prl aib.relogin.hold_login)"
+  printf '  %s\n> ' "$(_prl aib.relogin.hold_quit)"
   IFS= read -r _hold_choice || break          # 讀不到輸入(窗格被關)⇒ 照舊結束
   case "$_hold_choice" in
     q|Q) break ;;

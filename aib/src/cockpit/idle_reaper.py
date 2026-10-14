@@ -428,14 +428,17 @@ DEFAULT_POLICY = {
     "protect": {"instances": ["main"], "sessions": [], "roles": []},
 }
 
-_T = None
+_T = {}   # 語系 → Translator(每種語系字典只載一次)
 
 
 def t(key, **params):
-    global _T
-    if _T is None:
-        _T = i18n_lib.Translator(os.environ.get("EZ2_AIB_LOCALE"))
-    return _T.t(key, {k: str(v) for k, v in params.items()})
+    # 10-14 語系盤查第 26 條:aib idle watch 是長駐行程,原本 Translator 只建一次 ⇒ 切語系後一直講舊語言;
+    #   改成每次照 resolve_locale() 取(只讀一兩個小設定檔),語系變了換那一份字典。
+    loc = i18n_lib.resolve_locale()
+    tr = _T.get(loc)
+    if tr is None:
+        tr = _T[loc] = i18n_lib.Translator(loc)
+    return tr.t(key, {k: str(v) for k, v in params.items()})
 
 
 # ---------------------------------------------------------------- 快照(真系統)
