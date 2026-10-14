@@ -1588,7 +1588,7 @@
   "aib.newproj.not_bound": "이 좌석에는 연결된 프로젝트가 없습니다(좌석 파일에 project_uid 없음)",
   "aib.newproj.dry_unbind": "[DRY-RUN] {uid} 을(를) 좌석 {seat}에서 해제합니다",
   "aib.newproj.unbound": "프로젝트 {uid} 을(를) 좌석 {seat}에서 해제했습니다. 프로젝트 카드는 {path}에 남아 있습니다",
-  "aib.newproj.uid_unknown": "--project-uid {uid}: 해당 프로젝트 카드가 없거나 형식이 맞지 않습니다",
+  "aib.newproj.uid_unknown": "--project-uid {uid}: 이 uid의 프로젝트 카드가 없습니다",
   "aib.newproj.title_ambiguous": "제목 「{title}」의 프로젝트 카드가 {n}장 있습니다. 고르지 않습니다: {items}. --project-uid 로 지정하세요",
   "aib.newproj.need_title": "--title(프로젝트 제목) 또는 --project-uid(기존 프로젝트 연결)를 주세요",
   "aib.newproj.folder_mismatch": "이 프로젝트 카드의 폴더는 {key}({path})이며 {value} 가 아닙니다. 프로젝트 하나에 폴더 하나, 여기서 바꾸지 않습니다",
@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "지정된 함장이 한 명뿐인지 확인할 수 없습니다: {file}의 스키마가 맞지 않습니다",
   "aib.captains_ctl.captain_exists": "이미 함장이 지정되어 있습니다: 창 {window}, 좌석 코드={code}; 먼저 그 좌석을 --unassign한 뒤 새 좌석을 지정하세요",
   "aib.captains_ctl.unmeasured": "알 수 없음",
-  "aib.captains_ctl.status_label": "함장:"
+  "aib.captains_ctl.status_label": "함장:",
+  "aib.newproj.card_invalid": "--project-uid {uid}: 프로젝트 카드는 있지만({path}) 쓸 수 없습니다: {why}"
 }

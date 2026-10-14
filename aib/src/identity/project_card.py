@@ -96,6 +96,17 @@ def empty_four_layers() -> dict[str, Any]:
     }
 
 
+def migrate_legacy_layer(name: str, layer: Mapping[str, Any]) -> Mapping[str, Any]:
+    """早期開發版的卡:憲法層只有 andy_rulings、沒有 human_rulings ⇒ 補上 human_rulings(照抄,舊欄保留)。
+    10-14(6ddf 走查 K1):以前直接判缺欄,newproj 只說「找不到這張專案卡,或卡的形狀不合」。
+    只在讀進來時補;卡下次照常寫回時兩欄都在,舊工具讀 andy_rulings 照舊能用。"""
+    if name == "constitution" and "human_rulings" not in layer and isinstance(layer.get("andy_rulings"), list):
+        out = dict(layer)
+        out["human_rulings"] = list(layer["andy_rulings"])
+        return out
+    return layer
+
+
 def validate_layer(name: str, layer: Mapping[str, Any]) -> dict[str, Any]:
     if name not in LAYER_KEYS:
         raise ProjectCardError("未知層: %r" % (name,))
@@ -107,6 +118,7 @@ def validate_layer(name: str, layer: Mapping[str, Any]) -> dict[str, Any]:
         "work_state": empty_work_state,
         "handoff": empty_handoff_layer,
     }[name]()
+    layer = migrate_legacy_layer(name, layer)
     missing = [k for k in template if k not in layer]
     if missing:
         raise ProjectCardError("層 %s 缺欄: %s" % (name, ",".join(missing)))

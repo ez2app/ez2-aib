@@ -570,8 +570,38 @@ def _refuse(msg: str, seat: str) -> int:
     return 2
 
 
+def card_problem(state_root: Path, project_uid: str) -> str:
+    """load_card 回 None 的原因(給使用者看):"" = 卡不在;否則是讀不到 / 形狀不合的那一句(含缺哪一欄)。"""
+    try:
+        uid = PC.validate_project_uid(project_uid)
+    except PC.ProjectCardError as err:
+        return str(err)
+    path = card_path_of(state_root, uid)
+    if not path.exists():
+        return ""
+    card = _load_json(path)
+    if not card:
+        return "JSON 讀不到或不是物件"
+    if card.get("project_uid") != uid:
+        return "卡上的 project_uid 是 %r" % card.get("project_uid")
+    try:
+        PC.validate_project_card(card)
+    except PC.ProjectCardError as err:
+        return str(err)
+    return ""
+
+
+def _uid_refusal(state_root: Path, project_uid: str) -> str:
+    """--project-uid 用不了時說哪一種:卡不在,或卡在但哪裡不合(10-14 走查 K1:以前兩種同一句)。"""
+    why = card_problem(state_root, project_uid)
+    if not why:
+        return T("aib.newproj.uid_unknown", {"uid": project_uid})
+    return T("aib.newproj.card_invalid", {"uid": project_uid, "why": why,
+                                          "path": card_path_of(state_root, project_uid)})
+
+
 def load_card(state_root: Path, project_uid: str) -> Optional[dict]:
-    """專案卡正本;不在、讀不到、形狀不合 ⇒ None。"""
+    """專案卡正本;不在、讀不到、形狀不合 ⇒ None(原因見 card_problem)。"""
     try:
         uid = PC.validate_project_uid(project_uid)
     except PC.ProjectCardError:
@@ -725,7 +755,7 @@ def run_newproj(args) -> int:
         _pre_uid = ""
         if args.project_uid:
             if load_card(root, args.project_uid.strip()) is None:
-                return _refuse(T("aib.newproj.uid_unknown", {"uid": args.project_uid.strip()}), "(new seat)")
+                return _refuse(_uid_refusal(root, args.project_uid.strip()), "(new seat)")
             _pre_uid = args.project_uid.strip()
         elif _title:
             _same = projects_titled(root, _title)
@@ -840,7 +870,7 @@ def run_newproj(args) -> int:
     existing_uid = ""
     if args.project_uid:
         if load_card(root, args.project_uid.strip()) is None:
-            return _refuse(T("aib.newproj.uid_unknown", {"uid": args.project_uid.strip()}), seat_arg)
+            return _refuse(_uid_refusal(root, args.project_uid.strip()), seat_arg)
         existing_uid = args.project_uid.strip()
     elif title:
         same = projects_titled(root, title)

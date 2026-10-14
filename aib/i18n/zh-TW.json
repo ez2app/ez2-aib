@@ -1588,7 +1588,7 @@
   "aib.newproj.not_bound": "這一席沒有綁專案(席位檔沒有 project_uid)",
   "aib.newproj.dry_unbind": "[DRY-RUN] 會把 {uid} 從席位 {seat} 解掉",
   "aib.newproj.unbound": "專案 {uid} 已從席位 {seat} 解掉;專案卡還在 {path}",
-  "aib.newproj.uid_unknown": "--project-uid {uid}:找不到這張專案卡,或卡的形狀不合",
+  "aib.newproj.uid_unknown": "--project-uid {uid}:找不到這張專案卡",
   "aib.newproj.title_ambiguous": "標題「{title}」有 {n} 張專案卡,不挑:{items}。請用 --project-uid 指定",
   "aib.newproj.need_title": "要給 --title(專案標題)或 --project-uid(綁既有專案)",
   "aib.newproj.folder_mismatch": "這張專案卡記的資料夾是 {key}({path}),不是 {value};一個專案一個資料夾,不在這裡改",
@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "無法確認受派艦長唯一性:{file} schema 不符",
   "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
   "aib.captains_ctl.unmeasured": "量不到",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.newproj.card_invalid": "--project-uid {uid}:專案卡在({path}),但用不了:{why}"
 }

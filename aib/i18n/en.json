@@ -1588,7 +1588,7 @@
   "aib.newproj.not_bound": "This seat has no project bound (no project_uid in its seat file)",
   "aib.newproj.dry_unbind": "[DRY-RUN] would unbind {uid} from seat {seat}",
   "aib.newproj.unbound": "Project {uid} unbound from seat {seat}; the project card stays at {path}",
-  "aib.newproj.uid_unknown": "--project-uid {uid}: no such project card, or the card is malformed",
+  "aib.newproj.uid_unknown": "--project-uid {uid}: no project card with this uid",
   "aib.newproj.title_ambiguous": "The title 「{title}」 has {n} project cards; not picking one: {items}. Name one with --project-uid",
   "aib.newproj.need_title": "Give --title (project title) or --project-uid (bind an existing project)",
   "aib.newproj.folder_mismatch": "This project card records the folder {key} ({path}), not {value}; one project, one folder, not changed here",
@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "cannot confirm there is only one assigned captain: {file} has the wrong schema",
   "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
   "aib.captains_ctl.unmeasured": "unknown",
-  "aib.captains_ctl.status_label": "Captain:"
+  "aib.captains_ctl.status_label": "Captain:",
+  "aib.newproj.card_invalid": "--project-uid {uid}: the project card exists ({path}) but cannot be used: {why}"
 }

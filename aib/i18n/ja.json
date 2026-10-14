@@ -1588,7 +1588,7 @@
   "aib.newproj.not_bound": "この席にはプロジェクトが紐付いていません(席ファイルに project_uid がありません)",
   "aib.newproj.dry_unbind": "[DRY-RUN] {uid} を席 {seat} から外します",
   "aib.newproj.unbound": "プロジェクト {uid} を席 {seat} から外しました。プロジェクトカードは {path} に残っています",
-  "aib.newproj.uid_unknown": "--project-uid {uid}:そのプロジェクトカードがないか、形式が不正です",
+  "aib.newproj.uid_unknown": "--project-uid {uid}:この uid のプロジェクトカードがありません",
   "aib.newproj.title_ambiguous": "タイトル「{title}」のプロジェクトカードが {n} 枚あります。選びません:{items}。--project-uid で指定してください",
   "aib.newproj.need_title": "--title(プロジェクトのタイトル)か --project-uid(既存プロジェクトを紐付け)を指定してください",
   "aib.newproj.folder_mismatch": "このプロジェクトカードのフォルダは {key}({path})で、{value} ではありません。1 プロジェクト 1 フォルダ、ここでは変えません",
@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "任命された艦長が 1 人だけか確認できません:{file} のスキーマが違います",
   "aib.captains_ctl.captain_exists": "すでに艦長が任命されています:ウィンドウ {window}、席コード={code};先にその席を --unassign してから新しい席を任命してください",
   "aib.captains_ctl.unmeasured": "不明",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.newproj.card_invalid": "--project-uid {uid}:プロジェクトカードはあります({path})が使えません:{why}"
 }
