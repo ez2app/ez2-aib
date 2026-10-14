@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "無法確認受派艦長唯一性:{file} schema 不符",
   "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
   "aib.captains_ctl.unmeasured": "量不到",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "menu_pick.cli.watch_banner": "這個窗是 aib 的「選單自動選擇」。每 {interval} 秒看一次本艙每一席的底部;某一席卡在選單時,由小模型選一項(優先選標了建議的那項)、按下去,並記帳。\n  它選了什麼:aib menu-pick log\n  關掉:開艙前設 AIB_MENU_PICK=0,或在 <狀態根>/state/menu-pick/off.txt 一行寫一個不要碰的席碼"
 }

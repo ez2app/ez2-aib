@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "cannot confirm there is only one assigned captain: {file} has the wrong schema",
   "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
   "aib.captains_ctl.unmeasured": "unknown",
-  "aib.captains_ctl.status_label": "Captain:"
+  "aib.captains_ctl.status_label": "Captain:",
+  "menu_pick.cli.watch_banner": "This window is aib's menu auto-pick. Every {interval} s it looks at the bottom of each seat in this cabin; when a seat is stuck on a menu, a small AI model picks an option (preferring the recommended one), presses it, and records it.\n  What it picked: aib menu-pick log\n  Turn it off: AIB_MENU_PICK=0 before opening the cabin, or list seat codes (one per line) in <state root>/state/menu-pick/off.txt"
 }

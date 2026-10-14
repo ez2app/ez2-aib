@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "任命された艦長が 1 人だけか確認できません:{file} のスキーマが違います",
   "aib.captains_ctl.captain_exists": "すでに艦長が任命されています:ウィンドウ {window}、席コード={code};先にその席を --unassign してから新しい席を任命してください",
   "aib.captains_ctl.unmeasured": "不明",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "menu_pick.cli.watch_banner": "このウィンドウは aib の「メニュー自動選択」です。{interval} 秒ごとにこのキャビンの各席の下部を確認し、メニューで止まっている席があれば小さな AI モデルが選択肢を選び(推奨のものを優先)、押して記録します。\n  何を選んだか:aib menu-pick log\n  止めるには:キャビンを開く前に AIB_MENU_PICK=0、または <状態ルート>/state/menu-pick/off.txt に触らない席コードを 1 行ずつ"
 }

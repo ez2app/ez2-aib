@@ -1971,5 +1971,6 @@
   "aib.captains_ctl.unique_schema": "지정된 함장이 한 명뿐인지 확인할 수 없습니다: {file}의 스키마가 맞지 않습니다",
   "aib.captains_ctl.captain_exists": "이미 함장이 지정되어 있습니다: 창 {window}, 좌석 코드={code}; 먼저 그 좌석을 --unassign한 뒤 새 좌석을 지정하세요",
   "aib.captains_ctl.unmeasured": "알 수 없음",
-  "aib.captains_ctl.status_label": "함장:"
+  "aib.captains_ctl.status_label": "함장:",
+  "menu_pick.cli.watch_banner": "이 창은 aib의 '메뉴 자동 선택'입니다. {interval}초마다 이 캐빈의 각 좌석 하단을 확인하고, 메뉴에서 멈춘 좌석이 있으면 작은 AI 모델이 항목을 골라(권장 항목 우선) 누르고 기록합니다.\n  무엇을 골랐는지: aib menu-pick log\n  끄기: 캐빈을 열기 전에 AIB_MENU_PICK=0, 또는 <상태 루트>/state/menu-pick/off.txt에 건드리지 않을 좌석 코드를 한 줄에 하나씩"
 }
