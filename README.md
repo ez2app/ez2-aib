@@ -142,11 +142,13 @@ aib handoff status                                 # has this seat written its h
 - **Persona file:** must contain these three headings exactly, each with some text under it: `## 職責` (duties),
   `## 紅線` (red lines), `## 知識域` (knowledge). Without them `aib newrole` refuses (`PERSONA_LINT_FAIL`).
 - **`--actor`:** your own signature for the record, `<role>@<your seat code>/<AI>`, for example `root@54321/Claude`
-  (or set `EZ2_OWNER_SIG`). Binding a seat needs it; without `--seat`, `newrole` / `newproj` only create the card.
+  (or set `EZ2_OWNER_SIG`). Binding a seat needs it: with `--seat` but no `--actor`, `newrole` still creates the card
+  but does not bind it. Without `--seat`, `newrole` / `newproj` only create the card.
 - **Try first:** add `--dry-run` to `newrole`, `newproj` or `dm` to see what would happen without writing or sending.
 - **New project:** its goals and red lines start as a draft that is not in force until you approve it; there is no
   command for approving it yet.
-- **Messages:** if the other seat has unsent text in its input box, `aib dm` refuses rather than send it; try again later.
+- **Messages:** if the other seat has unsent text in its input box, `aib dm` does not paste over it: it retries once
+  about 30 seconds later, and if that fails too it holds the message for you.
 - **Hand-off:** three steps, `aib handoff collect` → `write` → `verify`, when the conversation nears 85% or before
   `/clear`.
 

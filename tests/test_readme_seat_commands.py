@@ -56,10 +56,11 @@ class ReadmeSeatCommands(unittest.TestCase):
             for word in words[2:]:
                 if word.startswith("--"):
                     with self.subTest(command=sub, option=word):
-                        self.assertIn(word, text)
+                        # whole option only: "--seat" must not be satisfied by "--new-seat"
+                        self.assertRegex(text, r"(?<![\w-])" + re.escape(word) + r"\b")
                 elif sub in ("bindme", "handoff") and re.fullmatch(r"[a-z]+", word):
                     with self.subTest(command=sub, subcommand=word):
-                        self.assertIn(word, text)
+                        self.assertRegex(text, r"(?<![\w-])" + re.escape(word) + r"\b")
         for sub in ("newrole", "newproj"):
             self.assertIn("--dry-run", self.help_of(sub, "--help"))
         self.assertIn("--dry-run", self.help_of("dm"))
