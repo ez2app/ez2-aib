@@ -614,8 +614,12 @@ def dm_send_body(address, body, seat_rec):
 
 
 def main():
+    # 三個必填標題放在 epilog、各佔一行且原樣輸出:argparse 只在空白處斷行,CJK 說明裡唯一的空白就是
+    #   「## 職責」中間那格 ⇒ 放在選項說明裡會被斷成兩行,照抄就過不了 lint(10-14 審查抓到)。
     parser = argparse.ArgumentParser(prog=os.environ.get("AIB_NEWROLE_PROG") or None,
-                                     description=T("aib.newrole.help_desc"))
+                                     description=T("aib.newrole.help_desc"),
+                                     epilog=T("aib.newrole.help_epilog"),
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--name", required=True, help=T("aib.newrole.help_name"))
     parser.add_argument("--code", help=T("aib.newrole.help_code"))
     parser.add_argument("--emoji", default="", help=T("aib.newrole.help_emoji"))

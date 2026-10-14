@@ -27,8 +27,9 @@ class HelpTexts(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.td, ignore_errors=True)
 
-    def aib(self, locale, *args):
+    def aib(self, locale, *args, **extra):
         env = {"PATH": os.environ.get("PATH", ""), "HOME": str(self.td / "home"), "EZ2_AIB_LOCALE": locale}
+        env.update(extra)
         return subprocess.run(AIB + list(args), cwd=self.td, env=env, capture_output=True, text=True,
                               stdin=subprocess.DEVNULL, timeout=60)
 
@@ -38,14 +39,22 @@ class HelpTexts(unittest.TestCase):
         self.assertEqual((a.returncode, a.stdout), (b.returncode, b.stdout))
 
     def test_newrole_help_names_the_three_sections(self):
-        r = self.aib("en", "newrole", "--help")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        for heading in ("## 職責", "## 紅線", "## 知識域"):
-            self.assertIn(heading, r.stdout)
-        self.assertIn("Create a persona card", r.stdout)
-        self.assertNotIn("角色名稱", r.stdout)
-        self.assertIsNone(INTERNAL.search(r.stdout), r.stdout)
-        self.assertIn("## 職責", self.aib("zh-TW", "newrole", "--help").stdout)
+        # Every heading must sit whole on one line in every locale, at a narrow terminal too: a heading split across
+        # two lines (argparse wraps at spaces, and the space inside "## 職責" is the only one in CJK text) gets copied
+        # wrong and fails the lint again.
+        for loc in ("en", "zh-TW", "ja", "ko"):
+            for cols in ("60", "80"):
+                with self.subTest(locale=loc, columns=cols):
+                    r = self.aib(loc, "newrole", "--help", COLUMNS=cols)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    lines = r.stdout.splitlines()
+                    for heading in ("## 職責", "## 紅線", "## 知識域"):
+                        self.assertTrue(any(heading in line for line in lines), (heading, r.stdout))
+                    self.assertFalse(any(line.rstrip().endswith("##") for line in lines), r.stdout)
+                    self.assertIsNone(INTERNAL.search(r.stdout), r.stdout)
+        en = self.aib("en", "newrole", "--help").stdout
+        self.assertIn("Create a persona card", en)
+        self.assertNotIn("角色名稱", en)
 
     def test_newproj_help_has_no_internal_seat_codes(self):
         for loc in ("en", "zh-TW", "ja", "ko"):

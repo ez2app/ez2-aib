@@ -1977,7 +1977,7 @@
   "aib.newrole.help_code": "short code (e.g. reviewer)",
   "aib.newrole.help_emoji": "icon (default 🎭; an existing card keeps its own)",
   "aib.newrole.help_category": "category",
-  "aib.newrole.help_prompt": "the persona text. It must contain these three sections with exactly these headings, each with some text under it: `## 職責` (duties), `## 紅線` (red lines), `## 知識域` (knowledge). Without --prompt / --prompt-file a template is used (card only; it cannot be bound to a seat)",
+  "aib.newrole.help_prompt": "the persona text; it must contain the three headings listed below. Without --prompt / --prompt-file a template is used (card only; it cannot be bound to a seat)",
   "aib.newrole.help_prompt_file": "read the persona text from this file (instead of --prompt; same three sections required)",
   "aib.newrole.help_seat": "seat to bind: the full address shown in the right pane or a dm header (<cabin>/<seat>), a seat code (@<seat>), or a seat_id; without it only the card is created",
   "aib.newrole.help_vault": "Obsidian vault path",
@@ -1993,5 +1993,6 @@
   "aib.newproj.help_cwd": "working directory used to fingerprint the repository (default: current directory)",
   "aib.newproj.help_state_root": "state root (default EZ2_AIB_HOME / ~/.ez2-aib)",
   "aib.newproj.help_persona_uid": "override the persona uid (default: read from the seat's continuity file)",
-  "aib.newproj.help_dry_run": "print the result only; write nothing"
+  "aib.newproj.help_dry_run": "print the result only; write nothing",
+  "aib.newrole.help_epilog": "The persona text (--prompt / --prompt-file) must contain these three headings, typed exactly as shown, each with some text under it:\n  ## 職責      (duties)\n  ## 紅線      (red lines)\n  ## 知識域    (knowledge)"
 }

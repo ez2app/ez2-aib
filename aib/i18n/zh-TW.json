@@ -1977,7 +1977,7 @@
   "aib.newrole.help_code": "角色代號(如:bao)",
   "aib.newrole.help_emoji": "角色圖示(預設 🎭;既有卡沿用卡上的)",
   "aib.newrole.help_category": "角色分類",
-  "aib.newrole.help_prompt": "角色人設、性格與說話口吻。必須有這三段,標題照寫、底下要有內容:`## 職責`、`## 紅線`、`## 知識域`。沒給 --prompt / --prompt-file 就用範本(只建卡,不能綁席)",
+  "aib.newrole.help_prompt": "角色人設、性格與說話口吻;必須有下方列的三個標題。沒給 --prompt / --prompt-file 就用範本(只建卡,不能綁席)",
   "aib.newrole.help_prompt_file": "從這個檔讀人設(與 --prompt 二選一;一樣要有那三段)",
   "aib.newrole.help_seat": "目標席位:右欄或 dm 抬頭的完整地址(<艙位碼>/<席碼>)、席碼(@<席碼>)、或 seat_id;不給 ⇒ 只建卡、不綁任何席",
   "aib.newrole.help_vault": "Obsidian Vault 路徑",
@@ -1993,5 +1993,6 @@
   "aib.newproj.help_cwd": "用來算倉指紋的工作目錄(預設 pwd)",
   "aib.newproj.help_state_root": "狀態根(預設 EZ2_AIB_HOME / ~/.ez2-aib)",
   "aib.newproj.help_persona_uid": "覆寫人格 uid(預設讀延續檔)",
-  "aib.newproj.help_dry_run": "只印結果,不落檔"
+  "aib.newproj.help_dry_run": "只印結果,不落檔",
+  "aib.newrole.help_epilog": "人設(--prompt / --prompt-file)必須有這三個標題,照下面原樣寫,底下都要有內容:\n  ## 職責\n  ## 紅線\n  ## 知識域"
 }

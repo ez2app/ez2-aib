@@ -1977,7 +1977,7 @@
   "aib.newrole.help_code": "短いコード(例:reviewer)",
   "aib.newrole.help_emoji": "アイコン(既定 🎭。既存のカードはそのまま)",
   "aib.newrole.help_category": "カテゴリ",
-  "aib.newrole.help_prompt": "ペルソナの本文。次の 3 つの見出しをそのまま書き、それぞれの下に本文を入れてください:`## 職責`(役割)、`## 紅線`(禁止事項)、`## 知識域`(知識範囲)。--prompt / --prompt-file がなければテンプレートを使います(カードのみ。席には紐付けられません)",
+  "aib.newrole.help_prompt": "ペルソナの本文。下に挙げる 3 つの見出しが必要です。--prompt / --prompt-file がなければテンプレートを使います(カードのみ。席には紐付けられません)",
   "aib.newrole.help_prompt_file": "このファイルからペルソナ本文を読みます(--prompt の代わり。同じ 3 つの見出しが必要)",
   "aib.newrole.help_seat": "紐付ける席:右ペインや dm の見出しにある完全なアドレス(<キャビン>/<席>)、席コード(@<席>)、または seat_id。指定しなければカードだけ作ります",
   "aib.newrole.help_vault": "Obsidian Vault のパス",
@@ -1993,5 +1993,6 @@
   "aib.newproj.help_cwd": "リポジトリの指紋を取る作業ディレクトリ(既定:現在のディレクトリ)",
   "aib.newproj.help_state_root": "状態ルート(既定 EZ2_AIB_HOME / ~/.ez2-aib)",
   "aib.newproj.help_persona_uid": "ペルソナ uid を上書き(既定:席の継続ファイルから読む)",
-  "aib.newproj.help_dry_run": "結果を表示するだけで、何も書きません"
+  "aib.newproj.help_dry_run": "結果を表示するだけで、何も書きません",
+  "aib.newrole.help_epilog": "ペルソナ本文(--prompt / --prompt-file)には次の 3 つの見出しを、このとおりに書き、それぞれの下に本文を入れてください:\n  ## 職責      (役割)\n  ## 紅線      (禁止事項)\n  ## 知識域    (知識範囲)"
 }

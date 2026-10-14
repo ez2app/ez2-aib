@@ -1977,7 +1977,7 @@
   "aib.newrole.help_code": "짧은 코드(예: reviewer)",
   "aib.newrole.help_emoji": "아이콘(기본 🎭; 기존 카드는 원래 아이콘 유지)",
   "aib.newrole.help_category": "분류",
-  "aib.newrole.help_prompt": "페르소나 본문. 다음 세 제목을 그대로 쓰고 각각 아래에 내용을 넣어야 합니다: `## 職責`(역할), `## 紅線`(금지선), `## 知識域`(지식 범위). --prompt / --prompt-file이 없으면 템플릿을 씁니다(카드만 생성, 좌석에는 연결 불가)",
+  "aib.newrole.help_prompt": "페르소나 본문. 아래에 적은 세 제목이 꼭 있어야 합니다. --prompt / --prompt-file이 없으면 템플릿을 씁니다(카드만 생성, 좌석에는 연결 불가)",
   "aib.newrole.help_prompt_file": "이 파일에서 페르소나 본문을 읽습니다(--prompt 대신; 같은 세 제목 필요)",
   "aib.newrole.help_seat": "연결할 좌석: 오른쪽 창이나 dm 머리글의 전체 주소(<캐빈>/<좌석>), 좌석 코드(@<좌석>) 또는 seat_id. 없으면 카드만 만듭니다",
   "aib.newrole.help_vault": "Obsidian Vault 경로",
@@ -1993,5 +1993,6 @@
   "aib.newproj.help_cwd": "저장소 지문을 계산할 작업 디렉터리(기본: 현재 디렉터리)",
   "aib.newproj.help_state_root": "상태 루트(기본 EZ2_AIB_HOME / ~/.ez2-aib)",
   "aib.newproj.help_persona_uid": "페르소나 uid 덮어쓰기(기본: 좌석의 연속 파일에서 읽음)",
-  "aib.newproj.help_dry_run": "결과만 출력하고 아무것도 쓰지 않습니다"
+  "aib.newproj.help_dry_run": "결과만 출력하고 아무것도 쓰지 않습니다",
+  "aib.newrole.help_epilog": "페르소나 본문(--prompt / --prompt-file)에는 다음 세 제목을 그대로 쓰고, 각각 아래에 내용을 넣어야 합니다:\n  ## 職責      (역할)\n  ## 紅線      (금지선)\n  ## 知識域    (지식 범위)"
 }
