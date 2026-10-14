@@ -74,9 +74,18 @@ class BindRouteContract(unittest.TestCase):
             self.assertIn(want, err.getvalue())
 
     def test_projection_verdict_for_this_seat_is_parsed(self):
-        out = '{"unresolved": [{"seat_id": "a", "reason": "r1", "detail": "d1"}, {"seat_id": "b", "reason": "r2"}]}'
-        self.assertEqual(self.BO._seat_unresolved(out, "a"), [{"reason": "r1", "detail": "d1"}])
+        out = ('{"unresolved": [{"seat_id": "a", "reason": "invalid_route_key", "detail": "d1"},'
+               ' {"seat_id": "b", "reason": "invalid_route_key", "detail": "d2"}]}')
+        self.assertEqual(self.BO._seat_unresolved(out, "a"), [{"reason": "invalid_route_key", "detail": "d1"}])
         self.assertEqual(self.BO._seat_unresolved("not json", "a"), [])
+
+    def test_normal_states_are_not_reported_as_dropped(self):
+        # After a persona unbind the seat has no persona card; with a persona but no brain it has no route (and is
+        # still shown). Neither is "dropped": reporting them made every normal unbind exit 1 (review catch).
+        for reason in ("missing_persona_card_binding", "missing_brain_route"):
+            with self.subTest(reason=reason):
+                out = '{"unresolved": [{"seat_id": "a", "reason": "%s", "detail": "x"}]}' % reason
+                self.assertEqual(self.BO._seat_unresolved(out, "a"), [])
 
 
 if __name__ == "__main__":

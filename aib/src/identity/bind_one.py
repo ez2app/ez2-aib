@@ -56,7 +56,7 @@ from role_model import (  # noqa: E402
     SHA256_RE as MODEL_SHA256_RE, TRUST_LEVELS, UID_RE, RoleModel,
     RoleModelError, _safe_name,
 )
-from binding_projection import load_card_registry, ProjectionError  # noqa: E402
+from binding_projection import load_card_registry, ProjectionError, REASON_ROUTE_REFUSED  # noqa: E402
 from card_registry import resolve_card, UID_RE as CARD_UID_RE  # noqa: E402
 from route_register import check_against_contract, default_contract_spec, load_contract  # noqa: E402
 import persona_fit  # noqa: E402
@@ -770,14 +770,17 @@ def resolve_card_ref(cards, ref):
 
 
 def _seat_unresolved(projection_stdout, seat_id):
-    """投影結果裡,這一席被擋下的原因(reason / detail);投影沒印 JSON 或沒擋 ⇒ []。"""
+    """投影結果裡,這一席因路由被契約擋下(invalid_route_key)的判決(reason / detail);沒有 ⇒ []。
+    ★ 只認這一種(審查抓到):unresolved 也列正常狀態 —— 解綁人格後「沒有人格卡」、只綁人格沒綁大腦
+      「沒有大腦路由」(後者照樣在右欄)—— 那些不是被擋,當成被擋會讓每次正常解綁都報失敗(rc 1)。"""
     try:
         doc = json.loads(projection_stdout)
     except (ValueError, TypeError):
         return []
     rows = doc.get("unresolved") if isinstance(doc, dict) else None
     return [{"reason": r.get("reason"), "detail": r.get("detail")}
-            for r in rows or [] if isinstance(r, dict) and r.get("seat_id") == seat_id]
+            for r in rows or [] if isinstance(r, dict) and r.get("seat_id") == seat_id
+            and r.get("reason") == REASON_ROUTE_REFUSED]
 
 
 def reproject(state_root, cards_path, contract_spec, seat_id=None):
