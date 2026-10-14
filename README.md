@@ -122,6 +122,34 @@ aib --help-cockpit         # every option
 - [25] Command-line tool: a program you use by typing commands in a terminal (for example `claude`, `codex`).
 - [26] `brew install bash`: installs a newer bash with Homebrew, the usual way to install software on macOS.
 
+## Personas, projects, messages and hand-offs
+
+Each seat can carry a **persona** (who it is and what it must never do) and a **project** (what it is working on).
+Seats send each other messages, and before a conversation fills up a seat writes a hand-off note for the next one.
+
+```sh
+aib bindme status                                  # each seat's persona and project (read-only)
+aib newrole --name "Code Reviewer" --prompt-file reviewer.md \
+  --seat abcd/12345 --actor root@54321/Claude       # create a persona and bind it to a seat
+aib newproj --title "My blog" \
+  --seat abcd/12345 --actor root@54321/Claude       # start a project and bind it to a seat
+aib dm abcd/12345 "please review the login change" # send a message to another seat
+aib handoff status                                 # has this seat written its hand-off note this round?
+```
+
+- **Seat address:** `<cabin>/<seat>`, as shown in the right pane and at the top of every message (`abcd/12345` above is a
+  placeholder). `aib bindme status` lists every seat in your cabin.
+- **Persona file:** must contain these three headings exactly, each with some text under it: `## 職責` (duties),
+  `## 紅線` (red lines), `## 知識域` (knowledge). Without them `aib newrole` refuses (`PERSONA_LINT_FAIL`).
+- **`--actor`:** your own signature for the record, `<role>@<your seat code>/<AI>`, for example `root@54321/Claude`
+  (or set `EZ2_OWNER_SIG`). Binding a seat needs it; without `--seat`, `newrole` / `newproj` only create the card.
+- **Try first:** add `--dry-run` to `newrole`, `newproj` or `dm` to see what would happen without writing or sending.
+- **New project:** its goals and red lines start as a draft that is not in force until you approve it; there is no
+  command for approving it yet.
+- **Messages:** if the other seat has unsent text in its input box, `aib dm` refuses rather than send it; try again later.
+- **Hand-off:** three steps, `aib handoff collect` → `write` → `verify`, when the conversation nears 85% or before
+  `/clear`.
+
 ## Planned: across machines and social channels
 
 > These are planned and not usable yet; each will be listed in the CHANGELOG<sup>[27]</sup> when it lands.

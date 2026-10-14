@@ -121,6 +121,29 @@ aib --help-cockpit         # 모든 옵션
 - [25] 명령줄 도구: 터미널에서 명령을 입력해 사용하는 프로그램입니다(예: `claude`, `codex`).
 - [26] `brew install bash`: macOS에서 소프트웨어를 설치하는 일반적인 방법인 Homebrew로 최신 bash를 설치합니다.
 
+## 페르소나, 프로젝트, 메시지, 인수인계
+
+각 좌석은 **페르소나**(누구인지, 절대 하지 않을 일)와 **프로젝트**(무엇을 하고 있는지)를 가질 수 있습니다.
+좌석끼리 메시지를 주고받을 수 있고, 대화가 가득 차기 전에 그 좌석은 다음 차례를 위해 인수인계를 씁니다.
+
+```sh
+aib bindme status                                  # 각 좌석의 페르소나와 프로젝트(읽기 전용)
+aib newrole --name "Code Reviewer" --prompt-file reviewer.md \
+  --seat abcd/12345 --actor root@54321/Claude       # 페르소나를 만들어 좌석에 연결
+aib newproj --title "My blog" \
+  --seat abcd/12345 --actor root@54321/Claude       # 프로젝트를 시작해 좌석에 연결
+aib dm abcd/12345 "please review the login change" # 다른 좌석에 메시지 보내기
+aib handoff status                                 # 이 좌석이 이번 회차 인수인계를 썼는지
+```
+
+- **좌석 주소:** `<캐빈>/<좌석>`. 오른쪽 창과 모든 메시지 머리글에 표시됩니다(위의 `abcd/12345`는 예시입니다). `aib bindme status`로 캐빈의 모든 좌석을 볼 수 있습니다.
+- **페르소나 파일:** 다음 세 제목을 그대로 쓰고 각각 아래에 내용이 있어야 합니다: `## 職責`(역할), `## 紅線`(금지선), `## 知識域`(지식 범위). 없으면 `aib newrole`이 거부합니다(`PERSONA_LINT_FAIL`).
+- **`--actor`:** 기록용 본인 서명으로 `<역할>@<내 좌석 코드>/<AI>`, 예: `root@54321/Claude`(또는 `EZ2_OWNER_SIG` 설정). 좌석에 연결할 때 필요합니다. `--seat`가 없으면 `newrole` / `newproj`는 카드만 만듭니다.
+- **먼저 시험:** `newrole`, `newproj`, `dm`에 `--dry-run`을 붙이면 쓰거나 보내지 않고 결과만 볼 수 있습니다.
+- **새 프로젝트:** 목표와 금지선은 초안으로 시작하며 승인해야 효력이 생깁니다. 아직 승인용 명령은 없습니다.
+- **메시지:** 상대 입력창에 보내지 않은 글이 있으면 `aib dm`은 그 글까지 보내지 않도록 전송을 거부합니다. 잠시 뒤 다시 보내세요.
+- **인수인계:** 대화가 85%에 가까워졌거나 `/clear` 전에 `aib handoff collect` → `write` → `verify` 세 단계로 합니다.
+
 ## 계획 중: 여러 컴퓨터와 소셜 채널로
 
 > 아래 기능은 계획 단계이며 아직 사용할 수 없습니다. 각 기능이 완성되면 CHANGELOG<sup>[27]</sup>에 기록합니다.

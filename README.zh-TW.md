@@ -111,6 +111,29 @@ aib --help-cockpit         # 所有選項
 - [25] 命令列工具:在終端機裡打指令使用的程式(例如 `claude`、`codex`)。
 - [26] `brew install bash`:用 Homebrew(macOS 上裝軟體的工具)裝新版的 bash。
 
+## 人格、專案、傳訊與交接
+
+每一席可以帶一個**人格**(它是誰、絕對不做什麼)和一個**專案**(它在做什麼)。
+席與席之間可以互寄訊息;對話快滿之前,這一席寫好交接,給下一輪接手。
+
+```sh
+aib bindme status                                  # 看每一席的人格與專案(唯讀)
+aib newrole --name "Code Reviewer" --prompt-file reviewer.md \
+  --seat abcd/12345 --actor root@54321/Claude       # 建一個人格,綁到某一席
+aib newproj --title "My blog" \
+  --seat abcd/12345 --actor root@54321/Claude       # 開一個專案,綁到某一席
+aib dm abcd/12345 "please review the login change" # 寄訊息給另一席
+aib handoff status                                 # 這一席這一輪寫過交接沒
+```
+
+- **席位地址:**`<艙位碼>/<席碼>`,右欄和每封訊息的抬頭都有(上面的 `abcd/12345` 只是示意)。`aib bindme status` 會列出你這一艙的每一席。
+- **人格檔:**一定要有這三個標題(照寫),底下都要有內容:`## 職責`、`## 紅線`、`## 知識域`。少了 `aib newrole` 會拒絕(`PERSONA_LINT_FAIL`)。
+- **`--actor`:**你自己的帳本署名,`<角色>@<你的席碼>/<AI>`,例如 `root@54321/Claude`(或設 `EZ2_OWNER_SIG`)。要綁席才需要;沒給 `--seat` 時 `newrole` / `newproj` 只建卡。
+- **先試跑:**`newrole`、`newproj`、`dm` 加 `--dry-run`,只看會發生什麼,不寫檔、不寄出。
+- **新專案:**目標與紅線一開始是初稿,你核准後才生效;目前還沒有核准用的指令。
+- **傳訊:**對方輸入框裡有還沒送出的字,`aib dm` 會拒送,不會把它一起送出;等一下再寄。
+- **交接:**對話接近 85% 或 `/clear` 之前,三步:`aib handoff collect` → `write` → `verify`。
+
 ## 規劃中:跨主機與社群
 
 > 下面這些還在規劃、還不能用,做好時會寫進版本紀錄 CHANGELOG<sup>[27]</sup>。
