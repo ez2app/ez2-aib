@@ -1249,6 +1249,7 @@
   "aib.test.why.row_age_unknown": "前回の記録に時刻がなく、古さが不明",
   "aib.test.why.row_from_future": "前回の記録の時刻が未来({detail})、時計がずれている",
   "aib.test.why.date_crossed": "読んだファイルにある日付を前回から今までにまたいだ:{detail}",
+  "aib.test.why.tz_changed": "前回実行時とマシンのタイムゾーンが違う:{detail}",
   "aib.test.live_unverified": "⊘ {test}:未検証({what})—— グリーンでもレッドでもない",
   "aib.test.live_mem_wait": "⏸ 空きメモリが約 {limit} GB しかないため、メモリが空くまで次のテストを待ちます(最大 10 分)",
   "aib.test.live_same_package": "  └ {test}:同じ Go パッケージはこのバッチで実行済み({name})、その結果を使用",

@@ -570,6 +570,10 @@ class Index(object):
             was = "none"
         if was != now:
             return "must-run", "lock-fp-changed", "%s→%s" % (was[:8], now[:8])
+        # 10-15 A7:環境指紋不含這台的時區(沒設 TZ 時看的是系統時區)⇒ 換了時區(或別台的列)要重跑;舊列沒有這欄 ⇒ 不判
+        tz_was, tz_now = prev.get("tz"), local_tz()[0]
+        if isinstance(tz_was, str) and tz_was and tz_was != tz_now:
+            return "must-run", "tz-changed", "%s→%s" % (tz_was, tz_now)
         crossed = self._date_crossed(repo, prev, born, now_utc)
         if crossed:
             return "must-run", "date-crossed", crossed
@@ -625,7 +629,7 @@ class Index(object):
             dates = file_dates(os.path.join(str(repo), rel), sha)
             if dates is None:
                 return "%s(讀不到,當作跨過)" % rel
-            hit = crossed_dates(dates, born, now_utc)
+            hit = crossed_dates(dates, born, now_utc, extra_offsets=_row_offsets(prev))
             if hit:
                 return "%s %s" % (rel, hit[0].isoformat())
         return ""
@@ -720,11 +724,28 @@ def file_dates(path, sha=""):
     return out
 
 
-def crossed_dates(dates, since, now):
-    """since/now:帶時區的 datetime。回「從 since 到 now 之間跨過了它(或它隔天)開始」的那些日期。
-    時區:UTC 加上這台在兩個時刻的本地偏移(夏令時間前後可能不同)。"""
+def local_tz():
+    """(這台的時區身分, 現在的 UTC 偏移秒數)。身分用標準/夏令名稱 + 標準偏移 —— 夏令時間切換不會讓它變(10-15 A7)。"""
+    import time as _time
+    return ("%s|%s|%d" % (_time.tzname[0], _time.tzname[1], _time.timezone),
+            int(_time.localtime().tm_gmtoff or 0))
+
+
+def _row_offsets(row):
+    """列上記的寫列當時 UTC 偏移(秒)→ [timedelta];沒記或看不懂 ⇒ []。"""
     import datetime as _dt
-    offsets = {_dt.timedelta(0)}
+    off = row.get("tz_off_s")
+    if isinstance(off, bool) or not isinstance(off, int) or abs(off) > 18 * 3600:
+        return []
+    return [_dt.timedelta(seconds=off)]
+
+
+def crossed_dates(dates, since, now, extra_offsets=()):
+    """since/now:帶時區的 datetime。回「從 since 到 now 之間跨過了它(或它隔天)開始」的那些日期。
+    時區:UTC 加上這台在兩個時刻的本地偏移(夏令時間前後可能不同),再加上 extra_offsets
+    (10-15 A7:寫那一列的機器當時的偏移 —— 別台/換過時區時,它那邊的日界也算)。"""
+    import datetime as _dt
+    offsets = {_dt.timedelta(0)} | set(extra_offsets or ())
     for t in (since, now):
         off = t.astimezone().utcoffset()
         if off is not None:
@@ -1261,6 +1282,9 @@ def stamp_row(row, repo, lock_now=None):
     if rid:
         out["repo_id"] = rid
     out.setdefault("host_id", host_id())
+    tz, off = local_tz()          # 10-15 A7:寫列這台的時區,沿用時比對、跨日判斷也算它的日界
+    out.setdefault("tz", tz)
+    out.setdefault("tz_off_s", off)
     return out
 
 

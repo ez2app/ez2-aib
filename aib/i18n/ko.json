@@ -1249,6 +1249,7 @@
   "aib.test.why.row_age_unknown": "지난 기록에 시간이 없어 얼마나 오래됐는지 모름",
   "aib.test.why.row_from_future": "지난 기록 시간이 미래임({detail}), 시계가 틀림",
   "aib.test.why.date_crossed": "읽은 파일에 적힌 날짜를 지난번 이후 지나감: {detail}",
+  "aib.test.why.tz_changed": "지난 실행 때와 이 기기의 시간대가 다름: {detail}",
   "aib.test.live_unverified": "⊘ {test}: 미검증({what}) —— 녹색도 빨강도 아님",
   "aib.test.live_mem_wait": "⏸ 남은 메모리가 약 {limit} GB 라서, 메모리가 확보될 때까지 다음 테스트를 기다립니다(최대 10분)",
   "aib.test.live_same_package": "  └ {test}: 같은 Go 패키지를 이번 배치에서 이미 실행함({name}), 그 결과 사용",
