@@ -58,8 +58,12 @@ def render_handoff_pack(
     last_event_at: str = "",
     ctx_budget_bytes: int = DEFAULT_CTX_BUDGET,
     extra_notes: Optional[Sequence[str]] = None,
+    memory_notes: Optional[Sequence[str]] = None,
 ) -> str:
     """把專案卡四層壓成一段純文字接手包。
+
+    memory_notes(10-15 H1):`aib memory write --about <專案 uid>` 寫的筆記指標(種類 · 標題 · uid · 怎麼讀),
+    接在專案記憶段後面;以前接手包只看卡上的 memory 層,席位看到「記憶空」而交接筆記其實在。
 
     超過 ctx_budget_bytes(UTF-8)時由下往上丟:extra_notes → 記憶最舊 →
     工作狀態 pending → 憲法目標;紅線與專案 uid／人格指紋最後才動。
@@ -107,6 +111,9 @@ def render_handoff_pack(
         _section(LAYER_ZH["memory"],
                  _as_lines(memory.get("entries") or [])),
     ]
+    if memory_notes:
+        parts.append(_section(LAYER_ZH["memory"] + "・aib memory(最新;全文用 aib memory show --uid <uid>)",
+                              _as_lines(list(memory_notes))))
     if extra_notes:
         parts.append(_section("附註", _as_lines(list(extra_notes))))
 
@@ -147,6 +154,7 @@ def build_handoff_for_seat(
     persona_uid: str = "",
     persona_version: str = "",
     last_event_at: str = "",
+    memory_notes: Optional[Sequence[str]] = None,
 ) -> str:
     """開席投遞用:卡缺 ⇒ 空字串(呼叫端記 delivered=false)。"""
     if not project_card:
@@ -157,6 +165,7 @@ def build_handoff_for_seat(
             persona_uid=persona_uid,
             persona_version=persona_version,
             last_event_at=last_event_at,
+            memory_notes=memory_notes,
         )
     except Exception:
         return ""

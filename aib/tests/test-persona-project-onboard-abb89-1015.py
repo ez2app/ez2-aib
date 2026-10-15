@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""席位開席 / 人格 / 專案 / 推包一串修補(10-15)。每一格一個缺陷,全在 tmp 沙盒跑:
+不碰真 ~/.ez2-aib、不碰 tmux、不碰真 vault。
+
+C1  開席選單「載入全部 / 只鐵則」與 `aib seat onboard --profile full` 恆失敗:公開倉缺開席單模板。
+"""
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import aib_testlib  # noqa: E402,F401 —— 基因/自動綁預設關
+
+ROOT = HERE.parent                       # aib/
+COCKPIT = ROOT / "src" / "cockpit"
+PY = sys.executable
+
+
+def sandbox_env(tmp):
+    """子行程用的沙盒環境:HOME/狀態根/艙家全在 tmp。"""
+    env = dict(os.environ)
+    home = os.path.join(tmp, "home")
+    os.makedirs(home, exist_ok=True)
+    env.update({
+        "HOME": home,
+        "EZ2_AIB_HOME": os.path.join(home, ".ez2-aib"),
+        "EZ2_AIB_STATE_ROOT": os.path.join(home, ".ez2-aib"),
+        "EZ2_AIB_INSTANCE_HOME": os.path.join(tmp, "inst"),
+        "EZ2_AIB_LOCALE": "en",
+        "AIB_GENES": "0",
+        "AIB_AUTO_BIND": "0",
+    })
+    for k in ("AIB_DM_SOCKET", "EZ2_AIHUB_SOCKET", "TMUX", "TMUX_PANE"):
+        env.pop(k, None)
+    return env
+
+
+class C1SeatOnboardTemplate(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aib-c1-")
+        self.env = sandbox_env(self.tmp)
+        self.seats = os.path.join(self.tmp, "inst", "seats")
+        os.makedirs(self.seats)
+        with open(os.path.join(self.seats, "w7.json"), "w", encoding="utf-8") as fh:
+            json.dump({"schema": "aib-seat/v1", "seat_id": "abcde", "role": "dev", "provider": "claude",
+                       "window_id": "@7"}, fh)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _prepare(self, profile):
+        return subprocess.run(
+            [PY, str(COCKPIT / "seat_onboard.py"), "--prepare-self-fetch", "--window", "@7",
+             "--provider", "claude", "--seats", self.seats, "--profile", profile],
+            env=self.env, capture_output=True, text=True, timeout=60)
+
+    def test_a_template_ships_in_package(self):
+        sys.path.insert(0, str(COCKPIT))
+        import seat_onboard
+        self.assertTrue((ROOT / seat_onboard.TEMPLATE_REL).is_file(),
+                        "開席單模板不在公開包裡:%s" % seat_onboard.TEMPLATE_REL)
+
+    def test_b_full_and_rules_both_render_with_ack(self):
+        for profile in ("full", "rules"):
+            r = self._prepare(profile)
+            self.assertEqual(r.returncode, 0, (profile, r.stdout, r.stderr))
+            body = pathlib.Path(r.stdout.strip()).read_text(encoding="utf-8")
+            self.assertIn("已就緒", body, profile)       # 回執字:沒有它守望永遠等不到
+            self.assertNotIn("aib:section", body)
+            self.assertEqual(re.findall(r"\{[a-z_]+\}", body), [], profile)  # 佔位符全代入
+            self.assertTrue(body.lstrip().startswith("[Iron rules"), body[:80])
+            if profile == "rules":
+                self.assertNotIn("[Seat order]", body)
+            else:
+                self.assertIn("seat_id=abcde", body)
+
+    def test_c_template_is_maintainer_neutral(self):
+        text = (ROOT / "docs" / "templates" / "SEAT-ONBOARD.md").read_text(encoding="utf-8")
+        for bad in ("Andy", "the maintainer", "/Users/", "~/.ez2-aib/seats", "艦長"):
+            self.assertNotIn(bad, text)
+        left = set(re.findall(r"\{[a-z_]+\}", text.split("---", 1)[1]))
+        self.assertLessEqual(left, {"{role_label}", "{seat_id}", "{window}", "{seat_file}",
+                                    "{cabin_label}", "{ack_instruction}"})
+
+    def test_d_menu_does_not_offer_load_when_template_missing(self):
+        src = (COCKPIT / "aib").read_text(encoding="utf-8")
+        i = src.index("aib_open_menu_after_right() {")
+        body = src[i:src.index("\n}\n", i)]
+        self.assertIn("docs/templates/SEAT-ONBOARD.md", body)
+        self.assertIn("aib.onboardcli.template_missing_menu", body)
+        for loc in ("en", "ja", "ko", "zh-TW"):
+            d = json.loads((ROOT / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
+            self.assertIn("{window}", d["aib.onboardcli.template_missing_menu"])
+
+
+class C7ProjectInRepoWithSrc(unittest.TestCase):
+    """使用者自己的專案有 src/ 套件時,`aib project …` 不得撞名崩潰。"""
+
+    def test_project_help_inside_repo_with_own_src(self):
+        tmp = tempfile.mkdtemp(prefix="aib-c7-")
+        try:
+            proj = os.path.join(tmp, "proj")
+            os.makedirs(os.path.join(proj, "src"))
+            open(os.path.join(proj, "src", "__init__.py"), "w").close()
+            r = subprocess.run(["bash", str(COCKPIT / "aib"), "project", "--help"],
+                               cwd=proj, env=sandbox_env(tmp), capture_output=True,
+                               text=True, timeout=60)
+            out = r.stdout + r.stderr
+            self.assertEqual(r.returncode, 0, out)
+            self.assertNotIn("ModuleNotFoundError", out)
+            self.assertNotIn("Traceback", out)
+            self.assertIn("interpret", r.stdout)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class C8ShipWithoutOriginMain(unittest.TestCase):
+    """沒有 origin/main 的倉:aib ship package/release/sync 給一行四語說明,不吐 traceback。"""
+
+    def test_no_origin_main_is_a_clear_message(self):
+        tmp = tempfile.mkdtemp(prefix="aib-c8-")
+        try:
+            env = sandbox_env(tmp)
+            env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                        "AIB_SHIP_PREFLIGHT": "0",
+                        "AIB_HOST_LEASE_FILE": os.path.join(tmp, "lease.json")})
+            repo = os.path.join(tmp, "r")
+            os.makedirs(repo)
+            subprocess.run(["git", "-C", repo, "init", "-q", "-b", "main"], env=env, check=True)
+            subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit",
+                            "-q", "--allow-empty", "-m", "x"], env=env, check=True)
+            ship = str(ROOT / "tools" / "release" / "ship.py")
+            for args in (["package", "--preview"], ["package"],
+                         ["release", "--version", "9.9.9", "--preview"], ["sync"]):
+                r = subprocess.run([PY, ship, "--repo", repo] + args, env=env,
+                                   capture_output=True, text=True, timeout=120)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, (args, out))
+                self.assertNotIn("Traceback", out, args)
+                self.assertIn("origin/main", out, args)
+                self.assertIn("git remote add origin", out, args)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+BIN_AIB = ROOT.parent / "bin" / "aib"
+
+
+def newrole(tmp, name, prompt, locale="en", *extra):
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": os.path.join(tmp, "home"),
+           "EZ2_AIB_LOCALE": locale, "AIB_GENES": "0", "AIB_AUTO_BIND": "0"}
+    os.makedirs(env["HOME"], exist_ok=True)
+    return subprocess.run([PY, str(BIN_AIB), "newrole", "--name", name, "--prompt", prompt] + list(extra),
+                          cwd=tmp, env=env, capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=120)
+
+
+class C10NewroleShortPrompt(unittest.TestCase):
+    """C10 一句話 --prompt 必 lint 失敗;E5 失敗前已印「分配新角色 UID」、失敗字寫死中文。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aib-c10-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_one_sentence_prompt_is_wrapped_into_three_sections(self):
+        r = newrole(self.tmp, "Reviewer", "A careful code reviewer.")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        card = next(pathlib.Path(self.tmp, "home", ".ez2-aib").rglob("角色.md")).read_text(encoding="utf-8")
+        body = card.split("---", 2)[-1]
+        self.assertTrue(body.strip().startswith("A careful code reviewer."), body[:80])
+        for h in ("## 職責\n", "## 紅線\n", "## 知識域\n"):
+            self.assertIn(h, card)
+        self.assertIn("--overwrite", r.stderr + r.stdout)     # 告訴人怎麼換成自己的三段
+
+    def test_b_partial_sections_fail_before_uid_and_localized(self):
+        for loc, word in (("en", "red lines"), ("ja", "禁止事項"), ("ko", "금지선")):
+            r = newrole(self.tmp, "Partial" + loc, "x\n\n## 職責\na\n", loc, "--dry-run")
+            out = r.stdout + r.stderr
+            self.assertEqual(r.returncode, 4, out)
+            self.assertIn("PERSONA_LINT_FAIL", out)
+            self.assertNotIn("分配新角色", out)               # E5:沒過檢查不印 UID
+            self.assertNotIn("UID", out.split("PERSONA_LINT_FAIL")[0])
+            self.assertNotIn("缺 ##", out)                    # E5:不再是寫死的中文
+            self.assertIn(word, out, loc)
+            self.assertIn("## 紅線", out)                     # 照抄就能用的標題
+
+    def test_c_full_prompt_unchanged(self):
+        full = "Me.\n\n## 職責\nA.\n\n## 紅線\nB.\n\n## 知識域\nC.\n"
+        r = newrole(self.tmp, "Full", full)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        card = next(pathlib.Path(self.tmp, "home", ".ez2-aib").rglob("角色.md")).read_text(encoding="utf-8")
+        self.assertIn(full.strip(), card)
+        self.assertNotIn("--overwrite", r.stderr + r.stdout)
+
+
+class _FakeTTY:
+    def __init__(self, text=""):
+        self.text, self.out = text, []
+
+    def isatty(self):
+        return True
+
+    def readline(self):
+        return self.text
+
+    def write(self, s):
+        self.out.append(s)
+
+    def flush(self):
+        pass
+
+
+def _load_new_project(locale="en"):
+    os.environ["EZ2_AIB_LOCALE"] = locale
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("new_project_c11", str(ROOT / "tools" / "project" / "new_project.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class C11ApproveConstitution(unittest.TestCase):
+    """newproj 叫人核准目標與紅線,卻沒有核准指令。--approve 只給真人。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aib-c11-")
+        self.home = os.path.join(self.tmp, "home")
+        os.makedirs(self.home)
+        os.makedirs(os.path.join(self.tmp, "proj"))
+        self.env = {"PATH": os.environ.get("PATH", ""), "HOME": self.home, "EZ2_AIB_LOCALE": "en",
+                    "AIB_GENES": "0", "AIB_AUTO_BIND": "0"}
+        r = self._aib("newproj", "--title", "Demo")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.created_err = r.stderr
+        self.uid = json.loads(r.stdout.strip().splitlines()[-1])["project_uid"]
+        self.root = pathlib.Path(self.home, ".ez2-aib")
+        self.card = self.root / "projects" / self.uid / "card.json"
+        self.cand = self.root / "projects" / self.uid / "candidates" / "constitution-draft.json"
+        doc = json.loads(self.cand.read_text(encoding="utf-8"))   # 草稿放一點內容,好看得出有搬過去
+        doc["constitution"]["goals"] = ["ship v1"]
+        doc["constitution"]["red_lines"] = ["never push to main"]
+        self.cand.write_text(json.dumps(doc), encoding="utf-8")
+        self._saved_env = dict(os.environ)
+        # 同行程呼叫 approve_constitution 時,備份(memory_archive)與狀態根都只准落在沙盒
+        os.environ.update({"HOME": self.home, "EZ2_AIB_STATE_ROOT": str(self.root),
+                           "EZ2_AIB_HOME": str(self.root)})
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved_env)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _aib(self, *args):
+        return subprocess.run([PY, str(BIN_AIB)] + list(args), cwd=os.path.join(self.tmp, "proj"),
+                              env=self.env, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=120)
+
+    def _approved(self):
+        return json.loads(self.card.read_text(encoding="utf-8"))["layers"]["constitution"].get("approved")
+
+    def test_a_newproj_names_the_approve_command(self):
+        self.assertIn("aib newproj --approve " + self.uid, self.created_err)
+
+    def test_b_no_terminal_is_refused(self):
+        r = self._aib("newproj", "--approve", self.uid)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("AI seat", r.stderr)
+        self.assertIs(self._approved(), False)
+
+    def test_c_human_confirms_and_card_is_approved(self):
+        np = _load_new_project()
+        out = _FakeTTY()
+        rc = np.approve_constitution(self.root, self.uid, human_check=lambda: (True, "tester", []),
+                                     stdin=_FakeTTY(self.uid + "\n"), stdout=out)
+        self.assertEqual(rc, 0)
+        shown = "".join(out.out)
+        self.assertIn("ship v1", shown)
+        self.assertIn("never push to main", shown)
+        card = json.loads(self.card.read_text(encoding="utf-8"))
+        const = card["layers"]["constitution"]
+        self.assertIs(const["approved"], True)
+        self.assertEqual(const["goals"], ["ship v1"])
+        self.assertEqual(const["red_lines"], ["never push to main"])
+        self.assertEqual(const["approved_by"], "human:tester")
+        self.assertEqual(card["constitution_status"], "approved")
+        self.assertIs(json.loads(self.cand.read_text(encoding="utf-8"))["approved"], True)
+        self.assertTrue(any((self.root / "archive" / "project").rglob("card-*.json")))   # 改卡前有備份(在沙盒)
+        ledger = "".join(p.read_text(encoding="utf-8") for p in self.root.rglob("*.jsonl")
+                         if "ledger" in str(p) or "events" in str(p))
+        self.assertIn("decision.resolved", ledger)
+        self.assertIn(self.uid, ledger)
+        self.assertIn('"kind": "human"', ledger.replace('"kind":"human"', '"kind": "human"'))
+
+    def test_d_ai_seat_cannot_self_approve(self):
+        np = _load_new_project()
+        os.environ["CLAUDECODE"] = "1"                 # 誠實的 AI session 標記:真探針必判不是人
+        rc = np.approve_constitution(self.root, self.uid, stdin=_FakeTTY(self.uid + "\n"), stdout=_FakeTTY())
+        self.assertEqual(rc, 2)
+        self.assertIs(self._approved(), False)
+        rc = np.approve_constitution(self.root, self.uid, human_check=lambda: (False, None, ["session"]),
+                                     stdin=_FakeTTY(self.uid + "\n"), stdout=_FakeTTY())
+        self.assertEqual(rc, 2)
+        self.assertIs(self._approved(), False)
+
+    def test_e_wrong_confirmation_cancels(self):
+        np = _load_new_project()
+        rc = np.approve_constitution(self.root, self.uid, human_check=lambda: (True, "tester", []),
+                                     stdin=_FakeTTY("yes\n"), stdout=_FakeTTY())
+        self.assertEqual(rc, 3)
+        self.assertIs(self._approved(), False)
+
+
+class H1HandoffPackCarriesMemoryNotes(unittest.TestCase):
+    """newproj --seat X --deliver 的接手包要帶 `aib memory write --about <專案 uid>` 的筆記指標。"""
+
+    UID = "proj:0123456789abcdef"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aib-h1-")
+        self.root = pathlib.Path(self.tmp, "state")
+        idx = self.root / "memory-index" / "notes.jsonl"
+        idx.parent.mkdir(parents=True)
+        rows = [
+            {"uid": "old111", "kind": "progress", "title": "old progress", "project_uid": self.UID,
+             "related_uids": [self.UID], "created_ms": 1000},
+            {"uid": "new222", "kind": "progress", "title": "newer progress", "project_uid": self.UID,
+             "related_uids": [self.UID], "created_ms": 3000, "supersedes": "old111"},
+            {"uid": "hnd333", "kind": "handoff", "title": "handoff for next seat", "project_uid": "",
+             "related_uids": [self.UID], "created_ms": 2000},
+            {"uid": "oth444", "kind": "note", "title": "other project", "project_uid": "proj:ffffffffffffffff",
+             "related_uids": [], "created_ms": 4000},
+        ]
+        idx.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        self._saved_env = dict(os.environ)
+        os.environ.update({"HOME": os.path.join(self.tmp, "home"), "EZ2_AIB_STATE_ROOT": str(self.root),
+                           "EZ2_AIB_HOME": str(self.root), "EZ2_AIB_LOCALE": "en"})
+        self.np = _load_new_project()
+        import project_card as PC
+        self.card = PC.make_project_card(self.UID, title="Demo")
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved_env)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_notes_listed_handoff_first_superseded_dropped(self):
+        notes = self.np.project_memory_notes(self.root, self.UID)
+        self.assertEqual(len(notes), 2, notes)
+        self.assertIn("hnd333", notes[0])
+        self.assertIn("aib memory show --uid hnd333", notes[0])
+        self.assertIn("new222", notes[1])
+        self.assertFalse(any("old111" in n or "oth444" in n for n in notes))
+
+    def test_b_deliver_handoff_body_carries_the_notes(self):
+        import create_and_bind_persona as CBP
+        sent = {}
+
+        class _Addr:
+            @staticmethod
+            def code_of(rec):
+                return "abcde"
+
+            @staticmethod
+            def format_address(code, cabin):
+                return "%s/%s" % (cabin, code)
+
+        saved = (CBP._cockpit_modules, CBP._seat_cabin, CBP.dm_send_body)
+        CBP._cockpit_modules = lambda: (_Addr, _Addr)
+        CBP._seat_cabin = lambda rec, inst: "f643"
+        CBP.dm_send_body = lambda addr, body, rec: (sent.update(body=body) or (0, "", ""))
+        try:
+            res = self.np.deliver_handoff(self.root, "abcde", {"provider": "claude"}, "", self.card, "")
+        finally:
+            CBP._cockpit_modules, CBP._seat_cabin, CBP.dm_send_body = saved
+        self.assertTrue(res.get("ok"), res)
+        self.assertIn("hnd333", sent["body"])
+        self.assertIn("handoff for next seat", sent["body"])
+        self.assertIn("aib memory show --uid", sent["body"])
+
+    def test_c_stays_within_budget(self):
+        import handoff_pack as HP
+        many = ["note %d · %s · uid x%05d → aib memory show --uid x%05d" % (i, "t" * 60, i, i) for i in range(200)]
+        text = HP.build_handoff_for_seat(self.card, memory_notes=many)
+        self.assertLessEqual(len(text.encode("utf-8")), HP.DEFAULT_CTX_BUDGET)
+        self.assertIn(self.UID, text)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

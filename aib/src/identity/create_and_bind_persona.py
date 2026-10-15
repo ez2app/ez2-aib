@@ -17,6 +17,8 @@ the maintainer 10-01 裁(取代 09-30「沒說就開新席」):沒指定席位 �
     --emoji EMOJI      代表圖示 (可選，預設 🎭)
     --category CAT     角色分類 (可選，預設 "客製/專家")
     --prompt PROMPT    角色人設、性格與說話口吻描述 (可選)
+                       一句話也行:三段 ## 職責/## 紅線/## 知識域 一段都沒寫 ⇒ 那句當開頭、三段補預設內文(10-15);
+                       寫了其中幾段 ⇒ 缺的段具名擋下,不替人猜
     --prompt-file F    同上,但從檔案讀(人設有引號、反引號、多行時用這個,不必過殼)
     --seat SEAT        目標席位(可選;不給 ⇒ 只建卡、不綁任何席)。三種寫法都收:
                        完整地址 f643/77324、畫面上的席碼 a seat、席位檔的 seat_id
@@ -150,6 +152,45 @@ def lint_card(text):
         if not match or not match.group(1).strip():
             failures.append("缺 ## %s 段" % heading)
     return failures
+
+
+# 10-15 C10/E5:三個必填段的標題(卡上一律寫中文正本,下游 persona_pack 等都認這三個字)與各語說明鍵
+REQUIRED_HEADINGS = (("職責", "duties"), ("紅線", "red_lines"), ("知識域", "knowledge"))
+
+
+def has_any_required_heading(text):
+    return any(re.search(r"^##[ \t]*" + h + r"[ \t]*$", text or "", re.M) for h, _k in REQUIRED_HEADINGS)
+
+
+def wrap_short_prompt(prompt):
+    """--prompt 一個 ## 必填段都沒有(常見:一句話人設)⇒ 那句當開頭定位,三段補上預設內文(內文照使用者語系)。
+    已經寫了任一段 ⇒ 原樣,缺的段交給 lint 具名擋(不替人猜他漏寫的那段)。"""
+    if has_any_required_heading(prompt):
+        return prompt, False
+    parts = [prompt.strip(), ""]
+    for heading, key in REQUIRED_HEADINGS:
+        parts += ["## " + heading, T("aib.newrole.default_" + key), ""]
+    return "\n".join(parts), True
+
+
+def lint_messages(failures):
+    """lint_card 的結果 → 給人看的句子(四語)。缺段那一條附上三段標題的正確寫法。"""
+    out, missing = [], False
+    for f in failures:
+        m = re.match(r"缺 ## (\S+) 段$", f)
+        if m:
+            key = dict(REQUIRED_HEADINGS).get(m.group(1), "")
+            out.append(T("aib.newrole.lint_missing", {"heading": "## " + m.group(1),
+                                                       "label": T("aib.newrole.heading_" + key)}))
+            missing = True
+        elif f.startswith("人格檔>20KB"):
+            out.append(T("aib.newrole.lint_too_big"))
+        else:
+            out.append(T("aib.newrole.lint_rule", {"rule": f}))
+    if missing:
+        out.append(T("aib.newrole.lint_headings_hint", {"headings": " / ".join(
+            "## %s (%s)" % (h, T("aib.newrole.heading_" + k)) for h, k in REQUIRED_HEADINGS)}))
+    return out
 
 
 def commit_card(role_lib_dir, card_file, name):
@@ -662,7 +703,7 @@ def main():
     parser.add_argument("--code", help="角色代號 (如: bao)")
     parser.add_argument("--emoji", default="", help="角色圖示 (預設 🎭;既有卡沿用卡上的)")
     parser.add_argument("--category", default="客製/專家", help="角色分類")
-    parser.add_argument("--prompt", help="角色人設、性格與說話口吻描述")
+    parser.add_argument("--prompt", help="角色人設、性格與說話口吻描述;一句話也行(三段 ## 職責/## 紅線/## 知識域 一段都沒寫 ⇒ 自動補預設三段;寫了部分 ⇒ 缺的段具名擋下)")
     parser.add_argument("--prompt-file", help="從這個檔讀人設(與 --prompt 二選一)")
     parser.add_argument("--seat", help="目標席位:完整地址 f643/77324、席碼 @00000、或 seat_id(不給 ⇒ 只建卡、不綁任何席)")
     parser.add_argument("--vault", default=str(DEFAULT_VAULT), help="Obsidian Vault 路徑")
@@ -776,9 +817,9 @@ def main():
             log(f"找到既有角色卡: {name} (UID: {target_card_uid})")
             break
 
-    if not target_card_uid:
+    new_uid = not target_card_uid
+    if new_uid:                     # 10-15 E5:先挑號不印;內容檢查過了才印「分配新角色 UID」
         target_card_uid = allocate_uid(existing_cards)
-        log(f"分配新角色 UID: {target_card_uid}")
 
     # 既有卡沒另外指定時,代號與圖示報卡上那一份(席位記憶與回報才不會寫成預設值)
     known = existing_cards.get(target_card_uid) or {}
@@ -800,6 +841,9 @@ def main():
     target_role_dir = role_lib_dir / folder_name
     target_role_file = target_role_dir / "角色.md"
 
+    wrapped = False
+    if args.prompt:
+        args.prompt, wrapped = wrap_short_prompt(args.prompt)
     prompt_content = args.prompt or (
         f"你是「{name}」。\n\n"
         "## 職責\n"
@@ -850,8 +894,12 @@ def main():
     else:
         failures = lint_card(card_markdown)
         if failures:
-            log("PERSONA_LINT_FAIL: " + "; ".join(failures), prefix="[x]")
+            log("PERSONA_LINT_FAIL: " + " ".join(lint_messages(failures)), prefix="[x]")
             return 4
+        if new_uid:
+            log(T("aib.newrole.uid_allocated", {"uid": target_card_uid}))
+        if wrapped:
+            log(T("aib.newrole.prompt_wrapped"), prefix="[!]")
         log(f"1. 準備寫入 Vault 角色卡: {target_role_file}")
     if args.dry_run or keep_existing:
         if args.dry_run:

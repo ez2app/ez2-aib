@@ -65,6 +65,21 @@ def git(repo, *a, check=True):
     return p.stdout
 
 
+def fetch_origin_main(repo):
+    """抓 origin 的 main、回它的 sha。沒有 origin 遠端、抓不到、遠端沒有 main ⇒ 四語一行停下,不吐 traceback(10-15 C8)。"""
+    if "origin" not in git(repo, "remote", check=False).split():
+        raise SystemExit(T("no_origin_main", {"why": "no remote 'origin'"}))
+    p = subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", "main"], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
+    if p.returncode != 0:
+        raise SystemExit(T("no_origin_main", {"why": (p.stderr.strip().splitlines() or ["fetch rc=%d" % p.returncode])[0][-200:]}))
+    p = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", "origin/main^{commit}"], capture_output=True,
+                       text=True, stdin=subprocess.DEVNULL)
+    if p.returncode != 0 or not p.stdout.strip():
+        raise SystemExit(T("no_origin_main", {"why": "origin/main not found"}))
+    return p.stdout.strip()
+
+
 def show(repo, rev, path):
     p = subprocess.run(["git", "-C", str(repo), "show", "%s:%s" % (rev, path)], capture_output=True, text=True,
                        stdin=subprocess.DEVNULL)
@@ -1280,7 +1295,7 @@ def cmd_sync(a):
     """把主線合進這個工作區(10-08:合併會改檔,同一個工作區有測試在跑就不准 —— 樹守衛會還原、測到一半的結果也不算數)。"""
     if tree_busy(a.repo):
         raise SystemExit(T("tree_busy_sync"))
-    git(a.repo, "fetch", "-q", "origin", "main")
+    fetch_origin_main(a.repo)
     r = subprocess.run(["git", "-C", a.repo, "merge", "--no-edit", "origin/main"], capture_output=True, text=True,
                        stdin=subprocess.DEVNULL)
     if r.returncode != 0:
@@ -1739,8 +1754,7 @@ def with_github_lock(repo, prof, branches, fn, base=None):
 def _cmd_package_body(a):
     if tree_busy(a.repo):                       # 10-08:推前檢查會在這棵樹跑測試、合併會改檔 ⇒ 別的批次在跑就不開始
         raise SystemExit(T("tree_busy_package"))
-    git(a.repo, "fetch", "-q", "origin", "main")
-    base = git(a.repo, "rev-parse", "origin/main").strip()
+    base = fetch_origin_main(a.repo)
     if subprocess.run(["git", "-C", a.repo, "merge-base", "--is-ancestor", base, "HEAD"],
                       stdin=subprocess.DEVNULL).returncode != 0:
         raise SystemExit(T("not_contain_main"))
@@ -2032,12 +2046,12 @@ def print_stale_hint(repo, days=7):
 
 
 def cmd_release(a):
+    fetch_origin_main(a.repo)                   # pending_emergencies 讀 origin/main:先確定它在
     if pending_emergencies(a.repo):
         raise SystemExit(T("emergency_blocks_release"))
     if a.prof.gate_mode != "aib":
         return cmd_release_generic(a)
-    git(a.repo, "fetch", "-q", "origin", "main")
-    base = git(a.repo, "rev-parse", "origin/main").strip()
+    base = fetch_origin_main(a.repo)
     if git(a.repo, "rev-parse", "HEAD").strip() != base:
         raise SystemExit(T("head_not_main"))
     if git(a.repo, "status", "--porcelain", "--untracked-files=no").strip():
@@ -2075,8 +2089,7 @@ def cmd_release_generic(a):
     if not a.prof.version_files:
         print(T("release_no_version", {"what": getattr(a.prof, "detected", "-"), "path": sp.CONFIG}))
         return 2
-    git(a.repo, "fetch", "-q", "origin", "main")
-    base = git(a.repo, "rev-parse", "origin/main").strip()
+    base = fetch_origin_main(a.repo)
     if git(a.repo, "rev-parse", "HEAD").strip() != base:
         raise SystemExit(T("head_not_main"))
     if git(a.repo, "status", "--porcelain", "--untracked-files=no").strip():

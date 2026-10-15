@@ -496,7 +496,10 @@ fi
 if [ "${1:-}" = "project" ]; then
   shift
   export PYTHONPATH="$AIB_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-  exec "$T_PY3" -m src.fleet_identity.project_callpoint "$@"
+  # ★ 不用 `-m`:`-m` 把目前目錄放在 sys.path 最前面,專案自己有 src/ 就撞名(10-15 C7)。
+  #   改由 -c 把 sys.path[0] 換成本包根再 runpy;cwd 不動(develop 的 --cwd 照舊是使用者的目錄)。
+  exec "$T_PY3" -c 'import runpy, sys; sys.path[0] = sys.argv.pop(1); runpy.run_module("src.fleet_identity.project_callpoint", run_name="__main__", alter_sys=True)' \
+    "$AIB_SOURCE_ROOT" "$@"
 fi
 
 # aib profile check|explain(第 113 項;艦長 09-13 21:1x 定名):
@@ -2288,6 +2291,11 @@ aib_open_menu_after_right() {
   local wid="${WINDOW_ID:-}" with_onboard=1 with_fork=0 from=""
   [ "$DRY" != "1" ] && [ -n "$wid" ] || return 0
   [ "${AIB_NO_ONBOARD:-0}" != "1" ] && [ "${AIB_ONBOARD_AUTO:-0}" != "1" ] || with_onboard=0
+  # 開席單模板不在 ⇒「全部/只鐵則」必然投不出去:不列這兩項,明說一行(四語)
+  if [ "$with_onboard" = "1" ] && [ ! -f "${AIB_ONBOARD_TEMPLATE:-$HERE/../../docs/templates/SEAT-ONBOARD.md}" ]; then
+    with_onboard=0
+    "$T_PY3" "$HERE/i18n_lib.py" --param "window=$wid" aib.onboardcli.template_missing_menu >&2 2>/dev/null || true
+  fi
   [ "${_aib_fork_menu:-0}" = "1" ] && with_fork=1
   if [ "$with_onboard" = "1" ] || [ "$with_fork" = "1" ]; then
     case "${AIB_RIGHT_OK_NOTE:-}" in
