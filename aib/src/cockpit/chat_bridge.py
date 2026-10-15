@@ -45,7 +45,7 @@ TICK_DEFAULT = 10                          # 秒;跟心跳間隔同一個節奏(
 SWEEP_EVERY = 3600                         # 秒;清舊檔(receipts / delivery / bad 超過 7 天)
 WINDOW_ROLE = "sys.chat"
 WINDOW_NAME = "chat"
-STATES = ("no_keys", "stopped")            # 1.1 只會有這兩種;1.2 起加 connecting / online / offline
+STATES = ("no_keys", "no_relays", "stopped")   # 1.2:有金鑰還沒中繼站 = no_relays;1.3 起加 connecting / online / offline
 SOCKET_RE = re.compile(r"^aihub(-[0-9A-Za-z-]+)?$")
 
 
@@ -178,7 +178,7 @@ def run(env=None, tick=None, max_ticks=None, out=sys.stdout):
                     out.flush()
                     said_standby = True
             if leader:
-                _leader_tick(root)
+                _leader_tick(root, env)
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 return 0
@@ -206,15 +206,28 @@ def _become_leader(root, env, out):
     out.flush()
 
 
-def _leader_tick(root):
+def sync_keys(env=None):
+    """主人金鑰 + 依活席發 / 轉 / 封存席金鑰(1.2,第 5.3 節)。回 (動作清單, 錯誤鍵或 None)。
+    「綁席時由轉接程式產生」:當班每一輪都對一次,新綁的席下一輪就有金鑰。私鑰不經過這裡的回傳值。"""
+    import nostr_keys as NK
+    try:
+        NK.ensure_owner(env)
+        return NK.sync_seats(NK.live_seats(), env), None
+    except Exception as err:   # noqa: BLE001  金鑰出錯不得讓轉接程式死掉;狀態檔記錯誤種類(不記內容)
+        return [], type(err).__name__
+
+
+def _leader_tick(root, env=None):
     st = read_status(root) or {}
     now = int(time.time())
     swept = st.get("swept_at")
     if not isinstance(swept, int) or now - swept >= SWEEP_EVERY:
         GF.sweep(root, now=now)
         swept = now
-    write_status(root, state="no_keys", pid=os.getpid(), instance=st.get("instance"),
-                 since=st.get("since") or now, at=now, swept_at=swept)
+    _acts, key_err = sync_keys(env)
+    # 有金鑰也還沒有中繼站(1.3 才接)⇒ 照舊不寫心跳
+    write_status(root, state="no_keys" if key_err else "no_relays", pid=os.getpid(), instance=st.get("instance"),
+                 since=st.get("since") or now, at=now, swept_at=swept, key_error=key_err)
 
 
 # ── sys.chat 窗 ──
@@ -297,6 +310,13 @@ def cmd_on(a, env, out):
     write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time())})
     os.chmod(switch_path(env), 0o600)
     out.write(T("on_done") + "\n")
+    acts, key_err = sync_keys(env)
+    if key_err:
+        out.write(T("keys_error", err=key_err) + "\n")
+    else:
+        import nostr_keys as NK
+        pv = NK.public_view(env)
+        out.write(T("keys_ready", n=sum(1 for e in pv["seats"] if e["status"] == "active")) + "\n")
     sock = hub_socket(env)
     if sock:
         act, wid = ensure_window(sock, env)
@@ -338,8 +358,30 @@ def status_record(env):
         "at": st.get("at"),
         "heartbeat": GF.bridge_alive(root),
         "venv": venv_state(env),
+        "keys": _keys_summary(env),
         "bridge_root": str(root),
     }
+
+
+def _keys_summary(env):
+    import nostr_keys as NK
+    pv = NK.public_view(env)
+    return {"owner": pv["owner"], "seats": sum(1 for e in pv["seats"] if e["status"] == "active")}
+
+
+def cmd_keys(a, env, out):
+    """只印公開的東西(npub、席、艙、狀態);私鑰不經過這裡。"""
+    import nostr_keys as NK
+    pv = NK.public_view(env)
+    if a.json:
+        out.write(json.dumps(pv, ensure_ascii=False) + "\n")
+        return 0
+    out.write(T("keys_owner", npub=pv["owner"] or "-") + "\n")
+    for e in pv["seats"]:
+        if e["status"] == "active" or a.all:
+            out.write(T("keys_row_" + ("active" if e["status"] == "active" else "retired"),
+                        seat=e["seat5"], cabin=e["cabin"] or "-", uid=e["persona_uid"], npub=e["npub"]) + "\n")
+    return 0
 
 
 def cmd_status(a, env, out):
@@ -353,6 +395,7 @@ def cmd_status(a, env, out):
     else:
         out.write(T("status_not_running") + "\n")
     out.write(T("status_venv_" + rec["venv"], pin=NOSTR_SDK_PIN) + "\n")
+    out.write(T("status_keys", n=rec["keys"]["seats"], owner=rec["keys"]["owner"] or "-") + "\n")
     out.write(T("status_heartbeat_" + ("yes" if rec["heartbeat"] else "no")) + "\n")
     return 0
 
@@ -367,6 +410,9 @@ def main(argv=None, env=None, out=sys.stdout):
     st = sub.add_parser("status", help=T("help.status"))
     st.add_argument("--json", action="store_true")
     sub.add_parser("run", help=T("help.run"))
+    ks = sub.add_parser("keys", help=T("help.keys"))
+    ks.add_argument("--json", action="store_true")
+    ks.add_argument("--all", action="store_true", help=T("help.keys_all"))
     ew = sub.add_parser("ensure-window", help=T("help.ensure_window"))
     ew.add_argument("--socket")
     sub.add_parser("enabled", help=T("help.enabled"))
@@ -379,6 +425,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_on(a, env, out)
     if a.cmd == "off":
         return cmd_off(a, env, out)
+    if a.cmd == "keys":
+        return cmd_keys(a, env, out)
     if a.cmd == "run":
         return run(env, out=out)
     if a.cmd == "enabled":

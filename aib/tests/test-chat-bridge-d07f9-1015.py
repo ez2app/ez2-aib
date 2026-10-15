@@ -145,8 +145,9 @@ class Leader(Base):
         self.assertTrue(GF.bridge_alive(self.b.root))
         p = self.b.start_run(EZ2_AIB_INSTANCE="20261015-000000-test")
         self.assertTrue(self.b.wait_for(lambda: (self.b.status() or {}).get("pid") == p.pid), "沒當班")
+        # 1.2 起:當班一上來先寫 no_keys,同一輪把主人金鑰做好就改 no_relays(中繼站還沒接)
+        self.assertTrue(self.b.wait_for(lambda: (self.b.status() or {}).get("state") == "no_relays"), self.b.status())
         st = self.b.status()
-        self.assertEqual(st["state"], "no_keys")
         self.assertEqual(st["instance"], "20261015-000000-test")
         time.sleep(0.6)                                       # 跑幾輪
         self.assertFalse((self.b.root / "heartbeat.json").exists(), "這一版不准有心跳")
@@ -229,7 +230,7 @@ class Window(Base):
         self.assertEqual(len(wins), 1, wins)
         wid = wins[0][0]
         self.assertEqual(self.tx("show-options", "-wqv", "-t", wid, "remain-on-exit"), "on")
-        self.assertTrue(self.b.wait_for(lambda: (self.b.status() or {}).get("state") == "no_keys"), "窗裡的轉接程式沒當班")
+        self.assertTrue(self.b.wait_for(lambda: (self.b.status() or {}).get("state") == "no_relays"), "窗裡的轉接程式沒當班")
         r = self.b.cli("ensure-window", "--socket", self.sock)
         self.assertIn("不動它", r.stdout)
         self.assertEqual(len(self.chat_windows()), 1, "重跑不准疊窗")
@@ -241,6 +242,37 @@ class Window(Base):
         self.assertTrue(self.b.wait_for(lambda: self.chat_windows()[0][-1] == "0"))
         self.assertEqual(self.chat_windows()[0][0], wid, "要重開同一個窗,不是另開")
         self.b.cli("off")
+
+
+class Keys(Base):
+    """1.2:當班照活席發金鑰;aib chat keys 只印公開號碼。"""
+
+    def _seat(self, inst, win, uuid, uid):
+        d = self.b.home / ".ez2-aib" / "instances" / inst / "seats"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ("%s.json" % win)).write_text(json.dumps({"schema": "aib-seat/v1", "session_uuid": uuid, "seat_id": uuid[-5:]}))
+        disp = self.b.home / ".ez2-aib" / "identity" / "seat-display.json"
+        disp.parent.mkdir(parents=True, exist_ok=True)
+        cur = json.loads(disp.read_text()) if disp.exists() else {"display": {}}
+        cur["display"][uuid.replace("-", "")[-5:]] = {"persona_uid": uid}
+        disp.write_text(json.dumps(cur))
+
+    def test_c10_leader_issues_seat_keys(self):
+        self._seat("20261015-000000-6ddf", "w2", "00000000-0000-0000-0000-0000000aaa11", "aaaa11")
+        self._seat("20261015-000000-931e", "w3", "00000000-0000-0000-0000-0000000bbb22", "bbbb22")
+        self.turn_on()
+        p = self.b.start_run()
+        self.assertTrue(self.b.wait_for(lambda: (self.b.status() or {}).get("pid") == p.pid))
+        r = self.b.cli("keys", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        pv = json.loads(r.stdout)
+        self.assertTrue(pv["owner"].startswith("npub1"))
+        got = sorted((e["seat5"], e["cabin"], e["persona_uid"]) for e in pv["seats"] if e["status"] == "active")
+        self.assertEqual(got, [("0aaa11"[-5:], "6ddf", "aaaa11"), ("0bbb22"[-5:], "931e", "bbbb22")])
+        for out in (r.stdout, self.b.cli("keys").stdout, self.b.cli("status").stdout,
+                    (self.b.root / "status.json").read_text()):
+            self.assertNotIn("nsec1", out)
+        self.assertFalse((self.b.root / "heartbeat.json").exists(), "有金鑰也還沒有中繼站,不准有心跳")
 
 
 class Dispatch(Base):
