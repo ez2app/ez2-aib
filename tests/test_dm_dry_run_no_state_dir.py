@@ -34,7 +34,9 @@ class DmDryRunNoStateDir(unittest.TestCase):
     def test_nothing_created(self):
         td = Path(tempfile.mkdtemp(prefix="aib-dmdry-"))
         try:
-            env = {"PATH": os.environ.get("PATH", ""), "HOME": str(td), "EZ2_AIB_LOCALE": "en"}
+            # macOS built-in /usr/bin/python3 (3.9) caches bytecode under HOME/Library/Caches before aib can redirect it;
+            # that is Python's cache, not aib writing, so keep it out of the snapshot.
+            env = {"PATH": os.environ.get("PATH", ""), "HOME": str(td), "EZ2_AIB_LOCALE": "en", "PYTHONDONTWRITEBYTECODE": "1"}
             before = snapshot(td)
             r = subprocess.run(AIB + ["dm", "abcd/12345", "hello", "--dry-run"], cwd=td, env=env,
                                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
