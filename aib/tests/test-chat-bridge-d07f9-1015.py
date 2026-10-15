@@ -107,7 +107,7 @@ class Base(unittest.TestCase):
         self.addCleanup(self.b.close)
 
     def turn_on(self):
-        r = self.b.cli("on", "--no-venv")
+        r = self.b.cli("on", "--no-venv", "--name", "Tester", "--country", "TW")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
@@ -125,7 +125,7 @@ class Basics(Base):
         self.assertIn("全球對談已關", r.stdout)
 
     def test_c2_on_off_switch(self):
-        r = self.b.cli("on", "--no-venv")
+        r = self.b.cli("on", "--no-venv", "--name", "Tester", "--country", "TW")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("不在艙裡", r.stdout)
         sw = self.b.chat / "enabled.json"
@@ -289,7 +289,7 @@ class Dispatch(Base):
 class Lang(Base):
     def test_z1_english_and_parity(self):
         outs = []
-        for args in (("status",), ("on", "--no-venv"), ("status",), ("off",), ("--help",)):
+        for args in (("status",), ("on", "--no-venv", "--name", "Tester", "--country", "TW"), ("status",), ("off",), ("--help",)):
             r = self.b.cli(*args, EZ2_AIB_LOCALE="en")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             outs.append(r.stdout + r.stderr)

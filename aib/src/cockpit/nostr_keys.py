@@ -314,12 +314,17 @@ def retire_persona(persona_uid, env=None, now=None):
     return n
 
 
-def live_seats(home=None):
-    """這台機器上綁著的席(各艙 seats/w*.json,不含 retired/)⇒ [{seat5, cabin, persona_uid}]。
+def live_seats(home=None, env=None):
+    """這台機器上綁著的席(各艙 seats/w*.json,不含 retired/)⇒ [{seat5, cabin, persona_uid, name, role}]。
     席碼用 seat_address.code_of;人格看 identity/seat-display.json 的 display[<席碼>].persona_uid
     (bindings.json 只收有第二大腦路由的席,display 才是全部)。沒綁人格的席不列。"""
     import seat_who
     from seat_address import code_of
+    if home is None and env is not None:
+        # 跟呼叫端同一個根(測試沙盒不准讀到真的 ~/.ez2-aib):state_root 沒設環境變數時用 expanduser,
+        #   那讀的是本行程的 HOME 不是 env 的 ⇒ 這裡照 env 的 HOME 自己推。
+        home = env.get("EZ2_AIB_STATE_ROOT") or env.get("EZ2_AIB_HOME") or (
+            os.path.join(env["HOME"], ".ez2-aib") if env.get("HOME") else None)
     home = home or seat_who._home()
     try:
         disp = json.loads((Path(home) / "identity" / "seat-display.json").read_text(encoding="utf-8")).get("display") or {}
@@ -332,7 +337,8 @@ def live_seats(home=None):
         if not code or code in seen or not isinstance(pu, str):
             continue
         seen.add(code)
-        out.append({"seat5": code, "cabin": inst.rsplit("-", 1)[-1] if inst else None, "persona_uid": pu})
+        out.append({"seat5": code, "cabin": inst.rsplit("-", 1)[-1] if inst else None, "persona_uid": pu,
+                    "name": (disp.get(code) or {}).get("display_name"), "role": rec.get("role")})   # 名冊用(1.3)
     return out
 
 

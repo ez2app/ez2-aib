@@ -45,7 +45,10 @@ TICK_DEFAULT = 10                          # 秒;跟心跳間隔同一個節奏(
 SWEEP_EVERY = 3600                         # 秒;清舊檔(receipts / delivery / bad 超過 7 天)
 WINDOW_ROLE = "sys.chat"
 WINDOW_NAME = "chat"
-STATES = ("no_keys", "no_relays", "stopped")   # 1.2:有金鑰還沒中繼站 = no_relays;1.3 起加 connecting / online / offline
+STATES = ("no_keys", "no_profile", "no_relays", "publishing", "published", "stopped")
+#   1.2:有金鑰還沒中繼站 = no_relays;1.3:沒設顯示名稱 / 國別 = no_profile、名冊發不出去 = publishing(下一輪再試)、
+#   名冊與 10050 都發出去了 = published。收發信(1.7)以前都不寫心跳。
+PUBLISH_EVERY = 60                         # 秒;名冊發失敗時多久再試(第 19.1 節:每站每 10 秒最多 2 則,不能狂發)
 SOCKET_RE = re.compile(r"^aihub(-[0-9A-Za-z-]+)?$")
 
 
@@ -212,7 +215,7 @@ def sync_keys(env=None):
     import nostr_keys as NK
     try:
         NK.ensure_owner(env)
-        return NK.sync_seats(NK.live_seats(), env), None
+        return NK.sync_seats(NK.live_seats(env=env), env), None
     except Exception as err:   # noqa: BLE001  金鑰出錯不得讓轉接程式死掉;狀態檔記錯誤種類(不記內容)
         return [], type(err).__name__
 
@@ -225,9 +228,47 @@ def _leader_tick(root, env=None):
         GF.sweep(root, now=now)
         swept = now
     _acts, key_err = sync_keys(env)
-    # 有金鑰也還沒有中繼站(1.3 才接)⇒ 照舊不寫心跳
-    write_status(root, state="no_keys" if key_err else "no_relays", pid=os.getpid(), instance=st.get("instance"),
-                 since=st.get("since") or now, at=now, swept_at=swept, key_error=key_err)
+    state, pub = ("no_keys", {}) if key_err else publish_roster(root, env, st, now)
+    write_status(root, state=state, pid=os.getpid(), instance=st.get("instance"),
+                 since=st.get("since") or now, at=now, swept_at=swept, key_error=key_err,
+                 publish_tried_at=pub.get("tried_at", st.get("publish_tried_at")), publish_error=pub.get("error"))
+
+
+def _run_nostr(cmd, root, env, timeout=60, extra=()):
+    """venv 那一半(chat_nostr.py)當子行程跑。回 (rc, 結果 dict)。venv 不能用 ⇒ (None, {})。"""
+    py = venv_python(env)
+    if not py.exists():
+        return None, {}
+    try:
+        r = subprocess.run([str(py), str(HERE / "chat_nostr.py"), cmd] + list(extra) + ["--root", str(root)],
+                           capture_output=True, text=True, timeout=timeout, env=dict(env))
+    except (OSError, subprocess.SubprocessError) as err:
+        return 2, {"why": type(err).__name__}
+    try:
+        return r.returncode, json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return r.returncode, {"why": "no_output"}
+
+
+def publish_roster(root, env, st, now):
+    """組名冊 → 內容變了就交給 venv 發(最多每 PUBLISH_EVERY 秒試一次)。回 (狀態, {tried_at, error})。"""
+    import chat_roster as CR
+    try:
+        content, dm_seats = CR.build(env)
+    except CR.RosterError as err:
+        return ("no_profile" if str(err) == "no_profile" else "no_keys"), {}
+    h, _changed = CR.write_outgoing(root, content, dm_seats)
+    if CR.published_hash(root) == h:
+        return "published", {}
+    tried = st.get("publish_tried_at")
+    if isinstance(tried, int) and now - tried < PUBLISH_EVERY:
+        return "publishing", {"tried_at": tried, "error": st.get("publish_error")}
+    rc, rec = _run_nostr("publish", root, env)
+    if rc is None:
+        return "no_relays", {}                       # 沒裝 nostr-sdk(--no-venv):名冊組好了,發不出去
+    if rc == 0:
+        return "published", {"tried_at": now}
+    return "publishing", {"tried_at": now, "error": rec.get("why") or "relays"}
 
 
 # ── sys.chat 窗 ──
@@ -303,6 +344,17 @@ def ensure_venv(env=None, out=sys.stdout):
 # ── 子指令 ──
 
 def cmd_on(a, env, out):
+    import chat_roster as CR
+    # 第 5.8、5.9 節:第一次開一定要有顯示名稱與國別(沒設不開)
+    if a.name is not None or a.country is not None:
+        try:
+            CR.set_profile(a.name, a.country, env)
+        except CR.RosterError as err:
+            out.write(T("profile_" + str(err)) + "\n")
+            return 2
+    if not CR.profile_ready(env):
+        out.write(T("profile_required") + "\n")
+        return 2
     if not a.no_venv and not ensure_venv(env, out):
         out.write(T("venv_failed", pin=NOSTR_SDK_PIN, path=str(chat_home(env) / "venv")) + "\n")
         return 2
@@ -323,6 +375,7 @@ def cmd_on(a, env, out):
         out.write(T("window_" + act, wid=wid or "-", socket=sock) + "\n")
     else:
         out.write(T("window_no_hub") + "\n")
+    out.write(T("public_hint") + "\n")
     out.write(T("no_keys_yet") + "\n")
     return 0
 
@@ -333,6 +386,11 @@ def cmd_off(a, env, out):
     except FileNotFoundError:
         pass
     root = bridge_root(env)
+    # 第 20.4 節:發空名冊、撤下 10050(發過才需要;沒有 venv 就沒發過)
+    import chat_roster as CR
+    if CR.published_hash(root) not in (None, "empty"):
+        rc, _rec = _run_nostr("publish-empty", root, env, timeout=30)
+        out.write(T("off_unpublished" if rc == 0 else "off_unpublish_failed") + "\n")
     st = read_status(root) or {}
     pid = st.get("pid")
     if st.get("state") != "stopped" and pid_alive(pid) and _pid_is_bridge(pid):
@@ -384,6 +442,52 @@ def cmd_keys(a, env, out):
     return 0
 
 
+def cmd_profile(a, env, out):
+    import chat_roster as CR
+    try:
+        if a.cmd == "name":
+            CR.set_profile(name=a.value, env=env)
+        elif a.cmd == "country":
+            CR.set_profile(country=a.value, env=env)
+        else:
+            CR.set_public(a.value, a.cmd == "publish", env)
+    except CR.RosterError as err:
+        out.write(T("profile_" + str(err)) + "\n")
+        return 2
+    out.write(T("profile_saved_" + a.cmd, value=a.value) + "\n")
+    return 0
+
+
+def cmd_roster(a, env, out):
+    """印自己的名冊內容(還沒簽的那份;公開資訊)。"""
+    import chat_roster as CR
+    try:
+        content, _seats = CR.build(env)
+    except CR.RosterError as err:
+        out.write(T("profile_" + str(err)) + "\n")
+        return 2
+    if a.json:
+        out.write(json.dumps(content, ensure_ascii=False) + "\n")
+        return 0
+    out.write(T("roster_head", name=content["display_name"], country=content["country"],
+                n=sum(len(c["seats"]) for c in content["cabins"])) + "\n")
+    for c in content["cabins"]:
+        for s_ in c["seats"]:
+            out.write(T("roster_row", cabin=c["cabin"], seat=s_["seat"], name=s_.get("name") or "-", npub=s_["npub"]) + "\n")
+    out.write(T("roster_relays", relays=", ".join(content["dm_relays"])) + "\n")
+    return 0
+
+
+def cmd_lookup(a, env, out):
+    """查對方的全球位址(第 7.3 節 --dry-run 的底):抓名冊、驗簽、找席、抓 10050;不寄。"""
+    rc, rec = _run_nostr("fetch", bridge_root(env), env, timeout=60, extra=[a.addr])
+    if rc is None:
+        out.write(T("lookup_no_venv", pin=NOSTR_SDK_PIN) + "\n")
+        return 2
+    out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return 0 if rc == 0 else 2
+
+
 def cmd_status(a, env, out):
     rec = status_record(env)
     if a.json:
@@ -392,6 +496,8 @@ def cmd_status(a, env, out):
     out.write(T("status_switch_" + ("on" if rec["enabled"] else "off")) + "\n")
     if rec["running"]:
         out.write(T("status_running", pid=rec["pid"], instance=rec["instance"] or "-") + "\n")
+        if rec["state"] in ("no_keys", "no_profile", "no_relays", "publishing", "published"):
+            out.write(T("status_roster_" + rec["state"]) + "\n")
     else:
         out.write(T("status_not_running") + "\n")
     out.write(T("status_venv_" + rec["venv"], pin=NOSTR_SDK_PIN) + "\n")
@@ -406,6 +512,15 @@ def main(argv=None, env=None, out=sys.stdout):
     sub = p.add_subparsers(dest="cmd")
     on = sub.add_parser("on", help=T("help.on"))
     on.add_argument("--no-venv", action="store_true", help=T("help.no_venv"))
+    on.add_argument("--name", help=T("help.name"))
+    on.add_argument("--country", help=T("help.country"))
+    for cmd in ("name", "country", "publish", "hide"):
+        sp = sub.add_parser(cmd, help=T("help." + cmd))
+        sp.add_argument("value")
+    rs = sub.add_parser("roster", help=T("help.roster"))
+    rs.add_argument("--json", action="store_true")
+    lk = sub.add_parser("lookup", help=T("help.lookup"))
+    lk.add_argument("addr")
     sub.add_parser("off", help=T("help.off"))
     st = sub.add_parser("status", help=T("help.status"))
     st.add_argument("--json", action="store_true")
@@ -427,6 +542,12 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_off(a, env, out)
     if a.cmd == "keys":
         return cmd_keys(a, env, out)
+    if a.cmd in ("name", "country", "publish", "hide"):
+        return cmd_profile(a, env, out)
+    if a.cmd == "roster":
+        return cmd_roster(a, env, out)
+    if a.cmd == "lookup":
+        return cmd_lookup(a, env, out)
     if a.cmd == "run":
         return run(env, out=out)
     if a.cmd == "enabled":
