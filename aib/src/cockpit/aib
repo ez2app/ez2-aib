@@ -752,6 +752,13 @@ if [ "${1:-}" = "entry-probe" ]; then
   aib_delegate_subcommand py "$HERE/entry_probe.py" "$@"
 fi
 
+# aib chat 子命令(Andy 10-15 22:5x:全球對談轉接程式放開源核心):on / off / status / run(sys.chat 窗裡跑的常駐)。
+#   整段委派 chat_bridge.py;連 Nostr 的部分之後才進 ~/.ez2-aib/chat/venv,主程式不 import nostr_sdk。
+if [ "${1:-}" = "chat" ]; then
+  shift
+  exec "$T_PY3" "$HERE/chat_bridge.py" "$@"
+fi
+
 # aib cli 子命令(the maintainer 2026-10-09):五家 AI CLI 版本。aib cli = 看本機/最新;aib cli update = 現在更新;
 # aib cli rollback <家> [--to 版本] = 退回上一版。開席時的倒數更新也是同一支(cli_versions.py),整段委派。
 if [ "${1:-}" = "cli" ]; then
