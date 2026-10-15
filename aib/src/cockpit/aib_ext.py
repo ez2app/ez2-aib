@@ -9,11 +9,14 @@
   aib theme list | current | use <名> | reset  佈景:列、看現在用哪套、換、換回內建
   aib ext enable <名> [--engine claude,codex,agy] [--trust-hooks]   啟用到各家 AI(install 預設就會做;下週才裝 Codex 時用)
   aib ext disable <名> [--engine …]                                 從各家 AI 撤掉(remove 會先做這一步)
-  aib ext auto                                 裝這份 aib 附的免費、已簽章 mod(extensions/;一行安裝、aib update、aib init 會叫)
+  aib ext auto                                 裝這份 aib 自帶的延伸外掛(extensions/ 裡受信鑰匙簽過的每一個;一行安裝、aib update、aib init 會叫)
 
 mod 本身就是 Claude Code 外掛(根目錄有 .claude-plugin/marketplace.json,10-15 the maintainer「裝上並在下一版自動安裝」):
   install / enable 在複製到 <狀態根>/mods/<名> 之後,接著 claude plugin marketplace add <那個資料夾> + claude plugin install
   <plugin>@<marketplace>(名字讀 marketplace.json 的 name / plugins)。已登記同一個資料夾、已裝同一版 ⇒ 不動;版本不同 ⇒ update。
+  包只附 .claude-plugin/plugin.json、沒附 marketplace.json(例 aib-languages;補檔會讓簽章失效)⇒ aib 在
+  <狀態根>/ext-engines/<名>/claude-mod/ 自己產生一份 marketplace(ez2-<名>),把 mod 複製到它的 ./plugin 再登記。
+  (Claude Code 規定 plugin 位置要 ./ 開頭;用捷徑連過去的話 hooks 會被判「跑出外掛資料夾」不生效 ⇒ 只能複製,10-16 實測。)
   這台沒有 claude ⇒ 照實說、跳過。disable / remove 反做:uninstall 每個 plugin、移除 marketplace(不刪 mod 資料夾以外的東西)。
   看到舊的 aib-seat@ez2-aib-mods(已由 aib-boards 取代)⇒ 只提示怎麼移除,不替你刪。
 
@@ -261,12 +264,36 @@ def _legacy_hint(plugins, tool, out):
                                           % (pid, pid.split("@", 1)[1])}) + "\n")
 
 
+def _generated_marketplace(name, pkg):
+    """包只有 plugin.json、沒有 marketplace.json ⇒ 在 ext-engines/<名>/claude-mod/ 產生一份,mod 複製到 ./plugin。
+    回那個資料夾;連 plugin.json 都沒有 / 名字不合 ⇒ None。"""
+    try:
+        pname = json.loads((Path(pkg) / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")).get("name")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not (isinstance(pname, str) and name_ok(pname) and name_ok("ez2-" + name)):
+        return None
+    d = state_root() / "ext-engines" / name / "claude-mod"
+    if d.exists():
+        shutil.rmtree(d)
+    shutil.copytree(pkg, d / "plugin", ignore=shutil.ignore_patterns("__pycache__"))
+    (d / ".claude-plugin").mkdir(parents=True)
+    (d / ".claude-plugin" / "marketplace.json").write_text(json.dumps(
+        {"name": "ez2-" + name, "owner": {"name": "Ez2 AIB"}, "plugins": [{"name": pname, "source": "./plugin"}]},
+        ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return d
+
+
 def claude_register(name, pkg, out, changes=None):
     """mod 資料夾 pkg 向 Claude Code 登記。回 rc(0 = 成功或照實跳過)。changes:有動到就把名字加進去(印 /restart 提示用)。"""
+    gen = None
+    if not mod_plugins(pkg)[0]:
+        gen = _generated_marketplace(name, pkg)
+        if not gen:
+            out.write(T("mod_not_claude", {"name": name, "path": str(Path(pkg) / ".claude-plugin" / "plugin.json")}) + "\n")
+            return 0
+        pkg = gen
     mkt, plugins = mod_plugins(pkg)
-    if not mkt:
-        out.write(T("mod_not_claude", {"name": name, "path": str(Path(pkg) / ".claude-plugin" / "marketplace.json")}) + "\n")
-        return 0
     tool = _which("claude")
     if not tool:
         out.write(T("eng_no_cli", {"engine": "claude", "cmd": "claude"}) + "\n")
@@ -291,7 +318,7 @@ def claude_register(name, pkg, out, changes=None):
         changed = True
     rows = _run_json([tool, "plugin", "list", "--json"])
     inst = {r.get("id"): r for r in (rows or []) if isinstance(r, dict)}
-    want = _folder_version(pkg)
+    want = _folder_version(Path(pkg) / "plugin" if gen else pkg)
     rc = 0
     for p in plugins:
         pid = "%s@%s" % (p, mkt)
@@ -308,6 +335,8 @@ def claude_register(name, pkg, out, changes=None):
             continue
         changed = True
     st["claude_mod"] = {"mkt": mkt, "plugins": plugins}
+    if gen:
+        st["claude_mod"]["dir"] = str(gen)
     _write_state(name, st)
     out.write(T("eng_ok" if changed else "mod_already", {"engine": "claude", "name": name}) + "\n")
     if changed and changes is not None:
@@ -328,6 +357,9 @@ def claude_unregister(name, out):
         for p in rec.get("plugins") or []:
             ok = _run([tool, "plugin", "uninstall", "%s@%s" % (p, rec.get("mkt"))])[0] == 0 and ok
         _run([tool, "plugin", "marketplace", "remove", str(rec.get("mkt"))])
+    gen = state_root() / "ext-engines" / name / "claude-mod"
+    if rec.get("dir") and os.path.realpath(rec["dir"]) == os.path.realpath(str(gen)):   # 只刪 aib 自己產生的那一份
+        shutil.rmtree(gen, ignore_errors=True)
     if st:
         _write_state(name, st)
     else:
@@ -771,7 +803,8 @@ def _same_copy(src, dst):
 
 
 def auto_install(out=sys.stdout, src=None, env=None):
-    """裝 extensions/ 裡免費(沒有 requires_addon)、受信鑰匙簽過的 mod;清單讀各包 aib-ext.json,不寫死。
+    """裝 extensions/ 裡 aib 自帶的延伸外掛(mod、skill…,受信鑰匙簽過、沒有 requires_addon);清單讀各包 aib-ext.json,不寫死。
+    10-16 the maintainer:extensions/ 是 aib 自己的延伸外掛,不是付費外掛(付費的在 aib-plugins 倉,這裡不碰)、5 個全裝。
     AIB_EXT_AUTO=0 ⇒ 全關。已裝同一份 ⇒ 只補 Claude Code 登記(沒登記才登記)。有動到 ⇒ 最後印一行「每席 /restart 生效」。"""
     env = os.environ if env is None else env
     if env.get("AIB_EXT_AUTO", "") == "0":
@@ -786,23 +819,24 @@ def auto_install(out=sys.stdout, src=None, env=None):
             m = json.loads((d / MANIFEST).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if K.kind_of_label(str(m.get("kind") or "")) != "mod" or m.get("requires_addon"):
+        kind = K.kind_of_label(str(m.get("kind") or ""))
+        if kind not in K.INSTALLABLE or m.get("requires_addon"):
             continue
         name = str(m.get("name") or "")
         if not signed_ok(m):
             out.write(T("auto_unsigned", {"name": name}) + "\n")
             continue
         try:
-            dst = target("mod", name)
+            dst = target(kind, name)
         except ValueError:
             continue
         if _same_copy(d, dst):
-            if not m.get("engines"):
+            if kind == "mod" and not m.get("engines"):
                 rc = claude_register(name, dst, out, changes) or rc
             continue
         before = len(changes)
         r = install(d, out=out, changes=changes)
-        if r == 0 and m.get("engines") and len(changes) == before:
+        if r == 0 and len(changes) == before:
             changes.append(name)
         rc = r or rc
     if changes:

@@ -14,13 +14,16 @@ A2 再 enable 一次(同一個資料夾、同一版已登記)⇒ 不再 add / in
 A3 已裝的版本跟資料夾不同 ⇒ marketplace update + plugin update
 A4 這台沒有 claude ⇒ 照實說跳過、rc 0、檔案照放
 A5 disable ⇒ uninstall + marketplace remove、狀態清掉;remove ⇒ 同樣撤掉再刪資料夾
-A6 auto:只裝免費 + 已簽章的 mod(沒簽章、要加購、skill 都不裝);有動到才印「每席 /restart」;再跑一次不印
+A6 auto:extensions/ 裡受信鑰匙簽過的延伸外掛都裝(mod 進 mods/、skill 進 skills/);沒簽章、要加購的不裝;
+   有動到才印「每席 /restart」;再跑一次不印(改過說明檔的複本用測試鑰匙重簽,鑰匙寫進 <狀態根>/trusted-ext-keys)
 A7 AIB_EXT_AUTO=0 ⇒ 什麼都不裝,說一句
 A8 有舊的 aib-seat@ez2-aib-mods ⇒ 提示怎麼移除,不替人刪
 A9 aib init(子行程、AIB_EXT_AUTO=1)⇒ 裝好並登記 aib-boards;不是終端機又沒設 AIB_EXT_AUTO ⇒ 不裝
 A10 四語字典新鍵四份都有、佔位符相同
+A11 aib-languages(只有 plugin.json、沒有 marketplace.json)⇒ aib 在 ext-engines/aib-languages/claude-mod 產生 marketplace
+    ez2-aib-languages、mod 複製到 ./plugin,登記 aib-languages@ez2-aib-languages;remove ⇒ 撤登記、刪掉產生的那份
 刀(同檔變體,不碰真樹):K1 mod 不登記 ⇒ A1 紅;K2 不看「已登記」⇒ A2 紅;K3 auto 不看簽章 ⇒ A6 紅;
-   K4 auto 不看 AIB_EXT_AUTO ⇒ A7 紅
+   K4 auto 不看 AIB_EXT_AUTO ⇒ A7 紅;K5 不替沒有 marketplace.json 的 mod 產生 ⇒ A11 紅
 """
 import io
 import json
@@ -39,12 +42,16 @@ ROOT = Path(__file__).resolve().parents[1]          # = aib/
 REPO = ROOT.parent
 SRC = ROOT / "src" / "cockpit" / "aib_ext.py"
 BOARDS = REPO / "extensions" / "aib-boards"
+LANGS = REPO / "extensions" / "aib-languages"
 sys.path.insert(0, str(ROOT / "src" / "cockpit"))
 sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(ROOT / "src"))
 import aib_ext  # noqa: E402
+from entitlement import ed25519, signing  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 
 PH = re.compile(r"\{[a-z_]+\}")
+SEED = bytes(range(32))     # 測試鑰匙(只寫進暫存狀態根的 trusted-ext-keys)
 NEW_KEYS = ("mod_already", "mod_not_claude", "legacy_plugin", "auto_off", "auto_unsigned", "restart_hint")
 _N = [0]
 
@@ -58,9 +65,11 @@ with open(str(S) + ".log", "a") as fh:
 a = sys.argv[1:]
 def save():
     S.write_text(json.dumps(st))
-def ver(path):
+def ver(path, plugin):
     try:
-        return json.loads((Path(path) / ".claude-plugin" / "plugin.json").read_text())["version"]
+        mk = json.loads((Path(path) / ".claude-plugin" / "marketplace.json").read_text())
+        src = [x["source"] for x in mk["plugins"] if x["name"] == plugin][0]
+        return json.loads((Path(path) / src / ".claude-plugin" / "plugin.json").read_text())["version"]
     except Exception:
         return "0"
 if a[:3] == ["plugin", "marketplace", "list"]:
@@ -80,7 +89,7 @@ elif a[:2] in (["plugin", "install"], ["plugin", "update"]):
     p, m = a[2].split("@", 1)
     if m not in st["mkts"]:
         print("no such marketplace", file=sys.stderr); sys.exit(1)
-    st["plugins"][a[2]] = ver(st["mkts"][m]); save()
+    st["plugins"][a[2]] = ver(st["mkts"][m], p); save()
 elif a[:2] == ["plugin", "uninstall"]:
     st["plugins"].pop(a[2], None); save()
 else:
@@ -97,6 +106,12 @@ def variant(needle, replacement):
     mod.__file__ = str(SRC)
     exec(compile(text.replace(needle, replacement), str(SRC), "exec"), mod.__dict__)
     return mod
+
+
+def resign(m):
+    m.pop("signature", None)
+    m["signature"] = "ed25519:" + __import__("base64").b64encode(ed25519.sign(SEED, signing.canonical(m))).decode()
+    return m
 
 
 def clean_path(extra):
@@ -125,6 +140,8 @@ class Base(unittest.TestCase):
         self.src.mkdir()
         shutil.copytree(BOARDS, self.src / "aib-boards")
         self.mods = self.home / ".ez2-aib" / "mods"
+        (self.home / ".ez2-aib").mkdir(parents=True, exist_ok=True)
+        (self.home / ".ez2-aib" / "trusted-ext-keys").write_text("ed25519:%s\n" % ed25519.public_key(SEED).hex())
 
     def tearDown(self):
         self.envp.stop()
@@ -174,23 +191,41 @@ def check_a2(t, mod):
 
 def check_a6(t, mod):
     # 沒簽章的 mod、要加購的 mod、skill:都不該被 auto 裝
-    for nm, edit in (("aib-unsigned", lambda m: m.pop("signature", None)),
-                     ("aib-paid", lambda m: m.__setitem__("requires_addon", "aib-paid")),
-                     ("aib-skilly", lambda m: m.__setitem__("kind", "skill"))):
+    for nm, edit in (("aib-unsigned", lambda m: (m.pop("signature", None), m)[1]),
+                     ("aib-paid", lambda m: resign(dict(m, requires_addon="aib-paid"))),
+                     ("aib-skilly", lambda m: resign(dict(m, kind="skill")))):
         d = t.src / nm
         shutil.copytree(BOARDS, d)
         m = json.loads((d / "aib-ext.json").read_text(encoding="utf-8"))
         m["name"] = nm
-        edit(m)
+        m = edit(m) or m
         (d / "aib-ext.json").write_text(json.dumps(m), encoding="utf-8")
     rc, out = t.run_mod(mod, "auto_install", src=str(t.src))
     t.assertEqual(rc, 0, out)
     t.assertEqual(sorted(p.name for p in t.mods.iterdir()), ["aib-boards"])
+    t.assertEqual(sorted(p.name for p in (t.home / ".ez2-aib" / "skills").iterdir()), ["aib-skilly"])
     t.assertIn("aib-unsigned", out)            # 沒簽章要說為什麼沒裝
     t.assertEqual(out.count("/restart"), 1, out)
     rc, out2 = t.run_mod(mod, "auto_install", src=str(t.src))
     t.assertEqual(rc, 0, out2)
     t.assertNotIn("/restart", out2)
+
+
+def check_a11(t, mod):
+    shutil.copytree(LANGS, t.src / "aib-languages")
+    rc, out = t.run_mod(mod, "install", str(t.src / "aib-languages"))
+    t.assertEqual(rc, 0, out)
+    gen = t.home / ".ez2-aib" / "ext-engines" / "aib-languages" / "claude-mod"
+    t.assertEqual(t.claude_state()["mkts"].get("ez2-aib-languages"), str(gen), out)
+    t.assertEqual(t.claude_state()["plugins"].get("aib-languages@ez2-aib-languages"), "0.1.0")
+    t.assertTrue((gen / "plugin" / ".claude-plugin" / "plugin.json").is_file())
+    n = len(t.calls())
+    t.run_mod(mod, "enable", "aib-languages")                     # 再一次:已登記同一份 ⇒ 不再 add / install
+    t.assertFalse([c for c in t.calls()[n:] if c.startswith(("plugin marketplace add", "plugin install", "plugin update"))])
+    rc, out = t.run_mod(mod, "remove", "aib-languages")
+    t.assertEqual(rc, 0, out)
+    t.assertEqual(t.claude_state(), {"mkts": {}, "plugins": {}})
+    t.assertFalse(gen.exists())
 
 
 def check_a7(t, mod):
@@ -248,6 +283,9 @@ class Register(Base):
     def test_a7_auto_off(self):
         check_a7(self, aib_ext)
 
+    def test_a11_plugin_json_only_mod_gets_generated_marketplace(self):
+        check_a11(self, aib_ext)
+
     def test_a8_legacy_hint_only(self):
         self.seed({"mkts": {"ez2-aib-mods": "/somewhere/old"}, "plugins": {"aib-seat@ez2-aib-mods": "0.10.0"}})
         rc, out = self.run_mod(aib_ext, "install", str(self.src / "aib-boards"))
@@ -274,6 +312,9 @@ class Init(Base):
         self.assertIn("aib-boards", r.stdout, r.stdout + r.stderr)
         self.assertTrue((self.mods / "aib-boards" / "aib-ext.json").is_file(), r.stdout + r.stderr)
         self.assertIn("aib-boards@ez2-aib-boards", self.claude_state()["plugins"])
+        self.assertIn("aib-languages@ez2-aib-languages", self.claude_state()["plugins"])
+        self.assertTrue((self.home / ".ez2-aib" / "skills" / "ez2-page-oneshot" / "SKILL.md").is_file())
+        self.assertTrue((self.home / ".ez2-aib" / "skills" / "aib-cabin-regroup" / "SKILL.md").is_file())
         self.assertIn("/restart", r.stdout)
 
     def test_a9b_init_from_script_without_flag_does_not(self):
@@ -309,6 +350,11 @@ class Knives(Base):
                       "        if False:\n            out.write(T(\"auto_unsigned\"")
         with self.assertRaises(AssertionError):
             check_a6(self, mod)
+
+    def test_k5_no_generated_marketplace(self):
+        mod = variant("        gen = _generated_marketplace(name, pkg)\n", "        gen = None\n")
+        with self.assertRaises(AssertionError):
+            check_a11(self, mod)
 
     def test_k4_auto_ignores_off_switch(self):
         mod = variant('    if env.get("AIB_EXT_AUTO", "") == "0":\n', "    if False:\n")
