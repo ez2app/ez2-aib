@@ -1,19 +1,20 @@
 {
-  "_comment_zh-TW": "EH.28 · CTX 門檻單一資料源(root@00000 09:07 裁、09:16 四問裁)。讀者一律經 src/rotation/ctx_policy.py 取值,不得在碼裡另寫字面。stage_* 是生命週期階段,action_* 是動作門檻——值相等不等於同一個鍵。",
-  "schema_version": "1",
-  "stages": {
-    "ok": 0,
-    "scout_successor": 50,
-    "should_checkpoint": 60,
-    "co_rule": 75,
-    "should_converge": 85,
-    "must_handoff": 90,
-    "advisor_stop": 96,
-    "claude_final": 97
-  },
-  "actions": {
-    "prepare_compact": 80,
-    "captain_compact": 85,
-    "final_clear_advice_floor": 85
+  "_comment_zh-TW": "CTX(對話用量 %)門檻單一資料源 —— 只有這一張表(10-15 維護者 20:0x「把這二個合成一個,並要確定會由程式觸發」、20:1x「只保留 A 一張表」)。原本的 stages / actions(艦隊巡檢 50/60/75/80/85/90/96/97)已刪;讀者一律經 src/rotation/ctx_policy.py 取值,不得在碼裡另寫字面。每一格的動作由各席自己的 hook 觸發(src/identity/auto_distill_hook.py:Claude 席 UserPromptSubmit 注入 + Stop 擋回合(85 交接沒過)、其他家一輪結束 aib dm 給自己、agy 叫模型前注入),同一格同一對話只一次;85 那格交接 verify 沒過就每則再提醒。總表(用量 → 會發生什麼 → 哪支程式)見 aib/docs/CTX-THRESHOLDS.md。",
+  "_comment_en": "Single source of CTX (context use %) thresholds: one table only. The old stages/actions section (fleet patrol 50/60/75/80/85/90/96/97) is gone. Every cell is fired by the seat's own hook (src/identity/auto_distill_hook.py), once per conversation; at 85 the hook keeps reminding and the Claude Stop hook blocks the turn until the handoff verify passes (capped). Full table: aib/docs/CTX-THRESHOLDS.md.",
+  "schema_version": "2",
+  "triggers": [
+    {"pct": 30, "do": ["tidy"]},
+    {"pct": 50, "do": ["tidy"]},
+    {"pct": 70, "do": ["tidy"]},
+    {"pct": 80, "do": ["handoff_remind"]},
+    {"pct": 85, "do": ["tidy", "handoff_now"]},
+    {"pct": 90, "do": ["tidy"]},
+    {"pct": 95, "do": ["red_line"]}
+  ],
+  "texts": {
+    "tidy": {"key": "auto_distill.instruct", "dm_key": "auto_distill.instruct_dm"},
+    "handoff_remind": {"key": "ctx_trigger.handoff_remind"},
+    "handoff_now": {"key": "ctx_trigger.handoff_now", "again_key": "ctx_trigger.handoff_again"},
+    "red_line": {"key": "ctx_trigger.red_line"}
   }
 }

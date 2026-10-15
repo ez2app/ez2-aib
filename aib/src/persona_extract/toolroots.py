@@ -20,6 +20,7 @@ import glob
 import os
 
 import wrappers
+from wrappers import rt
 
 TOOLS_ROOT_ENV = "EZ2_PERSONA_TOOLS_ROOT"
 DOCTOR_CMD = "aib persona doctor"
@@ -36,19 +37,32 @@ class RootSpec(object):
         self.key = key
         self.env = env
         self.flag = flag
-        self.what = what
+        # what / gotcha / sample_provenance 給的是 i18n 鍵名(aib.persona.run.<鍵>),讀的時候才照當下語系取字。
+        self._what = what
         self.markers = tuple(markers)
         self.candidate_globs = tuple(candidate_globs)
-        self.gotcha = gotcha
+        self._gotcha = gotcha
         # ★ sample 是**證據樣本不是預設值**:它只被印出來給人看,任何解析路徑都不得讀它。
         #   (差別在於:預設值會在沒人注意時被用掉;樣本要有人親手抄過去才會生效。)
         self.sample = sample
-        self.sample_provenance = sample_provenance
+        self._sample_provenance = sample_provenance
+
+    @property
+    def what(self):
+        return rt(self._what)
+
+    @property
+    def gotcha(self):
+        return rt(self._gotcha) if self._gotcha else None
+
+    @property
+    def sample_provenance(self):
+        return rt(self._sample_provenance) if self._sample_provenance else None
 
 
 TOOLS_ROOT = RootSpec(
     key="tools_root", env=TOOLS_ROOT_ENV, flag="--tools-root",
-    what="ez2-ai 的 checkout(工作樹,含 tools/ 目錄)",
+    what="root.tools_what",
     markers=(os.path.join("tools", wrappers.BIRTH_CHECK_SCRIPT),
              os.path.join("tools", wrappers.EVALS_SCRIPT),
              os.path.join("tools", wrappers.WATCHLIST_SCRIPT),
@@ -56,9 +70,9 @@ TOOLS_ROOT = RootSpec(
     candidate_globs=("~/ez2-ai", "~/worktrees/ez2ai-*", "~/Desktop/ez2-ai-*"),
     # ★ 08-18 現查:最像的那個目錄不是它。~/ez2-ai 的 core.bare=true,tools/ 裡沒有那些 .js。
     #    猜路徑的人會第一個試它、第一個失敗,然後把失敗歸給程式。
-    gotcha="~/ez2-ai 是 bare repo(core.bare=true),它的 tools/ 裡沒有這些 .js;真檔在各 worktree checkout",
+    gotcha="root.tools_gotcha",
     sample="~/Desktop/ez2-ai-converge-main",
-    sample_provenance="艦外 23:31 實測這組跑得動(rc=0);列為證據樣本,不是預設值")
+    sample_provenance="root.tools_sample_provenance")
 
 # ★ 刀 A(EG.7 第一步,the maintainer 裁):ACB_BIN 這個 root 已移除——precheck 不再需要
 #   ~/.acb/bin,`--acb-bin` / $EZ2_ACB_BIN 一併消失。移除的是**依賴**不是目錄:
@@ -132,44 +146,43 @@ def discover(spec, limit=MAX_CANDIDATES):
 
 
 def _how_to_pass(spec):
-    return "%s DIR   或   export %s=DIR" % (spec.flag, spec.env)
+    return rt("root.how_to_pass", flag=spec.flag, env=spec.env)
 
 
 def _where_to_look(spec, found=None):
-    lines = ["  去哪找:%s(會列出本機候選並附證據;只列不採用)" % DOCTOR_CMD]
+    lines = ["  " + rt("root.where_to_look", cmd=DOCTOR_CMD)]
     if spec.gotcha:
-        lines.append("  ★ 已知的坑:%s" % spec.gotcha)
+        lines.append("  " + rt("root.gotcha_line", gotcha=spec.gotcha))
     if found:
         ok = [c["path"] for c in found.get("candidates", []) if c["ok"]]
         if ok:
-            lines.append("  本機現查合格候選:%s" % "、".join(ok[:3]))
+            lines.append("  " + rt("root.found_ok", paths=rt("root.list_sep").join(ok[:3])))
     if spec.sample:
-        lines.append("  已知可跑的一組(樣本,不是預設):%s=%s —— %s"
-                     % (spec.env, spec.sample, spec.sample_provenance))
+        lines.append("  " + rt("root.sample_line", env=spec.env, sample=spec.sample,
+                                why=spec.sample_provenance))
     return lines
 
 
 def unset_message(spec, found=None):
     """未指定 root 的訊息。★ 第一句一定是「設定缺席,不是程式故障」——EG.1 掛 p0 一整晚買來的。"""
-    lines = ["tools_missing: 設定缺席(不是程式故障):未指定%s" % spec.what,
-             "  該傳什麼:%s" % _how_to_pass(spec),
-             "  怎麼認得出來:目錄下要有 %s 才算數" % spec.markers[0]]
+    lines = ["tools_missing: " + rt("root.unset_head", what=spec.what),
+             "  " + rt("root.pass_line", how=_how_to_pass(spec)),
+             "  " + rt("root.marker_line", marker=spec.markers[0])]
     lines += _where_to_look(spec, found)
-    lines.append("  為什麼不給預設:猜錯 checkout 會安靜地跑到別的版本(艦長 Q5 裁:不給預設、不猜)")
+    lines.append("  " + rt("root.why_no_default"))
     return "\n".join(lines)
 
 
 def tool_missing_message(spec, resolved, script_path, found=None):
     """root 給了、但工具檔不在的訊息(比「未指定」更常被誤讀成產品壞掉)。"""
-    src = {"flag": "來自 %s" % spec.flag, "env": "來自 $%s" % spec.env}.get(
-        resolved.get("source"), "來源不明")
+    src = {"flag": rt("root.src_flag", flag=spec.flag), "env": rt("root.src_env", env=spec.env)}.get(
+        resolved.get("source"), rt("root.src_unknown"))
     partial = inspect(spec, resolved.get("value"))["is_root"]
-    lines = ["tools_missing: 設定指到的目錄裡沒有這支工具(不是程式故障):%s" % script_path,
-             "  現用%s:%s(%s)" % (spec.what, resolved.get("value"), src),
-             "  這個目錄%s" % ("**是**對的一型(判別法 %s 在),只是缺上面那支工具——"
-                             "換一個較新/較完整的 checkout" % spec.markers[0] if partial
-                             else "連判別法 %s 都沒有,它不是這型的目錄" % spec.markers[0]),
-             "  該傳什麼:%s" % _how_to_pass(spec)]
+    lines = ["tools_missing: " + rt("root.tool_missing_head", path=script_path),
+             "  " + rt("root.current_line", what=spec.what, value=resolved.get("value"), src=src),
+             "  " + (rt("root.dir_partial", marker=spec.markers[0]) if partial
+                     else rt("root.dir_not_root", marker=spec.markers[0])),
+             "  " + rt("root.pass_line", how=_how_to_pass(spec))]
     lines += _where_to_look(spec, found)
     return "\n".join(lines)
 
@@ -204,9 +217,11 @@ def report_hints(rep):
         if entry["source"] is None:
             lines.append(unset_message(spec, found))
         elif not entry["exists"]:
-            lines.append("tools_missing: 設定指到的目錄不存在(不是程式故障):%s(%s)\n  該傳什麼:%s"
-                         % (entry["value"], "來自 $%s" % spec.env if entry["source"] == "env"
-                            else "來自 %s" % spec.flag, _how_to_pass(spec)))
+            lines.append("tools_missing: %s\n  %s"
+                         % (rt("root.dir_missing", value=entry["value"],
+                               src=rt("root.src_env", env=spec.env) if entry["source"] == "env"
+                               else rt("root.src_flag", flag=spec.flag)),
+                            rt("root.pass_line", how=_how_to_pass(spec))))
             lines += _where_to_look(spec, found)
         else:
             lines.append(tool_missing_message(

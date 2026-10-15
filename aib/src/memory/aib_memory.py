@@ -222,9 +222,13 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
     if vault is None:
         raise MemoryError_("這台量不到第二大腦(EZ2_VAULT_DIR)")
     import route_register as RR
-    rel = RR.resolve_route_folder(route_key, contract={"routes": [route]}) or route["folder"]
-    folder = Path(vault) / rel
-    file_name = (note["uid"] + ".md") if RR.vault_is_uid_layout(str(vault)) else note["file_name"]
+    uid_layout = RR.vault_is_uid_layout(str(vault))
+    rel = RR.resolve_route_folder(route_key, contract={"routes": [route]}, root=str(vault))
+    if rel is None and uid_layout:
+        # uid 版面查不到索引 ⇒ 停;退回契約字面(中文舊名)再 mkdir 會把轉換前的資料夾建回來
+        raise MemoryError_("第二大腦是 uid 版面,但索引裡找不到 %s 的資料夾;先跑轉換工具 reindex,不寫" % route_key)
+    folder = Path(vault) / (rel or route["folder"])
+    file_name = (note["uid"] + ".md") if uid_layout else note["file_name"]
     target = folder / file_name
     rec = {"uid": note["uid"], "title": " ".join(title.split()), "kind": kind, "tags": tags_out,
            "category_uid": category_uid, "route_key": route_key, "related_uids": related,
@@ -247,9 +251,9 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
 
 
 # ---------------------------------------------------------------- 讀(全部靠 uid)
-def entries() -> list[dict]:
+def entries(index: Path | None = None) -> list[dict]:
     try:
-        lines = index_path().read_text(encoding="utf-8").splitlines()
+        lines = Path(index or index_path()).read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
     out = []
@@ -263,8 +267,9 @@ def entries() -> list[dict]:
     return out
 
 
-def related_to(uid: str, kind: str = "", limit: int = 20, skip_superseded: bool = False) -> list[dict]:
-    rows = entries()
+def related_to(uid: str, kind: str = "", limit: int = 20, skip_superseded: bool = False,
+               index: Path | None = None) -> list[dict]:
+    rows = entries(index)
     gone = {r.get("supersedes") for r in rows if r.get("supersedes")} if skip_superseded else set()
     hits = [r for r in rows if r.get("uid") not in gone]   # 只有開席帶回(brief)跳過被取代的;手動 list 照列
     hits = [r for r in hits
@@ -300,6 +305,18 @@ def brief(uid: str, limit: int = 5) -> str:
     return "\n".join(out)
 
 
+def pointer_lines(uid: str, limit: int = 5, index: Path | None = None) -> list[str]:
+    """接手包用(10-15 H1):跟這個 uid 有關的最新幾則,只給 種類 · 標題 · uid · 怎麼讀(不帶內文,吃不了多少預算)。
+    交接(handoff)排最前面,其餘新→舊;已被取代的不列。讀不到索引回空。"""
+    rows = related_to(uid, limit=max(limit, 20), skip_superseded=True, index=index)
+    rows.sort(key=lambda r: (r.get("kind") != "handoff", -(r.get("created_ms") or 0)))
+    out = []
+    for r in rows[:max(1, limit)]:
+        k = display("aib.memory.kind.%s" % r.get("kind"), r.get("kind") or "")
+        out.append("%s · %s · uid %s → aib memory show --uid %s" % (k, r.get("title"), r.get("uid"), r.get("uid")))
+    return out
+
+
 def seat_brief(session_uuid: str, limit: int = 3) -> str:
     """換席用:這一席該帶回的記憶 —— 綁了專案就用專案 uid,沒綁就用這一席自己的 uid。讀不到回空字串。"""
     uuid = str(session_uuid or "")
@@ -318,6 +335,24 @@ def seat_brief(session_uuid: str, limit: int = 3) -> str:
     return brief(about, limit)
 
 
+USAGE_COMMANDS = (("write", "write"), ("list", "list"), ("show", "show"), ("brief", "brief"),
+                  ("snapshot", "snapshot"), ("archive-sweep", "archive_sweep"), ("tidy", "tidy"))
+
+
+def _help(key: str) -> str:
+    return display("aib.memory.help." + key, key)
+
+
+def memory_usage(prog: str = "aib memory") -> str:
+    """`aib memory` 不帶子指令時的友善用法(各子指令一行說明,走 i18n)。"""
+    lines = [_help("usage_title").replace("aib memory", prog, 1), "", _help("description"), "",
+             _help("usage_commands")]
+    width = max(len(c) for c, _ in USAGE_COMMANDS)
+    lines += ["  %-*s  %s" % (width, c, _help(k)) for c, k in USAGE_COMMANDS]
+    lines += ["", _help("usage_more")]
+    return "\n".join(lines)
+
+
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] in (["snapshot"], ["archive-sweep"]):   # 記憶整理第 1 包(10-13):備存與 90 天
@@ -326,31 +361,35 @@ def main(argv=None) -> int:
     if args[:1] == ["tidy"]:                             # 記憶整理第 3 包(10-13):整理記憶
         import memory_tidy
         return memory_tidy.main(args[1:])
-    ap = argparse.ArgumentParser(prog=os.environ.get("AIB_MEMORY_PROG") or "aib memory",
-                                 description="AI 工作記憶 → 第二大腦(uid 為鍵,標題只顯示)")
+    prog = os.environ.get("AIB_MEMORY_PROG") or "aib memory"
+    if not args or args[0] in ("help",):      # 10-15:不帶子指令 ⇒ 友善用法,不印 argparse 原始錯誤
+        print(memory_usage(prog), file=sys.stderr)
+        return 2
+    H = _help
+    ap = argparse.ArgumentParser(prog=prog, description=H("description"))
     sub = ap.add_subparsers(dest="cmd", required=True)
-    w = sub.add_parser("write")
-    w.add_argument("--kind", required=True, choices=KINDS)
-    w.add_argument("--title", required=True)
-    w.add_argument("--body", default="")
-    w.add_argument("--body-file", default="")
-    w.add_argument("--tags", default="")
-    w.add_argument("--about", default="")
-    w.add_argument("--seat", default="")
-    w.add_argument("--project", default="")
-    w.add_argument("--route", default="")
-    w.add_argument("--dry-run", action="store_true")
-    w.add_argument("--json", action="store_true")
-    ls = sub.add_parser("list")
-    ls.add_argument("--about", required=True)
-    ls.add_argument("--kind", default="")
-    ls.add_argument("--limit", type=int, default=20)
-    ls.add_argument("--json", action="store_true")
-    sh = sub.add_parser("show")
-    sh.add_argument("--uid", required=True)
-    br = sub.add_parser("brief")
-    br.add_argument("--about", required=True)
-    br.add_argument("--limit", type=int, default=5)
+    w = sub.add_parser("write", help=H("write"), description=H("write"))
+    w.add_argument("--kind", required=True, choices=KINDS, help=H("kind"))
+    w.add_argument("--title", required=True, help=H("title"))
+    w.add_argument("--body", default="", help=H("body"))
+    w.add_argument("--body-file", default="", help=H("body_file"))
+    w.add_argument("--tags", default="", help=H("tags"))
+    w.add_argument("--about", default="", help=H("about"))
+    w.add_argument("--seat", default="", help=H("seat"))
+    w.add_argument("--project", default="", help=H("project"))
+    w.add_argument("--route", default="", help=H("route"))
+    w.add_argument("--dry-run", action="store_true", help=H("dry_run"))
+    w.add_argument("--json", action="store_true", help=H("json"))
+    ls = sub.add_parser("list", help=H("list"), description=H("list"))
+    ls.add_argument("--about", required=True, help=H("about"))
+    ls.add_argument("--kind", default="", help=H("only_kind"))
+    ls.add_argument("--limit", type=int, default=20, help=H("limit"))
+    ls.add_argument("--json", action="store_true", help=H("json"))
+    sh = sub.add_parser("show", help=H("show"), description=H("show"))
+    sh.add_argument("--uid", required=True, help=H("uid"))
+    br = sub.add_parser("brief", help=H("brief"), description=H("brief"))
+    br.add_argument("--about", required=True, help=H("about"))
+    br.add_argument("--limit", type=int, default=5, help=H("limit"))
     a = ap.parse_args(argv)
     try:
         if a.cmd == "write":
@@ -362,7 +401,8 @@ def main(argv=None) -> int:
             if a.json:
                 print(json.dumps(rec, ensure_ascii=False, indent=1))
             else:
-                print("%s %s · %s · [[%s]] → %s" % ("(試跑)" if a.dry_run else "已寫",
+                print("%s %s · %s · [[%s]] → %s" % (display("aib.memory.cli.dry_run", "(dry run)") if a.dry_run
+                                                    else display("aib.memory.cli.written", "written"),
                                                     display("aib.memory.kind.%s" % rec["kind"], rec["kind"]),
                                                     rec["title"], rec["uid"], rec["path"]))
         elif a.cmd == "list":
@@ -376,7 +416,8 @@ def main(argv=None) -> int:
         elif a.cmd == "show":
             rec = next((r for r in entries() if r.get("uid") == a.uid), None)
             if not rec:
-                print("aib memory: 找不到 uid %s" % a.uid, file=sys.stderr)
+                print("aib memory: %s" % display("aib.memory.cli.not_found", "no note with id {uid}").replace("{uid}", a.uid),
+                      file=sys.stderr)
                 return 3
             print(note_text(rec))
         elif a.cmd == "brief":

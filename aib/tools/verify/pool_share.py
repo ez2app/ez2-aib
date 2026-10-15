@@ -159,8 +159,19 @@ def pull(trust, out_dir=None, repo=None, plaza=None):
         #   否則一列壞的就讓整次 pull 中斷、或讓整份索引降級成全部必跑。檔名只留安全字元(不能穿越目錄)
         good = []
         for row in rows:
+            if isinstance(row, dict) and "void" in row:
+                # 10-15 A3:作廢列只收「簽署那台作廢自己的列」:條件指名的 host_id 就是這筆紀錄(有簽章)的 host_id、
+                #   不是全作廢、有 UTC 時間。別台不能作廢本機或第三台的列。
+                v = ri._parse_void(row)
+                if (not v or v["cond"].get("all") is True or not v.get("before_utc")
+                        or not r.get("host_id") or v["cond"].get("host_id") != r.get("host_id")):
+                    skip("bad-void")
+                    continue
+                good.append({"void": v["cond"], "before": v["before"], "before_utc": v["before_utc"],
+                             "reason": str(v.get("reason") or "")[:200]})
+                continue
             ok = ri._parse_row(json.dumps(row, ensure_ascii=False)) if isinstance(row, dict) else None
-            if ok is None or "void" in ok:
+            if ok is None:
                 skip("bad-row")
                 continue
             good.append(ok)
@@ -174,13 +185,17 @@ def pull(trust, out_dir=None, repo=None, plaza=None):
             tmp = dst.with_name(dst.name + ".tmp")
             with open(tmp, "w", encoding="utf-8") as f:
                 for row in rows:
+                    if "void" in row:
+                        f.write(jsonl_safe.dumps(dict(row, via=who, via_record=r["id"])) + "\n")
+                        continue
                     row = {k: v for k, v in row.items() if k != "repo"}
                     # 10-03 審查第 2 條:host_id 一律用紀錄層級、有簽章的那一個(列自己寫的不算數)
                     row.update(via=who, via_record=r["id"], repo_id=local_rid, host_id=r.get("host_id") or "remote-unknown")
                     f.write(jsonl_safe.dumps(row) + "\n")
             os.replace(str(tmp), str(dst))
         summary["accepted"] += 1
-        summary["rows"] += len(rows)
+        summary["rows"] += sum(1 for x in rows if "void" not in x)
+        summary["voids"] = summary.get("voids", 0) + sum(1 for x in rows if "void" in x)
         summary["files"].append(dst.name)
     return summary
 

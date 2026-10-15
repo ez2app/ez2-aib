@@ -10,5 +10,6 @@
   "data_only": false,
   "files": {
     "SKILL.md": "c84b97b5bddb71223d67ab3c03aa7a76e4cf7916318b4f96b19b2af525a526f0"
-  }
+  },
+  "signature": "ed25519:4S0OPZoPuhtGa5G6RXVfaromRpONR7aRykGzy3JF0LyYV/v0dfWgl0ywSqEvMTxWOc0hEfeagXGrtlCZO0GxAg=="
 }

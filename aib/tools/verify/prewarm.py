@@ -207,20 +207,69 @@ def _own_rows(lines, tree, since):
     return out
 
 
+def _pool_voids(lines):
+    """池裡的作廢列(正規化後的,reuse_index._parse_void)。"""
+    out = []
+    for line in lines:
+        try:
+            v = ri._parse_void(json.loads(line))
+        except ValueError:
+            continue
+        if v:
+            out.append(v)
+    return out
+
+
+def _drop_voided(lines, voids):
+    """10-15 A3:被作廢的綠不准推出去(以前照推 ⇒ 別台拉下來照樣沿用)。"""
+    if not voids:
+        return list(lines)
+    out = []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if not any(ri._void_hits(v, r) for v in voids):
+            out.append(line)
+    return out
+
+
+def _export_voids(voids, me, since):
+    """10-15 A3:本機的作廢列也推出去,讓別台把「從本機收過去的」那些綠一起作廢。
+    只推:有 UTC 時間的(跨機器只能比 UTC)、指名本機或沒指名機器的;推出去一律縮成「只打本機的列」
+    (host_id = 本機;all 拿掉 —— all 會蓋過 host_id)。別台收的時候也只認「作廢簽署者自己的列」(pool_share.pull)。
+    since 往前 MAX_TTL_H:更早的作廢打不到任何還在期限內的列。"""
+    floor = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime((since or time.time()) - ri.MAX_TTL_H * 3600))
+    out = []
+    for v in voids:
+        c = dict(v["cond"])
+        if not v.get("before_utc") or v["before_utc"] < floor or c.get("host_id") not in (None, "", me):
+            continue
+        c.pop("all", None)
+        c["host_id"] = me
+        out.append({"void": c, "before": v["before"], "before_utc": v["before_utc"], "reason": "", "exported": True})
+    return out
+
+
 def _push_rows(me, _rows_path, tree, since=None):
-    """本機池 → 只留這棵樹這次實跑的 → row_export 清過 → pool_share 推上廣場。清不出東西就不推。"""
+    """本機池 → 只留這棵樹這次實跑的、沒被作廢的 → row_export 清過 → 連同本機的作廢列 → pool_share 推上廣場。
+    清不出東西就不推。"""
     import runner
     import row_export
     import pool_share
     pool = runner._pool_file(Path(tree))
     if not pool.is_file():
         return {"pushed_rows": 0, "why": "no-pool"}
-    rows, summary = row_export.export_lines(_own_rows(jsonl_safe.split_lines(pool.read_text(encoding="utf-8")), tree, since), str(tree),
+    lines = jsonl_safe.split_lines(pool.read_text(encoding="utf-8"))
+    voids = _pool_voids(lines)
+    rows, summary = row_export.export_lines(_drop_voided(_own_rows(lines, tree, since), voids), str(tree),
                                             os.environ.get("HOME") or str(Path.home()))
-    if not rows:
+    vrows = _export_voids(voids, ri.host_id(), since)
+    if not rows and not vrows:
         return {"pushed_rows": 0, "export": summary}
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
-        for r in rows:
+        for r in rows + vrows:
             f.write(jsonl_safe.dumps(r) + "\n")
         path = f.name
     try:

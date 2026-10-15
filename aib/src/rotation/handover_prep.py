@@ -98,7 +98,7 @@ def _mem_unresolved(key, label, path, remedy):
 
 
 def suggest(ctx_pct):
-    """生命週期**建議**(不執行):過 `stages.should_converge` 提示考慮交棒前置。
+    """生命週期**建議**(不執行):過表上「要求交接」那格(policy triggers 的 handoff_now)提示考慮交棒前置。
 
     掛進 lifecycle 與否是它擁有者的事;本函式純、無副作用、不碰 STAGES。
 
@@ -112,7 +112,8 @@ def suggest(ctx_pct):
     """
     if isinstance(ctx_pct, bool) or not isinstance(ctx_pct, int):
         return None
-    if ctx_pct >= ctx_policy.stage("should_converge"):
+    # 10-15 單表:B 的 should_converge 刪了 ⇒ 讀表上「要求交接」那一格(85,同值)。
+    if ctx_pct >= ctx_policy.trigger_pct("handoff_now"):
         return ("CTX %d%%:該考慮跑交棒前置了(handover_prep;"
                 "按下去的是人,不是這行字)" % ctx_pct)
     return None

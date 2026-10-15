@@ -254,14 +254,17 @@ aib_delegate_subcommand() {   # $1=py|exe $2=腳本絕對路徑,其餘原樣透�
   local kind="$1" path="$2"
   shift 2
   if [ ! -f "$path" ]; then
-    echo "aib: 這個指令還沒裝好(找不到 $path)" >&2
+    # 10-15:原本寫死中文「還沒裝好」;改走 i18n(依語系)
+    "$T_PY3" "$HERE/i18n_lib.py" --param "path=$path" aib.delegate.not_installed >&2 2>/dev/null \
+      || echo "aib: this command is not installed in this copy (missing $path)" >&2
     exit 2
   fi
   if [ "$kind" = "py" ]; then
     exec "$T_PY3" "$path" "$@"
   fi
   if [ ! -x "$path" ]; then
-    echo "aib: 這個指令還沒裝好($path 不是可執行檔)" >&2
+    "$T_PY3" "$HERE/i18n_lib.py" --param "path=$path" aib.delegate.not_executable >&2 2>/dev/null \
+      || echo "aib: this command is not installed correctly ($path is not executable)" >&2
     exit 2
   fi
   exec "$path" "$@"
@@ -305,6 +308,13 @@ if [ "${1:-}" = "brain" ]; then
   export PYTHONDONTWRITEBYTECODE=1
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/aib_brain.py" "$@"
 fi
+# aib plugins licensed <外掛> [--json] -> tools/verify/aib_plugins.py(10-15:不在 aib 行程裡的付費外掛,例 Obsidian 標題外掛,
+#   用它問這台有沒有授權;判準同 aib 載入外掛時的 licensed())。
+if [ "${1:-}" = "plugins" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/tools/verify/aib_plugins.py" "$@"
+fi
 # aib memory … -> src/memory/aib_memory.py(09-30 a seat,the maintainer「用 uuid 寫到 aib 對應的資料夾,用 obs 多維屬性寫,標題只顯示」):
 #   AI 工作記憶寫成第二大腦的一則筆記;認東西只用 uid,標題只顯示,標籤/分類英文、顯示走 i18n。
 if [ "${1:-}" = "memory" ]; then
@@ -326,7 +336,7 @@ if [ "${1:-}" = "summary" ]; then
   export PYTHONDONTWRITEBYTECODE=1
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/aib_summary.py" "$@"
 fi
-# aib menu-pick once|watch|log -> src/cockpit/menu_pick.py(10-13 a seat,the maintainer「把所有選項做出一個自動由AI選擇的功能,
+# aib menu-pick on|off|status|once|watch|log -> src/cockpit/menu_pick.py(10-13 a seat,the maintainer「把所有選項做出一個自動由AI選擇的功能,
 #   不需人按,未來選單變更也要自動能用」「自動判斷情境需要,危險也可以」):各席底部卡選單 ⇒ 小模型讀、依情境選、按、記帳。
 if [ "${1:-}" = "menu-pick" ]; then
   shift
@@ -486,7 +496,10 @@ fi
 if [ "${1:-}" = "project" ]; then
   shift
   export PYTHONPATH="$AIB_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-  exec "$T_PY3" -m src.fleet_identity.project_callpoint "$@"
+  # ★ 不用 `-m`:`-m` 把目前目錄放在 sys.path 最前面,專案自己有 src/ 就撞名(10-15 C7)。
+  #   改由 -c 把 sys.path[0] 換成本包根再 runpy;cwd 不動(develop 的 --cwd 照舊是使用者的目錄)。
+  exec "$T_PY3" -c 'import runpy, sys; sys.path[0] = sys.argv.pop(1); runpy.run_module("src.fleet_identity.project_callpoint", run_name="__main__", alter_sys=True)' \
+    "$AIB_SOURCE_ROOT" "$@"
 fi
 
 # aib profile check|explain(第 113 項;艦長 09-13 21:1x 定名):
@@ -598,15 +611,20 @@ aib_take_instance_flag() {
 #   兩條裁定都不動:不在艙裡(一般終端機)照舊預設開新艙;在艙裡則要說清楚 —— 本艙寫艙號或 --again,新艙寫 new。
 #   判「人在艙裡」只看 tmux 自己帶的 $TMUX(洗單上沒有它)指向 aihub / aihub-<艙>;解不出來就不擋(不猜)。
 #   右鍵開席(--again)、aib-grokbot/aib-codexbot(先補 EZ2_AIHUB_SOCKET)、aib <N>sits(帶三個艙變數)都不走這格。
-aib_refuse_silent_new_in_cabin() {
+# 10-15(the maintainer「之後只要建席位沒有特別說的情況下預設在同一個 aib 艙」):在艙裡沒說開在哪 ⇒ 開在**本艙**
+#   (原本是擋下要人補寫艙號)。不在艙裡(一般終端機)照舊開新艙;要在艙裡開新艙寫 new。回 0 = 已設 INSTANCE。
+aib_default_cabin_in_pane() {
   local sock hub cab
   sock="${TMUX:-}"
   sock="${sock%%,*}"
-  [ -n "$sock" ] || return 0
+  [ -n "$sock" ] || return 1
   hub="${sock##*/}"
-  cab="$(aib_cabin_instance_from_hub "$hub" 2>/dev/null)" || return 0
-  [ -n "$cab" ] || return 0
-  die "$(t aib.err.silent_new_in_cabin "instance=$cab")" 2
+  cab="$(aib_cabin_instance_from_hub "$hub" 2>/dev/null)" || return 1
+  [ -n "$cab" ] || return 1
+  INSTANCE="$cab"
+  ! aib_cabin_is_primary "$cab" || MAIN_EXPLICIT=1
+  printf '%s\n' "$(t aib.launch.default_cabin "instance=$cab")" >&2
+  return 0
 }
 
 aib_apply_socket_instance() {
@@ -818,7 +836,9 @@ if [ "${1:-}" = "seat" ]; then
     #   (_archive_same_uuid_exit)。以前只設 bash 變數 ⇒ 子行程永遠看到沒設 ⇒ 同窗重開的席退出欄清不掉,一直被判死。
     re-register) shift 2; export AIB_SEAT_REREGISTER=1; REREG_ARGS=("$@"); set -- ;;
     auto-rotate) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/codex_rotate_live.py" seat "$@" ;;
-    *) echo "aib seat: open|detect|onboard|socket-backfill|re-register|auto-rotate" >&2; exit 2 ;;
+    # E2(10-15):aib seat --help 要印用法、rc 0(以前印一行就 rc 2)
+    -h|--help|help) t aib.seat.help.usage; exit 0 ;;
+    *) t aib.seat.help.usage >&2; exit 2 ;;
   esac
 fi
 
@@ -1057,8 +1077,7 @@ if false; then
   :
 elif [ "${#POS[@]}" -eq 3 ] && [ "$NEW" = "0" ] && [ "$AGAIN" = "0" ] \
      && [ -z "$INSTANCE" ] && [ -z "${EZ2_AIB_INSTANCE:-}" ]; then
-  aib_refuse_silent_new_in_cabin
-  NEW=1
+  aib_default_cabin_in_pane || NEW=1
 fi
 # 10-12 新用戶全面檢查:第一個字不是任何指令也不是 AI 名稱(打錯字)⇒ 用你的語言說「沒有這個指令」+常用清單,
 #   不再倒四種語言的 44 行用法。是 AI 名稱但參數不夠 ⇒ 照舊印用法。
@@ -1170,6 +1189,11 @@ if [ "$MODE" = "dgrs" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
   printf '%s\n' "$(t aib.launch.dgrs_note "provider=$PROVIDER" "role=$ROLE")" >&2
 fi
 [[ "$ROLE" =~ $ROLE_RE ]] || die "$(t aib.err.role "role=$ROLE")"
+# the maintainer 10-15:「預設新開新從原有的角色上選,不另開新角色」⇒ 只收已定義角色(roles.py:四語字典有名稱的那些)。
+#   原地復活(re-register)不擋:舊席可能是 10-14 以前開的自訂角色,擋了就復活不了。逃生門 AIB_ALLOW_CUSTOM_ROLE=1。
+if [ "$AIB_SEAT_REREGISTER" != "1" ]; then
+  "$T_PY3" "$HERE/roles.py" check "$ROLE" || exit 2
+fi
 [ -z "$REPORTS_TO" ] || [[ "$REPORTS_TO" =~ $REPORTS_TO_RE ]] || \
   die "$(t aib.err.reports_to "seat=$REPORTS_TO")"
 [ -z "$INSTANCE" ] || [[ "$INSTANCE" =~ $INSTANCE_RE ]] || die "$(t aib.err.instance "instance=$INSTANCE")"
@@ -1225,6 +1249,38 @@ print(codex_luna_model.latest_luna_slug())' "$HERE" 2>/dev/null || true)"
 fi
 [[ "$MODEL_REQUESTED" =~ ^[~]?[0-9A-Za-z][0-9A-Za-z._:/-]*$ ]] || \
   die "aib: requested model is missing or invalid" 2
+
+# 10-14 公開版新用戶走查:這一家的命令列工具沒裝 ⇒ 開艙前就擋(以前整個艙照開、席位當場死),說怎麼裝、怎麼登入。
+#   找法跟 provider-launch.sh 同一套(type -P;codex 另認本機別名的真身 ez2-codex)。
+#   重新登記既有窗格(seat re-register)不查:那一席已經在跑。
+# 10-15 整合(#18 × #43/#48)維護者判準:**先驗參數與角色,再查 CLI** ⇒ 這段放在引擎/模式/角色/艙號/模型都驗完之後、
+#   第一個副作用(new 建艙目錄)之前;未定義角色照 #43 回 rc 2。--dry-run 不開任何席 ⇒ 不因沒裝而拒絕,
+#   照印計畫,只多一行提醒到 stderr;真跑沒裝 ⇒ rc 6、不開空窗。
+aib_cli_login() {   # 印「這一家的名字|第一次登入怎麼做」(跟 install.sh 的 AI_TABLE 同一份說法)
+  case "$1" in
+    claude) echo "Claude Code|claude" ;;
+    codex) echo "Codex|codex login" ;;
+    agy) echo "Antigravity|agy" ;;
+    copilot) echo "GitHub Copilot|copilot + /login" ;;
+    grok) echo "Grok|grok login" ;;
+  esac
+}
+if [ "$AIB_SEAT_REREGISTER" != "1" ]; then
+  case "$PROVIDER" in
+    claude|codex|agy|copilot|grok)
+      _aib_cli="$(type -P "$PROVIDER" 2>/dev/null || true)"
+      [ -n "$_aib_cli" ] || [ "$PROVIDER" != "codex" ] || _aib_cli="$(type -P ez2-codex 2>/dev/null || true)"
+      if [ -z "$_aib_cli" ]; then
+        _aib_cl="$(aib_cli_login "$PROVIDER")"
+        if [ "$DRY" = "1" ]; then
+          printf '%s\n' "$(t aib.warn.cli_missing_dry "provider=$PROVIDER" "name=${_aib_cl%%|*}" "login=${_aib_cl#*|}")" >&2
+        else
+          die "$(t aib.err.cli_missing "provider=$PROVIDER" "name=${_aib_cl%%|*}" "login=${_aib_cl#*|}")" 6
+        fi
+      fi
+      ;;
+  esac
+fi
 
 # `new` is a hard namespace boundary.  Clear every derived cockpit value that
 # could have been inherited from the pane where this command was typed.
@@ -1339,6 +1395,14 @@ aib_print_cabin_tuple() {
   # 這個終端即將被指揮艙接走時,四元組會停在畫面上像當掉。
   # dry-run / 不接入仍印(測試與腳本要能看見開了哪一艙)。
   if [ "$DRY" != "1" ] && [ "${AIB_NO_ATTACH:-0}" != "1" ] && [ -t 0 ]; then
+    return 0
+  fi
+  # C13(10-15):--dry-run + new 不會真的發艙號,以前印出假的「2」像真的艙號 ⇒ 改印「(新艙)」並說明預覽裡的號碼只是代位。
+  #   AIB_FAKE_NEW_INSTANCE 明給(測試 seam)⇒ 照印那個號。
+  if [ "$DRY" = "1" ] && [ "$NEW" = "1" ] && [ -z "${AIB_FAKE_NEW_INSTANCE:-}" ]; then
+    printf 'aib: instance=%s session=%s hub=%s state=%s\n' \
+      "$(t aib.dry_run.new_cabin)" "$EZ2_TMUX_SESSION" "$EZ2_AIHUB_SOCKET" "$EZ2_AIB_INSTANCE_HOME" >&2
+    t aib.dry_run.new_cabin_note "value=$EZ2_AIB_INSTANCE" >&2
     return 0
   fi
   printf 'aib: instance=%s session=%s hub=%s state=%s\n' \
@@ -2046,7 +2110,7 @@ aib_warn_non_entry_tree() {
 }
 
 aib_build_launch_cmd() {
-  printf -v LAUNCH_CMD '[ -t 1 ] && printf "%%s AI loading...\\n" %q; %s bash %q seat re-register "$(tmux display-message -p -t "$TMUX_PANE" "#{window_id}")" --provider %q --mode %q --role %q --cwd %q --model %q --session-uuid %q || echo "aib: seat self-register FAILED (dm will refuse stale; fix: aib seat re-register <window>)" >&2; %s bash %q %q %q %q %q %q %q; aib_provider_rc=$?; %q %q/seat_exit.py record --reason cli-exit --rc "$aib_provider_rc" --evidence "provider-launch returned" || echo "aib: seat_exit record FAILED (no exit trace; run: aib seat_exit sweep)" >&2; %q %q/activity_probe.py --window "$(tmux display-message -p -t "$TMUX_PANE" "#{window_id}")" --resume-command; exit "$aib_provider_rc"' \
+  printf -v LAUNCH_CMD '[ -t 1 ] && printf "%%s AI loading...\\n" %q; %s bash %q seat re-register "$(tmux display-message -p -t "$TMUX_PANE" "#{window_id}")" --provider %q --mode %q --role %q --cwd %q --model %q --session-uuid %q || echo "aib: seat self-register FAILED (dm will refuse stale; fix: aib seat re-register <window>)" >&2; %s bash %q %q %q %q %q %q %q; aib_provider_rc=$?; %q %q/seat_exit.py record --reason cli-exit --rc "$aib_provider_rc" --evidence "provider-launch returned" || echo "aib: seat_exit record FAILED (no exit trace; run: aib seat_exit sweep)" >&2; [ "$aib_provider_rc" = 6 ] || %q %q/activity_probe.py --window "$(tmux display-message -p -t "$TMUX_PANE" "#{window_id}")" --resume-command; exit "$aib_provider_rc"' \
     "$PROVIDER" "$AIB_SEAT_ENV" "$HERE/aib" "$PROVIDER" "$MODE" "$ROLE" "$CALLER_CWD" "$MODEL_REQUESTED" "$SEAT_SESSION_UUID" \
     "$AIB_SEAT_ENV$_aib_fork_launch_env""${_aib_api_wt_env:-}" \
     "$HERE/provider-run-relogin.sh" "$PROVIDER" "$MODE" "$ROLE" "${_aib_provider_cwd:-$CALLER_CWD}" \
@@ -2265,6 +2329,11 @@ aib_open_menu_after_right() {
   local wid="${WINDOW_ID:-}" with_onboard=1 with_fork=0 from=""
   [ "$DRY" != "1" ] && [ -n "$wid" ] || return 0
   [ "${AIB_NO_ONBOARD:-0}" != "1" ] && [ "${AIB_ONBOARD_AUTO:-0}" != "1" ] || with_onboard=0
+  # 開席單模板不在 ⇒「全部/只鐵則」必然投不出去:不列這兩項,明說一行(四語)
+  if [ "$with_onboard" = "1" ] && [ ! -f "${AIB_ONBOARD_TEMPLATE:-$HERE/../../docs/templates/SEAT-ONBOARD.md}" ]; then
+    with_onboard=0
+    "$T_PY3" "$HERE/i18n_lib.py" --param "window=$wid" aib.onboardcli.template_missing_menu >&2 2>/dev/null || true
+  fi
   [ "${_aib_fork_menu:-0}" = "1" ] && with_fork=1
   if [ "$with_onboard" = "1" ] || [ "$with_fork" = "1" ]; then
     case "${AIB_RIGHT_OK_NOTE:-}" in

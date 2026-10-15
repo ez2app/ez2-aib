@@ -319,27 +319,38 @@ def old_seats():
 
 # ───────────────────────── 畫面 ─────────────────────────
 
+def _m(_name, **params):
+    """執行時的字走四語鍵 aib.cli_versions.*(語系盤查:英文介面不准印中文);讀不到印鍵名,不讓開席停。"""
+    try:
+        import i18n_lib
+        return i18n_lib.t("aib.cli_versions." + _name, params or None, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001
+        return _name
+
+
 def version_rows(rows):
     """給 login_splash.frame 用:三列(本機、最新、最後更新),每家一格 = [(字, 256 色)…]。
     「本機/最新」淡灰、版本號亮灰、記號另佔一格(↑ 橘 = 有新版、✓ 綠 = 已最新),兩行起點對齊由 frame 負責。"""
     tag, val = 243, 252
+    w_loc, w_lat, w_upd, none_, nf = (_m("splash_local"), _m("splash_latest"), _m("splash_updated"),
+                                      _m("splash_not_installed"), _m("splash_not_found"))   # logo 下面窄,用短字
     loc, lat, upd_at = [], [], []
     by = {r["key"]: r for r in rows}
     for r in [by[k] for k in SPLASH_KEYS if k in by]:
-        if r.get("skipped"):          # 這一艙沒在用這一家:沒查,不能寫「沒裝」
-            loc.append([("本機 ", tag), ("沒開席", 241)])
-            lat.append([("最新 ", tag), ("沒查", 241)])
-            upd_at.append([("更新日 ", tag), ("—", 241)])
+        if r.get("skipped"):          # 這一艙沒在用這一家:沒查,不能寫「沒裝」(字走四語鍵,同上)
+            loc.append([(w_loc, tag), (_m("splash_no_seat"), 241)])
+            lat.append([(w_lat, tag), (_m("splash_not_checked"), 241)])
+            upd_at.append([(w_upd, tag), ("—", 241)])
             continue
-        loc.append([("本機 ", tag), (r["local"] or "沒裝", val if r["local"] else 241)])
+        loc.append([(w_loc, tag), (r["local"] or none_, val if r["local"] else 241)])
         if not r["latest"]:
-            lat.append([("最新 ", tag), ("找不到", 241)])
+            lat.append([(w_lat, tag), (nf, 241)])
         elif r["update"]:
-            lat.append([("最新 ", tag), (r["latest"], 214), (" ↑", 214)])
+            lat.append([(w_lat, tag), (r["latest"], 214), (" ↑", 214)])
         else:
-            lat.append([("最新 ", tag), (r["latest"], val), (" ✓", 71)])
+            lat.append([(w_lat, tag), (r["latest"], val), (" ✓", 71)])
         t = r.get("installed_at")
-        upd_at.append([("更新日 ", tag), (time.strftime("%m-%d", time.localtime(t)) if t else "找不到", val if t else 241)])
+        upd_at.append([(w_upd, tag), (time.strftime("%m-%d", time.localtime(t)) if t else nf, val if t else 241)])
     return [loc, lat, upd_at]
 
 
@@ -361,7 +372,7 @@ def update_lock(out=sys.stderr, wait_s=900, path=None):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             got = True
         except OSError:
-            out.write("⏳ 別的視窗正在更新 AI 程式,等它做完再繼續(最多 %d 分鐘)…\n" % (wait_s // 60))
+            out.write(_m("lock_wait", minutes=wait_s // 60) + "\n")
             out.flush()
             end = time.monotonic() + wait_s
             while time.monotonic() < end and not got:
@@ -413,32 +424,32 @@ def do_update(key, old, latest, *, out=sys.stderr, run=None, version_fn=None, ca
     version_fn = version_fn or local_version
     with (lock or update_lock(out)) as got:
         if not got:
-            out.write("⚠ 等不到更新鎖,%s 這次不更新,照舊進 aib\n" % key)
+            out.write(_m("update_lock_timeout", key=key) + "\n")
             return "locked"
         cur = version_fn(tool)
         if cur and not newer(latest, cur):
-            out.write("✅ %s 已經是 %s(別的視窗剛更新好)\n" % (key, cur))
+            out.write(_m("update_already", key=key, version=cur) + "\n")
             return "already"
-        out.write("\n▶ 更新 %s %s → %s:%s\n" % (key, cur or old, latest, " ".join(tool["update"])))
+        out.write("\n" + _m("update_start", key=key, old=cur or old, new=latest, cmd=" ".join(tool["update"])) + "\n")
         out.flush()
         rc = run(tool["update"])
         new_v = version_fn(tool)
         if new_v is None and (cur or old) and tool.get("pin"):
             back = cur or old
-            out.write("🔴 %s 更新後連 --version 都跑不起來,自動裝回 %s:%s\n" % (key, back, " ".join(_pin_cmd(tool, back))))
+            out.write(_m("update_broken", key=key, back=back, cmd=" ".join(_pin_cmd(tool, back))) + "\n")
             out.flush()
             rc2 = run(_pin_cmd(tool, back))
             again = version_fn(tool)
             hold(key, latest, cache=cache)
-            out.write(("✅ 已裝回 %s(%s 這一版之後不再催)\n" % (again, latest)) if again == back else
-                      ("🔴 裝回也失敗(rc=%s,本機現在是 %s)。手動:%s\n" % (rc2, again, " ".join(_pin_cmd(tool, back)))))
+            out.write((_m("update_restored", version=again, latest=latest) if again == back else
+                       _m("update_restore_failed", rc=rc2, version=again, cmd=" ".join(_pin_cmd(tool, back)))) + "\n")
             return "rolled_back"
         if rc == 0 and new_v == latest:
             if cur or old:
                 remember_prev(key, cur or old, cache=cache)
-            out.write("✅ %s 已更新到 %s(要退回:aib cli rollback %s)\n" % (key, new_v, key))
+            out.write(_m("update_done", key=key, version=new_v) + "\n")
             return "updated"
-        out.write("⚠ %s 更新後本機是 %s(rc=%s),先照舊進 aib;同一版 1 小時內不再問\n" % (key, new_v, rc))
+        out.write(_m("update_mismatch", key=key, version=new_v, rc=rc) + "\n")
         quiet(key, latest, cache=cache)
         return "failed"
 
@@ -451,17 +462,17 @@ def update_self_checking(key, *, out=sys.stdout, run=None, version_fn=None, lock
     version_fn = version_fn or local_version
     with (lock or update_lock(out)) as got:
         if not got:
-            out.write("等不到更新鎖,%s 這次不更新\n" % key)
+            out.write(_m("self_lock_timeout", key=key) + "\n")
             return 1
         before = version_fn(tool)
-        out.write("▶ %s(現在 %s):%s\n" % (key, before, " ".join(tool["update"])))
+        out.write(_m("self_start", key=key, version=before, cmd=" ".join(tool["update"])) + "\n")
         out.flush()
         rc = run(tool["update"])
         after = version_fn(tool)
     if rc != 0 or after is None:
-        out.write("🔴 %s 更新 rc=%s,現在版本 %s\n" % (key, rc, after))
+        out.write(_m("self_failed", key=key, rc=rc, version=after) + "\n")
         return 1
-    out.write(("✅ %s 已更新 %s → %s\n" % (key, before, after)) if after != before else ("✅ %s 已是最新(%s)\n" % (key, after)))
+    out.write((_m("self_updated", key=key, old=before, new=after) if after != before else _m("self_already", key=key, version=after)) + "\n")
     return 0
 
 
@@ -469,30 +480,30 @@ def rollback(key, to=None, *, out=sys.stdout, run=None, version_fn=None, cache=N
     """aib cli rollback <家> [--to 版本]:裝回上一次更新前的版本(或指定版本),並把現在那一版標成不再催。"""
     tool = _tool(key)
     if not tool.get("pin"):
-        out.write("%s 沒有辦法指定版本安裝,退不回去。\n" % key)
+        out.write(_m("rollback_no_pin", key=key) + "\n")
         return 2
     cache = cache_path() if cache is None else cache
     to = to or (_load(cache).get(key) or {}).get("prev")
     if not to:
-        out.write("沒有 %s 更新前的版本紀錄(這台還沒用 aib 更新過它)。指定版本:aib cli rollback %s --to <版本>\n" % (key, key))
+        out.write(_m("rollback_no_record", key=key) + "\n")
         return 2
     run = run or (lambda cmd: subprocess.run(cmd, stdin=subprocess.DEVNULL).returncode)
     version_fn = version_fn or local_version
     with (lock or update_lock(out)) as got:
         if not got:
-            out.write("等不到更新鎖(別的視窗正在更新),稍後再試。\n")
+            out.write(_m("rollback_lock") + "\n")
             return 1
         cur = version_fn(tool)
-        out.write("▶ %s %s → %s:%s\n" % (key, cur, to, " ".join(_pin_cmd(tool, to))))
+        out.write(_m("rollback_start", key=key, cur=cur, to=to, cmd=" ".join(_pin_cmd(tool, to))) + "\n")
         out.flush()
         rc = run(_pin_cmd(tool, to))
         now_v = version_fn(tool)
     if now_v == to:
         if cur and cur != to:
             hold(key, cur, cache=cache)
-        out.write("✅ %s 退回 %s。%s 這一版之後開席不再催;更新的版本出來才會再問。\n" % (key, to, cur))
+        out.write(_m("rollback_done", key=key, to=to, cur=cur) + "\n")
         return 0
-    out.write("🔴 %s 退版後本機是 %s(rc=%s),不是 %s\n" % (key, now_v, rc, to))
+    out.write(_m("rollback_mismatch", key=key, version=now_v, rc=rc, to=to) + "\n")
     return 1
 
 
@@ -508,11 +519,10 @@ def gate(rows, *, seconds=30, out=sys.stderr, getkey=None, run=None, sleep=time.
     if not todo:
         return "none"
     import login_splash as L
-    names = "、".join(r["key"] for r in todo)
+    names = _m("list_sep").join(r["key"] for r in todo)
     busy = old_seats()
-    note = ["%s 有 %d 席正在跑舊版(不會被打斷,下次開席才用新版)" % (r["key"], busy[r["key"]])
-            for r in todo if busy.get(r["key"])]
-    note += ["aib 本機 %s → 最新 %s(這一席已經開好,下次開席才用新版)" % (r["local"], r["latest"]) for r in todo if r["key"] == "aib"]
+    note = [_m("gate_busy", key=r["key"], n=busy[r["key"]]) for r in todo if busy.get(r["key"])]
+    note += [_m("gate_aib", local=r["local"], latest=r["latest"]) for r in todo if r["key"] == "aib"]
 
     def paint(tail):
         L.paint(L.frame(L.N, False, version_rows(rows))[:-1] + [L.status_line(tail, 214)]
@@ -530,7 +540,7 @@ def gate(rows, *, seconds=30, out=sys.stderr, getkey=None, run=None, sleep=time.
     choice = "update"
     try:
         for left in range(seconds, 0, -1):
-            paint("有新版:%s。%2d 秒後自動更新(按 s 跳過、按 Enter 馬上更新)" % (names, left))
+            paint(_m("gate_countdown", names=names, left="%2d" % left))
             t_end = time.monotonic() + 1
             k = None
             while time.monotonic() < t_end:
@@ -550,7 +560,7 @@ def gate(rows, *, seconds=30, out=sys.stderr, getkey=None, run=None, sleep=time.
     if choice == "skip":
         for r in todo:
             quiet(r["key"], r["latest"], cache=cache)
-        out.write("已跳過更新(同一版 1 小時內不再問)。\n")
+        out.write(_m("gate_skipped") + "\n")
         return "skipped"
     for r in todo:
         do_update(r["key"], r["local"], r["latest"], out=out, run=run, version_fn=version_fn, cache=cache, lock=lock)
@@ -558,41 +568,67 @@ def gate(rows, *, seconds=30, out=sys.stderr, getkey=None, run=None, sleep=time.
     return "updated"
 
 
+def _width(text):
+    """終端顯示寬度(中文 / 日文 / 韓文兩格)。"""
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
 def _pad(text, width):
     """照終端顯示寬度補空白(中文兩格),表格才不會被「找不到」推歪。"""
-    import unicodedata
-    w = sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
-    return text + " " * max(0, width - w)
+    return text + " " * max(0, width - _width(text))
+
+
+#: 各欄最小寬度(中文版原本的手排寬度);某語言的字比較長時,那一欄跟著加寬,整欄仍對齊。
+STATUS_WIDTHS = (8, 10, 12, 17)
 
 
 def status(out=sys.stdout):
     rows = check()
     memo = _load(cache_path())
-    out.write("AI       本機       最新         最後更新\n")          # 中文兩格寬,表頭手排對齊
+    none_, nf = _m("not_installed"), _m("not_found")
+    head = [_m("col_ai"), _m("col_local"), _m("col_latest"), _m("col_updated")]
+    table = []
     for r in rows:
-        mark = "↑ 有新版" if r["update"] else ("✓" if r["latest"] else
-                                               ("找不到最新版(aib cli update agy 會自己查、有新版才裝)" if r["key"] == "agy"
-                                                else "找不到最新版"))
-        prev = (memo.get(r["key"]) or {}).get("prev")
         t = r.get("installed_at")
-        out.write("%s %s %s %s %s%s\n" % (
-            _pad(r["key"], 8), _pad(r["local"] or "沒裝", 10), _pad(r["latest"] or "找不到", 12),
-            _pad(time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "找不到", 17), mark,
-            ("   上一版 %s(aib cli rollback %s)" % (prev, r["key"])) if prev else ""))
+        table.append([r["key"], r["local"] or none_, r["latest"] or nf,
+                      time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else nf])
+    widths = [max([base, _width(head[i])] + [_width(cells[i]) for cells in table])
+              for i, base in enumerate(STATUS_WIDTHS)]
+    out.write(" ".join([_pad(head[i], widths[i]) for i in range(3)] + [head[3]]) + "\n")
+    for r, cells in zip(rows, table):
+        mark = _m("mark_update") if r["update"] else ("✓" if r["latest"] else
+                                                     (_m("mark_no_latest_agy") if r["key"] == "agy" else _m("mark_no_latest")))
+        prev = (memo.get(r["key"]) or {}).get("prev")
+        out.write("%s %s%s\n" % (
+            " ".join(_pad(cells[i], widths[i]) for i in range(4)), mark,
+            ("   " + _m("prev", prev=prev, key=r["key"])) if prev else ""))
     if any(r["can_update"] for r in rows):
-        out.write("\n更新:aib cli update(或下次親手開席時倒數 30 秒自動更新)\n")
+        out.write("\n" + _m("update_hint") + "\n")
     return 0
 
 
+def _help(key):
+    """argparse 說明走四語鍵 aib.cli_versions.help.*(語系盤查:英文介面不准整段中文);讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.dirname(os.path.abspath(__file__))
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        return i18n_lib.t("aib.cli_versions.help." + key, locale=i18n_lib.resolve_locale()).replace("%", "%%")
+    except Exception:  # noqa: BLE001 —— 說明印不出來不能讓指令停
+        return key
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="aib cli", description="五家 AI CLI 與 aib 自己的本機/最新版本、更新、退版")
+    ap = argparse.ArgumentParser(prog="aib cli", description=_help("description"))
     sub = ap.add_subparsers(dest="cmd")
-    sub.add_parser("status", help="(預設)看五家本機/最新版本")
-    u = sub.add_parser("update", help="現在就更新(不倒數);不寫家名 = 有新版的全部")
-    u.add_argument("keys", nargs="*")
-    rb = sub.add_parser("rollback", help="退回上一次更新前的版本")
-    rb.add_argument("key", choices=[t["key"] for t in TOOLS if t.get("pin")])
-    rb.add_argument("--to", help="指定版本")
+    sub.add_parser("status", help=_help("status"), description=_help("status"))
+    u = sub.add_parser("update", help=_help("update"), description=_help("update"))
+    u.add_argument("keys", nargs="*", help=_help("keys"))
+    rb = sub.add_parser("rollback", help=_help("rollback"), description=_help("rollback"))
+    rb.add_argument("key", choices=[t["key"] for t in TOOLS if t.get("pin")], help=_help("key"))
+    rb.add_argument("--to", help=_help("to"))
     c = sub.add_parser("check")
     c.add_argument("--out")
     c.add_argument("--refresh", action="store_true")
@@ -613,7 +649,7 @@ def main(argv=None):
         if not args.keys or "agy" in args.keys:
             bad += update_self_checking("agy", out=sys.stdout) != 0
         elif not todo:
-            print("沒有要更新的(都已是最新,或找不到最新版)。")
+            print(_m("nothing_to_update"))
         return 1 if bad else 0
     if args.cmd == "rollback":
         return rollback(args.key, args.to)

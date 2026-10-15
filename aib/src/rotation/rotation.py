@@ -95,7 +95,9 @@ SENTENCES_REQUIRED = 3                # 決策 8:接棒三句理解驗收
 # EH.28:門檻改讀 policy/ctx-thresholds.json 單一資料源(艦長 09:07/09:16 裁)。
 # ★ 這裡**不留預設值**:policy 缺鍵時 ctx_policy 會 raise,而那正是要的 ——
 #   給預設值等於把「資料檔壞了」翻譯成「一切正常」。
-DEFAULT_ROTATE_THRESHOLD = ctx_policy.stage("must_handoff")   # HANDOFF「輪替協定」:CTX 90% 才交接
+# 10-15 維護者「只保留 A 一張表」(policy/ctx-thresholds.json 只剩各席的 7 格):B 的 must_handoff(90)刪了;
+#   20:4x 裁:輪替預設門檻與交接地板改讀表上「要求交接」那一格(85),防繞過地板照留。
+DEFAULT_ROTATE_THRESHOLD = ctx_policy.trigger_pct("handoff_now")
 EXPECTED_SLOTS = ["done", "not_done_traps", "next_step"]  # 決策 8 三 slot 名釘死
 # E6.3 高5(codex 08-14 審,08-15 關):accept 原本只印 stdout,驗收紀錄零持久化
 # ——事件裡宣稱可用「驗收指紋」稽核 preimage,而 preimage 從來沒落過盤,
@@ -114,7 +116,8 @@ _LEDGER_NAMES = (CHECKPOINTS_NAME, ACCEPTANCES_NAME, SCOUT_NAME,
                  DELEGATION_NAME, PATROL_NAME, TESTAMENT_RECEIPTS_NAME)
 # 顧問期改 CTX 制(PLAN §2.3):machine ctx ≥ 此值才解除;24h 保留為後備天花板
 # (到了只標 needs_human,不自動解除)。兩者都是常數,不吃 CLI 參數(防偽造精神)。
-ADVISOR_STOP_CTX = ctx_policy.stage("advisor_stop")
+# 10-15 單表:B 的 advisor_stop(96)刪了 ⇒ 顧問期不再因 CTX 自動解除(只剩 manual 與 24h 天花板 needs_human)。
+ADVISOR_STOP_CTX = None
 # 巡查節奏(PLAN §4-Q1 預設):上次巡查以來 ctx +10% 或 6h,取先到者;從未巡=逾期。
 PATROL_EVERY_PCT = 10
 PATROL_EVERY_MS = 6 * 3600 * 1000
@@ -1448,7 +1451,8 @@ def advisor_status(handoff, now_ms, machine_ctx=None, manual_release=False):
         if isinstance(pct, int) and not isinstance(pct, bool):
             machine_pct = pct
     released_by = None
-    if machine_pct is not None and machine_pct >= ADVISOR_STOP_CTX:
+    if machine_pct is not None and ADVISOR_STOP_CTX is not None \
+            and machine_pct >= ADVISOR_STOP_CTX:
         released_by = "ctx96"
     elif manual_release:
         released_by = "manual"
@@ -1771,7 +1775,7 @@ def main(argv=None):
     parser.add_argument("--task", help="任務節點 id(如 E6.3)")
     parser.add_argument("--ctx-pct", type=int, help="目前 CTX 百分比")
     parser.add_argument("--threshold", type=int, default=DEFAULT_ROTATE_THRESHOLD,
-                        help="check 用:交接門檻(預設 90,HANDOFF 協定)")
+                        help="check / handoff 用:輪替門檻(預設讀 policy 表上要求交接那格;handoff 只准更嚴)")
     parser.add_argument("--next-step", help="checkpoint 用:下一步(必填)")
     parser.add_argument("--trap", action="append", default=[],
                         help="陷阱節條目(可重複;checkpoint 至少一條)")
@@ -1923,8 +1927,7 @@ def main(argv=None):
             # 交棒。門檻同 check 共用 --threshold,預設 90 的出處=docs/HANDOFF.md
             # §6 輪替協定(the maintainer 08-08 修訂:CTX 到 90% 才交接)。
             if checkpoint["ctx_pct"] < args.threshold:
-                die("ctx %d%% 未達交接門檻 %d%%(HANDOFF「輪替協定」:CTX 到 90%% 才交接;"
-                    "門檻可 --threshold 調整但要自負舉證)"
+                die("ctx %d%% 未達交接門檻 %d%%(預設 = policy 表上要求交接那格;--threshold 只准更嚴)"
                     % (checkpoint["ctx_pct"], args.threshold))
             handoff = build_handoff(checkpoint, now_ms, extra_traps=args.trap)
         except RotationError as err:

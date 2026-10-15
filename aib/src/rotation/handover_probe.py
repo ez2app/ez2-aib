@@ -98,10 +98,12 @@ from rotation import (RotationError, acceptance_states,  # noqa: E402
 import lifecycle  # noqa: E402
 
 # ---- G1-09 艦長生命週期偵測(PLAN §2.6):門檻與 lifecycle.STAGES 同源 ----
+# 10-15 維護者「只保留 A 一張表」:B 的找接班(50)/ 完整總結共治(75)/ 顧問停止(96)三格刪了,
+#   表上沒有對應的格 ⇒ 這三道偵測不再自動判(值 None = 不判),不改寫成新門檻。
 _STAGE_FLOOR = {name: floor for floor, name in lifecycle.STAGES}
-SCOUT_FLOOR = _STAGE_FLOOR["scout_successor"]      # 50
-FULL_SUMMARY_FLOOR = _STAGE_FLOOR["co_rule"]        # 75
-ADVISOR_STOP_FLOOR = _STAGE_FLOOR["advisor_stop"]   # 96 (== ADVISOR_STOP_CTX)
+SCOUT_FLOOR = None
+FULL_SUMMARY_FLOOR = None
+ADVISOR_STOP_FLOOR = ADVISOR_STOP_CTX
 # finding code → 等級:red 計 rc=2、warn 計 rc=3、info 不計
 LIFECYCLE_CODES = {
     "manual_only": "info",              # (e) 無機器 ctx:不進自動輪替,不判死
@@ -413,16 +415,17 @@ def lifecycle_findings(claim, seat, rotation_root, fleet, mapping,
         add("manual_only", "無機器 CTX(uuid=%r,reason=%s)—— 只能手動輪替"
             % (claim.get("session_uuid"), (ctx or {}).get("stale_reason")))
         return out
-    if pct >= SCOUT_FLOOR and not scouts:
+    if SCOUT_FLOOR is not None and pct >= SCOUT_FLOOR and not scouts:
         add("no_scout_at_50", "ctx %d%% ≥ %d 而無 scout.jsonl 紀錄(未立儲)"
             % (pct, SCOUT_FLOOR))
-    if pct >= FULL_SUMMARY_FLOOR and not full:
+    if FULL_SUMMARY_FLOOR is not None and pct >= FULL_SUMMARY_FLOOR and not full:
         add("no_full_summary_at_75", "ctx %d%% ≥ %d 而無 kind=full_summary checkpoint"
             % (pct, FULL_SUMMARY_FLOOR))
     if patrol_overdue(patrols, now_ms, pct):
         add("patrol_overdue", "巡查逾期(上次 %s;規則:+10%% ctx 或 6h 先到者)"
             % (patrols[-1]["at_ms"] if patrols else "從未"))
-    if claim.get("advisor") and pct >= ADVISOR_STOP_FLOOR and not tstat["compact_ready"]:
+    if claim.get("advisor") and ADVISOR_STOP_FLOOR is not None and pct >= ADVISOR_STOP_FLOOR \
+            and not tstat["compact_ready"]:
         add("advisor_96_no_receipt",
             "顧問 ctx %d%% ≥ %d 而遺詔未投遞(testament=%s receipt=%s)—— 不得 compact"
             % (pct, ADVISOR_STOP_FLOOR, tstat["testament"], tstat["receipt"]))

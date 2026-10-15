@@ -416,7 +416,7 @@ def main(argv=None):
     ap.add_argument("--seats-dir", help="席位檔目錄(預設 $EZ2_AIB_INSTANCE_HOME/seats)")
     ap.add_argument("--state-root", help="身份層狀態根(預設 EZ2_AIB_HOME > ~/.ez2-aib)")
     ap.add_argument("--cards")
-    ap.add_argument("--contract", help="預設 EZ2_ROUTE_CONTRACT_SPEC > EZ2_ROUTE_REGISTRY")
+    ap.add_argument("--contract", help="預設 route_register.default_contract_spec(SPEC > ez2-ai main > REGISTRY)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--directed-first-captain", action="store_true",
                     help="冠位席:指名綁 71c97a,不走唯一命中")
@@ -425,7 +425,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     state_root = bind_one.state_root_of(args.state_root)
     seats_dir = seats_dir_for(args.seats_dir, state_root)
-    contract = args.contract or os.environ.get("EZ2_ROUTE_CONTRACT_SPEC") or os.environ.get("EZ2_ROUTE_REGISTRY")
+    contract = args.contract or bind_one.default_contract_spec()   # 10-15:唯一來源(含兩個 env 內容不同時的判斷)
     rc, out = rebind(state_root, seats_dir, args.window, cards_path=args.cards,
                      contract_spec=contract, dry_run=args.dry_run,
                      directed_first_captain=args.directed_first_captain,

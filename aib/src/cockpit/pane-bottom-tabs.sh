@@ -121,7 +121,7 @@ except Exception:
 # ★ 收件匣改印 '—' 不印 0:AIB 沒有持久收件匣(EH.10),我們**量不到**這個數。
 #   0 讀起來是「沒有未讀」,'—' 讀起來是「這裡沒有這個量」——差別在於前者
 #   是一個會被相信的宣稱。這正是今天反覆出現的那一族:失效值與安全值同形。
-print(f' 等你的事: 候拍板 {drafts} | 收件匣 — | 人格候審 {staged}')
+print(' ' + tr.t('aib.bottom_tabs.waiting', {'drafts': drafts, 'staged': staged}))
 # ── 降溫通知(the maintainer 2026-09-04 令:過熱時自動找解法,並在最下一行說正在解決)──
 # ★ 只讀 cooldown.py 落的檔,不在這裡判斷也不取值:判斷只有一份,在 cooldown.py。
 # ★ 檔不存在 = 這個機制沒在跑,要**說出來**,不能靜默留白 ——
@@ -133,13 +133,13 @@ try:
 except Exception:
     _cd = None
 if _cd is None:
-    print(' 降溫: 量不到(通知檔不在)')
+    print(' ' + tr.t('aib.bottom_tabs.cooldown', {'status': tr.t('aib.bottom_tabs.no_notice')}))
 elif (_cd.get('load_level') not in ('ok', 'warn', 'hot', 'critical') or
       _cd.get('thermal_level') not in ('ok', 'warn', 'hot', 'critical', 'unknown') or
       not notice_is_fresh(_cd, DEFAULT_TTL_S)):
     # Old notices only carried a combined level.  It can be high because of
     # load, so it cannot truthfully be rendered as a temperature verdict.
-    print(' 降溫: ' + tr.t('aib.machine.pending_update'))
+    print(' ' + tr.t('aib.bottom_tabs.cooldown', {'status': tr.t('aib.machine.pending_update')}))
 else:
     _thermal = _cd['thermal_level']
     _thermal_key = {'ok': 'normal', 'warn': 'warn', 'hot': 'hot',
@@ -147,7 +147,7 @@ else:
     _status = tr.t('aib.machine.thermal.' + _thermal_key)
     if _cd['load_level'] in ('hot', 'critical'):
         _status += ' · ' + tr.t('aib.machine.load.high')
-    print(f" 降溫: {_status}")
+    print(' ' + tr.t('aib.bottom_tabs.cooldown', {'status': _status}))
     for _did in (_cd.get('did') or []):
         print(f"   {tr.t('aib.machine.action.done')}: {_did}")
     for _n in (_cd.get('need') or []):
@@ -167,7 +167,7 @@ print()
 #   兩者的處置相反:empty 要等,retired 永遠不會自己好。
 #   ★ retired 是**宣告不是偵測**:ACB 廢止是我們自己的決定,寫死在這裡,
 #     不靠「找不到目錄」去推——那會把「使用者磁碟壞了」也講成「已廢止」。
-print(' 最近事件(fleet-sync):')
+print(' ' + tr.t('aib.bottom_tabs.events_head'))
 print('  ' + tr.t('aib.source.retired'))
 print('  ' + tr.t('aib.source.which', {'name': 'ACB fleet-sync'}))
 print('  ' + tr.t('aib.source.pending', {'name': 'E1.2'}))
@@ -201,10 +201,10 @@ for p in []:
     msgs.append(fm)
 human = [m for m in msgs if '[人類]' in m.get('subject', '')]
 if human:
-    print(' 真人往來(最近):')
+    print(' ' + tr.t('aib.bottom_tabs.human_head'))
     for m in human[:6]:
         ts = m.get('timestamp', '')[5:16].replace('T', ' ')
-        st = '未讀' if m.get('status') == 'unread' else '  '
+        st = tr.t('aib.bottom_tabs.unread') if m.get('status') == 'unread' else '  '
         print(f"  {ts} {m.get('from','?'):<6.6}{st} {m.get('subject','')[:70]}")
 else:
     print(' ' + tr.t('aib.source.retired'))
@@ -214,15 +214,19 @@ else:
     #   標題就變成一個宣稱有內容的空殼 —— 與上面那句「近 60 則」同一個病,
     #   只是更小。標題跟著內容一起走,不留孤兒。
 print()
-print(' 註:出站訊息不落本機收件匣,雙向完整紀錄候事件帳本(E1.4 解此限制)')
+print(' ' + tr.t('aib.bottom_tabs.outbound_note'))
 PY
   elif [ "$t" = "1" ]; then
     tab_bar 1
     bash "$EZ2_COCKPIT_DIR/outline-progress.sh"
     "$EZ2_PY3" - <<'PY'
-import glob, json, os
+import glob, json, os, sys
 from cockpit_lib import parse_outline_file
+sys.path.insert(0, os.environ["EZ2_COCKPIT_DIR"])
+from i18n_lib import Translator  # noqa: E402
 
+tr = Translator()
+draft_mark = tr.t('aib.bottom_tabs.draft_mark')
 items = []
 try:
     items = parse_outline_file(os.environ['EZ2_OUTLINE'])
@@ -250,7 +254,7 @@ for it in items:
     kids = [k for k in leaf_ids if k == oid or k.startswith(oid + '.')]
     done = sum(1 for k in kids if k in done_nodes)
     if ap == 'draft':
-        out.append(f'{oid}[草]')
+        out.append(f'{oid}{draft_mark}')
     elif kids:
         out.append(f'{oid} {done}/{len(kids)}')
 row = ' | '.join(out)
@@ -285,8 +289,8 @@ PY
     if [ -f "$PERF_CACHE" ]; then
       head -$VIS "$PERF_CACHE" | cut -c1-$((PW > 2 ? PW - 1 : 80))
     else
-      printf ' (盤點快取尚未生成)
-'
+      # 只在快取不在的那一幀查一次字(其餘字都在上面那幾支 python 裡、各建一個 Translator 一次載完)
+      printf ' %s\n' "$("$EZ2_PY3" "$EZ2_COCKPIT_DIR/i18n_lib.py" aib.bottom_tabs.perf_no_cache 2>/dev/null || printf '%s' aib.bottom_tabs.perf_no_cache)"
     fi
   fi
 }

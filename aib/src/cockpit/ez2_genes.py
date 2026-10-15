@@ -208,34 +208,63 @@ def _pct(x):
     return "?" if x is None else ("%+.1f%%" % x)
 
 
+def _say(key, fallback, **params):
+    """Words from aib/i18n (aib.genes.*) in the user's language; the Traditional Chinese fallback (escaped, this
+    file stays ASCII) is used only when the dictionary cannot be read, so a seat banner never breaks."""
+    try:
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import i18n_lib
+        return i18n_lib.t("aib.genes." + key, params, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001 - the banner line must never stop a seat
+        return fallback.format(**params)
+
+
 def suggestion(environ=None) -> str:
-    """One line for the seat's start-up banner (plain language, Traditional Chinese; escaped to keep this file ASCII)."""
+    """One line for the seat's start-up banner (plain language, in the user's language via aib.genes.*)."""
     environ = os.environ if environ is None else environ
     on = selected(environ)
     if on:
         # "genes: on (1,2,...)"
-        return "\u57fa\u56e0:\u958b(%s)" % ",".join(str(n) for n in on)
+        return _say("status_on", "\u57fa\u56e0:\u958b({genes})", genes=",".join(str(n) for n in on))
     p = prediction(environ)
     if p is None:
         # "genes: off (default). How much turning them on helps is not measured yet: the same model needs
         #  at least N tasks with and without genes (bench.py run --genes). Turn on: AIB_GENES=1"
-        return ("\u57fa\u56e0:\u95dc(\u9810\u8a2d)\u3002\u958b\u555f\u5f8c\u6703\u63d0\u5347\u591a\u5c11\u9084\u6c92"
-                "\u91cf\u5230:\u9700\u8981\u540c\u4e00\u500b\u6a21\u578b\u6709/\u6c92\u6709\u57fa\u56e0\u5404\u8003 %d "
-                "\u984c\u4ee5\u4e0a(bench.py run --genes)\u3002\u958b\u6cd5:AIB_GENES=1" % MIN_PAIRS)
+        return _say("status_off_unmeasured",
+                    "\u57fa\u56e0:\u95dc(\u9810\u8a2d)\u3002\u958b\u555f\u5f8c\u6703\u63d0\u5347\u591a\u5c11\u9084\u6c92"
+                    "\u91cf\u5230:\u9700\u8981\u540c\u4e00\u500b\u6a21\u578b\u6709/\u6c92\u6709\u57fa\u56e0\u5404\u8003 {n} "
+                    "\u984c\u4ee5\u4e0a(bench.py run --genes)\u3002\u958b\u6cd5:AIB_GENES=1", n=MIN_PAIRS)
     # "genes: off (default). Suggest turning on: expected fixed rate +x%, checks passed +y%
     #  (based on: <model>, the same N tasks with/without genes, last <date>). Turn on: AIB_GENES=1"
-    return ("\u57fa\u56e0:\u95dc(\u9810\u8a2d)\u3002\u5efa\u8b70\u958b\u555f:\u9810\u4f30\u4fee\u597d\u7387 %s\u3001"
-            "\u6aa2\u67e5\u901a\u904e %s(\u4f9d\u64da:%s \u540c\u4e00\u6279 %d \u984c\u6709/\u6c92\u6709\u57fa\u56e0"
-            "\u7684\u5be6\u6e2c,\u6700\u5f8c\u4e00\u6b21 %s)\u3002\u958b\u6cd5:AIB_GENES=1"
-            % (_pct(p["fixed_gain_pct"]), _pct(p["quality_gain_pct"]), p["model"], p["pairs"], p["last"]))
+    return _say("status_off_measured",
+                "\u57fa\u56e0:\u95dc(\u9810\u8a2d)\u3002\u5efa\u8b70\u958b\u555f:\u9810\u4f30\u4fee\u597d\u7387 {fixed}\u3001"
+                "\u6aa2\u67e5\u901a\u904e {quality}(\u4f9d\u64da:{model} \u540c\u4e00\u6279 {pairs} \u984c\u6709/\u6c92\u6709\u57fa\u56e0"
+                "\u7684\u5be6\u6e2c,\u6700\u5f8c\u4e00\u6b21 {last})\u3002\u958b\u6cd5:AIB_GENES=1",
+                fixed=_pct(p["fixed_gain_pct"]), quality=_pct(p["quality_gain_pct"]), model=p["model"],
+                pairs=p["pairs"], last=p["last"])
 
 
 USAGE = "usage: aib genes status | on [1,2,6] | off"
 
 
+def _help_text():
+    """`aib genes --help` (E2 10-15: used to fall through to the usage line with rc 2); words come from aib/i18n."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import i18n_lib
+    loc = i18n_lib.resolve_locale()
+    return "\n".join(i18n_lib.t(k, locale=loc) for k in (
+        "aib.genes.help.usage", "aib.genes.help.what", "aib.genes.help.status", "aib.genes.help.on",
+        "aib.genes.help.off", "aib.genes.help.locked"))
+
+
 def main(argv=None, environ=None):
     argv = sys.argv[1:] if argv is None else argv
     environ = os.environ if environ is None else environ
+    if argv[:1] in (["-h"], ["--help"], ["help"]):
+        print(_help_text())
+        return 0
     if argv[:1] == ["status"]:
         print(suggestion(environ))
         p = prediction(environ)

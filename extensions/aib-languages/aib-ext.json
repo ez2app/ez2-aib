@@ -17,5 +17,6 @@
     "hooks/register.tsx": "a1bea73c7d353aadca796ee91cd83ab3f3c1bcf968585400db3c1409dbb3d5ca",
     "tsconfig.json": "88437ec880f7008b5df208a95a7d47330f0e3a8204d78d6c5cc272e5941c3511",
     "types/index.d.ts": "ace1ae32cc1f95911e5c8ab049f36d2fcbd8e5e56a99f91f942d5d79f266e279"
-  }
+  },
+  "signature": "ed25519:kwPhYO52Kpk8wf3HntZslCQTILAWb+woZlx47vg8aYdTLhYwgQJN86WDSg3gz54XQsX0NJkjEbB0fWGG2NBCAQ=="
 }

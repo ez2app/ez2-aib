@@ -110,7 +110,18 @@ def persona_cards(state_root):
 
 
 CROWN_PERSONA = "71c97a"   # 冠位首綁指名的卡(a persona card,職責=以 the maintainer 語氣代言);seat_rebind.DIRECTED_PERSONA_UID
-DEFAULT_VAULT = os.path.expanduser("~/Ez2/Vault")
+def _suite_default_vault():
+    """vault 位置照全套件同一條規則(route_register.default_vault:EZ2_VAULT_DIR > EZ2_VAULT_ROOT >
+    ~/Desktop/Obsidian/Ez2 有才算 > ~/.ez2-aib/vault)。10-15 盤點 U18:這裡原本寫死 ~/Ez2/Vault,跟別處不同一個庫。"""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "persona_route"))
+        import route_register
+        return route_register.default_vault()
+    except Exception:  # noqa: BLE001
+        return os.path.expanduser("~/Desktop/Obsidian/Ez2")
+
+
+DEFAULT_VAULT = _suite_default_vault()
 
 
 def persona_profiles(state_root, vault=DEFAULT_VAULT):
@@ -171,6 +182,11 @@ def seat_state(state_root, seat, display=None, cards=None):
     })
     if seat["provider"] in BOT_PROVIDERS:
         st["problem"], st["hint"] = "bot", "bot 席不在本工具範圍"
+    elif d.get("brain_binding_status") == "unresolved":
+        # 10-15:人格在、大腦路由過不了這次投影的路由表(多半是路由表來源不一致)⇒ 講路由原因,不是「缺人格」
+        st["problem"] = "route_unresolved"
+        st["route_key"], st["route_code"] = d.get("route_key") or "", d.get("route_unresolved") or ""
+        st["hint"] = _ui("aib.bindme.route_unresolved_hint", route=st["route_key"] or "?", code=st["route_code"] or "?")
     elif persona_uid == CROWN_PERSONA and not seat.get("appointed"):
         # 10-11:冠位人格是「the maintainer 的代言人」,只該在受派艦長身上;最早開而戴冠、或歸隊後冠沒了的席都不對
         st["problem"] = "crown_persona"
@@ -592,10 +608,25 @@ def mac_choose(title, prompt, items, timeout=MAC_TIMEOUT_S, runner=None):
     return (got, "picked") if got in items else (None, "closed")
 
 
+# 回報句的開頭(「能用:…」「不能用:…」),不是名字(10-14 有一席 Grok 的人格被取成「能用 待審預設、主艙改名」)
+REPORT_HEAD_RE = re.compile(r"^\s*(現在)?(能不能用|還不能用|不能用|能用|可以用|還不能)\s*[::,,]\s*")
+
+
+def clean_name(s, limit):
+    """建議的名稱 ⇒ 拿掉回報句開頭與檔名不能用的字、截到 limit 字;剩空 ⇒ ""。"""
+    s = REPORT_HEAD_RE.sub("", (s or "").strip())
+    return re.sub(r"[\\/:*?\"<>|\n\r\t]", " ", s).strip()[:limit].strip()
+
+
 def new_persona_name(fields, cards):
-    """新卡名稱:回覆的「新人格名稱」> 主項目前 12 字;和既有卡同名 ⇒ 加序號(不覆蓋既有卡)。"""
-    base = (fields.get("新人格名稱") or fields.get("主項目") or "").strip()
-    base = re.sub(r"[\\/:*?\"<>|\n\r\t]", " ", base).strip()[:12].strip() or "新角色"
+    """新卡名稱:只用回覆的「新人格名稱」或記憶整理的「建議人格」(拿掉回報句開頭);沒有 ⇒ ""(不再拿「主項目」那句進度回報硬切 12 字當名字,
+    呼叫端不自動建、交給人取名)。和既有卡同名 ⇒ 加序號(不覆蓋既有卡)。"""
+    sug = (fields.get("建議人格") or "").strip()      # 記憶整理「新建:<名稱>」把名稱放這裡;關鍵字不算名字
+    if sug.lower() in UNKNOWN or sug in ("沿用", "新建"):
+        sug = ""
+    base = clean_name(fields.get("新人格名稱") or sug, 12)
+    if not base:
+        return ""
     taken = set(cards.values())
     name, n = base, 1
     while name in taken:
@@ -671,6 +702,11 @@ def auto_decide(row, cards, timeout=MAC_TIMEOUT_S, dialog=None, text=None, choos
     elif how in ("ask_existing", "continuity") and per.get("name") and per.get("uid") != CROWN_PERSONA:
         out["persona"] = {"act": "bind", "name": per["name"], "how": how}
         out["notice"] = True
+    elif how == "draft_new" and not new_persona_name(row.get("fields") or {}, cards):
+        # 沒有建議名稱 ⇒ 不自動建(名字要人取),送事後決定卡;草稿照擬,名稱維持(待取名)
+        out["persona"] = {"act": "skip", "how": "needs_name"}
+        out["card"] = True
+        out.setdefault("why", []).append("沒有合適的人格,也沒有建議名稱 ⇒ 不自動建,等人取名")
     elif how == "draft_new":
         name = new_persona_name(row.get("fields") or {}, cards)
         msg = "@%s 沒有合適的人格,要建一張新的\n\n名字:%s\n\n%d 秒後自動建立" % (row["code"], name, timeout)
@@ -681,7 +717,7 @@ def auto_decide(row, cards, timeout=MAC_TIMEOUT_S, dialog=None, text=None, choos
             if sub_how == "timeout":
                 btn = "照這樣建立"
             elif sub == "改名字":
-                name = new_persona_name({"新人格名稱": text("AIB 綁定", "新人格名稱", name, timeout)}, cards)
+                name = new_persona_name({"新人格名稱": text("AIB 綁定", "新人格名稱", name, timeout)}, cards) or name
                 btn = "照這樣建立"
             elif sub == "改綁其他候選":
                 pick, pick_how = choose("AIB 綁定", "改綁哪一張?", _candidates(row, cards, "persona"), timeout)
@@ -720,13 +756,18 @@ def auto_decide(row, cards, timeout=MAC_TIMEOUT_S, dialog=None, text=None, choos
     elif phow in ("uid", "title") and prj.get("uid") and persona_ready:
         out["project"] = {"act": "bind", "uid": prj["uid"], "title": prj.get("title"), "how": phow}
         out["notice"] = True
-    elif phow in ("contains", "ambiguous", "new", "unknown") and persona_ready:
-        title = prj.get("title") or ""
+    elif phow in ("ambiguous", "unknown") or (phow == "new" and not clean_name(prj.get("title"), 24)):
+        # 沒有建議專案名稱(或對到多張)⇒ 不自動建、不拿「主項目」那句進度回報當名字;送事後決定卡
+        if persona_ready:
+            out["card"] = True
+            out.setdefault("why", []).append("沒有合適的專案,也沒有可用的建議名稱 ⇒ 不自動建,等人決定")
+    elif phow in ("contains", "new") and persona_ready:
+        title = (prj.get("title") or "") if phow == "contains" else clean_name(prj.get("title"), 24)
         if phow == "contains":
             label, msg = "綁這張", "@%s 專案部分對到「%s」,要綁它嗎?\n\n%d 秒後自動綁" % (row["code"], title, timeout)
         else:
             label, msg = "照這樣建立", "@%s 沒有合適的專案,要建一個新的\n\n名稱:%s\n\n%d 秒後自動建立" % (
-                row["code"], title if phow == "new" else (row.get("fields") or {}).get("主項目", "")[:24], timeout)
+                row["code"], title, timeout)
         btn, asked = _ask(row, msg, label, timeout, dialog, menu, sleep, out)
         if out["asked"] in ("none", "picked"):
             out["asked"] = asked
@@ -741,9 +782,8 @@ def auto_decide(row, cards, timeout=MAC_TIMEOUT_S, dialog=None, text=None, choos
             if phow == "contains" and prj.get("uid"):
                 out["project"] = {"act": "bind", "uid": prj["uid"], "title": title, "how": phow}
             else:
-                t = title if phow == "new" else ((row.get("fields") or {}).get("主項目") or "")[:24]
-                if t:
-                    out["project"] = {"act": "create", "title": t, "how": phow}
+                if title:
+                    out["project"] = {"act": "create", "title": title, "how": phow}
     return out
 
 
@@ -989,8 +1029,26 @@ def repair(state_root, actor, only=None, dry_run=False, runner=None):
         args = ["newrole", "--name", name, "--seat", "%s/%s" % (st["cabin4"], st["code"]),
                 "--brain", "none", "--actor", actor] + (["--dry-run"] if dry_run else [])
         rc, txt = (runner or run_aib)(args)
-        out.append({"code": st["code"], "persona": name, "rc": rc})
+        row = {"code": st["code"], "persona": name, "rc": rc}
+        if rc == 0 and not dry_run:
+            row.update(verify_repaired(state_root, st))
+        out.append(row)
     return out
+
+
+def verify_repaired(state_root, before):
+    """10-15:repair 跑完**讀回**驗收 —— rc=0 不算接回(以前重投影讀舊路由表又把那一席丟掉,repair 照樣說成功)。
+    回 {"verified": bool, "why": str}。人格要等於延續檔記得的那張,而且大腦路由不是未解析。"""
+    now = next((s for s in status(state_root) if s["code"] == before["code"]), None)
+    if now is None:
+        return {"verified": False, "why": _ui("aib.bindme.repair_seat_gone", code=before["code"])}
+    if now.get("problem") == "route_unresolved":
+        return {"verified": False, "why": _ui("aib.bindme.repair_route_unresolved", code=before["code"],
+                                              route=now.get("route_key") or "?", code2=now.get("route_code") or "?")}
+    if now.get("persona_uid") != before["continuity_persona"]:
+        return {"verified": False, "why": _ui("aib.bindme.repair_not_back", code=before["code"],
+                                              problem=PROBLEM_TEXT.get(now.get("problem"), now.get("problem")))}
+    return {"verified": True, "why": ""}
 
 
 # ── 印表 ────────────────────────────────────────────────────────────
@@ -1008,7 +1066,8 @@ def print_status(rows):
         print("%-12s %-6s %-9s %-14s %-22s %s%s" % (
             "%s/@%s" % (r["cabin4"], r["code"]), r["seat_id"], r["provider"],
             (r["persona_name"] or "—")[:14], (r["project_title"] or "—")[:22],
-            PROBLEM_TEXT.get(r["problem"], r["problem"]), (" —— " + r["hint"]) if r["hint"] else ""))
+            _ui("aib.bindme.problem_route_unresolved") if r["problem"] == "route_unresolved"
+            else PROBLEM_TEXT.get(r["problem"], r["problem"]), (" —— " + r["hint"]) if r["hint"] else ""))
 
 
 def print_proposals(rec):
@@ -1061,40 +1120,40 @@ def _ui(key, **params):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog=os.environ.get("AIB_BINDME_PROG", "aib bindme"),
-                                 description="一次看清、補齊各席的人格與專案綁定")
-    ap.add_argument("--state-root", default=os.path.expanduser("~/.ez2-aib"))
+                                 description=_ui("aib.bindme.help.desc"))
+    ap.add_argument("--state-root", default=os.path.expanduser("~/.ez2-aib"), help=_ui("aib.bindme.help.state_root"))
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("status", help="全艙一張表(唯讀)")
-    s.add_argument("--json", action="store_true")
-    v = sub.add_parser("survey", help="寄問卷給缺綁定的席")
-    v.add_argument("--me", required=True, help="你自己的席碼(回信寄回這一席)")
-    v.add_argument("--seat", help="只問這幾席,逗號分隔席碼")
-    v.add_argument("--all", action="store_true", help="連已經齊的也問")
-    v.add_argument("--hours", type=int, default=24)
-    v.add_argument("--dry-run", action="store_true")
-    c = sub.add_parser("collect", help="收回覆、提出建議")
-    c.add_argument("sid")
-    c.add_argument("--json", action="store_true")
-    a = sub.add_parser("apply", help="照建議綁")
-    a.add_argument("sid")
-    a.add_argument("--me", required=True)
-    a.add_argument("--actor")
-    a.add_argument("--only", help="只綁這幾席,逗號分隔席碼")
-    a.add_argument("--create-missing", action="store_true", help="建議裡要新建的專案也建")
-    a.add_argument("--accept", action="store_true", help="同意建議裡「綁既有人格」的那些(沒給就只問不綁)")
-    a.add_argument("--ask", action="store_true", help="逐席在那一艙跳倒數選單;%d 秒沒選 = 照建議綁" % MENU_TIMEOUT_S)
-    a.add_argument("--dry-run", action="store_true")
-    au = sub.add_parser("auto", help="(交接背景用)自動模式綁自己這一席:找到就綁、沒有就 30 秒彈窗後建立")
-    au.add_argument("sid")
-    au.add_argument("--me", required=True)
-    rp = sub.add_parser("repick", help="「不對,換掉」:彈清單改綁人格 / 專案")
-    rp.add_argument("--me", required=True)
-    rp.add_argument("--actor")
-    r = sub.add_parser("repair", help="從延續檔把人格接回")
-    r.add_argument("--me", required=True)
-    r.add_argument("--actor")
-    r.add_argument("--only")
-    r.add_argument("--dry-run", action="store_true")
+    s = sub.add_parser("status", help=_ui("aib.bindme.help.status"))
+    s.add_argument("--json", action="store_true", help=_ui("aib.bindme.help.json"))
+    v = sub.add_parser("survey", help=_ui("aib.bindme.help.survey"))
+    v.add_argument("--me", required=True, help=_ui("aib.bindme.help.me_survey"))
+    v.add_argument("--seat", help=_ui("aib.bindme.help.seat"))
+    v.add_argument("--all", action="store_true", help=_ui("aib.bindme.help.all"))
+    v.add_argument("--hours", type=int, default=24, help=_ui("aib.bindme.help.hours"))
+    v.add_argument("--dry-run", action="store_true", help=_ui("aib.bindme.help.dry_run"))
+    c = sub.add_parser("collect", help=_ui("aib.bindme.help.collect"))
+    c.add_argument("sid", help=_ui("aib.bindme.help.sid"))
+    c.add_argument("--json", action="store_true", help=_ui("aib.bindme.help.json"))
+    a = sub.add_parser("apply", help=_ui("aib.bindme.help.apply"))
+    a.add_argument("sid", help=_ui("aib.bindme.help.sid"))
+    a.add_argument("--me", required=True, help=_ui("aib.bindme.help.me"))
+    a.add_argument("--actor", help=_ui("aib.bindme.help.actor"))
+    a.add_argument("--only", help=_ui("aib.bindme.help.only"))
+    a.add_argument("--create-missing", action="store_true", help=_ui("aib.bindme.help.create_missing"))
+    a.add_argument("--accept", action="store_true", help=_ui("aib.bindme.help.accept"))
+    a.add_argument("--ask", action="store_true", help=_ui("aib.bindme.help.ask", seconds=MENU_TIMEOUT_S))
+    a.add_argument("--dry-run", action="store_true", help=_ui("aib.bindme.help.dry_run"))
+    au = sub.add_parser("auto", help=_ui("aib.bindme.help.auto"))
+    au.add_argument("sid", help=_ui("aib.bindme.help.sid"))
+    au.add_argument("--me", required=True, help=_ui("aib.bindme.help.me"))
+    rp = sub.add_parser("repick", help=_ui("aib.bindme.help.repick"))
+    rp.add_argument("--me", required=True, help=_ui("aib.bindme.help.me"))
+    rp.add_argument("--actor", help=_ui("aib.bindme.help.actor"))
+    r = sub.add_parser("repair", help=_ui("aib.bindme.help.repair"))
+    r.add_argument("--me", required=True, help=_ui("aib.bindme.help.me"))
+    r.add_argument("--actor", help=_ui("aib.bindme.help.actor"))
+    r.add_argument("--only", help=_ui("aib.bindme.help.only"))
+    r.add_argument("--dry-run", action="store_true", help=_ui("aib.bindme.help.dry_run"))
     o = ap.parse_args(argv)
     root = o.state_root
 
@@ -1162,7 +1221,11 @@ def main(argv=None):
     else:
         res = repair(root, actor, only, o.dry_run)
     print(json.dumps(res, ensure_ascii=False, indent=2))
-    bad = [x for x in res if any(d.get("rc") for d in x.get("done", [])) or x.get("rc")]
+    for x in res:                                            # 10-15:repair 讀回沒過 ⇒ 原因印出來、rc≠0
+        if x.get("verified") is False:
+            print("bindme: " + x.get("why", ""), file=sys.stderr)
+    bad = [x for x in res if any(d.get("rc") for d in x.get("done", [])) or x.get("rc")
+           or x.get("verified") is False]
     return 1 if bad else 0
 
 

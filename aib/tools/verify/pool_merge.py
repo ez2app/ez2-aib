@@ -25,6 +25,7 @@ import fcntl
 import heapq
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -84,28 +85,84 @@ def candidates(shadow_dir, repo):
     return new_id, new, out
 
 
+_TEST_IN_RAW = re.compile(rb'"test"\s*:\s*"([^"\\]+)"')
+
+
+def _tomb(test, t_utc, stats, path):
+    """壞行/寫一半的行 ⇒ 必跑墓碑(與 reuse_index.quarantine 同形):那一行可能是這支最新的紅,丟掉它舊綠就變最新。"""
+    stats["tombstones"] = stats.get("tombstones", 0) + 1
+    row = {"test": test, "rc": -1, "inputs": [], "measured": "unmeasured", "external": False,
+           "why": ["quarantined-bad-row"], "time": time.strftime("%Y-%m-%d %H:%M"),
+           "time_utc": t_utc or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "repo_id": stats["new_id"], "merged_from": Path(path).name}
+    return jsonl_safe.dumps(row) + "\n"
+
+
 def _rows(path, allowed, stats):
-    """一行一行讀;回 (time_utc, 序號, 改寫後的那一行)。不收的列計數。"""
+    """一行一行讀;回 (time_utc, 序號, 改寫後的那一行)。不收的列計數。
+    10-15 A4:(1) 壞行、寫到一半的最後一行不再靜默丟掉 —— 原地換成必跑墓碑(認不出是哪支 ⇒ 這一池每支都留);
+    (2) 沒有 time_utc 的列(舊墓碑、舊列)排序鍵沿用同一池前一列的時間(每個池本來就照時間追加),
+        以前用空字串 ⇒ 排到最前面、被更舊的池裡較晚的綠蓋掉。
+    墓碑的時間取「壞行最晚可能是幾點」:同一池下一列的時間;後面沒有列(寫一半的最後一行)⇒ 合池當下。錯在多跑。
+    沒有 time_utc 的紅/墓碑同理(補上那個時間上限寫進 time_utc,讀的那邊 reuse_index 才排得一致);沒時間的綠照前一列。"""
+    last_t = ""
+    names, unknown = set(), False
+    pending = []          # 還不知道時間上限的墓碑(測試名)
+    pending_rows = []     # 還不知道時間上限、本身沒有 time_utc 的紅/墓碑列
+    now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     with open(path, "rb") as fh:
         for n, raw in enumerate(fh):
-            if not raw.endswith(b"\n"):          # 寫到一半的最後一行不收
-                stats["partial"] += 1
-                continue
-            try:
-                row = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError):
-                stats["bad"] += 1
-                continue
+            partial = not raw.endswith(b"\n")
+            row = None
+            if not partial:
+                try:
+                    row = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    row = None
             if not isinstance(row, dict):
-                stats["bad"] += 1
+                stats["partial" if partial else "bad"] += 1
+                if not raw.strip():
+                    continue
+                hit = sorted({m.decode("utf-8", "replace") for m in _TEST_IN_RAW.findall(raw)})
+                if not hit:
+                    unknown = True
+                pending.extend(hit)
                 continue
             rid = row.get("repo_id")
             if rid not in allowed and not (rid is None and not row.get("repo")):
                 stats["foreign"] += 1
                 continue
+            tu = row.get("time_utc")
+            if isinstance(row.get("test"), str):
+                names.add(row["test"])
             row["repo_id"] = stats["new_id"]
             row.setdefault("merged_from", Path(path).name)
-            yield (str(row.get("time_utc") or ""), n, jsonl_safe.dumps(row) + "\n")   # 同寫列的寫法(U+2028 等照樣跳脫 —— 二審)
+            if not (isinstance(tu, str) and tu):
+                if _green(row) or "void" in row:
+                    yield (last_t, n, jsonl_safe.dumps(row) + "\n")
+                else:
+                    pending_rows.append((n, row))      # 沒時間的紅/墓碑:時間上限 = 下一列的時間
+                continue
+            last_t = max(last_t, tu)
+            for t in pending:
+                yield (last_t, n, _tomb(t, last_t, stats, path))
+            pending = []
+            for pn, prow in pending_rows:
+                yield (last_t, pn, jsonl_safe.dumps(dict(prow, time_utc=last_t)) + "\n")
+            pending_rows = []
+            yield (tu, n, jsonl_safe.dumps(row) + "\n")   # 同寫列的寫法(U+2028 等照樣跳脫 —— 二審)
+    end = max(last_t, now_utc)
+    for pn, prow in pending_rows:
+        yield (end, pn, jsonl_safe.dumps(dict(prow, time_utc=end)) + "\n")
+    tail = sorted(set(pending) | (names if unknown else set()))
+    for t in tail:
+        yield (end, 1 << 62, _tomb(t, end, stats, path))
+
+
+def _green(row):
+    rc = row.get("rc")
+    return (isinstance(rc, int) and not isinstance(rc, bool) and rc == 0 and row.get("measured") is True
+            and not row.get("timed_out"))
 
 
 def _merge_locked(new, tmp, moved, allowed, stats, done=None):
@@ -165,8 +222,15 @@ def merge(shadow_dir, repo, apply=False, out=sys.stdout, now=None):
         tmp = Path(str(new) + ".merge.tmp")
         copied = 0
         done = {"committed": False}
+        held = []
         try:
             for p in olds:
+                # 10-15 A4:搬舊池之前拿它的寫列鎖(jsonl_safe.append_locked 同一把),合完才放:
+                #   以前不拿 ⇒ 舊版還在往舊池追加的那一列,寫進「已經搬走、已經讀過」的檔 ⇒ 不見。
+                #   拿著鎖搬走 ⇒ 等鎖的寫列者拿到鎖時發現檔案換了,會在原路徑重開新檔(留給下一次合池)。
+                lk = open(p, "ab")
+                held.append(lk)
+                fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
                 os.replace(p, dest / p.name)
                 moved.append(dest / p.name)
             copied = _merge_locked(new, tmp, moved, allowed, stats, done)
@@ -195,6 +259,12 @@ def merge(shadow_dir, repo, apply=False, out=sys.stdout, now=None):
             except OSError:
                 pass
             raise
+        finally:
+            for lk in held:
+                try:
+                    fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
+                finally:
+                    lk.close()
         res.update(copied=copied, foreign=stats["foreign"], bad=stats["bad"], partial=stats["partial"],
                    moved_to=str(dest), applied=True)
         out.write(T("done", {"n": copied, "other": stats["foreign"], "bad": stats["bad"], "count": stats["partial"],

@@ -12,6 +12,26 @@ import subprocess
 
 DEFAULT_TIMEOUT_S = 120
 
+_RT = {}
+
+
+def rt(msg_key, **params):
+    """aib persona 執行期的人看字走 i18n(10-15);鍵在 aib.persona.run.*。toolroots / report / 十步清單共用這一支。
+    字典讀不到 ⇒ 印鍵名(可見即可抓),不擋指令。"""
+    try:
+        import sys
+        cockpit = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cockpit")
+        if cockpit not in sys.path:
+            sys.path.insert(0, cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _RT.get(loc)
+        if tr is None:
+            tr = _RT[loc] = i18n_lib.Translator(loc)
+        return tr.t("aib.persona.run." + msg_key, params or None)
+    except Exception:  # noqa: BLE001
+        return "aib.persona.run." + msg_key
+
 
 class ToolMissing(Exception):
     pass
@@ -216,15 +236,6 @@ def owner_approval_verify(node_bin, tools_root, receipt, package, persona_state,
 
 
 # SOP §七 正式煉卡十步(AIB 只列印,不執行;每步的唯一寫入器在 ez2-ai)。
-FORMAL_STEPS = (
-    ("1", "更新/建卡(唯一合法寫入器)", "node tools/ez2-role-create.js --update --name <人格> …"),
-    ("2", "lint 自動守門", "(寫入即 lint,紅=自動還原;無獨立指令)"),
-    ("3", "出生檢查九項", "node tools/ez2-role-birth-check.js --name <人格>"),
-    ("4", "對抗出題(第二引擎)", "node tools/ez2-persona-adversarial-evals.js --name <人格> generate → merge"),
-    ("5", "全卷重考", "node tools/ez2-persona-evals.js --name <人格>"),
-    ("6", "歷程鏈 append", "shared/ez2-card-provenance.js → provenance.jsonl card_update+evals_recheck"),
-    ("7", "發正式卡", "schemas/ez2-expert-card.schema.json;provenance_head=真鏈頭"),
-    ("8", "KPI 裁決(核准者實名)", "node tools/ez2-persona-kpi.js --name <人格> adopt|reject --by <owner>"),
-    ("9", "個人記憶留痕", "node tools/ez2-role-memory-append.js --code <code> --title 卡片終態更新 …"),
-    ("10", "交接簡報同步+回報", "更新交接簡報.md + 全部 exit code/新 personaSha/收據/差異表"),
-)
+def formal_steps():
+    """(n, what, cmd) ×10;what 與 cmd 的人看字照當下語系取(aib.persona.run.step.<n>.what / .cmd)。"""
+    return tuple((str(n), rt("step.%d.what" % n), rt("step.%d.cmd" % n)) for n in range(1, 11))

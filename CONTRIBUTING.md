@@ -9,6 +9,7 @@ is cut from `main`.
 - **Pull requests are welcome.** Branch from the latest `main`; the six required checks (Linux and macOS, Python
   3.9, 3.12 and 3.14) must pass before a maintainer merges. Small, focused changes with a test are the easiest to
   review. If `main` moves while your PR is open, merge `main` into your branch so the checks run again.
+  Run the tests before you push: `python3 -m unittest discover -s tests -v`
 - **Releases** are made by a maintainer: the version in `pyproject.toml` and `aib/VERSION` and a section at the top
   of each `CHANGELOG`, then the release workflow, which checks the package before it is uploaded to PyPI.
 - Code comments are mostly in Traditional Chinese for historical reasons; English is fine in issues and PRs.

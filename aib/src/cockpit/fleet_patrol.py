@@ -78,10 +78,9 @@ def _ctx_policy():
     return ctx_policy
 
 
-# EH.28:改讀 policy 的 actions.prepare_compact(80)。
-# ★ 這一格與 E6.4 的「dm 派工閘 >75」**不是同一個門檻**,不要合併:
-#   本格問的是「要不要增員」,那一格問的是「還能不能派新工」。
-SEAT_GATE_CTX_THRESHOLD = _ctx_policy().action("prepare_compact")
+# 10-15 維護者「只保留 A 一張表」(policy 只剩各席 7 格):B 的 actions.prepare_compact(80)刪了,
+#   增員門檻不改寫成新數字 ⇒ None = 開新席閘不再自動判,要不要加開由人決定(seat_gate 回不准 + 說明)。
+SEAT_GATE_CTX_THRESHOLD = None
 SEAT_GATE_FRACTION = 0.5
 
 # dm 標頭:`[發送者 > 收件者]`。發送者兩形都要收——`role@五碼`(dm-ctl 正常
@@ -934,6 +933,9 @@ def scan(hub):
         targets = _binding_targets(rec, binding_display) \
             if rec is not None and binding_display is not None else (None, None)
         attention = _bind_attention_notice(code, pct, source, *targets)
+        unverified = handoff_unverified_line(code, pct, source)
+        if unverified:
+            attention = unverified + (("  " + attention) if attention else "")
         shared = _shared_conversation(rec, _procs)
         if shared:
             action = "needs_human" if action not in ("needs_human", "never_press") else action
@@ -954,8 +956,36 @@ def scan(hub):
                       "ctx_scheduler_receipt": ctx_scheduler_receipt,
                       "attention": attention,
                       "shared_conversation": shared,
+                      "handoff_unverified": bool(unverified),
                       "dm_queue": qrows})
     return seats
+
+
+def _auto_distill():
+    _idn = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "identity"))
+    if _idn not in sys.path:
+        sys.path.insert(0, _idn)
+    import auto_distill_hook
+    return auto_distill_hook
+
+
+def handoff_unverified_line(code, pct, source):
+    """唯讀(維護者 10-15 20:1x「巡檢只回報、不送指令」):機器用量 ≥ 表上「要求交接」那格、而本輪交接 verify 沒過 ⇒
+    給第一艦長看的一行;Claude 席 Stop 擋滿已放行的加註。畫面值 / 量不到 / verify 讀不到 ⇒ ""(不猜)。"""
+    if source != "machine" or not isinstance(pct, int) or isinstance(pct, bool) or not code:
+        return ""
+    try:
+        floor = _ctx_policy().trigger_pct("handoff_now")
+        if pct < floor:
+            return ""
+        ad = _auto_distill()
+        if ad.handoff_done(code) is not False:
+            return ""
+        gave = ad.gate_gave_up(code)
+    except Exception:  # noqa: BLE001
+        return ""
+    return "⚠ 85%% 交接未完成:用量 %d%% ≥ %d%%,本輪 aib handoff verify 沒過%s" % (
+        pct, floor, "(Stop 擋滿已放行)" if gave else "")
 
 
 def seat_gate(seats, purpose="capacity"):
@@ -971,6 +1001,9 @@ def seat_gate(seats, purpose="capacity"):
     if purpose == "succession":
         return True, {"allowed": True, "exempt": True, "purpose": purpose,
                       "verdict": "繼任/補位席豁免產能閘(傳承優先於產能)"}
+    if SEAT_GATE_CTX_THRESHOLD is None:
+        return False, {"allowed": False, "threshold_pct": None, "purpose": purpose,
+                       "verdict": "增員門檻已刪(10-15 CTX 單表):不再自動判斷,要不要加開新席由人決定"}
     known = [s for s in seats if not s.get("dead")]
     total = len(known)
     over = [s for s in known if (s.get("ctx_pct") or 0) > SEAT_GATE_CTX_THRESHOLD]
@@ -1360,7 +1393,7 @@ def main(argv=None):
         allowed, detail = seat_gate(seats, purpose=args.purpose)
         if args.json:
             print(json.dumps(detail, ensure_ascii=False, indent=2))
-        elif detail.get("exempt"):
+        elif detail.get("exempt") or detail.get("threshold_pct") is None:
             print(detail["verdict"])
         else:
             print("%s(%d/%d 席 CTX>%d%%,需 %d)" %

@@ -12,13 +12,24 @@ import subprocess
 from pathlib import Path
 
 
-def _git_out(repo, *args):
-    try:
-        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=8,
-                           stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return (p.stdout or "").strip() if p.returncode == 0 else None
+GIT_TIMEOUTS = (8, 30)   # 10-15 D3:逾時先重試一次(推前檢查三份同時起跑、機器忙時 8 秒常不夠)
+
+
+def _git_out(repo, *args, transient=None):
+    """git 的輸出;失敗回 None。transient(清單)給了 ⇒ 「git 沒回應」(逾時、叫不起來)跟「git 回答了:沒有」分開:
+    前者重試一次,仍失敗就把原因放進 transient(沒給清單就只回 None)。後者(沒有根提交、沒有遠端)照舊只回 None。"""
+    err = None
+    for t in GIT_TIMEOUTS:
+        try:
+            p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=t,
+                               stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            err = "%s %s: %s" % (args[0] if args else "git", type(e).__name__, str(e)[:120])
+            continue
+        return (p.stdout or "").strip() if p.returncode == 0 else None
+    if transient is not None and err:
+        transient.append(err)
+    return None
 
 
 def _norm_url(u):
@@ -39,15 +50,24 @@ def _norm_url(u):
     return ("https://" + x).lower()
 
 
-def project_key(repo):
+def project_key(repo, errors=None):
     """M1(10-13):「這個專案」的身分 = 最舊的根提交 + 遠端網址(正規化)。同一個專案不同 clone(Mini 正本、推包用的
     ~/wt-ship-*)⇒ 同一個鍵 ⇒ 同一個沿用池。下列一律回 None(退回舊的 git 目錄身分):沒有根提交、沒有任何遠端、
     淺複製(CI 的「根」是淺複製邊界,每次 fetch 都會變 —— 審查)。遠端多個時優先 github.com 的、其次字母序第一個。
-    只取最舊的一個根:別條歷史併進來不會換身分(審查)。"""
-    if _git_out(repo, "rev-parse", "--is-shallow-repository") == "true":
+    只取最舊的一個根:別條歷史併進來不會換身分(審查)。
+    errors(清單)給了 ⇒ git 沒回應(逾時)時把原因放進去:這時退回的舊身分是**猜錯的**,呼叫端要能說出來
+    (10-15 D3:以前算錯身分只會讓每支都顯示「第一次跑」,而且列寫進另一池)。"""
+    tr = [] if errors is not None else None
+    got = []
+    for args in (("rev-parse", "--is-shallow-repository"), ("log", "--max-parents=0", "--format=%ct %H", "HEAD"),
+                 ("config", "--get-regexp", r"^remote\..*\.url$")):
+        got.append(_git_out(repo, *args, transient=tr))
+        if tr:                      # git 沒回應 ⇒ 後面的也不問了(每問一次最多等 38 秒)
+            errors.extend(tr)
+            return None
+    shallow, roots, urls = got
+    if shallow == "true":
         return None
-    roots = _git_out(repo, "log", "--max-parents=0", "--format=%ct %H", "HEAD")
-    urls = _git_out(repo, "config", "--get-regexp", r"^remote\..*\.url$")
     if not roots or not urls:
         return None
     root = sorted((int(t), h) for t, h in (line.split() for line in roots.splitlines() if len(line.split()) == 2))[0][1]
@@ -58,9 +78,10 @@ def project_key(repo):
     return "%s|%s" % (root, (gh or norm)[0])
 
 
-def repo_id(repo):
-    """沿用池 / 收據的倉身分。M1(10-13):有 project_key ⇒ 專案身分(各 clone 共用);沒有 ⇒ legacy_repo_id。"""
-    key = project_key(repo)
+def repo_id(repo, errors=None):
+    """沿用池 / 收據的倉身分。M1(10-13):有 project_key ⇒ 專案身分(各 clone 共用);沒有 ⇒ legacy_repo_id。
+    errors 見 project_key:git 沒回應時照舊退回舊身分(寫列不能停),但原因放進 errors。"""
+    key = project_key(repo, errors)
     if key:
         return hashlib.sha256(("project:" + key).encode("utf-8")).hexdigest()[:16]
     return legacy_repo_id(repo)
