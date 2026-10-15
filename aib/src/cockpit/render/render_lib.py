@@ -1980,6 +1980,8 @@ INBOX_UPDATE_MARK = "[更新]"        # 這一則取代了同主題的舊版(is_
 INBOX_DECIDE_MARK = "[要裁]"        # kind=decide
 INBOX_EXPIRED_MARK = "[過期]"       # expires 已到(標記,不攔截:第 40 項)
 INBOX_TRIAGE_TAG_MAX = 12           # 歸納標籤最寬 12 欄([更99·最新]=11);the maintainer 09-30 17:2x,字面由 dm_triage 定
+INBOX_GLOBAL_MARK = "[外部]"                 # 全球來信、寄件人已驗證(名冊對得上)
+INBOX_GLOBAL_STRANGER_MARK = "[外部·未驗證]"  # 全球來信、陌生或未驗證:放行前看清楚(維護者 10-16)
 INBOX_HOLD_MARK = "[人審]"   # the maintainer 09-30 15:3x:列上只留兩個字;原因+停住時刻在點選後的說明行(_inbox_hold_note)
 # 點選一則人審信時展開的原因(白話,the maintainer 09-30 15:3x)。鍵 = hold_rc;不在表上的碼走 hold_why 關鍵字,再不行就「原因不明」。
 INBOX_HOLD_REASON = {
@@ -2170,6 +2172,10 @@ def _inbox_row_marks(item):
       dm_queue.tabs_payload 讀 triage.json 放進 row["triage_tag"],這裡只照抄(純函式,不讀檔)。
       只收 `[...]` 形狀、最多 INBOX_TRIAGE_TAG_MAX 欄,別的值一律不畫(寧可少一個標籤,不讓怪字撐爆列寬)。"""
     marks = []
+    g = item.get("global")
+    if isinstance(g, dict):
+        # 全球來信(10-16 維護者:放行鈕照留、加醒目提醒):外部席一律標,陌生 / 未驗證放最前面
+        marks.append(INBOX_GLOBAL_MARK if g.get("verified") else INBOX_GLOBAL_STRANGER_MARK)
     if str(item.get("kind") or "") == "decide":
         marks.append(INBOX_DECIDE_MARK)
     if item.get("is_update"):

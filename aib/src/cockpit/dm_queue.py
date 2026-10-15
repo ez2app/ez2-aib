@@ -76,6 +76,8 @@ HOLD_WHY = {
     "rc_other": "投遞回 %d(不在契約碼表裡,分不出就停手)",
     "attempts": "回 2 可重送但已重送 %d 次仍沒進目標,停手",
     "pane_dead": "收件席的視窗已結束(pane_dead),不投往重用的窗號;重開那一席後 requeue",
+    # 全球對談第 8.1 節:陌生(或未驗證)的外部席來信,進來就待審;只有人能放行(requeue)或刪
+    "global_stranger": "外部陌生,待主人放行(全球對談)",
 }
 # ── 第 70 項 P2:狀態、種類、轉移表(只住這裡一份;畫面與任務區讀 payload,不自己算)──
 # status 的完整集合。`updated` 不是 status:是衍生旗標 is_update(supersedes 非空且還沒讀),畫面掛角標。
@@ -1046,12 +1048,19 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
             env=None, now=None, origin=None,
             thread=None, kind=None, sender_seat=None, human_id=None, expires=None,
             sender_source=None, hub=None, sender_hub=None, sender_origin=None, no_relay=False, closes=None,
-            attempts=None, global_info=None):
+            attempts=None, global_info=None, status="queued", hold_why=None):
+    # status=hold_human:全球收件匯入器給陌生來信用 —— **建立時就是待審**,不是先排隊再轉待審
+    #   (中間那一刻排空器可能已經領走、貼進框;盤點 10-16 第 3 項)。
+    status = HOLD_STATUS if status == HOLD_STATUS else "queued"
     item = _new_item(seat, msg, sender_label, sender_kind=sender_kind, session_uuid=session_uuid,
                      wid=wid, provider=provider, priority=priority, env=env, now=now, origin=origin,
                      thread=thread, kind=kind, sender_seat=sender_seat, human_id=human_id, expires=expires,
                      sender_source=sender_source, hub=hub, sender_hub=sender_hub, sender_origin=sender_origin,
-                     closes=closes, global_info=global_info)
+                     closes=closes, global_info=global_info, status=status)
+    if status == HOLD_STATUS:
+        item["hold_why"] = str(hold_why) if hold_why else HOLD_WHY["global_stranger"]
+        item["held_at"] = item["ts"]
+        item["hold_rc"] = None
     if item.get("global") and not item["global"].get("reply_code"):
         # 回信短碼(第 9 節):同一席已用過的不重複
         import dm_global_files as GF
@@ -1073,6 +1082,61 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
     _order_append(seat, item_id, env)
     log_send(seat, msg, sender_label, "queued", queue_id=item_id, env=env, now=now)
     return item
+
+
+# ── 全球來信的投遞狀態(開發文件第 22.2 節 delivery/;轉接程式照它寄回條)──
+GLOBAL_STRANGER_WHY = HOLD_WHY["global_stranger"]
+
+
+def global_queue_pos(seat, item_id, env=None):
+    """這一則在收件席佇列裡排第幾(只算還沒送的 queued / claimed);不在佇列裡回 None。"""
+    n = 0
+    for iid in _load_order(seat, env)["ids"]:
+        it = _load_item(seat, iid, env)
+        if not it or it.get("status") not in ("queued", "claimed"):
+            continue
+        n += 1
+        if iid == item_id:
+            return n
+    return None
+
+
+def global_delivery(item, state, seat=None, env=None, now=None):
+    """全球來信的狀態變化寫進 delivery/<msgid>.jsonl。不是全球信、寫不進去 ⇒ 不做事(**不准擋佇列本身**)。"""
+    g = item.get("global") if isinstance(item, dict) else None
+    if not isinstance(g, dict) or not g.get("msgid"):
+        return False
+    try:
+        import dm_global_files as GF
+        rec = {"v": 1, "at": int(time.time() if now is None else now), "state": state}
+        if state == "queued" and seat:
+            pos = global_queue_pos(seat, item["id"], env)
+            if pos:
+                rec["pos"] = pos
+        GF.append_delivery(GF.default_root(env), g["msgid"], rec)
+        return True
+    except Exception:   # noqa: BLE001  回條是附加功能:寫壞了寄件端只是等到逾時(rc 4),不能讓投遞失敗
+        return False
+
+
+def _global_delivery_for_transition(item, frm, to, cls, why, seat, env, now):
+    """狀態轉移 ⇒ 回條(盤點 10-16 表 (d))。
+    投遞失敗轉待審(rc 3/4、重試用完、窗死了)不送 held —— 那不是「對方待審」,是我們這邊卡住,人會再處理。"""
+    if to == "delivered":
+        return global_delivery(item, "delivered", seat, env, now)
+    if to == HOLD_STATUS:
+        if isinstance(why, str) and why.startswith(EXPIRED_HOLD_WHY.split("(")[0]):
+            return global_delivery(item, "expired", seat, env, now)   # 寄件人設的期限到了
+        return False
+    if to == "queued" and frm == HOLD_STATUS:
+        return global_delivery(item, "queued", seat, env, now)        # 人放行
+    if to == "deleted" and frm in (HOLD_STATUS, "queued", "claimed"):
+        return global_delivery(item, "refused", seat, env, now)       # 沒送就被刪 = 對方沒收
+    if to == "read" and cls == "seat":
+        return global_delivery(item, "read", seat, env, now)          # 系統代標(通知組)不算已讀(第 10 節)
+    if to == "done" and frm == "delivered" and cls == "seat":
+        return global_delivery(item, "read", seat, env, now)          # 跳過「已讀」直接結案也是讀了(第 10 節:read_at 或 done_at)
+    return False
 
 
 def _appended_order(rec, seat, item_id):
@@ -1151,6 +1215,8 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         return refuse("actor")
     if cls == "seat" and ident != seat:
         return refuse("actor")
+    if to == "read" and frm == HOLD_STATUS and cls == "seat" and item.get("global"):
+        return refuse("actor")        # 陌生全球來信待審中:收件席自己不准讀(主人放行才給 AI;盤點 10-16 第 2 項)
     if to == "deleted" and cls == "system" and why != AUTO_DELETE_WHY:
         return refuse("actor")        # 系統只准刪「備存滿 30 天」那一種(the maintainer 09-30 17:1x)
     if to == "read" and cls == "system" and why != AUTO_READ_WHY:
@@ -1217,6 +1283,8 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         _order_remove(seat, item_id, env)
     _audit(seat, env, ts=now, id=item_id, **{"from": frm}, to=to, actor=actor, ok=True,
            reason="ok", rev=item_rev(item), why=why)
+    if item.get("global"):
+        _global_delivery_for_transition(item, frm, to, cls, why, seat, env, now)
     return {"ok": True, "reason": "ok", "rev": item_rev(item), "item": item, "message": ""}
 
 
@@ -1761,8 +1829,9 @@ def _hn_write(path, rec):
 
 def _hold_ids_now(seat, env, now):
     """現在還在人審、沒過期的信(舊在前)。"""
+    # 全球陌生來信不算:這則提示是貼給收件席(AI)看的,叫它去 list;那種信要主人放行,不是 AI 的事(盤點 10-16 第 2 項)
     rows = [i for i in _all_items(seat, env=env)
-            if i.get("status") == HOLD_STATUS and not i.get("expired") and not _expired(i, now)]
+            if i.get("status") == HOLD_STATUS and not i.get("expired") and not _expired(i, now) and not i.get("global")]
     rows.sort(key=lambda i: (int(i.get("ts") or 0), i.get("id") or ""))
     return rows
 
@@ -2542,6 +2611,12 @@ def _row(item, seat, now, index=None):
         "age_min": age,
         "legacy": bool(item.get("_legacy")),
     }
+    g = item.get("global")
+    if isinstance(g, dict):
+        # 全球來信:畫面標 [外部]、AI 用短碼回信(aib dm --reply);**不帶位址與 npub**(盤點 10-16 第 8、9 項)
+        row["global"] = {k: g.get(k) for k in ("shown", "verified", "same_name", "reply_code", "country", "country_status")}
+        # 寄件人指紋(位址雜湊):去重 / 分組要分得出兩個同名的陌生人,又不把位址放進列(盤點 10-16 第 5 項)
+        row["global"]["sender_id"] = hashlib.sha256(str(g.get("addr") or "").encode("utf-8")).hexdigest()[:12]
     if index is not None:
         row["index"] = index
     return row
@@ -2609,7 +2684,9 @@ def tabs_payload(seat, env=None, now=None):
         "unread": sum(1 for r in waiting if r["status"] in ("queued", "delivered", "claimed") and not r["expired_now"]),
         "expired": sum(1 for r in waiting if r["expired_now"]),
         "update": sum(1 for r in waiting if r["is_update"]),
-        "hold": sum(1 for r in waiting if r["status"] == HOLD_STATUS),
+        # 全球陌生來信另計:「待人處理」會被 hook 貼給 AI 看,那種信不是 AI 能處理的(盤點 10-16 第 2 項)
+        "hold": sum(1 for r in waiting if r["status"] == HOLD_STATUS and not r.get("global")),
+        "global_hold": sum(1 for r in waiting if r["status"] == HOLD_STATUS and r.get("global")),
         "decide": sum(1 for r in waiting if r["kind"] == "decide"),
         "human": sum(1 for r in waiting if r["sender_kind"] == "human"),
     }
@@ -2948,6 +3025,10 @@ def expire_sweep(seat=None, env=None, now=None, dry_run=False):
                     item["expired_why"] = why
                     _write_item(s, item, env)
                     row["ok"] = True
+                    if why == EXPIRED_WHY_HOLD_24H and item.get("global"):
+                        # 待審 24 小時沒人處理 ⇒ 寄件人收到 expired;信留著、標過期,人之後仍可放行或刪(Andy 10-16 裁)
+                        #   收件席已關(seat_closed)不送:席重開就清掉,不是終局
+                        global_delivery(item, "expired", s, env, now)
                 out.append(row)
             elif state == "alive" and item.get("expired") and item.get("expired_why") == EXPIRED_WHY_SEAT_CLOSED:
                 row = {"seat": s, "id": item["id"], "why": "seat_reopened", "cleared": True}
@@ -3585,6 +3666,10 @@ def edit_result(seat, item_id, msg=None, priority=None, env=None, if_rev=None, n
         return {"ok": False, "reason": "not_found", "rev": None, "item": None,
                 "message": REV_REASON["not_found"]}
     changed = False
+    if msg is not None and item.get("global") and (msg if isinstance(msg, str) else "") != (item.get("msg") or ""):
+        # 全球來信是別人的話:改了內文還會以「已驗證」抬頭重投,等於替對方改話(盤點 10-16 第 6 項)。優先級照樣可改。
+        return {"ok": False, "reason": "global_readonly", "rev": item_rev(item), "item": None,
+                "message": "全球來信不能改內文(是對方的原話);要回應請用 aib dm --reply <短碼>"}
     if msg is not None:
         new_msg = msg if isinstance(msg, str) else ""
         if new_msg != (item.get("msg") or ""):
@@ -4031,7 +4116,38 @@ def all_seats(env=None):
             if d.is_dir() and SEAT_RE.fullmatch(d.name)]
 
 
+GLOBAL_HOLD_PLACEHOLDER = "〔外部陌生來信,待主人放行;放行前內容不給 AI 看〕"
+_REVEAL_GLOBAL = {"on": False}
+
+
+def _is_global_hold(d):
+    return isinstance(d, dict) and d.get("status") == HOLD_STATUS and (
+        isinstance(d.get("global"), dict) or d.get("sender_kind") in GLOBAL_SENDER_KINDS)
+
+
+def redact_global_hold(obj):
+    """陌生(未放行)的全球來信:內文換成固定一行、拿掉位址與 npub(盤點 10-16 第 2 項)。
+    待審就是「主人看過才給 AI」;命令列(list / show / tabs,MCP aib_inbox 也走這裡)與交接預填都會被 AI 讀到。
+    給人看的畫面直接呼叫 tabs_payload,不經過這裡;命令列要看全文明寫 --reveal-global(人用)。"""
+    if isinstance(obj, list):
+        return [redact_global_hold(x) for x in obj]
+    if not isinstance(obj, dict):
+        return obj
+    out = {k: redact_global_hold(v) for k, v in obj.items()}
+    if _is_global_hold(obj):
+        for k in ("msg", "body", "text", "preview"):
+            if k in out:
+                out[k] = GLOBAL_HOLD_PLACEHOLDER
+        if isinstance(out.get("global"), dict):
+            out["global"] = {k: v for k, v in out["global"].items() if k in ("shown", "verified", "same_name", "reply_code")}
+        out.pop("sender_origin", None)
+        out["msg_hidden"] = True
+    return out
+
+
 def _print_json(obj):
+    if not _REVEAL_GLOBAL["on"]:
+        obj = redact_global_hold(obj)
     print(json.dumps(obj, ensure_ascii=False, sort_keys=True))
 
 
@@ -4248,6 +4364,8 @@ def _v2_kw(args):
 def main(argv=None, env=None):
     """env 給尺注入用(不動 os.environ;測試改 os.environ 再 pop 會成為「洗不滿」的艙變數清除站)。"""
     p = argparse.ArgumentParser(prog="dm_queue.py")
+    p.add_argument("--reveal-global", action="store_true",
+                   help="show held stranger global mail in full (for the human; AI seats must not use it)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("admit")
@@ -4472,6 +4590,7 @@ def main(argv=None, env=None):
     sub.add_parser("list-test")
 
     args = p.parse_args(argv)
+    _REVEAL_GLOBAL["on"] = bool(args.reveal_global)
     env = os.environ if env is None else env
 
     if args.cmd == "admit":
