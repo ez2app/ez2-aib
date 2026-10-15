@@ -2209,7 +2209,15 @@ def tmux_external_reason(fake_tmux, tmux_calls, tmux_seen, written_any):
     return "unknown"
 
 
-def tmux_socket_problem(inner, cwd, tt, tx, exe, repo, written_any, uid=None):
+def _born_tmp_root(root, t0):
+    """10-15 abb89:暫存根底下的這個目錄(<根>/<名>)起跑快照裡沒有 ⇒ 是這次跑測試才建的(tempfile.mkdtemp 之類)。
+    與 born_during_run 同一份快照、同一套判法;沒有快照、根不在快照裡、系統 tmux 目錄(tmux-*)一律 False(保守)。"""
+    snap = (t0 or {}).get("tmp") or {}
+    parent, name = os.path.split(str(root).rstrip("/"))
+    return bool(name) and parent in snap and name not in snap[parent] and not name.startswith("tmux-")
+
+
+def tmux_socket_problem(inner, cwd, tt, tx, exe, repo, written_any, uid=None, t0=None):
     """一次 tmux 呼叫不是「測試自己的、確定沒伺服器的」⇒ 回原因;是 ⇒ None(伺服器有沒有開由呼叫端看整份追蹤)。"""
     uid = os.getuid() if uid is None else uid
     if not exe or not str(exe).startswith("/"):
@@ -2236,7 +2244,9 @@ def tmux_socket_problem(inner, cwd, tt, tx, exe, repo, written_any, uid=None):
     if repo and os.path.realpath(sock).startswith(os.path.realpath(str(repo)) + "/"):
         return "tmux-socket-in-repo"
     root = m.group(0) + "/"
-    if not any(str(w).startswith(root) for w in written_any):
+    # 10-15 abb89:mkdtemp 建的目錄沒有寫檔事件 ⇒ 以前「沒人在底下寫過」就判不是自己的 ⇒ 誤判外部;
+    #   起跑快照裡沒有的目錄(這次才出生)也算自己的
+    if not any(str(w).startswith(root) for w in written_any) and not _born_tmp_root(m.group(0), t0):
         return "tmux-socket-not-own-tmp"
     return None
 
@@ -2502,7 +2512,7 @@ def inputs_from_events(events, repo=None):
                         _p = "tmux-env-unknown"
                     else:
                         _tt, _tx, _p = _tmux_wrapper_env(_sa, ev.get("tmux_tmpdir"), ev.get("tmux"))
-                        _p = _p or tmux_socket_problem(_in, _c, _tt, _tx, ev.get("tmux_exe"), repo, written_any)
+                        _p = _p or tmux_socket_problem(_in, _c, _tt, _tx, ev.get("tmux_exe"), repo, written_any, t0=t0)
                     tmux_seen.append((_p, tmux_starts_server(_in)))
                 elif kind == "external":
                     external = True
@@ -2621,7 +2631,7 @@ def inputs_from_events(events, repo=None):
                 else:
                     _tt, _tx, _p = _tmux_wrapper_env(_before, _ie.get("tmux_tmpdir"), _ie.get("tmux"))
                     _exe = argv[0] if argv[0].startswith("/") else _ie.get("tmux_exe")
-                    _p = _p or tmux_socket_problem(argv, _cwd, _tt, _tx, _exe, repo, written_any)
+                    _p = _p or tmux_socket_problem(argv, _cwd, _tt, _tx, _exe, repo, written_any, t0=t0)
                 tmux_seen.append((_p, tmux_starts_server(argv)))
             elif kind == "external":
                 external = True

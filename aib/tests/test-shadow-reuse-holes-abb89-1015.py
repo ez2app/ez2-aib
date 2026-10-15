@@ -58,7 +58,8 @@ HAS_TMUX = bool(shutil.which("tmux"))
 
 
 def _clean_env():
-    return {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "BASH_ENV", "EZ2_VERIFY_TRACE")}
+    # TMUX/TMUX_PANE 也拿掉:aib test 給的環境本來就沒有(runner.clean_test_env 白名單),也不准連到正在用的 tmux
+    return {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "BASH_ENV", "EZ2_VERIFY_TRACE", "TMUX", "TMUX_PANE")}
 
 
 class _Fixture(unittest.TestCase):
@@ -209,6 +210,59 @@ class Bash32(_Fixture):
             self.assertTrue(any(str(w).startswith("bash-version-no-xtrace") for w in row["why"]), (name, row["why"]))
 
 
+# ── F1 tmux ────────────────────────────────────────────────────────────────────────────────────────────
+TMUX_OWN = '''import os, subprocess, tempfile
+d = tempfile.mkdtemp()
+subprocess.run(["tmux", "-S", os.path.join(d, "s"), "has-session"], capture_output=True, stdin=subprocess.DEVNULL)
+'''
+TMUX_SERVER = '''import os, subprocess, tempfile
+d = tempfile.mkdtemp()
+s = os.path.join(d, "s")
+subprocess.run(["tmux", "-S", s, "-f", "/dev/null", "new-session", "-d", "-s", "x"], capture_output=True, stdin=subprocess.DEVNULL)
+subprocess.run(["tmux", "-S", s, "kill-server"], capture_output=True, stdin=subprocess.DEVNULL)
+'''
+TMUX_PRE = '''import os, subprocess
+subprocess.run(["tmux", "-S", os.path.join(os.environ["PRE_DIR"], "s"), "has-session"], capture_output=True, stdin=subprocess.DEVNULL)
+'''
+
+
+class TmuxOwnDir(_Fixture):
+    TESTS = {"t_own.py": TMUX_OWN, "t_server.py": TMUX_SERVER, "t_pre.py": TMUX_PRE}
+
+    def test_t1_born_dir_counts_as_own(self):
+        tmp_root = "/private/tmp" if os.path.isdir("/private/tmp") else "/tmp"
+        t0 = {"tmp": {tmp_root: ["old-dir"]}}
+        argv = ["tmux", "-S", tmp_root + "/tmpNEW123/s", "has-session"]
+        self.assertIsNone(st.tmux_socket_problem(argv, "/", None, None, "/usr/bin/tmux", self.repo, set(), t0=t0))
+        old = ["tmux", "-S", tmp_root + "/old-dir/s", "has-session"]
+        self.assertEqual(st.tmux_socket_problem(old, "/", None, None, "/usr/bin/tmux", self.repo, set(), t0=t0),
+                         "tmux-socket-not-own-tmp")
+        # 沒有起跑快照 ⇒ 照舊(不放行)
+        self.assertEqual(st.tmux_socket_problem(argv, "/", None, None, "/usr/bin/tmux", self.repo, set()),
+                         "tmux-socket-not-own-tmp")
+        # 系統 tmux 目錄(tmux-<uid>)即使是新的也不算
+        sys_dir = ["tmux", "-S", tmp_root + "/tmux-501/s", "has-session"]
+        self.assertEqual(st.tmux_socket_problem(sys_dir, "/", None, None, "/usr/bin/tmux", self.repo, set(), t0=t0),
+                         "tmux-socket-not-own-tmp")
+
+    @unittest.skipUnless(HAS_TMUX, "沒裝 tmux")
+    def test_t2_mkdtemp_socket_without_server_not_external(self):
+        row = self._run("t_own.py")
+        self.assertFalse(row["external"], row["why"])
+        self.assertIs(row["measured"], True, row["why"])
+
+    @unittest.skipUnless(HAS_TMUX, "沒裝 tmux")
+    def test_t3_server_or_preexisting_dir_stays_external(self):
+        row = self._run("t_server.py")
+        self.assertTrue(row["external"], row["why"])
+        pre = tempfile.mkdtemp(prefix="aib-pre-")
+        try:
+            row = self._run("t_pre.py", env=dict(_clean_env(), PRE_DIR=pre))
+            self.assertTrue(row["external"], row["why"])
+        finally:
+            shutil.rmtree(pre, ignore_errors=True)
+
+
 # ── 刀(複本)─────────────────────────────────────────────────────────────────────────────────────────
 def _knife(rel, needle, replacement, cell):
     from aib_knife_copy import knife_copy
@@ -234,6 +288,11 @@ class Knives(unittest.TestCase):
         red, err = _knife("tools/verify/bash-shim/_trace.bash", '  case $- in *c*)\n', '  case $- in *NEVER*)\n',
                           "Bash32.test_b2_version_probe_measured_and_data_change_blocks")
         self.assertIn("test_b2_version_probe_measured_and_data_change_blocks", red, err)
+
+    def test_k1_no_born_rule_reds_t1(self):
+        red, err = _knife("tools/verify/shadow_tracer.py", "    if not any(str(w).startswith(root) for w in written_any) and not _born_tmp_root(m.group(0), t0):\n",
+                          "    if not any(str(w).startswith(root) for w in written_any):\n", "TmuxOwnDir.test_t1_born_dir_counts_as_own")
+        self.assertIn("test_t1_born_dir_counts_as_own", red, err)
 
 
 if __name__ == "__main__":
