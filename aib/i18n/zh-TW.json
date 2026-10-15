@@ -1250,6 +1250,7 @@
   "aib.test.why.row_from_future": "上次紀錄的時間在未來({detail}),時鐘不對",
   "aib.test.why.date_crossed": "它讀的檔寫著日期,從上次到現在跨過了那一天:{detail}",
   "aib.test.why.tz_changed": "這台的時區跟上次跑的時候不同:{detail}",
+  "aib.test.why.identity_unknown": "認不出是哪個專案(git 沒回應:{detail}),對不上以前的紀錄,這次照跑",
   "aib.test.live_unverified": "⊘ {test}:沒驗({what})—— 不算綠也不算紅",
   "aib.test.live_mem_wait": "⏸ 可用記憶體只剩約 {limit} GB,先不接下一支測試,等記憶體降下來(最多等 10 分鐘)",
   "aib.test.live_same_package": "  └ {test}:同一個 Go 套件這一批已經跑過({name}),用那次的結果",

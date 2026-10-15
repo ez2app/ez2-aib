@@ -268,6 +268,7 @@ class Index(object):
         self.voided_rows = 0      # 被作廢掉的列數
         self.local_only = False   # 跨主機沿用被停用(第 3 步抽查抓到真錯)
         self.foreign_host_rows = 0
+        self.identity_error = ""      # 10-15 D3:非空 = git 沒回應、本樹身分是退回的猜測(對不上的列可能其實是自己的)
 
     def lock_for(self, repo):
         """本樹的鎖檔指紋,一棵樹只算一次。
@@ -379,6 +380,9 @@ class Index(object):
             return "must-run", "index-degraded", self.degraded
         rows = self.history.get(test) or ([self.latest[test]] if test in self.latest else [])
         if not rows:
+            if self.identity_error:
+                # 10-15 D3:身分算錯時「找不到上次」不是「第一次跑」—— 照實說是身分認不出來
+                return "must-run", "identity-unknown", self.identity_error
             return "must-run", "no-previous", ""
         cache = {}
         first = self._decide_row(repo, test, rows[-1], changed, lock_now, environ, cache)
@@ -874,7 +878,12 @@ def _parse_void(obj):
     before = obj.get("before")
     if not isinstance(cond, dict) or not isinstance(before, str) or not before:
         return False
+    unknown = [k for k in cond if k not in VOID_KEYS]
     cond = {k: v for k, v in cond.items() if k in VOID_KEYS}
+    if unknown and not any(isinstance(cond.get(k), str) and cond.get(k) for k in VOID_KEYS if k not in ("all", "green_only")):
+        # 10-15 D3:新版寫的作廢條件舊版看不懂。以前當壞列 ⇒ 整份索引永久降級(全部必跑,而且自己好不了)。
+        #   看不懂的條件只會「縮小」作廢範圍 ⇒ 拿掉它 = 放大範圍 = 錯在多跑:沒有其他看得懂的條件就當全作廢(只到 before 為止)
+        cond = dict(cond, all=True)
     if not cond or (cond.get("all") is not True and not any(isinstance(cond.get(k), str) and cond.get(k)
                                                               for k in VOID_KEYS if k not in ("all", "green_only"))):
         return False
@@ -1142,7 +1151,9 @@ def _shared_lock(path):
 def build_index(paths, repo=None):
     idx = Index()
     idx.repo = str(Path(repo).resolve()) if repo else None
-    idx.repo_id = repo_identity(repo) if repo else None
+    _id_err = []
+    idx.repo_id = repo_identity(repo, _id_err) if repo else None
+    idx.identity_error = _id_err[0] if _id_err else ""
     idx.repo_id_legacy = legacy_identity(repo) if repo else None
 
     def _mark_default():
@@ -1227,7 +1238,8 @@ def build_index(paths, repo=None):
                 del idx.history[test]
                 idx.latest.pop(test, None)
         # 反查表不收窄:多挑是安全側
-    if not idx.latest and not idx.degraded and not idx.voided_rows and not idx.foreign_host_rows:
+    if not idx.latest and not idx.degraded and not idx.voided_rows and not idx.foreign_host_rows and not idx.identity_error:
+        # (10-15 D3:身分是猜的 ⇒ 不報「池壞了/沒紀錄」,由 decide 回 identity-unknown)
         # 全被作廢 ≠ 池壞了:那是「沒有上次紀錄」(decide 回 no-previous,一樣必跑),不是降級
         idx.degraded = "no-usable-rows"
     return idx
@@ -1242,11 +1254,12 @@ def legacy_identity(repo):
         return None
 
 
-def repo_identity(repo):
-    """同一個專案的所有 clone 與工作樹共用的身分(resume_store.repo_id;M1 起看根提交 + 遠端);取不到回 None。"""
+def repo_identity(repo, errors=None):
+    """同一個專案的所有 clone 與工作樹共用的身分(resume_store.repo_id;M1 起看根提交 + 遠端);取不到回 None。
+    errors(清單)給了 ⇒ git 沒回應、身分是退回的猜測時,原因放進去(10-15 D3)。"""
     try:
         import resume_store  # noqa: E402 - same folder
-        return resume_store.repo_id(repo)
+        return resume_store.repo_id(repo, errors) if errors is not None else resume_store.repo_id(repo)
     except Exception:  # noqa: BLE001 - no identity ⇒ fall back to the path rule
         return None
 
