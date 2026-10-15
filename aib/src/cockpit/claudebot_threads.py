@@ -311,6 +311,18 @@ def seat_project_label(code: str, base=None) -> str:
     except (OSError, ValueError, AttributeError):
         return ""
     folder = d.get("folder") if isinstance(d, dict) else None
+    rk = d.get("route_key") if isinstance(d, dict) else None
+    if isinstance(rk, str) and rk.strip():
+        # 10-15 盤點 U9:uid 版面的路徑是 fld_…,標題要從 labels.json 來(route_register.route_label)
+        try:
+            import sys
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "persona_route"))
+            import route_register
+            label = route_register.route_label(rk.strip())
+            if label and label != rk.strip():
+                return _one_line(label)
+        except Exception:  # noqa: BLE001
+            pass
     if not isinstance(folder, str) or not folder.strip():
         return ""
     return _one_line(folder.strip().rstrip("/").split("/")[-1])

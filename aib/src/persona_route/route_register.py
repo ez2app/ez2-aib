@@ -295,13 +295,17 @@ def bundled_contract_if_default_vault(env=None):
     return None
 
 
-def resolve_route_folder(route_key, spec=None, contract=None, use_index=True):
+def resolve_route_folder(route_key, spec=None, contract=None, use_index=True, root=None):
     """routeKey → Vault 相對資料夾,每次從路由契約現查(the maintainer 08-27 第二鐵律:程式不得寫死 folder_path)。
     契約讀不到、沒有這條、或資料夾形狀不安全 ⇒ 回 None,由呼叫端決定怎麼辦,這裡不猜。
-    資料夾改 uid(the maintainer 09-26 R9)之後,改的是契約裡的 folder,呼叫端一行都不用動。"""
-    indexed = vault_index_folder(route_key) if use_index else None
+    資料夾改 uid(the maintainer 09-26 R9)之後,改的是契約裡的 folder,呼叫端一行都不用動。
+    root = 呼叫端實際要寫的 vault(10-15:不傳就只看環境變數,一般終端機沒設 EZ2_VAULT_DIR 時索引查不到、
+    退回契約字面,寫入端 mkdir 就把轉換前的舊名資料夾長回來)。uid 版面而索引沒有這條 ⇒ None,不退回字面。"""
+    indexed = vault_index_folder(route_key, root) if use_index else None
     if indexed is not None:                 # uid 版面(the maintainer 09-26 R9 / 10-05 轉換):vault 自己的索引才是真路徑
         return indexed                      # use_index=False = 只要契約字面(給人看的顯示用,不是落點)
+    if use_index and vault_is_uid_layout(root):
+        return None                         # 已轉 uid 版面:契約字面那個夾已經不存在,退回去就會被建回來
     if contract is None:
         spec = spec or default_contract_spec()
         if not spec:                        # 來源解不出就停在這層,不讓 load_contract 再讀一次 os.environ(a seat 建議 8)
@@ -312,6 +316,31 @@ def resolve_route_folder(route_key, spec=None, contract=None, use_index=True):
             folder = route.get("folder")
             return folder if folder and not _unsafe_folder(folder) else None
     return None
+
+
+def route_label(route_key, root=None, contract=None, spec=None):
+    """routeKey → 給人看的資料夾名稱(不是路徑;路徑一律 resolve_route_folder / aib memory write)。
+    the maintainer 10-15「用 uid 建立,顯示才用 title」:uid 版面 ⇒ <vault>/.ez2/display/labels.json 的
+    folders[<folderId>].title(folderId 從 route-key-index 查);舊版面 ⇒ 契約字面的最後一段(跟以前畫面一樣)。
+    都查不到 ⇒ routeKey 本身。"""
+    if not route_key:
+        return ""
+    root = root or vault_root_guess() or default_vault()
+    if vault_is_uid_layout(root):
+        try:
+            with open(os.path.join(root, ".ez2", "index", "route-key-index.json"), encoding="utf-8") as fh:
+                items = json.load(fh).get("items") or []
+            fid = next((it.get("folderId") for it in items
+                        if isinstance(it, dict) and it.get("routeKey") == route_key), None)
+            with open(os.path.join(root, ".ez2", "display", "labels.json"), encoding="utf-8") as fh:
+                title = ((json.load(fh).get("folders") or {}).get(fid) or {}).get("title") if fid else None
+            if isinstance(title, str) and title.strip():
+                return title.strip()
+        except (OSError, ValueError, AttributeError):
+            pass
+        return route_key
+    literal = resolve_route_folder(route_key, spec=spec, contract=contract, use_index=False)
+    return literal.rstrip("/").split("/")[-1] if literal else route_key
 
 
 def vault_root_guess():

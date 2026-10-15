@@ -110,7 +110,18 @@ def persona_cards(state_root):
 
 
 CROWN_PERSONA = "71c97a"   # 冠位首綁指名的卡(a persona card,職責=以 the maintainer 語氣代言);seat_rebind.DIRECTED_PERSONA_UID
-DEFAULT_VAULT = os.path.expanduser("~/Ez2/Vault")
+def _suite_default_vault():
+    """vault 位置照全套件同一條規則(route_register.default_vault:EZ2_VAULT_DIR > EZ2_VAULT_ROOT >
+    ~/Desktop/Obsidian/Ez2 有才算 > ~/.ez2-aib/vault)。10-15 盤點 U18:這裡原本寫死 ~/Ez2/Vault,跟別處不同一個庫。"""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "persona_route"))
+        import route_register
+        return route_register.default_vault()
+    except Exception:  # noqa: BLE001
+        return os.path.expanduser("~/Desktop/Obsidian/Ez2")
+
+
+DEFAULT_VAULT = _suite_default_vault()
 
 
 def persona_profiles(state_root, vault=DEFAULT_VAULT):

@@ -46,8 +46,8 @@ def template_dir():
         sys.path.insert(0, os.path.join(here, "..", "..", "memory"))
         import route_register
         import brain_write_plan          # Vault 根只有一個判準(認 EZ2_VAULT_DIR 與 EZ2_VAULT_ROOT;不存在回 None)
-        lib = route_register.resolve_route_folder(LIBRARY_ROUTE_KEY)
         root = brain_write_plan.vault_root()
+        lib = route_register.resolve_route_folder(LIBRARY_ROUTE_KEY, root=str(root) if root else None)
         return os.path.join(str(root), lib, TEMPLATE_SUBDIR) if (lib and root) else ""
     except Exception:
         return ""

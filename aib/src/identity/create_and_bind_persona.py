@@ -437,6 +437,33 @@ def open_new_seat(role, engine="claude", cabin="", timeout=300, interval=3.0, sl
         sleep(interval)
 
 
+def card_display_name(name):
+    """卡上 name: 欄的值:去掉會破壞單行 frontmatter 的字元(引號、換行、控制字元)。"""
+    return re.sub(r'[\x00-\x1f\x7f"]', "", str(name or "")).strip()
+
+
+def write_label_title(vault_dir, folder_id, title):
+    """uid 版面(<vault>/.ez2/display/labels.json 已存在)⇒ 補 folders[folder_id].title;
+    舊版面沒有這份檔 ⇒ 不建(轉換工具建),回 False。寫法:讀 → 改 → 暫存檔 → 換名。"""
+    path = Path(vault_dir) / ".ez2" / "display" / "labels.json"
+    if not path.is_file():
+        return False
+    try:
+        labels = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        log("警告: labels.json 讀不懂,不改它;卡上的 name: 仍會當顯示名")
+        return False
+    folders = labels.setdefault("folders", {})
+    rec = folders.setdefault(folder_id, {})
+    if rec.get("title") == title:
+        return True
+    rec["title"] = title
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(labels, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+    return True
+
+
 def folder_for_new_card(name, code):
     """新卡的資料夾名。名字開頭若是「英數字-」,卡片索引會把那一段當代號去掉
     (`PM-專案經理` 顯示成「專案經理」),於是「SEO-GEO大師」會顯示成「GEO大師」。
@@ -697,7 +724,7 @@ def main():
     # 角色庫位置從路由契約現查(the maintainer 08-27 第二鐵律;09-26 R9 資料夾要改 uid,改的是契約,這裡不動)
     sys.path.insert(0, str(REPO_ROOT / "src" / "persona_route"))   # 其他零件一律從 REPO_ROOT(EZ2_AIB_REPO)找
     from route_register import resolve_route_folder, default_contract_spec, BUNDLED_CONTRACT
-    lib_rel = resolve_route_folder(LIBRARY_ROUTE_KEY)
+    lib_rel = resolve_route_folder(LIBRARY_ROUTE_KEY, root=str(vault_dir))   # 用 --vault 那一個查索引,不是環境變數
     if not lib_rel:
         log("錯誤: 路由契約裡查不到 %s(角色庫在哪),不猜" % LIBRARY_ROUTE_KEY, prefix="[x]")
         # 10-12(a seat Pro):自訂 vault 有內容、看不出版面 ⇒ 說清楚兩條路,不只說「不猜」
@@ -748,7 +775,9 @@ def main():
     elif (role_lib_dir / name / "角色.md").is_file():
         folder_name = name
     else:
-        folder_name = folder_for_new_card(name, code)
+        # the maintainer 10-15:「人格與專案都用 uid 建立,顯示才用 title」⇒ 新卡資料夾 = 卡 uid;
+        #   顯示名讀卡上的 name:(uid 版面另寫進 .ez2/display/labels.json),改名不必搬資料夾。
+        folder_name = target_card_uid
     target_role_dir = role_lib_dir / folder_name
     target_role_file = target_role_dir / "角色.md"
 
@@ -767,6 +796,7 @@ def main():
     card_markdown = (
         "---\n"
         f'uid: "{target_card_uid}"\n'
+        f'name: "{card_display_name(name)}"\n'
         f"code: {code}\n"
         f"model: auto\n"
         f"emoji: {emoji}\n"
@@ -817,6 +847,8 @@ def main():
         with open(target_role_file, "w", encoding="utf-8") as f:
             f.write(card_markdown)
         log("   -> Vault 檔案已寫入")
+        if folder_name == target_card_uid and write_label_title(vault_dir, target_card_uid, card_display_name(name)):
+            log("   -> 顯示名已寫進 .ez2/display/labels.json")
         try:
             commit_card(role_lib_dir, target_role_file, name)
         except (OSError, RuntimeError, ValueError) as exc:

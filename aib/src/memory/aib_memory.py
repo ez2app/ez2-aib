@@ -222,9 +222,13 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
     if vault is None:
         raise MemoryError_("這台量不到第二大腦(EZ2_VAULT_DIR)")
     import route_register as RR
-    rel = RR.resolve_route_folder(route_key, contract={"routes": [route]}) or route["folder"]
-    folder = Path(vault) / rel
-    file_name = (note["uid"] + ".md") if RR.vault_is_uid_layout(str(vault)) else note["file_name"]
+    uid_layout = RR.vault_is_uid_layout(str(vault))
+    rel = RR.resolve_route_folder(route_key, contract={"routes": [route]}, root=str(vault))
+    if rel is None and uid_layout:
+        # uid 版面查不到索引 ⇒ 停;退回契約字面(中文舊名)再 mkdir 會把轉換前的資料夾建回來
+        raise MemoryError_("第二大腦是 uid 版面,但索引裡找不到 %s 的資料夾;先跑轉換工具 reindex,不寫" % route_key)
+    folder = Path(vault) / (rel or route["folder"])
+    file_name = (note["uid"] + ".md") if uid_layout else note["file_name"]
     target = folder / file_name
     rec = {"uid": note["uid"], "title": " ".join(title.split()), "kind": kind, "tags": tags_out,
            "category_uid": category_uid, "route_key": route_key, "related_uids": related,

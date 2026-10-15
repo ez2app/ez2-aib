@@ -276,7 +276,7 @@ def load_persona_red_lines(
         str(entry.get("vault_root") or "").strip()
         or str(source.get("vault_root") or "").strip()
         or os.environ.get("EZ2_VAULT_DIR", "")
-        or str(Path.home() / "Ez2" / "Vault")
+        or _suite_default_vault()      # 10-15 盤點 U18:原本寫死 ~/Ez2/Vault,跟全套件不是同一個庫
     )
     card_path = Path(vault_root).expanduser() / rel
     try:
@@ -618,6 +618,16 @@ def _ledger_note(state_root: Path, agent_uid: str, actor: dict, zh: str, en: str
     """先入帳。用既有的 identity.bound(事件種類是封閉清單,不為專案加第 16 種)。"""
     import role_model as RM  # noqa: E402
     RM.RoleModel(state_root=str(state_root))._append_event("identity.bound", zh, en, agent_uid, actor)
+
+
+def _suite_default_vault() -> str:
+    """vault 位置照全套件同一條規則(route_register.default_vault)。"""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "persona_route"))
+        import route_register
+        return route_register.default_vault()
+    except Exception:  # noqa: BLE001
+        return str(Path.home() / "Desktop" / "Obsidian" / "Ez2")
 
 
 def resolve_folder(contract: Any, wanted: str):
