@@ -2775,5 +2775,6 @@
   "aib.captains_ctl.unique_schema": "지정된 함장이 한 명뿐인지 확인할 수 없습니다: {file}의 스키마가 맞지 않습니다",
   "aib.captains_ctl.captain_exists": "이미 함장이 지정되어 있습니다: 창 {window}, 좌석 코드={code}; 먼저 그 좌석을 --unassign한 뒤 새 좌석을 지정하세요",
   "aib.captains_ctl.unmeasured": "알 수 없음",
-  "aib.captains_ctl.status_label": "함장:"
+  "aib.captains_ctl.status_label": "함장:",
+  "aib.onboardcli.template_missing_menu": "aib: 이 설치본에 온보딩 템플릿이 없어서 좌석 {window}에는 \"전체 불러오기 / 철칙만\"을 보여 주지 않습니다. aib을 다시 설치하거나 업데이트(aib update)하면 돌아옵니다."
 }

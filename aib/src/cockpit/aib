@@ -2259,6 +2259,11 @@ aib_open_menu_after_right() {
   local wid="${WINDOW_ID:-}" with_onboard=1 with_fork=0 from=""
   [ "$DRY" != "1" ] && [ -n "$wid" ] || return 0
   [ "${AIB_NO_ONBOARD:-0}" != "1" ] && [ "${AIB_ONBOARD_AUTO:-0}" != "1" ] || with_onboard=0
+  # 開席單模板不在 ⇒「全部/只鐵則」必然投不出去:不列這兩項,明說一行(四語)
+  if [ "$with_onboard" = "1" ] && [ ! -f "${AIB_ONBOARD_TEMPLATE:-$HERE/../../docs/templates/SEAT-ONBOARD.md}" ]; then
+    with_onboard=0
+    "$T_PY3" "$HERE/i18n_lib.py" --param "window=$wid" aib.onboardcli.template_missing_menu >&2 2>/dev/null || true
+  fi
   [ "${_aib_fork_menu:-0}" = "1" ] && with_fork=1
   if [ "$with_onboard" = "1" ] || [ "$with_fork" = "1" ]; then
     case "${AIB_RIGHT_OK_NOTE:-}" in

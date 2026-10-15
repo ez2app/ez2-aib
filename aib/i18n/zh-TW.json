@@ -2775,5 +2775,6 @@
   "aib.captains_ctl.unique_schema": "無法確認受派艦長唯一性:{file} schema 不符",
   "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
   "aib.captains_ctl.unmeasured": "量不到",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.onboardcli.template_missing_menu": "aib: 這份安裝缺開席單模板,所以席 {window} 不列「載入全部 / 只鐵則」。重裝或更新 aib(aib update)就會補回。"
 }
