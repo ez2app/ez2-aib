@@ -343,6 +343,13 @@ class Index(object):
             #   只收「讀過的檔」會漏掉這一整類,而漏掉的樣子是綠的。
             self.reverse.setdefault(rel, set()).add(test)
 
+    def sort_history(self):
+        """每支測試的歷史依列時間由舊到新重排(穩定排序:同一秒照讀入順序),latest 跟著換。見 _order_key。"""
+        for test, rows in self.history.items():
+            if len(rows) > 1:
+                rows.sort(key=_order_key)
+                self.latest[test] = rows[-1]
+
     def tests_reading(self, changed):
         """{改動檔: [讀過它的測試…]};只回有命中的檔。"""
         hits = {}
@@ -805,8 +812,10 @@ def _quarantine(path, apply=False, now=None):
         names |= {row["test"] for _, row in good if row}
     template = next((row for _, row in reversed(good) if row), {})
     stamp = now or _time.strftime("%Y-%m-%d %H:%M")
+    # 10-15 A6:墓碑帶 UTC 時間(照真實時鐘,不照 now 參數)。以前沒有 ⇒ 更早寫的作廢列(--void-test/--void-all)
+    #   因「列沒有時間 = 算在作廢之前」一律打中它 ⇒ 墓碑被吃掉,舊綠又變成最新一列。
     tombs = [{"test": t, "rc": -1, "inputs": [], "measured": "unmeasured", "external": False,
-              "why": ["quarantined-bad-row"], "time": stamp,
+              "why": ["quarantined-bad-row"], "time": stamp, "time_utc": _utc_now(),
               **{k: template[k] for k in ("repo", "repo_id") if k in template}} for t in sorted(names)]
     report = {"file": str(p), "bad_lines": [n for n, _ in bad], "tombstones": sorted(names),
               "unknown_test_in_bad_line": unknown, "applied": False, "changed": False}
@@ -861,6 +870,10 @@ def _void_hits(v, row):
                 return False
         if c.get("key_prefix") and not str(row.get("key") or "").startswith(c["key_prefix"]):
             return False
+    # 10-15 A6:沒有 UTC 時間的墓碑(舊版隔離留下的)不准被作廢:它是「最新那列壞了、可能是紅」的唯一證據,
+    #   而「沒時間 = 算在作廢之前」會讓任何更早的作廢列吃掉它 ⇒ 舊綠變最新。作廢墓碑從來不會讓結果更安全。
+    if _is_tombstone(row) and not row.get("time_utc"):
+        return False
     # 10-03 審查第 3 條:抽查作廢「錯的綠」時,不能連剛跑出來的紅證據一起作廢 ⇒ green_only 只打綠列
     if c.get("green_only") is True and not _walkable(row):
         return False
@@ -870,6 +883,30 @@ def _void_hits(v, row):
         return not isinstance(tu, str) or not tu or tu < v["before_utc"]
     t = row.get("time")
     return not isinstance(t, str) or not t or t < v["before"]
+
+
+def _local_to_utc(text):
+    """列的本地時間字串(寫列那台的時鐘;"YYYY-MM-DD HH:MM[:SS]")→ UTC 字串;看不懂回 None。只拿來排先後(近似)。"""
+    import time as _time
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.mktime(_time.strptime(text, fmt))))
+        except (ValueError, OverflowError, TypeError):
+            continue
+    return None
+
+
+def _order_key(row):
+    """排「哪一列最新」用的鍵(10-15 A5)。有 time_utc 用它;沒有就用本地 time 換算(近似);兩者都沒有 ⇒
+    綠的排最舊(沒有時間的綠本來就不准沿用,row-age-unknown)、非綠的(紅/墓碑/量不到)排最新 —— 錯也錯在多跑。"""
+    tu = row.get("time_utc")
+    if isinstance(tu, str) and tu:
+        return tu
+    t = row.get("time")
+    got = _local_to_utc(t) if isinstance(t, str) and t else None
+    if got:
+        return got
+    return "" if _walkable(row) else "9999"
 
 
 def _is_tombstone(row):
@@ -1136,6 +1173,9 @@ def build_index(paths, repo=None):
             return idx
         finally:
             lockf.close()       # 關檔即放鎖
+    # 10-15 A5:「最新一列」照列自己的時間排,不照檔案 mtime。拉進來的 shared-* 檔、隔離改寫過的檔整檔 mtime 變新,
+    #   照檔案順序疊 ⇒ 別台幾天前的綠排到墓碑/新紅之後、變成最新一列。檔案順序只在同一秒時當次序(穩定排序)。
+    idx.sort_history()
     # 第 3 步:抽查抓到「真的沿用錯了」⇒ 寫停用旗標;旗標在 ⇒ 別台機器的列一律不用(沒有 host_id 的舊列視為本機)
     flag_dirs = [Path(p) for p in (paths or [])] or [Path(st.shadow_dir_default()) if st is not None else None]
     for d in flag_dirs:
