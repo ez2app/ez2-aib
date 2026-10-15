@@ -418,5 +418,49 @@ class C9DoctorNotices(TmpCase):
         self.assertNotIn("沒有 ez2-ai", src)
 
 
+# ───────────────────────────────────────────────────────────── C13
+class C13UpdateHelpAndPipxName(TmpCase):
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(ROOT.parent))
+        import importlib
+        self.cli = importlib.import_module("aib.cli")
+        orig_execv = os.execv
+        self.addCleanup(setattr, os, "execv", orig_execv)
+
+        def boom(*a, **k):
+            raise AssertionError("execv called: %r" % (a,))
+        os.execv = boom
+
+    def test_update_help_has_no_side_effects(self):
+        import io
+        import contextlib
+        old_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.tmp)
+        self.addCleanup(os.environ.__setitem__, "HOME", old_home)
+        for flag in ("--help", "-h"):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = self.cli._update([flag])
+            self.assertEqual(rc, 0)
+            self.assertIn("usage: aib update", buf.getvalue())
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_pipx_hint_uses_package_name(self):
+        import io
+        import contextlib
+        pkg = self.tmp / "site-packages" / "aib"
+        pkg.mkdir(parents=True)
+        orig = self.cli.HERE
+        self.addCleanup(setattr, self.cli, "HERE", orig)
+        self.cli.HERE = str(pkg)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = self.cli._update([])
+        self.assertEqual(rc, 2)
+        self.assertIn("pipx upgrade ez2-aib", err.getvalue())
+        self.assertNotIn("pipx upgrade aib", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
