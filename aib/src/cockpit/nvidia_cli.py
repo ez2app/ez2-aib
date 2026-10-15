@@ -733,9 +733,9 @@ def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
             append_history(sess, "assistant", content)
             # 10-13 a seat(the maintainer「API 席和 Bot 也要能自動更新」「每 20 輪」):這一席的模型不能跑指令 ⇒ 程式代跑整理記憶
             #   (草稿只帶要改的段 + 最後幾則對話;不帶工具的單次呼叫;填壞就丟、不重試、不擋下一則;src/memory/api_tidy.py)
-            # 10-15 CTX 用量表:沒有 hook 機制 ⇒ 外層(本 REPL)每一輪代呼叫 stop 那條路(src/memory/api_tidy.py turn_end)
-            _api_tidy.turn_end(sess.name)
-            if _api_tidy.tick(sess.name):
+            # 10-15 CTX 用量表:沒有 hook 機制 ⇒ 外層(本 REPL)每一輪代呼叫 stop 那條路;量不到用量 ⇒ 每 N 輪
+            #   (policy 表 unmeasured_tidy_every_turns)回 True ⇒ 代跑整理記憶(src/memory/api_tidy.py turn_end)
+            if _api_tidy.turn_end(sess.name):
                 sys.stdout.write(_api_tidy.run(lambda p: _api_tidy.text_of(completion_message(
                     base_url=base_url, api_key=api_key, model=model,
                     messages=_api_tidy.recent(messages) + [{"role": "user", "content": p}])[0])) + "\n")

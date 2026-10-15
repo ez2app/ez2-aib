@@ -136,3 +136,13 @@ def stages_descending(path=None):
         except KeyError:
             continue                 # 表上沒有這種動作 ⇒ 沒有這一階(不補數字)
     return tuple(sorted(rows, key=lambda r: (r[0], TRIGGER_KINDS.index(r[1])), reverse=True)) + ((0, "ok"),)
+
+
+def unmeasured_every(path=None):
+    """量不到用量的席每幾輪精煉一次(`unmeasured_tidy_every_turns`;維護者 10-15 22:4x)。缺鍵 / 不是正整數 ⇒ raise
+    (同本模組:不給預設值)。auto_distill_hook(API 席 outer_turn、bot_turn)與 api_tidy 只經這一支取。"""
+    data = load(path)
+    n = data.get("unmeasured_tidy_every_turns")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise _fail(KeyError, "unmeasured_tidy_every_turns 要是正整數:%r", n)
+    return n
