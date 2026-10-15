@@ -1531,8 +1531,9 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
 _WOKE_KEYS = ("woke_batch", "woke_ids", "woke_at", "woke_rc", "woke_mode", "auto_read", "wake_log")
 # ★ review r2 m1:wake_log(每日上限的帳)**永不回滾** —— 每一次投遞嘗試都花過一次 dm-ctl,照算
 _WOKE_ROLLBACK_KEYS = tuple(k for k in _WOKE_KEYS if k != "wake_log")
-# ★ review r2 m1:rc=2 最多回滾這麼多次,之後記成叫過。dm-ctl 的 2 也用在
+# ★ review r2 m1:rc=2 最多回滾這麼多次,之後記成叫過。dm-ctl 的 2 以前也用在
 #   「回讀不符、勿自動重送」,沒有上限就會每分鐘重貼一次、一直貼下去。
+#   (10-15 B1:那一格已改回 4 = 勿重送;上限照留,防的是下一個把 2 用錯的出口。)
 # ★ review r3 m3:次數**每席**累計(woke_attempts 跟著 build_record 跨批次抄),只在叫醒成功(rc=0)後歸零 ——
 #   以前換一批(來一封新信)就從 1 重算,一直來信就一直重貼。
 WAKE_RC2_MAX = 3
@@ -3794,6 +3795,25 @@ def _read_msg(args):
 DELIVER_IDENTITY_DROP = ("CODEX_THREAD_ID", "DM_CODEX_SESSION_UUID")
 
 
+def sort_deliver_proof(seat, item_id, env=None):
+    """10-15 B4:dm-ctl 的排空器模式(AIB_DM_SORT_DELIVER=1)要有證據才算數 —— 那個模式跳過真人判定、
+    冒用改寫、留痕、record 與忙碌檢查,原本**一個環境變數**就打得開。
+    證據 = 投遞者手上**正在貼**的那一則:
+      · 佇列信(q_ 開頭):那一則在 seat 的佇列裡、狀態是 claimed(排空器 claim_id / 真人「立刻送出」都先 claim);
+      · 歸納叫醒(triage_<批>):那一席 triage.json 記著「這一批叫過了」(woke_batch)而結果還沒寫回(woke_rc 是 None)。
+    能力邊界同 dm-ctl「排隊投遞保留原寄件人」那段:本機行程刻意先入列再自己 claim 仍可通過;擋的是「設一個環境變數」。"""
+    seat, item_id = str(seat or ""), str(item_id or "")
+    if not SEAT_RE.fullmatch(seat):
+        return False
+    if ITEM_RE.fullmatch(item_id):
+        return (_load_item(seat, item_id, env) or {}).get("status") == "claimed"
+    if item_id.startswith("triage_") and len(item_id) > len("triage_"):
+        rec = TR.load(triage_path(seat, env)) or {}
+        return (str(rec.get("woke_batch") or "") == item_id[len("triage_"):]
+                and "woke_rc" in rec and rec.get("woke_rc") is None)
+    return False
+
+
 def _dmctl_env(item, env=None):
     """投遞器交給 dm-ctl 的環境(抽出來給尺直接驗;行為與原本內聯那段相同,多兩件):
     · 寄件身分變數(DELIVER_IDENTITY_DROP)洗掉;
@@ -3806,15 +3826,19 @@ def _dmctl_env(item, env=None):
     #   ⇒ 排隊送出的信抬頭一律變成「系統@aib」,收件席不知道是誰寄的、也回不了信。
     #   只遞**這一則的 id**,不遞寄件人字串:dm-ctl 自己回佇列讀這一則(要是 claimed、正文要對得上),
     #   抬頭才改用信上記的原寄件人。環境裡殘留的同名變數先清掉,不讓外層的值混進來。
-    for _k in [k for k in env2 if k.startswith("AIB_DM_QUEUED_")]:
+    for _k in [k for k in env2 if k.startswith("AIB_DM_QUEUED_")] + ["AIB_DM_SORT_WAKE_ID"]:
         env2.pop(_k, None)
     for _k in DELIVER_IDENTITY_DROP:
         env2.pop(_k, None)
+    # review r2 m6:這一則住在哪一席的佇列(dm-ctl 轉給後繼席之後收件席碼就不是它了);
+    #   10-15 B4:也是 dm-ctl 驗排空器模式證據(sort_deliver_proof)的那一席,叫醒那句也要帶
+    if SEAT_RE.fullmatch(str(item.get("seat") or "")):
+        env2["AIB_DM_QUEUED_SEAT"] = item["seat"]
     if ITEM_RE.fullmatch(str(item.get("id") or "")):
         env2["AIB_DM_QUEUED_ITEM_ID"] = item["id"]
-        # review r2 m6:這一則住在哪一席的佇列(dm-ctl 轉給後繼席之後收件席碼就不是它了)
-        if SEAT_RE.fullmatch(str(item.get("seat") or "")):
-            env2["AIB_DM_QUEUED_SEAT"] = item["seat"]
+    elif str(item.get("id") or "").startswith("triage_"):
+        # 叫醒那句不是佇列信(不帶 QUEUED_ITEM_ID ⇒ 抬頭不回佇列找原寄件人),但 dm-ctl 要拿它驗證據
+        env2["AIB_DM_SORT_WAKE_ID"] = item["id"]
     if item.get("no_relay"):
         env2["AIB_DM_RELAY_BYTES"] = "0"
     return env2
@@ -3826,9 +3850,17 @@ def _deliver_via_dmctl(item, env=None):
     env:背景 upkeep 逐艙呼叫時傳**那一艙**的環境(艙家、aihub-<艙>);不傳 = 右欄那條路,照舊用本行程環境。"""
     ctl = str(_HERE / "dm-ctl.sh")
     msg = delivery_text(item)   # 時效行在前、原文在後(接口 §5);歷史裡存的仍是原文
-    tmp = Path("/tmp") / ("aib-dmq-drain-%s.txt" % (item.get("id") or "x"))
+    # 10-15 B9:原本固定 /tmp/aib-dmq-drain-<id>.txt —— 名字猜得到、write_text 會跟著符號連結蓋掉別的檔。
+    #   改 mkstemp(O_EXCL、0600、名字隨機);開不了 ⇒ 一個字都沒送,回 2(可重送,佇列自己有 attempts 上限)。
+    import tempfile
     try:
-        tmp.write_text(msg, encoding="utf-8")
+        fd, tmp_name = tempfile.mkstemp(prefix="aib-dmq-drain-", suffix=".txt")
+    except OSError:
+        return 2
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(msg)
         env2 = _dmctl_env(item, env)
         proc = subprocess.run(
             ["bash", ctl, item.get("seat") or "", "--file", str(tmp)],
@@ -4129,6 +4161,10 @@ def main(argv=None, env=None):
 
     ci.add_argument("--no-rev-check", action="store_true")
 
+    spf = sub.add_parser("sort-proof")   # 10-15 B4:dm-ctl 排空器模式的證據(rc 0=有、1=沒有)
+    spf.add_argument("--seat", required=True)
+    spf.add_argument("--id", required=True)
+
     rq = sub.add_parser("requeue")   # 人把待人處理(hold_human)的信放回佇列
     rq.add_argument("--seat", required=True); rq.add_argument("--id", required=True)
     rq.add_argument("--by", default=None)          # human:<id>;沒帶一律拒
@@ -4417,6 +4453,9 @@ def main(argv=None, env=None):
         item = claim_next(args.seat, env=env)
         _print_json(item or {"id": None})
         return 0 if item else 3
+
+    if args.cmd == "sort-proof":
+        return 0 if sort_deliver_proof(args.seat, args.id, env=env) else 1
 
     if args.cmd == "claim-id":
         if args.no_rev_check and args.if_rev is None:
