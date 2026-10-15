@@ -67,8 +67,12 @@ jobs:
           test -d "$HOME/.ez2-aib/identity" || { echo "::error::install did not run aib init"; exit 1; }
           "$AIB" --help >/dev/null || [ $? -eq 2 ]
           printf '# Tester\n\n## 職責\nwrite tests\n\n## 紅線\nnever delete data\n\n## 知識域\nPython\n' > "$RUNNER_TEMP/role.md"
-          "$AIB" newrole --name Tester --prompt-file "$RUNNER_TEMP/role.md" </dev/null
-          test -f "$HOME/.ez2-aib/vault/10-Roles/Tester/角色.md" || { echo "::error::newrole did not create the role card"; exit 1; }
+          "$AIB" newrole --name Tester --prompt-file "$RUNNER_TEMP/role.md" </dev/null > "$RUNNER_TEMP/newrole.json"
+          cat "$RUNNER_TEMP/newrole.json"
+          # #41 起新人格卡放在 uid 資料夾(10-Roles/<uid>/角色.md),路徑照 newrole 回的 card_file 驗,不寫死名字
+          card="$(python3 -c 'import json,sys; t=open(sys.argv[1],encoding="utf-8").read(); i=t.rfind("\n{"); print(json.loads(t[i+1 if i>=0 else t.index("{"):]).get("card_file",""))' "$RUNNER_TEMP/newrole.json")"
+          case "$card" in "$HOME/.ez2-aib/vault/10-Roles/"*/角色.md) ;; *) echo "::error::newrole card_file is not under 10-Roles: $card"; exit 1 ;; esac
+          test -f "$card" || { echo "::error::newrole did not create the role card ($card)"; exit 1; }
           set +e
           out="$("$AIB" plaza 2>&1)"; rc=$?
           set -e
