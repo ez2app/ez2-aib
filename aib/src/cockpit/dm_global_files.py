@@ -564,6 +564,42 @@ def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=ti
             "detail": "已交給轉接程式,還沒收到對方回條;勿重送", "msgid": msgid}
 
 
+# 寄件人標籤(seat_address 白名單的格式):`@五碼[(暱稱)]` = 行程鏈量到的;`seat_claimed:五碼(自稱)` = 自稱(codex 等)
+_LABEL_SEAT_RE = re.compile(r"^@([0-9a-z]{4,8})(?:\(|$)")
+_LABEL_CLAIMED_RE = re.compile(r"^seat_claimed:([0-9a-z]{4,8})[(\uff08]")
+
+
+def sender_from_token(token):
+    """dm-ctl 的 whoami token(dm_xhost.encode,跨主機同一套推導)⇒ {cabin, seat, attested};推不出寄件席回 None。
+
+    全球信要用寄件席自己的金鑰簽(第 5.3 節),推不出是哪一席就不能寄 ⇒ 呼叫端回 rc 2。"""
+    import dm_xhost
+    d = dm_xhost.decode(token or "")
+    if not d:
+        return None
+    m = _LABEL_SEAT_RE.match(d["label"])
+    attested = m is not None
+    if m is None:
+        m = _LABEL_CLAIMED_RE.match(d["label"])    # 自稱席照寄,但標未認證(收件端抬頭會顯示未驗證)
+    hub = d["hub"]
+    if not m or not dm_xhost.HUB_RE.fullmatch(hub or ""):
+        return None
+    cabin = "main" if hub == "aihub" else hub.rsplit("-", 1)[-1]
+    if not _CABIN.match(cabin):
+        return None
+    return {"cabin": cabin, "seat": m.group(1), "attested": attested}
+
+
+def reply_target(seat, code, env=None):
+    """收件席 + 回信短碼 ⇒ (原寄件全球位址, 原 msgid);找不到回 None。查佇列(dm_queue.by_reply_code)。"""
+    import dm_queue
+    item = dm_queue.by_reply_code(seat, code, env)
+    if not item:
+        return None
+    g = item["global"]
+    return g["addr"], g["msgid"]
+
+
 def _cli(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="dm_global_files.py")
@@ -571,10 +607,12 @@ def _cli(argv):
     sw = sub.add_parser("send-and-wait", help="正文從 stdin 讀;印一行 key=value,rc 照第 7.1 節")
     sw.add_argument("--root", default=None)
     sw.add_argument("--op", choices=("send", "resolve"), default="send")
-    sw.add_argument("--to", required=True)
-    sw.add_argument("--from-cabin", required=True)
-    sw.add_argument("--from-seat", required=True)
-    sw.add_argument("--attested", choices=("0", "1"), required=True)
+    sw.add_argument("--to")
+    sw.add_argument("--reply-code", help="代替 --to:照外框說明上的短碼回原寄件人(第 9 節)")
+    sw.add_argument("--whoami-token", help="代替 --from-*:dm-ctl 推導的寄件人 token")
+    sw.add_argument("--from-cabin")
+    sw.add_argument("--from-seat")
+    sw.add_argument("--attested", choices=("0", "1"))
     sw.add_argument("--persona-uid")
     for k in ("priority", "thread", "kind", "lang", "reply-to"):
         sw.add_argument("--" + k)
@@ -587,12 +625,34 @@ def _cli(argv):
     if a.cmd == "reply-code":
         print(reply_code(a.msgid))
         return 0
+    def _bail(stage, detail):
+        print("stage=%s rc=2 msgid=- pos=- detail=%s" % (stage, detail))
+        return 2
+    if a.whoami_token:
+        who = sender_from_token(a.whoami_token)
+        if who is None:
+            return _bail("abort", "推不出寄件席(全球信要用寄件席自己的金鑰簽),一個字都沒送")
+    elif a.from_cabin and a.from_seat and a.attested:
+        who = {"cabin": a.from_cabin, "seat": a.from_seat, "attested": a.attested == "1"}
+    else:
+        return _bail("abort", "要給 --whoami-token 或 --from-cabin/--from-seat/--attested")
+    to, reply_to = a.to, a.reply_to
+    if a.reply_code:
+        if a.to:
+            return _bail("abort", "--reply 與位址不能同時給")
+        hit = reply_target(who["seat"], a.reply_code)
+        if hit is None:
+            return _bail("abort", "回信短碼 %s 在 @%s 的佇列找不到" % (a.reply_code, who["seat"]))
+        to, reply_to = hit
+    if not to:
+        return _bail("abort", "沒有收件位址")
     root = Path(a.root) if a.root else default_root()
     ensure_dirs(root)
     rec = {"v": VERSION, "msgid": new_msgid(), "created_at": int(time.time()), "op": a.op,
-           "from": {"cabin": a.from_cabin, "seat": a.from_seat, "attested": a.attested == "1"}, "to": a.to}
+           "from": dict(who), "to": to}
     if a.persona_uid:
         rec["from"]["persona_uid"] = a.persona_uid
+    a.reply_to = reply_to
     if a.op == "send":
         rec["content"] = sys.stdin.read()
     for k in ("priority", "thread", "kind", "lang"):
