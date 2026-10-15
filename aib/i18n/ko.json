@@ -3488,5 +3488,7 @@
   "aib.perf_tab.mark_manual": "수동",
   "aib.perf_tab.safe_all": "모두 안전하게 닫을 수 있음 {n}개({names})",
   "aib.perf_tab.none_safe": "모두 닫을 수 있는 항목 없음",
-  "aib.perf_tab.spans_need_path": "--spans 에는 경로나 EZ2_COCKPIT_STATE_DIR 가 필요합니다"
+  "aib.perf_tab.spans_need_path": "--spans 에는 경로나 EZ2_COCKPIT_STATE_DIR 가 필요합니다",
+  "aib.err.role_undefined": "aib: 역할 \"{role}\"은(는) 정의되지 않았습니다. 정의된 역할에서 고르세요: {roles}. 좌석 구분은 역할 이름이 아니라 페르소나와 프로젝트(aib newrole / aib newproj)로 합니다.",
+  "aib.launch.default_cabin": "aib: 이 함선 {instance}에서 엽니다(새 함선은 끝에 new)"
 }

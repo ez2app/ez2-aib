@@ -3488,5 +3488,7 @@
   "aib.perf_tab.mark_manual": "手動",
   "aib.perf_tab.safe_all": "安全にすべて閉じられます {n} 件({names})",
   "aib.perf_tab.none_safe": "一括で閉じられる項目なし",
-  "aib.perf_tab.spans_need_path": "--spans にはパスか EZ2_COCKPIT_STATE_DIR が必要です"
+  "aib.perf_tab.spans_need_path": "--spans にはパスか EZ2_COCKPIT_STATE_DIR が必要です",
+  "aib.err.role_undefined": "aib: ロール「{role}」は定義されていません。定義済みのロールから選んでください:{roles}。席の区別はペルソナとプロジェクト(aib newrole / aib newproj)で行い、ロール名では行いません。",
+  "aib.launch.default_cabin": "aib: この艙 {instance} で開きます(新しい艙にするには最後に new)"
 }

@@ -3488,5 +3488,7 @@
   "aib.perf_tab.mark_manual": "manual",
   "aib.perf_tab.safe_all": "Safe to close all {n} ({names})",
   "aib.perf_tab.none_safe": "Nothing safe to close all",
-  "aib.perf_tab.spans_need_path": "--spans needs a path or EZ2_COCKPIT_STATE_DIR"
+  "aib.perf_tab.spans_need_path": "--spans needs a path or EZ2_COCKPIT_STATE_DIR",
+  "aib.err.role_undefined": "aib: role \"{role}\" is not defined. Pick one of the defined roles: {roles}. Use personas and projects (aib newrole / aib newproj) to tell seats apart, not role names.",
+  "aib.launch.default_cabin": "aib: opening in this cabin {instance} (add new at the end for a new cabin)"
 }

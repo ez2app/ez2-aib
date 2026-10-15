@@ -727,7 +727,9 @@ def run_newproj(args) -> int:
             return _refuse(T("aib.newproj.unbind_needs_seat"), "(new seat)")
         import create_and_bind_persona as CBP  # noqa: E402
         CBP.AIB_HOME = root
-        role = CBP.seat_role_of(args.title, "project")
+        role, role_err = CBP.new_seat_role_or_die(getattr(args, "role", ""))   # 10-15:不拿專案標題當角色名
+        if role_err:
+            return _refuse(role_err, "(new seat)")
         # ★ review r15 M1(人格):開新席**之前**先做不需要席位的檢查。以前先開席 ⇒ 後面被擋(標題撞名、uid 不存在、
         #   新席沒人格所以綁不上資料夾 —— 帶 --folder 或同標題舊卡記了資料夾時**每次**都中)都留下一個在跑的新席,
         #   訊息卻說「什麼都沒寫」;試跑也在檢查前就回綠燈。
@@ -1134,6 +1136,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--folder", default="", help=T("aib.newproj.help_folder"))
     ap.add_argument("--new-seat", action="store_true", help=T("aib.newproj.help_new_seat"))
     ap.add_argument("--engine", default="claude", help=T("aib.newproj.help_engine"))
+    ap.add_argument("--role", default="", help="--new-seat: role of the new seat (a defined role; default dev)")
     ap.add_argument("--entry", default="", choices=["", "newproj"], help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     # 選單那條路一定帶 --seat;aib newproj 不帶 ⇒ 只建卡(the maintainer 10-01),不在這裡擋

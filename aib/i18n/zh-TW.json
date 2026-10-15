@@ -3488,5 +3488,7 @@
   "aib.perf_tab.mark_manual": "手動",
   "aib.perf_tab.safe_all": "可安全全關 {n} 項({names})",
   "aib.perf_tab.none_safe": "無可全關項",
-  "aib.perf_tab.spans_need_path": "--spans 需要路徑或 EZ2_COCKPIT_STATE_DIR"
+  "aib.perf_tab.spans_need_path": "--spans 需要路徑或 EZ2_COCKPIT_STATE_DIR",
+  "aib.err.role_undefined": "aib: 角色「{role}」沒有定義。開席請從已定義的角色選:{roles}。工作分類靠人格與專案(aib newrole / aib newproj),不靠角色名。",
+  "aib.launch.default_cabin": "aib: 開在本艙 {instance}(要開新艙請在最後寫 new)"
 }
