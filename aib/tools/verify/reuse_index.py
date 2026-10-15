@@ -1185,7 +1185,9 @@ def build_index(paths, repo=None):
         me = host_id()
         for test in list(idx.history):
             # 10-03 審查第 2 條:從別台收進來的列(帶 via)不管自己寫了什麼 host_id,一律當別台
-            kept = [r for r in idx.history[test] if not r.get("via") and r.get("host_id") in (None, "", me)]
+            # 10-15 A2:停用的是「拿別台的綠來沿用」,不是「看別台的紅」⇒ 別台的紅/逾時/墓碑照收(仍擋得住沿用),只丟別台的綠
+            kept = [r for r in idx.history[test]
+                    if (not r.get("via") and r.get("host_id") in (None, "", me)) or not _walkable(r)]
             idx.foreign_host_rows += len(idx.history[test]) - len(kept)
             if kept:
                 idx.history[test] = kept
