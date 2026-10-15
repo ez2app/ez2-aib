@@ -1528,8 +1528,9 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
 _WOKE_KEYS = ("woke_batch", "woke_ids", "woke_at", "woke_rc", "woke_mode", "auto_read", "wake_log")
 # ★ review r2 m1:wake_log(每日上限的帳)**永不回滾** —— 每一次投遞嘗試都花過一次 dm-ctl,照算
 _WOKE_ROLLBACK_KEYS = tuple(k for k in _WOKE_KEYS if k != "wake_log")
-# ★ review r2 m1:rc=2 最多回滾這麼多次,之後記成叫過。dm-ctl 的 2 也用在
+# ★ review r2 m1:rc=2 最多回滾這麼多次,之後記成叫過。dm-ctl 的 2 以前也用在
 #   「回讀不符、勿自動重送」,沒有上限就會每分鐘重貼一次、一直貼下去。
+#   (10-15 B1:那一格已改回 4 = 勿重送;上限照留,防的是下一個把 2 用錯的出口。)
 # ★ review r3 m3:次數**每席**累計(woke_attempts 跟著 build_record 跨批次抄),只在叫醒成功(rc=0)後歸零 ——
 #   以前換一批(來一封新信)就從 1 重算,一直來信就一直重貼。
 WAKE_RC2_MAX = 3

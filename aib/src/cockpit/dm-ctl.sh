@@ -37,7 +37,8 @@
 #
 # stdout 最後一行(第 70 項 P3,2026-09-14):
 #   RESULT stage=<stage> id=<佇列 id> relay=<留痕檔絕對路徑> thread=<thread>
-#   恰四鍵、鍵序固定、空值 `-`、零 ANSI;`--resolve-only` 不印。多目標 = 每席一行 + 最後一行
+#   前四鍵恰此、鍵序固定、空值 `-`、零 ANSI;被擋時其後多 ` reason=<block_kind>`(E4),重送輪再多 ` resend=1`;
+#   `--resolve-only` 與 `--probe-box` 不印(probe 的最後一行是 `box=…`)。多目標 = 每席一行 + 最後一行
 #   stage=batch。每一則(長短都算)都留痕:長訊在 pending(指標檔)、短訊在本艙
 #   state/relay/<日期>/;兩者都寫一列進 state/relay/index.jsonl;dry-run 檔名尾 `.dry`。
 #   id= 是這一則在佇列歷史裡的 id:忙碌入列時是 sort-queued 那一則;直送 rc0/3/4 之後由本檔呼叫
@@ -133,6 +134,9 @@ die() { echo "aib-dm-ctl: $1" >&2; exit "${2:-2}"; }
 # ★ 沒走到任何 stage 就退出(用法錯、die 在解析前)⇒ stage=abort;不印 `-`,
 #   `-` 留給「這一格結構上沒有值」,abort 是「有值但它是失敗」。
 _RESULT_STAGE="-"; _RESULT_ID="-"; _RESULT_RELAY="-"; _RESULT_THREAD="-"
+# E4(10-15 @977e3 只讀查):被擋時最後一行要看得到原因(腳本與 AI 多半只讀 tail -1)。
+#   有值才印、印在 thread 之後:前四鍵與鍵序不動,消費者 split 前四段照舊。
+_RESULT_REASON=""
 _RESULT_DONE=0
 _RECORD_ELIGIBLE=0
 # 直送之後把這一則記進佇列歷史(接口 §3 record;P3 第二包)。住在 EXIT trap 裡的理由與 RESULT 行同:
@@ -208,7 +212,8 @@ _result_line() {
   [ "$_st" = "-" ] && _st="abort"
   # ★ 第 159 項:重送那一輪多一鍵 ` resend=1`(只在重送輪出現;第一輪恰四鍵不變,消費者用 split 讀前四段照舊)。
   local _rs=""
-  [ "${AIB_DM_RESEND:-0}" = "1" ] && _rs=" resend=1"
+  [ -n "${_RESULT_REASON:-}" ] && _rs=" reason=$(_result_enc "$_RESULT_REASON")"
+  [ "${AIB_DM_RESEND:-0}" = "1" ] && _rs="${_rs} resend=1"
   printf 'RESULT stage=%s id=%s relay=%s thread=%s%s\n' \
     "$(_result_enc "$_st")" "$(_result_enc "$_RESULT_ID")" \
     "$(_result_enc "$_RESULT_RELAY")" "$(_result_enc "$_RESULT_THREAD")" "$_rs"
@@ -219,6 +224,8 @@ trap '_result_line' EXIT
 # 再失敗 ⇒ 轉 hold_human 給人(record rc=2、attempts=1,見 _record_delivery)。
 # ★ 只在兩個「可安全重送」出口:blocked 且回讀兩幀相同無殘留 / browse-mode。「不要自動重送」(兩幀不同)與 rc=4
 #   不重送 —— 它們的失效方向是**重複投遞**,那比少送一次貴(缺陷十六:32 次重送目標端實收 3 份)。
+#   (10-15 B1:「不要自動重送」那個出口原本回 rc 2,而 rc 2 的契約是「可安全重送」⇒ --retry-until、排空器、
+#    多目標照 2 重送。改回 4 + stage=blocked-unconfirmed,照契約就不會有人重送。)
 # ★ 重送 = 再入本檔自己(同多目標的做法,不複製投遞的任何一段):稿走 stdin(第三順位取法),引數只有目標與分類旗標;
 #   AIB_DM_RESEND=1 讓子輪(a)不再重送(上限 1)(b)不再留痕(第一輪已留,AIB_DM_RESEND_RELAY 帶路徑進 RESULT)(c)回 2 記 hold_human。
 # ★ 父輪不印自己的 RESULT(_RESULT_DONE=1)也不 record:stdout 最後一行是子輪的 RESULT(P3 契約),歷史裡一則一筆。
@@ -1674,6 +1681,7 @@ if [ -n "$REFUSAL_KIND" ]; then
     _notice_blocked "$("$PY3" -c 'import json,sys; print((json.loads(sys.argv[1]).get("refusal") or {}).get("blocked_code") or "")' "$RESOLVED")" window-alias
   fi
   if [ "$RESOLVE_ONLY" = "1" ]; then _resolve_fail "$REFUSAL_KIND" "$REFUSAL_JSON"; exit 2; fi
+  _RESULT_REASON="$REFUSAL_KIND"
   emit_json 2 resolve "$REFUSAL_DETAIL"
   exit 2
 fi
@@ -2944,6 +2952,8 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
       echo "aib-dm-ctl: $(_dmt aib.dmctl.engine_stopped_after_paste rc="$RC")" >&2
       exit 4
     fi
+    # E4:被擋的原因跟著 RESULT 行走(先設好;下面三個出口與自動重送都讀得到)
+    _RESULT_REASON="${_AE_BLOCK_KIND:-engine-rc-$RC}"
     if [ "$_AE_BLOCK_KIND" = "browse-mode" ]; then
       _aib_emit_engine_log final
       _auto_resend browse-mode
@@ -2957,9 +2967,13 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
         emit_json 2 blocked "咽喉或引擎擋下(原 rc=$RC:1=血緣deny/3=R30或讀不到畫面/4=BIND或卡稿/2=用法或目標);回讀連續兩幀逐位元組相同且無殘留佔位符 ⇒ 目標端零新增,**可安全重送**"
         exit 2
       fi
+      # ★ 10-15 B1:這裡原本 `exit 2`。rc 2 = 可安全重送,於是 --retry-until、排空器(最多 3 次)、多目標全照它重送,
+      #   而這一格逐字說的是「證不出零新增、不要自動重送」—— 收據的 rc 與 detail 講相反的話,機器只讀 rc。
+      #   證不出 = 不可判 ⇒ 4(絕不重送),與下面 undecidable 同一格處置;stage 另取名,人讀得出是哪一種。
       _aib_emit_engine_log final
-      emit_json 2 blocked "咽喉或引擎擋下(原 rc=$RC:1=血緣deny/3=R30或讀不到畫面/4=BIND或卡稿/2=用法或目標);**未確認送達,不要自動重送**——回讀兩幀不同(對方畫面還在動)或第二幀讀不到,證不出目標端零新增。請對方回一句,或自己 capture 那個 pane 看過再決定。"
-      exit 2
+      _RESULT_REASON="${_AE_BLOCK_KIND:-engine-rc-$RC}"
+      emit_json 4 blocked-unconfirmed "咽喉或引擎擋下(原 rc=$RC:1=血緣deny/3=R30或讀不到畫面/4=BIND或卡稿/2=用法或目標);**未確認送達,不要自動重送**——回讀兩幀不同(對方畫面還在動)或第二幀讀不到,證不出目標端零新增。請對方回一句,或自己 capture 那個 pane 看過再決定。"
+      exit 4
     fi
     _aib_emit_engine_log final
     emit_json 4 undecidable "咽喉或引擎擋下(原 rc=$RC),但**證不出目標端零進入**(貼後回讀=$_AE_RESID):稿可能已在對方框內,**絕不重送**,請 capture 人工確認"
