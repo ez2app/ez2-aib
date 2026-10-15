@@ -207,6 +207,12 @@ aib 不會把你的程式碼、測試結果或任何資料傳給我們。紀錄�
 席位紀錄與交接筆記、席位互傳的訊息、專案卡與角色卡,以及你為 API 金鑰席位加的金鑰(在 `~/.ez2-aib/secrets/`,資料夾 0700、
 檔案 0600<sup>[46]</sup>,用放在旁邊的金鑰加密 —— 防的是隨手看到和不小心提交,擋不住已經能讀你家目錄的人)。刪掉 `~/.ez2-aib/` 就全部清掉。
 
+aib 會改到自己資料夾以外的東西:開席時,它會在那家 AI 工具的設定裡加幾個掛點(hook),讓駕駛艙跟得上那一席 ——
+`~/.claude/settings.json`(對話開頭的狀態提醒、席位信箱、權限選單自動判斷、依用量自動整理記憶)、`~/.codex/hooks.json`、
+`~/.grok/hooks/aib-*.json`、`~/.copilot/hooks/aib-*.json` 和 `~/.gemini/config/hooks.json`。你自己的設定不會被動到,
+每次改之前會先複製一份 `<檔名>.bak-…`。狀態提醒只會提醒;只有你寫進 `~/.ez2-aib/state/seat-now/gate-seats.txt` 的席位
+(或 `*`)才會在回合結束時被擋下。`aib init` 也會在桌面放一個通往你筆記的捷徑。`aib uninstall` 會把這些全部拿掉。
+
 **註**
 - [45] 遠端(fetch / push):放在網路上的那份程式碼(例如 GitHub);fetch 是抓下來,push 是推上去。
 - [46] 0700 / 0600:檔案權限,表示只有你自己的帳號能讀寫。
@@ -267,6 +273,11 @@ aib uninstall --all --yes                # 連 aib 的紀錄與快取一起刪(~
 pipx uninstall ez2-aib                   # 用 pipx 裝的話
 rm -rf your-project/.aib                 # 只有 `aib ship` 建過、而且你不要了才刪
 ```
+
+`aib uninstall --yes` 也會拿掉 aib 加進各家 AI 工具設定的掛點(只動 aib 自己的那幾條)、它為那些檔留的 `.bak-…` 備份,
+以及桌面上通往你筆記的捷徑。如果 aib 資料夾裡有別的地方都沒有的東西 —— 沒提交的改動、未追蹤的檔、stash、沒推到任何遠端的
+commit、別的工作樹 —— 那個資料夾會留著並列出原因;真的要刪才加 `--discard-unsaved-work`。用 `aib ext` 裝的擴充放在 aib 的資料夾裡,
+請先用 `aib ext remove <名稱>` 移除。
 
 ## 參與與資安
 

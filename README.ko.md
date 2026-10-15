@@ -227,6 +227,13 @@ aib는 사용자의 코드, 테스트 결과, 그 밖의 어떤 것도 저희에
 (`~/.ez2-aib/secrets/`에 저장, 폴더 0700 / 파일 0600<sup>[46]</sup>, 옆에 저장된 키로 암호화 — 이는 우연히 들여다보거나
 실수로 커밋하는 것을 막을 뿐, 이미 사용자의 홈 폴더를 읽을 수 있는 사람까지 막지는 못합니다). `~/.ez2-aib/`를 삭제하면 모두 지워집니다.
 
+aib가 자기 폴더 밖에서 바꾸는 것: 자리를 열면 콕핏이 그 자리를 따라갈 수 있도록 해당 AI 도구의 설정에 훅 몇 개를 추가합니다 —
+`~/.claude/settings.json`(대화 시작 시 상태 알림, 자리 우편함, 권한 메뉴 자동 판단, 사용량에 따른 기억 정리), `~/.codex/hooks.json`,
+`~/.grok/hooks/aib-*.json`, `~/.copilot/hooks/aib-*.json`, `~/.gemini/config/hooks.json`. 사용자 본인의 항목은 건드리지 않으며,
+바꾸기 전마다 `<파일>.bak-…`로 먼저 복사합니다. 상태 알림은 알려 주기만 하고, 턴 끝에서 막는 것은
+`~/.ez2-aib/state/seat-now/gate-seats.txt`에 적은 자리(또는 `*`)뿐입니다. `aib init`은 바탕화면에 메모로 가는 바로가기도 만듭니다.
+`aib uninstall`은 이것들을 모두 다시 걷어 냅니다.
+
 **주**
 - [45] 원격 저장소(fetch / push): 온라인에 보관된 코드 사본(예: GitHub)으로, fetch는 거기서 내려받고 push는 거기로 올립니다.
 - [46] 0700 / 0600: 사용자 본인의 계정만 읽고 쓸 수 있다는 뜻의 파일 권한입니다.
@@ -290,6 +297,11 @@ aib uninstall --all --yes                # aib의 기록과 캐시도 삭제합�
 pipx uninstall ez2-aib                   # pipx로 설치한 경우
 rm -rf your-project/.aib                 # `aib ship`이 만들었고 더 이상 필요 없을 때만
 ```
+
+`aib uninstall --yes`는 aib가 AI 도구 설정에 추가한 훅(aib 자신의 항목만), 그 파일들에 대해 만든 `.bak-…` 사본, 바탕화면의 메모 바로가기도
+걷어 냅니다. aib 폴더에 다른 어디에도 없는 작업 — 커밋하지 않은 변경, 추적되지 않는 파일, stash, 어디에도 push하지 않은 커밋, 다른 워크트리 —
+이 있으면 그 폴더는 남겨 두고 이유를 보여 줍니다. 정말 지우려면 `--discard-unsaved-work`를 붙이세요. `aib ext`로 추가한 확장은 aib 폴더에
+있으므로 먼저 `aib ext remove <이름>`으로 제거하세요.
 
 ## 기여와 보안
 
