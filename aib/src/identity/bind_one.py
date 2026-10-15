@@ -305,7 +305,7 @@ def preflight_bind_agent(model, agent_uid, role, session_uuid, card_ref,
     if shape_error:
         return "failed", shape_error
     if agent.get("role") != role:
-        return "failed", _role_conflict(agent_uid, agent.get("role"), role)
+        return "failed", _role_conflict(model, agent_uid, agent.get("role"), role)
 
     state = "already"
     current_card = agent.get("persona_card")
@@ -406,7 +406,7 @@ def bind_agent(model, agent_uid, role, session_uuid, card_ref, actor,
         except RoleModelError:
             return "failed", "register 說已註冊,但 show 查不出來(狀態不一致)"
         if agent.get("role") != role:
-            return "failed", _role_conflict(agent_uid, agent.get("role"), role)
+            return "failed", _role_conflict(model, agent_uid, agent.get("role"), role)
         state = "already"
 
     # 2. bind-persona(換卡要具名;同卡不同 sha=重釘;都同=不寫)
@@ -949,12 +949,18 @@ def _dump(obj):
 _UI_TR = {}
 
 
-def _role_conflict(agent_uid, have, want):
+def _role_conflict(model, agent_uid, have, want):
     """身份層記的 role 跟席位檔不同(10-15 @977e3 實機:換人格時撞到 bot vs dev)。
-    不自動改(誰對要人判斷),但把解法那一行給出來:照席位檔改身份層用 role_model.py switch-role(入帳)。"""
+    不自動改(誰對要人判斷),但把解法那一行給出來:照席位檔改身份層用 role_model.py switch-role(入帳)。
+    ★ 一定帶 --state-root = 這次綁定用的狀態根:role_model 自己的預設只看 EZ2_AIB_HOME,不帶就可能改到主艙。
+    簽名兩格是大寫佔位(ROLE@SEAT/Engine),不用 <…>(貼進殼會被當成導向)。"""
+    import shlex
     tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "role_model.py")
+    root = getattr(model, "_root", None)
+    cmd = [sys.executable, tool] + (["--state-root", str(root)] if root else []) + \
+        ["switch-role", agent_uid, want, "--sig", "ROLE@SEAT/Engine", "--ai-id", "ENGINE:HOST:SESSION"]
     return _ui("aib.bindone.role_conflict", agent=agent_uid, have=have, want=want,
-               cmd="python3 %s switch-role %s %s --sig <role@seat/Engine> --ai-id <engine:host:session>" % (tool, agent_uid, want))
+               cmd=" ".join(shlex.quote(c) for c in cmd))
 
 
 def _ui(key, **params):

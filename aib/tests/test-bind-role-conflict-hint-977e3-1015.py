@@ -5,10 +5,11 @@
 全在 tmp 狀態根,不碰真 ~/.ez2-aib。
 R1 預演(preflight_bind_agent)擋下時,訊息帶 `role_model.py switch-role <agent> <席位檔的角色>` 那一行。
 R2 真綁那一條(bind_agent,預演放行後 register 才撞名)也帶同一行。
-R3 照那一行的指令改完身份層,同一筆綁定就過得了預演(解法是真的解法)。
+R3 照印出來的那一行原樣跑(帶這次的狀態根),改完身份層同一筆綁定就過得了預演;主艙在別處也不會改錯地方。
 """
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -46,7 +47,7 @@ class RoleConflictHint(unittest.TestCase):
 
     def _assert_hint(self, why):
         self.assertIn("這不是重跑,是衝突", why)
-        self.assertIn("role_model.py switch-role 977e3 dev", why)
+        self.assertIn("role_model.py --state-root %s switch-role 977e3 dev" % self.root, why)
 
     def test_R1_preflight_gives_switch_role(self):
         state, why = B.preflight_bind_agent(self.model, "977e3", "dev", SESSION, "o1q6jp")
@@ -59,13 +60,15 @@ class RoleConflictHint(unittest.TestCase):
         self.assertEqual(state, "failed")
         self._assert_hint(why)
 
-    def test_R3_running_the_hint_resolves_it(self):
+    def test_R3_running_the_printed_hint_resolves_it(self):
+        """照印出來的那一行原樣跑(只把兩格大寫佔位換成真簽名),不自己補 --state-root。"""
         _, why = B.preflight_bind_agent(self.model, "977e3", "dev", SESSION, "o1q6jp")
-        cmd = why.split("python3 ", 1)[1].split()
-        self.assertEqual(cmd[1:4], ["switch-role", "977e3", "dev"])
-        r = subprocess.run([sys.executable, cmd[0], "--state-root", str(self.root), "switch-role", "977e3", "dev",
-                            "--sig", "dev@977e3/Claude", "--ai-id", "claude:host:" + SESSION],
-                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+        cmd = shlex.split(why[why.index(sys.executable):])
+        self.assertIn("--state-root", cmd, "要帶這次綁定的狀態根,不然會改到主艙")
+        self.assertEqual(cmd[cmd.index("--state-root") + 1], str(self.root))
+        cmd = [c.replace("ROLE@SEAT/Engine", "dev@977e3/Claude").replace("ENGINE:HOST:SESSION", "claude:host:" + SESSION) for c in cmd]
+        env = dict(os.environ); env["EZ2_AIB_HOME"] = os.path.join(self.tmp, "main-cabin")   # 主艙在別處:不帶狀態根就改不到這裡
+        r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60, env=env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state, why = B.preflight_bind_agent(RM.RoleModel(state_root=str(self.root)), "977e3", "dev", SESSION, "o1q6jp")
         self.assertNotIn("是衝突", why)
