@@ -192,10 +192,23 @@ print(json.dumps(out))
         self.assertIsNone(got["prep_82"])
         self.assertTrue(got["prep_83"])
         self.assertEqual(got["continuity"], 83, "交接憑證讀表上要求交接那格")
-        self.assertIsNone(got["rotate"], "輪替門檻刪掉(不改寫成新數字)")
+        self.assertEqual(got["rotate"], 83, "輪替預設門檻 / 交接地板讀表上要求交接那格(維護者 20:4x)")
         self.assertIsNone(got["advisor"], "顧問停止門檻刪掉")
         self.assertIsNone(got["seat_gate"], "增員門檻刪掉")
         self.assertFalse(got["gate_verdict"], "增員閘不再自動判 ⇒ 不准(由人決定)")
+
+    def test_P6_rotation_floor_reads_table_and_blocks_bypass(self):
+        """維護者 20:4x:rotation.py 預設門檻與交接地板改讀表上的 85,防繞過地板照留。"""
+        p = self.write_policy([{"pct": 30, "do": ["tidy"]}, {"pct": 83, "do": ["handoff_now"]}])
+        env = dict(os.environ, EZ2_AIB_CTX_POLICY=str(p))
+        rot = str(ROOT / "src" / "rotation" / "rotation.py")
+        r = run_guarded([sys.executable, rot, "check", "--ctx-pct", "84"], env=env, stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(json.loads(r.stdout)["threshold"], 83, r.stderr)
+        r = run_guarded([sys.executable, rot, "handoff", "--root", str(self.tmp / "rot"), "--seat", "abcde", "--task",
+                         "E1", "--threshold", "50"], env=env, stdin=subprocess.DEVNULL, timeout=60)
+        self.assertNotEqual(r.returncode, 0, "--threshold 低於地板要被擋:%s" % r.stdout)
+        self.assertIn("83", r.stderr, r.stderr)
+        self.assertIn("不得低於", r.stderr)
 
     def test_P5_broken_table_raises_with_guard_mark(self):
         p = self.tmp / "bad.json"
@@ -547,6 +560,8 @@ KNIVES = {
                ["StopGate.test_G3_cap_then_release_and_mark"]),
     "bypass_any": (HOOK, "    if human and BYPASS_WORD in prompt:", "    if BYPASS_WORD in prompt:",
                    ["StopGate.test_G6_dm_xianzuo_still_blocked"]),
+    "no_floor": ("src/rotation/rotation.py", "        if args.threshold < DEFAULT_ROTATE_THRESHOLD:\n",
+                 "        if False:   # knife: 地板拿掉\n", ["Policy.test_P6_rotation_floor_reads_table_and_blocks_bypass"]),
     "no_stop_path": (HOOK, "    hand_text, hand_why = stop_handoff(code, rec, st, pct, runner, now)",
                      '    hand_text, hand_why = "", ""', ["Stop.test_S2_handoff_now_dm"]),
 }
@@ -590,6 +605,9 @@ class Knives(unittest.TestCase):
 
     def test_K9_no_stop_path(self):
         self._knife("no_stop_path")
+
+    def test_K10_no_rotation_floor(self):
+        self._knife("no_floor")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,8 @@ All readers go through `ctx_policy.py`; no threshold number is written in code.
 - 同一則跨過好幾格:交接類只講最重的那一句;要求交接 / 紅線那句已含整理記憶,不另叫精煉。
 - 提醒字裡的 % 是讀 gauge(`$EZ2_CTX_DIR/<uuid>.pct`)來的,不讓 AI 自報;讀不到 / 過期 ⇒ 不猜、不輸出、不擋。
 - 任何錯 ⇒ rc 0、無輸出(不能擋人講話)。
+- 「先做」例外要靠 `src/persona-collect/human_filter.py` 認真人訊息;公開版目前沒有那一包(已列進 CLOUD-MISSING-FILES,
+  等雲端補)。補進來之前:「先做」例外**不生效**(85 照擋),精煉格照觸發(不判「有沒有新的真人訊息」)。
 - 安裝:開 Claude 席時 `provider-launch.sh` 跑 `auto_distill_hook.py ensure`,把 UserPromptSubmit `prompt` 與 Stop `review-gate`
   寫進 `~/.claude/settings.json`;路徑經 `canonical_tree` 算正本樹(公開倉 `<倉>/aib/src/...`、pipx 本檔自己)。
 
@@ -34,7 +36,7 @@ All readers go through `ctx_policy.py`; no threshold number is written in code.
 | `prepare_compact`(80)增員閘 | 刪;`seat-gate` 不再自動判,回「由人決定」 |
 | `scout_successor`(50)找接班、`co_rule`(75)完整總結偵測 | 刪;`handover_probe` 不再判 |
 | `should_checkpoint`(60) | 刪(不再是一階) |
-| `must_handoff`(90)輪替 check / handoff 預設門檻與地板 | 刪;`rotation.py check/handoff` 要明給 `--threshold` |
+| `must_handoff`(90)輪替 check / handoff 預設門檻與地板 | 讀表上 85(維護者 20:4x);`--threshold` 只准比地板嚴 |
 | `advisor_stop`(96)顧問期自動解除、`claude_final`(97) | 刪;顧問期只剩 manual 與 24h 天花板 |
 | `captain_compact`(85) | 本來就沒讀者,刪 |
 
@@ -48,4 +50,4 @@ All readers go through `ctx_policy.py`; no threshold number is written in code.
 | 90% | Silent distill (or the handoff re-reminder if 85 is still not passed) | `auto_distill_hook.py` |
 | 95% | Red line: stop all new work and hand off now | `auto_distill_hook.py` |
 
-Each cell fires once per conversation. The % in every message is read from the gauge, never self-reported; no gauge ⇒ no output and no block. Any error ⇒ exit 0 with no output.
+Until `src/persona-collect/` (human_filter) is added to the public repo, the 「先做」 exception does not take effect and tidy cells fire without the "new human message" check. Each cell fires once per conversation. The % in every message is read from the gauge, never self-reported; no gauge ⇒ no output and no block. Any error ⇒ exit 0 with no output.

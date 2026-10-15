@@ -95,10 +95,9 @@ SENTENCES_REQUIRED = 3                # 決策 8:接棒三句理解驗收
 # EH.28:門檻改讀 policy/ctx-thresholds.json 單一資料源(艦長 09:07/09:16 裁)。
 # ★ 這裡**不留預設值**:policy 缺鍵時 ctx_policy 會 raise,而那正是要的 ——
 #   給預設值等於把「資料檔壞了」翻譯成「一切正常」。
-# 10-15 維護者「只保留 A 一張表」(policy/ctx-thresholds.json 只剩各席的 7 格):B 的 must_handoff(90)刪了,
-#   輪替門檻不改寫成新數字 ⇒ 沒有預設值。check / handoff 要人明給 --threshold 才跑(不再自動判「該輪替」);
-#   validate_handoff 的協定地板跟著拿掉(地板就是那個 90)。
-DEFAULT_ROTATE_THRESHOLD = None
+# 10-15 維護者「只保留 A 一張表」(policy/ctx-thresholds.json 只剩各席的 7 格):B 的 must_handoff(90)刪了;
+#   20:4x 裁:輪替預設門檻與交接地板改讀表上「要求交接」那一格(85),防繞過地板照留。
+DEFAULT_ROTATE_THRESHOLD = ctx_policy.trigger_pct("handoff_now")
 EXPECTED_SLOTS = ["done", "not_done_traps", "next_step"]  # 決策 8 三 slot 名釘死
 # E6.3 高5(codex 08-14 審,08-15 關):accept 原本只印 stdout,驗收紀錄零持久化
 # ——事件裡宣稱可用「驗收指紋」稽核 preimage,而 preimage 從來沒落過盤,
@@ -381,8 +380,7 @@ def validate_handoff(handoff):
     # 高2(08-14 六輪):門檻只擋 CLI 分支=library 呼叫或手製 46% handoff
     # 照樣過驗收。協定地板(HANDOFF「輪替協定」:CTX 90% 才交接)進 validate_handoff,
     # 產生端與驗收端同一道地板;CLI --threshold 只能在地板之上加嚴。
-    if DEFAULT_ROTATE_THRESHOLD is not None \
-            and handoff["ctx_pct_at_checkpoint"] < DEFAULT_ROTATE_THRESHOLD:
+    if handoff["ctx_pct_at_checkpoint"] < DEFAULT_ROTATE_THRESHOLD:
         raise RotationError(
             "ctx_pct_at_checkpoint %d%% 低於協定門檻 %d%%(HANDOFF「輪替協定」)——"
             "地板不是參數,放寬請修訂正本"
@@ -1777,7 +1775,7 @@ def main(argv=None):
     parser.add_argument("--task", help="任務節點 id(如 E6.3)")
     parser.add_argument("--ctx-pct", type=int, help="目前 CTX 百分比")
     parser.add_argument("--threshold", type=int, default=DEFAULT_ROTATE_THRESHOLD,
-                        help="check / handoff 用:輪替門檻(10-15 起沒有預設值,要明給)")
+                        help="check / handoff 用:輪替門檻(預設讀 policy 表上要求交接那格;handoff 只准更嚴)")
     parser.add_argument("--next-step", help="checkpoint 用:下一步(必填)")
     parser.add_argument("--trap", action="append", default=[],
                         help="陷阱節條目(可重複;checkpoint 至少一條)")
@@ -1845,8 +1843,6 @@ def main(argv=None):
         # 中5(08-14 審):--ctx-pct -1 --threshold -2 曾回報該輪替,101 也收。
         if args.ctx_pct is not None and not 0 <= args.ctx_pct <= 100:
             die("--ctx-pct 須在 0..100:%r" % args.ctx_pct)
-        if args.threshold is None:
-            die("輪替門檻已刪(10-15 CTX 單表,policy 只剩各席 7 格):check 要明給 --threshold")
         if not 1 <= args.threshold <= 100:
             die("--threshold 須在 1..100:%r" % args.threshold)
         # G1-01:有 uuid 只吃機器值;拿不到/stale → manual_only,自報值只當諮詢,
@@ -1903,15 +1899,13 @@ def main(argv=None):
                           ("--task", args.task)):
             if not val:
                 die("handoff 需要 %s" % name)
-        if args.threshold is None:
-            die("輪替門檻已刪(10-15 CTX 單表,policy 只剩各席 7 格):handoff 要明給 --threshold")
         if not 1 <= args.threshold <= 100:
             die("--threshold 須在 1..100:%r" % args.threshold)
         # 高3(08-14 二輪):交棒者自傳 --threshold 1 就繞過 90 閘——可以被
         # 執行者關掉的閘不是閘。handoff 的門檻只准比協定嚴;放寬要修訂的是
         # HANDOFF「輪替協定」 正本(the maintainer 的),不是命令列參數。check 保留彈性,那是
         # 諮詢訊號不是閘門。
-        if DEFAULT_ROTATE_THRESHOLD is not None and args.threshold < DEFAULT_ROTATE_THRESHOLD:
+        if args.threshold < DEFAULT_ROTATE_THRESHOLD:
             die("handoff 門檻不得低於協定值 %d(HANDOFF「輪替協定」)——要放寬請修訂"
                 "正本,不是改參數" % DEFAULT_ROTATE_THRESHOLD)
         # 中4(十二輪):handoff 分支的 task 也要過字元閘——帶換行/ANSI 的
@@ -1933,7 +1927,7 @@ def main(argv=None):
             # 交棒。門檻同 check 共用 --threshold,預設 90 的出處=docs/HANDOFF.md
             # §6 輪替協定(the maintainer 08-08 修訂:CTX 到 90% 才交接)。
             if checkpoint["ctx_pct"] < args.threshold:
-                die("ctx %d%% 未達 --threshold %d%%(輪替門檻由下指令的人給,自負舉證)"
+                die("ctx %d%% 未達交接門檻 %d%%(預設 = policy 表上要求交接那格;--threshold 只准更嚴)"
                     % (checkpoint["ctx_pct"], args.threshold))
             handoff = build_handoff(checkpoint, now_ms, extra_traps=args.trap)
         except RotationError as err:
