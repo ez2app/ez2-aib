@@ -320,5 +320,80 @@ class C11ApproveConstitution(unittest.TestCase):
         self.assertIs(self._approved(), False)
 
 
+class H1HandoffPackCarriesMemoryNotes(unittest.TestCase):
+    """newproj --seat X --deliver 的接手包要帶 `aib memory write --about <專案 uid>` 的筆記指標。"""
+
+    UID = "proj:0123456789abcdef"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aib-h1-")
+        self.root = pathlib.Path(self.tmp, "state")
+        idx = self.root / "memory-index" / "notes.jsonl"
+        idx.parent.mkdir(parents=True)
+        rows = [
+            {"uid": "old111", "kind": "progress", "title": "old progress", "project_uid": self.UID,
+             "related_uids": [self.UID], "created_ms": 1000},
+            {"uid": "new222", "kind": "progress", "title": "newer progress", "project_uid": self.UID,
+             "related_uids": [self.UID], "created_ms": 3000, "supersedes": "old111"},
+            {"uid": "hnd333", "kind": "handoff", "title": "handoff for next seat", "project_uid": "",
+             "related_uids": [self.UID], "created_ms": 2000},
+            {"uid": "oth444", "kind": "note", "title": "other project", "project_uid": "proj:ffffffffffffffff",
+             "related_uids": [], "created_ms": 4000},
+        ]
+        idx.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        self._saved_env = dict(os.environ)
+        os.environ.update({"HOME": os.path.join(self.tmp, "home"), "EZ2_AIB_STATE_ROOT": str(self.root),
+                           "EZ2_AIB_HOME": str(self.root), "EZ2_AIB_LOCALE": "en"})
+        self.np = _load_new_project()
+        import project_card as PC
+        self.card = PC.make_project_card(self.UID, title="Demo")
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved_env)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_notes_listed_handoff_first_superseded_dropped(self):
+        notes = self.np.project_memory_notes(self.root, self.UID)
+        self.assertEqual(len(notes), 2, notes)
+        self.assertIn("hnd333", notes[0])
+        self.assertIn("aib memory show --uid hnd333", notes[0])
+        self.assertIn("new222", notes[1])
+        self.assertFalse(any("old111" in n or "oth444" in n for n in notes))
+
+    def test_b_deliver_handoff_body_carries_the_notes(self):
+        import create_and_bind_persona as CBP
+        sent = {}
+
+        class _Addr:
+            @staticmethod
+            def code_of(rec):
+                return "abcde"
+
+            @staticmethod
+            def format_address(code, cabin):
+                return "%s/%s" % (cabin, code)
+
+        saved = (CBP._cockpit_modules, CBP._seat_cabin, CBP.dm_send_body)
+        CBP._cockpit_modules = lambda: (_Addr, _Addr)
+        CBP._seat_cabin = lambda rec, inst: "f643"
+        CBP.dm_send_body = lambda addr, body, rec: (sent.update(body=body) or (0, "", ""))
+        try:
+            res = self.np.deliver_handoff(self.root, "abcde", {"provider": "claude"}, "", self.card, "")
+        finally:
+            CBP._cockpit_modules, CBP._seat_cabin, CBP.dm_send_body = saved
+        self.assertTrue(res.get("ok"), res)
+        self.assertIn("hnd333", sent["body"])
+        self.assertIn("handoff for next seat", sent["body"])
+        self.assertIn("aib memory show --uid", sent["body"])
+
+    def test_c_stays_within_budget(self):
+        import handoff_pack as HP
+        many = ["note %d · %s · uid x%05d → aib memory show --uid x%05d" % (i, "t" * 60, i, i) for i in range(200)]
+        text = HP.build_handoff_for_seat(self.card, memory_notes=many)
+        self.assertLessEqual(len(text.encode("utf-8")), HP.DEFAULT_CTX_BUDGET)
+        self.assertIn(self.UID, text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

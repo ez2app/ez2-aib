@@ -247,9 +247,9 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
 
 
 # ---------------------------------------------------------------- 讀(全部靠 uid)
-def entries() -> list[dict]:
+def entries(index: Path | None = None) -> list[dict]:
     try:
-        lines = index_path().read_text(encoding="utf-8").splitlines()
+        lines = Path(index or index_path()).read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
     out = []
@@ -263,8 +263,9 @@ def entries() -> list[dict]:
     return out
 
 
-def related_to(uid: str, kind: str = "", limit: int = 20, skip_superseded: bool = False) -> list[dict]:
-    rows = entries()
+def related_to(uid: str, kind: str = "", limit: int = 20, skip_superseded: bool = False,
+               index: Path | None = None) -> list[dict]:
+    rows = entries(index)
     gone = {r.get("supersedes") for r in rows if r.get("supersedes")} if skip_superseded else set()
     hits = [r for r in rows if r.get("uid") not in gone]   # 只有開席帶回(brief)跳過被取代的;手動 list 照列
     hits = [r for r in hits
@@ -298,6 +299,18 @@ def brief(uid: str, limit: int = 5) -> str:
         if body:
             out.append(body[:1200])
     return "\n".join(out)
+
+
+def pointer_lines(uid: str, limit: int = 5, index: Path | None = None) -> list[str]:
+    """接手包用(10-15 H1):跟這個 uid 有關的最新幾則,只給 種類 · 標題 · uid · 怎麼讀(不帶內文,吃不了多少預算)。
+    交接(handoff)排最前面,其餘新→舊;已被取代的不列。讀不到索引回空。"""
+    rows = related_to(uid, limit=max(limit, 20), skip_superseded=True, index=index)
+    rows.sort(key=lambda r: (r.get("kind") != "handoff", -(r.get("created_ms") or 0)))
+    out = []
+    for r in rows[:max(1, limit)]:
+        k = display("aib.memory.kind.%s" % r.get("kind"), r.get("kind") or "")
+        out.append("%s · %s · uid %s → aib memory show --uid %s" % (k, r.get("title"), r.get("uid"), r.get("uid")))
+    return out
 
 
 def seat_brief(session_uuid: str, limit: int = 3) -> str:

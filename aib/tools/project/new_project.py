@@ -664,6 +664,19 @@ def _drop_project_fields(path: Path) -> bool:
     return True
 
 
+def project_memory_notes(state_root: Path, project_uid: str, limit: int = 5) -> list:
+    """10-15 H1:這個專案在 aib memory 的最新幾則(交接優先)⇒ 接手包的指標行;讀不到 ⇒ []。
+    索引用這次的狀態根(不靠環境猜),與卡同一個根。"""
+    try:
+        mem = str(REPO_ROOT / "src" / "memory")
+        if mem not in sys.path:
+            sys.path.insert(0, mem)
+        import aib_memory as AM  # noqa: E402
+        return AM.pointer_lines(project_uid, limit, index=Path(state_root) / "memory-index" / "notes.jsonl")
+    except Exception:  # noqa: BLE001 —— 記憶讀不到不擋寄接手包
+        return []
+
+
 def deliver_handoff(state_root: Path, seat_id: str, seat_rec: Mapping[str, Any], instance: str,
                     card: Mapping[str, Any], persona_uid: str, dry_run: bool = False) -> dict:
     """接手包用 aib dm 寄給那一席 ⇒ dict。寄不出去不改變「已綁」,只如實回報。"""
@@ -680,7 +693,8 @@ def deliver_handoff(state_root: Path, seat_id: str, seat_rec: Mapping[str, Any],
         _say(T("aib.newproj.dry_send", {"target": address}))
         return {"ok": None, "dry_run": True, "address": address}
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    text = HP.build_handoff_for_seat(card, persona_uid=persona_uid, last_event_at=stamp)
+    text = HP.build_handoff_for_seat(card, persona_uid=persona_uid, last_event_at=stamp,
+                                     memory_notes=project_memory_notes(state_root, str(card.get("project_uid") or "")))
     if not text:
         return {"ok": False, "address": address, "reason": T("aib.newproj.pack_failed")}
     title = str(card.get("title") or card.get("project_uid"))
