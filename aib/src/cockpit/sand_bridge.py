@@ -551,8 +551,8 @@ def is_dm_line(text: str) -> bool:
     got = parse(t)
     if got is None:
         return False
-    if got["form"] == "v2":
-        return True
+    if got["form"] in ("v2", "global"):
+        return True        # global:別人的 aib 席經全球對談寄來的 ⇒ 是 dm,絕不是真人本人(dm_sender_is_seat 也是 False)
     if not t.startswith("[") or " / " not in t.split("]", 1)[0]:
         return False
     head = t.split("]", 1)[0] + "]"
