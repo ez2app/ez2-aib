@@ -1213,6 +1213,7 @@
   "aib.test.row_resumed": "↻ {test}(배치 {name} 이어하기: 이전에 초록)",
   "aib.test.live_resume_on": "배치 {name} 이어하기: 이 목록 중 {n}개는 이미 초록이라 실행 안 함; 빨강과 미완료는 실행",
   "aib.test.live_resume_unusable": "배치 {name} 일지를 쓸 수 없음({why}) ⇒ 배치 전체를 처음부터 실행",
+  "aib.test.live_resume_dropped": "배치 {name}: 지난번 통과한 {n}개는 이번에 이어서 하지 않음({why}), 일반 재사용 판정으로 처리",
   "aib.test.resume_badname": "--resume 배치 이름은 영숫자, 점, 밑줄, 하이픈만(최대 64자): {name}",
   "aib.test.live_start_fallback": "▶ {test}: 섀도 이어하기 로드 안 됨 ⇒ 일반 실행",
   "aib.test.why.no_previous": "첫 실행, 이전 기록 없음",

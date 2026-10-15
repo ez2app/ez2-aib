@@ -1213,6 +1213,7 @@
   "aib.test.row_resumed": "↻ {test} (resumed batch {name}: green earlier)",
   "aib.test.live_resume_on": "Resuming batch {name}: {n} tests on this list were already green, not running them; red and unfinished ones run",
   "aib.test.live_resume_unusable": "Batch {name} journal is unusable ({why}) ⇒ running the whole batch from the start",
+  "aib.test.live_resume_dropped": "Batch {name}: {n} tests that were green earlier are not resumed ({why}); they go through the normal reuse check",
   "aib.test.resume_badname": "--resume batch name may only use letters, digits, dot, underscore, hyphen (max 64): {name}",
   "aib.test.live_start_fallback": "▶ {test}: shadow resume not loaded ⇒ plain run",
   "aib.test.why.no_previous": "first run, no earlier record",

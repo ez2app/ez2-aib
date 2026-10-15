@@ -1213,6 +1213,7 @@
   "aib.test.row_resumed": "↻ {test}(接續批次 {name}:上次已跑綠)",
   "aib.test.live_resume_on": "接續批次 {name}:這次的清單裡有 {n} 支上次已跑綠,不重跑;紅的與沒跑完的照跑",
   "aib.test.live_resume_unusable": "接續批次 {name} 的日誌不能用({why})⇒ 整批從頭跑",
+  "aib.test.live_resume_dropped": "接續批次 {name}:上次已跑綠的有 {n} 支這次不接續({why}),照一般規則判沿用或實跑",
   "aib.test.resume_badname": "--resume 的批次名只能用英數、點、底線、連字號(最多 64 字):{name}",
   "aib.test.live_start_fallback": "▶ {test}:影子續跑沒載入 ⇒ 一般實跑",
   "aib.test.why.no_previous": "第一次跑,沒有上次紀錄",
