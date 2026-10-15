@@ -93,7 +93,9 @@ jobs:
           v="${{ steps.v.outputs.v }}"
           python -m venv "$RUNNER_TEMP/fresh"
           "$RUNNER_TEMP/fresh/bin/python" -m pip install -q --no-cache-dir dist/*.whl
-          "$RUNNER_TEMP/fresh/bin/pip" show ez2-aib | grep -qx "Version: $v" || { echo "::error::the built package is not $v"; exit 1; }
+          # 先存下來再比:grep -q 一找到就結束,pip 還在寫 ⇒ BrokenPipe,pipefail 下整行算失敗(0.1.7 第一次發版就這樣假紅)
+          shown=$("$RUNNER_TEMP/fresh/bin/pip" show ez2-aib)
+          grep -qx "Version: $v" <<<"$shown" || { echo "::error::the built package is not $v"; exit 1; }
           cmd=$(python .github/scripts/update_cmd.py "$RUNNER_TEMP/fresh/bin/python")
           case "$cmd" in *"pip install"*"ez2-aib"*) ;; *) echo "::error::a pip install of $v does not update itself (got: $cmd)"; exit 1;; esac
           export HOME="$RUNNER_TEMP/home-fresh"; mkdir -p "$HOME"
@@ -168,7 +170,8 @@ jobs:
           v="${{ steps.v.outputs.v }}"
           python -m venv "$RUNNER_TEMP/fresh"
           for i in $(seq 1 30); do "$RUNNER_TEMP/fresh/bin/pip" install -q --no-cache-dir "ez2-aib==$v" && break; echo "ez2-aib $v not on PyPI yet ($i/30)"; sleep 20; done
-          "$RUNNER_TEMP/fresh/bin/pip" show ez2-aib | grep -qx "Version: $v" || { echo "::error::ez2-aib $v did not install from PyPI"; exit 1; }
+          shown=$("$RUNNER_TEMP/fresh/bin/pip" show ez2-aib)
+          grep -qx "Version: $v" <<<"$shown" || { echo "::error::ez2-aib $v did not install from PyPI"; exit 1; }
           export HOME="$RUNNER_TEMP/home-fresh"; mkdir -p "$HOME"
           set +e; out="$("$RUNNER_TEMP/fresh/bin/aib" room </dev/null 2>&1)"; rc=$?; set -e
           [ "$rc" = 2 ] && ! printf '%s' "$out" | grep -q Traceback || { echo "::error::aib room: rc=$rc $out"; exit 1; }
