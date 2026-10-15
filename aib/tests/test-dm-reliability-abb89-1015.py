@@ -526,5 +526,61 @@ class B4SortDeliverNeedsProof(unittest.TestCase):
         self.assertEqual(json.loads(p.stdout), [True, False, False, "triage_b1", "abcde"])
 
 
+B7_FAKE_AIB = r'''#!/bin/bash
+for a in "$@"; do
+  [ "$a" = --resolve-only ] && { echo '{"canonical_target": "@2"}'; exit 0; }
+done
+sleep 30 >/dev/null 2>&1 &
+echo $! > "$B7_PIDF"
+sleep 3
+'''
+
+
+class B7ToolTimeoutLeavesNoOrphan(unittest.TestCase):
+    """B7:API/MCP 的 dm 工具逾時要把整組子行程停掉(含重送子輪),不得說「未送出」。"""
+
+    def test_timeout_kills_group_and_says_unknown(self):
+        import importlib.util
+        d = Path(tempfile.mkdtemp(prefix="b7-", dir=str(TREE_BASE)))
+        pidf = d / "grandchild.pid"
+        fake = d / "aib"
+        fake.write_text(B7_FAKE_AIB)
+        os.chmod(fake, 0o755)
+        spec = importlib.util.spec_from_file_location("aib_dm_tool_b7", TREE / "src" / "cockpit" / "aib_dm_tool.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.aib_bin = lambda: fake
+        mod.DM_TOOL_TIMEOUT_S = 1
+        os.environ["B7_PIDF"] = str(pidf)
+        try:
+            out = mod.run_aib_dm("t1ab/abcde", "hello b7 timeout")
+        finally:
+            os.environ.pop("B7_PIDF", None)
+        gpid = int(pidf.read_text().strip())
+        time.sleep(0.3)
+        alive = True
+        try:
+            os.kill(gpid, 0)
+        except OSError:
+            alive = False
+        if alive:
+            os.kill(gpid, 9)
+        self.assertFalse(alive, "逾時後孫行程(重送子輪)還活著:" + out)
+        self.assertNotIn("未送出", out)
+
+    def test_tool_turns_off_entry_auto_resend(self):
+        import importlib.util
+        d = Path(tempfile.mkdtemp(prefix="b7b-", dir=str(TREE_BASE)))
+        fake = d / "aib"
+        fake.write_text('#!/bin/bash\necho \'{"canonical_target": "@2"}\'\necho "AUTO=${AIB_DM_AUTO_RESEND:-unset}"\n')
+        os.chmod(fake, 0o755)
+        spec = importlib.util.spec_from_file_location("aib_dm_tool_b7b", TREE / "src" / "cockpit" / "aib_dm_tool.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.aib_bin = lambda: fake
+        out = mod.run_aib_dm("t1ab/abcde", "hello b7b")
+        self.assertIn("AUTO=0", out)
+
+
 if __name__ == "__main__":
     unittest.main()

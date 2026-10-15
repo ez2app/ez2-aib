@@ -189,6 +189,41 @@ def hub_env(base: dict | None = None) -> dict:
     return child
 
 
+# 10-15 B7:工具等 aib dm 的上限。入口 `aib dm` 收據說「可安全重送」時會**等 30 秒再自動重送一次**,
+#   而 45 秒的逾時只夠一輪 ⇒ 第一輪被擋 + 等 30 秒 + 重送輪還在貼,工具就先逾時說「未送出」,
+#   重送子輪是孫行程,subprocess 只殺得到子行程 ⇒ 孤兒照送、模型看到「未送出」再送一次 = 兩份。
+#   不選「把逾時拉長到兩輪」:MCP 客戶端自己也有工具逾時(codex 預設 60 秒),拉長只是把同一個競態搬到客戶端那一層。
+#   ⇒ 工具這條路關掉入口的自動重送(AIB_DM_AUTO_RESEND=0):收據 rc=2「可安全重送」原樣交給模型,由它決定;
+#     子行程開自己的行程組,逾時整組停掉;逾時的收據講「結果不明、勿重送」。
+DM_TOOL_TIMEOUT_S = 45
+
+
+def _run_dm_group(argv, env, timeout):
+    """跑 aib dm(自己一個行程組);逾時 ⇒ 整組 SIGTERM、再不走就 SIGKILL,然後拋 TimeoutExpired。"""
+    import signal
+    proc = subprocess.Popen(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL, env=env, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+            except OSError:
+                break
+            try:
+                proc.wait(timeout=2)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        try:
+            proc.communicate(timeout=2)
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            pass
+        raise
+    return proc.returncode, out or "", err or ""
+
+
 # 呼叫端遞來的「我是哪一段 codex 對話」——**證據不是身份**:這裡只檢查它長得像 uuid,
 # 真正的判定在 dm-ctl(拿去比對席位登記簿,對得上唯一一個活席才推得出五碼)。
 # 這條路存在的理由:MCP 伺服器掛在 codex 常駐服務底下(父程是 init),
@@ -233,19 +268,18 @@ def run_aib_dm(target: str, message: str, claim_session_uuid: str = "") -> str:
     if claim and _CLAIM_UUID_RE.fullmatch(claim):
         argv += ["--codex-session-uuid", claim]
     try:
-        result = subprocess.run(
-            argv,
-            text=True,
-            capture_output=True,
-            timeout=45,
-            check=False,
-            env=hub_env(),
-        )
-    except (OSError, subprocess.TimeoutExpired) as err:
+        env = hub_env()
+        env["AIB_DM_AUTO_RESEND"] = "0"      # B7:見 DM_TOOL_TIMEOUT_S 註解
+        rc, out, err = _run_dm_group(argv, env, DM_TOOL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        # 逾時那一刻可能正在貼(或重送輪正在貼):不知道對方收到沒有 ⇒ 與 rc 4 同一種處置
+        return ("DM 結果不明：本機 AIB 工具 %d 秒內沒有結束,已停下;稿可能已到對方輸入框,"
+                "**不要重送**,請對方回一句或看過對方畫面再決定。" % DM_TOOL_TIMEOUT_S)
+    except OSError as err:
         return "DM 未送出：本機 AIB 工具無法執行(%s)。" % err
-    detail = (result.stdout + result.stderr).strip()
+    detail = (out + err).strip()
     detail = detail[-2000:] if detail else "沒有回傳內容"
-    return "DM 指令 rc=%d：%s" % (result.returncode, detail)
+    return "DM 指令 rc=%d：%s" % (rc, detail)
 
 
 def enforce_dm_truth(content: str, dm_outcomes) -> str:
