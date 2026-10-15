@@ -220,5 +220,109 @@ class C4UninstallKeepsUnsavedWork(TmpCase):
         self.assertFalse(self.co.exists(), out)
 
 
+# ───────────────────────────────────────────────────────────── C5
+def _cmd(rel, mode):
+    return "test -f '/opt/x/aib/src/%s' || exit 0; exec python3 '/opt/x/aib/src/%s' %s" % (rel, rel, mode)
+
+
+class C5UninstallCleansTraces(TmpCase):
+    def setUp(self):
+        super().setUp()
+        for k in ("CLAUDE_CONFIG_DIR", "EZ2_AIB_DESKTOP_DIR"):
+            old = os.environ.pop(k, None)
+            if old is not None:
+                self.addCleanup(os.environ.__setitem__, k, old)
+        h = self.home = self.tmp / "home"
+        self.pkg = self.tmp / "venv" / "site-packages" / "aib"
+        self.pkg.mkdir(parents=True)
+        mine_stop = {"hooks": [{"type": "command", "command": "echo mine"}]}
+        self.settings = {
+            "model": "x",
+            "hooks": {
+                "Stop": [mine_stop, {"hooks": [{"type": "command", "command": _cmd("policy/hooks/aib-now-gate.py", "stop")}]},
+                         {"hooks": [{"type": "command", "command": _cmd("cockpit/claudebot_hook.py", "stop")}]}],
+                "SessionStart": [{"hooks": [{"type": "command", "command": _cmd("policy/hooks/aib-now-gate.py", "session-start")}]}],
+                "Notification": [{"matcher": "permission_prompt",
+                                  "hooks": [{"type": "command", "command": _cmd("cockpit/menu_pick.py", "trigger")}]}],
+                "UserPromptSubmit": [{"hooks": [{"type": "command", "command": _cmd("identity/auto_distill_hook.py", "prompt")},
+                                                {"type": "command", "command": "echo also-mine"}]}],
+            }}
+        self._w(h / ".claude" / "settings.json", self.settings)
+        for b in ("settings.json.bak-now-gate-20261015-000000-1", "settings.json.bak-claudebot-1", "settings.json.mybackup"):
+            (h / ".claude" / b).write_text("{}", encoding="utf-8")
+        self._w(h / ".codex" / "hooks.json", {"hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": _cmd("identity/auto_distill_hook.py", "stop")}]},
+            {"hooks": [{"type": "command", "command": "echo codex-mine"}]}]}})
+        self._w(h / ".grok" / "hooks" / "aib-menu-pick.json", {"hooks": {"Notification": [
+            {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": _cmd("cockpit/menu_pick.py", "trigger")}]}]}})
+        self._w(h / ".grok" / "hooks" / "mine.json", {"hooks": {"Stop": [mine_stop]}})
+        self._w(h / ".copilot" / "hooks" / "aib-auto-distill.json", {"version": 1, "hooks": {"agentStop": [
+            {"type": "command", "bash": _cmd("identity/auto_distill_hook.py", "stop"), "timeoutSec": 5}]}})
+        self._w(h / ".gemini" / "config" / "hooks.json", {
+            "aib-menu-pick": {"PreToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": _cmd("cockpit/menu_pick.py", "trigger")}]}]},
+            "mine": {"PreToolUse": []}})
+        (h / ".ez2-aib" / "user").mkdir(parents=True)
+        self._w(h / ".ez2-aib" / "ext-state" / "foo.json", {"enabled": True})
+        desk = h / "Desktop"
+        desk.mkdir()
+        os.symlink(os.path.join("..", ".ez2-aib", "user"), str(desk / "AIB 第二大腦"))
+        os.symlink("/opt/elsewhere", str(desk / "Notes"))
+
+    @staticmethod
+    def _w(path, obj):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _run(self, *argv):
+        import io
+        import contextlib
+        import uninstall
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = uninstall.main(list(argv), home=str(self.home), package_dir=str(self.pkg))
+        return rc, buf.getvalue()
+
+    def test_list_only_touches_nothing(self):
+        before = (self.home / ".claude" / "settings.json").read_text(encoding="utf-8")
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+        for word in ("settings.json", "hooks.json", "aib-menu-pick.json", "bak-now-gate", "Desktop", "aib ext remove foo"):
+            self.assertIn(word, out)
+        self.assertEqual((self.home / ".claude" / "settings.json").read_text(encoding="utf-8"), before)
+        self.assertTrue(os.path.islink(str(self.home / "Desktop" / "AIB 第二大腦")))
+
+    def test_yes_removes_only_aib_things(self):
+        h = self.home
+        rc, out = self._run("--yes")
+        self.assertEqual(rc, 0, out)
+        cfg = json.loads((h / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["model"], "x")
+        self.assertEqual(cfg["hooks"], {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}],
+                                        "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "echo also-mine"}]}]})
+        self.assertFalse((h / ".claude" / "settings.json.bak-now-gate-20261015-000000-1").exists())
+        self.assertFalse((h / ".claude" / "settings.json.bak-claudebot-1").exists())
+        self.assertTrue((h / ".claude" / "settings.json.mybackup").exists())
+        codex = json.loads((h / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertEqual(codex, {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo codex-mine"}]}]}})
+        self.assertFalse((h / ".grok" / "hooks" / "aib-menu-pick.json").exists())
+        self.assertTrue((h / ".grok" / "hooks" / "mine.json").exists())
+        self.assertFalse((h / ".copilot" / "hooks" / "aib-auto-distill.json").exists())
+        self.assertEqual(json.loads((h / ".gemini" / "config" / "hooks.json").read_text(encoding="utf-8")),
+                         {"mine": {"PreToolUse": []}})
+        self.assertFalse(os.path.lexists(str(h / "Desktop" / "AIB 第二大腦")))
+        self.assertTrue(os.path.islink(str(h / "Desktop" / "Notes")))
+        self.assertTrue((h / ".ez2-aib" / "user").is_dir())          # 沒加 --all:紀錄留著
+
+    def test_other_aib_keeps_hooks(self):
+        link = self.home / ".local" / "bin" / "aib"
+        link.parent.mkdir(parents=True)
+        link.write_text("#!/bin/sh\n", encoding="utf-8")
+        before = (self.home / ".claude" / "settings.json").read_text(encoding="utf-8")
+        rc, out = self._run("--yes")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.home / ".claude" / "settings.json").read_text(encoding="utf-8"), before)
+        self.assertTrue(os.path.islink(str(self.home / "Desktop" / "AIB 第二大腦")))
+
+
 if __name__ == "__main__":
     unittest.main()
