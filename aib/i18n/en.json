@@ -2644,6 +2644,7 @@
   "aib.cardreg.compare_unreadable": "cannot read the file/receipt to compare ({err})",
   "aib.bindone.reproject_fail": "⚠ binding written, but re-projection rc={rc} (the screen may not be updated): {detail}",
   "aib.bindone.fit_warn": "⚠ persona card \"{name}\" ({uid}) is written for {kind}, and this seat is {provider}; bound anyway, please check that the abilities on the card match this seat",
+  "aib.bindone.role_conflict": "agent_uid {agent} already exists but the identity layer has role '{have}' while the seat file says '{want}' — this is a conflict, not a re-run. If the seat file is right, switch the identity role (recorded in the ledger) and run again: {cmd}",
   "aib.ppack.comply": "Reading it is not enough: from now on every reply follows this card — obey each red line, use its duties and verbal habits; check yourself against the red lines before sending each reply.",
   "aib.ppack.answer_lang": "Answer language: {name}({loc}). Follows this AIB's language setting; if the card names another language, this line wins. Answer in this language.",
   "aib.ppack.handoff_rule": "At 85% context use (or when the owner of this AIB says get ready to clear) you must run `aib handoff` (collect → three write steps); it cannot be skipped.",

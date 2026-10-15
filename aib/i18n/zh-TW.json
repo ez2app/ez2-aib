@@ -2644,6 +2644,7 @@
   "aib.cardreg.compare_unreadable": "要比對的檔/收據讀不到({err})",
   "aib.bindone.reproject_fail": "⚠ 綁定已寫入,但重投影 rc={rc}(畫面可能沒更新):{detail}",
   "aib.bindone.fit_warn": "⚠ 人格卡「{name}」({uid})是寫給 {kind} 的,這一席是 {provider};已照綁,請確認卡上寫的能力跟這一席相符",
+  "aib.bindone.role_conflict": "agent_uid {agent} 已存在但身份層記的角色是 '{have}',席位檔是 '{want}'——這不是重跑,是衝突。席位檔才對的話,改身份層的角色(會記進帳本)再重跑:{cmd}",
   "aib.ppack.comply": "不是讀過就好:從現在起每一則回答都照這張卡做 —— 紅線逐條遵守、職責與口癖照用;送出回答前,自己對一次紅線。",
   "aib.ppack.answer_lang": "回答語言:{name}({loc})。跟著這台 AIB 的語系設定;卡片裡若寫了別的語言,以這一行為準。Answer in this language.",
   "aib.ppack.handoff_rule": "對話用量到 85%(或這台 AIB 的主人說準備 clear)必須跑 `aib handoff`(collect → 三步 write),不可跳過。",

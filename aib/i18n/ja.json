@@ -2644,6 +2644,7 @@
   "aib.cardreg.compare_unreadable": "比べるファイル/受領が読めない({err})",
   "aib.bindone.reproject_fail": "⚠ 紐付けは書いたが再投影 rc={rc}(画面が更新されていないかも):{detail}",
   "aib.bindone.fit_warn": "⚠ 人格カード「{name}」({uid})は {kind} 向け、この席は {provider};そのまま紐付けた、カードの能力がこの席に合うか確認を",
+  "aib.bindone.role_conflict": "agent_uid {agent} は既にあり、身元層のロールは '{have}'、席ファイルは '{want}' です——再実行ではなく衝突です。席ファイルが正しければ、身元層のロールを切り替えて(台帳に記録されます)再実行してください:{cmd}",
   "aib.ppack.comply": "読んだだけでは足りない:今からすべての返答をこのカードどおりに —— 赤線は一つずつ守り、職責と口癖を使う;送る前に赤線を自分で確認。",
   "aib.ppack.answer_lang": "回答の言語:{name}({loc})。この AIB の言語設定に従う;カードに別の言語が書いてあっても、この行が優先。Answer in this language.",
   "aib.ppack.handoff_rule": "会話の使用量が 85%(またはこの AIB の持ち主が clear の準備と言ったら)`aib handoff`(collect → 三段の write)を必ず実行、飛ばせない。",
