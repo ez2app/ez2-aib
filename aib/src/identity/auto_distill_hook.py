@@ -10,6 +10,7 @@ the maintainer:「原 ctx %數 … 從 1x% 開始的」「照這套做,在 10% �
                                                       跨門檻 ⇒ 背景 aib dm 給自己這一席「請整理記憶」(the maintainer 10-13 14:1x「照這樣接」)
   python3 auto_distill_hook.py ensure [--settings P]  開 Claude 席前(provider-launch.sh):已裝不動、沒裝才裝(先備份)
   python3 auto_distill_hook.py ensure-grok [--dir D]  開 Grok 席前:~/.grok/hooks/aib-auto-distill.json(Claude 格式的 Stop)
+  python3 auto_distill_hook.py ensure-all             安裝 / aib init / aib update:這台有裝的 CLI 全部裝上(沒裝的略過並說明)
 
   python3 auto_distill_hook.py review-gate            Claude 席 Stop:先看 85 交接閘(用量過 85 且本輪交接 verify 沒過 ⇒ 擋),
                                                       再看遺漏回顧閘(§8e.7);兩道同一個 Stop 掛點,不另裝第二個
@@ -325,16 +326,83 @@ def is_aib_seat(sid):
     return any(str(r.get("session_uuid") or "").lower() == sid.lower() for r in recs)
 
 
+BY_SEAT_FRESH_S = 12 * 3600     # by-seat 對照(狀態列每一輪寫)多久內算數:閒一整晚再回來的那一則也要認得
+
+
+def _live_seat_files():
+    """→ [(艙, 席位檔)](沒退役的)。"""
+    import glob
+    out = []
+    for f in glob.glob(os.path.join(str(state_root()), "instances", "*", "seats", "w*.json")):
+        rec = _read_json(Path(f), None)
+        if isinstance(rec, dict) and not rec.get("retired"):
+            out.append((Path(f).parent.parent.name, rec))
+    return out
+
+
+def _by_seat_code(sid, files, now=None):
+    """/clear 之後的新對話編號 ⇒ 席碼:`$EZ2_CTX_DIR/by-seat/<席碼>.json`(ez2-ctx-by-seat-v1,狀態列寫)裡
+    session_id 相同、observed_at 在 BY_SEAT_FRESH_S 內、而且那個艙有一張沒退役的席位檔(席碼、窗號都對得上)。
+    恰好一席對得上才算;其他 ⇒ None。"""
+    import seat_address
+    try:
+        import ctx_by_seat
+    except Exception:  # noqa: BLE001
+        return None
+    d = Path(ctx_by_seat.ctx_dir()) / ctx_by_seat.BY_SEAT_DIR
+    if not d.is_dir():
+        return None
+    t = now or time.time()
+    hits = set()
+    for p in d.glob("*.json"):
+        if p.is_symlink():
+            continue
+        doc = _read_json(p, None)
+        if not isinstance(doc, dict) or doc.get("schema") != ctx_by_seat.SCHEMA:
+            continue
+        if str(doc.get("session_id") or "").lower() != sid.lower() or doc.get("seat") != p.stem:
+            continue
+        ms = ctx_by_seat.parse_observed_utc(doc.get("observed_at"))
+        if ms is None or t - ms / 1000.0 > BY_SEAT_FRESH_S:
+            continue
+        if any(inst == doc.get("instance") and seat_address.code_of(rec) == p.stem
+               and (not doc.get("window") or rec.get("window_id") == doc.get("window")) for inst, rec in files):
+            hits.add(p.stem)
+    return hits.pop() if len(hits) == 1 else None
+
+
+def seat_code(sid, now=None):
+    """對話編號 ⇒ 這一席的席碼(@abb89 10-15 實測:/clear 之後 Claude 換新對話編號,席位檔不變 ⇒ 舊寫法認不出是
+    AIB 席、席碼又拿新編號的尾碼 ⇒ 那一席整個不觸發)。先查席位檔 session_uuid,再查 by-seat 對照;兩者都沒有才當
+    非 AIB 席。席碼一律用查到的,不用新編號的尾碼。席位檔一張都讀不到 ⇒ 照舊(is_aib_seat:量不到當是、用尾碼)。
+    不把新編號寫回席位檔:席碼 = 登記 uuid 的尾碼,dm 位址靠它,寫回就換了這一席的地址。"""
+    import seat_address
+    if not _SID_RE.match(sid or ""):
+        return None
+    try:
+        files = _live_seat_files()
+    except Exception:  # noqa: BLE001
+        files = []
+    if files:
+        hits = {seat_address.code_of(r) for _i, r in files if str(r.get("session_uuid") or "").lower() == sid.lower()}
+        hits.discard(None)
+        if len(hits) == 1:
+            return hits.pop()
+        code = _by_seat_code(sid, files, now)
+        if code:
+            return code
+    return seat_address.uuid_tail5(sid) if is_aib_seat(sid) else None
+
+
 def on_prompt(payload, now=None):
     """→ 要印進對話的那一行(或空字串)。"""
-    import seat_address
     if foreign_host():
         return ""
     sid = str(payload.get("session_id") or "")
     if not _SID_RE.match(sid):
         return ""
-    code = seat_address.uuid_tail5(sid)
-    if not code or not is_aib_seat(sid):
+    code = seat_code(sid, now)
+    if not code:
         return ""
     prompt = str(payload.get("prompt") or "")
     sp = state_path(code)
@@ -571,11 +639,30 @@ def seat_for_payload(payload):
     if not sid:
         return None
     try:
-        import seat_now
-        hits = [r for r in seat_now._seat_records() if str(r.get("session_uuid") or "").lower() == sid]
+        import seat_address
+        files = [r for _i, r in _live_seat_files()]
+        hits = [r for r in files if str(r.get("session_uuid") or "").lower() == sid]
+        if not hits and _SID_RE.match(sid):            # /clear 之後的新編號:by-seat 對照(同 seat_code)
+            code = _by_seat_code(sid, _live_seat_files())
+            hits = [r for r in files if code and seat_address.code_of(r) == code]
     except Exception:  # noqa: BLE001
         return None
     return hits[0] if len(hits) == 1 else None
+
+
+def live_sid(payload, rec):
+    """量 gauge 用的對話編號:payload 帶的編號認得出是這一席(登記的、或 /clear 後 by-seat 對得上)⇒ 用它;
+    否則用席位檔登記的。"""
+    import seat_address
+    reg = str(rec.get("session_uuid") or "")
+    sid = str(payload.get("sessionId") or payload.get("session_id") or payload.get("conversationId") or "")
+    if sid and sid.lower() != reg.lower() and _SID_RE.match(sid):
+        try:
+            if _by_seat_code(sid, _live_seat_files()) == seat_address.code_of(rec):
+                return sid
+        except Exception:  # noqa: BLE001
+            pass
+    return reg
 
 
 def refresh_gauge(provider, sid):
@@ -816,12 +903,13 @@ def on_stop(payload, now=None, seat=None, runner=None, refresh=None, gate=None):
         ship_report_stop(payload, rec, code, runner, gate)   # 第 2 層影子續跑說明;另一件事,不影響下面的整理提醒
     except Exception as exc:  # noqa: BLE001
         _log({"seat": code, "action": "error", "mode": "ship-report", "why": str(exc)[:200]})
-    (refresh or refresh_gauge)(rec.get("provider"), sid)
+    gsid = live_sid(payload, rec)                      # /clear(/new)之後 gauge 記在新編號底下
+    (refresh or refresh_gauge)(rec.get("provider"), gsid)
     sp = state_path(code)
     st = _read_json(sp, {})
-    if st.get("session") != sid:
-        st = {"session": sid, "since": now or time.time(), "fired": []}
-    pct = gauge_pct(sid, now)
+    if st.get("session") != gsid:
+        st = {"session": gsid, "since": now or time.time(), "fired": []}
+    pct = gauge_pct(gsid, now)
     import i18n_lib
     before = json.dumps(st, sort_keys=True)
     hand_text, hand_why = stop_handoff(code, rec, st, pct, runner, now)   # 交接類(提醒 / 要求交接 / 紅線 + 再提醒)
@@ -906,36 +994,89 @@ def stop_handoff(code, rec, st, pct, runner=None, now=None):
 BOT_EVERY = 20       # 量不到用量 % 的 Bot:每 20 輪(the maintainer 10-13 14:4x 照 A)
 
 
+def _bot_handoff(code, cabin, st, trig, pct, now=None):
+    """Bot 那一席的交接類那幾格(提醒 / 要求交接 / 紅線;85 交接 verify 沒過再提醒,封頂同 stop_handoff)。
+    跟 stop_handoff 同一套判斷(crossings / handoff_owed / handoff_done),只是不 dm:回字由橋交給那個 Bot。改 st。"""
+    _tidy, top, hand_new = crossings(trig, pct, st)
+    params = trigger_params(trig, pct)
+    t_now = now or time.time()
+    key = ""
+    if top is not None:
+        st["fired"] = sorted(_fired(st) | {_tid(t) for t in hand_new})
+        if top["kind"] == "handoff_now" and handoff_done(code, st.get("since")) is True:
+            return ""
+        key, st["nag_at"] = top["key"], t_now
+    else:
+        owed = handoff_owed(trig, pct, st)
+        if owed is None or int(st.get("nag_n") or 0) >= STOP_NAG_MAX or t_now - float(st.get("nag_at") or 0) < FRESH_S:
+            return ""
+        if handoff_done(code, st.get("since")) is not False:
+            return ""
+        key = owed.get("again_key") or owed["key"]
+        st["nag_n"], st["nag_at"] = int(st.get("nag_n") or 0) + 1, t_now
+    import i18n_lib
+    loc = i18n_lib.resolve_locale()
+    tail = str(cabin or "").rsplit("-", 1)[-1][-4:]
+    _log({"seat": code, "pct": pct, "action": "bot-" + (top["kind"] if top is not None else "handoff-again")})
+    return T(key, params, loc) + "\n" + T("ctx_trigger.bot_seat", {"seat": "%s/%s" % (tail, code)}, loc)
+
+
 def bot_turn(code, cabin, gauge_sid=None, now=None):
-    """Bot 一輪結束時呼叫(claudebot_hook on_stop、codexbot / grokbot / musebot 橋)。
-    gauge_sid 有新鮮用量 ⇒ 照 30/50/70;沒有 ⇒ 每 BOT_EVERY 輪。→ 要交給那個 Bot 的指示(或空字串)。"""
+    """Bot 一輪結束時呼叫(claudebot_hook on_stop、codexbot / grokbot / musebot / sand 橋)。
+    gauge_sid 有新鮮用量 ⇒ 跑同一張表(policy/ctx-thresholds.json:精煉格 + 交接類,同格只一次);
+    量不到 ⇒ 每 BOT_EVERY 輪精煉一次,不假造交接。→ 要交給那個 Bot 的指示(或空字串)。"""
     if not code or os.environ.get("AIB_AUTO_DISTILL") == "0":
         return ""
     sp = state_path("bot-%s" % code)
     st = _read_json(sp, {})
     st["turns"] = int(st.get("turns") or 0) + 1
     pct = gauge_pct(gauge_sid, now) if gauge_sid and _SID_RE.match(gauge_sid) else None
-    due, why = False, ""
+    tail = str(cabin or "").rsplit("-", 1)[-1][-4:]
+    due, why, hand = False, "", ""
     if pct is not None:
-        if st.get("gauge_sid") != gauge_sid:
-            st["gauge_sid"], st["fired"] = gauge_sid, []
-        newly = [t for t in thresholds() if pct >= t and t not in (st.get("fired") or [])]
-        if newly:
-            st["fired"] = sorted(set(st.get("fired") or []) | set(newly))
-            due, why = True, "pct %s" % pct
+        if st.get("gauge_sid") != gauge_sid:            # 換了對話 ⇒ 表重算
+            st.update(gauge_sid=gauge_sid, fired=[], since=now or time.time(), nag_n=0, nag_at=0)
+        try:
+            trig = ctx_triggers()
+        except Exception as exc:  # noqa: BLE001
+            _log({"seat": code, "action": "error", "mode": "bot-policy", "why": str(exc)[:200]})
+            trig = ()
+        tidy_new, top, _h = crossings(trig, pct, st)
+        if tail:
+            hand = _bot_handoff(code, cabin, st, trig, pct, now)
+        if tidy_new:
+            st["fired"] = sorted(_fired(st) | {_tid(t) for t in tidy_new})
+            strong = top is not None and top["kind"] in ("handoff_now", "red_line")
+            due, why = not strong and not (hand and top is None), "pct %s" % pct   # 收尾三步第一步就是整理記憶
     elif st["turns"] % BOT_EVERY == 0:
         due, why = True, "turn %d" % st["turns"]
     _write_json(sp, st)
-    if not due:
+    if not due and not hand:
         return ""
-    import i18n_lib
-    tail = str(cabin or "").rsplit("-", 1)[-1][-4:]
     if not tail:                                       # 沒艙位碼 ⇒ --seat 會被拒;不送(審查:橋洗掉了 EZ2_AIB_INSTANCE)
         _log({"seat": code, "action": "bot-no-cabin", "why": why})
         return ""
-    target = "%s/%s" % (tail, code)
-    _log({"seat": code, "action": "bot", "why": why})
-    return with_inbox(T("auto_distill.instruct_bot", {"seat": target, "why": why}, i18n_lib.resolve_locale()), code)
+    import i18n_lib
+    out = [hand] if hand else []
+    if due:
+        _log({"seat": code, "action": "bot", "why": why})
+        out.append(with_inbox(T("auto_distill.instruct_bot", {"seat": "%s/%s" % (tail, code), "why": why},
+                                i18n_lib.resolve_locale()), code))
+    return "\n".join(out)
+
+
+def outer_turn(sid, seat=None, runner=None, now=None, refresh=None):
+    """沒有 hook 機制的席(API 金鑰席 REPL:deepseek / nvidia / openrouter / typesafe)由外層程式每一輪回完代呼叫:
+    走跟其他家「一輪結束」hook 一樣的 stop 那條路(on_stop:同一張表、aib dm 給自己、同格只一次)。
+    沒帶回覆原文 ⇒ 不碰影子續跑說明(REPL 自己印)。量不到用量(API 席今天 pct 一律 None)⇒ 照實不觸發。"""
+    if os.environ.get("AIB_AUTO_DISTILL") == "0" or not _SID_RE.match(str(sid or "")):
+        return ""
+    try:
+        return on_stop({"session_id": sid}, now=now, seat=seat, runner=runner,
+                       refresh=refresh or (lambda p, s: None), gate=lambda argv, text=None: (0, ""))
+    except Exception as exc:  # noqa: BLE001 —— REPL 不能因為它掛
+        _log({"action": "error", "mode": "outer", "why": str(exc)[:200]})
+        return ""
 
 
 COPILOT_HOOK_NAME = "aib-auto-distill.json"
@@ -1023,11 +1164,10 @@ def on_ctx_gate(payload, now=None):
     回 block(理由帶讀來的 %),直到 verify 前 8 項全過才放行。防卡死:同一則真人/訊息最多擋 CTX_GATE_MAX 次,
     擋滿 ⇒ 放行並記 gate_gave_up(fleet_patrol 巡檢列出「85% 交接未完成」)。真人訊息含「先做」的那一則不擋。
     讀不到 gauge / 表壞 / verify 本身出錯 ⇒ 不擋(只記 log)。→ JSON 字串或 ""。"""
-    import seat_address
     sid = str(payload.get("session_id") or "")
-    if not _SID_RE.match(sid) or foreign_host() or not is_aib_seat(sid):
+    if not _SID_RE.match(sid) or foreign_host():
         return ""
-    code = seat_address.uuid_tail5(sid)
+    code = seat_code(sid, now)                         # /clear 之後的新編號也認得(by-seat)
     if not code:
         return ""
     pct = gauge_pct(sid, now)
@@ -1081,11 +1221,12 @@ def gate_gave_up(code):
 def on_review_gate(payload, now=None):
     """§8e.7(the maintainer 10-13 17:5x「Claude 席沒做回顧擋結束」照預設):這一輪交接 verify 前 8 項都過、還沒做遺漏回顧
     ⇒ Claude Stop 回 block + 回顧指示。stop hook 自己續的那輪照擋(回顧沒做完),但同一張收據最多擋兩次。→ JSON 字串或 ""。"""
-    import seat_address
     sid = str(payload.get("session_id") or "")
-    if not _SID_RE.match(sid) or foreign_host() or not is_aib_seat(sid):
+    if not _SID_RE.match(sid) or foreign_host():
         return ""
-    code = seat_address.uuid_tail5(sid)
+    code = seat_code(sid, now)
+    if not code:
+        return ""
     try:
         sys.path.append(str(SRC / "cockpit"))
         import aib_handoff
@@ -1219,6 +1360,72 @@ def ensure(path=DEFAULT_SETTINGS):
     return "installed", _installed("Claude", path, T("auto_distill.backup", {"path": backup}, None) if backup else "")
 
 
+# ---------------------------------------------------------------- ensure-all(安裝 / 升級時就裝;10-15 維護者「這一版全補上」)
+def _claude_settings():
+    return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "settings.json")
+
+
+def _ensure_claude_all():
+    return ensure(_claude_settings())
+
+
+def _ensure_codex_all():
+    return ensure_codex(os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "hooks.json"))
+
+
+def _ensure_grok_all():
+    return ensure_grok(os.path.expanduser("~/.grok/hooks"))
+
+
+def _ensure_copilot_all():
+    return ensure_copilot(os.path.expanduser("~/.copilot/hooks"))
+
+
+def _ensure_agy_all():
+    return ensure_agy(os.path.expanduser("~/.gemini/config/hooks.json"))
+
+
+# 有自己 CLI、有 hook 機制的五家(品牌, 給人看的名字, 認得出「這台有裝」的指令, 裝法)。
+#   API 金鑰席(deepseek / nvidia / openrouter / typesafe / openrouterjev)是 aib 自己的 REPL,由 REPL 每一輪代呼叫
+#   (outer_turn);橋接 bot(claudebot / codexbot / grokbot / musebot / sand)由橋每一輪代呼叫(bot_turn)⇒ 都不用裝設定檔。
+ALL_BRANDS = (
+    ("claude", "Claude Code", ("claude",), "_ensure_claude_all"),
+    ("codex", "Codex", ("codex", "ez2-codex"), "_ensure_codex_all"),
+    ("grok", "Grok", ("grok",), "_ensure_grok_all"),
+    ("copilot", "GitHub Copilot", ("copilot",), "_ensure_copilot_all"),
+    ("agy", "Antigravity", ("agy",), "_ensure_agy_all"),
+)
+
+
+def ensure_all(which=None):
+    """只裝這台有裝的 CLI(沒裝的略過並說明);各家設定改之前先備份(各家 ensure 自己做);AIB_AUTO_DISTILL=0 全關。
+    任何一家出錯都不丟例外(安裝 / 升級不能因為它失敗)。→ [(品牌, 結果, 給人看的一行)]。"""
+    which = which or shutil.which
+    if os.environ.get("AIB_AUTO_DISTILL") == "0":
+        return [("all", "off", T("auto_distill.all_off", {}, None))]
+    out = []
+    for brand, name, bins, fn in ALL_BRANDS:
+        if not any(which(b) for b in bins):
+            out.append((brand, "absent", T("auto_distill.all_absent", {"what": name}, None)))
+            continue
+        try:
+            did, why = globals()[fn]()
+        except Exception as exc:  # noqa: BLE001
+            did, why = "skip", str(exc)[:200]
+        if did == "installed":
+            line = why
+            if brand == "codex":
+                line += "\n" + T("auto_distill.codex_trust_hint", {}, None)
+        elif did == "ok":
+            line = T("auto_distill.all_ok", {"what": name}, None)
+        elif did == "off":
+            line = T("auto_distill.all_off", {}, None)
+        else:
+            line = T("auto_distill.all_skip", {"what": name, "why": why}, None)
+        out.append((brand, did, line))
+    return out
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = argv[0] if argv else ""
@@ -1276,6 +1483,13 @@ def main(argv=None):
         did, why = ensure_grok(argv[argv.index("--dir") + 1] if "--dir" in argv[:-1] else None)
         if did == "installed":
             print(why, file=sys.stderr)
+        return 0
+    if mode == "ensure-all":
+        try:
+            for _b, _did, line in ensure_all():
+                print(line, file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 —— 安裝 / 升級不能因為它失敗
+            _log({"action": "error", "mode": "ensure-all", "why": str(exc)[:200]})
         return 0
     if mode == "ensure":
         path = argv[argv.index("--settings") + 1] if "--settings" in argv[:-1] else DEFAULT_SETTINGS

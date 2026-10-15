@@ -23,8 +23,30 @@ All readers go through `ctx_policy.py`; no threshold number is written in code.
 - 任何錯 ⇒ rc 0、無輸出(不能擋人講話)。
 - 「先做」例外要靠 `src/persona-collect/human_filter.py` 認真人訊息;公開版目前沒有那一包(已列進 CLOUD-MISSING-FILES,
   等雲端補)。補進來之前:「先做」例外**不生效**(85 照擋),精煉格照觸發(不判「有沒有新的真人訊息」)。
-- 安裝:開 Claude 席時 `provider-launch.sh` 跑 `auto_distill_hook.py ensure`,把 UserPromptSubmit `prompt` 與 Stop `review-gate`
-  寫進 `~/.claude/settings.json`;路徑經 `canonical_tree` 算正本樹(公開倉 `<倉>/aib/src/...`、pipx 本檔自己)。
+- 安裝(10-15 起):**安裝 / 升級時就裝**——`auto_distill_hook.py ensure-all` 由 install.sh(一行安裝最後、建狀態目錄之前)、
+  `aib init`、`aib update`(升級完成後,用升級後這份)呼叫:只裝這台有裝的 CLI(沒裝的略過並說明)、各家設定改之前先備份、
+  重跑不重複裝、`AIB_AUTO_DISTILL=0` 全關;Codex 裝好印一行「請在 Codex 打 /hooks 信任一次」。開席時 `provider-launch.sh`
+  那一段照留(已裝就不動;只在 `[ -t 0 ]`)。路徑經 `canonical_tree` 算正本樹(公開倉 `<倉>/aib/src/...`、pipx 本檔自己)。
+- /clear 之後:Claude 換新對話編號、席位檔不變 ⇒ 由 `$EZ2_CTX_DIR/by-seat/<席碼>.json`(狀態列寫)反查席碼
+  (session_id 相同、observed_at 12 小時內、那個艙有沒退役的席位檔且窗號對得上);席碼一律用登記的,不用新編號尾碼。
+  兩者都對不上 ⇒ 當非 AIB 席。不把新編號寫回席位檔(席碼 = 登記 uuid 尾碼,dm 位址靠它)。
+
+### 各家觸發路 / Per-brand trigger paths
+
+| 品牌(provider) | 實際跑的程式 | 觸發路 | 85 能不能擋 | 裝在哪 | 用量量得到嗎 |
+|---|---|---|---|---|---|
+| claude | Claude Code CLI `claude` | UserPromptSubmit `prompt` 注入 + Stop `review-gate` | **能**(Stop 擋回合,同一則最多 3 次) | `~/.claude/settings.json`(或 `$CLAUDE_CONFIG_DIR`) | 能(狀態列寫 gauge;/clear 後走 by-seat) |
+| codex | `codex`(本機 alias `ez2-codex`) | Stop hook `stop` → aib dm 給自己 | 不能(dm 再提醒:每 10 分最多一封、最多 3 封) | `~/.codex/hooks.json`(或 `$CODEX_HOME`);要在 /hooks 信任一次 | 能(`codex_ctx_probe` 一輪結束先刷) |
+| grok | `grok` | Stop hook `stop` → aib dm | 不能(同上) | `~/.grok/hooks/aib-auto-distill.json` | 能(`grok_ctx_probe`) |
+| copilot | `copilot` | agentStop hook `stop` → aib dm | 不能(同上) | `~/.copilot/hooks/aib-auto-distill.json` | 能(`copilot_ctx_probe`) |
+| agy(gemini 是它的別名) | `agy` | PreInvocation `agy-pre`:叫模型前注入(ephemeral) | 不能(同格注入一次) | `~/.gemini/config/hooks.json` 的 `aib-auto-distill` | 能(agy 狀態列) |
+| deepseek / nvidia / openrouter | aib 自己的 Python REPL(`deepseek_cli.py` 等;**不是** Claude Code) | 外層代觸發:REPL 每一輪回完 `api_tidy.turn_end` → `outer_turn` → 同一條 `stop` 路 | 不能 | 不用裝(在 REPL 程式裡) | **量不到**(gauge 的 pct 一律 None)⇒ 今天照實不觸發;精煉另由 `api_tidy` 每 20 輪代跑 |
+| typesafe / openrouterjev | `typesafe_cli.py` | 同上(檔補進來時要加同一行,測試 O4 會查) | 不能 | — | 公開版**沒有** `typesafe_cli.py`,開不起來 |
+| claudebot | 本機 Claude 對話 + `claudebot_hook.py` 的 Stop | 橋接代觸發:`bot_turn(gauge_sid=綁定的 Claude 對話)`,rc 2 續一輪 | 部分(續一輪要求交接;verify 沒過再提醒,封頂 3 次) | `claudebot_hook install` 裝的 Claude 設定 | 能(綁定對話的 gauge) |
+| codexbot | `codexbot_bridge.py`(Codex Desktop App Server) | 橋接代觸發:每一輪完成後 `bot_turn(gauge_sid=桌面 sessionId)`,指示附在下一則送出的訊息 | 不能 | 不用裝 | 試著量(`codex_ctx_probe` 讀桌面對話的 rollout,**沒實測**);量不到 ⇒ 每 20 輪精煉 |
+| grokbot / musebot / sand | `sand_bridge.py` | 橋接代觸發:每一則回真人後 `bot_turn`,指示放進 inbox 系統信 | 不能 | 不用裝 | **量不到** ⇒ 只每 20 輪精煉,不觸發 80 / 85 / 95 |
+
+全部呼叫 `auto_distill_hook.py` 同一套判斷(`crossings` / `handoff_owed` / `handoff_done` / 已觸發紀錄),沒有第二套。
 
 已刪掉的舊表(B,艦隊巡檢 `stages` / `actions`)與讀者現況:
 
@@ -51,3 +73,10 @@ All readers go through `ctx_policy.py`; no threshold number is written in code.
 | 95% | Red line: stop all new work and hand off now | `auto_distill_hook.py` |
 
 Until `src/persona-collect/` (human_filter) is added to the public repo, the 「先做」 exception does not take effect and tidy cells fire without the "new human message" check. Each cell fires once per conversation. The % in every message is read from the gauge, never self-reported; no gauge ⇒ no output and no block. Any error ⇒ exit 0 with no output.
+
+Per-brand: every provider now has a trigger path (table above). Hooks are installed at install / `aib init` / `aib update`
+time by `auto_distill_hook.py ensure-all` (only CLIs present on this computer; others skipped with a line; configs backed
+up; `AIB_AUTO_DISTILL=0` turns it all off). API-key REPL seats are triggered by the REPL itself after each turn
+(`outer_turn`); bridge bots by the bridge (`bot_turn`, full table when the bot's gauge is measurable). Not measurable today:
+API-key seats, GrokBot / MuseBot / Sand (turn-count distill only, no handoff cells). After `/clear` the seat is found via
+`$EZ2_CTX_DIR/by-seat/<code>.json`.

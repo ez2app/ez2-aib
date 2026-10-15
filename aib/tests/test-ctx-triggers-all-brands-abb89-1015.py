@@ -398,7 +398,7 @@ class Entry(Base):
         block = m.group(1)
         self.assertIn("auto_distill_hook.py", block)
         self.assertIn("ensure-all", block)
-        self.assertLess(block.index("ensure-all"), block.index("init"), "ensure-all 在 aib init 之前(init 的輸出被吃掉)")
+        self.assertLess(block.index("ensure-all"), block.index("\"$abin\" init"), "ensure-all 在 aib init 之前(init 的輸出被吃掉)")
 
 
 # ---------------------------------------------------------------- K 刀
@@ -424,7 +424,7 @@ KNIVES = {
                      ["Outer.test_O4_every_api_repl_calls_turn_end"]),
     "no_init_call": ("src/bootstrap/aib_init.py", "    hooks = _ensure_hooks()\n", "    hooks = []\n",
                      ["Entry.test_N1_aib_init_installs"]),
-    "no_update_call": ("cli.py", "'[ \"$rc\" -ne 0 ] || \"$AIB_UPDATE_PY\" \"$AIB_UPDATE_HOOK\" ensure-all >&2; '",
+    "no_update_call": ("cli.py", "'[ \"$rc\" -ne 0 ] || [ ! -f \"$AIB_UPDATE_HOOK\" ] || \"$AIB_UPDATE_PY\" \"$AIB_UPDATE_HOOK\" ensure-all >&2; '",
                        "''", ["Entry.test_N2_aib_update_runs_ensure_all_after_installer"]),
     "no_codexbot_gauge": ("src/cockpit/codexbot_bridge.py",
                           "        return adh.bot_turn(uuid_tail5(session_id) or \"\", cabin, gauge_sid=gauge_sid)\n",
