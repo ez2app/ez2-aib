@@ -664,6 +664,22 @@ def _suite_default_vault() -> str:
         return str(Path.home() / "Desktop" / "Obsidian" / "Ez2")
 
 
+def _folder_label(route_key: str, stored: str = "") -> str:
+    """給人看的資料夾名:每次從 route_key 現解(uid 版面讀 labels.json,舊版面是契約字面最後一段)。
+    卡上只存 route_key(10-15:契約字面存進卡,Vault 轉 uid 版面後就過期);舊卡記的 folder 只當後備。"""
+    if not route_key:
+        return ""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "persona_route"))
+        import route_register
+        label = route_register.route_label(route_key)
+    except Exception:  # noqa: BLE001
+        label = ""
+    if label and label != route_key:
+        return label
+    return str(stored or "").strip().rstrip("/").split("/")[-1] or route_key
+
+
 def resolve_folder(contract: Any, wanted: str):
     """--folder 的寫法 ⇒ (route_key, folder, 錯誤)。收路由代號、完整資料夾路徑、或資料夾最後一段
     (可以不帶前面的編號:「系統記憶交接」= 「C80-系統記憶交接」)。對到不只一個 ⇒ 列出來、不挑。"""
@@ -867,7 +883,7 @@ def run_newproj(args) -> int:
         base.update({"unbound": True, "project_uid": bound})
         bound_card = load_card(root, bound) or {}
         if bound_card.get("route_key") and bound_card.get("route_key") == current_route:
-            base.update({"route_key": current_route, "folder": str(bound_card.get("folder") or "")})
+            base.update({"route_key": current_route, "folder": _folder_label(current_route, str(bound_card.get("folder") or ""))})
         if args.dry_run:
             _say(T("aib.newproj.dry_unbind", {"uid": bound, "seat": seat_id}))
         else:
@@ -925,12 +941,13 @@ def run_newproj(args) -> int:
         if ferr:
             return _refuse(ferr, seat_arg)
         if card_route and card_route != route_key:
-            return _refuse(T("aib.newproj.folder_mismatch", {"key": card_route, "path": (known or {}).get("folder") or "?",
+            return _refuse(T("aib.newproj.folder_mismatch", {"key": card_route, "path": _folder_label(card_route, (known or {}).get("folder") or ""),
                                                              "value": route_key}), seat_arg)
     elif card_route:
         route_key, folder = card_route, str((known or {}).get("folder") or "")
     elif current_route:
         route_key, folder = current_route, _folder_of_key(contract, current_route)
+    folder = _folder_label(route_key, folder)            # 給人看的名字現解;卡上只存 route_key
     if route_key:
         ok, code, detail = BO.check_against_contract(route_key, contract)
         if not ok:
@@ -983,7 +1000,7 @@ def run_newproj(args) -> int:
                 try:
                     with _card_lock(card_path_of(root, existing_uid)):
                         raw = _load_json(card_path_of(root, existing_uid)) or {}
-                        raw.update({"route_key": route_key, "folder": folder})
+                        raw.update({"route_key": route_key})
                         # 記憶整理第 1 包(10-13):改卡前先快照;拍不成就不補記(卡維持原樣,綁定照做)
                         wrote = _archive_snapshot(card_path_of(root, existing_uid), "project", existing_uid).get("status") != "failed"
                         if wrote:
@@ -1023,7 +1040,7 @@ def run_newproj(args) -> int:
                                  cwd=Path(args.cwd) if args.cwd else Path.cwd(),
                                  state_root=root, persona_uid=args.persona_uid,
                                  dry_run=bool(args.dry_run), before_write=note_then_folder,
-                                 extra_fields=({"route_key": route_key, "folder": folder} if route_key else None))
+                                 extra_fields=({"route_key": route_key} if route_key else None))
         except (NewProjectError, PC.ProjectCardError, OSError, ValueError) as exc:
             print(json.dumps({"ok": False, "error": str(exc), "seat": seat_id, "approved": False},
                              ensure_ascii=False, sort_keys=True))
@@ -1158,11 +1175,12 @@ def run_card_only(args, root: Path) -> int:
         refusal = _folder_refusal(BO, route_key, contract)
         if refusal:
             return _refuse(refusal, no_seat)
+        folder = _folder_label(route_key, folder)
         base.update({"route_key": route_key, "folder": folder})
     try:
         out = create_project(seat="", title=title, cwd=Path(args.cwd) if args.cwd else Path.cwd(),
                              state_root=root, persona_uid=args.persona_uid, dry_run=bool(args.dry_run),
-                             extra_fields=({"route_key": route_key, "folder": folder} if route_key else None),
+                             extra_fields=({"route_key": route_key} if route_key else None),
                              bind=False)
     except (NewProjectError, PC.ProjectCardError, OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc), "seat": None, "approved": False},
