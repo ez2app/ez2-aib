@@ -985,7 +985,9 @@ _whoami_token() {
     tmux_sock="$(basename "${TMUX%%,*}")"
     case "$tmux_sock" in aihub|aihub-*) case "$tmux_sock" in *[!0-9A-Za-z-]*) ;; *) own_hub="$tmux_sock" ;; esac ;; esac
   fi
-  ident="$(env ${own_hub:+EZ2_AIHUB_SOCKET="$own_hub"} AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
+  # ★ 10-15 18:4x 事故:刀測拿掉 _GL_OUT_ADDR 初始化時,這一輪從環境繼承到全球位址又走全球、又來推導,
+  #   無限再入,兩千多個 bash 把整機行程數塞滿約 8 分鐘。⇒ 再入前清掉全球相關變數(第二層;第三層見下面分派那行)。
+  ident="$(env -u _GL_OUT_ADDR -u DM_REPLY ${own_hub:+EZ2_AIHUB_SOCKET="$own_hub"} AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
   ident="${ident##*$'\n'}"
   case "$ident" in *[!A-Za-z0-9_=-]*) ident="" ;; esac
   printf '%s' "$ident"
@@ -1096,7 +1098,8 @@ _xhost_send() {
   emit_json 4 xhost-unknown "收件機回了契約外的 rc=$rc;勿重送,先到那台看"
   return 4
 }
-if [ -n "${_GL_OUT_ADDR:-}" ] || [ -n "$DM_REPLY" ]; then
+# 推導寄件人那一輪(_XH_WHOAMI)永遠不走全球:它只該印 token。不然一層防護失效就會無限再入(上面 18:4x 事故)。
+if [ "$_XH_WHOAMI" != "1" ] && { [ -n "${_GL_OUT_ADDR:-}" ] || [ -n "$DM_REPLY" ]; }; then
   [ "${RETRY_UNTIL_GIVEN}" = "1" ] && { emit_json 2 resolve "global:retry-until"; die "全球路線還不支援 --retry-until" 2; }
   _global_send
   exit $?
