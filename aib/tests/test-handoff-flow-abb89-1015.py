@@ -918,7 +918,15 @@ class Onboard(Sandbox):
                                                + self.onboard_args(3), **self.onboard_kw()))
         self.assertIn(NOTICE, body)
         self.assertIn("@abcde", body.split(NOTICE, 1)[1])
-        self.assertIn("鐵則八", body)
+        # 10-15 整合(#58 × #50):公開版開席單模板只有一份中立版(英文,不跟 EZ2_AIB_LOCALE 走),沒有私倉的「鐵則八」。
+        #   要驗的是「收尾交接那條鐵則跟著開席單送到」⇒ 從模板鐵則段取出含 aib handoff 的那一行(恰好一行),斷言它在開席單裡;
+        #   不寫死任何語言的字。
+        import seat_onboard as SO
+        rules = SO.apply_profile((ROOT / SO.TEMPLATE_REL).read_text(encoding="utf-8"), "rules")
+        rule = [ln for ln in rules.splitlines() if "aib handoff" in ln]
+        self.assertEqual(len(rule), 1, "開席單鐵則段要恰好一行收尾交接規則:%r" % rule)
+        self.assertIn("85%", rule[0])
+        self.assertIn(rule[0], body, "收尾交接鐵則沒跟著開席單送到")
         self.assertTrue(H.missed_path("abcde").exists())
 
     def test_H7c_entry_onboard_main_in_process(self):
@@ -1234,7 +1242,8 @@ class RestoreKnives(unittest.TestCase):
         claimed = {"test_H10_rule_line_everywhere", "test_H7_entry_onboard_non_claude_predecessor_missed"}
         copy = _copy_tree(self)
         layer = copy / "docs/templates/SEAT-ONBOARD.md"
-        old = "[鐵則八 · 收尾交接] 對話用量到 85%(或 the maintainer 說準備 clear)必須跑 `aib handoff`(collect → 三步 write),不可跳過。\n"
+        # 10-15 整合(#58 × #50):刀錨換成公開版中立模板裡收尾交接那條鐵則(全檔唯一)。
+        old = "3. At about 85% context use, or when the human says to prepare a clear, run `aib handoff`.\n"
         text = layer.read_text(encoding="utf-8")
         self.assertEqual(text.count(old), 1, "刀錨必須全檔恰好一次")
         layer.write_text(text.replace(old, ""), encoding="utf-8")
