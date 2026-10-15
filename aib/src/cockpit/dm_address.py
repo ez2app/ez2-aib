@@ -97,7 +97,19 @@ def match_cabin(code: str, known: Iterable[str]) -> list:
 
 
 def resolve(target: str, state_root: str, primary: str, env=None) -> tuple:
-    """回 (rc, dict)。rc 0 = 可投;rc 2 = 拒(一個字都沒送)。"""
+    """回 (rc, dict)。rc 0 = 可投;rc 2 = 拒(一個字都沒送)。
+
+    全球位址(`<主人 npub>/<艙>/<席>` 或 `npub1…`,開發文件第 5.1、12 節)⇒ rc 2 reason=global:
+    跟 remote 一樣「這裡不投」,dm-ctl 讀完稿交給 dm_global_files send-and-wait(轉接程式寄)。
+    從全球來信抬頭抄下的寄件方(`Andy(全球·…)`)不是位址 ⇒ reason=global-header,請用 --reply。"""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import dm_global_files as GF
+    import dm_global_header as GH
+    if GF.parse_address(target) is not None:
+        return 2, {"reason": "global", "addr": target, "detail": "全球位址:交給轉接程式寄"}
+    if GH.parse_sender((target or "").split(GH.ARROW, 1)[0].strip()) is not None:
+        return 2, {"reason": "global-header",
+                   "detail": "全球來信的抬頭不是位址;回信請用 aib dm --reply <短碼>(短碼在來信最前面那行)"}
     p = parse(target)
     if p is None:
         return 2, {"reason": "bad", "detail": "認不出地址:%s(寫法:艙位碼/席碼,跨主機 IP/艙位碼/席碼)" % target}
