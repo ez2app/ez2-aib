@@ -259,6 +259,20 @@ def _ensure_secrets_tree(root):
                       "檢查 secrets/ 後重跑 aib init")]
 
 
+def _ensure_hooks():
+    """10-15(維護者「安裝 / 升級時就裝,不必等開席」):這台有裝的 AI CLI 全部裝上依用量自動精煉的 hook
+    (src/identity/auto_distill_hook.py ensure_all:沒裝的略過並說明、各家設定先備份、AIB_AUTO_DISTILL=0 全關)。
+    出錯不算 init 失敗。→ [{"brand", "status", "line"}]。"""
+    ident = str(Path(__file__).resolve().parents[1] / "identity")
+    if ident not in sys.path:
+        sys.path.insert(0, ident)
+    try:
+        import auto_distill_hook
+        return [{"brand": b, "status": did, "line": line} for b, did, line in auto_distill_hook.ensure_all()]
+    except Exception as err:  # noqa: BLE001
+        return [{"brand": "all", "status": "skip", "line": "auto-distill: %s" % str(err)[:200]}]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="aib init", description=_T("aib.init.help.description"))
@@ -278,13 +292,14 @@ def main(argv=None):
     except InitError as err:
         sys.stderr.write("aib-init: %s\n" % err)
         return 2
+    hooks = _ensure_hooks()
     counts = {CREATED: 0, FIXED: 0, OK: 0, FAIL: 0}
     for i in items:
         counts[i["action"]] += 1
 
     if args.json:
         print(json.dumps({"state_root": str(Path(os.path.expanduser(args.state_root))),
-                          "items": items, "counts": counts},
+                          "items": items, "counts": counts, "hooks": hooks},
                          ensure_ascii=False, indent=2))
     else:
         mark = {CREATED: _T("aib.init.mark_created"), FIXED: _T("aib.init.mark_fixed"), OK: "OK  ", FAIL: "FAIL"}
@@ -300,6 +315,8 @@ def main(argv=None):
             print(line)
         print("\ncreated=%d fixed=%d ok=%d fail=%d"
               % (counts[CREATED], counts[FIXED], counts[OK], counts[FAIL]))
+        for h in hooks:
+            sys.stderr.write(h["line"] + "\n")
         auto_ext()
 
     return 0 if counts[FAIL] == 0 else 1

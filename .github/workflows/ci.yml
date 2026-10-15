@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # labeled:補貼 full-ci 標籤時重跑,完整 macOS 那幾格才會真的跑
+    types: [opened, synchronize, reopened, labeled]
 permissions:
   contents: read
 jobs:
@@ -16,22 +18,35 @@ jobs:
         # 10-15 human:每種電腦只測三版 —— 最舊(3.9,pyproject 宣告的下限)、主流 3.12、最新 3.14(14 格減成 6 格)
         python: ["3.9", "3.12", "3.14"]
     runs-on: ${{ matrix.os }}
+    env:
+      # 10-15 維護者:一般 PR 的 macOS 只跑 3.12;macOS × 3.9/3.14 留給 main、整合(int/*)/發版(release/*)分支、
+      #   或貼了 full-ci 標籤的 PR。六格仍然都會出現(main 的必過清單就是這六個名字),沒輪到的那幾格只印一行說明、直接綠。
+      RUN_CELL: ${{ matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     steps:
+      - name: cell not run on this PR
+        if: env.RUN_CELL != 'true'
+        run: echo "::notice::macOS ${{ matrix.python }} runs only on main, int/* and release/* branches, or PRs labelled full-ci"
       - uses: actions/checkout@v4
+        if: env.RUN_CELL == 'true'
       - uses: actions/setup-python@v5
+        if: env.RUN_CELL == 'true'
         with:
           python-version: ${{ matrix.python }}
           allow-prereleases: true   # 最新版剛出時 setup-python 可能只有預覽版
       - name: newer bash on macOS (aib traces bash 4.1+; the system /bin/bash 3.2 is reported as not measured)
-        if: runner.os == 'macOS'
+        if: env.RUN_CELL == 'true' && runner.os == 'macOS'
         run: brew install bash && echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: install (pip)
+        if: env.RUN_CELL == 'true'
         run: python -m pip install .
       - name: installed entry point
+        if: env.RUN_CELL == 'true'
         run: aib || test $? -eq 2
       - name: smoke test
+        if: env.RUN_CELL == 'true'
         run: python -m unittest discover -s tests -v
       - name: core safety tests (each file on its own, like aib test does)
+        if: env.RUN_CELL == 'true'
         shell: bash
         run: |
           python -m pip install pytest

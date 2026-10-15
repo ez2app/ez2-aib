@@ -10,26 +10,43 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from .providers import FREE_ALLOWED_PROVIDERS, list_providers
+from .providers import list_providers
 from .store import resolve_home
 from .tier import get_entitlement
 
 SOURCES_REL = Path("persona") / "sources.json"
 SOURCES_VERSION = 1
 
-# 狀態列標示
+# 狀態列標示。字樣走四語字典 aib.persona_sources.*;這裡是字典讀不到時的保底(與 zh-TW.json 同字)。
+# 10-15 the maintainer 裁「所有 AI 都免費開放」:沒有「不可用(免費)」「付費版可開」這兩句了。
 LABEL_ON = "開"
 LABEL_OFF = "關"
-LABEL_UNAVAILABLE_FREE = "不可用(免費)"
-MSG_PAID_REQUIRED = "付費版可開"
-MSG_PAID_REQUIRED_DESIGN = "這一家要付費版才能開"
-MSG_UNSIGNED_FREE = "無簽章 = 免費"
+FALLBACK_ALL_FREE = "所有 AI 都免費開放,哪一家都能開"
 MSG_UNKNOWN_PROVIDER = "未知的 provider"
 MSG_BAD_ACTION = "用法: 來源 <provider> 開|關（英: source <p> on|off）"
+
+
+def _t(key, fallback, params=None, env=None):
+    """查四語字典;查不到(或回 !!key!!)用保底。字典壞掉不得讓開關壞掉。"""
+    try:
+        cockpit = str(Path(__file__).resolve().parents[1] / "cockpit")
+        if cockpit not in sys.path:
+            sys.path.insert(0, cockpit)
+        import i18n_lib
+        locale = i18n_lib.resolve_locale_source(env=dict(_env_map(env)))[0]
+        text = i18n_lib.t(key, params, locale=locale)
+    except Exception:  # noqa: BLE001
+        text = None
+    if not isinstance(text, str) or not text or text == key or (text.startswith("!!") and text.endswith("!!")):
+        text = fallback
+        for k, v in (params or {}).items():
+            text = text.replace("{%s}" % k, str(v))
+    return text
 
 
 def resolve_sources_path(env: Optional[Mapping[str, str]] = None) -> Path:
@@ -107,21 +124,12 @@ def allowed_providers_for_entitlement(
     *,
     repo_root: Optional[Path] = None,
 ) -> List[str]:
-    """依 tier 回傳「資格允許可開」的 provider 清單（穩定順序）。"""
-    all_p = list(list_providers(str(repo_root) if repo_root else None))
-    tier = entitlement.get("tier")
-    if tier == "all":
-        return all_p
-    if tier == "single":
-        bought = entitlement.get("providers") or []
-        allowed = set(FREE_ALLOWED_PROVIDERS)
-        if isinstance(bought, list):
-            for name in bought:
-                if isinstance(name, str) and name.strip():
-                    allowed.add(name.strip())
-        return [p for p in all_p if p in allowed]
-    # free（含缺檔／無簽／壞檔）
-    return [p for p in all_p if p in FREE_ALLOWED_PROVIDERS]
+    """資格允許可開的 provider 清單（穩定順序）。
+
+    10-15 the maintainer 裁「所有 AI 都免費開放」⇒ 不分 free / single / all 一律全部;
+    參數照留,呼叫端不用改。
+    """
+    return list(list_providers(str(repo_root) if repo_root else None))
 
 
 def is_provider_allowed(
@@ -171,44 +179,29 @@ def set_source(
 ) -> Tuple[bool, str, int]:
     """開／關一個來源。
 
-    回傳 (ok, message, exit_code)。
-    免費態對不在 FREE_ALLOWED_PROVIDERS 裡的「開」⇒ 拒、印付費提示、rc≠0；不靜默、不偷開。
+    回傳 (ok, message, exit_code)。所有 AI 都免費(10-15),認得的 provider 一律准開。
     """
     name = (provider or "").strip()
     if not name:
-        return False, MSG_BAD_ACTION, 2
+        return False, _t("aib.persona_sources.usage", MSG_BAD_ACTION, env=env), 2
 
     all_p = list(list_providers(str(repo_root) if repo_root else None))
     if name not in all_p:
-        return False, f"{MSG_UNKNOWN_PROVIDER}: {name}", 2
-
-    e = get_entitlement(env)
-    allowed = set(allowed_providers_for_entitlement(e, repo_root=repo_root))
-
-    if enabled and name not in allowed:
-        # 免費／未買：明講，不偷開
-        msg = MSG_PAID_REQUIRED
-        # 設計稿原文亦可接受；狀態頁統一用短句，拒開用短句
-        return False, msg, 1
+        return False, _t("aib.persona_sources.unknown", MSG_UNKNOWN_PROVIDER + ": {name}",
+                         {"name": name}, env=env), 2
 
     obj = read_sources_obj(env=env)
     enabled_map = dict(obj.get("enabled") or {})
     enabled_map[name] = bool(enabled)
     obj = {"version": SOURCES_VERSION, "enabled": enabled_map}
     write_sources_obj(obj, env=env)
-    state = LABEL_ON if enabled else LABEL_OFF
-    return True, f"{name}: {state}", 0
+    return True, f"{name}: {_state_label(enabled, env)}", 0
 
 
-def _unsigned_free_label(entitlement: Mapping[str, Any]) -> Optional[str]:
-    """無檔／無簽章 ⇒ 狀態明標「無簽章 = 免費」。"""
-    reason = entitlement.get("reason")
-    tier = entitlement.get("tier")
-    if tier != "free":
-        return None
-    if reason in ("missing", "unavailable", "invalid", "expired"):
-        return MSG_UNSIGNED_FREE
-    return None
+def _state_label(on, env=None):
+    if on:
+        return _t("aib.persona_sources.on", LABEL_ON, env=env)
+    return _t("aib.persona_sources.off", LABEL_OFF, env=env)
 
 
 def format_status(
@@ -216,51 +209,15 @@ def format_status(
     *,
     repo_root: Optional[Path] = None,
 ) -> str:
-    """人讀狀態：每 provider 一列；單家態加升級提示。"""
-    e = get_entitlement(env)
+    """人讀狀態：每 provider 一列(開 / 關),最後一句「所有 AI 都免費」。"""
     all_p = list(list_providers(str(repo_root) if repo_root else None))
-    allowed = set(allowed_providers_for_entitlement(e, repo_root=repo_root))
     obj = read_sources_obj(env=env)
     enabled_map = obj.get("enabled") or {}
 
     lines: List[str] = []
-    unsigned = _unsigned_free_label(e)
-    tier = e.get("tier", "free")
-    reason = e.get("reason", "")
-    head = f"資格: {tier}"
-    if unsigned:
-        head += f"（{unsigned}）"
-    elif reason and reason != "ok":
-        head += f"（reason={reason}）"
-    lines.append(head)
-
-    on_count = 0
     for p in all_p:
-        if p not in allowed:
-            label = LABEL_UNAVAILABLE_FREE
-            # 對非允許：若使用者曾寫開，仍顯示不可用（有效=關）
-        elif enabled_map.get(p, False):
-            label = LABEL_ON
-            on_count += 1
-        else:
-            label = LABEL_OFF
-        lines.append(f"  {p}: {label}")
-
-    if tier == "single":
-        # 已開 N 家,升級全開可再開 M 家
-        m = len(all_p) - on_count
-        if m < 0:
-            m = 0
-        lines.append(f"已開 {on_count} 家,升級全開可再開 {m} 家")
-    elif tier == "free":
-        # 提示：免費只 FREE_ALLOWED_PROVIDERS 那幾家
-        # 免費可開的那幾家用解析名單的順序印(不是集合的隨機順序)
-        free_here = [p for p in all_p if p in FREE_ALLOWED_PROVIDERS]
-        locked = len(all_p) - len(free_here)
-        lines.append(
-            f"免費態：僅 {'／'.join(free_here)} 可開；另有 {locked} 家{MSG_PAID_REQUIRED}"
-        )
-
+        lines.append(f"  {p}: {_state_label(bool(enabled_map.get(p, False)), env)}")
+    lines.append(_t("aib.persona_sources.all_free", FALLBACK_ALL_FREE, env=env))
     return "\n".join(lines) + "\n"
 
 

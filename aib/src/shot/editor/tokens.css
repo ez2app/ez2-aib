@@ -1,0 +1,65 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Ez2 設計 token — 一致性的地基(顏色/間距/圓角/字級/陰影/動效)。
+   主題引擎 theme.js 覆寫這些變數 = 換整套風格。純 CSS,Electron/PWA/手機共用。
+   規則:元件只引用 token,不寫死顏色/尺寸。 */
+:root {
+  color-scheme: dark;
+  /* 色板(深色預設;theme.js 可覆寫) */
+  --bg: #0f1117; --surface: #171b25; --surface-2: #1e2430; --panel: #171b25;
+  --line: #2a3142; --line-2: #3a4356;
+  --text: #eef2ff; --muted: #a7b0c3; --faint: #6b7488;
+  --brand: #58a6ff; --brand-ink: #04121f;
+  --accent: #c98bff; --ok: #46d180; --warn: #ffd400; --bad: #ff6b6b;
+  /* 產品線色(C/P/F/G,可主題化) */
+  --pl-c: #58a6ff; --pl-p: #46d180; --pl-f: #ffd400; --pl-g: #c98bff;
+  /* 圓角 */
+  --r-sm: 8px; --r-md: 10px; --r-lg: 14px; --r-xl: 18px; --r-pill: 999px;
+  /* 間距(rem 隨字級縮放) */
+  --sp-1: .25rem; --sp-2: .5rem; --sp-3: .75rem; --sp-4: 1rem; --sp-5: 1.5rem; --sp-6: 2rem;
+  /* 字級(clamp 流動 → 任何寬度都合適,非死斷點) */
+  --fs-xs: clamp(.68rem, .66rem + .1vw, .76rem);
+  --fs-sm: clamp(.78rem, .75rem + .15vw, .86rem);
+  --fs-md: clamp(.9rem, .86rem + .2vw, 1rem);
+  --fs-lg: clamp(1.05rem, 1rem + .3vw, 1.2rem);
+  --fs-xl: clamp(1.3rem, 1.2rem + .5vw, 1.6rem);
+  /* 陰影 / 動效(尊重 reduce-motion) */
+  --sh-1: 0 4px 14px rgba(0,0,0,.3);
+  --sh-2: 0 14px 44px rgba(0,0,0,.5);
+  --motion: 180ms cubic-bezier(.2,.7,.2,1);
+  /* 字體(CJK 安全堆疊:繁中 + 日文 fallback) */
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
+  /* 觸控目標(手機 ≥44px) */
+  --tap: 44px;
+  /* Apple 磨砂玻璃:半透明表面 + backdrop 模糊 + 頂緣反光(需背後有環境色才顯質感) */
+  --glass: rgba(22, 26, 36, .55);
+  --glass-2: rgba(30, 36, 48, .42);
+  --glass-blur: blur(26px) saturate(1.8);
+  --glass-border: rgba(255, 255, 255, .13);
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, .10);
+  --glow: var(--brand);   /* 呼吸光顏色(預設跟品牌色;主題可覆寫確保每套都明顯) */
+  /* 環境背景(給玻璃模糊的極光,含中央光暈才看得出磨砂) */
+  --ambient:
+    radial-gradient(880px 620px at 18% 2%, rgba(88, 130, 255, .20), transparent 55%),
+    radial-gradient(820px 620px at 100% 8%, rgba(180, 120, 255, .17), transparent 52%),
+    radial-gradient(1000px 820px at 50% 108%, rgba(70, 209, 200, .11), transparent 56%),
+    radial-gradient(680px 520px at 72% 44%, rgba(120, 100, 255, .09), transparent 60%),
+    var(--bg);
+}
+@media (prefers-reduced-motion: reduce) { :root { --motion: 1ms; } }
+
+/* 淺色主題(theme.js 用 data-theme=light 切;也可跟系統) */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f8fc; --surface: #ffffff; --surface-2: #eef2f9; --panel: #ffffff;
+  --line: #d9e0ec; --line-2: #c3ccdc;
+  --text: #101625; --muted: #5a6577; --faint: #8a94a8;
+  --brand: #2d6cff; --brand-ink: #ffffff;
+  --sh-1: 0 4px 14px rgba(30,50,90,.1); --sh-2: 0 14px 44px rgba(30,50,90,.16);
+  --glass: rgba(255, 255, 255, .6); --glass-2: rgba(255, 255, 255, .45); --glass-border: rgba(20, 40, 80, .1);
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, .5);
+  --ambient:
+    radial-gradient(880px 620px at 18% 2%, rgba(88, 130, 255, .18), transparent 55%),
+    radial-gradient(820px 620px at 100% 8%, rgba(180, 120, 255, .16), transparent 52%),
+    radial-gradient(1000px 820px at 50% 108%, rgba(70, 209, 200, .12), transparent 56%),
+    var(--bg);
+}
