@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>Ez2 截圖</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  /* .btn / .btn-primary 取自 Ez2 AI 人格萃取 App:desktop-shell/src/app/components.css */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    font: 600 var(--fs-sm, 13px)/1 var(--font, -apple-system, sans-serif); padding: 8px 13px; border-radius: var(--r-md, 10px);
+    border: 1px solid var(--line); background: rgba(255,255,255,.05); color: var(--text);
+    cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: color-mix(in srgb, var(--brand) 16%, transparent); }
+  .btn-primary { border-color: color-mix(in srgb, var(--brand) 45%, transparent); background: color-mix(in srgb, var(--brand) 14%, transparent); }
+  .btn-primary:hover { background: color-mix(in srgb, var(--brand) 22%, transparent); }
+  html, body { margin: 0; height: 100%; background: var(--bg, #0f1117); color: var(--text, #eef2ff);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; overflow: hidden; }
+  #box { position: absolute; inset: 0; }
+  #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 300; display: none;
+    padding: 8px 14px; border-radius: 10px; background: rgba(18,24,34,.94); border: 1px solid var(--line); font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="box"></div>
+<div id="toast"></div>
+<script src="icons.js"></script>
+<script src="editor.js"></script>
+</body>
+</html>

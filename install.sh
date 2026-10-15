@@ -806,6 +806,12 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
       # 10-12 新用戶全面檢查(the maintainer「新安裝的 aib 也要解決這個問題」):裝完就建好狀態樹(aib init,可重跑);
       #   第二大腦的預設 vault 與預設路由契約在第一次用時自動就緒。已有別的 aib(共用 ~/.ez2-aib)⇒ 不碰。
       if [ "${KEEP:-0}" != 1 ]; then
+        # 10-15(維護者「安裝 / 升級時就裝,不必等開席」):這台有裝的 AI CLI 都裝上 CTX 用量表的 hook(沒裝的略過並說明;
+        #   各家設定先備份;AIB_AUTO_DISTILL=0 全關;Codex 印一行「/hooks 信任一次」)。放在建狀態目錄那一步前面:那一步的輸出被吃掉。
+        #   已有別的 aib(KEEP=1)⇒ 不碰(會把那支 aib 的 hook 換成這份的路徑)。
+        for _adh in "$DIR/aib/src/identity/auto_distill_hook.py" "$DIR/src/identity/auto_distill_hook.py"; do
+          if [ -f "$_adh" ]; then python3 "$_adh" ensure-all </dev/null || true; break; fi
+        done
         if (cd "$DIR" && "$abin" init >/dev/null 2>&1); then say "✓ aib 狀態目錄就緒(~/.ez2-aib)"
         else note+=("aib init 沒跑成:開第一席前請自己跑一次 aib init"); fi
       fi

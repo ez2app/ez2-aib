@@ -591,7 +591,9 @@ class DesktopShortcutAsks(TmpCase):
         self.assertIn(self.desk / "AIB Second Brain", [p for p, _ in rm])
 
     def test_init_non_interactive_does_not_create(self):
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("EZ2_AIB", "LC_", "LANG"))}
+        # aib init 會裝各家 hook(10-15 ensure-all):CLAUDE_CONFIG_DIR / CODEX_HOME 不准帶進去(會繞過暫存 HOME)
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("EZ2_AIB", "LC_", "LANG"))
+               and k not in ("CLAUDE_CONFIG_DIR", "CODEX_HOME")}
         env.update(HOME=str(self.home), EZ2_AIB_STATE_ROOT=str(self.root), EZ2_AIB_DESKTOP_DIR=str(self.desk),
                    EZ2_AIB_LOCALE="en", LANG="C")
         r = subprocess.run([sys.executable, str(SRC / "bootstrap" / "aib_init.py")], capture_output=True, text=True,

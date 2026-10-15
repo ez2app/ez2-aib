@@ -71,7 +71,13 @@ def _update(args):
               'if [ -n "$s" ]; then echo "aib update: $u is not the open-source installer; trying the next one" >&2; fi; '
               's=""; done; '
               '[ -n "$s" ] || { echo "aib update: could not download the installer from: $0" >&2; exit 5; }; '
-              'exec bash -c "$s" aib-install "$@"')
+              'bash -c "$s" aib-install "$@"; rc=$?; '
+              '[ "$rc" -ne 0 ] || [ ! -f "$AIB_UPDATE_HOOK" ] || "$AIB_UPDATE_PY" "$AIB_UPDATE_HOOK" ensure-all >&2; '
+              'exit "$rc"')
+    # 10-15(維護者「安裝 / 升級時就裝」):升級完成後用**升級後**這份的 ensure-all 把這台有裝的 AI CLI 都裝上
+    #   CTX 用量表的 hook(網站上的安裝程式若還是舊版,也不會漏);安裝程式失敗 ⇒ 不裝,結束碼原樣傳回。
+    os.environ["AIB_UPDATE_PY"] = sys.executable
+    os.environ["AIB_UPDATE_HOOK"] = os.path.join(HERE, "src", "identity", "auto_distill_hook.py")
     os.execv("/bin/bash", ["bash", "-c", script, urls, PUBLIC_MARK, "--dir", root] + list(args))
 
 
