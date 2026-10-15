@@ -3541,5 +3541,6 @@
   "aib.bindme.route_unresolved_hint": "persona is still bound; brain route {route} fails the route contract used by this projection ({code}), existing binding kept — align the contract sources (EZ2_ROUTE_CONTRACT_SPEC / EZ2_ROUTE_REGISTRY) and re-project; repair is not needed",
   "aib.bindme.repair_not_back": "repair finished (rc=0) but after reading back, @{code} still has no persona (now: {problem}); the binding did not take effect",
   "aib.bindme.repair_route_unresolved": "repair re-attached the persona of @{code}, but brain route {route} fails the route contract ({code2}); the seat is not fully back — align the contract sources and re-project",
-  "aib.bindme.repair_seat_gone": "after repair, seat @{code} can no longer be read (seat file missing or exited)"
+  "aib.bindme.repair_seat_gone": "after repair, seat @{code} can no longer be read (seat file missing or exited)",
+  "aib.newproj.approve_ruling": "goals and red lines approved by {who} at their own terminal (aib newproj --approve)"
 }

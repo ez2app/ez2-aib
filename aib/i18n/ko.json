@@ -3541,5 +3541,6 @@
   "aib.bindme.route_unresolved_hint": "인격은 그대로; 두뇌 경로 {route}이(가) 이번 투영에 쓴 경로표를 통과하지 못함({code}), 기존 연결 유지 —— 경로표 출처(EZ2_ROUTE_CONTRACT_SPEC / EZ2_ROUTE_REGISTRY)를 맞춘 뒤 다시 투영, repair 불필요",
   "aib.bindme.repair_not_back": "repair는 끝났지만(rc=0) 다시 읽어 보니 @{code}의 인격이 아직 돌아오지 않음(현재: {problem}); 연결이 적용되지 않음",
   "aib.bindme.repair_route_unresolved": "repair로 @{code}의 인격은 다시 붙었지만 두뇌 경로 {route}이(가) 경로표를 통과하지 못함({code2}); 이 자리는 아직 완전히 돌아오지 않음 —— 경로표 출처를 맞추고 다시 투영",
-  "aib.bindme.repair_seat_gone": "repair 후 @{code} 자리를 읽을 수 없음(자리 파일이 없거나 이미 나감)"
+  "aib.bindme.repair_seat_gone": "repair 후 @{code} 자리를 읽을 수 없음(자리 파일이 없거나 이미 나감)",
+  "aib.newproj.approve_ruling": "목표와 레드라인을 {who} 가 자기 터미널에서 승인했습니다(aib newproj --approve)"
 }

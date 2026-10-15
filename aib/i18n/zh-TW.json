@@ -3541,5 +3541,6 @@
   "aib.bindme.route_unresolved_hint": "人格還在;大腦路由 {route} 過不了這次投影用的路由表({code}),原綁定已保留 —— 對齊路由表來源(EZ2_ROUTE_CONTRACT_SPEC / EZ2_ROUTE_REGISTRY)後重投影,不用 repair",
   "aib.bindme.repair_not_back": "repair 跑完(rc=0)但讀回後 @{code} 的人格還是沒回來(現況:{problem});綁定沒有生效",
   "aib.bindme.repair_route_unresolved": "repair 接回了 @{code} 的人格,但大腦路由 {route} 過不了路由表({code2}),這一席還沒完整回來;先對齊路由表來源再重投影",
-  "aib.bindme.repair_seat_gone": "repair 跑完後讀不到 @{code} 這一席(席位檔不見或已退出)"
+  "aib.bindme.repair_seat_gone": "repair 跑完後讀不到 @{code} 這一席(席位檔不見或已退出)",
+  "aib.newproj.approve_ruling": "目標與紅線由 {who} 在自己的終端機核准(aib newproj --approve)"
 }
