@@ -1,13 +1,13 @@
 {
-  "aib.ai_view.bad_key": "unknown switch 「{key}」; valid ones are: {keys}",
-  "aib.ai_view.bad_value": "invalid value 「{value}」; only {values} are accepted",
+  "aib.ai_view.bad_key": "unknown switch \"{key}\"; valid ones are: {keys}",
+  "aib.ai_view.bad_value": "invalid value \"{value}\"; only {values} are accepted",
   "aib.ai_view.hidden": "hidden",
   "aib.ai_view.set_ok": "set {key} = {value} (written to {path}, applies next frame)",
   "aib.ai_view.shown": "shown",
   "aib.ai_view.status_path": "config file: {path}",
   "aib.ai_view.status_role": "role (persona) row: {value}",
   "aib.ai_view.status_sb": "project row: {value}",
-  "aib.ai_view.too_many_args": "extra arguments 「{extra}」; one switch per call, nothing was written",
+  "aib.ai_view.too_many_args": "extra arguments \"{extra}\"; one switch per call, nothing was written",
   "aib.ai_view.usage": "usage: aib ai role on|off · aib ai sb on|off · aib ai (print current values)",
   "aib.audit.no_seats": "aib-audit: no seat could be read from the registry ({home})",
   "aib.audit.written": "\nwritten to: {path}",
@@ -3008,5 +3008,13 @@
   "aib.init.help.state_root": "AIB data folder to set up (default: ~/.ez2-aib)",
   "aib.init.help.json": "print the result as JSON (for scripts)",
   "aib.init.mark_created": "NEW ",
-  "aib.init.mark_fixed": "FIX "
+  "aib.init.mark_fixed": "FIX ",
+  "aib.ai_view.help": "Show or hide the extra rows under each AI in the right pane.\n  role on|off   the row with the persona bound to that AI\n  sb on|off     the row with the project (second brain) folder\n  (no argument) print the current values and where they are saved\nThe setting is saved and applies from the next screen refresh.",
+  "aib.genes.help.usage": "usage: aib genes status | on [1,2,6] | off",
+  "aib.genes.help.what": "Genes are a short set of working rules (finish the main goal first, plain language, honesty, safety...) added to every AI seat. One switch covers all seats; default is off.",
+  "aib.genes.help.status": "  status        show whether genes are on and how much they measurably help",
+  "aib.genes.help.on": "  on [1,2,6]    turn genes on (all of them, or only the numbers you list)",
+  "aib.genes.help.off": "  off           turn genes off",
+  "aib.genes.help.locked": "Whenever any gene is on, 3 (honesty) and 5 (safety) are on too. AI seats that use an API key pick up the change when reopened; other seats on their next start.",
+  "aib.seat.help.usage": "usage: aib seat <command> ...\n  open <provider> <dgrs|safe> <role> [--again]   open an AI seat (same as: aib <provider> <mode> <role>)\n  detect [--all|--window @N] [--apply]           find each seat's conversation id (see: aib seat detect --help)\n  onboard [--window @N|--missing]                send the opening note to a seat again\n  socket-backfill [--apply]                      fill in the missing connection field in older seat files\n  re-register                                    register this seat again after it restarted\n  auto-rotate                                    switch Codex account when its usage runs out"
 }

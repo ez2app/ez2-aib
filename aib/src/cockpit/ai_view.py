@@ -116,6 +116,10 @@ def main(argv, env=None, out=None, err=None):
         return 0
 
     key = argv[0]
+    if key in ("-h", "--help", "help"):
+        # E2(10-15):--help 要印用法、rc 0;以前當成不認得的開關 rc 2
+        out.write(tr.t("aib.ai_view.usage") + "\n" + tr.t("aib.ai_view.help") + "\n")
+        return 0
     if key not in KEYS:
         err.write(tr.t("aib.ai_view.bad_key",
                        {"key": key, "keys": " ".join(KEYS)}) + "\n")

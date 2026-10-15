@@ -3008,5 +3008,13 @@
   "aib.init.help.state_root": "要建立的 AIB 資料夾(預設 ~/.ez2-aib)",
   "aib.init.help.json": "結果印成 JSON(給程式讀)",
   "aib.init.mark_created": "建立",
-  "aib.init.mark_fixed": "修正"
+  "aib.init.mark_fixed": "修正",
+  "aib.ai_view.help": "右欄每個 AI 底下多出來的那幾行,要顯示還是隱藏。\n  role on|off   這個 AI 綁定的人格那一行\n  sb on|off     專案(第二大腦)資料夾那一行\n  (不加參數)    印出目前的設定和存在哪裡\n設定會存起來,下一次畫面更新就套用。",
+  "aib.genes.help.usage": "用法:aib genes status | on [1,2,6] | off",
+  "aib.genes.help.what": "基因是加在每一席 AI 前面的一小段做事規則(先做完主目標、白話、說實話、安全……)。一個開關管全部席,預設關。",
+  "aib.genes.help.status": "  status        看基因開了沒、實測能提升多少",
+  "aib.genes.help.on": "  on [1,2,6]    打開基因(全部,或只開你列的編號)",
+  "aib.genes.help.off": "  off           關掉基因",
+  "aib.genes.help.locked": "只要開了任何一個,3(說實話)和 5(安全)一定一起開。用 API 金鑰的席要重開才會套用;其他席下次開始時套用。",
+  "aib.seat.help.usage": "用法:aib seat <指令> ...\n  open <provider> <dgrs|safe> <role> [--again]   開一席 AI(等同 aib <provider> <mode> <role>)\n  detect [--all|--window @N] [--apply]           找出每一席的對話編號(詳見 aib seat detect --help)\n  onboard [--window @N|--missing]                再送一次開席說明給那一席\n  socket-backfill [--apply]                      幫舊的席位檔補上缺的連線欄位\n  re-register                                    席重開之後重新登記\n  auto-rotate                                    Codex 額度用完時換帳號"
 }

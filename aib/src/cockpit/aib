@@ -818,7 +818,9 @@ if [ "${1:-}" = "seat" ]; then
     #   (_archive_same_uuid_exit)。以前只設 bash 變數 ⇒ 子行程永遠看到沒設 ⇒ 同窗重開的席退出欄清不掉,一直被判死。
     re-register) shift 2; export AIB_SEAT_REREGISTER=1; REREG_ARGS=("$@"); set -- ;;
     auto-rotate) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/codex_rotate_live.py" seat "$@" ;;
-    *) echo "aib seat: open|detect|onboard|socket-backfill|re-register|auto-rotate" >&2; exit 2 ;;
+    # E2(10-15):aib seat --help 要印用法、rc 0(以前印一行就 rc 2)
+    -h|--help|help) t aib.seat.help.usage; exit 0 ;;
+    *) t aib.seat.help.usage >&2; exit 2 ;;
   esac
 fi
 
