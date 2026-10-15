@@ -5,7 +5,7 @@
 
 F1 tools/heat/rulers.py 與 src/shot/(hotkey.swift + editor/ 6 檔)都在,每支帶 SPDX 授權行
 F2 新檔脫敏:沒有維護者本名、家目錄絕對路徑、私倉名、真席碼
-R1 machine_status.rulers() 找得到本樹的尺;load1 / heavy 不再是 unmeasured;cpu_temp 不再說「尺還沒合入」
+R1 machine_status.rulers() 找得到本樹的尺;三格都不再說「尺還沒合入」;macOS 上 load1 / heavy 不再是 unmeasured
 B1 CLT 26 的 SwiftBridging 重複定義:第一次編失敗且 stderr 有那句 ⇒ 帶 -vfsoverlay 重編一次 ⇒ built
 B2 不是那句的編譯失敗 ⇒ 不重試,回 build_failed
 B3 overlay 把錯誤訊息裡那支 bridging.modulemap 指到一個空檔
@@ -84,11 +84,12 @@ class MachineStatusRulersTest(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr[-800:])
         doc = json.loads(p.stdout.strip().splitlines()[-1])
         self.assertTrue(doc["mod"], doc["why"])
-        if subprocess.run(["sh", "-c", "command -v uptime"], capture_output=True).returncode == 0:
+        for key in ("load1", "heavy", "cpu"):
+            self.assertNotEqual(doc[key]["detail"], doc["not_in_tree"], doc[key])
+        if sys.platform == "darwin":
+            # 尺的 uptime / ps 剖法是照 macOS 的輸出寫的;Linux 的 uptime 是「load average: a, b, c」
             self.assertNotEqual(doc["load1"]["state"], "unmeasured", doc["load1"])
-        self.assertNotEqual(doc["heavy"]["state"], "unmeasured", doc["heavy"])
-        # CPU 溫度在虛擬機/Linux 上可能真的讀不到;但原因不得再是「尺還沒合入」
-        self.assertNotEqual(doc["cpu"]["detail"], doc["not_in_tree"], doc["cpu"])
+            self.assertNotEqual(doc["heavy"]["state"], "unmeasured", doc["heavy"])
 
 
 class FakeRun:

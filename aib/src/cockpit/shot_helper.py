@@ -39,6 +39,7 @@ import json
 import os
 import pathlib
 import plistlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -513,23 +514,107 @@ def swiftc_cmd():
     return ["xcrun", "--sdk", "macosx", "swiftc"] if shutil.which("xcrun") else [swiftc_bin()]
 
 
+# CLT 26(Swift 6.2)已知 bug:CommandLineTools/usr/include/swift/ 底下 module.modulemap 與
+# bridging.modulemap 都定義 SwiftBridging ⇒ 連只 import Foundation 的檔都編不過。
+# 不用 sudo 的解法:-vfsoverlay 把 bridging.modulemap 指到一個空檔(10-15 這台實證可編、minos 15.0)。
+SWIFT_BRIDGING_DUP = "redefinition of module 'SwiftBridging'"
+
+
+def bridging_modulemap(stderr):
+    """重複定義的另一半(bridging.modulemap)在哪裡:先照錯誤訊息,再照 swiftc 所在的 toolchain。"""
+    for m in re.finditer(r"(/[^\s:]*?/bridging\.modulemap)", stderr or ""):
+        return m.group(1)
+    sw = swiftc_bin()
+    if sw:
+        cand = pathlib.Path(sw).resolve().parent.parent / "include" / "swift" / "bridging.modulemap"
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def write_bridging_overlay(td, stderr):
+    target = bridging_modulemap(stderr)
+    if not target:
+        return None
+    empty = os.path.join(td, "empty.modulemap")
+    open(empty, "w").close()
+    yml = os.path.join(td, "swift-bridging-overlay.yaml")
+    with open(yml, "w", encoding="utf-8") as fh:
+        json.dump({"version": 0, "case-sensitive": "false", "roots": [
+            {"name": target, "type": "file", "external-contents": empty}]}, fh)
+    return yml
+
+
+def macos_version():
+    try:
+        p = _run(["sw_vers", "-productVersion"], timeout=30)
+        if p.returncode == 0 and p.stdout.strip():
+            return p.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ""
+
+
+def binary_minos(path):
+    """執行檔的最低系統版本(LC_BUILD_VERSION 的 minos);讀不到回空字串。"""
+    for cmd in (["vtool", "-show-build", str(path)], ["otool", "-l", str(path)]):
+        try:
+            p = _run(cmd, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        m = re.search(r"^\s*minos\s+([0-9.]+)", p.stdout or "", re.M)
+        if p.returncode == 0 and m:
+            return m.group(1)
+    return ""
+
+
+def _ver(s):
+    try:
+        return tuple(int(x) for x in str(s).split("."))
+    except ValueError:
+        return ()
+
+
+def build_is_fresh(meta, sha, exe, macos):
+    """快取能不能用。★ 不同機器 / 不同系統版本編的 app 不共用:較新系統編的 minos 高,
+    在這台 open 回 -10825(10-15 實踩)。所以 macOS 版本要一樣,minos 也不能高過本機。"""
+    if meta.get("sha") != sha or not exe.exists():
+        return False
+    if macos and meta.get("macos") != macos:
+        return False
+    minos = meta.get("minos") or ""
+    if macos and minos and _ver(minos) > _ver(macos):
+        return False
+    return True
+
+
 def build(home=None):
     """原始碼的雜湊跟上次編的一樣 ⇒ 不重編(重編會換掉簽章,系統的「螢幕錄影」權限可能要重勾)。"""
     app, exe = app_paths(home)
     meta_path = shot_home(home) / "build.json"
     sha = source_sha()
     meta = _read_json(meta_path) or {}
-    if meta.get("sha") == sha and exe.exists():
+    macos = macos_version()
+    if build_is_fresh(meta, sha, exe, macos):
         return {"rc": 0, "reason": "build_cached", "sha": sha[:12]}
     swiftc = swiftc_cmd()
     if not swiftc:
         return {"rc": 1, "reason": "no_swiftc"}
     exe.parent.mkdir(parents=True, exist_ok=True)
+    overlay = False
     with tempfile.TemporaryDirectory(prefix="aib-shot-build-") as td:
         out = os.path.join(td, EXE_NAME)
-        p = _run(swiftc + ["-O", "-o", out, str(SHOT_SRC / "hotkey.swift")], timeout=600)
+        args = ["-O", "-o", out, str(SHOT_SRC / "hotkey.swift")]
+        p = _run(swiftc + args, timeout=600)
+        err = (p.stderr or "") + (p.stdout or "")
+        if p.returncode != 0 and SWIFT_BRIDGING_DUP in err:
+            yml = write_bridging_overlay(td, err)
+            if yml:
+                overlay = True
+                p = _run(swiftc + ["-vfsoverlay", yml] + args, timeout=600)
         if p.returncode != 0 or not os.path.exists(out):
-            return {"rc": 1, "reason": "build_failed", "detail": (p.stderr or p.stdout).strip()[-400:]}
+            return {"rc": 1, "reason": "build_failed", "vfsoverlay": overlay,
+                    "detail": (p.stderr or p.stdout).strip()[-400:]}
         shutil.copy2(out, exe)
     with open(app / "Contents" / "Info.plist", "wb") as fh:
         plistlib.dump({
@@ -544,8 +629,9 @@ def build(home=None):
             "NSScreenCaptureUsageDescription": "Ez2 AIB 截圖:按 Control+Shift+S 框選畫面",
         }, fh)
     _run(["codesign", "--force", "-s", "-", str(app)], timeout=120)
-    _write_json(meta_path, {"sha": sha, "built_at": int(time.time())})
-    return {"rc": 0, "reason": "built", "sha": sha[:12]}
+    _write_json(meta_path, {"sha": sha, "built_at": int(time.time()), "macos": macos,
+                            "minos": binary_minos(exe), "vfsoverlay": overlay})
+    return {"rc": 0, "reason": "built", "sha": sha[:12], "vfsoverlay": overlay}
 
 
 # ---------- 小幫手在不在跑 ----------
