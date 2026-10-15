@@ -68,6 +68,26 @@ _CHECK_TOOL = {
 }
 
 
+_RT = {}
+
+
+def _t(msg_key, **params):
+    """執行期訊息走 i18n(10-15:英文語系不再印中文錯誤/提示);鍵在 aib.persona.run.*。
+    字典讀不到 ⇒ 印鍵名(可見即可抓),不擋指令。"""
+    try:
+        cockpit = os.path.join(os.path.dirname(HERE), "cockpit")
+        if cockpit not in sys.path:
+            sys.path.insert(0, cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _RT.get(loc)
+        if tr is None:
+            tr = _RT[loc] = i18n_lib.Translator(loc)
+        return tr.t("aib.persona.run." + msg_key, params or None)
+    except Exception:  # noqa: BLE001
+        return "aib.persona.run." + msg_key
+
+
 def _dump(obj):
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=1) + "\n"
 
@@ -86,8 +106,7 @@ def _missing_tools_hint(missing, tools_root, tools_src):
         if not ent:
             # session_brief 不屬於任何 root:指令由 operator 指定(SOP §一-B-4),
             # 這裡講清楚,免得有人去找一個不存在的 root。
-            out.append("tools_missing: %s 的指令由 operator 指定($%s),不是 root 缺席"
-                       % (key, wrappers.SESSION_BRIEF_ENV))
+            out.append(_t("session_brief_hint", key=key, env=wrappers.SESSION_BRIEF_ENV))
             continue
         root_key, rel = ent
         spec, value, source = vals[root_key]
@@ -125,7 +144,7 @@ def precheck(args):
     if err:
         return die(err)
     if args.mode not in gates.MODES:
-        return die("--mode 只收 %s" % "|".join(gates.MODES))
+        return die(_t("mode_only", modes="|".join(gates.MODES)))
     repo = os.path.abspath(args.repo or os.getcwd())
     t = args.timeout
     checks = {}
@@ -158,8 +177,8 @@ def precheck(args):
                             if checks.get(k, ev).get("missing")]
             sys.stdout.write(_dump({"persona": args.persona, "requested_mode": args.mode,
                                     "checks": _slim(checks), "tools_missing": missing_full}))
-            return die("full 前提工具缺席:%s\n%s"
-                       % (", ".join(missing_full),
+            return die("%s\n%s"
+                       % (_t("full_tools_missing", missing=", ".join(missing_full)),
                           _missing_tools_hint(missing_full, tools_root, tools_src)))
         ev["no_bank"] = wrappers.evals_no_bank(ev)
         ev["verdict"] = gates.evals_verdict(ev["rc"], ev["no_bank"])
@@ -177,12 +196,11 @@ def evidence_add(args):
     """SOP §3.1:證據一筆=lane + day + 可驗指標(+session 稽核欄)。純敘述 pointer 拒(rc=2)。"""
     kind = gates.pointer_kind(args.pointer)
     if kind is None:
-        return die("pointer 不是可驗指標(只收 commit hash / receipt 路徑 / ev_ 事件 / 訊息 id / 檔案:行號):%r"
-                   % args.pointer)
+        return die(_t("pointer_bad", pointer=repr(args.pointer)))
     if not gates.LANE_RE.match(args.lane or ""):
-        return die("壞 lane:%r(lane=worklane=git 分支/worktree 名)" % args.lane)
+        return die(_t("lane_bad", lane=repr(args.lane)))
     if not gates.DAY_RE.match(args.day or ""):
-        return die("--day 須為 YYYY-MM-DD:%r" % args.day)
+        return die(_t("day_bad", day=repr(args.day)))
     entry = {"schema": "aib-persona-evidence/v1", "persona_code": args.persona_code,
              "lane": args.lane, "day": args.day, "pointer": args.pointer.strip(),
              "pointer_kind": kind, "session": args.session or None,
@@ -190,9 +208,9 @@ def evidence_add(args):
     try:
         ledgers.append(args.persona_code, ledgers.EVIDENCE_NAME, entry)
     except (ledgers.LedgerError, OSError) as err:
-        return die("evidence 落帳失敗:%s" % err)
+        return die(_t("evidence_write_failed", err=err))
     except Exception as err:  # writeguard.WriteRefused 等
-        return die("evidence 落帳被拒:%s" % err)
+        return die(_t("evidence_write_refused", err=err))
     sys.stdout.write(_dump(entry))
     return 0
 
@@ -202,7 +220,7 @@ def groups(args):
     try:
         evs = ledgers.read(args.persona_code, ledgers.EVIDENCE_NAME)
     except ledgers.LedgerError as err:
-        return die("evidence 帳不可用:%s" % err)
+        return die(_t("evidence_unusable", err=err))
     out = gates.count_groups(evs)
     out.update({"persona_code": args.persona_code, "evidence_count": len(evs),
                 "counting_key": "lane", "min_groups_for_card": gates.MIN_GROUPS_FOR_CARD})
@@ -232,21 +250,19 @@ def watchlist(args):
     elif args.code:
         ident, ident_kind, ident_value = ["--code", args.code], "code", args.code
     else:
-        return die("watchlist 需要 --name 或 --code(工具身份)")
+        return die(_t("watchlist_need_ident"))
     mutating = args.action in wrappers.WATCHLIST_MUTATE_CMDS
     # ★ 修正一(留痕不是選配):草稿是 `if mutating and args.persona_code` 才落帳,於是
     #   不給 --persona-code 就會**靜默地做完一次突變而不留任何痕跡**。留痕是這支包裝存在
     #   的一半理由(另一半是 CAS 前置),不能由呼叫者選擇性關掉。
     if mutating and not args.persona_code:
-        return die("突變指令(%s)必須帶 --persona-code:受理紀錄不是選配"
-                   % "|".join(wrappers.WATCHLIST_MUTATE_CMDS))
+        return die(_t("mutate_need_persona_code", cmds="|".join(wrappers.WATCHLIST_MUTATE_CMDS)))
     # ★ 修正二(兩套身份鍵對不起來):工具身份是 --name/--code,受理紀錄記的是 persona_code。
     #   兩者若不是同一個人格,事後對帳會對到別人身上(handover_probe.py 檔頭「兩套命名接不
     #   起來」同型)。能釘的釘死:給了 --code 就必須與 --persona-code 相同;
     #   --name → code 的對照住在工具那邊,AIB 這裡驗不了,所以**誠實標記**成未對照,不假裝。
     if ident_kind == "code" and args.persona_code and args.code != args.persona_code:
-        return die("--code %r 與 --persona-code %r 不同一人格:受理紀錄會對到別人身上"
-                   % (args.code, args.persona_code))
+        return die(_t("code_mismatch", code=repr(args.code), persona_code=repr(args.persona_code)))
     identity_linked = (ident_kind == "code" and args.persona_code == args.code)
 
     extra, cas, cas_source = [], None, None
@@ -258,13 +274,11 @@ def watchlist(args):
             for flag, val in (("--title", args.title), ("--trait-type", args.trait_type),
                               ("--event-file", args.event_file), ("--expires-at", args.expires_at)):
                 if not val:
-                    return die("watchlist add 需要 %s(v4 真形;free --session/--evidence 不算數)"
-                               % flag)
+                    return die(_t("add_needs", flag=flag))
             if args.trait_type not in wrappers.TRAIT_TYPES:
-                return die("--trait-type 只收 %s" % "|".join(wrappers.TRAIT_TYPES))
+                return die(_t("trait_type_only", types="|".join(wrappers.TRAIT_TYPES)))
             if not os.path.isfile(args.event_file):
-                return die("--event-file 不存在:%s(canonical event JSON 由呼叫者提供,AIB 不捏造)"
-                           % args.event_file)
+                return die(_t("event_file_missing", path=args.event_file))
             after_cas = ["--title", args.title, "--trait-type", args.trait_type,
                          "--event-file", args.event_file, "--expires-at", args.expires_at]
             if args.distinct_reason:
@@ -273,12 +287,12 @@ def watchlist(args):
             for flag, val in (("--id", args.id), ("--event-file", args.event_file),
                               ("--expires-at", args.expires_at)):
                 if not val:
-                    return die("watchlist recur 需要 %s" % flag)
+                    return die(_t("recur_needs", flag=flag))
             after_cas = ["--id", args.id, "--event-file", args.event_file,
                          "--expires-at", args.expires_at]
         else:  # promote
             if not args.id:
-                return die("watchlist promote 需要 --id")
+                return die(_t("promote_needs_id"))
             after_cas = ["--id", args.id]
         if args.expected_chain_head and args.expected_generation is not None:
             cas = {"chain_head": args.expected_chain_head,
@@ -292,8 +306,7 @@ def watchlist(args):
                     return die(_tool_hint(toolroots.TOOLS_ROOT, tools_root, tools_src,
                                           os.path.join("tools", wrappers.WATCHLIST_SCRIPT)))
                 # 前置失敗 = 一個字都還沒送進工具 → rc=2(沒有寫入發生),不是 4
-                return die("CAS 前置失敗(%s):list+verify 沒給出可用的鏈頭;"
-                           "不猜、不用舊值頂替" % cas["why"])
+                return die(_t("cas_failed", why=cas["why"]))
         extra += ["--expected-chain-head", cas["chain_head"],
                   "--expected-generation", str(cas["generation"])] + after_cas
 
@@ -317,7 +330,7 @@ def watchlist(args):
     if outcome == wrappers.OUTCOME_UNKNOWN:
         rc = wrappers.RC_NEEDS_RECONCILE
         out["needs_reconcile"] = True
-        out["do_not_retry"] = "工具可能已受理:重試會在鏈上多寫一筆。請以 watchlist list 對帳後人工處置。"
+        out["do_not_retry"] = _t("do_not_retry_unknown")
     else:
         rc = res["rc"]        # 透傳工具 rc(0 接受 / 2 拒收 / 其他例外),不吞不改
     if mutating:
@@ -340,9 +353,9 @@ def watchlist(args):
             #   工具那邊可能已成立,所以這也是「需人工對帳」那一格,不是失敗重跑。
             out["accepted_ledger"] = "failed: %s" % err
             out["needs_reconcile"] = True
-            out["do_not_retry"] = "工具 rc=%s 但受理紀錄沒落帳:重試可能重複入帳,請人工對帳。" % res["rc"]
+            out["do_not_retry"] = _t("do_not_retry_ledger", rc=res["rc"])
             sys.stdout.write(_dump(out))
-            return die("受理紀錄落帳失敗(工具 outcome=%s):%s" % (outcome, err),
+            return die(_t("accepted_write_failed", outcome=outcome, err=err),
                        wrappers.RC_NEEDS_RECONCILE)
     sys.stdout.write(_dump(out))
     return rc
@@ -356,16 +369,16 @@ def report_cmd(args):
         sys.stdout.write(_dump({"inspect": args.inspect, "rc": rc, **info}))
         return rc
     if not args.sections:
-        return die("report 需要 --sections JSON(maker 準備的六節素材)")
+        return die(_t("report_need_sections"))
     try:
         with open(args.sections, "r", encoding="utf-8") as fh:
             sections = json.load(fh)
     except (OSError, ValueError) as err:
-        return die("--sections 讀取失敗:%s" % err)
+        return die(_t("sections_unreadable", err=err))
     try:
         rows = ledgers.read(args.persona_code, ledgers.ACCEPTED_NAME)
     except ledgers.LedgerError as err:
-        return die("受理紀錄不可用:%s" % err)
+        return die(_t("accepted_unusable", err=err))
     added = sum(1 for r in rows if r.get("action") == "add" and r.get("rc") == 0)
     now_ms = int(time.time() * 1000)
     try:
@@ -375,7 +388,7 @@ def report_cmd(args):
     except report_mod.ReportError as err:
         return die(str(err))
     except Exception as err:  # WriteRefused / OSError(O_EXCL 同日已存在等)
-        return die("候選包落盤失敗:%s" % err)
+        return die(_t("package_write_failed", err=err))
     sys.stdout.write(report_mod.render_md(doc))
     print("package=%s" % path, file=sys.stderr)
     return 0
@@ -404,7 +417,7 @@ def _verify_receipt(args):
                       ("--persona-state", args.persona_state),
                       ("--key-file", args.key_file), ("--key-id", args.key_id)):
         if not val:
-            return 2, None, "receipt verify 需要 %s" % flag
+            return 2, None, _t("receipt_needs", flag=flag)
     res = wrappers.owner_approval_verify(args.node_bin, tools_root, args.receipt, args.package,
                                          args.persona_state, args.key_file, args.key_id,
                                          revocation=args.revocation, timeout_s=args.timeout)
@@ -432,24 +445,23 @@ def checklist(args):
     本命令**永不執行**任何一步(寫入器在 ez2-ai;writeguard 同時把 AIB 側寫入面關死)。"""
     if args.step is None:
         sys.stdout.write(_dump({"steps": [{"n": n, "what": w, "cmd": c}
-                                          for n, w, c in wrappers.FORMAL_STEPS],
-                                "note": "唯讀;人類逐項核准後才逐步執行(§六 完成即停)"}))
+                                          for n, w, c in wrappers.formal_steps()],
+                                "note": _t("checklist_note")}))
         return 0
-    step = next((s for s in wrappers.FORMAL_STEPS if s[0] == str(args.step)), None)
+    step = next((s for s in wrappers.formal_steps() if s[0] == str(args.step)), None)
     if step is None:
-        return die("--step 只收 1..10:%r" % args.step)
+        return die(_t("step_only", step=repr(args.step)))
     vrc, payload, err = _verify_receipt(args)
     if err:
-        return die("§七 步 %s 被拒:%s" % (args.step, err))
+        return die(_t("step_refused", step=args.step, err=err))
     if vrc != 0:
         sys.stdout.write(_dump({"step": step[0], "receipt_verified": False, "verify": payload,
-                                "refused": "無 receipt(或 verify 未過)不得取用十步任一步"}))
-        print("aib persona: §七 步 %s 被拒:receipt 未通過 verify(rc=%s)——"
-              "無 receipt 不得執行十步任一步" % (args.step, vrc), file=sys.stderr)
+                                "refused": _t("step_refused_no_receipt")}))
+        print("aib persona: %s" % _t("step_refused_verify", step=args.step, rc=vrc), file=sys.stderr)
         return 2
     sys.stdout.write(_dump({"step": step[0], "what": step[1], "cmd": step[2],
                             "receipt_verified": True, "verify": payload,
-                            "note": "AIB 只印指令不執行;執行與否是人類核准後的事"}))
+                            "note": _t("step_note")}))
     return 0
 
 

@@ -6,11 +6,16 @@
 "$EZ2_PY3" - <<'PY'
 import glob, json, os
 from cockpit_lib import parse_outline_file
+try:
+    from i18n_lib import Translator
+    _t = Translator().t
+except Exception:   # 字典讀不到也要印得出一行
+    _t = lambda k, p=None: k
 
 try:
     items = parse_outline_file(os.environ['EZ2_OUTLINE'])
 except Exception:
-    print('大綱:讀取失敗')
+    print(_t('aib.outline_progress.read_failed'))
     raise SystemExit
 leaves = [x for x in items if x['leaf']]
 drafts = sum(1 for x in leaves if x['approval'] == 'draft')
@@ -45,5 +50,5 @@ run = sum(1 for s in tasks.values() if s == 'in_progress')
 # 選「刪」不選「改源」的理由:AIB 這邊**沒有**人類收件匣可以改指
 # (~/.ez2-aib/inbox 不存在)。要恢復這個指標,得先有那個資料源;
 # 在沒有來源時保留一段恆 0 的計數,只會讓人以為「沒有未讀」是量出來的。
-print(f'大綱 ✓{done}/{total} 🔧{run} 候拍{drafts}')
+print(_t('aib.outline_progress.line', {'done': done, 'total': total, 'run': run, 'drafts': drafts}))
 PY

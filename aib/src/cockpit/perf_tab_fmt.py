@@ -28,6 +28,19 @@ import sys
 
 from cockpit_lib import cjk_w   # 顯示寬度=cell 數;與全艙版面同一把尺
 
+_TR = {}
+
+
+def _t(key, params=None):
+    """畫面字走 i18n(10-15 多語第二批);一個語系的字典每個行程只載一次。[X] 不進字典(點擊落點靠它量)。"""
+    try:
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc) or _TR.setdefault(loc, i18n_lib.Translator(locale=loc))
+        return tr.t(key, params)
+    except Exception:   # 字典讀不到也要畫得出來
+        return key
+
 
 def dur(sec):
     if sec is None:
@@ -64,16 +77,16 @@ def rows_from(targets, self_instance=None):
         if is_self:
             # 紅線:自己(發起點擊的席)永不列關——就算 scan 給了 auto=True
             # (防守縱深:正常不會,但畫面層不賭資料層)也不亮 [X]。
-            mark = '本席'
+            mark = _t('aib.perf_tab.mark_self')
         elif t.get('auto'):
             mark = X_MARK
             safe.append((name, tid))
         elif str(t.get('human_attached')) == 'True':
-            mark = '使用中'
+            mark = _t('aib.perf_tab.mark_in_use')
         elif t.get('verdict') == 'unknown':
-            mark = '量不到'
+            mark = _t('aib.perf_tab.mark_unmeasured')
         else:
-            mark = '手動'
+            mark = _t('aib.perf_tab.mark_manual')
         rows.append({'name': name[:22], 'idle': dur(idle), 'mark': mark,
                      'id': tid, 'kind': t.get('kind')})
     return rows, safe
@@ -98,11 +111,10 @@ def render(targets, self_instance=None):
             spans.append(meta)
 
     if safe:
-        push(' 可安全全關 %d 項(%s) [X]'
-             % (len(safe), ','.join(n for n, _ in safe)[:40]),
+        push(' %s [X]' % _t('aib.perf_tab.safe_all', {'n': len(safe), 'names': ','.join(n for n, _ in safe)[:40]}),
              {'kind': 'agg', 'ids': [i for _, i in safe]})
     else:
-        push(' 無可全關項', None)
+        push(' ' + _t('aib.perf_tab.none_safe'), None)
     width = max([len(r['name']) for r in rows] + [6])
     for r in rows:
         text = ' %-*s  %6s  %s' % (width, r['name'], r['idle'], r['mark'])
@@ -139,8 +151,7 @@ def spans_path(argv):
     state = os.environ.get('EZ2_COCKPIT_STATE_DIR')
     if not state:
         # SystemExit(字串) 的 rc 是 1;用法錯要 rc=2(與 aib-dm 契約同族)
-        print('perf_tab_fmt: --spans 需要路徑或 EZ2_COCKPIT_STATE_DIR',
-              file=sys.stderr)
+        print('perf_tab_fmt: ' + _t('aib.perf_tab.spans_need_path'), file=sys.stderr)
         raise SystemExit(2)
     return os.path.join(state, 'perf-spans.json')
 

@@ -46,11 +46,19 @@ import machine_status as ms  # noqa: E402
 import flap_guard  # noqa: E402
 
 
+_TR = {}
+
+
 def _ui(key, params=None):
-    """畫面/通知字走 i18n(C13 10-15:「CPU 溫度量不到」以前寫死中文,英文介面也照印);字典壞了退回鍵名。"""
+    """畫面/通知字走 i18n(C13 10-15:「CPU 溫度量不到」以前寫死中文,英文介面也照印);字典壞了退回鍵名。
+    語系每次照 resolve_locale() 取;同一語系的字典只載一次(一次載入約 9ms,一輪降溫要十幾個字)。"""
     try:
         import i18n_lib
-        return i18n_lib.t(key, params, locale=i18n_lib.resolve_locale())
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(locale=loc)
+        return tr.t(key, params)
     except Exception:  # noqa: BLE001 —— 印不出字不能讓降溫停
         return key
 
@@ -71,7 +79,21 @@ LOAD_CRIT = 25.0
 POLL_S = {OK: 5, WARN: 10, HOT: 30, CRIT: 30}
 
 MARK = {OK: "🟢", WARN: "🟡", HOT: "🔴", CRIT: "🔴🔴"}
-LABEL = {OK: "正常", WARN: "偏高", HOT: "過熱", CRIT: "危險"}
+LABEL_KEY = {OK: "aib.cool.level.ok", WARN: "aib.cool.level.warn", HOT: "aib.cool.level.hot",
+             CRIT: "aib.cool.level.critical"}
+
+
+class _Labels:
+    """LABEL[lv]:每次取當下語系的等級字(中文介面仍是 正常/偏高/過熱/危險)。"""
+
+    def __getitem__(self, lv):
+        return _ui(LABEL_KEY[lv])
+
+    def __contains__(self, lv):
+        return lv in LABEL_KEY
+
+
+LABEL = _Labels()
 
 # ★ 只有帶這些旗標的行程才可能被收。使用者自己開的瀏覽器一個都不帶。
 AUTOMATION_MARKS = (
@@ -251,7 +273,7 @@ def reap(dry_run=False, runner=None, killer=None):
     hits, scanned = scan_automation_procs(runner=runner)
     if hits is None:
         log({"action": "reap", "result": "scan_failed"})
-        return {"scanned": None, "matched": None, "killed": 0, "why": "掃不到行程表"}
+        return {"scanned": None, "matched": None, "killed": 0, "why": _ui("aib.cool.reap.scan_failed")}
     keep = KEEP_ALIVE
     targets = hits[keep:][:MAX_KILL_PER_ROUND]
     killed = []
@@ -268,7 +290,7 @@ def reap(dry_run=False, runner=None, killer=None):
          "samples": [c[:120] for _, c in targets[:3]]})
     return {"scanned": scanned, "matched": len(hits),
             "killed": len(killed) if not dry_run else 0,
-            "why": "" if hits else "掃到 %d 個瀏覽器行程,帶自動化旗標的 0 個 ⇒ 不動手" % scanned}
+            "why": "" if hits else _ui("aib.cool.reap.no_marked", {"n": scanned})}
 
 
 def _state_dir():
@@ -311,11 +333,11 @@ def culprits():
     """
     mod, why = _rulers()
     if mod is None:
-        return None, why or "熱度尺不在"
+        return None, why or _ui("aib.cool.why.no_ruler")
     try:
         cell, rows = mod.measure_ps()
         if not getattr(cell, "measured", False):
-            return None, getattr(cell, "why", "") or "ps 量不到"
+            return None, getattr(cell, "why", "") or _ui("aib.cool.why.ps_unmeasured")
         me = os.getpid()
         # ★★ 2026-09-04 自錯,寫下來:`suite_runners` 回的是
         #   `{"ez2_ai_test_js": [...], "ez2_ai_pre_push": [...], "aib_release": [...],
@@ -335,13 +357,13 @@ def culprits():
                 if n:
                     out.append((name, n))
         elif suites:
-            out.append(("整套/發版", len(suites)))
+            out.append((_ui("aib.cool.culprit.suites"), len(suites)))
         n_chrome = len(chrome or [])
         if n_chrome:
-            out.append(("瀏覽器", n_chrome))
+            out.append((_ui("aib.cool.culprit.browser"), n_chrome))
         return out, ""
     except Exception as err:
-        return None, "熱度尺呼叫失敗:%s" % err
+        return None, _ui("aib.cool.why.ruler_failed", {"error": err})
 
 
 # 這些不是我們能動的,只報不動手(使用者的瀏覽器 / 系統的視窗伺服器)
@@ -420,11 +442,11 @@ def plan(level, reasons, reap_result=None):
         return did, need, fyi
     who, why = culprits()
     if ORDER[lv] >= ORDER[WARN]:
-        fyi.append("資源限制條件:面板輪詢 %d 秒" % POLL_S[lv])
+        fyi.append(_ui("aib.cool.plan.poll", {"s": POLL_S[lv]}))
     if ORDER[lv] >= ORDER[HOT]:
-        fyi.append("資源限制條件:新大工作須讀 no-go 旗標")
+        fyi.append(_ui("aib.cool.plan.nogo"))
     if who is None:
-        need.append("查不出是誰在吃資源(%s)" % why)
+        need.append(_ui("aib.cool.plan.who_unknown", {"why": why}))
     elif not who:
         if ORDER[lv] >= ORDER[HOT]:
             # ★ 熱、但沒有任何我認得的重活 ⇒ 不是我發動的,**但要指名是誰**。
@@ -434,23 +456,25 @@ def plan(level, reasons, reap_result=None):
                 # ★ 這一條**留在 need**:量不到就是「不知道」,而讓「不知道」
                 #   變成要處理的事,正是本庫的判準。它與下面那條不同 ——
                 #   下面那條是「知道,而且知道沒事可做」。
-                need.append("無法量到目前 CPU 使用來源")
+                need.append(_ui("aib.cool.plan.top_unknown"))
             else:
-                desc = "、".join("%s %.0f%%(%d 個)%s" % (k, pct, cnt, "" if ours else " ←不是我們的")
-                                for k, pct, cnt, ours in top)
-                fyi.append("目前 CPU 使用最高:" + desc)
+                desc = _ui("aib.cool.plan.sep").join(
+                    _ui("aib.cool.plan.top_item", {"name": k, "pct": "%.0f" % pct, "n": cnt,
+                                                   "mark": "" if ours else _ui("aib.cool.plan.not_ours")})
+                    for k, pct, cnt, ours in top)
+                fyi.append(_ui("aib.cool.plan.top", {"desc": desc}))
     else:
-        desc = "、".join("%s %d 個" % (k, n) for k, n in who)
+        desc = _ui("aib.cool.plan.sep").join(_ui("aib.cool.plan.count_item", {"name": k, "n": n}) for k, n in who)
         if lv == CRIT:
             # `critical` grants an attempt, not a successful cleanup.  In
             # particular a dry run and a scan with zero matches must not be
             # rendered as an action that already happened.
             killed = reap_result.get("killed", 0) if isinstance(reap_result, dict) else 0
             if isinstance(killed, int) and not isinstance(killed, bool) and killed > 0:
-                did.append("收掉自動化瀏覽器行程 %d 個" % killed)
-            need.append("仍在跑:%s" % desc)
+                did.append(_ui("aib.cool.plan.reaped", {"n": killed}))
+            need.append(_ui("aib.cool.plan.still_running", {"desc": desc}))
         else:
-            need.append("正在跑:%s —— 要不要停由人決定" % desc)
+            need.append(_ui("aib.cool.plan.running_decide", {"desc": desc}))
     return did, need, fyi
 
 
@@ -675,7 +699,7 @@ def apply(cells, dry_run=None):
            "load_level": load_lv, "load_reasons": load_reasons,
            "thermal_level": thermal_lv, "thermal_reasons": thermal_reasons}
     if not enabled():
-        out["label"] = LABEL[lv] + "(降溫已關)"
+        out["label"] = _ui("aib.cool.label_off", {"label": LABEL[lv]})
         return out
     # 10-08:不是真的座艙(測試、截幀、治具)⇒ 只算等級。不落旗標、不收行程、不寫通知、不發 dm 給艦長 ——
     #   以前測試跑右欄時照這台真機器的負載收「自動化瀏覽器」、寫 ~/.ez2-aib/logs/cooldown.log(測試刪掉暫存目錄後
@@ -684,7 +708,7 @@ def apply(cells, dry_run=None):
         return out
     path = flag_path()
     if not path:
-        out["label"] = LABEL[lv] + "(座艙狀態目錄不明,旗標未落)"
+        out["label"] = _ui("aib.cool.label_no_state", {"label": LABEL[lv]})
         return out
     out["flag"] = set_nogo_flag(path, ORDER[lv] >= ORDER[HOT], "%s %s\n" % (lv, "; ".join(reasons)))
     if thermal_lv == CRIT:
@@ -701,11 +725,11 @@ def apply(cells, dry_run=None):
 def main(argv=None):
     cells, _took = ms.sample()
     res = apply(cells)
-    print("%s %s · 面板 %ds" % (res["mark"], res["label"], res["poll_s"]))
+    print(_ui("aib.cool.cli.status", {"mark": res["mark"], "label": res["label"], "poll": res["poll_s"]}))
     for r in res["reasons"]:
-        print("  理由 %s" % r)
+        print("  " + _ui("aib.cool.cli.reason", {"reason": r}))
     if res["reap"]:
-        print("  收行程 %s" % json.dumps(res["reap"], ensure_ascii=False))
+        print("  " + _ui("aib.cool.cli.reap", {"result": json.dumps(res["reap"], ensure_ascii=False)}))
     return 0
 
 

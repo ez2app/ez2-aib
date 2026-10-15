@@ -422,7 +422,11 @@ def sweep_dead(*, state_root=None, records=None):
 
 STALE_S = 3600
 STALE_MARK = "⚠"
-GATE_MISSING = " ⚠狀態檢查沒裝"
+def gate_missing_mark():
+    """ ⚠狀態檢查沒裝(字走 i18n:aib.now.gate_missing;每次重畫照當下語系取)。"""
+    return " ⚠" + T("aib.now.gate_missing")
+
+
 GATE_MISSING_SHORT = " ⚠"            # 視窗太窄放不下整句時(第二輪審查)   # 10-12:Claude 席狀態列自查 aib-now-gate 有沒有掛上(沒裝 = 規定靠記性,要看得到)
 
 
@@ -452,7 +456,13 @@ def now_gate_missing(settings_path=None):
                 script = words[2] if len(words) >= 3 and words[:2] == ["test", "-f"] else ""
                 return bool(script) and not os.path.isfile(script)
     return True
-SHADOW_L2_MARK = {"ok": " 🪞②✓", "missing": " 🪞②✗", "patrol": " 🪞②巡查"}
+SHADOW_L2_MARK = {"ok": " 🪞②✓", "missing": " 🪞②✗"}   # patrol 的字走 i18n(shadow_l2_mark)
+
+
+def shadow_l2_mark(l2):
+    if l2 == "patrol":
+        return " 🪞②" + T("aib.now.shadow_patrol")
+    return SHADOW_L2_MARK.get(l2, "")
 
 
 def shadow_layer2(provider, settings_path=None, hook_path=None):
@@ -701,7 +711,7 @@ def apply_borders(*, hubs=None, tmux=None, code_for=None, dry_run=False, out=sys
     for hub in hubs:
         listing = tmux(hub, "list-windows", "-a", "-F", "#{window_id}\t#{@aib_provider}")
         if listing is None:
-            out.write("✗ %s 問不到(tmux 沒回話),跳過\n" % hub)
+            out.write("✗ %s\n" % T("aib.now.borders_unreachable", hub=hub))
             unreachable += 1
             continue
         for row in listing.splitlines():
@@ -719,14 +729,15 @@ def apply_borders(*, hubs=None, tmux=None, code_for=None, dry_run=False, out=sys
             else:
                 ok = True
             out.write("%s %s %s @%s(%s)%s\n" % ("✅" if ok else "✗", hub, wid, code, prov,
-                                                " —— dry-run,沒動" if dry_run else ""))
+                                                T("aib.now.borders_dry_row") if dry_run else ""))
             done += ok
-    out.write("補了 %d 席%s;問不到 %d 艙\n" % (done, "(dry-run)" if dry_run else "", unreachable))
+    out.write(T("aib.now.borders_done", n=done, dry=T("aib.now.borders_dry") if dry_run else "",
+                count=unreachable) + "\n")
     return done, unreachable
 
 
-USAGE_LINE = ("aib now: 用法 aib now \"主項目\" 做完幾步/總共幾步,例:aib now \"AIB 停電恢復\" 2/5"
-              "(進度 % 由步數算,不自己填)\n")
+def usage_line():
+    return "aib now: %s\n" % T("aib.now.usage")
 
 
 def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=None, gate_check=None):
@@ -761,34 +772,35 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
                     help=T("aib.now.help.beat_age"))
     # 10-14:負的步數(-1/3)在 Python 3.13 以前會被 argparse 當成不認得的選項而直接結束 ⇒ 先當成步數寫錯,回用法、rc 2
     if any(re.fullmatch(r"-\d+(?:\.\d+)?/\d+", a or "") for a in (sys.argv[1:] if argv is None else argv)):
-        err.write(USAGE_LINE)
+        err.write(usage_line())
         return 2
     args = ap.parse_args(argv)
     if args.beat_age:
         got = beat_age(args.beat_age.strip().lstrip("@").lower(), state_root=state_root)
         if got is None:
-            out.write("沒有心跳\n")
+            out.write(T("aib.now.no_beat") + "\n")
             return 1
         out.write("%d %s\n" % got)
         return 0
     if args.all:
         if args.item is not None or args.clear:
-            err.write("aib now: --all 只用來看,不能同時回報或 --clear(那一句沒寫進去)\n")
+            err.write("aib now: %s\n" % T("aib.now.all_read_only"))
             return 2
         rows = overview(state_root=state_root)
         if not rows:
-            out.write("量不到任何還在的席(席位檔讀不到)\n")
+            out.write(T("aib.now.all_none") + "\n")
             return 1
         for c, line, stale in rows:
             out.write("%s @%s %s\n" % ("⚠" if stale else " ", c, line))
         n = sum(1 for r in rows if r[2])
-        out.write("共 %d 席;%s\n" % (len(rows), ("%d 席【忙碌中】超過 %d 分鐘沒更新(⚠)" % (n, STALE_BUSY_S // 60))
-                                      if n else "沒有過期的"))
+        out.write(T("aib.now.all_total", n=len(rows),
+                    detail=T("aib.now.all_stale", n=n, min=STALE_BUSY_S // 60) if n else T("aib.now.all_fresh"))
+                  + "\n")
         return 0
     if args.sweep:
         gone = sweep_dead(state_root=state_root)
-        out.write(("已掃掉 %d 席的 📌 紀錄:%s\n" % (len(gone), " ".join("@" + c for c in gone))) if gone
-                  else "沒有要掃的 📌 紀錄\n")
+        out.write((T("aib.now.swept", n=len(gone), codes=" ".join("@" + c for c in gone)) if gone
+                   else T("aib.now.swept_none")) + "\n")
         return 0
     if args.border_format:
         out.write(border_format(args.border_format) + "\n")
@@ -811,15 +823,15 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
             # gate_check 預設:正式跑(state_root=None)才查真的 settings.json;測試注入 state_root 時不查,
             #   不然同一格測試在裝了 / 沒裝的機器上結果不同(10-12 審查)。
             missing = (state_root is None if gate_check is None else gate_check) and now_gate_missing()
-            mark = GATE_MISSING
+            mark = gate_missing_mark() if missing else ""
             if missing and w:
                 sys.path.insert(0, os.path.join(HERE, "render"))
                 from render_lib import visible_width
-                if w - visible_width(GATE_MISSING) < 40:
+                if w - visible_width(mark) < 40:
                     mark = GATE_MISSING_SHORT
                 w = max(10, w - visible_width(mark))
             l2 = shadow_layer2(prov) if (state_root is None if gate_check is None else gate_check) and c else None
-            l2_mark = SHADOW_L2_MARK.get(l2, "")
+            l2_mark = shadow_l2_mark(l2)
             if l2_mark and w:
                 sys.path.insert(0, os.path.join(HERE, "render"))
                 from render_lib import visible_width
@@ -833,15 +845,14 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     if args.seat and not code:
         want = args.seat.strip().lstrip("@").lower()
         if not known_code(want):
-            err.write("aib now: 找不到席位碼 @%s 的席位檔,不寫。\n" % want)
+            err.write("aib now: %s\n" % T("aib.now.seat_unknown", code=want))
             return 2
         code = want
     code = code or self_code()
     if not code:
         # 10-10 實例:Claude 的背景對話掛在共用背景服務底下,沒有 TMUX_PANE;往上找上層程式會認成
         #   啟動那個服務的別席(a seat 的背景對話被認成 a seat)⇒ 不猜,請它自己報碼。
-        err.write("aib now: 量不到這一席是誰(沒有 TMUX_PANE、對話編號也對不到唯一一席,例如背景對話)。"
-                  "自己報碼:aib now --seat <你的席位碼> \"主項目\" 做完幾步/總共幾步,不寫。\n")
+        err.write("aib now: %s\n" % T("aib.now.who_unknown"))
         return 2
     sweep_dead(state_root=state_root)          # 順手掃:回報的席越多,死席殘影留得越短
     if args.clear:
@@ -851,22 +862,22 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     if args.item is None:
         rec = read(code, state_root=state_root)
         if not rec:
-            out.write("@%s %s。設定:aib now \"主項目\" 做完幾步/總共幾步 [--state reply|decide]\n"
-                      % (code, shown_line(code, state_root=state_root, color=False)))
+            out.write(T("aib.now.show_unset", code=code, line=shown_line(code, state_root=state_root, color=False))
+                      + "\n")
             return 0
-        out.write("%s(%s 更新)\n" % (shown_line(code, state_root=state_root, color=False),
-                                    time.strftime("%m-%d %H:%M", time.localtime(rec.get("at") or 0))))
+        out.write(T("aib.now.show_line", line=shown_line(code, state_root=state_root, color=False),
+                    when=time.strftime("%m-%d %H:%M", time.localtime(rec.get("at") or 0))) + "\n")
         return 0
     item = clean_item(args.item)
     steps = parse_steps(args.steps)
     if not item or steps is None:
-        err.write(USAGE_LINE)
+        err.write(usage_line())
         return 2
     started = None
     if args.started:
         started = parse_started(args.started)
         if started is None:
-            err.write("aib now: --started 要寫成 'MM-DD HH:MM' 或 'HH:MM'(今天),例:--started '10-10 16:04'\n")
+            err.write("aib now: %s\n" % T("aib.now.started_bad"))
             return 2
     rec = write(code, item, steps[0], steps[1], state=args.state, state_root=state_root, started_at=started,
                 new=args.new)

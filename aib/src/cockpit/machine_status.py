@@ -66,6 +66,21 @@ TMUX_SOCKET_DIR = (os.environ.get("TMUX_TMPDIR")
 HEAT_RULERS_ENV = "EZ2_HEAT_RULERS"
 _RULERS = None
 _RULERS_WHY = ""
+_RULERS_TR = {}
+
+
+def _rulers_why(key, params=None):
+    """「量不到」的原因字走 i18n(10-15 多語第二批:它會出現在降溫通知的「要人決定」那一行);字典讀不到印鍵名。"""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _RULERS_TR.get(loc) or _RULERS_TR.setdefault(loc, i18n_lib.Translator(locale=loc))
+        return tr.t("aib.machine.rulers." + key, params)
+    except Exception:  # noqa: BLE001
+        return "aib.machine.rulers." + key
 
 
 def rulers():
@@ -83,8 +98,7 @@ def rulers():
     #   由綠轉紅 —— 那支臂的前提在尺合入的那一刻過期,而它是對的,過期的是世界。
     _env = os.environ.get(HEAT_RULERS_ENV) or ""
     if _env and not os.path.isfile(_env):
-        _RULERS_WHY = "heat rulers 指不到:%s=%s(明確指定的路徑不存在,不改用本樹的尺)" % (
-            HEAT_RULERS_ENV, _env)
+        _RULERS_WHY = _rulers_why("missing_path", {"env": HEAT_RULERS_ENV, "path": _env})
         return None, _RULERS_WHY
     cands = [_env,
              os.path.join(os.path.dirname(os.path.dirname(here)), "tools", "heat", "rulers.py")]
@@ -100,11 +114,11 @@ def rulers():
         try:
             spec.loader.exec_module(mod)
         except Exception as exc:                      # noqa: BLE001 具名失敗,不靜默
-            _RULERS_WHY = "heat rulers 載入失敗:%s" % exc
+            _RULERS_WHY = _rulers_why("load_failed", {"err": exc})
             return None, _RULERS_WHY
         _RULERS = mod
         return _RULERS, ""
-    _RULERS_WHY = "heat rulers 尚未合入本樹(%s 未設)" % HEAT_RULERS_ENV
+    _RULERS_WHY = _rulers_why("not_in_tree", {"env": HEAT_RULERS_ENV})
     return None, _RULERS_WHY
 
 
