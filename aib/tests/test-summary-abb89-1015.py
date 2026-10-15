@@ -130,9 +130,8 @@ class PublicRenderer(Base):
         self.assertIn("沒寫收據", str(cm.exception))
         self.assertEqual(aib_summary.summary_this_round("abcde"), {})
 
-    @unittest.expectedFailure
     def test_default_renderer_and_linter_are_shipped(self):
-        """已知缺件:補進公開版後這格會變 unexpected success(整支轉紅)⇒ 提醒拿掉 expectedFailure。"""
+        """公開版要附渲染器與檢查器(G6;0.1.7 隨私倉最後匯出 #60 帶進來)。"""
         for p in (RENDERER, LINTER):
             self.assertTrue(p.is_file(), "公開版缺 %s" % p.relative_to(ROOT))
 
