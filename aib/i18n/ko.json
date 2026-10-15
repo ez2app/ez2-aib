@@ -94,6 +94,7 @@
   "aib.cockpit.footer_hint": "의견이나 아이디어는 aib.ez2.app 로",
   "aib.err.provider": "알 수 없는 provider: {provider}",
   "aib.err.cli_missing": "{name} 이(가) 아직 설치되지 않았습니다('{provider}' 명령을 찾을 수 없음). 그래서 좌석을 열지 않았습니다.\n  설치: curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash -s -- --tools ({name} 선택)\n  설치 후 터미널에서 {login} 로 한 번 로그인한 뒤 이 줄을 다시 실행하세요.",
+  "aib.warn.cli_missing_dry": "aib: 알림: {name} 이(가) 아직 설치되지 않았습니다('{provider}' 명령을 찾을 수 없음). 미리보기라서 계획은 그대로 출력합니다. 실제로 열면 설치(install.sh --tools 에서 {name} 선택)하고 {login} 로 한 번 로그인할 때까지 멈춥니다.",
   "aib.err.provider_window": "안정적인 provider 창을 만들 수 없습니다: {provider}",
   "aib.err.reports_to": "소속은 4–8자 좌석 번호여야 합니다. 입력값: {seat}",
   "aib.err.role": "role은 소문자 영숫자와 하이픈이어야 합니다. 입력값: {role}",

@@ -1098,30 +1098,6 @@ case " $PROVIDERS " in *" $PROVIDER "*) ;; *) die "$(t aib.err.provider "provide
 # 10-13(盤點「先修」第 1 件):typesafe / openrouterjev 開席要 typesafe_cli.py,公開版不帶(System One)⇒ 開席前就說「開發中」,
 #   不要開到一半才失敗
 case "$PROVIDER" in typesafe|openrouterjev) aib_need "$HERE/typesafe_cli.py" "$PROVIDER" ;; esac
-# 10-14 公開版新用戶走查:這一家的命令列工具沒裝 ⇒ 開艙前就擋(以前整個艙照開、席位當場死),說怎麼裝、怎麼登入。
-#   找法跟 provider-launch.sh 同一套(type -P;codex 另認本機別名的真身 ez2-codex);--dry-run 一樣擋。
-#   重新登記既有窗格(seat re-register)不查:那一席已經在跑。
-aib_cli_login() {   # 印「這一家的名字|第一次登入怎麼做」(跟 install.sh 的 AI_TABLE 同一份說法)
-  case "$1" in
-    claude) echo "Claude Code|claude" ;;
-    codex) echo "Codex|codex login" ;;
-    agy) echo "Antigravity|agy" ;;
-    copilot) echo "GitHub Copilot|copilot + /login" ;;
-    grok) echo "Grok|grok login" ;;
-  esac
-}
-if [ "$AIB_SEAT_REREGISTER" != "1" ]; then
-  case "$PROVIDER" in
-    claude|codex|agy|copilot|grok)
-      _aib_cli="$(type -P "$PROVIDER" 2>/dev/null || true)"
-      [ -n "$_aib_cli" ] || [ "$PROVIDER" != "codex" ] || _aib_cli="$(type -P ez2-codex 2>/dev/null || true)"
-      if [ -z "$_aib_cli" ]; then
-        _aib_cl="$(aib_cli_login "$PROVIDER")"
-        die "$(t aib.err.cli_missing "provider=$PROVIDER" "name=${_aib_cl%%|*}" "login=${_aib_cl#*|}")" 6
-      fi
-      ;;
-  esac
-fi
 # Desktop binding is explicit and checked before creating any cockpit window.
 if [ "$PROVIDER" = "codexbot" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
   # CODEXBOT 正名；CODEXAPP／CODEX_THREAD_ID 當別名（右鍵另開 AI 常只帶其一）
@@ -1267,6 +1243,38 @@ print(codex_luna_model.latest_luna_slug())' "$HERE" 2>/dev/null || true)"
 fi
 [[ "$MODEL_REQUESTED" =~ ^[~]?[0-9A-Za-z][0-9A-Za-z._:/-]*$ ]] || \
   die "aib: requested model is missing or invalid" 2
+
+# 10-14 公開版新用戶走查:這一家的命令列工具沒裝 ⇒ 開艙前就擋(以前整個艙照開、席位當場死),說怎麼裝、怎麼登入。
+#   找法跟 provider-launch.sh 同一套(type -P;codex 另認本機別名的真身 ez2-codex)。
+#   重新登記既有窗格(seat re-register)不查:那一席已經在跑。
+# 10-15 整合(#18 × #43/#48)維護者判準:**先驗參數與角色,再查 CLI** ⇒ 這段放在引擎/模式/角色/艙號/模型都驗完之後、
+#   第一個副作用(new 建艙目錄)之前;未定義角色照 #43 回 rc 2。--dry-run 不開任何席 ⇒ 不因沒裝而拒絕,
+#   照印計畫,只多一行提醒到 stderr;真跑沒裝 ⇒ rc 6、不開空窗。
+aib_cli_login() {   # 印「這一家的名字|第一次登入怎麼做」(跟 install.sh 的 AI_TABLE 同一份說法)
+  case "$1" in
+    claude) echo "Claude Code|claude" ;;
+    codex) echo "Codex|codex login" ;;
+    agy) echo "Antigravity|agy" ;;
+    copilot) echo "GitHub Copilot|copilot + /login" ;;
+    grok) echo "Grok|grok login" ;;
+  esac
+}
+if [ "$AIB_SEAT_REREGISTER" != "1" ]; then
+  case "$PROVIDER" in
+    claude|codex|agy|copilot|grok)
+      _aib_cli="$(type -P "$PROVIDER" 2>/dev/null || true)"
+      [ -n "$_aib_cli" ] || [ "$PROVIDER" != "codex" ] || _aib_cli="$(type -P ez2-codex 2>/dev/null || true)"
+      if [ -z "$_aib_cli" ]; then
+        _aib_cl="$(aib_cli_login "$PROVIDER")"
+        if [ "$DRY" = "1" ]; then
+          printf '%s\n' "$(t aib.warn.cli_missing_dry "provider=$PROVIDER" "name=${_aib_cl%%|*}" "login=${_aib_cl#*|}")" >&2
+        else
+          die "$(t aib.err.cli_missing "provider=$PROVIDER" "name=${_aib_cl%%|*}" "login=${_aib_cl#*|}")" 6
+        fi
+      fi
+      ;;
+  esac
+fi
 
 # `new` is a hard namespace boundary.  Clear every derived cockpit value that
 # could have been inherited from the pane where this command was typed.

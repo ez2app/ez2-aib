@@ -94,6 +94,7 @@
   "aib.cockpit.footer_hint": "Ideas or feedback? Visit aib.ez2.app",
   "aib.err.provider": "unknown provider: {provider}",
   "aib.err.cli_missing": "{name} is not installed yet (no '{provider}' command found), so no seat was opened.\n  Install it: curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash -s -- --tools (pick {name})\n  Then sign in once in a terminal with: {login}, and run this line again.",
+  "aib.warn.cli_missing_dry": "aib: note: {name} is not installed yet (no '{provider}' command found). This is a preview, so the plan below is printed anyway; a real open will stop until you install it (install.sh --tools, pick {name}) and sign in once with: {login}.",
   "aib.err.provider_window": "could not create a stable provider window for: {provider}",
   "aib.err.reports_to": "hang-under must be a 4–8 character seat id, got: {seat}",
   "aib.err.role": "role must be lowercase alphanumerics and hyphen, got: {role}",
