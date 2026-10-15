@@ -2803,5 +2803,6 @@
   "aib.newproj.approve_cancel": "已取消。什麼都沒改。",
   "aib.newproj.approve_backup_failed": "核准前備份專案卡失敗({err});卡沒動。",
   "aib.newproj.approve_done": "已核准:專案 {uid} 的目標與紅線生效(已入帳)。",
+  "aib.newproj.approve_ruling": "目標與紅線由 {who} 在自己的終端機核准(aib newproj --approve)",
   "aib.newproj.approve_ledger_failed": "核准入不了帳({err});卡沒動。"
 }

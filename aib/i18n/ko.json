@@ -2803,5 +2803,6 @@
   "aib.newproj.approve_cancel": "취소했습니다. 아무것도 바꾸지 않았습니다.",
   "aib.newproj.approve_backup_failed": "승인 전 카드 백업에 실패했습니다({err}). 카드는 바꾸지 않았습니다.",
   "aib.newproj.approve_done": "승인했습니다: 프로젝트 {uid}의 목표와 레드라인이 이제 효력을 가집니다(원장에 기록).",
+  "aib.newproj.approve_ruling": "목표와 레드라인을 {who} 가 자기 터미널에서 승인했습니다(aib newproj --approve)",
   "aib.newproj.approve_ledger_failed": "승인을 원장에 기록하지 못했습니다({err}). 카드는 바꾸지 않았습니다."
 }

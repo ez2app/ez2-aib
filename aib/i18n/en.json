@@ -2803,5 +2803,6 @@
   "aib.newproj.approve_cancel": "Cancelled. Nothing changed.",
   "aib.newproj.approve_backup_failed": "Backing up the card before approving failed ({err}); the card was not changed.",
   "aib.newproj.approve_done": "Approved: project {uid}'s goals and red lines are now in effect (recorded in the ledger).",
+  "aib.newproj.approve_ruling": "goals and red lines approved by {who} at their own terminal (aib newproj --approve)",
   "aib.newproj.approve_ledger_failed": "Could not record the approval in the ledger ({err}); the card was not changed."
 }

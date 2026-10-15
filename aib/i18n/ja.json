@@ -2803,5 +2803,6 @@
   "aib.newproj.approve_cancel": "取り消しました。何も変えていません。",
   "aib.newproj.approve_backup_failed": "承認前のカードのバックアップに失敗しました({err})。カードは変えていません。",
   "aib.newproj.approve_done": "承認しました:プロジェクト {uid} の目標とレッドラインが有効になりました(台帳に記録)。",
+  "aib.newproj.approve_ruling": "目標とレッドラインは {who} が自分の端末で承認しました(aib newproj --approve)",
   "aib.newproj.approve_ledger_failed": "承認を台帳に記録できませんでした({err})。カードは変えていません。"
 }
