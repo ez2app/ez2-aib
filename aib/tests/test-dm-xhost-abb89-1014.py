@@ -38,6 +38,11 @@ last="${@: -1}"
 if [ "$last" = "true" ]; then exit "${SSH_PROBE_RC:-0}"; fi
 printf '%s' "$last" > "$SSH_CMD"
 cat > "$SSH_STDIN"
+printf '%s\n' "$last" >> "$SSH_CMD_LOG"
+if [ -n "${SSH_OLD_AIB:-}" ]; then   # 舊版收件機:不認 --xhost-ident,解析參數就停
+  case "$last" in *--xhost-ident*) echo "aib-dm-ctl: 未知選項:--xhost-ident" >&2
+    echo "RESULT stage=abort id=- relay=- thread=-"; exit 2 ;; esac
+fi
 [ "${SSH_CMD_RC:-0}" = "255" ] || [ -n "${SSH_NO_RESULT:-}" ] || echo "RESULT stage=delivered id=q_0000000000000000 relay=- thread=-"
 exit "${SSH_CMD_RC:-0}"
 """
@@ -201,6 +206,7 @@ class DmCtl(unittest.TestCase):
                          "AIB_DM_LOCAL_IPS": "10.0.0.5", "TMPDIR": str(base), "AIB_DM_SETTLE_SLEEP": "0",
                          "AIB_DM_XHOST_SSH": str(bindir / "fake-ssh"), "SSH_CALLS": str(self.ssh_calls),
                          "SSH_CMD": str(self.ssh_cmd), "SSH_STDIN": str(self.ssh_stdin),
+                         "SSH_CMD_LOG": str(base / "ssh_cmd_log"),
                          "AIB_DM_XHOST_HOSTS": str(base / "dm-hosts.json")})
         (base / "dm-hosts.json").write_text(json.dumps({"100.1.2.3": "far-box"}), encoding="utf-8")
 
@@ -269,6 +275,28 @@ class DmCtl(unittest.TestCase):
         self.assertTrue(self.read(self.ssh_cmd).startswith("bash /opt/aib/src/cockpit/aib dm --xhost-ident "),
                         self.read(self.ssh_cmd))
         self.assertEqual(sum(l.startswith("RESULT ") for l in p.stdout.splitlines()), 1)
+
+    def test_X7_old_receiver_without_xhost_falls_back_once_without_ident(self):
+        """收件機是舊版(不認 --xhost-ident)⇒ 不帶身分重送一次,最後一行是重送那一輪的 RESULT。"""
+        p = self.run_dm("100.1.2.3/ab12/1857a", "hi 舊版", SSH_OLD_AIB="1")
+        self.assertEqual(p.returncode, 0, p.stderr[-600:])
+        sent = self.read(self.ssh_cmd.parent / "ssh_cmd_log").splitlines()
+        self.assertEqual(len(sent), 2, sent)
+        self.assertIn("--xhost-ident", sent[0])
+        self.assertNotIn("--xhost-ident", sent[1], "重送那一輪不帶身分")
+        self.assertIn(" ab12/1857a", sent[1])
+        self.assertEqual(self.read(self.ssh_stdin), "hi 舊版", "正文照樣走 stdin")
+        self.assertEqual([l for l in p.stdout.splitlines() if l.startswith("RESULT ")],
+                         ["RESULT stage=delivered id=q_0000000000000000 relay=- thread=-"],
+                         "舊版那一輪的 abort 行不能留在 stdout")
+        self.assertIn("舊版", p.stderr)
+        self.assertNotIn("未知選項", p.stderr, "退路成立時不把對方的解析錯誤當成失敗印出來")
+
+    def test_X7b_other_rc2_from_receiver_is_not_resent(self):
+        """對方真的擋下(rc 2 但不是不認身分)⇒ 原樣回 rc 2,不重送。"""
+        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", SSH_CMD_RC="2")
+        self.assertEqual(p.returncode, 2, p.stderr[-400:])
+        self.assertEqual(len(self.read(self.ssh_cmd.parent / "ssh_cmd_log").splitlines()), 1)
 
     def test_X1b_whoami_asks_senders_own_cabin_from_tmux(self):
         """真機第一封抓到:殼裡沒有 EZ2_AIHUB_SOCKET ⇒ 推導問預設名的艙(不存在)⇒ 落未認證。要從自己 pane 的 $TMUX 認艙。"""

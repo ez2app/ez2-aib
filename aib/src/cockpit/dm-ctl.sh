@@ -839,7 +839,24 @@ _xhost_send() {
   [ "$DRYRUN" = "1" ] && rargs+=(--dry-run)
   [ "$VERIFY" = "1" ] && rargs+=(--verify)
   cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
-  out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd")"; rc=$?
+  local errf; errf="$(mktemp "${TMPDIR:-/tmp}/aib-dm-xhost-err.XXXXXX")" || errf=/dev/null
+  out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd" 2>"$errf")"; rc=$?
+  # 相容退路:收件機的 aib 是還沒有跨主機身分的舊版 ⇒ 它在解析參數就停(rc 2、RESULT stage=abort、
+  #   stderr 點名 --xhost-ident),一個字都沒進艙 ⇒ 不帶身分重送一次;抬頭由收件機照舊寫未認證。
+  #   三條都要成立才退:別的 rc 2(對方擋下、地址錯)照原樣回,不重送。
+  if [ "$rc" = "2" ] && [ "${out##*$'\n'}" = "RESULT stage=abort id=- relay=- thread=-" ] \
+       && grep -q -- '--xhost-ident' "$errf" 2>/dev/null; then
+    rm -f "$errf"
+    echo "aib-dm-ctl: 收件機 $host 的 aib 是舊版、不認跨主機身分 ⇒ 不帶身分重送一次;對方抬頭會是未認證,寄件人只能看正文(請那台更新 aib)" >&2
+    local i; for ((i = 0; i < ${#rargs[@]}; i++)); do
+      if [ "${rargs[i]}" = "--xhost-ident" ]; then rargs=("${rargs[@]:0:i}" "${rargs[@]:i+2}"); break; fi
+    done
+    cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
+    out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd")"; rc=$?
+  else
+    cat "$errf" >&2 2>/dev/null
+    [ "$errf" = /dev/null ] || rm -f "$errf"
+  fi
   [ -n "$out" ] && printf '%s\n' "$out"
   # 收件機的 dm-ctl 有跑到 ⇒ 它自己印了 RESULT 行;本機不再印第二行(最後一行要是收件機那一則的)。
   local remote_ran=0
