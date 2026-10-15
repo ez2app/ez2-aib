@@ -1226,6 +1226,21 @@ def test_python(repo=None, environ=None):
     return sys.executable
 
 
+def _traced_here():
+    """本行程掛著追蹤器的稽核模組、而且它寫的正是 EZ2_VERIFY_TRACE 那份 ⇒ 回它旁邊的 py-site 目錄;否則 None。"""
+    tr = os.environ.get("EZ2_VERIFY_TRACE") or ""
+    sa = sys.modules.get("sitecustomize_audit")
+    if not tr or sa is None or not getattr(sa, "__file__", None):
+        return None
+    try:
+        if sa._trace_path() != tr:
+            return None
+    except Exception:  # noqa: BLE001 - 認不出 ⇒ 照舊洗掉(探測照舊量不到)
+        return None
+    site = os.path.join(os.path.dirname(os.path.abspath(sa.__file__)), "py-site")
+    return site if os.path.isfile(os.path.join(site, "sitecustomize.py")) else None
+
+
 def python_id(py):
     """(版本, pytest 版本或 "");問不到 ⇒ ("unknown", "")。用乾淨環境問(不帶追蹤器)。結果依檔案時間快取。"""
     try:
@@ -1240,6 +1255,13 @@ def python_id(py):
             "    try:\n        import importlib.metadata as m; v = m.version('pytest')\n    except Exception:\n        v = '?'\n"
             "print(sys.version.split()[0] + '|' + v)")
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "EZ2_VERIFY_TRACE", "BASH_ENV", "PYTHONSTARTUP")}
+    site = _traced_here()
+    if site:
+        # 10-15 abb89:本行程正被追蹤(巢狀跑 aib test、測試裡算環境指紋)⇒ 洗掉鉤子的探測子行程以前每支都記
+        #   python-child-no-sitecustomize。改成帶上同一份追蹤 + py-site(只載稽核模組,不把任何目錄加進 sys.path)
+        #   ⇒ 探測讀的 site-packages 等記進追蹤,find_spec / metadata 看到的路徑跟洗掉時一樣 ⇒ 答案不變。
+        env["EZ2_VERIFY_TRACE"] = os.environ["EZ2_VERIFY_TRACE"]
+        env["PYTHONPATH"] = site
     try:
         p = subprocess.run([py, "-c", code], capture_output=True, text=True, timeout=30, env=env, stdin=subprocess.DEVNULL)
         ver, _, pyt = (p.stdout or "").strip().rpartition("\n")[2].partition("|")

@@ -263,6 +263,43 @@ class TmuxOwnDir(_Fixture):
             shutil.rmtree(pre, ignore_errors=True)
 
 
+# ── F3 python_id 探測 ──────────────────────────────────────────────────────────────────────────────────
+# 真的形狀:探測不在測試本身那個行程(那裡有 Popen 補鉤子的包裝),而在它起的子 python 裡(巢狀 aib test、算環境指紋)
+PYID_T = '''import os, subprocess, sys
+root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+py = os.path.join(root, ".venv", "bin", "python")
+code = ("import sys; sys.path.insert(0, %%r); import shadow_tracer as st; v = st.python_id(%%r); "
+        "assert v[0] != 'unknown', v; print(v)" %% (%r, py))
+p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+assert p.returncode == 0, p.stderr
+''' % str(VERIFY)
+
+
+class PythonIdProbe(_Fixture):
+    TESTS = {"t_pyid.py": PYID_T}
+
+    def setUp(self):
+        super().setUp()
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(self.repo / ".venv")], check=True,
+                       capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
+
+    def test_p1_traced_python_id_is_measured(self):
+        row = self._run("t_pyid.py")
+        self.assertIs(row["measured"], True, row["why"])
+        self.assertNotIn("python-child-no-sitecustomize", row["why"])
+
+    def test_p2_site_packages_change_blocks_reuse(self):
+        row = self._run("t_pyid.py")
+        self.assertIsNotNone(self._reuse("t_pyid.py", row), "什麼都沒改 ⇒ 要沿用得到")
+        sp = next((self.repo / ".venv" / "lib").glob("python*/site-packages"))
+        (sp / "pytest").mkdir()
+        (sp / "pytest" / "__init__.py").write_text("", encoding="utf-8")
+        di = sp / "pytest-9.9.9.dist-info"
+        di.mkdir()
+        (di / "METADATA").write_text("Metadata-Version: 2.1\nName: pytest\nVersion: 9.9.9\n", encoding="utf-8")
+        self.assertIsNone(self._reuse("t_pyid.py", row), "探測看的 site-packages 多了 pytest ⇒ 答案變了 ⇒ 一定重跑")
+
+
 # ── 刀(複本)─────────────────────────────────────────────────────────────────────────────────────────
 def _knife(rel, needle, replacement, cell):
     from aib_knife_copy import knife_copy
@@ -284,6 +321,7 @@ class Knives(unittest.TestCase):
                           "            if False:\n", "Bash32.test_b1_analyzer_only_passes_reads_nothing_strings")
         self.assertIn("test_b1_analyzer_only_passes_reads_nothing_strings", red, err)
 
+    @unittest.skipUnless(OLD_SYS_BASH, "只在 /bin/bash < 4.1 的機器驗")
     def test_k2b_no_hook_cstr_reds_b2(self):
         red, err = _knife("tools/verify/bash-shim/_trace.bash", '  case $- in *c*)\n', '  case $- in *NEVER*)\n',
                           "Bash32.test_b2_version_probe_measured_and_data_change_blocks")
@@ -293,6 +331,11 @@ class Knives(unittest.TestCase):
         red, err = _knife("tools/verify/shadow_tracer.py", "    if not any(str(w).startswith(root) for w in written_any) and not _born_tmp_root(m.group(0), t0):\n",
                           "    if not any(str(w).startswith(root) for w in written_any):\n", "TmuxOwnDir.test_t1_born_dir_counts_as_own")
         self.assertIn("test_t1_born_dir_counts_as_own", red, err)
+
+    def test_k3_no_pysite_reds_p1(self):
+        red, err = _knife("tools/verify/shadow_tracer.py", "    site = _traced_here()\n", "    site = None\n",
+                          "PythonIdProbe.test_p1_traced_python_id_is_measured")
+        self.assertIn("test_p1_traced_python_id_is_measured", red, err)
 
 
 if __name__ == "__main__":
