@@ -10,7 +10,7 @@ E6.3 已有 checkpoint 與交棒(rotation.py);本模組補的是**協定層**—
      一死四席全滅)。lifecycle 狀態與 checkpoint 一樣落 append-only 檔,
      重開即可續。
   2. **門檻分級而非二值**:CTX 到 90% 才交接太晚——真實節奏是
-     ok → should_checkpoint(60%)→ should_converge(85%)→ must_handoff(90%)。
+     ok → handoff_remind → handoff_now → red_line(10-15 起數字只在 policy/ctx-thresholds.json 那張表)。
      每級有明確「該做什麼」,呼叫端(patrol/hook/artifact)照級行動。
   3. **resume 必須帶回陷阱**:恢復時若不重述 checkpoint 的 traps,
      接手者會重踩前人踩過的坑——resume 沒有 checkpoint 可依即 fail-closed。
@@ -87,6 +87,8 @@ LIFECYCLE_VERSION = "0.1.0-draft"
 #   不再觸發,而畫面照樣是綠的。所以整份由 policy 產,tuple 不再手寫。
 # ★ `claude_final`(97)刻意不在這裡:它不是段位,是 clear 前的一則建議,
 #   由下面 FINAL_CLEAR_ADVICE_FLOOR 那一段承擔(原註解已說明,語意未改)。
+# ★★ 10-15 維護者「只保留 A 一張表」:B 的七階(找接班 50 / 存檔 60 / 共治 75 / 收斂 85 / 退位 90 / 顧問停止 96)
+#   刪了,STAGES 改成表上會改變艦隊做法的三格:交接提醒(80,派工閘不再派新工)/ 要求交接(85)/ 紅線(95)。
 STAGES = ctx_policy.stages_descending()
 
 # ---- 97:clear 前的最後一動作(the maintainer 08-18 21:1x 常設規則)---------------------
@@ -108,36 +110,26 @@ STAGES = ctx_policy.stages_descending()
 #   ★ `STAGES` 與 `stage_for` 因此**一字未動**——97 不是段位,是一則建議。
 # EH.28:綁自己的鍵 actions.final_clear_advice_floor,**不綁 claude_final(97)**
 # —— 「從幾 % 開始建議」與「最後一動作在幾 %」是兩件事,兩個鍵各自存在。
-FINAL_CLEAR_ADVICE_FLOOR = ctx_policy.action("final_clear_advice_floor")
+# 10-15 單表:B 的 actions.final_clear_advice_floor 刪了 ⇒ 改讀表上「要求交接」那一格(85,同值;
+#   交棒前置本來就是交接時做的事)。
+FINAL_CLEAR_ADVICE_FLOOR = ctx_policy.trigger_pct("handoff_now")
 CLAUDE_ENGINES = ("claude",)
 STAGE_ACTIONS = {
     "ok": {
         "zh-TW": "照常工作",
         "en": "continue working",
     },
-    "scout_successor": {
-        "zh-TW": "物色繼任者:在同艦主管中挑一位登記為儲君(不得是自己)",
-        "en": "scout a successor: register one same-fleet lead as heir (not self)",
+    "handoff_remind": {
+        "zh-TW": "交接提醒:手上這件做到段落準備收尾;艦隊不再派新工給這一席",
+        "en": "handoff reminder: bring the current task to a stopping point; no new work is dispatched to this seat",
     },
-    "should_checkpoint": {
-        "zh-TW": "打一次 checkpoint(備而不交),含陷阱節",
-        "en": "take a checkpoint (kept, not handed over) including traps",
+    "handoff_now": {
+        "zh-TW": "要求交接:先做完收尾三步(aib memory tidy → aib summary → aib handoff + verify)再做別的",
+        "en": "handoff required: finish the three wrap-up steps (aib memory tidy -> aib summary -> aib handoff + verify) first",
     },
-    "co_rule": {
-        "zh-TW": "硬性完整總結一次,並讓繼任者開始協助處理事項(共治)",
-        "en": "forge one full summary; heir begins co-handling work (co-rule)",
-    },
-    "should_converge": {
-        "zh-TW": "停止接新工,把手上的收斂到可交付",
-        "en": "stop taking new work; converge what you hold",
-    },
-    "must_handoff": {
-        "zh-TW": "退位成顧問:交棒鍛造+接手者三句驗收,原主管晉升艦長",
-        "en": "abdicate to advisor: forge handoff + heir's 3-sentence acceptance; deputy promoted",
-    },
-    "advisor_stop": {
-        "zh-TW": "顧問停止:對自己做 clear 總結遺詔→發新艦長→自行 compact→轉世為新主管",
-        "en": "advisor stop: write clear testament -> deliver to new captain -> compact -> return as new lead",
+    "red_line": {
+        "zh-TW": "紅線:停止所有新工作,立刻交接",
+        "en": "red line: stop all new work and hand off now",
     },
     "final_clear_prep": {
         # 三步寫成**可執行**的動作,不是心法:每一步都指得出要跑什麼、落在哪裡。
@@ -183,16 +175,7 @@ def final_clear_advice(ctx_pct, engine=None, floor=FINAL_CLEAR_ADVICE_FLOOR):
     else:
         why = "ctx %d%% ≥ %d%%:可考慮跑交棒前置(何時真的跑由人決定)" % (ctx_pct, floor)
     return {"suggest": applicable and over, "floor": floor,
-            # EH.28 一刀半(艦長 09:31;a seat 的 K7 量到 stages.claude_final 零讀者):
-            # ★ 先講一件量到的事:**碼裡從來沒有 97**。裁文說「那段 97 改讀 policy」,
-            #   而 `97` 在本檔只出現在註解與 the maintainer 的原話裡;函式實際用的是 floor(85)。
-            #   所以這裡不是「把寫死的 97 換成讀取」,是**讓那個鍵第一次有讀者**。
-            # ★ 為什麼要有讀者:一個沒有人讀的鍵,會讓「policy 鍵集 == 讀者鍵集」
-            #   那條判準的一半恆真 —— 它永遠不會因為那個鍵壞掉而紅。
-            #   **沒開火不代表性質守得住,代表沒有任何一格在看它。**(艦長 09:29 進帳)
-            # ★ 行為零變化:本欄只是把「最後一動作在幾 %」誠實地講出來,
-            #   suggest / floor / engine_applicable 三欄逐字未動。
-            "final_at": ctx_policy.stage("claude_final"),
+            # 10-15 單表:B 的 claude_final(97)刪了,表上沒有「最後一動作在幾 %」這一格 ⇒ final_at 欄拿掉。
             "engine_applicable": applicable,
             "action": STAGE_ACTIONS["final_clear_prep"] if applicable else None,
             "why": why}

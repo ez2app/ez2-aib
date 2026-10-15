@@ -1243,7 +1243,7 @@ class RestoreKnives(unittest.TestCase):
         copy = _copy_tree(self)
         layer = copy / "docs/templates/SEAT-ONBOARD.md"
         # 10-15 整合(#58 × #50):刀錨換成公開版中立模板裡收尾交接那條鐵則(全檔唯一)。
-        old = "3. At about 85% context use, or when the human says to prepare a clear, run `aib handoff`.\n"
+        old = "3. The program watches your context use: at 80% it reminds you to hand off; at 85% it requires the three wrap-up steps (`aib memory tidy` -> `aib summary` -> `aib handoff` + verify) and holds the turn until verify passes; 95% is the red line (stop new work, hand off now). When the human says to prepare a clear, run `aib handoff` too.\n"
         text = layer.read_text(encoding="utf-8")
         self.assertEqual(text.count(old), 1, "刀錨必須全檔恰好一次")
         layer.write_text(text.replace(old, ""), encoding="utf-8")
