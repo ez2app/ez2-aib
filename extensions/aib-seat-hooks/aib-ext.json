@@ -21,5 +21,6 @@
     "engines/agy/plugin.json": "b3013ea5a71fca1c6a1d0e054e12d1fc2081f2dcaca6a52445e2e5a223e5939c",
     "engines/codex/.claude-plugin/marketplace.json": "27a626a6d55ef990e47f51214a1b47a0da7e534efda0b60368d55e7455587d37",
     "engines/codex/.codex-plugin/plugin.json": "2c4bc9adb61e94180fbbedc08950414c47284d3d45783ea265604bdd0b29fdde"
-  }
+  },
+  "signature": "ed25519:ooeUH/Xz3Sj1GjHk/QhQCX72Qml9cc9k+ReledvgrK/ay5jCgecCl64+AjHJdaf+kKJ8NsFSoPYdxMyC/s6/AA=="
 }

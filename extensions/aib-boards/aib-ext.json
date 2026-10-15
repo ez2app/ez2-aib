@@ -54,5 +54,6 @@
     "tui/ts-ext.mjs": "1d9289a95d64ba37d8717fe4698196baf8bc90519ec13ba9f009fce108721394",
     "tui/ui.mjs": "09c9d80d305cab554129e076ec5941ffd3178040204c1df2cf9e23c0c5040163",
     "types/index.d.ts": "b1908713188af446f97b5ffa6581d8866fd578f7919871413665e39f5bdafa97"
-  }
+  },
+  "signature": "ed25519:pMvxwreLq8gufOzk+aCJlwmuEZr/1ca7IqlYCUcBGJvWzi/EGLtjTcGOqNsD4pCIfUFcaqRfORuaSt5USqQZDA=="
 }
