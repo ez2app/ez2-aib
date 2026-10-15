@@ -1214,6 +1214,7 @@
   "aib.test.live_resume_on": "バッチ {name} を再開:このリストのうち {n} 件は前回すでに緑のため実行しません。赤と未完了は実行します",
   "aib.test.live_resume_unusable": "バッチ {name} のログが使えません({why})⇒ バッチ全体を最初から実行",
   "aib.test.live_resume_dropped": "バッチ {name}:前回グリーンだった {n} 件は今回は続行しない({why})。通常の再利用判定に回す",
+  "aib.test.live_pool_healed": "記録プールに壊れた行が {n} 行(前回が書き込み途中で強制終了)。退避し、{tests} 件を今回必ず実行に設定",
   "aib.test.resume_badname": "--resume のバッチ名は英数字・ドット・下線・ハイフンのみ(最大 64 文字):{name}",
   "aib.test.live_start_fallback": "▶ {test}:影子続行が読み込まれていません ⇒ 通常実行",
   "aib.test.why.no_previous": "初回実行、前回の記録なし",

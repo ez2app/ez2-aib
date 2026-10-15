@@ -636,6 +636,24 @@ def _rotate_journal(f, path):
         pass
 
 
+def _heal_own_pool(repo, idx, live=None):
+    """10-15 F6:本專案自己的池有壞行(被殺在半列、當機)⇒ 整份索引降級、每一輪都全部重跑,而且自己好不了
+    (修法 reuse_index quarantine 只有人手跑)。這裡自動跑同一個修法:壞行搬進 .bad、那幾支留必跑墓碑(認不出是哪支
+    ⇒ 檔內每支都留),然後重讀。只修本專案的池(別台收進來的 shared-*、別的專案不碰);修不了就照舊降級全跑。"""
+    pool = runner._pool_file(repo)
+    if not str(idx.degraded or "").startswith("bad-jsonl:%s:" % pool):
+        return idx
+    try:
+        rep = reuse_index.quarantine(pool, apply=True)
+    except Exception:  # noqa: BLE001 - 修不了就照舊(降級 = 全部必跑,多跑那一側)
+        return idx
+    if not rep.get("applied"):
+        return idx
+    if live is not None:
+        live("pool_healed", {"n": len(rep.get("bad_lines") or []), "tests": len(rep.get("tombstones") or [])})
+    return reuse_index.build_index([], repo=str(repo))
+
+
 def _jstamp(env_fp):
     """日誌列多記的兩欄(10-15 A1):UTC 時間(接續有期限)與環境指紋(環境變了不接續)。"""
     return {"time_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "env_fp": env_fp or ""}
@@ -1542,6 +1560,25 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                     "kept": 0, "rc": 1 if reds else (4 if unv else 0),
                     "line1": T("line1_fallback", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")})}
         idx = reuse_index.build_index([], repo=str(repo))
+        idx = _heal_own_pool(repo, idx, live)
+        env_fp_now = _resume_env_fp(repo, env) if journal is not None else None
+        if journal is not None and resumed_ok:
+            import datetime as _dt
+            now_utc = _dt.datetime.now(_dt.timezone.utc)
+            max_age = min(RESUME_MAX_AGE_H, reuse_index.max_row_age_h(env))
+            dropped = {}
+            for name in [t for t in tests if t in resumed_ok]:
+                why_not = resume_blocked(name, journal_rows.get(name), strict=strict, no_reuse=_no_reuse_env(),
+                                         always_run=_always_run_marked(repo, name), env_fp_now=env_fp_now, idx=idx,
+                                         now_utc=now_utc, max_age_h=max_age)
+                if why_not:
+                    resumed_ok.discard(name)
+                    dropped[why_not] = dropped.get(why_not, 0) + 1
+            if live is not None and dropped:
+                live("resume_dropped", {"name": resume, "n": sum(dropped.values()),
+                                        "why": ", ".join("%s×%d" % kv for kv in sorted(dropped.items()))})
+        if live is not None and journal is not None and not problem:
+            live("resume_on", {"name": resume, "n": len([t for t in tests if t in resumed_ok])})
         pool = runner._pool_file(repo)
         base = baselines(pool, tests)
         offset = _pool_size(pool)
