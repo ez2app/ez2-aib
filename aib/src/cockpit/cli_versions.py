@@ -535,15 +535,27 @@ def status(out=sys.stdout):
     return 0
 
 
+def _help(key):
+    """argparse 說明走四語鍵 aib.cli_versions.help.*(語系盤查:英文介面不准整段中文);讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.dirname(os.path.abspath(__file__))
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        return i18n_lib.t("aib.cli_versions.help." + key, locale=i18n_lib.resolve_locale()).replace("%", "%%")
+    except Exception:  # noqa: BLE001 —— 說明印不出來不能讓指令停
+        return key
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="aib cli", description="五家 AI CLI 與 aib 自己的本機/最新版本、更新、退版")
+    ap = argparse.ArgumentParser(prog="aib cli", description=_help("description"))
     sub = ap.add_subparsers(dest="cmd")
-    sub.add_parser("status", help="(預設)看五家本機/最新版本")
-    u = sub.add_parser("update", help="現在就更新(不倒數);不寫家名 = 有新版的全部")
-    u.add_argument("keys", nargs="*")
-    rb = sub.add_parser("rollback", help="退回上一次更新前的版本")
-    rb.add_argument("key", choices=[t["key"] for t in TOOLS if t.get("pin")])
-    rb.add_argument("--to", help="指定版本")
+    sub.add_parser("status", help=_help("status"), description=_help("status"))
+    u = sub.add_parser("update", help=_help("update"), description=_help("update"))
+    u.add_argument("keys", nargs="*", help=_help("keys"))
+    rb = sub.add_parser("rollback", help=_help("rollback"), description=_help("rollback"))
+    rb.add_argument("key", choices=[t["key"] for t in TOOLS if t.get("pin")], help=_help("key"))
+    rb.add_argument("--to", help=_help("to"))
     c = sub.add_parser("check")
     c.add_argument("--out")
     c.add_argument("--refresh", action="store_true")

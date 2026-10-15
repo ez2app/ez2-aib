@@ -596,17 +596,24 @@ def detect_seat(rec, panes, births):
     return "none", None, "無訊號"
 
 
+def _ui(key, **params):
+    """畫面字走四語鍵;每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名(不擋程式)。"""
+    try:
+        import i18n_lib
+        return i18n_lib.t(key, params or None, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001
+        return key
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="aib seat detect")
-    ap.add_argument("--all", action="store_true")
-    ap.add_argument("--window", help="只偵測這一窗,如 @5")
-    ap.add_argument("--apply", action="store_true",
-                    help="把偵測值寫回席位檔(只填空欄,絕不覆寫既存值)")
-    ap.add_argument("--retry", type=int, default=1,
-                    help="無訊號時重試次數(冷啟的 CLI 要幾秒才開檔),每次隔 3s")
+    ap = argparse.ArgumentParser(prog="aib seat detect", description=_ui("aib.seat_detect.help.desc"))
+    ap.add_argument("--all", action="store_true", help=_ui("aib.seat_detect.help.all"))
+    ap.add_argument("--window", help=_ui("aib.seat_detect.help.window"))
+    ap.add_argument("--apply", action="store_true", help=_ui("aib.seat_detect.help.apply"))
+    ap.add_argument("--retry", type=int, default=1, help=_ui("aib.seat_detect.help.retry"))
     args = ap.parse_args(argv)
     if bool(args.all) == bool(args.window):
-        print("seat-detect: 需要 --all 或 --window @N(擇一)", file=sys.stderr)
+        print(_ui("aib.seat_detect.need_target"), file=sys.stderr)
         return 2
 
     sdir = seats_dir()

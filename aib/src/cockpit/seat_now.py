@@ -730,17 +730,17 @@ USAGE_LINE = ("aib now: 用法 aib now \"主項目\" 做完幾步/總共幾步,�
 
 
 def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=None, gate_check=None):
-    ap = argparse.ArgumentParser(prog="aib now", description="回報這一席現在的主項目與步數(進度 % 由步數算),顯示在 CTX 那一行上面")
-    ap.add_argument("item", nargs="?", help="主項目(一句話)")
-    ap.add_argument("steps", nargs="?", help="做完幾步/總共幾步,例 2/5(進度 %% 由它算,不自己填)")
-    ap.add_argument("--clear", action="store_true", help="沒在做事 ⇒ 【我很閒】")
+    ap = argparse.ArgumentParser(prog="aib now", description=T("aib.now.help.desc"))
+    ap.add_argument("item", nargs="?", help=T("aib.now.help.item"))
+    ap.add_argument("steps", nargs="?", help=T("aib.now.help.steps"))
+    ap.add_argument("--clear", action="store_true", help=T("aib.now.help.clear"))
     ap.add_argument("--new", action="store_true",
-                    help="開始一個新的主項目 ⇒ 啟動時間重新計時(不加:改字、改步數、改狀態都沿用原本的啟動時間)")
-    ap.add_argument("--started", metavar="'MM-DD HH:MM'", help="更正啟動時間")
+                    help=T("aib.now.help.new"))
+    ap.add_argument("--started", metavar="'MM-DD HH:MM'", help=T("aib.now.help.started"))
     ap.add_argument("--state", choices=SETTABLE_STATES, default="busy",
-                    help="busy=【忙碌中】(預設)/ reply=【等回應】(等別席回信或交件)/ decide=【等你決定】")
-    ap.add_argument("--seat", metavar="席位碼", default="",
-                    help="認不出自己是哪一席時(例:Claude 背景對話沒有 TMUX_PANE)自己報席位碼;要有那一席的席位檔")
+                    help=T("aib.now.help.state"))
+    ap.add_argument("--seat", metavar="SEAT", default="",
+                    help=T("aib.now.help.seat"))
     ap.add_argument("--statusline", action="store_true", help=argparse.SUPPRESS)   # 狀態列用:印「席位碼<TAB>📌 行」
     ap.add_argument("--border", action="store_true", help=argparse.SUPPRESS)       # Codex 等席底部邊框用
     ap.add_argument("--now-only", action="store_true", help=argparse.SUPPRESS)     # agy:邊框只畫 📌
@@ -751,14 +751,14 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--width", type=int, default=0, help=argparse.SUPPRESS)   # 視窗寬(邊框由 tmux 帶;狀態列自己量)
     ap.add_argument("--border-format", metavar="PROVIDER", help=argparse.SUPPRESS)   # 開席時 aib 拿格式用
     ap.add_argument("--apply-borders", action="store_true",
-                    help="已經開著的 Codex / Grok / Copilot 席補上底部那一行(不用重開)")
-    ap.add_argument("--dry-run", action="store_true", help="跟 --apply-borders 一起用:只列出會補哪些席")
+                    help=T("aib.now.help.apply_borders"))
+    ap.add_argument("--dry-run", action="store_true", help=T("aib.now.help.dry_run"))
     ap.add_argument("--all", action="store_true",
-                    help="列出所有還在的席的 📌 那一行;【忙碌中】超過 30 分鐘沒更新的標 ⚠ 排最前面")
+                    help=T("aib.now.help.all"))
     ap.add_argument("--sweep", action="store_true",
-                    help="掃掉已經不在的席(沒有席位檔、已退席或已收工)留下的 📌 紀錄;每次 aib now 回報也會順手掃")
-    ap.add_argument("--beat-age", metavar="席位碼",
-                    help="那一席離上次心跳幾秒(Claude 狀態列 / 底框定時跳,跟主項目的更新時間分開);從沒跳過印「沒有心跳」、回 1")
+                    help=T("aib.now.help.sweep"))
+    ap.add_argument("--beat-age", metavar="SEAT",
+                    help=T("aib.now.help.beat_age"))
     # 10-14:負的步數(-1/3)在 Python 3.13 以前會被 argparse 當成不認得的選項而直接結束 ⇒ 先當成步數寫錯,回用法、rc 2
     if any(re.fullmatch(r"-\d+(?:\.\d+)?/\d+", a or "") for a in (sys.argv[1:] if argv is None else argv)):
         err.write(USAGE_LINE)
