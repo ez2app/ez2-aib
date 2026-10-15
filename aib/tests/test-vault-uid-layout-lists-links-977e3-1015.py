@@ -288,10 +288,13 @@ class ReviewFixes(Fixture):
     def test_F2_tables_without_leading_pipe_and_in_callout(self):
         lr = self._lr()
         uid = Path(next(n["new_rel"] for n in U.build_plan(self.vault, str(self.contract), None, None)["notes"] if n["old_rel"].endswith("範本一.md"))).stem
-        out, _, _ = lr.rewrite("[[範本一]] | 2\n> | [[範本一]] | x |\n平常 [[範本一]]\n")
+        src = ("a | b\n--- | ---\n[[範本一]] | 2\n\n"
+               "> [!note]\n> | h | i |\n> |---|---|\n> | [[範本一]] | x |\n\n"
+               "平常 [[範本一]],選 a | b 也不是表格\n")
+        out, _, _ = lr.rewrite(src)
         self.assertIn("[[%s\\|範本一]] | 2" % uid, out)
         self.assertIn("> | [[%s\\|範本一]] | x |" % uid, out)
-        self.assertIn("平常 [[%s|範本一]]" % uid, out)
+        self.assertIn("平常 [[%s|範本一]],選 a | b" % uid, out, "段落裡有 | 但不是表格 ⇒ 不用 \\|")
 
     def test_F3_second_apply_rewrites_nothing(self):
         p, plan = self.plan()
@@ -305,6 +308,18 @@ class ReviewFixes(Fixture):
         fm = "tags: # 註解\n  - a\n\n  # 中間註解\n  - b\nnext: 1"
         self.assertEqual(U.fm_list(fm, "tags"), ["a", "b"])
         self.assertEqual(U.strip_managed(fm), ["next: 1"])
+        self.assertEqual(U.fm_list("tags: #idea\nx: 1", "tags"), ["#idea"], "單行 #標籤 不是註解起頭")
+        self.assertEqual(U.strip_managed("tags:\n  - a\n\n# --- 我的段落 ---\nproject: x"), ["", "# --- 我的段落 ---", "project: x"],
+                         "清單後面用戶自己的空行與註解要留著")
+
+    def test_F6_partial_path_to_unmoved_file_untouched(self):
+        p, plan = self.plan()
+        self.apply(p)
+        dash_dir = str(Path(self.new_rel(plan, "06-工作區 Work/ACB/3cpog0-📋 Dashboard.md")).parent)
+        part = dash_dir.split("/", 1)[1] if "/" in dash_dir else dash_dir
+        (self.vault / dash_dir / "部分.md").write_text("![[%s/圖.png]] ![[%s/圖.png]]\n" % (part, part.upper()), encoding="utf-8")
+        _, plan2 = self.plan("plan2.json")
+        self.assertEqual(plan2["stats"]["links_rewritten"], 0, "對到的檔沒搬 ⇒ 部分路徑、大小寫不同都照原樣")
 
     def test_F5_fence_with_info_string_does_not_close(self):
         lr = self._lr()

@@ -139,19 +139,40 @@ def fm_lines_to_map(fm: str) -> dict:
     return out
 
 
+BLOCK_ITEM_RE = re.compile(r"^\s*-(?:\s+(.*))?$")
+
+
+def _block_follows(lines: list, i: int) -> bool:
+    """第 i 行之後(跳過空行與註解)接的是不是「- 值」清單項目。"""
+    for nxt in lines[i + 1:]:
+        if not nxt.strip() or nxt.lstrip().startswith("#"):
+            continue
+        return bool(BLOCK_ITEM_RE.match(nxt))
+    return False
+
+
+def _is_block_start(value: str, lines: list, i: int) -> bool:
+    """「key:」或「key: # 註解」且下面真的接清單項目 ⇒ 區塊起頭;「tags: #idea」底下沒有項目 ⇒ 是單行值。"""
+    v = value.strip()
+    return (v == "" or v.startswith("#")) and (v == "" or _block_follows(lines, i))
+
+
 def strip_managed(fm: str) -> list[str]:
-    """把要重寫的鍵(含其多行清單區塊)拿掉,保留其他原行。"""
+    """把要重寫的鍵(含其多行清單區塊)拿掉,保留其他原行。區塊裡的空行與註解跟著拿掉,區塊後面的照留。"""
     keep, skip_block = [], False
-    for ln in fm.splitlines():
+    lines = fm.splitlines()
+    for i, ln in enumerate(lines):
         m = re.match(r"^([A-Za-z0-9_.\-]+):(.*)$", ln)
         if m:
             key = m.group(1)
-            skip_block = key in MANAGED_KEYS and (m.group(2).strip() == "" or m.group(2).strip().startswith("#"))   # 多行清單起頭
+            skip_block = key in MANAGED_KEYS and _is_block_start(m.group(2), lines, i)
             if key in MANAGED_KEYS:
                 continue
             keep.append(ln)
-        elif skip_block and (re.match(r"^\s*-(\s|$)", ln) or not ln.strip() or ln.lstrip().startswith("#")):
-            continue                                       # 區塊項目(縮排或頂格)、區塊裡的空行與註解
+        elif skip_block and BLOCK_ITEM_RE.match(ln):
+            continue
+        elif skip_block and (not ln.strip() or ln.lstrip().startswith("#")) and _block_follows(lines, i):
+            continue                                       # 區塊中間的空行與註解(後面還有項目)
         else:
             skip_block = False
             keep.append(ln)
@@ -193,11 +214,11 @@ def fm_list(fm: str | None, key: str) -> list[str]:
         if not m or m.group(1) != key:
             continue
         v = m.group(2).strip()
-        if v and not v.startswith("#"):                    # 「tags: # 註解」= 區塊起頭,不是值
+        if not _is_block_start(v, lines, i):               # 「tags: # 註解」+ 下面有項目 = 區塊;「tags: #idea」= 單行值
             return parse_inline_list(v)
         out = []
         for nxt in lines[i + 1:]:
-            bm = re.match(r"^\s*-(?:\s+(.*))?$", nxt)
+            bm = BLOCK_ITEM_RE.match(nxt)
             if bm:
                 item = _unquote(bm.group(1) or "")
                 if item:
@@ -253,6 +274,7 @@ class LinkRewriter:
         self.other: dict[str, tuple] = {}
         self.by_name: dict[str, set] = {}
         self.by_name_cf: dict[str, set] = {}
+        self._cf: dict = {}
         for old_rel, uid in [(n["old_rel"], n["uid"]) for n in notes] + [(d["old_rel"], d["uid"]) for d in drops] + [(k, "") for k in kept_md]:
             key = _nfc(old_rel[:-3] if old_rel.endswith(".md") else old_rel)
             self.md[key] = ("note", uid) if uid else ("path", self._moved(key))
@@ -270,18 +292,18 @@ class LinkRewriter:
         parent, _, name = rel.rpartition("/")
         return (self.dir_map.get(parent, parent) + "/" + name) if parent else name
 
-    @staticmethod
-    def _lookup(table: dict, key: str):
-        """完整路徑優先;否則 Obsidian 的「部分路徑」= 尾端相符。回 (entry, ambiguous)。"""
+    def _lookup(self, table: dict, key: str):
+        """完整路徑優先;否則 Obsidian 的「部分路徑」= 尾端相符(不分大小寫)。回 (對到的完整舊路徑, entry, ambiguous)。"""
         if key in table:
-            return table[key], False
-        cands = [v for k, v in table.items() if k.endswith("/" + key)]
-        if not cands:                                      # Obsidian 比路徑不分大小寫
+            return key, table[key], False
+        cands = [k for k in table if k.endswith("/" + key)]
+        if not cands:
+            cf = self._cf.setdefault(id(table), [(k.casefold(), k) for k in table])
             kc = key.casefold()
-            cands = [v for k, v in table.items() if k.casefold() == kc or k.casefold().endswith("/" + kc)]
+            cands = [k for kf, k in cf if kf == kc or kf.endswith("/" + kc)]
         if len(cands) > 1:
-            return None, True
-        return (cands[0] if cands else None), False
+            return None, None, True
+        return (cands[0], table[cands[0]], False) if cands else (None, None, False)
 
     def resolve(self, target: str):
         """回 (新目標, 種類);種類 note=改指 uid、path=換成新路徑、ambiguous=對到不只一個不改、None=不動。"""
@@ -292,20 +314,20 @@ class LinkRewriter:
             return None, None
         if "/" in t_noext:
             key = t_noext.lstrip("/")
-            entry, amb = self._lookup(self.md, key)
+            full, entry, amb = self._lookup(self.md, key)
             if entry is None and not amb and not is_md:
-                entry, amb = self._lookup(self.other, t.lstrip("/"))
-                if entry and entry[0] == "path":
-                    return (entry[1], "path") if entry[1] != t.lstrip("/") else (None, None)
+                full, entry, amb = self._lookup(self.other, t.lstrip("/"))
+                if entry:                                  # 圖、pdf…:對到的檔沒搬就不動(部分路徑、大小寫不同都照原樣)
+                    return (entry[1], "path") if entry[1] != full else (None, None)
             if amb:
                 return None, "ambiguous"
             if entry is None:
                 return None, None
             if entry[0] == "note":
-                if key.rsplit("/", 1)[-1] == entry[1] and self._moved(key) == key:
+                if full.rsplit("/", 1)[-1] == entry[1] and self._moved(full) == full:
                     return None, None                      # 已經指著 uid、資料夾也沒搬(第二次 apply)
                 return entry[1], "note"
-            return (entry[1] + (t[len(t_noext):] if is_md else ""), "path") if entry[1] != key else (None, None)
+            return (entry[1] + (t[len(t_noext):] if is_md else ""), "path") if entry[1] != full else (None, None)
         us = self.by_name.get(t_noext) or self.by_name_cf.get(t_noext.casefold())
         if not us:
             return None, None
@@ -318,7 +340,9 @@ class LinkRewriter:
         """回 (新文字, edits[[位置, 新, 舊]], ambiguous 目標清單);位置是新文字裡的字元位置。"""
         out, edits, amb = [], [], []
         pos, fence = 0, None
-        for ln in text.splitlines(keepends=True):
+        lines = text.splitlines(keepends=True)
+        table_lines = _table_lines(lines)
+        for idx, ln in enumerate(lines):
             fm = FENCE_RE.match(ln)
             if fence:
                 fc = FENCE_CLOSE_RE.match(ln)
@@ -328,8 +352,7 @@ class LinkRewriter:
             if fm:
                 fence = fm.group(1); out.append(ln); pos += len(ln); continue
             code = [(m.start(), m.end()) for m in CODE_SPAN_RE.finditer(ln)]
-            # 表格(含沒有開頭 | 的、在 > 引用框裡的):連結以外還有 | 就當表格,補的分隔用 \|
-            table = "|" in WIKILINK_RE.sub("", CODE_SPAN_RE.sub("", ln))
+            table = idx in table_lines                     # 表格裡(含沒有開頭 | 的、> 引用框裡的)補的分隔用 \|
             new_ln, last = [], 0
             for m in WIKILINK_RE.finditer(ln):
                 if any(a <= m.start() < b for a, b in code):
@@ -360,6 +383,23 @@ class LinkRewriter:
         if disp is None and not bang:
             sep, disp = ("\\|" if table else "|"), tgt_part   # 畫面上原本看到的字留著
         return "%s[[%s%s%s]]" % (bang, new, head, (sep + disp) if disp is not None else "")
+
+
+TABLE_DELIM_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$|^\s*\|\s*:?-+:?\s*\|\s*$")
+
+
+def _table_lines(lines: list) -> set:
+    """哪幾行在表格裡:有分隔列(|---|---|)的那一段——上一行是表頭,往下接著有 | 的行都是;> 引用框裡的表格也算。"""
+    def body(ln):
+        return re.sub(r"^\s*(>\s*)+", "", ln.rstrip("\r\n"))
+    out = set()
+    for i, ln in enumerate(lines):
+        if "-" in ln and TABLE_DELIM_RE.match(body(ln)) and i > 0 and "|" in body(lines[i - 1]):
+            out.add(i - 1); out.add(i)
+            j = i + 1
+            while j < len(lines) and body(lines[j]).strip() and "|" in body(lines[j]):
+                out.add(j); j += 1
+    return out
 
 
 def undo_link_edits(text: str, edits: list):
@@ -762,10 +802,11 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
     plan["obsidian_edits"] = obsidian_setting_edits(vault, plan["notes"], plan["folders"])
     # 範本檔也會被補 uid ⇒ 用範本新建的筆記會抄到同一個 uid(verify 會報重號);先講清楚,處理方式待人決定
     tpl_dirs, tpl_files = [], []
-    for name, key in (("templates.json", "folder"), ("daily-notes.json", "template"), ("zk-prefixer.json", "template")):
+    for name, key in (("templates.json", "folder"), ("daily-notes.json", "template"), ("zk-prefixer.json", "template"),
+                      ("plugins/templater-obsidian/data.json", "templates_folder")):
         v = (load_json(vault / ".obsidian" / name, {}) or {}).get(key)
         if isinstance(v, str) and v.strip():
-            (tpl_dirs if key == "folder" else tpl_files).append(_nfc(v.strip().rstrip("/")))
+            (tpl_dirs if key in ("folder", "templates_folder") else tpl_files).append(_nfc(v.strip().rstrip("/")))
     n_tpl = sum(1 for n in plan["notes"] if any(_nfc(n["old_rel"]).startswith(d + "/") for d in tpl_dirs)
                 or _nfc(n["old_rel"][:-3]) in tpl_files or _nfc(n["old_rel"]) in tpl_files)
     if n_tpl:
