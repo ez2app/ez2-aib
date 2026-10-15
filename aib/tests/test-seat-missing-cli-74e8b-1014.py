@@ -31,6 +31,20 @@ TOOLS = ("python3", "git", "tmux", "bash", "env", "uname", "date", "mktemp", "se
          "head", "tail", "cut", "dirname", "basename", "id", "ps", "sort", "wc", "mkdir", "rm", "ln", "readlink")
 
 
+def real_tool(name):
+    """PATH 上第一支「不是墊片」的 name。
+    在 `aib test`(影子續跑追蹤器)底下,PATH 最前面是 tools/verify/bash-shim/,裡面的 bash/cat/head/tail 是
+    `exec "$(dirname "$0")/_shim" …` 的墊片:連結進我們自己的 bin 後 dirname 變成這個 bin,找不到 _shim(rc 126)。
+    ⇒ 跳過旁邊有 _shim 的那一支,連真的工具。"""
+    for d in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        p = os.path.join(d or ".", name)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            if os.path.exists(os.path.join(os.path.dirname(os.path.realpath(p)), "_shim")):
+                continue
+            return p
+    return None
+
+
 class MissingCli(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="aib-seat-cli-", dir=aib_tmp_root())
@@ -41,7 +55,7 @@ class MissingCli(unittest.TestCase):
         for d in (self.home, self.proj, self.bin):
             os.makedirs(d)
         for name in TOOLS:   # 只放基本工具;刻意不放任何一家 AI 的指令
-            real = shutil.which(name)
+            real = real_tool(name)
             if real:
                 os.symlink(real, os.path.join(self.bin, name))
         subprocess.run(["git", "init", "-q", self.proj], check=True, capture_output=True)
