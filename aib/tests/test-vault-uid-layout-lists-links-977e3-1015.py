@@ -7,10 +7,11 @@
   B1 frontmatter 區塊寫法(縮排「  - 值」、頂格「- 值」、帶引號)的 tags / aliases / legacy_paths 轉完一個不少。
   L1 正文 [[舊名]]、[[舊名|字]]、![[舊名]]、[[舊名#標題]]、[[資料夾/舊名]]、表格裡 [[舊名\\|字]] 改指 uid、原本的字留著;
      轉完每個連結用 Obsidian 的規則(檔名或路徑)都解得開;程式碼區塊與行內碼不動;同名多篇不改、plan 有警告。
-  L2 路徑型附件 ![[資料夾/圖.png]] 跟著資料夾改路徑。
+  L2 路徑型與部分路徑(![[資料夾/圖.png]]、[[卡夾/角色]])跟著資料夾改路徑;角色卡本身不改,卡裡的連結數 plan 警告。
   O1 .obsidian 的日記/範本/附件/書籤設定改到新路徑;相對附件位置與 remotely-save 只出警告。
   U1 undo:正文 byte 回到轉換前、.obsidian 設定回原值、.ez2 狀態檔回到轉換前(原本沒有的刪掉、原本有的照原樣)。
   U2 undo 後再 plan → apply:uid 與路徑跟第一次完全相同,verify ok。
+  F1–F5 審查抓到的五件:CRLF undo 照位置、無開頭 | 表格與引用框表格補 \\|、第二次 apply 0 改寫、清單註解/空行、帶語言名的圍欄。
   K1 刀:清單解析退回「只認單行」⇒ B1 的標籤會掉(證明 B1 有牙)。
   K2 刀:連結改寫拿掉 ⇒ L1 的連結解不開(證明 L1 有牙)。
 治具全部在 tmpdir,不碰真 vault / ~/.ez2-aib。
@@ -37,8 +38,12 @@ CONFIRM = "我已備份並同意轉成 uid 版面"
 C80 = "C-Ez2 Core系統底層/C80-系統記憶交接"
 INBOX = "00-暫存區 Inbox"
 STUDIO = "03-製作區 Studio"
+LIB = "P-Ez2 AI專家/P10-專家模板/角色庫"
+CARD_UID = "ab12cd"
+CARD_MD = '---\nuid: "%s"\ncode: tst\n---\n你是測試卡,開工先讀 [[範本一]]。\n' % CARD_UID
 CONTRACT = {"routes": [
     {"routeKey": "core.handoff", "module": "C", "folder": C80, "aiReadable": True, "aiWritable": True},
+    {"routeKey": "product.expert.agent_library", "module": "P", "folder": LIB, "aiReadable": True, "aiWritable": False},
 ]}
 BLOCK_NOTE = """---
 uid: 3cpog0
@@ -61,6 +66,7 @@ LINKS_BODY = """看 [[3cpog0-📋 Dashboard]] 與 [[3cpog0-📋 Dashboard|總覽
 路徑 [[06-工作區 Work/ACB/3cpog0-📋 Dashboard]]、副檔名 [[範本一.md]]。
 | 表 | [[範本一\\|範本]] |
 同名 [[_說明]] 不改。圖 ![[06-工作區 Work/ACB/圖.png]]。
+部分路徑 [[測試卡/角色]] 與 ![[ACB/圖.png]]。
 行內 `[[範本一]]` 不改。
 ```
 [[範本一]]
@@ -80,6 +86,8 @@ def make_vault(root: Path):
     (root / C80).mkdir(parents=True)
     (root / "06-工作區 Work" / "ACB").mkdir(parents=True)
     (root / INBOX).mkdir()
+    (root / LIB / "測試卡").mkdir(parents=True)
+    (root / LIB / "測試卡" / "角色.md").write_text(CARD_MD, encoding="utf-8")
     (root / STUDIO).mkdir()
     (root / "06-工作區 Work" / "ACB" / "3cpog0-📋 Dashboard.md").write_text(BLOCK_NOTE, encoding="utf-8")
     (root / "06-工作區 Work" / "ACB" / "圖.png").write_bytes(b"\x89PNG fake")
@@ -107,7 +115,7 @@ def links_in(text: str):
 
 
 def unresolved(vault: Path, text: str) -> list:
-    """Obsidian 的規則(不看 aliases):目標是檔名(去 .md)或從庫根算的路徑。"""
+    """Obsidian 的規則(不看 aliases):目標是檔名(去 .md)、從庫根算的路徑、或尾端相符的部分路徑。"""
     names, paths = set(), set()
     for dp, dn, fn in os.walk(vault):
         dn[:] = [d for d in dn if not d.startswith(".")]
@@ -119,7 +127,7 @@ def unresolved(vault: Path, text: str) -> list:
     for inner in links_in(text):
         t = re.split(r"\\?\||#", inner, maxsplit=1)[0].strip()
         t = t[:-3] if t.endswith(".md") else t
-        if t and t not in names and t not in paths:
+        if t and t not in names and t not in paths and not ("/" in t and any(x.endswith("/" + t) for x in paths)):
             bad.append(t)
     return bad
 
@@ -169,6 +177,9 @@ class ListsAndLinks(Fixture):
         p, plan = self.plan()
         self.assertGreaterEqual(plan["stats"]["links_rewritten"], 7)
         self.assertEqual(plan["stats"]["links_ambiguous"], 1)
+        self.assertEqual(plan["stats"]["links_in_cards_not_rewritten"], 1)
+        self.assertTrue(any("1 處連結" in w for w in plan["warnings"]), plan["warnings"])
+        card_sha = _sha(self.vault / LIB / "測試卡" / "角色.md")
         self.assertTrue(any("_說明" in w for w in plan["warnings"]), plan["warnings"])
         before = (self.vault / C80 / "連結大全.md").read_text(encoding="utf-8")
         self.assertEqual(unresolved(self.vault, before), [], "治具:轉換前每個連結都解得開")
@@ -187,6 +198,10 @@ class ListsAndLinks(Fixture):
         self.assertIn("[[_說明]]", text)
         self.assertIn("![[%s/圖.png]]" % str(Path(dash).parent), text)
         self.assertTrue((self.vault / Path(dash).parent / "圖.png").is_file())
+        lib_new = next(f["new_rel"] for f in plan["folders"] if f["old_rel"] == LIB)
+        self.assertIn("[[%s/%s/角色|測試卡/角色]]" % (lib_new, CARD_UID), text)
+        self.assertIn("![[%s/圖.png]]" % str(Path(dash).parent), text.split("部分路徑", 1)[1])
+        self.assertEqual(_sha(self.vault / lib_new / CARD_UID / "角色.md"), card_sha, "角色卡一 byte 不改")
         self.assertIn("`[[範本一]]`", text)
         self.assertIn("```\n[[範本一]]\n```", text)
 
@@ -194,6 +209,7 @@ class ListsAndLinks(Fixture):
         p, plan = self.plan()
         self.assertTrue(any("./附件" in w for w in plan["warnings"]))
         self.assertTrue(any("remotely-save" in w for w in plan["warnings"]))
+        self.assertTrue(any("範本" in w and "uid" in w for w in plan["warnings"]), plan["warnings"])
         self.apply(p)
         cfg = self.vault / ".obsidian"
         studio = next(f["new_rel"] for f in plan["folders"] if f["old_rel"] == STUDIO)
@@ -247,6 +263,55 @@ class ListsAndLinks(Fixture):
         rec = sorted((self.vault / ".ez2" / "migration").glob("uid-layout-receipt-*.json"))[-1]
         self.assertEqual(_run("undo", "--receipt", str(rec)).returncode, 0)
         self.assertFalse((self.vault / ".ez2" / "migration-state.json").exists())
+
+
+class ReviewFixes(Fixture):
+    """子代理審查抓到的五件(10-15):CRLF undo、沒開頭 | 的表格與引用框表格、第二次 apply 不再改、區塊清單裡的註解與空行、帶語言名的圍欄不算收尾。"""
+
+    def _lr(self):
+        plan = U.build_plan(self.vault, str(self.contract), None, None)
+        return U.LinkRewriter(self.vault, plan["notes"], plan["folders"], plan["drops"], plan["kept_md"])
+
+    def test_F1_crlf_undo_exact(self):
+        f = self.vault / C80 / "crlf.md"
+        raw = "---\r\ntitle: x\r\n---\r\nsee [[範本一]] and [[範本一|n]]\r\nline2 [[03-製作區 Studio/範本一]]\r\n".encode("utf-8")
+        f.write_bytes(raw)
+        p, plan = self.plan()
+        self.apply(p)
+        rec = sorted((self.vault / ".ez2" / "migration").glob("uid-layout-receipt-*.json"))[-1]
+        out = json.loads(_run("undo", "--receipt", str(rec)).stdout)
+        self.assertEqual(out["links_fuzzy"], 0)
+        body = f.read_bytes().split(b"---\r\n", 2)[-1] if b"---\r\n" in f.read_bytes()[4:] else f.read_bytes().split(b"\n---\n", 1)[-1]
+        self.assertIn(b"see [[\xe7\xaf\x84\xe6\x9c\xac\xe4\xb8\x80]] and", body)
+        self.assertTrue(body.endswith("line2 [[03-製作區 Studio/範本一]]\r\n".encode("utf-8")), body)
+
+    def test_F2_tables_without_leading_pipe_and_in_callout(self):
+        lr = self._lr()
+        uid = Path(next(n["new_rel"] for n in U.build_plan(self.vault, str(self.contract), None, None)["notes"] if n["old_rel"].endswith("範本一.md"))).stem
+        out, _, _ = lr.rewrite("[[範本一]] | 2\n> | [[範本一]] | x |\n平常 [[範本一]]\n")
+        self.assertIn("[[%s\\|範本一]] | 2" % uid, out)
+        self.assertIn("> | [[%s\\|範本一]] | x |" % uid, out)
+        self.assertIn("平常 [[%s|範本一]]" % uid, out)
+
+    def test_F3_second_apply_rewrites_nothing(self):
+        p, plan = self.plan()
+        self.apply(p)
+        tpl = self.new_rel(plan, STUDIO + "/範本一.md")           # 轉完後用戶照新路徑寫的連結
+        (self.vault / Path(tpl).parent / "新寫的.md").write_text("[[%s]] ![[%s]]\n" % (tpl[:-3], tpl), encoding="utf-8")
+        _, plan2 = self.plan("plan2.json")
+        self.assertEqual(plan2["stats"]["links_rewritten"], 0)
+
+    def test_F4_block_list_comment_and_blank_lines(self):
+        fm = "tags: # 註解\n  - a\n\n  # 中間註解\n  - b\nnext: 1"
+        self.assertEqual(U.fm_list(fm, "tags"), ["a", "b"])
+        self.assertEqual(U.strip_managed(fm), ["next: 1"])
+
+    def test_F5_fence_with_info_string_does_not_close(self):
+        lr = self._lr()
+        src = "```\n[[範本一]]\n```js\n[[範本一]]\n```\n"
+        out, edits, _ = lr.rewrite(src)
+        self.assertEqual(out, src)
+        self.assertEqual(edits, [])
 
 
 class Knives(Fixture):

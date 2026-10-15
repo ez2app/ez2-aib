@@ -146,12 +146,12 @@ def strip_managed(fm: str) -> list[str]:
         m = re.match(r"^([A-Za-z0-9_.\-]+):(.*)$", ln)
         if m:
             key = m.group(1)
-            skip_block = key in MANAGED_KEYS and m.group(2).strip() == ""   # 多行清單起頭
+            skip_block = key in MANAGED_KEYS and (m.group(2).strip() == "" or m.group(2).strip().startswith("#"))   # 多行清單起頭
             if key in MANAGED_KEYS:
                 continue
             keep.append(ln)
-        elif skip_block and re.match(r"^\s*-(\s|$)", ln):      # 區塊項目縮排或頂格(YAML 兩種都合法)
-            continue
+        elif skip_block and (re.match(r"^\s*-(\s|$)", ln) or not ln.strip() or ln.lstrip().startswith("#")):
+            continue                                       # 區塊項目(縮排或頂格)、區塊裡的空行與註解
         else:
             skip_block = False
             keep.append(ln)
@@ -192,8 +192,9 @@ def fm_list(fm: str | None, key: str) -> list[str]:
         m = re.match(r"^([A-Za-z0-9_.\-]+):\s*(.*)$", ln)
         if not m or m.group(1) != key:
             continue
-        if m.group(2).strip():
-            return parse_inline_list(m.group(2))
+        v = m.group(2).strip()
+        if v and not v.startswith("#"):                    # 「tags: # 註解」= 區塊起頭,不是值
+            return parse_inline_list(v)
         out = []
         for nxt in lines[i + 1:]:
             bm = re.match(r"^\s*-(?:\s+(.*))?$", nxt)
@@ -201,8 +202,8 @@ def fm_list(fm: str | None, key: str) -> list[str]:
                 item = _unquote(bm.group(1) or "")
                 if item:
                     out.append(item)
-            elif nxt.strip():
-                break
+            elif nxt.strip() and not nxt.lstrip().startswith("#"):
+                break                                      # 空行與註解行不結束區塊
         return out
     return []
 
@@ -231,7 +232,8 @@ def load_contract(path: str) -> dict:
 # 只改正文;frontmatter 裡的連結不碰。每一處改寫都記進收據,undo 照位置退回。
 WIKILINK_RE = re.compile(r"(!?)\[\[([^\[\]\n]+?)\]\]")
 CODE_SPAN_RE = re.compile(r"(`+).+?\1")
-FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")            # 縮排 4 格以上是縮排碼,不是圍欄
+FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")    # 收尾圍欄不能帶語言名(CommonMark)
 
 
 def _nfc(s: str) -> str:
@@ -239,26 +241,50 @@ def _nfc(s: str) -> str:
 
 
 class LinkRewriter:
-    """舊名 → uid 的對照(由計畫算出,plan 與 apply 共用同一份規則)。
-    by_path:舊相對路徑(去 .md)→ uid;by_name:舊檔名(去 .md)→ {uid 或 ""(不改名的檔)}。
-    同名不只一篇 ⇒ Obsidian 自己挑哪篇我們不猜,不改寫,記 ambiguous。"""
+    """舊名 → 新目標的對照(由計畫算出,plan 與 apply 共用同一份規則)。
+    md:每個 .md 的舊路徑(去 .md)→ ("note", uid)(這次改名的筆記)或 ("path", 新路徑)(不改名、只跟著資料夾搬,例如角色卡);
+    other:其他檔(圖、pdf…)舊路徑 → ("path", 新路徑);by_name:舊檔名(去 .md)→ {uid 或 ""(不改名的檔)}。
+    同名不只一篇、或部分路徑對到不只一個檔 ⇒ Obsidian 自己挑哪篇我們不猜,不改寫,記 ambiguous。"""
 
     def __init__(self, vault: Path, notes: list, folders: list, drops: list, kept_md: list):
         self.vault = vault
-        self.dir_map = {f["old_rel"]: f["new_rel"] for f in folders}
-        self.by_path: dict[str, str] = {}
+        self.dir_map = {_nfc(f["old_rel"]): f["new_rel"] for f in folders}
+        self.md: dict[str, tuple] = {}
+        self.other: dict[str, tuple] = {}
         self.by_name: dict[str, set] = {}
         self.by_name_cf: dict[str, set] = {}
         for old_rel, uid in [(n["old_rel"], n["uid"]) for n in notes] + [(d["old_rel"], d["uid"]) for d in drops] + [(k, "") for k in kept_md]:
             key = _nfc(old_rel[:-3] if old_rel.endswith(".md") else old_rel)
-            if uid:
-                self.by_path[key] = uid
+            self.md[key] = ("note", uid) if uid else ("path", self._moved(key))
             stem = key.rsplit("/", 1)[-1]
             self.by_name.setdefault(stem, set()).add(uid)
             self.by_name_cf.setdefault(stem.casefold(), set()).add(uid)
+        for dp, dn, fn in os.walk(vault):
+            dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+            for f in fn:
+                if not f.endswith(".md"):
+                    rel = _nfc(str(Path(dp, f).relative_to(vault)))
+                    self.other[rel] = ("path", self._moved(rel))
+
+    def _moved(self, rel: str) -> str:
+        parent, _, name = rel.rpartition("/")
+        return (self.dir_map.get(parent, parent) + "/" + name) if parent else name
+
+    @staticmethod
+    def _lookup(table: dict, key: str):
+        """完整路徑優先;否則 Obsidian 的「部分路徑」= 尾端相符。回 (entry, ambiguous)。"""
+        if key in table:
+            return table[key], False
+        cands = [v for k, v in table.items() if k.endswith("/" + key)]
+        if not cands:                                      # Obsidian 比路徑不分大小寫
+            kc = key.casefold()
+            cands = [v for k, v in table.items() if k.casefold() == kc or k.casefold().endswith("/" + kc)]
+        if len(cands) > 1:
+            return None, True
+        return (cands[0] if cands else None), False
 
     def resolve(self, target: str):
-        """回 (新目標, 種類);種類 note=改指 uid、path=只換資料夾路徑、ambiguous=同名多篇不改、None=不動。"""
+        """回 (新目標, 種類);種類 note=改指 uid、path=換成新路徑、ambiguous=對到不只一個不改、None=不動。"""
         t = _nfc(target.strip())
         is_md = t.lower().endswith(".md")
         t_noext = t[:-3] if is_md else t
@@ -266,19 +292,20 @@ class LinkRewriter:
             return None, None
         if "/" in t_noext:
             key = t_noext.lstrip("/")
-            u = self.by_path.get(key)
-            if u is None:
-                cands = {v for k, v in self.by_path.items() if k.endswith("/" + key)}
-                if len(cands) > 1:
-                    return None, "ambiguous"
-                u = next(iter(cands)) if cands else None
-            if u:
-                return u, "note"
-            parent, name = key.rsplit("/", 1)
-            new_parent = self.dir_map.get(parent)
-            if new_parent and new_parent != parent and ((self.vault / key).exists() or (self.vault / (key + ".md")).exists()):
-                return new_parent + "/" + name + (t[len(t_noext):] if is_md else ""), "path"
-            return None, None
+            entry, amb = self._lookup(self.md, key)
+            if entry is None and not amb and not is_md:
+                entry, amb = self._lookup(self.other, t.lstrip("/"))
+                if entry and entry[0] == "path":
+                    return (entry[1], "path") if entry[1] != t.lstrip("/") else (None, None)
+            if amb:
+                return None, "ambiguous"
+            if entry is None:
+                return None, None
+            if entry[0] == "note":
+                if key.rsplit("/", 1)[-1] == entry[1] and self._moved(key) == key:
+                    return None, None                      # 已經指著 uid、資料夾也沒搬(第二次 apply)
+                return entry[1], "note"
+            return (entry[1] + (t[len(t_noext):] if is_md else ""), "path") if entry[1] != key else (None, None)
         us = self.by_name.get(t_noext) or self.by_name_cf.get(t_noext.casefold())
         if not us:
             return None, None
@@ -294,13 +321,15 @@ class LinkRewriter:
         for ln in text.splitlines(keepends=True):
             fm = FENCE_RE.match(ln)
             if fence:
-                if fm and fm.group(1)[0] == fence[0] and len(fm.group(1)) >= len(fence):
+                fc = FENCE_CLOSE_RE.match(ln)
+                if fc and fc.group(1)[0] == fence[0] and len(fc.group(1)) >= len(fence):
                     fence = None
                 out.append(ln); pos += len(ln); continue
             if fm:
                 fence = fm.group(1); out.append(ln); pos += len(ln); continue
             code = [(m.start(), m.end()) for m in CODE_SPAN_RE.finditer(ln)]
-            table = ln.lstrip().startswith("|")
+            # 表格(含沒有開頭 | 的、在 > 引用框裡的):連結以外還有 | 就當表格,補的分隔用 \|
+            table = "|" in WIKILINK_RE.sub("", CODE_SPAN_RE.sub("", ln))
             new_ln, last = [], 0
             for m in WIKILINK_RE.finditer(ln):
                 if any(a <= m.start() < b for a, b in code):
@@ -326,9 +355,7 @@ class LinkRewriter:
         if kind == "ambiguous":
             amb.append(target)
             return None
-        if kind == "path":
-            return "%s[[%s%s%s]]" % (bang, new, head, (sep + disp) if sep else "")
-        if kind != "note":
+        if kind not in ("note", "path"):
             return None
         if disp is None and not bang:
             sep, disp = ("\\|" if table else "|"), tgt_part   # 畫面上原本看到的字留著
@@ -721,9 +748,28 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
         _, body = split_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
         _, edits, amb = lr.rewrite(body)
         n_links += len(edits); amb_all += amb
+    # 角色庫的卡(角色.md 等)照規則一 byte 不改 ⇒ 卡裡指向改名筆記的連結轉完在 Obsidian 解不開,先講清楚有幾處
+    card_links, card_files = 0, 0
+    for rel in plan["kept_md"]:
+        if under_library(rel):
+            _, body = split_frontmatter((vault / rel).read_text(encoding="utf-8", errors="replace"))
+            k = len(lr.rewrite(body)[1])
+            card_links += k; card_files += 1 if k else 0
+    if card_links:
+        plan["warnings"].append(T("warn_card_links", {"count": card_links, "files": card_files}))
     if amb_all:
         plan["warnings"].append(T("warn_link_ambiguous", {"count": len(amb_all), "sample": ", ".join(sorted(set(amb_all))[:5])}))
     plan["obsidian_edits"] = obsidian_setting_edits(vault, plan["notes"], plan["folders"])
+    # 範本檔也會被補 uid ⇒ 用範本新建的筆記會抄到同一個 uid(verify 會報重號);先講清楚,處理方式待人決定
+    tpl_dirs, tpl_files = [], []
+    for name, key in (("templates.json", "folder"), ("daily-notes.json", "template"), ("zk-prefixer.json", "template")):
+        v = (load_json(vault / ".obsidian" / name, {}) or {}).get(key)
+        if isinstance(v, str) and v.strip():
+            (tpl_dirs if key == "folder" else tpl_files).append(_nfc(v.strip().rstrip("/")))
+    n_tpl = sum(1 for n in plan["notes"] if any(_nfc(n["old_rel"]).startswith(d + "/") for d in tpl_dirs)
+                or _nfc(n["old_rel"][:-3]) in tpl_files or _nfc(n["old_rel"]) in tpl_files)
+    if n_tpl:
+        plan["warnings"].append(T("warn_template_uid", {"count": n_tpl}))
     attach = (load_json(vault / ".obsidian" / "app.json", {}) or {}).get("attachmentFolderPath")
     if isinstance(attach, str) and attach.startswith("./") and attach.strip("./"):
         plan["warnings"].append(T("warn_attach_relative", {"path": attach}))
@@ -747,6 +793,7 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
         "drops_identical": len(plan.get("drops", [])),
         "links_rewritten": n_links,
         "links_ambiguous": len(amb_all),
+        "links_in_cards_not_rewritten": card_links,
         "obsidian_settings": len(plan["obsidian_edits"]),
         "warnings": len(plan["warnings"]),
     }
@@ -892,7 +939,7 @@ def apply_plan(plan: dict, backup_dir: Path, confirm_text: str) -> dict:
         rest, edits, _ = lr.rewrite(body if old_fm is not None else "\n" + text if not text.startswith("\n") else text)
         new_text = head + rest
         tmp = p.with_name(p.name + ".tmp-uidlayout")
-        tmp.write_text(new_text, encoding="utf-8"); os.replace(tmp, p)
+        tmp.write_bytes(new_text.encode("utf-8")); os.replace(tmp, p)
         receipt["frontmatter_written"] += 1
         if edits:
             receipt["links_rewritten"] += len(edits)
@@ -994,13 +1041,13 @@ def undo(receipt_path: Path) -> dict:
     for fe in r.get("link_edits", []):
         p = vault / fe["path"]
         try:
-            text = p.read_text(encoding="utf-8")
+            text = p.read_bytes().decode("utf-8", errors="replace")   # 不經換行轉換:CRLF 的位置要跟 apply 時一樣
         except OSError as err:
             out["errors"].append({"file": fe["path"], "error": str(err)}); continue
         new_text, done, exact = undo_link_edits(text, fe["edits"])
         if new_text != text:
             tmp = p.with_name(p.name + ".tmp-uidlayout")
-            tmp.write_text(new_text, encoding="utf-8"); os.replace(tmp, p)
+            tmp.write_bytes(new_text.encode("utf-8")); os.replace(tmp, p)
         out["links_restored"] += done
         if not exact:
             out["links_fuzzy"] += done
