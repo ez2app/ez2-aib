@@ -74,7 +74,7 @@ for _p in ("memory", "identity", "persona_route", "ledger"):
 
 from pyramid import BINDINGS_SCHEMA, PYRAMID_VERSION, _SEAT_RE  # noqa: E402
 from role_model import _safe_name  # noqa: E402
-from route_register import check_against_contract, load_contract, contract_digest  # noqa: E402
+from route_register import check_against_contract, load_contract, contract_digest, default_contract_spec  # noqa: E402
 from card_registry import SCHEMA_VERSION as CARDS_V2_VERSION, resolve_card, UID_RE, has_unsafe_chars  # noqa: E402
 from schema_validator import SchemaValidator, SchemaValidationError  # noqa: E402
 import seat_address  # noqa: E402
@@ -946,7 +946,7 @@ def _sources_block(root, how, cards_path, contract_path, contract):
         "card_registry": {"path": str(cards_path),
                           "sha256": _digest(cards_path)},
         "route_contract": {
-            "path": contract_path or os.environ.get("EZ2_ROUTE_REGISTRY"),
+            "path": contract_path or default_contract_spec(),
             "loaded": contract is not None,
             "route_count": len(contract.get("routes", [])) if contract else 0,
             # git: 規格(艦外 08-17 裁:D lane 讀契約走 git show main:…)
@@ -988,7 +988,7 @@ def main(argv=None):
                         help="狀態根;預設 EZ2_AIB_STATE_ROOT>EZ2_AIB_HOME>~/.ez2-aib")
     parser.add_argument("--cards", required=True, help="卡片登記表路徑(必要)")
     parser.add_argument("--contract", default=None,
-                        help="路由契約路徑;預設讀 EZ2_ROUTE_REGISTRY")
+                        help="路由契約路徑;預設走 route_register.default_contract_spec(SPEC > ez2-ai main > REGISTRY)")
     parser.add_argument("--out", default=None,
                         help="project:bindings 輸出路徑(不給只印到 stdout)")
     parser.add_argument("--display-out", default=None,
@@ -1005,6 +1005,8 @@ def main(argv=None):
         help="project/check:D14 政策,目前只接受 preserve_closed",
     )
     args = parser.parse_args(argv)
+    # 10-15:沒給 --contract ⇒ 這裡解一次、之後全程用同一個值(以前 load_contract 讀 REGISTRY、別處讀 SPEC,兩份不同版本)
+    args.contract = args.contract or default_contract_spec()
 
     drop_flags = (
         bool(args.drop_report), bool(args.drop_evidence),
@@ -1046,7 +1048,7 @@ def main(argv=None):
         sys.stdout.write(_dump({
             "cards": len(cards), "problems": problems,
             "route_contract": {
-                "path": args.contract or os.environ.get("EZ2_ROUTE_REGISTRY"),
+                "path": args.contract,
                 "sha256": contract_digest(args.contract),
                 "route_count": len(contract.get("routes", [])),
             },
@@ -1088,7 +1090,7 @@ def main(argv=None):
             ("cards", str(args.cards)),
             ("bindings-provenance", str(provenance_path(drop_before_path))),
         ]
-        contract_ref = args.contract or os.environ.get("EZ2_ROUTE_REGISTRY")
+        contract_ref = args.contract
         if contract_ref and not str(contract_ref).startswith("git:"):
             path_roles.append(("contract", str(contract_ref)))
         if args.command == "project":

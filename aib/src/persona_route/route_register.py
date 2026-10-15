@@ -179,7 +179,7 @@ def read_contract_bytes(spec=None):
     - `git:<repo>#<rev>:<relpath>`:`git -C <repo> show <rev>:<relpath>`,**不走工作樹檔案系統**
       (艦外 08-17 23:42 裁:全機 69 份同名檔四種版本,D lane 一律讀 git main 正本)。
     讀不到回 None。"""
-    p = spec or os.environ.get("EZ2_ROUTE_REGISTRY") or fallback_contract()   # 10-12 新機器 / 團隊新機
+    p = spec or default_contract_spec()   # 10-15:沒給就走唯一來源(以前這裡只讀 EZ2_ROUTE_REGISTRY,與 default_contract_spec 分岔)
     if not p:
         return None
     git = _parse_git_spec(p)
@@ -211,10 +211,12 @@ def default_contract_spec(env=None, repo_has_main=None):
     """路由契約來源,逐字照 cockpit-env.sh(`EZ2_ROUTE_CONTRACT_SPEC` 那段):
     顯式 EZ2_ROUTE_CONTRACT_SPEC > ez2-ai repo(EZ2_EZ2AI_REPO,預設 ~/ez2-ai)有 main 就讀 git main 正本
     > 退回 EZ2_ROUTE_REGISTRY(舊形檔案路徑)。08-17 23:42 艦外裁「一律讀 git main 正本」。
-    ★ a seat 審查 09-26 重大 2:第一版把中間兩個寫反,沒在艙裡跑的行程會讀到舊的工作樹檔。"""
+    ★ a seat 審查 09-26 重大 2:第一版把中間兩個寫反,沒在艙裡跑的行程會讀到舊的工作樹檔。
+    ★ 10-15:全套件「沒給 --contract」一律走這一支(含 read_contract_bytes / load_contract 的預設);
+      順位第一的與 EZ2_ROUTE_REGISTRY 內容不同時交給 reconcile_contract_spec 判(見該函式)。"""
     env = os.environ if env is None else env
     if env.get("EZ2_ROUTE_CONTRACT_SPEC"):
-        return env["EZ2_ROUTE_CONTRACT_SPEC"]
+        return reconcile_contract_spec(env["EZ2_ROUTE_CONTRACT_SPEC"], env)
     repo = env.get("EZ2_EZ2AI_REPO") or "~/ez2-ai"
     if repo_has_main is not None:
         has_main = repo_has_main(repo)
@@ -225,8 +227,67 @@ def default_contract_spec(env=None, repo_has_main=None):
         except (OSError, subprocess.SubprocessError):
             has_main = False
     if has_main:
-        return "git:%s#main:%s" % (repo, DEFAULT_CONTRACT_REL)
+        return reconcile_contract_spec("git:%s#main:%s" % (repo, DEFAULT_CONTRACT_REL), env)
     return env.get("EZ2_ROUTE_REGISTRY") or fallback_contract(env)
+
+
+def contract_route_keys(contract):
+    """契約裡的 routeKey 集合;讀不到 / 形狀不對回 None(不當成空集合)。"""
+    routes = contract.get("routes") if isinstance(contract, dict) else None
+    if not isinstance(routes, list):
+        return None
+    return {r["routeKey"] for r in routes if isinstance(r, dict) and isinstance(r.get("routeKey"), str)}
+
+
+_CONTRACT_WARNED = set()
+
+
+def reconcile_contract_spec(primary, env=None, warn=True):
+    """順位第一的來源(primary)與 EZ2_ROUTE_REGISTRY 各指一份、內容不同時,決定用哪份並**出聲**。
+
+    10-15 艙內實量:REGISTRY 是七月舊檔(32 條),SPEC 指 git main(40 條,多 core.site_ops / core.meeting / storage.*);
+    別席重綁時整艙重投影讀的是舊檔 ⇒ 大腦在 core.site_ops 的席被從 bindings 安靜丟掉,狀態變「缺人格」。
+    規則(刻意的選擇,改這裡要同步 README / 測試):
+      兩份 routeKey 集合相同          ⇒ 用 primary,不出聲
+      REGISTRY 是 primary 的嚴格超集  ⇒ 改用 REGISTRY(不用缺路由的那份)
+      primary 讀不到、REGISTRY 讀得到 ⇒ 改用 REGISTRY
+      其他(primary 是超集 / 各缺各的)⇒ 照順位用 primary
+    只要兩份不同就 stderr 一行(同一對來源每個行程只講一次),點名兩邊與條數差。"""
+    env = os.environ if env is None else env
+    reg = env.get("EZ2_ROUTE_REGISTRY")
+    if not reg or not primary or reg == primary:
+        return primary
+    keys_p = contract_route_keys(load_contract(primary))
+    keys_r = contract_route_keys(load_contract(reg))
+    if keys_r is None or keys_p == keys_r:
+        return primary
+    if keys_p is None:
+        pick, key, params = reg, "aib.contract.primary_unreadable", {"a": primary, "b": reg}
+    else:
+        pick = reg if keys_r > keys_p else primary
+        key = "aib.contract.sources_differ"
+        params = {"a": primary, "na": len(keys_p), "b": reg, "nb": len(keys_r),
+                  "a_only": len(keys_p - keys_r), "b_only": len(keys_r - keys_p), "pick": pick}
+    if warn and (primary, reg) not in _CONTRACT_WARNED:
+        _CONTRACT_WARNED.add((primary, reg))
+        sys.stderr.write("route_register: %s\n" % _ui(key, **params))
+    return pick
+
+
+_UI_TR = {}
+
+
+def _ui(key, **params):
+    """畫面字走四語鍵(與 bind_one / binding_projection 同款);讀不到印鍵名,不讓程式停。"""
+    try:
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _UI_TR.get(loc)
+        if tr is None:
+            tr = _UI_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓程式停
+        return key
 
 
 # 10-12 新用戶全面檢查(the maintainer「讓用戶在用時不會有這個問題」):新機器沒有 ez2-ai、也沒設契約 ⇒ aib newrole / 第二大腦

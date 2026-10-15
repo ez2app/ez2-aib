@@ -2775,5 +2775,7 @@
   "aib.captains_ctl.unique_schema": "任命された艦長が 1 人だけか確認できません:{file} のスキーマが違います",
   "aib.captains_ctl.captain_exists": "すでに艦長が任命されています:ウィンドウ {window}、席コード={code};先にその席を --unassign してから新しい席を任命してください",
   "aib.captains_ctl.unmeasured": "不明",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.contract.sources_differ": "⚠ 経路契約の二つの出所の内容が違う:{a}({na} 本)と EZ2_ROUTE_REGISTRY={b}({nb} 本)、前者だけ {a_only} 本・後者だけ {b_only} 本;{pick} を使う",
+  "aib.contract.primary_unreadable": "⚠ 経路契約 {a} が読めない;EZ2_ROUTE_REGISTRY={b} を代わりに使う"
 }

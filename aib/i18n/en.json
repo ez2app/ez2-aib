@@ -2775,5 +2775,7 @@
   "aib.captains_ctl.unique_schema": "cannot confirm there is only one assigned captain: {file} has the wrong schema",
   "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
   "aib.captains_ctl.unmeasured": "unknown",
-  "aib.captains_ctl.status_label": "Captain:"
+  "aib.captains_ctl.status_label": "Captain:",
+  "aib.contract.sources_differ": "⚠ the two route contract sources differ: {a} ({na} routes) vs EZ2_ROUTE_REGISTRY={b} ({nb} routes); {a_only} only in the first, {b_only} only in the second; using {pick}",
+  "aib.contract.primary_unreadable": "⚠ cannot read the route contract {a}; using EZ2_ROUTE_REGISTRY={b} instead"
 }

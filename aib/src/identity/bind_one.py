@@ -793,6 +793,8 @@ def bind_seat(state_root, seat_id, card, actor, brain=None, rebind_persona=False
     席位關著的期間升了版,重開後右欄會亮「卡已更新」,而不是被續綁悄悄蓋成新版。"""
     state_root = Path(state_root)
     cards_path = Path(cards_path) if cards_path else default_cards_path(state_root)
+    # 10-15:來源在這裡解一次,綁定檢查與整艙重投影用同一份(以前重投影子行程自己讀 EZ2_ROUTE_REGISTRY,可能是舊版)
+    contract_spec = contract_spec or default_contract_spec()
     if not (state_root / "ledger").is_dir():
         raise BindError("找不到帳本目錄 %s —— 先跑 src/bootstrap/aib_init.py" % (state_root / "ledger"))
     try:
@@ -894,6 +896,7 @@ def unbind_seat(state_root, seat_id, actor, brain_only=False, cards_path=None,
                 now_ms=None):
     state_root = Path(state_root)
     cards_path = Path(cards_path) if cards_path else default_cards_path(state_root)
+    contract_spec = contract_spec or default_contract_spec()   # 10-15:同 bind_seat,重投影不各讀各的
     seat_path, rec = find_seat(state_root, seat_id)
     role, session_uuid, agent_uid = seat_binding_inputs(rec)
     plan = {"seat_id": seat_id, "agent_uid": agent_uid, "brain_only": brain_only}

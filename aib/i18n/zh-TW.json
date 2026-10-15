@@ -2775,5 +2775,7 @@
   "aib.captains_ctl.unique_schema": "無法確認受派艦長唯一性:{file} schema 不符",
   "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
   "aib.captains_ctl.unmeasured": "量不到",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.contract.sources_differ": "⚠ 路由表兩個來源內容不同:{a}({na} 條)與 EZ2_ROUTE_REGISTRY={b}({nb} 條),只在前者 {a_only} 條、只在後者 {b_only} 條;採用 {pick}",
+  "aib.contract.primary_unreadable": "⚠ 路由表 {a} 讀不到,改用 EZ2_ROUTE_REGISTRY={b}"
 }
