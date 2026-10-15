@@ -335,20 +335,31 @@ def relay_rows(b):
 class B2BatchRetryOnlyFailedSeats(unittest.TestCase):
     """B2:--to a,b --retry-until:已送達的 a 不得再收;契約外的 rc 不重試。"""
 
+    # ★ 結果由 rc_seq 決定,不由時鐘決定:--retry-until 給得遠大於實際所需(成功就提早結束),
+    #   aib test 的執行器(隔離環境+追蹤器)每一輪慢好幾倍,原本 5~9 秒的上限在那裡會先到 ⇒ 少一輪而紅。
     def test_delivered_seat_not_resent(self):
         b = Box(self, seats=((2, SEAT_UUID), (4, SEAT2_UUID)), extra_windows=())
-        b.rc_seq("0 4")      # 第一輪:@2 送達、@4 被擋(兩幀相同 ⇒ rc 2);之後每次都擋
-        p = b.run(["--to", "@abcde,@c0ffe", "status update for both", "--retry-until", "9",
-                   "--retry-every", "1"], FAKE_CAP_MODE="static")
+        b.rc_seq("0 4 4 0")  # 第一輪:@2 送達、@4 被擋(兩幀相同 ⇒ rc 2);@4 再擋一次後送達
+        p = b.run(["--to", "@abcde,@c0ffe", "status update for both", "--retry-until", "300",
+                   "--retry-every", "0"], FAKE_CAP_MODE="static")
         wins = [throat_window(c) for c in b.exec_calls()]
-        self.assertEqual(wins.count("@2"), 1, wins)
-        self.assertGreaterEqual(wins.count("@4"), 2, wins)
+        self.assertEqual(wins, ["@2", "@4", "@4", "@4"])
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_give_up_after_partial_delivery_is_rc5(self):
+        b = Box(self, seats=((2, SEAT_UUID), (4, SEAT2_UUID)), extra_windows=())
+        b.rc_seq("0 4")
+        # 上限 0:第一輪之後一定已到上限 ⇒ 放棄;@2 已送達 ⇒ 5(答案在逐席收據),與速度無關
+        p = b.run(["--to", "@abcde,@c0ffe", "status update for both", "--retry-until", "0",
+                   "--retry-every", "0"], FAKE_CAP_MODE="static")
+        wins = [throat_window(c) for c in b.exec_calls()]
+        self.assertEqual(wins, ["@2", "@4"])
         self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
 
     def test_batch_all_delivered_after_retry_is_rc0(self):
         b = Box(self, seats=((2, SEAT_UUID), (4, SEAT2_UUID)), extra_windows=())
         b.rc_seq("0 4 0")
-        p = b.run(["--to", "@abcde,@c0ffe", "status update again", "--retry-until", "20",
+        p = b.run(["--to", "@abcde,@c0ffe", "status update again", "--retry-until", "300",
                    "--retry-every", "0"], FAKE_CAP_MODE="static")
         wins = [throat_window(c) for c in b.exec_calls()]
         self.assertEqual(wins, ["@2", "@4", "@4"])
@@ -373,7 +384,7 @@ class B9RetryRoundsShareOneRelay(unittest.TestCase):
     def test_one_relay_row_for_all_rounds(self):
         b = Box(self)
         b.rc_seq("4 4 0")
-        p = b.run(["@abcde", "hello b9", "--retry-until", "5", "--retry-every", "0"],
+        p = b.run(["@abcde", "hello b9", "--retry-until", "300", "--retry-every", "0"],   # 上限遠大於所需,見 B2 註
                   FAKE_CAP_MODE="static")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(len(b.exec_calls()), 3)
@@ -532,7 +543,7 @@ for a in "$@"; do
 done
 sleep 30 >/dev/null 2>&1 &
 echo $! > "$B7_PIDF"
-sleep 3
+sleep 10
 '''
 
 
@@ -550,7 +561,7 @@ class B7ToolTimeoutLeavesNoOrphan(unittest.TestCase):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         mod.aib_bin = lambda: fake
-        mod.DM_TOOL_TIMEOUT_S = 1
+        mod.DM_TOOL_TIMEOUT_S = 3      # 假 aib 10 秒才結束;執行器慢也來得及先寫孫行程 pid
         os.environ["B7_PIDF"] = str(pidf)
         try:
             out = mod.run_aib_dm("t1ab/abcde", "hello b7 timeout")
