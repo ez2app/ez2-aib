@@ -525,24 +525,12 @@ REPO_ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 def canonical_script(repo_root=None):
     """正本樹裡的本支(git worktree list 第一列 = 主工作樹);量不到 ⇒ None。
     審查:從工作樹跑 install 會裝成工作樹路徑,工作樹一刪 test -f 讓閘永遠安靜放行,沒人知道。
-    只有「確定不在 git 裡」(這棵樹根本沒有 .git:zip 下載的公開版)才回本支自己的路徑 ——
-    那時沒有工作樹這回事,本支就是正本。git 跑失敗、輸出空白而樹裡有 .git(可能是連結工作樹)⇒ None,不猜
-    (第二輪審查:不然 git 一出錯,工作樹路徑就會蓋掉設定裡原本正確的正本路徑)。"""
-    import subprocess
+    只有「確定不在 git 裡」(pipx / zip 下載)才回本支自己的路徑 —— 那時沒有工作樹這回事,本支就是正本。
+    git 跑失敗而樹在 git 裡 ⇒ None,不猜(不然 git 一出錯,工作樹路徑就會蓋掉設定裡原本正確的正本路徑)。
+    10-15:路徑怎麼量交給 canonical_tree(公開倉的程式在 aib/ 底下一層,舊寫法少接這一層 ⇒ 永遠裝不上)。"""
+    import canonical_tree
     root = repo_root or REPO_ROOT
-    in_git = os.path.exists(os.path.join(root, ".git"))
-    try:
-        r = subprocess.run(["git", "-C", root, "worktree", "list", "--porcelain"], capture_output=True,
-                           text=True, timeout=10, stdin=subprocess.DEVNULL)
-        out = r.stdout if r.returncode == 0 else ""
-    except (OSError, subprocess.SubprocessError):
-        out = ""
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            return os.path.join(line[len("worktree "):], "src", "policy", "hooks", MARKER)
-    if not in_git:
-        return os.path.join(root, "src", "policy", "hooks", MARKER)
-    return None
+    return canonical_tree.canonical_path(os.path.join(root, "src", "policy", "hooks", MARKER))
 
 
 def _save(path, cfg):

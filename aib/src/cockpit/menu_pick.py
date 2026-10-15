@@ -645,16 +645,10 @@ def _ours(text, sub):
 
 
 def canonical_self():
-    """正本樹裡的本支(git worktree list 第一列);量不到 ⇒ None(不把工作樹路徑寫進設定)。"""
-    try:
-        r = subprocess.run(["git", "-C", str(HERE), "worktree", "list", "--porcelain"], capture_output=True,
-                           text=True, timeout=10, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    for line in (r.stdout or "").splitlines():
-        if line.startswith("worktree "):
-            return os.path.join(line[len("worktree "):], "src", "cockpit", "menu_pick.py")
-    return None
+    """正本樹裡的本支;量不到 ⇒ None(不把工作樹路徑寫進設定)。不在 git 裡(pipx)⇒ 本支就是正本。
+    10-15:改用 canonical_tree(舊寫法少接公開倉的 aib/ 一層 ⇒ git 安裝永遠裝不上;pipx 安裝也永遠量不到)。"""
+    import canonical_tree
+    return canonical_tree.canonical_path(str(HERE / "menu_pick.py"))
 
 
 def _cmd_line(script):
