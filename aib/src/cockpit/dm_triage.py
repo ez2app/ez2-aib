@@ -145,6 +145,9 @@ def sender_key(row):
     s = row.get("sender_seat")
     if isinstance(s, str) and s.strip():
         return "seat:" + s.strip()
+    g = row.get("global")
+    if isinstance(g, dict) and g.get("sender_id"):
+        return "global:" + str(g["sender_id"])     # 全球來信:看位址指紋,不看顯示名(兩個同名陌生人不准併成一組)
     return "label:" + str(row.get("sender") or "未知")
 
 

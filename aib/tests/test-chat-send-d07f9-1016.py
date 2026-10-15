@@ -10,7 +10,7 @@
 核心(一定跑):
 C1 沒有 venv ⇒ 不起工人、沒有心跳;send_and_wait ⇒ rc 2 bridge-off,一個字都沒寫進 outbox
 連 Nostr(要 AIB_TEST_NOSTR_VENV;沒有就跳過):
-S1 X 寄 A/6ddf/Y ⇒ rc 4 relayed(1.7 收件那一半還沒做,沒有 delivered 回條);假中繼站上有給 Y 的 gift wrap,
+S1 X 寄 A/6ddf/Y ⇒ rc 3 held(X 沒列名冊,Y 驗不到 ⇒ 待審;1.7 收件);假中繼站上有給 Y 的 gift wrap,
    Y 的金鑰拆得開:寄件人 = X 的 npub、內文對、aib-msgid / aib-from / aib-to / aib-priority 標籤對;另有一份給 X 自己
 S2 --dry-run(op=resolve)⇒ rc 0 resolved,detail 有 Y 的 npub 與收信站;沒有寄出任何 gift wrap
 S3 寄件人沒量到(attested=false)⇒ rc 2 refused unattested,中繼站上沒有任何 gift wrap
@@ -73,6 +73,7 @@ class Box(object):
         self.root = self.td / "bridge"
         self.relays = relays or []
         self.procs = []
+        self.extra = {}                      # 測試要改的環境變數(例 AIB_CHAT_READ_BATCH);env() 與 start_run 都帶
 
     def env(self, **extra):
         env = {k: v for k, v in os.environ.items()
@@ -82,6 +83,7 @@ class Box(object):
                     "AIB_CHAT_POLL": "0.1", "AIB_CHAT_RETRY_GAP": "0.3"})
         if self.relays:
             env["AIB_CHAT_RELAYS"] = ",".join(self.relays)
+        env.update(self.extra)
         env.update(extra)
         return env
 
@@ -206,8 +208,9 @@ class Network(unittest.TestCase):
 
     def test_s1_send(self):
         rec = outbox_rec("%s/6ddf/%s" % (self.owner, self.y), self.x, thread="t-1")
-        res = GF.send_and_wait(self.b.root, rec, wait=4)
-        self.assertEqual((res["rc"], res["stage"]), (4, "relayed"), res)
+        res = GF.send_and_wait(self.b.root, rec, wait=20)
+        # 1.7 收件做好後:X 沒列名冊 ⇒ Y 那邊驗不到 ⇒ 待審 ⇒ 寄件端拿到 held(rc 3)
+        self.assertEqual((res["rc"], res["stage"]), (3, "held"), res)
         got = self.unwrap(self.y, self.wraps_for(self.y))
         self.assertEqual(len(got), 1, got)
         g = got[0]
@@ -217,7 +220,7 @@ class Network(unittest.TestCase):
         self.assertEqual(tags["aib-from"], "%s/6ddf/%s" % (self.owner, self.x))
         self.assertEqual(tags["aib-to"], rec["to"])
         self.assertEqual((tags["aib-priority"], tags["aib-thread"], tags["aib-v"], tags["aib-type"]), ("important", "t-1", "1", "dm"))
-        mine = self.unwrap(self.x, self.wraps_for(self.x))
+        mine = [m for m in self.unwrap(self.x, self.wraps_for(self.x)) if m.get("sender") == self.npub_of(self.x)]
         self.assertEqual([m["content"] for m in mine], ["你好,全球"], "要另寄一份給自己(NIP-17)")
 
     def test_s2_dry_run(self):

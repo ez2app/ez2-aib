@@ -187,16 +187,31 @@ def run(env=None, tick=None, max_ticks=None, out=sys.stdout):
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 return 0
-            _sleep(tick, stop)
+            _sleep(tick, stop, every=(lambda: import_inbox(root, env)) if leader else None)
     finally:
         stop_worker()       # 工人跟著當班走(它看到父行程不在也會自己結束)
         os.close(fd)        # 關檔 = 放鎖,排隊的下一支接手
 
 
-def _sleep(seconds, stop):
-    end = time.time() + seconds
+IMPORT_EVERY = 1.0                         # 秒;全球來信匯入佇列(寄件端等 delivered 最多 20 秒,不能等一整輪)
+
+
+def _sleep(seconds, stop, every=None):
+    end, nxt = time.time() + seconds, 0.0
     while not stop["now"] and time.time() < end:
+        if every is not None and time.time() >= nxt:
+            every()
+            nxt = time.time() + IMPORT_EVERY
         time.sleep(min(0.2, max(0.0, end - time.time())))
+
+
+def import_inbox(root, env):
+    """當班才做:inbox → dm 佇列(global_inbox.py,核心規則)。出錯只記種類,不讓轉接程式死。"""
+    try:
+        import global_inbox
+        global_inbox.import_once(root, env)
+    except Exception as err:   # noqa: BLE001
+        sys.stderr.write("import_inbox:%s\n" % type(err).__name__)
 
 
 def _become_leader(root, env, out):
@@ -417,6 +432,32 @@ def cmd_on(a, env, out):
     return 0
 
 
+def cmd_prepare(a, env, out):
+    """先備好全球對談,但**不上線**(維護者 10-16:安裝時就裝好 Nostr 的程式、第一艦長開席就有身分):
+    裝 venv + nostr-sdk(--keys-only 略過)、產生主人金鑰、替已綁人格的席發席金鑰。全部只在本機:
+    不連中繼站、不發名冊、不開開關。要上線仍是 aib chat on --name … --country …(會公開顯示名稱與國別)。
+    AIB_CHAT_PREINSTALL=0 ⇒ 什麼都不做。任何一步失敗只回報,rc 0(不擋安裝與開艙)。"""
+    if (env.get("AIB_CHAT_PREINSTALL") or "1") == "0":
+        return 0
+    if not a.keys_only:
+        if venv_state(env) == "ok":
+            out.write(T("prepare_venv_ok", pin=NOSTR_SDK_PIN) + "\n")
+        elif ensure_venv(env, out):
+            out.write(T("prepare_venv_ok", pin=NOSTR_SDK_PIN) + "\n")
+        else:
+            out.write(T("prepare_venv_failed", pin=NOSTR_SDK_PIN) + "\n")
+    acts, key_err = sync_keys(env)
+    if key_err:
+        out.write(T("keys_error", err=key_err) + "\n")
+    elif not a.quiet or acts:
+        import nostr_keys as NK
+        pv = NK.public_view(env)
+        out.write(T("prepare_keys", n=sum(1 for e in pv["seats"] if e["status"] == "active")) + "\n")
+    if not is_enabled(env) and not a.quiet:
+        out.write(T("prepare_next") + "\n")
+    return 0
+
+
 def cmd_off(a, env, out):
     try:
         switch_path(env).unlink()
@@ -454,8 +495,20 @@ def status_record(env):
         "heartbeat": GF.bridge_alive(root),
         "venv": venv_state(env),
         "keys": _keys_summary(env),
+        "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
+
+
+def _worker_status(root, running):
+    """寄件 / 收件工人寫的 worker-status.json(1.9);太舊(工人沒在跑)回 None。"""
+    try:
+        w = json.loads((Path(root) / "worker-status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not running or not isinstance(w, dict) or time.time() - int(w.get("at") or 0) > 60:
+        return None
+    return w
 
 
 def _keys_summary(env):
@@ -539,6 +592,17 @@ def cmd_status(a, env, out):
         out.write(T("status_not_running") + "\n")
     out.write(T("status_venv_" + rec["venv"], pin=NOSTR_SDK_PIN) + "\n")
     out.write(T("status_keys", n=rec["keys"]["seats"], owner=rec["keys"]["owner"] or "-") + "\n")
+    w = rec.get("worker")
+    if w:
+        out.write(T("status_offline" if w.get("offline") else "status_relays", up=w.get("up", 0), total=w.get("total", 0)) + "\n")
+        t = w.get("today") or {}
+        out.write(T("status_today", sent=t.get("sent", 0), received=t.get("received", 0), failed=t.get("failed", 0),
+                    pending=w.get("pending", 0)) + "\n")
+        c = w.get("clock") or {}
+        if c.get("offset") is None:
+            out.write(T("status_clock_unknown") + "\n")
+        else:
+            out.write(T("status_clock_warn" if c.get("warn") else "status_clock_ok", offset=c["offset"]) + "\n")
     out.write(T("status_heartbeat_" + ("yes" if rec["heartbeat"] else "no")) + "\n")
     return 0
 
@@ -568,6 +632,9 @@ def main(argv=None, env=None, out=sys.stdout):
     ew = sub.add_parser("ensure-window", help=T("help.ensure_window"))
     ew.add_argument("--socket")
     sub.add_parser("enabled", help=T("help.enabled"))
+    pp = sub.add_parser("prepare", help=T("help.prepare"))
+    pp.add_argument("--keys-only", action="store_true", help=T("help.keys_only"))
+    pp.add_argument("--quiet", action="store_true")
     a = p.parse_args(argv)
     if a.cmd in (None, "status"):
         if a.cmd is None:
@@ -587,6 +654,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_lookup(a, env, out)
     if a.cmd == "run":
         return run(env, out=out)
+    if a.cmd == "prepare":
+        return cmd_prepare(a, env, out)
     if a.cmd == "enabled":
         return 0 if is_enabled(env) else 1
     if a.cmd == "ensure-window":

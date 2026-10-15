@@ -814,6 +814,14 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
         done
         if (cd "$DIR" && "$abin" init >/dev/null 2>&1); then say "✓ aib 狀態目錄就緒(~/.ez2-aib)"
         else note+=("aib init 沒跑成:開第一席前請自己跑一次 aib init"); fi
+        # 10-16(維護者「安裝時就裝好 Nostr 的程式」):全球對談先備好 —— venv + nostr-sdk(要網路,約 1–3 分鐘)與主人金鑰;
+        #   只在本機,不上線(要上線:aib chat on --name … --country …)。失敗不擋安裝;AIB_CHAT_PREINSTALL=0 略過。
+        if [ "${AIB_CHAT_PREINSTALL:-1}" != 0 ]; then
+          say "… 全球對談先備好(裝 nostr-sdk,約 1–3 分鐘;不會上線)"
+          if (cd "$DIR" && "$abin" chat prepare --quiet </dev/null >/dev/null 2>&1) && (cd "$DIR" && "$abin" chat status --json 2>/dev/null | grep -q '"venv": "ok"'); then
+            say "✓ 全球對談已備好(要上線:aib chat on --name \"<名稱>\" --country TW)"
+          else note+=("全球對談的 nostr-sdk 沒裝成(多半是網路):之後跑 aib chat prepare 再補"); fi
+        fi
       fi
     elif [ "$vrc" = 127 ]; then miss+=("$shown 不見了或不能執行")
     else miss+=("$shown 跑不起來(結束碼 $vrc)"); fi

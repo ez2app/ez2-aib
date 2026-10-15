@@ -160,21 +160,16 @@ def mark_queue_read(code: str, msgs, env=None) -> int:
         if it.get("status") != "delivered" or it.get("read_at") is not None:
             continue
         body = " ".join(str(it.get("msg") or "").split())
-        sender = str(it.get("sender_seat") or "")
-        if not sender:
-            continue   # 寄件席不明就不猜(寧可少標一筆已讀,不誤標)
-        pat = head_re(sender)
-        hit = None
-        for k, t in enumerate(texts):
-            if k in used or not body or not t.endswith(body):
-                continue
-            prefix = t[:-len(body)]
-            # 抬頭之後緊接就是正文(「驗證完成,收到」不算「收到」那封);寄件席、收件席都對得上才算。
-            # 已知限制:同一封信被交兩次(兩次呼叫)會各標一筆同正文的信 —— 要穩定的信編號才擋得住,hook 一封只交一次
-            if not pat.match(prefix):
-                continue
-            hit = k
-            break
+        g = it.get("global") if isinstance(it.get("global"), dict) else None
+        if g and g.get("reply_code"):
+            # 全球來信(10-16 盤點第 7 項):沒有寄件席碼、抬頭是 `名(全球·…) >> …` ⇒ 用抬頭解析 + 外框裡的回信短碼對;
+            #   短碼一則一個,不會誤標別封。標了已讀,轉接程式照它送「已讀」回條(1.8)。
+            hit = _match_global(texts, used, body, g["reply_code"], code)
+        else:
+            sender = str(it.get("sender_seat") or "")
+            if not sender:
+                continue   # 寄件席不明就不猜(寧可少標一筆已讀,不誤標)
+            hit = _match_local(texts, used, body, head_re(sender))
         if hit is None:
             continue
         try:
@@ -185,6 +180,30 @@ def mark_queue_read(code: str, msgs, env=None) -> int:
             used.add(hit)
             n += 1
     return n
+
+
+def _match_local(texts, used, body, pat):
+    """本機席的信:抬頭之後緊接就是正文(「驗證完成,收到」不算「收到」那封);寄件席、收件席都對得上才算。
+    已知限制:同一封信被交兩次(兩次呼叫)會各標一筆同正文的信 —— 要穩定的信編號才擋得住,hook 一封只交一次。"""
+    for k, t in enumerate(texts):
+        if k in used or not body or not t.endswith(body):
+            continue
+        if pat.match(t[:-len(body)]):
+            return k
+    return None
+
+
+def _match_global(texts, used, body, reply_code, code):
+    import dm_header
+    for k, t in enumerate(texts):
+        if k in used or not body or not t.endswith(body):
+            continue
+        got = dm_header.parse(t)
+        if not got or got.get("form") != "global" or (got.get("receiver") or {}).get("code") != code:
+            continue
+        if ("--reply %s" % reply_code) in t[:-len(body)]:
+            return k
+    return None
 
 
 RULES_SAME = ("規則(AIB 定的):同這條對話第一次收信時給你的那份,沒有變;照那份做。"
