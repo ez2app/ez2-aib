@@ -213,7 +213,7 @@ aib 會改到自己資料夾以外的東西:開席時,它會在那家 AI 工具�
 每次改之前會先複製一份 `<檔名>.bak-…`。狀態提醒只會提醒;只有你寫進 `~/.ez2-aib/state/seat-now/gate-seats.txt` 的席位
 (或 `*`)才會在回合結束時被擋下。
 讓 AI 代你選席位卡住的選單(權限提示和其他選項)預設是關的,要跑 `aib menu-pick on` 才開;`aib menu-pick off` 再關掉,
-`aib menu-pick status` 看現在是哪一種。`aib init` 也會在桌面放一個通往你筆記的捷徑。`aib uninstall` 會把這些全部拿掉。
+`aib menu-pick status` 看現在是哪一種。`aib init` 也會問你要不要在桌面放一個通往你筆記的捷徑(先問才放;沒有終端機可問時,例如在安裝程式裡,就不放並說一聲)。`aib uninstall` 會把這些全部拿掉。
 
 **註**
 - [45] 遠端(fetch / push):放在網路上的那份程式碼(例如 GitHub);fetch 是抓下來,push 是推上去。

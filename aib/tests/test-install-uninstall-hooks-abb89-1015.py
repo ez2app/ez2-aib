@@ -534,5 +534,80 @@ class MenuPickOptIn(TmpCase):
         self.assertFalse(self.mp.enabled())
 
 
+# ───────────────────────────────────────────────────────────── 桌面捷徑:先問、名字跟語言(Andy 10-15 裁)
+class DesktopShortcutAsks(TmpCase):
+    def setUp(self):
+        super().setUp()
+        for k, v in (("EZ2_AIB_DESKTOP_DIR", None), ("EZ2_AIB_LOCALE", "en"), ("CLAUDE_CONFIG_DIR", None)):
+            old = os.environ.get(k)
+            self.addCleanup(lambda k=k, old=old: os.environ.__setitem__(k, old) if old is not None
+                            else os.environ.pop(k, None))
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import desktop_shortcut
+        self.ds = desktop_shortcut
+        self.home = self.tmp / "home"
+        self.root = self.home / ".ez2-aib"
+        self.root.mkdir(parents=True, mode=0o700)
+        self.desk = self.home / "Desktop"
+        self.desk.mkdir()
+        self.env = {"EZ2_AIB_DESKTOP_DIR": str(self.desk)}
+
+    def _links(self):
+        return sorted(p.name for p in self.desk.iterdir() if p.is_symlink())
+
+    def test_no_one_to_ask_skips_with_note(self):
+        items = self.ds.ensure_desktop_hub(self.root, env=self.env, ask=None)
+        self.assertEqual(self._links(), [])
+        self.assertTrue(any("aib init" in (i.get("detail") or "") for i in items), items)
+
+    def test_yes_creates_localized_name(self):
+        asked = []
+        for loc, name in (("en", "AIB Second Brain"), ("ja", "AIB セカンドブレイン"), ("ko", "AIB 세컨드 브레인"),
+                          ("zh-TW", "AIB 第二大腦")):
+            os.environ["EZ2_AIB_LOCALE"] = loc
+            for p in list(self.desk.iterdir()):
+                p.unlink()
+            self.ds.ensure_desktop_hub(self.root, env=self.env, ask=lambda q: asked.append(q) or True)
+            self.assertEqual(self._links(), [name], loc)
+            self.assertIn(name, asked[-1])
+
+    def test_no_creates_nothing(self):
+        self.ds.ensure_desktop_hub(self.root, env=self.env, ask=lambda q: False)
+        self.assertEqual(self._links(), [])
+
+    def test_existing_shortcut_any_name_not_asked_again(self):
+        self.ds.ensure_desktop_hub(self.root, env=self.env, ask=lambda q: False)      # 先建好 user/ 入口
+        os.symlink(os.path.join("..", ".ez2-aib", "user"), str(self.desk / "AIB 第二大腦"))
+        self.ds.ensure_desktop_hub(self.root, env=self.env, ask=lambda q: self.fail("asked again"))
+        self.assertEqual(self._links(), ["AIB 第二大腦"])
+
+    def test_uninstall_finds_localized_shortcut(self):
+        import uninstall
+        self.ds.ensure_desktop_hub(self.root, env=self.env, ask=lambda q: True)
+        _rw, rm = uninstall.traces(self.home)
+        self.assertIn(self.desk / "AIB Second Brain", [p for p, _ in rm])
+
+    def test_init_non_interactive_does_not_create(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("EZ2_AIB", "LC_", "LANG"))}
+        env.update(HOME=str(self.home), EZ2_AIB_STATE_ROOT=str(self.root), EZ2_AIB_DESKTOP_DIR=str(self.desk),
+                   EZ2_AIB_LOCALE="en", LANG="C")
+        r = subprocess.run([sys.executable, str(SRC / "bootstrap" / "aib_init.py")], capture_output=True, text=True,
+                           env=env, stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(self._links(), [], r.stdout + r.stderr)
+        self.assertIn("no one to ask", r.stdout)
+
+    def test_tty_answer_parsing(self):
+        import builtins
+        import aib_init
+        orig = builtins.input
+        self.addCleanup(setattr, builtins, "input", orig)
+        for ans, want in (("y", True), ("YES", True), ("はい", True), ("", False), ("n", False)):
+            builtins.input = lambda q, _a=ans: _a
+            self.assertEqual(aib_init.ask_tty("? "), want, ans)
+
+
 if __name__ == "__main__":
     unittest.main()

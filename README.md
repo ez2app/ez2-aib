@@ -235,8 +235,9 @@ mailbox, the usage-based memory refresh, and — only if you turn it on — the 
 alone, and the file is copied to `<file>.bak-…` before each change. The status reminder only reminds; it blocks the end
 of a turn only for seats you list (or `*`) in `~/.ez2-aib/state/seat-now/gate-seats.txt`.
 Letting an AI answer the menus a seat gets stuck on (permission prompts and other choices) is off until you run
-`aib menu-pick on`; `aib menu-pick off` turns it off again and `aib menu-pick status` shows which it is. `aib init` also puts a
-shortcut to your notes on the desktop. `aib uninstall` takes all of these out again.
+`aib menu-pick on`; `aib menu-pick off` turns it off again and `aib menu-pick status` shows which it is. `aib init` also offers
+to put a shortcut to your notes on the desktop (it asks first; when run without a terminal, as in the installer,
+it skips it and says so). `aib uninstall` takes all of these out again.
 
 **Notes**
 - [45] Remote (fetch / push): the copy of the code kept online (for example on GitHub); fetch downloads from it, push uploads to it.
