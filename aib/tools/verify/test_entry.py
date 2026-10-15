@@ -532,11 +532,12 @@ def _journal_path(repo, name):
     return runner._pool_file(repo).parent / ("batch-%s.jsonl" % name)
 
 
-def load_journal(path, tree, fresh):
+def load_journal(path, tree, fresh, rows_out=None):
     """10-04 the maintainer「把可接續做成程式化」:讀批次日誌,回 (上次已跑綠的測試集合, 問題或 None)。
     判準照 tools/governance/suite_resume.py:同一棵樹、上次綠、同一種跑法(--fresh 與否)才算;
     同一支多筆以最後一筆為準(後來紅了就不算)。任何一行壞掉 ⇒ 整份不用(回空集合 + 問題),全部重跑 —— 安全的一側。
-    現樹 sha 量不到(空字串)⇒ 一律不接續。"""
+    現樹 sha 量不到(空字串)⇒ 一律不接續。
+    rows_out(dict)給了 ⇒ 每支最後一筆日誌列放進去(resume_blocked 要看它的時間與環境指紋)。"""
     if not tree:
         return set(), "tree-unknown"
     try:
@@ -557,7 +558,59 @@ def load_journal(path, tree, fresh):
             return set(), "bad-line %d" % n
         if row["tree"] == tree and bool(row["fresh"]) == bool(fresh):
             last[row["test"]] = row["rc"]
+            if rows_out is not None:
+                rows_out[row["test"]] = row
     return {t for t, rc in last.items() if rc == 0}, None
+
+
+# 10-15 A1:接續只是「同一批被打斷後再下一次」,不是第二套沿用。以前只看「同一棵樹 + 同一種跑法」,沒有時間、環境、
+#   作廢、嚴格模式與不准沿用的開關 ⇒ 推前檢查每輪都帶 --resume pushgate、日誌從不過期 ⇒ 同一顆 HEAD 幾天後、
+#   環境換了、抽查寫了作廢列,照樣拿舊綠。現在接續也要過這幾關,過不了的照一般規則(沿用判斷或實跑)。
+RESUME_MAX_AGE_H = 12.0
+
+
+def resume_blocked(test, row, *, strict, no_reuse, always_run, env_fp_now, idx, now_utc, max_age_h):
+    """一支上次已跑綠的日誌列還能不能接續:能 ⇒ None;不能 ⇒ 原因代碼。任何一項量不到都算不能(多跑那一側)。"""
+    import datetime as _dt
+    if strict:
+        return "strict"
+    if no_reuse:
+        return "no-reuse-env"
+    if always_run:
+        return "always-run"
+    born = reuse_index.row_time_utc(row or {})
+    if born is None:
+        return "resume-age-unknown"
+    age_h = (now_utc - born).total_seconds() / 3600.0
+    if age_h < -0.1:
+        return "resume-from-future"
+    if age_h > max_age_h:
+        return "resume-expired"
+    if not env_fp_now or row.get("env_fp") != env_fp_now:
+        return "resume-env-changed"
+    tu = row.get("time_utc")
+    for v in (getattr(idx, "voids", None) or ()):
+        c = v.get("cond") or {}
+        if not (c.get("all") is True or c.get("test") == test or not c.get("test")):
+            continue
+        if v.get("before_utc"):
+            if v["before_utc"] > tu:
+                return "resume-voided"
+        elif str(v.get("before") or "") > str(row.get("time") or ""):
+            return "resume-voided"
+    for r in (getattr(idx, "history", None) or {}).get(test) or ():
+        if not reuse_index._walkable(r) and reuse_index._order_key(r) > tu:
+            return "resume-newer-red"
+    return None
+
+
+def _resume_env_fp(repo, env):
+    """接續比的環境指紋 = 沿用判斷用的那一份(reuse_index._decide_row 同算法);算不出來回 None(⇒ 不接續)。"""
+    try:
+        cenv = runner.st.child_env(Path(repo), Path("/tmp/.ez2-verify-reuse-probe"), env)
+        return runner.st.env_fingerprint(cenv, repo=str(repo))[0]
+    except Exception:  # noqa: BLE001
+        return None
 
 
 JOURNAL_MAX_BYTES = 16 * 1024 * 1024     # 10-13:日誌多記重跑理由 ⇒ 加上限輪替(以前從不輪替,已 4.7MB)
@@ -581,6 +634,29 @@ def _rotate_journal(f, path):
             w.truncate()
     except OSError:
         pass
+
+
+def _heal_own_pool(repo, idx, live=None):
+    """10-15 F6:本專案自己的池有壞行(被殺在半列、當機)⇒ 整份索引降級、每一輪都全部重跑,而且自己好不了
+    (修法 reuse_index quarantine 只有人手跑)。這裡自動跑同一個修法:壞行搬進 .bad、那幾支留必跑墓碑(認不出是哪支
+    ⇒ 檔內每支都留),然後重讀。只修本專案的池(別台收進來的 shared-*、別的專案不碰);修不了就照舊降級全跑。"""
+    pool = runner._pool_file(repo)
+    if not str(idx.degraded or "").startswith("bad-jsonl:%s:" % pool):
+        return idx
+    try:
+        rep = reuse_index.quarantine(pool, apply=True)
+    except Exception:  # noqa: BLE001 - 修不了就照舊(降級 = 全部必跑,多跑那一側)
+        return idx
+    if not rep.get("applied"):
+        return idx
+    if live is not None:
+        live("pool_healed", {"n": len(rep.get("bad_lines") or []), "tests": len(rep.get("tombstones") or [])})
+    return reuse_index.build_index([], repo=str(repo))
+
+
+def _jstamp(env_fp):
+    """日誌列多記的兩欄(10-15 A1):UTC 時間(接續有期限)與環境指紋(環境變了不接續)。"""
+    return {"time_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "env_fp": env_fp or ""}
 
 
 def append_journal(path, row):
@@ -1417,19 +1493,17 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
         strict = mode == "strict"
     gate = self_check()
     # 10-04 可接續:--resume <批次名> ⇒ 這一批上次已跑綠(同樹、同跑法)的不重跑;紅的、沒跑完的照跑
-    journal, resumed_ok, tree_now = None, set(), ""
+    journal, resumed_ok, tree_now, env_fp_now, problem = None, set(), "", None, None
     if resume:
         journal = _journal_path(repo, resume)
         try:
             tree_now = runner.st.tree_sha(repo)
         except BaseException:   # noqa: BLE001  tree_sha 失敗會 SystemExit;量不到 ⇒ 不接續
             tree_now = ""
-        resumed_ok, problem = load_journal(journal, tree_now, fresh)
-        if live is not None:
-            if problem:
-                live("resume_unusable", {"name": resume, "why": problem})
-            else:
-                live("resume_on", {"name": resume, "n": len([t for t in tests if t in resumed_ok])})
+        journal_rows = {}
+        resumed_ok, problem = load_journal(journal, tree_now, fresh, rows_out=journal_rows)
+        if live is not None and problem:
+            live("resume_unusable", {"name": resume, "why": problem})
     home = Path(tempfile.mkdtemp(prefix="aib-test-home-", dir=runner.TMP_ROOT))
     trace_dir = Path(tempfile.mkdtemp(prefix="aib-test-trace-", dir=runner.TMP_ROOT))
     tree_base = _tracked_dirty(repo)
@@ -1454,6 +1528,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
             else:
                 live("gate_fail", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")})
         if not gate.get("ok"):
+            resumed_ok = set()      # 10-15 A1:自檢沒過 ⇒ 算不出環境指紋、讀不了作廢列 ⇒ 不接續(整批照跑)
             for name in tests:
                 if name in resumed_ok:
                     if live is not None:
@@ -1476,7 +1551,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                     _live_done(live, results[-1])
                 if journal is not None:
                     append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
-                                             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                             "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
                                              "verdict": "fallback", "why": str(gate.get("stage") or "?"),
                                              "detail": str(gate.get("reason") or "")[:200]})
             reds = [r for r in results if r["rc"] != 0 and not r.get("unverified")]
@@ -1486,7 +1561,26 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                     "line1": T("line1_fallback", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")})}
         idx = reuse_index.build_index([], repo=str(repo))
         pool = runner._pool_file(repo)
-        base = baselines(pool, tests)
+        base = baselines(pool, tests)      # 先讀耗時(容得下壞行),再修池
+        idx = _heal_own_pool(repo, idx, live)
+        env_fp_now = _resume_env_fp(repo, env) if journal is not None else None
+        if journal is not None and resumed_ok:
+            import datetime as _dt
+            now_utc = _dt.datetime.now(_dt.timezone.utc)
+            max_age = min(RESUME_MAX_AGE_H, reuse_index.max_row_age_h(env))
+            dropped = {}
+            for name in [t for t in tests if t in resumed_ok]:
+                why_not = resume_blocked(name, journal_rows.get(name), strict=strict, no_reuse=_no_reuse_env(),
+                                         always_run=_always_run_marked(repo, name), env_fp_now=env_fp_now, idx=idx,
+                                         now_utc=now_utc, max_age_h=max_age)
+                if why_not:
+                    resumed_ok.discard(name)
+                    dropped[why_not] = dropped.get(why_not, 0) + 1
+            if live is not None and dropped:
+                live("resume_dropped", {"name": resume, "n": sum(dropped.values()),
+                                        "why": ", ".join("%s×%d" % kv for kv in sorted(dropped.items()))})
+        if live is not None and journal is not None and not problem:
+            live("resume_on", {"name": resume, "n": len([t for t in tests if t in resumed_ok])})
         offset = _pool_size(pool)
         started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         ran_names = []
@@ -1523,7 +1617,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                 _mark_all_skipped(results[-1])
                 if journal is not None:
                     append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
-                                             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                             "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
                                              "verdict": "reuse", "why": why})
                 continue
             gk = runner.go_package_key(name)
@@ -1537,7 +1631,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                     live("same_package", {"test": name, "name": first["name"]})
                 if journal is not None:
                     append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
-                                             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                             "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
                                              "verdict": "same-package", "why": why, "detail": str(detail or "")[:200]})
                 continue
             b = base.get(name)
@@ -1565,7 +1659,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                 _live_done(live, results[-1])
             if journal is not None:
                 append_journal(journal, {"test": name, "rc": results[-1]["rc"], "tree": tree_now, "fresh": bool(fresh),
-                                         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                         "time": time.strftime("%Y-%m-%d %H:%M:%S"), **_jstamp(env_fp_now),
                                          "verdict": "must-run", "why": why, "detail": str(detail or "")[:200]})
             ran_names.append(name)
             if gk is not None:
@@ -1799,11 +1893,6 @@ def main(argv=None):
     for var, val in RETIRED_SWITCHES:
         if os.environ.get(var) == val:
             print(T("switch_ignored", {"what": "%s=%s" % (var, val)}), file=sys.stderr)
-    for rep in reuse_index.auto_compact():
-        print(T("pool_compacted", {"n": "%d" % reuse_index.AUTO_COMPACT_KEEP,
-                                   "what": "%s %d → %d%s" % (Path(rep["file"]).name, rep["rows"], rep["kept"],
-                                                             (" (" + rep["refused"] + ")") if rep["refused"] else "")}),
-              file=sys.stderr)
     started = time.monotonic()
 
     def live(kind, params):
@@ -1856,7 +1945,19 @@ def _run_shard(repo, names, a, live):
     return res["rc"]
 
 
+def _auto_compact(repo):
+    """紀錄池太大就壓縮(reuse_index.auto_compact)。10-15 D2:以前在 main 一開頭、拿租約之前做,而且沒給路徑
+    ⇒ 被租約擋下來的那一輪已經改寫過池;分份的每個子行程各壓一次;壓的是共用目錄裡**所有專案**的池(含 shared-*)。
+    現在只在主行程、確定要跑之後(拿到租約、進 _main_run)才做,只壓這個專案自己的池。"""
+    for rep in reuse_index.auto_compact([runner._pool_file(repo)]):
+        print(T("pool_compacted", {"n": "%d" % reuse_index.AUTO_COMPACT_KEEP,
+                                   "what": "%s %d → %d%s" % (Path(rep["file"]).name, rep["rows"], rep["kept"],
+                                                             (" (" + rep["refused"] + ")") if rep["refused"] else "")}),
+              file=sys.stderr)
+
+
 def _main_run(repo, names, a, live, started, lease, mem):
+    _auto_compact(repo)
     prev_actions = [] if a.resume else _prev_actions()
     if prev_actions:      # v2.1:開跑先讀上一輪的建議,跑完逐條判
         sys.stderr.write(i18n_lib.t("aib.advice.prev_loaded", {"n": len(prev_actions)}, locale=LOC) + "\n")

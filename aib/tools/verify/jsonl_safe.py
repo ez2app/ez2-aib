@@ -53,12 +53,29 @@ def append_locked(path, data, tries=5):
                     same = False
                 if not same:
                     continue
+                # 10-15 F6:上一個寫的人被殺在半列(SIGKILL、當機、斷電)⇒ 檔尾沒有換行。直接接著寫,這一列會跟那半列黏成
+                #   一行壞行(兩列一起不見,可能正是最新的紅)。先補一個換行:壞的只剩那半列,隔離工具認得出是哪支。
+                if _ends_mid_line(path):
+                    data = b"\n" + data
                 f.write(data)
                 f.flush()     # 放鎖之前一定要整列寫進檔案(10-04:緩衝留到關檔才寫 ⇒ 一列被切兩半)
                 return
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
     raise OSError(_T("replaced_too_often", {"path": path, "n": tries}))
+
+
+def _ends_mid_line(path):
+    """檔案非空而最後一個位元組不是換行 ⇒ True。讀不到當 False(照舊寫)。"""
+    try:
+        with open(path, "rb") as r:
+            r.seek(0, 2)
+            if r.tell() == 0:
+                return False
+            r.seek(-1, 2)
+            return r.read(1) != b"\n"
+    except OSError:
+        return False
 
 
 def _T(key, params):

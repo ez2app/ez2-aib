@@ -12,8 +12,9 @@
 
 本檔補兩件,都不動 shadow_tracer(它是熱檔,而且不在本包的寫入範圍):
 
-1. **跨樹的上一輪**:把 shadow 目錄底下**所有**列檔讀進來,依檔案 mtime 由舊到新
-   疊,得到每支測試的「最近一次量到的列」。哪一棵樹無所謂,鑰匙改由下面第 2 條判。
+1. **跨樹的上一輪**:把 shadow 目錄底下**所有**列檔讀進來,每支測試的列依**列自己的時間**
+   (time_utc)由舊到新排(10-15 A5:以前照檔案 mtime,拉進來/隔離改寫過的檔會整檔變「最新」),
+   得到每支測試的「最近一次量到的列」。哪一棵樹無所謂,鑰匙改由下面第 2 條判。
 2. **反查表**:`檔 → 讀過它的測試`。來源是列裡的 `inputs`,那是追蹤器**實際量到**
    的讀取,不是靜態猜的。`tools/verify/select_changed.py` 用它補靜態挑選漏掉的。
 
@@ -49,7 +50,9 @@
     lock-fp-changed      鎖檔變了/舊列缺欄而本樹有鎖檔 → 必跑
     row-age-unknown / row-from-future / row-expired
                          列沒有 UTC 時間 / 時間在未來 / 超過有效期限(預設 72 小時)→ 必跑(10-04)
+    tz-changed           那列寫的時候的機器時區跟現在不同 → 必跑(10-15 A7;舊列沒有 tz 欄不判)
     date-crossed         它讀過的倉內檔寫著某個日期,而從那列到現在之間跨過了那一天 → 必跑(10-04)
+    identity-unknown     git 沒回應、本樹身分是猜的,而且找不到上次 → 必跑(10-15 D3;不報成「第一次跑」)
     (最新一列只是指紋對不上 ⇒ 往回找鑰匙對得上的舊列;找到的那把鑰匙在池裡出現過紅/逾時 ⇒)
     unstable-same-key    同樣條件時好時壞 → 必跑(10-02 第 2 步,多台機器共用池)
     (以上都不成立)       → reuse
@@ -268,6 +271,7 @@ class Index(object):
         self.voided_rows = 0      # 被作廢掉的列數
         self.local_only = False   # 跨主機沿用被停用(第 3 步抽查抓到真錯)
         self.foreign_host_rows = 0
+        self.identity_error = ""      # 10-15 D3:非空 = git 沒回應、本樹身分是退回的猜測(對不上的列可能其實是自己的)
 
     def lock_for(self, repo):
         """本樹的鎖檔指紋,一棵樹只算一次。
@@ -343,6 +347,13 @@ class Index(object):
             #   只收「讀過的檔」會漏掉這一整類,而漏掉的樣子是綠的。
             self.reverse.setdefault(rel, set()).add(test)
 
+    def sort_history(self):
+        """每支測試的歷史依列時間由舊到新重排(穩定排序:同一秒照讀入順序),latest 跟著換。見 _order_key。"""
+        for test, rows in self.history.items():
+            if len(rows) > 1:
+                rows.sort(key=_order_key)
+                self.latest[test] = rows[-1]
+
     def tests_reading(self, changed):
         """{改動檔: [讀過它的測試…]};只回有命中的檔。"""
         hits = {}
@@ -372,6 +383,9 @@ class Index(object):
             return "must-run", "index-degraded", self.degraded
         rows = self.history.get(test) or ([self.latest[test]] if test in self.latest else [])
         if not rows:
+            if self.identity_error:
+                # 10-15 D3:身分算錯時「找不到上次」不是「第一次跑」—— 照實說是身分認不出來
+                return "must-run", "identity-unknown", self.identity_error
             return "must-run", "no-previous", ""
         cache = {}
         first = self._decide_row(repo, test, rows[-1], changed, lock_now, environ, cache)
@@ -563,6 +577,10 @@ class Index(object):
             was = "none"
         if was != now:
             return "must-run", "lock-fp-changed", "%s→%s" % (was[:8], now[:8])
+        # 10-15 A7:環境指紋不含這台的時區(沒設 TZ 時看的是系統時區)⇒ 換了時區(或別台的列)要重跑;舊列沒有這欄 ⇒ 不判
+        tz_was, tz_now = prev.get("tz"), local_tz()[0]
+        if isinstance(tz_was, str) and tz_was and tz_was != tz_now:
+            return "must-run", "tz-changed", "%s→%s" % (tz_was, tz_now)
         crossed = self._date_crossed(repo, prev, born, now_utc)
         if crossed:
             return "must-run", "date-crossed", crossed
@@ -618,7 +636,7 @@ class Index(object):
             dates = file_dates(os.path.join(str(repo), rel), sha)
             if dates is None:
                 return "%s(讀不到,當作跨過)" % rel
-            hit = crossed_dates(dates, born, now_utc)
+            hit = crossed_dates(dates, born, now_utc, extra_offsets=_row_offsets(prev))
             if hit:
                 return "%s %s" % (rel, hit[0].isoformat())
         return ""
@@ -713,11 +731,28 @@ def file_dates(path, sha=""):
     return out
 
 
-def crossed_dates(dates, since, now):
-    """since/now:帶時區的 datetime。回「從 since 到 now 之間跨過了它(或它隔天)開始」的那些日期。
-    時區:UTC 加上這台在兩個時刻的本地偏移(夏令時間前後可能不同)。"""
+def local_tz():
+    """(這台的時區身分, 現在的 UTC 偏移秒數)。身分用標準/夏令名稱 + 標準偏移 —— 夏令時間切換不會讓它變(10-15 A7)。"""
+    import time as _time
+    return ("%s|%s|%d" % (_time.tzname[0], _time.tzname[1], _time.timezone),
+            int(_time.localtime().tm_gmtoff or 0))
+
+
+def _row_offsets(row):
+    """列上記的寫列當時 UTC 偏移(秒)→ [timedelta];沒記或看不懂 ⇒ []。"""
     import datetime as _dt
-    offsets = {_dt.timedelta(0)}
+    off = row.get("tz_off_s")
+    if isinstance(off, bool) or not isinstance(off, int) or abs(off) > 18 * 3600:
+        return []
+    return [_dt.timedelta(seconds=off)]
+
+
+def crossed_dates(dates, since, now, extra_offsets=()):
+    """since/now:帶時區的 datetime。回「從 since 到 now 之間跨過了它(或它隔天)開始」的那些日期。
+    時區:UTC 加上這台在兩個時刻的本地偏移(夏令時間前後可能不同),再加上 extra_offsets
+    (10-15 A7:寫那一列的機器當時的偏移 —— 別台/換過時區時,它那邊的日界也算)。"""
+    import datetime as _dt
+    offsets = {_dt.timedelta(0)} | set(extra_offsets or ())
     for t in (since, now):
         off = t.astimezone().utcoffset()
         if off is not None:
@@ -805,8 +840,10 @@ def _quarantine(path, apply=False, now=None):
         names |= {row["test"] for _, row in good if row}
     template = next((row for _, row in reversed(good) if row), {})
     stamp = now or _time.strftime("%Y-%m-%d %H:%M")
+    # 10-15 A6:墓碑帶 UTC 時間(照真實時鐘,不照 now 參數)。以前沒有 ⇒ 更早寫的作廢列(--void-test/--void-all)
+    #   因「列沒有時間 = 算在作廢之前」一律打中它 ⇒ 墓碑被吃掉,舊綠又變成最新一列。
     tombs = [{"test": t, "rc": -1, "inputs": [], "measured": "unmeasured", "external": False,
-              "why": ["quarantined-bad-row"], "time": stamp,
+              "why": ["quarantined-bad-row"], "time": stamp, "time_utc": _utc_now(),
               **{k: template[k] for k in ("repo", "repo_id") if k in template}} for t in sorted(names)]
     report = {"file": str(p), "bad_lines": [n for n, _ in bad], "tombstones": sorted(names),
               "unknown_test_in_bad_line": unknown, "applied": False, "changed": False}
@@ -844,7 +881,12 @@ def _parse_void(obj):
     before = obj.get("before")
     if not isinstance(cond, dict) or not isinstance(before, str) or not before:
         return False
+    unknown = [k for k in cond if k not in VOID_KEYS]
     cond = {k: v for k, v in cond.items() if k in VOID_KEYS}
+    if unknown and not any(isinstance(cond.get(k), str) and cond.get(k) for k in VOID_KEYS if k not in ("all", "green_only")):
+        # 10-15 D3:新版寫的作廢條件舊版看不懂。以前當壞列 ⇒ 整份索引永久降級(全部必跑,而且自己好不了)。
+        #   看不懂的條件只會「縮小」作廢範圍 ⇒ 拿掉它 = 放大範圍 = 錯在多跑:沒有其他看得懂的條件就當全作廢(只到 before 為止)
+        cond = dict(cond, all=True)
     if not cond or (cond.get("all") is not True and not any(isinstance(cond.get(k), str) and cond.get(k)
                                                               for k in VOID_KEYS if k not in ("all", "green_only"))):
         return False
@@ -861,6 +903,10 @@ def _void_hits(v, row):
                 return False
         if c.get("key_prefix") and not str(row.get("key") or "").startswith(c["key_prefix"]):
             return False
+    # 10-15 A6:沒有 UTC 時間的墓碑(舊版隔離留下的)不准被作廢:它是「最新那列壞了、可能是紅」的唯一證據,
+    #   而「沒時間 = 算在作廢之前」會讓任何更早的作廢列吃掉它 ⇒ 舊綠變最新。作廢墓碑從來不會讓結果更安全。
+    if _is_tombstone(row) and not row.get("time_utc"):
+        return False
     # 10-03 審查第 3 條:抽查作廢「錯的綠」時,不能連剛跑出來的紅證據一起作廢 ⇒ green_only 只打綠列
     if c.get("green_only") is True and not _walkable(row):
         return False
@@ -870,6 +916,30 @@ def _void_hits(v, row):
         return not isinstance(tu, str) or not tu or tu < v["before_utc"]
     t = row.get("time")
     return not isinstance(t, str) or not t or t < v["before"]
+
+
+def _local_to_utc(text):
+    """列的本地時間字串(寫列那台的時鐘;"YYYY-MM-DD HH:MM[:SS]")→ UTC 字串;看不懂回 None。只拿來排先後(近似)。"""
+    import time as _time
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.mktime(_time.strptime(text, fmt))))
+        except (ValueError, OverflowError, TypeError):
+            continue
+    return None
+
+
+def _order_key(row):
+    """排「哪一列最新」用的鍵(10-15 A5)。有 time_utc 用它;沒有就用本地 time 換算(近似);兩者都沒有 ⇒
+    綠的排最舊(沒有時間的綠本來就不准沿用,row-age-unknown)、非綠的(紅/墓碑/量不到)排最新 —— 錯也錯在多跑。"""
+    tu = row.get("time_utc")
+    if isinstance(tu, str) and tu:
+        return tu
+    t = row.get("time")
+    got = _local_to_utc(t) if isinstance(t, str) and t else None
+    if got:
+        return got
+    return "" if _walkable(row) else "9999"
 
 
 def _is_tombstone(row):
@@ -1055,10 +1125,11 @@ def auto_compact(paths=None, environ=None):
         limit = float(environ.get("AIB_POOL_COMPACT_MB", AUTO_COMPACT_MB))
     except ValueError:
         limit = AUTO_COMPACT_MB
-    if limit <= 0:
+    if limit <= 0 or not paths:
+        # 10-15 D2:沒給路徑不再退回「共用目錄裡全部的池」(會改寫別的專案的池、別台收進來的 shared-*)
         return []
     out = []
-    for f in rows_files(paths or []):
+    for f in rows_files(paths):
         try:
             big = f.stat().st_size > limit * 1024 * 1024
         except OSError:
@@ -1084,7 +1155,9 @@ def _shared_lock(path):
 def build_index(paths, repo=None):
     idx = Index()
     idx.repo = str(Path(repo).resolve()) if repo else None
-    idx.repo_id = repo_identity(repo) if repo else None
+    _id_err = []
+    idx.repo_id = repo_identity(repo, _id_err) if repo else None
+    idx.identity_error = _id_err[0] if _id_err else ""
     idx.repo_id_legacy = legacy_identity(repo) if repo else None
 
     def _mark_default():
@@ -1136,6 +1209,9 @@ def build_index(paths, repo=None):
             return idx
         finally:
             lockf.close()       # 關檔即放鎖
+    # 10-15 A5:「最新一列」照列自己的時間排,不照檔案 mtime。拉進來的 shared-* 檔、隔離改寫過的檔整檔 mtime 變新,
+    #   照檔案順序疊 ⇒ 別台幾天前的綠排到墓碑/新紅之後、變成最新一列。檔案順序只在同一秒時當次序(穩定排序)。
+    idx.sort_history()
     # 第 3 步:抽查抓到「真的沿用錯了」⇒ 寫停用旗標;旗標在 ⇒ 別台機器的列一律不用(沒有 host_id 的舊列視為本機)
     flag_dirs = [Path(p) for p in (paths or [])] or [Path(st.shadow_dir_default()) if st is not None else None]
     for d in flag_dirs:
@@ -1145,7 +1221,9 @@ def build_index(paths, repo=None):
         me = host_id()
         for test in list(idx.history):
             # 10-03 審查第 2 條:從別台收進來的列(帶 via)不管自己寫了什麼 host_id,一律當別台
-            kept = [r for r in idx.history[test] if not r.get("via") and r.get("host_id") in (None, "", me)]
+            # 10-15 A2:停用的是「拿別台的綠來沿用」,不是「看別台的紅」⇒ 別台的紅/逾時/墓碑照收(仍擋得住沿用),只丟別台的綠
+            kept = [r for r in idx.history[test]
+                    if (not r.get("via") and r.get("host_id") in (None, "", me)) or not _walkable(r)]
             idx.foreign_host_rows += len(idx.history[test]) - len(kept)
             if kept:
                 idx.history[test] = kept
@@ -1164,7 +1242,8 @@ def build_index(paths, repo=None):
                 del idx.history[test]
                 idx.latest.pop(test, None)
         # 反查表不收窄:多挑是安全側
-    if not idx.latest and not idx.degraded and not idx.voided_rows and not idx.foreign_host_rows:
+    if not idx.latest and not idx.degraded and not idx.voided_rows and not idx.foreign_host_rows and not idx.identity_error:
+        # (10-15 D3:身分是猜的 ⇒ 不報「池壞了/沒紀錄」,由 decide 回 identity-unknown)
         # 全被作廢 ≠ 池壞了:那是「沒有上次紀錄」(decide 回 no-previous,一樣必跑),不是降級
         idx.degraded = "no-usable-rows"
     return idx
@@ -1179,11 +1258,12 @@ def legacy_identity(repo):
         return None
 
 
-def repo_identity(repo):
-    """同一個專案的所有 clone 與工作樹共用的身分(resume_store.repo_id;M1 起看根提交 + 遠端);取不到回 None。"""
+def repo_identity(repo, errors=None):
+    """同一個專案的所有 clone 與工作樹共用的身分(resume_store.repo_id;M1 起看根提交 + 遠端);取不到回 None。
+    errors(清單)給了 ⇒ git 沒回應、身分是退回的猜測時,原因放進去(10-15 D3)。"""
     try:
         import resume_store  # noqa: E402 - same folder
-        return resume_store.repo_id(repo)
+        return resume_store.repo_id(repo, errors) if errors is not None else resume_store.repo_id(repo)
     except Exception:  # noqa: BLE001 - no identity ⇒ fall back to the path rule
         return None
 
@@ -1219,6 +1299,9 @@ def stamp_row(row, repo, lock_now=None):
     if rid:
         out["repo_id"] = rid
     out.setdefault("host_id", host_id())
+    tz, off = local_tz()          # 10-15 A7:寫列這台的時區,沿用時比對、跨日判斷也算它的日界
+    out.setdefault("tz", tz)
+    out.setdefault("tz_off_s", off)
     return out
 
 
