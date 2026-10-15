@@ -101,5 +101,53 @@ class C2CanonicalPath(TmpCase):
                     self.assertNotIn(word, I18N[loc][key], (loc, key))
 
 
+# ───────────────────────────────────────────────────────────── C3
+class C3GateOptIn(TmpCase):
+    CODE = "abcde"
+
+    def _run_stop(self, locale="en"):
+        tp = self.tmp / "t.jsonl"
+        rows = [{"type": "user", "message": {"role": "user", "content": "do it"}, "timestamp": "2026-10-15T00:00:00Z"},
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {}}]}}]
+        tp.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("AIB_NOW_GATE", "EZ2_AIB", "LC_", "LANG"))}
+        env.update(HOME=str(self.tmp), AIB_NOW_GATE_CODE=self.CODE, EZ2_AIB_STATE_ROOT=str(self.tmp / "state"),
+                   EZ2_AIB_LOCALE=locale, LANG="C")
+        r = subprocess.run([sys.executable, str(SRC / "policy" / "hooks" / "aib-now-gate.py"), "stop"],
+                           input=json.dumps({"transcript_path": str(tp)}), capture_output=True, text=True, env=env,
+                           timeout=60)
+        return r
+
+    def _gate_list(self, text):
+        d = self.tmp / "state" / "state" / "seat-now"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "gate-seats.txt").write_text(text, encoding="utf-8")
+
+    def test_no_list_never_blocks(self):
+        r = self._run_stop()
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_listed_seat_blocks_without_maintainer_wording(self):
+        self._gate_list("%s\n" % self.CODE)
+        r = self._run_stop()
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("aib now", r.stderr)
+        self.assertNotIn("maintainer", r.stderr)
+
+    def test_star_blocks_other_seat_list_does_not(self):
+        self._gate_list("zzzzz\n")
+        self.assertEqual(self._run_stop().returncode, 0)
+        self._gate_list("*\n")
+        self.assertEqual(self._run_stop().returncode, 2)
+
+    def test_texts_localized_no_maintainer(self):
+        bad = ("maintainer", "維護者", "メンテナー", "관리자", "10-12", "trial list", "試跑", "試行", "시범")
+        for loc, tr in I18N.items():
+            for key in ("aib.nowgate.block", "aib.nowgate.start_hard", "aib.nowgate.start_soft"):
+                self.assertIn(key, tr, (loc, key))
+                for w in bad:
+                    self.assertNotIn(w, tr[key], (loc, key, w))
+
+
 if __name__ == "__main__":
     unittest.main()
