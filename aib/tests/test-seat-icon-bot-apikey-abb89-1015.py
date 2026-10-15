@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""右欄席位圖示:bot 角色戴 🤖、用 API 金鑰的引擎席戴 🔑(the maintainer 10-15 眼驗:
-6ddf 艙 bot 角色的席戴 👤 未列角色,「bot 應該有一個機器人頭的 icon、用金鑰的應該有一個 key 的」)。
+"""右欄組員圖示看引擎:橋接 bot 引擎戴 🤖、用 API 金鑰的引擎席戴 🔑(the maintainer 10-15:
+「bot 應該有一個機器人頭的 icon、用金鑰的應該有一個 key 的」;角色名叫 bot 的 Opus 席不是 bot)。
 
 量法:圖示表與 crew_mark 住在 pane-right-ai.sh 的內嵌 Python 裡,原樣抽出那幾段 exec(不另抄一份判準);
 金鑰引擎集合與 providers.json auth=api_key 對齊(pane-right-ai 與 list_captains 兩處)。
@@ -33,6 +33,7 @@ def _assign(src, name):
 def _load():
     src = PANE.read_text(encoding="utf-8")
     code = "\n".join([_assign(src, "ROLE_ICONS"), _assign(src, "UNLISTED_ROLE_ICON"),
+                      _assign(src, "AIBOT_PROVIDERS"), _assign(src, "AIBOT_MARK"),
                       _assign(src, "API_KEY_PROVIDERS"), _assign(src, "API_KEY_VICE_MARK"),
                       _assign(src, "API_KEY_MARK"),
                       _top_def(src, "role_family"), _top_def(src, "role_icon"), _top_def(src, "crew_mark")])
@@ -51,14 +52,17 @@ class SeatIcon(unittest.TestCase):
         self.ns = _load()
         self.mark = lambda role, prov="claude", u=False, ip=False: self.ns["crew_mark"](role, prov, u, ip, "❓")
 
-    def test_bot_role_wears_robot_head(self):
-        self.assertEqual(self.mark("bot"), "\U0001F916")
-        self.assertEqual(self.mark("bot2"), "\U0001F916", "同家族(尾端數字)一樣")
+    def test_bridge_bot_engine_wears_robot_head(self):
+        for prov in sorted(self.ns["AIBOT_PROVIDERS"]):
+            self.assertEqual(self.mark("dev", prov), "\U0001F916", prov)
+
+    def test_role_named_bot_on_claude_is_not_a_bot(self):
+        self.assertEqual(self.mark("bot", "claude"), "\U0001F464", "角色叫 bot 的 Opus 席照角色表(未列 ⇒ 👤)")
 
     def test_api_key_engine_wears_key(self):
         for prov in sorted(_api_key_ids()):
             self.assertEqual(self.mark("dev", prov), "\U0001F511", prov)
-            self.assertEqual(self.mark("bot", prov), "\U0001F511", "引擎事實排在角色圖示前:%s" % prov)
+            self.assertEqual(self.mark("bot", prov), "\U0001F511", "引擎排在角色圖示前:%s" % prov)
 
     def test_unassigned_still_wins_and_others_unchanged(self):
         self.assertEqual(self.mark("dev", "deepseek", u=True), "❓", "未編制仍最優先")
