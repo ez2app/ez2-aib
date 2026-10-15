@@ -205,6 +205,8 @@ def check_inbox(rec):
     _opt(rec, "reply_to", lambda v: isinstance(v, str) and bool(MSGID_RE.match(v)), "要是 msgid")
     for k in ("display_name", "persona_name", "thread", "kind", "lang"):
         _opt(rec, k, _is_str, "要是字串")
+    # 同名(第 5.8 節):轉接程式比對好友名冊判;只會多加警告、不會提高信任,所以讓外掛判
+    _opt(rec, "name_collision", lambda v: isinstance(v, bool), "要是 true/false")
     return rec
 
 
@@ -215,6 +217,7 @@ def queue_fields(rec):
     - 未驗證 ⇒ 不論外掛分到哪一類,一律當陌生。
     - 陌生 ⇒ hold_human(待審)、優先級降為 normal。
     - shown_name:顯示名稱 → 人格名 → npub 前 12 碼(第 5.8 節);不合格的名稱直接跳過。
+    - same_name:外掛判的同名旗標;抬頭加「同名」用(PR-2)。
     """
     check_inbox(rec)
     cls = rec["class"] if rec["verified"] else "stranger"
@@ -229,6 +232,7 @@ def queue_fields(rec):
         "sender_addr": rec.get("from_addr") or rec["from_npub"],
         "shown_name": shown,
         "verified": rec["verified"],
+        "same_name": bool(rec.get("name_collision")),
         "class": cls,
         "status": "hold_human" if cls == "stranger" else "queued",
         "priority": prio,

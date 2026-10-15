@@ -152,6 +152,10 @@ class Inbox(Base):
         self.assertEqual(q["sender_origin"], "nostr:" + NPUB_SEAT)
         self.assertEqual(q["sender_addr"], NPUB_OWNER + "/6ddf/abb89")
         self.assertEqual(q["shown_name"], "Andy")
+        self.assertFalse(q["same_name"])
+        self.assertTrue(G.queue_fields(inbox(name_collision=True))["same_name"])
+        with self.assertRaises(G.ContractError):
+            G.check_inbox(inbox(name_collision="yes"))
         self.assertEqual(G.queue_fields(inbox(**{"class": "paired"}))["sender_kind"], "owner_paired")
         st = G.queue_fields(inbox(**{"class": "stranger"}))
         self.assertEqual((st["status"], st["priority"]), ("hold_human", "normal"))
