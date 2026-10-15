@@ -7,6 +7,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib ship <subcommand> …     pre-push check, package, release (see `aib ship --help`)
     aib support [--confirm]     collect a de-identified bug report pack (nothing is sent; you attach it to an issue)
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
+    aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
     aib uninstall [--all] [--yes]   remove aib from this computer (lists first; --yes removes; --all also records)
     aib <provider> <dgrs|safe> <role>   open an AI seat in the cockpit (macOS + tmux; see `aib --help-cockpit`)
@@ -62,7 +63,7 @@ def _update(args):
     root = os.path.dirname(HERE)          # 從 checkout 跑(bin/aib):HERE = <checkout>/aib
     if not os.path.isdir(os.path.join(root, ".git")):
         sys.stderr.write("aib update: this aib (%s) is not a git checkout, so it was not installed by the one-line "
-                         "installer; update it the way you installed it (for example: pipx upgrade ez2-aib)\n" % root)
+                         "installer; update it the way you installed it (pipx upgrade ez2-aib, or pip install --upgrade ez2-aib)\n" % root)
         return 2
     urls = os.environ.get("AIB_INSTALL_URL", " ".join(INSTALL_URLS))
     # 先下載完整再跑(下載不完整不會跑半截);每個網址都下載不到要講清楚,不能被管線吃掉
@@ -74,17 +75,33 @@ def _update(args):
     os.execv("/bin/bash", ["bash", "-c", script, urls, PUBLIC_MARK, "--dir", root] + list(args))
 
 
+def _lease(args):
+    """aib lease(10-14 新用戶走查:aib test 說「大批要排隊拿機器租約」,用戶卻查不到租約在誰手上、等到幾點)。
+    不帶參數 = 只看:host_lease.py status(誰拿著、從幾點到幾點)+ queue list(誰在排、等多久),不改租約也不改排隊名單
+    (queue list 會照它平常的做法建好狀態資料夾與空的 .lock 檔,沒有別的);rc 跟 status 一樣
+    (0 機器空、4 被佔、3 讀不到)。帶參數 = 原樣交給 host_lease.py(acquire / release / renew / queue …,給腳本用)。"""
+    tool = os.path.join(HERE, "tools", "governance", "host_lease.py")
+    if args:
+        os.execv(sys.executable, [sys.executable, tool] + list(args))
+    import subprocess
+    rc = subprocess.run([sys.executable, tool, "status"], stdin=subprocess.DEVNULL).returncode
+    subprocess.run([sys.executable, tool, "queue", "list"], stdin=subprocess.DEVNULL)
+    return rc
+
+
 def main():
     """pip / pipx 裝好之後的 `aib` 指令進到這裡(pyproject.toml 的 project.scripts)。"""
     # 最外層那次 aib 寫的值被艙內繼承;艙內 LANG 被 cockpit-full.sh 強制成 en_US 也不會蓋掉(setdefault)
     os.environ.setdefault("EZ2_AIB_LOCALE_SYSTEM", _locale())
     # 10-12 新用戶全面檢查:Python 編譯快取不寫進安裝資料夾(看起來像被改過、也會擋 aib update);放 ~/.cache/ez2-aib
     os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(os.path.expanduser("~"), ".cache", "ez2-aib", "pycache"))
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
         sys.stdout.write(__doc__)
         return 2
     if sys.argv[1] == "update":
         return _update(sys.argv[2:])
+    if sys.argv[1] == "lease":
+        return _lease(sys.argv[2:])
     if sys.argv[1] == "license":
         # 授權(10-08):status / device-id / activate / deactivate —— entitlement 是套件(相對 import),用 run_module
         sys.path.insert(0, os.path.join(HERE, "src"))

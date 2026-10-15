@@ -407,10 +407,13 @@ def versus_lines(vs, before, who=None, causes=None, required=None):
 
 def rerun_causes(tests, top=3):
     """這一輪實跑的那幾支「為什麼不能沿用」:原因白話(支數),多的在前。"""
+    # 10-14 公開版新用戶走查:以前只拿 why 去翻、不帶 detail ⇒ 新機器第一次跑(index-degraded:no-rows-files)
+    #   印成「紀錄池讀不了:,…quarantine」(冒號後空白、還叫人修壞列)。紀錄池那一類要帶 detail 才分得出
+    #   「還沒有紀錄」與「真的讀壞了(附原因)」;其他原因的 detail 每支不同(哪個檔改了),照舊只按原因合併。
     import collections
-    c = collections.Counter(r.get("why") for r in tests
-                            if not r.get("reused") and not r.get("unverified") and r.get("why"))
-    return ["%s(%d)" % (_why_text(code), n) for code, n in c.most_common(top)]
+    c = collections.Counter((r.get("why"), str(r.get("why_detail") or "") if r.get("why") == "index-degraded" else "")
+                            for r in tests if not r.get("reused") and not r.get("unverified") and r.get("why"))
+    return ["%s(%d)" % (_why_text(code, detail), n) for (code, detail), n in c.most_common(top)]
 
 
 _LAST_ADVICE = {}
@@ -1391,7 +1394,7 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
             cur = cur or {}
             ahead.append("%s · %s" % (cur.get("owner", "?"), cur.get("what", "?")))
             say(T("lease_queue_wait", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"),
-                                       "waited": int(clock() - t0), "n": LEASE_POLL_S}))
+                                       "at": cur.get("expiry_at", "?"), "waited": int(clock() - t0), "n": LEASE_POLL_S}))
         sleep(LEASE_POLL_S)
         state, cur, ship_wait = _lease_now(env, with_ship=True)
         if state is None:

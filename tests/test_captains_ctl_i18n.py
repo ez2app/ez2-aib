@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""captains-ctl.sh speaks the user's language: error messages and the captain bar label come from aib/i18n.
+"""(Brought back from public PR #11; the captain bar label uses the key aib.cockpit.hub_captain_label.)
+captains-ctl.sh speaks the user's language: error messages and the captain bar label come from aib/i18n.
 
 Standard library only: python -m unittest discover -s tests -v
 """
@@ -16,7 +17,7 @@ CTL = ROOT / "aib" / "src" / "cockpit" / "nav" / "captains-ctl.sh"
 KEYS = ["aib.install_guard.missing", "aib.captains_ctl.cabin_resolver_missing", "aib.captains_ctl.cabin_conflict",
         "aib.captains_ctl.cross_cabin_no_cleanup", "aib.captains_ctl.unique_unreadable",
         "aib.captains_ctl.unique_schema", "aib.captains_ctl.captain_exists", "aib.captains_ctl.unmeasured",
-        "aib.captains_ctl.status_label"]
+        "aib.cockpit.hub_captain_label"]
 
 
 class CaptainsCtlI18n(unittest.TestCase):

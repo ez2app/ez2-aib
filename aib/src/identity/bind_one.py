@@ -56,7 +56,7 @@ from role_model import (  # noqa: E402
     SHA256_RE as MODEL_SHA256_RE, TRUST_LEVELS, UID_RE, RoleModel,
     RoleModelError, _safe_name,
 )
-from binding_projection import load_card_registry, ProjectionError, route_unresolved_lines  # noqa: E402
+from binding_projection import load_card_registry, ProjectionError, REASON_ROUTE_REFUSED, route_unresolved_lines  # noqa: E402
 from card_registry import resolve_card, UID_RE as CARD_UID_RE  # noqa: E402
 from route_register import check_against_contract, default_contract_spec, load_contract  # noqa: E402
 import persona_fit  # noqa: E402
@@ -69,6 +69,11 @@ PROJECTION = _SRC / "memory" / "binding_projection.py"
 
 class BindError(Exception):
     """來源不合/拒綁 —— 呼叫端回 rc 2,一個位元組都不寫。"""
+
+
+class NoPersonaError(BindError):
+    """這一席還沒綁人格,不能先綁大腦 / 資料夾。另立一類,讓 newproj 等呼叫端能說「先綁人格」那一行指令,
+    不靠比對訊息字面(10-14 6ddf 走查 K5)。"""
 
 
 def agent_uid_of(session_uuid):
@@ -767,8 +772,23 @@ def resolve_card_ref(cards, ref):
     return ref, None, entry
 
 
-def reproject(state_root, cards_path, contract_spec, notices=None):
-    """綁完重跑投影(同一支 CLI,收據照留)。回 (rc, stdout+stderr)。
+def _seat_unresolved(projection_stdout, seat_id):
+    """投影結果裡,這一席因路由被契約擋下(invalid_route_key)的判決(reason / detail);沒有 ⇒ []。
+    ★ 只認這一種(審查抓到):unresolved 也列正常狀態 —— 解綁人格後「沒有人格卡」、只綁人格沒綁大腦
+      「沒有大腦路由」(後者照樣在右欄)—— 那些不是被擋,當成被擋會讓每次正常解綁都報失敗(rc 1)。"""
+    try:
+        doc = json.loads(projection_stdout)
+    except (ValueError, TypeError):
+        return []
+    rows = doc.get("unresolved") if isinstance(doc, dict) else None
+    return [{"reason": r.get("reason"), "detail": r.get("detail")}
+            for r in rows or [] if isinstance(r, dict) and r.get("seat_id") == seat_id
+            and r.get("reason") == REASON_ROUTE_REFUSED]
+
+
+def reproject(state_root, cards_path, contract_spec, seat_id=None, notices=None):
+    """綁完重跑投影(同一支 CLI,收據照留)。回 (rc, stdout+stderr, 這一席被擋的原因 list)。
+    10-14(6ddf 走查 K2):投影對這一席的判決帶回來(seat_id),讓呼叫端照實說(new_project 讀 plan["reproject"]["seat_unresolved"])。
     notices(10-15):給一個 list ⇒ 把「別席路由過不了表、保留/標未解析」的人話行附進去(整艙重投影會動到別席)。"""
     out = Path(state_root) / "identity" / "bindings.json"
     disp = Path(state_root) / "identity" / "seat-display.json"
@@ -782,13 +802,14 @@ def reproject(state_root, cards_path, contract_spec, notices=None):
             notices.extend(route_unresolved_lines(json.loads(proc.stdout), contract_spec))
         except ValueError:
             pass
-    return proc.returncode, (proc.stdout + proc.stderr)
+    return proc.returncode, (proc.stdout + proc.stderr), _seat_unresolved(proc.stdout, seat_id)
 
 
-def _reproject_into(plan, state_root, cards_path, contract_spec):
+def _reproject_into(plan, state_root, cards_path, contract_spec, seat_id=None):
     notices = []
-    rc, log = reproject(state_root, cards_path, contract_spec, notices=notices)
-    plan["reproject"] = {"rc": rc, "log_tail": log[-400:]}
+    rc, log, dropped = reproject(state_root, cards_path, contract_spec, seat_id, notices=notices)
+    plan["reproject"] = {"rc": rc, "log_tail": log[-400:], "seat_unresolved": dropped,
+                         "contract_spec": contract_spec}
     if notices:
         plan["route_notices"] = notices
 
@@ -806,6 +827,7 @@ def bind_seat(state_root, seat_id, card, actor, brain=None, rebind_persona=False
     state_root = Path(state_root)
     cards_path = Path(cards_path) if cards_path else default_cards_path(state_root)
     # 10-15:來源在這裡解一次,綁定檢查與整艙重投影用同一份(以前重投影子行程自己讀 EZ2_ROUTE_REGISTRY,可能是舊版)
+    #   10-14(K2):沒給契約 ⇒ 跟座艙、newproj 同一套來源(default_contract_spec);以前 newrole 綁人格不帶 --contract ⇒ 已綁專案的席整筆被擋掉。
     contract_spec = contract_spec or default_contract_spec()
     if not (state_root / "ledger").is_dir():
         raise BindError("找不到帳本目錄 %s —— 先跑 src/bootstrap/aib_init.py" % (state_root / "ledger"))
@@ -836,7 +858,8 @@ def bind_seat(state_root, seat_id, card, actor, brain=None, rebind_persona=False
                 raise BindError("狀態不可讀:%s" % err)
         card = (current or {}).get("persona_card")
         if not card:
-            raise BindError("這席還沒綁人格,不能先綁大腦(先 [綁定人格])")
+            raise NoPersonaError("這席還沒綁人格,不能先綁大腦:先綁人格(右鍵 [綁定人格],或 aib newrole --name <角色> "
+                                 "--seat %s --actor <你的署名>),再綁大腦" % seat_id)
     persona_uid, persona_sha, entry = resolve_card_ref(cards, card)
     if pin_sha is not None:
         if not SHA256_RE.fullmatch(pin_sha):
@@ -898,7 +921,7 @@ def bind_seat(state_root, seat_id, card, actor, brain=None, rebind_persona=False
         now_ms() if callable(now_ms) else int(time.time() * 1000), bind_source)
     plan["bind_source"] = bind_source
     if do_reproject:
-        _reproject_into(plan, state_root, cards_path, contract_spec)
+        _reproject_into(plan, state_root, cards_path, contract_spec, seat_id)
     return plan
 
 
@@ -933,7 +956,7 @@ def unbind_seat(state_root, seat_id, actor, brain_only=False, cards_path=None,
         agent.get("persona_sha"), agent.get("brain_route_key"),
         now_ms() if callable(now_ms) else int(time.time() * 1000))
     if do_reproject:
-        _reproject_into(plan, state_root, cards_path, contract_spec)
+        _reproject_into(plan, state_root, cards_path, contract_spec, seat_id)
     return plan
 
 
@@ -1006,7 +1029,7 @@ def main(argv=None):
     ap.add_argument("--brain-only", action="store_true", help="unbind 用:只解大腦、留人格")
     ap.add_argument("--state-root")
     ap.add_argument("--cards", help="cards.json(預設 <state>/identity/cards.json)")
-    ap.add_argument("--contract", help="路由契約(檔案或 git:<repo>#<rev>:<rel>;預設 EZ2_ROUTE_REGISTRY)")
+    ap.add_argument("--contract", help="路由契約(檔案或 git:<repo>#<rev>:<rel>;預設跟座艙同一套:EZ2_ROUTE_CONTRACT_SPEC > ez2-ai main > EZ2_ROUTE_REGISTRY > 內建)")
     ap.add_argument("--no-reproject", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
@@ -1040,6 +1063,11 @@ def main(argv=None):
         rc = 1
     for line in out.get("route_notices") or []:   # 10-15:整艙重投影動到別席(路由過不了表)⇒ 讓觸發的這一席看得到
         print("bind-one: " + line, file=sys.stderr)
+    for d in (out.get("reproject") or {}).get("seat_unresolved") or []:
+        # K2:綁定寫進去了,但這一席的路由沒過投影用的契約 ⇒ 右欄標「大腦未解析」;照實說原因與用了哪份契約、rc 1
+        print("bind-one: ⚠ 綁定 / 解綁已寫入,但這一席的大腦路由沒過路由契約(右欄標「大腦未解析」):%s —— %s(路由契約:%s)"
+              % (d.get("reason"), d.get("detail"), out["reproject"].get("contract_spec") or "內建"), file=sys.stderr)
+        rc = 1
     if fit:   # 排在重投影錯誤後面:右鍵失敗訊息取第一行 bind-one:,不能被這行警告蓋掉
         print("bind-one: " + _ui("aib.bindone.fit_warn", name=fit.get("display_name") or "?", uid=fit.get("card_uid") or "?",
                                    kind=fit["card_kind"], provider=fit["seat_provider"]),

@@ -52,6 +52,7 @@ import re
 from composer_dialect import composer_kind, prompt_chars, browse_footer, busy_markers, cursor_line, cursor_stop
 from composer_dialect import empty_placeholder_marks
 from composer_dialect import input_repl
+from composer_dialect import history_border
 
 EMPTY = "empty"            # 框裡沒有內容
 SUGGESTION = "suggestion"  # CLI 下一步建議(dim)——視同空框
@@ -59,6 +60,7 @@ DRAFT = "draft"            # 人真的打了字(非 dim)——never_press
 MODAL = "modal"            # CLI 的模態選單(選項列+確認提示)——擋,但理由不同
 BROWSE = "browse"          # 第 55 項:TUI 瀏覽模式(grok 底列 ←:collapse / Enter:open),輸入行不在畫面上——擋,理由是「不是卡稿,回輸入列即可重送」
 BROWSE_TAIL_LINES = 3      # 只認尾端幾個非空行的底列;引文區裡的 collapse 字樣不算
+HISTORY = "history"        # 10-14 K8:Claude 輸入框在瀏覽輸入歷史(頂線 History n/m),框裡是舊訊息不是草稿——擋,理由是「不是卡稿,回到空框即可重送」
 NOT_APPLICABLE = "n/a"     # 這一格本來就沒有輸入框(watch/純 shell)——放行
 # ★★ EH.16:`n/a` 與 `unknown` 的**處置相反**(一個放行、一個擋),所以它
 #   必須要有**正面證據**,不能靠「畫面上沒看到提示符」推出來:重繪的瞬間、
@@ -548,6 +550,21 @@ def looks_browse(screen, provider=None):
     return all(m in joined for m in marks)
 
 
+def looks_history(screen, provider=None):
+    """10-14 K8:目前這個輸入框是不是在瀏覽輸入歷史。
+
+    認的是**最後一個框**的頂線:畫面上最後兩條框線(去掉跳脫碼後以 ─ 開頭)分別是框頂與框底,
+    框頂那條帶著方言宣告的字樣(`History n/m`)才算。只看最後一個框 ⇒ 捲軸上半部的舊畫面不算;
+    多行那筆舊訊息讓提示符那行掉出尾端 8 行也一樣認得(框頂線還是那條)。"""
+    pat = history_border(provider)
+    if not pat:
+        return False
+    rx = re.compile(pat)
+    borders = [strip_sgr(ln).replace(_NBSP, " ").strip() for ln in (screen or "").splitlines()]
+    borders = [t for t in borders if t.startswith("─")]
+    return len(borders) >= 2 and bool(rx.search(borders[-2]))
+
+
 def unknown_reason(screen, provider=None):
     """定不出輸入框時,**是哪一種**定不出來。定得出來回 None。
 
@@ -630,6 +647,9 @@ def composer_state(screen, pane_command=None, provider=None, cursor_y=None):
         text = _copilot_box_text(box)
         return (DRAFT if text else EMPTY), text
 
+    # 10-14 K8:框在瀏覽輸入歷史 ⇒ HISTORY(擋,理由不是卡稿);排在逐行分類之前 —— 那行字長得像真稿,但它是別席的舊訊息
+    if looks_history(screen, provider=provider):
+        return HISTORY, None
     raw, _idx = find_composer_line(screen, provider=provider)
     if looks_modal(screen, provider=provider):
         # ★ 模態優先於逐行分類:選項行長得像真稿(非 dim),但它不是稿。
@@ -751,6 +771,10 @@ def send_block_reason(state):
     if state == BROWSE:
         return ("目標 TUI 在**瀏覽模式**(底列 ←:collapse / Enter:open),輸入行不在畫面上,"
                 "**不是卡稿、沒有稿可清**:請該席按 Esc 回到輸入列後重送;這封信沒有進到對方框,可安全重送。")
+    if state == HISTORY:
+        return ("目標 Claude 的輸入框停在**輸入歷史**(框頂線 History n/m),框裡是別席的舊訊息,"
+                "**不是草稿、沒有稿可清**:aib dm 先試著按 ↓ 回到空框,這次沒退出來(畫面在動或按到上限)。"
+                "請該席按 ↓ 直到框頂線的 History 消失後重送;這封信沒有進到對方框,可安全重送。")
     if state == DRAFT:
         return ("目標輸入框有**真的**未送出草稿(非 dim):裸 Enter 會把對方"
                 "半寫的稿毀掉送出。請對方清稿後重送；若已比對確認這是本次"
@@ -809,7 +833,7 @@ def _main(argv=None):
     #   要求時才出現。**新增一態不得靠消費端同步更新才安全。**
     legacy = MODAL not in argv and "--modal-aware" not in argv
     # BROWSE 與 MODAL 同一條相容線:舊字彙下印 draft(擋,且擋法逐字同上線前),新資訊只在 --modal-aware 才出現
-    shown = DRAFT if (legacy and state in (MODAL, BROWSE)) else state
+    shown = DRAFT if (legacy and state in (MODAL, BROWSE, HISTORY)) else state
     if "--reason" in argv:
         print(send_block_reason(state) or "")
     elif "--composer-text" in argv:
@@ -828,7 +852,7 @@ def _main(argv=None):
     # 巡查才數得出「還有幾格真的判不出來」。兩個消費端都只讀 stdout 不讀 rc
     # (實查:aib-dm.sh:212 與 dm-ctl.sh:602 都是 `$(… 2>/dev/null)`),
     # 所以改 rc 不動到任何現行決定。
-    return 0 if state in (EMPTY, SUGGESTION, DRAFT, MODAL, BROWSE, NOT_APPLICABLE) else 3
+    return 0 if state in (EMPTY, SUGGESTION, DRAFT, MODAL, BROWSE, HISTORY, NOT_APPLICABLE) else 3
 
 
 if __name__ == "__main__":

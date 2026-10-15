@@ -168,6 +168,13 @@ class TmuxGone(RuntimeError):
     """綁定的 tmux 可執行檔不見了(治具收掉、或路徑失效)——守望結束,不改用別支 tmux。"""
 
 
+class CabinGone(RuntimeError):
+    """艙的 tmux 伺服器不在了(艙已關)——守望跟著結束(10-14 公開版新用戶走查第 10 條)。"""
+
+
+_SERVER_GONE = ("no server running", "error connecting", "server exited")
+
+
 def _tmux_bin():
     """守望用的 tmux **在起跑那一刻綁定成絕對路徑**,之後不再走 PATH。
 
@@ -193,7 +200,19 @@ def _tmux_capture(window):
                               stdin=subprocess.DEVNULL)
     except OSError:
         raise TmuxGone(binary)
-    return proc.stdout if proc.returncode == 0 else None
+    if proc.returncode != 0:
+        if any(w in (proc.stderr or "").lower() for w in _SERVER_GONE):
+            raise CabinGone(hub)
+        return None
+    # 10-14:remain-on-exit 的死窗格 capture-pane 照樣有字 ⇒ 以前一直等到 600 秒逾時;死了就當「沒畫面」,幾輪後判 pane_dead
+    try:
+        dead = subprocess.run([binary, "-L", hub, "display-message", "-p", "-t", str(window), "#{pane_dead}"],
+                              capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+    except OSError:
+        raise TmuxGone(binary)
+    if dead.returncode == 0 and dead.stdout.strip() == "1":
+        return None
+    return proc.stdout
 
 
 def _can_type(screen, provider):
@@ -231,6 +250,9 @@ def watch_loop(home, attempt_id, window, provider, timeout_s, interval_s,
             # 這裡**不落任何事件**:home 可能正在被刪,寫下去會把目錄重新長出來、
             # 讓 rmtree 撞「Directory not empty」。安靜結束,rc 由呼叫端讀。
             return "tmux_gone"
+        except CabinGone:
+            # 艙關了:同上,不落事件、安靜結束(艙家可能正在被刪)。
+            return "cabin_gone"
         if text is None:
             misses += 1
             if dead_polls > 0 and misses >= dead_polls:

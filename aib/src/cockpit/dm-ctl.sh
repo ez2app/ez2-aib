@@ -623,6 +623,7 @@ _engine_block_kind() {   # $1=引擎 log 檔
   text="$(cat "$1" 2>/dev/null)" || return 0
   case "$text" in
     *"block_kind=browse"*) printf 'browse-mode\n'; return 0 ;;
+    *"block_kind=history"*) printf 'history-mode\n'; return 0 ;;   # 10-14 K8:Claude 框在輸入歷史,不是卡稿
     *"block_kind=modal"*|*"block_kind=draft"*) printf 'foreign-draft\n'; return 0 ;;
     *未送出草稿*|*拒絕投遞*) printf 'foreign-draft\n'; return 0 ;;
   esac
@@ -989,7 +990,7 @@ _xhost_send() {
   [ "$DRYRUN" = "1" ] && rargs+=(--dry-run)
   [ "$VERIFY" = "1" ] && rargs+=(--verify)
   cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
-  local errf; errf="$(mktemp "${TMPDIR:-/tmp}/aib-dm-xhost-err.XXXXXX")" || errf=/dev/null
+  local errf; errf="$(_dm_ctl_tmp aib-dm-xhost-err)" || errf=/dev/null   # 暫存檔走 _dm_ctl_tmp(不自己推 TMPDIR)
   out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" ${muxopt[@]+"${muxopt[@]}"} "$host" "$cmd" 2>"$errf")"; rc=$?
   # 相容退路:收件機的 aib 是還沒有跨主機身分的舊版 ⇒ 它在解析參數就停(rc 2、RESULT stage=abort、
   #   stderr 點名 --xhost-ident),一個字都沒進艙 ⇒ 不帶身分重送一次;抬頭由收件機照舊寫未認證。
@@ -3158,6 +3159,7 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
     _AE_BLOCK_KIND="$(_engine_block_kind "$_ENG_LOG")"
     case "$_AE_BLOCK_KIND" in
       browse-mode)   _notice_blocked "$T_CODE" browse-mode ;;
+      history-mode)  _notice_blocked "$T_CODE" history-mode ;;
       foreign-draft) _notice_blocked "$T_CODE" foreign-draft ;;
     esac
     # ★ 第 55 項:瀏覽模式與卡稿分開講。對方輸入行不在畫面上,一個字都沒進去,它回輸入列後就能收 ——
@@ -3179,6 +3181,14 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
       _auto_resend browse-mode
       _resend_park browse-mode
       emit_json 2 browse-mode "對方 TUI 在瀏覽模式(底列 ←:collapse / Enter:open),輸入行不在畫面上;**不是卡稿**,一個字都沒進目標;該席按 Esc 回輸入列後**可安全重送**(原 rc=$RC)"
+      exit 2
+    fi
+    # 10-14 K8:Claude 輸入框停在輸入歷史(框頂線 History n/m)。引擎已先試著按 ↓ 退回空框,這次沒退出來;
+    #   框裡是別席的舊訊息、不是卡稿,這封一個字都沒進目標 ⇒ 可安全重送(與瀏覽模式同一條)。
+    if [ "$_AE_BLOCK_KIND" = "history-mode" ]; then
+      _aib_emit_engine_log final
+      _auto_resend history-mode
+      emit_json 2 history-mode "對方 Claude 的輸入框停在輸入歷史(框頂線 History n/m),框裡是別席的舊訊息、**不是卡稿**;引擎試著按 ↓ 退回空框沒成功(畫面在動或按到上限),一個字都沒進目標;該席按 ↓ 直到 History 消失後**可安全重送**(原 rc=$RC)"
       exit 2
     fi
     if [ "$_AE_RESID" = "0" ]; then

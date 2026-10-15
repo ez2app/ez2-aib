@@ -18,6 +18,10 @@ _DIALECTS = {
         "composer": "prompt",
         "prompt_chars": LEGACY_PROMPT_CHARS,
         "folded_lines": "additional",
+        # ★ 10-14 交接單 K8(a seat 21:05 真的碰到):按了 ↑ 之後輸入框頂線變成 `─── History 100/100 ───`,
+        #   框裡是同一目錄**別席**的舊訊息(Claude 輸入歷史共用),不是草稿。現量 Claude Code v2.1.299:
+        #   頂線 `38;5;244` 灰框線 + SGR 2 的 `History n/m`;框裡的字是一般亮度(所以以前判 draft)。
+        "history_border": r"History\s+\d+/\d+",
     },
     "codex": {
         "composer": "prompt",
@@ -319,6 +323,11 @@ def busy_markers(provider):
     """回合進行中、沒有提示符行時,尾端會出現的「引擎自己印的忙碌通知」前綴;
     沒宣告的 provider 回空 tuple(⇒ 定不出輸入框就維持 unknown,不猜)。"""
     return tuple(_DIALECTS.get(normalize_provider(provider), {}).get("busy_markers") or ())
+
+
+def history_border(provider):
+    """輸入框頂線在「瀏覽輸入歷史」時會出現的字樣(正則);沒有這種模式的引擎回 None。"""
+    return _DIALECTS.get(normalize_provider(provider), {}).get("history_border") or None
 
 
 def browse_footer(provider):

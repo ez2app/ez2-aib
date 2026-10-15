@@ -122,6 +122,36 @@ aib --help-cockpit         # every option
 - [25] Command-line tool: a program you use by typing commands in a terminal (for example `claude`, `codex`).
 - [26] `brew install bash`: installs a newer bash with Homebrew, the usual way to install software on macOS.
 
+## Personas, projects, messages and hand-offs
+
+Each seat can carry a **persona** (who it is and what it must never do) and a **project** (what it is working on).
+Seats send each other messages, and before a conversation fills up a seat writes a hand-off note for the next one.
+
+```sh
+aib bindme status                                  # each seat's persona and project (read-only)
+aib newrole --name "Code Reviewer" --prompt-file reviewer.md \
+  --seat abcd/12345 --actor root@54321/Claude       # create a persona and bind it to a seat
+aib newproj --title "My blog" \
+  --seat abcd/12345 --actor root@54321/Claude       # start a project and bind it to a seat
+aib dm abcd/12345 "please review the login change" # send a message to another seat
+aib handoff status                                 # has this seat written its hand-off note this round?
+```
+
+- **Seat address:** `<cabin>/<seat>`, as shown in the right pane and at the top of every message (`abcd/12345` above is a
+  placeholder). `aib bindme status` lists every seat in your cabin.
+- **Persona file:** must contain these three headings exactly, each with some text under it: `## 職責` (duties),
+  `## 紅線` (red lines), `## 知識域` (knowledge). Without them `aib newrole` refuses (`PERSONA_LINT_FAIL`).
+- **`--actor`:** your own signature for the record, `<role>@<your seat code>/<AI>`, for example `root@54321/Claude`
+  (or set `EZ2_OWNER_SIG`). Binding a seat needs it: with `--seat` but no `--actor`, `newrole` still creates the card
+  but does not bind it. Without `--seat`, `newrole` / `newproj` only create the card.
+- **Try first:** add `--dry-run` to `newrole`, `newproj` or `dm` to see what would happen without writing or sending.
+- **New project:** its goals and red lines start as a draft that is not in force until you approve it; there is no
+  command for approving it yet.
+- **Messages:** if the other seat has unsent text in its input box, `aib dm` does not paste over it: it retries once
+  about 30 seconds later, and if that fails too it holds the message for you.
+- **Hand-off:** three steps, `aib handoff collect` → `write` → `verify`, when the conversation nears 85% or before
+  `/clear`.
+
 ## Planned: across machines and social channels
 
 > These are planned and not usable yet; each will be listed in the CHANGELOG<sup>[27]</sup> when it lands.
@@ -289,6 +319,7 @@ runs only what changed too. Pull requests<sup>[52]</sup> from forks<sup>[53]</su
 |---|---|
 | `aib: there is no "…" command` | A typo or a command this version does not have. `aib --help` lists them all. |
 | `… this feature is still in development` | The command (cross-host fleet, plaza, reports…) is still in development and not open to the public yet. Everything else works without it. |
+| aib 0.1.6 or older installed with pip never updates itself | Those versions did not know how to update a pip install. Run `pip install --upgrade ez2-aib` once (in the same environment); from 0.1.7 on, aib updates itself when you open a seat. |
 | `aib newrole` / the second brain asks for `EZ2_ROUTE_REGISTRY` | You set your own vault (`EZ2_VAULT_DIR`, or you have `~/Desktop/Obsidian/Ez2`), so aib will not guess its folders. Either point `EZ2_ROUTE_REGISTRY` to your route contract, or unset `EZ2_VAULT_DIR` to use aib's own vault in `~/.ez2-aib/vault`. |
 | The installer says another `aib` is already in `~/.local/bin` | Your existing aib keeps working; the open-source copy sits next to it in `~/ez2-aib`. To try the cockpit with it, use a separate macOS user account. |
 | Anything else | `aib support` collects a de-identified report (nothing is sent); attach it to a GitHub issue. |

@@ -405,11 +405,11 @@ def keys_for(ans, opt):
 DIGEST_EVERY_S = 3600
 
 
-def _say(key):
+def _say(key, params=None):
     """使用者看得到的理由 / 終端訊息走 i18n(這裡沒有真人訊息可看語言 ⇒ 用這台的語系設定);i18n 壞了退回鍵名。"""
     try:
         import i18n_lib
-        return i18n_lib.t(key, {})
+        return i18n_lib.t(key, params or {})
     except Exception:  # noqa: BLE001
         return key
 
@@ -917,6 +917,10 @@ def watch(interval):
     except OSError:
         print(_say("menu_pick.cli.watch_running"), file=sys.stderr)
         return 0
+    # 10-14(6ddf 走查 K11):開艙自帶的 sys.menu 窗原本一片空白,用戶看到多一個叫 menu 的窗卻不知道它在做什麼。
+    #   開始常駐時先說清楚:它是什麼、多久看一次、去哪看它選了什麼、怎麼關。
+    print(_say("menu_pick.cli.watch_banner", {"interval": int(interval) if float(interval).is_integer() else interval}),
+          flush=True)
     while True:
         try:
             once()

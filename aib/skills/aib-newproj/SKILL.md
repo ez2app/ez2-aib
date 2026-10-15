@@ -44,11 +44,11 @@ aib newproj --help
 
 ## 先弄清楚五件事(能從對話推就不要再問)
 
-1. **專案標題**:例「麻瓜起飛 SEO」。同標題的專案已經有一張時,會沿用那一張,不另開。
-2. **綁到哪一席**:使用者有指名時,抄右欄或 dm 抬頭的地址,寫成 `<艙位碼>/<席碼>`,例 `f643/77324`。
+1. **專案標題**:例「我的部落格 SEO」。同標題的專案已經有一張時,會沿用那一張,不另開。
+2. **綁到哪一席**:使用者有指名時,抄右欄或 dm 抬頭的地址,寫成 `<艙位碼>/<席碼>`,例 `abcd/12345`。
    **沒指名就不要綁、也不要開新席、不要問**:不帶 `--seat` 只建卡(見下方「沒說綁哪一席」)。
 3. **專案的工作目錄**:那個專案的程式或網站所在的資料夾(用來記倉庫指紋)。不給就是你現在所在的資料夾。
-4. **你自己的署名**(要綁席位時才需要):`<角色>@<你的席碼>/<引擎>`,例 `a seat/Claude`。這是帳本署名,不是目標席。
+4. **你自己的署名**(要綁席位時才需要):`<角色>@<你的席碼>/<引擎>`,例 `root@54321/Claude`。這是帳本署名,不是目標席。
 5. **對應的資料夾**:這個專案的筆記要放哪個資料夾。可以給路由代號(`core.handoff`)或資料夾名稱
    (`系統記憶交接`)。不給就沿用那一席現在綁的資料夾;兩邊都沒有,專案卡就不記資料夾(指令會明講)。
    資料夾只能從既有清單選,這支指令不會新開資料夾。
@@ -60,18 +60,18 @@ aib newproj --help
 
 ```bash
 # 1. 先試跑:不寫任何檔,看會綁到哪一席、是新建還是沿用
-aib newproj --title "麻瓜起飛 SEO" --seat f643/77324 --cwd /path/to/site \
-  --folder "系統記憶交接" --actor "a seat/Claude" --deliver --dry-run
+aib newproj --title "我的部落格 SEO" --seat abcd/12345 --cwd /path/to/site \
+  --folder "系統記憶交接" --actor "root@54321/Claude" --deliver --dry-run
 
 # 2. 輸出的 seat、created、folder、delivery.address 都對,拿掉 --dry-run 真跑
-aib newproj --title "麻瓜起飛 SEO" --seat f643/77324 --cwd /path/to/site \
-  --folder "系統記憶交接" --actor "a seat/Claude" --deliver
+aib newproj --title "我的部落格 SEO" --seat abcd/12345 --cwd /path/to/site \
+  --folder "系統記憶交接" --actor "root@54321/Claude" --deliver
 ```
 
 | 參數 | 說明 |
 |---|---|
 | `--title` | 專案標題。新建必填;同標題已有一張就沿用 |
-| `--seat` | `f643/77324`(建議)、`a seat`、或席位檔的 seat_id。**不給 ⇒ 只建專案卡,不綁任何席** |
+| `--seat` | `abcd/12345`(建議)、`@12345`、或席位檔的 seat_id。**不給 ⇒ 只建專案卡,不綁任何席** |
 | `--new-seat` | **只有使用者明講「開一個新席來綁」才用**:開一個新席來綁(與 `--seat` 二選一);`--engine` 選引擎,預設 claude。不是預設 |
 | `--actor` | 你的署名,綁席位時必填(只建卡不用);要綁卻不給也沒設 `EZ2_OWNER_SIG` 就停手(rc=2),不會亂猜 |
 | `--cwd` | 專案的工作目錄(程式或網站所在處);不給=目前資料夾 |
@@ -113,7 +113,7 @@ aib newproj --title "麻瓜起飛 SEO" --seat f643/77324 --cwd /path/to/site \
 
 ## 回報給使用者
 
-只建卡時:回 JSON 的 `reply` 那一句(例「已創立 麻瓜起飛 SEO 專案(uid proj:0123456789abcdef)」)加上初稿還沒核准,
+只建卡時:回 JSON 的 `reply` 那一句(例「已創立 我的部落格 SEO 專案(uid proj:0123456789abcdef)」)加上初稿還沒核准,
 不要多加「要綁到哪一席?」的追問。
 
 有綁席位時:第一句講現在能不能用。接著講:綁到哪一席、是新建還是沿用、專案卡放哪裡、初稿還沒核准、
@@ -144,8 +144,8 @@ aib newproj --title "麻瓜起飛 SEO" --seat f643/77324 --cwd /path/to/site \
 使用者只說「建一個 XX 專案」、沒指名哪一席時,**不要問、不要綁到你自己這一席、也不要開新席**,不帶 `--seat` 就好:
 
 ```bash
-aib newproj --title "麻瓜起飛 SEO" --cwd /path/to/site [--folder "系統記憶交接"]
-# 印出:已創立 麻瓜起飛 SEO 專案(uid proj:0123456789abcdef)
+aib newproj --title "我的部落格 SEO" --cwd /path/to/site [--folder "系統記憶交接"]
+# 印出:已創立 我的部落格 SEO 專案(uid proj:0123456789abcdef)
 ```
 
 - 只寫專案卡與「目標與紅線」初稿;不綁任何席、不改席位檔、不記帳本、不寄接手包、不需要 `--actor`。

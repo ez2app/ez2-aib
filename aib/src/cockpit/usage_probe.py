@@ -1849,6 +1849,68 @@ def _agy_attempt_due(dest, now):
     return not (0 <= now - last < AGY_LIVE_MIN_S)
 
 
+def cabin_has_live_seat(engine, environ=None):
+    """這一艙(本艙 seats 目錄)有沒有還沒退的 <engine> 席。問不出是哪一艙、兩個來源對不上、讀不到 ⇒ False。
+    10-14 公開版新用戶走查第 10 條:艙裡沒有 agy 席,右欄就不該去跑 `agy -p /usage`(也不該寫 ~/.gemini)。"""
+    try:
+        import seats_dir_lib
+        seats, _src, conflict = seats_dir_lib.cabin_seats_dir_with_source(environ)
+    except Exception:  # noqa: BLE001
+        return False
+    if not seats or conflict:
+        return False
+    try:
+        files = sorted(Path(seats).glob("*.json"))
+    except OSError:
+        return False
+    for f in files:
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("provider") == engine and not rec.get("exited_at_epoch"):
+            return True
+    return False
+
+
+def _cabin_alive(environ=None):
+    """艙的 tmux 伺服器還在嗎?True / False;沒有艙可問(沒 EZ2_AIHUB_SOCKET、沒 tmux)⇒ None(不判)。"""
+    environ = os.environ if environ is None else environ
+    hub = environ.get("EZ2_AIHUB_SOCKET") or ""
+    tmux = environ.get("AIB_TMUX_BIN") or shutil.which("tmux")
+    if not hub or not tmux:
+        return None
+    env = dict(environ)
+    env.pop("TMUX", None)
+    try:
+        return subprocess.run([tmux, "-L", hub, "list-sessions"], capture_output=True, env=env,
+                              stdin=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _follow_cabin(interval_s=2.0):
+    """背景量測跟著艙走:艙的 tmux 伺服器不在了 ⇒ 連同自己起的 agy 一起結束。
+    右欄用 start_new_session 起本行程(自己是行程群組組長)⇒ 整組收;不是組長(有人手動跑)只收自己。"""
+    import threading
+
+    def loop():
+        while True:
+            time.sleep(interval_s)
+            if _cabin_alive() is False:
+                try:
+                    if os.getpgrp() == os.getpid():
+                        os.killpg(os.getpgrp(), signal.SIGTERM)
+                    else:
+                        os.kill(os.getpid(), signal.SIGTERM)
+                except OSError:
+                    os._exit(3)
+                return
+    t = threading.Thread(target=loop, name="follow-cabin", daemon=True)
+    t.start()
+    return t
+
+
 def _claim_and_spawn_agy(dest, now, spawn=None):
     """A 包 r2 低(codex):「判到期 → 寫嘗試時刻」要原子,兩個刷新同時到期只准一個起 worker。
     用 .agy-live-attempt.lock 的 flock(非阻塞)包住判與寫;拿不到鎖 = 別人正在判,這一幀不起。"""
@@ -1887,7 +1949,11 @@ def _spawn_agy_print_refresh(dest, now, popen=None):
 
 
 def agy_print_refresh(dest):
-    """背景子行程本體:headless `agy -p /usage`,量到寫 ok 記錄;量不到不寫(舊記錄照留,下一個 30 分再試)。"""
+    """背景子行程本體:headless `agy -p /usage`,量到寫 ok 記錄;量不到不寫(舊記錄照留,下一個 30 分再試)。
+    10-14:艙已經沒了 ⇒ 不跑;跑到一半艙沒了 ⇒ 跟著結束(_follow_cabin)。"""
+    if _cabin_alive() is False:
+        return 0
+    _follow_cabin()
     items = _records(read_agy(allow_cli=True))
     wrote = 0
     for rec in items:
@@ -1917,6 +1983,10 @@ def refresh_all(now=None, stamp_dir=None, throttle_s=THROTTLE_S,
     # v0.70.0 #14:enable_cli 可以是引擎名集合(只准那幾家起 CLI);True/False 照舊是全部/全不。
     if isinstance(enable_cli, (set, frozenset, tuple, list)):
         cli_engines = frozenset(str(e) for e in enable_cli)
+        # 10-14 公開版新用戶走查第 10 條:右欄單家模式預設准 agy 探;艙裡沒有還沒退的 agy 席 ⇒ 拿掉
+        #   (以前開 claude 席也會在背景跑 agy -p /usage 與互動探針、寫 ~/.gemini)
+        if "agy" in cli_engines and not cabin_has_live_seat("agy"):
+            cli_engines = cli_engines - {"agy"}
         enable_cli = bool(cli_engines)
     else:
         enable_cli = dest_dir is None if enable_cli is None else bool(enable_cli)

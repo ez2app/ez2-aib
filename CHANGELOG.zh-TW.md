@@ -4,6 +4,13 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.7
+
+- 用 pip 裝在虛擬環境的 aib,開席時也會自己更新了(pipx 與一行安裝本來就會)。**用 pip 裝 0.1.6 或更舊版的人,請手動跑一次 `pip install --upgrade ez2-aib`。**
+- 用 pip / pipx 裝的 aib,`aib update` 現在會說對套件名(`pipx upgrade ez2-aib` 或 `pip install --upgrade ez2-aib`)。
+- 艦長列的標籤與艦長工具的錯誤訊息跟著你的語言(英文、日文、韓文也是);英文標籤不再被截掉。
+- 每次發版在上傳 PyPI 之前就先驗:把建好的安裝檔裝進乾淨環境,並從上一版與最舊還在的那版升級上來;上傳後再對 PyPI 驗一次(pipx、pip、一行安裝),Linux 與 macOS 都跑。
+
 ## 0.1.6
 
 - README 最上面加上 aib 的由來與標語 **AI Basic to AI Best**:最容易使用、最人性化的 AI 工具基礎;也預告虛擬小夥伴(先做在 Claude Code mod),還在開發中。

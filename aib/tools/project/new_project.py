@@ -570,8 +570,42 @@ def _refuse(msg: str, seat: str) -> int:
     return 2
 
 
+def card_problem(state_root: Path, project_uid: str) -> str:
+    """load_card 回 None 的原因(給使用者看):"" = 卡不在;否則是讀不到 / 形狀不合的那一句(含缺哪一欄)。"""
+    try:
+        uid = PC.validate_project_uid(project_uid)
+    except PC.ProjectCardError as err:
+        return str(err)
+    path = card_path_of(state_root, uid)
+    if not path.exists():
+        return ""
+    card = _load_json(path)
+    if not card:
+        return T("aib.newproj.card_unreadable")
+    if card.get("project_uid") != uid:
+        return T("aib.newproj.card_uid_mismatch", {"got": repr(card.get("project_uid"))})
+    try:
+        PC.validate_project_card(card)
+    except PC.ProjectCardError as err:
+        return str(err)
+    return ""
+
+
+def _uid_refusal(state_root: Path, project_uid: str) -> str:
+    """--project-uid 用不了時說哪一種:卡不在,或卡在但哪裡不合(10-14 走查 K1:以前兩種同一句)。"""
+    try:
+        PC.validate_project_uid(project_uid)
+    except PC.ProjectCardError:
+        return T("aib.newproj.uid_unknown", {"uid": project_uid})   # 形狀不對 = 不會有這張卡,不說「卡在」
+    why = card_problem(state_root, project_uid)
+    if not why:
+        return T("aib.newproj.uid_unknown", {"uid": project_uid})
+    return T("aib.newproj.card_invalid", {"uid": project_uid, "why": why,
+                                          "path": card_path_of(state_root, project_uid)})
+
+
 def load_card(state_root: Path, project_uid: str) -> Optional[dict]:
-    """專案卡正本;不在、讀不到、形狀不合 ⇒ None。"""
+    """專案卡正本;不在、讀不到、形狀不合 ⇒ None(原因見 card_problem)。"""
     try:
         uid = PC.validate_project_uid(project_uid)
     except PC.ProjectCardError:
@@ -751,7 +785,7 @@ def run_newproj(args) -> int:
         _pre_uid = ""
         if args.project_uid:
             if load_card(root, args.project_uid.strip()) is None:
-                return _refuse(T("aib.newproj.uid_unknown", {"uid": args.project_uid.strip()}), "(new seat)")
+                return _refuse(_uid_refusal(root, args.project_uid.strip()), "(new seat)")
             _pre_uid = args.project_uid.strip()
         elif _title:
             _same = projects_titled(root, _title)
@@ -866,7 +900,7 @@ def run_newproj(args) -> int:
     existing_uid = ""
     if args.project_uid:
         if load_card(root, args.project_uid.strip()) is None:
-            return _refuse(T("aib.newproj.uid_unknown", {"uid": args.project_uid.strip()}), seat_arg)
+            return _refuse(_uid_refusal(root, args.project_uid.strip()), seat_arg)
         existing_uid = args.project_uid.strip()
     elif title:
         same = projects_titled(root, title)
@@ -905,6 +939,9 @@ def run_newproj(args) -> int:
             try:                                   # 預演:這一席綁得上這個資料夾嗎(沒綁人格就綁不上)
                 BO.bind_seat(root, seat_id, None, actor, brain=route_key, dry_run=True,
                              contract_spec=_spec)
+            except BO.NoPersonaError:
+                # K5(10-14):以前只轉述「不能先綁大腦(先 [綁定人格])」—— 那是右鍵選單的字;命令列的人要的是那一行指令
+                return _refuse(T("aib.newproj.persona_first", {"seat": seat_arg, "actor": sig}), seat_arg)
             except BO.BindError as exc:
                 return _refuse(T("aib.newproj.folder_unbindable", {"key": route_key, "err": exc}), seat_arg)
         base.update({"route_key": route_key, "folder": folder})
@@ -914,8 +951,15 @@ def run_newproj(args) -> int:
     def bind_folder() -> None:
         """席位的資料夾綁成專案的資料夾。要在寫延續檔的專案欄位**之前**做:它會整檔重寫延續檔。"""
         if route_key and route_key != current_route and not args.dry_run:
-            BO.bind_seat(root, seat_id, None, actor, brain=route_key, contract_spec=_spec)
+            plan = BO.bind_seat(root, seat_id, None, actor, brain=route_key, contract_spec=_spec)
             _say(T("aib.newproj.folder_bound", {"seat": seat_id, "path": folder, "key": route_key}))
+            # K2(10-14):綁上了但投影把這一席擋下 ⇒ 右欄 / bindme status 看不到;照實說,不讓人以為「缺人格」
+            dropped = ((plan or {}).get("reproject") or {}).get("seat_unresolved") or []
+            for d in dropped:
+                _say(T("aib.newproj.seat_dropped", {"seat": seat_id, "reason": d.get("reason"),
+                                                    "detail": d.get("detail"), "contract": _spec or "-"}))
+            if dropped:
+                base["seat_unresolved"] = dropped
 
     def note(project_uid: str, card_title: str) -> None:
         _ledger_note(root, agent_uid, actor,
@@ -1232,13 +1276,13 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog=os.environ.get("AIB_NEWPROJ_PROG") or None,
-                                 description="新開專案:專案卡 + 憲法候選 + 綁席")
+                                 description=T("aib.newproj.help_desc"))
     ap.add_argument("--seat", default="", help=T("aib.newproj.help_seat"))
-    ap.add_argument("--title", default="", help="專案標題(預設=cwd basename)")
-    ap.add_argument("--cwd", default="", help="用來算倉指紋的工作目錄(預設 pwd)")
-    ap.add_argument("--state-root", default="", help="狀態根(預設 EZ2_AIB_HOME / ~/.ez2-aib)")
-    ap.add_argument("--persona-uid", default="", help="覆寫人格 uid(預設讀延續檔)")
-    ap.add_argument("--dry-run", action="store_true", help="只印結果,不落檔")
+    ap.add_argument("--title", default="", help=T("aib.newproj.help_title"))
+    ap.add_argument("--cwd", default="", help=T("aib.newproj.help_cwd"))
+    ap.add_argument("--state-root", default="", help=T("aib.newproj.help_state_root"))
+    ap.add_argument("--persona-uid", default="", help=T("aib.newproj.help_persona_uid"))
+    ap.add_argument("--dry-run", action="store_true", help=T("aib.newproj.help_dry_run"))
     ap.add_argument("--actor", default="", help=T("aib.newproj.help_actor"))
     ap.add_argument("--project-uid", default="", help=T("aib.newproj.help_project_uid"))
     ap.add_argument("--deliver", action="store_true", help=T("aib.newproj.help_deliver"))

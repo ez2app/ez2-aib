@@ -140,6 +140,41 @@ def _archive_snapshot(path, kind, key):
         return {"status": "failed", "error": "memory_archive: %s" % exc}
 
 
+# 10-14 新用戶走查:三個必填標題接受四語寫法(## Duties / ## 役割 / ## 역할 …),寫卡前換成中文正本標題。
+#   只換標題、不動內文;下游 7 處(persona_pack 打包時紅線排第一、seat_screen、bindme、persona_check …)
+#   都認中文正本標題,所以在入口統一,不讓英文卡的紅線在後面被認不出來。
+#   各語的寫法在 aib/i18n 的 aib.persona.heading_aliases.*(| 分隔),四語全部都收,不看當下語系。
+HEADING_CANON = (("duties", "職責"), ("red_lines", "紅線"), ("knowledge", "知識域"))
+
+
+def _heading_aliases():
+    tree = _i18n_tree()
+    aliases = {}
+    for path in sorted((tree / "i18n").glob("*.json")):
+        try:
+            table = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for key, canon in HEADING_CANON:
+            for alias in str(table.get("aib.persona.heading_aliases." + key) or "").split("|"):
+                if alias.strip():
+                    aliases[alias.strip().casefold()] = canon
+    return aliases
+
+
+def normalize_headings(text):
+    """把三個必填標題的各語寫法換成中文正本(只認 `## 標題` 整行,可帶結尾冒號);其他行一字不動。"""
+    aliases = _heading_aliases()
+    if not aliases:
+        return text
+    out = []
+    for line in text.split("\n"):
+        m = re.match(r"^(##[ \t]*)(.+?)[ \t]*[:：]?[ \t]*$", line)
+        canon = aliases.get(m.group(2).strip().casefold()) if m else None
+        out.append("## " + canon if canon else line)
+    return "\n".join(out)
+
+
 def lint_card(text):
     failures = []
     if len(text.encode("utf-8")) > 20 * 1024:
@@ -696,26 +731,43 @@ def dm_send_body(address, body, seat_rec):
             pass
 
 
+class _HeadingsKeptFormatter(argparse.HelpFormatter):
+    """縮排的行(epilog 裡那三個標題)原樣保留;其他文字照常依寬度換行。"""
+
+    def _fill_text(self, text, width, indent):
+        out = []
+        for line in text.splitlines():
+            if line.startswith("  "):
+                out.append(indent + line)
+            else:
+                out.append(super()._fill_text(line, width, indent))
+        return "\n".join(out)
+
+
 def main():
+    # 三個必填標題放在 epilog、各佔一行且原樣輸出(_HeadingsKeptFormatter;其餘文字照常換行):argparse 只在空白處斷行,CJK 說明裡唯一的空白就是
+    #   「## 職責」中間那格 ⇒ 放在選項說明裡會被斷成兩行,照抄就過不了 lint(10-14 審查抓到)。
     parser = argparse.ArgumentParser(prog=os.environ.get("AIB_NEWROLE_PROG") or None,
-                                     description="一鍵建立角色卡;有指定席位(--seat / --new-seat)才綁定")
-    parser.add_argument("--name", required=True, help="角色名稱 (如: 九品芝麻官-包龍星)")
-    parser.add_argument("--code", help="角色代號 (如: bao)")
-    parser.add_argument("--emoji", default="", help="角色圖示 (預設 🎭;既有卡沿用卡上的)")
-    parser.add_argument("--category", default="客製/專家", help="角色分類")
-    parser.add_argument("--prompt", help="角色人設、性格與說話口吻描述;一句話也行(三段 ## 職責/## 紅線/## 知識域 一段都沒寫 ⇒ 自動補預設三段;寫了部分 ⇒ 缺的段具名擋下)")
-    parser.add_argument("--prompt-file", help="從這個檔讀人設(與 --prompt 二選一)")
-    parser.add_argument("--seat", help="目標席位:完整地址 f643/77324、席碼 @00000、或 seat_id(不給 ⇒ 只建卡、不綁任何席)")
-    parser.add_argument("--vault", default=str(DEFAULT_VAULT), help="Obsidian Vault 路徑")
+                                     description=T("aib.newrole.help_desc"),
+                                     epilog=T("aib.newrole.help_epilog"),
+                                     formatter_class=_HeadingsKeptFormatter)
+    parser.add_argument("--name", required=True, help=T("aib.newrole.help_name"))
+    parser.add_argument("--code", help=T("aib.newrole.help_code"))
+    parser.add_argument("--emoji", default="", help=T("aib.newrole.help_emoji"))
+    parser.add_argument("--category", default="客製/專家", help=T("aib.newrole.help_category"))
+    parser.add_argument("--prompt", help=T("aib.newrole.help_prompt"))
+    parser.add_argument("--prompt-file", help=T("aib.newrole.help_prompt_file"))
+    parser.add_argument("--seat", help=T("aib.newrole.help_seat"))
+    parser.add_argument("--vault", default=str(DEFAULT_VAULT), help=T("aib.newrole.help_vault"))
     parser.add_argument("--brain", default=None,
-                        help="大腦路由(預設 core.handoff;那一席已綁專案時預設 none = 不動專案資料夾);none = 只綁人格")
-    parser.add_argument("--deliver", action="store_true", help="綁完把人格包用 aib dm 寄給那一席")
-    parser.add_argument("--new-seat", action="store_true", help="明講才用:在你所在的艙開一個新席來綁(不是預設;沒指定席就只建卡)")
-    parser.add_argument("--engine", default="claude", help="--new-seat 用哪個引擎(預設 claude)")
-    parser.add_argument("--role", default="", help="--new-seat 開的席的角色(要是已定義角色;預設 dev)")
-    parser.add_argument("--actor", help="帳本操作者署名 (如 root@00000/agy)")
-    parser.add_argument("--overwrite", action="store_true", help="既有同名卡也重寫角色.md(預設不動既有卡)")
-    parser.add_argument("--dry-run", action="store_true", help="模擬執行")
+                        help=T("aib.newrole.help_brain"))
+    parser.add_argument("--deliver", action="store_true", help=T("aib.newrole.help_deliver"))
+    parser.add_argument("--new-seat", action="store_true", help=T("aib.newrole.help_new_seat"))
+    parser.add_argument("--engine", default="claude", help=T("aib.newrole.help_engine"))
+    parser.add_argument("--role", default="", help=T("aib.newrole.help_role"))
+    parser.add_argument("--actor", help=T("aib.newrole.help_actor"))
+    parser.add_argument("--overwrite", action="store_true", help=T("aib.newrole.help_overwrite"))
+    parser.add_argument("--dry-run", action="store_true", help=T("aib.newrole.help_dry_run"))
 
     args = parser.parse_args()
 
@@ -731,6 +783,8 @@ def main():
         if not args.prompt.strip():
             log("--prompt-file 是空的:%s。未建卡、未綁定" % args.prompt_file, prefix="[x]")
             return 2
+    if args.prompt:
+        args.prompt = normalize_headings(args.prompt)
 
     seat_id, seat_rec, seat_instance = None, None, ""
     # the maintainer 10-01:有明講席位(--seat)或明講開新席(--new-seat)才綁;都沒有 ⇒ 只建卡,不開席、不綁、不猜當前席
@@ -795,11 +849,13 @@ def main():
     role_lib_dir = vault_dir / lib_rel
     # aib 自己的預設 vault(新機器)⇒ 角色庫資料夾第一次用時建起來;別人的 vault 照舊不動、不猜。
     # 10-12(a seat:Pro 的 ~/Ez2/Vault):用的是套件預設契約 = route_register 判過這個 vault 安全(空的 / 有索引 / 已有 10-Roles)⇒ 也建
-    if not role_lib_dir.is_dir() and (str(vault_dir) == os.path.realpath(_aib_default_vault())
-                                      or default_contract_spec() == BUNDLED_CONTRACT):
+    # 10-14 新用戶走查:--dry-run 一個檔都不寫 ⇒ 試跑時只判「會建」,不真的建(下面的存在檢查也跟著放過)。
+    would_create_lib = not role_lib_dir.is_dir() and (str(vault_dir) == os.path.realpath(_aib_default_vault())
+                                                      or default_contract_spec() == BUNDLED_CONTRACT)
+    if would_create_lib and not args.dry_run:
         role_lib_dir.mkdir(parents=True, exist_ok=True)
 
-    if not role_lib_dir.is_dir():
+    if not role_lib_dir.is_dir() and not (args.dry_run and would_create_lib):
         log(f"錯誤: 找不到 Vault 角色庫路徑: {role_lib_dir}", prefix="[x]")
         sys.exit(2)
 
@@ -923,7 +979,8 @@ def main():
             return 5
 
     # 10-12 新用戶:狀態樹還沒建(沒跑過 aib init)⇒ 先建,不讓卡已寫進 vault 卻在掃描那步卡住
-    if not (AIB_HOME / "identity").is_dir():
+    #   試跑不建(aib_init 會種 secrets 範本、帳本、說明檔;--dry-run 一個檔都不寫)。
+    if not (AIB_HOME / "identity").is_dir() and not args.dry_run:
         subprocess.run([sys.executable, str(REPO_ROOT / "src" / "bootstrap" / "aib_init.py")],
                        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
     # 3. 重新掃描卡庫投影 (card_registry.py scan)
@@ -933,11 +990,26 @@ def main():
     if args.dry_run:
         scan_cmd.append("--dry-run")
 
-    rc, out, err = run_cmd(scan_cmd, cwd=REPO_ROOT)
-    if rc != 0:
-        log(f"錯誤: card_registry.py scan 失敗 (rc={rc}):\n{err}", prefix="[x]")
-        sys.exit(rc)
-    log("   -> 卡片索引掃描完成")
+    if args.dry_run and (not vault_dir.is_dir() or would_create_lib):
+        # 試跑而知識庫或角色庫還沒建(真跑會建、試跑不建)⇒ 沒有東西可掃,新卡試跑本來就不寫 ⇒ 跳過,不當成失敗
+        log("   -> [DRY-RUN] 角色庫還沒建立,跳過索引掃描")
+    else:
+        rc, out, err = run_cmd(scan_cmd, cwd=REPO_ROOT)
+        if rc != 0:
+            log(f"錯誤: card_registry.py scan 失敗 (rc={rc}):\n{err}", prefix="[x]")
+            sys.exit(rc)
+        log("   -> 卡片索引掃描完成")
+        # K6(10-14):知識庫裡有角色庫以外的 角色.md ⇒ 照實說沒收進索引、怎麼搬(scan 的摘要帶回來)
+        try:
+            summary = json.loads(out) if out.strip().startswith("{") else {}
+        except ValueError:
+            summary = {}
+        if summary.get("outside_library_count"):
+            paths = summary.get("outside_library") or []
+            log(T("aib.cards.outside_library", {"n": summary["outside_library_count"],
+                                                "lib": summary.get("library_folder") or lib_rel,
+                                                "paths": ", ".join(paths[:5]) + (" …" if summary["outside_library_count"] > 5 else "")}),
+                prefix="[!]")
 
     if not bind_target:
         # the maintainer 10-01:沒指定席位 ⇒ 到此為止:卡建好、索引掃好,不綁席、不寫席位記憶、不寄人格包
