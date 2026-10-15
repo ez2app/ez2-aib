@@ -1,0 +1,13 @@
+{
+ "name": "ez2-aib-seat-hooks",
+ "owner": {
+  "name": "Ez2 AIB"
+ },
+ "plugins": [
+  {
+   "name": "aib-seat-hooks",
+   "source": "./",
+   "description": "Ez2 AIB seat identity for non-Claude engines (Codex, Antigravity): writes the seat identity into context at session start and every prompt"
+  }
+ ]
+}

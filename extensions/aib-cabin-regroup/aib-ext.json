@@ -1,0 +1,15 @@
+{
+  "name": "aib-cabin-regroup",
+  "kind": "skill",
+  "version": "1.0.0",
+  "requires_aib": "0.1.7",
+  "built_from": "0.70.11",
+  "title": "把別艙的席拉回這一艙",
+  "note": "免費 skill(the maintainer 10-15 裁)。",
+  "schema": "aib-ext/v1",
+  "data_only": false,
+  "files": {
+    "SKILL.md": "1c10a7399c29afb1375d0adc57dc08a1d518a3bac04c67196a1930a646720d76",
+    "regroup.sh": "c5b0b63aa3a44e57e7cadb15b6856c778229bcd89e29c0635ed679a85d56a0a5"
+  }
+}

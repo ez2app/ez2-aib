@@ -1,0 +1,34 @@
+{
+ "name": "aib-seat-hooks",
+ "version": "0.1.0",
+ "description": "Ez2 AIB seat identity for non-Claude engines (Codex, Antigravity): writes the seat identity into context at session start and every prompt",
+ "author": {
+  "name": "Ez2 AIB pm@00000"
+ },
+ "hooks": {
+  "hooks": {
+   "SessionStart": [
+    {
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 \"${PLUGIN_ROOT}/bin/seat_hook.py\" SessionStart",
+       "timeout": 30
+      }
+     ]
+    }
+   ],
+   "UserPromptSubmit": [
+    {
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 \"${PLUGIN_ROOT}/bin/seat_hook.py\" UserPromptSubmit",
+       "timeout": 30
+      }
+     ]
+    }
+   ]
+  }
+ }
+}
