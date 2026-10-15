@@ -5,13 +5,13 @@
 
 以前:claude 沒裝,`aib claude safe dev` 照樣開出整個駕駛艙,席位當場死,訊息寫「這是 ED.4 的前置條件:provider 是
 訂閱 OAuth CLI」,最後還印 `claude --resume <uuid>` 叫人接回一個根本沒裝的工具;--dry-run 也照樣 rc 0。
-M1 沒裝 claude:--dry-run ⇒ rc 6、說還沒裝 Claude Code 與裝法(--tools)、怎麼登入;不印任何 tmux 計畫
+M1 沒裝 claude:--dry-run ⇒ 照印計畫、rc 0,另印一行「還沒裝 Claude Code」提醒(10-15 整合 #43 #48 時 @abb89 定:dry-run 不開席就不擋)
 M2 沒裝 claude:真開 ⇒ rc 6、同一句;一個 tmux 伺服器都沒起
 M3 有裝(PATH 上放一支假的 claude):--dry-run 照舊印計畫、rc 0(不能擋到有裝的人)
 M4 codex 只有 ez2-codex(本機別名的真身)也算有裝
 M5 provider-launch.sh 自己找不到 CLI:rc 6、說怎麼裝、沒有 ED.4 / OAuth 字樣
 M6 開席那一行:provider 結束碼 6(沒裝)時不跑 activity_probe --resume-command(不印 --resume)
-刀(複本):K1 拿掉開席前檢查 ⇒ M1、M2 紅;K2 檢查不認 ez2-codex ⇒ M4 紅;K3 拿掉 rc 6 跳過 ⇒ M6 紅
+刀(複本):K1 拿掉開席前檢查 ⇒ M1(提醒)、M2 紅;K2 檢查不認 ez2-codex ⇒ M4 紅;K3 拿掉 rc 6 跳過 ⇒ M6 紅
 """
 import os
 import shutil
@@ -91,11 +91,13 @@ class MissingCli(unittest.TestCase):
     def sockets(self):
         return [s for s in Path(self.sock).glob("tmux-*/*")]
 
-    def test_m1_dry_run_blocks(self):
+    def test_m1_dry_run_previews_with_reminder(self):
+        # 10-15 整合時 @abb89 定(配合 #43 #48 的 dry-run 測試):--dry-run 不開任何席 ⇒ 不因沒裝而拒絕;照印計畫、rc 0,stderr 多一行「還沒裝」提醒。
         rc, out = self.aib("claude", "safe", "dev", "--dry-run")
-        self.assertEqual(rc, 6, out)
-        self.assert_missing_msg(out, "Claude Code", "claude")
-        self.assertNotIn("tmux", "\n".join(l for l in out.splitlines() if l.startswith("+ ")), out)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("還沒裝 Claude Code", out)
+        self.assertIn("respawn-pane", out)
+        self.assertNotIn("ED.4", out)
 
     def test_m2_real_open_blocks(self):
         rc, out = self.aib("claude", "safe", "dev")
