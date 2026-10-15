@@ -111,8 +111,10 @@ class RightColumn(unittest.TestCase):
         cache.write_text(json.dumps({"cells": [{"key": "mem", "value": 50.0, "state": "ok"}], "level": {"load_level": "ok", "thermal_level": "ok"},
                                      "at": "2026-10-15T23:00:00"}))
         env = {"AIB_PROC_WARN_PCT": pct} if pct else {}
+        fake_lim = 10 * len(PC.user_processes(names=False, allow_fork=False)[0] or [1])  # 用量 10%:預設門檻不警告、1% 會警告
         with mock.patch.dict(os.environ, env), mock.patch.object(MSR, "spawn_refresh", lambda *a, **k: None), \
-                mock.patch.object(MSR, "composer_notice_lines", lambda w: []):
+                mock.patch.object(MSR, "composer_notice_lines", lambda w: []), \
+                mock.patch.object(PC, "limit", lambda: (fake_lim, "test")):  # CI 的 Linux 沒有 RLIMIT_NPROC(無上限 ⇒ 照設計不預警),上限給假的
             if not pct:
                 os.environ.pop("AIB_PROC_WARN_PCT", None)
             return MSR.rows(44, ttl=10 ** 9, path=str(cache))
@@ -127,6 +129,8 @@ class RightColumn(unittest.TestCase):
         self.assertFalse(any("行程快滿" in x for x in base))
 
     def test_p6_subprocess(self):
+        if PC.limit()[0] is None:
+            self.skipTest("這台量不到行程上限(Linux 無 RLIMIT_NPROC),照設計不預警;子行程沒法換假上限")
         r = subprocess.run([sys.executable, str(COCKPIT / "machine_status_row.py"), "--width", "44"],
                            capture_output=True, text=True, env=_env(AIB_PROC_WARN_PCT="1"), timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
