@@ -2995,5 +2995,18 @@
   "aib.task.help.approval_event_uid": "id of the approval given by a person",
   "aib.task.help.report_to": "role this seat reports to",
   "aib.task.help.no_fields": "aib task set: give at least one field to change",
-  "aib.task.help.write_failed": "could not save: {err}"
+  "aib.task.help.write_failed": "could not save: {err}",
+  "aib.doctor.help.description": "Check this computer item by item: what AIB still needs here and how to fix it (read-only)",
+  "aib.doctor.help.state_root": "AIB data folder to check (default: ~/.ez2-aib)",
+  "aib.doctor.help.repo_root": "where this copy of AIB is installed (default: detected automatically)",
+  "aib.doctor.help.provider": "AI command-line tool to check; repeat to check several (default: all supported ones)",
+  "aib.doctor.help.json": "print the result as JSON (for scripts)",
+  "aib.doctor.mark_manual": "YOU ",
+  "aib.doctor.summary": "ok={ok} fail={fail} for you to do={manual}",
+  "aib.doctor.manual_note": "* Items marked \"for you to do\" do not count as passing: the computer cannot confirm them, so doctor will not pretend they are green.",
+  "aib.init.help.description": "First-time setup: create AIB's data folders and lock their permissions down to you only",
+  "aib.init.help.state_root": "AIB data folder to set up (default: ~/.ez2-aib)",
+  "aib.init.help.json": "print the result as JSON (for scripts)",
+  "aib.init.mark_created": "NEW ",
+  "aib.init.mark_fixed": "FIX "
 }

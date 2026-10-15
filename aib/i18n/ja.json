@@ -2995,5 +2995,18 @@
   "aib.task.help.approval_event_uid": "人による承認の ID",
   "aib.task.help.report_to": "この席の報告先の役割",
   "aib.task.help.no_fields": "aib task set:変更する項目を少なくとも 1 つ指定してください",
-  "aib.task.help.write_failed": "保存できませんでした:{err}"
+  "aib.task.help.write_failed": "保存できませんでした:{err}",
+  "aib.doctor.help.description": "このコンピューターを項目ごとに点検し、AIB にまだ足りないものと直し方を表示します(読み取りのみ)",
+  "aib.doctor.help.state_root": "点検する AIB のデータフォルダー(既定: ~/.ez2-aib)",
+  "aib.doctor.help.repo_root": "この AIB がインストールされている場所(既定: 自動検出)",
+  "aib.doctor.help.provider": "点検する AI コマンドラインツール。複数なら繰り返し指定(既定: 対応しているものすべて)",
+  "aib.doctor.help.json": "結果を JSON で出力します(スクリプト用)",
+  "aib.doctor.mark_manual": "手動",
+  "aib.doctor.summary": "ok={ok} fail={fail} ご自身で対応={manual}",
+  "aib.doctor.manual_note": "※「ご自身で対応」の項目は合格扱いになりません。コンピューターでは確認できないため、doctor は合格のふりをしません。",
+  "aib.init.help.description": "初回セットアップ: AIB のデータフォルダーを作成し、権限をあなただけに絞ります",
+  "aib.init.help.state_root": "セットアップする AIB のデータフォルダー(既定: ~/.ez2-aib)",
+  "aib.init.help.json": "結果を JSON で出力します(スクリプト用)",
+  "aib.init.mark_created": "作成",
+  "aib.init.mark_fixed": "修正"
 }

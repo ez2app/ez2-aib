@@ -2995,5 +2995,18 @@
   "aib.task.help.approval_event_uid": "真人核准紀錄的 id",
   "aib.task.help.report_to": "這一席回報給哪個角色",
   "aib.task.help.no_fields": "aib task set:至少要給一個要改的欄位",
-  "aib.task.help.write_failed": "寫入失敗:{err}"
+  "aib.task.help.write_failed": "寫入失敗:{err}",
+  "aib.doctor.help.description": "逐項檢查這台電腦:AIB 還缺什麼、怎麼補(只讀,不改任何東西)",
+  "aib.doctor.help.state_root": "要檢查的 AIB 資料夾(預設 ~/.ez2-aib)",
+  "aib.doctor.help.repo_root": "這份 AIB 裝在哪裡(預設自動找)",
+  "aib.doctor.help.provider": "要檢查的 AI 命令列工具,可以重複給好幾個(預設:所有支援的)",
+  "aib.doctor.help.json": "結果印成 JSON(給程式讀)",
+  "aib.doctor.mark_manual": "你做",
+  "aib.doctor.summary": "ok={ok} fail={fail} 需你自己做={manual}",
+  "aib.doctor.manual_note": "★『需你自己做』不算通過:機器沒辦法確認的事,doctor 不會假裝它綠了。",
+  "aib.init.help.description": "第一次設定:建立 AIB 的資料夾,並把權限設成只有你自己能讀寫",
+  "aib.init.help.state_root": "要建立的 AIB 資料夾(預設 ~/.ez2-aib)",
+  "aib.init.help.json": "結果印成 JSON(給程式讀)",
+  "aib.init.mark_created": "建立",
+  "aib.init.mark_fixed": "修正"
 }
