@@ -8,8 +8,12 @@
 - tools/release/ship.py 推成時(announce_savings)在 ~/.ez2-aib/ship/last-push-<倉標籤>.json 加:
   reported=false、pusher=<推的那一席席碼>、savings=[G2 四行,字面跟 REPORT-DRAFT 的 G2.1~G2.4 逐字相同]。
 - 本支由 aib-now-gate.py 的 stop 先呼叫(那支已由 provider-launch.sh ensure 裝在每一席,不另加 settings 條目):
-  這一席有 reported=false 且 pusher=本席、24 小時內的推包 ⇒ 本回合的回覆要逐字含 savings 前兩行(空白不計);
-  有 ⇒ 改 reported=true 放行;沒有、或數字被手改 ⇒ 擋一次,印出要貼的四行。
+  這一席有 reported=false 且 pusher=本席、24 小時內的推包 / 說明 ⇒ stop_show():
+  回覆已逐字含那幾行 ⇒ 記 reported(how=reply);PostToolUse 已經顯示過(shown_at)⇒ 記 reported(how=tool_shown);
+  都沒有 ⇒ hook 自己用 systemMessage 顯示一次、記 reported(how=hook_shown)。**不擋**、不要 AI 再貼。
+  (10-14 the maintainer 截圖:原本擋下時擋的訊息已含整段、AI 又照貼一次 ⇒ 畫面出現兩次;10-13 要的是「人一定看得到」,
+  工具自己印就達成。)說明第一行標哪棵樹跑的(同對話的背景子代理跑的也記成本席,看得出不是本席主對話跑的)。
+- 沒有 Claude Stop 的各家掛點與巡查照舊走 check() / `check --seat`(漏了 rc 2 提醒)。
 - 只擋推的那一席;別席、不在 AIB 席、檔太舊 ⇒ 不管。
 
 ## 失效方向(同 aib-now-gate)
@@ -181,6 +185,55 @@ def _write(path, d):
     os.replace(tmp, path)
 
 
+def _label(d):
+    """說明第一行:哪一種、哪棵樹跑的(cwd 由 shadow_explain.record 記;推包檔記 repo)。
+    ★ 不讀 tree:那個欄位是 🧮 樹狀說明的那幾行(shown_lines),不是路徑。"""
+    tree = str(d.get("cwd") or d.get("repo") or "")
+    where = " · %s" % os.path.basename(tree.rstrip("/")) if tree else ""
+    if d.get("kind") == "push":
+        return "推包 %s(%s 顆)%s:" % (str(d.get("head") or "")[:9], d.get("commits"), where)
+    return "%s 的影子續跑說明%s:" % (d.get("kind") or "aib test", where)
+
+
+def stop_show(payload, code, now=None):
+    """Claude Stop 用:回要用 systemMessage 直接顯示給人看的那段(沒有 ⇒ "")。從不擋。
+    已經擋過一次還漏(missed_at,舊版留下的)不動,交給巡查點名。"""
+    if os.environ.get("AIB_SHIP_REPORT_GATE") == "0":
+        return ""
+    now = time.time() if now is None else now
+    if not [1 for _p, d in _open_records(now) if not d.get("missed_at")]:
+        return ""                             # 沒有任何待回報 ⇒ 不認席(不跑 ps)
+    if callable(code):
+        code = code()
+    if not code:
+        return ""
+    todo = pending(code, now, for_stop=True)
+    if not todo:
+        return ""
+    text = reply_text(payload)
+    body = _norm(text) if text else ""        # 讀不到回覆 ⇒ 當作沒貼,由 hook 顯示(人一定看得到)
+    out = []
+    for path, d in todo:
+        need = required_lines(d)
+        if need and body and all(_norm(ln) in body for ln in need):
+            how = "reply"
+        elif d.get("shown_at"):
+            how = "tool_shown"
+        else:
+            how = "hook_shown"
+        fields = {"reported": True, "reported_at": now, "reported_how": how,
+                  "reported_session": payload.get("session_id")}
+        if how == "hook_shown":
+            fields["shown_at"] = now
+        if not _update(path, fields):
+            continue                          # 別的掛點剛記過 ⇒ 不重複顯示
+        _log("SHOWN @%s %s %s" % (code, how, os.path.basename(path)))
+        if how == "hook_shown":
+            out.append(_label(d))
+            out.extend("  " + ln for ln in shown_lines(d))
+    return "\n".join(out)
+
+
 def check(payload, code, now=None):
     """回 (should_block, message)。code = 這一席席碼,或回傳席碼的函式(先看有沒有未回報的推包,有才認席 ——
     每一席每次 Stop 都會走到這裡,沒推包時不多花一次 ps)。"""
@@ -218,10 +271,7 @@ def check(payload, code, now=None):
         return False, ""
     lines = []
     for _p, d in missing:
-        if d.get("kind") == "push":
-            lines.append("推包 %s(%s 顆):" % (str(d.get("head") or "")[:9], d.get("commits")))
-        else:
-            lines.append("%s 的影子續跑說明:" % (d.get("kind") or "aib test"))
+        lines.append(_label(d))
         lines.extend("  " + ln for ln in shown_lines(d))
     _log("BLOCK @%s %s" % (code, ",".join(os.path.basename(p) for p, _ in missing)))
     return True, ("ship-report-gate:@%s 這一回合跑了推包 / aib test,但回覆沒有原樣附上影子續跑說明的數字"

@@ -6,7 +6,7 @@ aib test / 推前檢查(pushgate)跑完,**一定**印一段固定格式的說明
   沿用幾支、挑掉幾支、實跑幾支 / 沒有 aib 一支一支跑要多久 / 這次實際多久 / 省多少 / 主要重跑原因。
 --fresh(關掉影子續跑)印一行「這次沒用影子續跑」。
 同時把要原樣出現在回報裡的幾行記到 <狀態根>/state/shadow-explain/<席碼>.json(reported=false;a seat 19:5x 指定位置),
-由 src/policy/hooks/ship_report_gate.py 在那一席回合結束時檢查(沒貼就擋一次)。認不出席 ⇒ 只印不記。
+由 src/policy/hooks/ship_report_gate.py 在那一席回合結束時處理(Claude:回覆沒貼就由 hook 自己顯示一次、不擋;其他家:check 提醒)。認不出席 ⇒ 只印不記。
 """
 from __future__ import annotations
 
@@ -92,7 +92,8 @@ def record(kind, lines, required, seat=None, ship_dir=None, tree=None, next_acti
         tmp = f.with_name(f.name + ".tmp")
         tmp.write_text(json.dumps({"at": time.time(), "kind": kind, "reported": False, "pusher": seat,
                                    "savings": list(lines), "required": list(required),
-                                   "tree": list(tree or []), "next_actions": list(next_actions or [])}, ensure_ascii=False) + "\n",
+                                   "tree": list(tree or []), "next_actions": list(next_actions or []),
+                                   "cwd": os.getcwd()}, ensure_ascii=False) + "\n",
                        encoding="utf-8")
         os.replace(tmp, f)
         return f
