@@ -277,12 +277,15 @@ HUB_NAME_RE = re.compile(r"^[0-9A-Za-z._-]{1,64}$")
 
 
 ORIGIN_NAME_RE = re.compile(r"^[0-9A-Za-z._-]{1,64}$")
+# 跨主機收件(dm_xhost):xhost:<sshd 量到的對方 IP>。忙碌入列後重投靠它把抬頭位址寫回對方,
+#   不然重投那一輪會寫成收件機自己的 IP(10-15 實測:Pro 的席被標成 Mini 的區網 IP)。
+XHOST_ORIGIN_RE = re.compile(r"^xhost:[0-9A-Fa-f:.]{2,45}$")
 
 
 def _origin_or_none(value):
-    """寄件來源機器名(sender_origin 推的腳本名或五碼);不合形回 None。"""
+    """寄件來源機器名(sender_origin 推的腳本名或五碼,或 xhost:<IP>);不合形回 None。"""
     v = str(value or "").strip()
-    return v if ORIGIN_NAME_RE.fullmatch(v) else None
+    return v if ORIGIN_NAME_RE.fullmatch(v) or XHOST_ORIGIN_RE.fullmatch(v) else None
 
 
 _CABIN_HUB_CACHE = {}
