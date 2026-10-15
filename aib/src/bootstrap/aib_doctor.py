@@ -12,13 +12,16 @@
           —— 計為未通過。不假裝能修,也不因為修不了就跳過不算。
           今晚的教訓:守衛可以被證明有作用,同時作用在錯的東西上;
           一個把 manual 算成綠的 doctor,就是作用在錯的東西上。
+  note    **提醒,不算失敗**(10-15 稽核 C9):每個新用戶都一定會有、而且不是「壞了」的事 ——
+          AI 工具要自己登入一次、不在艙裡跑所以艙內那項沒量、發版閘只有發版的人要裝。
+          以前這些算 manual ⇒ 新用戶的 doctor 幾乎永遠 rc 1,「不通過」失去意思。
 
 唯讀:本工具**不建立、不修改任何檔案**。要建目錄是 ED.2 `aib init` 的事。
 
 狀態根以可注入方式取得(參數 > 環境變數 > 預設)。**刻意不改既有 9 處硬編路徑**
 ——那是 ED.1 的獨佔範圍,現在動會與未來的 ED.1 互撞(pm 裁決)。
 
-exit: 0 全部 ok · 1 有 fail 或 manual · 2 用法錯
+exit: 0 沒有 fail 也沒有 manual(note 不影響)· 1 有 fail 或 manual · 2 用法錯
 """
 
 import argparse
@@ -34,7 +37,7 @@ from pathlib import Path
 DEFAULT_STATE_ROOT = "~/.ez2-aib"
 MIN_PYTHON = (3, 9)
 
-OK, FAIL, MANUAL = "ok", "fail", "manual"
+OK, FAIL, MANUAL, NOTE = "ok", "fail", "manual", "note"
 
 
 def _T(key, params=None):
@@ -181,14 +184,33 @@ def check_provider_cli(name):
 
 
 def check_provider_login(name):
+    """登入與否機器量不到,但「沒量到」不是「壞了」⇒ note(提醒),不讓每個新用戶的 doctor 都 rc 1(稽核 C9)。"""
     return _result(
-        "provider_login_%s" % name, MANUAL,
+        "provider_login_%s" % name, NOTE,
         _C("provider_login.detail", name=name),
         _C("provider_login.remedy", name=name))
 
 
 # 漂移判準的基準線。★ 不是「這棵樹的檔案」——見 check_release_gate_hook 檔頭那段。
 HOOK_BASELINE_REF = "origin/main"
+
+
+def _uses_git_hooks(repo_root):
+    """這份倉有沒有在用發版閘:hooks 目錄(git rev-parse --git-path hooks,有設 core.hooksPath 就是那裡)裡已經有
+    pre-push,或明設了 core.hooksPath。不是 git 倉 / git 跑不起來 ⇒ False。"""
+    def git(*args):
+        try:
+            r = subprocess.run(["git"] + list(args), cwd=str(repo_root), capture_output=True, text=True, timeout=10,
+                               stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+    hooks = git("rev-parse", "--git-path", "hooks")
+    if not hooks:
+        return False
+    if (Path(repo_root) / hooks / "pre-push").exists():
+        return True
+    return bool(git("config", "--get", "core.hooksPath"))
 
 
 def check_release_gate_hook(repo_root):
@@ -250,6 +272,10 @@ def check_release_gate_hook(repo_root):
                        _C("release_gate_hook.no_installer_remedy"))
 
     fix = _C("release_gate_hook.fix")
+    # 10-15 稽核 C9:發版閘只有「發版的人」要裝;pipx / 一行安裝 / 一般 clone 的新用戶不需要,
+    #   沒裝不該讓 doctor rc 1。只有這份倉已經在用(hooks 目錄已有 pre-push,或設了 core.hooksPath)才照舊嚴查。
+    if not _uses_git_hooks(repo_root):
+        return _result("release_gate_hook", NOTE, _C("release_gate_hook.not_used"), "")
     try:
         proc = subprocess.run(
             ["bash", str(installer), "verify",
@@ -578,7 +604,7 @@ def check_cabin_env(repo_root, env=None):
     env = dict(os.environ if env is None else env)
     sock = (env.get("EZ2_AIHUB_SOCKET") or "").strip()
     if not sock:
-        return _result("cabin_env", MANUAL,
+        return _result("cabin_env", NOTE,
                        _C("cabin_env.no_socket"),
                        _C("cabin_env.no_socket_remedy"))
     try:
@@ -703,7 +729,7 @@ def main(argv=None):
         "claude", "codex", "agy", "copilot", "grok", "deepseek", "nvidia", "openrouter", "typesafe", "openrouterjev", "sand", "grokbot", "codexbot", "claudebot", "musebot"]
     checks = run_all(args.state_root, args.repo_root, providers, explicit_providers=args.provider is not None)
 
-    counts = {OK: 0, FAIL: 0, MANUAL: 0}
+    counts = {OK: 0, FAIL: 0, MANUAL: 0, NOTE: 0}
     for c in checks:
         counts[c["status"]] += 1
 
@@ -712,12 +738,14 @@ def main(argv=None):
                          ensure_ascii=False, indent=2))
     else:
         for c in checks:
-            mark = {OK: "OK  ", FAIL: "FAIL", MANUAL: _T("aib.doctor.mark_manual")}[c["status"]]
+            mark = {OK: "OK  ", FAIL: "FAIL", MANUAL: _T("aib.doctor.mark_manual"),
+                    NOTE: _T("aib.doctor.mark_note")}[c["status"]]
             line = "%s %-24s %s" % (mark, c["id"], c["detail"])
             if c["status"] != OK and c["remedy"]:
                 line += "\n         -> %s" % c["remedy"]
             print(line)
-        print("\n" + _T("aib.doctor.summary", {"ok": counts[OK], "fail": counts[FAIL], "manual": counts[MANUAL]}))
+        print("\n" + _T("aib.doctor.summary", {"ok": counts[OK], "fail": counts[FAIL], "manual": counts[MANUAL],
+                                                "note": counts[NOTE]}))
         if counts[MANUAL]:
             print(_T("aib.doctor.manual_note"))
 

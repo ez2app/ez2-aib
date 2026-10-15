@@ -39,6 +39,16 @@ INSTALL_URLS = ("https://aib.ez2.app/install.sh", "https://raw.githubusercontent
 PUBLIC_MARK = "github.com/ez2app/ez2-aib.git"   # 公開版安裝程式的預設來源;舊的私有版安裝程式沒有這一串
 
 
+UPDATE_HELP = """usage: aib update [--tools]
+
+Update this copy of aib to the latest version: downloads the open-source one-line installer and runs it on this
+folder (the same as running the install line again). It only fast-forwards; your own changes are never overwritten.
+
+    --tools     also ask again which AI tools to add
+Installed with pipx? Use `pipx upgrade ez2-aib` instead.
+"""
+
+
 def _update(args):
     """aib update(10-09 the maintainer「aib update 指令也做」):下載最新的一行安裝程式,裝在這份 aib 所在的 checkout。
     = 重跑 curl -fsSL https://aib.ez2.app/install.sh | bash:只快轉、不蓋本機改動、不再問 AI 工具(--tools 再問)。
@@ -46,10 +56,13 @@ def _update(args):
     10-09(the maintainer「第一種有就用第一種,沒有自動第二種備用」):預設先試網站,下載不到就用公開倉裡的 install.sh。
     10-10(Mac a seat 實測):網站還在回舊的私有版安裝程式 ⇒「下載得到」不夠,還要是公開版(內含 PUBLIC_MARK);
     不是 ⇒ 當成這個網址不能用,換下一個。"""
+    if any(a in ("-h", "--help") for a in args):
+        sys.stdout.write(UPDATE_HELP)     # 10-15 稽核 C13:說明要先印、不下載、不建安裝紀錄
+        return 0
     root = os.path.dirname(HERE)          # 從 checkout 跑(bin/aib):HERE = <checkout>/aib
     if not os.path.isdir(os.path.join(root, ".git")):
         sys.stderr.write("aib update: this aib (%s) is not a git checkout, so it was not installed by the one-line "
-                         "installer; update it the way you installed it (for example: pipx upgrade aib)\n" % root)
+                         "installer; update it the way you installed it (for example: pipx upgrade ez2-aib)\n" % root)
         return 2
     urls = os.environ.get("AIB_INSTALL_URL", " ".join(INSTALL_URLS))
     # 先下載完整再跑(下載不完整不會跑半截);每個網址都下載不到要講清楚,不能被管線吃掉

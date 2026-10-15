@@ -286,7 +286,7 @@ aib_claude_session_exists() {
 }
 # 10-12 a seat(the maintainer「如何確保我的要求是程式化必要流程」→「開始」):開 Claude 席前確認 aib now 狀態檢查
 #   (src/policy/hooks/aib-now-gate.py 的 Stop / SessionStart hook)有裝在 ~/.claude/settings.json;
-#   已裝好不動、沒裝才裝(先備份);失敗不擋開席;AIB_NOW_GATE=0 關。要不要真的擋人另由試跑名單 gate-seats.txt 決定。
+#   已裝好不動、沒裝才裝(先備份);失敗不擋開席;AIB_NOW_GATE=0 關。要不要真的擋人由名單 gate-seats.txt 決定(沒有名單 = 不擋,只提醒)。
 #   只在有終端機時([ -t 0 ]):真的開席一定有;測試跑本檔一律 stdin=DEVNULL(subprocess-stdin 棘輪),
 #   不然沒換 HOME 的舊測試會改到真的 ~/.claude/settings.json(P5 ClaudeBot 自動裝 hook 同一個理由不放橋裡)。
 if [ "$PROVIDER" = "claude" ] && [ -t 0 ] && [ -f "$HERE/../policy/hooks/aib-now-gate.py" ]; then

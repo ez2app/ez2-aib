@@ -206,7 +206,20 @@ def missing_ancestors(root):
     return list(reversed(chain))
 
 
-def run_init(state_root):
+YES_WORDS = ("y", "yes", "是", "好", "はい", "네", "예")
+
+
+def ask_tty(question):
+    """終端機問一句,預設不要(只有明確答是才放)。讀不到(EOF、中斷)⇒ 不要。"""
+    try:
+        ans = input(question).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return ans in YES_WORDS
+
+
+def run_init(state_root, ask=None):
     root = Path(os.path.expanduser(state_root))
     reject_dangerous_root(root)
     check_existing_ancestors(root)
@@ -224,7 +237,7 @@ def run_init(state_root):
         items.append(ensure_file(root / rel, mode))
     items.extend(_ensure_secrets_tree(root))
     from desktop_shortcut import ensure_desktop_hub
-    items.extend(ensure_desktop_hub(root))
+    items.extend(ensure_desktop_hub(root, ask=ask))
     return items
 
 
@@ -260,7 +273,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        items = run_init(args.state_root)
+        interactive = not args.json and sys.stdin.isatty() and sys.stdout.isatty()
+        items = run_init(args.state_root, ask=ask_tty if interactive else None)
     except InitError as err:
         sys.stderr.write("aib-init: %s\n" % err)
         return 2

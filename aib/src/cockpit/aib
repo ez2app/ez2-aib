@@ -336,7 +336,7 @@ if [ "${1:-}" = "summary" ]; then
   export PYTHONDONTWRITEBYTECODE=1
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/aib_summary.py" "$@"
 fi
-# aib menu-pick once|watch|log -> src/cockpit/menu_pick.py(10-13 a seat,the maintainer「把所有選項做出一個自動由AI選擇的功能,
+# aib menu-pick on|off|status|once|watch|log -> src/cockpit/menu_pick.py(10-13 a seat,the maintainer「把所有選項做出一個自動由AI選擇的功能,
 #   不需人按,未來選單變更也要自動能用」「自動判斷情境需要,危險也可以」):各席底部卡選單 ⇒ 小模型讀、依情境選、按、記帳。
 if [ "${1:-}" = "menu-pick" ]; then
   shift

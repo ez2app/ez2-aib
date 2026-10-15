@@ -228,6 +228,17 @@ seat records and hand-off notes, seat-to-seat messages, project and role cards, 
 (in `~/.ez2-aib/secrets/`, folder 0700 / files 0600<sup>[46]</sup>, encrypted with a key stored next to them — this stops casual reading
 and accidental commits, not someone who can already read your home folder). Delete `~/.ez2-aib/` to remove all of it.
 
+What aib changes outside its own folders: when you open a seat, it adds a few hooks to that AI tool's settings so the
+cockpit can follow the seat — `~/.claude/settings.json` (a status reminder at the start of a conversation, the seat
+mailbox, the usage-based memory refresh, and — only if you turn it on — the auto-answer for menus), `~/.codex/hooks.json`,
+`~/.grok/hooks/aib-*.json`, `~/.copilot/hooks/aib-*.json` and `~/.gemini/config/hooks.json`. Your own entries are left
+alone, and the file is copied to `<file>.bak-…` before each change. The status reminder only reminds; it blocks the end
+of a turn only for seats you list (or `*`) in `~/.ez2-aib/state/seat-now/gate-seats.txt`.
+Letting an AI answer the menus a seat gets stuck on (permission prompts and other choices) is off until you run
+`aib menu-pick on`; `aib menu-pick off` turns it off again and `aib menu-pick status` shows which it is. `aib init` also offers
+to put a shortcut to your notes on the desktop (it asks first; when run without a terminal, as in the installer,
+it skips it and says so). `aib uninstall` takes all of these out again.
+
 **Notes**
 - [45] Remote (fetch / push): the copy of the code kept online (for example on GitHub); fetch downloads from it, push uploads to it.
 - [46] 0700 / 0600: file permissions meaning only your own account can read and write.
@@ -291,6 +302,12 @@ aib uninstall --all --yes                # also remove aib's records and cache (
 pipx uninstall ez2-aib                   # if you installed it with pipx
 rm -rf your-project/.aib                 # only if `aib ship` created it and you no longer want it
 ```
+
+`aib uninstall --yes` also takes out the hooks aib added to your AI tools' settings (only aib's own entries), the
+`.bak-…` copies it made of those files, and the desktop shortcut to your notes. If the aib folder holds work that exists
+nowhere else — uncommitted changes, untracked files, stashes, commits not pushed anywhere, other worktrees — that folder
+is kept and the reason is listed; add `--discard-unsaved-work` only if you really want it gone. Extensions you added
+with `aib ext` live in aib's folder: remove them first with `aib ext remove <name>`.
 
 ## Contributing and security
 

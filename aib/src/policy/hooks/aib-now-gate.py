@@ -26,10 +26,11 @@ the maintainer:「把一開席之後每一個階段任務完成,就必需程式�
 - 逃生門:AIB_NOW_GATE_REASON="理由" ⇒ 放行並記檔。AIB_NOW_GATE=0 ⇒ 整支關(治具)。
 - 不在 AIB 席裡(認不出席位碼)⇒ 什麼都不做:一般 Claude 對話不受影響。
 
-## 試跑名單(the maintainer 10-12「依照你的建議」:先只在一席試跑一天,再全裝)
+## 要擋的席(名單 = 自己選擇開啟)
 
   <狀態根>/state/seat-now/gate-seats.txt   一行一個席位碼(# 開頭是註解);有 `*` = 全部。
-  檔不存在 ⇒ 全部的席都要求(正式狀態)。檔在而這一席不在名單 ⇒ 不擋(開席提醒照印,只是不說會擋)。
+  10-15 起(稽核 C3):檔不存在 ⇒ 一席都不擋,只印開席提醒(新用戶沒選過,不該每個回合被擋一次);
+  要擋就把席位碼或 `*` 寫進這個檔。名單讀不到 ⇒ 當成沒有名單(不擋,fail-open,留痕)。
 
 ## 已知取捨(10-12 審查)
 
@@ -270,17 +271,18 @@ GATE_SEATS = "gate-seats.txt"
 
 
 def enforced(code):
-    """這一席要不要擋。名單檔讀不到 ⇒ 當成沒有名單(全部擋)—— 試跑名單只用來縮小範圍,讀檔故障不該把閘關掉。"""
+    """這一席要不要擋。只有名單裡有這一席(或 `*`)才擋;沒有名單 = 使用者沒開 ⇒ 不擋(10-15 稽核 C3)。
+    名單讀不到 ⇒ 當成沒有名單(不擋,留痕):跟本支其他讀不到的情況一樣 fail-open。"""
     import seat_now
     path = os.path.join(seat_now.now_dir(), GATE_SEATS)
     try:
         with open(path, encoding="utf-8") as fh:
             names = {ln.split("#", 1)[0].strip() for ln in fh}
     except FileNotFoundError:
-        return True
+        return False
     except OSError as e:
-        _note("名單 %s 讀不到(%s),當成全部擋" % (path, e))
-        return True
+        _note("名單 %s 讀不到(%s),當成沒有名單(不擋)" % (path, e))
+        return False
     names.discard("")
     return "*" in names or code in names
 
@@ -330,7 +332,7 @@ def decide(payload):
     except Exception as e:  # noqa: BLE001
         _note("量程式樹失敗:%s(照原本認席)" % e)
     if not enforced(code):
-        return False, "@%s 不在試跑名單(%s),不擋" % (code, GATE_SEATS)
+        return False, "@%s 不在要擋的名單(%s),不擋" % (code, GATE_SEATS)
     tp = payload.get("transcript_path")
     if not tp or not os.path.isfile(tp):
         _note("FAILOPEN @%s 讀不到 transcript" % code)
@@ -384,7 +386,7 @@ def session_start_text(payload):
     try:
         hard = enforced(code)
     except Exception:  # noqa: BLE001
-        hard = True
+        hard = False
     tail = T("aib.nowgate.start_hard") if hard else T("aib.nowgate.start_soft")
     return T("aib.nowgate.start", code=code, source=src, line=shown, cmd=fix_line(code), tail=tail)
 
@@ -525,24 +527,12 @@ REPO_ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 def canonical_script(repo_root=None):
     """正本樹裡的本支(git worktree list 第一列 = 主工作樹);量不到 ⇒ None。
     審查:從工作樹跑 install 會裝成工作樹路徑,工作樹一刪 test -f 讓閘永遠安靜放行,沒人知道。
-    只有「確定不在 git 裡」(這棵樹根本沒有 .git:zip 下載的公開版)才回本支自己的路徑 ——
-    那時沒有工作樹這回事,本支就是正本。git 跑失敗、輸出空白而樹裡有 .git(可能是連結工作樹)⇒ None,不猜
-    (第二輪審查:不然 git 一出錯,工作樹路徑就會蓋掉設定裡原本正確的正本路徑)。"""
-    import subprocess
+    只有「確定不在 git 裡」(pipx / zip 下載)才回本支自己的路徑 —— 那時沒有工作樹這回事,本支就是正本。
+    git 跑失敗而樹在 git 裡 ⇒ None,不猜(不然 git 一出錯,工作樹路徑就會蓋掉設定裡原本正確的正本路徑)。
+    10-15:路徑怎麼量交給 canonical_tree(公開倉的程式在 aib/ 底下一層,舊寫法少接這一層 ⇒ 永遠裝不上)。"""
+    import canonical_tree
     root = repo_root or REPO_ROOT
-    in_git = os.path.exists(os.path.join(root, ".git"))
-    try:
-        r = subprocess.run(["git", "-C", root, "worktree", "list", "--porcelain"], capture_output=True,
-                           text=True, timeout=10, stdin=subprocess.DEVNULL)
-        out = r.stdout if r.returncode == 0 else ""
-    except (OSError, subprocess.SubprocessError):
-        out = ""
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            return os.path.join(line[len("worktree "):], "src", "policy", "hooks", MARKER)
-    if not in_git:
-        return os.path.join(root, "src", "policy", "hooks", MARKER)
-    return None
+    return canonical_tree.canonical_path(os.path.join(root, "src", "policy", "hooks", MARKER))
 
 
 def _save(path, cfg):

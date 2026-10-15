@@ -5,6 +5,12 @@
     aib uninstall              show what would be removed (nothing is touched)
     aib uninstall --yes        remove the program: this checkout, the ~/.local/bin/aib link to it, the boot menu,
                                the PATH line the installer added
+                               (a checkout with work that exists nowhere else — uncommitted changes, untracked files,
+                               stashes, commits not on any remote, other worktrees — is kept; add
+                               --discard-unsaved-work to remove it anyway)
+                               It also takes out what aib added to other programs' settings: its hooks in Claude
+                               (settings.json), Codex, Grok, Copilot and Antigravity hook files, the backups it made of
+                               those files, and the desktop shortcut to its records. Only entries aib made are touched.
     aib uninstall --all --yes  also remove aib's records (~/.ez2-aib: seats, personas, memory, handoffs, settings)
                                and its cache (~/.cache/ez2-aib); ~/.ez2-aib is first saved to ~/ez2-aib-backup-<time>.tar.gz
 
@@ -18,7 +24,10 @@ is yours to delete); the AI tools and Homebrew.
 from __future__ import annotations
 
 import argparse
+import glob
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,6 +52,171 @@ def _is_public_checkout(checkout):
     return (checkout / ".git").is_dir() and PUBLIC_REPO in _origin(checkout).replace("git@github.com:", "github.com/")
 
 
+def _git_out(checkout, *args):
+    """git 的 stdout;跑不起來或非 0 ⇒ None(呼叫端當成「查不了」)。"""
+    try:
+        r = subprocess.run(["git", "-C", str(checkout)] + list(args), capture_output=True, text=True, timeout=30,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def unsaved_work(checkout):
+    """10-15 稽核 C4:這份 checkout 裡有沒有「別的地方都沒有」的東西 —— 有就不能整包刪(照 CONTRIBUTING clone 來開發的人,
+    沒推的分支會全沒)。回原因清單;空 = 安全。查不了(git 失敗)也算一個原因:寧可留著不刪。"""
+    why = []
+    status = _git_out(checkout, "status", "--porcelain", "--untracked-files=normal")
+    if status is None:
+        return ["could not check it with git"]
+    n = len([ln for ln in status.splitlines() if ln.strip()])
+    if n:
+        why.append("%d uncommitted change(s) or untracked file(s)" % n)
+    stash = _git_out(checkout, "stash", "list")
+    if stash is None:
+        why.append("could not check its stashes")
+    elif stash.strip():
+        why.append("%d stash(es)" % len(stash.strip().splitlines()))
+    ahead = _git_out(checkout, "rev-list", "--count", "--branches", "--not", "--remotes")
+    if ahead is None:
+        why.append("could not check for unpushed commits")
+    elif ahead.strip() not in ("", "0"):
+        why.append("%s commit(s) not on any remote" % ahead.strip())
+    wts = _git_out(checkout, "worktree", "list", "--porcelain")
+    if wts is None:
+        why.append("could not list its worktrees")
+    else:
+        others = [ln[len("worktree "):] for ln in wts.splitlines() if ln.startswith("worktree ")][1:]
+        if others:
+            why.append("%d other worktree(s): %s" % (len(others), ", ".join(others)))
+    return why
+
+
+# 10-15 稽核 C5:aib 會在別的程式的設定裡加 hook(開席時自動裝)、改之前先備份、init 時在桌面放捷徑;移除要一起清。
+#   只認 aib 自己的:hook 指令裡有 aib 那幾支程式的路徑(src/.../<檔名>.py)、具名鍵 / 檔名是 aib-*、
+#   備份檔名是 aib 的寫法、桌面捷徑是連到 <狀態根>/user 的連結。別的東西一律不碰。
+OUR_HOOK = re.compile(r"/src/(policy/hooks/aib-now-gate|identity/auto_distill_hook|cockpit/menu_pick|cockpit/claudebot_hook)\.py")
+OUR_NAMED = ("aib-menu-pick", "aib-auto-distill")                    # ~/.gemini/config/hooks.json 的具名鍵
+OUR_HOOK_FILES = ("aib-menu-pick.json", "aib-auto-distill.json")     # ~/.grok/hooks、~/.copilot/hooks 裡 aib 自己的檔
+OUR_BACKUPS = ("bak-now-gate-", "bak-menu-pick-", "bak-claudebot-", "bak-auto-distill-", "bak-aib-hook-trust-",
+               "bak-aib-ext-")
+
+
+def _ours(obj):
+    return bool(OUR_HOOK.search(json.dumps(obj, ensure_ascii=False)))
+
+
+def _strip_hook_list(items):
+    """一個事件底下的清單:Claude 格式是 [{matcher, hooks:[handler]}],Copilot 格式是 [handler]。拿掉 aib 的 handler。"""
+    kept = []
+    for it in items:
+        if isinstance(it, dict) and isinstance(it.get("hooks"), list):
+            inner = [h for h in it["hooks"] if not _ours(h)]
+            if inner:
+                kept.append(dict(it, hooks=inner))
+        elif not _ours(it):
+            kept.append(it)
+    return kept
+
+
+def strip_aib_hooks(cfg):
+    """回 (新設定, 有沒有變)。cfg["hooks"] 是 {事件: 清單} 的設定檔(Claude settings.json、Codex / Grok / Copilot hooks)。"""
+    hooks = cfg.get("hooks") if isinstance(cfg, dict) else None
+    if not isinstance(hooks, dict):
+        return cfg, False
+    new = dict(cfg)
+    nh = {}
+    for ev, items in hooks.items():
+        if isinstance(items, list):
+            items = _strip_hook_list(items)
+            if not items:
+                continue
+        nh[ev] = items
+    if nh:
+        new["hooks"] = nh
+    else:
+        new.pop("hooks")
+    return new, new != cfg
+
+
+def _read_json(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _claude_settings(home):
+    cfg = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+    return (Path(cfg).expanduser() if cfg else Path(home) / ".claude") / "settings.json"
+
+
+def _desktop(home):
+    override = os.environ.get("EZ2_AIB_DESKTOP_DIR")
+    return Path(os.path.expanduser(override)) if override else Path(home) / "Desktop"
+
+
+def traces(home):
+    """aib 在別的程式裡留下的東西 ⇒ (rewrite: [(path, 新內容 dict, what)], remove: [(path, what)])。"""
+    home = Path(home)
+    rewrite, remove = [], []
+    touched = []
+    for f, label in ((_claude_settings(home), "Claude"), (home / ".codex" / "hooks.json", "Codex")):
+        cfg = _read_json(f)
+        touched.append(f)
+        if cfg is None:
+            continue
+        new, changed = strip_aib_hooks(cfg)
+        if changed:
+            rewrite.append((f, new, "take out the hooks aib added to %s" % label))
+    for d, label in ((home / ".grok" / "hooks", "Grok"), (home / ".copilot" / "hooks", "Copilot")):
+        for name in OUR_HOOK_FILES:
+            f = d / name
+            cfg = _read_json(f)
+            touched.append(f)
+            if cfg is None or not _ours(cfg):
+                continue
+            new, _changed = strip_aib_hooks(cfg)
+            if [k for k in (new.get("hooks") or {})]:
+                rewrite.append((f, new, "take out the hooks aib added to %s" % label))
+            else:
+                remove.append((f, "the %s hook file aib added" % label))
+    f = home / ".gemini" / "config" / "hooks.json"
+    cfg = _read_json(f)
+    touched.append(f)
+    if cfg is not None:
+        new = {k: v for k, v in cfg.items() if not (k in OUR_NAMED and _ours(v))}
+        if new != cfg:
+            rewrite.append((f, new, "take out the hooks aib added to Antigravity"))
+    touched.append(home / ".codex" / "config.toml")
+    for f in touched:
+        for b in sorted(glob.glob(glob.escape(str(f)) + ".*")):
+            if any(Path(b).name[len(f.name) + 1:].startswith(m) for m in OUR_BACKUPS):
+                remove.append((Path(b), "a backup aib made before changing %s" % f.name))
+    desk = _desktop(home)
+    user_hub = os.path.normpath(str(home / ".ez2-aib" / "user"))
+    try:
+        entries = sorted(desk.iterdir()) if desk.is_dir() else []
+    except OSError:
+        entries = []
+    for p in entries:
+        if p.is_symlink() and os.path.normpath(os.path.join(str(p.parent), os.readlink(str(p)))) == user_hub:
+            remove.append((p, "the desktop shortcut aib made to its records; only the shortcut goes, the records stay "
+                              "unless you add --all"))
+    return rewrite, remove
+
+
+def enabled_extensions(home):
+    """aib ext 裝進各家 AI 的擴充(Claude / Codex / agy 的 plugin 指到 aib 資料夾)⇒ 名字清單。移除前要先撤。"""
+    out = []
+    for f in sorted(glob.glob(str(Path(home) / ".ez2-aib" / "ext-state" / "*.json"))):
+        st = _read_json(f)
+        if st and st.get("enabled"):
+            out.append(Path(f).stem)
+    return out
+
+
 def _profile_without_path_line(text):
     """Drop the installer's `# aib-bootstrap: PATH` marker and the export line right after it; keep everything else."""
     lines = text.splitlines(keepends=True)
@@ -61,10 +235,12 @@ def _profile_without_path_line(text):
     return "".join(out)
 
 
-def plan(home, package_dir, want_all):
-    """⇒ (remove: [(path, what)], profiles: [path], keep: [str], refuse: [str], hints: [str])."""
+def plan(home, package_dir, want_all, discard_unsaved=False, rewrite=None):
+    """⇒ (remove: [(path, what)], profiles: [path], keep: [str], refuse: [str], hints: [str]).
+    rewrite(給清單就填):[(path, 新設定, what)] —— 要拿掉 aib hook 的設定檔。"""
     home = Path(home)
     remove, profiles, keep, refuse, hints = [], [], [], [], []
+    rewrite = [] if rewrite is None else rewrite
     checkout = Path(package_dir).resolve().parent
     link = home / ".local" / "bin" / "aib"
     ours_link = link.is_symlink() and Path(os.path.realpath(link)) == (checkout / "bin" / "aib").resolve()
@@ -76,7 +252,14 @@ def plan(home, package_dir, want_all):
         Path(os.path.realpath(link)).parent == (Path(sys.prefix) / "bin").resolve()
     other_aib = (link.exists() or link.is_symlink()) and not ours_link and not pipx_link
     if _is_public_checkout(checkout):
-        remove.append((checkout, "this aib (the copy the one-line installer put here)"))
+        unsaved = unsaved_work(checkout)
+        if unsaved and not discard_unsaved:
+            keep.append("%s: this aib folder has work that exists nowhere else (%s); it was not removed. Commit and push "
+                        "what you want to keep, or add --discard-unsaved-work to remove it anyway"
+                        % (checkout, "; ".join(unsaved)))
+        else:
+            remove.append((checkout, "this aib (the copy the one-line installer put here)" +
+                           (" — including work that exists nowhere else: %s" % "; ".join(unsaved) if unsaved else "")))
     elif in_pipx:
         hints.append("this aib was installed with pipx: remove it with `pipx uninstall ez2-aib`")
     elif pip_installed:
@@ -100,6 +283,17 @@ def plan(home, package_dir, want_all):
                     profiles.append(p)
             except OSError:
                 pass
+    rw, rm = traces(home)
+    if other_aib:
+        if rw or rm:
+            keep.append("hooks aib added to your AI tools and the desktop shortcut: they may belong to the other aib "
+                        "(%s), left as is" % link)
+    else:
+        rewrite.extend(rw)
+        remove.extend(rm)
+    for name in enabled_extensions(home):
+        hints.append("the extension `%s` is still turned on in your AI tools and lives in aib's folder: run "
+                     "`aib ext remove %s` first, or it stays listed there after aib is gone" % (name, name))
     state, cache = home / ".ez2-aib", home / ".cache" / "ez2-aib"
     if want_all:
         if other_aib:
@@ -126,28 +320,35 @@ def main(argv=None, home=None, package_dir=None):
     ap = argparse.ArgumentParser(prog="aib uninstall", description=__doc__.split("\n")[0])
     ap.add_argument("--yes", action="store_true", help="really remove (without it, only list)")
     ap.add_argument("--all", action="store_true", help="also remove aib's records and cache (backed up first)")
+    ap.add_argument("--discard-unsaved-work", action="store_true",
+                    help="also remove this aib folder when it has uncommitted changes, untracked files, stashes, "
+                         "commits not on any remote or other worktrees (they are lost)")
     a = ap.parse_args(argv)
     home = Path(home or Path.home())
     package_dir = package_dir or os.environ.get("AIB_PACKAGE_DIR") or str(Path(__file__).resolve().parents[2])
-    remove, profiles, keep, refuse, hints = plan(home, package_dir, a.all)
+    rewrite = []
+    remove, profiles, keep, refuse, hints = plan(home, package_dir, a.all, a.discard_unsaved_work, rewrite)
     for r in refuse:
         print("aib uninstall: refused: " + r)
     if refuse:
         return 3
-    if not remove and not profiles:
+    if not remove and not profiles and not rewrite:
         print("aib uninstall: nothing of this aib to remove here")
     for p, what in remove:
         print("  remove  %s  (%s)" % (p, what))
     for p in profiles:
         print("  edit    %s  (drop the PATH line the installer added)" % p)
+    for p, _cfg, what in rewrite:
+        print("  edit    %s  (%s)" % (p, what))
     for k in keep:
         print("  keep    " + k)
     for h in hints:
         print("  note    " + h)
     if not a.yes:
-        print("aib uninstall: nothing was removed; run `aib uninstall%s --yes` to do it" % (" --all" if a.all else ""))
+        print("aib uninstall: nothing was removed; run `aib uninstall%s%s --yes` to do it"
+              % (" --all" if a.all else "", " --discard-unsaved-work" if a.discard_unsaved_work else ""))
         return 0
-    if not remove and not profiles:
+    if not remove and not profiles and not rewrite:
         return 0
     state = home / ".ez2-aib"
     if any(p == state for p, _ in remove):
@@ -157,6 +358,14 @@ def main(argv=None, home=None, package_dir=None):
                        stdin=subprocess.DEVNULL, timeout=30)
     for p in profiles:
         p.write_text(_profile_without_path_line(p.read_text(encoding="utf-8")), encoding="utf-8")
+    for p, cfg, _what in rewrite:
+        tmp = p.with_name(p.name + ".tmp-aib-uninstall-%d" % os.getpid())
+        tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        try:
+            shutil.copymode(str(p), str(tmp))
+        except OSError:
+            pass
+        os.replace(str(tmp), str(p))
     for p, _ in remove:
         if p.is_symlink() or p.is_file():
             p.unlink()
