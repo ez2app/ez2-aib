@@ -66,6 +66,11 @@ RECEIPT_STAGES = ("resolved", "relayed", "queued", "delivered", "held", "refused
 RECEIPT_FINAL = ("delivered", "held", "refused", "expired", "failed")
 DELIVERY_STATES = ("queued", "delivered", "held", "refused", "expired", "read")
 INBOX_CLASSES = ("own", "paired", "friend", "stranger")
+# 國別(Andy 10-15 18:1x:「全球要能判斷國別」;裁:抬頭加國別、申報 + 時區佐證、用於顯示 / 預設回信語言 / 法規)
+COUNTRY_RE = re.compile(r"^[A-Z]{2}$")                      # ISO 3166-1 alpha-2,主人在名冊申報
+TZ_RE = re.compile(r"^[A-Za-z0-9_+\-]+(?:/[A-Za-z0-9_+\-]+){0,2}$")   # IANA 時區名,寄件機轉接程式量的
+COUNTRY_STATUSES = ("match", "mismatch", "unknown")
+LANG_BY_COUNTRY = {"TW": "zh-TW", "HK": "zh-TW", "MO": "zh-TW", "CN": "zh-TW", "JP": "ja", "KR": "ko"}
 # 名稱裡不准出現的字:會被看成抬頭的分隔、位址或驗證標記(第 5.8 節)
 _NAME_BANNED = (">>", "/", "@", "(", ")", "\uff08", "\uff09")   # 含全形括號
 
@@ -218,10 +223,59 @@ def check_inbox(rec):
         _opt(rec, k, _is_str, "要是字串")
     # 同名(第 5.8 節):轉接程式比對好友名冊判;只會多加警告、不會提高信任,所以讓外掛判
     _opt(rec, "name_collision", lambda v: isinstance(v, bool), "要是 true/false")
+    _opt(rec, "country", lambda v: isinstance(v, str) and bool(COUNTRY_RE.match(v)), "要是兩碼大寫國碼")
+    _opt(rec, "tz", lambda v: isinstance(v, str) and len(v) <= 64 and bool(TZ_RE.match(v)), "要是 IANA 時區名")
     return rec
 
 
-def queue_fields(rec):
+# ── 國別:申報 + 時區佐證 ──
+
+_TZ_TAB_CACHE = {}
+
+
+def _zone_tab_paths():
+    import zoneinfo
+    return [os.path.join(d, "zone.tab") for d in zoneinfo.TZPATH]
+
+
+def tz_country(tz, tab_paths=None):
+    """IANA 時區名 ⇒ 兩碼國碼(查系統 zone.tab,不連網);查不到(沒有 zone.tab、UTC、別名)回 None。"""
+    if not isinstance(tz, str) or not TZ_RE.match(tz):
+        return None
+    paths = tuple(tab_paths) if tab_paths is not None else tuple(_zone_tab_paths())
+    if paths not in _TZ_TAB_CACHE:
+        table = {}
+        for p in paths:
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    for line in fh:
+                        if line.startswith("#"):
+                            continue
+                        cols = line.rstrip("\n").split("\t")
+                        if len(cols) >= 3 and COUNTRY_RE.match(cols[0]):
+                            table.setdefault(cols[2], cols[0])
+            except OSError:
+                continue
+            if table:
+                break
+        _TZ_TAB_CACHE[paths] = table
+    return _TZ_TAB_CACHE[paths].get(tz)
+
+
+def country_check(declared, tz, tab_paths=None):
+    """(狀態, 時區推得的國碼)。狀態:match 申報與時區一致 / mismatch 不一致 / unknown 沒申報或時區量不到。"""
+    tzc = tz_country(tz, tab_paths)
+    if not declared or tzc is None:
+        return "unknown", tzc
+    return ("match" if tzc == declared else "mismatch"), tzc
+
+
+def default_lang(country):
+    """對方沒帶語言時的預設回信語言(aib 四語:zh-TW / en / ja / ko;其他國家用 en)。"""
+    return LANG_BY_COUNTRY.get(country or "", "en")
+
+
+def queue_fields(rec, tab_paths=None):
     """inbox 一筆 ⇒ 入佇列要用的身分與狀態欄位(PR-8 的匯入器照這個寫佇列)。
 
     - sender_kind:主人手機(已驗證)⇒ owner_paired;其他一律 external_seat。**永遠不會是 human**。
@@ -229,12 +283,15 @@ def queue_fields(rec):
     - 陌生 ⇒ hold_human(待審)、優先級降為 normal。
     - shown_name:顯示名稱 → 人格名 → npub 前 12 碼(第 5.8 節);不合格的名稱直接跳過。
     - same_name:外掛判的同名旗標;抬頭加「同名」用(PR-2)。
+    - country / country_status / tz_country:申報國別與寄件機時區佐證(country_check);
+      lang:對方帶的語言,沒帶就照國別給預設回信語言。
     """
     check_inbox(rec)
     cls = rec["class"] if rec["verified"] else "stranger"
     prio = rec.get("priority") or "normal"
     if cls == "stranger":
         prio = "normal"
+    cstat, tzc = country_check(rec.get("country"), rec.get("tz"), tab_paths)
     shown = clean_display_name(rec.get("display_name")) or clean_display_name(rec.get("persona_name")) \
         or rec["from_npub"][:12]
     return {
@@ -244,6 +301,10 @@ def queue_fields(rec):
         "shown_name": shown,
         "verified": rec["verified"],
         "same_name": bool(rec.get("name_collision")),
+        "country": rec.get("country"),
+        "country_status": cstat,
+        "tz_country": tzc,
+        "lang": rec.get("lang") or default_lang(rec.get("country")),
         "class": cls,
         "status": "hold_human" if cls == "stranger" else "queued",
         "priority": prio,
@@ -503,6 +564,42 @@ def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=ti
             "detail": "已交給轉接程式,還沒收到對方回條;勿重送", "msgid": msgid}
 
 
+# 寄件人標籤(seat_address 白名單的格式):`@五碼[(暱稱)]` = 行程鏈量到的;`seat_claimed:五碼(自稱)` = 自稱(codex 等)
+_LABEL_SEAT_RE = re.compile(r"^@([0-9a-z]{4,8})(?:\(|$)")
+_LABEL_CLAIMED_RE = re.compile(r"^seat_claimed:([0-9a-z]{4,8})[(\uff08]")
+
+
+def sender_from_token(token):
+    """dm-ctl 的 whoami token(dm_xhost.encode,跨主機同一套推導)⇒ {cabin, seat, attested};推不出寄件席回 None。
+
+    全球信要用寄件席自己的金鑰簽(第 5.3 節),推不出是哪一席就不能寄 ⇒ 呼叫端回 rc 2。"""
+    import dm_xhost
+    d = dm_xhost.decode(token or "")
+    if not d:
+        return None
+    m = _LABEL_SEAT_RE.match(d["label"])
+    attested = m is not None
+    if m is None:
+        m = _LABEL_CLAIMED_RE.match(d["label"])    # 自稱席照寄,但標未認證(收件端抬頭會顯示未驗證)
+    hub = d["hub"]
+    if not m or not dm_xhost.HUB_RE.fullmatch(hub or ""):
+        return None
+    cabin = "main" if hub == "aihub" else hub.rsplit("-", 1)[-1]
+    if not _CABIN.match(cabin):
+        return None
+    return {"cabin": cabin, "seat": m.group(1), "attested": attested}
+
+
+def reply_target(seat, code, env=None):
+    """收件席 + 回信短碼 ⇒ (原寄件全球位址, 原 msgid);找不到回 None。查佇列(dm_queue.by_reply_code)。"""
+    import dm_queue
+    item = dm_queue.by_reply_code(seat, code, env)
+    if not item:
+        return None
+    g = item["global"]
+    return g["addr"], g["msgid"]
+
+
 def _cli(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="dm_global_files.py")
@@ -510,10 +607,12 @@ def _cli(argv):
     sw = sub.add_parser("send-and-wait", help="正文從 stdin 讀;印一行 key=value,rc 照第 7.1 節")
     sw.add_argument("--root", default=None)
     sw.add_argument("--op", choices=("send", "resolve"), default="send")
-    sw.add_argument("--to", required=True)
-    sw.add_argument("--from-cabin", required=True)
-    sw.add_argument("--from-seat", required=True)
-    sw.add_argument("--attested", choices=("0", "1"), required=True)
+    sw.add_argument("--to")
+    sw.add_argument("--reply-code", help="代替 --to:照外框說明上的短碼回原寄件人(第 9 節)")
+    sw.add_argument("--whoami-token", help="代替 --from-*:dm-ctl 推導的寄件人 token")
+    sw.add_argument("--from-cabin")
+    sw.add_argument("--from-seat")
+    sw.add_argument("--attested", choices=("0", "1"))
     sw.add_argument("--persona-uid")
     for k in ("priority", "thread", "kind", "lang", "reply-to"):
         sw.add_argument("--" + k)
@@ -526,12 +625,34 @@ def _cli(argv):
     if a.cmd == "reply-code":
         print(reply_code(a.msgid))
         return 0
+    def _bail(stage, detail):
+        print("stage=%s rc=2 msgid=- pos=- detail=%s" % (stage, detail))
+        return 2
+    if a.whoami_token:
+        who = sender_from_token(a.whoami_token)
+        if who is None:
+            return _bail("abort", "推不出寄件席(全球信要用寄件席自己的金鑰簽),一個字都沒送")
+    elif a.from_cabin and a.from_seat and a.attested:
+        who = {"cabin": a.from_cabin, "seat": a.from_seat, "attested": a.attested == "1"}
+    else:
+        return _bail("abort", "要給 --whoami-token 或 --from-cabin/--from-seat/--attested")
+    to, reply_to = a.to, a.reply_to
+    if a.reply_code:
+        if a.to:
+            return _bail("abort", "--reply 與位址不能同時給")
+        hit = reply_target(who["seat"], a.reply_code)
+        if hit is None:
+            return _bail("abort", "回信短碼 %s 在 @%s 的佇列找不到" % (a.reply_code, who["seat"]))
+        to, reply_to = hit
+    if not to:
+        return _bail("abort", "沒有收件位址")
     root = Path(a.root) if a.root else default_root()
     ensure_dirs(root)
     rec = {"v": VERSION, "msgid": new_msgid(), "created_at": int(time.time()), "op": a.op,
-           "from": {"cabin": a.from_cabin, "seat": a.from_seat, "attested": a.attested == "1"}, "to": a.to}
+           "from": dict(who), "to": to}
     if a.persona_uid:
         rec["from"]["persona_uid"] = a.persona_uid
+    a.reply_to = reply_to
     if a.op == "send":
         rec["content"] = sys.stdin.read()
     for k in ("priority", "thread", "kind", "lang"):

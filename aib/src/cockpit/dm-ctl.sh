@@ -52,7 +52,7 @@
 # 自動標頭→交 E2.7 咽喉(R30 lint+血緣閘一行未動)→v3 引擎安全投遞。
 set -uo pipefail
 # ── 再入深度上限(@abb89 10-15 19:02,事故後第一道防線)──────────────────────────────
-#   本檔會再入自己(跳艙、自動重送、跨主機推導寄件人、多目標逐席…)。10-15 18:4x 全球接線分支的刀測拿掉一層防護,
+#   本檔會再入自己(跳艙、自動重送、跨主機 / 全球推導寄件人、多目標逐席…)。10-15 18:4x 一層防護被刀測拿掉,
 #   推導寄件人那一輪無限再入,兩千多個 bash 塞滿整機行程表(右欄 AI 欄掛、別席全套 rc 127)。
 #   ⇒ 每進一次本檔深度 +1(環境 AIB_DM_DEPTH,只認數字,壞值當 0);超過上限就 rc 2 停手、說原因。
 #   合法鏈最深約 4 層(入口 → 跳艙 → 重送 → 推導),上限 8 留餘裕。在任何 fork 之前判,失控時每層只多 0 支行程。
@@ -732,6 +732,7 @@ TO_RAW=""; TO_GIVEN=0; RESOLVE_ONLY=0
 DM_THREAD=""; DM_KIND=""; DM_EXPIRES=""; DM_TTL_MIN=""; DM_CLOSE=""
 RETRY_UNTIL=""; RETRY_EVERY=""; RETRY_UNTIL_GIVEN=0
 PROBE_BOX=0; PARK_ON_DRAFT=0; XHOST_IDENT=""
+DM_REPLY=""; DM_PRIORITY=""   # 全球路線(開發文件第 7.3、9、11 節):--reply <短碼>、--priority
 while [ $# -gt 0 ]; do
   case "$1" in
     --to) TO_RAW="${2:-}"; TO_GIVEN=1; shift 2 ;;
@@ -767,6 +768,11 @@ while [ $# -gt 0 ]; do
     # 跨主機收件端(dm_xhost.py):寄件機推導好的身分 token。只在 sshd 底下才收,驗不過 rc=2;見下面「跨主機」兩段。
     --xhost-ident) XHOST_IDENT="${2:-}"; shift 2 ;;
     --xhost-ident=*) XHOST_IDENT="${1#--xhost-ident=}"; shift ;;
+    # 全球回信:外框說明上的 5 碼短碼 ⇒ 回原寄件人(代替位置目標);全球優先級
+    --reply) DM_REPLY="${2:-}"; shift 2 ;;
+    --reply=*) DM_REPLY="${1#--reply=}"; shift ;;
+    --priority) DM_PRIORITY="${2:-}"; shift 2 ;;
+    --priority=*) DM_PRIORITY="${1#--priority=}"; shift ;;
     --human-id*|--sender-seat*)
       die "sender_seat / human_id 只可推導不可指定($1):那是身份欄,自填=冒充" 2 ;;
     --sender*|--as*)
@@ -802,6 +808,24 @@ if [ "$TO_GIVEN" = "1" ] && [ -n "$TARGET" ]; then
   "$PY3" -c 'import json,sys; print(json.dumps({"stage":"usage","rc":2,"detail":"--to 與位置目標不得同時給"},ensure_ascii=False))'
   die "--to 與位置目標不得同時給(§二 互斥)" 2
 fi
+# ── 全球路線的參數(開發文件第 7.3、9、11、21 節)──
+if [ -n "$DM_PRIORITY" ]; then
+  case "$DM_PRIORITY" in urgent|important|normal|reminder) ;;
+    *) die "--priority 只能 urgent / important / normal / reminder" 2 ;; esac
+fi
+if [ -n "$DM_REPLY" ]; then
+  case "$DM_REPLY" in [a-z2-9][a-z2-9][a-z2-9][a-z2-9][a-z2-9]) ;;
+    *) die "--reply 的短碼是 5 碼(小寫英文與 2–9),在全球來信最前面那行" 2 ;; esac
+  [ "$TO_GIVEN" = "1" ] && die "--reply 與 --to 不能同時給" 2
+  # 用 --reply 時沒有位置目標:位置參數全部是正文(`aib dm --reply g7k2m "收到"`)
+  [ -n "$TARGET" ] && MSG_ARGV=("$TARGET" ${MSG_ARGV[@]+"${MSG_ARGV[@]}"})
+  [ "$RESOLVE_ONLY" = "1" ] && die "--reply 不能用在解析模式" 2
+  TARGET="@reply"; AIB_DM_ADDR_DONE=1        # 位址由 send-and-wait 照短碼從自己的佇列查回
+fi
+if [ "$TO_GIVEN" = "1" ]; then
+  case "$TO_RAW" in *npub1*) emit_json 2 resolve "global:no-broadcast"
+    die "全球位址不能群發(--to);一次寄一位" 2 ;; esac
+fi
 if [ "$TO_GIVEN" != "1" ]; then
   [ -n "$TARGET" ] || die "用法:aib dm <目標> [訊息...] [--file F] [--dry-run] [--verify]" 2
 fi
@@ -811,6 +835,7 @@ fi
 #     寄件人用 AIB_DM_XHOST_WHOAMI=1 再入本檔推導 —— 同一套規則,不另抄一份;那一輪只印 token、不送、不留痕。
 #   收件機:--xhost-ident 驗過(sshd 底下、對方不是本機、寄件方過白名單)才換抬頭寄件方;驗不過 rc=2,一個字都沒送。
 _XH_WHOAMI=0; _XH_OUT_IP=""; _XH_IN=0; _XH_LABEL=""; _XH_ORIGIN=""; _XH_HUB=""; _XH_IP=""
+_GL_OUT_ADDR=""   # 全球位址只由下面位址段設;先清掉,環境裡帶進來的不算
 if [ "${AIB_DM_XHOST_WHOAMI:-0}" = "1" ] && [ -z "$XHOST_IDENT" ] && [ "$TO_GIVEN" != "1" ]; then
   # 只推導寄件人:跳過完整地址、取稿、真人三條件、留痕(RESOLVE_ONLY 那條路),下面目標閘整段跳過。
   _XH_WHOAMI=1; RESOLVE_ONLY=1; AIB_DM_ADDR_DONE=1; TARGET="${TARGET:-@xhost}"
@@ -846,6 +871,15 @@ if [ "$TO_GIVEN" != "1" ] && [ -z "${AIB_DM_ADDR_DONE:-}" ]; then
   # 認不出的寫法(窗號、角色名…)不在這裡拒:交給下面既有的具名拒投,理由才講得準。
   if [ "$_addr_rc" != "0" ] && [ "$(_addr_get reason)" = "bad" ]; then
     _addr_line="kind=other"; _addr_rc=0
+  fi
+  if [ "$_addr_rc" != "0" ] && [ "$(_addr_get reason)" = "global" ] && [ "$_XH_IN" != "1" ]; then
+    # 全球:這裡不送,讀完稿再交給 _global_send(轉接程式寄;同跨主機的時序)
+    if [ "$RESOLVE_ONLY" = "1" ]; then _resolve_fail invalid; exit 2; fi
+    _GL_OUT_ADDR="$(_addr_get addr)"; _addr_line="kind=global"; _addr_rc=0
+  fi
+  if [ "$_addr_rc" != "0" ] && [ "$(_addr_get reason)" = "global-header" ]; then
+    emit_json 2 resolve "address:global-header"
+    die "全球來信的抬頭不是位址;回信請用 aib dm --reply <短碼>(短碼在來信最前面那行)" 2
   fi
   if [ "$_addr_rc" != "0" ] && [ "$(_addr_get reason)" = "remote" ] && [ "$_XH_IN" != "1" ]; then
     # 跨主機:這裡不送,讀完稿再交給 _xhost_send(要先有稿;身分也在那裡推)。
@@ -957,6 +991,54 @@ fi
 if [ "$RESOLVE_ONLY" != "1" ] && [ "$PROBE_BOX" != "1" ]; then
   [ -n "${MSG//[[:space:]]/}" ] || die "訊息不得為空白" 2
 fi
+# 推導寄件人 token(跨主機與全球共用;同一套規則再入本檔,那一輪只印 token、不送、不留痕)。推不出印空字串。
+# 推導那一輪失敗時 stdout 會是解析失敗的 JSON:rc 不是 0、或不是純 token 字元 ⇒ 都當推不出來。
+# 推導要問寄件人**自己那一艙**:沒指定艙時 HUB 是預設名,這台不一定有 ⇒ 從自己 pane 的 $TMUX 認 aihub 形的 socket。
+#   (cockpit-env.sh 一定會 export 預設名,所以看的是呼叫端有沒有真的指定:_DM_SOCKET_WAS_SET。)
+_whoami_token() {
+  local own_hub="" tmux_sock ident
+  [ "$_DM_SOCKET_WAS_SET" = "1" ] && own_hub="${EZ2_AIHUB_SOCKET:-}"
+  if [ -z "$own_hub" ] && [ -n "${TMUX:-}" ]; then
+    tmux_sock="$(basename "${TMUX%%,*}")"
+    case "$tmux_sock" in aihub|aihub-*) case "$tmux_sock" in *[!0-9A-Za-z-]*) ;; *) own_hub="$tmux_sock" ;; esac ;; esac
+  fi
+  # ★ 10-15 18:4x 事故:刀測拿掉 _GL_OUT_ADDR 初始化時,這一輪從環境繼承到全球位址又走全球、又來推導,
+  #   無限再入,兩千多個 bash 把整機行程數塞滿約 8 分鐘。⇒ 再入前清掉全球相關變數(第二層;第三層見下面分派那行)。
+  ident="$(env -u _GL_OUT_ADDR -u DM_REPLY ${own_hub:+EZ2_AIHUB_SOCKET="$own_hub"} AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
+  ident="${ident##*$'\n'}"
+  case "$ident" in *[!A-Za-z0-9_=-]*) ident="" ;; esac
+  printf '%s' "$ident"
+}
+# 全球寄件(開發文件第 7 節):推導寄件人 ⇒ dm_global_files send-and-wait 寫待寄檔、等回條(一次 Python)。
+#   rc 照第 7.1 節:0 已到 / 已排進對方佇列;2 沒送出(轉接程式沒開、推不出寄件席、被拒、逾時已撤回);
+#   3 對方待審;4 已交出、不知道到沒(勿重送)。不 record 進本機佇列歷史(全球歷史在回條檔)。
+_global_send() {
+  local ident out rc stage msgid pos detail
+  local -a gargs=(send-and-wait)
+  if [ -n "$DM_REPLY" ]; then gargs+=(--reply-code "$DM_REPLY"); else gargs+=(--to "$_GL_OUT_ADDR"); fi
+  ident="$(_whoami_token)"
+  [ -n "$ident" ] && gargs+=(--whoami-token "$ident")
+  [ "$DRYRUN" = "1" ] && gargs+=(--op resolve)
+  [ "$VERIFY" = "1" ] && gargs+=(--verify)
+  [ -n "$DM_THREAD" ] && gargs+=(--thread "$DM_THREAD")
+  [ -n "$DM_KIND" ] && gargs+=(--kind "$DM_KIND")
+  [ -n "$DM_EXPIRES" ] && gargs+=(--expires "$DM_EXPIRES")
+  [ -n "$DM_PRIORITY" ] && gargs+=(--priority "$DM_PRIORITY")
+  out="$(printf '%s' "$MSG" | "$PY3" "$HERE/dm_global_files.py" "${gargs[@]}" 2>/dev/null)"; rc=$?
+  out="${out##*$'\n'}"
+  stage="$(printf '%s\n' "$out" | sed -n 's/^stage=\([^ ]*\) .*/\1/p')"
+  msgid="$(printf '%s\n' "$out" | sed -n 's/.* msgid=\([^ ]*\) .*/\1/p')"
+  pos="$(printf '%s\n' "$out" | sed -n 's/.* pos=\([^ ]*\) .*/\1/p')"
+  detail="${out#* detail=}"; [ "$detail" = "$out" ] && detail=""
+  case "$rc" in 0|2|3|4) ;; *) rc=4; stage="${stage:-unknown}"; detail="send-and-wait 回了契約外的結果;勿重送" ;; esac
+  [ -n "$stage" ] || { rc=2; stage="abort"; detail="send-and-wait 沒有輸出,一個字都沒送"; }
+  _RECORD_ELIGIBLE=0
+  _RESULT_STAGE="$stage"; _RESULT_ID="${msgid:--}"; _RESULT_RELAY="-"; _RESULT_THREAD="${DM_THREAD:--}"
+  [ -n "$pos" ] && [ "$pos" != "-" ] && _RESULT_REASON="pos=$pos"
+  emit_json "$rc" "$stage" "$detail"
+  [ -n "$detail" ] && echo "aib-dm-ctl: 全球:$detail" >&2
+  return "$rc"
+}
 # 跨主機寄件(上面「跨主機」那段):推導寄件人 ⇒ ssh 交給收件機的 aib dm;rc 與 RESULT 行照收件機的。
 #   投不進的兩種:連不上(先 ssh true 試過)或收件機自己拒 ⇒ rc 2;ssh 中途斷 ⇒ 不知道對方收到沒 ⇒ rc 4(勿重送)。
 _xhost_send() {
@@ -979,18 +1061,7 @@ _xhost_send() {
     emit_json 2 resolve "xhost:ssh-unreachable"
     die "連不上 $host($_XH_OUT_IP)的 SSH,一個字都沒送" 2
   fi
-  # 推導那一輪失敗時 stdout 會是解析失敗的 JSON:rc 不是 0、或不是純 token 字元 ⇒ 都當推不出來。
-  # 推導要問寄件人**自己那一艙**:沒指定艙時 HUB 是預設名,這台不一定有 ⇒ 從自己 pane 的 $TMUX 認 aihub 形的 socket。
-  #   (cockpit-env.sh 一定會 export 預設名,所以看的是呼叫端有沒有真的指定:_DM_SOCKET_WAS_SET。)
-  local own_hub="" tmux_sock
-  [ "$_DM_SOCKET_WAS_SET" = "1" ] && own_hub="${EZ2_AIHUB_SOCKET:-}"
-  if [ -z "$own_hub" ] && [ -n "${TMUX:-}" ]; then
-    tmux_sock="$(basename "${TMUX%%,*}")"
-    case "$tmux_sock" in aihub|aihub-*) case "$tmux_sock" in *[!0-9A-Za-z-]*) ;; *) own_hub="$tmux_sock" ;; esac ;; esac
-  fi
-  ident="$(env ${own_hub:+EZ2_AIHUB_SOCKET="$own_hub"} AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
-  ident="${ident##*$'\n'}"
-  case "$ident" in *[!A-Za-z0-9_=-]*) ident="" ;; esac
+  ident="$(_whoami_token)"
   if [ -z "$ident" ]; then
     # 推導那一輪自己死掉(hub 不可達之類):退回最低權格,照實寫推不出來,不猜。
     ident="$("$PY3" "$HERE/dm_xhost.py" encode "unattested:${S_ORIGIN_FALLBACK:-unknown}" "" "" "")" \
@@ -1044,6 +1115,13 @@ _xhost_send() {
   emit_json 4 xhost-unknown "收件機回了契約外的 rc=$rc;勿重送,先到那台看"
   return 4
 }
+# 推導寄件人那一輪(_XH_WHOAMI)永遠不走全球:它只該印 token。不然一層防護失效就會無限再入(上面 18:4x 事故)。
+if [ "$_XH_WHOAMI" != "1" ] && { [ -n "${_GL_OUT_ADDR:-}" ] || [ -n "$DM_REPLY" ]; }; then
+  [ "${RETRY_UNTIL_GIVEN}" = "1" ] && { emit_json 2 resolve "global:retry-until"; die "全球路線還不支援 --retry-until" 2; }
+  _global_send
+  exit $?
+fi
+[ -n "$DM_PRIORITY" ] && echo "aib-dm-ctl: --priority 目前只用在全球位址;本機路線照佇列原本的規則排,這次忽略" >&2
 if [ -n "$_XH_OUT_IP" ]; then
   [ "${RETRY_UNTIL_GIVEN}" = "1" ] && die "跨主機還不支援 --retry-until" 2
   S_ORIGIN_FALLBACK="$("$PY3" "$HERE/sender_origin.py" 2>/dev/null | tr -cd '0-9A-Za-z_.:-' || true)"
@@ -2312,7 +2390,7 @@ fi
 [ -n "${_SENDER_HUB:-$HUB}" ] && _V2_ARGS+=("--sender-hub=${_SENDER_HUB:-$HUB}")
 [ -n "${S_ORIGIN:-}" ] && _V2_ARGS+=("--sender-origin=${S_ORIGIN}")
 
-_HDR_S_LABEL="$S_LABEL"; _HDR_S_ORIGIN="${S_ORIGIN:-}"; _HDR_S_ADDR=""; _HDR_S_NOTE=""
+_HDR_S_LABEL="$S_LABEL"; _HDR_S_ORIGIN="${S_ORIGIN:-}"; _HDR_S_ADDR=""; _HDR_S_NOTE=""; _HDR_GLOBAL=0; _G_FRAME=""
 _xh_hdr() { _HDR_S_ADDR="${1#xhost:}"; _HDR_S_NOTE="跨主機·經SSH"; }
 if [ "$_XH_IN" = "1" ]; then _xh_hdr "$_XH_IP"; fi
 # review r2 m6:那一則住在哪一席的佇列 = 投遞者說的(AIB_DM_QUEUED_SEAT;轉給後繼席時由上面帶過來),沒說才用收件席
@@ -2337,7 +2415,13 @@ print("%s\x1f%s\x1f%s" % (lab, it.get("sender_origin") or "", Q._hub_or_empty(it
   if [ -n "$_q_orig" ]; then
     # 分隔用 \x1f 不用 tab:tab 是 IFS 空白字元,連續兩個會被併成一個 ⇒ 來源名空的時候艙名會跑到來源那一欄
     IFS=$'\x1f' read -r _q_lab _q_org _q_hub <<<"$_q_orig"
-    if [ -n "$_q_lab" ] && "$PY3" -c 'import sys,os
+    # 全球來信(開發文件第 8.1 節第 7–8 步):來源 nostr:<npub> ⇒ 抬頭整段由下面 dm_header.py from-global
+    #   照佇列的 global 欄組(顯示名稱 + 全球·已驗證/未驗證)。不走本機位址白名單:寄件方不是本機 token,
+    #   名字另由 dm_global_files.clean_display_name 驗過(不准 >> / @ 括號)。
+    case "$_q_org" in nostr:*) _HDR_GLOBAL=1 ;; esac
+    if [ "$_HDR_GLOBAL" = "1" ]; then
+      :
+    elif [ -n "$_q_lab" ] && "$PY3" -c 'import sys,os
 sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[2])))
 import seat_address as sa
 sa.assert_address_whitelist(sys.argv[1], "dm 抬頭")' "[$_q_lab > $T_LABEL / 台北 $(date '+%m-%d %H:%M')]" "$HERE/seat_address.py" 2>/dev/null \
@@ -2372,13 +2456,23 @@ fi
 _T_SOCKET="$("$PY3" -c 'import json,sys
 m=json.loads(sys.argv[1])["matches"][0]
 print((m.get("rec") or {}).get("socket") or "")' "$RESOLVED" 2>/dev/null || true)"
-if ! HEADER="$("$PY3" "$HERE/dm_header.py" from-labels "$_HDR_S_LABEL" "$T_LABEL" "$_HDR_S_ORIGIN" "${_SENDER_HUB:-$HUB}" "$_T_SOCKET" "$_HDR_S_ADDR" "$_HDR_S_NOTE")" \
+if [ "$_HDR_GLOBAL" = "1" ]; then
+  # 一次 Python 拿抬頭與外框說明行(\x1f 分開);佇列那一則不是可用的全球來信 ⇒ rc 2,不貼半個全球抬頭
+  if ! _g_out="$("$PY3" "$HERE/dm_header.py" from-global "$_Q_SEAT" "$AIB_DM_QUEUED_ITEM_ID" "$T_LABEL" "$_T_SOCKET")" \
+     || [ -z "$_g_out" ] || [ "${_g_out#*$'\x1f'}" = "$_g_out" ]; then
+    emit_json 2 header "全球抬頭產生失敗(dm_header.py from-global)"
+    die "全球抬頭產生失敗:$_Q_SEAT/$AIB_DM_QUEUED_ITEM_ID" 2
+  fi
+  HEADER="${_g_out%%$'\x1f'*}"; _G_FRAME="${_g_out#*$'\x1f'}"
+elif ! HEADER="$("$PY3" "$HERE/dm_header.py" from-labels "$_HDR_S_LABEL" "$T_LABEL" "$_HDR_S_ORIGIN" "${_SENDER_HUB:-$HUB}" "$_T_SOCKET" "$_HDR_S_ADDR" "$_HDR_S_NOTE")" \
    || [ -z "$HEADER" ]; then
   emit_json 2 header "抬頭產生失敗(dm_header.py from-labels)"
   die "抬頭產生失敗:[$S_LABEL > $T_LABEL]" 2
 fi
 # 抬頭與正文同一行、中間一個空格(a seat 22:54 裁;多行貼上會被 Claude Code 折成 [Pasted text])。
 BODY="$HEADER $MSG"
+# 全球來信:外框說明行(第 8.3 節,帶回信短碼)放在正文最前面,同一行
+[ -n "$_G_FRAME" ] && BODY="$HEADER $_G_FRAME $MSG"
 
 # ★★ EH.17 階段 3a(a seat 找到、a seat 量到、艦長 07:19 開工):
 #   `label_of()` 的 kind=emit 只看得到**席位紀錄**,而**手寫在正文裡的舊碼

@@ -89,7 +89,11 @@ WAITING_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered")
 KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "notice")   # notice:10-13 S7-2 知會,讀過即備存
 BROADCAST_KINDS = frozenset(("order", "rule", "pipeline"))
 # 寄件端量到的來源;v1 的 "ai" 讀進來當 seat。human 只在送信端三條件全量到時才會出現(dm-ctl 那一刀)。
-SENDER_KINDS = ("seat", "seat_claimed", "human", "system", "unknown")
+SENDER_KINDS = ("seat", "seat_claimed", "human", "system", "unknown", "external_seat", "owner_paired")
+# external_seat / owner_paired(全球席位對談,開發文件第 8.1 節):別人的 aib 席經 Nostr 寄來 / 主人配對過的手機。
+#   只由全球收件匯入器(dm_global_files.queue_fields)給;**都不是 human**,也不會被升成 human。
+#   來源欄必須是 nostr:<npub>,對不上就降成 unknown(見 _new_item)。
+GLOBAL_SENDER_KINDS = ("external_seat", "owner_paired")
 # seat_claimed:寄件席**有名字但沒有被量到**——名字是呼叫端遞來的證據(codex 的 turn metadata)
 # 經本機登記簿對得上活席而來,不是從行程祖先鏈量出來的。刻意不併進 "seat":
 # 消費端要放寬到它必須顯式寫出這個值,**放寬因此是一個看得見的決定**。
@@ -280,12 +284,48 @@ ORIGIN_NAME_RE = re.compile(r"^[0-9A-Za-z._-]{1,64}$")
 # 跨主機收件(dm_xhost):xhost:<sshd 量到的對方 IP>。忙碌入列後重投靠它把抬頭位址寫回對方,
 #   不然重投那一輪會寫成收件機自己的 IP(10-15 實測:Pro 的席被標成 Mini 的區網 IP)。
 XHOST_ORIGIN_RE = re.compile(r"^xhost:[0-9A-Fa-f:.]{2,45}$")
+# 全球收件(開發文件第 8.1 節):nostr:<寄件席 npub>。同 xhost:,重投時靠它還原全球抬頭(附錄 C-1 那個坑)。
+NOSTR_ORIGIN_RE = re.compile(r"^nostr:npub1[02-9ac-hj-np-z]{58}$")
 
 
 def _origin_or_none(value):
-    """寄件來源機器名(sender_origin 推的腳本名或五碼,或 xhost:<IP>);不合形回 None。"""
+    """寄件來源機器名(sender_origin 推的腳本名或五碼,或 xhost:<IP>、nostr:<npub>);不合形回 None。"""
     v = str(value or "").strip()
-    return v if ORIGIN_NAME_RE.fullmatch(v) or XHOST_ORIGIN_RE.fullmatch(v) else None
+    if ORIGIN_NAME_RE.fullmatch(v) or XHOST_ORIGIN_RE.fullmatch(v) or NOSTR_ORIGIN_RE.fullmatch(v):
+        return v
+    return None
+
+
+def _global_or_none(value):
+    """全球來信的抬頭資料(開發文件第 5.8、9 節)⇒ 驗過的 dict;任何一欄不合就整欄 None(不猜、不半存)。
+
+    {addr, shown, verified, same_name, msgid, reply_code, country, country_status, tz_country};
+    格式規則只在 dm_global_files 一處。國別三欄是選填(舊列、非 aib 寄件人沒有)。"""
+    if not isinstance(value, dict):
+        return None
+    import dm_global_files as GF
+    try:
+        addr, shown, msgid = value["addr"], value["shown"], value["msgid"]
+        verified, same = value["verified"], value.get("same_name", False)
+    except KeyError:
+        return None
+    ok_addr = GF.parse_address(addr) is not None
+    ok_shown = GF.clean_display_name(shown) == shown
+    ok_msgid = isinstance(msgid, str) and bool(GF.MSGID_RE.match(msgid))
+    code = value.get("reply_code")
+    ok_code = code is None or (isinstance(code, str) and bool(GLOBAL_REPLY_CODE_RE.fullmatch(code)))
+    country, cstat, tzc = value.get("country"), value.get("country_status") or "unknown", value.get("tz_country")
+    ok_country = (country is None or (isinstance(country, str) and bool(GF.COUNTRY_RE.match(country)))) \
+        and cstat in GF.COUNTRY_STATUSES \
+        and (tzc is None or (isinstance(tzc, str) and bool(GF.COUNTRY_RE.match(tzc))))
+    if not (ok_addr and ok_shown and ok_msgid and ok_code and ok_country
+            and isinstance(verified, bool) and isinstance(same, bool)):
+        return None
+    return {"addr": addr, "shown": shown, "verified": verified, "same_name": same, "msgid": msgid,
+            "reply_code": code, "country": country, "country_status": cstat, "tz_country": tzc}
+
+
+GLOBAL_REPLY_CODE_RE = re.compile(r"^[a-z2-9]{5}$")
 
 
 _CABIN_HUB_CACHE = {}
@@ -913,7 +953,8 @@ def item_origin(item, seat=None):
 def _new_item(seat, msg, sender_label, sender_kind="unknown", session_uuid="", wid="",
               provider="", priority="normal", env=None, now=None, origin=None,
               thread=None, kind=None, sender_seat=None, human_id=None, expires=None, status="queued",
-              sender_source=None, hub=None, sender_hub=None, sender_origin=None, closes=None):
+              sender_source=None, hub=None, sender_hub=None, sender_origin=None, closes=None,
+              global_info=None):
     if not SEAT_RE.fullmatch(seat or ""):
         raise ValueError("seat")
     body = msg if isinstance(msg, str) else ""
@@ -930,6 +971,9 @@ def _new_item(seat, msg, sender_label, sender_kind="unknown", session_uuid="", w
     if sk != "human":
         hid = None
     seat_claim = (sender_seat or "").strip().lower() or None
+    # 全球寄件人種類要配 nostr: 來源;對不上 ⇒ 降 unknown(失效方向落低權格,同上兩條)。
+    if sk in GLOBAL_SENDER_KINDS and not NOSTR_ORIGIN_RE.fullmatch(str(sender_origin or "").strip()):
+        sk = "unknown"
     if sk == "seat_claimed" and not seat_claim:
         # 形狀照上面那條 human:**標記了弱身分卻沒有身分值**,那個標記就沒有意義。
         # 失效方向一樣落在低權格(unknown),不落在看起來正常的那一格。
@@ -989,6 +1033,11 @@ def _new_item(seat, msg, sender_label, sender_kind="unknown", session_uuid="", w
             item["sender_seat"] = lab[1:]
     if isinstance(closes, str) and ITEM_RE.fullmatch(closes.strip()):
         item["closes"] = closes.strip()   # S7-3:送達後要結掉的原信(只在有帶時才有這欄,舊列形狀不變)
+    if global_info is not None and sk in GLOBAL_SENDER_KINDS:
+        # 全球來信才有這欄(舊列形狀不變);本機寄件人帶了也不收 —— 抬頭不能被本機的信換成全球格式。
+        g = _global_or_none(global_info)
+        if g is not None:
+            item["global"] = g
     return item
 
 
@@ -997,12 +1046,17 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
             env=None, now=None, origin=None,
             thread=None, kind=None, sender_seat=None, human_id=None, expires=None,
             sender_source=None, hub=None, sender_hub=None, sender_origin=None, no_relay=False, closes=None,
-            attempts=None):
+            attempts=None, global_info=None):
     item = _new_item(seat, msg, sender_label, sender_kind=sender_kind, session_uuid=session_uuid,
                      wid=wid, provider=provider, priority=priority, env=env, now=now, origin=origin,
                      thread=thread, kind=kind, sender_seat=sender_seat, human_id=human_id, expires=expires,
                      sender_source=sender_source, hub=hub, sender_hub=sender_hub, sender_origin=sender_origin,
-                     closes=closes)
+                     closes=closes, global_info=global_info)
+    if item.get("global") and not item["global"].get("reply_code"):
+        # 回信短碼(第 9 節):同一席已用過的不重複
+        import dm_global_files as GF
+        taken = {(i.get("global") or {}).get("reply_code") for i in _all_items(seat, env=env)}
+        item["global"]["reply_code"] = GF.reply_code(item["global"]["msgid"], taken=taken - {None})
     if no_relay:
         # review r13 M1:寄件端明說「整行貼、不落檔」(AIB_DM_RELAY_BYTES=0:給讀不到落檔的家的人格包/交接/開席單)
         #   ⇒ 排進佇列也記著;排空時 _dmctl_env 看到這個鍵才把門檻設 0,不然排空用預設 600 又換成指標
@@ -2399,6 +2453,26 @@ def _all_items(seat, env=None, with_errors=False):
         else:
             items.append(item)
     return (items, errors) if with_errors else items
+
+
+def by_reply_code(seat, code, env=None, now=None):
+    """收件席照外框說明上的短碼找回原信(`aib dm --reply <碼>`,第 9 節)。找不到、碼不合形、或過期回 None。
+
+    期限 = 檔案契約的保留天數(dm_global_files.KEEP_DAYS,7 天):很久以前的短碼不再認,避免回錯人(開發文件 v0.8)。"""
+    if not isinstance(code, str) or not GLOBAL_REPLY_CODE_RE.fullmatch(code):
+        return None
+    import dm_global_files as GF
+    cut = (time.time() if now is None else now) - GF.KEEP_DAYS * 86400
+    for item in _all_items(seat, env=env):
+        g = item.get("global")
+        if isinstance(g, dict) and g.get("reply_code") == code:
+            try:
+                fresh = int(item.get("ts") or 0) >= cut
+            except (TypeError, ValueError):
+                fresh = False
+            if fresh:
+                return item
+    return None
 
 
 def history_items(seat, env=None):
@@ -4302,6 +4376,9 @@ def main(argv=None, env=None):
     pt = sub.add_parser("patrol")
     pt.add_argument("--seat", required=True)
 
+    brc = sub.add_parser("by-reply-code")   # 全球回信(第 9 節):短碼 ⇒ 原寄件位址與 msgid(dm-ctl --reply 用)
+    brc.add_argument("--seat", required=True)
+    brc.add_argument("--code", required=True)
     sh = sub.add_parser("show")
     sh.add_argument("--seat", required=True)
     sh.add_argument("--id", required=True)
@@ -4577,6 +4654,14 @@ def main(argv=None, env=None):
         _print_json(patrol_payload(args.seat, env=env))
         return 0
 
+    if args.cmd == "by-reply-code":
+        # 一行 key=value;rc 0 找到 / 4 找不到(或碼不合形)。位址與 msgid 都驗過形狀才進佇列,這裡照印。
+        item = by_reply_code(args.seat, args.code, env)
+        if not item:
+            return 4
+        g = item["global"]
+        print("addr=%s msgid=%s id=%s" % (g["addr"], g["msgid"], item["id"]))
+        return 0
     if args.cmd == "show":
         item = _load_item(args.seat, args.id, env)
         if not item:
