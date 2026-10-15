@@ -432,5 +432,35 @@ class B8HopKeepsMessage(unittest.TestCase):
         self.assertEqual(len(relay_rows(b)), 1, relay_rows(b))
 
 
+def throat_sender(call):
+    return json.loads(call[call.index("--sender-json") + 1])
+
+
+class B3SpoofedTmuxPaneCannotClaimSeat(unittest.TestCase):
+    """B3:自設 TMUX + TMUX_PANE 指向別席的 pane,不得換到那一席的強身份(行程鏈證不出就不升)。"""
+
+    def _run(self, pane_pid):
+        b = Box(self, seats=((2, SEAT_UUID), (3, SENDER_UUID)), extra_windows=())
+        b.panes({"%9": {"wid": "@3", "pid": pane_pid}})
+        p = b.run(["@abcde", "hello b3"], TMUX="/tmp/fake-tmux-dir/%s,1,0" % HUB, TMUX_PANE="%9")
+        calls = b.exec_calls()
+        self.assertEqual(len(calls), 1, p.stdout + p.stderr)
+        return calls[0]
+
+    def test_pane_not_in_ancestry_is_not_main(self):
+        other = subprocess.Popen(["sleep", "60"])
+        try:
+            call = self._run(other.pid)
+        finally:
+            other.kill(); other.wait()
+        self.assertNotEqual(throat_sender(call).get("kind"), "main", throat_sender(call))
+        self.assertNotIn("77777", throat_body(call).split(" >> ")[0])
+
+    def test_pane_in_ancestry_still_main_control(self):
+        call = self._run(os.getpid())      # 測試行程是 dm-ctl 的祖先 ⇒ 行程鏈證得出
+        self.assertEqual(throat_sender(call).get("kind"), "main", throat_sender(call))
+        self.assertIn("77777", throat_body(call).split(" >> ")[0])
+
+
 if __name__ == "__main__":
     unittest.main()

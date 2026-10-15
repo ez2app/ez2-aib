@@ -1554,6 +1554,34 @@ LIVE_IDS="$(hub_tmux list-windows -t aihub -F '#{window_id}' 2>/dev/null)" \
        emit_json 2 resolve "hub 不可達"; die "hub tmux 不可達(-L $HUB)。沒有指定艙,也沒有在其他活艙找到這席。" 2; }
 
 # 目標解析+發送席推導(單次 python:JSON 讀寫不在 bash 裡手拼)
+# ★ 10-15 B3:TMUX / TMUX_PANE 是送方行程自己的環境變數 —— 設兩個變數指向別席的 pane,抬頭就掛成那一席的
+#   強身份(@五碼、kind=main),而帳本 --sender-seat 從行程鏈推是真席 ⇒ 抬頭與帳本分歧。
+#   改:問窗號時一併問那個 pane 的 pane_pid,**它要在本行程的祖先鏈上**才採用;證不出 ⇒ 當作沒有 pane
+#   (往下照舊走行程鏈 / 自稱 / unattested,不升權)。背景分身繼承 TMUX_PANE 時同理(它的父程是守護程式)。
+_dm_pid_is_ancestor() {   # $1=pid;本行程或其祖先之一 ⇒ 0
+  local _want="$1" _cur="$$" _n=0
+  case "$_want" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$_want" -gt 1 ] || return 1
+  while [ "$_n" -lt 64 ]; do
+    [ "$_cur" = "$_want" ] && return 0
+    _cur="$(ps -o ppid= -p "$_cur" 2>/dev/null | tr -d '[:space:]')"
+    case "$_cur" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$_cur" -gt 1 ] || return 1
+    _n=$((_n + 1))
+  done
+  return 1
+}
+_dm_pane_wid_proven() {   # $@=取 display-message 的指令前綴;印窗號(pane_pid 在祖先鏈上才印)
+  local _o _w _pp
+  _o="$("$@" display-message -p -t "$TMUX_PANE" '#{window_id} #{pane_pid}' 2>/dev/null)" || return 0
+  read -r _w _pp <<<"$_o"
+  if [ -n "$_w" ] && _dm_pid_is_ancestor "$_pp"; then
+    printf '%s\n' "$_w"
+  elif [ -n "$_w" ]; then
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.pane_not_ancestor pane="$TMUX_PANE")" >&2
+  fi
+  return 0
+}
 _SELF_WID=""
 if [ -n "${TMUX:-}" ]; then
   _sock_path="${TMUX%%,*}"
@@ -1566,7 +1594,7 @@ if [ -n "${TMUX:-}" ]; then
     #   human 署名」,而刀四之後 dm-ctl 永不產生 human:註解與碼相反,而下一個人
     #   會照註解去改碼(dev4 刀 H 第 1 條;零行為變更)。
     if [ -n "${TMUX_PANE:-}" ]; then
-      _SELF_WID="$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null || true)"
+      _SELF_WID="$(_dm_pane_wid_proven tmux)"
     fi
   elif [ -n "${TMUX_PANE:-}" ]; then
     # ★ 09-30 a seat(the maintainer 01:0x 抓到「為什麼會有艙外」):**跨艙寄信**時 HUB 已換成收件人那一艙,
@@ -1582,7 +1610,7 @@ if [ -n "${TMUX:-}" ]; then
                [ -n "$_sender_inst" ] && _SENDER_SEATS_DIR="$_AIB_ROOT/instances/$_sender_inst/seats" ;;
     esac
     if [ -n "${_SENDER_SEATS_DIR:-}" ] && [ -d "$_SENDER_SEATS_DIR" ]; then
-      _SELF_WID="$(env -u TMUX tmux -L "$_sender_sock" display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null || true)"
+      _SELF_WID="$(_dm_pane_wid_proven env -u TMUX tmux -L "$_sender_sock")"
       [ -n "$_SELF_WID" ] && _SENDER_HUB="$_sender_sock" && export DM_SENDER_SEATS_DIR="$_SENDER_SEATS_DIR"
     fi
   fi

@@ -2064,6 +2064,7 @@
   "aib.dmctl.try_n": "第 {n} 次 rc={rc} stage={stage}",
   "aib.dmctl.retry_park": "重試 {n} 次仍被擋,改入排序暫存",
   "aib.dmctl.retry_give_up": "重試 {n} 次仍被擋,放棄",
+  "aib.dmctl.pane_not_ancestor": "TMUX_PANE 指的 pane({pane})不在本行程的祖先鏈上,不拿它當寄件席",
   "aib.dmctl.retry_narrow": "多目標:只重送可安全重送的席:{seats}",
   "aib.dmctl.retry_stop_rc": "rc={rc} 不在重試契約內(只有 2 可安全重送),不重試",
   "aib.dmctl.queue_not_taken": "排序暫存未收下(take={state}):{raw}",
