@@ -403,6 +403,18 @@ class TemplateEdges(Fixture):
         self.assertNotEqual(r.returncode, 0, "有 blocker 不准 apply")
 
 
+class TemplateInLibrary(Fixture):
+    def test_T4_template_dir_inside_library_does_not_touch_cards(self):
+        (self.vault / ".obsidian" / "templates.json").write_text(json.dumps({"folder": LIB + "/測試卡"}, ensure_ascii=False), encoding="utf-8")
+        card_before = (self.vault / LIB / "測試卡" / "角色.md").read_bytes()
+        p, plan = self.plan()
+        self.assertEqual([t for t in plan["template_files"] if t.startswith(LIB + "/")], [], "角色庫裡的檔不當範本")
+        self.assertEqual(plan["stats"]["links_in_templates_rewritten"], 0)
+        self.apply(p)
+        lib_new = next(f["new_rel"] for f in plan["folders"] if f["old_rel"] == LIB)
+        self.assertEqual((self.vault / lib_new / CARD_UID / "角色.md").read_bytes(), card_before, "沒帶 --rewrite-card-links 卡一 byte 不改")
+
+
 class Knives(Fixture):
     """刀:把修正拿掉,上面的格就該紅(在這裡用相反的斷言證明那幾格有牙)。"""
 

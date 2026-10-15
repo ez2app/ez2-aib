@@ -848,7 +848,8 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
     if amb_all:
         plan["warnings"].append(T("warn_link_ambiguous", {"count": len(amb_all), "sample": ", ".join(sorted(set(amb_all))[:5])}))
     plan["obsidian_edits"] = obsidian_setting_edits(vault, plan["notes"], plan["folders"])
-    plan["template_files"] = [rel for rel in plan["kept_md"] if in_templates(rel, tpl_dirs, tpl_files)]
+    plan["template_files"] = [rel for rel in plan["kept_md"]                       # 角色庫裡的照卡片規則走,不當範本改
+                              if in_templates(rel, tpl_dirs, tpl_files) and not under_library(rel)]
     n_tpl = len(plan["template_files"])
     tpl_links = 0                                            # 範本正文裡的連結照改(範本沒有指紋;不改的話用它新建的筆記都帶斷鏈)
     for rel in plan["template_files"]:
