@@ -643,8 +643,20 @@ emit_json() {  # 機器可讀結果行(seat open 刀 debug 用),不取代人話�
       esac
       ;;
   esac
-  printf '{"rc_contract":%s,"stage":"%s","detail":"%s","verified":"%s","before_placeholders":%s%s}\n' \
-         "$1" "$2" "$3" "${4:-unknown}" "$_bp" "$_identity_fields"
+  # 10-15 B9:stage/detail/verified 走 JSON 逸出(detail 常夾使用者給的字:目標、角色名、引擎原話)。
+  #   原本裸塞進雙引號,一個 `"` 就讓整行解不開,而讀這一行的消費者解不開就當「沒收據」。
+  #   逸出器叫不動才退回舊寫法(行為與從前同),不讓收據因為印不出字而消失。
+  local _js _jst _jdt _jvf
+  _js="$("$PY3" -c 'import json,sys; print("\x1f".join(json.dumps(a, ensure_ascii=False) for a in sys.argv[1:]))' \
+         "$2" "$3" "${4:-unknown}" 2>/dev/null)" || _js=""
+  if [ -n "$_js" ]; then
+    IFS=$'\x1f' read -r _jst _jdt _jvf <<<"$_js"
+    printf '{"rc_contract":%s,"stage":%s,"detail":%s,"verified":%s,"before_placeholders":%s%s}\n' \
+           "$1" "$_jst" "$_jdt" "$_jvf" "$_bp" "$_identity_fields"
+  else
+    printf '{"rc_contract":%s,"stage":"%s","detail":"%s","verified":"%s","before_placeholders":%s%s}\n' \
+           "$1" "$2" "$3" "${4:-unknown}" "$_bp" "$_identity_fields"
+  fi
   _RESULT_STAGE="$2"    # RESULT 行的 stage 與這一行同源;最後一次 emit 的算數
 }
 

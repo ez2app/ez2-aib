@@ -3847,9 +3847,17 @@ def _deliver_via_dmctl(item, env=None):
     env:背景 upkeep 逐艙呼叫時傳**那一艙**的環境(艙家、aihub-<艙>);不傳 = 右欄那條路,照舊用本行程環境。"""
     ctl = str(_HERE / "dm-ctl.sh")
     msg = delivery_text(item)   # 時效行在前、原文在後(接口 §5);歷史裡存的仍是原文
-    tmp = Path("/tmp") / ("aib-dmq-drain-%s.txt" % (item.get("id") or "x"))
+    # 10-15 B9:原本固定 /tmp/aib-dmq-drain-<id>.txt —— 名字猜得到、write_text 會跟著符號連結蓋掉別的檔。
+    #   改 mkstemp(O_EXCL、0600、名字隨機);開不了 ⇒ 一個字都沒送,回 2(可重送,佇列自己有 attempts 上限)。
+    import tempfile
     try:
-        tmp.write_text(msg, encoding="utf-8")
+        fd, tmp_name = tempfile.mkstemp(prefix="aib-dmq-drain-", suffix=".txt")
+    except OSError:
+        return 2
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(msg)
         env2 = _dmctl_env(item, env)
         proc = subprocess.run(
             ["bash", ctl, item.get("seat") or "", "--file", str(tmp)],

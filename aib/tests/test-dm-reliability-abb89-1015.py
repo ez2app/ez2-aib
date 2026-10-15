@@ -582,5 +582,69 @@ class B7ToolTimeoutLeavesNoOrphan(unittest.TestCase):
         self.assertIn("AUTO=0", out)
 
 
+class B9SmallHoles(unittest.TestCase):
+    """B9 其餘四條:emit_json 的 detail 要逸出、背景分身長訊指標 dm_relay 要認得、
+    排空器暫存檔不得跟符號連結、--probe-box 不印 RESULT 要列為例外。"""
+
+    def test_emit_json_detail_with_quote_is_valid_json(self):
+        b = Box(self, seats=(), extra_windows=(2,))
+        rec = {"schema": "aib-seat/v1", "window_id": "@2", "session_uuid": SEAT_UUID, "socket": HUB,
+               "pid": os.getpid(), "provider": "claude", "role": 'de"v', "seat_id": "s2"}
+        (b.seats / "w2.json").write_text(json.dumps(rec))
+        p = b.run(['de"v', "hello b9 quote"])
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        rows = [l for l in p.stdout.splitlines() if l.startswith('{"rc_contract"')]
+        self.assertTrue(rows, p.stdout)
+        d = json.loads(rows[-1])          # 修前:detail 裡的 " 讓這一行解不開
+        self.assertIn('de"v', d["detail"])
+        self.assertIn("reason=role_alias_retired", last_line(p))
+
+    def test_relay_recognises_bgfork_pointer(self):
+        sys.path.insert(0, str(TREE / "src" / "cockpit"))
+        try:
+            import importlib
+            so = importlib.import_module("sender_origin")
+            dr = importlib.import_module("dm_relay")
+            line = so.relay_pointer_line(1234, "/x/RELAY-dm-t1-1.txt", "abcde", bg_fork_of=True)
+            self.assertEqual(dr.relay_path_of(line), "/x/RELAY-dm-t1-1.txt", line)
+            line2 = so.relay_pointer_line(1234, "/x/RELAY-dm-t1-2.txt", "abcde")
+            self.assertEqual(dr.relay_path_of(line2), "/x/RELAY-dm-t1-2.txt")
+        finally:
+            sys.path.remove(str(TREE / "src" / "cockpit"))
+            for m in ("sender_origin", "dm_relay"):
+                sys.modules.pop(m, None)
+
+    def test_drainer_tmp_does_not_follow_symlink(self):
+        import secrets
+        b = Box(self)
+        qid = "q_" + secrets.token_hex(8)
+        victim = b.dir / "victim.txt"
+        victim.write_text("keep me")
+        link = Path("/tmp") / ("aib-dmq-drain-%s.txt" % qid)
+        try:
+            os.symlink(str(victim), str(link))
+        except OSError:
+            self.skipTest("/tmp 不可寫")
+        try:
+            code = ("import sys; sys.path.insert(0, %r)\n"
+                    "import dm_queue as Q, os\n"
+                    "print(Q._deliver_via_dmctl({'id': %r, 'seat': 'zzzzz', 'msg': 'overwrite?', 'ts': 0,"
+                    " 'sent_at': 0}, dict(os.environ)))\n") % (str(TREE / "src" / "cockpit"), qid)
+            subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=b.env(), timeout=60)
+            self.assertEqual(victim.read_text(), "keep me", "排空器暫存檔跟著符號連結蓋掉了別的檔")
+        finally:
+            try:
+                os.unlink(str(link))
+            except OSError:
+                pass
+
+    def test_probe_box_listed_as_result_exception(self):
+        head = (TREE / "src" / "cockpit" / "dm-ctl.sh").read_text().split("set -uo pipefail")[0]
+        self.assertIn("`--probe-box` 不印", head)
+        b = Box(self)
+        p = b.run(["@abcde", "--probe-box"])
+        self.assertTrue(last_line(p).startswith("box="), p.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
