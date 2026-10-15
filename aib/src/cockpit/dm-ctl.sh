@@ -301,37 +301,39 @@ _dm_ctl_tmp() {
 #   rc=0         ⇒ 停,成功
 #   rc=2         ⇒ 可安全重送,等 --retry-every(預設 30)再試,直到 --retry-until
 #   rc=3 或 4    ⇒ 立刻停,絕不重送(3=已送未驗、4=進了沒送出)
-#   到上限仍 2   ⇒ 回 2,並逐字印「重試 N 次仍被擋,放棄」
+#   其他 rc      ⇒ 立刻停、rc 原樣回(10-15 B2:契約外的 1、126… 不是「可重送」,分不出就不重送)
+#   rc=5(多目標)⇒ 只重送收據 rc_contract==2 的那幾席;已送達(0)與勿重送(3/4)的席不再碰
+#                   (10-15 B2:原本整批重送,已送達的 a 每一輪再收一份)
+#   到上限仍 2   ⇒ 回 2(多目標:有任一席送達或停在 3/4 ⇒ 回 5,答案在逐席收據),並逐字印「重試 N 次仍被擋,放棄」
 # 每次嘗試印一行:第幾次、rc、stage。沒給 --retry-until ⇒ 本函式不會被叫。
 # 子輪關第 159 項自動重送(AIB_DM_AUTO_RESEND=0):上限與間隔由本旗標管,不再疊一次 30 秒。
+# ★ 10-15 B9:本函式在留痕**之後**才被叫(稿已改寫、已留痕一次);子輪帶 AIB_DM_RELAYED 指回那一份,
+#   不再每輪各寫一個 RELAY 檔與一列 index。
 # 治具:AIB_DM_RETRY_ONCE_CMD 取代子輪(假目標回指定 rc);不准拿它送真 dm。
 _retry_until_loop() {
   local _until="$RETRY_UNTIL" _every="${RETRY_EVERY:-30}" _n=0
-  local _start _now _deadline _left _wait _once_rc _stage
-  local _outf _errf
+  local _start _now _deadline _left _wait _once_rc _stage _nar _b_done=0 _b_bad=0
+  local _outf _errf _to="${TO_RAW:-}"
   local -a _argv
   case "$_until" in ''|*[!0-9]*) die "--retry-until 必須是秒數(非負整數):$_until" 2 ;; esac
   case "$_every" in ''|*[!0-9]*) die "--retry-every 必須是秒數(非負整數):$_every" 2 ;; esac
   _start="$(date +%s)"
   _deadline="$((_start + 10#$_until))"
-  if [ "${TO_GIVEN:-0}" = "1" ]; then
-    _argv+=(--to "$TO_RAW")
-  else
-    _argv+=("$TARGET")
-  fi
-  [ -n "${DM_THREAD:-}" ] && _argv+=(--thread "$DM_THREAD")
-  [ -n "${DM_KIND:-}" ] && _argv+=(--kind "$DM_KIND")
-  [ -n "${DM_CLOSE:-}" ] && _argv+=(--close "$DM_CLOSE")
-  [ -n "${DM_TTL_MIN:-}" ] && _argv+=(--ttl-min "$DM_TTL_MIN")
-  [ -z "${DM_TTL_MIN:-}" ] && [ -n "${DM_EXPIRES:-}" ] && _argv+=(--expires "$DM_EXPIRES")
-  [ "${VERIFY:-0}" = "1" ] && _argv+=(--verify)
-  [ "${DRYRUN:-0}" = "1" ] && _argv+=(--dry-run)
-  [ -n "${XHOST_IDENT:-}" ] && _argv+=(--xhost-ident "$XHOST_IDENT")   # 跨主機收件:每一輪都帶寄件機身分
-  _RESULT_DONE=1
+  _dm_reentry_flags with-dry
+  # 暫存檔開不了要在 _RESULT_DONE=1 之前死:不然 EXIT trap 以為子輪會印 RESULT,這一條路就沒有最後一行(B9)
   _outf="$(_dm_ctl_tmp aib-dm-retry-out)" || die "--retry-until 暫存檔開不了" 2
-  _errf="$(_dm_ctl_tmp aib-dm-retry-err)" || die "--retry-until 暫存檔開不了" 2
+  _errf="$(_dm_ctl_tmp aib-dm-retry-err)" || { rm -f "$_outf"; die "--retry-until 暫存檔開不了" 2; }
+  _RESULT_DONE=1
+  local _relayed=""
+  case "${_RESULT_RELAY:--}" in -|FAILED) ;; *) _relayed="$_RESULT_RELAY" ;; esac
   while true; do
     _n="$((_n + 1))"
+    if [ "${TO_GIVEN:-0}" = "1" ]; then
+      _argv=(--to "$_to")
+    else
+      _argv=("$TARGET")
+    fi
+    _argv+=(${_RE_FLAGS[@]+"${_RE_FLAGS[@]}"})
     : > "$_outf"
     : > "$_errf"
     if [ -n "${AIB_DM_RETRY_ONCE_CMD:-}" ]; then
@@ -339,7 +341,7 @@ _retry_until_loop() {
       _once_rc=$?
     else
       printf '%s' "$MSG" | env -u AIB_DM_BEFORE_PLACEHOLDERS \
-        AIB_DM_RETRY_INNER=1 AIB_DM_AUTO_RESEND=0 \
+        AIB_DM_RETRY_INNER=1 AIB_DM_AUTO_RESEND=0 AIB_DM_RELAYED="$_relayed" \
         bash "$0" "${_argv[@]}" >"$_outf" 2>"$_errf"
       _once_rc=$?
     fi
@@ -368,9 +370,55 @@ print(stage)
       0)
         cat "$_outf"
         rm -f "$_outf" "$_errf"
+        # 多目標:前幾輪有席停在 3/4 ⇒ 不是「全席皆 0」,照多目標契約回 5
+        [ "${TO_GIVEN:-0}" = "1" ] && [ "$_b_bad" = "1" ] && exit 5
         exit 0
         ;;
+      2) ;;
+      5)
+        if [ "${TO_GIVEN:-0}" != "1" ]; then
+          cat "$_outf"; rm -f "$_outf" "$_errf"; exit 5
+        fi
+        # 逐席收據:rc_contract==2 的才再送;0 記已送達、3/4 記勿重送
+        _nar="$("$PY3" -c '
+import json, sys
+again, done, bad = [], 0, 0
+for ln in sys.stdin.read().splitlines():
+    t = ln.strip()
+    if not t.startswith("{"):
+        continue
+    try:
+        o = json.loads(t)
+    except ValueError:
+        continue
+    if not isinstance(o, dict) or o.get("stage") != "delivery":
+        continue
+    rcc = o.get("rc_contract")
+    if rcc == 2:
+        again.append(str(o.get("input_selector") or ""))
+    elif rcc == 0:
+        done = 1
+    else:
+        bad = 1
+print("%s %d %d" % (",".join(a for a in again if a) or "-", done, bad))
+' < "$_outf" 2>/dev/null)" || _nar="- 0 1"
+        cat "$_outf"; : > "$_outf"      # 這一輪的逐席收據照印(已送達那幾席的行不能因為下一輪而消失)
+        set -- $_nar
+        [ "${2:-0}" = "1" ] && _b_done=1
+        [ "${3:-1}" = "1" ] && _b_bad=1
+        if [ "${1:--}" = "-" ]; then
+          rm -f "$_outf" "$_errf"; exit 5
+        fi
+        _to="$1"
+        echo "aib-dm-ctl: $(_dmt aib.dmctl.retry_narrow seats="${_to}")" >&2
+        ;;
       3|4)  # retry-until:never-resend-3-or-4
+        cat "$_outf"
+        rm -f "$_outf" "$_errf"
+        exit "$_once_rc"
+        ;;
+      *)
+        echo "aib-dm-ctl: $(_dmt aib.dmctl.retry_stop_rc rc="${_once_rc}")" >&2
         cat "$_outf"
         rm -f "$_outf" "$_errf"
         exit "$_once_rc"
@@ -382,13 +430,14 @@ print(stage)
         echo "aib-dm-ctl: $(_dmt aib.dmctl.retry_park n="${_n}")" >&2
         rm -f "$_outf" "$_errf"
         printf '%s' "$MSG" | env -u AIB_DM_BEFORE_PLACEHOLDERS -u AIB_DM_RETRY_ONCE_CMD \
-          AIB_DM_RETRY_INNER=1 AIB_DM_AUTO_RESEND=0 AIB_DM_PARK_NOW=1 \
+          AIB_DM_RETRY_INNER=1 AIB_DM_AUTO_RESEND=0 AIB_DM_PARK_NOW=1 AIB_DM_RELAYED="$_relayed" \
           bash "$0" "${_argv[@]}"
         exit $?
       fi
       echo "$(_dmt aib.dmctl.retry_give_up n="${_n}")" >&2
       cat "$_outf"
       rm -f "$_outf" "$_errf"
+      [ "${TO_GIVEN:-0}" = "1" ] && { [ "$_b_done" = "1" ] || [ "$_b_bad" = "1" ]; } && exit 5
       exit 2
     fi
     _left="$((_deadline - _now))"
@@ -890,12 +939,6 @@ if [ -n "$_XH_OUT_IP" ]; then
   _xhost_send
   exit $?
 fi
-# --retry-until:稿已讀完再進迴圈,子輪走 stdin,不會第二輪讀到空稿。
-if [ "${RETRY_UNTIL_GIVEN}" = "1" ] && [ "${AIB_DM_RETRY_INNER:-0}" != "1" ] \
-     && [ "${RESOLVE_ONLY:-0}" != "1" ] && [ "$PROBE_BOX" != "1" ]; then
-  _retry_until_loop
-  exit $?
-fi
 
 # HDR:席位對映優先於腳本名。長訊指標與 unattested 抬頭共用這一筆。
 # 推不出來就空 —— 指標維持舊字面,抬頭仍走下面的 unknown。
@@ -1086,7 +1129,20 @@ PY
 #   拿指標去比永遠對不上 ⇒ 過 600 位元組的排隊信抬頭退回投遞者(系統@aib)。先留一份換之前的正文給它比。
 #   (不選「排空重投跳過長訊落檔」:那會讓長信整段貼進對方輸入框,正是這一步要移掉的病。)
 _MSG_PRE_RELAY="$MSG"
-if [ "$RESOLVE_ONLY" != "1" ] && [ "$AIB_DM_RELAY_BYTES" -gt 0 ]; then
+# 10-15 B8/B9:再入本檔的子輪(--retry-until 每一輪、跳艙、轉後繼席)拿到的是父輪已改寫、已留痕的同一則 ⇒
+#   AIB_DM_RELAYED 指回父輪那一份,不再寫第二份。只認**對得上**的:檔在、而且正文就是那一份(短訊)
+#   或正文是指向它的指標(長訊);對不上就照常留痕 —— 設一個環境變數不能讓一則信不留痕。
+_relayed_ok() {
+  local _p="${AIB_DM_RELAYED:-}"
+  [ -n "$_p" ] && [ -f "$_p" ] || return 1
+  case "$MSG" in *"$_p"*) return 0 ;; esac
+  [ "$(cat "$_p" 2>/dev/null)" = "$MSG" ]
+}
+if [ "$RESOLVE_ONLY" != "1" ] && _relayed_ok; then
+  _RESULT_RELAY="$AIB_DM_RELAYED"
+  # 長訊:子輪拿到的是指標,而排隊投遞比對原寄件人要的是**原文** = 那個檔的內容(review r1 m4 同一條)
+  case "$MSG" in *"$AIB_DM_RELAYED"*) _MSG_PRE_RELAY="$(cat "$AIB_DM_RELAYED" 2>/dev/null)" ;; esac
+elif [ "$RESOLVE_ONLY" != "1" ] && [ "$AIB_DM_RELAY_BYTES" -gt 0 ]; then
   # 位元組不是字元:摺疊門檻由 CLI 按輸入長度決定,而 CJK 一字三位元組。
   _RELAY_N="$(printf '%s' "$MSG" | LC_ALL=C wc -c | tr -d '[:space:]')"
   if [ "${_RELAY_N:-0}" -gt "$AIB_DM_RELAY_BYTES" ]; then
@@ -1146,6 +1202,13 @@ print(so.relay_pointer_line(int(sys.argv[2]), sys.argv[3], sys.argv[4] or None, 
       echo "aib-dm-ctl: $(_dmt aib.dmctl.relay_short_fail file="${_RELAY_FILE}" n="${_RELAY_N}" got="${_RELAY_BACK:-$(_dmt aib.dmctl.not_readable)}")" >&2
     fi
   fi
+fi
+
+# --retry-until:稿已讀完、已改寫、已留痕一次再進迴圈;子輪走 stdin,不會第二輪讀到空稿,也不再各留一份痕(B9)。
+if [ "${RETRY_UNTIL_GIVEN}" = "1" ] && [ "${AIB_DM_RETRY_INNER:-0}" != "1" ] \
+     && [ "${RESOLVE_ONLY:-0}" != "1" ] && [ "$PROBE_BOX" != "1" ]; then
+  _retry_until_loop
+  exit $?
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1364,6 +1427,19 @@ fi
 
 hub_tmux() { env -u TMUX tmux -L "$HUB" "$@"; }
 
+# 跳艙 / 轉後繼席的再入引數(10-15 B8):原本 exec 原參數 ——
+#   稿走 stdin 的那一則,stdin 早被上面讀光 ⇒ 子輪空稿 rc 2;稿走 argv 的那一則,子輪再留一份痕、再判一次真人。
+#   改成:目標 + _dm_reentry_flags,稿(已改寫、已留痕的這一份)走 stdin,AIB_DM_RELAYED 指回這一份留痕。
+#   $1=新目標。結果放進 _HOP_ARGS。
+_dm_hop_args() {
+  _dm_reentry_flags with-dry
+  _HOP_ARGS=("$1")
+  [ "${RESOLVE_ONLY:-0}" = "1" ] && _HOP_ARGS+=(--resolve-only)
+  [ "${PROBE_BOX:-0}" = "1" ] && _HOP_ARGS+=(--probe-box)
+  _HOP_ARGS+=(${_RE_FLAGS[@]+"${_RE_FLAGS[@]}"})
+  _HOP_RELAYED=""
+  case "${_RESULT_RELAY:--}" in -|FAILED) ;; *) _HOP_RELAYED="$_RESULT_RELAY" ;; esac
+}
 # 當下這艙沒有這席時,到其他指揮艙找唯一活著的那格再送。
 # 人在哪一艙、有沒有自己設 socket,都不用先想。已經跳過一次、或同一個碼活在多艙,就不猜。
 _dm_hop_to_live_seat() {
@@ -1427,8 +1503,10 @@ PY
   [ "$sock" = "$HUB" ] && return 1
   echo "aib-dm-ctl: $(_dmt aib.dmctl.hop_cabin target="${sock}")" >&2
   # 外層已經把預設艙寫進環境。不拿掉的話,內層會當成「兩個艙打架」而拒絕。
+  _dm_hop_args "$TARGET"
   exec env -u EZ2_AIB_INSTANCE -u EZ2_AIB_INSTANCE_HOME -u EZ2_TMUX_SESSION \
-    EZ2_AIHUB_SOCKET="$sock" AIB_DM_HOPPED=1 bash "$SOURCE" "${_DM_ORIG_ARGS[@]}"
+    EZ2_AIHUB_SOCKET="$sock" AIB_DM_HOPPED=1 AIB_DM_RELAYED="$_HOP_RELAYED" \
+    bash "$SOURCE" "${_HOP_ARGS[@]}" <<<"$MSG"
 }
 
 # ★★ 2026-09-24(a seat)分出新席後的轉信:舊碼已沒有活席(本艙與跨艙都找過)、而恰好一個活席是從它
@@ -1443,22 +1521,16 @@ _dm_forward_to_successor() {
     4) echo "aib-dm-ctl: $(_dmt aib.dmctl.fork_ambiguous old="$old" detail="$(printf '%s' "$line" | tr '\n' ' ')")" >&2; return 1 ;;
     *) return 1 ;;
   esac
-  local -a args=(); local a replaced=0
-  for a in "${_DM_ORIG_ARGS[@]}"; do
-    if [ "$replaced" = "0" ] && { [ "$a" = "$TARGET" ] || [ "$a" = "@$old" ]; }; then
-      args+=("$line"); replaced=1
-    else
-      args+=("$a")
-    fi
-  done
-  [ "$replaced" = "1" ] || return 1
+  [ -n "$line" ] || return 1
+  _dm_hop_args "$line"
   echo "aib-dm-ctl: $(_dmt aib.dmctl.fork_hop old="$old" new="$line")" >&2
   # review r2 m6:排隊投遞轉給後繼席之後,T_CODE 變成後繼席,而那一則還住在**舊席**的佇列底下 ⇒
   #   把舊席碼帶過去(投遞者已帶就不蓋),原寄件人那一段拿它回佇列找
   if [ -n "${AIB_DM_QUEUED_ITEM_ID:-}" ]; then
-    exec env AIB_DM_FORWARDED=1 AIB_DM_QUEUED_SEAT="${AIB_DM_QUEUED_SEAT:-$old}" bash "$SOURCE" "${args[@]}"
+    exec env AIB_DM_FORWARDED=1 AIB_DM_QUEUED_SEAT="${AIB_DM_QUEUED_SEAT:-$old}" AIB_DM_RELAYED="$_HOP_RELAYED" \
+      bash "$SOURCE" "${_HOP_ARGS[@]}" <<<"$MSG"
   fi
-  exec env AIB_DM_FORWARDED=1 bash "$SOURCE" "${args[@]}"
+  exec env AIB_DM_FORWARDED=1 AIB_DM_RELAYED="$_HOP_RELAYED" bash "$SOURCE" "${_HOP_ARGS[@]}" <<<"$MSG"
 }
 
 # 2026-09-20:活席危險鍵硬擋(見 dangerous_seat_actions.py)。

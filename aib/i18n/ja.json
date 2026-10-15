@@ -2064,6 +2064,8 @@
   "aib.dmctl.try_n": "{n} 回目 rc={rc} stage={stage}",
   "aib.dmctl.retry_park": "{n} 回再試行しても止められたので、並べ替え待ちに入れる",
   "aib.dmctl.retry_give_up": "{n} 回再試行しても止められたので、あきらめる",
+  "aib.dmctl.retry_narrow": "複数宛先:安全に再送できる席だけ再送します:{seats}",
+  "aib.dmctl.retry_stop_rc": "rc={rc} は再試行契約外です(安全に再送できるのは 2 のみ)。再試行しません",
   "aib.dmctl.queue_not_taken": "並べ替え待ちが受け取らない(take={state}):{raw}",
   "aib.dmctl.queued_id": "待ちに入れた。まだ相手の入力欄には届いていない。queue_id={id}",
   "aib.dmctl.notice_write_fail": "[L8b] 通知ファイルを書けない(今回の rc には影響なし)",

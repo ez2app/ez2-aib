@@ -2064,6 +2064,8 @@
   "aib.dmctl.try_n": "第 {n} 次 rc={rc} stage={stage}",
   "aib.dmctl.retry_park": "重試 {n} 次仍被擋,改入排序暫存",
   "aib.dmctl.retry_give_up": "重試 {n} 次仍被擋,放棄",
+  "aib.dmctl.retry_narrow": "多目標:只重送可安全重送的席:{seats}",
+  "aib.dmctl.retry_stop_rc": "rc={rc} 不在重試契約內(只有 2 可安全重送),不重試",
   "aib.dmctl.queue_not_taken": "排序暫存未收下(take={state}):{raw}",
   "aib.dmctl.queued_id": "已排入暫存,尚未送到對方輸入框。queue_id={id}",
   "aib.dmctl.notice_write_fail": "[L8b] 通知檔寫不進去(不影響本次 rc)",

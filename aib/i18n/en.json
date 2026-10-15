@@ -2064,6 +2064,8 @@
   "aib.dmctl.try_n": "attempt {n} rc={rc} stage={stage}",
   "aib.dmctl.retry_park": "still blocked after {n} retries, parking it in the sort queue",
   "aib.dmctl.retry_give_up": "still blocked after {n} retries, giving up",
+  "aib.dmctl.retry_narrow": "batch: retrying only the seats that are safe to resend: {seats}",
+  "aib.dmctl.retry_stop_rc": "rc={rc} is outside the retry contract (only 2 is safe to resend); not retrying",
   "aib.dmctl.queue_not_taken": "the sort queue did not accept it (take={state}): {raw}",
   "aib.dmctl.queued_id": "queued, not yet in the other seat's input box. queue_id={id}",
   "aib.dmctl.notice_write_fail": "[L8b] could not write the notice file (this run's rc is unaffected)",

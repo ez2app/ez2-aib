@@ -325,5 +325,112 @@ class B5MultiTargetKeepsFlags(unittest.TestCase):
             self.assertTrue(it.get("expires"))
 
 
+def relay_rows(b):
+    out = []
+    for p in b.aib_home.rglob("index.jsonl"):
+        out += [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+    return out
+
+
+class B2BatchRetryOnlyFailedSeats(unittest.TestCase):
+    """B2:--to a,b --retry-until:已送達的 a 不得再收;契約外的 rc 不重試。"""
+
+    def test_delivered_seat_not_resent(self):
+        b = Box(self, seats=((2, SEAT_UUID), (4, SEAT2_UUID)), extra_windows=())
+        b.rc_seq("0 4")      # 第一輪:@2 送達、@4 被擋(兩幀相同 ⇒ rc 2);之後每次都擋
+        p = b.run(["--to", "@abcde,@c0ffe", "status update for both", "--retry-until", "9",
+                   "--retry-every", "1"], FAKE_CAP_MODE="static")
+        wins = [throat_window(c) for c in b.exec_calls()]
+        self.assertEqual(wins.count("@2"), 1, wins)
+        self.assertGreaterEqual(wins.count("@4"), 2, wins)
+        self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
+
+    def test_batch_all_delivered_after_retry_is_rc0(self):
+        b = Box(self, seats=((2, SEAT_UUID), (4, SEAT2_UUID)), extra_windows=())
+        b.rc_seq("0 4 0")
+        p = b.run(["--to", "@abcde,@c0ffe", "status update again", "--retry-until", "20",
+                   "--retry-every", "0"], FAKE_CAP_MODE="static")
+        wins = [throat_window(c) for c in b.exec_calls()]
+        self.assertEqual(wins, ["@2", "@4", "@4"])
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue(last_line(p).startswith("RESULT stage=batch"), p.stdout)
+
+    def test_unknown_rc_not_retried(self):
+        b = Box(self)
+        cnt = b.dir / "once.count"
+        once = b.dir / "once.sh"
+        once.write_text("#!/bin/bash\necho x >> %s\nexit 1\n" % cnt)
+        os.chmod(once, 0o755)
+        p = b.run(["@abcde", "hello b2", "--retry-until", "2", "--retry-every", "0"],
+                  AIB_DM_RETRY_ONCE_CMD=once)
+        self.assertEqual(len(cnt.read_text().splitlines()), 1, p.stderr)
+        self.assertEqual(p.returncode, 1)
+
+
+class B9RetryRoundsShareOneRelay(unittest.TestCase):
+    """B9:重試每輪不得各寫一個 RELAY 檔與一列 index;暫存檔開不了也要有 RESULT 行。"""
+
+    def test_one_relay_row_for_all_rounds(self):
+        b = Box(self)
+        b.rc_seq("4 4 0")
+        p = b.run(["@abcde", "hello b9", "--retry-until", "5", "--retry-every", "0"],
+                  FAKE_CAP_MODE="static")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(len(b.exec_calls()), 3)
+        self.assertEqual(len(relay_rows(b)), 1, relay_rows(b))
+        relay = [x for x in result_fields(last_line(p)) if x.startswith("relay=")][0][6:]
+        self.assertTrue(Path(relay).is_file(), last_line(p))
+
+    def test_result_line_when_retry_tmp_unavailable(self):
+        b = Box(self)
+        (b.bin / "mktemp").write_text("#!/bin/bash\nexit 1\n")
+        os.chmod(b.bin / "mktemp", 0o755)
+        p = b.run(["@abcde", "hello b9b", "--retry-until", "5", "--retry-every", "0"])
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertTrue(last_line(p).startswith("RESULT stage="), p.stdout + p.stderr)
+
+
+class B8HopKeepsMessage(unittest.TestCase):
+    """B8:跳艙 / 轉後繼席再入時,stdin 的稿不得變空;argv 的稿不得多留一份痕。"""
+
+    def _box(self):
+        b = Box(self, seats=(), extra_windows=(2,))
+        other = b.aib_home / "instances" / "t2" / "seats"
+        other.mkdir(parents=True)
+        rec = {"schema": "aib-seat/v1", "window_id": "@2", "session_uuid": SEAT_UUID,
+               "socket": "aihub-t2", "pid": os.getpid(), "provider": "claude", "role": "dev",
+               "seat_id": "s2"}
+        (other / "w2.json").write_text(json.dumps(rec))
+        return b
+
+    def test_hop_with_stdin_message(self):
+        b = self._box()
+        p = b.run(["@abcde"], stdin="hello via stdin b8")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        calls = b.exec_calls()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("hello via stdin b8", throat_body(calls[0]))
+
+    def test_forward_to_successor_with_stdin_message(self):
+        b = Box(self, seats=((4, SEAT2_UUID),), extra_windows=(2,))
+        dead = subprocess.Popen(["true"]); dead.wait()
+        b.write_seat(2, SEAT_UUID, pid=dead.pid)
+        rec = json.loads((b.seats / "w4.json").read_text())
+        rec["forked_from"] = SEAT_UUID
+        (b.seats / "w4.json").write_text(json.dumps(rec))
+        p = b.run(["@abcde"], stdin="hello successor b8")
+        calls = b.exec_calls()
+        self.assertEqual(len(calls), 1, p.stdout + p.stderr)
+        self.assertEqual(throat_window(calls[0]), "@4")
+        self.assertIn("hello successor b8", throat_body(calls[0]))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_hop_with_argv_message_one_relay_row(self):
+        b = self._box()
+        p = b.run(["@abcde", "hello via argv b8"])
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(len(relay_rows(b)), 1, relay_rows(b))
+
+
 if __name__ == "__main__":
     unittest.main()

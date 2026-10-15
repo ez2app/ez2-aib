@@ -2064,6 +2064,8 @@
   "aib.dmctl.try_n": "{n}번째 rc={rc} stage={stage}",
   "aib.dmctl.retry_park": "{n}번 재시도해도 막혀 정렬 대기열에 넣음",
   "aib.dmctl.retry_give_up": "{n}번 재시도해도 막혀 포기",
+  "aib.dmctl.retry_narrow": "다중 대상: 안전하게 재전송할 수 있는 좌석만 재전송: {seats}",
+  "aib.dmctl.retry_stop_rc": "rc={rc}는 재시도 계약 밖입니다(안전 재전송은 2뿐). 재시도하지 않습니다",
   "aib.dmctl.queue_not_taken": "정렬 대기열이 받지 않음(take={state}): {raw}",
   "aib.dmctl.queued_id": "대기열에 넣음, 아직 상대 입력창에 도착하지 않음. queue_id={id}",
   "aib.dmctl.notice_write_fail": "[L8b] 알림 파일을 쓸 수 없음(이번 rc 에는 영향 없음)",
