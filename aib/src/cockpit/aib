@@ -486,7 +486,10 @@ fi
 if [ "${1:-}" = "project" ]; then
   shift
   export PYTHONPATH="$AIB_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-  exec "$T_PY3" -m src.fleet_identity.project_callpoint "$@"
+  # ★ 不用 `-m`:`-m` 把目前目錄放在 sys.path 最前面,專案自己有 src/ 就撞名(10-15 C7)。
+  #   改由 -c 把 sys.path[0] 換成本包根再 runpy;cwd 不動(develop 的 --cwd 照舊是使用者的目錄)。
+  exec "$T_PY3" -c 'import runpy, sys; sys.path[0] = sys.argv.pop(1); runpy.run_module("src.fleet_identity.project_callpoint", run_name="__main__", alter_sys=True)' \
+    "$AIB_SOURCE_ROOT" "$@"
 fi
 
 # aib profile check|explain(第 113 項;艦長 09-13 21:1x 定名):

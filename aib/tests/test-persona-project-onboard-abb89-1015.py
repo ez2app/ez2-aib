@@ -101,5 +101,26 @@ class C1SeatOnboardTemplate(unittest.TestCase):
             self.assertIn("{window}", d["aib.onboardcli.template_missing_menu"])
 
 
+class C7ProjectInRepoWithSrc(unittest.TestCase):
+    """使用者自己的專案有 src/ 套件時,`aib project …` 不得撞名崩潰。"""
+
+    def test_project_help_inside_repo_with_own_src(self):
+        tmp = tempfile.mkdtemp(prefix="aib-c7-")
+        try:
+            proj = os.path.join(tmp, "proj")
+            os.makedirs(os.path.join(proj, "src"))
+            open(os.path.join(proj, "src", "__init__.py"), "w").close()
+            r = subprocess.run(["bash", str(COCKPIT / "aib"), "project", "--help"],
+                               cwd=proj, env=sandbox_env(tmp), capture_output=True,
+                               text=True, timeout=60)
+            out = r.stdout + r.stderr
+            self.assertEqual(r.returncode, 0, out)
+            self.assertNotIn("ModuleNotFoundError", out)
+            self.assertNotIn("Traceback", out)
+            self.assertIn("interpret", r.stdout)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
