@@ -145,14 +145,15 @@ class Behaviour(Base):
 
 class Knives(Base):
     def test_k1_free_list_back_to_claude_only(self):
-        mod = variant("    return list(all_p)\n", "    return [p for p in all_p if p == 'claude']\n")
+        mod = variant("    參數照留,呼叫端不用改。\n    \"\"\"\n    return list(list_providers(str(repo_root) if repo_root else None))\n",
+                      "    \"\"\"\n    return [p for p in list_providers() if p == 'claude']\n")
         with self.assertRaises(AssertionError):
             check_f1(self, mod)
 
     def test_k2_set_source_refuses_again(self):
-        mod = variant("    obj = read_sources_obj(env=env)\n    enabled_map",
+        mod = variant("    obj = read_sources_obj(env=env)\n    enabled_map = dict(",
                       "    if enabled and name != 'claude':\n        return False, 'paid', 1\n"
-                      "    obj = read_sources_obj(env=env)\n    enabled_map")
+                      "    obj = read_sources_obj(env=env)\n    enabled_map = dict(")
         with self.assertRaises(AssertionError):
             check_f2(self, mod)
 
