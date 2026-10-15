@@ -9,6 +9,7 @@
   B  橋接 bot(ClaudeBot / CodexBot / GrokBot / MuseBot / Sand):bot_turn 跑同一張表(跨 85 ⇒ 要求交接,同格只一次);
      量不到用量 ⇒ 只照輪數精煉、不假造交接
   O  外層代觸發(API 金鑰席 REPL:deepseek / nvidia / openrouter / typesafe):每一輪回完呼叫 stop 那條路
+  U  量不到用量的席(API 金鑰席、量不到的 bot):每 N 輪精煉一次(N 在 policy 表上,同一席同一對話一份計數)
   N  入口:aib init(實跑,暫存 HOME)、aib update(實跑,假安裝程式)、install.sh(靜態)都呼叫 ensure-all
   K  刀:各自退回一塊 ⇒ 對應格紅
 
@@ -326,6 +327,57 @@ class Outer(Base):
         self.assertIn("adh.outer_turn(", (ROOT / "src" / "memory" / "api_tidy.py").read_text(encoding="utf-8"))
 
 
+# ---------------------------------------------------------------- U 量不到用量:每 N 輪精煉(維護者 22:4x)
+class Unmeasured(Base):
+    REC = Outer.REC
+
+    def policy(self, n):
+        doc = json.loads((ROOT / "policy" / "ctx-thresholds.json").read_text(encoding="utf-8"))
+        doc["unmeasured_tidy_every_turns"] = n
+        p = self.tmp / "policy.json"
+        p.write_text(json.dumps(doc), encoding="utf-8")
+        q = mock.patch.dict(os.environ, {"EZ2_AIB_CTX_POLICY": str(p)})
+        q.start()
+        self.addCleanup(q.stop)
+
+    def due_turns(self, n_turns, fn):
+        return [i for i in range(1, n_turns + 1) if fn()]
+
+    def test_U1_api_seat_every_20(self):
+        outs = {}
+        for i in range(1, 41):
+            o = A.outer_turn(SID, seat=dict(self.REC), runner=lambda cmd: None)
+            if o:
+                outs[i] = o
+        self.assertEqual(sorted(outs), [20, 40], "第 19 輪不產生、第 20 / 40 輪各一次")
+        self.assertIn(MARK["tidy"], outs[20])
+
+    def test_U2_policy_n_moves(self):
+        self.policy(5)
+        self.assertEqual(self.due_turns(12, lambda: A.outer_turn(SID, seat=dict(self.REC), runner=lambda c: None)),
+                         [5, 10])
+
+    def test_U3_api_tidy_turn_end_drives_repl(self):
+        import api_tidy
+        sys.modules["auto_distill_hook"] = A
+        self.assertEqual(self.due_turns(40, lambda: api_tidy.turn_end(SID)), [20, 40])
+
+    def test_U4_bot_reads_same_policy(self):
+        self.policy(5)
+        self.assertEqual(self.due_turns(10, lambda: A.bot_turn(CODE, "20200101-000000-zz9q")), [5, 10])
+
+    def test_U5_measured_seat_unaffected(self):
+        self.gauge(10)
+        self.assertEqual(self.due_turns(20, lambda: A.outer_turn(SID, seat=dict(self.REC), runner=lambda c: None)), [])
+
+    def test_U6_new_conversation_restarts_count(self):
+        for _ in range(19):
+            A.outer_turn(SID, seat=dict(self.REC), runner=lambda c: None)
+        other = "00000000-0000-4000-8000-0000000ccccc"
+        self.assertFalse(A.outer_turn(other, seat=dict(self.REC, session_uuid=other), runner=lambda c: None),
+                         "換對話從 0 算,不疊算")
+
+
 # ---------------------------------------------------------------- N 入口
 class Entry(Base):
     def _env(self, home, fake_bins=("claude",)):
@@ -420,12 +472,16 @@ KNIVES = {
     "no_outer": (HOOK_REL, "        return on_stop({\"session_id\": sid}, now=now, seat=seat, runner=runner,",
                  "        return \"\" and on_stop({\"session_id\": sid}, now=now, seat=seat, runner=runner,",
                  ["Outer.test_O1_api_seat_85_dm_once"]),
-    "no_repl_call": ("src/cockpit/deepseek_cli.py", "            _api_tidy.turn_end(sess.name)\n", "",
+    "no_repl_call": ("src/cockpit/deepseek_cli.py", "            if _api_tidy.turn_end(sess.name):\n", "            if False:\n",
                      ["Outer.test_O4_every_api_repl_calls_turn_end"]),
     "no_init_call": ("src/bootstrap/aib_init.py", "    hooks = _ensure_hooks()\n", "    hooks = []\n",
                      ["Entry.test_N1_aib_init_installs"]),
     "no_update_call": ("cli.py", "'[ \"$rc\" -ne 0 ] || [ ! -f \"$AIB_UPDATE_HOOK\" ] || \"$AIB_UPDATE_PY\" \"$AIB_UPDATE_HOOK\" ensure-all >&2; '",
                        "''", ["Entry.test_N2_aib_update_runs_ensure_all_after_installer"]),
+    "no_api_every": (HOOK_REL, "    return _unmeasured_tidy(code, sid, rec)\n", '    return ""\n',
+                     ["Unmeasured.test_U1_api_seat_every_20"]),
+    "bot_hardcoded_n": (HOOK_REL, "    elif unmeasured_due(code, gauge_sid or \"\"):\n",
+                        "    elif st[\"turns\"] % 20 == 0:\n", ["Unmeasured.test_U4_bot_reads_same_policy"]),
     "no_codexbot_gauge": ("src/cockpit/codexbot_bridge.py",
                           "        return adh.bot_turn(uuid_tail5(session_id) or \"\", cabin, gauge_sid=gauge_sid)\n",
                           "        return adh.bot_turn(uuid_tail5(session_id) or \"\", cabin)\n",
