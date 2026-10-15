@@ -367,5 +367,56 @@ class C6CodexTrustOldPython(TmpCase):
             self.assertIn("{ver}", tr["codex_trust.result.old_python"], loc)
 
 
+# ───────────────────────────────────────────────────────────── C9
+class C9DoctorNotices(TmpCase):
+    def setUp(self):
+        super().setUp()
+        import aib_doctor
+        self.D = aib_doctor
+
+    def test_login_is_note_not_failure(self):
+        self.assertEqual(self.D.check_provider_login("claude")["status"], self.D.NOTE)
+
+    def test_not_in_cabin_is_note(self):
+        self.assertEqual(self.D.check_cabin_env(str(ROOT), env={})["status"], self.D.NOTE)
+
+    def test_rc_ignores_notes(self):
+        import io
+        import contextlib
+        D = self.D
+        orig = D.run_all
+        self.addCleanup(setattr, D, "run_all", orig)
+        for rows, want in (([D._result("a", D.OK, ""), D._result("b", D.NOTE, "")], 0),
+                           ([D._result("a", D.OK, ""), D._result("b", D.MANUAL, "")], 1),
+                           ([D._result("a", D.FAIL, "")], 1)):
+            D.run_all = lambda *a, _r=rows, **k: _r
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(D.main(["--state-root", str(self.tmp)]), want, rows)
+
+    def _fake_repo(self):
+        repo = self.tmp / "repo"
+        hooks = repo / "src" / "policy" / "hooks"
+        hooks.mkdir(parents=True)
+        (hooks / "release-tag-gate.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        (hooks / "install-hooks.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        git(repo, "init", "-q")
+        return repo
+
+    def test_release_gate_skipped_for_normal_users(self):
+        r = self.D.check_release_gate_hook(str(self._fake_repo()))
+        self.assertEqual(r["status"], self.D.NOTE, r)
+
+    def test_release_gate_still_checked_when_in_use(self):
+        repo = self._fake_repo()
+        (repo / ".git" / "hooks").mkdir(exist_ok=True)
+        (repo / ".git" / "hooks" / "pre-push").write_text("#!/bin/sh\n", encoding="utf-8")
+        r = self.D.check_release_gate_hook(str(repo))
+        self.assertNotEqual(r["status"], self.D.NOTE, r)
+
+    def test_no_private_repo_in_user_text(self):
+        src = (SRC / "bootstrap" / "aib_doctor.py").read_text(encoding="utf-8")
+        self.assertNotIn("沒有 ez2-ai", src)
+
+
 if __name__ == "__main__":
     unittest.main()

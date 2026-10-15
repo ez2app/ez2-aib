@@ -12,13 +12,16 @@
           —— 計為未通過。不假裝能修,也不因為修不了就跳過不算。
           今晚的教訓:守衛可以被證明有作用,同時作用在錯的東西上;
           一個把 manual 算成綠的 doctor,就是作用在錯的東西上。
+  note    **提醒,不算失敗**(10-15 稽核 C9):每個新用戶都一定會有、而且不是「壞了」的事 ——
+          AI 工具要自己登入一次、不在艙裡跑所以艙內那項沒量、發版閘只有發版的人要裝。
+          以前這些算 manual ⇒ 新用戶的 doctor 幾乎永遠 rc 1,「不通過」失去意思。
 
 唯讀:本工具**不建立、不修改任何檔案**。要建目錄是 ED.2 `aib init` 的事。
 
 狀態根以可注入方式取得(參數 > 環境變數 > 預設)。**刻意不改既有 9 處硬編路徑**
 ——那是 ED.1 的獨佔範圍,現在動會與未來的 ED.1 互撞(pm 裁決)。
 
-exit: 0 全部 ok · 1 有 fail 或 manual · 2 用法錯
+exit: 0 沒有 fail 也沒有 manual(note 不影響)· 1 有 fail 或 manual · 2 用法錯
 """
 
 import argparse
@@ -34,7 +37,7 @@ from pathlib import Path
 DEFAULT_STATE_ROOT = "~/.ez2-aib"
 MIN_PYTHON = (3, 9)
 
-OK, FAIL, MANUAL = "ok", "fail", "manual"
+OK, FAIL, MANUAL, NOTE = "ok", "fail", "manual", "note"
 
 
 def _result(check_id, status, detail, remedy=""):
@@ -161,14 +164,33 @@ def check_provider_cli(name):
 
 
 def check_provider_login(name):
+    """登入與否機器量不到,但「沒量到」不是「壞了」⇒ note(提醒),不讓每個新用戶的 doctor 都 rc 1(稽核 C9)。"""
     return _result(
-        "provider_login_%s" % name, MANUAL,
+        "provider_login_%s" % name, NOTE,
         "機器無法確認 %s 是否已登入" % name,
-        "請你自己跑一次 %s 並完成登入;doctor 不會、也不該代你登入" % name)
+        "第一次用之前自己跑一次 %s 並完成登入;doctor 不會、也不該代你登入" % name)
 
 
 # 漂移判準的基準線。★ 不是「這棵樹的檔案」——見 check_release_gate_hook 檔頭那段。
 HOOK_BASELINE_REF = "origin/main"
+
+
+def _uses_git_hooks(repo_root):
+    """這份倉有沒有在用發版閘:hooks 目錄(git rev-parse --git-path hooks,有設 core.hooksPath 就是那裡)裡已經有
+    pre-push,或明設了 core.hooksPath。不是 git 倉 / git 跑不起來 ⇒ False。"""
+    def git(*args):
+        try:
+            r = subprocess.run(["git"] + list(args), cwd=str(repo_root), capture_output=True, text=True, timeout=10,
+                               stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+    hooks = git("rev-parse", "--git-path", "hooks")
+    if not hooks:
+        return False
+    if (Path(repo_root) / hooks / "pre-push").exists():
+        return True
+    return bool(git("config", "--get", "core.hooksPath"))
 
 
 def check_release_gate_hook(repo_root):
@@ -230,6 +252,11 @@ def check_release_gate_hook(repo_root):
                        "確認 src/policy/hooks/install-hooks.sh 有沒有被誤刪")
 
     fix = "在這棵樹上跑 src/policy/hooks/install-hooks.sh install"
+    # 10-15 稽核 C9:發版閘只有「發版的人」要裝;pipx / 一行安裝 / 一般 clone 的新用戶不需要,
+    #   沒裝不該讓 doctor rc 1。只有這份倉已經在用(hooks 目錄已有 pre-push,或設了 core.hooksPath)才照舊嚴查。
+    if not _uses_git_hooks(repo_root):
+        return _result("release_gate_hook", NOTE, "這份 aib 沒有在用發版閘(只有發佈 aib 版本的人需要),略過",
+                       "")
     try:
         proc = subprocess.run(
             ["bash", str(installer), "verify",
@@ -556,9 +583,9 @@ def check_cabin_env(repo_root, env=None):
     env = dict(os.environ if env is None else env)
     sock = (env.get("EZ2_AIHUB_SOCKET") or "").strip()
     if not sock:
-        return _result("cabin_env", MANUAL,
+        return _result("cabin_env", NOTE,
                        "沒有 EZ2_AIHUB_SOCKET:不在艙裡,本項未檢查任何東西",
-                       "在艙裡重跑,或 --socket 指定")
+                       "要查這一項就在艙裡重跑,或 --socket 指定")
     try:
         M = _cabin_env_mod(repo_root)
         ids = M.provider_ids(str(Path(repo_root) / "src" / "cockpit" / "providers.json"))
@@ -608,7 +635,7 @@ def check_second_brain(repo_root):
     elif (vendor / "shared" / "ez2-note-format.js").is_file():
         out.append(_result("brain_note_format", OK, "用隨附副本 %s" % vendor))
     else:
-        out.append(_result("brain_note_format", FAIL, "筆記格式模組拿不到(沒有 ez2-ai,也沒有隨附副本)",
+        out.append(_result("brain_note_format", FAIL, "筆記格式模組拿不到(這份 aib 少了隨附副本 %s)" % vendor,
                            "更新 aib(aib update)取得隨附副本"))
     if not shutil.which("node"):
         out.append(_result("brain_node", FAIL, "找不到 node(寫第二大腦要用)", "安裝 Node.js(macOS:brew install node)"))
@@ -680,7 +707,7 @@ def main(argv=None):
         "claude", "codex", "agy", "copilot", "grok", "deepseek", "nvidia", "openrouter", "typesafe", "openrouterjev", "sand", "grokbot", "codexbot", "claudebot", "musebot"]
     checks = run_all(args.state_root, args.repo_root, providers, explicit_providers=args.provider is not None)
 
-    counts = {OK: 0, FAIL: 0, MANUAL: 0}
+    counts = {OK: 0, FAIL: 0, MANUAL: 0, NOTE: 0}
     for c in checks:
         counts[c["status"]] += 1
 
@@ -689,12 +716,12 @@ def main(argv=None):
                          ensure_ascii=False, indent=2))
     else:
         for c in checks:
-            mark = {OK: "OK  ", FAIL: "FAIL", MANUAL: "你做"}[c["status"]]
+            mark = {OK: "OK  ", FAIL: "FAIL", MANUAL: "你做", NOTE: "提醒"}[c["status"]]
             line = "%s %-24s %s" % (mark, c["id"], c["detail"])
             if c["status"] != OK and c["remedy"]:
                 line += "\n         -> %s" % c["remedy"]
             print(line)
-        print("\nok=%d fail=%d 需你自己做=%d" % (counts[OK], counts[FAIL], counts[MANUAL]))
+        print("\nok=%d fail=%d 需你自己做=%d 提醒=%d" % (counts[OK], counts[FAIL], counts[MANUAL], counts[NOTE]))
         if counts[MANUAL]:
             print("★『需你自己做』不算通過:機器沒辦法確認的事,doctor 不會假裝它綠了。")
 
