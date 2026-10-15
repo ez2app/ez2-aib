@@ -815,8 +815,19 @@ _xhost_send() {
   local ident host cmd out rc ssh_bin="${AIB_DM_XHOST_SSH:-ssh}"
   local -a sshopt=(-o BatchMode=yes -o ConnectTimeout="${AIB_DM_XHOST_TIMEOUT:-8}" -o ForwardAgent=no -o ClearAllForwardings=yes) rargs
   host="$("$PY3" "$HERE/dm_xhost.py" ssh-target "$_XH_OUT_IP")" || host="$_XH_OUT_IP"
+  # 共用連線(10-15 實測:冷連線 240–540 ms/次,共用後 45 ms):試連那一趟順便建主連線、留 10 分鐘,
+  #   之後這封與下一封都沿用。主連線只由試連建(stdio 全接 /dev/null);送件一律 ControlMaster=no
+  #   ——沿用現成的,沒有就照舊直連,不讓送件那一趟生出常駐行程卡住 $( ) 的輸出管線。
+  #   接口檔夾只給自己(0700、擁有者是自己);路徑太長(unix socket 上限)或 AIB_DM_XHOST_MUX=0 ⇒ 不共用。
+  local -a muxopt=() probeopt=()
+  local muxdir="${EZ2_AIB_STATE_ROOT:-$HOME/.ez2-aib}/run/ssh"
+  if [ "${AIB_DM_XHOST_MUX:-1}" != "0" ] && [ "${#muxdir}" -le 60 ] \
+       && mkdir -p "$muxdir" 2>/dev/null && chmod 700 "$muxdir" 2>/dev/null && [ -O "$muxdir" ]; then
+    muxopt=(-o ControlPath="$muxdir/%C" -o ControlMaster=no)
+    probeopt=(-o ControlPath="$muxdir/%C" -o ControlMaster=auto -o ControlPersist="${AIB_DM_XHOST_PERSIST:-600}")
+  fi
   # 先試連線再推導:連不上就什麼都不碰(推導那一輪會讀本機艙)。
-  if ! "$ssh_bin" "${sshopt[@]}" "$host" true </dev/null >/dev/null 2>&1; then
+  if ! "$ssh_bin" "${sshopt[@]}" ${probeopt[@]+"${probeopt[@]}"} "$host" true </dev/null >/dev/null 2>&1; then
     emit_json 2 resolve "xhost:ssh-unreachable"
     die "連不上 $host($_XH_OUT_IP)的 SSH,一個字都沒送" 2
   fi
@@ -847,7 +858,28 @@ _xhost_send() {
   [ "$DRYRUN" = "1" ] && rargs+=(--dry-run)
   [ "$VERIFY" = "1" ] && rargs+=(--verify)
   cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
-  out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd")"; rc=$?
+  local errf; errf="$(mktemp "${TMPDIR:-/tmp}/aib-dm-xhost-err.XXXXXX")" || errf=/dev/null
+  out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" ${muxopt[@]+"${muxopt[@]}"} "$host" "$cmd" 2>"$errf")"; rc=$?
+  # 相容退路:收件機的 aib 是還沒有跨主機身分的舊版 ⇒ 它在解析參數就停(rc 2、RESULT stage=abort、
+  #   stderr 點名 --xhost-ident),一個字都沒進艙 ⇒ 不帶身分重送一次;抬頭由收件機照舊寫未認證。
+  #   三條都要成立才退:別的 rc 2(對方擋下、地址錯)照原樣回,不重送。
+  if [ "$rc" = "2" ] && [ "${out##*$'\n'}" = "RESULT stage=abort id=- relay=- thread=-" ] \
+       && grep -q -- '--xhost-ident' "$errf" 2>/dev/null; then
+    rm -f "$errf"
+    echo "aib-dm-ctl: 收件機 $host 的 aib 是舊版、不認跨主機身分 ⇒ 不帶身分重送一次;對方抬頭會是未認證,寄件人只能看正文(請那台更新 aib)" >&2
+    local i; for ((i = 0; i < ${#rargs[@]}; i++)); do
+      if [ "${rargs[i]}" = "--xhost-ident" ]; then rargs=("${rargs[@]:0:i}" "${rargs[@]:i+2}"); break; fi
+    done
+    cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
+    # 舊版抬頭會把位址寫成收件機自己 ⇒ 正文第一行標出 sshd 在那台量到的來源 IP 與自稱寄件人。
+    local src_ip note
+    src_ip="$("$ssh_bin" "${sshopt[@]}" ${muxopt[@]+"${muxopt[@]}"} "$host" 'printf "%s" "${SSH_CONNECTION%% *}"' </dev/null 2>/dev/null)" || src_ip=""
+    note="$("$PY3" "$HERE/dm_xhost.py" fallback-note "$ident" "$src_ip")" || note=""
+    out="$({ [ -n "$note" ] && printf '%s\n' "$note"; printf '%s' "$MSG"; } | "$ssh_bin" "${sshopt[@]}" ${muxopt[@]+"${muxopt[@]}"} "$host" "$cmd")"; rc=$?
+  else
+    cat "$errf" >&2 2>/dev/null
+    [ "$errf" = /dev/null ] || rm -f "$errf"
+  fi
   [ -n "$out" ] && printf '%s\n' "$out"
   # 收件機的 dm-ctl 有跑到 ⇒ 它自己印了 RESULT 行;本機不再印第二行(最後一行要是收件機那一則的)。
   local remote_ran=0
