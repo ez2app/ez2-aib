@@ -122,5 +122,34 @@ class C7ProjectInRepoWithSrc(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class C8ShipWithoutOriginMain(unittest.TestCase):
+    """沒有 origin/main 的倉:aib ship package/release/sync 給一行四語說明,不吐 traceback。"""
+
+    def test_no_origin_main_is_a_clear_message(self):
+        tmp = tempfile.mkdtemp(prefix="aib-c8-")
+        try:
+            env = sandbox_env(tmp)
+            env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                        "AIB_SHIP_PREFLIGHT": "0",
+                        "AIB_HOST_LEASE_FILE": os.path.join(tmp, "lease.json")})
+            repo = os.path.join(tmp, "r")
+            os.makedirs(repo)
+            subprocess.run(["git", "-C", repo, "init", "-q", "-b", "main"], env=env, check=True)
+            subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit",
+                            "-q", "--allow-empty", "-m", "x"], env=env, check=True)
+            ship = str(ROOT / "tools" / "release" / "ship.py")
+            for args in (["package", "--preview"], ["package"],
+                         ["release", "--version", "9.9.9", "--preview"], ["sync"]):
+                r = subprocess.run([PY, ship, "--repo", repo] + args, env=env,
+                                   capture_output=True, text=True, timeout=120)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, (args, out))
+                self.assertNotIn("Traceback", out, args)
+                self.assertIn("origin/main", out, args)
+                self.assertIn("git remote add origin", out, args)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

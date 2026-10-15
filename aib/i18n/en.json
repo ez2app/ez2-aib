@@ -2776,5 +2776,6 @@
   "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
   "aib.captains_ctl.unmeasured": "unknown",
   "aib.captains_ctl.status_label": "Captain:",
-  "aib.onboardcli.template_missing_menu": "aib: the onboarding template is missing from this install, so seat {window} is not offered \"load all / iron rules only\". Reinstall or update aib (aib update) to get it back."
+  "aib.onboardcli.template_missing_menu": "aib: the onboarding template is missing from this install, so seat {window} is not offered \"load all / iron rules only\". Reinstall or update aib (aib update) to get it back.",
+  "aib.ship.no_origin_main": "There is no origin/main to compare against ({why}). Add the remote that holds your main branch (git remote add origin <url>), push main to it once, then run this again."
 }

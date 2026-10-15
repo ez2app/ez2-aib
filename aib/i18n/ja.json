@@ -2776,5 +2776,6 @@
   "aib.captains_ctl.captain_exists": "すでに艦長が任命されています:ウィンドウ {window}、席コード={code};先にその席を --unassign してから新しい席を任命してください",
   "aib.captains_ctl.unmeasured": "不明",
   "aib.captains_ctl.status_label": "艦長:",
-  "aib.onboardcli.template_missing_menu": "aib: このインストールにはオンボーディング用テンプレートがないため、席 {window} には「全部読み込む / 鉄則のみ」を表示しません。aib を再インストールまたは更新(aib update)すると戻ります。"
+  "aib.onboardcli.template_missing_menu": "aib: このインストールにはオンボーディング用テンプレートがないため、席 {window} には「全部読み込む / 鉄則のみ」を表示しません。aib を再インストールまたは更新(aib update)すると戻ります。",
+  "aib.ship.no_origin_main": "比較する origin/main がありません({why})。main ブランチがあるリモートを追加し(git remote add origin <url>)、main を一度 push してから、もう一度実行してください。"
 }

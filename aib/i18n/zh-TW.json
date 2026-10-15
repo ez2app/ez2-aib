@@ -2776,5 +2776,6 @@
   "aib.captains_ctl.captain_exists": "已有受派艦長:窗 {window} 正確座位碼={code};請先明示 --unassign 舊席,再任命新席",
   "aib.captains_ctl.unmeasured": "量不到",
   "aib.captains_ctl.status_label": "艦長:",
-  "aib.onboardcli.template_missing_menu": "aib: 這份安裝缺開席單模板,所以席 {window} 不列「載入全部 / 只鐵則」。重裝或更新 aib(aib update)就會補回。"
+  "aib.onboardcli.template_missing_menu": "aib: 這份安裝缺開席單模板,所以席 {window} 不列「載入全部 / 只鐵則」。重裝或更新 aib(aib update)就會補回。",
+  "aib.ship.no_origin_main": "沒有 origin/main 可以比對({why})。先加上放主線的遠端(git remote add origin <網址>)、把 main 推上去一次,再執行一次。"
 }
