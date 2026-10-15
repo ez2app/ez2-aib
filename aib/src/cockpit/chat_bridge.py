@@ -432,6 +432,32 @@ def cmd_on(a, env, out):
     return 0
 
 
+def cmd_prepare(a, env, out):
+    """先備好全球對談,但**不上線**(維護者 10-16:安裝時就裝好 Nostr 的程式、第一艦長開席就有身分):
+    裝 venv + nostr-sdk(--keys-only 略過)、產生主人金鑰、替已綁人格的席發席金鑰。全部只在本機:
+    不連中繼站、不發名冊、不開開關。要上線仍是 aib chat on --name … --country …(會公開顯示名稱與國別)。
+    AIB_CHAT_PREINSTALL=0 ⇒ 什麼都不做。任何一步失敗只回報,rc 0(不擋安裝與開艙)。"""
+    if (env.get("AIB_CHAT_PREINSTALL") or "1") == "0":
+        return 0
+    if not a.keys_only:
+        if venv_state(env) == "ok":
+            out.write(T("prepare_venv_ok", pin=NOSTR_SDK_PIN) + "\n")
+        elif ensure_venv(env, out):
+            out.write(T("prepare_venv_ok", pin=NOSTR_SDK_PIN) + "\n")
+        else:
+            out.write(T("prepare_venv_failed", pin=NOSTR_SDK_PIN) + "\n")
+    acts, key_err = sync_keys(env)
+    if key_err:
+        out.write(T("keys_error", err=key_err) + "\n")
+    elif not a.quiet or acts:
+        import nostr_keys as NK
+        pv = NK.public_view(env)
+        out.write(T("prepare_keys", n=sum(1 for e in pv["seats"] if e["status"] == "active")) + "\n")
+    if not is_enabled(env) and not a.quiet:
+        out.write(T("prepare_next") + "\n")
+    return 0
+
+
 def cmd_off(a, env, out):
     try:
         switch_path(env).unlink()
@@ -606,6 +632,9 @@ def main(argv=None, env=None, out=sys.stdout):
     ew = sub.add_parser("ensure-window", help=T("help.ensure_window"))
     ew.add_argument("--socket")
     sub.add_parser("enabled", help=T("help.enabled"))
+    pp = sub.add_parser("prepare", help=T("help.prepare"))
+    pp.add_argument("--keys-only", action="store_true", help=T("help.keys_only"))
+    pp.add_argument("--quiet", action="store_true")
     a = p.parse_args(argv)
     if a.cmd in (None, "status"):
         if a.cmd is None:
@@ -625,6 +654,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_lookup(a, env, out)
     if a.cmd == "run":
         return run(env, out=out)
+    if a.cmd == "prepare":
+        return cmd_prepare(a, env, out)
     if a.cmd == "enabled":
         return 0 if is_enabled(env) else 1
     if a.cmd == "ensure-window":

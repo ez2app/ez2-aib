@@ -4326,5 +4326,11 @@
   "aib.chat.status_today": "Today: sent {sent}, received {received}, failed {failed}; waiting to send {pending}",
   "aib.chat.status_clock_ok": "Clock: {offset} s off the relays (fine)",
   "aib.chat.status_clock_warn": "⚠ Clock: {offset} s off the relays; please sync the time (System Settings → Date & Time → set automatically) or receipts and expiry will be wrong",
-  "aib.chat.status_clock_unknown": "Clock: not measured yet (or cannot measure)"
+  "aib.chat.status_clock_unknown": "Clock: not measured yet (or cannot measure)",
+  "aib.chat.prepare_venv_ok": "Global chat: nostr-sdk ready ({pin})",
+  "aib.chat.prepare_venv_failed": "Global chat: could not install nostr-sdk ({pin}, usually the network); run aib chat prepare later",
+  "aib.chat.prepare_keys": "Global chat: owner key ready; {n} seats have seat keys (local only, not online yet)",
+  "aib.chat.prepare_next": "To go online: aib chat on --name \"<display name>\" --country US (publishes your display name and country; no seat is listed by default)",
+  "aib.chat.help.prepare": "prepare global chat (install nostr-sdk, create keys; local only, does not go online)",
+  "aib.chat.help.keys_only": "keys only; do not install packages"
 }

@@ -454,6 +454,9 @@ ensure_watch_window
 # ---- 全球對談轉接程式 sys.chat 窗(Andy 10-15 22:5x;開發文件第 20.1 節)----
 #   只在 `aib chat on` 過(開關檔在)才開;一台一支由 chat_bridge.py 的 flock 管,別艙的窗排隊備援。
 #   冪等:有窗且活著 = 不動;pane 死了 = respawn;沒有才開。失敗只警告,不擋開艙。
+# 全球對談先備好身分(維護者 10-16):開艙時在背景補主人金鑰與已綁席的席金鑰;只在本機,不連網、不上線、不裝套件。
+#   第一艦長綁好人格之後的下一次開艙(或 aib chat prepare / on)就有席金鑰。AIB_CHAT_PREINSTALL=0 關掉。
+( "$EZ2_PY3" "$C/chat_bridge.py" prepare --keys-only --quiet >/dev/null 2>&1 & ) 2>/dev/null
 if "$EZ2_PY3" "$C/chat_bridge.py" enabled 2>/dev/null; then
   EZ2_AIB_INSTANCE="$EZ2_AIB_INSTANCE" EZ2_AIB_INSTANCE_HOME="$EZ2_AIB_INSTANCE_HOME" EZ2_AIHUB_SOCKET="$HUB" \
     EZ2_AIB_ROOT="$EZ2_AIB_ROOT" "$EZ2_PY3" "$C/chat_bridge.py" ensure-window --socket "$HUB" >/dev/null 2>&1 || \
