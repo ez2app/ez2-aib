@@ -40,6 +40,15 @@ DEFAULT_STATE_ROOT = "~/.ez2-aib"
 DIR_MODE = 0o700
 FILE_MODE = 0o600
 
+
+def _T(key, params=None):
+    """使用者看得到的字一律走 i18n(aib/i18n/<語系>.json);語系照 aib lang / EZ2_AIB_LOCALE。"""
+    cockpit = str(Path(__file__).resolve().parents[1] / "cockpit")
+    if cockpit not in sys.path:
+        sys.path.insert(0, cockpit)
+    import i18n_lib  # noqa: E402
+    return i18n_lib.t(key, params, locale=i18n_lib.resolve_locale())
+
 # 目錄正本:相對狀態根的路徑 -> 釘死的權限。"" 是狀態根自身。
 # 清單依 2026-08-13 現行 ~/.ez2-aib 實際結構收錄;現場觀察到的較鬆權限
 # (0750/0755/0770)是歷次 umask 007/022 產物,不是設計,init 統一釘 0700。
@@ -197,7 +206,20 @@ def missing_ancestors(root):
     return list(reversed(chain))
 
 
-def run_init(state_root):
+YES_WORDS = ("y", "yes", "是", "好", "はい", "네", "예")
+
+
+def ask_tty(question):
+    """終端機問一句,預設不要(只有明確答是才放)。讀不到(EOF、中斷)⇒ 不要。"""
+    try:
+        ans = input(question).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return ans in YES_WORDS
+
+
+def run_init(state_root, ask=None):
     root = Path(os.path.expanduser(state_root))
     reject_dangerous_root(root)
     check_existing_ancestors(root)
@@ -215,7 +237,7 @@ def run_init(state_root):
         items.append(ensure_file(root / rel, mode))
     items.extend(_ensure_secrets_tree(root))
     from desktop_shortcut import ensure_desktop_hub
-    items.extend(ensure_desktop_hub(root))
+    items.extend(ensure_desktop_hub(root, ask=ask))
     return items
 
 
@@ -239,18 +261,20 @@ def _ensure_secrets_tree(root):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog="aib-init", description="ED.2 首跑建置:狀態目錄鏈逐層 mkdir+chmod")
+        prog="aib init", description=_T("aib.init.help.description"))
     parser.add_argument(
         "--state-root",
         default=os.environ.get(
             "EZ2_AIB_STATE_ROOT",
             os.environ.get("EZ2_AIB_HOME",
-                           os.path.expanduser(DEFAULT_STATE_ROOT))))
-    parser.add_argument("--json", action="store_true", help="輸出 JSON 供機器讀")
+                           os.path.expanduser(DEFAULT_STATE_ROOT))),
+        help=_T("aib.init.help.state_root"))
+    parser.add_argument("--json", action="store_true", help=_T("aib.init.help.json"))
     args = parser.parse_args(argv)
 
     try:
-        items = run_init(args.state_root)
+        interactive = not args.json and sys.stdin.isatty() and sys.stdout.isatty()
+        items = run_init(args.state_root, ask=ask_tty if interactive else None)
     except InitError as err:
         sys.stderr.write("aib-init: %s\n" % err)
         return 2
@@ -263,7 +287,7 @@ def main(argv=None):
                           "items": items, "counts": counts},
                          ensure_ascii=False, indent=2))
     else:
-        mark = {CREATED: "建立", FIXED: "修正", OK: "OK  ", FAIL: "FAIL"}
+        mark = {CREATED: _T("aib.init.mark_created"), FIXED: _T("aib.init.mark_fixed"), OK: "OK  ", FAIL: "FAIL"}
         for i in items:
             # 10-12 新用戶全面檢查:金鑰櫃 / 桌面捷徑回的項目不一定有 mode/detail/remedy ⇒ 用 get,不在最後一步崩
             line = "%s %s" % (mark[i["action"]], i["path"])

@@ -18,7 +18,8 @@ the maintainer:「把所有選項做出一個自動由AI選擇的功能,不需�
 問真人的選單(AskUserQuestion 那種)原本不代答(a seat 14:1x),the maintainer 10-13 14:2x 改裁:
 「所有的ai只要選單有選項,都應該自動判斷選擇」⇒ 也由 AI 選(優先選標了建議 / 預設的那一項),一定通知 the maintainer、記帳。
 送給小模型的只有底部選單那幾行和席的角色(防提示注入)。
-開關:AIB_MENU_PICK=0 全關;<狀態根>/state/menu-pick/off.txt 一行一個席碼 = 那幾席不碰。
+開關:新用戶預設不開,`aib menu-pick on` 才開(<狀態根>/state/menu-pick/switch;以前就在用的機器照舊開著);
+      AIB_MENU_PICK=0 全關;<狀態根>/state/menu-pick/off.txt 一行一個席碼 = 那幾席不碰。
 """
 from __future__ import annotations
 
@@ -91,6 +92,58 @@ def seats(seats_dir=None):
             out.append({"code": code, "provider": rec.get("provider") or "", "socket": rec["socket"],
                         "wid": rec["window_id"], "role": rec.get("role") or ""})
     return out
+
+
+# ---------------------------------------------------------------- 要自己開(10-15 稽核後 Andy 裁:新用戶預設不開)
+SWITCH = "switch"          # <狀態根>/state/menu-pick/switch:內容 on / off
+LEGACY_MARKS = ("log.jsonl", "seen.json")   # 這台以前跑過 menu-pick 留下的檔 ⇒ 舊裝的,照舊開著
+
+
+def _hook_installed():
+    """各家設定裡已經有 menu_pick 的 hook(舊版開席自動裝的)⇒ True。讀不到的檔當沒有。"""
+    home = Path(os.path.expanduser("~"))
+    claude = Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude") / "settings.json"
+    for f in (claude, home / ".grok" / "hooks" / "aib-menu-pick.json", home / ".codex" / "hooks.json",
+              home / ".gemini" / "config" / "hooks.json", home / ".copilot" / "hooks" / COPILOT_HOOK_NAME):
+        try:
+            if "menu_pick.py" in f.read_text(encoding="utf-8"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def switch_state():
+    """on / off / None(從沒設過)。"""
+    try:
+        v = (pick_dir() / SWITCH).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return v if v in ("on", "off") else None
+
+
+def set_switch(value):
+    d = pick_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / SWITCH).write_text(value + "\n", encoding="utf-8")
+
+
+def enabled():
+    """AI 自動選選單開了沒。新用戶要自己 `aib menu-pick on`;AIB_MENU_PICK=0 一律關。
+    沒設過開關、但這台以前就在用(有 menu-pick 紀錄檔,或各家設定裡已有它的 hook)⇒ 舊裝的,
+    記成 on 照舊運作(只判一次;之後 `aib menu-pick off` 就是 off,不會再被當成舊裝的打開)。"""
+    if os.environ.get("AIB_MENU_PICK") == "0":
+        return False
+    st = switch_state()
+    if st is not None:
+        return st == "on"
+    if any((pick_dir() / m).exists() for m in LEGACY_MARKS) or _hook_installed():
+        try:
+            set_switch("on")
+        except OSError:
+            pass
+        return True
+    return False
 
 
 def off_codes():
@@ -559,7 +612,7 @@ def _handle(seat, screen, *, dry_run=False, run=None, run_codex=None, send=None,
 
 
 def once(only=None, dry_run=False, seats_dir=None):
-    if os.environ.get("AIB_MENU_PICK") == "0":
+    if not enabled():
         return []
     off = off_codes()
     out = []
@@ -604,7 +657,7 @@ def self_code():
 
 def trigger(code=None, spawn=None, now=None):
     """hook 呼叫:背景起一支 `once --seat <自己>`(晚一點看,選單才畫好);2 秒內同一席只起一次。回 True = 有起。"""
-    if os.environ.get("AIB_MENU_PICK") == "0":
+    if not enabled():
         return False
     code = code or self_code()
     if not code or code in off_codes():
@@ -645,16 +698,10 @@ def _ours(text, sub):
 
 
 def canonical_self():
-    """正本樹裡的本支(git worktree list 第一列);量不到 ⇒ None(不把工作樹路徑寫進設定)。"""
-    try:
-        r = subprocess.run(["git", "-C", str(HERE), "worktree", "list", "--porcelain"], capture_output=True,
-                           text=True, timeout=10, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    for line in (r.stdout or "").splitlines():
-        if line.startswith("worktree "):
-            return os.path.join(line[len("worktree "):], "src", "cockpit", "menu_pick.py")
-    return None
+    """正本樹裡的本支;量不到 ⇒ None(不把工作樹路徑寫進設定)。不在 git 裡(pipx)⇒ 本支就是正本。
+    10-15:改用 canonical_tree(舊寫法少接公開倉的 aib/ 一層 ⇒ git 安裝永遠裝不上;pipx 安裝也永遠量不到)。"""
+    import canonical_tree
+    return canonical_tree.canonical_path(str(HERE / "menu_pick.py"))
 
 
 def _cmd_line(script):
@@ -703,7 +750,7 @@ def ensure_agy(path=None, script=None):
     """agy 沒有 permission 事件 ⇒ PreToolUse(每個工具前;a seat 10-13 17:06 實測會觸發)只當觸發時機,不回 decision
     (回 allow 在 headless 也放行不了;空輸出 = 照它原本的權限規則,a seat 10-13 17:26 實測證實)。~/.gemini/config/hooks.json 具名,
     別人的具名 hook 不動、先備份。"""
-    if os.environ.get("AIB_MENU_PICK") == "0":
+    if not enabled():
         return "off"
     script = script or canonical_self()
     if not script or not os.path.isfile(script):
@@ -751,7 +798,7 @@ def codex_permission(payload, ask=None, now=None, known=None):
     cmd = str(ti.get("command") or ti.get("cmd") or json.dumps(ti, ensure_ascii=False))[:1500]
     screen = "Codex wants to run a tool and needs approval.\nTool: %s\nCommand: %s\nDo you want to allow this?\n" \
              "> 1. Yes, allow\n  2. No, deny\nEnter to confirm · Esc to cancel" % (tool, cmd)
-    if os.environ.get("AIB_MENU_PICK") == "0":
+    if not enabled():
         return ""
     code = codex_code_of(payload, known)
     if not code or code in off_codes():
@@ -785,7 +832,7 @@ def codex_permission(payload, ask=None, now=None, known=None):
 def ensure_codex(path=None, script=None):
     """~/.codex/hooks.json 加 PermissionRequest 一組(別人的不動、先備份)。新 hook 要 the maintainer 在 Codex /hooks 信任一次
     (定義改了要重審;a seat 10-13 查證)。回 installed / ok / skip…。"""
-    if os.environ.get("AIB_MENU_PICK") == "0":
+    if not enabled():
         return "off"
     script = script or canonical_self()
     if not script or not os.path.isfile(script):
@@ -816,7 +863,7 @@ COPILOT_HOOK_NAME = "aib-menu-pick.json"
 def ensure_copilot(hooks_dir=None, script=None):
     """Copilot 沒有 permission 事件 ⇒ preToolUse(每個工具前)只當觸發;~/.copilot/hooks/aib-menu-pick.json
     (格式照 a seat / a seat 10-13 實測:version 1、bash、timeoutSec;使用者層不用信任,新開的對話才吃得到)。"""
-    if os.environ.get("AIB_MENU_PICK") == "0":
+    if not enabled():
         return "off"
     script = script or canonical_self()
     if not script or not os.path.isfile(script):
@@ -835,7 +882,7 @@ def ensure_copilot(hooks_dir=None, script=None):
 def ensure(claude_settings=None, grok_dir=None, script=None):
     """Claude:~/.claude/settings.json Notification(permission_prompt);Grok:~/.grok/hooks/aib-menu-pick.json 同一個事件。
     已裝不動、沒裝才裝(先備份);任何錯不擋開席。→ {家: 結果}。"""
-    if os.environ.get("AIB_MENU_PICK") == "0":
+    if not enabled():
         return {"all": "off"}
     script = script or canonical_self()
     if not script or not os.path.isfile(script):
@@ -900,7 +947,22 @@ def main(argv=None):
     sub.add_parser("codex-permission")
     lg = sub.add_parser("log")
     lg.add_argument("--n", type=int, default=20)
+    sub.add_parser("on", help="let an AI answer the seats' menus (installs the hooks; off by default)")
+    sub.add_parser("off", help="stop answering menus (hooks stay but do nothing)")
+    sub.add_parser("status")
     a = ap.parse_args(argv)
+    if a.cmd in ("on", "off", "status"):
+        if a.cmd == "status":
+            print(_say("menu_pick.cli.status_on" if enabled() else "menu_pick.cli.status_off"))
+            return 0
+        if a.cmd == "on" and os.environ.get("AIB_MENU_PICK") == "0":
+            print(_say("menu_pick.cli.env_off"), file=sys.stderr)
+            return 1
+        set_switch(a.cmd)
+        if a.cmd == "on":
+            ensure()
+        print(_say("menu_pick.cli.turned_%s" % a.cmd))
+        return 0
     if a.cmd == "once":
         recs = once(a.seat or None, a.dry_run)
         if a.json:

@@ -100,6 +100,11 @@ def brain_routes(contract, module):
             continue
         folder = _safe(r.get("folder"), 60)
         tail = folder.rsplit("/", 1)[-1] if folder else ""
+        try:   # 10-15 盤點 U10:uid 版面顯示 labels.json 的標題,不顯示 fld_…
+            import route_register
+            tail = _safe(route_register.route_label(r["routeKey"], contract=contract), 60) or tail
+        except Exception:  # noqa: BLE001
+            pass
         rows.append((r["routeKey"], "%s · %s" % (r["routeKey"], tail) if tail else r["routeKey"]))
     return sorted(rows)
 
@@ -128,8 +133,7 @@ def main(argv=None):
             for uid, label in persona_cards(cards, cat):
                 print("%s\t%s" % (uid, label))
         return 0
-    contract = load_contract(args.contract or os.environ.get("EZ2_ROUTE_CONTRACT_SPEC")
-                             or os.environ.get("EZ2_ROUTE_REGISTRY"))
+    contract = load_contract(args.contract)   # 10-15:沒給就走 route_register 唯一來源(與綁定、投影同一份)
     if contract is None:
         print("bind-menu: 路由契約讀不到(--contract / EZ2_ROUTE_CONTRACT_SPEC)", file=sys.stderr)
         return 0

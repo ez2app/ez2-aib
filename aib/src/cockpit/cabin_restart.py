@@ -995,17 +995,16 @@ def boot_check(*, delay=None, view=None, opener=None, out=sys.stdout, now=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="aib restart",
-                                 description="列出 AIB 艙(在線的 + 上次開機時還在的)、每艙的 AI 席、種類與最後活動,並恢復")
+                                 description=T("aib.restart.help.desc"))
     ap.add_argument("action", nargs="?", choices=["snapshot", "install-boot", "uninstall-boot", "boot-check"],
-                    help="snapshot = 手動寫一次快照;install-boot / uninstall-boot = 裝/拆開機選單(macOS);"
-                         "boot-check = 開機選單登入時跑的那一步")
-    ap.add_argument("--json", action="store_true", help="印 JSON")
-    ap.add_argument("--restore", metavar="艙碼", help="恢復那一艙(艙號後四碼即可)")
-    ap.add_argument("--restore-all", action="store_true", help="停電/重開機後:上次開機時的艙全部恢復(一艙對一艙)")
-    ap.add_argument("--yes", action="store_true", help="恢復斷掉的艙時不問確認")
-    ap.add_argument("--force", action="store_true", help="已經有人在看的艙也接(會踢掉那個視窗)")
-    ap.add_argument("--no-menu", action="store_true", help="只印列表,不跳選單、不問編號")
-    ap.add_argument("--no-attach", action="store_true", help="恢復斷掉的艙之後不開 Terminal 視窗")
+                    help=T("aib.restart.help.action"))
+    ap.add_argument("--json", action="store_true", help=T("aib.restart.help.json"))
+    ap.add_argument("--restore", metavar="CABIN", help=T("aib.restart.help.restore"))
+    ap.add_argument("--restore-all", action="store_true", help=T("aib.restart.help.restore_all"))
+    ap.add_argument("--yes", action="store_true", help=T("aib.restart.help.yes"))
+    ap.add_argument("--force", action="store_true", help=T("aib.restart.help.force"))
+    ap.add_argument("--no-menu", action="store_true", help=T("aib.restart.help.no_menu"))
+    ap.add_argument("--no-attach", action="store_true", help=T("aib.restart.help.no_attach"))
     args = ap.parse_args(argv)
     if args.action == "snapshot":
         p = write_snapshot(min_interval_s=0)

@@ -74,7 +74,7 @@ for _p in ("memory", "identity", "persona_route", "ledger"):
 
 from pyramid import BINDINGS_SCHEMA, PYRAMID_VERSION, _SEAT_RE  # noqa: E402
 from role_model import _safe_name  # noqa: E402
-from route_register import check_against_contract, load_contract, contract_digest  # noqa: E402
+from route_register import check_against_contract, load_contract, contract_digest, default_contract_spec  # noqa: E402
 from card_registry import SCHEMA_VERSION as CARDS_V2_VERSION, resolve_card, UID_RE, has_unsafe_chars  # noqa: E402
 from schema_validator import SchemaValidator, SchemaValidationError  # noqa: E402
 import seat_address  # noqa: E402
@@ -565,8 +565,11 @@ DISPLAY_SCHEMA = {
                     "folder": {"type": ["string", "null"], "maxLength": 512},
                     # D13:display 的存在只代表人格可顯示，不能再拿它暗示
                     # 第二大腦是否已綁。兩欄把機器狀態與人讀文字分開保存。
-                    "brain_binding_status": {"enum": ["bound", "unbound"]},
-                    "brain_status_text": {"enum": ["大腦已綁", "大腦未綁"]},
+                    # 10-15:unresolved=席位選了大腦,但這次投影的路由表過不了(舊表 / 拿掉了);
+                    #   原因碼在 route_unresolved。以前這種席整筆不出現,狀態面讀成「缺人格」。
+                    "brain_binding_status": {"enum": ["bound", "unbound", "unresolved"]},
+                    "brain_status_text": {"enum": ["大腦已綁", "大腦未綁", "大腦未解析"]},
+                    "route_unresolved": {"type": "string", "minLength": 1, "maxLength": 64},
                     # 以下四欄 v2 才有意義(v1 表沒有 sha):
                     #   persona_sha        登記表上這張卡現在的指紋
                     #   bound_persona_sha  身份層綁定當時釘的指紋(D-2 寫;沒釘=null)
@@ -624,11 +627,12 @@ def _binding_key(record, seat_id):
     return seat_id
 
 
-def project(state_root, cards, contract, seat_files=None):
+def project(state_root, cards, contract, seat_files=None, previous=None):
     """核心投影(純函數:輸入全部由呼叫端給,不自己去讀環境)。
 
     回 {"bindings": {...}, "unresolved": [...]}。
     **每一個席位檔都會在兩個清單其中之一出現,不會兩邊都沒有。**
+    previous(10-15):上一份 bindings(鍵→綁定);路由不在表裡的席保留這裡的那筆,不刪。
     """
     root = Path(state_root)
     sessions_dir = root / "identity" / "sessions"
@@ -730,16 +734,26 @@ def project(state_root, cards, contract, seat_files=None):
         #    預設;兩者都沒有=人格綁了、大腦沒綁 → 進 display 不進 bindings。
         #    有 route 就必須過路由契約。契約讀不到=拒絕,不是放行。
         route_key = agent.get("brain_route_key") or entry.get("route_key")
+        route_refused = None
         if route_key is not None:
             ok, code, detail = check_against_contract(route_key, contract)
             if not ok:
-                unresolved.append(_unresolved(
-                    seat_id, path, REASON_ROUTE_REFUSED,
-                    "route_key %s 未過契約(%s):%s"
-                    % (route_key, code, detail)))
-                continue
-            bindings[bkey] = {"persona_uid": entry["persona_uid"],
-                              "route_key": route_key}
+                # ★ 10-15:以前這裡 `continue` ⇒ 那一席從 bindings 與 display **整筆消失**,沒有一個字;
+                #   狀態面看到的是「缺人格」。路由表是舊版時(route_not_in_contract)保留上一份投影的那筆綁定
+                #   (寫入面閘五會現查契約,保留不等於放行);display 照出、標「未解析」附原因。
+                route_refused = code
+                prev = (previous or {}).get(bkey)
+                keep = code == "route_not_in_contract" and isinstance(prev, dict)
+                if keep:
+                    bindings[bkey] = prev
+                row = _unresolved(seat_id, path, REASON_ROUTE_REFUSED,
+                                  "route_key %s 未過契約(%s):%s" % (route_key, code, detail))
+                row.update({"binding_key": bkey, "route_key": route_key,
+                            "route_code": code, "preserved": keep})
+                unresolved.append(row)
+            else:
+                bindings[bkey] = {"persona_uid": entry["persona_uid"],
+                                  "route_key": route_key}
         else:
             unresolved.append(_unresolved(
                 seat_id, path, REASON_NO_BRAIN_ROUTE,
@@ -750,13 +764,19 @@ def project(state_root, cards, contract, seat_files=None):
         #   結構上不可能分歧。
         registry_sha = entry.get("persona_sha")
         bound_sha = agent.get("persona_sha")
+        if route_refused:
+            brain_status, brain_text = "unresolved", "大腦未解析"
+        elif route_key:
+            brain_status, brain_text = "bound", "大腦已綁"
+        else:
+            brain_status, brain_text = "unbound", "大腦未綁"
         display[bkey] = {
             "display_name": entry["display_name"],
             "persona_uid": entry["persona_uid"],
             "route_key": route_key,
-            "folder": _folder_of(route_key, contract) if route_key else None,
-            "brain_binding_status": "bound" if route_key else "unbound",
-            "brain_status_text": "大腦已綁" if route_key else "大腦未綁",
+            "folder": _folder_of(route_key, contract) if route_key and not route_refused else None,
+            "brain_binding_status": brain_status,
+            "brain_status_text": brain_text,
             "persona_sha": registry_sha,
             "bound_persona_sha": bound_sha if isinstance(bound_sha, str) else None,
             "persona_drift": bool(registry_sha and isinstance(bound_sha, str)
@@ -766,8 +786,23 @@ def project(state_root, cards, contract, seat_files=None):
             #   schema 允許缺,而缺的語意是「未標示」不是「人寫的」。
             "persona_source": entry.get("source"),
         }
+        if route_refused:
+            display[bkey]["route_unresolved"] = route_refused
 
     return {"bindings": bindings, "display": display, "unresolved": unresolved}
+
+
+def route_unresolved_lines(result, contract_source):
+    """投影結果裡「路由過不了表」的席 → 給人看的一行一席(四語)。bind_one 也拿這支印給觸發重投影的那一席看。"""
+    lines = []
+    for row in (result or {}).get("unresolved") or []:
+        if row.get("reason") != REASON_ROUTE_REFUSED or not row.get("route_key"):
+            continue
+        key = "aib.bindproj.route_kept" if row.get("preserved") else "aib.bindproj.route_unresolved"
+        lines.append(_ui(key, seat="@%s" % (row.get("binding_key") or row.get("seat_id")),
+                         route=row["route_key"], source=contract_source or "?",
+                         code=row.get("route_code") or "?"))
+    return lines
 
 
 def bindings_document(bindings):
@@ -946,7 +981,7 @@ def _sources_block(root, how, cards_path, contract_path, contract):
         "card_registry": {"path": str(cards_path),
                           "sha256": _digest(cards_path)},
         "route_contract": {
-            "path": contract_path or os.environ.get("EZ2_ROUTE_REGISTRY"),
+            "path": contract_path or default_contract_spec(),
             "loaded": contract is not None,
             "route_count": len(contract.get("routes", [])) if contract else 0,
             # git: 規格(艦外 08-17 裁:D lane 讀契約走 git show main:…)
@@ -988,7 +1023,7 @@ def main(argv=None):
                         help="狀態根;預設 EZ2_AIB_STATE_ROOT>EZ2_AIB_HOME>~/.ez2-aib")
     parser.add_argument("--cards", required=True, help="卡片登記表路徑(必要)")
     parser.add_argument("--contract", default=None,
-                        help="路由契約路徑;預設讀 EZ2_ROUTE_REGISTRY")
+                        help="路由契約路徑;預設走 route_register.default_contract_spec(SPEC > ez2-ai main > REGISTRY)")
     parser.add_argument("--out", default=None,
                         help="project:bindings 輸出路徑(不給只印到 stdout)")
     parser.add_argument("--display-out", default=None,
@@ -1005,6 +1040,8 @@ def main(argv=None):
         help="project/check:D14 政策,目前只接受 preserve_closed",
     )
     args = parser.parse_args(argv)
+    # 10-15:沒給 --contract ⇒ 這裡解一次、之後全程用同一個值(以前 load_contract 讀 REGISTRY、別處讀 SPEC,兩份不同版本)
+    args.contract = args.contract or default_contract_spec()
 
     drop_flags = (
         bool(args.drop_report), bool(args.drop_evidence),
@@ -1046,7 +1083,7 @@ def main(argv=None):
         sys.stdout.write(_dump({
             "cards": len(cards), "problems": problems,
             "route_contract": {
-                "path": args.contract or os.environ.get("EZ2_ROUTE_REGISTRY"),
+                "path": args.contract,
                 "sha256": contract_digest(args.contract),
                 "route_count": len(contract.get("routes", [])),
             },
@@ -1088,7 +1125,7 @@ def main(argv=None):
             ("cards", str(args.cards)),
             ("bindings-provenance", str(provenance_path(drop_before_path))),
         ]
-        contract_ref = args.contract or os.environ.get("EZ2_ROUTE_REGISTRY")
+        contract_ref = args.contract
         if contract_ref and not str(contract_ref).startswith("git:"):
             path_roles.append(("contract", str(contract_ref)))
         if args.command == "project":
@@ -1122,12 +1159,25 @@ def main(argv=None):
     _hub_seats = hub_seats_dir(root)
     if _hub_seats is not None and not _hub_seats.is_dir():
         print("binding-projection: " + _ui("aib.bindproj.no_seats_dir", value=os.environ.get("AIB_DM_SOCKET") or os.environ.get("EZ2_AIHUB_SOCKET"), path=_hub_seats), file=sys.stderr)
+    # 10-15:上一份投影(project 的 --out / check 的 --bindings);讀不到或形狀不對 = 沒有可保留的,不擋投影
+    previous = None
+    _prev_path = args.out if args.command == "project" else args.bindings
+    if _prev_path and Path(_prev_path).is_file():
+        try:
+            _prev_doc = _read_json(_prev_path, "previous bindings")
+            _validate(_prev_doc, BINDINGS_SCHEMA, "previous bindings")
+            previous = _prev_doc["bindings"]
+        except ProjectionError:
+            previous = None
     try:
         result = project(root, cards, contract,
-                         seat_files=discover_seat_files(root, _hub_seats))
+                         seat_files=discover_seat_files(root, _hub_seats),
+                         previous=previous)
     except ProjectionError as err:
         print("binding-projection: %s" % err, file=sys.stderr)
         return 2
+    for line in route_unresolved_lines(result, args.contract):
+        print("binding-projection: " + line, file=sys.stderr)
 
     # ★ 卡片表裡**沒有被任何席位用到**的條目,推導鏈根本走不到,所以它的
     #   route_key 不會被檢查。後果:真人把 core.refine 打成 core.refined,

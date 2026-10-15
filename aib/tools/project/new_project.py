@@ -276,7 +276,7 @@ def load_persona_red_lines(
         str(entry.get("vault_root") or "").strip()
         or str(source.get("vault_root") or "").strip()
         or os.environ.get("EZ2_VAULT_DIR", "")
-        or str(Path.home() / "Ez2" / "Vault")
+        or _suite_default_vault()      # 10-15 盤點 U18:原本寫死 ~/Ez2/Vault,跟全套件不是同一個庫
     )
     card_path = Path(vault_root).expanduser() / rel
     try:
@@ -654,6 +654,16 @@ def _ledger_note(state_root: Path, agent_uid: str, actor: dict, zh: str, en: str
     RM.RoleModel(state_root=str(state_root))._append_event("identity.bound", zh, en, agent_uid, actor)
 
 
+def _suite_default_vault() -> str:
+    """vault 位置照全套件同一條規則(route_register.default_vault)。"""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "persona_route"))
+        import route_register
+        return route_register.default_vault()
+    except Exception:  # noqa: BLE001
+        return str(Path.home() / "Desktop" / "Obsidian" / "Ez2")
+
+
 def resolve_folder(contract: Any, wanted: str):
     """--folder 的寫法 ⇒ (route_key, folder, 錯誤)。收路由代號、完整資料夾路徑、或資料夾最後一段
     (可以不帶前面的編號:「系統記憶交接」= 「C80-系統記憶交接」)。對到不只一個 ⇒ 列出來、不挑。"""
@@ -698,6 +708,19 @@ def _drop_project_fields(path: Path) -> bool:
     return True
 
 
+def project_memory_notes(state_root: Path, project_uid: str, limit: int = 5) -> list:
+    """10-15 H1:這個專案在 aib memory 的最新幾則(交接優先)⇒ 接手包的指標行;讀不到 ⇒ []。
+    索引用這次的狀態根(不靠環境猜),與卡同一個根。"""
+    try:
+        mem = str(REPO_ROOT / "src" / "memory")
+        if mem not in sys.path:
+            sys.path.insert(0, mem)
+        import aib_memory as AM  # noqa: E402
+        return AM.pointer_lines(project_uid, limit, index=Path(state_root) / "memory-index" / "notes.jsonl")
+    except Exception:  # noqa: BLE001 —— 記憶讀不到不擋寄接手包
+        return []
+
+
 def deliver_handoff(state_root: Path, seat_id: str, seat_rec: Mapping[str, Any], instance: str,
                     card: Mapping[str, Any], persona_uid: str, dry_run: bool = False) -> dict:
     """接手包用 aib dm 寄給那一席 ⇒ dict。寄不出去不改變「已綁」,只如實回報。"""
@@ -714,7 +737,8 @@ def deliver_handoff(state_root: Path, seat_id: str, seat_rec: Mapping[str, Any],
         _say(T("aib.newproj.dry_send", {"target": address}))
         return {"ok": None, "dry_run": True, "address": address}
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    text = HP.build_handoff_for_seat(card, persona_uid=persona_uid, last_event_at=stamp)
+    text = HP.build_handoff_for_seat(card, persona_uid=persona_uid, last_event_at=stamp,
+                                     memory_notes=project_memory_notes(state_root, str(card.get("project_uid") or "")))
     if not text:
         return {"ok": False, "address": address, "reason": T("aib.newproj.pack_failed")}
     title = str(card.get("title") or card.get("project_uid"))
@@ -751,7 +775,9 @@ def run_newproj(args) -> int:
             return _refuse(T("aib.newproj.unbind_needs_seat"), "(new seat)")
         import create_and_bind_persona as CBP  # noqa: E402
         CBP.AIB_HOME = root
-        role = CBP.seat_role_of(args.title, "project")
+        role, role_err = CBP.new_seat_role_or_die(getattr(args, "role", ""))   # 10-15:不拿專案標題當角色名
+        if role_err:
+            return _refuse(role_err, "(new seat)")
         # ★ review r15 M1(人格):開新席**之前**先做不需要席位的檢查。以前先開席 ⇒ 後面被擋(標題撞名、uid 不存在、
         #   新席沒人格所以綁不上資料夾 —— 帶 --folder 或同標題舊卡記了資料夾時**每次**都中)都留下一個在跑的新席,
         #   訊息卻說「什麼都沒寫」;試跑也在檢查前就回綠燈。
@@ -1011,7 +1037,7 @@ def run_newproj(args) -> int:
         card = None if args.dry_run else load_card(root, out["project_uid"])
         _say(T("aib.newproj.card_will" if args.dry_run else "aib.newproj.card_made",
                {"uid": out["project_uid"], "title": out["title"]}))
-        _say(T("aib.newproj.draft_note", {"path": out["candidate_path"]}))
+        _say(T("aib.newproj.draft_note", {"path": out["candidate_path"], "uid": out["project_uid"]}))
 
     _say(T("aib.newproj.seat_will" if args.dry_run else "aib.newproj.seat_bound",
            {"seat": seat_id, "code": agent_uid, "uid": base["project_uid"]}))
@@ -1146,9 +1172,105 @@ def run_card_only(args, root: Path) -> int:
                  "card_path": out["card_path"], "candidate_path": out["candidate_path"]})
     base["reply"] = T("aib.newproj.card_only_dry" if args.dry_run else "aib.newproj.card_only_made",
                       {"title": out["title"], "uid": out["project_uid"]})
-    _say(T("aib.newproj.draft_note", {"path": out["candidate_path"]}))
+    _say(T("aib.newproj.draft_note", {"path": out["candidate_path"], "uid": out["project_uid"]}))
     print(base["reply"], file=sys.stderr)
     print(json.dumps(base, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+# ── aib newproj --approve <專案 uid>(10-15 C11)──────────────────────────────────────────
+#   newproj 一直叫人「核准目標與紅線」,卻沒有任何指令能核准。只給真人:終端機 + human_attest 三條件
+#   (不在 hub 裡、tty 屬登入者、上游只有殼且沒有 AI session 標記)全到,再親手打一次專案 uid。AI 席跑不過。
+
+def _human_attest() -> tuple:
+    """(是不是真人, 登入名, 缺哪幾件)。量不到一律算不是人(失效方向只往低權)。"""
+    try:
+        import human_attest as HA   # src/cockpit(上面已掛進 sys.path)
+        res = HA.attest()
+    except Exception as exc:  # noqa: BLE001
+        return False, None, ["attest_unavailable:%s" % exc]
+    return bool(res.get("human")), res.get("human_id"), list(res.get("missing") or [])
+
+
+def approve_constitution(root: Path, project_uid: str, *, human_check: Any = None, ask: Any = None,
+                         stdin: Any = None, stdout: Any = None) -> int:
+    """真人核准專案憲法初稿:候選檔 → 卡上 layers.constitution,approved=true,先入帳再寫。
+    rc:0 核准(或本來就核准)/ 2 拒(找不到卡、不是真人、沒終端機)/ 3 真人打錯 uid 取消。"""
+    stdin = stdin or sys.stdin
+    stdout = stdout or sys.stdout
+    card = load_card(root, project_uid)
+    if card is None:
+        _say(T("aib.newproj.approve_not_found", {"uid": project_uid}), "[x]")
+        return 2
+    uid = card["project_uid"]
+    if (card["layers"].get("constitution") or {}).get("approved") is True:
+        _say(T("aib.newproj.approve_already", {"uid": uid}))
+        return 0
+    try:
+        tty = bool(stdin.isatty() and stdout.isatty())
+    except (AttributeError, ValueError):
+        tty = False
+    if not tty:
+        _say(T("aib.newproj.approve_need_human", {"why": "no tty"}), "[x]")
+        return 2
+    human, human_id, missing = (human_check or _human_attest)()
+    if not human or not human_id:
+        _say(T("aib.newproj.approve_need_human", {"why": ",".join(missing) or "?"}), "[x]")
+        return 2
+    cand_path = candidate_path_of(root, uid)
+    cand = _load_json(cand_path) or {}
+    draft = cand.get("constitution") if isinstance(cand.get("constitution"), dict) else card["layers"]["constitution"]
+    const = dict(PC.empty_constitution(), **{k: v for k, v in draft.items() if k in ("goals", "red_lines", "human_rulings")})
+
+    def lines(items):
+        return ["    - %s" % (i.get("text") if isinstance(i, dict) else i) for i in (items or [])] or ["    " + T("aib.newproj.approve_empty")]
+
+    show = [T("aib.newproj.approve_head", {"title": card.get("title") or uid, "uid": uid}),
+            "  " + T("aib.newproj.approve_goals")] + lines(const["goals"]) + \
+           ["  " + T("aib.newproj.approve_red_lines")] + lines(const["red_lines"]) + \
+           ["  " + T("aib.newproj.approve_rulings")] + lines(const["human_rulings"])
+    stdout.write("\n".join(show) + "\n" + T("aib.newproj.approve_prompt", {"uid": uid}))
+    stdout.flush()
+    ans = (ask() if ask else stdin.readline()).strip()
+    if ans != uid:
+        _say(T("aib.newproj.approve_cancel"), "[x]")
+        return 3
+    now_ms = int(time.time() * 1000)
+    actor = {"ai_id": "human:%s" % human_id, "sig": "human@0000/Human", "kind": "human"}
+    import role_model as RM  # noqa: E402 —— 先入帳(入不了帳 ⇒ 卡不動)
+    if not (root / "ledger").is_dir():      # 只建卡沒跑過 aib init 的新機器:先建狀態樹(明給狀態根,不靠環境猜)
+        subprocess.run([sys.executable, str(REPO_ROOT / "src" / "bootstrap" / "aib_init.py"), "--state-root", str(root)],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+    try:
+        RM.RoleModel(state_root=str(root))._append_event(
+            "decision.resolved",
+            "專案 %s 的目標與紅線由真人 %s 核准" % (uid, human_id),
+            "project %s goals and red lines approved by human %s" % (uid, human_id),
+            uid, actor)
+    except RM.RoleModelError as exc:
+        _say(T("aib.newproj.approve_ledger_failed", {"err": exc}), "[x]")
+        return 2
+    c_path = card_path_of(root, uid)
+    with _card_lock(c_path):
+        snap = _archive_snapshot(c_path, "project", uid)
+        if snap.get("status") == "failed":
+            _say(T("aib.newproj.approve_backup_failed", {"err": snap.get("error")}), "[x]")
+            return 2
+        raw = _load_json(c_path) or {}
+        import datetime as _dt                                    # +08:00 形(跟既有卡同形);不靠 %z(有的平台給時區名)
+        at = _dt.datetime.fromtimestamp(now_ms / 1000).astimezone().isoformat(timespec="seconds")
+        rulings = [r for r in (const.get("human_rulings") or []) if isinstance(r, (dict, str))]
+        rulings.append({"uid": "approve-%d" % now_ms, "text": T("aib.newproj.approve_ruling", {"who": human_id}), "at": at})
+        const.update({"approved": True, "approved_by": "human:%s" % human_id, "approved_at": at,
+                      "approved_wall_ms": now_ms, "human_rulings": rulings})
+        raw["layers"] = dict(raw.get("layers") or {}, constitution=const)
+        raw["constitution_status"] = "approved"
+        PC.validate_project_card(raw)
+        _atomic_write_json(c_path, raw)
+        if cand:
+            cand.update({"approved": True, "constitution": const, "approved_wall_ms": now_ms})
+            _atomic_write_json(cand_path, cand)
+    _say(T("aib.newproj.approve_done", {"uid": uid}))
     return 0
 
 
@@ -1168,8 +1290,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--folder", default="", help=T("aib.newproj.help_folder"))
     ap.add_argument("--new-seat", action="store_true", help=T("aib.newproj.help_new_seat"))
     ap.add_argument("--engine", default="claude", help=T("aib.newproj.help_engine"))
+    ap.add_argument("--role", default="", help="--new-seat: role of the new seat (a defined role; default dev)")
     ap.add_argument("--entry", default="", choices=["", "newproj"], help=argparse.SUPPRESS)
+    ap.add_argument("--approve", default="", metavar="PROJECT_UID", help=T("aib.newproj.help_approve"))
     args = ap.parse_args(argv)
+    if args.approve:                          # 10-15 C11:只給真人,其他旗標不看
+        return approve_constitution(state_root_of(args.state_root or None), args.approve.strip())
     # 選單那條路一定帶 --seat;aib newproj 不帶 ⇒ 只建卡(the maintainer 10-01),不在這裡擋
     if not args.seat and not args.new_seat and args.entry != "newproj":
         ap.error(T("aib.newproj.need_seat"))

@@ -23,8 +23,12 @@ import os
 import shutil
 import sys
 import time
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib            # Python 3.11+
+except ImportError:           # 10-15 稽核 C6:Mac 只有系統 Python 3.9 ⇒ 開 Codex 席不該閃 traceback;跳過並說一句
+    tomllib = None
 
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parent
@@ -236,9 +240,11 @@ def ask(items, runner=None):
 
 
 def ensure(home=None, yes=False, runner=None):
-    """裝完新掛點後叫。回 {result, n, backup?}:result = off / unreadable / none / unsupported / trusted / refused / no_popup / failed。"""
+    """裝完新掛點後叫。回 {result, n, backup?}:result = off / old_python / unreadable / none / unsupported / trusted / refused / no_popup / failed。"""
     if os.environ.get("AIB_CODEX_HOOK_TRUST") == "0":
         return {"result": "off", "n": 0}
+    if tomllib is None:
+        return {"result": "old_python", "n": 0}
     home = codex_home(home)
     todo = untrusted(home)
     if todo is None:
@@ -268,7 +274,9 @@ def main(argv=None):
         if name == "ensure":
             sp.add_argument("--yes", action="store_true", help="不跳窗直接信任(測試 / 真人已在終端機同意)")
     a = ap.parse_args(argv)
-    if a.cmd == "status":
+    if a.cmd == "status" and tomllib is None:
+        res = {"result": "old_python", "n": 0, "keys": []}
+    elif a.cmd == "status":
         home = codex_home(a.codex_home)
         todo = untrusted(home)
         res = {"result": "unreadable" if todo is None else ("none" if not todo else "untrusted"),
@@ -278,8 +286,9 @@ def main(argv=None):
     if a.json:
         print(json.dumps(res, ensure_ascii=False))
     elif res["result"] not in ("none", "off"):
-        print(_say("codex_trust.result.%s" % res["result"], {"n": res["n"]}))
-    return 0 if res["result"] in ("none", "off", "trusted", "untrusted") else 1
+        print(_say("codex_trust.result.%s" % res["result"],
+                   {"n": res["n"], "ver": "%d.%d" % sys.version_info[:2]}))
+    return 0 if res["result"] in ("none", "off", "trusted", "untrusted", "old_python") else 1
 
 
 if __name__ == "__main__":

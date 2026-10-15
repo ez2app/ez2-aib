@@ -14,12 +14,35 @@ import os
 import gates
 import ledgers
 import writeguard
+from wrappers import rt
 
 FRESH_DAYS = 14
 B_EMPTY_LINE = "B:無(首煉輪,依計數法全部進 C)"
 F_TEMPLATE = ("本輪提取無候選。已讀來源:{sources};watchlist 新增 {n} 筆;"
               "原因:{reason}")
 F_REASONS = ("證據不足", "全部單一事件", "全部狀態未定")
+# ★ B_EMPTY_LINE / F_TEMPLATE / F_REASONS 是**寫進候選包的資料**(進 content_hash、F_REASONS 是 maker 傳進來的列舉值),
+#   不隨語系變:同一份 sections 在任何語系產出的包要逐 byte 相同。只有 render_md 印給人看的那一份照語系翻
+#   (F 節由 _F_RE 從包裡那句拆回 sources / n / reason 再照語系重組;拆不開就原樣印)。
+_F_RE = None
+
+
+def _f_display(text):
+    global _F_RE
+    import re
+    if _F_RE is None:
+        pat = re.escape(F_TEMPLATE)
+        for name, rx in (("sources", "(?P<sources>.*)"), ("n", r"(?P<n>\d+)"), ("reason", "(?P<reason>.*)")):
+            pat = pat.replace(re.escape("{%s}" % name), rx)
+        _F_RE = re.compile("^%s$" % pat, re.S)
+    m = _F_RE.match(text or "")
+    if not m:
+        return text
+    reason = m.group("reason")
+    if reason in F_REASONS:
+        reason = rt("report.reason.%d" % (F_REASONS.index(reason) + 1))
+    srcs = [rt("report.sources_unlisted") if x == "(未列)" else x for x in m.group("sources").split("、")]
+    return rt("report.md_f_text", sources=rt("root.list_sep").join(srcs), n=m.group("n"), reason=reason)
 
 
 class ReportError(Exception):
@@ -38,10 +61,10 @@ def build(sections, persona_code, now_ms, watchlist_added, self_round=False):
     """sections={A_keep, retire_review, candidates[], D_diff[], E_unknown[], sources[],
     empty_reason?, self_mistakes?[]} → 完整包 dict。丟 ReportError=一 byte 不落盤。"""
     if not isinstance(sections, dict):
-        raise ReportError("sections 必須是物件")
+        raise ReportError(rt("report.sections_not_object"))
     retire_review = (sections.get("retire_review") or "").strip()
     if not retire_review:
-        raise ReportError("A 節必含 retire 檢視結果一行(「沒有要退」和「沒看」不能長得一樣)")
+        raise ReportError(rt("report.retire_required"))
     cands = sections.get("candidates") or []
     b_list, c_list, invalid = [], [], []
     for c in cands:
@@ -52,31 +75,28 @@ def build(sections, persona_code, now_ms, watchlist_added, self_round=False):
         dest = gates.candidate_destination(c)
         (b_list if dest == "B" else c_list).append(c)
     if invalid:
-        raise ReportError("候選 13 欄不齊,退回 maker 補齊(unknown 是合法值,缺欄不是):%s"
-                          % json.dumps(invalid, ensure_ascii=False)[:500])
+        raise ReportError(rt("report.candidates_incomplete",
+                             detail=json.dumps(invalid, ensure_ascii=False)[:500]))
     for c in b_list:
         if c.get("anchor_grade") != "machine":
-            raise ReportError("descriptive-anchor 候選不得進 B(SOP §五)")
+            raise ReportError(rt("report.descriptive_not_b"))
     for i, c in enumerate(c_list):
         rc = c.get("watchlist_add_rc")
         if not isinstance(rc, int) or isinstance(rc, bool):
-            raise ReportError("C 節第 %d 項缺 watchlist_add_rc(候觀察項必須同步 watchlist add 並貼 exit code,"
-                              "否則學費只留在對話裡)" % (i + 1))
+            raise ReportError(rt("report.c_missing_rc", n=i + 1))
     if self_round:
         mistakes = sections.get("self_mistakes") or []
         bad = [m for m in mistakes
                if not (isinstance(m, dict) and (m.get("what") or "").strip()
                        and gates.pointer_kind(m.get("pointer")))]
         if not mistakes or bad:
-            raise ReportError("自煉輪候選包必含「本輪我做錯的事」節,逐項附可驗指標;"
-                              "空或指標不可驗=不完整退回(SOP §十)")
+            raise ReportError(rt("report.self_mistakes_required"))
     empty_handed = not cands
     f_section = None
     if empty_handed:
         reason = sections.get("empty_reason")
         if reason not in F_REASONS:
-            raise ReportError("空手輪 F 節需 empty_reason ∈ %s(空手是合法交付,但要說得出為什麼)"
-                              % (F_REASONS,))
+            raise ReportError(rt("report.empty_reason_required", reasons=str(F_REASONS)))
         f_section = F_TEMPLATE.format(sources="、".join(sections.get("sources") or ["(未列)"]),
                                       n=watchlist_added, reason=reason)
     doc = {
@@ -103,24 +123,27 @@ def build(sections, persona_code, now_ms, watchlist_added, self_round=False):
 
 def render_md(doc):
     L = ["content_hash=%s" % doc["content_hash"], "",
-         "# 候選包 %s(%s)" % (doc["persona_code"], "自煉輪" if doc["self_round"] else "提取輪"), ""]
-    L += ["## A 已完成且可保留", "- retire 檢視:%s" % doc["A_keep"]["retire_review"]]
+         rt("report.md_title", code=doc["persona_code"],
+            kind=rt("report.kind_self") if doc["self_round"] else rt("report.kind_extract")), ""]
+    none = rt("report.md_none")
+    L += [rt("report.md_a"), rt("report.md_retire", text=doc["A_keep"]["retire_review"])]
     L += ["- %s" % x for x in doc["A_keep"]["kept"]]
-    L += ["", "## B 本 session 新候選(machine-anchor 且 ≥2 事件群)"]
+    L += ["", rt("report.md_b")]
     if doc["B_candidates"]:
         L += ["- %s → %s" % (c["candidate_uid"], c["target_field"]) for c in doc["B_candidates"]]
     else:
-        L += [doc["B_note"]]
-    L += ["", "## C 仍不能寫入(候觀察,附 watchlist add rc)"]
-    L += ["- %s(add rc=%d)" % (c["candidate_uid"], c["watchlist_add_rc"]) for c in doc["C_watchlist"]] or ["(無)"]
-    L += ["", "## D 差異表"] + (["- %s" % x for x in doc["D_diff"]] or ["(無)"])
-    L += ["", "## E unknown"] + (["- %s" % x for x in doc["E_unknown"]] or ["(無)"])
+        L += [rt("report.md_b_empty") if doc["B_note"] == B_EMPTY_LINE else doc["B_note"]]
+    L += ["", rt("report.md_c")]
+    L += [rt("report.md_c_row", uid=c["candidate_uid"], rc="%d" % c["watchlist_add_rc"])
+          for c in doc["C_watchlist"]] or [none]
+    L += ["", rt("report.md_d")] + (["- %s" % x for x in doc["D_diff"]] or [none])
+    L += ["", "## E unknown"] + (["- %s" % x for x in doc["E_unknown"]] or [none])
     if doc["F_empty_handed"]:
-        L += ["", "## F 本輪無候選", doc["F_empty_handed"]]
+        L += ["", rt("report.md_f"), _f_display(doc["F_empty_handed"])]
     if doc["self_round"]:
-        L += ["", "## 本輪我做錯的事"]
+        L += ["", rt("report.md_self")]
         L += ["- %s — %s" % (m["what"], m["pointer"]) for m in doc["self_mistakes"]]
-    L += ["", "(完成即停:§七 任何一步都要人類逐項核准後另行執行。)"]
+    L += ["", rt("report.md_stop")]
     return "\n".join(L) + "\n"
 
 

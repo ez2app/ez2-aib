@@ -28,7 +28,26 @@ _EZ2_BT_LOADED=1
 # ⇒ 3.2 只記 inherit/exit 與一條 unmeasured,整列量不到(#!/bin/bash 直接執行的腳本、tests 裡寫死 /bin/bash 的都是這一類)。
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] || { [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -lt 1 ]; }; then
   printf '{"ch":"inherit","pid":%s,"via":"bash","argv0":"%s"}\n' "$$" "${0//\"/\\\"}" >> "$EZ2_VERIFY_TRACE"
-  printf '{"ch":"unmeasured","why":"bash-version-no-xtrace:%s","pid":%s}\n' "${BASH_VERSION%%(*}" "$$" >> "$EZ2_VERIFY_TRACE"
+  # 10-15 abb89:`bash -c '<字串>'` 把字串(BASH_EXECUTION_STRING,3.2 就有)記成 cstr,分析端判「只是一條不讀檔的內建命令」
+  #   (版本探測 `echo "${BASH_VERSINFO[0]}"` 之類)就不算量不到(shadow_tracer.bash_c_reads_nothing)。
+  #   環境帶進同名函式(BASH_FUNC_echo%%…,啟動時就定義好了)⇒ 不記 cstr(內建可能被函式蓋掉)。含控制字元 ⇒ 不記。
+  #   只用內建(declare -F / 參數展開),不起行程、不開子殼。
+  _EZ2_BT_C=""
+  case $- in *c*)
+    _EZ2_BT_C=${BASH_EXECUTION_STRING:-}
+    for _EZ2_BT_F in echo printf true : exit; do
+      declare -F "$_EZ2_BT_F" >/dev/null 2>&1 && _EZ2_BT_C=""
+    done
+    case $_EZ2_BT_C in *[[:cntrl:]]*) _EZ2_BT_C="" ;; esac
+    _EZ2_BT_C=${_EZ2_BT_C//\\/\\\\}; _EZ2_BT_C=${_EZ2_BT_C//\"/\\\"}
+    ;;
+  esac
+  if [ -n "$_EZ2_BT_C" ]; then
+    printf '{"ch":"unmeasured","why":"bash-version-no-xtrace:%s","pid":%s,"cstr":"%s"}\n' "${BASH_VERSION%%(*}" "$$" "$_EZ2_BT_C" >> "$EZ2_VERIFY_TRACE"
+  else
+    printf '{"ch":"unmeasured","why":"bash-version-no-xtrace:%s","pid":%s}\n' "${BASH_VERSION%%(*}" "$$" >> "$EZ2_VERIFY_TRACE"
+  fi
+  unset _EZ2_BT_C _EZ2_BT_F
   trap 'printf "{\"ch\":\"exit\",\"pid\":%s,\"via\":\"bash\"}\n" "$$" >> "$EZ2_VERIFY_TRACE"' EXIT
   return 0 2>/dev/null || exit 0
 fi

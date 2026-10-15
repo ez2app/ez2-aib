@@ -19,6 +19,19 @@ HEADER = "[AIB 接手包 v1]"
 DEFAULT_CTX_BUDGET = 3500  # UTF-8 bytes;低於人格包 4000,留給兩句回執
 
 
+
+def _route_label(route_key):
+    """routeKey → 資料夾標題(route_register.route_label);讀不到回空字串。"""
+    if not route_key:
+        return ""
+    try:
+        import os, sys
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "persona_route"))
+        import route_register
+        return route_register.route_label(route_key)
+    except Exception:  # noqa: BLE001
+        return ""
+
 def _as_lines(items: Sequence[Any], bullet: str = "- ") -> list[str]:
     out = []
     for it in items or []:
@@ -45,8 +58,12 @@ def render_handoff_pack(
     last_event_at: str = "",
     ctx_budget_bytes: int = DEFAULT_CTX_BUDGET,
     extra_notes: Optional[Sequence[str]] = None,
+    memory_notes: Optional[Sequence[str]] = None,
 ) -> str:
     """把專案卡四層壓成一段純文字接手包。
+
+    memory_notes(10-15 H1):`aib memory write --about <專案 uid>` 寫的筆記指標(種類 · 標題 · uid · 怎麼讀),
+    接在專案記憶段後面;以前接手包只看卡上的 memory 層,席位看到「記憶空」而交接筆記其實在。
 
     超過 ctx_budget_bytes(UTF-8)時由下往上丟:extra_notes → 記憶最舊 →
     工作狀態 pending → 憲法目標;紅線與專案 uid／人格指紋最後才動。
@@ -70,8 +87,10 @@ def render_handoff_pack(
     ]
     # 09-30 a seat:專案記了對應的資料夾(aib newproj --folder)就寫出來 —— 專案的筆記放那裡。
     #   沒記就不印這一行(舊卡、選單建的卡都沒有這兩欄),其餘每一行一個字都不變。
-    if str(card.get("folder") or "").strip():
-        head.append("資料夾: %s(%s)" % (str(card["folder"]).strip(), str(card.get("route_key") or "").strip() or "?"))
+    if str(card.get("folder") or "").strip() or str(card.get("route_key") or "").strip():
+        # 10-15 盤點 U8:只印資料夾標題,不印路徑(AI 會照路徑手動建檔);寫入一律 aib memory write --route
+        rk = str(card.get("route_key") or "").strip()
+        head.append("資料夾: %s(寫入用 aib memory write --route %s)" % (_route_label(rk) or str(card.get("folder") or "").strip().rstrip("/").split("/")[-1], rk or "?"))
     head += [
         "最後一筆: %s" % last_at,
         "現在在哪: %s" % (work.get("now") or "(未填)"),
@@ -92,6 +111,9 @@ def render_handoff_pack(
         _section(LAYER_ZH["memory"],
                  _as_lines(memory.get("entries") or [])),
     ]
+    if memory_notes:
+        parts.append(_section(LAYER_ZH["memory"] + "・aib memory(最新;全文用 aib memory show --uid <uid>)",
+                              _as_lines(list(memory_notes))))
     if extra_notes:
         parts.append(_section("附註", _as_lines(list(extra_notes))))
 
@@ -132,6 +154,7 @@ def build_handoff_for_seat(
     persona_uid: str = "",
     persona_version: str = "",
     last_event_at: str = "",
+    memory_notes: Optional[Sequence[str]] = None,
 ) -> str:
     """開席投遞用:卡缺 ⇒ 空字串(呼叫端記 delivered=false)。"""
     if not project_card:
@@ -142,6 +165,7 @@ def build_handoff_for_seat(
             persona_uid=persona_uid,
             persona_version=persona_version,
             last_event_at=last_event_at,
+            memory_notes=memory_notes,
         )
     except Exception:
         return ""

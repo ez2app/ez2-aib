@@ -296,20 +296,14 @@ def _make_directive(state_root, authority_path, request, binding, observation,
         "observed_pct": observation["observed_pct"],
         "issued_at_ms": int(now_ms),
     }
-    if stage == "co_rule":
-        directive["lease_effect"] = "retain_single_holder"
-        directive["handoff_capability"] = False
-    elif stage == "should_converge":
+    # 10-15 CTX 單表(policy 只剩各席 7 格):派工閘讀表上「交接提醒」那格(80)以上就不派新工;
+    #   「要求交接」(85)起發交接憑證(seat_continuity 同讀那一格)。B 的共治(75)/ 顧問停止(96)沒有格 ⇒ 不再做。
+    if stage in ("handoff_remind", "handoff_now", "red_line"):
         directive["accept_new_work"] = False
-    elif stage == "must_handoff":
+    if stage in ("handoff_now", "red_line"):
         directive["handoff_capability"] = _mint_handoff(
             state_root, authority_path, request, binding, observation,
             policy_sha, now_ms)
-    elif stage == "advisor_stop":
-        directive.update({
-            "advisor_stop": True, "accept_new_work": False,
-            "allow_new_effects": False,
-        })
     if not directive.get("action"):
         raise SchedulerError("ctx_scheduler_action_missing", rc=2)
     return directive
@@ -374,10 +368,6 @@ def _admit_work(work_request, observation, now_ms):
             or work_request.get("operation") not in ("claim", "continue"):
         raise SchedulerError("ctx_scheduler_work_request_invalid", rc=2)
     stage = observation["stage"]
-    if stage == "advisor_stop":
-        return _error(
-            "ctx_scheduler_advisor_stopped", rc=1,
-            new_work_allowed=False, current_work_allowed=False)
     if work_request["operation"] == "continue":
         state = _work_state(work_request, now_ms)
         active = state.get("active_lease")
@@ -393,17 +383,12 @@ def _admit_work(work_request, observation, now_ms):
         return _ok(
             "ctx_scheduler_current_work_allowed", current_work_allowed=True,
             new_work_allowed=False, work_lease_result=state)
-    if stage in ("should_converge", "must_handoff"):
+    if stage in ("handoff_remind", "handoff_now", "red_line"):   # 派工閘 = 表上 80 那格以上
         return _error(
             "ctx_scheduler_new_work_blocked", rc=1,
             new_work_allowed=False)
     state = _work_state(work_request, now_ms)
     active = state.get("active_lease")
-    if stage == "co_rule" and isinstance(active, dict) \
-            and active.get("owner") != work_request.get("owner"):
-        return _error(
-            "ctx_scheduler_co_rule_assist_only", rc=1,
-            new_work_allowed=False, assist_only=True)
     rc, value = _work_call(work_request, now_ms)
     if rc != 0:
         return _error(

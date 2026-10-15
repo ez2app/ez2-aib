@@ -106,6 +106,26 @@ BASH_PROBE_FLAGS = frozenset(("-e", "-f", "-d", "-r", "-w", "-x", "-s", "-L", "-
 _EVAL_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-=+?][^}$`<>()\\;|&'\"]*)?\}")
 
 
+# 10-15 abb89:bash 3.2 量不到的裡面,最常見的是測試自己的「這台 bash 追不追得了」探測
+#   `/bin/bash -c 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"'` —— 它什麼檔都沒讀,卻讓整支量不到。
+#   鉤子記下 -c 的字串(cstr,環境有同名函式時不記);字串整條吻合下面這個形才放行:
+#   第一個字是 echo/printf/true/:/exit(內建),其後每個字只能是單引號字串、雙引號字串(裡面只准普通字與
+#   $NAME / ${NAME} / ${NAME[數字]})、或不帶引號的普通字(不含 glob、~、{}、導向、管線、分號、反引號、反斜線)。
+#   ⇒ 不開檔、不跑命令、不列目錄;變數值來自環境(已在環境指紋)。其餘一律照舊量不到。
+#   不採「換成新版 bash 跑」:那會改掉測試驗的對象(macOS 使用者真的用 3.2 跑 #!/bin/bash 腳本,3.2 才有的錯會被藏成綠)。
+_BC_VAR = r"\$(?:\{[A-Za-z_][A-Za-z0-9_]*(?:\[[0-9]+\])?\}|[A-Za-z_][A-Za-z0-9_]*)"
+_BC_WORD = r"(?:'[^']*'|\"(?:[^\"\\$`]|%s)*\"|(?:[A-Za-z0-9_.,:=+/%%@-]|%s)+)+" % (_BC_VAR, _BC_VAR)
+_BASH_C_NOREAD_RE = re.compile(r"[ ]*(?:echo|printf|true|:|exit)(?:[ ]+%s)*[ ]*" % _BC_WORD)
+
+
+def bash_c_reads_nothing(ev):
+    """unmeasured 事件是 bash 3.2 的、帶 cstr、而且字串整條是「不讀任何東西的內建命令」⇒ True(見上方註解)。"""
+    if not str(ev.get("why") or "").startswith("bash-version-no-xtrace"):
+        return False
+    c = ev.get("cstr")
+    return isinstance(c, str) and bool(c) and _BASH_C_NOREAD_RE.fullmatch(c) is not None
+
+
 WHY_MAX = 200
 
 
@@ -488,12 +508,15 @@ _GIT_HIST_SUBS = {
     "log": (frozenset(("--oneline", "--no-merges", "--merges", "--reverse", "--first-parent", "-z", "--no-color",
                        "--abbrev-commit", "--topo-order", "--date-order", "--no-decorate", "--decorate=no")),
             ("--format=", "--pretty=", "--max-count=", "--date=", "--since=", "--until=", "--after=", "--before=",
-             "--author=", "--committer=", "--grep=", "--abbrev=", "--skip=")),
+             "--author=", "--committer=", "--grep=", "--abbrev=", "--skip=",
+             # 10-15 abb89:依父提交數篩(--max-parents=0 = 根提交),只看物件;沿用池的專案身分(resume_store.project_key)用它
+             "--max-parents=", "--min-parents=")),
     "rev-list": (frozenset(("--count", "--reverse", "--first-parent", "--no-merges", "--merges", "--topo-order")),
                  ("--max-count=", "--since=", "--until=", "--skip=", "--max-parents=", "--min-parents=")),
     "shortlog": (frozenset(("-s", "-n", "-e", "-sn", "-ns", "--summary", "--numbered", "--email")), ()),
     "rev-parse": (frozenset(("--verify", "--short", "-q", "--quiet", "--git-common-dir", "--git-dir", "--absolute-git-dir",
-                             "--show-toplevel", "--is-inside-work-tree")), ("--short=",)),
+                             # 10-15 abb89:--is-shallow-repository 只看 .git/shallow 在不在(project_key 用;結果走 gitq 重跑比對)
+                             "--show-toplevel", "--is-inside-work-tree", "--is-shallow-repository")), ("--short=",)),
     # 10-04 第二批:ls-files 只收「索引裡有哪些檔」(不收 -m/-d/-o/--others 等看工作樹的);索引內容進 githead 狀態
     "ls-files": (frozenset(("-z", "--full-name", "-s", "--stage", "--cached", "-c")), ()),
     # show 只收 <版本>:<路徑>(那個提交裡那支檔的內容,不產生 diff);見 git_history_read_of_repo
@@ -1203,6 +1226,21 @@ def test_python(repo=None, environ=None):
     return sys.executable
 
 
+def _traced_here():
+    """本行程掛著追蹤器的稽核模組、而且它寫的正是 EZ2_VERIFY_TRACE 那份 ⇒ 回它旁邊的 py-site 目錄;否則 None。"""
+    tr = os.environ.get("EZ2_VERIFY_TRACE") or ""
+    sa = sys.modules.get("sitecustomize_audit")
+    if not tr or sa is None or not getattr(sa, "__file__", None):
+        return None
+    try:
+        if sa._trace_path() != tr:
+            return None
+    except Exception:  # noqa: BLE001 - 認不出 ⇒ 照舊洗掉(探測照舊量不到)
+        return None
+    site = os.path.join(os.path.dirname(os.path.abspath(sa.__file__)), "py-site")
+    return site if os.path.isfile(os.path.join(site, "sitecustomize.py")) else None
+
+
 def python_id(py):
     """(版本, pytest 版本或 "");問不到 ⇒ ("unknown", "")。用乾淨環境問(不帶追蹤器)。結果依檔案時間快取。"""
     try:
@@ -1217,6 +1255,13 @@ def python_id(py):
             "    try:\n        import importlib.metadata as m; v = m.version('pytest')\n    except Exception:\n        v = '?'\n"
             "print(sys.version.split()[0] + '|' + v)")
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "EZ2_VERIFY_TRACE", "BASH_ENV", "PYTHONSTARTUP")}
+    site = _traced_here()
+    if site:
+        # 10-15 abb89:本行程正被追蹤(巢狀跑 aib test、測試裡算環境指紋)⇒ 洗掉鉤子的探測子行程以前每支都記
+        #   python-child-no-sitecustomize。改成帶上同一份追蹤 + py-site(只載稽核模組,不把任何目錄加進 sys.path)
+        #   ⇒ 探測讀的 site-packages 等記進追蹤,find_spec / metadata 看到的路徑跟洗掉時一樣 ⇒ 答案不變。
+        env["EZ2_VERIFY_TRACE"] = os.environ["EZ2_VERIFY_TRACE"]
+        env["PYTHONPATH"] = site
     try:
         p = subprocess.run([py, "-c", code], capture_output=True, text=True, timeout=30, env=env, stdin=subprocess.DEVNULL)
         ver, _, pyt = (p.stdout or "").strip().rpartition("\n")[2].partition("|")
@@ -2186,7 +2231,15 @@ def tmux_external_reason(fake_tmux, tmux_calls, tmux_seen, written_any):
     return "unknown"
 
 
-def tmux_socket_problem(inner, cwd, tt, tx, exe, repo, written_any, uid=None):
+def _born_tmp_root(root, t0):
+    """10-15 abb89:暫存根底下的這個目錄(<根>/<名>)起跑快照裡沒有 ⇒ 是這次跑測試才建的(tempfile.mkdtemp 之類)。
+    與 born_during_run 同一份快照、同一套判法;沒有快照、根不在快照裡、系統 tmux 目錄(tmux-*)一律 False(保守)。"""
+    snap = (t0 or {}).get("tmp") or {}
+    parent, name = os.path.split(str(root).rstrip("/"))
+    return bool(name) and parent in snap and name not in snap[parent] and not name.startswith("tmux-")
+
+
+def tmux_socket_problem(inner, cwd, tt, tx, exe, repo, written_any, uid=None, t0=None):
     """一次 tmux 呼叫不是「測試自己的、確定沒伺服器的」⇒ 回原因;是 ⇒ None(伺服器有沒有開由呼叫端看整份追蹤)。"""
     uid = os.getuid() if uid is None else uid
     if not exe or not str(exe).startswith("/"):
@@ -2213,7 +2266,9 @@ def tmux_socket_problem(inner, cwd, tt, tx, exe, repo, written_any, uid=None):
     if repo and os.path.realpath(sock).startswith(os.path.realpath(str(repo)) + "/"):
         return "tmux-socket-in-repo"
     root = m.group(0) + "/"
-    if not any(str(w).startswith(root) for w in written_any):
+    # 10-15 abb89:mkdtemp 建的目錄沒有寫檔事件 ⇒ 以前「沒人在底下寫過」就判不是自己的 ⇒ 誤判外部;
+    #   起跑快照裡沒有的目錄(這次才出生)也算自己的
+    if not any(str(w).startswith(root) for w in written_any) and not _born_tmp_root(m.group(0), t0):
         return "tmux-socket-not-own-tmp"
     return None
 
@@ -2479,7 +2534,7 @@ def inputs_from_events(events, repo=None):
                         _p = "tmux-env-unknown"
                     else:
                         _tt, _tx, _p = _tmux_wrapper_env(_sa, ev.get("tmux_tmpdir"), ev.get("tmux"))
-                        _p = _p or tmux_socket_problem(_in, _c, _tt, _tx, ev.get("tmux_exe"), repo, written_any)
+                        _p = _p or tmux_socket_problem(_in, _c, _tt, _tx, ev.get("tmux_exe"), repo, written_any, t0=t0)
                     tmux_seen.append((_p, tmux_starts_server(_in)))
                 elif kind == "external":
                     external = True
@@ -2598,7 +2653,7 @@ def inputs_from_events(events, repo=None):
                 else:
                     _tt, _tx, _p = _tmux_wrapper_env(_before, _ie.get("tmux_tmpdir"), _ie.get("tmux"))
                     _exe = argv[0] if argv[0].startswith("/") else _ie.get("tmux_exe")
-                    _p = _p or tmux_socket_problem(argv, _cwd, _tt, _tx, _exe, repo, written_any)
+                    _p = _p or tmux_socket_problem(argv, _cwd, _tt, _tx, _exe, repo, written_any, t0=t0)
                 tmux_seen.append((_p, tmux_starts_server(argv)))
             elif kind == "external":
                 external = True
@@ -2606,6 +2661,8 @@ def inputs_from_events(events, repo=None):
                 if _w not in why:
                     why.append(_w)
         elif ch == "unmeasured":
+            if bash_c_reads_nothing(ev):
+                continue      # 10-15 abb89:bash 3.2 的 `bash -c` 字串只是一條不讀檔的內建命令(見 bash_c_reads_nothing)
             unmeasured = True
             why.append(str(ev.get("why") or "unmeasured"))
         elif ch == "external":

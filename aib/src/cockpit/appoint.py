@@ -253,15 +253,18 @@ def _ui(key, **params):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="appoint")
+    def _h(key):   # argparse 說明走四語鍵 aib.appoint.help.*;% 要跳脫
+        return _ui("aib.appoint.help." + key).replace("%", "%%")
+
+    ap = argparse.ArgumentParser(prog="aib appoint", description=_h("description"))
     ap.add_argument("command",
                     choices=["captain", "advisor", "successor", "fleet",
-                             "verify"])
-    ap.add_argument("target", help="窗 id(如 @10)或席位名(successor 用)")
-    ap.add_argument("--to", help="successor:繼任者角色 / fleet:艦隊 id")
-    ap.add_argument("--by", default="", help="任命者(留痕用,必填於任命動作)")
-    ap.add_argument("--reason", default="", help="任命理由(留痕用)")
-    ap.add_argument("--instance", help="艙號(如 13);等同 EZ2_AIB_INSTANCE")
+                             "verify"], help=_h("command"))
+    ap.add_argument("target", help=_h("target"))
+    ap.add_argument("--to", help=_h("to"))
+    ap.add_argument("--by", default="", help=_h("by"))
+    ap.add_argument("--reason", default="", help=_h("reason"))
+    ap.add_argument("--instance", help=_h("instance"))
     args = ap.parse_args(argv)
     if getattr(args, "instance", None):
         os.environ["EZ2_AIB_INSTANCE"] = args.instance

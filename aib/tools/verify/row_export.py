@@ -41,7 +41,7 @@ import tempfile
 
 EXPORT_FIELDS = (
     "test", "rc", "timed_out", "measured", "external", "why", "inputs", "input_fp", "env_fp",
-    "key", "lock_fp", "repo_id", "host_id", "duration_s", "source", "time",
+    "key", "lock_fp", "repo_id", "host_id", "duration_s", "source", "time", "tz", "tz_off_s",
 )
 REQUIRED_FIELDS = ("test", "rc", "inputs", "input_fp", "env_fp", "key")
 # 分析模式(10-02 建議 5):把 Mac 的發版證詞列清乾淨推到資料分支,讓雲端能自己量。

@@ -13,6 +13,16 @@ from . import fleet_members
 from . import runtime_model_observation
 
 
+def _ctx_policy():
+    import os
+    import sys
+    rot = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rotation")
+    if rot not in sys.path:
+        sys.path.insert(0, rot)
+    import ctx_policy
+    return ctx_policy
+
+
 HANDOFF_KEYS = frozenset((
     "schema", "capability_id", "binding_id", "binding_generation",
     "policy_sha256", "observation_sha256", "issued_at_ms", "expires_at_ms",
@@ -63,8 +73,11 @@ def _policy(path, supplied_hash):
         policy = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError):
         raise auth.AuthorityError("ctx_policy_invalid", rc=1)
-    threshold = (policy.get("stages") or {}).get("must_handoff") \
-        if isinstance(policy, dict) else None
+    # 10-15 CTX 單表:B 的 stages.must_handoff(90)刪了 ⇒ 交接憑證讀表上「要求交接」那一格(85)。
+    try:
+        threshold = _ctx_policy().trigger_pct("handoff_now", path)
+    except (OSError, KeyError, ValueError, TypeError):
+        raise auth.AuthorityError("ctx_policy_invalid", rc=1)
     if isinstance(threshold, bool) or not isinstance(threshold, int) \
             or not 0 <= threshold <= 100:
         raise auth.AuthorityError("ctx_policy_invalid", rc=1)

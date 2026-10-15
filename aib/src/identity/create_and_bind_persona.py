@@ -17,6 +17,8 @@ the maintainer 10-01 裁(取代 09-30「沒說就開新席」):沒指定席位 �
     --emoji EMOJI      代表圖示 (可選，預設 🎭)
     --category CAT     角色分類 (可選，預設 "客製/專家")
     --prompt PROMPT    角色人設、性格與說話口吻描述 (可選)
+                       一句話也行:三段 ## 職責/## 紅線/## 知識域 一段都沒寫 ⇒ 那句當開頭、三段補預設內文(10-15);
+                       寫了其中幾段 ⇒ 缺的段具名擋下,不替人猜
     --prompt-file F    同上,但從檔案讀(人設有引號、反引號、多行時用這個,不必過殼)
     --seat SEAT        目標席位(可選;不給 ⇒ 只建卡、不綁任何席)。三種寫法都收:
                        完整地址 f643/77324、畫面上的席碼 a seat、席位檔的 seat_id
@@ -185,6 +187,45 @@ def lint_card(text):
         if not match or not match.group(1).strip():
             failures.append("缺 ## %s 段" % heading)
     return failures
+
+
+# 10-15 C10/E5:三個必填段的標題(卡上一律寫中文正本,下游 persona_pack 等都認這三個字)與各語說明鍵
+REQUIRED_HEADINGS = (("職責", "duties"), ("紅線", "red_lines"), ("知識域", "knowledge"))
+
+
+def has_any_required_heading(text):
+    return any(re.search(r"^##[ \t]*" + h + r"[ \t]*$", text or "", re.M) for h, _k in REQUIRED_HEADINGS)
+
+
+def wrap_short_prompt(prompt):
+    """--prompt 一個 ## 必填段都沒有(常見:一句話人設)⇒ 那句當開頭定位,三段補上預設內文(內文照使用者語系)。
+    已經寫了任一段 ⇒ 原樣,缺的段交給 lint 具名擋(不替人猜他漏寫的那段)。"""
+    if has_any_required_heading(prompt):
+        return prompt, False
+    parts = [prompt.strip(), ""]
+    for heading, key in REQUIRED_HEADINGS:
+        parts += ["## " + heading, T("aib.newrole.default_" + key), ""]
+    return "\n".join(parts), True
+
+
+def lint_messages(failures):
+    """lint_card 的結果 → 給人看的句子(四語)。缺段那一條附上三段標題的正確寫法。"""
+    out, missing = [], False
+    for f in failures:
+        m = re.match(r"缺 ## (\S+) 段$", f)
+        if m:
+            key = dict(REQUIRED_HEADINGS).get(m.group(1), "")
+            out.append(T("aib.newrole.lint_missing", {"heading": "## " + m.group(1),
+                                                       "label": T("aib.newrole.heading_" + key)}))
+            missing = True
+        elif f.startswith("人格檔>20KB"):
+            out.append(T("aib.newrole.lint_too_big"))
+        else:
+            out.append(T("aib.newrole.lint_rule", {"rule": f}))
+    if missing:
+        out.append(T("aib.newrole.lint_headings_hint", {"headings": " / ".join(
+            "## %s (%s)" % (h, T("aib.newrole.heading_" + k)) for h, k in REQUIRED_HEADINGS)}))
+    return out
 
 
 def commit_card(role_lib_dir, card_file, name):
@@ -390,6 +431,21 @@ def _hub_name(cabin):
     return hub
 
 
+def new_seat_role_or_die(role):
+    """--new-seat 開的席用哪個角色:--role 給的(要是已定義角色),沒給 = dev。
+    the maintainer 10-15「預設新開新從原有的角色上選,不另開新角色」⇒ 不再拿人格代號 / 專案標題當角色名。
+    回 (role, 錯誤訊息);錯誤訊息非空 ⇒ 呼叫端擋下,什麼都不寫。"""
+    role = (role or "dev").strip()
+    sys.path.insert(0, str(REPO_ROOT / "src" / "cockpit"))
+    try:
+        import roles as _roles
+    except Exception as exc:  # noqa: BLE001
+        return role, "讀不到角色清單(%s)" % exc
+    if not _roles.is_defined(role):
+        return role, "角色「%s」沒有定義;可用:%s" % (role, ", ".join(_roles.defined_roles()))
+    return role, ""
+
+
 def seat_role_of(text, fallback):
     """新席的角色名(aib 只收小寫英數與連字號):取英數字;一個都沒有(例如中文名稱)就用 fallback。"""
     role = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")[:24]
@@ -470,6 +526,33 @@ def open_new_seat(role, engine="claude", cabin="", timeout=300, interval=3.0, sl
             raise NewSeatError("新席的窗已開,但 %d 秒內沒等到它的席碼(AI 可能還在啟動)。"
                                "看右欄那一席出現後,改用 --seat <艙位碼>/<席碼> 再跑一次" % int(timeout), opened=True)
         sleep(interval)
+
+
+def card_display_name(name):
+    """卡上 name: 欄的值:去掉會破壞單行 frontmatter 的字元(引號、換行、控制字元)。"""
+    return re.sub(r'[\x00-\x1f\x7f"]', "", str(name or "")).strip()
+
+
+def write_label_title(vault_dir, folder_id, title):
+    """uid 版面(<vault>/.ez2/display/labels.json 已存在)⇒ 補 folders[folder_id].title;
+    舊版面沒有這份檔 ⇒ 不建(轉換工具建),回 False。寫法:讀 → 改 → 暫存檔 → 換名。"""
+    path = Path(vault_dir) / ".ez2" / "display" / "labels.json"
+    if not path.is_file():
+        return False
+    try:
+        labels = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        log("警告: labels.json 讀不懂,不改它;卡上的 name: 仍會當顯示名")
+        return False
+    folders = labels.setdefault("folders", {})
+    rec = folders.setdefault(folder_id, {})
+    if rec.get("title") == title:
+        return True
+    rec["title"] = title
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(labels, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+    return True
 
 
 def folder_for_new_card(name, code):
@@ -681,6 +764,7 @@ def main():
     parser.add_argument("--deliver", action="store_true", help=T("aib.newrole.help_deliver"))
     parser.add_argument("--new-seat", action="store_true", help=T("aib.newrole.help_new_seat"))
     parser.add_argument("--engine", default="claude", help=T("aib.newrole.help_engine"))
+    parser.add_argument("--role", default="", help=T("aib.newrole.help_role"))
     parser.add_argument("--actor", help=T("aib.newrole.help_actor"))
     parser.add_argument("--overwrite", action="store_true", help=T("aib.newrole.help_overwrite"))
     parser.add_argument("--dry-run", action="store_true", help=T("aib.newrole.help_dry_run"))
@@ -723,7 +807,10 @@ def main():
         except _BO.BindError as exc:
             log("錯誤: %s。什麼都沒寫:沒開席、卡沒建" % exc, prefix="[x]")
             return 2
-        new_seat_role = seat_role_of(args.code or args.name, "persona")
+        new_seat_role, role_err = new_seat_role_or_die(args.role)
+        if role_err:
+            log("錯誤: %s。什麼都沒寫:沒開席、卡沒建" % role_err, prefix="[x]")
+            return 2
         # review r16(人格):量不到艙真跑也在建卡前擋(以前只有試跑先擋,真跑要等開席才發現 ⇒ 卡已建)
         if not current_cabin():
             log(("[DRY-RUN] " if args.dry_run else "") + "量不到你所在的艙,--new-seat 開不了席;在艙裡的席位上執行,"
@@ -751,7 +838,7 @@ def main():
     # 角色庫位置從路由契約現查(the maintainer 08-27 第二鐵律;09-26 R9 資料夾要改 uid,改的是契約,這裡不動)
     sys.path.insert(0, str(REPO_ROOT / "src" / "persona_route"))   # 其他零件一律從 REPO_ROOT(EZ2_AIB_REPO)找
     from route_register import resolve_route_folder, default_contract_spec, BUNDLED_CONTRACT
-    lib_rel = resolve_route_folder(LIBRARY_ROUTE_KEY)
+    lib_rel = resolve_route_folder(LIBRARY_ROUTE_KEY, root=str(vault_dir))   # 用 --vault 那一個查索引,不是環境變數
     if not lib_rel:
         log("錯誤: 路由契約裡查不到 %s(角色庫在哪),不猜" % LIBRARY_ROUTE_KEY, prefix="[x]")
         # 10-12(a seat Pro):自訂 vault 有內容、看不出版面 ⇒ 說清楚兩條路,不只說「不猜」
@@ -786,9 +873,9 @@ def main():
             log(f"找到既有角色卡: {name} (UID: {target_card_uid})")
             break
 
-    if not target_card_uid:
+    new_uid = not target_card_uid
+    if new_uid:                     # 10-15 E5:先挑號不印;內容檢查過了才印「分配新角色 UID」
         target_card_uid = allocate_uid(existing_cards)
-        log(f"分配新角色 UID: {target_card_uid}")
 
     # 既有卡沒另外指定時,代號與圖示報卡上那一份(席位記憶與回報才不會寫成預設值)
     known = existing_cards.get(target_card_uid) or {}
@@ -804,10 +891,15 @@ def main():
     elif (role_lib_dir / name / "角色.md").is_file():
         folder_name = name
     else:
-        folder_name = folder_for_new_card(name, code)
+        # the maintainer 10-15:「人格與專案都用 uid 建立,顯示才用 title」⇒ 新卡資料夾 = 卡 uid;
+        #   顯示名讀卡上的 name:(uid 版面另寫進 .ez2/display/labels.json),改名不必搬資料夾。
+        folder_name = target_card_uid
     target_role_dir = role_lib_dir / folder_name
     target_role_file = target_role_dir / "角色.md"
 
+    wrapped = False
+    if args.prompt:
+        args.prompt, wrapped = wrap_short_prompt(args.prompt)
     prompt_content = args.prompt or (
         f"你是「{name}」。\n\n"
         "## 職責\n"
@@ -823,6 +915,7 @@ def main():
     card_markdown = (
         "---\n"
         f'uid: "{target_card_uid}"\n'
+        f'name: "{card_display_name(name)}"\n'
         f"code: {code}\n"
         f"model: auto\n"
         f"emoji: {emoji}\n"
@@ -857,8 +950,12 @@ def main():
     else:
         failures = lint_card(card_markdown)
         if failures:
-            log("PERSONA_LINT_FAIL: " + "; ".join(failures), prefix="[x]")
+            log("PERSONA_LINT_FAIL: " + " ".join(lint_messages(failures)), prefix="[x]")
             return 4
+        if new_uid:
+            log(T("aib.newrole.uid_allocated", {"uid": target_card_uid}))
+        if wrapped:
+            log(T("aib.newrole.prompt_wrapped"), prefix="[!]")
         log(f"1. 準備寫入 Vault 角色卡: {target_role_file}")
     if args.dry_run or keep_existing:
         if args.dry_run:
@@ -873,6 +970,8 @@ def main():
         with open(target_role_file, "w", encoding="utf-8") as f:
             f.write(card_markdown)
         log("   -> Vault 檔案已寫入")
+        if folder_name == target_card_uid and write_label_title(vault_dir, target_card_uid, card_display_name(name)):
+            log("   -> 顯示名已寫進 .ez2/display/labels.json")
         try:
             commit_card(role_lib_dir, target_role_file, name)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -993,11 +1092,27 @@ def main():
         rc, out, err = run_cmd(bind_cmd, cwd=REPO_ROOT)
         if rc != 0:
             log(f"錯誤: bind_one.py 失敗 (rc={rc}):\n{err}", prefix="[x]")
+            # 10-15 @977e3 實機:卡在步驟 1 已寫進 vault、索引已掃,只有綁席沒成 ⇒ 講明卡怎麼了、重跑要怎麼下
+            #   (審查:帶 --new-seat 時新席已開,重跑同一行會再開一席;帶 --overwrite 重跑會再覆寫一次 ⇒ 各自講)
+            card_key = ("aib.newrole.bind_failed_card_existing" if keep_existing
+                        else "aib.newrole.bind_failed_card_overwritten" if existed_before
+                        else "aib.newrole.bind_failed_card_kept")
+            log(T(card_key, {"name": name, "uid": target_card_uid, "path": str(target_role_file)}), prefix="[x]")
+            if args.new_seat:
+                log(T("aib.newrole.bind_failed_rerun_new_seat", {"seat": seat_id}), prefix="[x]")
+            elif existed_before and args.overwrite:
+                log(T("aib.newrole.bind_failed_rerun_drop_overwrite"), prefix="[x]")
+            else:
+                log(T("aib.newrole.bind_failed_rerun"), prefix="[x]")
             sys.exit(rc)
         log("   -> 席位綁定完成")
         # 10-12 Bot 開發第 16 件:bind_one 收據裡的 provider_warning ⇒ 只警告,照綁、不改卡
         try:
-            fit_warn = (json.loads(out) or {}).get("provider_warning")
+            _bind_out = json.loads(out) or {}
+            fit_warn = _bind_out.get("provider_warning")
+            # 10-15:整艙重投影時別席的路由過不了表(保留原綁定、標未解析)⇒ 照印,不吞
+            for _line in _bind_out.get("route_notices") or []:
+                log(_line, prefix="[!]")
         except (ValueError, AttributeError):
             fit_warn = None
         if fit_warn:

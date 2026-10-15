@@ -4,6 +4,18 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.8
+
+- **Messages between AIs**: cross-host `aib dm` shows the real sender, works with older receivers and reuses one SSH connection (about 45 ms instead of 240–540 ms). Retries resend only to seats that did not get the message; options are no longer dropped; messages no longer vanish; a seat cannot send as another seat; a tool timeout no longer sends twice. When the receiving seat is busy, the message waits in its queue and is delivered when the seat is idle; messages held for a person are announced to the receiving seat when it is idle. A runaway loop is stopped after 8 nested calls.
+- **Context usage is handled by the program**, from one table: memory is consolidated quietly at 30, 50, 70 and 90%; at 80% you are reminded to hand off; at 85% the closing steps (tidy → summary → `aib handoff` + verify) are required before a Claude seat can end its turn (write「先做」in your message to skip that one turn); 95% is the red line. The hook is now installed when a seat opens (it was never installed in the open-source layout).
+- **Personas, projects, binding**: new persona cards are kept under their uid and shown by title; `aib newproj --approve` lets you approve a project's goals and red lines yourself; there is one route table, so re-binding another seat no longer drops yours; `bindme repair` reads back what it fixed; auto-binding no longer names things after status lines; `newrole` explains where the card is when binding fails.
+- **Second-brain uid layout converter**: plan → apply → verify → undo; lists, links, attachments and `.obsidian` settings are converted; templates keep their names.
+- **Opening seats**: a seat opened inside a cabin opens in that cabin; only defined roles are accepted; a missing AI tool is named with how to install and sign in, and no empty window is opened. The right pane marks bridged bots 🤖 and API-key engines 🔑.
+- **English UI is English throughout** (`doctor`, `page`, `persona`, the bottom pane, every `--help`), with real Japanese and Korean; internal codes are gone.
+- **Tests**: earlier green results are reused only when they still apply (12-hour limit on resuming, red results from other machines still count, a time-zone change reruns, damaged records repair themselves); a few tests that never reused results now do.
+- **Install / doctor**: git installs get their hooks; uninstall keeps unsaved work; `aib doctor` marks what it cannot measure as a note instead of a failure.
+- **Extensions**: `aib plugins licensed` for paid plugins; the five free extensions are signed, so `--allow-unsigned` is no longer needed.
+
 ## 0.1.7
 
 - aib installed with pip in a virtual environment now updates itself when you open a seat, like pipx and one-line installs already did. **If you installed 0.1.6 or older with pip, run `pip install --upgrade ez2-aib` once.**

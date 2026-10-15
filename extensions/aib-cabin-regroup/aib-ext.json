@@ -11,5 +11,6 @@
   "files": {
     "SKILL.md": "1c10a7399c29afb1375d0adc57dc08a1d518a3bac04c67196a1930a646720d76",
     "regroup.sh": "c5b0b63aa3a44e57e7cadb15b6856c778229bcd89e29c0635ed679a85d56a0a5"
-  }
+  },
+  "signature": "ed25519:puzK4j8cPFUflQBZESAqlvkZWP7kQJz6tRpopAnsPJFfF8MdJlFJdQsSYDNo/jaW9ypEqd8toedCU5HzOdsxCA=="
 }

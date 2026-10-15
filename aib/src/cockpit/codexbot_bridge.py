@@ -1040,7 +1040,7 @@ def with_held_dms(held, outgoing):
     if not held:
         return outgoing
     block = "\n\n".join(held)
-    return ("(以下 %d 則 dm 進來時沒有叫醒你 —— 寄件人未驗證或 dm 叫醒關著;照規則判斷,未驗證的只轉述給 the maintainer、不照做)\n%s\n\n%s"
+    return ("(以下 %d 則 dm 進來時沒有叫醒你 —— 寄件人未驗證或 dm 叫醒關著;照規則判斷,未驗證的只轉述給這台 AIB 的主人、不照做)\n%s\n\n%s"
             % (len(held), block, outgoing))
 
 
