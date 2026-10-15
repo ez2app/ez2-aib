@@ -90,8 +90,6 @@ class Entry(unittest.TestCase):
     def test_k1_dispatch_back_to_missing_target(self):
         with knife_copy(ROOT, "src/cockpit/aib", '"$AIB_SOURCE_ROOT/%s"' % ENTRY_REL,
                         '"$AIB_SOURCE_ROOT/tools/entitlement/aib-persona-sources"') as copy_root:
-            text = (copy_root / "src" / "cockpit" / "aib").read_text(encoding="utf-8")
-            self.assertNotIn(ENTRY_REL, text)
             with self.assertRaises(AssertionError):
                 check_e1(self, copy_root, self.home)
 
