@@ -8,6 +8,7 @@ API 席(openrouter / deepseek / nvidia / typesafe 的 REPL)的模型只有 aib_d
 草稿與模型的回答都不進這場對話的 messages / history(不污染對話)。任何錯 ⇒ 回一行失敗原因,REPL 照常。
 
   tick(session_id)  每輪回完呼叫一次;到第 20、40、… 輪回 True
+  turn_end(session_id)  每輪回完呼叫一次:CTX 用量表(auto_distill_hook.outer_turn)
   run(ask, seat="") ask(prompt) -> 模型回的字;回要印在畫面的一行
   recent(messages)  ask 要帶的那幾則(system + 最後 RECENT_MESSAGES 則)
 
@@ -70,6 +71,17 @@ def ship_segment(code=None, gate=None):
         if not code:
             return ""
         return adh.ship_append(code, gate)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def turn_end(session_id):
+    """10-15(維護者「每一家都要由程式觸發」):API 席沒有 hook 機制 ⇒ REPL 每一輪回完代呼叫 CTX 用量表那條 stop 路
+    (auto_distill_hook.outer_turn:同一張表、aib dm 給自己、同格只一次)。API 席今天量不到用量(gauge pct 一律 None)
+    ⇒ 照實不觸發;精煉仍由上面 tick / run 每 EVERY 輪代跑。任何錯 ⇒ 安靜略過。"""
+    try:
+        import auto_distill_hook as adh
+        return adh.outer_turn(session_id)
     except Exception:  # noqa: BLE001
         return ""
 
