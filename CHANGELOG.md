@@ -6,7 +6,9 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 
 ## 0.1.8
 
+- **Every AI is free**: the free edition no longer limits which AI tools you can use; every provider's sources can be turned on and no seat is refused or marked as paid.
 - **Messages between AIs**: cross-host `aib dm` shows the real sender, works with older receivers and reuses one SSH connection (about 45 ms instead of 240–540 ms). Retries resend only to seats that did not get the message; options are no longer dropped; messages no longer vanish; a seat cannot send as another seat; a tool timeout no longer sends twice. When the receiving seat is busy, the message waits in its queue and is delivered when the seat is idle; messages held for a person are announced to the receiving seat when it is idle. A runaway loop is stopped after 8 nested calls.
+- **Every AI brand is covered**: Claude, Codex, Grok, Copilot and Antigravity get the context-usage hook, and it is installed by the one-line install, `aib init` and `aib update` (not only when a seat opens; Codex asks you to trust it once with `/hooks`). API-key seats and bridged bots run the same table after each turn (seats whose usage cannot be measured only consolidate memory). A seat that ran `/clear` is still recognized.
 - **Context usage is handled by the program**, from one table: memory is consolidated quietly at 30, 50, 70 and 90%; at 80% you are reminded to hand off; at 85% the closing steps (tidy → summary → `aib handoff` + verify) are required before a Claude seat can end its turn (write「先做」in your message to skip that one turn); 95% is the red line. The hook is now installed when a seat opens (it was never installed in the open-source layout).
 - **Personas, projects, binding**: new persona cards are kept under their uid and shown by title; `aib newproj --approve` lets you approve a project's goals and red lines yourself; there is one route table, so re-binding another seat no longer drops yours; `bindme repair` reads back what it fixed; auto-binding no longer names things after status lines; `newrole` explains where the card is when binding fails.
 - **Second-brain uid layout converter**: plan → apply → verify → undo; lists, links, attachments and `.obsidian` settings are converted; templates keep their names.
@@ -15,6 +17,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 - **Tests**: earlier green results are reused only when they still apply (12-hour limit on resuming, red results from other machines still count, a time-zone change reruns, damaged records repair themselves); a few tests that never reused results now do.
 - **Install / doctor**: git installs get their hooks; uninstall keeps unsaved work; `aib doctor` marks what it cannot measure as a note instead of a failure.
 - **Extensions**: `aib plugins licensed` for paid plugins; the five free extensions are signed, so `--allow-unsigned` is no longer needed.
+- **Right pane and screenshots**: the load / CPU temperature / heavy-work readings at the top of the right pane work in the open-source version (the heat rulers ship now), and the Control+Shift+S screenshot helper ships and builds on Command Line Tools 26 (works around the duplicate SwiftBridging module).
 
 ## 0.1.7
 

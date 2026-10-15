@@ -456,12 +456,12 @@ def now_gate_missing(settings_path=None):
                 script = words[2] if len(words) >= 3 and words[:2] == ["test", "-f"] else ""
                 return bool(script) and not os.path.isfile(script)
     return True
-SHADOW_L2_MARK = {"ok": " 🪞②✓", "missing": " 🪞②✗"}   # patrol 的字走 i18n(shadow_l2_mark)
+SHADOW_L2_MARK = {"ok": " 🪞② ✓", "missing": " 🪞② ✗"}   # 10-15 the maintainer:②✓ 太近 ⇒ 中間空一格   # patrol 的字走 i18n(shadow_l2_mark)
 
 
 def shadow_l2_mark(l2):
     if l2 == "patrol":
-        return " 🪞②" + T("aib.now.shadow_patrol")
+        return " 🪞② " + T("aib.now.shadow_patrol")
     return SHADOW_L2_MARK.get(l2, "")
 
 

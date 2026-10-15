@@ -49,7 +49,9 @@ class DryRunWritesNothing(unittest.TestCase):
         return seen
 
     def aib(self, *args):
-        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(self.home), "EZ2_AIB_LOCALE": "en"}
+        # macOS built-in /usr/bin/python3 (3.9) caches bytecode under HOME/Library/Caches before aib can redirect it;
+        # that is Python's cache, not aib writing, so keep it out of the snapshot.
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(self.home), "EZ2_AIB_LOCALE": "en", "PYTHONDONTWRITEBYTECODE": "1"}
         return subprocess.run(AIB + list(args), cwd=self.work, env=env, capture_output=True, text=True,
                               stdin=subprocess.DEVNULL, timeout=120)
 

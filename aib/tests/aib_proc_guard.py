@@ -36,6 +36,25 @@ def group_size(pgid):
     return sum(1 for x in out.split() if x == want)
 
 
+def _kill_group(p, pgid, rounds=50, gap=0.05):
+    """killpg 到那一組一支不剩為止。
+    10-15 22:11 CI(macOS 3.9)G1 量到 31.4 秒:killpg 那一刻正在 fork 的子行程會漏殺一支 `sleep 30`,
+    它抱著 stdout 管線,communicate() 就陪它睡滿 30 秒(本機舊版 30 輪重現 1 次 30.4 秒)
+    ⇒ 砍一次不夠,要砍到清空(最多 rounds 輪)。
+    macOS:組裡只剩沒收屍的組長時 killpg 回 EPERM ⇒ 這輪當沒砍到,p.poll() 收掉組長再數。"""
+    for _ in range(rounds):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            pass
+        p.poll()
+        time.sleep(gap)
+        if not group_size(pgid):
+            return
+
+
 def run_guarded(cmd, max_procs=150, timeout=300, poll=0.2, **kw):
     kw.setdefault("stdout", subprocess.PIPE)
     kw.setdefault("stderr", subprocess.PIPE)
@@ -50,17 +69,11 @@ def run_guarded(cmd, max_procs=150, timeout=300, poll=0.2, **kw):
         elif time.time() - t0 > timeout:
             tripped = "timeout"
         if tripped:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _kill_group(p, pgid)
             break
         time.sleep(poll)
     out, err = p.communicate()
     # 組長先結束、子孫還活著(孤兒)也要清:同一組剩下的一律收掉
     if group_size(pgid):
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_group(p, pgid)
     return GuardResult(p.returncode, out, err, tripped, peak, pgid)

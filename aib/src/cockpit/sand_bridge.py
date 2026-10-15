@@ -305,8 +305,10 @@ REPLAY_FOLDERS = ("inbox", "claimed", "delivered", "outbox")   # 10-09 the maint
 def _bridge_distill(root, session_uuid, provider_id, body=None):
     """10-13 a seat(the maintainer「Bot 也要能自動更新」「量不到 % 每 20 輪」):GrokBot / MuseBot 每回一則算一輪,
     到點放一則 aib-system 信進本席 inbox(跟改名、人格包同一條路),bot 下次收信時替這一席整理記憶。
-    ClaudeBot 在 claudebot_hook 的 Stop 做(那邊量得到用量 %),這裡不算。任何錯 ⇒ 略過。"""
-    if provider_id not in ("grokbot", "musebot"):
+    ClaudeBot 在 claudebot_hook 的 Stop 做(那邊量得到用量 %),這裡不算。任何錯 ⇒ 略過。
+    10-15:舊的 sand 席(已退出新開選單,舊席還開得起來)同一個後端 ⇒ 也算。三家都量不到用量 ⇒ 只照輪數精煉,
+    不觸發 80 / 85 / 95 交接類(bot_turn 量不到不假造)。"""
+    if provider_id not in ("grokbot", "musebot", "sand"):
         return None
     if isinstance(body, dict) and (str(body.get("role") or "") == "user"
                                    or str(body.get("to") or "human") not in ("human", "cursor", "")):

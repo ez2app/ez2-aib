@@ -13,7 +13,6 @@ for_task: §108.320 / evening-D-0926
 from .tier import TIERS, get_entitlement, verify_signature
 from .store import resolve_home, resolve_license_path, read_license_obj
 from .providers import (
-    FREE_ALLOWED_PROVIDERS,
     KNOWN_PROVIDERS,
     list_providers,
     parse_providers_from_launch,
@@ -35,7 +34,6 @@ __all__ = [
     "resolve_home",
     "resolve_license_path",
     "read_license_obj",
-    "FREE_ALLOWED_PROVIDERS",
     "KNOWN_PROVIDERS",
     "list_providers",
     "parse_providers_from_launch",

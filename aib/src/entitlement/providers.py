@@ -31,13 +31,9 @@ KNOWN_PROVIDERS: tuple[str, ...] = (
     "musebot",     # 2026-10-05 MuseBot 橋接席(Meta Muse 桌面橋;Glint a seat 工單)
 )
 
-# 免費態可開的 provider（寫進程式）。
-# ★ the maintainer 2026-09-27 09:1x 裁(逐字「claudebot 算付費,其他照艦長預設」):免費態只有 claude 一家;
-#   claudebot 與其餘 bots 各自獨立、算付費。艦長 03:59「claudebot 算 Claude 家族」的預設作廢。
-#   改這裡就夠,消費者一律讀這個集合。
-# ★ 刻意**不保留**單數的 FREE_ALLOWED_PROVIDER 別名:同一件事兩個名字,
-#   兩邊遲早分岔而且失效是靜的(共用記憶 one-observation-two-sources-same-handling)。
-FREE_ALLOWED_PROVIDERS: frozenset[str] = frozenset({"claude"})
+# ★ the maintainer 2026-10-15 22:5x 裁「所有 AI 都免費開放」(不只 Claude):沒有「免費只限某幾家」的集合了。
+#   09-27 的 FREE_ALLOWED_PROVIDERS = {"claude"}(claudebot 等算付費)作廢、刻意刪掉不留別名 ——
+#   留著就會有人再拿它擋。要再分免費 / 付費,先問 the maintainer,不要把集合加回來。
 
 _CASE_RE = re.compile(
     r'case\s+"\$PROVIDER"\s+in\s+([a-z0-9_|]+)\)',

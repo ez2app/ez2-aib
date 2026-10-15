@@ -2,6 +2,8 @@
   "_comment_zh-TW": "CTX(對話用量 %)門檻單一資料源 —— 只有這一張表(10-15 維護者 20:0x「把這二個合成一個,並要確定會由程式觸發」、20:1x「只保留 A 一張表」)。原本的 stages / actions(艦隊巡檢 50/60/75/80/85/90/96/97)已刪;讀者一律經 src/rotation/ctx_policy.py 取值,不得在碼裡另寫字面。每一格的動作由各席自己的 hook 觸發(src/identity/auto_distill_hook.py:Claude 席 UserPromptSubmit 注入 + Stop 擋回合(85 交接沒過)、其他家一輪結束 aib dm 給自己、agy 叫模型前注入),同一格同一對話只一次;85 那格交接 verify 沒過就每則再提醒。總表(用量 → 會發生什麼 → 哪支程式)見 aib/docs/CTX-THRESHOLDS.md。",
   "_comment_en": "Single source of CTX (context use %) thresholds: one table only. The old stages/actions section (fleet patrol 50/60/75/80/85/90/96/97) is gone. Every cell is fired by the seat's own hook (src/identity/auto_distill_hook.py), once per conversation; at 85 the hook keeps reminding and the Claude Stop hook blocks the turn until the handoff verify passes (capped). Full table: aib/docs/CTX-THRESHOLDS.md.",
   "schema_version": "2",
+  "_comment_unmeasured": "量不到用量(gauge 沒有 pct)的席:API 金鑰席 REPL、量不到的橋接 bot ⇒ 同一席同一對話每 N 輪精煉一次(維護者 10-15 22:4x);量得到的席照 triggers。",
+  "unmeasured_tidy_every_turns": 20,
   "triggers": [
     {"pct": 30, "do": ["tidy"]},
     {"pct": 50, "do": ["tidy"]},
