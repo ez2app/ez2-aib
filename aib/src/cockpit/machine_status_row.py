@@ -280,7 +280,11 @@ def compose(cells, level=None, width=44, stale=False, legacy=False):
                 "ok": "normal", "warn": "warn", "hot": "hot",
                 "critical": "critical", "unmeasured": "unknown",
             }.get(thermal, "unknown")
-            head = _paint(tr.t("aib.machine.thermal.%s" % thermal_key), thermal)
+            # C13(10-15):窄欄時長句會被截成「CPU temperature unavail…」⇒ 放不下就換短句(四語各一)
+            head_text = tr.t("aib.machine.thermal.%s" % thermal_key)
+            if visible_width(head_text) > width:
+                head_text = tr.t("aib.machine.thermal_short.%s" % thermal_key)
+            head = _paint(head_text, thermal)
             if load in ("hot", "critical"):
                 head += " %s· %s%s" % (DIM, tr.t("aib.machine.load.high"), RESET)
             if stale:

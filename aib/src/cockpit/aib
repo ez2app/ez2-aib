@@ -254,14 +254,17 @@ aib_delegate_subcommand() {   # $1=py|exe $2=腳本絕對路徑,其餘原樣透�
   local kind="$1" path="$2"
   shift 2
   if [ ! -f "$path" ]; then
-    echo "aib: 這個指令還沒裝好(找不到 $path)" >&2
+    # 10-15:原本寫死中文「還沒裝好」;改走 i18n(依語系)
+    "$T_PY3" "$HERE/i18n_lib.py" --param "path=$path" aib.delegate.not_installed >&2 2>/dev/null \
+      || echo "aib: this command is not installed in this copy (missing $path)" >&2
     exit 2
   fi
   if [ "$kind" = "py" ]; then
     exec "$T_PY3" "$path" "$@"
   fi
   if [ ! -x "$path" ]; then
-    echo "aib: 這個指令還沒裝好($path 不是可執行檔)" >&2
+    "$T_PY3" "$HERE/i18n_lib.py" --param "path=$path" aib.delegate.not_executable >&2 2>/dev/null \
+      || echo "aib: this command is not installed correctly ($path is not executable)" >&2
     exit 2
   fi
   exec "$path" "$@"
@@ -818,7 +821,9 @@ if [ "${1:-}" = "seat" ]; then
     #   (_archive_same_uuid_exit)。以前只設 bash 變數 ⇒ 子行程永遠看到沒設 ⇒ 同窗重開的席退出欄清不掉,一直被判死。
     re-register) shift 2; export AIB_SEAT_REREGISTER=1; REREG_ARGS=("$@"); set -- ;;
     auto-rotate) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/codex_rotate_live.py" seat "$@" ;;
-    *) echo "aib seat: open|detect|onboard|socket-backfill|re-register|auto-rotate" >&2; exit 2 ;;
+    # E2(10-15):aib seat --help 要印用法、rc 0(以前印一行就 rc 2)
+    -h|--help|help) t aib.seat.help.usage; exit 0 ;;
+    *) t aib.seat.help.usage >&2; exit 2 ;;
   esac
 fi
 
@@ -1333,6 +1338,14 @@ aib_print_cabin_tuple() {
   # 這個終端即將被指揮艙接走時,四元組會停在畫面上像當掉。
   # dry-run / 不接入仍印(測試與腳本要能看見開了哪一艙)。
   if [ "$DRY" != "1" ] && [ "${AIB_NO_ATTACH:-0}" != "1" ] && [ -t 0 ]; then
+    return 0
+  fi
+  # C13(10-15):--dry-run + new 不會真的發艙號,以前印出假的「2」像真的艙號 ⇒ 改印「(新艙)」並說明預覽裡的號碼只是代位。
+  #   AIB_FAKE_NEW_INSTANCE 明給(測試 seam)⇒ 照印那個號。
+  if [ "$DRY" = "1" ] && [ "$NEW" = "1" ] && [ -z "${AIB_FAKE_NEW_INSTANCE:-}" ]; then
+    printf 'aib: instance=%s session=%s hub=%s state=%s\n' \
+      "$(t aib.dry_run.new_cabin)" "$EZ2_TMUX_SESSION" "$EZ2_AIHUB_SOCKET" "$EZ2_AIB_INSTANCE_HOME" >&2
+    t aib.dry_run.new_cabin_note "value=$EZ2_AIB_INSTANCE" >&2
     return 0
   fi
   printf 'aib: instance=%s session=%s hub=%s state=%s\n' \

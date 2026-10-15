@@ -233,9 +233,22 @@ def suggestion(environ=None) -> str:
 USAGE = "usage: aib genes status | on [1,2,6] | off"
 
 
+def _help_text():
+    """`aib genes --help` (E2 10-15: used to fall through to the usage line with rc 2); words come from aib/i18n."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import i18n_lib
+    loc = i18n_lib.resolve_locale()
+    return "\n".join(i18n_lib.t(k, locale=loc) for k in (
+        "aib.genes.help.usage", "aib.genes.help.what", "aib.genes.help.status", "aib.genes.help.on",
+        "aib.genes.help.off", "aib.genes.help.locked"))
+
+
 def main(argv=None, environ=None):
     argv = sys.argv[1:] if argv is None else argv
     environ = os.environ if environ is None else environ
+    if argv[:1] in (["-h"], ["--help"], ["help"]):
+        print(_help_text())
+        return 0
     if argv[:1] == ["status"]:
         print(suggestion(environ))
         p = prediction(environ)

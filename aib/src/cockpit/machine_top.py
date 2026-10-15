@@ -362,15 +362,24 @@ def render(res: dict) -> str:
     return "\n".join(out)
 
 
+def _ui(key, **params):
+    """畫面字走四語鍵;每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名(不擋程式)。"""
+    try:
+        import i18n_lib
+        return i18n_lib.t(key, params or None, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001
+        return key
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog=os.environ.get("AIB_TOP_PROG") or "aib top")
-    ap.add_argument("--seconds", type=float, default=5.0)
-    ap.add_argument("--top", type=int, default=8)
-    ap.add_argument("--json", action="store_true")
-    ap.add_argument("--no-trace", action="store_true", help="不用核心追蹤")
+    ap = argparse.ArgumentParser(prog=os.environ.get("AIB_TOP_PROG") or "aib top", description=_ui("aib.top.help.desc"))
+    ap.add_argument("--seconds", type=float, default=5.0, help=_ui("aib.top.help.seconds"))
+    ap.add_argument("--top", type=int, default=8, help=_ui("aib.top.help.top"))
+    ap.add_argument("--json", action="store_true", help=_ui("aib.top.help.json"))
+    ap.add_argument("--no-trace", action="store_true", help=_ui("aib.top.help.no_trace"))
     args = ap.parse_args(argv)
     if not 0.2 <= args.seconds <= 120:
-        print("aib top: --seconds 要在 0.2 到 120 之間", file=sys.stderr)
+        print(_ui("aib.top.bad_seconds"), file=sys.stderr)
         return 2
     res = measure(args.seconds, max(1, args.top), use_trace=not args.no_trace)
     print(json.dumps(res, ensure_ascii=False) if args.json else render(res))

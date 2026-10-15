@@ -37,6 +37,15 @@ MIN_PYTHON = (3, 9)
 OK, FAIL, MANUAL = "ok", "fail", "manual"
 
 
+def _T(key, params=None):
+    """使用者看得到的字一律走 i18n(aib/i18n/<語系>.json);語系照 aib lang / EZ2_AIB_LOCALE。"""
+    cockpit = str(Path(__file__).resolve().parents[1] / "cockpit")
+    if cockpit not in sys.path:
+        sys.path.insert(0, cockpit)
+    import i18n_lib  # noqa: E402
+    return i18n_lib.t(key, params, locale=i18n_lib.resolve_locale())
+
+
 def _result(check_id, status, detail, remedy=""):
     return {"id": check_id, "status": status, "detail": detail, "remedy": remedy}
 
@@ -661,15 +670,17 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog="aib-doctor", description="ED.3 逐項體檢,每項回機器可判結果")
+        prog="aib doctor", description=_T("aib.doctor.help.description"))
     parser.add_argument("--state-root",
                         default=os.environ.get("EZ2_AIB_STATE_ROOT",
-                                               os.path.expanduser(DEFAULT_STATE_ROOT)))
+                                               os.path.expanduser(DEFAULT_STATE_ROOT)),
+                        help=_T("aib.doctor.help.state_root"))
     parser.add_argument("--repo-root",
-                        default=str(Path(__file__).resolve().parents[2]))
+                        default=str(Path(__file__).resolve().parents[2]),
+                        help=_T("aib.doctor.help.repo_root"))
     parser.add_argument("--provider", action="append", default=None,
-                        help="要檢查的 provider CLI,可重複;預設=登記簿裡 status=supported 的四個")
-    parser.add_argument("--json", action="store_true", help="輸出 JSON 供機器讀")
+                        help=_T("aib.doctor.help.provider"))
+    parser.add_argument("--json", action="store_true", help=_T("aib.doctor.help.json"))
     args = parser.parse_args(argv)
 
     providers = args.provider if args.provider is not None else [
@@ -689,14 +700,14 @@ def main(argv=None):
                          ensure_ascii=False, indent=2))
     else:
         for c in checks:
-            mark = {OK: "OK  ", FAIL: "FAIL", MANUAL: "你做"}[c["status"]]
+            mark = {OK: "OK  ", FAIL: "FAIL", MANUAL: _T("aib.doctor.mark_manual")}[c["status"]]
             line = "%s %-24s %s" % (mark, c["id"], c["detail"])
             if c["status"] != OK and c["remedy"]:
                 line += "\n         -> %s" % c["remedy"]
             print(line)
-        print("\nok=%d fail=%d 需你自己做=%d" % (counts[OK], counts[FAIL], counts[MANUAL]))
+        print("\n" + _T("aib.doctor.summary", {"ok": counts[OK], "fail": counts[FAIL], "manual": counts[MANUAL]}))
         if counts[MANUAL]:
-            print("★『需你自己做』不算通過:機器沒辦法確認的事,doctor 不會假裝它綠了。")
+            print(_T("aib.doctor.manual_note"))
 
     return 0 if (counts[FAIL] == 0 and counts[MANUAL] == 0) else 1
 
