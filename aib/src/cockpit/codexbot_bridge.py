@@ -270,8 +270,10 @@ def _persona_mark_sent(base, thread_id, session_uuid, ux, what="codexbot"):
 DELIVERY_UNCERTAIN = "delivery uncertain"     # DesktopRPC.call 逾時那一句;與下面 raise 的字面同一個
 
 
-def _codexbot_distill(session_id):
-    """CodexBot 一輪完成 ⇒ 每 20 輪回一段「請替這一席整理記憶」(桌面對話量不到用量 %;the maintainer 10-13 照 A)。錯 ⇒ 空字串。"""
+def _codexbot_distill(session_id, gauge_sid=None):
+    """CodexBot 一輪完成 ⇒ 跑 CTX 用量表(auto_distill_hook.bot_turn)。10-15:gauge_sid = 桌面對話自己的 sessionId,
+    先叫 codex_ctx_probe 讀它的 rollout 刷一次用量 ⇒ 量得到就照表(精煉格 + 80 提醒 / 85 要求交接 / 95 紅線);
+    量不到(桌面 rollout 不在 ~/.codex/sessions、node 探針不在)⇒ 照舊每 20 輪精煉一次。錯 ⇒ 空字串。"""
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         ident = os.path.join(here, "..", "identity")
@@ -281,7 +283,13 @@ def _codexbot_distill(session_id):
         from seat_address import uuid_tail5
         import grokbot_mailbox as gm                     # 開席器洗掉 EZ2_AIB_INSTANCE ⇒ 用登記簿反查本席艙位碼
         cabin = (os.environ.get("AIB_BRIDGE_CABIN") or "").strip() or gm.own_cabin(session_id)
-        return adh.bot_turn(uuid_tail5(session_id) or "", cabin)
+        if gauge_sid:
+            try:
+                import codex_ctx_probe
+                codex_ctx_probe.refresh(gauge_sid)
+            except Exception:  # noqa: BLE001
+                pass
+        return adh.bot_turn(uuid_tail5(session_id) or "", cabin, gauge_sid=gauge_sid)
     except Exception:  # noqa: BLE001
         return ""
 
@@ -2219,7 +2227,7 @@ def main(argv=None):
                     persona_sent = _persona_mark_sent(base, args.thread_id, args.session_id or "", ux, pack_what)
                 if distill_attached:
                     _distill_pending = ""
-                _distill_pending = _codexbot_distill(args.session_id or "") or _distill_pending   # 佇列模式:排進去就算一輪
+                _distill_pending = _codexbot_distill(args.session_id or "", str(thread.get("sessionId") or "") or None) or _distill_pending   # 佇列模式:排進去就算一輪
                 if supervisor.takeover_secs > 0:
                     print("codexbot: " + _ui("aib.codexbot.queued_takeover", id=qid, seconds=int(supervisor.takeover_secs)), flush=True)
                 else:
@@ -2303,7 +2311,7 @@ def main(argv=None):
                      last_turn_completed_ms=progress["completed_ms"])
                 if turn_status == "completed":
                     health_ok()
-                    _distill_pending = _codexbot_distill(args.session_id or "") or _distill_pending
+                    _distill_pending = _codexbot_distill(args.session_id or "", str(thread.get("sessionId") or "") or None) or _distill_pending
                 elif turn_status == "failed":
                     health_bad(BridgeError(str((progress.get("turn_error") or {}).get("message") or progress.get("turn_error") or "turn failed")))
                 ux.cancel()

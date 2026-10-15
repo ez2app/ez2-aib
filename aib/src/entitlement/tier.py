@@ -6,7 +6,7 @@ for_task: §108.320
 主軸：產品有可用的付費資格底（free／單家／全開），付費功能有處可查。
 與 EZ2_LICENSE／license_plan（basic|advanced）並列，不擴充不合併 enum。
 查詢永不回傳憑證原文；查不到／壞檔／無法驗證 → free（回 reason）。
-「只 claude」語意由呼叫端用 tier=free 判斷，本層不寫死 provider 名。
+10-15 起所有 AI 都免費(the maintainer 裁);tier 不再決定能用哪幾家 AI,只給加購外掛等付費功能查。
 
 三缺口草稿預設（標 TODO，未裁）：
 1. 離線寬限：先 72h、時鐘系統 UTC，候 the maintainer

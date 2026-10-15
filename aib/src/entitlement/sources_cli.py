@@ -12,7 +12,7 @@ from typing import List
 
 from .sources import (
     MSG_BAD_ACTION,
-    MSG_PAID_REQUIRED,
+    _t,
     format_status,
     parse_source_argv,
     set_source,
@@ -38,7 +38,7 @@ def cmd_status(_rest: List[str]) -> int:
 
 def cmd_source(rest: List[str]) -> int:
     if len(rest) < 2:
-        sys.stderr.write(MSG_BAD_ACTION + "\n")
+        sys.stderr.write(_t("aib.persona_sources.usage", MSG_BAD_ACTION) + "\n")
         return 2
     provider = rest[0]
     action = rest[1]
@@ -47,15 +47,11 @@ def cmd_source(rest: List[str]) -> int:
     elif action in _OFF:
         enabled = False
     else:
-        sys.stderr.write(MSG_BAD_ACTION + "\n")
+        sys.stderr.write(_t("aib.persona_sources.usage", MSG_BAD_ACTION) + "\n")
         return 2
     ok, msg, rc = set_source(provider, enabled)
     stream = sys.stdout if ok else sys.stderr
     stream.write(msg + "\n")
-    # 拒開時附設計稿長句，方便審核對照（短句已在 msg）
-    if not ok and msg == MSG_PAID_REQUIRED:
-        # msg 已是「付費版可開」；不再重複印長句到 stderr 造成兩行混淆
-        pass
     return rc
 
 
