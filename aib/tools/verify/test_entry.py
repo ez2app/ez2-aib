@@ -1560,6 +1560,8 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                     "kept": 0, "rc": 1 if reds else (4 if unv else 0),
                     "line1": T("line1_fallback", {"stage": gate.get("stage", "?"), "reason": gate.get("reason", "")})}
         idx = reuse_index.build_index([], repo=str(repo))
+        pool = runner._pool_file(repo)
+        base = baselines(pool, tests)      # 先讀耗時(容得下壞行),再修池
         idx = _heal_own_pool(repo, idx, live)
         env_fp_now = _resume_env_fp(repo, env) if journal is not None else None
         if journal is not None and resumed_ok:
@@ -1579,8 +1581,6 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                                         "why": ", ".join("%s×%d" % kv for kv in sorted(dropped.items()))})
         if live is not None and journal is not None and not problem:
             live("resume_on", {"name": resume, "n": len([t for t in tests if t in resumed_ok])})
-        pool = runner._pool_file(repo)
-        base = baselines(pool, tests)
         offset = _pool_size(pool)
         started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         ran_names = []
