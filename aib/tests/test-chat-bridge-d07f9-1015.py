@@ -212,10 +212,11 @@ class Window(Base):
         self.sock = "aihub-chattest%d" % os.getpid()
         subprocess.run(["tmux", "-L", self.sock, "new-session", "-d", "-s", "aihub", "-n", "seat", "sleep 300"],
                        check=True, env=self.b.env())
-        self.addCleanup(lambda: subprocess.run(["tmux", "-L", self.sock, "kill-server"], capture_output=True))
+        self.addCleanup(lambda: subprocess.run(["tmux", "-L", self.sock, "kill-server"], capture_output=True, env=self.b.env()))
 
     def tx(self, *args):
-        return subprocess.run(["tmux", "-L", self.sock] + list(args), capture_output=True, text=True).stdout.strip()
+        # 跟建 session、跑 ensure-window 用同一份環境:aib test 底下 TMUX_TMPDIR 不同,混用會連到另一個 tmux(10-16 全套紅一次)
+        return subprocess.run(["tmux", "-L", self.sock] + list(args), capture_output=True, text=True, env=self.b.env()).stdout.strip()
 
     def chat_windows(self):
         rows = self.tx("list-windows", "-t", "aihub", "-F", "#{window_id} #{@aib_role} #{pane_dead}").splitlines()
