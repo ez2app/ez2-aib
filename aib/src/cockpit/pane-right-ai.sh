@@ -1686,7 +1686,10 @@ rows.sort(key=lambda r: (r[0], r[1]))
 #   python3 unicodedata 實測,並由 test_icon_grid_width_machine_criterion 看守。
 ROLE_ICONS = {'pm': '\U0001F454', 'dev': '\U0001F9DE', 'design': '\U0001F3A8',
               'qa': '\U0001F50D', 'monitor': '\U0001F4E1',
-              'advisor': '\U0001F393'}
+              'advisor': '\U0001F393',
+              # the maintainer 10-15:boards(看板/席位面板)📋、bot(Bot 接線)🔌 —— bot 角色不用 🤖,
+              #   🤖 留給橋接 bot 引擎(AIBOT_MARK),免得「角色叫 bot 的 Opus 席」又被看成 bot。
+              'boards': '\U0001F4CB', 'bot': '\U0001F50C'}
 UNLISTED_ROLE_ICON = '\U0001F464'  # 👤 未列角色 fallback(不得用 ❓)
 
 # aibot 第三種段位圖示(the maintainer 2026-09-18 裁):sand/grokbot（Cursor）與 codexbot（Desktop） 橋接席戴 🤖,

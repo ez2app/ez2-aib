@@ -553,6 +553,8 @@
   "aib.right.expand_all": "全部展開",
   "aib.right.fold_summary": "{n} 席・{m} 做中・{red} 紅",
   "aib.role.advisor": "專家(顧問)",
+  "aib.role.boards": "看板",
+  "aib.role.bot": "Bot 接線",
   "aib.role.design": "設計師",
   "aib.role.dev": "工程師",
   "aib.role.monitor": "監察",

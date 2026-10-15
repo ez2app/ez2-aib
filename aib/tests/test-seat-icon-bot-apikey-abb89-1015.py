@@ -57,7 +57,19 @@ class SeatIcon(unittest.TestCase):
             self.assertEqual(self.mark("dev", prov), "\U0001F916", prov)
 
     def test_role_named_bot_on_claude_is_not_a_bot(self):
-        self.assertEqual(self.mark("bot", "claude"), "\U0001F464", "角色叫 bot 的 Opus 席照角色表(未列 ⇒ 👤)")
+        self.assertEqual(self.mark("bot", "claude"), "\U0001F50C", "角色叫 bot 的 Opus 席照角色表 🔌,不戴 🤖")
+        self.assertEqual(self.mark("boards", "claude"), "\U0001F4CB")
+
+    def test_every_role_icon_is_one_wide_codepoint_with_four_language_names(self):
+        import unicodedata
+        for role, icon in self.ns["ROLE_ICONS"].items():
+            self.assertEqual(len(icon), 1, "%s:圖示要單一碼位(右欄對齊)" % role)
+            self.assertEqual(unicodedata.east_asian_width(icon), "W", role)
+        self.assertNotIn("\U0001F916", self.ns["ROLE_ICONS"].values(), "🤖 只給橋接 bot 引擎")
+        for lang in ("en", "ja", "ko", "zh-TW"):
+            d = json.loads((ROOT / "i18n" / ("%s.json" % lang)).read_text(encoding="utf-8"))
+            for role in self.ns["ROLE_ICONS"]:
+                self.assertIn("aib.role.%s" % role, d, "%s 缺角色名 %s" % (lang, role))
 
     def test_api_key_engine_wears_key(self):
         for prov in sorted(_api_key_ids()):
@@ -68,7 +80,8 @@ class SeatIcon(unittest.TestCase):
         self.assertEqual(self.mark("dev", "deepseek", u=True), "❓", "未編制仍最優先")
         self.assertEqual(self.mark("dev", "deepseek", u=True, ip=True), "\U0001F511", "開席中照引擎")
         self.assertEqual(self.mark("dev"), "\U0001F9DE")
-        self.assertEqual(self.mark("boards"), "\U0001F464", "沒登記的角色仍是 👤")
+        self.assertEqual(self.mark("boards2"), "\U0001F4CB", "同家族(尾端數字)一樣")
+        self.assertEqual(self.mark("zzz"), "\U0001F464", "沒登記的角色仍是 👤")
 
     def test_api_key_sets_match_providers_json(self):
         ids = _api_key_ids()
