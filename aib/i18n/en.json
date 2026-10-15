@@ -2775,5 +2775,20 @@
   "aib.captains_ctl.unique_schema": "cannot confirm there is only one assigned captain: {file} has the wrong schema",
   "aib.captains_ctl.captain_exists": "a captain is already assigned: window {window}, seat code={code}; run --unassign on that seat first, then assign the new one",
   "aib.captains_ctl.unmeasured": "unknown",
-  "aib.captains_ctl.status_label": "Captain:"
+  "aib.captains_ctl.status_label": "Captain:",
+  "aib.vault_convert.desc": "Convert an Obsidian second brain to the uid layout: folders=folderId, notes=<uid>.md, titles and i18n labels in .ez2/display/labels.json. Subcommands: plan → apply → verify → undo → reindex.",
+  "aib.vault_convert.confirm_text": "I have backed up and agree to convert to the uid layout",
+  "aib.vault_convert.warn_zone_missing": "legacy zone not found: {zone}",
+  "aib.vault_convert.warn_dst_exists": "destination already exists, skipped: {dst}",
+  "aib.vault_convert.warn_library_skip": "role-library subtree is not imported by this tool, skipped: {dst}",
+  "aib.vault_convert.warn_uid_collision": "uid {uid} collides across {count} notes: keeping {keep}, the rest get new uids (#ez2/uid-collision)",
+  "aib.vault_convert.blocker_same_new_rel": "same path after rename",
+  "aib.vault_convert.err_merge_differs": "same name but different content while merging: {dst}",
+  "aib.vault_convert.err_no_folder_index": "no folder-id-index; run plan/apply first",
+  "aib.vault_convert.err_confirm_mismatch": "confirmation text mismatch; nothing written. Paste exactly: {text}",
+  "aib.vault_convert.err_blockers": "plan has {count} blocker(s); resolve them (or move them out of scope) before apply.",
+  "aib.vault_convert.err_backup_inside": "backup directory must be outside the vault",
+  "aib.vault_convert.err_dst_exists_differs": "target file exists with different content: {name}",
+  "aib.vault_convert.err_dir_missing": "folder does not exist",
+  "aib.vault_convert.undo_note": "identity added to frontmatter (uid/aliases/legacy_paths) is kept; rebuild indexes with plan+apply or restore from {backup}"
 }

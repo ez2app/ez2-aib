@@ -2775,5 +2775,20 @@
   "aib.captains_ctl.unique_schema": "任命された艦長が 1 人だけか確認できません:{file} のスキーマが違います",
   "aib.captains_ctl.captain_exists": "すでに艦長が任命されています:ウィンドウ {window}、席コード={code};先にその席を --unassign してから新しい席を任命してください",
   "aib.captains_ctl.unmeasured": "不明",
-  "aib.captains_ctl.status_label": "艦長:"
+  "aib.captains_ctl.status_label": "艦長:",
+  "aib.vault_convert.desc": "Obsidian の第二の脳を uid レイアウトへ変換:フォルダ=folderId、ノート=<uid>.md、タイトルと多言語表示名は .ez2/display/labels.json。サブコマンド plan → apply → verify → undo → reindex。",
+  "aib.vault_convert.confirm_text": "バックアップ済みで、uid レイアウトへの変換に同意します",
+  "aib.vault_convert.warn_zone_missing": "legacy zone が存在しません:{zone}",
+  "aib.vault_convert.warn_dst_exists": "移動先が既に存在するためスキップ:{dst}",
+  "aib.vault_convert.warn_library_skip": "ロールライブラリ配下は本ツールで取り込まないためスキップ:{dst}",
+  "aib.vault_convert.warn_uid_collision": "uid {uid} が {count} 件で衝突:{keep} を残し、他は新 uid を発番(#ez2/uid-collision)",
+  "aib.vault_convert.blocker_same_new_rel": "改名後にパスが重複",
+  "aib.vault_convert.err_merge_differs": "統合時に同名だが内容が異なる:{dst}",
+  "aib.vault_convert.err_no_folder_index": "folder-id-index がありません。先に plan/apply を実行してください",
+  "aib.vault_convert.err_confirm_mismatch": "確認文が一致しないため何も書きません。そのまま貼り付けてください:{text}",
+  "aib.vault_convert.err_blockers": "plan に blocker が {count} 件あります。解消(または対象外に)してから apply してください。",
+  "aib.vault_convert.err_backup_inside": "バックアップ先は vault の外に置いてください",
+  "aib.vault_convert.err_dst_exists_differs": "移動先ファイルが既に存在し内容が異なります:{name}",
+  "aib.vault_convert.err_dir_missing": "フォルダが存在しません",
+  "aib.vault_convert.undo_note": "frontmatter に補った身分(uid/aliases/legacy_paths)は残します。索引は plan+apply を再実行するか {backup} から復元してください"
 }
