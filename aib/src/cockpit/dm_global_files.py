@@ -8,6 +8,7 @@
 格式規則因此只有這一份。
 
     outbox/<msgid>.json      核心 → 外掛  要寄的信(op=send)或 --dry-run 的解析請求(op=resolve)
+    sending/<msgid>.json     外掛領件    外掛用 claim() 從 outbox 原子搬過來才開始寄(見下面「撤回」)
     receipts/<msgid>.jsonl   外掛 → 核心  寄件端回條,逐行附加
     inbox/<msgid>.json       外掛 → 核心  已解包、已驗證、已分類的來信;核心的匯入器入佇列後刪檔
     delivery/<msgid>.jsonl   核心 → 外掛  佇列狀態變化;外掛照它送回條給對方
@@ -19,10 +20,17 @@
   - ★ 來信的身分由**核心**決定,不收外掛給的:inbox 帶 sender_kind 欄 ⇒ 整筆拒收(外掛寫 human 也進不去);
     未驗證的一律當陌生(待審、優先級降一般)。對照開發文件第 8.1 節第 4–6 步、第 17.2 節。
   - 私鑰不寫進任何一個資料夾;這支也不碰金鑰。
+
+寄件端(dm-ctl 只叫一次 `dm_global_files.py send-and-wait`,第 14 節:不在 bash 迴圈裡反覆起 Python):
+  - 轉接程式心跳檔 heartbeat.json 超過 HEARTBEAT_MAX_AGE 秒沒更新 ⇒ rc 2「全球對談沒開」,**一個字都不寫**。
+  - 寫待寄檔 → 同一個行程裡等回條 → 照開發文件第 7.1 節的表回 rc。
+  - ★ 撤回:逾時還沒任何回條時,刪 outbox 那份。刪得掉 = 外掛還沒領(claim 是原子 rename)⇒ 保證沒送出,rc 2;
+    刪不掉 = 外掛已領走、可能已寄 ⇒ rc 4(勿重送)。「沒送出」只在證得出時才說。
 """
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -36,9 +44,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from atomic_json import AtomicWriteError, MAX_RECORD_BYTES, write_json  # noqa: E402
 
 VERSION = 1
-BOXES = ("outbox", "receipts", "inbox", "delivery")
+BOXES = ("outbox", "sending", "receipts", "inbox", "delivery")
 DIR_MODE = 0o700
 KEEP_DAYS = 7
+HEARTBEAT_MAX_AGE = 30     # 秒;轉接程式每 10 秒寫一次
+WAIT_DEFAULT = 20          # 秒;第 7.1 節 AIB_DM_GLOBAL_WAIT
+REPLY_CODE_LEN = 5
 CONTENT_MAX = 8000          # 第 6.3 節
 NAME_MAX = 32               # 第 5.8 節
 
@@ -371,3 +382,172 @@ def sweep(root, now=None, keep_days=KEEP_DAYS):
             except OSError:
                 pass
     return n
+
+
+# ── 轉接程式心跳、領件、撤回 ──
+
+def write_heartbeat(root, now=None, pid=None):
+    """轉接程式定時呼叫。"""
+    rec = {"v": VERSION, "at": int(time.time() if now is None else now), "pid": os.getpid() if pid is None else pid}
+    write_json(str(Path(root) / "heartbeat.json"), rec)
+
+
+def bridge_alive(root, now=None, max_age=HEARTBEAT_MAX_AGE):
+    """心跳檔在、版本對、而且不舊 ⇒ True。讀不到、壞掉、太舊、時間在未來超過 max_age(時鐘亂了)⇒ False。"""
+    try:
+        rec = json.loads((Path(root) / "heartbeat.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(rec, dict) or rec.get("v") != VERSION or not _is_int(rec.get("at")):
+        return False
+    now = time.time() if now is None else now
+    return abs(now - rec["at"]) <= max_age
+
+
+def claim(root, msgid):
+    """外掛要寄之前呼叫:outbox → sending 原子搬。搬到了回 sending 的路徑;已被撤回或別人領走回 None。"""
+    src = _path(root, "outbox", msgid, ".json")
+    dst = _path(root, "sending", msgid, ".json")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.rename(str(src), str(dst))
+    except FileNotFoundError:
+        return None
+    return dst
+
+
+def withdraw(root, msgid):
+    """寄件端逾時時呼叫:outbox 那份還在就刪掉,回 True(保證外掛沒領、沒寄);已被領走回 False。"""
+    try:
+        _path(root, "outbox", msgid, ".json").unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+# ── 回信短碼(第 9 節)──
+
+_CODE_ALPHA = "abcdefghjkmnpqrstuvwxyz23456789"   # 去掉容易看錯的 i l o 0 1
+
+
+def reply_code(msgid, taken=()):
+    """msgid ⇒ 5 碼短碼;跟 taken 撞了就換下一段雜湊。同一個 msgid、同一個 taken 永遠得到同一個碼。"""
+    if not isinstance(msgid, str) or not MSGID_RE.match(msgid):
+        raise ContractError("msgid 要是 32 碼小寫 hex")
+    taken = set(taken)
+    n = 0
+    while True:
+        h = int(hashlib.sha256(("%s:%d" % (msgid, n)).encode("ascii")).hexdigest(), 16)
+        code = ""
+        for _ in range(REPLY_CODE_LEN):
+            h, r = divmod(h, len(_CODE_ALPHA))
+            code += _CODE_ALPHA[r]
+        if code not in taken:
+            return code
+        n += 1
+
+
+# ── 寄送與等待(第 7.1 節的表)──
+
+def outcome(receipts, op="send", verify=False):
+    """回條 ⇒ (rc, stage, pos, detail) 或 None(還要再等)。
+
+    send:delivered 0;queued 0(--verify 時不算,繼續等);held 3;refused / expired / failed 2。
+    resolve(--dry-run):resolved 0;refused / failed 2。
+    """
+    for r in receipts:
+        st = r["stage"]
+        if op == "resolve":
+            if st == "resolved":
+                return 0, "resolved", None, r.get("detail", "")
+            if st in ("refused", "failed"):
+                return 2, st, None, r.get("detail", "")
+            continue
+        if st == "delivered":
+            return 0, "delivered", None, r.get("detail", "")
+        if st == "queued" and not verify:
+            return 0, "queued", r.get("pos"), r.get("detail", "")
+        if st == "held":
+            return 3, "held", None, r.get("detail", "")
+        if st in ("refused", "expired", "failed"):
+            return 2, st, None, r.get("detail", "")
+    return None
+
+
+def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=time.time, sleep=time.sleep):
+    """寫待寄檔並等回條。回 {rc, stage, pos, detail, msgid}。rc 2 的情況保證外掛沒有寄出這一則。"""
+    msgid = rec.get("msgid") if isinstance(rec, dict) else None
+    try:
+        check_outbox(rec)
+    except ContractError as e:
+        return {"rc": 2, "stage": "abort", "pos": None, "detail": str(e), "msgid": msgid}
+    if not bridge_alive(root, now=clock()):
+        return {"rc": 2, "stage": "bridge-off", "pos": None, "detail": "全球對談沒開(轉接程式沒在跑)", "msgid": msgid}
+    write_outbox(root, rec)
+    deadline = clock() + max(0, wait)
+    op = rec["op"]
+    while True:
+        got = read_receipts(root, msgid)
+        res = outcome(got, op=op, verify=verify)
+        if res is not None:
+            rc, stage, pos, detail = res
+            return {"rc": rc, "stage": stage, "pos": pos, "detail": detail, "msgid": msgid}
+        if clock() >= deadline:
+            break
+        sleep(poll)
+    if withdraw(root, msgid):
+        return {"rc": 2, "stage": "timeout-withdrawn", "pos": None,
+                "detail": "%d 秒內轉接程式沒領件,已撤回,一個字都沒送" % wait, "msgid": msgid}
+    relayed = any(r["stage"] == "relayed" for r in got)
+    return {"rc": 4, "stage": "relayed" if relayed else "claimed", "pos": None,
+            "detail": "已交給轉接程式,還沒收到對方回條;勿重送", "msgid": msgid}
+
+
+def _cli(argv):
+    import argparse
+    ap = argparse.ArgumentParser(prog="dm_global_files.py")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sw = sub.add_parser("send-and-wait", help="正文從 stdin 讀;印一行 key=value,rc 照第 7.1 節")
+    sw.add_argument("--root", default=None)
+    sw.add_argument("--op", choices=("send", "resolve"), default="send")
+    sw.add_argument("--to", required=True)
+    sw.add_argument("--from-cabin", required=True)
+    sw.add_argument("--from-seat", required=True)
+    sw.add_argument("--attested", choices=("0", "1"), required=True)
+    sw.add_argument("--persona-uid")
+    for k in ("priority", "thread", "kind", "lang", "reply-to"):
+        sw.add_argument("--" + k)
+    sw.add_argument("--expires", type=int)
+    sw.add_argument("--wait", type=int, default=None)
+    sw.add_argument("--verify", action="store_true")
+    rc_ = sub.add_parser("reply-code")
+    rc_.add_argument("msgid")
+    a = ap.parse_args(argv)
+    if a.cmd == "reply-code":
+        print(reply_code(a.msgid))
+        return 0
+    root = Path(a.root) if a.root else default_root()
+    ensure_dirs(root)
+    rec = {"v": VERSION, "msgid": new_msgid(), "created_at": int(time.time()), "op": a.op,
+           "from": {"cabin": a.from_cabin, "seat": a.from_seat, "attested": a.attested == "1"}, "to": a.to}
+    if a.persona_uid:
+        rec["from"]["persona_uid"] = a.persona_uid
+    if a.op == "send":
+        rec["content"] = sys.stdin.read()
+    for k in ("priority", "thread", "kind", "lang"):
+        if getattr(a, k):
+            rec[k] = getattr(a, k)
+    if a.reply_to:
+        rec["reply_to"] = a.reply_to
+    if a.expires is not None:
+        rec["expires"] = a.expires
+    wait = a.wait if a.wait is not None else int(os.environ.get("AIB_DM_GLOBAL_WAIT") or WAIT_DEFAULT)
+    res = send_and_wait(root, rec, wait=wait, verify=a.verify)
+    detail = (res["detail"] or "").replace("\n", " ")
+    print("stage=%s rc=%d msgid=%s pos=%s detail=%s" % (res["stage"], res["rc"], res["msgid"] or "-",
+                                                        res["pos"] or "-", detail))
+    return res["rc"]
+
+
+if __name__ == "__main__":
+    sys.exit(_cli(sys.argv[1:]))
