@@ -38,6 +38,8 @@
 # stdout 最後一行(第 70 項 P3,2026-09-14):
 #   RESULT stage=<stage> id=<佇列 id> relay=<留痕檔絕對路徑> thread=<thread>
 #   前四鍵恰此、鍵序固定、空值 `-`、零 ANSI;被擋時其後多 ` reason=<block_kind>`(E4),重送輪再多 ` resend=1`;
+#   這一則接下來怎麼走(G7,10-15)再多 ` then=queued`(重送仍零進框 ⇒ 已排佇列,收件席空了會送,勿再重送)
+#   或 ` then=hold-human notify=on-idle|none`(轉人審;on-idle=收件席空閒時會收到提示、none=本艙沒開佇列不會提示);
 #   `--resolve-only` 與 `--probe-box` 不印(probe 的最後一行是 `box=…`)。多目標 = 每席一行 + 最後一行
 #   stage=batch。每一則(長短都算)都留痕:長訊在 pending(指標檔)、短訊在本艙
 #   state/relay/<日期>/;兩者都寫一列進 state/relay/index.jsonl;dry-run 檔名尾 `.dry`。
@@ -137,6 +139,9 @@ _RESULT_STAGE="-"; _RESULT_ID="-"; _RESULT_RELAY="-"; _RESULT_THREAD="-"
 # E4(10-15 @977e3 只讀查):被擋時最後一行要看得到原因(腳本與 AI 多半只讀 tail -1)。
 #   有值才印、印在 thread 之後:前四鍵與鍵序不動,消費者 split 前四段照舊。
 _RESULT_REASON=""
+# G7:這一則接下來怎麼走(queued / hold-human)與人審提示會不會到(on-idle / none);有值才印、印在 resend 之後
+_RESULT_THEN=""
+_RESULT_NOTIFY=""
 _RESULT_DONE=0
 _RECORD_ELIGIBLE=0
 # 直送之後把這一則記進佇列歷史(接口 §3 record;P3 第二包)。住在 EXIT trap 裡的理由與 RESULT 行同:
@@ -161,6 +166,8 @@ _record_delivery() {   # $1=rc
   local _rec_extra=()
   # ★ 第 159 項:重送那一輪(AIB_DM_RESEND=1)再回 2 ⇒ 轉待人處理(hold_human,rc=2,attempts=1);
   #   第一輪的 2 不記(它會被重送,記了就是同一則兩筆)。其餘 rc 的記法不變。
+  #   ★ 10-15 G7:重送輪的兩個「確定零進框」出口先走 _resend_park(排進佇列,不到這裡);
+  #     走到這裡的 rc 2 只剩「排不進佇列」(本艙沒開佇列 / upsert 失敗)與其他 rc 2 出口,照舊轉人審。
   case "$rc" in
     0) status=delivered ;;
     3|4) status=hold_human ;;
@@ -178,6 +185,18 @@ _record_delivery() {   # $1=rc
   qid="$("$PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("id") or "")' "$out" 2>/dev/null || true)"
   if [ -n "$qid" ]; then
     _RESULT_ID="$qid"
+    if [ "$status" = "hold_human" ]; then
+      # G7:轉人審要講清楚,而且「會不會提示收件席」要照實說 —— 提示走排空器那一拍(triage_tick),
+      #   而排空器只在本艙 admit 准(進階版 + 佇列開)時跑;沒開就不會有提示,不能說會。
+      _RESULT_THEN="hold-human"
+      if "$PY3" "$HERE/dm_queue.py" admit >/dev/null 2>&1; then
+        _RESULT_NOTIFY="on-idle"
+        echo "aib-dm-ctl: $(_dmt aib.dmctl.hold_notify_idle)"
+      else
+        _RESULT_NOTIFY="none"
+        echo "aib-dm-ctl: $(_dmt aib.dmctl.hold_notify_none)"
+      fi
+    fi
   else
     _RESULT_ID="FAILED"
     echo "aib-dm-ctl: $(_dmt aib.dmctl.record_fail status="$status")" >&2
@@ -214,6 +233,8 @@ _result_line() {
   local _rs=""
   [ -n "${_RESULT_REASON:-}" ] && _rs=" reason=$(_result_enc "$_RESULT_REASON")"
   [ "${AIB_DM_RESEND:-0}" = "1" ] && _rs="${_rs} resend=1"
+  [ -n "${_RESULT_THEN:-}" ] && _rs="${_rs} then=$(_result_enc "$_RESULT_THEN")"
+  [ -n "${_RESULT_NOTIFY:-}" ] && _rs="${_rs} notify=$(_result_enc "$_RESULT_NOTIFY")"
   printf 'RESULT stage=%s id=%s relay=%s thread=%s%s\n' \
     "$(_result_enc "$_st")" "$(_result_enc "$_RESULT_ID")" \
     "$(_result_enc "$_RESULT_RELAY")" "$(_result_enc "$_RESULT_THREAD")" "$_rs"
@@ -480,20 +501,21 @@ _probe_box() {
   exit "$_prc"
 }
 # ── --park-on-draft:重試上限後把這則寫進既有排序暫存 ────────────────────
-_park_on_draft() {
-  [ -n "${T_CODE:-}" ] || die "停放失敗:沒有目標碼" 2
-  [ -f "$HERE/dm_queue.py" ] || die "停放失敗:沒有 dm_queue.py" 2
-  local _q_kind=unknown _q_raw _q_take _q_id _q_uuid
+# 強制入列(--hold yes)那一段的單一份:_park_on_draft 與 G7 的 _resend_park 共用。
+#   $1=可選 attempts(入列時已試過幾次)。結果放 _QP_RAW / _QP_TAKE / _QP_ID;收下了回 0。
+_q_park_upsert() {
+  local _q_kind=unknown _q_uuid _att=()
+  [ -n "${1:-}" ] && _att=(--attempts "$1")
   _q_kind="$(_dm_queue_kind "${S_LABEL:-}")"
   _q_uuid="$("$PY3" -c 'import json,sys
 print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get("session_uuid") or "")' \
     "${RESOLVED:-{}}" 2>/dev/null || true)"
-  _q_raw="$(printf '%s' "$MSG" | "$PY3" "$HERE/dm_queue.py" upsert \
+  _QP_RAW="$(printf '%s' "$MSG" | "$PY3" "$HERE/dm_queue.py" upsert \
       --seat "$T_CODE" --sender-label "${S_LABEL:-}" --sender-kind "$_q_kind" \
       --session-uuid "${_q_uuid:-}" --wid "${T_WID:-}" --provider "${T_PROVIDER:-}" \
       --hub "$HUB" --priority "${AIB_DM_QUEUE_PRIORITY:-normal}" --hold yes \
-      ${_V2_ARGS[@]+"${_V2_ARGS[@]}"} 2>&1)" || true
-  _q_take="$("$PY3" -c '
+      ${_att[@]+"${_att[@]}"} ${_V2_ARGS[@]+"${_V2_ARGS[@]}"} 2>&1)" || true
+  _QP_TAKE="$("$PY3" -c '
 import json,sys
 raw=sys.argv[1]
 for ln in raw.splitlines():
@@ -507,8 +529,8 @@ for ln in raw.splitlines():
     if isinstance(o, dict) and o.get("take"):
         print(o.get("take") or "")
         break
-' "$_q_raw" 2>/dev/null || true)"
-  _q_id="$("$PY3" -c '
+' "$_QP_RAW" 2>/dev/null || true)"
+  _QP_ID="$("$PY3" -c '
 import json,sys
 raw=sys.argv[1]
 for ln in raw.splitlines():
@@ -523,16 +545,44 @@ for ln in raw.splitlines():
         rec=o.get("receipt") or {}
         print(rec.get("queue_id") or o.get("id") or "")
         break
-' "$_q_raw" 2>/dev/null || true)"
-  if [ "$_q_take" != "queue" ] || [ -z "$_q_id" ]; then
-    echo "aib-dm-ctl: $(_dmt aib.dmctl.queue_not_taken state="${_q_take:-none}" raw="$_q_raw")" >&2
+' "$_QP_RAW" 2>/dev/null || true)"
+  [ "$_QP_TAKE" = "queue" ] && [ -n "$_QP_ID" ]
+}
+_park_on_draft() {
+  [ -n "${T_CODE:-}" ] || die "停放失敗:沒有目標碼" 2
+  [ -f "$HERE/dm_queue.py" ] || die "停放失敗:沒有 dm_queue.py" 2
+  if ! _q_park_upsert; then
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.queue_not_taken state="${_QP_TAKE:-none}" raw="$_QP_RAW")" >&2
     die "重試後仍被擋,且排序暫存未收下" 2
   fi
-  echo "aib-dm-ctl: $(_dmt aib.dmctl.queued_id id="$_q_id")" >&2
-  printf '%s\n' "$_q_raw" | grep -v '^{' || true
+  echo "aib-dm-ctl: $(_dmt aib.dmctl.queued_id id="$_QP_ID")" >&2
+  printf '%s\n' "$_QP_RAW" | grep -v '^{' || true
   emit_json 0 sort-queued "已排入暫存,尚未送到對方輸入框"
   _RESULT_STAGE="sort-queued"
-  _RESULT_ID="$_q_id"
+  _RESULT_ID="$_QP_ID"
+  exit 0
+}
+# ── 10-15 G7:自動重送那一輪仍被擋(確定零進框)⇒ 排進那一席的佇列,不轉人審 ─────────────
+# 實案:收件席忙 ⇒ 第一輪 rc 2、重送一次仍 2 ⇒ 舊碼記 hold_human,排空器不領 hold、收件席沒有任何提示,
+#   @abb89 漏看 5 封。「一個字都沒進框」的信本來就該等對方閒下來再送 —— 那正是忙碌入列(sort-queued)那條路。
+# ★ 只在重送輪(AIB_DM_RESEND=1)的兩個「確定零進框」出口叫(blocked 兩幀相同 / browse-mode);
+#   rc 3/4(可能已進框,重貼會疊)不走這裡,照舊 hold_human。
+# ★ attempts=1 帶進佇列:排空器 _settle_delivery 接著加,滿 RESEND_MAX_ATTEMPTS 才轉人審(不從 0 重算)。
+# ★ 收據 rc 0 + stage=sort-queued(既有契約:已寫入排序暫存、尚未貼稿),不是 2:2 的意思是「可安全重送」,
+#   而這一則已經在佇列裡 —— 寄件人或 --retry-until / 多目標照 2 再送,就是兩份。
+# ★ 排不進(本艙沒開佇列 / upsert 失敗)⇒ 回來,呼叫端照原路印 rc 2 收據,EXIT trap 照舊記 hold_human。
+_resend_park() {   # $1=收據 stage(只進 detail)
+  [ "${AIB_DM_RESEND:-0}" = "1" ] || return 0
+  [ "${DRYRUN:-0}" != "1" ] || return 0
+  [ "${AIB_DM_SORT_DELIVER:-0}" != "1" ] || return 0
+  [ -n "${T_CODE:-}" ] && [ -f "$HERE/dm_queue.py" ] || return 0
+  _q_park_upsert 1 || return 0
+  emit_json 0 sort-queued "收件席忙,重送一次仍沒進框(原 stage=${1:--});已排入佇列 queue_id=$_QP_ID,收件席空了會送,**不必再重送**"
+  echo "aib-dm-ctl: $(_dmt aib.dmctl.resend_queued id="$_QP_ID")"
+  _RESULT_STAGE="sort-queued"
+  _RESULT_ID="$_QP_ID"
+  _RESULT_THEN="queued"
+  _RECORD_ELIGIBLE=0          # 這則已在佇列裡,不再 record(否則 rc 0 會被記成 delivered)
   exit 0
 }
 _missing_seat_hint() {
@@ -3143,6 +3193,7 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
     if [ "$_AE_BLOCK_KIND" = "browse-mode" ]; then
       _aib_emit_engine_log final
       _auto_resend browse-mode
+      _resend_park browse-mode
       emit_json 2 browse-mode "對方 TUI 在瀏覽模式(底列 ←:collapse / Enter:open),輸入行不在畫面上;**不是卡稿**,一個字都沒進目標;該席按 Esc 回輸入列後**可安全重送**(原 rc=$RC)"
       exit 2
     fi
@@ -3150,6 +3201,7 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
       if [ "$_AE_CAP2_RC" = "0" ] && [ "$_AE_AFTER" = "$_AE_AFTER2" ]; then
         _aib_emit_engine_log final
         _auto_resend blocked
+        _resend_park blocked
         emit_json 2 blocked "咽喉或引擎擋下(原 rc=$RC:1=血緣deny/3=R30或讀不到畫面/4=BIND或卡稿/2=用法或目標);回讀連續兩幀逐位元組相同且無殘留佔位符 ⇒ 目標端零新增,**可安全重送**"
         exit 2
       fi

@@ -1046,7 +1046,7 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
             env=None, now=None, origin=None,
             thread=None, kind=None, sender_seat=None, human_id=None, expires=None,
             sender_source=None, hub=None, sender_hub=None, sender_origin=None, no_relay=False, closes=None,
-            global_info=None):
+            global_info=None, attempts=None):
     item = _new_item(seat, msg, sender_label, sender_kind=sender_kind, session_uuid=session_uuid,
                      wid=wid, provider=provider, priority=priority, env=env, now=now, origin=origin,
                      thread=thread, kind=kind, sender_seat=sender_seat, human_id=human_id, expires=expires,
@@ -1061,6 +1061,10 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
         # review r13 M1:寄件端明說「整行貼、不落檔」(AIB_DM_RELAY_BYTES=0:給讀不到落檔的家的人格包/交接/開席單)
         #   ⇒ 排進佇列也記著;排空時 _dmctl_env 看到這個鍵才把門檻設 0,不然排空用預設 600 又換成指標
         item["no_relay"] = True
+    if attempts:
+        # 10-15 G7:dm-ctl 自動重送一次仍 rc 2(確定零進框)⇒ 排進來時就帶著「已試過幾次」,
+        #   排空器 _settle_delivery 從這裡接著加,滿 RESEND_MAX_ATTEMPTS 才轉人審(不從 0 重算)。
+        item["attempts"] = int(attempts)
     item_id = item["id"]
     d = seat_dir(seat, env)
     d.mkdir(parents=True, exist_ok=True)
@@ -1716,6 +1720,169 @@ def _triage_writeback(seat, plan, path, batch, rc, now, auto_read):
             "mode": (cur or {}).get("woke_mode"), "auto_read": auto_read}
 
 
+# ── 10-15 G7:人審(hold_human)的信要讓收件席知道 ───────────────────────────────────────────
+# 實案:收件席忙 ⇒ dm-ctl 自動重送一次仍 rc 2 ⇒ 記成 hold_human;排空器不領 hold、triage 只數未讀(不含 hold)
+#   ⇒ 收件席**完全不知道**有信沒送進來(@abb89 漏看 5 封,兩封含維護者裁示)。
+# 解:triage_tick 同一拍、同一把鎖、同一套閒置判定(_wake_gate + 判忙)與投遞器,只多一份小帳 hold_notice.json:
+#   · noted_ids = 已經提示過的人審 id(只留現在還在 hold 的;requeue 後又被 hold 會再提示);
+#   · 有「不在 noted_ids 裡」的人審信、而且席閒著 ⇒ 貼一句(四語 aib.dmqueue.hold_notice),同一批只一次;
+#   · pending = 投遞中那一句的 id(holdnote_<鍵>),dm-ctl 拿它驗排空器模式證據(sort_deliver_proof),寫回後失效;
+#   · 節流沿用 triage:每日上限 WAKE_DAILY_MAX(自己一份 wake_log,不吃 triage 的額度)、閒置超過 1 小時不叫、
+#     rc 2 下一拍重試(最多 WAKE_RC2_MAX 次)、投遞當下判忙 / 等不到鎖 ⇒ 原樣退回不算一次。
+# ★ 那一句**不進佇列**(同 triage 叫醒):進了就變成待審區的一封信。
+# ★ 同一拍 triage 已經要叫醒這一席 ⇒ 這一拍不提示(不在同一拍貼兩句),下一拍再看。
+HOLD_NOTICE_FILE = "hold_notice.json"
+HOLD_NOTICE_SCHEMA = "aib-dm-hold-notice/v1"
+HOLD_NOTICE_PREFIX = "holdnote_"
+HOLD_NOTICE_PENDING_STALE_S = 15 * 60     # 投遞中那一筆超過這麼久還沒寫回(行程死在半路)⇒ 當沒投過
+
+
+def hold_notice_path(seat, env=None):
+    return seat_dir(seat, env) / HOLD_NOTICE_FILE
+
+
+def _hn_load(path):
+    try:
+        rec = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"schema": HOLD_NOTICE_SCHEMA, "noted_ids": [], "pending": None, "wake_log": []}
+    if not isinstance(rec, dict) or rec.get("schema") != HOLD_NOTICE_SCHEMA:
+        return {"schema": HOLD_NOTICE_SCHEMA, "noted_ids": [], "pending": None, "wake_log": []}
+    return rec
+
+
+def _hn_write(path, rec):
+    try:
+        AJ.write_json(str(path), rec)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _hold_ids_now(seat, env, now):
+    """現在還在人審、沒過期的信(舊在前)。"""
+    rows = [i for i in _all_items(seat, env=env)
+            if i.get("status") == HOLD_STATUS and not i.get("expired") and not _expired(i, now)]
+    rows.sort(key=lambda i: (int(i.get("ts") or 0), i.get("id") or ""))
+    return rows
+
+
+def hold_notice_text(seat, n, new, env=None):
+    try:
+        import i18n_lib as _I18N
+        return _I18N.t("aib.dmqueue.hold_notice", {"n": n, "new": new, "seat": seat},
+                       locale=_I18N.resolve_locale(env=_env(env)))
+    except Exception:  # noqa: BLE001 —— 字典壞了也要讓人知道(字面備援,與 zh-TW 同義)
+        return "你有 %d 封信沒送進框(人審),看:aib dm-queue list --seat %s" % (n, seat)
+
+
+def _holdnote_seat(seat, env, now, hold_fn):
+    """一席的人審提示(在 drain.lock + 該席 triage 小鎖裡跑)。回結果列;沒事回 None;要投 ⇒ 帶 "_hplan"。"""
+    path = hold_notice_path(seat, env)
+    st = _hn_load(path)
+    held = _hold_ids_now(seat, env, now)
+    ids = [i["id"] for i in held]
+    noted = [i for i in (st.get("noted_ids") or []) if i in ids]
+    pend = st.get("pending")
+    if isinstance(pend, dict):
+        try:
+            stale = now - int(pend.get("at") or 0) > HOLD_NOTICE_PENDING_STALE_S
+        except (TypeError, ValueError):
+            stale = True
+        if not stale:
+            return {"seat": seat, "holdnote": False, "why": "pending"}
+        st["pending"] = None
+    new = [i for i in ids if i not in noted]
+    if noted != (st.get("noted_ids") or []) or pend is not None:
+        st["noted_ids"] = noted
+        if path.parent.is_dir():
+            _hn_write(path, st)
+    if not new:
+        return None
+    gate_ok, gate_why = _wake_gate(seat, st, env, now)
+    if not gate_ok:
+        return {"seat": seat, "holdnote": False, "why": gate_why}
+    probe = next((r for r in reversed(held) if r.get("wid")), held[-1])
+    res = hold_fn(seat, probe) if hold_fn is not None else drain_hold(seat, probe, env=env)
+    busy, why = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
+    if busy:
+        return {"seat": seat, "holdnote": False, "why": why or "busy"}
+    reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
+    text = _one_line_for_line_reader(hold_notice_text(seat, len(ids), len(new), env=env),
+                                     reg_prov or probe.get("provider"))
+    key = hashlib.sha1(("%s|%d" % (",".join(ids), now)).encode("utf-8")).hexdigest()[:16]
+    nid = HOLD_NOTICE_PREFIX + key
+    st = dict(st)
+    st["pending"] = {"id": nid, "ids": ids, "at": now}
+    st["wake_log"] = [int(t) for t in (st.get("wake_log") or [])
+                      if isinstance(t, (int, float)) and now - int(t) < 86400] + [now]
+    if not _hn_write(path, st):
+        return {"seat": seat, "holdnote": False, "why": "notice-write-failed"}   # 記不下來就不貼(否則每拍都貼)
+    wake = {"id": nid, "seat": seat, "msg": text, "sent_at": now, "ts": now, "no_relay": True}
+    return {"seat": seat, "holdnote": False, "why": "planned",
+            "_hplan": {"wake": wake, "ids": ids, "path": str(path), "at": now, "probe": probe}}
+
+
+def _holdnote_rollback(path, nid, now, count_log):
+    """一個字都沒送 ⇒ 拿掉 pending;count_log=False 時這一拍記進 wake_log 的那一筆也拿掉(不算每日額度)。"""
+    st = _hn_load(path)
+    if (st.get("pending") or {}).get("id") != nid:
+        return
+    st["pending"] = None
+    if not count_log:
+        log = list(st.get("wake_log") or [])
+        if now in log:
+            log.remove(now)
+        st["wake_log"] = log
+    _hn_write(path, st)
+
+
+def _holdnote_deliver(seat, plan, env, deliver_fn=None, hold_fn=None):
+    """鎖外投遞人審提示並寫回 hold_notice.json(形狀同 _triage_deliver)。"""
+    wake, now, path = plan["wake"], plan["at"], Path(plan["path"])
+    nid = wake["id"]
+    lk = _seat_deliver_lock(seat, env, wait_s=SEAT_DELIVER_WAIT_S)
+    rc, busy_why = None, None
+    if lk is None:
+        busy_why = "deliver-lock-timeout"
+    else:
+        try:
+            busy, why = _triage_busy_now(seat, plan, env, hold_fn)
+            if busy:
+                busy_why = "busy-at-deliver:%s" % (why or "busy")
+            else:
+                rc = int((deliver_fn or _deliver_via_dmctl)(wake) or 0)
+        finally:
+            _seat_deliver_unlock(lk)
+    tl = _seat_deliver_lock(seat, env, wait_s=None if busy_why else SEAT_TRIAGE_WAIT_S, name=SEAT_TRIAGE_LOCK)
+    if tl is None:
+        return {"seat": seat, "holdnote": False, "why": "triage-lock-unavailable", "rc": rc}
+    try:
+        if busy_why is not None:
+            _holdnote_rollback(path, nid, now, count_log=False)
+            return {"seat": seat, "holdnote": False, "why": busy_why}
+        st = _hn_load(path)
+        if (st.get("pending") or {}).get("id") != nid:
+            return {"seat": seat, "holdnote": rc != 2, "why": "pending-replaced", "rc": rc}
+        if rc == 2:
+            n = int(st.get("attempts") or 0) + 1
+            st["attempts"] = n
+            _hn_write(path, st)
+            if n < WAKE_RC2_MAX:
+                _holdnote_rollback(path, nid, now, count_log=True)   # 下一拍再試;wake_log 不退(同 triage r2 m1)
+                return {"seat": seat, "holdnote": False, "why": "rc2", "rc": rc}
+        st = _hn_load(path)
+        st["noted_ids"] = sorted(set(st.get("noted_ids") or []) | set(plan.get("ids") or []))
+        st["pending"] = None
+        st["noted_at"], st["noted_rc"] = now, rc
+        if rc in (0, 3, 4):
+            st["attempts"] = 0
+        _hn_write(path, st)
+        return {"seat": seat, "holdnote": rc != 2, "why": "rc2-max" if rc == 2 else "noted", "rc": rc}
+    finally:
+        _seat_deliver_unlock(tl)
+
+
 WAKE_DAILY_MAX = 12              # the maintainer 09-30 18:4x(預設照建議):每席一天最多叫醒 12 次,超過只在待審區顯示
 WAKE_IDLE_MAX_S = 3600          # 閒置超過 1 小時的席不叫(等它下次自己開口時由 hook 提醒)
 
@@ -1927,14 +2094,23 @@ def triage_tick(env=None, now=None, hold_fn=None, deliver_fn=None, force=False):
             if tl is None:
                 out.append({"seat": seat, "woke": False, "why": "triage-lock-timeout"})
                 continue
+            hres = None
             try:
                 res = _triage_seat(seat, env, now, hold_fn)
             except Exception as exc:  # noqa: BLE001 —— 一席壞掉不得擋其他席、更不得擋投遞
                 res = {"seat": seat, "woke": False, "why": "error:%s" % exc.__class__.__name__}
+            try:
+                # G7:同一拍 triage 已要叫醒這一席 ⇒ 不再貼第二句,下一拍再看
+                if not (res or {}).get("_plan"):
+                    hres = _holdnote_seat(seat, env, now, hold_fn)
+            except Exception as exc:  # noqa: BLE001
+                hres = {"seat": seat, "holdnote": False, "why": "error:%s" % exc.__class__.__name__}
             finally:
                 _seat_deliver_unlock(tl)
             if res is not None:
                 out.append(res)
+            if hres is not None:
+                out.append(hres)
     finally:
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
@@ -1944,10 +2120,14 @@ def triage_tick(env=None, now=None, hold_fn=None, deliver_fn=None, force=False):
     # 鎖已放掉才投(review r1 m2):每一席的叫醒最多等 dm-ctl 60 秒,不讓排空器陪著等
     for i, res in enumerate(out):
         plan = res.pop("_plan", None)
-        if plan is None:
+        hplan = res.pop("_hplan", None)
+        if plan is None and hplan is None:
             continue
         try:
-            out[i] = _triage_deliver(res["seat"], plan, env, deliver_fn, hold_fn)
+            if plan is not None:
+                out[i] = _triage_deliver(res["seat"], plan, env, deliver_fn, hold_fn)
+            else:
+                out[i] = _holdnote_deliver(res["seat"], hplan, env, deliver_fn, hold_fn)
         except Exception as exc:  # noqa: BLE001
             out[i] = {"seat": res["seat"], "woke": False, "why": "error:%s" % exc.__class__.__name__}
     return out
@@ -3670,8 +3850,8 @@ def intercept(seat, msg, sender_label, sender_kind="unknown",
               session_uuid="", wid="", provider="", hub="",
               priority="normal", hold=None, env=None, now=None,
               origin=None, thread=None, kind=None, sender_seat=None, human_id=None, expires=None,
-              sender_source=None, sender_hub=None, sender_origin=None, closes=None):
-    """admit 且忙碌 → 入列;否則交給既有貼稿。"""
+              sender_source=None, sender_hub=None, sender_origin=None, closes=None, attempts=None):
+    """admit 且忙碌 → 入列;否則交給既有貼稿。attempts:入列時已試過幾次(G7,dm-ctl 重送輪)。"""
     ok, reason = admit(env)
     if not ok:
         # 沒開佇列 ⇒ 直接貼。這也是「送出過」,一樣要留痕(只記入列的那一半,
@@ -3697,7 +3877,7 @@ def intercept(seat, msg, sender_label, sender_kind="unknown",
         priority=priority, env=env, now=now, origin=origin,
         thread=thread, kind=kind, sender_seat=sender_seat, human_id=human_id, expires=expires,
         sender_source=sender_source, hub=hub, sender_hub=sender_hub, sender_origin=sender_origin,
-        closes=closes,
+        closes=closes, attempts=attempts,
         no_relay=(str(_env(env).get("AIB_DM_RELAY_BYTES") or "") == "0"))
     return {
         "take": "queue",
@@ -3866,7 +4046,8 @@ def sort_deliver_proof(seat, item_id, env=None):
     冒用改寫、留痕、record 與忙碌檢查,原本**一個環境變數**就打得開。
     證據 = 投遞者手上**正在貼**的那一則:
       · 佇列信(q_ 開頭):那一則在 seat 的佇列裡、狀態是 claimed(排空器 claim_id / 真人「立刻送出」都先 claim);
-      · 歸納叫醒(triage_<批>):那一席 triage.json 記著「這一批叫過了」(woke_batch)而結果還沒寫回(woke_rc 是 None)。
+      · 歸納叫醒(triage_<批>):那一席 triage.json 記著「這一批叫過了」(woke_batch)而結果還沒寫回(woke_rc 是 None);
+      · 人審提示(holdnote_<鍵>,G7):那一席 hold_notice.json 的 pending 就是這一句。
     能力邊界同 dm-ctl「排隊投遞保留原寄件人」那段:本機行程刻意先入列再自己 claim 仍可通過;擋的是「設一個環境變數」。"""
     seat, item_id = str(seat or ""), str(item_id or "")
     if not SEAT_RE.fullmatch(seat):
@@ -3877,6 +4058,9 @@ def sort_deliver_proof(seat, item_id, env=None):
         rec = TR.load(triage_path(seat, env)) or {}
         return (str(rec.get("woke_batch") or "") == item_id[len("triage_"):]
                 and "woke_rc" in rec and rec.get("woke_rc") is None)
+    if item_id.startswith(HOLD_NOTICE_PREFIX) and len(item_id) > len(HOLD_NOTICE_PREFIX):
+        # G7 人審提示:那一席 hold_notice.json 記著這一句正在投(pending),寫回後就失效
+        return (_hn_load(hold_notice_path(seat, env)).get("pending") or {}).get("id") == item_id
     return False
 
 
@@ -3902,7 +4086,7 @@ def _dmctl_env(item, env=None):
         env2["AIB_DM_QUEUED_SEAT"] = item["seat"]
     if ITEM_RE.fullmatch(str(item.get("id") or "")):
         env2["AIB_DM_QUEUED_ITEM_ID"] = item["id"]
-    elif str(item.get("id") or "").startswith("triage_"):
+    elif str(item.get("id") or "").startswith(("triage_", HOLD_NOTICE_PREFIX)):
         # 叫醒那句不是佇列信(不帶 QUEUED_ITEM_ID ⇒ 抬頭不回佇列找原寄件人),但 dm-ctl 要拿它驗證據
         env2["AIB_DM_SORT_WAKE_ID"] = item["id"]
     if item.get("no_relay"):
@@ -4096,11 +4280,13 @@ def main(argv=None, env=None):
     _sender_args(i)
     i.add_argument("--hub", default="")
     i.add_argument("--hold", choices=("yes", "no"))
+    i.add_argument("--attempts", type=int, default=None)   # G7:dm-ctl 重送輪入列時已試過幾次
 
     up = sub.add_parser("upsert")      # 廣播型同 thread 取代舊版;其餘 = intercept
     _sender_args(up)
     up.add_argument("--hub", default="")
     up.add_argument("--hold", choices=("yes", "no"))
+    up.add_argument("--attempts", type=int, default=None)  # G7:同上
 
     rc_ = sub.add_parser("record")     # 直送之後把這則記進歷史(P3 的 dm-ctl 在 rc0/3/4 後呼叫)
     _sender_args(rc_)
@@ -4313,7 +4499,8 @@ def main(argv=None, env=None):
             hold = False
         kw = dict(sender_kind=args.sender_kind, session_uuid=args.session_uuid,
                   wid=args.wid, provider=args.provider, hub=args.hub or env.get("EZ2_AIHUB_SOCKET") or "",
-                  priority=args.priority, hold=hold, origin=args.origin, env=env, **_v2_kw(args))
+                  priority=args.priority, hold=hold, origin=args.origin, env=env,
+                  attempts=args.attempts, **_v2_kw(args))
         if args.cmd == "upsert":
             out = upsert(args.seat, _read_msg(args), args.sender_label, **kw)
         else:
