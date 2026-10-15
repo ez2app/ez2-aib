@@ -230,7 +230,7 @@ def _cmd_set(args: argparse.Namespace) -> int:
     if args.report_to is not None:
         patch["report_to"] = args.report_to
     if not patch:
-        print("seat_task_fields set: 未給任何四欄旗標", file=sys.stderr)
+        print(_help_t()("no_fields"), file=sys.stderr)
         return 2
     try:
         fields = update_task_fields(path, patch)
@@ -238,29 +238,46 @@ def _cmd_set(args: argparse.Namespace) -> int:
         print("seat_task_fields: %s" % exc, file=sys.stderr)
         return 1
     except Exception as exc:  # noqa: BLE001 — atomic 失敗也要非 0
-        print("seat_task_fields: 寫入失敗: %s" % exc, file=sys.stderr)
+        print("aib task: %s" % _help_t()("write_failed", err=exc), file=sys.stderr)
         return 1
     print(json.dumps({"path": str(path), "fields": fields}, ensure_ascii=False))
     return 0
 
 
+def _help_t():
+    """說明文字走 i18n(10-15:英文語系不再印中文 help)。字典讀不到就退回鍵名,不擋指令。"""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    try:
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+    except Exception:  # noqa: BLE001
+        return lambda key, **kw: key
+
+    def T(key, **params):
+        return i18n_lib.t("aib.task.help." + key, params or None, locale=loc)
+    return T
+
+
 def main(argv: Optional[list[str]] = None) -> int:
-    ap = argparse.ArgumentParser(prog="seat_task_fields.py")
+    T = _help_t()
+    ap = argparse.ArgumentParser(prog=os.environ.get("AIB_TASK_PROG") or "aib task", description=T("description"))
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def add_seat_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--seat-file", default="", help="席位檔絕對／相對路徑")
-        p.add_argument("--seat-id", default="", help="五碼 seat_id 或 uuid 尾五碼")
-        p.add_argument("--aib-home", default="", help="狀態根(預設 EZ2_AIB_HOME / ~/.ez2-aib)")
+        p.add_argument("--seat-file", default="", help=T("seat_file"))
+        p.add_argument("--seat-id", default="", help=T("seat_id"))
+        p.add_argument("--aib-home", default="", help=T("aib_home"))
 
-    sh = sub.add_parser("show", help="讀四欄(JSON)")
+    sh = sub.add_parser("show", help=T("show"), description=T("show"))
     add_seat_args(sh)
-    st = sub.add_parser("set", help="寫四欄(只碰 FIELD_KEYS)")
+    st = sub.add_parser("set", help=T("set"), description=T("set"))
     add_seat_args(st)
-    st.add_argument("--task-uid", default=None)
-    st.add_argument("--task-started-at", default=None)
-    st.add_argument("--approval-event-uid", default=None)
-    st.add_argument("--report-to", default=None)
+    st.add_argument("--task-uid", default=None, help=T("task_uid"))
+    st.add_argument("--task-started-at", default=None, help=T("task_started_at"))
+    st.add_argument("--approval-event-uid", default=None, help=T("approval_event_uid"))
+    st.add_argument("--report-to", default=None, help=T("report_to"))
 
     args = ap.parse_args(argv)
     try:
