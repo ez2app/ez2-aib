@@ -39,7 +39,8 @@ state/handoff/<席碼>.missed.json、在背景起 `collect --auto` 存一份 pen
   ★ r19:接回的那一份只算接回之後的真人訊息(記下接回當下的檔案大小 offset,從那裡往後讀;有 timestamp 的
   訊息早於接回時刻也不算)—— 不然接回一份舊對話、什麼都沒講就 /clear,會被舊對話裡的話誤報成跳過交接。
   API 席與橋接 bot 自己不能跑指令 ⇒ 提醒換說法,請真人代跑。
-★ 85% 自動觸發還沒接(v0.70.0 之後);接點 = 呼叫 `aib handoff collect` 或本檔 nudge_text()。
+★ 85% 自動觸發(10-15 接上):auto_distill_hook 依 policy/ctx-thresholds.json 那張表注入「先做完收尾三步」,
+  Claude 席 Stop 在 verify 沒過時擋回合(見 aib/docs/CTX-THRESHOLDS.md)。
 
 狀態根走單源 seats_dir_lib.state_root(EZ2_AIB_STATE_ROOT > EZ2_AIB_HOME > ~/.ez2-aib),測試可整個搬走。
 """
@@ -613,8 +614,14 @@ def predecessor_check(old_uuid: str, new_uuid: str = "", *, source: str = "", ho
 
 
 def nudge_text(pct: int | None = None) -> str:
-    """85% 自動觸發的接點(v0.70.0 之後接):提醒要跑的字,單一來源。"""
-    return T("aib.handoff.nudge", percent=str(pct if pct is not None else 85))
+    """要求交接那格的提醒字(沒給 pct ⇒ 用 policy 表上 handoff_now 那格,不寫字面)。"""
+    if pct is None:
+        rot = str(Path(__file__).resolve().parent.parent / "rotation")
+        if rot not in sys.path:
+            sys.path.append(rot)
+        import ctx_policy
+        pct = ctx_policy.trigger_pct("handoff_now")
+    return T("aib.handoff.nudge", percent=str(pct))
 
 
 # ---------------------------------------------------------------- collect

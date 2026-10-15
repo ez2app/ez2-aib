@@ -11,13 +11,22 @@ the maintainer:「原 ctx %數 … 從 1x% 開始的」「照這套做,在 10% �
   python3 auto_distill_hook.py ensure [--settings P]  開 Claude 席前(provider-launch.sh):已裝不動、沒裝才裝(先備份)
   python3 auto_distill_hook.py ensure-grok [--dir D]  開 Grok 席前:~/.grok/hooks/aib-auto-distill.json(Claude 格式的 Stop)
 
+  python3 auto_distill_hook.py review-gate            Claude 席 Stop:先看 85 交接閘(用量過 85 且本輪交接 verify 沒過 ⇒ 擋),
+                                                      再看遺漏回顧閘(§8e.7);兩道同一個 Stop 掛點,不另裝第二個
+
+門檻只有一張表:policy/ctx-thresholds.json 的 triggers(經 src/rotation/ctx_policy.py 讀;10-15 維護者
+「把這二個合成一個,並要確定會由程式觸發」)。本檔不寫任何門檻數字。總表見 aib/docs/CTX-THRESHOLDS.md。
 每一則訊息都會跑(a seat 10-13 13:56):
-  - 正常路徑只量一次 gauge 就回;沒跨門檻、沒有待發的提醒 ⇒ stdout 為空。
-  - 剛跨過 30 / 50 / 70(數字取 persona-collect tick.DEFAULT_THRESHOLDS,不另寫)⇒ 輸出一行,
-    叫 AI 這則回完後跑 aib memory tidy(--defer-big:第一艦長卡大變動存到 85% 交接再按)。
-    距上次精煉沒有新的真人訊息 ⇒ 不叫(省用量),門檻照記。同一門檻同一個對話只一次。
+  - 正常路徑只量一次 gauge 就回;沒跨格、沒有待發的提醒 ⇒ stdout 為空。讀不到 gauge ⇒ 不猜、不輸出。
+  - 剛跨過 tidy 格 ⇒ 輸出一行,叫 AI 這則回完後跑 aib memory tidy(--defer-big:第一艦長卡大變動存到 85% 交接再按)。
+    距上次精煉沒有新的真人訊息 ⇒ 不叫(省用量),門檻照記。
+  - 剛跨過 handoff_remind ⇒ 一行交接提醒;handoff_now ⇒「先做完收尾三步(aib memory tidy → aib summary →
+    aib handoff 三步 + verify)再做別的」,之後每一則讀交接收據:verify 沒過就再提醒一次;red_line ⇒ 停止新工作、立刻交接。
+    三句都帶讀來的用量 %(不讓 AI 自報)。同一則跨好幾格:交接類只講最重的那句;要交接的那句已含整理記憶,不另叫 tidy。
+  - 每一格同一個對話只觸發一次(已觸發紀錄在 state/auto-distill/<席>.json,換對話就重算)。
+  - Claude 席 Stop(review-gate):用量 ≥ handoff_now 格且本輪交接 verify 沒過 ⇒ 擋回合(同一則最多 CTX_GATE_MAX 次,
+    擋滿就放行並記 gate_gave_up,巡檢列出);真人訊息含「先做」那一則不擋(記 log);gauge / verify 讀不到 ⇒ 不擋。
   - 精煉收據出現後的下一則真人訊息 ⇒ 輸出一行,叫 AI 在回覆最後一行告訴 the maintainer 已自動精煉(數字讀收據,不由 AI 自報)。
-  - 85 / 95 不在這裡做(交接提醒 ctx-handoff-nudge.sh 照舊)。
   - 任何錯 ⇒ rc 0、無輸出(不能擋人講話)。
 """
 from __future__ import annotations
@@ -35,12 +44,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parent
-for _p in (SRC / "cockpit", SRC / "persona-collect", SRC / "memory"):
+for _p in (SRC / "cockpit", SRC / "persona-collect", SRC / "memory", SRC / "rotation"):
     if str(_p) not in sys.path:
         sys.path.append(str(_p))
 
 MARKER = "auto_distill_hook.py"
-FRESH_S = 600                       # 沿用 ctx-handoff-nudge.sh 的 10 分鐘新鮮
+FRESH_S = 600                       # 用量檔 10 分鐘內才算新鮮
 HOOK_TIMEOUT_S = 10
 _SID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
@@ -82,14 +91,103 @@ def with_inbox(text, code, locale=None):
     return text + ("\n" + extra if extra else "")
 
 
-AUTO_THRESHOLDS = (30, 50, 70, 85, 90)
+def ctx_triggers():
+    """觸發表(單一資料源 policy/ctx-thresholds.json,經 ctx_policy 讀;表壞 ⇒ raise,呼叫端吞掉、不輸出)。"""
+    import ctx_policy
+    return ctx_policy.triggers()
 
 
 def thresholds():
-    """自動精煉(靜默)的門檻。the maintainer 10-13:17:3x「把10%取消好了」;17:5x「同意提早到80%,然後85%、90% 做靜默更新」
-    ⇒ 30 / 50 / 70 / 85 / 90 靜默;80 是交接流程(ctx-handoff-nudge.sh);95 紅線照舊。
-    跟 persona-collect tick.DEFAULT_THRESHOLDS(10/30/50/70/85/95)分家了 —— 那份是人格收集的,不是這裡的。"""
-    return AUTO_THRESHOLDS
+    """靜默精煉(tidy)那幾格的用量 %(Bot 那條路用)。數字只在 policy 表上。"""
+    return tuple(sorted({t["pct"] for t in ctx_triggers() if t["kind"] == "tidy"}))
+
+
+def _kinds():
+    import ctx_policy
+    return ctx_policy.TRIGGER_KINDS
+
+
+def _tid(t):
+    return "%s@%d" % (t["kind"], t["pct"])
+
+
+def _fired(st):
+    """已觸發紀錄;舊版存的是 tidy 門檻整數 ⇒ 認成 tidy@N。"""
+    out = set()
+    for x in st.get("fired") or []:
+        out.add("tidy@%d" % x if isinstance(x, int) and not isinstance(x, bool) else str(x))
+    return out
+
+
+def _first_pct(trig, kind):
+    hits = [t["pct"] for t in trig if t["kind"] == kind]
+    return min(hits) if hits else None
+
+
+def trigger_params(trig, pct):
+    """注入字串的參數:pct = 讀來的用量(不讓 AI 自報);remind / now / red = 表上那幾格。"""
+    q = lambda k: _first_pct(trig, k)   # noqa: E731
+    return {"pct": pct, "remind": q("handoff_remind") if q("handoff_remind") is not None else "?",
+            "now": q("handoff_now") if q("handoff_now") is not None else "?",
+            "red": q("red_line") if q("red_line") is not None else "?"}
+
+
+def crossings(trig, pct, st):
+    """→ (剛跨過的 tidy 格, 剛跨過的交接類最重那一格或 None, 剛跨過的交接類全部)。讀不到 gauge ⇒ 全空。"""
+    if pct is None:
+        return [], None, []
+    fired = _fired(st)
+    newly = [t for t in trig if pct >= t["pct"] and _tid(t) not in fired]
+    tidy = [t for t in newly if t["kind"] == "tidy"]
+    hand = [t for t in newly if t["kind"] != "tidy"]
+    order = _kinds()
+    top = max(hand, key=lambda t: (order.index(t["kind"]), t["pct"])) if hand else None
+    return tidy, top, hand
+
+
+def handoff_owed(trig, pct, st):
+    """要求交接那格早就觸發過、現在用量還在那格以上 ⇒ 該看交接有沒有做完的那一格(或 None)。"""
+    if pct is None:
+        return None
+    fired = _fired(st)
+    for t in trig:
+        if t["kind"] == "handoff_now" and _tid(t) in fired and pct >= t["pct"]:
+            return t
+    return None
+
+
+def handoff_done(code, since=0.0):
+    """這一輪交接 verify 過了沒(讀交接收據,不看 AI 自己說):True 過;False 沒做 / 沒過;None 量不到(不猜)。
+    收據要是這一輪(current_round_start)、也是這個對話開始之後(since)的;收據裡 verify 前 8 項全過 ⇒ 過;
+    收據有、但寫的時候沒過 ⇒ 當下重驗一次(補好缺項之後也要認;同 on_review_gate)。"""
+    try:
+        import aib_handoff
+        rec = aib_handoff._read_json(aib_handoff.receipt_path(code)) or {}
+        start = max(float(since or 0), aib_handoff.current_round_start(code))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(rec, dict) or not rec or float(rec.get("ts") or 0) < start:
+        return False
+    v = rec.get("verify") or {}
+    items = v.get("items") if isinstance(v, dict) else None
+    if isinstance(v, dict) and (v.get("ok") is True or (isinstance(items, list) and len(items) >= 8
+                                                        and all(bool((x or {}).get("ok")) for x in items[:8]))):
+        return True
+    return _live_verify(code)
+
+
+def _live_verify(code):
+    try:
+        import handoff_check
+        items = handoff_check.verify(code, review=False)
+    except Exception:  # noqa: BLE001
+        return None
+    return bool(items) and len(items) >= 8 and all(ok for _n, ok, _d in items[:8])
+
+
+BYPASS_WORD = "先做"           # 維護者 10-15 20:2x:真人訊息有「先做」⇒ 那一則 85 不擋
+CTX_GATE_MAX = 3              # 同一則最多擋幾次(防卡死)
+STOP_NAG_MAX = 3              # 非 Claude 席:verify 沒過的再提醒 dm 最多幾封(dm 會開新的一輪,不封頂會一直轉)
 
 
 def state_root():
@@ -147,9 +245,14 @@ def gauge_pct(sid, now=None):
 
 
 def is_human(code, prompt):
-    """跟 aib memory tidy 收 the maintainer 原話同一把篩子(dm 標頭、通知、hook 回饋等機器字樣擋掉);篩子壞了 ⇒ 當不是。"""
+    """跟 aib memory tidy 收 the maintainer 原話同一把篩子(dm 標頭、通知、hook 回饋等機器字樣擋掉);篩子壞了 ⇒ 當不是。
+    10-15:公開版沒有 persona-collect/human_filter.py ⇒ 回 None(量不到),不當成「不是真人」——
+    當成不是的話,精煉格永遠因為「沒有新的真人訊息」被略過,公開版 30/50/70/90 從來不會觸發。"""
     try:
         import human_filter
+    except Exception:  # noqa: BLE001
+        return None
+    try:
         ok, _m = human_filter.is_human({"human_bound": True, "code": code}, {"text": prompt}, skip_ledger=True)
         return bool(ok)
     except Exception:  # noqa: BLE001
@@ -237,9 +340,15 @@ def on_prompt(payload, now=None):
     sp = state_path(code)
     st = _read_json(sp, {})
     if st.get("session") != sid:                       # 換對話(/clear、新席)⇒ 門檻重算
-        st = {"session": sid, "fired": [], "human": 0, "receipt_at": "", "pending": False, "notice_for": ""}
+        st = {"session": sid, "since": now or time.time(), "fired": [], "human": 0, "receipt_at": "",
+              "pending": False, "notice_for": ""}
     before = json.dumps(st, sort_keys=True)
-    human = is_human(code, prompt)
+    st["prompts"] = int(st.get("prompts") or 0) + 1
+    known = is_human(code, prompt)                     # True / False / None(篩子不在,量不到)
+    human = known is True
+    if human and BYPASS_WORD in prompt:                # 這一則 85 交接閘不擋(只認真人訊息;dm / AI 自己寫的不算)
+        st["bypass_for"] = st["prompts"]
+        _log({"seat": code, "action": "gate-bypass-marked", "prompt_n": st["prompts"], "why": BYPASS_WORD})
     rec = tidy_receipt(code)
     if rec.get("at") and rec.get("at") != st.get("receipt_at"):   # 又整理過一次 ⇒ 新真人訊息從零算
         st["receipt_at"], st["human"] = rec.get("at"), 0
@@ -252,16 +361,46 @@ def on_prompt(payload, now=None):
         lines.append(T("auto_distill.notice", notice_params(rec), lang_of(prompt)))
         st["notice_for"] = ""
     pct = gauge_pct(sid, now)
-    newly = [t for t in thresholds() if pct is not None and pct >= t and t not in (st.get("fired") or [])]
-    if newly:
-        if int(st.get("human") or 0) == 0:                # 上次精煉後(或開對話後)沒有真人原話 ⇒ 不叫 AI 白做;
-            _log({"seat": code, "pct": pct, "fired": newly, "action": "skip-nothing-new"})   # 門檻不算用掉
+    lang = lang_of(prompt) if known is not False else None
+    try:
+        trig = ctx_triggers()
+    except Exception as exc:  # noqa: BLE001 —— 表壞了:不輸出觸發,其餘照舊
+        _log({"seat": code, "action": "error", "mode": "policy", "why": str(exc)[:200]})
+        trig = ()
+    tidy_new, top, hand_new = crossings(trig, pct, st)
+    fired = _fired(st)
+    params = trigger_params(trig, pct)
+    mark = {_tid(t) for t in hand_new}
+    hand_line, owed = "", None
+    if top is not None:
+        if top["kind"] == "handoff_now" and handoff_done(code, st.get("since")) is True:
+            _log({"seat": code, "pct": pct, "fired": sorted(mark), "action": "handoff-already-done"})
         else:
-            st["fired"] = sorted(set(st.get("fired") or []) | set(newly))
-            lines.append(with_inbox(T("auto_distill.instruct", {"pct": pct}, lang_of(prompt) if human else None),
-                                    code, lang_of(prompt) if human else None))
+            hand_line = T(top["key"], params, lang)
+            _log({"seat": code, "pct": pct, "fired": sorted(mark), "action": top["kind"]})
+    else:
+        owed = handoff_owed(trig, pct, st)
+        if owed is not None and handoff_done(code, st.get("since")) is False:   # verify 沒過 ⇒ 每則再提醒
+            hand_line = T(owed.get("again_key") or owed["key"], params, lang)
+            _log({"seat": code, "pct": pct, "action": "handoff-again"})
+        else:
+            owed = None
+    if hand_line:
+        lines.append(hand_line)
+    if tidy_new:
+        strong = (top is not None and top["kind"] in ("handoff_now", "red_line")) or owed is not None
+        ids = {_tid(t) for t in tidy_new}
+        if strong:                                     # 收尾三步第一步就是整理記憶 ⇒ 不另叫,格照記
+            mark |= ids
+        elif known is not None and int(st.get("human") or 0) == 0:   # 上次精煉後沒有真人原話 ⇒ 不叫 AI 白做(篩子不在 ⇒ 不判);
+            _log({"seat": code, "pct": pct, "fired": sorted(ids), "action": "skip-nothing-new"})   # 門檻不算用掉
+        else:
+            mark |= ids
+            lines.append(with_inbox(T(tidy_new[-1]["key"], {"pct": pct}, lang), code, lang))
             st["pending"] = True
-            _log({"seat": code, "pct": pct, "fired": newly, "action": "instruct"})
+            _log({"seat": code, "pct": pct, "fired": sorted(ids), "action": "instruct"})
+    if mark - fired:
+        st["fired"] = sorted(fired | mark)
     out = "\n".join(lines)
     changed = json.dumps(st, sort_keys=True) != before
     if changed:
@@ -632,18 +771,30 @@ def on_agy_pre(payload, now=None, seat=None, refresh=None, gate=None):
         _log({"seat": code, "action": "error", "mode": "agy-ship", "why": str(exc)[:200]})
         ship = ""
     pct = gauge_pct(sid, now)
-    newly = [t for t in thresholds() if pct is not None and pct >= t and t not in (st.get("fired") or [])]
-    if newly:
-        st["fired"] = sorted(set(st.get("fired") or []) | set(newly))
-        import i18n_lib
+    try:
+        trig = ctx_triggers()
+    except Exception as exc:  # noqa: BLE001
+        _log({"seat": code, "action": "error", "mode": "agy-policy", "why": str(exc)[:200]})
+        trig = ()
+    tidy_new, top, hand_new = crossings(trig, pct, st)
+    import i18n_lib
+    if top is not None:                                 # 交接類:同一套表、同一格只一次
+        texts.append(T(top["key"], trigger_params(trig, pct), i18n_lib.resolve_locale()))
+        _log({"seat": code, "pct": pct, "fired": sorted(_tid(t) for t in hand_new), "action": "agy-" + top["kind"]})
+    if tidy_new and not (top is not None and top["kind"] in ("handoff_now", "red_line")):
         tail = str(rec.get("cabin_id") or "").rsplit("-", 1)[-1][-4:]
         texts.append(with_inbox(T("auto_distill.instruct_bot", {"seat": "%s/%s" % (tail, code), "why": "%s%%" % pct},
                                   i18n_lib.resolve_locale()), code))
-        _log({"seat": code, "pct": pct, "fired": newly, "action": "agy-inject"})
+        _log({"seat": code, "pct": pct, "fired": sorted(_tid(t) for t in tidy_new), "action": "agy-inject"})
+    newly = tidy_new + hand_new
+    if newly:
+        st["fired"] = sorted(_fired(st) | {_tid(t) for t in newly})
     if ship:
         texts.append(ship)
         _log({"seat": code, "action": "agy-ship-report"})
     if not texts:
+        if newly:
+            _write_json(sp, st)
         return "{}"
     _write_json(sp, st)
     return json.dumps({"injectSteps": [{"ephemeralMessage": t} for t in texts]}, ensure_ascii=False)
@@ -669,12 +820,30 @@ def on_stop(payload, now=None, seat=None, runner=None, refresh=None, gate=None):
     sp = state_path(code)
     st = _read_json(sp, {})
     if st.get("session") != sid:
-        st = {"session": sid, "fired": []}
+        st = {"session": sid, "since": now or time.time(), "fired": []}
     pct = gauge_pct(sid, now)
-    newly = [t for t in thresholds() if pct is not None and pct >= t and t not in (st.get("fired") or [])]
     import i18n_lib
+    before = json.dumps(st, sort_keys=True)
+    hand_text, hand_why = stop_handoff(code, rec, st, pct, runner, now)   # 交接類(提醒 / 要求交接 / 紅線 + 再提醒)
+    try:
+        trig = ctx_triggers()
+    except Exception as exc:  # noqa: BLE001
+        _log({"seat": code, "action": "error", "mode": "stop-policy", "why": str(exc)[:200]})
+        trig = ()
+    tidy_new, _top, _hand = crossings(trig, pct, st)
+    if hand_text and hand_why != "handoff_remind":     # 收尾三步第一步就是整理記憶 ⇒ 不另寄 tidy,格照記
+        if tidy_new:
+            st["fired"] = sorted(_fired(st) | {_tid(t) for t in tidy_new})
+        _write_json(sp, st)
+        return hand_text
+    newly = [t["pct"] for t in tidy_new]
+    tidy_key = (tidy_new[-1].get("dm_key") or tidy_new[-1]["key"]) if tidy_new else "auto_distill.instruct_dm"
     pending = _read_json(due_path(code), {})
     if not newly:
+        if json.dumps(st, sort_keys=True) != before:   # 交接類格記了(寄了提醒 / 已交接 / 寄信關著)⇒ 照樣寫回
+            _write_json(sp, st)
+        if hand_text:
+            return hand_text
         # 上次等不到閒 ⇒ 再起一支。只看「等的那支不在」不夠:它剛起、還沒寫 .waiter(或測試注入 runner 根本沒起)
         # 就會被當成放棄 ⇒ 同一門檻寄兩封(a seat 10-13 跑出 test_refresh_then_threshold_dm 紅)。要過了放棄時間才算。
         t = now or time.time()
@@ -685,16 +854,53 @@ def on_stop(payload, now=None, seat=None, runner=None, refresh=None, gate=None):
             deliver(rec.get("cabin_id") or "", code, text, runner, rec)
             return text
         return ""
-    st["fired"] = sorted(set(st.get("fired") or []) | set(newly))
+    st["fired"] = sorted(_fired(st) | {_tid(t) for t in tidy_new})
     _write_json(sp, st)
-    text = with_inbox(T("auto_distill.instruct_dm", {"pct": pct}, i18n_lib.resolve_locale()), code)
+    text = with_inbox(T(tidy_key, {"pct": pct}, i18n_lib.resolve_locale()), code)
     write_due(code, sid, pct, newly)
     if not dm_allowed():
         _log({"seat": code, "pct": pct, "fired": newly, "action": "due-only", "provider": rec.get("provider")})
         return ""
     deliver(rec.get("cabin_id") or "", code, text, runner, rec)
     _log({"seat": code, "pct": pct, "fired": newly, "action": "dm", "provider": rec.get("provider")})
-    return text
+    return (hand_text + "\n" + text) if hand_text else text
+
+
+def stop_handoff(code, rec, st, pct, runner=None, now=None):
+    """非 Claude 席一輪結束:交接類那幾格(沒有能擋的 Stop ⇒ aib dm 給自己,維護者 10-15 20:2x「照 dm 給自己強制收尾」)。
+    剛跨過 ⇒ 最重那一句;85 早就觸發過、交接 verify 還沒過 ⇒ 再提醒(每 FRESH_S 最多一封、這個對話最多 STOP_NAG_MAX 封:
+    dm 會開新的一輪,不封頂會自己一直轉)。改了 st(呼叫端寫回)。→ (寄出的字或 "", 哪一種)。"""
+    import i18n_lib
+    try:
+        trig = ctx_triggers()
+    except Exception as exc:  # noqa: BLE001
+        _log({"seat": code, "action": "error", "mode": "stop-policy", "why": str(exc)[:200]})
+        return "", ""
+    _tidy, top, hand_new = crossings(trig, pct, st)
+    loc = i18n_lib.resolve_locale()
+    params = trigger_params(trig, pct)
+    text, why = "", ""
+    t_now = now or time.time()
+    if top is not None:
+        st["fired"] = sorted(_fired(st) | {_tid(t) for t in hand_new})
+        if top["kind"] == "handoff_now" and handoff_done(code, st.get("since")) is True:
+            return "", ""
+        text, why = T(top.get("dm_key") or top["key"], params, loc), top["kind"]
+        st["nag_at"] = t_now
+    else:
+        owed = handoff_owed(trig, pct, st)
+        if owed is None or int(st.get("nag_n") or 0) >= STOP_NAG_MAX or t_now - float(st.get("nag_at") or 0) < FRESH_S:
+            return "", ""
+        if handoff_done(code, st.get("since")) is not False:
+            return "", ""
+        text, why = T(owed.get("again_key") or owed["key"], params, loc), "handoff-again"
+        st["nag_n"], st["nag_at"] = int(st.get("nag_n") or 0) + 1, t_now
+    if not dm_allowed():
+        _log({"seat": code, "pct": pct, "action": "due-only-" + why, "provider": rec.get("provider")})
+        return "", why
+    deliver(rec.get("cabin_id") or "", code, text, runner, rec, kind="handoff")
+    _log({"seat": code, "pct": pct, "action": "dm-" + why, "provider": rec.get("provider")})
+    return text, why
 
 
 BOT_EVERY = 20       # 量不到用量 % 的 Bot:每 20 輪(the maintainer 10-13 14:4x 照 A)
@@ -812,6 +1018,66 @@ def ensure_codex(path=None, script=None):
 REVIEW_GATE_MAX = 2          # 同一張交接收據最多擋兩次(不卡死)
 
 
+def on_ctx_gate(payload, now=None):
+    """維護者 10-15 20:2x「85% 要強制執行」:Claude 席 Stop。用量 ≥ 表上 handoff_now 那格、而本輪交接 verify 沒過 ⇒
+    回 block(理由帶讀來的 %),直到 verify 前 8 項全過才放行。防卡死:同一則真人/訊息最多擋 CTX_GATE_MAX 次,
+    擋滿 ⇒ 放行並記 gate_gave_up(fleet_patrol 巡檢列出「85% 交接未完成」)。真人訊息含「先做」的那一則不擋。
+    讀不到 gauge / 表壞 / verify 本身出錯 ⇒ 不擋(只記 log)。→ JSON 字串或 ""。"""
+    import seat_address
+    sid = str(payload.get("session_id") or "")
+    if not _SID_RE.match(sid) or foreign_host() or not is_aib_seat(sid):
+        return ""
+    code = seat_address.uuid_tail5(sid)
+    if not code:
+        return ""
+    pct = gauge_pct(sid, now)
+    if pct is None:
+        return ""
+    try:
+        import ctx_policy
+        floor = ctx_policy.trigger_pct("handoff_now")
+    except Exception as exc:  # noqa: BLE001
+        _log({"seat": code, "action": "error", "mode": "ctx-gate-policy", "why": str(exc)[:200]})
+        return ""
+    if pct < floor:
+        return ""
+    sp = state_path(code)
+    st = _read_json(sp, {})
+    if st.get("session") != sid:
+        st = {"session": sid, "fired": []}
+    n = int(st.get("prompts") or 0)
+    if n and st.get("bypass_for") == n:
+        _log({"seat": code, "pct": pct, "action": "ctx-gate-bypass", "prompt_n": n, "why": "真人訊息含「%s」" % BYPASS_WORD})
+        return ""
+    done = handoff_done(code, st.get("since"))
+    if done is None:
+        _log({"seat": code, "pct": pct, "action": "ctx-gate-unknown", "why": "verify 量不到 ⇒ 不擋"})
+        return ""
+    if done:
+        return ""
+    g = st.get("gate") if isinstance(st.get("gate"), dict) else {}
+    if g.get("prompt") != n:
+        g = {"prompt": n, "blocks": 0}
+    if int(g.get("blocks") or 0) >= CTX_GATE_MAX:
+        if not st.get("gate_gave_up"):
+            st["gate_gave_up"] = True
+            _write_json(sp, st)
+            _log({"seat": code, "pct": pct, "action": "ctx-gate-gave-up", "prompt_n": n})
+        return ""
+    g["blocks"] = int(g.get("blocks") or 0) + 1
+    st["gate"] = g
+    _write_json(sp, st)
+    _log({"seat": code, "pct": pct, "action": "ctx-gate-block", "n": g["blocks"], "prompt_n": n})
+    return json.dumps({"decision": "block", "reason": T("ctx_trigger.gate_block", {
+        "pct": pct, "now": floor, "n": g["blocks"], "max": CTX_GATE_MAX, "word": BYPASS_WORD}, None)},
+        ensure_ascii=False)
+
+
+def gate_gave_up(code):
+    """這一席 85 交接閘擋滿放行過(還沒交接)⇒ True。巡檢唯讀用。"""
+    return bool(_read_json(state_path(code), {}).get("gate_gave_up"))
+
+
 def on_review_gate(payload, now=None):
     """§8e.7(the maintainer 10-13 17:5x「Claude 席沒做回顧擋結束」照預設):這一輪交接 verify 前 8 項都過、還沒做遺漏回顧
     ⇒ Claude Stop 回 block + 回顧指示。stop hook 自己續的那輪照擋(回顧沒做完),但同一張收據最多擋兩次。→ JSON 字串或 ""。"""
@@ -889,9 +1155,14 @@ def _now_gate():
 
 
 def canonical_script(gate=None):
-    gate = gate or _now_gate()
-    p = gate.canonical_script()
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(p))), "identity", MARKER) if p else None
+    """正本樹裡的本支(裝進 ~/.claude/settings.json 等各家 hook 的路徑)。
+    10-15(今天 Pro 上什麼都沒觸發的根因):舊寫法拿 aib-now-gate 的正本路徑往上三層再接 identity/,而那支 gate
+    (主線版)是 `git worktree list` 第一列直接接 src/... ⇒ 公開倉(程式在 aib/ 底下一層)算出 <倉>/src/identity/...
+    不存在 ⇒ ensure 回 skip「正本樹沒有」⇒ 從沒裝上。現在直接量本檔自己:canonical_tree 用 git rev-parse
+    --show-prefix 接到主工作樹 —— 公開倉 <倉>/aib/src/...、私倉 <倉>/src/...、pipx / 一行安裝(不在 git 裡 ⇒ 本檔就是正本)
+    三種一樣對;在 git 裡但 git 量不到 ⇒ None 不猜。gate 參數留著相容舊呼叫端,不再用。"""
+    import canonical_tree
+    return canonical_tree.canonical_path(str(Path(__file__).resolve()))
 
 
 def hook_entry(script):
@@ -968,7 +1239,13 @@ def main(argv=None):
         return 0
     if mode == "review-gate":
         try:
-            out = on_review_gate(json.loads(sys.stdin.read() or "{}"))
+            payload = json.loads(sys.stdin.read() or "{}")
+            out = ""
+            try:                                       # 85 交接閘先(同一個 Stop 掛點;出錯 ⇒ 不擋,往下看回顧閘)
+                out = on_ctx_gate(payload)
+            except Exception as exc:  # noqa: BLE001
+                _log({"action": "error", "mode": "ctx-gate", "why": str(exc)[:200]})
+            out = out or on_review_gate(payload)
         except Exception as exc:  # noqa: BLE001 —— 擋不了就放行
             _log({"action": "error", "mode": "review-gate", "why": str(exc)[:200]})
             out = ""

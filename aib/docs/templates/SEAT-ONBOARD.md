@@ -23,7 +23,7 @@ they carry no persona and no window, and they vanish when their work ends.
    Never claim "delivered" from prose or an old receipt.
 2. Mark every dm as read once you have read it; unread mail piles up in the human's
    inbox and hides new mail.
-3. At about 85% context use, or when the human says to prepare a clear, run `aib handoff`.
+3. The program watches your context use: at 80% it reminds you to hand off; at 85% it requires the three wrap-up steps (`aib memory tidy` -> `aib summary` -> `aib handoff` + verify) and holds the turn until verify passes; 95% is the red line (stop new work, hand off now). When the human says to prepare a clear, run `aib handoff` too.
 4. Report your main item with `aib now "<main item>" <done>/<total>` when you start, switch item,
    change state, finish a step, or report. Add `--state reply` while waiting on another seat,
    `--state decide` while waiting on a human decision, and `aib now --clear` when idle.
