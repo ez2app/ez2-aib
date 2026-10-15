@@ -592,10 +592,25 @@ def mac_choose(title, prompt, items, timeout=MAC_TIMEOUT_S, runner=None):
     return (got, "picked") if got in items else (None, "closed")
 
 
+# 回報句的開頭(「能用:…」「不能用:…」),不是名字(10-14 有一席 Grok 的人格被取成「能用 待審預設、主艙改名」)
+REPORT_HEAD_RE = re.compile(r"^\s*(現在)?(能不能用|還不能用|不能用|能用|可以用|還不能)\s*[::,,]\s*")
+
+
+def clean_name(s, limit):
+    """建議的名稱 ⇒ 拿掉回報句開頭與檔名不能用的字、截到 limit 字;剩空 ⇒ ""。"""
+    s = REPORT_HEAD_RE.sub("", (s or "").strip())
+    return re.sub(r"[\\/:*?\"<>|\n\r\t]", " ", s).strip()[:limit].strip()
+
+
 def new_persona_name(fields, cards):
-    """新卡名稱:回覆的「新人格名稱」> 主項目前 12 字;和既有卡同名 ⇒ 加序號(不覆蓋既有卡)。"""
-    base = (fields.get("新人格名稱") or fields.get("主項目") or "").strip()
-    base = re.sub(r"[\\/:*?\"<>|\n\r\t]", " ", base).strip()[:12].strip() or "新角色"
+    """新卡名稱:只用回覆的「新人格名稱」或記憶整理的「建議人格」(拿掉回報句開頭);沒有 ⇒ ""(不再拿「主項目」那句進度回報硬切 12 字當名字,
+    呼叫端不自動建、交給人取名)。和既有卡同名 ⇒ 加序號(不覆蓋既有卡)。"""
+    sug = (fields.get("建議人格") or "").strip()      # 記憶整理「新建:<名稱>」把名稱放這裡;關鍵字不算名字
+    if sug.lower() in UNKNOWN or sug in ("沿用", "新建"):
+        sug = ""
+    base = clean_name(fields.get("新人格名稱") or sug, 12)
+    if not base:
+        return ""
     taken = set(cards.values())
     name, n = base, 1
     while name in taken:
@@ -671,6 +686,11 @@ def auto_decide(row, cards, timeout=MAC_TIMEOUT_S, dialog=None, text=None, choos
     elif how in ("ask_existing", "continuity") and per.get("name") and per.get("uid") != CROWN_PERSONA:
         out["persona"] = {"act": "bind", "name": per["name"], "how": how}
         out["notice"] = True
+    elif how == "draft_new" and not new_persona_name(row.get("fields") or {}, cards):
+        # 沒有建議名稱 ⇒ 不自動建(名字要人取),送事後決定卡;草稿照擬,名稱維持(待取名)
+        out["persona"] = {"act": "skip", "how": "needs_name"}
+        out["card"] = True
+        out.setdefault("why", []).append("沒有合適的人格,也沒有建議名稱 ⇒ 不自動建,等人取名")
     elif how == "draft_new":
         name = new_persona_name(row.get("fields") or {}, cards)
         msg = "@%s 沒有合適的人格,要建一張新的\n\n名字:%s\n\n%d 秒後自動建立" % (row["code"], name, timeout)
@@ -681,7 +701,7 @@ def auto_decide(row, cards, timeout=MAC_TIMEOUT_S, dialog=None, text=None, choos
             if sub_how == "timeout":
                 btn = "照這樣建立"
             elif sub == "改名字":
-                name = new_persona_name({"新人格名稱": text("AIB 綁定", "新人格名稱", name, timeout)}, cards)
+                name = new_persona_name({"新人格名稱": text("AIB 綁定", "新人格名稱", name, timeout)}, cards) or name
                 btn = "照這樣建立"
             elif sub == "改綁其他候選":
                 pick, pick_how = choose("AIB 綁定", "改綁哪一張?", _candidates(row, cards, "persona"), timeout)
@@ -720,13 +740,18 @@ def auto_decide(row, cards, timeout=MAC_TIMEOUT_S, dialog=None, text=None, choos
     elif phow in ("uid", "title") and prj.get("uid") and persona_ready:
         out["project"] = {"act": "bind", "uid": prj["uid"], "title": prj.get("title"), "how": phow}
         out["notice"] = True
-    elif phow in ("contains", "ambiguous", "new", "unknown") and persona_ready:
-        title = prj.get("title") or ""
+    elif phow in ("ambiguous", "unknown") or (phow == "new" and not clean_name(prj.get("title"), 24)):
+        # 沒有建議專案名稱(或對到多張)⇒ 不自動建、不拿「主項目」那句進度回報當名字;送事後決定卡
+        if persona_ready:
+            out["card"] = True
+            out.setdefault("why", []).append("沒有合適的專案,也沒有可用的建議名稱 ⇒ 不自動建,等人決定")
+    elif phow in ("contains", "new") and persona_ready:
+        title = (prj.get("title") or "") if phow == "contains" else clean_name(prj.get("title"), 24)
         if phow == "contains":
             label, msg = "綁這張", "@%s 專案部分對到「%s」,要綁它嗎?\n\n%d 秒後自動綁" % (row["code"], title, timeout)
         else:
             label, msg = "照這樣建立", "@%s 沒有合適的專案,要建一個新的\n\n名稱:%s\n\n%d 秒後自動建立" % (
-                row["code"], title if phow == "new" else (row.get("fields") or {}).get("主項目", "")[:24], timeout)
+                row["code"], title, timeout)
         btn, asked = _ask(row, msg, label, timeout, dialog, menu, sleep, out)
         if out["asked"] in ("none", "picked"):
             out["asked"] = asked
@@ -741,9 +766,8 @@ def auto_decide(row, cards, timeout=MAC_TIMEOUT_S, dialog=None, text=None, choos
             if phow == "contains" and prj.get("uid"):
                 out["project"] = {"act": "bind", "uid": prj["uid"], "title": title, "how": phow}
             else:
-                t = title if phow == "new" else ((row.get("fields") or {}).get("主項目") or "")[:24]
-                if t:
-                    out["project"] = {"act": "create", "title": t, "how": phow}
+                if title:
+                    out["project"] = {"act": "create", "title": title, "how": phow}
     return out
 
 
