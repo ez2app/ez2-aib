@@ -488,12 +488,15 @@ _GIT_HIST_SUBS = {
     "log": (frozenset(("--oneline", "--no-merges", "--merges", "--reverse", "--first-parent", "-z", "--no-color",
                        "--abbrev-commit", "--topo-order", "--date-order", "--no-decorate", "--decorate=no")),
             ("--format=", "--pretty=", "--max-count=", "--date=", "--since=", "--until=", "--after=", "--before=",
-             "--author=", "--committer=", "--grep=", "--abbrev=", "--skip=")),
+             "--author=", "--committer=", "--grep=", "--abbrev=", "--skip=",
+             # 10-15 abb89:依父提交數篩(--max-parents=0 = 根提交),只看物件;沿用池的專案身分(resume_store.project_key)用它
+             "--max-parents=", "--min-parents=")),
     "rev-list": (frozenset(("--count", "--reverse", "--first-parent", "--no-merges", "--merges", "--topo-order")),
                  ("--max-count=", "--since=", "--until=", "--skip=", "--max-parents=", "--min-parents=")),
     "shortlog": (frozenset(("-s", "-n", "-e", "-sn", "-ns", "--summary", "--numbered", "--email")), ()),
     "rev-parse": (frozenset(("--verify", "--short", "-q", "--quiet", "--git-common-dir", "--git-dir", "--absolute-git-dir",
-                             "--show-toplevel", "--is-inside-work-tree")), ("--short=",)),
+                             # 10-15 abb89:--is-shallow-repository 只看 .git/shallow 在不在(project_key 用;結果走 gitq 重跑比對)
+                             "--show-toplevel", "--is-inside-work-tree", "--is-shallow-repository")), ("--short=",)),
     # 10-04 第二批:ls-files 只收「索引裡有哪些檔」(不收 -m/-d/-o/--others 等看工作樹的);索引內容進 githead 狀態
     "ls-files": (frozenset(("-z", "--full-name", "-s", "--stage", "--cached", "-c")), ()),
     # show 只收 <版本>:<路徑>(那個提交裡那支檔的內容,不產生 diff);見 git_history_read_of_repo
