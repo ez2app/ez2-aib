@@ -29,6 +29,7 @@ REPO = HERE.parent
 sys.path.insert(0, str(REPO / "src" / "cockpit"))
 sys.path.insert(0, str(HERE))
 from aib_knife_copy import knife_copy  # noqa: E402
+from aib_proc_guard import run_guarded  # noqa: E402
 
 RELI = "test-dm-reliability-abb89-1015.py"
 _spec = importlib.util.spec_from_file_location("dm_reliability_box", str(HERE / RELI))
@@ -142,8 +143,9 @@ class Knife(unittest.TestCase):
         name = Path(__file__).name
         with knife_copy(REPO, "src/cockpit/dm-ctl.sh", '    case "$_q_org" in nostr:*) _HDR_GLOBAL=1 ;; esac\n', "",
                         tests=(name, RELI)) as root:
-            r = subprocess.run([sys.executable, str(root / "tests" / name), "Wire.test_w1_global_header_frame_body"],
-                               cwd=str(root), capture_output=True, text=True, timeout=300)
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Wire.test_w1_global_header_frame_body"],
+                            cwd=str(root), max_procs=150, timeout=300)        # 跑 dm-ctl 的刀一律經看門狗
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
