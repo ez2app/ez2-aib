@@ -3530,5 +3530,14 @@
   "desktop.declined": "沒有放桌面捷徑(你選了不要)",
   "codex_trust.result.old_python": "沒有自動信任 AIB 的 Codex 掛點:這要 Python 3.11 以上(這台是 {ver});請在 Codex 裡用 /hooks 信任一次",
   "aib.doctor.check.release_gate_hook.not_used": "這份 aib 沒有在用發版閘(只有發佈 aib 版本的人需要),略過",
-  "aib.doctor.mark_note": "提醒"
+  "aib.doctor.mark_note": "提醒",
+  "aib.contract.sources_differ": "⚠ 路由表兩個來源內容不同:{a}({na} 條)與 EZ2_ROUTE_REGISTRY={b}({nb} 條),只在前者 {a_only} 條、只在後者 {b_only} 條;採用 {pick}",
+  "aib.contract.primary_unreadable": "⚠ 路由表 {a} 讀不到,改用 EZ2_ROUTE_REGISTRY={b}",
+  "aib.bindproj.route_kept": "⚠ {seat} 的大腦路由 {route} 不在路由表裡(路由表:{source}),保留原綁定、標成未解析",
+  "aib.bindproj.route_unresolved": "⚠ {seat} 的大腦路由 {route} 過不了路由表({code};路由表:{source}),沒有原綁定可保留、標成未解析",
+  "aib.bindme.problem_route_unresolved": "⚠ 大腦路由未解析",
+  "aib.bindme.route_unresolved_hint": "人格還在;大腦路由 {route} 過不了這次投影用的路由表({code}),原綁定已保留 —— 對齊路由表來源(EZ2_ROUTE_CONTRACT_SPEC / EZ2_ROUTE_REGISTRY)後重投影,不用 repair",
+  "aib.bindme.repair_not_back": "repair 跑完(rc=0)但讀回後 @{code} 的人格還是沒回來(現況:{problem});綁定沒有生效",
+  "aib.bindme.repair_route_unresolved": "repair 接回了 @{code} 的人格,但大腦路由 {route} 過不了路由表({code2}),這一席還沒完整回來;先對齊路由表來源再重投影",
+  "aib.bindme.repair_seat_gone": "repair 跑完後讀不到 @{code} 這一席(席位檔不見或已退出)"
 }

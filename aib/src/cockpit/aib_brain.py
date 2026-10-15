@@ -364,6 +364,10 @@ def contract_bytes(explicit=None):
         raise BrainError('route_contract_missing')
     if explicit:
         layer = 'explicit'
+    elif os.environ.get('EZ2_ROUTE_CONTRACT_SPEC') == spec:
+        layer = 'explicit_environment'
+    elif os.environ.get('EZ2_ROUTE_CONTRACT_SPEC') and os.environ.get('EZ2_ROUTE_REGISTRY') == spec:
+        layer = 'registry_environment'   # 10-15:兩個 env 不同而 REGISTRY 是超集,default_contract_spec 改用它
     elif os.environ.get('EZ2_ROUTE_CONTRACT_SPEC'):
         layer = 'explicit_environment'
     elif spec.startswith('git:'):

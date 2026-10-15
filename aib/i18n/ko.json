@@ -3530,5 +3530,14 @@
   "desktop.declined": "바탕화면 바로가기를 만들지 않았습니다(아니요를 선택)",
   "codex_trust.result.old_python": "AIB 의 Codex 훅 자동 신뢰를 건너뛰었습니다: Python 3.11 이상이 필요합니다(이 컴퓨터는 {ver}). Codex 에서 /hooks 로 한 번 신뢰하세요",
   "aib.doctor.check.release_gate_hook.not_used": "이 AIB는 릴리스 게이트를 쓰지 않습니다(AIB 버전을 배포하는 사람만 필요). 건너뜀",
-  "aib.doctor.mark_note": "알림"
+  "aib.doctor.mark_note": "알림",
+  "aib.contract.sources_differ": "⚠ 경로 계약 두 출처의 내용이 다름: {a}({na}개)와 EZ2_ROUTE_REGISTRY={b}({nb}개), 앞쪽에만 {a_only}개·뒤쪽에만 {b_only}개; {pick} 사용",
+  "aib.contract.primary_unreadable": "⚠ 경로 계약 {a}을(를) 읽을 수 없음; 대신 EZ2_ROUTE_REGISTRY={b} 사용",
+  "aib.bindproj.route_kept": "⚠ {seat}의 두뇌 경로 {route}이(가) 경로표에 없음(경로표: {source}); 기존 연결을 유지하고 미해결로 표시",
+  "aib.bindproj.route_unresolved": "⚠ {seat}의 두뇌 경로 {route}이(가) 경로표를 통과하지 못함({code}; 경로표: {source}); 유지할 기존 연결이 없어 미해결로 표시",
+  "aib.bindme.problem_route_unresolved": "⚠ 두뇌 경로 미해결",
+  "aib.bindme.route_unresolved_hint": "인격은 그대로; 두뇌 경로 {route}이(가) 이번 투영에 쓴 경로표를 통과하지 못함({code}), 기존 연결 유지 —— 경로표 출처(EZ2_ROUTE_CONTRACT_SPEC / EZ2_ROUTE_REGISTRY)를 맞춘 뒤 다시 투영, repair 불필요",
+  "aib.bindme.repair_not_back": "repair는 끝났지만(rc=0) 다시 읽어 보니 @{code}의 인격이 아직 돌아오지 않음(현재: {problem}); 연결이 적용되지 않음",
+  "aib.bindme.repair_route_unresolved": "repair로 @{code}의 인격은 다시 붙었지만 두뇌 경로 {route}이(가) 경로표를 통과하지 못함({code2}); 이 자리는 아직 완전히 돌아오지 않음 —— 경로표 출처를 맞추고 다시 투영",
+  "aib.bindme.repair_seat_gone": "repair 후 @{code} 자리를 읽을 수 없음(자리 파일이 없거나 이미 나감)"
 }

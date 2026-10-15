@@ -569,7 +569,8 @@ def main(argv=None):
     try:
         vault = resolve_vault(args.vault)
         # 10-12:新機器(vault 是 aib 預設)沒有契約 ⇒ 套件附的預設契約;有自己 vault 的照舊要明給
-        contract_path = args.contract or os.environ.get("EZ2_ROUTE_REGISTRY") or _RR.fallback_contract()
+        # 10-15:沒給 --contract 走唯一來源(SPEC > ez2-ai main > REGISTRY > 隨附/預設),不再自己挑
+        contract_path = args.contract or _RR.default_contract_spec()
         contract = load_contract(contract_path)
         if contract is None:
             raise CardRegistryError("路由契約讀不到(--contract 或 EZ2_ROUTE_REGISTRY);"

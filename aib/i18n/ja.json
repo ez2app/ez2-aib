@@ -3530,5 +3530,14 @@
   "desktop.declined": "デスクトップのショートカットは作りませんでした(「いいえ」を選択)",
   "codex_trust.result.old_python": "AIB の Codex フックの自動信頼をスキップしました:Python 3.11 以上が必要です(この環境は {ver});Codex の /hooks で一度信頼してください",
   "aib.doctor.check.release_gate_hook.not_used": "この AIB はリリースゲートを使っていません(AIB を公開する人だけが必要);スキップ",
-  "aib.doctor.mark_note": "注意"
+  "aib.doctor.mark_note": "注意",
+  "aib.contract.sources_differ": "⚠ 経路契約の二つの出所の内容が違う:{a}({na} 本)と EZ2_ROUTE_REGISTRY={b}({nb} 本)、前者だけ {a_only} 本・後者だけ {b_only} 本;{pick} を使う",
+  "aib.contract.primary_unreadable": "⚠ 経路契約 {a} が読めない;EZ2_ROUTE_REGISTRY={b} を代わりに使う",
+  "aib.bindproj.route_kept": "⚠ {seat} の大脳経路 {route} が経路表にない(経路表:{source});元の紐付けを残し、未解決として記録",
+  "aib.bindproj.route_unresolved": "⚠ {seat} の大脳経路 {route} が経路表を通らない({code};経路表:{source});残せる元の紐付けがなく、未解決として記録",
+  "aib.bindme.problem_route_unresolved": "⚠ 大脳経路が未解決",
+  "aib.bindme.route_unresolved_hint": "人格は残っている;大脳経路 {route} が今回の投影で使った経路表を通らない({code})、元の紐付けは保持 —— 経路表の出所(EZ2_ROUTE_CONTRACT_SPEC / EZ2_ROUTE_REGISTRY)を揃えて再投影、repair は不要",
+  "aib.bindme.repair_not_back": "repair は終わった(rc=0)が、読み戻すと @{code} の人格はまだ戻っていない(現状:{problem});紐付けが効いていない",
+  "aib.bindme.repair_route_unresolved": "repair で @{code} の人格は戻ったが、大脳経路 {route} が経路表を通らない({code2});この席はまだ完全には戻っていない —— 経路表の出所を揃えて再投影",
+  "aib.bindme.repair_seat_gone": "repair 後に席 @{code} が読めない(席ファイルがない、または退出済み)"
 }

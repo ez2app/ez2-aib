@@ -182,6 +182,11 @@ def seat_state(state_root, seat, display=None, cards=None):
     })
     if seat["provider"] in BOT_PROVIDERS:
         st["problem"], st["hint"] = "bot", "bot 席不在本工具範圍"
+    elif d.get("brain_binding_status") == "unresolved":
+        # 10-15:人格在、大腦路由過不了這次投影的路由表(多半是路由表來源不一致)⇒ 講路由原因,不是「缺人格」
+        st["problem"] = "route_unresolved"
+        st["route_key"], st["route_code"] = d.get("route_key") or "", d.get("route_unresolved") or ""
+        st["hint"] = _ui("aib.bindme.route_unresolved_hint", route=st["route_key"] or "?", code=st["route_code"] or "?")
     elif persona_uid == CROWN_PERSONA and not seat.get("appointed"):
         # 10-11:冠位人格是「the maintainer 的代言人」,只該在受派艦長身上;最早開而戴冠、或歸隊後冠沒了的席都不對
         st["problem"] = "crown_persona"
@@ -1000,8 +1005,26 @@ def repair(state_root, actor, only=None, dry_run=False, runner=None):
         args = ["newrole", "--name", name, "--seat", "%s/%s" % (st["cabin4"], st["code"]),
                 "--brain", "none", "--actor", actor] + (["--dry-run"] if dry_run else [])
         rc, txt = (runner or run_aib)(args)
-        out.append({"code": st["code"], "persona": name, "rc": rc})
+        row = {"code": st["code"], "persona": name, "rc": rc}
+        if rc == 0 and not dry_run:
+            row.update(verify_repaired(state_root, st))
+        out.append(row)
     return out
+
+
+def verify_repaired(state_root, before):
+    """10-15:repair 跑完**讀回**驗收 —— rc=0 不算接回(以前重投影讀舊路由表又把那一席丟掉,repair 照樣說成功)。
+    回 {"verified": bool, "why": str}。人格要等於延續檔記得的那張,而且大腦路由不是未解析。"""
+    now = next((s for s in status(state_root) if s["code"] == before["code"]), None)
+    if now is None:
+        return {"verified": False, "why": _ui("aib.bindme.repair_seat_gone", code=before["code"])}
+    if now.get("problem") == "route_unresolved":
+        return {"verified": False, "why": _ui("aib.bindme.repair_route_unresolved", code=before["code"],
+                                              route=now.get("route_key") or "?", code2=now.get("route_code") or "?")}
+    if now.get("persona_uid") != before["continuity_persona"]:
+        return {"verified": False, "why": _ui("aib.bindme.repair_not_back", code=before["code"],
+                                              problem=PROBLEM_TEXT.get(now.get("problem"), now.get("problem")))}
+    return {"verified": True, "why": ""}
 
 
 # ── 印表 ────────────────────────────────────────────────────────────
@@ -1019,7 +1042,8 @@ def print_status(rows):
         print("%-12s %-6s %-9s %-14s %-22s %s%s" % (
             "%s/@%s" % (r["cabin4"], r["code"]), r["seat_id"], r["provider"],
             (r["persona_name"] or "—")[:14], (r["project_title"] or "—")[:22],
-            PROBLEM_TEXT.get(r["problem"], r["problem"]), (" —— " + r["hint"]) if r["hint"] else ""))
+            _ui("aib.bindme.problem_route_unresolved") if r["problem"] == "route_unresolved"
+            else PROBLEM_TEXT.get(r["problem"], r["problem"]), (" —— " + r["hint"]) if r["hint"] else ""))
 
 
 def print_proposals(rec):
@@ -1173,7 +1197,11 @@ def main(argv=None):
     else:
         res = repair(root, actor, only, o.dry_run)
     print(json.dumps(res, ensure_ascii=False, indent=2))
-    bad = [x for x in res if any(d.get("rc") for d in x.get("done", [])) or x.get("rc")]
+    for x in res:                                            # 10-15:repair 讀回沒過 ⇒ 原因印出來、rc≠0
+        if x.get("verified") is False:
+            print("bindme: " + x.get("why", ""), file=sys.stderr)
+    bad = [x for x in res if any(d.get("rc") for d in x.get("done", [])) or x.get("rc")
+           or x.get("verified") is False]
     return 1 if bad else 0
 
 

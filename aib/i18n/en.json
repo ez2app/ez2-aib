@@ -3530,5 +3530,14 @@
   "desktop.declined": "desktop shortcut not created (you said no)",
   "codex_trust.result.old_python": "Skipped trusting AIB's Codex hooks automatically: that needs Python 3.11 or newer (this is {ver}); trust them once with /hooks in Codex",
   "aib.doctor.check.release_gate_hook.not_used": "This copy of AIB does not use the release gate (only people who publish AIB releases need it); skipped",
-  "aib.doctor.mark_note": "NOTE"
+  "aib.doctor.mark_note": "NOTE",
+  "aib.contract.sources_differ": "⚠ the two route contract sources differ: {a} ({na} routes) vs EZ2_ROUTE_REGISTRY={b} ({nb} routes); {a_only} only in the first, {b_only} only in the second; using {pick}",
+  "aib.contract.primary_unreadable": "⚠ cannot read the route contract {a}; using EZ2_ROUTE_REGISTRY={b} instead",
+  "aib.bindproj.route_kept": "⚠ {seat}: brain route {route} is not in the route contract (contract: {source}); keeping the existing binding, marked unresolved",
+  "aib.bindproj.route_unresolved": "⚠ {seat}: brain route {route} fails the route contract ({code}; contract: {source}); no existing binding to keep, marked unresolved",
+  "aib.bindme.problem_route_unresolved": "⚠ brain route unresolved",
+  "aib.bindme.route_unresolved_hint": "persona is still bound; brain route {route} fails the route contract used by this projection ({code}), existing binding kept — align the contract sources (EZ2_ROUTE_CONTRACT_SPEC / EZ2_ROUTE_REGISTRY) and re-project; repair is not needed",
+  "aib.bindme.repair_not_back": "repair finished (rc=0) but after reading back, @{code} still has no persona (now: {problem}); the binding did not take effect",
+  "aib.bindme.repair_route_unresolved": "repair re-attached the persona of @{code}, but brain route {route} fails the route contract ({code2}); the seat is not fully back — align the contract sources and re-project",
+  "aib.bindme.repair_seat_gone": "after repair, seat @{code} can no longer be read (seat file missing or exited)"
 }

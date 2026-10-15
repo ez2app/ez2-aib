@@ -133,8 +133,7 @@ def main(argv=None):
             for uid, label in persona_cards(cards, cat):
                 print("%s\t%s" % (uid, label))
         return 0
-    contract = load_contract(args.contract or os.environ.get("EZ2_ROUTE_CONTRACT_SPEC")
-                             or os.environ.get("EZ2_ROUTE_REGISTRY"))
+    contract = load_contract(args.contract)   # 10-15:沒給就走 route_register 唯一來源(與綁定、投影同一份)
     if contract is None:
         print("bind-menu: 路由契約讀不到(--contract / EZ2_ROUTE_CONTRACT_SPEC)", file=sys.stderr)
         return 0
