@@ -152,6 +152,63 @@ class GitQueries(_Fixture):
         self.assertIsNone(self._reuse("t_git.py", row), "根提交多一個 ⇒ 查詢結果變了 ⇒ 一定重跑")
 
 
+# ── F2 bash 3.2 ────────────────────────────────────────────────────────────────────────────────────────
+PROBE = 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"'
+B_PROBE = '''import subprocess
+p = subprocess.run(["/bin/bash", "-c", %r], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+assert p.returncode == 0 and p.stdout.strip(), p
+assert open("data.txt").read() == "D\\n" or True
+''' % PROBE
+B_CAT = '''import subprocess
+p = subprocess.run(["/bin/bash", "-c", "cat data.txt"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+assert p.returncode == 0 and p.stdout == "D\\n", p
+'''
+B_FUNC = '''import os, subprocess
+env = dict(os.environ, **{"BASH_FUNC_echo%%": "() {  builtin echo \\"$(cat data.txt)\\"\\n}"})
+p = subprocess.run(["/bin/bash", "-c", "echo hi"], capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env)
+assert p.returncode == 0, p
+'''
+
+
+def _b32_events(cstr):
+    ev = [{"ch": "inherit", "pid": 1}, {"ch": "argv", "pid": 1, "argv": ["/bin/bash", "-c", str(cstr)], "cwd": "/",
+                                         "hooked": True, "shell": "bash"},
+          {"ch": "inherit", "pid": 2, "via": "bash", "argv0": "/bin/bash"}]
+    u = {"ch": "unmeasured", "why": "bash-version-no-xtrace:3.2.57", "pid": 2}
+    if cstr is not None:
+        u["cstr"] = cstr
+    return ev + [u, {"ch": "exit", "pid": 2, "via": "bash"}, {"ch": "exit", "pid": 1}]
+
+
+class Bash32(_Fixture):
+    TESTS = {"t_probe.py": B_PROBE, "t_cat.py": B_CAT, "t_func.py": B_FUNC}
+
+    def test_b1_analyzer_only_passes_reads_nothing_strings(self):
+        for ok in (PROBE, "true", ":", "exit 0", "printf '%s\\n' \"$HOME\"", "echo hi $BASH_VERSION"):
+            _i, _fp, unm, _x, why = st.inputs_from_events(_b32_events(ok))
+            self.assertFalse(unm, (ok, why))
+        for bad in ("cat data.txt", "echo $(cat data.txt)", "echo `id`", "echo hi > out", "echo < data.txt", "echo *",
+                    "echo ${X:-$(cat f)}", "echo a; cat b", "echo a | wc", "echo a && cat b", "source ./lib.sh",
+                    ". ./lib.sh", "echo ~/x", "echo $1", "echo \"$(<data.txt)\"", "echo a\ncat b", "echo $X[0]", None):
+            _i, _fp, unm, _x, why = st.inputs_from_events(_b32_events(bad))
+            self.assertTrue(unm, (bad, why))
+
+    @unittest.skipUnless(OLD_SYS_BASH, "只在 /bin/bash < 4.1 的機器驗(macOS 內建 3.2);新 bash 走完整追蹤")
+    def test_b2_version_probe_measured_and_data_change_blocks(self):
+        row = self._run("t_probe.py")
+        self.assertIs(row["measured"], True, row["why"])
+        self.assertIsNotNone(self._reuse("t_probe.py", row), "什麼都沒改 ⇒ 要沿用得到")
+        (self.repo / "data.txt").write_text("D2\n", encoding="utf-8")
+        self.assertIsNone(self._reuse("t_probe.py", row), "測試讀的檔改了 ⇒ 一定重跑")
+
+    @unittest.skipUnless(OLD_SYS_BASH, "只在 /bin/bash < 4.1 的機器驗(macOS 內建 3.2);新 bash 走完整追蹤")
+    def test_b3_reading_strings_and_env_functions_stay_unmeasured(self):
+        for name in ("t_cat.py", "t_func.py"):
+            row = self._run(name)
+            self.assertIsNot(row["measured"], True, (name, row["why"]))
+            self.assertTrue(any(str(w).startswith("bash-version-no-xtrace") for w in row["why"]), (name, row["why"]))
+
+
 # ── 刀(複本)─────────────────────────────────────────────────────────────────────────────────────────
 def _knife(rel, needle, replacement, cell):
     from aib_knife_copy import knife_copy
@@ -167,6 +224,16 @@ class Knives(unittest.TestCase):
         red, err = _knife("tools/verify/shadow_tracer.py", '"--show-toplevel", "--is-inside-work-tree", "--is-shallow-repository")',
                           '"--show-toplevel", "--is-inside-work-tree")', "GitQueries.test_g2_measured_and_reused_when_unchanged")
         self.assertIn("test_g2_measured_and_reused_when_unchanged", red, err)
+
+    def test_k2_no_cstr_rule_reds_b1(self):
+        red, err = _knife("tools/verify/shadow_tracer.py", "            if bash_c_reads_nothing(ev):\n",
+                          "            if False:\n", "Bash32.test_b1_analyzer_only_passes_reads_nothing_strings")
+        self.assertIn("test_b1_analyzer_only_passes_reads_nothing_strings", red, err)
+
+    def test_k2b_no_hook_cstr_reds_b2(self):
+        red, err = _knife("tools/verify/bash-shim/_trace.bash", '  case $- in *c*)\n', '  case $- in *NEVER*)\n',
+                          "Bash32.test_b2_version_probe_measured_and_data_change_blocks")
+        self.assertIn("test_b2_version_probe_measured_and_data_change_blocks", red, err)
 
 
 if __name__ == "__main__":

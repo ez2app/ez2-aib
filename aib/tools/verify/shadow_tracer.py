@@ -106,6 +106,26 @@ BASH_PROBE_FLAGS = frozenset(("-e", "-f", "-d", "-r", "-w", "-x", "-s", "-L", "-
 _EVAL_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-=+?][^}$`<>()\\;|&'\"]*)?\}")
 
 
+# 10-15 abb89:bash 3.2 量不到的裡面,最常見的是測試自己的「這台 bash 追不追得了」探測
+#   `/bin/bash -c 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"'` —— 它什麼檔都沒讀,卻讓整支量不到。
+#   鉤子記下 -c 的字串(cstr,環境有同名函式時不記);字串整條吻合下面這個形才放行:
+#   第一個字是 echo/printf/true/:/exit(內建),其後每個字只能是單引號字串、雙引號字串(裡面只准普通字與
+#   $NAME / ${NAME} / ${NAME[數字]})、或不帶引號的普通字(不含 glob、~、{}、導向、管線、分號、反引號、反斜線)。
+#   ⇒ 不開檔、不跑命令、不列目錄;變數值來自環境(已在環境指紋)。其餘一律照舊量不到。
+#   不採「換成新版 bash 跑」:那會改掉測試驗的對象(macOS 使用者真的用 3.2 跑 #!/bin/bash 腳本,3.2 才有的錯會被藏成綠)。
+_BC_VAR = r"\$(?:\{[A-Za-z_][A-Za-z0-9_]*(?:\[[0-9]+\])?\}|[A-Za-z_][A-Za-z0-9_]*)"
+_BC_WORD = r"(?:'[^']*'|\"(?:[^\"\\$`]|%s)*\"|(?:[A-Za-z0-9_.,:=+/%%@-]|%s)+)+" % (_BC_VAR, _BC_VAR)
+_BASH_C_NOREAD_RE = re.compile(r"[ ]*(?:echo|printf|true|:|exit)(?:[ ]+%s)*[ ]*" % _BC_WORD)
+
+
+def bash_c_reads_nothing(ev):
+    """unmeasured 事件是 bash 3.2 的、帶 cstr、而且字串整條是「不讀任何東西的內建命令」⇒ True(見上方註解)。"""
+    if not str(ev.get("why") or "").startswith("bash-version-no-xtrace"):
+        return False
+    c = ev.get("cstr")
+    return isinstance(c, str) and bool(c) and _BASH_C_NOREAD_RE.fullmatch(c) is not None
+
+
 WHY_MAX = 200
 
 
@@ -2609,6 +2629,8 @@ def inputs_from_events(events, repo=None):
                 if _w not in why:
                     why.append(_w)
         elif ch == "unmeasured":
+            if bash_c_reads_nothing(ev):
+                continue      # 10-15 abb89:bash 3.2 的 `bash -c` 字串只是一條不讀檔的內建命令(見 bash_c_reads_nothing)
             unmeasured = True
             why.append(str(ev.get("why") or "unmeasured"))
         elif ch == "external":
