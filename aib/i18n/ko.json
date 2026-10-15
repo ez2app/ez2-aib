@@ -4248,5 +4248,13 @@
   "aib.persona_sources.off": "끔",
   "aib.persona_sources.all_free": "모든 AI를 무료로 쓸 수 있습니다. 어느 것이든 켤 수 있습니다",
   "aib.persona_sources.unknown": "알 수 없는 provider: {name}",
-  "aib.persona_sources.usage": "사용법: source <provider> on|off(중: 來源 <provider> 開|關)"
+  "aib.persona_sources.usage": "사용법: source <provider> on|off(중: 來源 <provider> 開|關)",
+  "aib.proc_count.warn": "⚠ 프로세스 한도 임박: {count}/{limit}({pct}%) · 많은 순: {top}",
+  "aib.proc_count.top_item": "{name}×{n}",
+  "aib.proc_count.top_sep": ", ",
+  "aib.proc_count.unknown": "프로세스 수: 측정 불가",
+  "aib.proc_count.report_ok": "프로세스 수: {count}/{limit}({pct}%, {threshold}%부터 경고)",
+  "aib.proc_count.report_warn": "⚠ 프로세스 수: {count}/{limit}({pct}%, {threshold}% 초과): 조금만 더 늘면 새 프로세스를 못 엽니다. 아래 상위 명령을 확인하세요",
+  "aib.proc_count.report_no_limit": "프로세스 수: {count}(이 기기에서 한도를 찾지 못해 경고 없음)",
+  "aib.proc_count.report_top": "프로세스가 가장 많은 명령: {top}"
 }

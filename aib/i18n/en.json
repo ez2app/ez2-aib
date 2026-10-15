@@ -4248,5 +4248,13 @@
   "aib.persona_sources.off": "off",
   "aib.persona_sources.all_free": "All AIs are free: any of them can be turned on",
   "aib.persona_sources.unknown": "Unknown provider: {name}",
-  "aib.persona_sources.usage": "Usage: source <provider> on|off"
+  "aib.persona_sources.usage": "Usage: source <provider> on|off",
+  "aib.proc_count.warn": "⚠ Processes nearly full: {count}/{limit} ({pct}%) · most: {top}",
+  "aib.proc_count.top_item": "{name}×{n}",
+  "aib.proc_count.top_sep": ", ",
+  "aib.proc_count.unknown": "Processes: could not measure",
+  "aib.proc_count.report_ok": "Processes: {count}/{limit} ({pct}%; warns from {threshold}%)",
+  "aib.proc_count.report_warn": "⚠ Processes: {count}/{limit} ({pct}%, over {threshold}%): a little more and no new process can start; check the top commands below",
+  "aib.proc_count.report_no_limit": "Processes: {count} (no limit found on this machine; no warning)",
+  "aib.proc_count.report_top": "Commands with the most processes: {top}"
 }

@@ -312,15 +312,31 @@ def compose(cells, level=None, width=44, stale=False, legacy=False):
     return out or [_center(tr.t("aib.machine.measuring"), width)]
 
 
+def proc_warn_lines(width):
+    """G11(@abb89 10-15 22:56):這個使用者的行程數超過 kern.maxprocperuid 的 80% ⇒ 右欄最頂一行警告(含最多的前 3 名)。
+    ★ 例外於「取值不在這一層」:這一格**每次畫都現量**,不進背景快取 —— 行程表快滿時背景更新那一支 fork 正好開不出來,
+      快取停在舊的「正常」,最該警告的時候反而不警告。現量走 libproc / /proc,不 fork(allow_fork=False),一輪 < 1 毫秒。
+    ★ 加在 rows() 回的第 0 行:外框照 rows 的行數算 EZ2_ROW_OFFSET,點擊位置跟著移,不會「點 A 跳 B」。
+    量不到或沒超過 ⇒ 不佔行。"""
+    try:
+        import proc_count
+        line = proc_count.warn_line(proc_count.check(allow_fork=False))
+    except Exception:   # noqa: BLE001  預警壞了不得讓整個面板不畫
+        return []
+    if not line:
+        return []
+    return [_paint(_clip_visible(line, width), "critical")]
+
+
 def rows(width, ttl=DEFAULT_TTL_S, path=None):
     """畫面用:讀快取(毫秒)、就地排版,過期時背景更新。**取值永遠不在這一層**。"""
     path = path or cache_path()
     if not path:
-        return [MEASURING]          # 座艙狀態目錄不明 ⇒ 說量不到,不猜一個艙
+        return proc_warn_lines(width) + [MEASURING]   # 座艙狀態目錄不明 ⇒ 說量不到,不猜一個艙(行程預警不靠快取,照樣量)
     data, age = read_cache(path)
     if data is None:
         spawn_refresh(path)
-        return [MEASURING]
+        return proc_warn_lines(width) + [MEASURING]
     # A future mtime is not fresh evidence: clock skew must not let a cached
     # normal/critical verdict remain current forever.  Treat missing age the
     # same way rather than silently assuming it is current.
@@ -329,6 +345,7 @@ def rows(width, ttl=DEFAULT_TTL_S, path=None):
     legacy = not isinstance(level, dict) or "load_level" not in level or "thermal_level" not in level
     lines = compose(data.get("cells") or [], level, width, stale=stale, legacy=legacy)
     lines.extend(composer_notice_lines(width))
+    lines[:0] = proc_warn_lines(width)
     if stale or legacy:
         spawn_refresh(path)
     return lines

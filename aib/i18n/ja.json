@@ -4248,5 +4248,13 @@
   "aib.persona_sources.off": "オフ",
   "aib.persona_sources.all_free": "すべての AI が無料で使えます。どれでもオンにできます",
   "aib.persona_sources.unknown": "不明な provider: {name}",
-  "aib.persona_sources.usage": "使い方: source <provider> on|off(中: 來源 <provider> 開|關)"
+  "aib.persona_sources.usage": "使い方: source <provider> on|off(中: 來源 <provider> 開|關)",
+  "aib.proc_count.warn": "⚠ プロセス数が上限間近:{count}/{limit}({pct}%)· 多い順:{top}",
+  "aib.proc_count.top_item": "{name}×{n}",
+  "aib.proc_count.top_sep": "、",
+  "aib.proc_count.unknown": "プロセス数:計測できません",
+  "aib.proc_count.report_ok": "プロセス数:{count}/{limit}({pct}%、{threshold}% から警告)",
+  "aib.proc_count.report_warn": "⚠ プロセス数:{count}/{limit}({pct}%、{threshold}% 超過):これ以上増えると新しいプロセスを起動できません。下の上位を確認してください",
+  "aib.proc_count.report_no_limit": "プロセス数:{count}(このマシンでは上限不明のため警告なし)",
+  "aib.proc_count.report_top": "プロセス数が多いコマンド:{top}"
 }
