@@ -171,6 +171,11 @@ def seat_state(state_root, seat, display=None, cards=None):
     })
     if seat["provider"] in BOT_PROVIDERS:
         st["problem"], st["hint"] = "bot", "bot 席不在本工具範圍"
+    elif d.get("brain_binding_status") == "unresolved":
+        # 10-15:人格在、大腦路由過不了這次投影的路由表(多半是路由表來源不一致)⇒ 講路由原因,不是「缺人格」
+        st["problem"] = "route_unresolved"
+        st["route_key"], st["route_code"] = d.get("route_key") or "", d.get("route_unresolved") or ""
+        st["hint"] = _ui("aib.bindme.route_unresolved_hint", route=st["route_key"] or "?", code=st["route_code"] or "?")
     elif persona_uid == CROWN_PERSONA and not seat.get("appointed"):
         # 10-11:冠位人格是「the maintainer 的代言人」,只該在受派艦長身上;最早開而戴冠、或歸隊後冠沒了的席都不對
         st["problem"] = "crown_persona"
@@ -1008,7 +1013,8 @@ def print_status(rows):
         print("%-12s %-6s %-9s %-14s %-22s %s%s" % (
             "%s/@%s" % (r["cabin4"], r["code"]), r["seat_id"], r["provider"],
             (r["persona_name"] or "—")[:14], (r["project_title"] or "—")[:22],
-            PROBLEM_TEXT.get(r["problem"], r["problem"]), (" —— " + r["hint"]) if r["hint"] else ""))
+            _ui("aib.bindme.problem_route_unresolved") if r["problem"] == "route_unresolved"
+            else PROBLEM_TEXT.get(r["problem"], r["problem"]), (" —— " + r["hint"]) if r["hint"] else ""))
 
 
 def print_proposals(rec):

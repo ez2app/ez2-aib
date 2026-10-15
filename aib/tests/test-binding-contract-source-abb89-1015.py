@@ -221,5 +221,60 @@ class F2NoSilentDrop(unittest.TestCase):
         self.assertIn(CODE_OPS, self.sb.bound_keys())
 
 
+def _live_row(code, seat_id):
+    return {"code": code, "seat_id": seat_id, "cabin": "inst-abcd", "cabin4": "abcd", "provider": "claude",
+            "role": "root", "project_uid": "", "project_title": "", "appointed": False}
+
+
+class _BindmeCase(unittest.TestCase):
+    """bindme 沙盒:狀態根同 Sandbox;live_seats 換成固定兩席(不碰真艙 / tmux)。"""
+
+    def setUp(self):
+        self.sb = Sandbox()
+        r = self.sb.project(self.sb.env(registry=self.sb.fresh))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ident = self.sb.state / "identity"
+        (ident / "cards.json").write_text(self.sb.cards.read_text(encoding="utf-8"), encoding="utf-8")
+        (ident / "seat-continuity").mkdir()
+        for sid, _uuid, _rk in (SEAT_OPS, SEAT_OK):
+            (ident / "seat-continuity" / (sid + ".json")).write_text(
+                json.dumps({"persona_uid": "p-" + sid}), encoding="utf-8")
+        import bindme
+        self.bm = bindme
+        self._orig_live = bindme.live_seats
+        bindme.live_seats = lambda _root: [_live_row(CODE_OPS, SEAT_OPS[0]), _live_row(CODE_OK, SEAT_OK[0])]
+        self._env = patched_env(self.sb.env(registry=self.sb.stale))
+        self._env.__enter__()
+
+    def tearDown(self):
+        self.bm.live_seats = self._orig_live
+        self._env.__exit__(None, None, None)
+        self.sb.cleanup()
+
+    def stale_reproject(self):
+        r = self.sb.project(self.sb.env(registry=self.sb.stale), contract=self.sb.stale)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def row(self, code):
+        return next(r for r in self.bm.status(str(self.sb.state)) if r["code"] == code)
+
+
+class F4StatusSaysRouteReason(_BindmeCase):
+    """f4:路由未解析的席,status 講路由原因,不是「缺人格」。"""
+
+    def test_unresolved_route_seat_shows_route_reason(self):
+        self.stale_reproject()
+        r = self.row(CODE_OPS)
+        self.assertEqual(r["problem"], "route_unresolved")
+        self.assertIn("core.site_ops", r["hint"])
+        self.assertIn("route_not_in_contract", r["hint"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.bm.print_status([r])
+        self.assertIn("大腦路由未解析", out.getvalue())
+        self.assertNotIn("缺人格", out.getvalue())
+        self.assertNotEqual(self.row(CODE_OK)["problem"], "route_unresolved")
+
+
 if __name__ == "__main__":
     unittest.main()
