@@ -504,6 +504,7 @@ _engine_block_kind() {   # $1=引擎 log 檔
   text="$(cat "$1" 2>/dev/null)" || return 0
   case "$text" in
     *"block_kind=browse"*) printf 'browse-mode\n'; return 0 ;;
+    *"block_kind=history"*) printf 'history-mode\n'; return 0 ;;   # 10-14 K8:Claude 框在輸入歷史,不是卡稿
     *"block_kind=modal"*|*"block_kind=draft"*) printf 'foreign-draft\n'; return 0 ;;
     *未送出草稿*|*拒絕投遞*) printf 'foreign-draft\n'; return 0 ;;
   esac
@@ -847,7 +848,28 @@ _xhost_send() {
   [ "$DRYRUN" = "1" ] && rargs+=(--dry-run)
   [ "$VERIFY" = "1" ] && rargs+=(--verify)
   cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
-  out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd")"; rc=$?
+  local errf; errf="$(_dm_ctl_tmp aib-dm-xhost-err)" || errf=/dev/null   # 暫存檔走 _dm_ctl_tmp(不自己推 TMPDIR)
+  out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd" 2>"$errf")"; rc=$?
+  # 相容退路:收件機的 aib 是還沒有跨主機身分的舊版 ⇒ 它在解析參數就停(rc 2、RESULT stage=abort、
+  #   stderr 點名 --xhost-ident),一個字都沒進艙 ⇒ 不帶身分重送一次;抬頭由收件機照舊寫未認證。
+  #   三條都要成立才退:別的 rc 2(對方擋下、地址錯)照原樣回,不重送。
+  if [ "$rc" = "2" ] && [ "${out##*$'\n'}" = "RESULT stage=abort id=- relay=- thread=-" ] \
+       && grep -q -- '--xhost-ident' "$errf" 2>/dev/null; then
+    rm -f "$errf"
+    echo "aib-dm-ctl: 收件機 $host 的 aib 是舊版、不認跨主機身分 ⇒ 不帶身分重送一次;對方抬頭會是未認證,寄件人只能看正文(請那台更新 aib)" >&2
+    local i; for ((i = 0; i < ${#rargs[@]}; i++)); do
+      if [ "${rargs[i]}" = "--xhost-ident" ]; then rargs=("${rargs[@]:0:i}" "${rargs[@]:i+2}"); break; fi
+    done
+    cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
+    # 舊版抬頭會把位址寫成收件機自己 ⇒ 正文第一行標出 sshd 在那台量到的來源 IP 與自稱寄件人。
+    local src_ip note
+    src_ip="$("$ssh_bin" "${sshopt[@]}" "$host" 'printf "%s" "${SSH_CONNECTION%% *}"' </dev/null 2>/dev/null)" || src_ip=""
+    note="$("$PY3" "$HERE/dm_xhost.py" fallback-note "$ident" "$src_ip")" || note=""
+    out="$({ [ -n "$note" ] && printf '%s\n' "$note"; printf '%s' "$MSG"; } | "$ssh_bin" "${sshopt[@]}" "$host" "$cmd")"; rc=$?
+  else
+    cat "$errf" >&2 2>/dev/null
+    [ "$errf" = /dev/null ] || rm -f "$errf"
+  fi
   [ -n "$out" ] && printf '%s\n' "$out"
   # 收件機的 dm-ctl 有跑到 ⇒ 它自己印了 RESULT 行;本機不再印第二行(最後一行要是收件機那一則的)。
   local remote_ran=0
@@ -2930,6 +2952,7 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
     _AE_BLOCK_KIND="$(_engine_block_kind "$_ENG_LOG")"
     case "$_AE_BLOCK_KIND" in
       browse-mode)   _notice_blocked "$T_CODE" browse-mode ;;
+      history-mode)  _notice_blocked "$T_CODE" history-mode ;;
       foreign-draft) _notice_blocked "$T_CODE" foreign-draft ;;
     esac
     # ★ 第 55 項:瀏覽模式與卡稿分開講。對方輸入行不在畫面上,一個字都沒進去,它回輸入列後就能收 ——
@@ -2948,6 +2971,14 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
       _aib_emit_engine_log final
       _auto_resend browse-mode
       emit_json 2 browse-mode "對方 TUI 在瀏覽模式(底列 ←:collapse / Enter:open),輸入行不在畫面上;**不是卡稿**,一個字都沒進目標;該席按 Esc 回輸入列後**可安全重送**(原 rc=$RC)"
+      exit 2
+    fi
+    # 10-14 K8:Claude 輸入框停在輸入歷史(框頂線 History n/m)。引擎已先試著按 ↓ 退回空框,這次沒退出來;
+    #   框裡是別席的舊訊息、不是卡稿,這封一個字都沒進目標 ⇒ 可安全重送(與瀏覽模式同一條)。
+    if [ "$_AE_BLOCK_KIND" = "history-mode" ]; then
+      _aib_emit_engine_log final
+      _auto_resend history-mode
+      emit_json 2 history-mode "對方 Claude 的輸入框停在輸入歷史(框頂線 History n/m),框裡是別席的舊訊息、**不是卡稿**;引擎試著按 ↓ 退回空框沒成功(畫面在動或按到上限),一個字都沒進目標;該席按 ↓ 直到 History 消失後**可安全重送**(原 rc=$RC)"
       exit 2
     fi
     if [ "$_AE_RESID" = "0" ]; then

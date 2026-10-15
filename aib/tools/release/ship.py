@@ -124,9 +124,16 @@ def policy_start(repo, rev="HEAD", prof=None):
     return out[-1] if out else None
 
 
+def has_commits(repo):
+    """這個倉有沒有任何提交(新專案 git init 完還沒 commit ⇒ False)。"""
+    return bool(git(repo, "rev-parse", "-q", "--verify", "HEAD", check=False).strip())
+
+
 def first_parent(repo, since_incl, rev="HEAD"):
-    shas = git(repo, "rev-list", "--first-parent", "--reverse", "%s^..%s" % (since_incl, rev)).split()
-    return shas
+    # 10-14 新用戶走查:規則起點是根提交(第一顆就加了 .aib/ship.toml)⇒ 沒有 since^,從根算起
+    if git(repo, "rev-parse", "-q", "--verify", since_incl + "^", check=False).strip():
+        return git(repo, "rev-list", "--first-parent", "--reverse", "%s^..%s" % (since_incl, rev)).split()
+    return git(repo, "rev-list", "--first-parent", "--reverse", rev).split()
 
 
 def check_range(repo, since_incl, rev="HEAD", prof=None):
@@ -403,6 +410,9 @@ def watch_main(repo, base, prof, stop, on_stop, wait=None):
         except (OSError, subprocess.SubprocessError) as e:
             print(T("lock_take_failed", {"why": str(e)[:160]}))
             continue
+        if isinstance(why, _Unmeasurable):         # 量不到(例如挑選逾時)≠ 推不上去:跑完再由推的那一步判
+            print(T("moved_watch_unmeasurable", {"sha": sha[:9], "why": why}))
+            continue
         if why:
             print(T("moved_watch_stop", {"sha": sha[:9], "why": why}))
             on_stop(sha, why)
@@ -489,6 +499,10 @@ def _select_tests(repo, base, head):
     return 0, [l.strip() for l in p.stdout.splitlines() if l.strip().startswith("tests/")]
 
 
+class _Unmeasurable(str):
+    """moved_plan 的「量不到影響哪些測試」:推之前照舊停;檢查途中看主線時不提早停(Mini 審查建議 4),交給推的那一步判。"""
+
+
 MOVED_CODE_MAX = 150  # 10-14:主線新來的改到程式檔時,受影響的測試超過這麼多支 ⇒ 不追(等於整輪重跑),停給人
 
 
@@ -520,7 +534,7 @@ def moved_plan(repo, expect_remote, remote, prof, head="HEAD"):
     except subprocess.TimeoutExpired:
         rc, tests = -1, []
     if rc != 0:
-        return T("moved_why_unmeasurable", {"rc": rc}), files, code, []
+        return _Unmeasurable(T("moved_why_unmeasurable", {"rc": rc})), files, code, []
     if code and len(tests) > MOVED_CODE_MAX:
         return T("moved_why_too_many", {"n": len(tests), "max": MOVED_CODE_MAX}), files, code, tests
     return None, files, code, tests
@@ -1152,6 +1166,9 @@ def cmd_check_gate(a):
 def cmd_check(a):
     if getattr(a, "gate", False):
         return cmd_check_gate(a)
+    if not has_commits(a.repo):
+        print(T("no_commits"))
+        return 2
     since = a.since or policy_start(a.repo, a.rev, a.prof)
     if since is None:
         print(T("no_start", {"path": a.prof.policy_start_file}))
@@ -1364,6 +1381,13 @@ def cmd_package(a):
     A) 自己拿機器租約、綁自己的 pid(外層殼死了租約不跟著死),結束一定放;
        租約已被「自己或呼叫自己的殼」拿著 ⇒ 沿用,不重拿也不放(相容先拿鎖再起 ship 的排隊腳本);
     登記 <git dir>/aib-ship-running/<pid>,讓 host_lease 在持有者死了時看得到「這棵樹還有推包在跑」而不准接管(提案 C)。"""
+    # 10-14 新用戶走查:新專案還沒提交 / 還沒設遠端 ⇒ 說一句人話,不噴 git 的 traceback
+    if not has_commits(a.repo):
+        print(T("no_commits"))
+        return 2
+    if not git(a.repo, "remote", "get-url", "origin", check=False).strip():
+        print(T("no_origin"))
+        return 2
     if getattr(a, "preview", False):
         return _cmd_package_body(a)
     saved = _exit_on_signals()
@@ -1462,8 +1486,12 @@ def ship_role():
     return "submit" if role.strip().lower() == "submit" else "push"
 
 
+SUBMIT_RC = 10   # 交件成功的結束碼:不是 0,外層看結束碼才不會當成「推進主線了」(Mini 審查建議 7)
+
+
 def submit(repo, branches):
-    """交件:把這包推到 origin 的 submit/<主機>/<分支>,給主推合進它的下一包。不碰主線、不拿鎖、不跑整輪檢查。"""
+    """交件:把這包推到 origin 的 submit/<主機>/<分支>,給主推合進它的下一包。不碰主線、不拿鎖、不跑整輪檢查。
+    成功回 SUBMIT_RC(不是 0)。"""
     host = re.sub(r"[^A-Za-z0-9._-]+", "-", socket.gethostname()) or "host"
     refs = ["HEAD:refs/heads/submit/%s/%s" % (host, b) for b in branches]
     p = subprocess.run(["git", "-C", str(repo), "push", "-q", "-f", "origin", *refs], capture_output=True, text=True,
@@ -1472,7 +1500,7 @@ def submit(repo, branches):
         raise SystemExit(T("submit_failed", {"why": p.stderr.strip()[-300:]}))
     print(T("submit_done", {"what": ", ".join(r.split(":", 1)[1].replace("refs/heads/", "") for r in refs),
                             "sha": git(repo, "rev-parse", "--short", "HEAD").strip()}))
-    return 0
+    return SUBMIT_RC
 
 
 def _cmd_package_guarded(a):

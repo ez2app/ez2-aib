@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.7
+
+- aib installed with pip in a virtual environment now updates itself when you open a seat, like pipx and one-line installs already did. **If you installed 0.1.6 or older with pip, run `pip install --upgrade ez2-aib` once.**
+- `aib update` on a pip / pipx install now names the right package (`pipx upgrade ez2-aib` or `pip install --upgrade ez2-aib`).
+- The captain bar label and the error messages of the captain tools follow your language (Japanese and Korean too), and the label is no longer cut off in English.
+- Every release is now checked before it reaches PyPI: the built package is installed in a clean environment and upgraded to from the previous and the oldest available release; after the upload, the same checks run again against PyPI (pipx, pip and the one-line install) on Linux and macOS.
+
 ## 0.1.6
 
 - The README now opens with where aib comes from and its slogan, **AI Basic to AI Best**: the easiest-to-use, most human foundation for AI tools. It also previews virtual buddies (a Claude Code mod first), which are still in development.

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # aib 一行安裝,也是一行更新(10-09 起開源版預設:從 github.com/ez2app/ez2-aib 取,裝到 ~/ez2-aib)
-#   curl -fsSL https://aib.ez2.app/install.sh | bash                  沒裝過就安裝;裝過就只快轉到最新(不重抓、不蓋你的改動)
-#   curl -fsSL https://aib.ez2.app/install.sh | bash -s -- --tools     另外再問一次要加裝哪些 AI 工具
+#   curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash                  沒裝過就安裝;裝過就只快轉到最新(不重抓、不蓋你的改動)
+#   curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash -s -- --tools     另外再問一次要加裝哪些 AI 工具
+#   (網址跟 README 一致;https://aib.ez2.app/install.sh 是同一支的短網址,兩個都可以。)
 #   bash aib-bootstrap.sh [--dir DIR] [--tools] [--package-base HTTPS_URL …] [--dry-run];管理者舊路徑:--source GIT_URL
 # 一開始問一次管理員密碼(sudo),之後自動裝:Apple 開發者工具、Homebrew、tmux、勾選的 AI 工具、aib。可重跑;已有的跳過。
 # bash 照已排定的第 3 步升級,這裡不動。必須本人在終端機執行(要輸入密碼)。

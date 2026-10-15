@@ -111,6 +111,29 @@ aib --help-cockpit         # 所有選項
 - [25] 命令列工具:在終端機裡打指令使用的程式(例如 `claude`、`codex`)。
 - [26] `brew install bash`:用 Homebrew(macOS 上裝軟體的工具)裝新版的 bash。
 
+## 人格、專案、傳訊與交接
+
+每一席可以帶一個**人格**(它是誰、絕對不做什麼)和一個**專案**(它在做什麼)。
+席與席之間可以互寄訊息;對話快滿之前,這一席寫好交接,給下一輪接手。
+
+```sh
+aib bindme status                                  # 看每一席的人格與專案(唯讀)
+aib newrole --name "Code Reviewer" --prompt-file reviewer.md \
+  --seat abcd/12345 --actor root@54321/Claude       # 建一個人格,綁到某一席
+aib newproj --title "My blog" \
+  --seat abcd/12345 --actor root@54321/Claude       # 開一個專案,綁到某一席
+aib dm abcd/12345 "please review the login change" # 寄訊息給另一席
+aib handoff status                                 # 這一席這一輪寫過交接沒
+```
+
+- **席位地址:**`<艙位碼>/<席碼>`,右欄和每封訊息的抬頭都有(上面的 `abcd/12345` 只是示意)。`aib bindme status` 會列出你這一艙的每一席。
+- **人格檔:**一定要有這三個標題(照寫),底下都要有內容:`## 職責`、`## 紅線`、`## 知識域`。少了 `aib newrole` 會拒絕(`PERSONA_LINT_FAIL`)。
+- **`--actor`:**你自己的帳本署名,`<角色>@<你的席碼>/<AI>`,例如 `root@54321/Claude`(或設 `EZ2_OWNER_SIG`)。要綁席才需要:給了 `--seat` 卻沒給 `--actor`,`newrole` 照樣建卡,但不綁席。沒給 `--seat` 時 `newrole` / `newproj` 只建卡。
+- **先試跑:**`newrole`、`newproj`、`dm` 加 `--dry-run`,只看會發生什麼,不寫檔、不寄出。
+- **新專案:**目標與紅線一開始是初稿,你核准後才生效;目前還沒有核准用的指令。
+- **傳訊:**對方輸入框裡有還沒送出的字,`aib dm` 不會蓋過去一起送出:約 30 秒後自動重送一次,再不行就把訊息留給你處理。
+- **交接:**對話接近 85% 或 `/clear` 之前,三步:`aib handoff collect` → `write` → `verify`。
+
 ## 規劃中:跨主機與社群
 
 > 下面這些還在規劃、還不能用,做好時會寫進版本紀錄 CHANGELOG<sup>[27]</sup>。
@@ -254,6 +277,7 @@ aib 不會把你的程式碼、測試結果或任何資料傳給我們。紀錄�
 |---|---|
 | `aib:沒有「…」這個指令` | 打錯字,或這一版沒有這個指令。`aib --help` 列出全部。 |
 | `…這個功能還在開發中` | 這個指令(跨主機艦隊、協作廣場、報告等)還在開發中、尚未對外開放;其他功能不用它也能正常用。 |
+| 用 pip 裝的 aib 0.1.6 或更舊版一直不會自己更新 | 這些版本不知道怎麼更新用 pip 裝的 aib。在同一個環境跑一次 `pip install --upgrade ez2-aib`;0.1.7 起開席時會自己更新。 |
 | `aib newrole`/第二大腦要你設 `EZ2_ROUTE_REGISTRY` | 你設了自己的知識庫(`EZ2_VAULT_DIR`,或電腦上有 `~/Desktop/Obsidian/Ez2`),aib 不會替你猜資料夾。把 `EZ2_ROUTE_REGISTRY` 指到你的路由契約;或拿掉 `EZ2_VAULT_DIR`,改用 aib 自己的 `~/.ez2-aib/vault`。 |
 | 安裝時說 `~/.local/bin` 已經有別的 `aib` | 你原本的 aib 照常可用,開源版放在旁邊的 `~/ez2-aib`。要用它試駕駛艙,請另開一個 macOS 使用者帳號。 |
 | 其他 | `aib support` 會打包一份去掉個資的回報(什麼都不會送出),附在 GitHub issue 上即可。 |

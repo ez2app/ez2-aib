@@ -332,6 +332,22 @@ DEAD="$("$TMUX_BIN" -L "$SOCKET" display-message -p -t "$PANE" '#{pane_dead}' 2>
 #   同一句話今晚已對 `git status` 講過一次(N1 v2.1),這是同一個病的第二個工具。
 BEFORE_E="$("$TMUX_BIN" -L "$SOCKET" capture-pane -e -p -t "$PANE" 2>/dev/null)"; _cap_rc=$?
 [ "$_cap_rc" = "0" ] || die 3 "讀不到目標畫面(capture-pane -e rc=$_cap_rc):**取不到畫面不等於畫面乾淨**,拒絕投遞。"
+# 10-14 交接單 K8:Claude 輸入框停在輸入歷史(框頂線 History n/m)時框裡是別席的舊訊息,不是草稿。
+#   貼前先試著退回空框:只按 ↓、每按一次重讀、畫面在動就一個鍵都不按(composer_history.py);
+#   退不出來就照常往下 —— 守衛會判成 history,擋下時說原因與解法(不是「請對方清稿」)。
+#   只有 claude 方言宣告了歷史框頂線;別家 composer_history 一定回 history=no,不按任何鍵。
+# ★ 10-15 回補 #36 時改:先照原樣讀 BEFORE_E,畫面上真的有「History」字樣才去退、退完重讀 ——
+#   平常一次都不多讀畫面(原寫法每封多讀一次,吃掉照順序吐畫面的假 tmux 一張,test-dm-auto-resend-159 等 9 格紅)。
+if [ "${AIB_DM_SKIP_HISTORY_LEAVE:-0}" != "1" ] && [[ "$BEFORE_E" == *History* ]]; then
+  _HIST_PROVIDER="${AIB_DM_TARGET_PROVIDER:-$("$TMUX_BIN" -L "$SOCKET" show-options -w -qv -t "$PANE" @aib_provider 2>/dev/null)}"
+  _HIST_OUT="$("${EZ2_PY3:-python3}" "$(dirname "${BASH_SOURCE[0]}")/../../src/cockpit/composer_history.py" leave \
+                 --socket "$SOCKET" --pane "$PANE" --provider "${_HIST_PROVIDER:-claude}" --tmux "$TMUX_BIN" 2>&1)"
+  if [ "$_HIST_OUT" != "history=no" ]; then
+    echo "aib-dm: 輸入歷史:${_HIST_OUT:-(沒有回應)}"
+    BEFORE_E="$("$TMUX_BIN" -L "$SOCKET" capture-pane -e -p -t "$PANE" 2>/dev/null)"; _cap_rc=$?
+    [ "$_cap_rc" = "0" ] || die 3 "讀不到目標畫面(capture-pane -e rc=$_cap_rc):**取不到畫面不等於畫面乾淨**,拒絕投遞。"
+  fi
+fi
 BEFORE="$(printf '%s' "$BEFORE_E" | LC_ALL=C sed $'s/\033\[[0-9;]*m//g')"
 # ★★ 刀 M+H(艦長 23:12 派、dev4 提):**BEFORE 已經被抓了,只是沒被交出來**——
 #   守衛在下面 die 4 之前必須先 capture,而那份畫面只被引擎自己用掉,人接手時等於

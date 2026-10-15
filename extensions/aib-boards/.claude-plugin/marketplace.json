@@ -1,0 +1,6 @@
+{
+  "name": "ez2-aib-boards",
+  "description": "Ez2 AIB 每席一台電腦(今天 / 專案 / 私訊 / 圖表 / 自訂)",
+  "owner": { "name": "Ez2 AIB" },
+  "plugins": [{ "name": "aib-boards", "source": "./" }]
+}

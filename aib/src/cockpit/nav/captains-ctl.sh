@@ -27,7 +27,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COCKPIT="$(cd "$HERE/.." && pwd)"
 # 報錯訊息走 aib/i18n 四語鍵;字典或 python 出事就印鍵名,報錯本身不能因翻譯失敗而消失。
-_t() { python3 "$COCKPIT/i18n_lib.py" "$@" 2>/dev/null || printf '%s\n' "$1"; }
+_t() { "${EZ2_PY3:-python3}" -I "$COCKPIT/i18n_lib.py" "$@" 2>/dev/null || printf '%s\n' "$1"; }
 # ★ 在 source 之前先記下「哪些是呼叫端**明示**的」。source 完之後兩者一定都有值
 #   (cabin_resolve 會補上推導值),那時就再也分不出「他說的」與「我算的」——
 #   而底下的艙一致性閘要判的正是這個差別。
@@ -602,9 +602,13 @@ install_status() {
   # 10-10(the maintainer 眼驗令):艦長列與 Claude 輸入框下方那三行(📌 / CTX / 權限列)對齊——
   #   Claude Code 把那三行固定縮 2 格,tmux status 從第 0 欄起畫,所以這裡補 2 格;長度 8 → 10 跟著加。
   #   外層座艙的 status-left(cockpit-full.sh / title-beat.sh)同一條令、同樣補 2 格。
-  #   標籤走四語鍵;英文比中文寬,長度照顯示寬度算(全形算 2 格)再留 2 格,不寫死 10。
-  _label="  $(_t aib.captains_ctl.status_label) "
-  _label_w="$(python3 -c 'import sys, unicodedata as u; print(sum(2 if u.east_asian_width(c) in "WF" else 1 for c in sys.argv[1]))' "$_label" 2>/dev/null || echo 8)"
+  #   10-14 語系盤查:「艦長:」走四語字典 aib.cockpit.hub_captain_label(開艙 / --install 時取一次;切語系後下次 --install 換);
+  #   字典讀不到(印 !!key!! 或空)退回中文字面。
+  _cap_label="$("${EZ2_PY3:-python3}" -I "$COCKPIT/i18n_lib.py" aib.cockpit.hub_captain_label 2>/dev/null || true)"
+  case "$_cap_label" in ''|'!!'*) _cap_label='艦長:' ;; esac
+  #   長度照顯示寬度算(全形算 2 格)再留 2 格,不寫死 10:英文「Captain:」比中文寬,寫死會被截(公開倉 PR #11 帶回)。
+  _label="  $_cap_label "
+  _label_w="$("${EZ2_PY3:-python3}" -I -c 'import sys, unicodedata as u; print(sum(2 if u.east_asian_width(c) in "WF" else 1 for c in sys.argv[1]))' "$_label" 2>/dev/null || echo 8)"
   run hub_tmux set-option -t aihub status-left "$_label"
   run hub_tmux set-option -t aihub status-left-length "$((_label_w + 2))"
   run hub_tmux set-option -t aihub status-right ''

@@ -4,6 +4,13 @@
 
 버전은 `pyproject.toml`의 `version`을 따릅니다. 릴리스는 `v<version>` 태그이며, 관리자가 만듭니다.
 
+## 0.1.7
+
+- pip 로 가상 환경에 설치한 aib 도 자리를 열 때 스스로 업데이트합니다(pipx 와 한 줄 설치는 원래 됐습니다). **pip 로 0.1.6 이하를 설치했다면 `pip install --upgrade ez2-aib` 를 한 번 실행하세요.**
+- pip / pipx 로 설치한 aib 에서 `aib update` 가 올바른 패키지 이름(`pipx upgrade ez2-aib` 또는 `pip install --upgrade ez2-aib`)을 안내합니다.
+- 함장 표시줄의 라벨과 함장 도구의 오류 메시지가 사용자의 언어(영어·일본어도)를 따릅니다. 영어 라벨이 더 이상 잘리지 않습니다.
+- 릴리스마다 PyPI 에 올리기 전에 먼저 확인합니다: 만든 패키지를 깨끗한 환경에 설치하고, 바로 전 버전과 남아 있는 가장 오래된 버전에서 업데이트해 봅니다. 업로드 후에도 PyPI 를 대상으로 같은 확인(pipx·pip·한 줄 설치)을 Linux 와 macOS 에서 합니다.
+
 ## 0.1.6
 
 - README 맨 위에 aib의 유래와 슬로건 **AI Basic to AI Best**(가장 쓰기 쉽고 가장 사람다운 AI 도구의 기반)를 넣었습니다. 가상 동료(먼저 Claude Code mod로 제공)도 예고합니다. 아직 개발 중입니다.
