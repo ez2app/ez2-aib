@@ -299,7 +299,8 @@ def _origin_or_none(value):
 def _global_or_none(value):
     """全球來信的抬頭資料(開發文件第 5.8、9 節)⇒ 驗過的 dict;任何一欄不合就整欄 None(不猜、不半存)。
 
-    {addr, shown, verified, same_name, msgid, reply_code};格式規則只在 dm_global_files 一處。"""
+    {addr, shown, verified, same_name, msgid, reply_code, country, country_status, tz_country};
+    格式規則只在 dm_global_files 一處。國別三欄是選填(舊列、非 aib 寄件人沒有)。"""
     if not isinstance(value, dict):
         return None
     import dm_global_files as GF
@@ -313,10 +314,15 @@ def _global_or_none(value):
     ok_msgid = isinstance(msgid, str) and bool(GF.MSGID_RE.match(msgid))
     code = value.get("reply_code")
     ok_code = code is None or (isinstance(code, str) and bool(GLOBAL_REPLY_CODE_RE.fullmatch(code)))
-    if not (ok_addr and ok_shown and ok_msgid and ok_code and isinstance(verified, bool) and isinstance(same, bool)):
+    country, cstat, tzc = value.get("country"), value.get("country_status") or "unknown", value.get("tz_country")
+    ok_country = (country is None or (isinstance(country, str) and bool(GF.COUNTRY_RE.match(country)))) \
+        and cstat in GF.COUNTRY_STATUSES \
+        and (tzc is None or (isinstance(tzc, str) and bool(GF.COUNTRY_RE.match(tzc))))
+    if not (ok_addr and ok_shown and ok_msgid and ok_code and ok_country
+            and isinstance(verified, bool) and isinstance(same, bool)):
         return None
     return {"addr": addr, "shown": shown, "verified": verified, "same_name": same, "msgid": msgid,
-            "reply_code": code}
+            "reply_code": code, "country": country, "country_status": cstat, "tz_country": tzc}
 
 
 GLOBAL_REPLY_CODE_RE = re.compile(r"^[a-z2-9]{5}$")

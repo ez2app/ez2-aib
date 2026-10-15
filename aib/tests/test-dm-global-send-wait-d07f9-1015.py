@@ -181,7 +181,8 @@ class Header(unittest.TestCase):
                 for same in (True, False):
                     side = H.sender_side("Andy", ver, same_name=same, lang=lang)
                     self.assertEqual(H.parse_sender(side),
-                                     {"name": "Andy", "verified": ver, "same_name": same, "lang": lang}, side)
+                                     {"name": "Andy", "verified": ver, "same_name": same, "lang": lang,
+                                      "country": None, "country_sure": None}, side)
         for not_global in ("IP:100.64.0.1/6ddf/AIB工程師@abb89", "Andy", "Andy(全球)", "Andy(全球·已驗證·其他)",
                            "Andy(Global·已驗證)", "A/B(全球·已驗證)", ""):
             self.assertIsNone(H.parse_sender(not_global), not_global)

@@ -66,6 +66,11 @@ RECEIPT_STAGES = ("resolved", "relayed", "queued", "delivered", "held", "refused
 RECEIPT_FINAL = ("delivered", "held", "refused", "expired", "failed")
 DELIVERY_STATES = ("queued", "delivered", "held", "refused", "expired", "read")
 INBOX_CLASSES = ("own", "paired", "friend", "stranger")
+# 國別(Andy 10-15 18:1x:「全球要能判斷國別」;裁:抬頭加國別、申報 + 時區佐證、用於顯示 / 預設回信語言 / 法規)
+COUNTRY_RE = re.compile(r"^[A-Z]{2}$")                      # ISO 3166-1 alpha-2,主人在名冊申報
+TZ_RE = re.compile(r"^[A-Za-z0-9_+\-]+(?:/[A-Za-z0-9_+\-]+){0,2}$")   # IANA 時區名,寄件機轉接程式量的
+COUNTRY_STATUSES = ("match", "mismatch", "unknown")
+LANG_BY_COUNTRY = {"TW": "zh-TW", "HK": "zh-TW", "MO": "zh-TW", "CN": "zh-TW", "JP": "ja", "KR": "ko"}
 # 名稱裡不准出現的字:會被看成抬頭的分隔、位址或驗證標記(第 5.8 節)
 _NAME_BANNED = (">>", "/", "@", "(", ")", "\uff08", "\uff09")   # 含全形括號
 
@@ -218,10 +223,59 @@ def check_inbox(rec):
         _opt(rec, k, _is_str, "要是字串")
     # 同名(第 5.8 節):轉接程式比對好友名冊判;只會多加警告、不會提高信任,所以讓外掛判
     _opt(rec, "name_collision", lambda v: isinstance(v, bool), "要是 true/false")
+    _opt(rec, "country", lambda v: isinstance(v, str) and bool(COUNTRY_RE.match(v)), "要是兩碼大寫國碼")
+    _opt(rec, "tz", lambda v: isinstance(v, str) and len(v) <= 64 and bool(TZ_RE.match(v)), "要是 IANA 時區名")
     return rec
 
 
-def queue_fields(rec):
+# ── 國別:申報 + 時區佐證 ──
+
+_TZ_TAB_CACHE = {}
+
+
+def _zone_tab_paths():
+    import zoneinfo
+    return [os.path.join(d, "zone.tab") for d in zoneinfo.TZPATH]
+
+
+def tz_country(tz, tab_paths=None):
+    """IANA 時區名 ⇒ 兩碼國碼(查系統 zone.tab,不連網);查不到(沒有 zone.tab、UTC、別名)回 None。"""
+    if not isinstance(tz, str) or not TZ_RE.match(tz):
+        return None
+    paths = tuple(tab_paths) if tab_paths is not None else tuple(_zone_tab_paths())
+    if paths not in _TZ_TAB_CACHE:
+        table = {}
+        for p in paths:
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    for line in fh:
+                        if line.startswith("#"):
+                            continue
+                        cols = line.rstrip("\n").split("\t")
+                        if len(cols) >= 3 and COUNTRY_RE.match(cols[0]):
+                            table.setdefault(cols[2], cols[0])
+            except OSError:
+                continue
+            if table:
+                break
+        _TZ_TAB_CACHE[paths] = table
+    return _TZ_TAB_CACHE[paths].get(tz)
+
+
+def country_check(declared, tz, tab_paths=None):
+    """(狀態, 時區推得的國碼)。狀態:match 申報與時區一致 / mismatch 不一致 / unknown 沒申報或時區量不到。"""
+    tzc = tz_country(tz, tab_paths)
+    if not declared or tzc is None:
+        return "unknown", tzc
+    return ("match" if tzc == declared else "mismatch"), tzc
+
+
+def default_lang(country):
+    """對方沒帶語言時的預設回信語言(aib 四語:zh-TW / en / ja / ko;其他國家用 en)。"""
+    return LANG_BY_COUNTRY.get(country or "", "en")
+
+
+def queue_fields(rec, tab_paths=None):
     """inbox 一筆 ⇒ 入佇列要用的身分與狀態欄位(PR-8 的匯入器照這個寫佇列)。
 
     - sender_kind:主人手機(已驗證)⇒ owner_paired;其他一律 external_seat。**永遠不會是 human**。
@@ -229,12 +283,15 @@ def queue_fields(rec):
     - 陌生 ⇒ hold_human(待審)、優先級降為 normal。
     - shown_name:顯示名稱 → 人格名 → npub 前 12 碼(第 5.8 節);不合格的名稱直接跳過。
     - same_name:外掛判的同名旗標;抬頭加「同名」用(PR-2)。
+    - country / country_status / tz_country:申報國別與寄件機時區佐證(country_check);
+      lang:對方帶的語言,沒帶就照國別給預設回信語言。
     """
     check_inbox(rec)
     cls = rec["class"] if rec["verified"] else "stranger"
     prio = rec.get("priority") or "normal"
     if cls == "stranger":
         prio = "normal"
+    cstat, tzc = country_check(rec.get("country"), rec.get("tz"), tab_paths)
     shown = clean_display_name(rec.get("display_name")) or clean_display_name(rec.get("persona_name")) \
         or rec["from_npub"][:12]
     return {
@@ -244,6 +301,10 @@ def queue_fields(rec):
         "shown_name": shown,
         "verified": rec["verified"],
         "same_name": bool(rec.get("name_collision")),
+        "country": rec.get("country"),
+        "country_status": cstat,
+        "tz_country": tzc,
+        "lang": rec.get("lang") or default_lang(rec.get("country")),
         "class": cls,
         "status": "hold_human" if cls == "stranger" else "queued",
         "priority": prio,

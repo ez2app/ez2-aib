@@ -291,9 +291,11 @@ def build_from_global(seat: str, item_id: str, t_label: str, *, t_socket: str = 
     lang = _reader_lang(env)
     r = party_from_label(t_label)
     r["addr"], r["cabin"] = local_addr(env), cabin_of_socket(t_socket, env)
-    sender = GH.sender_side(g["shown"], g["verified"], same_name=g["same_name"], lang=lang)
+    sender = GH.sender_side(g["shown"], g["verified"], same_name=g["same_name"], lang=lang,
+                            country=g["country"], country_status=g["country_status"])
     head = GH.build(sender, _side(r), format_when(time.time() if when is None else when))
-    frame = GH.frame(g["reply_code"], lang=lang, paired=item.get("sender_kind") == "owner_paired")
+    frame = GH.frame(g["reply_code"], lang=lang, paired=item.get("sender_kind") == "owner_paired",
+                     country=g["country"], country_status=g["country_status"], tz_country=g["tz_country"])
     return head, frame
 
 
