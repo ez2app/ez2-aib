@@ -131,6 +131,9 @@ class Send(Base):
             self.assertEqual(p.returncode, 2, "%s\n%s" % (args, p.stdout + p.stderr))
             self.assertEqual(self.outbox_recs(b, fb), [], args)
             self.assertEqual(b.exec_calls(), [], args)
+        b = self.box()
+        p, _ = self.run_dm(b, ["--to", ADDR + ",@abcde", MSG])
+        self.assertIn("全球位址不能群發", p.stderr)          # 講得出為什麼,不是別處碰巧擋下
 
     def test_p7_reply(self):
         b = self.box()
