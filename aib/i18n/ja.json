@@ -1983,6 +1983,7 @@
   "codex_trust.result.unreadable": "Codex の config.toml を読めなかったため変更していません",
   "codex_trust.result.untrusted": "Codex に未信頼の AIB フックが {n} 個あります",
   "codex_trust.result.unsupported": "Codex に未信頼の AIB フックが {n} 個あります:config.toml の書き方をこのツールでは安全に編集できないため変更していません。Codex で /hooks から信頼してください",
+  "codex_trust.result.old_python": "AIB の Codex フックの自動信頼をスキップしました:Python 3.11 以上が必要です(この環境は {ver});Codex の /hooks で一度信頼してください",
   "aib.now.state.busy": "【作業中】",
   "aib.now.state.reply": "【返信待ち】",
   "aib.now.state.decide": "【判断待ち】",

@@ -1983,6 +1983,7 @@
   "codex_trust.result.unreadable": "Codex config.toml을 읽을 수 없어 건드리지 않았습니다",
   "codex_trust.result.untrusted": "Codex에 아직 신뢰되지 않은 AIB 훅이 {n}개 있습니다",
   "codex_trust.result.unsupported": "Codex에 아직 신뢰되지 않은 AIB 훅이 {n}개 있습니다: 이 도구로는 config.toml 형식을 안전하게 고칠 수 없어 건드리지 않았습니다. Codex에서 /hooks로 신뢰하세요",
+  "codex_trust.result.old_python": "AIB 의 Codex 훅 자동 신뢰를 건너뛰었습니다: Python 3.11 이상이 필요합니다(이 컴퓨터는 {ver}). Codex 에서 /hooks 로 한 번 신뢰하세요",
   "aib.now.state.busy": "【작업 중】",
   "aib.now.state.reply": "【응답 대기】",
   "aib.now.state.decide": "【결정 필요】",

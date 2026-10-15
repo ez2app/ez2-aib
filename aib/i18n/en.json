@@ -1983,6 +1983,7 @@
   "codex_trust.result.unreadable": "Could not parse Codex config.toml; left it untouched",
   "codex_trust.result.untrusted": "{n} AIB hook(s) in Codex are not trusted yet",
   "codex_trust.result.unsupported": "{n} AIB hook(s) in Codex are not trusted: this tool cannot safely edit the way config.toml is written, so it left it untouched; trust them with /hooks in Codex",
+  "codex_trust.result.old_python": "Skipped trusting AIB's Codex hooks automatically: that needs Python 3.11 or newer (this is {ver}); trust them once with /hooks in Codex",
   "aib.now.state.busy": "[busy]",
   "aib.now.state.reply": "[waiting reply]",
   "aib.now.state.decide": "[needs your call]",

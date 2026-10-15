@@ -1983,6 +1983,7 @@
   "codex_trust.result.unreadable": "讀不懂 Codex 的 config.toml,沒有動它",
   "codex_trust.result.untrusted": "Codex 有 {n} 個 AIB 掛點還沒信任",
   "codex_trust.result.unsupported": "Codex 有 {n} 個 AIB 掛點還沒信任:config.toml 的寫法這支程式改不了,沒有動它;請在 Codex 打 /hooks 信任",
+  "codex_trust.result.old_python": "沒有自動信任 AIB 的 Codex 掛點:這要 Python 3.11 以上(這台是 {ver});請在 Codex 裡用 /hooks 信任一次",
   "aib.now.state.busy": "【忙碌中】",
   "aib.now.state.reply": "【等回應】",
   "aib.now.state.decide": "【等你決定】",

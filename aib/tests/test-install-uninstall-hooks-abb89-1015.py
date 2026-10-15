@@ -324,5 +324,48 @@ class C5UninstallCleansTraces(TmpCase):
         self.assertTrue(os.path.islink(str(self.home / "Desktop" / "AIB 第二大腦")))
 
 
+# ───────────────────────────────────────────────────────────── C6
+_NO_TOMLLIB = """
+import sys, runpy
+sys.modules['tomllib'] = None          # 模擬 Python 3.9:import tomllib ⇒ ImportError
+sys.argv = ['codex_hook_trust.py', 'ensure']
+runpy.run_path(%r, run_name='__main__')
+"""
+
+
+class C6CodexTrustOldPython(TmpCase):
+    def _env(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("AIB_", "EZ2_AIB", "CODEX_", "LC_", "LANG"))}
+        env.update(HOME=str(self.tmp), CODEX_HOME=str(self.tmp / ".codex"), EZ2_AIB_STATE_ROOT=str(self.tmp / "state"),
+                   EZ2_AIB_LOCALE="en", LANG="C")
+        return env
+
+    def _check(self, r):
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Traceback", r.stderr + r.stdout)
+        self.assertIn("3.11", r.stdout)
+        self.assertEqual(len([ln for ln in r.stdout.splitlines() if ln.strip()]), 1, r.stdout)
+
+    def test_without_tomllib_one_line_no_traceback(self):
+        script = str(SRC / "cockpit" / "codex_hook_trust.py")
+        r = subprocess.run([sys.executable, "-c", _NO_TOMLLIB % script], capture_output=True, text=True,
+                           env=self._env(), timeout=60)
+        self._check(r)
+
+    @unittest.skipUnless(os.path.exists("/usr/bin/python3"), "no system python3")
+    def test_real_system_python(self):
+        v = subprocess.run(["/usr/bin/python3", "-c", "import sys; print(sys.version_info >= (3, 11))"],
+                           capture_output=True, text=True, timeout=60).stdout.strip()
+        if v != "False":
+            self.skipTest("system python3 already has tomllib")
+        r = subprocess.run(["/usr/bin/python3", str(SRC / "cockpit" / "codex_hook_trust.py"), "ensure"],
+                           capture_output=True, text=True, env=self._env(), timeout=60)
+        self._check(r)
+
+    def test_message_in_all_locales(self):
+        for loc, tr in I18N.items():
+            self.assertIn("{ver}", tr["codex_trust.result.old_python"], loc)
+
+
 if __name__ == "__main__":
     unittest.main()
