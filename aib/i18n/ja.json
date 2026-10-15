@@ -3018,5 +3018,14 @@
   "aib.genes.help.locked": "どれか 1 つでもオンなら、3(正直さ)と 5(安全)も必ずオンになります。API キーを使う席は開き直したときに、その他の席は次回起動時に反映されます。",
   "aib.seat.help.usage": "使い方: aib seat <コマンド> ...\n  open <provider> <dgrs|safe> <role> [--again]   AI 席を開く(aib <provider> <mode> <role> と同じ)\n  detect [--all|--window @N] [--apply]           各席の会話 ID を調べる(詳しくは aib seat detect --help)\n  onboard [--window @N|--missing]                席に開始メモをもう一度送る\n  socket-backfill [--apply]                      古い席ファイルに足りない接続欄を補う\n  re-register                                    再起動した席を登録し直す\n  auto-rotate                                    Codex の使用量が尽きたらアカウントを切り替える",
   "aib.delegate.not_installed": "aib: このコピーにはこのコマンドが入っていません({path} がありません)。aib update で修復してください",
-  "aib.delegate.not_executable": "aib: このコマンドが正しくインストールされていません({path} が実行可能ではありません)。aib update で修復してください"
+  "aib.delegate.not_executable": "aib: このコマンドが正しくインストールされていません({path} が実行可能ではありません)。aib update で修復してください",
+  "aib.dry_run.new_cabin": "(新しいキャビン)",
+  "aib.dry_run.new_cabin_note": "aib: 試し実行のみ: 新しいキャビンの番号は実際に作るときに決まります。コマンドのプレビューにある「{value}」は仮の値です",
+  "aib.cool.reason.temp_unknown": "CPU 温度は未測定",
+  "aib.cool.reason.throttle": "熱による速度低下 {value} ≥ {limit}",
+  "aib.machine.thermal_short.normal": "温度 正常",
+  "aib.machine.thermal_short.warn": "温度 やや高",
+  "aib.machine.thermal_short.hot": "温度 高い",
+  "aib.machine.thermal_short.critical": "温度 危険",
+  "aib.machine.thermal_short.unknown": "温度 未測定"
 }

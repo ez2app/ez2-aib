@@ -3018,5 +3018,14 @@
   "aib.genes.help.locked": "只要開了任何一個,3(說實話)和 5(安全)一定一起開。用 API 金鑰的席要重開才會套用;其他席下次開始時套用。",
   "aib.seat.help.usage": "用法:aib seat <指令> ...\n  open <provider> <dgrs|safe> <role> [--again]   開一席 AI(等同 aib <provider> <mode> <role>)\n  detect [--all|--window @N] [--apply]           找出每一席的對話編號(詳見 aib seat detect --help)\n  onboard [--window @N|--missing]                再送一次開席說明給那一席\n  socket-backfill [--apply]                      幫舊的席位檔補上缺的連線欄位\n  re-register                                    席重開之後重新登記\n  auto-rotate                                    Codex 額度用完時換帳號",
   "aib.delegate.not_installed": "aib:這份 aib 沒有裝好這個指令(找不到 {path});請跑 aib update 修復",
-  "aib.delegate.not_executable": "aib:這個指令沒有裝好({path} 不是可執行檔);請跑 aib update 修復"
+  "aib.delegate.not_executable": "aib:這個指令沒有裝好({path} 不是可執行檔);請跑 aib update 修復",
+  "aib.dry_run.new_cabin": "(新艙)",
+  "aib.dry_run.new_cabin_note": "aib:這只是試跑:新艙的號碼要真的建立時才會發;指令預覽裡的「{value}」只是代位",
+  "aib.cool.reason.temp_unknown": "CPU 溫度量不到",
+  "aib.cool.reason.throttle": "熱節流 {value} ≥ {limit}",
+  "aib.machine.thermal_short.normal": "溫度正常",
+  "aib.machine.thermal_short.warn": "溫度偏高",
+  "aib.machine.thermal_short.hot": "溫度過高",
+  "aib.machine.thermal_short.critical": "溫度危險",
+  "aib.machine.thermal_short.unknown": "溫度量不到"
 }

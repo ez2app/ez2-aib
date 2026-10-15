@@ -3018,5 +3018,14 @@
   "aib.genes.help.locked": "하나라도 켜면 3(정직)과 5(안전)도 항상 켜집니다. API 키를 쓰는 자리는 다시 열 때, 다른 자리는 다음 시작 때 반영됩니다.",
   "aib.seat.help.usage": "사용법: aib seat <명령> ...\n  open <provider> <dgrs|safe> <role> [--again]   AI 자리 열기(aib <provider> <mode> <role> 와 같음)\n  detect [--all|--window @N] [--apply]           각 자리의 대화 ID 찾기(자세히: aib seat detect --help)\n  onboard [--window @N|--missing]                자리에 시작 안내를 다시 보내기\n  socket-backfill [--apply]                      오래된 자리 파일에 빠진 연결 칸 채우기\n  re-register                                    다시 시작한 자리를 다시 등록\n  auto-rotate                                    Codex 사용량이 다 되면 계정 전환",
   "aib.delegate.not_installed": "aib: 이 사본에는 이 명령이 설치되어 있지 않습니다({path} 없음). aib update 로 복구하세요",
-  "aib.delegate.not_executable": "aib: 이 명령이 제대로 설치되지 않았습니다({path} 실행 불가). aib update 로 복구하세요"
+  "aib.delegate.not_executable": "aib: 이 명령이 제대로 설치되지 않았습니다({path} 실행 불가). aib update 로 복구하세요",
+  "aib.dry_run.new_cabin": "(새 캐빈)",
+  "aib.dry_run.new_cabin_note": "aib: 시험 실행만 합니다: 새 캐빈의 번호는 실제로 만들 때 정해집니다. 명령 미리보기의 '{value}' 는 임시 값입니다",
+  "aib.cool.reason.temp_unknown": "CPU 온도 측정 불가",
+  "aib.cool.reason.throttle": "발열로 인한 속도 저하 {value} ≥ {limit}",
+  "aib.machine.thermal_short.normal": "온도 정상",
+  "aib.machine.thermal_short.warn": "온도 약간 높음",
+  "aib.machine.thermal_short.hot": "온도 높음",
+  "aib.machine.thermal_short.critical": "온도 위험",
+  "aib.machine.thermal_short.unknown": "온도 측정 불가"
 }

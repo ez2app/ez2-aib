@@ -45,6 +45,15 @@ if HERE not in sys.path:
 import machine_status as ms  # noqa: E402
 import flap_guard  # noqa: E402
 
+
+def _ui(key, params=None):
+    """畫面/通知字走 i18n(C13 10-15:「CPU 溫度量不到」以前寫死中文,英文介面也照印);字典壞了退回鍵名。"""
+    try:
+        import i18n_lib
+        return i18n_lib.t(key, params, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓降溫停
+        return key
+
 OK, WARN, HOT, CRIT, UNKNOWN = "ok", "warn", "hot", "critical", "unknown"
 ORDER = {OK: 0, WARN: 1, HOT: 2, CRIT: 3}
 # machine_status._from_ruler_cell() gives a successfully measured CPU die cell
@@ -163,7 +172,7 @@ def thermal_state(cells):
     cpu = _first_measured_number(by, CPU_TEMP_MEASURED_STATES,
                                  "cpu_temp", "CPU 溫度")
     if cpu is None:
-        return UNKNOWN, ["CPU 溫度量不到"]
+        return UNKNOWN, [_ui("aib.cool.reason.temp_unknown")]
     if cpu >= CPU_CRIT_C:
         return CRIT, ["CPU %.1f°C ≥ %.0f" % (cpu, CPU_CRIT_C)]
     if cpu >= CPU_HOT_C:
@@ -206,7 +215,8 @@ def level_of(cells):
 
     kt = _first_number(by, "kernel_task", "熱節流")
     if kt is not None and kt >= ms.THRESHOLDS["kernel_task_hot"]:
-        bump(HOT, "熱節流 %.1f%% ≥ %.0f" % (kt, ms.THRESHOLDS["kernel_task_hot"]))
+        bump(HOT, _ui("aib.cool.reason.throttle", {"value": "%.1f%%" % kt,
+                                                   "limit": "%.0f" % ms.THRESHOLDS["kernel_task_hot"]}))
 
     return lv, reasons
 

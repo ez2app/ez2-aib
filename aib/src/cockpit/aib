@@ -1340,6 +1340,14 @@ aib_print_cabin_tuple() {
   if [ "$DRY" != "1" ] && [ "${AIB_NO_ATTACH:-0}" != "1" ] && [ -t 0 ]; then
     return 0
   fi
+  # C13(10-15):--dry-run + new 不會真的發艙號,以前印出假的「2」像真的艙號 ⇒ 改印「(新艙)」並說明預覽裡的號碼只是代位。
+  #   AIB_FAKE_NEW_INSTANCE 明給(測試 seam)⇒ 照印那個號。
+  if [ "$DRY" = "1" ] && [ "$NEW" = "1" ] && [ -z "${AIB_FAKE_NEW_INSTANCE:-}" ]; then
+    printf 'aib: instance=%s session=%s hub=%s state=%s\n' \
+      "$(t aib.dry_run.new_cabin)" "$EZ2_TMUX_SESSION" "$EZ2_AIHUB_SOCKET" "$EZ2_AIB_INSTANCE_HOME" >&2
+    t aib.dry_run.new_cabin_note "value=$EZ2_AIB_INSTANCE" >&2
+    return 0
+  fi
   printf 'aib: instance=%s session=%s hub=%s state=%s\n' \
     "$EZ2_AIB_INSTANCE" "$EZ2_TMUX_SESSION" "$EZ2_AIHUB_SOCKET" "$EZ2_AIB_INSTANCE_HOME" >&2
   return 0
