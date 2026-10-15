@@ -16,6 +16,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 - **Tests**: earlier green results are reused only when they still apply (12-hour limit on resuming, red results from other machines still count, a time-zone change reruns, damaged records repair themselves); a few tests that never reused results now do.
 - **Install / doctor**: git installs get their hooks; uninstall keeps unsaved work; `aib doctor` marks what it cannot measure as a note instead of a failure.
 - **Extensions**: `aib plugins licensed` for paid plugins; the five free extensions are signed, so `--allow-unsigned` is no longer needed.
+- **Right pane and screenshots**: the load / CPU temperature / heavy-work readings at the top of the right pane work in the open-source version (the heat rulers ship now), and the Control+Shift+S screenshot helper ships and builds on Command Line Tools 26 (works around the duplicate SwiftBridging module).
 
 ## 0.1.7
 
