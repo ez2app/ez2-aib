@@ -46,6 +46,16 @@ def _T(key, params=None):
     return i18n_lib.t(key, params, locale=i18n_lib.resolve_locale())
 
 
+def _C(key, **params):
+    """檢查項的字:鍵 = aib.doctor.check.<key>。"""
+    return _T("aib.doctor.check." + key, params or None)
+
+
+def _join(items):
+    """清單分隔字跟語系走(中日:「、」;英韓:「, 」)。"""
+    return _T("aib.doctor.list_sep").join(items)
+
+
 def _result(check_id, status, detail, remedy=""):
     return {"id": check_id, "status": status, "detail": detail, "remedy": remedy}
 
@@ -56,25 +66,25 @@ def check_python():
     if (v.major, v.minor) >= MIN_PYTHON:
         return _result("python_version", OK, got)
     return _result("python_version", FAIL, got,
-                   "需要 Python %d.%d 以上" % MIN_PYTHON)
+                   _C("python_version.remedy", version="%d.%d" % MIN_PYTHON))
 
 
 def check_git():
     path = shutil.which("git")
     if not path:
-        return _result("git_present", FAIL, "找不到 git",
-                       "安裝 git 後重跑")
+        return _result("git_present", FAIL, _C("git_present.missing"),
+                       _C("git_present.remedy"))
     return _result("git_present", OK, path)
 
 
 def check_state_root(root):
     path = Path(root)
     if not path.exists():
-        return _result("state_root_exists", FAIL, "不存在:%s" % path,
-                       "跑 aib init 建立狀態根")
+        return _result("state_root_exists", FAIL, _C("state_root_exists.missing", path=path),
+                       _C("state_root_exists.missing_remedy"))
     if not path.is_dir():
-        return _result("state_root_exists", FAIL, "不是目錄:%s" % path,
-                       "移走該檔後重跑 aib init")
+        return _result("state_root_exists", FAIL, _C("state_root_exists.not_dir", path=path),
+                       _C("state_root_exists.not_dir_remedy"))
     return _result("state_root_exists", OK, str(path))
 
 
@@ -82,18 +92,18 @@ def check_state_root_perms(root):
     """group/world 可寫的狀態根 = 同機任何人都能改帳本與收據。"""
     path = Path(root)
     if not path.is_dir():
-        return _result("state_root_perms", FAIL, "狀態根不存在,無法判定",
-                       "先讓 state_root_exists 通過")
+        return _result("state_root_perms", FAIL, _C("state_root_perms.no_root"),
+                       _C("state_root_perms.no_root_remedy"))
     mode = path.stat().st_mode
     bad = []
     if mode & stat.S_IWGRP:
-        bad.append("group 可寫")
+        bad.append(_C("state_root_perms.group_writable"))
     if mode & stat.S_IWOTH:
-        bad.append("world 可寫")
+        bad.append(_C("state_root_perms.world_writable"))
     shown = stat.filemode(mode)
     if bad:
         return _result("state_root_perms", FAIL,
-                       "%s(%s)" % (shown, "、".join(bad)),
+                       "%s(%s)" % (shown, _join(bad)),
                        "chmod g-w,o-w %s" % path)
     return _result("state_root_perms", OK, shown)
 
@@ -102,7 +112,8 @@ def check_writable(root):
     """真的寫得進去才算,不是看權限位元推測。唯讀原則的例外:寫完立刻刪。"""
     path = Path(root)
     if not path.is_dir():
-        return _result("state_root_writable", FAIL, "狀態根不存在", "先跑 aib init")
+        return _result("state_root_writable", FAIL, _C("state_root_writable.no_root"),
+                       _C("state_root_writable.no_root_remedy"))
     probe = path / ".aib-doctor-write-probe"
     try:
         fd = os.open(str(probe), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -110,16 +121,16 @@ def check_writable(root):
         os.unlink(str(probe))
     except OSError as err:
         return _result("state_root_writable", FAIL, str(err),
-                       "檢查 %s 的擁有者與權限" % path)
-    return _result("state_root_writable", OK, "可寫且探針已清除")
+                       _C("state_root_writable.remedy", path=path))
+    return _result("state_root_writable", OK, _C("state_root_writable.ok"))
 
 
 def check_ledger(root):
     """帳本在就要能通過鏈驗證。複用 E1.1,不另造第二套驗證器(反重造)。"""
     ledger = Path(root) / "ledger" / "aib-ledger.jsonl"
     if not ledger.exists():
-        return _result("ledger_chain", FAIL, "帳本不存在:%s" % ledger,
-                       "跑 aib init 建立空帳本")
+        return _result("ledger_chain", FAIL, _C("ledger_chain.missing", path=ledger),
+                       _C("ledger_chain.missing_remedy"))
     src = Path(__file__).resolve().parents[1] / "ledger"
     sys.path.insert(0, str(src))
     try:
@@ -128,21 +139,21 @@ def check_ledger(root):
     except Exception as err:      # noqa: BLE001 — 不可信輸入決定這裡能拋什麼
         return _result("ledger_chain", FAIL,
                        "%s: %s" % (type(err).__name__, str(err)[:120]),
-                       "帳本損壞,需人工裁決是否截斷或重建")
+                       _C("ledger_chain.broken_remedy"))
     if report.get("ok"):
-        return _result("ledger_chain", OK, "鏈驗證通過(%d 筆)" % report["count"])
+        return _result("ledger_chain", OK, _C("ledger_chain.ok", count=report["count"]))
     err = report.get("error") or {}
     return _result("ledger_chain", FAIL,
                    "index %s %s" % (err.get("index"), err.get("code")),
-                   "帳本鏈斷裂,需人工裁決")
+                   _C("ledger_chain.chain_remedy"))
 
 
 def check_schemas(repo_root):
     """schema 是驗證的正本;讀不到就沒有任何『合格』是可信的(fail-closed)。"""
     schema_dir = Path(repo_root) / "schemas"
     if not schema_dir.is_dir():
-        return _result("schemas_readable", FAIL, "找不到 schemas/",
-                       "確認在 repo 根目錄執行")
+        return _result("schemas_readable", FAIL, _C("schemas_readable.no_dir"),
+                       _C("schemas_readable.no_dir_remedy"))
     broken = []
     count = 0
     for f in sorted(schema_dir.glob("*.json")):
@@ -152,28 +163,28 @@ def check_schemas(repo_root):
         except (OSError, ValueError) as err:
             broken.append("%s(%s)" % (f.name, str(err)[:40]))
     if not count:
-        return _result("schemas_readable", FAIL, "schemas/ 下沒有任何 .json",
-                       "檢查 checkout 是否完整")
+        return _result("schemas_readable", FAIL, _C("schemas_readable.empty"),
+                       _C("schemas_readable.empty_remedy"))
     if broken:
-        return _result("schemas_readable", FAIL, "、".join(broken),
-                       "修正壞掉的 schema 檔")
-    return _result("schemas_readable", OK, "%d 份可解析" % count)
+        return _result("schemas_readable", FAIL, _join(broken),
+                       _C("schemas_readable.broken_remedy"))
+    return _result("schemas_readable", OK, _C("schemas_readable.ok", count=count))
 
 
 def check_provider_cli(name):
     """CLI 在不在是機器可判的;**有沒有登入不是**,所以那件回 manual。"""
     path = shutil.which(name)
     if not path:
-        return _result("provider_cli_%s" % name, FAIL, "找不到 %s" % name,
-                       "安裝 %s CLI" % name)
+        return _result("provider_cli_%s" % name, FAIL, _C("provider_cli.missing", name=name),
+                       _C("provider_cli.remedy", name=name))
     return _result("provider_cli_%s" % name, OK, path)
 
 
 def check_provider_login(name):
     return _result(
         "provider_login_%s" % name, MANUAL,
-        "機器無法確認 %s 是否已登入" % name,
-        "請你自己跑一次 %s 並完成登入;doctor 不會、也不該代你登入" % name)
+        _C("provider_login.detail", name=name),
+        _C("provider_login.remedy", name=name))
 
 
 # 漂移判準的基準線。★ 不是「這棵樹的檔案」——見 check_release_gate_hook 檔頭那段。
@@ -232,20 +243,20 @@ def check_release_gate_hook(repo_root):
     gate = Path(repo_root) / "src" / "policy" / "hooks" / "release-tag-gate.sh"
     installer = Path(repo_root) / "src" / "policy" / "hooks" / "install-hooks.sh"
     if not gate.is_file():
-        return _result("release_gate_hook", FAIL, "閘門腳本不在 repo:%s" % gate,
-                       "確認 src/policy/hooks/release-tag-gate.sh 有沒有被誤刪")
+        return _result("release_gate_hook", FAIL, _C("release_gate_hook.no_gate", path=gate),
+                       _C("release_gate_hook.no_gate_remedy"))
     if not installer.is_file():
-        return _result("release_gate_hook", FAIL, "安裝器不在 repo:%s" % installer,
-                       "確認 src/policy/hooks/install-hooks.sh 有沒有被誤刪")
+        return _result("release_gate_hook", FAIL, _C("release_gate_hook.no_installer", path=installer),
+                       _C("release_gate_hook.no_installer_remedy"))
 
-    fix = "在這棵樹上跑 src/policy/hooks/install-hooks.sh install"
+    fix = _C("release_gate_hook.fix")
     try:
         proc = subprocess.run(
             ["bash", str(installer), "verify",
              "--baseline", HOOK_BASELINE_REF, "--porcelain"],
             cwd=str(repo_root), capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as err:
-        return _result("release_gate_hook", FAIL, "安裝器跑不起來:%s" % err, fix)
+        return _result("release_gate_hook", FAIL, _C("release_gate_hook.installer_error", error=err), fix)
 
     states = {}
     for line in proc.stdout.splitlines():
@@ -256,33 +267,32 @@ def check_release_gate_hook(repo_root):
     if row is None:
         # 單源沒有報這一槽 = 我們什麼都沒量到,不是通過。
         return _result("release_gate_hook", MANUAL,
-                       "安裝器沒有報 pre-push 這一槽(rc=%s):%s"
-                       % (proc.returncode, (proc.stderr or "").strip()[:200]),
+                       _C("release_gate_hook.no_slot", rc=proc.returncode,
+                          stderr=(proc.stderr or "").strip()[:200]),
                        fix)
     state, baseline_sha, installed_sha = row
     if state == "same":
         return _result("release_gate_hook", OK,
-                       "pre-push 與 %s 的正本逐位元組相同(%s)"
-                       % (HOOK_BASELINE_REF, baseline_sha))
+                       _C("release_gate_hook.same", ref=HOOK_BASELINE_REF, sha=baseline_sha))
     if state == "missing":
         return _result("release_gate_hook", MANUAL,
-                       "pre-push 未安裝(hooks 目錄裡沒有這一支)",
-                       "裝上發版閘(沒裝的話 tag 推上去不會被擋):%s" % fix)
+                       _C("release_gate_hook.missing"),
+                       _C("release_gate_hook.missing_remedy", fix=fix))
     if state == "no-baseline":
         # ★ 量不到不是 OK 也不是 FAIL:本機沒有那個 ref(新 clone 沒 fetch 過)。
         return _result("release_gate_hook", MANUAL,
-                       "基準 %s 問不到,本項這一輪量不到" % HOOK_BASELINE_REF,
-                       "git fetch origin,再跑一次 doctor")
+                       _C("release_gate_hook.no_baseline", ref=HOOK_BASELINE_REF),
+                       _C("release_gate_hook.no_baseline_remedy"))
     if state == "drift":
         return _result("release_gate_hook", FAIL,
-                       "pre-push 裝出去那份與 %s 的正本不同:正本 %s 實裝 %s"
-                       % (HOOK_BASELINE_REF, baseline_sha, installed_sha),
+                       _C("release_gate_hook.drift", ref=HOOK_BASELINE_REF,
+                          baseline=baseline_sha, installed=installed_sha),
                        fix)
     if state == "not-executable":
         return _result("release_gate_hook", FAIL,
-                       "pre-push 位元組相同但沒有執行權 —— 裝了等於沒裝", fix)
+                       _C("release_gate_hook.not_executable"), fix)
     return _result("release_gate_hook", FAIL,
-                   "pre-push 狀態 %s(安裝器 rc=%s)" % (state, proc.returncode), fix)
+                   _C("release_gate_hook.other", state=state, rc=proc.returncode), fix)
 
 
 def check_seat_files(state_root, repo_root):
@@ -307,22 +317,21 @@ def check_seat_files(state_root, repo_root):
         # 還沒開過席=沒有席位檔可驗,這不是缺陷。但要把「本項什麼都沒檢查」
         # 講出來,不能只回一個看起來像通過的 ok。
         return _result("seat_files", OK,
-                       "席位目錄尚未建立(還沒開過席),本項未檢查任何東西:%s"
-                       % sdir)
+                       _C("seat_files.no_dir", path=sdir))
     cockpit = Path(repo_root) / "src" / "cockpit"
     try:
         if str(cockpit) not in sys.path:
             sys.path.insert(0, str(cockpit))
         import seat_guard
     except ImportError as err:
-        return _result("seat_files", FAIL, "載入 seat_guard 失敗:%s" % err,
-                       "確認 %s/seat_guard.py 存在且可 import" % cockpit)
+        return _result("seat_files", FAIL, _C("seat_files.import_error", error=err),
+                       _C("seat_files.import_remedy", path=cockpit))
     paths = sorted(sdir.glob("w*.json"))
     if not paths:
         # 與 seat_guard 的高-2 修法同一條紀律:0 份是合法狀態(全新 instance),
         # 不判紅;但**不得長得像通過**。
         return _result("seat_files", OK,
-                       "目錄存在但 0 份 w*.json,本項未檢查任何東西:%s" % sdir)
+                       _C("seat_files.empty", path=sdir))
     bad = []
     for path in paths:
         fail, code, detail = seat_guard.check_file(str(path))
@@ -330,11 +339,9 @@ def check_seat_files(state_root, repo_root):
             bad.append("%s [%s] %s" % (path.name, code, detail))
     if bad:
         return _result("seat_files", FAIL,
-                       "%d/%d 份席位檔有結構性缺陷:%s"
-                       % (len(bad), len(paths), ";".join(bad)),
-                       "逐檔詳情:python3 %s/seat_guard.py --seats %s"
-                       % (cockpit, sdir))
-    return _result("seat_files", OK, "%d 份席位檔結構完好:%s" % (len(paths), sdir))
+                       _C("seat_files.bad", bad=len(bad), total=len(paths), items=";".join(bad)),
+                       _C("seat_files.bad_remedy", cockpit=cockpit, path=sdir))
+    return _result("seat_files", OK, _C("seat_files.ok", count=len(paths), path=sdir))
 
 
 def _secrets_mod(repo_root):
@@ -353,21 +360,21 @@ def check_secrets_perms(state_root, repo_root):
     d = S.secrets_dir(env)
     if not d.is_dir():
         return _result("secrets_perms", OK,
-                       "金鑰目錄尚未建立,本項未檢查任何東西:%s" % d)
+                       _C("secrets_perms.no_dir", path=d))
     bad = []
     if S._too_open(d, S.DIR_MODE):
-        bad.append("%s 目錄權限不是 0700" % d)
+        bad.append(_C("secrets_perms.dir_mode", path=d))
     for path in sorted(d.rglob("*")):
         if path.is_file():
             if S._too_open(path, S.FILE_MODE):
-                bad.append("%s 檔權限不是 0600" % path.relative_to(d))
+                bad.append(_C("secrets_perms.file_mode", path=path.relative_to(d)))
         elif path.is_dir():
             if S._too_open(path, S.DIR_MODE):
-                bad.append("%s 目錄權限不是 0700" % path.relative_to(d))
+                bad.append(_C("secrets_perms.dir_mode", path=path.relative_to(d)))
     if bad:
         return _result("secrets_perms", FAIL, "; ".join(bad[:8]),
-                       "chmod 0700 目錄、chmod 0600 檔:%s" % d)
-    return _result("secrets_perms", OK, "目錄與檔權限皆為 0700/0600")
+                       _C("secrets_perms.remedy", path=d))
+    return _result("secrets_perms", OK, _C("secrets_perms.ok"))
 
 
 def check_secrets_feature(state_root, repo_root, feature):
@@ -378,29 +385,29 @@ def check_secrets_feature(state_root, repo_root, feature):
     cid = "secrets_%s" % feature.replace("-", "_")
     spec = S.FEATURES.get(feature)
     if not spec:
-        return _result(cid, OK, "沒有這個功能")
+        return _result(cid, OK, _C("secrets_feature.unknown"))
     rel, required = spec
     d = S.secrets_dir(env)
     if not d.is_dir():
-        return _result(cid, OK, "金鑰目錄尚未建立,未啟用 %s" % feature)
+        return _result(cid, OK, _C("secrets_feature.no_dir", feature=feature))
     path = d / rel
     if path.is_file() and S._too_open(path, S.FILE_MODE):
-        return _result(cid, OK, "檔權限太寬,見 secrets_perms")
+        return _result(cid, OK, _C("secrets_feature.too_open"))
     try:
         rows = S.load_file(rel, env)
     except S.SecretError as err:
         if err.reason == S.PERM_TOO_OPEN:
-            return _result(cid, OK, "檔權限太寬,見 secrets_perms")
-        return _result(cid, OK, "讀不到 %s,未啟用" % rel)
+            return _result(cid, OK, _C("secrets_feature.too_open"))
+        return _result(cid, OK, _C("secrets_feature.unreadable", file=rel))
     filled = [n for n in required if rows.get(n)]
     missing = [n for n in required if not rows.get(n)]
     if not filled:
-        return _result(cid, OK, "未啟用 %s(必填行全空)" % feature)
+        return _result(cid, OK, _C("secrets_feature.off", feature=feature))
     if missing:
         return _result(cid, MANUAL,
-                       "%s 已啟用但缺 %s" % (feature, "、".join(missing)),
-                       "在 %s 填上缺的行名(只停這一個功能)" % (d / rel))
-    return _result(cid, OK, "%s 必填行齊" % feature)
+                       _C("secrets_feature.missing", feature=feature, missing=_join(missing)),
+                       _C("secrets_feature.missing_remedy", path=d / rel))
+    return _result(cid, OK, _C("secrets_feature.ok", feature=feature))
 
 
 def _feature_policy_mod(repo_root=None):
@@ -425,29 +432,33 @@ def check_feature_policy(env=None, repo_root=None):
     try:
         FP = _feature_policy_mod(repo_root)
     except Exception as err:  # noqa: BLE001
-        return _result("feature_policy", FAIL, "載入功能區開關失敗:%s" % err,
-                       "確認 src/cockpit/feature_policy.py")
+        return _result("feature_policy", FAIL, _C("feature_policy.load_error", error=err),
+                       _C("feature_policy.load_remedy"))
     st = FP.status(env)
     how = st["policy_how"]
-    on = "、".join(st["on"]) or "無"
-    off = "、".join(st["off"]) or "無"
-    base = "艙 %s・方案 %s・開著:%s・關著:%s(%s)" % (
-        st["cabin"], st["plan"], on, off, st["off_means"])
+    none = _T("aib.doctor.none")
+    on = _join(st["on"]) or none
+    off = _join(st["off"]) or none
+    cabin = st["cabin"]
+    if cabin == "量不到":      # feature_policy 的「量不到艙家」字面(該模組自己不走 i18n)
+        cabin = _T("aib.doctor.unmeasured")
+    base = _C("feature_policy.base", cabin=cabin, plan=st["plan"], on=on, off=off,
+              off_means=st["off_means"])
     if FP.lacks_plus(env, how):
         # 10-01:基本版時畫面上功能區什麼都不畫;這裡一行說出是「要 Plus 授權」,不是關著。
-        base = "%s・%s" % (base, FP.plus_needed_notice())
+        base = _C("feature_policy.plus", base=base, notice=FP.plus_needed_notice())
     if how == "unreadable":
         # ★ 這一句與畫面那一列**共用同一份字面**(FP.unreadable_notice)——
         #   兩邊各寫一份的話,改了一邊而另一邊沒改,使用者看到的兩個說法會不一樣。
         return _result("feature_policy", FAIL,
                        "%s:%s" % (FP.unreadable_notice(), st["policy_path"]),
-                       "刪掉或修好 %s(格式 schema=%s);在那之前你以為開著的"
-                       "功能其實是關的" % (st["policy_path"], FP.POLICY_SCHEMA))
+                       _C("feature_policy.unreadable_remedy", path=st["policy_path"],
+                          schema=FP.POLICY_SCHEMA))
     if how == FP.R_NO_HOME:
         return _result("feature_policy", OK,
-                       "量不到艙家,功能區當沒開(%s)" % base)
+                       _C("feature_policy.no_home", base=base))
     if how == "missing":
-        return _result("feature_policy", OK, "還沒設過開關,三件都是關的・%s" % base)
+        return _result("feature_policy", OK, _C("feature_policy.missing", base=base))
     return _result("feature_policy", OK, base)
 
 
@@ -468,33 +479,33 @@ def check_handoff_fields(state_root, repo_root):
     if pend.is_dir():
         files = sorted(pend.glob("HANDOFF-*.md"), key=lambda p: p.stat().st_mtime)
     if not files:
-        return _result("handoff_fields", OK, "沒有交接單可驗(%s 下無 HANDOFF-*.md)" % pend)
+        return _result("handoff_fields", OK, _C("handoff_fields.none", path=pend))
     latest = files[-1]
     tool = Path(repo_root) / "tools" / "dispatch" / "handoff_fields.py"
     if not tool.is_file():
-        return _result("handoff_fields", FAIL, "解析器不在:%s" % tool,
-                       "確認 tools/dispatch/handoff_fields.py 在這棵樹裡(第 41 項)")
+        return _result("handoff_fields", FAIL, _C("handoff_fields.no_tool", path=tool),
+                       _C("handoff_fields.no_tool_remedy"))
     try:
         proc = subprocess.run([sys.executable, str(tool), str(latest), "--json", "--strict-fixed"],
                               capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
     except (OSError, subprocess.SubprocessError) as err:
-        return _result("handoff_fields", FAIL, "解析器跑不動:%s" % err, "python3 %s %s --strict-fixed" % (tool, latest))
+        return _result("handoff_fields", FAIL, _C("handoff_fields.tool_error", error=err), "python3 %s %s --strict-fixed" % (tool, latest))
     rc = proc.returncode
     try:
         data = json.loads(proc.stdout) if proc.stdout.strip() else {}
     except ValueError:
         data = {}
-    missing = "、".join(data.get("missing") or []) or "無"
+    missing = _join(data.get("missing") or []) or _T("aib.doctor.none")
     if rc == 0:
-        return _result("handoff_fields", OK, "%s:固定層六格齊(接自 @%s)" % (latest.name, data.get("from_seat")))
+        return _result("handoff_fields", OK, _C("handoff_fields.ok", name=latest.name, seat=data.get("from_seat")))
     if rc == 4:
         return _result("handoff_fields", OK,
-                       "△ 舊單(標題層):%s 六格解得出但沒有 handoff-fields 圍欄;下一份請照 docs/handbook/HANDOFF-FIELDS.md 寫圍欄"
-                       % latest.name)
+                       _C("handoff_fields.old", name=latest.name))
     if rc == 3:
-        return _result("handoff_fields", FAIL, "%s 缺格:%s" % (latest.name, missing),
-                       "補齊六格再交棒;python3 %s %s --strict-fixed" % (tool, latest))
-    return _result("handoff_fields", FAIL, "%s 不像交接單或解析器 rc=%s:%s" % (latest.name, rc, proc.stderr.strip()[:200]),
+        return _result("handoff_fields", FAIL, _C("handoff_fields.missing", name=latest.name, missing=missing),
+                       _C("handoff_fields.missing_remedy", tool=tool, file=latest))
+    return _result("handoff_fields", FAIL, _C("handoff_fields.not_handoff", name=latest.name, rc=rc,
+                                               stderr=proc.stderr.strip()[:200]),
                    "python3 %s %s --strict-fixed" % (tool, latest))
 
 
@@ -516,13 +527,14 @@ def check_dm_latency(state_root, repo_root, env=None, now=None):
         sys.path.insert(0, str(Path(repo_root) / "src" / "cockpit"))
         import dm_queue as Q
     except Exception as exc:  # noqa: BLE001
-        return _result("dm_latency", FAIL, "dm_queue 載不進來:%r" % (exc,), "修 src/cockpit/dm_queue.py")
+        return _result("dm_latency", FAIL, _C("dm_latency.import_error", error=repr(exc)),
+                       _C("dm_latency.import_remedy"))
     root = Q.queue_root(env)
     if not root.is_dir():
-        return _result("dm_latency", OK, "量不到:佇列目錄不存在(%s),沒有樣本" % root)
+        return _result("dm_latency", OK, _C("dm_latency.no_dir", path=root))
 
     def _m(vals, q):
-        return "量不到" if not vals else "%d分" % (_pct(vals, q) // 60)
+        return _T("aib.doctor.unmeasured") if not vals else _C("dm_latency.minutes", n=_pct(vals, q) // 60)
     rows, bad = [], 0
     for seat in Q.all_seats(env):
         items, errors = Q._all_items(seat, env=env, with_errors=True)
@@ -533,13 +545,14 @@ def check_dm_latency(state_root, repo_root, env=None, now=None):
               if i.get("read_at") is not None and i.get("sent_at") is not None]
         unread = [int(i["sent_at"]) for i in items
                   if i.get("status") in ("queued", "delivered", "claimed") and i.get("read_at") is None and i.get("sent_at")]
-        rows.append("%s:送達p50/p95=%s/%s 讀取p50/p95=%s/%s 樣本=%d/%d 最舊未讀=%s" % (
-            seat, _m(dl, .5), _m(dl, .95), _m(rd, .5), _m(rd, .95), len(dl), len(rd),
-            ("%d分" % ((now - min(unread)) // 60)) if unread else "無"))
+        rows.append(_C("dm_latency.row", seat=seat, d50=_m(dl, .5), d95=_m(dl, .95), r50=_m(rd, .5),
+                       r95=_m(rd, .95), nd=len(dl), nr=len(rd),
+                       oldest=_C("dm_latency.minutes", n=(now - min(unread)) // 60) if unread
+                       else _T("aib.doctor.none")))
     if bad:
-        return _result("dm_latency", FAIL, "佇列有 %d 個檔讀不到;%s" % (bad, " | ".join(rows)),
-                       "python3 src/cockpit/dm_queue.py tabs --seat <席> 看 errors")
-    return _result("dm_latency", OK, " | ".join(rows) if rows else "量不到:沒有任何席的佇列,沒有樣本")
+        return _result("dm_latency", FAIL, _C("dm_latency.bad", count=bad, rows=" | ".join(rows)),
+                       _C("dm_latency.bad_remedy"))
+    return _result("dm_latency", OK, " | ".join(rows) if rows else _C("dm_latency.no_seats"))
 
 
 def _cabin_env_mod(repo_root):
@@ -566,31 +579,29 @@ def check_cabin_env(repo_root, env=None):
     sock = (env.get("EZ2_AIHUB_SOCKET") or "").strip()
     if not sock:
         return _result("cabin_env", MANUAL,
-                       "沒有 EZ2_AIHUB_SOCKET:不在艙裡,本項未檢查任何東西",
-                       "在艙裡重跑,或 --socket 指定")
+                       _C("cabin_env.no_socket"),
+                       _C("cabin_env.no_socket_remedy"))
     try:
         M = _cabin_env_mod(repo_root)
         ids = M.provider_ids(str(Path(repo_root) / "src" / "cockpit" / "providers.json"))
         names = M.read_global_env(sock)
     except Exception as err:  # noqa: BLE001
         return _result("cabin_env", MANUAL,
-                       "量不到(**不是乾淨**):%s" % err,
-                       "確認 socket 還活著:tmux -L %s list-sessions" % sock)
+                       _C("cabin_env.unmeasured", error=err),
+                       _C("cabin_env.unmeasured_remedy", socket=sock))
     got = M.classify(names, ids)
     bad = got["identity"] + got["colour"]
     if not bad:
         return _result("cabin_env", OK,
-                       "艙 %s 乾淨(%d 個變數,沒有別人的會話身份、沒有關色旗標)"
-                       % (sock, len(names)))
+                       _C("cabin_env.ok", socket=sock, count=len(names)))
     parts = []
     if got["identity"]:
-        parts.append("別人的會話身份 %s" % " ".join(got["identity"]))
+        parts.append(_C("cabin_env.identity", names=" ".join(got["identity"])))
     if got["colour"]:
-        parts.append("關色旗標 %s(這艙開的 CLI 會是單色)" % " ".join(got["colour"]))
+        parts.append(_C("cabin_env.colour", names=" ".join(got["colour"])))
     return _result("cabin_env", FAIL,
-                   "艙 %s 帶了 %d 個不該帶的變數:%s" % (sock, len(bad), ";".join(parts)),
-                   "這一艙是從別人的殼裡開出來的。逐項看:"
-                   "python3 src/cockpit/cabin_env_audit.py --socket %s" % sock)
+                   _C("cabin_env.bad", socket=sock, count=len(bad), parts=";".join(parts)),
+                   _C("cabin_env.bad_remedy", socket=sock))
 
 
 def check_second_brain(repo_root):
@@ -600,27 +611,28 @@ def check_second_brain(repo_root):
         sys.path.insert(0, str(Path(repo_root) / "src" / "persona_route"))
         import route_register as RR
     except Exception as err:  # noqa: BLE001
-        return [_result("brain_contract", FAIL, "載入 route_register 失敗:%s" % err, "確認安裝完整")]
+        return [_result("brain_contract", FAIL, _C("brain_contract.load_error", error=err),
+                        _C("brain_contract.load_remedy"))]
     vault = RR.default_vault()
     default = os.path.abspath(vault) == os.path.abspath(RR.aib_default_vault())
-    out.append(_result("brain_vault", OK, "%s%s" % (vault, "(aib 預設,第一次用時自動建立)" if default else "")))
+    out.append(_result("brain_vault", OK, "%s%s" % (vault, _C("brain_vault.default_note") if default else "")))
     spec = RR.default_contract_spec()
     if RR.read_contract_bytes(spec) is None:
-        out.append(_result("brain_contract", FAIL, "路由契約讀不到(你有自己的知識庫:%s)" % vault,
-                           "把 EZ2_ROUTE_REGISTRY 指到你的路由契約檔;或拿掉 EZ2_VAULT_DIR,改用 aib 自己的 ~/.ez2-aib/vault"))
+        out.append(_result("brain_contract", FAIL, _C("brain_contract.unreadable", vault=vault),
+                           _C("brain_contract.unreadable_remedy")))
     else:
         out.append(_result("brain_contract", OK, str(spec)))
     vendor = Path(repo_root) / "src" / "memory" / "vendor"
     ez2ai = Path(os.path.expanduser(os.environ.get("EZ2_AI_REPO") or "~/ez2-ai"))
     if ez2ai.is_dir():
-        out.append(_result("brain_note_format", OK, "讀 %s" % ez2ai))
+        out.append(_result("brain_note_format", OK, _C("brain_note_format.ez2ai", path=ez2ai)))
     elif (vendor / "shared" / "ez2-note-format.js").is_file():
-        out.append(_result("brain_note_format", OK, "用隨附副本 %s" % vendor))
+        out.append(_result("brain_note_format", OK, _C("brain_note_format.vendor", path=vendor)))
     else:
-        out.append(_result("brain_note_format", FAIL, "筆記格式模組拿不到(沒有 ez2-ai,也沒有隨附副本)",
-                           "更新 aib(aib update)取得隨附副本"))
+        out.append(_result("brain_note_format", FAIL, _C("brain_note_format.missing"),
+                           _C("brain_note_format.missing_remedy")))
     if not shutil.which("node"):
-        out.append(_result("brain_node", FAIL, "找不到 node(寫第二大腦要用)", "安裝 Node.js(macOS:brew install node)"))
+        out.append(_result("brain_node", FAIL, _C("brain_node.missing"), _C("brain_node.remedy")))
     return out
 
 
@@ -637,10 +649,10 @@ def provider_checks(providers, explicit):
     for name in have:
         out += [check_provider_cli(name), check_provider_login(name)]
     if not have:
-        out.append(_result("provider_any", FAIL, "一個 AI 工具都沒裝", "至少裝一個:重跑安裝指令並加 --tools,或 aib update --tools"))
+        out.append(_result("provider_any", FAIL, _C("provider_any.none"), _C("provider_any.remedy")))
     missing = [n for n in providers if n not in have]
     if missing:
-        out.append(_result("provider_optional", OK, "沒裝(可選,要用再裝):%s" % "、".join(missing)))
+        out.append(_result("provider_optional", OK, _C("provider_optional.detail", names=_join(missing))))
     return out
 
 
@@ -660,8 +672,8 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
             checks.append(check_secrets_feature(state_root, repo_root, feat))
     except Exception as err:  # noqa: BLE001
         checks.append(_result("secrets_perms", FAIL,
-                              "載入金鑰櫃失敗:%s" % err,
-                              "確認 src/bootstrap/aib_secrets.py"))
+                              _C("secrets_perms.load_error", error=err),
+                              _C("secrets_perms.load_remedy")))
     checks += check_second_brain(repo_root)
     checks += provider_checks(providers, explicit_providers)
     checks.append(check_dm_latency(state_root, repo_root))

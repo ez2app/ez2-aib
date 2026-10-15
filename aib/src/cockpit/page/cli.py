@@ -46,6 +46,23 @@ def _out(line):
     print(line, flush=True)
 
 
+def _m(_name, **params):
+    """執行時的訊息走四語鍵 aib.page.*(語系盤查:英文介面不准印中文);讀不到印鍵名,不讓指令崩。"""
+    try:
+        import i18n_lib
+        return i18n_lib.t("aib.page." + _name, params or None, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001
+        return _name
+
+
+def _locale():
+    try:
+        import i18n_lib
+        return i18n_lib.resolve_locale()
+    except Exception:  # noqa: BLE001
+        return "zh-TW"
+
+
 def _seat_addr(args, environ):
     """席位位址(`@` + session uuid 尾五碼;b15:席身分只有這一個,不讀退役的舊欄)。"""
     return args.seat or environ.get(SEAT_ENV) or ""
@@ -62,7 +79,7 @@ def _pick_record(args, environ):
     if args.tenant and args.page:
         return store.load_token(args.tenant, args.page, environ)
     if args.tenant or args.page:
-        raise store.StoreError("--tenant 與 --page 要一起給")
+        raise store.StoreError(_m("tenant_page_both"))
     return store.only_token(environ)
 
 
@@ -72,15 +89,15 @@ def cmd_bind(args, environ):
     if args.serial and not label:
         label = "AIB"
     if not label:
-        raise SystemExit("aib page bind: 要 --seat-label(會顯示在後台確認畫面上,讓人認得出是哪一席)")
+        raise SystemExit("aib page bind: " + _m("bind_need_label"))
     api = _api_for(None, args, environ)
     if args.serial:
         record, path = bind_mod.run_serial_bind(api, args.serial, label, _out, environ=environ)
         args.serial = None
     else:
-        _out("沒給序號,走配對碼(到 /manage/aib 輸入)")
+        _out(_m("bind_pair_code"))
         record, path = bind_mod.run_bind(api, label, _out, environ=environ)
-    _out("憑證存在 %s(只有你讀得到,權限 0600)" % path)
+    _out(_m("bind_saved", path=path))
     return 0
 
 
@@ -124,7 +141,7 @@ def _chat_autofill(args, environ, record, api):
         _out("  " + note)
     ops = ops + more
     if not ops:
-        _out("沒有缺的欄可以生成;草稿沒動")
+        _out(_m("autofill_nothing"))
         return 0
     response = chat_mod.apply_skill_ops(api, record, ops, _seat_addr(args, environ), _out, template_id=args.template, seq=args.seq,
                              confirm=(lambda lines: True) if args.yes else None, open_browser=False)
@@ -149,19 +166,19 @@ def cmd_oneshot(args, environ):
             with open(args.intent, encoding="utf-8") as fh:
                 text = fh.read()
         except OSError as exc:
-            raise oneshot_mod.OneshotError("讀不到 intent 檔 %s:%s" % (args.intent, exc.strerror or exc))
+            raise oneshot_mod.OneshotError(_m("oneshot_read_fail", path=args.intent, error=exc.strerror or exc))
     if args.checklist:
         intent = oneshot_mod.load_intent(text, confirm_clear=True)[0] if text is not None else None
         api = _api_for(record, args, environ) if token else None
         if not token:
-            _out("(這台機器還沒綁頁面:只印清單;綁定用 `aib page bind --serial <序號>`)")
+            _out(_m("oneshot_checklist_unbound"))
         oneshot_mod.checklist(api, intent, _out, environ, token=token, lang=args.lang)
         return 0
     if text is None:
-        raise oneshot_mod.OneshotError("要給 intent JSON 檔(或 `-` 讀 stdin);先問清單用 --checklist")
+        raise oneshot_mod.OneshotError(_m("oneshot_need_intent"))
     intent, clear = oneshot_mod.load_intent(text, confirm_clear=args.confirm_clear or args.dry_run)
     if clear and args.dry_run and not args.confirm_clear:
-        _out("注意:intent 寫了 clear_existing:true(會刪掉草稿全部區塊再重建);真的寫要再加 --confirm-clear")
+        _out(_m("oneshot_clear_note"))
     if args.dry_run and not token:
         oneshot_mod.compose_only(intent, _out, environ)
         return 0
@@ -176,25 +193,25 @@ def cmd_oneshot(args, environ):
     if args.json:
         _out(oneshot_mod.redact(json.dumps(result, ensure_ascii=False, indent=2), token))
     if args.dry_run:
-        _out("DRY_RUN_WRITES=%d(真的跑會送這幾筆;全部只進草稿)" % len(broker.writes))
-        _out("要寫進草稿就拿掉 --dry-run 重跑同一份 intent")
+        _out("DRY_RUN_WRITES=%d%s" % (len(broker.writes), _m("oneshot_dry_writes_note")))   # 前綴給機器讀,不翻
+        _out(_m("oneshot_dry_rerun"))
         return 0
     if broker.last_write is not None:
         chat_mod.announce_quota(broker.last_write, _out)
     url = result.get("review_url")
     wrote = any(w[3] == 200 for w in broker.writes)
     if not url:
-        _out("沒有需要變更的內容(草稿沒動,不開預覽確認頁)")
+        _out(_m("oneshot_no_change"))
         _out("REVIEW_URL=")
         return 0
     if not chat_mod.REVIEW_URL_RE.match(url):
         raise oneshot_mod.OneshotError(oneshot_mod.redact(
-            "伺服器回的預覽網址不是 ez2.page 的 review 路(%r),不當成預覽連結給你;%s" % (
-                url[:120], "草稿已寫入,請到 ez2.page 後台看草稿" if wrote else "這次沒有寫入"), token))
+            _m("oneshot_bad_review_url", url=repr(url[:120]),
+               tail=_m("oneshot_bad_url_wrote") if wrote else _m("oneshot_bad_url_not_wrote")), token))
     if wrote:
-        _out("草稿已更新;線上頁沒變。發布要你自己在預覽確認頁按(我沒有權限發布,也不會去按)")
+        _out(_m("oneshot_draft_updated"))
     else:
-        _out("這次沒有需要變更的內容;草稿原本就在,連結照給(發布仍是你自己按)")
+        _out(_m("oneshot_draft_unchanged"))
     _offer_review_after_writes(args, environ, {"preview": {"review_url": url}})
     _out("REVIEW_URL=%s" % url)
     return 0
@@ -208,12 +225,12 @@ def cmd_usage(args, environ):
     """
     record = _pick_record(args, environ)
     if not record:
-        raise usage_mod.UsageError("還沒綁這個頁面,沒有可以記帳的對象;先跑 `aib page bind`")
+        raise usage_mod.UsageError(_m("usage_unbound"))
     api = _api_for(record, args, environ)
     tenant, page = record.get("tenant_id"), record.get("page_id")
     if args.flush:
         sent, left = usage_mod.flush(api, tenant, page, environ, _out)
-        _out("重送 %d 筆,還剩 %d 筆" % (sent, left))
+        _out(_m("usage_flushed", sent=sent, left=left))
         return 0
     explicit = {"binding_id": args.binding_id, "provider": args.provider,
                 "funding": args.funding}
@@ -224,7 +241,7 @@ def cmd_usage(args, environ):
     for raw in args.tool or []:
         kind, _, count = raw.partition(":")
         if not count.isdigit():
-            raise usage_mod.UsageError("--tool 要寫成 kind:次數(收到 %r)" % raw)
+            raise usage_mod.UsageError(_m("usage_bad_tool", raw=repr(raw)))
         tools.append({"kind": kind, "count": int(count)})
     receipt = usage_mod.build_receipt(
         operation_key=key, call_id=args.call_id,
@@ -234,7 +251,7 @@ def cmd_usage(args, environ):
         tokens={"input_uncached": args.input_uncached, "input_cached": args.input_cached,
                 "output": args.output, "output_reasoning_included": args.output_reasoning})
     ok, detail = usage_mod.send(api, receipt, tenant, page, environ, _out)
-    _out("用量收據 %s(%s)" % ("已送出" if ok else "留在本機待重送", detail or key))
+    _out(_m("usage_receipt", state=_m("usage_sent") if ok else _m("usage_kept"), detail=detail or key))
     return 0
 
 
@@ -249,7 +266,7 @@ def cmd_intake(args, environ):
     draft = api.get_draft()
     lines = intake_mod.missing_lines(blocks, draft, template_skill.BLOCK_REQUIRED_KEYS)
     if not lines:
-        _out("清單五節都齊了。")
+        _out(_m("intake_complete"))
         return 0
     for line in lines:
         _out(line)
@@ -261,13 +278,13 @@ def cmd_intake(args, environ):
     if args.refetch:
         sources += [u for u in known if u not in sources]
     elif known:
-        _out("  頁上有 %d 個取回來源(%s);加 --refetch 會重抓它們的快照找候選" % (len(known), ", ".join(known)[:200]))
+        _out(_m("intake_known_sources", n=len(known), urls=", ".join(known)[:200]))
     adapter = []
     for url in sources:
         try:
             adapter.append((url, intake_sources.fetch_snapshot(url, explicit=True)))
         except intake_sources.SourceError as exc:
-            _out("  來源 %s 抓不到,跳過:%s" % (url, exc))
+            _out(_m("intake_source_fail", url=url, error=exc))
     fields, socials_gap = intake_mod.missing_profile_fields(profile)
     cands = intake_mod.candidates(profile, intake_mod.social_snapshots_of(blocks, draft), adapter)
     for line in intake_mod.candidate_lines(cands, fields, socials_gap):
@@ -291,9 +308,9 @@ def cmd_import(args, environ):
     chat_mod.assert_writable(record)          # 未綁時在這裡就停
     api = _api_for(record, args, environ)
     if not args.urls and not args.search:
-        raise intake_sources.SourceError("要給至少一條來源網址,或帶 --search 用品牌名搜(289 (h))")
+        raise intake_sources.SourceError(_m("import_need_url"))
     if (args.city or args.domain) and not args.search:
-        raise intake_sources.SourceError("--city / --domain 只在 --search 時有用;沒帶 --search 它們什麼都不做,所以具名停手(root2 複審 F3)")
+        raise intake_sources.SourceError(_m("import_city_needs_search"))
     snapshots = []
     for url in args.urls:                     # 先把每條都抓齊、驗齊,再動草稿:第 3 條沒轉接器不該讓第 1 條已經寫了一半
         snapshots.append((url, intake_sources.fetch_snapshot(url, explicit=True)))   # 用戶親手給的網址 ⇒ 網站轉接器也認
@@ -302,13 +319,13 @@ def cmd_import(args, environ):
         state = _current_state(api)           # 每一輪重讀現值:上一輪填進去的欄,這一輪就是「已有」
         image_notes = _materialize(snapshot, api, args, environ)
         ops, notes = intake_sources.merge_into_ops(snapshot, state)
-        _out("來源 %s(%s):%d 個操作" % (snapshot["source"]["kind"], url, len(ops)))
+        _out(_m("import_source_ops", kind=snapshot["source"]["kind"], url=url, n=len(ops)))
         for note in image_notes:
             _out("  " + note)
         for note in notes:
             _out("  " + note)
         if not ops:
-            _out("  這個來源沒有可以補的缺欄")
+            _out(_m("import_source_nothing"))
             continue
         response = chat_mod.apply_skill_ops(api, record, ops, _seat_addr(args, environ), _out,
                                  template_id=args.template, seq=args.seq,
@@ -318,7 +335,7 @@ def cmd_import(args, environ):
     if args.search:
         total += _import_search(args, environ, record, api)
     if not total:
-        _out("所有來源都沒有可以補的缺欄;草稿沒動")
+        _out(_m("import_all_nothing"))
     return 0
 
 
@@ -340,13 +357,13 @@ def _import_search(args, environ, record, api):
     state = _current_state(api)
     gaps = _search_gaps(state)
     if not gaps:
-        _out("沒有缺欄(自介 / 在線狀態 / 社群 / 區塊都有了),不搜尋;零請求")
+        _out(_m("search_no_gaps"))
         return 0
     name = (intake_sources._current_profile(state).get("display_name") or "").strip()
-    _out("缺:%s;用品牌名「%s」搜公開結果" % ("、".join(gaps), name or "(空)"))
+    _out(_m("search_gaps", gaps=_m("list_sep").join(gaps), name=name or _m("search_empty_name")))
     found, _lines = intake_search.run_search(name, environ, city=args.city, domain=args.domain, out=_out)
     if not found:
-        _out("搜尋沒有可用的候選;草稿沒動")
+        _out(_m("search_none"))
         return 0
     # 候選是機器挑的不是用戶給的:一個抓不到(lnk.bio 對機器人 403 是常態)只跳過那一個,其餘照寫(root2 複審 F1;用戶給網址的那條路仍是「第 3 條沒轉接器不該讓第 1 條寫一半」)。
     #   刀 K7(尺裡把 except 換成 raise):任一候選抓不到就整個中止 ⇒ H4'' 必紅
@@ -355,19 +372,19 @@ def _import_search(args, environ, record, api):
         try:
             snapshots.append((item["url"], intake_sources.fetch_snapshot(item["url"], explicit=item.get("explicit", False))))
         except intake_sources.SourceError as exc:
-            _out("跳過:%s 抓不到:%s" % (item["url"], str(exc)[:200]))
+            _out(_m("search_skip", url=item["url"], error=str(exc)[:200]))
     if not snapshots:
-        _out("候選都抓不到;草稿沒動")
+        _out(_m("search_all_failed"))
         return 0
     total = 0
     for url, snapshot in snapshots:
         ops, notes = intake_sources.merge_into_ops(snapshot, _current_state(api))
         ops, marks = intake_search.mark_search_ops(ops, snapshot)
-        _out("搜尋來源 %s(%s):%d 個操作" % (snapshot["source"]["kind"], url, len(ops)))
+        _out(_m("search_source_ops", kind=snapshot["source"]["kind"], url=url, n=len(ops)))
         for note in notes + marks:
             _out("  " + note)
         if not ops:
-            _out("  這個來源沒有可以補的缺欄")
+            _out(_m("import_source_nothing"))
             continue
         response = chat_mod.apply_skill_ops(api, record, ops, _seat_addr(args, environ), _out,
                                  template_id=args.template, seq=args.seq,
@@ -375,7 +392,7 @@ def _import_search(args, environ, record, api):
         _offer_review_after_writes(args, environ, response)
         total += len(ops)
     if total:
-        _out(intake_search.notice("zh-TW"))
+        _out(intake_search.notice(_locale()))
     return total
 
 
@@ -394,11 +411,11 @@ def cmd_refresh(args, environ):
             urls.append(prov.get("url"))
     if not urls:
         raise intake_sources.SourceError(
-            "頁上沒有來源 %s 的取回顆(有的來源:%s);沒有東西可以重抓"
-            % (args.source, ", ".join(sorted({b["provenance"]["source"] for b in intake_sources._current_blocks(state)
-                                               if isinstance(b, dict) and isinstance(b.get("provenance"), dict)})) or "無"))
+            _m("refresh_no_source", source=args.source,
+               have=", ".join(sorted({b["provenance"]["source"] for b in intake_sources._current_blocks(state)
+                                      if isinstance(b, dict) and isinstance(b.get("provenance"), dict)})) or _m("refresh_none")))
     if any(not isinstance(u, str) or not u for u in urls):
-        raise intake_sources.SourceError("來源 %s 的取回顆沒有記網址(手寫的快照檔),不能重抓;要更新請再 `aib page import <檔>`" % args.source)
+        raise intake_sources.SourceError(_m("refresh_no_url", source=args.source))
     snapshots = [(url, intake_sources.fetch_snapshot(url, explicit=True)) for url in urls]      # 先全抓齊再動草稿(來源網址是用戶當初給的)
     total = 0
     for url, snapshot in snapshots:
@@ -406,7 +423,7 @@ def cmd_refresh(args, environ):
         ops, notes = intake_sources.refresh_into_ops(snapshot, _current_state(api), args.source)
         for note in image_notes:
             _out("  " + note)
-        _out("重抓 %s(%s):%d 個操作" % (args.source, url, len(ops)))
+        _out(_m("refresh_ops", source=args.source, url=url, n=len(ops)))
         for note in notes:
             _out("  " + note)
         if not ops:
@@ -417,7 +434,7 @@ def cmd_refresh(args, environ):
         _offer_review_after_writes(args, environ, response)
         total += len(ops)
     if not total:
-        _out("來源 %s 沒有新內容;草稿沒動" % args.source)
+        _out(_m("refresh_nothing_new", source=args.source))
     return 0
 
 
@@ -452,33 +469,32 @@ def cmd_upload(args, environ):
 def cmd_list(args, environ):
     records = store.list_tokens(environ)
     if not records:
-        _out("這台機器還沒綁任何 ez2.page 頁面。要綁就跑 `aib page bind`")
+        _out(_m("list_empty"))
         return 0
     for record in records:
-        _out("%s.%s%s 到期 %s"
-             % (record.get("tenant_id"), record.get("page_id"),
-                ("(" + record["slug"] + ")") if record.get("slug") else "",
-                record.get("expires_at", "?")))
+        _out(_m("list_row", tenant=record.get("tenant_id"), page=record.get("page_id"),
+                slug=_m("list_slug", slug=record["slug"]) if record.get("slug") else "",
+                expires=record.get("expires_at", "?")))
     return 0
 
 
 def cmd_status(args, environ):
     record = _pick_record(args, environ)
     if not record:
-        _out("綁定:未綁定;先跑 `aib page bind --serial <序號>`")
+        _out(_m("status_unbound"))
         return 0
     try:
         state = _api_for(record, args, environ).get_draft()
     except ApiError as exc:
-        _out("綁定:伺服器未確認有效")
+        _out(_m("status_unverified"))
         raise chat_mod.ChatError(chat_mod.write_error_text(exc))
-    _out("綁定:有效(%s)" % (record.get("slug") or record.get("page_id")))
+    _out(_m("status_ok", page=record.get("slug") or record.get("page_id")))
     enabled = state.get("aib_write_enabled")
     if enabled is False:
         since = chat_mod._taipei_time(state.get("aib_write_disabled_at"), "%Y-%m-%d %H:%M")
-        _out("允許 AIB 改頁:關(自 %s 起)" % (since or "不知道何時"))
+        _out(_m("status_write_off", since=since or _m("status_since_unknown")))
     else:
-        _out("允許 AIB 改頁:%s" % ("開" if enabled is True else "狀態未知(伺服器未提供)"))
+        _out(_m("status_write", state=_m("status_write_on") if enabled is True else _m("status_write_unknown")))
     chat_mod.announce_quota(state, _out)
     return 0
 
@@ -488,17 +504,17 @@ def cmd_stats(args, environ):
     區塊標籤要對線上顆:讀一次 /blocks 拿 block_id → 型別 / 字(唯讀,不扣配額)。"""
     record = _pick_record(args, environ)
     if not record:
-        raise chat_mod.ChatError("還沒綁這個頁面;先跑 `aib page bind --serial <序號>`")
+        raise chat_mod.ChatError(_m("stats_unbound"))
     api = _api_for(record, args, environ)
     try:
         answer = api.get_stats()
     except ApiError as exc:
         if exc.code == "page_api_not_found":
-            raise chat_mod.ChatError("這台 ez2.page 還沒開統計(GET /stats 404);r41 之後才有")
-        raise chat_mod.ChatError("統計讀不到:" + chat_mod.write_error_text(exc))
+            raise chat_mod.ChatError(_m("stats_not_enabled"))
+        raise chat_mod.ChatError(_m("stats_read_fail", error=chat_mod.write_error_text(exc)))
     stats = answer.get("stats") if isinstance(answer, dict) else None
     if not isinstance(stats, dict):
-        raise chat_mod.ChatError("統計回應形狀不對(沒有 stats)")
+        raise chat_mod.ChatError(_m("stats_bad_shape"))
     labels = {}
     try:
         for block in (api.get_blocks().get("blocks") or []):
@@ -506,19 +522,20 @@ def cmd_stats(args, environ):
             labels[block.get("block_id")] = "%s · %s" % (block.get("block_type"), str(payload.get("label") or payload.get("title") or payload.get("name") or payload.get("text") or "")[:40])
     except ApiError:
         pass
-    _out("頁面統計(%s;數的是次不是人;保留 %s 天)" % (record.get("slug") or record.get("page_id"), stats.get("retention_days", "?")))
-    for key, name in (("today", "今天"), ("last_7", "近 7 天"), ("last_30", "近 30 天")):
+    _out(_m("stats_head", page=record.get("slug") or record.get("page_id"), days=stats.get("retention_days", "?")))
+    for key, name in (("today", _m("stats_today")), ("last_7", _m("stats_last_7")), ("last_30", _m("stats_last_30"))):
         row = stats.get(key) or {}
         clicks = sum(sum(slots.values()) for slots in (row.get("clicks") or {}).values() if isinstance(slots, dict))
-        _out("%s:瀏覽 %s 次 · 點擊 %s 次" % (name, row.get("views", 0), clicks))
+        _out(_m("stats_row", name=name, views=row.get("views", 0), clicks=clicks))
     per_block = (stats.get("last_30") or {}).get("clicks") or {}
     if per_block:
-        _out("各區塊點擊(近 30 天):")
+        _out(_m("stats_per_block"))
         for block_id, slots in per_block.items():
-            parts = "、".join("%s %d" % ({"link": "連結", "nav": "導航", "review": "留評論", "social": "社群"}.get(slot, slot), n) for slot, n in (slots or {}).items())
-            _out("  %s:%s" % (labels.get(block_id, block_id), parts))
+            parts = _m("list_sep").join("%s %d" % (_m("stats_slot_" + slot) if slot in ("link", "nav", "review", "social") else slot, n)
+                                        for slot, n in (slots or {}).items())
+            _out(_m("stats_block_row", label=labels.get(block_id, block_id), parts=parts))
     else:
-        _out("還沒有點擊紀錄。")
+        _out(_m("stats_no_clicks"))
     return 0
 
 
@@ -664,8 +681,7 @@ def main(argv=None, environ=None):
         return 1
     except ApiError as exc:
         # 走到這裡代表某條路忘了翻成人話 —— 印出原碼,不要假裝看得懂
-        print("aib page: 沒有被翻成人話的錯誤 %s(HTTP %s);請回報這一行"
-              % (exc.code or "?", exc.http_status), file=sys.stderr)
+        print("aib page: " + _m("api_untranslated", code=exc.code or "?", status=exc.http_status), file=sys.stderr)
         return 1
 
 

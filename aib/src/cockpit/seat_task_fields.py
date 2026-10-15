@@ -54,12 +54,32 @@ class SeatTaskFieldsError(ValueError):
     """四欄形狀不合法。"""
 
 
+_ERR_TR: dict = {}
+
+
+def _err(key: str, **params: Any) -> str:
+    """錯誤訊息走 i18n(10-15:英文語系不再印中文錯誤);鍵在 aib.task.err.*。
+    字典讀不到 ⇒ 鍵名(可見即可抓),不擋指令。"""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    try:
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _ERR_TR.get(loc)
+        if tr is None:
+            tr = _ERR_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t("aib.task.err." + key, params or None)
+    except Exception:  # noqa: BLE001
+        return "aib.task.err." + key
+
+
 def _opt_uid(name: str, raw: Any) -> str:
     if raw is None or raw == "":
         return ""
     text = str(raw).strip()
     if not UID_RE.fullmatch(text):
-        raise SeatTaskFieldsError("%s 形狀不合法: %r" % (name, raw))
+        raise SeatTaskFieldsError(_err("uid_bad", name=name, value=repr(raw)))
     return text
 
 
@@ -68,7 +88,7 @@ def _opt_time(raw: Any) -> str:
         return ""
     text = str(raw).strip()
     if not TIME_RE.fullmatch(text):
-        raise SeatTaskFieldsError("task_started_at 形狀不合法: %r" % (raw,))
+        raise SeatTaskFieldsError(_err("time_bad", value=repr(raw)))
     return text
 
 
@@ -78,19 +98,16 @@ def _opt_role(raw: Any) -> str:
         return ""
     text = str(raw).strip()
     if SEAT_CODE_RE.fullmatch(text):
-        raise SeatTaskFieldsError(
-            "report_to 必須是角色名,不可寫席碼(那是既有 reports_to 的範疇): %r"
-            % (raw,)
-        )
+        raise SeatTaskFieldsError(_err("role_is_seat_code", value=repr(raw)))
     if not ROLE_RE.fullmatch(text):
-        raise SeatTaskFieldsError("report_to 角色形狀不合法: %r" % (raw,))
+        raise SeatTaskFieldsError(_err("role_bad", value=repr(raw)))
     return text
 
 
 def validate_seat_task_fields(data: Mapping[str, Any]) -> dict[str, str]:
     """驗證並正規化四欄;缺欄視為空字串(未派)。不碰 reports_to。"""
     if not isinstance(data, Mapping):
-        raise SeatTaskFieldsError("席檔四欄必須是物件")
+        raise SeatTaskFieldsError(_err("fields_not_object"))
     return {
         "task_uid": _opt_uid("task_uid", data.get("task_uid", "")),
         "task_started_at": _opt_time(data.get("task_started_at", "")),
@@ -108,7 +125,7 @@ def read_seat_task_fields(seat_record: Mapping[str, Any]) -> dict[str, str]:
     未知／缺席的鍵 → 空字串。
     """
     if not isinstance(seat_record, Mapping):
-        raise SeatTaskFieldsError("席位檔必須是物件")
+        raise SeatTaskFieldsError(_err("seat_not_object"))
     slim = {k: seat_record.get(k, "") for k in FIELD_KEYS}
     return validate_seat_task_fields(slim)
 
@@ -126,7 +143,7 @@ def merge_task_fields(
 ) -> dict[str, Any]:
     """回傳席位檔副本,只覆寫 FIELD_KEYS(經驗證)。不碰 reports_to。"""
     if not isinstance(seat_record, Mapping):
-        raise SeatTaskFieldsError("席位檔必須是物件")
+        raise SeatTaskFieldsError(_err("seat_not_object"))
     out = dict(seat_record)
     # 以現況四欄為底,再套 patch(只收 FIELD_KEYS)
     base = {k: out.get(k, "") for k in FIELD_KEYS}
@@ -170,11 +187,11 @@ def find_seat_file(
     if seat_file:
         p = Path(seat_file).expanduser()
         if not p.is_file():
-            raise SeatTaskFieldsError("席位檔不存在: %s" % p)
+            raise SeatTaskFieldsError(_err("seat_file_missing", path=p))
         return p
     sid = (seat_id or "").strip().lstrip("@").lower()
     if not sid:
-        raise SeatTaskFieldsError("需要 --seat-file 或 --seat-id")
+        raise SeatTaskFieldsError(_err("need_seat"))
     import seats_dir_lib  # noqa: E402  同目錄單源
     env = dict(os.environ)
     if aib_home:
@@ -197,11 +214,11 @@ def find_seat_file(
         if len(su) >= 5 and su[-5:].lower() == sid:
             hits.append(path)
     if not hits:
-        raise SeatTaskFieldsError("找不到席位檔 seat_id=%s (home=%s)" % (sid, home))
+        raise SeatTaskFieldsError(_err("seat_not_found", sid=sid, home=home))
     if len(hits) > 1:
         # 同一個席位目錄裡兩份都對得上 = 席位檔本身重複,報錯不猜
         raise SeatTaskFieldsError(
-            "seat_id=%s 命中多份席位檔: %s" % (sid, ", ".join(str(h) for h in hits))
+            _err("seat_ambiguous", sid=sid, paths=", ".join(str(h) for h in hits))
         )
     return hits[0]
 

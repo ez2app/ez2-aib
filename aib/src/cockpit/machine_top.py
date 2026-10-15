@@ -286,7 +286,7 @@ def measure(seconds: float = 5.0, top: int = 8, use_trace: bool = True) -> dict:
         try:
             traced = _trace(troot, seconds)
         except OSError as exc:
-            notes.append("核心追蹤失敗(%s),改用快速取樣" % exc)
+            notes.append(_ui("aib.top.trace_failed", error=exc))
             polled = poll_spawns(max(0.0, seconds - (time.time() - t0)), me=me)
     else:
         polled = poll_spawns(seconds, me=me)
@@ -301,15 +301,15 @@ def measure(seconds: float = 5.0, top: int = 8, use_trace: bool = True) -> dict:
         skip = {me}
     if forks0 is not None and forks1 is not None:
         new_rate = round((forks1 - forks0) / elapsed, 1)
-        rate_how = "核心計數 /proc/stat"
+        rate_how = _ui("aib.top.how.proc_stat")
     elif probe1 > probe0 > 0:
         # 扣掉自己開的:結尾探針 1 個 + 快速取樣每輪 1 個 ps
         own = 1 + (polled["polls"] - 1 if polled else 0)
         new_rate = round(max(0, probe1 - probe0 - own) / elapsed, 1)
-        rate_how = "pid 前進量(Mac 依序發號;估計)"
+        rate_how = _ui("aib.top.how.pid_advance")
     else:
         new_rate = None
-        rate_how = "量不到(pid 繞回或無法開探針)"
+        rate_how = _ui("aib.top.how.rate_unknown")
     res = {
         "seconds": round(elapsed, 2),
         "cpu_top": cpu_top(before, after, elapsed, skip, top),
@@ -319,54 +319,61 @@ def measure(seconds: float = 5.0, top: int = 8, use_trace: bool = True) -> dict:
     }
     if traced is not None:
         res["spawn"] = parse_trace(traced, skip, top)
-        res["spawn_how"] = "核心追蹤(準,含短命程式)"
+        res["spawn_how"] = _ui("aib.top.how.trace")
     elif polled is not None:
         res["spawn"] = {"groups": group_spawns(polled["seen"], polled["names"], skip, top),
                         "polls": polled["polls"]}
-        res["spawn_how"] = ("每 0.1 秒看一次行程表(共 %d 次);活不到 0.1 秒的程式看不到,"
-                            "所以這裡的數字會比每秒新開程式少(Linux 用 root 跑才有核心追蹤)" % polled["polls"])
+        res["spawn_how"] = _ui("aib.top.how.poll", polls=polled["polls"])
     else:
         res["spawn"] = {"survivors": new_survivors(before, after, skip, top)}
-        res["spawn_how"] = "只看得到活過取樣的新程式(短命程式會漏)"
+        res["spawn_how"] = _ui("aib.top.how.survivors")
     return res
 
 
 def render(res: dict) -> str:
-    out = ["取樣 %.1f 秒" % res["seconds"], "", "CPU 用最多(平均占幾顆核心):"]
+    out = [_ui("aib.top.sampled", seconds="%.1f" % res["seconds"]), "", _ui("aib.top.cpu_head")]
     for r in res["cpu_top"] or []:
         out.append("  %6.2f  %s (pid %d)" % (r["cores"], r["comm"], r["pid"]))
     if not res["cpu_top"]:
-        out.append("  (沒有)")
+        out.append("  " + _ui("aib.top.none"))
     rate = res["new_per_s"]
-    out += ["", "每秒新開程式:%s(%s)" % ("量不到" if rate is None else rate, res["new_per_s_how"]),
-            "誰在開新程式(%s):" % res["spawn_how"]]
+    out += ["", _ui("aib.top.rate", rate=_ui("aib.top.rate_unknown") if rate is None else rate,
+                    how=res["new_per_s_how"]),
+            _ui("aib.top.spawn_head", how=res["spawn_how"])]
     sp = res["spawn"]
     if "spawners" in sp:
         for r in sp["spawners"]:
             out.append("  %6d  %s" % (r["count"], r["parent"]))
-        out.append("開的是什麼:")
+        out.append(_ui("aib.top.execs_head"))
         for r in sp["execs"]:
             out.append("  %6d  %s" % (r["count"], r["file"]))
     elif "groups" in sp:
         for r in sp["groups"]:
             out.append("  %6d  %s → %s" % (r["count"], r["parent"], r["child"]))
         if not sp["groups"]:
-            out.append("  (取樣期間沒看到新程式)")
+            out.append("  " + _ui("aib.top.no_new_seen"))
     else:
         for r in sp["survivors"]:
             out.append("  %6d  %s (pid %d)" % (r["count"], r["parent"], r["ppid"]))
         if not sp["survivors"]:
-            out.append("  (沒有活過取樣的新程式)")
+            out.append("  " + _ui("aib.top.no_survivors"))
     for n in res.get("notes") or []:
-        out.append("註:" + n)
+        out.append(_ui("aib.top.note", text=n))
     return "\n".join(out)
 
 
+_TR = {}
+
+
 def _ui(key, **params):
-    """畫面字走四語鍵;每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名(不擋程式)。"""
+    """畫面字走四語鍵;每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名(不擋程式)。同一語系的字典只載一次。"""
     try:
         import i18n_lib
-        return i18n_lib.t(key, params or None, locale=i18n_lib.resolve_locale())
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(locale=loc)
+        return tr.t(key, params or None)
     except Exception:  # noqa: BLE001
         return key
 
