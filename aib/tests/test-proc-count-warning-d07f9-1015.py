@@ -131,8 +131,10 @@ class RightColumn(unittest.TestCase):
     def test_p6_subprocess(self):
         if PC.limit()[0] is None:
             self.skipTest("這台量不到行程上限(Linux 無 RLIMIT_NPROC),照設計不預警;子行程沒法換假上限")
+        ratio = PC.check(threshold=1.0, top_n=0, allow_fork=False)["ratio"] or 0
+        pct = "%.6f" % max(ratio * 50, 1e-6)   # 門檻 = 目前用量的一半:CI 的 Linux 上限幾萬支,用量常 < 1%,固定 1% 會不觸發
         r = subprocess.run([sys.executable, str(COCKPIT / "machine_status_row.py"), "--width", "44"],
-                           capture_output=True, text=True, env=_env(AIB_PROC_WARN_PCT="1"), timeout=60)
+                           capture_output=True, text=True, env=_env(AIB_PROC_WARN_PCT=pct), timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("行程快滿", r.stdout.splitlines()[0])
         r = subprocess.run([sys.executable, str(COCKPIT / "machine_status_row.py"), "--width", "44"],
