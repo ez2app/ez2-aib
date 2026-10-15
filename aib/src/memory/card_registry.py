@@ -250,6 +250,11 @@ def display_name_of(dirname):
     現行顯示一致);沒有前綴就整個目錄名。超過 24 截斷並回旗標(schema 上限)。"""
     m = re.match(r"^[A-Za-z0-9]{1,12}-(.+)$", dirname)
     name = m.group(1) if m else dirname
+    return fit_display_name(name)
+
+
+def fit_display_name(name):
+    """顯示名超過上限時的截法(display_name_of 與卡上 name: 共用)⇒ (名字, 是否截過)。"""
     name = name.strip()
     if len(name) > DISPLAY_NAME_MAX:
         # 09-14(the maintainer「標題顯示不正確」判準④「人格名正確:不是描述文、括號閉合」):
@@ -376,7 +381,13 @@ def scan(vault_root, library_folder, contract, route_defaults=None):
         shown_name = entry.name
         if UID_RE.fullmatch(entry.name):
             shown_name = _label_title(Path(vault_root), entry.name) or entry.name
-        name, truncated = display_name_of(shown_name)
+        # the maintainer 10-15:「用 uid 建立,顯示才用 title」⇒ 顯示名順位:labels.json(uid 版面)>
+        #   卡上的 name: > 資料夾名。card_ref 仍照資料夾/labels 那一份(舊綁定的比對不變)。
+        fm_name = clean_value(fm.get("name"), 80) or ""
+        if fm_name and shown_name == entry.name:
+            name, truncated = fit_display_name(fm_name)   # 使用者給的全名:不剝代號前綴
+        else:
+            name, truncated = display_name_of(shown_name)
         default_rk = route_defaults.get(uid)
         if default_rk is not None:
             ok, code, detail = check_against_contract(default_rk, contract)
