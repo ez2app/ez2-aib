@@ -8,7 +8,7 @@ Q2 不是 human:本機寄件人(含 human)帶 global 也不收;全球種類永�
 Q3 全球種類一定要配 nostr: 來源,不然降 unknown、不存 global。
 Q4 global 任何一欄不合 ⇒ 整欄不存(名字含 / 或 >>、msgid、位址、短碼)。
 Q5 回信短碼:同一席不重複。
-Q6 by_reply_code 與 CLI `by-reply-code`:找到印 addr/msgid,找不到 rc 4。
+Q6 by_reply_code 與 CLI `by-reply-code`:找到印 addr/msgid,找不到 rc 4;超過 7 天的短碼不認(Q6b)。
 Q7 來源欄:nostr:<npub> 收、壞的拒、xhost 照舊。
 Q8 檔案契約 queue_fields() 的輸出可以直接餵 enqueue(兩邊格式對得上)。
 K1–K2 刀測:拿掉「全球種類配 nostr: 來源」/ 拿掉「只有全球種類才收 global」⇒ 對應格變紅。
@@ -111,6 +111,13 @@ class Queue(Base):
         self.assertEqual(out.getvalue().strip(), "addr=%s msgid=%s id=%s" % (ADDR, item["global"]["msgid"], item["id"]))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(Q.main(["by-reply-code", "--seat", SEAT, "--code", "zzzzz"], env=self.env), 4)
+
+    def test_q6b_reply_code_expires(self):
+        import time
+        old = self.put(now=time.time() - 8 * 86400)          # 8 天前的來信
+        self.assertIsNone(Q.by_reply_code(SEAT, old["global"]["reply_code"], env=self.env))
+        new = self.put(now=time.time() - 6 * 86400)          # 6 天前的還認
+        self.assertEqual(Q.by_reply_code(SEAT, new["global"]["reply_code"], env=self.env)["id"], new["id"])
 
     def test_q7_origin(self):
         self.assertEqual(Q._origin_or_none("nostr:" + NPUB), "nostr:" + NPUB)

@@ -2455,14 +2455,23 @@ def _all_items(seat, env=None, with_errors=False):
     return (items, errors) if with_errors else items
 
 
-def by_reply_code(seat, code, env=None):
-    """收件席照外框說明上的短碼找回原信(`aib dm --reply <碼>`,第 9 節)。找不到或碼不合形回 None。"""
+def by_reply_code(seat, code, env=None, now=None):
+    """收件席照外框說明上的短碼找回原信(`aib dm --reply <碼>`,第 9 節)。找不到、碼不合形、或過期回 None。
+
+    期限 = 檔案契約的保留天數(dm_global_files.KEEP_DAYS,7 天):很久以前的短碼不再認,避免回錯人(開發文件 v0.8)。"""
     if not isinstance(code, str) or not GLOBAL_REPLY_CODE_RE.fullmatch(code):
         return None
+    import dm_global_files as GF
+    cut = (time.time() if now is None else now) - GF.KEEP_DAYS * 86400
     for item in _all_items(seat, env=env):
         g = item.get("global")
         if isinstance(g, dict) and g.get("reply_code") == code:
-            return item
+            try:
+                fresh = int(item.get("ts") or 0) >= cut
+            except (TypeError, ValueError):
+                fresh = False
+            if fresh:
+                return item
     return None
 
 
