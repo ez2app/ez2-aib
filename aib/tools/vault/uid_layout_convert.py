@@ -21,6 +21,10 @@
 - Obsidian 自己只照檔名解 [[連結]]、不看 aliases ⇒ 正文裡指向改名筆記的 [[舊名]]、[[舊名|字]]、![[舊名]]、[[舊名#標題]]
   改寫成指向 uid,畫面上原本的字留在 | 後面;同名多篇的不猜、不改,plan 列出來。frontmatter 裡的連結不改。
 - .obsidian 的日記/範本/碎片/附件/新檔位置與書籤,指到改名路徑的一併改(只改這幾格)。
+- 範本(範本資料夾、Templater 範本資料夾、日記/碎片指定的範本檔)不補 uid、不改名——補了 uid,用範本新建的筆記會抄到同一個 uid;
+  範本資料夾可跟著上層搬,verify 從 .obsidian 讀範本位置跳過。
+- 角色卡預設一 byte 不改;plan 帶 --rewrite-card-links 才把卡正文裡的連結也改指 uid(frontmatter 不動;卡片指紋會變,
+  釘過舊指紋的席會亮「卡已更新」,重綁確認;apply 帶 --rescan-cards)。
 - 寫入前整庫 tar 到庫外;apply 產 receipt(含 undo map)。undo 退回:檔名、資料夾名、正文連結、上面那幾格設定、
   .ez2 的狀態與索引(回到轉換前,migration-state 不再說是 uid 版面);frontmatter 補的身分留著(要全退就從 tar 還原)。
 
@@ -507,13 +511,42 @@ def apply_obsidian_edits(vault: Path, edits: list, forward: bool) -> int:
     return done
 
 
+# 範本(10-15 the maintainer 裁「範本排除」):Obsidian 把範本資料夾裡每一篇都當範本;範本補了 uid,用它新建的筆記就抄到同一個 uid。
+# ⇒ 範本資料夾(內建範本、Templater)與日記/碎片指定的範本檔:不補 uid、不改名(資料夾可跟著上層搬);verify 從 .obsidian 讀同一份位置跳過。
+TEMPLATE_SETTINGS = (("templates.json", "folder", "dir"), ("plugins/templater-obsidian/data.json", "templates_folder", "dir"),
+                     ("daily-notes.json", "template", "file"), ("zk-prefixer.json", "template", "file"))
+
+
+def template_paths(vault: Path):
+    """回 (範本資料夾集合, 範本檔集合(去 .md));路徑是 Vault 相對、NFC。"""
+    dirs, files = set(), set()
+    for name, key, kind in TEMPLATE_SETTINGS:
+        v = (load_json(vault / ".obsidian" / name, {}) or {}).get(key)
+        if not isinstance(v, str) or v.startswith(("./", "../")):
+            continue
+        v = _nfc(v.strip().strip("/"))
+        if not v:
+            continue
+        if kind == "dir":
+            dirs.add(v)
+        else:
+            files.add(v[:-3] if v.endswith(".md") else v)
+    return dirs, files
+
+
+def in_templates(rel: str, dirs: set, files: set) -> bool:
+    r = _nfc(str(rel))
+    return (r[:-3] if r.endswith(".md") else r) in files or any(r == d or r.startswith(d + "/") for d in dirs)
+
+
 # 轉換會寫的 .ez2 檔:apply 前先留一份,undo 照原樣放回(原本沒有的就刪掉)⇒ migration-state 回到轉換前
 EZ2_STATE_FILES = (".ez2/migration-state.json", ".ez2/index/folder-id-index.json", ".ez2/index/route-key-index.json",
                    ".ez2/index/uid-index.json", ".ez2/display/labels.json", ".ez2/routes/obsidian-routes-v2.json")
 
 
 # ---------------------------------------------------------------- plan
-def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map: dict | None) -> dict:
+def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map: dict | None,
+               rewrite_card_links: bool = False) -> dict:
     vault = vault.resolve()
     routes = load_contract(contract_path)                      # routeKey -> {folder, module, ...}
     folder_to_route = {r["folder"]: k for k, r in routes.items()}
@@ -530,10 +563,18 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
     _con_lib = routes.get(LIBRARY_RK, {}).get("folder", "")
     library_old = _idx_lib or _con_lib
     library_olds = {x for x in (_idx_lib, _con_lib) if x and (vault / x).is_dir()}
+    tpl_dirs, tpl_files = template_paths(vault)
+    # 範本資料夾蓋到路由資料夾或角色庫 ⇒ 不能整夾當範本(路由會沒有 folderId、筆記不補 uid):擋下,請先把範本改到專用資料夾
+    protected = {_nfc(x) for x in folder_to_route if (vault / x).is_dir()} | {_nfc(x) for x in library_olds}
+    def _overlap(d):                                         # 範本夾等於或包住路由夾/角色庫;範本夾在路由夾裡面沒關係
+        return sorted(x for x in protected if x == d or x.startswith(d + "/"))
+    tpl_blockers = [{"template_dir": d, "covers": _overlap(d)[:5], "reason": T("blocker_template_covers_route")}
+                    for d in sorted(tpl_dirs) if _overlap(d)]
+    tpl_dirs = {d for d in tpl_dirs if not _overlap(d)}
 
     plan = {"schema": "2026-10-05.ez2-uid-layout-plan", "vault": str(vault), "contract": contract_path,
             "generated_at": iso(int(time.time() * 1000)), "legacy_copies": [], "folders": [], "notes": [],
-            "blockers": [], "warnings": [], "stats": {}}
+            "blockers": tpl_blockers, "warnings": [], "stats": {}}
 
     # ---- 1. 舊庫導入(只複製,目的地照對照表) ----
     legacy_targets: dict[str, dict] = {}   # 導入後在 vault 內的相對路徑 -> {legacy_rel, routeKey}
@@ -605,6 +646,10 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
             folder_recs[rel_s] = {"old_rel": rel_s, "folderId": fid, "kind": kind, "routeKey": rk,
                                   "parent_old_rel": parent_rel, "title": rel.name, "level": len(rel.parts)}
             continue
+        if in_templates(rel_s, tpl_dirs, set()):
+            folder_recs[rel_s] = {"old_rel": rel_s, "folderId": rel.name, "kind": "template", "routeKey": "",
+                                  "parent_old_rel": parent_rel, "title": rel.name, "level": len(rel.parts)}
+            continue                                                # 範本資料夾:名字不動(可跟著上層搬)
         if FOLDER_ID_RE.match(rel.name):
             fid = rel.name; kind = "route" if "_route_" in fid else ("group" if "_group_" in fid else "sub")
             rk = next((it.get("routeKey", "") for it in fid_index.get("items", []) if it.get("folderId") == fid), "")
@@ -653,8 +698,8 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
         if rel_dir in library_olds or under_library(rel_dir):
             continue                                                # 角色庫:自己的 git 倉與指紋規則,不改寫、不改名
         for f in sorted(fn):
-            if f.endswith(".md"):
-                notes_raw.append((Path(dp, f).relative_to(vault), False, None))
+            if f.endswith(".md") and not in_templates(Path(dp, f).relative_to(vault), tpl_dirs, tpl_files):
+                notes_raw.append((Path(dp, f).relative_to(vault), False, None))   # 範本不補 uid、不改名
     for dst_rel, meta in legacy_targets.items():
         if dst_rel.endswith(".md"):
             notes_raw.append((Path(dst_rel), True, meta))
@@ -788,29 +833,30 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
         _, body = split_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
         _, edits, amb = lr.rewrite(body)
         n_links += len(edits); amb_all += amb
-    # 角色庫的卡(角色.md 等)照規則一 byte 不改 ⇒ 卡裡指向改名筆記的連結轉完在 Obsidian 解不開,先講清楚有幾處
+    # 角色庫的卡(角色.md 等)預設一 byte 不改 ⇒ 卡裡指向改名筆記的連結轉完在 Obsidian 解不開。
+    # plan 帶 --rewrite-card-links 才改卡的正文連結(frontmatter 不動);卡片指紋會變,綁定時釘過舊指紋的席會亮「卡已更新」。
+    plan["rewrite_card_links"] = bool(rewrite_card_links)
+    plan["card_files"] = [rel for rel in plan["kept_md"] if under_library(rel)]
     card_links, card_files = 0, 0
-    for rel in plan["kept_md"]:
-        if under_library(rel):
-            _, body = split_frontmatter((vault / rel).read_text(encoding="utf-8", errors="replace"))
-            k = len(lr.rewrite(body)[1])
-            card_links += k; card_files += 1 if k else 0
+    for rel in plan["card_files"]:
+        _, body = split_frontmatter((vault / rel).read_text(encoding="utf-8", errors="replace"))
+        k = len(lr.rewrite(body)[1])
+        card_links += k; card_files += 1 if k else 0
     if card_links:
-        plan["warnings"].append(T("warn_card_links", {"count": card_links, "files": card_files}))
+        plan["warnings"].append(T("warn_card_links_rewrite" if rewrite_card_links else "warn_card_links",
+                                  {"count": card_links, "files": card_files}))
     if amb_all:
         plan["warnings"].append(T("warn_link_ambiguous", {"count": len(amb_all), "sample": ", ".join(sorted(set(amb_all))[:5])}))
     plan["obsidian_edits"] = obsidian_setting_edits(vault, plan["notes"], plan["folders"])
-    # 範本檔也會被補 uid ⇒ 用範本新建的筆記會抄到同一個 uid(verify 會報重號);先講清楚,處理方式待人決定
-    tpl_dirs, tpl_files = [], []
-    for name, key in (("templates.json", "folder"), ("daily-notes.json", "template"), ("zk-prefixer.json", "template"),
-                      ("plugins/templater-obsidian/data.json", "templates_folder")):
-        v = (load_json(vault / ".obsidian" / name, {}) or {}).get(key)
-        if isinstance(v, str) and v.strip():
-            (tpl_dirs if key in ("folder", "templates_folder") else tpl_files).append(_nfc(v.strip().rstrip("/")))
-    n_tpl = sum(1 for n in plan["notes"] if any(_nfc(n["old_rel"]).startswith(d + "/") for d in tpl_dirs)
-                or _nfc(n["old_rel"][:-3]) in tpl_files or _nfc(n["old_rel"]) in tpl_files)
+    plan["template_files"] = [rel for rel in plan["kept_md"]                       # 角色庫裡的照卡片規則走,不當範本改
+                              if in_templates(rel, tpl_dirs, tpl_files) and not under_library(rel)]
+    n_tpl = len(plan["template_files"])
+    tpl_links = 0                                            # 範本正文裡的連結照改(範本沒有指紋;不改的話用它新建的筆記都帶斷鏈)
+    for rel in plan["template_files"]:
+        _, body = split_frontmatter((vault / rel).read_text(encoding="utf-8", errors="replace"))
+        tpl_links += len(lr.rewrite(body)[1])
     if n_tpl:
-        plan["warnings"].append(T("warn_template_uid", {"count": n_tpl}))
+        plan["warnings"].append(T("warn_template_kept", {"count": n_tpl}))
     attach = (load_json(vault / ".obsidian" / "app.json", {}) or {}).get("attachmentFolderPath")
     if isinstance(attach, str) and attach.startswith("./") and attach.strip("./"):
         plan["warnings"].append(T("warn_attach_relative", {"path": attach}))
@@ -834,7 +880,11 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
         "drops_identical": len(plan.get("drops", [])),
         "links_rewritten": n_links,
         "links_ambiguous": len(amb_all),
-        "links_in_cards_not_rewritten": card_links,
+        "links_in_cards_not_rewritten": 0 if rewrite_card_links else card_links,
+        "links_in_cards_rewritten": card_links if rewrite_card_links else 0,
+        "folders_template": sum(1 for f in plan["folders"] if f["kind"] == "template"),
+        "notes_template_kept": n_tpl,
+        "links_in_templates_rewritten": tpl_links,
         "obsidian_settings": len(plan["obsidian_edits"]),
         "warnings": len(plan["warnings"]),
     }
@@ -985,6 +1035,24 @@ def apply_plan(plan: dict, backup_dir: Path, confirm_text: str) -> dict:
         if edits:
             receipt["links_rewritten"] += len(edits)
             receipt["link_edits"].append({"path": n["old_rel"], "edits": [[pos + len(head), new, old] for pos, new, old in edits]})
+    # 2b. 角色卡(plan 帶 --rewrite-card-links 才做)與範本的正文連結:frontmatter 一字不動,undo 照位置退回
+    receipt["card_links_rewritten"] = 0; receipt["template_links_rewritten"] = 0
+    cards = set((plan.get("card_files") or []) if plan.get("rewrite_card_links") else [])
+    for rel in sorted(cards) + [t for t in plan.get("template_files") or [] if t not in cards]:
+        p = vault / rel
+        try:
+            text = p.read_bytes().decode("utf-8", errors="replace")
+        except OSError as err:
+            receipt["errors"].append({"path": rel, "error": str(err)}); continue
+        _, body = split_frontmatter(text)
+        head = text[:len(text) - len(body)]
+        rest, edits, _ = lr.rewrite(body)
+        if edits:
+            tmp = p.with_name(p.name + ".tmp-uidlayout")
+            tmp.write_bytes((head + rest).encode("utf-8")); os.replace(tmp, p)
+            receipt["card_links_rewritten" if rel in cards else "template_links_rewritten"] += len(edits)
+            receipt["links_rewritten"] += len(edits)
+            receipt["link_edits"].append({"path": rel, "edits": [[pos + len(head), new, old] for pos, new, old in edits]})
 
     # 3. 檔案改名(在舊資料夾裡)
     for n in plan["notes"]:
@@ -1131,6 +1199,7 @@ def verify(vault: Path, cards_path=None) -> dict:
         return bool(lib_new) and (rel == lib_new or rel.startswith(lib_new + "/"))
     fid0 = load_json(vault / ".ez2" / "index" / "folder-id-index.json", {"items": []})
     registered_keep = {it["folderPath"] for it in fid0.get("items", []) if it.get("kind") == "keep"}
+    tpl_dirs, tpl_files = template_paths(vault)                 # 範本:名字不動、不補 uid(位置照 .obsidian 現值)
     for dp, dn, fn in os.walk(vault):
         dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
         rel_dir = str(Path(dp).relative_to(vault))
@@ -1144,12 +1213,12 @@ def verify(vault: Path, cards_path=None) -> dict:
                 elif depth == 1 and rel_d in registered_keep:
                     res.setdefault("library_dirs_without_card_uid", []).append(rel_d)
                 continue
-            if not FOLDER_ID_RE.match(d):
+            if not FOLDER_ID_RE.match(d) and not in_templates(rel_d, tpl_dirs, set()):
                 res["dirs_not_folder_id"].append(rel_d)
-        if in_library(rel_dir):
+        if in_library(rel_dir) or in_templates(rel_dir, tpl_dirs, set()):
             continue
         for f in fn:
-            if not f.endswith(".md"):
+            if not f.endswith(".md") or in_templates(Path(dp, f).relative_to(vault), set(), tpl_files):
                 continue
             res["md_total"] += 1
             rel = str(Path(dp, f).relative_to(vault))
@@ -1235,6 +1304,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("plan"); p.add_argument("--vault", required=True); p.add_argument("--contract", required=True)
     p.add_argument("--legacy"); p.add_argument("--legacy-map"); p.add_argument("--out", required=True)
+    p.add_argument("--rewrite-card-links", action="store_true",
+                   help="角色卡正文裡的連結也改指 uid(卡片指紋會變,釘過舊指紋的席會亮「卡已更新」;apply 時要帶 --rescan-cards)")
     a = sub.add_parser("apply"); a.add_argument("--plan", required=True); a.add_argument("--backup-dir", required=True); a.add_argument("--confirm-text", required=True)
     a.add_argument("--rescan-cards", action="store_true", help="apply 完重掃 aib 卡片索引(真庫轉換時要帶)")
     v = sub.add_parser("verify"); v.add_argument("--vault", required=True); v.add_argument("--cards", help="aib 卡片索引路徑(預設狀態根)")
@@ -1244,7 +1315,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.cmd == "plan":
         lm = json.loads(Path(args.legacy_map).read_text(encoding="utf-8")) if args.legacy_map else None
-        plan = build_plan(Path(args.vault), args.contract, Path(args.legacy) if args.legacy else None, lm)
+        plan = build_plan(Path(args.vault), args.contract, Path(args.legacy) if args.legacy else None, lm,
+                          rewrite_card_links=args.rewrite_card_links)
         Path(args.out).write_text(json.dumps(plan, ensure_ascii=False, indent=1), encoding="utf-8")
         print(json.dumps({"out": args.out, "stats": plan["stats"], "blockers": plan["blockers"][:5], "warnings": plan["warnings"][:5]}, ensure_ascii=False, indent=1))
         return 0 if not plan["blockers"] else 3
