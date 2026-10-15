@@ -92,6 +92,12 @@ class A1ApprovedAtAndRuling(unittest.TestCase):
         self.assertIn("tester", rulings[-1]["text"])
         self.assertEqual(rulings[-1]["at"], const["approved_at"])
         np.PC.validate_project_card(card)
+        # 再核准一次:已核准 ⇒ 什麼都不改,不會多一筆核准紀錄
+        rc = np.approve_constitution(self.root, self.uid, human_check=lambda: (True, "tester", []),
+                                     stdin=_FakeTTY(self.uid + "\n"), stdout=_FakeTTY())
+        self.assertEqual(rc, 0)
+        again = json.loads(self.card.read_text(encoding="utf-8"))["layers"]["constitution"]["human_rulings"]
+        self.assertEqual(len(again), len(rulings))
 
 
 class A2SkillTellsHowToApprove(unittest.TestCase):

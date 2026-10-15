@@ -1201,8 +1201,8 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
             _say(T("aib.newproj.approve_backup_failed", {"err": snap.get("error")}), "[x]")
             return 2
         raw = _load_json(c_path) or {}
-        at = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now_ms / 1000))
-        at = at[:-2] + ":" + at[-2:] if re.search(r"[+-]\d{4}$", at) else at      # +0800 → +08:00(跟既有卡同形)
+        import datetime as _dt                                    # +08:00 形(跟既有卡同形);不靠 %z(有的平台給時區名)
+        at = _dt.datetime.fromtimestamp(now_ms / 1000).astimezone().isoformat(timespec="seconds")
         rulings = [r for r in (const.get("human_rulings") or []) if isinstance(r, (dict, str))]
         rulings.append({"uid": "approve-%d" % now_ms, "text": T("aib.newproj.approve_ruling", {"who": human_id}), "at": at})
         const.update({"approved": True, "approved_by": "human:%s" % human_id, "approved_at": at,
