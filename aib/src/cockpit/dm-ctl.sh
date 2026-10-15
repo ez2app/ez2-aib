@@ -51,6 +51,22 @@
 # 流程:解析目標→推導發送席(**只可推導不可偽填**,無旗標可冒他席)→
 # 自動標頭→交 E2.7 咽喉(R30 lint+血緣閘一行未動)→v3 引擎安全投遞。
 set -uo pipefail
+# ── 再入深度上限(@abb89 10-15 19:02,事故後第一道防線)──────────────────────────────
+#   本檔會再入自己(跳艙、自動重送、跨主機推導寄件人、多目標逐席…)。10-15 18:4x 全球接線分支的刀測拿掉一層防護,
+#   推導寄件人那一輪無限再入,兩千多個 bash 塞滿整機行程表(右欄 AI 欄掛、別席全套 rc 127)。
+#   ⇒ 每進一次本檔深度 +1(環境 AIB_DM_DEPTH,只認數字,壞值當 0);超過上限就 rc 2 停手、說原因。
+#   合法鏈最深約 4 層(入口 → 跳艙 → 重送 → 推導),上限 8 留餘裕。在任何 fork 之前判,失控時每層只多 0 支行程。
+AIB_DM_DEPTH="${AIB_DM_DEPTH:-0}"
+case "$AIB_DM_DEPTH" in *[!0-9]*) AIB_DM_DEPTH=0 ;; esac
+[ "${#AIB_DM_DEPTH}" -gt 3 ] && AIB_DM_DEPTH=999   # 超長的數字會溢位繞過上限 ⇒ 直接當超過
+AIB_DM_DEPTH=$(( 10#$AIB_DM_DEPTH + 1 ))          # 10#:前導 0 不當八進位(008 不炸)
+case "${AIB_DM_DEPTH_MAX:-8}" in ''|*[!0-9]*) AIB_DM_DEPTH_MAX=8 ;; esac
+if [ "$AIB_DM_DEPTH" -gt "${AIB_DM_DEPTH_MAX:-8}" ]; then
+  echo "aib-dm-ctl: 再入深度 $AIB_DM_DEPTH 超過上限 ${AIB_DM_DEPTH_MAX:-8},停手(多半是程式迴圈;一個字都沒送)" >&2
+  echo "RESULT stage=abort id=- relay=- thread=- reason=depth"
+  exit 2
+fi
+export AIB_DM_DEPTH
 
 SOURCE="${BASH_SOURCE[0]}"
 HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
