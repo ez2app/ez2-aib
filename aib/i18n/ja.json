@@ -2792,8 +2792,9 @@
   "aib.vault_convert.err_dir_missing": "フォルダが存在しません",
   "aib.vault_convert.undo_note": "frontmatter に補った身分(uid/aliases/legacy_paths)は残します。変換前の状態へ完全に戻すには {backup} から復元してください",
   "aib.vault_convert.warn_link_ambiguous": "本文の {count} 件のリンクが同名の複数ノートを指しています。Obsidian がどれを選ぶか確定できないため書き換えません(変換後に解決できなくなる可能性があります):{sample}",
-  "aib.vault_convert.warn_card_links": "ロールライブラリのカードは変更しません(角色.md は 1 バイトも変えません):{files} 個のファイルにある {count} 件のリンクが名前変更されたノートを指しており、変換後は Obsidian で解決できません(aib のカード読み込みには影響しません)",
-  "aib.vault_convert.warn_template_uid": "テンプレートフォルダ/テンプレートファイル内の {count} 件のノートにも uid が付きます。テンプレートから作ったノートは同じ uid をコピーします(verify が重複を報告します)。テンプレートを除外するかは人の判断が必要です",
+  "aib.vault_convert.warn_card_links": "ロールカードは既定で変更しません(角色.md は 1 バイトも変えません):{files} 個のファイルにある {count} 件のリンクが名前変更されたノートを指し、変換後は Obsidian で解決できません。一緒に書き換えるには plan に --rewrite-card-links を付けてください",
+  "aib.vault_convert.warn_card_links_rewrite": "{files} 枚のロールカード本文の {count} 件のリンクを書き換えます(frontmatter は変えません)。カードの指紋が変わるため、旧指紋で紐付けた席は「カード更新」と表示され、再紐付けで確認できます。apply には --rescan-cards を付けてください",
+  "aib.vault_convert.warn_template_kept": "テンプレート {count} 件は名前を変えず uid も付けません(テンプレートフォルダと日記/メモ用テンプレート)。テンプレートから作るノートが同じ uid をコピーしないためです",
   "aib.vault_convert.warn_attach_relative": "Obsidian の添付ファイルの場所が相対パス {path} です。変換後に貼った添付は各フォルダ内にこの旧名フォルダを作り、verify が赤になります。固定の uid フォルダへの変更を勧めます",
   "aib.vault_convert.warn_remotely_save": "同期プラグイン remotely-save を検出しました。.ez2 と .obsidian は同期されないため、他の端末では <uid>.md しか見えません。変換前に全端末を同期して編集を止めてください(手順は本ツールの説明を参照)"
 }

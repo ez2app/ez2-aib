@@ -2792,8 +2792,9 @@
   "aib.vault_convert.err_dir_missing": "資料夾不存在",
   "aib.vault_convert.undo_note": "frontmatter 補的身分(uid/aliases/legacy_paths)留著不退;要整個回到轉換前請從 {backup} 還原",
   "aib.vault_convert.warn_link_ambiguous": "正文有 {count} 處連結指向同名多篇的筆記,Obsidian 會挑哪篇無法確定,這些不改寫(轉完可能解不開):{sample}",
-  "aib.vault_convert.warn_card_links": "角色庫的卡片不改(角色.md 一 byte 不動):{files} 個檔裡有 {count} 處連結指向改名的筆記,轉完這些在 Obsidian 解不開(aib 讀卡不受影響)",
-  "aib.vault_convert.warn_template_uid": "範本資料夾/範本檔裡有 {count} 篇筆記也會被補上 uid:用範本新建的筆記會抄到同一個 uid(verify 會報重號);範本要不要排除,待人決定",
+  "aib.vault_convert.warn_card_links": "角色卡預設不改(角色.md 一 byte 不動):{files} 個檔裡有 {count} 處連結指向改名的筆記,轉完這些在 Obsidian 解不開;要一起改請 plan 加 --rewrite-card-links",
+  "aib.vault_convert.warn_card_links_rewrite": "會改 {files} 張角色卡正文裡的 {count} 處連結(frontmatter 不動):卡片指紋會變,綁定時釘過舊指紋的席會亮「卡已更新」,重綁確認即可;apply 請帶 --rescan-cards",
+  "aib.vault_convert.warn_template_kept": "範本 {count} 篇保留原名、不補 uid(範本資料夾與日記/碎片指定的範本檔;用範本新建的筆記才不會抄到同一個 uid)",
   "aib.vault_convert.warn_attach_relative": "Obsidian 附件位置是相對路徑 {path}:轉完之後貼的附件會在各資料夾裡長出這個舊名資料夾,verify 會紅;建議改成固定的 uid 資料夾",
   "aib.vault_convert.warn_remotely_save": "偵測到同步外掛 remotely-save:它不同步 .ez2 與 .obsidian,其他裝置只會看到 <uid>.md;轉換前所有裝置先同步並停止編輯,步驟見本工具說明"
 }

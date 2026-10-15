@@ -2792,8 +2792,9 @@
   "aib.vault_convert.err_dir_missing": "folder does not exist",
   "aib.vault_convert.undo_note": "identity added to frontmatter (uid/aliases/legacy_paths) is kept; to return fully to the pre-conversion state, restore from {backup}",
   "aib.vault_convert.warn_link_ambiguous": "{count} links in note bodies point to a name shared by several notes; Obsidian's choice can't be known, so they are not rewritten (they may stop resolving): {sample}",
-  "aib.vault_convert.warn_card_links": "role-library cards are left untouched (角色.md stays byte-identical): {count} links in {files} files point to renamed notes and will not resolve in Obsidian after conversion (aib reading the cards is unaffected)",
-  "aib.vault_convert.warn_template_uid": "{count} notes in the template folder/template files will also get a uid: notes created from a template will copy that same uid (verify will report duplicates); whether to exclude templates needs a human decision",
+  "aib.vault_convert.warn_card_links": "role cards are left untouched by default (角色.md stays byte-identical): {count} links in {files} files point to renamed notes and will not resolve in Obsidian after conversion; add --rewrite-card-links to plan to rewrite them too",
+  "aib.vault_convert.warn_card_links_rewrite": "will rewrite {count} links in the body of {files} role cards (frontmatter untouched): card fingerprints change, so seats that pinned the old fingerprint will show \"card updated\" until rebound; run apply with --rescan-cards",
+  "aib.vault_convert.warn_template_kept": "{count} templates keep their names and get no uid (template folders and daily/zettel template files), so notes created from a template do not copy one uid",
   "aib.vault_convert.warn_attach_relative": "Obsidian's attachment location is the relative path {path}: attachments added after conversion will recreate this old-named folder inside each folder and verify will fail; consider a fixed uid folder",
   "aib.vault_convert.warn_remotely_save": "remotely-save sync plugin found: it does not sync .ez2 or .obsidian, so other devices will only see <uid>.md; sync every device and stop editing before converting (steps in this tool's help)"
 }

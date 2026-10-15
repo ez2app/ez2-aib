@@ -41,6 +41,7 @@ STUDIO = "03-製作區 Studio"
 LIB = "P-Ez2 AI專家/P10-專家模板/角色庫"
 CARD_UID = "ab12cd"
 CARD_MD = '---\nuid: "%s"\ncode: tst\n---\n你是測試卡,開工先讀 [[範本一]]。\n' % CARD_UID
+TPL_MD = "---\ntags:\n  - 日記\n---\n# {{date}}\n"
 CONTRACT = {"routes": [
     {"routeKey": "core.handoff", "module": "C", "folder": C80, "aiReadable": True, "aiWritable": True},
     {"routeKey": "product.expert.agent_library", "module": "P", "folder": LIB, "aiReadable": True, "aiWritable": False},
@@ -92,13 +93,15 @@ def make_vault(root: Path):
     (root / "06-工作區 Work" / "ACB" / "3cpog0-📋 Dashboard.md").write_text(BLOCK_NOTE, encoding="utf-8")
     (root / "06-工作區 Work" / "ACB" / "圖.png").write_bytes(b"\x89PNG fake")
     (root / STUDIO / "範本一.md").write_text("範本內容\n", encoding="utf-8")
+    (root / STUDIO / "範本").mkdir()
+    (root / STUDIO / "範本" / "日記範本.md").write_text(TPL_MD, encoding="utf-8")
     (root / INBOX / "_說明.md").write_text("收件匣說明\n", encoding="utf-8")
     (root / STUDIO / "_說明.md").write_text("製作區說明\n", encoding="utf-8")
     (root / C80 / "連結大全.md").write_text("---\ntitle: 連結大全\n---\n" + LINKS_BODY, encoding="utf-8")
     cfg = root / ".obsidian"; (cfg / "plugins" / "remotely-save").mkdir(parents=True)
     (cfg / "plugins" / "remotely-save" / "manifest.json").write_text('{"id": "remotely-save"}', encoding="utf-8")
-    (cfg / "daily-notes.json").write_text(json.dumps({"format": "x-HHmmss", "folder": INBOX, "template": STUDIO + "/範本一"}, ensure_ascii=False), encoding="utf-8")
-    (cfg / "templates.json").write_text(json.dumps({"folder": STUDIO}, ensure_ascii=False), encoding="utf-8")
+    (cfg / "daily-notes.json").write_text(json.dumps({"format": "x-HHmmss", "folder": INBOX, "template": STUDIO + "/範本/日記範本"}, ensure_ascii=False), encoding="utf-8")
+    (cfg / "templates.json").write_text(json.dumps({"folder": STUDIO + "/範本"}, ensure_ascii=False), encoding="utf-8")
     (cfg / "app.json").write_text(json.dumps({"attachmentFolderPath": "./附件", "alwaysUpdateLinks": True}), encoding="utf-8")
     (cfg / "bookmarks.json").write_text(json.dumps({"items": [
         {"type": "file", "ctime": 1, "path": "06-工作區 Work/ACB/3cpog0-📋 Dashboard.md"},
@@ -216,15 +219,18 @@ class ListsAndLinks(Fixture):
         inbox = next(f["new_rel"] for f in plan["folders"] if f["old_rel"] == INBOX)
         dn = json.loads((cfg / "daily-notes.json").read_text(encoding="utf-8"))
         self.assertEqual(dn["folder"], inbox)
-        self.assertEqual(dn["template"], self.new_rel(plan, STUDIO + "/範本一.md")[:-3])
+        self.assertEqual(dn["template"], studio + "/範本/日記範本", "範本夾名字不動、跟著上層搬")
         self.assertEqual(dn["format"], "x-HHmmss")
-        self.assertEqual(json.loads((cfg / "templates.json").read_text(encoding="utf-8"))["folder"], studio)
+        self.assertEqual(json.loads((cfg / "templates.json").read_text(encoding="utf-8"))["folder"], studio + "/範本")
+        self.assertEqual((self.vault / studio / "範本" / "日記範本.md").read_text(encoding="utf-8"), TPL_MD, "範本不補 uid、不改名")
+        self.assertEqual(plan["stats"]["notes_template_kept"], 1)
+        self.assertEqual(_run("verify", "--vault", str(self.vault)).returncode, 0, "verify 認得範本")
         self.assertEqual(json.loads((cfg / "app.json").read_text(encoding="utf-8"))["attachmentFolderPath"], "./附件")
         bm = json.loads((cfg / "bookmarks.json").read_text(encoding="utf-8"))["items"]
         self.assertEqual(bm[0]["path"], self.new_rel(plan, "06-工作區 Work/ACB/3cpog0-📋 Dashboard.md"))
         self.assertEqual(bm[1]["items"][0]["path"], studio)
         self.assertEqual(bm[2]["query"], "x")
-        for p_ in (bm[0]["path"], bm[1]["items"][0]["path"], dn["folder"]):
+        for p_ in (bm[0]["path"], bm[1]["items"][0]["path"], dn["folder"], dn["template"] + ".md"):
             self.assertTrue((self.vault / p_).exists(), p_)
 
     def test_U1_U2_undo_restores_then_reapply_same(self):
@@ -327,6 +333,43 @@ class ReviewFixes(Fixture):
         out, edits, _ = lr.rewrite(src)
         self.assertEqual(out, src)
         self.assertEqual(edits, [])
+
+
+class CardsAndTemplates(Fixture):
+    """10-15 the maintainer 裁:角色卡連結明講才改(--rewrite-card-links)、範本排除。"""
+
+    def test_C1_rewrite_card_links_opt_in_and_undo(self):
+        out = self.t / "plan.json"
+        r = _run("plan", "--vault", str(self.vault), "--contract", str(self.contract), "--out", str(out), "--rewrite-card-links")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        plan = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(plan["stats"]["links_in_cards_rewritten"], 1)
+        self.assertEqual(plan["stats"]["links_in_cards_not_rewritten"], 0)
+        self.assertTrue(any("卡已更新" in w for w in plan["warnings"]), plan["warnings"])
+        card_before = (self.vault / LIB / "測試卡" / "角色.md").read_bytes()
+        self.apply(out)
+        lib_new = next(f["new_rel"] for f in plan["folders"] if f["old_rel"] == LIB)
+        tpl = Path(self.new_rel(plan, STUDIO + "/範本一.md")).stem
+        card = (self.vault / lib_new / CARD_UID / "角色.md").read_text(encoding="utf-8")
+        self.assertIn("開工先讀 [[%s|範本一]]" % tpl, card)
+        self.assertTrue(card.startswith('---\nuid: "%s"\ncode: tst\n---\n' % CARD_UID), "卡的 frontmatter 一字不動")
+        self.assertEqual(unresolved(self.vault, card), [])
+        rec = sorted((self.vault / ".ez2" / "migration").glob("uid-layout-receipt-*.json"))[-1]
+        self.assertEqual(_run("undo", "--receipt", str(rec)).returncode, 0)
+        self.assertEqual((self.vault / LIB / "測試卡" / "角色.md").read_bytes(), card_before, "undo 後卡片 byte 回原樣")
+
+    def test_T1_daily_template_file_outside_template_folder(self):
+        cfg = self.vault / ".obsidian"
+        (cfg / "templates.json").unlink()
+        (self.vault / INBOX / "碎片範本.md").write_text(TPL_MD, encoding="utf-8")
+        (cfg / "zk-prefixer.json").write_text(json.dumps({"folder": INBOX, "template": INBOX + "/碎片範本.md"}, ensure_ascii=False), encoding="utf-8")
+        p, plan = self.plan()
+        self.assertFalse(any(n["old_rel"].endswith("碎片範本.md") for n in plan["notes"]))
+        self.apply(p)
+        inbox = next(f["new_rel"] for f in plan["folders"] if f["old_rel"] == INBOX)
+        self.assertEqual((self.vault / inbox / "碎片範本.md").read_text(encoding="utf-8"), TPL_MD)
+        self.assertEqual(json.loads((cfg / "zk-prefixer.json").read_text(encoding="utf-8"))["template"], inbox + "/碎片範本.md")
+        self.assertEqual(_run("verify", "--vault", str(self.vault)).returncode, 0)
 
 
 class Knives(Fixture):
