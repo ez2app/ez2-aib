@@ -355,6 +355,21 @@ def _hub_name(cabin):
     return hub
 
 
+def new_seat_role_or_die(role):
+    """--new-seat 開的席用哪個角色:--role 給的(要是已定義角色),沒給 = dev。
+    the maintainer 10-15「預設新開新從原有的角色上選,不另開新角色」⇒ 不再拿人格代號 / 專案標題當角色名。
+    回 (role, 錯誤訊息);錯誤訊息非空 ⇒ 呼叫端擋下,什麼都不寫。"""
+    role = (role or "dev").strip()
+    sys.path.insert(0, str(REPO_ROOT / "src" / "cockpit"))
+    try:
+        import roles as _roles
+    except Exception as exc:  # noqa: BLE001
+        return role, "讀不到角色清單(%s)" % exc
+    if not _roles.is_defined(role):
+        return role, "角色「%s」沒有定義;可用:%s" % (role, ", ".join(_roles.defined_roles()))
+    return role, ""
+
+
 def seat_role_of(text, fallback):
     """新席的角色名(aib 只收小寫英數與連字號):取英數字;一個都沒有(例如中文名稱)就用 fallback。"""
     role = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")[:24]
@@ -629,6 +644,7 @@ def main():
     parser.add_argument("--deliver", action="store_true", help="綁完把人格包用 aib dm 寄給那一席")
     parser.add_argument("--new-seat", action="store_true", help="明講才用:在你所在的艙開一個新席來綁(不是預設;沒指定席就只建卡)")
     parser.add_argument("--engine", default="claude", help="--new-seat 用哪個引擎(預設 claude)")
+    parser.add_argument("--role", default="", help="--new-seat 開的席的角色(要是已定義角色;預設 dev)")
     parser.add_argument("--actor", help="帳本操作者署名 (如 root@00000/agy)")
     parser.add_argument("--overwrite", action="store_true", help="既有同名卡也重寫角色.md(預設不動既有卡)")
     parser.add_argument("--dry-run", action="store_true", help="模擬執行")
@@ -669,7 +685,10 @@ def main():
         except _BO.BindError as exc:
             log("錯誤: %s。什麼都沒寫:沒開席、卡沒建" % exc, prefix="[x]")
             return 2
-        new_seat_role = seat_role_of(args.code or args.name, "persona")
+        new_seat_role, role_err = new_seat_role_or_die(args.role)
+        if role_err:
+            log("錯誤: %s。什麼都沒寫:沒開席、卡沒建" % role_err, prefix="[x]")
+            return 2
         # review r16(人格):量不到艙真跑也在建卡前擋(以前只有試跑先擋,真跑要等開席才發現 ⇒ 卡已建)
         if not current_cabin():
             log(("[DRY-RUN] " if args.dry_run else "") + "量不到你所在的艙,--new-seat 開不了席;在艙裡的席位上執行,"

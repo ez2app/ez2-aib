@@ -601,15 +601,20 @@ aib_take_instance_flag() {
 #   兩條裁定都不動:不在艙裡(一般終端機)照舊預設開新艙;在艙裡則要說清楚 —— 本艙寫艙號或 --again,新艙寫 new。
 #   判「人在艙裡」只看 tmux 自己帶的 $TMUX(洗單上沒有它)指向 aihub / aihub-<艙>;解不出來就不擋(不猜)。
 #   右鍵開席(--again)、aib-grokbot/aib-codexbot(先補 EZ2_AIHUB_SOCKET)、aib <N>sits(帶三個艙變數)都不走這格。
-aib_refuse_silent_new_in_cabin() {
+# 10-15(the maintainer「之後只要建席位沒有特別說的情況下預設在同一個 aib 艙」):在艙裡沒說開在哪 ⇒ 開在**本艙**
+#   (原本是擋下要人補寫艙號)。不在艙裡(一般終端機)照舊開新艙;要在艙裡開新艙寫 new。回 0 = 已設 INSTANCE。
+aib_default_cabin_in_pane() {
   local sock hub cab
   sock="${TMUX:-}"
   sock="${sock%%,*}"
-  [ -n "$sock" ] || return 0
+  [ -n "$sock" ] || return 1
   hub="${sock##*/}"
-  cab="$(aib_cabin_instance_from_hub "$hub" 2>/dev/null)" || return 0
-  [ -n "$cab" ] || return 0
-  die "$(t aib.err.silent_new_in_cabin "instance=$cab")" 2
+  cab="$(aib_cabin_instance_from_hub "$hub" 2>/dev/null)" || return 1
+  [ -n "$cab" ] || return 1
+  INSTANCE="$cab"
+  ! aib_cabin_is_primary "$cab" || MAIN_EXPLICIT=1
+  printf '%s\n' "$(t aib.launch.default_cabin "instance=$cab")" >&2
+  return 0
 }
 
 aib_apply_socket_instance() {
@@ -1057,8 +1062,7 @@ if false; then
   :
 elif [ "${#POS[@]}" -eq 3 ] && [ "$NEW" = "0" ] && [ "$AGAIN" = "0" ] \
      && [ -z "$INSTANCE" ] && [ -z "${EZ2_AIB_INSTANCE:-}" ]; then
-  aib_refuse_silent_new_in_cabin
-  NEW=1
+  aib_default_cabin_in_pane || NEW=1
 fi
 # 10-12 新用戶全面檢查:第一個字不是任何指令也不是 AI 名稱(打錯字)⇒ 用你的語言說「沒有這個指令」+常用清單,
 #   不再倒四種語言的 44 行用法。是 AI 名稱但參數不夠 ⇒ 照舊印用法。
@@ -1164,6 +1168,11 @@ if [ "$MODE" = "dgrs" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
   printf '%s\n' "$(t aib.launch.dgrs_note "provider=$PROVIDER" "role=$ROLE")" >&2
 fi
 [[ "$ROLE" =~ $ROLE_RE ]] || die "$(t aib.err.role "role=$ROLE")"
+# the maintainer 10-15:「預設新開新從原有的角色上選,不另開新角色」⇒ 只收已定義角色(roles.py:四語字典有名稱的那些)。
+#   原地復活(re-register)不擋:舊席可能是 10-14 以前開的自訂角色,擋了就復活不了。逃生門 AIB_ALLOW_CUSTOM_ROLE=1。
+if [ "$AIB_SEAT_REREGISTER" != "1" ]; then
+  "$T_PY3" "$HERE/roles.py" check "$ROLE" || exit 2
+fi
 [ -z "$REPORTS_TO" ] || [[ "$REPORTS_TO" =~ $REPORTS_TO_RE ]] || \
   die "$(t aib.err.reports_to "seat=$REPORTS_TO")"
 [ -z "$INSTANCE" ] || [[ "$INSTANCE" =~ $INSTANCE_RE ]] || die "$(t aib.err.instance "instance=$INSTANCE")"
