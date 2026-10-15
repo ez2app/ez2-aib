@@ -93,6 +93,7 @@
   "aib.launch.revive_model_seat_file": "aib: {session} を同コードで復活:会話記録にモデルがないため、旧席ファイルが要求したモデル {value} を引き継ぎます",
   "aib.cockpit.footer_hint": "ご意見・アイデアは aib.ez2.app へ",
   "aib.err.provider": "不明な provider: {provider}",
+  "aib.err.cli_missing": "{name} がまだインストールされていません('{provider}' コマンドが見つかりません)。席は開いていません。\n  インストール:curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash -s -- --tools({name} を選択)\n  その後ターミナルで {login} を一度実行してログインし、この行をもう一度実行してください。",
   "aib.err.provider_window": "安定した provider ウィンドウを作成できませんでした: {provider}",
   "aib.err.reports_to": "所属先は 4〜8 文字の席コードである必要があります。受信値: {seat}",
   "aib.err.role": "role は小文字英数字とハイフンで指定してください。受信値: {role}",

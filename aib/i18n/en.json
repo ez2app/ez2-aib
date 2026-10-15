@@ -93,6 +93,7 @@
   "aib.launch.revive_model_seat_file": "aib: reviving {session}: the conversation record has no model; keeping the model its old seat file requested, {value}",
   "aib.cockpit.footer_hint": "Ideas or feedback? Visit aib.ez2.app",
   "aib.err.provider": "unknown provider: {provider}",
+  "aib.err.cli_missing": "{name} is not installed yet (no '{provider}' command found), so no seat was opened.\n  Install it: curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash -s -- --tools (pick {name})\n  Then sign in once in a terminal with: {login}, and run this line again.",
   "aib.err.provider_window": "could not create a stable provider window for: {provider}",
   "aib.err.reports_to": "hang-under must be a 4–8 character seat id, got: {seat}",
   "aib.err.role": "role must be lowercase alphanumerics and hyphen, got: {role}",

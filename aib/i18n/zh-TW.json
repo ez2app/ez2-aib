@@ -93,6 +93,7 @@
   "aib.launch.revive_model_seat_file": "aib: 原地復活 {session}:對話紀錄沒記模型,沿用舊席位檔開席時要求的 {value}",
   "aib.cockpit.footer_hint": "若有任何想法,請訪問:aib.ez2.app",
   "aib.err.provider": "未知 provider:{provider}",
+  "aib.err.cli_missing": "還沒裝 {name}(找不到 {provider} 指令),所以這次沒開席。\n  裝法:curl -fsSL https://raw.githubusercontent.com/ez2app/ez2-aib/main/install.sh | bash -s -- --tools(勾 {name})\n  裝好後先在終端機打 {login} 登入一次,再重跑這一行。",
   "aib.err.provider_window": "無法建立穩定的 provider 視窗:{provider}",
   "aib.err.reports_to": "掛點必須是 4–8 碼席位號,收到:{seat}",
   "aib.err.role": "role 必須是小寫英數與連字號,收到:{role}",
