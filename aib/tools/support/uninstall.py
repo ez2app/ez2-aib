@@ -380,10 +380,18 @@ def main(argv=None, home=None, package_dir=None):
         if p.is_symlink() or p.is_file():
             p.unlink()
         elif p.is_dir():
-            shutil.rmtree(p)
+            shutil.rmtree(p, onerror=_rm_gone_ok)
     print(done)
     return 0
 
+
+
+def _rm_gone_ok(func, path, exc_info):
+    """刪的時候檔案自己先不見了(例:git 背景打包的暫存檔 bitmap-ref-tips_*)⇒ 本來就要刪,算成功;其他錯照舊丟。
+    onerror 參數 Python 3.9–3.13 都有(3.12 起另有 onexc,這裡不用,保 3.9 相容)。"""
+    if isinstance(exc_info[1], FileNotFoundError):
+        return
+    raise exc_info[1]
 
 if __name__ == "__main__":
     sys.exit(main())
