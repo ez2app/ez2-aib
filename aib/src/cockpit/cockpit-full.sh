@@ -451,6 +451,15 @@ EOF_W
 }
 ensure_watch_window
 
+# ---- 全球對談轉接程式 sys.chat 窗(Andy 10-15 22:5x;開發文件第 20.1 節)----
+#   只在 `aib chat on` 過(開關檔在)才開;一台一支由 chat_bridge.py 的 flock 管,別艙的窗排隊備援。
+#   冪等:有窗且活著 = 不動;pane 死了 = respawn;沒有才開。失敗只警告,不擋開艙。
+if "$EZ2_PY3" "$C/chat_bridge.py" enabled 2>/dev/null; then
+  EZ2_AIB_INSTANCE="$EZ2_AIB_INSTANCE" EZ2_AIB_INSTANCE_HOME="$EZ2_AIB_INSTANCE_HOME" EZ2_AIHUB_SOCKET="$HUB" \
+    EZ2_AIB_ROOT="$EZ2_AIB_ROOT" "$EZ2_PY3" "$C/chat_bridge.py" ensure-window --socket "$HUB" >/dev/null 2>&1 || \
+    echo "cockpit-full: chat window ensure failed" >&2
+fi
+
 # ---- 選單自動選常駐窗(10-13 a seat,the maintainer「所有的ai只要選單有選項,都應該自動判斷選擇」「五家都要做第一層」;
 #   這是第二層:每 3 秒看本艙各席底部,卡在選單就叫 AI 選;建議 3「每艙開艙自帶一支」)----
 #   與 sys.watch 同三條約束:不標 @aib_lobby、標 @aib_role=sys.menu、冪等(有就留、死了 respawn、沒有才建、不殺窗)。
