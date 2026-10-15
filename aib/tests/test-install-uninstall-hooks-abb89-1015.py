@@ -462,5 +462,77 @@ class C13UpdateHelpAndPipxName(TmpCase):
         self.assertNotIn("pipx upgrade aib", err.getvalue())
 
 
+# ───────────────────────────────────────────────────────────── menu-pick 要自己開(Andy 10-15 裁)
+class MenuPickOptIn(TmpCase):
+    def setUp(self):
+        super().setUp()
+        for k, v in (("HOME", str(self.tmp)), ("EZ2_AIB_STATE_ROOT", str(self.tmp / "state")),
+                     ("CLAUDE_CONFIG_DIR", None), ("AIB_MENU_PICK", None), ("EZ2_AIB_LOCALE", "en")):
+            old = os.environ.get(k)
+            self.addCleanup(lambda k=k, old=old: os.environ.__setitem__(k, old) if old is not None
+                            else os.environ.pop(k, None))
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import menu_pick
+        self.mp = menu_pick
+        self.settings = self.tmp / ".claude" / "settings.json"
+
+    def _main(self, *argv):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc = self.mp.main(list(argv))
+        return rc, buf.getvalue()
+
+    def test_new_user_off_by_default(self):
+        mp = self.mp
+        self.assertFalse(mp.enabled())
+        self.assertEqual(mp.ensure(), {"all": "off"})
+        for f in (mp.ensure_codex, mp.ensure_agy, mp.ensure_copilot):
+            self.assertEqual(f(), "off")
+        self.assertFalse(self.settings.exists())
+        self.assertFalse((self.tmp / ".codex").exists())
+        self.assertEqual(mp.once(seats_dir=str(self.tmp / "none")), [])
+        self.assertFalse(mp.trigger(code="abcde", spawn=lambda cmd: self.fail("spawned")))
+        self.assertEqual(mp.codex_permission({"tool_name": "Bash"}, known={"abcde"}), "")
+        rc, out = self._main("status")
+        self.assertIn("off", out)
+
+    def test_on_installs_off_stops(self):
+        rc, out = self._main("on")
+        self.assertEqual(rc, 0)
+        self.assertTrue(self.mp.enabled())
+        self.assertIn("menu_pick.py", self.settings.read_text(encoding="utf-8"))
+        rc, out = self._main("off")
+        self.assertEqual(rc, 0)
+        self.assertFalse(self.mp.enabled())
+        self.assertIn("menu_pick.py", self.settings.read_text(encoding="utf-8"))     # 掛點留著,只是不做事
+        self.assertFalse(self.mp.trigger(code="abcde", spawn=lambda cmd: self.fail("spawned")))
+
+    def test_existing_hook_keeps_working(self):
+        self.settings.parent.mkdir(parents=True)
+        self.settings.write_text(json.dumps({"hooks": {"Notification": [{"matcher": "permission_prompt", "hooks": [
+            {"type": "command", "command": "test -f /x/src/cockpit/menu_pick.py && python3 /x/src/cockpit/menu_pick.py trigger"}]}]}}),
+            encoding="utf-8")
+        self.assertTrue(self.mp.enabled())
+        self.assertEqual(self.mp.switch_state(), "on")
+        self._main("off")
+        self.assertFalse(self.mp.enabled())        # 自己關了就是關了,不會再被當成舊裝的打開
+
+    def test_existing_usage_log_keeps_working(self):
+        d = self.tmp / "state" / "state" / "menu-pick"
+        d.mkdir(parents=True)
+        (d / "log.jsonl").write_text("{}\n", encoding="utf-8")
+        self.assertTrue(self.mp.enabled())
+
+    def test_env_zero_wins(self):
+        self._main("on")
+        os.environ["AIB_MENU_PICK"] = "0"
+        self.assertFalse(self.mp.enabled())
+
+
 if __name__ == "__main__":
     unittest.main()

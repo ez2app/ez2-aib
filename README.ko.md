@@ -228,10 +228,12 @@ aib는 사용자의 코드, 테스트 결과, 그 밖의 어떤 것도 저희에
 실수로 커밋하는 것을 막을 뿐, 이미 사용자의 홈 폴더를 읽을 수 있는 사람까지 막지는 못합니다). `~/.ez2-aib/`를 삭제하면 모두 지워집니다.
 
 aib가 자기 폴더 밖에서 바꾸는 것: 자리를 열면 콕핏이 그 자리를 따라갈 수 있도록 해당 AI 도구의 설정에 훅 몇 개를 추가합니다 —
-`~/.claude/settings.json`(대화 시작 시 상태 알림, 자리 우편함, 권한 메뉴 자동 판단, 사용량에 따른 기억 정리), `~/.codex/hooks.json`,
+`~/.claude/settings.json`(대화 시작 시 상태 알림, 자리 우편함, 사용량에 따른 기억 정리, 그리고 — 직접 켠 경우에만 — 메뉴 자동 판단), `~/.codex/hooks.json`,
 `~/.grok/hooks/aib-*.json`, `~/.copilot/hooks/aib-*.json`, `~/.gemini/config/hooks.json`. 사용자 본인의 항목은 건드리지 않으며,
 바꾸기 전마다 `<파일>.bak-…`로 먼저 복사합니다. 상태 알림은 알려 주기만 하고, 턴 끝에서 막는 것은
-`~/.ez2-aib/state/seat-now/gate-seats.txt`에 적은 자리(또는 `*`)뿐입니다. `aib init`은 바탕화면에 메모로 가는 바로가기도 만듭니다.
+`~/.ez2-aib/state/seat-now/gate-seats.txt`에 적은 자리(또는 `*`)뿐입니다.
+자리가 멈춘 메뉴(권한 확인과 그 밖의 선택지)를 AI 가 대신 고르는 기능은 `aib menu-pick on`을 실행하기 전까지 꺼져 있습니다.
+`aib menu-pick off`로 다시 끄고, `aib menu-pick status`로 지금 상태를 볼 수 있습니다. `aib init`은 바탕화면에 메모로 가는 바로가기도 만듭니다.
 `aib uninstall`은 이것들을 모두 다시 걷어 냅니다.
 
 **주**

@@ -230,10 +230,12 @@ and accidental commits, not someone who can already read your home folder). Dele
 
 What aib changes outside its own folders: when you open a seat, it adds a few hooks to that AI tool's settings so the
 cockpit can follow the seat — `~/.claude/settings.json` (a status reminder at the start of a conversation, the seat
-mailbox, the auto-answer for permission menus, the usage-based memory refresh), `~/.codex/hooks.json`,
+mailbox, the usage-based memory refresh, and — only if you turn it on — the auto-answer for menus), `~/.codex/hooks.json`,
 `~/.grok/hooks/aib-*.json`, `~/.copilot/hooks/aib-*.json` and `~/.gemini/config/hooks.json`. Your own entries are left
 alone, and the file is copied to `<file>.bak-…` before each change. The status reminder only reminds; it blocks the end
-of a turn only for seats you list (or `*`) in `~/.ez2-aib/state/seat-now/gate-seats.txt`. `aib init` also puts a
+of a turn only for seats you list (or `*`) in `~/.ez2-aib/state/seat-now/gate-seats.txt`.
+Letting an AI answer the menus a seat gets stuck on (permission prompts and other choices) is off until you run
+`aib menu-pick on`; `aib menu-pick off` turns it off again and `aib menu-pick status` shows which it is. `aib init` also puts a
 shortcut to your notes on the desktop. `aib uninstall` takes all of these out again.
 
 **Notes**

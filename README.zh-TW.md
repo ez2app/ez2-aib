@@ -208,10 +208,12 @@ aib 不會把你的程式碼、測試結果或任何資料傳給我們。紀錄�
 檔案 0600<sup>[46]</sup>,用放在旁邊的金鑰加密 —— 防的是隨手看到和不小心提交,擋不住已經能讀你家目錄的人)。刪掉 `~/.ez2-aib/` 就全部清掉。
 
 aib 會改到自己資料夾以外的東西:開席時,它會在那家 AI 工具的設定裡加幾個掛點(hook),讓駕駛艙跟得上那一席 ——
-`~/.claude/settings.json`(對話開頭的狀態提醒、席位信箱、權限選單自動判斷、依用量自動整理記憶)、`~/.codex/hooks.json`、
+`~/.claude/settings.json`(對話開頭的狀態提醒、席位信箱、依用量自動整理記憶,以及 —— 只有你自己開了才有 —— 選單自動判斷)、`~/.codex/hooks.json`、
 `~/.grok/hooks/aib-*.json`、`~/.copilot/hooks/aib-*.json` 和 `~/.gemini/config/hooks.json`。你自己的設定不會被動到,
 每次改之前會先複製一份 `<檔名>.bak-…`。狀態提醒只會提醒;只有你寫進 `~/.ez2-aib/state/seat-now/gate-seats.txt` 的席位
-(或 `*`)才會在回合結束時被擋下。`aib init` 也會在桌面放一個通往你筆記的捷徑。`aib uninstall` 會把這些全部拿掉。
+(或 `*`)才會在回合結束時被擋下。
+讓 AI 代你選席位卡住的選單(權限提示和其他選項)預設是關的,要跑 `aib menu-pick on` 才開;`aib menu-pick off` 再關掉,
+`aib menu-pick status` 看現在是哪一種。`aib init` 也會在桌面放一個通往你筆記的捷徑。`aib uninstall` 會把這些全部拿掉。
 
 **註**
 - [45] 遠端(fetch / push):放在網路上的那份程式碼(例如 GitHub);fetch 是抓下來,push 是推上去。
