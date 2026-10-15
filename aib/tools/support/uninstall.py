@@ -5,6 +5,9 @@
     aib uninstall              show what would be removed (nothing is touched)
     aib uninstall --yes        remove the program: this checkout, the ~/.local/bin/aib link to it, the boot menu,
                                the PATH line the installer added
+                               (a checkout with work that exists nowhere else — uncommitted changes, untracked files,
+                               stashes, commits not on any remote, other worktrees — is kept; add
+                               --discard-unsaved-work to remove it anyway)
     aib uninstall --all --yes  also remove aib's records (~/.ez2-aib: seats, personas, memory, handoffs, settings)
                                and its cache (~/.cache/ez2-aib); ~/.ez2-aib is first saved to ~/ez2-aib-backup-<time>.tar.gz
 
@@ -43,6 +46,46 @@ def _is_public_checkout(checkout):
     return (checkout / ".git").is_dir() and PUBLIC_REPO in _origin(checkout).replace("git@github.com:", "github.com/")
 
 
+def _git_out(checkout, *args):
+    """git 的 stdout;跑不起來或非 0 ⇒ None(呼叫端當成「查不了」)。"""
+    try:
+        r = subprocess.run(["git", "-C", str(checkout)] + list(args), capture_output=True, text=True, timeout=30,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def unsaved_work(checkout):
+    """10-15 稽核 C4:這份 checkout 裡有沒有「別的地方都沒有」的東西 —— 有就不能整包刪(照 CONTRIBUTING clone 來開發的人,
+    沒推的分支會全沒)。回原因清單;空 = 安全。查不了(git 失敗)也算一個原因:寧可留著不刪。"""
+    why = []
+    status = _git_out(checkout, "status", "--porcelain", "--untracked-files=normal")
+    if status is None:
+        return ["could not check it with git"]
+    n = len([ln for ln in status.splitlines() if ln.strip()])
+    if n:
+        why.append("%d uncommitted change(s) or untracked file(s)" % n)
+    stash = _git_out(checkout, "stash", "list")
+    if stash is None:
+        why.append("could not check its stashes")
+    elif stash.strip():
+        why.append("%d stash(es)" % len(stash.strip().splitlines()))
+    ahead = _git_out(checkout, "rev-list", "--count", "--branches", "--not", "--remotes")
+    if ahead is None:
+        why.append("could not check for unpushed commits")
+    elif ahead.strip() not in ("", "0"):
+        why.append("%s commit(s) not on any remote" % ahead.strip())
+    wts = _git_out(checkout, "worktree", "list", "--porcelain")
+    if wts is None:
+        why.append("could not list its worktrees")
+    else:
+        others = [ln[len("worktree "):] for ln in wts.splitlines() if ln.startswith("worktree ")][1:]
+        if others:
+            why.append("%d other worktree(s): %s" % (len(others), ", ".join(others)))
+    return why
+
+
 def _profile_without_path_line(text):
     """Drop the installer's `# aib-bootstrap: PATH` marker and the export line right after it; keep everything else."""
     lines = text.splitlines(keepends=True)
@@ -61,7 +104,7 @@ def _profile_without_path_line(text):
     return "".join(out)
 
 
-def plan(home, package_dir, want_all):
+def plan(home, package_dir, want_all, discard_unsaved=False):
     """⇒ (remove: [(path, what)], profiles: [path], keep: [str], refuse: [str], hints: [str])."""
     home = Path(home)
     remove, profiles, keep, refuse, hints = [], [], [], [], []
@@ -76,7 +119,14 @@ def plan(home, package_dir, want_all):
         Path(os.path.realpath(link)).parent == (Path(sys.prefix) / "bin").resolve()
     other_aib = (link.exists() or link.is_symlink()) and not ours_link and not pipx_link
     if _is_public_checkout(checkout):
-        remove.append((checkout, "this aib (the copy the one-line installer put here)"))
+        unsaved = unsaved_work(checkout)
+        if unsaved and not discard_unsaved:
+            keep.append("%s: this aib folder has work that exists nowhere else (%s); it was not removed. Commit and push "
+                        "what you want to keep, or add --discard-unsaved-work to remove it anyway"
+                        % (checkout, "; ".join(unsaved)))
+        else:
+            remove.append((checkout, "this aib (the copy the one-line installer put here)" +
+                           (" — including work that exists nowhere else: %s" % "; ".join(unsaved) if unsaved else "")))
     elif in_pipx:
         hints.append("this aib was installed with pipx: remove it with `pipx uninstall ez2-aib`")
     elif pip_installed:
@@ -126,10 +176,13 @@ def main(argv=None, home=None, package_dir=None):
     ap = argparse.ArgumentParser(prog="aib uninstall", description=__doc__.split("\n")[0])
     ap.add_argument("--yes", action="store_true", help="really remove (without it, only list)")
     ap.add_argument("--all", action="store_true", help="also remove aib's records and cache (backed up first)")
+    ap.add_argument("--discard-unsaved-work", action="store_true",
+                    help="also remove this aib folder when it has uncommitted changes, untracked files, stashes, "
+                         "commits not on any remote or other worktrees (they are lost)")
     a = ap.parse_args(argv)
     home = Path(home or Path.home())
     package_dir = package_dir or os.environ.get("AIB_PACKAGE_DIR") or str(Path(__file__).resolve().parents[2])
-    remove, profiles, keep, refuse, hints = plan(home, package_dir, a.all)
+    remove, profiles, keep, refuse, hints = plan(home, package_dir, a.all, a.discard_unsaved_work)
     for r in refuse:
         print("aib uninstall: refused: " + r)
     if refuse:
@@ -145,7 +198,8 @@ def main(argv=None, home=None, package_dir=None):
     for h in hints:
         print("  note    " + h)
     if not a.yes:
-        print("aib uninstall: nothing was removed; run `aib uninstall%s --yes` to do it" % (" --all" if a.all else ""))
+        print("aib uninstall: nothing was removed; run `aib uninstall%s%s --yes` to do it"
+              % (" --all" if a.all else "", " --discard-unsaved-work" if a.discard_unsaved_work else ""))
         return 0
     if not remove and not profiles:
         return 0

@@ -149,5 +149,76 @@ class C3GateOptIn(TmpCase):
                     self.assertNotIn(w, tr[key], (loc, key, w))
 
 
+# ───────────────────────────────────────────────────────────── C4
+class C4UninstallKeepsUnsavedWork(TmpCase):
+    def setUp(self):
+        super().setUp()
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.co = self.home / "ez2-aib"
+        (self.co / "aib").mkdir(parents=True)
+        (self.co / "bin").mkdir()
+        (self.co / "aib" / "VERSION").write_text("0.1.6\n", encoding="utf-8")
+        (self.co / "bin" / "aib").write_text("#!/bin/sh\n", encoding="utf-8")
+        git(self.co, "init", "-q", "-b", "main")
+        git(self.co, "add", "-A")
+        git(self.co, "commit", "-q", "-m", "init")
+        git(self.co, "remote", "add", "origin", "https://github.com/ez2app/ez2-aib.git")
+        git(self.co, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+    def _run(self, *argv):
+        import io
+        import contextlib
+        import uninstall
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = uninstall.main(list(argv), home=str(self.home), package_dir=str(self.co / "aib"))
+        return rc, buf.getvalue()
+
+    def test_clean_clone_is_removed(self):
+        rc, out = self._run("--yes")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.co.exists(), out)
+
+    def _assert_kept(self, words):
+        rc, out = self._run("--yes")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.co.is_dir(), out)
+        self.assertIn("--discard-unsaved-work", out)
+        self.assertIn(words, out)
+
+    def test_untracked_file_kept(self):
+        (self.co / "notes.txt").write_text("mine\n", encoding="utf-8")
+        self._assert_kept("untracked")
+
+    def test_modified_file_kept(self):
+        (self.co / "aib" / "VERSION").write_text("0.1.7\n", encoding="utf-8")
+        self._assert_kept("uncommitted")
+
+    def test_stash_kept(self):
+        (self.co / "aib" / "VERSION").write_text("0.1.7\n", encoding="utf-8")
+        git(self.co, "stash", "push", "-q", "-m", "t-abb89-1015")
+        self._assert_kept("stash")
+
+    def test_unpushed_branch_kept(self):
+        git(self.co, "checkout", "-q", "-b", "fix/x")
+        (self.co / "aib" / "x.py").write_text("x = 1\n", encoding="utf-8")
+        git(self.co, "add", "-A")
+        git(self.co, "commit", "-q", "-m", "x")
+        git(self.co, "checkout", "-q", "main")
+        self._assert_kept("not on any remote")
+
+    def test_other_worktree_kept(self):
+        git(self.co, "worktree", "add", "-q", str(self.tmp / "wt"), "-b", "wt", "origin/main")
+        git(self.co, "update-ref", "refs/remotes/origin/wt", "HEAD")
+        self._assert_kept("worktree")
+
+    def test_explicit_flag_removes_anyway(self):
+        (self.co / "notes.txt").write_text("mine\n", encoding="utf-8")
+        rc, out = self._run("--yes", "--discard-unsaved-work")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.co.exists(), out)
+
+
 if __name__ == "__main__":
     unittest.main()
