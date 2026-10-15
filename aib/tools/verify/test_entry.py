@@ -1856,11 +1856,6 @@ def main(argv=None):
     for var, val in RETIRED_SWITCHES:
         if os.environ.get(var) == val:
             print(T("switch_ignored", {"what": "%s=%s" % (var, val)}), file=sys.stderr)
-    for rep in reuse_index.auto_compact():
-        print(T("pool_compacted", {"n": "%d" % reuse_index.AUTO_COMPACT_KEEP,
-                                   "what": "%s %d → %d%s" % (Path(rep["file"]).name, rep["rows"], rep["kept"],
-                                                             (" (" + rep["refused"] + ")") if rep["refused"] else "")}),
-              file=sys.stderr)
     started = time.monotonic()
 
     def live(kind, params):
@@ -1913,7 +1908,19 @@ def _run_shard(repo, names, a, live):
     return res["rc"]
 
 
+def _auto_compact(repo):
+    """紀錄池太大就壓縮(reuse_index.auto_compact)。10-15 D2:以前在 main 一開頭、拿租約之前做,而且沒給路徑
+    ⇒ 被租約擋下來的那一輪已經改寫過池;分份的每個子行程各壓一次;壓的是共用目錄裡**所有專案**的池(含 shared-*)。
+    現在只在主行程、確定要跑之後(拿到租約、進 _main_run)才做,只壓這個專案自己的池。"""
+    for rep in reuse_index.auto_compact([runner._pool_file(repo)]):
+        print(T("pool_compacted", {"n": "%d" % reuse_index.AUTO_COMPACT_KEEP,
+                                   "what": "%s %d → %d%s" % (Path(rep["file"]).name, rep["rows"], rep["kept"],
+                                                             (" (" + rep["refused"] + ")") if rep["refused"] else "")}),
+              file=sys.stderr)
+
+
 def _main_run(repo, names, a, live, started, lease, mem):
+    _auto_compact(repo)
     prev_actions = [] if a.resume else _prev_actions()
     if prev_actions:      # v2.1:開跑先讀上一輪的建議,跑完逐條判
         sys.stderr.write(i18n_lib.t("aib.advice.prev_loaded", {"n": len(prev_actions)}, locale=LOC) + "\n")

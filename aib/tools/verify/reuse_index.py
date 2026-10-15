@@ -1122,10 +1122,11 @@ def auto_compact(paths=None, environ=None):
         limit = float(environ.get("AIB_POOL_COMPACT_MB", AUTO_COMPACT_MB))
     except ValueError:
         limit = AUTO_COMPACT_MB
-    if limit <= 0:
+    if limit <= 0 or not paths:
+        # 10-15 D2:沒給路徑不再退回「共用目錄裡全部的池」(會改寫別的專案的池、別台收進來的 shared-*)
         return []
     out = []
-    for f in rows_files(paths or []):
+    for f in rows_files(paths):
         try:
             big = f.stat().st_size > limit * 1024 * 1024
         except OSError:
