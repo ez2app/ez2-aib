@@ -4,6 +4,12 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.10
+
+- **Global chat (second part)**: receiving (catch-up subscription, verification, import into the queue, delivery status and receipts), read receipts sent in one batch without going through the AI, and observability (audit lines, worker status, clock skew, offline). Still being developed.
+- **Prepared at install**: `aib chat prepare` installs the chat library and creates keys on this computer only (nothing goes online); the installer runs it after `aib init`, and a failure does not stop the install.
+- **Tests**: the process-table warning tests also pass on Linux machines without a per-user process limit.
+
 ## 0.1.9
 
 - **Global chat (first part)**: `aib chat` skeleton, keys, the roster, and sending to a global address (still being developed; the bridge that carries messages is not public yet).
