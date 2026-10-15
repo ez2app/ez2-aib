@@ -318,6 +318,31 @@ def resolve_route_folder(route_key, spec=None, contract=None, use_index=True, ro
     return None
 
 
+def route_label(route_key, root=None, contract=None, spec=None):
+    """routeKey → 給人看的資料夾名稱(不是路徑;路徑一律 resolve_route_folder / aib memory write)。
+    the maintainer 10-15「用 uid 建立,顯示才用 title」:uid 版面 ⇒ <vault>/.ez2/display/labels.json 的
+    folders[<folderId>].title(folderId 從 route-key-index 查);舊版面 ⇒ 契約字面的最後一段(跟以前畫面一樣)。
+    都查不到 ⇒ routeKey 本身。"""
+    if not route_key:
+        return ""
+    root = root or vault_root_guess() or default_vault()
+    if vault_is_uid_layout(root):
+        try:
+            with open(os.path.join(root, ".ez2", "index", "route-key-index.json"), encoding="utf-8") as fh:
+                items = json.load(fh).get("items") or []
+            fid = next((it.get("folderId") for it in items
+                        if isinstance(it, dict) and it.get("routeKey") == route_key), None)
+            with open(os.path.join(root, ".ez2", "display", "labels.json"), encoding="utf-8") as fh:
+                title = ((json.load(fh).get("folders") or {}).get(fid) or {}).get("title") if fid else None
+            if isinstance(title, str) and title.strip():
+                return title.strip()
+        except (OSError, ValueError, AttributeError):
+            pass
+        return route_key
+    literal = resolve_route_folder(route_key, spec=spec, contract=contract, use_index=False)
+    return literal.rstrip("/").split("/")[-1] if literal else route_key
+
+
 def vault_root_guess():
     """與 brain_write_plan.vault_root 同一條規則(EZ2_VAULT_DIR > EZ2_VAULT_ROOT > ~/Desktop/Obsidian/Ez2);
     這裡不 import 它,避免 persona_route ↔ memory 循環引用。回 str 或 None。"""

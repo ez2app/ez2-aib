@@ -2638,7 +2638,7 @@
   "aib.ppack.brief_cut": "…(인계 요약 잘림, 원본 파일을 읽으세요)",
   "aib.ppack.sec_mem": "── 개인 기억(최근 {n}개)",
   "aib.ppack.sec_brain": "── 두 번째 두뇌",
-  "aib.ppack.vault": "- Vault 쓰기 위치: routeKey={ref} ({dir})",
+  "aib.ppack.vault": "- 세컨드 브레인에는 aib memory write --route {ref} 로 씁니다(폴더: {dir}); 경로를 보고 직접 파일을 만들지 마세요",
   "aib.ppack.unbound": "미연결",
   "aib.ppack.unknown": "알 수 없음",
   "aib.ppack.seat_mem": "- 석 기억: ~/.ez2-aib/memory/{code}/context.md",

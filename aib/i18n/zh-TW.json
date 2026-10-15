@@ -2638,7 +2638,7 @@
   "aib.ppack.brief_cut": "…(交接簡報截斷,讀原檔)",
   "aib.ppack.sec_mem": "── 個人記憶(最近 {n} 條)",
   "aib.ppack.sec_brain": "── 第二大腦",
-  "aib.ppack.vault": "- Vault 寫入位置:routeKey={ref}({dir})",
+  "aib.ppack.vault": "- 寫進第二大腦:用 aib memory write --route {ref}(資料夾:{dir});不要自己照路徑建檔",
   "aib.ppack.unbound": "未綁",
   "aib.ppack.unknown": "量不到",
   "aib.ppack.seat_mem": "- 席位記憶:~/.ez2-aib/memory/{code}/context.md",

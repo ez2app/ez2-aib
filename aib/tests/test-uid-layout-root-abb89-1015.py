@@ -8,6 +8,8 @@ S2 aib memory write:沒設 EZ2_VAULT_DIR(一般終端機)、vault 在預設位�
    索引沒有這條路由 ⇒ 報錯,而且沒有建出契約字面的舊名夾。(要 node + ez2-ai 筆記格式;環境不齊跳過)
 S3 newrole --vault <uid 版面庫>,EZ2_VAULT_DIR 指別的庫 ⇒ 卡建進 --vault 那個庫的索引角色庫,不另建 10-Roles。
 S4 轉換工具 verify:卡片索引掃的是這個 vault、card_path_rel 已不存在 ⇒ 列出、ok=False、給重掃指令。
+L1 route_label:uid 版面 ⇒ labels.json 標題;沒標題 ⇒ routeKey;舊版面 ⇒ 契約字面最後一段。
+L2 給 AI 看的接手包、對話標題:uid 版面只出現標題,不出現 fld_ 路徑;接手包寫明用 aib memory write --route。
 治具全在 tmpdir。
 """
 import json
@@ -153,6 +155,42 @@ class VerifyCards(Base):
         doc["source"]["vault_root"] = str(self.other)                    # 別的庫的索引:不判
         cards.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
         self.assertFalse(UC.check_cards(self.vault, cards)["cards_checked"])
+
+
+def _labels(vault, folder_titles):
+    d = vault / ".ez2" / "display"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "labels.json").write_text(json.dumps({"folders": {k: {"title": v} for k, v in folder_titles.items()}},
+                                              ensure_ascii=False), encoding="utf-8")
+
+
+class Labels(Base):
+    def test_L1_route_label(self):
+        make_uid_vault(self.vault, {"core.handoff": "fld_c_route_eeeeeeeeeeee", "core.inbox": "fld_c_route_ffffffffffff"})
+        _labels(self.vault, {"fld_c_route_eeeeeeeeeeee": "C80-系統記憶交接"})
+        self.assertEqual(RR.route_label("core.handoff", root=str(self.vault)), "C80-系統記憶交接")
+        self.assertEqual(RR.route_label("core.inbox", root=str(self.vault)), "core.inbox", "沒標題 ⇒ routeKey,不給 fld_")
+        self.assertEqual(RR.route_label("core.handoff", root=str(self.other), contract=CONTRACT), "C80-系統記憶交接",
+                         "舊版面 ⇒ 契約字面最後一段(跟以前畫面一樣)")
+
+    def test_L2_ai_facing_text_shows_title_not_fld_path(self):
+        make_uid_vault(self.vault, {"core.handoff": "fld_c_route_eeeeeeeeeeee"})
+        _labels(self.vault, {"fld_c_route_eeeeeeeeeeee": "C80-系統記憶交接"})
+        with mock.patch.dict(os.environ, {"EZ2_VAULT_DIR": str(self.vault)}):
+            import handoff_pack as HP
+            import project_card as PC
+            card = PC.make_project_card("proj:0123456789abcdef", title="測試專案",
+                                        extra={"route_key": "core.handoff", "folder": "fld_c_route_eeeeeeeeeeee"})
+            text = HP.render_handoff_pack(card)
+            self.assertIn("資料夾: C80-系統記憶交接(寫入用 aib memory write --route core.handoff)", text)
+            self.assertNotIn("fld_c_route_", text)
+            sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+            import claudebot_threads as CT
+            state = self.t / "state"
+            (state / "identity").mkdir(parents=True)
+            (state / "identity" / "seat-display.json").write_text(json.dumps({"display": {"abcde": {
+                "route_key": "core.handoff", "folder": "fld_c_route_eeeeeeeeeeee"}}}), encoding="utf-8")
+            self.assertEqual(CT.seat_project_label("abcde", base=state), "C80-系統記憶交接")
 
 
 if __name__ == "__main__":

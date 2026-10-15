@@ -2638,7 +2638,7 @@
   "aib.ppack.brief_cut": "…(引き継ぎ要約は途中まで、元ファイルを読む)",
   "aib.ppack.sec_mem": "── 個人の記憶(最新 {n} 件)",
   "aib.ppack.sec_brain": "── 第二の脳",
-  "aib.ppack.vault": "- Vault の書き込み先:routeKey={ref}({dir})",
+  "aib.ppack.vault": "- セカンドブレインへの書き込みは aib memory write --route {ref}(フォルダ:{dir});パスを見て自分でファイルを作らない",
   "aib.ppack.unbound": "未紐付け",
   "aib.ppack.unknown": "取れない",
   "aib.ppack.seat_mem": "- 席の記憶:~/.ez2-aib/memory/{code}/context.md",

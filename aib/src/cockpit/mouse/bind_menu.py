@@ -100,6 +100,11 @@ def brain_routes(contract, module):
             continue
         folder = _safe(r.get("folder"), 60)
         tail = folder.rsplit("/", 1)[-1] if folder else ""
+        try:   # 10-15 盤點 U10:uid 版面顯示 labels.json 的標題,不顯示 fld_…
+            import route_register
+            tail = _safe(route_register.route_label(r["routeKey"], contract=contract), 60) or tail
+        except Exception:  # noqa: BLE001
+            pass
         rows.append((r["routeKey"], "%s · %s" % (r["routeKey"], tail) if tail else r["routeKey"]))
     return sorted(rows)
 

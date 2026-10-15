@@ -19,6 +19,19 @@ HEADER = "[AIB 接手包 v1]"
 DEFAULT_CTX_BUDGET = 3500  # UTF-8 bytes;低於人格包 4000,留給兩句回執
 
 
+
+def _route_label(route_key):
+    """routeKey → 資料夾標題(route_register.route_label);讀不到回空字串。"""
+    if not route_key:
+        return ""
+    try:
+        import os, sys
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "persona_route"))
+        import route_register
+        return route_register.route_label(route_key)
+    except Exception:  # noqa: BLE001
+        return ""
+
 def _as_lines(items: Sequence[Any], bullet: str = "- ") -> list[str]:
     out = []
     for it in items or []:
@@ -70,8 +83,10 @@ def render_handoff_pack(
     ]
     # 09-30 a seat:專案記了對應的資料夾(aib newproj --folder)就寫出來 —— 專案的筆記放那裡。
     #   沒記就不印這一行(舊卡、選單建的卡都沒有這兩欄),其餘每一行一個字都不變。
-    if str(card.get("folder") or "").strip():
-        head.append("資料夾: %s(%s)" % (str(card["folder"]).strip(), str(card.get("route_key") or "").strip() or "?"))
+    if str(card.get("folder") or "").strip() or str(card.get("route_key") or "").strip():
+        # 10-15 盤點 U8:只印資料夾標題,不印路徑(AI 會照路徑手動建檔);寫入一律 aib memory write --route
+        rk = str(card.get("route_key") or "").strip()
+        head.append("資料夾: %s(寫入用 aib memory write --route %s)" % (_route_label(rk) or str(card.get("folder") or "").strip().rstrip("/").split("/")[-1], rk or "?"))
     head += [
         "最後一筆: %s" % last_at,
         "現在在哪: %s" % (work.get("now") or "(未填)"),

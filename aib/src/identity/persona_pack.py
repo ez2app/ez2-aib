@@ -35,7 +35,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "persona_route"))
-from route_register import resolve_route_folder  # noqa: E402
+from route_register import resolve_route_folder, route_label  # noqa: E402
 
 MAX_BYTES = 4000
 # 主人格檔(the maintainer 08-22 §二十六之七:「主人格獨立綁主艦長」;主人格 = P10-主人格萃煉 五份人格檔)。
@@ -263,7 +263,9 @@ def base_fingerprint(blocks) -> str:
 
 def route_folder(route_key: str, spec: str = "") -> str:
     """共用解析器(route_register.resolve_route_folder,契約來源順序與 cockpit-env 同);查不到回空字串。"""
-    return (resolve_route_folder(route_key, spec=spec or None, use_index=False) or "") if route_key else ""   # 人格包這行是給人看的:印契約字面,不印 uid 版面的 fld_ 路徑
+    # 10-15 盤點 U5:人格包這行是給人與 AI 看的 ⇒ 只印資料夾標題(route_label),不印路徑;
+    #   印路徑的話 AI 會照著手動建檔,uid 版面下就把舊名資料夾建回來。寫入一律 aib memory write --route。
+    return (route_label(route_key, spec=spec or None) or "") if route_key else ""
 
 
 def _empty(status: str, code: str, **extra) -> dict:

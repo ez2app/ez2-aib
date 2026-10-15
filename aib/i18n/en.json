@@ -2638,7 +2638,7 @@
   "aib.ppack.brief_cut": "…(handoff brief truncated; read the original file)",
   "aib.ppack.sec_mem": "── Personal memory (latest {n})",
   "aib.ppack.sec_brain": "── Second brain",
-  "aib.ppack.vault": "- Vault write location: routeKey={ref} ({dir})",
+  "aib.ppack.vault": "- Write to the second brain with aib memory write --route {ref} (folder: {dir}); do not create files by path yourself",
   "aib.ppack.unbound": "unbound",
   "aib.ppack.unknown": "unknown",
   "aib.ppack.seat_mem": "- Seat memory: ~/.ez2-aib/memory/{code}/context.md",
