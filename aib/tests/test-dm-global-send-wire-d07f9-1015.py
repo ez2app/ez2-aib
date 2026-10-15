@@ -16,6 +16,8 @@ P7 --reply <短碼>:照自己佇列裡那封全球來信回原寄件人,帶 repl
 P8 --priority:全球路線帶進待寄檔;本機路線印一行提示後照常投遞。
 P9 推不出寄件席(不在任何一席的視窗裡)⇒ rc 2,沒有待寄檔(全球信要用寄件席自己的金鑰簽)。
 P10 環境變數塞 _GL_OUT_ADDR 不會把本機信改走全球。
+P11 推導寄件人那一輪(AIB_DM_XHOST_WHOAMI=1)就算環境帶全球位址也只印 token、不走全球、不再入
+    (10-15 18:4x 事故:一層防護被刀拿掉就無限再入,兩千多個 bash 塞滿整機行程數)。
 K1–K2 刀測:拿掉 _GL_OUT_ADDR 初始化 ⇒ P10 紅;拿掉禁止全球群發 ⇒ P6 紅。
 """
 import importlib.util
@@ -186,6 +188,14 @@ class Send(Base):
         self.assertEqual(len(b.exec_calls()), 1)
 
 
+    def test_p11_whoami_never_goes_global(self):
+        b = self.box()
+        p, fb = self.run_dm(b, ["@xhost"], AIB_DM_XHOST_WHOAMI="1", _GL_OUT_ADDR=ADDR, DM_REPLY="g7k2m")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertRegex(p.stdout.strip().splitlines()[-1], r"^[A-Za-z0-9_=-]{8,}$")
+        self.assertEqual(self.outbox_recs(b, fb), [])
+
+
 class Knife(unittest.TestCase):
     def _red(self, needle, cut, cell):
         name = Path(__file__).name
@@ -200,7 +210,7 @@ class Knife(unittest.TestCase):
 
     def test_k2_broadcast_allowed(self):
         self._red('  case "$TO_RAW" in *npub1*) emit_json 2 resolve "global:no-broadcast"\n'
-                  '    die "全球位址不能群發(--to);一次寄一位" 2 ;; esac\n', "", "Send.test_p6_blocked")
+                  '    die "全球位址不能群發(--to);一次寄一位" 2 ;; esac\n', "  :\n", "Send.test_p6_blocked")
 
 
 if __name__ == "__main__":
