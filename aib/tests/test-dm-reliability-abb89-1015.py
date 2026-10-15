@@ -272,5 +272,58 @@ class E4BlockedResultHasReason(unittest.TestCase):
         self.assertEqual(len(result_fields(last_line(p))), 4, last_line(p))
 
 
+def throat_body(call):
+    return call[call.index("--body") + 1]
+
+
+def throat_window(call):
+    return call[call.index("--tmux-window") + 1]
+
+
+class B6AutoResendWithTtl(unittest.TestCase):
+    """B6:自動重送遇 --ttl-min 不得因「--expires 與 --ttl-min 不得同時給」死掉。"""
+
+    def test_resend_round_runs_with_ttl(self):
+        b = Box(self)
+        b.rc_seq("4 0")
+        p = b.run(["@abcde", "hello b6", "--ttl-min", "5"], FAKE_CAP_MODE="static", AIB_DM_AUTO_RESEND="1")
+        self.assertEqual(len(b.exec_calls()), 2, p.stdout + p.stderr)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+
+class B7ResendKeepsClaimedIdentity(unittest.TestCase):
+    """B7:重送輪要帶 --codex-session-uuid,抬頭不退回未認證。"""
+
+    def test_resend_round_header_keeps_seat_claimed(self):
+        b = Box(self, seats=((2, SEAT_UUID), (3, SENDER_UUID)), extra_windows=())
+        b.rc_seq("4 0")
+        p = b.run(["@abcde", "hello b7", "--codex-session-uuid", SENDER_UUID],
+                  FAKE_CAP_MODE="static", AIB_DM_AUTO_RESEND="1")
+        calls = b.exec_calls()
+        self.assertEqual(len(calls), 2, p.stdout + p.stderr)
+        self.assertIn("77777", throat_body(calls[0]), "前提:第一輪要認得自稱席")
+        self.assertIn("77777", throat_body(calls[1]), "重送輪抬頭不得退回未認證")
+
+
+class B5MultiTargetKeepsFlags(unittest.TestCase):
+    """B5:多目標子輪要帶 --thread/--kind/--close/--expires。"""
+
+    def test_children_carry_thread_kind_expires(self):
+        b = Box(self, seats=((2, SEAT_UUID), (4, SEAT2_UUID)), extra_windows=())
+        p = b.run(["--to", "@abcde,@c0ffe", "status update for both", "--thread", "24/lease",
+                   "--kind", "notice", "--ttl-min", "5"])
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        rows = [l for l in p.stdout.splitlines() if l.startswith("RESULT ")]
+        self.assertEqual(len(rows), 3, p.stdout)
+        for r in rows[:2]:
+            self.assertIn("thread=24/lease", r)
+        items = [i for i in b.queue_items() if i.get("status") == "delivered"]
+        self.assertEqual(len(items), 2, items)
+        for it in items:
+            self.assertEqual(it.get("thread"), "24/lease")
+            self.assertEqual(it.get("kind"), "notice")
+            self.assertTrue(it.get("expires"))
+
+
 if __name__ == "__main__":
     unittest.main()

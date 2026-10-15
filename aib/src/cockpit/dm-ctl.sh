@@ -234,6 +234,26 @@ trap '_result_line' EXIT
 # ★ 不重送:dry-run / 排空器重投(AIB_DM_SORT_DELIVER=1,佇列自己有 attempts 語意)/ 開關沒開。
 # ★ 間隔:AIB_DM_RESEND_WAIT_S 預設 30;治具可設小,但預設值由尺釘住(test-dm-auto-resend-159 那一格讀本檔字面)。
 AIB_DM_RESEND_WAIT_S_DEFAULT=30
+# 再入本檔(重送輪、--retry-until 子輪、多目標子輪、跳艙/轉後繼席)要帶的旗標:**一份**,不各抄一份。
+#   10-15 B5/B6/B7:原本四處各自組,漏的各不同 —— 多目標子輪丟了 thread/kind/close/expires(每席 thread=-、
+#   --close 從不結原信);自動重送同時帶 --expires 與 --ttl-min(子輪 rc 2「不得同時給」,信靜靜消失);
+#   重送輪不帶 --codex-session-uuid(MCP 路的抬頭退回未認證)。
+#   時效一律帶 --expires(--ttl-min 在上面已換成絕對時刻):子輪不重算,截止時間跟第一輪同一刻。
+#   $1=with-dry ⇒ 也帶 --dry-run(重送輪不帶:dry-run 本來就不重送)。結果放進 _RE_FLAGS。
+_dm_reentry_flags() {
+  _RE_FLAGS=()
+  [ -n "${DM_THREAD:-}" ] && _RE_FLAGS+=(--thread "$DM_THREAD")
+  [ -n "${DM_KIND:-}" ] && _RE_FLAGS+=(--kind "$DM_KIND")
+  [ -n "${DM_CLOSE:-}" ] && _RE_FLAGS+=(--close "$DM_CLOSE")
+  [ -n "${DM_EXPIRES:-}" ] && _RE_FLAGS+=(--expires "$DM_EXPIRES")
+  [ "${VERIFY:-0}" = "1" ] && _RE_FLAGS+=(--verify)
+  [ "${1:-}" = "with-dry" ] && [ "${DRYRUN:-0}" = "1" ] && _RE_FLAGS+=(--dry-run)
+  # 跨主機收件那一則:子輪也要帶寄件機的身分(子輪自己再驗一次;不帶就退回未認證,真機 Mini→Pro 量到)
+  [ -n "${XHOST_IDENT:-}" ] && _RE_FLAGS+=(--xhost-ident "$XHOST_IDENT")
+  # 證據不是身份:子輪拿它再比對一次登記簿,對不上照樣不具名
+  [ -n "${DM_CODEX_SESSION_UUID:-}" ] && _RE_FLAGS+=(--codex-session-uuid "$DM_CODEX_SESSION_UUID")
+  return 0
+}
 _auto_resend() {   # $1=stage(收據的 stage,只給 stderr 用);回來 = 本輪不重送,呼叫端照原路印收據並 exit 2
   [ "${AIB_DM_AUTO_RESEND:-0}" = "1" ] || return 0
   [ "${AIB_DM_RESEND:-0}" != "1" ] || return 0            # 上限 1:重送輪自己不再重送
@@ -250,15 +270,8 @@ _auto_resend() {   # $1=stage(收據的 stage,只給 stderr 用);回來 = 本輪
     "$(date +%s)" "$TARGET" "$1" "$_wait" "${_RESULT_RELAY:--}" "$$" >> "$_rlog" 2>/dev/null \
     || echo "aib-dm-ctl: $(_dmt aib.dmctl.resend_log_fail path="$_rlog")" >&2
   [ "$_wait" = "0" ] || sleep "$_wait"
-  local _argv=("$TARGET")
-  [ -n "${DM_THREAD:-}" ] && _argv+=(--thread "$DM_THREAD")
-  [ -n "${DM_KIND:-}" ] && _argv+=(--kind "$DM_KIND")
-  [ -n "${DM_CLOSE:-}" ] && _argv+=(--close "$DM_CLOSE")
-  [ -n "${DM_EXPIRES:-}" ] && _argv+=(--expires "$DM_EXPIRES")
-  [ -n "${DM_TTL_MIN:-}" ] && _argv+=(--ttl-min "$DM_TTL_MIN")
-  [ "${VERIFY:-0}" = "1" ] && _argv+=(--verify)
-  # 跨主機收件那一則:重送輪也要帶寄件機的身分(子輪自己再驗一次;不帶就退回未認證,真機 Mini→Pro 量到)
-  [ -n "${XHOST_IDENT:-}" ] && _argv+=(--xhost-ident "$XHOST_IDENT")
+  _dm_reentry_flags
+  local _argv=("$TARGET" ${_RE_FLAGS[@]+"${_RE_FLAGS[@]}"})
   [ -n "${_ENG_LOG:-}" ] && rm -f "$_ENG_LOG"
   _RESULT_DONE=1                                           # 父輪不印 RESULT、不 record;子輪的算數
   # env -u:父輪引擎 export 的貼前佔位符不得帶進子輪(子輪要自己抓;帶進去的是另一幀的事實)
@@ -1297,9 +1310,8 @@ print(json.dumps({"stage": "preflight", "invalid_selectors": [],
     # B11 前把 phase A 的 canonical 窗號餵回 child；窗號入口退役後那會讓
     # **每一個合法多目標都在 phase B 自己拒絕自己**。phase A 已證原選擇子是
     # 唯一 UUID 座位碼,故 child 重用原選擇子；canonical 只留給去重與收據。
-    _CHILD=("${_SELS[$_i]}")
-    [ "$DRYRUN" = "1" ] && _CHILD+=(--dry-run)
-    [ "$VERIFY" = "1" ] && _CHILD+=(--verify)
+    _dm_reentry_flags with-dry      # B5:主題/用途/結原信/時效/身分證據也要帶進每一席
+    _CHILD=("${_SELS[$_i]}" ${_RE_FLAGS[@]+"${_RE_FLAGS[@]}"})
     # 原始選擇子同時是 child 的合法座位碼與收據 carrier；canonical 窗號不再當目標。
     _out="$(printf '%s' "$MSG" | EZ2_DM_MULTI_DEPTH=1 AIB_DM_INPUT_SELECTOR="${_SELS[$_i]}" bash "$_SELF" "${_CHILD[@]}" 2>&1)"
     _crc=$?
