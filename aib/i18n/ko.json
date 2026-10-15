@@ -1785,7 +1785,7 @@
   "aib.handoff.proposal.done": "결과: 바인딩됨 {what} ({why})",
   "aib.sync_receipt.ledger_write_failed": "★ 영수증 기록 실패 {err} (이번 건은 기록이 남지 않음)",
   "aib.sync_receipt.not_int": "{flag} 는 정수여야 합니다",
-  "aib.sync_receipt.no_target": "{host} 의 ssh 대상이 없습니다 (--ssh user@host 또는 먼저 aib room add-host)",
+  "aib.sync_receipt.no_target": "{host} 의 ssh 주소가 등록되어 있지 않습니다. --ssh user@host 로 지정하세요",
   "aib.sync_receipt.repo_bad": "--repo 는 경로만 지정할 수 있습니다",
   "aib.sync_receipt.why_conn": "연결 rc={rc}",
   "aib.sync_receipt.why_no_repo": "repo {repo} 를 찾을 수 없음",
@@ -3016,5 +3016,7 @@
   "aib.genes.help.on": "  on [1,2,6]    유전자 켜기(전부, 또는 지정한 번호만)",
   "aib.genes.help.off": "  off           유전자 끄기",
   "aib.genes.help.locked": "하나라도 켜면 3(정직)과 5(안전)도 항상 켜집니다. API 키를 쓰는 자리는 다시 열 때, 다른 자리는 다음 시작 때 반영됩니다.",
-  "aib.seat.help.usage": "사용법: aib seat <명령> ...\n  open <provider> <dgrs|safe> <role> [--again]   AI 자리 열기(aib <provider> <mode> <role> 와 같음)\n  detect [--all|--window @N] [--apply]           각 자리의 대화 ID 찾기(자세히: aib seat detect --help)\n  onboard [--window @N|--missing]                자리에 시작 안내를 다시 보내기\n  socket-backfill [--apply]                      오래된 자리 파일에 빠진 연결 칸 채우기\n  re-register                                    다시 시작한 자리를 다시 등록\n  auto-rotate                                    Codex 사용량이 다 되면 계정 전환"
+  "aib.seat.help.usage": "사용법: aib seat <명령> ...\n  open <provider> <dgrs|safe> <role> [--again]   AI 자리 열기(aib <provider> <mode> <role> 와 같음)\n  detect [--all|--window @N] [--apply]           각 자리의 대화 ID 찾기(자세히: aib seat detect --help)\n  onboard [--window @N|--missing]                자리에 시작 안내를 다시 보내기\n  socket-backfill [--apply]                      오래된 자리 파일에 빠진 연결 칸 채우기\n  re-register                                    다시 시작한 자리를 다시 등록\n  auto-rotate                                    Codex 사용량이 다 되면 계정 전환",
+  "aib.delegate.not_installed": "aib: 이 사본에는 이 명령이 설치되어 있지 않습니다({path} 없음). aib update 로 복구하세요",
+  "aib.delegate.not_executable": "aib: 이 명령이 제대로 설치되지 않았습니다({path} 실행 불가). aib update 로 복구하세요"
 }

@@ -1785,7 +1785,7 @@
   "aib.handoff.proposal.done": "結果:バインド済み {what}({why})",
   "aib.sync_receipt.ledger_write_failed": "★ 記録の書き込みに失敗 {err}(この1件は記録されていません)",
   "aib.sync_receipt.not_int": "{flag} は整数で指定してください",
-  "aib.sync_receipt.no_target": "{host} の ssh 接続先がありません(--ssh user@host か、先に aib room add-host)",
+  "aib.sync_receipt.no_target": "{host} の ssh 接続先が登録されていません。--ssh user@host で指定してください",
   "aib.sync_receipt.repo_bad": "--repo はパスだけを指定してください",
   "aib.sync_receipt.why_conn": "接続 rc={rc}",
   "aib.sync_receipt.why_no_repo": "repo {repo} が見つかりません",
@@ -3016,5 +3016,7 @@
   "aib.genes.help.on": "  on [1,2,6]    遺伝子をオン(全部、または指定した番号だけ)",
   "aib.genes.help.off": "  off           遺伝子をオフ",
   "aib.genes.help.locked": "どれか 1 つでもオンなら、3(正直さ)と 5(安全)も必ずオンになります。API キーを使う席は開き直したときに、その他の席は次回起動時に反映されます。",
-  "aib.seat.help.usage": "使い方: aib seat <コマンド> ...\n  open <provider> <dgrs|safe> <role> [--again]   AI 席を開く(aib <provider> <mode> <role> と同じ)\n  detect [--all|--window @N] [--apply]           各席の会話 ID を調べる(詳しくは aib seat detect --help)\n  onboard [--window @N|--missing]                席に開始メモをもう一度送る\n  socket-backfill [--apply]                      古い席ファイルに足りない接続欄を補う\n  re-register                                    再起動した席を登録し直す\n  auto-rotate                                    Codex の使用量が尽きたらアカウントを切り替える"
+  "aib.seat.help.usage": "使い方: aib seat <コマンド> ...\n  open <provider> <dgrs|safe> <role> [--again]   AI 席を開く(aib <provider> <mode> <role> と同じ)\n  detect [--all|--window @N] [--apply]           各席の会話 ID を調べる(詳しくは aib seat detect --help)\n  onboard [--window @N|--missing]                席に開始メモをもう一度送る\n  socket-backfill [--apply]                      古い席ファイルに足りない接続欄を補う\n  re-register                                    再起動した席を登録し直す\n  auto-rotate                                    Codex の使用量が尽きたらアカウントを切り替える",
+  "aib.delegate.not_installed": "aib: このコピーにはこのコマンドが入っていません({path} がありません)。aib update で修復してください",
+  "aib.delegate.not_executable": "aib: このコマンドが正しくインストールされていません({path} が実行可能ではありません)。aib update で修復してください"
 }

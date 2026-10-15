@@ -1785,7 +1785,7 @@
   "aib.handoff.proposal.done": "Result: bound {what} ({why})",
   "aib.sync_receipt.ledger_write_failed": "★ receipt write failed {err} (this one left no record)",
   "aib.sync_receipt.not_int": "{flag} must be an integer",
-  "aib.sync_receipt.no_target": "{host} has no ssh target (--ssh user@host, or run aib room add-host first)",
+  "aib.sync_receipt.no_target": "{host} has no ssh address on record; give it with --ssh user@host",
   "aib.sync_receipt.repo_bad": "--repo must be a plain path",
   "aib.sync_receipt.why_conn": "connection rc={rc}",
   "aib.sync_receipt.why_no_repo": "repo {repo} not found",
@@ -3016,5 +3016,7 @@
   "aib.genes.help.on": "  on [1,2,6]    turn genes on (all of them, or only the numbers you list)",
   "aib.genes.help.off": "  off           turn genes off",
   "aib.genes.help.locked": "Whenever any gene is on, 3 (honesty) and 5 (safety) are on too. AI seats that use an API key pick up the change when reopened; other seats on their next start.",
-  "aib.seat.help.usage": "usage: aib seat <command> ...\n  open <provider> <dgrs|safe> <role> [--again]   open an AI seat (same as: aib <provider> <mode> <role>)\n  detect [--all|--window @N] [--apply]           find each seat's conversation id (see: aib seat detect --help)\n  onboard [--window @N|--missing]                send the opening note to a seat again\n  socket-backfill [--apply]                      fill in the missing connection field in older seat files\n  re-register                                    register this seat again after it restarted\n  auto-rotate                                    switch Codex account when its usage runs out"
+  "aib.seat.help.usage": "usage: aib seat <command> ...\n  open <provider> <dgrs|safe> <role> [--again]   open an AI seat (same as: aib <provider> <mode> <role>)\n  detect [--all|--window @N] [--apply]           find each seat's conversation id (see: aib seat detect --help)\n  onboard [--window @N|--missing]                send the opening note to a seat again\n  socket-backfill [--apply]                      fill in the missing connection field in older seat files\n  re-register                                    register this seat again after it restarted\n  auto-rotate                                    switch Codex account when its usage runs out",
+  "aib.delegate.not_installed": "aib: this command is not installed in this copy (missing {path}); run aib update to repair it",
+  "aib.delegate.not_executable": "aib: this command is not installed correctly ({path} is not executable); run aib update to repair it"
 }

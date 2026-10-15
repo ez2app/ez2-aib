@@ -254,14 +254,17 @@ aib_delegate_subcommand() {   # $1=py|exe $2=腳本絕對路徑,其餘原樣透�
   local kind="$1" path="$2"
   shift 2
   if [ ! -f "$path" ]; then
-    echo "aib: 這個指令還沒裝好(找不到 $path)" >&2
+    # 10-15:原本寫死中文「還沒裝好」;改走 i18n(依語系)
+    "$T_PY3" "$HERE/i18n_lib.py" --param "path=$path" aib.delegate.not_installed >&2 2>/dev/null \
+      || echo "aib: this command is not installed in this copy (missing $path)" >&2
     exit 2
   fi
   if [ "$kind" = "py" ]; then
     exec "$T_PY3" "$path" "$@"
   fi
   if [ ! -x "$path" ]; then
-    echo "aib: 這個指令還沒裝好($path 不是可執行檔)" >&2
+    "$T_PY3" "$HERE/i18n_lib.py" --param "path=$path" aib.delegate.not_executable >&2 2>/dev/null \
+      || echo "aib: this command is not installed correctly ($path is not executable)" >&2
     exit 2
   fi
   exec "$path" "$@"

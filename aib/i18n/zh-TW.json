@@ -1785,7 +1785,7 @@
   "aib.handoff.proposal.done": "結果:綁了 {what}({why})",
   "aib.sync_receipt.ledger_write_failed": "★收據寫入失敗 {err}(這一筆沒留下紀錄)",
   "aib.sync_receipt.not_int": "{flag} 要是整數",
-  "aib.sync_receipt.no_target": "{host} 沒有 ssh 目標(--ssh user@host,或先 aib room add-host)",
+  "aib.sync_receipt.no_target": "{host} 沒有登記 ssh 位址;請用 --ssh user@host 指定",
   "aib.sync_receipt.repo_bad": "--repo 只能是路徑",
   "aib.sync_receipt.why_conn": "連線 rc={rc}",
   "aib.sync_receipt.why_no_repo": "找不到 repo {repo}",
@@ -3016,5 +3016,7 @@
   "aib.genes.help.on": "  on [1,2,6]    打開基因(全部,或只開你列的編號)",
   "aib.genes.help.off": "  off           關掉基因",
   "aib.genes.help.locked": "只要開了任何一個,3(說實話)和 5(安全)一定一起開。用 API 金鑰的席要重開才會套用;其他席下次開始時套用。",
-  "aib.seat.help.usage": "用法:aib seat <指令> ...\n  open <provider> <dgrs|safe> <role> [--again]   開一席 AI(等同 aib <provider> <mode> <role>)\n  detect [--all|--window @N] [--apply]           找出每一席的對話編號(詳見 aib seat detect --help)\n  onboard [--window @N|--missing]                再送一次開席說明給那一席\n  socket-backfill [--apply]                      幫舊的席位檔補上缺的連線欄位\n  re-register                                    席重開之後重新登記\n  auto-rotate                                    Codex 額度用完時換帳號"
+  "aib.seat.help.usage": "用法:aib seat <指令> ...\n  open <provider> <dgrs|safe> <role> [--again]   開一席 AI(等同 aib <provider> <mode> <role>)\n  detect [--all|--window @N] [--apply]           找出每一席的對話編號(詳見 aib seat detect --help)\n  onboard [--window @N|--missing]                再送一次開席說明給那一席\n  socket-backfill [--apply]                      幫舊的席位檔補上缺的連線欄位\n  re-register                                    席重開之後重新登記\n  auto-rotate                                    Codex 額度用完時換帳號",
+  "aib.delegate.not_installed": "aib:這份 aib 沒有裝好這個指令(找不到 {path});請跑 aib update 修復",
+  "aib.delegate.not_executable": "aib:這個指令沒有裝好({path} 不是可執行檔);請跑 aib update 修復"
 }
