@@ -553,6 +553,8 @@
   "aib.right.expand_all": "Expand all",
   "aib.right.fold_summary": "{n} seats · {m} working · {red} red",
   "aib.role.advisor": "Expert (Advisor)",
+  "aib.role.boards": "Boards",
+  "aib.role.bot": "Bot liaison",
   "aib.role.design": "Designer",
   "aib.role.dev": "Engineer",
   "aib.role.monitor": "Monitor",

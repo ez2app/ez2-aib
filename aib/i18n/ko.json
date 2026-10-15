@@ -553,6 +553,8 @@
   "aib.right.expand_all": "모두 펼치기",
   "aib.right.fold_summary": "{n} 석・{m} 작업 중・{red} 빨강",
   "aib.role.advisor": "전문가(고문)",
+  "aib.role.boards": "보드",
+  "aib.role.bot": "Bot 연결",
   "aib.role.design": "디자이너",
   "aib.role.dev": "엔지니어",
   "aib.role.monitor": "감찰",

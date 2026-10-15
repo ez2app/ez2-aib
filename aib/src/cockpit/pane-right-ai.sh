@@ -1686,7 +1686,10 @@ rows.sort(key=lambda r: (r[0], r[1]))
 #   python3 unicodedata 實測,並由 test_icon_grid_width_machine_criterion 看守。
 ROLE_ICONS = {'pm': '\U0001F454', 'dev': '\U0001F9DE', 'design': '\U0001F3A8',
               'qa': '\U0001F50D', 'monitor': '\U0001F4E1',
-              'advisor': '\U0001F393'}
+              'advisor': '\U0001F393',
+              # the maintainer 10-15:boards(看板/席位面板)📋、bot(Bot 接線)🔌 —— bot 角色不用 🤖,
+              #   🤖 留給橋接 bot 引擎(AIBOT_MARK),免得「角色叫 bot 的 Opus 席」又被看成 bot。
+              'boards': '\U0001F4CB', 'bot': '\U0001F50C'}
 UNLISTED_ROLE_ICON = '\U0001F464'  # 👤 未列角色 fallback(不得用 ❓)
 
 # aibot 第三種段位圖示(the maintainer 2026-09-18 裁):sand/grokbot（Cursor）與 codexbot（Desktop） 橋接席戴 🤖,
@@ -1698,6 +1701,9 @@ AIBOT_MARK = '\U0001F916'  # 🤖
 # 鍵集必須跟 providers.json 的 auth=api_key 對齊;新加 API-key 引擎時兩處一起改。
 API_KEY_PROVIDERS = frozenset(('deepseek', 'nvidia', 'openrouter', 'typesafe', 'openrouterjev'))
 API_KEY_VICE_MARK = '\U0001F511'  # 🔑
+# 組員也一樣:用 API 金鑰的引擎席戴 🔑(the maintainer 10-15:「用金鑰的應該有一個 key 的」),
+#   引擎事實排在角色圖示前面;❓ 未編制仍最優先(身份驗不出來比用什麼引擎重要)。
+API_KEY_MARK = API_KEY_VICE_MARK
 
 
 def role_icon(role):
@@ -1716,6 +1722,20 @@ def role_icon(role):
 # 十五輪審高2:艦長判定與 bar 同源——讀同一 env(預設 root 不變),
 # 不再硬編;兩面不一致=qa 設為艦長時右欄不掛冠而 bar 掛,實測抓到的。
 CAPTAIN_ROLES = set((os.environ.get('EZ2_AIB_CAPTAIN_ROLES') or 'root').split())
+
+
+def crew_mark(role, provider, unassigned, identity_pending, unassigned_mark):
+    """組員列圖示:❓ 未編制 > 🤖 橋接 bot 引擎 > 🔑 API 金鑰引擎 > 角色圖示(含 👤 未列角色)。
+
+    看**引擎**不看角色名(the maintainer 10-15):角色叫 bot 的 Opus 席不是 bot,不戴 🤖。"""
+    if unassigned and not identity_pending:
+        return unassigned_mark
+    prov = (provider or '').strip().lower()
+    if prov in AIBOT_PROVIDERS:
+        return AIBOT_MARK
+    if prov in API_KEY_PROVIDERS:
+        return API_KEY_MARK
+    return role_icon(role)
 
 
 def is_captain_role(role):
@@ -1877,10 +1897,8 @@ for _prov in sorted(_groups, key=_grp_key):
         # ❓ 贏過角色圖示:未編制=「系統無法驗證這是什麼」,不是它的角色。
         # 修好身份後 unassigned 變 None,圖示自動回到角色本位——**不需要人
         # 工改任何東西**(本判定無狀態、無側檔、無覆寫入口)。
-        _r[3]['mark'] = (UNASSIGNED_MARK
-                         if (_r[3].get('unassigned')
-                             and not _r[3].get('identity_pending'))
-                         else role_icon(_r[2]))
+        _r[3]['mark'] = crew_mark(_r[2], _r[3].get('provider'), _r[3].get('unassigned'),
+                                  _r[3].get('identity_pending'), UNASSIGNED_MARK)
                         # 未列角色 fallback=👤 組員(08-17 the maintainer 實見 dev3 戴 ❓):
                         # ❓ 語意=未編制(seat_status),不得被「圖示表沒這個 role」
                         # 冒用——兩義相撞會讓已編制的新角色看起來身份有問題。
