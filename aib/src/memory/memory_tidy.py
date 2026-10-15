@@ -180,7 +180,7 @@ def facts(ctx, repo=None):
     else:
         lines.append("- 人格卡:這一席沒綁人格,或卡讀不到(人格那段不會寫)")
     words = human_words(ctx, evidence_since(code))
-    lines.append("- the maintainer 本輪原話(人格證據只認這裡的原文):" + ("" if words else "沒有"))
+    lines.append("- 真人本輪原話(人格證據只認這裡的原文):" + ("" if words else "沒有"))
     lines += ["  - [%s] %s" % (t, w.replace("\n", " ")) for t, w in words]
     lines += fit_facts(ctx, repo)
     return "\n".join(lines)
@@ -198,7 +198,7 @@ def fit_facts(ctx, repo):
     out += ["    - " + ln[:120] for ln in log.splitlines()]
     since = (datetime.datetime.now().astimezone() - datetime.timedelta(hours=FIT_HOURS)).isoformat(timespec="seconds")
     words = human_words(ctx, since)
-    out.append("  - the maintainer 說的(最近 %d 小時,最多 %d 則):" % (FIT_HOURS, HUMAN_MAX) + ("" if words else "沒有"))
+    out.append("  - 真人說的(最近 %d 小時,最多 %d 則):" % (FIT_HOURS, HUMAN_MAX) + ("" if words else "沒有"))
     out += ["    - " + w.replace("\n", " ")[:120] for _t, w in words[-15:]]
     try:
         import bindme
@@ -349,10 +349,10 @@ def render_draft(ctx, facts_text, nonce):
         "## 進度筆記(寫進第二大腦,取代本席上一則進度)<!-- tidy:note -->",
         "",
         "",
-        "## 人格卡新增(每行一條,新的寫上面;證據要是下面「the maintainer 本輪原話」裡 ≥ %d 字的原文;這輪沒觀察到就留空)<!-- tidy:persona -->"
+        "## 人格卡新增(每行一條,新的寫上面;證據要是下面「真人本輪原話」裡 ≥ %d 字的原文;這輪沒觀察到就留空)<!-- tidy:persona -->"
         % EVIDENCE_MIN,
         "<!-- 格式:- 表達語氣:第一句講能不能用。好:「…」壞:「…」〔證據:「原文」〕 -->",
-        "<!-- 身分只在 the maintainer 說了才寫:身分:生日=1996-09-10〔證據:「原文」〕 -->",
+        "<!-- 身分只在真人說了才寫:身分:生日=1996-09-10〔證據:「原文」〕 -->",
         "",
         "",
         "## 綁定檢查(這一席的人格、專案跟「最近 4 小時」做的事合不合;看機器事實最後那段)<!-- tidy:fit -->",
@@ -478,7 +478,7 @@ def validate(ctx, parts, skip_context=False):
         if len(_norm(e)) < EVIDENCE_MIN:
             errs.append("證據太短(去空白後至少 %d 字):「%s」" % (EVIDENCE_MIN, e))
         elif not any(_norm(e) in w for w in said):
-            errs.append("證據不在 the maintainer 本輪原話裡(要原文,不能改寫):「%s」" % e[:40])
+            errs.append("證據不在真人本輪原話裡(要原文,不能改寫):「%s」" % e[:40])
     for d, items in pdims.items():
         if len(items) > 3:
             errs.append("「%s」一次加了 %d 條(最多 3)" % (d, len(items)))
@@ -661,9 +661,9 @@ def write_persona(ctx, parts, dialog=None, runner=None, defer_big=False, add_onl
     if is_crown(pc["uid"]):
         big, reasons = pce.big_change(pc["text"], text)
         if big and defer_big:
-            return "waiting", "第一艦長卡大變動,存到 85%% 交接時給 the maintainer 按:%s" % ";".join(reasons)
+            return "waiting", "第一艦長卡大變動,存到 85%% 交接時給真人按:%s" % ";".join(reasons)
         if big and not ask_big_change(pc, reasons, dialog):
-            return "waiting", "第一艦長卡大變動,the maintainer 沒按套用:%s" % ";".join(reasons)
+            return "waiting", "第一艦長卡大變動,真人沒有按套用:%s" % ";".join(reasons)
     with _Lock(tidy_dir() / ("persona-%s.lock" % pc["uid"])):
         # collect 之後卡變了:是別席 tidy 寫的(sha 在 writes.jsonl)⇒ 照新內容合併(上面就是拿現在的卡算的);
         # 不是 ⇒ 有人手改(例如 the maintainer 在 Obsidian 改)⇒ 不蓋,重新 collect(DESIGN §4.0b)
