@@ -1134,6 +1134,8 @@ def _global_delivery_for_transition(item, frm, to, cls, why, seat, env, now):
         return global_delivery(item, "refused", seat, env, now)       # 沒送就被刪 = 對方沒收
     if to == "read" and cls == "seat":
         return global_delivery(item, "read", seat, env, now)          # 系統代標(通知組)不算已讀(第 10 節)
+    if to == "done" and frm == "delivered" and cls == "seat":
+        return global_delivery(item, "read", seat, env, now)          # 跳過「已讀」直接結案也是讀了(第 10 節:read_at 或 done_at)
     return False
 
 

@@ -4319,5 +4319,6 @@
   "aib.chat.receipt.delivered": "전달되었습니다.",
   "aib.chat.receipt.held": "상대가 먼저 검토해야 받습니다.",
   "aib.chat.receipt.refused": "상대가 이 메시지를 받지 않았습니다.",
-  "aib.chat.receipt.expired": "만료되어 전달되지 않았습니다."
+  "aib.chat.receipt.expired": "만료되어 전달되지 않았습니다.",
+  "aib.chat.receipt.read": "읽음"
 }

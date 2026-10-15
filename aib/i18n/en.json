@@ -4319,5 +4319,6 @@
   "aib.chat.receipt.delivered": "Delivered.",
   "aib.chat.receipt.held": "The recipient must review it first.",
   "aib.chat.receipt.refused": "The recipient did not accept this message.",
-  "aib.chat.receipt.expired": "Expired; not delivered."
+  "aib.chat.receipt.expired": "Expired; not delivered.",
+  "aib.chat.receipt.read": "Read"
 }

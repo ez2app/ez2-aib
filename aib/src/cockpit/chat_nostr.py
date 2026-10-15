@@ -378,7 +378,8 @@ async def _send_to(target, own, gw, mine):
 BACKFILL = 2 * 86400 + 600       # gift wrap 時間戳往回亂數最多 2 天 ⇒ 補收要往回 2 天 10 分
 KEEP = 7 * 86400                 # 去重紀錄保留 7 天
 RESUB_EVERY = 30                 # 秒;席的金鑰有變(新席、封存)就重新訂閱
-RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired")   # read 是 1.8
+RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired")   # read 另走一批一次(1.8)
+READ_BATCH_S = float(os.environ.get("AIB_CHAT_READ_BATCH") or 30)   # 秒;同一寄件人同一席這段時間內讀的合成一張(第 10 節)
 
 
 def _tagmap(rumor):
@@ -403,6 +404,7 @@ class Ledger(object):
         self.st.setdefault("seen", {})
         self.st.setdefault("last_at", 0)
         self.st.setdefault("delivery_sent", {})
+        self.st.setdefault("read_pending", {})      # "<寄件人 npub>|<本席金鑰>" ⇒ {"refs": [...], "first": t}
 
     def save(self):
         cut = time.time() - KEEP
@@ -504,27 +506,32 @@ class Receiver(object):
         tags = _tagmap(rumor)
         from_npub = sender.to_bech32()
         if tags.get("aib-type") == "receipt":
-            self.on_receipt(tags, from_npub)
+            refs = [v[1] for v in (t.to_vec() for t in rumor.tags()) if len(v) >= 2 and v[0] == "aib-ref"]
+            self.on_receipt(tags, from_npub, refs)
             return self.led.save()
         await self.on_dm(rumor, tags, from_npub, entry)
         self.led.save()
 
-    def on_receipt(self, tags, from_npub):
-        ref, stage = tags.get("aib-ref", ""), tags.get("aib-receipt", "")
-        if not GF.MSGID_RE.match(ref) or stage not in ("queued", "delivered", "held", "refused", "expired", "read"):
+    def on_receipt(self, tags, from_npub, refs=None):
+        """回條:每一個 aib-ref 都要是「我寄給這個 npub 的信」才收(已讀一張可帶多個 ref,1.8)。"""
+        stage = tags.get("aib-receipt", "")
+        if stage not in ("queued", "delivered", "held", "refused", "expired", "read"):
             return
-        try:
-            sent = json.loads((self.root / "sent" / (ref + ".json")).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return                                           # 不是我寄的信 ⇒ 不收
-        if sent.get("to") != from_npub:
-            sys.stderr.write("receipt_wrong_author\n")       # 不是我寄給的那席簽的 ⇒ 冒充,不收
-            return
-        r = {"v": 1, "at": int(time.time()), "stage": stage}
-        pos = tags.get("aib-queue-pos", "")
-        if stage == "queued" and pos.isdigit() and int(pos) > 0:
-            r["pos"] = int(pos)
-        GF.append_receipt(self.root, ref, r)
+        for ref in (refs or [tags.get("aib-ref", "")])[:200]:
+            if not GF.MSGID_RE.match(ref or ""):
+                continue
+            try:
+                sent = json.loads((self.root / "sent" / (ref + ".json")).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue                                     # 不是我寄的信 ⇒ 不收
+            if sent.get("to") != from_npub:
+                sys.stderr.write("receipt_wrong_author\n")   # 不是我寄給的那席簽的 ⇒ 冒充,不收
+                continue
+            r = {"v": 1, "at": int(time.time()), "stage": stage}
+            pos = tags.get("aib-queue-pos", "")
+            if stage == "queued" and pos.isdigit() and int(pos) > 0:
+                r["pos"] = int(pos)
+            GF.append_receipt(self.root, ref, r)
 
     async def on_dm(self, rumor, tags, from_npub, entry):
         msgid = tags.get("aib-msgid") or ""
@@ -578,15 +585,17 @@ class Receiver(object):
             sys.stderr.write("inbox:%s\n" % err)
             await self.send_receipt(msgid, "refused")
 
-    async def send_receipt(self, msgid, stage, pos=None):
-        """回條寄回原寄件席(第 6.2 節)。只回 aib 寄件人(一般 Nostr App 收到一則看不懂的字沒用)。"""
+    async def send_receipt(self, msgid, stage, pos=None, refs=None):
+        """回條寄回原寄件席(第 6.2 節)。只回 aib 寄件人(一般 Nostr App 收到一則看不懂的字沒用)。
+        refs:已讀一批一次時,同一張回條帶的全部 msgid(第一個 = msgid)。"""
         rec = self.led.received(msgid)
-        if not rec or not rec.get("aib") or stage not in RECEIPT_STAGES_OUT:
+        if not rec or not rec.get("aib") or (stage not in RECEIPT_STAGES_OUT and stage != "read"):
             return False
         rc, res = await self.sender._resolve(rec["from"])
         if rc != 0:
             return False
-        t = [["aib-v", "1"], ["aib-type", "receipt"], ["aib-receipt", stage], ["aib-ref", msgid]]
+        t = [["aib-v", "1"], ["aib-type", "receipt"], ["aib-receipt", stage]] + \
+            [["aib-ref", r] for r in (refs or [msgid])]
         if pos:
             t.append(["aib-queue-pos", str(pos)])
         keys = _keys(rec["key"])
@@ -617,14 +626,42 @@ class Receiver(object):
             for r in lines[done:]:
                 if r.get("state") in RECEIPT_STAGES_OUT:
                     await self.send_receipt(msgid, r["state"], r.get("pos"))
+                elif r.get("state") == "read":
+                    self._queue_read(msgid)
                 done += 1
                 changed = True
             sent[msgid] = done
+        if await self._flush_reads():
+            changed = True
         if changed:
             self.led.save()
 
+    def _queue_read(self, msgid):
+        rec = self.led.received(msgid)
+        if not rec or not rec.get("aib"):
+            return
+        key = "%s|%s" % (rec["from"], rec["key"])
+        b = self.led.st["read_pending"].setdefault(key, {"refs": [], "first": int(time.time())})
+        if msgid not in b["refs"]:
+            b["refs"].append(msgid)
 
-_RECEIPT_TEXT = {"queued": "已排隊", "delivered": "已送達", "held": "待對方審核", "refused": "對方未收", "expired": "已過期"}
+    async def _flush_reads(self, force=False):
+        """同一寄件人同一席,READ_BATCH_S 秒內讀的合成一張「已讀」(第 10 節:一批一次、不經 AI)。"""
+        pend = self.led.st["read_pending"]
+        out = False
+        for key in list(pend):
+            b = pend[key]
+            if not b.get("refs") or (not force and time.time() - b.get("first", 0) < READ_BATCH_S):
+                continue
+            ok = await self.send_receipt(b["refs"][0], "read", refs=b["refs"])
+            if ok or time.time() - b.get("first", 0) > 3600:      # 寄不出去一小時後放棄(不無限堆)
+                pend.pop(key, None)
+                out = True
+        return out
+
+
+_RECEIPT_TEXT = {"queued": "已排隊", "delivered": "已送達", "held": "待對方審核", "refused": "對方未收", "expired": "已過期",
+                 "read": "已讀"}
 
 
 def _receipt_text(stage, lang):

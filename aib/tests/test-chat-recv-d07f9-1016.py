@@ -178,6 +178,7 @@ class HoldGuard(CoreBox):
 class Network(unittest.TestCase):
     def _box(self, name, seats, publish):
         b = Box([self.relay.url])
+        b.extra.update(getattr(self, "box_extra", {}))
         self.addCleanup(b.close)
         b.chat.mkdir(parents=True, exist_ok=True)
         os.symlink(NOSTR_VENV, str(b.chat / "venv"))

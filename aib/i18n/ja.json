@@ -4319,5 +4319,6 @@
   "aib.chat.receipt.delivered": "届きました。",
   "aib.chat.receipt.held": "相手が確認してから受け取ります。",
   "aib.chat.receipt.refused": "相手はこのメッセージを受け取りませんでした。",
-  "aib.chat.receipt.expired": "期限切れのため届きませんでした。"
+  "aib.chat.receipt.expired": "期限切れのため届きませんでした。",
+  "aib.chat.receipt.read": "既読"
 }

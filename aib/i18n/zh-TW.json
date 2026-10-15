@@ -4319,5 +4319,6 @@
   "aib.chat.receipt.delivered": "已送達。",
   "aib.chat.receipt.held": "對方需要先審核才會收。",
   "aib.chat.receipt.refused": "對方沒有收下這則。",
-  "aib.chat.receipt.expired": "已過期,沒有送出。"
+  "aib.chat.receipt.expired": "已過期,沒有送出。",
+  "aib.chat.receipt.read": "已讀"
 }

@@ -73,6 +73,7 @@ class Box(object):
         self.root = self.td / "bridge"
         self.relays = relays or []
         self.procs = []
+        self.extra = {}                      # 測試要改的環境變數(例 AIB_CHAT_READ_BATCH);env() 與 start_run 都帶
 
     def env(self, **extra):
         env = {k: v for k, v in os.environ.items()
@@ -82,6 +83,7 @@ class Box(object):
                     "AIB_CHAT_POLL": "0.1", "AIB_CHAT_RETRY_GAP": "0.3"})
         if self.relays:
             env["AIB_CHAT_RELAYS"] = ",".join(self.relays)
+        env.update(self.extra)
         env.update(extra)
         return env
 
