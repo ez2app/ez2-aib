@@ -1401,7 +1401,8 @@ def cmd_package(a):
         print(T("no_commits"))
         return 2
     if not git(a.repo, "remote", "get-url", "origin", check=False).strip():
-        print(T("no_origin"))
+        # 同 release / sync 那條(no_origin_main):三個子指令沒遠端時講同一句,點名 origin/main 與 git remote add origin
+        print(T("no_origin_main", {"why": "no remote 'origin'"}))
         return 2
     if getattr(a, "preview", False):
         return _cmd_package_body(a)
