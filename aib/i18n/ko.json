@@ -4243,5 +4243,10 @@
   "mod.aib_video.terminal_only": "영상 패널은 터미널에서만 열림(현재: {what}).",
   "mod.aib_video.pane_title": "영상",
   "mod.aib_video.opened": "영상 패널 열림.",
-  "mod.aib_video.skeleton": "영상 모듈은 골격 단계: 추적할 계정 / 플랫폼과 표시할 숫자는 아직 미정."
+  "mod.aib_video.skeleton": "영상 모듈은 골격 단계: 추적할 계정 / 플랫폼과 표시할 숫자는 아직 미정.",
+  "aib.persona_sources.on": "켬",
+  "aib.persona_sources.off": "끔",
+  "aib.persona_sources.all_free": "모든 AI를 무료로 쓸 수 있습니다. 어느 것이든 켤 수 있습니다",
+  "aib.persona_sources.unknown": "알 수 없는 provider: {name}",
+  "aib.persona_sources.usage": "사용법: source <provider> on|off(중: 來源 <provider> 開|關)"
 }

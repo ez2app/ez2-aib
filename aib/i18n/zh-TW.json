@@ -4243,5 +4243,10 @@
   "mod.aib_video.terminal_only": "影音面板只在終端機打開(現在是 {what})。",
   "mod.aib_video.pane_title": "影音",
   "mod.aib_video.opened": "影音面板已打開。",
-  "mod.aib_video.skeleton": "影音模組還在骨架階段:要追哪些帳號 / 平台、看什麼數字還沒定,定了再接資料。"
+  "mod.aib_video.skeleton": "影音模組還在骨架階段:要追哪些帳號 / 平台、看什麼數字還沒定,定了再接資料。",
+  "aib.persona_sources.on": "開",
+  "aib.persona_sources.off": "關",
+  "aib.persona_sources.all_free": "所有 AI 都免費開放,哪一家都能開",
+  "aib.persona_sources.unknown": "未知的 provider: {name}",
+  "aib.persona_sources.usage": "用法: 來源 <provider> 開|關（英: source <p> on|off）"
 }
