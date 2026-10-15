@@ -238,7 +238,7 @@ fi
 #   各包只交子命令腳本,入口分派只在這裡(寫集互斥:本檔只有主線 a seat 動)。
 #   aib project show …            -> tools/project/show.py          (A 計畫樹;project 其餘子命令照舊走 project_callpoint)
 #   aib task …                    -> src/cockpit/seat_task_fields.py(B 頂行四欄)
-#   aib persona 來源|狀態|sources|status … -> tools/entitlement/aib-persona-sources(D 資格與開關;persona 其餘子命令照舊)
+#   aib persona 來源|狀態|source|sources|status … -> tools/entitlement/aib_persona_sources.py(D 資格與開關;persona 其餘子命令照舊)
 # ★ 腳本還沒到就說一句話 rc=2 —— 不得掉進下面的開席參數解析(那裡會把 task 當 provider 報「不認得」,指錯方向)。
 # ★ 放在 provider 解析之前,與 init/bot/verify 同形:不進席位、不碰 tmux。
 # 10-12 新用戶全面檢查:公開版沒附的子指令(私有倉才有的程式)不准掉成 Python 錯誤 —— 說清楚、rc 2。
@@ -288,10 +288,12 @@ if [ "${1:-}" = "task" ]; then
 fi
 if [ "${1:-}" = "persona" ]; then
   case "${2:-}" in
-    來源|狀態|sources|status)
+    來源|狀態|source|sources|status)   # 10-15:補 source(sources_cli 認單數,這裡原本漏了)
       shift
-      aib_need "$AIB_SOURCE_ROOT/tools/entitlement/aib-persona-sources" "persona $1"   # 10-13:公開版沒帶 ⇒ 同一套「開發中」
-      aib_delegate_subcommand exe "$AIB_SOURCE_ROOT/tools/entitlement/aib-persona-sources" "$@"
+      # 10-15:開源版自帶入口(原本指向公開版沒帶的 aib-persona-sources ⇒ 一律「沒有這個功能」)
+      _ps_entry="$AIB_SOURCE_ROOT/tools/entitlement/aib_persona_sources.py"
+      aib_need "$_ps_entry" "persona $1"
+      aib_delegate_subcommand py "$_ps_entry" "$@"
       ;;
   esac
 fi
@@ -748,6 +750,13 @@ if [ "${1:-}" = "entry-probe" ]; then
   shift
   aib_need "$HERE/entry_probe.py" entry-probe
   aib_delegate_subcommand py "$HERE/entry_probe.py" "$@"
+fi
+
+# aib chat 子命令(Andy 10-15 22:5x:全球對談轉接程式放開源核心):on / off / status / run(sys.chat 窗裡跑的常駐)。
+#   整段委派 chat_bridge.py;連 Nostr 的部分之後才進 ~/.ez2-aib/chat/venv,主程式不 import nostr_sdk。
+if [ "${1:-}" = "chat" ]; then
+  shift
+  exec "$T_PY3" "$HERE/chat_bridge.py" "$@"
 fi
 
 # aib cli 子命令(the maintainer 2026-10-09):五家 AI CLI 版本。aib cli = 看本機/最新;aib cli update = 現在更新;

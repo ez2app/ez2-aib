@@ -1383,6 +1383,13 @@ def main(argv=None):
                 print(notice["text"])
         return 0
 
+    if args.command == "scan" and not args.json:
+        # G11(@abb89 10-15 22:56):行程數 / 上限與最多的前 3 名指令放最前面 ——
+        #   行程表快滿時 tmux 常連不上、下面就只剩「無可巡席位」,這兩行要在那之前印出來。
+        #   --json 的席位清單形狀不動(別的程式在讀);機器要讀行程數走 proc_count.py --json。
+        import proc_count
+        for line in proc_count.report_lines(proc_count.check()):
+            print(line)
     seats = scan(args.hub)
     if not seats:
         print("fleet_patrol: 艙 %s 無可巡席位(tmux 不通或空艙)" % args.hub,

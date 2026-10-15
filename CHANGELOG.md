@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.9
+
+- **Global chat (first part)**: `aib chat` skeleton, keys, the roster, and sending to a global address (still being developed; the bridge that carries messages is not public yet).
+- **Process-table warning**: when the processes of your user reach 80% of the system limit, the right pane shows a red warning with the top 3 commands, and fleet patrol prints it first (measured without starting new processes).
+- **Persona sources**: `aib persona sources` entry point.
+- **CI**: ordinary pull requests run macOS only on Python 3.12; full runs stay on `main`, integration and release branches.
+
 ## 0.1.8
 
 - **Every AI is free**: the free edition no longer limits which AI tools you can use; every provider's sources can be turned on and no seat is refused or marked as paid.
