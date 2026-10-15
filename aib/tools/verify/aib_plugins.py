@@ -154,3 +154,24 @@ def get(repo, what, env=None):
             return mod, name, "ok"
         return None, name, why
     return None, None, why
+
+
+def main(argv=None):
+    """aib plugins licensed <外掛名> [--json](10-15:Obsidian 標題外掛等**不在 aib 行程裡**的付費外掛,
+    問 aib 這台有沒有授權用的;判準就是 licensed(),不另寫一份)。有授權 ⇒ rc 0;沒有 ⇒ rc 1;用法錯 ⇒ rc 2。
+    輸出 {"addon", "licensed", "why", "signature_enforced"};signature_enforced=False 表示授權簽章檢查還是草稿,
+    擋不住自己寫的授權檔(照實說,不假裝安全)。"""
+    a = list(sys.argv[1:] if argv is None else argv)
+    as_json = "--json" in a
+    a = [x for x in a if x != "--json"]
+    if len(a) != 2 or a[0] != "licensed" or not a[1].replace("-", "").replace("_", "").isalnum():
+        print("usage: aib plugins licensed <addon> [--json]", file=sys.stderr)
+        return 2
+    ok, why = licensed({"requires_addon": a[1]})
+    out = {"addon": a[1], "licensed": bool(ok), "why": why, "signature_enforced": license_check_enforced()}
+    print(json.dumps(out, ensure_ascii=False) if as_json else ("%s: %s (%s)" % (a[1], "licensed" if ok else "not licensed", why)))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
