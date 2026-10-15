@@ -203,5 +203,122 @@ class C10NewroleShortPrompt(unittest.TestCase):
         self.assertNotIn("--overwrite", r.stderr + r.stdout)
 
 
+class _FakeTTY:
+    def __init__(self, text=""):
+        self.text, self.out = text, []
+
+    def isatty(self):
+        return True
+
+    def readline(self):
+        return self.text
+
+    def write(self, s):
+        self.out.append(s)
+
+    def flush(self):
+        pass
+
+
+def _load_new_project(locale="en"):
+    os.environ["EZ2_AIB_LOCALE"] = locale
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("new_project_c11", str(ROOT / "tools" / "project" / "new_project.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class C11ApproveConstitution(unittest.TestCase):
+    """newproj 叫人核准目標與紅線,卻沒有核准指令。--approve 只給真人。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aib-c11-")
+        self.home = os.path.join(self.tmp, "home")
+        os.makedirs(self.home)
+        os.makedirs(os.path.join(self.tmp, "proj"))
+        self.env = {"PATH": os.environ.get("PATH", ""), "HOME": self.home, "EZ2_AIB_LOCALE": "en",
+                    "AIB_GENES": "0", "AIB_AUTO_BIND": "0"}
+        r = self._aib("newproj", "--title", "Demo")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.created_err = r.stderr
+        self.uid = json.loads(r.stdout.strip().splitlines()[-1])["project_uid"]
+        self.root = pathlib.Path(self.home, ".ez2-aib")
+        self.card = self.root / "projects" / self.uid / "card.json"
+        self.cand = self.root / "projects" / self.uid / "candidates" / "constitution-draft.json"
+        doc = json.loads(self.cand.read_text(encoding="utf-8"))   # 草稿放一點內容,好看得出有搬過去
+        doc["constitution"]["goals"] = ["ship v1"]
+        doc["constitution"]["red_lines"] = ["never push to main"]
+        self.cand.write_text(json.dumps(doc), encoding="utf-8")
+        self._saved_env = dict(os.environ)
+        # 同行程呼叫 approve_constitution 時,備份(memory_archive)與狀態根都只准落在沙盒
+        os.environ.update({"HOME": self.home, "EZ2_AIB_STATE_ROOT": str(self.root),
+                           "EZ2_AIB_HOME": str(self.root)})
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved_env)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _aib(self, *args):
+        return subprocess.run([PY, str(BIN_AIB)] + list(args), cwd=os.path.join(self.tmp, "proj"),
+                              env=self.env, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=120)
+
+    def _approved(self):
+        return json.loads(self.card.read_text(encoding="utf-8"))["layers"]["constitution"].get("approved")
+
+    def test_a_newproj_names_the_approve_command(self):
+        self.assertIn("aib newproj --approve " + self.uid, self.created_err)
+
+    def test_b_no_terminal_is_refused(self):
+        r = self._aib("newproj", "--approve", self.uid)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("AI seat", r.stderr)
+        self.assertIs(self._approved(), False)
+
+    def test_c_human_confirms_and_card_is_approved(self):
+        np = _load_new_project()
+        out = _FakeTTY()
+        rc = np.approve_constitution(self.root, self.uid, human_check=lambda: (True, "tester", []),
+                                     stdin=_FakeTTY(self.uid + "\n"), stdout=out)
+        self.assertEqual(rc, 0)
+        shown = "".join(out.out)
+        self.assertIn("ship v1", shown)
+        self.assertIn("never push to main", shown)
+        card = json.loads(self.card.read_text(encoding="utf-8"))
+        const = card["layers"]["constitution"]
+        self.assertIs(const["approved"], True)
+        self.assertEqual(const["goals"], ["ship v1"])
+        self.assertEqual(const["red_lines"], ["never push to main"])
+        self.assertEqual(const["approved_by"], "human:tester")
+        self.assertEqual(card["constitution_status"], "approved")
+        self.assertIs(json.loads(self.cand.read_text(encoding="utf-8"))["approved"], True)
+        self.assertTrue(any((self.root / "archive" / "project").rglob("card-*.json")))   # 改卡前有備份(在沙盒)
+        ledger = "".join(p.read_text(encoding="utf-8") for p in self.root.rglob("*.jsonl")
+                         if "ledger" in str(p) or "events" in str(p))
+        self.assertIn("decision.resolved", ledger)
+        self.assertIn(self.uid, ledger)
+        self.assertIn('"kind": "human"', ledger.replace('"kind":"human"', '"kind": "human"'))
+
+    def test_d_ai_seat_cannot_self_approve(self):
+        np = _load_new_project()
+        os.environ["CLAUDECODE"] = "1"                 # 誠實的 AI session 標記:真探針必判不是人
+        rc = np.approve_constitution(self.root, self.uid, stdin=_FakeTTY(self.uid + "\n"), stdout=_FakeTTY())
+        self.assertEqual(rc, 2)
+        self.assertIs(self._approved(), False)
+        rc = np.approve_constitution(self.root, self.uid, human_check=lambda: (False, None, ["session"]),
+                                     stdin=_FakeTTY(self.uid + "\n"), stdout=_FakeTTY())
+        self.assertEqual(rc, 2)
+        self.assertIs(self._approved(), False)
+
+    def test_e_wrong_confirmation_cancels(self):
+        np = _load_new_project()
+        rc = np.approve_constitution(self.root, self.uid, human_check=lambda: (True, "tester", []),
+                                     stdin=_FakeTTY("yes\n"), stdout=_FakeTTY())
+        self.assertEqual(rc, 3)
+        self.assertIs(self._approved(), False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
