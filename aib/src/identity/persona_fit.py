@@ -13,6 +13,7 @@ bot 名單一律從 providers.json(bot_caps.registry_bots)來,不另寫一份。
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -77,16 +78,23 @@ def raw_entry(cards_path, uid):
 
 
 def card_text(cards_path, entry):
-    """cards.json 的 source.vault_root + 這筆的 card_path_rel → 正文;讀不到回空字串。"""
+    """Vault 根 + 這筆的 card_path_rel → 正文;讀不到回空字串。
+    Vault 根先看現在的 EZ2_VAULT_DIR / EZ2_VAULT_ROOT,再退回 cards.json 記的 source.vault_root
+    (10-16:那是掃描當時的絕對路徑,庫搬家後就指空)。"""
     try:
-        root = (json.loads(Path(cards_path).read_text(encoding="utf-8")).get("source") or {}).get("vault_root")
+        stored = (json.loads(Path(cards_path).read_text(encoding="utf-8")).get("source") or {}).get("vault_root")
         rel = (entry or {}).get("card_path_rel")
-        if not root or not rel:
+        if not rel:
             return ""
-        path = (Path(root) / rel).resolve()
-        if Path(root).resolve() not in path.parents:
-            return ""
-        return path.read_text(encoding="utf-8", errors="replace")
+        live = os.environ.get("EZ2_VAULT_DIR") or os.environ.get("EZ2_VAULT_ROOT")
+        for root in (live, stored):
+            if not root:
+                continue
+            root = Path(os.path.expanduser(root))
+            path = (root / rel).resolve()
+            if root.resolve() in path.parents and path.is_file():
+                return path.read_text(encoding="utf-8", errors="replace")
+        return ""
     except (OSError, ValueError, AttributeError):
         return ""
 

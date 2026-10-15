@@ -4,6 +4,10 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.11
+
+- **Memory survives moving the vault**: the memory index stores each note's id and a path relative to the vault instead of an absolute path, and looks the note up again when reading; old indexes still work. If a note cannot be found it now says so instead of silently bringing back an empty note. Persona cards are found the same way after the vault moves.
+
 ## 0.1.10
 
 - **Global chat (second part)**: receiving (catch-up subscription, verification, import into the queue, delivery status and receipts), read receipts sent in one batch without going through the AI, and observability (audit lines, worker status, clock skew, offline). Still being developed.

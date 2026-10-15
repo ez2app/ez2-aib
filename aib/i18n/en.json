@@ -3291,6 +3291,7 @@
   "aib.memory.cli.dry_run": "(dry run)",
   "aib.memory.cli.written": "written",
   "aib.memory.cli.not_found": "no note with id {uid}",
+  "aib.memory.cli.file_missing": "note {uid} is in the memory index but its file is not in the vault ({vault}); looked up by id, relative path and file name",
   "aib.task.help.description": "Read or set a seat's main task: the task, when it started, the approval, and who it reports to",
   "aib.task.help.show": "show the main task fields (JSON)",
   "aib.task.help.set": "set the main task fields",

@@ -230,14 +230,16 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
     folder = Path(vault) / (rel or route["folder"])
     file_name = (note["uid"] + ".md") if uid_layout else note["file_name"]
     target = folder / file_name
+    # 10-16:索引不存絕對路徑(庫一搬家就失效、讀的人還會靜默拿到空);存 uid + 相對 Vault 的路徑當提示,讀時現查
     rec = {"uid": note["uid"], "title": " ".join(title.split()), "kind": kind, "tags": tags_out,
            "category_uid": category_uid, "route_key": route_key, "related_uids": related,
            "seat_uid": ctx.get("seat_uid"), "project_uid": ctx.get("project_uid"),
-           "persona_uid": ctx.get("persona_uid"), "path": str(target), "created_ms": int(time.time() * 1000),
+           "persona_uid": ctx.get("persona_uid"), "rel": os.path.relpath(str(target), str(vault)),
+           "created_ms": int(time.time() * 1000),
            # 10-13 第 3 包:索引也記取代關係(seat_brief 讀索引不讀 frontmatter)
            "supersedes": supersedes or "", "model": model or "", "seat": ctx.get("code") or ""}
     if dry_run:
-        return dict(rec, dry_run=True)
+        return dict(rec, path=str(target), dry_run=True)
     if target.exists():
         raise MemoryError_("目標已存在,不覆寫:%s" % target)
     folder.mkdir(parents=True, exist_ok=True)
@@ -247,7 +249,7 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
     index_path().parent.mkdir(parents=True, exist_ok=True)
     with open(index_path(), "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    return rec
+    return dict(rec, path=str(target))          # 給人看的完整路徑只在回傳裡,不進索引
 
 
 # ---------------------------------------------------------------- 讀(全部靠 uid)
@@ -281,11 +283,92 @@ def related_to(uid: str, kind: str = "", limit: int = 20, skip_superseded: bool 
     return hits[:max(1, limit)]
 
 
-def note_text(rec: dict) -> str:
+_VAULT_FILES: dict = {}
+_REWALKED: set = set()
+
+
+def _inside(root: Path, rel) -> "Path | None":
+    """root/rel 解開後還在 root 裡才回;rel 不是字串、絕對路徑、../ 跑出去 ⇒ None。"""
+    if not isinstance(rel, str) or not rel:
+        return None
     try:
-        text = Path(rec["path"]).read_text(encoding="utf-8")
-    except (OSError, KeyError):
-        return ""
+        p = (root / rel).resolve()
+        return p if root.resolve() in p.parents else None
+    except (OSError, ValueError):
+        return None
+
+
+def _vault_files(root: Path) -> dict:
+    """Vault 裡每個 .md 的檔名 → 路徑(跳過 . 開頭的資料夾);同一次執行只走一遍。"""
+    key = str(root)
+    if key not in _VAULT_FILES:
+        names: dict = {}
+        for dp, dn, fn in os.walk(root):
+            dn[:] = [d for d in dn if not d.startswith(".")]
+            for f in fn:
+                if f.endswith(".md"):
+                    names.setdefault(f, Path(dp) / f)
+        _VAULT_FILES[key] = names
+    return _VAULT_FILES[key]
+
+
+def _uid_index_path(root: Path, uid: str):
+    try:
+        items = json.loads((root / ".ez2" / "index" / "uid-index.json").read_text(encoding="utf-8")).get("items") or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    hit = next((it.get("path") for it in items if isinstance(it, dict) and it.get("uid") == uid), None)
+    return _inside(root, hit)
+
+
+def resolve_note_path(rec: dict, vault=None) -> Path:
+    """索引一筆 → 這則筆記現在在哪。認 uid,不認寫入當時的絕對路徑(10-16:庫搬家後舊路徑會靜默讀成空)。
+    順序:相對提示 rel → Vault 的 uid-index → 舊格式的絕對 path → 在 Vault 裡找 <uid>.md / 舊檔名。
+    都找不到 ⇒ MemoryError_,不給空字串。"""
+    import brain_write_plan as B
+    uid = str(rec.get("uid") or "")
+    root = Path(vault) if vault else B.vault_root()
+    legacy = Path(rec["path"]) if rec.get("path") else None
+    cands = []
+    if root is not None:
+        hint = _inside(root, rec.get("rel"))
+        if hint is not None:
+            cands.append(hint)
+        hit = _uid_index_path(root, uid)
+        if hit is not None:
+            cands.append(hit)
+    if legacy is not None:
+        cands.append(legacy)
+    for c in cands:
+        if c.is_file():
+            return c
+    if root is not None and root.is_dir():
+        # 舊版面的檔名是 <uid>-<標題>.md ⇒ 也找相對提示與舊路徑的檔名(筆記在 Obsidian 裡被拖到別夾時用得上)
+        wanted = ([uid + ".md"] if NOTE_UID_RE.fullmatch(uid) else []) + \
+            ([Path(rec["rel"]).name] if isinstance(rec.get("rel"), str) and rec.get("rel") else []) + \
+            ([legacy.name] if legacy else [])
+        for fresh in (False, True):            # 長駐行程的快取可能沒有後寫的筆記 ⇒ 沒中就重走一遍,
+            if fresh:                          #   但每個庫每個行程最多重走一次(開席 hook 有 10 秒上限)
+                if str(root) in _REWALKED:
+                    break
+                _REWALKED.add(str(root))
+                _VAULT_FILES.pop(str(root), None)
+            names = _vault_files(root)
+            for name in wanted:
+                if name in names and names[name].is_file():
+                    return names[name]
+    raise MemoryError_(display("aib.memory.cli.file_missing",
+                               "note {uid} is in the memory index but its file is not in the vault ({vault})")
+                       .replace("{uid}", uid).replace("{vault}", str(root or "-")))
+
+
+def note_text(rec: dict) -> str:
+    """這則的內文(frontmatter 之後)。檔案找不到 ⇒ MemoryError_(不靜默給空)。"""
+    path = resolve_note_path(rec)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise MemoryError_("%s: %s" % (path, exc))
     parts = text.split("---", 2)
     return parts[2].strip() if len(parts) == 3 else text
 
@@ -299,7 +382,11 @@ def brief(uid: str, limit: int = 5) -> str:
     for r in rows:
         k = display("aib.memory.kind.%s" % r.get("kind"), r.get("kind") or "")
         out.append("── %s · %s · [[%s]]" % (k, r.get("title"), r.get("uid")))
-        body = note_text(r)
+        try:
+            body = note_text(r)
+        except MemoryError_ as exc:            # 找不到要講出來,不讓開席帶回靜默少一段
+            out.append("(%s)" % exc)
+            continue
         if body:
             out.append(body[:1200])
     return "\n".join(out)
@@ -419,7 +506,7 @@ def main(argv=None) -> int:
                 print("aib memory: %s" % display("aib.memory.cli.not_found", "no note with id {uid}").replace("{uid}", a.uid),
                       file=sys.stderr)
                 return 3
-            print(note_text(rec))
+            print(note_text(rec))           # 找不到 ⇒ MemoryError_ ⇒ 下面印原因、回 2
         elif a.cmd == "brief":
             print(brief(a.about, a.limit))
     except MemoryError_ as exc:
