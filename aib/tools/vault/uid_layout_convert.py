@@ -666,7 +666,7 @@ def undo(receipt_path: Path) -> dict:
 
 
 # ---------------------------------------------------------------- verify
-def verify(vault: Path) -> dict:
+def verify(vault: Path, cards_path=None) -> dict:
     vault = vault.resolve()
     res = {"vault": str(vault), "dirs_total": 0, "dirs_not_folder_id": [], "md_total": 0, "md_not_uid_name": [],
            "md_uid_mismatch": [], "md_no_uid": [], "uid_duplicates": [], "index_ok": {}, "ok": False}
@@ -725,10 +725,54 @@ def verify(vault: Path) -> dict:
     res["routes_v2_stale"] = [r.get("folderId") for r in (v2.get("routes") if isinstance(v2, dict) else []) or [] if r.get("status") != "not-on-disk" and not (vault / str(r.get("folderPath", ""))).is_dir()]
     lab = load_json(vault / ".ez2" / "display" / "labels.json", {})
     res["labels"] = {"folders": len(lab.get("folders", {})), "notes": len(lab.get("notes", {}))}
+    res.update(check_cards(vault, cards_path))
     res["ok"] = (not res["dirs_not_folder_id"] and not res["md_not_uid_name"] and not res["md_uid_mismatch"]
                  and not res["md_no_uid"] and not res["uid_duplicates"] and all(res["index_ok"].values())
-                 and not missing and not res["route_paths_missing"] and not res["routes_v2_stale"])
+                 and not missing and not res["route_paths_missing"] and not res["routes_v2_stale"]
+                 and not res["cards_path_missing"])
     return res
+
+
+def default_cards_path() -> Path:
+    """aib 的卡片索引(<狀態根>/identity/cards.json;狀態根 = EZ2_AIB_STATE_ROOT > EZ2_AIB_HOME > ~/.ez2-aib)。"""
+    root = os.environ.get("EZ2_AIB_STATE_ROOT") or os.environ.get("EZ2_AIB_HOME") or os.path.expanduser("~/.ez2-aib")
+    return Path(root) / "identity" / "cards.json"
+
+
+def check_cards(vault: Path, cards_path=None) -> dict:
+    """10-15 盤點 U6:轉換只改 vault,卡片索引的 card_path_rel 還指著舊卡夾 ⇒ 7 處讀不到卡。
+    只檢查「這份索引掃的就是這個 vault」的情形;別的 vault 的索引或沒有索引 ⇒ cards_checked=False,不判。"""
+    path = Path(cards_path) if cards_path else default_cards_path()
+    out = {"cards_checked": False, "cards_path_missing": [], "cards_index": str(path)}
+    doc = load_json(path, None)
+    if not isinstance(doc, dict):
+        return out
+    src = doc.get("source") if isinstance(doc.get("source"), dict) else {}
+    try:
+        same = Path(str(src.get("vault_root") or "")).expanduser().resolve() == vault.resolve()
+    except OSError:
+        same = False
+    if not same:
+        return out
+    out["cards_checked"] = True
+    cards = doc.get("cards") if isinstance(doc.get("cards"), dict) else {}
+    for uid, c in cards.items():
+        rel = str((c or {}).get("card_path_rel") or "")
+        if rel and not (vault / rel).is_file():
+            out["cards_path_missing"].append(uid)
+    if out["cards_path_missing"]:
+        out["cards_hint"] = "python3 %s scan --vault %s" % (
+            Path(__file__).resolve().parents[2] / "src" / "memory" / "card_registry.py", vault)
+    return out
+
+
+def rescan_cards(vault: Path) -> dict:
+    """apply / undo 帶 --rescan-cards 才跑:重掃 aib 卡片索引,讓 card_path_rel 指到改名後的卡夾。
+    不預設跑:測試在暫存 vault 上 apply,預設重掃會把假卡寫進真狀態根。"""
+    reg = Path(__file__).resolve().parents[2] / "src" / "memory" / "card_registry.py"
+    p = subprocess.run([sys.executable, str(reg), "scan", "--vault", str(vault)],
+                       capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    return {"rc": p.returncode, "tail": (p.stdout + p.stderr).strip().splitlines()[-3:]}
 
 
 # ---------------------------------------------------------------- CLI
@@ -738,8 +782,10 @@ def main(argv=None):
     p = sub.add_parser("plan"); p.add_argument("--vault", required=True); p.add_argument("--contract", required=True)
     p.add_argument("--legacy"); p.add_argument("--legacy-map"); p.add_argument("--out", required=True)
     a = sub.add_parser("apply"); a.add_argument("--plan", required=True); a.add_argument("--backup-dir", required=True); a.add_argument("--confirm-text", required=True)
-    v = sub.add_parser("verify"); v.add_argument("--vault", required=True)
+    a.add_argument("--rescan-cards", action="store_true", help="apply 完重掃 aib 卡片索引(真庫轉換時要帶)")
+    v = sub.add_parser("verify"); v.add_argument("--vault", required=True); v.add_argument("--cards", help="aib 卡片索引路徑(預設狀態根)")
     u = sub.add_parser("undo"); u.add_argument("--receipt", required=True)
+    u.add_argument("--rescan-cards", action="store_true", help="退回後重掃 aib 卡片索引")
     ri = sub.add_parser("reindex"); ri.add_argument("--vault", required=True)
     args = ap.parse_args(argv)
     if args.cmd == "plan":
@@ -751,14 +797,19 @@ def main(argv=None):
     if args.cmd == "apply":
         plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
         rec = apply_plan(plan, Path(args.backup_dir), args.confirm_text)
+        if args.rescan_cards and not rec.get("errors"):
+            rec["cards_rescan"] = rescan_cards(Path(plan["vault"]))
         print(json.dumps({k: (v if not isinstance(v, list) else len(v)) for k, v in rec.items()}, ensure_ascii=False, indent=1))
         return 0 if not rec["errors"] else 4
     if args.cmd == "verify":
-        res = verify(Path(args.vault))
+        res = verify(Path(args.vault), args.cards)
         print(json.dumps({k: (v if not isinstance(v, list) else (v if len(v) <= 8 else v[:8] + ["…+%d" % (len(v) - 8)])) for k, v in res.items()}, ensure_ascii=False, indent=1))
         return 0 if res["ok"] else 5
     if args.cmd == "undo":
-        print(json.dumps(undo(Path(args.receipt)), ensure_ascii=False, indent=1))
+        out = undo(Path(args.receipt))
+        if args.rescan_cards and not out.get("errors"):
+            out["cards_rescan"] = rescan_cards(Path(json.loads(Path(args.receipt).read_text(encoding="utf-8"))["vault"]))
+        print(json.dumps(out, ensure_ascii=False, indent=1))
         return 0
     if args.cmd == "reindex":
         print(json.dumps(reindex(Path(args.vault)), ensure_ascii=False, indent=1))

@@ -724,7 +724,7 @@ def main():
     # 角色庫位置從路由契約現查(the maintainer 08-27 第二鐵律;09-26 R9 資料夾要改 uid,改的是契約,這裡不動)
     sys.path.insert(0, str(REPO_ROOT / "src" / "persona_route"))   # 其他零件一律從 REPO_ROOT(EZ2_AIB_REPO)找
     from route_register import resolve_route_folder, default_contract_spec, BUNDLED_CONTRACT
-    lib_rel = resolve_route_folder(LIBRARY_ROUTE_KEY)
+    lib_rel = resolve_route_folder(LIBRARY_ROUTE_KEY, root=str(vault_dir))   # 用 --vault 那一個查索引,不是環境變數
     if not lib_rel:
         log("錯誤: 路由契約裡查不到 %s(角色庫在哪),不猜" % LIBRARY_ROUTE_KEY, prefix="[x]")
         # 10-12(a seat Pro):自訂 vault 有內容、看不出版面 ⇒ 說清楚兩條路,不只說「不猜」
