@@ -12,13 +12,30 @@
     plan   --vault V --contract C [--legacy DIR --legacy-map MAP.json] --out plan.json     只讀,產計畫
     apply  --plan plan.json --backup-dir DIR --confirm-text "我已備份並同意轉成 uid 版面"   寫(先 tar 整庫到庫外)
     verify --vault V                                                                        只讀,驗收
-    undo   --receipt receipt.json                                                           退回改名(frontmatter 補的身分留著)
+    undo   --receipt receipt.json                                                           退回改名、連結、設定、.ez2 狀態(frontmatter 補的身分留著)
 
 鐵則:
 - 既有 uid 不換號;重複 uid 只在「一邊明顯是副本(.bak / 鏡像夾)」時給副本新號並記 duplicate_of,否則列 blocker、兩邊都不改名。
-- 不碰 .obsidian / .ez2 / .git / .trash;非 .md 附件只跟著資料夾走,不改名。
-- 舊檔名、舊路徑全部進 aliases / legacy_paths / legacyPaths,所以 [[舊名]] 連結仍解得開。
-- 寫入前整庫 tar 到庫外;apply 產 receipt(含 undo map)。
+- 不搬、不改名 .obsidian / .ez2 / .git / .trash 裡的東西;非 .md 附件只跟著資料夾走,不改名。
+- 舊檔名、舊路徑全部進 aliases / legacy_paths / legacyPaths(aib 照這些找得到)。frontmatter 清單單行、區塊寫法都認,原有值一個不丟。
+- Obsidian 自己只照檔名解 [[連結]]、不看 aliases ⇒ 正文裡指向改名筆記的 [[舊名]]、[[舊名|字]]、![[舊名]]、[[舊名#標題]]
+  改寫成指向 uid,畫面上原本的字留在 | 後面;同名多篇的不猜、不改,plan 列出來。frontmatter 裡的連結不改。
+- .obsidian 的日記/範本/碎片/附件/新檔位置與書籤,指到改名路徑的一併改(只改這幾格)。
+- 寫入前整庫 tar 到庫外;apply 產 receipt(含 undo map)。undo 退回:檔名、資料夾名、正文連結、上面那幾格設定、
+  .ez2 的狀態與索引(回到轉換前,migration-state 不再說是 uid 版面);frontmatter 補的身分留著(要全退就從 tar 還原)。
+
+同步外掛 remotely-save(10-15 彩排讀真庫設定得出;本工具只看有沒有裝,不讀它的設定檔——裡面有雲端帳密):
+- 它不同步「.」開頭的檔與夾(README:以 . 或 _ 開頭都當隱藏檔;只能另外打開 _ 與 .obsidian)⇒ .ez2(標題對照、索引、
+  轉換狀態)只留在跑轉換的這台;手機與其他電腦拿到的只有 <uid>.md。
+  建議:aib 只在跑轉換的那台用(.ez2 在這台);其他裝置要看標題就靠每篇 frontmatter 的 title(會同步),
+  配 Obsidian 的標題顯示外掛。另一台也要跑 aib 時,在那台對同步下來的庫再跑一次 plan → apply 可重建 .ez2
+  (uid 已在 frontmatter,不換號、不改名;筆記標題從 frontmatter 的 title 回來),但**資料夾標題只存在 .ez2**,
+  那台重建出來的資料夾標題會是 fld_ 名 —— 要不要把標題對照另存到會同步的位置,待 the maintainer 決定。
+- .obsidian 預設也不同步 ⇒ 上面改的日記/範本/附件/書籤設定,每台各自要改(或那台也跑一次 apply)。
+- 改名對它來說是「刪舊檔 + 傳新檔」,會碰到「一次改太多」的保護門檻(預設 50%)。
+- 步驟:① 所有裝置先同步到最新、停止編輯;② 這台關掉 remotely-save 的自動同步;③ plan → apply(--rescan-cards)→ verify;
+  ④ 這台手動同步一次(門檻警告確認後繼續);⑤ 其他裝置先備份或清掉本機庫再拉,不要帶著轉換前改過的舊名檔去同步,
+  不然舊名檔傳回雲端會跟 <uid>.md 並存;⑥ 全部同步完,這台再 verify 一次(出現非 uid 檔名 = 有裝置傳回舊檔)。
 """
 from __future__ import annotations
 
@@ -32,6 +49,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "cockpit"))
@@ -121,19 +139,40 @@ def fm_lines_to_map(fm: str) -> dict:
     return out
 
 
+BLOCK_ITEM_RE = re.compile(r"^\s*-(?:\s+(.*))?$")
+
+
+def _block_follows(lines: list, i: int) -> bool:
+    """第 i 行之後(跳過空行與註解)接的是不是「- 值」清單項目。"""
+    for nxt in lines[i + 1:]:
+        if not nxt.strip() or nxt.lstrip().startswith("#"):
+            continue
+        return bool(BLOCK_ITEM_RE.match(nxt))
+    return False
+
+
+def _is_block_start(value: str, lines: list, i: int) -> bool:
+    """「key:」或「key: # 註解」且下面真的接清單項目 ⇒ 區塊起頭;「tags: #idea」底下沒有項目 ⇒ 是單行值。"""
+    v = value.strip()
+    return (v == "" or v.startswith("#")) and (v == "" or _block_follows(lines, i))
+
+
 def strip_managed(fm: str) -> list[str]:
-    """把要重寫的鍵(含其多行清單區塊)拿掉,保留其他原行。"""
+    """把要重寫的鍵(含其多行清單區塊)拿掉,保留其他原行。區塊裡的空行與註解跟著拿掉,區塊後面的照留。"""
     keep, skip_block = [], False
-    for ln in fm.splitlines():
+    lines = fm.splitlines()
+    for i, ln in enumerate(lines):
         m = re.match(r"^([A-Za-z0-9_.\-]+):(.*)$", ln)
         if m:
             key = m.group(1)
-            skip_block = key in MANAGED_KEYS and m.group(2).strip() == ""   # 多行清單起頭
+            skip_block = key in MANAGED_KEYS and _is_block_start(m.group(2), lines, i)
             if key in MANAGED_KEYS:
                 continue
             keep.append(ln)
-        elif skip_block and re.match(r"^\s+-\s", ln):
+        elif skip_block and BLOCK_ITEM_RE.match(ln):
             continue
+        elif skip_block and (not ln.strip() or ln.lstrip().startswith("#")) and _block_follows(lines, i):
+            continue                                       # 區塊中間的空行與註解(後面還有項目)
         else:
             skip_block = False
             keep.append(ln)
@@ -152,6 +191,44 @@ def parse_inline_list(v: str) -> list[str]:
     return [v] if v else []
 
 
+def _unquote(v: str) -> str:
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] == '"':
+        try:
+            return str(json.loads(v))
+        except ValueError:
+            return v[1:-1]
+    if len(v) >= 2 and v[0] == v[-1] == "'":
+        return v[1:-1].replace("''", "'")
+    return v
+
+
+def fm_list(fm: str | None, key: str) -> list[str]:
+    """frontmatter 的清單鍵:單行 [a, b]、單一值、YAML 區塊寫法(下一行起「  - 值」或頂格「- 值」)都認。
+    10-15 彩排:只認單行時,區塊寫法的 tags/aliases 整串被清成 [](真庫 450 篇掉標籤、208 篇掉別名)。"""
+    if not fm:
+        return []
+    lines = fm.splitlines()
+    for i, ln in enumerate(lines):
+        m = re.match(r"^([A-Za-z0-9_.\-]+):\s*(.*)$", ln)
+        if not m or m.group(1) != key:
+            continue
+        v = m.group(2).strip()
+        if not _is_block_start(v, lines, i):               # 「tags: # 註解」+ 下面有項目 = 區塊;「tags: #idea」= 單行值
+            return parse_inline_list(v)
+        out = []
+        for nxt in lines[i + 1:]:
+            bm = BLOCK_ITEM_RE.match(nxt)
+            if bm:
+                item = _unquote(bm.group(1) or "")
+                if item:
+                    out.append(item)
+            elif nxt.strip() and not nxt.lstrip().startswith("#"):
+                break                                      # 空行與註解行不結束區塊
+        return out
+    return []
+
+
 # ---------------------------------------------------------------- 索引
 def load_json(p: Path, default):
     try:
@@ -167,6 +244,272 @@ def load_contract(path: str) -> dict:
         if r.get("routeKey") and r.get("folder"):
             routes[r["routeKey"]] = dict(r)
     return routes
+
+
+# ---------------------------------------------------------------- 正文連結 / Obsidian 設定(10-15 彩排)
+# Obsidian 的 [[連結]] 只照檔名或路徑解,不看 aliases(彩排:真庫解不開的連結 270 → 669)。
+# 所以正文裡指向「這次改名的筆記」的連結改寫成指向 uid,原本畫面上看到的字留在 | 後面;
+# 指向「搬了資料夾的其他檔」的路徑型連結(![[資料夾/圖.png]])改成新路徑。程式碼區塊與 `行內碼` 不動。
+# 只改正文;frontmatter 裡的連結不碰。每一處改寫都記進收據,undo 照位置退回。
+WIKILINK_RE = re.compile(r"(!?)\[\[([^\[\]\n]+?)\]\]")
+CODE_SPAN_RE = re.compile(r"(`+).+?\1")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")            # 縮排 4 格以上是縮排碼,不是圍欄
+FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")    # 收尾圍欄不能帶語言名(CommonMark)
+
+
+def _nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s)
+
+
+class LinkRewriter:
+    """舊名 → 新目標的對照(由計畫算出,plan 與 apply 共用同一份規則)。
+    md:每個 .md 的舊路徑(去 .md)→ ("note", uid)(這次改名的筆記)或 ("path", 新路徑)(不改名、只跟著資料夾搬,例如角色卡);
+    other:其他檔(圖、pdf…)舊路徑 → ("path", 新路徑);by_name:舊檔名(去 .md)→ {uid 或 ""(不改名的檔)}。
+    同名不只一篇、或部分路徑對到不只一個檔 ⇒ Obsidian 自己挑哪篇我們不猜,不改寫,記 ambiguous。"""
+
+    def __init__(self, vault: Path, notes: list, folders: list, drops: list, kept_md: list):
+        self.vault = vault
+        self.dir_map = {_nfc(f["old_rel"]): f["new_rel"] for f in folders}
+        self.md: dict[str, tuple] = {}
+        self.other: dict[str, tuple] = {}
+        self.by_name: dict[str, set] = {}
+        self.by_name_cf: dict[str, set] = {}
+        self._cf: dict = {}
+        for old_rel, uid in [(n["old_rel"], n["uid"]) for n in notes] + [(d["old_rel"], d["uid"]) for d in drops] + [(k, "") for k in kept_md]:
+            key = _nfc(old_rel[:-3] if old_rel.endswith(".md") else old_rel)
+            self.md[key] = ("note", uid) if uid else ("path", self._moved(key))
+            stem = key.rsplit("/", 1)[-1]
+            self.by_name.setdefault(stem, set()).add(uid)
+            self.by_name_cf.setdefault(stem.casefold(), set()).add(uid)
+        for dp, dn, fn in os.walk(vault):
+            dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+            for f in fn:
+                if not f.endswith(".md"):
+                    rel = _nfc(str(Path(dp, f).relative_to(vault)))
+                    self.other[rel] = ("path", self._moved(rel))
+
+    def _moved(self, rel: str) -> str:
+        parent, _, name = rel.rpartition("/")
+        return (self.dir_map.get(parent, parent) + "/" + name) if parent else name
+
+    def _lookup(self, table: dict, key: str):
+        """完整路徑優先;否則 Obsidian 的「部分路徑」= 尾端相符(不分大小寫)。回 (對到的完整舊路徑, entry, ambiguous)。"""
+        if key in table:
+            return key, table[key], False
+        cands = [k for k in table if k.endswith("/" + key)]
+        if not cands:
+            cf = self._cf.setdefault(id(table), [(k.casefold(), k) for k in table])
+            kc = key.casefold()
+            cands = [k for kf, k in cf if kf == kc or kf.endswith("/" + kc)]
+        if len(cands) > 1:
+            return None, None, True
+        return (cands[0], table[cands[0]], False) if cands else (None, None, False)
+
+    def resolve(self, target: str):
+        """回 (新目標, 種類);種類 note=改指 uid、path=換成新路徑、ambiguous=對到不只一個不改、None=不動。"""
+        t = _nfc(target.strip())
+        is_md = t.lower().endswith(".md")
+        t_noext = t[:-3] if is_md else t
+        if not t_noext:
+            return None, None
+        if "/" in t_noext:
+            key = t_noext.lstrip("/")
+            full, entry, amb = self._lookup(self.md, key)
+            if entry is None and not amb and not is_md:
+                full, entry, amb = self._lookup(self.other, t.lstrip("/"))
+                if entry:                                  # 圖、pdf…:對到的檔沒搬就不動(部分路徑、大小寫不同都照原樣)
+                    return (entry[1], "path") if entry[1] != full else (None, None)
+            if amb:
+                return None, "ambiguous"
+            if entry is None:
+                return None, None
+            if entry[0] == "note":
+                if full.rsplit("/", 1)[-1] == entry[1] and self._moved(full) == full:
+                    return None, None                      # 已經指著 uid、資料夾也沒搬(第二次 apply)
+                return entry[1], "note"
+            return (entry[1] + (t[len(t_noext):] if is_md else ""), "path") if entry[1] != full else (None, None)
+        us = self.by_name.get(t_noext) or self.by_name_cf.get(t_noext.casefold())
+        if not us:
+            return None, None
+        if len(us) > 1:
+            return None, "ambiguous"
+        u = next(iter(us))
+        return (u, "note") if u and u != t_noext else (None, None)
+
+    def rewrite(self, text: str):
+        """回 (新文字, edits[[位置, 新, 舊]], ambiguous 目標清單);位置是新文字裡的字元位置。"""
+        out, edits, amb = [], [], []
+        pos, fence = 0, None
+        lines = text.splitlines(keepends=True)
+        table_lines = _table_lines(lines)
+        for idx, ln in enumerate(lines):
+            fm = FENCE_RE.match(ln)
+            if fence:
+                fc = FENCE_CLOSE_RE.match(ln)
+                if fc and fc.group(1)[0] == fence[0] and len(fc.group(1)) >= len(fence):
+                    fence = None
+                out.append(ln); pos += len(ln); continue
+            if fm:
+                fence = fm.group(1); out.append(ln); pos += len(ln); continue
+            code = [(m.start(), m.end()) for m in CODE_SPAN_RE.finditer(ln)]
+            table = idx in table_lines                     # 表格裡(含沒有開頭 | 的、> 引用框裡的)補的分隔用 \|
+            new_ln, last = [], 0
+            for m in WIKILINK_RE.finditer(ln):
+                if any(a <= m.start() < b for a, b in code):
+                    continue
+                rep = self._one(m.group(1), m.group(2), table, amb)
+                if rep is None:
+                    continue
+                new_ln.append(ln[last:m.start()])
+                edits.append([pos + sum(len(x) for x in new_ln), rep, m.group(0)])
+                new_ln.append(rep); last = m.end()
+            new_ln.append(ln[last:])
+            s = "".join(new_ln); out.append(s); pos += len(s)
+        return "".join(out), edits, amb
+
+    def _one(self, bang: str, inner: str, table: bool, amb: list):
+        mm = re.match(r"^(.*?)(\\?\|)(.*)$", inner, re.S)
+        tgt_part, sep, disp = (mm.group(1), mm.group(2), mm.group(3)) if mm else (inner, "", None)
+        h = tgt_part.find("#")
+        target, head = (tgt_part[:h], tgt_part[h:]) if h >= 0 else (tgt_part, "")
+        if not target.strip():
+            return None                                    # [[#標題]]:同篇內連結
+        new, kind = self.resolve(target)
+        if kind == "ambiguous":
+            amb.append(target)
+            return None
+        if kind not in ("note", "path"):
+            return None
+        if disp is None and not bang:
+            sep, disp = ("\\|" if table else "|"), tgt_part   # 畫面上原本看到的字留著
+        return "%s[[%s%s%s]]" % (bang, new, head, (sep + disp) if disp is not None else "")
+
+
+TABLE_DELIM_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$|^\s*\|\s*:?-+:?\s*\|\s*$")
+
+
+def _table_lines(lines: list) -> set:
+    """哪幾行在表格裡:有分隔列(|---|---|)的那一段——上一行是表頭,往下接著有 | 的行都是;> 引用框裡的表格也算。"""
+    def body(ln):
+        return re.sub(r"^\s*(>\s*)+", "", ln.rstrip("\r\n"))
+    out = set()
+    for i, ln in enumerate(lines):
+        if "-" in ln and TABLE_DELIM_RE.match(body(ln)) and i > 0 and "|" in body(lines[i - 1]):
+            out.add(i - 1); out.add(i)
+            j = i + 1
+            while j < len(lines) and body(lines[j]).strip() and "|" in body(lines[j]):
+                out.add(j); j += 1
+    return out
+
+
+def undo_link_edits(text: str, edits: list):
+    """照位置退回(檔案沒被改過時);位置對不上 ⇒ 逐筆找第一個「新」字串換回「舊」。回 (文字, 退回筆數, 是否照位置)。"""
+    if all(text[p:p + len(new)] == new for p, new, _ in edits):
+        for p, new, old in sorted(edits, key=lambda e: -e[0]):
+            text = text[:p] + old + text[p + len(new):]
+        return text, len(edits), True
+    done = 0
+    for _, new, old in edits:
+        if new in text:
+            text = text.replace(new, old, 1); done += 1
+    return text, done, False
+
+
+# Obsidian 自己的設定裡記著資料夾/檔案路徑:轉完不改,新日記、範本、附件會把舊名夾建回來,書籤會失效。
+OBSIDIAN_PATH_KEYS = {"daily-notes.json": ("folder", "template"), "templates.json": ("folder",),
+                      "zk-prefixer.json": ("folder", "template"), "app.json": ("attachmentFolderPath", "newFileFolderPath")}
+
+
+def map_vault_path(p: str, note_map: dict, dir_map: dict):
+    """Vault 相對路徑 → 轉換後路徑;不在這次改名範圍 ⇒ None。資料夾、筆記(有沒有 .md 都認)、其他檔(跟著資料夾走)。"""
+    if not isinstance(p, str) or not p.strip() or p.startswith(("./", "../", "/")):
+        return None
+    tail = "/" if p.endswith("/") else ""
+    s = _nfc(p.strip().rstrip("/"))
+    if s in dir_map:
+        new = dir_map[s]
+    elif s in note_map:
+        new = note_map[s]
+    elif s + ".md" in note_map:
+        new = note_map[s + ".md"][:-3]
+    elif "/" in s and s.rsplit("/", 1)[0] in dir_map:
+        new = dir_map[s.rsplit("/", 1)[0]] + "/" + s.rsplit("/", 1)[1]
+    else:
+        return None
+    return None if new == s else new + tail
+
+
+def obsidian_setting_edits(vault: Path, notes: list, folders: list) -> list:
+    """回 [{file, keys(JSON 路徑), old, new}]。只看日記/範本/碎片/附件/新檔位置與書籤;讀不到或壞掉的 JSON 略過。"""
+    cfg = vault / ".obsidian"
+    note_map = {_nfc(n["old_rel"]): n["new_rel"] for n in notes}
+    dir_map = {_nfc(f["old_rel"]): f["new_rel"] for f in folders}
+    edits = []
+    for name, keys in OBSIDIAN_PATH_KEYS.items():
+        d = load_json(cfg / name, None)
+        if not isinstance(d, dict):
+            continue
+        for k in keys:
+            new = map_vault_path(d.get(k), note_map, dir_map)
+            if new is not None:
+                edits.append({"file": name, "keys": [k], "old": d[k], "new": new})
+    bm = load_json(cfg / "bookmarks.json", None)
+
+    def walk(items, path):
+        for i, it in enumerate(items or []):
+            if not isinstance(it, dict):
+                continue
+            if it.get("type") in ("file", "folder"):
+                new = map_vault_path(it.get("path"), note_map, dir_map)
+                if new is not None:
+                    edits.append({"file": "bookmarks.json", "keys": path + [i, "path"], "old": it["path"], "new": new})
+            if isinstance(it.get("items"), list):
+                walk(it["items"], path + [i, "items"])
+    if isinstance(bm, dict):
+        walk(bm.get("items"), ["items"])
+    return edits
+
+
+def _json_set(doc, keys, value):
+    for k in keys[:-1]:
+        doc = doc[k]
+    doc[keys[-1]] = value
+
+
+def _json_get(doc, keys):
+    for k in keys:
+        doc = doc[k]
+    return doc
+
+
+def apply_obsidian_edits(vault: Path, edits: list, forward: bool) -> int:
+    """forward=True 寫新值;False 退回(只在目前值還是我們寫的那個時才退,用戶之後改過的不動)。回改了幾處。"""
+    done, by_file = 0, {}
+    for e in edits:
+        by_file.setdefault(e["file"], []).append(e)
+    for name, es in by_file.items():
+        p = vault / ".obsidian" / name
+        doc = load_json(p, None)
+        if doc is None:
+            continue
+        changed = 0
+        for e in es:
+            want, put = (e["old"], e["new"]) if forward else (e["new"], e["old"])
+            try:
+                if _json_get(doc, e["keys"]) == want:
+                    _json_set(doc, e["keys"], put); changed += 1
+            except (KeyError, IndexError, TypeError):
+                continue
+        if changed:
+            tmp = p.with_name(p.name + ".tmp-uidlayout")
+            tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"); os.replace(tmp, p)
+            done += changed
+    return done
+
+
+# 轉換會寫的 .ez2 檔:apply 前先留一份,undo 照原樣放回(原本沒有的就刪掉)⇒ migration-state 回到轉換前
+EZ2_STATE_FILES = (".ez2/migration-state.json", ".ez2/index/folder-id-index.json", ".ez2/index/route-key-index.json",
+                   ".ez2/index/uid-index.json", ".ez2/display/labels.json", ".ez2/routes/obsidian-routes-v2.json")
 
 
 # ---------------------------------------------------------------- plan
@@ -392,17 +735,17 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
         title_existing = (kv.get("title") or "").strip().strip('"\'')
         base_title = UID_PREFIX_RE.sub(r"\2", rel.stem) if UID_PREFIX_RE.match(rel.stem) else rel.stem
         title = title_existing or base_title
-        aliases = parse_inline_list(kv.get("aliases", ""))
+        aliases = fm_list(n["fm"], "aliases")
         for a in (n["uid"], rel.stem, base_title):
             if a and a not in aliases:
                 aliases.append(a)
-        legacy_paths = parse_inline_list(kv.get("legacy_paths", ""))
+        legacy_paths = fm_list(n["fm"], "legacy_paths")
         orig_name_existing = (kv.get("orig_name") or "").strip().strip('"\'')
         created = (kv.get("created") or "").strip().strip('"\'') or iso(n["mtime_ms"])
         updated = (kv.get("updated") or "").strip().strip('"\'') or iso(n["mtime_ms"])
         source_kind = (kv.get("source_kind") or "").strip().strip('"\'') or ("legacy_obsidian" if (n["is_legacy"] or minted) else "manual")
         privacy = (kv.get("privacy_level") or "").strip().strip('"\'') or "internal"
-        tags = parse_inline_list(kv.get("tags", ""))
+        tags = fm_list(n["fm"], "tags")
         if n["is_legacy"] and "#ez2/imported" not in tags:
             tags.append("#ez2/imported")
         if n.get("duplicate_of") and "#ez2/duplicate" not in tags:
@@ -429,6 +772,50 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
         if nrec["new_rel"] in seen_new:
             plan["blockers"].append({"new_rel": nrec["new_rel"], "paths": [seen_new[nrec["new_rel"]], nrec["old_rel"]], "reason": T("blocker_same_new_rel")})
         seen_new[nrec["new_rel"]] = nrec["old_rel"]
+    # 正文連結:先算一遍,讓人在 apply 前看到要改幾處、幾處同名多篇不敢改
+    planned = {n["old_rel"] for n in plan["notes"]} | {d["old_rel"] for d in plan["drops"]}
+    plan["kept_md"] = sorted(str(Path(dp, f).relative_to(vault)) for dp, dn, fn in os.walk(vault)
+                             if not any(part in SKIP_DIRS or part.startswith(".") for part in Path(dp).relative_to(vault).parts)
+                             for f in fn if f.endswith(".md") and str(Path(dp, f).relative_to(vault)) not in planned)
+    lr = LinkRewriter(vault, plan["notes"], plan["folders"], plan["drops"], plan["kept_md"])
+    n_links, amb_all = 0, []
+    for nrec in plan["notes"]:
+        if nrec["is_legacy"]:
+            continue
+        p = vault / nrec["old_rel"]
+        if not p.is_file():
+            continue
+        _, body = split_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        _, edits, amb = lr.rewrite(body)
+        n_links += len(edits); amb_all += amb
+    # 角色庫的卡(角色.md 等)照規則一 byte 不改 ⇒ 卡裡指向改名筆記的連結轉完在 Obsidian 解不開,先講清楚有幾處
+    card_links, card_files = 0, 0
+    for rel in plan["kept_md"]:
+        if under_library(rel):
+            _, body = split_frontmatter((vault / rel).read_text(encoding="utf-8", errors="replace"))
+            k = len(lr.rewrite(body)[1])
+            card_links += k; card_files += 1 if k else 0
+    if card_links:
+        plan["warnings"].append(T("warn_card_links", {"count": card_links, "files": card_files}))
+    if amb_all:
+        plan["warnings"].append(T("warn_link_ambiguous", {"count": len(amb_all), "sample": ", ".join(sorted(set(amb_all))[:5])}))
+    plan["obsidian_edits"] = obsidian_setting_edits(vault, plan["notes"], plan["folders"])
+    # 範本檔也會被補 uid ⇒ 用範本新建的筆記會抄到同一個 uid(verify 會報重號);先講清楚,處理方式待人決定
+    tpl_dirs, tpl_files = [], []
+    for name, key in (("templates.json", "folder"), ("daily-notes.json", "template"), ("zk-prefixer.json", "template"),
+                      ("plugins/templater-obsidian/data.json", "templates_folder")):
+        v = (load_json(vault / ".obsidian" / name, {}) or {}).get(key)
+        if isinstance(v, str) and v.strip():
+            (tpl_dirs if key in ("folder", "templates_folder") else tpl_files).append(_nfc(v.strip().rstrip("/")))
+    n_tpl = sum(1 for n in plan["notes"] if any(_nfc(n["old_rel"]).startswith(d + "/") for d in tpl_dirs)
+                or _nfc(n["old_rel"][:-3]) in tpl_files or _nfc(n["old_rel"]) in tpl_files)
+    if n_tpl:
+        plan["warnings"].append(T("warn_template_uid", {"count": n_tpl}))
+    attach = (load_json(vault / ".obsidian" / "app.json", {}) or {}).get("attachmentFolderPath")
+    if isinstance(attach, str) and attach.startswith("./") and attach.strip("./"):
+        plan["warnings"].append(T("warn_attach_relative", {"path": attach}))
+    if (vault / ".obsidian" / "plugins" / "remotely-save" / "manifest.json").is_file():
+        plan["warnings"].append(T("warn_remotely_save"))   # 只看有沒有裝;設定檔有帳密,不讀
     plan["stats"] = {
         "folders": len(plan["folders"]),
         "folders_route": sum(1 for f in plan["folders"] if f["kind"] == "route"),
@@ -445,6 +832,10 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
         "legacy_copies": len(plan["legacy_copies"]),
         "blockers": len(plan["blockers"]),
         "drops_identical": len(plan.get("drops", [])),
+        "links_rewritten": n_links,
+        "links_ambiguous": len(amb_all),
+        "links_in_cards_not_rewritten": card_links,
+        "obsidian_settings": len(plan["obsidian_edits"]),
         "warnings": len(plan["warnings"]),
     }
     return plan
@@ -575,7 +966,9 @@ def apply_plan(plan: dict, backup_dir: Path, confirm_text: str) -> dict:
         if not dst.exists():
             shutil.copy2(c["src"], dst); receipt["legacy_copied"] += 1
 
-    # 2. frontmatter(在舊路徑上寫)
+    # 2. frontmatter + 正文連結(在舊路徑上寫;連結改寫要在改名前,路徑型連結才查得到舊檔在不在)
+    lr = LinkRewriter(vault, plan["notes"], plan["folders"], plan.get("drops", []), plan.get("kept_md", []))
+    receipt["links_rewritten"] = 0; receipt["link_edits"] = []
     for n in plan["notes"]:
         p = vault / n["old_rel"]
         try:
@@ -583,10 +976,15 @@ def apply_plan(plan: dict, backup_dir: Path, confirm_text: str) -> dict:
         except OSError as err:
             receipt["errors"].append({"path": n["old_rel"], "error": str(err)}); continue
         old_fm, body = split_frontmatter(text)
-        new_text = render_frontmatter(old_fm, n["fm_set"], n["folder_id"], n["duplicate_of"]) + (body if old_fm is not None else "\n" + text if not text.startswith("\n") else text)
+        head = render_frontmatter(old_fm, n["fm_set"], n["folder_id"], n["duplicate_of"])
+        rest, edits, _ = lr.rewrite(body if old_fm is not None else "\n" + text if not text.startswith("\n") else text)
+        new_text = head + rest
         tmp = p.with_name(p.name + ".tmp-uidlayout")
-        tmp.write_text(new_text, encoding="utf-8"); os.replace(tmp, p)
+        tmp.write_bytes(new_text.encode("utf-8")); os.replace(tmp, p)
         receipt["frontmatter_written"] += 1
+        if edits:
+            receipt["links_rewritten"] += len(edits)
+            receipt["link_edits"].append({"path": n["old_rel"], "edits": [[pos + len(head), new, old] for pos, new, old in edits]})
 
     # 3. 檔案改名(在舊資料夾裡)
     for n in plan["notes"]:
@@ -616,8 +1014,26 @@ def apply_plan(plan: dict, backup_dir: Path, confirm_text: str) -> dict:
             continue
         os.rename(old, new); receipt["dirs_renamed"].append([str(old.relative_to(vault)), str(new.relative_to(vault))])
 
-    # 5. 索引、顯示名、狀態、undo
+    # 5. 索引、顯示名、狀態、undo(寫之前先把原本的 .ez2 狀態檔留一份,undo 放回去)
     now = time.strftime("%Y-%m-%d %H:%M:%S")
+    pre_dir = vault / ".ez2" / "migration" / ("pre-%s" % stamp)
+    receipt["ez2_before_dir"] = str(pre_dir.relative_to(vault))
+    receipt["ez2_before"] = {}
+    for rel in EZ2_STATE_FILES:
+        src = vault / rel
+        receipt["ez2_before"][rel] = src.is_file()
+        if src.is_file():
+            (pre_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, pre_dir / rel)
+    # Obsidian 設定裡的舊路徑(原檔先留一份,undo 時檔案沒被動過就整檔放回,byte 不差)
+    receipt["obsidian_edits"] = plan.get("obsidian_edits", [])
+    for name in sorted({e["file"] for e in receipt["obsidian_edits"]}):
+        if (vault / ".obsidian" / name).is_file():
+            (pre_dir / ".obsidian").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(vault / ".obsidian" / name, pre_dir / ".obsidian" / name)
+    receipt["obsidian_settings_written"] = apply_obsidian_edits(vault, receipt["obsidian_edits"], forward=True)
+    receipt["obsidian_after_sha"] = {name: hashlib.sha256((vault / ".obsidian" / name).read_bytes()).hexdigest()
+                                     for name in {e["file"] for e in receipt["obsidian_edits"]} if (vault / ".obsidian" / name).is_file()}
     fid_items = []
     for f in plan["folders"]:
         prev = {}
@@ -661,6 +1077,44 @@ def undo(receipt_path: Path) -> dict:
             os.rename(src, dst); out["files_restored"] += 1
         except OSError as err:
             out["errors"].append({"file": new, "error": str(err)})
+    # 正文連結(檔已回到舊路徑)
+    out["links_restored"], out["links_fuzzy"] = 0, 0
+    for fe in r.get("link_edits", []):
+        p = vault / fe["path"]
+        try:
+            text = p.read_bytes().decode("utf-8", errors="replace")   # 不經換行轉換:CRLF 的位置要跟 apply 時一樣
+        except OSError as err:
+            out["errors"].append({"file": fe["path"], "error": str(err)}); continue
+        new_text, done, exact = undo_link_edits(text, fe["edits"])
+        if new_text != text:
+            tmp = p.with_name(p.name + ".tmp-uidlayout")
+            tmp.write_bytes(new_text.encode("utf-8")); os.replace(tmp, p)
+        out["links_restored"] += done
+        if not exact:
+            out["links_fuzzy"] += done
+    # Obsidian 設定:apply 之後沒人動過 ⇒ 整檔放回原檔;動過 ⇒ 只把我們改的那幾格(值還是我們寫的)改回去
+    pre_dir = vault / r["ez2_before_dir"] if r.get("ez2_before_dir") else None
+    out["obsidian_settings_restored"], by_key = 0, []
+    for name in sorted({e["file"] for e in r.get("obsidian_edits", [])}):
+        es = [e for e in r["obsidian_edits"] if e["file"] == name]
+        cur, orig = vault / ".obsidian" / name, (pre_dir / ".obsidian" / name) if pre_dir else None
+        if orig and orig.is_file() and cur.is_file() and hashlib.sha256(cur.read_bytes()).hexdigest() == (r.get("obsidian_after_sha") or {}).get(name):
+            shutil.copy2(orig, cur); out["obsidian_settings_restored"] += len(es)
+        else:
+            by_key += es
+    out["obsidian_settings_restored"] += apply_obsidian_edits(vault, by_key, forward=False)
+    # .ez2 狀態檔放回轉換前(原本沒有的刪掉)⇒ migration-state 不再說是 uid 版面
+    out["ez2_restored"] = 0
+    for rel, existed in (r.get("ez2_before") or {}).items():
+        cur = vault / rel
+        try:
+            if existed:
+                shutil.copy2(pre_dir / rel, cur)
+            elif cur.is_file():
+                cur.unlink()
+            out["ez2_restored"] += 1
+        except OSError as err:
+            out["errors"].append({"file": rel, "error": str(err)})
     out["note"] = T("undo_note", {"backup": r["backup_tar"]})
     return out
 
