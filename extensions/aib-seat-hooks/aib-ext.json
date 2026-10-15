@@ -1,0 +1,25 @@
+{
+  "name": "aib-seat-hooks",
+  "kind": "mod",
+  "version": "0.1.0",
+  "requires_aib": "0.1.6",
+  "built_from": "0.70.11",
+  "title": "席位身份(非 Claude 的 AI)",
+  "note": "給 Codex / Antigravity 的席位:開席與每回合把席位身份寫進上下文(Claude 由 aib-boards 寫,不重複)。",
+  "engines": {
+    "codex": "engines/codex",
+    "agy": "engines/agy"
+  },
+  "core": [
+    "bin/seat_hook.py"
+  ],
+  "schema": "aib-ext/v1",
+  "data_only": false,
+  "files": {
+    "core/bin/seat_hook.py": "8c94bb653fe1268057575b7050fc5bf764110b97a23ac9ef3fe1bf47dd26b414",
+    "engines/agy/hooks.json": "5c76a4bd79ae1733aba3567a8a9fee4ee145c5bfd31a0b2edf4a774a3bc73830",
+    "engines/agy/plugin.json": "b3013ea5a71fca1c6a1d0e054e12d1fc2081f2dcaca6a52445e2e5a223e5939c",
+    "engines/codex/.claude-plugin/marketplace.json": "27a626a6d55ef990e47f51214a1b47a0da7e534efda0b60368d55e7455587d37",
+    "engines/codex/.codex-plugin/plugin.json": "2c4bc9adb61e94180fbbedc08950414c47284d3d45783ea265604bdd0b29fdde"
+  }
+}

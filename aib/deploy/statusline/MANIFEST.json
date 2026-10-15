@@ -1,0 +1,101 @@
+{
+  "schema": "ez2-statusline-manifest-v1",
+  "note": "哪支裝到哪的唯一清單。安裝器不得手抄第二份(缺陷七判例)。刻意不放 sha:清單裡的 sha 會過期,而過期與被竄改在比對畫面上逐字相同 —— sha 一律由安裝器現算。dest 只准用 $HOME 一個變數。",
+  "engines": ["claude", "codex", "agy"],
+  "items": [
+    {
+      "src": "deploy/statusline/shared/ez2-ctx-core.js",
+      "dest": "$HOME/.claude/ez2-ctx-core.js",
+      "mode": "600",
+      "engine": "claude"
+    },
+    {
+      "src": "deploy/statusline/shared/ez2-ctx-core.js",
+      "dest": "$HOME/.codex/ez2-ctx-core.js",
+      "mode": "755",
+      "engine": "codex"
+    },
+    {
+      "src": "deploy/statusline/shared/ez2-ctx-core.js",
+      "dest": "$HOME/.gemini/antigravity-cli/ez2-ctx-core.js",
+      "mode": "755",
+      "engine": "agy"
+    },
+    {
+      "src": "deploy/statusline/shared/ez2-ctx-fleet.js",
+      "dest": "$HOME/.claude/ez2-ctx-fleet.js",
+      "mode": "755",
+      "engine": "claude"
+    },
+    {
+      "src": "deploy/statusline/shared/ez2-ctx-fleet.js",
+      "dest": "$HOME/.codex/ez2-ctx-fleet.js",
+      "mode": "755",
+      "engine": "codex"
+    },
+    {
+      "src": "deploy/statusline/shared/ez2-ctx-fleet.js",
+      "dest": "$HOME/.gemini/antigravity-cli/ez2-ctx-fleet.js",
+      "mode": "755",
+      "engine": "agy"
+    },
+    {
+      "src": "deploy/statusline/claude/statusline-ez2-ctx.js",
+      "dest": "$HOME/.claude/statusline-ez2-ctx.js",
+      "mode": "700",
+      "engine": "claude"
+    },
+    {
+      "src": "deploy/statusline/claude/statusline-ez2-v215.sh",
+      "dest": "$HOME/.claude/statusline-ez2-v215.sh",
+      "mode": "700",
+      "engine": "claude"
+    },
+    {
+      "src": "deploy/statusline/codex/statusline-ez2-ctx.js",
+      "dest": "$HOME/.codex/statusline-ez2-ctx.js",
+      "mode": "755",
+      "engine": "codex"
+    },
+    {
+      "src": "deploy/statusline/agy/statusline-ez2-ctx.js",
+      "dest": "$HOME/.gemini/antigravity-cli/statusline-ez2-ctx.js",
+      "mode": "755",
+      "engine": "agy"
+    }
+  ],
+  "wiring": {
+    "note": "安裝器只印這幾行,不代貼(改檔與接線是兩件事;混在一起會讓『裝了但沒接上』與『沒裝』在收據上同形)。",
+    "claude": {
+      "file": "$HOME/.claude/settings.json",
+      "key": "statusLine.command",
+      "line": "/bin/bash $HOME/.claude/statusline-ez2-v215.sh",
+      "extra": [
+        {
+          "key": "statusLine.refreshInterval",
+          "line": "15",
+          "note": "每 15 秒重跑一次狀態列,閒著的席也會更新 📌 那一行。實測 M4:一次約 0.35 秒 CPU,10 席約占整台 2.3%;筆電會多一點耗電;0 或拿掉這一行 = 只在對話有動作時更新。這個設定全機共用,艙外的 Claude 對話也會跟著重跑。"
+        }
+      ]
+    },
+    "agy": {
+      "file": "$HOME/.gemini/antigravity-cli/settings.json",
+      "key": "statusLine",
+      "line": "node '$HOME/.gemini/antigravity-cli/statusline-ez2-ctx.js'",
+      "extra": [
+        {
+          "key": "statusLine.stack_with_default",
+          "line": "true",
+          "note": "agy 原本的狀態列與我們的那一行上下疊著一起顯示(agy 1.3.x 才有這個旗標)。不加的話,agy 原本的狀態列會被換掉。"
+        }
+      ]
+    },
+    "codex": {
+      "file": "$HOME/.codex/hooks.json",
+      "key": "hooks.Stop[0].hooks[0].command / hooks.PostCompact[0].hooks[0].command",
+      "line": "node '$HOME/.codex/statusline-ez2-ctx.js' --hook",
+      "retrust_required": true,
+      "retrust_note": "codex 專屬:改完 hooks.json 之後那條 hook 會安靜地不執行(rc=0、無錯誤、無提示),要在互動 TUI 跑一次並選 Trust all and continue 才會恢復。codex exec 模式無法重新信任。換掉本安裝器管的腳本檔則不影響信任(dev3@00000 2026-09-05 四跑實測)。"
+    }
+  }
+}

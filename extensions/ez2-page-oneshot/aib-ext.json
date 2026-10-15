@@ -1,0 +1,14 @@
+{
+  "name": "ez2-page-oneshot",
+  "kind": "skill",
+  "version": "1.0.0",
+  "requires_aib": "0.1.7",
+  "built_from": "0.70.11",
+  "title": "一句話建整頁 ez2.page",
+  "note": "免費 skill(the maintainer 10-15 裁);要用的組版工具在開源版本體 aib/vendor/ez2-page-oneshot(aib page oneshot 本來就要)。",
+  "schema": "aib-ext/v1",
+  "data_only": false,
+  "files": {
+    "SKILL.md": "c84b97b5bddb71223d67ab3c03aa7a76e4cf7916318b4f96b19b2af525a526f0"
+  }
+}
