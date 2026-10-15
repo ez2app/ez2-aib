@@ -994,8 +994,26 @@ def repair(state_root, actor, only=None, dry_run=False, runner=None):
         args = ["newrole", "--name", name, "--seat", "%s/%s" % (st["cabin4"], st["code"]),
                 "--brain", "none", "--actor", actor] + (["--dry-run"] if dry_run else [])
         rc, txt = (runner or run_aib)(args)
-        out.append({"code": st["code"], "persona": name, "rc": rc})
+        row = {"code": st["code"], "persona": name, "rc": rc}
+        if rc == 0 and not dry_run:
+            row.update(verify_repaired(state_root, st))
+        out.append(row)
     return out
+
+
+def verify_repaired(state_root, before):
+    """10-15:repair 跑完**讀回**驗收 —— rc=0 不算接回(以前重投影讀舊路由表又把那一席丟掉,repair 照樣說成功)。
+    回 {"verified": bool, "why": str}。人格要等於延續檔記得的那張,而且大腦路由不是未解析。"""
+    now = next((s for s in status(state_root) if s["code"] == before["code"]), None)
+    if now is None:
+        return {"verified": False, "why": _ui("aib.bindme.repair_seat_gone", code=before["code"])}
+    if now.get("problem") == "route_unresolved":
+        return {"verified": False, "why": _ui("aib.bindme.repair_route_unresolved", code=before["code"],
+                                              route=now.get("route_key") or "?", code2=now.get("route_code") or "?")}
+    if now.get("persona_uid") != before["continuity_persona"]:
+        return {"verified": False, "why": _ui("aib.bindme.repair_not_back", code=before["code"],
+                                              problem=PROBLEM_TEXT.get(now.get("problem"), now.get("problem")))}
+    return {"verified": True, "why": ""}
 
 
 # ── 印表 ────────────────────────────────────────────────────────────
@@ -1168,7 +1186,11 @@ def main(argv=None):
     else:
         res = repair(root, actor, only, o.dry_run)
     print(json.dumps(res, ensure_ascii=False, indent=2))
-    bad = [x for x in res if any(d.get("rc") for d in x.get("done", [])) or x.get("rc")]
+    for x in res:                                            # 10-15:repair 讀回沒過 ⇒ 原因印出來、rc≠0
+        if x.get("verified") is False:
+            print("bindme: " + x.get("why", ""), file=sys.stderr)
+    bad = [x for x in res if any(d.get("rc") for d in x.get("done", [])) or x.get("rc")
+           or x.get("verified") is False]
     return 1 if bad else 0
 
 

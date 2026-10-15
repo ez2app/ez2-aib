@@ -276,5 +276,62 @@ class F4StatusSaysRouteReason(_BindmeCase):
         self.assertNotEqual(self.row(CODE_OK)["problem"], "route_unresolved")
 
 
+class F3RepairVerifies(_BindmeCase):
+    """f3:repair 跑完讀回;那一席沒回來 ⇒ rc≠0 + 原因(以前 rc=0 說接回了)。"""
+
+    def _drop_ops_from_display(self):
+        # 艙內現場:舊投影把 core.site_ops 那席整筆刪掉(bindings 與 display 都沒有)
+        for path, field in ((self.sb.display, "display"), (self.sb.bindings, "bindings")):
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            doc[field].pop(CODE_OPS, None)
+            path.write_text(json.dumps(doc), encoding="utf-8")
+
+    def _main(self, runner_effect):
+        calls = []
+
+        def fake_run_aib(args):
+            calls.append(args)
+            runner_effect()
+            return 0, "ok\n"
+
+        orig = self.bm.run_aib
+        self.bm.run_aib = fake_run_aib
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = self.bm.main(["--state-root", str(self.sb.state), "repair", "--me", CODE_OK])
+        finally:
+            self.bm.run_aib = orig
+        return rc, out.getvalue(), err.getvalue(), calls
+
+    def test_repair_rc0_but_seat_still_missing_is_failure(self):
+        self._drop_ops_from_display()
+        self.assertEqual(self.row(CODE_OPS)["problem"], "no_persona")
+        rc, out, err, calls = self._main(self._drop_ops_from_display)   # newrole rc=0,重投影又把它丟了
+        self.assertEqual(len(calls), 1, out + err)
+        self.assertNotEqual(rc, 0, "repair 沒有讀回驗收:席位還是不見卻回 0")
+        self.assertIn("@%s" % CODE_OPS, err)
+        self.assertIn("沒回來", err)
+
+    def test_repair_persona_back_but_route_unresolved_is_not_done(self):
+        self._drop_ops_from_display()
+        rc, _out, err, _calls = self._main(self.stale_reproject)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("core.site_ops", err)
+
+    def test_repair_that_really_restores_returns_zero(self):
+        self._drop_ops_from_display()
+        sb = self.sb
+
+        def restore():
+            r = sb.project(sb.env(registry=sb.fresh), contract=sb.fresh)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+        rc, out, err, calls = self._main(restore)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn('"verified": true', out)
+
+
 if __name__ == "__main__":
     unittest.main()
