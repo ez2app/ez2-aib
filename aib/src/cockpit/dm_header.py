@@ -264,9 +264,43 @@ def build_from_labels(s_label: str, t_label: str, *, s_origin: str = "", s_socke
     return build(s, r, time.time() if when is None else when)
 
 
+def _reader_lang(env: Optional[Mapping] = None) -> str:
+    """外框說明與全球標記用讀者(收件機主人)的介面語言(開發文件第 16 節);認不出就用預設。"""
+    try:
+        import i18n_lib
+        loc = i18n_lib.resolve_locale(env=env) if env is not None else i18n_lib.resolve_locale()
+    except Exception:  # noqa: BLE001 —— 語言判不出不擋投遞,退預設
+        loc = ""
+    return loc if loc in ("zh-TW", "en", "ja", "ko") else "zh-TW"
+
+
+def build_from_global(seat: str, item_id: str, t_label: str, *, t_socket: str = "", when=None,
+                      env: Optional[Mapping] = None) -> tuple:
+    """全球來信(佇列裡 sender_origin=nostr:*)⇒ (抬頭一行, 外框說明行)。開發文件第 5.8、8.1、8.3 節。
+
+    寄件方只有顯示名稱加標記(dm_global_header.sender_side),收件方與時間照本機格式。
+    佇列記錄不是全球種類、或 global 欄驗不過 ⇒ ValueError(不組出半個全球抬頭)。"""
+    import time
+    import dm_global_header as GH
+    import dm_queue as Q
+    item = Q._load_item(seat, item_id, env) or {}
+    g = Q._global_or_none(item.get("global"))
+    if item.get("sender_kind") not in Q.GLOBAL_SENDER_KINDS or g is None or not g.get("reply_code") \
+            or not Q.NOSTR_ORIGIN_RE.fullmatch(str(item.get("sender_origin") or "")):
+        raise ValueError("不是可用的全球來信:%s/%s" % (seat, item_id))
+    lang = _reader_lang(env)
+    r = party_from_label(t_label)
+    r["addr"], r["cabin"] = local_addr(env), cabin_of_socket(t_socket, env)
+    sender = GH.sender_side(g["shown"], g["verified"], same_name=g["same_name"], lang=lang)
+    head = GH.build(sender, _side(r), format_when(time.time() if when is None else when))
+    frame = GH.frame(g["reply_code"], lang=lang, paired=item.get("sender_kind") == "owner_paired")
+    return head, frame
+
+
 def main(argv=None) -> int:
     """殼腳本用:dm_header.py build <寄件席> <寄件名> <收件席> <收件名> [epoch]
                  dm_header.py from-labels <S_LABEL> <T_LABEL> [S_ORIGIN] [S_SOCKET] [T_SOCKET] [S_ADDR] [S_NOTE]
+                 dm_header.py from-global <佇列席> <佇列 id> <T_LABEL> [T_SOCKET]  ⇒ 抬頭\x1f外框說明(不是全球來信 rc=2)
                  dm_header.py parse < 文字   ⇒ JSON(認不出 rc=1)"""
     import json
     import sys
@@ -281,6 +315,14 @@ def main(argv=None) -> int:
         rest = args[3:] + [""] * 5
         print(build_from_labels(args[1], args[2], s_origin=rest[0], s_socket=rest[1], t_socket=rest[2],
                                 s_addr=rest[3], s_note=rest[4]))
+        return 0
+    if args[:1] == ["from-global"] and len(args) >= 4:
+        try:
+            head, frame = build_from_global(args[1], args[2], args[3], t_socket=(args[4] if len(args) > 4 else ""))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print("%s\x1f%s" % (head, frame))
         return 0
     if args[:1] == ["parse"]:
         got = parse(sys.stdin.read())

@@ -2312,7 +2312,7 @@ fi
 [ -n "${_SENDER_HUB:-$HUB}" ] && _V2_ARGS+=("--sender-hub=${_SENDER_HUB:-$HUB}")
 [ -n "${S_ORIGIN:-}" ] && _V2_ARGS+=("--sender-origin=${S_ORIGIN}")
 
-_HDR_S_LABEL="$S_LABEL"; _HDR_S_ORIGIN="${S_ORIGIN:-}"; _HDR_S_ADDR=""; _HDR_S_NOTE=""
+_HDR_S_LABEL="$S_LABEL"; _HDR_S_ORIGIN="${S_ORIGIN:-}"; _HDR_S_ADDR=""; _HDR_S_NOTE=""; _HDR_GLOBAL=0; _G_FRAME=""
 _xh_hdr() { _HDR_S_ADDR="${1#xhost:}"; _HDR_S_NOTE="跨主機·經SSH"; }
 if [ "$_XH_IN" = "1" ]; then _xh_hdr "$_XH_IP"; fi
 # review r2 m6:那一則住在哪一席的佇列 = 投遞者說的(AIB_DM_QUEUED_SEAT;轉給後繼席時由上面帶過來),沒說才用收件席
@@ -2337,7 +2337,13 @@ print("%s\x1f%s\x1f%s" % (lab, it.get("sender_origin") or "", Q._hub_or_empty(it
   if [ -n "$_q_orig" ]; then
     # 分隔用 \x1f 不用 tab:tab 是 IFS 空白字元,連續兩個會被併成一個 ⇒ 來源名空的時候艙名會跑到來源那一欄
     IFS=$'\x1f' read -r _q_lab _q_org _q_hub <<<"$_q_orig"
-    if [ -n "$_q_lab" ] && "$PY3" -c 'import sys,os
+    # 全球來信(開發文件第 8.1 節第 7–8 步):來源 nostr:<npub> ⇒ 抬頭整段由下面 dm_header.py from-global
+    #   照佇列的 global 欄組(顯示名稱 + 全球·已驗證/未驗證)。不走本機位址白名單:寄件方不是本機 token,
+    #   名字另由 dm_global_files.clean_display_name 驗過(不准 >> / @ 括號)。
+    case "$_q_org" in nostr:*) _HDR_GLOBAL=1 ;; esac
+    if [ "$_HDR_GLOBAL" = "1" ]; then
+      :
+    elif [ -n "$_q_lab" ] && "$PY3" -c 'import sys,os
 sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[2])))
 import seat_address as sa
 sa.assert_address_whitelist(sys.argv[1], "dm 抬頭")' "[$_q_lab > $T_LABEL / 台北 $(date '+%m-%d %H:%M')]" "$HERE/seat_address.py" 2>/dev/null \
@@ -2372,13 +2378,23 @@ fi
 _T_SOCKET="$("$PY3" -c 'import json,sys
 m=json.loads(sys.argv[1])["matches"][0]
 print((m.get("rec") or {}).get("socket") or "")' "$RESOLVED" 2>/dev/null || true)"
-if ! HEADER="$("$PY3" "$HERE/dm_header.py" from-labels "$_HDR_S_LABEL" "$T_LABEL" "$_HDR_S_ORIGIN" "${_SENDER_HUB:-$HUB}" "$_T_SOCKET" "$_HDR_S_ADDR" "$_HDR_S_NOTE")" \
+if [ "$_HDR_GLOBAL" = "1" ]; then
+  # 一次 Python 拿抬頭與外框說明行(\x1f 分開);佇列那一則不是可用的全球來信 ⇒ rc 2,不貼半個全球抬頭
+  if ! _g_out="$("$PY3" "$HERE/dm_header.py" from-global "$_Q_SEAT" "$AIB_DM_QUEUED_ITEM_ID" "$T_LABEL" "$_T_SOCKET")" \
+     || [ -z "$_g_out" ] || [ "${_g_out#*$'\x1f'}" = "$_g_out" ]; then
+    emit_json 2 header "全球抬頭產生失敗(dm_header.py from-global)"
+    die "全球抬頭產生失敗:$_Q_SEAT/$AIB_DM_QUEUED_ITEM_ID" 2
+  fi
+  HEADER="${_g_out%%$'\x1f'*}"; _G_FRAME="${_g_out#*$'\x1f'}"
+elif ! HEADER="$("$PY3" "$HERE/dm_header.py" from-labels "$_HDR_S_LABEL" "$T_LABEL" "$_HDR_S_ORIGIN" "${_SENDER_HUB:-$HUB}" "$_T_SOCKET" "$_HDR_S_ADDR" "$_HDR_S_NOTE")" \
    || [ -z "$HEADER" ]; then
   emit_json 2 header "抬頭產生失敗(dm_header.py from-labels)"
   die "抬頭產生失敗:[$S_LABEL > $T_LABEL]" 2
 fi
 # 抬頭與正文同一行、中間一個空格(a seat 22:54 裁;多行貼上會被 Claude Code 折成 [Pasted text])。
 BODY="$HEADER $MSG"
+# 全球來信:外框說明行(第 8.3 節,帶回信短碼)放在正文最前面,同一行
+[ -n "$_G_FRAME" ] && BODY="$HEADER $_G_FRAME $MSG"
 
 # ★★ EH.17 階段 3a(a seat 找到、a seat 量到、艦長 07:19 開工):
 #   `label_of()` 的 kind=emit 只看得到**席位紀錄**,而**手寫在正文裡的舊碼
