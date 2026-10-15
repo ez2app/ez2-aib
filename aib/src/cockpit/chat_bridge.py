@@ -48,6 +48,8 @@ WINDOW_NAME = "chat"
 STATES = ("no_keys", "no_profile", "no_relays", "publishing", "published", "stopped")
 #   1.2:有金鑰還沒中繼站 = no_relays;1.3:沒設顯示名稱 / 國別 = no_profile、名冊發不出去 = publishing(下一輪再試)、
 #   名冊與 10050 都發出去了 = published。收發信(1.7)以前都不寫心跳。
+WORKER_RESTART_GAP = 30                    # 秒;寄件工人掛了多久後再起(不狂起)
+_WORKER = {"proc": None, "started": 0.0}   # 當班才有;寄件工人(venv 的 chat_nostr.py serve)
 PUBLISH_EVERY = 60                         # 秒;名冊發失敗時多久再試(第 19.1 節:每站每 10 秒最多 2 則,不能狂發)
 SOCKET_RE = re.compile(r"^aihub(-[0-9A-Za-z-]+)?$")
 
@@ -187,6 +189,7 @@ def run(env=None, tick=None, max_ticks=None, out=sys.stdout):
                 return 0
             _sleep(tick, stop)
     finally:
+        stop_worker()       # 工人跟著當班走(它看到父行程不在也會自己結束)
         os.close(fd)        # 關檔 = 放鎖,排隊的下一支接手
 
 
@@ -229,9 +232,43 @@ def _leader_tick(root, env=None):
         swept = now
     _acts, key_err = sync_keys(env)
     state, pub = ("no_keys", {}) if key_err else publish_roster(root, env, st, now)
+    worker = None if key_err else ensure_worker(root, env, now)
     write_status(root, state=state, pid=os.getpid(), instance=st.get("instance"),
                  since=st.get("since") or now, at=now, swept_at=swept, key_error=key_err,
-                 publish_tried_at=pub.get("tried_at", st.get("publish_tried_at")), publish_error=pub.get("error"))
+                 publish_tried_at=pub.get("tried_at", st.get("publish_tried_at")), publish_error=pub.get("error"),
+                 worker_pid=worker)
+
+
+def ensure_worker(root, env, now):
+    """寄件工人(1.7):venv 的 chat_nostr.py serve 常駐,領 outbox、寄、寫回條與心跳。
+    心跳只由它寫 ⇒「有心跳」就等於「真的寄得出去」。venv 沒裝 ⇒ 不起(寄件端照實回全球對談沒開)。回工人 pid 或 None。"""
+    p = _WORKER["proc"]
+    if p is not None and p.poll() is None:
+        return p.pid
+    py = venv_python(env)
+    if not py.exists() or now - _WORKER["started"] < WORKER_RESTART_GAP:
+        return None
+    log = Path(root) / "worker.log"
+    fd = os.open(str(log), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)   # 工人只記錯誤種類,不記內容
+    try:
+        _WORKER["proc"] = subprocess.Popen([str(py), str(HERE / "chat_nostr.py"), "serve", "--root", str(root)],
+                                           stdin=subprocess.DEVNULL, stdout=fd, stderr=fd, env=dict(env))
+    finally:
+        os.close(fd)
+    _WORKER["started"] = now
+    return _WORKER["proc"].pid
+
+
+def stop_worker():
+    p = _WORKER["proc"]
+    if p is None or p.poll() is not None:
+        return
+    p.terminate()
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
 
 
 def _run_nostr(cmd, root, env, timeout=60, extra=()):

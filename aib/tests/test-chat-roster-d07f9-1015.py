@@ -327,7 +327,7 @@ class Network(unittest.TestCase):
         from aib_fake_relay import RelayClient
         c = RelayClient(self.relay.url)
         c.send(["REQ", "all", {}])
-        evs, _ = c.recv_until_eose("all")
+        evs = c.recv_until_eose("all")
         blobs.append(("relay", json.dumps(evs).lower()))
         self.assertTrue(evs)
         for where, text in blobs:
