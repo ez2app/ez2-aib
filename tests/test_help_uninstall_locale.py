@@ -58,7 +58,13 @@ class HelpUninstallLocale(unittest.TestCase):
         copy.mkdir()
         shutil.copytree(ROOT / "aib", copy / "aib", ignore=shutil.ignore_patterns("__pycache__", "tests"))
         shutil.copytree(ROOT / "bin", copy / "bin")
-        for git in (["init", "-q"], ["remote", "add", "origin", "https://github.com/ez2app/ez2-aib.git"]):
+        shutil.copy(ROOT / ".gitignore", copy / ".gitignore")   # as in a real clone: running aib leaves __pycache__
+        # A clean clone: everything committed and on the remote. With uncommitted or unpushed work the checkout is
+        # kept, not removed (#51: never delete work that exists nowhere else).
+        for git in (["init", "-q", "-b", "main"], ["add", "-A"],
+                    ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"],
+                    ["remote", "add", "origin", "https://github.com/ez2app/ez2-aib.git"],
+                    ["update-ref", "refs/remotes/origin/main", "HEAD"]):
             subprocess.run(["git"] + git, cwd=copy, check=True, capture_output=True, stdin=subprocess.DEVNULL)
         env = {"PATH": os.environ.get("PATH", ""), "HOME": str(self.home), "EZ2_AIB_LOCALE": "zh-TW"}
         r = subprocess.run([sys.executable, str(copy / "bin" / "aib"), "uninstall", "--yes"], cwd=self.home,
