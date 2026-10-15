@@ -4237,5 +4237,11 @@
   "mod.aib_video.terminal_only": "영상 패널은 터미널에서만 열림(현재: {what}).",
   "mod.aib_video.pane_title": "영상",
   "mod.aib_video.opened": "영상 패널 열림.",
-  "mod.aib_video.skeleton": "영상 모듈은 골격 단계: 추적할 계정 / 플랫폼과 표시할 숫자는 아직 미정."
+  "mod.aib_video.skeleton": "영상 모듈은 골격 단계: 추적할 계정 / 플랫폼과 표시할 숫자는 아직 미정.",
+  "aib.ext.mod_already": "✓ {engine}: {name} 이미 등록됨, 변경 없음",
+  "aib.ext.mod_not_claude": "– claude: {name}에 {path}가 없어 Claude Code 플러그인이 아님. 배치만 하고 등록 안 함",
+  "aib.ext.legacy_plugin": "알림: 예전 {id}가 아직 남아 있습니다(폐기됨, aib-boards로 대체). 제거하려면: {cmd}",
+  "aib.ext.auto_off": "AIB_EXT_AUTO=0: 함께 든 mod를 자동 설치하지 않음",
+  "aib.ext.auto_unsigned": "– {name}은 신뢰된 키로 서명되지 않아 자동 설치하지 않음(직접 설치: aib ext install --allow-unsigned)",
+  "aib.ext.restart_hint": "설치 / 업데이트: {names}. 각 석에서 /restart 하면 적용됩니다(원래 대화로 돌아갑니다)"
 }

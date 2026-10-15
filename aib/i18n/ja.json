@@ -4237,5 +4237,11 @@
   "mod.aib_video.terminal_only": "動画パネルは端末でのみ開く(現在:{what})。",
   "mod.aib_video.pane_title": "動画",
   "mod.aib_video.opened": "動画パネルを開いた。",
-  "mod.aib_video.skeleton": "動画モジュールは骨組みの段階:追うアカウント / プラットフォームと表示する数値は未定。"
+  "mod.aib_video.skeleton": "動画モジュールは骨組みの段階:追うアカウント / プラットフォームと表示する数値は未定。",
+  "aib.ext.mod_already": "✓ {engine}:{name} は登録済み、変更なし",
+  "aib.ext.mod_not_claude": "– claude:{name} に {path} がないため Claude Code プラグインではない。配置のみ、登録しない",
+  "aib.ext.legacy_plugin": "お知らせ:古い {id} がまだ残っています(廃止済み、aib-boards に置き換え)。削除するには:{cmd}",
+  "aib.ext.auto_off": "AIB_EXT_AUTO=0:同梱の mod は自動インストールしない",
+  "aib.ext.auto_unsigned": "– {name} は信頼された鍵で署名されていないため自動インストールしない(自分で入れるには aib ext install --allow-unsigned)",
+  "aib.ext.restart_hint": "インストール / 更新:{names}。各席で /restart すると有効になります(元の会話に戻ります)"
 }

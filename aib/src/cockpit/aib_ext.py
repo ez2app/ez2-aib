@@ -9,6 +9,13 @@
   aib theme list | current | use <名> | reset  佈景:列、看現在用哪套、換、換回內建
   aib ext enable <名> [--engine claude,codex,agy] [--trust-hooks]   啟用到各家 AI(install 預設就會做;下週才裝 Codex 時用)
   aib ext disable <名> [--engine …]                                 從各家 AI 撤掉(remove 會先做這一步)
+  aib ext auto                                 裝這份 aib 附的免費、已簽章 mod(extensions/;一行安裝、aib update、aib init 會叫)
+
+mod 本身就是 Claude Code 外掛(根目錄有 .claude-plugin/marketplace.json,10-15 the maintainer「裝上並在下一版自動安裝」):
+  install / enable 在複製到 <狀態根>/mods/<名> 之後,接著 claude plugin marketplace add <那個資料夾> + claude plugin install
+  <plugin>@<marketplace>(名字讀 marketplace.json 的 name / plugins)。已登記同一個資料夾、已裝同一版 ⇒ 不動;版本不同 ⇒ update。
+  這台沒有 claude ⇒ 照實說、跳過。disable / remove 反做:uninstall 每個 plugin、移除 marketplace(不刪 mod 資料夾以外的東西)。
+  看到舊的 aib-seat@ez2-aib-mods(已由 aib-boards 取代)⇒ 只提示怎麼移除,不替你刪。
 
 多家 AI(10-14 the maintainer「plugin_kit 他會做的是 for aib 的外掛,要能包含所有 ai」;雲端 10-14 回覆定的規則;
 設計稿 docs/DESIGN-plugin-kit-engines-86ff0-1014.md):擴充包的 aib-ext.json 有 engines(各家接頭)與 core(共用程式一份)。
@@ -212,6 +219,121 @@ def _marketplace(d):
     except (OSError, ValueError, KeyError, TypeError):
         return None
     return n if isinstance(n, str) and name_ok(n) else None
+
+
+LEGACY_CLAUDE_PLUGINS = ("aib-seat@ez2-aib-mods",)   # 10-15:已停用、由 aib-boards 取代的舊席位外掛
+
+
+def _run_json(argv):
+    """只讀 stdout 當 JSON;失敗 / 不是 JSON ⇒ None(量不到,不當成「沒有」)。"""
+    import subprocess
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+        return json.loads(p.stdout) if p.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
+def mod_plugins(pkg):
+    """mod 根目錄 .claude-plugin/marketplace.json ⇒ (marketplace 名, [plugin 名]);不是 Claude 外掛 / 名字不合 ⇒ (None, [])。"""
+    try:
+        d = json.loads((Path(pkg) / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, []
+    mkt = d.get("name") if isinstance(d, dict) else None
+    names = [x.get("name") for x in (d.get("plugins") or []) if isinstance(x, dict)] if isinstance(d, dict) else []
+    if not (isinstance(mkt, str) and name_ok(mkt)) or not names or not all(isinstance(n, str) and name_ok(n) for n in names):
+        return None, []
+    return mkt, names
+
+
+def _folder_version(pkg):
+    try:
+        return json.loads((Path(pkg) / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _legacy_hint(plugins, tool, out):
+    for pid in LEGACY_CLAUDE_PLUGINS:
+        if pid in plugins:
+            out.write(T("legacy_plugin", {"id": pid, "cmd": "claude plugin uninstall %s && claude plugin marketplace remove %s"
+                                          % (pid, pid.split("@", 1)[1])}) + "\n")
+
+
+def claude_register(name, pkg, out, changes=None):
+    """mod 資料夾 pkg 向 Claude Code 登記。回 rc(0 = 成功或照實跳過)。changes:有動到就把名字加進去(印 /restart 提示用)。"""
+    mkt, plugins = mod_plugins(pkg)
+    if not mkt:
+        out.write(T("mod_not_claude", {"name": name, "path": str(Path(pkg) / ".claude-plugin" / "marketplace.json")}) + "\n")
+        return 0
+    tool = _which("claude")
+    if not tool:
+        out.write(T("eng_no_cli", {"engine": "claude", "cmd": "claude"}) + "\n")
+        return 0
+    st = _read_state(name)
+    own = (st.get("claude_mod") or {}).get("mkt")
+    mkts = _run_json([tool, "plugin", "marketplace", "list", "--json"])
+    cur = {m.get("name"): m for m in (mkts or []) if isinstance(m, dict)}.get(mkt)
+    here = os.path.realpath(str(pkg))
+    same = bool(cur) and os.path.realpath(str(cur.get("path") or cur.get("installLocation") or "")) == here
+    changed = False
+    if cur and not same:
+        if mkt != own and mkt != "ez2-" + name:     # 不是 aib 登記的、也不是這個包的固定命名 ⇒ 可能是使用者的,不刪
+            out.write(T("eng_mkt_taken", {"mkt": mkt}) + "\n")
+            return 1
+        _run([tool, "plugin", "marketplace", "remove", mkt])
+    if not same:
+        rc, msg = _run([tool, "plugin", "marketplace", "add", str(pkg)])
+        if rc != 0:
+            out.write(T("eng_fail", {"engine": "claude", "name": name}) + "  " + msg[-200:] + "\n")
+            return 1
+        changed = True
+    rows = _run_json([tool, "plugin", "list", "--json"])
+    inst = {r.get("id"): r for r in (rows or []) if isinstance(r, dict)}
+    want = _folder_version(pkg)
+    rc = 0
+    for p in plugins:
+        pid = "%s@%s" % (p, mkt)
+        if pid not in inst:
+            r, msg = _run([tool, "plugin", "install", pid])
+        elif want and inst[pid].get("version") != want:
+            _run([tool, "plugin", "marketplace", "update", mkt])
+            r, msg = _run([tool, "plugin", "update", pid])
+        else:
+            continue
+        if r != 0:
+            out.write(T("eng_fail", {"engine": "claude", "name": pid}) + "  " + msg[-200:] + "\n")
+            rc = 1
+            continue
+        changed = True
+    st["claude_mod"] = {"mkt": mkt, "plugins": plugins}
+    _write_state(name, st)
+    out.write(T("eng_ok" if changed else "mod_already", {"engine": "claude", "name": name}) + "\n")
+    if changed and changes is not None:
+        changes.append(name)
+    _legacy_hint(inst, tool, out)
+    return rc
+
+
+def claude_unregister(name, out):
+    """反做 claude_register:只撤自己登記過的那個 marketplace 與 plugin。"""
+    st = _read_state(name)
+    rec = st.pop("claude_mod", None)
+    if not rec:
+        return 0
+    tool = _which("claude")
+    ok = bool(tool)
+    if tool:
+        for p in rec.get("plugins") or []:
+            ok = _run([tool, "plugin", "uninstall", "%s@%s" % (p, rec.get("mkt"))])[0] == 0 and ok
+        _run([tool, "plugin", "marketplace", "remove", str(rec.get("mkt"))])
+    if st:
+        _write_state(name, st)
+    else:
+        _state_file(name).unlink(missing_ok=True)
+    out.write(T("eng_off" if ok else "eng_off_fail", {"engine": "claude", "name": name}) + "\n")
+    return 0
 
 
 def codex_hooks(codex, plugin_id):
@@ -487,7 +609,7 @@ def _installed_row(name, kind=None):
     return hits[0] if len(hits) == 1 else None
 
 
-def enable(name, engines=None, trust_hooks=False, out=sys.stdout, kind=None):
+def enable(name, engines=None, trust_hooks=False, out=sys.stdout, kind=None, changes=None):
     row = _installed_row(name, kind)
     if not row:
         hits = [r["kind"] for r in installed() if r["name"] == name]
@@ -502,6 +624,10 @@ def enable(name, engines=None, trust_hooks=False, out=sys.stdout, kind=None):
     if not isinstance(m.get("files"), dict) or m["files"] != _hashes(pkg):     # 啟用前再驗一次:裝好之後被改過就不啟用
         out.write(T("not_intact", {"extra": [], "missing": [], "changed": ["(installed copy)"]}) + "\n")
         return 3
+    if row["kind"] == "mod" and not m.get("engines"):       # mod 本身就是 Claude Code 外掛
+        if engines and "claude" not in engines:
+            return 0
+        return claude_register(name, pkg, out, changes)
     st = _read_state(name)
     trusted_src = signed_ok(m) or bool(st.get("allow_unsigned"))
     has = m.get("engines") or {}
@@ -559,6 +685,8 @@ def _still_trusted(keys):
 
 
 def disable(name, engines=None, out=sys.stdout):
+    if _read_state(name).get("claude_mod") and (not engines or "claude" in engines):
+        claude_unregister(name, out)
     st = _read_state(name)
     on = st.get("enabled") or {}
     for ai in [a for a in (engines or ENGINES) if a in on]:
@@ -577,8 +705,8 @@ def disable(name, engines=None, out=sys.stdout):
     if on:
         st["enabled"] = on
         _write_state(name, st)
-    elif _state_file(name).exists() and not st.get("allow_unsigned"):
-        _state_file(name).unlink()
+    elif not st.get("allow_unsigned"):      # 沒有要留的紀錄 ⇒ 狀態檔不留(mod 的 Claude Code 登記撤掉時可能已先刪,不重建)
+        _state_file(name).unlink(missing_ok=True)
     else:
         st["enabled"] = {}
         _write_state(name, st)
@@ -593,7 +721,7 @@ def target(kind, name):
     return p
 
 
-def install(folder, allow_unsigned=False, out=sys.stdout, enable_engines=True, engines=None, trust_hooks=False):
+def install(folder, allow_unsigned=False, out=sys.stdout, enable_engines=True, engines=None, trust_hooks=False, changes=None):
     m, probs = inspect(folder, allow_unsigned=allow_unsigned)
     if probs:
         for p in probs:
@@ -621,7 +749,65 @@ def install(folder, allow_unsigned=False, out=sys.stdout, enable_engines=True, e
         if enable_engines:
             return enable(m["name"], engines=engines, trust_hooks=trust_hooks, out=out, kind=kind)
         out.write(T("not_enabled", {"name": m["name"]}) + "\n")
+    elif kind == "mod":
+        if enable_engines:
+            return enable(m["name"], engines=engines, out=out, kind=kind, changes=changes)
+        out.write(T("not_enabled", {"name": m["name"]}) + "\n")
     return 0
+
+
+def bundled_dir():
+    """這份 aib 附的擴充:倉庫根的 extensions/(一行安裝 / git checkout 才有;pip 裝的沒有)。"""
+    return Path(HERE).parents[2] / "extensions"
+
+
+def _same_copy(src, dst):
+    try:
+        a = json.loads((Path(src) / MANIFEST).read_text(encoding="utf-8"))
+        b = json.loads((Path(dst) / MANIFEST).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return a == b and b.get("files") == _hashes(dst)
+
+
+def auto_install(out=sys.stdout, src=None, env=None):
+    """裝 extensions/ 裡免費(沒有 requires_addon)、受信鑰匙簽過的 mod;清單讀各包 aib-ext.json,不寫死。
+    AIB_EXT_AUTO=0 ⇒ 全關。已裝同一份 ⇒ 只補 Claude Code 登記(沒登記才登記)。有動到 ⇒ 最後印一行「每席 /restart 生效」。"""
+    env = os.environ if env is None else env
+    if env.get("AIB_EXT_AUTO", "") == "0":
+        out.write(T("auto_off") + "\n")
+        return 0
+    base = Path(src) if src else bundled_dir()
+    if not base.is_dir():
+        return 0
+    changes, rc = [], 0
+    for d in sorted(p for p in base.iterdir() if p.is_dir()):
+        try:
+            m = json.loads((d / MANIFEST).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if K.kind_of_label(str(m.get("kind") or "")) != "mod" or m.get("requires_addon"):
+            continue
+        name = str(m.get("name") or "")
+        if not signed_ok(m):
+            out.write(T("auto_unsigned", {"name": name}) + "\n")
+            continue
+        try:
+            dst = target("mod", name)
+        except ValueError:
+            continue
+        if _same_copy(d, dst):
+            if not m.get("engines"):
+                rc = claude_register(name, dst, out, changes) or rc
+            continue
+        before = len(changes)
+        r = install(d, out=out, changes=changes)
+        if r == 0 and m.get("engines") and len(changes) == before:
+            changes.append(name)
+        rc = r or rc
+    if changes:
+        out.write(T("restart_hint", {"names": ", ".join(changes)}) + "\n")
+    return rc
 
 
 def installed():
@@ -651,8 +837,8 @@ def remove(name, kind=None, out=sys.stdout):
     if len(hits) > 1:
         out.write(T("ambiguous", {"name": name, "kinds": [h["kind"] for h in hits]}) + "\n")
         return 2
-    if (_read_state(name).get("enabled")):
-        disable(name, out=out)                     # 先從各家 AI 撤掉(含自己寫的 Codex 鉤子信任),再刪包
+    if _read_state(name).get("enabled") or _read_state(name).get("claude_mod"):
+        disable(name, out=out)                     # 先從各家 AI 撤掉(含自己寫的 Codex 鉤子信任、mod 的 Claude Code 登記),再刪包
     if not _read_state(name).get("enabled"):       # 有撤不掉的信任紀錄 ⇒ 狀態檔留著(之後 aib ext disable <名> 還能撤),包照刪
         _state_file(name).unlink(missing_ok=True)
     shutil.rmtree(hits[0]["path"])
@@ -734,6 +920,7 @@ def main(argv=None, out=sys.stdout):
         p.add_argument("--engine", default="", help="comma list: claude,codex,agy")
         if c == "enable":
             p.add_argument("--trust-hooks", action="store_true", help="also trust its Codex hooks (signed or --allow-unsigned packages only)")
+    sp.add_parser("auto")
     p = sp.add_parser("remove")
     p.add_argument("name")
     p.add_argument("--kind", choices=K.INSTALLABLE)
@@ -752,6 +939,8 @@ def main(argv=None, out=sys.stdout):
         return disable(a.name, engines=eng or None, out=out)
     if a.cmd == "remove":
         return remove(a.name, a.kind, out=out)
+    if a.cmd == "auto":
+        return auto_install(out=out)
     rows = installed()
     if getattr(a, "json", False):
         out.write(json.dumps(rows, ensure_ascii=False) + "\n")

@@ -4237,5 +4237,11 @@
   "mod.aib_video.terminal_only": "影音面板只在終端機打開(現在是 {what})。",
   "mod.aib_video.pane_title": "影音",
   "mod.aib_video.opened": "影音面板已打開。",
-  "mod.aib_video.skeleton": "影音模組還在骨架階段:要追哪些帳號 / 平台、看什麼數字還沒定,定了再接資料。"
+  "mod.aib_video.skeleton": "影音模組還在骨架階段:要追哪些帳號 / 平台、看什麼數字還沒定,定了再接資料。",
+  "aib.ext.mod_already": "✓ {engine}:{name} 已登記,沒有變動",
+  "aib.ext.mod_not_claude": "– claude:{name} 沒有 {path},不是 Claude Code 外掛,只放好不登記",
+  "aib.ext.legacy_plugin": "提醒:舊的 {id} 還在(已停用,由 aib-boards 取代)。要移除:{cmd}",
+  "aib.ext.auto_off": "AIB_EXT_AUTO=0:不自動裝附帶的 mod",
+  "aib.ext.auto_unsigned": "– {name} 沒有受信鑰匙的簽章,不自動裝(要裝請自己 aib ext install --allow-unsigned)",
+  "aib.ext.restart_hint": "已裝好 / 更新:{names}。每席 /restart 生效(會接回原對話)"
 }

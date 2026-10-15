@@ -4237,5 +4237,11 @@
   "mod.aib_video.terminal_only": "The Video panel opens only in the terminal (now: {what}).",
   "mod.aib_video.pane_title": "Video",
   "mod.aib_video.opened": "Video panel opened.",
-  "mod.aib_video.skeleton": "The Video module is a skeleton: which accounts / platforms to track and which numbers to show are not decided yet."
+  "mod.aib_video.skeleton": "The Video module is a skeleton: which accounts / platforms to track and which numbers to show are not decided yet.",
+  "aib.ext.mod_already": "✓ {engine}: {name} already registered, nothing changed",
+  "aib.ext.mod_not_claude": "– claude: {name} has no {path}, so it is not a Claude Code plugin; put in place, not registered",
+  "aib.ext.legacy_plugin": "Note: the old {id} is still installed (retired, replaced by aib-boards). To remove it: {cmd}",
+  "aib.ext.auto_off": "AIB_EXT_AUTO=0: bundled mods are not installed automatically",
+  "aib.ext.auto_unsigned": "– {name} is not signed by a trusted key, so it is not installed automatically (to install it yourself: aib ext install --allow-unsigned)",
+  "aib.ext.restart_hint": "Installed / updated: {names}. Type /restart in each seat for it to take effect (it resumes the same conversation)"
 }
