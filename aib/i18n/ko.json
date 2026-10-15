@@ -2783,6 +2783,7 @@
   "aib.vault_convert.warn_library_skip": "역할 라이브러리 하위는 이 도구로 가져오지 않아 건너뜀: {dst}",
   "aib.vault_convert.warn_uid_collision": "uid {uid} 가 {count}건에서 충돌: {keep} 유지, 나머지는 새 uid 발급(#ez2/uid-collision)",
   "aib.vault_convert.blocker_same_new_rel": "이름 변경 후 경로 중복",
+  "aib.vault_convert.blocker_template_covers_route": "템플릿 폴더가 경로 폴더/역할 라이브러리와 같거나 그것을 포함해 템플릿으로 다룰 수 없습니다(경로가 folderId 를 잃고 노트에 uid 가 붙지 않음). 먼저 Obsidian 에서 템플릿을 전용 폴더로 옮기세요",
   "aib.vault_convert.err_merge_differs": "병합 중 이름은 같지만 내용이 다름: {dst}",
   "aib.vault_convert.err_no_folder_index": "folder-id-index 가 없습니다. 먼저 plan/apply 를 실행하세요",
   "aib.vault_convert.err_confirm_mismatch": "확인 문구가 일치하지 않아 아무것도 쓰지 않았습니다. 그대로 붙여넣으세요: {text}",

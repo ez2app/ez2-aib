@@ -2783,6 +2783,7 @@
   "aib.vault_convert.warn_library_skip": "ロールライブラリ配下は本ツールで取り込まないためスキップ:{dst}",
   "aib.vault_convert.warn_uid_collision": "uid {uid} が {count} 件で衝突:{keep} を残し、他は新 uid を発番(#ez2/uid-collision)",
   "aib.vault_convert.blocker_same_new_rel": "改名後にパスが重複",
+  "aib.vault_convert.blocker_template_covers_route": "テンプレートフォルダがルートフォルダ/ロールライブラリと同じかそれを含んでいるため、テンプレートとして扱えません(ルートが folderId を失い、ノートに uid が付きません)。先に Obsidian でテンプレートを専用フォルダへ移してください",
   "aib.vault_convert.err_merge_differs": "統合時に同名だが内容が異なる:{dst}",
   "aib.vault_convert.err_no_folder_index": "folder-id-index がありません。先に plan/apply を実行してください",
   "aib.vault_convert.err_confirm_mismatch": "確認文が一致しないため何も書きません。そのまま貼り付けてください:{text}",

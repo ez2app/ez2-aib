@@ -2783,6 +2783,7 @@
   "aib.vault_convert.warn_library_skip": "角色庫子樹不經本工具導入,略過:{dst}",
   "aib.vault_convert.warn_uid_collision": "uid {uid} 真撞號 {count} 篇:保留 {keep},其餘換新號(#ez2/uid-collision)",
   "aib.vault_convert.blocker_same_new_rel": "改名後同路徑",
+  "aib.vault_convert.blocker_template_covers_route": "範本資料夾等於或包住路由資料夾/角色庫,不能整夾當範本(路由會失去 folderId、筆記不補 uid);請先在 Obsidian 把範本改到專用資料夾",
   "aib.vault_convert.err_merge_differs": "併入時同名但內容不同:{dst}",
   "aib.vault_convert.err_no_folder_index": "沒有 folder-id-index,先 plan/apply",
   "aib.vault_convert.err_confirm_mismatch": "確認句不符,什麼都沒寫。要原樣貼:{text}",

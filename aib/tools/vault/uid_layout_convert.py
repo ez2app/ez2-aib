@@ -564,10 +564,17 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
     library_old = _idx_lib or _con_lib
     library_olds = {x for x in (_idx_lib, _con_lib) if x and (vault / x).is_dir()}
     tpl_dirs, tpl_files = template_paths(vault)
+    # 範本資料夾蓋到路由資料夾或角色庫 ⇒ 不能整夾當範本(路由會沒有 folderId、筆記不補 uid):擋下,請先把範本改到專用資料夾
+    protected = {_nfc(x) for x in folder_to_route if (vault / x).is_dir()} | {_nfc(x) for x in library_olds}
+    def _overlap(d):                                         # 範本夾等於或包住路由夾/角色庫;範本夾在路由夾裡面沒關係
+        return sorted(x for x in protected if x == d or x.startswith(d + "/"))
+    tpl_blockers = [{"template_dir": d, "covers": _overlap(d)[:5], "reason": T("blocker_template_covers_route")}
+                    for d in sorted(tpl_dirs) if _overlap(d)]
+    tpl_dirs = {d for d in tpl_dirs if not _overlap(d)}
 
     plan = {"schema": "2026-10-05.ez2-uid-layout-plan", "vault": str(vault), "contract": contract_path,
             "generated_at": iso(int(time.time() * 1000)), "legacy_copies": [], "folders": [], "notes": [],
-            "blockers": [], "warnings": [], "stats": {}}
+            "blockers": tpl_blockers, "warnings": [], "stats": {}}
 
     # ---- 1. 舊庫導入(只複製,目的地照對照表) ----
     legacy_targets: dict[str, dict] = {}   # 導入後在 vault 內的相對路徑 -> {legacy_rel, routeKey}
@@ -841,7 +848,12 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
     if amb_all:
         plan["warnings"].append(T("warn_link_ambiguous", {"count": len(amb_all), "sample": ", ".join(sorted(set(amb_all))[:5])}))
     plan["obsidian_edits"] = obsidian_setting_edits(vault, plan["notes"], plan["folders"])
-    n_tpl = sum(1 for rel in plan["kept_md"] if in_templates(rel, tpl_dirs, tpl_files))
+    plan["template_files"] = [rel for rel in plan["kept_md"] if in_templates(rel, tpl_dirs, tpl_files)]
+    n_tpl = len(plan["template_files"])
+    tpl_links = 0                                            # 範本正文裡的連結照改(範本沒有指紋;不改的話用它新建的筆記都帶斷鏈)
+    for rel in plan["template_files"]:
+        _, body = split_frontmatter((vault / rel).read_text(encoding="utf-8", errors="replace"))
+        tpl_links += len(lr.rewrite(body)[1])
     if n_tpl:
         plan["warnings"].append(T("warn_template_kept", {"count": n_tpl}))
     attach = (load_json(vault / ".obsidian" / "app.json", {}) or {}).get("attachmentFolderPath")
@@ -871,6 +883,7 @@ def build_plan(vault: Path, contract_path: str, legacy: Path | None, legacy_map:
         "links_in_cards_rewritten": card_links if rewrite_card_links else 0,
         "folders_template": sum(1 for f in plan["folders"] if f["kind"] == "template"),
         "notes_template_kept": n_tpl,
+        "links_in_templates_rewritten": tpl_links,
         "obsidian_settings": len(plan["obsidian_edits"]),
         "warnings": len(plan["warnings"]),
     }
@@ -1021,9 +1034,10 @@ def apply_plan(plan: dict, backup_dir: Path, confirm_text: str) -> dict:
         if edits:
             receipt["links_rewritten"] += len(edits)
             receipt["link_edits"].append({"path": n["old_rel"], "edits": [[pos + len(head), new, old] for pos, new, old in edits]})
-    # 2b. 角色卡正文連結(plan 帶 --rewrite-card-links 才做;frontmatter 一字不動,undo 照位置退回)
-    receipt["card_links_rewritten"] = 0
-    for rel in (plan.get("card_files") or []) if plan.get("rewrite_card_links") else []:
+    # 2b. 角色卡(plan 帶 --rewrite-card-links 才做)與範本的正文連結:frontmatter 一字不動,undo 照位置退回
+    receipt["card_links_rewritten"] = 0; receipt["template_links_rewritten"] = 0
+    cards = set((plan.get("card_files") or []) if plan.get("rewrite_card_links") else [])
+    for rel in sorted(cards) + [t for t in plan.get("template_files") or [] if t not in cards]:
         p = vault / rel
         try:
             text = p.read_bytes().decode("utf-8", errors="replace")
@@ -1035,7 +1049,8 @@ def apply_plan(plan: dict, backup_dir: Path, confirm_text: str) -> dict:
         if edits:
             tmp = p.with_name(p.name + ".tmp-uidlayout")
             tmp.write_bytes((head + rest).encode("utf-8")); os.replace(tmp, p)
-            receipt["card_links_rewritten"] += len(edits); receipt["links_rewritten"] += len(edits)
+            receipt["card_links_rewritten" if rel in cards else "template_links_rewritten"] += len(edits)
+            receipt["links_rewritten"] += len(edits)
             receipt["link_edits"].append({"path": rel, "edits": [[pos + len(head), new, old] for pos, new, old in edits]})
 
     # 3. 檔案改名(在舊資料夾裡)

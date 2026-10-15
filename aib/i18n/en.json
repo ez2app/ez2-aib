@@ -2783,6 +2783,7 @@
   "aib.vault_convert.warn_library_skip": "role-library subtree is not imported by this tool, skipped: {dst}",
   "aib.vault_convert.warn_uid_collision": "uid {uid} collides across {count} notes: keeping {keep}, the rest get new uids (#ez2/uid-collision)",
   "aib.vault_convert.blocker_same_new_rel": "same path after rename",
+  "aib.vault_convert.blocker_template_covers_route": "the template folder equals or contains a route folder / the role library and cannot be treated as templates (the route would lose its folderId and notes would get no uid); move templates to a dedicated folder in Obsidian first",
   "aib.vault_convert.err_merge_differs": "same name but different content while merging: {dst}",
   "aib.vault_convert.err_no_folder_index": "no folder-id-index; run plan/apply first",
   "aib.vault_convert.err_confirm_mismatch": "confirmation text mismatch; nothing written. Paste exactly: {text}",

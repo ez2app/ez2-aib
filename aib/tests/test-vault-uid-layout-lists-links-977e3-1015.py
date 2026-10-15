@@ -372,6 +372,37 @@ class CardsAndTemplates(Fixture):
         self.assertEqual(_run("verify", "--vault", str(self.vault)).returncode, 0)
 
 
+class TemplateEdges(Fixture):
+    """三審(1563cf4)抓到:範本正文連結沒改、範本夾蓋到路由夾時路由被吃掉。"""
+
+    def test_T2_template_body_links_rewritten_and_undone(self):
+        tpl = self.vault / STUDIO / "範本" / "週報範本.md"
+        raw = "---\ntags: [週報]\n---\n參考 [[範本一]]\n"
+        tpl.write_text(raw, encoding="utf-8")
+        p, plan = self.plan()
+        self.assertEqual(plan["stats"]["links_in_templates_rewritten"], 1)
+        self.apply(p)
+        studio = next(f["new_rel"] for f in plan["folders"] if f["old_rel"] == STUDIO)
+        uid = Path(self.new_rel(plan, STUDIO + "/範本一.md")).stem
+        text = (self.vault / studio / "範本" / "週報範本.md").read_text(encoding="utf-8")
+        self.assertEqual(text, "---\ntags: [週報]\n---\n參考 [[%s|範本一]]\n" % uid, "範本 frontmatter 不動、正文連結改指 uid")
+        rec = sorted((self.vault / ".ez2" / "migration").glob("uid-layout-receipt-*.json"))[-1]
+        self.assertEqual(_run("undo", "--receipt", str(rec)).returncode, 0)
+        self.assertEqual(tpl.read_text(encoding="utf-8"), raw)
+
+    def test_T3_template_folder_covering_route_is_blocked(self):
+        (self.vault / ".obsidian" / "templates.json").write_text(json.dumps({"folder": "C-Ez2 Core系統底層"}, ensure_ascii=False), encoding="utf-8")
+        out = self.t / "plan.json"
+        r = _run("plan", "--vault", str(self.vault), "--contract", str(self.contract), "--out", str(out))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        plan = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(plan["blockers"][0]["template_dir"], "C-Ez2 Core系統底層")
+        self.assertIn(C80, plan["blockers"][0]["covers"])
+        self.assertTrue(any(f["kind"] == "route" for f in plan["folders"] if f["old_rel"] == C80), "路由夾照常拿 folderId")
+        r = _run("apply", "--plan", str(out), "--backup-dir", str(self.t / "backup"), "--confirm-text", CONFIRM)
+        self.assertNotEqual(r.returncode, 0, "有 blocker 不准 apply")
+
+
 class Knives(Fixture):
     """刀:把修正拿掉,上面的格就該紅(在這裡用相反的斷言證明那幾格有牙)。"""
 
