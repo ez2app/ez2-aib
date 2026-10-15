@@ -35,6 +35,7 @@ sys.path.insert(0, str(HERE))
 import dm_global_files as G  # noqa: E402
 from aib_fake_bridge import FakeBridge  # noqa: E402
 from aib_knife_copy import knife_copy  # noqa: E402
+from aib_proc_guard import run_guarded  # noqa: E402
 
 RELI = "test-dm-reliability-abb89-1015.py"
 _spec = importlib.util.spec_from_file_location("dm_reliability_box", str(HERE / RELI))
@@ -200,8 +201,9 @@ class Knife(unittest.TestCase):
     def _red(self, needle, cut, cell):
         name = Path(__file__).name
         with knife_copy(REPO, "src/cockpit/dm-ctl.sh", needle, cut, tests=(name, RELI)) as root:
-            r = subprocess.run([sys.executable, str(root / "tests" / name), cell],
-                               cwd=str(root), capture_output=True, text=True, timeout=600)
+            # 10-15 18:4x 事故:刀拿掉防護可能讓 dm-ctl 無限再入 ⇒ 一律經看門狗跑,失控只死這一組
+            r = run_guarded([sys.executable, str(root / "tests" / name), cell], cwd=str(root), max_procs=150, timeout=600)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_k1_no_init(self):
