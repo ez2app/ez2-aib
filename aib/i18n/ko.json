@@ -2777,5 +2777,17 @@
   "aib.captains_ctl.unmeasured": "알 수 없음",
   "aib.captains_ctl.status_label": "함장:",
   "aib.onboardcli.template_missing_menu": "aib: 이 설치본에 온보딩 템플릿이 없어서 좌석 {window}에는 \"전체 불러오기 / 철칙만\"을 보여 주지 않습니다. aib을 다시 설치하거나 업데이트(aib update)하면 돌아옵니다.",
-  "aib.ship.no_origin_main": "비교할 origin/main이 없습니다({why}). main 브랜치가 있는 원격을 추가하고(git remote add origin <url>) main을 한 번 push한 뒤 다시 실행하세요."
+  "aib.ship.no_origin_main": "비교할 origin/main이 없습니다({why}). main 브랜치가 있는 원격을 추가하고(git remote add origin <url>) main을 한 번 push한 뒤 다시 실행하세요.",
+  "aib.newrole.heading_duties": "역할",
+  "aib.newrole.heading_red_lines": "금지선",
+  "aib.newrole.heading_knowledge": "지식 범위",
+  "aib.newrole.lint_missing": "인격에 {heading}({label}) 단락이 없거나 비어 있습니다.",
+  "aib.newrole.lint_headings_hint": "인격에는 세 단락이 모두 필요하며 제목은 정확히 이렇게 씁니다: {headings}. 단락이 하나도 없는 한 문장 --prompt는 자동으로 채웁니다. 아무것도 쓰지 않았습니다.",
+  "aib.newrole.lint_too_big": "인격이 20KB를 넘습니다. 지식은 지식 베이스로 옮기세요.",
+  "aib.newrole.lint_rule": "인격 문장이 안전 규칙({rule})에 걸렸습니다. 그 부분을 다시 쓰세요.",
+  "aib.newrole.prompt_wrapped": "--prompt에 ## 단락이 없어서 그 문장을 첫 줄로 두고 역할·금지선·지식 범위 기본 단락을 채웠습니다. 직접 쓰려면 ## 職責, ## 紅線, ## 知識域이 들어 있는 --prompt-file과 --overwrite로 다시 실행하세요.",
+  "aib.newrole.default_duties": "맡은 범위의 일을 하고, 재현 가능한 실제 증거와 함께 보고한다.",
+  "aib.newrole.default_red_lines": "확인하지 않고 된다고 말하지 않는다. 확인하지 않은 것은 분명히 그렇다고 말한다.",
+  "aib.newrole.default_knowledge": "맡은 일에 필요한 범위. 근거가 없으면 모른다고 말한다.",
+  "aib.newrole.uid_allocated": "새 인격 UID: {uid}"
 }

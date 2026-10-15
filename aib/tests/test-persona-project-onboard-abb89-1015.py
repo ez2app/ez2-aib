@@ -151,5 +151,57 @@ class C8ShipWithoutOriginMain(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+BIN_AIB = ROOT.parent / "bin" / "aib"
+
+
+def newrole(tmp, name, prompt, locale="en", *extra):
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": os.path.join(tmp, "home"),
+           "EZ2_AIB_LOCALE": locale, "AIB_GENES": "0", "AIB_AUTO_BIND": "0"}
+    os.makedirs(env["HOME"], exist_ok=True)
+    return subprocess.run([PY, str(BIN_AIB), "newrole", "--name", name, "--prompt", prompt] + list(extra),
+                          cwd=tmp, env=env, capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=120)
+
+
+class C10NewroleShortPrompt(unittest.TestCase):
+    """C10 一句話 --prompt 必 lint 失敗;E5 失敗前已印「分配新角色 UID」、失敗字寫死中文。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aib-c10-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_one_sentence_prompt_is_wrapped_into_three_sections(self):
+        r = newrole(self.tmp, "Reviewer", "A careful code reviewer.")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        card = next(pathlib.Path(self.tmp, "home", ".ez2-aib").rglob("角色.md")).read_text(encoding="utf-8")
+        body = card.split("---", 2)[-1]
+        self.assertTrue(body.strip().startswith("A careful code reviewer."), body[:80])
+        for h in ("## 職責\n", "## 紅線\n", "## 知識域\n"):
+            self.assertIn(h, card)
+        self.assertIn("--overwrite", r.stderr + r.stdout)     # 告訴人怎麼換成自己的三段
+
+    def test_b_partial_sections_fail_before_uid_and_localized(self):
+        for loc, word in (("en", "red lines"), ("ja", "禁止事項"), ("ko", "금지선")):
+            r = newrole(self.tmp, "Partial" + loc, "x\n\n## 職責\na\n", loc, "--dry-run")
+            out = r.stdout + r.stderr
+            self.assertEqual(r.returncode, 4, out)
+            self.assertIn("PERSONA_LINT_FAIL", out)
+            self.assertNotIn("分配新角色", out)               # E5:沒過檢查不印 UID
+            self.assertNotIn("UID", out.split("PERSONA_LINT_FAIL")[0])
+            self.assertNotIn("缺 ##", out)                    # E5:不再是寫死的中文
+            self.assertIn(word, out, loc)
+            self.assertIn("## 紅線", out)                     # 照抄就能用的標題
+
+    def test_c_full_prompt_unchanged(self):
+        full = "Me.\n\n## 職責\nA.\n\n## 紅線\nB.\n\n## 知識域\nC.\n"
+        r = newrole(self.tmp, "Full", full)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        card = next(pathlib.Path(self.tmp, "home", ".ez2-aib").rglob("角色.md")).read_text(encoding="utf-8")
+        self.assertIn(full.strip(), card)
+        self.assertNotIn("--overwrite", r.stderr + r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
