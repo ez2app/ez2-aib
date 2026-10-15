@@ -225,6 +225,84 @@ def _receipt(root, msgid, stage, detail=None):
     GF.append_receipt(root, msgid, r)
 
 
+# ── 觀測(第 20.5 節;第 1 期 1.9):稽核行、時鐘、工人狀態 ──
+CLOCK_EVERY = float(os.environ.get("AIB_CHAT_CLOCK_EVERY") or 600)   # 秒
+CLOCK_WARN_S = float(os.environ.get("AIB_CHAT_CLOCK_WARN") or 3)     # 驗收第 10 項:慢 3 秒就警告
+OFFLINE_AFTER = float(os.environ.get("AIB_CHAT_OFFLINE_AFTER") or 300)   # 第 20.1 節:全部站斷線超過 5 分鐘 ⇒ 離線
+
+
+def audit(root, direction, msgid, peer, result):
+    """一則全球收發一行(第 20.5 節):時間、方向、msgid、對象 npub、結果。**不記內容。**"""
+    d = Path(root) / "audit"
+    try:
+        d.mkdir(mode=0o700, exist_ok=True)
+        p = d / (time.strftime("%Y%m%d") + ".jsonl")
+        line = json.dumps({"v": 1, "at": int(time.time()), "dir": direction, "msgid": msgid, "peer": peer,
+                           "result": result}, ensure_ascii=False) + "\n"
+        fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+    except OSError:
+        pass                      # 稽核寫不進去不擋收發
+
+
+def today_counts(root):
+    out = {"sent": 0, "received": 0, "failed": 0}
+    try:
+        lines = (Path(root) / "audit" / (time.strftime("%Y%m%d") + ".jsonl")).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for l in lines:
+        try:
+            r = json.loads(l)
+        except ValueError:
+            continue
+        if r.get("dir") == "out" and r.get("result") == "relayed":
+            out["sent"] += 1
+        elif r.get("dir") == "out" and r.get("result") in ("failed", "refused", "expired"):
+            out["failed"] += 1
+        elif r.get("dir") == "in" and r.get("result") == "inbox":
+            out["received"] += 1
+    return out
+
+
+def _clock_url(relay):
+    explicit = os.environ.get("AIB_CHAT_CLOCK_URL")
+    if explicit:
+        return explicit
+    if relay.startswith("wss://"):
+        return "https://" + relay[len("wss://"):].split("/", 1)[0] + "/"
+    return None
+
+
+def clock_offset(relays):
+    """中繼站主機 HTTP Date 標頭 − 本機時間(秒;Date 只到秒)。量不到回 None。不連任何新的站:只問收信站本身。"""
+    import email.utils
+    import urllib.request
+    got = []
+    for r in relays:
+        url = _clock_url(r)
+        if not url:
+            continue
+        try:
+            t0 = time.time()
+            with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=5) as resp:
+                date = resp.headers.get("Date")
+            t1 = time.time()
+            if date:
+                got.append(email.utils.parsedate_to_datetime(date).timestamp() - (t0 + t1) / 2)
+        except Exception:   # noqa: BLE001  (含 HTTP 錯誤碼:4xx 也常帶 Date,但這裡寧可少量一站)
+            continue
+        if os.environ.get("AIB_CHAT_CLOCK_URL"):
+            break
+    if not got:
+        return None
+    got.sort()
+    return round(got[len(got) // 2], 1)
+
+
 class Sender(object):
     def __init__(self, root):
         self.root = Path(root)
@@ -238,6 +316,10 @@ class Sender(object):
         if res[0] == 0:
             self.cache[addr] = (time.time(), res)
         return res
+
+    def _rcpt(self, msgid, peer, stage, detail=None):
+        _receipt(self.root, msgid, stage, detail)
+        audit(self.root, "out", msgid, peer, stage)
 
     def _done(self, msgid):
         for ext in (".json", ".try"):
@@ -253,7 +335,7 @@ class Sender(object):
         except (OSError, ValueError, AttributeError):
             n = 1
         if n >= MAX_TRIES:
-            _receipt(self.root, msgid, "failed", why)
+            self._rcpt(msgid, None, "failed", why)
             self._done(msgid)
             return
         write_json(str(tp), {"n": n, "next": time.time() + RETRY_GAP, "why": why})
@@ -268,26 +350,26 @@ class Sender(object):
         if rec["op"] == "resolve":
             rc, res = await self._resolve(rec["to"])
             if rc == 0:
-                _receipt(self.root, msgid, "resolved", json.dumps({"npub": res["seat"]["npub"], "dm_relays": res["dm_relays"],
+                self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "resolved", json.dumps({"npub": res["seat"]["npub"], "dm_relays": res["dm_relays"],
                                                                    "display_name": res.get("display_name")}, ensure_ascii=False))
             else:
-                _receipt(self.root, msgid, "failed", res.get("why"))
+                self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "failed", res.get("why"))
             self._done(msgid)
             return
         if rec.get("expires") and rec["expires"] < time.time():
-            _receipt(self.root, msgid, "expired")
+            self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "expired")
             self._done(msgid)
             return
         frm = rec["from"]
         if not frm.get("attested"):
             # 寄件人身分沒量到 ⇒ 不拿那一席的金鑰代簽(簽了就等於證明是那一席寄的)
-            _receipt(self.root, msgid, "refused", "unattested")
+            self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "refused", "unattested")
             self._done(msgid)
             return
         m = NK.read_map()
         entry = next((e for e in m["seats"] if e.get("status") == "active" and e["seat5"] == frm["seat"]), None)
         if entry is None or not m.get("owner"):
-            _receipt(self.root, msgid, "refused", "no_sender_key")
+            self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "refused", "no_sender_key")
             self._done(msgid)
             return
         rc, res = await self._resolve(rec["to"])
@@ -295,7 +377,7 @@ class Sender(object):
             if res.get("why") in TRANSIENT:
                 self._retry_later(msgid, res.get("why"))
             else:
-                _receipt(self.root, msgid, "refused", res.get("why"))
+                self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "refused", res.get("why"))
                 self._done(msgid)
             return
         await self._ensure_dm_relays(entry)
@@ -314,7 +396,7 @@ class Sender(object):
             self._retry_later(msgid, type(err).__name__)
             return
         if ok:
-            _receipt(self.root, msgid, "relayed", "%d" % len(ok))      # 第 7.1 節第 6 步:1 站成功就算
+            self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "relayed", "%d" % len(ok))      # 第 7.1 節第 6 步:1 站成功就算
             # 寄出帳:對方回條回來時,只收「我寄給的那個 npub」簽的(防有人冒充對方亂回條)
             (self.root / "sent").mkdir(exist_ok=True)
             write_json(str(self.root / "sent" / (msgid + ".json")), {"v": 1, "to": res["seat"]["npub"], "at": int(time.time())})
@@ -436,6 +518,7 @@ class Receiver(object):
         self.root = Path(root)
         self.sender = sender
         self.led = Ledger(root)
+        self.client = None
 
     def _our_seats(self):
         m = NK.read_map()
@@ -456,6 +539,7 @@ class Receiver(object):
 
     async def _session(self, stop, seats):
         c = await _client(CR.relays())
+        self.client = c
         try:
             since = int(self.led.st.get("last_at") or time.time()) - BACKFILL
             flt = N.Filter().kind(N.Kind(1059)).pubkeys([N.PublicKey.parse(h) for h in seats]) \
@@ -477,6 +561,7 @@ class Receiver(object):
                 if n.is_NEW_EVENT():
                     await self.on_wrap(n.event, seats)
         finally:
+            self.client = None
             await c.shutdown()
 
     async def on_wrap(self, ev, seats):
@@ -532,6 +617,7 @@ class Receiver(object):
             if stage == "queued" and pos.isdigit() and int(pos) > 0:
                 r["pos"] = int(pos)
             GF.append_receipt(self.root, ref, r)
+            audit(self.root, "receipt-in", ref, from_npub, stage)
 
     async def on_dm(self, rumor, tags, from_npub, entry):
         msgid = tags.get("aib-msgid") or ""
@@ -581,8 +667,10 @@ class Receiver(object):
             rec["reply_to"] = tags["aib-reply-to"]
         try:
             GF.write_inbox(self.root, rec)
+            audit(self.root, "in", msgid, from_npub, "inbox")
         except GF.ContractError as err:
             sys.stderr.write("inbox:%s\n" % err)
+            audit(self.root, "in", msgid, from_npub, "refused")
             await self.send_receipt(msgid, "refused")
 
     async def send_receipt(self, msgid, stage, pos=None, refs=None):
@@ -605,6 +693,7 @@ class Receiver(object):
         c = await _client(res["dm_relays"])
         try:
             out = await c.send_event(gw)
+            audit(self.root, "receipt-out", msgid, rec["from"], stage if out.success else stage + ":failed")
             return bool(out.success)
         finally:
             await c.shutdown()
@@ -685,6 +774,41 @@ def _switch_on():
     return CR.profile_path().parent.joinpath("enabled.json").exists()
 
 
+async def _relay_status(receiver):
+    c = receiver.client
+    out = {r: "DISCONNECTED" for r in CR.relays()}
+    if c is None:
+        return out
+    try:
+        rel = await c.relays()
+        for url, relay in rel.items():
+            st = relay.status()
+            out[str(url).rstrip("/")] = getattr(st, "name", None) or str(st).split(".")[-1]
+    except Exception:   # noqa: BLE001
+        pass
+    return out
+
+
+async def write_worker_status(root, receiver, state):
+    """工人狀態(第 20.5 節):各站連線、今日收發、待寄、時鐘差、離線。aib chat status 讀它(四語由核心印)。"""
+    rel = await _relay_status(receiver)
+    up = sum(1 for v in rel.values() if v == "CONNECTED")
+    now = time.time()
+    if up:
+        state["last_up"] = now
+    offline = up == 0 and now - state.get("last_up", state["started"]) >= OFFLINE_AFTER
+    pend = len(list((Path(root) / "outbox").glob("*.json"))) + len(list((Path(root) / "sending").glob("*.json")))
+    rec = {"v": 1, "at": int(now), "pid": os.getpid(), "relays": rel, "up": up, "total": len(rel), "offline": offline,
+           "today": today_counts(root), "pending": pend, "clock": state.get("clock")}
+    write_json(str(Path(root) / "worker-status.json"), rec)
+    os.chmod(str(Path(root) / "worker-status.json"), 0o600)
+
+
+async def _check_clock(state):
+    off = await asyncio.to_thread(clock_offset, CR.relays())
+    state["clock"] = {"offset": off, "at": int(time.time()), "warn": off is not None and abs(off) >= CLOCK_WARN_S}
+
+
 async def serve(root):
     """常駐:每 POLL 秒領 outbox、寄;每 HB_EVERY 秒寫心跳。開關關掉、父行程(當班的轉接程式)不在、SIGTERM ⇒ 結束並刪心跳。"""
     import signal
@@ -696,6 +820,8 @@ async def serve(root):
     parent = os.getppid()
     sender, last_hb = Sender(root), 0.0
     receiver = Receiver(root, sender)
+    wstate = {"started": time.time(), "clock": None}
+    last_clock = 0.0
     recv_task = asyncio.ensure_future(receiver.run(stop))
     for left in sorted((root / "sending").glob("*.json")):     # 上次掛掉時領了還沒寄完的:當重試處理
         if not (root / "sending" / (left.stem + ".try")).exists():
@@ -707,6 +833,10 @@ async def serve(root):
             if time.time() - last_hb >= HB_EVERY:
                 GF.write_heartbeat(root)
                 last_hb = time.time()
+                if time.time() - last_clock >= CLOCK_EVERY:
+                    last_clock = time.time()
+                    asyncio.ensure_future(_check_clock(wstate))
+                await write_worker_status(root, receiver, wstate)
             for msgid, _rec, _p in GF.pending(root, "outbox"):
                 if GF.claim(root, msgid) is not None:
                     await sender.handle(msgid)

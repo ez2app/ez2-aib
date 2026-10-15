@@ -4320,5 +4320,11 @@
   "aib.chat.receipt.held": "상대가 먼저 검토해야 받습니다.",
   "aib.chat.receipt.refused": "상대가 이 메시지를 받지 않았습니다.",
   "aib.chat.receipt.expired": "만료되어 전달되지 않았습니다.",
-  "aib.chat.receipt.read": "읽음"
+  "aib.chat.receipt.read": "읽음",
+  "aib.chat.status_relays": "릴레이: {up}/{total} 연결됨",
+  "aib.chat.status_offline": "⚠ 글로벌 채팅 오프라인: 릴레이 {up}/{total}, 5분 넘게 모두 끊김(송수신 불가)",
+  "aib.chat.status_today": "오늘: 보냄 {sent}, 받음 {received}, 실패 {failed}; 보낼 대기 {pending}",
+  "aib.chat.status_clock_ok": "시계: 릴레이와 {offset}초 차이(정상)",
+  "aib.chat.status_clock_warn": "⚠ 시계: 릴레이와 {offset}초 차이. 시간을 맞추세요(시스템 설정 → 날짜 및 시간 → 자동 설정). 수신 확인과 만료 판단이 틀어집니다",
+  "aib.chat.status_clock_unknown": "시계: 아직 측정 안 됨(또는 측정 불가)"
 }

@@ -4320,5 +4320,11 @@
   "aib.chat.receipt.held": "The recipient must review it first.",
   "aib.chat.receipt.refused": "The recipient did not accept this message.",
   "aib.chat.receipt.expired": "Expired; not delivered.",
-  "aib.chat.receipt.read": "Read"
+  "aib.chat.receipt.read": "Read",
+  "aib.chat.status_relays": "Relays: {up}/{total} connected",
+  "aib.chat.status_offline": "⚠ Global chat offline: relays {up}/{total}, all disconnected for over 5 minutes (nothing in or out)",
+  "aib.chat.status_today": "Today: sent {sent}, received {received}, failed {failed}; waiting to send {pending}",
+  "aib.chat.status_clock_ok": "Clock: {offset} s off the relays (fine)",
+  "aib.chat.status_clock_warn": "⚠ Clock: {offset} s off the relays; please sync the time (System Settings → Date & Time → set automatically) or receipts and expiry will be wrong",
+  "aib.chat.status_clock_unknown": "Clock: not measured yet (or cannot measure)"
 }

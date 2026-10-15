@@ -4320,5 +4320,11 @@
   "aib.chat.receipt.held": "相手が確認してから受け取ります。",
   "aib.chat.receipt.refused": "相手はこのメッセージを受け取りませんでした。",
   "aib.chat.receipt.expired": "期限切れのため届きませんでした。",
-  "aib.chat.receipt.read": "既読"
+  "aib.chat.receipt.read": "既読",
+  "aib.chat.status_relays": "リレー:{up}/{total} 接続中",
+  "aib.chat.status_offline": "⚠ グローバルチャットがオフライン:リレー {up}/{total}、5 分以上すべて切断(送受信できません)",
+  "aib.chat.status_today": "本日:送信 {sent}、受信 {received}、失敗 {failed}。送信待ち {pending}",
+  "aib.chat.status_clock_ok": "時計:リレーとの差 {offset} 秒(正常)",
+  "aib.chat.status_clock_warn": "⚠ 時計:リレーとの差 {offset} 秒。時刻を合わせてください(システム設定 → 日付と時刻 → 自動設定)。受領通知と期限の判定がずれます",
+  "aib.chat.status_clock_unknown": "時計:未計測(または計測不可)"
 }

@@ -469,8 +469,20 @@ def status_record(env):
         "heartbeat": GF.bridge_alive(root),
         "venv": venv_state(env),
         "keys": _keys_summary(env),
+        "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
+
+
+def _worker_status(root, running):
+    """寄件 / 收件工人寫的 worker-status.json(1.9);太舊(工人沒在跑)回 None。"""
+    try:
+        w = json.loads((Path(root) / "worker-status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not running or not isinstance(w, dict) or time.time() - int(w.get("at") or 0) > 60:
+        return None
+    return w
 
 
 def _keys_summary(env):
@@ -554,6 +566,17 @@ def cmd_status(a, env, out):
         out.write(T("status_not_running") + "\n")
     out.write(T("status_venv_" + rec["venv"], pin=NOSTR_SDK_PIN) + "\n")
     out.write(T("status_keys", n=rec["keys"]["seats"], owner=rec["keys"]["owner"] or "-") + "\n")
+    w = rec.get("worker")
+    if w:
+        out.write(T("status_offline" if w.get("offline") else "status_relays", up=w.get("up", 0), total=w.get("total", 0)) + "\n")
+        t = w.get("today") or {}
+        out.write(T("status_today", sent=t.get("sent", 0), received=t.get("received", 0), failed=t.get("failed", 0),
+                    pending=w.get("pending", 0)) + "\n")
+        c = w.get("clock") or {}
+        if c.get("offset") is None:
+            out.write(T("status_clock_unknown") + "\n")
+        else:
+            out.write(T("status_clock_warn" if c.get("warn") else "status_clock_ok", offset=c["offset"]) + "\n")
     out.write(T("status_heartbeat_" + ("yes" if rec["heartbeat"] else "no")) + "\n")
     return 0
 

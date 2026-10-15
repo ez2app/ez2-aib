@@ -4320,5 +4320,11 @@
   "aib.chat.receipt.held": "對方需要先審核才會收。",
   "aib.chat.receipt.refused": "對方沒有收下這則。",
   "aib.chat.receipt.expired": "已過期,沒有送出。",
-  "aib.chat.receipt.read": "已讀"
+  "aib.chat.receipt.read": "已讀",
+  "aib.chat.status_relays": "中繼站:{up}/{total} 連線中",
+  "aib.chat.status_offline": "⚠ 全球對談離線:中繼站 {up}/{total},全部斷線超過 5 分鐘(收不到也寄不出)",
+  "aib.chat.status_today": "今天:寄出 {sent}、收到 {received}、失敗 {failed};待寄 {pending}",
+  "aib.chat.status_clock_ok": "時鐘:跟中繼站差 {offset} 秒(正常)",
+  "aib.chat.status_clock_warn": "⚠ 時鐘:跟中繼站差 {offset} 秒;請校時(系統設定 → 日期與時間 → 自動設定),不然回條與過期判斷會錯",
+  "aib.chat.status_clock_unknown": "時鐘:還沒量(或量不到)"
 }
