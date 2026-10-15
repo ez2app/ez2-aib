@@ -2790,5 +2790,8 @@
   "aib.vault_convert.err_backup_inside": "バックアップ先は vault の外に置いてください",
   "aib.vault_convert.err_dst_exists_differs": "移動先ファイルが既に存在し内容が異なります:{name}",
   "aib.vault_convert.err_dir_missing": "フォルダが存在しません",
-  "aib.vault_convert.undo_note": "frontmatter に補った身分(uid/aliases/legacy_paths)は残します。索引は plan+apply を再実行するか {backup} から復元してください"
+  "aib.vault_convert.undo_note": "frontmatter に補った身分(uid/aliases/legacy_paths)は残します。変換前の状態へ完全に戻すには {backup} から復元してください",
+  "aib.vault_convert.warn_link_ambiguous": "本文の {count} 件のリンクが同名の複数ノートを指しています。Obsidian がどれを選ぶか確定できないため書き換えません(変換後に解決できなくなる可能性があります):{sample}",
+  "aib.vault_convert.warn_attach_relative": "Obsidian の添付ファイルの場所が相対パス {path} です。変換後に貼った添付は各フォルダ内にこの旧名フォルダを作り、verify が赤になります。固定の uid フォルダへの変更を勧めます",
+  "aib.vault_convert.warn_remotely_save": "同期プラグイン remotely-save を検出しました。.ez2 と .obsidian は同期されないため、他の端末では <uid>.md しか見えません。変換前に全端末を同期して編集を止めてください(手順は本ツールの説明を参照)"
 }
