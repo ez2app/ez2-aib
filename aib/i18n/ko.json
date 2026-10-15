@@ -2626,6 +2626,7 @@
   "aib.cardreg.compare_unreadable": "비교할 파일/수령증을 읽을 수 없음({err})",
   "aib.bindone.reproject_fail": "⚠ 연결은 썼지만 재투영 rc={rc}(화면이 갱신되지 않았을 수 있음): {detail}",
   "aib.bindone.fit_warn": "⚠ 인격 카드 「{name}」({uid})는 {kind} 용, 이 석은 {provider}; 그대로 연결했으니 카드의 능력이 이 석과 맞는지 확인하세요",
+  "aib.bindone.role_conflict": "agent_uid {agent} 가 이미 있고 신원 층의 역할은 '{have}', 자리 파일은 '{want}' 입니다——재실행이 아니라 충돌입니다. 자리 파일이 맞다면 신원 층 역할을 바꾸고(장부에 기록) 다시 실행하세요: {cmd}",
   "aib.ppack.comply": "읽기만 해서는 안 됨: 지금부터 모든 답변을 이 카드대로 — 레드라인은 하나하나 지키고 직무와 말버릇을 쓰기; 보내기 전에 레드라인을 스스로 점검.",
   "aib.ppack.answer_lang": "답변 언어: {name}({loc}). 이 AIB 의 언어 설정을 따름; 카드에 다른 언어가 적혀 있어도 이 줄이 우선. Answer in this language.",
   "aib.ppack.handoff_rule": "대화 사용량이 85%(또는 관리자 가 clear 준비라고 하면)가 되면 `aib handoff`(collect → 세 단계 write)를 반드시 실행, 건너뛸 수 없음.",

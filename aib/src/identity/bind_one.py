@@ -305,8 +305,7 @@ def preflight_bind_agent(model, agent_uid, role, session_uuid, card_ref,
     if shape_error:
         return "failed", shape_error
     if agent.get("role") != role:
-        return "failed", ("agent_uid %s 已存在但 role=%r,席位檔是 %r——這不是重跑,是衝突"
-                          % (agent_uid, agent.get("role"), role))
+        return "failed", _role_conflict(agent_uid, agent.get("role"), role)
 
     state = "already"
     current_card = agent.get("persona_card")
@@ -407,8 +406,7 @@ def bind_agent(model, agent_uid, role, session_uuid, card_ref, actor,
         except RoleModelError:
             return "failed", "register 說已註冊,但 show 查不出來(狀態不一致)"
         if agent.get("role") != role:
-            return "failed", ("agent_uid %s 已存在但 role=%r,席位檔是 %r——這不是重跑,是衝突"
-                              % (agent_uid, agent.get("role"), role))
+            return "failed", _role_conflict(agent_uid, agent.get("role"), role)
         state = "already"
 
     # 2. bind-persona(換卡要具名;同卡不同 sha=重釘;都同=不寫)
@@ -949,6 +947,14 @@ def _dump(obj):
 
 
 _UI_TR = {}
+
+
+def _role_conflict(agent_uid, have, want):
+    """身份層記的 role 跟席位檔不同(10-15 @977e3 實機:換人格時撞到 bot vs dev)。
+    不自動改(誰對要人判斷),但把解法那一行給出來:照席位檔改身份層用 role_model.py switch-role(入帳)。"""
+    tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "role_model.py")
+    return _ui("aib.bindone.role_conflict", agent=agent_uid, have=have, want=want,
+               cmd="python3 %s switch-role %s %s --sig <role@seat/Engine> --ai-id <engine:host:session>" % (tool, agent_uid, want))
 
 
 def _ui(key, **params):
