@@ -940,6 +940,20 @@ if [ -n "$_XH_OUT_IP" ]; then
   exit $?
 fi
 
+# ── 排空器模式要有證據(10-15 B4)──────────────────────────────────────────────
+#   AIB_DM_SORT_DELIVER=1 會跳過真人判定、冒用改寫、留痕、record 與忙碌檢查 —— 原本一個環境變數就打得開。
+#   證據 = 投遞者手上正在貼的那一則(佇列信 claimed / 叫醒那批還沒寫回),判準單源在 dm_queue.sort_deliver_proof。
+#   證不出 ⇒ 照一般 aib dm 送(具名一行),不拒送:拒送會讓「排空器少帶一個變數」變成信送不出去。
+if [ "${AIB_DM_SORT_DELIVER:-0}" = "1" ]; then
+  _SP_ID="${AIB_DM_QUEUED_ITEM_ID:-${AIB_DM_SORT_WAKE_ID:-}}"
+  if [ -z "${AIB_DM_QUEUED_SEAT:-}" ] || [ -z "$_SP_ID" ] || [ ! -f "$HERE/dm_queue.py" ] \
+     || ! "$PY3" "$HERE/dm_queue.py" sort-proof --seat "$AIB_DM_QUEUED_SEAT" --id "$_SP_ID" >/dev/null 2>&1; then
+    echo "aib-dm-ctl: $(_dmt aib.dmctl.sort_proof_missing id="${_SP_ID:--}")" >&2
+    export AIB_DM_SORT_DELIVER=0
+    unset AIB_DM_QUEUED_ITEM_ID AIB_DM_SORT_WAKE_ID
+  fi
+fi
+
 # HDR:席位對映優先於腳本名。長訊指標與 unattested 抬頭共用這一筆。
 # 推不出來就空 —— 指標維持舊字面,抬頭仍走下面的 unknown。
 S_TAGGED="$("$PY3" "$HERE/sender_origin.py" --tagged 2>/dev/null || true)"
