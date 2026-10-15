@@ -1640,6 +1640,8 @@
   "aib.newproj.draft_refreshed": "プロジェクトの憲法草案にレッドラインがなかったため、この席のペルソナ {uid} から作り直しました(未承認のまま):{path}",
   "aib.newproj.draft_refresh_will": "プロジェクトの憲法草案にレッドラインがないため、この席のペルソナ {uid} から作り直します(未承認のまま):{path}",
   "aib.newrole.card_only_created": "ペルソナ {name} を作成しました(uid {uid})",
+  "aib.newrole.bind_failed_card_kept": "ロールカード「{name}」(uid {uid})は {path} に作成済みで、カード索引も更新済みです。席への紐付けだけが失敗しました。上の原因を直して同じコマンドを再実行すれば、紐付けだけをやり直し、カードを二重に作りません。",
+  "aib.newrole.bind_failed_card_existing": "ロールカード「{name}」(uid {uid})は元から {path} にあり、変更していません。席への紐付けだけが失敗しました。上の原因を直して同じコマンドを再実行してください。",
   "aib.newrole.card_only_exists": "ペルソナ {name} はすでにあります(uid {uid})。カードは変更していません",
   "aib.newrole.card_only_dry_run": "(試行、何も書いていません)ペルソナ {name} を作成します(uid {uid})",
   "aib.newrole.card_only_dry_run_overwrite": "(試行、何も書いていません)ペルソナ {name} を上書きします(uid {uid})",

@@ -1640,6 +1640,8 @@
   "aib.newproj.draft_refreshed": "The project's constitution draft had no red lines; regenerated from this seat's persona {uid} (still not approved): {path}",
   "aib.newproj.draft_refresh_will": "The project's constitution draft has no red lines; it would be regenerated from this seat's persona {uid} (still not approved): {path}",
   "aib.newrole.card_only_created": "Created persona {name} (uid {uid})",
+  "aib.newrole.bind_failed_card_kept": "The persona card {name} (uid {uid}) has been created at {path} and the card index is updated; only binding the seat failed. Fix the reason above and run the same command again: it will only rebind, it will not create a second card.",
+  "aib.newrole.bind_failed_card_existing": "The persona card {name} (uid {uid}) already existed at {path} and was left as is; only binding the seat failed. Fix the reason above and run the same command again.",
   "aib.newrole.card_only_exists": "Persona {name} already exists (uid {uid}); card unchanged",
   "aib.newrole.card_only_dry_run": "(dry run, nothing written) would create persona {name} (uid {uid})",
   "aib.newrole.card_only_dry_run_overwrite": "(dry run, nothing written) would overwrite persona {name} (uid {uid})",

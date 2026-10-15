@@ -921,6 +921,9 @@ def main():
         rc, out, err = run_cmd(bind_cmd, cwd=REPO_ROOT)
         if rc != 0:
             log(f"錯誤: bind_one.py 失敗 (rc={rc}):\n{err}", prefix="[x]")
+            # 10-15 @977e3 實機:卡在步驟 1 已寫進 vault、索引已掃,只有綁席沒成 ⇒ 講明卡在哪、重跑同一行只會重綁(不會再建一張)
+            log(T("aib.newrole.bind_failed_card_existing" if keep_existing else "aib.newrole.bind_failed_card_kept",
+                  {"name": name, "uid": target_card_uid, "path": str(target_role_file)}), prefix="[x]")
             sys.exit(rc)
         log("   -> 席位綁定完成")
         # 10-12 Bot 開發第 16 件:bind_one 收據裡的 provider_warning ⇒ 只警告,照綁、不改卡

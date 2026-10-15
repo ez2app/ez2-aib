@@ -1640,6 +1640,8 @@
   "aib.newproj.draft_refreshed": "프로젝트 헌법 초안에 레드라인이 없어 이 좌석의 페르소나 {uid} 로 다시 만들었습니다(아직 미승인): {path}",
   "aib.newproj.draft_refresh_will": "프로젝트 헌법 초안에 레드라인이 없어 이 좌석의 페르소나 {uid} 로 다시 만들 예정입니다(아직 미승인): {path}",
   "aib.newrole.card_only_created": "페르소나 {name} 를 만들었습니다(uid {uid})",
+  "aib.newrole.bind_failed_card_kept": "역할 카드 「{name}」(uid {uid})는 {path} 에 이미 만들어졌고 카드 색인도 갱신됐습니다. 자리 연결만 실패했습니다. 위 원인을 고친 뒤 같은 명령을 다시 실행하면 연결만 다시 하고 카드를 두 번 만들지 않습니다.",
+  "aib.newrole.bind_failed_card_existing": "역할 카드 「{name}」(uid {uid})는 원래 {path} 에 있었고 바꾸지 않았습니다. 자리 연결만 실패했습니다. 위 원인을 고친 뒤 같은 명령을 다시 실행하세요.",
   "aib.newrole.card_only_exists": "페르소나 {name} 는 이미 있습니다(uid {uid}). 카드는 바꾸지 않았습니다",
   "aib.newrole.card_only_dry_run": "(시험 실행, 아무것도 쓰지 않음) 페르소나 {name} 를 만들 예정입니다(uid {uid})",
   "aib.newrole.card_only_dry_run_overwrite": "(시험 실행, 아무것도 쓰지 않음) 페르소나 {name} 를 덮어쓸 예정입니다(uid {uid})",
