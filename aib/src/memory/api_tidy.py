@@ -3,12 +3,12 @@
 """API 金鑰席的自動精煉(DESIGN-memory-tidy-1013 §8b;the maintainer 10-13 14:4x「API 席和 Bot 也要能自動更新」「照 A,每 20 輪」)。
 
 API 席(openrouter / deepseek / nvidia / typesafe 的 REPL)的模型只有 aib_dm 工具,不能自己跑 aib memory tidy ⇒
-由 REPL 程式代跑:每 EVERY 輪(量不到用量 %,照 the maintainer 裁的 A)——
+由 REPL 程式代跑:每 N 輪(N = policy 表 unmeasured_tidy_every_turns)(量不到用量 %,照 the maintainer 裁的 A)——
   collect(機器量,出草稿)→ 草稿當一則訊息給這一席的模型填(只帶這場對話最後幾則,畫面不印)→ apply --defer-big → 回一行提醒。
 草稿與模型的回答都不進這場對話的 messages / history(不污染對話)。任何錯 ⇒ 回一行失敗原因,REPL 照常。
 
-  tick(session_id)  每輪回完呼叫一次;到第 20、40、… 輪回 True
-  turn_end(session_id)  每輪回完呼叫一次:CTX 用量表(auto_distill_hook.outer_turn)
+  turn_end(session_id)  每輪回完呼叫一次:CTX 用量表(auto_distill_hook.outer_turn);量不到用量 ⇒ 每 N 輪回 True
+  tick(session_id)  舊入口(只計數,不看用量表);REPL 已改用 turn_end
   run(ask, seat="") ask(prompt) -> 模型回的字;回要印在畫面的一行
   recent(messages)  ask 要帶的那幾則(system + 最後 RECENT_MESSAGES 則)
 
@@ -28,11 +28,21 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-for _p in (HERE, HERE.parent / "cockpit", HERE.parent / "identity"):
+for _p in (HERE, HERE.parent / "cockpit", HERE.parent / "identity", HERE.parent / "rotation"):
     if str(_p) not in sys.path:
         sys.path.append(str(_p))
 
-EVERY = 20
+def every():
+    """量不到用量的席每幾輪精煉一次:單一來源 policy/ctx-thresholds.json unmeasured_tidy_every_turns(10-15 22:4x)。"""
+    import ctx_policy
+    return ctx_policy.unmeasured_every()
+
+
+def _n():
+    try:
+        return every()
+    except Exception:  # noqa: BLE001 —— 只是畫面上的字
+        return "?"
 RECENT_MESSAGES = 6        # 只帶這場對話最後幾則(整場重送很貴;a seat 10-13 14:41 API 席照 token 算錢)
 
 PROMPT = ("[AIB 自動精煉] 請替這一席整理記憶。下面「可以改的四段」各有現在的內容與說明;「機器事實」只供參考,不要回。\n"
@@ -76,18 +86,19 @@ def ship_segment(code=None, gate=None):
 
 
 def turn_end(session_id):
-    """10-15(維護者「每一家都要由程式觸發」):API 席沒有 hook 機制 ⇒ REPL 每一輪回完代呼叫 CTX 用量表那條 stop 路
-    (auto_distill_hook.outer_turn:同一張表、aib dm 給自己、同格只一次)。API 席今天量不到用量(gauge pct 一律 None)
-    ⇒ 照實不觸發;精煉仍由上面 tick / run 每 EVERY 輪代跑。任何錯 ⇒ 安靜略過。"""
+    """REPL 每一輪回完呼叫一次(10-15 維護者「每一家都要由程式觸發」、22:4x「量不到用量的席一律每 20 輪精煉」):
+    auto_distill_hook.outer_turn 跑 CTX 用量表那條 stop 路;API 席量不到用量 ⇒ 同一席同一對話每 N 輪
+    (policy/ctx-thresholds.json unmeasured_tidy_every_turns)回一段精煉指令 ⇒ 回 True,REPL 就代跑 run()
+    (模型不能自己跑指令)。計數只在 outer_turn 那邊數一次,不跟 tick 疊算。任何錯 ⇒ False。"""
     try:
         import auto_distill_hook as adh
-        return adh.outer_turn(session_id)
+        return adh.outer_turn_kind(session_id)[0] == "unmeasured-tidy"
     except Exception:  # noqa: BLE001
-        return ""
+        return False
 
 
 def tick(session_id):
-    """這一席又回完一輪 ⇒ 計數 +1;到 EVERY 的倍數回 True。換對話(session 不同)從 0 算。"""
+    """這一席又回完一輪 ⇒ 計數 +1;到 N 的倍數回 True。換對話(session 不同)從 0 算。"""
     try:
         from seat_address import uuid_tail5
         code = uuid_tail5(session_id or "")
@@ -105,7 +116,7 @@ def tick(session_id):
         tmp = p.with_name(p.name + ".tmp-%d" % os.getpid())
         tmp.write_text(json.dumps(st), encoding="utf-8")
         os.replace(tmp, p)
-        return st["turns"] % EVERY == 0
+        return st["turns"] % every() == 0
     except Exception:  # noqa: BLE001 —— 計數壞了不能讓 REPL 掛
         return False
 
@@ -183,12 +194,12 @@ def run(ask, seat=""):
         return "[AIB] " + adh.T("auto_distill.notice_api", adh.notice_params(rec), None)
     except KeyboardInterrupt:
         _log({"action": "api-tidy-interrupted"})
-        return _say("auto_distill.api_interrupted", {"n": EVERY}, "[AIB] auto-distill interrupted (retry in %d turns)" % EVERY)
+        return _say("auto_distill.api_interrupted", {"n": _n()}, "[AIB] auto-distill interrupted (retry in %s turns)" % _n())
     except Exception as exc:  # noqa: BLE001 —— 填壞、網路錯:這次丟掉、不重試
         _log({"action": "api-tidy-failed", "why": str(exc)[:200]})
         why = str(exc).splitlines()[0][:160] if str(exc) else type(exc).__name__
-        return _say("auto_distill.api_failed", {"n": EVERY, "why": why},
-                    "[AIB] auto-distill failed (retry in %d turns): %s" % (EVERY, why))
+        return _say("auto_distill.api_failed", {"n": _n(), "why": why},
+                    "[AIB] auto-distill failed (retry in %s turns): %s" % (_n(), why))
 
 
 def text_of(reply):

@@ -267,7 +267,7 @@ class Bridge(Base):
         self.assertIn(MARK["handoff_remind"], A.bot_turn(CODE, self.CABIN, gauge_sid=SID))
 
     def test_B3_bot_no_gauge_turns_only_never_handoff(self):
-        outs = [A.bot_turn(CODE, self.CABIN) for _ in range(A.BOT_EVERY)]
+        outs = [A.bot_turn(CODE, self.CABIN) for _ in range(A.unmeasured_every())]
         self.assertEqual(sum(1 for o in outs if o), 1)
         self.assertIn(MARK["tidy"], outs[-1])
         self.assertFalse(any(MARK["handoff_now"] in o for o in outs), "量不到用量不准假造交接")
@@ -324,7 +324,7 @@ class Outer(Base):
             if not f.is_file():
                 continue                       # typesafe_cli.py 公開版沒有(雲端補)
             self.assertIn("_api_tidy.turn_end(sess.name)", f.read_text(encoding="utf-8"), name)
-        self.assertIn("adh.outer_turn(", (ROOT / "src" / "memory" / "api_tidy.py").read_text(encoding="utf-8"))
+        self.assertIn("adh.outer_turn", (ROOT / "src" / "memory" / "api_tidy.py").read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------- U 量不到用量:每 N 輪精煉(維護者 22:4x)
@@ -469,8 +469,8 @@ KNIVES = {
                          "        if ms is None:\n", ["ClearRebind.test_R2_stale_by_seat_no_fire"]),
     "no_bot_handoff": (HOOK_REL, "            hand = _bot_handoff(code, cabin, st, trig, pct, now)\n",
                        '            hand = ""\n', ["Bridge.test_B1_bot_85_handoff_once"]),
-    "no_outer": (HOOK_REL, "        return on_stop({\"session_id\": sid}, now=now, seat=seat, runner=runner,",
-                 "        return \"\" and on_stop({\"session_id\": sid}, now=now, seat=seat, runner=runner,",
+    "no_outer": (HOOK_REL, "        out = on_stop({\"session_id\": sid}, now=now, seat=rec, runner=runner,",
+                 "        out = \"\" and on_stop({\"session_id\": sid}, now=now, seat=rec, runner=runner,",
                  ["Outer.test_O1_api_seat_85_dm_once"]),
     "no_repl_call": ("src/cockpit/deepseek_cli.py", "            if _api_tidy.turn_end(sess.name):\n", "            if False:\n",
                      ["Outer.test_O4_every_api_repl_calls_turn_end"]),
@@ -478,7 +478,7 @@ KNIVES = {
                      ["Entry.test_N1_aib_init_installs"]),
     "no_update_call": ("cli.py", "'[ \"$rc\" -ne 0 ] || [ ! -f \"$AIB_UPDATE_HOOK\" ] || \"$AIB_UPDATE_PY\" \"$AIB_UPDATE_HOOK\" ensure-all >&2; '",
                        "''", ["Entry.test_N2_aib_update_runs_ensure_all_after_installer"]),
-    "no_api_every": (HOOK_REL, "    return _unmeasured_tidy(code, sid, rec)\n", '    return ""\n',
+    "no_api_every": (HOOK_REL, "    text = _unmeasured_tidy(code, sid, rec)\n", '    text = ""\n',
                      ["Unmeasured.test_U1_api_seat_every_20"]),
     "bot_hardcoded_n": (HOOK_REL, "    elif unmeasured_due(code, gauge_sid or \"\"):\n",
                         "    elif st[\"turns\"] % 20 == 0:\n", ["Unmeasured.test_U4_bot_reads_same_policy"]),

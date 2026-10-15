@@ -40,13 +40,15 @@ All readers go through `ctx_policy.py`; no threshold number is written in code.
 | grok | `grok` | Stop hook `stop` → aib dm | 不能(同上) | `~/.grok/hooks/aib-auto-distill.json` | 能(`grok_ctx_probe`) |
 | copilot | `copilot` | agentStop hook `stop` → aib dm | 不能(同上) | `~/.copilot/hooks/aib-auto-distill.json` | 能(`copilot_ctx_probe`) |
 | agy(gemini 是它的別名) | `agy` | PreInvocation `agy-pre`:叫模型前注入(ephemeral) | 不能(同格注入一次) | `~/.gemini/config/hooks.json` 的 `aib-auto-distill` | 能(agy 狀態列) |
-| deepseek / nvidia / openrouter | aib 自己的 Python REPL(`deepseek_cli.py` 等;**不是** Claude Code) | 外層代觸發:REPL 每一輪回完 `api_tidy.turn_end` → `outer_turn` → 同一條 `stop` 路 | 不能 | 不用裝(在 REPL 程式裡) | **量不到**(gauge 的 pct 一律 None)⇒ 今天照實不觸發;精煉另由 `api_tidy` 每 20 輪代跑 |
+| deepseek / nvidia / openrouter | aib 自己的 Python REPL(`deepseek_cli.py` 等;**不是** Claude Code) | 外層代觸發:REPL 每一輪回完 `api_tidy.turn_end` → `outer_turn` → 同一條 `stop` 路 | 不能 | 不用裝(在 REPL 程式裡) | **量不到**(gauge 的 pct 一律 None)⇒ **每 20 輪精煉**(`outer_turn` 數輪,REPL 代跑 `api_tidy.run`);不觸發交接類 |
 | typesafe / openrouterjev | `typesafe_cli.py` | 同上(檔補進來時要加同一行,測試 O4 會查) | 不能 | — | 公開版**沒有** `typesafe_cli.py`,開不起來 |
-| claudebot | 本機 Claude 對話 + `claudebot_hook.py` 的 Stop | 橋接代觸發:`bot_turn(gauge_sid=綁定的 Claude 對話)`,rc 2 續一輪 | 部分(續一輪要求交接;verify 沒過再提醒,封頂 3 次) | `claudebot_hook install` 裝的 Claude 設定 | 能(綁定對話的 gauge) |
-| codexbot | `codexbot_bridge.py`(Codex Desktop App Server) | 橋接代觸發:每一輪完成後 `bot_turn(gauge_sid=桌面 sessionId)`,指示附在下一則送出的訊息 | 不能 | 不用裝 | 試著量(`codex_ctx_probe` 讀桌面對話的 rollout,**沒實測**);量不到 ⇒ 每 20 輪精煉 |
-| grokbot / musebot / sand | `sand_bridge.py` | 橋接代觸發:每一則回真人後 `bot_turn`,指示放進 inbox 系統信 | 不能 | 不用裝 | **量不到** ⇒ 只每 20 輪精煉,不觸發 80 / 85 / 95 |
+| claudebot | 本機 Claude 對話 + `claudebot_hook.py` 的 Stop | 橋接代觸發:`bot_turn(gauge_sid=綁定的 Claude 對話)`,rc 2 續一輪 | 部分(續一輪要求交接;verify 沒過再提醒,封頂 3 次) | `claudebot_hook install` 裝的 Claude 設定 | 能(綁定對話的 gauge);量不到 ⇒ 每 20 輪精煉 |
+| codexbot | `codexbot_bridge.py`(Codex Desktop App Server) | 橋接代觸發:每一輪完成後 `bot_turn(gauge_sid=桌面 sessionId)`,指示附在下一則送出的訊息 | 不能 | 不用裝 | 試著量(`codex_ctx_probe` 讀桌面對話的 rollout,**沒實測**);量不到 ⇒ **每 20 輪精煉** |
+| grokbot / musebot / sand | `sand_bridge.py` | 橋接代觸發:每一則回真人後 `bot_turn`,指示放進 inbox 系統信 | 不能 | 不用裝 | **量不到** ⇒ **每 20 輪精煉**,不觸發 80 / 85 / 95 |
 
 全部呼叫 `auto_distill_hook.py` 同一套判斷(`crossings` / `handoff_owed` / `handoff_done` / 已觸發紀錄),沒有第二套。
+
+量不到用量(gauge 沒有 pct)的席一律**每 20 輪精煉一次**(維護者 10-15 22:4x):N 是 policy 表的 `unmeasured_tidy_every_turns`(經 `ctx_policy.unmeasured_every()` 讀,單一來源);計數與已觸發紀錄同一席同一對話一份(`state/auto-distill/unmeasured-<席>.json`,換對話從 0 算、同一輪不重複);API 席由 `outer_turn` 數、bot 由 `bot_turn` 數。量得到用量的席照上面的表,不受影響。
 
 已刪掉的舊表(B,艦隊巡檢 `stages` / `actions`)與讀者現況:
 
@@ -78,5 +80,6 @@ Per-brand: every provider now has a trigger path (table above). Hooks are instal
 time by `auto_distill_hook.py ensure-all` (only CLIs present on this computer; others skipped with a line; configs backed
 up; `AIB_AUTO_DISTILL=0` turns it all off). API-key REPL seats are triggered by the REPL itself after each turn
 (`outer_turn`); bridge bots by the bridge (`bot_turn`, full table when the bot's gauge is measurable). Not measurable today:
-API-key seats, GrokBot / MuseBot / Sand (turn-count distill only, no handoff cells). After `/clear` the seat is found via
+API-key seats, GrokBot / MuseBot / Sand (and CodexBot / ClaudeBot when their gauge is missing): distill every 20 turns
+(`unmeasured_tidy_every_turns` in the policy file; one counter per seat and conversation), no handoff cells. After `/clear` the seat is found via
 `$EZ2_CTX_DIR/by-seat/<code>.json`.

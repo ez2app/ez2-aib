@@ -991,7 +991,33 @@ def stop_handoff(code, rec, st, pct, runner=None, now=None):
     return text, why
 
 
-BOT_EVERY = 20       # 量不到用量 % 的 Bot:每 20 輪(the maintainer 10-13 14:4x 照 A)
+def unmeasured_every():
+    """量不到用量的席每幾輪精煉一次(policy/ctx-thresholds.json 的 unmeasured_tidy_every_turns,經 ctx_policy 讀)。"""
+    import ctx_policy
+    return ctx_policy.unmeasured_every()
+
+
+def unmeasured_due(code, sid):
+    """量不到用量的席(API 金鑰席、量不到的 bot)這一輪該不該精煉:同一席同一對話一份計數
+    (state/auto-distill/unmeasured-<席>.json;換對話從 0 算),每 N 輪一次,已觸發的輪記在 fired(不重複、不疊算)。
+    每一輪只准一個呼叫端數(API 席 = outer_turn,bot = bot_turn)。表壞 ⇒ 不叫(記 log)。→ 到點那一輪的輪數或 0。"""
+    if not code:
+        return False
+    try:
+        n = unmeasured_every()
+    except Exception as exc:  # noqa: BLE001
+        _log({"seat": code, "action": "error", "mode": "unmeasured-policy", "why": str(exc)[:200]})
+        return False
+    sp = state_path("unmeasured-%s" % code)
+    st = _read_json(sp, {})
+    if st.get("session") != (sid or ""):
+        st = {"session": sid or "", "turns": 0, "fired": []}
+    st["turns"] = int(st.get("turns") or 0) + 1
+    due = st["turns"] % n == 0 and st["turns"] not in (st.get("fired") or [])
+    if due:
+        st["fired"] = (list(st.get("fired") or []) + [st["turns"]])[-20:]
+    _write_json(sp, st)
+    return st["turns"] if due else 0
 
 
 def _bot_handoff(code, cabin, st, trig, pct, now=None):
@@ -1024,7 +1050,7 @@ def _bot_handoff(code, cabin, st, trig, pct, now=None):
 def bot_turn(code, cabin, gauge_sid=None, now=None):
     """Bot 一輪結束時呼叫(claudebot_hook on_stop、codexbot / grokbot / musebot / sand 橋)。
     gauge_sid 有新鮮用量 ⇒ 跑同一張表(policy/ctx-thresholds.json:精煉格 + 交接類,同格只一次);
-    量不到 ⇒ 每 BOT_EVERY 輪精煉一次,不假造交接。→ 要交給那個 Bot 的指示(或空字串)。"""
+    量不到 ⇒ 每 N 輪精煉一次(unmeasured_due,N 在 policy 表上),不假造交接。→ 要交給那個 Bot 的指示(或空字串)。"""
     if not code or os.environ.get("AIB_AUTO_DISTILL") == "0":
         return ""
     sp = state_path("bot-%s" % code)
@@ -1048,7 +1074,7 @@ def bot_turn(code, cabin, gauge_sid=None, now=None):
             st["fired"] = sorted(_fired(st) | {_tid(t) for t in tidy_new})
             strong = top is not None and top["kind"] in ("handoff_now", "red_line")
             due, why = not strong and not (hand and top is None), "pct %s" % pct   # 收尾三步第一步就是整理記憶
-    elif st["turns"] % BOT_EVERY == 0:
+    elif unmeasured_due(code, gauge_sid or ""):
         due, why = True, "turn %d" % st["turns"]
     _write_json(sp, st)
     if not due and not hand:
@@ -1066,17 +1092,47 @@ def bot_turn(code, cabin, gauge_sid=None, now=None):
 
 
 def outer_turn(sid, seat=None, runner=None, now=None, refresh=None):
+    """→ 文字(精煉指令 / dm 內文 / "");說明見 outer_turn_kind。"""
+    return outer_turn_kind(sid, seat, runner, now, refresh)[1]
+
+
+def outer_turn_kind(sid, seat=None, runner=None, now=None, refresh=None):
     """沒有 hook 機制的席(API 金鑰席 REPL:deepseek / nvidia / openrouter / typesafe)由外層程式每一輪回完代呼叫:
     走跟其他家「一輪結束」hook 一樣的 stop 那條路(on_stop:同一張表、aib dm 給自己、同格只一次)。
-    沒帶回覆原文 ⇒ 不碰影子續跑說明(REPL 自己印)。量不到用量(API 席今天 pct 一律 None)⇒ 照實不觸發。"""
+    沒帶回覆原文 ⇒ 不碰影子續跑說明(REPL 自己印)。量不到用量(API 席今天 pct 一律 None)⇒ 每 N 輪回一段精煉指令
+    (維護者 10-15 22:4x;REPL 拿到就代跑 api_tidy.run,因為 API 席的模型不能自己跑指令)。
+    → (種類, 文字):("dm", 寄出的內文) / ("unmeasured-tidy", 精煉指令) / ("", "")。"""
+    import seat_address
     if os.environ.get("AIB_AUTO_DISTILL") == "0" or not _SID_RE.match(str(sid or "")):
-        return ""
+        return "", ""
+    rec = seat
     try:
-        return on_stop({"session_id": sid}, now=now, seat=seat, runner=runner,
-                       refresh=refresh or (lambda p, s: None), gate=lambda argv, text=None: (0, ""))
+        if rec is None:
+            rec = seat_for_payload({"session_id": sid})
+        out = on_stop({"session_id": sid}, now=now, seat=rec, runner=runner,
+                      refresh=refresh or (lambda p, s: None), gate=lambda argv, text=None: (0, ""))
     except Exception as exc:  # noqa: BLE001 —— REPL 不能因為它掛
         _log({"action": "error", "mode": "outer", "why": str(exc)[:200]})
+        out = ""
+    if out:
+        return "dm", out
+    gsid = live_sid({"session_id": sid}, rec) if rec else sid
+    if gauge_pct(gsid, now) is not None:               # 量得到 ⇒ 照原表(on_stop 已經判過),不另數輪
+        return "", ""
+    code = seat_address.code_of(rec) if rec else seat_address.uuid_tail5(sid)
+    text = _unmeasured_tidy(code, sid, rec)
+    return ("unmeasured-tidy", text) if text else ("", "")
+
+
+def _unmeasured_tidy(code, sid, rec):
+    n = unmeasured_due(code, sid)
+    if not n:
         return ""
+    import i18n_lib
+    tail = str((rec or {}).get("cabin_id") or "").rsplit("-", 1)[-1][-4:]
+    _log({"seat": code, "action": "unmeasured-tidy", "provider": (rec or {}).get("provider")})
+    return T("auto_distill.instruct_bot", {"seat": "%s/%s" % (tail, code) if tail else code,
+                                            "why": "turn %d" % n}, i18n_lib.resolve_locale())
 
 
 COPILOT_HOOK_NAME = "aib-auto-distill.json"
