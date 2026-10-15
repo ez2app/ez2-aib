@@ -3291,6 +3291,7 @@
   "aib.memory.cli.dry_run": "(試行)",
   "aib.memory.cli.written": "書き込み済み",
   "aib.memory.cli.not_found": "ID {uid} のメモはありません",
+  "aib.memory.cli.file_missing": "メモリ索引に {uid} がありますが、Vault({vault})にファイルが見つかりません。ID・相対パス・ファイル名で探しました",
   "aib.task.help.description": "席のメインタスクを表示・設定します:タスク、開始時刻、承認、報告先",
   "aib.task.help.show": "メインタスクの項目を表示(JSON)",
   "aib.task.help.set": "メインタスクの項目を設定",

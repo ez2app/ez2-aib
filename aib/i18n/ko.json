@@ -3291,6 +3291,7 @@
   "aib.memory.cli.dry_run": "(시험 실행)",
   "aib.memory.cli.written": "작성됨",
   "aib.memory.cli.not_found": "ID {uid}인 메모가 없습니다",
+  "aib.memory.cli.file_missing": "메모리 색인에 {uid}가 있지만 Vault({vault})에서 파일을 찾을 수 없습니다. ID, 상대 경로, 파일 이름으로 모두 찾아봤습니다",
   "aib.task.help.description": "자리의 주 작업을 보거나 설정합니다: 작업, 시작 시각, 승인, 보고 대상",
   "aib.task.help.show": "주 작업 항목 보기(JSON)",
   "aib.task.help.set": "주 작업 항목 설정",

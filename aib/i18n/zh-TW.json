@@ -3291,6 +3291,7 @@
   "aib.memory.cli.dry_run": "(試跑)",
   "aib.memory.cli.written": "已寫",
   "aib.memory.cli.not_found": "找不到 id 為 {uid} 的筆記",
+  "aib.memory.cli.file_missing": "記憶索引裡有 {uid},但第二大腦({vault})裡找不到這則的檔案;已用 id、相對路徑、檔名都找過",
   "aib.task.help.description": "看或設定某一席的主任務:任務、開始時間、核准與回報對象",
   "aib.task.help.show": "顯示主任務欄位(JSON)",
   "aib.task.help.set": "設定主任務欄位",

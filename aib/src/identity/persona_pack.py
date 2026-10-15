@@ -395,8 +395,19 @@ def render_pack(session_uuid: str, home: Path, vault: str = "", contract: str = 
     card = (cards_doc.get("cards") or {}).get(uid)
     if not isinstance(card, dict):
         return _empty("card_missing", code, persona_uid=uid, reason="not_in_cards_json")
-    root = Path(vault or (cards_doc.get("source") or {}).get("vault_root") or "")
-    path = inside(root, str(card.get("card_path_rel") or "")) if str(root) not in ("", ".") else None
+    # 10-16:cards.json 的 vault_root 是掃描當時的絕對路徑,庫搬家後就指空 ⇒ 先看呼叫端給的、再看現在的
+    #   EZ2_VAULT_DIR / EZ2_VAULT_ROOT,最後才用記下來的;取第一個真的有這張卡的
+    rel = str(card.get("card_path_rel") or "")
+    path = None
+    # 呼叫端明給 vault 就只認它(不偷偷換庫)
+    for cand in ((vault,) if vault else (os.environ.get("EZ2_VAULT_DIR") or os.environ.get("EZ2_VAULT_ROOT"),
+                                         (cards_doc.get("source") or {}).get("vault_root"))):
+        root = Path(os.path.expanduser(str(cand or "")))
+        if str(root) in ("", "."):
+            continue
+        path = inside(root, rel)
+        if path is not None and path.is_file():
+            break
     if path is None or not path.is_file():
         return _empty("card_missing", code, persona_uid=uid, reason="card_file_unreadable")
     raw = path.read_bytes()
