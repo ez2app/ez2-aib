@@ -36,10 +36,10 @@ aib newrole --help
 ## 先弄清楚四件事(能從對話推就不要再問)
 
 1. **人格名稱**:畫面上要顯示的名字,例「SEO-GEO大師」。
-2. **綁到哪一席**:使用者有指名時,抄右欄或 dm 抬頭的地址,寫成 `<艙位碼>/<席碼>`,例 `f643/77324`。
+2. **綁到哪一席**:使用者有指名時,抄右欄或 dm 抬頭的地址,寫成 `<艙位碼>/<席碼>`,例 `abcd/12345`。
    **沒指名就不要綁、也不要開新席、不要問**:不帶 `--seat` 只建卡(見下方「沒說綁哪一席」)。
 3. **人設內容**:使用者只給一句話(「他是全球 SEO 大師」)時,由你把它寫成下面的四段。
-4. **你自己的署名**(要綁席位時才需要):`<角色>@<你的席碼>/<引擎>`,例 `a seat/Claude`。
+4. **你自己的署名**(要綁席位時才需要):`<角色>@<你的席碼>/<引擎>`,例 `root@54321/Claude`。
    角色只能小寫英數與連字號,席碼是你自己抬頭 `@` 後面那五碼。這是帳本署名,不是目標席。
 
 ## 人設檔怎麼寫
@@ -72,20 +72,20 @@ aib newrole --help
 ```bash
 # 1. 先試跑:不寫任何檔,看會綁到哪一席、卡會放哪裡
 aib newrole --name "SEO-GEO大師" --code seogeo --emoji "🌐" --category "行銷/SEO" \
-  --prompt-file /path/to/persona.md --seat f643/77324 \
-  --actor "a seat/Claude" --deliver --dry-run
+  --prompt-file /path/to/persona.md --seat abcd/12345 \
+  --actor "root@54321/Claude" --deliver --dry-run
 
 # 2. 輸出的 seat_bound、card_file、delivery.address 都對,拿掉 --dry-run 真跑
 aib newrole --name "SEO-GEO大師" --code seogeo --emoji "🌐" --category "行銷/SEO" \
-  --prompt-file /path/to/persona.md --seat f643/77324 \
-  --actor "a seat/Claude" --deliver
+  --prompt-file /path/to/persona.md --seat abcd/12345 \
+  --actor "root@54321/Claude" --deliver
 ```
 
 | 參數 | 說明 |
 |---|---|
 | `--name` | 人格名稱,必填 |
 | `--prompt-file` | 人設檔。也可用 `--prompt "文字"`,但有引號、反引號、多行時一律用檔案 |
-| `--seat` | `f643/77324`(建議)、`a seat`、或席位檔的 seat_id。**不給 ⇒ 只建卡,不綁任何席** |
+| `--seat` | `abcd/12345`(建議)、`@12345`、或席位檔的 seat_id。**不給 ⇒ 只建卡,不綁任何席** |
 | `--new-seat` | **只有使用者明講「開一個新席來綁」才用**:開一個新席來綁(與 `--seat` 二選一);`--engine` 選引擎,預設 claude。不是預設 |
 | `--actor` | 你的署名,綁定必填(只建卡不用);要綁卻不給也沒設 `EZ2_OWNER_SIG` 就停手(rc=2),不會亂猜 |
 | `--code` | 英文代號,小寫英數;不給會從名稱抽 |

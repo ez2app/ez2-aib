@@ -181,6 +181,24 @@ def accept(token: str, *, env: Optional[Mapping] = None, pid: Optional[int] = No
     return 0, {"label": label, "origin": d["origin"], "hub": hub, "ip": ip}
 
 
+_IP_RE = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")
+
+
+def fallback_note(token: str, src_ip: str = "") -> str:
+    """收件機是舊版、不認 --xhost-ident 時,正文第一行的註記。
+
+    舊版收件機把 SSH 進來的行程當本機未認證寄件人,抬頭位址寫成**它自己的** IP,看起來像那台自己寄的;
+    抬頭寄件端改不了 ⇒ 由寄件機在正文開頭講清楚來源,且標明寄件人是自稱、未經驗證。"""
+    d = decode(token) or {}
+    name = str(d.get("label") or "unattested:unknown")
+    if d.get("origin") and not name.startswith("unattested:"):
+        name = "%s@%s" % (name, d["origin"])
+    name = re.sub(r"[\x00-\x1f\x7f]", " ", name)[:80]
+    ip = src_ip.strip() if _IP_RE.match(src_ip.strip() or "-") else ""
+    where = ("自 %s " % ip) if ip else ""
+    return "〔跨主機·經SSH %s;對方 aib 舊版,抬頭位址是對方自己;寄件人自稱 %s(未經驗證)〕" % (where, name)
+
+
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == ["encode"] and len(args) == 5:
@@ -191,6 +209,9 @@ def main(argv=None) -> int:
         return 0
     if args[:1] == ["remote-cmd"] and len(args) >= 2:
         print(remote_cmd(args[1:]))
+        return 0
+    if args[:1] == ["fallback-note"] and len(args) in (2, 3):
+        print(fallback_note(*args[1:]))
         return 0
     if args[:1] == ["accept"] and len(args) == 2:
         rc, got = accept(args[1])

@@ -114,11 +114,11 @@ export EZ2_AIB_ROOT="$AIB_SOURCE_ROOT"
 #   改用本執行檔所在的 repo(AIB_SOURCE_ROOT)並出聲;只判「等於家目錄」不判「非 git 樹」,
 #   免得把刻意開在非 git 專案的席也搬走。★ 失效值不得等於安全值:沒有 HOME 就不判,不猜。
 # ★ BC 刀錨,必須全檔恰好一次。
+_AIB_HOME_CWD_NOTE=""
 if [ -n "${HOME:-}" ] && [ "$CALLER_CWD" = "$(cd "$HOME" 2>/dev/null && pwd -P)" ]; then
-  # 真開席且這個終端會被接走:這行會停在畫面上像錯誤。dry-run 仍印(BC 臂要看見)。
-  if [ "${AIB_DRY_RUN:-0}" = "1" ] || [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ ! -t 0 ]; then
-    printf 'aib: 席位目錄由呼叫者 cwd(%s)改為專案目錄（家目錄不開席）\n' "$CALLER_CWD" >&2
-  fi
+  # 提示只在真的開席時印(下面 PROVIDER/MODE/ROLE 解析完那裡):寫在這裡的話,aib dm / bindme / now… 從家目錄叫
+  #   (AI 叫的指令 stdin 都不是終端機)每一次都多一行看不懂的話(10-14 公開版走查)。改目錄照舊在這裡做。
+  _AIB_HOME_CWD_NOTE="$CALLER_CWD"
   CALLER_CWD="$AIB_SOURCE_ROOT"
 fi
 AIB_VERSION_FILE="$AIB_SOURCE_ROOT/VERSION"
@@ -562,15 +562,12 @@ t() {
 }
 
 usage() {
-  local loc
-  for loc in zh-TW en ja ko; do
-    "$T_PY3" "$HERE/i18n_lib.py" --locale "$loc" \
-      --param "version=$EZ2_AIB_VERSION" \
-      aib.help.title aib.help.usage aib.help.providers \
-      aib.help.modes aib.help.role aib.help.new aib.help.again \
-      aib.help.reports_to aib.help.dry_run aib.help.example
-    echo
-  done
+  # 只印使用者的語系(10-14 新用戶走查第 12 條:原本四種語言各印一遍)。
+  "$T_PY3" "$HERE/i18n_lib.py" \
+    --param "version=$EZ2_AIB_VERSION" \
+    aib.help.title aib.help.usage aib.help.providers \
+    aib.help.modes aib.help.role aib.help.new aib.help.again \
+    aib.help.reports_to aib.help.dry_run aib.help.example
 }
 
 die() {
@@ -663,6 +660,9 @@ if [ "${1:-}" = "dm" ]; then
   #   真人與 AI 打 `aib dm` 才是「沒人替寄件人重送」那個洞所在的路徑(艦長 12:16 更正 04:56 那則)。
   # ★ the maintainer 09-28「aib dm 一律要含艙位碼」「立刻切換新法,舊的停用」:入口一律要求 <艙位碼>/<席碼>,
   #   不給關(故意不讀呼叫端的值)。拆法與建議寫法在 dm_address.py / dm-ctl.sh 那一段。
+  # 10-14(6ddf 走查):dm-ctl.sh 一開頭就 source cockpit-env.sh(它會 mkdir 狀態資料夾),參數在那之後才解析
+  #   ⇒ --dry-run 在這裡先認,跟開席試跑同一個開關(AIB_NO_STATE_WRITE),試跑不在家目錄建任何資料夾。
+  for _a in "$@"; do [ "$_a" = "--dry-run" ] && export AIB_NO_STATE_WRITE=1; done
   exec env AIB_DM_REQUIRE_CABIN=1 AIB_DM_AUTO_RESEND="${AIB_DM_AUTO_RESEND:-1}" bash "$HERE/dm-ctl.sh" "$@"   # cockpit-env 在後段才 source,用 HERE
 fi
 if [ "${1:-}" = "dm-queue" ]; then
@@ -1076,6 +1076,12 @@ MODE="${POS[1]}"
 ROLE="${POS[2]}"
 
 case " $PROVIDERS " in *" $PROVIDER "*) ;; *) die "$(t aib.err.provider "provider=$PROVIDER")" ;; esac
+# 家目錄開席的提示(BC,上面改目錄那段記下的):真開席且這個終端會被接走時這行會停在畫面上像錯誤 ⇒ 只在
+#   dry-run / 不接走 / 不是終端機時印(dry-run 仍印,BC 臂要看見)。
+if [ -n "$_AIB_HOME_CWD_NOTE" ] && { [ "${AIB_DRY_RUN:-0}" = "1" ] || [ "$DRY" = "1" ] || [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ ! -t 0 ]; }; then
+  # 走 i18n 四語鍵(公開 #17);字典出事就印鍵名,這行不消失。
+  { t aib.launch.home_cwd_moved "cwd=$_AIB_HOME_CWD_NOTE" 2>/dev/null || printf '%s\n' aib.launch.home_cwd_moved; } >&2
+fi
 # 10-13(盤點「先修」第 1 件):typesafe / openrouterjev 開席要 typesafe_cli.py,公開版不帶(System One)⇒ 開席前就說「開發中」,
 #   不要開到一半才失敗
 case "$PROVIDER" in typesafe|openrouterjev) aib_need "$HERE/typesafe_cli.py" "$PROVIDER" ;; esac
@@ -1720,7 +1726,7 @@ aib_splash_start() {
   _cliver_arg=()
   if [ "${AIB_CLI_UPDATE:-1}" != "0" ] && _AIB_CLIVER_FILE="$(mktemp "${TMPDIR:-/tmp}/aibcliver.XXXXXX")"; then
     rm -f "$_AIB_CLIVER_FILE"            # 檔不在 = 還沒查完(動畫與倒數都靠「檔出現」判斷)
-    "$T_PY3" "$HERE/cli_versions.py" check --out "$_AIB_CLIVER_FILE" >/dev/null 2>&1 &
+    "$T_PY3" "$HERE/cli_versions.py" check --provider "$PROVIDER" --out "$_AIB_CLIVER_FILE" >/dev/null 2>&1 &
     _cliver_arg=(--versions "$_AIB_CLIVER_FILE")
   fi
   "$T_PY3" "$HERE/login_splash.py" --flag "$_AIB_SPLASH_FLAG" ${_cliver_arg[@]+"${_cliver_arg[@]}"} &
@@ -1746,7 +1752,7 @@ aib_splash_stop() {
 aib_cli_gate() {
   [ -n "$_AIB_CLIVER_FILE" ] || return 0
   [ -t 0 ] && [ -t 2 ] || { rm -f "$_AIB_CLIVER_FILE"; _AIB_CLIVER_FILE=""; return 0; }
-  "$T_PY3" "$HERE/cli_versions.py" gate --in "$_AIB_CLIVER_FILE" || true
+  "$T_PY3" "$HERE/cli_versions.py" gate --provider "$PROVIDER" --in "$_AIB_CLIVER_FILE" || true
   rm -f "$_AIB_CLIVER_FILE"
   _AIB_CLIVER_FILE=""
 }
