@@ -925,7 +925,11 @@ def main():
         log("   -> 席位綁定完成")
         # 10-12 Bot 開發第 16 件:bind_one 收據裡的 provider_warning ⇒ 只警告,照綁、不改卡
         try:
-            fit_warn = (json.loads(out) or {}).get("provider_warning")
+            _bind_out = json.loads(out) or {}
+            fit_warn = _bind_out.get("provider_warning")
+            # 10-15:整艙重投影時別席的路由過不了表(保留原綁定、標未解析)⇒ 照印,不吞
+            for _line in _bind_out.get("route_notices") or []:
+                log(_line, prefix="[!]")
         except (ValueError, AttributeError):
             fit_warn = None
         if fit_warn:

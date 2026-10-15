@@ -2777,5 +2777,7 @@
   "aib.captains_ctl.unmeasured": "不明",
   "aib.captains_ctl.status_label": "艦長:",
   "aib.contract.sources_differ": "⚠ 経路契約の二つの出所の内容が違う:{a}({na} 本)と EZ2_ROUTE_REGISTRY={b}({nb} 本)、前者だけ {a_only} 本・後者だけ {b_only} 本;{pick} を使う",
-  "aib.contract.primary_unreadable": "⚠ 経路契約 {a} が読めない;EZ2_ROUTE_REGISTRY={b} を代わりに使う"
+  "aib.contract.primary_unreadable": "⚠ 経路契約 {a} が読めない;EZ2_ROUTE_REGISTRY={b} を代わりに使う",
+  "aib.bindproj.route_kept": "⚠ {seat} の大脳経路 {route} が経路表にない(経路表:{source});元の紐付けを残し、未解決として記録",
+  "aib.bindproj.route_unresolved": "⚠ {seat} の大脳経路 {route} が経路表を通らない({code};経路表:{source});残せる元の紐付けがなく、未解決として記録"
 }

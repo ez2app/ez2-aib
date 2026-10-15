@@ -2777,5 +2777,7 @@
   "aib.captains_ctl.unmeasured": "量不到",
   "aib.captains_ctl.status_label": "艦長:",
   "aib.contract.sources_differ": "⚠ 路由表兩個來源內容不同:{a}({na} 條)與 EZ2_ROUTE_REGISTRY={b}({nb} 條),只在前者 {a_only} 條、只在後者 {b_only} 條;採用 {pick}",
-  "aib.contract.primary_unreadable": "⚠ 路由表 {a} 讀不到,改用 EZ2_ROUTE_REGISTRY={b}"
+  "aib.contract.primary_unreadable": "⚠ 路由表 {a} 讀不到,改用 EZ2_ROUTE_REGISTRY={b}",
+  "aib.bindproj.route_kept": "⚠ {seat} 的大腦路由 {route} 不在路由表裡(路由表:{source}),保留原綁定、標成未解析",
+  "aib.bindproj.route_unresolved": "⚠ {seat} 的大腦路由 {route} 過不了路由表({code};路由表:{source}),沒有原綁定可保留、標成未解析"
 }

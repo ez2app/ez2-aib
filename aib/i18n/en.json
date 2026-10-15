@@ -2777,5 +2777,7 @@
   "aib.captains_ctl.unmeasured": "unknown",
   "aib.captains_ctl.status_label": "Captain:",
   "aib.contract.sources_differ": "⚠ the two route contract sources differ: {a} ({na} routes) vs EZ2_ROUTE_REGISTRY={b} ({nb} routes); {a_only} only in the first, {b_only} only in the second; using {pick}",
-  "aib.contract.primary_unreadable": "⚠ cannot read the route contract {a}; using EZ2_ROUTE_REGISTRY={b} instead"
+  "aib.contract.primary_unreadable": "⚠ cannot read the route contract {a}; using EZ2_ROUTE_REGISTRY={b} instead",
+  "aib.bindproj.route_kept": "⚠ {seat}: brain route {route} is not in the route contract (contract: {source}); keeping the existing binding, marked unresolved",
+  "aib.bindproj.route_unresolved": "⚠ {seat}: brain route {route} fails the route contract ({code}; contract: {source}); no existing binding to keep, marked unresolved"
 }

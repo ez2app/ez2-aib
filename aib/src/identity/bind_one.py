@@ -56,7 +56,7 @@ from role_model import (  # noqa: E402
     SHA256_RE as MODEL_SHA256_RE, TRUST_LEVELS, UID_RE, RoleModel,
     RoleModelError, _safe_name,
 )
-from binding_projection import load_card_registry, ProjectionError  # noqa: E402
+from binding_projection import load_card_registry, ProjectionError, route_unresolved_lines  # noqa: E402
 from card_registry import resolve_card, UID_RE as CARD_UID_RE  # noqa: E402
 from route_register import check_against_contract, default_contract_spec, load_contract  # noqa: E402
 import persona_fit  # noqa: E402
@@ -769,8 +769,9 @@ def resolve_card_ref(cards, ref):
     return ref, None, entry
 
 
-def reproject(state_root, cards_path, contract_spec):
-    """綁完重跑投影(同一支 CLI,收據照留)。回 (rc, stdout+stderr)。"""
+def reproject(state_root, cards_path, contract_spec, notices=None):
+    """綁完重跑投影(同一支 CLI,收據照留)。回 (rc, stdout+stderr)。
+    notices(10-15):給一個 list ⇒ 把「別席路由過不了表、保留/標未解析」的人話行附進去(整艙重投影會動到別席)。"""
     out = Path(state_root) / "identity" / "bindings.json"
     disp = Path(state_root) / "identity" / "seat-display.json"
     cmd = [sys.executable, str(PROJECTION), "project", "--state-root", str(state_root),
@@ -778,7 +779,20 @@ def reproject(state_root, cards_path, contract_spec):
     if contract_spec:
         cmd += ["--contract", contract_spec]
     proc = subprocess.run(cmd, capture_output=True, text=True)
+    if notices is not None and proc.returncode == 0:
+        try:
+            notices.extend(route_unresolved_lines(json.loads(proc.stdout), contract_spec))
+        except ValueError:
+            pass
     return proc.returncode, (proc.stdout + proc.stderr)
+
+
+def _reproject_into(plan, state_root, cards_path, contract_spec):
+    notices = []
+    rc, log = reproject(state_root, cards_path, contract_spec, notices=notices)
+    plan["reproject"] = {"rc": rc, "log_tail": log[-400:]}
+    if notices:
+        plan["route_notices"] = notices
 
 
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -886,8 +900,7 @@ def bind_seat(state_root, seat_id, card, actor, brain=None, rebind_persona=False
         now_ms() if callable(now_ms) else int(time.time() * 1000), bind_source)
     plan["bind_source"] = bind_source
     if do_reproject:
-        rc, log = reproject(state_root, cards_path, contract_spec)
-        plan["reproject"] = {"rc": rc, "log_tail": log[-400:]}
+        _reproject_into(plan, state_root, cards_path, contract_spec)
     return plan
 
 
@@ -922,8 +935,7 @@ def unbind_seat(state_root, seat_id, actor, brain_only=False, cards_path=None,
         agent.get("persona_sha"), agent.get("brain_route_key"),
         now_ms() if callable(now_ms) else int(time.time() * 1000))
     if do_reproject:
-        rc, log = reproject(state_root, cards_path, contract_spec)
-        plan["reproject"] = {"rc": rc, "log_tail": log[-400:]}
+        _reproject_into(plan, state_root, cards_path, contract_spec)
     return plan
 
 
@@ -1014,6 +1026,8 @@ def main(argv=None):
         print("bind-one: " + _ui("aib.bindone.reproject_fail", rc=out["reproject"]["rc"], detail=out["reproject"]["log_tail"][-200:]),
               file=sys.stderr)
         rc = 1
+    for line in out.get("route_notices") or []:   # 10-15:整艙重投影動到別席(路由過不了表)⇒ 讓觸發的這一席看得到
+        print("bind-one: " + line, file=sys.stderr)
     if fit:   # 排在重投影錯誤後面:右鍵失敗訊息取第一行 bind-one:,不能被這行警告蓋掉
         print("bind-one: " + _ui("aib.bindone.fit_warn", name=fit.get("display_name") or "?", uid=fit.get("card_uid") or "?",
                                    kind=fit["card_kind"], provider=fit["seat_provider"]),

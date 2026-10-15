@@ -171,5 +171,55 @@ class F1SingleSource(unittest.TestCase):
         self.assertIn("EZ2_ROUTE_REGISTRY", r.stderr)
 
 
+class F2NoSilentDrop(unittest.TestCase):
+    """f2:路由不在表裡 ⇒ 保留原綁定、display 標未解析、印一行(含 bind_one 觸發的重投影)。"""
+
+    def setUp(self):
+        self.sb = Sandbox()
+        r = self.sb.project(self.sb.env(registry=self.sb.fresh))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def tearDown(self):
+        self.sb.cleanup()
+
+    def _display(self):
+        return json.loads(self.sb.display.read_text(encoding="utf-8"))["display"]
+
+    def test_stale_contract_keeps_binding_marks_unresolved_and_says_so(self):
+        sb = self.sb
+        before = json.loads(sb.bindings.read_text(encoding="utf-8"))["bindings"][CODE_OPS]
+        r = sb.project(sb.env(registry=sb.stale), contract=sb.stale)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        after = json.loads(sb.bindings.read_text(encoding="utf-8"))["bindings"]
+        self.assertEqual(after.get(CODE_OPS), before, "原綁定被刪了")
+        d = self._display()[CODE_OPS]
+        self.assertEqual(d["brain_binding_status"], "unresolved")
+        self.assertEqual(d["route_unresolved"], "route_not_in_contract")
+        self.assertEqual(d["persona_uid"], "p-" + SEAT_OPS[0])
+        self.assertIn("@%s 的大腦路由 core.site_ops 不在路由表裡(路由表:%s),保留原綁定、標成未解析"
+                      % (CODE_OPS, sb.stale), r.stderr)
+        rows = [u for u in json.loads(r.stdout)["unresolved"] if u.get("binding_key") == CODE_OPS]
+        self.assertTrue(rows and rows[0]["preserved"])
+
+    def test_no_previous_binding_still_shows_unresolved_in_display(self):
+        sb = self.sb
+        sb.bindings.unlink()
+        r = sb.project(sb.env(registry=sb.stale), contract=sb.stale)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn(CODE_OPS, sb.bound_keys())
+        self.assertEqual(self._display()[CODE_OPS]["brain_binding_status"], "unresolved")
+        self.assertIn("@%s" % CODE_OPS, r.stderr)
+
+    def test_bind_one_reproject_surfaces_notice_for_triggering_seat(self):
+        import bind_one
+        plan = {}
+        with patched_env(self.sb.env(registry=self.sb.stale)):
+            bind_one._reproject_into(plan, self.sb.state, self.sb.cards, str(self.sb.stale))
+        self.assertEqual(plan["reproject"]["rc"], 0, plan["reproject"]["log_tail"])
+        notes = plan.get("route_notices") or []
+        self.assertTrue(any(("@%s" % CODE_OPS) in n and "core.site_ops" in n for n in notes), notes)
+        self.assertIn(CODE_OPS, self.sb.bound_keys())
+
+
 if __name__ == "__main__":
     unittest.main()
