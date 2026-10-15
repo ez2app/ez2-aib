@@ -3,7 +3,7 @@
 """aib-persona-sources CLI：來源開|關／狀態。
 
 for_task: evening-D-0926 / DESIGN §4.4
-可由 aib persona 來源|狀態 轉呼（入口由 a seat 接）；本包裝腳本。
+aib persona 來源|狀態|source|status 經 tools/entitlement/aib_persona_sources.py 轉呼本檔(10-15 開源版補上入口)。
 """
 from __future__ import annotations
 
@@ -24,10 +24,9 @@ _OFF = frozenset(("關", "off", "OFF", "false", "0"))
 
 def _usage() -> str:
     return (
-        "usage: aib-persona-sources 來源 <provider> 開|關\n"
-        "       aib-persona-sources source <provider> on|off\n"
-        "       aib-persona-sources 狀態|status\n"
-        "（aib 入口待 @00000 接：aib persona 來源|狀態）\n"
+        "usage: aib persona 來源 <provider> 開|關\n"
+        "       aib persona source <provider> on|off\n"
+        "       aib persona 狀態|status\n"
     )
 
 
