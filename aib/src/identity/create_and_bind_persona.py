@@ -1020,6 +1020,18 @@ def main():
         rc, out, err = run_cmd(bind_cmd, cwd=REPO_ROOT)
         if rc != 0:
             log(f"錯誤: bind_one.py 失敗 (rc={rc}):\n{err}", prefix="[x]")
+            # 10-15 @977e3 實機:卡在步驟 1 已寫進 vault、索引已掃,只有綁席沒成 ⇒ 講明卡怎麼了、重跑要怎麼下
+            #   (審查:帶 --new-seat 時新席已開,重跑同一行會再開一席;帶 --overwrite 重跑會再覆寫一次 ⇒ 各自講)
+            card_key = ("aib.newrole.bind_failed_card_existing" if keep_existing
+                        else "aib.newrole.bind_failed_card_overwritten" if existed_before
+                        else "aib.newrole.bind_failed_card_kept")
+            log(T(card_key, {"name": name, "uid": target_card_uid, "path": str(target_role_file)}), prefix="[x]")
+            if args.new_seat:
+                log(T("aib.newrole.bind_failed_rerun_new_seat", {"seat": seat_id}), prefix="[x]")
+            elif existed_before and args.overwrite:
+                log(T("aib.newrole.bind_failed_rerun_drop_overwrite"), prefix="[x]")
+            else:
+                log(T("aib.newrole.bind_failed_rerun"), prefix="[x]")
             sys.exit(rc)
         log("   -> 席位綁定完成")
         # 10-12 Bot 開發第 16 件:bind_one 收據裡的 provider_warning ⇒ 只警告,照綁、不改卡
