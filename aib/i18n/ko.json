@@ -4237,5 +4237,13 @@
   "mod.aib_video.terminal_only": "영상 패널은 터미널에서만 열림(현재: {what}).",
   "mod.aib_video.pane_title": "영상",
   "mod.aib_video.opened": "영상 패널 열림.",
-  "mod.aib_video.skeleton": "영상 모듈은 골격 단계: 추적할 계정 / 플랫폼과 표시할 숫자는 아직 미정."
+  "mod.aib_video.skeleton": "영상 모듈은 골격 단계: 추적할 계정 / 플랫폼과 표시할 숫자는 아직 미정.",
+  "aib.proc_count.warn": "⚠ 프로세스 한도 임박: {count}/{limit}({pct}%) · 많은 순: {top}",
+  "aib.proc_count.top_item": "{name}×{n}",
+  "aib.proc_count.top_sep": ", ",
+  "aib.proc_count.unknown": "프로세스 수: 측정 불가",
+  "aib.proc_count.report_ok": "프로세스 수: {count}/{limit}({pct}%, {threshold}%부터 경고)",
+  "aib.proc_count.report_warn": "⚠ 프로세스 수: {count}/{limit}({pct}%, {threshold}% 초과): 조금만 더 늘면 새 프로세스를 못 엽니다. 아래 상위 명령을 확인하세요",
+  "aib.proc_count.report_no_limit": "프로세스 수: {count}(이 기기에서 한도를 찾지 못해 경고 없음)",
+  "aib.proc_count.report_top": "프로세스가 가장 많은 명령: {top}"
 }

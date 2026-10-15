@@ -4237,5 +4237,13 @@
   "mod.aib_video.terminal_only": "動画パネルは端末でのみ開く(現在:{what})。",
   "mod.aib_video.pane_title": "動画",
   "mod.aib_video.opened": "動画パネルを開いた。",
-  "mod.aib_video.skeleton": "動画モジュールは骨組みの段階:追うアカウント / プラットフォームと表示する数値は未定。"
+  "mod.aib_video.skeleton": "動画モジュールは骨組みの段階:追うアカウント / プラットフォームと表示する数値は未定。",
+  "aib.proc_count.warn": "⚠ プロセス数が上限間近:{count}/{limit}({pct}%)· 多い順:{top}",
+  "aib.proc_count.top_item": "{name}×{n}",
+  "aib.proc_count.top_sep": "、",
+  "aib.proc_count.unknown": "プロセス数:計測できません",
+  "aib.proc_count.report_ok": "プロセス数:{count}/{limit}({pct}%、{threshold}% から警告)",
+  "aib.proc_count.report_warn": "⚠ プロセス数:{count}/{limit}({pct}%、{threshold}% 超過):これ以上増えると新しいプロセスを起動できません。下の上位を確認してください",
+  "aib.proc_count.report_no_limit": "プロセス数:{count}(このマシンでは上限不明のため警告なし)",
+  "aib.proc_count.report_top": "プロセス数が多いコマンド:{top}"
 }

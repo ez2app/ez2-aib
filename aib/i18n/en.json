@@ -4237,5 +4237,13 @@
   "mod.aib_video.terminal_only": "The Video panel opens only in the terminal (now: {what}).",
   "mod.aib_video.pane_title": "Video",
   "mod.aib_video.opened": "Video panel opened.",
-  "mod.aib_video.skeleton": "The Video module is a skeleton: which accounts / platforms to track and which numbers to show are not decided yet."
+  "mod.aib_video.skeleton": "The Video module is a skeleton: which accounts / platforms to track and which numbers to show are not decided yet.",
+  "aib.proc_count.warn": "⚠ Processes nearly full: {count}/{limit} ({pct}%) · most: {top}",
+  "aib.proc_count.top_item": "{name}×{n}",
+  "aib.proc_count.top_sep": ", ",
+  "aib.proc_count.unknown": "Processes: could not measure",
+  "aib.proc_count.report_ok": "Processes: {count}/{limit} ({pct}%; warns from {threshold}%)",
+  "aib.proc_count.report_warn": "⚠ Processes: {count}/{limit} ({pct}%, over {threshold}%): a little more and no new process can start; check the top commands below",
+  "aib.proc_count.report_no_limit": "Processes: {count} (no limit found on this machine; no warning)",
+  "aib.proc_count.report_top": "Commands with the most processes: {top}"
 }
