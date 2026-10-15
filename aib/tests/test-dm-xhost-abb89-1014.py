@@ -194,12 +194,23 @@ class ReentryKeepsIdent(unittest.TestCase):
     自己重組參數再進 dm-ctl 的每一支函式都要把跨主機身分帶下去(照原參數 exec 的那幾條本來就帶著)。"""
 
     def test_R1_rebuilt_argv_carries_xhost_ident(self):
+        # 10-15 整合(#46 × #56):#56 把再入旗標收成一份 _dm_reentry_flags(結果放 _RE_FLAGS)。
+        #   ⇒ 兩條路擇一才算帶到:函式內文直接帶 --xhost-ident;或呼叫 _dm_reentry_flags、把 _RE_FLAGS 放進重組參數,
+        #   且 _dm_reentry_flags 內文帶 --xhost-ident。
         text = CTL.read_text(encoding="utf-8")
-        for fn in ("_auto_resend", "_retry_until_loop"):
+
+        def body(fn):
             m = re.search(r"(?ms)^%s\(\) \{[^\n]*\n(.*?)^\}" % fn, text)
             self.assertIsNotNone(m, fn)
-            code = "\n".join(l for l in m.group(1).splitlines() if not l.lstrip().startswith("#"))
-            self.assertIn("--xhost-ident", code, "%s 重組參數沒帶跨主機身分" % fn)
+            return "\n".join(l for l in m.group(1).splitlines() if not l.lstrip().startswith("#"))
+
+        helper = body("_dm_reentry_flags") if re.search(r"(?m)^_dm_reentry_flags\(\) \{", text) else ""
+        for fn in ("_auto_resend", "_retry_until_loop"):
+            code = body(fn)
+            direct = "--xhost-ident" in code
+            via = (re.search(r"(?m)^\s*_dm_reentry_flags\b", code) is not None and "_RE_FLAGS" in code
+                   and "--xhost-ident" in helper)
+            self.assertTrue(direct or via, "%s 重組參數沒帶跨主機身分(內文沒帶,也沒經 _dm_reentry_flags 帶)" % fn)
 
 
 class DmCtl(unittest.TestCase):
