@@ -4303,5 +4303,10 @@
   "aib.chat.help.publish": "把這一席列進名冊(外人看得到、寄得到)",
   "aib.chat.help.hide": "把這一席從名冊拿掉",
   "aib.chat.help.roster": "看自己的名冊內容(公開資訊)",
-  "aib.chat.help.lookup": "查一個全球位址:抓名冊、驗簽、找席、看收信站;不寄"
+  "aib.chat.help.lookup": "查一個全球位址:抓名冊、驗簽、找席、看收信站;不寄",
+  "aib.chat.receipt.queued": "已排隊,對方忙完會收到。",
+  "aib.chat.receipt.delivered": "已送達。",
+  "aib.chat.receipt.held": "對方需要先審核才會收。",
+  "aib.chat.receipt.refused": "對方沒有收下這則。",
+  "aib.chat.receipt.expired": "已過期,沒有送出。"
 }

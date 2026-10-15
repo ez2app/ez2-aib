@@ -187,16 +187,31 @@ def run(env=None, tick=None, max_ticks=None, out=sys.stdout):
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 return 0
-            _sleep(tick, stop)
+            _sleep(tick, stop, every=(lambda: import_inbox(root, env)) if leader else None)
     finally:
         stop_worker()       # 工人跟著當班走(它看到父行程不在也會自己結束)
         os.close(fd)        # 關檔 = 放鎖,排隊的下一支接手
 
 
-def _sleep(seconds, stop):
-    end = time.time() + seconds
+IMPORT_EVERY = 1.0                         # 秒;全球來信匯入佇列(寄件端等 delivered 最多 20 秒,不能等一整輪)
+
+
+def _sleep(seconds, stop, every=None):
+    end, nxt = time.time() + seconds, 0.0
     while not stop["now"] and time.time() < end:
+        if every is not None and time.time() >= nxt:
+            every()
+            nxt = time.time() + IMPORT_EVERY
         time.sleep(min(0.2, max(0.0, end - time.time())))
+
+
+def import_inbox(root, env):
+    """當班才做:inbox → dm 佇列(global_inbox.py,核心規則)。出錯只記種類,不讓轉接程式死。"""
+    try:
+        import global_inbox
+        global_inbox.import_once(root, env)
+    except Exception as err:   # noqa: BLE001
+        sys.stderr.write("import_inbox:%s\n" % type(err).__name__)
 
 
 def _become_leader(root, env, out):

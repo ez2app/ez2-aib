@@ -4303,5 +4303,10 @@
   "aib.chat.help.publish": "この席を名簿に掲載(外部から見え、届く)",
   "aib.chat.help.hide": "この席を名簿から外す",
   "aib.chat.help.roster": "自分の名簿を表示(公開情報)",
-  "aib.chat.help.lookup": "グローバル宛先を照会:名簿取得・署名検証・席の確認・受信リレー確認。送信しない"
+  "aib.chat.help.lookup": "グローバル宛先を照会:名簿取得・署名検証・席の確認・受信リレー確認。送信しない",
+  "aib.chat.receipt.queued": "キューに入りました。相手の手が空けば届きます。",
+  "aib.chat.receipt.delivered": "届きました。",
+  "aib.chat.receipt.held": "相手が確認してから受け取ります。",
+  "aib.chat.receipt.refused": "相手はこのメッセージを受け取りませんでした。",
+  "aib.chat.receipt.expired": "期限切れのため届きませんでした。"
 }
