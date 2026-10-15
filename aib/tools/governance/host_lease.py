@@ -63,7 +63,7 @@ if str(_fallback) not in sys.path:
     sys.path.append(str(_fallback))
 import i18n_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 _TR = {}
 
 

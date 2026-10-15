@@ -45,7 +45,7 @@ if str(_COCKPIT_FALLBACK) not in sys.path:
     sys.path.append(str(_COCKPIT_FALLBACK))
 import i18n_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 
 
 def T(key, params=None):

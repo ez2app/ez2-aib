@@ -102,14 +102,44 @@ except Exception:  # noqa: BLE001 —— 模組不在(拆包)時退回同一條�
         r"|(?<![0-9])401(?![0-9])[^0-9\n]{0,40}unauthorized"
         r"|(?:status|http|code)[ :=]*(?<![0-9])401(?![0-9])", re.I)
 
-HUMAN_ERRORS = {
-    "server-cwd": "AIB 的本機 Codex server 工作目錄不見了(server 要重起;開席器 ensure 會自動做)",
-    "auth": "Codex 登入失效(401):請重新登入 codex",
-    "lock-held": "這條對話被另一邊握著(桌面或另一席),等它放手",
-    "disconnected": "與本機 Codex server 斷線",
-    "server-down": "本機 Codex server 起不來",
-    "thread-status": "對話在這顆 server 不是 idle/active(server 剛重起、登入失效或被桌面握著)",
-}
+HUMAN_ERROR_KINDS = ("server-cwd", "auth", "lock-held", "disconnected", "server-down", "thread-status")
+
+
+def human_error(kind):
+    """錯誤種類的人話(四語鍵 aib.codexbot.err.*;語系盤查第 15 條)。舊名 HUMAN_ERRORS 走模組 __getattr__。"""
+    return _ui("aib.codexbot.err." + kind.replace("-", "_"))
+
+
+def queue_paused_hint():
+    """中斷後提醒按 ▶ 的那句(四語鍵 aib.codexbot.queue_paused_hint)。舊名 QUEUE_PAUSED_HINT 走模組 __getattr__。"""
+    return _ui("aib.codexbot.queue_paused_hint")
+
+
+def __getattr__(name):
+    if name == "HUMAN_ERRORS":
+        return {k: human_error(k) for k in HUMAN_ERROR_KINDS}
+    if name == "QUEUE_PAUSED_HINT":
+        return queue_paused_hint()
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
+
+_UI_TR = {}
+
+
+def _ui(key, **params):
+    """畫面字走四語鍵(語系盤查,10-14);每次照 i18n_lib.resolve_locale() 取(長駐程式切語系也跟得上),讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.dirname(os.path.abspath(__file__))
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _UI_TR.get(loc)
+        if tr is None:
+            tr = _UI_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓程式停
+        return key
 
 
 def classify_error(err):
@@ -120,18 +150,18 @@ def classify_error(err):
     low = text.lower()
     kind = getattr(err, "kind", None)
     if "failed to load configuration" in low and ("no such file" in low or "os error 2" in low):
-        return "server-cwd", HUMAN_ERRORS["server-cwd"]
+        return "server-cwd", human_error("server-cwd")
     if _AUTH_401_RE.search(text) or "invalidated oauth" in low or "could not be refreshed" in low \
             or "please sign in again" in low or kind == "auth":
-        return "auth", HUMAN_ERRORS["auth"]
+        return "auth", human_error("auth")
     if "active writer" in low or "already has a live aib bridge" in low:
-        return "lock-held", HUMAN_ERRORS["lock-held"]
+        return "lock-held", human_error("lock-held")
     if kind == "server-down":
-        return "server-down", HUMAN_ERRORS["server-down"] + ":" + text[:120]
+        return "server-down", human_error("server-down") + ":" + text[:120]
     if kind == "disconnected" or "connection closed" in low or "disconnected" in low or "connection lost" in low:
-        return "disconnected", HUMAN_ERRORS["disconnected"]
+        return "disconnected", human_error("disconnected")
     if kind == "thread-status" or "not loaded in this server" in low:
-        return "thread-status", HUMAN_ERRORS["thread-status"]
+        return "thread-status", human_error("thread-status")
     return "unknown", text[:160]
 
 
@@ -186,7 +216,7 @@ def start_device_login(notice, save=None, popen=None, auth_path=None, clock=time
         proc = run([codex_bin(), "login", "--device-auth"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                    stderr=subprocess.STDOUT, text=True, start_new_session=True)
     except OSError as exc:
-        notice("codexbot: 起不了 codex login(%s);請自己在終端機跑 codex login" % str(exc)[:80])
+        notice("codexbot: " + _ui("aib.codexbot.login_spawn_fail", err=str(exc)[:80]))
         return False
 
     def worker():
@@ -205,20 +235,20 @@ def start_device_login(notice, save=None, popen=None, auth_path=None, clock=time
         except (OSError, ValueError):
             pass
         if url and code:
-            notice("codexbot: Codex 登入失效。請在瀏覽器開 %s 輸入 %s(15 分鐘內;這是本席起的 codex login,不是別人給的碼)" % (url, code))
+            notice("codexbot: " + _ui("aib.codexbot.login_url", url=url, code=code))
             if save:
                 save(auth_login_url=url, auth_login_code=code, auth_login_started_epoch=now)
         else:
-            notice("codexbot: codex login 沒印出登入碼;請自己在終端機跑 codex login")
+            notice("codexbot: " + _ui("aib.codexbot.login_no_code"))
         deadline = clock() + wait_secs
         while clock() < deadline:
             if auth.exists():
-                notice("codexbot: Codex 登入回來了;剛才那句沒送出去,請再送一次")
+                notice("codexbot: " + _ui("aib.codexbot.login_back"))
                 if save:
                     save(last_error="登入已回來,等下一句驗證")
                 return
             sleep(poll_secs)
-        notice("codexbot: 登入碼已過期(15 分鐘);下一句失敗時會再給一組")
+        notice("codexbot: " + _ui("aib.codexbot.login_code_expired"))
 
     threading.Thread(target=worker, name="codexbot-device-login", daemon=True).start()
     return True
@@ -232,7 +262,7 @@ def _persona_mark_sent(base, thread_id, session_uuid, ux, what="codexbot"):
     try:
         _bridge_persona.mark_sent(_bridge_persona.codexbot_marker_dir(base, thread_id, session_uuid), what)
     except OSError as exc:
-        ux.notice("codexbot: 人格包記號寫不進去(%s),下次開席會再送一次" % str(exc)[:80])
+        ux.notice("codexbot: " + _ui("aib.codexbot.persona_mark_fail", err=str(exc)[:80]))
         return True
     return what != "genes"
 
@@ -1097,7 +1127,6 @@ POLL_TURNS_ENV = "AIB_CODEXBOT_POLL_TURNS"   # C3:每輪只讀最近幾個回合
 POLL_TURNS_DEFAULT = 5
 WATCHDOG_ENV = "AIB_CODEXBOT_APPROVAL_WATCHDOG_SECS"  # 接手期間回合卡在等核准超過這麼久 ⇒ 中斷+放手
 WATCHDOG_DEFAULT = 180.0
-QUEUE_PAUSED_HINT = "(中斷會讓桌面「佇列已暫停」;桌面有排隊的稿要在桌面按 ▶ 繼續)"   # A2
 AUTO_APPROVE_TOOLS = ("aib_dm",)          # 接手期間唯一自動核准的工具(它自己有 R30 lint/停投名單)
 _TOOL_KEYS = frozenset(("tool", "toolName", "name", "server", "serverName", "mcpServer", "command"))
 
@@ -1181,7 +1210,7 @@ def handle_server_request(msg, rpc, holding, notice=lambda text: None, log_path=
     try:
         rpc.respond(msg.get("id"), result=result, error=error)
     except Exception as exc:
-        notice("codexbot: [接手中] 回覆核准請求失敗:%s" % str(exc)[:120])
+        notice("codexbot: " + _ui("aib.codexbot.takeover_approve_fail", err=str(exc)[:120]))
         return False
     notice(note)
     return True
@@ -1811,7 +1840,7 @@ def main(argv=None):
         params = msg.get("params", {})
         if msg.get("method") == "bridge/error":
             save(state="disconnected", health="down", last_error_kind="disconnected",
-                 last_error=HUMAN_ERRORS["disconnected"], error=params.get("message"))
+                 last_error=human_error("disconnected"), error=params.get("message"))
             ux.notice("codexbot: desktop disconnected(%s)" % str(params.get("message") or "")[:80])
             if not args.check and threading.current_thread() is not threading.main_thread() \
                     and os.environ.get(RECONNECT_ENV, "1") != "0":
@@ -1829,7 +1858,7 @@ def main(argv=None):
             return
         handled = ux.handle(msg)
         if "id" in msg:
-            ux.notice("codexbot: 等待 Codex Desktop 核准...")
+            ux.notice("codexbot: " + _ui("aib.codexbot.wait_approval"))
             return
         if handled and msg.get("method") == "item/started":
             kind = (params.get("item") or {}).get("type")
@@ -1878,14 +1907,14 @@ def main(argv=None):
                 closer = _closer.spawn("codexbot", {"thread_id": args.thread_id, "session_id": args.session_id,
                                                     "endpoint": args.endpoint}, base)
                 if closer is None:
-                    print("codexbot: 收尾小幫手起不來;橋若突然死,桌面名稱不會改回未綁定", flush=True)
+                    print("codexbot: " + _ui("aib.codexbot.closer_fail"), flush=True)
             # B1:橋開本機 socket 收 MCP 的 dm 單,在這個行程(席 pane 的子行程)跑 run_aib_dm ⇒ 抬頭是 @席碼
             try:
                 dm_server = _dm_socket.DmSocketServer(_dm_socket.socket_path(base, args.thread_id), _aib_dm.run_aib_dm, notice=ux.notice)
                 save(dm_socket=str(dm_server.start()))
             except OSError as exc:
                 dm_server = None
-                ux.notice("codexbot: dm socket 開不起來(%s);桌面 MCP 的 dm 會直送、抬頭 unattested" % str(exc)[:120])
+                ux.notice("codexbot: " + _ui("aib.codexbot.dm_socket_fail", err=str(exc)[:120]))
         # 10-07:自管 server 由橋自己 ensure(以前只有 aib 開席那條路會做;respawn-pane / 開席器重連那兩條路不經過 aib,
         #   server 死了橋就連不上、rc 2、席死)。位址不是自管的那顆(自訂 ws://)不動。
         logged_in = None
@@ -1914,15 +1943,15 @@ def main(argv=None):
         save(state="connected", desktop_session_id=thread["sessionId"], desktop_thread_title=title,
              health=("degraded" if logged_in is False else "ok"),
              last_error_kind=("auth" if logged_in is False else None),
-             last_error=(HUMAN_ERRORS["auth"] if logged_in is False else None))
+             last_error=(human_error("auth") if logged_in is False else None))
         if logged_in is False:
-            ux.notice("codexbot: " + HUMAN_ERRORS["auth"] + "(連線在,但送字會失敗)")
+            ux.notice("codexbot: " + human_error("auth") + _ui("aib.codexbot.auth_but_connected"))
             start_device_login(ux.notice, save)
         print("AIB Codex desktop bridge -> " + args.thread_id + "(app-server %s)" % desktop.server_version
-              + (" 對話「%s」" % title if title else ""), flush=True)   # B4:席上看得到綁的是哪條對話
+              + ((" " + _ui("aib.codexbot.bridge_title", name=title)) if title else ""), flush=True)   # B4:席上看得到綁的是哪條對話
         account = desktop_account(rpc)                          # 第 22 件:席上看得到用的是哪個 Codex 帳號
         save(codex_account=account or None)
-        print("codexbot: 這條對話用的 Codex 帳號:%s" % (account or "讀不到"), flush=True)
+        print("codexbot: " + _ui("aib.codexbot.account", who=account or _ui("aib.codexbot.unreadable")), flush=True)
         ux.title_text = title_line(title, args.thread_id)       # 提示符上面那一行;改名時 poll_loop 更新
 
         def refresh_title(new_title):
@@ -1934,7 +1963,7 @@ def main(argv=None):
                 return
             ux.title_text = line
             save(desktop_thread_title=new_title)
-            ux.notice("codexbot: 對話改名 ⇒ " + line)
+            ux.notice("codexbot: " + _ui("aib.codexbot.renamed", text=line))
         # the maintainer 09-25:綁定後把 AIB 席碼掛在桌面對話名稱後面(例 `CodexBot 開發01 ( @xxxxx )`),
         #   命名規則與 Grok 共用 bot_seat_name。改名失敗不讓綁定失敗:印一行實話,繼續。
         #   ★ 桌面 ChatGPT 畫面會不會即時跟著變:未驗(等 bot 重開真機看)。
@@ -1946,18 +1975,18 @@ def main(argv=None):
                 if wanted != current_name:
                     rpc.call("thread/name/set", {"threadId": args.thread_id, "name": wanted}, timeout=15)
                     refresh_title(wanted)
-                    print("codexbot: 已把桌面對話名稱改成「%s」" % wanted, flush=True)
+                    print("codexbot: " + _ui("aib.codexbot.name_set", name=wanted), flush=True)
             except Exception as exc:  # noqa: BLE001 — 改名是附加功能,任何失敗都不得擋綁定
-                print("codexbot: 沒把席碼寫進桌面對話名稱(%s);綁定照常" % str(exc)[:120], flush=True)
+                print("codexbot: " + _ui("aib.codexbot.name_set_fail", err=str(exc)[:120]), flush=True)
 
         human_label = human_name()                                # 回顯行「真人(名字)> 」;開席算一次
-        print("Connected to existing conversation. Approvals remain in the desktop app. /dm <@席> <訊> 走原生 aib dm。", flush=True)
+        print(_ui("aib.codexbot.connected"), flush=True)
         print(_aib_dm.dm_boot_banner(), flush=True)
-        print("指令：/status 看橋狀態 · Ctrl-C 中斷本輪 · /quit 離開 · /dm <@席> <訊>", flush=True)
+        print(_ui("aib.codexbot.help"), flush=True)
         if ux.title_text:
             print(ux.title_text, flush=True)     # 第一個提示符上面也有標題行
-        print("模型自主 dm：整則回覆只放 <aib_tool>{…aib_dm…}</aib_tool>,橋代送並印收據(%s=0 關閉)" % MODEL_DM_ENV, flush=True)
-        print("模式：%s（writer=AIB 持有寫入權;queue=不搶寫入權、佇列投遞、桌面可同時打字。/handoff 放手轉 queue,/attach 接回轉 writer）" % mode, flush=True)
+        print(_ui("aib.codexbot.model_dm", name=MODEL_DM_ENV, text="<aib_tool>{…aib_dm…}</aib_tool>"), flush=True)
+        print(_ui("aib.codexbot.mode", mode=mode), flush=True)
         replay_thread(thread, args.session_id, human_label)   # 10-09 開席重放:桌面對話最近幾則畫成卡(橋接席已有,codexbot 補齊)
         save(mode=mode)
         supervisor = QueueSupervisor(rpc, args.thread_id,
@@ -1989,7 +2018,7 @@ def main(argv=None):
                     new = supervisor.step()
                 except Exception as exc:
                     kind, human = health_bad(exc)
-                    ux.notice("codexbot: 佇列輪詢失敗:%s(%s)" % (human, str(exc)[:120]))
+                    ux.notice("codexbot: " + _ui("aib.codexbot.queue_poll_fail", why=human, err=str(exc)[:120]))
                     continue
                 if new:
                     health_ok()
@@ -2077,22 +2106,22 @@ def main(argv=None):
                 try:
                     rpc.call("thread/unsubscribe", {"threadId": args.thread_id}, timeout=15)
                 except Exception as exc:
-                    print("codexbot: 放手失敗:%s" % str(exc)[:160], flush=True); continue
+                    print("codexbot: " + _ui("aib.codexbot.release_fail", err=str(exc)[:160]), flush=True); continue
                 mode_box[0] = mode = "queue"; supervisor.holding = False; save(mode=mode)
-                print("codexbot: 已放手(幾秒後桌面可接回)。現在是 queue 模式:你打的字會排進佇列,由持有者執行;/attach 接回。", flush=True)
+                print("codexbot: " + _ui("aib.codexbot.released"), flush=True)
                 continue
             if line == "/attach":
                 try:
                     desktop.attach()
                 except Exception as exc:
                     kind, human = health_bad(exc)
-                    print("codexbot: 接回失敗:%s(%s)" % (human, str(exc)[:160]), flush=True); continue
+                    print("codexbot: " + _ui("aib.codexbot.attach_fail", why=human, err=str(exc)[:160]), flush=True); continue
                 supervisor.holding = False
                 mode_box[0] = mode = "writer"; save(mode=mode)
-                print("codexbot: 已接回寫入權,writer 模式。", flush=True)
+                print("codexbot: " + _ui("aib.codexbot.attached"), flush=True)
                 continue
             if line == "/unbind":
-                print("codexbot: CodexBot 席一定要綁一條 Codex 對話,不能只解除;要換別條打 /bind", flush=True)
+                print("codexbot: " + _ui("aib.codexbot.must_bind"), flush=True)
                 continue
             if line == "/bind" or line.startswith("/bind "):
                 arg = line[len("/bind"):].strip()
@@ -2100,7 +2129,7 @@ def main(argv=None):
                     try:
                         bind_rows = codex_bind_rows(rpc, args.endpoint, args.thread_id, base)
                     except Exception as exc:  # noqa: BLE001
-                        print("codexbot: 清單讀不到(%s);可以直接打 /bind <完整 UUID>" % str(exc)[:120], flush=True)
+                        print("codexbot: " + _ui("aib.codexbot.list_fail", err=str(exc)[:120]), flush=True)
                         continue
                     for ln in render_codex_bind_list(bind_rows, args.thread_id):
                         print(ln, flush=True)
@@ -2112,21 +2141,20 @@ def main(argv=None):
                 import codexbot_threads as _cbt2
                 _held = _cbt2.held_by(want, base)     # 先擋:重開後才發現被占,橋起不來、席就死了
                 if _held:
-                    print("codexbot: 綁不上:這條正被 %s 使用" % "、".join(_held), flush=True)
+                    print("codexbot: " + _ui("aib.codexbot.bind_held", who="、".join(_held)), flush=True)
                     continue
                 if _cbt2.thread_exists(args.endpoint, want, rpc=rpc) is False:
-                    print("codexbot: 綁不上:Codex 桌面找不到 %s" % want[:8], flush=True)
+                    print("codexbot: " + _ui("aib.codexbot.bind_missing", id=want[:8]), flush=True)
                     continue
                 from sand_bridge import save_bind_override
                 save_bind_override(root, launch_thread, want)
                 rebind_to[0] = want
-                print("codexbot: 換綁到 Codex 對話 %s:先把現在這條的桌面名稱改回未綁定,再重開這一席接新的那條(席碼不變)…"
-                      % want, flush=True)
+                print("codexbot: " + _ui("aib.codexbot.rebinding", id=want), flush=True)
                 break
             if not line:
                 continue
             if is_system_notice(line):
-                ux.notice("codexbot: [系統通知,不轉進對話] " + line[:80].replace("\n", " "))
+                ux.notice("codexbot: " + _ui("aib.codexbot.system_notice", text=line[:80].replace("\n", " ")))
                 continue
             slash = _aib_dm.parse_dm_slash(line)
             if slash:
@@ -2137,8 +2165,7 @@ def main(argv=None):
             _is_dm, _wake = dm_should_wake(line)
             if not _wake:
                 held_dms.append(tag_origin(line))
-                ux.notice("codexbot: 這則 dm 不開一輪(寄件人未驗證或 dm 叫醒關著),先留著;你下一次說話時一起附上(%s=all 可改)"
-                          % CODEX_WAKE_ON_DM_ENV)
+                ux.notice("codexbot: " + _ui("aib.codexbot.dm_held", name=CODEX_WAKE_ON_DM_ENV))
                 continue
             message_id = str(uuid.uuid4())
             message = {"id": message_id, "thread_id": args.thread_id,
@@ -2153,7 +2180,7 @@ def main(argv=None):
                 try:
                     mark_header_sent(base, args.thread_id)
                 except OSError as exc:
-                    ux.notice("codexbot: 說明記號寫不進去(%s),下次開席會再送一次" % str(exc)[:80])
+                    ux.notice("codexbot: " + _ui("aib.codexbot.explain_mark_fail", err=str(exc)[:80]))
             persona_attached = False
             pack_what = ""
             if not persona_sent:
@@ -2170,7 +2197,7 @@ def main(argv=None):
                     prefix, pack_what = ("", "") if persona_sent else _bridge_persona.codexbot_pack(base, args.thread_id, args.session_id or "")
                 except Exception as exc:  # noqa: BLE001 —— 人格包壞掉不能擋這一則
                     prefix = ""
-                    ux.notice("codexbot: 人格包讀不出來(%s),這一則照送" % type(exc).__name__)
+                    ux.notice("codexbot: " + _ui("aib.codexbot.persona_read_fail", err=type(exc).__name__))
                 if prefix:
                     outgoing = prefix + "\n\n" + outgoing
                     persona_attached = True
@@ -2187,19 +2214,19 @@ def main(argv=None):
                     if persona_attached and _send_maybe_delivered(exc):
                         persona_sent = _persona_mark_sent(base, args.thread_id, args.session_id or "", ux, pack_what)
                     kind, human = health_bad(exc)
-                    print("codexbot: 排入佇列失敗:%s(%s)" % (human, str(exc)[:160]), flush=True); continue
+                    print("codexbot: " + _ui("aib.codexbot.queue_fail", why=human, err=str(exc)[:160]), flush=True); continue
                 if persona_attached:
                     persona_sent = _persona_mark_sent(base, args.thread_id, args.session_id or "", ux, pack_what)
                 if distill_attached:
                     _distill_pending = ""
                 _distill_pending = _codexbot_distill(args.session_id or "") or _distill_pending   # 佇列模式:排進去就算一輪
                 if supervisor.takeover_secs > 0:
-                    print("codexbot: 已排入桌面佇列(%s)。持有者閒下來就會執行;%d 秒沒人吃 AIB 會暫時接手。" % (qid, int(supervisor.takeover_secs)), flush=True)
+                    print("codexbot: " + _ui("aib.codexbot.queued_takeover", id=qid, seconds=int(supervisor.takeover_secs)), flush=True)
                 else:
-                    print("codexbot: 已排入桌面佇列(%s)。由桌面(持有者)閒下來時執行;AIB 不接手(TAKEOVER_SECS=0)。" % qid, flush=True)
+                    print("codexbot: " + _ui("aib.codexbot.queued_no_takeover", id=qid), flush=True)
                 continue
             ux.begin()
-            ux.notice("codexbot: 已送出，等待回覆...")
+            ux.notice("codexbot: " + _ui("aib.codexbot.sent_wait"))
             try:
                 try:
                     result = desktop.send(outgoing)
@@ -2230,22 +2257,22 @@ def main(argv=None):
                             raise
                         desktop.interrupt(ux.turn_id)
                         interrupt_sent = True
-                        ux.notice("codexbot: 已要求中斷本輪，等待 Desktop 收尾..." + QUEUE_PAUSED_HINT)
+                        ux.notice("codexbot: " + _ui("aib.codexbot.interrupt_req") + queue_paused_hint())
                         continue
                     if progress["turn_status"] in TurnUX.TERMINAL:
                         break
                     if rpc.closed.is_set():
                         raise BridgeError("desktop disconnected while the turn was running; input was not resent")
                     if progress["first_output_ms"] is None and progress["elapsed_ms"] >= 1500 and not slow_notice:
-                        ux.notice("codexbot: 思考中...")
+                        ux.notice("codexbot: " + _ui("aib.codexbot.thinking"))
                         slow_notice = True
                     if progress["first_output_ms"] is None and progress["elapsed_ms"] >= 10000 and not long_notice:
-                        ux.notice("codexbot: 仍在處理；若需要核准，請查看 Codex Desktop。")
+                        ux.notice("codexbot: " + _ui("aib.codexbot.still_working"))
                         long_notice = True
                     if not interrupt_sent and TurnUX.silence_expired(progress, args.silence_timeout):
                         desktop.interrupt(ux.turn_id)
                         interrupt_sent = True
-                        ux.notice("codexbot: 長時間沒有任何進展事件，已自動中斷本輪。" + QUEUE_PAUSED_HINT)
+                        ux.notice("codexbot: " + _ui("aib.codexbot.auto_interrupt") + queue_paused_hint())
 
                 recovered = False
                 try:
@@ -2261,9 +2288,9 @@ def main(argv=None):
                 turn_status = progress["turn_status"] or "failed"
                 if turn_status == "failed":
                     error = progress.get("turn_error") or {}
-                    ux.notice("codexbot: 本輪失敗：" + str(error.get("message") or error))
+                    ux.notice("codexbot: " + _ui("aib.codexbot.turn_failed", err=str(error.get("message") or error)))
                 elif turn_status == "interrupted":
-                    ux.notice("codexbot: 本輪已中斷。")
+                    ux.notice("codexbot: " + _ui("aib.codexbot.turn_interrupted"))
                 message.update(
                     state=("answered" if turn_status == "completed" else turn_status),
                     turn_status=turn_status,
@@ -2304,10 +2331,10 @@ def main(argv=None):
                     try:
                         rpc.call("thread/unsubscribe", dict(threadId=args.thread_id), timeout=15)
                     except Exception as rel:
-                        ux.notice("codexbot: 放手失敗:%s" % str(rel)[:120])
+                        ux.notice("codexbot: " + _ui("aib.codexbot.release_fail", err=str(rel)[:120]))
                     else:
                         mode_box[0] = mode = "queue"; supervisor.holding = False; save(mode=mode)
-                        ux.notice("codexbot: 已放手讓桌面可接回,改 queue 模式;問題排除後 /attach 接回寫入權")
+                        ux.notice("codexbot: " + _ui("aib.codexbot.released_queue"))
             atomic_json(path, message)
         if rebind_to[0]:
             save(state="rebinding", rebind_to=rebind_to[0])
@@ -2316,13 +2343,13 @@ def main(argv=None):
     except Reload:
         reloading[0] = True
         save(state="reloading")
-        print("codexbot: 程式已更新、席閒著 ⇒ 重開同一席載新碼(綁定不變,幾秒)", file=sys.stderr, flush=True)
+        print("codexbot: " + _ui("aib.codexbot.reload"), file=sys.stderr, flush=True)
         return RELOAD_RC
     except Disconnected as exc:
         reconnecting[0] = True
-        save(state="disconnected", health="down", last_error_kind="disconnected", last_error=HUMAN_ERRORS["disconnected"],
+        save(state="disconnected", health="down", last_error_kind="disconnected", last_error=human_error("disconnected"),
              error=str(exc))
-        print("codexbot: %s;以 rc=%d 結束,交給開席器重連同一席" % (exc, RECONNECT_RC), file=sys.stderr, flush=True)
+        print("codexbot: " + _ui("aib.codexbot.reconnect_exit", err=exc, rc=RECONNECT_RC), file=sys.stderr, flush=True)
         return RECONNECT_RC
     except (Exception, KeyboardInterrupt) as exc:
         kind, human = classify_error(exc)
@@ -2352,10 +2379,10 @@ def main(argv=None):
                     closer.done()          # 自己改好了,小幫手不用動
                     closer = None
                 if unbound != cur:
-                    print("codexbot: 已把桌面對話名稱改回「%s」" % unbound, flush=True)
+                    print("codexbot: " + _ui("aib.codexbot.name_reset", name=unbound), flush=True)
             except Exception as exc:  # noqa: BLE001
                 try:
-                    print("codexbot: 沒把桌面對話名稱改回未綁定(%s)" % str(exc)[:120], flush=True)
+                    print("codexbot: " + _ui("aib.codexbot.name_reset_fail", err=str(exc)[:120]), flush=True)
                 except OSError:
                     pass   # 關窗後終端機已不在
         if rpc:

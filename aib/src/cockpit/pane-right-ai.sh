@@ -14,6 +14,14 @@
 #     模型落地前不可能出現(紅線);
 #   - 窗集合與 rowmap 跳轉目標取自同一次 list-windows(畫面與落點同源)。
 . "$(dirname "$0")/cockpit-env.sh"
+# 畫面字走四語字典(語系盤查第 14 條,10-14):_rai <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取。
+#   python 起不來 ⇒ 印鍵名、rc 照 0(set -e 底下也不會中斷)。
+_rai() {
+  local key="$1"; shift
+  local args=() kv
+  for kv in "$@"; do args+=(--param "$kv"); done
+  "${EZ2_PY3:-python3}" "$EZ2_COCKPIT_DIR/i18n_lib.py" ${args[@]+"${args[@]}"} "$key" 2>/dev/null || printf '%s\n' "$key"
+}
 
 set -o pipefail   # 三輪審中3:輸出管線任一段死都算 render 失敗,不發布 rowmap
 
@@ -1061,6 +1069,17 @@ _HEARTBEAT_PROVIDERS = ('sand', 'grokbot', 'claudebot', 'musebot')   # sand_brid
 _HEARTBEAT_STALE_S = 120
 
 
+def _health_word(kind, zh):
+    """健康短字查四語鍵 aib.rightai.health.<kind>(語系盤查第 21 條);i18n_lib 載不到(例:測試把這一段單獨抽出來跑)
+    ⇒ 用原本的繁中字。"""
+    try:
+        import i18n_lib as _i18n
+        _v = _i18n.t('aib.rightai.health.' + kind.replace('-', '_'))
+        return zh if _v.startswith('!!') else _v
+    except Exception:
+        return zh
+
+
 def _bridge_health_text(rec):
     """橋接席的健康短字:health 是 degraded/down 才回(例「⚠登入失效」);健康、不是橋接席、讀不到 ⇒ ''(不畫,不猜)。"""
     if not isinstance(rec, dict) or (rec.get('provider') or '') not in _BRIDGE_PROVIDERS:
@@ -1082,17 +1101,20 @@ def _bridge_health_text(rec):
             try:
                 os.kill(_pid, 0)
             except ProcessLookupError:
-                return '⚠已斷線'
+                return '⚠' + _health_word('gone', '已斷線')
             except OSError:
                 pass
         _ue = _st.get('updated_epoch')
         if (rec.get('provider') or '') in _HEARTBEAT_PROVIDERS and isinstance(_ue, (int, float)):
             import time as _time
             if _time.time() - _ue > _HEARTBEAT_STALE_S:
-                return '⚠已斷線'
+                return '⚠' + _health_word('gone', '已斷線')
     if _st.get('health') not in ('degraded', 'down'):
         return ''
-    return '⚠' + _BRIDGE_HEALTH_SHORT.get(str(_st.get('last_error_kind') or ''), '異常')
+    _kind = str(_st.get('last_error_kind') or '')
+    if _kind in _BRIDGE_HEALTH_SHORT:
+        return '⚠' + _health_word(_kind, _BRIDGE_HEALTH_SHORT[_kind])
+    return '⚠' + _health_word('unknown', '異常')
 
 
 
@@ -1600,7 +1622,7 @@ for _wid in sorted(live, key=lambda w: int(w.lstrip('@') or 0)):
         # 沒有席位檔就沒有人格、沒有五碼——唯一可驗證的事實只剩窗號,
         # 就顯示窗號(也正好是 the maintainer 與各席互相稱呼的方式)。不編假五碼。
         # v0.70.0 #15(the maintainer 09-27 10:43 截圖「❓ @41」):窗號後明說「非 AIB 席」,人一眼知道這是外開的視窗不是壞掉的席。
-        'name': _wid + ' 非 AIB 席',
+        'name': _wid + ' ' + tr.t('aib.rightai.not_aib'),
         'trust': 'self_reported',
         'ctx_percent': None,          # 無 session 可測
         'ctx_stale': False,
@@ -2006,7 +2028,7 @@ for row in _label_rows:
         #   沒有才照原句接在後面。
         _qc = row[3].get('codex_quota_clock') or ''
         if _qc:
-            row[3]['name'] = '額滿%s ' % _qc + (row[3].get('name') or '')
+            row[3]['name'] = tr.t('aib.rightai.quota_full', {'when': _qc}) + ' ' + (row[3].get('name') or '')
         else:
             row[3]['name'] = (row[3].get('name') or '') + ' · ' + row[3]['codex_quota_line']
     if row[3].get('bot_session') is not None:
@@ -2015,7 +2037,8 @@ for row in _label_rows:
         if _oa_st and _oa_st.get('mode') in ('unconfirmed', 'opening'):
             _oa_st = None
         _bs = row[3].get('bot_session') or ''
-        row[3]['name'] = (row[3].get('name') or '') + (' · 綁 Claude 對話 ' + _bs[:8] if _bs else ' · 沒綁 Claude 對話')
+        row[3]['name'] = (row[3].get('name') or '') + ' · ' + (tr.t('aib.rightai.bound_claude', {'id': _bs[:8]}) if _bs
+                                                              else tr.t('aib.rightai.unbound_claude'))
     if _oa_st:
         _name = row[3].get('name') or ''
         if _oa_st.get('mode') == 'unconfirmed':
@@ -2340,7 +2363,7 @@ if _view == 'usage':
             bar_arrows=True)
 else:
     if _view != 'ai':
-        sys.stderr.write('right-view: 不認識的 EZ2_RIGHT_VIEW=%r,畫 1.AI\n' % _view)
+        sys.stderr.write(tr.t('aib.rightai.bad_view', {'value': repr(_view)}) + '\n')
     lines, rowmap = render_ai_list_with_map(render_data, width=width)
     required_width = required_ai_pane_width(render_data)
     raw_lines, raw_rowmap = list(lines), list(rowmap)
@@ -2390,7 +2413,7 @@ else:
                 _below = len(raw_lines) - (_scroll_off + _total)
                 if _mark and _below > 0:
                     lines = list(lines)
-                    lines[-1] = ' %s 還有 %d 行未顯示' % (_mark, _below + 1)
+                    lines[-1] = ' ' + tr.t('aib.rightai.overflow', {'mark': _mark, 'n': _below + 1})
         if _ldir:
             try:
                 _lpath = os.path.join(_ldir, '.right-scroll-limit.json')
@@ -2509,7 +2532,7 @@ PY
     else
       [ -n "${TMUX_PANE:-}" ] && tmux set-option -p -t "$TMUX_PANE" @aib_pane "" 2>/dev/null || true
     fi
-    printf '\033[H AI(主+子)\n\n 清單暫時無法取得\n 已停用列點擊以免誤跳\033[J\n'
+    printf '\033[H %s\n\n %s\n %s\033[J\n' "$(_rai aib.rightai.fallback_title)" "$(_rai aib.rightai.fallback_unavailable)" "$(_rai aib.rightai.fallback_clicks_off)"
     # stderr 節流:同一失敗簽名連續 poll 只印首見;pane 內訊息照常每輪畫
     if [ "$_fail_sig" != "$_last_fail_sig" ]; then
       sed -n '1,3p' "$_ai_out.err" >&2 2>/dev/null || true

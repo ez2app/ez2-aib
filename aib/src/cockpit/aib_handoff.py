@@ -112,12 +112,16 @@ _TR = {}
 
 
 def T(key: str, **params) -> str:
-    loc = os.environ.get("EZ2_AIB_LOCALE") or ""
+    try:
+        from i18n_lib import resolve_locale
+        loc = resolve_locale()   # 語系來源只認 i18n_lib(明給 > env > 設定檔 > zh-TW)
+    except Exception:  # noqa: BLE001 —— 讀不到 i18n_lib 時下面 Translator 也會失敗、印鍵名
+        loc = ""
     tr = _TR.get(loc)
     if tr is None:
         try:
             from i18n_lib import Translator
-            tr = Translator()
+            tr = Translator(loc or None)
         except Exception:  # noqa: BLE001 —— 字典讀不到就印鍵名(可見即可抓),不擋交接
             tr = False
         _TR[loc] = tr

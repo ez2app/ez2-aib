@@ -50,7 +50,7 @@ if str(_COCKPIT) not in sys.path:
     sys.path.insert(0, str(_COCKPIT))
 import i18n_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 DEFAULT_S = 10.0
 EARLY_RED = 5
 RESUME_NAME = "pushgate"
@@ -932,6 +932,30 @@ def run_shards(repo, shards, fail_fast=False, poll_s=1.0, resume=True, known_red
                              stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, start_new_session=True,
                              preexec_fn=_sigint_default)
         procs.append((p, log))
+    try:
+        return _collect_shards(procs, fail_fast, poll_s, known_red)
+    finally:
+        # 10-14 Mini 審查 2:每份自成一組行程(start_new_session),推包整組停 pushgate 時停不到它們 ⇒
+        # 不管怎麼離開(被 SIGTERM / Ctrl-C / 例外),還在跑的份逐一停掉,不留在同一棵樹上跟下一批互撞
+        for p, _log in procs:
+            if p.poll() is None:
+                _stop(p)
+
+
+def _stop_on_signals():
+    """10-14 Mini 審查 2:SIGTERM / SIGHUP 照 Ctrl-C 走(丟 SystemExit)⇒ run_shards 的 finally 停掉每一份。
+    本來就是忽略的訊號不接管(nohup … & / trap "" TERM)。"""
+    def handler(signum, _frame):
+        raise SystemExit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            if signal.getsignal(sig) != signal.SIG_IGN:
+                signal.signal(sig, handler)
+        except (ValueError, OSError):          # 不在主執行緒 ⇒ 不裝
+            pass
+
+
+def _collect_shards(procs, fail_fast, poll_s, known_red):
     stopped = set()
     while fail_fast and any(p.poll() is None for p, _ in procs):
         hit = False
@@ -974,6 +998,7 @@ def main(argv=None):
     ap.add_argument("--farm", default=os.environ.get("AIB_SHIP_FARM", ""),
                     help="@me: hand all but the first shard to trusted idle machines (ship_farm worker); env AIB_SHIP_FARM")
     a = ap.parse_args(argv)
+    _stop_on_signals()
     repo = Path(a.repo).resolve()
     if a.mode == "generic":
         sys.path.insert(0, str(HERE.parent / "release"))

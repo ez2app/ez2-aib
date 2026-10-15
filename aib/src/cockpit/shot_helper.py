@@ -55,7 +55,7 @@ import seat_address  # noqa: E402
 import composer_state  # noqa: E402
 import seats_dir_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 REPO = _HERE.parents[1]
 SHOT_SRC = REPO / "src" / "shot"
 APP_NAME = "Ez2AIBShot.app"

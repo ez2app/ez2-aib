@@ -204,8 +204,31 @@ def main_persona_blocks(vault: Path) -> list[tuple[str, str, str, str]]:
 
 # 09-30 測試艙 b1af:Codex 讀了人格卡、背得出紅線,回答卻沒照做(卡上「每則最後一行寫…」一次都沒寫)。
 # 讀過 ≠ 照做 ⇒ 明說是每一則都要做,並給一個自己對照的動作。
-COMPLY_LINE = ("不是讀過就好:從現在起每一則回答都照這張卡做 —— 紅線逐條遵守、職責與口癖照用;"
-               "送出回答前,自己對一次紅線。")
+def comply_line() -> str:
+    """「讀過不等於照做」那一行(四語鍵 aib.ppack.comply;語系盤查第 17 條)。舊名 COMPLY_LINE 走模組 __getattr__。"""
+    return T("aib.ppack.comply")
+
+# 回執那一句是協定字:open_ack.PACK_PERSONA_ACK_PREFIX、dm_triage、create_and_bind_persona 都認這個字面 ⇒ 四語都不翻
+ACK_PREFIX = "人格已載入 "
+_TR = {}
+
+
+def T(key, **params):
+    """人格包框架句走 aib.ppack.* 四語鍵(語系盤查第 17 條,10-14);每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名。
+    卡片正文、小節名稱(紅線 / 職責…,SECTION_KEEP 靠它截段)是使用者的資料,不翻。"""
+    try:
+        _ck = str(Path(__file__).resolve().parents[1] / "cockpit")
+        if _ck not in sys.path:   # 每次叫都插一次會讓 sys.path 一直長
+            sys.path.insert(0, _ck)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
 
 LANGUAGE_NAMES = {"zh-TW": "繁體中文", "en": "English", "ja": "日本語", "ko": "한국어"}
 
@@ -213,7 +236,9 @@ LANGUAGE_NAMES = {"zh-TW": "繁體中文", "en": "English", "ja": "日本語", "
 def answer_language() -> str:
     """這台 AIB 的介面語系(EZ2_AIB_LOCALE,與右欄、選單同一個來源);讀不到就是 zh-TW。"""
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cockpit"))
+        _ck = str(Path(__file__).resolve().parents[1] / "cockpit")
+        if _ck not in sys.path:   # 每次叫都插一次會讓 sys.path 一直長
+            sys.path.insert(0, _ck)
         import i18n_lib
         return i18n_lib.resolve_locale()
     except Exception:  # noqa: BLE001
@@ -224,8 +249,7 @@ def answer_language_line() -> str:
     """the maintainer 09-30:「應該是用他的對應 i18n 語系回答,因為用戶不一定是繁中語言」。
     角色卡多半寫死「以繁體中文回答」(建卡範本留下的);卡是使用者的資料不在這裡改,改由這一行蓋過去。"""
     loc = answer_language()
-    return ("回答語言:%s(%s)。跟著這台 AIB 的語系設定;卡片裡若寫了別的語言,以這一行為準。Answer in this language."
-            % (LANGUAGE_NAMES.get(loc, loc), loc))
+    return T("aib.ppack.answer_lang", name=LANGUAGE_NAMES.get(loc, loc), loc=loc)
 
 
 def base_fingerprint(blocks) -> str:
@@ -250,7 +274,18 @@ def _empty(status: str, code: str, **extra) -> dict:
 
 
 # 10-01 the maintainer「85% 或準備 clear 必做三步交接,全部 AI、不可跳過」:寫回段的固定一行(開席單鐵則八同一句)。
-HANDOFF_RULE = "對話用量到 85%(或 the maintainer 說準備 clear)必須跑 `aib handoff`(collect → 三步 write),不可跳過。"
+def handoff_rule() -> str:
+    """寫回段的交接鐵則一行(四語鍵 aib.ppack.handoff_rule)。舊名 HANDOFF_RULE 走模組 __getattr__。"""
+    return T("aib.ppack.handoff_rule")
+
+
+def __getattr__(name):
+    # 舊的模組層名字(測試、外部讀 persona_pack.COMPLY_LINE / HANDOFF_RULE)照讀得到,每次都是當下語系
+    if name == "COMPLY_LINE":
+        return comply_line()
+    if name == "HANDOFF_RULE":
+        return handoff_rule()
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
 def assemble(name, uid, sha8, card_secs, handoff, memories, route_key, folder, code, max_bytes=MAX_BYTES,
@@ -268,33 +303,33 @@ def assemble(name, uid, sha8, card_secs, handoff, memories, route_key, folder, c
     if not (handoff or "").strip():
         brief_lines = []
 
+    COMPLY_LINE, HANDOFF_RULE = comply_line(), handoff_rule()   # 每次組包照當下語系取(語系盤查第 17 條)
+
     def render() -> str:
-        lines = ["%s 你綁定的人格卡:%s(uid %s,指紋 %s)" % (HEADER, name, uid, sha8),
-                 "照這張卡的職責、紅線與語氣工作;它和開席鐵則或 the maintainer 當次指令衝突時,以鐵則與 the maintainer 為準。",
+        lines = [T("aib.ppack.identity", head=HEADER, name=name, uid=uid, sha=sha8),
+                 T("aib.ppack.obey"),
                  answer_language_line(),
                  COMPLY_LINE,
-                 "── 角色卡"]
-        lines += [t for _, t in card] or ["(卡片正文被截掉了,讀原檔)"]
+                 T("aib.ppack.sec_card")]
+        lines += [t for _, t in card] or [T("aib.ppack.card_cut")]
         if main:
-            lines += ["── 主人格檔(用戶本人;讀這幾份,不要改它們)"]
+            lines += [T("aib.ppack.sec_main")]
             for kind, muid, text, _ in main:
                 lines += ["[[%s]] %s" % (muid, kind), text]
         if brief_lines:
-            lines += ["── 交接簡報"] + brief_lines + (["…(交接簡報截斷,讀原檔)"] if brief_cut else [])
+            lines += [T("aib.ppack.sec_brief")] + brief_lines + ([T("aib.ppack.brief_cut")] if brief_cut else [])
         if mem:
-            lines += ["── 個人記憶(最近 %d 條)" % len(mem)] + mem
-        lines += ["── 第二大腦",
-                  "- Vault 寫入位置:routeKey=%s(%s)" % (route_key or "未綁", folder or "量不到"),
-                  "- 席位記憶:~/.ez2-aib/memory/%s/context.md" % code,
-                  "── 寫回",
-                  "- 工作進度、決定、下一步:aib memory write --kind progress|decision|next|handoff --title <短標題> "
-                  "--body-file <檔> [--tags 英文]。以 uid 串這一席、專案、人格;換席與壓縮後會自動帶回。",
-                  "- 學到的人格面:aib memory write --kind note --tags persona/correction,內文帶「基準人格檔指紋 %s、"
-                  "讀取時刻 %s」(不改人格檔;人格修正的專屬路由還沒登記,先放這裡)。" % (base8 or sha8, read_at),
-                  "- 角色卡正文(職責/紅線/語氣)不直接改,要改就提候選給 the maintainer 核准。",
+            lines += [T("aib.ppack.sec_mem", n=len(mem))] + mem
+        lines += [T("aib.ppack.sec_brain"),
+                  T("aib.ppack.vault", ref=route_key or T("aib.ppack.unbound"), dir=folder or T("aib.ppack.unknown")),
+                  T("aib.ppack.seat_mem", code=code),
+                  T("aib.ppack.sec_write"),
+                  T("aib.ppack.write_progress"),
+                  T("aib.ppack.write_persona", sha=base8 or sha8, when=read_at),
+                  T("aib.ppack.write_card"),
                   "- " + HANDOFF_RULE,
-                  "- 引用一律用 uid([[%s]] 這種),不寫名稱或路徑;寫筆記要帶屬性、category_uid、英文標籤與雙向連結。" % uid,
-                  "── 請回覆一行:人格已載入 %s" % sha8]
+                  T("aib.ppack.cite", uid=uid),
+                  T("aib.ppack.reply", text=ACK_PREFIX + sha8)]   # 回執那句是協定字(open_ack / dm_triage 認),四語都照抄
         return "\n".join(lines) + "\n"
 
     text = render()
@@ -325,7 +360,7 @@ def assemble(name, uid, sha8, card_secs, handoff, memories, route_key, folder, c
             main.pop(0)
         else:
             cut = card[0][1].encode("utf-8")[: max(0, len(card[0][1].encode("utf-8")) - 200)]
-            card[0] = (card[0][0], cut.decode("utf-8", "ignore") + "…(截斷)")
+            card[0] = (card[0][0], cut.decode("utf-8", "ignore") + T("aib.ppack.card_trunc"))
             parts["dropped"].append("card:truncated")
             if not cut:
                 break

@@ -56,10 +56,12 @@ stty -echo 2>/dev/null || true
 MOD="${EZ2_MODIFIER_LABEL:-$MOD}"
 export EZ2_MODIFIER_LABEL="$MOD"
 
-# 頁簽字從 i18n 取(UI 紅線:四語),與底部頁簽 pane-bottom-tabs.sh 同一條路。開檔時取一次:
-# 字典不會在一次 session 內變,每幀查一次是白燒。★ 取不到不退中文預設 —— 印鍵名本身
+# 頁簽字從 i18n 取(UI 紅線:四語),與底部頁簽 pane-bottom-tabs.sh 同一條路。開檔時取一次,之後語系變了才重取
+# (10-14 語系盤查第 7 條:原本只取一次 ⇒ 切語系後分頁標籤要重開 pane;見下面 relabel_if_locale_changed)。
+# ★ 取不到不退中文預設 —— 印鍵名本身
 # (i18n_lib 對缺鍵回 !!key!!,python 起不來則下面自己印鍵名),讓壞掉的樣子跟正確的不同。
-IFS=$'\t' read -r TAB_AI TAB_USAGE TAB_LEFT <<EOF
+load_tab_labels() {
+IFS=$'\t' read -r TAB_LOC TAB_AI TAB_USAGE TAB_LEFT <<EOF
 $("$EZ2_PY3" - <<'PYI18N' 2>/dev/null
 import json, os, sys
 sys.path.insert(0, os.environ["EZ2_COCKPIT_DIR"])
@@ -81,13 +83,42 @@ try:
         os.replace(tmp, os.path.join(d, "right-tab-spans.json"))
 except Exception:
     pass
-print(ai + "\t" + us + "\t" + lf)
+print(tr.locale + "\t" + ai + "\t" + us + "\t" + lf)
 PYI18N
 )
 EOF
 [ -n "${TAB_AI:-}" ] || TAB_AI="aib.tabs.right_ai"
 [ -n "${TAB_USAGE:-}" ] || TAB_USAGE="aib.tabs.right_usage"
 [ -n "${TAB_LEFT:-}" ] || TAB_LEFT="aib.tabs.right_leftover"
+}
+load_tab_labels
+# 語系變了才重取頁簽字。現在是哪一種語系只問 i18n_lib.resolve_locale(語系來源只有那一處,本檔不自己猜設定檔在哪);
+#   問一次是一支只 import i18n_lib 的小 python(不載字典),最多每 LABEL_CHECK_S 秒一次,收到 right-kick 時立刻問。
+LABEL_CHECK_S="${EZ2_RIGHT_LABEL_CHECK_S:-10}"
+case "$LABEL_CHECK_S" in
+  ''|*[!0-9]*|0) LABEL_CHECK_S=10 ;;
+esac
+LABEL_CHECK_NEXT=$(( SECONDS + LABEL_CHECK_S ))
+LABEL_KICK=""
+LABEL_KICK_SEEN=0
+relabel_if_locale_changed() {
+  if [ "$LABEL_KICK_SEEN" = "0" ]; then        # 第一幀:開檔時剛取過,只記下 kick 現值(不多起一支 python 拖慢開席、單幀模式照舊)
+    LABEL_KICK_SEEN=1
+    LABEL_KICK="${KICK:-}"
+    return 0
+  fi
+  if [ "$SECONDS" -lt "$LABEL_CHECK_NEXT" ] && [ "${KICK:-}" = "$LABEL_KICK" ]; then
+    return 0
+  fi
+  LABEL_CHECK_NEXT=$(( SECONDS + LABEL_CHECK_S ))
+  LABEL_KICK="${KICK:-}"
+  local now
+  now="$("$EZ2_PY3" -c 'import os, sys; sys.path.insert(0, os.environ["EZ2_COCKPIT_DIR"]); import i18n_lib; print(i18n_lib.resolve_locale())' 2>/dev/null)" || return 0
+  [ -n "$now" ] || return 0                  # 問不到 = 當沒變,照舊字畫
+  [ "$now" = "${TAB_LOC:-}" ] && return 0
+  load_tab_labels
+  [ -n "${TAB_LOC:-}" ] || TAB_LOC="$now"    # 重取也失敗(印鍵名)⇒ 記成這個語系,不每 10 秒重跑一支會失敗的 python
+}
 
 render_frame() {
   local tab="$1"
@@ -311,6 +342,7 @@ while true; do
   PANE_GEOM_DIRTY=0
   pane_read_file TAB "$TABF"
   pane_read_file KICK "$KICKF"
+  relabel_if_locale_changed             # 語系變了 ⇒ 分頁標籤這一幀就換(語系盤查第 7 條)
   # 上一輪若是因為點了頁簽、子頁或捲了用量才醒來，這一輪直接貼預載。
   # 五秒心跳不帶原因，仍整頁重查，時鐘才會走。
   # 以後的右欄頁：頁簽值在下面這段對到 page id。有子選單的頁走該頁的一行檔

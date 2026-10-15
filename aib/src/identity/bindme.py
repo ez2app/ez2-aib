@@ -363,7 +363,7 @@ def collect(state_root, sid, rows=None, reader=None, vault=DEFAULT_VAULT):
     """收回覆、提出建議;把建議寫回調查檔。回調查記錄。"""
     rec = _load(survey_path(state_root, sid))
     if not rec:
-        raise SystemExit("找不到調查 %s(%s)" % (sid, survey_path(state_root, sid)))
+        raise SystemExit(_ui("aib.bindme.no_survey", id=sid, path=survey_path(state_root, sid)))
     rows = rows if rows is not None else (reader or read_queue)(rec["me"])
     states = {s["code"]: s for s in status(state_root)}
     cards = persona_cards(state_root)
@@ -945,7 +945,7 @@ def apply(state_root, sid, actor, only=None, create_missing=False, dry_run=False
           ask=False, menu=None, timeout=MENU_TIMEOUT_S, deliver=True):
     rec = _load(survey_path(state_root, sid))
     if not rec or "proposals" not in rec:
-        raise SystemExit("調查 %s 還沒 collect" % sid)
+        raise SystemExit(_ui("aib.bindme.not_collected", id=sid))
     results = []
     for row in rec["proposals"]:
         if only and row["code"] not in only:
@@ -1002,7 +1002,8 @@ PROBLEM_TEXT = {"ok": "✅ 齊", "crown_persona": "⚠ 冠位人格錯置", "no_
 
 
 def print_status(rows):
-    print("%-12s %-6s %-9s %-14s %-22s %s" % ("席", "seat_id", "引擎", "人格", "專案", "狀況 / 怎麼修"))
+    print("%-12s %-6s %-9s %-14s %-22s %s" % (_ui("aib.bindme.col_seat"), "seat_id", _ui("aib.bindme.col_engine"),
+                                              _ui("aib.bindme.col_persona"), _ui("aib.bindme.col_project"), _ui("aib.bindme.col_status")))
     for r in rows:
         print("%-12s %-6s %-9s %-14s %-22s %s%s" % (
             "%s/@%s" % (r["cabin4"], r["code"]), r["seat_id"], r["provider"],
@@ -1011,24 +1012,23 @@ def print_status(rows):
 
 
 def print_proposals(rec):
-    print("調查 %s:%d 席,已回 %d 席" % (rec["sid"], len(rec["proposals"]),
-                                      sum(1 for p in rec["proposals"] if p["replied"])))
+    print(_ui("aib.bindme.survey_head", id=rec["sid"], n=len(rec["proposals"]),
+              count=sum(1 for p in rec["proposals"] if p["replied"])))
     for p in rec["proposals"]:
         per, prj = p.get("persona") or {}, p.get("project") or {}
         acts, why = plan_for(p)
         print("@%s(%s) %s" % (p["code"], p.get("seat_id", ""), p["summary"]))
         if p["replied"]:
-            print("    人格:%s〔%s〕 專案:%s〔%s〕" % (per.get("name") or "—", per.get("how"),
-                                                 prj.get("title") or "—", prj.get("how")))
+            print("    " + _ui("aib.bindme.row_detail", name=per.get("name") or "—", detail=per.get("how"),
+                         title=prj.get("title") or "—", kind=prj.get("how")))
             if per.get("how") == "ask_existing":
-                print("    ❓ 它挑了既有卡「%s」(理由:%s),綁它好嗎?" % (per.get("name"), per.get("why") or ""))
+                print("    " + _ui("aib.bindme.picked_existing", name=per.get("name"), why=per.get("why") or ""))
             if per.get("how") == "draft_new":
-                print("    ✏️ 沒有合適的既有卡(%s),草稿:%s" % (per.get("why") or "", per.get("draft_path") or "?"))
+                print("    " + _ui("aib.bindme.no_fit_draft", why=per.get("why") or "", path=per.get("draft_path") or "?"))
             if p.get("mismatch"):
-                print("    ⚠ 它自己建議「%s」,但現在綁的是「%s」—— 要人裁" % (
-                    (p.get("self_suggested") or {}).get("title"), prj.get("title")))
-            print("    apply 會做:%s%s" % ("、".join(k for k, _ in acts) or "不動",
-                                         ("|跳過:" + ";".join(why)) if why else ""))
+                print("    " + _ui("aib.bindme.self_vs_bound", name=(p.get("self_suggested") or {}).get("title"), title=prj.get("title")))
+            print("    " + _ui("aib.bindme.apply_will", what="、".join(k for k, _ in acts) or _ui("aib.bindme.nothing"),
+                         detail=_ui("aib.bindme.skipped", items=";".join(why)) if why else ""))
 
 
 def _actor(state_root, me, explicit):
@@ -1037,7 +1037,26 @@ def _actor(state_root, me, explicit):
     for s in live_seats(state_root):
         if s["code"] == me:
             return "%s@%s/%s" % (s["role"] or "root", me, (s["provider"] or "claude").capitalize())
-    raise SystemExit("認不出 --me %s 是哪一席,請加 --actor <角色>@<席碼>/<引擎>" % me)
+    raise SystemExit(_ui("aib.bindme.me_unknown", value=me))
+
+
+_UI_TR = {}
+
+
+def _ui(key, **params):
+    """畫面字走四語鍵(語系盤查,10-14);每次照 i18n_lib.resolve_locale() 取(長駐程式切語系也跟得上),讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cockpit")
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _UI_TR.get(loc)
+        if tr is None:
+            tr = _UI_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓程式停
+        return key
 
 
 def main(argv=None):
@@ -1085,7 +1104,7 @@ def main(argv=None):
         return 0
     if o.cmd == "survey":
         if not CODE_RE.match(o.me):
-            raise SystemExit("--me 要是五碼席碼,例 8f366")
+            raise SystemExit(_ui("aib.bindme.me_shape"))
         rows = [st for st in status(root) if st["code"] != o.me and st["problem"] != "bot"]
         if o.seat:
             want = set(o.seat.split(","))
@@ -1093,15 +1112,15 @@ def main(argv=None):
         elif not o.all:
             rows = [st for st in rows if st["problem"] != "ok"]
         if not rows:
-            print("沒有要問的席:活著的席都已綁齊(要連綁齊的也問,加 --all)")
+            print(_ui("aib.bindme.nobody"))
             return 0
         rec = run_survey(root, o.me, rows, o.hours, o.dry_run)
         for t in rec["targets"]:
             print("  %-12s %s" % (t["addr"], t["stage"]))
         if o.dry_run:
-            print("(試跑:沒寄、沒存調查檔)")
+            print(_ui("aib.bindme.dry"))
         else:
-            print("調查編號 %s;回信到齊後跑:aib bindme collect %s" % (rec["sid"], rec["sid"]))
+            print(_ui("aib.bindme.survey_id", id=rec["sid"]))
         return 0
     if o.cmd == "collect":
         rec = collect(root, o.sid)

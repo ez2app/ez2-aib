@@ -33,7 +33,6 @@ DEFAULT_MODEL = "deepseek-v4-pro"
 USER_AGENT = "aib-deepseek/0.62 (+Ez2-AIB; OpenAI-compat)"
 KEY_NAME = "DEEPSEEK_API_KEY"
 DM_ADDRESS = _aib_dm.DM_ADDRESS
-DM_TOOL = _aib_dm.DM_TOOL
 LOCAL_TOOL = {
     "type": "function",
     "function": {
@@ -63,34 +62,47 @@ LOCAL_TOOL = {
         },
     },
 }
-TOOL_SYSTEM = {
-    "role": "system",
-    "content": (
-        _aib_dm.GENE_HEAD + "You are an AIB seat. " + _aib_dm.dm_system_snippet() + " "
-        "You can assist local development with aib_local: read and search project files, "
-        "use read_chunk to continue any truncated read until the result says [已讀完], "
-        "run only tests/test-*.py (the tool takes the machine lease; if it says 排隊中, wait and retry later), "
-        "then change only a file you already read: prefer operation=replace (old text that appears exactly once -> "
-        "new text) and use write (whole-file replacement) only when most of the file changes. When you work in your own "
-        "worktree you may use operation=git (status/diff/add explicit paths/commit/push your own branch) — "
-        "never main. You must explain a proposed change before writing it and report "
-        "the actual result. You cannot access paths outside the project, secrets, "
-        "network, or arbitrary shell commands. Do not claim you lack these capabilities. "
-        "Never claim a file is fully read when a result says it was truncated. If tool "
-        "calling is unavailable, emit exactly one line "
-        "<aib_tool>{\"name\":\"aib_local\",\"arguments\":{...}}</aib_tool>."
-    ),
-}
+def _build_system():
+    """回 (TOOL_SYSTEM, TOOL_SYSTEM_DM_OFF)。10-14 語系盤查第 6 條:assistant_turn 每一輪照當下語系重組
+    (原本 import 時就組好 ⇒ 長駐的 REPL 之後切語系不會跟)。"""
+    # dm 說明只取一次、兩份共用:原本取兩次再 assert 相同,每輪都跑之後,兩次之間字典被改寫或讀失敗就會中斷這一輪
+    _TOOL_SYSTEM_DM_SNIPPET = _aib_dm.dm_system_snippet() + " "
+    TOOL_SYSTEM = {
+        "role": "system",
+        "content": (
+            _aib_dm.GENE_HEAD + "You are an AIB seat. " + _TOOL_SYSTEM_DM_SNIPPET +
+            "You can assist local development with aib_local: read and search project files, "
+            "use read_chunk to continue any truncated read until the result says [已讀完], "
+            "run only tests/test-*.py (the tool takes the machine lease; if it says 排隊中, wait and retry later), "
+            "then change only a file you already read: prefer operation=replace (old text that appears exactly once -> "
+            "new text) and use write (whole-file replacement) only when most of the file changes. When you work in your own "
+            "worktree you may use operation=git (status/diff/add explicit paths/commit/push your own branch) — "
+            "never main. You must explain a proposed change before writing it and report "
+            "the actual result. You cannot access paths outside the project, secrets, "
+            "network, or arbitrary shell commands. Do not claim you lack these capabilities. "
+            "Never claim a file is fully read when a result says it was truncated. If tool "
+            "calling is unavailable, emit exactly one line "
+            "<aib_tool>{\"name\":\"aib_local\",\"arguments\":{...}}</aib_tool>."
+        ),
+    }
+    # 停用後換上這份:拿掉 aib_dm 說明(TOOL_SYSTEM 本來就不含 <aib_tool> aib_dm 範本)。
+    TOOL_SYSTEM_DM_OFF = {
+        "role": "system",
+        "content": TOOL_SYSTEM["content"].replace(_TOOL_SYSTEM_DM_SNIPPET, "") + " " + _aib_dm.DM_DISABLED_NOTE,
+    }
+    return TOOL_SYSTEM, TOOL_SYSTEM_DM_OFF
+
+
+def __getattr__(name):
+    # 舊的模組層名字(測試、外部讀 deepseek_cli.TOOL_SYSTEM)照樣讀得到,但每次都是當下語系組的
+    if name in ('TOOL_SYSTEM', 'TOOL_SYSTEM_DM_OFF'):
+        return _build_system()[name == 'TOOL_SYSTEM_DM_OFF']
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
+
 TOOL_ROUNDS = max(4, min(200, int(os.environ.get("AIB_DEEPSEEK_TOOL_ROUNDS") or 40)))   # 一輪最多幾次工具呼叫(讀檔也算)
 DM_FAIL_DROP_TOOLS = 2      # 一輪裡 aib_dm 累計失敗 2 次(成功不歸零)⇒ 之後不再給 aib_dm(09-28 P1 r3:與五支外殼同一套)
 DM_HAMMER_STOP = 3          # 停用後仍硬打 dm 這麼多次 ⇒ 結束這一回合
-_TOOL_SYSTEM_DM_SNIPPET = _aib_dm.dm_system_snippet() + " "
-assert _TOOL_SYSTEM_DM_SNIPPET in TOOL_SYSTEM["content"]
-# 停用後換上這份:拿掉 aib_dm 說明(TOOL_SYSTEM 本來就不含 <aib_tool> aib_dm 範本)。
-TOOL_SYSTEM_DM_OFF = {
-    "role": "system",
-    "content": TOOL_SYSTEM["content"].replace(_TOOL_SYSTEM_DM_SNIPPET, "") + " " + _aib_dm.DM_DISABLED_NOTE,
-}
 TEXT_TOOL = re.compile(r"^\s*<aib_tool>(\{.*\})</aib_tool>\s*$", re.DOTALL)
 PLAIN_READ_CHUNK = re.compile(
     r"read_chunk\s*\(\s*path\s*=\s*[`\"']?([^,`\"'\s]+)[`\"']?\s*,\s*"
@@ -123,25 +135,18 @@ def resolve_api_key():
     try:
         rows = S.load_file(rel)
     except S.SecretError as err:
-        raise SystemExit(
-            "deepseek: 讀不到金鑰櫃 %s(%s)。把 %s 寫進 ~/.ez2-aib/secrets/%s "
-            "或 export %s=…"
-            % (rel, getattr(err, "reason", err), KEY_NAME, rel, KEY_NAME)
-        ) from err
+        raise SystemExit(_ui("aib.apirepl.vault_unreadable", provider="deepseek", path=rel,
+                             err=getattr(err, "reason", err), name=KEY_NAME)) from err
     raw = (rows.get(KEY_NAME) or "").strip()
     if not raw:
-        raise SystemExit(
-            "deepseek: 缺少 %s。寫進 ~/.ez2-aib/secrets/%s 一行 "
-            "%s=… 或在開席前 export %s=…（這不是 OAuth CLI，不必登入網頁）"
-            % (KEY_NAME, rel, KEY_NAME, KEY_NAME)
-        )
+        raise SystemExit(_ui("aib.apirepl.key_missing", provider="deepseek", name=KEY_NAME, path=rel))
     try:
         import secret_crypto as C  # noqa: E402
         if C.is_envelope(raw):
             d = S.secrets_dir()
             return C.decrypt_value(raw, KEY_NAME, d)
     except Exception as err:  # noqa: BLE001
-        raise SystemExit("deepseek: 金鑰解密失敗") from err
+        raise SystemExit(_ui("aib.apirepl.decrypt_fail", provider="deepseek")) from err
     return raw
 
 
@@ -680,6 +685,7 @@ def enforce_dm_truth(content: str, dm_outcomes) -> str:
 
 def assistant_turn(*, base_url: str, api_key: str, model: str, messages, cwd=None) -> str:
     """Complete one model turn, including at most two explicit DM tool calls."""
+    TOOL_SYSTEM, TOOL_SYSTEM_DM_OFF = _build_system()   # 每一輪照當下語系重組(語系盤查第 6 條)
     wire = [_api_persona.with_persona(TOOL_SYSTEM)] + list(messages)   # 09-30:人格每一輪都在系統說明裡
     workspace = LocalWorkspace(cwd or os.getcwd())
     dm_outcomes = []
@@ -862,15 +868,31 @@ def _bc_replay(sess: Path, kind: str) -> int:
         return 0
 
 
+_UI_TR = {}
+
+
+def _ui(key, **params):
+    """畫面字走四語鍵(語系盤查,10-14);每次照 i18n_lib.resolve_locale() 取(長駐程式切語系也跟得上),讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.dirname(os.path.abspath(__file__))
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _UI_TR.get(loc)
+        if tr is None:
+            tr = _UI_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓程式停
+        return key
+
+
 def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
     from bridge_cards import ReplFrame
     _frame = ReplFrame("deepseek", seat=_bc_seat(sess))   # 10-09:標題列帶席碼,跟橋接席的卡一致
     sys.stdout.write(
-        "deepseek · model=%s · session=%s\n"
-        "（API key；/models [關鍵字] 列模型（新→舊＋日期）、/model <id> 切換、/model 看現用；"
-        "Ctrl-D /exit /quit 結束）\n"
-        "%s\n"
-        % (model, sess.name, _aib_dm.dm_boot_banner() + _aib_dm.gene_banner())
+        _ui("aib.apirepl.boot", provider="deepseek", value=model, session=sess.name) + "\n"
+        + _aib_dm.dm_boot_banner() + _aib_dm.gene_banner() + "\n"
     )
     sys.stdout.flush()
     _api_model_gauge.record(sess.name, model, "deepseek")  # 開 REPL:蓋掉上一個行程切過的模型
@@ -891,26 +913,23 @@ def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
         if text in ("/exit", "/quit", "/q"):
             break
         if text in ("/help", "/?"):
-            sys.stdout.write(
-                "指令：/models [關鍵字]  ·  /model <id> 切換  ·  /model 現用  ·  "
-                "/dm <艙位碼/席碼> <訊息>  ·  /exit 結束\n"
-            )
+            sys.stdout.write(_ui("aib.apirepl.help") + "\n")
             sys.stdout.flush()
             continue
         if text == "/model" or text.startswith("/model "):
             parts = text.split(None, 1)
             if len(parts) == 1:
-                sys.stdout.write("現用模型：%s\n" % model)
+                sys.stdout.write(_ui("aib.apirepl.current_model", value=model) + "\n")
                 sys.stdout.flush()
                 continue
             new_m = parts[1].strip()
             if not new_m:
-                sys.stdout.write("用法：/model <id>\n")
+                sys.stdout.write(_ui("aib.apirepl.model_usage") + "\n")
                 sys.stdout.flush()
                 continue
             model = new_m
             _api_model_gauge.record(sess.name, model, "deepseek")  # /model 切換:右欄跟著變
-            sys.stdout.write("已切換模型 → %s（之後回合都用這個）\n" % model)
+            sys.stdout.write(_ui("aib.apirepl.model_switched", value=model) + "\n")
             sys.stdout.flush()
             continue
         if text == "/models" or text.startswith("/models "):
@@ -922,19 +941,17 @@ def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
                 sys.stderr.write("deepseek: /models HTTP %s — %s\n" % (err.code, detail))
                 continue
             except urllib.error.URLError as err:
-                sys.stderr.write("deepseek: /models 連線失敗 — %s\n" % err.reason)
+                sys.stderr.write(_ui("aib.apirepl.models_net_fail", provider="deepseek", err=err.reason) + "\n")
                 continue
             if filt:
                 rows = [(i, ts) for i, ts in ids if filt in i.lower()]
             else:
                 rows = list(ids)
             if not rows:
-                sys.stdout.write("（沒有符合的模型）\n")
+                sys.stdout.write(_ui("aib.apirepl.no_models") + "\n")
             else:
-                sys.stdout.write(
-                    "可選模型 %d 個%s（新→舊；右側為上架／更新日期）：\n"
-                    % (len(rows), ("（含 %r）" % filt) if filt else "")
-                )
+                sys.stdout.write(_ui("aib.apirepl.models_head", n=len(rows),
+                                     detail=_ui("aib.apirepl.models_filter", value=repr(filt)) if filt else "") + "\n")
                 for mid, ts in rows:
                     mark = " *" if mid == model else ""
                     sys.stdout.write(
@@ -979,11 +996,11 @@ def run_repl(*, api_key: str, model: str, base_url: str, sess: Path, messages):
             messages.pop()
             continue
         except urllib.error.URLError as err:
-            sys.stderr.write("deepseek: 連線失敗 — %s\n" % err.reason)
+            sys.stderr.write(_ui("aib.apirepl.net_fail", provider="deepseek", err=err.reason) + "\n")
             messages.pop()
             continue
         except Exception as err:  # noqa: BLE001
-            sys.stderr.write("deepseek: 回合失敗 — %s\n" % err)
+            sys.stderr.write(_ui("aib.apirepl.turn_fail", provider="deepseek", err=err) + "\n")
             messages.pop()
             continue
         if content:
@@ -1034,7 +1051,7 @@ def main(argv=None):
             os.environ["AIB_DEEPSEEK_WORKTREE"] = str(workspace)
             os.chdir(workspace)
         except (OSError, RuntimeError) as err:
-            raise SystemExit("deepseek: 無法進入目錄 %s: %s" % (args.cwd, err)) from err
+            raise SystemExit(_ui("aib.apirepl.cwd_fail", provider="deepseek", path=args.cwd, err=err)) from err
     api_key = resolve_api_key()
     sess = session_dir(sid)
     messages = load_history(sess)

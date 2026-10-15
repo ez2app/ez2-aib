@@ -49,10 +49,30 @@ from pathlib import Path
 
 RETIRED = "docs/RETIRED.md"
 
-# (規則名, 適用檔案判準, 命中判準, 為什麼, 怎麼改)
+_TR = {}
+
+
+def T(key, **params):
+    """人看得到的字走 aib.ctxgate.* 四語鍵(語系盤查第 16 條);每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名。
+    寫進 docs/RETIRED.md 的那一列(執行情境閘:理由)是 repo 紀錄,不翻。"""
+    try:
+        cockpit = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "cockpit"))
+        if cockpit not in sys.path:
+            sys.path.insert(0, cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
+# (規則代號, 適用檔案判準, 命中判準)。給人看的名稱 / 為什麼 / 怎麼改在字典 aib.ctxgate.<代號>.name / why / how
+#   (語系盤查第 16 條:原本名稱同時當判斷用的識別字,改成代號判斷、名稱查字典)
 RULES = [
     (
-        "tmux socket 靠繼承",
+        "tmux_socket",
         lambda p: p.startswith("src/") and p.endswith(".sh"),
         # ★ 2026-08-16 初審中-1:原式擋所有不帶 -L 的 tmux,把「pane 問自己
         #   幾何」也一起擋了——**那類本來就不該帶 -L**(帶了就問到別的
@@ -69,29 +89,21 @@ RULES = [
             r"(?!-L\b)"
             r"(?!(display|display-message|show-option|show-options|"
             r"show-environment|showenv|list-panes)\b)"),
-        "沒帶 -L 的 tmux 會用繼承來的 socket,可能打到別套指揮艙",
-        "帶 -L,或改用既有的 hub_tmux / outer_tmux 包裝",
     ),
     (
-        "run-shell 的工作目錄靠繼承",
+        "runshell_cwd",
         lambda p: p.startswith("src/") and p.endswith(".sh"),
         re.compile(r"run-shell\s+(?!.*\bcd\s)"),
-        "run-shell 的工作目錄是家目錄不是 repo,而家目錄未被信任",
-        "命令寫成 `cd \"$EZ2_AIB_ROOT\" && ...`",
     ),
     (
-        "測試環境靠繼承",
+        "test_env",
         lambda p: p.startswith("tests/") and p.endswith(".py"),
         re.compile(r"dict\(\s*os\.environ"),
-        "從 os.environ 複製會把活艙狀態一起帶進測試",
-        "同一行或鄰近行釘住 EZ2_COCKPIT_STATE_DIR 等隔離變數",
     ),
     (
-        "tmux 開窗沒指定命令",
+        "tmux_newwin",
         lambda p: p.startswith("tests/") and p.endswith(".py"),
         re.compile(r"[\"']new-(session|window)[\"']"),
-        "不指定命令就跑預設 shell,畫面內容取決於是不是互動式",
-        "顯式給一個會產生確定輸出的命令",
     ),
 ]
 
@@ -180,58 +192,43 @@ def main():
         ok, detail = _log_override(reason)
         if not ok:
             print("", file=sys.stderr)
-            print("✖ 執行情境閘:逃生門**無法記錄理由**,因此不予放行",
-                  file=sys.stderr)
-            print("  原因:%s" % detail, file=sys.stderr)
-            print("  這道逃生門的價值在於理由會累積成清單;記不了帳的放行",
-                  file=sys.stderr)
-            print("  等於一個沒有痕跡的關閉開關,所以這裡 fail-closed。",
-                  file=sys.stderr)
+            print(T("aib.ctxgate.override_fail", detail=detail), file=sys.stderr)
             print("", file=sys.stderr)
             return 2
-        print("⚠ 執行情境閘已放行", file=sys.stderr)
-        print("  理由已記入 %s:%s" % (RETIRED, reason), file=sys.stderr)
+        print(T("aib.ctxgate.override_ok", path=RETIRED, reason=reason), file=sys.stderr)
         return 0
 
     hits = []
     for path, lineno, text in staged_added_lines():
         if is_comment(text):
             continue          # 註解裡寫到那個字是正常的,不是違規
-        for name, applies, pattern, why, how in RULES:
+        for rid, applies, pattern in RULES:
             if not applies(path):
                 continue
             if not pattern.search(text):
                 continue
-            if name == "測試環境靠繼承" and (
+            if rid == "test_env" and (
                     ISOLATION_HINT.search(text)
                     or isolation_nearby(path, lineno)):
                 continue
-            if name == "tmux 開窗沒指定命令" and HAS_COMMAND.search(text):
+            if rid == "tmux_newwin" and HAS_COMMAND.search(text):
                 continue
-            hits.append((path, lineno, text.strip()[:64], name, why, how))
+            hits.append((path, lineno, text.strip()[:64], rid))
 
     if not hits:
         return 0
 
     print("", file=sys.stderr)
-    print("✖ 執行情境繼承閘擋下這次 commit", file=sys.stderr)
+    print(T("aib.ctxgate.block_head"), file=sys.stderr)
     print("", file=sys.stderr)
-    print("  「執行情境要顯式指定,不能靠繼承」——這條規則 2026-08-15 一天",
-          file=sys.stderr)
-    print("  之內以五種不同的變數各發作一次,所以它現在是閘門不是提醒。",
-          file=sys.stderr)
-    print("", file=sys.stderr)
-    for path, lineno, text, name, why, how in hits:
+    for path, lineno, text, rid in hits:
         print("  %s:%d" % (path, lineno), file=sys.stderr)
         print("    %s" % text, file=sys.stderr)
-        print("    ↑ %s——%s" % (name, why), file=sys.stderr)
-        print("    改法:%s" % how, file=sys.stderr)
+        print(T("aib.ctxgate.hit_rule", name=T("aib.ctxgate.%s.name" % rid), why=T("aib.ctxgate.%s.why" % rid)),
+              file=sys.stderr)
+        print(T("aib.ctxgate.hit_fix", detail=T("aib.ctxgate.%s.how" % rid)), file=sys.stderr)
         print("", file=sys.stderr)
-    print("  只擋**新增的行**;既有的違規不在本閘範圍(存量另案)。",
-          file=sys.stderr)
-    print("  真的要放行:AIB_CONTEXT_GATE_REASON=\"理由\" git commit ...",
-          file=sys.stderr)
-    print("  (理由會被記檔,不是只印在畫面上)", file=sys.stderr)
+    print(T("aib.ctxgate.block_foot"), file=sys.stderr)
     print("", file=sys.stderr)
     return 1
 
@@ -248,10 +245,10 @@ def _log_override(reason):
                           capture_output=True, text=True)
     top = proc.stdout.strip()
     if proc.returncode != 0 or not top:
-        return False, "取不到 repo 根(git rev-parse --show-toplevel 失敗)"
+        return False, T("aib.ctxgate.log_no_root")
     p = Path(top) / RETIRED
     if not p.exists():
-        return False, "%s 不存在,無處記錄(請先建立該檔)" % p
+        return False, T("aib.ctxgate.log_no_file", path=p)
     who = (os.environ.get("EZ2_SESSION_SIG") or os.environ.get("USER")
            or "unknown")
     row = ("| %s | %s | 執行情境閘:%s |\n"
@@ -260,14 +257,13 @@ def _log_override(reason):
         with p.open("a", encoding="utf-8") as fh:
             fh.write(row)
     except OSError as err:
-        return False, "寫入 %s 失敗:%s" % (p, err)
+        return False, T("aib.ctxgate.log_write_fail", path=p, err=err)
     add = subprocess.run(["git", "add", str(p)], cwd=top,
                          capture_output=True, text=True)
     if add.returncode != 0:
         # 已經寫進檔案但沒進暫存區:那筆記錄不會跟著這次 commit 進版控,
         # 下一個人 review 時看不到 —— 一樣算沒記到。
-        return False, ("已寫入 %s 但 git add 失敗(rc=%d):%s"
-                       % (p, add.returncode, add.stderr.strip()[:120]))
+        return False, T("aib.ctxgate.log_add_fail", path=p, n=add.returncode, err=add.stderr.strip()[:120])
     return True, str(p)
 
 

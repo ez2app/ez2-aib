@@ -177,6 +177,31 @@ def routes_since(since):
     return routes
 
 
+_TR = {}
+
+
+def T(key, **params):
+    """人和 AI 會讀到的字(擋下說明、警告、自身故障)走 aib.routegate.* 四語鍵(語系盤查第 16 條);每次照
+    i18n_lib.resolve_locale() 取。讀不到印鍵名。只回傳不印的放行理由與記錄檔原因不翻。"""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        cockpit = os.path.normpath(os.path.join(here, "..", "..", "cockpit"))
+        if cockpit not in sys.path:
+            sys.path.insert(0, cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
+
+def _warn(key, **params):
+    return T("aib.routegate.warn_prefix") + T(key, **params)
+
+
 def decide(payload):
     """回 (should_block, message)。純函式 —— 臂可以直接餵字典。"""
     if payload.get("stop_hook_active"):
@@ -190,13 +215,13 @@ def decide(payload):
     tp = payload.get("transcript_path")
     if not tp or not os.path.isfile(tp):
         _note("FAILOPEN 讀不到 transcript")
-        return False, "警告:讀不到 transcript,放行(fail-open)"
+        return False, _warn("aib.routegate.warn_no_transcript")
 
     try:
         tools, since = turn_facts(tp)
     except (OSError, ValueError) as e:
         _note("FAILOPEN 解析 transcript 失敗:%s" % e)
-        return False, "警告:解析 transcript 失敗,放行(fail-open):%s" % e
+        return False, _warn("aib.routegate.warn_parse", err=e)
 
     if ASK_TOOL not in tools:
         return False, "本回合沒有把選擇丟回給人"
@@ -205,30 +230,21 @@ def decide(payload):
     if routes is None:
         # 只有「檔在而讀不動」(權限/IO 錯)才走到這裡 —— 那是真的量不到。
         _note("FAILOPEN 路由留痕存在但讀不動 %s" % ROUTE_LOG)
-        return False, ("警告:用了 %s,而路由留痕存在卻讀不動(%s)—— 放行,"
-                       "但這一次沒有被檢查過" % (ASK_TOOL, ROUTE_LOG))
+        return False, _warn("aib.routegate.warn_log_unreadable", name=ASK_TOOL, path=ROUTE_LOG)
     if not routes:
-        route_detail = "路由留痕不存在,或本回合從沒留下有效路由"
+        route_detail = T("aib.routegate.no_route")
     else:
         latest = routes[-1]
         if latest == "HUMAN":
             return False, "用了 %s,且本回合最近一筆是 route=HUMAN" % ASK_TOOL
-        direction = {
-            "MEASURE": "先去量",
-            "CHAIR": "由主導席自行決定",
-            "COUNCIL": "開 AI 合議",
-        }[latest]
-        route_detail = "本回合最近一筆是 route=%s -> %s" % (latest, direction)
+        direction = T({
+            "MEASURE": "aib.routegate.dir_measure",
+            "CHAIR": "aib.routegate.dir_chair",
+            "COUNCIL": "aib.routegate.dir_council",
+        }[latest])
+        route_detail = T("aib.routegate.latest_route", name=latest, detail=direction)
 
-    return True, (
-        "本回合用了 %s 把選擇丟回給真人,但%s,不是 route=HUMAN。\n"
-        "  規格 §12.9.3:卡住要選的先跑 tools/dispatch/decide-route.py,\n"
-        "  判 MEASURE 就去量、判 CHAIR/COUNCIL 就自己決定或開合議 —— 那些都不該問人。\n"
-        "  只有判 HUMAN 才輪得到真人保留格。\n"
-        "  ★ 走到 HUMAN 之前先查常設令有沒有已經下放/回答過它(判例:merge-ez2-aib\n"
-        "    的 routing_error,那次實付 60 顆停一天)。\n"
-        "  真的要問:AIB_ROUTE_GATE_REASON=\"理由\"(理由會記檔)。" %
-        (ASK_TOOL, route_detail))
+    return True, T("aib.routegate.block", name=ASK_TOOL, detail=route_detail)
 
 
 def main():
@@ -241,12 +257,12 @@ def main():
         block, msg = decide(payload)
     except Exception as e:  # noqa: BLE001 —— 閘自己壞掉不得擋人
         _note("FAILOPEN decide() 自己炸了:%r" % e)
-        sys.stderr.write("route-gate: 自身故障,已放行並留痕:%r\n" % e)
+        sys.stderr.write(T("aib.routegate.self_fault", err=repr(e)))
         return 0
     if block:
-        sys.stderr.write("遇事不決閘 [BLOCK] " + msg + "\n")
+        sys.stderr.write(T("aib.routegate.block_head") + msg + "\n")
         return 2
-    if msg.startswith("警告:"):
+    if msg.startswith(T("aib.routegate.warn_prefix")):
         sys.stderr.write("route-gate [WARN] " + msg + "\n")
     return 0
 

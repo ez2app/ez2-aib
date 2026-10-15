@@ -58,7 +58,7 @@ import dm_text  # noqa: E402  原話一行的單一入口(與收件匣總覽共�
 import i18n_lib  # noqa: E402
 import render_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 
 
 _TRANSLATORS = {}

@@ -99,6 +99,25 @@ def decide(payload, tdir=None):
                                    "updatedInput": updated}}
 
 
+_TR = {}
+
+
+def T(key, **params):
+    """人和 AI 會讀到的字走四語鍵(語系盤查第 16 條);每次照 i18n_lib.resolve_locale() 取,讀不到印鍵名。"""
+    try:
+        cockpit = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "cockpit"))
+        if cockpit not in sys.path:
+            sys.path.insert(0, cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
+
 def main(argv=None):
     try:
         payload = json.load(sys.stdin)
@@ -107,7 +126,7 @@ def main(argv=None):
     try:
         out = decide(payload)
     except Exception as exc:                                   # noqa: BLE001
-        print("子代理前言: ⚠️ 注入器異常,已放行:%s" % exc, file=sys.stderr)
+        print(T("aib.preamble.self_fault", err=exc), file=sys.stderr)
         return 0
     if out is not None:
         print(json.dumps(out, ensure_ascii=False))

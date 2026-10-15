@@ -132,7 +132,7 @@ def team(seat, session_uuid=""):
             return False, "找不到 %s 的席位檔(或席位檔沒記 session_uuid),認不出它在哪一艙,所以不猜。" % seat
     if not session_uuid:
         return False, "要哪一席?帶 seat(5 碼席碼,例 04e0a);這條對話認不出是哪一席,所以不猜。"
-    argv = [sys.executable or "python3", str(REPO / "tools" / "claude-mods" / "aib-seat" / "bin" / "seat-info.py"),
+    argv = [sys.executable or "python3", str(REPO / "tools" / "claude-mods" / "aib-boards" / "bin" / "seat-info.py"),
             session_uuid, "--fleet"]
     env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE", "AIB_RESUME_SESSION_UUID")}
     ok, text = _run(argv, env=env)     # 只准用對話 id 對席位檔;不准退回「呼叫端在哪個 tmux 窗格」去猜(10-11 實測猜成別席)

@@ -25,7 +25,9 @@ TARGETS = {"test": os.path.join(HERE, "tools", "verify", "test_entry.py"),
 
 
 def _locale():
-    """EZ2_AIB_LOCALE wins; otherwise follow the system locale (zh_TW / ja / ko); everything else is English."""
+    """System-language hint from LC_ALL / LC_MESSAGES / LANG (zh_TW / ja / ko; everything else is English).
+    10-14 語系盤查第 8 條:只當 i18n_lib.resolve_locale 的最低一層 EZ2_AIB_LOCALE_SYSTEM(排在 EZ2_AIB_LOCALE、
+    艙檔、人檔之後)—— 原本寫進 EZ2_AIB_LOCALE,env 排在設定檔前面,`aib lang ja` 之後開著的艙仍吃 LANG 值。"""
     lang = (os.environ.get("LC_ALL") or os.environ.get("LC_MESSAGES") or os.environ.get("LANG") or "").lower()
     for prefix, loc in (("zh_tw", "zh-TW"), ("zh_hk", "zh-TW"), ("ja", "ja"), ("ko", "ko")):
         if lang.startswith(prefix):
@@ -61,7 +63,8 @@ def _update(args):
 
 def main():
     """pip / pipx 裝好之後的 `aib` 指令進到這裡(pyproject.toml 的 project.scripts)。"""
-    os.environ.setdefault("EZ2_AIB_LOCALE", _locale())
+    # 最外層那次 aib 寫的值被艙內繼承;艙內 LANG 被 cockpit-full.sh 強制成 en_US 也不會蓋掉(setdefault)
+    os.environ.setdefault("EZ2_AIB_LOCALE_SYSTEM", _locale())
     # 10-12 新用戶全面檢查:Python 編譯快取不寫進安裝資料夾(看起來像被改過、也會擋 aib update);放 ~/.cache/ez2-aib
     os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(os.path.expanduser("~"), ".cache", "ez2-aib", "pycache"))
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):

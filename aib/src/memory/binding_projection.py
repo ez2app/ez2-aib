@@ -960,6 +960,25 @@ def _dump(obj):
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
+_UI_TR = {}
+
+
+def _ui(key, **params):
+    """畫面字走四語鍵(語系盤查,10-14);每次照 i18n_lib.resolve_locale() 取(長駐程式切語系也跟得上),讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cockpit")
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _UI_TR.get(loc)
+        if tr is None:
+            tr = _UI_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓程式停
+        return key
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="binding-projection",
@@ -993,12 +1012,10 @@ def main(argv=None):
     )
     drop_requested = all(drop_flags)
     if any(drop_flags) and not drop_requested:
-        print("binding-projection: --drop-report、--drop-evidence、"
-              "--drop-policy 必須成組提供", file=sys.stderr)
+        print("binding-projection: " + _ui("aib.bindproj.drop_group"), file=sys.stderr)
         return 2
     if drop_requested and args.command not in ("project", "check"):
-        print("binding-projection: D14 drop 參數只適用 project/check",
-              file=sys.stderr)
+        print("binding-projection: " + _ui("aib.bindproj.drop_scope"), file=sys.stderr)
         return 2
 
     root, how = resolve_state_root(args.state_root)
@@ -1014,8 +1031,7 @@ def main(argv=None):
         #   不要等到某天投影跑出來才發現整批席位都 unresolved。
         contract = load_contract(args.contract)
         if contract is None:
-            print("binding-projection: 路由契約讀不到,無法驗 route_key",
-                  file=sys.stderr)
+            print("binding-projection: " + _ui("aib.bindproj.contract_unreadable"), file=sys.stderr)
             return 2
         problems = []
         for card_ref, entry in sorted(cards.items()):
@@ -1040,9 +1056,7 @@ def main(argv=None):
     contract = load_contract(args.contract)
     if contract is None:
         # 契約讀不到不是「沒人反對就通過」,是查不到證據 -> rc=2。
-        print("binding-projection: 路由契約讀不到(--contract 或 "
-              "EZ2_ROUTE_REGISTRY);拒絕在看不到規則的情況下投影",
-              file=sys.stderr)
+        print("binding-projection: " + _ui("aib.bindproj.contract_refuse"), file=sys.stderr)
         return 2
 
     # D14:先讀 before 與理由 manifest,再做當次投影。這不是形式上的
@@ -1054,18 +1068,15 @@ def main(argv=None):
     drop_captured_at_ms = None
     if drop_requested:
         if args.command == "project" and not args.out:
-            print("binding-projection: project 的 D14 report 需要既有 --out 作 before",
-                  file=sys.stderr)
+            print("binding-projection: " + _ui("aib.bindproj.need_out_before"), file=sys.stderr)
             return 2
         if args.command == "check" and not args.bindings:
-            print("binding-projection: check 的 D14 report 需要 --bindings 作 before",
-                  file=sys.stderr)
+            print("binding-projection: " + _ui("aib.bindproj.need_bindings_before"), file=sys.stderr)
             return 2
         drop_before_path = Path(
             args.out if args.command == "project" else args.bindings)
         if not drop_before_path.is_file():
-            print("binding-projection: D14 before 不存在:%s" % drop_before_path,
-                  file=sys.stderr)
+            print("binding-projection: " + _ui("aib.bindproj.before_missing", path=drop_before_path), file=sys.stderr)
             return 2
 
         # 每個角色路徑都必須不同。否則後段一次正常 replace 就可能把
@@ -1091,8 +1102,7 @@ def main(argv=None):
         for role, value in path_roles:
             key = os.path.realpath(os.path.abspath(value))
             if key in seen_paths:
-                print("binding-projection: D14 路徑衝突:%s=%s 與 %s"
-                      % (role, value, seen_paths[key]), file=sys.stderr)
+                print("binding-projection: " + _ui("aib.bindproj.path_clash", role=role, value=value, path=seen_paths[key]), file=sys.stderr)
                 return 2
             seen_paths[key] = role
 
@@ -1111,10 +1121,7 @@ def main(argv=None):
     #   「這艙還沒開席」在輸出上長得一樣,不講就沒有人會發現。
     _hub_seats = hub_seats_dir(root)
     if _hub_seats is not None and not _hub_seats.is_dir():
-        print("binding-projection: 本艙(HUB=%s)的席位目錄不存在:%s"
-              % (os.environ.get("AIB_DM_SOCKET")
-                 or os.environ.get("EZ2_AIHUB_SOCKET"), _hub_seats),
-              file=sys.stderr)
+        print("binding-projection: " + _ui("aib.bindproj.no_seats_dir", value=os.environ.get("AIB_DM_SOCKET") or os.environ.get("EZ2_AIHUB_SOCKET"), path=_hub_seats), file=sys.stderr)
     try:
         result = project(root, cards, contract,
                          seat_files=discover_seat_files(root, _hub_seats))
@@ -1138,9 +1145,7 @@ def main(argv=None):
                                   "code": code, "detail": detail})
     result["card_registry_problems"] = card_problems
     for problem in card_problems:
-        print("binding-projection: ⚠ 卡片 %s 的 route_key %s 過不了契約(%s)"
-              % (problem["card"], problem["route_key"], problem["code"]),
-              file=sys.stderr)
+        print("binding-projection: " + _ui("aib.bindproj.route_key_bad", name=problem["card"], value=problem["route_key"], code=problem["code"]), file=sys.stderr)
 
     result["sources"] = _sources_block(root, how, args.cards, args.contract,
                                        contract)
@@ -1209,12 +1214,11 @@ def main(argv=None):
 
     # check
     if not args.bindings:
-        print("binding-projection: check 需要 --bindings", file=sys.stderr)
+        print("binding-projection: " + _ui("aib.bindproj.check_need_bindings"), file=sys.stderr)
         return 2
     current_path = Path(args.bindings)
     if not current_path.is_file():
-        print("binding-projection: 要比對的 bindings 檔不存在:%s"
-              % current_path, file=sys.stderr)
+        print("binding-projection: " + _ui("aib.bindproj.bindings_missing", path=current_path), file=sys.stderr)
         return 2
     if drop_requested:
         current_doc = drop_before_doc

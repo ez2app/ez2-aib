@@ -575,6 +575,88 @@ def fetch_events(root, repo, code, now):
     return ev[:EVENT_MAX]
 
 
+FLOW_WINDOW_S = 24 * 3600
+FLOW_ITEMS = 3
+DELIVER_KINDS = ("deliver", "report")
+# 驗收席「退回」:近 24 小時我寄出、內文像退件的信(推估 —— dm 沒有「退回」這種 kind,畫面標 guess)
+RETURN_RE = re.compile(r"退回|退件|打回|紅燈|沒過|不過|reject|fail", re.I)
+
+
+def _flow_item(m, who):
+    return {"who": who, "text": _clip(m.get("msg"), 120), "at": m.get("sent_at") or m.get("ts")}
+
+
+def fetch_flow(root, code, role, now):
+    """§22.5 第 1 步「依角色換流程」(the maintainer 10-14 03:1x):role_family → 流程節點,mod 只照節點畫。
+    dev 家族(dev / pm / integrator / root)沿用今天頁原本的包 → 推包 → 機器 / 主線 / 信箱 → 下一件,這裡回空節點;
+    qa:待驗 → 驗過 → 退回;bot:來訊 → 回覆 → 結案。資料 = 這一席的信件佇列(收件匣資料夾)+ 我寄出的信(只有退回要)。"""
+    fam = role_family(role)
+    if fam not in ("qa", "bot"):
+        return {"family": "dev", "nodes": []}
+    qroot, since = os.path.join(root, "state", "dm-queue"), now - FLOW_WINDOW_S
+    inbox = []
+    for path in glob.glob(os.path.join(qroot, code, "q_*.json")):
+        m = _load(path)
+        if isinstance(m, dict) and not m.get("deleted_at") and not m.get("superseded_by"):
+            inbox.append(m)
+    num = lambda v: float(v) if isinstance(v, (int, float)) or str(v or "").replace(".", "", 1).isdigit() else 0.0
+    who = lambda m: m.get("sender_label") or ("@" + str(m["sender_seat"]) if m.get("sender_seat") else None) or m.get("sender") or "?"
+    newest = lambda ms: sorted(ms, key=lambda m: -num(m.get("sent_at") or m.get("ts")))
+
+    def node(key, ms, level, guess=False, label=who):
+        ms = newest(ms)
+        return {"key": key, "level": level, "count": len(ms), "guess": guess, "items": [_flow_item(m, label(m)) for m in ms[:FLOW_ITEMS]]}
+    if fam == "bot":
+        open_ = [m for m in inbox if not m.get("done_at") and not m.get("archived_at")]
+        unread = [m for m in open_ if not m.get("read_at")]
+        reading = [m for m in open_ if m.get("read_at")]
+        closed = [m for m in inbox if num(m.get("done_at")) >= since]
+        return {"family": "bot", "nodes": [node("bot_in", unread, "error" if unread else "ok"),
+                                           node("bot_reply", reading, "warning" if reading else "ok"),
+                                           node("bot_closed", closed, "ok")]}
+    deliv = [m for m in inbox if m.get("kind") in DELIVER_KINDS]
+    pending = [m for m in deliv if not m.get("done_at") and not m.get("archived_at")]
+    passed = [m for m in deliv if num(m.get("done_at")) >= since]
+    returned = []
+    for path in glob.glob(os.path.join(qroot, "*", "q_*.json")):
+        try:
+            if os.path.getmtime(path) < since:
+                continue
+        except OSError:
+            continue
+        m = _load(path)
+        if isinstance(m, dict) and str(m.get("sender_seat") or "") == code and num(m.get("sent_at") or m.get("ts")) >= since \
+                and RETURN_RE.search(str(m.get("msg") or "")):
+            returned.append(m)
+    lvl = "error" if any(not m.get("read_at") for m in pending) else "warning" if pending else "ok"
+    return {"family": "qa", "nodes": [node("qa_pending", pending, lvl), node("qa_passed", passed, "ok"),
+                                      node("qa_returned", returned, "warning" if returned else "ok", guess=True,
+                                           label=lambda m: "→ @" + str(m.get("seat") or "?"))]}
+
+
+# §22.5 第 2 步「依人格換主題」(the maintainer 10-14 03:1x):角色.md 開頭設定區可寫 theme_color / theme_particle / theme_speed / theme_border;
+# 沒寫或寫錯的那一項不給 ⇒ 畫面用預設(主色 claude、光點 ●、速度 normal、框線 round)。只讀,不改人格卡。
+THEME_SPEEDS = ("slow", "normal", "fast")
+THEME_BORDERS = ("round", "single", "double", "bold")
+
+
+def persona_theme(frontmatter):
+    vals = {}
+    for m in re.finditer(r"(?m)^theme_(color|particle|speed|border)\s*:\s*(.+?)\s*$", frontmatter or ""):
+        vals[m.group(1)] = m.group(2).strip().strip("\"'")
+    out = {}
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", vals.get("color", "")):
+        out["color"] = vals["color"].lower()
+    p = vals.get("particle", "")
+    if p and len(p) <= 2 and not any(c.isspace() for c in p):
+        out["particle"] = p
+    if vals.get("speed") in THEME_SPEEDS:
+        out["speed"] = vals["speed"]
+    if vals.get("border") in THEME_BORDERS:
+        out["border"] = vals["border"]
+    return out
+
+
 def fetch_persona(root, seat_id):
     """seat_id → 延續檔(bind_one.read_continuity)→ persona_uid → cards.json → 角色.md 的「職責」「紅線」兩段。
     路徑防護與切段沿用 persona_pack(inside / body_of / sections / clean),不另寫一套。"""
@@ -599,7 +681,12 @@ def fetch_persona(root, seat_id):
     if path is None or not path.is_file():
         out["_card"] = "unreadable"
         return out
-    body = persona_pack.clean(persona_pack.body_of(path.read_text(encoding="utf-8", errors="replace")))
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    fm = persona_pack._FRONTMATTER_RE.match(raw)
+    theme = persona_theme(fm.group(0) if fm else "")
+    if theme:
+        out["theme"] = theme
+    body = persona_pack.clean(persona_pack.body_of(raw))
     for name, text in persona_pack.sections(body):
         key = {"職責": "duties", "紅線": "red_lines"}.get(name)
         if key:
@@ -815,6 +902,7 @@ def produce(root, seat_file, rec, cabin, *, repo=None, now=None):
     if code:
         jobs["dm"] = lambda: fetch_dm(code)
         jobs["now"] = lambda: fetch_now(root, code)
+        jobs["flow"] = lambda: fetch_flow(root, code, rec.get("role"), at)
     else:
         missing.append("code:no_session_uuid")
     got, err = {}, {}
@@ -863,6 +951,8 @@ def produce(root, seat_file, rec, cabin, *, repo=None, now=None):
                 why = (str(e) or e.__class__.__name__)[:60]
         know.append(_card(name, "unknown", None, [], at, SENSORS[name][0].__name__[2:]))
         missing.append("%s:%s" % (name, why))
+    if "flow" in err:
+        missing.append("flow:" + err["flow"])
     for k in ("dm", "now", "ledger"):
         if k in err:
             missing.append("todo_%s:%s" % (k, err[k]))
@@ -886,6 +976,7 @@ def produce(root, seat_file, rec, cabin, *, repo=None, now=None):
             "started_at": now_rec.get("started_at")},
         "todo": build_todo(got, ctx) if code else [],
         "events": got.get("events") or [],
+        "flow": got.get("flow") or {"family": role_family(rec.get("role")) if role_family(rec.get("role")) in ("qa", "bot") else "dev", "nodes": []},
         "logos": seat_logos(root, cabin),
         "logo_colors": seat_logo_colors(root, cabin),
         "know": know,
@@ -1398,7 +1489,7 @@ DM_TEXT_MAX = 240
 
 def _relay_summary():
     """長信落檔的展開:沿用 seat-info 的 relay_line.relay_summary(同一支,不另寫);公開版沒有那支 ⇒ 原文照回。"""
-    path = os.path.join(repo_root(), "tools", "claude-mods", "aib-seat", "bin", "relay_line.py")
+    path = os.path.join(repo_root(), "tools", "claude-mods", "aib-boards", "bin", "relay_line.py")
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("seat_screen_relay_line", path)

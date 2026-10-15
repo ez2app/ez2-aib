@@ -32,7 +32,7 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / "src" / "cockpit"))
 import i18n_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()   # 語系單一來源(盤查第 1 條):環境變數之外還有設定檔層
 
 
 def T(key, params=None):

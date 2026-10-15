@@ -29,13 +29,21 @@
 set -uo pipefail
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 畫面字走四語字典(語系盤查第 14 條,10-14):_sbt <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取。
+#   python 起不來 ⇒ 印鍵名、rc 照 0(set -e 底下也不會中斷)。
+_sbt() {
+  local key="$1"; shift
+  local args=() kv
+  for kv in "$@"; do args+=(--param "$kv"); done
+  "${EZ2_PY3:-python3}" "$HERE/i18n_lib.py" ${args[@]+"${args[@]}"} "$key" 2>/dev/null || printf '%s\n' "$key"
+}
 # ★ 預設用同一棵樹的 aib(啟動器與執行期同一份 checkout,是 aib 檔頭自己的
 #   紀律)。`AIB_SITS_AIB_BIN` 是**唯一**的例外口,存在的理由很窄:在
 #   worktree 裡驗證本工具時,開出來的席不該把 EZ2_AIB_ROOT 指到那棵未審的樹
 #   ——席位是長期的,worktree 是暫時的。指定時原樣尊重,不可執行就擋下,
 #   不靜默退回預設(「我指定了 A 卻跑到 B」比「跑不起來」難查十倍)。
 AIB="${AIB_SITS_AIB_BIN:-$HERE/aib}"
-[ -x "$AIB" ] || { echo "aib sits: 開席器不可執行:$AIB" >&2; exit 2; }
+[ -x "$AIB" ] || { echo "aib sits: $(_sbt aib.sits.aib_not_exec path="$AIB")" >&2; exit 2; }
 PY3="${EZ2_PY3:-python3}"
 ROSTER="${AIB_SEATS_ROSTER:-$HERE/rosters/default.json}"
 
@@ -49,38 +57,44 @@ die() { echo "aib sits: $2" >&2; exit "$1"; }
 #     EZ2_AIHUB_SOCKET=aihub-16 aib ... --dry-run → tmux -L aihub-16
 #   批次開席一次錯五席,所以這裡擋下來要人講清楚,不猜。
 HUB="${EZ2_AIHUB_SOCKET:-}"
-[ -n "$HUB" ] || die 2 "EZ2_AIHUB_SOCKET 未設。批次開席不猜艙——一次猜錯就是五席開錯地方。
-  現有 socket:$(ls "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" 2>/dev/null | tr '\n' ' ')
-  例:EZ2_AIHUB_SOCKET=aihub-16 aib 5sits"
+[ -n "$HUB" ] || die 2 "$(_sbt aib.sits.no_socket detail="$(ls "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" 2>/dev/null | tr '\n' ' ')")"
 
 DRY=0; N=""; SPECS=()
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
-    -*) die 2 "不認得的旗標:$arg" ;;
+    -*) die 2 "$(_sbt aib.sits.bad_flag value="$arg")" ;;
     *[0-9]sits|[0-9]*sits) N="${arg%sits}" ;;
     *) SPECS+=("$arg") ;;
   esac
 done
-[ -n "$N" ] || die 2 "缺席數。用法:aib <N>sits [role[:provider] ...]"
-[[ "$N" =~ ^[0-9]+$ ]] && [ "$N" -ge 1 ] || die 2 "席數要是正整數:$N"
+[ -n "$N" ] || die 2 "$(_sbt aib.sits.no_count)"
+[[ "$N" =~ ^[0-9]+$ ]] && [ "$N" -ge 1 ] || die 2 "$(_sbt aib.sits.bad_count n="$N")"
 MODE_OVERRIDE="${AIB_SITS_MODE_OVERRIDE:-}"
 case "$MODE_OVERRIDE" in
   ""|dgrs|safe) ;;
-  *) die 2 "不認得的模式覆寫:$MODE_OVERRIDE" ;;
+  *) die 2 "$(_sbt aib.sits.bad_mode mode="$MODE_OVERRIDE")" ;;
 esac
 
 # ---- 名冊解析 --------------------------------------------------------------
 PLAN="$("$PY3" - "$ROSTER" "$HERE/providers.json" "$N" "$MODE_OVERRIDE" \
   "${SPECS[@]+"${SPECS[@]}"}" <<'PY'
-import json, re, sys
+import json, os, re, sys
 roster_path, providers_path = sys.argv[1:3]
+def _t(key, **params):
+    # 錯誤訊息走四語鍵(語系盤查第 14 條);i18n_lib 與 providers.json 同在 cockpit 資料夾;讀不到印鍵名
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(providers_path)))
+        import i18n_lib
+        return i18n_lib.t(key, params or None)
+    except Exception:
+        return key
 n, mode_override = int(sys.argv[3]), sys.argv[4]
 specs = sys.argv[5:]
 try:
     roster = json.load(open(roster_path, encoding='utf-8'))
 except Exception as e:
-    sys.exit('名冊讀不到或不是合法 JSON:%s(%s)' % (roster_path, e))
+    sys.exit(_t('aib.sits.roster_bad', path=roster_path, err=e))
 try:
     registry = json.load(open(providers_path, encoding='utf-8'))
     model_defaults = {
@@ -90,7 +104,7 @@ try:
         and isinstance(row.get('default_requested_model'), str)
     }
 except Exception as e:
-    sys.exit('provider 登記簿讀不到:%s(%s)' % (providers_path, e))
+    sys.exit(_t('aib.sits.registry_bad', path=providers_path, err=e))
 seats = roster.get('seats') or []
 mode = mode_override or roster.get('mode') or 'safe'   # 10-08:名冊沒寫模式 ⇒ 每次先問(要全部放行就在名冊寫 mode: dgrs)
 by_role = {s['role']: dict(s) for s in seats}
@@ -106,7 +120,7 @@ if specs:
         prov = parts[1] if len(parts) > 1 else ''
         explicit_model = parts[2] if len(parts) > 2 else ''
         if not role:
-            sys.exit('席位規格缺角色:%r' % sp)
+            sys.exit(_t('aib.sits.spec_no_role', value=repr(sp)))
         base = dict(by_role.get(role, {'role': role, 'provider': 'claude'}))
         base['role'] = role
         if prov:
@@ -128,24 +142,19 @@ else:
 
 # ★ 不靜默截斷也不靜默補齊。少開一席不會亮紅燈,成本是別人以為開了。
 if len(plan) != n:
-    sys.exit('要開 %d 席,但解出 %d 席(%s)。名冊 %s 只有 %d 席——'
-             '改 N、補參數,或改名冊,三選一;本工具不替你截斷也不替你湊數。'
-             % (n, len(plan), ' '.join(p['role'] for p in plan),
-                roster_path, len(seats)))
+    sys.exit(_t('aib.sits.count_mismatch', n=n, total=len(plan), items=' '.join(p['role'] for p in plan),
+                path=roster_path, count=len(seats)))
 seen = {}
 for p in plan:
     if p['role'] in seen:
-        sys.exit('角色重複:%s。同一艙兩席同名會被 aib 自動改窗名(dev12-claude)'
-                 '而你不會知道哪一席是哪一席——要開兩席請明寫 dev1 dev2。'
-                 % p['role'])
+        sys.exit(_t('aib.sits.dup_role', role=p['role']))
     seen[p['role']] = 1
 for p in plan:
     provider = p.get('provider', 'claude')
     requested_model = p.get('requested_model') or model_defaults.get(provider)
     if not isinstance(requested_model, str) or not re.fullmatch(
             r'[0-9A-Za-z][0-9A-Za-z._:/-]*', requested_model):
-        sys.exit('席位 %s 的 requested_model 缺失或格式錯誤(provider=%s)'
-                 % (p['role'], provider))
+        sys.exit(_t('aib.sits.bad_model', role=p['role'], provider=provider))
     print('%s\t%s\t%s\t%s\t%s' % (
         p['role'], provider, mode, p.get('icon', ''), requested_model))
 PY
@@ -177,10 +186,10 @@ if dry == "1":
 print(json.dumps(plan, ensure_ascii=False, sort_keys=True,
                  separators=(",", ":")))
 PYPLAN
-)" || die 2 "啟動計畫無法編碼"
+)" || die 2 "$(_sbt aib.sits.plan_encode_fail)"
 printf 'AIB_FLEET_PLAN %s\n' "$PLAN_JSON"
 
-echo "aib sits: 艙=$HUB 名冊=$ROSTER 要開 $N 席"
+echo "aib sits: $(_sbt aib.sits.plan_head instance="$HUB" path="$ROSTER" n="$N")"
 printf '%s\n' "$PLAN" | while IFS=$'\t' read -r role prov mode icon requested_model; do
   printf '  %-8s %-7s %-24s %s\n' "$role" "$prov" "$requested_model" "$icon"
 done
@@ -228,10 +237,10 @@ print(os.path.expandvars(r.get('cwd') or '$EZ2_AIB_ROOT'))
 PYC
 )"
 case "$SEAT_CWD" in
-  ''|*'$'*) die 2 "名冊的 cwd 展不開:'$SEAT_CWD'(EZ2_AIB_ROOT 有設嗎?)" ;;
+  ''|*'$'*) die 2 "$(_sbt aib.sits.cwd_unexpanded path="$SEAT_CWD")" ;;
 esac
-[ -d "$SEAT_CWD" ] || die 2 "名冊宣告的工作目錄不存在:$SEAT_CWD"
-echo "aib sits: 席位工作目錄=$SEAT_CWD"
+[ -d "$SEAT_CWD" ] || die 2 "$(_sbt aib.sits.cwd_missing path="$SEAT_CWD")"
+echo "aib sits: $(_sbt aib.sits.cwd path="$SEAT_CWD")"
 
 # ---- 逐席開 ---------------------------------------------------------------
 # ★ AIB_NO_ATTACH=1 是 aib 給程式呼叫端的正門(aib:560-575 自己記著理由):
@@ -243,10 +252,10 @@ echo "aib sits: 席位工作目錄=$SEAT_CWD"
 #   放在解析完就印,印出來的是一份**與實際行為不同**的清單——那種 dry-run
 #   會讓人以為五席都會開,而實際只開三席。會說謊的預演比沒有預演更糟。
 if [ "$DRY" = "1" ]; then
-  echo "aib sits: --dry-run,以下不會執行"
+  echo "aib sits: $(_sbt aib.sits.dry_head)"
   printf '%s\n' "$PLAN" | while IFS=$'\t' read -r role prov mode icon requested_model; do
     if printf '%s\n' "$EXISTING" | grep -qxF "$role"; then
-      echo "  跳過 $role(已有活席)"
+      echo "  $(_sbt aib.sits.dry_skip role="$role")"
     else
       echo "  ( cd $SEAT_CWD && EZ2_AIHUB_SOCKET=$HUB AIB_NO_ATTACH=1 $AIB $prov $mode $role --model $requested_model )"
     fi
@@ -285,11 +294,11 @@ PYB
 OPENED=(); SKIPPED=(); FAILED=""; FAILED_ROLE=""
 while IFS=$'\t' read -r role prov mode icon requested_model; do
   if printf '%s\n' "$EXISTING" | grep -qxF "$role"; then
-    echo "aib sits: 跳過 ${role}——該角色有活席在艙內(aib 對活席會 rc=2,跳過才能把其餘幾席開完)"
+    echo "aib sits: $(_sbt aib.sits.skip_live role="${role}")"
     SKIPPED+=("$role")
     continue
   fi
-  echo "aib sits: 開 $role($prov)…"
+  echo "aib sits: $(_sbt aib.sits.opening role="$role" provider="$prov")"
   # ★ EZ2_TMUX_SESSION 一併帶上:少了它,aib 會把外層 session 算成 `main`
   #   (instance=main → session aib-main),於是 attach/switch 會把操作者的畫面
   #   切到**另一個艙**。實測付過:畫面被切到主艙外殼,而那個艙的中央格
@@ -323,7 +332,7 @@ while IFS=$'\t' read -r role prov mode icon requested_model; do
 done < <(printf '%s\n' "$PLAN")
 
 [ "${#SKIPPED[@]}" -eq 0 ] || \
-  echo "aib sits: 已在艙內而跳過:${SKIPPED[*]}"
+  echo "aib sits: $(_sbt aib.sits.skipped_list items="${SKIPPED[*]}")"
 
 if [ -n "$FAILED" ]; then
   # ★ qa 二審判退第二條:收據只列了「已開」與「失敗」,**沒有點名還沒嘗試
@@ -336,12 +345,12 @@ if [ -n "$FAILED" ]; then
       *) NOT_TRIED="$NOT_TRIED $role" ;;
     esac
   done < <(printf '%s\n' "$PLAN")
-  echo "aib sits: 停在 $FAILED" >&2
-  echo "aib sits:   已開 ${#OPENED[@]} 席:${OPENED[*]:-無}" >&2
-  echo "aib sits:   失敗:${FAILED_ROLE:-無}" >&2
-  echo "aib sits:   已在艙內而跳過:${SKIPPED[*]:-無}" >&2
-  echo "aib sits:   ★ 尚未嘗試:${NOT_TRIED:- 無}" >&2
-  echo "aib sits: ★ 已開的席**沒有被回收**——回收是人的決定,不是本工具的。" >&2
+  echo "aib sits: $(_sbt aib.sits.stopped_at value="$FAILED")" >&2
+  echo "aib sits:   $(_sbt aib.sits.opened_n n="${#OPENED[@]}" items="${OPENED[*]:-$(_sbt aib.sits.none)}")" >&2
+  echo "aib sits:   $(_sbt aib.sits.failed_role role="${FAILED_ROLE:-$(_sbt aib.sits.none)}")" >&2
+  echo "aib sits:   $(_sbt aib.sits.skipped_list items="${SKIPPED[*]:-$(_sbt aib.sits.none)}")" >&2
+  echo "aib sits:   $(_sbt aib.sits.not_tried items="${NOT_TRIED:- $(_sbt aib.sits.none)}")" >&2
+  echo "aib sits: $(_sbt aib.sits.not_reclaimed)" >&2
   exit 3
 fi
 
@@ -363,7 +372,7 @@ for i in $(seq 1 "$TRIES"); do
     >/dev/null 2>&1
   MISSING="$(EZ2_AIHUB_SOCKET="$HUB" "$PY3" "$HERE/seats_report.py" --missing-uuid --require-new "$OPENED_BASELINE" 2>/dev/null)"
   [ -n "$MISSING" ] || break
-  echo "aib sits: 第 $i/$TRIES 輪,尚未落檔:$MISSING"
+  echo "aib sits: $(_sbt aib.sits.settle_round n="$i" total="$TRIES" items="$MISSING")"
 done
 
 EZ2_AIHUB_SOCKET="$HUB" "$PY3" "$HERE/seats_report.py" --table \

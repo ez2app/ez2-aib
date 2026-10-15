@@ -22,6 +22,13 @@ fi
 S="$EZ2_TMUX_SESSION"
 HUB="$EZ2_AIHUB_SOCKET"
 C="$EZ2_COCKPIT_DIR"
+# 畫面字走四語字典(語系盤查第 14 條,10-14):_cft <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取,python 起不來印鍵名。
+_cft() {
+  local key="$1"; shift
+  local args=() kv
+  for kv in "$@"; do args+=(--param "$kv"); done
+  "${EZ2_PY3:-python3}" "$C/i18n_lib.py" ${args[@]+"${args[@]}"} "$key" 2>/dev/null || printf '%s\n' "$key"
+}
 TOKEN="$EZ2_AIB_INSTANCE_TOKEN"
 AIB_TITLE="Ez2 AIB v$EZ2_AIB_VERSION"
 
@@ -175,7 +182,7 @@ mkdir -p "$EZ2_COCKPIT_STATE_DIR"
 exec 8>>"$EZ2_COCKPIT_STATE_DIR/.cockpit-ensure.v2.lock"
 # 224:flock -w,不默等。逾時具名 exit 5;8>&- 那道仍在下面,防 tmux 繼承 fd。
 flock -w "${AIB_ENSURE_LOCK_WAIT_SEC:-60}" 8 || {
-  echo "座艙組裝鎖被佔超過 ${AIB_ENSURE_LOCK_WAIT_SEC:-60} 秒(ensure 鎖:$EZ2_COCKPIT_STATE_DIR/.cockpit-ensure.v2.lock)。先查誰持有這個檔。" >&2
+  echo "$(_cft aib.cfull.lock_busy seconds="${AIB_ENSURE_LOCK_WAIT_SEC:-60}" path="$EZ2_COCKPIT_STATE_DIR/.cockpit-ensure.v2.lock")" >&2
   exit 5
 }
 
@@ -258,7 +265,7 @@ resolve_badge_pref() {
   case "$v" in
     both|icon|letters) printf '%s' "$v" ;;
     '') printf '' ;;
-    *) echo "cockpit: engine badge 偏好值不合法(${v};來源=${src})——忽略,交採集端預設" >&2; printf '' ;;
+    *) echo "cockpit: $(_cft aib.cfull.badge_bad value="${v}" source="${src}")" >&2; printf '' ;;
   esac
 }
 
@@ -420,9 +427,9 @@ ensure_watch_window() {
         *'"rc": 3'*|*'"rc":3'*)
           case "$hb_out" in
             *heartbeat_missing*|*stale:*|*pid_gone*|*instance_mismatch*)
-              echo "cockpit-full: watch 心跳失效,重生 ($wid): $hb_out" >&2
+              echo "cockpit-full: $(_cft aib.cfull.hb_respawn window="$wid" detail="$hb_out")" >&2
               dead=1 ;;
-            *) echo "cockpit-full: watch 心跳異常但迴圈仍在,不重生: $hb_out" >&2 ;;
+            *) echo "cockpit-full: $(_cft aib.cfull.hb_odd detail="$hb_out")" >&2 ;;
           esac ;;
       esac
     fi
@@ -640,7 +647,7 @@ _cmd_for_root_role() {
 if ! outer_tmux has-session -t "$S" 2>/dev/null; then
   # 初始格跟 plan 走(預設 hub,不再無條件建左欄)。
   _root_role="$(cockpit_root_role)"
-  [ -n "$_root_role" ] || { echo "cockpit: panes.py 沒有任何一格要建" >&2; exit 2; }
+  [ -n "$_root_role" ] || { echo "cockpit: $(_cft aib.cfull.no_panes)" >&2; exit 2; }
   P_ROOT="$(outer_tmux new-session -d -s "$S" -n cockpit -x 220 -y 50 \
     -P -F '#{pane_id}' "$(_cmd_for_root_role "$_root_role")")"
   mark_cockpit_window
@@ -677,8 +684,7 @@ else
   if [ "$_layout_rc" -eq 2 ]; then
     # 讀不到設定:**什麼都不做**,但一定出聲。不自癒的理由見 validate 的註解 ——
     # 自癒是破壞性的,不在一次失敗的量測上執行破壞性動作。
-    echo "cockpit $S:讀不到座艙版面設定(panes.py --expected-roles 失敗)——" \
-         "跳過版面檢查與自癒,版面維持原樣" >&2
+    echo "$(_cft aib.cfull.layout_unread session="$S")" >&2
   elif [ "$_layout_rc" -ne 0 ]; then
     # 自癒(codex 審 cockpit 域高:冷啟動中斷會留下不足四 pane 的 session,
     # 下次 --ensure 直接拒絕=永久卡死,只能人工砍 session)。
@@ -691,8 +697,7 @@ else
     hub_live="$(outer_tmux list-panes -t "$S:cockpit" -F '#{@aib_role}' \
       2>/dev/null | awk '$1=="hub"{print 1; exit}')"
     if [ "${live_providers:-0}" -gt 0 ] || [ "${hub_live:-0}" = "1" ]; then
-      echo "cockpit $S 版面檢查未過,但中欄對話還在或有活體 provider——" \
-           "拒絕自動重建,請人工確認後處理" >&2
+      echo "$(_cft aib.cfull.layout_refuse session="$S")" >&2
       exit 3
     fi
     # 高3:main instance 允許空 token,ownership 檢查會被跳過——刪 window 前
@@ -728,8 +733,7 @@ else
     fi
     if [ "$cockpit_marked" != "1" ] && [ -z "$session_marked" ] && \
        [ "$structural_remnant" -ne 1 ]; then
-      echo "cockpit $S:cockpit 無 AIB 標記、session 無狀態目錄,且不像中斷殘骸" \
-           "(pane 數 ${pane_count:-?})——拒絕自動刪除" >&2
+      echo "$(_cft aib.cfull.no_mark_refuse session="$S" n="${pane_count:-?}")" >&2
       exit 3
     fi
     # 刪窗前留可稽核的殘骸快照(codex 六輪殘餘風險:若使用者自己建了同名
@@ -746,8 +750,7 @@ else
         outer_tmux capture-pane -p -t "$S:cockpit" 2>/dev/null | head -40 || true
       } > "$EZ2_COCKPIT_STATE_DIR/.selfheal-last-removed" 2>/dev/null || true
     fi
-    echo "cockpit $S 版面不完整且無活體 provider:重建 cockpit window" \
-         "(移除前快照見 .selfheal-last-removed)" >&2
+    echo "$(_cft aib.cfull.rebuild session="$S")" >&2
     # 只重建壞掉的那個 window,session 與戰情室原樣保留
     outer_tmux kill-window -t "$S:cockpit" 2>/dev/null || true
     _root_role="$(cockpit_root_role)"
@@ -802,9 +805,17 @@ fi
 outer_tmux set-option -t "$S" status-style "$(cockpit_status_style 'bg=colour235,fg=colour245')"
 # 10-10(the maintainer 眼驗令):最下面那行不再放 [Ez2 AIB v…],改成給使用者的提示(四語字典 aib.cockpit.footer_hint);
 #   字典讀不到(印 !!key!! 或空)就退回中文字面,不讓狀態列空掉。前補 2 格與 Claude 輸入框下方三行對齊(同 hub 艦長列)。
-#   版號仍在視窗標題與 @aib_title;title-beat.sh --install 會把帶顏色的更新狀態接在這句後面。
-_footer_hint="$("$EZ2_PY3" "$C/i18n_lib.py" aib.cockpit.footer_hint 2>/dev/null || true)"
-case "$_footer_hint" in ''|'!!'*) _footer_hint='若有任何想法,請訪問:aib.ez2.app' ;; esac
+#   版號仍在視窗標題與 @aib_title。title-beat.sh --install 也會設這行(接帶顏色的更新狀態),但它目前零呼叫點(見下面「終端機視窗標題」段)⇒ 實際生效的是這裡。
+#   10-14 語系盤查第 23 條:原本開艙算一次寫死 ⇒ 切語系後這行一直是舊語言。改成 tmux #(…) 每次重畫狀態列(status-interval)重算。
+#   ★ #(…) 裡不能有不成對的 ")"(case 的 ")" 會把指令切斷)、"%" 要寫 %%(status-left 先過 strftime,printf %s 會變秒數)
+#     ⇒ 反引號 + grep 判 !!key!!、echo 輸出(實測 tmux 3.7c)。
+#   ★ tmux 跑 #(…) 只給 server 的全域環境(不給 session 環境)⇒ 艙檔那層(EZ2_AIB_INSTANCE_HOME/locale)與狀態根要在這裡寫死進指令,
+#     不然 aib lang --cabin 切了窗格換、底列不換(審查實測)。python 加 -I 不吃 PYTHONPATH。
+_fh_env=""
+for _v in EZ2_AIB_INSTANCE_HOME EZ2_AIB_STATE_ROOT EZ2_AIB_HOME; do
+  [ -n "${!_v:-}" ] && _fh_env="$_fh_env$(printf '%s=%q ' "$_v" "${!_v}")"
+done
+_footer_hint="#(v=\`$_fh_env$(printf '%q -I %q' "$EZ2_PY3" "$C/i18n_lib.py") aib.cockpit.footer_hint 2>/dev/null\`; echo \"\$v\" | grep -q '^!!' && v=; [ -n \"\$v\" ] || v='若有任何想法,請訪問:aib.ez2.app'; echo \"\$v\")"
 outer_tmux set-option -t "$S" status-left-length 40
 outer_tmux set-option -t "$S" status-left "  $_footer_hint "
 # 10-10(the maintainer 眼驗令):最下面那行不列視窗分頁(0:cockpit* 1:war-room),只留提示句。

@@ -505,6 +505,25 @@ def _resolve_state_root(explicit):
     return Path(os.path.expanduser("~/.ez2-aib"))
 
 
+_UI_TR = {}
+
+
+def _ui(key, **params):
+    """畫面字走四語鍵(語系盤查,10-14);每次照 i18n_lib.resolve_locale() 取(長駐程式切語系也跟得上),讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cockpit")
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _UI_TR.get(loc)
+        if tr is None:
+            tr = _UI_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓程式停
+        return key
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="card-registry")
     ap.add_argument("command", choices=["scan", "check", "show"])
@@ -522,16 +541,16 @@ def main(argv=None):
 
     if args.command == "show":
         if not args.ref:
-            print("card-registry: show 需要 uid 或 card_ref", file=sys.stderr)
+            print("card-registry: " + _ui("aib.cardreg.show_usage"), file=sys.stderr)
             return 2
         try:
             doc = json.loads(_read_bytes(out_path).decode("utf-8"))
         except (OSError, ValueError) as err:
-            print("card-registry: 讀不到 %s(%s)——先 scan" % (out_path, err), file=sys.stderr)
+            print("card-registry: " + _ui("aib.cardreg.unreadable", path=out_path, err=err), file=sys.stderr)
             return 2
         entry, legacy = resolve_card(doc.get("cards", {}), args.ref)
         if entry is None:
-            print("card-registry: 查無 %r" % args.ref, file=sys.stderr)
+            print("card-registry: " + _ui("aib.cardreg.not_found", value=repr(args.ref)), file=sys.stderr)
             return 1
         sys.stdout.write(_dump({"card": entry, "matched_by": "legacy_card_ref" if legacy else "uid"}))
         return 0
@@ -577,7 +596,7 @@ def main(argv=None):
             current = json.loads(_read_bytes(out_path).decode("utf-8"))
             receipt = json.loads(_read_bytes(provenance_path(out_path)).decode("utf-8"))
         except (OSError, ValueError) as err:
-            print("card-registry: 要比對的檔/收據讀不到(%s)" % err, file=sys.stderr)
+            print("card-registry: " + _ui("aib.cardreg.compare_unreadable", err=err), file=sys.stderr)
             return 2
         on_disk_sha = _digest_file(out_path)
         edited_by_hand = receipt.get("cards_json_sha256") != on_disk_sha

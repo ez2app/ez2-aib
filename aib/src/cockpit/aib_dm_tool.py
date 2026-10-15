@@ -113,10 +113,16 @@ def dm_tool(locale=None) -> dict:
     }
 
 
-# Compat aliases (import-time defaults = current locale / fallback).
-DM_SYSTEM_SNIPPET = dm_system_snippet()
-DM_BOOT_BANNER = dm_boot_banner()
-DM_TOOL = dm_tool()
+# Compat names. 10-14 語系盤查第 6 條:原本 import 時就照當時語系組好 ⇒ 長駐的 bot / bridge 之後切語系不會跟。
+#   改成取用時才照當下語系組(PEP 562 模組 __getattr__;from aib_dm_tool import DM_TOOL 也走這裡)。
+_LAZY = {"DM_SYSTEM_SNIPPET": dm_system_snippet, "DM_BOOT_BANNER": dm_boot_banner, "DM_TOOL": dm_tool}
+
+
+def __getattr__(name):
+    fn = _LAZY.get(name)
+    if fn is None:
+        raise AttributeError("module %r has no attribute %r" % (__name__, name))
+    return fn()
 
 # the maintainer 2026-09-28 令「首要基因」(v0.69.2 起六支 API 席都帶);09-28 再定:**要能開關、預設關**。
 #   正本 docs/Ez2-GENES.md;程式 ez2_genes.py(開法 AIB_GENES=1 或 ~/.ez2-aib/genes.json;開任何一條時 3、5 一定跟著開)。
@@ -155,7 +161,6 @@ DM_SLASH = re.compile(
 
 # Aliases used by older deepseek / docs wording
 DM_ADDRESS = DM_ADDRESS
-DM_SYSTEM_SNIPPET = DM_SYSTEM_SNIPPET
 UNVERIFIED_DM_CLAIM = UNVERIFIED_DM_CLAIM
 DM_SLASH = DM_SLASH
 

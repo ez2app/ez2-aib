@@ -146,6 +146,16 @@ unset _AIB_VERSION _AIB_VERSION_FILE
 
 # Four-region theme. The JSON is the only colour source; theme.py validates
 # ownership, file mode, schema and xterm values before cockpit-full mutates tmux.
+# 10-14(the maintainer「也要有轉成佈景」):使用者選的佈景 —— `aib theme use <名>` 寫 <狀態根>/theme,
+#   佈景裝在 <狀態根>/themes/<名>/theme.json(aib ext install 裝的)。沒選、名字不合、檔不在 ⇒ 照舊用內建那套。
+if [ -z "${EZ2_AIB_THEME_FILE:-}" ]; then
+  _aib_theme_sel=""
+  { IFS= read -r _aib_theme_sel < "$_AIB_STATE_ROOT/theme"; } 2>/dev/null || true
+  if [[ "$_aib_theme_sel" =~ ^[A-Za-z0-9._-]+$ ]] && [ -f "$_AIB_STATE_ROOT/themes/$_aib_theme_sel/theme.json" ]; then
+    EZ2_AIB_THEME_FILE="$_AIB_STATE_ROOT/themes/$_aib_theme_sel/theme.json"
+  fi
+  unset _aib_theme_sel
+fi
 export EZ2_AIB_THEME_FILE="${EZ2_AIB_THEME_FILE:-$EZ2_AIB_ROOT/themes/aib-default.json}"
 _aib_require_abs EZ2_AIB_THEME_FILE "$EZ2_AIB_THEME_FILE" || \
   { return 2 2>/dev/null || exit 2; }

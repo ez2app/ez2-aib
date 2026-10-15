@@ -101,8 +101,7 @@ def _t(key, fallback, locale=None):
     try:
         import i18n_lib
         text = i18n_lib.t(key, None,
-                          locale=locale or os.environ.get("EZ2_AIB_LOCALE")
-                          or "zh-TW")
+                          locale=locale or i18n_lib.resolve_locale())
     except Exception:                      # noqa: BLE001 字典壞掉不得癱瘓閘
         return fallback
     if not isinstance(text, str) or not text:

@@ -151,7 +151,7 @@ def cmd_pull(args) -> int:
     inbox = root / "inbox"
     claimed = root / "claimed"
     if not inbox.is_dir():
-        print(f"信箱不存在:{inbox}(席還沒開或 session 錯)", file=sys.stderr)
+        print(_ui("aib.musemail.no_inbox", path=inbox), file=sys.stderr)
         return 2
     claimed.mkdir(parents=True, exist_ok=True)
     zones: dict[str, list] = {"human": [], "dm": [], "system": []}
@@ -178,17 +178,17 @@ def cmd_pull(args) -> int:
                          ensure_ascii=False, indent=2))
         return 0
     titles = {"human": "【the maintainer 本人】", "dm": "【別席 dm】", "system": "【AIB 系統】"}
-    print(f"認領 {n} 則。{RULES}")
+    print(_ui("aib.musemail.claimed", n=n) + RULES)
     for z in ("human", "dm", "system"):
         items = zones[z]
-        print(f"\n{titles[z]}({len(items)} 則):")
+        print("\n" + _ui("aib.musemail.section", name=titles[z], n=len(items)))
         for it in items:
             print(f"--- {it['file']} (from={it['from']}) ---")
-            print(it["text"] or "(空)")
+            print(it["text"] or _ui("aib.musemail.empty"))
     if token:
-        print(f"\n通行碼(回信 post/dm 要帶 --token):{token}")
+        print("\n" + _ui("aib.musemail.token", value=token))
     else:
-        print("\n(還沒有通行碼:橋可能還沒 ready)")
+        print("\n" + _ui("aib.musemail.no_token"))
     return 0
 
 
@@ -199,7 +199,7 @@ def cmd_post(args) -> int:
         print(other, file=sys.stderr)
         return 2
     if not (root / "outbox").is_dir():
-        print(f"信箱不存在:{root / 'outbox'}(席還沒開或 session 錯)", file=sys.stderr)
+        print(_ui("aib.musemail.no_inbox", path=root / "outbox"), file=sys.stderr)
         return 2
     err = check_token(root, args.token)
     if err:
@@ -210,7 +210,7 @@ def cmd_post(args) -> int:
         text = sys.stdin.read()
     text = sanitize(text)
     if not text.strip():
-        print("正文是空的,不送", file=sys.stderr)
+        print(_ui("aib.musemail.empty_body"), file=sys.stderr)
         return 2
     to = (getattr(args, "to", None) or "human").strip()
     if to != "human":
@@ -222,7 +222,7 @@ def cmd_post(args) -> int:
         except ImportError:
             ok = bool(re.match(r"^(?:[0-9a-z]{4}/[0-9a-z]{4,8}|@[0-9a-z]{4,8})$", to))
         if not ok:
-            print("--to 要是 human、艙位碼/席碼(例 664d/987f7)或 @五碼", file=sys.stderr)
+            print(_ui("aib.musemail.bad_to"), file=sys.stderr)
             return 2
     ts = time.time()
     name = f"{int(ts * 1000):013d}-{os.getpid()}-{os.urandom(2).hex()}-muse.json"
@@ -238,7 +238,7 @@ def cmd_post(args) -> int:
         "created_epoch": int(ts),
     }
     _atomic_write(root / "outbox" / name, payload)
-    print(f"已寫入 outbox:{name}")
+    print(_ui("aib.musemail.outbox_written", name=name))
     return 0
 
 
@@ -257,7 +257,7 @@ def cmd_dm(args) -> int:
         text = sys.stdin.read()
     text = sanitize(text).strip()
     if not text:
-        print("正文是空的,不送", file=sys.stderr)
+        print(_ui("aib.musemail.empty_body"), file=sys.stderr)
         return 2
     # ★ 10-05 a seat(a seat 實踩同病):以前這裡直接跑 aib dm,跑它的是排程/人的殼,不在本席窗底下 ⇒
     #   抬頭「未認證@unknown」。改走本席橋開的 dm socket(musebot-bindings/<session>.dm.sock):
@@ -281,7 +281,7 @@ def cmd_dm(args) -> int:
     except (OSError, ValueError):
         recent = []
     if len(recent) >= DM_PER_MIN:
-        print("這一分鐘已經送了 %d 則 dm,先停(防互叫);有急事請 the maintainer 本人處理" % len(recent), file=sys.stderr)
+        print(_ui("aib.musemail.rate_limit", n=len(recent)), file=sys.stderr)
         return 5
     try:
         rate.write_text(" ".join("%.3f" % x for x in recent + [now]) + "\n", encoding="utf-8")
@@ -293,22 +293,22 @@ def cmd_dm(args) -> int:
             import codexbot_dm_socket as _dms
             reply = _dms.send_via_bridge(sock, target, text)
         except (OSError, ValueError, ImportError) as exc:
-            print(f"連不上本席的 dm socket({type(exc).__name__}:{exc});這則沒送", file=sys.stderr)
+            print(_ui("aib.musemail.socket_fail", err="%s:%s" % (type(exc).__name__, exc)), file=sys.stderr)
             return 3
         print(reply.get("outcome") or "")
         if not reply.get("ok"):
             dm_receipt(root, args.session, text, target, reply.get("outcome") or reply.get("error") or "")
         return 0 if reply.get("ok") else 1
-    print("本席 dm socket 不在(席沒開或橋沒起):改直送,抬頭會是「未認證@unknown」", file=sys.stderr)
+    print(_ui("aib.musemail.socket_missing"), file=sys.stderr)
     try:
         import aib_dm_tool as _aib_dm
     except ImportError as exc:
-        print(f"載不到 aib_dm_tool:{exc}", file=sys.stderr)
+        print(_ui("aib.musemail.dm_tool_fail", err=exc), file=sys.stderr)
         return 3
     try:
         out = _aib_dm.run_aib_dm(target, text)
     except Exception as exc:  # noqa: BLE001
-        print(f"dm 送出失敗:{type(exc).__name__}:{exc}", file=sys.stderr)
+        print(_ui("aib.musemail.dm_fail", err="%s:%s" % (type(exc).__name__, exc)), file=sys.stderr)
         dm_receipt(root, args.session, text, target, f"{type(exc).__name__}:{exc}")
         return 3
     print(out)
@@ -332,7 +332,7 @@ def cmd_status(args) -> int:
     try:
         st = json.loads((root / "status.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        print(f"讀不到 status.json(席還沒 ready 或 session 錯):{root}", file=sys.stderr)
+        print(_ui("aib.musemail.no_status", path=root), file=sys.stderr)
         return 2
     if args.json:
         print(json.dumps(st, ensure_ascii=False, indent=2))
@@ -341,6 +341,25 @@ def cmd_status(args) -> int:
           f"code=@{st.get('code')} role={st.get('role')} mode={st.get('mode')}")
     print(f"inbox={st.get('inbox')} outbox={st.get('outbox')} pid={st.get('pid')}")
     return 0
+
+
+_UI_TR = {}
+
+
+def _ui(key, **params):
+    """畫面字走四語鍵(語系盤查,10-14);每次照 i18n_lib.resolve_locale() 取(長駐程式切語系也跟得上),讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.dirname(os.path.abspath(__file__))
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _UI_TR.get(loc)
+        if tr is None:
+            tr = _UI_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓程式停
+        return key
 
 
 def main(argv=None) -> int:

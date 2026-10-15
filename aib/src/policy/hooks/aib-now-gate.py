@@ -285,9 +285,26 @@ def enforced(code):
     return "*" in names or code in names
 
 
+_TR = {}
+
+
+def T(key, **params):
+    """人和 AI 會讀到的字(擋下說明、開席提醒、安裝結果、用法)走 aib.nowgate.* 四語鍵(語系盤查第 16 條);
+    每次照 i18n_lib.resolve_locale() 取(掛點是 Claude 的子程序,每回合重起)。字典讀不到 ⇒ 印鍵名,不擋。
+    只寫進 now-gate 記錄檔的內部原因(FAILOPEN …、逃生門放行…)不翻:那是給查問題的人 grep 的。"""
+    try:
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _TR.get(loc)
+        if tr is None:
+            tr = _TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001
+        return key
+
+
 def fix_line(code):
-    return ('aib now "<這一階段的主項目>" <做完幾步>/<共幾步> [--state reply|decide]'
-            "  (等別席回 = reply、等真人決定 = decide;全部做完沒事 = aib now --clear)")
+    return T("aib.nowgate.fix_line")
 
 
 def decide(payload):
@@ -344,12 +361,10 @@ def decide(payload):
             at = 0
     if at >= since:
         return False, "本回合已更新 aib now"
-    when = time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "從沒回報過"
+    when = time.strftime("%m-%d %H:%M", time.localtime(at)) if at else T("aib.nowgate.never")
     # 10-13 a seat:彙整誤擋要看「哪種回合被擋」⇒ 留痕帶本回合用過的工具名(只有名字,不寫內容)
     _note("BLOCK @%s at=%s since=%s tools=%s" % (code, at, since, ",".join(sorted(t for t in tools if t))))
-    msg = ("aib-now-gate:@%s 這一回合做了事,但 📌 狀態沒有更新(上次更新:%s)。\n"
-           "the maintainer 10-12 規定:每一個階段完成、把話交回給人之前,先更新狀態列。請跑:\n  %s\n"
-           "現在畫面上是:%s") % (code, when, fix_line(code), _shown(code))
+    msg = T("aib.nowgate.block", code=code, when=when, cmd=fix_line(code), line=_shown(code))
     return True, msg
 
 
@@ -370,11 +385,8 @@ def session_start_text(payload):
         hard = enforced(code)
     except Exception:  # noqa: BLE001
         hard = True
-    tail = ("沒更新的話,回合結束時 aib-now-gate 會擋下(the maintainer 10-12)。" if hard
-            else "(本席不在試跑名單,目前不會擋,但規則一樣。)")
-    return ("[AIB 狀態列] @%s(%s)輸入框下方現在是:%s\n"
-            "第一個動作先跑 `%s`,寫這一席現在的主項目;之後每做完一個階段、把話交回給人之前都要再更新一次 ——%s\n"
-            ) % (code, src, shown, fix_line(code), tail)
+    tail = T("aib.nowgate.start_hard") if hard else T("aib.nowgate.start_soft")
+    return T("aib.nowgate.start", code=code, source=src, line=shown, cmd=fix_line(code), tail=tail)
 
 
 def _read_payload():
@@ -493,7 +505,8 @@ def ensure(path=DEFAULT_SETTINGS):
         _note("ensure 寫不進 %s:%s" % (path, e))
         return "skip", "寫不進 %s" % path
     _note("ENSURE 裝上 %s(備份 %s)" % (path, backup))
-    return "installed", "已裝上 aib now 狀態檢查(%s%s)" % (path, ";原檔備份 %s" % backup if backup else "")
+    return "installed", T("aib.nowgate.installed", path=path,
+                          backup=T("aib.nowgate.installed_backup", file=backup) if backup else "")
 
 
 def _load(path):
@@ -605,11 +618,11 @@ def main(argv=None):
         try:
             code = self_seat()
         except Exception as e:  # noqa: BLE001
-            print("認不出這一席:%s" % e)
+            print(T("aib.nowgate.status_unknown", err=e))
         if not code:
-            print("不在 AIB 席裡:aib-now-gate 不管這個對話")
+            print(T("aib.nowgate.status_none"))
             return 0
-        print("@%s 現在:%s" % (code, _shown(code)))
+        print(T("aib.nowgate.status", code=code, line=_shown(code)))
         return 0
     if mode == "ensure":
         try:
@@ -625,25 +638,24 @@ def main(argv=None):
         try:
             cfg = _load(path)
         except (OSError, ValueError) as e:
-            print("讀不懂 %s(%s):不覆寫" % (path, e), file=sys.stderr)
+            print(T("aib.nowgate.unreadable", path=path, err=e), file=sys.stderr)
             return 1
         script = _opt(argv, "--script")
         if mode == "install" and not script:
             script = canonical_script()
             if not script or not os.path.isfile(script):
-                print("找不到正本樹裡的 %s(正本還沒有這支?先合併再裝,或用 --script 指定)" % MARKER, file=sys.stderr)
+                print(T("aib.nowgate.no_script", file=MARKER), file=sys.stderr)
                 return 1
         try:
             cfg = add_ours(cfg, script) if mode == "install" else strip_ours(cfg)
         except ValueError as e:
-            print("讀不懂 %s(%s):不覆寫" % (path, e), file=sys.stderr)
+            print(T("aib.nowgate.unreadable", path=path, err=e), file=sys.stderr)
             return 1
         backup = _save(path, cfg)
-        print("%s 完成:%s%s" % ("安裝" if mode == "install" else "移除", path,
-                                ("(原檔備份 %s)" % backup) if backup else ""))
+        print(T("aib.nowgate.done_install" if mode == "install" else "aib.nowgate.done_uninstall", path=path,
+                backup=T("aib.nowgate.done_backup", file=backup) if backup else ""))
         return 0
-    print("用法:aib-now-gate.py stop|session-start|status|install|uninstall|ensure [--settings PATH] [--script PATH]",
-          file=sys.stderr)
+    print(T("aib.nowgate.usage"), file=sys.stderr)
     return 2
 
 

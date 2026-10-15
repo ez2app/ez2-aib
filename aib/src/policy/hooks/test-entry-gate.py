@@ -22,7 +22,6 @@ A gate on every Bash call that blocks by mistake costs more than one that misses
 Codex / Grok seats do not load Claude hooks: for them this is a rule in the onboarding text, not a block.
 """
 import json
-import os
 import re
 import shlex
 import sys
@@ -42,7 +41,7 @@ def _t(key, params=None):
     try:
         sys.path.insert(0, str(ROOT / "src" / "cockpit"))
         import i18n_lib
-        return i18n_lib.t("aib.test." + key, params, locale=os.environ.get("EZ2_AIB_LOCALE", "zh-TW"))
+        return i18n_lib.t("aib.test." + key, params, locale=i18n_lib.resolve_locale())
     except Exception:
         return "%s %s" % (key, params or "")
 

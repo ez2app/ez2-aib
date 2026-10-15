@@ -948,6 +948,25 @@ def _dump(obj):
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=1) + "\n"
 
 
+_UI_TR = {}
+
+
+def _ui(key, **params):
+    """畫面字走四語鍵(語系盤查,10-14);每次照 i18n_lib.resolve_locale() 取(長駐程式切語系也跟得上),讀不到印鍵名。"""
+    try:
+        _cockpit = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cockpit")
+        if _cockpit not in sys.path:
+            sys.path.insert(0, _cockpit)
+        import i18n_lib
+        loc = i18n_lib.resolve_locale()
+        tr = _UI_TR.get(loc)
+        if tr is None:
+            tr = _UI_TR[loc] = i18n_lib.Translator(loc)
+        return tr.t(key, params or None)
+    except Exception:  # noqa: BLE001 —— 印不出字不能讓程式停
+        return key
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="bind-one", description="單席綁定執行器(預設會寫;--dry-run 只印計畫)")
     ap.add_argument("command", choices=["bind", "unbind", "status"])
@@ -989,12 +1008,12 @@ def main(argv=None):
     fit = out.get("provider_warning")
     rc = 0
     if out.get("reproject") and out["reproject"]["rc"] != 0:
-        print("bind-one: ⚠ 綁定已寫入,但重投影 rc=%d(畫面可能沒更新):%s"
-              % (out["reproject"]["rc"], out["reproject"]["log_tail"][-200:]), file=sys.stderr)
+        print("bind-one: " + _ui("aib.bindone.reproject_fail", rc=out["reproject"]["rc"], detail=out["reproject"]["log_tail"][-200:]),
+              file=sys.stderr)
         rc = 1
     if fit:   # 排在重投影錯誤後面:右鍵失敗訊息取第一行 bind-one:,不能被這行警告蓋掉
-        print("bind-one: ⚠ 人格卡「%s」(%s)是寫給 %s 的,這一席是 %s;已照綁,請確認卡上寫的能力跟這一席相符"
-              % (fit.get("display_name") or "?", fit.get("card_uid") or "?", fit["card_kind"], fit["seat_provider"]),
+        print("bind-one: " + _ui("aib.bindone.fit_warn", name=fit.get("display_name") or "?", uid=fit.get("card_uid") or "?",
+                                   kind=fit["card_kind"], provider=fit["seat_provider"]),
               file=sys.stderr)
     return rc
 

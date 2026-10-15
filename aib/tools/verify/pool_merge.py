@@ -35,7 +35,7 @@ import jsonl_safe  # noqa: E402 - 同資料夾;行界只認 "\n"
 sys.path.insert(0, str(HERE.parents[1] / "src" / "cockpit"))
 import i18n_lib  # noqa: E402 - 畫面文字走四語字典(tests/test-tools-i18n-ratchet.py)
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 
 
 def T(key, params=None):

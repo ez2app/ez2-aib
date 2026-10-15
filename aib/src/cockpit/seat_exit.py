@@ -44,7 +44,7 @@ if str(_HERE) not in sys.path:
 import i18n_lib  # noqa: E402
 import seats_dir_lib  # noqa: E402
 
-LOC = os.environ.get("EZ2_AIB_LOCALE", "zh-TW")
+LOC = i18n_lib.resolve_locale()
 
 RECORD_REASONS = ("cli-exit", "window-killed", "captain-close", "usage-gate", "unknown")
 SWEEP_REASONS = ("window-gone", "pid-gone")
