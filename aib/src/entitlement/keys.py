@@ -15,7 +15,7 @@ is listed (tools/oss/export_aib.py --public).
 # 10-08(the maintainer 同意):草稿簽章換成真的公鑰驗證,之後授權模組可以開源。私鑰只在簽發的人手上。
 TRUSTED_PUBLIC_KEYS: tuple = (
     # "ed25519:<64 hex>",   ← tools/license/aib-license.py pubkey 印出的那一行
-    "ed25519:90e5afdcd8a5ed6fc71a151b329c17fb6a911c19c1c4e035221accee0c953be5",   # the maintainer 10-09 keygen(發證主鑰;10-16 找不到私鑰在哪台)
+    # 10-09 發證主鑰 ed25519:90e5afdc…3be5 已撤(10-16 the maintainer:私鑰找不到在哪台 ⇒ 拿掉,它簽過的授權一併失效)
     # 10-16 the maintainer:三台 Mac 都能簽,各台自己的鑰匙(私鑰不出那台;哪台遺失只撤那一行)
     "ed25519:cb973123600961450410fc8471d833126ffcc1d97843378ddd639934faf15a3e",   # MacBook Pro 16(10-16 keygen)
 )
