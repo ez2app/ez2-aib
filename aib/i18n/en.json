@@ -4341,5 +4341,11 @@
   "aib.chat.prepare_keys": "Global chat: owner key ready; {n} seats have seat keys (local only, not online yet)",
   "aib.chat.prepare_next": "To go online: aib chat on --name \"<display name>\" --country US (publishes your display name and country; no seat is listed by default)",
   "aib.chat.help.prepare": "prepare global chat (install nostr-sdk, create keys; local only, does not go online)",
-  "aib.chat.help.keys_only": "keys only; do not install packages"
+  "aib.chat.help.keys_only": "keys only; do not install packages",
+  "aib.ext.mod_already": "✓ {engine}: {name} already registered, nothing changed",
+  "aib.ext.mod_not_claude": "– claude: {name} has no {path}, so it is not a Claude Code plugin; put in place, not registered",
+  "aib.ext.legacy_plugin": "Note: the old {id} is still installed (retired, replaced by aib-boards). To remove it: {cmd}",
+  "aib.ext.auto_off": "AIB_EXT_AUTO=0: bundled mods are not installed automatically",
+  "aib.ext.auto_unsigned": "– {name} is not signed by a trusted key, so it is not installed automatically (to install it yourself: aib ext install --allow-unsigned)",
+  "aib.ext.restart_hint": "Installed / updated: {names}. Type /restart in each seat for it to take effect (it resumes the same conversation)"
 }

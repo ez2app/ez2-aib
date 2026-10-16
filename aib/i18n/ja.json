@@ -4341,5 +4341,11 @@
   "aib.chat.prepare_keys": "グローバルチャット:オーナー鍵を準備。{n} 席に席鍵(このマシンのみ、まだオンラインではありません)",
   "aib.chat.prepare_next": "オンラインにするには:aib chat on --name \"<表示名>\" --country JP(表示名と国が公開されます。名簿には既定で席は載りません)",
   "aib.chat.help.prepare": "グローバルチャットを準備(nostr-sdk 導入・鍵作成。このマシンのみ、オンラインにはしない)",
-  "aib.chat.help.keys_only": "鍵のみ。パッケージは入れない"
+  "aib.chat.help.keys_only": "鍵のみ。パッケージは入れない",
+  "aib.ext.mod_already": "✓ {engine}:{name} は登録済み、変更なし",
+  "aib.ext.mod_not_claude": "– claude:{name} に {path} がないため Claude Code プラグインではない。配置のみ、登録しない",
+  "aib.ext.legacy_plugin": "お知らせ:古い {id} がまだ残っています(廃止済み、aib-boards に置き換え)。削除するには:{cmd}",
+  "aib.ext.auto_off": "AIB_EXT_AUTO=0:同梱の mod は自動インストールしない",
+  "aib.ext.auto_unsigned": "– {name} は信頼された鍵で署名されていないため自動インストールしない(自分で入れるには aib ext install --allow-unsigned)",
+  "aib.ext.restart_hint": "インストール / 更新:{names}。各席で /restart すると有効になります(元の会話に戻ります)"
 }

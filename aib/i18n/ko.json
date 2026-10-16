@@ -4341,5 +4341,11 @@
   "aib.chat.prepare_keys": "글로벌 채팅: 오너 키 준비, {n}개 좌석에 좌석 키(이 기기만, 아직 온라인 아님)",
   "aib.chat.prepare_next": "온라인으로 하려면: aib chat on --name \"<표시 이름>\" --country KR(표시 이름과 국가가 공개됩니다. 명부에는 기본적으로 좌석이 없습니다)",
   "aib.chat.help.prepare": "글로벌 채팅 준비(nostr-sdk 설치, 키 생성; 이 기기만, 온라인 아님)",
-  "aib.chat.help.keys_only": "키만, 패키지는 설치하지 않음"
+  "aib.chat.help.keys_only": "키만, 패키지는 설치하지 않음",
+  "aib.ext.mod_already": "✓ {engine}: {name} 이미 등록됨, 변경 없음",
+  "aib.ext.mod_not_claude": "– claude: {name}에 {path}가 없어 Claude Code 플러그인이 아님. 배치만 하고 등록 안 함",
+  "aib.ext.legacy_plugin": "알림: 예전 {id}가 아직 남아 있습니다(폐기됨, aib-boards로 대체). 제거하려면: {cmd}",
+  "aib.ext.auto_off": "AIB_EXT_AUTO=0: 함께 든 mod를 자동 설치하지 않음",
+  "aib.ext.auto_unsigned": "– {name}은 신뢰된 키로 서명되지 않아 자동 설치하지 않음(직접 설치: aib ext install --allow-unsigned)",
+  "aib.ext.restart_hint": "설치 / 업데이트: {names}. 각 석에서 /restart 하면 적용됩니다(원래 대화로 돌아갑니다)"
 }

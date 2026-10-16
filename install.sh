@@ -814,6 +814,11 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
         done
         if (cd "$DIR" && "$abin" init >/dev/null 2>&1); then say "✓ aib 狀態目錄就緒(~/.ez2-aib)"
         else note+=("aib init 沒跑成:開第一席前請自己跑一次 aib init"); fi
+        # 10-15(the maintainer「裝上並在下一版自動安裝」):附帶的免費、已簽章 mod(extensions/)裝好並登記到 Claude Code;
+        #   aib update 也是重跑這支,一起涵蓋。AIB_EXT_AUTO=0 全關。裝不成只記一筆,不擋安裝。
+        local ext_out
+        if ext_out="$(cd "$DIR" && "$abin" ext auto 2>&1)"; then [ -z "$ext_out" ] || say "$ext_out"
+        else [ -z "$ext_out" ] || say "$ext_out"; note+=("附帶的 mod 沒裝成:之後可以自己跑 aib ext auto"); fi
         # 10-16(維護者「安裝時就裝好 Nostr 的程式」):全球對談先備好 —— venv + nostr-sdk(要網路,約 1–3 分鐘)與主人金鑰;
         #   只在本機,不上線(要上線:aib chat on --name … --country …)。失敗不擋安裝;AIB_CHAT_PREINSTALL=0 略過。
         if [ "${AIB_CHAT_PREINSTALL:-1}" != 0 ]; then
