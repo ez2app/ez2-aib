@@ -42,6 +42,7 @@ HELP_CMDS = [
     "memory write --help", "task --help", "task set --help", "top --help", "seat detect --help", "init --help",
     "persona --help", "persona precheck --help", "persona report --help",
     "ai --help", "ai -h", "seat --help", "seat -h", "genes --help", "genes -h",
+    "who-owns --help", "scope --help", "scope set --help", "scope show --help",
 ]
 
 
