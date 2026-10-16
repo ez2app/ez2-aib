@@ -15,8 +15,9 @@ N2 別人(陌生)⇒ 待審、寄件端 rc 3 held;人刪 ⇒ 寄件端補記 ref
 N3 寄件席沒列名冊 ⇒ 收件端驗不到 ⇒ 未驗證、待審
 N4 重開轉接程式(補收)⇒ 同一封不會進兩次
 N5 冒充回條:別的金鑰寄一張 delivered 回條 ⇒ 寄件端不收
+N6 站回 OK 慢(先轉送、2 秒後才回 OK)⇒ 對方的 held 回條比 send_event 先回來,寄件端照收(10-16 實機驗收掉 3/5 張)
 刀(複本):K1 席可讀待審全球信 ⇒ U3 紅;K2 parse 不認全球抬頭 ⇒ U1 紅;K3 enqueue 不收 status(先排隊)⇒ U2 紅;
-  K4 回條不比對寄件對象 ⇒ N5 紅(有 nostr-sdk 才跑)
+  K4 回條不比對寄件對象 ⇒ N5 紅(有 nostr-sdk 才跑);K5 寄出帳改回寄完才寫 ⇒ N6 紅
 """
 import importlib.util
 import json
@@ -277,6 +278,25 @@ class Network(unittest.TestCase):
         self.assertNotIn("delivered", [r["stage"] for r in GF.read_receipts(a.root, rec["msgid"])], "冒充的回條不准收")
 
 
+@unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
+class SlowOk(Network):
+    def setUp(self):
+        from aib_fake_relay import FakeRelay
+        self.relay = FakeRelay(ok_delay=lambda ev: 2 if ev.get("kind") == 1059 else 0)
+        self.relay.__enter__()
+        self.addCleanup(self.relay.__exit__, None, None, None)
+        import dm_queue as DQ
+        self.DQ = DQ
+
+    def test_n6_receipt_before_ok(self):
+        a, (x,) = self._box("Andy", [("00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")], [True])
+        b, (y,) = self._box("Bob", [("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [True])
+        for _ in range(2):
+            rec = outbox_rec("%s/6ddf/%s" % (b.owner, y), x)
+            res = GF.send_and_wait(a.root, rec, wait=25)
+            self.assertEqual((res["rc"], res["stage"]), (3, "held"), (res, GF.read_receipts(a.root, rec["msgid"])))
+
+
 class Knife(unittest.TestCase):
     def _knife(self, rel, needle, replacement, cell):
         name = Path(__file__).name
@@ -300,6 +320,15 @@ class Knife(unittest.TestCase):
     def test_k4_receipt_any_author(self):
         self._knife("src/cockpit/chat_nostr.py", '        if sent.get("to") != from_npub:', "        if False:",
                     "Network.test_n5_forged_receipt_ignored")
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k5_ledger_after_send(self):
+        self._knife("src/cockpit/chat_nostr.py",
+                    "        try:\n            ok = await _send_to(target, own, gw, mine)\n",
+                    "        _p = self.root / \"sent\" / (msgid + \".json\")\n        _p.rename(str(_p) + \".later\")\n"
+                    "        try:\n            ok = await _send_to(target, own, gw, mine)\n"
+                    "            os.rename(str(_p) + \".later\", str(_p))\n",
+                    "SlowOk.test_n6_receipt_before_ok")
 
 
 if __name__ == "__main__":

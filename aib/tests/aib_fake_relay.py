@@ -12,6 +12,8 @@
   - 可替換事件照 NIP-01 只留最新(kind 0、3、10000–19999 依 pubkey+kind;30000–39999 再加 d 標籤),
     名冊(30078)與收信中繼站清單(10050)的測試才不會讀到舊版;20000–29999 只轉送不存。
   - reject(event) -> str|None:測試要模擬限流/封鎖時傳入,回字串就以 OK false 回該字串。
+  - ok_delay(event) -> 秒數:先轉送給訂閱者、隔這麼久才回寄件端 OK(模擬公開站回 OK 慢,
+    10-16 實機驗收:回條比寄件端的 send_event 先回來)。
 
 用法:
     with FakeRelay() as relay:
@@ -248,9 +250,10 @@ class _Server(socketserver.ThreadingTCPServer):
 class FakeRelay(object):
     """本機假中繼站。port=0 ⇒ 系統挑空埠;`with` 離開即關站並斷掉所有連線。"""
 
-    def __init__(self, host=LOOPBACK, port=0, reject=None):
+    def __init__(self, host=LOOPBACK, port=0, reject=None, ok_delay=None):
         assert_loopback(host)
         self.reject = reject
+        self.ok_delay = ok_delay
         self.events = []          # 依收到先後;REQ 回舊事件時另外排序
         self.received = []        # 每一則 EVENT(含被拒、重複)照原樣記下,給測試數「寄了幾次」
         self._conns = set()
@@ -340,12 +343,17 @@ class FakeRelay(object):
             targets = list(self._conns)
         if dup:
             return conn.send_json(["OK", eid, True, "duplicate: already have this event"])
-        conn.send_json(["OK", eid, True, ""])
+        delay = self.ok_delay(ev) if self.ok_delay else 0
+        if not delay:
+            conn.send_json(["OK", eid, True, ""])
         for c in targets:
             with c.lock:
                 hits = [sid for sid, flts in c.subs.items() if any(matches(f, ev) for f in flts)]
             for sid in hits:
                 c.send_json(["EVENT", sid, ev])
+        if delay:
+            time.sleep(delay)
+            conn.send_json(["OK", eid, True, ""])
         return None
 
     def _on_req(self, conn, sid, filters):
