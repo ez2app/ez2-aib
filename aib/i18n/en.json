@@ -4465,7 +4465,7 @@
   "aib.chat.profile_too_many_relays": "At most {n} relays (each extra relay means one more copy of every message)",
   "aib.chat.profile_last_relay": "At least one relay must stay",
   "aib.chat.help.selftest": "self-check: switch, name, connection, relays, clock, whether published seats can be found (read-only, sends nothing)",
-  "aib.chat.help.relays": "list / add / remove relays; reset returns to the defaults",
+  "aib.chat.help.relays": "list / add / remove relays; reset returns to the defaults; test <wss://…> measures one relay (connects only when you run it)",
   "aib.chat.backup_ask": "Passphrase (at least 8 characters; if you forget it, the backup cannot be opened): ",
   "aib.chat.backup_ask_again": "Enter it again: ",
   "aib.chat.backup_need_tty": "A person must type the passphrase in a terminal (an AI seat cannot); scripts can use --passphrase-stdin",
@@ -4535,5 +4535,7 @@
   "aib.chat.state_unknown": "❓ unknown",
   "aib.chat.help.share": "who sees your online status and how much (off / online / status; --default sets the default)",
   "aib.chat.help.world": "online status shared by friends (the captain room's world tab reads --json)",
-  "aib.chat.share_set": "Set: {owner} ⇒ {level} (nothing is sent unless they are a friend or one of your machines)"
+  "aib.chat.share_set": "Set: {owner} ⇒ {level} (nothing is sent unless they are a friend or one of your machines)",
+  "aib.chat.relay_test_ok": "✓ {url}: connect {c} ms, acknowledge {o} ms, query {q} ms",
+  "aib.chat.relay_test_bad": "✗ {url}: not usable ({why})"
 }

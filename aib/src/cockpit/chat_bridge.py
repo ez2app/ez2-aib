@@ -700,9 +700,32 @@ def cmd_refused(a, env, out):
     return 0
 
 
+def _relay_test(a, env, out):
+    """aib chat relays test <wss://…>:量一站(連線 / 回 OK / 查詢各幾毫秒)。拋棄式金鑰、一則不存的 ephemeral、一次查詢;
+    不連發(公開站會封連發的人,第 19.1 節)。只在人下指令時才連,不是背景自動測。"""
+    import chat_roster as CR
+    url = (a.url or "").strip().rstrip("/")
+    if not CR._relay_ok(url):
+        out.write(T("profile_bad_relay") + "\n")
+        return 2
+    rc, rec = _run_nostr("probe", bridge_root(env), env, timeout=90, extra=[url])
+    if rc is None:
+        out.write(T("lookup_no_venv", pin=NOSTR_SDK_PIN) + "\n")
+        return 2
+    if a.json:
+        out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    elif rc == 0:
+        out.write(T("relay_test_ok", url=url, c=rec.get("connect_ms"), o=rec.get("ok_ms"), q=rec.get("query_ms")) + "\n")
+    else:
+        out.write(T("relay_test_bad", url=url, why=rec.get("reason") or rec.get("why") or "-") + "\n")
+    return 0 if rc == 0 else 2
+
+
 def cmd_relays(a, env, out):
     """aib chat relays [add|remove <wss://…> | reset](第 27.9 節)。列出時附各站最近狀態(工人寫的)。"""
     import chat_roster as CR
+    if a.action == "test":
+        return _relay_test(a, env, out)
     if a.action:
         if a.action in ("add", "remove") and not a.url:
             out.write(T("profile_bad_relay") + "\n")
@@ -1175,7 +1198,7 @@ def main(argv=None, env=None, out=sys.stdout):
     stt = sub.add_parser("selftest", help=T("help.selftest"))
     stt.add_argument("--json", action="store_true")
     rl = sub.add_parser("relays", help=T("help.relays"))
-    rl.add_argument("action", nargs="?", choices=("add", "remove", "reset"))
+    rl.add_argument("action", nargs="?", choices=("add", "remove", "reset", "test"))
     rl.add_argument("url", nargs="?")
     rl.add_argument("--json", action="store_true")
     rf = sub.add_parser("refused", help=T("help.refused"))

@@ -4465,7 +4465,7 @@
   "aib.chat.profile_too_many_relays": "최대 {n}개(하나 늘 때마다 모든 메일을 한 번 더 보냅니다)",
   "aib.chat.profile_last_relay": "최소 한 개는 남겨야 합니다",
   "aib.chat.help.selftest": "자체 점검: 스위치, 이름, 연결, 릴레이, 시계, 공개 석 조회 가능 여부(읽기만, 보내지 않음)",
-  "aib.chat.help.relays": "릴레이 목록 / 추가 / 삭제, reset은 기본값으로",
+  "aib.chat.help.relays": "릴레이 목록 / 추가 / 삭제, reset은 기본값으로, test <wss://…>는 한 곳 측정(실행할 때만 연결)",
   "aib.chat.backup_ask": "암호 문구(8자 이상, 잊으면 열 수 없습니다): ",
   "aib.chat.backup_ask_again": "한 번 더 입력: ",
   "aib.chat.backup_need_tty": "암호 문구는 사람이 터미널에서 직접 입력해야 합니다(AI 석은 대신 못 함). 스크립트는 --passphrase-stdin",
@@ -4535,5 +4535,7 @@
   "aib.chat.state_unknown": "❓ 알 수 없음",
   "aib.chat.help.share": "누구에게 접속 상태를 얼마나 공유할지(off / online / status, --default로 기본값)",
   "aib.chat.help.world": "친구가 공유한 접속 상태(함장실 월드 탭은 --json을 읽음)",
-  "aib.chat.share_set": "설정했습니다: {owner} ⇒ {level}(친구 / 내 기기가 아니면 보내지 않음)"
+  "aib.chat.share_set": "설정했습니다: {owner} ⇒ {level}(친구 / 내 기기가 아니면 보내지 않음)",
+  "aib.chat.relay_test_ok": "✓ {url}: 연결 {c} ms, 확인 {o} ms, 조회 {q} ms",
+  "aib.chat.relay_test_bad": "✗ {url}: 사용할 수 없음({why})"
 }

@@ -135,6 +135,47 @@ async def _fetch_latest(relays, flt):
     return max(evs, key=lambda e: e.created_at().as_secs()) if evs else None
 
 
+async def probe(url):
+    """量一個中繼站(第 28.6 第三站實測):連線、回 OK、查詢回 EOSE 各花多久。只用**拋棄式金鑰**發一則
+    ephemeral(kind 20001,站只轉送不存)、查一次 kind 10050(limit 1);不連發、不帶我們任何金鑰或名冊。"""
+    out = {"ok": False, "url": url}
+    t0 = time.time()
+    c = N.Client()
+    try:
+        await c.add_relay(N.RelayUrl.parse(url))
+        await c.try_connect(datetime.timedelta(seconds=TIMEOUT))
+        rels = await c.relays()
+        rel = next(iter(rels.values()), None)
+        st = rel.status() if rel is not None else None
+        if (getattr(st, "name", None) or str(st).split(".")[-1]) != "CONNECTED":
+            out["why"] = "connect"
+            return 2, out
+        out["connect_ms"] = int((time.time() - t0) * 1000)
+        ev = N.EventBuilder(N.Kind(20001), "aib-probe").finalize(N.Keys.generate())
+        t1 = time.time()
+        res = await c.send_event(ev)
+        out["ok_ms"] = int((time.time() - t1) * 1000)
+        out["accepted"] = bool(res.success)
+        if not res.success:
+            out["why"] = "rejected"
+            out["reason"] = str(next(iter(res.failed.values()), ""))[:120] if getattr(res, "failed", None) else ""
+        t2 = time.time()
+        await c.fetch_events(N.ReqTarget.auto([N.Filter().kind(N.Kind(CR.KIND_DM_RELAYS)).limit(1)]),
+                             datetime.timedelta(seconds=TIMEOUT))
+        out["query_ms"] = int((time.time() - t2) * 1000)
+        out["ok"] = out["accepted"]
+        return (0 if out["ok"] else 2), out
+    except Exception as err:   # noqa: BLE001
+        out["why"] = out.get("why") or "error"
+        out["err"] = type(err).__name__
+        return 2, out
+    finally:
+        try:
+            await c.shutdown()
+        except Exception:   # noqa: BLE001
+            pass
+
+
 async def resolve(addr, relays):
     """全球位址 → (rc, 結果)。<主人 npub>/<艙>/<席>:抓名冊 → 驗簽 → parse → 找席 → 抓那席 10050;
     npub1…(直接指定席金鑰):只抓那個 npub 的 10050。任何一步不對 ⇒ rc 2 + 原因代碼(不寄任何東西)。"""
@@ -1140,7 +1181,7 @@ async def serve(root):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="chat_nostr")
-    p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve"])
+    p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve", "probe"])
     p.add_argument("addr", nargs="?")
     p.add_argument("--root")
     a = p.parse_args(argv)
@@ -1152,6 +1193,8 @@ def main(argv=None):
             rc, rec = cmd_publish_empty(root)
         elif a.cmd == "serve":
             return asyncio.run(serve(root))
+        elif a.cmd == "probe":
+            rc, rec = asyncio.run(probe(a.addr))
         else:
             rc, rec = cmd_fetch(a.addr, CR.relays())
     except Exception as err:   # noqa: BLE001  例外只記種類:訊息裡可能帶路徑或金鑰相關字

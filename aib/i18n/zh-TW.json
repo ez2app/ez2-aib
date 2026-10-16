@@ -4465,7 +4465,7 @@
   "aib.chat.profile_too_many_relays": "最多 {n} 站(每多一站,每則信就多寄一份)",
   "aib.chat.profile_last_relay": "至少要留一站",
   "aib.chat.help.selftest": "自我檢查:開關、名字、連線、中繼站、時鐘、公開席查不查得到(只讀、不寄信)",
-  "aib.chat.help.relays": "列出 / 加 / 移除中繼站,reset 回預設",
+  "aib.chat.help.relays": "列出 / 加 / 移除中繼站,reset 回預設,test <wss://…> 量一站(只在你下指令時連)",
   "aib.chat.backup_ask": "通關密語(至少 8 字;忘了就解不開):",
   "aib.chat.backup_ask_again": "再輸入一次:",
   "aib.chat.backup_need_tty": "要人在終端機親手輸入通關密語(AI 席不能代打);腳本請用 --passphrase-stdin",
@@ -4535,5 +4535,7 @@
   "aib.chat.state_unknown": "❓ 不明",
   "aib.chat.help.share": "分享在線狀態給誰、分享多少(off / online / status;--default 改預設)",
   "aib.chat.help.world": "好友分享來的在線狀態(艦長室世界分頁讀 --json)",
-  "aib.chat.share_set": "已設定:{owner} ⇒ {level}(對方不是好友 / 我的機器時一律不送)"
+  "aib.chat.share_set": "已設定:{owner} ⇒ {level}(對方不是好友 / 我的機器時一律不送)",
+  "aib.chat.relay_test_ok": "✓ {url}:連線 {c} ms、確認 {o} ms、查詢 {q} ms",
+  "aib.chat.relay_test_bad": "✗ {url}:不能用({why})"
 }

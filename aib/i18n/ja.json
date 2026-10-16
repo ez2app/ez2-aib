@@ -4465,7 +4465,7 @@
   "aib.chat.profile_too_many_relays": "最大 {n} 局まで(1 局増えるごとに全メールの送信が 1 通増えます)",
   "aib.chat.profile_last_relay": "少なくとも 1 局は残してください",
   "aib.chat.help.selftest": "自己診断:スイッチ・名前・接続・リレー・時計・公開席が見つかるか(読むだけ、送信なし)",
-  "aib.chat.help.relays": "リレーの一覧 / 追加 / 削除。reset で既定に戻す",
+  "aib.chat.help.relays": "リレーの一覧 / 追加 / 削除。reset で既定に戻す。test <wss://…> で 1 局を計測(実行したときだけ接続)",
   "aib.chat.backup_ask": "パスフレーズ(8 文字以上。忘れると復号できません):",
   "aib.chat.backup_ask_again": "もう一度入力:",
   "aib.chat.backup_need_tty": "パスフレーズは人が端末で入力してください(AI 席は代行不可)。スクリプトは --passphrase-stdin",
@@ -4535,5 +4535,7 @@
   "aib.chat.state_unknown": "❓ 不明",
   "aib.chat.help.share": "在席状況を誰にどこまで共有するか(off / online / status。--default で既定)",
   "aib.chat.help.world": "友だちが共有した在席状況(艦長室のワールドタブは --json を読む)",
-  "aib.chat.share_set": "設定しました:{owner} ⇒ {level}(友だち / 自分の機器でなければ送りません)"
+  "aib.chat.share_set": "設定しました:{owner} ⇒ {level}(友だち / 自分の機器でなければ送りません)",
+  "aib.chat.relay_test_ok": "✓ {url}:接続 {c} ms、確認 {o} ms、検索 {q} ms",
+  "aib.chat.relay_test_bad": "✗ {url}:使えません({why})"
 }
