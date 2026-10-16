@@ -4,6 +4,18 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.12
+
+- **Bundled extensions install themselves**: the free signed extensions that ship with aib are installed and registered with Claude Code during install, `aib init` and `aib update`.
+- **Global chat receipts no longer get dropped**: the sender now records a message as sent before sending it, so a receipt that arrives before the relay's confirmation is no longer mistaken for an impostor.
+- **Find who owns an out-of-scope question**: `aib who-owns <keyword or sentence>` searches persona cards, project cards and the vault's full text, ranks the matches with evidence, and suggests reopening the seat that owns it, or creating a new persona or project when nothing matches. `aib scope set / show` records the sites, domains, keywords and aliases a card is responsible for.
+- **Seats hand off out-of-scope questions**: the persona pack now tells each seat to run `aib who-owns` first when a question is outside its scope, and to suggest opening the seat that owns it instead of doing it itself.
+- **Add and retire vault folders**: `folder-add` and `folder-retire` register new folders in a uid vault, or retire old ones, without editing the index by hand.
+- **`aib who-owns` matches more wording**: it splits camelCase and case (RichMenu = richmenu = rich menu), breaks a sentence into words before searching the vault, and reads each card's `scope_aliases`.
+- **Licence trust keys**: licences signed by the maintainer's main key or the MacBook Pro backup key are accepted; a test pins the list so any change to it fails until a maintainer approves it.
+- **Missing pieces are reported, not hidden**: when the module that recognises the human's own words is missing, memory tidy says so in its receipt and in the check-up instead of silently counting zero.
+- **Main persona for the human**: `aib persona main show / set / clear` records which persona card is the human's own; when a seat's memory tidy finds words the human typed, it adds what it learned to that card quietly, with a snapshot and receipt so it can be undone.
+
 ## 0.1.11
 
 - **Memory survives moving the vault**: the memory index stores each note's id and a path relative to the vault instead of an absolute path, and looks the note up again when reading; old indexes still work. If a note cannot be found it now says so instead of silently bringing back an empty note. Persona cards are found the same way after the vault moves.
