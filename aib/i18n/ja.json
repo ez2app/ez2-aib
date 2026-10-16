@@ -4398,5 +4398,12 @@
   "aib.persona_main.unknown": "カード {uid} はペルソナカード登録表にありません。変更していません",
   "aib.persona_main.set": "メインペルソナを {name}({uid})に登録しました",
   "aib.persona_main.cleared": "メインペルソナの登録を解除しました(以前:{uid})",
-  "aib.persona_main.usage": "使い方:aib persona main [show | set <カード ID> | clear]"
+  "aib.persona_main.usage": "使い方:aib persona main [show | set <カード ID> | clear]",
+  "aib.vault_convert.help_folder_route_key": "このフォルダに専用のルートキーを付けます(例 proj.line-richmenu)。aib newproj --folder と aib memory write --route で使えるようになります。書き込み権限は上位のルートに従います",
+  "aib.vault_convert.err_route_key_bad": "ルートキーの形式が正しくありません:{key}(英小文字・数字・ハイフン、ドット区切りで2階層以上。例 proj.line-richmenu)",
+  "aib.vault_convert.err_route_key_taken": "ルートキー {key} はすでに「{folder}」で使われています。別のキーにしてください",
+  "aib.vault_convert.err_route_key_in_contract": "ルートキー {key} はルート契約にすでにあり、別のフォルダには付けられません。別のキーにしてください",
+  "aib.vault_convert.err_route_no_contract": "ルート契約を読めないため、ルートキーは付けていません(何も変更していません)",
+  "aib.vault_convert.err_route_no_parent": "このフォルダの上位にシステムルートがないため、{key} が引き継ぐ権限がありません。ルートのあるフォルダの下に置いてください(例 下書きフォルダ)",
+  "aib.vault_convert.err_folder_has_route": "「{folder}」にはすでにルートキー {key} があります。付いているキーは置き換えないため、何も変更していません"
 }

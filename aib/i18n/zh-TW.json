@@ -4398,5 +4398,12 @@
   "aib.persona_main.unknown": "卡號 {uid} 不在人格卡登記表,沒改",
   "aib.persona_main.set": "主人格登記為 {name}({uid})",
   "aib.persona_main.cleared": "主人格登記已清除(原本:{uid})",
-  "aib.persona_main.usage": "用法:aib persona main [show | set <卡號> | clear]"
+  "aib.persona_main.usage": "用法:aib persona main [show | set <卡號> | clear]",
+  "aib.vault_convert.help_folder_route_key": "給這個夾自己的路由代號(例 proj.line-richmenu),aib newproj --folder 與 aib memory write --route 才認得;寫入權限沿用上層路由",
+  "aib.vault_convert.err_route_key_bad": "路由代號形狀不對:{key}(小寫英數與連字號,用點分至少兩層,例 proj.line-richmenu)",
+  "aib.vault_convert.err_route_key_taken": "路由代號 {key} 已經掛在「{folder}」;換一個代號",
+  "aib.vault_convert.err_route_key_in_contract": "路由代號 {key} 是路由契約裡既有的代號,不能再掛到別的夾;換一個代號",
+  "aib.vault_convert.err_route_no_contract": "讀不到路由契約,不能掛路由代號(什麼都沒改)",
+  "aib.vault_convert.err_route_no_parent": "這個夾的上層沒有任何系統路由,{key} 沒有權限可沿用;請放在有路由的夾底下(例 P20 專家進行中)",
+  "aib.vault_convert.err_folder_has_route": "「{folder}」已經掛了路由代號 {key};已掛的代號不換,這次什麼都沒改"
 }

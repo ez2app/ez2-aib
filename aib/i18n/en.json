@@ -4398,5 +4398,12 @@
   "aib.persona_main.unknown": "Card {uid} is not in the persona card registry; nothing changed",
   "aib.persona_main.set": "Main persona set to {name} ({uid})",
   "aib.persona_main.cleared": "Main persona cleared (was: {uid})",
-  "aib.persona_main.usage": "Usage: aib persona main [show | set <card id> | clear]"
+  "aib.persona_main.usage": "Usage: aib persona main [show | set <card id> | clear]",
+  "aib.vault_convert.help_folder_route_key": "give this folder its own route key (e.g. proj.line-richmenu) so aib newproj --folder and aib memory write --route can use it; write permission follows the parent route",
+  "aib.vault_convert.err_route_key_bad": "route key not allowed: {key} (lowercase letters, digits and hyphens, at least two dot-separated parts, e.g. proj.line-richmenu)",
+  "aib.vault_convert.err_route_key_taken": "route key {key} is already used by \"{folder}\"; pick another",
+  "aib.vault_convert.err_route_key_in_contract": "route key {key} already exists in the route contract and cannot be put on another folder; pick another",
+  "aib.vault_convert.err_route_no_contract": "cannot read the route contract, so no route key was added (nothing changed)",
+  "aib.vault_convert.err_route_no_parent": "no folder above this one has a system route, so {key} has no permission to inherit; put it under a routed folder (e.g. the drafts folder)",
+  "aib.vault_convert.err_folder_has_route": "\"{folder}\" already has route key {key}; an existing key is never replaced, so nothing changed"
 }

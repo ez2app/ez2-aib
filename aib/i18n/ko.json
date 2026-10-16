@@ -4398,5 +4398,12 @@
   "aib.persona_main.unknown": "카드 {uid}은(는) 페르소나 카드 등록표에 없습니다. 변경하지 않았습니다",
   "aib.persona_main.set": "메인 페르소나를 {name}({uid})(으)로 등록했습니다",
   "aib.persona_main.cleared": "메인 페르소나 등록을 해제했습니다(이전: {uid})",
-  "aib.persona_main.usage": "사용법: aib persona main [show | set <카드 ID> | clear]"
+  "aib.persona_main.usage": "사용법: aib persona main [show | set <카드 ID> | clear]",
+  "aib.vault_convert.help_folder_route_key": "이 폴더에 전용 라우트 키를 붙입니다(예 proj.line-richmenu). aib newproj --folder 와 aib memory write --route 에서 쓸 수 있게 됩니다. 쓰기 권한은 상위 라우트를 따릅니다",
+  "aib.vault_convert.err_route_key_bad": "라우트 키 형식이 맞지 않습니다: {key}(영문 소문자·숫자·하이픈, 점으로 두 단계 이상. 예 proj.line-richmenu)",
+  "aib.vault_convert.err_route_key_taken": "라우트 키 {key} 는 이미 \"{folder}\" 에서 쓰고 있습니다. 다른 키를 고르세요",
+  "aib.vault_convert.err_route_key_in_contract": "라우트 키 {key} 는 라우트 계약에 이미 있어 다른 폴더에 붙일 수 없습니다. 다른 키를 고르세요",
+  "aib.vault_convert.err_route_no_contract": "라우트 계약을 읽을 수 없어 라우트 키를 붙이지 않았습니다(아무것도 바꾸지 않음)",
+  "aib.vault_convert.err_route_no_parent": "이 폴더 위에 시스템 라우트가 없어 {key} 가 물려받을 권한이 없습니다. 라우트가 있는 폴더 아래에 두세요(예 초안 폴더)",
+  "aib.vault_convert.err_folder_has_route": "\"{folder}\" 에는 이미 라우트 키 {key} 가 있습니다. 붙어 있는 키는 바꾸지 않으므로 아무것도 바꾸지 않았습니다"
 }
