@@ -74,7 +74,7 @@ class Relays(unittest.TestCase):
     def test_t1_selftest_fresh(self):
         r = self.b.cli("selftest")
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn("✗ 全球對談開關:關", r.stdout)
+        self.assertIn("✗ 線上對話開關:關", r.stdout)
         self.assertIn("aib chat name", r.stdout)
         self.assertIn("aib chat prepare", r.stdout)
         rows = json.loads(self.b.cli("selftest", "--json").stdout)
