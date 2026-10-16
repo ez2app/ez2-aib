@@ -7,7 +7,7 @@ Andy 10-15 15:4x:「所有用戶要有顯示名稱,若有就預設只顯示 顯�
 全球來信一律先進佇列,只會從排空器的「排序投遞」貼進框 ⇒ 這裡照真的走一次 dm-ctl.sh:
 入列(nostr: 來源 + global 欄)→ 排空器領件 → AIB_DM_SORT_DELIVER=1 跑 dm-ctl → 看咽喉拿到的正文。
 
-W1 抬頭寄件方只有顯示名稱 + 線上標記(沙箱介面是英文 ⇒ Online·verified),後面接外框說明行與回信短碼,再接原文。
+W1 抬頭寄件方只有顯示名稱 + 全球標記(沙箱介面是英文 ⇒ Global·verified;標記暫用舊的,見 dm_global_header.EMIT_NEW_TAG),後面接外框說明行與回信短碼,再接原文。
 W2 未驗證、同名照標。
 W3 本機席的排隊信照舊(不帶全球標記、不帶外框)——回歸。
 W4 佇列裡的 global 欄被竄改(名字含 /)⇒ rc 2、一個字都沒送,不貼半個全球抬頭。
@@ -82,7 +82,7 @@ class Wire(unittest.TestCase):
         p = deliver(b, qid)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         body = R.throat_body(b.exec_calls()[0])
-        self.assertTrue(body.startswith("Andy(Online·verified) >> IP:"), body[:120])
+        self.assertTrue(body.startswith("Andy(Global·verified) >> IP:"), body[:120])
         self.assertIn("[Online message:", body)
         self.assertIn("aib dm --reply %s]" % code, body)
         self.assertTrue(body.endswith(MSG), body[-80:])
@@ -94,7 +94,7 @@ class Wire(unittest.TestCase):
         qid, _ = enqueue_global(b, verified=False, same=True)
         p = deliver(b, qid)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertTrue(R.throat_body(b.exec_calls()[0]).startswith("Andy(Online·unverified·same name) >> "))
+        self.assertTrue(R.throat_body(b.exec_calls()[0]).startswith("Andy(Global·unverified·same name) >> "))
 
     def test_w3_local_queued_unchanged(self):
         b = R.Box(self)
@@ -129,7 +129,7 @@ class Unit(unittest.TestCase):
             it = Q.enqueue("8f366", MSG, "Andy", sender_kind="owner_paired", sender_origin="nostr:" + NPUB, env=env,
                            global_info={"addr": ADDR, "shown": "Andy", "verified": True, "msgid": G.new_msgid()})
             head, frame = HD.build_from_global("8f366", it["id"], "@8f366(第二艦長)", when=1792045800, env=env)
-            self.assertTrue(head.startswith("Andy(線上·已驗證) >> IP:100.114.152.121/"), head)
+            self.assertTrue(head.startswith("Andy(全球·已驗證) >> IP:100.114.152.121/"), head)
             self.assertIn("第二艦長@8f366", head)
             self.assertTrue(frame.startswith("〔主人手機"))            # owner_paired 換另一句
             self.assertIn(it["global"]["reply_code"], frame)

@@ -63,18 +63,18 @@ class Country(Base):
             self.assertEqual(G.default_lang(cc), lang, cc)
 
     def test_c4_header_segment(self):
-        self.assertEqual(H.sender_side("Andy", True, country="TW", country_status="match"), "Andy(線上·台灣·已驗證)")
-        self.assertEqual(H.sender_side("Andy", True, country="TW", country_status="mismatch"), "Andy(線上·台灣?·已驗證)")
+        self.assertEqual(H.sender_side("Andy", True, country="TW", country_status="match"), "Andy(全球·台灣·已驗證)")
+        self.assertEqual(H.sender_side("Andy", True, country="TW", country_status="mismatch"), "Andy(全球·台灣?·已驗證)")
         self.assertEqual(H.sender_side("Andy", False, country="TW", country_status="unknown", same_name=True),
-                         "Andy(線上·台灣?·未驗證·同名)")
-        self.assertEqual(H.sender_side("Andy", True), "Andy(線上·已驗證)")          # 沒申報不加段
+                         "Andy(全球·台灣?·未驗證·同名)")
+        self.assertEqual(H.sender_side("Andy", True), "Andy(全球·已驗證)")          # 沒申報不加段
         self.assertEqual(H.sender_side("Andy", True, lang="en", country="JP", country_status="match"),
-                         "Andy(Online·Japan·verified)")
+                         "Andy(Global·Japan·verified)")
         self.assertEqual(H.sender_side("Andy", True, lang="ja", country="KR", country_status="match"),
-                         "Andy(オンライン·韓国·認証済み)")
+                         "Andy(グローバル·韓国·認証済み)")
         self.assertEqual(H.sender_side("Andy", True, lang="ko", country="TW", country_status="match"),
-                         "Andy(온라인·대만·인증됨)")
-        self.assertEqual(H.sender_side("Andy", True, country="CL", country_status="match"), "Andy(線上·CL·已驗證)")
+                         "Andy(글로벌·대만·인증됨)")
+        self.assertEqual(H.sender_side("Andy", True, country="CL", country_status="match"), "Andy(全球·CL·已驗證)")
         with self.assertRaises(ValueError):
             H.sender_side("Andy", True, country="tw", country_status="match")
 
@@ -122,7 +122,7 @@ class Country(Base):
                                     "country_status": f["country_status"], "tz_country": f["tz_country"]})
         self.assertEqual(it["global"]["country"], "TW")
         head, frame = HD.build_from_global("8f366", it["id"], "@8f366(第二艦長)", when=1792045800, env=env)
-        self.assertTrue(head.startswith("Andy(線上·台灣?·已驗證) >> "), head)
+        self.assertTrue(head.startswith("Andy(全球·台灣?·已驗證) >> "), head)
         self.assertIn("自稱台灣,寄件機時區在日本", frame)
 
     def test_c8_bad_values(self):
