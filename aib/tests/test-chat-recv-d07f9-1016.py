@@ -279,6 +279,8 @@ class Network(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
 class SlowOk(Network):
+    box_extra = {"AIB_CHAT_REFUSE_EVERY": "0"}      # N6 連寄兩則陌生信,兩則都要回拒收(限量是第 27.4 節,另測)
+
     def setUp(self):
         from aib_fake_relay import FakeRelay
         self.relay = FakeRelay(ok_delay=lambda ev: 2 if ev.get("kind") == 1059 else 0)

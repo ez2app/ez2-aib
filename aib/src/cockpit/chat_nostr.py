@@ -478,6 +478,9 @@ RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired")   # r
 # 拒收原因碼(回條 aib-reason 標籤;寄件端 dm-ctl 照碼翻成一句話)。只放碼,不放內文
 REFUSE_REASONS = ("not_friend", "unverified")
 READ_BATCH_S = float(os.environ.get("AIB_CHAT_READ_BATCH") or 30)   # 秒;同一寄件人同一席這段時間內讀的合成一張(第 10 節)
+REFUSE_EVERY_S = float(os.environ.get("AIB_CHAT_REFUSE_EVERY") or 86400)   # 秒;同一寄件 npub 這段時間最多回 1 張拒收(第 27.4 節)
+REFUSED_MAX = 200                           # refused.json 最多記幾位(第 27.5 節)
+REFUSED_KEEP_S = 30 * 86400                 # 30 天沒再來就清
 
 
 def _tagmap(rumor):
@@ -487,6 +490,33 @@ def _tagmap(rumor):
         if len(v) >= 2 and v[0] not in out:
             out[v[0]] = v[1]
     return out
+
+
+def note_refused(root, rec, parsed, why):
+    """誰被拒收過(第 27.5 節):<bridge root>/refused.json,每位寄件主人一筆(沒有主人就記席 npub)。
+    **不存內文**;名字與國別只記驗得到的(名冊上的),自稱的不記。最多 REFUSED_MAX 筆,30 天沒再來就清。"""
+    p = Path(root) / "refused.json"
+    try:
+        cur = json.loads(p.read_text(encoding="utf-8"))
+        rows = cur.get("refused") if isinstance(cur, dict) else None
+        rows = rows if isinstance(rows, list) else []
+    except (OSError, ValueError):
+        rows = []
+    now = int(time.time())
+    who = (parsed or {}).get("owner") or rec["from_npub"]
+    row = next((r for r in rows if isinstance(r, dict) and r.get("who") == who), None)
+    if row is None:
+        row = {"who": who, "count": 0, "first_at": now}
+        rows.append(row)
+    row.update(count=int(row.get("count") or 0) + 1, last_at=now, reason=why, from_addr=rec.get("from_addr"),
+               owner=bool((parsed or {}).get("owner")))
+    for k in ("display_name", "country"):
+        if rec.get("verified") and rec.get(k):
+            row[k] = rec[k]
+    rows = [r for r in rows if isinstance(r, dict) and now - int(r.get("last_at") or 0) < REFUSED_KEEP_S]
+    rows = sorted(rows, key=lambda r: -int(r.get("last_at") or 0))[:REFUSED_MAX]
+    write_json(str(p), {"v": 1, "refused": rows})
+    os.chmod(str(p), 0o600)
 
 
 class Ledger(object):
@@ -503,10 +533,13 @@ class Ledger(object):
         self.st.setdefault("last_at", 0)
         self.st.setdefault("delivery_sent", {})
         self.st.setdefault("read_pending", {})      # "<寄件人 npub>|<本席金鑰>" ⇒ {"refs": [...], "first": t}
+        self.st.setdefault("refused_sent", {})      # 寄件 npub ⇒ 上次回拒收回條的時間(第 27.4 節)
 
     def save(self):
         cut = time.time() - KEEP
         self.st["seen"] = {k: v for k, v in self.st["seen"].items() if v >= cut}
+        rcut = time.time() - REFUSE_EVERY_S
+        self.st["refused_sent"] = {k: v for k, v in self.st["refused_sent"].items() if v >= rcut}
         write_json(str(self.p), self.st)
         os.chmod(str(self.p), 0o600)
 
@@ -679,6 +712,13 @@ class Receiver(object):
         if rec["class"] == "stranger":
             # 維護者 10-16 12:1x:加入好友之後才收、才有已讀;不然拒收(不進佇列、不進待審、AI 看不到)
             why = "not_friend" if rec["verified"] else "unverified"
+            note_refused(self.root, rec, parsed, why)
+            last = self.led.st["refused_sent"].get(from_npub)
+            if last and time.time() - last < REFUSE_EVERY_S:
+                # 第 27.4 節:同一寄件人限量回拒收,免得被人狂寄時跟著狂回、被公開站封
+                audit(self.root, "in", msgid, from_npub, "refused:%s:quiet" % why)
+                return
+            self.led.st["refused_sent"][from_npub] = int(time.time())
             audit(self.root, "in", msgid, from_npub, "refused:" + why)
             return await self.send_receipt(msgid, "refused", reason=why)
         for k_tag, k in (("aib-priority", "priority"), ("aib-thread", "thread"), ("aib-kind", "kind"),

@@ -4365,5 +4365,13 @@
   "aib.chat.friends_row_sent": "  {name}  {owner}(메일을 보내서 자동 추가)",
   "aib.chat.status_mine": "내 다른 기기: {n}대(본인으로 취급)",
   "aib.chat.help.mine": "내 다른 기기 연결 / 해제(본인으로 취급)",
-  "aib.chat.help.mine_who": "다른 기기의 주인 npub 또는 글로벌 주소"
+  "aib.chat.help.mine_who": "다른 기기의 주인 npub 또는 글로벌 주소",
+  "aib.chat.refused_none": "최근 거부한 상대가 없습니다.",
+  "aib.chat.refused_row_verified": "  {when}  {name}({country})  {n}건  {reason}\n    {who}",
+  "aib.chat.refused_row_unknown": "  {when}  (이름 확인 안 됨)  {n}건  {reason}\n    {who}",
+  "aib.chat.refused_reason_not_friend": "친구 아님",
+  "aib.chat.refused_reason_unverified": "보낸 석을 확인할 수 없음",
+  "aib.chat.refused_add_hint": "    이 상대의 메일을 받으려면: aib chat friend add {who}",
+  "aib.chat.status_refused": "최근 7일 거부: {n}명(aib chat refused로 확인)",
+  "aib.chat.help.refused": "거부한 상대 목록(본문 없음)"
 }

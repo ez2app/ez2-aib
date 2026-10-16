@@ -532,6 +532,7 @@ def status_record(env):
         "keys": _keys_summary(env),
         "friends": len(_friends(env)),
         "mine": len(_friends(env, "mine")),
+        "refused_7d": sum(1 for r in read_refused(env) if time.time() - int(r.get("last_at") or 0) < 7 * 86400),
         "off_by_owner": off_marker(env).exists(),
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
@@ -637,6 +638,34 @@ def cmd_friends(a, env, out):
     return 0
 
 
+def read_refused(env=None):
+    """誰被拒收過(第 27.5 節;轉接程式寫 <bridge root>/refused.json,不含內文)。新的在前。"""
+    try:
+        cur = json.loads((bridge_root(env) / "refused.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = cur.get("refused") if isinstance(cur, dict) else None
+    return [r for r in rows if isinstance(r, dict) and r.get("who")] if isinstance(rows, list) else []
+
+
+def cmd_refused(a, env, out):
+    rows = read_refused(env)
+    if a.json:
+        out.write(json.dumps({"refused": rows}, ensure_ascii=False) + "\n")
+        return 0
+    if not rows:
+        out.write(T("refused_none") + "\n")
+        return 0
+    for r in rows:
+        when = time.strftime("%m-%d %H:%M", time.localtime(int(r.get("last_at") or 0)))
+        out.write(T("refused_row_" + ("verified" if r.get("display_name") else "unknown"), name=r.get("display_name") or "-",
+                    country=r.get("country") or "-", who=r["who"], n=r.get("count", 1), when=when,
+                    reason=T("refused_reason_" + ("not_friend" if r.get("reason") == "not_friend" else "unverified"))) + "\n")
+        if r.get("owner"):
+            out.write(T("refused_add_hint", who=r["who"]) + "\n")
+    return 0
+
+
 def cmd_roster(a, env, out):
     """印自己的名冊內容(還沒簽的那份;公開資訊)。"""
     import chat_roster as CR
@@ -684,6 +713,8 @@ def cmd_status(a, env, out):
     out.write(T("status_friends", n=rec["friends"]) + "\n")
     if rec["mine"]:
         out.write(T("status_mine", n=rec["mine"]) + "\n")
+    if rec["refused_7d"]:
+        out.write(T("status_refused", n=rec["refused_7d"]) + "\n")
     w = rec.get("worker")
     if w:
         out.write(T("status_offline" if w.get("offline") else "status_relays", up=w.get("up", 0), total=w.get("total", 0)) + "\n")
@@ -735,6 +766,8 @@ def main(argv=None, env=None, out=sys.stdout):
     mn.add_argument("--json", action="store_true")
     fs = sub.add_parser("friends", help=T("help.friends"))
     fs.add_argument("--json", action="store_true")
+    rf = sub.add_parser("refused", help=T("help.refused"))
+    rf.add_argument("--json", action="store_true")
     au = sub.add_parser("auto", help=T("help.auto"))
     au.add_argument("--quiet", action="store_true")
     pp = sub.add_parser("prepare", help=T("help.prepare"))
@@ -763,6 +796,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_prepare(a, env, out)
     if a.cmd == "auto":
         return cmd_auto(a, env, out)
+    if a.cmd == "refused":
+        return cmd_refused(a, env, out)
     if a.cmd in ("friend", "mine"):
         return cmd_friend(a, env, out)
     if a.cmd == "friends":

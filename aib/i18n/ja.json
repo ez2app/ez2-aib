@@ -4365,5 +4365,13 @@
   "aib.chat.friends_row_sent": "  {name}  {owner}(送信したので自動追加)",
   "aib.chat.status_mine": "自分の他の機器:{n} 台(本人として扱う)",
   "aib.chat.help.mine": "自分の他の機器の紐付け / 解除(本人として扱う)",
-  "aib.chat.help.mine_who": "別の機器の持ち主 npub またはグローバル宛先"
+  "aib.chat.help.mine_who": "別の機器の持ち主 npub またはグローバル宛先",
+  "aib.chat.refused_none": "最近拒否した相手はいません。",
+  "aib.chat.refused_row_verified": "  {when}  {name}({country})  {n} 通  {reason}\n    {who}",
+  "aib.chat.refused_row_unknown": "  {when}  (名前は未確認)  {n} 通  {reason}\n    {who}",
+  "aib.chat.refused_reason_not_friend": "友だちではない",
+  "aib.chat.refused_reason_unverified": "送信席を確認できない",
+  "aib.chat.refused_add_hint": "    この相手のメールを受け取るには:aib chat friend add {who}",
+  "aib.chat.status_refused": "直近 7 日に拒否:{n} 人(aib chat refused で確認)",
+  "aib.chat.help.refused": "拒否した相手の一覧(本文なし)"
 }

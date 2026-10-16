@@ -4365,5 +4365,13 @@
   "aib.chat.friends_row_sent": "  {name}  {owner} (added automatically when you wrote to them)",
   "aib.chat.status_mine": "My other machines: {n} (treated as yourself)",
   "aib.chat.help.mine": "link / unlink your own other machines (their mail counts as yours)",
-  "aib.chat.help.mine_who": "the other machine's owner npub or a global address"
+  "aib.chat.help.mine_who": "the other machine's owner npub or a global address",
+  "aib.chat.refused_none": "Nobody has been refused recently.",
+  "aib.chat.refused_row_verified": "  {when}  {name} ({country})  {n} message(s)  {reason}\n    {who}",
+  "aib.chat.refused_row_unknown": "  {when}  (name not verified)  {n} message(s)  {reason}\n    {who}",
+  "aib.chat.refused_reason_not_friend": "not a friend",
+  "aib.chat.refused_reason_unverified": "sender seat not verified",
+  "aib.chat.refused_add_hint": "    To accept their mail: aib chat friend add {who}",
+  "aib.chat.status_refused": "Refused in the last 7 days: {n} (aib chat refused shows who)",
+  "aib.chat.help.refused": "list who was refused (no message content)"
 }

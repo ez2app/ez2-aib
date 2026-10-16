@@ -4365,5 +4365,13 @@
   "aib.chat.friends_row_sent": "  {name}  {owner}(寄過信自動加)",
   "aib.chat.status_mine": "我的其他機器:{n} 台(寄來當本人)",
   "aib.chat.help.mine": "綁定 / 解除我自己的其他機器(寄來當本人)",
-  "aib.chat.help.mine_who": "另一台的主人 npub 或全球位址"
+  "aib.chat.help.mine_who": "另一台的主人 npub 或全球位址",
+  "aib.chat.refused_none": "最近沒有人被拒收。",
+  "aib.chat.refused_row_verified": "  {when}  {name}({country})  {n} 則  {reason}\n    {who}",
+  "aib.chat.refused_row_unknown": "  {when}  (名字驗不到)  {n} 則  {reason}\n    {who}",
+  "aib.chat.refused_reason_not_friend": "不是好友",
+  "aib.chat.refused_reason_unverified": "驗不到寄件席",
+  "aib.chat.refused_add_hint": "    要收他的信:aib chat friend add {who}",
+  "aib.chat.status_refused": "最近 7 天被拒收:{n} 位(aib chat refused 看是誰)",
+  "aib.chat.help.refused": "列出誰被拒收過(不含內文)"
 }
