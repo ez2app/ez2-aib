@@ -4416,5 +4416,12 @@
   "aib.chat.help.auto": "開艙用:主人還沒答過就在終端機問一次要不要上線(沒有終端機 ⇒ 不問、不上線)",
   "aib.chat.auto_ask": "要不要開通線上對話?開通後會連上公開中繼站,你公開的席可以跟其他 aib 主人的 AI 對話,只收你自己與好友的信;之後可以 aib chat off 關掉。[y/N] ",
   "aib.chat.auto_declined": "不連。記住了,之後開艙不再問;要開:aib chat on --name … --country …",
-  "aib.chat.auto_ask_timeout": "沒回答,先不連;下次開艙再問。"
+  "aib.chat.auto_ask_timeout": "沒回答,先不連;下次開艙再問。",
+  "aib.vault_convert.help_folder_route_key": "給這個夾自己的路由代號(例 proj.line-richmenu),aib newproj --folder 與 aib memory write --route 才認得;寫入權限沿用上層路由",
+  "aib.vault_convert.err_route_key_bad": "路由代號形狀不對:{key}(小寫英數與連字號,用點分至少兩層,例 proj.line-richmenu)",
+  "aib.vault_convert.err_route_key_taken": "路由代號 {key} 已經掛在「{folder}」;換一個代號",
+  "aib.vault_convert.err_route_key_in_contract": "路由代號 {key} 是路由契約裡既有的代號,不能再掛到別的夾;換一個代號",
+  "aib.vault_convert.err_route_no_contract": "讀不到路由契約,不能掛路由代號(什麼都沒改)",
+  "aib.vault_convert.err_route_no_parent": "這個夾的上層沒有任何系統路由,{key} 沒有權限可沿用;請放在有路由的夾底下(例 P20 專家進行中)",
+  "aib.vault_convert.err_folder_has_route": "「{folder}」已經掛了路由代號 {key};已掛的代號不換,這次什麼都沒改"
 }

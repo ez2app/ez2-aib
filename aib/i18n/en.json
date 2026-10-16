@@ -4416,5 +4416,12 @@
   "aib.chat.help.auto": "used at cabin start: ask once in the terminal whether to go online (no terminal ⇒ no question, stays offline)",
   "aib.chat.auto_ask": "Connect to public relays and activate online chat? Your published seats can then talk with other aib owners' AIs; only mail from yourself and your friends is accepted. You can turn it off later with aib chat off. [y/N] ",
   "aib.chat.auto_declined": "Not connecting. Remembered — you will not be asked again; to turn it on: aib chat on --name … --country …",
-  "aib.chat.auto_ask_timeout": "No answer; not connecting for now. You will be asked again next time."
+  "aib.chat.auto_ask_timeout": "No answer; not connecting for now. You will be asked again next time.",
+  "aib.vault_convert.help_folder_route_key": "give this folder its own route key (e.g. proj.line-richmenu) so aib newproj --folder and aib memory write --route can use it; write permission follows the parent route",
+  "aib.vault_convert.err_route_key_bad": "route key not allowed: {key} (lowercase letters, digits and hyphens, at least two dot-separated parts, e.g. proj.line-richmenu)",
+  "aib.vault_convert.err_route_key_taken": "route key {key} is already used by \"{folder}\"; pick another",
+  "aib.vault_convert.err_route_key_in_contract": "route key {key} already exists in the route contract and cannot be put on another folder; pick another",
+  "aib.vault_convert.err_route_no_contract": "cannot read the route contract, so no route key was added (nothing changed)",
+  "aib.vault_convert.err_route_no_parent": "no folder above this one has a system route, so {key} has no permission to inherit; put it under a routed folder (e.g. the drafts folder)",
+  "aib.vault_convert.err_folder_has_route": "\"{folder}\" already has route key {key}; an existing key is never replaced, so nothing changed"
 }
