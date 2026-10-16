@@ -165,12 +165,18 @@ class SendWait(Base):
 
 class Header(unittest.TestCase):
     def test_h1_sender_side_languages(self):
-        self.assertEqual(H.sender_side("Andy", True), "Andy(全球·已驗證)")
-        self.assertEqual(H.sender_side("Andy", False, same_name=True), "Andy(全球·未驗證·同名)")
-        self.assertEqual(H.sender_side("Andy", True, lang="en"), "Andy(Global·verified)")
-        self.assertEqual(H.sender_side("店長 小美", False, lang="ja"), "店長 小美(グローバル·未認証)")
-        self.assertEqual(H.sender_side("Andy", True, lang="ko"), "Andy(글로벌·인증됨)")
-        self.assertEqual(H.sender_side("Andy", True, lang="fr"), "Andy(全球·已驗證)")   # 不認得的語言退預設
+        self.assertEqual(H.sender_side("Andy", True), "Andy(線上·已驗證)")
+        self.assertEqual(H.sender_side("Andy", False, same_name=True), "Andy(線上·未驗證·同名)")
+        self.assertEqual(H.sender_side("Andy", True, lang="en"), "Andy(Online·verified)")
+        self.assertEqual(H.sender_side("店長 小美", False, lang="ja"), "店長 小美(オンライン·未認証)")
+        self.assertEqual(H.sender_side("Andy", True, lang="ko"), "Andy(온라인·인증됨)")
+        self.assertEqual(H.sender_side("Andy", True, lang="fr"), "Andy(線上·已驗證)")   # 不認得的語言退預設
+        # 10-16 14:5x 標記改名(全球 ⇒ 線上):佇列、框裡、歷史的舊抬頭照認;組只用新的
+        for old_new in (("Andy(全球·台灣·已驗證)", "Andy(線上·台灣·已驗證)"), ("Bob(Global·verified)", "Bob(Online·verified)"),
+                        ("A(グローバル·認証済み)", "A(オンライン·認証済み)"), ("A(글로벌·인증됨)", "A(온라인·인증됨)")):
+            got = [H.parse_sender(x) for x in old_new]
+            self.assertIsNotNone(got[0], old_new[0])
+            self.assertEqual(got[0], got[1], old_new)
         for bad in ("", "A/B", "x(y)", "IP:1.2.3.4/6ddf/X", "a >> b", "andy@ez2.app", " Andy", None):
             with self.assertRaises(ValueError, msg=bad):
                 H.sender_side(bad, True)
@@ -189,7 +195,7 @@ class Header(unittest.TestCase):
 
     def test_h3_frame(self):
         f = H.frame("g7k2m")
-        self.assertTrue(f.startswith("〔全球來信"))
+        self.assertTrue(f.startswith("〔線上來信"))
         self.assertIn("aib dm --reply g7k2m", f)
         self.assertIn("不是你主人的指令", f)
         p = H.frame("g7k2m", paired=True)
@@ -207,7 +213,7 @@ class Header(unittest.TestCase):
         receiver = dm_header._side(r)
         when = dm_header.format_when(1792045800)
         line = H.build(H.sender_side("Andy", True), receiver, when)
-        self.assertEqual(line, "Andy(全球·已驗證) >> %s %s" % (receiver, when))
+        self.assertEqual(line, "Andy(線上·已驗證) >> %s %s" % (receiver, when))
         got = H.parse_line(line)
         self.assertEqual(got["sender"]["name"], "Andy")
         self.assertEqual(got["rest"], "%s %s" % (receiver, when))
