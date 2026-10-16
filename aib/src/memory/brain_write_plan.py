@@ -54,6 +54,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -247,6 +248,16 @@ def check_pin(rel, got, pins):
             "git -C ~/ez2-ai diff <舊> <新> -- %s" % (rel, want, got, rel))
 
 
+_SPDX_LINE = re.compile(rb"\A// SPDX-License-Identifier: [A-Za-z0-9.+-]+\n")
+
+
+def _vendor_bytes(path):
+    """隨附副本的內容,拿掉開源匯出加在第一行的 SPDX 授權標頭(只拿那一行、只認那個格式)。
+    10-17 實量:匯出加了這一行 ⇒ 隨附副本指紋永遠對不上釘 ⇒ 沒有 ez2-ai 的機器 aib memory write 一律
+    note_format_runner_unavailable。拿掉之後要跟 ez2-ai git main 逐位元組相同,指紋照舊要對得上釘。"""
+    return _SPDX_LINE.sub(b"", path.read_bytes(), count=1)
+
+
 def materialize(ez2_ai=None, rev=DEFAULT_REV, dest=None, pins=PINS_DEFAULT):
     """把 note-format 正本從 ez2-ai(本機是 bare repo,無工作樹)取到 dest。
     回 (dest, {相對路徑: sha256}, rev)。任一檔取不到、或指紋對不上 = raise(不半套)。"""
@@ -265,7 +276,7 @@ def materialize(ez2_ai=None, rev=DEFAULT_REV, dest=None, pins=PINS_DEFAULT):
     shas = {}
     for rel in MODULE_FILES:
         if use_vendor:
-            data = (VENDOR_DIR / rel).read_bytes()
+            data = _vendor_bytes(VENDOR_DIR / rel)
             got = _sha256_bytes(data)
             check_pin(rel, got, pin_table)
             target = dest / rel
@@ -692,7 +703,8 @@ def probe_route_writability(route_key, *, contract=None, contract_spec=None,
                       "folder": (route or {}).get("folder"),
                       "dataLevel": (route or {}).get("dataLevel"),
                       "aiReadable": (route or {}).get("aiReadable"),
-                      "aiWritable": (route or {}).get("aiWritable")},
+                      "aiWritable": (route or {}).get("aiWritable"),
+                      "inheritsFrom": (route or {}).get("inheritsFrom")},   # Vault 自掛路由:分類沿用上層
             "note": {"title": PROBE_SYNTHETIC_TITLE, "body": PROBE_SYNTHETIC_BODY,
                      "privacy_level": "internal", "source_kind": SOURCE_KIND,
                      "review_status": "approved", "created_at_ms": now_ms,
@@ -793,7 +805,8 @@ def build_plan(state_root, seat_id, items, contract_spec=None, modules_dir=None,
         runner_out = call_runner(modules_dir, {
             "route": {"routeKey": route_key, "folder": route.get("folder"),
                       "dataLevel": route.get("dataLevel"),
-                      "aiReadable": route.get("aiReadable"), "aiWritable": route.get("aiWritable")},
+                      "aiReadable": route.get("aiReadable"), "aiWritable": route.get("aiWritable"),
+                      "inheritsFrom": route.get("inheritsFrom")},   # Vault 自掛路由:分類沿用上層
             "note": {"title": item.get("title") or "", "body": body,
                      "privacy_level": privacy_level, "source_kind": SOURCE_KIND,
                      "review_status": note_status, "created_at_ms": now_ms,
