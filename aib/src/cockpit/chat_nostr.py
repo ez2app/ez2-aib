@@ -879,8 +879,8 @@ class Receiver(object):
             return await self.send_receipt(msgid, "delivered")
         if not rec["verified"]:
             note_refused(self.root, rec, parsed, "unverified")
-            last = self.led.st["refused_sent"].get(from_npub)
-            if last and time.time() - last < REFUSE_EVERY_S:
+            last = self.led.st["refused_sent"].get(from_npub) or 0
+            if time.time() - last < REFUSE_EVERY_S:            # 跟 dm 拒收同一個限量(寫法不同:刀測錨點要唯一)
                 audit(self.root, "in", msgid, from_npub, "request:unverified:quiet")
                 return
             self.led.st["refused_sent"][from_npub] = int(time.time())
