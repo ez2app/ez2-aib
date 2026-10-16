@@ -2715,6 +2715,8 @@
   "aib.ext.no_requires": "マニフェストに必要な aib の版(requires_aib)がありません",
   "aib.ext.too_old": "この拡張には aib {need} 以上が必要です(このマシンは {have}):先に aib update してください",
   "aib.ext.not_intact": "ファイルがマニフェストと一致しません(余分 {extra}、不足 {missing}、変更 {changed}):インストールしません",
+  "aib.ext.pyc_purged": "Python のバイトコードを {n} 件削除しました({what}、{path}):パッケージ内の .py を直接実行すると作られます。検査の対象外で、インストールもされません",
+  "aib.ext.pyc_left": "バイトコードを削除できません({what}):有効化しません。手動で削除してからやり直してください",
   "aib.ext.data_has_code": "データのみの拡張にプログラムファイルは入れられません:{what}",
   "aib.ext.needs_trust": "{kind} はプログラムを実行します:信頼する鍵の署名が必要です。出どころを信頼するなら --allow-unsigned を付けてください",
   "aib.ext.installed": "{kind} {name} {version} をインストールしました ⇒ {path}",

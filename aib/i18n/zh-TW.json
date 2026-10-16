@@ -2715,6 +2715,8 @@
   "aib.ext.no_requires": "說明檔沒寫要哪版 aib(requires_aib)",
   "aib.ext.too_old": "這個擴充要 aib {need} 以上,這台是 {have}:請先 aib update",
   "aib.ext.not_intact": "檔案跟說明檔對不上(多了 {extra}、少了 {missing}、內容不同 {changed}):不裝",
+  "aib.ext.pyc_purged": "清掉 {n} 個 Python 位元碼({what},在 {path}):有人直接跑過包裡的 .py 才會長;不算進檢查,也不會被裝過去",
+  "aib.ext.pyc_left": "位元碼清不掉({what}):不啟用,請手動刪掉再試",
   "aib.ext.data_has_code": "純資料的擴充不准帶程式檔:{what}",
   "aib.ext.needs_trust": "{kind} 會跑程式:要有受信鑰匙的簽章;你確定信這個來源,就加 --allow-unsigned",
   "aib.ext.installed": "已裝 {kind} {name} {version} ⇒ {path}",
