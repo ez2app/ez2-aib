@@ -10,7 +10,7 @@
 核心(一定跑):
 C1 沒有 venv ⇒ 不起工人、沒有心跳;send_and_wait ⇒ rc 2 bridge-off,一個字都沒寫進 outbox
 連 Nostr(要 AIB_TEST_NOSTR_VENV;沒有就跳過):
-S1 X 寄 A/6ddf/Y ⇒ rc 3 held(X 沒列名冊,Y 驗不到 ⇒ 待審;1.7 收件);假中繼站上有給 Y 的 gift wrap,
+S1 X 寄 A/6ddf/Y ⇒ rc 2 refused(X 沒列名冊,Y 驗不到 ⇒ 拒收,10-16 好友制);假中繼站上有給 Y 的 gift wrap,
    Y 的金鑰拆得開:寄件人 = X 的 npub、內文對、aib-msgid / aib-from / aib-to / aib-priority 標籤對;另有一份給 X 自己
 S2 --dry-run(op=resolve)⇒ rc 0 resolved,detail 有 Y 的 npub 與收信站;沒有寄出任何 gift wrap
 S3 寄件人沒量到(attested=false)⇒ rc 2 refused unattested,中繼站上沒有任何 gift wrap
@@ -209,8 +209,9 @@ class Network(unittest.TestCase):
     def test_s1_send(self):
         rec = outbox_rec("%s/6ddf/%s" % (self.owner, self.y), self.x, thread="t-1")
         res = GF.send_and_wait(self.b.root, rec, wait=20)
-        # 1.7 收件做好後:X 沒列名冊 ⇒ Y 那邊驗不到 ⇒ 待審 ⇒ 寄件端拿到 held(rc 3)
-        self.assertEqual((res["rc"], res["stage"]), (3, "held"), res)
+        # X 沒列名冊 ⇒ Y 那邊驗不到 ⇒ 拒收(維護者 10-16 12:1x:只收本人與好友)⇒ 寄件端 rc 2,說得出原因
+        self.assertEqual((res["rc"], res["stage"]), (2, "refused"), res)
+        self.assertIn("名冊", res["detail"])
         got = self.unwrap(self.y, self.wraps_for(self.y))
         self.assertEqual(len(got), 1, got)
         g = got[0]

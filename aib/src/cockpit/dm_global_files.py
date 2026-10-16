@@ -510,6 +510,13 @@ def reply_code(msgid, taken=()):
 
 # ── 寄送與等待(第 7.1 節的表)──
 
+# 對方拒收的原因碼(回條 detail;轉接程式從 aib-reason 標籤讀來)⇒ 寄件端看的一句話
+REFUSE_TEXT = {
+    "not_friend": "對方只收好友的信:請對方先把你的主人號碼加為好友(aib chat friend add <你的主人 npub>)",
+    "unverified": "對方驗不到寄件席:這一席要先列進你的名冊(aib chat publish <席碼>)",
+}
+
+
 def outcome(receipts, op="send", verify=False):
     """回條 ⇒ (rc, stage, pos, detail) 或 None(還要再等)。
 
@@ -531,7 +538,8 @@ def outcome(receipts, op="send", verify=False):
         if st == "held":
             return 3, "held", None, r.get("detail", "")
         if st in ("refused", "expired", "failed"):
-            return 2, st, None, r.get("detail", "")
+            d = r.get("detail", "")
+            return 2, st, None, REFUSE_TEXT.get(d, d) if st == "refused" else d
     return None
 
 

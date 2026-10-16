@@ -11,6 +11,7 @@
   - display_name、country:`aib chat on` 第一次一定要給(第 5.8、5.9 節);`aib chat name` 改名。
   - public:列進名冊的席碼。**預設一席都不列**(Andy 10-15 23:5x 裁):`aib chat publish <席碼>` 逐席打開、`aib chat hide` 關。
     列進去的席全世界都看得到它的 npub、人格名、角色,外人也才寄得到;沒列的席外人寄不到。
+好友 ~/.ez2-aib/chat/friends.json(0600):只收本人與好友的信,其他一律拒收(維護者 10-16 12:1x);見下面「好友」一節。
 名冊內容(第 5.4 節;第 1 期 owner 填主人 npub,NIP-05 網域到第 2 期):
   {"v":1, "owner":"npub1…", "display_name", "country", "cabins":[{"cabin","seats":[{"seat","npub","name","role",
    "accepts":["dm"],"langs":[…],"public":true}]}], "dm_relays":[…], "aib_version", "envelope":[1], "updated_at"}
@@ -83,6 +84,84 @@ def _save_profile(rec, env=None):
     rec["updated_at"] = int(time.time())
     write_json(str(p), rec)
     os.chmod(str(p), 0o600)
+
+
+# ── 好友(維護者 10-16 12:1x:加入好友之後才收、才有已讀;不然拒收)──
+# ~/.ez2-aib/chat/friends.json(0600):{"v":1, "friends":[{"owner":"npub1…", "name":"Bob", "added_at":…}]}
+# 以「主人」為單位:加了 Bob 的主人 npub,Bob 名冊上列出的每一席寄來都收。只在本機,不公開、不發到中繼站。
+# 第 1 期是單方面的通訊錄(好友申請與同意是第 2 期):對方也要把你加進他的好友,你寄的才進得去。
+
+def friends_path(env=None):
+    return _chat_home(env) / "friends.json"
+
+
+def read_friends(env=None):
+    try:
+        rec = json.loads(friends_path(env).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(rec, dict) or rec.get("v") != VERSION or not isinstance(rec.get("friends"), list):
+        return []
+    return [f for f in rec["friends"] if isinstance(f, dict) and _NPUB_RE.match(str(f.get("owner") or ""))]
+
+
+def _save_friends(friends, env=None):
+    p = friends_path(env)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(p.parent), 0o700)
+    write_json(str(p), {"v": VERSION, "friends": friends, "updated_at": int(time.time())})
+    os.chmod(str(p), 0o600)
+
+
+def friend_owner(text):
+    """`npub1…`(主人的)或全球位址 `<主人 npub>/<艙>/<席>` ⇒ 主人 npub;不合回 None。"""
+    t = (text or "").strip()
+    parsed = GF.parse_address(t)
+    owner = (parsed or {}).get("owner") or (parsed or {}).get("seat_npub")
+    if not owner:
+        return None
+    try:
+        NK.npub_to_hex(owner)
+    except ValueError:
+        return None
+    return owner
+
+
+def add_friend(text, name=None, env=None):
+    """加好友(同一位主人再加 = 改名字)。不合 ⇒ RosterError。回 (主人 npub, 是否新加)。"""
+    owner = friend_owner(text)
+    if not owner:
+        raise RosterError("bad_friend")
+    me = (NK.read_map(env).get("owner") or {}).get("npub")
+    if me and me == owner:
+        raise RosterError("friend_self")
+    clean = GF.clean_display_name(name) if name else None
+    if name and not clean:
+        raise RosterError("bad_name")
+    fr = read_friends(env)
+    old = next((f for f in fr if f["owner"] == owner), None)
+    if old:
+        if clean:
+            old["name"] = clean
+    else:
+        fr.append({"owner": owner, "name": clean, "added_at": int(time.time())})
+    _save_friends(fr, env)
+    return owner, old is None
+
+
+def remove_friend(text, env=None):
+    owner = friend_owner(text)
+    if not owner:
+        raise RosterError("bad_friend")
+    fr = read_friends(env)
+    left = [f for f in fr if f["owner"] != owner]
+    if len(left) != len(fr):
+        _save_friends(left, env)
+    return owner, len(left) != len(fr)
+
+
+def is_friend(owner, env=None):
+    return bool(owner) and any(f["owner"] == owner for f in read_friends(env))
 
 
 def clean_country(code):
