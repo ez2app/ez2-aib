@@ -231,7 +231,8 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
     file_name = (note["uid"] + ".md") if uid_layout else note["file_name"]
     target = folder / file_name
     # 10-16:索引不存絕對路徑(庫一搬家就失效、讀的人還會靜默拿到空);存 uid + 相對 Vault 的路徑當提示,讀時現查
-    rec = {"uid": note["uid"], "title": " ".join(title.split()), "kind": kind, "tags": tags_out,
+    # 10-17:標題記正本清洗後、檔內那一份(cleanTitle 會拿掉 : / # 等檔名不安全字);舊 runner 沒回 ⇒ 退回原字
+    rec = {"uid": note["uid"], "title": note.get("title") or " ".join(title.split()), "kind": kind, "tags": tags_out,
            "category_uid": category_uid, "route_key": route_key, "related_uids": related,
            "seat_uid": ctx.get("seat_uid"), "project_uid": ctx.get("project_uid"),
            "persona_uid": ctx.get("persona_uid"), "rel": os.path.relpath(str(target), str(vault)),
