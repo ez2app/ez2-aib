@@ -4341,5 +4341,11 @@
   "aib.chat.prepare_keys": "Global chat: owner key ready; {n} seats have seat keys (local only, not online yet)",
   "aib.chat.prepare_next": "To go online: aib chat on --name \"<display name>\" --country US (publishes your display name and country; no seat is listed by default)",
   "aib.chat.help.prepare": "prepare global chat (install nostr-sdk, create keys; local only, does not go online)",
-  "aib.chat.help.keys_only": "keys only; do not install packages"
+  "aib.chat.help.keys_only": "keys only; do not install packages",
+  "aib.persona_main.none": "Main persona: not set (to set it: aib persona main set <card id>)",
+  "aib.persona_main.show": "Main persona: {name} ({uid})",
+  "aib.persona_main.unknown": "Card {uid} is not in the persona card registry; nothing changed",
+  "aib.persona_main.set": "Main persona set to {name} ({uid})",
+  "aib.persona_main.cleared": "Main persona cleared (was: {uid})",
+  "aib.persona_main.usage": "Usage: aib persona main [show | set <card id> | clear]"
 }

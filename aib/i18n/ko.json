@@ -4341,5 +4341,11 @@
   "aib.chat.prepare_keys": "글로벌 채팅: 오너 키 준비, {n}개 좌석에 좌석 키(이 기기만, 아직 온라인 아님)",
   "aib.chat.prepare_next": "온라인으로 하려면: aib chat on --name \"<표시 이름>\" --country KR(표시 이름과 국가가 공개됩니다. 명부에는 기본적으로 좌석이 없습니다)",
   "aib.chat.help.prepare": "글로벌 채팅 준비(nostr-sdk 설치, 키 생성; 이 기기만, 온라인 아님)",
-  "aib.chat.help.keys_only": "키만, 패키지는 설치하지 않음"
+  "aib.chat.help.keys_only": "키만, 패키지는 설치하지 않음",
+  "aib.persona_main.none": "메인 페르소나: 등록 안 됨(등록: aib persona main set <카드 ID>)",
+  "aib.persona_main.show": "메인 페르소나: {name}({uid})",
+  "aib.persona_main.unknown": "카드 {uid}은(는) 페르소나 카드 등록표에 없습니다. 변경하지 않았습니다",
+  "aib.persona_main.set": "메인 페르소나를 {name}({uid})(으)로 등록했습니다",
+  "aib.persona_main.cleared": "메인 페르소나 등록을 해제했습니다(이전: {uid})",
+  "aib.persona_main.usage": "사용법: aib persona main [show | set <카드 ID> | clear]"
 }

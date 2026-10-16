@@ -4341,5 +4341,11 @@
   "aib.chat.prepare_keys": "グローバルチャット:オーナー鍵を準備。{n} 席に席鍵(このマシンのみ、まだオンラインではありません)",
   "aib.chat.prepare_next": "オンラインにするには:aib chat on --name \"<表示名>\" --country JP(表示名と国が公開されます。名簿には既定で席は載りません)",
   "aib.chat.help.prepare": "グローバルチャットを準備(nostr-sdk 導入・鍵作成。このマシンのみ、オンラインにはしない)",
-  "aib.chat.help.keys_only": "鍵のみ。パッケージは入れない"
+  "aib.chat.help.keys_only": "鍵のみ。パッケージは入れない",
+  "aib.persona_main.none": "メインペルソナ:未登録(登録:aib persona main set <カード ID>)",
+  "aib.persona_main.show": "メインペルソナ:{name}({uid})",
+  "aib.persona_main.unknown": "カード {uid} はペルソナカード登録表にありません。変更していません",
+  "aib.persona_main.set": "メインペルソナを {name}({uid})に登録しました",
+  "aib.persona_main.cleared": "メインペルソナの登録を解除しました(以前:{uid})",
+  "aib.persona_main.usage": "使い方:aib persona main [show | set <カード ID> | clear]"
 }

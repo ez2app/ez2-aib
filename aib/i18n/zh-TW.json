@@ -4341,5 +4341,11 @@
   "aib.chat.prepare_keys": "全球對談:主人金鑰已備好;{n} 席有席金鑰(只在本機,還沒上線)",
   "aib.chat.prepare_next": "要上線:aib chat on --name \"<顯示名稱>\" --country TW(會公開顯示名稱與國別;名冊預設一席都不列)",
   "aib.chat.help.prepare": "先備好全球對談(裝 nostr-sdk、產生金鑰;只在本機,不上線)",
-  "aib.chat.help.keys_only": "只補金鑰,不裝套件"
+  "aib.chat.help.keys_only": "只補金鑰,不裝套件",
+  "aib.persona_main.none": "主人格:沒登記(登記:aib persona main set <卡號>)",
+  "aib.persona_main.show": "主人格:{name}({uid})",
+  "aib.persona_main.unknown": "卡號 {uid} 不在人格卡登記表,沒改",
+  "aib.persona_main.set": "主人格登記為 {name}({uid})",
+  "aib.persona_main.cleared": "主人格登記已清除(原本:{uid})",
+  "aib.persona_main.usage": "用法:aib persona main [show | set <卡號> | clear]"
 }
