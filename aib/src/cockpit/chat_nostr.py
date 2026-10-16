@@ -468,6 +468,39 @@ class Sender(object):
                 return "%s/%s/%s" % (owner, cab.get("cabin"), st.get("seat"))
         return None
 
+    async def _push_card(self, tgt, owner, frm, now):
+        """名片(第 32 節,Andy 23:5x「社群只給好友看」):我宣告的社群帳號私下送給這位好友 / 我的機器;
+        內容有變就送,沒變一天一次。分享等級 off 也照送(名片跟在線狀態是兩回事);陌生人不會在 targets 裡。"""
+        socials = CR.clean_socials((CR.read_profile() or {}).get("socials"))
+        body = json.dumps({"v": 1, "socials": socials}, ensure_ascii=False, sort_keys=True)
+        cards = getattr(self, "c_last", None)
+        if cards is None:
+            cards = self.c_last = {}
+        prev = cards.get(tgt)
+        due = tgt in getattr(self, "card_due", set())
+        if not due and ((prev and prev[0] == body and now - prev[1] < 86400) or (not socials and not prev)):
+            return
+        addr = await self._first_seat_addr(tgt)
+        rc, res = await self._resolve(addr) if addr else (2, {})
+        if rc != 0:
+            return
+        keys = _keys(frm["key"])
+        tags = [N.Tag.parse(x) for x in (["aib-v", "1"], ["aib-type", "card"],
+                                         ["aib-from", "%s/%s/%s" % (owner, frm.get("cabin") or "main", frm["seat5"])])]
+        gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(res["seat"]["npub"]), body, rumor_extra_tags=tags)
+        keys = None
+        c = await _client(res["dm_relays"])
+        try:
+            out = await c.send_event(gw)
+        except Exception:   # noqa: BLE001
+            out = None
+        finally:
+            await c.shutdown()
+        if out is not None and out.success:
+            cards[tgt] = (body, now)
+            getattr(self, "card_due", set()).discard(tgt)
+            audit(self.root, "card-out", "-", tgt, str(len(socials)))
+
     async def push_presence(self, now=None):
         """在線狀態(第 30.3 節):每位好友 / 我的其他機器依分享等級送一份;有變就送(最少間隔 PRESENCE_GAP_S),
         沒變 PRESENCE_EVERY_S 送一次。陌生、封鎖、等級 off ⇒ 不送。回送了幾份。"""
@@ -488,6 +521,7 @@ class Sender(object):
             last = self.p_last = {}
         sent = 0
         for tgt in targets[:PRESENCE_MAX_TARGETS]:
+            await self._push_card(tgt, owner, mine_seats[0], now)       # 名片跟在線等級無關(好友 / 我的機器才在 targets)
             lvl = CR.share_level(tgt)
             if lvl == "off":
                 continue
@@ -628,7 +662,7 @@ def _clean_note(text):
 
 def _claims(res):
     """名冊上宣告的社群與 NIP-05(第 32 節);驗證由 chat_verify.verify_round 另做。"""
-    return {"socials": (res or {}).get("socials") or [], "nip05": (res or {}).get("nip05")}
+    return {"nip05": (res or {}).get("nip05")}          # 社群不在名冊上(只給好友,走 card)
 
 
 VERIFY_TICK_S = float(os.environ.get("AIB_CHAT_VERIFY_TICK") or 300)    # 多久看一次有沒有要驗的證明(第 32 節)
@@ -847,6 +881,23 @@ class Receiver(object):
             GF.note_peer(self.root, sent["owner"], request=req)        # 第 29.4 節:通訊錄顯示申請推到哪
         return "ok"
 
+    async def on_card(self, rumor, tags, from_npub):
+        """名片(第 32 節):好友 / 我的其他機器私下送來的社群帳號。陌生、封鎖 ⇒ 靜默丟;不進佇列、不回條。"""
+        parsed = GF.parse_address(tags.get("aib-from") or "") or {}
+        owner = parsed.get("owner")
+        if not owner or CR.is_blocked(owner) or not (CR.is_friend(owner) or CR.is_mine(owner)):
+            return
+        rc, res = await self.sender._resolve(tags.get("aib-from"))
+        if rc != 0 or res["seat"]["npub"] != from_npub:
+            return
+        try:
+            body = json.loads(rumor.content())
+        except ValueError:
+            return
+        socials = CR.clean_socials(body.get("socials") if isinstance(body, dict) else None)
+        GF.note_peer(self.root, owner, claims={"socials": socials})
+        audit(self.root, "card-in", "-", from_npub, str(len(socials)))
+
     async def on_presence(self, rumor, tags, from_npub):
         """在線狀態(第 30.4 節):只收驗得到名冊、而且是好友 / 我的其他機器送來的;其他靜默丟。
         不進佇列、不回條、不記收件帳;只寫 world.json。"""
@@ -878,6 +929,16 @@ class Receiver(object):
                                                 "step": step})
         for cab, seats in by_cab.items():
             GF.note_world(self.root, owner, cab, seats)
+        # 對方送在線狀態來 = 他把我當好友了 ⇒ 這個工人第一次聽到他時,補送一次名片(先前送的可能在他加我好友前被丟掉)
+        heard = getattr(self, "heard", None)
+        if heard is None:
+            heard = self.heard = set()
+        if owner not in heard:
+            heard.add(owner)
+            due = getattr(self.sender, "card_due", None)
+            if due is None:
+                due = self.sender.card_due = set()
+            due.add(owner)
         audit(self.root, "presence-in", "-", from_npub, str(len(rows)))
 
     async def on_request(self, rec, parsed, peer, msgid, from_npub):
@@ -914,6 +975,8 @@ class Receiver(object):
         self.led.mark("m:" + msgid)
         if tags.get("aib-type") == "presence":
             return await self.on_presence(rumor, tags, from_npub)
+        if tags.get("aib-type") == "card":
+            return await self.on_card(rumor, tags, from_npub)
         is_aib = tags.get("aib-v") == "1"
         self.led.received(msgid, {"v": 1, "from": from_npub, "key": entry["key"], "seat": entry["seat5"],
                                   "aib": is_aib, "lang": tags.get("aib-lang"), "at": int(time.time())})

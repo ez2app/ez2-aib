@@ -4,13 +4,15 @@
 """線上對話包 I(開發文件第 32 節,Andy 10-16 23:4x「真人驗證」「社群綁定」):宣告社群 / NIP-05,照證明自動驗。
 
 核心(一定跑;證明頁用本機 http 假站,AIB_CHAT_VERIFY_ALLOW_LOCAL=1):
-I1 aib chat social add|remove、nip05 <名@網域>|--clear:沒主人資料 ⇒ rc 2;平台 / 證明網址不合 ⇒ rc 2;寫進名冊;
-   別人名冊裡不合格的社群 / NIP-05 整欄當沒有(名冊照用)
+I1 aib chat social add|remove、nip05 <名@網域>|--clear:沒主人資料 ⇒ rc 2;平台 / 證明網址不合 ⇒ rc 2;
+   NIP-05 進名冊;社群**不進公開名冊**(Andy 23:5x「社群只給好友看」);別人名冊裡不合格的 NIP-05 當沒有
 I2 check_social:證明頁有 npub ⇒ True、沒有 ⇒ False、404 / 抓不到 ⇒ None;x 這類要登入的平台不抓 ⇒ None;非 https 不抓
    check_nip05:names[名] == 主人公鑰 ⇒ True、別人的鑰 ⇒ False、抓不到 ⇒ None
 I3 aib chat contacts --json:verified(有驗過的名冊)、human、seats[].ai、nip05 與 socials 三態
 I4 verify_round:只驗好友 / 我的機器 / 等我同意的申請,陌生人不抓;一天一次;每輪最多 5 項
-刀(複本):K1 社群證明不比對 npub ⇒ I2 紅;K2 陌生人也抓 ⇒ I4 紅
+連 Nostr(要 AIB_TEST_NOSTR_VENV;本機假中繼站):
+N1 互為好友 ⇒ A 宣告的社群經名片(aib-type=card)私下送到 B,B 的聯絡人快照有;B 沒把 A 當好友 ⇒ 名片丟掉
+刀(複本):K1 社群證明不比對 npub ⇒ I2 紅;K2 陌生人也抓 ⇒ I4 紅;K3 名片不看好友 ⇒ N1 紅
 """
 import http.server
 import importlib.util
@@ -99,11 +101,12 @@ class Declare(unittest.TestCase):
         b.cli("publish", "0aaa1")
         import chat_roster as CR
         content, _ = CR.build(b.env())
-        self.assertEqual((content["nip05"], len(content["socials"])), ("andy@ez2.app", 2))
-        content["socials"].append({"p": "evil", "v": "x"})
+        self.assertEqual(content["nip05"], "andy@ez2.app")
+        self.assertNotIn("socials", content, "社群只給好友看(Andy 23:5x)⇒ 不准放公開名冊")
+        self.assertNotIn("andy", json.dumps(content).replace("andy@ez2.app", ""))
         content["nip05"] = "BAD"
         back = CR.parse(json.dumps(content), content["owner"])
-        self.assertEqual((back["nip05"], len(back["socials"])), (None, 2), "別人名冊裡不合格的整欄當沒有")
+        self.assertIsNone(back["nip05"], "別人名冊裡不合格的整欄當沒有")
         b.cli("social", "remove", "x")
         b.cli("nip05", "--clear")
         got = json.loads(b.cli("social", "--json").stdout)
@@ -176,6 +179,31 @@ class Check(Base):
         self.assertNotIn("checks", peers[OTHER], "陌生人不抓")
 
 
+_rspec = importlib.util.spec_from_file_location("chat_recv_pi", str(HERE / "test-chat-recv-d07f9-1016.py"))
+RT = importlib.util.module_from_spec(_rspec)
+_rspec.loader.exec_module(RT)
+
+
+@unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
+class Network(unittest.TestCase):
+    box_extra = {"AIB_CHAT_PRESENCE_TICK": "1", "AIB_CHAT_PRESENCE_GAP": "1", "AIB_CHAT_PRESENCE_EVERY": "3"}
+    setUp = RT.Network.setUp
+    _box = RT.Network._box
+
+    def test_n1_card_to_friends_only(self):
+        a, (x,) = self._box("Andy", [("00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")], [True])
+        b, (y,) = self._box("Bob", [("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [True])
+        c, (z,) = self._box("Cara", [("00000000-0000-0000-0000-00000000ccc3", "zzzz33", "收件席")], [True])
+        self.assertEqual(a.cli("social", "add", "github", "andy", "--proof", "https://gist.github.com/andy/1").returncode, 0)
+        a.cli("friend", "add", "%s/6ddf/%s" % (b.owner, y))
+        a.cli("friend", "add", "%s/6ddf/%s" % (c.owner, z))
+        b.cli("friend", "add", a.owner)                     # Cara 沒把 Andy 當好友
+        self.assertTrue(b.wait_for(lambda: (GF.read_peers(b.root).get(a.owner) or {}).get("socials"), 40), GF.read_peers(b.root))
+        self.assertEqual(GF.read_peers(b.root)[a.owner]["socials"][0]["v"], "andy")
+        time.sleep(3)
+        self.assertFalse((GF.read_peers(c.root).get(a.owner) or {}).get("socials"), "不是好友 ⇒ 名片要丟")
+
+
 class Knife(unittest.TestCase):
     def _knife(self, rel, needle, replacement, cell):
         name = Path(__file__).name
@@ -186,6 +214,18 @@ class Knife(unittest.TestCase):
 
     def test_k1_no_npub_match(self):
         self._knife("src/cockpit/chat_verify.py", "    return owner_npub in body\n", "    return True\n", "Check.test_i2_checks")
+
+    @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k3_card_from_anyone(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_nostr.py",
+                        "        if not owner or CR.is_blocked(owner) or not (CR.is_friend(owner) or CR.is_mine(owner)):\n            return\n        rc, res = await self.sender._resolve(tags.get(\"aib-from\"))",
+                        "        if not owner:\n            return\n        rc, res = await self.sender._resolve(tags.get(\"aib-from\"))",
+                        tests=(name, "test-chat-send-d07f9-1016.py", "test-chat-recv-d07f9-1016.py")) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Network.test_n1_card_to_friends_only"],
+                            cwd=str(root), max_procs=120, timeout=400)
+        self.assertIsNone(r.tripped)
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅:\n" + r.stdout + r.stderr)
 
     def test_k2_check_strangers(self):
         self._knife("src/cockpit/chat_verify.py", "        if owner not in owners or CR.is_blocked(owner, env):",

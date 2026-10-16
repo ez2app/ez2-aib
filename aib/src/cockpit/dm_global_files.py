@@ -693,9 +693,11 @@ def note_peer(root, owner, display_name=None, country=None, seat=None, roster_at
             p["seats"].append(keep)
             p["seats"] = p["seats"][-20:]
         p["seen_at"] = now
-        if isinstance(claims, dict):          # 第 32 節:名冊上宣告的社群與 NIP-05(驗的結果另存 checks)
-            p["socials"] = claims.get("socials") or []
-            p["nip05"] = claims.get("nip05")
+        if isinstance(claims, dict):          # 第 32 節:對方宣告的 NIP-05(名冊)與社群(好友私下送的 card);驗的結果另存 checks
+            if "socials" in claims:
+                p["socials"] = claims.get("socials") or []
+            if "nip05" in claims:
+                p["nip05"] = claims.get("nip05")
         if request in ("pending", "accepted", "rejected"):   # 我送出的好友申請,對方回條推到哪(第 29.4 節)
             p["request"] = request
         if direction in ("in", "out"):

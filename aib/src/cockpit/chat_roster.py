@@ -455,9 +455,8 @@ def build(env=None, live=None, now=None):
                "cabins": [{"cabin": c, "seats": seats} for c, seats in sorted(cabins.items())],
                "dm_relays": relays(env), "aib_version": _aib_version(), "envelope": list(ENVELOPES),
                "updated_at": int(time.time() if now is None else now)}
-    # 第 32 節(Andy 10-16 23:4x 真人驗證):自己宣告的社群帳號與 NIP-05;別人照證明去驗
-    if prof.get("socials"):
-        content["socials"] = clean_socials(prof["socials"])
+    # 第 32 節(Andy 10-16 23:4x 真人驗證):NIP-05 放公開名冊(網域那份檔本來就公開);
+    # 社群帳號**不放**(Andy 23:5x「社群只給好友看」)⇒ 由連線工人私下送給好友 / 我的其他機器(aib-type=card)
     if prof.get("nip05") and clean_nip05(prof["nip05"]):
         content["nip05"] = clean_nip05(prof["nip05"])
     return content, dm_seats
