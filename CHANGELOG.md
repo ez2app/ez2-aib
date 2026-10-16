@@ -8,6 +8,9 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 
 - **Bundled extensions install themselves**: the free signed extensions that ship with aib are installed and registered with Claude Code during install, `aib init` and `aib update`.
 - **Global chat receipts no longer get dropped**: the sender now records a message as sent before sending it, so a receipt that arrives before the relay's confirmation is no longer mistaken for an impostor.
+- **Find who owns an out-of-scope question**: `aib who-owns <keyword or sentence>` searches persona cards, project cards and the vault's full text, ranks the matches with evidence, and suggests reopening the seat that owns it, or creating a new persona or project when nothing matches. `aib scope set / show` records the sites, domains, keywords and aliases a card is responsible for.
+- **Seats hand off out-of-scope questions**: the persona pack now tells each seat to run `aib who-owns` first when a question is outside its scope, and to suggest opening the seat that owns it instead of doing it itself.
+- **Add and retire vault folders**: `folder-add` and `folder-retire` register new folders in a uid vault, or retire old ones, without editing the index by hand.
 
 ## 0.1.11
 
