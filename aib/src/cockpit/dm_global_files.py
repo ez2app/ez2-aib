@@ -557,7 +557,7 @@ def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=ti
     except ContractError as e:
         return {"rc": 2, "stage": "abort", "pos": None, "detail": str(e), "msgid": msgid}
     if not bridge_alive(root, now=clock()):
-        return {"rc": 2, "stage": "bridge-off", "pos": None, "detail": "全球對談沒開(轉接程式沒在跑)", "msgid": msgid}
+        return {"rc": 2, "stage": "bridge-off", "pos": None, "detail": "線上對話沒開(轉接程式沒在跑)", "msgid": msgid}
     write_outbox(root, rec)
     deadline = clock() + max(0, wait)
     op = rec["op"]

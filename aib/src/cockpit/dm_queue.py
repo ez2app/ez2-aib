@@ -77,7 +77,7 @@ HOLD_WHY = {
     "attempts": "回 2 可重送但已重送 %d 次仍沒進目標,停手",
     "pane_dead": "收件席的視窗已結束(pane_dead),不投往重用的窗號;重開那一席後 requeue",
     # 全球對談第 8.1 節:陌生(或未驗證)的外部席來信,進來就待審;只有人能放行(requeue)或刪
-    "global_stranger": "外部陌生,待主人放行(全球對談)",
+    "global_stranger": "外部陌生,待主人放行(線上對話)",
 }
 # ── 第 70 項 P2:狀態、種類、轉移表(只住這裡一份;畫面與任務區讀 payload,不自己算)──
 # status 的完整集合。`updated` 不是 status:是衍生旗標 is_update(supersedes 非空且還沒讀),畫面掛角標。
