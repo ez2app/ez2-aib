@@ -13,6 +13,11 @@
     apply  --plan plan.json --backup-dir DIR --confirm-text "我已備份並同意轉成 uid 版面"   寫(先 tar 整庫到庫外)
     verify --vault V                                                                        只讀,驗收
     undo   --receipt receipt.json                                                           退回改名、連結、設定、.ez2 狀態(frontmatter 補的身分留著)
+轉換後維護(10-16):
+    reindex       --vault V                                                                 只重寫衍生索引
+    folder-add    --vault V --title 名稱 [--parent folderId] [--dry-run]                     新增資料夾並登記(同名回原本那個)
+    folder-retire --vault V --folder folderId --backup-dir DIR [--include-notes] [--dry-run] 打包到庫外 → 拿掉索引 → 刪資料夾;
+                  路由夾、非筆記檔、還被連結的筆記一律擋下;資料夾已被直接刪掉時只清索引
 
 鐵則:
 - 既有 uid 不換號;重複 uid 只在「一邊明顯是副本(.bak / 鏡像夾)」時給副本新號並記 duplicate_of,否則列 blocker、兩邊都不改名。
@@ -1299,6 +1304,145 @@ def rescan_cards(vault: Path) -> dict:
 
 
 # ---------------------------------------------------------------- CLI
+# ---------------------------------------------------------------- 轉換後新增 / 退役資料夾(10-16)
+# uid 庫的每個資料夾都要登記在 folder-id-index;直接 mkdir / rm 會讓 verify 變紅(索引與硬碟對不上)。
+def _fid_load(vault: Path):
+    p = vault / ".ez2" / "index" / "folder-id-index.json"
+    doc = load_json(p, None)
+    if not isinstance(doc, dict) or not doc.get("items"):
+        raise SystemExit(T("err_no_folder_index"))
+    return doc
+
+
+def _legacy_of(item: dict, by_id: dict) -> str:
+    """這個資料夾的「舊路徑字面」(算 sha12 用):有 legacyPaths 用第一條,沒有就用祖先標題串起來。"""
+    lp = item.get("legacyPaths") or []
+    if lp:
+        return lp[0]
+    parent = by_id.get(item.get("parentFolderId") or "")
+    return (_legacy_of(parent, by_id) + "/" if parent else "") + item.get("title", item["folderId"])
+
+
+def folder_add(vault: Path, parent: str, title: str, dry_run: bool = False) -> dict:
+    """在 parent(folderId;空字串 = 庫根)底下新增資料夾並登記。同一個父夾已有同名 ⇒ 回那一個,不重複建。"""
+    vault = vault.resolve()
+    title = unicodedata.normalize("NFC", (title or "").strip())
+    if not title or "/" in title or "\\" in title or title in (".", "..") or title.startswith("."):
+        raise SystemExit(T("err_folder_title_bad", {"title": title}))
+    doc = _fid_load(vault)
+    items = doc["items"]
+    by_id = {i["folderId"]: i for i in items}
+    if parent and parent not in by_id:
+        raise SystemExit(T("err_folder_unknown", {"folder": parent}))
+    same = next((i for i in items if (i.get("parentFolderId") or "") == (parent or "")
+                 and i.get("title") == title and i.get("status", "active") == "active"), None)
+    if same:
+        return {"folderId": same["folderId"], "folderPath": same["folderPath"], "title": title, "created": False}
+    if parent:
+        par = by_id[parent]
+        legacy = _legacy_of(par, by_id) + "/" + title
+        mod = par["folderId"].split("_")[1]
+        fid, kind, rk = "fld_%s_sub_%s" % (mod, sha12(legacy)), "sub", ""
+        path, level = par["folderPath"] + "/" + fid, int(par.get("level") or 1) + 1
+    else:
+        legacy = title
+        mod = module_of(title)
+        fid, kind, rk = "fld_%s_group_%s" % (mod, sha12(legacy)), "group", "folder.group.%s.%s" % (mod, sha12(legacy)[:8])
+        path, level = fid, 1
+    if fid in by_id:                     # 同字面路徑以前登記過(例如退役後又加回來時已被別處用掉)
+        raise SystemExit(T("err_folder_id_taken", {"folder": fid}))
+    item = {"folderId": fid, "routeKey": rk, "folderPath": path, "parentFolderId": parent or "", "level": level,
+            "title": title, "legacyPaths": [legacy], "status": "active", "kind": kind}
+    if not dry_run:
+        if parent and not (vault / by_id[parent]["folderPath"]).is_dir():
+            raise SystemExit(T("err_dir_missing"))
+        (vault / path).mkdir(parents=False, exist_ok=True)
+        items.append(item)
+        write_indexes(vault, items, None, None, time.strftime("%Y-%m-%d %H:%M:%S"))
+    return {"folderId": fid, "folderPath": path, "title": title, "created": not dry_run, "dry_run": dry_run}
+
+
+def _links_to(vault: Path, uids: set, skip_prefix: str) -> list:
+    """庫裡(skip_prefix 以外)連到這些 uid 的筆記:[[uid]] / [[uid|…]] / [[uid#…]] 與 (…/uid.md)。"""
+    if not uids:
+        return []
+    pat = re.compile(r"\[\[(%s)(?:[|#\]])|[(/](%s)\.md\b" % ("|".join(map(re.escape, uids)), "|".join(map(re.escape, uids))))
+    hits = []
+    for dp, dn, fn in os.walk(vault):
+        dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+        rel_dir = str(Path(dp).relative_to(vault))
+        if rel_dir == skip_prefix or rel_dir.startswith(skip_prefix + "/"):
+            continue
+        for f in fn:
+            if f.endswith(".md"):
+                rel = str(Path(rel_dir, f)) if rel_dir != "." else f
+                text = Path(dp, f).read_text(encoding="utf-8", errors="replace")
+                m = pat.search(text)
+                if m:
+                    hits.append({"from": rel, "uid": m.group(1) or m.group(2)})
+    return hits
+
+
+def folder_retire(vault: Path, folder: str, backup_dir: Path | None, include_notes: bool = False,
+                  dry_run: bool = False) -> dict:
+    """退役一個資料夾(連子夾):先打包到庫外,再從 folder-id-index / uid-index / labels 拿掉、刪掉資料夾。
+    擋下:路由資料夾(契約寫入點)、裡面有筆記但沒帶 --include-notes、筆記還被別處連結、其他檔案。
+    資料夾已經不在硬碟上(以前直接刪掉的)⇒ 只清索引,verify 就會回綠。"""
+    vault = vault.resolve()
+    doc = _fid_load(vault)
+    items = doc["items"]
+    top = next((i for i in items if i["folderId"] == folder), None)
+    if top is None:
+        raise SystemExit(T("err_folder_unknown", {"folder": folder}))
+    sub = [i for i in items if i["folderPath"] == top["folderPath"] or i["folderPath"].startswith(top["folderPath"] + "/")]
+    routes = [i["routeKey"] for i in sub if i.get("kind") == "route"]
+    if routes:
+        raise SystemExit(T("err_folder_is_route", {"routes": ", ".join(routes)}))
+    root = vault / top["folderPath"]
+    on_disk = root.is_dir()
+    notes, others = [], []
+    if on_disk:
+        for p in sorted(root.rglob("*")):
+            if p.is_file() and p.name != ".DS_Store":
+                (notes if p.suffix == ".md" and UID_RE.match(p.stem) else others).append(str(p.relative_to(vault)))
+    if others:
+        raise SystemExit(T("err_folder_has_files", {"count": len(others), "files": ", ".join(others[:5])}))
+    if notes and not include_notes:
+        raise SystemExit(T("err_folder_has_notes", {"count": len(notes), "files": ", ".join(notes[:5])}))
+    uids = {Path(n).stem for n in notes}
+    linked = _links_to(vault, uids, top["folderPath"])
+    if linked:
+        raise SystemExit(T("err_notes_linked", {"count": len(linked),
+                                               "links": ", ".join("%s → %s" % (h["from"], h["uid"]) for h in linked[:5])}))
+    out = {"folderId": folder, "folders": len(sub), "notes": sorted(uids), "on_disk": on_disk, "dry_run": dry_run, "backup": None}
+    if dry_run:
+        return out
+    if on_disk:
+        if backup_dir is None:
+            raise SystemExit(T("err_backup_required"))
+        backup_dir = backup_dir.resolve()
+        if backup_dir == vault or vault in backup_dir.parents:
+            raise SystemExit(T("err_backup_inside"))
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        tgz = backup_dir / ("retire-%s-%s.tgz" % (folder, time.strftime("%Y%m%d-%H%M%S")))
+        with tarfile.open(tgz, "w:gz") as tar:
+            tar.add(str(root), arcname=top["folderPath"])
+        out["backup"] = str(tgz)
+    gone = {i["folderId"] for i in sub}
+    doc["items"] = [i for i in items if i["folderId"] not in gone]
+    idx = vault / ".ez2" / "index"
+    uidx = load_json(idx / "uid-index.json", None)
+    if isinstance(uidx, dict) and uids:
+        uidx["items"] = [i for i in uidx.get("items", []) if i.get("uid") not in uids]
+        (idx / "uid-index.json").write_text(json.dumps(uidx, ensure_ascii=False, indent=1), encoding="utf-8")
+    lab = load_json(vault / ".ez2" / "display" / "labels.json", {})
+    notes_lab = {k: v for k, v in (lab.get("notes") or {}).items() if k not in uids}
+    if on_disk:
+        shutil.rmtree(root)
+    write_indexes(vault, doc["items"], notes_lab, None, time.strftime("%Y-%m-%d %H:%M:%S"))
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=T("desc"), formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1312,6 +1456,15 @@ def main(argv=None):
     u = sub.add_parser("undo"); u.add_argument("--receipt", required=True)
     u.add_argument("--rescan-cards", action="store_true", help="退回後重掃 aib 卡片索引")
     ri = sub.add_parser("reindex"); ri.add_argument("--vault", required=True)
+    fa = sub.add_parser("folder-add", help=T("help_folder_add"))
+    fa.add_argument("--vault", required=True); fa.add_argument("--title", required=True)
+    fa.add_argument("--parent", default="", help=T("help_folder_parent"))
+    fa.add_argument("--dry-run", action="store_true")
+    fr = sub.add_parser("folder-retire", help=T("help_folder_retire"))
+    fr.add_argument("--vault", required=True); fr.add_argument("--folder", required=True)
+    fr.add_argument("--backup-dir", help=T("help_folder_backup"))
+    fr.add_argument("--include-notes", action="store_true", help=T("help_folder_include_notes"))
+    fr.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     if args.cmd == "plan":
         lm = json.loads(Path(args.legacy_map).read_text(encoding="utf-8")) if args.legacy_map else None
@@ -1339,6 +1492,14 @@ def main(argv=None):
         return 0
     if args.cmd == "reindex":
         print(json.dumps(reindex(Path(args.vault)), ensure_ascii=False, indent=1))
+        return 0
+    if args.cmd == "folder-add":
+        print(json.dumps(folder_add(Path(args.vault), args.parent, args.title, args.dry_run), ensure_ascii=False, indent=1))
+        return 0
+    if args.cmd == "folder-retire":
+        out = folder_retire(Path(args.vault), args.folder, Path(args.backup_dir) if args.backup_dir else None,
+                            args.include_notes, args.dry_run)
+        print(json.dumps(out, ensure_ascii=False, indent=1))
         return 0
     return 2
 

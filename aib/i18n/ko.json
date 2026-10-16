@@ -4341,5 +4341,18 @@
   "aib.chat.prepare_keys": "글로벌 채팅: 오너 키 준비, {n}개 좌석에 좌석 키(이 기기만, 아직 온라인 아님)",
   "aib.chat.prepare_next": "온라인으로 하려면: aib chat on --name \"<표시 이름>\" --country KR(표시 이름과 국가가 공개됩니다. 명부에는 기본적으로 좌석이 없습니다)",
   "aib.chat.help.prepare": "글로벌 채팅 준비(nostr-sdk 설치, 키 생성; 이 기기만, 온라인 아님)",
-  "aib.chat.help.keys_only": "키만, 패키지는 설치하지 않음"
+  "aib.chat.help.keys_only": "키만, 패키지는 설치하지 않음",
+  "aib.vault_convert.err_folder_title_bad": "사용할 수 없는 폴더 이름: \"{title}\" (비어 있거나 / 또는 \\ 포함, . 으로 시작 불가)",
+  "aib.vault_convert.err_folder_unknown": "폴더 색인에 {folder} 이(가) 없습니다",
+  "aib.vault_convert.err_folder_id_taken": "폴더 ID {folder} 이(가) 이미 사용 중입니다. 다른 이름을 쓰세요",
+  "aib.vault_convert.err_folder_is_route": "이 폴더(또는 하위 폴더)는 시스템 쓰기 대상이라 폐기할 수 없습니다: {routes}",
+  "aib.vault_convert.err_folder_has_files": "폴더에 노트가 아닌 파일 {count}개가 있습니다. 먼저 옮기세요: {files}",
+  "aib.vault_convert.err_folder_has_notes": "폴더에 노트 {count}개가 있습니다. 함께 폐기하려면 --include-notes 를 붙이세요: {files}",
+  "aib.vault_convert.err_notes_linked": "이 노트들을 가리키는 링크가 {count}개 남아 있습니다. 먼저 고치세요: {links}",
+  "aib.vault_convert.err_backup_required": "폐기하면 폴더가 삭제됩니다. --backup-dir 로 Vault 밖의 백업 위치를 지정하세요",
+  "aib.vault_convert.help_folder_add": "폴더를 추가하고 폴더 색인에 등록",
+  "aib.vault_convert.help_folder_parent": "상위 폴더의 folderId, 비우면 Vault 최상위",
+  "aib.vault_convert.help_folder_retire": "폴더 폐기: Vault 밖에 백업한 뒤 색인에서 빼고 삭제",
+  "aib.vault_convert.help_folder_backup": "백업 위치(Vault 밖이어야 함)",
+  "aib.vault_convert.help_folder_include_notes": "안의 노트도 함께 폐기(링크가 없는지는 확인함)"
 }
