@@ -217,7 +217,7 @@ def store_secret(stem, secret, env=None, replace=False):
     _mkdir_private(secrets_dir(env))
     _mkdir_private(d)
     pub = pubkey_hex(secret)
-    env_blob = SC.encrypt_value(secret, "nostr/" + stem, str(secrets_dir(env)))
+    env_blob = SC.encrypt_value(secret, "nostr/%s" % stem, str(secrets_dir(env)))   # 寫法跟 _write_key 不同:刀測錨點要唯一
     path = d / (stem + ".key")
     tmp = d / (".%s.key.tmp" % stem)
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

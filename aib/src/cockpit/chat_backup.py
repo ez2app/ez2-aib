@@ -5,8 +5,9 @@
 為什麼:主人與各席的 Nostr 私鑰只在這台機器(`~/.ez2-aib/secrets/nostr/`,用本機包裝金鑰加密)。
 機器壞了 ⇒ 身分全失,好友要重加、名冊要重發。
 
-備份檔(0600,JSON):{"v":1, "kdf":"scrypt", "n","r","p", "salt", "nonce", "ct", "tag"}
-  - 通關密語 ⇒ scrypt(n=2^15, r=8, p=1)⇒ 32 位元組金鑰 ⇒ XChaCha20-Poly1305(secret_crypto 那一套)加密整份內容。
+備份檔(0600,JSON):{"v":1, "kdf":"pbkdf2-sha256", "iter", "salt", "nonce", "ct", "tag"}
+  - 通關密語 ⇒ PBKDF2-HMAC-SHA256(60 萬次,OWASP 建議值)⇒ 32 位元組金鑰 ⇒ XChaCha20-Poly1305(secret_crypto 那一套)加密整份內容。
+    不用 scrypt:macOS 內建 Python 3.9 的 hashlib 沒有 scrypt(10-16 測出來);PBKDF2 每一版都有。
   - 內容:對照表(nostr-map.json)、每一把私鑰(以 stem 為鍵)、好友 / 我的其他機器名單、主人資料。
   - 檔裡沒有明文私鑰;通關密語不落檔、不進 log、不從命令列參數拿(只從終端機或 --passphrase-stdin)。
 還原:
@@ -31,7 +32,8 @@ import secret_crypto as SC  # noqa: E402
 
 VERSION = 1
 AAD = b"aib-chat-backup/v1"
-SCRYPT = {"n": 2 ** 15, "r": 8, "p": 1}
+KDF = "pbkdf2-sha256"
+ITERATIONS = 600000
 MIN_PASS = 8
 
 
@@ -39,8 +41,8 @@ class BackupError(ValueError):
     """原因碼:bad_passphrase / short_passphrase / exists / bad_file / owner_differs / chat_on / no_keys。"""
 
 
-def _kdf(passphrase, salt, n, r, p):
-    return hashlib.scrypt(passphrase.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=128 * 1024 * 1024, dklen=32)
+def _kdf(passphrase, salt, iterations):
+    return hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, iterations, dklen=32)
 
 
 def _stems(m):
@@ -64,9 +66,9 @@ def backup(path, passphrase, env=None):
     raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
     keys = body = None
     salt = os.urandom(16)
-    nonce, ct, tag = SC._encrypt_bytes(_kdf(passphrase, salt, **SCRYPT), raw, AAD)
+    nonce, ct, tag = SC._encrypt_bytes(_kdf(passphrase, salt, ITERATIONS), raw, AAD)
     raw = None
-    rec = {"v": VERSION, "kdf": "scrypt", **SCRYPT, "salt": salt.hex(), "nonce": nonce.hex(),
+    rec = {"v": VERSION, "kdf": KDF, "iter": ITERATIONS, "salt": salt.hex(), "nonce": nonce.hex(),
            "ct": base64.b64encode(ct).decode("ascii"), "tag": tag.hex(), "owner": m["owner"]["npub"]}
     try:
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -83,9 +85,10 @@ def backup(path, passphrase, env=None):
 def _open(path, passphrase):
     try:
         rec = json.loads(Path(path).read_text(encoding="ascii"))
-        if rec.get("v") != VERSION or rec.get("kdf") != "scrypt":
+        it = int(rec.get("iter") or 0)
+        if rec.get("v") != VERSION or rec.get("kdf") != KDF or not 100000 <= it <= 10000000:
             raise ValueError("version")
-        key = _kdf(passphrase or "", bytes.fromhex(rec["salt"]), int(rec["n"]), int(rec["r"]), int(rec["p"]))
+        key = _kdf(passphrase or "", bytes.fromhex(rec["salt"]), it)
         nonce, ct, tag = bytes.fromhex(rec["nonce"]), base64.b64decode(rec["ct"]), bytes.fromhex(rec["tag"])
     except (OSError, ValueError, KeyError, TypeError):
         raise BackupError("bad_file")
