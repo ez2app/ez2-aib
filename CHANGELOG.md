@@ -4,6 +4,23 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.11
+
+- **Memory survives moving the vault**: the memory index stores each note's id and a path relative to the vault instead of an absolute path, and looks the note up again when reading; old indexes still work. If a note cannot be found it now says so instead of silently bringing back an empty note. Persona cards are found the same way after the vault moves.
+
+## 0.1.10
+
+- **Global chat (second part)**: receiving (catch-up subscription, verification, import into the queue, delivery status and receipts), read receipts sent in one batch without going through the AI, and observability (audit lines, worker status, clock skew, offline). Still being developed.
+- **Prepared at install**: `aib chat prepare` installs the chat library and creates keys on this computer only (nothing goes online); the installer runs it after `aib init`, and a failure does not stop the install.
+- **Tests**: the process-table warning tests also pass on Linux machines without a per-user process limit.
+
+## 0.1.9
+
+- **Global chat (first part)**: `aib chat` skeleton, keys, the roster, and sending to a global address (still being developed; the bridge that carries messages is not public yet).
+- **Process-table warning**: when the processes of your user reach 80% of the system limit, the right pane shows a red warning with the top 3 commands, and fleet patrol prints it first (measured without starting new processes).
+- **Persona sources**: `aib persona sources` entry point.
+- **CI**: ordinary pull requests run macOS only on Python 3.12; full runs stay on `main`, integration and release branches.
+
 ## 0.1.8
 
 - **Every AI is free**: the free edition no longer limits which AI tools you can use; every provider's sources can be turned on and no seat is refused or marked as paid.

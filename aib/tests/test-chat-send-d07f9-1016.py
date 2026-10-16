@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: Apache-2.0
+"""全球對談寄件(開發文件第 7.1 節;22.1 PR-9 = 第 1 期 1.7 寄件那一半)。
+
+當班的轉接程式起一支寄件工人(venv 的 chat_nostr.py serve):領 outbox → 解析位址(名冊、10050)→ 包 NIP-17 →
+寄到對方收信站、另寄自己一份 → 回條 relayed;心跳只由它寫。全部只連本機假中繼站。
+沙盒:主人 A 有兩席,X(寄件)與 Y(收件,列進名冊);寄件端走 dm_global_files.send_and_wait(dm-ctl 用的同一支)。
+
+核心(一定跑):
+C1 沒有 venv ⇒ 不起工人、沒有心跳;send_and_wait ⇒ rc 2 bridge-off,一個字都沒寫進 outbox
+連 Nostr(要 AIB_TEST_NOSTR_VENV;沒有就跳過):
+S1 X 寄 A/6ddf/Y ⇒ rc 3 held(X 沒列名冊,Y 驗不到 ⇒ 待審;1.7 收件);假中繼站上有給 Y 的 gift wrap,
+   Y 的金鑰拆得開:寄件人 = X 的 npub、內文對、aib-msgid / aib-from / aib-to / aib-priority 標籤對;另有一份給 X 自己
+S2 --dry-run(op=resolve)⇒ rc 0 resolved,detail 有 Y 的 npub 與收信站;沒有寄出任何 gift wrap
+S3 寄件人沒量到(attested=false)⇒ rc 2 refused unattested,中繼站上沒有任何 gift wrap
+S4 沒公開的席 ⇒ rc 2 refused no_seat;過期的信 ⇒ rc 2 expired;都沒寄
+S5 對方收信站全連不上 ⇒ 重試 3 次後 failed(rc 2,或逾時 rc 4 後回條補 failed);不會無限重試
+S6 有工人就有心跳;off ⇒ 工人結束、心跳刪掉、寄件端回 bridge-off
+L1 洩漏:沙盒(金鑰檔以外)、回條、工人 log、中繼站所有事件都沒有 nsec1 與私鑰 hex
+刀(複本):K1 拿掉「沒量到不代簽」⇒ S3 紅;K2 不寄自己那一份 ⇒ S1 紅
+"""
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
+COCKPIT = REPO / "src" / "cockpit"
+BRIDGE = COCKPIT / "chat_bridge.py"
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(COCKPIT))
+from aib_knife_copy import knife_copy  # noqa: E402
+from aib_proc_guard import run_guarded  # noqa: E402
+import dm_global_files as GF  # noqa: E402
+import nostr_keys as NK  # noqa: E402
+
+NOSTR_VENV = os.environ.get("AIB_TEST_NOSTR_VENV") or ""
+HAVE_NOSTR = bool(NOSTR_VENV) and (Path(NOSTR_VENV) / "bin" / "python").exists() and subprocess.run(
+    [str(Path(NOSTR_VENV) / "bin" / "python"), "-c", "import nostr_sdk"], capture_output=True).returncode == 0
+
+UNWRAP = r'''
+import json, sys
+import nostr_sdk as N
+req = json.loads(sys.stdin.read())
+k = N.Keys.parse(req["secret"])
+out = []
+for raw in req["events"]:
+    try:
+        u = N.UnwrappedGift.from_gift_wrap(k, N.Event.from_json(json.dumps(raw)))
+    except Exception as e:
+        out.append({"error": type(e).__name__}); continue
+    r = u.rumor()
+    out.append({"sender": u.sender().to_bech32(), "content": r.content(), "kind": r.kind().as_u16(),
+                "tags": [t.to_vec() for t in r.tags()]})
+print(json.dumps(out, ensure_ascii=False))
+'''
+
+
+class Box(object):
+    def __init__(self, relays=None):
+        self.td = Path(tempfile.mkdtemp(prefix="aib-send-"))
+        self.home = self.td / "home"
+        self.home.mkdir()
+        self.chat = self.home / ".ez2-aib" / "chat"
+        self.root = self.td / "bridge"
+        self.relays = relays or []
+        self.procs = []
+        self.extra = {}                      # 測試要改的環境變數(例 AIB_CHAT_READ_BATCH);env() 與 start_run 都帶
+
+    def env(self, **extra):
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("EZ2_", "AIB_", "TMUX")) and k not in ("PYTHONPATH", "BASH_ENV")}
+        env.update({"HOME": str(self.home), "AIB_CHAT_BRIDGE_DIR": str(self.root), "AIB_CHAT_TICK": "0.2",
+                    "EZ2_AIB_LOCALE": "zh-TW", "PYTHONDONTWRITEBYTECODE": "1", "AIB_CHAT_NET_TIMEOUT": "3",
+                    "AIB_CHAT_POLL": "0.1", "AIB_CHAT_RETRY_GAP": "0.3"})
+        if self.relays:
+            env["AIB_CHAT_RELAYS"] = ",".join(self.relays)
+        env.update(self.extra)
+        env.update(extra)
+        return env
+
+    def cli(self, *args, **extra):
+        return subprocess.run([sys.executable, str(BRIDGE)] + list(args), capture_output=True, text=True,
+                              env=self.env(**extra), timeout=120)
+
+    def seat(self, inst, win, uuid, uid, name):
+        d = self.home / ".ez2-aib" / "instances" / inst / "seats"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ("%s.json" % win)).write_text(json.dumps({"schema": "aib-seat/v1", "session_uuid": uuid, "role": "dev"}))
+        disp = self.home / ".ez2-aib" / "identity" / "seat-display.json"
+        disp.parent.mkdir(parents=True, exist_ok=True)
+        cur = json.loads(disp.read_text()) if disp.exists() else {"display": {}}
+        cur["display"][uuid.replace("-", "")[-5:]] = {"persona_uid": uid, "display_name": name}
+        disp.write_text(json.dumps(cur))
+        return uuid.replace("-", "")[-5:]
+
+    def start_run(self):
+        p = subprocess.Popen([sys.executable, str(BRIDGE), "run"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, env=self.env(), start_new_session=True)
+        self.procs.append(p)
+        return p
+
+    def status(self):
+        try:
+            return json.loads((self.root / "status.json").read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def wait_for(self, cond, secs=30):
+        end = time.time() + secs
+        while time.time() < end:
+            if cond():
+                return True
+            time.sleep(0.1)
+        return False
+
+    def close(self):
+        self.cli("off")
+        for p in self.procs:
+            if p.poll() is None:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            try:
+                p.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+        shutil.rmtree(self.td, ignore_errors=True)
+
+
+def outbox_rec(to, frm_seat, content="你好,全球", attested=True, op="send", **extra):
+    rec = {"v": 1, "msgid": GF.new_msgid(), "created_at": int(time.time()), "op": op,
+           "from": {"cabin": "6ddf", "seat": frm_seat, "attested": attested}, "to": to, "priority": "important"}
+    if op == "send":
+        rec["content"] = content
+    rec.update(extra)
+    return rec
+
+
+class Core(unittest.TestCase):
+    def test_c1_no_venv_no_heartbeat(self):
+        b = Box()
+        self.addCleanup(b.close)
+        x = b.seat("20261016-000000-6ddf", "w2", "00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")
+        r = b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        b.start_run()
+        self.assertTrue(b.wait_for(lambda: b.status().get("state") in ("no_relays", "published")), b.status())
+        time.sleep(0.6)
+        self.assertIsNone(b.status().get("worker_pid"))
+        self.assertFalse(GF.bridge_alive(b.root))
+        res = GF.send_and_wait(b.root, outbox_rec("npub1" + "q" * 58, x), wait=1)
+        self.assertEqual((res["rc"], res["stage"]), (2, "bridge-off"))
+        self.assertEqual(list((b.root / "outbox").glob("*.json")), [])
+
+
+@unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
+class Network(unittest.TestCase):
+    def setUp(self):
+        from aib_fake_relay import FakeRelay
+        self.relay = FakeRelay()
+        self.relay.__enter__()
+        self.addCleanup(self.relay.__exit__, None, None, None)
+        self.b = Box([self.relay.url])
+        self.addCleanup(self.b.close)
+        self.b.chat.mkdir(parents=True, exist_ok=True)
+        os.symlink(NOSTR_VENV, str(self.b.chat / "venv"))
+        self.x = self.b.seat("20261016-000000-6ddf", "w2", "00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")
+        self.y = self.b.seat("20261016-000000-6ddf", "w3", "00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")
+        self.hidden = self.b.seat("20261016-000000-6ddf", "w4", "00000000-0000-0000-0000-00000000ccc3", "zzzz33", "沒公開")
+        r = self.b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.b.cli("publish", self.y)
+        self.b.start_run()
+        ok = self.b.wait_for(lambda: self.b.status().get("state") == "published" and GF.bridge_alive(self.b.root), 40)
+        self.assertTrue(ok, self.b.status())
+        self.env = self.b.env()
+        self.owner = NK.read_map(self.env)["owner"]["npub"]
+
+    def npub_of(self, seat):
+        return next(e["npub"] for e in NK.read_map(self.env)["seats"] if e["seat5"] == seat and e["status"] == "active")
+
+    def stem_of(self, seat):
+        return next(e["key"] for e in NK.read_map(self.env)["seats"] if e["seat5"] == seat and e["status"] == "active")
+
+    def wraps_for(self, seat):
+        from aib_fake_relay import RelayClient
+        c = RelayClient(self.relay.url)
+        c.send(["REQ", "w", {"kinds": [1059], "#p": [NK.npub_to_hex(self.npub_of(seat))]}])
+        evs = c.recv_until_eose("w")
+        return evs
+
+    def unwrap(self, seat, events):
+        req = json.dumps({"secret": NK.load_secret(self.stem_of(seat), self.env), "events": events})
+        r = subprocess.run([str(Path(NOSTR_VENV) / "bin" / "python"), "-c", UNWRAP], input=req, capture_output=True,
+                           text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_s1_send(self):
+        rec = outbox_rec("%s/6ddf/%s" % (self.owner, self.y), self.x, thread="t-1")
+        res = GF.send_and_wait(self.b.root, rec, wait=20)
+        # 1.7 收件做好後:X 沒列名冊 ⇒ Y 那邊驗不到 ⇒ 待審 ⇒ 寄件端拿到 held(rc 3)
+        self.assertEqual((res["rc"], res["stage"]), (3, "held"), res)
+        got = self.unwrap(self.y, self.wraps_for(self.y))
+        self.assertEqual(len(got), 1, got)
+        g = got[0]
+        self.assertEqual((g["sender"], g["content"], g["kind"]), (self.npub_of(self.x), "你好,全球", 14))
+        tags = {t[0]: t[1] for t in g["tags"] if len(t) > 1}
+        self.assertEqual(tags["aib-msgid"], rec["msgid"])
+        self.assertEqual(tags["aib-from"], "%s/6ddf/%s" % (self.owner, self.x))
+        self.assertEqual(tags["aib-to"], rec["to"])
+        self.assertEqual((tags["aib-priority"], tags["aib-thread"], tags["aib-v"], tags["aib-type"]), ("important", "t-1", "1", "dm"))
+        mine = [m for m in self.unwrap(self.x, self.wraps_for(self.x)) if m.get("sender") == self.npub_of(self.x)]
+        self.assertEqual([m["content"] for m in mine], ["你好,全球"], "要另寄一份給自己(NIP-17)")
+
+    def test_s2_dry_run(self):
+        res = GF.send_and_wait(self.b.root, outbox_rec("%s/6ddf/%s" % (self.owner, self.y), self.x, op="resolve"), wait=8)
+        self.assertEqual((res["rc"], res["stage"]), (0, "resolved"), res)
+        d = json.loads(res["detail"])
+        self.assertEqual((d["npub"], d["dm_relays"], d["display_name"]), (self.npub_of(self.y), [self.relay.url], "Andy"))
+        self.assertEqual(self.wraps_for(self.y), [])
+
+    def test_s3_unattested_not_signed(self):
+        res = GF.send_and_wait(self.b.root, outbox_rec("%s/6ddf/%s" % (self.owner, self.y), self.x, attested=False), wait=8)
+        self.assertEqual((res["rc"], res["stage"], res["detail"]), (2, "refused", "unattested"), res)
+        self.assertEqual(self.wraps_for(self.y), [])
+        self.assertEqual(self.wraps_for(self.x), [])
+
+    def test_s4_no_seat_and_expired(self):
+        res = GF.send_and_wait(self.b.root, outbox_rec("%s/6ddf/%s" % (self.owner, self.hidden), self.x), wait=8)
+        self.assertEqual((res["rc"], res["stage"], res["detail"]), (2, "refused", "no_seat"), res)
+        res = GF.send_and_wait(self.b.root, outbox_rec("%s/6ddf/%s" % (self.owner, self.y), self.x,
+                                                       expires=int(time.time()) - 5), wait=8)
+        self.assertEqual((res["rc"], res["stage"]), (2, "expired"), res)
+        self.assertEqual(self.wraps_for(self.y), [])
+
+    def test_s5_relays_down_gives_up(self):
+        # 對方 10050 列的站連不上:用 npub 直寄、10050 先發到假站,裡面寫一個關著的埠
+        from aib_fake_relay import RelayClient
+        dead = "ws://127.0.0.1:9"
+        target = NK.npub(NK.pubkey_hex("%064x" % 11))
+        # 假站不驗簽,但 nostr-sdk 收事件會驗 ⇒ 用 venv 真的簽一則
+        signed = subprocess.run([str(Path(NOSTR_VENV) / "bin" / "python"), "-c",
+                                 "import nostr_sdk as N,sys;k=N.Keys.parse('%064x'%11);"
+                                 "print(N.EventBuilder(N.Kind(10050),'').tags([N.Tag.parse(['relay',sys.argv[1]])]).finalize(k).as_json())",
+                                 dead], capture_output=True, text=True, timeout=60)
+        ev = json.loads(signed.stdout)
+        c = RelayClient(self.relay.url)
+        c.send(["EVENT", ev])
+        c.recv()
+        rec = outbox_rec(target, self.x)
+        res = GF.send_and_wait(self.b.root, rec, wait=20)
+        if res["rc"] == 4:                                        # 逾時:晚到的回條要是 failed
+            self.assertTrue(self.b.wait_for(lambda: GF.final_receipt(GF.read_receipts(self.b.root, rec["msgid"])) is not None, 30))
+            res = {"rc": 2, "stage": GF.final_receipt(GF.read_receipts(self.b.root, rec["msgid"]))["stage"]}
+        self.assertEqual((res["rc"], res["stage"]), (2, "failed"), res)
+        self.assertEqual(list((self.b.root / "sending").glob(rec["msgid"] + ".*")), [], "放棄後不准再重試")
+
+    def test_s6_heartbeat_and_off(self):
+        self.assertTrue(GF.bridge_alive(self.b.root))
+        pid = self.b.status().get("worker_pid")
+        self.assertIsInstance(pid, int)
+        self.b.cli("off")
+        self.assertTrue(self.b.wait_for(lambda: not (self.b.root / "heartbeat.json").exists(), 15), "off 後心跳要刪")
+        res = GF.send_and_wait(self.b.root, outbox_rec("%s/6ddf/%s" % (self.owner, self.y), self.x), wait=1)
+        self.assertEqual(res["stage"], "bridge-off")
+
+    def test_l1_no_secret_leak(self):
+        GF.send_and_wait(self.b.root, outbox_rec("%s/6ddf/%s" % (self.owner, self.y), self.x), wait=4)
+        m = NK.read_map(self.env)
+        stems = ["owner"] + [e["key"] for e in m["seats"] if e["status"] == "active"]
+        secrets = [NK.load_secret(s, self.env) for s in stems]
+        nsecs = [NK.bech32_encode("nsec", bytes.fromhex(s)) for s in secrets]
+        from aib_fake_relay import RelayClient
+        c = RelayClient(self.relay.url)
+        c.send(["REQ", "all", {}])
+        evs = c.recv_until_eose("all")
+        blobs = [("relay", json.dumps(evs).lower())]
+        for p in self.b.td.rglob("*"):
+            if p.is_file() and not p.name.endswith(".key") and p.name != "wrap.key" and "venv" not in p.parts:
+                blobs.append((str(p), p.read_bytes().decode("utf-8", "replace").lower()))
+        for where, text in blobs:
+            self.assertNotIn("nsec1", text, where)
+            for s, ns in zip(secrets, nsecs):
+                self.assertNotIn(s, text, where)
+                self.assertNotIn(ns, text, where)
+
+
+class Knife(unittest.TestCase):
+    def _knife(self, needle, replacement, cell):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_nostr.py", needle, replacement, tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), cell], cwd=str(root), max_procs=80, timeout=300)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅:" + cell + "\n" + r.stdout + r.stderr)
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k1_sign_unattested(self):
+        self._knife('        if not frm.get("attested"):', '        if False:', "Network.test_s3_unattested_not_signed")
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k2_no_self_copy(self):
+        self._knife('            await c.send_event(mine, N.SendEventTarget.to([N.RelayUrl.parse(r) for r in own]))',
+                    '            pass', "Network.test_s1_send")
+
+
+if __name__ == "__main__":
+    unittest.main()

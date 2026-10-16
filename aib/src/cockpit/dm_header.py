@@ -44,6 +44,33 @@ LOOPBACK = "127.0.0.1"
 _PARTY = r"IP:(?P<{p}addr>[^/\s]+)/(?P<{p}cabin>[^/\s]*)/(?P<{p}name>[^\s@][^@]*?)@(?P<{p}code>[^\s/@>]+)"
 _V2_RE = re.compile(r"^" + _PARTY.format(p="s_") + re.escape(ARROW) + _PARTY.format(p="r_")
                     + r" (?P<when>\d\d-\d\d \d\d:\d\d)\((?P<tz>[^()\s]+)\)(?= |\n|$)")
+# 全球來信(開發文件第 8.1 節第 7 步):寄件方是 `名(全球·…)`,收件方與時間同新式
+_GLOBAL_REST_RE = re.compile(r"^" + _PARTY.format(p="r_") + r" (?P<when>\d\d-\d\d \d\d:\d\d)\((?P<tz>[^()\s]+)\)(?= |\n|$)")
+
+
+def _parse_global(text):
+    """全球抬頭 ⇒ 同形結果,form="global"、sender_kind="external"(外部席:不是本機的席、**也不是真人**)。
+    10-16 盤點第 1 項:以前認不出 ⇒ bot 席把它當成主人本人打的字(grokbot / claudebot 分區成 human)。"""
+    try:
+        import dm_global_header as GH
+    except Exception:   # noqa: BLE001
+        return None
+    head, nl, tail = text.partition("\n")
+    got = GH.parse_line(head)
+    if not got:
+        return None
+    m = _GLOBAL_REST_RE.match(got["rest"])
+    if not m:
+        return None
+    rest = got["rest"][m.end():]
+    if rest[:1] == " ":
+        rest = rest[1:]
+    body = rest + (nl + tail if nl else "")
+    sender = {"addr": "", "cabin": "", "name": got["sender"]["name"], "code": ""}
+    out = _result("global", sender, _from_groups(m, "r_"), m.group("when"), m.group("tz"), body)
+    out["sender_kind"] = "external"
+    out["global"] = got["sender"]
+    return out
 
 
 def party(code: str, name: str = "", *, addr: str = "", cabin: str = "") -> dict:
@@ -102,12 +129,13 @@ def parse(text: str) -> Optional[dict]:
     """認新式與舊式兩種;認不出回 None。
 
     回傳(三式同形):
-      form         "v2" | "legacy_at" | "legacy_ip"
+      form         "v2" | "global" | "legacy_at" | "legacy_ip"
       sender       {addr, cabin, name, code}(舊式缺的欄給 "")
       receiver     同上
       when         "MM-DD HH:MM"
       tz           "台北時間" 這類地名(舊式的「台北」補成「台北時間」)
-      sender_kind  "system" | "human" | "seat" | "other"(未認證/艙外/bot)—— 系統判斷只看第三段 `系統@aib`
+      sender_kind  "system" | "human" | "seat" | "other"(未認證/艙外/bot)| "external"(全球來信)
+                   —— 系統判斷只看第三段 `系統@aib`
       body         抬頭之後的正文(抬頭後的一個空格或換行不算正文)
     """
     if not text:
@@ -118,6 +146,9 @@ def parse(text: str) -> Optional[dict]:
         if rest[:1] in (" ", "\n"):
             rest = rest[1:]
         return _result("v2", _from_groups(m, "s_"), _from_groups(m, "r_"), m.group("when"), m.group("tz"), rest)
+    g = _parse_global(text)
+    if g is not None:
+        return g
     return parse_legacy(text)
 
 
