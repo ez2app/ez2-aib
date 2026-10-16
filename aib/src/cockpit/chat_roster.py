@@ -91,13 +91,17 @@ def _save_profile(rec, env=None):
 # 以「主人」為單位:加了 Bob 的主人 npub,Bob 名冊上列出的每一席寄來都收。只在本機,不公開、不發到中繼站。
 # 第 1 期是單方面的通訊錄(好友申請與同意是第 2 期):對方也要把你加進他的好友,你寄的才進得去。
 
-def friends_path(env=None):
-    return _chat_home(env) / "friends.json"
+LISTS = ("friends", "mine", "blocks")   # friends 好友;mine 我自己其他機器(27.2,收到當本人);blocks 封鎖(29.3,靜默丟)
 
 
-def read_friends(env=None):
+def friends_path(env=None, kind="friends"):
+    assert kind in LISTS
+    return _chat_home(env) / (kind + ".json")
+
+
+def read_friends(env=None, kind="friends"):
     try:
-        rec = json.loads(friends_path(env).read_text(encoding="utf-8"))
+        rec = json.loads(friends_path(env, kind).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not isinstance(rec, dict) or rec.get("v") != VERSION or not isinstance(rec.get("friends"), list):
@@ -105,8 +109,8 @@ def read_friends(env=None):
     return [f for f in rec["friends"] if isinstance(f, dict) and _NPUB_RE.match(str(f.get("owner") or ""))]
 
 
-def _save_friends(friends, env=None):
-    p = friends_path(env)
+def _save_friends(friends, env=None, kind="friends"):
+    p = friends_path(env, kind)
     p.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(str(p.parent), 0o700)
     write_json(str(p), {"v": VERSION, "friends": friends, "updated_at": int(time.time())})
@@ -127,41 +131,193 @@ def friend_owner(text):
     return owner
 
 
-def add_friend(text, name=None, env=None):
-    """加好友(同一位主人再加 = 改名字)。不合 ⇒ RosterError。回 (主人 npub, 是否新加)。"""
+def add_friend(text, name=None, env=None, kind="friends", source=None):
+    """加好友 / 加我的其他機器(同一位主人再加 = 改名字)。不合 ⇒ RosterError。回 (主人 npub, 是否新加)。
+    source:"sent" = 寄過信自動加(第 27.3 節);手動加不帶。"""
     owner = friend_owner(text)
     if not owner:
         raise RosterError("bad_friend")
     me = (NK.read_map(env).get("owner") or {}).get("npub")
     if me and me == owner:
         raise RosterError("friend_self")
+    if kind != "blocks" and is_blocked(owner, env):
+        raise RosterError("blocked")                # 封鎖優先:要先解封才能加好友 / 綁成我的機器
     clean = GF.clean_display_name(name) if name else None
     if name and not clean:
         raise RosterError("bad_name")
-    fr = read_friends(env)
+    fr = read_friends(env, kind)
     old = next((f for f in fr if f["owner"] == owner), None)
     if old:
         if clean:
             old["name"] = clean
+        if source is None:
+            old.pop("source", None)                 # 手動加過 ⇒ 不再算「自動加」
     else:
-        fr.append({"owner": owner, "name": clean, "added_at": int(time.time())})
-    _save_friends(fr, env)
+        rec = {"owner": owner, "name": clean, "added_at": int(time.time())}
+        if source:
+            rec["source"] = source
+        fr.append(rec)
+    _save_friends(fr, env, kind)
+    if kind == "blocks":                            # 封鎖 = 同時移出好友(第 29.3 節)
+        remove_friend(owner, env, "friends")
     return owner, old is None
 
 
-def remove_friend(text, env=None):
+def remove_friend(text, env=None, kind="friends"):
     owner = friend_owner(text)
     if not owner:
         raise RosterError("bad_friend")
-    fr = read_friends(env)
+    fr = read_friends(env, kind)
     left = [f for f in fr if f["owner"] != owner]
     if len(left) != len(fr):
-        _save_friends(left, env)
+        _save_friends(left, env, kind)
     return owner, len(left) != len(fr)
 
 
-def is_friend(owner, env=None):
-    return bool(owner) and any(f["owner"] == owner for f in read_friends(env))
+def is_friend(owner, env=None, kind="friends"):
+    return bool(owner) and any(f["owner"] == owner for f in read_friends(env, kind))
+
+
+def is_blocked(who, env=None):
+    """第 29.3 節:封鎖的主人(或只有席 npub 的寄件人)⇒ 信與申請一律靜默丟。"""
+    return is_friend(who, env, "blocks")
+
+
+def is_mine(owner, env=None):
+    """寄件主人是我自己的另一台機器(第 27.2 節)⇒ 收件當本人(class own)。"""
+    return is_friend(owner, env, "mine")
+
+
+# ── 在線狀態分享等級(第 30.2 節)── chat/share.json(0600):{"v":1, "default":"online", "per":{owner: level}}
+SHARE_LEVELS = ("off", "online", "status")
+SHARE_DEFAULT = "online"          # 第 18.1 節:預設只有在或不在
+SHARE_MINE_DEFAULT = "status"     # 我的其他機器預設看得到狀態列
+
+
+def share_path(env=None):
+    return _chat_home(env) / "share.json"
+
+
+def read_share(env=None):
+    try:
+        rec = json.loads(share_path(env).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        rec = None
+    if not isinstance(rec, dict) or rec.get("v") != VERSION:
+        rec = {"v": VERSION}
+    if rec.get("default") not in SHARE_LEVELS:
+        rec["default"] = SHARE_DEFAULT
+    per = rec.get("per") if isinstance(rec.get("per"), dict) else {}
+    rec["per"] = {k: v for k, v in per.items() if _NPUB_RE.match(k) and v in SHARE_LEVELS}
+    return rec
+
+
+def set_share(level, who=None, env=None):
+    """who=None ⇒ 改預設;否則改這一位(主人 npub 或位址)。回 (對象, 等級)。"""
+    if level not in SHARE_LEVELS:
+        raise RosterError("bad_share")
+    rec = read_share(env)
+    if who is None:
+        rec["default"] = level
+        target = "default"
+    else:
+        target = friend_owner(who)
+        if not target:
+            raise RosterError("bad_friend")
+        rec["per"][target] = level
+    p = share_path(env)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(p.parent), 0o700)
+    write_json(str(p), rec)
+    os.chmod(str(p), 0o600)
+    return target, level
+
+
+def share_level(owner, env=None):
+    """對這位主人分享到哪一級:封鎖 / 不是好友也不是我的機器 ⇒ off(陌生人什麼都不送)。"""
+    if not owner or is_blocked(owner, env):
+        return "off"
+    rec = read_share(env)
+    if owner in rec["per"]:
+        lvl = rec["per"][owner]
+    elif is_mine(owner, env):
+        lvl = SHARE_MINE_DEFAULT
+    else:
+        lvl = rec["default"]
+    if not (is_mine(owner, env) or is_friend(owner, env)):
+        return "off"
+    return lvl
+
+
+# ── 真人驗證:社群帳號與 NIP-05(第 32 節,Andy 10-16 23:4x)──
+SOCIAL_PLATFORMS = ("x", "github", "line", "fb", "ig", "threads", "youtube", "web")
+SOCIAL_AUTO = ("github", "web", "youtube", "threads")   # 證明頁不用登入就抓得到的(其他平台只能算自稱)
+SOCIALS_MAX = 8
+_NIP05_RE = re.compile(r"^[a-z0-9._-]{1,64}@[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})+$")
+_PROOF_RE = re.compile(r"^https://[^\s<>\"']{1,300}$")
+
+
+def _clean_text(v, n):
+    t = "".join(ch for ch in str(v or "") if ord(ch) >= 32 and ch not in "<>").strip()
+    return t[:n] or None
+
+
+def clean_socials(items):
+    out, seen = [], set()
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict) or it.get("p") not in SOCIAL_PLATFORMS:
+            continue
+        v = _clean_text(it.get("v"), 100)
+        if not v or (it["p"], v) in seen:
+            continue
+        seen.add((it["p"], v))
+        row = {"p": it["p"], "v": v}
+        if isinstance(it.get("proof"), str) and _PROOF_RE.match(it["proof"]):
+            row["proof"] = it["proof"]
+        out.append(row)
+    return out[:SOCIALS_MAX]
+
+
+def clean_nip05(text):
+    t = str(text or "").strip().lower()
+    return t if _NIP05_RE.match(t) else None
+
+
+def set_social(action, p=None, v=None, proof=None, env=None):
+    """aib chat social add <平台> <帳號或網址> [--proof <https 網址>] / remove <平台> [<帳號>]。回改好的清單。"""
+    rec = read_profile(env)
+    if not rec:
+        raise RosterError("no_profile")
+    cur = clean_socials(rec.get("socials"))
+    if p not in SOCIAL_PLATFORMS:
+        raise RosterError("bad_social")
+    if action == "add":
+        row = clean_socials([{"p": p, "v": v, "proof": proof}])
+        if not row or (proof and "proof" not in row[0]):
+            raise RosterError("bad_social")
+        cur = [x for x in cur if not (x["p"] == p and x["v"] == row[0]["v"])] + row
+        if len(cur) > SOCIALS_MAX:
+            raise RosterError("too_many_socials")
+    else:
+        cur = [x for x in cur if not (x["p"] == p and (v is None or x["v"] == v))]
+    rec["socials"] = cur
+    _save_profile(rec, env)
+    return cur
+
+
+def set_nip05(text, env=None):
+    rec = read_profile(env)
+    if not rec:
+        raise RosterError("no_profile")
+    if text is None:
+        rec.pop("nip05", None)
+    else:
+        n = clean_nip05(text)
+        if not n:
+            raise RosterError("bad_nip05")
+        rec["nip05"] = n
+    _save_profile(rec, env)
+    return rec.get("nip05")
 
 
 def clean_country(code):
@@ -205,12 +361,51 @@ def set_public(seat5, on, env=None):
     return rec
 
 
+MAX_RELAYS = 6     # 第 27.9 節:每多一站,每則信就多寄一份、多一個會限流或封人的對象
+
+
+def _relay_ok(url):
+    return bool(_RELAY_RE.match(url or "") or _LOCAL_RELAY_RE.match(url or ""))
+
+
 def relays(env=None):
-    """AIB_CHAT_RELAYS(逗號分隔)可改;不合格的站略過,全不合格退回預設。"""
+    """用哪些中繼站:AIB_CHAT_RELAYS(逗號分隔,測試用)優先;再來主人資料的 relays(aib chat relays add,
+    第 27.9 節);都沒有 ⇒ 預設兩站。不合格的站略過,全不合格退回預設。"""
     env = os.environ if env is None else env
     raw = [x.strip() for x in (env.get("AIB_CHAT_RELAYS") or "").split(",") if x.strip()]
-    good = [r for r in raw if _RELAY_RE.match(r) or _LOCAL_RELAY_RE.match(r)]
+    if not raw:
+        raw = list((read_profile(env) or {}).get("relays") or [])
+    good = [r for r in raw if _relay_ok(r)][:MAX_RELAYS]
     return good or list(DEFAULT_RELAYS)
+
+
+def set_relays(action, url=None, env=None):
+    """aib chat relays add|remove|reset。自訂清單一開始 = 現在用的(預設兩站),加減都在它上面。
+    不合格 ⇒ RosterError(bad_relay / too_many_relays / no_profile / last_relay)。回改好的清單。"""
+    rec = read_profile(env)
+    if not rec:
+        raise RosterError("no_profile")
+    cur = [r for r in (rec.get("relays") or list(DEFAULT_RELAYS)) if _relay_ok(r)]
+    url = (url or "").strip().rstrip("/") if action != "reset" else None
+    if action == "add":
+        if not _relay_ok(url):
+            raise RosterError("bad_relay")
+        if url not in cur:
+            if len(cur) >= MAX_RELAYS:
+                raise RosterError("too_many_relays")
+            cur.append(url)
+    elif action == "remove":
+        if url in cur and len(cur) == 1:
+            raise RosterError("last_relay")
+        cur = [r for r in cur if r != url]
+    else:
+        cur = list(DEFAULT_RELAYS)
+    if cur == list(DEFAULT_RELAYS):
+        rec.pop("relays", None)
+    else:
+        rec["relays"] = cur
+    _save_profile(rec, env)
+    return cur
 
 
 def _aib_version():
@@ -260,6 +455,10 @@ def build(env=None, live=None, now=None):
                "cabins": [{"cabin": c, "seats": seats} for c, seats in sorted(cabins.items())],
                "dm_relays": relays(env), "aib_version": _aib_version(), "envelope": list(ENVELOPES),
                "updated_at": int(time.time() if now is None else now)}
+    # 第 32 節(Andy 10-16 23:4x 真人驗證):NIP-05 放公開名冊(網域那份檔本來就公開);
+    # 社群帳號**不放**(Andy 23:5x「社群只給好友看」)⇒ 由連線工人私下送給好友 / 我的其他機器(aib-type=card)
+    if prof.get("nip05") and clean_nip05(prof["nip05"]):
+        content["nip05"] = clean_nip05(prof["nip05"])
     return content, dm_seats
 
 
@@ -353,6 +552,9 @@ def parse(content, signer_npub):
                 s["name"] = None
             if not isinstance(s.get("langs", []), list) or not all(isinstance(x, str) and _LANG_RE.match(x) for x in s.get("langs", [])):
                 s["langs"] = []
+    # 第 32 節:社群與 NIP-05 是選填;不合格的整欄當沒有(不讓名冊因此不能用)
+    rec["socials"] = clean_socials(rec.get("socials"))
+    rec["nip05"] = clean_nip05(rec.get("nip05"))
     return rec
 
 

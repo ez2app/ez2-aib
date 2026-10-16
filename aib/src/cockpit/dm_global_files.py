@@ -55,6 +55,7 @@ NAME_MAX = 32               # 第 5.8 節
 
 MSGID_RE = re.compile(r"^[0-9a-f]{32}$")
 NPUB_RE = r"npub1[02-9ac-hj-np-z]{58}"
+NPUB_FULL_RE = re.compile(r"^%s$" % NPUB_RE)
 _ADDR_RE = re.compile(r"^(?:(?P<owner>%s)/(?P<cabin>[0-9a-z]{1,4})/(?P<seat>[0-9a-z]{4,8})|(?P<npub>%s))$"
                       % (NPUB_RE, NPUB_RE))
 _NPUB_ONLY = re.compile(r"^%s$" % NPUB_RE)
@@ -166,7 +167,7 @@ def parse_address(addr):
 def check_outbox(rec):
     _base(rec)
     _need(rec, "created_at", _is_int, "要是非負整數(UTC 秒)")
-    _need(rec, "op", lambda v: v in ("send", "resolve"), "只能 send / resolve")
+    _need(rec, "op", lambda v: v in ("send", "resolve", "request"), "只能 send / resolve / request")
     frm = rec.get("from")
     if not isinstance(frm, dict):
         raise ContractError("from:要是物件")
@@ -177,6 +178,8 @@ def check_outbox(rec):
     _need(rec, "to", lambda v: parse_address(v) is not None, "不是全球位址(<主人 npub>/<艙>/<席> 或 npub1…)")
     if rec["op"] == "send":
         _need(rec, "content", _content_ok, "要有內容、最多 %d 字" % CONTENT_MAX)
+    if rec["op"] == "request":   # 好友申請(第 29.4 節):一句話,可空
+        _opt(rec, "content", lambda v: isinstance(v, str) and len(v) <= REQUEST_NOTE_MAX, "最多 %d 字" % REQUEST_NOTE_MAX)
     _opt(rec, "priority", lambda v: v in PRIORITIES, "只能 %s" % "/".join(PRIORITIES))
     _opt(rec, "expires", _is_int, "要是非負整數(UTC 秒)")
     _opt(rec, "reply_to", lambda v: isinstance(v, str) and bool(MSGID_RE.match(v)), "要是 msgid")
@@ -201,6 +204,7 @@ def check_delivery(rec):
     _need(rec, "at", _is_int, "要是非負整數(UTC 秒)")
     _need(rec, "state", lambda v: v in DELIVERY_STATES, "不認得的狀態")
     _opt(rec, "pos", lambda v: _is_int(v) and v > 0, "要是正整數")
+    _opt(rec, "reason", lambda v: v in REFUSE_TEXT, "不認得的拒收原因")
     return rec
 
 
@@ -514,7 +518,9 @@ def reply_code(msgid, taken=()):
 REFUSE_TEXT = {
     "not_friend": "對方只收好友的信:請對方先把你的主人號碼加為好友(aib chat friend add <你的主人 npub>)",
     "unverified": "對方驗不到寄件席:這一席要先列進你的名冊(aib chat publish <席碼>)",
+    "rejected": "對方拒絕了好友申請",
 }
+REQUEST_NOTE_MAX = 140      # 好友申請附的一句話(第 29.4 節)
 
 
 def outcome(receipts, op="send", verify=False):
@@ -575,6 +581,171 @@ def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=ti
 # 寄件人標籤(seat_address 白名單的格式):`@五碼[(暱稱)]` = 行程鏈量到的;`seat_claimed:五碼(自稱)` = 自稱(codex 等)
 _LABEL_SEAT_RE = re.compile(r"^@([0-9a-z]{4,8})(?:\(|$)")
 _LABEL_CLAIMED_RE = re.compile(r"^seat_claimed:([0-9a-z]{4,8})[(\uff08]")
+
+
+# ── 好友申請與聯絡人快照(第 29.4、29.6 節)──
+# requests.json:別人寄來、等主人同意的申請 {"v":1, "requests":[{owner, display_name, country, from_addr, note, at, msgid}]}
+#   工人寫入、核心(aib chat request accept|reject)拿掉 ⇒ 兩邊都改 ⇒ 一律在 requests.lock 底下讀改寫。
+# peers.json:查到 / 往來過的對方主人快照 {"v":1, "peers":{owner: {display_name, country, seats[], roster_at, seen_at,
+#   last_in, last_out, n_in, n_out}}};只有工人寫。都不存內文。
+PEERS_MAX = 500
+PEERS_KEEP_S = 180 * 86400
+REQUESTS_MAX = 200
+
+
+def _locked_update(root, name, fn, default):
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    p = root / name
+    lk = os.open(str(root / (name + ".lock")), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            cur = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(cur, dict) or cur.get("v") != VERSION:
+                cur = default()
+        except (OSError, ValueError):
+            cur = default()
+        out = fn(cur)
+        write_json(str(p), cur)
+        os.chmod(str(p), 0o600)
+        return out
+    finally:
+        fcntl.flock(lk, fcntl.LOCK_UN)
+        os.close(lk)
+
+
+def read_requests(root):
+    try:
+        cur = json.loads((Path(root) / "requests.json").read_text(encoding="utf-8"))
+        rows = cur.get("requests") if isinstance(cur, dict) else None
+    except (OSError, ValueError):
+        return []
+    return [r for r in rows if isinstance(r, dict) and NPUB_FULL_RE.match(str(r.get("owner") or ""))] \
+        if isinstance(rows, list) else []
+
+
+def add_request(root, rec, every=86400, now=None):
+    """記一則申請;同一主人 every 秒內已有 ⇒ 不記、回 False(靜默,第 29.4 節)。"""
+    now = int(time.time() if now is None else now)
+
+    def fn(cur):
+        rows = [r for r in cur.setdefault("requests", []) if isinstance(r, dict)]
+        old = next((r for r in rows if r.get("owner") == rec["owner"]), None)
+        if old and now - int(old.get("at") or 0) < every:
+            return False
+        rows = [r for r in rows if r.get("owner") != rec["owner"]]
+        rows.insert(0, dict(rec, at=now))
+        cur["requests"] = rows[:REQUESTS_MAX]
+        return True
+    return _locked_update(root, "requests.json", fn, lambda: {"v": VERSION, "requests": []})
+
+
+def pop_request(root, owner):
+    """拿掉一則申請(同意 / 拒絕後),回那一筆;沒有回 None。"""
+    def fn(cur):
+        rows = [r for r in cur.setdefault("requests", []) if isinstance(r, dict)]
+        hit = next((r for r in rows if r.get("owner") == owner), None)
+        cur["requests"] = [r for r in rows if r.get("owner") != owner]
+        return hit
+    return _locked_update(root, "requests.json", fn, lambda: {"v": VERSION, "requests": []})
+
+
+def note_check(root, owner, key, verified, now=None):
+    """第 32 節:一項證明的驗證結果。key = nip05 / social:<平台>:<帳號>;verified = True / False / None(平台不能自動驗)。"""
+    now = int(time.time() if now is None else now)
+
+    def fn(cur):
+        p = cur.setdefault("peers", {}).get(owner)
+        if p is not None:
+            p.setdefault("checks", {})[key] = {"verified": verified, "at": now}
+    _locked_update(root, "peers.json", fn, lambda: {"v": VERSION, "peers": {}})
+
+
+def read_peers(root):
+    try:
+        cur = json.loads((Path(root) / "peers.json").read_text(encoding="utf-8"))
+        peers = cur.get("peers") if isinstance(cur, dict) else None
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in peers.items() if NPUB_FULL_RE.match(k) and isinstance(v, dict)} if isinstance(peers, dict) else {}
+
+
+def note_peer(root, owner, display_name=None, country=None, seat=None, roster_at=None, direction=None, now=None,
+              request=None, claims=None):
+    """更新一位對方主人的快照。seat = {cabin, seat, npub, name, role}(名冊上的公開欄位)。direction = in / out。"""
+    if not NPUB_FULL_RE.match(owner or ""):
+        return
+    now = int(time.time() if now is None else now)
+
+    def fn(cur):
+        peers = cur.setdefault("peers", {})
+        p = peers.setdefault(owner, {"seats": [], "n_in": 0, "n_out": 0})
+        if display_name:
+            p["display_name"] = display_name
+        if country:
+            p["country"] = country
+        if roster_at:
+            p["roster_at"] = int(roster_at)
+        if isinstance(seat, dict) and seat.get("seat"):
+            keep = {k: seat.get(k) for k in ("cabin", "seat", "npub", "name", "role")}
+            p["seats"] = [x for x in p.get("seats") or [] if x.get("seat") != keep["seat"] or x.get("cabin") != keep["cabin"]]
+            p["seats"].append(keep)
+            p["seats"] = p["seats"][-20:]
+        p["seen_at"] = now
+        if isinstance(claims, dict):          # 第 32 節:對方宣告的 NIP-05(名冊)與社群(好友私下送的 card);驗的結果另存 checks
+            if "socials" in claims:
+                p["socials"] = claims.get("socials") or []
+            if "nip05" in claims:
+                p["nip05"] = claims.get("nip05")
+        if request in ("pending", "accepted", "rejected"):   # 我送出的好友申請,對方回條推到哪(第 29.4 節)
+            p["request"] = request
+        if direction in ("in", "out"):
+            p["last_" + direction] = now
+            p["n_" + direction] = int(p.get("n_" + direction) or 0) + 1
+        drop = [k for k, v in peers.items() if now - int(v.get("seen_at") or 0) > PEERS_KEEP_S]
+        for k in drop:
+            peers.pop(k, None)
+        if len(peers) > PEERS_MAX:
+            for k in sorted(peers, key=lambda k: int(peers[k].get("seen_at") or 0))[:len(peers) - PEERS_MAX]:
+                peers.pop(k, None)
+    _locked_update(root, "peers.json", fn, lambda: {"v": VERSION, "peers": {}})
+
+
+# world.json(第 30.4 節):好友 / 我的其他機器分享來的在線狀態。只有工人寫;核心讀時判過期。
+WORLD_FRESH_S = 40 * 60
+WORLD_STATES = ("online", "idle", "away", "asleep", "unknown")
+
+
+def read_world(root):
+    try:
+        cur = json.loads((Path(root) / "world.json").read_text(encoding="utf-8"))
+        cabins = cur.get("cabins") if isinstance(cur, dict) else None
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in cabins.items() if isinstance(v, dict)} if isinstance(cabins, dict) else {}
+
+
+def note_world(root, owner, cabin, seats, now=None):
+    """收到一份 presence:{owner/cabin: {owner, cabin, presence_at, seats:[{seat, state, now, step}]}}。"""
+    now = int(time.time() if now is None else now)
+    key = "%s/%s" % (owner, cabin)
+
+    def fn(cur):
+        cab = cur.setdefault("cabins", {})
+        cab[key] = {"owner": owner, "cabin": cabin, "presence_at": now, "seats": seats}
+        for k in [k for k, v in cab.items() if now - int(v.get("presence_at") or 0) > PEERS_KEEP_S]:
+            cab.pop(k, None)
+    _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
+
+
+def drop_world(root, keep_owner):
+    """拿掉不再分享對象(好友移除、封鎖)的格;keep_owner(owner) ⇒ True 才留。"""
+    def fn(cur):
+        cab = cur.setdefault("cabins", {})
+        for k in [k for k, v in cab.items() if not keep_owner(v.get("owner"))]:
+            cab.pop(k, None)
+    _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
 
 
 def sender_from_token(token):
