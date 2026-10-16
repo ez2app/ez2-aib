@@ -323,8 +323,10 @@ def _global_or_none(value):
     if not (ok_addr and ok_shown and ok_msgid and ok_code and ok_country
             and isinstance(verified, bool) and isinstance(same, bool)):
         return None
+    rel = value.get("relation")      # 第 29.5 節:own / paired / friend(艦長室收件匣連到通訊錄);舊列沒有
     return {"addr": addr, "shown": shown, "verified": verified, "same_name": same, "msgid": msgid,
-            "reply_code": code, "country": country, "country_status": cstat, "tz_country": tzc}
+            "reply_code": code, "country": country, "country_status": cstat, "tz_country": tzc,
+            "relation": rel if rel in ("own", "paired", "friend") else None}
 
 
 GLOBAL_REPLY_CODE_RE = re.compile(r"^[a-z2-9]{5}$")
@@ -2617,6 +2619,11 @@ def _row(item, seat, now, index=None):
         row["global"] = {k: g.get(k) for k in ("shown", "verified", "same_name", "reply_code", "country", "country_status")}
         # 寄件人指紋(位址雜湊):去重 / 分組要分得出兩個同名的陌生人,又不把位址放進列(盤點 10-16 第 5 項)
         row["global"]["sender_id"] = hashlib.sha256(str(g.get("addr") or "").encode("utf-8")).hexdigest()[:12]
+        # 第 29.5 節:艦長室收件匣用 contact_key 連到通訊錄那一筆(global:<主人 npub>;主人號碼本來就公開在名冊上)
+        import dm_global_files as GF
+        owner = (GF.parse_address(str(g.get("addr") or "")) or {}).get("owner")
+        row["global"]["contact_key"] = "global:" + owner if owner else None
+        row["global"]["relation"] = g.get("relation")
     if index is not None:
         row["index"] = index
     return row

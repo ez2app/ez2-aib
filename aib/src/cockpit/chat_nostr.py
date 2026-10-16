@@ -205,7 +205,8 @@ def _local_tz():
 
 
 def _rumor_tags(rec, from_addr):
-    t = [["aib-v", "1"], ["aib-type", "dm"], ["aib-msgid", rec["msgid"]], ["aib-from", from_addr], ["aib-to", rec["to"]]]
+    typ = "friend-request" if rec.get("op") == "request" else "dm"        # 第 29.4 節
+    t = [["aib-v", "1"], ["aib-type", typ], ["aib-msgid", rec["msgid"]], ["aib-from", from_addr], ["aib-to", rec["to"]]]
     for key, tag in (("thread", "aib-thread"), ("kind", "aib-kind"), ("priority", "aib-priority"),
                      ("reply_to", "aib-reply-to"), ("lang", "aib-lang")):
         if rec.get(key):
@@ -385,15 +386,16 @@ class Sender(object):
         from_addr = "%s/%s/%s" % (m["owner"]["npub"], frm["cabin"], frm["seat"])
         tags = _rumor_tags(rec, from_addr)
         receiver = N.PublicKey.parse(res["seat"]["npub"])
-        gw = N.nip17_make_private_msg(keys, receiver, rec["content"], rumor_extra_tags=tags)
+        gw = N.nip17_make_private_msg(keys, receiver, rec.get("content") or "", rumor_extra_tags=tags)
         # NIP-17:另包一份給自己(手機端才看得到雙方完整對話),發到自己的收信站
-        mine = N.nip17_make_private_msg(keys, keys.public_key(), rec["content"], rumor_extra_tags=tags)
+        mine = N.nip17_make_private_msg(keys, keys.public_key(), rec.get("content") or "", rumor_extra_tags=tags)
         keys = None
         target, own = res["dm_relays"], CR.relays()
         # 寄出帳:對方回條回來時,只收「我寄給的那個 npub」簽的(防有人冒充對方亂回條)。
         # 要在寄之前寫:公開站回 OK 可能比對方的回條還慢(10-16 實機驗收 5 則掉 3 張 held 回條)
         (self.root / "sent").mkdir(exist_ok=True)
-        write_json(str(self.root / "sent" / (msgid + ".json")), {"v": 1, "to": res["seat"]["npub"], "at": int(time.time())})
+        write_json(str(self.root / "sent" / (msgid + ".json")), {"v": 1, "to": res["seat"]["npub"], "at": int(time.time()),
+                                                                  "op": rec.get("op") or "send", "owner": res.get("owner")})
         try:
             ok = await _send_to(target, own, gw, mine)
         except Exception as err:   # noqa: BLE001
@@ -401,20 +403,23 @@ class Sender(object):
             return
         if ok:
             self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "relayed", "%d" % len(ok))      # 第 7.1 節第 6 步:1 站成功就算
-            self._remember_peer(rec["to"], res)
+            self._remember_peer(rec["to"], res, "request" if rec.get("op") == "request" else "sent")
             self._done(msgid)
         else:
             self._retry_later(msgid, "relays")
 
-    def _remember_peer(self, to, res):
+    def _remember_peer(self, to, res, source="sent"):
         """寄過信的人,回信照收(第 27.3 節):收件人的主人自動加進好友(source=sent)。
         寄到只有席 npub 的位址(沒有主人)⇒ 不加;收件人是自己或我的其他機器 ⇒ 不加。"""
         owner = (GF.parse_address(to) or {}).get("owner")
         me = (NK.read_map().get("owner") or {}).get("npub")
-        if not owner or owner == me or CR.is_mine(owner):
+        if owner:
+            GF.note_peer(self.root, owner, res.get("display_name"), res.get("country"), _peer_seat(res),
+                         res.get("roster_at"), direction="out")          # 第 29.6 節聯絡人快照
+        if not owner or owner == me or CR.is_mine(owner) or CR.is_blocked(owner):
             return
         try:
-            CR.add_friend(owner, res.get("display_name"), source="sent")
+            CR.add_friend(owner, res.get("display_name"), source=source)
         except CR.RosterError as err:
             sys.stderr.write("remember_peer:%s\n" % err)
 
@@ -492,6 +497,21 @@ def _tagmap(rumor):
         if len(v) >= 2 and v[0] not in out:
             out[v[0]] = v[1]
     return out
+
+
+def _clean_note(text):
+    """好友申請附的一句話:去掉控制字元、換行改空白、最多 REQUEST_NOTE_MAX 字。只給人看(艦長室),不進 AI。"""
+    t = "".join(" " if ch in "\r\n\t" else ch for ch in str(text or "") if ch in "\r\n\t" or ord(ch) >= 32)
+    return t.strip()[:GF.REQUEST_NOTE_MAX]
+
+
+def _peer_seat(res):
+    """resolve 的結果 ⇒ 聯絡人快照裡的一席(只放名冊上的公開欄位)。"""
+    s = (res or {}).get("seat") or {}
+    if not s.get("npub"):
+        return None
+    return {"cabin": res.get("cabin"), "seat": s.get("seat") or s.get("code"), "npub": s.get("npub"),
+            "name": s.get("name"), "role": s.get("role")}
 
 
 def note_refused(root, rec, parsed, why):
@@ -693,7 +713,35 @@ class Receiver(object):
             r["detail"] = tags["aib-reason"]
         GF.append_receipt(self.root, ref, r)
         audit(self.root, "receipt-in", ref, from_npub, stage)
+        req = {"held": "pending", "delivered": "accepted", "refused": "rejected"}.get(stage)
+        if sent.get("op") == "request" and req and sent.get("owner"):
+            GF.note_peer(self.root, sent["owner"], request=req)        # 第 29.4 節:通訊錄顯示申請推到哪
         return "ok"
+
+    async def on_request(self, rec, parsed, peer, msgid, from_npub):
+        """好友申請(第 29.4 節):不進 AI 佇列。本人 / 好友 ⇒ 直接 delivered;驗不到 ⇒ 拒收(限量);
+        驗得到的陌生人 ⇒ 記 requests.json(同一主人 24 小時 1 則,多的靜默)⇒ 回 held(等主人同意)。"""
+        if rec["class"] in ("own", "friend"):
+            audit(self.root, "in", msgid, from_npub, "request:known")
+            return await self.send_receipt(msgid, "delivered")
+        if not rec["verified"]:
+            note_refused(self.root, rec, parsed, "unverified")
+            last = self.led.st["refused_sent"].get(from_npub)
+            if last and time.time() - last < REFUSE_EVERY_S:
+                audit(self.root, "in", msgid, from_npub, "request:unverified:quiet")
+                return
+            self.led.st["refused_sent"][from_npub] = int(time.time())
+            audit(self.root, "in", msgid, from_npub, "request:unverified")
+            return await self.send_receipt(msgid, "refused", reason="unverified")
+        row = {"owner": parsed["owner"], "display_name": rec.get("display_name"), "country": rec.get("country"),
+               "from_addr": rec.get("from_addr"), "note": rec["content"], "msgid": msgid}
+        GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"), _peer_seat(peer),
+                     peer.get("roster_at"))
+        if not GF.add_request(self.root, row, every=REFUSE_EVERY_S):
+            audit(self.root, "in", msgid, from_npub, "request:quiet")
+            return
+        audit(self.root, "in", msgid, from_npub, "request")
+        return await self.send_receipt(msgid, "held")
 
     async def on_dm(self, rumor, tags, from_npub, entry):
         msgid = tags.get("aib-msgid") or ""
@@ -706,7 +754,14 @@ class Receiver(object):
         self.led.received(msgid, {"v": 1, "from": from_npub, "key": entry["key"], "seat": entry["seat5"],
                                   "aib": is_aib, "lang": tags.get("aib-lang"), "at": int(time.time())})
         content = rumor.content()
-        if not content or len(content) > GF.CONTENT_MAX:
+        is_request = tags.get("aib-type") == "friend-request"
+        who = (GF.parse_address(tags.get("aib-from") or "") or {}).get("owner") or from_npub
+        if CR.is_blocked(who) or CR.is_blocked(from_npub):
+            audit(self.root, "in", msgid, from_npub, "blocked")        # 第 29.3 節:封鎖 ⇒ 靜默丟,不回條、不記拒收
+            return
+        if is_request:
+            content = _clean_note(content)
+        elif not content or len(content) > GF.CONTENT_MAX:
             return await self.send_receipt(msgid, "refused")
         exp = tags.get("aib-expires", "")
         expires = int(exp) if exp.isdigit() else None
@@ -719,10 +774,12 @@ class Receiver(object):
         parsed = GF.parse_address(from_addr) if from_addr else None
         if parsed is not None:
             rec["from_addr"] = from_addr
+        peer = None
         if parsed and "owner" in parsed:
             rc, res = await self.sender._resolve(from_addr)
             # 第 8.1 節第 4 步:rumor 作者要就是名冊上那一席 ⇒ 已驗證;否則一律未驗證、當陌生
             if rc == 0 and res["seat"]["npub"] == from_npub:
+                peer = res
                 rec["verified"] = True
                 own = (NK.read_map().get("owner") or {}).get("npub")
                 if parsed["owner"] == own or CR.is_mine(parsed["owner"]):
@@ -734,6 +791,8 @@ class Receiver(object):
                         rec[k_out] = res[k_in]
                 if res["seat"].get("name"):
                     rec["persona_name"] = res["seat"]["name"]
+        if is_request:
+            return await self.on_request(rec, parsed, peer, msgid, from_npub)
         if rec["class"] == "stranger":
             # 維護者 10-16 12:1x:加入好友之後才收、才有已讀;不然拒收(不進佇列、不進待審、AI 看不到)
             why = "not_friend" if rec["verified"] else "unverified"
@@ -759,6 +818,9 @@ class Receiver(object):
         try:
             GF.write_inbox(self.root, rec)
             audit(self.root, "in", msgid, from_npub, "inbox")
+            if peer:
+                GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"),
+                             _peer_seat(peer), peer.get("roster_at"), direction="in")
         except GF.ContractError as err:
             sys.stderr.write("inbox:%s\n" % err)
             audit(self.root, "in", msgid, from_npub, "refused")
@@ -808,7 +870,7 @@ class Receiver(object):
             done = sent.get(msgid, 0)
             for r in lines[done:]:
                 if r.get("state") in RECEIPT_STAGES_OUT:
-                    await self.send_receipt(msgid, r["state"], r.get("pos"))
+                    await self.send_receipt(msgid, r["state"], r.get("pos"), reason=r.get("reason"))
                 elif r.get("state") == "read":
                     self._queue_read(msgid)
                 done += 1

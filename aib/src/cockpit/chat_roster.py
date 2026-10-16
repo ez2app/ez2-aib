@@ -91,7 +91,7 @@ def _save_profile(rec, env=None):
 # 以「主人」為單位:加了 Bob 的主人 npub,Bob 名冊上列出的每一席寄來都收。只在本機,不公開、不發到中繼站。
 # 第 1 期是單方面的通訊錄(好友申請與同意是第 2 期):對方也要把你加進他的好友,你寄的才進得去。
 
-LISTS = ("friends", "mine")       # friends = 好友;mine = 我自己其他機器的主人號碼(第 27.2 節,收到當本人)
+LISTS = ("friends", "mine", "blocks")   # friends 好友;mine 我自己其他機器(27.2,收到當本人);blocks 封鎖(29.3,靜默丟)
 
 
 def friends_path(env=None, kind="friends"):
@@ -140,6 +140,8 @@ def add_friend(text, name=None, env=None, kind="friends", source=None):
     me = (NK.read_map(env).get("owner") or {}).get("npub")
     if me and me == owner:
         raise RosterError("friend_self")
+    if kind != "blocks" and is_blocked(owner, env):
+        raise RosterError("blocked")                # 封鎖優先:要先解封才能加好友 / 綁成我的機器
     clean = GF.clean_display_name(name) if name else None
     if name and not clean:
         raise RosterError("bad_name")
@@ -156,6 +158,8 @@ def add_friend(text, name=None, env=None, kind="friends", source=None):
             rec["source"] = source
         fr.append(rec)
     _save_friends(fr, env, kind)
+    if kind == "blocks":                            # 封鎖 = 同時移出好友(第 29.3 節)
+        remove_friend(owner, env, "friends")
     return owner, old is None
 
 
@@ -172,6 +176,11 @@ def remove_friend(text, env=None, kind="friends"):
 
 def is_friend(owner, env=None, kind="friends"):
     return bool(owner) and any(f["owner"] == owner for f in read_friends(env, kind))
+
+
+def is_blocked(who, env=None):
+    """第 29.3 節:封鎖的主人(或只有席 npub 的寄件人)⇒ 信與申請一律靜默丟。"""
+    return is_friend(who, env, "blocks")
 
 
 def is_mine(owner, env=None):

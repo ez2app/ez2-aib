@@ -604,8 +604,8 @@ def cmd_friend(a, env, out):
     """好友(維護者 10-16 12:1x):只收本人與好友的信,其他拒收。以主人為單位;只存在本機。
     mine(第 27.2 節):我自己其他機器的主人號碼,收到當本人。"""
     import chat_roster as CR
-    kind = "mine" if a.cmd == "mine" else "friends"
-    pre = "mine_" if kind == "mine" else "friend_"
+    kind = {"mine": "mine", "block": "blocks"}.get(a.cmd, "friends")
+    pre = {"mine": "mine_", "blocks": "block_"}.get(kind, "friend_")
     if a.action is None:
         return cmd_friends(a, env, out)
     if not a.who:
@@ -626,7 +626,7 @@ def cmd_friend(a, env, out):
 
 def cmd_friends(a, env, out):
     import chat_roster as CR
-    kind = "mine" if a.cmd == "mine" else "friends"
+    kind = {"mine": "mine", "block": "blocks"}.get(a.cmd, "friends")
     fr = CR.read_friends(env, kind)
     if getattr(a, "json", False):
         out.write(json.dumps({kind: fr}, ensure_ascii=False) + "\n")
@@ -694,6 +694,134 @@ def cmd_relays(a, env, out):
     for u in cur:
         st = seen.get(u)
         out.write(T("relays_row_" + ("up" if st == "CONNECTED" else ("down" if st else "unknown")), url=u) + "\n")
+    return 0
+
+
+def _my_published(env):
+    """自己公開(列進名冊、金鑰 active)的席 ⇒ [{cabin, seat, addr}]。"""
+    import chat_roster as CR
+    import nostr_keys as NK
+    m = NK.read_map(env)
+    owner = (m.get("owner") or {}).get("npub")
+    pub = set((CR.read_profile(env) or {}).get("public") or [])
+    return [{"cabin": e.get("cabin") or "main", "seat": e["seat5"],
+             "addr": "%s/%s/%s" % (owner, e.get("cabin") or "main", e["seat5"])}
+            for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub and owner]
+
+
+def cmd_request(a, env, out):
+    """好友申請(第 29.4 節):aib chat request <位址> [--note] [--from 席] ;aib chat request accept|reject <主人 npub>。"""
+    import chat_roster as CR
+    root = bridge_root(env)
+    if a.target in ("accept", "reject"):
+        owner = CR.friend_owner(a.who or "")
+        hit = GF.pop_request(root, owner) if owner else None
+        if not hit:
+            out.write(T("request_not_found", owner=owner or (a.who or "-")) + "\n")
+            return 2
+        if a.target == "accept":
+            try:
+                CR.add_friend(owner, hit.get("display_name"), env, source="accepted")   # 對方申請、我同意(不是我送的申請)
+            except CR.RosterError as err:
+                GF.add_request(root, hit, every=0)          # 加不成(例:封鎖中)⇒ 申請放回去,照實說
+                out.write(T("profile_" + str(err)) + "\n")
+                return 2
+            GF.append_delivery(root, hit["msgid"], {"v": 1, "at": int(time.time()), "state": "delivered"})
+            out.write(T("request_accepted", owner=owner) + "\n")
+        else:
+            if not a.silent:
+                GF.append_delivery(root, hit["msgid"], {"v": 1, "at": int(time.time()), "state": "refused",
+                                                         "reason": "rejected"})
+            out.write(T("request_rejected", owner=owner) + "\n")
+        return 0
+    pub = _my_published(env)
+    frm = next((p for p in pub if p["seat"] == a.from_seat), None) if a.from_seat else (pub[0] if pub else None)
+    if frm is None:
+        out.write(T("request_no_seat") + "\n")
+        return 2
+    rec = {"v": GF.VERSION, "msgid": GF.new_msgid(), "created_at": int(time.time()), "op": "request",
+           "from": {"cabin": frm["cabin"], "seat": frm["seat"], "attested": True}, "to": a.target,
+           "content": a.note or ""}
+    GF.ensure_dirs(root)
+    res = GF.send_and_wait(root, rec, wait=int(env.get("AIB_DM_GLOBAL_WAIT") or GF.WAIT_DEFAULT))
+    key = {"held": "request_sent", "delivered": "request_already", "refused": "request_refused"}.get(res["stage"], "request_other")
+    out.write(T(key, stage=res["stage"], detail=res["detail"] or "-") + "\n")
+    return res["rc"]
+
+
+def cmd_requests(a, env, out):
+    rows = GF.read_requests(bridge_root(env))
+    if a.json:
+        out.write(json.dumps({"requests": rows}, ensure_ascii=False) + "\n")
+        return 0
+    if not rows:
+        out.write(T("requests_none") + "\n")
+    for r in rows:
+        when = time.strftime("%m-%d %H:%M", time.localtime(int(r.get("at") or 0)))
+        out.write(T("requests_row", when=when, name=r.get("display_name") or "-", country=r.get("country") or "-",
+                    note=r.get("note") or "-", owner=r["owner"]) + "\n")
+    return 0
+
+
+def contacts_payload(env=None):
+    """第 29.2 節:艦長室通訊錄的第五來源。只讀本機檔、不連網、不含內文。"""
+    import chat_roster as CR
+    import nostr_keys as NK
+    root = bridge_root(env)
+    prof = CR.read_profile(env) or {}
+    me = {"owner": (NK.read_map(env).get("owner") or {}).get("npub"), "display_name": prof.get("display_name"),
+          "country": prof.get("country"), "published": _my_published(env)}
+    peers = GF.read_peers(root)
+    rows = {}
+
+    def row(owner, relation, label=None, source=None, extra=None):
+        p = peers.get(owner) or {}
+        r = rows.setdefault(owner, {"key": "global:" + owner, "owner": owner, "relation": relation, "label": label,
+                                    "display_name": p.get("display_name"), "country": p.get("country"),
+                                    "seats": [dict(x, addr="%s/%s/%s" % (owner, x.get("cabin") or "main", x.get("seat")))
+                                              for x in p.get("seats") or [] if x.get("seat")],
+                                    "roster_at": p.get("roster_at"), "seen_at": p.get("seen_at"),
+                                    "last_in": p.get("last_in"), "last_out": p.get("last_out"),
+                                    "n_in": p.get("n_in", 0), "n_out": p.get("n_out", 0), "n_refused": 0,
+                                    "request": None, "source": source})
+        for k, v in (extra or {}).items():
+            r[k] = v
+        return r
+    for f in CR.read_friends(env, "blocks"):
+        row(f["owner"], "blocked", f.get("name"))
+    for f in CR.read_friends(env, "mine"):
+        row(f["owner"], "mine", f.get("name"))
+    for f in CR.read_friends(env):
+        st = (peers.get(f["owner"]) or {}).get("request")
+        out_req = f.get("source") == "request" and st != "accepted"
+        r = row(f["owner"], "request_out" if out_req else "friend", f.get("name"), f.get("source") or "manual")
+        if out_req:
+            r["request"] = {"state": st or "pending"}
+    for q in GF.read_requests(root):
+        r = row(q["owner"], "request_in", None, None, {"request": {"note": q.get("note"), "at": q.get("at")}})
+        r["display_name"] = r["display_name"] or q.get("display_name")
+        r["country"] = r["country"] or q.get("country")
+    for x in read_refused(env):
+        if x.get("owner"):
+            r = row(x["who"], "refused", None, None, {"n_refused": int(x.get("count") or 0)})
+            r["display_name"] = r["display_name"] or x.get("display_name")
+            r["country"] = r["country"] or x.get("country")
+    # 只往來過、沒有任何關係的人不列(關係只有上面五份名單);拒收的已列在上面
+    order = {"request_in": 0, "mine": 1, "friend": 2, "request_out": 3, "refused": 4, "blocked": 5}
+    return {"v": 1, "me": me, "contacts": sorted(rows.values(), key=lambda r: (order.get(r["relation"], 9),
+                                                                                -(r.get("last_in") or r.get("seen_at") or 0)))}
+
+
+def cmd_contacts(a, env, out):
+    pl = contacts_payload(env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0
+    if not pl["contacts"]:
+        out.write(T("contacts_none") + "\n")
+    for r in pl["contacts"]:
+        out.write(T("contacts_row", rel=T("rel_" + r["relation"]), name=r.get("label") or r.get("display_name") or "-",
+                    country=r.get("country") or "-", owner=r["owner"], n=len(r["seats"])) + "\n")
     return 0
 
 
@@ -875,6 +1003,21 @@ def main(argv=None, env=None, out=sys.stdout):
     fr.add_argument("action", choices=("add", "remove"))
     fr.add_argument("who", help=T("help.friend_who"))
     fr.add_argument("--name", help=T("help.friend_name"))
+    bl = sub.add_parser("block", help=T("help.block"))
+    bl.add_argument("action", nargs="?", choices=("add", "remove"))
+    bl.add_argument("who", nargs="?", help=T("help.friend_who"))
+    bl.add_argument("--name", help=T("help.friend_name"))
+    bl.add_argument("--json", action="store_true")
+    rq = sub.add_parser("request", help=T("help.request"))
+    rq.add_argument("target", help=T("help.request_target"))
+    rq.add_argument("who", nargs="?")
+    rq.add_argument("--note", default="", help=T("help.request_note"))
+    rq.add_argument("--from", dest="from_seat", help=T("help.request_from"))
+    rq.add_argument("--silent", action="store_true", help=T("help.request_silent"))
+    rqs = sub.add_parser("requests", help=T("help.requests"))
+    rqs.add_argument("--json", action="store_true")
+    ct = sub.add_parser("contacts", help=T("help.contacts"))
+    ct.add_argument("--json", action="store_true")
     mn = sub.add_parser("mine", help=T("help.mine"))
     mn.add_argument("action", nargs="?", choices=("add", "remove"))
     mn.add_argument("who", nargs="?", help=T("help.mine_who"))
@@ -932,8 +1075,14 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_selftest(a, env, out)
     if a.cmd == "refused":
         return cmd_refused(a, env, out)
-    if a.cmd in ("friend", "mine"):
+    if a.cmd in ("friend", "mine", "block"):
         return cmd_friend(a, env, out)
+    if a.cmd == "request":
+        return cmd_request(a, env, out)
+    if a.cmd == "requests":
+        return cmd_requests(a, env, out)
+    if a.cmd == "contacts":
+        return cmd_contacts(a, env, out)
     if a.cmd == "friends":
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":
