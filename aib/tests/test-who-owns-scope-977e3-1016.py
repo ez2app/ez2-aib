@@ -134,7 +134,7 @@ class TestWhoOwns(Base):
             top = res["matches"][0]
             self.assertEqual((top["kind"], top["uid"], top["field"], top["score"]),
                              ("persona", "cbk1z2", "scope_domains", 1.0), q)
-            self.assertEqual(top["seat"], "6ddf/ee0bb")
+            self.assertEqual((top["seat"], top["owner"]), ("6ddf/ee0bb", "persona:cbk1z2"))
         res = self.W.who_owns("jurassicmuseum.com.tw")
         self.assertEqual(res["verdict"], "new")
         self.assertNotIn("cbk1z2", [m["uid"] for m in res["matches"]])
@@ -189,7 +189,8 @@ class TestWhoOwns(Base):
         d = json.loads(r.stdout)
         self.assertEqual(set(d), {"version", "query", "verdict", "matches", "new_cmd", "new_role_cmd"})
         self.assertEqual(set(d["matches"][0]) >= {"kind", "uid", "name", "seat", "score", "field", "evidence",
-                                                  "last_bound", "reopen_cmd"}, True)
+                                                  "last_bound", "reopen_cmd", "owner"}, True)
+        self.assertTrue(all(m["owner"] for m in d["matches"] if m["kind"] != "vault"))
         r = self.cli("who-owns", "jurassicmuseum.com.tw")
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertIn("aib newproj", r.stdout)

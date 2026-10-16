@@ -439,7 +439,8 @@ def who_owns(query: str, limit: int = 10) -> dict:
             score, field, evidence = got
             seat, at, cmd = seat_info(kind, e["uid"], records)
             matches.append({"kind": kind, "uid": e["uid"], "name": e["name"], "seat": seat, "score": round(score, 2),
-                            "field": field, "evidence": evidence, "last_bound": at, "reopen_cmd": cmd})
+                            "field": field, "evidence": evidence, "last_bound": at, "reopen_cmd": cmd,
+                            "owner": "%s:%s" % (kind, e["uid"])})   # 跟全文命中同一個欄位(@ee0bb 10-16 提)
     owners = {(m["kind"], m["uid"]) for m in matches}
     cards_rel = {e["rel"] for e in persona_entries() if e["rel"]}
     for v in vault_hits(needles, limit=max(limit, 10), skip=cards_rel):
