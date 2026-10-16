@@ -109,6 +109,7 @@ function main() {
       markdown_bytes: Buffer.byteLength(built.markdown, "utf8"),
       privacy_level: built.record.frontmatter.privacy_level,
       review_status: built.record.frontmatter.review_status,
+      title: built.record.frontmatter.title,   // 正本 cleanTitle 清洗後、真的寫進檔的標題(10-17:索引要跟檔內一致)
       frontmatter_keys: Object.keys(built.record.frontmatter).sort(),
     };
     out.validate_errors = noteFormat.validateEz2NoteRecord(built.record);
