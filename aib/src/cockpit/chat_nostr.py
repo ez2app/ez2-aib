@@ -390,6 +390,10 @@ class Sender(object):
         mine = N.nip17_make_private_msg(keys, keys.public_key(), rec["content"], rumor_extra_tags=tags)
         keys = None
         target, own = res["dm_relays"], CR.relays()
+        # 寄出帳:對方回條回來時,只收「我寄給的那個 npub」簽的(防有人冒充對方亂回條)。
+        # 要在寄之前寫:公開站回 OK 可能比對方的回條還慢(10-16 實機驗收 5 則掉 3 張 held 回條)
+        (self.root / "sent").mkdir(exist_ok=True)
+        write_json(str(self.root / "sent" / (msgid + ".json")), {"v": 1, "to": res["seat"]["npub"], "at": int(time.time())})
         try:
             ok = await _send_to(target, own, gw, mine)
         except Exception as err:   # noqa: BLE001
@@ -397,9 +401,6 @@ class Sender(object):
             return
         if ok:
             self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "relayed", "%d" % len(ok))      # 第 7.1 節第 6 步:1 站成功就算
-            # 寄出帳:對方回條回來時,只收「我寄給的那個 npub」簽的(防有人冒充對方亂回條)
-            (self.root / "sent").mkdir(exist_ok=True)
-            write_json(str(self.root / "sent" / (msgid + ".json")), {"v": 1, "to": res["seat"]["npub"], "at": int(time.time())})
             self._done(msgid)
         else:
             self._retry_later(msgid, "relays")
