@@ -52,7 +52,7 @@ STATES = ("no_keys", "no_profile", "no_relays", "publishing", "published", "stop
 #   1.2:有金鑰還沒中繼站 = no_relays;1.3:沒設顯示名稱 / 國別 = no_profile、名冊發不出去 = publishing(下一輪再試)、
 #   名冊與 10050 都發出去了 = published。心跳由寄件工人寫(接上中繼站才寫)。
 WORKER_RESTART_GAP = 30                    # 秒;寄件工人掛了多久後再起(不狂起)
-_WORKER = {"proc": None, "started": 0.0}   # 當班才有;寄件工人(venv 的 chat_nostr.py serve)
+_WORKER = {"proc": None, "started": 0.0, "relays": None}   # 當班才有;寄件工人(venv 的 chat_nostr.py serve)
 PUBLISH_EVERY = 60                         # 秒;名冊發失敗時多久再試(第 19.1 節:每站每 10 秒最多 2 則,不能狂發)
 SOCKET_RE = re.compile(r"^aihub(-[0-9A-Za-z-]+)?$")
 
@@ -255,7 +255,18 @@ def _leader_tick(root, env=None):
         swept = now
     _acts, key_err = sync_keys(env)
     state, pub = ("no_keys", {}) if key_err else publish_roster(root, env, st, now)
-    worker = None if key_err else ensure_worker(root, env, now)
+    if key_err or state == "no_profile":
+        # 第 27.1 節:沒設名字與國別 ⇒ 名冊不發、誰都寄不到這台 ⇒ 不連中繼站(不起工人;在跑的停掉)
+        stop_worker()
+        worker = None
+    else:
+        import chat_roster as CR
+        cur = tuple(CR.relays(env))
+        if _WORKER["relays"] is not None and _WORKER["relays"] != cur:
+            stop_worker()                       # 第 27.9 節:換了中繼站 ⇒ 工人重連(不等重起間隔)
+            _WORKER["started"] = 0.0
+        _WORKER["relays"] = cur
+        worker = ensure_worker(root, env, now)
     write_status(root, state=state, pid=os.getpid(), instance=st.get("instance"),
                  since=st.get("since") or now, at=now, swept_at=swept, key_error=key_err,
                  publish_tried_at=pub.get("tried_at", st.get("publish_tried_at")), publish_error=pub.get("error"),
@@ -554,15 +565,17 @@ def status_record(env):
         "venv": venv_state(env),
         "keys": _keys_summary(env),
         "friends": len(_friends(env)),
+        "mine": len(_friends(env, "mine")),
+        "refused_7d": sum(1 for r in read_refused(env) if time.time() - int(r.get("last_at") or 0) < 7 * 86400),
         "off_by_owner": off_marker(env).exists(),
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
 
 
-def _friends(env):
+def _friends(env, kind="friends"):
     import chat_roster as CR
-    return CR.read_friends(env)
+    return CR.read_friends(env, kind)
 
 
 def _worker_status(root, running):
@@ -594,6 +607,8 @@ def cmd_keys(a, env, out):
         if e["status"] == "active" or a.all:
             out.write(T("keys_row_" + ("active" if e["status"] == "active" else "retired"),
                         seat=e["seat5"], cabin=e["cabin"] or "-", uid=e["persona_uid"], npub=e["npub"]) + "\n")
+    if pv["owner"]:
+        out.write(T("mine_hint", owner=pv["owner"]) + "\n")
     return 0
 
 
@@ -614,15 +629,23 @@ def cmd_profile(a, env, out):
 
 
 def cmd_friend(a, env, out):
-    """好友(維護者 10-16 12:1x):只收本人與好友的信,其他拒收。以主人為單位;只存在本機。"""
+    """好友(維護者 10-16 12:1x):只收本人與好友的信,其他拒收。以主人為單位;只存在本機。
+    mine(第 27.2 節):我自己其他機器的主人號碼,收到當本人。"""
     import chat_roster as CR
+    kind = {"mine": "mine", "block": "blocks"}.get(a.cmd, "friends")
+    pre = {"mine": "mine_", "blocks": "block_"}.get(kind, "friend_")
+    if a.action is None:
+        return cmd_friends(a, env, out)
+    if not a.who:
+        out.write(T("profile_bad_friend") + "\n")
+        return 2
     try:
         if a.action == "add":
-            owner, new = CR.add_friend(a.who, a.name, env)
-            out.write(T("friend_added" if new else "friend_renamed", owner=owner) + "\n")
+            owner, new = CR.add_friend(a.who, a.name, env, kind)
+            out.write(T(pre + ("added" if new else "renamed"), owner=owner) + "\n")
         else:
-            owner, gone = CR.remove_friend(a.who, env)
-            out.write(T("friend_removed" if gone else "friend_not_found", owner=owner) + "\n")
+            owner, gone = CR.remove_friend(a.who, env, kind)
+            out.write(T(pre + ("removed" if gone else "not_found"), owner=owner) + "\n")
     except CR.RosterError as err:
         out.write(T("profile_" + str(err)) + "\n")
         return 2
@@ -631,14 +654,372 @@ def cmd_friend(a, env, out):
 
 def cmd_friends(a, env, out):
     import chat_roster as CR
-    fr = CR.read_friends(env)
-    if a.json:
-        out.write(json.dumps({"friends": fr}, ensure_ascii=False) + "\n")
+    kind = {"mine": "mine", "block": "blocks"}.get(a.cmd, "friends")
+    fr = CR.read_friends(env, kind)
+    if getattr(a, "json", False):
+        out.write(json.dumps({kind: fr}, ensure_ascii=False) + "\n")
         return 0
     if not fr:
-        out.write(T("friends_none") + "\n")
+        out.write(T(kind + "_none") + "\n")
     for f in fr:
-        out.write(T("friends_row", name=f.get("name") or "-", owner=f["owner"]) + "\n")
+        row = "friends_row_sent" if f.get("source") == "sent" else "friends_row"
+        out.write(T(row, name=f.get("name") or "-", owner=f["owner"]) + "\n")
+    if kind == "mine" or not fr:
+        import nostr_keys as NK
+        me = (NK.read_map(env).get("owner") or {}).get("npub")
+        if kind == "mine" and me:
+            out.write(T("mine_hint", owner=me) + "\n")
+    return 0
+
+
+def read_refused(env=None):
+    """誰被拒收過(第 27.5 節;轉接程式寫 <bridge root>/refused.json,不含內文)。新的在前。"""
+    try:
+        cur = json.loads((bridge_root(env) / "refused.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = cur.get("refused") if isinstance(cur, dict) else None
+    return [r for r in rows if isinstance(r, dict) and r.get("who")] if isinstance(rows, list) else []
+
+
+def cmd_refused(a, env, out):
+    rows = read_refused(env)
+    if a.json:
+        out.write(json.dumps({"refused": rows}, ensure_ascii=False) + "\n")
+        return 0
+    if not rows:
+        out.write(T("refused_none") + "\n")
+        return 0
+    for r in rows:
+        when = time.strftime("%m-%d %H:%M", time.localtime(int(r.get("last_at") or 0)))
+        out.write(T("refused_row_" + ("verified" if r.get("display_name") else "unknown"), name=r.get("display_name") or "-",
+                    country=r.get("country") or "-", who=r["who"], n=r.get("count", 1), when=when,
+                    reason=T("refused_reason_" + ("not_friend" if r.get("reason") == "not_friend" else "unverified"))) + "\n")
+        if r.get("owner"):
+            out.write(T("refused_add_hint", who=r["who"]) + "\n")
+    return 0
+
+
+def _relay_test(a, env, out):
+    """aib chat relays test <wss://…>:量一站(連線 / 回 OK / 查詢各幾毫秒)。拋棄式金鑰、一則不存的 ephemeral、一次查詢;
+    不連發(公開站會封連發的人,第 19.1 節)。只在人下指令時才連,不是背景自動測。"""
+    import chat_roster as CR
+    url = (a.url or "").strip().rstrip("/")
+    if not CR._relay_ok(url):
+        out.write(T("profile_bad_relay") + "\n")
+        return 2
+    rc, rec = _run_nostr("probe", bridge_root(env), env, timeout=90, extra=[url])
+    if rc is None:
+        out.write(T("lookup_no_venv", pin=NOSTR_SDK_PIN) + "\n")
+        return 2
+    if a.json:
+        out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    elif rc == 0:
+        out.write(T("relay_test_ok", url=url, c=rec.get("connect_ms"), o=rec.get("ok_ms"), q=rec.get("query_ms")) + "\n")
+    else:
+        out.write(T("relay_test_bad", url=url, why=rec.get("reason") or rec.get("why") or "-") + "\n")
+    return 0 if rc == 0 else 2
+
+
+def cmd_relays(a, env, out):
+    """aib chat relays [add|remove <wss://…> | reset](第 27.9 節)。列出時附各站最近狀態(工人寫的)。"""
+    import chat_roster as CR
+    if a.action == "test":
+        return _relay_test(a, env, out)
+    if a.action:
+        if a.action in ("add", "remove") and not a.url:
+            out.write(T("profile_bad_relay") + "\n")
+            return 2
+        try:
+            CR.set_relays(a.action, a.url, env)
+        except CR.RosterError as err:
+            out.write(T("profile_" + str(err), n=CR.MAX_RELAYS) + "\n")
+            return 2
+        out.write(T("relays_saved") + "\n")
+    w = _worker_status(bridge_root(env), True) or {}
+    seen = w.get("relays") or {}
+    cur = CR.relays(env)
+    if a.json:
+        out.write(json.dumps({"relays": [{"url": u, "status": seen.get(u)} for u in cur]}, ensure_ascii=False) + "\n")
+        return 0
+    for u in cur:
+        st = seen.get(u)
+        out.write(T("relays_row_" + ("up" if st == "CONNECTED" else ("down" if st else "unknown")), url=u) + "\n")
+    return 0
+
+
+def _my_published(env):
+    """自己公開(列進名冊、金鑰 active)的席 ⇒ [{cabin, seat, addr}]。"""
+    import chat_roster as CR
+    import nostr_keys as NK
+    m = NK.read_map(env)
+    owner = (m.get("owner") or {}).get("npub")
+    pub = set((CR.read_profile(env) or {}).get("public") or [])
+    return [{"cabin": e.get("cabin") or "main", "seat": e["seat5"],
+             "addr": "%s/%s/%s" % (owner, e.get("cabin") or "main", e["seat5"])}
+            for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub and owner]
+
+
+def _tell_requester(root, hit, rec):
+    """同意 / 拒絕 ⇒ 寫 delivery 讓工人回條給對方。申請那筆壞了(msgid 不合)⇒ 回 False:照樣同意 / 拒絕,只是通知不到。"""
+    try:
+        GF.append_delivery(root, hit.get("msgid") or "", rec)
+        return True
+    except (GF.ContractError, OSError, ValueError):
+        return False
+
+
+def cmd_request(a, env, out):
+    """好友申請(第 29.4 節):aib chat request <位址> [--note] [--from 席] ;aib chat request accept|reject <主人 npub>。"""
+    import chat_roster as CR
+    root = bridge_root(env)
+    if a.target in ("accept", "reject"):
+        owner = CR.friend_owner(a.who or "")
+        hit = GF.pop_request(root, owner) if owner else None
+        if not hit:
+            out.write(T("request_not_found", owner=owner or (a.who or "-")) + "\n")
+            return 2
+        if a.target == "accept":
+            try:
+                CR.add_friend(owner, hit.get("display_name"), env, source="accepted")   # 對方申請、我同意(不是我送的申請)
+            except CR.RosterError as err:
+                GF.add_request(root, hit, every=0)          # 加不成(例:封鎖中)⇒ 申請放回去,照實說
+                out.write(T("profile_" + str(err)) + "\n")
+                return 2
+            if not _tell_requester(root, hit, {"v": 1, "at": int(time.time()), "state": "delivered"}):
+                out.write(T("request_no_notice") + "\n")
+            out.write(T("request_accepted", owner=owner) + "\n")
+        else:
+            if not a.silent and not _tell_requester(root, hit, {"v": 1, "at": int(time.time()), "state": "refused",
+                                                                    "reason": "rejected"}):
+                out.write(T("request_no_notice") + "\n")
+            out.write(T("request_rejected", owner=owner) + "\n")
+        return 0
+    pub = _my_published(env)
+    frm = next((p for p in pub if p["seat"] == a.from_seat), None) if a.from_seat else (pub[0] if pub else None)
+    if frm is None:
+        out.write(T("request_no_seat") + "\n")
+        return 2
+    rec = {"v": GF.VERSION, "msgid": GF.new_msgid(), "created_at": int(time.time()), "op": "request",
+           "from": {"cabin": frm["cabin"], "seat": frm["seat"], "attested": True}, "to": a.target,
+           "content": a.note or ""}
+    GF.ensure_dirs(root)
+    res = GF.send_and_wait(root, rec, wait=int(env.get("AIB_DM_GLOBAL_WAIT") or GF.WAIT_DEFAULT))
+    key = {"held": "request_sent", "delivered": "request_already", "refused": "request_refused"}.get(res["stage"], "request_other")
+    out.write(T(key, stage=res["stage"], detail=res["detail"] or "-") + "\n")
+    return res["rc"]
+
+
+def cmd_requests(a, env, out):
+    rows = GF.read_requests(bridge_root(env))
+    if a.json:
+        out.write(json.dumps({"requests": rows}, ensure_ascii=False) + "\n")
+        return 0
+    if not rows:
+        out.write(T("requests_none") + "\n")
+    for r in rows:
+        when = time.strftime("%m-%d %H:%M", time.localtime(int(r.get("at") or 0)))
+        out.write(T("requests_row", when=when, name=r.get("display_name") or "-", country=r.get("country") or "-",
+                    note=r.get("note") or "-", owner=r["owner"]) + "\n")
+    return 0
+
+
+def _claim_view(peer, key, name=None):
+    """一項證明的驗證結果:verified = True / False / None(還沒驗或平台不能自動驗 ⇒ 只算自稱)。"""
+    c = (peer.get("checks") or {}).get(key) or {}
+    out = {"verified": c.get("verified"), "at": c.get("at")}
+    if name is not None:
+        out["name"] = name
+    return out
+
+
+def cmd_social(a, env, out):
+    """aib chat social [add <平台> <帳號或網址> [--proof <https>] | remove <平台> [<帳號>]] [--json];
+    aib chat nip05 <名@網域> | --clear。寫進名冊,別人照證明去驗(第 32 節)。"""
+    import chat_roster as CR
+    try:
+        if a.cmd == "nip05":
+            got = CR.set_nip05(None if a.clear else a.name, env)
+            out.write(T("nip05_saved" if got else "nip05_cleared", name=got or "-") + "\n")
+            return 0
+        if a.action:
+            CR.set_social(a.action, a.p, a.v, a.proof, env)
+            out.write(T("social_saved") + "\n")
+    except CR.RosterError as err:
+        out.write(T("profile_" + str(err), n=CR.SOCIALS_MAX, list="/".join(CR.SOCIAL_PLATFORMS)) + "\n")
+        return 2
+    prof = CR.read_profile(env) or {}
+    items = CR.clean_socials(prof.get("socials"))
+    if getattr(a, "json", False):
+        out.write(json.dumps({"socials": items, "nip05": prof.get("nip05")}, ensure_ascii=False) + "\n")
+        return 0
+    for x in items:
+        out.write(T("social_row", p=x["p"], v=x["v"], proof=x.get("proof") or "-") + "\n")
+    if not items:
+        out.write(T("social_none") + "\n")
+    return 0
+
+
+def contacts_payload(env=None):
+    """第 29.2 節:艦長室通訊錄的第五來源。只讀本機檔、不連網、不含內文。"""
+    import chat_roster as CR
+    import nostr_keys as NK
+    root = bridge_root(env)
+    prof = CR.read_profile(env) or {}
+    me = {"owner": (NK.read_map(env).get("owner") or {}).get("npub"), "display_name": prof.get("display_name"),
+          "country": prof.get("country"), "published": _my_published(env)}
+    peers = GF.read_peers(root)
+    rows = {}
+
+    def row(owner, relation, label=None, source=None, extra=None):
+        p = peers.get(owner) or {}
+        r = rows.setdefault(owner, {"key": "global:" + owner, "owner": owner, "relation": relation, "label": label,
+                                    "display_name": p.get("display_name"), "country": p.get("country"),
+                                    "seats": [dict(x, addr="%s/%s/%s" % (owner, x.get("cabin") or "main", x.get("seat")), ai=True)
+                                              for x in p.get("seats") or [] if x.get("seat")],
+                                    # 第 32 節真人驗證:verified = 手上有驗過簽章的名冊;human = 通訊錄每一筆都是主人(人)
+                                    "verified": bool(p.get("roster_at")), "human": True,
+                                    "nip05": _claim_view(p, "nip05", p.get("nip05")) if p.get("nip05") else None,
+                                    "socials": [dict(x, **_claim_view(p, "social:%s:%s" % (x["p"], x["v"])))
+                                                for x in p.get("socials") or []],
+                                    "roster_at": p.get("roster_at"), "seen_at": p.get("seen_at"),
+                                    "last_in": p.get("last_in"), "last_out": p.get("last_out"),
+                                    "n_in": p.get("n_in", 0), "n_out": p.get("n_out", 0), "n_refused": 0,
+                                    "request": None, "source": source})
+        for k, v in (extra or {}).items():
+            r[k] = v
+        return r
+    for f in CR.read_friends(env, "blocks"):
+        row(f["owner"], "blocked", f.get("name"))
+    for f in CR.read_friends(env, "mine"):
+        row(f["owner"], "mine", f.get("name"))
+    for f in CR.read_friends(env):
+        st = (peers.get(f["owner"]) or {}).get("request")
+        out_req = f.get("source") == "request" and st != "accepted"
+        r = row(f["owner"], "request_out" if out_req else "friend", f.get("name"), f.get("source") or "manual")
+        if out_req:
+            r["request"] = {"state": st or "pending"}
+    for q in GF.read_requests(root):
+        r = row(q["owner"], "request_in", None, None, {"request": {"note": q.get("note"), "at": q.get("at")}})
+        r["display_name"] = r["display_name"] or q.get("display_name")
+        r["country"] = r["country"] or q.get("country")
+    for x in read_refused(env):
+        if x.get("owner"):
+            r = row(x["who"], "refused", None, None, {"n_refused": int(x.get("count") or 0)})
+            r["display_name"] = r["display_name"] or x.get("display_name")
+            r["country"] = r["country"] or x.get("country")
+    # 只往來過、沒有任何關係的人不列(關係只有上面五份名單);拒收的已列在上面
+    order = {"request_in": 0, "mine": 1, "friend": 2, "request_out": 3, "refused": 4, "blocked": 5}
+    return {"v": 1, "me": me, "contacts": sorted(rows.values(), key=lambda r: (order.get(r["relation"], 9),
+                                                                                -(r.get("last_in") or r.get("seen_at") or 0)))}
+
+
+def cmd_contacts(a, env, out):
+    pl = contacts_payload(env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0
+    if not pl["contacts"]:
+        out.write(T("contacts_none") + "\n")
+    for r in pl["contacts"]:
+        out.write(T("contacts_row", rel=T("rel_" + r["relation"]), name=r.get("label") or r.get("display_name") or "-",
+                    country=r.get("country") or "-", owner=r["owner"], n=len(r["seats"])) + "\n")
+    return 0
+
+
+def share_payload(env=None):
+    """第 30.2 節(@74e8b 22:51 要的形狀):{"default", "peers": {npub: 實際等級}};好友與我的其他機器都填好
+    (mine 沒設 ⇒ status、好友沒設 ⇒ default)。"""
+    import chat_roster as CR
+    rec = CR.read_share(env)
+    owners = [f["owner"] for f in CR.read_friends(env, "mine")] + [f["owner"] for f in CR.read_friends(env)]
+    return {"v": 1, "default": rec["default"], "peers": {o: CR.share_level(o, env) for o in dict.fromkeys(owners)}}
+
+
+def cmd_share(a, env, out):
+    """aib chat share [<主人 npub> off|online|status] [--default off|online|status] [--json]。"""
+    import chat_roster as CR
+    try:
+        if a.default:
+            CR.set_share(a.default, None, env)
+        if a.who:
+            if a.level is None:
+                out.write(T("share_need_level") + "\n")
+                return 2
+            CR.set_share(a.level, a.who, env)
+    except CR.RosterError as err:
+        out.write(T("profile_" + str(err)) + "\n")
+        return 2
+    pl = share_payload(env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0
+    if a.who or a.default:                  # 有改 ⇒ 只回這一筆(@74e8b 22:56:之前會印整份名單,看起來像改到別人)
+        if a.default:
+            out.write(T("share_default", level=T("share_" + pl["default"])) + "\n")
+        if a.who:
+            import chat_roster as CR
+            o = CR.friend_owner(a.who)
+            out.write(T("share_set", owner=o, level=T("share_" + CR.share_level(o, env))) + "\n")
+        return 0
+    out.write(T("share_default", level=T("share_" + pl["default"])) + "\n")
+    for o, lvl in pl["peers"].items():
+        out.write(T("share_row", level=T("share_" + lvl), owner=o) + "\n")
+    return 0
+
+
+def world_payload(env=None, now=None):
+    """第 30.4–30.5 節:好友 / 我的其他機器分享來的在線狀態 + 我自己這一份(me)。只讀本機檔。
+    過期(WORLD_FRESH_S 沒收到)⇒ fresh=false、各席 unknown;不再是好友 / 我的機器的不列。"""
+    import chat_roster as CR
+    import nostr_keys as NK
+    import seat_presence as SP
+    now = time.time() if now is None else now
+    root = bridge_root(env)
+    peers = GF.read_peers(root)
+    m = NK.read_map(env)
+    prof = CR.read_profile(env) or {}
+    pub = _my_published(env)
+    me = {"owner": (m.get("owner") or {}).get("npub"), "display_name": prof.get("display_name"),
+          "country": prof.get("country"), "seats": []}
+    rows = SP.presence([p["seat"] for p in pub], with_status=True, now=now)
+    for p, r in zip(pub, rows):
+        me["seats"].append(dict(r, cabin=p["cabin"], addr=p["addr"]))
+    cabins = []
+    for key, c in sorted(GF.read_world(root).items()):
+        owner = c.get("owner")
+        rel = "mine" if CR.is_mine(owner, env) else ("friend" if CR.is_friend(owner, env) else None)
+        if rel is None or CR.is_blocked(owner, env):
+            continue
+        fresh = now - int(c.get("presence_at") or 0) < GF.WORLD_FRESH_S
+        info = peers.get(owner) or {}
+        names = {x.get("seat"): x for x in info.get("seats") or []}
+        seats = []
+        for x in c.get("seats") or []:
+            meta = names.get(x.get("seat")) or {}
+            seats.append({"seat": x.get("seat"), "name": meta.get("name"), "role": meta.get("role"),
+                          "addr": "%s/%s/%s" % (owner, c.get("cabin"), x.get("seat")),
+                          "state": x.get("state") if fresh else "unknown",
+                          "now": x.get("now") if fresh else None, "step": x.get("step") if fresh else None})
+        cabins.append({"owner": owner, "cabin": c.get("cabin"), "relation": rel,
+                       "display_name": info.get("display_name"), "country": info.get("country"),
+                       "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
+    return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
+
+
+def cmd_world(a, env, out):
+    pl = world_payload(env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0
+    if not pl["cabins"]:
+        out.write(T("world_none") + "\n")
+    for c in pl["cabins"]:
+        out.write(T("world_cabin", name=c.get("display_name") or "-", country=c.get("country") or "-", cabin=c["cabin"],
+                    fresh="" if c["fresh"] else T("world_stale")) + "\n")
+        for x in c["seats"]:
+            out.write(T("world_seat", seat=x["seat"], name=x.get("name") or "-", state=T("state_" + x["state"]),
+                        now=x.get("now") or "") + "\n")
     return 0
 
 
@@ -672,6 +1053,91 @@ def cmd_lookup(a, env, out):
     return 0 if rc == 0 else 2
 
 
+def selftest(env, fetch=True):
+    """自我檢查(第 27.7 節):只讀、不寄信。回 [(項目, ok, 參數)];ok None = 略過(前一項沒過就查不了)。"""
+    import chat_roster as CR
+    import nostr_keys as NK
+    rec = status_record(env)
+    prof = CR.read_profile(env) or {}
+    w = rec.get("worker") or {}
+    rows = [("switch", rec["enabled"], {}),
+            ("profile", bool(prof.get("display_name") and prof.get("country")),
+             {"name": prof.get("display_name") or "-", "country": prof.get("country") or "-"}),
+            ("venv", rec["venv"] == "ok", {"pin": NOSTR_SDK_PIN}),
+            ("bridge", rec["running"], {}),
+            ("heartbeat", rec["heartbeat"], {})]
+    seen = w.get("relays") or {}
+    for u in CR.relays(env):
+        rows.append(("relay", (seen.get(u) == "CONNECTED") if seen else None, {"url": u}))
+    c = w.get("clock") or {}
+    off = c.get("offset")
+    rows.append(("clock", None if off is None else not c.get("warn"), {"offset": None if off is None else round(off, 1)}))
+    m = NK.read_map(env)
+    owner = (m.get("owner") or {}).get("npub")
+    pub = set(prof.get("public") or [])
+    seats = [e for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub]
+    if not seats:
+        rows.append(("published_none", False, {}))
+    for e in seats:
+        addr = "%s/%s/%s" % (owner, e.get("cabin") or "main", e["seat5"])
+        if not (fetch and rec["venv"] == "ok" and rec["heartbeat"]):
+            rows.append(("seat", None, {"seat": e["seat5"], "why": "-"}))
+            continue
+        rc, got = _run_nostr("fetch", bridge_root(env), env, timeout=60, extra=[addr])
+        ok = rc == 0 and (got.get("seat") or {}).get("npub") == e["npub"] and bool(got.get("dm_relays"))
+        rows.append(("seat", ok, {"seat": e["seat5"], "why": got.get("why") or "-"}))
+    return rows
+
+
+def cmd_selftest(a, env, out):
+    rows = selftest(env)
+    if a.json:
+        out.write(json.dumps([{"item": k, "ok": ok, **p} for k, ok, p in rows], ensure_ascii=False) + "\n")
+    else:
+        for k, ok, p in rows:
+            mark = "✓" if ok else ("–" if ok is None else "✗")
+            out.write("%s %s\n" % (mark, T("self_" + k + ("_ok" if ok else ("_skip" if ok is None else "_bad")), **p)))
+    bad = [k for k, ok, _p in rows if ok is False]
+    if not a.json:
+        out.write(T("self_all_ok" if not bad else "self_some_bad", n=len(bad)) + "\n")
+    return 0 if not bad else 1
+
+
+def _passphrase(a, twice):
+    """通關密語:--passphrase-stdin 讀一行(腳本用);否則要終端機,人親手輸入(AI 席跑會停在這裡、照實說要人來)。
+    不從命令列參數拿(會進 shell 歷史與行程列表)。"""
+    if a.passphrase_stdin:
+        return sys.stdin.readline().rstrip("\n")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+    import getpass
+    first = getpass.getpass(T("backup_ask"))
+    if twice and getpass.getpass(T("backup_ask_again")) != first:
+        return ""
+    return first
+
+
+def cmd_backup(a, env, out):
+    import chat_backup as CB
+    pw = _passphrase(a, twice=a.cmd == "backup")
+    if pw is None:
+        out.write(T("backup_need_tty") + "\n")
+        return 2
+    try:
+        if a.cmd == "backup":
+            n = CB.backup(a.file, pw, env)
+            out.write(T("backup_done", n=n, file=a.file) + "\n")
+        else:
+            r = CB.restore(a.file, pw, env, replace=a.replace, chat_on=is_enabled(env))
+            out.write(T("restore_done_" + r["mode"], n=r["keys"], owner=r["owner"]) + "\n")
+    except CB.BackupError as err:
+        out.write(T("backup_err_" + str(err), n=CB.MIN_PASS) + "\n")
+        return 2
+    finally:
+        pw = None
+    return 0
+
+
 def cmd_status(a, env, out):
     rec = status_record(env)
     if a.json:
@@ -687,6 +1153,10 @@ def cmd_status(a, env, out):
     out.write(T("status_venv_" + rec["venv"], pin=NOSTR_SDK_PIN) + "\n")
     out.write(T("status_keys", n=rec["keys"]["seats"], owner=rec["keys"]["owner"] or "-") + "\n")
     out.write(T("status_friends", n=rec["friends"]) + "\n")
+    if rec["mine"]:
+        out.write(T("status_mine", n=rec["mine"]) + "\n")
+    if rec["refused_7d"]:
+        out.write(T("status_refused", n=rec["refused_7d"]) + "\n")
     w = rec.get("worker")
     if w:
         out.write(T("status_offline" if w.get("offline") else "status_relays", up=w.get("up", 0), total=w.get("total", 0)) + "\n")
@@ -731,8 +1201,58 @@ def main(argv=None, env=None, out=sys.stdout):
     fr.add_argument("action", choices=("add", "remove"))
     fr.add_argument("who", help=T("help.friend_who"))
     fr.add_argument("--name", help=T("help.friend_name"))
+    bl = sub.add_parser("block", help=T("help.block"))
+    bl.add_argument("action", nargs="?", choices=("add", "remove"))
+    bl.add_argument("who", nargs="?", help=T("help.friend_who"))
+    bl.add_argument("--name", help=T("help.friend_name"))
+    bl.add_argument("--json", action="store_true")
+    rq = sub.add_parser("request", help=T("help.request"))
+    rq.add_argument("target", help=T("help.request_target"))
+    rq.add_argument("who", nargs="?")
+    rq.add_argument("--note", default="", help=T("help.request_note"))
+    rq.add_argument("--from", dest="from_seat", help=T("help.request_from"))
+    rq.add_argument("--silent", action="store_true", help=T("help.request_silent"))
+    rqs = sub.add_parser("requests", help=T("help.requests"))
+    rqs.add_argument("--json", action="store_true")
+    so = sub.add_parser("social", help=T("help.social"))
+    so.add_argument("action", nargs="?", choices=("add", "remove"))
+    so.add_argument("p", nargs="?")
+    so.add_argument("v", nargs="?")
+    so.add_argument("--proof")
+    so.add_argument("--json", action="store_true")
+    n5 = sub.add_parser("nip05", help=T("help.nip05"))
+    n5.add_argument("name", nargs="?")
+    n5.add_argument("--clear", action="store_true")
+    sh = sub.add_parser("share", help=T("help.share"))
+    sh.add_argument("who", nargs="?")
+    sh.add_argument("level", nargs="?", choices=("off", "online", "status"))
+    sh.add_argument("--default", choices=("off", "online", "status"))
+    sh.add_argument("--json", action="store_true")
+    wd = sub.add_parser("world", help=T("help.world"))
+    wd.add_argument("--json", action="store_true")
+    ct = sub.add_parser("contacts", help=T("help.contacts"))
+    ct.add_argument("--json", action="store_true")
+    mn = sub.add_parser("mine", help=T("help.mine"))
+    mn.add_argument("action", nargs="?", choices=("add", "remove"))
+    mn.add_argument("who", nargs="?", help=T("help.mine_who"))
+    mn.add_argument("--name", help=T("help.friend_name"))
+    mn.add_argument("--json", action="store_true")
     fs = sub.add_parser("friends", help=T("help.friends"))
     fs.add_argument("--json", action="store_true")
+    for name in ("backup", "restore"):
+        bk = sub.add_parser(name, help=T("help." + name))
+        bk.add_argument("file")
+        bk.add_argument("--passphrase-stdin", action="store_true", help=T("help.passphrase_stdin"))
+        if name == "restore":
+            bk.add_argument("--replace", action="store_true", help=T("help.restore_replace"))
+    stt = sub.add_parser("selftest", help=T("help.selftest"))
+    stt.add_argument("--json", action="store_true")
+    rl = sub.add_parser("relays", help=T("help.relays"))
+    rl.add_argument("action", nargs="?", choices=("add", "remove", "reset", "test"))
+    rl.add_argument("url", nargs="?")
+    rl.add_argument("--json", action="store_true")
+    rf = sub.add_parser("refused", help=T("help.refused"))
+    rf.add_argument("--json", action="store_true")
     au = sub.add_parser("auto", help=T("help.auto"))
     au.add_argument("--quiet", action="store_true")
     pp = sub.add_parser("prepare", help=T("help.prepare"))
@@ -761,8 +1281,31 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_prepare(a, env, out)
     if a.cmd == "auto":
         return cmd_auto(a, env, out)
-    if a.cmd == "friend":
+    if a.cmd == "relays":
+        return cmd_relays(a, env, out)
+    if a.cmd in ("backup", "restore"):
+        return cmd_backup(a, env, out)
+    if a.cmd == "selftest":
+        return cmd_selftest(a, env, out)
+    if a.cmd == "refused":
+        return cmd_refused(a, env, out)
+    if a.cmd in ("friend", "mine", "block"):
         return cmd_friend(a, env, out)
+    if a.cmd == "request":
+        return cmd_request(a, env, out)
+    if a.cmd == "requests":
+        return cmd_requests(a, env, out)
+    if a.cmd == "contacts":
+        return cmd_contacts(a, env, out)
+    if a.cmd == "share":
+        return cmd_share(a, env, out)
+    if a.cmd in ("social", "nip05"):
+        if a.cmd == "nip05" and not a.clear and not a.name:
+            out.write(T("profile_bad_nip05") + "\n")
+            return 2
+        return cmd_social(a, env, out)
+    if a.cmd == "world":
+        return cmd_world(a, env, out)
     if a.cmd == "friends":
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":

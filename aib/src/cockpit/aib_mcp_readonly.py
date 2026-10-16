@@ -135,6 +135,7 @@ def team(seat, session_uuid=""):
     argv = [sys.executable or "python3", str(REPO / "tools" / "claude-mods" / "aib-boards" / "bin" / "seat-info.py"),
             session_uuid, "--fleet"]
     env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE", "AIB_RESUME_SESSION_UUID")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"   # 10-17:直接跑擴充裡的 .py 不在包裡長 __pycache__(aib ext 會當成多出來的檔)
     ok, text = _run(argv, env=env)     # 只准用對話 id 對席位檔;不准退回「呼叫端在哪個 tmux 窗格」去猜(10-11 實測猜成別席)
     if not ok:
         return False, "團隊狀態讀不到:" + text

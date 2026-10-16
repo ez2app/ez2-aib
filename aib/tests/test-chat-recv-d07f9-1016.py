@@ -17,7 +17,8 @@ N4 重開轉接程式(補收)⇒ 同一封不會進兩次
 N5 冒充回條:別的金鑰寄一張 delivered 回條 ⇒ 寄件端不收
 N6 站回 OK 慢(先轉送、2 秒後才回 OK)⇒ 對方的回條(陌生 ⇒ refused)比 send_event 先回來,寄件端照收(10-16 實機驗收掉 3/5 張)
 刀(複本):K1 席可讀待審全球信 ⇒ U3 紅;K2 parse 不認全球抬頭 ⇒ U1 紅;K3 enqueue 不收 status(先排隊)⇒ U2 紅;
-  K4 回條不比對寄件對象 ⇒ N5 紅(有 nostr-sdk 才跑);K5 寄出帳改回寄完才寫 ⇒ N6 紅
+  K4 回條不比對寄件對象 ⇒ N5 紅(有 nostr-sdk 才跑);K5 寄出帳改回寄完才寫 ⇒ N6 紅(N6 關掉回條暫存)
+  K6(反向)同 K5 但回條暫存開著(第 27.8 節)⇒ O1 照收,要綠
 """
 import importlib.util
 import json
@@ -279,6 +280,9 @@ class Network(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
 class SlowOk(Network):
+    # N6 連寄兩則陌生信,兩則都要回拒收(限量是第 27.4 節,另測);關掉回條暫存(27.8),N6 / K5 才只驗「寄出帳先寫」
+    box_extra = {"AIB_CHAT_REFUSE_EVERY": "0", "AIB_CHAT_ORPHAN_KEEP": "0"}
+
     def setUp(self):
         from aib_fake_relay import FakeRelay
         self.relay = FakeRelay(ok_delay=lambda ev: 2 if ev.get("kind") == 1059 else 0)
@@ -294,6 +298,17 @@ class SlowOk(Network):
             rec = outbox_rec("%s/6ddf/%s" % (b.owner, y), x)
             res = GF.send_and_wait(a.root, rec, wait=25)
             self.assertEqual((res["rc"], res["stage"]), (2, "refused"), (res, GF.read_receipts(a.root, rec["msgid"])))
+
+
+@unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
+class LateLedger(unittest.TestCase):
+    """第 27.8 節:回條暫存開著(預設 60 秒)。這格平常一定綠;K6 在「寄完才露出寄出帳」的複本裡跑它,也要綠。"""
+    box_extra = {"AIB_CHAT_REFUSE_EVERY": "0"}
+    setUp = SlowOk.setUp
+    _box = Network._box
+
+    def test_o1_receipt_waits_for_ledger(self):
+        SlowOk.test_n6_receipt_before_ok(self)
 
 
 class Knife(unittest.TestCase):
@@ -328,6 +343,21 @@ class Knife(unittest.TestCase):
                     "        try:\n            ok = await _send_to(target, own, gw, mine)\n"
                     "            os.rename(str(_p) + \".later\", str(_p))\n",
                     "SlowOk.test_n6_receipt_before_ok")
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k6_late_ledger_saved_by_orphans(self):
+        """反向刀:同 K5 讓寄出帳寄完才出現,但回條暫存開著 ⇒ 照收(要綠)。"""
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_nostr.py",
+                        "        try:\n            ok = await _send_to(target, own, gw, mine)\n",
+                        "        _p = self.root / \"sent\" / (msgid + \".json\")\n        _p.rename(str(_p) + \".later\")\n"
+                        "        try:\n            ok = await _send_to(target, own, gw, mine)\n"
+                        "            os.rename(str(_p) + \".later\", str(_p))\n",
+                        tests=(name, "test-chat-send-d07f9-1016.py")) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "LateLedger.test_o1_receipt_waits_for_ledger"],
+                            cwd=str(root), max_procs=120, timeout=400)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertEqual(r.returncode, 0, "寄出帳晚寫時,回條暫存要接住:\n" + r.stdout + r.stderr)
 
 
 if __name__ == "__main__":
