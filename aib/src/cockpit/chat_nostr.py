@@ -885,7 +885,8 @@ class Receiver(object):
         """名片(第 32 節):好友 / 我的其他機器私下送來的社群帳號。陌生、封鎖 ⇒ 靜默丟;不進佇列、不回條。"""
         parsed = GF.parse_address(tags.get("aib-from") or "") or {}
         owner = parsed.get("owner")
-        if not owner or CR.is_blocked(owner) or not (CR.is_friend(owner) or CR.is_mine(owner)):
+        known = bool(owner) and (CR.is_friend(owner) or CR.is_mine(owner))
+        if not known or CR.is_blocked(owner):          # 跟 presence 同一條規則(寫法不同:刀測錨點要唯一)
             return
         rc, res = await self.sender._resolve(tags.get("aib-from"))
         if rc != 0 or res["seat"]["npub"] != from_npub:

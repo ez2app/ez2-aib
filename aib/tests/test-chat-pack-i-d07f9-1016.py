@@ -219,8 +219,8 @@ class Knife(unittest.TestCase):
     def test_k3_card_from_anyone(self):
         name = Path(__file__).name
         with knife_copy(REPO, "src/cockpit/chat_nostr.py",
-                        "        if not owner or CR.is_blocked(owner) or not (CR.is_friend(owner) or CR.is_mine(owner)):\n            return\n        rc, res = await self.sender._resolve(tags.get(\"aib-from\"))",
-                        "        if not owner:\n            return\n        rc, res = await self.sender._resolve(tags.get(\"aib-from\"))",
+                        "        if not known or CR.is_blocked(owner):",
+                        "        if not owner:",
                         tests=(name, "test-chat-send-d07f9-1016.py", "test-chat-recv-d07f9-1016.py")) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "Network.test_n1_card_to_friends_only"],
                             cwd=str(root), max_procs=120, timeout=400)
