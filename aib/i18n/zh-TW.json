@@ -4537,5 +4537,15 @@
   "aib.chat.help.world": "好友分享來的在線狀態(艦長室世界分頁讀 --json)",
   "aib.chat.share_set": "已設定:{owner} ⇒ {level}(對方不是好友 / 我的機器時一律不送)",
   "aib.chat.relay_test_ok": "✓ {url}:連線 {c} ms、確認 {o} ms、查詢 {q} ms",
-  "aib.chat.relay_test_bad": "✗ {url}:不能用({why})"
+  "aib.chat.relay_test_bad": "✗ {url}:不能用({why})",
+  "aib.chat.social_saved": "已存;下一輪轉接程式會重發名冊,好友那邊照證明頁去驗。",
+  "aib.chat.social_row": "  {p}  {v}  證明:{proof}",
+  "aib.chat.social_none": "還沒宣告社群帳號(aib chat social add <平台> <帳號> --proof <貼了你主人 npub 的公開網址>)",
+  "aib.chat.nip05_saved": "NIP-05 已設為 {name};對方會去 https://<網域>/.well-known/nostr.json 驗,網域那邊要放你的主人公鑰。",
+  "aib.chat.nip05_cleared": "已拿掉 NIP-05。",
+  "aib.chat.profile_bad_social": "社群格式不對:平台只能是 {list};帳號 1–100 字;證明要 https:// 網址",
+  "aib.chat.profile_too_many_socials": "社群帳號最多 {n} 個",
+  "aib.chat.profile_bad_nip05": "NIP-05 要是 名@網域(小寫),例如 andy@ez2.app",
+  "aib.chat.help.social": "宣告你的社群帳號(寫進名冊,好友照證明頁驗)",
+  "aib.chat.help.nip05": "設定 NIP-05 好記位址(名@網域),--clear 拿掉"
 }

@@ -249,6 +249,77 @@ def share_level(owner, env=None):
     return lvl
 
 
+# ── 真人驗證:社群帳號與 NIP-05(第 32 節,Andy 10-16 23:4x)──
+SOCIAL_PLATFORMS = ("x", "github", "line", "fb", "ig", "threads", "youtube", "web")
+SOCIAL_AUTO = ("github", "web", "youtube", "threads")   # 證明頁不用登入就抓得到的(其他平台只能算自稱)
+SOCIALS_MAX = 8
+_NIP05_RE = re.compile(r"^[a-z0-9._-]{1,64}@[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})+$")
+_PROOF_RE = re.compile(r"^https://[^\s<>\"']{1,300}$")
+
+
+def _clean_text(v, n):
+    t = "".join(ch for ch in str(v or "") if ord(ch) >= 32 and ch not in "<>").strip()
+    return t[:n] or None
+
+
+def clean_socials(items):
+    out, seen = [], set()
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict) or it.get("p") not in SOCIAL_PLATFORMS:
+            continue
+        v = _clean_text(it.get("v"), 100)
+        if not v or (it["p"], v) in seen:
+            continue
+        seen.add((it["p"], v))
+        row = {"p": it["p"], "v": v}
+        if isinstance(it.get("proof"), str) and _PROOF_RE.match(it["proof"]):
+            row["proof"] = it["proof"]
+        out.append(row)
+    return out[:SOCIALS_MAX]
+
+
+def clean_nip05(text):
+    t = str(text or "").strip().lower()
+    return t if _NIP05_RE.match(t) else None
+
+
+def set_social(action, p=None, v=None, proof=None, env=None):
+    """aib chat social add <平台> <帳號或網址> [--proof <https 網址>] / remove <平台> [<帳號>]。回改好的清單。"""
+    rec = read_profile(env)
+    if not rec:
+        raise RosterError("no_profile")
+    cur = clean_socials(rec.get("socials"))
+    if p not in SOCIAL_PLATFORMS:
+        raise RosterError("bad_social")
+    if action == "add":
+        row = clean_socials([{"p": p, "v": v, "proof": proof}])
+        if not row or (proof and "proof" not in row[0]):
+            raise RosterError("bad_social")
+        cur = [x for x in cur if not (x["p"] == p and x["v"] == row[0]["v"])] + row
+        if len(cur) > SOCIALS_MAX:
+            raise RosterError("too_many_socials")
+    else:
+        cur = [x for x in cur if not (x["p"] == p and (v is None or x["v"] == v))]
+    rec["socials"] = cur
+    _save_profile(rec, env)
+    return cur
+
+
+def set_nip05(text, env=None):
+    rec = read_profile(env)
+    if not rec:
+        raise RosterError("no_profile")
+    if text is None:
+        rec.pop("nip05", None)
+    else:
+        n = clean_nip05(text)
+        if not n:
+            raise RosterError("bad_nip05")
+        rec["nip05"] = n
+    _save_profile(rec, env)
+    return rec.get("nip05")
+
+
 def clean_country(code):
     c = (code or "").strip().upper()
     return c if GF.COUNTRY_RE.match(c) else None
@@ -384,6 +455,11 @@ def build(env=None, live=None, now=None):
                "cabins": [{"cabin": c, "seats": seats} for c, seats in sorted(cabins.items())],
                "dm_relays": relays(env), "aib_version": _aib_version(), "envelope": list(ENVELOPES),
                "updated_at": int(time.time() if now is None else now)}
+    # 第 32 節(Andy 10-16 23:4x 真人驗證):自己宣告的社群帳號與 NIP-05;別人照證明去驗
+    if prof.get("socials"):
+        content["socials"] = clean_socials(prof["socials"])
+    if prof.get("nip05") and clean_nip05(prof["nip05"]):
+        content["nip05"] = clean_nip05(prof["nip05"])
     return content, dm_seats
 
 
@@ -477,6 +553,9 @@ def parse(content, signer_npub):
                 s["name"] = None
             if not isinstance(s.get("langs", []), list) or not all(isinstance(x, str) and _LANG_RE.match(x) for x in s.get("langs", [])):
                 s["langs"] = []
+    # 第 32 節:社群與 NIP-05 是選填;不合格的整欄當沒有(不讓名冊因此不能用)
+    rec["socials"] = clean_socials(rec.get("socials"))
+    rec["nip05"] = clean_nip05(rec.get("nip05"))
     return rec
 
 

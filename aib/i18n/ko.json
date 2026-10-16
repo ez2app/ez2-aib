@@ -4537,5 +4537,15 @@
   "aib.chat.help.world": "친구가 공유한 접속 상태(함장실 월드 탭은 --json을 읽음)",
   "aib.chat.share_set": "설정했습니다: {owner} ⇒ {level}(친구 / 내 기기가 아니면 보내지 않음)",
   "aib.chat.relay_test_ok": "✓ {url}: 연결 {c} ms, 확인 {o} ms, 조회 {q} ms",
-  "aib.chat.relay_test_bad": "✗ {url}: 사용할 수 없음({why})"
+  "aib.chat.relay_test_bad": "✗ {url}: 사용할 수 없음({why})",
+  "aib.chat.social_saved": "저장했습니다. 다음 주기에 명부를 다시 발행하고, 친구 쪽에서 증명 페이지를 확인합니다.",
+  "aib.chat.social_row": "  {p}  {v}  증명: {proof}",
+  "aib.chat.social_none": "아직 소셜 계정을 선언하지 않았습니다(aib chat social add <플랫폼> <계정> --proof <주인 npub를 올린 공개 URL>)",
+  "aib.chat.nip05_saved": "NIP-05를 {name}(으)로 설정했습니다. 상대가 https://<도메인>/.well-known/nostr.json을 확인하므로 거기에 주인 공개키를 올려 두세요.",
+  "aib.chat.nip05_cleared": "NIP-05를 삭제했습니다.",
+  "aib.chat.profile_bad_social": "소셜 형식 오류: 플랫폼은 {list}만, 계정 1–100자, 증명은 https:// URL",
+  "aib.chat.profile_too_many_socials": "소셜 계정은 최대 {n}개",
+  "aib.chat.profile_bad_nip05": "NIP-05는 이름@도메인(소문자) 형식, 예: andy@ez2.app",
+  "aib.chat.help.social": "소셜 계정 선언(명부에 기록, 친구가 증명 페이지로 확인)",
+  "aib.chat.help.nip05": "NIP-05 주소(이름@도메인) 설정, --clear로 삭제"
 }

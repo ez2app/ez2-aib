@@ -208,7 +208,8 @@ async def resolve(addr, relays):
             return 2, {"ok": False, "why": "no_common_envelope"}
         seat_npub, look_in = s["npub"], (rec["dm_relays"] or relays)
         out.update(owner=owner_npub, display_name=rec.get("display_name"), country=rec.get("country"), cabin=cabin,
-                   seat=s, envelope=CR.common_envelope(rec), roster_at=ev.created_at().as_secs())
+                   seat=s, envelope=CR.common_envelope(rec), roster_at=ev.created_at().as_secs(),
+                   socials=rec.get("socials") or [], nip05=rec.get("nip05"))
     flt2 = N.Filter().author(N.PublicKey.parse(seat_npub)).kind(N.Kind(CR.KIND_DM_RELAYS))
     try:
         rel_ev = await _fetch_latest(look_in, flt2)
@@ -531,7 +532,7 @@ class Sender(object):
         me = (NK.read_map().get("owner") or {}).get("npub")
         if owner:
             GF.note_peer(self.root, owner, res.get("display_name"), res.get("country"), _peer_seat(res),
-                         res.get("roster_at"), direction="out")          # 第 29.6 節聯絡人快照
+                         res.get("roster_at"), direction="out", claims=_claims(res))          # 第 29.6 節聯絡人快照
         if not owner or owner == me or CR.is_mine(owner) or CR.is_blocked(owner):
             return
         try:
@@ -623,6 +624,14 @@ def _clean_note(text):
     """好友申請附的一句話:去掉控制字元、換行改空白、最多 REQUEST_NOTE_MAX 字。只給人看(艦長室),不進 AI。"""
     t = "".join(" " if ch in "\r\n\t" else ch for ch in str(text or "") if ch in "\r\n\t" or ord(ch) >= 32)
     return t.strip()[:GF.REQUEST_NOTE_MAX]
+
+
+def _claims(res):
+    """名冊上宣告的社群與 NIP-05(第 32 節);驗證由 chat_verify.verify_round 另做。"""
+    return {"socials": (res or {}).get("socials") or [], "nip05": (res or {}).get("nip05")}
+
+
+VERIFY_TICK_S = float(os.environ.get("AIB_CHAT_VERIFY_TICK") or 300)    # 多久看一次有沒有要驗的證明(第 32 節)
 
 
 def _peer_seat(res):
@@ -889,7 +898,7 @@ class Receiver(object):
         row = {"owner": parsed["owner"], "display_name": rec.get("display_name"), "country": rec.get("country"),
                "from_addr": rec.get("from_addr"), "note": rec["content"], "msgid": msgid}
         GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"), _peer_seat(peer),
-                     peer.get("roster_at"))
+                     peer.get("roster_at"), claims=_claims(peer))
         if not GF.add_request(self.root, row, every=REFUSE_EVERY_S):
             audit(self.root, "in", msgid, from_npub, "request:quiet")
             return
@@ -975,7 +984,7 @@ class Receiver(object):
             audit(self.root, "in", msgid, from_npub, "inbox")
             if peer:
                 GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"),
-                             _peer_seat(peer), peer.get("roster_at"), direction="in")
+                             _peer_seat(peer), peer.get("roster_at"), direction="in", claims=_claims(peer))
         except GF.ContractError as err:
             sys.stderr.write("inbox:%s\n" % err)
             audit(self.root, "in", msgid, from_npub, "refused")
@@ -1134,6 +1143,7 @@ async def serve(root):
     wstate = {"started": time.time(), "clock": None}
     last_clock = 0.0
     last_presence = 0.0
+    last_verify = 0.0
     recv_task = asyncio.ensure_future(receiver.run(stop))
     for left in sorted((root / "sending").glob("*.json")):     # 上次掛掉時領了還沒寄完的:當重試處理
         if not (root / "sending" / (left.stem + ".try")).exists():
@@ -1156,6 +1166,13 @@ async def serve(root):
                 await sender.handle(msgid)
             await receiver.pump_delivery()
             receiver.retry_orphans()
+            if time.time() - last_verify >= VERIFY_TICK_S:
+                last_verify = time.time()
+                try:
+                    import chat_verify as CV
+                    await asyncio.to_thread(CV.verify_round, root)
+                except Exception as err:   # noqa: BLE001
+                    sys.stderr.write("verify:%s\n" % type(err).__name__)
             if time.time() - last_presence >= PRESENCE_TICK_S:
                 last_presence = time.time()
                 try:

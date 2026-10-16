@@ -824,6 +824,42 @@ def cmd_requests(a, env, out):
     return 0
 
 
+def _claim_view(peer, key, name=None):
+    """一項證明的驗證結果:verified = True / False / None(還沒驗或平台不能自動驗 ⇒ 只算自稱)。"""
+    c = (peer.get("checks") or {}).get(key) or {}
+    out = {"verified": c.get("verified"), "at": c.get("at")}
+    if name is not None:
+        out["name"] = name
+    return out
+
+
+def cmd_social(a, env, out):
+    """aib chat social [add <平台> <帳號或網址> [--proof <https>] | remove <平台> [<帳號>]] [--json];
+    aib chat nip05 <名@網域> | --clear。寫進名冊,別人照證明去驗(第 32 節)。"""
+    import chat_roster as CR
+    try:
+        if a.cmd == "nip05":
+            got = CR.set_nip05(None if a.clear else a.name, env)
+            out.write(T("nip05_saved" if got else "nip05_cleared", name=got or "-") + "\n")
+            return 0
+        if a.action:
+            CR.set_social(a.action, a.p, a.v, a.proof, env)
+            out.write(T("social_saved") + "\n")
+    except CR.RosterError as err:
+        out.write(T("profile_" + str(err), n=CR.SOCIALS_MAX, list="/".join(CR.SOCIAL_PLATFORMS)) + "\n")
+        return 2
+    prof = CR.read_profile(env) or {}
+    items = CR.clean_socials(prof.get("socials"))
+    if getattr(a, "json", False):
+        out.write(json.dumps({"socials": items, "nip05": prof.get("nip05")}, ensure_ascii=False) + "\n")
+        return 0
+    for x in items:
+        out.write(T("social_row", p=x["p"], v=x["v"], proof=x.get("proof") or "-") + "\n")
+    if not items:
+        out.write(T("social_none") + "\n")
+    return 0
+
+
 def contacts_payload(env=None):
     """第 29.2 節:艦長室通訊錄的第五來源。只讀本機檔、不連網、不含內文。"""
     import chat_roster as CR
@@ -839,8 +875,13 @@ def contacts_payload(env=None):
         p = peers.get(owner) or {}
         r = rows.setdefault(owner, {"key": "global:" + owner, "owner": owner, "relation": relation, "label": label,
                                     "display_name": p.get("display_name"), "country": p.get("country"),
-                                    "seats": [dict(x, addr="%s/%s/%s" % (owner, x.get("cabin") or "main", x.get("seat")))
+                                    "seats": [dict(x, addr="%s/%s/%s" % (owner, x.get("cabin") or "main", x.get("seat")), ai=True)
                                               for x in p.get("seats") or [] if x.get("seat")],
+                                    # 第 32 節真人驗證:verified = 手上有驗過簽章的名冊;human = 通訊錄每一筆都是主人(人)
+                                    "verified": bool(p.get("roster_at")), "human": True,
+                                    "nip05": _claim_view(p, "nip05", p.get("nip05")) if p.get("nip05") else None,
+                                    "socials": [dict(x, **_claim_view(p, "social:%s:%s" % (x["p"], x["v"])))
+                                                for x in p.get("socials") or []],
                                     "roster_at": p.get("roster_at"), "seen_at": p.get("seen_at"),
                                     "last_in": p.get("last_in"), "last_out": p.get("last_out"),
                                     "n_in": p.get("n_in", 0), "n_out": p.get("n_out", 0), "n_refused": 0,
@@ -1173,6 +1214,15 @@ def main(argv=None, env=None, out=sys.stdout):
     rq.add_argument("--silent", action="store_true", help=T("help.request_silent"))
     rqs = sub.add_parser("requests", help=T("help.requests"))
     rqs.add_argument("--json", action="store_true")
+    so = sub.add_parser("social", help=T("help.social"))
+    so.add_argument("action", nargs="?", choices=("add", "remove"))
+    so.add_argument("p", nargs="?")
+    so.add_argument("v", nargs="?")
+    so.add_argument("--proof")
+    so.add_argument("--json", action="store_true")
+    n5 = sub.add_parser("nip05", help=T("help.nip05"))
+    n5.add_argument("name", nargs="?")
+    n5.add_argument("--clear", action="store_true")
     sh = sub.add_parser("share", help=T("help.share"))
     sh.add_argument("who", nargs="?")
     sh.add_argument("level", nargs="?", choices=("off", "online", "status"))
@@ -1249,6 +1299,11 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_contacts(a, env, out)
     if a.cmd == "share":
         return cmd_share(a, env, out)
+    if a.cmd in ("social", "nip05"):
+        if a.cmd == "nip05" and not a.clear and not a.name:
+            out.write(T("profile_bad_nip05") + "\n")
+            return 2
+        return cmd_social(a, env, out)
     if a.cmd == "world":
         return cmd_world(a, env, out)
     if a.cmd == "friends":

@@ -4537,5 +4537,15 @@
   "aib.chat.help.world": "友だちが共有した在席状況(艦長室のワールドタブは --json を読む)",
   "aib.chat.share_set": "設定しました:{owner} ⇒ {level}(友だち / 自分の機器でなければ送りません)",
   "aib.chat.relay_test_ok": "✓ {url}:接続 {c} ms、確認 {o} ms、検索 {q} ms",
-  "aib.chat.relay_test_bad": "✗ {url}:使えません({why})"
+  "aib.chat.relay_test_bad": "✗ {url}:使えません({why})",
+  "aib.chat.social_saved": "保存しました。次の周期で名簿を再発行し、友だち側が証明ページを確認します。",
+  "aib.chat.social_row": "  {p}  {v}  証明:{proof}",
+  "aib.chat.social_none": "まだ SNS アカウントを宣言していません(aib chat social add <プラットフォーム> <アカウント> --proof <持ち主 npub を載せた公開 URL>)",
+  "aib.chat.nip05_saved": "NIP-05 を {name} に設定しました。相手は https://<ドメイン>/.well-known/nostr.json を確認するので、そこに持ち主の公開鍵を載せてください。",
+  "aib.chat.nip05_cleared": "NIP-05 を削除しました。",
+  "aib.chat.profile_bad_social": "SNS の形式が不正:プラットフォームは {list} のみ、アカウント 1–100 文字、証明は https:// の URL",
+  "aib.chat.profile_too_many_socials": "SNS アカウントは最大 {n} 件",
+  "aib.chat.profile_bad_nip05": "NIP-05 は 名前@ドメイン(小文字)、例:andy@ez2.app",
+  "aib.chat.help.social": "SNS アカウントを宣言(名簿に載り、友だちが証明ページで確認)",
+  "aib.chat.help.nip05": "NIP-05 アドレス(名前@ドメイン)を設定。--clear で削除"
 }

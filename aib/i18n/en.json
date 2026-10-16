@@ -4537,5 +4537,15 @@
   "aib.chat.help.world": "online status shared by friends (the captain room's world tab reads --json)",
   "aib.chat.share_set": "Set: {owner} ⇒ {level} (nothing is sent unless they are a friend or one of your machines)",
   "aib.chat.relay_test_ok": "✓ {url}: connect {c} ms, acknowledge {o} ms, query {q} ms",
-  "aib.chat.relay_test_bad": "✗ {url}: not usable ({why})"
+  "aib.chat.relay_test_bad": "✗ {url}: not usable ({why})",
+  "aib.chat.social_saved": "Saved; the bridge will republish your roster on its next round, and friends will check the proof page.",
+  "aib.chat.social_row": "  {p}  {v}  proof: {proof}",
+  "aib.chat.social_none": "No social accounts declared yet (aib chat social add <platform> <account> --proof <public URL containing your owner npub>)",
+  "aib.chat.nip05_saved": "NIP-05 set to {name}; others will check https://<domain>/.well-known/nostr.json, so that file must list your owner public key.",
+  "aib.chat.nip05_cleared": "NIP-05 removed.",
+  "aib.chat.profile_bad_social": "Social account not accepted: platform must be one of {list}; account 1–100 characters; proof must be an https:// URL",
+  "aib.chat.profile_too_many_socials": "At most {n} social accounts",
+  "aib.chat.profile_bad_nip05": "NIP-05 must look like name@domain (lowercase), e.g. andy@ez2.app",
+  "aib.chat.help.social": "declare your social accounts (written into the roster; friends verify them via the proof page)",
+  "aib.chat.help.nip05": "set a NIP-05 address (name@domain); --clear removes it"
 }
