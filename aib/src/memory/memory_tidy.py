@@ -42,9 +42,12 @@ FRESH_DAYS = 14          # 總覽只彙整 N 天內更新過的席列(換艙 / r
 NOW_ROW_CHARS = 80
 LOCK_WAIT_S = 10
 SECTIONS = ("row", "context", "note", "persona", "fit", "facts")
-SEC_RE = re.compile(r"^## .*<!-- tidy:(row|context|note|persona|fit|facts) -->\s*$", re.M)
+OPTIONAL_SECTIONS = ("main",)          # 10-16 主人格(真人分身)那段:有登記、本席沒綁它、讀得到真人原話才出現
+SEC_RE = re.compile(r"^## .*<!-- tidy:(row|context|note|persona|main|fit|facts) -->\s*$", re.M)
 EVIDENCE_MIN = 8
 HUMAN_MAX = 40
+# 10-16 維護者裁:human_filter(src/persona-collect/)開源倉還沒有,等私倉匯出、不手搬;缺件時照實寫,不靜默回空
+HUMAN_WORDS_UNAVAILABLE = "unavailable(缺 human_filter)"
 CROWN_PERSONA = "71c97a"
 PERSONA_LINE_RE = re.compile(r"^\s*-\s*(\S+?)\s*[::]\s*(.+?)\s*〔證據[::]「(.+?)」〕\s*$")
 IDENT_LINE_RE = re.compile(r"^\s*身分\s*[::]\s*(性別|生日|嗜好)\s*=\s*(.+?)\s*〔證據[::]「(.+?)」〕\s*$")
@@ -180,7 +183,7 @@ def facts(ctx, repo=None):
     else:
         lines.append("- 人格卡:這一席沒綁人格,或卡讀不到(人格那段不會寫)")
     words = human_words(ctx, evidence_since(code))
-    lines.append("- 真人本輪原話(人格證據只認這裡的原文):" + ("" if words else "沒有"))
+    lines.append(human_words_line(words))
     lines += ["  - [%s] %s" % (t, w.replace("\n", " ")) for t, w in words]
     lines += fit_facts(ctx, repo)
     return "\n".join(lines)
@@ -234,6 +237,33 @@ def persona_card(ctx):
     return {"uid": uid, "name": row.get("display_name") or uid, "path": path, "text": text}
 
 
+def _human_filter():
+    """真人判準模組;開源倉還沒有(等私倉匯出)⇒ None。"""
+    pc = HERE.parent / "persona-collect"
+    if str(pc) not in sys.path:
+        sys.path.append(str(pc))
+    try:
+        import human_filter
+    except Exception:  # noqa: BLE001
+        return None
+    return human_filter
+
+
+def human_words_status():
+    """收據 / collect 記的真人原話來源狀態:ok,或 HUMAN_WORDS_UNAVAILABLE(缺 human_filter)。"""
+    return "ok" if _human_filter() is not None else HUMAN_WORDS_UNAVAILABLE
+
+
+def human_words_line(words):
+    """機器事實裡那一行:缺 human_filter 時寫「讀不到」,不寫「沒有」(不讓模型以為真人沒說話)。"""
+    head = "- 真人本輪原話(人格證據只認這裡的原文):"
+    if words:
+        return head
+    if human_words_status() != "ok":
+        return head + "讀不到(缺 human_filter,等私倉匯出;人格那段留空)"
+    return head + "沒有"
+
+
 def human_words(ctx, since="", span_rounds=False):
     """本輪(since 之後)the maintainer 親口說的話:這一席的 Claude 對話檔 → human_filter.is_human 篩
     (比對 dm 送件紀錄、dm 標頭、Stop hook 回饋等機器字樣;seat 一律當已綁真人,不然沒綁人格的席全被丟)。
@@ -269,12 +299,8 @@ def human_words(ctx, since="", span_rounds=False):
             paths = []
     if not paths:
         return []
-    pc = HERE.parent / "persona-collect"
-    if str(pc) not in sys.path:
-        sys.path.append(str(pc))
-    try:
-        import human_filter
-    except Exception:  # noqa: BLE001
+    human_filter = _human_filter()
+    if human_filter is None:                       # 缺件:collect / 收據 / 巡檢另外照實寫(human_words_status)
         return []
     seat = {"human_bound": True, "code": ctx["code"]}
     out = []
@@ -355,6 +381,7 @@ def render_draft(ctx, facts_text, nonce):
         "<!-- 身分只在真人說了才寫:身分:生日=1996-09-10〔證據:「原文」〕 -->",
         "",
         "",
+    ] + main_section(ctx) + [
         "## 綁定檢查(這一席的人格、專案跟「最近 4 小時」做的事合不合;看機器事實最後那段)<!-- tidy:fit -->",
         "人格: 合",
         "人格建議: ",
@@ -369,6 +396,20 @@ def render_draft(ctx, facts_text, nonce):
     ])
 
 
+def main_section(ctx):
+    """草稿的主人格段(只在 main_persona_target 有卡時出現)。"""
+    pc, _why = main_persona_target(ctx)
+    if not pc:
+        return []
+    return [
+        "## 主人格新增(真人分身「%s」;只寫真人親口說話看得出的習慣、偏好,只補不改、不寫身分;證據規則同上;沒觀察到就留空)"
+        "<!-- tidy:main -->" % pc["name"],
+        "<!-- 格式同人格卡新增:- 維度:規則〔證據:「原文」〕 -->",
+        "",
+        "",
+    ]
+
+
 def parse_draft(text):
     m = HEAD_RE.search(text or "")
     if not m:
@@ -376,7 +417,7 @@ def parse_draft(text):
     out = {"code": m.group(1), "nonce": m.group(2)}
     marks = list(SEC_RE.finditer(text))
     names = [mk.group(1) for mk in marks]
-    if sorted(names) != sorted(SECTIONS) or len(names) != len(set(names)):
+    if sorted(n for n in names if n not in OPTIONAL_SECTIONS) != sorted(SECTIONS) or len(names) != len(set(names)):
         raise TidyError("段落標記不對(要恰好 %s 各一個):%s" % (" / ".join(SECTIONS), names))
     for i, mk in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
@@ -434,13 +475,15 @@ def collect(seat="", out=None, repo=None):
     ftext = facts(ctx, repo)
     draft = render_draft(ctx, ftext, nonce)
     pc = persona_card(ctx)
+    mpc, _why = main_persona_target(ctx)
     since = evidence_since(ctx["code"])
     words = [w for _t, w in human_words(ctx, since)]
     _write_json(tidy_dir() / ("%s.collect.json" % ctx["code"]),
                 {"nonce": nonce, "facts_sha": _sha(ftext.strip("\n")), "at": _now(), "project_uid": ctx.get("project_uid"),
                  "persona_sha": _sha(pc["text"]) if pc else "", "persona_since": since,
                  # 證據只認這一份(collect 當下抽的 the maintainer 原話),不從機器事實文字切 —— 文字裡的提交標題、各席列都可能被寫成假原話
-                 "human_words": words})
+                 "human_words": words, "human_words_status": human_words_status(),
+                 "main_sha": _sha(mpc["text"]) if mpc else ""})
     if out:
         Path(out).write_text(draft, encoding="utf-8")
     return draft
@@ -473,6 +516,16 @@ def validate(ctx, parts, skip_context=False):
     errs += perrs
     if (pdims or pident) and not persona_card(ctx):
         errs.append("人格那段有寫,但這一席沒綁人格或卡讀不到")
+    mdims, mident, merrs, mevid = parse_persona(parts.get("main", ""))
+    errs += merrs
+    if mident:
+        errs.append("主人格那段不寫身分(只補 12 維)")
+    if (mdims or mident) and not main_persona_target(ctx)[0]:
+        errs.append("主人格那段有寫,但這輪不寫主人格:%s" % main_persona_target(ctx)[1])
+    for d, items in mdims.items():
+        if len(items) > 3:
+            errs.append("主人格「%s」一次加了 %d 條(最多 3)" % (d, len(items)))
+    evid = list(evid) + list(mevid)
     said = [_norm(w) for w in (col.get("human_words") or [])]
     for e in evid:
         if len(_norm(e)) < EVIDENCE_MIN:
@@ -593,10 +646,31 @@ def _tidy_writes():
     return out
 
 
+def main_persona_uid():
+    """登記的主人格(真人分身)uid:identity/user-main-persona.json(aib persona main set 寫);沒登記 ⇒ ""。"""
+    uid = (_read_json(state_root() / "identity" / "user-main-persona.json", {}) or {}).get("persona_uid")
+    return uid if isinstance(uid, str) else ""
+
+
 def is_crown(uid):
-    """第一艦長人格卡(真人分身):冠位那張,或 identity/user-main-persona.json 指的主人格。"""
-    main = (_read_json(state_root() / "identity" / "user-main-persona.json", {}) or {}).get("persona_uid")
-    return uid == CROWN_PERSONA or (bool(main) and uid == main)
+    """大變動要真人按的卡(真人分身):有登記主人格就認登記那張(10-16 維護者裁),沒登記才退回冠位常數。"""
+    return uid == (main_persona_uid() or CROWN_PERSONA)
+
+
+def main_persona_target(ctx):
+    """這一席這輪要不要另外精煉主人格 → (卡 or None, 不做的原因)。
+    維護者 10-16 13:1x:「真人分身就算沒有被綁定，也可以在判斷真人的情況下、靜默優化」。"""
+    uid = main_persona_uid()
+    if not uid:
+        return None, "主人格沒登記(aib persona main set <卡號>)"
+    if uid == (ctx.get("persona_uid") or ""):
+        return None, "本席就綁主人格(寫在人格那段)"
+    if human_words_status() != "ok":
+        return None, "讀不到真人原話(缺 human_filter,等私倉匯出)"
+    pc = persona_card({"persona_uid": uid})
+    if not pc:
+        return None, "主人格卡 %s 讀不到" % uid
+    return pc, ""
 
 
 def ask_big_change(pc, reasons, dialog=None):
@@ -638,14 +712,18 @@ def refingerprint(ctx, pc, runner=None):
     return out
 
 
-def write_persona(ctx, parts, dialog=None, runner=None, defer_big=False, add_only=False):
+def write_persona(ctx, parts, dialog=None, runner=None, defer_big=False, add_only=False, main=None):
     """加 12 維、改身分 → 快照 → 寫 → 重新登記指紋。回 (status, 細節)。
-    defer_big:依用量自動精煉(10~70%)時第一艦長卡大變動不跳窗,存成待批,85% 交接那次再跳(DESIGN §8b.2)。"""
+    defer_big:依用量自動精煉(10~70%)時第一艦長卡大變動不跳窗,存成待批,85% 交接那次再跳(DESIGN §8b.2)。
+    main:主人格卡(main_persona_target 給的)⇒ 讀「主人格新增」段寫進那張;靜默(10-16 維護者裁):只補不改、
+         不改身分、不跳窗;快照 + writes.jsonl + 收據照寫,可查可退。"""
     import persona_card_edit as pce
-    pdims, pident, _e, _v = parse_persona(parts.get("persona", ""))
+    pdims, pident, _e, _v = parse_persona(parts.get("main" if main else "persona", ""))
+    if main:
+        pident, add_only = {}, True
     if not pdims and not pident:
         return "skipped", "這輪沒觀察到"
-    pc = persona_card(ctx)
+    pc = main or persona_card(ctx)
     stamp = "%s · @%s · %s" % (_now()[:16].replace("T", " "), ctx["code"], ctx["model"])
     new = {d: ["%s〔AIB · %s · 證據:「%s」〕" % (rule, stamp, ev) for rule, ev in items] for d, items in pdims.items()}
     if add_only:                                     # 只補不改:那一維已滿 3 條就不加(不擠掉舊的)
@@ -658,7 +736,7 @@ def write_persona(ctx, parts, dialog=None, runner=None, defer_big=False, add_onl
     text, dropped = pce.set_dims(pc["text"], new)
     if pident:
         text = pce.set_identity(text, pident)
-    if is_crown(pc["uid"]):
+    if not main and is_crown(pc["uid"]):
         big, reasons = pce.big_change(pc["text"], text)
         if big and defer_big:
             return "waiting", "第一艦長卡大變動,存到 85%% 交接時給真人按:%s" % ";".join(reasons)
@@ -674,7 +752,8 @@ def write_persona(ctx, parts, dialog=None, runner=None, defer_big=False, add_onl
             return "failed", str(exc)
         if now_text != pc["text"]:
             return "failed", "人格卡在套用途中又被改過,重新 collect"
-        if col.get("persona_sha") and _sha(now_text) != col["persona_sha"] and _sha(now_text) not in _tidy_writes():
+        sha_key = "main_sha" if main else "persona_sha"
+        if col.get(sha_key) and _sha(now_text) != col[sha_key] and _sha(now_text) not in _tidy_writes():
             return "failed", "人格卡在 collect 之後被人手改過(不是 tidy 寫的),不蓋;重新 collect"
         snap = memory_archive.snapshot(pc["path"], "persona", pc["uid"])
         if snap["status"] == "failed":
@@ -847,6 +926,17 @@ def apply(text, seat="", defer_big=False, skip_context=False, add_only=False):
                             "added": _persona_count(parts) if st in ("ok", "partial", "waiting") else 0}
     except Exception as exc:  # noqa: BLE001
         files["persona"] = {"status": "failed", "why": str(exc)[:200]}
+    mpc, mwhy = main_persona_target(ctx)
+    if not mpc:
+        files["main_persona"] = {"status": "skipped", "why": mwhy}
+    else:
+        try:
+            st, why = write_persona(ctx, parts, main=mpc)
+            mdims = parse_persona(parts.get("main", ""))[0]
+            files["main_persona"] = {"status": st, "why": why, "uid": mpc["uid"],
+                                     "added": sum(len(v) for v in mdims.values()) if st in ("ok", "partial") else 0}
+        except Exception as exc:  # noqa: BLE001 —— 主人格寫不進只記這一筆,其他照寫(不報錯)
+            files["main_persona"] = {"status": "failed", "why": str(exc)[:200], "uid": mpc["uid"]}
     try:
         files["fit"] = fit_check(ctx, parts.get("fit", ""))
     except Exception as exc:  # noqa: BLE001 —— 綁定檢查壞了不擋其他
@@ -859,11 +949,15 @@ def apply(text, seat="", defer_big=False, skip_context=False, add_only=False):
             files["note"] = {"status": st, "uid": uid}
         except Exception as exc:  # noqa: BLE001 —— 第二大腦寫不進(這台沒有 Vault 等)照實記,其他照寫
             files["note"] = {"status": "failed", "why": str(exc)[:200]}
-    status = "ok" if all(f["status"] in ("ok", "skipped") for f in files.values()) else "partial"   # waiting(等 the maintainer 按)也算 partial
     col = _read_json(tidy_dir() / ("%s.collect.json" % ctx["code"]), {})
+    hw = col.get("human_words_status") or human_words_status()
+    if hw != "ok" and files["persona"]["status"] == "skipped":
+        files["persona"]["why"] = "讀不到真人原話(缺 human_filter,等私倉匯出)"
+    status = "ok" if all(f["status"] in ("ok", "skipped") for f in files.values()) else "partial"   # waiting(等 the maintainer 按)也算 partial
     rec = {"status": status, "at": _now(), "seat": ctx["code"], "seat_id": ctx.get("seat_id") or "",
            "persona_since": col.get("persona_since") or "",
            "model": ctx["model"], "project_uid": ctx.get("project_uid") or "", "nonce": parts["nonce"], "files": files}
+    rec["human_words"] = hw
     _write_json(tidy_dir() / ("%s.json" % ctx["code"]), rec)
     memory_archive.spawn_background()           # 一天一次的 90 天清理,背景、不等
     return rec
