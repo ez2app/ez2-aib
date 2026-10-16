@@ -479,6 +479,8 @@ RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired")   # r
 REFUSE_REASONS = ("not_friend", "unverified")
 READ_BATCH_S = float(os.environ.get("AIB_CHAT_READ_BATCH") or 30)   # 秒;同一寄件人同一席這段時間內讀的合成一張(第 10 節)
 REFUSE_EVERY_S = float(os.environ.get("AIB_CHAT_REFUSE_EVERY") or 86400)   # 秒;同一寄件 npub 這段時間最多回 1 張拒收(第 27.4 節)
+ORPHAN_KEEP_S = float(os.environ.get("AIB_CHAT_ORPHAN_KEEP") or 60)   # 秒;查不到寄出帳的回條暫存多久(第 27.8 節)
+ORPHAN_MAX = 500
 REFUSED_MAX = 200                           # refused.json 最多記幾位(第 27.5 節)
 REFUSED_KEEP_S = 30 * 86400                 # 30 天沒再來就清
 
@@ -568,6 +570,7 @@ class Receiver(object):
         self.sender = sender
         self.led = Ledger(root)
         self.client = None
+        self.orphans = []      # 查不到寄出帳的回條:[(到期, ref, stage, tags, from_npub)](第 27.8 節)
 
     def _our_seats(self):
         m = NK.read_map()
@@ -647,28 +650,50 @@ class Receiver(object):
         self.led.save()
 
     def on_receipt(self, tags, from_npub, refs=None):
-        """回條:每一個 aib-ref 都要是「我寄給這個 npub 的信」才收(已讀一張可帶多個 ref,1.8)。"""
+        """回條:每一個 aib-ref 都要是「我寄給這個 npub 的信」才收(已讀一張可帶多個 ref,1.8)。
+        查不到寄出帳的先暫存 ORPHAN_KEEP_S 秒再比(第 27.8 節:寄出帳可能比回條晚寫);冒充的直接丟。"""
         stage = tags.get("aib-receipt", "")
         if stage not in ("queued", "delivered", "held", "refused", "expired", "read"):
             return
         for ref in (refs or [tags.get("aib-ref", "")])[:200]:
             if not GF.MSGID_RE.match(ref or ""):
                 continue
-            try:
-                sent = json.loads((self.root / "sent" / (ref + ".json")).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue                                     # 不是我寄的信 ⇒ 不收
-            if sent.get("to") != from_npub:
-                sys.stderr.write("receipt_wrong_author\n")   # 不是我寄給的那席簽的 ⇒ 冒充,不收
+            if self._apply_receipt(ref, stage, tags, from_npub) == "missing" and ORPHAN_KEEP_S > 0 \
+                    and len(self.orphans) < ORPHAN_MAX:
+                self.orphans.append((time.time() + ORPHAN_KEEP_S, ref, stage, tags, from_npub))
+
+    def retry_orphans(self):
+        """每輪重比一次暫存的回條;比到了照收,過期才丟(記稽核 receipt-orphan)。"""
+        keep, now = [], time.time()
+        for item in self.orphans:
+            until, ref, stage, tags, from_npub = item
+            got = self._apply_receipt(ref, stage, tags, from_npub)
+            if got != "missing":
                 continue
-            r = {"v": 1, "at": int(time.time()), "stage": stage}
-            pos = tags.get("aib-queue-pos", "")
-            if stage == "queued" and pos.isdigit() and int(pos) > 0:
-                r["pos"] = int(pos)
-            if stage == "refused" and tags.get("aib-reason") in REFUSE_REASONS:
-                r["detail"] = tags["aib-reason"]
-            GF.append_receipt(self.root, ref, r)
-            audit(self.root, "receipt-in", ref, from_npub, stage)
+            if now < until:
+                keep.append(item)
+            else:
+                audit(self.root, "receipt-orphan", ref, from_npub, stage)
+        self.orphans = keep
+
+    def _apply_receipt(self, ref, stage, tags, from_npub):
+        """回 ok / missing(還沒有寄出帳)/ forged(寄出帳在,但簽的人不是我寄給的那席)。"""
+        try:
+            sent = json.loads((self.root / "sent" / (ref + ".json")).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "missing"
+        if sent.get("to") != from_npub:
+            sys.stderr.write("receipt_wrong_author\n")   # 不是我寄給的那席簽的 ⇒ 冒充,不收
+            return "forged"
+        r = {"v": 1, "at": int(time.time()), "stage": stage}
+        pos = tags.get("aib-queue-pos", "")
+        if stage == "queued" and pos.isdigit() and int(pos) > 0:
+            r["pos"] = int(pos)
+        if stage == "refused" and tags.get("aib-reason") in REFUSE_REASONS:
+            r["detail"] = tags["aib-reason"]
+        GF.append_receipt(self.root, ref, r)
+        audit(self.root, "receipt-in", ref, from_npub, stage)
+        return "ok"
 
     async def on_dm(self, rumor, tags, from_npub, entry):
         msgid = tags.get("aib-msgid") or ""
@@ -912,6 +937,7 @@ async def serve(root):
             for msgid in sender.due_retries():
                 await sender.handle(msgid)
             await receiver.pump_delivery()
+            receiver.retry_orphans()
             try:
                 await asyncio.wait_for(stop.wait(), POLL)
             except asyncio.TimeoutError:
