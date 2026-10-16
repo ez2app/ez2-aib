@@ -279,7 +279,7 @@ def build(env=None, live=None, now=None):
 
 
 def empty(owner_npub, env=None, now=None):
-    """關閉全球對談時發的空名冊(第 20.4 節):沒有艙、沒有收信站。"""
+    """關閉線上對話時發的空名冊(第 20.4 節):沒有艙、沒有收信站。"""
     return {"v": VERSION, "owner": owner_npub, "display_name": None, "country": None, "cabins": [], "dm_relays": [],
             "aib_version": _aib_version(), "envelope": list(ENVELOPES), "updated_at": int(time.time() if now is None else now)}
 

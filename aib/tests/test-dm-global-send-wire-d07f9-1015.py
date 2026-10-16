@@ -114,9 +114,9 @@ class Send(Base):
         p, _ = self.run_dm(b, [ADDR, MSG], steps("relayed", "held"))
         self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
         b = self.box()
-        p, _ = self.run_dm(b, [ADDR, MSG], steps("refused", refused={"detail": "對方還沒開全球對談"}))
+        p, _ = self.run_dm(b, [ADDR, MSG], steps("refused", refused={"detail": "對方還沒開線上對話"}))
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
-        self.assertIn("對方還沒開全球對談", p.stderr)
+        self.assertIn("對方還沒開線上對話", p.stderr)
 
     def test_p5_dry_run(self):
         b = self.box()
