@@ -208,6 +208,12 @@ def comply_line() -> str:
     """「讀過不等於照做」那一行(四語鍵 aib.ppack.comply;語系盤查第 17 條)。舊名 COMPLY_LINE 走模組 __getattr__。"""
     return T("aib.ppack.comply")
 
+# 10-16 the maintainer「範圍外導引」:找的答案不屬於自己範圍時，先查既有人格與第二大腦(aib who-owns),
+# 有就建議用戶開舊席，沒有才新開。放人格包：五家都載入,Claude compact/clear 後由 SessionStart 補回。
+def scope_route_line() -> str:
+    """範圍外導引那一行(四語鍵 aib.ppack.scope_route)。"""
+    return T("aib.ppack.scope_route")
+
 # 回執那一句是協定字:open_ack.PACK_PERSONA_ACK_PREFIX、dm_triage、create_and_bind_persona 都認這個字面 ⇒ 四語都不翻
 ACK_PREFIX = "人格已載入 "
 _TR = {}
@@ -306,12 +312,14 @@ def assemble(name, uid, sha8, card_secs, handoff, memories, route_key, folder, c
         brief_lines = []
 
     COMPLY_LINE, HANDOFF_RULE = comply_line(), handoff_rule()   # 每次組包照當下語系取(語系盤查第 17 條)
+    SCOPE_LINE = scope_route_line()
 
     def render() -> str:
         lines = [T("aib.ppack.identity", head=HEADER, name=name, uid=uid, sha=sha8),
                  T("aib.ppack.obey"),
                  answer_language_line(),
                  COMPLY_LINE,
+                 SCOPE_LINE,
                  T("aib.ppack.sec_card")]
         lines += [t for _, t in card] or [T("aib.ppack.card_cut")]
         if main:
