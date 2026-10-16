@@ -135,7 +135,8 @@ class Knife(unittest.TestCase):
 
     @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k3_sent_not_remembered(self):
-        self._knife("src/cockpit/chat_nostr.py", "            self._remember_peer(rec[\"to\"], res)\n", "",
+        self._knife("src/cockpit/chat_nostr.py",
+                    "            self._remember_peer(rec[\"to\"], res, \"request\" if rec.get(\"op\") == \"request\" else \"sent\")\n", "",
                     "Network.test_s1_sent_means_accept_reply")
 
 
