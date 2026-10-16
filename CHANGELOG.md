@@ -4,6 +4,17 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.15
+
+- **Online chat, friends and contacts**: friend requests, blocking and a contact list (shown in the captain room's address book and inbox); replies from people you wrote to are accepted; your own other machines can be linked.
+- **Presence and world map**: `aib chat share` sets what each contact can see (default: friends see online, your own machines see status, strangers see nothing).
+- **Identity proofs**: NIP-05 goes into the public roster; social-media proofs are sent only to friends and your own machines.
+- **Key backup**: `aib chat backup <file>` / `aib chat restore <file>` encrypt the chat keys with a passphrase you type (the file never holds the private key in clear).
+- **Checks and relays**: `aib chat selftest`, custom relays, and `aib chat relays test <relay>`. Without a name and country set, chat does not connect.
+- **Fewer lost or noisy receipts**: refusal receipts are rate-limited and listed; a receipt that arrives before its send record is held and matched later.
+- **Memory index titles match the note**: the index keeps the cleaned title that is written in the note file.
+- **Extensions install after being run**: stray `__pycache__` / `.pyc` files are listed and removed before install or enable instead of blocking it, and seat-info runs without writing bytecode.
+
 ## 0.1.14
 
 - **Memory notes can be written on a fresh install**: the bundled note-format files carried a licence header added by the open-source export, so their fingerprint never matched and `aib memory write` always failed on machines without the private source. The check now ignores only that one header line and still enforces the fingerprint.

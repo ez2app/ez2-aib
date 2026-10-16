@@ -232,7 +232,7 @@ class Knife(unittest.TestCase):
 
     @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k2_friend_never_matches(self):
-        self._knife("src/cockpit/chat_roster.py", '    return bool(owner) and any(f["owner"] == owner for f in read_friends(env))',
+        self._knife("src/cockpit/chat_roster.py", '    return bool(owner) and any(f["owner"] == owner for f in read_friends(env, kind))',
                     "    return False", "Network.test_n1_friend_accepted_and_read")
 
     @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")

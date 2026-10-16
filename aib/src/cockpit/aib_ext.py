@@ -91,10 +91,55 @@ def _num(v):
     return tuple(int(x) for x in str(v).split(".")[:3] if x.isdigit())
 
 
+BYTECODE_DIR = "__pycache__"
+BYTECODE_EXT = (".pyc", ".pyo")
+NO_BYTECODE = shutil.ignore_patterns(BYTECODE_DIR, *("*" + e for e in BYTECODE_EXT))   # 複製時不帶
+
+
+def _is_bytecode(rel):
+    """Python 自己長出來的位元碼(有人直接跑包裡的 .py 就會長):__pycache__/ 底下的、或散落的 .pyc / .pyo"""
+    rel = Path(rel)
+    return BYTECODE_DIR in rel.parts or rel.suffix.lower() in BYTECODE_EXT
+
+
 def _hashes(folder):
     folder = Path(folder)
     return {p.relative_to(folder).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(folder.rglob("*")) if p.is_file() and p.name != MANIFEST}
+            for p in sorted(folder.rglob("*")) if p.is_file() and p.name != MANIFEST and not _is_bytecode(p.relative_to(folder))}
+
+
+def bytecode_in(folder):
+    """包裡的位元碼:最上層的 __pycache__ 資料夾 + 不在 __pycache__ 裡的 .pyc / .pyo(相對路徑,排好)"""
+    folder = Path(folder)
+    hits = []
+    for p in sorted(folder.rglob("*")):
+        rel = p.relative_to(folder)
+        if p.name == BYTECODE_DIR and BYTECODE_DIR not in rel.parts[:-1]:
+            hits.append(rel.as_posix() + "/")
+        elif p.suffix.lower() in BYTECODE_EXT and BYTECODE_DIR not in rel.parts and (p.is_file() or p.is_symlink()):
+            hits.append(rel.as_posix())
+    return hits
+
+
+def purge_bytecode(folder, out=sys.stdout):
+    """10-17 @d07f9 回報、@abb89 派:位元碼不算進雜湊,但不默默放著 —— 列出來並清掉(避免有人塞 .pyc 被當成程式跑)。
+    回清不掉的那幾個(呼叫端決定要不要擋)。"""
+    folder = Path(folder)
+    hits, left = bytecode_in(folder), []
+    for rel in hits:
+        p = folder / rel.rstrip("/")
+        try:
+            if p.is_dir() and not p.is_symlink():
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+        except OSError:
+            left.append(rel)
+    if hits:
+        out.write(T("pyc_purged", {"n": len(hits), "what": hits[:5], "path": str(folder)}) + "\n")
+    if left:
+        out.write(T("pyc_left", {"what": left[:5]}) + "\n")
+    return left
 
 
 def trusted_keys():
@@ -276,7 +321,7 @@ def _generated_marketplace(name, pkg):
     d = state_root() / "ext-engines" / name / "claude-mod"
     if d.exists():
         shutil.rmtree(d)
-    shutil.copytree(pkg, d / "plugin", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(pkg, d / "plugin", ignore=NO_BYTECODE)
     (d / ".claude-plugin").mkdir(parents=True)
     (d / ".claude-plugin" / "marketplace.json").write_text(json.dumps(
         {"name": "ez2-" + name, "owner": {"name": "Ez2 AIB"}, "plugins": [{"name": pname, "source": "./plugin"}]},
@@ -653,6 +698,8 @@ def enable(name, engines=None, trust_hooks=False, out=sys.stdout, kind=None, cha
     except (OSError, ValueError):
         out.write(T("bad_manifest", {"path": str(pkg / MANIFEST)}) + "\n")
         return 3
+    if purge_bytecode(pkg, out):   # 裝好的那份被直接跑過也會長位元碼;清不掉 ⇒ 不啟用(不讓多出來的 .pyc 被當程式跑)
+        return 3
     if not isinstance(m.get("files"), dict) or m["files"] != _hashes(pkg):     # 啟用前再驗一次:裝好之後被改過就不啟用
         out.write(T("not_intact", {"extra": [], "missing": [], "changed": ["(installed copy)"]}) + "\n")
         return 3
@@ -754,6 +801,7 @@ def target(kind, name):
 
 
 def install(folder, allow_unsigned=False, out=sys.stdout, enable_engines=True, engines=None, trust_hooks=False, changes=None):
+    purge_bytecode(folder, out)   # 清不掉的也不會被複製過去(NO_BYTECODE)
     m, probs = inspect(folder, allow_unsigned=allow_unsigned)
     if probs:
         for p in probs:
@@ -764,7 +812,7 @@ def install(folder, allow_unsigned=False, out=sys.stdout, enable_engines=True, e
     tmp = dst.with_name(dst.name + ".installing")
     if tmp.exists():
         shutil.rmtree(tmp)
-    shutil.copytree(folder, tmp)
+    shutil.copytree(folder, tmp, ignore=NO_BYTECODE)
     if dst.exists():
         shutil.rmtree(dst)
     tmp.rename(dst)
@@ -830,6 +878,9 @@ def auto_install(out=sys.stdout, src=None, env=None):
             dst = target(kind, name)
         except ValueError:
             continue
+        purge_bytecode(d, out)
+        if dst.is_dir():
+            purge_bytecode(dst, out)
         if _same_copy(d, dst):
             if kind == "mod" and not m.get("engines"):
                 rc = claude_register(name, dst, out, changes) or rc

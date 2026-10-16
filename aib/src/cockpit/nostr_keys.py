@@ -206,6 +206,36 @@ def _write_key(stem, env=None):
     return npub(pub)
 
 
+def store_secret(stem, secret, env=None, replace=False):
+    """還原備份用(第 27.6 節):把一把已知的私鑰加密落檔。replace=False 時檔已在就 FileExistsError(不蓋)。
+    回 npub。私鑰不印、不進例外訊息。"""
+    if not re.fullmatch(r"[0-9a-f]{64}", secret or ""):
+        raise ValueError("bad secret")
+    if stem != "owner" and not re.fullmatch(r"[0-9a-z]{6}(-[0-9a-z]{4,8})?", stem or ""):
+        raise ValueError("bad stem")
+    d = keys_dir(env)
+    _mkdir_private(secrets_dir(env))
+    _mkdir_private(d)
+    pub = pubkey_hex(secret)
+    env_blob = SC.encrypt_value(secret, "nostr/%s" % stem, str(secrets_dir(env)))   # 寫法跟 _write_key 不同:刀測錨點要唯一
+    path = d / (stem + ".key")
+    tmp = d / (".%s.key.tmp" % stem)
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, (env_blob + "\n").encode("ascii"))
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+    if replace:
+        os.replace(str(tmp), str(path))
+    else:
+        try:
+            os.link(str(tmp), str(path))
+        finally:
+            tmp.unlink()
+    return npub(pub)
+
+
 def load_secret(stem, env=None):
     """**只給轉接程式用**:解開一把金鑰 → 私鑰 hex。不印、不落檔、不進例外訊息。"""
     raw = (keys_dir(env) / (stem + ".key")).read_text(encoding="ascii").strip()
