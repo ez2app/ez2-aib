@@ -1381,7 +1381,8 @@ def folder_add(vault: Path, parent: str, title: str, dry_run: bool = False, rout
     if same:
         out = {"folderId": same["folderId"], "folderPath": same["folderPath"], "title": title, "created": False}
         if not route_key or same.get("routeKey") == route_key:
-            return dict(out, **({"routeKey": route_key, "inheritsFrom": same.get("inheritsFrom", "")} if route_key else {}))
+            return dict(out, **({"routeKey": route_key, "inheritsFrom": same.get("inheritsFrom", ""), "route_added": False}
+                                if route_key else {}))
         if same.get("routeKey"):
             raise SystemExit(T("err_folder_has_route", {"folder": title, "key": same["routeKey"]}))
         inherits = _route_for(items, by_id, parent, route_key, own=same["folderId"])

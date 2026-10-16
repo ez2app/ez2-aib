@@ -4,6 +4,11 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.14
+
+- **Memory notes can be written on a fresh install**: the bundled note-format files carried a licence header added by the open-source export, so their fingerprint never matched and `aib memory write` always failed on machines without the private source. The check now ignores only that one header line and still enforces the fingerprint.
+- **Notes go into vault folders with their own route**: a route added with `folder-add --route-key` uses its parent route's category, so `aib memory write --route <key>` writes into the new folder. `folder-add` reports `route_added=false` when the route was already there.
+
 ## 0.1.13
 
 - **Online chat (renamed from global chat) asks once before going online**: the first time it is turned on, aib asks whether to connect to public relays and remembers the answer; saying no is remembered like `aib chat off`. When nobody can answer (non-interactive runs, the installer), it stays offline.
