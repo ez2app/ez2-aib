@@ -15,7 +15,8 @@
     undo   --receipt receipt.json                                                           退回改名、連結、設定、.ez2 狀態(frontmatter 補的身分留著)
 轉換後維護(10-16):
     reindex       --vault V                                                                 只重寫衍生索引
-    folder-add    --vault V --title 名稱 [--parent folderId] [--dry-run]                     新增資料夾並登記(同名回原本那個)
+    folder-add    --vault V --title 名稱 [--parent folderId] [--route-key K] [--dry-run]     新增資料夾並登記(同名回原本那個;
+                  --route-key 給夾自己的路由代號,權限沿用上層路由;同名夾還沒代號就補掛)
     folder-retire --vault V --folder folderId --backup-dir DIR [--include-notes] [--dry-run] 打包到庫外 → 拿掉索引 → 刪資料夾;
                   路由夾、非筆記檔、還被連結的筆記一律擋下;資料夾已被直接刪掉時只清索引
 
@@ -942,6 +943,11 @@ def _merge_dir(src: Path, dst: Path, vault: Path, receipt: dict):
     return merged, kept
 
 
+def is_routed(f: dict) -> bool:
+    """有寫入路由的夾:轉換時的路由夾,或 folder-add --route-key 掛上自己路由代號的夾(inheritsFrom = 權限沿用的上層路由)。"""
+    return bool(f.get("routeKey")) and (f.get("kind") == "route" or bool(f.get("inheritsFrom")))
+
+
 def write_indexes(vault: Path, fid_items: list, note_labels: dict | None, uid_items: list | None, now: str):
     """從資料夾身分表寫出四份衍生索引:folder-id-index、route-key-index、routes v2(契約第三複本,同步 folderPath)、labels。
     note_labels / uid_items 給 None 表示沿用檔裡既有的(reindex 用)。"""
@@ -949,8 +955,9 @@ def write_indexes(vault: Path, fid_items: list, note_labels: dict | None, uid_it
     disp_dir = vault / ".ez2" / "display"; disp_dir.mkdir(parents=True, exist_ok=True)
     routes_dir = vault / ".ez2" / "routes"
     by_id = {f["folderId"]: f for f in fid_items}
-    rk_items = [{"routeKey": f["routeKey"], "folderId": f["folderId"], "folderPath": f["folderPath"], "module": module_of(f["folderPath"].split("/")[0][4:5] if f["folderPath"].startswith("fld_") else f["folderPath"].split("/")[0]).upper()}
-                for f in fid_items if f.get("kind") == "route" and f.get("routeKey")]
+    rk_items = [dict({"routeKey": f["routeKey"], "folderId": f["folderId"], "folderPath": f["folderPath"], "module": module_of(f["folderPath"].split("/")[0][4:5] if f["folderPath"].startswith("fld_") else f["folderPath"].split("/")[0]).upper()},
+                     **({"inheritsFrom": f["inheritsFrom"]} if f.get("inheritsFrom") else {}))
+                for f in fid_items if is_routed(f)]
     old_labels = load_json(disp_dir / "labels.json", {})
     labels = {"schema": "2026-10-05.ez2-display-labels", "generatedAt": now,
               "folders": {f["folderId"]: {"title": f["title"], "i18n": ((old_labels.get("folders") or {}).get(f["folderId"]) or {}).get("i18n") or {"zh-TW": f["title"], "en": None, "ja": None, "ko": None}} for f in fid_items},
@@ -1323,10 +1330,45 @@ def _legacy_of(item: dict, by_id: dict) -> str:
     return (_legacy_of(parent, by_id) + "/" if parent else "") + item.get("title", item["folderId"])
 
 
-def folder_add(vault: Path, parent: str, title: str, dry_run: bool = False) -> dict:
-    """在 parent(folderId;空字串 = 庫根)底下新增資料夾並登記。同一個父夾已有同名 ⇒ 回那一個,不重複建。"""
+def _route_contract_keys() -> set | None:
+    """路由契約(不含 Vault 自掛的路由)的 routeKey 集合;讀不到 ⇒ None。"""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "persona_route"))
+    import route_register
+    return route_register.contract_route_keys(route_register.load_contract(with_vault_routes=False))
+
+
+def _route_for(items: list, by_id: dict, parent: str, route_key: str, own: str = "") -> str:
+    """--route-key 的檢查 ⇒ 權限沿用的上層路由代號(最近一層轉換時的路由夾)。不合就 SystemExit。
+    契約只有維護者能改;Vault 自掛的路由不另給權限,一律沿用上層那條(dataLevel / aiWritable 都照它)。"""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "persona_route"))
+    import route_register
+    try:
+        route_register.validate_route_key(route_key)
+    except route_register.RouteError:
+        raise SystemExit(T("err_route_key_bad", {"key": route_key}))
+    taken = next((i for i in items if i.get("routeKey") == route_key and i["folderId"] != own), None)
+    if taken:
+        raise SystemExit(T("err_route_key_taken", {"key": route_key, "folder": taken.get("title") or taken["folderId"]}))
+    keys = _route_contract_keys()
+    if keys is None:
+        raise SystemExit(T("err_route_no_contract"))
+    if route_key in keys:
+        raise SystemExit(T("err_route_key_in_contract", {"key": route_key}))
+    cur = by_id.get(parent)
+    while cur is not None:
+        if cur.get("kind") == "route" and cur.get("routeKey") in keys:
+            return cur["routeKey"]
+        cur = by_id.get(cur.get("parentFolderId") or "")
+    raise SystemExit(T("err_route_no_parent", {"key": route_key}))
+
+
+def folder_add(vault: Path, parent: str, title: str, dry_run: bool = False, route_key: str = "") -> dict:
+    """在 parent(folderId;空字串 = 庫根)底下新增資料夾並登記。同一個父夾已有同名 ⇒ 回那一個,不重複建。
+    route_key:給這個夾自己的路由代號(newproj --folder / aib memory write --route 才認得);
+    權限沿用最近一層上層路由。已有同名夾且還沒有代號 ⇒ 補掛上去;已掛別的代號 ⇒ 擋。"""
     vault = vault.resolve()
     title = unicodedata.normalize("NFC", (title or "").strip())
+    route_key = (route_key or "").strip()
     if not title or "/" in title or "\\" in title or title in (".", "..") or title.startswith("."):
         raise SystemExit(T("err_folder_title_bad", {"title": title}))
     doc = _fid_load(vault)
@@ -1337,7 +1379,17 @@ def folder_add(vault: Path, parent: str, title: str, dry_run: bool = False) -> d
     same = next((i for i in items if (i.get("parentFolderId") or "") == (parent or "")
                  and i.get("title") == title and i.get("status", "active") == "active"), None)
     if same:
-        return {"folderId": same["folderId"], "folderPath": same["folderPath"], "title": title, "created": False}
+        out = {"folderId": same["folderId"], "folderPath": same["folderPath"], "title": title, "created": False}
+        if not route_key or same.get("routeKey") == route_key:
+            return dict(out, **({"routeKey": route_key, "inheritsFrom": same.get("inheritsFrom", "")} if route_key else {}))
+        if same.get("routeKey"):
+            raise SystemExit(T("err_folder_has_route", {"folder": title, "key": same["routeKey"]}))
+        inherits = _route_for(items, by_id, parent, route_key, own=same["folderId"])
+        if not dry_run:
+            same.update({"routeKey": route_key, "inheritsFrom": inherits})
+            write_indexes(vault, items, None, None, time.strftime("%Y-%m-%d %H:%M:%S"))
+        return dict(out, routeKey=route_key, inheritsFrom=inherits, route_added=not dry_run, dry_run=dry_run)
+    inherits = _route_for(items, by_id, parent, route_key) if route_key else ""
     if parent:
         par = by_id[parent]
         legacy = _legacy_of(par, by_id) + "/" + title
@@ -1353,13 +1405,16 @@ def folder_add(vault: Path, parent: str, title: str, dry_run: bool = False) -> d
         raise SystemExit(T("err_folder_id_taken", {"folder": fid}))
     item = {"folderId": fid, "routeKey": rk, "folderPath": path, "parentFolderId": parent or "", "level": level,
             "title": title, "legacyPaths": [legacy], "status": "active", "kind": kind}
+    if route_key:
+        item.update({"routeKey": route_key, "inheritsFrom": inherits})
     if not dry_run:
         if parent and not (vault / by_id[parent]["folderPath"]).is_dir():
             raise SystemExit(T("err_dir_missing"))
         (vault / path).mkdir(parents=False, exist_ok=True)
         items.append(item)
         write_indexes(vault, items, None, None, time.strftime("%Y-%m-%d %H:%M:%S"))
-    return {"folderId": fid, "folderPath": path, "title": title, "created": not dry_run, "dry_run": dry_run}
+    return dict({"folderId": fid, "folderPath": path, "title": title, "created": not dry_run, "dry_run": dry_run},
+                **({"routeKey": route_key, "inheritsFrom": inherits} if route_key else {}))
 
 
 def _links_to(vault: Path, uids: set, skip_prefix: str) -> list:
@@ -1395,7 +1450,7 @@ def folder_retire(vault: Path, folder: str, backup_dir: Path | None, include_not
     if top is None:
         raise SystemExit(T("err_folder_unknown", {"folder": folder}))
     sub = [i for i in items if i["folderPath"] == top["folderPath"] or i["folderPath"].startswith(top["folderPath"] + "/")]
-    routes = [i["routeKey"] for i in sub if i.get("kind") == "route"]
+    routes = [i["routeKey"] for i in sub if is_routed(i)]
     if routes:
         raise SystemExit(T("err_folder_is_route", {"routes": ", ".join(routes)}))
     root = vault / top["folderPath"]
@@ -1459,6 +1514,7 @@ def main(argv=None):
     fa = sub.add_parser("folder-add", help=T("help_folder_add"))
     fa.add_argument("--vault", required=True); fa.add_argument("--title", required=True)
     fa.add_argument("--parent", default="", help=T("help_folder_parent"))
+    fa.add_argument("--route-key", default="", help=T("help_folder_route_key"))
     fa.add_argument("--dry-run", action="store_true")
     fr = sub.add_parser("folder-retire", help=T("help_folder_retire"))
     fr.add_argument("--vault", required=True); fr.add_argument("--folder", required=True)
@@ -1494,7 +1550,7 @@ def main(argv=None):
         print(json.dumps(reindex(Path(args.vault)), ensure_ascii=False, indent=1))
         return 0
     if args.cmd == "folder-add":
-        print(json.dumps(folder_add(Path(args.vault), args.parent, args.title, args.dry_run), ensure_ascii=False, indent=1))
+        print(json.dumps(folder_add(Path(args.vault), args.parent, args.title, args.dry_run, args.route_key), ensure_ascii=False, indent=1))
         return 0
     if args.cmd == "folder-retire":
         out = folder_retire(Path(args.vault), args.folder, Path(args.backup_dir) if args.backup_dir else None,
