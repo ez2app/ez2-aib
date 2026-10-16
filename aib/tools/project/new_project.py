@@ -682,7 +682,8 @@ def _folder_label(route_key: str, stored: str = "") -> str:
 
 def resolve_folder(contract: Any, wanted: str):
     """--folder 的寫法 ⇒ (route_key, folder, 錯誤)。收路由代號、完整資料夾路徑、或資料夾最後一段
-    (可以不帶前面的編號:「系統記憶交接」= 「C80-系統記憶交接」)。對到不只一個 ⇒ 列出來、不挑。"""
+    (可以不帶前面的編號:「系統記憶交接」= 「C80-系統記憶交接」);Vault 自掛的路由也收資料夾標題。
+    對到不只一個 ⇒ 列出來、不挑。"""
     want = (wanted or "").strip().strip("/")
     routes = contract.get("routes") if isinstance(contract, dict) else None
     if not want or not isinstance(routes, list):
@@ -696,7 +697,8 @@ def resolve_folder(contract: Any, wanted: str):
             continue
         last = folder.rsplit("/", 1)[-1]
         bare = re.sub(r"^[A-Za-z0-9]{1,6}-", "", last)
-        if want in (key, folder, last, bare):
+        title = str(r.get("title") or "").strip()      # Vault 自掛的路由(route_register.vault_routes)帶資料夾標題
+        if want in (key, folder, last, bare) or (title and want == title):
             hits.append((key, folder))
     if not hits:
         return None, None, T("aib.newproj.folder_unknown", {"value": want})
