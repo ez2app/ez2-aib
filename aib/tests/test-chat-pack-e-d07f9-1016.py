@@ -122,7 +122,7 @@ class Backup(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("--replace", r.stdout)
         self.assertEqual(secrets(o), mine_before, "主人不同不准動本機")
-        self.assertEqual(run(o, "auto").returncode, 0)                  # 開關打開
+        self.assertEqual(run(o, "on", "--no-venv", "--name", "Other", "--country", "TW").returncode, 0)   # 開關打開
         r = run(o, "restore", str(self.file), "--replace", "--passphrase-stdin", stdin=PASS + "\n")
         self.assertEqual(r.returncode, 2)
         self.assertIn("aib chat off", r.stdout)
