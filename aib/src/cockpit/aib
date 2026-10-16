@@ -366,6 +366,12 @@ if [ "${1:-}" = "newproj" ]; then
   export PYTHONDONTWRITEBYTECODE=1 AIB_NEWPROJ_PROG="aib newproj"
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/tools/project/new_project.py" --entry newproj "$@"
 fi
+# 10-16 aib vault newpost / doctor(the maintainer):uid 庫的新增筆記與健檢;受授權管理(加購 obsidian-labels),判斷在 vault_cli.py 裡。
+if [ "${1:-}" = "vault" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/tools/vault/vault_cli.py" "$@"
+fi
 # 10-11 aib bindme(the maintainer 01:0x):一次看清、補齊各席的人格與專案綁定;先問各席 24 小時做了什麼再提建議。
 if [ "${1:-}" = "bindme" ]; then
   shift

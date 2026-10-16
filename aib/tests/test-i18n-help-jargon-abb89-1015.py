@@ -36,6 +36,7 @@ CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")      # 假名、漢字、諺文(不
 LEAK = re.compile(r"\bED\.\d|\bSOP\b|§|the maintainer|!!aib\.")
 
 HELP_CMDS = [
+    "vault --help", "vault newpost --help", "vault doctor --help",
     "now --help", "restart --help", "bindme --help", "bindme status --help", "page --help", "page chat --help",
     "page import --help", "appoint --help", "cli --help", "cli update --help", "doctor --help", "memory --help",
     "memory write --help", "task --help", "task set --help", "top --help", "seat detect --help", "init --help",
