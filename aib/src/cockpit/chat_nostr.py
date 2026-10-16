@@ -401,9 +401,22 @@ class Sender(object):
             return
         if ok:
             self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "relayed", "%d" % len(ok))      # 第 7.1 節第 6 步:1 站成功就算
+            self._remember_peer(rec["to"], res)
             self._done(msgid)
         else:
             self._retry_later(msgid, "relays")
+
+    def _remember_peer(self, to, res):
+        """寄過信的人,回信照收(第 27.3 節):收件人的主人自動加進好友(source=sent)。
+        寄到只有席 npub 的位址(沒有主人)⇒ 不加;收件人是自己或我的其他機器 ⇒ 不加。"""
+        owner = (GF.parse_address(to) or {}).get("owner")
+        me = (NK.read_map().get("owner") or {}).get("npub")
+        if not owner or owner == me or CR.is_mine(owner):
+            return
+        try:
+            CR.add_friend(owner, res.get("display_name"), source="sent")
+        except CR.RosterError as err:
+            sys.stderr.write("remember_peer:%s\n" % err)
 
     async def _ensure_dm_relays(self, entry):
         """寄件席沒列名冊也要有 10050,對方才回得了回條與回信(NIP-17:沒有 10050 就不寄)。
@@ -654,8 +667,8 @@ class Receiver(object):
             if rc == 0 and res["seat"]["npub"] == from_npub:
                 rec["verified"] = True
                 own = (NK.read_map().get("owner") or {}).get("npub")
-                if parsed["owner"] == own:
-                    rec["class"] = "own"
+                if parsed["owner"] == own or CR.is_mine(parsed["owner"]):
+                    rec["class"] = "own"                                   # 同一把主人金鑰,或綁過的我的其他機器(27.2)
                 elif CR.is_friend(parsed["owner"]):
                     rec["class"] = "friend"
                 for k_in, k_out in (("display_name", "display_name"), ("country", "country")):

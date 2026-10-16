@@ -4346,7 +4346,7 @@
   "aib.chat.friend_renamed": "好友已在名單裡,名字已更新:{owner}",
   "aib.chat.friend_removed": "已移出好友:{owner}。之後他寄來的信會拒收。",
   "aib.chat.friend_not_found": "好友名單裡沒有 {owner}",
-  "aib.chat.friends_none": "還沒有好友(aib chat friend add <對方主人 npub 或全球位址>)。只收你自己其他艙的信。",
+  "aib.chat.friends_none": "還沒有好友(aib chat friend add <對方主人 npub 或全球位址>;你寄過信的人會自動加)。只收你自己其他艙的信。",
   "aib.chat.friends_row": "  {name}  {owner}",
   "aib.chat.status_friends": "好友:{n} 位(只收本人與好友的信,其他拒收)",
   "aib.chat.profile_bad_friend": "看不懂這個好友:請給對方的主人 npub(npub1…)或全球位址(<主人 npub>/<艙>/<席>)",
@@ -4355,5 +4355,15 @@
   "aib.chat.help.friend_who": "對方主人 npub 或全球位址",
   "aib.chat.help.friend_name": "自己記的名字",
   "aib.chat.help.friends": "列出好友",
-  "aib.chat.help.auto": "開艙用:主人沒關過就打開全球對談(只寫開關檔)"
+  "aib.chat.help.auto": "開艙用:主人沒關過就打開全球對談(只寫開關檔)",
+  "aib.chat.mine_added": "已綁定我的其他機器:{owner}。那台列在名冊上的席寄來的信,當成本人收。對方那台也要跑一次 aib chat mine add <這台的主人號碼>。",
+  "aib.chat.mine_renamed": "已在我的機器名單裡,名字已更新:{owner}",
+  "aib.chat.mine_removed": "已解除綁定:{owner}。之後那台寄來的信照好友規則處理。",
+  "aib.chat.mine_not_found": "我的機器名單裡沒有 {owner}",
+  "aib.chat.mine_none": "還沒綁定其他機器。",
+  "aib.chat.mine_hint": "綁定我的另一台機器:在那台跑 aib chat mine add {owner}(兩台各跑一次)",
+  "aib.chat.friends_row_sent": "  {name}  {owner}(寄過信自動加)",
+  "aib.chat.status_mine": "我的其他機器:{n} 台(寄來當本人)",
+  "aib.chat.help.mine": "綁定 / 解除我自己的其他機器(寄來當本人)",
+  "aib.chat.help.mine_who": "另一台的主人 npub 或全球位址"
 }

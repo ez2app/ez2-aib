@@ -254,7 +254,12 @@ def _leader_tick(root, env=None):
         swept = now
     _acts, key_err = sync_keys(env)
     state, pub = ("no_keys", {}) if key_err else publish_roster(root, env, st, now)
-    worker = None if key_err else ensure_worker(root, env, now)
+    if key_err or state == "no_profile":
+        # 第 27.1 節:沒設名字與國別 ⇒ 名冊不發、誰都寄不到這台 ⇒ 不連中繼站(不起工人;在跑的停掉)
+        stop_worker()
+        worker = None
+    else:
+        worker = ensure_worker(root, env, now)
     write_status(root, state=state, pid=os.getpid(), instance=st.get("instance"),
                  since=st.get("since") or now, at=now, swept_at=swept, key_error=key_err,
                  publish_tried_at=pub.get("tried_at", st.get("publish_tried_at")), publish_error=pub.get("error"),
@@ -526,15 +531,16 @@ def status_record(env):
         "venv": venv_state(env),
         "keys": _keys_summary(env),
         "friends": len(_friends(env)),
+        "mine": len(_friends(env, "mine")),
         "off_by_owner": off_marker(env).exists(),
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
 
 
-def _friends(env):
+def _friends(env, kind="friends"):
     import chat_roster as CR
-    return CR.read_friends(env)
+    return CR.read_friends(env, kind)
 
 
 def _worker_status(root, running):
@@ -566,6 +572,8 @@ def cmd_keys(a, env, out):
         if e["status"] == "active" or a.all:
             out.write(T("keys_row_" + ("active" if e["status"] == "active" else "retired"),
                         seat=e["seat5"], cabin=e["cabin"] or "-", uid=e["persona_uid"], npub=e["npub"]) + "\n")
+    if pv["owner"]:
+        out.write(T("mine_hint", owner=pv["owner"]) + "\n")
     return 0
 
 
@@ -586,15 +594,23 @@ def cmd_profile(a, env, out):
 
 
 def cmd_friend(a, env, out):
-    """好友(維護者 10-16 12:1x):只收本人與好友的信,其他拒收。以主人為單位;只存在本機。"""
+    """好友(維護者 10-16 12:1x):只收本人與好友的信,其他拒收。以主人為單位;只存在本機。
+    mine(第 27.2 節):我自己其他機器的主人號碼,收到當本人。"""
     import chat_roster as CR
+    kind = "mine" if a.cmd == "mine" else "friends"
+    pre = "mine_" if kind == "mine" else "friend_"
+    if a.action is None:
+        return cmd_friends(a, env, out)
+    if not a.who:
+        out.write(T("profile_bad_friend") + "\n")
+        return 2
     try:
         if a.action == "add":
-            owner, new = CR.add_friend(a.who, a.name, env)
-            out.write(T("friend_added" if new else "friend_renamed", owner=owner) + "\n")
+            owner, new = CR.add_friend(a.who, a.name, env, kind)
+            out.write(T(pre + ("added" if new else "renamed"), owner=owner) + "\n")
         else:
-            owner, gone = CR.remove_friend(a.who, env)
-            out.write(T("friend_removed" if gone else "friend_not_found", owner=owner) + "\n")
+            owner, gone = CR.remove_friend(a.who, env, kind)
+            out.write(T(pre + ("removed" if gone else "not_found"), owner=owner) + "\n")
     except CR.RosterError as err:
         out.write(T("profile_" + str(err)) + "\n")
         return 2
@@ -603,14 +619,21 @@ def cmd_friend(a, env, out):
 
 def cmd_friends(a, env, out):
     import chat_roster as CR
-    fr = CR.read_friends(env)
-    if a.json:
-        out.write(json.dumps({"friends": fr}, ensure_ascii=False) + "\n")
+    kind = "mine" if a.cmd == "mine" else "friends"
+    fr = CR.read_friends(env, kind)
+    if getattr(a, "json", False):
+        out.write(json.dumps({kind: fr}, ensure_ascii=False) + "\n")
         return 0
     if not fr:
-        out.write(T("friends_none") + "\n")
+        out.write(T(kind + "_none") + "\n")
     for f in fr:
-        out.write(T("friends_row", name=f.get("name") or "-", owner=f["owner"]) + "\n")
+        row = "friends_row_sent" if f.get("source") == "sent" else "friends_row"
+        out.write(T(row, name=f.get("name") or "-", owner=f["owner"]) + "\n")
+    if kind == "mine" or not fr:
+        import nostr_keys as NK
+        me = (NK.read_map(env).get("owner") or {}).get("npub")
+        if kind == "mine" and me:
+            out.write(T("mine_hint", owner=me) + "\n")
     return 0
 
 
@@ -659,6 +682,8 @@ def cmd_status(a, env, out):
     out.write(T("status_venv_" + rec["venv"], pin=NOSTR_SDK_PIN) + "\n")
     out.write(T("status_keys", n=rec["keys"]["seats"], owner=rec["keys"]["owner"] or "-") + "\n")
     out.write(T("status_friends", n=rec["friends"]) + "\n")
+    if rec["mine"]:
+        out.write(T("status_mine", n=rec["mine"]) + "\n")
     w = rec.get("worker")
     if w:
         out.write(T("status_offline" if w.get("offline") else "status_relays", up=w.get("up", 0), total=w.get("total", 0)) + "\n")
@@ -703,6 +728,11 @@ def main(argv=None, env=None, out=sys.stdout):
     fr.add_argument("action", choices=("add", "remove"))
     fr.add_argument("who", help=T("help.friend_who"))
     fr.add_argument("--name", help=T("help.friend_name"))
+    mn = sub.add_parser("mine", help=T("help.mine"))
+    mn.add_argument("action", nargs="?", choices=("add", "remove"))
+    mn.add_argument("who", nargs="?", help=T("help.mine_who"))
+    mn.add_argument("--name", help=T("help.friend_name"))
+    mn.add_argument("--json", action="store_true")
     fs = sub.add_parser("friends", help=T("help.friends"))
     fs.add_argument("--json", action="store_true")
     au = sub.add_parser("auto", help=T("help.auto"))
@@ -733,7 +763,7 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_prepare(a, env, out)
     if a.cmd == "auto":
         return cmd_auto(a, env, out)
-    if a.cmd == "friend":
+    if a.cmd in ("friend", "mine"):
         return cmd_friend(a, env, out)
     if a.cmd == "friends":
         return cmd_friends(a, env, out)

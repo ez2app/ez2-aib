@@ -4346,7 +4346,7 @@
   "aib.chat.friend_renamed": "이미 친구입니다. 이름을 바꿨습니다: {owner}",
   "aib.chat.friend_removed": "친구에서 뺐습니다: {owner}. 앞으로 이 상대의 메일은 거부합니다.",
   "aib.chat.friend_not_found": "{owner}은(는) 친구 목록에 없습니다",
-  "aib.chat.friends_none": "아직 친구가 없습니다(aib chat friend add <상대 주인 npub 또는 글로벌 주소>). 내 다른 캐빈에서 온 메일만 받습니다.",
+  "aib.chat.friends_none": "아직 친구가 없습니다(aib chat friend add <상대 주인 npub 또는 글로벌 주소>, 메일을 보낸 상대는 자동 추가). 내 다른 캐빈에서 온 메일만 받습니다.",
   "aib.chat.friends_row": "  {name}  {owner}",
   "aib.chat.status_friends": "친구: {n}명(나와 친구의 메일만 받고 나머지는 거부)",
   "aib.chat.profile_bad_friend": "이 친구 지정을 읽을 수 없습니다: 상대 주인 npub(npub1…) 또는 글로벌 주소(<주인 npub>/<캐빈>/<석>)를 주세요",
@@ -4355,5 +4355,15 @@
   "aib.chat.help.friend_who": "상대 주인 npub 또는 글로벌 주소",
   "aib.chat.help.friend_name": "내가 기억할 이름",
   "aib.chat.help.friends": "친구 목록",
-  "aib.chat.help.auto": "캐빈 시작 시 사용: 주인이 끈 적이 없으면 글로벌 채팅을 켬(스위치만 씀)"
+  "aib.chat.help.auto": "캐빈 시작 시 사용: 주인이 끈 적이 없으면 글로벌 채팅을 켬(스위치만 씀)",
+  "aib.chat.mine_added": "내 다른 기기로 연결했습니다: {owner}. 그 기기의 명부에 있는 석에서 온 메일은 본인으로 받습니다. 그 기기에서도 aib chat mine add <이 기기의 주인 번호>를 한 번 실행하세요.",
+  "aib.chat.mine_renamed": "이미 내 기기입니다. 이름을 바꿨습니다: {owner}",
+  "aib.chat.mine_removed": "연결을 해제했습니다: {owner}. 앞으로 그 기기의 메일은 친구 규칙을 따릅니다.",
+  "aib.chat.mine_not_found": "{owner}은(는) 내 기기 목록에 없습니다",
+  "aib.chat.mine_none": "아직 연결한 다른 기기가 없습니다.",
+  "aib.chat.mine_hint": "내 다른 기기를 연결하려면 그 기기에서 aib chat mine add {owner} 실행(두 기기에서 각각 한 번)",
+  "aib.chat.friends_row_sent": "  {name}  {owner}(메일을 보내서 자동 추가)",
+  "aib.chat.status_mine": "내 다른 기기: {n}대(본인으로 취급)",
+  "aib.chat.help.mine": "내 다른 기기 연결 / 해제(본인으로 취급)",
+  "aib.chat.help.mine_who": "다른 기기의 주인 npub 또는 글로벌 주소"
 }

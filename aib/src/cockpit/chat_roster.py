@@ -91,13 +91,17 @@ def _save_profile(rec, env=None):
 # 以「主人」為單位:加了 Bob 的主人 npub,Bob 名冊上列出的每一席寄來都收。只在本機,不公開、不發到中繼站。
 # 第 1 期是單方面的通訊錄(好友申請與同意是第 2 期):對方也要把你加進他的好友,你寄的才進得去。
 
-def friends_path(env=None):
-    return _chat_home(env) / "friends.json"
+LISTS = ("friends", "mine")       # friends = 好友;mine = 我自己其他機器的主人號碼(第 27.2 節,收到當本人)
 
 
-def read_friends(env=None):
+def friends_path(env=None, kind="friends"):
+    assert kind in LISTS
+    return _chat_home(env) / (kind + ".json")
+
+
+def read_friends(env=None, kind="friends"):
     try:
-        rec = json.loads(friends_path(env).read_text(encoding="utf-8"))
+        rec = json.loads(friends_path(env, kind).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not isinstance(rec, dict) or rec.get("v") != VERSION or not isinstance(rec.get("friends"), list):
@@ -105,8 +109,8 @@ def read_friends(env=None):
     return [f for f in rec["friends"] if isinstance(f, dict) and _NPUB_RE.match(str(f.get("owner") or ""))]
 
 
-def _save_friends(friends, env=None):
-    p = friends_path(env)
+def _save_friends(friends, env=None, kind="friends"):
+    p = friends_path(env, kind)
     p.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(str(p.parent), 0o700)
     write_json(str(p), {"v": VERSION, "friends": friends, "updated_at": int(time.time())})
@@ -127,8 +131,9 @@ def friend_owner(text):
     return owner
 
 
-def add_friend(text, name=None, env=None):
-    """加好友(同一位主人再加 = 改名字)。不合 ⇒ RosterError。回 (主人 npub, 是否新加)。"""
+def add_friend(text, name=None, env=None, kind="friends", source=None):
+    """加好友 / 加我的其他機器(同一位主人再加 = 改名字)。不合 ⇒ RosterError。回 (主人 npub, 是否新加)。
+    source:"sent" = 寄過信自動加(第 27.3 節);手動加不帶。"""
     owner = friend_owner(text)
     if not owner:
         raise RosterError("bad_friend")
@@ -138,30 +143,40 @@ def add_friend(text, name=None, env=None):
     clean = GF.clean_display_name(name) if name else None
     if name and not clean:
         raise RosterError("bad_name")
-    fr = read_friends(env)
+    fr = read_friends(env, kind)
     old = next((f for f in fr if f["owner"] == owner), None)
     if old:
         if clean:
             old["name"] = clean
+        if source is None:
+            old.pop("source", None)                 # 手動加過 ⇒ 不再算「自動加」
     else:
-        fr.append({"owner": owner, "name": clean, "added_at": int(time.time())})
-    _save_friends(fr, env)
+        rec = {"owner": owner, "name": clean, "added_at": int(time.time())}
+        if source:
+            rec["source"] = source
+        fr.append(rec)
+    _save_friends(fr, env, kind)
     return owner, old is None
 
 
-def remove_friend(text, env=None):
+def remove_friend(text, env=None, kind="friends"):
     owner = friend_owner(text)
     if not owner:
         raise RosterError("bad_friend")
-    fr = read_friends(env)
+    fr = read_friends(env, kind)
     left = [f for f in fr if f["owner"] != owner]
     if len(left) != len(fr):
-        _save_friends(left, env)
+        _save_friends(left, env, kind)
     return owner, len(left) != len(fr)
 
 
-def is_friend(owner, env=None):
-    return bool(owner) and any(f["owner"] == owner for f in read_friends(env))
+def is_friend(owner, env=None, kind="friends"):
+    return bool(owner) and any(f["owner"] == owner for f in read_friends(env, kind))
+
+
+def is_mine(owner, env=None):
+    """寄件主人是我自己的另一台機器(第 27.2 節)⇒ 收件當本人(class own)。"""
+    return is_friend(owner, env, "mine")
 
 
 def clean_country(code):

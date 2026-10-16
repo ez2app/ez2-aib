@@ -4346,7 +4346,7 @@
   "aib.chat.friend_renamed": "すでに友だちです。名前を更新しました:{owner}",
   "aib.chat.friend_removed": "友だちから外しました:{owner}。今後この相手のメールは受け取りません。",
   "aib.chat.friend_not_found": "{owner} は友だちリストにありません",
-  "aib.chat.friends_none": "まだ友だちがいません(aib chat friend add <相手の持ち主 npub またはグローバル宛先>)。自分の他のキャビンからのメールだけ受け取ります。",
+  "aib.chat.friends_none": "まだ友だちがいません(aib chat friend add <相手の持ち主 npub またはグローバル宛先>。送信した相手は自動で追加されます)。自分の他のキャビンからのメールだけ受け取ります。",
   "aib.chat.friends_row": "  {name}  {owner}",
   "aib.chat.status_friends": "友だち:{n} 人(自分と友だちのメールだけ受け取り、それ以外は拒否)",
   "aib.chat.profile_bad_friend": "この友だち指定は読めません:相手の持ち主 npub(npub1…)かグローバル宛先(<持ち主 npub>/<キャビン>/<席>)を指定してください",
@@ -4355,5 +4355,15 @@
   "aib.chat.help.friend_who": "相手の持ち主 npub またはグローバル宛先",
   "aib.chat.help.friend_name": "自分用のメモ名",
   "aib.chat.help.friends": "友だち一覧",
-  "aib.chat.help.auto": "キャビン起動時用:持ち主がオフにしていなければグローバルチャットをオン(スイッチだけ書く)"
+  "aib.chat.help.auto": "キャビン起動時用:持ち主がオフにしていなければグローバルチャットをオン(スイッチだけ書く)",
+  "aib.chat.mine_added": "自分の他の機器として紐付けました:{owner}。その機器の名簿にある席からのメールは本人として受け取ります。相手の機器でも aib chat mine add <この機器の持ち主番号> を一度実行してください。",
+  "aib.chat.mine_renamed": "すでに自分の機器です。名前を更新しました:{owner}",
+  "aib.chat.mine_removed": "紐付けを解除しました:{owner}。今後その機器のメールは友だちのルールで扱います。",
+  "aib.chat.mine_not_found": "{owner} は自分の機器リストにありません",
+  "aib.chat.mine_none": "まだ他の機器を紐付けていません。",
+  "aib.chat.mine_hint": "自分の別の機器を紐付けるには、その機器で aib chat mine add {owner} を実行(両方の機器で一度ずつ)",
+  "aib.chat.friends_row_sent": "  {name}  {owner}(送信したので自動追加)",
+  "aib.chat.status_mine": "自分の他の機器:{n} 台(本人として扱う)",
+  "aib.chat.help.mine": "自分の他の機器の紐付け / 解除(本人として扱う)",
+  "aib.chat.help.mine_who": "別の機器の持ち主 npub またはグローバル宛先"
 }
