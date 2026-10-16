@@ -737,6 +737,15 @@ def _my_published(env):
             for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub and owner]
 
 
+def _tell_requester(root, hit, rec):
+    """同意 / 拒絕 ⇒ 寫 delivery 讓工人回條給對方。申請那筆壞了(msgid 不合)⇒ 回 False:照樣同意 / 拒絕,只是通知不到。"""
+    try:
+        GF.append_delivery(root, hit.get("msgid") or "", rec)
+        return True
+    except (GF.ContractError, OSError, ValueError):
+        return False
+
+
 def cmd_request(a, env, out):
     """好友申請(第 29.4 節):aib chat request <位址> [--note] [--from 席] ;aib chat request accept|reject <主人 npub>。"""
     import chat_roster as CR
@@ -754,12 +763,13 @@ def cmd_request(a, env, out):
                 GF.add_request(root, hit, every=0)          # 加不成(例:封鎖中)⇒ 申請放回去,照實說
                 out.write(T("profile_" + str(err)) + "\n")
                 return 2
-            GF.append_delivery(root, hit["msgid"], {"v": 1, "at": int(time.time()), "state": "delivered"})
+            if not _tell_requester(root, hit, {"v": 1, "at": int(time.time()), "state": "delivered"}):
+                out.write(T("request_no_notice") + "\n")
             out.write(T("request_accepted", owner=owner) + "\n")
         else:
-            if not a.silent:
-                GF.append_delivery(root, hit["msgid"], {"v": 1, "at": int(time.time()), "state": "refused",
-                                                         "reason": "rejected"})
+            if not a.silent and not _tell_requester(root, hit, {"v": 1, "at": int(time.time()), "state": "refused",
+                                                                    "reason": "rejected"}):
+                out.write(T("request_no_notice") + "\n")
             out.write(T("request_rejected", owner=owner) + "\n")
         return 0
     pub = _my_published(env)

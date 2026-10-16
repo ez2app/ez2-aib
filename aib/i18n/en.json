@@ -4515,5 +4515,6 @@
   "aib.chat.help.request_from": "which published seat sends it (default: the first)",
   "aib.chat.help.request_silent": "do not tell them when rejecting",
   "aib.chat.help.requests": "list friend requests waiting for you",
-  "aib.chat.help.contacts": "global contacts (your machines, friends, requests, refused, blocked; the captain room reads --json)"
+  "aib.chat.help.contacts": "global contacts (your machines, friends, requests, refused, blocked; the captain room reads --json)",
+  "aib.chat.request_no_notice": "(This request's record is incomplete, so they cannot be notified; your friends list was still updated)"
 }

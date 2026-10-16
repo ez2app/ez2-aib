@@ -4515,5 +4515,6 @@
   "aib.chat.help.request_from": "用哪一個公開的席送(預設第一個)",
   "aib.chat.help.request_silent": "拒絕時不通知對方",
   "aib.chat.help.requests": "列出等你同意的好友申請",
-  "aib.chat.help.contacts": "全球通訊錄(本人機器、好友、申請、拒收、封鎖;艦長室讀 --json)"
+  "aib.chat.help.contacts": "全球通訊錄(本人機器、好友、申請、拒收、封鎖;艦長室讀 --json)",
+  "aib.chat.request_no_notice": "(這則申請的紀錄不完整,沒辦法通知對方;你這邊的好友名單照樣改好了)"
 }

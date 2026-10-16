@@ -4515,5 +4515,6 @@
   "aib.chat.help.request_from": "どの公開席から送るか(既定は最初の席)",
   "aib.chat.help.request_silent": "拒否しても相手に知らせない",
   "aib.chat.help.requests": "承認待ちの友だち申請の一覧",
-  "aib.chat.help.contacts": "グローバル連絡先(自分の機器・友だち・申請・拒否・ブロック。艦長室は --json を読む)"
+  "aib.chat.help.contacts": "グローバル連絡先(自分の機器・友だち・申請・拒否・ブロック。艦長室は --json を読む)",
+  "aib.chat.request_no_notice": "(この申請の記録が不完全なため相手に通知できません。こちらの友だちリストは更新済みです)"
 }

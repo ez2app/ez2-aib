@@ -4515,5 +4515,6 @@
   "aib.chat.help.request_from": "어느 공개 석에서 보낼지(기본: 첫 번째)",
   "aib.chat.help.request_silent": "거절해도 상대에게 알리지 않음",
   "aib.chat.help.requests": "승인 대기 중인 친구 신청 목록",
-  "aib.chat.help.contacts": "글로벌 연락처(내 기기, 친구, 신청, 거부, 차단; 함장실은 --json을 읽음)"
+  "aib.chat.help.contacts": "글로벌 연락처(내 기기, 친구, 신청, 거부, 차단; 함장실은 --json을 읽음)",
+  "aib.chat.request_no_notice": "(이 신청 기록이 불완전해 상대에게 알릴 수 없습니다. 내 친구 목록은 바뀌었습니다)"
 }

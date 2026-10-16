@@ -106,6 +106,13 @@ class Core(unittest.TestCase):
         self.assertEqual(GF.read_delivery(root, "d" * 32), [])
         self.assertEqual(GF.read_requests(root), [])
         self.assertEqual(b.cli("request", "accept", P[7]).returncode, 2)
+        # 申請紀錄壞了(msgid 不合,@74e8b 22:50 回報)⇒ 照樣同意、白話說通知不到,不丟例外
+        GF.add_request(root, {"owner": P[7], "display_name": "壞", "note": "", "msgid": "not-a-msgid"})
+        r = b.cli("request", "accept", P[7])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("沒辦法通知對方", r.stdout)
+        self.assertNotIn("Error", r.stdout + r.stderr)
+        self.assertIn(P[7], [x["owner"] for x in js(b.cli("friends", "--json"))["friends"]])
 
 
 class Row(RT.CoreBox):
