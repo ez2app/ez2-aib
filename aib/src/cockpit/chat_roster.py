@@ -220,12 +220,51 @@ def set_public(seat5, on, env=None):
     return rec
 
 
+MAX_RELAYS = 6     # 第 27.9 節:每多一站,每則信就多寄一份、多一個會限流或封人的對象
+
+
+def _relay_ok(url):
+    return bool(_RELAY_RE.match(url or "") or _LOCAL_RELAY_RE.match(url or ""))
+
+
 def relays(env=None):
-    """AIB_CHAT_RELAYS(逗號分隔)可改;不合格的站略過,全不合格退回預設。"""
+    """用哪些中繼站:AIB_CHAT_RELAYS(逗號分隔,測試用)優先;再來主人資料的 relays(aib chat relays add,
+    第 27.9 節);都沒有 ⇒ 預設兩站。不合格的站略過,全不合格退回預設。"""
     env = os.environ if env is None else env
     raw = [x.strip() for x in (env.get("AIB_CHAT_RELAYS") or "").split(",") if x.strip()]
-    good = [r for r in raw if _RELAY_RE.match(r) or _LOCAL_RELAY_RE.match(r)]
+    if not raw:
+        raw = list((read_profile(env) or {}).get("relays") or [])
+    good = [r for r in raw if _relay_ok(r)][:MAX_RELAYS]
     return good or list(DEFAULT_RELAYS)
+
+
+def set_relays(action, url=None, env=None):
+    """aib chat relays add|remove|reset。自訂清單一開始 = 現在用的(預設兩站),加減都在它上面。
+    不合格 ⇒ RosterError(bad_relay / too_many_relays / no_profile / last_relay)。回改好的清單。"""
+    rec = read_profile(env)
+    if not rec:
+        raise RosterError("no_profile")
+    cur = [r for r in (rec.get("relays") or list(DEFAULT_RELAYS)) if _relay_ok(r)]
+    url = (url or "").strip().rstrip("/") if action != "reset" else None
+    if action == "add":
+        if not _relay_ok(url):
+            raise RosterError("bad_relay")
+        if url not in cur:
+            if len(cur) >= MAX_RELAYS:
+                raise RosterError("too_many_relays")
+            cur.append(url)
+    elif action == "remove":
+        if url in cur and len(cur) == 1:
+            raise RosterError("last_relay")
+        cur = [r for r in cur if r != url]
+    else:
+        cur = list(DEFAULT_RELAYS)
+    if cur == list(DEFAULT_RELAYS):
+        rec.pop("relays", None)
+    else:
+        rec["relays"] = cur
+    _save_profile(rec, env)
+    return cur
 
 
 def _aib_version():

@@ -51,7 +51,7 @@ STATES = ("no_keys", "no_profile", "no_relays", "publishing", "published", "stop
 #   1.2:有金鑰還沒中繼站 = no_relays;1.3:沒設顯示名稱 / 國別 = no_profile、名冊發不出去 = publishing(下一輪再試)、
 #   名冊與 10050 都發出去了 = published。心跳由寄件工人寫(接上中繼站才寫)。
 WORKER_RESTART_GAP = 30                    # 秒;寄件工人掛了多久後再起(不狂起)
-_WORKER = {"proc": None, "started": 0.0}   # 當班才有;寄件工人(venv 的 chat_nostr.py serve)
+_WORKER = {"proc": None, "started": 0.0, "relays": None}   # 當班才有;寄件工人(venv 的 chat_nostr.py serve)
 PUBLISH_EVERY = 60                         # 秒;名冊發失敗時多久再試(第 19.1 節:每站每 10 秒最多 2 則,不能狂發)
 SOCKET_RE = re.compile(r"^aihub(-[0-9A-Za-z-]+)?$")
 
@@ -259,6 +259,12 @@ def _leader_tick(root, env=None):
         stop_worker()
         worker = None
     else:
+        import chat_roster as CR
+        cur = tuple(CR.relays(env))
+        if _WORKER["relays"] is not None and _WORKER["relays"] != cur:
+            stop_worker()                       # 第 27.9 節:換了中繼站 ⇒ 工人重連(不等重起間隔)
+            _WORKER["started"] = 0.0
+        _WORKER["relays"] = cur
         worker = ensure_worker(root, env, now)
     write_status(root, state=state, pid=os.getpid(), instance=st.get("instance"),
                  since=st.get("since") or now, at=now, swept_at=swept, key_error=key_err,
@@ -666,6 +672,31 @@ def cmd_refused(a, env, out):
     return 0
 
 
+def cmd_relays(a, env, out):
+    """aib chat relays [add|remove <wss://…> | reset](第 27.9 節)。列出時附各站最近狀態(工人寫的)。"""
+    import chat_roster as CR
+    if a.action:
+        if a.action in ("add", "remove") and not a.url:
+            out.write(T("profile_bad_relay") + "\n")
+            return 2
+        try:
+            CR.set_relays(a.action, a.url, env)
+        except CR.RosterError as err:
+            out.write(T("profile_" + str(err), n=CR.MAX_RELAYS) + "\n")
+            return 2
+        out.write(T("relays_saved") + "\n")
+    w = _worker_status(bridge_root(env), True) or {}
+    seen = w.get("relays") or {}
+    cur = CR.relays(env)
+    if a.json:
+        out.write(json.dumps({"relays": [{"url": u, "status": seen.get(u)} for u in cur]}, ensure_ascii=False) + "\n")
+        return 0
+    for u in cur:
+        st = seen.get(u)
+        out.write(T("relays_row_" + ("up" if st == "CONNECTED" else ("down" if st else "unknown")), url=u) + "\n")
+    return 0
+
+
 def cmd_roster(a, env, out):
     """印自己的名冊內容(還沒簽的那份;公開資訊)。"""
     import chat_roster as CR
@@ -694,6 +725,56 @@ def cmd_lookup(a, env, out):
         return 2
     out.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return 0 if rc == 0 else 2
+
+
+def selftest(env, fetch=True):
+    """自我檢查(第 27.7 節):只讀、不寄信。回 [(項目, ok, 參數)];ok None = 略過(前一項沒過就查不了)。"""
+    import chat_roster as CR
+    import nostr_keys as NK
+    rec = status_record(env)
+    prof = CR.read_profile(env) or {}
+    w = rec.get("worker") or {}
+    rows = [("switch", rec["enabled"], {}),
+            ("profile", bool(prof.get("display_name") and prof.get("country")),
+             {"name": prof.get("display_name") or "-", "country": prof.get("country") or "-"}),
+            ("venv", rec["venv"] == "ok", {"pin": NOSTR_SDK_PIN}),
+            ("bridge", rec["running"], {}),
+            ("heartbeat", rec["heartbeat"], {})]
+    seen = w.get("relays") or {}
+    for u in CR.relays(env):
+        rows.append(("relay", (seen.get(u) == "CONNECTED") if seen else None, {"url": u}))
+    c = w.get("clock") or {}
+    off = c.get("offset")
+    rows.append(("clock", None if off is None else not c.get("warn"), {"offset": None if off is None else round(off, 1)}))
+    m = NK.read_map(env)
+    owner = (m.get("owner") or {}).get("npub")
+    pub = set(prof.get("public") or [])
+    seats = [e for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub]
+    if not seats:
+        rows.append(("published_none", False, {}))
+    for e in seats:
+        addr = "%s/%s/%s" % (owner, e.get("cabin") or "main", e["seat5"])
+        if not (fetch and rec["venv"] == "ok" and rec["heartbeat"]):
+            rows.append(("seat", None, {"seat": e["seat5"], "why": "-"}))
+            continue
+        rc, got = _run_nostr("fetch", bridge_root(env), env, timeout=60, extra=[addr])
+        ok = rc == 0 and (got.get("seat") or {}).get("npub") == e["npub"] and bool(got.get("dm_relays"))
+        rows.append(("seat", ok, {"seat": e["seat5"], "why": got.get("why") or "-"}))
+    return rows
+
+
+def cmd_selftest(a, env, out):
+    rows = selftest(env)
+    if a.json:
+        out.write(json.dumps([{"item": k, "ok": ok, **p} for k, ok, p in rows], ensure_ascii=False) + "\n")
+    else:
+        for k, ok, p in rows:
+            mark = "✓" if ok else ("–" if ok is None else "✗")
+            out.write("%s %s\n" % (mark, T("self_" + k + ("_ok" if ok else ("_skip" if ok is None else "_bad")), **p)))
+    bad = [k for k, ok, _p in rows if ok is False]
+    if not a.json:
+        out.write(T("self_all_ok" if not bad else "self_some_bad", n=len(bad)) + "\n")
+    return 0 if not bad else 1
 
 
 def cmd_status(a, env, out):
@@ -766,6 +847,12 @@ def main(argv=None, env=None, out=sys.stdout):
     mn.add_argument("--json", action="store_true")
     fs = sub.add_parser("friends", help=T("help.friends"))
     fs.add_argument("--json", action="store_true")
+    stt = sub.add_parser("selftest", help=T("help.selftest"))
+    stt.add_argument("--json", action="store_true")
+    rl = sub.add_parser("relays", help=T("help.relays"))
+    rl.add_argument("action", nargs="?", choices=("add", "remove", "reset"))
+    rl.add_argument("url", nargs="?")
+    rl.add_argument("--json", action="store_true")
     rf = sub.add_parser("refused", help=T("help.refused"))
     rf.add_argument("--json", action="store_true")
     au = sub.add_parser("auto", help=T("help.auto"))
@@ -796,6 +883,10 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_prepare(a, env, out)
     if a.cmd == "auto":
         return cmd_auto(a, env, out)
+    if a.cmd == "relays":
+        return cmd_relays(a, env, out)
+    if a.cmd == "selftest":
+        return cmd_selftest(a, env, out)
     if a.cmd == "refused":
         return cmd_refused(a, env, out)
     if a.cmd in ("friend", "mine"):
