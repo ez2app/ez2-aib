@@ -4264,7 +4264,7 @@
   "aib.chat.venv_installing": "初回のみ:~/.ez2-aib/chat/venv を作成し {pin} をインストールします(ネットワークが必要、約 3 分)…",
   "aib.chat.venv_failed": "{pin} をインストールできませんでした({path})。グローバルチャットはオンになっていません。ネットワーク復旧後に aib chat on を再実行してください。",
   "aib.chat.on_done": "グローバルチャットのスイッチ:オン。",
-  "aib.chat.off_done": "グローバルチャットのスイッチ:オフ。チャットブリッジは停止しました。鍵(今後作成)は保持されます。",
+  "aib.chat.off_done": "グローバルチャットのスイッチ:オフ。チャットブリッジは停止しました。鍵はこの機器に保持されます。",
   "aib.chat.window_created": "このキャビンに sys.chat ウィンドウを開きました({wid})。",
   "aib.chat.window_kept": "このキャビンには動作中の sys.chat ウィンドウ({wid})があります。そのままにします。",
   "aib.chat.window_respawned": "このキャビンの sys.chat ウィンドウ({wid})が止まっていたため再起動しました。",

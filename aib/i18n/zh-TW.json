@@ -4264,7 +4264,7 @@
   "aib.chat.venv_installing": "第一次開:建立 ~/.ez2-aib/chat/venv 並安裝 {pin}(要網路,約 3 分鐘)…",
   "aib.chat.venv_failed": "裝不起來:{pin} 沒裝好({path})。全球對談沒有打開;網路好了再跑一次 aib chat on。",
   "aib.chat.on_done": "全球對談開關:開。",
-  "aib.chat.off_done": "全球對談開關:關。轉接程式已停;金鑰(之後才有)會保留。",
+  "aib.chat.off_done": "全球對談開關:關。轉接程式已停;金鑰保留在本機。",
   "aib.chat.window_created": "已在這一艙開 sys.chat 窗({wid})。",
   "aib.chat.window_kept": "這一艙已有 sys.chat 窗({wid}),在跑,不動它。",
   "aib.chat.window_respawned": "這一艙的 sys.chat 窗({wid})停了,已重開。",

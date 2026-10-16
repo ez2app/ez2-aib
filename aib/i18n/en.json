@@ -4264,7 +4264,7 @@
   "aib.chat.venv_installing": "First time on: creating ~/.ez2-aib/chat/venv and installing {pin} (needs the network, about 3 minutes)…",
   "aib.chat.venv_failed": "Could not install {pin} ({path}). Global chat was not turned on; run aib chat on again when the network is back.",
   "aib.chat.on_done": "Global chat switch: on.",
-  "aib.chat.off_done": "Global chat switch: off. The chat bridge has stopped; keys (once they exist) are kept.",
+  "aib.chat.off_done": "Global chat switch: off. The chat bridge has stopped; keys stay on this machine.",
   "aib.chat.window_created": "Opened the sys.chat window in this cabin ({wid}).",
   "aib.chat.window_kept": "This cabin already has a running sys.chat window ({wid}); left as is.",
   "aib.chat.window_respawned": "The sys.chat window in this cabin ({wid}) had stopped; restarted it.",

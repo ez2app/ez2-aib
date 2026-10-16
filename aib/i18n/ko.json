@@ -4264,7 +4264,7 @@
   "aib.chat.venv_installing": "처음 켤 때만: ~/.ez2-aib/chat/venv를 만들고 {pin}을 설치합니다(네트워크 필요, 약 3분)…",
   "aib.chat.venv_failed": "{pin}을 설치하지 못했습니다({path}). 글로벌 채팅은 켜지지 않았습니다. 네트워크가 되면 aib chat on을 다시 실행하세요.",
   "aib.chat.on_done": "글로벌 채팅 스위치: 켬.",
-  "aib.chat.off_done": "글로벌 채팅 스위치: 끔. 채팅 브리지를 멈췄습니다. 키(나중에 생김)는 보관됩니다.",
+  "aib.chat.off_done": "글로벌 채팅 스위치: 끔. 채팅 브리지를 멈췄습니다. 키는 이 기기에 보관됩니다.",
   "aib.chat.window_created": "이 캐빈에 sys.chat 창을 열었습니다({wid}).",
   "aib.chat.window_kept": "이 캐빈에는 이미 실행 중인 sys.chat 창({wid})이 있어 그대로 둡니다.",
   "aib.chat.window_respawned": "이 캐빈의 sys.chat 창({wid})이 멈춰 있어 다시 시작했습니다.",
