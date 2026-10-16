@@ -696,6 +696,42 @@ def note_peer(root, owner, display_name=None, country=None, seat=None, roster_at
     _locked_update(root, "peers.json", fn, lambda: {"v": VERSION, "peers": {}})
 
 
+# world.json(第 30.4 節):好友 / 我的其他機器分享來的在線狀態。只有工人寫;核心讀時判過期。
+WORLD_FRESH_S = 40 * 60
+WORLD_STATES = ("online", "idle", "away", "asleep", "unknown")
+
+
+def read_world(root):
+    try:
+        cur = json.loads((Path(root) / "world.json").read_text(encoding="utf-8"))
+        cabins = cur.get("cabins") if isinstance(cur, dict) else None
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in cabins.items() if isinstance(v, dict)} if isinstance(cabins, dict) else {}
+
+
+def note_world(root, owner, cabin, seats, now=None):
+    """收到一份 presence:{owner/cabin: {owner, cabin, presence_at, seats:[{seat, state, now, step}]}}。"""
+    now = int(time.time() if now is None else now)
+    key = "%s/%s" % (owner, cabin)
+
+    def fn(cur):
+        cab = cur.setdefault("cabins", {})
+        cab[key] = {"owner": owner, "cabin": cabin, "presence_at": now, "seats": seats}
+        for k in [k for k, v in cab.items() if now - int(v.get("presence_at") or 0) > PEERS_KEEP_S]:
+            cab.pop(k, None)
+    _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
+
+
+def drop_world(root, keep_owner):
+    """拿掉不再分享對象(好友移除、封鎖)的格;keep_owner(owner) ⇒ True 才留。"""
+    def fn(cur):
+        cab = cur.setdefault("cabins", {})
+        for k in [k for k, v in cab.items() if not keep_owner(v.get("owner"))]:
+            cab.pop(k, None)
+    _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
+
+
 def sender_from_token(token):
     """dm-ctl 的 whoami token(dm_xhost.encode,跨主機同一套推導)⇒ {cabin, seat, attested};推不出寄件席回 None。
 

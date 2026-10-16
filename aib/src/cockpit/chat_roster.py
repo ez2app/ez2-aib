@@ -188,6 +188,67 @@ def is_mine(owner, env=None):
     return is_friend(owner, env, "mine")
 
 
+# ── 在線狀態分享等級(第 30.2 節)── chat/share.json(0600):{"v":1, "default":"online", "per":{owner: level}}
+SHARE_LEVELS = ("off", "online", "status")
+SHARE_DEFAULT = "online"          # 第 18.1 節:預設只有在或不在
+SHARE_MINE_DEFAULT = "status"     # 我的其他機器預設看得到狀態列
+
+
+def share_path(env=None):
+    return _chat_home(env) / "share.json"
+
+
+def read_share(env=None):
+    try:
+        rec = json.loads(share_path(env).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        rec = None
+    if not isinstance(rec, dict) or rec.get("v") != VERSION:
+        rec = {"v": VERSION}
+    if rec.get("default") not in SHARE_LEVELS:
+        rec["default"] = SHARE_DEFAULT
+    per = rec.get("per") if isinstance(rec.get("per"), dict) else {}
+    rec["per"] = {k: v for k, v in per.items() if _NPUB_RE.match(k) and v in SHARE_LEVELS}
+    return rec
+
+
+def set_share(level, who=None, env=None):
+    """who=None ⇒ 改預設;否則改這一位(主人 npub 或位址)。回 (對象, 等級)。"""
+    if level not in SHARE_LEVELS:
+        raise RosterError("bad_share")
+    rec = read_share(env)
+    if who is None:
+        rec["default"] = level
+        target = "default"
+    else:
+        target = friend_owner(who)
+        if not target:
+            raise RosterError("bad_friend")
+        rec["per"][target] = level
+    p = share_path(env)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(p.parent), 0o700)
+    write_json(str(p), rec)
+    os.chmod(str(p), 0o600)
+    return target, level
+
+
+def share_level(owner, env=None):
+    """對這位主人分享到哪一級:封鎖 / 不是好友也不是我的機器 ⇒ off(陌生人什麼都不送)。"""
+    if not owner or is_blocked(owner, env):
+        return "off"
+    rec = read_share(env)
+    if owner in rec["per"]:
+        lvl = rec["per"][owner]
+    elif is_mine(owner, env):
+        lvl = SHARE_MINE_DEFAULT
+    else:
+        lvl = rec["default"]
+    if not (is_mine(owner, env) or is_friend(owner, env)):
+        return "off"
+    return lvl
+
+
 def clean_country(code):
     c = (code or "").strip().upper()
     return c if GF.COUNTRY_RE.match(c) else None

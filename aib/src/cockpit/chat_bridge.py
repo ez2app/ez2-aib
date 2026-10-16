@@ -863,6 +863,94 @@ def cmd_contacts(a, env, out):
     return 0
 
 
+def share_payload(env=None):
+    """第 30.2 節(@74e8b 22:51 要的形狀):{"default", "peers": {npub: 實際等級}};好友與我的其他機器都填好
+    (mine 沒設 ⇒ status、好友沒設 ⇒ default)。"""
+    import chat_roster as CR
+    rec = CR.read_share(env)
+    owners = [f["owner"] for f in CR.read_friends(env, "mine")] + [f["owner"] for f in CR.read_friends(env)]
+    return {"v": 1, "default": rec["default"], "peers": {o: CR.share_level(o, env) for o in dict.fromkeys(owners)}}
+
+
+def cmd_share(a, env, out):
+    """aib chat share [<主人 npub> off|online|status] [--default off|online|status] [--json]。"""
+    import chat_roster as CR
+    try:
+        if a.default:
+            CR.set_share(a.default, None, env)
+        if a.who:
+            if a.level is None:
+                out.write(T("share_need_level") + "\n")
+                return 2
+            CR.set_share(a.level, a.who, env)
+    except CR.RosterError as err:
+        out.write(T("profile_" + str(err)) + "\n")
+        return 2
+    pl = share_payload(env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0
+    out.write(T("share_default", level=T("share_" + pl["default"])) + "\n")
+    for o, lvl in pl["peers"].items():
+        out.write(T("share_row", level=T("share_" + lvl), owner=o) + "\n")
+    return 0
+
+
+def world_payload(env=None, now=None):
+    """第 30.4–30.5 節:好友 / 我的其他機器分享來的在線狀態 + 我自己這一份(me)。只讀本機檔。
+    過期(WORLD_FRESH_S 沒收到)⇒ fresh=false、各席 unknown;不再是好友 / 我的機器的不列。"""
+    import chat_roster as CR
+    import nostr_keys as NK
+    import seat_presence as SP
+    now = time.time() if now is None else now
+    root = bridge_root(env)
+    peers = GF.read_peers(root)
+    m = NK.read_map(env)
+    prof = CR.read_profile(env) or {}
+    pub = _my_published(env)
+    me = {"owner": (m.get("owner") or {}).get("npub"), "display_name": prof.get("display_name"),
+          "country": prof.get("country"), "seats": []}
+    rows = SP.presence([p["seat"] for p in pub], with_status=True, now=now)
+    for p, r in zip(pub, rows):
+        me["seats"].append(dict(r, cabin=p["cabin"], addr=p["addr"]))
+    cabins = []
+    for key, c in sorted(GF.read_world(root).items()):
+        owner = c.get("owner")
+        rel = "mine" if CR.is_mine(owner, env) else ("friend" if CR.is_friend(owner, env) else None)
+        if rel is None or CR.is_blocked(owner, env):
+            continue
+        fresh = now - int(c.get("presence_at") or 0) < GF.WORLD_FRESH_S
+        info = peers.get(owner) or {}
+        names = {x.get("seat"): x for x in info.get("seats") or []}
+        seats = []
+        for x in c.get("seats") or []:
+            meta = names.get(x.get("seat")) or {}
+            seats.append({"seat": x.get("seat"), "name": meta.get("name"), "role": meta.get("role"),
+                          "addr": "%s/%s/%s" % (owner, c.get("cabin"), x.get("seat")),
+                          "state": x.get("state") if fresh else "unknown",
+                          "now": x.get("now") if fresh else None, "step": x.get("step") if fresh else None})
+        cabins.append({"owner": owner, "cabin": c.get("cabin"), "relation": rel,
+                       "display_name": info.get("display_name"), "country": info.get("country"),
+                       "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
+    return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
+
+
+def cmd_world(a, env, out):
+    pl = world_payload(env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0
+    if not pl["cabins"]:
+        out.write(T("world_none") + "\n")
+    for c in pl["cabins"]:
+        out.write(T("world_cabin", name=c.get("display_name") or "-", country=c.get("country") or "-", cabin=c["cabin"],
+                    fresh=T("world_fresh" if c["fresh"] else "world_stale")) + "\n")
+        for x in c["seats"]:
+            out.write(T("world_seat", seat=x["seat"], name=x.get("name") or "-", state=T("state_" + x["state"]),
+                        now=x.get("now") or "") + "\n")
+    return 0
+
+
 def cmd_roster(a, env, out):
     """印自己的名冊內容(還沒簽的那份;公開資訊)。"""
     import chat_roster as CR
@@ -1054,6 +1142,13 @@ def main(argv=None, env=None, out=sys.stdout):
     rq.add_argument("--silent", action="store_true", help=T("help.request_silent"))
     rqs = sub.add_parser("requests", help=T("help.requests"))
     rqs.add_argument("--json", action="store_true")
+    sh = sub.add_parser("share", help=T("help.share"))
+    sh.add_argument("who", nargs="?")
+    sh.add_argument("level", nargs="?", choices=("off", "online", "status"))
+    sh.add_argument("--default", choices=("off", "online", "status"))
+    sh.add_argument("--json", action="store_true")
+    wd = sub.add_parser("world", help=T("help.world"))
+    wd.add_argument("--json", action="store_true")
     ct = sub.add_parser("contacts", help=T("help.contacts"))
     ct.add_argument("--json", action="store_true")
     mn = sub.add_parser("mine", help=T("help.mine"))
@@ -1121,6 +1216,10 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_requests(a, env, out)
     if a.cmd == "contacts":
         return cmd_contacts(a, env, out)
+    if a.cmd == "share":
+        return cmd_share(a, env, out)
+    if a.cmd == "world":
+        return cmd_world(a, env, out)
     if a.cmd == "friends":
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":

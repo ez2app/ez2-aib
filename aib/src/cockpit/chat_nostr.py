@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import datetime
 import json
+import re
 import os
 import sys
 import time
@@ -408,6 +409,80 @@ class Sender(object):
         else:
             self._retry_later(msgid, "relays")
 
+    async def _first_seat_addr(self, owner):
+        """對方主人名冊上第一個公開席的位址(聯絡人快照有就用,沒有就抓名冊)。"""
+        p = GF.read_peers(self.root).get(owner) or {}
+        for x in p.get("seats") or []:
+            if x.get("seat"):
+                return "%s/%s/%s" % (owner, x.get("cabin") or "main", x["seat"])
+        flt = N.Filter().author(N.PublicKey.parse(owner)).kind(N.Kind(CR.KIND_ROSTER)).identifier(CR.ROSTER_D)
+        try:
+            ev = await _fetch_latest(CR.relays(), flt)
+            rec = CR.parse(ev.content(), owner) if ev is not None else None
+        except Exception:   # noqa: BLE001
+            return None
+        for cab in (rec or {}).get("cabins") or []:
+            for st in cab.get("seats") or []:
+                return "%s/%s/%s" % (owner, cab.get("cabin"), st.get("seat"))
+        return None
+
+    async def push_presence(self, now=None):
+        """在線狀態(第 30.3 節):每位好友 / 我的其他機器依分享等級送一份;有變就送(最少間隔 PRESENCE_GAP_S),
+        沒變 PRESENCE_EVERY_S 送一次。陌生、封鎖、等級 off ⇒ 不送。回送了幾份。"""
+        import seat_presence as SP
+        now = time.time() if now is None else now
+        m = NK.read_map()
+        owner = (m.get("owner") or {}).get("npub")
+        pub = set((CR.read_profile() or {}).get("public") or [])
+        mine_seats = [e for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub]
+        if not owner or not mine_seats:
+            return 0
+        peers = GF.read_peers(self.root)
+        targets = [f["owner"] for f in CR.read_friends(None, "mine")] + [f["owner"] for f in CR.read_friends()]
+        targets = list(dict.fromkeys(t for t in targets if t != owner))
+        targets.sort(key=lambda o: -max(int((peers.get(o) or {}).get(k) or 0) for k in ("last_in", "last_out", "seen_at")))
+        last = getattr(self, "p_last", None)
+        if last is None:
+            last = self.p_last = {}
+        sent = 0
+        for tgt in targets[:PRESENCE_MAX_TARGETS]:
+            lvl = CR.share_level(tgt)
+            if lvl == "off":
+                continue
+            rows = SP.presence([e["seat5"] for e in mine_seats], with_status=(lvl == "status"))
+            for r, e in zip(rows, mine_seats):
+                r["cabin"] = e.get("cabin") or "main"
+            body = json.dumps({"v": 1, "seats": rows}, ensure_ascii=False, sort_keys=True)
+            prev = last.get(tgt)
+            if prev and ((prev[0] == body and now - prev[1] < PRESENCE_EVERY_S) or now - prev[1] < PRESENCE_GAP_S):
+                continue
+            addr = await self._first_seat_addr(tgt)
+            if not addr:
+                continue
+            rc, res = await self._resolve(addr)
+            if rc != 0:
+                continue
+            frm = mine_seats[0]
+            keys = _keys(frm["key"])
+            tags = [N.Tag.parse(x) for x in (["aib-v", "1"], ["aib-type", "presence"],
+                                             ["aib-from", "%s/%s/%s" % (owner, frm.get("cabin") or "main", frm["seat5"])])]
+            gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(res["seat"]["npub"]),
+                                          json.dumps({"v": 1, "at": int(now), "seats": rows}, ensure_ascii=False),
+                                          rumor_extra_tags=tags)
+            keys = None
+            c = await _client(res["dm_relays"])
+            try:
+                out = await c.send_event(gw)
+            except Exception:   # noqa: BLE001
+                out = None
+            finally:
+                await c.shutdown()
+            if out is not None and out.success:
+                last[tgt] = (body, now)
+                sent += 1
+                audit(self.root, "presence-out", "-", tgt, lvl)
+        return sent
+
     def _remember_peer(self, to, res, source="sent"):
         """寄過信的人,回信照收(第 27.3 節):收件人的主人自動加進好友(source=sent)。
         寄到只有席 npub 的位址(沒有主人)⇒ 不加;收件人是自己或我的其他機器 ⇒ 不加。"""
@@ -484,6 +559,10 @@ RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired")   # r
 REFUSE_REASONS = ("not_friend", "unverified")
 READ_BATCH_S = float(os.environ.get("AIB_CHAT_READ_BATCH") or 30)   # 秒;同一寄件人同一席這段時間內讀的合成一張(第 10 節)
 REFUSE_EVERY_S = float(os.environ.get("AIB_CHAT_REFUSE_EVERY") or 86400)   # 秒;同一寄件 npub 這段時間最多回 1 張拒收(第 27.4 節)
+PRESENCE_TICK_S = float(os.environ.get("AIB_CHAT_PRESENCE_TICK") or 60)     # 秒;多久看一次要不要送在線狀態(第 30.3 節)
+PRESENCE_EVERY_S = float(os.environ.get("AIB_CHAT_PRESENCE_EVERY") or 900)  # 沒變也每 15 分鐘送一次
+PRESENCE_GAP_S = float(os.environ.get("AIB_CHAT_PRESENCE_GAP") or 120)      # 同一位對方最少間隔
+PRESENCE_MAX_TARGETS = 50
 ORPHAN_KEEP_S = float(os.environ.get("AIB_CHAT_ORPHAN_KEEP") or 60)   # 秒;查不到寄出帳的回條暫存多久(第 27.8 節)
 ORPHAN_MAX = 500
 REFUSED_MAX = 200                           # refused.json 最多記幾位(第 27.5 節)
@@ -718,6 +797,39 @@ class Receiver(object):
             GF.note_peer(self.root, sent["owner"], request=req)        # 第 29.4 節:通訊錄顯示申請推到哪
         return "ok"
 
+    async def on_presence(self, rumor, tags, from_npub):
+        """在線狀態(第 30.4 節):只收驗得到名冊、而且是好友 / 我的其他機器送來的;其他靜默丟。
+        不進佇列、不回條、不記收件帳;只寫 world.json。"""
+        import seat_presence as SP
+        from_addr = tags.get("aib-from") or ""
+        parsed = GF.parse_address(from_addr) or {}
+        owner = parsed.get("owner")
+        if not owner or CR.is_blocked(owner) or not (CR.is_friend(owner) or CR.is_mine(owner)):
+            return
+        rc, res = await self.sender._resolve(from_addr)
+        if rc != 0 or res["seat"]["npub"] != from_npub:
+            return
+        try:
+            body = json.loads(rumor.content())
+            rows = body.get("seats") if isinstance(body, dict) else None
+        except ValueError:
+            return
+        if not isinstance(rows, list):
+            return
+        by_cab = {}
+        for r in rows[:50]:
+            if not isinstance(r, dict) or r.get("state") not in SP.STATES:
+                continue
+            seat, cab = str(r.get("seat") or ""), str(r.get("cabin") or "main")
+            if not (NK.SEAT5_RE.match(seat) and NK.CABIN_RE.match(cab)):
+                continue
+            step = r.get("step") if isinstance(r.get("step"), str) and re.fullmatch(r"\d{1,3}/\d{1,3}", r["step"]) else None
+            by_cab.setdefault(cab, []).append({"seat": seat, "state": r["state"], "now": SP.clean_now(r.get("now")),
+                                                "step": step})
+        for cab, seats in by_cab.items():
+            GF.note_world(self.root, owner, cab, seats)
+        audit(self.root, "presence-in", "-", from_npub, str(len(rows)))
+
     async def on_request(self, rec, parsed, peer, msgid, from_npub):
         """好友申請(第 29.4 節):不進 AI 佇列。本人 / 好友 ⇒ 直接 delivered;驗不到 ⇒ 拒收(限量);
         驗得到的陌生人 ⇒ 記 requests.json(同一主人 24 小時 1 則,多的靜默)⇒ 回 held(等主人同意)。"""
@@ -750,6 +862,8 @@ class Receiver(object):
         if not msgid or self.led.seen("m:" + msgid):
             return
         self.led.mark("m:" + msgid)
+        if tags.get("aib-type") == "presence":
+            return await self.on_presence(rumor, tags, from_npub)
         is_aib = tags.get("aib-v") == "1"
         self.led.received(msgid, {"v": 1, "from": from_npub, "key": entry["key"], "seat": entry["seat5"],
                                   "aib": is_aib, "lang": tags.get("aib-lang"), "at": int(time.time())})
@@ -978,6 +1092,7 @@ async def serve(root):
     receiver = Receiver(root, sender)
     wstate = {"started": time.time(), "clock": None}
     last_clock = 0.0
+    last_presence = 0.0
     recv_task = asyncio.ensure_future(receiver.run(stop))
     for left in sorted((root / "sending").glob("*.json")):     # 上次掛掉時領了還沒寄完的:當重試處理
         if not (root / "sending" / (left.stem + ".try")).exists():
@@ -1000,6 +1115,12 @@ async def serve(root):
                 await sender.handle(msgid)
             await receiver.pump_delivery()
             receiver.retry_orphans()
+            if time.time() - last_presence >= PRESENCE_TICK_S:
+                last_presence = time.time()
+                try:
+                    await sender.push_presence()
+                except Exception as err:   # noqa: BLE001
+                    sys.stderr.write("presence:%s\n" % type(err).__name__)
             try:
                 await asyncio.wait_for(stop.wait(), POLL)
             except asyncio.TimeoutError:
