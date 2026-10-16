@@ -239,6 +239,7 @@ fi
 #   aib project show …            -> tools/project/show.py          (A 計畫樹;project 其餘子命令照舊走 project_callpoint)
 #   aib task …                    -> src/cockpit/seat_task_fields.py(B 頂行四欄)
 #   aib persona 來源|狀態|source|sources|status … -> tools/entitlement/aib_persona_sources.py(D 資格與開關;persona 其餘子命令照舊)
+#   aib persona main|主人格 [show|set <uid>|clear] -> src/identity/persona_main.py(10-16 主人格登記)
 # ★ 腳本還沒到就說一句話 rc=2 —— 不得掉進下面的開席參數解析(那裡會把 task 當 provider 報「不認得」,指錯方向)。
 # ★ 放在 provider 解析之前,與 init/bot/verify 同形:不進席位、不碰 tmux。
 # 10-12 新用戶全面檢查:公開版沒附的子指令(私有倉才有的程式)不准掉成 Python 錯誤 —— 說清楚、rc 2。
@@ -294,6 +295,10 @@ if [ "${1:-}" = "persona" ]; then
       _ps_entry="$AIB_SOURCE_ROOT/tools/entitlement/aib_persona_sources.py"
       aib_need "$_ps_entry" "persona $1"
       aib_delegate_subcommand py "$_ps_entry" "$@"
+      ;;
+    main|主人格)   # 10-16 維護者裁:主人格(真人分身)正式登記入口(原本只能手寫 user-main-persona.json)
+      shift 2
+      aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/identity/persona_main.py" "$@"
       ;;
   esac
 fi
@@ -371,6 +376,11 @@ if [ "${1:-}" = "bindme" ]; then
   shift
   export PYTHONDONTWRITEBYTECODE=1 AIB_BINDME_PROG="aib bindme"
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/identity/bindme.py" "$@"
+fi
+# 10-16 範圍外導引(the maintainer):aib who-owns 查誰負責(人格 / 專案 / 第二大腦全文),aib scope 寫卡的負責範圍。
+if [ "${1:-}" = "who-owns" ] || [ "${1:-}" = "scope" ]; then
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/identity/who_owns.py" "$@"
 fi
 
 # 10-10 a seat(the maintainer「4 件都做」):機器健康的三個小指令,只讀或只動自己的狀態檔,不進席位、不碰 tmux。
