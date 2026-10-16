@@ -2715,6 +2715,8 @@
   "aib.ext.no_requires": "매니페스트에 필요한 aib 버전(requires_aib)이 없습니다",
   "aib.ext.too_old": "이 확장은 aib {need} 이상이 필요합니다(이 머신은 {have}): 먼저 aib update 하세요",
   "aib.ext.not_intact": "파일이 매니페스트와 맞지 않습니다(추가 {extra}, 누락 {missing}, 변경 {changed}): 설치하지 않습니다",
+  "aib.ext.pyc_purged": "Python 바이트코드 {n}개를 지웠습니다({what}, {path}): 패키지의 .py 를 직접 실행하면 생깁니다. 검사에 넣지 않고 설치하지도 않습니다",
+  "aib.ext.pyc_left": "바이트코드를 지울 수 없습니다({what}): 활성화하지 않습니다. 직접 지운 뒤 다시 시도하세요",
   "aib.ext.data_has_code": "데이터 전용 확장에는 프로그램 파일을 넣을 수 없습니다: {what}",
   "aib.ext.needs_trust": "{kind} 는 프로그램을 실행합니다: 신뢰하는 키의 서명이 필요합니다. 출처를 믿는다면 --allow-unsigned 를 붙이세요",
   "aib.ext.installed": "{kind} {name} {version} 설치함 ⇒ {path}",

@@ -2715,6 +2715,8 @@
   "aib.ext.no_requires": "the manifest does not say which aib it needs (requires_aib)",
   "aib.ext.too_old": "this extension needs aib {need} or newer; this machine has {have}: run aib update first",
   "aib.ext.not_intact": "files do not match the manifest (extra {extra}, missing {missing}, changed {changed}): not installing",
+  "aib.ext.pyc_purged": "Removed {n} Python bytecode item(s) ({what}, in {path}): they appear when a .py in the package is run directly; not counted in the check and never installed",
+  "aib.ext.pyc_left": "Could not remove bytecode ({what}): not enabling; delete it by hand and try again",
   "aib.ext.data_has_code": "a data-only extension must not contain program files: {what}",
   "aib.ext.needs_trust": "a {kind} runs programs: it needs a signature from a trusted key; if you trust the source, add --allow-unsigned",
   "aib.ext.installed": "installed {kind} {name} {version} ⇒ {path}",
