@@ -71,7 +71,7 @@ class Prepare(unittest.TestCase):
         inst = (REPO.parent / "install.sh").read_text(encoding="utf-8")
         i, j = inst.find('"$abin" init'), inst.find('"$abin" chat prepare')
         self.assertTrue(0 < i < j, "install.sh 要在 aib init 之後 chat prepare")
-        self.assertIn('note+=("全球對談的 nostr-sdk 沒裝成', inst)
+        self.assertIn('note+=("線上對話的 nostr-sdk 沒裝成', inst)
         cf = (REPO / "src" / "cockpit" / "cockpit-full.sh").read_text(encoding="utf-8")
         self.assertRegex(cf, re.compile(r'chat_bridge\.py" prepare --keys-only --quiet .*&'))
 
