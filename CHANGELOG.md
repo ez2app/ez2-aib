@@ -4,6 +4,11 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.12
+
+- **Bundled extensions install themselves**: the free signed extensions that ship with aib are installed and registered with Claude Code during install, `aib init` and `aib update`.
+- **Global chat receipts no longer get dropped**: the sender now records a message as sent before sending it, so a receipt that arrives before the relay's confirmation is no longer mistaken for an impostor.
+
 ## 0.1.11
 
 - **Memory survives moving the vault**: the memory index stores each note's id and a path relative to the vault instead of an absolute path, and looks the note up again when reading; old indexes still work. If a note cannot be found it now says so instead of silently bringing back an empty note. Persona cards are found the same way after the vault moves.
