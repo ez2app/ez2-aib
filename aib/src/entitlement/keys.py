@@ -15,7 +15,11 @@ is listed (tools/oss/export_aib.py --public).
 # 10-08(the maintainer 同意):草稿簽章換成真的公鑰驗證,之後授權模組可以開源。私鑰只在簽發的人手上。
 TRUSTED_PUBLIC_KEYS: tuple = (
     # "ed25519:<64 hex>",   ← tools/license/aib-license.py pubkey 印出的那一行
-    "ed25519:90e5afdcd8a5ed6fc71a151b329c17fb6a911c19c1c4e035221accee0c953be5",   # the maintainer 10-09 keygen(發證主鑰)
+    # 10-16 the maintainer:兩把。簽發平常走 ssh 到 Mac mini 用主鑰;MacBook Pro 那把是 mini 掛掉時的備援;
+    #   MacBook Air 13 不另產鑰。私鑰不出那台;哪台遺失只撤那一行。改這份清單要 the maintainer 點頭
+    #   (aib/tests/test-license-trusted-keys-pin-977e3-1016.py 釘著,多一把、少一把、改一個字都會紅)。
+    "ed25519:90e5afdcd8a5ed6fc71a151b329c17fb6a911c19c1c4e035221accee0c953be5",   # 主鑰:Mac mini M4(10-09 keygen)
+    "ed25519:cb973123600961450410fc8471d833126ffcc1d97843378ddd639934faf15a3e",   # 備援:MacBook Pro 16(10-16 keygen)
 )
 # 10-09:私有開發倉照舊 True —— 約 30 支測試用草稿簽章的授權開付費功能。公開版(使用者實際裝的那一份)
 #   由 tools/oss/export_aib.py 匯出時改成 False,只認上面那把鑰匙簽的授權。
