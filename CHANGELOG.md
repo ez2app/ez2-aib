@@ -9,6 +9,8 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 - **Online chat (renamed from global chat) asks once before going online**: the first time it is turned on, aib asks whether to connect to public relays and remembers the answer; saying no is remembered like `aib chat off`. When nobody can answer (non-interactive runs, the installer), it stays offline.
 - **Friends only**: messages from strangers are refused with a reason (exit code 2). `aib chat friend add / remove` and `aib chat friends` manage the list.
 - **Older versions keep working**: the message header still uses the old tag when sending, so 0.1.12 and earlier can read it; both old and new tags are accepted when reading.
+- **New vault folders can carry their own route**: `folder-add --route-key <key>` registers a route for a new folder (permissions inherited from the nearest parent route, never widened), so `aib newproj`, binding and `aib memory write` can use it; `aib newproj --folder` also accepts a folder title.
+- **`aib test --changed` no longer crashes** when a helper module is missing; it says the selection could not be measured (exit code 3).
 
 ## 0.1.12
 
