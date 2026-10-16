@@ -4534,5 +4534,6 @@
   "aib.chat.state_asleep": "⚫ 休止",
   "aib.chat.state_unknown": "❓ 不明",
   "aib.chat.help.share": "在席状況を誰にどこまで共有するか(off / online / status。--default で既定)",
-  "aib.chat.help.world": "友だちが共有した在席状況(艦長室のワールドタブは --json を読む)"
+  "aib.chat.help.world": "友だちが共有した在席状況(艦長室のワールドタブは --json を読む)",
+  "aib.chat.share_set": "設定しました:{owner} ⇒ {level}(友だち / 自分の機器でなければ送りません)"
 }

@@ -4534,5 +4534,6 @@
   "aib.chat.state_asleep": "⚫ 휴면",
   "aib.chat.state_unknown": "❓ 알 수 없음",
   "aib.chat.help.share": "누구에게 접속 상태를 얼마나 공유할지(off / online / status, --default로 기본값)",
-  "aib.chat.help.world": "친구가 공유한 접속 상태(함장실 월드 탭은 --json을 읽음)"
+  "aib.chat.help.world": "친구가 공유한 접속 상태(함장실 월드 탭은 --json을 읽음)",
+  "aib.chat.share_set": "설정했습니다: {owner} ⇒ {level}(친구 / 내 기기가 아니면 보내지 않음)"
 }

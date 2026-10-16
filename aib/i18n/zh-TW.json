@@ -4534,5 +4534,6 @@
   "aib.chat.state_asleep": "⚫ 睡著",
   "aib.chat.state_unknown": "❓ 不明",
   "aib.chat.help.share": "分享在線狀態給誰、分享多少(off / online / status;--default 改預設)",
-  "aib.chat.help.world": "好友分享來的在線狀態(艦長室世界分頁讀 --json)"
+  "aib.chat.help.world": "好友分享來的在線狀態(艦長室世界分頁讀 --json)",
+  "aib.chat.share_set": "已設定:{owner} ⇒ {level}(對方不是好友 / 我的機器時一律不送)"
 }

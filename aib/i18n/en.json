@@ -4534,5 +4534,6 @@
   "aib.chat.state_asleep": "⚫ asleep",
   "aib.chat.state_unknown": "❓ unknown",
   "aib.chat.help.share": "who sees your online status and how much (off / online / status; --default sets the default)",
-  "aib.chat.help.world": "online status shared by friends (the captain room's world tab reads --json)"
+  "aib.chat.help.world": "online status shared by friends (the captain room's world tab reads --json)",
+  "aib.chat.share_set": "Set: {owner} ⇒ {level} (nothing is sent unless they are a friend or one of your machines)"
 }

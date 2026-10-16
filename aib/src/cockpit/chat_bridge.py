@@ -890,6 +890,14 @@ def cmd_share(a, env, out):
     if a.json:
         out.write(json.dumps(pl, ensure_ascii=False) + "\n")
         return 0
+    if a.who or a.default:                  # 有改 ⇒ 只回這一筆(@74e8b 22:56:之前會印整份名單,看起來像改到別人)
+        if a.default:
+            out.write(T("share_default", level=T("share_" + pl["default"])) + "\n")
+        if a.who:
+            import chat_roster as CR
+            o = CR.friend_owner(a.who)
+            out.write(T("share_set", owner=o, level=T("share_" + CR.share_level(o, env))) + "\n")
+        return 0
     out.write(T("share_default", level=T("share_" + pl["default"])) + "\n")
     for o, lvl in pl["peers"].items():
         out.write(T("share_row", level=T("share_" + lvl), owner=o) + "\n")

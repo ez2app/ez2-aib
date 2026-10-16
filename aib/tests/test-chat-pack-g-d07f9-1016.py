@@ -53,6 +53,15 @@ def js(r):
     return json.loads(r.stdout)
 
 
+class Dict(unittest.TestCase):
+    def test_g0_dicts_load(self):
+        """四語字典要讀得起來(10-16 22:5x:一個空字串值讓整本字典讀不起來,所有訊息都變成鍵名)。"""
+        import i18n_lib
+        for lang in ("zh-TW", "en", "ja", "ko"):
+            d = i18n_lib.load_dict(lang, i18n_dir=str(REPO / "i18n"))
+            self.assertIn("aib.chat.world_none", d, lang)
+
+
 class Core(unittest.TestCase):
     def setUp(self):
         self.b = SB.Box()
@@ -81,7 +90,11 @@ class Core(unittest.TestCase):
         b.cli("mine", "add", P[2])
         pl = js(b.cli("share", "--json"))
         self.assertEqual((pl["default"], pl["peers"]), ("online", {P[2]: "status", P[0]: "online", P[1]: "online"}))
-        self.assertEqual(b.cli("share", P[1], "off").returncode, 0)
+        r = b.cli("share", P[1], "off")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.strip().count("\n"), 0, "改一位只回那一位:" + r.stdout)
+        self.assertIn(P[1], r.stdout)
+        self.assertNotIn("aib.chat.", r.stdout, "字典鍵沒翻到")
         self.assertEqual(b.cli("share", "--default", "status").returncode, 0)
         pl = js(b.cli("share", "--json"))
         self.assertEqual(pl["peers"], {P[2]: "status", P[0]: "status", P[1]: "off"})
