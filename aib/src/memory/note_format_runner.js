@@ -60,7 +60,10 @@ function main() {
 
   // 分類身份:查得到才算數。categoryFallbackUsed=true 代表 registry 裡沒登記這條路,
   // category_uid 是 fallbackCategoryUid() 依 routeKey 機械造出來的字——python 側閘一擋。
-  const category = resolver.resolveRouteCategory(route, {
+  // 10-16 Vault 自掛的路由(route_register.vault_routes,帶 inheritsFrom):分類沿用上層那條契約路由,
+  // 跟權限同一個規則;筆記的 routeKey 還是自己的。沒有 inheritsFrom ⇒ 照舊用自己的 routeKey 查。
+  const categoryRoute = route.inheritsFrom ? Object.assign({}, route, { routeKey: route.inheritsFrom }) : route;
+  const category = resolver.resolveRouteCategory(categoryRoute, {
     registryPath: req.category_registry_path || undefined,
   });
 
