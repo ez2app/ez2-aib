@@ -108,8 +108,8 @@ class SendWait(Base):
         self.assertIn("931e/8f366", res["detail"])
         rec = outbox(op="resolve")
         del rec["content"]
-        res, _, _ = self.send(steps("refused", refused={"detail": "對方還沒開全球對談"}), rec=rec)
-        self.assertEqual((res["rc"], res["detail"]), (2, "對方還沒開全球對談"))
+        res, _, _ = self.send(steps("refused", refused={"detail": "對方還沒開線上對話"}), rec=rec)
+        self.assertEqual((res["rc"], res["detail"]), (2, "對方還沒開線上對話"))
 
     def test_s8_bad_record_writes_nothing(self):
         G.write_heartbeat(self.root)
