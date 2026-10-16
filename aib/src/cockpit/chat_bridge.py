@@ -944,7 +944,7 @@ def cmd_world(a, env, out):
         out.write(T("world_none") + "\n")
     for c in pl["cabins"]:
         out.write(T("world_cabin", name=c.get("display_name") or "-", country=c.get("country") or "-", cabin=c["cabin"],
-                    fresh=T("world_fresh" if c["fresh"] else "world_stale")) + "\n")
+                    fresh="" if c["fresh"] else T("world_stale")) + "\n")
         for x in c["seats"]:
             out.write(T("world_seat", seat=x["seat"], name=x.get("name") or "-", state=T("state_" + x["state"]),
                         now=x.get("now") or "") + "\n")

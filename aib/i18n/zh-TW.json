@@ -4526,7 +4526,6 @@
   "aib.chat.profile_bad_share": "分享等級只能是 off / online / status",
   "aib.chat.world_none": "還沒有好友分享在線狀態給你。",
   "aib.chat.world_cabin": "{name}({country})艙 {cabin}  {fresh}",
-  "aib.chat.world_fresh": "",
   "aib.chat.world_stale": "(40 分鐘沒更新,狀態不明)",
   "aib.chat.world_seat": "  @{seat} {name}  {state}  {now}",
   "aib.chat.state_online": "🟢 在線",

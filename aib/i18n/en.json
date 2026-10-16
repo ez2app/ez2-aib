@@ -4526,7 +4526,6 @@
   "aib.chat.profile_bad_share": "Sharing level must be off / online / status",
   "aib.chat.world_none": "No friend is sharing their online status with you yet.",
   "aib.chat.world_cabin": "{name} ({country}) cabin {cabin}  {fresh}",
-  "aib.chat.world_fresh": "",
   "aib.chat.world_stale": "(no update for 40 minutes; status unknown)",
   "aib.chat.world_seat": "  @{seat} {name}  {state}  {now}",
   "aib.chat.state_online": "🟢 online",

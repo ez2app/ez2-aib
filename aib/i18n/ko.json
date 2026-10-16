@@ -4526,7 +4526,6 @@
   "aib.chat.profile_bad_share": "공유 단계는 off / online / status만 가능",
   "aib.chat.world_none": "아직 접속 상태를 공유한 친구가 없습니다.",
   "aib.chat.world_cabin": "{name}({country}) 캐빈 {cabin}  {fresh}",
-  "aib.chat.world_fresh": "",
   "aib.chat.world_stale": "(40분간 갱신 없음, 상태 모름)",
   "aib.chat.world_seat": "  @{seat} {name}  {state}  {now}",
   "aib.chat.state_online": "🟢 접속 중",

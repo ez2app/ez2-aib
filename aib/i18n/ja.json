@@ -4526,7 +4526,6 @@
   "aib.chat.profile_bad_share": "共有レベルは off / online / status のみ",
   "aib.chat.world_none": "まだ在席状況を共有している友だちはいません。",
   "aib.chat.world_cabin": "{name}({country})キャビン {cabin}  {fresh}",
-  "aib.chat.world_fresh": "",
   "aib.chat.world_stale": "(40 分更新なし、状態不明)",
   "aib.chat.world_seat": "  @{seat} {name}  {state}  {now}",
   "aib.chat.state_online": "🟢 在席",
