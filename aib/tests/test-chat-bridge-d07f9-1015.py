@@ -122,7 +122,7 @@ class Basics(Base):
         self.assertEqual(rec["venv"], "missing")
         r = subprocess.run([sys.executable, str(BRIDGE), "run"], capture_output=True, text=True, env=self.b.env(), timeout=20)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("全球對談已關", r.stdout)
+        self.assertIn("線上對話已關", r.stdout)
 
     def test_c2_on_off_switch(self):
         r = self.b.cli("on", "--no-venv", "--name", "Tester", "--country", "TW")
