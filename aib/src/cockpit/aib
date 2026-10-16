@@ -372,6 +372,11 @@ if [ "${1:-}" = "bindme" ]; then
   export PYTHONDONTWRITEBYTECODE=1 AIB_BINDME_PROG="aib bindme"
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/identity/bindme.py" "$@"
 fi
+# 10-16 範圍外導引(the maintainer):aib who-owns 查誰負責(人格 / 專案 / 第二大腦全文),aib scope 寫卡的負責範圍。
+if [ "${1:-}" = "who-owns" ] || [ "${1:-}" = "scope" ]; then
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/identity/who_owns.py" "$@"
+fi
 
 # 10-10 a seat(the maintainer「4 件都做」):機器健康的三個小指令,只讀或只動自己的狀態檔,不進席位、不碰 tmux。
 #   aib top [--seconds N]        誰在吃這台機器(CPU 前幾名 + 每秒新開程式 + 誰在開)
