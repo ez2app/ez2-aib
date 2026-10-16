@@ -1,0 +1,9 @@
+{
+  "id": "ez2-uid-display",
+  "name": "Ez2 UID Display",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Show folder and note titles instead of uid names in the file explorer and tab headers of an Ez2 uid-layout vault. Display only: never renames or writes files.",
+  "author": "Ez2",
+  "isDesktopOnly": true
+}

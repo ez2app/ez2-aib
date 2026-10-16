@@ -9,6 +9,7 @@ Each folder is one extension. Install it with `aib ext install extensions/<name>
 | `aib-seat-hooks` | mod (Codex, Antigravity) | writes the seat's identity into the context when a seat opens and on every turn |
 | `ez2-page-oneshot` | skill | build or refresh a whole ez2.page from one sentence (drafts only; you publish) |
 | `aib-cabin-regroup` | skill | pull the seats of an older cabin into the cabin you are in |
+| `obsidian-uid-display` | Obsidian plugin | show folder and note titles instead of uid names in an Ez2 uid-layout vault (display only; copy it into the vault, see its README) |
 
 The extensions that run code (mods and skills) are not signed yet. Until they are, install them with `--allow-unsigned`.
 
