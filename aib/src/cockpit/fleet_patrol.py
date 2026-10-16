@@ -936,6 +936,9 @@ def scan(hub):
         unverified = handoff_unverified_line(code, pct, source)
         if unverified:
             attention = unverified + (("  " + attention) if attention else "")
+        no_human = human_words_unavailable_line(code)
+        if no_human:
+            attention = (attention + "  " + no_human) if attention else no_human
         shared = _shared_conversation(rec, _procs)
         if shared:
             action = "needs_human" if action not in ("needs_human", "never_press") else action
@@ -957,6 +960,7 @@ def scan(hub):
                       "attention": attention,
                       "shared_conversation": shared,
                       "handoff_unverified": bool(unverified),
+                      "human_words_unavailable": bool(no_human),
                       "dm_queue": qrows})
     return seats
 
@@ -986,6 +990,24 @@ def handoff_unverified_line(code, pct, source):
         return ""
     return "⚠ 85%% 交接未完成:用量 %d%% ≥ %d%%,本輪 aib handoff verify 沒過%s" % (
         pct, floor, "(Stop 擋滿已放行)" if gave else "")
+
+
+def human_words_unavailable_line(code):
+    """唯讀(10-16 維護者裁「不再靜默」):這一席最後一張整理收據寫 human_words = unavailable(缺 human_filter,
+    開源倉等私倉匯出)⇒ 一行提醒:人格精煉讀不到真人原話。沒收據 / ok / 讀不到 ⇒ ""。"""
+    if not code:
+        return ""
+    try:
+        _mem = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "memory"))
+        if _mem not in sys.path:
+            sys.path.insert(0, _mem)
+        import memory_tidy
+        rec = memory_tidy.last_receipt(code) or {}
+    except Exception:  # noqa: BLE001
+        return ""
+    if not str(rec.get("human_words") or "").startswith("unavailable"):
+        return ""
+    return "⚠ 人格精煉讀不到真人原話(缺 human_filter,等私倉匯出)"
 
 
 def seat_gate(seats, purpose="capacity"):
