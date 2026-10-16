@@ -777,6 +777,41 @@ def cmd_selftest(a, env, out):
     return 0 if not bad else 1
 
 
+def _passphrase(a, twice):
+    """通關密語:--passphrase-stdin 讀一行(腳本用);否則要終端機,人親手輸入(AI 席跑會停在這裡、照實說要人來)。
+    不從命令列參數拿(會進 shell 歷史與行程列表)。"""
+    if a.passphrase_stdin:
+        return sys.stdin.readline().rstrip("\n")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+    import getpass
+    first = getpass.getpass(T("backup_ask"))
+    if twice and getpass.getpass(T("backup_ask_again")) != first:
+        return ""
+    return first
+
+
+def cmd_backup(a, env, out):
+    import chat_backup as CB
+    pw = _passphrase(a, twice=a.cmd == "backup")
+    if pw is None:
+        out.write(T("backup_need_tty") + "\n")
+        return 2
+    try:
+        if a.cmd == "backup":
+            n = CB.backup(a.file, pw, env)
+            out.write(T("backup_done", n=n, file=a.file) + "\n")
+        else:
+            r = CB.restore(a.file, pw, env, replace=a.replace, chat_on=is_enabled(env))
+            out.write(T("restore_done_" + r["mode"], n=r["keys"], owner=r["owner"]) + "\n")
+    except CB.BackupError as err:
+        out.write(T("backup_err_" + str(err), n=CB.MIN_PASS) + "\n")
+        return 2
+    finally:
+        pw = None
+    return 0
+
+
 def cmd_status(a, env, out):
     rec = status_record(env)
     if a.json:
@@ -847,6 +882,12 @@ def main(argv=None, env=None, out=sys.stdout):
     mn.add_argument("--json", action="store_true")
     fs = sub.add_parser("friends", help=T("help.friends"))
     fs.add_argument("--json", action="store_true")
+    for name in ("backup", "restore"):
+        bk = sub.add_parser(name, help=T("help." + name))
+        bk.add_argument("file")
+        bk.add_argument("--passphrase-stdin", action="store_true", help=T("help.passphrase_stdin"))
+        if name == "restore":
+            bk.add_argument("--replace", action="store_true", help=T("help.restore_replace"))
     stt = sub.add_parser("selftest", help=T("help.selftest"))
     stt.add_argument("--json", action="store_true")
     rl = sub.add_parser("relays", help=T("help.relays"))
@@ -885,6 +926,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_auto(a, env, out)
     if a.cmd == "relays":
         return cmd_relays(a, env, out)
+    if a.cmd in ("backup", "restore"):
+        return cmd_backup(a, env, out)
     if a.cmd == "selftest":
         return cmd_selftest(a, env, out)
     if a.cmd == "refused":
