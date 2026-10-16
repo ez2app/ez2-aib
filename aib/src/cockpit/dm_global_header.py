@@ -9,7 +9,7 @@ Andy 10-15 15:4x:「所有用戶要有顯示名稱,若有就預設只顯示 顯�
     Andy(線上·已驗證) >> IP:100.114.152.121/931e/第二艦長@8f366 10-15 14:30(台北時間)
     Andy(線上·未驗證·同名) >> …
 
-  標記 10-16 14:5x 前是「全球」(Andy「全球對談 改成,開通線上對話」;改抬頭標記也點頭):組只用新的,parse 新舊都認。
+  標記要改成「線上」(Andy 10-16 14:4x–14:5x);為了跟 0.1.12 以前相容,**組抬頭暫用舊的「全球」**、parse 新舊都認(見 EMIT_NEW_TAG)。
 
   - 名字由 dm_global_files.queue_fields() 決定(顯示名稱 → 人格名 → npub 前 12 碼),這裡只再驗一次:
     不合 clean_display_name 的一律拒(ValueError),不在抬頭裡出現 `>>`、`/`、`@`、括號。
@@ -120,7 +120,7 @@ def sender_side(shown, verified, same_name=False, lang=DEFAULT_LANG, country=Non
     if name is None or name != shown:
         raise ValueError("寄件方名字不合格:%r" % (shown,))
     L = LABELS[_lang(lang)]
-    tags = [L["global"]]
+    tags = [L["global"] if EMIT_NEW_TAG else LEGACY_GLOBAL[_lang(lang)]]
     if country is not None:
         cn = country_name(country, lang)
         if cn is None:
@@ -137,8 +137,12 @@ def build(sender, receiver_side, when):
     return sender + ARROW + receiver_side + " " + when
 
 
-# 10-16 14:5x 前的標記(「全球」等):佇列、框裡、歷史裡的舊抬頭還是這樣寫 ⇒ parse 新舊都認,組抬頭只用新的。
+# 10-16 14:5x 前的標記(「全球」等)。parse 新舊都認。
+# **組抬頭暫時仍用舊標記**(@abb89 14:5x 相容性要求,實測過):0.1.12 以前的解析器不認「線上·」⇒ 同一台機器升級後
+# 還沒重開的常駐行程(bot 信箱等)會把新抬頭的全球來信當成不是 dm。等一兩版大家都升級了,把 EMIT_NEW_TAG 改 True。
+# 外框說明行(〔線上來信…)舊解析器不看,已用新字。
 LEGACY_GLOBAL = {"zh-TW": "全球", "en": "Global", "ja": "グローバル", "ko": "글로벌"}
+EMIT_NEW_TAG = False
 
 
 def _tag_tables():
