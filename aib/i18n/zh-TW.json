@@ -4392,5 +4392,11 @@
   "aib.vault_convert.help_folder_parent": "父資料夾的 folderId;不填 = 放在庫根",
   "aib.vault_convert.help_folder_retire": "退役資料夾:備份到庫外後,從索引移除並刪除",
   "aib.vault_convert.help_folder_backup": "備份位置(必須在 Vault 外)",
-  "aib.vault_convert.help_folder_include_notes": "資料夾裡的筆記也一起退役(仍會檢查沒有連結指向它們)"
+  "aib.vault_convert.help_folder_include_notes": "資料夾裡的筆記也一起退役(仍會檢查沒有連結指向它們)",
+  "aib.persona_main.none": "主人格:沒登記(登記:aib persona main set <卡號>)",
+  "aib.persona_main.show": "主人格:{name}({uid})",
+  "aib.persona_main.unknown": "卡號 {uid} 不在人格卡登記表,沒改",
+  "aib.persona_main.set": "主人格登記為 {name}({uid})",
+  "aib.persona_main.cleared": "主人格登記已清除(原本:{uid})",
+  "aib.persona_main.usage": "用法:aib persona main [show | set <卡號> | clear]"
 }

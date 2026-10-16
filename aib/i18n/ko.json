@@ -4392,5 +4392,11 @@
   "aib.vault_convert.help_folder_parent": "상위 폴더의 folderId, 비우면 Vault 최상위",
   "aib.vault_convert.help_folder_retire": "폴더 폐기: Vault 밖에 백업한 뒤 색인에서 빼고 삭제",
   "aib.vault_convert.help_folder_backup": "백업 위치(Vault 밖이어야 함)",
-  "aib.vault_convert.help_folder_include_notes": "안의 노트도 함께 폐기(링크가 없는지는 확인함)"
+  "aib.vault_convert.help_folder_include_notes": "안의 노트도 함께 폐기(링크가 없는지는 확인함)",
+  "aib.persona_main.none": "메인 페르소나: 등록 안 됨(등록: aib persona main set <카드 ID>)",
+  "aib.persona_main.show": "메인 페르소나: {name}({uid})",
+  "aib.persona_main.unknown": "카드 {uid}은(는) 페르소나 카드 등록표에 없습니다. 변경하지 않았습니다",
+  "aib.persona_main.set": "메인 페르소나를 {name}({uid})(으)로 등록했습니다",
+  "aib.persona_main.cleared": "메인 페르소나 등록을 해제했습니다(이전: {uid})",
+  "aib.persona_main.usage": "사용법: aib persona main [show | set <카드 ID> | clear]"
 }

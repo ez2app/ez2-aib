@@ -4392,5 +4392,11 @@
   "aib.vault_convert.help_folder_parent": "親フォルダの folderId。空 = Vault 直下",
   "aib.vault_convert.help_folder_retire": "フォルダを廃止:Vault 外にバックアップしてから索引から外して削除する",
   "aib.vault_convert.help_folder_backup": "バックアップ先(Vault の外であること)",
-  "aib.vault_convert.help_folder_include_notes": "中のノートも一緒に廃止する(リンクされていないことは確認する)"
+  "aib.vault_convert.help_folder_include_notes": "中のノートも一緒に廃止する(リンクされていないことは確認する)",
+  "aib.persona_main.none": "メインペルソナ:未登録(登録:aib persona main set <カード ID>)",
+  "aib.persona_main.show": "メインペルソナ:{name}({uid})",
+  "aib.persona_main.unknown": "カード {uid} はペルソナカード登録表にありません。変更していません",
+  "aib.persona_main.set": "メインペルソナを {name}({uid})に登録しました",
+  "aib.persona_main.cleared": "メインペルソナの登録を解除しました(以前:{uid})",
+  "aib.persona_main.usage": "使い方:aib persona main [show | set <カード ID> | clear]"
 }

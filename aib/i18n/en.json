@@ -4392,5 +4392,11 @@
   "aib.vault_convert.help_folder_parent": "folderId of the parent folder; empty = vault root",
   "aib.vault_convert.help_folder_retire": "retire a folder: back it up outside the vault, remove it from the indexes and delete it",
   "aib.vault_convert.help_folder_backup": "backup location (must be outside the vault)",
-  "aib.vault_convert.help_folder_include_notes": "retire the notes inside too (still checks that nothing links to them)"
+  "aib.vault_convert.help_folder_include_notes": "retire the notes inside too (still checks that nothing links to them)",
+  "aib.persona_main.none": "Main persona: not set (to set it: aib persona main set <card id>)",
+  "aib.persona_main.show": "Main persona: {name} ({uid})",
+  "aib.persona_main.unknown": "Card {uid} is not in the persona card registry; nothing changed",
+  "aib.persona_main.set": "Main persona set to {name} ({uid})",
+  "aib.persona_main.cleared": "Main persona cleared (was: {uid})",
+  "aib.persona_main.usage": "Usage: aib persona main [show | set <card id> | clear]"
 }
