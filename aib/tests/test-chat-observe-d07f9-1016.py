@@ -115,7 +115,7 @@ class Observe(unittest.TestCase):
         a, _ = self.boot(AIB_CHAT_OFFLINE_AFTER="2")
         self.relay.__exit__(None, None, None)                          # 中繼站全斷
         self.assertTrue(a.wait_for(lambda: self.worker(a).get("offline") is True, 60), self.worker(a))
-        self.assertIn("全球對談離線", a.cli("status").stdout)
+        self.assertIn("線上對話離線", a.cli("status").stdout)
 
 
 class Knife(unittest.TestCase):

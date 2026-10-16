@@ -632,8 +632,13 @@ def select(repo, changed, rows=None, use_reverse=True, idents=None):
 
     # ── ③ import ──────────────────────────────────────────────────────
     if scanned:
+        # 10-16 @abb89:import 要自己一段 —— 跟呼叫同一個 try 時,模組不在 ⇒ 下面 except cs.… 先撞 UnboundLocalError
         try:
             import consumer_scope as cs
+        except Exception as err:  # noqa: BLE001
+            raise Unmeasurable("consumer_scope import: %s: %s"
+                               % (type(err).__name__, err))
+        try:
             hits3 = cs.import_consumers(repo, scanned, tests_all)
         except cs.Unmeasurable as err:
             raise Unmeasurable("import_consumers: %s" % err)

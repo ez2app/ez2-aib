@@ -257,8 +257,8 @@ def reconcile_contract_spec(primary, env=None, warn=True):
     reg = env.get("EZ2_ROUTE_REGISTRY")
     if not reg or not primary or reg == primary:
         return primary
-    keys_p = contract_route_keys(load_contract(primary))
-    keys_r = contract_route_keys(load_contract(reg))
+    keys_p = contract_route_keys(load_contract(primary, with_vault_routes=False))
+    keys_r = contract_route_keys(load_contract(reg, with_vault_routes=False))
     if keys_r is None or keys_p == keys_r:
         return primary
     if keys_p is None:
@@ -450,16 +450,60 @@ def vault_index_folder(route_key, root=None):
     return None
 
 
-def load_contract(path=None):
+def load_contract(path=None, with_vault_routes=True):
     """讀 ez2-ai 的路由中心契約(唯讀)。讀不到回 None,由呼叫端決定怎麼辦。
-    來源形狀見 read_contract_bytes(檔案路徑或 git: 規格)。"""
+    來源形狀見 read_contract_bytes(檔案路徑或 git: 規格)。
+    with_vault_routes:併入 Vault 自掛的路由(vault_routes;10-16 folder-add --route-key)。
+    全套件讀契約都走這一支,所以 newproj / 綁定 / 投影 / aib memory write 看到的是同一份。"""
     raw = read_contract_bytes(path)
     if raw is None:
         return None
     try:
-        return json.loads(raw.decode("utf-8"))
+        contract = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return None
+    if with_vault_routes:
+        extra = vault_routes(contract)
+        if extra:
+            contract["routes"] = list(contract["routes"]) + extra
+    return contract
+
+
+def vault_routes(contract, root=None):
+    """uid 版面 Vault 自掛的路由(route-key-index 裡帶 inheritsFrom 的條目)⇒ 契約形狀的條目清單。
+    權限一律照抄 inheritsFrom 那條契約路由(dataLevel / aiReadable / aiWritable),不另給、不放寬;
+    inheritsFrom 不在契約、代號跟契約撞、形狀不合、路徑不安全、同代號第二筆 ⇒ 略過(契約永遠優先)。
+    沒設 EZ2_VAULT_DIR / 不是 uid 版面 / 索引讀不到 ⇒ []。"""
+    routes = contract.get("routes") if isinstance(contract, dict) else None
+    root = root or vault_root_guess()
+    if not isinstance(routes, list) or not root or not vault_is_uid_layout(root):
+        return []
+    try:
+        with open(os.path.join(root, ".ez2", "index", "route-key-index.json"), encoding="utf-8") as fh:
+            items = json.load(fh).get("items") or []
+        with open(os.path.join(root, ".ez2", "display", "labels.json"), encoding="utf-8") as fh:
+            labels = json.load(fh).get("folders") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    base = {r.get("routeKey"): r for r in routes if isinstance(r, dict)}
+    out, seen = [], set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        key, parent, folder = str(it.get("routeKey") or ""), it.get("inheritsFrom"), it.get("folderPath")
+        if (not parent or parent not in base or key in base or key in seen or not ROUTE_KEY_RE.fullmatch(key)
+                or len(key) > ROUTE_KEY_MAX or _unsafe_folder(folder)):
+            continue
+        seen.add(key)
+        p = base[parent]
+        title = ((labels.get(it.get("folderId")) or {}) if isinstance(labels, dict) else {}).get("title")
+        entry = {"routeKey": key, "module": p.get("module"), "folder": folder, "dataLevel": p.get("dataLevel"),
+                 "aiReadable": p.get("aiReadable"), "aiWritable": p.get("aiWritable"),
+                 "inheritsFrom": parent, "source": "vault"}
+        if isinstance(title, str) and title.strip():
+            entry["title"] = title.strip()
+        out.append(entry)
+    return out
 
 
 # write_rules 第 7 條:routeKey 只能指向 vault 相對路徑,

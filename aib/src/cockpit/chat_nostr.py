@@ -462,6 +462,8 @@ BACKFILL = 2 * 86400 + 600       # gift wrap 時間戳往回亂數最多 2 天 �
 KEEP = 7 * 86400                 # 去重紀錄保留 7 天
 RESUB_EVERY = 30                 # 秒;席的金鑰有變(新席、封存)就重新訂閱
 RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired")   # read 另走一批一次(1.8)
+# 拒收原因碼(回條 aib-reason 標籤;寄件端 dm-ctl 照碼翻成一句話)。只放碼,不放內文
+REFUSE_REASONS = ("not_friend", "unverified")
 READ_BATCH_S = float(os.environ.get("AIB_CHAT_READ_BATCH") or 30)   # 秒;同一寄件人同一席這段時間內讀的合成一張(第 10 節)
 
 
@@ -617,6 +619,8 @@ class Receiver(object):
             pos = tags.get("aib-queue-pos", "")
             if stage == "queued" and pos.isdigit() and int(pos) > 0:
                 r["pos"] = int(pos)
+            if stage == "refused" and tags.get("aib-reason") in REFUSE_REASONS:
+                r["detail"] = tags["aib-reason"]
             GF.append_receipt(self.root, ref, r)
             audit(self.root, "receipt-in", ref, from_npub, stage)
 
@@ -650,12 +654,20 @@ class Receiver(object):
             if rc == 0 and res["seat"]["npub"] == from_npub:
                 rec["verified"] = True
                 own = (NK.read_map().get("owner") or {}).get("npub")
-                rec["class"] = "own" if parsed["owner"] == own else "stranger"   # 好友名單是第 2 期
+                if parsed["owner"] == own:
+                    rec["class"] = "own"
+                elif CR.is_friend(parsed["owner"]):
+                    rec["class"] = "friend"
                 for k_in, k_out in (("display_name", "display_name"), ("country", "country")):
                     if res.get(k_in):
                         rec[k_out] = res[k_in]
                 if res["seat"].get("name"):
                     rec["persona_name"] = res["seat"]["name"]
+        if rec["class"] == "stranger":
+            # 維護者 10-16 12:1x:加入好友之後才收、才有已讀;不然拒收(不進佇列、不進待審、AI 看不到)
+            why = "not_friend" if rec["verified"] else "unverified"
+            audit(self.root, "in", msgid, from_npub, "refused:" + why)
+            return await self.send_receipt(msgid, "refused", reason=why)
         for k_tag, k in (("aib-priority", "priority"), ("aib-thread", "thread"), ("aib-kind", "kind"),
                          ("aib-lang", "lang"), ("aib-tz", "tz")):
             if tags.get(k_tag):
@@ -674,9 +686,10 @@ class Receiver(object):
             audit(self.root, "in", msgid, from_npub, "refused")
             await self.send_receipt(msgid, "refused")
 
-    async def send_receipt(self, msgid, stage, pos=None, refs=None):
+    async def send_receipt(self, msgid, stage, pos=None, refs=None, reason=None):
         """回條寄回原寄件席(第 6.2 節)。只回 aib 寄件人(一般 Nostr App 收到一則看不懂的字沒用)。
-        refs:已讀一批一次時,同一張回條帶的全部 msgid(第一個 = msgid)。"""
+        refs:已讀一批一次時,同一張回條帶的全部 msgid(第一個 = msgid)。
+        reason:拒收的原因碼(REFUSE_REASONS),寄件端照碼顯示給人看;不帶任何內文。"""
         rec = self.led.received(msgid)
         if not rec or not rec.get("aib") or (stage not in RECEIPT_STAGES_OUT and stage != "read"):
             return False
@@ -687,6 +700,8 @@ class Receiver(object):
             [["aib-ref", r] for r in (refs or [msgid])]
         if pos:
             t.append(["aib-queue-pos", str(pos)])
+        if reason in REFUSE_REASONS:
+            t.append(["aib-reason", reason])
         keys = _keys(rec["key"])
         gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(rec["from"]), _receipt_text(stage, rec.get("lang")),
                                       rumor_extra_tags=[N.Tag.parse(x) for x in t])
