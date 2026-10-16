@@ -4379,5 +4379,18 @@
   "aib.scope.help.field_domains": "ドメイン、カンマ区切り(www. と http は外す)",
   "aib.scope.help.field_keywords": "キーワード、カンマ区切り",
   "aib.scope.help.field_aliases": "別名、カンマ区切り",
-  "aib.scope.help.replace": "追加ではなく項目ごと置き換える"
+  "aib.scope.help.replace": "追加ではなく項目ごと置き換える",
+  "aib.vault_convert.err_folder_title_bad": "このフォルダ名は使えません:「{title}」(空・/ や \\ を含む・. で始まる名前は不可)",
+  "aib.vault_convert.err_folder_unknown": "フォルダ索引に {folder} がありません",
+  "aib.vault_convert.err_folder_id_taken": "フォルダ ID {folder} は使用済みです。別の名前にしてください",
+  "aib.vault_convert.err_folder_is_route": "このフォルダ(またはサブフォルダ)はシステムの書き込み先なので廃止できません:{routes}",
+  "aib.vault_convert.err_folder_has_files": "フォルダにノート以外のファイルが {count} 件あります。先に移動してください:{files}",
+  "aib.vault_convert.err_folder_has_notes": "フォルダにノートが {count} 件あります。一緒に廃止するなら --include-notes を付けてください:{files}",
+  "aib.vault_convert.err_notes_linked": "これらのノートへのリンクが {count} 件残っています。先にリンクを直してください:{links}",
+  "aib.vault_convert.err_backup_required": "廃止するとフォルダが削除されます。--backup-dir で Vault 外のバックアップ先を指定してください",
+  "aib.vault_convert.help_folder_add": "フォルダを追加してフォルダ索引に登録する",
+  "aib.vault_convert.help_folder_parent": "親フォルダの folderId。空 = Vault 直下",
+  "aib.vault_convert.help_folder_retire": "フォルダを廃止:Vault 外にバックアップしてから索引から外して削除する",
+  "aib.vault_convert.help_folder_backup": "バックアップ先(Vault の外であること)",
+  "aib.vault_convert.help_folder_include_notes": "中のノートも一緒に廃止する(リンクされていないことは確認する)"
 }

@@ -4379,5 +4379,18 @@
   "aib.scope.help.field_domains": "網域,逗號分隔(去掉 www. 與 http)",
   "aib.scope.help.field_keywords": "關鍵字,逗號分隔",
   "aib.scope.help.field_aliases": "別名,逗號分隔",
-  "aib.scope.help.replace": "整欄換掉,不是加進去"
+  "aib.scope.help.replace": "整欄換掉,不是加進去",
+  "aib.vault_convert.err_folder_title_bad": "資料夾名稱不能用:「{title}」(不能空白、不能含 / 或 \\、不能用 . 開頭)",
+  "aib.vault_convert.err_folder_unknown": "資料夾索引裡沒有 {folder}",
+  "aib.vault_convert.err_folder_id_taken": "資料夾編號 {folder} 已被占用;請換個名稱",
+  "aib.vault_convert.err_folder_is_route": "這個資料夾(或它的子夾)是系統寫入點,不能退役:{routes}",
+  "aib.vault_convert.err_folder_has_files": "資料夾裡有 {count} 個不是筆記的檔案,先移走再退役:{files}",
+  "aib.vault_convert.err_folder_has_notes": "資料夾裡有 {count} 篇筆記;確定一起退役請加 --include-notes:{files}",
+  "aib.vault_convert.err_notes_linked": "有 {count} 處連到這些筆記,先改掉連結再退役:{links}",
+  "aib.vault_convert.err_backup_required": "退役會刪資料夾,請用 --backup-dir 指定 Vault 外的備份位置",
+  "aib.vault_convert.help_folder_add": "新增資料夾並登記到資料夾索引",
+  "aib.vault_convert.help_folder_parent": "父資料夾的 folderId;不填 = 放在庫根",
+  "aib.vault_convert.help_folder_retire": "退役資料夾:備份到庫外後,從索引移除並刪除",
+  "aib.vault_convert.help_folder_backup": "備份位置(必須在 Vault 外)",
+  "aib.vault_convert.help_folder_include_notes": "資料夾裡的筆記也一起退役(仍會檢查沒有連結指向它們)"
 }

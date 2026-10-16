@@ -4379,5 +4379,18 @@
   "aib.scope.help.field_domains": "domains, comma separated (www. and http are dropped)",
   "aib.scope.help.field_keywords": "keywords, comma separated",
   "aib.scope.help.field_aliases": "aliases, comma separated",
-  "aib.scope.help.replace": "replace the whole field instead of adding"
+  "aib.scope.help.replace": "replace the whole field instead of adding",
+  "aib.vault_convert.err_folder_title_bad": "folder name not allowed: \"{title}\" (not empty, no / or \\, must not start with .)",
+  "aib.vault_convert.err_folder_unknown": "{folder} is not in the folder index",
+  "aib.vault_convert.err_folder_id_taken": "folder id {folder} is already taken; use another name",
+  "aib.vault_convert.err_folder_is_route": "this folder (or a subfolder) is a system write target and cannot be retired: {routes}",
+  "aib.vault_convert.err_folder_has_files": "the folder holds {count} file(s) that are not notes; move them out first: {files}",
+  "aib.vault_convert.err_folder_has_notes": "the folder holds {count} note(s); add --include-notes to retire them too: {files}",
+  "aib.vault_convert.err_notes_linked": "{count} link(s) still point to these notes; change them first: {links}",
+  "aib.vault_convert.err_backup_required": "retiring deletes the folder; give a backup location outside the vault with --backup-dir",
+  "aib.vault_convert.help_folder_add": "add a folder and register it in the folder index",
+  "aib.vault_convert.help_folder_parent": "folderId of the parent folder; empty = vault root",
+  "aib.vault_convert.help_folder_retire": "retire a folder: back it up outside the vault, remove it from the indexes and delete it",
+  "aib.vault_convert.help_folder_backup": "backup location (must be outside the vault)",
+  "aib.vault_convert.help_folder_include_notes": "retire the notes inside too (still checks that nothing links to them)"
 }
