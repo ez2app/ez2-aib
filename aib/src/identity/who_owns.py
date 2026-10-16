@@ -101,6 +101,60 @@ def fold(s) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip().casefold()
 
 
+STOP = {"the", "a", "an", "of", "to", "and", "or", "for", "in", "on", "is", "are", "my", "me", "i", "it", "with"}
+_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+#'-]*|[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]+")
+_CAMEL_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
+
+
+def squash(s) -> str:
+    """去空白、連字號、底線再比:Rich Menu = rich-menu = RichMenu。"""
+    return re.sub(r"[\s_\-]+", "", fold(s))
+
+
+def word_groups(q: str) -> list:
+    """一句話 → 詞組;每組是同一個詞的幾種寫法(10-16 @abb89 報 RichMenu 漏抓):
+    RichMenu → {richmenu, rich menu, rich-menu, rich_menu};大小寫不分;英文常見虛詞與單字元不算;
+    超過 4 字的中日韓長串多半是半句話(沒有斷詞),不拿來當詞(同義詞請寫進卡的 scope_aliases / scope_keywords)。"""
+    out = []
+    for t in _WORD_RE.findall(q or ""):
+        low = t.casefold()
+        if len(low) < 2 or low in STOP:
+            continue
+        if re.match(r"[\u3400-\uffff]", t) and len(t) > 4:
+            continue
+        variants = {low}
+        parts = [x.casefold() for x in _CAMEL_RE.findall(t)] if re.match(r"[A-Za-z0-9]", t) else []
+        if len(parts) > 1:
+            variants |= {" ".join(parts), "-".join(parts), "_".join(parts), "".join(parts)}
+        if variants not in out:
+            out.append(sorted(variants, key=len, reverse=True))
+    return out
+
+
+def doc_match(low: str, groups: list, mode: str = "words"):
+    """全文(已轉小寫)對詞組 ⇒ None 或 (命中幾組, 全部命中?, 拿來找依據行的寫法)。
+    mode="any":網域查詢,中一個就算。mode="words":最具體(最長)的那組一定要中,而且至少中六成。"""
+    if not groups:
+        return None
+    hit = [g for g in groups if any(v in low for v in g)]
+    if not hit:
+        return None
+    if mode == "any":
+        return len(hit), True, [v for g in hit for v in g]
+    key = max(groups, key=lambda g: len(g[0]))
+    if key not in hit or len(hit) * 10 < 6 * len(groups):
+        return None
+    return len(hit), len(hit) == len(groups), list(key)
+
+
+def first_line(text: str, variants: list, start: int = 1):
+    for i, line in enumerate(text.splitlines()[start - 1:], start):
+        low = line.casefold()
+        if any(v in low for v in variants):
+            return i, line
+    return 0, ""
+
+
 def name_tokens(name: str) -> list:
     """卡名拆詞:英數一段、中日韓一段(「清展SEO主管」→ 清展 / seo / 主管),兩字以上才算。"""
     return [t for t in (m.casefold() for m in re.findall(r"[A-Za-z0-9][A-Za-z0-9.+#-]*|[\u3400-\u9fff\uf900-\ufaff]+", name or ""))
@@ -267,7 +321,7 @@ def _scope_line(text: str, key: str, needle: str):
     return 0, ""
 
 
-def match_card(entry: dict, kind: str, q: str, qdomains: list, needles: list):
+def match_card(entry: dict, kind: str, q: str, qdomains: list, groups: list, mode: str = "words"):
     """一張卡 → (分數, 命中欄位, [依據]);沒中 ⇒ None。"""
     hits = []
     src = "card"
@@ -286,11 +340,11 @@ def match_card(entry: dict, kind: str, q: str, qdomains: list, needles: list):
             ln, txt = _scope_line(entry["text"], FM_KEY["sites"], s) if kind == "persona" else (0, s)
             hits.append((SCORE["site"], key("sites"), _ev(src, path, ln, txt or s, key("sites"))))
     for a in sc["aliases"]:
-        if fold(a) and (fold(a) == fold(q) or (len(fold(a)) >= 2 and fold(a) in fold(q))):
+        if fold(a) and (fold(a) == fold(q) or (len(squash(a)) >= 2 and squash(a) in squash(q))):
             ln, txt = _scope_line(entry["text"], FM_KEY["aliases"], a) if kind == "persona" else (0, a)
             hits.append((SCORE["alias"], key("aliases"), _ev(src, path, ln, txt or a, key("aliases"))))
     for k in sc["keywords"]:
-        if fold(k) and fold(k) in fold(q):
+        if fold(k) and len(squash(k)) >= 2 and squash(k) in squash(q):
             ln, txt = _scope_line(entry["text"], FM_KEY["keywords"], k) if kind == "persona" else (0, k)
             hits.append((SCORE["keyword"], key("keywords"), _ev(src, path, ln, txt or k, key("keywords"))))
     names = [entry["name"]] + ([entry["code"]] if entry["code"] else [])
@@ -301,17 +355,18 @@ def match_card(entry: dict, kind: str, q: str, qdomains: list, needles: list):
             hits.append((SCORE["title"], "name", _ev(src, path, 0, n, "name")))
         else:                                   # 一句話裡出現卡名的大半個詞(清展 + SEO ⇒ 清展SEO主管)
             toks = name_tokens(n)
-            got = [t for t in toks if t in fold(q)]
+            got = [t for t in toks if t in fold(q) or t in squash(q)]
             if len(got) >= 2 and len(got) * 2 >= len(toks):
                 hits.append((round(0.6 * len(got) / len(toks), 2), "name", _ev(src, path, 0, n, "name")))
     if entry["text"]:
         body = entry["text"]
         fm = _FM_RE.match(body)
         start = body.count("\n", 0, fm.end()) + 1 if fm else 1
-        for i, line in enumerate(body.splitlines()[start - 1:], start):
-            if any(n.casefold() in line.casefold() for n in needles):
+        got = doc_match("\n".join(body.splitlines()[start - 1:]).casefold(), groups, mode)
+        if got:
+            i, line = first_line(body, got[2], start)
+            if i:
                 hits.append((SCORE["body"], "body", _ev(src, path, i, line, "body")))
-                break
     if not hits:
         return None
     hits.sort(key=lambda h: -h[0])
@@ -324,13 +379,13 @@ def match_card(entry: dict, kind: str, q: str, qdomains: list, needles: list):
     return hits[0][0], hits[0][1], evidence
 
 
-def vault_hits(needles: list, limit: int, skip=()):
-    """Vault 全文:每篇筆記第一個命中行。筆記 frontmatter 有 persona_uid / project_uid 就帶上(反查席位用)。"""
+def vault_hits(groups: list, limit: int, skip=(), mode: str = "words"):
+    """Vault 全文:每篇筆記第一個命中行。筆記 frontmatter 有 persona_uid / project_uid 就帶上(反查席位用)。
+    full = 每一組詞都中(只有這種才拿來建議重開)。"""
     vault = vault_root()
-    if vault is None or not needles:
+    if vault is None or not groups:
         return []
     import card_registry
-    lowered = [n.casefold() for n in needles]
     out = []
     for dp, dn, fn in os.walk(vault):
         dn[:] = sorted(d for d in dn if not d.startswith("."))
@@ -344,19 +399,18 @@ def vault_hits(needles: list, limit: int, skip=()):
                 text = p.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            low = text.casefold()
-            if not any(n in low for n in lowered):
+            got = doc_match(text.casefold(), groups, mode)
+            if not got:
                 continue
             fm = card_registry.parse_frontmatter(text) or {}
-            for i, line in enumerate(text.splitlines(), 1):
-                if any(n in line.casefold() for n in lowered):
-                    rel = str(p.relative_to(vault))
-                    # aib memory 寫的筆記帶 custom.aib.persona_uid / project_uid(誰寫的)
-                    out.append({"uid": fm.get("uid") or p.stem, "name": fm.get("title") or p.stem,
-                                "persona_uid": fm.get("custom.aib.persona_uid") or fm.get("persona_uid") or "",
-                                "project_uid": fm.get("custom.aib.project_uid") or fm.get("project_uid") or "",
-                                "evidence": [_ev("vault", rel, i, line, "body")]})
-                    break
+            i, line = first_line(text, got[2])
+            if i:
+                rel = str(p.relative_to(vault))
+                # aib memory 寫的筆記帶 custom.aib.persona_uid / project_uid(誰寫的)
+                out.append({"uid": fm.get("uid") or p.stem, "name": fm.get("title") or p.stem,
+                            "persona_uid": fm.get("custom.aib.persona_uid") or fm.get("persona_uid") or "",
+                            "project_uid": fm.get("custom.aib.project_uid") or fm.get("project_uid") or "",
+                            "full": got[1], "evidence": [_ev("vault", rel, i, line, "body")]})
             if len(out) >= limit:
                 return out
     return out
@@ -427,13 +481,16 @@ def who_owns(query: str, limit: int = 10) -> dict:
     if not q:
         raise WhoOwnsError(_ui("aib.who_owns.empty_query"))
     qdomains = domains_in(q)
-    # 全文找什麼:句子裡的網域;沒有網域時只有短關鍵字才整串找(整句話拿去全文比對找不到東西)
-    needles = qdomains or ([q] if len(q) <= 24 and not re.search(r"\s", q) else [])
+    # 全文找什麼:句子裡有網域 ⇒ 找網域(中一個就算);沒有 ⇒ 拆成詞組(RichMenu 的幾種寫法、句子裡的詞)
+    if qdomains:
+        groups, mode = [[d] for d in qdomains], "any"
+    else:
+        groups, mode = word_groups(q), "words"
     records = _seat_records()
     matches = []
     for kind, entries in (("persona", persona_entries()), ("project", project_entries())):
         for e in entries:
-            got = match_card(e, kind, q, qdomains, needles)
+            got = match_card(e, kind, q, qdomains, groups, mode)
             if not got:
                 continue
             score, field, evidence = got
@@ -443,12 +500,17 @@ def who_owns(query: str, limit: int = 10) -> dict:
                             "owner": "%s:%s" % (kind, e["uid"])})   # 跟全文命中同一個欄位(@ee0bb 10-16 提)
     owners = {(m["kind"], m["uid"]) for m in matches}
     cards_rel = {e["rel"] for e in persona_entries() if e["rel"]}
-    for v in vault_hits(needles, limit=max(limit, 10), skip=cards_rel):
+    for v in vault_hits(groups, limit=max(limit, 10), skip=cards_rel, mode=mode):
         owner = ("persona", v["persona_uid"]) if v["persona_uid"] else (("project", v["project_uid"]) if v["project_uid"] else None)
+        if owner in owners:                              # 那張卡已經列在上面:筆記併進它的依據
+            card = next(m for m in matches if (m["kind"], m["uid"]) == owner)
+            if len(card["evidence"]) < 4:
+                card["evidence"].append(v["evidence"][0])
+            if v["full"] and card["seat"] and card["score"] < SCORE["vault_owned"]:
+                card["score"], card["field"] = SCORE["vault_owned"], "vault"   # 卡寫到 + 它寫的筆記每個詞都中
+            continue
         seat, at, cmd = seat_info(owner[0], owner[1], records) if owner else (None, None, None)
-        if owner in owners:                              # 那張卡已經列在上面:筆記只當旁證
-            seat, at, cmd = None, None, None
-        score = SCORE["vault_owned"] if owner and owner not in owners and seat else SCORE["vault"]
+        score = SCORE["vault_owned"] if owner and seat and v["full"] else SCORE["vault"]
         same = next((m for m in matches if m["kind"] == "vault" and owner and m.get("owner") == "%s:%s" % owner), None)
         if same is not None:                             # 同一個作者的筆記併成一筆,依據最多留 3 條
             if len(same["evidence"]) < 3:
