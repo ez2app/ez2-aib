@@ -12,9 +12,9 @@ Andy 10-15 22:5x 裁:轉接程式與 `aib chat` 放**開源核心**(不做成要
     當班的那支死了,鎖跟著放掉,下一支自動接手。
   - 開關檔 `~/.ez2-aib/chat/enabled.json`:`aib chat off` 刪掉它,當班與排隊的都在下一輪自己結束。
 
-★ 這一版**不寫心跳**(第 20.3b 節):還沒有金鑰與中繼站,寫了心跳 dm-ctl 就會把信交給一個寄不出去的轉接程式
-  (等滿逾時才撤回 rc 2)。不寫 ⇒ dm_global_files.bridge_alive() 是 False ⇒ 寄件端馬上照實回「全球對談沒開」。
-  當班一上來還會刪掉殘留的 heartbeat.json,免得舊檔讓寄件端誤判。
+★ 心跳只由接上中繼站的寄件工人(venv 的 chat_nostr.py serve)寫(第 20.3b 節):沒金鑰、沒中繼站時寫了心跳,
+  dm-ctl 就會把信交給一個寄不出去的轉接程式(等滿逾時才撤回 rc 2)。沒心跳 ⇒ dm_global_files.bridge_alive() 是 False
+  ⇒ 寄件端馬上照實回「全球對談沒開」。當班一上來還會刪掉殘留的 heartbeat.json,免得舊檔讓寄件端誤判。
 
 檔案位置(都跟 dm_global_files 的契約同一個根,`AIB_CHAT_BRIDGE_DIR` 可改,測試用):
   <bridge root>/bridge.lock    flock
@@ -47,7 +47,7 @@ WINDOW_ROLE = "sys.chat"
 WINDOW_NAME = "chat"
 STATES = ("no_keys", "no_profile", "no_relays", "publishing", "published", "stopped")
 #   1.2:有金鑰還沒中繼站 = no_relays;1.3:沒設顯示名稱 / 國別 = no_profile、名冊發不出去 = publishing(下一輪再試)、
-#   名冊與 10050 都發出去了 = published。收發信(1.7)以前都不寫心跳。
+#   名冊與 10050 都發出去了 = published。心跳由寄件工人寫(接上中繼站才寫)。
 WORKER_RESTART_GAP = 30                    # 秒;寄件工人掛了多久後再起(不狂起)
 _WORKER = {"proc": None, "started": 0.0}   # 當班才有;寄件工人(venv 的 chat_nostr.py serve)
 PUBLISH_EVERY = 60                         # 秒;名冊發失敗時多久再試(第 19.1 節:每站每 10 秒最多 2 則,不能狂發)
@@ -428,7 +428,6 @@ def cmd_on(a, env, out):
     else:
         out.write(T("window_no_hub") + "\n")
     out.write(T("public_hint") + "\n")
-    out.write(T("no_keys_yet") + "\n")
     return 0
 
 
