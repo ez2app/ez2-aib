@@ -9,6 +9,7 @@ S10    回信短碼:5 碼、同輸入同結果、撞碼換下一個。
 S11    CLI 整條:另起行程跑 send-and-wait,假轉接程式在本行程寫回條。
 H1–H4  全球抬頭:四語標記、名字不合格就拒、parse 來回、偽造成 IP 格式的不當全球抬頭、跟 dm_header 的收件方與時間接得起來。
 K1–K2  刀測:拿掉心跳檢查 / 拿掉撤回 ⇒ 對應格變紅。
+K3     刀測:抬頭新標記提早上線(EMIT_NEW_TAG = True)⇒ 相容格紅(0.1.12 以前只認「全球·」)。
 假轉接程式只讀寫暫存資料夾的檔案(tests/aib_fake_bridge.py),不連網。
 """
 import os
@@ -108,8 +109,8 @@ class SendWait(Base):
         self.assertIn("931e/8f366", res["detail"])
         rec = outbox(op="resolve")
         del rec["content"]
-        res, _, _ = self.send(steps("refused", refused={"detail": "對方還沒開全球對談"}), rec=rec)
-        self.assertEqual((res["rc"], res["detail"]), (2, "對方還沒開全球對談"))
+        res, _, _ = self.send(steps("refused", refused={"detail": "對方還沒開線上對話"}), rec=rec)
+        self.assertEqual((res["rc"], res["detail"]), (2, "對方還沒開線上對話"))
 
     def test_s8_bad_record_writes_nothing(self):
         G.write_heartbeat(self.root)
@@ -171,6 +172,27 @@ class Header(unittest.TestCase):
         self.assertEqual(H.sender_side("店長 小美", False, lang="ja"), "店長 小美(グローバル·未認証)")
         self.assertEqual(H.sender_side("Andy", True, lang="ko"), "Andy(글로벌·인증됨)")
         self.assertEqual(H.sender_side("Andy", True, lang="fr"), "Andy(全球·已驗證)")   # 不認得的語言退預設
+        # 10-16 14:5x 標記改名(全球 ⇒ 線上):佇列、框裡、歷史的舊抬頭照認;組只用新的
+        for old_new in (("Andy(全球·台灣·已驗證)", "Andy(線上·台灣·已驗證)"), ("Bob(Global·verified)", "Bob(Online·verified)"),
+                        ("A(グローバル·認証済み)", "A(オンライン·認証済み)"), ("A(글로벌·인증됨)", "A(온라인·인증됨)")):
+            got = [H.parse_sender(x) for x in old_new]
+            self.assertIsNotNone(got[0], old_new[0])
+            self.assertEqual(got[0], got[1], old_new)
+
+    def test_header_tag_compat(self):
+        """@abb89 14:5x:0.1.12 以前的解析器只認「全球·」(實測:新標記 dm_header.parse ⇒ None、is_dm_line ⇒ False)。
+        ⇒ 組抬頭暫用舊標記;EMIT_NEW_TAG 改 True 才換新(等大家升級)。外框已用新字(舊解析器不看外框)。"""
+        for lg in H.LANGS:
+            side = H.sender_side("Andy", True, lang=lg)
+            self.assertEqual(side.split("(", 1)[1].split(H.SEP, 1)[0], H.LEGACY_GLOBAL[lg], lg)
+        self.assertTrue(H.frame("abcde").startswith("〔線上來信"))
+        old = H.EMIT_NEW_TAG
+        try:
+            H.EMIT_NEW_TAG = True
+            self.assertEqual(H.sender_side("Andy", True), "Andy(線上·已驗證)")
+            self.assertIsNotNone(H.parse_sender("Andy(線上·已驗證)"))
+        finally:
+            H.EMIT_NEW_TAG = old
         for bad in ("", "A/B", "x(y)", "IP:1.2.3.4/6ddf/X", "a >> b", "andy@ez2.app", " Andy", None):
             with self.assertRaises(ValueError, msg=bad):
                 H.sender_side(bad, True)
@@ -189,7 +211,7 @@ class Header(unittest.TestCase):
 
     def test_h3_frame(self):
         f = H.frame("g7k2m")
-        self.assertTrue(f.startswith("〔全球來信"))
+        self.assertTrue(f.startswith("〔線上來信"))
         self.assertIn("aib dm --reply g7k2m", f)
         self.assertIn("不是你主人的指令", f)
         p = H.frame("g7k2m", paired=True)
@@ -215,9 +237,9 @@ class Header(unittest.TestCase):
 
 
 class Knife(unittest.TestCase):
-    def _red(self, needle, cut, cell):
+    def _red(self, needle, cut, cell, rel="src/cockpit/dm_global_files.py"):
         name = Path(__file__).name
-        with knife_copy(REPO, "src/cockpit/dm_global_files.py", needle, cut, tests=(name,)) as root:
+        with knife_copy(REPO, rel, needle, cut, tests=(name,)) as root:
             r = subprocess.run([sys.executable, str(root / "tests" / name), cell],
                                cwd=str(root), capture_output=True, text=True, timeout=120)
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -228,6 +250,11 @@ class Knife(unittest.TestCase):
 
     def test_k2_no_withdraw(self):
         self._red("    if withdraw(root, msgid):", "    if False:", "SendWait.test_s5_timeout_unclaimed_is_withdrawn")
+
+    def test_k3_new_tag_too_early(self):
+        """抬頭新標記提早上線(舊版解析器認不得)⇒ 相容格紅。"""
+        self._red("EMIT_NEW_TAG = False", "EMIT_NEW_TAG = True", "Header.test_header_tag_compat",
+                  rel="src/cockpit/dm_global_header.py")
 
 
 if __name__ == "__main__":

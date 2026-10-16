@@ -11,11 +11,11 @@ U4 狀態 ⇒ delivery:人放行 queued(帶名次)、貼進框 delivered、席�
 U5 全球信不能改內文(優先級照改);兩個同名陌生人去重時不併成一組;列上帶短碼與寄件人指紋、不帶位址
 連 Nostr(要 AIB_TEST_NOSTR_VENV;兩個沙盒 = 兩位主人,共用本機假中繼站):
 N1 本人其他艙(同主人、雙方都列名冊)⇒ 已驗證、排隊;寄件端 rc 0 queued(帶名次);再貼進框 ⇒ 寄件端補記 delivered
-N2 別人(陌生)⇒ 待審、寄件端 rc 3 held;人刪 ⇒ 寄件端補記 refused
-N3 寄件席沒列名冊 ⇒ 收件端驗不到 ⇒ 未驗證、待審
+N2 別人(陌生、不是好友)⇒ 拒收:不進佇列,寄件端 rc 2 refused、原因「只收好友」(維護者 10-16 12:1x)
+N3 寄件席沒列名冊 ⇒ 收件端驗不到 ⇒ 拒收,原因「驗不到寄件席」
 N4 重開轉接程式(補收)⇒ 同一封不會進兩次
 N5 冒充回條:別的金鑰寄一張 delivered 回條 ⇒ 寄件端不收
-N6 站回 OK 慢(先轉送、2 秒後才回 OK)⇒ 對方的 held 回條比 send_event 先回來,寄件端照收(10-16 實機驗收掉 3/5 張)
+N6 站回 OK 慢(先轉送、2 秒後才回 OK)⇒ 對方的回條(陌生 ⇒ refused)比 send_event 先回來,寄件端照收(10-16 實機驗收掉 3/5 張)
 刀(複本):K1 席可讀待審全球信 ⇒ U3 紅;K2 parse 不認全球抬頭 ⇒ U1 紅;K3 enqueue 不收 status(先排隊)⇒ U2 紅;
   K4 回條不比對寄件對象 ⇒ N5 紅(有 nostr-sdk 才跑);K5 寄出帳改回寄完才寫 ⇒ N6 紅
 """
@@ -225,24 +225,23 @@ class Network(unittest.TestCase):
         self.DQ._transition(y, it["id"], "delivered", "system", env=a.qenv)
         self.assertTrue(self.final(a, rec["msgid"], "delivered"), GF.read_receipts(a.root, rec["msgid"]))
 
-    def test_n2_stranger_held_then_refused(self):
+    def test_n2_stranger_refused(self):
         a, (x,) = self._box("Andy", [("00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")], [True])
         b, (y,) = self._box("Bob", [("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [True])
         rec = outbox_rec("%s/6ddf/%s" % (b.owner, y), x)
         res = GF.send_and_wait(a.root, rec, wait=20)
-        self.assertEqual((res["rc"], res["stage"]), (3, "held"), res)
-        it = self.items(b, y)[0]
-        self.assertEqual((it["status"], it["global"]["verified"]), ("hold_human", True))   # 驗得到,但不是同主人 ⇒ 陌生
-        self.DQ._transition(y, it["id"], "deleted", "human:bob", env=b.qenv)
-        self.assertTrue(self.final(a, rec["msgid"], "refused"), GF.read_receipts(a.root, rec["msgid"]))
+        self.assertEqual((res["rc"], res["stage"]), (2, "refused"), res)    # 驗得到,但不是同主人、也不是好友 ⇒ 拒收
+        self.assertIn("好友", res["detail"])
+        time.sleep(2)
+        self.assertEqual(self.items(b, y), [], "陌生人的信不准進佇列(連待審都不進)")
 
     def test_n3_unlisted_sender_unverified(self):
         a, (x, y) = self._box("Andy", [("00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席"),
                                         ("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [False, True])
         res = GF.send_and_wait(a.root, outbox_rec("%s/6ddf/%s" % (a.owner, y), x), wait=20)
-        self.assertEqual((res["rc"], res["stage"]), (3, "held"), res)
-        it = self.items(a, y)[0]
-        self.assertEqual((it["status"], it["global"]["verified"]), ("hold_human", False))
+        self.assertEqual((res["rc"], res["stage"]), (2, "refused"), res)
+        self.assertIn("名冊", res["detail"])
+        self.assertEqual(self.items(a, y), [])
 
     def test_n4_restart_no_duplicate(self):
         a, (x, y) = self._box("Andy", [("00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席"),
@@ -262,7 +261,7 @@ class Network(unittest.TestCase):
         b, (y,) = self._box("Bob", [("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [True])
         rec = outbox_rec("%s/6ddf/%s" % (b.owner, y), x)
         res = GF.send_and_wait(a.root, rec, wait=20)
-        self.assertEqual(res["stage"], "held")
+        self.assertEqual(res["stage"], "refused")
         # 第三把金鑰冒充 b 寄一張 delivered 回條給 a 的 x
         x_npub = next(e["npub"] for e in NK.read_map(a.env())["seats"] if e["seat5"] == x)
         script = ("import nostr_sdk as N,sys,asyncio,datetime\n"
@@ -294,7 +293,7 @@ class SlowOk(Network):
         for _ in range(2):
             rec = outbox_rec("%s/6ddf/%s" % (b.owner, y), x)
             res = GF.send_and_wait(a.root, rec, wait=25)
-            self.assertEqual((res["rc"], res["stage"]), (3, "held"), (res, GF.read_receipts(a.root, rec["msgid"])))
+            self.assertEqual((res["rc"], res["stage"]), (2, "refused"), (res, GF.read_receipts(a.root, rec["msgid"])))
 
 
 class Knife(unittest.TestCase):

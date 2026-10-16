@@ -11,6 +11,9 @@ Andy 10-15 22:5x 裁:轉接程式與 `aib chat` 放**開源核心**(不做成要
   - 每一艙開艙時都開一個 `sys.chat` 窗跑 `run`:搶到鎖的當班,其他艙的排隊(每輪再試一次),
     當班的那支死了,鎖跟著放掉,下一支自動接手。
   - 開關檔 `~/.ez2-aib/chat/enabled.json`:`aib chat off` 刪掉它,當班與排隊的都在下一輪自己結束。
+  - 問一次(維護者 10-16 14:3x):開艙跑 `auto`,開關檔沒有、主人也沒答過 ⇒ 在終端機問要不要連公開中繼站;
+    答要 ⇒ 開關檔;答不要 ⇒ `off-by-owner.json`(同 `aib chat off`,記住不再問);沒人能答 ⇒ 不上線、不記。
+    `aib chat on` 拿掉記號。
 
 ★ 心跳只由接上中繼站的寄件工人(venv 的 chat_nostr.py serve)寫(第 20.3b 節):沒金鑰、沒中繼站時寫了心跳,
   dm-ctl 就會把信交給一個寄不出去的轉接程式(等滿逾時才撤回 rc 2)。沒心跳 ⇒ dm_global_files.bridge_alive() 是 False
@@ -78,6 +81,11 @@ def chat_home(env=None):
 
 def switch_path(env=None):
     return chat_home(env) / "enabled.json"
+
+
+def off_marker(env=None):
+    """主人自己 aib chat off 過 ⇒ 留這個檔,開艙的自動開(auto)就不再替他打開(維護者 10-16:預設開、之後可以關)。"""
+    return chat_home(env) / "off-by-owner.json"
 
 
 def venv_python(env=None):
@@ -413,6 +421,10 @@ def cmd_on(a, env, out):
     _mkdir_private(chat_home(env))
     write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time())})
     os.chmod(switch_path(env), 0o600)
+    try:
+        off_marker(env).unlink()
+    except FileNotFoundError:
+        pass
     out.write(T("on_done") + "\n")
     acts, key_err = sync_keys(env)
     if key_err:
@@ -428,6 +440,50 @@ def cmd_on(a, env, out):
     else:
         out.write(T("window_no_hub") + "\n")
     out.write(T("public_hint") + "\n")
+    return 0
+
+
+YES = ("y", "yes", "是", "好", "要", "對", "はい", "うん", "예", "네", "응")
+
+
+def _ask(prompt, out, timeout):
+    """終端機上問一句、等一行。回答案字串;逾時回 None。"""
+    import select
+    out.write(prompt)
+    out.flush()
+    r, _w, _x = select.select([sys.stdin], [], [], timeout)
+    if not r:
+        out.write("\n")
+        return None
+    return (sys.stdin.readline() or "").strip()
+
+
+def cmd_auto(a, env, out):
+    """開艙時問一次要不要連上公開中繼站(維護者 10-16 14:3x 改裁:「問一次」取代 12:1x 的「預設開不問」)。
+    - 答「要」⇒ 寫開關檔(記住);答「不要」或直接 Enter ⇒ 留 off-by-owner.json(跟 aib chat off 一樣記住,不再問)。
+    - 沒有人能回答(stdin / stdout 不是終端機:安裝程式、背景、測試)⇒ 一律不上線、也不記,下次有人在時再問。
+    - 逾時(AIB_CHAT_ASK_TIMEOUT,預設 60 秒)沒回 ⇒ 先不上線、不記。
+    - 已經開著或主人關過 ⇒ 不問。AIB_CHAT_AUTO=0 或 AIB_CHAT_PREINSTALL=0 ⇒ 什麼都不做。
+    打開以後:沒設顯示名稱與國別 ⇒ 名冊不發,外人找不到這台;只收本人與好友的信。"""
+    if (env.get("AIB_CHAT_AUTO") or "1") == "0" or (env.get("AIB_CHAT_PREINSTALL") or "1") == "0":
+        return 0
+    if is_enabled(env) or off_marker(env).exists():
+        return 0
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return 0
+    ans = _ask(T("auto_ask"), out, float(env.get("AIB_CHAT_ASK_TIMEOUT") or 60))
+    if ans is None:
+        out.write(T("auto_ask_timeout") + "\n")
+        return 0
+    _mkdir_private(chat_home(env))
+    if ans.lower() in YES:
+        write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time()), "asked": True})
+        os.chmod(switch_path(env), 0o600)
+        out.write(T("auto_on") + "\n")
+    else:
+        write_json(str(off_marker(env)), {"v": VERSION, "at": int(time.time()), "asked": True})
+        os.chmod(off_marker(env), 0o600)
+        out.write(T("auto_declined") + "\n")
     return 0
 
 
@@ -462,6 +518,9 @@ def cmd_off(a, env, out):
         switch_path(env).unlink()
     except FileNotFoundError:
         pass
+    _mkdir_private(chat_home(env))
+    write_json(str(off_marker(env)), {"v": VERSION, "at": int(time.time())})   # 開艙不再自動打開
+    os.chmod(off_marker(env), 0o600)
     root = bridge_root(env)
     # 第 20.4 節:發空名冊、撤下 10050(發過才需要;沒有 venv 就沒發過)
     import chat_roster as CR
@@ -494,9 +553,16 @@ def status_record(env):
         "heartbeat": GF.bridge_alive(root),
         "venv": venv_state(env),
         "keys": _keys_summary(env),
+        "friends": len(_friends(env)),
+        "off_by_owner": off_marker(env).exists(),
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
+
+
+def _friends(env):
+    import chat_roster as CR
+    return CR.read_friends(env)
 
 
 def _worker_status(root, running):
@@ -547,6 +613,35 @@ def cmd_profile(a, env, out):
     return 0
 
 
+def cmd_friend(a, env, out):
+    """好友(維護者 10-16 12:1x):只收本人與好友的信,其他拒收。以主人為單位;只存在本機。"""
+    import chat_roster as CR
+    try:
+        if a.action == "add":
+            owner, new = CR.add_friend(a.who, a.name, env)
+            out.write(T("friend_added" if new else "friend_renamed", owner=owner) + "\n")
+        else:
+            owner, gone = CR.remove_friend(a.who, env)
+            out.write(T("friend_removed" if gone else "friend_not_found", owner=owner) + "\n")
+    except CR.RosterError as err:
+        out.write(T("profile_" + str(err)) + "\n")
+        return 2
+    return 0
+
+
+def cmd_friends(a, env, out):
+    import chat_roster as CR
+    fr = CR.read_friends(env)
+    if a.json:
+        out.write(json.dumps({"friends": fr}, ensure_ascii=False) + "\n")
+        return 0
+    if not fr:
+        out.write(T("friends_none") + "\n")
+    for f in fr:
+        out.write(T("friends_row", name=f.get("name") or "-", owner=f["owner"]) + "\n")
+    return 0
+
+
 def cmd_roster(a, env, out):
     """印自己的名冊內容(還沒簽的那份;公開資訊)。"""
     import chat_roster as CR
@@ -591,6 +686,7 @@ def cmd_status(a, env, out):
         out.write(T("status_not_running") + "\n")
     out.write(T("status_venv_" + rec["venv"], pin=NOSTR_SDK_PIN) + "\n")
     out.write(T("status_keys", n=rec["keys"]["seats"], owner=rec["keys"]["owner"] or "-") + "\n")
+    out.write(T("status_friends", n=rec["friends"]) + "\n")
     w = rec.get("worker")
     if w:
         out.write(T("status_offline" if w.get("offline") else "status_relays", up=w.get("up", 0), total=w.get("total", 0)) + "\n")
@@ -631,6 +727,14 @@ def main(argv=None, env=None, out=sys.stdout):
     ew = sub.add_parser("ensure-window", help=T("help.ensure_window"))
     ew.add_argument("--socket")
     sub.add_parser("enabled", help=T("help.enabled"))
+    fr = sub.add_parser("friend", help=T("help.friend"))
+    fr.add_argument("action", choices=("add", "remove"))
+    fr.add_argument("who", help=T("help.friend_who"))
+    fr.add_argument("--name", help=T("help.friend_name"))
+    fs = sub.add_parser("friends", help=T("help.friends"))
+    fs.add_argument("--json", action="store_true")
+    au = sub.add_parser("auto", help=T("help.auto"))
+    au.add_argument("--quiet", action="store_true")
     pp = sub.add_parser("prepare", help=T("help.prepare"))
     pp.add_argument("--keys-only", action="store_true", help=T("help.keys_only"))
     pp.add_argument("--quiet", action="store_true")
@@ -655,6 +759,12 @@ def main(argv=None, env=None, out=sys.stdout):
         return run(env, out=out)
     if a.cmd == "prepare":
         return cmd_prepare(a, env, out)
+    if a.cmd == "auto":
+        return cmd_auto(a, env, out)
+    if a.cmd == "friend":
+        return cmd_friend(a, env, out)
+    if a.cmd == "friends":
+        return cmd_friends(a, env, out)
     if a.cmd == "enabled":
         return 0 if is_enabled(env) else 1
     if a.cmd == "ensure-window":
