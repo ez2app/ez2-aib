@@ -4399,7 +4399,7 @@
   "aib.persona_main.set": "主人格登記為 {name}({uid})",
   "aib.persona_main.cleared": "主人格登記已清除(原本:{uid})",
   "aib.persona_main.usage": "用法:aib persona main [show | set <卡號> | clear]",
-  "aib.chat.auto_on": "全球對談已自動打開(預設開;aib chat off 可關)。還沒設名字與國別前,外人找不到這台。",
+  "aib.chat.auto_on": "全球對談已打開。設名字與國別後外人才找得到這台:aib chat name <名字>、aib chat country <國碼>;要公開哪一席:aib chat publish <席碼>。",
   "aib.chat.friend_added": "已加為好友:{owner}。這位主人列在名冊上的席寄來的信會收下、讀了會回已讀。",
   "aib.chat.friend_renamed": "好友已在名單裡,名字已更新:{owner}",
   "aib.chat.friend_removed": "已移出好友:{owner}。之後他寄來的信會拒收。",
@@ -4413,5 +4413,8 @@
   "aib.chat.help.friend_who": "對方主人 npub 或全球位址",
   "aib.chat.help.friend_name": "自己記的名字",
   "aib.chat.help.friends": "列出好友",
-  "aib.chat.help.auto": "開艙用:主人沒關過就打開全球對談(只寫開關檔)"
+  "aib.chat.help.auto": "開艙用:主人還沒答過就在終端機問一次要不要上線(沒有終端機 ⇒ 不問、不上線)",
+  "aib.chat.auto_ask": "要不要連上公開中繼站、打開全球對談?打開後你公開的席可以跟其他 aib 主人的 AI 對談,只收你自己與好友的信;之後可以 aib chat off 關掉。[y/N] ",
+  "aib.chat.auto_declined": "不連。記住了,之後開艙不再問;要開:aib chat on --name … --country …",
+  "aib.chat.auto_ask_timeout": "沒回答,先不連;下次開艙再問。"
 }

@@ -4399,7 +4399,7 @@
   "aib.persona_main.set": "Main persona set to {name} ({uid})",
   "aib.persona_main.cleared": "Main persona cleared (was: {uid})",
   "aib.persona_main.usage": "Usage: aib persona main [show | set <card id> | clear]",
-  "aib.chat.auto_on": "Global chat turned on automatically (on by default; aib chat off turns it off). Until you set a name and country, outsiders cannot find this machine.",
+  "aib.chat.auto_on": "Global chat is on. Outsiders can find this machine only after you set a name and country: aib chat name <name>, aib chat country <code>; publish a seat with aib chat publish <seat>.",
   "aib.chat.friend_added": "Added as a friend: {owner}. Mail from this owner's listed seats is accepted and gets read receipts.",
   "aib.chat.friend_renamed": "Already a friend; name updated: {owner}",
   "aib.chat.friend_removed": "Removed from friends: {owner}. Mail from them will be refused from now on.",
@@ -4413,5 +4413,8 @@
   "aib.chat.help.friend_who": "their owner npub or a global address",
   "aib.chat.help.friend_name": "a name for your own reference",
   "aib.chat.help.friends": "list friends",
-  "aib.chat.help.auto": "used at cabin start: turn global chat on unless the owner turned it off (writes the switch only)"
+  "aib.chat.help.auto": "used at cabin start: ask once in the terminal whether to go online (no terminal ⇒ no question, stays offline)",
+  "aib.chat.auto_ask": "Connect to public relays and turn on global chat? Your published seats can then talk with other aib owners' AIs; only mail from yourself and your friends is accepted. You can turn it off later with aib chat off. [y/N] ",
+  "aib.chat.auto_declined": "Not connecting. Remembered — you will not be asked again; to turn it on: aib chat on --name … --country …",
+  "aib.chat.auto_ask_timeout": "No answer; not connecting for now. You will be asked again next time."
 }

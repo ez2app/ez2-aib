@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""全球對談:預設開 + 好友制(維護者 10-16 12:1x 裁示:
-「1、不問,之後可以關;2、加入好友之後才能有已讀,不然拒收;3、已讀字樣照舊」)。
+"""全球對談:問一次 + 好友制(維護者 10-16 12:1x 裁示好友制與已讀字樣;14:3x 改裁「預設開不問」⇒「問一次」)。
 
 核心(一定跑,只用標準庫):
-A1 開艙的 auto:沒開過、主人也沒關過 ⇒ 寫開關檔(標 auto);不連網、不發名冊、不設名字
-A2 主人 aib chat off 過 ⇒ 留 off-by-owner.json ⇒ auto 不再打開;aib chat on ⇒ 拿掉記號
-A3 AIB_CHAT_AUTO=0 或 AIB_CHAT_PREINSTALL=0 ⇒ auto 什麼都不做
-A4 cockpit-full.sh 在「有開才開 sys.chat 窗」之前先跑 auto
+A1 沒有終端機(安裝程式、背景)⇒ 不問、不上線、不記
+A2 終端機答 y ⇒ 寫開關檔(asked);不設名字;答過就不再問
+A3 答不要(直接 Enter)⇒ 留 off-by-owner.json(同 aib chat off),之後不再問也不打開;aib chat on 拿掉記號
+A4 逾時沒答 ⇒ 不上線、不記;AIB_CHAT_AUTO=0 或 AIB_CHAT_PREINSTALL=0 ⇒ 不問
+A5 cockpit-full.sh 在「有開才開 sys.chat 窗」之前跑 auto,而且輸出沒導走(問得到人)
 F1 好友名單:主人 npub 或全球位址都收(位址取主人)、同人再加 = 改名、加自己 / 看不懂 ⇒ rc 2;檔案 0600;移除
 F2 status --json 帶好友數與「主人關過」;拒收原因碼 ⇒ 寄件端一句話
 連 Nostr(要 AIB_TEST_NOSTR_VENV;兩個沙盒 = 兩位主人,本機假中繼站):
 N1 Bob 把 Andy 加為好友 ⇒ Andy 寄的進 Bob 佇列(queued,class friend);讀了 ⇒ Andy 收到「已讀」
 N2 好友移除 ⇒ 之後寄的拒收(rc 2、原因「只收好友」),佇列沒多
-刀(複本):K1 auto 不看 off 記號 ⇒ A2 紅;K2 好友比對永遠不中 ⇒ N1 紅;K3 陌生不拒收(退回待審)⇒ N2 紅
+刀(複本):K1 auto 不看 off 記號 ⇒ A3 紅;K2 好友比對永遠不中 ⇒ N1 紅;K3 陌生不拒收(退回待審)⇒ N2 紅
 """
 import importlib.util
 import json
@@ -56,44 +56,87 @@ class Base(unittest.TestCase):
             return None
 
 
+def run_tty(b, args, answer, timeout=20, **extra):
+    """在假終端機(pty)跑 chat_bridge;看到 [y/N] 就打 answer(None = 不回答)。回 (rc, 輸出)。"""
+    import pty
+    import select
+    import subprocess
+    m, s_ = pty.openpty()
+    p = subprocess.Popen([sys.executable, str(SB.BRIDGE)] + list(args), stdin=s_, stdout=s_, stderr=s_,
+                         env=b.env(**extra), close_fds=True)
+    os.close(s_)
+    buf, sent, end = b"", False, time.time() + timeout
+    while time.time() < end:
+        r, _w, _x = select.select([m], [], [], 0.2)
+        if r:
+            try:
+                chunk = os.read(m, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            if not sent and b"[y/N]" in buf and answer is not None:
+                os.write(m, (answer + "\n").encode("utf-8"))
+                sent = True
+        elif p.poll() is not None:
+            break
+    try:
+        p.wait(timeout=10)
+    finally:
+        os.close(m)
+    return p.returncode, buf.decode("utf-8", "replace")
+
+
 class Auto(Base):
-    def test_a1_auto_turns_on(self):
+    def test_a1_no_terminal_no_question(self):
         r = self.cli("auto")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        sw = self.switch()
-        self.assertTrue(sw and sw.get("on") and sw.get("auto"), sw)
-        self.assertEqual(oct((self.b.chat / "enabled.json").stat().st_mode & 0o777), "0o600")
-        self.assertEqual(self.cli("enabled").returncode, 0)
-        self.assertFalse((self.b.chat / "profile.json").exists(), "auto 不准替主人設名字(名字會公開)")
-        self.assertFalse((self.b.root / "heartbeat.json").exists())
-        self.assertIn("自動打開", r.stdout)
-        self.assertEqual(self.cli("auto", "--quiet").stdout, "")
+        self.assertIsNone(self.switch(), "沒有人能回答 ⇒ 一律不上線")
+        self.assertFalse((self.b.chat / "off-by-owner.json").exists(), "沒問到人 ⇒ 不記,下次再問")
+        self.assertNotIn("[y/N]", r.stdout)
 
-    def test_a2_off_is_remembered(self):
-        self.cli("auto")
-        self.assertEqual(self.cli("off").returncode, 0)
-        self.assertTrue((self.b.chat / "off-by-owner.json").exists())
-        self.assertEqual(self.cli("auto").returncode, 0)
-        self.assertIsNone(self.switch(), "主人關過,開艙不准再自動打開")
+    def test_a2_yes_once(self):
+        rc, out = run_tty(self.b, ["auto"], "y")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("[y/N]", out)
+        sw = self.switch()
+        self.assertTrue(sw and sw.get("on") and sw.get("asked"), sw)
+        self.assertEqual(oct((self.b.chat / "enabled.json").stat().st_mode & 0o777), "0o600")
+        self.assertFalse((self.b.chat / "profile.json").exists(), "不准替主人設名字(名字會公開)")
+        rc, out = run_tty(self.b, ["auto"], "n")
+        self.assertNotIn("[y/N]", out, "答過就不再問")
+
+    def test_a3_no_is_remembered(self):
+        rc, out = run_tty(self.b, ["auto"], "")                  # 直接 Enter = 不要
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(self.switch())
+        self.assertTrue((self.b.chat / "off-by-owner.json").exists(), "答不要 = 跟 aib chat off 一樣記住")
+        rc, out = run_tty(self.b, ["auto"], "y")
+        self.assertNotIn("[y/N]", out)
+        self.assertIsNone(self.switch(), "答過不要,開艙不准再打開")
         r = self.cli("on", "--no-venv", "--name", "Andy", "--country", "TW")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse((self.b.chat / "off-by-owner.json").exists(), "aib chat on 要拿掉記號")
         self.cli("off")
-        self.cli("auto")
-        self.assertIsNone(self.switch())
+        self.assertTrue((self.b.chat / "off-by-owner.json").exists())
 
-    def test_a3_env_opt_out(self):
+    def test_a4_timeout_and_opt_out(self):
+        rc, out = run_tty(self.b, ["auto"], None, AIB_CHAT_ASK_TIMEOUT="1")
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(self.switch())
+        self.assertFalse((self.b.chat / "off-by-owner.json").exists(), "逾時 = 沒答 ⇒ 不記")
         for k in ("AIB_CHAT_AUTO", "AIB_CHAT_PREINSTALL"):
-            r = self.cli("auto", **{k: "0"})
-            self.assertEqual(r.returncode, 0)
+            rc, out = run_tty(self.b, ["auto"], "y", **{k: "0"})
+            self.assertNotIn("[y/N]", out, k)
             self.assertIsNone(self.switch(), k)
 
-    def test_a4_cockpit_runs_auto_before_window(self):
+    def test_a5_cockpit_asks_before_window(self):
         cf = (COCKPIT / "cockpit-full.sh").read_text(encoding="utf-8")
-        auto = cf.find('chat_bridge.py" auto --quiet')
-        win = cf.find('chat_bridge.py" enabled')
-        self.assertGreater(auto, 0)
-        self.assertGreater(win, auto)
+        line = next(ln for ln in cf.splitlines() if 'chat_bridge.py" auto' in ln)
+        import re
+        self.assertIsNone(re.search(r"(^|[^2])>\s*/dev/null|(?<![|])[|](?![|])", line), "開艙問人時標準輸出不能導走:" + line)
+        self.assertGreater(cf.find('chat_bridge.py" enabled'), cf.find('chat_bridge.py" auto'))
 
 
 class Friends(Base):
@@ -185,7 +228,7 @@ class Knife(unittest.TestCase):
 
     def test_k1_auto_ignores_off(self):
         self._knife("src/cockpit/chat_bridge.py", "    if is_enabled(env) or off_marker(env).exists():",
-                    "    if is_enabled(env):", "Auto.test_a2_off_is_remembered")
+                    "    if is_enabled(env):", "Auto.test_a3_no_is_remembered")
 
     @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k2_friend_never_matches(self):
