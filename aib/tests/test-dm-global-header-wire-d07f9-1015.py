@@ -7,7 +7,7 @@ Andy 10-15 15:4x:「所有用戶要有顯示名稱,若有就預設只顯示 顯�
 全球來信一律先進佇列,只會從排空器的「排序投遞」貼進框 ⇒ 這裡照真的走一次 dm-ctl.sh:
 入列(nostr: 來源 + global 欄)→ 排空器領件 → AIB_DM_SORT_DELIVER=1 跑 dm-ctl → 看咽喉拿到的正文。
 
-W1 抬頭寄件方只有顯示名稱 + 全球標記(沙箱介面是英文 ⇒ Global·verified),後面接外框說明行與回信短碼,再接原文。
+W1 抬頭寄件方只有顯示名稱 + 全球標記(沙箱介面是英文 ⇒ Global·verified;標記暫用舊的,見 dm_global_header.EMIT_NEW_TAG),後面接外框說明行與回信短碼,再接原文。
 W2 未驗證、同名照標。
 W3 本機席的排隊信照舊(不帶全球標記、不帶外框)——回歸。
 W4 佇列裡的 global 欄被竄改(名字含 /)⇒ rc 2、一個字都沒送,不貼半個全球抬頭。
@@ -83,7 +83,7 @@ class Wire(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         body = R.throat_body(b.exec_calls()[0])
         self.assertTrue(body.startswith("Andy(Global·verified) >> IP:"), body[:120])
-        self.assertIn("[Global message:", body)
+        self.assertIn("[Online message:", body)
         self.assertIn("aib dm --reply %s]" % code, body)
         self.assertTrue(body.endswith(MSG), body[-80:])
         self.assertNotIn(NPUB, body)           # 完整位址不顯示(第 5.8 節)

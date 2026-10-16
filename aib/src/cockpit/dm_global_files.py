@@ -510,6 +510,13 @@ def reply_code(msgid, taken=()):
 
 # ── 寄送與等待(第 7.1 節的表)──
 
+# 對方拒收的原因碼(回條 detail;轉接程式從 aib-reason 標籤讀來)⇒ 寄件端看的一句話
+REFUSE_TEXT = {
+    "not_friend": "對方只收好友的信:請對方先把你的主人號碼加為好友(aib chat friend add <你的主人 npub>)",
+    "unverified": "對方驗不到寄件席:這一席要先列進你的名冊(aib chat publish <席碼>)",
+}
+
+
 def outcome(receipts, op="send", verify=False):
     """回條 ⇒ (rc, stage, pos, detail) 或 None(還要再等)。
 
@@ -531,7 +538,8 @@ def outcome(receipts, op="send", verify=False):
         if st == "held":
             return 3, "held", None, r.get("detail", "")
         if st in ("refused", "expired", "failed"):
-            return 2, st, None, r.get("detail", "")
+            d = r.get("detail", "")
+            return 2, st, None, REFUSE_TEXT.get(d, d) if st == "refused" else d
     return None
 
 
@@ -543,7 +551,7 @@ def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=ti
     except ContractError as e:
         return {"rc": 2, "stage": "abort", "pos": None, "detail": str(e), "msgid": msgid}
     if not bridge_alive(root, now=clock()):
-        return {"rc": 2, "stage": "bridge-off", "pos": None, "detail": "全球對談沒開(轉接程式沒在跑)", "msgid": msgid}
+        return {"rc": 2, "stage": "bridge-off", "pos": None, "detail": "線上對話沒開(轉接程式沒在跑)", "msgid": msgid}
     write_outbox(root, rec)
     deadline = clock() + max(0, wait)
     op = rec["op"]
