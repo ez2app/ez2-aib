@@ -11,8 +11,9 @@ Andy 10-15 22:5x 裁:轉接程式與 `aib chat` 放**開源核心**(不做成要
   - 每一艙開艙時都開一個 `sys.chat` 窗跑 `run`:搶到鎖的當班,其他艙的排隊(每輪再試一次),
     當班的那支死了,鎖跟著放掉,下一支自動接手。
   - 開關檔 `~/.ez2-aib/chat/enabled.json`:`aib chat off` 刪掉它,當班與排隊的都在下一輪自己結束。
-  - 預設開(維護者 10-16 12:1x「不問,之後可以關」):開艙跑 `auto`,開關檔沒有、主人也沒關過就寫上;
-    `aib chat off` 留 `off-by-owner.json`,之後開艙不再自動開;`aib chat on` 拿掉它。
+  - 問一次(維護者 10-16 14:3x):開艙跑 `auto`,開關檔沒有、主人也沒答過 ⇒ 在終端機問要不要連公開中繼站;
+    答要 ⇒ 開關檔;答不要 ⇒ `off-by-owner.json`(同 `aib chat off`,記住不再問);沒人能答 ⇒ 不上線、不記。
+    `aib chat on` 拿掉記號。
 
 ★ 心跳只由接上中繼站的寄件工人(venv 的 chat_nostr.py serve)寫(第 20.3b 節):沒金鑰、沒中繼站時寫了心跳,
   dm-ctl 就會把信交給一個寄不出去的轉接程式(等滿逾時才撤回 rc 2)。沒心跳 ⇒ dm_global_files.bridge_alive() 是 False
@@ -453,20 +454,47 @@ def cmd_on(a, env, out):
     return 0
 
 
+YES = ("y", "yes", "是", "好", "要", "對", "はい", "うん", "예", "네", "응")
+
+
+def _ask(prompt, out, timeout):
+    """終端機上問一句、等一行。回答案字串;逾時回 None。"""
+    import select
+    out.write(prompt)
+    out.flush()
+    r, _w, _x = select.select([sys.stdin], [], [], timeout)
+    if not r:
+        out.write("\n")
+        return None
+    return (sys.stdin.readline() or "").strip()
+
+
 def cmd_auto(a, env, out):
-    """開艙時自動打開全球對談(維護者 10-16 12:1x:「不問,之後可以關」)。只寫開關檔,很快、不連網:
-    轉接程式由 sys.chat 窗跑;沒設顯示名稱與國別 ⇒ 名冊不發(no_profile),外人寄不到也找不到這台,
-    只收本人與好友的信。主人 aib chat off 過(off-by-owner.json 在)⇒ 不再打開。
-    AIB_CHAT_AUTO=0 或 AIB_CHAT_PREINSTALL=0 ⇒ 什麼都不做。"""
+    """開艙時問一次要不要連上公開中繼站(維護者 10-16 14:3x 改裁:「問一次」取代 12:1x 的「預設開不問」)。
+    - 答「要」⇒ 寫開關檔(記住);答「不要」或直接 Enter ⇒ 留 off-by-owner.json(跟 aib chat off 一樣記住,不再問)。
+    - 沒有人能回答(stdin / stdout 不是終端機:安裝程式、背景、測試)⇒ 一律不上線、也不記,下次有人在時再問。
+    - 逾時(AIB_CHAT_ASK_TIMEOUT,預設 60 秒)沒回 ⇒ 先不上線、不記。
+    - 已經開著或主人關過 ⇒ 不問。AIB_CHAT_AUTO=0 或 AIB_CHAT_PREINSTALL=0 ⇒ 什麼都不做。
+    打開以後:沒設顯示名稱與國別 ⇒ 名冊不發,外人找不到這台;只收本人與好友的信。"""
     if (env.get("AIB_CHAT_AUTO") or "1") == "0" or (env.get("AIB_CHAT_PREINSTALL") or "1") == "0":
         return 0
     if is_enabled(env) or off_marker(env).exists():
         return 0
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return 0
+    ans = _ask(T("auto_ask"), out, float(env.get("AIB_CHAT_ASK_TIMEOUT") or 60))
+    if ans is None:
+        out.write(T("auto_ask_timeout") + "\n")
+        return 0
     _mkdir_private(chat_home(env))
-    write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time()), "auto": True})
-    os.chmod(switch_path(env), 0o600)
-    if not a.quiet:
+    if ans.lower() in YES:
+        write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time()), "asked": True})
+        os.chmod(switch_path(env), 0o600)
         out.write(T("auto_on") + "\n")
+    else:
+        write_json(str(off_marker(env)), {"v": VERSION, "at": int(time.time()), "asked": True})
+        os.chmod(off_marker(env), 0o600)
+        out.write(T("auto_declined") + "\n")
     return 0
 
 

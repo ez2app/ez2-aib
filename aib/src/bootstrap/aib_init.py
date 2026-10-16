@@ -317,8 +317,27 @@ def main(argv=None):
               % (counts[CREATED], counts[FIXED], counts[OK], counts[FAIL]))
         for h in hooks:
             sys.stderr.write(h["line"] + "\n")
+        auto_ext()
 
     return 0 if counts[FAIL] == 0 else 1
+
+
+def auto_ext(env=None):
+    """10-15 the maintainer「裝上並在下一版自動安裝」:aib init 順手裝這份 aib 附的免費、已簽章 mod(aib ext auto)。
+    人在終端機打 aib init 才做;腳本 / 測試叫的(輸出不是終端機)要 AIB_EXT_AUTO=1 才做 —— 不讓每支叫 aib init 的測試都去碰 claude。
+    AIB_EXT_AUTO=0 全關。裝不成不影響 init 的結果(只印出來)。"""
+    env = os.environ if env is None else env
+    flag = env.get("AIB_EXT_AUTO", "")
+    if flag == "0" or (flag != "1" and not sys.stdout.isatty()):
+        return
+    try:
+        cockpit = str(Path(__file__).resolve().parents[1] / "cockpit")
+        if cockpit not in sys.path:
+            sys.path.insert(0, cockpit)
+        import aib_ext
+        aib_ext.auto_install(out=sys.stdout, env=env)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write("aib init: aib ext auto: %s\n" % exc)
 
 
 if __name__ == "__main__":
