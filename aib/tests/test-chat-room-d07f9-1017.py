@@ -57,13 +57,13 @@ class Pure(unittest.TestCase):
         got = RS.decode(RS.encode(dict(small, rooms=dict(small["rooms"], layout={"k": noise()}))))
         self.assertEqual((got["rooms"]["layout"], got["rooms"]["layout_omitted"], got["island"]["decor"]), (None, True, [1]),
                          "先丟艦長室的 layout")
-        got = RS.decode(RS.encode(dict(small, island={"decor": noise()}, rooms=dict(small["rooms"], layout={"k": noise()}))))
-        self.assertEqual((got["rooms"]["layout"], got["island"]["decor"], got["island"]["decor_omitted"]), (None, [], True),
-                         "還太大再丟島上擺設")
+        wire, full, over = RS.encode_info(dict(small, island={"decor": noise()}, rooms=dict(small["rooms"], layout={"k": noise()})))
+        self.assertEqual((wire, over), (None, "too_big"), "第 36.3 節:島主親手擺的 decor 不丟;還太大就整則不送")
+        self.assertGreater(full, RS.WIRE_MAX)
         self.assertIsNone(RS.decode("not base64!!"))
         self.assertIsNone(RS.decode(base64.b64encode(zlib.compress(b'{"v":1,"seats":[]}')).decode()), "舊版房間快照不收")
-        bomb = base64.b64encode(zlib.compress(json.dumps({"v": 2, "people": [], "x": "0" * (RS.RAW_MAX + 10)}).encode())).decode()
-        self.assertIsNone(RS.decode(bomb), "解開超過 64 KB 的不收")
+        bomb = base64.b64encode(zlib.compress(json.dumps({"v": 2, "people": [], "x": "0" * (RS.SPACE_RAW_MAX + 10)}).encode())).decode()
+        self.assertIsNone(RS.decode(bomb), "解開超過上限的不收")
 
 
 class Box(unittest.TestCase):

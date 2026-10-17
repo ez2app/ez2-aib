@@ -474,8 +474,11 @@ class Sender(object):
         import room_snapshot as RS
         sp, lvl = CR.space_level(tgt), CR.share_level(tgt)
         snap = RS.build(with_rooms=(sp == "room"), with_status=(lvl == "status"), with_state=(lvl != "off"))
-        wire = RS.encode(snap) if snap else None
-        if wire is None:
+        if not snap:
+            return
+        wire, full, dropped = RS.encode_info(snap)
+        if wire is None:                                         # 第 36.3 節:不送、記原因(aib chat space --json 的 last_error)
+            GF.write_space_status(self.root, {"at": int(now), "reason": "too_big", "wire_bytes": full, "limit": RS.WIRE_MAX})
             return
         rooms = getattr(self, "r_last", None)
         if rooms is None:
@@ -502,7 +505,47 @@ class Sender(object):
             await c.shutdown()
         if out is not None and out.success:
             rooms[tgt] = (wire, now, sp)
+            GF.write_space_status(self.root, {"at": int(now), "reason": None, "wire_bytes": len(wire), "dropped": dropped})
             audit(self.root, "space-out", "-", tgt, str(len(wire)))
+
+    async def _send_owner_msg(self, tgt, typ, body):
+        """主人層級的私訊(掛單,第 36.2 節):用我第一個公開席的金鑰寄到對方第一個席。回 True = 中繼站收下。"""
+        m = NK.read_map()
+        owner = (m.get("owner") or {}).get("npub")
+        pub = set((CR.read_profile() or {}).get("public") or [])
+        mine = [e for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub]
+        if not owner or not mine:
+            return False
+        addr = await self._first_seat_addr(tgt)
+        rc, res = await self._resolve(addr) if addr else (2, {})
+        if rc != 0:
+            return False
+        frm = mine[0]
+        keys = _keys(frm["key"])
+        tags = [N.Tag.parse(x) for x in (["aib-v", "1"], ["aib-type", typ],
+                                         ["aib-from", "%s/%s/%s" % (owner, frm.get("cabin") or "main", frm["seat5"])])]
+        gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(res["seat"]["npub"]), body, rumor_extra_tags=tags)
+        keys = None
+        c = await _client(res["dm_relays"])
+        try:
+            out = await c.send_event(gw)
+        except Exception:   # noqa: BLE001
+            out = None
+        finally:
+            await c.shutdown()
+        return out is not None and out.success
+
+    async def push_offers(self, now=None):
+        """offer-out 裡的買單送出去;送不出去留著下一輪再試,超過 EXPIRE_S 就丟(帳那邊會記 expired)。"""
+        import chat_offers as CO
+        now = time.time() if now is None else now
+        for p, rec in CO.queued(self.root):
+            if now - int(rec.get("at") or 0) >= CO.EXPIRE_S:
+                p.unlink(missing_ok=True)
+                continue
+            if await self._send_owner_msg(rec.get("to"), "offer", json.dumps(rec["msg"], ensure_ascii=False)):
+                p.unlink(missing_ok=True)
+                audit(self.root, "offer-out", "-", rec.get("to"), "buy")
 
     async def _push_card(self, tgt, owner, frm, now):
         """名片(第 32 節,Andy 23:5x「社群只給好友看」):我宣告的社群帳號私下送給這位好友 / 我的機器;
@@ -938,6 +981,29 @@ class Receiver(object):
         GF.write_room(self.root, owner, snap)
         audit(self.root, "space-in", "-", from_npub, "room" if snap.get("rooms") else "island")
 
+    async def on_offer(self, rumor, tags, from_npub):
+        """掛單(第 36.2 節):只收驗得到名冊的好友 / 我的機器;買單 ⇒ 賣方核心決定並回覆;回覆 ⇒ 買方記帳。不進佇列。"""
+        import chat_offers as CO
+        parsed = GF.parse_address(tags.get("aib-from") or "") or {}
+        owner = parsed.get("owner")
+        if not owner or CR.is_blocked(owner) or not (CR.is_mine(owner) or CR.is_friend(owner)):
+            return
+        rc, res = await self.sender._resolve(tags.get("aib-from"))
+        if rc != 0 or res["seat"]["npub"] != from_npub:
+            return
+        msg = CO.parse(rumor.content())
+        if msg is None:
+            audit(self.root, "offer-in", "-", from_npub, "bad")
+            return
+        if msg["op"] == "buy":
+            reply = CO.seller_decide(None, owner, msg)
+            audit(self.root, "offer-in", "-", from_npub, "buy:" + (reply["op"] if reply else "dropped"))
+            if reply:
+                await self.sender._send_owner_msg(owner, "offer", json.dumps(reply, ensure_ascii=False))
+            return
+        got = CO.buyer_reply(None, owner, msg)
+        audit(self.root, "offer-in", "-", from_npub, (got or {}).get("status") or "ignored")
+
     async def on_card(self, rumor, tags, from_npub):
         """名片(第 32 節):好友 / 我的其他機器私下送來的社群帳號。陌生、封鎖 ⇒ 靜默丟;不進佇列、不回條。"""
         parsed = GF.parse_address(tags.get("aib-from") or "") or {}
@@ -1037,6 +1103,8 @@ class Receiver(object):
             return await self.on_card(rumor, tags, from_npub)
         if tags.get("aib-type") == "space":
             return await self.on_room(rumor, tags, from_npub)
+        if tags.get("aib-type") == "offer":
+            return await self.on_offer(rumor, tags, from_npub)
         is_aib = tags.get("aib-v") == "1"
         self.led.received(msgid, {"v": 1, "from": from_npub, "key": entry["key"], "seat": entry["seat5"],
                                   "aib": is_aib, "lang": tags.get("aib-lang"), "at": int(time.time())})
@@ -1296,6 +1364,10 @@ async def serve(root):
                     await asyncio.to_thread(CV.verify_round, root)
                 except Exception as err:   # noqa: BLE001
                     sys.stderr.write("verify:%s\n" % type(err).__name__)
+            try:
+                await sender.push_offers()
+            except Exception as err:   # noqa: BLE001
+                sys.stderr.write("offers:%s\n" % type(err).__name__)
             if time.time() - last_presence >= PRESENCE_TICK_S:
                 last_presence = time.time()
                 try:

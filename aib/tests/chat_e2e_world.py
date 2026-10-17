@@ -287,8 +287,18 @@ def up(d, venv, out=sys.stdout):
         "buildings": [{"cabin": bob.cab, "x": 6, "y": 5, "style": "港口木造", "kind": "hall", "lv": 2},
                       {"cabin": bob.cab, "x": 18, "y": 8, "kind": "dock", "lv": 1, "building": {"start": 1792200000, "done": 1792286400}},
                       {"cabin": bob.cab, "x": 99, "y": 99, "kind": "far"}],
-        "decor": [{"kind": "tree", "x": 1, "y": 1}], "terrain": {"sea": "east", "seed": 4217}, "ip": "192.168.1.9"}, ensure_ascii=False),
+        "decor": [{"kind": "tree", "x": 1, "y": 1}], "terrain": {"sea": "east", "seed": 4217}, "ip": "192.168.1.9",
+        # 包 K(第 36 節):風格、寵物、地形格子、建築外觀、掛單
+        "style": "cn", "pets": [{"kind": "cat", "lv": 3}, {"kind": "Bad Kind", "lv": 1}],
+        "offers": [{"id": "0a1b2c3d", "item": "plank", "n": 5, "unit": 3, "at": 1792200000},
+                   {"id": "deadbeef", "item": "brick", "n": 1, "unit": 9, "at": 1792200000}]}, ensure_ascii=False),
         encoding="utf-8")
+    isl = json.loads((bob.chat / "island.json").read_text(encoding="utf-8"))
+    isl["terrain"]["grid"] = {"v": 1, "rle": "g200s100w84"}                       # 24 × 16 = 384 格
+    isl["buildings"][0]["look"] = {"base": "cn", "wall": "stone", "roof": "eave", "sign": "food",
+                                   "c": {"wall": "#AA3322", "roof": "#224488", "accent": "nope"}}
+    (bob.chat / "island.json").write_text(json.dumps(isl, ensure_ascii=False), encoding="utf-8")
+    bob.cli("offer", "host", "on", check=True)                    # 第 36.2 節:Bob 這台是掛單機
     (bob.chat / "room.json").write_text(json.dumps({            # 艦長室寫的房間資料(故意夾禁止欄位測過濾)
         "v": 1, "ship": {"name": "Bob 商會號", "sign": "BOB TRADING", "line": "歡迎來談合作", "ip": "192.168.1.9"},
         "cabins": [{"cabin": bob.cab, "floors": [{"id": "1F", "name": "大廳"}, {"id": "2F", "name": "業務部"}],
@@ -318,6 +328,15 @@ def up(d, venv, out=sys.stdout):
     wait_for(lambda: andy.cli("room", bob.owner(), "--json").returncode == 0, 60, "Bob 的空間快照(島 + 艦長室)到 Andy")
     wait_for(lambda: any(c["owner"] == bob.owner() and any(s.get("verified") for s in c.get("socials") or [])
                          for c in andy.json("contacts", "--json")["contacts"]), 60, "Bob 的社群證明驗過")
+    wait_for(lambda: len(andy.json("offers", bob.owner(), "--json")["offers"]) == 2, 60, "Bob 的掛單到 Andy")
+    # 掛單往來(第 36.2 節):成交、改價退回、搶最後一份(Bob 的核心一筆一筆在帳本鎖底下決定)
+    buys = {"ok": andy.json("offer", "buy", bob.owner(), "0a1b2c3d", "2", "--unit", "3", "--json")["trade"]["nonce"],
+            "price": andy.json("offer", "buy", bob.owner(), "0a1b2c3d", "1", "--unit", "2", "--json")["trade"]["nonce"],
+            "race1": andy.json("offer", "buy", bob.owner(), "deadbeef", "1", "--unit", "9", "--json")["trade"]["nonce"],
+            "race2": andy.json("offer", "buy", bob.owner(), "deadbeef", "1", "--unit", "9", "--json")["trade"]["nonce"]}
+    wait_for(lambda: all(t["status"] != "pending" for t in andy.json("offer", "list", "--json")["trades"]), 60, "Bob 回覆 4 筆買單")
+    world["results"]["buys"] = buys
+    (d / "world.json").write_text(json.dumps(world, ensure_ascii=False, indent=2), encoding="utf-8")
     out.write("假世界好了:%s\n" % d)
     out.write("  中繼站 %s、證明站 %s\n" % (hubinfo["relay"], hubinfo["site"]))
     out.write("  Bob dm:%s;Cara dm:%s;Eve dm:%s;Dan 申請 rc %s\n" % (
@@ -383,6 +402,21 @@ def check(d, out=sys.stdout):
     ok((wcab.get("space") or {}).get("room") is True and (wcab.get("space") or {}).get("fresh") is True,
        "世界格標出 Bob 有島與艦長室可走進去")
     ok(andy.cli("island", O["cara"], "--json").returncode != 0, "陌生人的島看不到")
+    ok(ii.get("style") == "cn" and ii.get("pets") == [{"kind": "cat", "lv": 3}]
+       and (ii.get("terrain") or {}).get("grid") == {"v": 1, "rle": "g200s100w84"}, "島的風格、寵物(壞的濾掉)、地形格子")
+    lk = (ii.get("buildings") or [{}])[0].get("look") or {}
+    ok(lk.get("c") == {"wall": "#aa3322", "roof": "#224488"} and lk.get("sign") == "food", "建築外觀:顏色存小寫、壞色濾掉")
+    offers = {o["id"]: o for o in andy.json("offers", O["bob"], "--json")["offers"]}
+    ok(set(offers) == {"0a1b2c3d", "deadbeef"} and offers["0a1b2c3d"]["unit"] == 3, "Bob 島上的兩筆掛單")
+    buys = w["results"].get("buys") or {}
+    mine = {t["nonce"]: t for t in andy.json("offer", "list", "--json")["trades"] if t["role"] == "buyer"}
+    st = {k: (mine.get(v) or {}).get("status") for k, v in buys.items()}
+    ok(st.get("ok") == "ok" and (mine.get(buys.get("ok")) or {}).get("total") == 6, "買 2 個木板:成交、總價 6")
+    ok(st.get("price") == "reject" and (mine.get(buys.get("price")) or {}).get("why") == "price_changed", "單價不對:退回 price_changed")
+    ok(sorted([st.get("race1"), st.get("race2")]) == ["ok", "reject"], "搶最後一塊磚:一筆成交、一筆退回(不超賣)")
+    bob_o = Owner(d, "bob", hub, "")
+    bl = {o["id"]: o for o in bob_o.json("offer", "list", "--json")["offers"]}
+    ok((bl.get("0a1b2c3d") or {}).get("left") == 3 and (bl.get("deadbeef") or {}).get("left") == 0, "Bob 的帳:木板剩 3、磚賣完")
     reqs = andy.json("requests", "--json")["requests"]
     ok([r["owner"] for r in reqs] == [O["dan"]], "申請分頁只有 Dan")
     refused = andy.json("refused", "--json")["refused"]
