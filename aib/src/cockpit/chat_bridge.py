@@ -358,7 +358,14 @@ def window_command(env=None):
     keep = ["HOME", "PATH", "LANG", "EZ2_AIB_INSTANCE", "EZ2_AIB_INSTANCE_HOME", "EZ2_AIHUB_SOCKET", "EZ2_AIB_ROOT",
             "EZ2_AIB_LOCALE", "AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR", "AIB_CHAT_TICK"]
     pairs = ["%s=%s" % (k, shlex.quote(env[k])) for k in keep if env.get(k)]
-    return "exec env %s %s %s run" % (" ".join(pairs), shlex.quote(sys.executable), shlex.quote(str(HERE / "chat_bridge.py")))
+    me = "env %s %s %s" % (" ".join(pairs), shlex.quote(sys.executable), shlex.quote(str(HERE / "chat_bridge.py")))
+    # 開發文件第 37.3 節(10-18 fishmac 單艙:轉接程式停了、窗格卻還活著 ⇒ 沒人重起):run 結束後開關還開著 ⇒ 等 RESTART_GAP 秒再起;
+    #   aib chat off(開關關了)⇒ 迴圈結束、窗格死。版本更新後停掉舊的,下一輪自然載入新程式。
+    return "exec sh -c %s" % shlex.quote("while :; do %s run; %s enabled >/dev/null 2>&1 || exit 0; sleep %d; done"
+                                         % (me, me, RESTART_GAP))
+
+
+RESTART_GAP = 5           # 秒;sys.chat 窗的迴圈:run 結束、開關還開著 ⇒ 等這麼久再起(第 37.3 節)
 
 
 def ensure_window(socket, env=None, tmux="tmux"):
@@ -451,6 +458,8 @@ def cmd_on(a, env, out):
     else:
         out.write(T("window_no_hub") + "\n")
     out.write(T("public_hint") + "\n")
+    if not backup_state(env)["at"]:
+        out.write(T("backup_hint") + "\n")             # 第 37.4 節:主人金鑰只在這台,硬碟壞 / 重灌就沒了
     return 0
 
 
@@ -554,7 +563,7 @@ def status_record(env):
     st = read_status(root) or {}
     pid = st.get("pid")
     running = st.get("state") not in (None, "stopped") and pid_alive(pid)
-    return {
+    rec = {
         "enabled": is_enabled(env),
         "running": running,
         "state": st.get("state") if running else ("stopped" if st else None),
@@ -571,6 +580,46 @@ def status_record(env):
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
+    rec["healthy"], rec["why"] = health(rec)
+    rec["backup"] = backup_state(env)
+    return rec
+
+
+def health(rec):
+    """第 37.3 節:(healthy, why)。沒開 ⇒ ("off", None);開著但沒當班 ⇒ not_running;當班但沒心跳(沒接上中繼站)⇒
+    no_relay(還沒發名冊 / 沒金鑰)或 stale_heartbeat;工人回報全部站斷線 ⇒ no_relay。都好 ⇒ (True, None)。"""
+    if not rec["enabled"]:
+        return "off", None
+    if not rec["running"]:
+        return False, "not_running"
+    if (rec.get("worker") or {}).get("offline"):
+        return False, "no_relay"
+    if not rec["heartbeat"]:
+        return False, "stale_heartbeat" if rec.get("state") == "published" else "no_relay"
+    return True, None
+
+
+BACKUP_NAG_S = 7 * 86400   # 第 37.4 節:開通滿 7 天還沒備份 ⇒ 提醒
+
+
+def backup_state_path(env=None):
+    return chat_home(env) / "backup-state.json"
+
+
+def backup_state(env=None, now=None):
+    """{at: 最後備份時間或 None, due: 該不該提醒}。開通(開關檔)滿 7 天、有主人金鑰、從沒備份 ⇒ due。"""
+    now = time.time() if now is None else now
+    try:
+        at = json.loads(backup_state_path(env).read_text(encoding="utf-8")).get("at")
+    except (OSError, ValueError, AttributeError):
+        at = None
+    try:
+        since = switch_path(env).stat().st_mtime
+    except OSError:
+        since = None
+    import nostr_keys as NK
+    has_owner = bool((NK.read_map(env).get("owner") or {}).get("npub"))
+    return {"at": at, "due": bool(has_owner and not at and since is not None and now - since >= BACKUP_NAG_S)}
 
 
 def _friends(env, kind="friends"):
@@ -1340,6 +1389,8 @@ def cmd_backup(a, env, out):
     try:
         if a.cmd == "backup":
             n = CB.backup(a.file, pw, env)
+            write_json(str(backup_state_path(env)), {"v": VERSION, "at": int(time.time())})   # 第 37.4 節:不記檔名、不記密語
+            os.chmod(str(backup_state_path(env)), 0o600)
             out.write(T("backup_done", n=n, file=a.file) + "\n")
         else:
             r = CB.restore(a.file, pw, env, replace=a.replace, chat_on=is_enabled(env))
@@ -1383,6 +1434,10 @@ def cmd_status(a, env, out):
         else:
             out.write(T("status_clock_warn" if c.get("warn") else "status_clock_ok", offset=c["offset"]) + "\n")
     out.write(T("status_heartbeat_" + ("yes" if rec["heartbeat"] else "no")) + "\n")
+    if rec["healthy"] is False:
+        out.write(T("status_unhealthy_" + rec["why"]) + "\n")
+    if rec["backup"]["due"]:
+        out.write(T("backup_hint") + "\n")
     return 0
 
 
