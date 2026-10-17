@@ -368,7 +368,8 @@ def live_seats(home=None, env=None):
             continue
         seen.add(code)
         out.append({"seat5": code, "cabin": inst.rsplit("-", 1)[-1] if inst else None, "persona_uid": pu,
-                    "name": (disp.get(code) or {}).get("display_name"), "role": rec.get("role")})   # 名冊用(1.3)
+                    "name": (disp.get(code) or {}).get("display_name"), "role": rec.get("role"),
+                    "provider": rec.get("provider")})   # 名冊用(1.3);provider 給房間快照(第 34 節)
     return out
 
 
