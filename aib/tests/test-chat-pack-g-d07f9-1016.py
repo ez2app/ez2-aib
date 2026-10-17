@@ -168,8 +168,8 @@ class Network(unittest.TestCase):
         a, x, b, y = self.pair(b_friends_a=False)
         time.sleep(8)
         self.assertEqual(GF.read_world(b.root), {}, "不是好友送來的 presence 要丟")
+        a.cli("share", b.owner, "off")          # 先關再加好友:反過來的話,兩步之間 A 那一輪在線剛好送出就會被收(時序競態)
         b.cli("friend", "add", a.owner)
-        a.cli("share", b.owner, "off")
         time.sleep(8)
         self.assertEqual(GF.read_world(b.root), {}, "等級 off 不准送")
 

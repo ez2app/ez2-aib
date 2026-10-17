@@ -59,6 +59,7 @@ def _emoji_of(home, persona_uid):
 
 ISLAND_MAX = 64              # 島最大 64 × 64 格(@74e8b 11:59)
 _KEY_RE = __import__("re").compile(r"^[a-z0-9_]{1,24}$")      # kind、res 的名稱(艦長室定義意思,核心只驗型別)
+_STYLE_RE = __import__("re").compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")  # 島的風格包 id(@74e8b 14:50);空 / 沒有 = 基本風格
 RES_MAX = 50
 
 
@@ -83,13 +84,15 @@ def _int_in(v, lo, hi):
 def clean_island(x):
     """island.json(艦長室寫)⇒ 驗過的島:size ≤ 64×64 格;建築 x,y 要在島內;島主只收名字與 emoji / 背景字(不收圖檔)。
     建築的 kind / lv / building{start,done}、島的 age / res{名稱: 數量} 由艦長室定義意思,核心只驗型別與範圍
-    (kind 與名稱 [a-z0-9_]{1,24}、lv / age 0–99、數量非負整數、名稱最多 50 個),不合的欄位當沒有。"""
+    (kind 與名稱 [a-z0-9_]{1,24}、lv / age 0–99、數量非負整數、名稱最多 50 個),不合的欄位當沒有。
+    島的 style = 風格包 id [a-z0-9][a-z0-9_-]{0,23};空、沒有或不合 ⇒ None(基本風格,收件端沒有那個包也退回基本)。"""
     size = x.get("size") if isinstance(x.get("size"), dict) else {}
     w = size.get("w") if _int_in(size.get("w"), 1, ISLAND_MAX) else 16
     h = size.get("h") if _int_in(size.get("h"), 1, ISLAND_MAX) else 16
     owner = x.get("owner") if isinstance(x.get("owner"), dict) else {}
     av = owner.get("avatar") if isinstance(owner.get("avatar"), dict) else {}
     out = {"name": x.get("name") if isinstance(x.get("name"), str) else None, "size": {"w": w, "h": h},
+           "style": x.get("style") if isinstance(x.get("style"), str) and _STYLE_RE.match(x["style"]) else None,
            "owner": {"name": owner.get("name") if isinstance(owner.get("name"), str) else None,
                      "avatar": {k: av.get(k) for k in ("emoji", "bg") if isinstance(av.get(k), str)}},
            "terrain": x.get("terrain") if isinstance(x.get("terrain"), (dict, list)) else None,
