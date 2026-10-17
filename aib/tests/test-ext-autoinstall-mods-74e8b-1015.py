@@ -252,7 +252,8 @@ class Register(Base):
         rc, out = self.run_mod(aib_ext, "enable", "aib-boards")
         self.assertEqual(rc, 0, out)
         self.assertIn("plugin update aib-boards@ez2-aib-boards", self.calls()[n:])
-        self.assertEqual(self.claude_state()["plugins"]["aib-boards@ez2-aib-boards"], "0.2.0")
+        want = json.loads((BOARDS / "aib-ext.json").read_text(encoding="utf-8"))["version"]   # 跟著本倉 mod 的版號,不寫死
+        self.assertEqual(self.claude_state()["plugins"]["aib-boards@ez2-aib-boards"], want)
 
     def test_a4_no_claude_skips(self):
         os.environ["PATH"] = clean_path(None)
