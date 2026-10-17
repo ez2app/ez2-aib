@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.21
+
+- **Send online messages as the human from the captain room**: `aib chat send <address> --as-human --cabin <cabin>` (text on stdin). On macOS every send needs Touch ID (or the login password); the prompt text is built by aib ("send to <who>: <first 40 chars>"), one prompt at a time, and there is no way to skip it — if Touch ID is off or unavailable the send is refused. Other platforms use the captain-room PIN (pbkdf2-hashed, at least 6 digits, lockout that doubles after each miss up to 1 hour); the PIN only guards against mistakes, not against other programs running as you.
+- **Screenshots in a uid vault go to the second brain's gallery**: the screenshot helper finds the gallery by route (`storage.gallery`), creates a "Screenshots" subfolder when missing, and only falls back to the Desktop (with the reason in `status`) when there is no gallery. The screenshot editor can also save to the clipboard only.
+- **Friends see your island's sky** (season, weather, time of day, festival, realm); only these keys travel, each a short lowercase name. Values that end with a newline are no longer accepted anywhere in island snapshots.
+- **Handoff lists stuck messages**: `aib handoff collect` shows messages from the last 48 hours that never reached the other seat's input box (held because of a draft), both sent and received, so the next session knows what to re-send.
+
 ## 0.1.20
 
 - **`aib vault doctor --fix` keeps persona card folder titles**: 0.1.19 dropped the titles of non-`fld_` folders (persona card folders) when rewriting indexes, so card references fell back to raw uids. Retired `fld_` folders are still removed. Do not run `doctor --fix` on 0.1.19.
