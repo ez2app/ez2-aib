@@ -4593,5 +4593,8 @@
   "aib.chat.profile_bad_space": "空間分享只能是 none / island / room(room 只能逐位打開,不能當預設)",
   "aib.chat.help.island": "走到好友的島上(戶外:地形、建築外觀、走動的人)",
   "aib.chat.help.space": "空間分享給誰、到哪(none / island / room;--default 改預設)",
-  "aib.vault_cli.doctor_updated_ambiguous": "另有 {count} 篇的 updated 只有日期、或沒有秒與時區,換算要猜,沒改也不算問題(要統一請另外決定)"
+  "aib.vault_cli.doctor_updated_ambiguous": "另有 {count} 篇的 updated 只有日期、或沒有秒與時區,換算要猜,沒改也不算問題(要統一請另外決定)",
+  "aib.vault_cli.help_mkdir": "新增 uid 資料夾並登記(Obsidian 的「新增資料夾」按鈕用這個)",
+  "aib.vault_cli.help_mkdir_title": "資料夾標題(顯示用;實際資料夾名是 folderId)",
+  "aib.vault_cli.mkdir_done": "已新增資料夾「{title}」:{path}"
 }
