@@ -1021,7 +1021,7 @@
   "aib.legend.model_requested": "◌=開席要求的模型,尚未觀測到",
   "aib.onboard.skipped_notice": "你的選擇是:【不載入】。若想重新載入、或載入全部,可以重新執行:aib seat onboard --window {window} --profile full(全部)/ --profile rules(只鐵則);若不想載入,則可直接對話!",
   "aib.onboard.timeout_notice": "開席選單 {seconds} 秒未選,已自動【不載入】。若想載入全部或只鐵則,可以執行:aib seat onboard --window {window} --profile full(全部)/ --profile rules(只鐵則);若不想載入,則可直接對話!",
-  "aib.onboard.now_rule": "[鐵則九 · 回報主項目] 每一席開工、換主項目、換狀態、每做完一步、每次回報時都要跑:aib now \"主項目\" 做完幾步/總共幾步(例:aib now \"AIB 停電恢復\" 2/5),顯示在你輸入框下方 CTX 那一行上面,進度 % 由步數算、不自己填(先拆好步數就固定,做完一步才加一)。狀態照實選:正在做不加(【忙碌中】橙);等別席回信、交件、推版加 --state reply(【等回應】黃);卡在要真人決定加 --state decide(【等你決定】紅);做完或沒事做 aib now --clear(【我很閒】亮灰)。認不出自己是哪一席就加 --seat <席位碼>。開始新的主項目時加 --new(啟動時間從現在算)。",
+  "aib.onboard.now_rule": "[鐵則九 · 回報主項目] 每一席開工、換主項目、換狀態、每做完一步、每次回報時都要跑:aib now \"主項目\" 做完幾步/總共幾步(例:aib now \"AIB 停電恢復\" 2/5),顯示在你輸入框下方 CTX 那一行上面,進度 % 由步數算、不自己填(先拆好步數就固定,做完一步才加一)。狀態照實選:正在做不加(【忙碌中】橙);等別席回信、交件、推版加 --state reply(【等回應】黃);卡在要真人決定加 --state decide(【等你決定】紅);做完或沒事做 aib now --clear(【我很閒】亮灰)。認不出自己是哪一席就加 --seat <席位碼>。開始新的主項目時加 --new(初始時間從現在算)。",
   "aib.feature.dialog_panel": "AIB 對話區",
   "aib.feature.pending_panel": "AIB 訊息待審區",
   "aib.verify.help": "切換這個專案的驗證模式:快驗(預設)、嚴格",
