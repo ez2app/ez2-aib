@@ -256,6 +256,8 @@ def _rumor_tags(rec, from_addr):
             t.append([tag, str(rec[key])])
     if rec.get("expires"):
         t.append(["aib-expires", str(rec["expires"])])
+    if rec.get("author") in GF.AUTHORS:                                   # 第 35 節第 2 點:誰寫的(本人 = 艦長室驗過 PIN)
+        t.append(["aib-author", rec["author"]])
     tz = _local_tz()
     if tz:
         t.append(["aib-tz", tz])
