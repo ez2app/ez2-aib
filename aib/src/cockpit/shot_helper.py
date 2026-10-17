@@ -170,23 +170,66 @@ def vault_root(environ=None):
     return None
 
 
-def resolve_shot_dir(environ=None, home=None):
+GALLERY_ROUTE = "storage.gallery"   # uid 庫的「00.Ez2_圖庫」路由;截圖放它底下的「截圖」子夾
+SHOT_SUB = "截圖"
+
+
+def _gallery_shot(vault, items, create):
+    """uid 庫:用 routeKey storage.gallery 找圖庫,底下「截圖」子夾 ⇒ (路徑, 來源);沒有就建(create=True,同 aib vault mkdir 的
+    folder_add:建夾 + 同步 folder-id-index 等衍生索引)。10-18 uid 庫沒有舊路徑那一筆 ⇒ 原本一律退桌面。"""
+    gal = next((it for it in items if isinstance(it, dict) and it.get("routeKey") == GALLERY_ROUTE
+                and it.get("status", "active") == "active" and it.get("folderPath")), None)
+    if not gal or not os.path.isdir(os.path.join(vault, gal["folderPath"])):
+        return None, "no_gallery"
+    sub = next((it for it in items if isinstance(it, dict) and it.get("parentFolderId") == gal["folderId"]
+                and it.get("title") == SHOT_SUB and it.get("status", "active") == "active" and it.get("folderPath")), None)
+    if sub and os.path.isdir(os.path.join(vault, sub["folderPath"])):
+        return os.path.join(vault, sub["folderPath"]), "gallery"
+    if not create:
+        return os.path.join(vault, gal["folderPath"]), "gallery_no_sub"   # 只看狀態時不建夾:先指圖庫本身
+    try:
+        vdir = str(REPO / "tools" / "vault")
+        if vdir not in sys.path:
+            sys.path.insert(0, vdir)
+        import uid_layout_convert as U
+        r = U.folder_add(pathlib.Path(vault), gal["folderId"], SHOT_SUB)
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 建不了 ⇒ 圖庫本身(還在第二大腦裡)
+        return os.path.join(vault, gal["folderPath"]), "gallery_sub_failed:%s" % str(getattr(exc, "code", exc))[:120]
+    return os.path.join(vault, r["folderPath"]), "gallery_created" if r.get("created") else "gallery"
+
+
+def shot_dir_info(environ=None, home=None, create=True):
+    """截圖存哪 ⇒ {dir, source, why}。source:env / legacy(舊庫 legacyPaths)/ gallery(uid 庫圖庫/截圖)/ gallery_created /
+    legacy_path / desktop(找不到,why 說原因)"""
     env = os.environ if environ is None else environ
     given = env.get("EZ2_AIB_SHOT_DIR")
     if given:
-        return os.path.expanduser(given)
+        return {"dir": os.path.expanduser(given), "source": "env", "why": ""}
     vault = vault_root(env)
+    why = "no_vault_env"
     if vault:
         idx = _read_json(os.path.join(vault, ".ez2", "index", "folder-id-index.json")) or {}
-        for it in idx.get("items") or []:
+        items = idx.get("items") or []
+        for it in items:
             if isinstance(it, dict) and (it.get("legacyPaths") or [None])[0] == LEGACY_SHOT and it.get("folderPath"):
                 d = os.path.join(vault, it["folderPath"])
                 if os.path.isdir(d):
-                    return d
+                    return {"dir": d, "source": "legacy", "why": ""}
+        if items:
+            d, src = _gallery_shot(vault, items, create)
+            if d:
+                return {"dir": d, "source": src.split(":")[0], "why": src.split(":", 1)[1] if ":" in src else ""}
+            why = src
+        else:
+            why = "no_folder_index"
         d = os.path.join(vault, LEGACY_SHOT)
         if os.path.isdir(d):
-            return d
-    return str(_home(home) / "Desktop")   # the maintainer 10-09:找不到對應的截圖資料夾就存桌面
+            return {"dir": d, "source": "legacy_path", "why": ""}
+    return {"dir": str(_home(home) / "Desktop"), "source": "desktop", "why": why}   # the maintainer 10-09:找不到對應的截圖資料夾就存桌面
+
+
+def resolve_shot_dir(environ=None, home=None, create=True):
+    return shot_dir_info(environ, home, create)["dir"]
 
 
 # ---------- 存回時送到某一席(10-09 the maintainer:「存到 aib 的 ai 對話框裡,要能有預載圖」)----------
@@ -664,7 +707,8 @@ def write_agent_config(home=None, environ=None):
         "python": sys.executable,
         "helper": str(pathlib.Path(__file__).resolve()),
         "interval": INTERVAL_S,
-        "shot_dir": resolve_shot_dir(environ, home),
+        "shot_dir": resolve_shot_dir(environ, home, create=False),
+        "vault": vault_root(environ),       # 10-18:小幫手 / 鼠鬚管叫的時候沒有 vault 環境變數 ⇒ 記下來,截圖時再找一次(會建「截圖」子夾)
         "editor_dir": str(SHOT_SRC / "editor"),
         "sock_dir": socket_dir(environ),
         "locale": LOC,
@@ -919,9 +963,20 @@ def cmd_alive(args):
     return 0 if r else 1
 
 
+def shoot_dir(cfg, environ=None):
+    """截圖時才找存哪:環境沒有 vault 變數就用 agent.json 記的 vault(開艙時記的 shot_dir 可能是當時找不到的桌面)"""
+    env = dict(os.environ if environ is None else environ)
+    if cfg.get("vault") and not vault_root(env):
+        env["EZ2_VAULT_DIR"] = cfg["vault"]
+    info = shot_dir_info(env)
+    if info["source"] == "desktop" and cfg.get("shot_dir") and not cfg.get("vault"):
+        return cfg["shot_dir"]          # 舊版 agent.json(沒記 vault)照舊
+    return info["dir"]
+
+
 def edit_and_deliver(image, cfg, prefer=None):
     """開編輯器編 image;存回時有選席位就送進那一席的輸入框,送成功就在 [Image #…] 上方浮縮圖。"""
-    shot_dir = cfg.get("shot_dir") or resolve_shot_dir()
+    shot_dir = shoot_dir(cfg)
     editor = pathlib.Path(cfg.get("editor_dir") or (SHOT_SRC / "editor"))
     sock_dir = cfg.get("sock_dir") or socket_dir()
     last_save = shot_home() / "last-save.json"
@@ -994,7 +1049,8 @@ def cmd_status(args):
     _, exe = app_paths()
     doc = {"rc": 0, "reason": "status", "agent_running": agent_running(), "agent": agent_status(),
            "built": exe.exists(), "build": _read_json(shot_home() / "build.json") or {},
-           "ime": ime_status(), "prompt": (_read_json(shot_home() / "state.json") or {}).get("ime_prompt")}
+           "ime": ime_status(), "prompt": (_read_json(shot_home() / "state.json") or {}).get("ime_prompt"),
+           "shot_dir": shot_dir_info(create=False)}   # 10-18:存哪、從哪找到的;退桌面時 why 說原因
     return _emit(doc)
 
 
