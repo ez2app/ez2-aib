@@ -35,8 +35,8 @@ VERSION = 1
 ROSTER_D = "aib-roster"
 KIND_ROSTER = 30078
 KIND_DM_RELAYS = 10050
-# 第 19.1 節:第 1 期只用 primal、nos.lol 兩站(收信專用站費用與頻率上限查清楚前不放)
-DEFAULT_RELAYS = ("wss://relay.primal.net", "wss://nos.lol")
+# 第 19.1 節:第 1 期只用免費公開站;10-17 加第三站 offchain.pub(五站實測:連線 0.8–1.3 秒、收件 0.4–0.7 秒,damus 拒收)
+DEFAULT_RELAYS = ("wss://relay.primal.net", "wss://nos.lol", "wss://offchain.pub")   # 第三站:10-17 五個免費站實測選的(Andy 21:5x)
 ENVELOPES = [1]
 _RELAY_RE = re.compile(r"^wss://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$")
 _LOCAL_RELAY_RE = re.compile(r"^ws://127\.0\.0\.1:[0-9]{1,5}$")    # 只給測試(本機假中繼站)

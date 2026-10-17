@@ -4,6 +4,14 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.19
+
+- **Cleaner installs and upgrades**: a copy that is 5 or more minor versions behind is backed up and installed fresh; the installer ends with commands you can copy to open your first seat; PATH is no longer added twice to your shell profile.
+- **Persona card list refreshes after an upgrade**: `aib update` / `install.sh` rebuild `cards.json` when the program version changes, and `aib doctor` rebuilds one made by an older aib (cards you edited by hand or a changed persona library are reported, never overwritten).
+- **Clearer command hints**: `aib dm --help` prints its usage; the status line's read hint includes `--seat`; "folder not found" errors name the full path.
+- **Chat**: a third default relay (offchain.pub).
+- README: new projects are approved with `aib newproj --approve` (Touch ID on macOS when an AI seat runs it); `safe` mode is explained as each AI's own permission settings.
+
 ## 0.1.18
 
 - **Touch ID approval on macOS**: when an AI seat runs `aib newproj --approve`, the Mac shows a Touch ID (or login password) prompt and the project's goals and red lines are approved only after the owner touches the sensor. The prompt text is built by aib, each prompt carries a one-time nonce, only one prompt can be open per machine, and `AIB_TOUCHID=0` turns the path off. Other platforms keep the terminal-only approval.

@@ -68,7 +68,7 @@ aib update                                          # 裝好之後也可以這�
 #          git clone https://github.com/ez2app/ez2-aib ~/ez2-aib && export PATH="$HOME/ez2-aib/bin:$PATH"
 
 cd your-project
-aib claude safe dev                  # 開一個叫 dev 的 Claude Code 席位(每個動作都先問你)
+aib claude safe dev                  # 開一個叫 dev 的 Claude Code 席位(照 Claude 自己的權限設定,見下)
 aib codex safe qa                    # 旁邊再開一個叫 qa 的 Codex 席位
 aib test tests/test_something.py     # 第一次:實跑並記下來
 aib test tests/test_something.py     # 什麼都沒改:沿用
@@ -93,7 +93,7 @@ Python<sup>[18]</sup> 3.9 以上,Linux 或 macOS;駕駛艙需要 macOS 和 tmux�
 左中右三欄、滑鼠選單、席位互傳訊息、對話快滿時的交接筆記,以及艦隊工具<sup>[24]</sup>(席位身分、派工、巡查)。
 
 ```sh
-aib claude safe dev        # 開一席 Claude Code,角色 dev,每個動作先問你
+aib claude safe dev        # 開一席 Claude Code,角色 dev,照 Claude 自己的權限設定(見下)
 aib codex dgrs qa          # 開一席 Codex,角色 qa,全部放行(見下)
 aib --help-cockpit         # 所有選項
 ```
@@ -102,8 +102,10 @@ aib --help-cockpit         # 所有選項
   駕駛艙還沒在 Linux 上試過。
 - **macOS 上的 bash 測試:** aib 追蹤 bash 腳本要 bash 4.1 以上。macOS 內建的是 3.2,跑 bash 腳本的測試會判「量不到」、每次重跑
   (安全,只是比較慢)。`brew install bash`<sup>[26]</sup> 之後就能沿用。
-- **權限模式,每席自己選:**`safe` 保留 AI 工具原本的保護(改檔、跑指令前會問你);`dgrs` **只對那一席**關掉這些保護,
-  AI 不問就做,開席時 aib 會印警告和改用 `safe` 重開的指令。開每一席時自己決定。
+- **權限模式,每席自己選:**`safe` 不替 AI 工具關掉任何保護,**照那家 AI 自己的權限設定**(aib 不加任何權限旗標);
+  Claude Code 新版的預設是 auto 模式(畫面會顯示 auto mode on),它判斷安全的動作會直接做、其他的才問你 ——
+  要每個動作都先問,在那家 AI 自己的設定裡改(Claude Code:shift+tab 切換,或 settings.json 的 permissions.defaultMode)。
+  `dgrs` **只對那一席**關掉這些保護,AI 不問就做,開席時 aib 會印警告和改用 `safe` 重開的指令。開每一席時自己決定。
 - **Claude** 是 Anthropic 的商標;Codex 是 OpenAI 的;Grok 是 xAI 的。aib 與它們沒有關係。
 
 **註**
@@ -130,7 +132,7 @@ aib handoff status                                 # 這一席這一輪寫過交
 - **人格檔:**一定要有這三個標題(照寫),底下都要有內容:`## 職責`、`## 紅線`、`## 知識域`。少了 `aib newrole` 會拒絕(`PERSONA_LINT_FAIL`)。
 - **`--actor`:**你自己的帳本署名,`<角色>@<你的席碼>/<AI>`,例如 `root@54321/Claude`(或設 `EZ2_OWNER_SIG`)。要綁席才需要:給了 `--seat` 卻沒給 `--actor`,`newrole` 照樣建卡,但不綁席。沒給 `--seat` 時 `newrole` / `newproj` 只建卡。
 - **先試跑:**`newrole`、`newproj`、`dm` 加 `--dry-run`,只看會發生什麼,不寫檔、不寄出。
-- **新專案:**目標與紅線一開始是初稿,你核准後才生效;目前還沒有核准用的指令。
+- **新專案:**目標與紅線一開始是初稿,你核准後才生效:跑 `aib newproj --approve <專案 uid>`(在終端機再打一次 uid;macOS 上由 AI 席代跑時會跳 Touch ID 視窗，只有你按得過)。
 - **傳訊:**對方輸入框裡有還沒送出的字,`aib dm` 不會蓋過去一起送出:約 30 秒後自動重送一次,再不行就把訊息留給你處理。
 - **交接:**對話接近 85% 或 `/clear` 之前,三步:`aib handoff collect` → `write` → `verify`。
 

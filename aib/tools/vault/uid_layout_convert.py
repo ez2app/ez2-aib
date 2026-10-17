@@ -1411,7 +1411,7 @@ def folder_add(vault: Path, parent: str, title: str, dry_run: bool = False, rout
         item.update({"routeKey": route_key, "inheritsFrom": inherits})
     if not dry_run:
         if parent and not (vault / by_id[parent]["folderPath"]).is_dir():
-            raise SystemExit(T("err_dir_missing"))
+            raise SystemExit(T("err_dir_missing_at", {"path": str(vault / by_id[parent]["folderPath"])}))
         (vault / path).mkdir(parents=False, exist_ok=True)
         items.append(item)
         write_indexes(vault, items, None, None, time.strftime("%Y-%m-%d %H:%M:%S"))

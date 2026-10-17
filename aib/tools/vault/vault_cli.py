@@ -130,7 +130,7 @@ def newpost(vault: Path, title: str, folder: str = "", body: str = "", now_ms: i
         frec = _inbox(fid)
     d = vault / frec["folderPath"]
     if not d.is_dir():
-        raise VaultError(U.T("err_dir_missing"))
+        raise VaultError(U.T("err_dir_missing_at", {"path": str(d)}))
     ms = int(now_ms if now_ms is not None else time.time() * 1000)
     used = {i.get("uid") for i in uidx} | {p.stem for p in vault.rglob("*.md") if U.UID_RE.match(p.stem)}
     uid = U.mint_uid(ms, used)

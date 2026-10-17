@@ -778,7 +778,31 @@ while [ $# -gt 0 ]; do
     --sender*|--as*)
       # 發送席只可推導:任何指定發送身份的旗標=拒(不可偽填他席)
       die "發送席身份只可推導不可指定($1)" 2 ;;
-    -*) die "未知選項:$1" 2 ;;
+    # 10-17(@977e3 用公開版):`aib dm --help` 以前回「未知選項」、RESULT stage=abort,新用戶沒有地方看用法。
+    #   說明不是一次送信 ⇒ 不印 RESULT 行(_RESULT_DONE=1)、rc 0。
+    -h|--help)
+      _RESULT_DONE=1
+      cat <<'USAGE'
+用法:aib dm <目標> [訊息...] [選項]
+      aib dm --to <目標1>,<目標2> [訊息...] [選項]
+
+目標:@<席碼>(同艙)、<艙位碼>/<席碼>(別艙)、<IP>/<艙位碼>/<席碼>(別台主機)
+訊息:直接寫在後面;長訊息用 --file
+
+常用選項:
+  --file F          訊息從檔案讀
+  --dry-run         只解析目標、不送
+  --verify          送完回讀對方畫面確認
+  --reply <短碼>    回覆外框說明上的寄件人短碼(代替目標)
+  --priority P      優先級
+  --thread T / --kind K / --expires ISO / --ttl-min N   寄件人自報的主題、用途、時效
+
+結果:最後一行固定是 RESULT stage=<stage> id=<佇列 id> relay=<留痕檔> thread=<主題>
+  stage=delivered            已進對方視窗(不代表已讀)
+  stage=blocked-unconfirmed  沒確認送到;不要自己重送,下一封合併補
+USAGE
+      exit 0 ;;
+    -*) die "未知選項:$1(用法:aib dm --help)" 2 ;;
     *)
       # ★ EH.20:`--to` 之**後**的位置參數一律是訊息,不是目標。
       #   沒有這條,`aib dm --to @a,@b "訊息"`(§二 介面逐字允許的形狀)會把

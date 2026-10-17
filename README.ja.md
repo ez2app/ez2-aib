@@ -74,7 +74,7 @@ aib update                                          # aib のインストール�
 #             git clone https://github.com/ez2app/ez2-aib ~/ez2-aib && export PATH="$HOME/ez2-aib/bin:$PATH"
 
 cd your-project
-aib claude safe dev                  # dev という名前の Claude Code の席を開きます（操作のたびに確認します）
+aib claude safe dev                  # dev という名前の Claude Code の席を開きます（Claude 自身の権限設定に従います。下記参照）
 aib codex safe qa                    # その隣に qa という名前の Codex の席を開きます
 aib test tests/test_something.py     # 初回: 実行して記録します
 aib test tests/test_something.py     # 何も変わっていない: 再利用します
@@ -100,7 +100,7 @@ Linux または macOS 上の Python<sup>[18]</sup> 3.9 以上が必要です。�
 引き継ぎメモ、フリートツール<sup>[24]</sup>（席の身元、作業の割り振り、巡回）を備えています。
 
 ```sh
-aib claude safe dev        # dev という名前の Claude Code の席を開き、操作のたびに確認します
+aib claude safe dev        # dev という名前の Claude Code の席を開きます（Claude 自身の権限設定。下記参照）
 aib codex dgrs qa          # qa という名前の Codex の席を全許可モードで開きます（下記参照）
 aib --help-cockpit         # すべてのオプション
 ```
@@ -109,7 +109,9 @@ aib --help-cockpit         # すべてのオプション
   あらかじめインストールされログイン済みである必要があります。aib がインストールやログインを代行することはありません。コックピットはまだ Linux では試していません。
 - **macOS での bash テスト：** aib が bash スクリプトを追跡するには bash 4.1 以降が必要です。macOS には bash 3.2 が付属しているため、bash スクリプトを
   実行するテストは「計測不可」と報告され、毎回再実行されます（安全ですが、遅くなります）。`brew install bash`<sup>[26]</sup> を実行すると再利用できるようになります。
-- **権限モード（席ごと）：** `safe` は AI ツール本来の保護を維持します（ファイルの編集やコマンドの実行前に確認します）。
+- **権限モード（席ごと）：** `safe` は AI ツールの保護を何も外さず、**そのツール自身の権限設定に従います**（aib は権限フラグを付けません）。
+  最近の Claude Code の既定は auto モード（画面に auto mode on と表示）で、安全と判断した操作はそのまま行い、それ以外だけ確認します。
+  毎回確認させたい場合はツール側の設定で変えてください（Claude Code:shift+tab、または settings.json の permissions.defaultMode）。
   `dgrs` はその保護を**その席に限って**オフにするため、AI は確認せずに操作します。aib は警告と、その席を `safe` で開き直すコマンドを表示します。
   どちらにするかは、席を開くときに席ごとに選べます。
 - **Claude** は Anthropic の商標です。Codex は OpenAI の、Grok は xAI の商標です。aib はこれらの企業とは提携していません。
@@ -138,7 +140,7 @@ aib handoff status                                 # この席は今回の引き
 - **ペルソナファイル:**次の 3 つの見出しをそのまま書き、それぞれの下に本文が必要です:`## 職責`(役割)、`## 紅線`(禁止事項)、`## 知識域`(知識範囲)。ないと `aib newrole` は拒否します(`PERSONA_LINT_FAIL`)。
 - **`--actor`:**記録用の自分の署名で、`<役割>@<自分の席コード>/<AI>`、例えば `root@54321/Claude`(または `EZ2_OWNER_SIG` を設定)。席に紐付けるときに必要です。`--seat` があって `--actor` がない場合、`newrole` はカードを作りますが席には紐付けません。`--seat` がなければ `newrole` / `newproj` はカードだけ作ります。
 - **まず試す:**`newrole`、`newproj`、`dm` に `--dry-run` を付けると、書き込みや送信をせずに結果だけ確認できます。
-- **新しいプロジェクト:**目標と禁止事項は下書きから始まり、承認するまで有効になりません。承認用のコマンドはまだありません。
+- **新しいプロジェクト:**目標と禁止事項は下書きから始まり、承認するまで有効になりません。承認は `aib newproj --approve <プロジェクト uid>`(端末で uid をもう一度入力。macOS で AI 席が実行すると Touch ID の画面が出て、本人しか通れません)。
 - **メッセージ:**相手の入力欄に未送信の文字があると、`aib dm` はそれを巻き込んで送りません。約 30 秒後に一度だけ自動で再送し、それも失敗したらメッセージをあなたの判断待ちとして保留します。
 - **引き継ぎ:**会話が 85% 近くになったとき、または `/clear` の前に、`aib handoff collect` → `write` → `verify` の 3 段階で行います。
 

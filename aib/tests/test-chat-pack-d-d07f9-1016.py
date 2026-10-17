@@ -32,7 +32,7 @@ _spec = importlib.util.spec_from_file_location("chat_recv_pd", str(HERE / "test-
 RT = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(RT)
 SB = RT.SB
-DEFAULTS = ["wss://relay.primal.net", "wss://nos.lol"]
+DEFAULTS = ["wss://relay.primal.net", "wss://nos.lol", "wss://offchain.pub"]
 
 
 def relays_of(b):
@@ -54,7 +54,7 @@ class Relays(unittest.TestCase):
         self.assertEqual(relays_of(b), DEFAULTS + ["wss://relay.example.com"])
         for bad in ("ws://relay.example.com", "https://x.com", "relay.example.com"):
             self.assertEqual(b.cli("relays", "add", bad).returncode, 2, bad)
-        for i in range(3):
+        for i in range(6 - len(DEFAULTS) - 1):             # 補滿到 6 站(預設幾站跟著 DEFAULTS)
             self.assertEqual(b.cli("relays", "add", "wss://r%d.example.com" % i).returncode, 0)
         r = b.cli("relays", "add", "wss://r9.example.com")
         self.assertEqual(r.returncode, 2, "最多 6 站")
@@ -63,12 +63,13 @@ class Relays(unittest.TestCase):
         b.cli("roster", "--json")
         import chat_roster as CR
         content, _ = CR.build(b.env())
-        self.assertIn("wss://r2.example.com", content["dm_relays"])
+        self.assertIn("wss://r1.example.com", content["dm_relays"])
         self.assertEqual(b.cli("relays", "reset").returncode, 0)
         self.assertEqual(relays_of(b), DEFAULTS)
-        b.cli("relays", "remove", DEFAULTS[0])
-        self.assertEqual(b.cli("relays", "remove", DEFAULTS[1]).returncode, 2, "至少留一站")
-        self.assertEqual(relays_of(b), [DEFAULTS[1]])
+        for r in DEFAULTS[:-1]:                              # 拿到只剩最後一站
+            b.cli("relays", "remove", r)
+        self.assertEqual(b.cli("relays", "remove", DEFAULTS[-1]).returncode, 2, "至少留一站")
+        self.assertEqual(relays_of(b), [DEFAULTS[-1]])
         self.assertEqual(CR.relays(b.env(AIB_CHAT_RELAYS="ws://127.0.0.1:9")), ["ws://127.0.0.1:9"], "環境變數優先")
 
     def test_t1_selftest_fresh(self):
