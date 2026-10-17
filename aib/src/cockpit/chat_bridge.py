@@ -1204,8 +1204,8 @@ def cmd_offer(a, env, out):
 
 
 def cmd_send(a, env, out):
-    """aib chat send <全球位址> --as-human --cabin <艙碼> [--json];stdin 一行 JSON {"pin", "text"}(艦長室網頁代表真人寄)。
-    PIN 只走 stdin;核心自己驗(chat_human)。目前只開 --as-human 這一條:席自己寄照舊用 aib dm。"""
+    """aib chat send <全球位址> --as-human --cabin <艙碼> [--json];stdin 一行 JSON {"text", "pin"}(艦長室網頁代表真人寄)。
+    Mac 彈 Touch ID(pin 不看);非 Mac 才驗 PIN(只走 stdin)。目前只開 --as-human 這一條:席自己寄照舊用 aib dm。"""
     import chat_human as CH
     if not a.as_human or not a.cabin:
         out.write(T("send_usage") + "\n")
@@ -1218,6 +1218,8 @@ def cmd_send(a, env, out):
     res = CH.send(a.who, req.get("text"), req.get("pin"), a.cabin, env)
     if a.json:
         out.write(json.dumps(res, ensure_ascii=False) + "\n")
+    elif res["why"] and res["why"].startswith("touchid_"):
+        out.write(T("send_why_touchid", why=res["why"][len("touchid_"):]) + "\n")
     elif res["why"]:
         out.write(T("send_why_" + res["why"]) + "\n")
     else:
