@@ -762,6 +762,22 @@ def write_room(root, owner, snap, now=None):
     os.chmod(str(d / (owner + ".json")), 0o600)
 
 
+def write_space_status(root, rec):
+    """space-status.json:最近一次送空間快照的結果(第 36.3 節;too_big ⇒ aib chat space --json 的 last_error)。"""
+    d = Path(root)
+    d.mkdir(parents=True, exist_ok=True)
+    write_json(str(d / "space-status.json"), dict(rec, v=VERSION))
+    os.chmod(str(d / "space-status.json"), 0o600)
+
+
+def read_space_status(root):
+    try:
+        rec = json.loads((Path(root) / "space-status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
 def read_room(root, owner):
     if not NPUB_FULL_RE.match(owner or ""):
         return None

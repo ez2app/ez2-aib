@@ -1058,9 +1058,47 @@ def cmd_island(a, env, out):
     return 0
 
 
+def space_check(island=None, room=None, env=None):
+    """aib chat space check(第 36.3 節):艦長室存檔前先問 ⇒ {ok, wire_bytes, limit, over, errors}。
+    以最大的分享等級(含建築內部、狀態列、掛單)組一份快照來量;給了 --island / --room 就用那份檔代替現有的(不動真的檔)。"""
+    import room_snapshot as RS
+    errors, given = [], {}
+    for name, src, cap in (("island", island, RS.SPACE_RAW_MAX), ("room", room, RS.RAW_MAX)):
+        if not src:
+            continue
+        try:
+            b = Path(src).read_bytes()
+            x = json.loads(b.decode("utf-8"))
+        except (OSError, ValueError):
+            errors.append({"field": name, "why": "unreadable"})
+            continue
+        if len(b) > cap:
+            errors.append({"field": name, "why": "too_big_raw", "max": cap})
+        given[name] = x if isinstance(x, dict) else {}
+    isl = given.get("island")
+    if isl is None:
+        isl = RS._read_json(RS.island_path(env), RS.SPACE_RAW_MAX)
+    errors += RS.problems(isl)
+    snap = RS.build(env, with_rooms=True, with_status=True, with_offers=True, island=isl, room=given.get("room")) or {
+        "v": 3, "island": RS.clean_island(RS.scrub(isl)), "people": [], "rooms": None}
+    wire, full, dropped = RS.encode_info(snap)
+    return {"v": 1, "ok": wire is not None and dropped is None and not errors, "wire_bytes": full, "limit": RS.WIRE_MAX,
+            "over": "too_big" if wire is None else dropped, "errors": errors}
+
+
 def cmd_space(a, env, out):
-    """aib chat space [<主人> none|island|room] [--default none|island] [--json](第 34 節 v2)。"""
+    """aib chat space [<主人> none|island|room] [--default none|island] [--json](第 34 節 v2);
+    aib chat space check [--island <檔>] [--room <檔>] --json(第 36.3 節)。"""
     import chat_roster as CR
+    if a.who == "check":
+        pl = space_check(a.island, a.room, env)
+        if a.json:
+            out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        else:
+            out.write(T("space_check_" + ("ok" if pl["ok"] else "bad"), kb=round(pl["wire_bytes"] / 1024, 1),
+                        limit=pl["limit"] // 1024, over=pl["over"] or "-",
+                        errors=", ".join(e["field"] for e in pl["errors"]) or "-") + "\n")
+        return 0 if pl["ok"] else 1
     try:
         if a.default:
             CR.set_space(a.default, None, env)
@@ -1074,7 +1112,9 @@ def cmd_space(a, env, out):
         return 2
     sp = CR.read_space(env)
     owners = [f["owner"] for f in CR.read_friends(env, "mine")] + [f["owner"] for f in CR.read_friends(env)]
-    pl = {"v": 1, "default": sp["default"], "peers": {o: CR.space_level(o, env) for o in dict.fromkeys(owners)}}
+    st = GF.read_space_status(bridge_root(env)) or {}
+    pl = {"v": 1, "default": sp["default"], "peers": {o: CR.space_level(o, env) for o in dict.fromkeys(owners)},
+          "last_error": {k: st.get(k) for k in ("at", "reason", "wire_bytes", "limit")} if st.get("reason") else None}
     if a.json:
         out.write(json.dumps(pl, ensure_ascii=False) + "\n")
         return 0
@@ -1085,6 +1125,77 @@ def cmd_space(a, env, out):
     out.write(T("space_default", level=T("space_" + pl["default"])) + "\n")
     for o, lvl in pl["peers"].items():
         out.write(T("share_row", level=T("space_" + lvl), owner=o) + "\n")
+    return 0
+
+
+def offers_payload(owner, env=None, now=None):
+    """aib chat offers <主人> --json:好友島上的掛單(就是他空間快照 island.offers 那一欄)。"""
+    pl = island_payload(owner, env, now)
+    if not pl:
+        return None
+    return {"v": 1, "owner": owner, "at": pl["at"], "fresh": pl["fresh"], "offers": pl["island"].get("offers") or []}
+
+
+def cmd_offers(a, env, out):
+    import chat_roster as CR
+    pl = offers_payload(CR.friend_owner(a.who or ""), env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0 if pl else 1
+    if not pl:
+        out.write(T("island_none") + "\n")
+        return 1
+    for o in pl["offers"]:
+        out.write(T("offer_row", id=o["id"], item=o["item"], n=o["n"], unit=o["unit"]) + "\n")
+    if not pl["offers"]:
+        out.write(T("offer_none") + "\n")
+    return 0
+
+
+def cmd_offer(a, env, out):
+    """aib chat offer buy <主人> <id> <n> --unit <單價> | list | host on|off(第 36.2 節)。"""
+    import chat_offers as CO
+    import chat_roster as CR
+    import room_snapshot as RS
+    if a.action == "host":
+        if a.args not in (["on"], ["off"]):
+            out.write(T("offer_usage") + "\n")
+            return 2
+        on = RS.set_offers_host(a.args[0] == "on", env)
+        out.write((json.dumps({"v": 1, "host": on}) if a.json else T("offer_host_" + ("on" if on else "off"))) + "\n")
+        return 0
+    if a.action == "list":
+        pl = CO.offer_list(env)
+        if a.json:
+            out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+            return 0
+        for o in pl["offers"]:
+            out.write(T("offer_mine_row", id=o["id"], item=o["item"], left=o["left"], n=o["n"], unit=o["unit"]) + "\n")
+        for t in pl["trades"][:20]:
+            out.write(T("offer_trade_row", role=T("offer_role_" + t["role"]), status=T("offer_st_" + t["status"]),
+                        item=t.get("item") or t.get("id") or "-", n=t.get("n"), total=t.get("total") or "-") + "\n")
+        return 0
+    if len(a.args) != 3 or a.unit is None:
+        out.write(T("offer_usage") + "\n")
+        return 2
+    owner = CR.friend_owner(a.args[0])
+    try:
+        n = int(a.args[2])
+    except ValueError:
+        n = 0
+    if not owner or not (CR.is_friend(owner, env) or CR.is_mine(owner, env)) or CR.is_blocked(owner, env):
+        out.write(T("offer_not_friend") + "\n")
+        return 2
+    if not (RS._OFFER_ID_RE.match(a.args[1]) and 1 <= n <= 999 and 1 <= a.unit <= 10 ** 6):
+        out.write(T("offer_usage") + "\n")
+        return 2
+    if not GF.bridge_alive(bridge_root(env)):
+        out.write(T("offer_bridge_off") + "\n")
+        return 2
+    seen = next((o for o in (offers_payload(owner, env) or {}).get("offers") or [] if o["id"] == a.args[1]), None)
+    rec = CO.buyer_new(env, bridge_root(env), owner, a.args[1], n, a.unit, item=(seen or {}).get("item"))
+    out.write((json.dumps({"v": 1, "trade": rec}, ensure_ascii=False) if a.json
+               else T("offer_sent", nonce=rec["nonce"], n=n, total=rec["total"])) + "\n")
     return 0
 
 
@@ -1334,7 +1445,17 @@ def main(argv=None, env=None, out=sys.stdout):
     spc.add_argument("who", nargs="?")
     spc.add_argument("level", nargs="?", choices=("none", "island", "room"))
     spc.add_argument("--default", choices=("none", "island"))
+    spc.add_argument("--island")
+    spc.add_argument("--room")
     spc.add_argument("--json", action="store_true")
+    of = sub.add_parser("offer", help=T("help.offer"))
+    of.add_argument("action", choices=("buy", "list", "host"))
+    of.add_argument("args", nargs="*")
+    of.add_argument("--unit", type=int)
+    of.add_argument("--json", action="store_true")
+    ofs = sub.add_parser("offers", help=T("help.offers"))
+    ofs.add_argument("who")
+    ofs.add_argument("--json", action="store_true")
     rm = sub.add_parser("room", help=T("help.room"))
     rm.add_argument("who")
     rm.add_argument("--json", action="store_true")
@@ -1420,6 +1541,10 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_room(a, env, out)
     if a.cmd == "island":
         return cmd_island(a, env, out)
+    if a.cmd == "offer":
+        return cmd_offer(a, env, out)
+    if a.cmd == "offers":
+        return cmd_offers(a, env, out)
     if a.cmd == "space":
         return cmd_space(a, env, out)
     if a.cmd == "friends":
