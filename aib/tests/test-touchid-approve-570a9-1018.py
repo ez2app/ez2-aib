@@ -39,7 +39,6 @@ import touchid_approve as TA  # noqa: E402
 
 THIS = pathlib.Path(__file__).name
 PY = sys.executable
-BIN_AIB = ROOT.parent / "bin" / "aib"
 OSA = os.path.exists(TA.OSASCRIPT) and sys.platform == "darwin"
 NONCE_RE = re.compile(r'NONCE = ("[0-9a-f]+")')
 
@@ -162,7 +161,8 @@ class Approve(unittest.TestCase):
         os.makedirs(os.path.join(self.tmp, "proj"))
         env = {"PATH": os.environ.get("PATH", ""), "HOME": self.home, "EZ2_AIB_LOCALE": "zh-TW",
                "AIB_GENES": "0", "AIB_AUTO_BIND": "0", "AIB_TOUCHID": "0"}
-        r = subprocess.run([PY, str(BIN_AIB), "newproj", "--title", 'Demo "島"\n第二行'],
+        # 直接叫 new_project.py(= aib newproj):刀的複本只有 aib/ 這一層、沒有 bin/aib,走 bin/aib 會在 setUp 就倒(假紅)
+        r = subprocess.run([PY, str(ROOT / "tools" / "project" / "new_project.py"), "--entry", "newproj", "--title", 'Demo "島"\n第二行'],
                            cwd=os.path.join(self.tmp, "proj"), env=env, capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, timeout=120)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -254,6 +254,9 @@ class Knife(unittest.TestCase):
         with knife_copy(ROOT, rel, needle, repl, tests=(THIS,)) as copy_root:
             r = run_guarded([PY, str(copy_root / "tests" / THIS), test], cwd=str(copy_root), timeout=300)
         self.assertNotEqual(r.returncode, 0, "刀下去 %s 應該紅:\n%s%s" % (test, r.stdout, r.stderr))
+        out = r.stdout + r.stderr
+        self.assertIn("FAIL:", out, "要紅在斷言上(FAIL),不是 setUp 或匯入就倒(ERROR = 假紅):\n" + out)
+        self.assertNotIn("ERROR:", out, "刀的複本裡出現 ERROR = 沒驗到要驗的東西:\n" + out)
 
     def test_K1_no_nonce_check(self):
         self._cut("src/cockpit/touchid_approve.py", 'if out.get("ok") is True and out.get("nonce") == nonce:',
