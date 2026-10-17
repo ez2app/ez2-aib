@@ -3,9 +3,9 @@ import { FIXTURE } from '../i18n-fixture'
 import { useT, makeT } from '../i18n'
 // 字走 tr();斷言是中文原字 ⇒ 先換成 zh-TW 字典(register.tsx 平常做這件事)
 useT('zh-TW', makeT('mod.aib_boards', FIXTURE['zh-TW']!))
-import { statusOf, cardOf, upsert, relayPath, iconOf, clip, rasterCells, UNLISTED_ICON } from './mailcard'
+import { statusOf, cardOf, upsert, syncRequests, requestCard, relayPath, iconOf, clip, UNLISTED_ICON, REQUEST_ICON } from './mailcard'
 
-const q = { id: 'q_1', seat: '86ff0', sender_seat: '8f366', sender_label: '@8f366(第二艦長)', sender_kind: 'seat', msg: '機器空了', sent_at: 100 }
+const q = { id: 'q_1', seat: '86ff0', sender_seat: '8f366', sender_label: 'Andy', sender_kind: 'human', msg: '機器空了', sent_at: 100 }
 
 test('狀態:未讀 / 已讀未結 / 完成 / 卡住 / 封存', () => {
   expect(statusOf(q)).toBe('unread')
@@ -13,6 +13,12 @@ test('狀態:未讀 / 已讀未結 / 完成 / 卡住 / 封存', () => {
   expect(statusOf({ ...q, read_at: 1, done_at: 2 })).toBe('done')
   expect(statusOf({ ...q, held_at: 1 })).toBe('held')
   expect(statusOf({ ...q, superseded_by: 'q_2' })).toBe('archived')
+})
+
+test('卡片:只做真人來信(human / owner_paired),席、系統、bot、全球來信不做', () => {
+  expect(cardOf(q, '86ff0')).not.toBeNull()
+  expect(cardOf({ ...q, sender_kind: 'owner_paired' }, '86ff0')).not.toBeNull()
+  for (const k of ['seat', 'system', 'other', 'external', 'external_seat', undefined]) expect(cardOf({ ...q, sender_kind: k }, '86ff0')).toBeNull()
 })
 
 test('卡片:自己寄的不做;只新增未讀;已有的只換狀態、開合照舊;關過的不再出現;新的在前', () => {
@@ -53,13 +59,16 @@ test('收起只留三行,中文算兩格;沒超過就不切', () => {
   expect(r.text.endsWith('…')).toBe(true)
 })
 
-test('像素圖 → 半格方塊:上下兩像素一格,透明用預設色', () => {
-  const R = [255, 0, 0, 255], T = [0, 0, 0, 0], B = [0, 0, 255, 255]
-  const out = rasterCells({ w: 2, h: 2, px: [R, T, B, T] })
-  expect(out.columns).toBe(2)
-  expect(out.rows).toBe(1)
-  const bin = atob(out.cells), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i)
-  const w = new Uint32Array(u.buffer)
-  expect([w[0], w[1], w[2]]).toEqual([0x2580, 0xff0000, 0x0000ff])
-  expect([w[3], w[4], w[5]]).toEqual([0x20, 0x01000000, 0x01000000])
+const A = 'npub1' + 'q'.repeat(58), B = 'npub1' + 'p'.repeat(58)
+test('好友申請:一位一張;已處理的拿掉;關過的不再出現;位址不對的不做', () => {
+  expect(requestCard({ owner: 'npub1bad', name: 'x' })).toBeNull()
+  const r = requestCard({ owner: A, name: 'Bob', note: '你好', at: 50 })!
+  expect([r.id, r.kind, r.label, r.text, r.status]).toEqual(['req:' + A, 'request', 'Bob', '你好', 'unread'])
+  expect(iconOf(r)).toBe(REQUEST_ICON)
+  expect(requestCard({ owner: B })!.label).toBe('npub1pppp…pppp')
+  const mail = cardOf(q, '86ff0')!
+  const two = syncRequests([mail], [{ owner: A, name: 'Bob', at: 300 }, { owner: B, at: 200 }], new Set())
+  expect(two.map(c => c.id)).toEqual(['req:' + A, 'req:' + B, 'q_1'])
+  expect(syncRequests(two, [{ owner: B, at: 200 }], new Set()).map(c => c.id)).toEqual(['req:' + B, 'q_1'])
+  expect(syncRequests([], [{ owner: A }], new Set(['req:' + A]))).toEqual([])
 })

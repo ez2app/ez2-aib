@@ -133,7 +133,9 @@ def skeleton_markdown(uid, role, seat, created_ms):
         "> 本卡由 EH.4 自動新建流程產生,frontmatter 的 source 標記為機器新建。角色的判準與邊界**由人寫**;\n"
         "> 補完後把 `source` 改成 `human`(DESIGN-SPEC-persona-source-three-states §五)。\n"
         % (uid, role, SOURCE_CREATED, seat, dt.isoformat(timespec="seconds"),
-           dt.strftime("%Y-%m-%d %H:%M"), role)
+           # 10-17 updated 跟 note-format 同格式(UTC ISO、毫秒、Z);created_at 留原樣(帶 +08:00,本來就不含糊)
+           datetime.fromtimestamp(created_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.")
+           + "%03dZ" % (int(created_ms) % 1000), role)
     )
 
 

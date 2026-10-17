@@ -128,7 +128,7 @@ def newpost(vault: Path, title: str, folder: str = "", body: str = "", now_ms: i
     used = {i.get("uid") for i in uidx} | {p.stem for p in vault.rglob("*.md") if U.UID_RE.match(p.stem)}
     uid = U.mint_uid(ms, used)
     path = d / (uid + ".md")
-    fm = U.render_frontmatter(None, _fm_set(uid, title, frec["folderId"], by_id, ms, uid + ".md"), frec["folderId"], "")
+    fm = U.render_frontmatter(None, _fm_set(uid, title, frec["folderId"], by_id, ms, ""), frec["folderId"], "")   # 新筆記沒有原名
     text = fm + ("\n" + body.rstrip() + "\n" if body.strip() else "\n")
     with open(path, "x", encoding="utf-8") as fh:          # 不覆蓋:同名就錯
         fh.write(text)

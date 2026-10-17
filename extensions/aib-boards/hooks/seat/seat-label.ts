@@ -1,4 +1,5 @@
 import type { FleetRow } from './captain'
+import type { FriendReq } from './mailcard'
 import type { IntegInfo } from './integrator'
 import type { DevInfo } from './dev'
 import type { QaInfo } from './qa'
@@ -23,6 +24,7 @@ export type SeatInfo = {
   captain: string | null; captain_addr: string | null; captain_src?: string; roots: string[]
   unread: number | null; unread_list: { id: string; rev: number; sender: string; when: string; msg: string; sender_seat?: string | null; ts?: number | null }[]; logos?: Record<string, string>; logo_colors?: Record<string, string>
   personas?: Record<string, { name?: string | null; role?: string | null }>; marks?: Record<string, string>; home?: string | null
+  friend_requests?: FriendReq[]             // 線上好友申請(只有艦長席的探測會帶;新信卡片用)
   handoff?: { done: boolean; at: string | null; file: string | null; steps: string[] } | null
   roster?: { code: string; role: string | null; provider: string | null; window: string | null; idle_s: number | null }[]
   blocks?: { ts: string; gate: string; why: string; first: string; n: number }[]

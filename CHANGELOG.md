@@ -4,6 +4,14 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.17
+
+- **aib-boards 0.2.1**: new-mail cards pop up only for messages a human sent and for friend requests (friend requests only on the captain seat); the pixel avatar is gone and the icon is back in the title bar.
+- **Release checks retry upgrades from PyPI**: right after an upload PyPI's CDN edges can disagree for a few minutes, so the from-PyPI upgrade check retries (6 × 20 s) instead of failing on the first stale answer.
+- **Card dates use ISO**: new persona cards and skeleton cards write `updated` as UTC ISO, and the card registry reads ISO dates.
+- **`aib vault newpost` no longer writes `orig_name`** for notes it creates (the field stays for notes adopted by `aib vault doctor`).
+- Traditional Chinese: 「啟動時間 / 啟動」 is now 「初始」.
+
 ## 0.1.16
 
 - **New notes and a health check for uid vaults** (licensed add-on `obsidian-labels`): `aib vault newpost` creates a note in uid layout in the chosen folder; `aib vault doctor [--fix --backup-dir]` checks the vault layout. Without the licence they exit 3 and write nothing.

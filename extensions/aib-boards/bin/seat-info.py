@@ -678,4 +678,14 @@ if uuid:
         out["blocks"] = hits[-5:]
     except Exception as e:
         out["err"].append(f"blocks: {e}")
+# 線上好友申請(等主人同意):只給艦長席(新信卡片只彈真人來信與加好友,Andy 10-17);只帶卡片要的欄位,不帶位址
+out["friend_requests"] = []
+if out["code"] and out["code"] == out["captain"]:
+    try:
+        import dm_global_files as _GF
+        out["friend_requests"] = [{"owner": r.get("owner"), "name": str(r.get("display_name") or "")[:64],
+                                   "country": r.get("country"), "note": str(r.get("note") or "")[:280], "at": r.get("at"),
+                                   "msgid": r.get("msgid")} for r in _GF.read_requests(_GF.default_root())[-20:]]
+    except Exception as e:
+        out["err"].append(f"friend_requests: {e}")
 print(json.dumps(out, ensure_ascii=False))
