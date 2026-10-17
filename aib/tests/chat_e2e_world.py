@@ -35,13 +35,16 @@ BRIDGE = COCKPIT / "chat_bridge.py"
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(COCKPIT))
 
-OWNERS = [  # (名, 國, 艙, [(視窗, uuid, 人格 uid, 席名)])
-    ("andy", "Andy-demo", "TW", "a0d1", [("w2", "00000000-0000-4000-8000-00000000a0a1", "andy01", "接待席"),
-                                         ("w3", "00000000-0000-4000-8000-00000000a0a2", "andy02", "工程席")]),
-    ("bob", "Bob", "JP", "b0b1", [("w2", "00000000-0000-4000-8000-00000000b0b1", "bob001", "業務席")]),
-    ("cara", "Cara", "US", "c0c1", [("w2", "00000000-0000-4000-8000-00000000c0c1", "cara01", "推銷席")]),
-    ("dan", "Dan", "KR", "d0d1", [("w2", "00000000-0000-4000-8000-00000000d0d1", "dan001", "合作席")]),
-    ("eve", "Eve", "SG", "e0e1", [("w2", "00000000-0000-4000-8000-00000000e0e1", "eve001", "騷擾席")]),
+OWNERS = [  # (key, 名, 國, 艙, [(視窗, uuid, 人格 uid, 席名, 角色, AI 家, emoji, 📌)])  第一席 = 艦長(role root,Andy 10:5x)
+    ("andy", "Andy-demo", "TW", "a0d1", [
+        ("w2", "00000000-0000-4000-8000-00000000a0a1", "andy01", "Andy 艦長", "root", "claude", "👑", "看今天的線上來信"),
+        ("w3", "00000000-0000-4000-8000-00000000a0a2", "andy02", "工程席", "dev", "codex", "🛠️", "修艦長室通訊錄")]),
+    ("bob", "Bob", "JP", "b0b1", [
+        ("w2", "00000000-0000-4000-8000-00000000b0b1", "bob001", "Bob 艦長", "root", "claude", "🧭", "整理客戶回信"),
+        ("w3", "00000000-0000-4000-8000-00000000b0b2", "bob002", "業務席", "dev", "claude", "💼", "準備週三提案")]),
+    ("cara", "Cara", "US", "c0c1", [("w2", "00000000-0000-4000-8000-00000000c0c1", "cara01", "Cara 艦長", "root", "claude", "📣", "群發廣告")]),
+    ("dan", "Dan", "KR", "d0d1", [("w2", "00000000-0000-4000-8000-00000000d0d1", "dan001", "Dan 艦長", "root", "claude", "🤝", "找合作夥伴")]),
+    ("eve", "Eve", "SG", "e0e1", [("w2", "00000000-0000-4000-8000-00000000e0e1", "eve001", "Eve 艦長", "root", "claude", "🌀", "到處留言")]),
 ]
 
 
@@ -115,24 +118,59 @@ class Owner(object):
     def json(self, *args):
         return json.loads(self.cli(*args, check=True).stdout)
 
-    def seat(self, inst, win, uuid, uid, name):
+    def init(self):
+        """真的 aib init(0.1.15 的家目錄骨架:secrets、identity、instances…)。"""
+        r = subprocess.run([sys.executable, str(REPO.parent / "bin" / "aib"), "init"], capture_output=True, text=True,
+                           env=self.env(), timeout=120)
+        if r.returncode != 0:
+            raise RuntimeError("%s: aib init ⇒ rc %d\n%s%s" % (self.key, r.returncode, r.stdout, r.stderr))
+
+    def seat(self, inst, idx, win, uuid, uid, name, role, provider, emoji):
+        """照 0.1.15 真的格式寫一席:席位檔、人格卡索引(cards.json aib-cards/v2)、綁定、席位顯示。"""
+        code = uuid.replace("-", "")[-5:]
+        now = int(time.time())
         sd = self.home / ".ez2-aib" / "instances" / inst / "seats"
         sd.mkdir(parents=True, exist_ok=True)
-        (sd / ("%s.json" % win)).write_text(json.dumps({"schema": "aib-seat/v1", "session_uuid": uuid, "role": "dev"}))
-        disp = self.home / ".ez2-aib" / "identity" / "seat-display.json"
-        disp.parent.mkdir(parents=True, exist_ok=True)
-        cur = json.loads(disp.read_text()) if disp.exists() else {"display": {}}
-        cur["display"][uuid.replace("-", "")[-5:]] = {"persona_uid": uid, "display_name": name}
-        disp.write_text(json.dumps(cur))
-        return uuid.replace("-", "")[-5:]
+        (sd / ("%s.json" % win)).write_text(json.dumps({
+            "born_at": time.strftime("%Y-%m-%dT%H:%M:%S+08:00"), "cabin_id": inst, "fleet_id": "f-" + inst,
+            "cwd": str(self.home), "last_used_epoch": now, "mode": "dgrs", "model_requested": "claude-opus-5-5" if provider == "claude" else provider,
+            "pid": 0, "project_title": "線上對話示範", "project_uid": "proj:e2e0demo0000000", "provider": provider, "role": role,
+            "schema": "aib-seat/v1", "seat_id": "%05x" % (0x10000 + idx), "session_uuid": uuid, "socket": "aihub-" + inst,
+            "started_epoch": now, "trust": "self_reported", "window_id": "@%d" % (idx + 2)}, ensure_ascii=False))
+        ident = self.home / ".ez2-aib" / "identity"
+        ident.mkdir(parents=True, exist_ok=True)
+
+        def upd(fn, default, mutate):
+            f = ident / fn
+            cur = json.loads(f.read_text(encoding="utf-8")) if f.exists() else default
+            mutate(cur)
+            f.write_text(json.dumps(cur, ensure_ascii=False), encoding="utf-8")
+        sha = "%064x" % (int(uid.encode().hex(), 16) % (1 << 255))
+        upd("cards.json", {"cards": {}, "generated_wall_ms": now * 1000, "schema_version": "aib-cards/v2", "skipped": [],
+                           "source": {"library_folder": "e2e", "library_route_key": "product.expert.agent_library",
+                                      "vault_root": str(self.home / "Vault")}},
+            lambda c: c["cards"].__setitem__(uid, {"uid": uid, "code": uid, "display_name": name, "emoji": emoji,
+                                                   "category": "示範/" + self.key, "card_ref": "P10/" + name,
+                                                   "card_path_rel": "e2e/%s/角色.md" % uid, "card_updated": None,
+                                                   "default_route_key": None, "dims": [], "persona_sha": sha}))
+        upd("bindings.json", {"bindings": {}, "schema_version": "0.1.0-draft"},
+            lambda b: b["bindings"].__setitem__(code, {"persona_uid": uid, "route_key": "core.handoff"}))
+        upd("seat-display.json", {"display": {}},
+            lambda d: d["display"].__setitem__(code, {"persona_uid": uid, "display_name": name, "persona_sha": sha,
+                                                      "bound_persona_sha": sha, "brain_binding_status": "bound",
+                                                      "brain_status_text": "大腦已綁", "folder": "e2e/" + uid,
+                                                      "persona_drift": False, "persona_ref_legacy": False,
+                                                      "persona_source": "cards", "route_key": "core.handoff"}))
+        return code
 
     def now(self, code, item, state="busy", done=2, total=5):
-        d = self.home / ".ez2-aib" / "state" / "seat-now"
-        d.mkdir(parents=True, exist_ok=True)
+        """📌 狀態列用真的 seat_now.write;心跳照狀態列定時重畫的格式寫(.beat)。"""
+        import seat_now as SN
+        root = str(self.home / ".ez2-aib")
+        SN.write(code, item, done, total, state=state, state_root=root)
         t = int(time.time())
-        (d / (code + ".json")).write_text(json.dumps({"at": t, "code": code, "item": item, "state": state,
-                                                       "steps_done": done, "steps_total": total}), encoding="utf-8")
-        (d / (code + ".beat")).write_text(json.dumps({"at": t, "src": "statusline", "code": code}), encoding="utf-8")
+        (Path(SN.now_dir(root)) / (code + ".beat")).write_text(json.dumps({"at": t, "src": "statusline", "code": code}),
+                                                                encoding="utf-8")
 
     def start(self, pids):
         self.chat.mkdir(parents=True, exist_ok=True)
@@ -200,11 +238,13 @@ def up(d, venv, out=sys.stdout):
     for key, name, cc, cab, seats in OWNERS:
         o = Owner(d, key, hubinfo, venv)
         o.cab = cab
-        codes = [o.seat("20261017-000000-%s" % cab, w, u, uid, nm) for w, u, uid, nm in seats]
+        o.init()
+        inst = "20261017-000000-%s" % cab
+        codes = [o.seat(inst, n, w, u, uid, nm, role, prov, emo) for n, (w, u, uid, nm, role, prov, emo, _pin) in enumerate(seats)]
         o.cli("on", "--no-venv", "--name", name, "--country", cc, check=True)
-        for c in codes:
+        for c, row in zip(codes, seats):
             o.cli("publish", c, check=True)
-            o.now(c, "示範:%s 的 %s 在忙" % (name, c))
+            o.now(c, "示範:" + row[7])
         owners[key] = o
         o.codes = codes
     # 名字、證明(Bob)寫好再起轉接程式
@@ -304,6 +344,10 @@ def check(d, out=sys.stdout):
     g = [x.get("global") or {} for x in rows if x.get("global")]
     ok(len(g) == 1 and g[0].get("contact_key") == "global:" + O["bob"] and g[0].get("relation") == "friend",
        "Andy 的佇列只有 Bob 那一封(contact_key、relation 對)")
+    inst = "20261017-000000-%s" % w["owners"]["andy"]["cabin"]
+    seat_files = sorted((Path(w["owners"]["andy"]["home"]) / ".ez2-aib" / "instances" / inst / "seats").glob("w*.json"))
+    roles = [json.loads(f.read_text(encoding="utf-8")).get("role") for f in seat_files]
+    ok(roles[:1] == ["root"] and roles.count("root") == 1, "Andy-demo 的艦長席(role root)恰好一席,信寄進艦長席")
     res = w["results"]
     ok(res["bob_dm"]["rc"] == 0 and res["cara_dm"]["stage"] == "refused" and res["eve_dm"]["rc"] == 4
        and res["dan_request"]["rc"] == 3, "寄件端:Bob rc 0、Cara refused、Eve 沒回條、Dan 等同意")
