@@ -963,6 +963,12 @@ def write_indexes(vault: Path, fid_items: list, note_labels: dict | None, uid_it
     labels = {"schema": "2026-10-05.ez2-display-labels", "generatedAt": now,
               "folders": {f["folderId"]: {"title": f["title"], "i18n": ((old_labels.get("folders") or {}).get(f["folderId"]) or {}).get("i18n") or {"zh-TW": f["title"], "en": None, "ja": None, "ko": None}} for f in fid_items},
               "notes": note_labels if note_labels is not None else (old_labels.get("notes") or {})}
+    # 10-18(@977e3 實量:0.1.18 doctor --fix 把 3pb70i「EU01防護工程師」的標題拿掉,card_ref 跟著變):角色卡資料夾用 uid 命名、
+    #   標題由 aib newrole 寫進 labels,不在 folder-id-index ⇒ 以前每次重寫索引都被當成退役資料夾清掉。
+    #   不是 fld_ 開頭的照舊留下;fld_ 開頭的歸索引管,退役了照舊拿掉。
+    for key, val in (old_labels.get("folders") or {}).items():
+        if key not in labels["folders"] and not str(key).startswith("fld_"):
+            labels["folders"][key] = val
     (idx_dir / "folder-id-index.json").write_text(json.dumps({"schema_version": "2026-10-05.ez2-folder-id-index", "generatedAt": now, "items": fid_items}, ensure_ascii=False, indent=1), encoding="utf-8")
     (idx_dir / "route-key-index.json").write_text(json.dumps({"schema_version": "2026-10-05.ez2-route-key-index", "generatedAt": now, "items": rk_items}, ensure_ascii=False, indent=1), encoding="utf-8")
     if uid_items is not None:
