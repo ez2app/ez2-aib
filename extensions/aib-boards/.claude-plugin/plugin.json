@@ -1,1 +1,1 @@
-{"name": "aib-boards", "version": "0.2.0", "description": "Ez2 AIB 每席一台電腦:今天 / 專案 / 私訊 / 圖表 / 自訂(讀 seat_screen.py 一份資料,打開才算,只在真人打字時打開);席位核心(從 aib-seat 搬來):系統提示的席位身份、狀態列、85% 交接提醒、守衛擋下提示、新信卡片、/aib room", "author": {"name": "Ez2 AIB pm@00000"}, "types": "./types/index.d.ts"}
+{"name": "aib-boards", "version": "0.2.1", "description": "Ez2 AIB 每席一台電腦:今天 / 專案 / 私訊 / 圖表 / 自訂(讀 seat_screen.py 一份資料,打開才算,只在真人打字時打開);席位核心(從 aib-seat 搬來):系統提示的席位身份、狀態列、85% 交接提醒、守衛擋下提示、新信卡片、/aib room", "author": {"name": "Ez2 AIB pm@00000"}, "types": "./types/index.d.ts"}
