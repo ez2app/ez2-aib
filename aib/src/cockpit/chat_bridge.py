@@ -1001,9 +1001,10 @@ def world_payload(env=None, now=None):
                           "addr": "%s/%s/%s" % (owner, c.get("cabin"), x.get("seat")),
                           "state": x.get("state") if fresh else "unknown",
                           "now": x.get("now") if fresh else None, "step": x.get("step") if fresh else None})
-        room = GF.read_room(root, owner)
+        sp = GF.read_room(root, owner)
         cabins.append({"owner": owner, "cabin": c.get("cabin"), "relation": rel,
-                       "room": {"at": room["at"], "fresh": now - int(room["at"]) < GF.ROOM_FRESH_S} if room else None,
+                       "space": {"at": sp["at"], "fresh": now - int(sp["at"]) < GF.ROOM_FRESH_S,
+                                 "room": bool(sp["snap"].get("rooms"))} if sp else None,
                        "display_name": info.get("display_name"), "country": info.get("country"),
                        "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
     return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
@@ -1016,12 +1017,75 @@ def room_payload(owner, env=None, now=None):
     if not owner or CR.is_blocked(owner, env) or not (CR.is_friend(owner, env) or CR.is_mine(owner, env)):
         return None
     rec = GF.read_room(bridge_root(env), owner)
+    if not rec or not isinstance(rec["snap"].get("rooms"), dict):
+        return None
+    r = rec["snap"]["rooms"]
+    return {"v": 1, "owner": owner, "room_at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
+            "ship": r.get("ship") or {}, "cabins": r.get("cabins") or [], "seats": r.get("seats") or [],
+            "layout": r.get("layout"), "layout_omitted": bool(r.get("layout_omitted"))}
+
+
+def island_payload(owner, env=None, now=None):
+    """aib chat island <主人> --json(第 34 節 v2):好友島的戶外 + 島上走動的人。"""
+    import chat_roster as CR
+    now = time.time() if now is None else now
+    if not owner or CR.is_blocked(owner, env) or not (CR.is_friend(owner, env) or CR.is_mine(owner, env)):
+        return None
+    rec = GF.read_room(bridge_root(env), owner)
     if not rec:
         return None
     snap = rec["snap"]
-    return {"v": 1, "owner": owner, "room_at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
-            "ship": snap.get("ship") or {}, "cabins": snap.get("cabins") or [], "seats": snap.get("seats") or [],
-            "layout": snap.get("layout"), "layout_omitted": bool(snap.get("layout_omitted"))}
+    return {"v": 1, "owner": owner, "at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
+            "island": snap.get("island") or {}, "people": snap.get("people") or [],
+            "has_room": isinstance(snap.get("rooms"), dict)}
+
+
+def cmd_island(a, env, out):
+    import chat_roster as CR
+    pl = island_payload(CR.friend_owner(a.who or ""), env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0 if pl else 1
+    if not pl:
+        out.write(T("island_none") + "\n")
+        return 1
+    isl = pl["island"]
+    out.write(T("island_head", name=isl.get("name") or "-", owner=(isl.get("owner") or {}).get("name") or "-",
+                w=(isl.get("size") or {}).get("w"), h=(isl.get("size") or {}).get("h"), n=len(isl.get("buildings") or [])) + "\n")
+    for p in pl["people"]:
+        out.write(T("island_person", emoji=p.get("emoji") or "·", seat=p.get("seat"), name=p.get("name") or "-",
+                    state=T("state_" + (p.get("state") or "unknown"))) + "\n")
+    return 0
+
+
+def cmd_space(a, env, out):
+    """aib chat space [<主人> none|island|room] [--default none|island] [--json](第 34 節 v2)。"""
+    import chat_roster as CR
+    try:
+        if a.default:
+            CR.set_space(a.default, None, env)
+        if a.who:
+            if a.level is None:
+                out.write(T("space_need_level") + "\n")
+                return 2
+            CR.set_space(a.level, a.who, env)
+    except CR.RosterError as err:
+        out.write(T("profile_" + str(err)) + "\n")
+        return 2
+    sp = CR.read_space(env)
+    owners = [f["owner"] for f in CR.read_friends(env, "mine")] + [f["owner"] for f in CR.read_friends(env)]
+    pl = {"v": 1, "default": sp["default"], "peers": {o: CR.space_level(o, env) for o in dict.fromkeys(owners)}}
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0
+    if a.who:
+        o = CR.friend_owner(a.who)
+        out.write(T("space_set", owner=o, level=T("space_" + CR.space_level(o, env))) + "\n")
+        return 0
+    out.write(T("space_default", level=T("space_" + pl["default"])) + "\n")
+    for o, lvl in pl["peers"].items():
+        out.write(T("share_row", level=T("space_" + lvl), owner=o) + "\n")
+    return 0
 
 
 def cmd_room(a, env, out):
@@ -1260,9 +1324,17 @@ def main(argv=None, env=None, out=sys.stdout):
     n5.add_argument("--clear", action="store_true")
     sh = sub.add_parser("share", help=T("help.share"))
     sh.add_argument("who", nargs="?")
-    sh.add_argument("level", nargs="?", choices=("off", "online", "status", "room"))
-    sh.add_argument("--default", choices=("off", "online", "status"))      # room 不准當預設(第 34.1 節逐位打開)
+    sh.add_argument("level", nargs="?", choices=("off", "online", "status"))
+    sh.add_argument("--default", choices=("off", "online", "status"))
     sh.add_argument("--json", action="store_true")
+    il = sub.add_parser("island", help=T("help.island"))
+    il.add_argument("who")
+    il.add_argument("--json", action="store_true")
+    spc = sub.add_parser("space", help=T("help.space"))
+    spc.add_argument("who", nargs="?")
+    spc.add_argument("level", nargs="?", choices=("none", "island", "room"))
+    spc.add_argument("--default", choices=("none", "island"))
+    spc.add_argument("--json", action="store_true")
     rm = sub.add_parser("room", help=T("help.room"))
     rm.add_argument("who")
     rm.add_argument("--json", action="store_true")
@@ -1346,6 +1418,10 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_world(a, env, out)
     if a.cmd == "room":
         return cmd_room(a, env, out)
+    if a.cmd == "island":
+        return cmd_island(a, env, out)
+    if a.cmd == "space":
+        return cmd_space(a, env, out)
     if a.cmd == "friends":
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":

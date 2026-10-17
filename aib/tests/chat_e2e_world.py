@@ -102,7 +102,7 @@ class Owner(object):
         env.update({"HOME": str(self.home), "AIB_CHAT_HOME": str(self.chat), "AIB_CHAT_BRIDGE_DIR": str(self.root),
                     "EZ2_AIB_STATE_ROOT": str(self.home / ".ez2-aib"), "AIB_CHAT_RELAYS": self.hub["relay"],
                     "AIB_CHAT_TICK": "0.5", "AIB_CHAT_POLL": "0.2", "AIB_CHAT_NET_TIMEOUT": "3", "AIB_CHAT_RETRY_GAP": "0.5",
-                    "AIB_CHAT_PRESENCE_TICK": "2", "AIB_CHAT_PRESENCE_GAP": "2", "AIB_CHAT_PRESENCE_EVERY": "20",
+                    "AIB_CHAT_PRESENCE_TICK": "2", "AIB_CHAT_PRESENCE_GAP": "2", "AIB_CHAT_PRESENCE_EVERY": "20", "AIB_CHAT_ROOM_GAP": "5",
                     "AIB_CHAT_VERIFY_TICK": "3", "AIB_CHAT_VERIFY_ALLOW_LOCAL": "1", "AIB_CHAT_NIP05_BASE": self.hub["site"],
                     "AIB_CHAT_READ_BATCH": "2", "EZ2_AIB_LOCALE": "zh-TW", "PYTHONDONTWRITEBYTECODE": "1"})
         env.update(extra)
@@ -269,7 +269,16 @@ def up(d, venv, out=sys.stdout):
     # 關係
     andy.cli("friend", "add", b_addr, "--name", "Bob 客戶", check=True)
     bob.cli("friend", "add", a_addr, check=True)
-    bob.cli("share", andy.owner(), "room", check=True)          # 第 34 節:Bob 讓 Andy 走進他的艦長室
+    bob.cli("share", andy.owner(), "status", check=True)        # 在線分享到 📌 狀態列
+    bob.cli("space", andy.owner(), "room", check=True)          # 第 34 節 v2:Bob 讓 Andy 走進他的島與艦長室
+    (bob.chat / "island.json").write_text(json.dumps({          # 艦長室寫的島(故意夾禁止欄位與超出範圍的值測過濾)
+        "v": 1, "name": "Bob 港", "size": {"w": 24, "h": 16}, "age": 2, "res": {"wood": 30, "stone": 12},
+        "owner": {"name": "Bob", "avatar": {"emoji": "🧔", "bg": "#2a6"}},
+        "buildings": [{"cabin": bob.cab, "x": 6, "y": 5, "style": "港口木造", "kind": "hall", "lv": 2},
+                      {"cabin": bob.cab, "x": 12, "y": 8, "kind": "dock", "lv": 1, "building": {"start": 1792200000, "done": 1792286400}},
+                      {"cabin": bob.cab, "x": 99, "y": 99, "kind": "far"}],
+        "decor": [{"kind": "tree", "x": 1, "y": 1}], "terrain": {"sea": "east"}, "ip": "192.168.1.9"}, ensure_ascii=False),
+        encoding="utf-8")
     (bob.chat / "room.json").write_text(json.dumps({            # 艦長室寫的房間資料(故意夾禁止欄位測過濾)
         "v": 1, "ship": {"name": "Bob 商會號", "sign": "BOB TRADING", "line": "歡迎來談合作", "ip": "192.168.1.9"},
         "cabins": [{"cabin": bob.cab, "floors": [{"id": "1F", "name": "大廳"}, {"id": "2F", "name": "業務部"}],
@@ -296,7 +305,7 @@ def up(d, venv, out=sys.stdout):
     # 等在線狀態、名片與驗證都到
     wait_for(lambda: any(c["owner"] == bob.owner() and c["fresh"] for c in andy.json("world", "--json")["cabins"]), 60,
              "Bob 的在線狀態到 Andy")
-    wait_for(lambda: andy.cli("room", bob.owner(), "--json").returncode == 0, 60, "Bob 的艦長室快照到 Andy")
+    wait_for(lambda: andy.cli("room", bob.owner(), "--json").returncode == 0, 60, "Bob 的空間快照(島 + 艦長室)到 Andy")
     wait_for(lambda: any(c["owner"] == bob.owner() and any(s.get("verified") for s in c.get("socials") or [])
                          for c in andy.json("contacts", "--json")["contacts"]), 60, "Bob 的社群證明驗過")
     out.write("假世界好了:%s\n" % d)
@@ -351,8 +360,19 @@ def check(d, out=sys.stdout):
     ok(all(k not in blob for k in ('"ip"', '"host"', '"ctx"', '"unread"', "192.168.1.9", "bob-mbp")), "房間快照沒有 IP / 主機名 / CTX / 未讀")
     ok(andy.cli("room", O["cara"], "--json").returncode != 0 and andy.cli("room", O["eve"], "--json").returncode != 0,
        "陌生 / 封鎖的沒有艦長室可看")
+    isl = json.loads(andy.cli("island", O["bob"], "--json").stdout or "null") or {}
+    ii = isl.get("island") or {}
+    ok(ii.get("name") == "Bob 港" and (ii.get("owner") or {}).get("name") == "Bob" and ii.get("size") == {"w": 24, "h": 16},
+       "走到 Bob 的島:島名、島主、大小")
+    ok([b.get("kind") for b in ii.get("buildings") or []] == ["hall", "dock"] and "building" in (ii.get("buildings") or [{}, {}])[1],
+       "島上建築:兩棟(島外那棟濾掉)、建造中那棟有時間")
+    ok(ii.get("age") == 2 and ii.get("res") == {"wood": 30, "stone": 12} and "192.168.1.9" not in json.dumps(isl),
+       "島的 age / res 照轉、沒有 IP")
+    ok(isl.get("has_room") is True and len(isl.get("people") or []) == 2, "島上走動的人 = Bob 的兩席,有艦長室可進")
     wcab = world.get(O["bob"]) or {}
-    ok((wcab.get("room") or {}).get("fresh") is True, "世界格標出 Bob 有房間可走進去")
+    ok((wcab.get("space") or {}).get("room") is True and (wcab.get("space") or {}).get("fresh") is True,
+       "世界格標出 Bob 有島與艦長室可走進去")
+    ok(andy.cli("island", O["cara"], "--json").returncode != 0, "陌生人的島看不到")
     reqs = andy.json("requests", "--json")["requests"]
     ok([r["owner"] for r in reqs] == [O["dan"]], "申請分頁只有 Dan")
     refused = andy.json("refused", "--json")["refused"]

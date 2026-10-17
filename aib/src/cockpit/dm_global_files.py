@@ -748,14 +748,14 @@ def drop_world(root, keep_owner):
     _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
 
 
-# rooms/<主人>.json(第 34 節):好友分享來的房間快照;只有工人寫,核心讀。
+# spaces/<主人>.json(第 34 節 v2):好友分享來的空間快照(島 + 艦長室);只有工人寫,核心讀。
 ROOM_FRESH_S = 7 * 86400
 
 
 def write_room(root, owner, snap, now=None):
     if not NPUB_FULL_RE.match(owner or ""):
         return
-    d = Path(root) / "rooms"
+    d = Path(root) / "spaces"
     d.mkdir(parents=True, exist_ok=True)
     write_json(str(d / (owner + ".json")), {"v": VERSION, "owner": owner, "at": int(time.time() if now is None else now),
                                             "snap": snap})
@@ -766,7 +766,7 @@ def read_room(root, owner):
     if not NPUB_FULL_RE.match(owner or ""):
         return None
     try:
-        rec = json.loads((Path(root) / "rooms" / (owner + ".json")).read_text(encoding="utf-8"))
+        rec = json.loads((Path(root) / "spaces" / (owner + ".json")).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return rec if isinstance(rec, dict) and isinstance(rec.get("snap"), dict) else None

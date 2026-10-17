@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""房間快照:讓好友走進你的艦長室(開發文件第 34 節)。只用標準庫。
+"""空間快照:讓好友走進你的島與艦長室(開發文件第 34 節 v2:島的戶外 + 建築內部)。只用標準庫。
 
 - 艦長室寫 ~/.ez2-aib/chat/room.json(艦名 / 招牌 / 艦長一句話、樓層與風格、每席樓層與 Lv、裝潢 layout);
 - 這裡加上核心自己知道的每個**公開席**(席名、人格 emoji、AI 家、角色、📌),不信 room.json 自報;
@@ -57,10 +57,67 @@ def _emoji_of(home, persona_uid):
     return e if isinstance(e, str) and 0 < len(e) <= 8 else None
 
 
-def build(env=None, now=None):
-    """組自己的房間快照(還沒壓)。沒有公開席 ⇒ None。"""
+ISLAND_MAX = 64              # 島最大 64 × 64 格(@74e8b 11:59)
+_KEY_RE = __import__("re").compile(r"^[a-z0-9_]{1,24}$")      # kind、res 的名稱(艦長室定義意思,核心只驗型別)
+RES_MAX = 50
+
+
+def island_path(env=None):
+    import chat_roster as CR
+    return CR._chat_home(env) / "island.json"
+
+
+def _read_json(path):
+    try:
+        raw = path.read_text(encoding="utf-8")
+        x = json.loads(raw) if len(raw.encode("utf-8")) <= RAW_MAX else {}
+    except (OSError, ValueError):
+        x = {}
+    return scrub(x if isinstance(x, dict) else {}) or {}
+
+
+def _int_in(v, lo, hi):
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def clean_island(x):
+    """island.json(艦長室寫)⇒ 驗過的島:size ≤ 64×64 格;建築 x,y 要在島內;島主只收名字與 emoji / 背景字(不收圖檔)。
+    建築的 kind / lv / building{start,done}、島的 age / res{名稱: 數量} 由艦長室定義意思,核心只驗型別與範圍
+    (kind 與名稱 [a-z0-9_]{1,24}、lv / age 0–99、數量非負整數、名稱最多 50 個),不合的欄位當沒有。"""
+    size = x.get("size") if isinstance(x.get("size"), dict) else {}
+    w = size.get("w") if _int_in(size.get("w"), 1, ISLAND_MAX) else 16
+    h = size.get("h") if _int_in(size.get("h"), 1, ISLAND_MAX) else 16
+    owner = x.get("owner") if isinstance(x.get("owner"), dict) else {}
+    av = owner.get("avatar") if isinstance(owner.get("avatar"), dict) else {}
+    out = {"name": x.get("name") if isinstance(x.get("name"), str) else None, "size": {"w": w, "h": h},
+           "owner": {"name": owner.get("name") if isinstance(owner.get("name"), str) else None,
+                     "avatar": {k: av.get(k) for k in ("emoji", "bg") if isinstance(av.get(k), str)}},
+           "terrain": x.get("terrain") if isinstance(x.get("terrain"), (dict, list)) else None,
+           "buildings": [], "decor": x.get("decor") if isinstance(x.get("decor"), list) else [],
+           "age": x.get("age") if _int_in(x.get("age"), 0, 99) else None,
+           "res": {k: v for k, v in list((x.get("res") if isinstance(x.get("res"), dict) else {}).items())[:RES_MAX]
+                   if isinstance(k, str) and _KEY_RE.match(k) and _int_in(v, 0, 10 ** 12)}}
+    for b in x.get("buildings") or []:
+        if isinstance(b, dict) and isinstance(b.get("cabin"), str) and _int_in(b.get("x"), 0, w - 1) and _int_in(b.get("y"), 0, h - 1):
+            row = {"cabin": b["cabin"], "x": b["x"], "y": b["y"],
+                   "style": b.get("style") if isinstance(b.get("style"), str) else None,
+                   "kind": b.get("kind") if isinstance(b.get("kind"), str) and _KEY_RE.match(b["kind"]) else None,
+                   "lv": b.get("lv") if _int_in(b.get("lv"), 0, 99) else None}
+            bd = b.get("building") if isinstance(b.get("building"), dict) else None
+            if bd and _int_in(bd.get("start"), 0, 10 ** 11) and _int_in(bd.get("done"), 0, 10 ** 11):
+                row["building"] = {"start": bd["start"], "done": bd["done"]}
+            out["buildings"].append(row)
+    return out
+
+
+def build(env=None, now=None, with_rooms=False, with_status=False, with_state=True):
+    """組自己的空間快照(第 34 節 v2):{v, island, people, rooms}。
+    island = 島的戶外(island.json);people = 島上走動的人 = 公開席(席名、emoji、AI 家、角色、state、at);
+    rooms 只在 room 等級才帶(room.json 的艦名 / 樓層 / Lv / layout + 核心補的席);now / step 只在在線等級 status 才帶。
+    沒有公開席 ⇒ None。"""
     import chat_roster as CR
     import nostr_keys as NK
+    import seat_now as SN
     import seat_presence as SP
     env = os.environ if env is None else env
     prof = CR.read_profile(env) or {}
@@ -71,47 +128,56 @@ def build(env=None, now=None):
     live = [s for s in NK.live_seats(env=env) if s["seat5"] in pub and s["seat5"] in active]
     if not live:
         return None
-    try:
-        raw = room_path(env).read_text(encoding="utf-8")
-        mine = json.loads(raw) if len(raw.encode("utf-8")) <= RAW_MAX else {}
-    except (OSError, ValueError):
-        mine = {}
-    mine = scrub(mine if isinstance(mine, dict) else {}) or {}
-    extra = mine.get("seats") if isinstance(mine.get("seats"), dict) else {}
     pres = {r["seat"]: r for r in SP.presence([s["seat5"] for s in live], with_status=True, state_root=home)}
-    seats = []
+    people = []
     for s in live:
-        e = extra.get(s["seat5"]) if isinstance(extra.get(s["seat5"]), dict) else {}
         p = pres.get(s["seat5"]) or {}
-        seats.append({"seat": s["seat5"], "cabin": s.get("cabin") or "main", "name": s.get("name"),
-                      "emoji": _emoji_of(home, s.get("persona_uid")), "provider": s.get("provider"), "role": s.get("role"),
-                      "state": p.get("state"), "now": p.get("now"), "step": p.get("step"),
-                      "floor": e.get("floor"), "lv": e.get("lv") if isinstance(e.get("lv"), int) else None,
-                      "stars": e.get("stars") if isinstance(e.get("stars"), int) else None})
-    ship = dict(mine.get("ship")) if isinstance(mine.get("ship"), dict) else {}
-    cap = ship.get("captain")
-    if isinstance(cap, dict):          # @74e8b 11:09:艦長(真人)那一格 {seat, name, avatar};席要是公開的,不然不帶席碼
-        cap = {k: cap.get(k) for k in ("seat", "name", "avatar") if isinstance(cap.get(k), str)}
-        if cap.get("seat") not in {x["seat"] for x in seats}:
-            cap.pop("seat", None)
-        ship["captain"] = cap
-    elif "captain" in ship:
-        ship.pop("captain")
-    snap = {"v": 1, "ship": ship,
-            "cabins": mine.get("cabins") if isinstance(mine.get("cabins"), list) else [],
-            "seats": seats, "layout": mine.get("layout") if isinstance(mine.get("layout"), (dict, list)) else None,
-            "layout_omitted": False}
+        rec = SN.read(s["seat5"], state_root=home) or {}
+        people.append({"seat": s["seat5"], "cabin": s.get("cabin") or "main", "name": s.get("name"),
+                       "emoji": _emoji_of(home, s.get("persona_uid")), "provider": s.get("provider"), "role": s.get("role"),
+                       "state": p.get("state") if with_state else None,
+                       "at": rec.get("at") if isinstance(rec.get("at"), int) and with_state else None})
+    snap = {"v": 2, "island": clean_island(_read_json(island_path(env))), "people": people, "rooms": None}
+    if with_rooms:
+        mine = _read_json(room_path(env))
+        extra = mine.get("seats") if isinstance(mine.get("seats"), dict) else {}
+        seats = []
+        for s, ppl in zip(live, people):
+            e = extra.get(s["seat5"]) if isinstance(extra.get(s["seat5"]), dict) else {}
+            p = pres.get(s["seat5"]) or {}
+            seats.append(dict(ppl, now=p.get("now") if with_status else None, step=p.get("step") if with_status else None,
+                              floor=e.get("floor"), lv=e.get("lv") if isinstance(e.get("lv"), int) else None,
+                              stars=e.get("stars") if isinstance(e.get("stars"), int) else None))
+        ship = dict(mine.get("ship")) if isinstance(mine.get("ship"), dict) else {}
+        cap = ship.get("captain")
+        if isinstance(cap, dict):          # @74e8b 11:09:艦長(真人)那一格 {seat, name, avatar};席要是公開的,不然不帶席碼
+            cap = {k: cap.get(k) for k in ("seat", "name", "avatar") if isinstance(cap.get(k), str)}
+            if cap.get("seat") not in {x["seat"] for x in seats}:
+                cap.pop("seat", None)
+            ship["captain"] = cap
+        elif "captain" in ship:
+            ship.pop("captain")
+        snap["rooms"] = {"ship": ship, "cabins": mine.get("cabins") if isinstance(mine.get("cabins"), list) else [],
+                         "seats": seats, "layout": mine.get("layout") if isinstance(mine.get("layout"), (dict, list)) else None,
+                         "layout_omitted": False}
     return snap
 
 
 def encode(snap):
-    """快照 ⇒ 傳輸字串(zlib + base64);超過 WIRE_MAX 先拿掉 layout,還超過回 None。"""
+    """快照 ⇒ 傳輸字串(zlib + base64);超過 WIRE_MAX 先丟 rooms.layout、再丟 island.decor,還超過回 None。"""
     def enc(x):
         return base64.b64encode(zlib.compress(json.dumps(x, ensure_ascii=False, sort_keys=True).encode("utf-8"), 9)).decode("ascii")
     s = enc(snap)
     if len(s) <= WIRE_MAX:
         return s
-    snap = dict(snap, layout=None, layout_omitted=True)
+    snap = json.loads(json.dumps(snap))
+    if snap.get("rooms"):
+        snap["rooms"]["layout"], snap["rooms"]["layout_omitted"] = None, True
+        s = enc(snap)
+        if len(s) <= WIRE_MAX:
+            return s
+    if snap.get("island"):
+        snap["island"]["decor"], snap["island"]["decor_omitted"] = [], True
     s = enc(snap)
     return s if len(s) <= WIRE_MAX else None
 
@@ -125,6 +191,6 @@ def decode(text):
         snap = json.loads(raw.decode("utf-8"))
     except (ValueError, zlib.error, UnicodeDecodeError, TypeError):
         return None
-    if not isinstance(snap, dict) or snap.get("v") != 1 or not isinstance(snap.get("seats"), list):
+    if not isinstance(snap, dict) or snap.get("v") != 2 or not isinstance(snap.get("people"), list):
         return None
     return scrub(snap)

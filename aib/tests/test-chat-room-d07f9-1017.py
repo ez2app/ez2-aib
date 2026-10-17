@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""房間快照:走進好友的艦長室(開發文件第 34 節;包 J)。核心一定跑(只用標準庫);走進艦長室的端到端在 test-chat-e2e-world。
+"""空間快照:走進好友的島與艦長室(開發文件第 34 節 v2;包 J)。核心一定跑(只用標準庫);端到端在 test-chat-e2e-world。
 
 J1 scrub:任何層級的 ctx / unread / ip / host / hostname / content / body / msg 都拿掉;字串清控制字元與長度
-J2 encode / decode:壓縮後超過上限 ⇒ 拿掉 layout、標 layout_omitted;decode 壞資料 ⇒ None;解壓炸彈(超過 64 KB)⇒ None
-J3 build:只列公開的席;席名 / emoji / AI 家 / 角色由核心補(room.json 自報的 name / role 不採用);
-   room.json 帶的禁止欄位不進快照
-J4 分享等級:room 只能逐位打開(--default room ⇒ rc 2);room 對陌生人一樣是 off
-J5 aib chat room:不是好友 ⇒ rc 1;好友有快照 ⇒ 列艦名與席
+J2 encode / decode:超過上限先丟 rooms.layout、再丟 island.decor;decode 壞資料 / 舊版 / 解壓炸彈 ⇒ None
+J3 build:people 只列公開的席、名字角色由核心補;island 驗格子(≤ 64×64、建築在島內、島主只收名字與 emoji / 背景字);
+   rooms 只在 with_rooms;now / step 只在 with_status;state / at 只在 with_state;禁止欄位不進快照
+J4 空間分享:預設 island、room 只能逐位開(--default room ⇒ rc 2)、陌生人 none;在線梯子回到 off / online / status
+J5 aib chat island / room:不是好友 ⇒ rc 1;好友只有 island ⇒ room 沒有;有 rooms ⇒ room 列艦名與席
 刀(複本):K1 不濾禁止欄位 ⇒ J1 紅;K2 build 不看公開 ⇒ J3 紅
 """
 import base64
@@ -50,14 +50,19 @@ class Pure(unittest.TestCase):
 
     def test_j2_encode_decode(self):
         import os
-        small = {"v": 1, "seats": [{"seat": "abcde"}], "layout": {"a": 1}, "layout_omitted": False}
-        self.assertEqual(RS.decode(RS.encode(small))["layout"], {"a": 1})
-        big = dict(small, layout={"k": [os.urandom(8).hex() for _ in range(6000)]})
-        got = RS.decode(RS.encode(big))
-        self.assertEqual((got["layout"], got["layout_omitted"]), (None, True))
+        small = {"v": 2, "island": {"decor": [1]}, "people": [{"seat": "abcde"}],
+                 "rooms": {"seats": [], "layout": {"a": 1}, "layout_omitted": False}}
+        self.assertEqual(RS.decode(RS.encode(small))["rooms"]["layout"], {"a": 1})
+        noise = lambda: [os.urandom(8).hex() for _ in range(6000)]
+        got = RS.decode(RS.encode(dict(small, rooms=dict(small["rooms"], layout={"k": noise()}))))
+        self.assertEqual((got["rooms"]["layout"], got["rooms"]["layout_omitted"], got["island"]["decor"]), (None, True, [1]),
+                         "先丟艦長室的 layout")
+        got = RS.decode(RS.encode(dict(small, island={"decor": noise()}, rooms=dict(small["rooms"], layout={"k": noise()}))))
+        self.assertEqual((got["rooms"]["layout"], got["island"]["decor"], got["island"]["decor_omitted"]), (None, [], True),
+                         "還太大再丟島上擺設")
         self.assertIsNone(RS.decode("not base64!!"))
-        self.assertIsNone(RS.decode(base64.b64encode(zlib.compress(b'{"v":2}')).decode()))
-        bomb = base64.b64encode(zlib.compress(json.dumps({"v": 1, "seats": [], "x": "0" * (RS.RAW_MAX + 10)}).encode())).decode()
+        self.assertIsNone(RS.decode(base64.b64encode(zlib.compress(b'{"v":1,"seats":[]}')).decode()), "舊版房間快照不收")
+        bomb = base64.b64encode(zlib.compress(json.dumps({"v": 2, "people": [], "x": "0" * (RS.RAW_MAX + 10)}).encode())).decode()
         self.assertIsNone(RS.decode(bomb), "解開超過 64 KB 的不收")
 
 
@@ -84,45 +89,69 @@ class Box(unittest.TestCase):
                              "captain": {"seat": self.codes[0], "name": "Andy", "avatar": "🧑‍✈️", "ip": "x"}},
             "seats": {self.codes[0]: {"floor": "3F", "lv": 9, "stars": 5, "name": "假名", "role": "假角色", "ctx": 90},
                       self.codes[1]: {"floor": "1F", "lv": 1}}}))
-        snap = RS.build(self.b.env())
-        self.assertEqual([s["seat"] for s in snap["seats"]], [self.codes[0]], "沒公開的席不准出現")
-        s = snap["seats"][0]
-        self.assertEqual((s["name"], s["role"], s["provider"], s["emoji"], s["floor"], s["lv"]),
-                         ("艦長", "root", "claude", "👑", "3F", 9), "名字角色由核心補,不信 room.json 自報")
-        self.assertEqual(snap["ship"]["captain"], {"seat": self.codes[0], "name": "Andy", "avatar": "🧑‍✈️"})
-        (self.b.chat / "room.json").write_text(json.dumps({"v": 1, "ship": {"captain": {"seat": self.codes[1], "name": "X"}}}))
-        self.assertNotIn("seat", RS.build(self.b.env())["ship"]["captain"], "艦長格指到沒公開的席 ⇒ 不帶席碼")
+        (self.b.chat / "island.json").write_text(json.dumps({
+            "v": 1, "name": "Andy 島", "size": {"w": 200, "h": 10}, "owner": {"name": "Andy", "avatar": {"emoji": "🧑", "bg": "#123", "img": "x.png"}},
+            "age": 3, "res": {"wood": 12, "Bad Name": 1, "stone": -1},
+            "buildings": [{"cabin": "6ddf", "x": 3, "y": 4, "style": "塔", "kind": "hall", "lv": 2,
+                           "building": {"start": 100, "done": 200}},
+                          {"cabin": "6ddf", "x": 5, "y": 5, "kind": "BAD!", "lv": 500, "building": {"start": "x"}},
+                          {"cabin": "zzzz", "x": 99, "y": 1}],
+            "decor": [{"kind": "樹", "x": 1, "y": 1, "host": "mbp"}], "terrain": {"sea": True}}))
+        snap = RS.build(self.b.env(), with_rooms=True, with_status=True)
+        self.assertEqual([p["seat"] for p in snap["people"]], [self.codes[0]], "沒公開的席不准出現")
+        p = snap["people"][0]
+        self.assertEqual((p["name"], p["role"], p["provider"], p["emoji"]), ("艦長", "root", "claude", "👑"), "名字角色由核心補")
+        isl = snap["island"]
+        self.assertEqual((isl["name"], isl["size"], isl["owner"]["avatar"]), ("Andy 島", {"w": 16, "h": 10}, {"emoji": "🧑", "bg": "#123"}),
+                         "島最大 64 格;島主不收圖檔")
+        self.assertEqual([b["cabin"] for b in isl["buildings"]], ["6ddf", "6ddf"], "建築要在島內")
+        b0, b1 = isl["buildings"]
+        self.assertEqual((b0["kind"], b0["lv"], b0["building"]), ("hall", 2, {"start": 100, "done": 200}))
+        self.assertEqual((b1["kind"], b1["lv"], "building" in b1), (None, None, False), "型別 / 範圍不合 ⇒ 當沒有")
+        self.assertEqual((isl["age"], isl["res"]), (3, {"wood": 12}))
+        r = snap["rooms"]
+        self.assertEqual((r["seats"][0]["floor"], r["seats"][0]["lv"], r["ship"]["captain"]["seat"]), ("3F", 9, self.codes[0]))
         blob = json.dumps(snap, ensure_ascii=False)
-        self.assertNotIn("10.0.0.1", blob)
-        self.assertNotIn('"ctx"', blob)
+        for bad in ("10.0.0.1", '"ctx"', '"host"', "x.png"):
+            self.assertNotIn(bad, blob, bad)
+        lite = RS.build(self.b.env(), with_rooms=False, with_status=False, with_state=False)
+        self.assertIsNone(lite["rooms"], "island 等級不帶建築內部")
+        self.assertEqual((lite["people"][0]["state"], lite["people"][0]["at"]), (None, None), "在線 off ⇒ 不帶 state")
 
-    def test_j4_share_room(self):
+    def test_j4_space(self):
         b = self.b
         b.cli("friend", "add", FRIEND)
-        self.assertEqual(b.cli("share", "--default", "room").returncode, 2, "room 不准當預設")
-        self.assertEqual(b.cli("share", FRIEND, "room").returncode, 0)
-        self.assertEqual(json.loads(b.cli("share", "--json").stdout)["peers"][FRIEND], "room")
+        b.cli("mine", "add", OTHER)
+        self.assertEqual(json.loads(b.cli("space", "--json").stdout)["peers"], {OTHER: "island", FRIEND: "island"}, "預設 island")
+        self.assertEqual(b.cli("space", "--default", "room").returncode, 2, "room 不准當預設")
+        self.assertEqual(b.cli("space", FRIEND, "room").returncode, 0)
+        self.assertEqual(json.loads(b.cli("space", "--json").stdout)["peers"][FRIEND], "room")
+        self.assertEqual(b.cli("share", FRIEND, "room").returncode, 2, "在線梯子沒有 room 了")
         import chat_roster as CR
-        self.assertEqual(CR.share_level(OTHER, b.env()), "off")
+        stranger = NK.npub(NK.pubkey_hex("%064x" % 123))
+        self.assertEqual(CR.space_level(stranger, b.env()), "none")
 
-    def test_j5_room_cli(self):
+    def test_j5_island_room_cli(self):
         b = self.b
         GF.ensure_dirs(b.root)
-        snap = {"v": 1, "ship": {"name": "Bob 號"}, "cabins": [], "seats": [{"seat": "bbbb2", "emoji": "🧭", "name": "Bob 艦長"}],
-                "layout": None, "layout_omitted": False}
+        snap = {"v": 2, "island": {"name": "Bob 島", "size": {"w": 8, "h": 8}, "owner": {"name": "Bob"}, "buildings": []},
+                "people": [{"seat": "bbbb2", "emoji": "🧭", "name": "Bob 艦長", "state": "online"}], "rooms": None}
         GF.write_room(b.root, FRIEND, snap)
-        self.assertEqual(b.cli("room", FRIEND, "--json").returncode, 1, "不是好友 ⇒ 看不到")
+        self.assertEqual(b.cli("island", FRIEND, "--json").returncode, 1, "不是好友 ⇒ 看不到")
         b.cli("friend", "add", FRIEND)
-        r = b.cli("room", FRIEND)
+        r = b.cli("island", FRIEND)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("Bob 號", r.stdout)
+        self.assertIn("Bob 島", r.stdout)
         self.assertIn("🧭", r.stdout)
-        pl = json.loads(b.cli("room", FRIEND, "--json").stdout)
-        self.assertTrue(pl["fresh"])
-        rec = json.loads((b.root / "rooms" / (FRIEND + ".json")).read_text())
+        self.assertFalse(json.loads(b.cli("island", FRIEND, "--json").stdout)["has_room"])
+        self.assertEqual(b.cli("room", FRIEND, "--json").returncode, 1, "只有 island ⇒ 沒有艦長室內部")
+        GF.write_room(b.root, FRIEND, dict(snap, rooms={"ship": {"name": "Bob 號"}, "cabins": [], "seats": [{"seat": "bbbb2"}],
+                                                        "layout": None, "layout_omitted": False}))
+        self.assertIn("Bob 號", b.cli("room", FRIEND).stdout)
+        rec = json.loads((b.root / "spaces" / (FRIEND + ".json")).read_text())
         rec["at"] = int(time.time()) - 8 * 86400
-        (b.root / "rooms" / (FRIEND + ".json")).write_text(json.dumps(rec))
-        self.assertFalse(json.loads(b.cli("room", FRIEND, "--json").stdout)["fresh"], "7 天沒更新 ⇒ 不新鮮")
+        (b.root / "spaces" / (FRIEND + ".json")).write_text(json.dumps(rec))
+        self.assertFalse(json.loads(b.cli("island", FRIEND, "--json").stdout)["fresh"], "7 天沒更新 ⇒ 不新鮮")
 
 
 class Knife(unittest.TestCase):

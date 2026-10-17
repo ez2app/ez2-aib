@@ -189,7 +189,7 @@ def is_mine(owner, env=None):
 
 
 # ── 在線狀態分享等級(第 30.2 節)── chat/share.json(0600):{"v":1, "default":"online", "per":{owner: level}}
-SHARE_LEVELS = ("off", "online", "status", "room")     # room = status + 房間快照(第 34 節,逐位打開)
+SHARE_LEVELS = ("off", "online", "status")
 SHARE_DEFAULT = "online"          # 第 18.1 節:預設只有在或不在
 SHARE_MINE_DEFAULT = "status"     # 我的其他機器預設看得到狀態列
 
@@ -217,8 +217,6 @@ def set_share(level, who=None, env=None):
     if level not in SHARE_LEVELS:
         raise RosterError("bad_share")
     rec = read_share(env)
-    if who is None and level == "room":
-        raise RosterError("bad_share")       # 房間快照要逐位打開,不准當預設(第 34.1 節)
     if who is None:
         rec["default"] = level
         target = "default"
@@ -325,6 +323,51 @@ def set_nip05(text, env=None):
         rec["nip05"] = n
     _save_profile(rec, env)
     return rec.get("nip05")
+
+
+# ── 空間分享(第 34 節 v2,Andy 10-17 11:5x「好友的地圖是一個空間,不僅是艦長室」)──
+# 跟在線分享(off / online / status)分開的一條:none < island(島的戶外)< room(島 + 建築內部)。
+# 存同一個 share.json 的 space 欄:{"default": "island", "per": {owner: level}}。room 不准當預設、要逐位開。
+SPACE_LEVELS = ("none", "island", "room")
+SPACE_DEFAULT = "island"
+
+
+def read_space(env=None):
+    sp = read_share(env).get("space")
+    sp = sp if isinstance(sp, dict) else {}
+    default = sp.get("default") if sp.get("default") in ("none", "island") else SPACE_DEFAULT
+    per = sp.get("per") if isinstance(sp.get("per"), dict) else {}
+    return {"default": default, "per": {k: v for k, v in per.items() if _NPUB_RE.match(k) and v in SPACE_LEVELS}}
+
+
+def set_space(level, who=None, env=None):
+    if level not in SPACE_LEVELS or (who is None and level == "room"):
+        raise RosterError("bad_space")
+    rec = read_share(env)
+    sp = read_space(env)
+    if who is None:
+        sp["default"] = level
+        target = "default"
+    else:
+        target = friend_owner(who)
+        if not target:
+            raise RosterError("bad_friend")
+        sp["per"][target] = level
+    rec["space"] = sp
+    p = share_path(env)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(p.parent), 0o700)
+    write_json(str(p), rec)
+    os.chmod(str(p), 0o600)
+    return target, level
+
+
+def space_level(owner, env=None):
+    """對這位主人分享到哪:封鎖 / 不是好友也不是我的機器 ⇒ none。"""
+    if not owner or is_blocked(owner, env) or not (is_mine(owner, env) or is_friend(owner, env)):
+        return "none"
+    sp = read_space(env)
+    return sp["per"].get(owner) or sp["default"]
 
 
 def clean_country(code):
