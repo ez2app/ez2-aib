@@ -107,7 +107,11 @@ aib newproj --title "我的部落格 SEO" --seat abcd/12345 --cwd /path/to/site 
   `aib newproj --approve <專案 uid>`。它會把初稿的目標、紅線、本人裁定印出來,要本人親手再打一次專案 uid 才生效;
   打錯就取消、什麼都不改。生效後卡上會寫 `approved: true`、`approved_by`(登入名)、`approved_at`(時間),
   `human_rulings` 多一筆核准紀錄,帳本也記一筆。
-  - 使用者在對話裡說「核准」「全核準」也一樣:把上面那行指令給他,請他自己去終端機跑。AI 席跑這行會被擋(rc 2)。
+  - **Mac 上可以不換終端機:** 使用者在對話裡明講要核准(「核准」「全核準」),你可以替他跑
+    `aib newproj --approve <專案 uid>`:它會印出目標與紅線,並在 Mac 上跳 **Touch ID 視窗**(或登入密碼欄),
+    要本人按指紋才生效;本人按取消、等太久、或不在電腦前,就是沒核准(rc 2)。跑之前先把目標與紅線給他看,
+    跑完照實回報:成功才說「已核准」,沒過就說沒過、原因照印。卡上會記 `approved_via: touchid`。
+  - 不是 Mac(或設了 `AIB_TOUCHID=0`):把上面那行指令給他,請他自己去終端機跑。AI 席跑這行會被擋(rc 2)。
   - 要先改目標或紅線:改 `candidate_path` 那個初稿檔(使用者自己改,或使用者明講要你改),改完再請他核准。
 - 專案的「目標」一開始是空的,只有紅線是從人格抽的。請使用者告訴你目標,或提醒他去補。
 
@@ -180,7 +184,8 @@ aib newproj --title "我的部落格 SEO" --cwd /path/to/site [--folder "系統�
 
 - 不要手改 `~/.ez2-aib/projects/` 底下的專案卡,也不要手改席位檔來綁專案。
 - 不要自己建立或修改「已核准」的目標與紅線;核准權在本人。
-- 不要自己跑 `aib newproj --approve`,也不要手改卡上的 `approved` / `constitution_status` 代替它;使用者口頭說核准也一樣,請他自己跑。
+- 使用者沒明講要核准,不要自己跑 `aib newproj --approve`;也不要手改卡上的 `approved` / `constitution_status` 代替它。
+  Mac 上跑它只會跳 Touch ID 視窗等本人按,AI 不能替本人按、不能叫別的程式代按;不是 Mac 就請他自己去終端機跑。
 - 不要用 `--unbind` 之後再去刪專案卡資料夾;專案記憶是只增不改的。
 - 不要直接對別席的視窗貼字;寄送一律走 `--deliver`(它走 aib dm)。
 - 不要在沒有 `--dry-run` 看過結果之前,對別人的席位真跑。
