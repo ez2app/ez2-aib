@@ -4576,5 +4576,6 @@
   "aib.vault_cli.doctor_ok": "Vault 가 uid 형식을 따르며 고칠 것이 없습니다",
   "aib.vault_cli.doctor_found": "uid 형식에 맞지 않는 부분이 있습니다:",
   "aib.vault_cli.doctor_backup": "바꾸기 전 파일을 묶어 두었습니다: {path}",
-  "aib.vault_cli.doctor_hint_fix": "고치려면 --fix --backup-dir <Vault 밖 폴더> 를 붙이세요"
+  "aib.vault_cli.doctor_hint_fix": "고치려면 --fix --backup-dir <Vault 밖 폴더> 를 붙이세요",
+  "aib.vault_cli.doctor_updated_ambiguous": "그 밖에 {count} 개 노트의 updated 는 날짜만 있거나 초와 시간대가 없습니다. 변환하면 추측이 되므로 바꾸지 않고 문제로도 세지 않습니다"
 }

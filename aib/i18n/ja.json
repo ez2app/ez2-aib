@@ -4576,5 +4576,6 @@
   "aib.vault_cli.doctor_ok": "Vault は uid 形式どおりで、直す所はありません",
   "aib.vault_cli.doctor_found": "uid 形式に合わない箇所があります:",
   "aib.vault_cli.doctor_backup": "変更前のファイルを保存しました:{path}",
-  "aib.vault_cli.doctor_hint_fix": "修復するには --fix --backup-dir <Vault の外のフォルダ> を付けてください"
+  "aib.vault_cli.doctor_hint_fix": "修復するには --fix --backup-dir <Vault の外のフォルダ> を付けてください",
+  "aib.vault_cli.doctor_updated_ambiguous": "ほかに {count} 件のノートの updated は日付だけ、または秒とタイムゾーンがありません。変換は推測になるため変更せず、問題にも数えません"
 }

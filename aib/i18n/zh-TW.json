@@ -4576,5 +4576,6 @@
   "aib.vault_cli.doctor_ok": "Vault 符合 uid 版面,沒有要修的",
   "aib.vault_cli.doctor_found": "有不合 uid 版面的地方:",
   "aib.vault_cli.doctor_backup": "改之前的檔已打包:{path}",
-  "aib.vault_cli.doctor_hint_fix": "要修請加 --fix --backup-dir <Vault 外的資料夾>"
+  "aib.vault_cli.doctor_hint_fix": "要修請加 --fix --backup-dir <Vault 外的資料夾>",
+  "aib.vault_cli.doctor_updated_ambiguous": "另有 {count} 篇的 updated 只有日期、或沒有秒與時區,換算要猜,沒改也不算問題(要統一請另外決定)"
 }

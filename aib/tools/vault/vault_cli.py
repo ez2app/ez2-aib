@@ -12,6 +12,9 @@
           · 檔名是 uid 但 frontmatter 沒有 uid ⇒ 補上
           · 索引裡有、硬碟上已不在的資料夾 ⇒ 從索引拿掉
           · uid 重複、檔名與 frontmatter 的 uid 不一致 ⇒ 只列出來,要人看
+          · frontmatter 的 updated 是「本機時間 + 空格」(2026-10-07 00:12:16,舊外掛 update-time-on-edit 寫的)
+            ⇒ 照本機時區換成 ISO(2026-10-06T16:12:16.000Z);只改那一行,不動正文與其他欄位
+          · updated 只有日期、或沒有秒與時區(2026-08-10T18:48)⇒ 換算要猜,只在 notices 列數量,不改、不算問題
 離開碼:0 沒問題 / 已修好、1 有問題(只列沒修)、2 用法或錯誤、3 沒有授權。
 """
 from __future__ import annotations
@@ -137,11 +140,59 @@ def newpost(vault: Path, title: str, folder: str = "", body: str = "", now_ms: i
 
 
 # ---------------------------------------------------------------- doctor
+ISO_Z_RE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z")
+LOCAL_TIME_RE = re.compile(r"([\"']?)(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\1")
+UPDATED_LINE_RE = re.compile(r"(?m)^updated:[ \t]*(.*?)[ \t]*$")
+
+
+def _local_to_iso(value: str) -> str:
+    """「2026-10-07 00:12:16」照本機時區 ⇒ UTC 的 ISO(毫秒補 .000,跟 note-format 寫的同形)。"""
+    return U.iso(int(time.mktime(time.strptime(value, "%Y-%m-%d %H:%M:%S")) * 1000))
+
+
+def _updated_scan(vault: Path) -> tuple[list, list]:
+    """frontmatter updated 不是 ISO 的筆記 ⇒ (能確定換算的 [{path, old, new}], 要猜的 [{path, old}])。"""
+    fixable, guess = [], []
+    for dp, dn, fn in os.walk(vault):
+        dn[:] = sorted(x for x in dn if x not in U.SKIP_DIRS and not x.startswith("."))
+        for f in sorted(fn):
+            if not f.endswith(".md"):
+                continue
+            p = Path(dp, f)
+            fm, _body = U.split_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+            m = UPDATED_LINE_RE.search(fm or "")
+            if not m or not m.group(1) or ISO_Z_RE.fullmatch(m.group(1)):
+                continue
+            rel = str(p.relative_to(vault))
+            lm = LOCAL_TIME_RE.fullmatch(m.group(1))
+            if lm:
+                fixable.append({"path": rel, "old": m.group(1), "new": _local_to_iso(lm.group(2))})
+            else:
+                guess.append({"path": rel, "old": m.group(1)})
+    return fixable, guess
+
+
 def _problems(vault: Path) -> dict:
     res = U.verify(vault, cards_path=str(vault / ".ez2" / "no-cards-check.json"))
     keys = ("dirs_not_folder_id", "md_not_uid_name", "md_no_uid", "md_uid_mismatch", "uid_duplicates", "index_paths_missing",
             "route_paths_missing")
-    return {k: res.get(k) or [] for k in keys}
+    out = {k: res.get(k) or [] for k in keys}
+    out["md_updated_local_time"] = _updated_scan(vault)[0]
+    return out
+
+
+def _fix_updated(vault: Path, entry: dict) -> bool:
+    """只換 frontmatter 那一行 updated;讀到的值跟掃描時不同(期間有人改過)⇒ 不動、回 False。"""
+    p = vault / entry["path"]
+    text = p.read_text(encoding="utf-8")
+    fm, body = U.split_frontmatter(text)
+    m = UPDATED_LINE_RE.search(fm or "")
+    if not m or m.group(1) != entry["old"]:
+        return False
+    new_fm = fm[:m.start()] + "updated: " + entry["new"] + fm[m.end():]
+    head = text[:len(text) - len(body)]
+    p.write_text(head.replace(fm, new_fm, 1) + body, encoding="utf-8")
+    return True
 
 
 def _rewrite_links(vault: Path, old_stem: str, uid: str, skip: Path) -> int:
@@ -174,7 +225,8 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
     vault = Path(vault).resolve()                 # 捷徑解開再比(/var → /private/var),「備份放庫裡」才擋得住
     found = _problems(vault)
     out = {"vault": str(vault), "problems": found, "fixed": [], "left": [], "backup": None,
-           "ok": not any(found.values())}
+           "ok": not any(found.values()),
+           "notices": {"md_updated_ambiguous": _updated_scan(vault)[1], "timezone": time.strftime("%z")}}
     if not fix or out["ok"]:
         return out
     if backup_dir is None:
@@ -184,7 +236,8 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
         raise VaultError(U.T("err_backup_inside"))
     backup_dir.mkdir(parents=True, exist_ok=True)
     tgz = backup_dir / ("doctor-%s.tgz" % time.strftime("%Y%m%d-%H%M%S"))
-    touched = sorted(set(found["dirs_not_folder_id"]) | set(found["md_not_uid_name"]) | set(found["md_no_uid"]))
+    touched = sorted(set(found["dirs_not_folder_id"]) | set(found["md_not_uid_name"]) | set(found["md_no_uid"])
+                     | {e["path"] for e in found["md_updated_local_time"]})
     with tarfile.open(tgz, "w:gz") as tar:                   # 要動的檔 + 索引,原樣打包
         for rel in touched + [".ez2/index/folder-id-index.json", ".ez2/index/uid-index.json", ".ez2/display/labels.json"]:
             if (vault / rel).exists():
@@ -247,6 +300,12 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
         notes_lab[uid] = {"title": title, "path": new_rel}
         out["fixed"].append({"kind": "note", "path": rel, "new_path": new_rel, "uid": uid, "links_rewritten": links})
     _save(vault, fid, uidx, notes_lab)
+    # 5) updated「本機時間 + 空格」⇒ ISO(只改那一行;筆記在前面幾步被改名的,用改名後的路徑)
+    for e in _updated_scan(vault)[0]:
+        if _fix_updated(vault, e):
+            out["fixed"].append({"kind": "updated", "path": e["path"], "old": e["old"], "new": e["new"]})
+        else:
+            out["left"].append({"kind": "updated", "path": e["path"], "why": "changed"})
     after = _problems(vault)
     for k in ("uid_duplicates", "md_uid_mismatch"):
         for item in after[k]:
@@ -339,6 +398,9 @@ def main(argv=None) -> int:
                     print("    - %s" % (item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)))
         for f in res["fixed"]:
             print("  ✓ %s" % json.dumps(f, ensure_ascii=False))
+        amb = (res.get("notices") or {}).get("md_updated_ambiguous") or []
+        if amb:
+            print("  " + T("doctor_updated_ambiguous", {"count": len(amb)}))
         if res["backup"]:
             print("  " + T("doctor_backup", {"path": res["backup"]}))
         if not res["ok"] and not args.fix:

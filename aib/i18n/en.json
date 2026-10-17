@@ -4576,5 +4576,6 @@
   "aib.vault_cli.doctor_ok": "the vault follows the uid layout; nothing to fix",
   "aib.vault_cli.doctor_found": "parts of the vault break the uid layout:",
   "aib.vault_cli.doctor_backup": "files were packed before changing: {path}",
-  "aib.vault_cli.doctor_hint_fix": "to repair, add --fix --backup-dir <folder outside the vault>"
+  "aib.vault_cli.doctor_hint_fix": "to repair, add --fix --backup-dir <folder outside the vault>",
+  "aib.vault_cli.doctor_updated_ambiguous": "{count} more notes have an updated value with only a date, or without seconds and time zone; converting them would be a guess, so they are left as they are and not counted as problems"
 }
