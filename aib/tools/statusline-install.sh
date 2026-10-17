@@ -25,14 +25,16 @@ MANIFEST="$REPO_ROOT/deploy/statusline/MANIFEST.json"
 # $HOME 一律從環境取,不得寫死(§2.3-7:臂就是靠換 HOME 來跑)
 : "${HOME:?HOME 未設,安裝器拒絕猜測目的地}"
 WITNESS="$HOME/.ez2/statusline-install-witness.json"
+KNOWN="$REPO_ROOT/deploy/statusline/KNOWN-SHAS.json"
 
 MODE="install"
 for arg in "$@"; do
   case "$arg" in
     --check)   MODE="check" ;;
     --dry-run) MODE="dry-run" ;;
+    --auto)    MODE="auto" ;;
     --help|-h) MODE="help" ;;
-    *) printf '錯誤:未知選項 %s(只接受 --check / --dry-run / --help)\n' "$arg" >&2; exit 2 ;;
+    *) printf '錯誤:未知選項 %s(只接受 --check / --dry-run / --auto / --help)\n' "$arg" >&2; exit 2 ;;
   esac
 done
 
@@ -43,10 +45,19 @@ if [ "$MODE" = "help" ]; then
   (無選項)  依 MANIFEST 安裝;內容相同的檔不寫、不備份(冪等)
   --check    只比對不寫,逐支印 same / differs / missing;任一 differs|missing ⇒ rc=1
   --dry-run  印出會做什麼,零寫入,rc 與 --check 同
+  --auto     給 aib update / install.sh / aib init 結尾叫的:只換 aib 裝的舊版(sha 在 KNOWN-SHAS.json),
+             你改過或不是 aib 的不動(印一行手動換法);沒在用的那家不新建;不印接線說明。
+             AIB_STATUSLINE_AUTO=0 ⇒ 什麼都不做
 
 目的地清單唯一來源:deploy/statusline/MANIFEST.json
 本工具不改 settings.json / config.toml / hooks.json —— 接線那幾行由它印出、由人自己貼。
 USAGE
+  exit 0
+fi
+
+# 10-17 the maintainer「以後都應該自動更新」(@abb89 交辦):自動模式可以整個關掉;關了就一個位元組都不碰
+if [ "$MODE" = "auto" ] && [ "${AIB_STATUSLINE_AUTO:-1}" = "0" ]; then
+  printf '狀態列自動更新已關(AIB_STATUSLINE_AUTO=0);要手動換:%s\n' "$REPO_ROOT/tools/statusline-install.sh"
   exit 0
 fi
 
@@ -57,8 +68,8 @@ if [ ! -r "$MANIFEST" ]; then
   exit 3
 fi
 
-ITEMS="$(python3 - "$MANIFEST" <<'PY'
-import json, sys
+ITEMS="$(python3 - "$MANIFEST" "$MODE" "$KNOWN" "$HOME" "$REPO_ROOT" <<'PY'
+import hashlib, json, os, sys
 try:
     m = json.load(open(sys.argv[1], encoding="utf-8"))
 except Exception as e:
@@ -77,20 +88,59 @@ for i, it in enumerate(items):
         sys.stderr.write("錯誤:items[%d] 的 dest 含 $HOME 以外的變數:%s\n" % (i, dest)); sys.exit(3)
     if any(c in dest for c in " \t*?["):
         sys.stderr.write("錯誤:items[%d] 的 dest 含空白或 glob 字元(安靜的放寬):%s\n" % (i, dest)); sys.exit(3)
-    print("\t".join((it["src"], dest, str(it["mode"]), it["engine"])))
+# --auto:每一項先分好要不要動(其他模式一律 go)
+#   same / known(家目錄那支的 sha 是 aib 發過的某一版)⇒ go
+#   unknown(你改過或不是 aib 的)⇒ user;missing 而且那一家沒有任何一支是 aib 的 ⇒ unused(沒在用,不新建)
+mode, home, root = sys.argv[2], sys.argv[4], sys.argv[5]
+known = {}
+if mode == "auto":
+    try:
+        known = json.load(open(sys.argv[3], encoding="utf-8")).get("shas") or {}
+    except Exception as e:
+        sys.stderr.write("錯誤:讀不到 KNOWN-SHAS.json(%s)—— 自動模式認不出哪支是 aib 裝的,一支都不換\n" % e); sys.exit(3)
+def sha(path):
+    try:
+        return hashlib.sha256(open(path, "rb").read()).hexdigest()
+    except OSError:
+        return None
+state = []
+for it in items:
+    dest = it["dest"].replace("$HOME", home, 1)
+    if mode != "auto":
+        state.append("go"); continue
+    have = sha(dest)
+    if have is None:
+        state.append("missing")
+    elif have == sha(os.path.join(root, it["src"])) or have in (known.get(it["src"]) or []):
+        state.append("go")
+    else:
+        state.append("user")
+in_use = {it["engine"] for it, st in zip(items, state) if st == "go"}
+for it, st in zip(items, state):
+    if st == "missing":
+        st = "go" if it["engine"] in in_use else "unused"
+    print("\t".join((it["src"], it["dest"], str(it["mode"]), it["engine"], st)))
 PY
 )" || exit 3
 
 # ── 逐項比對 ────────────────────────────────────────────────────────────────
-n_same=0; n_write=0; n_missing=0; n_differ=0; rc=0
+n_same=0; n_write=0; n_missing=0; n_differ=0; n_user=0; rc=0
 declare -a NAMED_BAD=()
 
 sha_of() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
 
-while IFS=$'\t' read -r src dest mode engine; do
+while IFS=$'\t' read -r src dest mode engine auto; do
   [ -n "${src:-}" ] || continue
   abs_src="$REPO_ROOT/$src"
   abs_dest="${dest/\$HOME/$HOME}"
+  if [ "$MODE" = "auto" ]; then
+    case "$auto" in
+      unused) continue ;;
+      user)
+        printf '  %-8s %-46s 你改過(或不是 aib 的),沒自動換;要換成這一版:%s\n' "$engine" "${abs_dest#$HOME/}" "$REPO_ROOT/tools/statusline-install.sh"
+        n_user=$((n_user+1)); continue ;;
+    esac
+  fi
 
   if [ ! -r "$abs_src" ]; then
     printf '  %-52s 來源不存在 ← 具名失敗\n' "$src" >&2
@@ -125,7 +175,7 @@ while IFS=$'\t' read -r src dest mode engine; do
         NAMED_BAD+=("$dest(differs)"); n_differ=$((n_differ+1)); rc=1
       fi
       ;;
-    install)
+    install|auto)
       if [ "$state" = "same" ]; then
         # 內容相同一律不備份、不寫 —— 冪等的判準是「寫入次數」,不是 rc
         if [ "$mode_ok" != "yes" ]; then
@@ -224,9 +274,13 @@ json.dump({"schema": "ez2-statusline-install-witness-v1",
 PY
 }
 
+if [ "$MODE" = "auto" ]; then
+  codex_trust_check >/dev/null || rc=1      # 自動模式只在真的出事時開口(stderr);平常的綠燈不印
+else
 echo
 echo "── codex 信任面 ──────────────────────────────────────────"
 codex_trust_check || rc=1
+fi
 
 # ── 接線那幾行(只印,不代貼;§2.3-6)────────────────────────────────────────
 # ★ 只在 install 模式印。--check / --dry-run 是**診斷**,不是說明書。
@@ -257,7 +311,7 @@ PY
 fi
 
 # ── 收尾 ────────────────────────────────────────────────────────────────────
-echo
+[ "$MODE" = "auto" ] || echo
 case "$MODE" in
   install)
     [ $rc -eq 0 ] && write_witness
@@ -265,6 +319,13 @@ case "$MODE" in
       printf '%d 支已是最新\n' "$n_same"
     else
       printf '%d 支已更新,%d 支已是最新\n' "$n_write" "$n_same"
+    fi
+    ;;
+  auto)
+    # 一支 aib 的狀態列都沒有(沒在用)⇒ 驗證檔也不建:自動模式在沒用的機器上一個位元組都不寫
+    [ $rc -eq 0 ] && [ $((n_write + n_same)) -gt 0 ] && write_witness
+    if [ "$n_write" -gt 0 ] || [ "$n_user" -gt 0 ]; then
+      printf '狀態列:%d 支已更新、%d 支已是最新、%d 支你改過沒動\n' "$n_write" "$n_same" "$n_user"
     fi
     ;;
   check|dry-run)
