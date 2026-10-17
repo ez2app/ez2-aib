@@ -222,7 +222,8 @@ def clean_value(text, limit=64):
 
 
 _CODE_RE = re.compile(r"[A-Za-z0-9._-]{1,32}")
-_UPDATED_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}(?::\d{2})?)?")
+# 10-17:全庫 updated 統一成 UTC ISO(2026-10-06T16:12:16.000Z);舊的本機「日期 時間」照收
+_UPDATED_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}(?::\d{2})?|T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)?")
 
 
 def _shape_or_none(text, regex):

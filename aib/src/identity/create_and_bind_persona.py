@@ -881,7 +881,10 @@ def main():
     known = existing_cards.get(target_card_uid) or {}
     code = sanitize_code(name, args.code or (known.get("code") if isinstance(known.get("code"), str) else None))
     emoji = args.emoji.strip() or (known.get("emoji") if isinstance(known.get("emoji"), str) else "") or "🎭"
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 10-17:跟 note-format / aib vault newpost 同一個格式(UTC ISO、毫秒、Z);以前寫本機「2026-10-17 16:40:42」,
+    #   全庫統一成 ISO 後新卡又冒出舊格式,aib vault doctor 會一直抓到
+    _now = datetime.datetime.now(datetime.timezone.utc)
+    now_str = _now.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (_now.microsecond // 1000)
 
     # 2. 寫入 Vault 角色.md
     #    既有卡 ⇒ 用索引記的那個資料夾(顯示名「專案經理」的卡住在 PM-專案經理/);新卡 ⇒ 看名字會不會被吃掉一段
