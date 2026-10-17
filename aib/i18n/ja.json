@@ -4597,6 +4597,7 @@
   "aib.chat.help.send": "艦長室ページから本人として送信(PIN と本文は stdin)",
   "aib.chat.send_usage": "使い方:aib chat send <グローバルアドレス> --as-human --cabin <艙> [--json];stdin に pin と text を持つ JSON を 1 行。席からは aib dm",
   "aib.chat.send_why_no_pin": "未送信:艦長室に PIN がありません(本人として送るには証明が必要)。端末で aib room set-pin",
+  "aib.chat.send_why_pin_not_hashed": "未送信:艦長室の PIN がハッシュで保存されていません(旧版)。aib room set-pin で一度設定し直してください",
   "aib.chat.send_why_bad_pin": "未送信:PIN が違います",
   "aib.chat.send_why_pin_locked": "未送信:PIN の誤りが多すぎるため 30 秒ロック",
   "aib.chat.send_why_no_public_seat": "未送信:この艙に署名できる公開席がありません(aib chat publish <席>)",

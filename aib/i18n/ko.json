@@ -4597,6 +4597,7 @@
   "aib.chat.help.send": "함장실 페이지에서 본인으로 보내기(PIN과 본문은 stdin)",
   "aib.chat.send_usage": "사용법: aib chat send <전역 주소> --as-human --cabin <함> [--json]; stdin에 pin과 text가 있는 JSON 한 줄. 석에서는 aib dm",
   "aib.chat.send_why_no_pin": "보내지 않음: 함장실에 PIN이 없습니다(본인으로 보내려면 증명 필요). 터미널에서 aib room set-pin",
+  "aib.chat.send_why_pin_not_hashed": "보내지 않음: 함장실 PIN이 해시로 저장되어 있지 않습니다(구버전). aib room set-pin으로 한 번 다시 설정하세요",
   "aib.chat.send_why_bad_pin": "보내지 않음: PIN이 틀렸습니다",
   "aib.chat.send_why_pin_locked": "보내지 않음: PIN 오류가 많아 30초 잠금",
   "aib.chat.send_why_no_public_seat": "보내지 않음: 이 함에 서명할 공개 석이 없습니다(aib chat publish <석>)",

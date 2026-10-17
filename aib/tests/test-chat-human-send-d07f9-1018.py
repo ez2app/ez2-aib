@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """艦長室網頁代表真人寄線上私訊(10-18 @74e8b:網頁寄全球信 rc 2「推不出寄件席」)。
 
-H1 PIN:沒設 ⇒ no_pin;對(pbkdf2 或舊明碼)⇒ 過;錯 ⇒ bad_pin;連錯 5 次 ⇒ pin_locked、鎖完再對才過
+H1 PIN:沒設 ⇒ no_pin;明碼存的 ⇒ pin_not_hashed;對(pbkdf2)⇒ 過;錯 ⇒ bad_pin;連錯 5 次 ⇒ pin_locked、鎖完再對才過
 H2 選席:這一艙公開、有金鑰的席,role 開頭 root 優先;別艙 / 沒公開 / 沒金鑰的不選;都沒有 ⇒ None
 H3 指令:沒 --as-human ⇒ rc 2;PIN 只走 stdin;錯 PIN、空內文、壞位址、沒公開席都 rc 2 且一個字都沒寫進 outbox;
    PIN 對 ⇒ 待寄檔 from = 艦長席、attested、author = human(轉接程式沒開 ⇒ rc 2 bridge-off,照樣不寫)
@@ -77,9 +77,9 @@ class Human(unittest.TestCase):
         self.assertEqual(CH.check_pin("000000", self.env, now=t), "bad_pin")
         self.assertEqual(CH.check_pin("123456", self.env, now=t + 1), "pin_locked", "連錯 5 次鎖 30 秒,對的也不收")
         self.assertIsNone(CH.check_pin("123456", self.env, now=t + 31))
-        self.set_pin("4321")
-        self.assertIsNone(CH.check_pin("4321", self.env, now=t + 40), "艦長室舊版的明碼也認")
         self.assertEqual(CH.check_pin(None, self.env, now=t + 40), "bad_pin")
+        self.set_pin("4321")
+        self.assertEqual(CH.check_pin("4321", self.env, now=t + 40), "pin_not_hashed", "明碼存的不認(請重設 PIN)")
 
     def test_h2_pick(self):
         self.assertIsNone(CH.pick_seat("6ddf", self.env), "還沒公開")

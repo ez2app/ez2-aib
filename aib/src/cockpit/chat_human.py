@@ -48,22 +48,22 @@ def _stored_pin(env):
 
 
 def _matches(given, stored):
-    if stored.startswith(PIN_SCHEME + "$"):
-        try:
-            _, iters, salt, want = stored.split("$")
-            got = hashlib.pbkdf2_hmac("sha256", str(given).encode("utf-8"), bytes.fromhex(salt), int(iters)).hex()
-        except (ValueError, TypeError):
-            return False
-        return secrets.compare_digest(got, want)
-    return secrets.compare_digest(str(given).encode("utf-8"), stored.encode("utf-8"))   # 艦長室舊版存明碼(它下次啟動會換成雜湊)
+    try:
+        _, iters, salt, want = stored.split("$")
+        got = hashlib.pbkdf2_hmac("sha256", str(given).encode("utf-8"), bytes.fromhex(salt), int(iters)).hex()
+    except (ValueError, TypeError):
+        return False
+    return secrets.compare_digest(got, want)
 
 
 def check_pin(pin, env, now=None):
-    """None = 通過;否則 why:no_pin / pin_locked / bad_pin。"""
+    """None = 通過;否則 why:no_pin / pin_not_hashed / pin_locked / bad_pin。只認 pbkdf2 雜湊(艦長室舊版存的明碼不認,請重設)。"""
     now = time.time() if now is None else now
     stored = _stored_pin(env)
     if not stored:
         return "no_pin"
+    if not stored.startswith(PIN_SCHEME + "$"):
+        return "pin_not_hashed"
     fp = _fails_path(env)
     try:
         st = json.loads(fp.read_text(encoding="utf-8"))
