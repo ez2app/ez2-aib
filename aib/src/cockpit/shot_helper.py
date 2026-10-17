@@ -933,6 +933,9 @@ def edit_and_deliver(image, cfg, prefer=None):
     _log(None, "shoot editor rc=%d" % ed.returncode)
     out = {"rc": 0 if ed.returncode == 0 else 1, "reason": "edited", "editor_rc": ed.returncode}
     saved = _read_json(last_save) or {}
+    if saved.get("clipboard"):   # 10-18 編輯器的「只存剪貼簿」:沒存檔、不送席
+        out["clipboard"] = True
+        return out
     if saved.get("seat"):
         r = deliver(saved["seat"], saved.get("path", ""), png=saved.get("png"), note=saved.get("note", ""),
                     sock_dir=sock_dir, seats=seats)

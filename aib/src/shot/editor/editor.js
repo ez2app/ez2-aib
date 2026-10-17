@@ -307,6 +307,10 @@
       this.toast("存回中…");
     };
     saveBtn.onclick = save;
+    // 10-18 維護者:存回旁邊加「只存剪貼簿」—— 複製到剪貼簿就關掉,不存檔、不進第二大腦、不送任何席
+    const clipBtn = annoBtn("copy", "只存剪貼簿:複製到剪貼簿就關掉(不存檔)"); clipBtn.appendChild(el("span", { text: "只存剪貼簿" }));
+    clipBtn.onclick = () => { sel = null; const out = exportCanvas(); native({ cmd: "cliponly", png: pngB64(out) }); this.toast("已複製到剪貼簿"); };
+    bar.appendChild(clipBtn);
     bar.appendChild(saveBtn);
 
     let editing = false;
