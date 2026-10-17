@@ -1001,10 +1001,45 @@ def world_payload(env=None, now=None):
                           "addr": "%s/%s/%s" % (owner, c.get("cabin"), x.get("seat")),
                           "state": x.get("state") if fresh else "unknown",
                           "now": x.get("now") if fresh else None, "step": x.get("step") if fresh else None})
+        room = GF.read_room(root, owner)
         cabins.append({"owner": owner, "cabin": c.get("cabin"), "relation": rel,
+                       "room": {"at": room["at"], "fresh": now - int(room["at"]) < GF.ROOM_FRESH_S} if room else None,
                        "display_name": info.get("display_name"), "country": info.get("country"),
                        "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
     return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
+
+
+def room_payload(owner, env=None, now=None):
+    """aib chat room <主人> --json(第 34.4 節):好友分享來的房間快照 + fresh;不是好友 / 我的機器 ⇒ None。"""
+    import chat_roster as CR
+    now = time.time() if now is None else now
+    if not owner or CR.is_blocked(owner, env) or not (CR.is_friend(owner, env) or CR.is_mine(owner, env)):
+        return None
+    rec = GF.read_room(bridge_root(env), owner)
+    if not rec:
+        return None
+    snap = rec["snap"]
+    return {"v": 1, "owner": owner, "room_at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
+            "ship": snap.get("ship") or {}, "cabins": snap.get("cabins") or [], "seats": snap.get("seats") or [],
+            "layout": snap.get("layout"), "layout_omitted": bool(snap.get("layout_omitted"))}
+
+
+def cmd_room(a, env, out):
+    import chat_roster as CR
+    owner = CR.friend_owner(a.who or "")
+    pl = room_payload(owner, env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0 if pl else 1
+    if not pl:
+        out.write(T("room_none") + "\n")
+        return 1
+    ship = pl["ship"]
+    out.write(T("room_head", name=ship.get("name") or "-", sign=ship.get("sign") or "-", line=ship.get("line") or "-") + "\n")
+    for s in pl["seats"]:
+        out.write(T("room_seat", emoji=s.get("emoji") or "·", seat=s.get("seat"), name=s.get("name") or "-",
+                    role=s.get("role") or "-", floor=s.get("floor") or "-", now=s.get("now") or "") + "\n")
+    return 0
 
 
 def cmd_world(a, env, out):
@@ -1225,9 +1260,12 @@ def main(argv=None, env=None, out=sys.stdout):
     n5.add_argument("--clear", action="store_true")
     sh = sub.add_parser("share", help=T("help.share"))
     sh.add_argument("who", nargs="?")
-    sh.add_argument("level", nargs="?", choices=("off", "online", "status"))
-    sh.add_argument("--default", choices=("off", "online", "status"))
+    sh.add_argument("level", nargs="?", choices=("off", "online", "status", "room"))
+    sh.add_argument("--default", choices=("off", "online", "status"))      # room 不准當預設(第 34.1 節逐位打開)
     sh.add_argument("--json", action="store_true")
+    rm = sub.add_parser("room", help=T("help.room"))
+    rm.add_argument("who")
+    rm.add_argument("--json", action="store_true")
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
     ct = sub.add_parser("contacts", help=T("help.contacts"))
@@ -1306,6 +1344,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_social(a, env, out)
     if a.cmd == "world":
         return cmd_world(a, env, out)
+    if a.cmd == "room":
+        return cmd_room(a, env, out)
     if a.cmd == "friends":
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":

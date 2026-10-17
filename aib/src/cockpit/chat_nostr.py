@@ -468,6 +468,39 @@ class Sender(object):
                 return "%s/%s/%s" % (owner, cab.get("cabin"), st.get("seat"))
         return None
 
+    async def _push_room(self, tgt, owner, frm, now):
+        """房間快照(第 34 節):等級 room 的好友 / 我的機器;內容有變就送(同一位最少 ROOM_GAP_S),沒變一天一次。"""
+        import room_snapshot as RS
+        snap = RS.build()
+        wire = RS.encode(snap) if snap else None
+        if wire is None:
+            return
+        rooms = getattr(self, "r_last", None)
+        if rooms is None:
+            rooms = self.r_last = {}
+        prev = rooms.get(tgt)
+        if prev and ((prev[0] == wire and now - prev[1] < 86400) or now - prev[1] < ROOM_GAP_S):
+            return
+        addr = await self._first_seat_addr(tgt)
+        rc, res = await self._resolve(addr) if addr else (2, {})
+        if rc != 0:
+            return
+        keys = _keys(frm["key"])
+        tags = [N.Tag.parse(x) for x in (["aib-v", "1"], ["aib-type", "room"],
+                                         ["aib-from", "%s/%s/%s" % (owner, frm.get("cabin") or "main", frm["seat5"])])]
+        gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(res["seat"]["npub"]), wire, rumor_extra_tags=tags)
+        keys = None
+        c = await _client(res["dm_relays"])
+        try:
+            out = await c.send_event(gw)
+        except Exception:   # noqa: BLE001
+            out = None
+        finally:
+            await c.shutdown()
+        if out is not None and out.success:
+            rooms[tgt] = (wire, now)
+            audit(self.root, "room-out", "-", tgt, str(len(wire)))
+
     async def _push_card(self, tgt, owner, frm, now):
         """名片(第 32 節,Andy 23:5x「社群只給好友看」):我宣告的社群帳號私下送給這位好友 / 我的機器;
         內容有變就送,沒變一天一次。分享等級 off 也照送(名片跟在線狀態是兩回事);陌生人不會在 targets 裡。"""
@@ -525,7 +558,9 @@ class Sender(object):
             lvl = CR.share_level(tgt)
             if lvl == "off":
                 continue
-            rows = SP.presence([e["seat5"] for e in mine_seats], with_status=(lvl == "status"))
+            rows = SP.presence([e["seat5"] for e in mine_seats], with_status=(lvl in ("status", "room")))
+            if lvl == "room":
+                await self._push_room(tgt, owner, mine_seats[0], now)
             for r, e in zip(rows, mine_seats):
                 r["cabin"] = e.get("cabin") or "main"
             body = json.dumps({"v": 1, "seats": rows}, ensure_ascii=False, sort_keys=True)
@@ -639,6 +674,7 @@ PRESENCE_TICK_S = float(os.environ.get("AIB_CHAT_PRESENCE_TICK") or 60)     # �
 PRESENCE_EVERY_S = float(os.environ.get("AIB_CHAT_PRESENCE_EVERY") or 900)  # 沒變也每 15 分鐘送一次
 PRESENCE_GAP_S = float(os.environ.get("AIB_CHAT_PRESENCE_GAP") or 120)      # 同一位對方最少間隔
 PRESENCE_MAX_TARGETS = 50
+ROOM_GAP_S = float(os.environ.get("AIB_CHAT_ROOM_GAP") or 600)          # 房間快照同一位最少間隔(第 34 節)
 ORPHAN_KEEP_S = float(os.environ.get("AIB_CHAT_ORPHAN_KEEP") or 60)   # 秒;查不到寄出帳的回條暫存多久(第 27.8 節)
 ORPHAN_MAX = 500
 REFUSED_MAX = 200                           # refused.json 最多記幾位(第 27.5 節)
@@ -881,6 +917,24 @@ class Receiver(object):
             GF.note_peer(self.root, sent["owner"], request=req)        # 第 29.4 節:通訊錄顯示申請推到哪
         return "ok"
 
+    async def on_room(self, rumor, tags, from_npub):
+        """房間快照(第 34 節):只收驗得到名冊的好友 / 我的機器;解壓、再清一次、存 rooms/<主人>.json。不進佇列、不回條。"""
+        import room_snapshot as RS
+        parsed = GF.parse_address(tags.get("aib-from") or "") or {}
+        owner = parsed.get("owner")
+        allowed = bool(owner) and not CR.is_blocked(owner) and (CR.is_mine(owner) or CR.is_friend(owner))
+        if not allowed:
+            return
+        rc, res = await self.sender._resolve(tags.get("aib-from"))
+        if rc != 0 or res["seat"]["npub"] != from_npub:
+            return
+        snap = RS.decode(rumor.content())
+        if snap is None:
+            audit(self.root, "room-in", "-", from_npub, "bad")
+            return
+        GF.write_room(self.root, owner, snap)
+        audit(self.root, "room-in", "-", from_npub, str(len(snap.get("seats") or [])))
+
     async def on_card(self, rumor, tags, from_npub):
         """名片(第 32 節):好友 / 我的其他機器私下送來的社群帳號。陌生、封鎖 ⇒ 靜默丟;不進佇列、不回條。"""
         parsed = GF.parse_address(tags.get("aib-from") or "") or {}
@@ -978,6 +1032,8 @@ class Receiver(object):
             return await self.on_presence(rumor, tags, from_npub)
         if tags.get("aib-type") == "card":
             return await self.on_card(rumor, tags, from_npub)
+        if tags.get("aib-type") == "room":
+            return await self.on_room(rumor, tags, from_npub)
         is_aib = tags.get("aib-v") == "1"
         self.led.received(msgid, {"v": 1, "from": from_npub, "key": entry["key"], "seat": entry["seat5"],
                                   "aib": is_aib, "lang": tags.get("aib-lang"), "at": int(time.time())})

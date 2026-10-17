@@ -269,7 +269,14 @@ def up(d, venv, out=sys.stdout):
     # 關係
     andy.cli("friend", "add", b_addr, "--name", "Bob 客戶", check=True)
     bob.cli("friend", "add", a_addr, check=True)
-    bob.cli("share", andy.owner(), "status", check=True)
+    bob.cli("share", andy.owner(), "room", check=True)          # 第 34 節:Bob 讓 Andy 走進他的艦長室
+    (bob.chat / "room.json").write_text(json.dumps({            # 艦長室寫的房間資料(故意夾禁止欄位測過濾)
+        "v": 1, "ship": {"name": "Bob 商會號", "sign": "BOB TRADING", "line": "歡迎來談合作", "ip": "192.168.1.9"},
+        "cabins": [{"cabin": bob.cab, "floors": [{"id": "1F", "name": "大廳"}, {"id": "2F", "name": "業務部"}],
+                    "style": "港口木造", "host": "bob-mbp"}],
+        "seats": {bob.codes[0]: {"floor": "1F", "lv": 5, "stars": 2, "ctx": 81},
+                  bob.codes[1]: {"floor": "2F", "lv": 3, "stars": 1, "unread": 4}},
+        "layout": {"tiles": [[0, 1, 1, 0], [1, 1, 1, 1]], "theme": "harbor"}}, ensure_ascii=False), encoding="utf-8")
     andy.cli("block", "add", eve.owner(), check=True)
     # 往來
     res = {"bob_dm": _send(bob, a_addr, bob.codes[0], "Andy 你好,下週的合作會議改到週三下午,可以嗎?"),
@@ -289,6 +296,7 @@ def up(d, venv, out=sys.stdout):
     # 等在線狀態、名片與驗證都到
     wait_for(lambda: any(c["owner"] == bob.owner() and c["fresh"] for c in andy.json("world", "--json")["cabins"]), 60,
              "Bob 的在線狀態到 Andy")
+    wait_for(lambda: andy.cli("room", bob.owner(), "--json").returncode == 0, 60, "Bob 的艦長室快照到 Andy")
     wait_for(lambda: any(c["owner"] == bob.owner() and any(s.get("verified") for s in c.get("socials") or [])
                          for c in andy.json("contacts", "--json")["contacts"]), 60, "Bob 的社群證明驗過")
     out.write("假世界好了:%s\n" % d)
@@ -333,6 +341,18 @@ def check(d, out=sys.stdout):
     ok(wb.get("fresh") is True and (wb.get("seats") or [{}])[0].get("state") in ("online", "idle"), "世界:Bob 在線")
     ok("示範" in ((wb.get("seats") or [{}])[0].get("now") or ""), "世界:Bob 分享了 📌 狀態列")
     ok(O["cara"] not in world and O["eve"] not in world, "世界:陌生 / 封鎖的不出現")
+    room = json.loads(andy.cli("room", O["bob"], "--json").stdout or "null") or {}
+    ok((room.get("ship") or {}).get("name") == "Bob 商會號" and room.get("fresh") is True, "走進 Bob 的艦長室:艦名、新鮮")
+    rs = {x["seat"]: x for x in room.get("seats") or []}
+    bs = w["owners"]["bob"]["seats"]
+    ok(set(rs) == set(bs) and rs.get(bs[0], {}).get("emoji") == "🧭" and rs.get(bs[0], {}).get("role") == "root"
+       and rs.get(bs[1], {}).get("floor") == "2F" and rs.get(bs[0], {}).get("lv") == 5, "Bob 的兩席:emoji、角色、樓層、Lv 都在")
+    blob = json.dumps(room, ensure_ascii=False)
+    ok(all(k not in blob for k in ('"ip"', '"host"', '"ctx"', '"unread"', "192.168.1.9", "bob-mbp")), "房間快照沒有 IP / 主機名 / CTX / 未讀")
+    ok(andy.cli("room", O["cara"], "--json").returncode != 0 and andy.cli("room", O["eve"], "--json").returncode != 0,
+       "陌生 / 封鎖的沒有艦長室可看")
+    wcab = world.get(O["bob"]) or {}
+    ok((wcab.get("room") or {}).get("fresh") is True, "世界格標出 Bob 有房間可走進去")
     reqs = andy.json("requests", "--json")["requests"]
     ok([r["owner"] for r in reqs] == [O["dan"]], "申請分頁只有 Dan")
     refused = andy.json("refused", "--json")["refused"]

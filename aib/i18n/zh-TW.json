@@ -4532,7 +4532,7 @@
   "aib.chat.share_off": "不分享",
   "aib.chat.share_online": "只分享在不在",
   "aib.chat.share_status": "在不在 + 📌 狀態列",
-  "aib.chat.profile_bad_share": "分享等級只能是 off / online / status",
+  "aib.chat.profile_bad_share": "分享等級只能是 off / online / status / room(room 只能逐位打開,不能當預設)",
   "aib.chat.world_none": "還沒有好友分享在線狀態給你。",
   "aib.chat.world_cabin": "{name}({country})艙 {cabin}  {fresh}",
   "aib.chat.world_stale": "(40 分鐘沒更新,狀態不明)",
@@ -4556,5 +4556,10 @@
   "aib.chat.profile_too_many_socials": "社群帳號最多 {n} 個",
   "aib.chat.profile_bad_nip05": "NIP-05 要是 名@網域(小寫),例如 andy@ez2.app",
   "aib.chat.help.social": "宣告你的社群帳號(寫進名冊,好友照證明頁驗)",
-  "aib.chat.help.nip05": "設定 NIP-05 好記位址(名@網域),--clear 拿掉"
+  "aib.chat.help.nip05": "設定 NIP-05 好記位址(名@網域),--clear 拿掉",
+  "aib.chat.room_none": "沒有這位的艦長室可看(他還沒對你開 room 分享,或不是好友)",
+  "aib.chat.room_head": "🚢 {name}「{sign}」— {line}",
+  "aib.chat.room_seat": "  {emoji} @{seat} {name}({role},{floor})  {now}",
+  "aib.chat.share_room": "在不在 + 📌 + 艦長室(房間快照)",
+  "aib.chat.help.room": "走進好友的艦長室(他對你開了 room 分享才有)"
 }

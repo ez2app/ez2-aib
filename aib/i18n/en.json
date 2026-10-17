@@ -4532,7 +4532,7 @@
   "aib.chat.share_off": "not shared",
   "aib.chat.share_online": "online status only",
   "aib.chat.share_status": "online status + 📌 status line",
-  "aib.chat.profile_bad_share": "Sharing level must be off / online / status",
+  "aib.chat.profile_bad_share": "Sharing level must be off / online / status / room (room is per person only, not a default)",
   "aib.chat.world_none": "No friend is sharing their online status with you yet.",
   "aib.chat.world_cabin": "{name} ({country}) cabin {cabin}  {fresh}",
   "aib.chat.world_stale": "(no update for 40 minutes; status unknown)",
@@ -4556,5 +4556,10 @@
   "aib.chat.profile_too_many_socials": "At most {n} social accounts",
   "aib.chat.profile_bad_nip05": "NIP-05 must look like name@domain (lowercase), e.g. andy@ez2.app",
   "aib.chat.help.social": "declare your social accounts (written into the roster; friends verify them via the proof page)",
-  "aib.chat.help.nip05": "set a NIP-05 address (name@domain); --clear removes it"
+  "aib.chat.help.nip05": "set a NIP-05 address (name@domain); --clear removes it",
+  "aib.chat.room_none": "No captain room to show (they have not shared their room with you, or are not a friend)",
+  "aib.chat.room_head": "🚢 {name} \"{sign}\" — {line}",
+  "aib.chat.room_seat": "  {emoji} @{seat} {name} ({role}, {floor})  {now}",
+  "aib.chat.share_room": "online + 📌 + captain room (room snapshot)",
+  "aib.chat.help.room": "walk into a friend's captain room (only if they share their room with you)"
 }

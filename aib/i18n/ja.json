@@ -4532,7 +4532,7 @@
   "aib.chat.share_off": "共有しない",
   "aib.chat.share_online": "在席のみ共有",
   "aib.chat.share_status": "在席 + 📌 ステータス行",
-  "aib.chat.profile_bad_share": "共有レベルは off / online / status のみ",
+  "aib.chat.profile_bad_share": "共有レベルは off / online / status / room(room は個別のみ、既定にはできません)",
   "aib.chat.world_none": "まだ在席状況を共有している友だちはいません。",
   "aib.chat.world_cabin": "{name}({country})キャビン {cabin}  {fresh}",
   "aib.chat.world_stale": "(40 分更新なし、状態不明)",
@@ -4556,5 +4556,10 @@
   "aib.chat.profile_too_many_socials": "SNS アカウントは最大 {n} 件",
   "aib.chat.profile_bad_nip05": "NIP-05 は 名前@ドメイン(小文字)、例:andy@ez2.app",
   "aib.chat.help.social": "SNS アカウントを宣言(名簿に載り、友だちが証明ページで確認)",
-  "aib.chat.help.nip05": "NIP-05 アドレス(名前@ドメイン)を設定。--clear で削除"
+  "aib.chat.help.nip05": "NIP-05 アドレス(名前@ドメイン)を設定。--clear で削除",
+  "aib.chat.room_none": "見られる艦長室がありません(相手が room 共有をしていないか、友だちではありません)",
+  "aib.chat.room_head": "🚢 {name}「{sign}」— {line}",
+  "aib.chat.room_seat": "  {emoji} @{seat} {name}({role}、{floor})  {now}",
+  "aib.chat.share_room": "在席 + 📌 + 艦長室(ルームスナップショット)",
+  "aib.chat.help.room": "友だちの艦長室に入る(相手が room 共有をしている場合のみ)"
 }

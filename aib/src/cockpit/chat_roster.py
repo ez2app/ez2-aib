@@ -189,7 +189,7 @@ def is_mine(owner, env=None):
 
 
 # ── 在線狀態分享等級(第 30.2 節)── chat/share.json(0600):{"v":1, "default":"online", "per":{owner: level}}
-SHARE_LEVELS = ("off", "online", "status")
+SHARE_LEVELS = ("off", "online", "status", "room")     # room = status + 房間快照(第 34 節,逐位打開)
 SHARE_DEFAULT = "online"          # 第 18.1 節:預設只有在或不在
 SHARE_MINE_DEFAULT = "status"     # 我的其他機器預設看得到狀態列
 
@@ -217,6 +217,8 @@ def set_share(level, who=None, env=None):
     if level not in SHARE_LEVELS:
         raise RosterError("bad_share")
     rec = read_share(env)
+    if who is None and level == "room":
+        raise RosterError("bad_share")       # 房間快照要逐位打開,不准當預設(第 34.1 節)
     if who is None:
         rec["default"] = level
         target = "default"
