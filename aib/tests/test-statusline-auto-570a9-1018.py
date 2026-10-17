@@ -198,6 +198,9 @@ class Knife(unittest.TestCase):
         with knife_copy(ROOT, "tools/statusline-install.sh", needle, repl, tests=(THIS,)) as copy_root:
             r = run_guarded([PY, str(copy_root / "tests" / THIS), test], cwd=str(copy_root), timeout=300)
         self.assertNotEqual(r.returncode, 0, "刀下去 %s 應該紅:\n%s%s" % (test, r.stdout, r.stderr))
+        out = r.stdout + r.stderr
+        self.assertIn("FAIL:", out, "要紅在斷言上(FAIL),不是 setUp 或匯入就倒(ERROR = 假紅):\n" + out)
+        self.assertNotIn("ERROR:", out, "刀的複本裡出現 ERROR = 沒驗到要驗的東西:\n" + out)
 
     def test_K1_replace_everything(self):
         self._cut('or have in (known.get(it["src"]) or []):', "or True:", "Auto.test_S2_user_modified_left_alone")
