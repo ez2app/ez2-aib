@@ -78,6 +78,21 @@ def probe_chain(pid=None, max_depth=MAX_DEPTH, comm=_comm, ppid=_ppid):
     return chain
 
 
+def _stdio_tty(fds=(0, 1, 2), isatty=None, ttyname=None):
+    """stdin / stdout / stderr 裡第一個是終端機的裝置路徑(不收 "/dev/tty" 本身);都不是 ⇒ None。"""
+    isatty = isatty or os.isatty
+    ttyname = ttyname or os.ttyname
+    for fd in fds:
+        try:
+            if isatty(fd):
+                name = ttyname(fd)
+                if name and name != "/dev/tty":
+                    return name
+        except OSError:
+            continue
+    return None
+
+
 def probe_tty():
     """(tty 裝置路徑, 擁有者名, 真實 uid 的名字);打不開 /dev/tty ⇒ (None, None, 名)。"""
     me = None
@@ -95,6 +110,11 @@ def probe_tty():
         path = None
     finally:
         os.close(fd)
+    # 10-17 @abb89:macOS 上 /dev/tty 開出來的 fd,ttyname 回的就是 "/dev/tty"(擁有者 root),不是真的
+    # /dev/ttysNNN ⇒ 本人在普通終端機也被判 tty_owner,hub 的 pane tty 也永遠比對不上。
+    # 改用 stdin / stdout / stderr 裡第一個是終端機的那個名字(上面已確認有控制終端機)。
+    if not path or path == "/dev/tty":
+        path = _stdio_tty() or path
     owner = None
     if path:
         try:
