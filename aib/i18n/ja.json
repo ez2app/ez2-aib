@@ -4307,6 +4307,7 @@
   "aib.chat.profile_saved_name": "表示名を「{value}」にしました。ブリッジが次の周期で名簿に再署名します。",
   "aib.chat.profile_saved_country": "国を {value} にしました。ブリッジが次の周期で名簿に再署名します。",
   "aib.chat.profile_saved_publish": "@{value} を名簿に掲載しました:外部から公開 ID・人格名・役割が見え、メッセージも届きます。",
+  "aib.chat.publish_no_key": "  ⚠ @{value} にはまだ席鍵がないため、名簿にはまだ載りません:ブリッジが動いていれば次の回(約 1 分)で発行;動いていなければ先に艙を開く(aib <provider> safe <role>)。aib chat roster で確認。",
   "aib.chat.profile_saved_hide": "@{value} を名簿から外しました:外部からは届かなくなります。",
   "aib.chat.public_hint": "名簿には既定で 1 席も載りません。外部向けの席は aib chat publish <席> で掲載(aib chat hide で解除)。",
   "aib.chat.off_unpublished": "空の名簿を公開し、受信リレー一覧を取り下げました。",

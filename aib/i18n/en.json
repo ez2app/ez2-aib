@@ -4307,6 +4307,7 @@
   "aib.chat.profile_saved_name": "Display name set to \"{value}\"; the bridge re-signs the roster next round.",
   "aib.chat.profile_saved_country": "Country set to {value}; the bridge re-signs the roster next round.",
   "aib.chat.profile_saved_publish": "@{value} is now listed in the roster: others can see its public id, persona name and role, and can message it.",
+  "aib.chat.publish_no_key": "  ⚠ @{value} has no seat key yet, so the roster does not list it yet: if the bridge is running it is issued next round (about 1 minute); otherwise open a cabin first (aib <provider> safe <role>). Check with aib chat roster.",
   "aib.chat.profile_saved_hide": "@{value} removed from the roster: others can no longer message it.",
   "aib.chat.public_hint": "No seat is listed in the roster by default; list a seat with aib chat publish <seat> (aib chat hide to unlist).",
   "aib.chat.off_unpublished": "Published an empty roster and withdrew the inbox relay lists.",

@@ -4307,6 +4307,7 @@
   "aib.chat.profile_saved_name": "顯示名稱改成「{value}」;轉接程式下一輪重簽名冊。",
   "aib.chat.profile_saved_country": "國別改成 {value};轉接程式下一輪重簽名冊。",
   "aib.chat.profile_saved_publish": "@{value} 列進名冊:外人看得到它的公開號碼、人格名與角色,也寄得到它。",
+  "aib.chat.publish_no_key": "  ⚠ @{value} 還沒有席金鑰,名冊暫時不會列它:轉接程式在跑的話下一輪(約 1 分鐘)就發;沒在跑先開艙(aib <provider> safe <role>)。aib chat roster 看列了沒。",
   "aib.chat.profile_saved_hide": "@{value} 從名冊拿掉:外人寄不到它了。",
   "aib.chat.public_hint": "名冊預設一席都不列;要對外的席用 aib chat publish <席碼> 打開(aib chat hide 關)。",
   "aib.chat.off_unpublished": "已發空名冊、撤下收信中繼站清單。",

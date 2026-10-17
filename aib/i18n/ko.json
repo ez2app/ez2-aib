@@ -4307,6 +4307,7 @@
   "aib.chat.profile_saved_name": "표시 이름을 \"{value}\"(으)로 바꿨습니다. 브리지가 다음 주기에 명부를 다시 서명합니다.",
   "aib.chat.profile_saved_country": "국가를 {value}(으)로 바꿨습니다. 브리지가 다음 주기에 명부를 다시 서명합니다.",
   "aib.chat.profile_saved_publish": "@{value}을(를) 명부에 올렸습니다: 외부에서 공개 ID, 페르소나 이름, 역할을 볼 수 있고 메시지도 보낼 수 있습니다.",
+  "aib.chat.publish_no_key": "  ⚠ @{value}에 아직 석 키가 없어 명부에 아직 올라가지 않습니다: 브리지가 실행 중이면 다음 회차(약 1분)에 발급; 아니면 먼저 함을 여세요(aib <provider> safe <role>). aib chat roster로 확인.",
   "aib.chat.profile_saved_hide": "@{value}을(를) 명부에서 뺐습니다: 외부에서 더 이상 보낼 수 없습니다.",
   "aib.chat.public_hint": "명부에는 기본적으로 좌석이 없습니다. 외부용 좌석은 aib chat publish <좌석>으로 올리세요(aib chat hide로 해제).",
   "aib.chat.off_unpublished": "빈 명부를 게시하고 수신 릴레이 목록을 내렸습니다.",
