@@ -2734,7 +2734,7 @@
   "aib.ext.signed": "서명됨",
   "aib.ext.eng_ok": "✓ {engine}: {name} 활성화",
   "aib.ext.eng_fail": "✗ {engine}: {name} 활성화 실패",
-  "aib.ext.eng_none": "– {engine}: {name}은(는) 아직 이 AI 버전이 없음",
+  "aib.ext.eng_none": "  · {engine}: {name} 설치 불필요(이 AI용 버전이 없음, 사용에 영향 없음)",
   "aib.ext.eng_no_cli": "– {engine}: 이 기기에 {cmd} 없음, 건너뜀",
   "aib.ext.eng_no_marketplace": ".claude-plugin/marketplace.json 없음: {path}",
   "aib.ext.eng_mkt_taken": "같은 이름의 marketplace \"{mkt}\"가 이미 있고 aib가 지난번에 등록한 것이 아님(직접 만든 것일 수 있음): 삭제·활성화하지 않음. 이름을 바꾸거나 직접 제거한 뒤 다시 시도",

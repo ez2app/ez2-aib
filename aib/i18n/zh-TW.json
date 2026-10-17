@@ -2734,7 +2734,7 @@
   "aib.ext.signed": "已簽章",
   "aib.ext.eng_ok": "✓ {engine}:{name} 啟用了",
   "aib.ext.eng_fail": "✗ {engine}:{name} 沒啟用成功",
-  "aib.ext.eng_none": "– {engine}:{name} 還沒有這家 AI 的版本",
+  "aib.ext.eng_none": "  · {engine}:{name} 不用裝(它沒有這家 AI 的版本,不影響使用)",
   "aib.ext.eng_no_cli": "– {engine}:這台沒有 {cmd},跳過",
   "aib.ext.eng_no_marketplace": "接頭資料夾沒有 .claude-plugin/marketplace.json:{path}",
   "aib.ext.eng_mkt_taken": "這台已經有同名的 marketplace「{mkt}」,不是 aib 上次登記的,可能是你自己的 ⇒ 不刪、不啟用;先改名或手動移除再試",

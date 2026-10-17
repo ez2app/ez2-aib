@@ -2734,7 +2734,7 @@
   "aib.ext.signed": "署名済み",
   "aib.ext.eng_ok": "✓ {engine}:{name} を有効化",
   "aib.ext.eng_fail": "✗ {engine}:{name} の有効化に失敗",
-  "aib.ext.eng_none": "– {engine}:{name} にはこの AI 版がまだない",
+  "aib.ext.eng_none": "  · {engine}:{name} は不要(この AI 用の版はありません。使用に影響なし)",
   "aib.ext.eng_no_cli": "– {engine}:このマシンに {cmd} がないのでスキップ",
   "aib.ext.eng_no_marketplace": ".claude-plugin/marketplace.json がない:{path}",
   "aib.ext.eng_mkt_taken": "同名の marketplace「{mkt}」が既にあり、aib が前回登録したものではない(あなたのものかも):削除も有効化もしない。名前を変えるか手で外してから再試行",
