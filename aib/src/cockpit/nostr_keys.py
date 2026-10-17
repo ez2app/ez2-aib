@@ -148,6 +148,7 @@ def npub_to_hex(text):
 
 # ── 存放 ──
 PERSONA_UID_RE = re.compile(r"^[0-9a-z]{6}$")      # card_registry.UID_RE;不合形(舊式、directed)的席不發金鑰
+UNBOUND_RE = re.compile(r"^s-[0-9a-z]{4,8}$")      # 沒綁人格的席:用 s-<席碼> 當替代(新用戶第一席,10-17 fishmac 實機抓到)
 SEAT5_RE = re.compile(r"^[0-9a-z]{4,8}$")          # seat_address._CODE_RE
 CABIN_RE = re.compile(r"^[0-9a-z]{1,4}$")
 MAP_VERSION = 1
@@ -179,7 +180,7 @@ def _mkdir_private(d):
 
 
 def _key_stem(persona_uid, seat5=None):
-    if not PERSONA_UID_RE.match(persona_uid or ""):
+    if not (PERSONA_UID_RE.match(persona_uid or "") or UNBOUND_RE.match(persona_uid or "")):
         raise ValueError("bad persona_uid")
     if seat5 is None:
         return persona_uid
@@ -285,9 +286,16 @@ def sync_seats(live, env=None, now=None):
     rec = read_map(env)
     seats = rec["seats"]
     acts = []
-    live = [s for s in live if PERSONA_UID_RE.match(s.get("persona_uid") or "") and SEAT5_RE.match(s.get("seat5") or "")]
+    live = [s for s in live if (PERSONA_UID_RE.match(s.get("persona_uid") or "") or UNBOUND_RE.match(s.get("persona_uid") or ""))
+            and SEAT5_RE.match(s.get("seat5") or "")]
     live_by_seat = {s["seat5"]: s for s in live}
     active = [e for e in seats if e.get("status") == "active"]
+    # 0. 替代金鑰(s-<席碼>):那一席綁了人格或不活了 ⇒ 封存(綁人格後改發人格的金鑰,npub 會換)
+    for e in active:
+        if UNBOUND_RE.match(e.get("persona_uid") or "") and (live_by_seat.get(e["seat5"]) or {}).get("persona_uid") != e["persona_uid"]:
+            _retire_entry(e, env, now)
+            acts.append(("retired", e["persona_uid"], e["seat5"]))
+    active = [e for e in active if e.get("status") == "active"]
     # 1. 第二把:席不活了 ⇒ 封存
     for e in active:
         if e.get("extra") and e["seat5"] not in live_by_seat:
@@ -347,7 +355,8 @@ def retire_persona(persona_uid, env=None, now=None):
 def live_seats(home=None, env=None):
     """這台機器上綁著的席(各艙 seats/w*.json,不含 retired/)⇒ [{seat5, cabin, persona_uid, name, role}]。
     席碼用 seat_address.code_of;人格看 identity/seat-display.json 的 display[<席碼>].persona_uid
-    (bindings.json 只收有第二大腦路由的席,display 才是全部)。沒綁人格的席不列。"""
+    (bindings.json 只收有第二大腦路由的席,display 才是全部)。沒綁人格的席 persona_uid = s-<席碼>(替代;
+    新用戶第一席還沒綁人格也要能收全球信)。"""
     import seat_who
     from seat_address import code_of
     if home is None and env is not None:
@@ -364,8 +373,10 @@ def live_seats(home=None, env=None):
     for inst, _path, rec in seat_who._iter_seats(home):
         code = code_of(rec)
         pu = (disp.get(code) or {}).get("persona_uid") if code else None
-        if not code or code in seen or not isinstance(pu, str):
+        if not code or code in seen:
             continue
+        if not isinstance(pu, str):
+            pu = "s-" + code
         seen.add(code)
         out.append({"seat5": code, "cabin": inst.rsplit("-", 1)[-1] if inst else None, "persona_uid": pu,
                     "name": (disp.get(code) or {}).get("display_name"), "role": rec.get("role"),

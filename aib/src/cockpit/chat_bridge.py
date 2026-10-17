@@ -625,6 +625,10 @@ def cmd_profile(a, env, out):
         out.write(T("profile_" + str(err)) + "\n")
         return 2
     out.write(T("profile_saved_" + a.cmd, value=a.value) + "\n")
+    if a.cmd == "publish":                  # 還沒有席金鑰 ⇒ 名冊不會列它,要說清楚(10-17 fishmac:說「已列進」卻 0 席)
+        import nostr_keys as NK
+        if not any(e.get("status") == "active" and e.get("seat5") == a.value for e in NK.read_map(env)["seats"]):
+            out.write(T("publish_no_key", value=a.value) + "\n")
     return 0
 
 
