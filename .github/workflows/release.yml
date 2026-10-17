@@ -181,6 +181,7 @@ jobs:
         run: |
           v="${{ steps.v.outputs.v }}"; prev="${{ steps.v.outputs.prev }}"
           python -m pip install -q pipx
+          bash .github/scripts/wait_pypi_latest.sh "$v"    # unpinned upgrades must see the new one first (CDN lag)
           for old in ${{ steps.v.outputs.olds }}; do
             # 上一版用 pipx 裝的一定要認得怎麼更新自己;更舊的、與 pip 裝的(0.1.7 前不認得)只提醒
             strict=0; [ "$old" = "$prev" ] && strict=1

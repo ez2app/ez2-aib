@@ -20,7 +20,7 @@
                不支援定時重跑 ⇒ 📌 那一行改畫在 hub 窗底部邊框(--border --now-only,tmux 每幾秒重畫);
     Codex / Grok / Copilot 席  狀態列只能選內建項目、放不了自訂字 ⇒ 開席時 hub 窗開底部邊框,
                邊框跑 `seat_now.py --border --window #{window_id} --socket #{socket_path}`。
-  每一行帶「更新時間」與「啟動時間」(shown_line);窄視窗換短寫法。
+  每一行帶「更新時間」(shown_line;10-17 起不畫啟動時間);窄視窗換短寫法。
 這一席是誰:seat_who.self_seat_uuid()(TMUX_PANE → 窗 id → 艙 → 席位檔交叉驗)→ seat_address.uuid_tail5。
   拿不到就回 2,不猜(寫到別席名下比沒寫更糟)。
 """
@@ -251,9 +251,9 @@ def started_text(started_at):
 
 
 def times_text(at, started_at):
-    """| 更新時間:… | 啟動時間:…(the maintainer 10-10 定的順序)。更新時間就是新不新的證據,不再另標「N 小時前」。"""
-    return "%s | %s" % (T("aib.now.updated", when=_stamp(at) if at else T("aib.now.unknown_time")),
-                        started_text(started_at))
+    """| 更新時間:…。更新時間就是新不新的證據,不再另標「N 小時前」。
+    10-17 the maintainer「只顯示更新時間」:啟動時間照記(--new / --started 照用),只是不畫在狀態列上。"""
+    return T("aib.now.updated", when=_stamp(at) if at else T("aib.now.unknown_time"))
 
 
 def parse_started(text, now=None):
@@ -275,7 +275,7 @@ def steps_text(done, total):
 
 
 def line_of(item, done, total, state="busy", color=False, started_at=None, at=None):
-    """📌【狀態】主項目 | 2/5 STEP > 進度:40% | 更新時間:10-10 17:05 | 啟動時間:10-10 16:04"""
+    """📌【狀態】主項目 | 2/5 STEP > 進度:40% | 更新時間:10-10 17:05"""
     return "%s%s%s | %s | %s" % (PIN, state_tag(state, color), item, steps_text(done, total),
                                  times_text(at, started_at))
 
@@ -465,6 +465,69 @@ def shadow_l2_mark(l2):
     return SHADOW_L2_MARK.get(l2, "")
 
 
+# 10-17 the maintainer:等級(Lv、星 / 月 / 日、冠)也顯示在狀態列。核心不算等級 —— 算的是擴充(艦長室),
+#   它把每一席的快照寫到 <狀態根>/state/seat-rank/<席碼>.json:{"lv": 42, "rank": {"kind": "sun", "n": 2}, "crowns": [...], "at": 秒}。
+#   沒裝擴充 / 沒有快照 / 超過一天沒更新 / 讀不懂 ⇒ 不顯示(不猜、不留舊的)。
+RANK_SUBDIR = os.path.join("state", "seat-rank")
+RANK_IC = {"star": "⭐", "moon": "🌙", "sun": "☀️"}
+RANK_MAX_AGE_S = 86400
+RANK_N_MAX = 10
+CROWNS_MAX = 5
+
+
+RES_MAX = 4
+RES_LABEL_MAX = 6
+
+
+def _res_label(x):
+    """資源名稱由擴充給(核心不認得玩法用詞):去掉控制字元與分隔符號、最多 6 字。"""
+    t = "".join(ch for ch in str(x) if ch.isprintable() and ch not in "|/\\&\x1f").strip()   # & 與 \ :殼的 ${x/…/…} 取代字串在 bash 5.2 會解讀它們
+    return t[:RES_LABEL_MAX]
+
+
+def rank_text(code, *, state_root=None, now=None):
+    """'5⭐ 2👑 30木材/12石塊' 或 ''(10-17 the maintainer:等級寫成 n⭐、n🌙、n☀️、n👑,後面接目前獲得的資源)。
+    快照多帶 "res": [["木材", 30], ["石塊", 12], …](照擴充給的順序;最多 4 種,其餘略過);沒有 res ⇒ 只畫等級。"""
+    if not code:
+        return ""
+    path = os.path.join(state_root or seats_dir_lib.state_root()[0], RANK_SUBDIR, code + ".json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            snap = json.load(fh)
+        lv, rank, at = int(snap["lv"]), snap["rank"], float(snap["at"])
+        kind, n = rank["kind"], int(rank["n"])
+        crowns = snap.get("crowns") or []
+        res = snap.get("res") or []
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return ""
+    now = now if now is not None else time.time()
+    if not (1 <= lv <= 100) or kind not in RANK_IC or not (1 <= n <= RANK_N_MAX) or not isinstance(crowns, list) \
+            or not (0 <= now - at <= RANK_MAX_AGE_S):
+        return ""
+    parts = ["%d%s" % (n, RANK_IC[kind])]
+    if crowns:
+        parts.append("%d👑" % min(len(crowns), CROWNS_MAX))
+    items = []
+    for it in res if isinstance(res, list) else []:
+        try:
+            label, qty = _res_label(it[0]), int(it[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if label and 0 <= qty <= 10 ** 9:
+            items.append("%d%s" % (qty, label))
+        if len(items) >= RES_MAX:
+            break
+    if items:
+        parts.append("/".join(items))
+    return " ".join(parts)
+
+
+def rank_mark(code, *, state_root=None, now=None):
+    """狀態列舊版殼(沒帶 --rank-field)的退路:等級接在 📌 行尾端 ' | 5⭐ 30木材/12石塊'。"""
+    t = rank_text(code, state_root=state_root, now=now)
+    return " | " + t if t else ""
+
+
 def shadow_layer2(provider, settings_path=None, hook_path=None):
     """10-13 the maintainer:狀態列顯示這一席有沒有裝上「影子續跑說明」第 2 層(回合結束 hook)。
     claude ⇒ settings 裡 aib-now-gate 的 Stop 與 PostToolUse(post-tool)都在 ⇒ ok;缺 ⇒ missing。
@@ -553,19 +616,17 @@ def _parts(code, rec, color, now):
     stamps = []
     if at:
         stamps.append(T("aib.now.updated_short", when=_stamp(at, now, short=True)))
-    if started:
-        stamps.append(T("aib.now.started_short", when=_stamp(started, now, short=True)))
     if stamps:
         short += " | " + tint(" | ".join(stamps))
     return head, item, full, short
 
 
 def shown_line(code, *, state_root=None, now=None, color=True, width=None):
-    """畫面上那一行:📌【狀態】主項目 | 2/5 STEP > 進度:40% | 更新時間:10-10 17:05 | 啟動時間:10-10 16:04。
+    """畫面上那一行:📌【狀態】主項目 | 2/5 STEP > 進度:40% | 更新時間:10-10 17:05。
     沒回報 ⇒ 📌【未回報】尚未回報主項目;--clear ⇒ 📌【我很閒】等待指派新工作。
     新舊看「更新時間」;【忙碌中】超過 30 分鐘沒更新 ⇒ 📌⚠【忙碌中】(the maintainer 10-12)。沒有席位碼 ⇒ ""(不是席,不畫)。
     width(那一席視窗寬):完整那行放不下 ⇒ 短寫法(📌【狀態】主項目 | 2/5 > 40% | 更新 17:05 | 啟動 16:04);
-    還放不下 ⇒ 主項目截短加「…」,步數、% 與啟動時間不截。"""
+    還放不下 ⇒ 主項目截短加「…」,步數、% 與更新時間不截。"""
     if not code:
         return ""
     now = now if now is not None else time.time()
@@ -752,7 +813,8 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
                     help=T("aib.now.help.state"))
     ap.add_argument("--seat", metavar="SEAT", default="",
                     help=T("aib.now.help.seat"))
-    ap.add_argument("--statusline", action="store_true", help=argparse.SUPPRESS)   # 狀態列用:印「席位碼<TAB>📌 行」
+    ap.add_argument("--statusline", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--rank-field", action="store_true", help=argparse.SUPPRESS)   # 10-17:等級另成第 4 欄(殼把它放到 CTX 那一行 @席位 後面);沒帶 ⇒ 接在 📌 行尾   # 狀態列用:印「席位碼<TAB>📌 行」
     ap.add_argument("--border", action="store_true", help=argparse.SUPPRESS)       # Codex 等席底部邊框用
     ap.add_argument("--now-only", action="store_true", help=argparse.SUPPRESS)     # agy:邊框只畫 📌
     ap.add_argument("--session", default="", help=argparse.SUPPRESS)              # 狀態列遞來的對話編號(沒有 TMUX_PANE 時用)
@@ -818,7 +880,7 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
             beat(c, "statusline", state_root=state_root)
         prov = args.provider or (self_provider(c) if c else "")
         w = args.width or (_self_width() if c else None)
-        line = ""
+        line, r_text = "", ""
         if c:
             # gate_check 預設:正式跑(state_root=None)才查真的 settings.json;測試注入 state_root 時不查,
             #   不然同一格測試在裝了 / 沒裝的機器上結果不同(10-12 審查)。
@@ -836,11 +898,24 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
                 sys.path.insert(0, os.path.join(HERE, "render"))
                 from render_lib import visible_width
                 w = max(10, w - visible_width(l2_mark))
+            r_text = rank_text(c, state_root=state_root)
+            r_mark = "" if args.rank_field else (" | " + r_text if r_text else "")
+            if r_mark and w:
+                sys.path.insert(0, os.path.join(HERE, "render"))
+                from render_lib import visible_width
+                if w - visible_width(r_mark) < 40:    # 窄窗:等級讓位給主項目
+                    r_mark = ""
+                else:
+                    w = max(10, w - visible_width(r_mark))
             line = shown_line(c, state_root=state_root, width=w)
+            line += r_mark
             if missing:
                 line += mark
             line += l2_mark
-        out.write(SEP.join([c, line, statusline_logo(prov) if c else ""]) + "\n")
+        fields = [c, line, statusline_logo(prov) if c else ""]
+        if args.rank_field:
+            fields.append(r_text if c else "")
+        out.write(SEP.join(fields) + "\n")
         return 0
     if args.seat and not code:
         want = args.seat.strip().lstrip("@").lower()
