@@ -10,7 +10,7 @@ R3 組名冊:預設一席都不列(Andy 23:5x 裁);publish 才列(npub、人格�
    雜湊不含 updated_at、改名就變
 R4 驗名冊:自己組的那份驗得過;owner 不是簽章者 ⇒ 拒;http 中繼站 ⇒ 拒;同艙同席兩筆 ⇒ 拒;壞 npub ⇒ 拒;
    不合的名字退回 None(不整份拒);find_seat;沒有共同信封版本 ⇒ None
-R5 中繼站:預設 primal、nos.lol;AIB_CHAT_RELAYS 只收 wss:// 與本機 ws://127.0.0.1
+R5 中繼站:預設 primal、nos.lol、offchain.pub;AIB_CHAT_RELAYS 只收 wss:// 與本機 ws://127.0.0.1
 R6 沒有 nostr-sdk:轉接程式組好名冊、狀態 no_relays、不寫心跳;主人資料被刪 ⇒ no_profile
 連 Nostr(要 AIB_TEST_NOSTR_VENV = 裝了 nostr-sdk==0.45.1 的 venv;只連本機假中繼站,沒有就跳過):
 N1 當班發名冊 + 10050 ⇒ 狀態 published、published.json 雜湊 = outgoing;lookup <主人 npub>/<艙>/<席> 拿到席 npub 與收信站
@@ -228,7 +228,7 @@ class Build(Base):
         self.assertIsNone(CR.common_envelope(CR.parse(old, owner)))
 
     def test_r5_relays(self):
-        self.assertEqual(CR.relays({}), ["wss://relay.primal.net", "wss://nos.lol"])
+        self.assertEqual(CR.relays({}), ["wss://relay.primal.net", "wss://nos.lol", "wss://offchain.pub"])
         self.assertEqual(CR.relays({"AIB_CHAT_RELAYS": "wss://a.example, http://b.example, ws://127.0.0.1:7000, ws://10.0.0.1:1"}),
                          ["wss://a.example", "ws://127.0.0.1:7000"])
         self.assertEqual(CR.relays({"AIB_CHAT_RELAYS": "http://x"}), list(CR.DEFAULT_RELAYS))
