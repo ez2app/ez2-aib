@@ -4,6 +4,10 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.20
+
+- **`aib vault doctor --fix` keeps persona card folder titles**: 0.1.19 dropped the titles of non-`fld_` folders (persona card folders) when rewriting indexes, so card references fell back to raw uids. Retired `fld_` folders are still removed. Do not run `doctor --fix` on 0.1.19.
+
 ## 0.1.19
 
 - **Cleaner installs and upgrades**: a copy that is 5 or more minor versions behind is backed up and installed fresh; the installer ends with commands you can copy to open your first seat; PATH is no longer added twice to your shell profile.
