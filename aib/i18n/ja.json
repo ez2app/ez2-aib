@@ -3634,6 +3634,7 @@
   "aib.newrole.help_deliver": "紐付け後、ペルソナパックを aib dm でその席に送ります",
   "aib.newrole.help_new_seat": "明示したときだけ:今いるキャビンに新しい席を開いて紐付けます(既定ではありません。席を指定しなければカードのみ)",
   "aib.newrole.help_engine": "--new-seat で使うエンジン(既定 claude)",
+  "aib.newrole.help_model": "--new-seat で使うモデル(省略時はそのエンジンの既定)",
   "aib.newrole.help_role": "--new-seat で開く席の役割(定義済みの役割のみ。既定 dev)",
   "aib.newrole.help_actor": "台帳の署名(例:root@00000/agy)",
   "aib.newrole.help_overwrite": "同名のカードがあっても書き直します(既定では既存のカードはそのまま)",

@@ -3634,6 +3634,7 @@
   "aib.newrole.help_deliver": "after binding, send the persona pack to that seat with aib dm",
   "aib.newrole.help_new_seat": "only when asked: open a new seat in your cabin and bind it (not the default; with no seat named only the card is created)",
   "aib.newrole.help_engine": "engine for --new-seat (default claude)",
+  "aib.newrole.help_model": "model for --new-seat (default: that engine's default)",
   "aib.newrole.help_role": "role of the seat --new-seat opens (must be an already defined role; default dev)",
   "aib.newrole.help_actor": "ledger signature (e.g. root@00000/agy)",
   "aib.newrole.help_overwrite": "rewrite the card even if one with this name exists (default: leave an existing card as is)",

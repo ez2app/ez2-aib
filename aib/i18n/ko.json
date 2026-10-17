@@ -3634,6 +3634,7 @@
   "aib.newrole.help_deliver": "연결 후 페르소나 팩을 aib dm으로 그 좌석에 보냅니다",
   "aib.newrole.help_new_seat": "명시했을 때만: 지금 캐빈에 새 좌석을 열어 연결합니다(기본값 아님; 좌석을 지정하지 않으면 카드만 생성)",
   "aib.newrole.help_engine": "--new-seat에 쓸 엔진(기본 claude)",
+  "aib.newrole.help_model": "--new-seat에서 쓸 모델(생략하면 그 엔진의 기본값)",
   "aib.newrole.help_role": "--new-seat로 여는 좌석의 역할(이미 정의된 역할만; 기본 dev)",
   "aib.newrole.help_actor": "장부 서명(예: root@00000/agy)",
   "aib.newrole.help_overwrite": "같은 이름의 카드가 있어도 다시 씁니다(기본: 기존 카드는 그대로)",
