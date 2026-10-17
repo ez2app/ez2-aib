@@ -542,6 +542,86 @@ def resolve_card(cards, ref):
     return None, False
 
 
+def project(vault_arg=None, contract_arg=None, defaults_arg=None):
+    """唯讀掃描角色庫 ⇒ (vault, library_folder, doc, sources)。scan / check / refresh 共用,來源規則只有這一份。"""
+    vault = resolve_vault(vault_arg)
+    # 10-12:新機器(vault 是 aib 預設)沒有契約 ⇒ 套件附的預設契約;有自己 vault 的照舊要明給
+    # 10-15:沒給 --contract 走唯一來源(SPEC > ez2-ai main > REGISTRY > 隨附/預設),不再自己挑
+    contract_path = contract_arg or _RR.default_contract_spec()
+    contract = load_contract(contract_path)
+    if contract is None:
+        raise CardRegistryError("路由契約讀不到(--contract 或 EZ2_ROUTE_REGISTRY);"
+                                "拒絕在看不到規則的情況下掃描")
+    library_folder = library_folder_of(contract, vault)
+    defaults_path = defaults_arg
+    if defaults_path is None:
+        candidate = Path(__file__).resolve().parent / "card-route-defaults.json"
+        defaults_path = str(candidate) if candidate.is_file() else None
+    route_defaults = load_route_defaults(defaults_path)
+    result = scan(vault, library_folder, contract, route_defaults)
+    doc = build_document(result, vault, library_folder, int(time.time() * 1000))
+    sources = {
+        "vault_root": str(vault),
+        "library_folder": str(library_folder),
+        # 契約來源可能是 git: 規格(不走檔案系統),雜湊交給 route_register 同一條規則算
+        "route_contract": {"path": contract_path,
+                           "sha256": contract_digest(contract_path),
+                           "route_count": len(contract.get("routes", []))},
+        "route_defaults": {"path": defaults_path,
+                           "sha256": _digest_file(defaults_path) if defaults_path else None,
+                           "count": len(route_defaults)},
+        "generator": {"path": str(Path(__file__).resolve()),
+                      "sha256": _digest_file(Path(__file__).resolve())},
+    }
+    return vault, library_folder, doc, sources
+
+
+def compare(out_path, current, receipt, doc):
+    """磁碟上那份(current + 收據)對新掃的 doc。changed_fields = 有變的卡裡哪些欄不同。"""
+    old = current.get("cards", {}) if isinstance(current, dict) else {}
+    edited_by_hand = receipt.get("cards_json_sha256") != _digest_file(out_path)
+    drift = cards_fingerprint(current) != cards_fingerprint(doc) if "cards" in current else True
+    changed = sorted(u for u in set(doc["cards"]) & set(old) if doc["cards"][u] != old[u])
+    fields = sorted({f for u in changed for f in set(doc["cards"][u]) | set(old[u])
+                     if doc["cards"][u].get(f) != old[u].get(f)})
+    return {"drift": drift, "edited_by_hand": edited_by_hand,
+            "added": sorted(set(doc["cards"]) - set(old)), "removed": sorted(set(old) - set(doc["cards"])),
+            "changed": changed, "changed_fields": fields}
+
+
+def refresh(out_path, vault_arg=None, contract_arg=None, defaults_arg=None):
+    """10-17 @abb89 裁:升級後 cards.json 是舊程式產的 ⇒ 自動重產,不叫用戶手動 scan。
+    只在「同一批卡、卡檔一個位元組都沒變、只是新程式算出來不一樣」時才寫:
+      產它的程式跟現在這支不同(收據 generator.sha256)、沒人手改過、卡沒增減、每張卡 persona_sha 都一樣。
+    角色庫本身改了(新卡、改卡)或有人手改 ⇒ 不動,回報給人(那是別的事,不該被升級順手蓋掉)。
+    status:absent(還沒產過,不建)· current(已是新的)· refreshed(已重產)· stale(過期但不是程式造成)·
+            edited_by_hand(有人手改)"""
+    out_path = Path(out_path)
+    if not out_path.is_file():
+        return {"status": "absent", "out": str(out_path)}
+    try:
+        current = json.loads(_read_bytes(out_path).decode("utf-8"))
+        receipt = json.loads(_read_bytes(provenance_path(out_path)).decode("utf-8"))
+    except (OSError, ValueError) as err:
+        raise CardRegistryError(_ui("aib.cardreg.compare_unreadable", err=err))
+    _vault, _lib, doc, sources = project(vault_arg, contract_arg, defaults_arg)
+    cmp_ = compare(out_path, current, receipt, doc)
+    res = {"out": str(out_path), "cards": len(doc["cards"]), "changed": cmp_["changed"],
+           "changed_fields": cmp_["changed_fields"]}
+    if cmp_["edited_by_hand"]:
+        return dict(res, status="edited_by_hand")
+    if not cmp_["drift"]:
+        return dict(res, status="current")
+    old = current.get("cards", {})
+    same_cards = not cmp_["added"] and not cmp_["removed"] and all(
+        old[u].get("persona_sha") == doc["cards"][u].get("persona_sha") for u in cmp_["changed"])
+    old_generator = (receipt.get("sources") or {}).get("generator", {}).get("sha256")
+    if not same_cards or old_generator == sources["generator"]["sha256"]:
+        return dict(res, status="stale", added=cmp_["added"], removed=cmp_["removed"])
+    receipt = write_registry(out_path, doc, sources)
+    return dict(res, status="refreshed", cards_json_sha256=receipt["cards_json_sha256"])
+
+
 # ---- CLI -----------------------------------------------------------------------
 
 def _default_out(state_root):
@@ -579,7 +659,7 @@ def _ui(key, **params):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="card-registry")
-    ap.add_argument("command", choices=["scan", "check", "show"])
+    ap.add_argument("command", choices=["scan", "check", "show", "refresh"])
     ap.add_argument("ref", nargs="?", help="show 用:uid 或 card_ref")
     ap.add_argument("--vault", help="vault 根(預設 EZ2_VAULT_DIR > %s)" % DEFAULT_VAULT)
     ap.add_argument("--contract", help="路由契約(預設 EZ2_ROUTE_REGISTRY)")
@@ -608,40 +688,20 @@ def main(argv=None):
         sys.stdout.write(_dump({"card": entry, "matched_by": "legacy_card_ref" if legacy else "uid"}))
         return 0
 
+    if args.command == "refresh":
+        try:
+            res = refresh(out_path, args.vault, args.contract, args.route_defaults)
+        except CardRegistryError as err:
+            print("card-registry: %s" % err, file=sys.stderr)
+            return 2
+        sys.stdout.write(_dump(res))
+        return 1 if res["status"] in ("stale", "edited_by_hand") else 0
+
     try:
-        vault = resolve_vault(args.vault)
-        # 10-12:新機器(vault 是 aib 預設)沒有契約 ⇒ 套件附的預設契約;有自己 vault 的照舊要明給
-        # 10-15:沒給 --contract 走唯一來源(SPEC > ez2-ai main > REGISTRY > 隨附/預設),不再自己挑
-        contract_path = args.contract or _RR.default_contract_spec()
-        contract = load_contract(contract_path)
-        if contract is None:
-            raise CardRegistryError("路由契約讀不到(--contract 或 EZ2_ROUTE_REGISTRY);"
-                                    "拒絕在看不到規則的情況下掃描")
-        library_folder = library_folder_of(contract, vault)
-        defaults_path = args.route_defaults
-        if defaults_path is None:
-            candidate = Path(__file__).resolve().parent / "card-route-defaults.json"
-            defaults_path = str(candidate) if candidate.is_file() else None
-        route_defaults = load_route_defaults(defaults_path)
-        result = scan(vault, library_folder, contract, route_defaults)
+        vault, library_folder, doc, sources = project(args.vault, args.contract, args.route_defaults)
     except CardRegistryError as err:
         print("card-registry: %s" % err, file=sys.stderr)
         return 2
-
-    doc = build_document(result, vault, library_folder, int(time.time() * 1000))
-    sources = {
-        "vault_root": str(vault),
-        "library_folder": str(library_folder),
-        # 契約來源可能是 git: 規格(不走檔案系統),雜湊交給 route_register 同一條規則算
-        "route_contract": {"path": contract_path,
-                           "sha256": contract_digest(contract_path),
-                           "route_count": len(contract.get("routes", []))},
-        "route_defaults": {"path": defaults_path,
-                           "sha256": _digest_file(defaults_path) if defaults_path else None,
-                           "count": len(route_defaults)},
-        "generator": {"path": str(Path(__file__).resolve()),
-                      "sha256": _digest_file(Path(__file__).resolve())},
-    }
     summary = {"cards": len(doc["cards"]), "skipped": doc["skipped"],
                "fingerprint": cards_fingerprint(doc), "out": str(out_path)}
     outside, outside_total = cards_outside_library(vault, library_folder)
@@ -658,17 +718,10 @@ def main(argv=None):
         except (OSError, ValueError) as err:
             print("card-registry: " + _ui("aib.cardreg.compare_unreadable", err=err), file=sys.stderr)
             return 2
-        on_disk_sha = _digest_file(out_path)
-        edited_by_hand = receipt.get("cards_json_sha256") != on_disk_sha
-        drift = cards_fingerprint(current) != summary["fingerprint"] if "cards" in current else True
-        added = sorted(set(doc["cards"]) - set(current.get("cards", {})))
-        removed = sorted(set(current.get("cards", {})) - set(doc["cards"]))
-        changed = sorted(u for u in set(doc["cards"]) & set(current.get("cards", {}))
-                         if doc["cards"][u] != current["cards"][u])
-        summary.update({"drift": drift, "edited_by_hand": edited_by_hand,
-                        "added": added, "removed": removed, "changed": changed})
+        cmp_ = compare(out_path, current, receipt, doc)
+        summary.update({k: cmp_[k] for k in ("drift", "edited_by_hand", "added", "removed", "changed")})
         sys.stdout.write(_dump(summary))
-        return 1 if (drift or edited_by_hand) else 0
+        return 1 if (cmp_["drift"] or cmp_["edited_by_hand"]) else 0
 
     # scan
     if args.dry_run:

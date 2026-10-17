@@ -741,6 +741,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     say "✓ 舊版已備份並搬開(還原方法在 $B/README.txt)"
   }
   t_step=$(date +%s)
+  UPGRADED=0
   same_source || { show_miss; return 2; }
   clean_if_far
   if [ -d "$DIR/.git" ]; then
@@ -750,7 +751,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     elif ! git -C "$DIR" fetch -q --tags origin; then
       miss+=("快轉失敗(連不上來源),請稍後重跑同一行")
     else
-      local dirty before after ver
+      local dirty before after ver ver_before
       # 只看追蹤中的檔(10-09 a seat 用真公開版實測:跑過一次 aib 就多出 aib/__pycache__/,被當成本機改動、從此更新不了)。
       #   沒追蹤的檔快轉本來就不會蓋;真的會撞到時 git merge --ff-only 自己會拒絕。
       dirty="$(git -C "$DIR" status --porcelain --untracked-files=no)"
@@ -767,8 +768,9 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
         # 已在這版、或比最新正式版還新(以前從 main 裝的)⇒ 不往回退
         ver="$(repo_ver "$DIR")"
         say "✓ 已是最新($ver)"
-      elif git -C "$DIR" merge -q --ff-only "$after"; then
+      elif ver_before="$(repo_ver "$DIR")"; git -C "$DIR" merge -q --ff-only "$after"; then
         ver="$(repo_ver "$DIR")"
+        [ "$ver" = "$ver_before" ] || UPGRADED=1   # 版號真的變了才算升級(收尾時重產舊程式產的投影)
         say "✓ 已更新到 $ver($(git -C "$DIR" rev-parse --short "$before") → $(git -C "$DIR" rev-parse --short HEAD))"   # 版號沒變也看得出有更新
       else
         miss+=("快轉失敗(歷史分叉,不能快轉),請手動看")
@@ -857,6 +859,20 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
         done
         if (cd "$DIR" && "$abin" init >/dev/null 2>&1); then say "✓ aib 狀態目錄就緒(~/.ez2-aib)"
         else note+=("aib init 沒跑成:開第一席前請自己跑一次 aib init"); fi
+        # 10-17(@abb89 裁):版號變了 ⇒ 舊程式產的角色卡清單(~/.ez2-aib/identity/cards.json)換新程式重產,不叫用戶手動 scan。
+        #   只在「卡檔沒變、只是程式算法變了」才寫(card_registry refresh 自己判);角色庫改過或有人手改 ⇒ 只提醒。
+        if [ "$UPGRADED" = 1 ]; then
+          local _cr _crs
+          for _cr in "$DIR/aib/src/memory/card_registry.py" "$DIR/src/memory/card_registry.py"; do
+            [ -f "$_cr" ] || continue
+            _crs="$(python3 "$_cr" refresh </dev/null 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("cards", 0))' 2>/dev/null)"
+            case "$_crs" in
+              refreshed*) say "✓ 角色卡清單是舊版程式產的,已用新版重產(${_crs#refreshed } 張)" ;;
+              stale*|edited_by_hand*) note+=("角色卡清單跟角色庫對不上(不是升級造成的),沒有自動蓋:跑 aib doctor 看哪裡不同") ;;
+            esac
+            break
+          done
+        fi
         # 10-15(the maintainer「裝上並在下一版自動安裝」):附帶的免費、已簽章 mod(extensions/)裝好並登記到 Claude Code;
         #   aib update 也是重跑這支,一起涵蓋。AIB_EXT_AUTO=0 全關。裝不成只記一筆,不擋安裝。
         local ext_out
