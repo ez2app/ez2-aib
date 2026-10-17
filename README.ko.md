@@ -76,7 +76,7 @@ aib update                                          # aib 설치 후에는 이�
 #            git clone https://github.com/ez2app/ez2-aib ~/ez2-aib && export PATH="$HOME/ez2-aib/bin:$PATH"
 
 cd your-project
-aib claude safe dev                  # dev라는 이름의 Claude Code 자리를 엽니다(모든 동작 전에 물어봅니다)
+aib claude safe dev                  # dev라는 이름의 Claude Code 자리를 엽니다(Claude 자체 권한 설정을 따릅니다. 아래 참고)
 aib codex safe qa                    # 그 옆에 qa라는 이름의 Codex 자리를 엽니다
 aib test tests/test_something.py     # 첫 실행: 실행하고 기록합니다
 aib test tests/test_something.py     # 변경 없음: 재사용합니다
@@ -102,7 +102,7 @@ Linux 또는 macOS에서 Python<sup>[18]</sup> 3.9 이상이 필요하며, 콕�
 인수인계 메모, 그리고 플릿 도구<sup>[24]</sup>(자리 신원, 작업 배분, 순찰)를 제공합니다.
 
 ```sh
-aib claude safe dev        # dev라는 이름의 Claude Code 자리를 열고, 모든 동작 전에 물어봅니다
+aib claude safe dev        # dev라는 이름의 Claude Code 자리를 엽니다(Claude 자체 권한 설정. 아래 참고)
 aib codex dgrs qa          # qa라는 이름의 Codex 자리를 모두 허용 모드로 엽니다(아래 참고)
 aib --help-cockpit         # 모든 옵션
 ```
@@ -111,7 +111,9 @@ aib --help-cockpit         # 모든 옵션
   (`claude`, `codex`, `grok`, …). aib가 대신 설치하거나 로그인해 주지 않습니다. 콕핏은 아직 Linux에서 시험해 보지 않았습니다.
 - **macOS에서의 bash 테스트:** aib는 bash 4.1 이상으로 bash 스크립트를 추적합니다. macOS에는 bash 3.2가 들어 있으므로, bash 스크립트를 실행하는 테스트는
   "측정 불가"로 보고되어 항상 다시 실행됩니다(안전하지만 느릴 뿐입니다). `brew install bash`<sup>[26]</sup>를 하면 재사용할 수 있게 됩니다.
-- **자리별 권한 모드:** `safe`는 AI 도구의 기본 보호 장치를 유지합니다(파일을 수정하거나 명령을 실행하기 전에 물어봅니다).
+- **자리별 권한 모드:** `safe`는 AI 도구의 보호 장치를 하나도 끄지 않고 **그 도구 자체의 권한 설정을 따릅니다**(aib는 권한 플래그를 붙이지 않습니다).
+  최신 Claude Code의 기본값은 auto 모드(화면에 auto mode on 표시)로, 안전하다고 판단한 동작은 바로 하고 나머지만 묻습니다.
+  모든 동작 전에 묻게 하려면 도구 쪽 설정에서 바꾸세요(Claude Code: shift+tab, 또는 settings.json의 permissions.defaultMode).
   `dgrs`는 이 보호 장치를 **해당 자리에서만** 끄므로 AI가 묻지 않고 실행합니다. 이때 aib는 경고와 함께 그 자리를
   `safe`로 다시 여는 명령을 출력합니다. 자리를 열 때마다 자리별로 선택합니다.
 - **Claude**는 Anthropic의 상표이고, Codex는 OpenAI, Grok은 xAI의 상표입니다. aib는 이들 회사와 관련이 없습니다.
