@@ -38,7 +38,8 @@ TO = NK.npub(NK.pubkey_hex("%064x" % 141)) + "/cf04/5f7cf"
 
 
 def pin_hash(pin, salt="00" * 16, iters=1000):
-    return "pbkdf2-sha256$%d$%s$%s" % (iters, salt, hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), iters).hex())
+    """照艦長室 captain_room.pin_hash 原樣抄:scheme 是 pbkdf2_sha256(底線)、iters / salt / hex 用 $ 隔開。"""
+    return "pbkdf2_sha256$%d$%s$%s" % (iters, salt, hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), iters).hex())
 
 
 def CH_until(env):
@@ -96,6 +97,12 @@ class Human(unittest.TestCase):
         self.assertEqual(CH_until(self.env), 0, "歸零後要再錯滿 5 次才鎖")
         t = at
         self.assertEqual(CH.check_pin(None, self.env, now=t + 40), "pin_too_short")
+        # 用戶機上真實的存法:艦長室 200000 次、隨機 salt、scheme 底線(10-18 寫成連字號,真 PIN 全被擋)
+        CH._fails_path(self.env).unlink(missing_ok=True)
+        self.set_pin(pin_hash("246810", salt="ab" * 16, iters=200000))
+        self.assertIsNone(CH.check_pin("246810", self.env, now=t + 50), "艦長室真實格式要過")
+        self.set_pin(pin_hash("246810").replace("pbkdf2_sha256", "pbkdf2-sha256"))
+        self.assertEqual(CH.check_pin("246810", self.env, now=t + 50), "pin_not_hashed", "scheme 名稱要一字不差")
         self.set_pin("4321")
         self.assertEqual(CH.check_pin("4321", self.env, now=t + 40), "pin_not_hashed", "明碼存的不認(請重設 PIN)")
 

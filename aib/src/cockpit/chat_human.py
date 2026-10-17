@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-PIN_SCHEME = "pbkdf2-sha256"          # 跟艦長室 captain_room.pin_hash 同一個格式:scheme$iters$salt$hex
+PIN_SCHEME = "pbkdf2_sha256"          # 跟艦長室 captain_room.PIN_SCHEME 一字不差(底線;10-18 寫成連字號,真 PIN 全被擋):scheme$iters$salt$hex
 PIN_MAX_FAILS = 5            # 連錯這麼多次開始鎖
 PIN_LOCK_S = 30              # 第一次鎖 30 秒,之後每錯一次翻倍(@abb89 10-18 01:46:固定 30 秒一天可猜約 1.4 萬次)
 PIN_LOCK_MAX_S = 3600        # 上限 1 小時;只有輸對才歸零,計數落檔(重開程式不歸零)
