@@ -238,7 +238,8 @@ class C11ApproveConstitution(unittest.TestCase):
         os.makedirs(self.home)
         os.makedirs(os.path.join(self.tmp, "proj"))
         self.env = {"PATH": os.environ.get("PATH", ""), "HOME": self.home, "EZ2_AIB_LOCALE": "en",
-                    "AIB_GENES": "0", "AIB_AUTO_BIND": "0"}
+                    "AIB_GENES": "0", "AIB_AUTO_BIND": "0",
+                    "AIB_TOUCHID": "0"}   # 10-17:Mac 上不跳真的 Touch ID 視窗(只關不放行)
         r = self._aib("newproj", "--title", "Demo")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.created_err = r.stderr

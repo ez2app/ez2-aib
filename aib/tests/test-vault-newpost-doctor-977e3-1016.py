@@ -209,7 +209,7 @@ class TestDoctor(Base):
         self.assertTrue((self.v / INBOX / "3aaaa1.md").is_file())
 
 
-UPD_LOCAL = "---\nuid: 3cccc1\ntitle: \"舊外掛寫的\"\ncreated: 2026-10-07 00:08:49\nupdated: 2026-10-07 00:12:16\ntags: [a]\n---\n正文 updated: 2026-01-01 00:00:00 不是欄位\n"
+UPD_LOCAL = "---\nuid: 3cccc1\naliases: [\"3cccc1\", \"舊外掛寫的\"]\ntitle: \"舊外掛寫的\"\ncreated: 2026-10-07 00:08:49\nupdated: 2026-10-07 00:12:16\ntags: [a]\n---\n正文 updated: 2026-01-01 00:00:00 不是欄位\n"
 UPD_DATE = "---\nuid: 3cccc2\nupdated: 2026-06-30\n---\n只有日期\n"
 UPD_NOTZ = "---\nuid: 3cccc3\nupdated: \"2026-08-10T18:48\"\n---\n沒秒沒時區\n"
 

@@ -20,6 +20,12 @@ os.environ.setdefault("AIB_GENES", "0")
 # 10-13 記憶整理第 2 包(a seat 11:36):交接第三步的背景自動綁預設開 ⇒ 測試預設**關**(不在 the maintainer 螢幕跳真視窗、不真建卡)。
 #   同樣只 setdefault:要驗自動綁的格自己明確開(AIB_AUTO_BIND=1);子行程繼承 os.environ 一起關。
 os.environ.setdefault("AIB_AUTO_BIND", "0")
+# 10-17 Touch ID 核准(@570a9):AI 席跑 aib newproj --approve 時 Mac 會跳 Touch ID 視窗 ⇒ 測試預設**關**(不在 the maintainer
+#   螢幕跳真視窗)。AIB_TOUCHID=0 只會關掉那條路、退回只剩終端機,不會放行任何東西。要驗的格用替身注入,不開真視窗。
+os.environ.setdefault("AIB_TOUCHID", "0")
+# 10-17 狀態列自動更新(@570a9):aib init 結尾會跑 statusline-install.sh --auto ⇒ 測試預設**關**(沒換 HOME 的舊測試
+#   不會去換操作者真的 ~/.claude 狀態列)。要驗的格自己明確開(AIB_STATUSLINE_AUTO=1)並換 HOME。
+os.environ.setdefault("AIB_STATUSLINE_AUTO", "0")
 
 
 # ★ AR(2026-09-02,the maintainer 眼驗選 A):子 AI 列自帶彎角 `├--⚙`/`╰--⚙`(舊形 `---⚙` 退役)。

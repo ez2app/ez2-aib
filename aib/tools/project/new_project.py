@@ -1201,6 +1201,8 @@ def run_card_only(args, root: Path) -> int:
 # ── aib newproj --approve <專案 uid>(10-15 C11)──────────────────────────────────────────
 #   newproj 一直叫人「核准目標與紅線」,卻沒有任何指令能核准。只給真人:終端機 + human_attest 三條件
 #   (不在 hub 裡、tty 屬登入者、上游只有殼且沒有 AI session 標記)全到,再親手打一次專案 uid。AI 席跑不過。
+#   10-17 the maintainer:AI 席跑的時候,macOS 改彈 Touch ID / 登入密碼視窗給本人按(touchid_approve.py 檔頭有規矩);
+#   不是 macOS 或 AIB_TOUCHID=0 ⇒ 照舊只有終端機那條。
 
 def _human_attest() -> tuple:
     """(是不是真人, 登入名, 缺哪幾件)。量不到一律算不是人(失效方向只往低權)。"""
@@ -1212,10 +1214,25 @@ def _human_attest() -> tuple:
     return bool(res.get("human")), res.get("human_id"), list(res.get("missing") or [])
 
 
+def _login_name() -> Optional[str]:
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name
+    except (KeyError, ImportError):
+        return None
+
+
+def _touchid():
+    import touchid_approve as TA   # src/cockpit
+    return TA
+
+
 def approve_constitution(root: Path, project_uid: str, *, human_check: Any = None, ask: Any = None,
-                         stdin: Any = None, stdout: Any = None) -> int:
+                         stdin: Any = None, stdout: Any = None, touchid: Any = None,
+                         touchid_available: Any = None) -> int:
     """真人核准專案憲法初稿:候選檔 → 卡上 layers.constitution,approved=true,先入帳再寫。
-    rc:0 核准(或本來就核准)/ 2 拒(找不到卡、不是真人、沒終端機)/ 3 真人打錯 uid 取消。"""
+    兩條路:終端機三條件全到 ⇒ 打一次 uid;否則 macOS 彈 Touch ID 視窗(touchid(reason) 回 {ok, why})。
+    rc:0 核准(或本來就核准)/ 2 拒(找不到卡、不是真人、沒終端機、Touch ID 沒過)/ 3 真人打錯 uid 取消。"""
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     card = load_card(root, project_uid)
@@ -1230,13 +1247,14 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         tty = bool(stdin.isatty() and stdout.isatty())
     except (AttributeError, ValueError):
         tty = False
-    if not tty:
-        _say(T("aib.newproj.approve_need_human", {"why": "no tty"}), "[x]")
-        return 2
-    human, human_id, missing = (human_check or _human_attest)()
-    if not human or not human_id:
-        _say(T("aib.newproj.approve_need_human", {"why": ",".join(missing) or "?"}), "[x]")
-        return 2
+    human, human_id, missing = (human_check or _human_attest)() if tty else (False, None, ["no tty"])
+    via = "tty" if (human and human_id) else ""
+    if not via:
+        can_touch = touchid_available() if touchid_available else (touchid is not None or _touchid().available())
+        if not can_touch:
+            _say(T("aib.newproj.approve_need_human", {"why": ",".join(missing) or "?"}), "[x]")
+            return 2
+        via = "touchid"
     cand_path = candidate_path_of(root, uid)
     cand = _load_json(cand_path) or {}
     draft = cand.get("constitution") if isinstance(cand.get("constitution"), dict) else card["layers"]["constitution"]
@@ -1249,12 +1267,29 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
             "  " + T("aib.newproj.approve_goals")] + lines(const["goals"]) + \
            ["  " + T("aib.newproj.approve_red_lines")] + lines(const["red_lines"]) + \
            ["  " + T("aib.newproj.approve_rulings")] + lines(const["human_rulings"])
-    stdout.write("\n".join(show) + "\n" + T("aib.newproj.approve_prompt", {"uid": uid}))
-    stdout.flush()
-    ans = (ask() if ask else stdin.readline()).strip()
-    if ans != uid:
-        _say(T("aib.newproj.approve_cancel"), "[x]")
-        return 3
+    if via == "tty":
+        stdout.write("\n".join(show) + "\n" + T("aib.newproj.approve_prompt", {"uid": uid}))
+        stdout.flush()
+        ans = (ask() if ask else stdin.readline()).strip()
+        if ans != uid:
+            _say(T("aib.newproj.approve_cancel"), "[x]")
+            return 3
+    else:
+        TA = _touchid()
+        # 視窗文字只由這裡組:動作 + 卡上的標題與 uid + 條數(呼叫端沒有任何一個字進得來)
+        reason = T("aib.newproj.approve_touchid_reason", {
+            "title": TA.clean(card.get("title") or uid, 60), "uid": uid,
+            "goals": len(const["goals"] or []), "red_lines": len(const["red_lines"] or [])})
+        stdout.write("\n".join(show) + "\n")
+        stdout.flush()
+        _say(T("aib.newproj.approve_touchid_wait", {"uid": uid}))
+        with TA.one_at_a_time(Path(root) / "locks" / "touchid-approve.lock") as gate:
+            res = (touchid or TA.ask)(reason) if gate.held else {"ok": False, "why": "busy"}
+        human_id = _login_name()
+        if not (isinstance(res, dict) and res.get("ok") is True) or not human_id:
+            why = (res.get("why") if isinstance(res, dict) else None) or "?"
+            _say(T("aib.newproj.approve_touchid_failed", {"why": why}), "[x]")
+            return 2
     now_ms = int(time.time() * 1000)
     actor = {"ai_id": "human:%s" % human_id, "sig": "human@0000/Human", "kind": "human"}
     import role_model as RM  # noqa: E402 —— 先入帳(入不了帳 ⇒ 卡不動)
@@ -1264,8 +1299,8 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
     try:
         RM.RoleModel(state_root=str(root))._append_event(
             "decision.resolved",
-            "專案 %s 的目標與紅線由真人 %s 核准" % (uid, human_id),
-            "project %s goals and red lines approved by human %s" % (uid, human_id),
+            "專案 %s 的目標與紅線由真人 %s 核准(%s)" % (uid, human_id, via),
+            "project %s goals and red lines approved by human %s (%s)" % (uid, human_id, via),
             uid, actor)
     except RM.RoleModelError as exc:
         _say(T("aib.newproj.approve_ledger_failed", {"err": exc}), "[x]")
@@ -1280,9 +1315,10 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         import datetime as _dt                                    # +08:00 形(跟既有卡同形);不靠 %z(有的平台給時區名)
         at = _dt.datetime.fromtimestamp(now_ms / 1000).astimezone().isoformat(timespec="seconds")
         rulings = [r for r in (const.get("human_rulings") or []) if isinstance(r, (dict, str))]
-        rulings.append({"uid": "approve-%d" % now_ms, "text": T("aib.newproj.approve_ruling", {"who": human_id}), "at": at})
+        ruling_key = "aib.newproj.approve_ruling" if via == "tty" else "aib.newproj.approve_ruling_touchid"
+        rulings.append({"uid": "approve-%d" % now_ms, "text": T(ruling_key, {"who": human_id}), "at": at})
         const.update({"approved": True, "approved_by": "human:%s" % human_id, "approved_at": at,
-                      "approved_wall_ms": now_ms, "human_rulings": rulings})
+                      "approved_wall_ms": now_ms, "approved_via": via, "human_rulings": rulings})
         raw["layers"] = dict(raw.get("layers") or {}, constitution=const)
         raw["constitution_status"] = "approved"
         PC.validate_project_card(raw)

@@ -206,6 +206,20 @@ def build_note(kind, title, body, tags, about, ctx, route_key, supersedes="", mo
     return out, route, category_uid, clean_tags, related
 
 
+def seat_route(ctx: dict) -> str:
+    """0.1.18(G29):沒指定路由時這一席該寫哪裡 —— 專案卡的 route_key > 席位綁定的 route_key;都沒有 ⇒ ""。
+    10-17 @0c105 實測:tidy / handoff / 遺漏回顧都沒帶路由,一律落到 core.handoff,綁了 proj.line-richmenu 也一樣。"""
+    uid = str(ctx.get("project_uid") or "")
+    if PROJECT_RE.fullmatch(uid):
+        try:
+            card = json.loads((aib_home() / "projects" / uid / "card.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            card = {}
+        if isinstance(card, dict) and card.get("project_uid") == uid and str(card.get("route_key") or "").strip():
+            return str(card["route_key"]).strip()
+    return str(ctx.get("route_key") or "").strip()
+
+
 def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="", dry_run=False,
           supersedes="", model="") -> dict:
     import brain_write_plan as B
@@ -214,19 +228,30 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
         if not PROJECT_RE.fullmatch(project):
             raise MemoryError_("--project 要寫 proj:<16 碼>")
         ctx["project_uid"] = project
-    route_key = route_key or DEFAULT_ROUTE
-    out, route, category_uid, tags_out, related = build_note(kind, title, body, list(tags), list(about), ctx, route_key,
-                                                             supersedes, model)
-    note = out["note"]
     vault = B.vault_root()
     if vault is None:
         raise MemoryError_("這台量不到第二大腦(EZ2_VAULT_DIR)")
     import route_register as RR
     uid_layout = RR.vault_is_uid_layout(str(vault))
-    rel = RR.resolve_route_folder(route_key, contract={"routes": [route]}, root=str(vault))
-    if rel is None and uid_layout:
-        # uid 版面查不到索引 ⇒ 停;退回契約字面(中文舊名)再 mkdir 會把轉換前的資料夾建回來
-        raise MemoryError_("第二大腦是 uid 版面,但索引裡找不到 %s 的資料夾;先跑轉換工具 reindex,不寫" % route_key)
+    # 路由:明講的 > 這一席的(專案卡 / 綁定)> core.handoff。這一席的路由寫不進去(不可寫、索引沒有)⇒ 退回
+    #   core.handoff 並在回傳記 route_fallback —— 交接 / 整理不能因為席位路由壞掉就整個寫不進去;明講的照舊直接報錯
+    candidates = [route_key] if route_key else [r for r in dict.fromkeys([seat_route(ctx), DEFAULT_ROUTE]) if r]
+    fallback = ""
+    for i, route_key in enumerate(candidates):
+        last = i == len(candidates) - 1
+        try:
+            out, route, category_uid, tags_out, related = build_note(kind, title, body, list(tags), list(about), ctx,
+                                                                     route_key, supersedes, model)
+            rel = RR.resolve_route_folder(route_key, contract={"routes": [route]}, root=str(vault))
+            if rel is None and uid_layout:
+                # uid 版面查不到索引 ⇒ 停;退回契約字面(中文舊名)再 mkdir 會把轉換前的資料夾建回來
+                raise MemoryError_("第二大腦是 uid 版面,但索引裡找不到 %s 的資料夾;先跑轉換工具 reindex,不寫" % route_key)
+            break
+        except MemoryError_ as exc:
+            if last:
+                raise
+            fallback = "%s:%s" % (route_key, str(exc)[:160])
+    note = out["note"]
     folder = Path(vault) / (rel or route["folder"])
     file_name = (note["uid"] + ".md") if uid_layout else note["file_name"]
     target = folder / file_name
@@ -238,7 +263,7 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
            "persona_uid": ctx.get("persona_uid"), "rel": os.path.relpath(str(target), str(vault)),
            "created_ms": int(time.time() * 1000),
            # 10-13 第 3 包:索引也記取代關係(seat_brief 讀索引不讀 frontmatter)
-           "supersedes": supersedes or "", "model": model or "", "seat": ctx.get("code") or ""}
+           "supersedes": supersedes or "", "model": model or "", "seat": ctx.get("code") or "", **({"route_fallback": fallback} if fallback else {})}
     if dry_run:
         return dict(rec, path=str(target), dry_run=True)
     if target.exists():
@@ -250,7 +275,32 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
     index_path().parent.mkdir(parents=True, exist_ok=True)
     with open(index_path(), "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    return dict(rec, path=str(target))          # 給人看的完整路徑只在回傳裡,不進索引
+    if uid_layout:
+        _register_uid_note(Path(vault), note["uid"], rec["rel"], out.get("note", {}).get("title") or rec["title"], route_key)
+    return dict(rec, path=str(target))
+
+
+def _register_uid_note(vault: Path, uid: str, rel: str, title: str, route_key: str) -> None:
+    """0.1.18:uid 版面的新筆記登記進 .ez2/index/uid-index.json 與 .ez2/display/labels.json(以前沒登記 ⇒
+    aib vault doctor 報 md_not_indexed,10-17 真庫 210 篇)。只加這一筆、整檔原子換上;讀不到 / 壞掉就不寫(doctor 會補)。"""
+    parent = Path(rel).parent.name
+    for name, update in ((".ez2/index/uid-index.json", "items"), (".ez2/display/labels.json", "notes")):
+        f = vault / name
+        try:
+            doc = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if update == "items":
+            items = [i for i in (doc.get("items") or []) if i.get("uid") != uid]
+            items.append({"uid": uid, "path": rel, "title": title, "routeKey": route_key,
+                          "folderId": parent if parent.startswith("fld_") else ""})
+            doc["items"] = items
+        else:
+            notes = doc.setdefault("notes", {})
+            notes[uid] = {"title": title, "i18n": {"zh-TW": title, "en": None, "ja": None, "ko": None}, "path": rel}
+        tmp = f.with_name(f.name + ".tmp-%d" % os.getpid())
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, f)          # 給人看的完整路徑只在回傳裡,不進索引
 
 
 # ---------------------------------------------------------------- 讀(全部靠 uid)

@@ -4,6 +4,16 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.18
+
+- **Touch ID approval on macOS**: when an AI seat runs `aib newproj --approve`, the Mac shows a Touch ID (or login password) prompt and the project's goals and red lines are approved only after the owner touches the sensor. The prompt text is built by aib, each prompt carries a one-time nonce, only one prompt can be open per machine, and `AIB_TOUCHID=0` turns the path off. Other platforms keep the terminal-only approval.
+- **Status line updates itself**: `aib update`, `install.sh` and `aib init` refresh the status line script at the end.
+- **`aib vault doctor` syncs titles, aliases and the index** and fixes moved notes; new `aib vault mkdir`; `aib memory write` registers new notes in the index.
+- **Handoff, tidy and review notes follow the seat's route** instead of always landing in the default handoff folder (falls back to the default and records why if the seat route cannot be written).
+- **`aib newrole --new-seat --model`** picks the model for the new seat.
+- **Chat**: seats without a bound persona still get a seat key and appear in the roster; island records gain extension fields with size limits and compatibility checks.
+- Traditional Chinese: the brain row button in the right pane now reads 「換第二大腦(專案)」/「綁第二大腦(專案)」; when the pane is too narrow the title gives way and the button stays.
+
 ## 0.1.17
 
 - **aib-boards 0.2.1**: new-mail cards pop up only for messages a human sent and for friend requests (friend requests only on the captain seat); the pixel avatar is gone and the icon is back in the title bar.

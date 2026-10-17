@@ -32,6 +32,7 @@ import argparse
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -273,6 +274,24 @@ def _ensure_hooks():
         return [{"brand": "all", "status": "skip", "line": "auto-distill: %s" % str(err)[:200]}]
 
 
+def _ensure_statusline():
+    """10-17 the maintainer「以後都應該自動更新」(@abb89 交辦):狀態列腳本跟著 aib 換新(tools/statusline-install.sh --auto:
+    只換 aib 裝的舊版、改過的不動、沒在用的不建、先備份;AIB_STATUSLINE_AUTO=0 全關)。失敗只警告,不算 init 失敗。
+    → [印給人看的行]。"""
+    tool = Path(__file__).resolve().parents[2] / "tools" / "statusline-install.sh"
+    if not tool.is_file():
+        return []
+    try:
+        r = subprocess.run(["bash", str(tool), "--auto"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as err:
+        return ["statusline: %s" % str(err)[:200]]
+    lines = [ln for ln in (r.stdout + r.stderr).splitlines() if ln.strip()]
+    if r.returncode != 0:
+        lines.append(_T("aib.init.statusline_warn", {"rc": r.returncode, "tool": str(tool)}))
+    return lines
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="aib init", description=_T("aib.init.help.description"))
@@ -293,13 +312,14 @@ def main(argv=None):
         sys.stderr.write("aib-init: %s\n" % err)
         return 2
     hooks = _ensure_hooks()
+    statusline = _ensure_statusline()
     counts = {CREATED: 0, FIXED: 0, OK: 0, FAIL: 0}
     for i in items:
         counts[i["action"]] += 1
 
     if args.json:
         print(json.dumps({"state_root": str(Path(os.path.expanduser(args.state_root))),
-                          "items": items, "counts": counts, "hooks": hooks},
+                          "items": items, "counts": counts, "hooks": hooks, "statusline": statusline},
                          ensure_ascii=False, indent=2))
     else:
         mark = {CREATED: _T("aib.init.mark_created"), FIXED: _T("aib.init.mark_fixed"), OK: "OK  ", FAIL: "FAIL"}
@@ -317,6 +337,8 @@ def main(argv=None):
               % (counts[CREATED], counts[FIXED], counts[OK], counts[FAIL]))
         for h in hooks:
             sys.stderr.write(h["line"] + "\n")
+        for ln in statusline:
+            sys.stderr.write(ln + "\n")
         auto_ext()
 
     return 0 if counts[FAIL] == 0 else 1

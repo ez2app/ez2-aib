@@ -15,6 +15,13 @@
           · frontmatter 的 updated 是「本機時間 + 空格」(2026-10-07 00:12:16,舊外掛 update-time-on-edit 寫的)
             ⇒ 照本機時區換成 ISO(2026-10-06T16:12:16.000Z);只改那一行,不動正文與其他欄位
           · updated 只有日期、或沒有秒與時區(2026-08-10T18:48)⇒ 換算要猜,只在 notices 列數量,不改、不算問題
+          · (0.1.18)uid 筆記沒登記在 uid-index / labels(例 aib memory write 舊版寫的)⇒ 補登記
+          · (0.1.18)筆記在 Obsidian 被搬走:uid-index / labels 的路徑、frontmatter folder_id 過期 ⇒ 改成現在的位置
+            (routeKey 是寫入語意,不跟著位置改;跟所在路由不同的只在 notices 列)
+          · (0.1.18)labels.json 的標題跟 frontmatter title 不同 ⇒ 以 frontmatter 為準改 labels(使用者在屬性改標題的情況)
+          · (0.1.18)aliases 裡沒有 title ⇒ 補進去(Obsidian 快速切換只比對檔名與別名,沒有就用標題找不到)
+    aib vault mkdir --title 名稱 [--parent folderId] [--vault V] [--json]
+        新增 uid 資料夾並登記(Obsidian 的 obsidian-labels「新增資料夾」按鈕呼叫的就是這個)
 離開碼:0 沒問題 / 已修好、1 有問題(只列沒修)、2 用法或錯誤、3 沒有授權。
 """
 from __future__ import annotations
@@ -172,12 +179,84 @@ def _updated_scan(vault: Path) -> tuple[list, list]:
     return fixable, guess
 
 
+def _uid_notes(vault: Path) -> dict:
+    """uid 檔名的筆記 ⇒ {uid: 相對路徑};跳過 .ez2 / .obsidian 等。同 uid 兩份(verify 會另外報)取先看到的。"""
+    out = {}
+    for dp, dn, fn in os.walk(vault):
+        dn[:] = sorted(x for x in dn if x not in U.SKIP_DIRS and not x.startswith("."))
+        for f in sorted(fn):
+            if f.endswith(".md") and U.UID_RE.match(f[:-3]):
+                out.setdefault(f[:-3], str(Path(dp, f).relative_to(vault)))
+    return out
+
+
+def _fm_title(kv: dict) -> str:
+    return (kv.get("title") or "").strip().strip("\"'")
+
+
+def _sync_scan(vault: Path) -> dict:
+    """0.1.18:索引 / 標題 / 別名跟筆記本身對不上的地方。筆記(frontmatter 與實際位置)為準。"""
+    _fid, uidx, notes_lab = _load(vault)
+    by_uid = {i.get("uid"): i for i in uidx}
+    out = {"md_not_indexed": [], "md_index_stale": [], "md_title_out_of_sync": [], "md_alias_missing_title": []}
+    for uid, rel in _uid_notes(vault).items():
+        fm, _body = U.split_frontmatter((vault / rel).read_text(encoding="utf-8", errors="replace"))
+        kv = U.fm_lines_to_map(fm) if fm is not None else {}
+        title = _fm_title(kv)
+        parent = Path(rel).parent.name
+        here = parent if U.FOLDER_ID_RE.match(parent) else ""
+        it, lab = by_uid.get(uid), notes_lab.get(uid) or {}
+        if it is None:
+            out["md_not_indexed"].append({"uid": uid, "path": rel, "title": title})
+        else:
+            fid_fm = (kv.get("folder_id") or "").strip().strip("\"'")
+            if it.get("path") != rel or (lab and lab.get("path") not in (None, rel)) or (fid_fm and here and fid_fm != here):
+                out["md_index_stale"].append({"uid": uid, "path": rel, "old_path": it.get("path"),
+                                              "folder_id": here, "old_folder_id": fid_fm})
+        if title and lab.get("title") and lab.get("title") != title:
+            out["md_title_out_of_sync"].append({"uid": uid, "path": rel, "title": title, "label": lab["title"]})
+        if title and fm is not None and title not in U.fm_list(fm, "aliases"):
+            out["md_alias_missing_title"].append({"uid": uid, "path": rel, "title": title})
+    return out
+
+
+def _set_key_line(fm: str, key: str, line: str, after: str = "title") -> str:
+    """frontmatter 的 key 換成一行 line(原本是單行或區塊寫法都換掉);沒有這個 key ⇒ 插在 after 那行後面(沒有就最前面)。"""
+    lines = fm.splitlines()
+    for i, ln in enumerate(lines):
+        m = re.match(r"^([A-Za-z0-9_.\-]+):(.*)$", ln)
+        if m and m.group(1) == key:
+            j = i + 1
+            if U._is_block_start(m.group(2).strip(), lines, i):
+                while j < len(lines) and (U.BLOCK_ITEM_RE.match(lines[j]) or not lines[j].strip()
+                                          or lines[j].lstrip().startswith("#")):
+                    j += 1
+            return "\n".join(lines[:i] + [line] + lines[j:])
+    at = next((i + 1 for i, ln in enumerate(lines) if re.match(r"^%s:" % re.escape(after), ln)), 0)
+    return "\n".join(lines[:at] + [line] + lines[at:])
+
+
+def _rewrite_fm(vault: Path, rel: str, edit) -> bool:
+    """只改 frontmatter(edit(fm) ⇒ 新 fm),正文一個位元組不動;沒有 frontmatter ⇒ 不動、回 False。"""
+    p = vault / rel
+    text = p.read_text(encoding="utf-8")
+    m = U.FM_RE.match(text)
+    if not m:
+        return False
+    new_fm = edit(m.group(1))
+    if new_fm == m.group(1):
+        return False
+    p.write_text(text[:m.start(1)] + new_fm + text[m.end(1):], encoding="utf-8")
+    return True
+
+
 def _problems(vault: Path) -> dict:
     res = U.verify(vault, cards_path=str(vault / ".ez2" / "no-cards-check.json"))
     keys = ("dirs_not_folder_id", "md_not_uid_name", "md_no_uid", "md_uid_mismatch", "uid_duplicates", "index_paths_missing",
             "route_paths_missing")
     out = {k: res.get(k) or [] for k in keys}
     out["md_updated_local_time"] = _updated_scan(vault)[0]
+    out.update(_sync_scan(vault))
     return out
 
 
@@ -237,7 +316,9 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
     backup_dir.mkdir(parents=True, exist_ok=True)
     tgz = backup_dir / ("doctor-%s.tgz" % time.strftime("%Y%m%d-%H%M%S"))
     touched = sorted(set(found["dirs_not_folder_id"]) | set(found["md_not_uid_name"]) | set(found["md_no_uid"])
-                     | {e["path"] for e in found["md_updated_local_time"]})
+                     | {e["path"] for e in found["md_updated_local_time"]}
+                     | {e["path"] for e in found["md_index_stale"] if e["old_folder_id"]}
+                     | {e["path"] for e in found["md_alias_missing_title"]})
     with tarfile.open(tgz, "w:gz") as tar:                   # 要動的檔 + 索引,原樣打包
         for rel in touched + [".ez2/index/folder-id-index.json", ".ez2/index/uid-index.json", ".ez2/display/labels.json"]:
             if (vault / rel).exists():
@@ -306,6 +387,8 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
             out["fixed"].append({"kind": "updated", "path": e["path"], "old": e["old"], "new": e["new"]})
         else:
             out["left"].append({"kind": "updated", "path": e["path"], "why": "changed"})
+    # 6) 0.1.18 索引 / 標題 / 別名跟筆記同步(筆記為準;前面幾步改過名的用改名後的路徑重掃)
+    out["fixed"] += _fix_sync(vault)
     after = _problems(vault)
     for k in ("uid_duplicates", "md_uid_mismatch"):
         for item in after[k]:
@@ -313,6 +396,59 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
     out["problems_after"] = after
     out["ok"] = not any(v for k, v in after.items())
     return out
+
+
+def _fix_sync(vault: Path) -> list:
+    sync = _sync_scan(vault)
+    fixed = []
+    for e in sync["md_alias_missing_title"]:
+        def add_alias(fm, e=e):
+            items = U.fm_list(fm, "aliases")
+            return _set_key_line(fm, "aliases", "aliases: " + U.yaml_list(items + [e["title"]]))
+        if _rewrite_fm(vault, e["path"], add_alias):
+            fixed.append({"kind": "alias", "path": e["path"], "title": e["title"]})
+    for e in sync["md_index_stale"]:
+        if e["folder_id"] and e["old_folder_id"] and e["old_folder_id"] != e["folder_id"]:
+            if _rewrite_fm(vault, e["path"], lambda fm, e=e: _set_key_line(fm, "folder_id", "folder_id: " + e["folder_id"])):
+                fixed.append({"kind": "folder_id", "path": e["path"], "old": e["old_folder_id"], "new": e["folder_id"]})
+    fid, uidx, notes_lab = _load(vault)
+    by_uid = {i.get("uid"): i for i in uidx}
+    todo = {}                                                     # 同一篇只處理一次(先登記 > 路徑 > 標題)
+    for kind, key in (("index_add", "md_not_indexed"), ("index_path", "md_index_stale"), ("label_title", "md_title_out_of_sync")):
+        for e in sync[key]:
+            todo.setdefault(e["uid"], (kind, e))
+    for kind, e in todo.values():
+        fm, _b = U.split_frontmatter((vault / e["path"]).read_text(encoding="utf-8", errors="replace"))
+        kv = U.fm_lines_to_map(fm) if fm is not None else {}
+        title = _fm_title(kv) or e["uid"]
+        parent = Path(e["path"]).parent.name
+        rec = by_uid.get(e["uid"])
+        if rec is None:
+            rec = {"uid": e["uid"]}
+            uidx.append(rec)
+            by_uid[e["uid"]] = rec
+        rec.update({"path": e["path"], "title": title,
+                    "routeKey": (kv.get("routeKey") or "").strip().strip("\"'") or rec.get("routeKey") or "",
+                    "folderId": parent if U.FOLDER_ID_RE.match(parent) else rec.get("folderId", "")})
+        lab = dict(notes_lab.get(e["uid"]) or {})
+        old_title = lab.get("title")
+        i18n = dict(lab.get("i18n") or {})
+        if not i18n.get("zh-TW") or i18n.get("zh-TW") == old_title:
+            i18n["zh-TW"] = title
+        lab.update({"title": title, "path": e["path"], "i18n": i18n})
+        notes_lab[e["uid"]] = lab
+        fixed.append({"kind": kind, "path": e["path"], "uid": e["uid"]})
+    if todo:
+        _save(vault, fid, uidx, notes_lab)
+    return fixed
+
+
+def mkdir(vault: Path, title: str, parent: str = "") -> dict:
+    """新增 uid 資料夾(包 uid_layout_convert.folder_add;同一個父夾已有同名 ⇒ 回原本那個)。"""
+    try:
+        return U.folder_add(Path(vault).resolve(), parent or "", title)
+    except SystemExit as exc:
+        raise VaultError(str(exc.code))
 
 
 def _adopt_folder(vault: Path, rel: str) -> dict:
@@ -365,7 +501,10 @@ def main(argv=None) -> int:
     d = sub.add_parser("doctor", help=T("help_doctor"))
     d.add_argument("--fix", action="store_true", help=T("help_fix"))
     d.add_argument("--backup-dir", help=U.T("help_folder_backup"))
-    for p in (n, d):
+    k = sub.add_parser("mkdir", help=T("help_mkdir"))
+    k.add_argument("--title", required=True, help=T("help_mkdir_title"))
+    k.add_argument("--parent", default="", help=U.T("help_folder_parent"))
+    for p in (n, d, k):
         p.add_argument("--vault", default="", help=T("help_vault"))
         p.add_argument("--json", action="store_true", help=T("help_json"))
     args = ap.parse_args(argv)
@@ -377,6 +516,10 @@ def main(argv=None) -> int:
         return 3
     try:
         vault = resolve_vault(args.vault)
+        if args.cmd == "mkdir":
+            res = mkdir(vault, args.title, args.parent)
+            print(json.dumps(res, ensure_ascii=False) if args.json else T("mkdir_done", {"title": res["title"], "path": res["folderPath"]}))
+            return 0
         if args.cmd == "newpost":
             res = newpost(vault, args.title, args.folder, args.body)
             print(json.dumps(res, ensure_ascii=False) if args.json else T("newpost_done", {"title": res["title"], "path": res["path"]}))
