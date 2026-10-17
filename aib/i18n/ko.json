@@ -3285,7 +3285,7 @@
   "aib.memory.help.about": "이 메모와 관련된 ID(자리·페르소나·프로젝트), 쉼표 구분",
   "aib.memory.help.seat": "자리 코드(기본값: 이 자리)",
   "aib.memory.help.project": "프로젝트 ID(proj:…)",
-  "aib.memory.help.route": "세컨드 브레인의 어디에 둘지(기본값: core.handoff)",
+  "aib.memory.help.route": "두 번째 뇌의 어디에 둘지(생략 = 이 자리의 프로젝트 카드 / 바인딩 라우트. 없거나 쓸 수 없을 때만 core.handoff)",
   "aib.memory.help.dry_run": "쓸 내용만 보여 주고 아무것도 쓰지 않음",
   "aib.memory.help.json": "JSON으로 출력",
   "aib.memory.help.only_kind": "이 종류만",

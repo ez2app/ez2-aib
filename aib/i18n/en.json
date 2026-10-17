@@ -3285,7 +3285,7 @@
   "aib.memory.help.about": "ids this note is about (seat, persona or project), comma separated",
   "aib.memory.help.seat": "seat code (default: this seat)",
   "aib.memory.help.project": "project id (proj:…)",
-  "aib.memory.help.route": "where in the second brain it goes (default: core.handoff)",
+  "aib.memory.help.route": "where in the second brain it goes (default: this seat's project card / bound route; core.handoff only when there is none or it cannot be written)",
   "aib.memory.help.dry_run": "show what would be written; write nothing",
   "aib.memory.help.json": "print JSON",
   "aib.memory.help.only_kind": "only this kind",
