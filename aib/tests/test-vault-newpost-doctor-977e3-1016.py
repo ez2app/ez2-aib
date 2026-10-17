@@ -9,6 +9,10 @@ V4 doctor --fix:手建資料夾改 folderId 並登記(標題 = 原名)、手建�
    檔名是 uid 但缺 frontmatter uid ⇒ 補、索引裡已不在的資料夾 ⇒ 拿掉;先打包到庫外;修完 verify 綠
 V5 --fix 沒給備份位置 / 備份放庫裡 ⇒ 擋下不寫
 V6 uid 重複只列不修、ok = False
+V7 updated「本機時間 + 空格」⇒ 列出、照本機時區換成 ISO(台北 00:12:16 ⇒ 前一天 16:12:16.000Z);只有日期 / 沒秒沒時區 ⇒
+   只在 notices 列、不算問題;預設不改
+V8 --fix 只改 updated 那一行(正文、其他欄位、只有日期的那篇位元組不變)、先打包、verify 綠、再跑 ok
+刀(複本,走 run_guarded):X1 換算不照時區 ⇒ V7 紅;X2 換行時把 updated 後面的欄位丟掉 ⇒ V8 紅
 I1 新鍵四語都有、英文值沒有中日韓字、佔位符一致
 """
 import contextlib
@@ -29,6 +33,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "tools" / "vault"))
 import aib_testlib  # noqa: E402,F401
+from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 import uid_layout_convert as U  # noqa: E402
 import vault_cli as VC  # noqa: E402
@@ -199,6 +204,71 @@ class TestDoctor(Base):
         self.assertFalse(res["ok"])
         self.assertTrue(any(x["kind"] == "uid_duplicates" for x in res["left"]))
         self.assertTrue((self.v / INBOX / "3aaaa1.md").is_file())
+
+
+UPD_LOCAL = "---\nuid: 3cccc1\ntitle: \"舊外掛寫的\"\ncreated: 2026-10-07 00:08:49\nupdated: 2026-10-07 00:12:16\ntags: [a]\n---\n正文 updated: 2026-01-01 00:00:00 不是欄位\n"
+UPD_DATE = "---\nuid: 3cccc2\nupdated: 2026-06-30\n---\n只有日期\n"
+UPD_NOTZ = "---\nuid: 3cccc3\nupdated: \"2026-08-10T18:48\"\n---\n沒秒沒時區\n"
+
+
+@mock.patch.object(VC, "licensed", return_value=(True, "test"))
+class TestUpdated(Base):
+    def setUp(self):
+        super().setUp()
+        saved = os.environ.get("TZ")
+        os.environ["TZ"] = "Asia/Taipei"
+        __import__("time").tzset()
+        self.addCleanup(lambda: (os.environ.pop("TZ", None) if saved is None else os.environ.__setitem__("TZ", saved),
+                                 __import__("time").tzset()))
+        for uid, text in (("3cccc1", UPD_LOCAL), ("3cccc2", UPD_DATE), ("3cccc3", UPD_NOTZ)):
+            (self.v / INBOX / (uid + ".md")).write_text(text, encoding="utf-8")
+        U.write_indexes(self.v, self.index("folder-id-index.json")["items"], None,
+                        self.index("uid-index.json")["items"] + [{"uid": u, "path": INBOX + "/%s.md" % u}
+                                                                  for u in ("3cccc1", "3cccc2", "3cccc3")], "t2")
+
+    def test_V7_report(self, _lic):
+        before = self.snapshot()
+        res = VC.doctor(self.v)
+        self.assertEqual(res["problems"]["md_updated_local_time"],
+                         [{"path": INBOX + "/3cccc1.md", "old": "2026-10-07 00:12:16", "new": "2026-10-06T16:12:16.000Z"}])
+        self.assertFalse(res["ok"])
+        self.assertEqual(sorted(e["path"] for e in res["notices"]["md_updated_ambiguous"]),
+                         [INBOX + "/3cccc2.md", INBOX + "/3cccc3.md"])
+        self.assertEqual(res["notices"]["timezone"], "+0800")
+        self.assertEqual(before, self.snapshot())
+
+    def test_V8_fix_only_that_line(self, _lic):
+        date_only = (self.v / INBOX / "3cccc2.md").read_bytes()
+        res = VC.doctor(self.v, fix=True, backup_dir=self.bk)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual([f for f in res["fixed"] if f["kind"] == "updated"],
+                         [{"kind": "updated", "path": INBOX + "/3cccc1.md", "old": "2026-10-07 00:12:16",
+                           "new": "2026-10-06T16:12:16.000Z"}])
+        self.assertEqual((self.v / INBOX / "3cccc1.md").read_text(encoding="utf-8"),
+                         UPD_LOCAL.replace("updated: 2026-10-07 00:12:16\n", "updated: 2026-10-06T16:12:16.000Z\n", 1))
+        self.assertEqual((self.v / INBOX / "3cccc2.md").read_bytes(), date_only)
+        with tarfile.open(res["backup"]) as tar:
+            self.assertIn(INBOX + "/3cccc1.md", tar.getnames())
+            self.assertEqual(tar.extractfile(INBOX + "/3cccc1.md").read().decode("utf-8"), UPD_LOCAL)
+        self.ok_verify()
+        self.assertTrue(VC.doctor(self.v)["ok"])
+
+
+class Knife(unittest.TestCase):
+    def _knife(self, needle, replacement, cell):
+        name = Path(__file__).name
+        with knife_copy(ROOT, "tools/vault/vault_cli.py", needle, replacement, tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), cell], cwd=str(root), max_procs=60, timeout=300)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅:" + cell + "\n" + r.stdout + r.stderr)
+
+    def test_X1_ignores_timezone(self):
+        self._knife("int(time.mktime(time.strptime(", "int(__import__('calendar').timegm(time.strptime(",
+                    "TestUpdated.test_V7_report")
+
+    def test_X2_drops_following_fields(self):
+        self._knife('"updated: " + entry["new"] + fm[m.end():]', '"updated: " + entry["new"]',
+                    "TestUpdated.test_V8_fix_only_that_line")
 
 
 class TestI18n(unittest.TestCase):

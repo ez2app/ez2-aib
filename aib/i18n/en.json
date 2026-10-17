@@ -4592,5 +4592,6 @@
   "aib.chat.space_room": "island + captain room interiors",
   "aib.chat.profile_bad_space": "Space sharing must be none / island / room (room is per person only, not a default)",
   "aib.chat.help.island": "visit a friend's island (outdoors: terrain, buildings, people walking around)",
-  "aib.chat.help.space": "who sees your space and how much (none / island / room; --default sets the default)"
+  "aib.chat.help.space": "who sees your space and how much (none / island / room; --default sets the default)",
+  "aib.vault_cli.doctor_updated_ambiguous": "{count} more notes have an updated value with only a date, or without seconds and time zone; converting them would be a guess, so they are left as they are and not counted as problems"
 }

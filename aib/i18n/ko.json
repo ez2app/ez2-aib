@@ -4592,5 +4592,6 @@
   "aib.chat.space_room": "섬 + 함장실 내부",
   "aib.chat.profile_bad_space": "공간 공유는 none / island / room(room은 개별로만, 기본값 불가)",
   "aib.chat.help.island": "친구의 섬 방문(야외: 지형, 건물 외관, 돌아다니는 사람)",
-  "aib.chat.help.space": "공간을 누구에게 얼마나 공유할지(none / island / room, --default로 기본값)"
+  "aib.chat.help.space": "공간을 누구에게 얼마나 공유할지(none / island / room, --default로 기본값)",
+  "aib.vault_cli.doctor_updated_ambiguous": "그 밖에 {count} 개 노트의 updated 는 날짜만 있거나 초와 시간대가 없습니다. 변환하면 추측이 되므로 바꾸지 않고 문제로도 세지 않습니다"
 }

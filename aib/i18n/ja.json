@@ -4592,5 +4592,6 @@
   "aib.chat.space_room": "島 + 艦長室の中",
   "aib.chat.profile_bad_space": "空間共有は none / island / room(room は個別のみ、既定にはできません)",
   "aib.chat.help.island": "友だちの島を訪ねる(屋外:地形・建物の外観・歩いている人)",
-  "aib.chat.help.space": "空間を誰にどこまで共有するか(none / island / room。--default で既定)"
+  "aib.chat.help.space": "空間を誰にどこまで共有するか(none / island / room。--default で既定)",
+  "aib.vault_cli.doctor_updated_ambiguous": "ほかに {count} 件のノートの updated は日付だけ、または秒とタイムゾーンがありません。変換は推測になるため変更せず、問題にも数えません"
 }
