@@ -4,6 +4,14 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.17
+
+- **aib-boards 0.2.1**:新信卡片只為真人寄的信和好友申請跳出(好友申請只給艦長席);拿掉像素大頭像，圖示放回標題列。
+- **發版驗收從 PyPI 升級會重試**:剛上傳時 PyPI 的 CDN 各節點幾分鐘內可能不同步，從 PyPI 升級的檢查改成重試(6 次 × 20 秒),不會一拿到舊版就判失敗。
+- **角色卡日期用 ISO**:新人格卡與骨架卡的 `updated` 寫 UTC ISO,卡片登記表也讀得懂 ISO 日期。
+- **`aib vault newpost` 不再寫 `orig_name`**(`aib vault doctor` 收編的舊筆記照留)。
+- 繁中介面「啟動時間 / 啟動」改為「初始」。
+
 ## 0.1.16
 
 - **uid 庫的新增筆記與健檢**(加購授權 `obsidian-labels`):`aib vault newpost` 在選的資料夾用 uid 格式新增筆記;`aib vault doctor [--fix --backup-dir]` 檢查 Vault 版面。沒有授權時結束碼 3,什麼都不寫。
