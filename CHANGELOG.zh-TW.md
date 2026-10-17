@@ -4,6 +4,14 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.19
+
+- **安裝與升級更乾淨**:落後 5 個小版以上的舊版先備份再乾淨安裝;安裝結尾給可以直接複製的開席指令;不再重複把 PATH 加進 shell 設定檔。
+- **升級後角色卡清單自動更新**:`aib update` / `install.sh` 在程式版號變了時重產 `cards.json`;`aib doctor` 發現是舊版 aib 產的也會重產(手改過的卡或人格庫有變動只回報、不覆蓋)。
+- **指令提示更清楚**:`aib dm --help` 會印用法;狀態列的讀信提示補上 `--seat`;「資料夾不存在」會寫出完整路徑。
+- **聊天**:預設收信中繼站加第三站(offchain.pub)。
+- README:新專案用 `aib newproj --approve` 核准(macOS 上 AI 席代跑會走 Touch ID);寫明 `safe` = 照各家 AI 自己的權限設定。
+
 ## 0.1.18
 
 - **macOS 用 Touch ID 核准**:AI 席跑 `aib newproj --approve` 時，Mac 跳出 Touch ID(或登入密碼)視窗，本人按了才核准專案的目標與紅線。視窗文字由 aib 自己組、每次帶一次性 nonce、整台機器同時只開一個視窗;`AIB_TOUCHID=0` 可關掉這條路。其他平台照舊只能在終端機核准。
