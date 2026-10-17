@@ -1082,6 +1082,7 @@
   "aib.vp2.err.outside_repo": "変更パスがこのツリーの外にあります:{names}",
   "aib.vp2.err.unmeasurable": "計測できません => 呼び出し側は狭い集合ではなく**全部**を実行すること:{why}",
   "aib.verify.runner.home_alias_other_tree": "テスト用 HOME の ez2-aib は既に別のツリーを指しています",
+  "aib.verify.runner.real_home_touched": "✗ このテストは本物のホームディレクトリに触れました({n} 箇所、先頭 5 件):{files}。テストは自分の一時 HOME を使うこと(aib test が用意);本当に必要ならファイル先頭に @needs-real-home と書きレビューで説明",
   "aib.verify.runner.home_alias_exists": "テスト用 HOME に ez2-aib が既にあります。上書きしません",
   "aib.verify.runner.git_failed": "git {args} が失敗しました:{err}",
   "aib.verify.runner.dirty_tree": "コミット済みのクリーンな版だけを検証します。作業ツリーに未コミットの変更があります",
