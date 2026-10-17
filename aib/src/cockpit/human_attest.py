@@ -89,10 +89,24 @@ def probe_tty():
         fd = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
     except OSError:
         return None, None, me
+    # 10-17:macOS 的 ttyname(/dev/tty 的 fd) 回的是 "/dev/tty" 本身(root 擁有),不是真的 /dev/ttysNNN
+    #   ⇒ tty_owner 在每一台 Mac 的每一個終端機都不過(the maintainer 在普通終端機核准被擋)。
+    #   真裝置名從標準輸入 / 輸出 / 錯誤拿;三個都不是終端機才退回 /dev/tty 那個 fd 的名字。
+    #   能打開 /dev/tty(有控制終端機)仍是前提;擋 AI 席靠的是 in_hub 與 session 兩條,不是這條。
+    path = None
     try:
-        path = os.ttyname(fd)
-    except OSError:
-        path = None
+        for std in (0, 1, 2):
+            try:
+                if os.isatty(std):
+                    path = os.ttyname(std)
+                    break
+            except OSError:
+                continue
+        if path is None:
+            try:
+                path = os.ttyname(fd)
+            except OSError:
+                path = None
     finally:
         os.close(fd)
     owner = None
