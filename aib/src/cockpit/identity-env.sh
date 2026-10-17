@@ -216,7 +216,8 @@ aib_env_door_report_dropped() {
     dropped="$dropped $n"
   done
   [ -n "$dropped" ] || return 0
-  echo "aib: 艙門擋下$(printf '%s' "$dropped" | wc -w | tr -d ' ') 個外來變數:$dropped" >&2
+  # 10-17 fishmac:「擋下 N 個外來變數」像出錯(多半是舊安裝或別的工具留下的環境變數)⇒ 照舊列出,但說清楚不影響使用
+  echo "aib: 開艙時沒帶進 $(printf '%s' "$dropped" | wc -w | tr -d ' ') 個外面的環境變數(舊安裝或別的工具留下的,不影響使用):$dropped" >&2
 }
 
 aib_scrub_carrier_env() {

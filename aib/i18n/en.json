@@ -2734,7 +2734,7 @@
   "aib.ext.signed": "signed",
   "aib.ext.eng_ok": "✓ {engine}: {name} enabled",
   "aib.ext.eng_fail": "✗ {engine}: {name} failed to enable",
-  "aib.ext.eng_none": "– {engine}: {name} has no version for this AI yet",
+  "aib.ext.eng_none": "  · {engine}: {name} not needed (it has no version for this AI; nothing is missing)",
   "aib.ext.eng_no_cli": "– {engine}: {cmd} is not installed here, skipped",
   "aib.ext.eng_no_marketplace": "no .claude-plugin/marketplace.json in {path}",
   "aib.ext.eng_mkt_taken": "a marketplace named \"{mkt}\" already exists and was not registered by aib last time (it may be yours): not removed, not enabled; rename or remove it yourself and retry",

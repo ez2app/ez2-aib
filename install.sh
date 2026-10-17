@@ -232,7 +232,9 @@ install_main() {
     fi
     UPDATE=1
   }
-  have_tty() { ( : < /dev/tty ) 2>/dev/null; }   # 真的打得開才算(-r 只看權限,沒有終端機時也會是真)
+  have_tty() { ( : < /dev/tty ) 2>/dev/null; }
+  # 10-17 fishmac:.zprofile 已經有別的安裝程式把 ~/.local/bin 放進 PATH(沒註解掉的那行)⇒ 不再加(那台疊了 3 行)
+  has_local_bin() { grep -Eq '^[[:space:]]*export[[:space:]]+PATH=.*(\$HOME|\$\{HOME\}|~|'"$HOME"')/\.local/bin' "$1" 2>/dev/null; }   # 真的打得開才算(-r 只看權限,沒有終端機時也會是真)
   # 長步驟的心跳:每 60 秒印一行,讓人知道沒當掉
   tick_start() { local t0; t0=$(date +%s); set -m
     ( trap - INT TERM HUP EXIT; while sleep 60; do say "  … 還在進行,已經 $(( ($(date +%s)-t0)/60 )) 分鐘(請不要關掉這個視窗)"; done ) & _TICK_PID=$!
@@ -640,7 +642,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
         bash "$DIR/tools/chrome-reaper/install.sh" --root "$DIR" >/dev/null || miss+=("無頭 Chrome 收屍排程沒裝上")
       fi
     fi
-    if ! grep -q 'aib-bootstrap: PATH' "$HOME/.zprofile" 2>/dev/null; then
+    if ! grep -q 'aib-bootstrap: PATH' "$HOME/.zprofile" 2>/dev/null && ! has_local_bin "$HOME/.zprofile"; then
       run sh -c 'printf "\n# aib-bootstrap: PATH\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n" >> "$HOME/.zprofile"'
     fi
     if [ "$DRY" = 0 ]; then
@@ -708,8 +710,39 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
     fi
     if [ -n "$tag" ]; then printf '%s' "$tag"; else printf '%s' "origin/main"; fi
   }
+  # 10-17 fishmac(Andy「有舊版先全備份,再用乾淨的環境裝」):舊版落後太多(同大版號差 AIB_CLEAN_GAP 個小版以上,預設 5;
+  #   或大 / 中版號不同)⇒ 不原地快轉:整份資料夾搬進 ~/aib-backup-<時間>/(連同 ~/.claude/settings.json 與還原說明),再重新下載乾淨的。
+  _ver_num() { printf '%s' "$1" | awk -F. '{ if (NF < 3) { print -1; exit } printf "%d %d %d", $1, $2, $3 }'; }
+  clean_if_far() {
+    [ -d "$DIR/.git" ] && [ "$DRY" = 0 ] || return 0
+    git -C "$DIR" fetch -q --tags origin 2>/dev/null || return 0
+    local want old new o n gap="${AIB_CLEAN_GAP:-5}"
+    want="$(release_ref "$DIR")"
+    old="$(repo_ver "$DIR")"
+    new="$(git -C "$DIR" show "$want:aib/VERSION" 2>/dev/null || git -C "$DIR" show "$want:VERSION" 2>/dev/null)"; new="${new%%$'\n'*}"
+    o="$(_ver_num "$old")"; n="$(_ver_num "$new")"
+    [ "$o" != -1 ] && [ "$n" != -1 ] || return 0
+    set -- $o $n
+    # 舊版不比正式版舊(一樣、或開發機從 main 裝的比較新)⇒ 不動
+    if [ "$1" -gt "$4" ] || { [ "$1" = "$4" ] && [ "$2" -gt "$5" ]; } || { [ "$1" = "$4" ] && [ "$2" = "$5" ] && [ "$3" -ge "$6" ]; }; then return 0; fi
+    if [ "$1" = "$4" ] && [ "$2" = "$5" ] && [ $(( $6 - $3 )) -lt "$gap" ]; then return 0; fi
+    local ts B; ts="$(date +%Y%m%d-%H%M%S)"; B="$HOME/aib-backup-$ts"
+    say "… 這台的 aib 是舊版 $old(最新 $new,差太多),先全備份再裝乾淨的:$B"
+    mkdir -p "$B/dotfiles" || { miss+=("舊版備份資料夾建不起來,沒有動舊版"); return 0; }
+    if ! tar -czf "$B/$(basename "$DIR")-$old.tgz" -C "$(dirname "$DIR")" "$(basename "$DIR")"; then
+      miss+=("舊版打包失敗,沒有動舊版"); return 0
+    fi
+    cp -p "$HOME/.zprofile" "$B/dotfiles/" 2>/dev/null || true
+    cp -p "$HOME/.claude/settings.json" "$B/dotfiles/claude-settings.json" 2>/dev/null || true
+    mv "$DIR" "$B/$(basename "$DIR")-$old" || { miss+=("舊版搬不走,沒有動它"); return 0; }
+    printf '%s\n' "aib 舊版備份($ts,一行安裝自動做的)" "- $(basename "$DIR")-$old.tgz 與 $(basename "$DIR")-$old/:原本的 $DIR(版本 $old)" \
+      "- dotfiles/:安裝前的 ~/.zprofile、~/.claude/settings.json" \
+      "還原:rm -rf \"$DIR\" && mv \"$B/$(basename "$DIR")-$old\" \"$DIR\";設定檔照 dotfiles/ 拷回" > "$B/README.txt"
+    say "✓ 舊版已備份並搬開(還原方法在 $B/README.txt)"
+  }
   t_step=$(date +%s)
   same_source || { show_miss; return 2; }
+  clean_if_far
   if [ -d "$DIR/.git" ]; then
     say "… 已有 $DIR,只快轉到來源最新"
     if [ "$DRY" = 1 ]; then
@@ -783,7 +816,7 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   fi
   local PROFILE="$HOME/.zprofile"
   [ "$LINUX" = 1 ] && PROFILE="$HOME/.profile"   # Linux 多半是 bash:登入殼讀 ~/.profile
-  if ! grep -q 'aib-bootstrap: PATH' "$PROFILE" 2>/dev/null; then
+  if ! grep -q 'aib-bootstrap: PATH' "$PROFILE" 2>/dev/null && ! has_local_bin "$PROFILE"; then
     run sh -c 'printf "\n# aib-bootstrap: PATH\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n" >> "$1"' sh "$PROFILE"
   fi
 
@@ -843,6 +876,10 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   fi
   say "== 完成(全部花了 $(took "$T_ALL"))。缺的:${#miss[@]} 項"
   for m in "${miss[@]+"${miss[@]}"}"; do say "  ✗ $m"; done
+  # 10-17 fishmac:Codex 新掛點要人在 Codex 裡同意一次,那句夾在中間很容易漏看 ⇒ 結尾再列一次
+  if [ "$DRY" = 0 ] && [ "$LINUX" != 1 ] && command -v codex >/dev/null 2>&1 && [ -f "$HOME/.codex/hooks.json" ]; then
+    note+=("Codex 新加的掛點要你同意一次:開 Codex 打 /hooks(沒同意之前 Codex 那邊的自動整理不會跑,不影響 Claude)")
+  fi
   for m in "${note[@]+"${note[@]}"}"; do say "  · $m"; done
   if [ "$LINUX" = 1 ]; then
     say "  · Linux:目前只有測試安全網(aib test、aib ship);駕駛艙與 AI 席位需要 macOS"
@@ -854,7 +891,12 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
   else
     say "  · 之後要加裝 AI 工具:curl -fsSL $SELF_URL | bash -s -- --tools"
   fi
-  [ "$LINUX" = 1 ] || say "  · 登入後用 aib <provider> safe <role> 開席"
+  if [ "$LINUX" != 1 ]; then   # 10-17 fishmac:新用戶看不懂 <provider> <role> ⇒ 給一行能直接複製的
+    local first_ai="claude" w
+    for w in claude codex grok copilot agy; do command -v "$w" >/dev/null 2>&1 && { first_ai="$w"; break; }; done
+    say "  · 開第一席(登入那家 AI 之後):aib $first_ai safe root   ← 安全模式的艦長席;想用別家把 $first_ai 換成 claude / codex / grok / copilot / agy"
+    say "  · 想跟其他 aib 用戶對談(可選):aib chat on --name \"<你的名字>\" --country TW"
+  fi
   if [ "$DRY" = 1 ]; then
     say "" "試跑完成:上面只顯示預計動作,沒有安裝 Ez2 AIB 或其他工具。"
   elif [ "${#miss[@]}" -eq 0 ] && [ "${KEEP:-0}" = 1 ]; then

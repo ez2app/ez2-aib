@@ -77,7 +77,7 @@ aib update                                          # same thing, once aib is in
 #             git clone https://github.com/ez2app/ez2-aib ~/ez2-aib && export PATH="$HOME/ez2-aib/bin:$PATH"
 
 cd your-project
-aib claude safe dev                  # open a Claude Code seat named dev (it asks before every action)
+aib claude safe dev                  # open a Claude Code seat named dev (Claude's own permission settings; see below)
 aib codex safe qa                    # and a Codex seat named qa next to it
 aib test tests/test_something.py     # first run: runs and records
 aib test tests/test_something.py     # nothing changed: reused
@@ -103,7 +103,7 @@ role (`dev`, `qa`, `pm`, …), a left / center / right layout, mouse menus, seat
 conversation fills up, and fleet tools<sup>[24]</sup> (seat identity, dispatch, patrol).
 
 ```sh
-aib claude safe dev        # open a Claude Code seat named dev, asking before every action
+aib claude safe dev        # open a Claude Code seat named dev, with Claude's own permission settings (see below)
 aib codex dgrs qa          # open a Codex seat named qa in allow-all mode (see below)
 aib --help-cockpit         # every option
 ```
@@ -112,8 +112,10 @@ aib --help-cockpit         # every option
   (`claude`, `codex`, `grok`, …); aib does not install or log in for you. The cockpit has not been tried on Linux yet.
 - **bash tests on macOS:** aib traces bash scripts with bash 4.1 or newer. macOS ships bash 3.2, so tests that run bash scripts
   are reported as "not measured" and always rerun (safe, just slower). `brew install bash`<sup>[26]</sup> makes them reusable.
-- **Permission modes, per seat:** `safe` keeps the AI tool's normal protections (it asks before editing files or running
-  commands). `dgrs` turns those protections off **for that seat only**, so the AI acts without asking; aib prints a
+- **Permission modes, per seat:** `safe` turns none of the AI tool's protections off and **uses that tool's own permission
+  settings** (aib adds no permission flag). Recent Claude Code defaults to auto mode (the screen shows "auto mode on"): it
+  does what it judges safe and asks about the rest. To be asked before every action, change it in the tool's own settings
+  (Claude Code: shift+tab, or permissions.defaultMode in settings.json). `dgrs` turns those protections off **for that seat only**, so the AI acts without asking; aib prints a
   warning with the command to reopen the seat in `safe`. You choose for each seat when you open it.
 - **Claude** is a trademark of Anthropic; Codex of OpenAI; Grok of xAI. aib is not affiliated with them.
 
