@@ -90,7 +90,7 @@ class Box(unittest.TestCase):
             "seats": {self.codes[0]: {"floor": "3F", "lv": 9, "stars": 5, "name": "假名", "role": "假角色", "ctx": 90},
                       self.codes[1]: {"floor": "1F", "lv": 1}}}))
         (self.b.chat / "island.json").write_text(json.dumps({
-            "v": 1, "name": "Andy 島", "size": {"w": 200, "h": 10}, "owner": {"name": "Andy", "avatar": {"emoji": "🧑", "bg": "#123", "img": "x.png"}},
+            "v": 1, "name": "Andy 島", "style": "taiwan", "size": {"w": 200, "h": 10}, "owner": {"name": "Andy", "avatar": {"emoji": "🧑", "bg": "#123", "img": "x.png"}},
             "age": 3, "res": {"wood": 12, "Bad Name": 1, "stone": -1},
             "buildings": [{"cabin": "6ddf", "x": 3, "y": 4, "style": "塔", "kind": "hall", "lv": 2,
                            "building": {"start": 100, "done": 200}},
@@ -108,7 +108,11 @@ class Box(unittest.TestCase):
         b0, b1 = isl["buildings"]
         self.assertEqual((b0["kind"], b0["lv"], b0["building"]), ("hall", 2, {"start": 100, "done": 200}))
         self.assertEqual((b1["kind"], b1["lv"], "building" in b1), (None, None, False), "型別 / 範圍不合 ⇒ 當沒有")
-        self.assertEqual((isl["age"], isl["res"]), (3, {"wood": 12}))
+        self.assertEqual((isl["age"], isl["res"], isl["style"]), (3, {"wood": 12}, "taiwan"))
+        for bad in ("", "Taiwan", "-x", "a" * 25, "台灣", 3):
+            self.assertIsNone(RS.clean_island({"style": bad})["style"], "風格包 id 不合 ⇒ 基本風格:%r" % (bad,))
+        self.assertEqual(RS.clean_island({"style": "jp_v2-a"})["style"], "jp_v2-a")
+        self.assertIsNone(RS.clean_island({})["style"], "沒有 style ⇒ 基本風格")
         r = snap["rooms"]
         self.assertEqual((r["seats"][0]["floor"], r["seats"][0]["lv"], r["ship"]["captain"]["seat"]), ("3F", 9, self.codes[0]))
         blob = json.dumps(snap, ensure_ascii=False)
