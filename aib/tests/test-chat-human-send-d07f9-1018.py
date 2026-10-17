@@ -3,12 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """艦長室網頁代表真人寄線上私訊(10-18 @74e8b:網頁寄全球信 rc 2「推不出寄件席」)。
 
-H1 PIN:沒設 ⇒ no_pin;明碼存的 ⇒ pin_not_hashed;對(pbkdf2)⇒ 過;錯 ⇒ bad_pin;連錯 5 次 ⇒ pin_locked、鎖完再對才過
+H1 PIN:沒設 ⇒ no_pin;明碼存的 ⇒ pin_not_hashed;不到 6 位 ⇒ pin_too_short;對(pbkdf2)⇒ 過;錯 ⇒ bad_pin;
+   連錯 5 次鎖 30 秒、之後每錯一次翻倍、上限 1 小時;輸對才歸零
 H2 選席:這一艙公開、有金鑰的席,role 開頭 root 優先;別艙 / 沒公開 / 沒金鑰的不選;都沒有 ⇒ None
 H3 指令:沒 --as-human ⇒ rc 2;PIN 只走 stdin;錯 PIN、空內文、壞位址、沒公開席都 rc 2 且一個字都沒寫進 outbox;
    PIN 對 ⇒ 待寄檔 from = 艦長席、attested、author = human(轉接程式沒開 ⇒ rc 2 bridge-off,照樣不寫)
 H4 契約:outbox 的 author 只收 human / ai_draft / ai_auto;工人送出時 rumor 多一個 aib-author(要 Nostr venv)
-刀(複本):K1 不驗 PIN ⇒ H3 紅
+刀(複本):K1 不驗 PIN ⇒ H3 紅;K2 拿掉遞增(固定 30 秒)⇒ H1 紅
 """
 import hashlib
 import importlib.util
@@ -38,6 +39,13 @@ TO = NK.npub(NK.pubkey_hex("%064x" % 141)) + "/cf04/5f7cf"
 
 def pin_hash(pin, salt="00" * 16, iters=1000):
     return "pbkdf2-sha256$%d$%s$%s" % (iters, salt, hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), iters).hex())
+
+
+def CH_until(env):
+    try:
+        return float(json.loads(CH._fails_path(env).read_text()).get("until") or 0)
+    except (OSError, ValueError):
+        return 0
 
 
 class Human(unittest.TestCase):
@@ -72,12 +80,22 @@ class Human(unittest.TestCase):
         self.assertEqual(CH.check_pin("1234", self.env, now=t), "no_pin")
         self.set_pin(pin_hash("123456"))
         self.assertIsNone(CH.check_pin("123456", self.env, now=t))
-        for _ in range(4):
+        self.assertEqual(CH.check_pin("1234", self.env, now=t), "pin_too_short", "至少 6 位")
+        for _ in range(5):
             self.assertEqual(CH.check_pin("000000", self.env, now=t), "bad_pin")
-        self.assertEqual(CH.check_pin("000000", self.env, now=t), "bad_pin")
         self.assertEqual(CH.check_pin("123456", self.env, now=t + 1), "pin_locked", "連錯 5 次鎖 30 秒,對的也不收")
-        self.assertIsNone(CH.check_pin("123456", self.env, now=t + 31))
-        self.assertEqual(CH.check_pin(None, self.env, now=t + 40), "bad_pin")
+        locks, at = [], t
+        for _ in range(9):                                     # 每次等鎖過了再錯一次:鎖翻倍,上限 1 小時
+            at = CH_until(self.env) + 0.5
+            self.assertEqual(CH.check_pin("000000", self.env, now=at), "bad_pin")
+            locks.append(round(CH_until(self.env) - at))
+        self.assertEqual(locks, [60, 120, 240, 480, 960, 1920, 3600, 3600, 3600], "遞增鎖、上限 1 小時")
+        at = CH_until(self.env) + 0.5
+        self.assertIsNone(CH.check_pin("123456", self.env, now=at), "輸對才歸零")
+        self.assertEqual(CH.check_pin("000000", self.env, now=at), "bad_pin")
+        self.assertEqual(CH_until(self.env), 0, "歸零後要再錯滿 5 次才鎖")
+        t = at
+        self.assertEqual(CH.check_pin(None, self.env, now=t + 40), "pin_too_short")
         self.set_pin("4321")
         self.assertEqual(CH.check_pin("4321", self.env, now=t + 40), "pin_not_hashed", "明碼存的不認(請重設 PIN)")
 
@@ -98,7 +116,7 @@ class Human(unittest.TestCase):
         self.assertEqual((rc, out["why"]), (2, "no_pin"))
         self.set_pin(pin_hash("123456"))
         b.cli("publish", self.cap)
-        for pin, text, to, why in (("999999", "你好", TO, "bad_pin"), ("123456", "  ", TO, "empty"), ("123456", "你好", "nobody", "bad_address")):
+        for pin, text, to, why in (("999999", "你好", TO, "bad_pin"), ("1234", "你好", TO, "pin_too_short"), ("123456", "  ", TO, "empty"), ("123456", "你好", "nobody", "bad_address")):
             rc, out = self.send(pin, text, to, "--as-human", "--cabin", "6ddf")
             self.assertEqual((rc, out["why"]), (2, why), why)
         b.cli("hide", self.cap)
@@ -144,6 +162,15 @@ class Human(unittest.TestCase):
 
 
 class Knife(unittest.TestCase):
+    def test_k2_no_escalation(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_human.py",
+                        "    lock = min(PIN_LOCK_MAX_S, PIN_LOCK_S * 2 ** (n - PIN_MAX_FAILS)) if n >= PIN_MAX_FAILS else 0\n",
+                        "    lock = PIN_LOCK_S if n >= PIN_MAX_FAILS else 0\n", tests=(name, "test-chat-send-d07f9-1016.py")) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Human.test_h1_pin"], cwd=str(root), max_procs=120, timeout=400)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
     def test_k1_no_pin_check(self):
         name = Path(__file__).name
         with knife_copy(REPO, "src/cockpit/chat_human.py", "    why = check_pin(pin, env)\n", "    why = None\n",

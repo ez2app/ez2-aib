@@ -23,8 +23,10 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 PIN_SCHEME = "pbkdf2-sha256"          # 跟艦長室 captain_room.pin_hash 同一個格式:scheme$iters$salt$hex
-PIN_MAX_FAILS = 5
-PIN_LOCK_S = 30
+PIN_MAX_FAILS = 5            # 連錯這麼多次開始鎖
+PIN_LOCK_S = 30              # 第一次鎖 30 秒,之後每錯一次翻倍(@abb89 10-18 01:46:固定 30 秒一天可猜約 1.4 萬次)
+PIN_LOCK_MAX_S = 3600        # 上限 1 小時;只有輸對才歸零,計數落檔(重開程式不歸零)
+PIN_MIN_LEN = 6
 
 
 def _state_root(env):
@@ -57,7 +59,9 @@ def _matches(given, stored):
 
 
 def check_pin(pin, env, now=None):
-    """None = 通過;否則 why:no_pin / pin_not_hashed / pin_locked / bad_pin。只認 pbkdf2 雜湊(艦長室舊版存的明碼不認,請重設)。"""
+    """None = 通過;否則 why:no_pin / pin_not_hashed / pin_too_short / pin_locked / bad_pin。
+    只認 pbkdf2 雜湊(艦長室舊版存的明碼不認,請重設);輸入的 PIN 至少 PIN_MIN_LEN 位(短的請用 aib room set-pin 換長的)。
+    連錯 PIN_MAX_FAILS 次起鎖 PIN_LOCK_S 秒,之後每錯一次翻倍、上限 PIN_LOCK_MAX_S;輸對才歸零。"""
     now = time.time() if now is None else now
     stored = _stored_pin(env)
     if not stored:
@@ -71,12 +75,15 @@ def check_pin(pin, env, now=None):
         st = {}
     if now < float(st.get("until") or 0):
         return "pin_locked"
-    if isinstance(pin, str) and pin and _matches(pin, stored):
+    if not isinstance(pin, str) or len(pin) < PIN_MIN_LEN:
+        return "pin_too_short"
+    if _matches(pin, stored):
         if st:
             fp.unlink(missing_ok=True)
         return None
     n = int(st.get("n") or 0) + 1
-    st = {"n": 0, "until": now + PIN_LOCK_S} if n >= PIN_MAX_FAILS else {"n": n, "until": 0}
+    lock = min(PIN_LOCK_MAX_S, PIN_LOCK_S * 2 ** (n - PIN_MAX_FAILS)) if n >= PIN_MAX_FAILS else 0
+    st = {"n": n, "until": now + lock if lock else 0}
     fp.parent.mkdir(parents=True, exist_ok=True)
     fp.write_text(json.dumps(st), encoding="utf-8")
     os.chmod(str(fp), 0o600)
