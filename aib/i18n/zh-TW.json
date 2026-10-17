@@ -4599,6 +4599,8 @@
   "aib.chat.send_why_no_pin": "沒寄:艦長室還沒設 PIN(代表真人寄信要先證明是本人)。在終端機跑 aib room set-pin",
   "aib.chat.send_touchid_reason": "aib:代你寄線上私訊給 {who}:「{text}」",
   "aib.chat.send_why_touchid": "沒寄:Touch ID 沒過({why});要寄請再按一次,按到指紋或輸入登入密碼",
+  "aib.chat.send_why_touchid_off": "沒寄:這台 Mac 關掉了 Touch ID 這條路(AIB_TOUCHID=0)。Mac 上代你寄信只認 Touch ID,不收 PIN;拿掉 AIB_TOUCHID=0 再寄",
+  "aib.chat.send_why_touchid_unavailable": "沒寄:這台 Mac 現在叫不出 Touch ID / 登入密碼視窗。Mac 上代你寄信只認 Touch ID,不收 PIN",
   "aib.chat.send_why_pin_too_short": "沒寄:PIN 至少要 6 位;短的請在終端機用 aib room set-pin 換一個長的",
   "aib.chat.send_why_pin_not_hashed": "沒寄:艦長室的 PIN 不是用雜湊存的(舊版);請在終端機重設一次 aib room set-pin",
   "aib.chat.send_why_bad_pin": "沒寄:PIN 不對",

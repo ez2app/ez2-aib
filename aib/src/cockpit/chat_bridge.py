@@ -1218,6 +1218,8 @@ def cmd_send(a, env, out):
     res = CH.send(a.who, req.get("text"), req.get("pin"), a.cabin, env)
     if a.json:
         out.write(json.dumps(res, ensure_ascii=False) + "\n")
+    elif res["why"] in ("touchid_off", "touchid_unavailable"):
+        out.write(T("send_why_" + res["why"]) + "\n")
     elif res["why"] and res["why"].startswith("touchid_"):
         out.write(T("send_why_touchid", why=res["why"][len("touchid_"):]) + "\n")
     elif res["why"]:
