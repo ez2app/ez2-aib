@@ -60,10 +60,10 @@ def _emoji_of(home, persona_uid):
 
 
 ISLAND_MAX = 64              # 島最大 64 × 64 格(@74e8b 11:59)
-_KEY_RE = __import__("re").compile(r"^[a-z0-9_]{1,24}$")      # kind、res 的名稱(艦長室定義意思,核心只驗型別)
-_STYLE_RE = __import__("re").compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")  # 風格包 id 規則(@74e8b 14:50);島 style、look 的各欄共用
-_HEX_RE = __import__("re").compile(r"^#[0-9a-fA-F]{6}$")
-_OFFER_ID_RE = __import__("re").compile(r"^[0-9a-f]{8}$")
+_KEY_RE = __import__("re").compile(r"^[a-z0-9_]{1,24}\Z")      # kind、res 的名稱(艦長室定義意思,核心只驗型別);\Z 不是 $:$ 會讓結尾帶換行的值過
+_STYLE_RE = __import__("re").compile(r"^[a-z0-9][a-z0-9_-]{0,23}\Z")  # 風格包 id 規則(@74e8b 14:50);島 style、look 的各欄共用
+_HEX_RE = __import__("re").compile(r"^#[0-9a-fA-F]{6}\Z")
+_OFFER_ID_RE = __import__("re").compile(r"^[0-9a-f]{8}\Z")
 _RLE_RE = __import__("re").compile(r"([gswdrtfh])([1-9][0-9]{0,3})?")
 RES_MAX = 50
 BUILDINGS_MAX, DECOR_MAX, PETS_MAX, OFFERS_MAX = 200, 500, 24, 20   # 第 36.1 節

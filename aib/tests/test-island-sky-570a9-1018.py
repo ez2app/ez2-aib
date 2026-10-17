@@ -6,7 +6,8 @@
 S1 clean_sky:6 個鍵各自驗 [a-z0-9_]{1,24},不合的那項當沒有;其他鍵(例如座標)一律不帶;不是 dict 或全不合 ⇒ None
 S2 clean_island:合格的 sky 照帶;沒有 / 全不合 ⇒ 不出現 sky 鍵;座標不會出現在輸出裡
 S3 傳輸:encode → decode 後 sky 還在、收件端再驗一次(壞值丟掉);只有 sky 不會把快照標成 v3(舊版照收)
-刀(複本):K1 不篩鍵 ⇒ S1 紅;K2 clean_island 不帶 sky ⇒ S2 紅
+S4 結尾帶換行的值不帶(@abb89 10-18:$ 會讓 "abc\n" 過,改 \Z):sky、kind、res 名稱、風格 id、顏色、掛單 id
+刀(複本):K1 不篩鍵 ⇒ S1 紅;K2 clean_island 不帶 sky ⇒ S2 紅;K3 _KEY_RE 改回 $ ⇒ S4 紅
 """
 import json
 import sys
@@ -48,6 +49,18 @@ class Pure(unittest.TestCase):
         self.assertNotIn("weather", raw["island"]["sky"], "收件端再驗一次")
 
 
+    def test_s4_trailing_newline(self):
+        self.assertIsNone(RS.clean_sky({"season": "winter\n"}))
+        isl = RS.clean_island({"style": "cn\n", "res": {"log\n": 3, "raw": 2}, "pets": [{"kind": "cat\n", "lv": 1}],
+                               "buildings": [{"cabin": "a", "x": 0, "y": 0, "kind": "hall\n", "look": {"base": "cn\n"}},
+                                             {"cabin": "a", "x": 0, "y": 0, "look": {"base": "cn", "c": {"wall": "#aabbcc\n"}}}],
+                               "offers": [{"id": "0123abcd\n", "item": "plank", "n": 1, "unit": 1}]})
+        self.assertEqual((isl["style"], isl["res"], isl["pets"], isl["buildings"][0]["kind"]), (None, {"raw": 2}, [], None))
+        self.assertNotIn("look", isl["buildings"][0])
+        self.assertEqual(isl["buildings"][1]["look"], {"base": "cn", "c": {}}, "壞顏色當沒有(c 照舊留空物件)")
+        self.assertEqual(isl["offers"], [])
+
+
 class Knife(unittest.TestCase):
     def _knife(self, needle, replacement, cell):
         name = Path(__file__).name
@@ -65,6 +78,9 @@ class Knife(unittest.TestCase):
 
     def test_k2_island_drops_sky(self):
         self._knife('    if sky:\n        out["sky"] = sky', '    if False:\n        out["sky"] = sky', "Pure.test_s2_island")
+
+    def test_k3_key_dollar(self):
+        self._knife('compile(r"^[a-z0-9_]{1,24}\\Z")', 'compile(r"^[a-z0-9_]{1,24}$")', "Pure.test_s4_trailing_newline")
 
 
 if __name__ == "__main__":
