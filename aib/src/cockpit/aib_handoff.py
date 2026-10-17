@@ -753,6 +753,35 @@ def binding_state(code: str, home=None) -> dict:
             "project": st.get("project_title") or "", "why": st.get("hint") or ""}
 
 
+
+STUCK_STATUSES = ("queued", "claimed", "hold_human")
+
+
+def stuck_dm(code: str, env=None, limit: int = 10, hours: float = 48, now=None) -> dict:
+    """還沒進對方輸入框的 dm:寄出(別席佇列裡 sender_seat = 這席)與收進(這席佇列)。
+    只看 status ∈ queued / claimed / hold_human、delivered_at 是空的、最近 hours 小時寄的;回 {"out": [...], "in": [...]},每邊最多 limit 封。
+    (更舊的卡信多半已經合併補送過,交接只看這兩天的。)"""
+    import dm_queue
+    cut = (time.time() if now is None else now) - hours * 3600
+    def row(seat, it):
+        return {"id": it.get("id"), "seat": seat, "status": it.get("status"),
+                "why": it.get("hold_why") or "", "sent_at": it.get("sent_at"),
+                "summary": str(it.get("msg") or it.get("body") or "")[:60]}
+    out, inn = [], []
+    for seat in dm_queue.all_seats(env):
+        for it in dm_queue._all_items(seat, env=env):
+            if it.get("status") not in STUCK_STATUSES or it.get("delivered_at") is not None:
+                continue
+            if float(it.get("sent_at") or 0) < cut:
+                continue
+            if seat == code:
+                inn.append(row(it.get("sender_seat") or it.get("sender_label") or "?", it))
+            elif it.get("sender_seat") == code:
+                out.append(row(seat, it))
+    key = lambda r: r.get("sent_at") or 0
+    return {"out": sorted(out, key=key)[:limit], "in": sorted(inn, key=key)[:limit],
+            "out_total": len(out), "in_total": len(inn)}
+
 def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
     code = seat.get("code") or ""
     rec = seat.get("record") or {}
@@ -883,6 +912,13 @@ def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
                                for r in rows if r.get("status") in ("delivered", "queued") and not r.get("read_at")][:20]
         except Exception as exc:  # noqa: BLE001
             miss.append({"item": "pending_box", "why": repr(exc)[:200]})
+    # 卡住沒送到的 dm(10-18 @9f808 建議、維護者同意由 @abb89 做):對方輸入框有草稿 ⇒ blocked / hold_human、不會自己重送;
+    #   待審框只量「已送進來的」,量不到這種 ⇒ 交接前寄出 / 收進兩邊都列,下一棒才知道哪幾封要合併補送。
+    if code and not over("stuck_dm"):
+        try:
+            facts["stuck_dm"] = stuck_dm(code)
+        except Exception as exc:  # noqa: BLE001
+            miss.append({"item": "stuck_dm", "why": repr(exc)[:200]})
     # review 帳
     if code:
         hits = sorted(glob.glob(str(pending_dir(home) / ("REVIEW-LOOP-*%s*.md" % code))),
@@ -1084,6 +1120,13 @@ def render_draft(facts: dict, auto: bool = False) -> str:
     pb = facts.get("pending_box") or {}
     if pb:
         lines.append("- %s: %s" % (T("aib.handoff.fact.pending_box"), json.dumps(pb, ensure_ascii=False)))
+    sd = facts.get("stuck_dm")
+    if isinstance(sd, dict):
+        lines.append("- %s: %s" % (T("aib.handoff.fact.stuck_dm", out=sd.get("out_total", 0), inn=sd.get("in_total", 0)),
+                                   "; ".join(["%s→@%s %s(%s)" % (r.get("id"), r.get("seat"), r.get("status"), r.get("why") or "-")
+                                              for r in sd.get("out") or []] +
+                                             ["%s←@%s %s(%s)" % (r.get("id"), r.get("seat"), r.get("status"), r.get("why") or "-")
+                                              for r in sd.get("in") or []]) or "-"))
     rv = facts.get("review") or {}
     if rv.get("file"):
         lines += ["", "### " + T("aib.handoff.fact.review", file=rv["file"])] + ["    " + ln for ln in rv["tail"]]

@@ -1697,6 +1697,7 @@
   "aib.handoff.fact.unmerged": "main에 병합 안 된 브랜치({total}개 중 {count}개)",
   "aib.handoff.fact.lease": "머신 임대",
   "aib.handoff.fact.pending_box": "대기함(이 좌석)",
+  "aib.handoff.fact.stuck_dm": "아직 들어가지 않은 DM(보냄 {out} / 받음 {inn}; 상대 초안 때문에 막혀 자동으로 다시 보내지 않음 ⇒ 다음 메시지에 합쳐 보내기)",
   "aib.handoff.fact.review": "리뷰 기록 마지막 줄({file})",
   "aib.handoff.fact.review_none": "이 좌석의 REVIEW-LOOP 기록 없음",
   "aib.handoff.fact.background": "워크트리에서 시작한 백그라운드 스캔/테스트({n}개)",

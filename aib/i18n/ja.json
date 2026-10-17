@@ -1697,6 +1697,7 @@
   "aib.handoff.fact.unmerged": "main に未マージのブランチ({total} 中 {count})",
   "aib.handoff.fact.lease": "マシンのリース",
   "aib.handoff.fact.pending_box": "保留箱(この席)",
+  "aib.handoff.fact.stuck_dm": "届いていない DM(送信 {out} / 受信 {inn};相手の下書きで止まり自動再送されない ⇒ 次の 1 通にまとめて送る)",
   "aib.handoff.fact.review": "レビュー記録の末尾({file})",
   "aib.handoff.fact.review_none": "この席の REVIEW-LOOP 記録はありません",
   "aib.handoff.fact.background": "worktree から起動したバックグラウンドのスキャン/テスト({n} 件)",

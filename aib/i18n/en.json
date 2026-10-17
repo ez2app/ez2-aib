@@ -1697,6 +1697,7 @@
   "aib.handoff.fact.unmerged": "Branches not merged into main (showing {count} of {total})",
   "aib.handoff.fact.lease": "Host lease",
   "aib.handoff.fact.pending_box": "Pending box (this seat)",
+  "aib.handoff.fact.stuck_dm": "Stuck DMs not yet in the box (sent {out} / incoming {inn}; blocked by a draft, never resent on their own ⇒ fold into the next message)",
   "aib.handoff.fact.review": "Last lines of the review ledger ({file})",
   "aib.handoff.fact.review_none": "No REVIEW-LOOP ledger for this seat",
   "aib.handoff.fact.background": "Background scans/tests started from worktrees ({n})",

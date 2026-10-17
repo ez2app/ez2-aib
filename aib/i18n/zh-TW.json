@@ -1697,6 +1697,7 @@
   "aib.handoff.fact.unmerged": "沒合進 main 的分支(列出 {count} / 共 {total})",
   "aib.handoff.fact.lease": "機器租約",
   "aib.handoff.fact.pending_box": "待審框(這一席)",
+  "aib.handoff.fact.stuck_dm": "卡住沒送到的 dm(寄出 {out} / 收進 {inn};對方有草稿被擋，不會自己重送 ⇒ 下一封合併補送)",
   "aib.handoff.fact.review": "review 帳最後幾行({file})",
   "aib.handoff.fact.review_none": "沒有這一席的 REVIEW-LOOP 帳",
   "aib.handoff.fact.background": "從工作樹起的背景掃描/測試({n} 支)",
