@@ -465,6 +465,36 @@ def shadow_l2_mark(l2):
     return SHADOW_L2_MARK.get(l2, "")
 
 
+# 10-17 the maintainer:等級(Lv、星 / 月 / 日、冠)也顯示在狀態列。核心不算等級 —— 算的是擴充(艦長室),
+#   它把每一席的快照寫到 <狀態根>/state/seat-rank/<席碼>.json:{"lv": 42, "rank": {"kind": "sun", "n": 2}, "crowns": [...], "at": 秒}。
+#   沒裝擴充 / 沒有快照 / 超過一天沒更新 / 讀不懂 ⇒ 不顯示(不猜、不留舊的)。
+RANK_SUBDIR = os.path.join("state", "seat-rank")
+RANK_IC = {"star": "⭐", "moon": "🌙", "sun": "☀️"}
+RANK_MAX_AGE_S = 86400
+RANK_N_MAX = 10
+CROWNS_MAX = 5
+
+
+def rank_mark(code, *, state_root=None, now=None):
+    """' | Lv42 ☀️☀️ 👑👑' 或 ''。"""
+    if not code:
+        return ""
+    path = os.path.join(state_root or seats_dir_lib.state_root()[0], RANK_SUBDIR, code + ".json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            snap = json.load(fh)
+        lv, rank, at = int(snap["lv"]), snap["rank"], float(snap["at"])
+        kind, n = rank["kind"], int(rank["n"])
+        crowns = snap.get("crowns") or []
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    now = now if now is not None else time.time()
+    if not (1 <= lv <= 100) or kind not in RANK_IC or not (1 <= n <= RANK_N_MAX) or not isinstance(crowns, list) \
+            or not (0 <= now - at <= RANK_MAX_AGE_S):
+        return ""
+    return " | Lv%d %s%s" % (lv, RANK_IC[kind] * n, (" " + "👑" * min(len(crowns), CROWNS_MAX)) if crowns else "")
+
+
 def shadow_layer2(provider, settings_path=None, hook_path=None):
     """10-13 the maintainer:狀態列顯示這一席有沒有裝上「影子續跑說明」第 2 層(回合結束 hook)。
     claude ⇒ settings 裡 aib-now-gate 的 Stop 與 PostToolUse(post-tool)都在 ⇒ ok;缺 ⇒ missing。
@@ -836,7 +866,16 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
                 sys.path.insert(0, os.path.join(HERE, "render"))
                 from render_lib import visible_width
                 w = max(10, w - visible_width(l2_mark))
+            r_mark = rank_mark(c, state_root=state_root)
+            if r_mark and w:
+                sys.path.insert(0, os.path.join(HERE, "render"))
+                from render_lib import visible_width
+                if w - visible_width(r_mark) < 40:    # 窄窗:等級讓位給主項目
+                    r_mark = ""
+                else:
+                    w = max(10, w - visible_width(r_mark))
             line = shown_line(c, state_root=state_root, width=w)
+            line += r_mark
             if missing:
                 line += mark
             line += l2_mark
