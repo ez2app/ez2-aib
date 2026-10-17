@@ -250,7 +250,32 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
     index_path().parent.mkdir(parents=True, exist_ok=True)
     with open(index_path(), "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    return dict(rec, path=str(target))          # 給人看的完整路徑只在回傳裡,不進索引
+    if uid_layout:
+        _register_uid_note(Path(vault), note["uid"], rec["rel"], out.get("note", {}).get("title") or rec["title"], route_key)
+    return dict(rec, path=str(target))
+
+
+def _register_uid_note(vault: Path, uid: str, rel: str, title: str, route_key: str) -> None:
+    """0.1.18:uid 版面的新筆記登記進 .ez2/index/uid-index.json 與 .ez2/display/labels.json(以前沒登記 ⇒
+    aib vault doctor 報 md_not_indexed,10-17 真庫 210 篇)。只加這一筆、整檔原子換上;讀不到 / 壞掉就不寫(doctor 會補)。"""
+    parent = Path(rel).parent.name
+    for name, update in ((".ez2/index/uid-index.json", "items"), (".ez2/display/labels.json", "notes")):
+        f = vault / name
+        try:
+            doc = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if update == "items":
+            items = [i for i in (doc.get("items") or []) if i.get("uid") != uid]
+            items.append({"uid": uid, "path": rel, "title": title, "routeKey": route_key,
+                          "folderId": parent if parent.startswith("fld_") else ""})
+            doc["items"] = items
+        else:
+            notes = doc.setdefault("notes", {})
+            notes[uid] = {"title": title, "i18n": {"zh-TW": title, "en": None, "ja": None, "ko": None}, "path": rel}
+        tmp = f.with_name(f.name + ".tmp-%d" % os.getpid())
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, f)          # 給人看的完整路徑只在回傳裡,不進索引
 
 
 # ---------------------------------------------------------------- 讀(全部靠 uid)

@@ -4596,5 +4596,8 @@
   "aib.chat.profile_bad_space": "Space sharing must be none / island / room (room is per person only, not a default)",
   "aib.chat.help.island": "visit a friend's island (outdoors: terrain, buildings, people walking around)",
   "aib.chat.help.space": "who sees your space and how much (none / island / room; --default sets the default)",
-  "aib.vault_cli.doctor_updated_ambiguous": "{count} more notes have an updated value with only a date, or without seconds and time zone; converting them would be a guess, so they are left as they are and not counted as problems"
+  "aib.vault_cli.doctor_updated_ambiguous": "{count} more notes have an updated value with only a date, or without seconds and time zone; converting them would be a guess, so they are left as they are and not counted as problems",
+  "aib.vault_cli.help_mkdir": "add a uid folder and register it (the Obsidian \"New folder\" button uses this)",
+  "aib.vault_cli.help_mkdir_title": "folder title (for display; the folder on disk is named by its folderId)",
+  "aib.vault_cli.mkdir_done": "folder \"{title}\" added: {path}"
 }
