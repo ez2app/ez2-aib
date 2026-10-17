@@ -262,6 +262,11 @@ def _clean_text(v, n):
     return t[:n] or None
 
 
+def _local_proof_ok(url):
+    """測試 / 端到端沙盒才准 http://127.0.0.1 的證明頁(AIB_CHAT_VERIFY_ALLOW_LOCAL=1,同 chat_verify)。"""
+    return os.environ.get("AIB_CHAT_VERIFY_ALLOW_LOCAL") == "1" and bool(re.match(r"^http://127\.0\.0\.1:[0-9]{1,5}/[^\s<>\"']{0,200}$", url))
+
+
 def clean_socials(items):
     out, seen = [], set()
     for it in items if isinstance(items, list) else []:
@@ -272,7 +277,7 @@ def clean_socials(items):
             continue
         seen.add((it["p"], v))
         row = {"p": it["p"], "v": v}
-        if isinstance(it.get("proof"), str) and _PROOF_RE.match(it["proof"]):
+        if isinstance(it.get("proof"), str) and (_PROOF_RE.match(it["proof"]) or _local_proof_ok(it["proof"])):
             row["proof"] = it["proof"]
         out.append(row)
     return out[:SOCIALS_MAX]
