@@ -27,6 +27,7 @@ the maintainer 10-01 裁(取代 09-30「沒說就開新席」):沒指定席位 �
     --deliver          綁完把人格包用 aib dm 寄給那一席(正在跑的對話不會自己知道被綁了;要配 --seat 或 --new-seat)
     --new-seat         明講才用:在你所在的艙開一個新席,等它啟動完成再綁(10-01 起不是預設;沒指定席就只建卡)
     --engine ENGINE    --new-seat 用哪個引擎(預設 claude)
+    --model MODEL      --new-seat 用哪個模型(沒給 = 那家的預設;10-17 艦長室「開新席」要能選)
     --actor ACTOR      帳本署名 role@hex/Engine(要綁席位時必填,只建卡不用;不給就讀 EZ2_OWNER_SIG,兩個都沒有 ⇒ 具名停手不猜)
     --overwrite        既有同名卡也重寫角色.md(不給 ⇒ 既有卡一個位元組都不動,只 scan + bind + 記憶)
                        席位記憶:同一張卡的人設只寫一次;帶 --overwrite 才會把新內容再接一段
@@ -473,6 +474,14 @@ def _seat_snapshot(seats_dir):
     return out
 
 
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,79}$")   # 模型 id(例 claude-opus-5-5、opus[1m]、gpt-5.5-codex);不能 - 開頭(會被當旗標)
+
+
+def new_seat_model_ok(model):
+    """--model 的值:空 = 用那家預設;不然要合 MODEL_RE"""
+    return not model or bool(MODEL_RE.match(model))
+
+
 def new_seat_precheck(engine="claude", cabin=""):
     """開新席之前、不需要真的開就能做的檢查(review r16 m1:試跑與真跑都在寫卡前跑這一組)。
     ⇒ (艙 id, 引擎, 席位資料夾, tmux socket 名);不合 ⇒ NewSeatError(opened=False,什麼都沒做)。"""
@@ -488,7 +497,7 @@ def new_seat_precheck(engine="claude", cabin=""):
     return cabin, engine, seats_dir, _hub_name(cabin)
 
 
-def open_new_seat(role, engine="claude", cabin="", timeout=300, interval=3.0, sleep=None, clock=None):
+def open_new_seat(role, engine="claude", cabin="", timeout=300, interval=3.0, sleep=None, clock=None, model=""):
     """在 `cabin` 開一個新席(同艙再開一席,不搶使用者的畫面),等它的席位檔帶上 session_uuid。
     ⇒ (seat_id, 席位紀錄, 艙 id)。開不起來或等不到 ⇒ NewSeatError(什麼都還沒寫)。
 
@@ -499,6 +508,8 @@ def open_new_seat(role, engine="claude", cabin="", timeout=300, interval=3.0, sl
     sleep = sleep or _time.sleep
     clock = clock or _time.time
     cabin, engine, seats_dir, hub = new_seat_precheck(engine, cabin)
+    if not new_seat_model_ok(model):
+        raise NewSeatError("模型名稱不對:%r" % model)
     role = re.sub(r"[^a-z0-9-]", "-", (role or "").lower()).strip("-")[:24] or "persona"
     before = {rec.get("session_uuid") for rec in _seat_snapshot(seats_dir).values() if rec.get("session_uuid")}
     launcher = os.environ.get("AIB_NEWSEAT_LAUNCHER") or str(REPO_ROOT / "src" / "cockpit" / "aib")
@@ -506,8 +517,8 @@ def open_new_seat(role, engine="claude", cabin="", timeout=300, interval=3.0, sl
                EZ2_AIHUB_SOCKET=hub, EZ2_AIB_INSTANCE=cabin)
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
-    log("開新席:引擎 %s、角色 %s、艙 %s" % (engine, role, cabin))
-    res = subprocess.run(["bash", launcher, engine, "dgrs", role, "--again"], env=env,
+    log("開新席:引擎 %s、角色 %s、艙 %s" % (engine, role, cabin) + ("、模型 %s" % model if model else ""))
+    res = subprocess.run(["bash", launcher, engine, "dgrs", role, "--again"] + (["--model", model] if model else []), env=env,
                          capture_output=True, text=True, stdin=subprocess.DEVNULL)
     if res.returncode != 0:
         raise NewSeatError("開席指令失敗(rc=%s):%s" % (res.returncode, (res.stderr or res.stdout).strip()[-300:]))
@@ -765,6 +776,7 @@ def main():
     parser.add_argument("--new-seat", action="store_true", help=T("aib.newrole.help_new_seat"))
     parser.add_argument("--engine", default="claude", help=T("aib.newrole.help_engine"))
     parser.add_argument("--role", default="", help=T("aib.newrole.help_role"))
+    parser.add_argument("--model", default="", help=T("aib.newrole.help_model"))
     parser.add_argument("--actor", help=T("aib.newrole.help_actor"))
     parser.add_argument("--overwrite", action="store_true", help=T("aib.newrole.help_overwrite"))
     parser.add_argument("--dry-run", action="store_true", help=T("aib.newrole.help_dry_run"))
@@ -788,6 +800,9 @@ def main():
 
     seat_id, seat_rec, seat_instance = None, None, ""
     # the maintainer 10-01:有明講席位(--seat)或明講開新席(--new-seat)才綁;都沒有 ⇒ 只建卡,不開席、不綁、不猜當前席
+    if args.model and not args.new_seat:   # --model 只管新開的席;已開的席換模型不歸 newrole
+        log("錯誤: --model 只配 --new-seat 用(已開的席換模型請在那一席裡切)。什麼都沒寫", prefix="[x]")
+        return 2
     bind_target = bool(args.new_seat or (args.seat and args.seat.strip()))
     if args.new_seat:
         if args.seat:
@@ -810,6 +825,9 @@ def main():
         new_seat_role, role_err = new_seat_role_or_die(args.role)
         if role_err:
             log("錯誤: %s。什麼都沒寫:沒開席、卡沒建" % role_err, prefix="[x]")
+            return 2
+        if not new_seat_model_ok(args.model):
+            log("錯誤: 模型名稱不對:%r(英數開頭,只能有英數 . _ : / [ ] -)。什麼都沒寫:沒開席、卡沒建" % args.model, prefix="[x]")
             return 2
         # review r16(人格):量不到艙真跑也在建卡前擋(以前只有試跑先擋,真跑要等開席才發現 ⇒ 卡已建)
         if not current_cabin():
@@ -1044,13 +1062,13 @@ def main():
     if args.new_seat:
         # review r15 M1(人格):所有不需要席位的檢查都過了才開新席
         if args.dry_run:
-            log("[DRY-RUN] 會在艙 %s 開一個新的 %s 席(角色 %s),等它啟動後綁上「%s」" % (
-                current_cabin() or "(量不到)", args.engine, new_seat_role, name))
+            log("[DRY-RUN] 會在艙 %s 開一個新的 %s 席(角色 %s%s),等它啟動後綁上「%s」" % (
+                current_cabin() or "(量不到)", args.engine, new_seat_role, "、模型 %s" % args.model if args.model else "", name))
             seat_id = "(新席)"
         else:
             try:
                 seat_id, seat_rec, seat_instance = open_new_seat(new_seat_role, engine=args.engine,
-                                                                 timeout=new_seat_timeout())
+                                                                 timeout=new_seat_timeout(), model=args.model)
             except NewSeatError as exc:
                 # ★ review r16 M1:開席指令成功但等不到席碼/冒出多席 ⇒ 席已開、在跑,不能說「沒開成」
                 #   (AI 會再下一次 --new-seat 多開一席)。卡在不在也照實說。

@@ -3634,6 +3634,7 @@
   "aib.newrole.help_deliver": "綁完把人格包用 aib dm 寄給那一席",
   "aib.newrole.help_new_seat": "明講才用:在你所在的艙開一個新席來綁(不是預設;沒指定席就只建卡)",
   "aib.newrole.help_engine": "--new-seat 用哪個引擎(預設 claude)",
+  "aib.newrole.help_model": "--new-seat 用哪個模型(沒給 = 那一家的預設)",
   "aib.newrole.help_role": "--new-seat 開的席的角色(要是已定義角色;預設 dev)",
   "aib.newrole.help_actor": "帳本操作者署名(如 root@00000/agy)",
   "aib.newrole.help_overwrite": "既有同名卡也重寫角色.md(預設不動既有卡)",
