@@ -11,7 +11,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 - **The "is this the human" check works on macOS**: in an ordinary terminal it no longer mistakes `/dev/tty` (owned by root) for the real terminal, so commands that only the human may run (such as approving a project's goals) work again; cockpit panes are now also recognised by their terminal, not only by an environment variable.
 - **Release checks wait for PyPI**: the release verification waits until PyPI serves the new version before testing upgrades.
 - End-to-end sandbox tests for online chat.
-- **Seat level on the status line**: `aib now --statusline` ends with the seat's level (for example ` | Lv42 ☀️☀️ 👑👑`) when the captain-room extension has written a snapshot within the last day; on narrow windows the level gives way.
+- **Seat level on the status line**: when the captain-room extension has written a snapshot within the last day, the CTX line shows the seat's level and resources after `@seat` (for example `@abb89 5⭐ 30 wood/12 stone`); the 📌 line keeps only the main item, steps and update time.
 - `aib vault doctor` also reports `updated` values that are not ISO times and fixes the ones it can convert for certain.
 
 ## 0.1.15
