@@ -228,10 +228,12 @@ class Build(Base):
         self.assertIsNone(CR.common_envelope(CR.parse(old, owner)))
 
     def test_r5_relays(self):
-        self.assertEqual(CR.relays({}), ["wss://relay.primal.net", "wss://nos.lol", "wss://offchain.pub"])
-        self.assertEqual(CR.relays({"AIB_CHAT_RELAYS": "wss://a.example, http://b.example, ws://127.0.0.1:7000, ws://10.0.0.1:1"}),
+        # 環境一律帶沙盒的家目錄:空環境會讀到這台機器真的 ~/.ez2-aib/chat(10-17 Pro 實機加了第三站,這格就紅)
+        home = {"HOME": self.penv["HOME"]}
+        self.assertEqual(CR.relays(home), ["wss://relay.primal.net", "wss://nos.lol", "wss://offchain.pub"])
+        self.assertEqual(CR.relays(dict(home, AIB_CHAT_RELAYS="wss://a.example, http://b.example, ws://127.0.0.1:7000, ws://10.0.0.1:1")),
                          ["wss://a.example", "ws://127.0.0.1:7000"])
-        self.assertEqual(CR.relays({"AIB_CHAT_RELAYS": "http://x"}), list(CR.DEFAULT_RELAYS))
+        self.assertEqual(CR.relays(dict(home, AIB_CHAT_RELAYS="http://x")), list(CR.DEFAULT_RELAYS))
 
     def test_r6_bridge_without_nostr(self):
         a = self.b.seat("20261015-000000-6ddf", "w2", "00000000-0000-0000-0000-00000000abb8", "aaaa11", "AIB工程師")
