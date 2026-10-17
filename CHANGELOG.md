@@ -4,6 +4,16 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.16
+
+- **New notes and a health check for uid vaults** (licensed add-on `obsidian-labels`): `aib vault newpost` creates a note in uid layout in the chosen folder; `aib vault doctor [--fix --backup-dir]` checks the vault layout. Without the licence they exit 3 and write nothing.
+- **Visit a friend's island and captain room**: `aib chat space [<owner> none|island|room]` sets what each contact may see (friends and your own machines: island by default; room is opened per person; strangers and blocked people: nothing). `aib chat island <owner>` / `aib chat room <owner>` read what was shared. Usage, unread counts, IP, host names and message text are always filtered out.
+- **The "is this the human" check works on macOS**: in an ordinary terminal it no longer mistakes `/dev/tty` (owned by root) for the real terminal, so commands that only the human may run (such as approving a project's goals) work again; cockpit panes are now also recognised by their terminal, not only by an environment variable.
+- **Release checks wait for PyPI**: the release verification waits until PyPI serves the new version before testing upgrades.
+- End-to-end sandbox tests for online chat.
+- **Seat level on the status line**: when the captain-room extension has written a snapshot within the last day, the CTX line shows the seat's level and resources after `@seat` (for example `@abb89 5⭐ 30 wood/12 stone`); the 📌 line keeps only the main item, steps and update time.
+- `aib vault doctor` also reports `updated` values that are not ISO times and fixes the ones it can convert for certain.
+
 ## 0.1.15
 
 - **Online chat, friends and contacts**: friend requests, blocking and a contact list (shown in the captain room's address book and inbox); replies from people you wrote to are accepted; your own other machines can be linked.
