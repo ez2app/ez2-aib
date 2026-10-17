@@ -11,7 +11,8 @@ Touch ID,沒有或失敗時系統自己給登入密碼欄)。只有本人的手�
   - 視窗文字只由 aib 自己組(呼叫端只給「核准哪一件」的資料,不給整句);這一支沒有 CLI,不吃外來字串。
   - 每次產生一次性 nonce 放進 JXA,成功時 JXA 要原樣印回;對不上 = 沒過(擋「隨便印一行 ok 的假 osascript」)。
   - 只認真的成功:取消、失敗、逾時、沒有圖形介面、osascript 不在、輸出讀不懂,一律沒過。
-  - 一次只核准那一件:視窗文字綁專案 uid + 動作,成功只回給這一次呼叫,不留任何「已驗過」的狀態。
+  - 一次只核准那一件:視窗文字綁專案 uid + 動作,成功只回給這一次呼叫,不留任何「已驗過」的狀態;
+    整台機器同時只開一個視窗(one_at_a_time 鎖;別席已在等指紋 ⇒ 這次直接沒過,不排隊、不疊兩個視窗)。
   - 沒有放行的環境變數或旗標。唯一的開關 AIB_TOUCHID=0 只會**關掉**這條路(退回只剩終端機),失效方向只往低權。
   - 不是 macOS ⇒ 這條路不存在,照舊只有終端機。
 """
@@ -30,6 +31,8 @@ LA_CODES = {"-1": "failed", "-2": "cancel", "-3": "fallback", "-4": "system_canc
             "-5": "no_passcode", "-6": "no_biometry", "-8": "lockout", "-9": "timeout"}
 
 _CTRL = re.compile(r"[\x00-\x1f\x7f  ]")
+# 方向控制 / 零寬字(U+202E 之類):視窗裡看不到、卻能把標題排成別的樣子 ⇒ 直接拿掉(@abb89 審 10-17)
+_INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
 
 JXA = r"""
 ObjC.import('LocalAuthentication');
@@ -64,8 +67,36 @@ def available(platform=None, environ=None, exists=os.path.exists):
 
 def clean(text, limit=80):
     """把要放進視窗的一段資料壓成一行、去掉控制字元、截長度(資料是卡上的標題,不是指令)。"""
-    text = _CTRL.sub(" ", str(text or "")).strip()
+    text = _CTRL.sub(" ", _INVISIBLE.sub("", str(text or ""))).strip()
     return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+class one_at_a_time:
+    """整台機器同時只准一個 Touch ID 核准視窗(fcntl 不等待鎖)。拿不到 ⇒ self.held=False,呼叫端要當沒過。
+    免得兩席同時跑 --approve、疊兩個視窗,本人一個指紋核到另一件。"""
+
+    def __init__(self, lock_path):
+        self.path = str(lock_path)
+        self.f = None
+        self.held = False
+
+    def __enter__(self):
+        import fcntl
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self.f = open(self.path, "a")
+            fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.held = True
+        except OSError:          # BlockingIOError(別人拿著)或開不了檔 ⇒ 一律沒拿到(失效往低權)
+            self.held = False
+        return self
+
+    def __exit__(self, *a):
+        if self.f is not None:
+            if self.held:
+                import fcntl
+                fcntl.flock(self.f, fcntl.LOCK_UN)
+            self.f.close()
 
 
 def build_script(reason, nonce, wait=WAIT_S):

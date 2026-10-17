@@ -1283,7 +1283,8 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         stdout.write("\n".join(show) + "\n")
         stdout.flush()
         _say(T("aib.newproj.approve_touchid_wait", {"uid": uid}))
-        res = (touchid or TA.ask)(reason)
+        with TA.one_at_a_time(Path(root) / "locks" / "touchid-approve.lock") as gate:
+            res = (touchid or TA.ask)(reason) if gate.held else {"ok": False, "why": "busy"}
         human_id = _login_name()
         if not (isinstance(res, dict) and res.get("ok") is True) or not human_id:
             why = (res.get("why") if isinstance(res, dict) else None) or "?"

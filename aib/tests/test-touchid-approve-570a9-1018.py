@@ -13,7 +13,10 @@ T7  approve_constitution 走 Touch ID:過 ⇒ 卡核准、approved_via=touchid�
     視窗文字由卡組(uid、標題、條數),呼叫端沒有參數能改字
 T8  Touch ID 沒過 ⇒ rc 2、卡不動;這台沒有 Touch ID 路 ⇒ rc 2、不叫視窗(照舊只有終端機)
 T9  終端機三條件全到 ⇒ 照舊走打 uid,不叫 Touch ID
-刀(複本):K1 拿掉 nonce 比對 ⇒ T2 紅;K2 不看 Touch ID 結果 ⇒ T8 紅;K3 拿掉 AIB_TOUCHID=0 ⇒ T6 紅
+T10 一次只核一件:別席正開著 Touch ID 視窗(鎖被拿著)⇒ 這次 rc 2、why=busy、不叫第二個視窗、卡不動;放掉後照常能核
+T11 標題裡的方向控制 / 零寬字(U+202E 之類)進視窗前就拿掉
+刀(複本):K1 拿掉 nonce 比對 ⇒ T2 紅;K2 不看 Touch ID 結果 ⇒ T8 紅;K3 拿掉 AIB_TOUCHID=0 ⇒ T6 紅;
+         K4 拿掉 gate.held 判斷 ⇒ T10 紅
 """
 import importlib.util
 import inspect
@@ -105,6 +108,9 @@ class Script(unittest.TestCase):
         self.assertEqual(json.loads(lit.group(1)), nasty)
         self.assertNotIn("\n", lit.group(1))
         self.assertEqual(TA.clean("a\nb\x00c" + "字" * 100, 10), "a b c字字字字…")
+
+    def test_T11_invisible_chars_removed(self):
+        self.assertEqual(TA.clean("Demo\u202egnp.exe\u200b\u2066x\ufeff"), "Demognp.exex")
 
     def _real(self, ctx_js, wait=5):
         nonce = "cd" * 16
@@ -248,6 +254,28 @@ class Approve(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertEqual(self._const()["approved_via"], "tty")
 
+    def test_T10_one_window_at_a_time(self):
+        import fcntl
+        lock = self.root / "locks" / "touchid-approve.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        called, out = [], _FakeIO()
+        import contextlib
+        import io
+        err = io.StringIO()
+        with open(lock, "a") as other, contextlib.redirect_stderr(err), contextlib.redirect_stdout(err):
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)   # 別席正在等指紋
+            rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=out,
+                                              touchid=lambda reason: called.append(1) or {"ok": True, "why": "ok"},
+                                              touchid_available=lambda: True)
+        self.assertEqual(rc, 2)
+        self.assertEqual(called, [], "鎖被拿著就不跳第二個視窗")
+        self.assertIn("busy", err.getvalue() + "".join(out.out))
+        self.assertIs(self._const()["approved"], False)
+        rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=_FakeIO(),
+                                          touchid=lambda reason: called.append(1) or {"ok": True, "why": "ok"},
+                                          touchid_available=lambda: True)
+        self.assertEqual((rc, called), (0, [1]), "鎖放掉後照常能核")
+
 
 class Knife(unittest.TestCase):
     def _cut(self, rel, needle, repl, test):
@@ -269,6 +297,9 @@ class Knife(unittest.TestCase):
     def test_K3_no_off_switch(self):
         self._cut("src/cockpit/touchid_approve.py", 'if str(env.get("AIB_TOUCHID", "")).strip() == "0":',
                   "if False:", "Available.test_T6_available")
+
+    def test_K4_no_one_at_a_time(self):
+        self._cut("tools/project/new_project.py", "if gate.held else", "if True else", "Approve.test_T10_one_window_at_a_time")
 
 
 if __name__ == "__main__":
