@@ -17,6 +17,8 @@
           以前這些算 manual ⇒ 新用戶的 doctor 幾乎永遠 rc 1,「不通過」失去意思。
 
 唯讀:本工具**不建立、不修改任何檔案**。要建目錄是 ED.2 `aib init` 的事。
+  唯一例外(10-17 @abb89 裁):角色卡清單 cards.json 是角色庫的投影,升級後是舊程式產的(卡檔沒變、只是算法變了)⇒
+  直接重產並在 cards_projection 那一項回報,不叫用戶手動 scan。角色庫改過或有人手改 ⇒ 照舊只列。
 
 狀態根以可注入方式取得(參數 > 環境變數 > 預設)。**刻意不改既有 9 處硬編路徑**
 ——那是 ED.1 的獨佔範圍,現在動會與未來的 ED.1 互撞(pm 裁決)。
@@ -662,6 +664,36 @@ def check_second_brain(repo_root):
     return out
 
 
+def check_cards_projection(state_root, repo_root):
+    """角色卡清單(<狀態根>/identity/cards.json)是不是現在這版程式產的;舊程式產的就重產(見檔頭「唯一例外」)。"""
+    try:
+        sys.path.insert(0, str(Path(repo_root) / "src" / "memory"))
+        import card_registry as CR
+    except Exception as err:  # noqa: BLE001
+        return _result("cards_projection", NOTE, _C("cards_projection.error", error=err))
+    out = Path(state_root) / "identity" / "cards.json"
+    try:
+        res = CR.refresh(out)
+    except Exception as err:  # noqa: BLE001 —— 量不到(沒 vault、契約讀不到…)不算壞,說一聲
+        return _result("cards_projection", NOTE, _C("cards_projection.error", error=err))
+    st, n = res["status"], res.get("cards", 0)
+    if st == "absent":
+        return _result("cards_projection", OK, _C("cards_projection.absent"))
+    if st == "current":
+        return _result("cards_projection", OK, _C("cards_projection.current", n=n))
+    if st == "refreshed":
+        return _result("cards_projection", OK, _C("cards_projection.refreshed", n=n,
+                                                       fields=_join(res.get("changed_fields") or ["-"])))
+    scan_cmd = "python3 %s scan" % (Path(repo_root) / "src" / "memory" / "card_registry.py")
+    if st == "edited_by_hand":
+        return _result("cards_projection", FAIL, _C("cards_projection.edited", path=out),
+                       _C("cards_projection.rescan_remedy", cmd=scan_cmd))
+    return _result("cards_projection", NOTE,
+                   _C("cards_projection.stale", added=len(res.get("added") or []),
+                      removed=len(res.get("removed") or []), changed=len(res.get("changed") or [])),
+                   _C("cards_projection.rescan_remedy", cmd=scan_cmd))
+
+
 def provider_checks(providers, explicit):
     """預設(沒給 --provider)只檢查**裝了的** AI 工具;沒裝的合成一行「可選、沒裝」,一個都沒裝才算缺。
     明給 --provider 的照舊逐一檢查(沒裝就 FAIL)。"""
@@ -701,6 +733,7 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
                               _C("secrets_perms.load_error", error=err),
                               _C("secrets_perms.load_remedy")))
     checks += check_second_brain(repo_root)
+    checks.append(check_cards_projection(state_root, repo_root))
     checks += provider_checks(providers, explicit_providers)
     checks.append(check_dm_latency(state_root, repo_root))
     return checks
