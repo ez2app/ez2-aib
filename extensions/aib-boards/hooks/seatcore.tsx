@@ -4,7 +4,7 @@ import { fleetPromptLines, fleetAlerts } from './seat/captain'
 import { integPromptLines, integAlerts } from './seat/integrator'
 import { devPromptLines, devAlerts } from './seat/dev'
 import { qaPromptLines, qaAlerts } from './seat/qa'
-import { cardOf, upsert, relayPath, iconOf, clip, rasterCells, STATUS, type MailCard, type QItem, type Icon } from './seat/mailcard'
+import { cardOf, upsert, syncRequests, relayPath, iconOf, clip, STATUS, REQ_PREFIX, type MailCard, type QItem } from './seat/mailcard'
 import { statusLabel, promptSection, handoffState, newBlocks, label, type SeatInfo } from './seat/seat-label'
 import { tr } from './i18n'
 import { openRoom } from './room'   // /aib room(艦長室外掛)拆在 room.ts
@@ -29,8 +29,6 @@ let tick: Timer | undefined
 // 新信卡片:開席時已經在的未讀不做卡(只做之後來的);人按過 ✕ 的記在 mailDismissed
 let mailBaseline: Set<string> | null = null
 let dmDir = ''
-const iconCache = new Map<string, { columns: number; rows: number; cells: string } | null>()
-const ICON_W = 14, ICON_H = 14   // 大頭像 14×14 像素 = 14 格寬、7 行高
 
 // 席位檔 mod.enabled=false(依角色關)⇒ 不寫系統提示、狀態列只留一句
 const modOn = () => seat?.mod?.enabled !== false
@@ -73,16 +71,7 @@ async function takeMail($: EngineInterface, q: QItem): Promise<void> {
   const c = cardOf(q, me, full); if (!c) return
   const gone = new Set(await read($, mailDismissed))
   await update($, mailCards, list => upsert(list, c, gone))
-  ensureIcon($, iconOf(c, seat?.marks))
   $.ui.invalidate('ui.render')
-}
-// 人格圖示畫成像素圖(macOS 的 Apple Color Emoji;別的系統或失敗 ⇒ 退回文字 emoji)
-function ensureIcon($: EngineInterface, emoji: string): void {
-  if (iconCache.has(emoji)) return
-  iconCache.set(emoji, null)
-  void $.process.run(['osascript', '-l', 'JavaScript', `${$.plugin.root}/bin/emoji-raster.js`, emoji, String(ICON_W), String(ICON_H)], { timeoutMs: 8000 })
-    .then(r => { if (r.exitCode === 0) { iconCache.set(emoji, rasterCells(JSON.parse(r.stdout) as Icon)); $.ui.invalidate('ui.render') } })
-    .catch(() => undefined)
 }
 async function refresh($: EngineInterface): Promise<void> {
   await ready($)
@@ -99,6 +88,10 @@ async function refresh($: EngineInterface): Promise<void> {
     const ids = new Set([...(s.unread_list ?? []).map(m => m.id), ...(await read($, mailCards)).map(c => c.id)])
     for (const id of ids) { const q = await readQ($, `${dir}/${id}.json`); if (q) await takeMail($, q) }
   }
+  // 線上好友申請(只有艦長席的探測會帶):新的做卡、已處理的拿掉
+  const gone = new Set(await read($, mailDismissed)), before = (await read($, mailCards)).map(c => c.id).join()
+  await update($, mailCards, list => syncRequests(list, s.friend_requests ?? [], gone))
+  if ((await read($, mailCards)).map(c => c.id).join() !== before) $.ui.invalidate('ui.render')
   const fresh = newBlocks(s.blocks, await read($, blockSeen), Date.now())
   for (const b of fresh) $.ui.toast(tr('seat_toast_block', { label: label(b.gate), why: b.why }), { timeoutMs: 8000 })
   if (fresh.length) await update($, blockSeen, () => fresh[fresh.length - 1]!.ts)
@@ -156,14 +149,13 @@ export const registerSeat: Register = on => {
     return { sections: [...r.sections, { id: 'aib-seat', text, scope: 'session' as const }] }
   }).catch(($, e, next) => (next.called ? next(e) : next(e)))
 
-  // 新信卡片(輸入框上方):狀態色外框、角色大頭像、收起三行可展開、按 ✕ 才關
+  // 新信卡片(輸入框上方):只有真人來信與好友申請;狀態色外框、標題列角色圖示、收起兩行可展開、按 ✕ 才關
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const cards = await read($, mailCards)
     if (e.props.hasSurvey || !cards.length) return next(e)
     await ready($)
-    const { Box, Text, Button, Raster } = $.ui.resolve(e) as ReturnType<typeof $.ui.resolve> & { Raster?: unknown }
-    const W = Math.max(30, e.props.bodyColumns), me = seat?.code ?? '?'
-    const lg = (c?: string | null) => (c && seat?.logos?.[c] ? <Text color={seat?.logo_colors?.[c]}>{seat.logos[c]} </Text> : null)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const W = Math.max(30, e.props.bodyColumns)
     const close = (id: string) => async () => { await update($, mailDismissed, l => [...l.filter(x => x !== id), id].slice(-200)); await update($, mailCards, l => l.filter(x => x.id !== id)); $.ui.invalidate('ui.render') }
     const flip = (id: string) => async () => { await update($, mailCards, l => l.map(x => (x.id === id ? { ...x, open: !x.open } : x))); $.ui.invalidate('ui.render') }
     const closeAll = async () => { const ids = cards.map(c => c.id); await update($, mailDismissed, l => [...l, ...ids].slice(-200)); await update($, mailCards, () => []); $.ui.invalidate('ui.render') }
@@ -173,23 +165,21 @@ export const registerSeat: Register = on => {
         <Box flexDirection="row" justifyContent="space-between"><Text bold>{tr('mail_band', { n: cards.length })}<Text dimColor>{tr('mail_close_hint')}</Text></Text>
           {cards.length > 1 ? <Button key="mail-x-all" variant="secondary" onPress={closeAll}>{tr('mail_close_all')}</Button> : null}</Box>
         {cards.map(c => {
-          const st = STATUS[c.status], emoji = iconOf(c, seat?.marks), pic = iconCache.get(emoji), p = c.from ? seat?.personas?.[c.from] : undefined
-          const body = c.open ? { text: c.text, cut: false } : clip(c.text.replace(/\s+\n/g, '\n'), Math.max(10, W - ICON_W - 8), 3)
+          const st = STATUS[c.status], req = c.kind === 'request', p = c.from ? seat?.personas?.[c.from] : undefined
+          const raw = req ? (c.text || tr('mail_req_no_note')) : c.text.replace(/\s+\n/g, '\n')
+          const body = c.open ? { text: raw, cut: false } : clip(raw, Math.max(10, W - 6), 2)
           return (
-            <Box key={`mail-${c.id}`} flexDirection="row" borderStyle="round" borderColor={st.color} paddingX={1} width={W}>
-              <Box flexDirection="column" width={ICON_W + 1} alignItems="center">
-                {pic && Raster ? <Raster key={`mail-pic-${c.id}`} columns={pic.columns} rows={pic.rows} cells={pic.cells} /> : <Text>{emoji}</Text>}
-              </Box>
-              <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-                <Box flexDirection="row" justifyContent="space-between">
-                  <Text wrap="truncate-end"><Text color={st.color} bold>● {tr(st.key)}</Text><Text>  </Text>{lg(c.from)}<Text bold>{p?.name ?? c.label ?? c.from ?? '?'}</Text><Text dimColor>{c.from ? ` @${c.from}` : ''} → </Text>{lg(me)}<Text dimColor>@{me} · {hm(c.at)}</Text></Text>
-                  <Box flexDirection="row" gap={1}>
-                    {body.cut || c.open ? <Button key={`mail-open-${c.id}`} variant="secondary" onPress={flip(c.id)}>{c.open ? tr('collapse') : tr('expand')}</Button> : null}
-                    <Button key={`mail-x-${c.id}`} variant="secondary" onPress={close(c.id)}>✕</Button>
-                  </Box>
+            <Box key={`mail-${c.id}`} flexDirection="column" borderStyle="round" borderColor={st.color} paddingX={1} width={W}>
+              <Box flexDirection="row" justifyContent="space-between">
+                <Text wrap="truncate-end"><Text>{iconOf(c, seat?.marks)} </Text><Text bold>{p?.name ?? c.label ?? c.from ?? '?'}</Text>
+                  <Text dimColor>{req ? ` ${tr('mail_req_title')}` : c.from ? ` @${c.from}` : ''} · {hm(c.at)}  </Text><Text color={st.color}>● {tr(st.key)}</Text></Text>
+                <Box flexDirection="row" gap={1}>
+                  {body.cut || c.open ? <Button key={`mail-open-${c.id}`} variant="secondary" onPress={flip(c.id)}>{c.open ? tr('collapse') : tr('expand')}</Button> : null}
+                  <Button key={`mail-x-${c.id}`} variant="secondary" onPress={close(c.id)}>✕</Button>
                 </Box>
-                <Text wrap="wrap">{body.text}</Text>
               </Box>
+              <Text wrap="wrap" dimColor={req && !c.text}>{body.text}</Text>
+              {req ? <Text dimColor wrap="truncate-end">{tr('mail_req_hint', { owner: c.id.slice(REQ_PREFIX.length) })}</Text> : null}
             </Box>)
         })}
       </Box>)

@@ -12,13 +12,12 @@ const SEAT = { cabin: '20261010-125119-931e', cabin_code: '931e', role: 'pm', co
 const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) as never
 const LONG = '機器空了,請跑三包。'.repeat(30)
 
-test('新信 → 卡片:狀態色、角色圖示、展開、讀了變色、✕ 才關;不跳 toast', async ($: Any, on: Any) => {
+test('真人來信 → 卡片:狀態色、標題列角色圖示(不畫像素大頭像)、展開、讀了變色、✕ 才關;席的信不彈;不跳 toast', async ($: Any, on: Any) => {
   mock.clock(on)
   const toasts: string[] = [], files: Record<string, string> = {}
   on('process.run', async (_$: Any, e: Any) => { const a = e.argv as string[]
     if (a[2]?.endsWith('/i18n_lib.py')) return ok(JSON.stringify(FIXTURE[a[a.indexOf('--locale') + 1]!] ?? {}))   // 字典(語系由 env 給 zh-TW)
     if (a.includes('--dm-dir')) return ok('/h/.ez2-aib/state/dm-queue/86ff0\n')
-    if (a[0] === 'osascript') return ok(JSON.stringify({ w: 2, h: 2, px: [[255, 0, 0, 255], [0, 0, 0, 0], [0, 0, 255, 255], [0, 0, 0, 0]] }))
     return ok(JSON.stringify(SEAT)) })
   on('fs.read', async (_$: Any, e: Any) => (files[e.path] !== undefined ? { value: files[e.path] } : { error: new Error('ENOENT') }) as never)
   on('fs.write', async () => ({ value: undefined }) as never)
@@ -40,7 +39,10 @@ test('新信 → 卡片:狀態色、角色圖示、展開、讀了變色、✕ �
   await $.session.start({ cwd: '/x', source: 'startup' })
 
   const path = '/h/.ez2-aib/state/dm-queue/86ff0/q_9.json'
-  const q = { id: 'q_9', seat: '86ff0', sender_seat: '8f366', sender_label: '@8f366(第二艦長)', sender_kind: 'seat', msg: LONG, sent_at: 1791922000 }
+  const seatPath = '/h/.ez2-aib/state/dm-queue/86ff0/q_8.json'
+  files[seatPath] = JSON.stringify({ id: 'q_8', seat: '86ff0', sender_seat: '8f366', sender_kind: 'seat', msg: '席的信', sent_at: 1791921000 })
+  await $.classic.FileChanged({ file_path: seatPath, event: 'add' })
+  const q = { id: 'q_9', seat: '86ff0', sender_seat: '8f366', sender_label: '@8f366(第二艦長)', sender_kind: 'human', msg: LONG, sent_at: 1791922000 }
   files[path] = JSON.stringify(q)
   await $.classic.FileChanged({ file_path: path, event: 'add' })
   const ui = await $.ui.mount({ plugin: 'aib-boards', surface: 'terminal', component: 'AbovePrompt', requestId: 'band',
@@ -48,7 +50,9 @@ test('新信 → 卡片:狀態色、角色圖示、展開、讀了變色、✕ �
   expect(await ui.find({ type: 'Text', text: /新信 1 封/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /● 未讀/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^第二艦長$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Raster' })).toBeDefined()
+  expect(await ui.find({ type: 'Raster' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^👑 $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /席的信/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /…$/ })).toBeDefined()
   await ui.press({ key: 'mail-open-q_9' })
   expect(await ui.find({ type: 'Text', text: /^(機器空了,請跑三包。){30}$/ })).toBeDefined()

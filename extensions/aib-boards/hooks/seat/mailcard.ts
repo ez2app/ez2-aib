@@ -1,5 +1,6 @@
 // 新信卡片(the maintainer 10-14「新信彈窗重做」:狀態色、完整換行、可點開、不自動關;「彈窗要放大皇冠、⚓、👔、🧞 這種角色 icon 當成圖像」
 //   「所有的角色都要有」)。toast 只能一行純文字、幾秒就關 ⇒ 改畫在輸入框上方那一條(AbovePrompt),關掉要人按 ✕。
+//   Andy 10-17:卡片只彈「真人來信」與「加好友」(席與席之間的信照舊進佇列與狀態列,不彈);像素大頭像拿掉,圖示放回標題列。
 //   這裡只放純函式(測試直接載);畫面在 register.tsx。
 
 export type MailStatus = 'unread' | 'read' | 'done' | 'held' | 'archived'
@@ -7,7 +8,11 @@ export type MailCard = { id: string; from: string | null; label: string | null; 
 export type QItem = { id?: string; seat?: string; sender?: string; sender_seat?: string | null; sender_label?: string | null; sender_kind?: string | null
   kind?: string | null; msg?: string | null; ts?: number | null; sent_at?: number | null; read_at?: unknown; done_at?: unknown; held_at?: unknown
   archived_at?: unknown; superseded_by?: unknown; deleted_at?: unknown }
-export type Icon = { w: number; h: number; px: number[][] }
+export type FriendReq = { owner?: string | null; name?: string | null; country?: string | null; note?: string | null; at?: number | null; msgid?: string | null }
+
+// 真人來信:本機真人親打(human)與主人手機(owner_paired);其他(席、系統、bot、全球來信)不彈卡
+export const HUMAN_KINDS: ReadonlySet<string> = new Set(['human', 'owner_paired'])
+export const REQ_PREFIX = 'req:'
 
 // 狀態字走字典 mod.aib_boards.st_*(Claude 面板 seatcore.tsx 與小窗格 tui 同一組鍵);這裡只放鍵與顏色
 export const STATUS: Record<MailStatus, { key: string; color: string }> = {
@@ -21,9 +26,9 @@ export function statusOf(q: QItem): MailStatus {
   return q.read_at ? 'read' : 'unread'
 }
 
-// 信件檔 → 卡片;寄件人是自己(寄給自己的回條)不做卡
+// 信件檔 → 卡片;寄件人是自己(寄給自己的回條)或不是真人 ⇒ 不做卡
 export function cardOf(q: QItem, me: string | null, full?: string | null): MailCard | null {
-  if (!q.id || (me && q.sender_seat === me)) return null
+  if (!q.id || (me && q.sender_seat === me) || !HUMAN_KINDS.has(String(q.sender_kind ?? ''))) return null
   return { id: q.id, from: q.sender_seat ?? null, label: q.sender_label ?? q.sender ?? null, kind: q.sender_kind ?? null,
     at: Number(q.sent_at ?? q.ts ?? 0), text: String(full ?? q.msg ?? ''), status: statusOf(q), open: false }
 }
@@ -36,6 +41,21 @@ export function upsert(cards: MailCard[], c: MailCard, dismissed: ReadonlySet<st
   return [c, ...cards].sort((a, b) => b.at - a.at).slice(0, max)
 }
 
+// 好友申請 → 卡片(kind = 'request');一位主人一張,id = req:<主人 npub>(提示列的同意指令要用)
+export function requestCard(r: FriendReq): MailCard | null {
+  if (!r.owner || !/^npub1[02-9ac-hj-np-z]{58}$/.test(r.owner)) return null
+  return { id: REQ_PREFIX + r.owner, from: null, label: r.name || `${r.owner.slice(0, 9)}…${r.owner.slice(-4)}`, kind: 'request',
+    at: Number(r.at ?? 0), text: String(r.note ?? ''), status: 'unread', open: false }
+}
+
+// 申請清單 → 卡片:已處理(同意 / 拒絕,清單裡沒了)的申請卡拿掉;新的照 upsert 規則加(關過的不再出現)
+export function syncRequests(cards: MailCard[], reqs: FriendReq[], dismissed: ReadonlySet<string>, max = 8): MailCard[] {
+  const fresh = reqs.map(requestCard).filter((c): c is MailCard => !!c), live = new Set(fresh.map(c => c.id))
+  let out = cards.filter(c => c.kind !== 'request' || live.has(c.id))
+  for (const c of fresh) out = upsert(out, c, dismissed, max)
+  return out
+}
+
 // 長訊落檔(「長訊已落檔 … 請讀:<路徑>」)⇒ 回路徑,卡片展開時讀全文
 export function relayPath(msg: string, home: string | null): string | null {
   const m = /請讀[::]\s*(\S+)/.exec(msg)
@@ -46,7 +66,9 @@ export function relayPath(msg: string, home: string | null): string | null {
 // 圖示一律用右欄 AI 清單那一格的(seat-info 讀 ai-rowmap.json 的 mark:👑 / ⚓ / 🤖 / 👔 / 🧞 …,the maintainer 10-14「右邊的 ai 欄早就訂好所有 icon」);
 //   不在右欄的寄件人(真人、系統、別艙)用右欄自己的「未列角色」圖示 👤(pane-right-ai.sh UNLISTED_ROLE_ICON),不另訂
 export const UNLISTED_ICON = '\u{1F464}'
-export function iconOf(c: Pick<MailCard, 'from'>, marks?: Record<string, string> | null): string {
+export const REQUEST_ICON = '\u{1F91D}'   // 🤝 好友申請
+export function iconOf(c: Pick<MailCard, 'from'> & { kind?: string | null }, marks?: Record<string, string> | null): string {
+  if (c.kind === 'request') return REQUEST_ICON
   return (c.from ? marks?.[c.from] : null) || UNLISTED_ICON
 }
 
@@ -64,24 +86,4 @@ export function clip(text: string, width: number, lines: number): { text: string
   const keep = rows.slice(0, lines)
   keep[lines - 1] = keep[lines - 1]!.replace(/.{0,1}$/u, '…')
   return { text: keep.join('\n'), cut: true }
-}
-
-// 像素圖 → Raster 格子:一格上下兩個像素(▀ 前景 = 上、背景 = 下);透明的用終端機預設色。h 是奇數就補一列透明
-const DEFAULT = 0x01000000
-export function rasterCells(icon: Icon, alphaMin = 64): { columns: number; rows: number; cells: string } {
-  const { w, h, px } = icon, rows = Math.ceil(h / 2), words = new Uint32Array(w * rows * 3)
-  const col = (p?: number[]) => (p && p[3]! >= alphaMin ? ((p[0]! << 16) | (p[1]! << 8) | p[2]!) >>> 0 : DEFAULT)
-  for (let r = 0; r < rows; r++) for (let x = 0; x < w; x++) {
-    const top = col(px[(r * 2) * w + x]), bot = col(r * 2 + 1 < h ? px[(r * 2 + 1) * w + x] : undefined), k = (r * w + x) * 3
-    if (top === DEFAULT && bot === DEFAULT) { words[k] = 0x20; words[k + 1] = DEFAULT; words[k + 2] = DEFAULT }
-    else if (top === DEFAULT) { words[k] = 0x2584; words[k + 1] = bot; words[k + 2] = DEFAULT }   // ▄ 只有下半
-    else { words[k] = 0x2580; words[k + 1] = top; words[k + 2] = bot }                           // ▀ 上半前景、下半背景
-  }
-  return { columns: w, rows, cells: b64(new Uint8Array(words.buffer)) }
-}
-function b64(u: Uint8Array): string {
-  const t = u as Uint8Array & { toBase64?: () => string }
-  if (typeof t.toBase64 === 'function') return t.toBase64()
-  let s = ''; for (const b of u) s += String.fromCharCode(b)
-  return btoa(s)
 }
