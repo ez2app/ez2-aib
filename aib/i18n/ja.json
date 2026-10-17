@@ -4626,5 +4626,6 @@
   "aib.vault_cli.doctor_updated_ambiguous": "ほかに {count} 件のノートの updated は日付だけ、または秒とタイムゾーンがありません。変換は推測になるため変更せず、問題にも数えません",
   "aib.vault_cli.help_mkdir": "uid フォルダを追加して登録します(Obsidian の「フォルダを追加」ボタンが使います)",
   "aib.vault_cli.help_mkdir_title": "フォルダのタイトル(表示用。実際のフォルダ名は folderId)",
-  "aib.vault_cli.mkdir_done": "フォルダ「{title}」を追加しました:{path}"
+  "aib.vault_cli.mkdir_done": "フォルダ「{title}」を追加しました:{path}",
+  "aib.init.statusline_warn": "ステータスラインの自動更新が完了しませんでした(rc {rc})。ほかの設定には影響しません。あとで {tool} を自分で実行できます。"
 }

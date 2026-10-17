@@ -4626,5 +4626,6 @@
   "aib.vault_cli.doctor_updated_ambiguous": "另有 {count} 篇的 updated 只有日期、或沒有秒與時區,換算要猜,沒改也不算問題(要統一請另外決定)",
   "aib.vault_cli.help_mkdir": "新增 uid 資料夾並登記(Obsidian 的「新增資料夾」按鈕用這個)",
   "aib.vault_cli.help_mkdir_title": "資料夾標題(顯示用;實際資料夾名是 folderId)",
-  "aib.vault_cli.mkdir_done": "已新增資料夾「{title}」:{path}"
+  "aib.vault_cli.mkdir_done": "已新增資料夾「{title}」:{path}",
+  "aib.init.statusline_warn": "狀態列自動更新沒跑完(rc {rc}),不影響其他設定;之後可以自己跑 {tool}"
 }

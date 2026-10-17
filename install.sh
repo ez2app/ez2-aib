@@ -812,6 +812,16 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
         for _adh in "$DIR/aib/src/identity/auto_distill_hook.py" "$DIR/src/identity/auto_distill_hook.py"; do
           if [ -f "$_adh" ]; then python3 "$_adh" ensure-all </dev/null || true; break; fi
         done
+        # 10-17(the maintainer「以後都應該自動更新」):狀態列腳本跟著換新 —— 只換 aib 裝的舊版、你改過的不動(印一行手動換法)、
+        #   先備份、沒在用的那家不建;AIB_STATUSLINE_AUTO=0 全關。失敗只記一筆,不擋安裝 / 升級。
+        for _sli in "$DIR/aib/tools/statusline-install.sh" "$DIR/tools/statusline-install.sh"; do
+          if [ -f "$_sli" ]; then
+            local sl_out
+            if sl_out="$(bash "$_sli" --auto </dev/null 2>&1)"; then [ -z "$sl_out" ] || say "$sl_out"
+            else [ -z "$sl_out" ] || say "$sl_out"; note+=("狀態列沒自動換成:之後可以自己跑 bash $_sli"); fi
+            break
+          fi
+        done
         if (cd "$DIR" && "$abin" init >/dev/null 2>&1); then say "✓ aib 狀態目錄就緒(~/.ez2-aib)"
         else note+=("aib init 沒跑成:開第一席前請自己跑一次 aib init"); fi
         # 10-15(the maintainer「裝上並在下一版自動安裝」):附帶的免費、已簽章 mod(extensions/)裝好並登記到 Claude Code;
