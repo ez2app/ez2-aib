@@ -4606,6 +4606,8 @@
   "aib.chat.help.send": "함장실 페이지에서 본인으로 보내기(PIN과 본문은 stdin)",
   "aib.chat.send_usage": "사용법: aib chat send <전역 주소> --as-human --cabin <함> [--json]; stdin에 pin과 text가 있는 JSON 한 줄. 석에서는 aib dm",
   "aib.chat.send_why_no_pin": "보내지 않음: 함장실에 PIN이 없습니다(본인으로 보내려면 증명 필요). 터미널에서 aib room set-pin",
+  "aib.chat.send_touchid_reason": "aib: 본인으로 {who}에게 온라인 메시지 보내기: \"{text}\"",
+  "aib.chat.send_why_touchid": "보내지 않음: Touch ID 통과 실패({why}). 다시 보내고 지문이나 로그인 암호로 확인하세요",
   "aib.chat.send_why_pin_too_short": "보내지 않음: PIN은 6자리 이상이어야 합니다. aib room set-pin으로 더 긴 것으로 바꾸세요",
   "aib.chat.send_why_pin_not_hashed": "보내지 않음: 함장실 PIN이 해시로 저장되어 있지 않습니다(구버전). aib room set-pin으로 한 번 다시 설정하세요",
   "aib.chat.send_why_bad_pin": "보내지 않음: PIN이 틀렸습니다",

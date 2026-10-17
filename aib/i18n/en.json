@@ -4606,6 +4606,8 @@
   "aib.chat.help.send": "Send an online message as the human from the captain room (PIN and text on stdin)",
   "aib.chat.send_usage": "Usage: aib chat send <global address> --as-human --cabin <cabin> [--json]; stdin one JSON line with pin and text. Seats send with aib dm",
   "aib.chat.send_why_no_pin": "Not sent: the captain room has no PIN yet (sending as the human needs proof). Run aib room set-pin in a terminal",
+  "aib.chat.send_touchid_reason": "aib: send an online message as you to {who}: \"{text}\"",
+  "aib.chat.send_why_touchid": "Not sent: Touch ID did not pass ({why}); send again and confirm with your fingerprint or login password",
   "aib.chat.send_why_pin_too_short": "Not sent: the PIN must be at least 6 digits; set a longer one with aib room set-pin",
   "aib.chat.send_why_pin_not_hashed": "Not sent: the captain-room PIN is not stored hashed (old version); reset it once with aib room set-pin",
   "aib.chat.send_why_bad_pin": "Not sent: wrong PIN",
