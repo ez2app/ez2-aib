@@ -156,12 +156,13 @@ ATTR_ICONS = {"persona": "\U0001f3ad", "brain": "\U0001f9e0"}   # 🎭 / 🧠
 #   兩處分岔時紅。[解綁] 字面退役(AR-3 第 3 條):人格行 [解人格]、專案行 [換專案]。
 # ★ R16(the maintainer 2026-09-26 裁):畫面用字「人格(第一大腦)」「專案(第二大腦)」;括號版只出現在
 #   選單標題與開席第一次說明(i18n aib.bindmenu.* / aib.onboard.brain_intro),右欄這五個字面用短字。
+# ★ 10-17 the maintainer 裁:大腦行按鈕改「換第二大腦(專案)」「綁第二大腦(專案)」(標題讓位、按鈕留著)。
 #   識別字不動:本表的鍵、ATTR_ICONS 的 "brain"、路由 core.* 全部照舊 —— 改的只有看得見的字。
 DEFAULT_LABELS = {
     "persona_unbind": "解人格",
     "persona_bind": "綁人格",
-    "brain_change": "換專案",
-    "brain_bind": "綁專案",
+    "brain_change": "換第二大腦(專案)",
+    "brain_bind": "綁第二大腦(專案)",
     "unbound": "未綁",
 }
 _AGY_GRADIENT = (((66, 133, 244), 69),     # A=#4285F4 藍
@@ -4190,8 +4191,11 @@ def render_ai_list_with_map(data, width=DEFAULT_PANE_W - 1):
                     #   截成 `[解人…`,入口跟著消失(09-02 三案例實渲染看到)。
                     _body = _txt[:-len(_tok)].rstrip()
                     _txt = "%s %s" % (trunc(_body, max(1, _avail - visible_width(_tok) - 1)), _tok)
+                    if visible_width(_txt) > _avail and visible_width(_tok) <= _avail:
+                        # 10-17 [換第二大腦(專案)] 18 格:預設寬下連一個字的名字都擠不下 ⇒ 名字整個讓位,只留入口
+                        _txt = _tok
                     if visible_width(_txt) > _avail:
-                        # 連「一個字的名字 + 字面」都放不下:回到尾端截,入口誠實消失
+                        # 連字面本身都放不下:回到尾端截,入口誠實消失
                         # (span 由下面 _tail_span 從**同一行**算,不會指到被檔尾截寬吃掉的位置)。
                         _txt = trunc(_txt, _avail)
             _line = _pre + _txt
