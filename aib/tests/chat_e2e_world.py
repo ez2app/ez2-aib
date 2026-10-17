@@ -81,7 +81,17 @@ def serve_hub(d, port):
                                                   "pid": os.getpid()}), encoding="utf-8")
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    last = 0.0
     while not stop.is_set():
+        if time.time() - last >= 60:          # 模擬真艙的狀態列定時重畫:每分鐘替每位假主人的席跳一次心跳
+            last = time.time()
+            for beat in Path(d).glob("*/home/.ez2-aib/state/seat-now/*.beat"):
+                try:
+                    rec = json.loads(beat.read_text(encoding="utf-8"))
+                    rec["at"] = int(time.time())
+                    beat.write_text(json.dumps(rec), encoding="utf-8")
+                except (OSError, ValueError):
+                    pass
         stop.wait(1)
     relay.stop()
     site.shutdown()
@@ -275,9 +285,9 @@ def up(d, venv, out=sys.stdout):
         "v": 1, "name": "Bob 港", "size": {"w": 24, "h": 16}, "age": 2, "res": {"wood": 30, "stone": 12},
         "owner": {"name": "Bob", "avatar": {"emoji": "🧔", "bg": "#2a6"}},
         "buildings": [{"cabin": bob.cab, "x": 6, "y": 5, "style": "港口木造", "kind": "hall", "lv": 2},
-                      {"cabin": bob.cab, "x": 12, "y": 8, "kind": "dock", "lv": 1, "building": {"start": 1792200000, "done": 1792286400}},
+                      {"cabin": bob.cab, "x": 18, "y": 8, "kind": "dock", "lv": 1, "building": {"start": 1792200000, "done": 1792286400}},
                       {"cabin": bob.cab, "x": 99, "y": 99, "kind": "far"}],
-        "decor": [{"kind": "tree", "x": 1, "y": 1}], "terrain": {"sea": "east"}, "ip": "192.168.1.9"}, ensure_ascii=False),
+        "decor": [{"kind": "tree", "x": 1, "y": 1}], "terrain": {"sea": "east", "seed": 4217}, "ip": "192.168.1.9"}, ensure_ascii=False),
         encoding="utf-8")
     (bob.chat / "room.json").write_text(json.dumps({            # 艦長室寫的房間資料(故意夾禁止欄位測過濾)
         "v": 1, "ship": {"name": "Bob 商會號", "sign": "BOB TRADING", "line": "歡迎來談合作", "ip": "192.168.1.9"},
