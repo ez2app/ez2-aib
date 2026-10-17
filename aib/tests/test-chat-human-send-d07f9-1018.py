@@ -12,7 +12,11 @@ H4 契約:outbox 的 author 只收 human / ai_draft / ai_auto;工人送出時 ru
 H5 Mac(Touch ID 可用):彈視窗、PIN 不看;沒過 ⇒ 不寫;視窗文字核心組(收件人 + 內文前段、去控制字元);整台一次一窗(busy);
    AIB_TOUCHID=0 只關不開
 H6 併發猜 PIN:8 個同時 ⇒ 剛好 5 次算錯、其餘被鎖(讀-判-寫上鎖)
-刀(複本):K1 不驗 PIN ⇒ H3 紅;K2 拿掉遞增(固定 30 秒)⇒ H1 紅;K3 Touch ID 沒過也放行 ⇒ H5 紅
+H7 Mac 只准 Touch ID(@abb89 10-18 07:28):AIB_TOUCHID=0 ⇒ touchid_off、Touch ID 叫不出來 ⇒ touchid_unavailable,
+   都不退 PIN(PIN 對也不寄、錯的也不記次數);真的在 Mac 上跑時指令那條也一樣
+   (H1 / H3 / H6 走 PIN 的格子假裝在非 Mac:指令用 sys.platform = linux 的包裝跑,只在測試裡)
+刀(複本):K1 不驗 PIN ⇒ H3 紅;K2 拿掉遞增(固定 30 秒)⇒ H1 紅;K3 Touch ID 沒過也放行 ⇒ H5 紅;
+   K4 Mac 上 Touch ID 不能用就退回 PIN(舊寫法)⇒ H7 紅
 """
 import hashlib
 import importlib.util
@@ -25,6 +29,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
+# 走 PIN 的格子假裝在非 Mac 跑(只在測試;真的指令不讀任何環境變數決定平台)
+NOT_MAC = [sys.executable, "-c", "import sys, runpy; sys.platform = 'linux'; sys.argv = sys.argv[1:]; "
+           "runpy.run_path(sys.argv[0], run_name='__main__')"]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO / "src" / "cockpit"))
 from aib_knife_copy import knife_copy  # noqa: E402
@@ -72,7 +79,7 @@ class Human(unittest.TestCase):
         p.write_text(json.dumps({"pin": stored}))
 
     def send(self, pin, text="你好", to=TO, *extra):
-        r = subprocess.run([sys.executable, str(SB.BRIDGE), "send", to, "--json", *extra], input=json.dumps({"pin": pin, "text": text}) + "\n",
+        r = subprocess.run(NOT_MAC + [str(SB.BRIDGE), "send", to, "--json", *extra], input=json.dumps({"pin": pin, "text": text}) + "\n",
                            capture_output=True, text=True, env=self.env, timeout=60)
         return r.returncode, (json.loads(r.stdout) if r.stdout.strip().startswith("{") else r.stdout)
 
@@ -140,7 +147,7 @@ class Human(unittest.TestCase):
         self.assertEqual((rc, out["stage"], out["seat"]), (2, "bridge-off", self.cap), "轉接程式沒開 ⇒ 不寫")
         GF.write_heartbeat(b.root)
         self.env["AIB_DM_GLOBAL_WAIT"] = "0"
-        proc = subprocess.Popen([sys.executable, str(SB.BRIDGE), "send", TO, "--as-human", "--cabin", "6ddf", "--json"],
+        proc = subprocess.Popen(NOT_MAC + [str(SB.BRIDGE), "send", TO, "--as-human", "--cabin", "6ddf", "--json"],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=dict(self.env, AIB_DM_GLOBAL_WAIT="3"))
         proc.stdin.write(json.dumps({"pin": "123456", "text": "Andy 本人寄的"}) + "\n")
         proc.stdin.close()
@@ -166,14 +173,15 @@ class Human(unittest.TestCase):
                 asked.append(reason)
                 return {"ok": ok, "why": why}
             return _ask
-        env = dict(self.env, AIB_DM_GLOBAL_WAIT="0")
-        res = CH.send(TO, "取消的那封", "", "6ddf", env, touchid=fake(False, "cancel"), touchid_available=lambda: True)
+        env = {k: v for k, v in self.env.items() if k != "AIB_TOUCHID"}
+        env["AIB_DM_GLOBAL_WAIT"] = "0"
+        res = CH.send(TO, "取消的那封", "", "6ddf", env, touchid=fake(False, "cancel"), touchid_available=lambda: True, platform="darwin")
         self.assertEqual((res["via"], res["why"], res["rc"]), ("touchid", "touchid_cancel", 2))
         self.assertEqual(self.outbox(), [], "Touch ID 沒過 ⇒ 一個字都不寫")
         self.assertIn("Mac mini M4", asked[-1])
         self.assertIn("取消的那封", asked[-1], "視窗文字由核心組:收件人 + 內文")
         long = "很長的內文" * 20 + "\u202e藏起來"
-        res = CH.send(TO, long, "", "6ddf", env, touchid=fake(True), touchid_available=lambda: True)
+        res = CH.send(TO, long, "", "6ddf", env, touchid=fake(True), touchid_available=lambda: True, platform="darwin")
         self.assertEqual((res["via"], res["why"], res["seat"]), ("touchid", None, self.cap), "PIN 空的也照過:Mac 不看 PIN")
         self.assertNotIn("\u202e", asked[-1], "方向控制字元要拿掉")
         self.assertLess(len(asked[-1]), 120, "內文截短")
@@ -182,10 +190,36 @@ class Human(unittest.TestCase):
         import fcntl
         with open(lock, "a") as other:
             fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)        # 別席正在等指紋
-            res = CH.send(TO, "疊視窗", "", "6ddf", env, touchid=fake(True), touchid_available=lambda: True)
+            res = CH.send(TO, "疊視窗", "", "6ddf", env, touchid=fake(True), touchid_available=lambda: True, platform="darwin")
         self.assertEqual(res["why"], "touchid_busy", "整台一次一窗")
         import touchid_approve as TA
-        self.assertFalse(TA.available(environ={"AIB_TOUCHID": "0"}), "AIB_TOUCHID=0 只會關掉,退回 PIN")
+        self.assertFalse(TA.available(environ={"AIB_TOUCHID": "0"}), "AIB_TOUCHID=0 只會關掉")
+
+    def test_h7_mac_touchid_only(self):
+        self.b.cli("publish", self.cap)
+        GF.write_heartbeat(self.b.root)
+        self.set_pin(pin_hash("123456"))
+        env = dict(self.env, AIB_DM_GLOBAL_WAIT="0")
+        never = lambda reason: self.fail("Touch ID 關掉了還彈視窗")      # noqa: E731
+        for pin in ("123456", "000000"):
+            res = CH.send(TO, "你好", pin, "6ddf", env, touchid=never, touchid_available=lambda: True, platform="darwin")
+            self.assertEqual((res["via"], res["why"], res["rc"]), ("touchid", "touchid_off", 2), "AIB_TOUCHID=0 ⇒ 拒、不退 PIN")
+        env_on = {k: v for k, v in env.items() if k != "AIB_TOUCHID"}
+        res = CH.send(TO, "你好", "123456", "6ddf", env_on, touchid=never, touchid_available=lambda: False, platform="darwin")
+        self.assertEqual((res["via"], res["why"]), ("touchid", "touchid_unavailable"), "Touch ID 叫不出來 ⇒ 拒、不退 PIN")
+        self.assertEqual(self.outbox(), [], "PIN 對也不准寄")
+        self.assertFalse(CH._fails_path(self.env).exists(), "Mac 上 PIN 根本不看(錯的也不記次數)")
+        if sys.platform == "darwin":
+            r = subprocess.run([sys.executable, str(SB.BRIDGE), "send", TO, "--as-human", "--cabin", "6ddf", "--json"],
+                               input=json.dumps({"pin": "123456", "text": "你好"}) + "\n", capture_output=True, text=True,
+                               env=env, timeout=60)
+            out = json.loads(r.stdout)
+            self.assertEqual((r.returncode, out["via"], out["why"]), (2, "touchid", "touchid_off"), "真的 Mac 上指令也一樣")
+            r = subprocess.run([sys.executable, str(SB.BRIDGE), "send", TO, "--as-human", "--cabin", "6ddf"],
+                               input=json.dumps({"pin": "123456", "text": "你好"}) + "\n", capture_output=True, text=True,
+                               env=env, timeout=60)
+            self.assertIn("AIB_TOUCHID=0", r.stdout)
+            self.assertEqual(self.outbox(), [])
 
     def test_h6_concurrent_guesses(self):
         self.set_pin(pin_hash("123456"))
@@ -233,6 +267,17 @@ class Knife(unittest.TestCase):
                         '        return "touchid", None if res.get("ok") is True else "touchid_" + str(res.get("why") or "failed").split(":")[0]\n',
                         '        return "touchid", None\n', tests=(name, "test-chat-send-d07f9-1016.py")) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "Human.test_h5_touchid"], cwd=str(root), max_procs=120, timeout=400)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+    def test_k4_mac_falls_back_to_pin(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_human.py", '    if platform == "darwin":\n',
+                        '    if platform == "darwin" and str(env.get("AIB_TOUCHID", "")).strip() != "0" and '
+                        '(touchid_available() if touchid_available else TA.available(platform=platform, environ=env)):\n',
+                        tests=(name, "test-chat-send-d07f9-1016.py")) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Human.test_h7_mac_touchid_only"], cwd=str(root),
+                            max_procs=120, timeout=400)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 

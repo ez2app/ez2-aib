@@ -6,7 +6,8 @@
 - 網頁伺服器跟 AI 席是同一個使用者跑的程式:光帶「我是真人」任何席都能照抄 ⇒ 核心自己要本人證明。
 - **Mac 一律走 Touch ID**(維護者 10-18 03:1x 裁):每次寄都彈 Touch ID / 登入密碼視窗(touchid_approve),
   視窗文字只由核心組「代你寄給 <對象>:<內文前 40 字>」、nonce、整台一次一窗;AI 按不到。
-  AIB_TOUCHID=0 只會關掉這條路(退回 PIN),沒有任何打開或略過的開關。
+  Mac 上 Touch ID 不能用(AIB_TOUCHID=0、沒有 osascript)⇒ 一律拒(touchid_off / touchid_unavailable),**不退 PIN**
+  (@abb89 10-18 07:28:不然 AI 席自己設 AIB_TOUCHID=0 就繞過 Touch ID 改猜 PIN);沒有任何打開或略過的開關。
 - **非 Mac 才退回 PIN**:PIN 只防誤操作,擋不住同一使用者的程式(讀得到艦長室的 PIN 雜湊可離線猜,也刪得掉錯誤計數檔)。
   PIN 只從 stdin 進來(不放參數 / 環境變數,ps 看得到);讀-判-寫整段在 fcntl 鎖底下(併發猜不會繞過遞增鎖)。
 - 用這一艙的艦長席簽(role 開頭 root、有席金鑰、在名冊公開);沒有就用這一艙第一個公開席。
@@ -146,11 +147,17 @@ def touchid_reason(to, text, env):
                       locale=i18n_lib.resolve_locale())
 
 
-def prove_human(to, text, pin, env, touchid=None, touchid_available=None):
-    """本人證明:Mac(Touch ID 可用)⇒ 彈視窗,PIN 不看;否則 PIN。回 (via, why);why None = 過。"""
+def prove_human(to, text, pin, env, touchid=None, touchid_available=None, platform=None):
+    """本人證明:Mac ⇒ 只准 Touch ID(彈視窗,PIN 不看;不能用就拒、不退 PIN);非 Mac ⇒ PIN。
+    回 (via, why);why None = 過。platform 只給測試換掉(真用時就是 sys.platform,不讀環境變數)。"""
     import touchid_approve as TA
-    can = touchid_available() if touchid_available else TA.available(environ=env)
-    if can:
+    platform = sys.platform if platform is None else platform
+    if platform == "darwin":
+        if str(env.get("AIB_TOUCHID", "")).strip() == "0":
+            return "touchid", "touchid_off"
+        can = touchid_available() if touchid_available else TA.available(platform=platform, environ=env)
+        if not can:
+            return "touchid", "touchid_unavailable"
         root = _state_root(env)
         with TA.one_at_a_time(root / "locks" / "touchid-approve.lock") as gate:
             res = (touchid or TA.ask)(touchid_reason(to, text, env)) if gate.held else {"ok": False, "why": "busy"}
@@ -158,9 +165,9 @@ def prove_human(to, text, pin, env, touchid=None, touchid_available=None):
     return "pin", check_pin(pin, env)
 
 
-def send(to, text, pin, cabin, env=None, wait=None, touchid=None, touchid_available=None):
+def send(to, text, pin, cabin, env=None, wait=None, touchid=None, touchid_available=None, platform=None):
     """回 {rc, stage, msgid, seat, via, why, detail};rc 同 aib dm(0 到 / 2 沒送出 / 3 對方待審 / 4 交出不知道到沒)。
-    touchid / touchid_available 只給測試換掉(真用時就是 touchid_approve 那一套)。"""
+    touchid / touchid_available / platform 只給測試換掉(真用時就是 touchid_approve 那一套)。"""
     import dm_global_files as GF
     env = dict(os.environ if env is None else env)
     out = {"v": 1, "rc": 2, "stage": "abort", "msgid": None, "seat": None, "via": None, "why": None, "detail": ""}
@@ -174,7 +181,7 @@ def send(to, text, pin, cabin, env=None, wait=None, touchid=None, touchid_availa
     if not seat:
         out["why"] = "no_public_seat"
         return out
-    out["via"], why = prove_human(to, text, pin, env, touchid, touchid_available)
+    out["via"], why = prove_human(to, text, pin, env, touchid, touchid_available, platform)
     if why:
         out["why"] = why
         return out
