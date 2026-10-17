@@ -2016,7 +2016,7 @@
   "aib.now.idle_text": "等待指派新工作",
   "aib.now.unreported_text": "尚未回報主項目",
   "aib.now.unknown_time": "不明",
-  "aib.now.updated": "更新時間：{when}",
+  "aib.now.updated": "更新：{when}",
   "aib.now.started": "啟動時間：{when}",
   "aib.now.updated_short": "更新 {when}",
   "aib.now.started_short": "啟動 {when}",

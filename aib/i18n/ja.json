@@ -2016,7 +2016,7 @@
   "aib.now.idle_text": "新しい作業の指示待ち",
   "aib.now.unreported_text": "主項目がまだ報告されていません",
   "aib.now.unknown_time": "不明",
-  "aib.now.updated": "更新時刻：{when}",
+  "aib.now.updated": "更新：{when}",
   "aib.now.started": "開始時刻：{when}",
   "aib.now.updated_short": "更新 {when}",
   "aib.now.started_short": "開始 {when}",
