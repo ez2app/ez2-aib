@@ -905,9 +905,10 @@ def render_frontmatter(old_fm: str | None, fm_set: dict, folder_id: str, duplica
     lines = ["---",
              "uid: %s" % uid_yaml(fm_set["uid"]),
              "aliases: %s" % yaml_list(fm_set["aliases"]),
-             "title: %s" % yaml_str(fm_set["title"]),
-             "orig_name: %s" % yaml_str(fm_set["orig_name"]),
-             "uid_scheme: %s" % fm_set["uid_scheme"],
+             "title: %s" % yaml_str(fm_set["title"])]
+    if fm_set.get("orig_name"):                 # 10-17:新筆記沒有「原名」(以前 newpost 寫 <uid>.md,沒意義)⇒ 不寫這欄
+        lines.append("orig_name: %s" % yaml_str(fm_set["orig_name"]))
+    lines += ["uid_scheme: %s" % fm_set["uid_scheme"],
              "routeKey: %s" % fm_set["routeKey"],
              "category_uid: %s" % fm_set["category_uid"],
              "folder_id: %s" % folder_id,

@@ -3,7 +3,7 @@
 
 V1 沒授權 ⇒ 結束碼 3、什麼都不寫(子行程,暫存 HOME 沒有授權檔)
 V2 newpost:收件匣 / 指定資料夾、uid 檔名與 frontmatter、routeKey 照最近的路由祖先、uid-index 與 labels 登記、
-   verify 綠;同一毫秒連發兩篇不撞號;資料夾不存在 ⇒ 錯
+   verify 綠;同一毫秒連發兩篇不撞號;資料夾不存在 ⇒ 錯;新筆記沒有 orig_name 欄(10-17:以前寫 <uid>.md,沒意義)
 V3 doctor 預設只列不改(整個暫存目錄位元組不變)
 V4 doctor --fix:手建資料夾改 folderId 並登記(標題 = 原名)、手建筆記補 uid 改名、[[原名]] 連結改成 [[uid|原名]]、
    檔名是 uid 但缺 frontmatter uid ⇒ 補、索引裡已不在的資料夾 ⇒ 拿掉;先打包到庫外;修完 verify 綠
@@ -12,7 +12,8 @@ V6 uid 重複只列不修、ok = False
 V7 updated「本機時間 + 空格」⇒ 列出、照本機時區換成 ISO(台北 00:12:16 ⇒ 前一天 16:12:16.000Z);只有日期 / 沒秒沒時區 ⇒
    只在 notices 列、不算問題;預設不改
 V8 --fix 只改 updated 那一行(正文、其他欄位、只有日期的那篇位元組不變)、先打包、verify 綠、再跑 ok
-刀(複本,走 run_guarded):X1 換算不照時區 ⇒ V7 紅;X2 換行時把 updated 後面的欄位丟掉 ⇒ V8 紅
+刀(複本,走 run_guarded):X1 換算不照時區 ⇒ V7 紅;X2 換行時把 updated 後面的欄位丟掉 ⇒ V8 紅;
+   X3 newpost 又寫 <uid>.md 當原名 ⇒ V2 紅
 I1 新鍵四語都有、英文值沒有中日韓字、佔位符一致
 """
 import contextlib
@@ -120,6 +121,7 @@ class TestNewpost(Base):
         for line in ("uid: %s" % a["uid"], 'title: "第一篇 筆記"', "routeKey: core.inbox", "folder_id: %s" % INBOX,
                      "category_uid: cat_core_inbox", "ez2fmt: 2"):
             self.assertIn(line, text)
+        self.assertNotIn("orig_name", text)
         self.assertEqual(b["title"], "Untitled" if U.LOC == "en" else b["title"])
         c = VC.newpost(self.v, "交接", folder=ROUTE, body="內容", now_ms=1792123457000)
         self.assertIn("routeKey: core.handoff", (self.v / c["path"]).read_text(encoding="utf-8"))
@@ -176,6 +178,7 @@ class TestDoctor(Base):
         self.assertIn("[[會議]]", board)                                         # 不同名的不動
         mt = (self.v / meet["new_path"]).read_text(encoding="utf-8")
         self.assertIn('title: "會議記錄"', mt)
+        self.assertIn('orig_name: "會議記錄.md"', mt)                              # 手建筆記的原名照留
         self.assertIn("週一會議", mt)
         self.assertRegex(mt, r"tags: \[.*會議.*\]")
         un = next(f for f in res["fixed"] if f["kind"] == "note" and f["path"].endswith("未命名.md"))
@@ -265,6 +268,10 @@ class Knife(unittest.TestCase):
     def test_X1_ignores_timezone(self):
         self._knife("int(time.mktime(time.strptime(", "int(__import__('calendar').timegm(time.strptime(",
                     "TestUpdated.test_V7_report")
+
+    def test_X3_newpost_writes_orig_name(self):
+        self._knife('_fm_set(uid, title, frec["folderId"], by_id, ms, "")', '_fm_set(uid, title, frec["folderId"], by_id, ms, uid + ".md")',
+                    "TestNewpost.test_V2_newpost")
 
     def test_X2_drops_following_fields(self):
         self._knife('"updated: " + entry["new"] + fm[m.end():]', '"updated: " + entry["new"]',
