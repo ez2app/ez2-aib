@@ -132,7 +132,7 @@ aib handoff status                                 # 這一席這一輪寫過交
 - **人格檔:**一定要有這三個標題(照寫),底下都要有內容:`## 職責`、`## 紅線`、`## 知識域`。少了 `aib newrole` 會拒絕(`PERSONA_LINT_FAIL`)。
 - **`--actor`:**你自己的帳本署名,`<角色>@<你的席碼>/<AI>`,例如 `root@54321/Claude`(或設 `EZ2_OWNER_SIG`)。要綁席才需要:給了 `--seat` 卻沒給 `--actor`,`newrole` 照樣建卡,但不綁席。沒給 `--seat` 時 `newrole` / `newproj` 只建卡。
 - **先試跑:**`newrole`、`newproj`、`dm` 加 `--dry-run`,只看會發生什麼,不寫檔、不寄出。
-- **新專案:**目標與紅線一開始是初稿,你核准後才生效;目前還沒有核准用的指令。
+- **新專案:**目標與紅線一開始是初稿,你核准後才生效:跑 `aib newproj --approve <專案 uid>`(在終端機再打一次 uid;macOS 上由 AI 席代跑時會跳 Touch ID 視窗，只有你按得過)。
 - **傳訊:**對方輸入框裡有還沒送出的字,`aib dm` 不會蓋過去一起送出:約 30 秒後自動重送一次,再不行就把訊息留給你處理。
 - **交接:**對話接近 85% 或 `/clear` 之前,三步:`aib handoff collect` → `write` → `verify`。
 
