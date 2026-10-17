@@ -4576,5 +4576,21 @@
   "aib.vault_cli.doctor_ok": "the vault follows the uid layout; nothing to fix",
   "aib.vault_cli.doctor_found": "parts of the vault break the uid layout:",
   "aib.vault_cli.doctor_backup": "files were packed before changing: {path}",
-  "aib.vault_cli.doctor_hint_fix": "to repair, add --fix --backup-dir <folder outside the vault>"
+  "aib.vault_cli.doctor_hint_fix": "to repair, add --fix --backup-dir <folder outside the vault>",
+  "aib.chat.room_none": "No captain room to show (they have not shared room space with you, or are not a friend)",
+  "aib.chat.room_head": "🚢 {name} \"{sign}\" — {line}",
+  "aib.chat.room_seat": "  {emoji} @{seat} {name} ({role}, {floor})  {now}",
+  "aib.chat.help.room": "walk into a friend's captain room (only if they share their room with you)",
+  "aib.chat.island_none": "No island to show (not a friend, or they turned space sharing off)",
+  "aib.chat.island_head": "🏝️ {name} (owner {owner}, {w}×{h} tiles, {n} building(s))",
+  "aib.chat.island_person": "  {emoji} @{seat} {name}  {state}",
+  "aib.chat.space_need_level": "Give a level: none / island / room",
+  "aib.chat.space_set": "Space sharing set: {owner} ⇒ {level} (nothing is sent unless they are a friend or one of your machines)",
+  "aib.chat.space_default": "Default space sharing: {level}",
+  "aib.chat.space_none": "no space shared",
+  "aib.chat.space_island": "island (outdoors)",
+  "aib.chat.space_room": "island + captain room interiors",
+  "aib.chat.profile_bad_space": "Space sharing must be none / island / room (room is per person only, not a default)",
+  "aib.chat.help.island": "visit a friend's island (outdoors: terrain, buildings, people walking around)",
+  "aib.chat.help.space": "who sees your space and how much (none / island / room; --default sets the default)"
 }

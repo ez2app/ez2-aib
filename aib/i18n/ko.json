@@ -4576,5 +4576,21 @@
   "aib.vault_cli.doctor_ok": "Vault 가 uid 형식을 따르며 고칠 것이 없습니다",
   "aib.vault_cli.doctor_found": "uid 형식에 맞지 않는 부분이 있습니다:",
   "aib.vault_cli.doctor_backup": "바꾸기 전 파일을 묶어 두었습니다: {path}",
-  "aib.vault_cli.doctor_hint_fix": "고치려면 --fix --backup-dir <Vault 밖 폴더> 를 붙이세요"
+  "aib.vault_cli.doctor_hint_fix": "고치려면 --fix --backup-dir <Vault 밖 폴더> 를 붙이세요",
+  "aib.chat.room_none": "볼 수 있는 함장실이 없습니다(상대가 room 공간 공유를 안 했거나 친구가 아님)",
+  "aib.chat.room_head": "🚢 {name} \"{sign}\" — {line}",
+  "aib.chat.room_seat": "  {emoji} @{seat} {name}({role}, {floor})  {now}",
+  "aib.chat.help.room": "친구의 함장실 들어가기(상대가 room 공유를 했을 때만)",
+  "aib.chat.island_none": "볼 수 있는 섬이 없습니다(친구가 아니거나 공간 공유를 꺼 둠)",
+  "aib.chat.island_head": "🏝️ {name}(섬 주인 {owner}, {w}×{h}칸, 건물 {n}동)",
+  "aib.chat.island_person": "  {emoji} @{seat} {name}  {state}",
+  "aib.chat.space_need_level": "단계를 지정: none / island / room",
+  "aib.chat.space_set": "공간 공유 설정: {owner} ⇒ {level}(친구 / 내 기기가 아니면 보내지 않음)",
+  "aib.chat.space_default": "기본 공간 공유: {level}",
+  "aib.chat.space_none": "공간 공유 안 함",
+  "aib.chat.space_island": "섬(야외)",
+  "aib.chat.space_room": "섬 + 함장실 내부",
+  "aib.chat.profile_bad_space": "공간 공유는 none / island / room(room은 개별로만, 기본값 불가)",
+  "aib.chat.help.island": "친구의 섬 방문(야외: 지형, 건물 외관, 돌아다니는 사람)",
+  "aib.chat.help.space": "공간을 누구에게 얼마나 공유할지(none / island / room, --default로 기본값)"
 }
