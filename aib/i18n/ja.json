@@ -3285,7 +3285,7 @@
   "aib.memory.help.about": "このメモが関係する ID(席・人格・プロジェクト)、カンマ区切り",
   "aib.memory.help.seat": "席コード(既定:この席)",
   "aib.memory.help.project": "プロジェクト ID(proj:…)",
-  "aib.memory.help.route": "セカンドブレインのどこに置くか(既定:core.handoff)",
+  "aib.memory.help.route": "第二の脳のどこに置くか(省略 = この席のプロジェクトカード / バインドのルート。なければ、または書けなければ core.handoff)",
   "aib.memory.help.dry_run": "書き込む内容を表示するだけで、何も書きません",
   "aib.memory.help.json": "JSON で出力",
   "aib.memory.help.only_kind": "この種類だけ",

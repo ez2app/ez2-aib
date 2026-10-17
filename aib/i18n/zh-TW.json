@@ -3285,7 +3285,7 @@
   "aib.memory.help.about": "這則筆記相關的 id(席位、人格或專案),逗號分隔",
   "aib.memory.help.seat": "席碼(預設:這一席)",
   "aib.memory.help.project": "專案 id(proj:…)",
-  "aib.memory.help.route": "放到第二大腦的哪裡(預設:core.handoff)",
+  "aib.memory.help.route": "放到第二大腦的哪裡(不給 = 這一席專案卡 / 綁定的路由;都沒有或寫不進去才 core.handoff)",
   "aib.memory.help.dry_run": "只顯示會寫什麼,不真的寫",
   "aib.memory.help.json": "印 JSON",
   "aib.memory.help.only_kind": "只看這個種類",
