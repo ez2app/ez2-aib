@@ -268,6 +268,7 @@ async def resolve(addr, relays, root=None):
                    seat=s, envelope=env, roster_at=at, device=cab.get("device"),
                    socials=rec.get("socials") or [], nip05=rec.get("nip05"),
                    aib=cab.get("aib_version") or rec.get("aib_version"))   # 第 37.5 節:席所在那台的版本
+        out["roster_seats"] = _roster_seats(rec)
     flt2 = N.Filter().author(N.PublicKey.parse(seat_npub)).kind(N.Kind(CR.KIND_DM_RELAYS))
     try:
         rel_ev = await _fetch_latest(look_in, flt2)
@@ -806,10 +807,33 @@ def _claims(res):
     out = {"nip05": (res or {}).get("nip05")}          # 社群不在名冊上(只給好友,走 card)
     if (res or {}).get("aib"):
         out["aib"] = res["aib"]                          # 第 37.5 節:對方版本(名冊上的 aib_version)
+    if isinstance((res or {}).get("roster_seats"), list) and (res or {}).get("roster_at"):
+        out["roster_seats"] = res["roster_seats"]         # 名冊目前公開的席(較新的名冊才會換掉快照的 seats)
     return out
 
 
 VERIFY_TICK_S = float(os.environ.get("AIB_CHAT_VERIFY_TICK") or 300)    # 多久看一次有沒有要驗的證明(第 32 節)
+
+
+def _roster_seats(rec):
+    """名冊(合併後)目前公開的每一席 ⇒ 聯絡人快照的 seats(10-18 @74e8b:好友換艙後通訊錄還留著死席、排第一)。"""
+    out = []
+    for cab in rec.get("cabins") or []:
+        for s in cab.get("seats") or []:
+            if s.get("seat") and s.get("npub"):
+                out.append({"cabin": cab.get("cabin"), "seat": s["seat"], "npub": s["npub"], "name": s.get("name"),
+                            "role": s.get("role")})
+    return out
+
+
+async def roster_of(owner_npub, relays, root):
+    """aib chat contacts --refresh:立刻重抓一位主人的名冊(含機器清單合併),回聯絡人快照要的欄位。"""
+    rc, rec, at = await _owner_roster(owner_npub, relays, root)
+    if rc != 0:
+        return rc, rec
+    return 0, {"ok": True, "owner": owner_npub, "display_name": rec.get("display_name"), "country": rec.get("country"),
+               "roster_at": at, "aib": rec.get("aib_version"), "nip05": rec.get("nip05"),
+               "roster_seats": _roster_seats(rec)}
 
 
 def _peer_seat(res):
@@ -1455,7 +1479,7 @@ async def serve(root):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="chat_nostr")
-    p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve", "probe"])
+    p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve", "probe", "roster"])
     p.add_argument("addr", nargs="?")
     p.add_argument("--root")
     a = p.parse_args(argv)
@@ -1469,6 +1493,8 @@ def main(argv=None):
             return asyncio.run(serve(root))
         elif a.cmd == "probe":
             rc, rec = asyncio.run(probe(a.addr))
+        elif a.cmd == "roster":
+            rc, rec = asyncio.run(roster_of(a.addr, CR.relays(), root))
         else:
             rc, rec = cmd_fetch(a.addr, CR.relays(), root=root)
     except Exception as err:   # noqa: BLE001  例外只記種類:訊息裡可能帶路徑或金鑰相關字

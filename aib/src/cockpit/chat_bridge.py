@@ -969,7 +969,33 @@ def contacts_payload(env=None):
                                                                                 -(r.get("last_in") or r.get("seen_at") or 0)))}
 
 
+def refresh_contacts(who, env):
+    """aib chat contacts --refresh <npub|all>(10-18 @74e8b):立刻重抓好友 / 我的其他機器的名冊,更新聯絡人快照
+    (席位換成名冊目前公開的)。回 [{owner, ok, why}]。"""
+    import chat_roster as CR
+    root = bridge_root(env)
+    owners = [f["owner"] for f in CR.read_friends(env, "mine")] + [f["owner"] for f in CR.read_friends(env)]
+    owners = list(dict.fromkeys(owners)) if who == "all" else [who]
+    res = []
+    for o in owners:
+        rc, rec = _run_nostr("roster", root, env, timeout=60, extra=[o])
+        if rc is None:
+            return [{"owner": o, "ok": False, "why": "no_venv"}]
+        if rc == 0 and rec.get("ok"):
+            GF.note_peer(root, o, rec.get("display_name"), rec.get("country"), None, rec.get("roster_at"),
+                         claims={"nip05": rec.get("nip05"), "aib": rec.get("aib"), "roster_seats": rec.get("roster_seats")})
+            res.append({"owner": o, "ok": True, "seats": len(rec.get("roster_seats") or [])})
+        else:
+            res.append({"owner": o, "ok": False, "why": rec.get("why") or "error"})
+    return res
+
+
 def cmd_contacts(a, env, out):
+    if a.refresh:
+        for r in refresh_contacts(a.refresh, env):
+            if not a.json:
+                out.write((T("contacts_refreshed", owner=r["owner"], n=r["seats"]) if r["ok"]
+                           else T("contacts_refresh_failed", owner=r["owner"], why=r["why"])) + "\n")
     pl = contacts_payload(env)
     if a.json:
         out.write(json.dumps(pl, ensure_ascii=False) + "\n")
@@ -1556,6 +1582,7 @@ def main(argv=None, env=None, out=sys.stdout):
     wd.add_argument("--json", action="store_true")
     ct = sub.add_parser("contacts", help=T("help.contacts"))
     ct.add_argument("--json", action="store_true")
+    ct.add_argument("--refresh", metavar="NPUB|all", help=T("help.contacts_refresh"))
     mn = sub.add_parser("mine", help=T("help.mine"))
     mn.add_argument("action", nargs="?", choices=("add", "remove"))
     mn.add_argument("who", nargs="?", help=T("help.mine_who"))
