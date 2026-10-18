@@ -266,7 +266,8 @@ async def resolve(addr, relays, root=None):
         seat_npub, look_in = s["npub"], (cab.get("dm_relays") or rec.get("dm_relays") or relays)
         out.update(owner=owner_npub, display_name=rec.get("display_name"), country=rec.get("country"), cabin=cabin,
                    seat=s, envelope=env, roster_at=at, device=cab.get("device"),
-                   socials=rec.get("socials") or [], nip05=rec.get("nip05"))
+                   socials=rec.get("socials") or [], nip05=rec.get("nip05"),
+                   aib=cab.get("aib_version") or rec.get("aib_version"))   # 第 37.5 節:席所在那台的版本
     flt2 = N.Filter().author(N.PublicKey.parse(seat_npub)).kind(N.Kind(CR.KIND_DM_RELAYS))
     try:
         rel_ev = await _fetch_latest(look_in, flt2)
@@ -802,7 +803,10 @@ def _clean_note(text):
 
 def _claims(res):
     """名冊上宣告的社群與 NIP-05(第 32 節);驗證由 chat_verify.verify_round 另做。"""
-    return {"nip05": (res or {}).get("nip05")}          # 社群不在名冊上(只給好友,走 card)
+    out = {"nip05": (res or {}).get("nip05")}          # 社群不在名冊上(只給好友,走 card)
+    if (res or {}).get("aib"):
+        out["aib"] = res["aib"]                          # 第 37.5 節:對方版本(名冊上的 aib_version)
+    return out
 
 
 VERIFY_TICK_S = float(os.environ.get("AIB_CHAT_VERIFY_TICK") or 300)    # 多久看一次有沒有要驗的證明(第 32 節)

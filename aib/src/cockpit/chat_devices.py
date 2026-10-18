@@ -191,7 +191,8 @@ def merge(owner, base, devices):
             continue
         npub, rec, cab = decl[0]
         out = dict(cab)
-        out.update(device=npub, dm_relays=list(rec.get("dm_relays") or []), envelope=list(rec.get("envelope") or []))
+        out.update(device=npub, dm_relays=list(rec.get("dm_relays") or []), envelope=list(rec.get("envelope") or []),
+                   aib_version=rec.get("aib_version"))   # 第 37.5 節:每台版本不同,對方版本取席所在那台的
         cabins.append(out)
     head = base or (max((r for _n, r in devices if r), key=lambda r: r.get("updated_at") or 0, default=None) or {})
     merged = {k: v for k, v in head.items() if k != "cabins"}
