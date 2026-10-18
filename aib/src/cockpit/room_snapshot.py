@@ -172,7 +172,7 @@ def clean_sky(v):
     return out or None
 
 
-SEAT_LOOK_RE = __import__("re").compile(r"^av[0-9]{1,2}:[0-9a-z]{1,64}\Z")   # 席的外觀(紙娃娃;跟建築的 clean_look 不同):版本前綴 + 一欄一字;每個字代表什麼由艦長室定義
+SEAT_LOOK_RE = __import__("re").compile(r"^av[0-9]{1,2}:[0-9a-z]{1,128}\Z")   # 席的外觀(紙娃娃;跟建築的 clean_look 不同):版本前綴 + 一欄一字;每個字代表什麼由艦長室定義
 
 
 def clean_seat_look(v):

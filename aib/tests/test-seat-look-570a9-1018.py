@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """席的外觀 look:好友收到的島上走動的人帶各席的外觀字串(艦長室定義意思,核心只驗型別)。只用標準庫。
 
-L1 clean_seat_look:合 ^av[0-9]{1,2}:[0-9a-z]{1,64}\\Z 才回原字串;大寫、空白、太長、結尾換行、不是字串 ⇒ None
+L1 clean_seat_look:合 ^av[0-9]{1,2}:[0-9a-z]{1,128}\\Z 才回原字串;大寫、空白、太長、結尾換行、不是字串 ⇒ None
 L2 attach_looks:room.json seats[席碼].look 合格的放進 people;沒有 / 不合 ⇒ 不出現 look 鍵(原本有的也拿掉)
 L3 傳輸:encode → decode 後 look 還在;收件端再驗一次(壞的拿掉、其他欄位不動);只有 look 不會把快照標成 v3
 刀(複本):K1 clean_seat_look 不驗 ⇒ L1 紅;K2 attach_looks 不放 ⇒ L2 紅;K3 收件端不再驗 ⇒ L3 紅
@@ -27,7 +27,7 @@ class Pure(unittest.TestCase):
     def test_l1_clean_look(self):
         self.assertEqual(RS.clean_seat_look(LOOK), LOOK)
         self.assertEqual(RS.clean_seat_look("av12:z"), "av12:z")
-        for bad in (None, 3, "", "av1:", "AV1:01", "av1:0A", "av1:01 2", "av1:" + "0" * 65, LOOK + "\n", "xx1:01", "av123:01", ["av1:01"]):
+        for bad in (None, 3, "", "av1:", "AV1:01", "av1:0A", "av1:01 2", "av1:" + "0" * 129, LOOK + "\n", "xx1:01", "av123:01", ["av1:01"]):
             self.assertIsNone(RS.clean_seat_look(bad), repr(bad))
 
     def test_l2_attach(self):
