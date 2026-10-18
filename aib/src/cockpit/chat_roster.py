@@ -559,16 +559,17 @@ def published_hash(root):
 
 # ── 驗別人的名冊 ──
 
-def parse(content, signer_npub):
+def parse(content, signer_npub, owner=None):
     """別人的名冊內容(已由 nostr-sdk 驗過簽章)⇒ 驗過的 dict;任何一處不對 ⇒ RosterError(一個字都不寄)。
-    signer_npub = 簽這份名冊的金鑰;第 1 期 owner 一定要等於它(名冊不能替別人的金鑰作主)。"""
+    signer_npub = 簽這份名冊的金鑰;第 1 期 owner 一定要等於它(名冊不能替別人的金鑰作主)。
+    owner 有給(第 37.7 節機器名冊)⇒ 名冊的 owner 欄要等於它;簽章者在不在主人的機器清單由呼叫端(chat_devices)對。"""
     try:
         rec = json.loads(content) if isinstance(content, (str, bytes)) else content
     except ValueError:
         raise RosterError("not_json")
     if not isinstance(rec, dict) or rec.get("v") != VERSION:
         raise RosterError("bad_version")
-    if rec.get("owner") != signer_npub or not _NPUB_RE.match(signer_npub or ""):
+    if rec.get("owner") != (owner or signer_npub) or not _NPUB_RE.match(signer_npub or ""):
         raise RosterError("owner_mismatch")
     name = rec.get("display_name")
     if name is not None and GF.clean_display_name(name) != name:
