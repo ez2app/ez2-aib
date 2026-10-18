@@ -65,6 +65,8 @@ def import_once(root=None, env=None):
                 DQ.hold_item(seat, item["id"], DQ.GLOBAL_STRANGER_WHY, env=env)
         state = "held" if item.get("status") == DQ.HOLD_STATUS else "queued"
         DQ.global_delivery(item, state, seat, env)
+        if state == "queued":
+            DQ.note_global_pending(env)        # 沒開佇列的艙,排空器看這個記號才去投(全球信不受授權限制)
         try:
             path.unlink()
         except FileNotFoundError:
