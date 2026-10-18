@@ -304,7 +304,8 @@ async def _sleep(stop, secs):
 
 
 def main(argv=None, env=None, out=None):
-    """aib chat telegram on --seat <席> | off | status | allow <id> | block <id> | send <id>(stdin 一行內文;Touch ID)"""
+    """aib chat telegram on --seat <席> | off | status | check | serve | allow <id> | block <id> | send <id>(stdin 一行內文;Touch ID)
+    check = getMe 驗金鑰(只印機器人帳號名);serve = 單獨跑收信迴圈(轉接程式還沒換版時用;Ctrl-C 停)。"""
     import argparse
     env = os.environ if env is None else env
     out = out or sys.stdout
@@ -314,6 +315,8 @@ def main(argv=None, env=None, out=None):
     p_on.add_argument("--seat", required=True)
     sub.add_parser("off")
     sub.add_parser("status")
+    sub.add_parser("check")
+    sub.add_parser("serve")
     for name in ("allow", "block", "send"):
         sub.add_parser(name).add_argument("uid")
     a = ap.parse_args(argv)
@@ -323,6 +326,25 @@ def main(argv=None, env=None, out=None):
         rows = [{"id": k, "shown": v.get("shown"), "relation": v.get("relation") or "stranger", "seen_at": v.get("seen_at")}
                 for k, v in sorted(st["contacts"].items())]
         out.write(json.dumps({"on": st["on"], "seat": st["seat"], "contacts": rows}, ensure_ascii=False) + "\n")
+        return 0
+    if a.cmd == "check":
+        try:
+            me = Api(load_token(env), api_base(env)).call("getMe") or {}
+        except Exception as err:   # noqa: BLE001 —— 只印代碼
+            out.write(json.dumps({"ok": False, "why": err.code if isinstance(err, TgError) else type(err).__name__}) + "\n")
+            return 1
+        out.write(json.dumps({"ok": True, "bot": "@" + _clean(me.get("username"), 64)}, ensure_ascii=False) + "\n")
+        return 0
+    if a.cmd == "serve":
+        import asyncio
+        import signal
+
+        async def run():
+            stop = asyncio.Event()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+            await serve_loop(root, stop, env)
+        asyncio.run(run())
         return 0
     if a.cmd in ("on", "send"):
         import chat_owner as CO
