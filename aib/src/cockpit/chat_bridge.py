@@ -1111,6 +1111,52 @@ def world_payload(env=None, now=None):
     return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
 
 
+RECENT_MINUTES = 10
+
+
+def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
+    """aib chat recent --json(新艦長室視訊螢幕 / 收發室,@74e8b 10-19):最近 N 分鐘的線上 / Telegram 私訊收發。
+    只讀 audit(時間、方向、對象、結果),**不含內容**;同一封寄出只留最後一個階段。對象一律換成通訊錄的 contact_key
+    (global:<主人 npub> / telegram:<user_id>),認不出的主人不列。"""
+    now = time.time() if now is None else now
+    since = now - max(1, int(minutes)) * 60
+    root = bridge_root(env)
+    seat_owner = {}
+    for owner, info in GF.read_peers(root).items():
+        for x in info.get("seats") or []:
+            if isinstance(x, dict) and x.get("npub"):
+                seat_owner[x["npub"]] = owner
+    rows, out_last = [], {}
+    for day in sorted({time.strftime("%Y%m%d", time.localtime(t)) for t in (since, now)}):
+        try:
+            lines = (root / "audit" / (day + ".jsonl")).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for ln in lines:
+            try:
+                r = json.loads(ln)
+                at = int(r.get("at") or 0)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if at < since or at > now + 60:
+                continue
+            d, peer, res = r.get("dir"), str(r.get("peer") or ""), str(r.get("result") or "")[:40]
+            if d in ("tg-in", "tg-out") and peer.startswith("telegram:"):
+                rows.append({"at": at, "dir": d[3:], "net": "telegram", "contact_key": peer, "result": res})
+            elif d == "in":
+                owner = seat_owner.get(peer)
+                if owner:
+                    rows.append({"at": at, "dir": "in", "net": "nostr", "contact_key": "global:" + owner, "result": res})
+            elif d == "out":
+                owner = (GF.parse_address(peer) or {}).get("owner")
+                if owner:
+                    out_last[r.get("msgid")] = {"at": at, "dir": "out", "net": "nostr", "contact_key": "global:" + owner,
+                                                "result": res}
+    rows += list(out_last.values())
+    rows.sort(key=lambda x: x["at"])
+    return {"v": 1, "at": int(now), "minutes": int(minutes), "rows": rows}
+
+
 def room_payload(owner, env=None, now=None):
     """aib chat room <主人> --json(第 34.4 節):好友分享來的房間快照 + fresh;不是好友 / 我的機器 ⇒ None。"""
     import chat_roster as CR
@@ -1672,6 +1718,9 @@ def main(argv=None, env=None, out=sys.stdout):
     rm = sub.add_parser("room", help=T("help.room"))
     rm.add_argument("who")
     rm.add_argument("--json", action="store_true")
+    rc = sub.add_parser("recent")
+    rc.add_argument("--json", action="store_true")
+    rc.add_argument("--minutes", type=int, default=RECENT_MINUTES)
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
     pr = sub.add_parser("pair", help=T("help.pair"))
@@ -1739,6 +1788,9 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_roster(a, env, out)
     if a.cmd == "lookup":
         return cmd_lookup(a, env, out)
+    if a.cmd == "recent":
+        out.write(json.dumps(recent_payload(env, minutes=a.minutes), ensure_ascii=False) + "\n")
+        return 0
     if a.cmd == "awake":
         return cmd_awake(a, env, out)
     if a.cmd == "pair":
