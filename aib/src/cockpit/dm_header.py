@@ -326,7 +326,8 @@ def build_from_global(seat: str, item_id: str, t_label: str, *, t_socket: str = 
                             country=g["country"], country_status=g["country_status"])
     head = GH.build(sender, _side(r), format_when(time.time() if when is None else when))
     frame = GH.frame(g["reply_code"], lang=lang, paired=item.get("sender_kind") == "owner_paired",
-                     country=g["country"], country_status=g["country_status"], tz_country=g["tz_country"])
+                     country=g["country"], country_status=g["country_status"], tz_country=g["tz_country"],
+                     author=g.get("author"))
     return head, frame
 
 

@@ -48,6 +48,8 @@ def import_once(root=None, env=None):
         g = {"addr": qf["sender_addr"], "shown": qf["shown_name"], "verified": qf["verified"],
              "same_name": qf["same_name"], "msgid": msgid, "country": qf["country"],
              "country_status": qf["country_status"], "tz_country": qf["tz_country"], "relation": qf["class"]}
+        if qf["author"]:
+            g["author"] = qf["author"]
         kind = rec.get("kind") if rec.get("kind") in DQ.KINDS else None
         thread = rec.get("thread") if isinstance(rec.get("thread"), str) and DQ.THREAD_RE.fullmatch(rec["thread"]) else None
         try:

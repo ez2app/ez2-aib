@@ -1321,11 +1321,13 @@ class Receiver(object):
             audit(self.root, "in", msgid, from_npub, "refused:" + why)
             return await self.send_receipt(msgid, "refused", reason=why)
         for k_tag, k in (("aib-priority", "priority"), ("aib-thread", "thread"), ("aib-kind", "kind"),
-                         ("aib-lang", "lang"), ("aib-tz", "tz")):
+                         ("aib-lang", "lang"), ("aib-tz", "tz"), ("aib-author", "author")):
             if tags.get(k_tag):
                 rec[k] = tags[k_tag]
         if rec.get("priority") not in GF.PRIORITIES:
             rec.pop("priority", None)
+        if rec.get("author") not in GF.AUTHORS:          # 第 35 節第 2 點:本人 / AI 擬稿 / AI 自動;其他值不轉
+            rec.pop("author", None)
         if expires:
             rec["expires"] = expires
         if GF.MSGID_RE.match(tags.get("aib-reply-to", "")):
