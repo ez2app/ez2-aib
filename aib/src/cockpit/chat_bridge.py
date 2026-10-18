@@ -1541,6 +1541,11 @@ def cmd_status(a, env, out):
         out.write(T("backup_hint") + "\n")
     for line in power_lines(env):
         out.write(line + "\n")
+    import chat_pair as CP
+    last = CP.last_command(bridge_root(env))
+    if last and time.time() - int(last.get("at") or 0) < 86400:     # 第 33.6 節:電腦上看得到「手機下了指令」
+        out.write(T("status_phone_cmd", when=time.strftime("%H:%M", time.localtime(last["at"])), via=last.get("via", ""),
+                    head=last.get("head", "")) + "\n")
     return 0
 
 
@@ -1661,6 +1666,12 @@ def main(argv=None, env=None, out=sys.stdout):
     rm.add_argument("--json", action="store_true")
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
+    pr = sub.add_parser("pair", help=T("help.pair"))
+    pr.add_argument("action", nargs="?", choices=("start", "confirm", "list", "revoke"))
+    pr.add_argument("target", nargs="?", help=T("help.pair_target"))
+    pr.add_argument("--seat")
+    pr.add_argument("--no-wait", action="store_true")
+    pr.add_argument("--json", action="store_true")
     aw = sub.add_parser("awake", help=T("help.awake"))
     aw.add_argument("value", nargs="?", choices=("on", "off"))
     ow = sub.add_parser("owner", help=T("help.owner"))
@@ -1722,6 +1733,9 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_lookup(a, env, out)
     if a.cmd == "awake":
         return cmd_awake(a, env, out)
+    if a.cmd == "pair":
+        import chat_pair as CP                          # 第 33 節:主人手機
+        return CP.cmd_pair(a, env, out)
     if a.cmd in ("owner", "join", "devices"):
         import chat_owner_cli as OC                     # 第 37.7 節 K2
         return {"owner": OC.cmd_owner, "join": OC.cmd_join, "devices": OC.cmd_devices}[a.cmd](a, env, out)

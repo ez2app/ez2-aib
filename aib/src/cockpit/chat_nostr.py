@@ -1285,6 +1285,23 @@ class Receiver(object):
         rec = {"v": 1, "msgid": msgid, "received_at": int(time.time()), "to_cabin": entry.get("cabin") or "main",
                "to_seat": entry["seat5"], "from_npub": from_npub, "verified": False, "class": "stranger",
                "content": content}
+        phone_cmd = None
+        if not is_aib and not is_request:
+            import chat_pair as CP                              # 第 33 節:主人手機(一般 Nostr App,沒有 aib 標籤)
+            if CP.offer_code(self.root, from_npub, content):
+                audit(self.root, "in", msgid, from_npub, "phone-pair-code")   # 只記成候選;本人在電腦上按 Touch ID 才配
+                return
+            if CP.is_paired(from_npub):
+                why = CP.accept_event(self.root, rumor.id().to_hex() if rumor.id() else msgid, rumor.created_at().as_secs())
+                if why:
+                    audit(self.root, "in", msgid, from_npub, "phone-refused:" + why)   # 防重播 / 時間差
+                    return
+                kind, text = CP.classify(content)
+                rec.update(verified=True, display_name="主人手機", content=text, kind="order" if kind == "command" else "other")
+                rec["class"] = "paired"
+                if kind == "command":
+                    phone_cmd = text
+                    CP.log_command(self.root, from_npub, msgid, text)
         from_addr = tags.get("aib-from")
         parsed = GF.parse_address(from_addr) if from_addr else None
         if parsed is not None:
@@ -1333,6 +1350,8 @@ class Receiver(object):
         try:
             GF.write_inbox(self.root, rec)
             audit(self.root, "in", msgid, from_npub, "inbox")
+            if phone_cmd is not None:                          # 第 33.6 節:回手機一句純文字(手機 App 看得懂)
+                await self._reply_plain(entry, from_npub, "aib:收到指令,已交給 @%s:%s" % (entry["seat5"], phone_cmd[:40]))
             if peer:
                 GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"),
                              _peer_seat(peer), peer.get("roster_at"), direction="in", claims=_claims(peer))
@@ -1340,6 +1359,23 @@ class Receiver(object):
             sys.stderr.write("inbox:%s\n" % err)
             audit(self.root, "in", msgid, from_npub, "refused")
             await self.send_receipt(msgid, "refused")
+
+    async def _reply_plain(self, entry, to_npub, text):
+        """回一則不帶 aib 標籤的純文字私訊(給主人手機;一般 Nostr App 看得懂)。失敗只記 audit。"""
+        rc, res = await self.sender._resolve(to_npub)
+        if rc != 0:
+            audit(self.root, "out", "-", to_npub, "phone-ack:" + str(res.get("why")))
+            return False
+        keys = _keys(entry["key"])
+        gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(to_npub), text)
+        keys = None
+        c = await _client(res["dm_relays"])
+        try:
+            out = await c.send_event(gw)
+            audit(self.root, "out", "-", to_npub, "phone-ack" if out.success else "phone-ack:failed")
+            return bool(out.success)
+        finally:
+            await c.shutdown()
 
     async def send_receipt(self, msgid, stage, pos=None, refs=None, reason=None):
         """回條寄回原寄件席(第 6.2 節)。只回 aib 寄件人(一般 Nostr App 收到一則看不懂的字沒用)。
