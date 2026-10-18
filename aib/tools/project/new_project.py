@@ -1086,6 +1086,56 @@ def _union_keep_order(*lists: Any) -> list:
     return out
 
 
+def _goals_of(const: Mapping[str, Any]) -> list:
+    """憲法裡的目標,正規化成可比較的字串清單。"""
+    return [json.dumps(i, ensure_ascii=False, sort_keys=True) for i in (const.get("goals") or [])]
+
+
+def _pending_amendment(card_const: Mapping[str, Any], cand: Mapping[str, Any]) -> bool:
+    """卡已核准、候選檔明寫沒核准、目標跟卡上生效的不同 ⇒ 有一份目標修訂在等本人核。
+    修訂只換目標:紅線與本人裁示一律沿用卡上生效的(候選檔被改了紅線也不算數,見 approve_constitution)。"""
+    cc = cand.get("constitution") if isinstance(cand.get("constitution"), dict) else None
+    return bool(cc) and cand.get("approved") is False and _goals_of(cc) != _goals_of(card_const)
+
+
+GOAL_MAX = 12
+GOAL_MAX_CHARS = 300
+
+
+def propose_goals(root: Path, project_uid: str, goals: Any) -> int:
+    """aib newproj --propose-goals <uid> --goal …:把目標寫進候選檔等本人核(10-18 977e3)。
+    卡上生效的憲法一個字都不動(已核准的照舊有效);紅線、本人裁示沿用現在那份;
+    本人跑 aib newproj --approve <uid>(終端機或 Touch ID)才換上。AI 席可以跑 —— 這只是提案。
+    rc:0 寫好 / 2 找不到卡、目標空的或超量。"""
+    card = load_card(root, project_uid)
+    if card is None:
+        _say(T("aib.newproj.approve_not_found", {"uid": project_uid}), "[x]")
+        return 2
+    clean = _union_keep_order([" ".join(str(g).split()) for g in (goals or []) if str(g).strip()])
+    if not clean or len(clean) > GOAL_MAX or any(len(g) > GOAL_MAX_CHARS for g in clean):
+        _say(T("aib.newproj.propose_bad_goals", {"max": GOAL_MAX, "chars": GOAL_MAX_CHARS}), "[x]")
+        return 2
+    uid = card["project_uid"]
+    c_path, cand_path = card_path_of(root, uid), candidate_path_of(root, uid)
+    with _card_lock(c_path):
+        card_const = (_load_json(c_path) or {}).get("layers", {}).get("constitution") or {}
+        cand = _load_json(cand_path) or {}
+        approved = card_const.get("approved") is True
+        # 沒核准過:草稿在候選檔(紅線從那裡來);核准過:以卡上生效的為底
+        base = card_const if approved or not isinstance(cand.get("constitution"), dict) else cand["constitution"]
+        draft = dict(PC.empty_constitution(), **{k: base.get(k) or [] for k in ("red_lines", "human_rulings")})
+        draft.update({"goals": clean, "approved": False})
+        cand.update({"approved": False, "constitution": draft, "proposed_wall_ms": int(time.time() * 1000)})
+        cand.setdefault("project_uid", uid)
+        cand_path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(cand_path, cand)
+    _say(T("aib.newproj.propose_done", {"uid": uid, "goals": len(clean)}))
+    print(json.dumps({"ok": True, "project_uid": uid, "candidate_path": str(cand_path), "goals": len(clean),
+                      "card_approved": approved, "approved": False,
+                      "next": "aib newproj --approve %s" % uid}, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def refresh_empty_draft(root: Path, project_uid: str, persona_uid: str, dry_run: bool = False) -> bool:
     """review r6 m6:綁既有專案卡時,卡上的憲法草稿**沒有紅線且沒核准** ⇒ 照這一席綁的人格重出草稿 ⇒ True。
 
@@ -1240,7 +1290,11 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         _say(T("aib.newproj.approve_not_found", {"uid": project_uid}), "[x]")
         return 2
     uid = card["project_uid"]
-    if (card["layers"].get("constitution") or {}).get("approved") is True:
+    cand_path = candidate_path_of(root, uid)
+    cand = _load_json(cand_path) or {}
+    card_const = card["layers"].get("constitution") or {}
+    amending = card_const.get("approved") is True
+    if amending and not _pending_amendment(card_const, cand):
         _say(T("aib.newproj.approve_already", {"uid": uid}))
         return 0
     try:
@@ -1255,10 +1309,10 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
             _say(T("aib.newproj.approve_need_human", {"why": ",".join(missing) or "?"}), "[x]")
             return 2
         via = "touchid"
-    cand_path = candidate_path_of(root, uid)
-    cand = _load_json(cand_path) or {}
     draft = cand.get("constitution") if isinstance(cand.get("constitution"), dict) else card["layers"]["constitution"]
     const = dict(PC.empty_constitution(), **{k: v for k, v in draft.items() if k in ("goals", "red_lines", "human_rulings")})
+    if amending:                              # 修訂只換目標;紅線、本人裁示照卡上生效的(候選檔裡的不信)
+        const.update({k: list(card_const.get(k) or []) for k in ("red_lines", "human_rulings")})
 
     def lines(items):
         return ["    - %s" % (i.get("text") if isinstance(i, dict) else i) for i in (items or [])] or ["    " + T("aib.newproj.approve_empty")]
@@ -1267,6 +1321,8 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
             "  " + T("aib.newproj.approve_goals")] + lines(const["goals"]) + \
            ["  " + T("aib.newproj.approve_red_lines")] + lines(const["red_lines"]) + \
            ["  " + T("aib.newproj.approve_rulings")] + lines(const["human_rulings"])
+    if amending:                              # 已核准的卡:這次核的是修訂;生效的版本到按下去才換
+        show.insert(1, "  " + T("aib.newproj.approve_amend_note", {"goals": len(card_const.get("goals") or [])}))
     if via == "tty":
         stdout.write("\n".join(show) + "\n" + T("aib.newproj.approve_prompt", {"uid": uid}))
         stdout.flush()
@@ -1277,7 +1333,7 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
     else:
         TA = _touchid()
         # 視窗文字只由這裡組:動作 + 卡上的標題與 uid + 條數(呼叫端沒有任何一個字進得來)
-        reason = T("aib.newproj.approve_touchid_reason", {
+        reason = T("aib.newproj.approve_touchid_reason_amend" if amending else "aib.newproj.approve_touchid_reason", {
             "title": TA.clean(card.get("title") or uid, 60), "uid": uid,
             "goals": len(const["goals"] or []), "red_lines": len(const["red_lines"] or [])})
         stdout.write("\n".join(show) + "\n")
@@ -1312,6 +1368,9 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
             _say(T("aib.newproj.approve_backup_failed", {"err": snap.get("error")}), "[x]")
             return 2
         raw = _load_json(c_path) or {}
+        if amending:                          # 鎖內再取一次生效的紅線 / 裁示(等 Touch ID 期間別人核過也不丟)
+            live = (raw.get("layers") or {}).get("constitution") or {}
+            const.update({k: list(live.get(k) or []) for k in ("red_lines", "human_rulings")})
         import datetime as _dt                                    # +08:00 形(跟既有卡同形);不靠 %z(有的平台給時區名)
         at = _dt.datetime.fromtimestamp(now_ms / 1000).astimezone().isoformat(timespec="seconds")
         rulings = [r for r in (const.get("human_rulings") or []) if isinstance(r, (dict, str))]
@@ -1323,9 +1382,11 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         raw["constitution_status"] = "approved"
         PC.validate_project_card(raw)
         _atomic_write_json(c_path, raw)
-        if cand:
-            cand.update({"approved": True, "constitution": const, "approved_wall_ms": now_ms})
-            _atomic_write_json(cand_path, cand)
+        cand_now = _load_json(cand_path) or {}
+        newer = isinstance(cand_now.get("constitution"), dict) and _goals_of(cand_now["constitution"]) != _goals_of(const)
+        if cand_now and not newer:            # 等 Touch ID 期間又有人提了新目標 ⇒ 留著那份等下次核,不蓋掉
+            cand_now.update({"approved": True, "constitution": const, "approved_wall_ms": now_ms})
+            _atomic_write_json(cand_path, cand_now)
     _say(T("aib.newproj.approve_done", {"uid": uid}))
     return 0
 
@@ -1349,9 +1410,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--role", default="", help="--new-seat: role of the new seat (a defined role; default dev)")
     ap.add_argument("--entry", default="", choices=["", "newproj"], help=argparse.SUPPRESS)
     ap.add_argument("--approve", default="", metavar="PROJECT_UID", help=T("aib.newproj.help_approve"))
+    ap.add_argument("--propose-goals", default="", metavar="PROJECT_UID", help=T("aib.newproj.help_propose_goals"))
+    ap.add_argument("--goal", action="append", default=[], help=T("aib.newproj.help_goal"))
     args = ap.parse_args(argv)
     if args.approve:                          # 10-15 C11:只給真人,其他旗標不看
         return approve_constitution(state_root_of(args.state_root or None), args.approve.strip())
+    if args.propose_goals:                    # 10-18:只寫候選檔,其他旗標不看
+        return propose_goals(state_root_of(args.state_root or None), args.propose_goals.strip(), args.goal)
     # 選單那條路一定帶 --seat;aib newproj 不帶 ⇒ 只建卡(the maintainer 10-01),不在這裡擋
     if not args.seat and not args.new_seat and args.entry != "newproj":
         ap.error(T("aib.newproj.need_seat"))
