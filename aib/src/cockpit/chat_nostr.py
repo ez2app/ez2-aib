@@ -1257,14 +1257,19 @@ class Receiver(object):
         if not msgid or self.led.seen("m:" + msgid):
             return
         self.led.mark("m:" + msgid)
-        if tags.get("aib-type") == "presence":
+        kind = GF.inbound_kind(tags)
+        if kind == "presence":
             return await self.on_presence(rumor, tags, from_npub)
-        if tags.get("aib-type") == "card":
+        if kind == "card":
             return await self.on_card(rumor, tags, from_npub)
-        if tags.get("aib-type") == "space":
+        if kind == "space":
             return await self.on_room(rumor, tags, from_npub)
-        if tags.get("aib-type") == "offer":
+        if kind == "offer":
             return await self.on_offer(rumor, tags, from_npub)
+        if kind == "unknown":
+            # 對方版本比這台新:不進 AI 框、不回條;記一行好查(型別名截短,不記內容)
+            audit(self.root, "in", msgid, from_npub, "unknown-type:" + str(tags.get("aib-type"))[:32])
+            return
         is_aib = tags.get("aib-v") == "1"
         self.led.received(msgid, {"v": 1, "from": from_npub, "key": entry["key"], "seat": entry["seat5"],
                                   "aib": is_aib, "lang": tags.get("aib-lang"), "at": int(time.time())})
