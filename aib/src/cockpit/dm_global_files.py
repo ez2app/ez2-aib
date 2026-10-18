@@ -685,13 +685,20 @@ def note_peer(root, owner, display_name=None, country=None, seat=None, roster_at
     def fn(cur):
         peers = cur.setdefault("peers", {})
         p = peers.setdefault(owner, {"seats": [], "n_in": 0, "n_out": 0})
+        fresh = isinstance(claims, dict) and isinstance(claims.get("roster_seats"), list) and roster_at \
+            and int(roster_at) >= int(p.get("roster_at") or 0)
         if display_name:
             p["display_name"] = display_name
         if country:
             p["country"] = country
         if roster_at:
-            p["roster_at"] = int(roster_at)
-        if isinstance(seat, dict) and seat.get("seat"):
+            p["roster_at"] = max(int(roster_at), int(p.get("roster_at") or 0))     # 舊名冊不蓋掉新的時間
+        if fresh:
+            # 10-18 @74e8b:拿到不比快照舊的名冊 ⇒ seats 整份換成名冊目前公開的席(不在名冊上的死席拿掉、順序照名冊)
+            p["seats"] = [{k: x.get(k) for k in ("cabin", "seat", "npub", "name", "role")}
+                          for x in claims["roster_seats"] if isinstance(x, dict) and x.get("seat")][:20]
+        elif isinstance(seat, dict) and seat.get("seat") and not (isinstance(claims, dict) and "roster_seats" in claims):
+            # 帶了名冊席位卻比快照舊 ⇒ 是舊名冊,這一席也不補(不然死席又被加回來)
             keep = {k: seat.get(k) for k in ("cabin", "seat", "npub", "name", "role")}
             p["seats"] = [x for x in p.get("seats") or [] if x.get("seat") != keep["seat"] or x.get("cabin") != keep["cabin"]]
             p["seats"].append(keep)
