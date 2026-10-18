@@ -1095,11 +1095,16 @@ MOUSE_CONDITION='#{&&:#{!=:#{@aib_role},hub},#{&&:#{==:#{@aib_cockpit},1},#{||:#
     printf -v MOUSE_SCRIPT_Q '%q' "$MOUSE_SCRIPT_PATH"
     printf -v MOUSE_LOG_Q '%q' "$EZ2_COCKPIT_STATE_DIR/aib-open.log"
     MOUSE_COMMAND="display-message -d 1500 'CLICK #{@aib_pane} #{mouse_x},#{mouse_y}' ; run-shell -b -t= 'bash $MOUSE_SCRIPT_Q --click #{q:@aib_pane} #{q:mouse_x} #{q:mouse_y} #{q:session_name} --role #{q:@aib_role} >>$MOUSE_LOG_Q 2>&1'"
-    # 中欄放開也不送滑鼠序列。右欄等點擊仍走原來的條件。
+    # 10-18:右欄重繪時 @aib_pane 會短暫撤下(發布時序,見 pane-right-ai.sh),那一下原本落到 else = 白點、要點兩下。
+    #   右欄的 @aib_role=right 不會撤 ⇒ 認得出是右欄,交給 click-wait.sh 等 marker 掛回再照新 rowmap 處理(最多 1.5 秒)。
+    RIGHT_GAP='#{&&:#{==:#{@aib_cockpit},1},#{&&:#{==:#{@aib_role},right},#{==:#{@aib_pane},}}}'
+    printf -v CLICK_WAIT_Q '%q' "$MOUSE_SCRIPT_DIR/click-wait.sh"
+    RIGHT_GAP_COMMAND="run-shell -b -t= 'bash $CLICK_WAIT_Q #{q:pane_id} #{q:mouse_x} #{q:mouse_y} #{q:session_name} >>$MOUSE_LOG_Q 2>&1'"
+    # 中欄放開也不送滑鼠序列。右欄等點擊仍走原來的條件;右欄空窗走 click-wait;其他照舊送序列。
     run env -u TMUX tmux bind-key -n MouseUp1Pane \
       if-shell -F -t= "$HUB_CLICK" \
         "send-keys -M -t =" \
-        "if-shell -F -t= \"$MOUSE_CONDITION\" \"$MOUSE_COMMAND\" \"send-keys -M -t =\""
+        "if-shell -F -t= \"$MOUSE_CONDITION\" \"$MOUSE_COMMAND\" \"if-shell -F -t= \\\"$RIGHT_GAP\\\" \\\"$RIGHT_GAP_COMMAND\\\" \\\"send-keys -M -t =\\\"\""
 
     # 先看這台機器有沒有剪貼簿工具。沒有就不要裝 copy-pipe，否則放開拖曳會失敗。
     COPY_CMD=""
