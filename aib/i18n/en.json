@@ -4651,5 +4651,16 @@
   "aib.vault_cli.help_mkdir": "add a uid folder and register it (the Obsidian \"New folder\" button uses this)",
   "aib.vault_cli.help_mkdir_title": "folder title (for display; the folder on disk is named by its folderId)",
   "aib.vault_cli.mkdir_done": "folder \"{title}\" added: {path}",
-  "aib.init.statusline_warn": "The status line auto-update did not finish (rc {rc}); nothing else is affected. You can run {tool} yourself later."
+  "aib.init.statusline_warn": "The status line auto-update did not finish (rc {rc}); nothing else is affected. You can run {tool} yourself later.",
+  "aib.secret.dialog_title": "aib · enter {name}",
+  "aib.secret.dialog_prompt": "Paste {name} below (the characters stay hidden). It is saved encrypted to: {dest}. You confirm with Touch ID before anything is written.",
+  "aib.secret.dialog_retry": "That did not look right: {why}. Please paste it again.",
+  "aib.secret.why.empty": "it was empty",
+  "aib.secret.why.too_long": "it is too long",
+  "aib.secret.why.newline": "it contains a line break",
+  "aib.secret.why.bad_prefix": "it should start with {prefix}",
+  "aib.secret.touchid_reason": "aib: save the key {name} to {dest}",
+  "aib.secret.dest_local": "this Mac's key store",
+  "aib.secret.btn_ok": "Save",
+  "aib.secret.btn_cancel": "Cancel"
 }

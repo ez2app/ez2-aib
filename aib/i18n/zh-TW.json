@@ -4651,5 +4651,16 @@
   "aib.vault_cli.help_mkdir": "新增 uid 資料夾並登記(Obsidian 的「新增資料夾」按鈕用這個)",
   "aib.vault_cli.help_mkdir_title": "資料夾標題(顯示用;實際資料夾名是 folderId)",
   "aib.vault_cli.mkdir_done": "已新增資料夾「{title}」:{path}",
-  "aib.init.statusline_warn": "狀態列自動更新沒跑完(rc {rc}),不影響其他設定;之後可以自己跑 {tool}"
+  "aib.init.statusline_warn": "狀態列自動更新沒跑完(rc {rc}),不影響其他設定;之後可以自己跑 {tool}",
+  "aib.secret.dialog_title": "aib · 輸入 {name}",
+  "aib.secret.dialog_prompt": "把 {name} 貼在下面(字會被遮住)。會加密存到:{dest}。寫入前要你按 Touch ID 確認。",
+  "aib.secret.dialog_retry": "剛才那個不對:{why}。請再貼一次。",
+  "aib.secret.why.empty": "是空的",
+  "aib.secret.why.too_long": "太長了",
+  "aib.secret.why.newline": "裡面有換行",
+  "aib.secret.why.bad_prefix": "應該是 {prefix} 開頭",
+  "aib.secret.touchid_reason": "aib:把金鑰 {name} 存到 {dest}",
+  "aib.secret.dest_local": "這台 Mac 的金鑰櫃",
+  "aib.secret.btn_ok": "儲存",
+  "aib.secret.btn_cancel": "取消"
 }
