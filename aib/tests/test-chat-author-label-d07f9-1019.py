@@ -5,7 +5,8 @@
 代主人寄的信,Pro 13 / Mini 收到後跟 AI 寄的一模一樣)。只進外框說明行,不進抬頭括號。
 
 核心(一定跑,只用標準庫):
-A1 frame:human / ai_draft / ai_auto 四種語言各多一句「寄件方標示」;沒帶 / 不認得的值 ⇒ 跟以前一字不差
+A1 frame:human / ai_draft / ai_auto 四種語言各多一句「寄件方自報(收件端驗不了)」;沒帶 / 不認得的值 ⇒ 跟以前一字不差
+   (aib-author 是寄件機自己寫的,同帳號 AI 不按 Touch ID 也寫得出 human ⇒ 照守則只能照實寫「自報、驗不了」,不能寫成保證)
 A2 檔案契約:inbox 收 author 三種值、其他值整筆拒;queue_fields 帶出 author
 A3 收件程式 → 佇列 → 外框:import_once 的 global 帶 author;build_from_global 的外框有那一句;沒帶的舊列不多欄
 連 Nostr(要 AIB_TEST_NOSTR_VENV;沒有就跳過):
@@ -69,6 +70,7 @@ class Frame(unittest.TestCase):
                 "en": ("written by the owner", "drafted by AI", "sent automatically by AI"),
                 "ja": ("主人本人が送信", "AI の下書き", "AI が自動送信"),
                 "ko": ("주인 본인이 보냄", "AI 초안", "AI 자동 발송")}
+        claim = {"zh-TW": "收件端驗不了", "en": "not verifiable here", "ja": "受信側では検証不可", "ko": "수신 측 검증 불가"}
         for lang, words in want.items():
             plain = GH.frame("abcde", lang=lang)
             self.assertEqual(GH.frame("abcde", lang=lang, author=None), plain)
@@ -76,6 +78,7 @@ class Frame(unittest.TestCase):
             for author, w in zip(("human", "ai_draft", "ai_auto"), words):
                 f = GH.frame("abcde", lang=lang, author=author)
                 self.assertIn(w, f, (lang, author))
+                self.assertIn(claim[lang], f, "要照實寫自報、驗不了")
                 self.assertIn("abcde", f)
         both = GH.frame("abcde", country="JP", country_status="mismatch", tz_country="TW", author="human")
         self.assertLess(both.index("主人本人寄的"), both.index("國別"), "標示在國別那句前面")
@@ -110,11 +113,11 @@ class Pipeline(unittest.TestCase):
         it = self.imp(author="human")
         self.assertEqual(it["global"]["author"], "human")
         _head, frame = HD.build_from_global(SEAT, it["id"], "@4345c(收件席)", when=1792045800, env=self.env)
-        self.assertIn("寄件方標示:主人本人寄的", frame)
+        self.assertIn("寄件方自報(收件端驗不了):主人本人寄的", frame)
         old = self.imp()
         self.assertNotIn("author", old["global"], "沒帶的不多一欄")
         _head, frame = HD.build_from_global(SEAT, old["id"], "@4345c(收件席)", when=1792045800, env=self.env)
-        self.assertNotIn("寄件方標示", frame)
+        self.assertNotIn("寄件方自報", frame)
 
 
 @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
