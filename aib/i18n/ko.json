@@ -4665,5 +4665,16 @@
   "aib.chat.backup_hint": "온라인 대화 키를 지금 백업하세요(주인 키는 이 기기에만 있어 디스크 고장이나 재설치 시 사라집니다): aib chat backup <파일>",
   "aib.chat.status_unhealthy_not_running": "⚠ 온라인 대화는 켜져 있지만 브리지가 실행 중이 아닙니다: 송수신 불가(함을 열거나 aib chat ensure-window로 시작)",
   "aib.chat.status_unhealthy_stale_heartbeat": "⚠ 브리지는 실행 중이지만 한동안 중계국에 연결되지 않았습니다: 전송이 안 될 수 있음",
-  "aib.chat.status_unhealthy_no_relay": "⚠ 브리지는 실행 중이지만 아직 중계국에 연결되지 않았습니다(키 없음, 명부 미발행 또는 전부 끊김)"
+  "aib.chat.status_unhealthy_no_relay": "⚠ 브리지는 실행 중이지만 아직 중계국에 연결되지 않았습니다(키 없음, 명부 미발행 또는 전부 끊김)",
+  "aib.secret.dialog_title": "aib · {name} 입력",
+  "aib.secret.dialog_prompt": "아래에 {name}을(를) 붙여 넣으세요(글자는 가려집니다). 암호화해서 저장합니다: {dest}. 쓰기 전에 Touch ID로 확인합니다.",
+  "aib.secret.dialog_retry": "입력한 값이 올바르지 않습니다: {why}. 다시 붙여 넣으세요.",
+  "aib.secret.why.empty": "비어 있습니다",
+  "aib.secret.why.too_long": "너무 깁니다",
+  "aib.secret.why.newline": "줄바꿈이 들어 있습니다",
+  "aib.secret.why.bad_prefix": "{prefix}(으)로 시작해야 합니다",
+  "aib.secret.touchid_reason": "aib: 키 {name}을(를) {dest}에 저장",
+  "aib.secret.dest_local": "이 Mac의 키 보관함",
+  "aib.secret.btn_ok": "저장",
+  "aib.secret.btn_cancel": "취소"
 }

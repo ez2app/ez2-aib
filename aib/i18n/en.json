@@ -4665,5 +4665,16 @@
   "aib.chat.backup_hint": "Back up your online-chat keys now (the owner key exists only on this machine; a dead disk or reinstall loses it): aib chat backup <file>",
   "aib.chat.status_unhealthy_not_running": "⚠ Online chat is on but the bridge is not running: nothing is sent or received (opening a cabin or aib chat ensure-window starts it)",
   "aib.chat.status_unhealthy_stale_heartbeat": "⚠ The bridge runs but has not reached a relay for a while: messages may not go out",
-  "aib.chat.status_unhealthy_no_relay": "⚠ The bridge runs but is not connected to a relay yet (no keys, roster not published, or all relays down)"
+  "aib.chat.status_unhealthy_no_relay": "⚠ The bridge runs but is not connected to a relay yet (no keys, roster not published, or all relays down)",
+  "aib.secret.dialog_title": "aib · enter {name}",
+  "aib.secret.dialog_prompt": "Paste {name} below (the characters stay hidden). It is saved encrypted to: {dest}. You confirm with Touch ID before anything is written.",
+  "aib.secret.dialog_retry": "That did not look right: {why}. Please paste it again.",
+  "aib.secret.why.empty": "it was empty",
+  "aib.secret.why.too_long": "it is too long",
+  "aib.secret.why.newline": "it contains a line break",
+  "aib.secret.why.bad_prefix": "it should start with {prefix}",
+  "aib.secret.touchid_reason": "aib: save the key {name} to {dest}",
+  "aib.secret.dest_local": "this Mac's key store",
+  "aib.secret.btn_ok": "Save",
+  "aib.secret.btn_cancel": "Cancel"
 }

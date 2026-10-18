@@ -4665,5 +4665,16 @@
   "aib.chat.backup_hint": "オンライン会話の鍵を今バックアップしてください(オーナー鍵はこのマシンだけ。故障や再インストールで失われます):aib chat backup <ファイル>",
   "aib.chat.status_unhealthy_not_running": "⚠ オンライン会話はオンですがブリッジが動いていません:送受信できません(艙を開くか aib chat ensure-window で起動)",
   "aib.chat.status_unhealthy_stale_heartbeat": "⚠ ブリッジは動いていますが、しばらく中継局につながっていません:送信できない可能性",
-  "aib.chat.status_unhealthy_no_relay": "⚠ ブリッジは動いていますが、まだ中継局に接続していません(鍵なし・名簿未発行・全局切断)"
+  "aib.chat.status_unhealthy_no_relay": "⚠ ブリッジは動いていますが、まだ中継局に接続していません(鍵なし・名簿未発行・全局切断)",
+  "aib.secret.dialog_title": "aib · {name} を入力",
+  "aib.secret.dialog_prompt": "{name} を下に貼り付けてください(文字は隠れます)。暗号化して保存します:{dest}。書き込む前に Touch ID で確認します。",
+  "aib.secret.dialog_retry": "入力内容が正しくないようです:{why}。もう一度貼り付けてください。",
+  "aib.secret.why.empty": "空でした",
+  "aib.secret.why.too_long": "長すぎます",
+  "aib.secret.why.newline": "改行が含まれています",
+  "aib.secret.why.bad_prefix": "{prefix} で始まるはずです",
+  "aib.secret.touchid_reason": "aib:キー {name} を {dest} に保存",
+  "aib.secret.dest_local": "この Mac のキー保管庫",
+  "aib.secret.btn_ok": "保存",
+  "aib.secret.btn_cancel": "キャンセル"
 }
