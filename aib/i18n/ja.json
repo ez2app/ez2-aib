@@ -4676,5 +4676,7 @@
   "aib.secret.touchid_reason": "aib:キー {name} を {dest} に保存",
   "aib.secret.dest_local": "この Mac のキー保管庫",
   "aib.secret.btn_ok": "保存",
-  "aib.secret.btn_cancel": "キャンセル"
+  "aib.secret.btn_cancel": "キャンセル",
+  "aib.rightai.mouse_hint1": "🖱 クリックできない?",
+  "aib.rightai.mouse_hint2": "表示→マウス報告を許可"
 }

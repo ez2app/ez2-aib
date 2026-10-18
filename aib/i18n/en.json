@@ -4676,5 +4676,7 @@
   "aib.secret.touchid_reason": "aib: save the key {name} to {dest}",
   "aib.secret.dest_local": "this Mac's key store",
   "aib.secret.btn_ok": "Save",
-  "aib.secret.btn_cancel": "Cancel"
+  "aib.secret.btn_cancel": "Cancel",
+  "aib.rightai.mouse_hint1": "🖱 Can't click?",
+  "aib.rightai.mouse_hint2": "View→Allow Mouse Reporting"
 }

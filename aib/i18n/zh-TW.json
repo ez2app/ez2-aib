@@ -4676,5 +4676,7 @@
   "aib.secret.touchid_reason": "aib:把金鑰 {name} 存到 {dest}",
   "aib.secret.dest_local": "這台 Mac 的金鑰櫃",
   "aib.secret.btn_ok": "儲存",
-  "aib.secret.btn_cancel": "取消"
+  "aib.secret.btn_cancel": "取消",
+  "aib.rightai.mouse_hint1": "🖱 點不到席位?",
+  "aib.rightai.mouse_hint2": "顯示方式→允許滑鼠回報"
 }
