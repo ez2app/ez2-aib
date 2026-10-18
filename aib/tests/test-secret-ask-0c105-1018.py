@@ -13,7 +13,11 @@ S7 --push:值只走 ssh 的 stdin,不在 argv;遠端指令 umask 077、600、暫
    沒輸入框;ssh 失敗 ⇒ rc 4(本機已寫)
 S9 --remote-only:只送遠端、本機金鑰櫃不動;沒給 --push ⇒ rc 2 沒輸入框;遠端失敗 ⇒ rc 2
 S8 不認得的名字 ⇒ rc 2;不是 Mac 又不是終端機 ⇒ no_tty
-刀(複本):K1 Touch ID 沒過也寫 ⇒ S4 紅;K2 拿掉 sk-ant- 前綴檢查 ⇒ S5 紅
+S10 --push 先 ssh -G 解出真正的 user@hostname:port,印進 Touch ID 視窗,連線用 -o 釘死;-G 失敗 / 有 ProxyCommand、ProxyJump
+    ⇒ rc 2、沒輸入框(@abb89 審 10-18:ssh 別名同帳號的 AI 改得到)
+S11 狀態根走單源順位:只設 EZ2_AIB_HOME 時,Touch ID 一次一窗的鎖在 $EZ2_AIB_HOME/locks(別人拿著 ⇒ touchid_busy、沒寫)
+刀(複本):K1 Touch ID 沒過也寫 ⇒ S4 紅;K2 拿掉 sk-ant- 前綴檢查 ⇒ S5 紅;K3 視窗不印解出的真 host ⇒ S10 紅;
+    K4 狀態根只看 EZ2_AIB_STATE_ROOT(舊寫法)⇒ S11 紅
 """
 import io
 import json
@@ -53,6 +57,18 @@ class Fake:
         self.touches += 1
         self.reason = reason
         return {"ok": self.touch, "why": "ok" if self.touch else "cancel"}
+
+
+GOUT = "user root\nhostname 203.0.113.7\nport 2222\nproxycommand none\nproxyjump none\n"
+
+
+def sshfake(calls, rc=0, gout=GOUT, grc=0):
+    def run(cmd, input=None, **kw):
+        if cmd[:2] == ["ssh", "-G"]:
+            return type("R", (), {"returncode": grc, "stdout": gout})()
+        calls.append((cmd, input))
+        return type("R", (), {"returncode": rc, "stdout": ""})()
+    return run
 
 
 class Resp:
@@ -170,17 +186,15 @@ class SecretAsk(unittest.TestCase):
 
     def test_s7_push(self):
         calls = []
-
-        def ssh(cmd, input=None, **kw):
-            calls.append((cmd, input))
-            return type("R", (), {"returncode": 0})()
+        ssh = sshfake(calls)
         f = Fake([KEY])
         rc, res = self.run_cmd([NAME, "--push", "eu01-ts:/home/app/daily/.secrets/anthropic.env", "--owner", "app"], f, ssh_run=ssh)
-        self.assertEqual((rc, res["pushed"]), (0, "eu01-ts:/home/app/daily/.secrets/anthropic.env"))
+        self.assertEqual((rc, res["pushed"]), (0, "eu01-ts(root@203.0.113.7:2222):/home/app/daily/.secrets/anthropic.env"))
         cmd, stdin = calls[0]
         self.assertEqual(stdin, "%s=%s\n" % (NAME, KEY))
         self.assertFalse(any(KEY in c for c in cmd))
-        self.assertEqual(cmd[:6], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--"])
+        self.assertEqual(cmd[:12], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "HostName=203.0.113.7",
+                                    "-o", "Port=2222", "-o", "User=root", "--"])
         remote = cmd[-1]
         for part in ("umask 077", "chmod 600", "chown app:app", ".tmp-aib", "mv -f"):
             self.assertIn(part, remote)
@@ -190,7 +204,7 @@ class SecretAsk(unittest.TestCase):
             rc, res = self.run_cmd([NAME] + bad, f, ssh_run=ssh)
             self.assertEqual((rc, f.asks), (2, 0), bad)
         f = Fake([KEY])
-        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env"], f, ssh_run=lambda *a, **k: type("R", (), {"returncode": 255})())
+        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env"], f, ssh_run=sshfake([], rc=255))
         self.assertEqual((rc, res["why"], res["ok"]), (4, "push_ssh_rc_255", False))
         self.assertEqual(C.decrypt_value(self.stored(), NAME, self.sec), KEY)
 
@@ -206,21 +220,61 @@ class SecretAsk(unittest.TestCase):
 
     def test_s9_remote_only(self):
         calls = []
-        ok = lambda cmd, input=None, **kw: calls.append(input) or type("R", (), {"returncode": 0})()
         f = Fake([KEY])
-        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env", "--remote-only"], f, ssh_run=ok)
-        self.assertEqual((rc, res["pushed"], res["local"], f.touches), (0, "eu01:/a/b.env", False, 1))
-        self.assertEqual(calls, ["%s=%s\n" % (NAME, KEY)])
+        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env", "--remote-only"], f, ssh_run=sshfake(calls))
+        self.assertEqual((rc, res["pushed"], res["local"], f.touches), (0, "eu01(root@203.0.113.7:2222):/a/b.env", False, 1))
+        self.assertEqual([c[1] for c in calls], ["%s=%s\n" % (NAME, KEY)])
         self.assertIsNone(self.stored())
-        self.assertIn("eu01:/a/b.env", f.reason)
+        self.assertIn("eu01(root@203.0.113.7:2222):/a/b.env", f.reason)
         f = Fake([KEY])
         rc, res = self.run_cmd([NAME, "--remote-only"], f)
         self.assertEqual((rc, res["why"], f.asks), (2, "remote_only_needs_push", 0))
         f = Fake([KEY])
-        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env", "--remote-only"], f,
-                               ssh_run=lambda *a, **k: type("R", (), {"returncode": 1})())
+        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env", "--remote-only"], f, ssh_run=sshfake([], rc=1))
         self.assertEqual((rc, res["ok"]), (2, False))
         self.assertIsNone(self.stored())
+
+
+    def test_s10_resolve_pin(self):
+        calls = []
+        f = Fake([KEY])
+        rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env"], f, ssh_run=sshfake(calls))
+        self.assertEqual(rc, 0)
+        self.assertIn("203.0.113.7:2222", f.reason)
+        self.assertIn("root@", f.reason)
+        for kw, why in (({"grc": 255}, "ssh_resolve_failed"),
+                        ({"gout": GOUT.replace("proxycommand none", "proxycommand nc evil 22")}, "ssh_proxy_refused"),
+                        ({"gout": GOUT.replace("proxyjump none", "proxyjump bastion")}, "ssh_proxy_refused"),
+                        ({"gout": "user root\nport 22\n"}, "ssh_resolve_failed"),
+                        ({"gout": GOUT.replace("203.0.113.7", "a b;c")}, "ssh_resolve_failed")):
+            f = Fake([KEY])
+            rc, res = self.run_cmd([NAME, "--push", "eu01:/a/b.env"], f, ssh_run=sshfake([], **kw))
+            self.assertEqual((rc, res["why"], f.asks, f.touches), (2, why, 0, 0), kw)
+        f = Fake([KEY])
+        rc, res = self.run_cmd([NAME, "--push", "v6:/a/b.env"], f, ssh_run=sshfake([], gout=GOUT.replace("203.0.113.7", "2001:db8::7")))
+        self.assertEqual(rc, 0)
+        self.assertIn("2001:db8::7", f.reason)
+
+    def test_s11_state_root_order(self):
+        import touchid_approve as TA
+        home = Path(self.td.name) / "aibhome"
+        env = dict(self.env)
+        env.pop("EZ2_AIB_STATE_ROOT")
+        env["EZ2_AIB_HOME"] = str(home)
+        saved = os.environ.pop("EZ2_AIB_STATE_ROOT", None)
+        try:
+            with TA.one_at_a_time(home / "locks" / "touchid-approve.lock") as held:
+                self.assertTrue(held.held)
+                f = Fake([KEY])
+                out = io.StringIO()
+                rc = SA.ask_cmd([NAME], env=env, platform="darwin", ask=f.ask, touchid=f.touchid,
+                                touchid_available=lambda: True, out=out)
+                res = json.loads(out.getvalue())
+            self.assertEqual((rc, res["why"], f.touches), (2, "touchid_busy", 0))
+            self.assertIsNone(self.stored())
+        finally:
+            if saved is not None:
+                os.environ["EZ2_AIB_STATE_ROOT"] = saved
 
 
 class Knives(unittest.TestCase):
@@ -233,6 +287,16 @@ class Knives(unittest.TestCase):
     def test_k1_touchid_skipped(self):
         self._red('    return None if res.get("ok") is True else "touchid_"', '    return None\n    return None if res.get("ok") is True else "touchid_"',
                   "test_s4_touchid_gate")
+
+    def test_k3_host_not_shown(self):
+        self._red('''    dest = where if a.remote_only else _t("aib.secret.dest_local") + (" + " + where if target else "")''',
+                  '''    dest = ("%s:%s" % target) if a.remote_only else _t("aib.secret.dest_local") + (" + %s:%s" % target if target else "")''',
+                  "test_s10_resolve_pin")
+
+    def test_k4_state_root_env_only(self):
+        self._red("    root = seats_dir_lib.state_root(env)[0]",
+                  '    root = env.get("EZ2_AIB_STATE_ROOT") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".ez2-aib")',
+                  "test_s11_state_root_order")
 
     def test_k2_prefix_dropped(self):
         self._red("    if want and not value.startswith(want):\n", "    if False:\n", "test_s5_retry")

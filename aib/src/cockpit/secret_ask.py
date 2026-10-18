@@ -48,6 +48,7 @@ CHECKS = {"ANTHROPIC_API_KEY": ("https://api.anthropic.com/v1/models",
 _HOST = re.compile(r"^[A-Za-z0-9._@-]{1,128}$")
 _PATH = re.compile(r"^/[A-Za-z0-9._/-]{1,255}$")
 _OWNER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+_HOSTNAME = re.compile(r"^[A-Za-z0-9._:%-]{1,253}$")   # ssh -G 解出的 hostname(含 IPv6)
 
 JXA = r"""
 var app = Application.currentApplication();
@@ -167,8 +168,9 @@ def prove_human(name, dest, env, platform, touchid=None, touchid_available=None)
         return "touchid_off"
     if not (touchid_available() if touchid_available else TA.available(platform=platform, environ=env)):
         return "touchid_unavailable"
-    reason = _t("aib.secret.touchid_reason", {"name": TA.clean(name, 64), "dest": TA.clean(dest, 80)})
-    root = os.path.join(env.get("EZ2_AIB_STATE_ROOT") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".ez2-aib"))
+    reason = _t("aib.secret.touchid_reason", {"name": TA.clean(name, 64), "dest": TA.clean(dest, 160)})
+    import seats_dir_lib
+    root = seats_dir_lib.state_root(env)[0]     # 同單源順位:EZ2_AIB_STATE_ROOT > EZ2_AIB_HOME > ~/.ez2-aib(@abb89 審:不然鎖檔分家、一次一窗破功)
     with TA.one_at_a_time(os.path.join(root, "locks", "touchid-approve.lock")) as gate:
         res = (touchid or TA.ask)(reason) if gate.held else {"ok": False, "why": "busy"}
     return None if res.get("ok") is True else "touchid_" + str(res.get("why") or "failed").split(":")[0]
@@ -184,15 +186,41 @@ def parse_push(spec, owner):
     return host, path
 
 
-def push(name, value, host, path, owner=None, run=subprocess.run):
-    """經 ssh stdin 寫 NAME=value 到遠端。回 None = 成功;否則原因代碼。"""
+def resolve(host, run=subprocess.run):
+    """ssh -G 解出別名真正會連的 user / hostname / port(@abb89 審:~/.ssh/config 同帳號的 AI 改得到,別名可被指去別台)。
+    回 {"user","hostname","port"};解不出、或有 ProxyCommand / ProxyJump(連線會被轉走、視窗看不出)⇒ 丟 ValueError。"""
+    try:
+        r = run(["ssh", "-G", "--", host], capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+    except (subprocess.TimeoutExpired, OSError):
+        raise ValueError("ssh_resolve_failed")
+    if r.returncode != 0:
+        raise ValueError("ssh_resolve_failed")
+    kv = {}
+    for ln in (r.stdout or "").splitlines():
+        k, _, v = ln.strip().partition(" ")
+        kv.setdefault(k.lower(), v.strip())
+    if kv.get("proxycommand", "none") != "none" or kv.get("proxyjump", "none") != "none":
+        raise ValueError("ssh_proxy_refused")
+    hn, port, user = kv.get("hostname", ""), kv.get("port", ""), kv.get("user", "")
+    if not _HOSTNAME.match(hn) or not port.isdigit() or not _OWNER.match(user or "-"):
+        raise ValueError("ssh_resolve_failed")
+    return {"user": user, "hostname": hn, "port": port}
+
+
+def push(name, value, host, path, owner=None, run=subprocess.run, pin=None):
+    """經 ssh stdin 寫 NAME=value 到遠端。pin = resolve() 的結果:用 -o 釘死 HostName / Port / User,
+    Touch ID 視窗顯示的那台就是真的連的那台(解析完才改 config 也轉不走)。回 None = 成功;否則原因代碼。"""
     q, tmp = shlex.quote(path), shlex.quote(path + ".tmp-aib")
     cmd = "umask 077; mkdir -p %s && cat > %s && chmod 600 %s" % (shlex.quote(os.path.dirname(path)), tmp, tmp)
     if owner:
         cmd += " && chown %s:%s %s" % (owner, owner, tmp)
     cmd += " && mv -f %s %s" % (tmp, q)
     try:
-        r = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host, cmd],
+        fixed = []
+        for k, v in (("HostName", (pin or {}).get("hostname")), ("Port", (pin or {}).get("port")), ("User", (pin or {}).get("user"))):
+            if v:
+                fixed += ["-o", "%s=%s" % (k, v)]
+        r = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"] + fixed + ["--", host, cmd],
                 input="%s=%s\n" % (name, value), capture_output=True, text=True, timeout=60)
     except (subprocess.TimeoutExpired, OSError):
         return "ssh_failed"
@@ -223,17 +251,19 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         res["why"] = "unknown_name"
         return done(2)
     res["file"] = rel
-    target = None
+    target = pin = None
     if a.push:
         try:
             target = parse_push(a.push, a.owner)
+            pin = resolve(target[0], run=ssh_run or subprocess.run)
         except ValueError as e:
             res["why"] = str(e)
             return done(2)
+        where = "%s(%s@%s:%s):%s" % (target[0], pin["user"], pin["hostname"], pin["port"], target[1])
     if a.remote_only and not target:
         res["why"] = "remote_only_needs_push"
         return done(2)
-    dest = ("%s:%s" % target) if a.remote_only else _t("aib.secret.dest_local") + (" + %s:%s" % target if target else "")
+    dest = where if a.remote_only else _t("aib.secret.dest_local") + (" + " + where if target else "")
     value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty)
     if value is None:
         res["why"] = why
@@ -258,11 +288,11 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         res["local"] = not a.remote_only
         res["fingerprint"] = fingerprint(value)
         if target:
-            bad = push(a.name, value, target[0], target[1], a.owner, run=ssh_run or subprocess.run)
+            bad = push(a.name, value, target[0], target[1], a.owner, run=ssh_run or subprocess.run, pin=pin)
             if bad:
                 res["why"] = "push_" + bad
                 return done(4 if not a.remote_only else 2)   # 4 = 本機已寫、遠端沒送到
-            res["pushed"] = "%s:%s" % target
+            res["pushed"] = where
         res["ok"] = True
         return done(0)
     finally:
