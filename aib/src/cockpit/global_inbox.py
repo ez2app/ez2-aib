@@ -37,6 +37,10 @@ def import_once(root=None, env=None):
     out = []
     for msgid, rec, path in GF.pending(root, "inbox"):
         try:
+            if rec.get("class") == "paired":                     # @abb89 F3:撤銷之後才匯入的,一律降成陌生(待審)
+                import chat_pair as CP
+                if not CP.is_paired(rec.get("from_npub"), env):
+                    rec = dict(rec, **{"class": "stranger", "verified": False})
             qf = GF.queue_fields(rec)
         except GF.ContractError as err:
             out.append(_refuse(root, msgid, path, "contract:%s" % err))

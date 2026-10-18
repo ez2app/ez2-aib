@@ -33,6 +33,7 @@ AAD = b"aib-owner-seal/v1"
 KDF = "pbkdf2-sha256"
 ITERATIONS = 600000
 MIN_PASS = 12
+MAX_PHONES = 3                  # 主人手機最多 3 支(第 33.5 節,Andy 10-18 裁)
 PASS_MAX_FAILS = 5              # 主人密語連錯 5 次鎖 30 秒,之後每錯一次翻倍,上限 1 小時(@abb89 10-18 H2;同 #144)
 PASS_LOCK_S = 30
 PASS_LOCK_MAX_S = 3600
@@ -409,8 +410,10 @@ def next_list(cur, now, add=None, revoke=None):
             raise OwnerError("too_many")
         if add.get("host") and any(d.get("host") for d in devices):
             raise OwnerError("already_listed")
-        devices.append(dict({"npub": add["npub"], "name": add.get("name"), "added_at": int(now)},
-                            **({"host": True} if add.get("host") else {})))
+        if add.get("role") == "phone" and sum(1 for d in devices if d.get("role") == "phone") >= MAX_PHONES:
+            raise OwnerError("too_many_phones")
+        extra = {"host": True} if add.get("host") else ({"role": "phone"} if add.get("role") == "phone" else {})
+        devices.append(dict({"npub": add["npub"], "name": add.get("name"), "added_at": int(now)}, **extra))
     if revoke:
         hit = [d for d in devices if revoke in (d["npub"], DV.device_code(d["npub"]), fingerprint(d["npub"]))]
         if not hit:

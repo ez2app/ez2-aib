@@ -238,8 +238,8 @@ async def _owner_roster(owner_npub, relays, root):
     if ev_dv is not None and dv_why != "ok":
         audit(root, "devices", "-", owner_npub, "devices-list:" + dv_why)
     devs = []
-    if dev_list and dev_list["devices"]:
-        listed = {d["npub"]: d for d in dev_list["devices"]}
+    if dev_list and DV.machines(dev_list):
+        listed = {d["npub"]: d for d in DV.machines(dev_list)}        # 主人手機不發機器名冊、不准被當機器合併
         flt_r = N.Filter().authors([N.PublicKey.parse(n) for n in listed]).kind(N.Kind(CR.KIND_ROSTER)) \
             .identifiers([DV.roster_d(n) for n in listed])
         try:
@@ -1285,6 +1285,23 @@ class Receiver(object):
         rec = {"v": 1, "msgid": msgid, "received_at": int(time.time()), "to_cabin": entry.get("cabin") or "main",
                "to_seat": entry["seat5"], "from_npub": from_npub, "verified": False, "class": "stranger",
                "content": content}
+        phone_cmd = None
+        if not is_aib and not is_request:
+            import chat_pair as CP                              # 第 33 節:主人手機(一般 Nostr App,沒有 aib 標籤)
+            if CP.offer_code(self.root, from_npub, content):
+                audit(self.root, "in", msgid, from_npub, "phone-pair-code")   # 只記成候選;本人在電腦上按 Touch ID 才配
+                return
+            if from_npub in await self._signed_phones():           # @abb89 F1:信任錨是主人簽的清單,不是 paired.json
+                why = CP.accept_event(self.root, rumor.id().to_hex() if rumor.id() else msgid, rumor.created_at().as_secs())
+                if why:
+                    audit(self.root, "in", msgid, from_npub, "phone-refused:" + why)   # 防重播 / 時間差
+                    return
+                kind, text = CP.classify(content)
+                rec.update(verified=True, display_name="主人手機", content=text, kind="order" if kind == "command" else "other")
+                rec["class"] = "paired"
+                if kind == "command":
+                    phone_cmd = text
+                    CP.log_command(self.root, from_npub, msgid, text)
         from_addr = tags.get("aib-from")
         parsed = GF.parse_address(from_addr) if from_addr else None
         if parsed is not None:
@@ -1333,6 +1350,8 @@ class Receiver(object):
         try:
             GF.write_inbox(self.root, rec)
             audit(self.root, "in", msgid, from_npub, "inbox")
+            if phone_cmd is not None:                          # 第 33.6 節:回手機一句純文字(手機 App 看得懂)
+                await self._reply_plain(entry, from_npub, "aib:收到指令,已交給 @%s:%s" % (entry["seat5"], phone_cmd[:40]))
             if peer:
                 GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"),
                              _peer_seat(peer), peer.get("roster_at"), direction="in", claims=_claims(peer))
@@ -1340,6 +1359,47 @@ class Receiver(object):
             sys.stderr.write("inbox:%s\n" % err)
             audit(self.root, "in", msgid, from_npub, "refused")
             await self.send_receipt(msgid, "refused")
+
+    async def _signed_phones(self):
+        """主人簽的機器清單裡 role=phone 的手機(中繼站抓、nostr-sdk 驗簽 + 作者 = 主人 + chat_devices 驗內容 + seq 不倒退、
+        沒過期)。快取 60 秒;本機 paired.json 有變(配對 / 撤銷剛做完)就立刻重抓。抓不到 ⇒ 空(寧可不認)。"""
+        import chat_pair as CP
+        owner = (NK.read_map().get("owner") or {}).get("npub")
+        try:
+            mt = CP.paired_path(None).stat().st_mtime
+        except OSError:
+            mt = 0
+        hit = getattr(self, "_phones", None)
+        if hit and time.time() - hit[0] < 60 and hit[1] == mt:
+            return hit[2]
+        phones = set()
+        if owner:
+            try:
+                rc, rec = await devices_fetch(owner, CR.relays())
+                lst = rec.get("list") if rc == 0 else None
+                if lst and not lst.get("expired") and DV.accept_seq(self.root, owner, lst["seq"]):
+                    phones = DV.phones(lst)
+            except Exception as err:   # noqa: BLE001
+                sys.stderr.write("signed_phones:%s\n" % type(err).__name__)
+        self._phones = (time.time(), mt, phones)
+        return phones
+
+    async def _reply_plain(self, entry, to_npub, text):
+        """回一則不帶 aib 標籤的純文字私訊(給主人手機;一般 Nostr App 看得懂)。失敗只記 audit。"""
+        rc, res = await self.sender._resolve(to_npub)
+        if rc != 0:
+            audit(self.root, "out", "-", to_npub, "phone-ack:" + str(res.get("why")))
+            return False
+        keys = _keys(entry["key"])
+        gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(to_npub), text)
+        keys = None
+        c = await _client(res["dm_relays"])
+        try:
+            out = await c.send_event(gw)
+            audit(self.root, "out", "-", to_npub, "phone-ack" if out.success else "phone-ack:failed")
+            return bool(out.success)
+        finally:
+            await c.shutdown()
 
     async def send_receipt(self, msgid, stage, pos=None, refs=None, reason=None):
         """回條寄回原寄件席(第 6.2 節)。只回 aib 寄件人(一般 Nostr App 收到一則看不懂的字沒用)。

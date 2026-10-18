@@ -95,7 +95,7 @@ def parse_list(content, signer_npub, now):
         codes.add(device_code(d["npub"]))
         if d.get("name") is not None and GF.clean_display_name(d["name"]) != d["name"]:
             d["name"] = None
-        if d.get("host") not in (None, True):
+        if d.get("host") not in (None, True) or d.get("role") not in (None, "phone") or (d.get("host") and d.get("role")):
             raise DevicesError("bad_device")
     for r in revs:
         if not isinstance(r, dict) or not _NPUB_RE.match(str(r.get("npub"))):
@@ -168,9 +168,19 @@ def usable_list(root, owner, ev_content, signer_npub, now):
     return rec, "ok"
 
 
+def machines(dev_list):
+    """清單裡真正的機器(不含 role=phone 的主人手機:手機不發機器名冊,也不准被當機器合併)。"""
+    return [d for d in (dev_list or {}).get("devices") or [] if d.get("role") != "phone"]
+
+
+def phones(dev_list):
+    """清單裡主人簽過的手機 npub(第 33 節 F1:手機配對的信任錨是主人簽的清單,不是本機 paired.json)。"""
+    return {d["npub"] for d in (dev_list or {}).get("devices") or [] if d.get("role") == "phone"}
+
+
 def parse_device_roster(content, signer_npub, owner, dev_list):
-    """機器名冊 ⇒ 驗過的 dict。簽章者要在清單 devices 裡、owner 欄要 = 這位主人;否則 DevicesError / RosterError。"""
-    if signer_npub not in {d["npub"] for d in dev_list["devices"]}:
+    """機器名冊 ⇒ 驗過的 dict。簽章者要在清單的機器裡(手機不算)、owner 欄要 = 這位主人;否則 DevicesError / RosterError。"""
+    if signer_npub not in {d["npub"] for d in machines(dev_list)}:
         raise DevicesError("signer_not_listed")
     return CR.parse(content, signer_npub, owner=owner)
 

@@ -257,7 +257,7 @@ class Knife(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅:" + cell + "\n" + r.stdout + r.stderr)
 
     def test_k1_signer_not_checked(self):
-        self._knife("src/cockpit/chat_devices.py", '''    if signer_npub not in {d["npub"] for d in dev_list["devices"]}:
+        self._knife("src/cockpit/chat_devices.py", '''    if signer_npub not in {d["npub"] for d in machines(dev_list)}:
         raise DevicesError("signer_not_listed")''', "    pass", "Core.test_d5_device_roster")
 
     @unittest.skipUnless(RT.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
