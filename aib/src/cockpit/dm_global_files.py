@@ -164,6 +164,9 @@ def parse_address(addr):
     return {"owner": m.group("owner"), "cabin": m.group("cabin"), "seat": m.group("seat")}
 
 
+AUTHORS = ("human", "ai_draft", "ai_auto")
+
+
 def check_outbox(rec):
     _base(rec)
     _need(rec, "created_at", _is_int, "要是非負整數(UTC 秒)")
@@ -181,6 +184,7 @@ def check_outbox(rec):
     if rec["op"] == "request":   # 好友申請(第 29.4 節):一句話,可空
         _opt(rec, "content", lambda v: isinstance(v, str) and len(v) <= REQUEST_NOTE_MAX, "最多 %d 字" % REQUEST_NOTE_MAX)
     _opt(rec, "priority", lambda v: v in PRIORITIES, "只能 %s" % "/".join(PRIORITIES))
+    _opt(rec, "author", lambda v: v in AUTHORS, "只能 %s" % "/".join(AUTHORS))   # 第 35 節第 2 點:本人 / AI 擬稿 / AI 自動
     _opt(rec, "expires", _is_int, "要是非負整數(UTC 秒)")
     _opt(rec, "reply_to", lambda v: isinstance(v, str) and bool(MSGID_RE.match(v)), "要是 msgid")
     for k in ("thread", "kind", "lang"):

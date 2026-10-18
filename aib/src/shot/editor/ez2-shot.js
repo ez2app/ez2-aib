@@ -62,6 +62,15 @@ function writeLastSave(path, seat, note, pngB64) {
   } catch (e) { log("last-save FAIL " + e); }
 }
 
+// 只存剪貼簿:last-save.json 不帶檔案路徑,標 clipboard,讓叫編輯器的人(shot_helper / 艦長室)知道圖在剪貼簿
+function writeClipOnly(ok) {
+  try {
+    var doc = { path: "", seat: "", note: "", png: "", clipboard: !!ok, ts: Math.floor(Date.now() / 1000) };
+    $.NSString.stringWithString(JSON.stringify(doc)).writeToFileAtomicallyEncodingError(G.lastSavePath, true, $.NSUTF8StringEncoding, null);
+    log("last-save clipboard ok=" + !!ok);
+  } catch (e) { log("last-save FAIL " + e); }
+}
+
 function copyPng(pngB64) {
   var png = $.NSData.alloc.initWithBase64EncodedStringOptions(pngB64, 0);
   var pb = $.NSPasteboard.generalPasteboard;
@@ -107,6 +116,10 @@ ObjC.registerSubclass({
           G.web.evaluateJavaScriptCompletionHandler("ez2Saved(" + (p ? "true" : "false") + "," + JSON.stringify(p ? name : "寫檔失敗") + ")", function (res, err) {});   // 不能傳 null:JXA 會當掉
         } else if (m.cmd === "copy") {
           copyPng(m.png);
+        } else if (m.cmd === "cliponly") {   // 只存剪貼簿:複製 → 留一筆 clipboard=true(不存檔、不送席)→ 關掉
+          var okc = copyPng(m.png);
+          writeClipOnly(okc);
+          finish("clipboard");
         } else if (m.cmd === "copytext") {
           var pb = $.NSPasteboard.generalPasteboard; pb.clearContents; pb.setStringForType(m.text, $.NSPasteboardTypeString);
         } else if (m.cmd === "prefs") {

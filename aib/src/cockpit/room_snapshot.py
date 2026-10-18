@@ -60,10 +60,10 @@ def _emoji_of(home, persona_uid):
 
 
 ISLAND_MAX = 64              # 島最大 64 × 64 格(@74e8b 11:59)
-_KEY_RE = __import__("re").compile(r"^[a-z0-9_]{1,24}$")      # kind、res 的名稱(艦長室定義意思,核心只驗型別)
-_STYLE_RE = __import__("re").compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")  # 風格包 id 規則(@74e8b 14:50);島 style、look 的各欄共用
-_HEX_RE = __import__("re").compile(r"^#[0-9a-fA-F]{6}$")
-_OFFER_ID_RE = __import__("re").compile(r"^[0-9a-f]{8}$")
+_KEY_RE = __import__("re").compile(r"^[a-z0-9_]{1,24}\Z")      # kind、res 的名稱(艦長室定義意思,核心只驗型別);\Z 不是 $:$ 會讓結尾帶換行的值過
+_STYLE_RE = __import__("re").compile(r"^[a-z0-9][a-z0-9_-]{0,23}\Z")  # 風格包 id 規則(@74e8b 14:50);島 style、look 的各欄共用
+_HEX_RE = __import__("re").compile(r"^#[0-9a-fA-F]{6}\Z")
+_OFFER_ID_RE = __import__("re").compile(r"^[0-9a-f]{8}\Z")
 _RLE_RE = __import__("re").compile(r"([gswdrtfh])([1-9][0-9]{0,3})?")
 RES_MAX = 50
 BUILDINGS_MAX, DECOR_MAX, PETS_MAX, OFFERS_MAX = 200, 500, 24, 20   # 第 36.1 節
@@ -160,6 +160,18 @@ def clean_offers(v):
     return out
 
 
+SKY_KEYS = ("season", "weather", "time", "fest", "realm", "src")
+
+
+def clean_sky(v):
+    """島的天色 sky = {season, weather, time, fest, realm, src}(艦長室定義意思,核心只驗型別):每項 [a-z0-9_]{1,24},
+    不合的那項當沒有;只收這 6 個鍵,其他鍵(例如艦長本機的座標)一律不帶出去。全空 ⇒ None。"""
+    if not isinstance(v, dict):
+        return None
+    out = {k: v[k] for k in SKY_KEYS if isinstance(v.get(k), str) and _KEY_RE.match(v[k])}
+    return out or None
+
+
 def problems(x):
     """艦長室存檔前要知道的「不合格」(第 36.3 節 check):超過上限、地形格子不合。不合格的欄位送出時當沒有 / 只取前面。"""
     out = []
@@ -179,7 +191,8 @@ def clean_island(x, with_offers=True):
     建築的 kind / lv / building{start,done}、島的 age / res{名稱: 數量} 由艦長室定義意思,核心只驗型別與範圍
     (kind 與名稱 [a-z0-9_]{1,24}、lv / age 0–99、數量非負整數、名稱最多 50 個),不合的欄位當沒有。
     島的 style = 風格包 id [a-z0-9][a-z0-9_-]{0,23};空、沒有或不合 ⇒ None(基本風格,收件端沒有那個包也退回基本)。
-    包 K(第 36.1 節):pets ≤ 24、terrain.grid、建築 look、建築 ≤ 200 / 擺設 ≤ 500(超過只取前面)、offers(with_offers=False ⇒ 不帶)。"""
+    包 K(第 36.1 節):pets ≤ 24、terrain.grid、建築 look、建築 ≤ 200 / 擺設 ≤ 500(超過只取前面)、offers(with_offers=False ⇒ 不帶)。
+    sky(島的天色:季節、天氣、時間…)照 clean_sky 驗;不合或沒有 ⇒ 不帶,收件端自己算。"""
     size = x.get("size") if isinstance(x.get("size"), dict) else {}
     w = size.get("w") if _int_in(size.get("w"), 1, ISLAND_MAX) else 16
     h = size.get("h") if _int_in(size.get("h"), 1, ISLAND_MAX) else 16
@@ -201,6 +214,9 @@ def clean_island(x, with_offers=True):
         out["terrain"] = {k: v for k, v in out["terrain"].items() if k != "grid"}
         if g:
             out["terrain"]["grid"] = g
+    sky = clean_sky(x.get("sky"))
+    if sky:
+        out["sky"] = sky
     if with_offers:
         out["offers"] = clean_offers(x.get("offers"))
     bl = x.get("buildings") if isinstance(x.get("buildings"), list) else []
