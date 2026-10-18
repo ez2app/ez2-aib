@@ -17,7 +17,7 @@ S10 --push 先 ssh -G 解出真正的 user@hostname:port,印進 Touch ID 視窗,
     ⇒ rc 2、沒輸入框(@abb89 審 10-18:ssh 別名同帳號的 AI 改得到)
 S11 狀態根走單源順位:只設 EZ2_AIB_HOME 時,Touch ID 一次一窗的鎖在 $EZ2_AIB_HOME/locks(別人拿著 ⇒ touchid_busy、沒寫)
 刀(複本):K1 Touch ID 沒過也寫 ⇒ S4 紅;K2 拿掉 sk-ant- 前綴檢查 ⇒ S5 紅;K3 視窗不印解出的真 host ⇒ S10 紅;
-    K4 狀態根只看 EZ2_AIB_STATE_ROOT(舊寫法)⇒ S11 紅
+    K4 狀態根只看 EZ2_AIB_STATE_ROOT(舊寫法)⇒ S11 紅;K5 push 不帶 ProxyCommand=none / ProxyJump=none ⇒ S7 紅
 """
 import io
 import json
@@ -193,8 +193,8 @@ class SecretAsk(unittest.TestCase):
         cmd, stdin = calls[0]
         self.assertEqual(stdin, "%s=%s\n" % (NAME, KEY))
         self.assertFalse(any(KEY in c for c in cmd))
-        self.assertEqual(cmd[:12], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "HostName=203.0.113.7",
-                                    "-o", "Port=2222", "-o", "User=root", "--"])
+        self.assertEqual(cmd[:16], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "HostName=203.0.113.7",
+                                    "-o", "Port=2222", "-o", "User=root", "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "--"])
         remote = cmd[-1]
         for part in ("umask 077", "chmod 600", "chown app:app", ".tmp-aib", "mv -f"):
             self.assertIn(part, remote)
@@ -297,6 +297,9 @@ class Knives(unittest.TestCase):
         self._red("    root = seats_dir_lib.state_root(env)[0]",
                   '    root = env.get("EZ2_AIB_STATE_ROOT") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".ez2-aib")',
                   "test_s11_state_root_order")
+
+    def test_k5_push_proxy_not_pinned(self):
+        self._red('        fixed += ["-o", "ProxyCommand=none", "-o", "ProxyJump=none"]', "        pass", "test_s7_push")
 
     def test_k2_prefix_dropped(self):
         self._red("    if want and not value.startswith(want):\n", "    if False:\n", "test_s5_retry")

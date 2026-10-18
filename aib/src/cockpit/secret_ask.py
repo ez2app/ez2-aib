@@ -220,6 +220,7 @@ def push(name, value, host, path, owner=None, run=subprocess.run, pin=None):
         for k, v in (("HostName", (pin or {}).get("hostname")), ("Port", (pin or {}).get("port")), ("User", (pin or {}).get("user"))):
             if v:
                 fixed += ["-o", "%s=%s" % (k, v)]
+        fixed += ["-o", "ProxyCommand=none", "-o", "ProxyJump=none"]    # 解析完到按指紋之間改 config 加轉接也沒用(@abb89 審)
         r = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"] + fixed + ["--", host, cmd],
                 input="%s=%s\n" % (name, value), capture_output=True, text=True, timeout=60)
     except (subprocess.TimeoutExpired, OSError):
