@@ -349,7 +349,7 @@ class Knife(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅:" + cell + "\n" + r.stdout + r.stderr)
 
     def test_k1_parse_trusts_owner_field(self):
-        self._knife("src/cockpit/chat_roster.py", 'if rec.get("owner") != signer_npub or not _NPUB_RE.match(signer_npub or ""):',
+        self._knife("src/cockpit/chat_roster.py", 'if rec.get("owner") != (owner or signer_npub) or not _NPUB_RE.match(signer_npub or ""):',
                     'if not _NPUB_RE.match(signer_npub or ""):', "Build.test_r4_parse")
 
 

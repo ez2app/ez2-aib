@@ -26,6 +26,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import nostr_sdk as N  # noqa: E402  只有 venv 裡有;核心沒有這一行
+import chat_devices as DV  # noqa: E402
 import chat_roster as CR  # noqa: E402
 import dm_global_files as GF  # noqa: E402
 import nostr_keys as NK  # noqa: E402
@@ -135,6 +136,71 @@ async def _fetch_latest(relays, flt):
     return max(evs, key=lambda e: e.created_at().as_secs()) if evs else None
 
 
+async def _fetch_all(relays, flt):
+    """同 _fetch_latest,但回全部(驗過簽);機器名冊一次抓清單上每一台。"""
+    c = await _client(relays)
+    try:
+        evs = await c.fetch_events(N.ReqTarget.auto([flt]), datetime.timedelta(seconds=TIMEOUT))
+    finally:
+        await c.shutdown()
+    return [e for e in evs if e.verify()]
+
+
+async def _owner_roster(owner_npub, relays, root):
+    """主人的名冊(第 37.7 節 K1):主人金鑰簽的 d=aib-roster,再加機器清單上各台的機器名冊合併。
+    ⇒ (rc, 合併後名冊或原因 dict, 名冊時間)。清單不可用(沒有 / 壞 / seq 比看過的小 / 過期)⇒ 只用 d=aib-roster。"""
+    owner_pk = N.PublicKey.parse(owner_npub)
+    flt = N.Filter().author(owner_pk).kind(N.Kind(CR.KIND_ROSTER)).identifier(CR.ROSTER_D)
+    flt_dv = N.Filter().author(owner_pk).kind(N.Kind(CR.KIND_ROSTER)).identifier(DV.DEVICES_D)
+    try:
+        ev, ev_dv = await asyncio.gather(_fetch_latest(relays, flt), _fetch_latest(relays, flt_dv))
+    except Exception as err:   # noqa: BLE001
+        return 2, {"ok": False, "why": "relay_error", "err": type(err).__name__}, None
+    base, at = None, None
+    if ev is not None:
+        if ev.author().to_bech32() != owner_npub:
+            return 2, {"ok": False, "why": "wrong_author"}, None
+        try:
+            base = CR.parse(ev.content(), owner_npub)
+        except CR.RosterError as err:
+            return 2, {"ok": False, "why": "bad_roster", "detail": str(err)}, None
+        at = ev.created_at().as_secs()
+    dev_list, dv_why = DV.usable_list(root, owner_npub, ev_dv.content() if ev_dv else None,
+                                      ev_dv.author().to_bech32() if ev_dv else None, int(time.time()))
+    if ev_dv is not None and dv_why != "ok":
+        audit(root, "devices", "-", owner_npub, "devices-list:" + dv_why)
+    devs = []
+    if dev_list and dev_list["devices"]:
+        listed = {d["npub"]: d for d in dev_list["devices"]}
+        flt_r = N.Filter().authors([N.PublicKey.parse(n) for n in listed]).kind(N.Kind(CR.KIND_ROSTER)) \
+            .identifiers([DV.roster_d(n) for n in listed])
+        try:
+            evs = await _fetch_all(relays, flt_r)
+        except Exception as err:   # noqa: BLE001
+            return 2, {"ok": False, "why": "relay_error", "err": type(err).__name__}, None
+        latest = {}
+        for e in evs:
+            n = e.author().to_bech32()
+            vecs = [t.to_vec() for t in e.tags()]
+            d_tag = next((v[1] for v in vecs if len(v) >= 2 and v[0] == "d"), None)
+            if n not in listed or d_tag != DV.roster_d(n):
+                continue
+            if n not in latest or e.created_at().as_secs() > latest[n].created_at().as_secs():
+                latest[n] = e
+        for n, e in sorted(latest.items()):
+            try:
+                devs.append((n, DV.parse_device_roster(e.content(), n, owner_npub, dev_list)))
+                at = max(at or 0, e.created_at().as_secs())
+            except (CR.RosterError, DV.DevicesError) as err:
+                audit(root, "devices", "-", n, "device-roster:%s" % err)
+    if base is None and not devs:
+        return 2, {"ok": False, "why": "no_roster"}, None             # 對方還沒開全球對談(第 13 節)
+    merged, warns = DV.merge(owner_npub, base, devs)
+    for w in warns:
+        audit(root, "devices", "-", owner_npub, "%s:%s" % (w["kind"], w["cabin"]))
+    return 0, merged, at
+
+
 async def probe(url):
     """量一個中繼站(第 28.6 第三站實測):連線、回 OK、查詢回 EOSE 各花多久。只用**拋棄式金鑰**發一則
     ephemeral(kind 20001,站只轉送不存)、查一次 kind 10050(limit 1);不連發、不帶我們任何金鑰或名冊。"""
@@ -176,7 +242,7 @@ async def probe(url):
             pass
 
 
-async def resolve(addr, relays):
+async def resolve(addr, relays, root=None):
     """全球位址 → (rc, 結果)。<主人 npub>/<艙>/<席>:抓名冊 → 驗簽 → parse → 找席 → 抓那席 10050;
     npub1…(直接指定席金鑰):只抓那個 npub 的 10050。任何一步不對 ⇒ rc 2 + 原因代碼(不寄任何東西)。"""
     parsed = GF.parse_address(addr)
@@ -188,27 +254,18 @@ async def resolve(addr, relays):
         out.update(seat={"npub": seat_npub}, envelope=CR.ENVELOPES[-1])
     else:
         owner_npub, cabin, seat = parsed["owner"], parsed["cabin"], parsed["seat"]
-        flt = N.Filter().author(N.PublicKey.parse(owner_npub)).kind(N.Kind(CR.KIND_ROSTER)).identifier(CR.ROSTER_D)
-        try:
-            ev = await _fetch_latest(relays, flt)
-        except Exception as err:   # noqa: BLE001
-            return 2, {"ok": False, "why": "relay_error", "err": type(err).__name__}
-        if ev is None:
-            return 2, {"ok": False, "why": "no_roster"}            # 對方還沒開全球對談(第 13 節)
-        if ev.author().to_bech32() != owner_npub:
-            return 2, {"ok": False, "why": "wrong_author"}
-        try:
-            rec = CR.parse(ev.content(), owner_npub)
-        except CR.RosterError as err:
-            return 2, {"ok": False, "why": "bad_roster", "detail": str(err)}
-        s = CR.find_seat(rec, cabin, seat)
+        rc, rec, at = await _owner_roster(owner_npub, relays, Path(root) if root else GF.default_root())
+        if rc != 0:
+            return rc, rec
+        s, cab = DV.find(rec, cabin, seat)          # 艙綁宣告它的機器(第 37.7 節第 4 點):撞名的艙已不在合併結果裡
         if s is None:
             return 2, {"ok": False, "why": "no_seat"}
-        if CR.common_envelope(rec) is None:
+        env = CR.common_envelope({"envelope": cab.get("envelope") or rec.get("envelope")})
+        if env is None:
             return 2, {"ok": False, "why": "no_common_envelope"}
-        seat_npub, look_in = s["npub"], (rec["dm_relays"] or relays)
+        seat_npub, look_in = s["npub"], (cab.get("dm_relays") or rec.get("dm_relays") or relays)
         out.update(owner=owner_npub, display_name=rec.get("display_name"), country=rec.get("country"), cabin=cabin,
-                   seat=s, envelope=CR.common_envelope(rec), roster_at=ev.created_at().as_secs(),
+                   seat=s, envelope=env, roster_at=at, device=cab.get("device"),
                    socials=rec.get("socials") or [], nip05=rec.get("nip05"))
     flt2 = N.Filter().author(N.PublicKey.parse(seat_npub)).kind(N.Kind(CR.KIND_DM_RELAYS))
     try:
@@ -223,8 +280,8 @@ async def resolve(addr, relays):
     return 0, out
 
 
-def cmd_fetch(addr, relays):
-    return asyncio.run(resolve(addr, relays))
+def cmd_fetch(addr, relays, root=None):
+    return asyncio.run(resolve(addr, relays, root=root))
 
 
 # ── 常駐寄件(serve;第 7.1 節步驟 5–8)──
@@ -358,7 +415,7 @@ class Sender(object):
         hit = self.cache.get(addr)
         if hit and time.time() - hit[0] < RESOLVE_TTL:
             return hit[1]
-        res = await resolve(addr, CR.relays())
+        res = await resolve(addr, CR.relays(), root=self.root)
         if res[0] == 0:
             self.cache[addr] = (time.time(), res)
         return res
@@ -459,12 +516,11 @@ class Sender(object):
         for x in p.get("seats") or []:
             if x.get("seat"):
                 return "%s/%s/%s" % (owner, x.get("cabin") or "main", x["seat"])
-        flt = N.Filter().author(N.PublicKey.parse(owner)).kind(N.Kind(CR.KIND_ROSTER)).identifier(CR.ROSTER_D)
         try:
-            ev = await _fetch_latest(CR.relays(), flt)
-            rec = CR.parse(ev.content(), owner) if ev is not None else None
+            rc, rec, _at = await _owner_roster(owner, CR.relays(), self.root)
         except Exception:   # noqa: BLE001
             return None
+        rec = rec if rc == 0 else None
         for cab in (rec or {}).get("cabins") or []:
             for st in cab.get("seats") or []:
                 return "%s/%s/%s" % (owner, cab.get("cabin"), st.get("seat"))
@@ -1410,7 +1466,7 @@ def main(argv=None):
         elif a.cmd == "probe":
             rc, rec = asyncio.run(probe(a.addr))
         else:
-            rc, rec = cmd_fetch(a.addr, CR.relays())
+            rc, rec = cmd_fetch(a.addr, CR.relays(), root=root)
     except Exception as err:   # noqa: BLE001  例外只記種類:訊息裡可能帶路徑或金鑰相關字
         rc, rec = 2, {"ok": False, "why": "error", "err": type(err).__name__}
     print(json.dumps(rec, ensure_ascii=False))
