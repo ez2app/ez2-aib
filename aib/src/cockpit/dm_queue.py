@@ -324,9 +324,12 @@ def _global_or_none(value):
             and isinstance(verified, bool) and isinstance(same, bool)):
         return None
     rel = value.get("relation")      # 第 29.5 節:own / paired / friend(艦長室收件匣連到通訊錄);舊列沒有
-    return {"addr": addr, "shown": shown, "verified": verified, "same_name": same, "msgid": msgid,
-            "reply_code": code, "country": country, "country_status": cstat, "tz_country": tzc,
-            "relation": rel if rel in ("own", "paired", "friend") else None}
+    out = {"addr": addr, "shown": shown, "verified": verified, "same_name": same, "msgid": msgid,
+           "reply_code": code, "country": country, "country_status": cstat, "tz_country": tzc,
+           "relation": rel if rel in ("own", "paired", "friend") else None}
+    if value.get("author") in GF.AUTHORS:      # 第 35 節第 2 點:寄件方自報誰寫的;舊列、沒帶的不加這欄
+        out["author"] = value["author"]
+    return out
 
 
 GLOBAL_REPLY_CODE_RE = re.compile(r"^[a-z2-9]{5}$")

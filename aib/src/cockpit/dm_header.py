@@ -328,7 +328,8 @@ def build_from_global(seat: str, item_id: str, t_label: str, *, t_socket: str = 
     paired = item.get("sender_kind") == "owner_paired"
     frame = GH.frame(g["reply_code"], lang=lang, paired=paired,
                      country=g["country"], country_status=g["country_status"], tz_country=g["tz_country"],
-                     command=paired and item.get("kind") == "order")     # 第 33.6 節:只有手機的「指令」那一類是指令
+                     command=paired and item.get("kind") == "order",     # 第 33.6 節:只有手機的「指令」那一類是指令
+                     author=g.get("author"))                              # 第 35 節:寄件方自報,只顯示
     return head, frame
 
 
