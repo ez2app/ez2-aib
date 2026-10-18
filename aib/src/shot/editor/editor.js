@@ -290,12 +290,7 @@
     const delBtn = annoBtn("trash", "刪除選取"); delBtn.onclick = delSel; bar.appendChild(delBtn);
     bar.appendChild(el("span", null, "flex:1"));
     const pngB64 = (cv) => cv.toDataURL("image/png").split(",")[1];
-    const copyBtn = annoBtn("copy", "複製到剪貼簿");
-    copyBtn.onclick = () => {
-      try { const out = exportCanvas(); native({ cmd: "copy", png: pngB64(out) }); copyBtn.style.borderColor = "var(--ok,#46d180)"; setTimeout(() => copyBtn.style.borderColor = "", 1200); }
-      catch (e) { copyBtn.style.borderColor = "var(--bad,#ff6b6b)"; setTimeout(() => copyBtn.style.borderColor = "", 1200); }
-    };
-    bar.appendChild(copyBtn);
+    // 10-18 維護者:原本這裡有一顆「複製到剪貼簿」圖示(複製後編輯器還開著),跟存回旁的「只存剪貼簿」重複 ⇒ 拿掉,只留後者;存回也會順便複製
     const cancelBtn = annoBtn("x", "取消(Esc):不存檔"); cancelBtn.onclick = () => this._closeAnnotateOverlay(); bar.appendChild(cancelBtn);
     const saveBtn = annoBtn("check", "存回(Enter):存進截圖資料夾並複製到剪貼簿", true); saveBtn.appendChild(el("span", { text: "存回" }));
     const save = async () => {
