@@ -305,14 +305,16 @@ def stop_worker():
         p.wait()
 
 
-def _run_nostr(cmd, root, env, timeout=60, extra=()):
-    """venv 那一半(chat_nostr.py)當子行程跑。回 (rc, 結果 dict)。venv 不能用 ⇒ (None, {})。"""
+def _run_nostr(cmd, root, env, timeout=60, extra=(), stdin=None):
+    """venv 那一半(chat_nostr.py)當子行程跑。回 (rc, 結果 dict)。venv 不能用 ⇒ (None, {})。
+    stdin:要交給它的一行 JSON(主人私鑰只走這裡,不經參數 / 環境變數)。"""
     py = venv_python(env)
     if not py.exists():
         return None, {}
     try:
         r = subprocess.run([str(py), str(HERE / "chat_nostr.py"), cmd] + list(extra) + ["--root", str(root)],
-                           capture_output=True, text=True, timeout=timeout, env=dict(env))
+                           capture_output=True, text=True, timeout=timeout, env=dict(env),
+                           input=(json.dumps(stdin) + "\n") if stdin is not None else None)
     except (OSError, subprocess.SubprocessError) as err:
         return 2, {"why": type(err).__name__}
     try:
@@ -547,6 +549,8 @@ def cmd_off(a, env, out):
     if CR.published_hash(root) not in (None, "empty"):
         rc, _rec = _run_nostr("publish-empty", root, env, timeout=30)
         out.write(T("off_unpublished" if rc == 0 else "off_unpublish_failed") + "\n")
+    import chat_owner_cli as OC
+    OC.off_owner_roster(env, out)                          # 主人金鑰加密了 ⇒ 當場輸密語撤主人名冊;不輸一定提示
     st = read_status(root) or {}
     pid = st.get("pid")
     if st.get("state") != "stopped" and pid_alive(pid) and _pid_is_bridge(pid):
@@ -1435,6 +1439,32 @@ def _passphrase(a, twice):
     return first
 
 
+def backup_paths_file(env=None):
+    return chat_home(env) / "backup-paths.json"
+
+
+def note_backup_path(path, env=None):
+    """記下備份檔在哪(只記路徑):設主人密語時拿來試解,同一組就拒(第 37.7 節 K2 第 14.5 節②)。"""
+    p = backup_paths_file(env)
+    try:
+        cur = json.loads(p.read_text(encoding="utf-8"))
+        cur = cur if isinstance(cur, list) else []
+    except (OSError, ValueError):
+        cur = []
+    full = str(Path(path).expanduser().resolve())
+    cur = [x for x in cur if isinstance(x, str) and x != full][-19:] + [full]
+    write_json(str(p), cur)
+    os.chmod(str(p), 0o600)
+
+
+def known_backups(env=None):
+    try:
+        cur = json.loads(backup_paths_file(env).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [x for x in cur if isinstance(x, str) and Path(x).is_file()] if isinstance(cur, list) else []
+
+
 def cmd_backup(a, env, out):
     import chat_backup as CB
     pw = _passphrase(a, twice=a.cmd == "backup")
@@ -1447,6 +1477,7 @@ def cmd_backup(a, env, out):
             write_json(str(backup_state_path(env)), {"v": VERSION, "at": int(time.time())})   # 第 37.4 節:不記檔名、不記密語
             os.chmod(str(backup_state_path(env)), 0o600)
             out.write(T("backup_done", n=n, file=a.file) + "\n")
+            note_backup_path(a.file, env)
         else:
             r = CB.restore(a.file, pw, env, replace=a.replace, chat_on=is_enabled(env))
             out.write(T("restore_done_" + r["mode"], n=r["keys"], owner=r["owner"]) + "\n")
@@ -1580,6 +1611,17 @@ def main(argv=None, env=None, out=sys.stdout):
     rm.add_argument("--json", action="store_true")
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
+    ow = sub.add_parser("owner", help=T("help.owner"))
+    ow.add_argument("action", choices=("protect", "status"))
+    ow.add_argument("--json", action="store_true")
+    jn = sub.add_parser("join", help=T("help.join"))
+    jn.add_argument("owner")
+    jn.add_argument("--name", help=T("help.join_name"))
+    dv = sub.add_parser("devices", help=T("help.devices"))
+    dv.add_argument("action", nargs="?", choices=("list", "add", "revoke", "extend"))
+    dv.add_argument("target", nargs="?", help=T("help.devices_target"))
+    dv.add_argument("--name", help=T("help.join_name"))
+    dv.add_argument("--json", action="store_true")
     ct = sub.add_parser("contacts", help=T("help.contacts"))
     ct.add_argument("--json", action="store_true")
     ct.add_argument("--refresh", metavar="NPUB|all", help=T("help.contacts_refresh"))
@@ -1626,6 +1668,9 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_roster(a, env, out)
     if a.cmd == "lookup":
         return cmd_lookup(a, env, out)
+    if a.cmd in ("owner", "join", "devices"):
+        import chat_owner_cli as OC                     # 第 37.7 節 K2
+        return {"owner": OC.cmd_owner, "join": OC.cmd_join, "devices": OC.cmd_devices}[a.cmd](a, env, out)
     if a.cmd == "run":
         return run(env, out=out)
     if a.cmd == "prepare":

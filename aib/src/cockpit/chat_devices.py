@@ -77,6 +77,8 @@ def parse_list(content, signer_npub, now):
     if until <= at or until - at > VALID_MAX_S:
         raise DevicesError("bad_valid_until")
     devs, revs = rec.get("devices"), rec.get("revoked", [])
+    if isinstance(devs, list) and sum(1 for d in devs if isinstance(d, dict) and d.get("host") is True) > 1:
+        raise DevicesError("two_hosts")
     if not isinstance(devs, list) or not isinstance(revs, list):
         raise DevicesError("bad_shape")
     if len(devs) > MAX_DEVICES or len(revs) > MAX_REVOKED:
@@ -93,6 +95,8 @@ def parse_list(content, signer_npub, now):
         codes.add(device_code(d["npub"]))
         if d.get("name") is not None and GF.clean_display_name(d["name"]) != d["name"]:
             d["name"] = None
+        if d.get("host") not in (None, True):
+            raise DevicesError("bad_device")
     for r in revs:
         if not isinstance(r, dict) or not _NPUB_RE.match(str(r.get("npub"))):
             raise DevicesError("bad_revoked")
@@ -175,9 +179,14 @@ def _seat_set(cab):
     return sorted((s.get("seat"), s.get("npub")) for s in cab.get("seats") or [])
 
 
-def merge(owner, base, devices):
+def merge(owner, base, devices, host=None):
     """base = 主人金鑰簽的名冊(驗過,可為 None);devices = [(機器 npub, 驗過的機器名冊)…]。
+    host = 清單上標 host 的那台(持主人金鑰那台加密後自己也是一台,K2):它有機器名冊 ⇒ 主人名冊只是給舊版好友的舊副本,
+    不拿來合併(不然它自己的艙會跟舊副本撞名);其他台跟主人名冊撞艙照樣算撞名。
     ⇒ (合併後的名冊, 警告 [{kind, cabin, devices}…])。每個艙多帶 device / dm_relays / envelope。"""
+    head_base = base
+    if host and any(npub == host and rec for npub, rec in devices):
+        base = None
     sources = ([(owner, base)] if base else []) + [(npub, rec) for npub, rec in devices if rec]
     by_cabin = {}
     for npub, rec in sources:
@@ -194,10 +203,10 @@ def merge(owner, base, devices):
         out.update(device=npub, dm_relays=list(rec.get("dm_relays") or []), envelope=list(rec.get("envelope") or []),
                    aib_version=rec.get("aib_version"))   # 第 37.5 節:每台版本不同,對方版本取席所在那台的
         cabins.append(out)
-    head = base or (max((r for _n, r in devices if r), key=lambda r: r.get("updated_at") or 0, default=None) or {})
+    head = head_base or (max((r for _n, r in devices if r), key=lambda r: r.get("updated_at") or 0, default=None) or {})
     merged = {k: v for k, v in head.items() if k != "cabins"}
     merged.update(owner=owner, cabins=cabins, devices=[n for n, _r in sources if n != owner])
-    if not base:
+    if not head_base:
         merged["dm_relays"] = sorted({r for _n, rec in sources for r in rec.get("dm_relays") or []})
         merged["envelope"] = sorted({e for _n, rec in sources for e in rec.get("envelope") or []})
     return merged, warns

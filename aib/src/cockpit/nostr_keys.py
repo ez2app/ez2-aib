@@ -212,7 +212,7 @@ def store_secret(stem, secret, env=None, replace=False):
     回 npub。私鑰不印、不進例外訊息。"""
     if not re.fullmatch(r"[0-9a-f]{64}", secret or ""):
         raise ValueError("bad secret")
-    if stem != "owner" and not re.fullmatch(r"[0-9a-z]{6}(-[0-9a-z]{4,8})?", stem or ""):
+    if stem not in ("owner", "device") and not re.fullmatch(r"[0-9a-z]{6}(-[0-9a-z]{4,8})?", stem or ""):
         raise ValueError("bad stem")
     d = keys_dir(env)
     _mkdir_private(secrets_dir(env))
@@ -243,6 +243,30 @@ def load_secret(stem, env=None):
     return SC.decrypt_value(raw, "nostr/" + stem, str(secrets_dir(env)))
 
 
+def ensure_device(env=None, now=None):
+    """這台的機器金鑰(第 37.7 節 K2):沒有才產。回 npub。只在主人金鑰加密或 join 時用。"""
+    rec = read_map(env)
+    if rec.get("device") and (keys_dir(env) / "device.key").is_file():
+        return rec["device"]["npub"]
+    if (keys_dir(env) / "device.key").is_file():
+        raise RuntimeError("device.key exists but is not in the map")
+    rec["device"] = {"npub": _write_key("device", env), "created_at": int(time.time() if now is None else now)}
+    _save_map(rec, env)
+    return rec["device"]["npub"]
+
+
+def set_remote_owner(owner_npub, env=None, now=None):
+    """join 別人清單的機器:對照表記主人 npub(remote),這台沒有主人私鑰。已有自己的主人 ⇒ ValueError("has_owner")。"""
+    rec = read_map(env)
+    if rec.get("owner") and rec["owner"].get("npub") != owner_npub:
+        raise ValueError("has_owner")
+    if (keys_dir(env) / "owner.key").is_file():
+        raise ValueError("has_owner")
+    rec["owner"] = {"npub": owner_npub, "remote": True, "created_at": int(time.time() if now is None else now)}
+    _save_map(rec, env)
+    return owner_npub
+
+
 def read_map(env=None):
     try:
         rec = json.loads(map_path(env).read_text(encoding="utf-8"))
@@ -261,10 +285,18 @@ def _save_map(rec, env=None):
     os.chmod(str(p), 0o600)
 
 
+def owner_local(env=None):
+    """主人私鑰在這台、而且不用密語就解得開(第 37.7 節 K2:密語加密後 / join 進別人清單的機器 ⇒ False)。"""
+    return (keys_dir(env) / "owner.key").is_file()
+
+
 def ensure_owner(env=None, now=None):
-    """主人金鑰:沒有才產。回 npub。"""
+    """主人金鑰:沒有才產。回 npub。
+    第 37.7 節 K2:主人金鑰改成密語加密(owner.sealed)或這台是 join 進來的機器(owner.remote)⇒ 照用對照表上的主人,
+    絕不重產(重產 = 整個身分換掉)。"""
     rec = read_map(env)
-    if rec.get("owner") and (keys_dir(env) / "owner.key").is_file():
+    if rec.get("owner") and ((keys_dir(env) / "owner.key").is_file() or (keys_dir(env) / "owner.sealed").is_file()
+                             or rec["owner"].get("remote")):
         return rec["owner"]["npub"]
     if (keys_dir(env) / "owner.key").is_file():
         raise RuntimeError("owner.key exists but is not in the map")   # 不猜:不重產、不覆蓋

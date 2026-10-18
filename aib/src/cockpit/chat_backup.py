@@ -45,12 +45,24 @@ def _kdf(passphrase, salt, iterations):
     return hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, iterations, dklen=32)
 
 
-def _stems(m):
+def _stems(m, with_owner=True):
+    """要備份 / 還原的金鑰 stem。with_owner=False:主人金鑰改成密語加密(owner.sealed)或這台是 join 進來的(remote),
+    沒有包裝金鑰那份主人私鑰可備(第 37.7 節 K2:加密的那份原樣放進備份,不解開)。"""
     out = []
-    if m.get("owner"):
+    if m.get("owner") and with_owner:
         out.append("owner")
+    if (m.get("device") or {}).get("npub"):
+        out.append("device")
     out += [e["key"] for e in m["seats"] if e.get("key")]
     return out
+
+
+def _sealed_rec(env):
+    p = NK.keys_dir(env) / "owner.sealed"
+    try:
+        return json.loads(p.read_text(encoding="ascii"))
+    except FileNotFoundError:
+        return None
 
 
 def backup(path, passphrase, env=None):
@@ -60,10 +72,14 @@ def backup(path, passphrase, env=None):
     m = NK.read_map(env)
     if not m.get("owner"):
         raise BackupError("no_keys")
-    keys = {st: NK.load_secret(st, env) for st in _stems(m)}
+    keys = {st: NK.load_secret(st, env) for st in _stems(m, with_owner=NK.owner_local(env))}
     body = {"v": VERSION, "map": m, "keys": keys, "friends": CR.read_friends(env), "mine": CR.read_friends(env, "mine"),
             "profile": CR.read_profile(env)}
+    sealed = _sealed_rec(env)
+    if sealed:
+        body["owner_sealed"] = sealed          # 原樣(仍是主人密語加密的),備份密語外面再包一層
     raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    n_keys = len(keys) + (1 if sealed else 0)
     keys = body = None
     salt = os.urandom(16)
     nonce, ct, tag = SC._encrypt_bytes(_kdf(passphrase, salt, ITERATIONS), raw, AAD)
@@ -79,7 +95,7 @@ def backup(path, passphrase, env=None):
         os.fchmod(fd, 0o600)
     finally:
         os.close(fd)
-    return len(_stems(m))
+    return n_keys
 
 
 def _open(path, passphrase):
@@ -110,9 +126,16 @@ def restore(path, passphrase, env=None, replace=False, chat_on=False):
     body = _open(path, passphrase)
     bm = body["map"]
     b_owner = (bm.get("owner") or {}).get("npub")
-    if not b_owner or "owner" not in body["keys"] or NK.npub(NK.pubkey_hex(body["keys"]["owner"])) != b_owner:
+    sealed = body.get("owner_sealed")
+    if not b_owner:
         raise BackupError("bad_file")
-    for st in _stems(bm):
+    if "owner" in body["keys"]:
+        if NK.npub(NK.pubkey_hex(body["keys"]["owner"])) != b_owner:
+            raise BackupError("bad_file")
+    elif not ((isinstance(sealed, dict) and sealed.get("npub") == b_owner) or (bm.get("owner") or {}).get("remote")):
+        raise BackupError("bad_file")
+    stems = _stems(bm, with_owner="owner" in body["keys"])
+    for st in stems:
         if st not in body["keys"]:
             raise BackupError("bad_file")
     lm = NK.read_map(env)
@@ -126,7 +149,18 @@ def restore(path, passphrase, env=None, replace=False, chat_on=False):
     else:
         mode = "merge" if l_owner else "fresh"
     n = 0
-    for st in _stems(bm):
+    if isinstance(sealed, dict):
+        sp = NK.keys_dir(env) / "owner.sealed"
+        if mode != "merge" or not (sp.exists() or (NK.keys_dir(env) / "owner.key").exists()):
+            NK._mkdir_private(NK.secrets_dir(env))
+            NK._mkdir_private(NK.keys_dir(env))
+            from atomic_json import write_json
+            write_json(str(sp), sealed)
+            os.chmod(str(sp), 0o600)
+            if mode == "replace":
+                (NK.keys_dir(env) / "owner.key").unlink(missing_ok=True)     # 換成加密的那位主人:舊的明文那把不留
+            n += 1
+    for st in stems:
         exists = (NK.keys_dir(env) / (st + ".key")).is_file()
         if exists and mode == "merge":
             continue

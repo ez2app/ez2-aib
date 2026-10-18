@@ -43,8 +43,17 @@ def _keys(stem):
         secret = None
 
 
-def _sign_roster(keys, content):
-    tag = N.Tag.identifier(CR.ROSTER_D)
+def _roster_signer():
+    """名冊用哪一把簽(第 37.7 節 K2):主人私鑰在這台、不用密語 ⇒ 主人金鑰 + d=aib-roster;
+    主人金鑰加密了 / 這台是 join 進來的 ⇒ 機器金鑰 + d=aib-roster:<機器碼>(主人那份只在本人輸密語時重發)。"""
+    if NK.owner_local():
+        return _keys("owner"), CR.ROSTER_D
+    dev = NK.read_map().get("device") or {}
+    return _keys("device"), DV.roster_d(dev["npub"])
+
+
+def _sign_roster(keys, content, d=None):
+    tag = N.Tag.identifier(d or CR.ROSTER_D)
     return N.EventBuilder(N.Kind(CR.KIND_ROSTER), json.dumps(content, ensure_ascii=False, sort_keys=True)).tags([tag]).finalize(keys)
 
 
@@ -77,8 +86,8 @@ async def _send_all(relays, events):
 
 
 def _publish(root, content, dm_seats, relays, tag):
-    owner = _keys("owner")
-    roster_ev = _sign_roster(owner, content)
+    owner, d = _roster_signer()
+    roster_ev = _sign_roster(owner, content, d)
     seat_evs = [(s, _sign_dm_relays(_keys(s["key"]), relays)) for s in dm_seats]
     acks = asyncio.run(_send_all(relays, [roster_ev] + [ev for _s, ev in seat_evs]))
     ok_roster = acks.get(roster_ev.id().to_hex()) or []
@@ -113,8 +122,8 @@ def cmd_publish_empty(root):
     owner_npub = NK.read_map().get("owner", {}).get("npub")
     content = CR.empty(owner_npub)
     # 撤下 = 各席 10050 換成沒有站;發到上次公告的那些站,看過舊清單的人才會收到新的
-    owner = _keys("owner")
-    roster_ev = _sign_roster(owner, content)
+    owner, d = _roster_signer()
+    roster_ev = _sign_roster(owner, content, d)
     seat_evs = [(s, _sign_dm_relays(_keys(s["key"]), [])) for s in (prev.get("dm_seats") or [])]
     acks = asyncio.run(_send_all(last_relays, [roster_ev] + [ev for _s, ev in seat_evs]))
     rec = {"v": 1, "hash": "empty", "kind": "publish-empty", "at": int(time.time()), "roster_id": roster_ev.id().to_hex(),
@@ -122,6 +131,48 @@ def cmd_publish_empty(root):
     write_json(str(CR.published_path(root)), rec)
     os.chmod(str(CR.published_path(root)), 0o600)
     return (0 if rec["roster_ok"] else 2), rec
+
+
+def cmd_sign_owner(stdin):
+    """本人輸過密語之後(chat_bridge 那一半解開主人私鑰、從管線交過來,不經參數 / 環境變數):
+    用主人金鑰簽機器清單(d=aib-devices)與 / 或主人名冊(d=aib-roster),發出去。回各自收下的站。"""
+    req = json.loads(stdin.readline() or "{}")
+    keys = N.Keys.parse(req.pop("secret"))
+    evs = {}
+    if req.get("devices") is not None:
+        evs["devices"] = N.EventBuilder(N.Kind(CR.KIND_ROSTER), json.dumps(req["devices"], ensure_ascii=False, sort_keys=True)) \
+            .tags([N.Tag.identifier(DV.DEVICES_D)]).finalize(keys)
+    if req.get("roster") is not None:
+        evs["roster"] = _sign_roster(keys, req["roster"])
+    keys = None
+    acks = asyncio.run(_send_all(req.get("relays") or CR.relays(), list(evs.values())))
+    out = {k + "_ok": acks.get(ev.id().to_hex()) or [] for k, ev in evs.items()}
+    return (0 if evs and all(out.values()) else 2), out
+
+
+def cmd_pair_send(stdin):
+    """新機器(join):用機器金鑰簽配對請求(d=aib-pair:<指紋>,p = 主人)發到主人的收信站。nonce 只帶雜湊。"""
+    import chat_owner as CO
+    req = json.loads(stdin.readline() or "{}")
+    dev = NK.read_map().get("device") or {}
+    ev = N.EventBuilder(N.Kind(CR.KIND_ROSTER), json.dumps(req["content"], ensure_ascii=False, sort_keys=True)) \
+        .tags([N.Tag.identifier(CO.pair_d(dev["npub"])), N.Tag.parse(["p", NK.npub_to_hex(req["content"]["owner"])])]) \
+        .finalize(_keys("device"))
+    ok = asyncio.run(_send_all(req.get("relays") or CR.relays(), [ev])).get(ev.id().to_hex()) or []
+    return (0 if ok else 2), {"ok": bool(ok), "relays_ok": ok}
+
+
+async def pair_fetch(owner_npub, relays):
+    """主人那台:抓給我的配對請求 ⇒ [{signer, content}](簽章已驗;d 要是簽章者自己的 aib-pair:<指紋>)。"""
+    import chat_owner as CO
+    flt = N.Filter().kind(N.Kind(CR.KIND_ROSTER)).pubkey(N.PublicKey.parse(owner_npub))
+    out = []
+    for e in await _fetch_all(relays, flt):
+        signer = e.author().to_bech32()
+        vecs = [t.to_vec() for t in e.tags()]
+        if next((v[1] for v in vecs if len(v) >= 2 and v[0] == "d"), None) == CO.pair_d(signer):
+            out.append({"signer": signer, "content": e.content()})
+    return 0, {"ok": True, "requests": out}
 
 
 async def _fetch_latest(relays, flt):
@@ -195,7 +246,8 @@ async def _owner_roster(owner_npub, relays, root):
                 audit(root, "devices", "-", n, "device-roster:%s" % err)
     if base is None and not devs:
         return 2, {"ok": False, "why": "no_roster"}, None             # 對方還沒開全球對談(第 13 節)
-    merged, warns = DV.merge(owner_npub, base, devs)
+    host = next((d["npub"] for d in (dev_list or {}).get("devices") or [] if d.get("host") is True), None)
+    merged, warns = DV.merge(owner_npub, base, devs, host=host)
     for w in warns:
         audit(root, "devices", "-", owner_npub, "%s:%s" % (w["kind"], w["cabin"]))
     return 0, merged, at
@@ -1479,7 +1531,8 @@ async def serve(root):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="chat_nostr")
-    p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve", "probe", "roster"])
+    p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve", "probe", "roster", "sign-owner", "pair-send",
+                                   "pair-fetch"])
     p.add_argument("addr", nargs="?")
     p.add_argument("--root")
     a = p.parse_args(argv)
@@ -1495,6 +1548,12 @@ def main(argv=None):
             rc, rec = asyncio.run(probe(a.addr))
         elif a.cmd == "roster":
             rc, rec = asyncio.run(roster_of(a.addr, CR.relays(), root))
+        elif a.cmd == "sign-owner":
+            rc, rec = cmd_sign_owner(sys.stdin)
+        elif a.cmd == "pair-send":
+            rc, rec = cmd_pair_send(sys.stdin)
+        elif a.cmd == "pair-fetch":
+            rc, rec = asyncio.run(pair_fetch(a.addr, CR.relays()))
         else:
             rc, rec = cmd_fetch(a.addr, CR.relays(), root=root)
     except Exception as err:   # noqa: BLE001  例外只記種類:訊息裡可能帶路徑或金鑰相關字
