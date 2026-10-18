@@ -4652,5 +4652,9 @@
   "aib.vault_cli.help_mkdir": "uid フォルダを追加して登録します(Obsidian の「フォルダを追加」ボタンが使います)",
   "aib.vault_cli.help_mkdir_title": "フォルダのタイトル(表示用。実際のフォルダ名は folderId)",
   "aib.vault_cli.mkdir_done": "フォルダ「{title}」を追加しました:{path}",
-  "aib.init.statusline_warn": "ステータスラインの自動更新が完了しませんでした(rc {rc})。ほかの設定には影響しません。あとで {tool} を自分で実行できます。"
+  "aib.init.statusline_warn": "ステータスラインの自動更新が完了しませんでした(rc {rc})。ほかの設定には影響しません。あとで {tool} を自分で実行できます。",
+  "aib.chat.backup_hint": "オンライン会話の鍵を今バックアップしてください(オーナー鍵はこのマシンだけ。故障や再インストールで失われます):aib chat backup <ファイル>",
+  "aib.chat.status_unhealthy_not_running": "⚠ オンライン会話はオンですがブリッジが動いていません:送受信できません(艙を開くか aib chat ensure-window で起動)",
+  "aib.chat.status_unhealthy_stale_heartbeat": "⚠ ブリッジは動いていますが、しばらく中継局につながっていません:送信できない可能性",
+  "aib.chat.status_unhealthy_no_relay": "⚠ ブリッジは動いていますが、まだ中継局に接続していません(鍵なし・名簿未発行・全局切断)"
 }

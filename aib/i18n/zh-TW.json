@@ -4652,5 +4652,9 @@
   "aib.vault_cli.help_mkdir": "新增 uid 資料夾並登記(Obsidian 的「新增資料夾」按鈕用這個)",
   "aib.vault_cli.help_mkdir_title": "資料夾標題(顯示用;實際資料夾名是 folderId)",
   "aib.vault_cli.mkdir_done": "已新增資料夾「{title}」:{path}",
-  "aib.init.statusline_warn": "狀態列自動更新沒跑完(rc {rc}),不影響其他設定;之後可以自己跑 {tool}"
+  "aib.init.statusline_warn": "狀態列自動更新沒跑完(rc {rc}),不影響其他設定;之後可以自己跑 {tool}",
+  "aib.chat.backup_hint": "建議現在備份線上對話的金鑰(主人金鑰只在這台,硬碟壞或重灌就找不回):aib chat backup <檔>",
+  "aib.chat.status_unhealthy_not_running": "⚠ 線上對話開著,但轉接程式沒在跑:信寄不出去也收不到(開艙或 aib chat ensure-window 會叫起來)",
+  "aib.chat.status_unhealthy_stale_heartbeat": "⚠ 轉接程式在跑,但很久沒接上中繼站:信可能寄不出去",
+  "aib.chat.status_unhealthy_no_relay": "⚠ 轉接程式在跑,但還沒接上中繼站(沒金鑰、還沒發名冊或全部站斷線)"
 }

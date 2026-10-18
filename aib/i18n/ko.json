@@ -4652,5 +4652,9 @@
   "aib.vault_cli.help_mkdir": "uid 폴더를 추가하고 등록합니다(Obsidian 의 \"새 폴더\" 버튼이 사용합니다)",
   "aib.vault_cli.help_mkdir_title": "폴더 제목(표시용. 실제 폴더 이름은 folderId)",
   "aib.vault_cli.mkdir_done": "폴더 \"{title}\" 를 추가했습니다: {path}",
-  "aib.init.statusline_warn": "상태 표시줄 자동 업데이트가 끝나지 않았습니다(rc {rc}). 다른 설정에는 영향이 없습니다. 나중에 {tool} 을 직접 실행할 수 있습니다."
+  "aib.init.statusline_warn": "상태 표시줄 자동 업데이트가 끝나지 않았습니다(rc {rc}). 다른 설정에는 영향이 없습니다. 나중에 {tool} 을 직접 실행할 수 있습니다.",
+  "aib.chat.backup_hint": "온라인 대화 키를 지금 백업하세요(주인 키는 이 기기에만 있어 디스크 고장이나 재설치 시 사라집니다): aib chat backup <파일>",
+  "aib.chat.status_unhealthy_not_running": "⚠ 온라인 대화는 켜져 있지만 브리지가 실행 중이 아닙니다: 송수신 불가(함을 열거나 aib chat ensure-window로 시작)",
+  "aib.chat.status_unhealthy_stale_heartbeat": "⚠ 브리지는 실행 중이지만 한동안 중계국에 연결되지 않았습니다: 전송이 안 될 수 있음",
+  "aib.chat.status_unhealthy_no_relay": "⚠ 브리지는 실행 중이지만 아직 중계국에 연결되지 않았습니다(키 없음, 명부 미발행 또는 전부 끊김)"
 }
