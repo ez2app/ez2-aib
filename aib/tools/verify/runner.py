@@ -92,7 +92,9 @@ def clean_test_env(home: str, repo_root: str | Path = ROOT) -> dict[str, str]:
     }
     # 10-04 晚(外部倉實測):專案自己的虛擬環境 —— 明講的 AIB_TEST_PYTHON、已啟用的 VIRTUAL_ENV 照抄(shadow_tracer.test_python
     #   依它選 python;兩個值都進環境指紋)。VIRTUAL_ENV 等於「已啟用」:它的 bin 放 PATH 最前面,測試裡叫 python/pytest 也用它。
-    for k in ("AIB_TEST_PYTHON", "VIRTUAL_ENV"):
+    # 10-18(開發文件第 37.1 節):AIB_TEST_NOSTR_VENV 也照抄 —— 以前被清掉,連 Nostr 的格在全套裡只能跳過,
+    #   大家改成「直接跑測試」,那條路沒有假 HOME(10-17 test-chat-roster 就讀到 Pro 真的設定)。它只是一個 venv 的路徑。
+    for k in ("AIB_TEST_PYTHON", "VIRTUAL_ENV", "AIB_TEST_NOSTR_VENV"):
         if os.environ.get(k):
             env[k] = os.environ[k]
     if os.environ.get("VIRTUAL_ENV") and os.path.isdir(os.path.join(os.environ["VIRTUAL_ENV"], "bin")):
@@ -102,6 +104,23 @@ def clean_test_env(home: str, repo_root: str | Path = ROOT) -> dict[str, str]:
     #   逾時被強殺時 finally 不跑 ⇒ 正在用的產品樹停在沒有門的狀態)。真 tmux 測試維持「直接執行、自己負責」,
     #   不從唯一合法入口放行;要放行得先把那些刀改成落在副本樹上。
     return env
+
+
+REAL_HOME_OK_MARK = "@needs-real-home"   # 測試檔開頭 2 KB 內寫這個標記 ⇒ 不檢查(要真家目錄的極少數,審查時要看到)
+
+
+def real_home():
+    """執行 aib test 的使用者真正的家目錄:看 passwd,不看 HOME(測試沙盒會改 HOME)。AIB_TEST_REAL_HOME 只給測這個檢查本身用。"""
+    import pwd
+    return os.environ.get("AIB_TEST_REAL_HOME") or pwd.getpwuid(os.getuid()).pw_dir
+
+
+def _head(path, n=2048):
+    try:
+        with open(path, "rb") as f:
+            return f.read(n).decode("utf-8", "replace")
+    except OSError:
+        return ""
 
 
 def isolated_test_env(home: str | Path, repo_root: str | Path) -> dict[str, str]:
@@ -691,6 +710,12 @@ def _traced_run(repo: Path, snapshot: Path, name: str, env: dict[str, str], trac
     reap_leftovers(str(trace))                        # 10-08:測試開出來沒收的背景行程(tmux 伺服器等)一併收掉
     try:
         events = st.load_trace(trace)
+        touched = [] if REAL_HOME_OK_MARK in _head(snapshot / name) else st.real_home_touches(events, real_home())
+        if touched:                                   # 第 37.1 節:碰到真家目錄 ⇒ 這支判紅,說是哪個檔(只列前 5 個)
+            actual["rc"] = actual["rc"] or 1
+            actual["real_home"] = touched[:5]
+            actual["output"] = (actual.get("output") or "") + "\n" + T("real_home_touched", {
+                "files": ", ".join("%s %s" % t for t in touched[:5]), "n": len(touched)})
         items, input_fp, unmeasured, external, why = st.inputs_from_events(events, repo=str(snapshot))
         own = self_state_inputs(items)
         if own:

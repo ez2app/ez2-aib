@@ -358,7 +358,14 @@ def window_command(env=None):
     keep = ["HOME", "PATH", "LANG", "EZ2_AIB_INSTANCE", "EZ2_AIB_INSTANCE_HOME", "EZ2_AIHUB_SOCKET", "EZ2_AIB_ROOT",
             "EZ2_AIB_LOCALE", "AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR", "AIB_CHAT_TICK"]
     pairs = ["%s=%s" % (k, shlex.quote(env[k])) for k in keep if env.get(k)]
-    return "exec env %s %s %s run" % (" ".join(pairs), shlex.quote(sys.executable), shlex.quote(str(HERE / "chat_bridge.py")))
+    me = "env %s %s %s" % (" ".join(pairs), shlex.quote(sys.executable), shlex.quote(str(HERE / "chat_bridge.py")))
+    # 開發文件第 37.3 節(10-18 fishmac 單艙:轉接程式停了、窗格卻還活著 ⇒ 沒人重起):run 結束後開關還開著 ⇒ 等 RESTART_GAP 秒再起;
+    #   aib chat off(開關關了)⇒ 迴圈結束、窗格死。版本更新後停掉舊的,下一輪自然載入新程式。
+    return "exec sh -c %s" % shlex.quote("while :; do %s run; %s enabled >/dev/null 2>&1 || exit 0; sleep %d; done"
+                                         % (me, me, RESTART_GAP))
+
+
+RESTART_GAP = 5           # 秒;sys.chat 窗的迴圈:run 結束、開關還開著 ⇒ 等這麼久再起(第 37.3 節)
 
 
 def ensure_window(socket, env=None, tmux="tmux"):
@@ -451,6 +458,8 @@ def cmd_on(a, env, out):
     else:
         out.write(T("window_no_hub") + "\n")
     out.write(T("public_hint") + "\n")
+    if not backup_state(env)["at"]:
+        out.write(T("backup_hint") + "\n")             # 第 37.4 節:主人金鑰只在這台,硬碟壞 / 重灌就沒了
     return 0
 
 
@@ -554,7 +563,7 @@ def status_record(env):
     st = read_status(root) or {}
     pid = st.get("pid")
     running = st.get("state") not in (None, "stopped") and pid_alive(pid)
-    return {
+    rec = {
         "enabled": is_enabled(env),
         "running": running,
         "state": st.get("state") if running else ("stopped" if st else None),
@@ -571,6 +580,46 @@ def status_record(env):
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
+    rec["healthy"], rec["why"] = health(rec)
+    rec["backup"] = backup_state(env)
+    return rec
+
+
+def health(rec):
+    """第 37.3 節:(healthy, why)。沒開 ⇒ ("off", None);開著但沒當班 ⇒ not_running;當班但沒心跳(沒接上中繼站)⇒
+    no_relay(還沒發名冊 / 沒金鑰)或 stale_heartbeat;工人回報全部站斷線 ⇒ no_relay。都好 ⇒ (True, None)。"""
+    if not rec["enabled"]:
+        return "off", None
+    if not rec["running"]:
+        return False, "not_running"
+    if (rec.get("worker") or {}).get("offline"):
+        return False, "no_relay"
+    if not rec["heartbeat"]:
+        return False, "stale_heartbeat" if rec.get("state") == "published" else "no_relay"
+    return True, None
+
+
+BACKUP_NAG_S = 7 * 86400   # 第 37.4 節:開通滿 7 天還沒備份 ⇒ 提醒
+
+
+def backup_state_path(env=None):
+    return chat_home(env) / "backup-state.json"
+
+
+def backup_state(env=None, now=None):
+    """{at: 最後備份時間或 None, due: 該不該提醒}。開通(開關檔)滿 7 天、有主人金鑰、從沒備份 ⇒ due。"""
+    now = time.time() if now is None else now
+    try:
+        at = json.loads(backup_state_path(env).read_text(encoding="utf-8")).get("at")
+    except (OSError, ValueError, AttributeError):
+        at = None
+    try:
+        since = switch_path(env).stat().st_mtime
+    except OSError:
+        since = None
+    import nostr_keys as NK
+    has_owner = bool((NK.read_map(env).get("owner") or {}).get("npub"))
+    return {"at": at, "due": bool(has_owner and not at and since is not None and now - since >= BACKUP_NAG_S)}
 
 
 def _friends(env, kind="friends"):
@@ -887,6 +936,8 @@ def contacts_payload(env=None):
                                     "socials": [dict(x, **_claim_view(p, "social:%s:%s" % (x["p"], x["v"])))
                                                 for x in p.get("socials") or []],
                                     "roster_at": p.get("roster_at"), "seen_at": p.get("seen_at"),
+                                    # 第 37.5 節:對方版本與它收不到的功能(版本不知道 ⇒ aib / missing 都是 None)
+                                    "aib": CR.clean_version(p.get("aib")), "missing": CR.missing_features(p.get("aib")),
                                     "last_in": p.get("last_in"), "last_out": p.get("last_out"),
                                     "n_in": p.get("n_in", 0), "n_out": p.get("n_out", 0), "n_refused": 0,
                                     "request": None, "source": source})
@@ -918,7 +969,33 @@ def contacts_payload(env=None):
                                                                                 -(r.get("last_in") or r.get("seen_at") or 0)))}
 
 
+def refresh_contacts(who, env):
+    """aib chat contacts --refresh <npub|all>(10-18 @74e8b):立刻重抓好友 / 我的其他機器的名冊,更新聯絡人快照
+    (席位換成名冊目前公開的)。回 [{owner, ok, why}]。"""
+    import chat_roster as CR
+    root = bridge_root(env)
+    owners = [f["owner"] for f in CR.read_friends(env, "mine")] + [f["owner"] for f in CR.read_friends(env)]
+    owners = list(dict.fromkeys(owners)) if who == "all" else [who]
+    res = []
+    for o in owners:
+        rc, rec = _run_nostr("roster", root, env, timeout=60, extra=[o])
+        if rc is None:
+            return [{"owner": o, "ok": False, "why": "no_venv"}]
+        if rc == 0 and rec.get("ok"):
+            GF.note_peer(root, o, rec.get("display_name"), rec.get("country"), None, rec.get("roster_at"),
+                         claims={"nip05": rec.get("nip05"), "aib": rec.get("aib"), "roster_seats": rec.get("roster_seats")})
+            res.append({"owner": o, "ok": True, "seats": len(rec.get("roster_seats") or [])})
+        else:
+            res.append({"owner": o, "ok": False, "why": rec.get("why") or "error"})
+    return res
+
+
 def cmd_contacts(a, env, out):
+    if a.refresh:
+        for r in refresh_contacts(a.refresh, env):
+            if not a.json:
+                out.write((T("contacts_refreshed", owner=r["owner"], n=r["seats"]) if r["ok"]
+                           else T("contacts_refresh_failed", owner=r["owner"], why=r["why"])) + "\n")
     pl = contacts_payload(env)
     if a.json:
         out.write(json.dumps(pl, ensure_ascii=False) + "\n")
@@ -1010,6 +1087,7 @@ def world_payload(env=None, now=None):
                        "space": {"at": sp["at"], "fresh": now - int(sp["at"]) < GF.ROOM_FRESH_S,
                                  "room": bool(sp["snap"].get("rooms"))} if sp else None,
                        "display_name": info.get("display_name"), "country": info.get("country"),
+                       "aib": CR.clean_version(info.get("aib")), "missing": CR.missing_features(info.get("aib")),
                        "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
     return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
 
@@ -1366,6 +1444,8 @@ def cmd_backup(a, env, out):
     try:
         if a.cmd == "backup":
             n = CB.backup(a.file, pw, env)
+            write_json(str(backup_state_path(env)), {"v": VERSION, "at": int(time.time())})   # 第 37.4 節:不記檔名、不記密語
+            os.chmod(str(backup_state_path(env)), 0o600)
             out.write(T("backup_done", n=n, file=a.file) + "\n")
         else:
             r = CB.restore(a.file, pw, env, replace=a.replace, chat_on=is_enabled(env))
@@ -1409,6 +1489,10 @@ def cmd_status(a, env, out):
         else:
             out.write(T("status_clock_warn" if c.get("warn") else "status_clock_ok", offset=c["offset"]) + "\n")
     out.write(T("status_heartbeat_" + ("yes" if rec["heartbeat"] else "no")) + "\n")
+    if rec["healthy"] is False:
+        out.write(T("status_unhealthy_" + rec["why"]) + "\n")
+    if rec["backup"]["due"]:
+        out.write(T("backup_hint") + "\n")
     return 0
 
 
@@ -1498,6 +1582,7 @@ def main(argv=None, env=None, out=sys.stdout):
     wd.add_argument("--json", action="store_true")
     ct = sub.add_parser("contacts", help=T("help.contacts"))
     ct.add_argument("--json", action="store_true")
+    ct.add_argument("--refresh", metavar="NPUB|all", help=T("help.contacts_refresh"))
     mn = sub.add_parser("mine", help=T("help.mine"))
     mn.add_argument("action", nargs="?", choices=("add", "remove"))
     mn.add_argument("who", nargs="?", help=T("help.mine_who"))

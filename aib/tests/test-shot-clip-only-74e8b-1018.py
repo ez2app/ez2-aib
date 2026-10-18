@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Ez2 截圖編輯器「只存剪貼簿」(10-18 維護者:「截圖裡的存回,應該新增一個只存剪貼簿」)。
 
-C1 editor.js:存回旁邊有「只存剪貼簿」鈕,送 cliponly(帶 PNG);ez2-shot.js 收到 ⇒ copyPng、last-save 標 clipboard、finish 關掉
+C1 editor.js:存回旁邊有「只存剪貼簿」鈕,送 cliponly(帶 PNG);舊的「複製到剪貼簿」圖示拿掉(只留一個);ez2-shot.js 收到 ⇒ copyPng、last-save 標 clipboard、finish 關掉
 C2 shot_helper.edit_and_deliver:last-save 標 clipboard ⇒ 回 clipboard=True,不送任何席(就算編輯器開時有預設席)
 C3 一般存回選了席 ⇒ 照舊送(回歸)
 C4 兩支 JS 語法過得了(有 node 才驗)
@@ -62,6 +62,8 @@ class ClipOnly(unittest.TestCase):
         self.assertIn('native({ cmd: "cliponly", png: pngB64(out) })', ed)
         self.assertIn("只存剪貼簿", ed)
         self.assertLess(ed.index("bar.appendChild(clipBtn)"), ed.index("bar.appendChild(saveBtn)"))   # 在存回旁邊(左邊)
+        self.assertNotIn("copyBtn", ed)                                                                # 舊的「複製到剪貼簿」圖示拿掉(維護者:重複,留一個)
+        self.assertEqual(ed.count('annoBtn("copy"'), 1)
         js = (EDITOR / "ez2-shot.js").read_text(encoding="utf-8")
         i = js.index('m.cmd === "cliponly"')
         branch = js[i:js.index("} else if", i)]
