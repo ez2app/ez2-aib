@@ -10,7 +10,7 @@
         (伺服器專用的 key 不該佔本機同名那一格:那格是整台 Mac 的 key,claude-apikey 之類會拿去用)
 
 流程:輸入框(字被遮住)→ 格式檢查(錯了最多再問 2 次)→ [--check] → Touch ID / 登入密碼 → 加密寫進
-~/.ez2-aib/secrets(enc.v1.,同 put_secret)→ [--push] 經 ssh 的 stdin 寫到遠端(umask 077、600、先寫暫存再換名)。
+~/.ez2-aib/secrets(enc.v1.,同 put_secret)→ [--push] 經 ssh、走 stdin 寫到遠端(umask 077、600、先寫暫存再換名)。
 
 規矩:
   - 值只在記憶體與管線(osascript 的 stdout、ssh 的 stdin)裡走;不進 argv、不印、不寫 log。輸出只有名字、檔名、
@@ -48,7 +48,7 @@ CHECKS = {"ANTHROPIC_API_KEY": ("https://api.anthropic.com/v1/models",
 _HOST = re.compile(r"^[A-Za-z0-9._@-]{1,128}$")
 _PATH = re.compile(r"^/[A-Za-z0-9._/-]{1,255}$")
 _OWNER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
-_HOSTNAME = re.compile(r"^[A-Za-z0-9._:%-]{1,253}$")   # ssh -G 解出的 hostname(含 IPv6)
+_HOSTNAME = re.compile(r"^[A-Za-z0-9._:%-]{1,253}$")   # resolve() 解出的 hostname(含 IPv6)
 
 JXA = r"""
 var app = Application.currentApplication();
@@ -190,7 +190,7 @@ def resolve(host, run=subprocess.run):
     """ssh -G 解出別名真正會連的 user / hostname / port(@abb89 審:~/.ssh/config 同帳號的 AI 改得到,別名可被指去別台)。
     回 {"user","hostname","port"};解不出、或有 ProxyCommand / ProxyJump(連線會被轉走、視窗看不出)⇒ 丟 ValueError。"""
     try:
-        r = run(["ssh", "-G", "--", host], capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+        r = run(["ssh", "-G", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "--", host], capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, OSError):
         raise ValueError("ssh_resolve_failed")
     if r.returncode != 0:
@@ -221,7 +221,7 @@ def push(name, value, host, path, owner=None, run=subprocess.run, pin=None):
             if v:
                 fixed += ["-o", "%s=%s" % (k, v)]
         fixed += ["-o", "ProxyCommand=none", "-o", "ProxyJump=none"]    # 解析完到按指紋之間改 config 加轉接也沒用(@abb89 審)
-        r = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"] + fixed + ["--", host, cmd],
+        r = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes"] + fixed + ["--", host, cmd],
                 input="%s=%s\n" % (name, value), capture_output=True, text=True, timeout=60)
     except (subprocess.TimeoutExpired, OSError):
         return "ssh_failed"

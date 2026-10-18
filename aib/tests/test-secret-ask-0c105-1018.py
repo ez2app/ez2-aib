@@ -193,7 +193,7 @@ class SecretAsk(unittest.TestCase):
         cmd, stdin = calls[0]
         self.assertEqual(stdin, "%s=%s\n" % (NAME, KEY))
         self.assertFalse(any(KEY in c for c in cmd))
-        self.assertEqual(cmd[:16], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "HostName=203.0.113.7",
+        self.assertEqual(cmd[:20], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "-o", "HostName=203.0.113.7",
                                     "-o", "Port=2222", "-o", "User=root", "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "--"])
         remote = cmd[-1]
         for part in ("umask 077", "chmod 600", "chown app:app", ".tmp-aib", "mv -f"):
