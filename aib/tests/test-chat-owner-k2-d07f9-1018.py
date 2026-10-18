@@ -21,7 +21,14 @@ N2 B join A ⇒ 印配對碼;A devices add <碼> ⇒ 清單 seq 2 有 B;B 開線
    沒加密就改清單 ⇒ devices_need_protect;本人證明沒過 ⇒ 什麼都沒改
 N3 A devices revoke B ⇒ B 的席查不到;停用持主人金鑰那台 ⇒ is_host
 N4 加密後 aib chat off、沒輸密語 ⇒ 一定提示「舊版好友還看得到」
-刀(複本):K1 假請求也算錯(只比 device = 簽章者、不比指紋)⇒ O5 紅;K2 不比備份密語 ⇒ O2 紅;K3 不關回顯 ⇒ O3 紅;
+O8 主人密語連錯(@abb89 10-18 H2):第 5 次錯起鎖 30 秒、鎖住時對的也不收(pass_locked);鎖過了輸對 ⇒ 歸零;
+   8 個同時猜 ⇒ 剛好 5 次算錯、其餘被鎖(讀-判-解-寫上鎖)
+O9 加密後(@abb89 M1):還原一份加密前的舊備份 ⇒ 不寫回明文 owner.key;明文與加密並存 ⇒ owner_local False、角色 both、
+   aib chat owner repair 驗過密語後刪掉明文那份
+O10 中繼站來的機器名稱(@abb89 M2):控制字元 / ANSI 清掉、限長
+N5 竄改 devices-own.json 多塞一台(@abb89 H1)⇒ devices extend 從中繼站抓已簽的那份當底,塞的那台簽不進去;畫面列出差異
+刀(複本):K5 拿掉密語鎖 ⇒ O8 紅;K6 owner_local 不看 owner.sealed ⇒ O9 紅;K7 拿本機檔當底 ⇒ N5 紅;
+   K1 假請求也算錯(只比 device = 簽章者、不比指紋)⇒ O5 紅;K2 不比備份密語 ⇒ O2 紅;K3 不關回顯 ⇒ O3 紅;
    K4 加密後 ensure_owner 又重產主人金鑰(10-18 動工時抓到的洞)⇒ N1 紅
 """
 import importlib.util
@@ -104,6 +111,74 @@ class Protect(unittest.TestCase):
         with self.assertRaises(O.OwnerError) as cm:
             O.protect("another long phrase", self.env, iterations=FAST)
         self.assertEqual(str(cm.exception), "sealed")
+
+
+class Lock(unittest.TestCase):
+    def setUp(self):
+        self.b = RT.Box()
+        self.addCleanup(self.b.close)
+        self.assertEqual(self.b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW").returncode, 0)
+        self.env = self.b.env()
+        self.secret = NK.load_secret("owner", self.env)
+        O.protect(PASS, self.env, iterations=FAST)
+
+    def test_o8_pass_lock(self):
+        t = 1000.0
+        for i in range(5):
+            with self.assertRaises(O.OwnerError) as cm:
+                O.open_owner("wrong wrong wrong", self.env, now=t)
+            self.assertEqual(str(cm.exception), "bad_passphrase")
+        with self.assertRaises(O.OwnerError) as cm:
+            O.open_owner(PASS, self.env, now=t + 1)
+        self.assertEqual(str(cm.exception), "pass_locked", "鎖住時對的也不收")
+        self.assertEqual(O.open_owner(PASS, self.env, now=t + 31), self.secret)
+        self.assertEqual(json.loads(O.pass_fails_path(self.env).read_text())["n"], 0, "輸對才歸零")
+        code = ("import sys,json;sys.path.insert(0,%r);import chat_owner as O\n"
+                "try:\n  O.open_owner('wrong wrong wrong', json.loads(sys.argv[1]), now=5000.0); print('ok')\n"
+                "except O.OwnerError as e: print(e)") % str(COCKPIT)
+        import subprocess
+        ps = [subprocess.Popen([sys.executable, "-c", code, json.dumps(self.env)], stdout=subprocess.PIPE, text=True)
+              for _ in range(8)]
+        outs = [p.communicate(timeout=120)[0].strip() for p in ps]
+        self.assertEqual((outs.count("bad_passphrase"), outs.count("pass_locked")), (5, 3), outs)
+
+
+class Restore(unittest.TestCase):
+    def test_o9_no_plain_after_seal(self):
+        import chat_backup as CB
+        import chat_owner_cli as OC
+        b = RT.Box()
+        self.addCleanup(b.close)
+        self.assertEqual(b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW").returncode, 0)
+        env = b.env()
+        old = b.td / "old.json"
+        CB.backup(old, "backup phrase", env)                       # 加密前的舊備份(裡面有明文主人金鑰)
+        plain = NK.load_secret("owner", env)
+        O.protect(PASS, env, iterations=FAST)
+        CB.restore(old, "backup phrase", env)
+        self.assertFalse((NK.keys_dir(env) / "owner.key").exists(), "加密後還原舊備份不准把明文寫回")
+        NK.store_secret("owner", plain, env)                        # 模擬 protect 寫完 sealed 還沒刪就當掉:兩份並存
+        self.assertFalse(NK.owner_local(env), "並存時不算明文可用")
+        self.assertEqual(OC.owner_status(env)["role"], "both")
+        import io
+        import chat_bridge as CBR
+        orig = (OC.PROVE, OC.READ_PASS)
+        OC.PROVE, OC.READ_PASS = (lambda reason, env, root=None: None), (lambda prompt: PASS)
+        try:
+            buf = io.StringIO()
+            rc = CBR.main(["owner", "repair"], env=env, out=buf)
+        finally:
+            OC.PROVE, OC.READ_PASS = orig
+        self.assertEqual(rc, 0, buf.getvalue())
+        self.assertFalse((NK.keys_dir(env) / "owner.key").exists())
+        self.assertEqual(OC.owner_status(env)["role"], "sealed")
+
+    def test_o10_clean_name(self):
+        import chat_owner_cli as OC
+        n = OC.GF_clean_name("B\x1b[31m機\u202e" + "x" * 80)
+        self.assertNotIn("\x1b", n or "")
+        self.assertNotIn("\u202e", n or "")
+        self.assertLessEqual(len(n or ""), 32)
 
 
 class Tty(unittest.TestCase):
@@ -375,6 +450,24 @@ class Network(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("不能停用", txt)
 
+    def test_n5_tampered_own_list(self):
+        self._join_and_add()
+        evil = npub_of(30)
+        p = O.own_list_path(self.a.root)
+        rec = json.loads(p.read_text())
+        rec["devices"].append({"npub": evil, "name": "偷塞的", "added_at": 1})
+        rec["seq"] = 1                                                 # 也把 seq 改小
+        p.write_text(json.dumps(rec))
+        self.passes = [PASS]
+        rc, txt = self.run_cli(self.a, "devices", "extend")
+        self.assertEqual(rc, 0, txt)
+        import chat_bridge as CBR
+        rc, got = CBR._run_nostr("devices-fetch", self.a.root, self.a.env(), extra=[self.owner])
+        self.assertEqual(rc, 0, got)
+        self.assertNotIn(evil, [d["npub"] for d in got["list"]["devices"]], "本機檔偷塞的不准簽進去")
+        self.assertEqual(got["list"]["seq"], 3, "seq 要接中繼站那份(2)+1,不被改小")
+        self.assertIn("共 2 台", txt, "簽之前要列台數")
+
     def test_n4_off_warns(self):
         self.protect()
         self.passes = []
@@ -413,6 +506,23 @@ class Knife(unittest.TestCase):
         if r.returncode == 0 and "skipped=" in (r.stdout + r.stderr):
             self.skipTest("被砍的那格跳過了,刀沒得驗")
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+    def test_k5_no_pass_lock(self):
+        self._knife("        if now < until:\n            raise OwnerError(\"pass_locked\")\n", "", "Lock.test_o8_pass_lock")
+
+    def test_k6_owner_local_ignores_sealed(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/nostr_keys.py",
+                        '    return (keys_dir(env) / "owner.key").is_file() and not (keys_dir(env) / "owner.sealed").is_file()\n',
+                        '    return (keys_dir(env) / "owner.key").is_file()\n', tests=(name, "test-chat-roster-d07f9-1015.py")) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Restore.test_o9_no_plain_after_seal"], cwd=str(root),
+                            max_procs=80, timeout=300, env=dict(os.environ))
+        self.assertIsNone(r.tripped)
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+    @unittest.skipUnless(RT.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(被砍的 Network 也會跳過)")
+    def test_k7_local_base(self):
+        self._knife("    if relay:\n        base = {k: relay[k]", "    if False:\n        base = {k: relay[k]", "Network.test_n5_tampered_own_list")
 
     def test_k2_backup_pass_allowed(self):
         self._knife("    check_not_backup_pass(passphrase, backups)\n", "", "Protect.test_o2_protect")

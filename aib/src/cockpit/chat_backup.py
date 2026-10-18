@@ -164,8 +164,12 @@ def restore(path, passphrase, env=None, replace=False, chat_on=False):
         exists = (NK.keys_dir(env) / (st + ".key")).is_file()
         if exists and mode == "merge":
             continue
+        if st == "owner" and (NK.keys_dir(env) / "owner.sealed").is_file() and mode != "replace":
+            continue                     # @abb89 10-18 M1:本機主人金鑰已密語加密 ⇒ 舊備份的明文那把不寫回
         NK.store_secret(st, body["keys"][st], env, replace=(mode == "replace" or exists))
         n += 1
+    if mode == "replace" and "owner" in body["keys"] and not isinstance(sealed, dict):
+        (NK.keys_dir(env) / "owner.sealed").unlink(missing_ok=True)      # 換成明文那位主人:舊主人的加密檔不留(不並存)
     if mode == "merge":
         have = {e["seat5"] + "|" + (e.get("persona_uid") or "") for e in lm["seats"]}
         lm["seats"] += [e for e in bm["seats"] if e["seat5"] + "|" + (e.get("persona_uid") or "") not in have]

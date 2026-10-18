@@ -56,6 +56,7 @@ def _base_roster(env):
 
 def _proof_then_pass(reason, env, root, out, twice=False):
     """本人證明 ⇒ 密語。回密語;不過 ⇒ None(已印原因)。"""
+    out.write(_t("owner_proof_reason", reason=reason) + "\n")       # 非 Mac 也看得到要核准什麼(名稱 + 指紋)
     why = PROVE(reason, env, root=root)
     if why:
         out.write(_t("owner_proof_failed", why=why) + "\n")
@@ -75,7 +76,9 @@ def _proof_then_pass(reason, env, root, out, twice=False):
 def owner_status(env):
     m = NK.read_map(env)
     o = m.get("owner") or {}
-    role = ("remote" if o.get("remote") else "sealed" if CO.is_sealed(env) else "local" if NK.owner_local(env) else "none")
+    both = CO.is_sealed(env) and (NK.keys_dir(env) / "owner.key").is_file()
+    role = ("remote" if o.get("remote") else "both" if both else "sealed" if CO.is_sealed(env)
+            else "local" if NK.owner_local(env) else "none")
     return {"owner": o.get("npub"), "role": role, "device": (m.get("device") or {}).get("npub")}
 
 
@@ -85,6 +88,8 @@ def cmd_owner(a, env, out):
         out.write((json.dumps(st) if a.json else _t("owner_role_" + st["role"], owner=st["owner"] or "-")) + "\n")
         return 0
     st = owner_status(env)
+    if a.action == "repair":
+        return _repair(st, env, out)
     if st["role"] != "local":
         out.write(_t("owner_err_" + ("sealed" if st["role"] == "sealed" else "no_owner"), n=CO.MIN_PASS) + "\n")
         return 2
@@ -102,20 +107,50 @@ def cmd_owner(a, env, out):
         now = int(time.time())
         lst = CO.next_list(CO.read_own_list(root, st["owner"]), now, add={"npub": dev, "name": name, "host": True})
         secret = NK.load_secret("owner", env)
+        CO.protect(pw, env, backups=CB.known_backups(env))      # 先加密成功(明文那份刪掉)才發清單(@abb89 10-18 次要)
+        CO.save_own_list(root, lst)
         rc, rec = _sign(root, env, secret, devices=lst, roster=_base_roster(env))
         secret = None
-        if rc != 0:
-            out.write(_t("owner_sign_failed", why=rec.get("why") or "relays") + "\n")
-            return 2
-        CO.protect(pw, env, backups=CB.known_backups(env))
-        CO.save_own_list(root, lst)
         _republish(root)
     except CO.OwnerError as err:
         out.write(_t("owner_err_" + str(err), n=CO.MIN_PASS) + "\n")
         return 2
     finally:
-        pw = None
+        pw = secret = None
     out.write(_t("owner_protected", code=DV.device_code(dev)) + "\n")
+    if rc != 0:
+        out.write(_t("owner_protected_unpublished", why=(rec or {}).get("why") or "relays") + "\n")
+    out.write(_t("owner_backup_check_note") + "\n")
+    return 0
+
+
+def _repair(st, env, out):
+    """owner.key 與 owner.sealed 並存(@abb89 10-18 M1)⇒ 本人證明 + 主人密語解得開、而且兩份是同一把 ⇒ 刪掉明文 owner.key。"""
+    if st["role"] != "both":
+        out.write(_t("owner_repair_none") + "\n")
+        return 0
+    CB = _bridge()
+    pw = _proof_then_pass(_t("owner_repair_reason"), env, CB.bridge_root(env), out)
+    if pw is None:
+        return 2
+    try:
+        secret = CO.open_owner(pw, env)
+    except CO.OwnerError as err:
+        out.write(_t("owner_err_" + str(err), n=CO.MIN_PASS) + "\n")
+        return 2
+    finally:
+        pw = None
+    try:
+        plain = NK.load_secret("owner", env)
+    except Exception:   # noqa: BLE001  明文那份壞了也照刪(加密那份驗過了)
+        plain = secret
+    same = plain == secret and NK.npub(NK.pubkey_hex(secret)) == st["owner"]
+    secret = plain = None
+    if not same:
+        out.write(_t("owner_repair_differs") + "\n")
+        return 2
+    (NK.keys_dir(env) / "owner.key").unlink()
+    out.write(_t("owner_repair_done") + "\n")
     return 0
 
 
@@ -174,7 +209,12 @@ def cmd_devices(a, env, out):
         out.write(_t("devices_need_protect") + "\n")
         return 2
     now = int(time.time())
-    cur = CO.read_own_list(root, st["owner"])
+    # @abb89 10-18 H1:底一律從中繼站抓、驗過主人簽章的那份;本機 devices-own.json(沒簽章)只用來比 seq
+    rc, frec = CB._run_nostr("devices-fetch", root, env, timeout=60, extra=[st["owner"]])
+    if rc != 0:
+        out.write(_t("devices_fetch_failed", why=(frec or {}).get("why") or "no_venv") + "\n")
+        return 2
+    cur, verified = CO.verified_base(CO.read_own_list(root, st["owner"]), frec.get("list"))
     pending = None
     try:
         if a.action == "add":
@@ -184,7 +224,7 @@ def cmd_devices(a, env, out):
                 return 2
             req = CO.check_pair(root, st["owner"], a.target or "", [(r["signer"], r["content"]) for r in rec.get("requests") or []],
                                 now, mark=False)
-            name = a.name or req.get("name")
+            name = GF_clean_name(a.name or req.get("name"))           # @abb89 M2:中繼站來的名字先清、限長
             reason = _t("devices_add_reason", name=name or "-", fp=CO.fingerprint(req["device"]))
             nxt = CO.next_list(cur, now, add={"npub": req["device"], "name": name})
             pending = req["nonce_hash"]
@@ -197,6 +237,9 @@ def cmd_devices(a, env, out):
     except CO.OwnerError as err:
         out.write(_t("owner_err_" + str(err), n=CO.MIN_PASS) + "\n")
         return 2
+    diff = CO.list_diff(cur, nxt)
+    _show_diff(out, diff, nxt, verified, cur)
+    reason = "%s %s" % (reason, _t("devices_diff_short", a=len(diff["added"]), r=len(diff["removed"]), n=diff["total"]))
     pw = _proof_then_pass(reason, env, root, out)
     if pw is None:
         return 2
@@ -213,10 +256,33 @@ def cmd_devices(a, env, out):
         out.write(_t("owner_sign_failed", why=(rec or {}).get("why") or "relays") + "\n")
         return 2
     if pending:
-        CO.mark_used(root, pending, now)
+        try:
+            CO.mark_used(root, pending, now)
+        except CO.OwnerError:
+            pass                      # 同一個配對碼在別處剛被用掉:清單已經簽好,不噴錯(@abb89 次要)
     CO.save_own_list(root, nxt)
     out.write(_t("devices_signed", seq=nxt["seq"], n=len(nxt["devices"])) + "\n")
     return 0
+
+
+def GF_clean_name(name):
+    import dm_global_files as GF
+    name = GF.clean_display_name(str(name or "")[:64]) if name else None
+    return (name or None) and name[:32]
+
+
+def _show_diff(out, diff, nxt, verified, cur):
+    """簽之前列給本人看(@abb89 H1 (2)):相對上一份已簽清單多了誰、少了誰;底沒驗到 ⇒ 整份列出來。"""
+    out.write(_t("devices_diff_head", n=diff["total"], seq=nxt["seq"]) + "\n")
+    for name, fp in diff["added"]:
+        out.write(_t("devices_diff_add", name=name, fp=fp) + "\n")
+    for name, fp in diff["removed"]:
+        out.write(_t("devices_diff_remove", name=name, fp=fp) + "\n")
+    if not verified:
+        out.write(_t("devices_base_unverified") + "\n")
+        for d in nxt.get("devices") or []:
+            out.write(_t("devices_row", name=d.get("name") or "-", code=DV.device_code(d["npub"]), fp=CO.fingerprint(d["npub"]),
+                         host=" ★" if d.get("host") else "") + "\n")
 
 
 def off_owner_roster(env, out):

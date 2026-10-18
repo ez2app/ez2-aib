@@ -1520,6 +1520,9 @@ def cmd_status(a, env, out):
         else:
             out.write(T("status_clock_warn" if c.get("warn") else "status_clock_ok", offset=c["offset"]) + "\n")
     out.write(T("status_heartbeat_" + ("yes" if rec["heartbeat"] else "no")) + "\n")
+    import chat_owner_cli as OC
+    if OC.owner_status(env)["role"] == "both":
+        out.write(T("status_owner_both") + "\n")          # @abb89 10-18 M1:明文與加密的主人金鑰並存
     if rec["healthy"] is False:
         out.write(T("status_unhealthy_" + rec["why"]) + "\n")
     if rec["backup"]["due"]:
@@ -1612,7 +1615,7 @@ def main(argv=None, env=None, out=sys.stdout):
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
     ow = sub.add_parser("owner", help=T("help.owner"))
-    ow.add_argument("action", choices=("protect", "status"))
+    ow.add_argument("action", choices=("protect", "status", "repair"))
     ow.add_argument("--json", action="store_true")
     jn = sub.add_parser("join", help=T("help.join"))
     jn.add_argument("owner")

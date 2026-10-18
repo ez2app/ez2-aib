@@ -287,7 +287,9 @@ def _save_map(rec, env=None):
 
 def owner_local(env=None):
     """主人私鑰在這台、而且不用密語就解得開(第 37.7 節 K2:密語加密後 / join 進別人清單的機器 ⇒ False)。"""
-    return (keys_dir(env) / "owner.key").is_file()
+    # @abb89 10-18 M1:owner.key 與 owner.sealed 並存(還原了加密前的舊備份、或 protect 寫完 sealed 還沒刪就當掉)⇒ 不算明文可用,
+    #   轉接程式不准拿明文那把自動簽;status 紅字、aib chat owner repair 驗過密語後刪掉明文那份
+    return (keys_dir(env) / "owner.key").is_file() and not (keys_dir(env) / "owner.sealed").is_file()
 
 
 def ensure_owner(env=None, now=None):

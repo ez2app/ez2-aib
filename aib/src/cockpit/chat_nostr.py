@@ -162,6 +162,22 @@ def cmd_pair_send(stdin):
     return (0 if ok else 2), {"ok": bool(ok), "relays_ok": ok}
 
 
+async def devices_fetch(owner_npub, relays):
+    """改清單前(@abb89 10-18 H1):從中繼站抓這位主人現行的 d=aib-devices、驗簽(nostr-sdk)+ 作者 = 主人 + chat_devices 驗內容,
+    當下一次簽章的底。過期的照樣回(底只看內容);沒有 ⇒ list None。"""
+    flt = N.Filter().author(N.PublicKey.parse(owner_npub)).kind(N.Kind(CR.KIND_ROSTER)).identifier(DV.DEVICES_D)
+    ev = await _fetch_latest(relays, flt)
+    if ev is None:
+        return 0, {"ok": True, "list": None}
+    if ev.author().to_bech32() != owner_npub:
+        return 2, {"ok": False, "why": "wrong_author"}
+    try:
+        rec = DV.parse_list(ev.content(), owner_npub, int(time.time()))
+    except DV.DevicesError as err:
+        return 2, {"ok": False, "why": "bad_list", "detail": str(err)}
+    return 0, {"ok": True, "list": rec}
+
+
 async def pair_fetch(owner_npub, relays):
     """主人那台:抓給我的配對請求 ⇒ [{signer, content}](簽章已驗;d 要是簽章者自己的 aib-pair:<指紋>)。"""
     import chat_owner as CO
@@ -1532,7 +1548,7 @@ async def serve(root):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="chat_nostr")
     p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve", "probe", "roster", "sign-owner", "pair-send",
-                                   "pair-fetch"])
+                                   "pair-fetch", "devices-fetch"])
     p.add_argument("addr", nargs="?")
     p.add_argument("--root")
     a = p.parse_args(argv)
@@ -1554,6 +1570,8 @@ def main(argv=None):
             rc, rec = cmd_pair_send(sys.stdin)
         elif a.cmd == "pair-fetch":
             rc, rec = asyncio.run(pair_fetch(a.addr, CR.relays()))
+        elif a.cmd == "devices-fetch":
+            rc, rec = asyncio.run(devices_fetch(a.addr, CR.relays()))
         else:
             rc, rec = cmd_fetch(a.addr, CR.relays(), root=root)
     except Exception as err:   # noqa: BLE001  例外只記種類:訊息裡可能帶路徑或金鑰相關字

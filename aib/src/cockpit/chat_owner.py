@@ -33,6 +33,9 @@ AAD = b"aib-owner-seal/v1"
 KDF = "pbkdf2-sha256"
 ITERATIONS = 600000
 MIN_PASS = 12
+PASS_MAX_FAILS = 5              # 主人密語連錯 5 次鎖 30 秒,之後每錯一次翻倍,上限 1 小時(@abb89 10-18 H2;同 #144)
+PASS_LOCK_S = 30
+PASS_LOCK_MAX_S = 3600
 PAIR_D = "aib-pair"
 PAIR_TTL_S = 600
 PAIR_MAX_FAILS = 3
@@ -42,7 +45,8 @@ _B32 = "abcdefghijkmnpqrstuvwxyz23456789"     # 去掉容易看錯的 l / o / 0 
 
 class OwnerError(ValueError):
     """原因碼:short_passphrase / same_as_backup / bad_passphrase / not_sealed / sealed / no_owner / bad_file /
-    no_tty / bad_code / no_request / expired / burned / used / too_many / was_revoked / already_listed / not_listed / is_host。"""
+    no_tty / bad_code / no_request / expired / burned / used / too_many / was_revoked / already_listed / not_listed / is_host /
+    pass_locked。"""
 
 
 # ── 主人金鑰加密 ──
@@ -140,9 +144,44 @@ def protect(passphrase, env=None, backups=(), iterations=ITERATIONS):
     return npub
 
 
-def open_owner(passphrase, env=None):
-    """要簽清單時:密語解開主人私鑰(呼叫端用完就丟,盡量縮短在記憶體裡的時間)。"""
-    return unseal(read_sealed(env), passphrase)
+def pass_fails_path(env=None):
+    return NK.secrets_dir(env) / "owner-pass-fails.json"
+
+
+def open_owner(passphrase, env=None, now=None):
+    """要簽清單時:密語解開主人私鑰(呼叫端用完就丟,盡量縮短在記憶體裡的時間)。
+    連錯 PASS_MAX_FAILS 次起遞增鎖(讀-判-解-寫整段在 fcntl 鎖底下,併發猜繞不過);鎖住時對的也不收(pass_locked)。
+    界線(照實寫):計數檔同帳號的程式刪得掉;真正的防線是密語強度 + 60 萬次 PBKDF2。"""
+    import fcntl
+    now = time.time() if now is None else now
+    p = pass_fails_path(env)
+    NK._mkdir_private(NK.secrets_dir(env))
+    fd = os.open(str(p) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            st = json.loads(p.read_text(encoding="utf-8"))
+            n, until = int(st.get("n") or 0), float(st.get("until") or 0)
+        except (OSError, ValueError, AttributeError, TypeError):
+            n, until = 0, 0.0
+        if now < until:
+            raise OwnerError("pass_locked")
+        try:
+            secret = unseal(read_sealed(env), passphrase)
+        except OwnerError as err:
+            if str(err) != "bad_passphrase":
+                raise
+            n += 1
+            lock = min(PASS_LOCK_MAX_S, PASS_LOCK_S * 2 ** (n - PASS_MAX_FAILS)) if n >= PASS_MAX_FAILS else 0
+            write_json(str(p), {"v": 1, "n": n, "until": now + lock if lock else 0})
+            os.chmod(str(p), 0o600)
+            raise
+        if n:
+            write_json(str(p), {"v": 1, "n": 0, "until": 0})
+        return secret
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def read_passphrase(prompt, tty_path="/dev/tty"):
@@ -378,6 +417,29 @@ def next_list(cur, now, add=None, revoke=None):
         devices = [d for d in devices if d not in hit]
         revoked += [{"npub": d["npub"], "at": int(now)} for d in hit]
     return DV.build_list(cur["owner"], devices, revoked[-DV.MAX_REVOKED:], seq=int(cur.get("seq") or 0) + 1, at=now)
+
+
+def verified_base(local, relay):
+    """下一次簽清單的底(@abb89 10-18 H1):本機 devices-own.json 沒簽章、同帳號 AI 改得到 ⇒ 不能直接當底。
+    relay = 中繼站抓回、已驗主人簽章的那份(沒有 ⇒ None)。回 (底, verified)。
+    有 relay ⇒ 用它、seq = max(relay, 本機) + 1 由 next_list 加;沒有 relay 而本機也沒簽過(seq 0)⇒ 空清單,verified;
+    沒有 relay 但本機說簽過 ⇒ 用本機、verified False(呼叫端要把整份清單列給本人看)。"""
+    if relay:
+        base = {k: relay[k] for k in ("v", "owner", "devices", "revoked", "seq") if k in relay}
+        base["seq"] = max(int(relay.get("seq") or 0), int(local.get("seq") or 0))
+        return base, True
+    if not int(local.get("seq") or 0):
+        return dict(local, devices=[], revoked=[]), True
+    return local, False
+
+
+def list_diff(prev, new):
+    """兩份清單的差異 ⇒ {added:[(名稱, 指紋)], removed:[…], total}(給本人看:多了誰、少了誰)。"""
+    a = {d["npub"]: d for d in prev.get("devices") or []}
+    b = {d["npub"]: d for d in new.get("devices") or []}
+    row = lambda d: (d.get("name") or "-", fingerprint(d["npub"]))   # noqa: E731
+    return {"added": [row(b[n]) for n in b if n not in a], "removed": [row(a[n]) for n in a if n not in b],
+            "total": len(b)}
 
 
 def save_own_list(root, rec):
