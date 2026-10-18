@@ -4,6 +4,17 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.22
+
+- **Paste API keys into a masked box**: `aib secret ask <NAME>` opens a masked input box, checks the format (and with `--check`, asks the provider whether the key works), then needs Touch ID before the key is stored encrypted. `--push <host>:<path>` also sends it to a server over ssh; the Touch ID prompt shows the real host and port that ssh will connect to, and that connection is pinned (no proxy). The key never appears in arguments, output or logs.
+- **The chat relay restarts itself and reports its health**: if the relay stops while online chat is on, it starts again after 5 seconds. `aib chat status --json` adds `healthy` and `why`, and aib reminds you to back up your chat key.
+- **One owner, several machines (part 1)**: aib can verify an owner-signed device list and merge each listed machine's roster when looking someone up; mail from a removed machine no longer verifies. Old rosters without a device list work as before.
+- **Contacts show the other side's aib version** and which features it cannot receive yet; with several machines it uses the version of the machine that seat lives on.
+- **Contacts follow roster changes**: seats removed from a friend's roster drop out of your contacts, so messages no longer go to a closed seat; `aib chat contacts --refresh <npub|all>` fetches again right away.
+- **Approved project cards can get goals later**: `aib newproj --propose-goals <uid> --goal …` writes a proposal only; the goals take effect after the human runs `aib newproj --approve <uid>`. Red lines and human rulings stay as approved, and control or invisible characters are stripped from the goals.
+- **`aib test` refuses to touch the real home folder**: a test that reads or writes `~/.ez2-aib`, `~/.claude`, `~/.ssh` and similar places is marked red with the paths it touched.
+- The screenshot editor drops its old copy-to-clipboard icon; "Clipboard only" next to Save remains.
+
 ## 0.1.21
 
 - **Send online messages as the human from the captain room**: `aib chat send <address> --as-human --cabin <cabin>` (text on stdin). On macOS every send needs Touch ID (or the login password); the prompt text is built by aib ("send to <who>: <first 40 chars>"), one prompt at a time, and there is no way to skip it — if Touch ID is off or unavailable the send is refused. Other platforms use the captain-room PIN (pbkdf2-hashed, at least 6 digits, lockout that doubles after each miss up to 1 hour); the PIN only guards against mistakes, not against other programs running as you.
