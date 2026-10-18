@@ -601,6 +601,17 @@ def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=ti
                                   "detail": "已交給轉接程式,還沒收到對方回條;勿重送", "msgid": msgid}, clock())
 
 
+def sent_author(root, msgid):
+    """寄出帳那封記的 author(human / ai_draft / ai_auto);沒這封、舊帳沒記、msgid 不像 ⇒ None。"""
+    if not isinstance(msgid, str) or not MSGID_RE.match(msgid):
+        return None
+    try:
+        a = json.loads((Path(root) / "sent" / (msgid + ".json")).read_text(encoding="utf-8")).get("author")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return a if a in AUTHORS else None
+
+
 def mark_unconfirmed(root, now=None, after=86400):
     """10-18:交出(relayed)或對方只回到 queued、超過 after 還沒 delivered / read / 拒收 ⇒ 補一張 unconfirmed 回條
     (寄件人與艦長室看得到「可能沒收到」;Mac Pro 13 換艙後寄到舊席的信就是這樣一直排著)。回補了幾張。"""
