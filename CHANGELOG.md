@@ -4,6 +4,14 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.24
+
+- **Pair your phone as the owner's phone**: `aib chat pair start` (Touch ID) shows a QR code; after the phone sends back the one-time code (10 characters, 5 minutes), a second Touch ID window shows the phone's npub before it is added. Up to 3 phones; `aib chat pair revoke <npub prefix|all>` (Touch ID). Messages from the phone that start with `指令:`, `!` or `gm ` are instructions; everything else is discussion (reply only). Security settings (pairing, devices, owner key, wake, friends, sharing, Touch ID / PIN, secret store, plugins, license) still need Touch ID on the computer. Replayed or out-of-time messages are rejected.
+- **Online messages reach the AI box without a Plus licence**: incoming messages from other people's seats are delivered on the basic plan too (other queue features still need Plus).
+- **Messages with an unknown type are no longer put in the AI box** (they are logged and not receipted).
+- **Who wrote it**: the message frame now shows what the sender says about the author (the owner / drafted by AI and approved / sent automatically by AI), and says plainly that the receiver cannot verify it.
+- **`aib newproj --approve` shows what changed**: approving records a hash of the goals and red lines; before you confirm, it lists added / removed goals and whether the red lines are the same as last time. The records are not signed, and the screen says so.
+
 ## 0.1.23
 
 - **Owner key protected by a passphrase**: `aib chat owner protect` encrypts your owner key at rest (passphrase of at least 12 characters, read only from the terminal; on macOS Touch ID first). Changing your device list then always needs you: the base is the signed list fetched from the relays (an older or missing one is shown in full with a warning), and the changes (+added / −removed, with fingerprints) are shown before you approve. Wrong passphrases lock with growing delays. Restoring an old backup no longer writes the plain key back.
