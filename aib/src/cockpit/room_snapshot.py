@@ -172,6 +172,27 @@ def clean_sky(v):
     return out or None
 
 
+SEAT_LOOK_RE = __import__("re").compile(r"^av[0-9]{1,2}:[0-9a-z]{1,64}\Z")   # 席的外觀(紙娃娃;跟建築的 clean_look 不同):版本前綴 + 一欄一字;每個字代表什麼由艦長室定義
+
+
+def clean_seat_look(v):
+    """席的外觀字串(艦長室定義意思,核心只驗型別):合 SEAT_LOOK_RE 才帶,不合 ⇒ None。"""
+    return v if isinstance(v, str) and SEAT_LOOK_RE.match(v) else None
+
+
+def attach_looks(people, room_seats):
+    """room.json 的 seats[席碼].look(艦長室寫的)⇒ 合格的才放進 people[i]["look"];沒有 / 不合 ⇒ 不出現 look 鍵。"""
+    room_seats = room_seats if isinstance(room_seats, dict) else {}
+    for p in people:
+        e = room_seats.get(p.get("seat"))
+        look = clean_seat_look(e.get("look")) if isinstance(e, dict) else None
+        if look:
+            p["look"] = look
+        else:
+            p.pop("look", None)
+    return people
+
+
 def problems(x):
     """艦長室存檔前要知道的「不合格」(第 36.3 節 check):超過上限、地形格子不合。不合格的欄位送出時當沒有 / 只取前面。"""
     out = []
@@ -263,11 +284,12 @@ def build(env=None, now=None, with_rooms=False, with_status=False, with_state=Tr
                        "emoji": _emoji_of(home, s.get("persona_uid")), "provider": s.get("provider"), "role": s.get("role"),
                        "state": p.get("state") if with_state else None,
                        "at": rec.get("at") if isinstance(rec.get("at"), int) and with_state else None})
+    mine = (scrub(room) or {}) if isinstance(room, dict) else _read_json(room_path(env))
+    attach_looks(people, mine.get("seats") if isinstance(mine, dict) else None)   # 島上走動的人也穿得出自己的樣子(好友看得到)
     isl = clean_island(scrub(island) if isinstance(island, dict) else _read_json(island_path(env), SPACE_RAW_MAX),
                        with_offers=offers_host(env) if with_offers is None else with_offers)
     snap = {"v": 3 if has_k_fields(isl) else 2, "island": isl, "people": people, "rooms": None}
     if with_rooms:
-        mine = (scrub(room) or {}) if isinstance(room, dict) else _read_json(room_path(env))
         extra = mine.get("seats") if isinstance(mine.get("seats"), dict) else {}
         seats = []
         for s, ppl in zip(live, people):
@@ -327,6 +349,9 @@ def decode(text):
     if not isinstance(snap, dict) or snap.get("v") not in (2, 3) or not isinstance(snap.get("people"), list):
         return None
     snap = scrub(snap)
+    for p in snap["people"]:                            # 收件端自己再驗一次外觀:不合就拿掉,不影響其他欄位
+        if isinstance(p, dict) and "look" in p and not clean_seat_look(p["look"]):
+            p.pop("look")
     if isinstance(snap.get("island"), dict):            # 收件端自己再驗一次島(第 36.4 節),不只靠艦長室
         omitted = snap["island"].get("decor_omitted") is True     # 0.1.16 以前的寄件端會丟 decor 並標記
         snap["island"] = clean_island(snap["island"])
