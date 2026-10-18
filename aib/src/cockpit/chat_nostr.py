@@ -27,6 +27,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import nostr_sdk as N  # noqa: E402  只有 venv 裡有;核心沒有這一行
 import chat_devices as DV  # noqa: E402
+import chat_power as CP  # noqa: E402
 import chat_roster as CR  # noqa: E402
 import dm_global_files as GF  # noqa: E402
 import nostr_keys as NK  # noqa: E402
@@ -737,7 +738,8 @@ class Sender(object):
             rows = SP.presence([e["seat5"] for e in mine_seats], with_status=(lvl == "status"))
             for r, e in zip(rows, mine_seats):
                 r["cabin"] = e.get("cabin") or "main"
-            body = json.dumps({"v": 1, "seats": rows}, ensure_ascii=False, sort_keys=True)
+            power = CP.presence_power(self.root, PRESENCE_EVERY_S)          # 10-18:讓好友判斷這台是不是在睡
+            body = json.dumps({"v": 1, "seats": rows, "power": power}, ensure_ascii=False, sort_keys=True)
             prev = last.get(tgt)
             if prev and ((prev[0] == body and now - prev[1] < PRESENCE_EVERY_S) or now - prev[1] < PRESENCE_GAP_S):
                 continue
@@ -752,7 +754,7 @@ class Sender(object):
             tags = [N.Tag.parse(x) for x in (["aib-v", "1"], ["aib-type", "presence"],
                                              ["aib-from", "%s/%s/%s" % (owner, frm.get("cabin") or "main", frm["seat5"])])]
             gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(res["seat"]["npub"]),
-                                          json.dumps({"v": 1, "at": int(now), "seats": rows}, ensure_ascii=False),
+                                          json.dumps({"v": 1, "at": int(now), "seats": rows, "power": power}, ensure_ascii=False),
                                           rumor_extra_tags=tags)
             keys = None
             c = await _client(res["dm_relays"])
@@ -848,6 +850,9 @@ PRESENCE_TICK_S = float(os.environ.get("AIB_CHAT_PRESENCE_TICK") or 60)     # �
 PRESENCE_EVERY_S = float(os.environ.get("AIB_CHAT_PRESENCE_EVERY") or 900)  # 沒變也每 15 分鐘送一次
 PRESENCE_GAP_S = float(os.environ.get("AIB_CHAT_PRESENCE_GAP") or 120)      # 同一位對方最少間隔
 PRESENCE_MAX_TARGETS = 50
+UNCONFIRMED_AFTER_S = float(os.environ.get("AIB_CHAT_UNCONFIRMED_AFTER") or 86400)  # 交出多久沒回條就標「未確認」
+UNCONFIRMED_TICK_S = 600
+
 ROOM_GAP_S = float(os.environ.get("AIB_CHAT_ROOM_GAP") or 600)          # 房間快照同一位最少間隔(第 34 節)
 ORPHAN_KEEP_S = float(os.environ.get("AIB_CHAT_ORPHAN_KEEP") or 60)   # 秒;查不到寄出帳的回條暫存多久(第 27.8 節)
 ORPHAN_MAX = 500
@@ -1205,8 +1210,9 @@ class Receiver(object):
             step = r.get("step") if isinstance(r.get("step"), str) and re.fullmatch(r"\d{1,3}/\d{1,3}", r["step"]) else None
             by_cab.setdefault(cab, []).append({"seat": seat, "state": r["state"], "now": SP.clean_now(r.get("now")),
                                                 "step": step})
+        power = CP.clean_power(body.get("power"))
         for cab, seats in by_cab.items():
-            GF.note_world(self.root, owner, cab, seats)
+            GF.note_world(self.root, owner, cab, seats, power=power)
         # 對方送在線狀態來 = 他把我當好友了 ⇒ 這個工人第一次聽到他時,補送一次名片(先前送的可能在他加我好友前被丟掉)
         heard = getattr(self, "heard", None)
         if heard is None:
@@ -1489,6 +1495,8 @@ async def serve(root):
     last_clock = 0.0
     last_presence = 0.0
     last_verify = 0.0
+    last_unconfirmed = 0.0
+    watch = CP.SleepWatch(root)
     recv_task = asyncio.ensure_future(receiver.run(stop))
     for left in sorted((root / "sending").glob("*.json")):     # 上次掛掉時領了還沒寄完的:當重試處理
         if not (root / "sending" / (left.stem + ".try")).exists():
@@ -1497,6 +1505,12 @@ async def serve(root):
         while not stop.is_set():
             if not _switch_on() or os.getppid() != parent:
                 break
+            if watch.tick():                                  # 剛睡醒:立刻補送在線狀態,好友很快就看到醒了
+                sender.p_last = {}
+                last_presence = 0.0
+            if time.time() - last_unconfirmed >= UNCONFIRMED_TICK_S:
+                last_unconfirmed = time.time()
+                GF.mark_unconfirmed(root, after=UNCONFIRMED_AFTER_S)
             if time.time() - last_hb >= HB_EVERY:
                 GF.write_heartbeat(root)
                 last_hb = time.time()

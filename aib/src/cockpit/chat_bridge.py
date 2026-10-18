@@ -171,6 +171,7 @@ def run(env=None, tick=None, max_ticks=None, out=sys.stdout):
 
     fd = os.open(str(root / "bridge.lock"), os.O_RDWR | os.O_CREAT, 0o600)
     leader, said_standby, ticks = False, False, 0
+    keep = None                              # 10-18 Andy:接電源時撐著不睡(caffeinate -s,只在 Mac、aib chat awake off 可關)
     try:
         while True:
             if stop["now"] or not is_enabled(env):
@@ -185,6 +186,8 @@ def run(env=None, tick=None, max_ticks=None, out=sys.stdout):
                 leader = _try_lock(fd)
                 if leader:
                     _become_leader(root, env, out)
+                    import chat_power as CP
+                    keep = CP.start_keep_awake(root, chat_home(env))
                 elif not said_standby:
                     st = read_status(root) or {}
                     out.write(T("run_standby", pid=st.get("pid", "?"), instance=st.get("instance") or "?") + "\n")
@@ -198,6 +201,9 @@ def run(env=None, tick=None, max_ticks=None, out=sys.stdout):
             _sleep(tick, stop, every=(lambda: import_inbox(root, env)) if leader else None)
     finally:
         stop_worker()       # 工人跟著當班走(它看到父行程不在也會自己結束)
+        if keep is not None:
+            import chat_power as CP
+            CP.stop_keep_awake(root, keep)
         os.close(fd)        # 關檔 = 放鎖,排隊的下一支接手
 
 
@@ -926,6 +932,8 @@ def contacts_payload(env=None):
     me = {"owner": (NK.read_map(env).get("owner") or {}).get("npub"), "display_name": prof.get("display_name"),
           "country": prof.get("country"), "published": _my_published(env)}
     peers = GF.read_peers(root)
+    world = GF.read_world(root)
+    import chat_power as CP
     rows = {}
 
     def row(owner, relation, label=None, source=None, extra=None):
@@ -940,6 +948,8 @@ def contacts_payload(env=None):
                                     "socials": [dict(x, **_claim_view(p, "social:%s:%s" % (x["p"], x["v"])))
                                                 for x in p.get("socials") or []],
                                     "roster_at": p.get("roster_at"), "seen_at": p.get("seen_at"),
+                                    "machine": CP.owner_state([c for c in world.values() if c.get("owner") == owner],
+                                                              time.time()),
                                     # 第 37.5 節:對方版本與它收不到的功能(版本不知道 ⇒ aib / missing 都是 None)
                                     "aib": CR.clean_version(p.get("aib")), "missing": CR.missing_features(p.get("aib")),
                                     "last_in": p.get("last_in"), "last_out": p.get("last_out"),
@@ -1087,7 +1097,9 @@ def world_payload(env=None, now=None):
                           "state": x.get("state") if fresh else "unknown",
                           "now": x.get("now") if fresh else None, "step": x.get("step") if fresh else None})
         sp = GF.read_room(root, owner)
+        import chat_power as CP
         cabins.append({"owner": owner, "cabin": c.get("cabin"), "relation": rel,
+                       "machine": CP.machine_state(c, now),             # 10-18:對方那台醒著 / 在睡 / 離線
                        "space": {"at": sp["at"], "fresh": now - int(sp["at"]) < GF.ROOM_FRESH_S,
                                  "room": bool(sp["snap"].get("rooms"))} if sp else None,
                        "display_name": info.get("display_name"), "country": info.get("country"),
@@ -1527,6 +1539,41 @@ def cmd_status(a, env, out):
         out.write(T("status_unhealthy_" + rec["why"]) + "\n")
     if rec["backup"]["due"]:
         out.write(T("backup_hint") + "\n")
+    for line in power_lines(env):
+        out.write(line + "\n")
+    return 0
+
+
+def power_lines(env):
+    """10-18 Andy:這台會不會睡、有沒有撐著;自己的其他機器版本落後(只提醒自己的機器,不對好友)。"""
+    import chat_power as CP
+    import chat_roster as CR
+    root = bridge_root(env)
+    lines = []
+    info = CP.power_info(root)
+    if info["sleep_min"]:
+        key = "status_power_kept" if info["kept_awake"] and info["ac"] else (
+            "status_power_battery" if info["kept_awake"] else "status_power_sleeps")
+        lines.append(T(key, n=info["sleep_min"]))
+    mine_ver = CR._aib_version()
+    peers = GF.read_peers(root)
+    for f in CR.read_friends(env, "mine"):
+        v = CR.clean_version((peers.get(f["owner"]) or {}).get("aib"))
+        if v and mine_ver and CR.clean_version(mine_ver) and \
+                tuple(int(x) for x in v.split(".")) < tuple(int(x) for x in mine_ver.split(".")):
+            lines.append(T("status_mine_old", name=f.get("name") or f["owner"][:16], v=v, mine=mine_ver))
+    return lines
+
+
+def cmd_awake(a, env, out):
+    """aib chat awake [on|off]:轉接程式當班時,接電源就撐著不睡(caffeinate -s;只在 Mac)。改了下次當班生效。"""
+    import chat_power as CP
+    if a.value in ("on", "off"):
+        CP.set_awake(chat_home(env), a.value == "on")
+    on = CP.awake_wanted(chat_home(env))
+    out.write(T("awake_" + ("on" if on else "off")) + "\n")
+    if a.value and sys.platform == "darwin":
+        out.write(T("awake_next_run") + "\n")
     return 0
 
 
@@ -1614,6 +1661,8 @@ def main(argv=None, env=None, out=sys.stdout):
     rm.add_argument("--json", action="store_true")
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
+    aw = sub.add_parser("awake", help=T("help.awake"))
+    aw.add_argument("value", nargs="?", choices=("on", "off"))
     ow = sub.add_parser("owner", help=T("help.owner"))
     ow.add_argument("action", choices=("protect", "status", "repair"))
     ow.add_argument("--json", action="store_true")
@@ -1671,6 +1720,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_roster(a, env, out)
     if a.cmd == "lookup":
         return cmd_lookup(a, env, out)
+    if a.cmd == "awake":
+        return cmd_awake(a, env, out)
     if a.cmd in ("owner", "join", "devices"):
         import chat_owner_cli as OC                     # 第 37.7 節 K2
         return {"owner": OC.cmd_owner, "join": OC.cmd_join, "devices": OC.cmd_devices}[a.cmd](a, env, out)
