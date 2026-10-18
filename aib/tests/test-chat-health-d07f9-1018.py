@@ -12,6 +12,7 @@ S4 備份提醒:aib chat on 沒備份過 ⇒ 提醒;開通滿 7 天、有主人�
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -89,6 +90,9 @@ class Window(BT.Window):
 
 
 class Knife(unittest.TestCase):
+    # 被砍的那格要 tmux;CI 的 macOS 沒有 tmux ⇒ 那格跳過、rc 0,刀會被誤判「沒砍出紅」(10-18 run 39072757007)。
+    # ⇒ 刀跟它砍的那格同一個跳過條件;萬一那格還是跳過(條件以後變了),刀也算跳過,不算過。
+    @unittest.skipUnless(shutil.which("tmux"), "沒有 tmux(被砍的 Window.test_s3_respawn 也會跳過)")
     def test_k1_no_loop(self):
         name = Path(__file__).name
         with knife_copy(REPO, "src/cockpit/chat_bridge.py",
@@ -99,6 +103,8 @@ class Knife(unittest.TestCase):
             r = run_guarded([sys.executable, str(root / "tests" / name), "Window.test_s3_respawn"], cwd=str(root),
                             max_procs=120, timeout=400)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        if r.returncode == 0 and "skipped=" in (r.stdout + r.stderr):
+            self.skipTest("被砍的那格跳過了,刀沒得驗")
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 
 
