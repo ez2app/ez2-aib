@@ -702,6 +702,8 @@ def note_peer(root, owner, display_name=None, country=None, seat=None, roster_at
                 p["socials"] = claims.get("socials") or []
             if "nip05" in claims:
                 p["nip05"] = claims.get("nip05")
+            if claims.get("aib"):
+                p["aib"] = str(claims["aib"])[:16]
         if request in ("pending", "accepted", "rejected"):   # 我送出的好友申請,對方回條推到哪(第 29.4 節)
             p["request"] = request
         if direction in ("in", "out"):

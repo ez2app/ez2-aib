@@ -887,6 +887,8 @@ def contacts_payload(env=None):
                                     "socials": [dict(x, **_claim_view(p, "social:%s:%s" % (x["p"], x["v"])))
                                                 for x in p.get("socials") or []],
                                     "roster_at": p.get("roster_at"), "seen_at": p.get("seen_at"),
+                                    # 第 37.5 節:對方版本與它收不到的功能(版本不知道 ⇒ aib / missing 都是 None)
+                                    "aib": CR.clean_version(p.get("aib")), "missing": CR.missing_features(p.get("aib")),
                                     "last_in": p.get("last_in"), "last_out": p.get("last_out"),
                                     "n_in": p.get("n_in", 0), "n_out": p.get("n_out", 0), "n_refused": 0,
                                     "request": None, "source": source})
@@ -1010,6 +1012,7 @@ def world_payload(env=None, now=None):
                        "space": {"at": sp["at"], "fresh": now - int(sp["at"]) < GF.ROOM_FRESH_S,
                                  "room": bool(sp["snap"].get("rooms"))} if sp else None,
                        "display_name": info.get("display_name"), "country": info.get("country"),
+                       "aib": CR.clean_version(info.get("aib")), "missing": CR.missing_features(info.get("aib")),
                        "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
     return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
 

@@ -458,6 +458,28 @@ def set_relays(action, url=None, env=None):
     return cur
 
 
+# 第 37.5 節:功能 ⇒ 對方最少要哪一版才收得到(10-18 三台混 0.1.16 / 0.1.18 / 0.1.19,新功能遇舊版默默收不到)
+FEATURES = (("room", "0.1.16"),            # 走進好友的艦長室(空間快照 v2,包 J)
+            ("space_v3", "0.1.18"),        # 島的擴充欄位(快照 v3,包 K)
+            ("offers", "0.1.18"),          # 好友掛單(包 K)
+            ("human_author", "0.1.21"))    # 分得出真人親寄 / AI 寄(#144)
+_VER_RE = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,4})$")
+
+
+def clean_version(v):
+    """名冊上的 aib_version ⇒ "0.1.19" 這種三段數字;其他一律 None(不認得就當不知道)。"""
+    return v if isinstance(v, str) and _VER_RE.fullmatch(v) else None
+
+
+def missing_features(v):
+    """對方版本 ⇒ 它收不到的功能名 [..];版本不知道 ⇒ None(不亂講對方缺什麼)。"""
+    v = clean_version(v)
+    if v is None:
+        return None
+    have = tuple(int(x) for x in v.split("."))
+    return [name for name, need in FEATURES if have < tuple(int(x) for x in need.split("."))]
+
+
 def _aib_version():
     try:
         return (HERE.parent.parent / "VERSION").read_text(encoding="utf-8").strip() or None
@@ -606,6 +628,7 @@ def parse(content, signer_npub, owner=None):
     # 第 32 節:社群與 NIP-05 是選填;不合格的整欄當沒有(不讓名冊因此不能用)
     rec["socials"] = clean_socials(rec.get("socials"))
     rec["nip05"] = clean_nip05(rec.get("nip05"))
+    rec["aib_version"] = clean_version(rec.get("aib_version"))
     return rec
 
 
