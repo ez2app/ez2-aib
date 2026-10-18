@@ -2285,13 +2285,20 @@ REAL_HOME_READ_OK = (".ez2-aib/chat/venv",)
 REAL_HOME_TOOL_OWN = (".ez2-aib/verify-shadow",)    # aib test 自己的沿用紀錄池(追蹤器 / 量測本身在讀寫,不是測試碰的)
 
 
-def real_home_touches(events, real_home):
-    """→ [(動作 write|read, 路徑)](去重、排序)。real_home = 執行 aib test 的使用者真正的家目錄(passwd 那個)。"""
+def real_home_touches(events, real_home, exempt=()):
+    """→ [(動作 write|read, 路徑)](去重、排序)。real_home = 執行 aib test 的使用者真正的家目錄(passwd 那個)。
+    exempt = 被測的倉本身(工作樹、快照、git 共用目錄):10-18 @9f808 回報 0.1.22 退步 —— 各席工作樹放在
+    ~/.ez2-aib/worktrees/ 底下時,測試讀倉裡自己的檔被算成碰真家目錄、整支判紅。倉底下的讀寫不算。"""
     if not real_home:
         return []
     bases = [os.path.join(real_home, s) for s in REAL_HOME_SENSITIVE]
     ok = [os.path.join(real_home, s) for s in REAL_HOME_READ_OK]
     own = [os.path.join(real_home, s) for s in REAL_HOME_TOOL_OWN]
+    for e in exempt or ():
+        e = str(e or "").rstrip("/")
+        # 倉若就是家目錄或整個敏感目錄(例如 --repo ~/.ez2-aib)⇒ 不豁免,不然等於關掉檢查
+        if e and not any(b == e or b.startswith(e + "/") for b in bases + [str(real_home).rstrip("/")]):
+            own.append(e)
     out = set()
     for ev in events or []:
         ch = ev.get("ch")
