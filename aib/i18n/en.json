@@ -4536,6 +4536,8 @@
   "aib.chat.requests_row": "  {when}  {name} ({country}) \"{note}\"\n    accept: aib chat request accept {owner}\n    reject: aib chat request reject {owner}",
   "aib.chat.contacts_none": "Your global contacts are empty.",
   "aib.chat.contacts_row": "  {rel}  {name} ({country})  {n} seat(s)  {owner}",
+  "aib.chat.devices_base_stale": "⚠ The relays returned a list older than the one you last signed (possibly withheld or replayed); revoked machines stay revoked. The full list is below: check every machine",
+  "aib.chat.devices_base_stale_short": "⚠ Relay list is old, check the full list",
   "aib.chat.status_owner_both": "⚠ The owner key exists both plain and encrypted: run aib chat owner repair",
   "aib.chat.devices_diff_short": "(+{a} −{r}, {n} machines)",
   "aib.chat.devices_base_unverified": "⚠ No previous signed list found on the relays; using this machine's record. The full list is below: check every machine is yours",

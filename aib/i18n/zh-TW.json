@@ -4536,6 +4536,8 @@
   "aib.chat.requests_row": "  {when}  {name}({country})「{note}」\n    同意:aib chat request accept {owner}\n    拒絕:aib chat request reject {owner}",
   "aib.chat.contacts_none": "全球通訊錄是空的。",
   "aib.chat.contacts_row": "  {rel}  {name}({country})  {n} 席  {owner}",
+  "aib.chat.devices_base_stale": "⚠ 中繼站回的是比你上次簽的還舊的清單(可能被扣住或重播);這次照「停用過的一律不收回」做:下面是整份清單,請逐台確認",
+  "aib.chat.devices_base_stale_short": "⚠ 中繼站的清單是舊的,請對整份清單",
   "aib.chat.status_owner_both": "⚠ 主人金鑰明文與加密兩份並存:請跑 aib chat owner repair",
   "aib.chat.devices_diff_short": "(+{a} −{r},共 {n} 台)",
   "aib.chat.devices_base_unverified": "⚠ 中繼站上找不到上一份已簽的清單,這次照本機記錄:下面是整份清單,請逐台確認都是你的機器",

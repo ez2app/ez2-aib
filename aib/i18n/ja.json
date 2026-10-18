@@ -4536,6 +4536,8 @@
   "aib.chat.requests_row": "  {when}  {name}({country})「{note}」\n    承認:aib chat request accept {owner}\n    拒否:aib chat request reject {owner}",
   "aib.chat.contacts_none": "グローバル連絡先は空です。",
   "aib.chat.contacts_row": "  {rel}  {name}({country})  {n} 席  {owner}",
+  "aib.chat.devices_base_stale": "⚠ リレーから前回署名したものより古い一覧が返りました(保留や再送の可能性)。停止済みのマシンは戻しません。下に全体を出すので 1 台ずつ確認してください",
+  "aib.chat.devices_base_stale_short": "⚠ リレーの一覧が古いので全体を確認",
   "aib.chat.status_owner_both": "⚠ 持ち主の鍵が平文と暗号化の 2 つあります:aib chat owner repair を実行してください",
   "aib.chat.devices_diff_short": "(+{a} −{r}、計 {n} 台)",
   "aib.chat.devices_base_unverified": "⚠ リレーに前回署名した一覧が見つからないので、このマシンの記録を使います。下に全体を出すので、全部自分のマシンか確認してください",

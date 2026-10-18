@@ -164,6 +164,9 @@ def open_owner(passphrase, env=None, now=None):
             n, until = int(st.get("n") or 0), float(st.get("until") or 0)
         except (OSError, ValueError, AttributeError, TypeError):
             n, until = 0, 0.0
+        if until > now + PASS_LOCK_MAX_S:               # @abb89 10-18 H2:AI 寫一個很遠的 until 不能把本人永久鎖在外面
+            until = now + PASS_LOCK_MAX_S                # ⇒ 截到最多 1 小時並寫回(之後照截過的倒數,不是每讀一次又一小時)
+            write_json(str(p), {"v": 1, "n": n, "until": until})
         if now < until:
             raise OwnerError("pass_locked")
         try:
@@ -419,18 +422,25 @@ def next_list(cur, now, add=None, revoke=None):
     return DV.build_list(cur["owner"], devices, revoked[-DV.MAX_REVOKED:], seq=int(cur.get("seq") or 0) + 1, at=now)
 
 
-def verified_base(local, relay):
+def verified_base(local, relay, seen=0):
     """下一次簽清單的底(@abb89 10-18 H1):本機 devices-own.json 沒簽章、同帳號 AI 改得到 ⇒ 不能直接當底。
-    relay = 中繼站抓回、已驗主人簽章的那份(沒有 ⇒ None)。回 (底, verified)。
-    有 relay ⇒ 用它、seq = max(relay, 本機) + 1 由 next_list 加;沒有 relay 而本機也沒簽過(seq 0)⇒ 空清單,verified;
-    沒有 relay 但本機說簽過 ⇒ 用本機、verified False(呼叫端要把整份清單列給本人看)。"""
+    relay = 中繼站抓回、已驗主人簽章的那份(沒有 ⇒ None);seen = 收件端看過這位主人的最大 seq(chat_devices.seen_seq)。
+    回 (底, verified)。seq 一律 = max(relay, 本機, seen),next_list 再 +1。
+    - 停用名單取「中繼站 ∪ 本機」,再把停用的從 devices 拿掉 ⇒ 舊清單(重播 / 只從沒收到停用的那站抓到)不能讓停用的機器復活,
+      多出的停用會在差異的「−」裡看得到(複審 10-18 17:39)。
+    - relay 的 seq 比本機或 seen 小 ⇒ 是舊清單 ⇒ verified False(呼叫端列整份、Touch ID 字加警告)。
+    - 沒有 relay 而本機也沒簽過(seq 0)⇒ 空清單,verified;沒有 relay 但本機說簽過 ⇒ 用本機、verified False。"""
+    lseq, rseq = int(local.get("seq") or 0), int((relay or {}).get("seq") or 0)
+    seq = max(lseq, rseq, int(seen or 0))
     if relay:
-        base = {k: relay[k] for k in ("v", "owner", "devices", "revoked", "seq") if k in relay}
-        base["seq"] = max(int(relay.get("seq") or 0), int(local.get("seq") or 0))
-        return base, True
-    if not int(local.get("seq") or 0):
-        return dict(local, devices=[], revoked=[]), True
-    return local, False
+        revoked = {r["npub"]: r for r in (local.get("revoked") or []) + (relay.get("revoked") or []) if isinstance(r, dict)}
+        base = {k: relay[k] for k in ("v", "owner") if k in relay}
+        base.update(devices=[d for d in relay.get("devices") or [] if d["npub"] not in revoked],
+                    revoked=list(revoked.values()), seq=seq)
+        return base, rseq >= lseq and rseq >= int(seen or 0)
+    if not lseq:
+        return dict(local, devices=[], revoked=[], seq=seq), True
+    return dict(local, seq=seq), False
 
 
 def list_diff(prev, new):

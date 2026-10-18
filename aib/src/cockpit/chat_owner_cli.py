@@ -214,7 +214,7 @@ def cmd_devices(a, env, out):
     if rc != 0:
         out.write(_t("devices_fetch_failed", why=(frec or {}).get("why") or "no_venv") + "\n")
         return 2
-    cur, verified = CO.verified_base(CO.read_own_list(root, st["owner"]), frec.get("list"))
+    cur, verified = CO.verified_base(CO.read_own_list(root, st["owner"]), frec.get("list"), DV.seen_seq(root, st["owner"]))
     pending = None
     try:
         if a.action == "add":
@@ -237,9 +237,11 @@ def cmd_devices(a, env, out):
     except CO.OwnerError as err:
         out.write(_t("owner_err_" + str(err), n=CO.MIN_PASS) + "\n")
         return 2
-    diff = CO.list_diff(cur, nxt)
-    _show_diff(out, diff, nxt, verified, cur)
-    reason = "%s %s" % (reason, _t("devices_diff_short", a=len(diff["added"]), r=len(diff["removed"]), n=diff["total"]))
+    relay = frec.get("list")
+    diff = CO.list_diff(relay or cur, nxt)                  # 跟中繼站那份比:被拿掉的停用機器也列在「−」
+    _show_diff(out, diff, nxt, verified, cur, stale=bool(relay) and not verified)
+    reason = "%s%s %s" % ("" if verified else _t("devices_base_stale_short") + " ", reason,
+                          _t("devices_diff_short", a=len(diff["added"]), r=len(diff["removed"]), n=diff["total"]))
     pw = _proof_then_pass(reason, env, root, out)
     if pw is None:
         return 2
@@ -271,7 +273,7 @@ def GF_clean_name(name):
     return (name or None) and name[:32]
 
 
-def _show_diff(out, diff, nxt, verified, cur):
+def _show_diff(out, diff, nxt, verified, cur, stale=False):
     """簽之前列給本人看(@abb89 H1 (2)):相對上一份已簽清單多了誰、少了誰;底沒驗到 ⇒ 整份列出來。"""
     out.write(_t("devices_diff_head", n=diff["total"], seq=nxt["seq"]) + "\n")
     for name, fp in diff["added"]:
@@ -279,7 +281,7 @@ def _show_diff(out, diff, nxt, verified, cur):
     for name, fp in diff["removed"]:
         out.write(_t("devices_diff_remove", name=name, fp=fp) + "\n")
     if not verified:
-        out.write(_t("devices_base_unverified") + "\n")
+        out.write(_t("devices_base_stale" if stale else "devices_base_unverified") + "\n")
         for d in nxt.get("devices") or []:
             out.write(_t("devices_row", name=d.get("name") or "-", code=DV.device_code(d["npub"]), fp=CO.fingerprint(d["npub"]),
                          host=" ★" if d.get("host") else "") + "\n")

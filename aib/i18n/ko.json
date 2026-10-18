@@ -4536,6 +4536,8 @@
   "aib.chat.requests_row": "  {when}  {name}({country}) \"{note}\"\n    승인: aib chat request accept {owner}\n    거절: aib chat request reject {owner}",
   "aib.chat.contacts_none": "글로벌 연락처가 비어 있습니다.",
   "aib.chat.contacts_row": "  {rel}  {name}({country})  {n}석  {owner}",
+  "aib.chat.devices_base_stale": "⚠ 릴레이가 지난번 서명한 것보다 오래된 목록을 돌려줬습니다(보류나 재전송 가능성). 정지된 기기는 되살리지 않습니다. 아래 전체 목록을 한 대씩 확인하세요",
+  "aib.chat.devices_base_stale_short": "⚠ 릴레이 목록이 오래됨, 전체 목록 확인",
   "aib.chat.status_owner_both": "⚠ 주인 키가 평문과 암호화 두 개 있습니다: aib chat owner repair를 실행하세요",
   "aib.chat.devices_diff_short": "(+{a} −{r}, 총 {n}대)",
   "aib.chat.devices_base_unverified": "⚠ 릴레이에서 이전에 서명한 목록을 찾지 못해 이 기기 기록을 씁니다. 아래 전체 목록이 모두 내 기기인지 확인하세요",

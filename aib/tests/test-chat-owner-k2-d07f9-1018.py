@@ -26,8 +26,11 @@ O8 主人密語連錯(@abb89 10-18 H2):第 5 次錯起鎖 30 秒、鎖住時對�
 O9 加密後(@abb89 M1):還原一份加密前的舊備份 ⇒ 不寫回明文 owner.key;明文與加密並存 ⇒ owner_local False、角色 both、
    aib chat owner repair 驗過密語後刪掉明文那份
 O10 中繼站來的機器名稱(@abb89 M2):控制字元 / ANSI 清掉、限長
+O8b 計數檔被寫一個很遠的 until(複審 17:39)⇒ 最多鎖 1 小時,不能把本人永久鎖在外面
+O11 舊清單當底(複審 17:39):中繼站 seq 比本機小 ⇒ 未驗證;停用名單取中繼站 ∪ 本機,停用的不能復活
+N6 停用 B 之後中繼站只回得到停用前那份(重播 / 扣住)⇒ extend 畫面警告、整份列出,簽出的清單 B 不復活、seq 接最大
 N5 竄改 devices-own.json 多塞一台(@abb89 H1)⇒ devices extend 從中繼站抓已簽的那份當底,塞的那台簽不進去;畫面列出差異
-刀(複本):K5 拿掉密語鎖 ⇒ O8 紅;K6 owner_local 不看 owner.sealed ⇒ O9 紅;K7 拿本機檔當底 ⇒ N5 紅;
+刀(複本):K8 舊清單的 devices 不扣停用 ⇒ N6 紅;K5 拿掉密語鎖 ⇒ O8 紅;K6 owner_local 不看 owner.sealed ⇒ O9 紅;K7 拿本機檔當底 ⇒ N5 紅;
    K1 假請求也算錯(只比 device = 簽章者、不比指紋)⇒ O5 紅;K2 不比備份密語 ⇒ O2 紅;K3 不關回顯 ⇒ O3 紅;
    K4 加密後 ensure_owner 又重產主人金鑰(10-18 動工時抓到的洞)⇒ N1 紅
 """
@@ -141,6 +144,27 @@ class Lock(unittest.TestCase):
               for _ in range(8)]
         outs = [p.communicate(timeout=120)[0].strip() for p in ps]
         self.assertEqual((outs.count("bad_passphrase"), outs.count("pass_locked")), (5, 3), outs)
+
+
+    def test_o8b_lock_capped(self):
+        GF_write = __import__("atomic_json").write_json
+        GF_write(str(O.pass_fails_path(self.env)), {"v": 1, "n": 9, "until": 9e18})
+        with self.assertRaises(O.OwnerError) as cm:
+            O.open_owner(PASS, self.env, now=1000.0)
+        self.assertEqual(str(cm.exception), "pass_locked")
+        self.assertEqual(O.open_owner(PASS, self.env, now=1000.0 + O.PASS_LOCK_MAX_S + 1), self.secret, "最多鎖 1 小時")
+
+
+class Base(unittest.TestCase):
+    def test_o11_stale_relay(self):
+        x, h = npub_of(41), npub_of(40)
+        local = {"owner": OWNER, "seq": 3, "devices": [{"npub": h, "host": True}], "revoked": [{"npub": x, "at": 3}]}
+        relay = {"v": 1, "owner": OWNER, "seq": 2, "devices": [{"npub": h, "host": True}, {"npub": x, "name": "X"}], "revoked": []}
+        base, ok = O.verified_base(local, relay)
+        self.assertFalse(ok, "中繼站比本機舊 ⇒ 未驗證")
+        self.assertEqual(([d["npub"] for d in base["devices"]], base["seq"]), ([h], 3), "停用的不能復活、seq 取最大")
+        self.assertEqual(O.verified_base(dict(local, revoked=[], seq=2), relay, seen=5)[1], False, "比看過的 seq 小也算舊")
+        self.assertTrue(O.verified_base(dict(local, seq=2), relay)[1])
 
 
 class Restore(unittest.TestCase):
@@ -468,6 +492,33 @@ class Network(unittest.TestCase):
         self.assertEqual(got["list"]["seq"], 3, "seq 要接中繼站那份(2)+1,不被改小")
         self.assertIn("共 2 台", txt, "簽之前要列台數")
 
+    def test_n6_stale_relay_no_revive(self):
+        from aib_fake_relay import FakeRelay, RelayClient
+        self._join_and_add()                                           # seq 2:host + B
+        with RelayClient(self.relay.url) as c:
+            c.send(["REQ", "l2", {"kinds": [30078], "#d": [DV.DEVICES_D]}])
+            l2 = c.recv_until_eose("l2")
+        self.assertTrue(l2)
+        bdev = NK.read_map(self.b.env())["device"]["npub"]
+        self.passes = [PASS]
+        rc, txt = self.run_cli(self.a, "devices", "revoke", DV.device_code(bdev))
+        self.assertEqual(rc, 0, txt)                                   # seq 3:B 停用
+        old = FakeRelay()
+        old.__enter__()
+        self.addCleanup(old.__exit__, None, None, None)
+        with RelayClient(old.url) as c:                                # 只有停用前那份的站
+            c.send(["EVENT", l2[-1]])
+            c.recv()
+        self.a.relays = [old.url]
+        self.passes = [PASS]
+        rc, txt = self.run_cli(self.a, "devices", "extend")
+        self.assertEqual(rc, 0, txt)
+        self.assertIn("比你上次簽的還舊", txt, "要警告")
+        import chat_bridge as CBR
+        rc, got = CBR._run_nostr("devices-fetch", self.a.root, self.a.env(), extra=[self.owner])
+        self.assertNotIn(bdev, [d["npub"] for d in got["list"]["devices"]], "停用的不准復活")
+        self.assertEqual(got["list"]["seq"], 4)
+
     def test_n4_off_warns(self):
         self.protect()
         self.passes = []
@@ -507,6 +558,11 @@ class Knife(unittest.TestCase):
             self.skipTest("被砍的那格跳過了,刀沒得驗")
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 
+    @unittest.skipUnless(RT.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(被砍的 Network 也會跳過)")
+    def test_k8_stale_revives(self):
+        self._knife('        base.update(devices=[d for d in relay.get("devices") or [] if d["npub"] not in revoked],',
+                    '        base.update(devices=list(relay.get("devices") or []),', "Network.test_n6_stale_relay_no_revive")
+
     def test_k5_no_pass_lock(self):
         self._knife("        if now < until:\n            raise OwnerError(\"pass_locked\")\n", "", "Lock.test_o8_pass_lock")
 
@@ -522,7 +578,7 @@ class Knife(unittest.TestCase):
 
     @unittest.skipUnless(RT.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(被砍的 Network 也會跳過)")
     def test_k7_local_base(self):
-        self._knife("    if relay:\n        base = {k: relay[k]", "    if False:\n        base = {k: relay[k]", "Network.test_n5_tampered_own_list")
+        self._knife("    if relay:\n        revoked = {", "    if False:\n        revoked = {", "Network.test_n5_tampered_own_list")
 
     def test_k2_backup_pass_allowed(self):
         self._knife("    check_not_backup_pass(passphrase, backups)\n", "", "Protect.test_o2_protect")
