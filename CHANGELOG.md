@@ -10,6 +10,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 - **Online messages reach the AI box without a Plus licence**: incoming messages from other people's seats are delivered on the basic plan too (other queue features still need Plus).
 - **Messages with an unknown type are no longer put in the AI box** (they are logged and not receipted).
 - **Who wrote it**: the message frame now shows what the sender says about the author (the owner / drafted by AI and approved / sent automatically by AI), and says plainly that the receiver cannot verify it.
+- **World lists the live cabin first**: when one owner has several cabins, the fresh, most recently seen one comes first, so a captain room that reads only the first entry no longer shows an online friend as offline.
 - **`aib newproj --approve` shows what changed**: approving records a hash of the goals and red lines; before you confirm, it lists added / removed goals and whether the red lines are the same as last time. The records are not signed, and the screen says so.
 
 ## 0.1.23
