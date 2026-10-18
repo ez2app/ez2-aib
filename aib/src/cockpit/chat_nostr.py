@@ -1567,6 +1567,8 @@ async def serve(root):
     last_unconfirmed = 0.0
     watch = CP.SleepWatch(root)
     recv_task = asyncio.ensure_future(receiver.run(stop))
+    import chat_telegram as TG                                # 第 39 節:Telegram 互串(關著就只是每 10 秒看一次開關)
+    tg_task = asyncio.ensure_future(TG.serve_loop(root, stop))
     for left in sorted((root / "sending").glob("*.json")):     # 上次掛掉時領了還沒寄完的:當重試處理
         if not (root / "sending" / (left.stem + ".try")).exists():
             write_json(str(root / "sending" / (left.stem + ".try")), {"n": 0, "next": 0, "why": "restart"})
@@ -1621,6 +1623,7 @@ async def serve(root):
             await asyncio.wait_for(recv_task, 10)
         except Exception:   # noqa: BLE001
             recv_task.cancel()
+        tg_task.cancel()
         try:
             (Path(root) / "heartbeat.json").unlink()
         except FileNotFoundError:

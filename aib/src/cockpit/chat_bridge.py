@@ -1588,6 +1588,10 @@ def cmd_awake(a, env, out):
 
 def main(argv=None, env=None, out=sys.stdout):
     env = os.environ if env is None else env
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["telegram"]:            # 第 39 節:Telegram 互串自己一支(只用標準庫)
+        import chat_telegram as TG
+        return TG.main(args[1:], env=env, out=out)
     p = argparse.ArgumentParser(prog="aib chat", description=T("help.description"))
     sub = p.add_subparsers(dest="cmd")
     on = sub.add_parser("on", help=T("help.on"))
