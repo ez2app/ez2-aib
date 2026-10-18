@@ -1111,8 +1111,13 @@ def propose_goals(root: Path, project_uid: str, goals: Any) -> int:
     if card is None:
         _say(T("aib.newproj.approve_not_found", {"uid": project_uid}), "[x]")
         return 2
-    clean = _union_keep_order([" ".join(str(g).split()) for g in (goals or []) if str(g).strip()])
-    if not clean or len(clean) > GOAL_MAX or any(len(g) > GOAL_MAX_CHARS for g in clean):
+    # 目標是 AI 寫的字,核准時原樣印給本人看:ANSI 跳脫、控制字元、方向控制 / 零寬字一律濾掉(跟 Touch ID 視窗同一套),
+    # 不然能把某條藏起來或改寫畫面,本人看到的跟核准的不一樣(@abb89 審 #155)。濾完空的 ⇒ 整批拒。
+    TA = _touchid()
+    given = [str(g) for g in (goals or []) if str(g).strip()]
+    scrubbed = [" ".join(TA.clean(g, 10 ** 6).split()) for g in given]
+    clean = _union_keep_order(scrubbed)
+    if not clean or "" in scrubbed or len(clean) > GOAL_MAX or any(len(g) > GOAL_MAX_CHARS for g in clean):
         _say(T("aib.newproj.propose_bad_goals", {"max": GOAL_MAX, "chars": GOAL_MAX_CHARS}), "[x]")
         return 2
     uid = card["project_uid"]

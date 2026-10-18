@@ -12,10 +12,11 @@ P6 還沒核准過的卡提目標 ⇒ 紅線沿用候選草稿的;核准後目�
 P7 指令列 new_project.py --propose-goals <uid> --goal a --goal b ⇒ 印 JSON ok、goals=2、next 指 --approve
 P8 新字串四語都有
 P9 候選檔被改了紅線 / 刪了本人裁示再 --approve ⇒ 印出來的、視窗條數、寫進卡的,紅線與裁示都是卡上生效的(@977e3 子代理審)
+P11 目標帶 ANSI 跳脫(\x1b[…)、控制字元、方向控制(U+202E)、零寬字 ⇒ 濾掉後才寫;濾完空的 ⇒ 整批拒(@abb89 審)
 P10 等 Touch ID 期間又提了新目標 ⇒ 核的是按之前那份;新那份留在候選檔等下次核,不被蓋掉
 刀(複本):K1 --approve 照舊只看卡已核准 ⇒ P2 紅;K2 不比目標、候選沒核准就當修訂 ⇒ P3 紅;
          K3 拿掉條數 / 字數檢查 ⇒ P5 紅;K4 修訂照收候選檔的紅線 ⇒ P9 紅;K5 核完照蓋候選檔 ⇒ P10 紅;
-         K6 沒核准過的卡也拿卡當底 ⇒ P6 紅
+         K6 沒核准過的卡也拿卡當底 ⇒ P6 紅;K7 不濾字元 ⇒ P11 紅
 """
 import importlib.util
 import json
@@ -221,6 +222,24 @@ class Propose(unittest.TestCase):
         self.assertEqual((rc, len(asked)), (0, 1))
         self.assertEqual(self._const()["goals"], ["second"])
 
+    def test_P11_control_chars_scrubbed(self):
+        self._approved_card()
+        rc = self.np.propose_goals(self.root, self.uid, ["ok\x1b[2K\x1b[1Ahidden", "abc\u202edcba", "zero\u200bwidth\x07"])
+        self.assertEqual(rc, 0)
+        goals = json.loads(self.cand.read_text(encoding="utf-8"))["constitution"]["goals"]
+        blob = "".join(goals)
+        for bad in ("\x1b", "\u202e", "\u200b", "\x07"):
+            self.assertNotIn(bad, blob, "控制 / 隱形字元要濾掉:%r" % bad)
+        self.assertIn("hidden", blob, "字元濾掉、內容留著(看得到才核得到)")
+        before = self.cand.read_bytes()
+        for goals in (["\x1b\u202e\u200b"], ["good", "\x1b\x07"]):
+            with self.subTest(goals=goals):
+                self.assertEqual(self.np.propose_goals(self.root, self.uid, goals), 2, "濾完空的整批拒")
+                self.assertEqual(self.cand.read_bytes(), before)
+        out = _FakeIO()
+        self._approve(out=out)
+        self.assertNotIn("\x1b", "".join(out.out))
+
     def test_P7_cli(self):
         env = dict(self.env, EZ2_AIB_STATE_ROOT=str(self.root), EZ2_AIB_HOME=str(self.root))
         r = subprocess.run([PY, str(NP), "--propose-goals", self.uid, "--goal", "a", "--goal", "b"],
@@ -257,8 +276,8 @@ class Knife(unittest.TestCase):
         self._cut('and _goals_of(cc) != _goals_of(card_const)', "", "Propose.test_P3_nothing_pending")
 
     def test_K3_no_limits(self):
-        self._cut("if not clean or len(clean) > GOAL_MAX or any(len(g) > GOAL_MAX_CHARS for g in clean):",
-                  "if not clean:", "Propose.test_P5_bad_goals")
+        self._cut("or len(clean) > GOAL_MAX or any(len(g) > GOAL_MAX_CHARS for g in clean):", ":",
+                  "Propose.test_P5_bad_goals")
 
 
     def test_K4_amend_trusts_candidate_red_lines(self):
@@ -271,6 +290,11 @@ class Knife(unittest.TestCase):
     def test_K6_unapproved_uses_card(self):
         self._cut('base = card_const if approved or not isinstance(cand.get("constitution"), dict) else cand["constitution"]',
                   "base = card_const", "Propose.test_P6_unapproved_card")
+
+
+    def test_K7_no_scrub(self):
+        self._cut('scrubbed = [" ".join(TA.clean(g, 10 ** 6).split()) for g in given]',
+                  'scrubbed = [" ".join(g.split()) for g in given]', "Propose.test_P11_control_chars_scrubbed")
 
 
 if __name__ == "__main__":
