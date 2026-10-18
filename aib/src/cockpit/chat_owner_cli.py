@@ -267,6 +267,51 @@ def cmd_devices(a, env, out):
     return 0
 
 
+def sign_list_change(env, out, reason_base, mutate):
+    """主人簽的機器清單改一筆(手機配對 / 撤銷共用;第 33 節 F1):主人金鑰要先加密;底從中繼站抓驗過簽章那份;
+    列差異 ⇒ 本人證明(視窗字 = reason_base + 差異)⇒ 主人密語 ⇒ 簽、發、記本機。mutate(cur, now) ⇒ 新清單。
+    回 (rc, 新清單或 None)。"""
+    st = owner_status(env)
+    if st["role"] != "sealed":
+        out.write(_t("devices_need_protect") + "\n")
+        return 2, None
+    CB = _bridge()
+    root = CB.bridge_root(env)
+    now = int(time.time())
+    rc, frec = CB._run_nostr("devices-fetch", root, env, timeout=60, extra=[st["owner"]])
+    if rc != 0:
+        out.write(_t("devices_fetch_failed", why=(frec or {}).get("why") or "no_venv") + "\n")
+        return 2, None
+    cur, verified = CO.verified_base(CO.read_own_list(root, st["owner"]), frec.get("list"), DV.seen_seq(root, st["owner"]))
+    try:
+        nxt = mutate(cur, now)
+    except CO.OwnerError as err:
+        out.write(_t("owner_err_" + str(err), n=CO.MIN_PASS) + "\n")
+        return 2, None
+    relay = frec.get("list")
+    diff = CO.list_diff(relay or cur, nxt)
+    _show_diff(out, diff, nxt, verified, cur, stale=bool(relay) and not verified)
+    reason = "%s%s %s" % ("" if verified else _t("devices_base_stale_short") + " ", reason_base,
+                          _t("devices_diff_short", a=len(diff["added"]), r=len(diff["removed"]), n=diff["total"]))
+    pw = _proof_then_pass(reason, env, root, out)
+    if pw is None:
+        return 2, None
+    try:
+        secret = CO.open_owner(pw, env)
+    except CO.OwnerError as err:
+        out.write(_t("owner_err_" + str(err), n=CO.MIN_PASS) + "\n")
+        return 2, None
+    finally:
+        pw = None
+    rc, rec = _sign(root, env, secret, devices=nxt, roster=_base_roster(env))
+    secret = None
+    if rc != 0:
+        out.write(_t("owner_sign_failed", why=(rec or {}).get("why") or "relays") + "\n")
+        return 2, None
+    CO.save_own_list(root, nxt)
+    return 0, nxt
+
+
 def GF_clean_name(name):
     import dm_global_files as GF
     name = GF.clean_display_name(str(name or "")[:64]) if name else None

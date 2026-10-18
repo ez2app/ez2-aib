@@ -37,6 +37,10 @@ def import_once(root=None, env=None):
     out = []
     for msgid, rec, path in GF.pending(root, "inbox"):
         try:
+            if rec.get("class") == "paired":                     # @abb89 F3:撤銷之後才匯入的,一律降成陌生(待審)
+                import chat_pair as CP
+                if not CP.is_paired(rec.get("from_npub"), env):
+                    rec = dict(rec, **{"class": "stranger", "verified": False})
             qf = GF.queue_fields(rec)
         except GF.ContractError as err:
             out.append(_refuse(root, msgid, path, "contract:%s" % err))
@@ -48,6 +52,8 @@ def import_once(root=None, env=None):
         g = {"addr": qf["sender_addr"], "shown": qf["shown_name"], "verified": qf["verified"],
              "same_name": qf["same_name"], "msgid": msgid, "country": qf["country"],
              "country_status": qf["country_status"], "tz_country": qf["tz_country"], "relation": qf["class"]}
+        if qf["author"]:
+            g["author"] = qf["author"]
         kind = rec.get("kind") if rec.get("kind") in DQ.KINDS else None
         thread = rec.get("thread") if isinstance(rec.get("thread"), str) and DQ.THREAD_RE.fullmatch(rec["thread"]) else None
         try:
@@ -65,6 +71,8 @@ def import_once(root=None, env=None):
                 DQ.hold_item(seat, item["id"], DQ.GLOBAL_STRANGER_WHY, env=env)
         state = "held" if item.get("status") == DQ.HOLD_STATUS else "queued"
         DQ.global_delivery(item, state, seat, env)
+        if state == "queued":
+            DQ.note_global_pending(env)        # 沒開佇列的艙,排空器看這個記號才去投(全球信不受授權限制)
         try:
             path.unlink()
         except FileNotFoundError:

@@ -1282,6 +1282,65 @@ def _touchid():
     return TA
 
 
+# ── 核准留底與差異(10-18 977e3,照 GUIDE-same-user-ai-threat-model 自查,@abb89 排 0.1.24)──────────
+# 卡檔與這裡的留底都是本機沒簽章的檔:同帳號的 AI 改得到。所以核准只證明「本人按過」,不保證卡上內容沒被動;
+# 這裡做的是讓本人按指紋前**看得到差異**(目標增減、紅線跟上次核准相不相同),不是當防線:
+# 帳本是未簽章草稿(只驗雜湊鏈),AI 追加一筆假核准 + 寫對應留底,就能讓「相同」被騙出來 —— 畫面上的注意文字照實寫。
+_SHA_RE = re.compile(r"constitution sha256=([0-9a-f]{64})")
+
+
+def _const_sha(const: Mapping[str, Any]) -> str:
+    """目標 + 紅線的正規化雜湊(核准的就是這兩樣)。"""
+    body = {"goals": list(const.get("goals") or []), "red_lines": list(const.get("red_lines") or [])}
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _approved_snapshot_path(root: Path, uid: str, sha: str) -> Path:
+    return card_path_of(root, uid).parent / "approved" / ("%s.json" % sha)
+
+
+def _last_approved(root: Path, uid: str) -> dict:
+    """帳本裡這張卡最後一次核准記的雜湊 + 那份留底。
+    {"sha": None} = 0.1.24 以前核的(沒記);snapshot=None = 留底不在或內容跟雜湊對不上(被動過)。"""
+    import role_model as RM  # noqa: E402
+    from ledger import Ledger, LedgerError  # noqa: E402
+    path = Path(root) / RM.DEFAULT_LEDGER_REL
+    sha = None
+    try:
+        events = Ledger(str(path)).read_verified_events() if path.is_file() else []
+    except (LedgerError, OSError, ValueError):
+        events = []
+    for ev in events:
+        body = ev.get("body") or {}
+        if ev.get("kind") != "decision.resolved" or (body.get("subject") or {}).get("id") != uid:
+            continue
+        m = _SHA_RE.search(str((body.get("summary") or {}).get("en") or ""))
+        if m:
+            sha = m.group(1)
+    if not sha:
+        return {"sha": None, "snapshot": None}
+    snap = _load_json(_approved_snapshot_path(root, uid, sha))
+    ok = isinstance(snap, dict) and _const_sha(snap) == sha
+    return {"sha": sha, "snapshot": snap if ok else None}
+
+
+def _write_approved_snapshot(root: Path, uid: str, sha: str, const: Mapping[str, Any]) -> None:
+    snap_path = _approved_snapshot_path(root, uid, sha)
+    snap_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(snap_path, {"goals": list(const.get("goals") or []), "red_lines": list(const.get("red_lines") or [])})
+
+
+def _plain(item: Any) -> str:
+    """要印給本人看的一條:去控制 / 方向 / 零寬字、壓成一行(卡檔 AI 改得到,印之前一律清)。"""
+    return " ".join(_touchid().clean(item.get("text") if isinstance(item, dict) else item, 10 ** 6).split())
+
+
+def _list_diff(old: Any, new: Any) -> tuple:
+    o = [_plain(x) for x in (old or [])]
+    n = [_plain(x) for x in (new or [])]
+    return [x for x in n if x not in o], [x for x in o if x not in n]
+
+
 def approve_constitution(root: Path, project_uid: str, *, human_check: Any = None, ask: Any = None,
                          stdin: Any = None, stdout: Any = None, touchid: Any = None,
                          touchid_available: Any = None) -> int:
@@ -1320,14 +1379,31 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         const.update({k: list(card_const.get(k) or []) for k in ("red_lines", "human_rulings")})
 
     def lines(items):
-        return ["    - %s" % (i.get("text") if isinstance(i, dict) else i) for i in (items or [])] or ["    " + T("aib.newproj.approve_empty")]
+        return ["    - %s" % _plain(i) for i in (items or [])] or ["    " + T("aib.newproj.approve_empty")]
 
-    show = [T("aib.newproj.approve_head", {"title": card.get("title") or uid, "uid": uid}),
+    show = [T("aib.newproj.approve_head", {"title": _plain(card.get("title") or uid), "uid": uid}),
             "  " + T("aib.newproj.approve_goals")] + lines(const["goals"]) + \
            ["  " + T("aib.newproj.approve_red_lines")] + lines(const["red_lines"]) + \
            ["  " + T("aib.newproj.approve_rulings")] + lines(const["human_rulings"])
+    rl_state = "new"
     if amending:                              # 已核准的卡:這次核的是修訂;生效的版本到按下去才換
         show.insert(1, "  " + T("aib.newproj.approve_amend_note", {"goals": len(card_const.get("goals") or [])}))
+        added, removed = _list_diff(card_const.get("goals"), const["goals"])
+        diff = ["  " + T("aib.newproj.approve_goals_diff")] + ["    [+] %s" % x for x in added] + ["    [-] %s" % x for x in removed]
+        last = _last_approved(root, uid)
+        if not last["sha"]:
+            rl_state, rl_lines = "unknown", ["  " + T("aib.newproj.approve_red_lines_unknown")]
+        elif last["snapshot"] is not None:
+            r_add, r_rm = _list_diff(last["snapshot"].get("red_lines"), const["red_lines"])
+            rl_state = "same" if not (r_add or r_rm) else "changed"
+            rl_lines = ["  " + T("aib.newproj.approve_red_lines_" + rl_state)] + \
+                       ["    [+] %s" % x for x in r_add] + ["    [-] %s" % x for x in r_rm]
+        else:                                 # 留底不在 / 被動過:只能說不同、列不出來
+            same = _const_sha({"goals": card_const.get("goals"), "red_lines": card_const.get("red_lines")}) == last["sha"]
+            rl_state = "same" if same else "changed"
+            rl_lines = ["  " + T("aib.newproj.approve_red_lines_same" if same else "aib.newproj.approve_card_changed_no_list")]
+        show[2:2] = diff + rl_lines
+    show.append("  " + T("aib.newproj.approve_unsigned_note"))
     if via == "tty":
         stdout.write("\n".join(show) + "\n" + T("aib.newproj.approve_prompt", {"uid": uid}))
         stdout.flush()
@@ -1340,7 +1416,8 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         # 視窗文字只由這裡組:動作 + 卡上的標題與 uid + 條數(呼叫端沒有任何一個字進得來)
         reason = T("aib.newproj.approve_touchid_reason_amend" if amending else "aib.newproj.approve_touchid_reason", {
             "title": TA.clean(card.get("title") or uid, 60), "uid": uid,
-            "goals": len(const["goals"] or []), "red_lines": len(const["red_lines"] or [])})
+            "goals": len(const["goals"] or []), "red_lines": len(const["red_lines"] or []),
+            "rl": T("aib.newproj.approve_rl_word_" + rl_state)})
         stdout.write("\n".join(show) + "\n")
         stdout.flush()
         _say(T("aib.newproj.approve_touchid_wait", {"uid": uid}))
@@ -1357,11 +1434,16 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
     if not (root / "ledger").is_dir():      # 只建卡沒跑過 aib init 的新機器:先建狀態樹(明給狀態根,不靠環境猜)
         subprocess.run([sys.executable, str(REPO_ROOT / "src" / "bootstrap" / "aib_init.py"), "--state-root", str(root)],
                        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+    shown_red = list(const.get("red_lines") or [])         # 原文(不是清過的):多一個零寬字也算變了
+    sha = _const_sha(const)
+    # 留底先寫、再入帳:入帳後才失敗(鎖內重查、備份、驗卡)也不會變成「帳本有雜湊、留底不在」而誤報不同;
+    # 沒被帳本指到的留底不會被讀到,留著無害(@977e3 子代理審 #4)。留底是本機檔,不是防線。
+    _write_approved_snapshot(root, uid, sha, const)
     try:
         RM.RoleModel(state_root=str(root))._append_event(
             "decision.resolved",
-            "專案 %s 的目標與紅線由真人 %s 核准(%s)" % (uid, human_id, via),
-            "project %s goals and red lines approved by human %s (%s)" % (uid, human_id, via),
+            "專案 %s 的目標與紅線由真人 %s 核准(%s);constitution sha256=%s" % (uid, human_id, via, sha),
+            "project %s goals and red lines approved by human %s (%s); constitution sha256=%s" % (uid, human_id, via, sha),
             uid, actor)
     except RM.RoleModelError as exc:
         _say(T("aib.newproj.approve_ledger_failed", {"err": exc}), "[x]")
@@ -1375,6 +1457,9 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         raw = _load_json(c_path) or {}
         if amending:                          # 鎖內再取一次生效的紅線 / 裁示(等 Touch ID 期間別人核過也不丟)
             live = (raw.get("layers") or {}).get("constitution") or {}
+            if list(live.get("red_lines") or []) != shown_red:
+                _say(T("aib.newproj.approve_red_lines_moved"), "[x]")   # 按指紋前看到的紅線跟現在不一樣 ⇒ 不寫
+                return 2
             const.update({k: list(live.get(k) or []) for k in ("red_lines", "human_rulings")})
         import datetime as _dt                                    # +08:00 形(跟既有卡同形);不靠 %z(有的平台給時區名)
         at = _dt.datetime.fromtimestamp(now_ms / 1000).astimezone().isoformat(timespec="seconds")

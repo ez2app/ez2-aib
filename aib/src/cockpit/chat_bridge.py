@@ -1105,6 +1105,9 @@ def world_payload(env=None, now=None):
                        "display_name": info.get("display_name"), "country": info.get("country"),
                        "aib": CR.clean_version(info.get("aib")), "missing": CR.missing_features(info.get("aib")),
                        "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
+    # 10-19:同一位主人換了艙,舊艙還在 world 裡(分不出是關掉的艙還是睡著的另一台,所以不刪)⇒ 新的排前面,
+    # 只看第一格的畫面才不會拿到過期那格、把在線的人顯示成不在線
+    cabins.sort(key=lambda x: (not x["fresh"], -int(x["presence_at"] or 0)))
     return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
 
 
@@ -1541,6 +1544,12 @@ def cmd_status(a, env, out):
         out.write(T("backup_hint") + "\n")
     for line in power_lines(env):
         out.write(line + "\n")
+    import chat_pair as CP
+    last = CP.last_command(bridge_root(env))
+    if last and time.time() - int(last.get("at") or 0) < 86400:     # 第 33.6 節:電腦上看得到「手機下了指令」
+        import touchid_approve as TA                                  # @abb89 F6:帳本 AI 改得到 ⇒ 清字元、只供參考
+        out.write(T("status_phone_cmd", when=time.strftime("%H:%M", time.localtime(int(last["at"]))),
+                    via=TA.clean(last.get("via", ""), 40), head=TA.clean(last.get("head", ""), 40)) + "\n")
     return 0
 
 
@@ -1661,6 +1670,12 @@ def main(argv=None, env=None, out=sys.stdout):
     rm.add_argument("--json", action="store_true")
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
+    pr = sub.add_parser("pair", help=T("help.pair"))
+    pr.add_argument("action", nargs="?", choices=("start", "confirm", "list", "revoke"))
+    pr.add_argument("target", nargs="?", help=T("help.pair_target"))
+    pr.add_argument("--seat")
+    pr.add_argument("--no-wait", action="store_true")
+    pr.add_argument("--json", action="store_true")
     aw = sub.add_parser("awake", help=T("help.awake"))
     aw.add_argument("value", nargs="?", choices=("on", "off"))
     ow = sub.add_parser("owner", help=T("help.owner"))
@@ -1722,6 +1737,9 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_lookup(a, env, out)
     if a.cmd == "awake":
         return cmd_awake(a, env, out)
+    if a.cmd == "pair":
+        import chat_pair as CP                          # 第 33 節:主人手機
+        return CP.cmd_pair(a, env, out)
     if a.cmd in ("owner", "join", "devices"):
         import chat_owner_cli as OC                     # 第 37.7 節 K2
         return {"owner": OC.cmd_owner, "join": OC.cmd_join, "devices": OC.cmd_devices}[a.cmd](a, env, out)

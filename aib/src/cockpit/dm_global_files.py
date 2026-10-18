@@ -103,6 +103,20 @@ def new_msgid():
     return uuid.uuid4().hex
 
 
+# 收件端認得的 aib-type。新版加新型別時,舊版收件端不認得 ⇒ 以前會當一般信送進 AI 框
+# (10-17 Pro 轉接程式還跑 0.1.16 以前的碼,Mini 的島快照 aib-type=space 進了 @d07f9 待審框)。
+# 一般信:aib-type=dm,或根本不是 aib 寄件人(沒有 aib-type)。receipt 在進 on_dm 之前就分走了,不在這裡。
+INBOUND_TYPES = ("dm", "friend-request", "presence", "card", "space", "offer")
+
+
+def inbound_kind(tags):
+    """rumor 標籤 ⇒ 收件分流:INBOUND_TYPES 之一,或 "unknown"(帶了這版不認得的型別 ⇒ 不投遞)。"""
+    typ = tags.get("aib-type")
+    if typ is None:
+        return "dm"
+    return typ if typ in INBOUND_TYPES else "unknown"
+
+
 def _path(root, box, msgid, ext):
     if box not in BOXES:
         raise ContractError("沒有這個資料夾:%r" % (box,))
@@ -234,6 +248,7 @@ def check_inbox(rec):
     _opt(rec, "name_collision", lambda v: isinstance(v, bool), "要是 true/false")
     _opt(rec, "country", lambda v: isinstance(v, str) and bool(COUNTRY_RE.match(v)), "要是兩碼大寫國碼")
     _opt(rec, "tz", lambda v: isinstance(v, str) and len(v) <= 64 and bool(TZ_RE.match(v)), "要是 IANA 時區名")
+    _opt(rec, "author", lambda v: v in AUTHORS, "只能 %s" % "/".join(AUTHORS))   # 寄件方自報誰寫的(aib-author)
     return rec
 
 
@@ -294,6 +309,7 @@ def queue_fields(rec, tab_paths=None):
     - same_name:外掛判的同名旗標;抬頭加「同名」用(PR-2)。
     - country / country_status / tz_country:申報國別與寄件機時區佐證(country_check);
       lang:對方帶的語言,沒帶就照國別給預設回信語言。
+    - author:寄件方自報誰寫的(human / ai_draft / ai_auto,第 35 節第 2 點);沒帶 = None。只進外框說明行。
     """
     check_inbox(rec)
     cls = rec["class"] if rec["verified"] else "stranger"
@@ -314,6 +330,7 @@ def queue_fields(rec, tab_paths=None):
         "country_status": cstat,
         "tz_country": tzc,
         "lang": rec.get("lang") or default_lang(rec.get("country")),
+        "author": rec.get("author"),
         "class": cls,
         "status": "hold_human" if cls == "stranger" else "queued",
         "priority": prio,

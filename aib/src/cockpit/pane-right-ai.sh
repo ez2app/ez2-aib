@@ -2492,7 +2492,7 @@ with open(os.environ['EZ2_RIGHT_WIDTH_PENDING'], 'w', encoding='utf-8') as fh:
 for ln in lines:
     print(ln)
 try:
-    if dm_queue.admit()[0]:
+    if dm_queue.drain_wanted():          # 佇列開著,或沒開但有全球來信在等(全球信不受授權限制)
         subprocess.Popen(
             [sys.executable, os.path.join(cockpit, "dm_queue.py"), "drain-idle"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

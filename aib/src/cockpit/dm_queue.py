@@ -324,9 +324,12 @@ def _global_or_none(value):
             and isinstance(verified, bool) and isinstance(same, bool)):
         return None
     rel = value.get("relation")      # 第 29.5 節:own / paired / friend(艦長室收件匣連到通訊錄);舊列沒有
-    return {"addr": addr, "shown": shown, "verified": verified, "same_name": same, "msgid": msgid,
-            "reply_code": code, "country": country, "country_status": cstat, "tz_country": tzc,
-            "relation": rel if rel in ("own", "paired", "friend") else None}
+    out = {"addr": addr, "shown": shown, "verified": verified, "same_name": same, "msgid": msgid,
+           "reply_code": code, "country": country, "country_status": cstat, "tz_country": tzc,
+           "relation": rel if rel in ("own", "paired", "friend") else None}
+    if value.get("author") in GF.AUTHORS:      # 第 35 節第 2 點:寄件方自報誰寫的;舊列、沒帶的不加這欄
+        out["author"] = value["author"]
+    return out
 
 
 GLOBAL_REPLY_CODE_RE = re.compile(r"^[a-z2-9]{5}$")
@@ -671,6 +674,31 @@ def admit(env=None):
     """
     policy, how = load_policy(env)
     return FP.judge(how, lambda: LP.license_plan(env), policy.get("enabled"))
+
+
+# 全球來信不受佇列授權限制(Andy 10-19 裁):全球信一律先排佇列,但佇列是進階功能;基本版的艙
+# 排空器整個不跑 ⇒ 全球信永遠停在 queued、AI 框收不到(10-19 Pro / Mini / Pro 13 實機三台都這樣)。
+# 沒開佇列時,排空器只投全球來信(照樣等閒、一次一封);收件程式排進一封就留記號,右欄 / upkeep 看記號才跑。
+def global_pending_path(env=None):
+    return queue_root(env) / "global-pending"
+
+
+def note_global_pending(env=None):
+    p = global_pending_path(env)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+    except OSError:
+        pass
+
+
+def drain_wanted(env=None):
+    """排空器這一拍要不要跑:佇列開著,或沒開但有全球來信在等。"""
+    return admit(env)[0] or global_pending_path(env).exists()
+
+
+def _is_global_item(item):
+    return isinstance(item.get("global"), dict) or item.get("sender_kind") in GLOBAL_SENDER_KINDS
 
 
 def _empty_order(seat):
@@ -3146,14 +3174,15 @@ def global_payload(env=None):
     return rows
 
 
-def next_to_drain(seat, env=None, now=None):
+def next_to_drain(seat, env=None, now=None, global_only=False):
     """下一則要投的:不投 hold;到期的先轉 hold(第 40 項,hold_expired);第 13 項:expire_sweep
     把「收件席已關 / hold 超 24h」的標 expired 並跳過,所以挑出來的一定沒到期、也沒過期。"""
     now = int(time.time() if now is None else now)
     hold_expired(seat, env=env, now=now)
     expire_sweep(seat, env=env, now=now)
     items = [i for i in list_for_box(seat, env=env)
-             if i.get("status") != HOLD_STATUS and not _expired(i, now) and not i.get("expired")]
+             if i.get("status") != HOLD_STATUS and not _expired(i, now) and not i.get("expired")
+             and (not global_only or _is_global_item(i))]
     return items[0] if items else None
 
 
@@ -4032,7 +4061,8 @@ def _settle_delivery(seat, claimed, rc, env, sent, now=None):
 def drain_once(env=None, hold_fn=None, deliver_fn=None):
     """每席最多領一封。緊急→重要→一般→提醒,同組先到先送。草稿不送。"""
     ok, _reason = admit(env)
-    if not ok:
+    global_only = not ok                     # 沒開佇列:只投全球來信(見 global_pending_path)
+    if global_only and not global_pending_path(env).exists():
         return []
     root = queue_root(env)
     root.mkdir(parents=True, exist_ok=True)
@@ -4046,12 +4076,19 @@ def drain_once(env=None, hold_fn=None, deliver_fn=None):
         return []
     sent = []
     hub = _env(env).get("EZ2_AIHUB_SOCKET") or ""
+    waiting = False
     try:
         for seat in all_seats(env):
             try:
-                _drain_seat_once(seat, env, hub, hold_fn, deliver_fn, sent)
+                waiting = _drain_seat_once(seat, env, hub, hold_fn, deliver_fn, sent, global_only) or waiting
             except Exception:  # noqa: BLE001 —— review r1 m1:一席壞掉(tmux 卡住、壞信檔)不得擋其他席
+                waiting = True
                 continue
+        if global_only and not waiting:
+            try:
+                global_pending_path(env).unlink()        # 全球來信都投完了 ⇒ 右欄 / upkeep 不必再跑
+            except OSError:
+                pass
         return sent
     finally:
         try:
@@ -4078,11 +4115,11 @@ def _drain_busy(seat, peek, env, hub, hold_fn):
     return busy, _why
 
 
-def _drain_seat_once(seat, env, hub, hold_fn, deliver_fn, sent):
-    """drain_once 的一席(拆出來只為了讓迴圈能逐席接住例外)。"""
-    peek = next_to_drain(seat, env)
+def _drain_seat_once(seat, env, hub, hold_fn, deliver_fn, sent, global_only=False):
+    """drain_once 的一席(拆出來只為了讓迴圈能逐席接住例外)。回 True = 這一席還有信在等(看過 peek)。"""
+    peek = next_to_drain(seat, env, global_only=global_only)
     if not peek:
-        return
+        return False
     busy, _why = _drain_busy(seat, peek, env, hub, hold_fn)
     if busy and _why == PANE_DEAD_WHY:
         # 第 54 項 a:死窗不是忙。這一則轉待人處理、理由具名(視窗已結束,重開後 requeue),
@@ -4090,29 +4127,30 @@ def _drain_seat_once(seat, env, hub, hold_fn, deliver_fn, sent):
         # (第 13 項:席關的標記已在 next_to_drain 的 expire_sweep 先做;這裡只在問不到
         #  窗、_seat_closed 無法確定的罕見情況下退回第 54 項的具名 hold,不致每幀重判。)
         hold_item(seat, peek["id"], HOLD_WHY["pane_dead"], env=env)
-        return
+        return True
     if busy:
-        return
+        return True
     # review r2 m2:叫醒正在貼給這一席 ⇒ 這一拍不領(信照舊排隊,下一拍再送),免得兩段貼進同一個輸入框
     lk = _seat_deliver_lock(seat, env)
     if lk is None:
-        return
+        return True
     try:
         # ★ review r4 m8:判閒到拿到投遞鎖之間,叫醒那句可能剛貼完(它放掉鎖我們才拿到)⇒ 那一席現在正在動。
         #   拿到鎖之後用同一個判準再問一次;忙(含死窗,下一拍前面那道會轉待人處理)⇒ 這一拍不領,信照舊排隊。
         if _drain_busy(seat, peek, env, hub, hold_fn)[0]:   # r4-m8-recheck-after-lock
-            return
+            return True
         # 領 peek 那一則(不是 claim_next 的第一則):next_to_drain 已跳過到期的信,claim_next 沒有這個判準,
         # 兩者的第一則可能不同 ⇒ 用 claim_id 釘住剛才看的那一則。
         claimed = claim_id(seat, peek["id"], env=env)
         if not claimed:
-            return
+            return True
         rc = 0
         if deliver_fn is not None:
             rc = int(deliver_fn(claimed) or 0)
         _settle_delivery(seat, claimed, rc, env, sent)
     finally:
         _seat_deliver_unlock(lk)
+    return True
 
 
 def all_seats(env=None):
@@ -4314,7 +4352,7 @@ def upkeep(env=None, now=None, alive_fn=None, hold_fn=None, deliver_fn=None, dry
         row = {"cabin": name, "hub": cenv["EZ2_AIHUB_SOCKET"], "ran": False}
         rows.append(row)
         ok, why = admit(cenv)
-        if not ok:
+        if not ok and not global_pending_path(cenv).exists():
             row["why"] = "queue-off:%s" % why
             continue
         alive = alive_fn(name, cenv) if alive_fn is not None else cabin_server_alive(cenv["EZ2_AIHUB_SOCKET"], cenv)
@@ -4333,18 +4371,21 @@ def upkeep(env=None, now=None, alive_fn=None, hold_fn=None, deliver_fn=None, dry
             return deliver_fn(item) if deliver_fn is not None else _deliver_via_dmctl(item, env=_e)
 
         row["ran"] = True
-        try:
-            ret = retention_tick(env=cenv, now=now)
-            row["retention"] = None if ret is None else {"archived": len(ret.get("archived") or []),
-                                                         "deleted": len(ret.get("deleted") or [])}
-        except Exception as exc:  # noqa: BLE001 —— 保留整理失敗不得擋投遞(同 drain-idle)
-            row["retention"] = "error:%s" % exc.__class__.__name__
-        try:
-            tri = triage_tick(env=cenv, now=now, deliver_fn=lambda item: _ddeliver(item),
-                              hold_fn=(lambda seat, r: _dhold(r)) if hold_fn is not None else None)
-            row["triage"] = None if tri is None else {"seats": len(tri), "woke": sum(1 for r in tri if r.get("woke"))}
-        except Exception as exc:  # noqa: BLE001 —— 歸納/叫醒失敗不得擋投遞
-            row["triage"] = "error:%s" % exc.__class__.__name__
+        if not ok:
+            row["why"] = "global-only:%s" % why             # 沒開佇列:只投全球來信,不整理、不叫醒
+        else:
+            try:
+                ret = retention_tick(env=cenv, now=now)
+                row["retention"] = None if ret is None else {"archived": len(ret.get("archived") or []),
+                                                             "deleted": len(ret.get("deleted") or [])}
+            except Exception as exc:  # noqa: BLE001 —— 保留整理失敗不得擋投遞(同 drain-idle)
+                row["retention"] = "error:%s" % exc.__class__.__name__
+            try:
+                tri = triage_tick(env=cenv, now=now, deliver_fn=lambda item: _ddeliver(item),
+                                  hold_fn=(lambda seat, r: _dhold(r)) if hold_fn is not None else None)
+                row["triage"] = None if tri is None else {"seats": len(tri), "woke": sum(1 for r in tri if r.get("woke"))}
+            except Exception as exc:  # noqa: BLE001 —— 歸納/叫醒失敗不得擋投遞
+                row["triage"] = "error:%s" % exc.__class__.__name__
         try:
             sent = drain_once(env=cenv, hold_fn=lambda item: _dhold(item), deliver_fn=lambda item: _ddeliver(item))  # upkeep 投遞
         except Exception as exc:  # noqa: BLE001 —— 一艙壞掉不得擋下一艙
@@ -4948,12 +4989,15 @@ def main(argv=None, env=None):
             #   別艙席的窗號在本艙沒有意義。改走 drain_hold:登記表現查那一席現在在哪一艙哪個窗,在那一艙問。
             return drain_hold(item.get("seat") or "", item, env=env)
 
+        queue_on = admit(env)[0]        # 沒開佇列:只投全球來信(drain_once 自己判),不整理、不叫醒
         try:
-            retention_tick(env=env)     # the maintainer 09-30 17:1x:完成 12 小時備存、備存 30 天刪除(節流 10 分鐘)
+            if queue_on:
+                retention_tick(env=env)     # the maintainer 09-30 17:1x:完成 12 小時備存、備存 30 天刪除(節流 10 分鐘)
         except Exception:  # noqa: BLE001 —— 保留整理失敗不得擋投遞
             pass
         try:
-            triage_tick(env=env)        # the maintainer 09-30 17:2x:未讀 > 3 ⇒ 程式歸納 + 席閒著才叫醒一次(節流 60 秒)
+            if queue_on:
+                triage_tick(env=env)        # the maintainer 09-30 17:2x:未讀 > 3 ⇒ 程式歸納 + 席閒著才叫醒一次(節流 60 秒)
         except Exception:  # noqa: BLE001 —— 歸納/叫醒失敗不得擋投遞
             pass
         # ★ hold_fn 寫成呼叫(lambda 裡叫 _hold)而不是傳函式物件:到達性閘只認「呼叫」,傳物件它看不出
