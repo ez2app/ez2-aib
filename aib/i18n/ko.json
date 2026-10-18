@@ -4676,5 +4676,7 @@
   "aib.secret.touchid_reason": "aib: 키 {name}을(를) {dest}에 저장",
   "aib.secret.dest_local": "이 Mac의 키 보관함",
   "aib.secret.btn_ok": "저장",
-  "aib.secret.btn_cancel": "취소"
+  "aib.secret.btn_cancel": "취소",
+  "aib.rightai.mouse_hint1": "🖱 클릭이 안 되면",
+  "aib.rightai.mouse_hint2": "보기→마우스 보고 허용"
 }
