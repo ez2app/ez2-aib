@@ -1544,8 +1544,9 @@ def cmd_status(a, env, out):
     import chat_pair as CP
     last = CP.last_command(bridge_root(env))
     if last and time.time() - int(last.get("at") or 0) < 86400:     # 第 33.6 節:電腦上看得到「手機下了指令」
-        out.write(T("status_phone_cmd", when=time.strftime("%H:%M", time.localtime(last["at"])), via=last.get("via", ""),
-                    head=last.get("head", "")) + "\n")
+        import touchid_approve as TA                                  # @abb89 F6:帳本 AI 改得到 ⇒ 清字元、只供參考
+        out.write(T("status_phone_cmd", when=time.strftime("%H:%M", time.localtime(int(last["at"]))),
+                    via=TA.clean(last.get("via", ""), 40), head=TA.clean(last.get("head", ""), 40)) + "\n")
     return 0
 
 

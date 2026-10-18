@@ -8,8 +8,10 @@
   (手機 App 畫面上顯示的就是 npub,本人對得上)放最前面,本人按了才寫 paired.json。配對碼本身不是防線(艦長室顯示、AI 讀得到)。
 - 最多 3 支;撤銷一支或全部(本人證明);撤銷後那支傳的一律拒收。
 - 防重播:收件端記已處理的事件 id 7 天、rumor 時間差 > 10 分鐘拒收;指令同一個 id 不執行第二次。
-- 分成指令 / 討論:開頭 `gm`(大小寫,後面要接空格或冒號再接內容)/ `指令` / `!` / `!` ⇒ 指令;其他 ⇒ 討論。
-  只打一個「gm」(早安招呼)⇒ 討論。
+- 分成指令 / 討論(@abb89 F4 收緊):開頭 `gm` 或 `GM`(不分大小寫)+ 空白或冒號、`指令` + 空白或冒號、
+  `!` / `!` + 不是驚嘆號的字 ⇒ 指令;其他 ⇒ 討論。只打「gm」、「指令集…」、「!!! 太好了」⇒ 討論。
+  ⚠ 照 Andy 裁,「gm 大家早」會被當指令(gm 後面接了空白與內容)。
+- 信任錨(@abb89 F1):主人簽的機器清單裡 role=phone 的那幾支;paired.json 只是顯示用快取,工人收信不看它。
 """
 import hashlib
 import json
@@ -31,7 +33,7 @@ SKEW_S = 600
 SEEN_KEEP_S = 7 * 86400
 _B32 = "abcdefghijkmnpqrstuvwxyz23456789"
 _NPUB_RE = re.compile(r"^npub1[02-9ac-hj-np-z]{58}$")
-_CMD_RE = re.compile(r"^\s*(?:gm[\s:\uff1a]+|指令[\s:\uff1a]*|[!\uff01]\s*)(\S.*)$", re.I | re.S)
+_CMD_RE = re.compile(r"^\s*(?:gm[\s:\uff1a]+|指令[\s:\uff1a]+|[!\uff01](?![!\uff01])\s*)(\S.*)$", re.I | re.S)
 
 # 手機指令只准這幾類(@abb89 33.6 第 5 點白名單)。⚠ 核心分不出一句話屬哪一類:這是寫給席位遵守的規矩,不是防線;
 # 真正的防線是那些敏感指令本來就要在電腦上 Touch ID / 密語。
@@ -74,8 +76,9 @@ def is_paired(npub, env=None):
 
 
 def short(npub):
-    """給本人對的樣子:npub 頭 10 + 尾 6(手機 App 畫面上看得到的就是 npub)。"""
-    return "%s…%s" % (npub[:10], npub[-6:])
+    """給本人對的樣子:npub 頭 10 + 中段 8 + 尾 6(手機 App 畫面上看得到的就是 npub;頭 5 碼固定是 npub1,
+    只比頭尾約 55 位元,加中段 8 碼才夠 ⇒ @abb89 F5)。"""
+    return "%s…%s…%s" % (npub[:10], npub[29:37], npub[-6:])
 
 
 def add_phone(npub, env=None, now=None):
@@ -227,6 +230,7 @@ def last_command(root):
 # ── 指令(aib chat pair …)──
 
 PROVE = None          # 只給測試換掉(行程內;不讀環境變數)
+_TARGET_RE = re.compile(r"^npub1[02-9ac-hj-np-z]{5,58}$")      # 至少頭 10 碼(npub1 + 5)
 
 
 def _prove(reason, env, root):
@@ -245,8 +249,23 @@ def _seat_npub(env, seat=None):
     return None, None
 
 
+def hold_queued_from(npub, env=None):
+    """撤銷手機後(@abb89 F3):各席佇列裡這支手機傳來、還沒處理的,一律改待審(不讓已排隊的指令在撤銷後照跑)。回改了幾筆。"""
+    import dm_queue as DQ
+    n = 0
+    for seat in DQ.all_seats(env):
+        for item in DQ.list_items(seat, env):
+            if item.get("sender_origin") == "nostr:" + npub and item.get("status") not in (DQ.HOLD_STATUS, "done", "deleted"):
+                if DQ.hold_item(seat, item["id"], "phone_revoked", env=env):
+                    n += 1
+    return n
+
+
 def cmd_pair(a, env, out):
     import chat_bridge as CB
+    import chat_owner as CO
+    import chat_owner_cli as OC
+    import touchid_approve as TA
     T = CB.T
     root = CB.bridge_root(env)
     if a.action in (None, "list"):
@@ -262,21 +281,40 @@ def cmd_pair(a, env, out):
         out.write(T("pair_lost_hint") + "\n")
         return 0
     if a.action == "revoke":
-        target = a.target or ""
-        why = _prove(T("pair_reason_revoke", target=("all" if target == "all" else target[:16])), env, root)
-        if why:
-            out.write(T("pair_proof_failed", why=why) + "\n")
+        target = (a.target or "").strip()
+        if target != "all" and not _TARGET_RE.match(target):           # @abb89 F7:只收 npub 格式或 all
+            out.write(T("pair_err_not_paired") + "\n")
             return 2
-        try:
-            gone = revoke(target, env)
-        except PairError as err:
-            out.write(T("pair_err_" + str(err), n=MAX_PHONES) + "\n")
+        hit = [p["npub"] for p in read_paired(env) if target == "all" or p["npub"].startswith(target)]
+
+        def mutate(cur, now):
+            phones_signed = [d["npub"] for d in cur.get("devices") or [] if d.get("role") == "phone"
+                             and (target == "all" or d["npub"].startswith(target))]
+            if not phones_signed:
+                raise CO.OwnerError("not_listed")
+            nxt = cur
+            for n in phones_signed:
+                nxt = CO.next_list(nxt, now, revoke=n)
+                hit.append(n)
+            return nxt
+        rc, _nxt = OC.sign_list_change(env, out, T("pair_reason_revoke", target=TA.clean(target, 24)), mutate)
+        if rc != 0:
             return 2
+        gone = set(hit)
+        for n in gone:
+            try:
+                revoke(n, env)
+            except PairError:
+                pass
+            hold_queued_from(n, env)
         out.write(T("pair_revoked", n=len(gone)) + "\n")
         return 0
     if a.action == "start":
         if len(read_paired(env)) >= MAX_PHONES:
             out.write(T("pair_err_too_many", n=MAX_PHONES) + "\n")
+            return 2
+        if OC.owner_status(env)["role"] != "sealed":                 # F1:手機要簽進主人清單 ⇒ 主人金鑰要先加密
+            out.write(T("pair_need_protect") + "\n")
             return 2
         seat, npub = _seat_npub(env, a.seat)
         if not seat:
@@ -299,37 +337,46 @@ def cmd_pair(a, env, out):
 
 
 def _confirm(a, env, out, root):
-    """等手機傳回配對碼 ⇒ 每一個候選都請本人按第二窗(手機 npub 頭尾放最前面);按了才配。"""
+    """等手機傳回配對碼。同一窗期一個以上候選 ⇒ 整批作廢 + 警告(@abb89 F5:讀到碼的 AI 可能搶先送);
+    只有一個 ⇒ 簽進主人清單(第二窗字「把手機 <頭…中…尾> 配成主人手機」+ 差異;要主人密語)。"""
     import chat_bridge as CB
+    import chat_owner as CO
+    import chat_owner_cli as OC
     T = CB.T
     if not read_pending(root):
         out.write(T("pair_err_no_pending") + "\n")
         return 2
     if not a.json:
         out.write(T("pair_waiting") + "\n")
-    done = set()
     while True:
         rec = read_pending(root)
         if not rec or time.time() > rec.get("until", 0):
             clear_pending(root)
             out.write((json.dumps({"ok": False, "why": "timeout"}) if a.json else T("pair_timeout")) + "\n")
             return 2
-        for c in rec.get("candidates") or []:
-            phone = c.get("npub")
-            if not _NPUB_RE.match(str(phone)) or phone in done:
+        if rec.get("candidates"):
+            time.sleep(float(env.get("AIB_PAIR_SETTLE") or 2))     # 再等一下:第二個(搶先或跟在後面的)也算整批作廢
+            rec = read_pending(root) or {}
+            cands = [c.get("npub") for c in rec.get("candidates") or [] if _NPUB_RE.match(str(c.get("npub")))]
+            if len(cands) > 1:
+                clear_pending(root)
+                out.write((json.dumps({"ok": False, "why": "multiple"}) if a.json else T("pair_multi", n=len(cands))) + "\n")
+                return 2
+            if not cands:
                 continue
-            done.add(phone)
-            why = _prove(T("pair_reason_confirm", phone=short(phone)), env, root)
-            if why:
-                out.write(T("pair_rejected", phone=short(phone), why=why) + "\n")
-                continue
+            phone = cands[0]
+            clear_pending(root)
+            rc, _nxt = OC.sign_list_change(
+                env, out, T("pair_reason_confirm", phone=short(phone)),
+                lambda cur, now: CO.next_list(cur, now, add={"npub": phone, "name": "phone", "role": "phone"}))
+            if rc != 0:
+                out.write((json.dumps({"ok": False, "why": "not_signed"}) if a.json else T("pair_rejected", phone=short(phone),
+                                                                                        why="not_signed")) + "\n")
+                return 2
             try:
                 n = len(add_phone(phone, env))
-            except PairError as err:
-                out.write(T("pair_err_" + str(err), n=MAX_PHONES) + "\n")
-                clear_pending(root)
-                return 2
-            clear_pending(root)
+            except PairError:
+                n = MAX_PHONES
             out.write((json.dumps({"ok": True, "phone": phone, "short": short(phone), "n": n}) if a.json
                        else T("pair_done", phone=short(phone), n=n)) + "\n")
             return 0
