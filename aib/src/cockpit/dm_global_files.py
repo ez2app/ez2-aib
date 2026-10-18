@@ -524,8 +524,8 @@ REFUSE_TEXT = {
     "not_friend": "對方只收好友的信:請對方先把你的主人號碼加為好友(aib chat friend add <你的主人 npub>)",
     "unverified": "對方驗不到寄件席:這一席要先列進你的名冊(aib chat publish <席碼>)",
     "rejected": "對方拒絕了好友申請",
-    "no_seat": "對方名冊上沒有這一席(換艙或不公開了):請用 aib chat contacts --refresh 看對方現在公開的席",
 }
+# no_seat 不翻成句子:艦長室(captain-room #17)認 detail == "no_seat" 自己講人話;翻了它就認不得(0.1.23 整合時 test-chat-send S4 抓到)
 REQUEST_NOTE_MAX = 140      # 好友申請附的一句話(第 29.4 節)
 
 
