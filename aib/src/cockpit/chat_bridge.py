@@ -1105,6 +1105,9 @@ def world_payload(env=None, now=None):
                        "display_name": info.get("display_name"), "country": info.get("country"),
                        "aib": CR.clean_version(info.get("aib")), "missing": CR.missing_features(info.get("aib")),
                        "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
+    # 10-19:同一位主人換了艙,舊艙還在 world 裡(分不出是關掉的艙還是睡著的另一台,所以不刪)⇒ 新的排前面,
+    # 只看第一格的畫面才不會拿到過期那格、把在線的人顯示成不在線
+    cabins.sort(key=lambda x: (not x["fresh"], -int(x["presence_at"] or 0)))
     return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
 
 
