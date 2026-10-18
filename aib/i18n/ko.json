@@ -1082,6 +1082,7 @@
   "aib.vp2.err.outside_repo": "변경 경로가 이 트리 밖에 있습니다: {names}",
   "aib.vp2.err.unmeasurable": "측정 불가 => 호출 측은 더 좁은 집합이 아니라 **전부**를 실행해야 함: {why}",
   "aib.verify.runner.home_alias_other_tree": "테스트 HOME 의 ez2-aib 가 이미 다른 트리를 가리키고 있습니다",
+  "aib.verify.runner.real_home_touched": "✗ 이 테스트가 실제 홈 디렉터리를 건드렸습니다({n}곳, 앞 5개): {files}. 테스트는 자기 임시 HOME을 써야 합니다(aib test가 제공); 꼭 필요하면 파일 머리에 @needs-real-home을 쓰고 리뷰에서 설명",
   "aib.verify.runner.home_alias_exists": "테스트 HOME 에 ez2-aib 가 이미 있어 덮어쓰지 않습니다",
   "aib.verify.runner.git_failed": "git {args} 실패:{err}",
   "aib.verify.runner.dirty_tree": "커밋된 깨끗한 버전만 검증합니다. 작업 트리에 커밋되지 않은 변경이 있습니다",

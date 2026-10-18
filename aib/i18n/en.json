@@ -1082,6 +1082,7 @@
   "aib.vp2.err.outside_repo": "Changed paths are outside this tree: {names}",
   "aib.vp2.err.unmeasurable": "Cannot measure => the caller must run EVERYTHING, not a narrower set: {why}",
   "aib.verify.runner.home_alias_other_tree": "ez2-aib in the test HOME already points to another tree",
+  "aib.verify.runner.real_home_touched": "✗ This test touched the real home directory ({n} places, first 5): {files}. Tests must use their own temporary HOME (aib test provides one); if truly needed, put @needs-real-home in the file header and explain it in review",
   "aib.verify.runner.home_alias_exists": "the test HOME already has ez2-aib; refusing to overwrite it",
   "aib.verify.runner.git_failed": "git {args} failed: {err}",
   "aib.verify.runner.dirty_tree": "only a committed, clean tree is verified; the working tree has uncommitted changes",

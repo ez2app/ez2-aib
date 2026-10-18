@@ -2276,6 +2276,39 @@ def tmux_socket_problem(inner, cwd, tt, tx, exe, repo, written_any, uid=None, t0
 _LOCAL_LISTEN_HOSTS = ("127.0.0.1", "::1", "0.0.0.0", "::", "localhost", "")
 
 
+# 開發文件第 37.1 節(10-17 / 10-18 兩次實踩:測試讀到 Pro 真的收信站設定、ez2-ai 測試改寫真的 API key 檔)。
+#   aib test 給每支測試假 HOME,但寫死路徑、從 passwd 拿家目錄、或「直接跑測試」都還碰得到真的。這裡從追蹤事件挑出
+#   碰到真家目錄敏感位置的:寫一律算;讀也算(真設定會讓測試結果跟著這台機器變),只排除線上對話的 venv(測試合法要用它跑)。
+REAL_HOME_SENSITIVE = (".ez2-aib", ".claude", ".ez2-claude-secrets.json", ".acb", ".ez2-persona-runtime", ".ssh",
+                       ".codex", ".grok", ".gemini", ".copilot")
+REAL_HOME_READ_OK = (".ez2-aib/chat/venv",)
+REAL_HOME_TOOL_OWN = (".ez2-aib/verify-shadow",)    # aib test 自己的沿用紀錄池(追蹤器 / 量測本身在讀寫,不是測試碰的)
+
+
+def real_home_touches(events, real_home):
+    """→ [(動作 write|read, 路徑)](去重、排序)。real_home = 執行 aib test 的使用者真正的家目錄(passwd 那個)。"""
+    if not real_home:
+        return []
+    bases = [os.path.join(real_home, s) for s in REAL_HOME_SENSITIVE]
+    ok = [os.path.join(real_home, s) for s in REAL_HOME_READ_OK]
+    own = [os.path.join(real_home, s) for s in REAL_HOME_TOOL_OWN]
+    out = set()
+    for ev in events or []:
+        ch = ev.get("ch")
+        if ch not in ("write", "open"):
+            continue
+        for p in {str(ev.get("path") or ""), str(ev.get("real") or "")}:
+            if not p:
+                continue
+            hit = any(p == b or p.startswith(b + "/") for b in bases) \
+                and not any(p == t or p.startswith(t + "/") for t in own)
+            if hit and ch == "open" and any(p == o or p.startswith(o + "/") for o in ok):
+                hit = False
+            if hit:
+                out.add(("write" if ch == "write" else "read", p))
+    return sorted(out)
+
+
 def network_targets(events):
     """10-12 P17(只多記資料,不影響沿用判斷):這支測試連了哪些網路目標,每個分三種 ——
     local-own   本機,而且這支測試(任何一個行程)在聽那個位址(listen 事件;同一行程連自己的早就不算網路、不會出現)

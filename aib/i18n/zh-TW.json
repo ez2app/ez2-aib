@@ -1082,6 +1082,7 @@
   "aib.vp2.err.outside_repo": "改動路徑不在這棵樹底下:{names}",
   "aib.vp2.err.unmeasurable": "量不到 ⇒ 呼叫端要**全跑**,不是拿比較窄的集合去跑:{why}",
   "aib.verify.runner.home_alias_other_tree": "測試 HOME 的 ez2-aib 已指向另一棵樹",
+  "aib.verify.runner.real_home_touched": "✗ 這支測試碰到真的家目錄({n} 處,只列前 5):{files}。測試要用自己的暫存 HOME(aib test 已給);真的需要就在檔頭寫 @needs-real-home 並在審查時說明",
   "aib.verify.runner.home_alias_exists": "測試 HOME 已有 ez2-aib,拒絕覆蓋",
   "aib.verify.runner.git_failed": "git {args} 失敗:{err}",
   "aib.verify.runner.dirty_tree": "只執行已提交的乾淨版本;工作目錄還有未提交改動",
