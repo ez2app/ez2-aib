@@ -63,7 +63,8 @@ _CABIN = re.compile(r"^[0-9a-z]{1,4}$")
 _SEAT = re.compile(r"^[0-9a-z]{4,8}$")
 
 PRIORITIES = ("urgent", "important", "normal", "reminder")   # 與 dm_queue.PRIORITIES 同序
-RECEIPT_STAGES = ("resolved", "relayed", "queued", "delivered", "held", "refused", "expired", "read", "failed")
+RECEIPT_STAGES = ("resolved", "relayed", "queued", "delivered", "held", "refused", "expired", "read", "failed",
+                  "unconfirmed")   # 10-18:交出 24 小時還沒有對方回條(寄件人要知道可能沒收到)
 RECEIPT_FINAL = ("delivered", "held", "refused", "expired", "failed")
 DELIVERY_STATES = ("queued", "delivered", "held", "refused", "expired", "read")
 INBOX_CLASSES = ("own", "paired", "friend", "stranger")
@@ -524,6 +525,7 @@ REFUSE_TEXT = {
     "unverified": "對方驗不到寄件席:這一席要先列進你的名冊(aib chat publish <席碼>)",
     "rejected": "對方拒絕了好友申請",
 }
+# no_seat 不翻成句子:艦長室(captain-room #17)認 detail == "no_seat" 自己講人話;翻了它就認不得(0.1.23 整合時 test-chat-send S4 抓到)
 REQUEST_NOTE_MAX = 140      # 好友申請附的一句話(第 29.4 節)
 
 
@@ -570,7 +572,7 @@ def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=ti
         res = outcome(got, op=op, verify=verify)
         if res is not None:
             rc, stage, pos, detail = res
-            return {"rc": rc, "stage": stage, "pos": pos, "detail": detail, "msgid": msgid}
+            return _with_peer(root, rec, {"rc": rc, "stage": stage, "pos": pos, "detail": detail, "msgid": msgid}, clock())
         if clock() >= deadline:
             break
         sleep(poll)
@@ -578,8 +580,47 @@ def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=ti
         return {"rc": 2, "stage": "timeout-withdrawn", "pos": None,
                 "detail": "%d 秒內轉接程式沒領件,已撤回,一個字都沒送" % wait, "msgid": msgid}
     relayed = any(r["stage"] == "relayed" for r in got)
-    return {"rc": 4, "stage": "relayed" if relayed else "claimed", "pos": None,
-            "detail": "已交給轉接程式,還沒收到對方回條;勿重送", "msgid": msgid}
+    return _with_peer(root, rec, {"rc": 4, "stage": "relayed" if relayed else "claimed", "pos": None,
+                                  "detail": "已交給轉接程式,還沒收到對方回條;勿重送", "msgid": msgid}, clock())
+
+
+def mark_unconfirmed(root, now=None, after=86400):
+    """10-18:交出(relayed)或對方只回到 queued、超過 after 還沒 delivered / read / 拒收 ⇒ 補一張 unconfirmed 回條
+    (寄件人與艦長室看得到「可能沒收到」;Mac Pro 13 換艙後寄到舊席的信就是這樣一直排著)。回補了幾張。"""
+    now = time.time() if now is None else now
+    done = 0
+    for p in sorted((Path(root) / "sent").glob("*.json"))[-2000:]:
+        try:
+            at = int(json.loads(p.read_text(encoding="utf-8")).get("at") or 0)
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+        if not at or now - at < after:
+            continue
+        stages = {r.get("stage") for r in read_receipts(root, p.stem)}
+        if stages & {"delivered", "read", "refused", "held", "expired", "failed", "unconfirmed"} or not stages & {"relayed", "queued"}:
+            continue
+        append_receipt(root, p.stem, {"v": 1, "at": int(now), "stage": "unconfirmed",
+                                         "detail": "queued" if "queued" in stages else "relayed"})
+        done += 1
+    return done
+
+def _with_peer(root, rec, res, now):
+    """10-18 Andy「要能判斷該電腦休眠」:寄件結果帶對方那台的狀態;還沒送到而對方在睡 / 離線 ⇒ detail 補一句。"""
+    owner = (parse_address((rec or {}).get("to") or "") or {}).get("owner")
+    if not owner or rec.get("op") == "resolve":
+        return res
+    try:
+        import chat_power as CP
+        st = CP.owner_state([c for c in read_world(root).values() if c.get("owner") == owner], now)
+    except Exception:   # noqa: BLE001  看不到狀態就不補,不擋寄件
+        return res
+    res["peer"] = st
+    if res["stage"] in ("relayed", "claimed", "queued") and st["state"] in ("asleep", "offline") and st.get("since"):
+        when = time.strftime("%m-%d %H:%M", time.localtime(st["since"]))
+        res["detail"] = (res["detail"] + ";" if res["detail"] else "") + (
+            "對方那台電腦在睡(%s 起沒動靜),信在中繼站等,醒來才收" % when if st["state"] == "asleep"
+            else "對方那台電腦離線(%s 起沒動靜,它設定成不睡:可能斷網、關機或轉接程式停了)" % when)
+    return res
 
 
 # 寄件人標籤(seat_address 白名單的格式):`@五碼[(暱稱)]` = 行程鏈量到的;`seat_claimed:五碼(自稱)` = 自稱(codex 等)
@@ -739,14 +780,17 @@ def read_world(root):
     return {k: v for k, v in cabins.items() if isinstance(v, dict)} if isinstance(cabins, dict) else {}
 
 
-def note_world(root, owner, cabin, seats, now=None):
-    """收到一份 presence:{owner/cabin: {owner, cabin, presence_at, seats:[{seat, state, now, step}]}}。"""
+def note_world(root, owner, cabin, seats, now=None, power=None):
+    """收到一份 presence:{owner/cabin: {owner, cabin, presence_at, seats:[{seat, state, now, step}], power}}。
+    power = 對方那台的電源 / 睡眠設定(chat_power.clean_power 過的;舊版沒有 ⇒ None)。"""
     now = int(time.time() if now is None else now)
     key = "%s/%s" % (owner, cabin)
 
     def fn(cur):
         cab = cur.setdefault("cabins", {})
         cab[key] = {"owner": owner, "cabin": cabin, "presence_at": now, "seats": seats}
+        if power:
+            cab[key]["power"] = power
         for k in [k for k, v in cab.items() if now - int(v.get("presence_at") or 0) > PEERS_KEEP_S]:
             cab.pop(k, None)
     _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})

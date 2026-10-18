@@ -1,0 +1,588 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: Apache-2.0
+"""主人金鑰加密 + 配對碼 + 改清單(開發文件第 37.7 節 K2 第一包;設計 v0.3 第 14 節,@abb89 10-18 11:29 / 11:32 准)。
+
+O1 加解:同一組密語解得回、錯密語 ⇒ bad_passphrase、改一個 byte ⇒ bad_passphrase、不到 12 字元 ⇒ short_passphrase
+O2 protect:寫 owner.sealed(0600)、刪 owner.key、用密語解得回同一把主人金鑰;
+   本機 chat_backup 用同一組密語解得開 ⇒ same_as_backup、owner.key 不動;已加密再跑 ⇒ sealed
+O3 讀密語:不是終端 ⇒ no_tty;假終端(pty)⇒ 讀得到、回顯關掉(主控端看不到密語)
+O4 配對碼:6 組 4 碼、大小寫 / 空白 / - 不計較;長度或字元不對 ⇒ bad_code
+O5 配對請求:簽章者指紋對不上配對碼的(別人灌的假請求)一律不理、不算錯;本人打錯 nonce 才算,同一台第 3 次作廢(之後打對也不收);
+   10 分鐘過期;同一個請求只收一次(used)
+O6 改清單:加一台 seq+1、驗得過 chat_devices.parse_list;同一台兩次 ⇒ already_listed;超過 16 台 ⇒ too_many;
+   用機器碼停用 ⇒ 移到 revoked;停用過的再加 ⇒ was_revoked;上次簽超過 7 天 ⇒ 要提醒延長
+O7 備份:主人金鑰加密後 aib chat backup 照樣備得出來(加密的那份原樣放進去、加機器金鑰);還原到新家 ⇒ owner.sealed 回來、
+   主人密語照樣解得開、沒有明文 owner.key
+連 Nostr(要 AIB_TEST_NOSTR_VENV;兩台沙盒 + 本機假中繼站;本人證明與密語在行程內換成假的,不讀環境變數):
+N1 A 持主人金鑰 ⇒ owner protect:清單(seq 1,A 自己標 host)與主人名冊發出、owner.key 刪掉;A 改用機器金鑰發名冊後
+   lookup A 的席照樣查得到(host 的機器名冊取代舊主人名冊,不算撞名);再跑 aib chat on 主人 npub 不變(不准重產)
+N2 B join A ⇒ 印配對碼;A devices add <碼> ⇒ 清單 seq 2 有 B;B 開線上對話用機器金鑰發名冊 ⇒ lookup <A>/<B 的艙>/<席> 查得到、device = B;
+   沒加密就改清單 ⇒ devices_need_protect;本人證明沒過 ⇒ 什麼都沒改
+N3 A devices revoke B ⇒ B 的席查不到;停用持主人金鑰那台 ⇒ is_host
+N4 加密後 aib chat off、沒輸密語 ⇒ 一定提示「舊版好友還看得到」
+O8 主人密語連錯(@abb89 10-18 H2):第 5 次錯起鎖 30 秒、鎖住時對的也不收(pass_locked);鎖過了輸對 ⇒ 歸零;
+   8 個同時猜 ⇒ 剛好 5 次算錯、其餘被鎖(讀-判-解-寫上鎖)
+O9 加密後(@abb89 M1):還原一份加密前的舊備份 ⇒ 不寫回明文 owner.key;明文與加密並存 ⇒ owner_local False、角色 both、
+   aib chat owner repair 驗過密語後刪掉明文那份
+O10 中繼站來的機器名稱(@abb89 M2):控制字元 / ANSI 清掉、限長
+O8b 計數檔被寫一個很遠的 until(複審 17:39)⇒ 最多鎖 1 小時,不能把本人永久鎖在外面
+O11 舊清單當底(複審 17:39):中繼站 seq 比本機小 ⇒ 未驗證;停用名單取中繼站 ∪ 本機,停用的不能復活
+N6 停用 B 之後中繼站只回得到停用前那份(重播 / 扣住)⇒ extend 畫面警告、整份列出,簽出的清單 B 不復活、seq 接最大
+N5 竄改 devices-own.json 多塞一台(@abb89 H1)⇒ devices extend 從中繼站抓已簽的那份當底,塞的那台簽不進去;畫面列出差異
+刀(複本):K8 舊清單的 devices 不扣停用 ⇒ N6 紅;K5 拿掉密語鎖 ⇒ O8 紅;K6 owner_local 不看 owner.sealed ⇒ O9 紅;K7 拿本機檔當底 ⇒ N5 紅;
+   K1 假請求也算錯(只比 device = 簽章者、不比指紋)⇒ O5 紅;K2 不比備份密語 ⇒ O2 紅;K3 不關回顯 ⇒ O3 紅;
+   K4 加密後 ensure_owner 又重產主人金鑰(10-18 動工時抓到的洞)⇒ N1 紅
+"""
+import importlib.util
+import json
+import os
+import pty
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
+COCKPIT = REPO / "src" / "cockpit"
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(COCKPIT))
+from aib_knife_copy import knife_copy  # noqa: E402
+from aib_proc_guard import run_guarded  # noqa: E402
+import chat_devices as DV  # noqa: E402
+import chat_owner as O  # noqa: E402
+import nostr_keys as NK  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("roster_t", str(HERE / "test-chat-roster-d07f9-1015.py"))
+RT = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(RT)
+
+FAST = 100000                       # 測試用最低次數(真用 60 萬次)
+PASS = "correct horse battery"
+NOW = 1_800_000_000
+
+
+def npub_of(i):
+    return NK.npub(NK.pubkey_hex("%064x" % (0x5000 + i)))
+
+
+OWNER = npub_of(0)
+
+
+class Seal(unittest.TestCase):
+    def test_o1_seal_roundtrip(self):
+        sk = "%064x" % 0x77
+        rec = O.seal(sk, PASS, NK.npub(NK.pubkey_hex(sk)), FAST)
+        self.assertEqual(O.unseal(rec, PASS), sk)
+        self.assertNotIn(sk, json.dumps(rec))
+        with self.assertRaises(O.OwnerError) as cm:
+            O.unseal(rec, PASS + "x")
+        self.assertEqual(str(cm.exception), "bad_passphrase")
+        bad = dict(rec, ct=rec["ct"][:-4] + ("AAAA" if rec["ct"][-4:] != "AAAA" else "BBBB"))
+        with self.assertRaises(O.OwnerError):
+            O.unseal(bad, PASS)
+        with self.assertRaises(O.OwnerError) as cm:
+            O.seal(sk, "short pass", "x", FAST)
+        self.assertEqual(str(cm.exception), "short_passphrase")
+
+
+class Protect(unittest.TestCase):
+    def setUp(self):
+        self.b = RT.Box()
+        self.addCleanup(self.b.close)
+        self.assertEqual(self.b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW").returncode, 0)
+        self.env = self.b.env()
+        self.owner = NK.read_map(self.env)["owner"]["npub"]
+
+    def test_o2_protect(self):
+        import chat_backup as CB
+        bk = self.b.td / "backup.json"
+        CB.backup(bk, PASS, self.env)
+        with self.assertRaises(O.OwnerError) as cm:
+            O.protect(PASS, self.env, backups=[bk], iterations=FAST)
+        self.assertEqual(str(cm.exception), "same_as_backup", "主人密語不准跟備份密語一樣")
+        self.assertTrue((NK.keys_dir(self.env) / "owner.key").exists(), "拒了就不動原檔")
+        self.assertFalse(O.is_sealed(self.env))
+        before = NK.load_secret("owner", self.env)
+        self.assertEqual(O.protect("another long phrase", self.env, backups=[bk], iterations=FAST), self.owner)
+        self.assertFalse((NK.keys_dir(self.env) / "owner.key").exists(), "加密後包裝金鑰那份要刪")
+        self.assertEqual(oct(O.sealed_path(self.env).stat().st_mode & 0o777), "0o600")
+        self.assertEqual(O.open_owner("another long phrase", self.env), before)
+        with self.assertRaises(O.OwnerError) as cm:
+            O.protect("another long phrase", self.env, iterations=FAST)
+        self.assertEqual(str(cm.exception), "sealed")
+
+
+class Lock(unittest.TestCase):
+    def setUp(self):
+        self.b = RT.Box()
+        self.addCleanup(self.b.close)
+        self.assertEqual(self.b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW").returncode, 0)
+        self.env = self.b.env()
+        self.secret = NK.load_secret("owner", self.env)
+        O.protect(PASS, self.env, iterations=FAST)
+
+    def test_o8_pass_lock(self):
+        t = 1000.0
+        for i in range(5):
+            with self.assertRaises(O.OwnerError) as cm:
+                O.open_owner("wrong wrong wrong", self.env, now=t)
+            self.assertEqual(str(cm.exception), "bad_passphrase")
+        with self.assertRaises(O.OwnerError) as cm:
+            O.open_owner(PASS, self.env, now=t + 1)
+        self.assertEqual(str(cm.exception), "pass_locked", "鎖住時對的也不收")
+        self.assertEqual(O.open_owner(PASS, self.env, now=t + 31), self.secret)
+        self.assertEqual(json.loads(O.pass_fails_path(self.env).read_text())["n"], 0, "輸對才歸零")
+        code = ("import sys,json;sys.path.insert(0,%r);import chat_owner as O\n"
+                "try:\n  O.open_owner('wrong wrong wrong', json.loads(sys.argv[1]), now=5000.0); print('ok')\n"
+                "except O.OwnerError as e: print(e)") % str(COCKPIT)
+        import subprocess
+        ps = [subprocess.Popen([sys.executable, "-c", code, json.dumps(self.env)], stdout=subprocess.PIPE, text=True)
+              for _ in range(8)]
+        outs = [p.communicate(timeout=120)[0].strip() for p in ps]
+        self.assertEqual((outs.count("bad_passphrase"), outs.count("pass_locked")), (5, 3), outs)
+
+
+    def test_o8b_lock_capped(self):
+        GF_write = __import__("atomic_json").write_json
+        GF_write(str(O.pass_fails_path(self.env)), {"v": 1, "n": 9, "until": 9e18})
+        with self.assertRaises(O.OwnerError) as cm:
+            O.open_owner(PASS, self.env, now=1000.0)
+        self.assertEqual(str(cm.exception), "pass_locked")
+        self.assertEqual(O.open_owner(PASS, self.env, now=1000.0 + O.PASS_LOCK_MAX_S + 1), self.secret, "最多鎖 1 小時")
+
+
+class Base(unittest.TestCase):
+    def test_o11_stale_relay(self):
+        x, h = npub_of(41), npub_of(40)
+        local = {"owner": OWNER, "seq": 3, "devices": [{"npub": h, "host": True}], "revoked": [{"npub": x, "at": 3}]}
+        relay = {"v": 1, "owner": OWNER, "seq": 2, "devices": [{"npub": h, "host": True}, {"npub": x, "name": "X"}], "revoked": []}
+        base, ok = O.verified_base(local, relay)
+        self.assertFalse(ok, "中繼站比本機舊 ⇒ 未驗證")
+        self.assertEqual(([d["npub"] for d in base["devices"]], base["seq"]), ([h], 3), "停用的不能復活、seq 取最大")
+        self.assertEqual(O.verified_base(dict(local, revoked=[], seq=2), relay, seen=5)[1], False, "比看過的 seq 小也算舊")
+        self.assertTrue(O.verified_base(dict(local, seq=2), relay)[1])
+
+
+class Restore(unittest.TestCase):
+    def test_o9_no_plain_after_seal(self):
+        import chat_backup as CB
+        import chat_owner_cli as OC
+        b = RT.Box()
+        self.addCleanup(b.close)
+        self.assertEqual(b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW").returncode, 0)
+        env = b.env()
+        old = b.td / "old.json"
+        CB.backup(old, "backup phrase", env)                       # 加密前的舊備份(裡面有明文主人金鑰)
+        plain = NK.load_secret("owner", env)
+        O.protect(PASS, env, iterations=FAST)
+        CB.restore(old, "backup phrase", env)
+        self.assertFalse((NK.keys_dir(env) / "owner.key").exists(), "加密後還原舊備份不准把明文寫回")
+        NK.store_secret("owner", plain, env)                        # 模擬 protect 寫完 sealed 還沒刪就當掉:兩份並存
+        self.assertFalse(NK.owner_local(env), "並存時不算明文可用")
+        self.assertEqual(OC.owner_status(env)["role"], "both")
+        import io
+        import chat_bridge as CBR
+        orig = (OC.PROVE, OC.READ_PASS)
+        OC.PROVE, OC.READ_PASS = (lambda reason, env, root=None: None), (lambda prompt: PASS)
+        try:
+            buf = io.StringIO()
+            rc = CBR.main(["owner", "repair"], env=env, out=buf)
+        finally:
+            OC.PROVE, OC.READ_PASS = orig
+        self.assertEqual(rc, 0, buf.getvalue())
+        self.assertFalse((NK.keys_dir(env) / "owner.key").exists())
+        self.assertEqual(OC.owner_status(env)["role"], "sealed")
+
+    def test_o10_clean_name(self):
+        import chat_owner_cli as OC
+        n = OC.GF_clean_name("B\x1b[31m機\u202e" + "x" * 80)
+        self.assertNotIn("\x1b", n or "")
+        self.assertNotIn("\u202e", n or "")
+        self.assertLessEqual(len(n or ""), 32)
+
+
+class Tty(unittest.TestCase):
+    def test_o3_read_passphrase(self):
+        with tempfile.NamedTemporaryFile() as f:
+            with self.assertRaises(O.OwnerError) as cm:
+                O.read_passphrase("密語:", tty_path=f.name)
+            self.assertEqual(str(cm.exception), "no_tty")
+        master, slave = pty.openpty()
+        path = os.ttyname(slave)
+        seen = []
+
+        def typist():                                          # 看到提示才打字(跟真人一樣),之後收完主控端看到的東西
+            import select
+            end, typed = time.time() + 5, False
+            while time.time() < end:
+                if not select.select([master], [], [], 0.1)[0]:
+                    continue
+                seen.append(os.read(master, 1024))
+                out = b"".join(seen)
+                if not typed and "密語:".encode("utf-8") in out:
+                    os.write(master, (PASS + "\n").encode("utf-8"))
+                    typed = True
+                elif typed and out.endswith(b"\n"):
+                    return
+
+        t = threading.Thread(target=typist)
+        t.start()
+        got = O.read_passphrase("密語:", tty_path=path)
+        t.join(5)
+        os.close(master)
+        os.close(slave)
+        self.assertEqual(got, PASS)
+        self.assertNotIn(PASS.encode("utf-8"), b"".join(seen), "回顯要關")
+
+
+class Pair(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory(prefix="aib-pair-")
+        self.root = Path(self.td.name)
+        self.dev = npub_of(1)
+        self.nonce = O.new_nonce()
+        self.code = O.pair_code(self.dev, self.nonce)
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def req(self, signer=None, device=None, nonce=None, at=NOW):
+        signer = signer or self.dev
+        return signer, json.dumps(O.pair_request(OWNER, device or signer, nonce or self.nonce, "Mac mini", at=at))
+
+    def test_o4_code(self):
+        self.assertEqual(len(self.code.split("-")), 6)
+        self.assertEqual(O.parse_code(self.code), (O.fingerprint(self.dev), self.nonce))
+        self.assertEqual(O.parse_code(" " + self.code.upper().replace("-", " ") + " "), (O.fingerprint(self.dev), self.nonce))
+        self.assertEqual(O.parse_code("配對碼:" + self.code), (O.fingerprint(self.dev), self.nonce), "連前綴一起貼也要認得")
+        for bad in ("", self.code[:-1], self.code + "a", "zz" + self.code[2:], self.code[:-1] + "0"):
+            with self.assertRaises(O.OwnerError, msg=bad):
+                O.parse_code(bad)
+
+    def test_o5_requests(self):
+        spam = [self.req(signer=npub_of(10 + i), nonce=O.new_nonce(), at=NOW + 5) for i in range(5)]
+        for _ in range(5):                                     # 灌假請求:不理、不算,真的配對碼不會被弄作廢
+            with self.assertRaises(O.OwnerError) as cm:
+                O.check_pair(self.root, OWNER, self.code, spam, NOW + 10)
+            self.assertEqual(str(cm.exception), "no_request")
+        typo = O.pair_code(self.dev, O.new_nonce())
+        for i in range(2):
+            with self.assertRaises(O.OwnerError) as cm:
+                O.check_pair(self.root, OWNER, typo, spam + [self.req()], NOW + 10)
+            self.assertEqual(str(cm.exception), "bad_code", "本人打錯 nonce 算一次")
+        rec = O.check_pair(self.root, OWNER, self.code, spam + [self.req()], NOW + 10)
+        self.assertEqual(rec["device"], self.dev, "錯 2 次後打對照收")
+        with self.assertRaises(O.OwnerError) as cm:
+            O.check_pair(self.root, OWNER, self.code, [self.req()], NOW + 11)
+        self.assertEqual(str(cm.exception), "used", "同一個請求只收一次")
+        dev2, n2 = npub_of(2), O.new_nonce()
+        code2 = O.pair_code(dev2, n2)
+        good2 = (dev2, json.dumps(O.pair_request(OWNER, dev2, n2, "Pro 13", at=NOW)))
+        for i in range(3):
+            with self.assertRaises(O.OwnerError) as cm:
+                O.check_pair(self.root, OWNER, O.pair_code(dev2, O.new_nonce()), [good2], NOW + 10)
+        self.assertEqual(str(cm.exception), "burned", "同一台錯第 3 次作廢")
+        with self.assertRaises(O.OwnerError) as cm:
+            O.check_pair(self.root, OWNER, code2, [good2], NOW + 10)
+        self.assertEqual(str(cm.exception), "burned", "作廢之後打對也不收")
+        dev3, n3 = npub_of(3), O.new_nonce()
+        with self.assertRaises(O.OwnerError) as cm:
+            O.check_pair(self.root, OWNER, O.pair_code(dev3, n3),
+                         [(dev3, json.dumps(O.pair_request(OWNER, dev3, n3, "x", at=NOW)))], NOW + O.PAIR_TTL_S + 1)
+        self.assertEqual(str(cm.exception), "expired")
+        other_owner = (dev3, json.dumps(O.pair_request(npub_of(9), dev3, n3, "x", at=NOW)))
+        with self.assertRaises(O.OwnerError) as cm:
+            O.check_pair(self.root, OWNER, O.pair_code(dev3, n3), [other_owner], NOW + 1)
+        self.assertEqual(str(cm.exception), "no_request", "給別位主人的請求不算")
+
+
+class Lists(unittest.TestCase):
+    def test_o6_next_list(self):
+        td = tempfile.TemporaryDirectory(prefix="aib-ownlist-")
+        self.addCleanup(td.cleanup)
+        root = Path(td.name)
+        cur = O.read_own_list(root, OWNER)
+        self.assertEqual(cur["seq"], 0)
+        a = O.next_list(cur, NOW, add={"npub": npub_of(1), "name": "Mini"})
+        self.assertEqual((a["seq"], a["valid_until"] - a["at"]), (1, 30 * 86400))
+        self.assertEqual(DV.parse_list(json.dumps(a), OWNER, NOW)["devices"][0]["npub"], npub_of(1))
+        with self.assertRaises(O.OwnerError) as cm:
+            O.next_list(a, NOW, add={"npub": npub_of(1)})
+        self.assertEqual(str(cm.exception), "already_listed")
+        full = a
+        for i in range(2, 17):
+            full = O.next_list(full, NOW, add={"npub": npub_of(i)})
+        with self.assertRaises(O.OwnerError) as cm:
+            O.next_list(full, NOW, add={"npub": npub_of(17)})
+        self.assertEqual(str(cm.exception), "too_many")
+        r = O.next_list(a, NOW + 5, revoke=DV.device_code(npub_of(1)))
+        self.assertEqual((r["seq"], r["devices"], [x["npub"] for x in r["revoked"]]), (2, [], [npub_of(1)]))
+        DV.parse_list(json.dumps(r), OWNER, NOW + 5)
+        with self.assertRaises(O.OwnerError) as cm:
+            O.next_list(r, NOW, add={"npub": npub_of(1)})
+        self.assertEqual(str(cm.exception), "was_revoked")
+        with self.assertRaises(O.OwnerError) as cm:
+            O.next_list(r, NOW, revoke="zzzz")
+        self.assertEqual(str(cm.exception), "not_listed")
+        O.save_own_list(root, r)
+        self.assertFalse(O.extend_due(root, OWNER, NOW + 6 * 86400))
+        self.assertTrue(O.extend_due(root, OWNER, NOW + 7 * 86400 + 5))
+
+
+class Backup(unittest.TestCase):
+    def test_o7_backup_sealed(self):
+        import chat_backup as CB
+        a = RT.Box()
+        self.addCleanup(a.close)
+        self.assertEqual(a.cli("on", "--no-venv", "--name", "Andy", "--country", "TW").returncode, 0)
+        env = a.env()
+        owner = NK.read_map(env)["owner"]["npub"]
+        secret = NK.load_secret("owner", env)
+        NK.ensure_device(env)
+        O.protect("owner phrase long", env, iterations=FAST)
+        bk = a.td / "bk.json"
+        CB.backup(bk, "backup phrase", env)
+        self.assertNotIn(secret, bk.read_text())
+        b = RT.Box()
+        self.addCleanup(b.close)
+        envb = b.env()
+        r = CB.restore(bk, "backup phrase", envb)
+        self.assertEqual((r["owner"], r["mode"]), (owner, "fresh"))
+        self.assertTrue(O.is_sealed(envb))
+        self.assertFalse((NK.keys_dir(envb) / "owner.key").exists(), "還原後也沒有明文主人金鑰")
+        self.assertEqual(O.open_owner("owner phrase long", envb), secret)
+        self.assertEqual(NK.load_secret("device", envb), NK.load_secret("device", env))
+
+
+@unittest.skipUnless(RT.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
+class Network(unittest.TestCase):
+    """兩台:A(持主人金鑰,艙 6ddf)、B(新機器,艙 2282)。指令在行程內跑 chat_bridge.main,本人證明 / 密語換成假的。"""
+
+    def setUp(self):
+        import io
+        import chat_owner_cli as OC
+        from aib_fake_relay import FakeRelay
+        self.io, self.OC = io, OC
+        self.relay = FakeRelay()
+        self.relay.__enter__()
+        self.addCleanup(self.relay.__exit__, None, None, None)
+        self.a, self.b = RT.Box([self.relay.url]), RT.Box([self.relay.url])
+        for x in (self.a, self.b):
+            self.addCleanup(x.close)
+            x.link_venv()
+        self.sa = self.a.seat("20261015-000000-6ddf", "w2", "00000000-0000-0000-0000-00000000aaa1", "aaaa11", "A席")
+        self.sb = self.b.seat("20261015-000000-2282", "w2", "00000000-0000-0000-0000-00000000bbb2", "bbbb22", "B席")
+        self.assertEqual(self.a.cli("on", "--no-venv", "--name", "Andy", "--country", "TW").returncode, 0)
+        self.a.cli("publish", self.sa)
+        self.owner = NK.read_map(self.a.env())["owner"]["npub"]
+        self.a.start_run()
+        self.assertTrue(self.a.wait_for(lambda: self.a.status().get("state") == "published", 40), self.a.status())
+        self.proof = None
+        self.passes = []
+        from unittest import mock
+        loc = mock.patch.dict(os.environ, {"EZ2_AIB_LOCALE": "zh-TW"})
+        loc.start()
+        self.addCleanup(loc.stop)
+        self.addCleanup(setattr, OC, "PROVE", OC.PROVE)
+        self.addCleanup(setattr, OC, "READ_PASS", OC.READ_PASS)
+        OC.PROVE = lambda reason, env, root=None: self.proof
+        OC.READ_PASS = self._read
+
+    def _read(self, prompt):
+        if not self.passes:
+            raise O.OwnerError("no_tty")
+        return self.passes.pop(0)
+
+    def run_cli(self, box, *argv):
+        import chat_bridge as CBR
+        buf = self.io.StringIO()
+        rc = CBR.main(list(argv), env=box.env(), out=buf)
+        return rc, buf.getvalue()
+
+    def lookup(self, box, addr):
+        r = box.cli("lookup", addr)
+        return r.returncode, json.loads(r.stdout.strip().splitlines()[-1])
+
+    def protect(self):
+        self.passes = [PASS, PASS]
+        rc, txt = self.run_cli(self.a, "owner", "protect")
+        self.assertEqual(rc, 0, txt)
+        return txt
+
+    def test_n1_protect(self):
+        self.protect()
+        env = self.a.env()
+        self.assertTrue(O.is_sealed(env))
+        self.assertFalse((NK.keys_dir(env) / "owner.key").exists())
+        lst = O.read_own_list(self.a.root, self.owner)
+        self.assertEqual((lst["seq"], lst["devices"][0].get("host")), (1, True))
+        rc, rec = self.lookup(self.a, "%s/6ddf/%s" % (self.owner, self.sa))
+        self.assertEqual(rc, 0, rec)
+        import chat_bridge as CBR
+        self.assertEqual(CBR._run_nostr("publish", self.a.root, env)[0], 0, "加密後名冊改用機器金鑰發")
+        rc, rec = self.lookup(self.a, "%s/6ddf/%s" % (self.owner, self.sa))
+        self.assertEqual((rc, rec.get("device")), (0, NK.read_map(env)["device"]["npub"]), rec)
+        self.assertEqual(self.a.cli("on", "--no-venv", "--name", "Andy", "--country", "TW").returncode, 0)
+        self.assertEqual(NK.read_map(env)["owner"]["npub"], self.owner, "加密後再開一次不准換掉主人身分")
+        self.assertFalse((NK.keys_dir(env) / "owner.key").exists(), "也不准重產一把明文主人金鑰")
+
+    def _join_b(self):
+        rc, txt = self.run_cli(self.b, "join", self.owner, "--name", "B 機")
+        self.assertEqual(rc, 0, txt)
+        return txt.split("\n")[0].split()[-1]
+
+    def test_n2_join_and_add(self):
+        self._join_and_add()
+
+    def _join_and_add(self):
+        code = self._join_b()
+        rc, txt = self.run_cli(self.a, "devices", "add", code)
+        self.assertEqual(rc, 2)
+        self.assertIn("aib chat owner protect", txt, "沒加密不准改清單")
+        self.protect()
+        self.proof = "touchid_cancel"
+        rc, txt = self.run_cli(self.a, "devices", "add", code)
+        self.assertEqual(rc, 2, txt)
+        self.assertEqual(O.read_own_list(self.a.root, self.owner)["seq"], 1, "本人證明沒過 ⇒ 什麼都沒改")
+        self.proof = None
+        self.passes = [PASS]
+        rc, txt = self.run_cli(self.a, "devices", "add", code)
+        self.assertEqual(rc, 0, txt)
+        lst = O.read_own_list(self.a.root, self.owner)
+        self.assertEqual((lst["seq"], lst["devices"][-1]["name"]), (2, "B 機"))
+        self.assertEqual(self.b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW").returncode, 0)
+        self.b.cli("publish", self.sb)
+        import chat_bridge as CBR
+        CBR.publish_roster(self.b.root, self.b.env(), {}, int(time.time()))
+        rc, rec = self.lookup(self.a, "%s/2282/%s" % (self.owner, self.sb))
+        self.assertEqual((rc, rec.get("device")), (0, NK.read_map(self.b.env())["device"]["npub"]), rec)
+
+    def test_n3_revoke(self):
+        self._join_and_add()
+        bdev = NK.read_map(self.b.env())["device"]["npub"]
+        self.passes = [PASS]
+        rc, txt = self.run_cli(self.a, "devices", "revoke", DV.device_code(bdev))
+        self.assertEqual(rc, 0, txt)
+        rc, rec = self.lookup(self.a, "%s/2282/%s" % (self.owner, self.sb))
+        self.assertEqual((rc, rec.get("why")), (2, "no_seat"), rec)
+        host = O.read_own_list(self.a.root, self.owner)["devices"][0]["npub"]
+        rc, txt = self.run_cli(self.a, "devices", "revoke", DV.device_code(host))
+        self.assertEqual(rc, 2)
+        self.assertIn("不能停用", txt)
+
+    def test_n5_tampered_own_list(self):
+        self._join_and_add()
+        evil = npub_of(30)
+        p = O.own_list_path(self.a.root)
+        rec = json.loads(p.read_text())
+        rec["devices"].append({"npub": evil, "name": "偷塞的", "added_at": 1})
+        rec["seq"] = 1                                                 # 也把 seq 改小
+        p.write_text(json.dumps(rec))
+        self.passes = [PASS]
+        rc, txt = self.run_cli(self.a, "devices", "extend")
+        self.assertEqual(rc, 0, txt)
+        import chat_bridge as CBR
+        rc, got = CBR._run_nostr("devices-fetch", self.a.root, self.a.env(), extra=[self.owner])
+        self.assertEqual(rc, 0, got)
+        self.assertNotIn(evil, [d["npub"] for d in got["list"]["devices"]], "本機檔偷塞的不准簽進去")
+        self.assertEqual(got["list"]["seq"], 3, "seq 要接中繼站那份(2)+1,不被改小")
+        self.assertIn("共 2 台", txt, "簽之前要列台數")
+
+    def test_n6_stale_relay_no_revive(self):
+        from aib_fake_relay import FakeRelay, RelayClient
+        self._join_and_add()                                           # seq 2:host + B
+        with RelayClient(self.relay.url) as c:
+            c.send(["REQ", "l2", {"kinds": [30078], "#d": [DV.DEVICES_D]}])
+            l2 = c.recv_until_eose("l2")
+        self.assertTrue(l2)
+        bdev = NK.read_map(self.b.env())["device"]["npub"]
+        self.passes = [PASS]
+        rc, txt = self.run_cli(self.a, "devices", "revoke", DV.device_code(bdev))
+        self.assertEqual(rc, 0, txt)                                   # seq 3:B 停用
+        old = FakeRelay()
+        old.__enter__()
+        self.addCleanup(old.__exit__, None, None, None)
+        with RelayClient(old.url) as c:                                # 只有停用前那份的站
+            c.send(["EVENT", l2[-1]])
+            c.recv()
+        self.a.relays = [old.url]
+        self.passes = [PASS]
+        rc, txt = self.run_cli(self.a, "devices", "extend")
+        self.assertEqual(rc, 0, txt)
+        self.assertIn("比你上次簽的還舊", txt, "要警告")
+        import chat_bridge as CBR
+        rc, got = CBR._run_nostr("devices-fetch", self.a.root, self.a.env(), extra=[self.owner])
+        self.assertNotIn(bdev, [d["npub"] for d in got["list"]["devices"]], "停用的不准復活")
+        self.assertEqual(got["list"]["seq"], 4)
+
+    def test_n4_off_warns(self):
+        self.protect()
+        self.passes = []
+        rc, txt = self.run_cli(self.a, "off")
+        self.assertIn("舊版好友還看得到", txt, "沒輸密語一定要提示,不能默默略過")
+
+
+class Knife(unittest.TestCase):
+    def _knife(self, needle, replacement, cell):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_owner.py", needle, replacement,
+                        tests=(name, "test-chat-roster-d07f9-1015.py")) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), cell], cwd=str(root), max_procs=80, timeout=300,
+                            env=dict(os.environ))
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅:" + cell + "\n" + r.stdout + r.stderr)
+
+    def test_k1_spam_counts(self):
+        self._knife('        if rec.get("device") != signer or fingerprint(signer) != fp:\n',
+                    '        if rec.get("device") != signer:\n', "Pair.test_o5_requests")
+
+    def test_k3_echo_on(self):
+        self._knife("        new[3] &= ~termios.ECHO\n", "        pass\n", "Tty.test_o3_read_passphrase")
+
+    @unittest.skipUnless(RT.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(被砍的 Network 也會跳過)")
+    def test_k4_owner_regenerated(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/nostr_keys.py",
+                        '    if rec.get("owner") and ((keys_dir(env) / "owner.key").is_file() or (keys_dir(env) / "owner.sealed").is_file()\n'
+                        '                             or rec["owner"].get("remote")):\n',
+                        '    if rec.get("owner") and (keys_dir(env) / "owner.key").is_file():\n',
+                        tests=(name, "test-chat-roster-d07f9-1015.py")) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Network.test_n1_protect"], cwd=str(root),
+                            max_procs=80, timeout=300, env=dict(os.environ))
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        if r.returncode == 0 and "skipped=" in (r.stdout + r.stderr):
+            self.skipTest("被砍的那格跳過了,刀沒得驗")
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+    @unittest.skipUnless(RT.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(被砍的 Network 也會跳過)")
+    def test_k8_stale_revives(self):
+        self._knife('        base.update(devices=[d for d in relay.get("devices") or [] if d["npub"] not in revoked],',
+                    '        base.update(devices=list(relay.get("devices") or []),', "Network.test_n6_stale_relay_no_revive")
+
+    def test_k5_no_pass_lock(self):
+        self._knife("        if now < until:\n            raise OwnerError(\"pass_locked\")\n", "", "Lock.test_o8_pass_lock")
+
+    def test_k6_owner_local_ignores_sealed(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/nostr_keys.py",
+                        '    return (keys_dir(env) / "owner.key").is_file() and not (keys_dir(env) / "owner.sealed").is_file()\n',
+                        '    return (keys_dir(env) / "owner.key").is_file()\n', tests=(name, "test-chat-roster-d07f9-1015.py")) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Restore.test_o9_no_plain_after_seal"], cwd=str(root),
+                            max_procs=80, timeout=300, env=dict(os.environ))
+        self.assertIsNone(r.tripped)
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+    @unittest.skipUnless(RT.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(被砍的 Network 也會跳過)")
+    def test_k7_local_base(self):
+        self._knife("    if relay:\n        revoked = {", "    if False:\n        revoked = {", "Network.test_n5_tampered_own_list")
+
+    def test_k2_backup_pass_allowed(self):
+        self._knife("    check_not_backup_pass(passphrase, backups)\n", "", "Protect.test_o2_protect")
+
+
+if __name__ == "__main__":
+    unittest.main()

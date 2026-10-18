@@ -27,6 +27,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import nostr_sdk as N  # noqa: E402  只有 venv 裡有;核心沒有這一行
 import chat_devices as DV  # noqa: E402
+import chat_power as CP  # noqa: E402
 import chat_roster as CR  # noqa: E402
 import dm_global_files as GF  # noqa: E402
 import nostr_keys as NK  # noqa: E402
@@ -43,8 +44,17 @@ def _keys(stem):
         secret = None
 
 
-def _sign_roster(keys, content):
-    tag = N.Tag.identifier(CR.ROSTER_D)
+def _roster_signer():
+    """名冊用哪一把簽(第 37.7 節 K2):主人私鑰在這台、不用密語 ⇒ 主人金鑰 + d=aib-roster;
+    主人金鑰加密了 / 這台是 join 進來的 ⇒ 機器金鑰 + d=aib-roster:<機器碼>(主人那份只在本人輸密語時重發)。"""
+    if NK.owner_local():
+        return _keys("owner"), CR.ROSTER_D
+    dev = NK.read_map().get("device") or {}
+    return _keys("device"), DV.roster_d(dev["npub"])
+
+
+def _sign_roster(keys, content, d=None):
+    tag = N.Tag.identifier(d or CR.ROSTER_D)
     return N.EventBuilder(N.Kind(CR.KIND_ROSTER), json.dumps(content, ensure_ascii=False, sort_keys=True)).tags([tag]).finalize(keys)
 
 
@@ -77,8 +87,8 @@ async def _send_all(relays, events):
 
 
 def _publish(root, content, dm_seats, relays, tag):
-    owner = _keys("owner")
-    roster_ev = _sign_roster(owner, content)
+    owner, d = _roster_signer()
+    roster_ev = _sign_roster(owner, content, d)
     seat_evs = [(s, _sign_dm_relays(_keys(s["key"]), relays)) for s in dm_seats]
     acks = asyncio.run(_send_all(relays, [roster_ev] + [ev for _s, ev in seat_evs]))
     ok_roster = acks.get(roster_ev.id().to_hex()) or []
@@ -113,8 +123,8 @@ def cmd_publish_empty(root):
     owner_npub = NK.read_map().get("owner", {}).get("npub")
     content = CR.empty(owner_npub)
     # 撤下 = 各席 10050 換成沒有站;發到上次公告的那些站,看過舊清單的人才會收到新的
-    owner = _keys("owner")
-    roster_ev = _sign_roster(owner, content)
+    owner, d = _roster_signer()
+    roster_ev = _sign_roster(owner, content, d)
     seat_evs = [(s, _sign_dm_relays(_keys(s["key"]), [])) for s in (prev.get("dm_seats") or [])]
     acks = asyncio.run(_send_all(last_relays, [roster_ev] + [ev for _s, ev in seat_evs]))
     rec = {"v": 1, "hash": "empty", "kind": "publish-empty", "at": int(time.time()), "roster_id": roster_ev.id().to_hex(),
@@ -122,6 +132,64 @@ def cmd_publish_empty(root):
     write_json(str(CR.published_path(root)), rec)
     os.chmod(str(CR.published_path(root)), 0o600)
     return (0 if rec["roster_ok"] else 2), rec
+
+
+def cmd_sign_owner(stdin):
+    """本人輸過密語之後(chat_bridge 那一半解開主人私鑰、從管線交過來,不經參數 / 環境變數):
+    用主人金鑰簽機器清單(d=aib-devices)與 / 或主人名冊(d=aib-roster),發出去。回各自收下的站。"""
+    req = json.loads(stdin.readline() or "{}")
+    keys = N.Keys.parse(req.pop("secret"))
+    evs = {}
+    if req.get("devices") is not None:
+        evs["devices"] = N.EventBuilder(N.Kind(CR.KIND_ROSTER), json.dumps(req["devices"], ensure_ascii=False, sort_keys=True)) \
+            .tags([N.Tag.identifier(DV.DEVICES_D)]).finalize(keys)
+    if req.get("roster") is not None:
+        evs["roster"] = _sign_roster(keys, req["roster"])
+    keys = None
+    acks = asyncio.run(_send_all(req.get("relays") or CR.relays(), list(evs.values())))
+    out = {k + "_ok": acks.get(ev.id().to_hex()) or [] for k, ev in evs.items()}
+    return (0 if evs and all(out.values()) else 2), out
+
+
+def cmd_pair_send(stdin):
+    """新機器(join):用機器金鑰簽配對請求(d=aib-pair:<指紋>,p = 主人)發到主人的收信站。nonce 只帶雜湊。"""
+    import chat_owner as CO
+    req = json.loads(stdin.readline() or "{}")
+    dev = NK.read_map().get("device") or {}
+    ev = N.EventBuilder(N.Kind(CR.KIND_ROSTER), json.dumps(req["content"], ensure_ascii=False, sort_keys=True)) \
+        .tags([N.Tag.identifier(CO.pair_d(dev["npub"])), N.Tag.parse(["p", NK.npub_to_hex(req["content"]["owner"])])]) \
+        .finalize(_keys("device"))
+    ok = asyncio.run(_send_all(req.get("relays") or CR.relays(), [ev])).get(ev.id().to_hex()) or []
+    return (0 if ok else 2), {"ok": bool(ok), "relays_ok": ok}
+
+
+async def devices_fetch(owner_npub, relays):
+    """改清單前(@abb89 10-18 H1):從中繼站抓這位主人現行的 d=aib-devices、驗簽(nostr-sdk)+ 作者 = 主人 + chat_devices 驗內容,
+    當下一次簽章的底。過期的照樣回(底只看內容);沒有 ⇒ list None。"""
+    flt = N.Filter().author(N.PublicKey.parse(owner_npub)).kind(N.Kind(CR.KIND_ROSTER)).identifier(DV.DEVICES_D)
+    ev = await _fetch_latest(relays, flt)
+    if ev is None:
+        return 0, {"ok": True, "list": None}
+    if ev.author().to_bech32() != owner_npub:
+        return 2, {"ok": False, "why": "wrong_author"}
+    try:
+        rec = DV.parse_list(ev.content(), owner_npub, int(time.time()))
+    except DV.DevicesError as err:
+        return 2, {"ok": False, "why": "bad_list", "detail": str(err)}
+    return 0, {"ok": True, "list": rec}
+
+
+async def pair_fetch(owner_npub, relays):
+    """主人那台:抓給我的配對請求 ⇒ [{signer, content}](簽章已驗;d 要是簽章者自己的 aib-pair:<指紋>)。"""
+    import chat_owner as CO
+    flt = N.Filter().kind(N.Kind(CR.KIND_ROSTER)).pubkey(N.PublicKey.parse(owner_npub))
+    out = []
+    for e in await _fetch_all(relays, flt):
+        signer = e.author().to_bech32()
+        vecs = [t.to_vec() for t in e.tags()]
+        if next((v[1] for v in vecs if len(v) >= 2 and v[0] == "d"), None) == CO.pair_d(signer):
+            out.append({"signer": signer, "content": e.content()})
+    return 0, {"ok": True, "requests": out}
 
 
 async def _fetch_latest(relays, flt):
@@ -195,7 +263,8 @@ async def _owner_roster(owner_npub, relays, root):
                 audit(root, "devices", "-", n, "device-roster:%s" % err)
     if base is None and not devs:
         return 2, {"ok": False, "why": "no_roster"}, None             # 對方還沒開全球對談(第 13 節)
-    merged, warns = DV.merge(owner_npub, base, devs)
+    host = next((d["npub"] for d in (dev_list or {}).get("devices") or [] if d.get("host") is True), None)
+    merged, warns = DV.merge(owner_npub, base, devs, host=host)
     for w in warns:
         audit(root, "devices", "-", owner_npub, "%s:%s" % (w["kind"], w["cabin"]))
     return 0, merged, at
@@ -669,7 +738,8 @@ class Sender(object):
             rows = SP.presence([e["seat5"] for e in mine_seats], with_status=(lvl == "status"))
             for r, e in zip(rows, mine_seats):
                 r["cabin"] = e.get("cabin") or "main"
-            body = json.dumps({"v": 1, "seats": rows}, ensure_ascii=False, sort_keys=True)
+            power = CP.presence_power(self.root, PRESENCE_EVERY_S)          # 10-18:讓好友判斷這台是不是在睡
+            body = json.dumps({"v": 1, "seats": rows, "power": power}, ensure_ascii=False, sort_keys=True)
             prev = last.get(tgt)
             if prev and ((prev[0] == body and now - prev[1] < PRESENCE_EVERY_S) or now - prev[1] < PRESENCE_GAP_S):
                 continue
@@ -684,7 +754,7 @@ class Sender(object):
             tags = [N.Tag.parse(x) for x in (["aib-v", "1"], ["aib-type", "presence"],
                                              ["aib-from", "%s/%s/%s" % (owner, frm.get("cabin") or "main", frm["seat5"])])]
             gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(res["seat"]["npub"]),
-                                          json.dumps({"v": 1, "at": int(now), "seats": rows}, ensure_ascii=False),
+                                          json.dumps({"v": 1, "at": int(now), "seats": rows, "power": power}, ensure_ascii=False),
                                           rumor_extra_tags=tags)
             keys = None
             c = await _client(res["dm_relays"])
@@ -780,6 +850,9 @@ PRESENCE_TICK_S = float(os.environ.get("AIB_CHAT_PRESENCE_TICK") or 60)     # �
 PRESENCE_EVERY_S = float(os.environ.get("AIB_CHAT_PRESENCE_EVERY") or 900)  # 沒變也每 15 分鐘送一次
 PRESENCE_GAP_S = float(os.environ.get("AIB_CHAT_PRESENCE_GAP") or 120)      # 同一位對方最少間隔
 PRESENCE_MAX_TARGETS = 50
+UNCONFIRMED_AFTER_S = float(os.environ.get("AIB_CHAT_UNCONFIRMED_AFTER") or 86400)  # 交出多久沒回條就標「未確認」
+UNCONFIRMED_TICK_S = 600
+
 ROOM_GAP_S = float(os.environ.get("AIB_CHAT_ROOM_GAP") or 600)          # 房間快照同一位最少間隔(第 34 節)
 ORPHAN_KEEP_S = float(os.environ.get("AIB_CHAT_ORPHAN_KEEP") or 60)   # 秒;查不到寄出帳的回條暫存多久(第 27.8 節)
 ORPHAN_MAX = 500
@@ -1137,8 +1210,9 @@ class Receiver(object):
             step = r.get("step") if isinstance(r.get("step"), str) and re.fullmatch(r"\d{1,3}/\d{1,3}", r["step"]) else None
             by_cab.setdefault(cab, []).append({"seat": seat, "state": r["state"], "now": SP.clean_now(r.get("now")),
                                                 "step": step})
+        power = CP.clean_power(body.get("power"))
         for cab, seats in by_cab.items():
-            GF.note_world(self.root, owner, cab, seats)
+            GF.note_world(self.root, owner, cab, seats, power=power)
         # 對方送在線狀態來 = 他把我當好友了 ⇒ 這個工人第一次聽到他時,補送一次名片(先前送的可能在他加我好友前被丟掉)
         heard = getattr(self, "heard", None)
         if heard is None:
@@ -1421,6 +1495,8 @@ async def serve(root):
     last_clock = 0.0
     last_presence = 0.0
     last_verify = 0.0
+    last_unconfirmed = 0.0
+    watch = CP.SleepWatch(root)
     recv_task = asyncio.ensure_future(receiver.run(stop))
     for left in sorted((root / "sending").glob("*.json")):     # 上次掛掉時領了還沒寄完的:當重試處理
         if not (root / "sending" / (left.stem + ".try")).exists():
@@ -1429,6 +1505,12 @@ async def serve(root):
         while not stop.is_set():
             if not _switch_on() or os.getppid() != parent:
                 break
+            if watch.tick():                                  # 剛睡醒:立刻補送在線狀態,好友很快就看到醒了
+                sender.p_last = {}
+                last_presence = 0.0
+            if time.time() - last_unconfirmed >= UNCONFIRMED_TICK_S:
+                last_unconfirmed = time.time()
+                GF.mark_unconfirmed(root, after=UNCONFIRMED_AFTER_S)
             if time.time() - last_hb >= HB_EVERY:
                 GF.write_heartbeat(root)
                 last_hb = time.time()
@@ -1479,7 +1561,8 @@ async def serve(root):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="chat_nostr")
-    p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve", "probe", "roster"])
+    p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve", "probe", "roster", "sign-owner", "pair-send",
+                                   "pair-fetch", "devices-fetch"])
     p.add_argument("addr", nargs="?")
     p.add_argument("--root")
     a = p.parse_args(argv)
@@ -1495,6 +1578,14 @@ def main(argv=None):
             rc, rec = asyncio.run(probe(a.addr))
         elif a.cmd == "roster":
             rc, rec = asyncio.run(roster_of(a.addr, CR.relays(), root))
+        elif a.cmd == "sign-owner":
+            rc, rec = cmd_sign_owner(sys.stdin)
+        elif a.cmd == "pair-send":
+            rc, rec = cmd_pair_send(sys.stdin)
+        elif a.cmd == "pair-fetch":
+            rc, rec = asyncio.run(pair_fetch(a.addr, CR.relays()))
+        elif a.cmd == "devices-fetch":
+            rc, rec = asyncio.run(devices_fetch(a.addr, CR.relays()))
         else:
             rc, rec = cmd_fetch(a.addr, CR.relays(), root=root)
     except Exception as err:   # noqa: BLE001  例外只記種類:訊息裡可能帶路徑或金鑰相關字

@@ -2384,6 +2384,11 @@ else:
         sys.stderr.write(tr.t('aib.rightai.bad_view', {'value': repr(_view)}) + '\n')
     lines, rowmap = render_ai_list_with_map(render_data, width=width)
     required_width = required_ai_pane_width(render_data)
+    # 10-18 Andy 准:macOS 終端機「允許滑鼠回報」被關(⌘R 切換)時點擊全被終端機接走,艙裡偵測不到 ⇒ 清單最底固定兩行提示。
+    #   只加在最後、不帶 rowmap(點了不做事),不動前面任何一列的行號。
+    if sys.platform == 'darwin':
+        lines = list(lines) + ['', ' \033[2m' + tr.t('aib.rightai.mouse_hint1') + '\033[0m',
+                               ' \033[2m' + tr.t('aib.rightai.mouse_hint2') + '\033[0m']
     raw_lines, raw_rowmap = list(lines), list(rowmap)
     # 沒開收合時也要能捲。上方的分頁和機器狀態在外層，這裡整段清單當正文。
     if (os.environ.get('EZ2_RIGHT_FOLD') or '0') != '1':

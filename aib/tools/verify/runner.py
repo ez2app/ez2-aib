@@ -691,6 +691,21 @@ def reap_leftovers(marker: str, grace_s: float = 2.0, proc: str = "/proc", var: 
 NET_TARGETS_MAX = 20     # 10-12 P17:紀錄池每列最多記幾個網路目標
 
 
+def _repo_roots(repo: Path, snapshot: Path) -> list[str]:
+    """被測的倉本身(工作樹、快照、git 共用目錄;各取真路徑和原路徑):這些底下的讀寫不算碰真家目錄。"""
+    out = []
+    for p in (repo, snapshot):
+        out += [str(p), os.path.realpath(str(p))]
+    try:
+        common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL).stdout.strip()
+        if common:
+            out += [common, os.path.realpath(common)]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return sorted(set(out))
+
+
 def _traced_run(repo: Path, snapshot: Path, name: str, env: dict[str, str], trace_dir: Path,
                 row_source: str = ROW_SOURCE, timeout: float | None = None) -> dict:
     """在追蹤下跑一支,跑完把量到的輸入寫進沿用池。量不到照實寫 measured="unmeasured"(下次必跑)。
@@ -710,7 +725,7 @@ def _traced_run(repo: Path, snapshot: Path, name: str, env: dict[str, str], trac
     reap_leftovers(str(trace))                        # 10-08:測試開出來沒收的背景行程(tmux 伺服器等)一併收掉
     try:
         events = st.load_trace(trace)
-        touched = [] if REAL_HOME_OK_MARK in _head(snapshot / name) else st.real_home_touches(events, real_home())
+        touched = [] if REAL_HOME_OK_MARK in _head(snapshot / name) else st.real_home_touches(events, real_home(), _repo_roots(repo, snapshot))
         if touched:                                   # 第 37.1 節:碰到真家目錄 ⇒ 這支判紅,說是哪個檔(只列前 5 個)
             actual["rc"] = actual["rc"] or 1
             actual["real_home"] = touched[:5]

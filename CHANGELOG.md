@@ -4,6 +4,15 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.23
+
+- **Owner key protected by a passphrase**: `aib chat owner protect` encrypts your owner key at rest (passphrase of at least 12 characters, read only from the terminal; on macOS Touch ID first). Changing your device list then always needs you: the base is the signed list fetched from the relays (an older or missing one is shown in full with a warning), and the changes (+added / −removed, with fingerprints) are shown before you approve. Wrong passphrases lock with growing delays. Restoring an old backup no longer writes the plain key back.
+- **Pair another machine**: `aib chat join` on the new machine shows a pairing code; `aib chat devices add <code>` on the owner machine checks the fingerprint, then you approve. `devices revoke` / `devices extend` sign a new list.
+- **See whether the other computer is asleep**: contacts and `world` show awake / asleep / offline; sends to a sleeping machine say so; on mains power the relay keeps the Mac awake (`aib chat awake on|off`); messages without a receipt after 24 hours are marked unconfirmed.
+- **Friends see each seat's outfit** on your island (the captain room's look code, checked again by the receiver).
+- **Right column**: a click during a redraw now waits for the list to finish drawing instead of being lost; on macOS the bottom of the list reminds you where to turn mouse reporting back on (Terminal: View → Allow Mouse Reporting).
+- **`aib test` no longer flags the repository under test** as touching the real home folder when worktrees live under `~/.ez2-aib` (regression in 0.1.22).
+
 ## 0.1.22
 
 - **Paste API keys into a masked box**: `aib secret ask <NAME>` opens a masked input box, checks the format (and with `--check`, asks the provider whether the key works), then needs Touch ID before the key is stored encrypted. `--push <host>:<path>` also sends it to a server over ssh; the Touch ID prompt shows the real host and port that ssh will connect to, and that connection is pinned (no proxy). The key never appears in arguments, output or logs.
