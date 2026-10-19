@@ -180,6 +180,33 @@ def clean_seat_look(v):
     return v if isinstance(v, str) and SEAT_LOOK_RE.match(v) else None
 
 
+USE_RE = __import__("re").compile(r"^[a-z][0-9]{1,4}\Z")   # 新辦公室(@74e8b 10-19):這席正站在哪個版面物件前(物件 id,例 m13)
+SEAT_CODE_RE = __import__("re").compile(r"^[0-9a-z]{5}\Z")
+MEET_GROUPS_MAX, MEET_SIZE_MAX = 8, 16
+
+
+def clean_use(v):
+    """版面物件 id:合 USE_RE 才帶;不帶原因、不帶數字(艦長室定義物件是什麼)。不合 ⇒ None。"""
+    return v if isinstance(v, str) and USE_RE.match(v) else None
+
+
+def clean_meet(v, seat_codes):
+    """正在開會的幾組 [[席碼, …], …]:只收 seat_codes 裡的(公開席)、每組去重後 ≥ 2 人;最多 8 組、每組 16 人。"""
+    out = []
+    for g in v if isinstance(v, list) else []:
+        if not isinstance(g, list):
+            continue
+        grp = []
+        for c in g:
+            if isinstance(c, str) and SEAT_CODE_RE.match(c) and c in seat_codes and c not in grp:
+                grp.append(c)
+        if len(grp) >= 2:
+            out.append(grp[:MEET_SIZE_MAX])
+        if len(out) >= MEET_GROUPS_MAX:
+            break
+    return out
+
+
 def attach_looks(people, room_seats):
     """room.json 的 seats[席碼].look(艦長室寫的)⇒ 合格的才放進 people[i]["look"];沒有 / 不合 ⇒ 不出現 look 鍵。"""
     room_seats = room_seats if isinstance(room_seats, dict) else {}
@@ -298,6 +325,8 @@ def build(env=None, now=None, with_rooms=False, with_status=False, with_state=Tr
             seats.append(dict(ppl, now=p.get("now") if with_status else None, step=p.get("step") if with_status else None,
                               floor=e.get("floor"), lv=e.get("lv") if isinstance(e.get("lv"), int) else None,
                               stars=e.get("stars") if isinstance(e.get("stars"), int) else None))
+            if clean_use(e.get("use")):        # 新辦公室:只帶物件 id,沒在用就沒這鍵
+                seats[-1]["use"] = e["use"]
         ship = dict(mine.get("ship")) if isinstance(mine.get("ship"), dict) else {}
         cap = ship.get("captain")
         if isinstance(cap, dict):          # @74e8b 11:09:艦長(真人)那一格 {seat, name, avatar};席要是公開的,不然不帶席碼
@@ -309,7 +338,8 @@ def build(env=None, now=None, with_rooms=False, with_status=False, with_state=Tr
             ship.pop("captain")
         snap["rooms"] = {"ship": ship, "cabins": mine.get("cabins") if isinstance(mine.get("cabins"), list) else [],
                          "seats": seats, "layout": mine.get("layout") if isinstance(mine.get("layout"), (dict, list)) else None,
-                         "layout_omitted": False}
+                         "layout_omitted": False,
+                         "meet": clean_meet(mine.get("meet"), {x["seat"] for x in seats})}
     return snap
 
 
