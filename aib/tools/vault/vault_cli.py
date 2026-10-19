@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
 """aib vault —— uid 庫的日常維護(10-16 維護者裁;受 aib 授權管理,加購項目 obsidian-labels,授權失效就不跑)。
 
-    aib vault newpost --title 標題 [--folder folderId] [--body 正文] [--vault V] [--json]
+    aib vault newpost --title 標題 [--folder folderId] [--body 正文] [--meta-json JSON] [--appendable] [--vault V] [--json]
         照 uid 版面的格式新增一篇筆記(<uid>.md + frontmatter),登記到 uid-index 與 labels;
         Obsidian 的 obsidian-labels 外掛「新增筆記」按鈕呼叫的就是這個。不給 --folder ⇒ 收件匣(core.inbox)。
+        (0.1.25)--meta-json:白名單欄位(META_TYPES)寫進 frontmatter;核心管的欄位(uid / routeKey / aliases / created…)
+        一律不准給;privacy_level 只收 public / internal / restricted / sensitive 且只能比預設(internal)高;
+        字串裡的控制字元(含換行、U+2028/2029)、方向字元、零寬字清掉;型別不對 / 不認得的鍵 / 壞 UTF-8 ⇒ 整筆拒。
+        --appendable:frontmatter 標 append_route = 這篇的 routeKey,之後才准 aib vault append。
+    aib vault append --uid U (--body 正文 | --body-file 檔|-) [--vault V] [--json]
+        (0.1.25)把正文接到既有那篇的尾巴、更新 updated 與索引。只准 newpost --appendable 建的、
+        而且還在同一條寫入路由底下的那篇(append_route = 目前所在位置最近的路由夾,含 folder-add --route-key 的子夾);
+        檔內 uid 要等於 --uid;單次正文上限 64 KB。
+        注意:這些標記只防用錯,擋不住同帳號的程式直接改檔。
     aib vault doctor [--fix --backup-dir DIR] [--vault V] [--json]
         找出不合 uid 版面的東西,預設只列不改;--fix 先把要動的檔打包到庫外再修:
           · 在 Obsidian 手動建的資料夾(不是 fld_ 名)⇒ 改成 folderId 並登記(標題 = 原名)
           · 手動建的筆記(例「未命名.md」)⇒ 補 uid、改名 <uid>.md,原名留在 title / aliases,
             正文裡 [[原名]] 這種連結改成 [[uid|原名]]
+          · 在 Obsidian 只改名 / 搬走(索引記的舊路徑已不在、全庫只有這篇帶這個 uid)⇒ 當搬家:沿用原 uid、改回 <uid>.md;
+            兩篇帶同一個 uid(複製出來的)⇒ 換新 uid,並拿掉 append_route 與 record_id(複本不是那筆紀錄)
           · 檔名是 uid 但 frontmatter 沒有 uid ⇒ 補上
           · 索引裡有、硬碟上已不在的資料夾 ⇒ 從索引拿掉
           · uid 重複、檔名與 frontmatter 的 uid 不一致 ⇒ 只列出來,要人看
@@ -27,7 +38,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
+import math
 import os
 import re
 import sys
@@ -42,6 +56,16 @@ import uid_layout_convert as U  # noqa: E402
 
 ADDON = "obsidian-labels"                   # 維護者 10-16 裁:Obsidian 外掛與 aib vault 共用一個加購項目
 LINK_RE = re.compile(r"\[\[([^\[\]|#^]+)((?:#[^\[\]|]*)?)(\|[^\[\]]*)?\]\]")
+# 0.1.25 newpost --meta-json 的白名單:鍵 ⇒ 型別。不在這裡的鍵(含核心自己管的 uid / routeKey / aliases / created…)一律拒。
+META_TYPES = {"record_id": str, "record_type": str, "record_at": str, "level": str, "origin": str, "ai_memory": str,
+              "privacy_level": str, "people": list, "projects": list, "tasks": list, "source": list}
+META_ENUM = {"origin": ("internal", "external"), "ai_memory": ("keep", "skip")}
+PRIVACY_RANK = {"public": 0, "internal": 1, "restricted": 2, "sensitive": 3}   # 跟 brain_write_plan.PRIVACY_ORDER 同一套(測試 I2 釘住)
+PRIVACY_DEFAULT = "internal"
+# 控制字元(含換行)、方向字元、零寬字、行 / 段分隔(U+2028/2029:splitlines 會在這裡斷行,能偽造 frontmatter 鍵)
+INVISIBLE_RE = re.compile("[\x00-\x1f\x7f-\x9f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
+APPEND_KEY = "append_route"
+APPEND_MAX = 64 * 1024
 
 
 def T(key, params=None):
@@ -116,10 +140,84 @@ def _inbox(fid) -> dict:
     return by_id[hit["folderId"]]
 
 
+@contextlib.contextmanager
+def _locked(vault: Path):
+    """aib vault 的 newpost / append / mkdir / doctor --fix 互相排隊(都會讀改寫索引)。
+    只防兩支 aib vault 同時寫;Obsidian 或其他程式直接改檔不受這把鎖管。鎖檔不截斷、不跟符號連結。"""
+    d = Path(vault) / ".ez2"
+    d.mkdir(exist_ok=True)
+    fd = os.open(str(d / ".write.lock"), os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _clean(s: str) -> str:
+    return INVISIBLE_RE.sub("", s)          # 單獨的代理字元由 _newpost 整段 encode 時擋(建檔前)
+
+
+def check_meta(meta) -> dict:
+    """--meta-json ⇒ 清過的 {鍵: 值};不認得的鍵、型別不對、列舉值不對、privacy_level 比預設低 ⇒ VaultError(整筆拒)。"""
+    if not isinstance(meta, dict):
+        raise VaultError(T("err_meta_not_object"))
+    out = {}
+    for k, v in meta.items():
+        want = META_TYPES.get(k)
+        if want is None:
+            raise VaultError(T("err_meta_key", {"key": k, "allowed": ", ".join(META_TYPES)}))
+        if want is str:
+            if not isinstance(v, str):
+                raise VaultError(T("err_meta_want_string", {"key": k}))
+            v = _clean(v)
+        elif k == "source":
+            if not isinstance(v, list) or not all(isinstance(x, dict) for x in v):
+                raise VaultError(T("err_meta_want_objects", {"key": k}))
+            items = []
+            for x in v:
+                one = {}
+                for kk, vv in x.items():
+                    if isinstance(vv, bool) or not isinstance(vv, (str, int, float)) or (isinstance(vv, float) and not math.isfinite(vv)):
+                        raise VaultError(T("err_meta_want_objects", {"key": k}))
+                    one[_clean(str(kk))] = _clean(vv) if isinstance(vv, str) else vv
+                items.append(one)
+            v = items
+        else:
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                raise VaultError(T("err_meta_want_strings", {"key": k}))
+            v = [_clean(x) for x in v]
+        if k in META_ENUM and v not in META_ENUM[k]:
+            raise VaultError(T("err_meta_enum", {"key": k, "value": v, "ok": ", ".join(META_ENUM[k])}))
+        if k == "privacy_level":
+            if v not in PRIVACY_RANK:
+                raise VaultError(T("err_meta_enum", {"key": k, "value": v, "ok": ", ".join(PRIVACY_RANK)}))
+            if PRIVACY_RANK[v] < PRIVACY_RANK[PRIVACY_DEFAULT]:
+                raise VaultError(T("err_meta_privacy_lower", {"value": v, "base": PRIVACY_DEFAULT}))
+        out[k] = v
+    return out
+
+
+def _with_extra(fm: str, extra: list) -> str:
+    """render_frontmatter 的結果(以「---\n」結尾)⇒ 在結尾那行前補上 extra 行。"""
+    head, tail = fm[:-len("---\n")], "---\n"
+    return head + "".join(ln + "\n" for ln in extra) + tail
+
+
 # ---------------------------------------------------------------- newpost
-def newpost(vault: Path, title: str, folder: str = "", body: str = "", now_ms: int | None = None) -> dict:
+def newpost(vault: Path, title: str, folder: str = "", body: str = "", now_ms: int | None = None,
+            meta=None, appendable: bool = False) -> dict:
     title = re.sub(r"\s+", " ", (title or "").strip()) or T("untitled")
     vault = Path(vault).resolve()
+    meta = check_meta(meta) if meta is not None else {}
+    with _locked(vault):
+        return _newpost(vault, title, folder, body, now_ms, meta, appendable)
+
+
+def _newpost(vault: Path, title: str, folder: str, body: str, now_ms, meta: dict, appendable: bool) -> dict:
     fid, uidx, notes_lab = _load(vault)
     by_id = {i["folderId"]: i for i in fid}
     if folder:
@@ -135,15 +233,89 @@ def newpost(vault: Path, title: str, folder: str = "", body: str = "", now_ms: i
     used = {i.get("uid") for i in uidx} | {p.stem for p in vault.rglob("*.md") if U.UID_RE.match(p.stem)}
     uid = U.mint_uid(ms, used)
     path = d / (uid + ".md")
-    fm = U.render_frontmatter(None, _fm_set(uid, title, frec["folderId"], by_id, ms, ""), frec["folderId"], "")   # 新筆記沒有原名
+    fs = _fm_set(uid, title, frec["folderId"], by_id, ms, "")
+    if "privacy_level" in meta:
+        fs["privacy_level"] = meta["privacy_level"]
+    fm = U.render_frontmatter(None, fs, frec["folderId"], "")   # 新筆記沒有原名
+    extra = ["%s: %s" % (k, json.dumps(v, ensure_ascii=False)) for k, v in meta.items() if k != "privacy_level"]
+    if appendable:
+        extra.append("%s: %s" % (APPEND_KEY, _append_route(frec["folderId"], by_id)))
+    if extra:
+        fm = _with_extra(fm, extra)
     text = fm + ("\n" + body.rstrip() + "\n" if body.strip() else "\n")
-    with open(path, "x", encoding="utf-8") as fh:          # 不覆蓋:同名就錯
-        fh.write(text)
+    try:
+        data = text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise VaultError(T("err_text_not_utf8", {"key": "title / body / --meta-json"}))
+    with open(path, "xb") as fh:                          # 不覆蓋:同名就錯
+        try:
+            fh.write(data)
+        except BaseException:
+            fh.close()
+            path.unlink()
+            raise
     rel = str(path.relative_to(vault))
     uidx.append({"uid": uid, "path": rel})
     notes_lab[uid] = {"title": title, "path": rel}
     _save(vault, fid, uidx, notes_lab)
     return {"uid": uid, "path": rel, "abs_path": str(path), "title": title, "folderId": frec["folderId"]}
+
+
+# ---------------------------------------------------------------- append
+def _append_route(folder_id: str, by_id: dict) -> str:
+    """最近一層「有寫入路由」的夾(轉換時的路由夾,或 folder-add --route-key 掛了代號的子夾)的 routeKey;都沒有 ⇒ core.inbox。
+    比 _route_of 細:同一條上層路由底下兩個掛代號的子夾之間搬檔,也算換了路由。"""
+    cur = by_id.get(folder_id)
+    while cur:
+        if U.is_routed(cur):
+            return cur["routeKey"]
+        cur = by_id.get(cur.get("parentFolderId") or "")
+    return "core.inbox"
+
+
+def append(vault: Path, uid: str, body: str, now_ms: int | None = None) -> dict:
+    """正文接到 uid 那篇尾巴;只准 newpost --appendable 建、還在同一條路由底下的那篇。更新 updated 與索引。"""
+    vault = Path(vault).resolve()
+    if not isinstance(body, str) or not body.strip():
+        raise VaultError(T("err_append_empty"))
+    try:
+        size = len(body.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise VaultError(T("err_text_not_utf8", {"key": "--body"}))
+    if size > APPEND_MAX:
+        raise VaultError(T("err_append_too_big", {"size": size, "max": APPEND_MAX}))
+    with _locked(vault):
+        fid, uidx, notes_lab = _load(vault)
+        hit = next((i for i in uidx if i.get("uid") == uid), None)
+        path = vault / hit["path"] if hit else None
+        if path is None or not path.is_file():
+            raise VaultError(T("err_append_not_found", {"uid": uid}))
+        text = path.read_text(encoding="utf-8")
+        fm, rest = U.split_frontmatter(text)
+        kv = U.fm_lines_to_map(fm or "")
+        mark = kv.get(APPEND_KEY, "").strip().strip("\"'")
+        by_id = {i["folderId"]: i for i in fid}
+        by_path = {i["folderPath"]: i for i in fid}
+        frec = by_path.get(str(Path(hit["path"]).parent))
+        here = _append_route(frec["folderId"], by_id) if frec else ""
+        if kv.get("uid", "").strip().strip("\"'") != uid:          # 索引指錯篇 ⇒ 不寫
+            raise VaultError(T("err_append_not_found", {"uid": uid}))
+        if not mark:
+            raise VaultError(T("err_append_not_appendable", {"uid": uid}))
+        if mark != here:
+            raise VaultError(T("err_append_route_moved", {"uid": uid, "mark": mark, "here": here or "?"}))
+        ms = int(now_ms if now_ms is not None else time.time() * 1000)
+        fm2 = UPDATED_LINE_RE.sub("updated: " + U.iso(ms), fm, count=1)
+        new = "---\n" + fm2 + "\n---\n" + (rest.rstrip("\n") + "\n\n" if rest.strip() else "\n") + body.rstrip("\n") + "\n"
+        tmp = path.with_name("." + path.name + ".tmp")
+        try:
+            tmp.write_bytes(new.encode("utf-8"))
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+        _save(vault, fid, uidx, notes_lab)
+    return {"uid": uid, "path": hit["path"], "bytes": size}
 
 
 # ---------------------------------------------------------------- doctor
@@ -301,6 +473,24 @@ def _rewrite_links(vault: Path, old_stem: str, uid: str, skip: Path) -> int:
 
 
 def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_ms: int | None = None) -> dict:
+    out = _doctor(vault, False, None, now_ms)
+    if not fix or out["ok"]:
+        return out
+    _backup_ok(Path(vault).resolve(), backup_dir)          # 備份位置不合 ⇒ 先錯,鎖檔都不建(庫裡一個位元組都不動)
+    with _locked(Path(vault).resolve()):                  # 拿到鎖之後重掃一次再修
+        return _doctor(vault, True, backup_dir, now_ms)
+
+
+def _backup_ok(vault: Path, backup_dir: Path | None) -> Path:
+    if backup_dir is None:
+        raise VaultError(U.T("err_backup_required"))
+    backup_dir = backup_dir.resolve()
+    if backup_dir == vault or vault in backup_dir.parents:
+        raise VaultError(U.T("err_backup_inside"))
+    return backup_dir
+
+
+def _doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_ms: int | None = None) -> dict:
     vault = Path(vault).resolve()                 # 捷徑解開再比(/var → /private/var),「備份放庫裡」才擋得住
     found = _problems(vault)
     out = {"vault": str(vault), "problems": found, "fixed": [], "left": [], "backup": None,
@@ -308,11 +498,7 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
            "notices": {"md_updated_ambiguous": _updated_scan(vault)[1], "timezone": time.strftime("%z")}}
     if not fix or out["ok"]:
         return out
-    if backup_dir is None:
-        raise VaultError(U.T("err_backup_required"))
-    backup_dir = backup_dir.resolve()
-    if backup_dir == vault or vault in backup_dir.parents:
-        raise VaultError(U.T("err_backup_inside"))
+    backup_dir = _backup_ok(vault, backup_dir)
     backup_dir.mkdir(parents=True, exist_ok=True)
     tgz = backup_dir / ("doctor-%s.tgz" % time.strftime("%Y%m%d-%H%M%S"))
     touched = sorted(set(found["dirs_not_folder_id"]) | set(found["md_not_uid_name"]) | set(found["md_no_uid"])
@@ -352,6 +538,7 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
     by_id = {i["folderId"]: i for i in fid}
     used = {i.get("uid") for i in uidx} | {p.stem for p in vault.rglob("*.md") if U.UID_RE.match(p.stem)}
     cur = _problems(vault)
+    carriers = _uid_carriers(vault)
     for rel in dict.fromkeys(cur["md_not_uid_name"] + cur["md_no_uid"]):   # 兩份清單都有的(檔名與 uid 都缺)只處理一次
         p = vault / rel
         text = p.read_text(encoding="utf-8", errors="replace")
@@ -359,8 +546,16 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
         kv = U.fm_lines_to_map(old_fm) if old_fm is not None else {}
         named_uid = U.UID_RE.match(p.stem) is not None
         have = (kv.get("uid") or "").strip().strip("\"'")
-        uid = p.stem if named_uid else (have if U.UID_RE.match(have) and have not in used else U.mint_uid(int(p.stat().st_mtime * 1000), used))
+        if named_uid:
+            uid = p.stem
+        elif U.UID_RE.match(have) and (have not in used or _moved_alone(vault, have, uidx, carriers)):
+            uid = have                              # 沒人用過,或只是改名 / 搬家(舊路徑已不在、全庫只有這篇帶它)⇒ 沿用
+        else:
+            uid = U.mint_uid(int(p.stat().st_mtime * 1000), used)
         used.add(uid)
+        if old_fm is not None and uid != have:      # 換了新 uid(例 Obsidian 複製出來的那篇)⇒ 不是那筆紀錄、也不是 newpost 建的那篇
+            old_fm = "\n".join(ln for ln in old_fm.splitlines()
+                                if not ln.startswith((APPEND_KEY + ":", "record_id:")))
         title = (kv.get("title") or "").strip().strip("\"'") or (p.stem if not named_uid else uid)
         parent = p.parent.name if U.FOLDER_ID_RE.match(p.parent.name) else ""
         fs = _fm_set(uid, title, parent, by_id, ms, kv.get("orig_name", "").strip("\"'") or p.name, old_kv=kv)
@@ -396,6 +591,28 @@ def doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_m
     out["problems_after"] = after
     out["ok"] = not any(v for k, v in after.items())
     return out
+
+
+def _uid_carriers(vault: Path) -> dict:
+    """全庫每個 uid 有幾篇帶著(檔名或 frontmatter uid,同一篇只算一次)。"""
+    n: dict = {}
+    for dp, dn, fn in os.walk(vault):
+        dn[:] = [x for x in dn if x not in U.SKIP_DIRS and not x.startswith(".")]
+        for f in fn:
+            if not f.endswith(".md"):
+                continue
+            p = Path(dp, f)
+            fm, _b = U.split_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+            have = (U.fm_lines_to_map(fm).get("uid", "") if fm is not None else "").strip().strip("\"'")
+            for u in {x for x in (p.stem, have) if U.UID_RE.match(x)}:
+                n[u] = n.get(u, 0) + 1
+    return n
+
+
+def _moved_alone(vault: Path, uid: str, uidx: list, carriers: dict) -> bool:
+    """改名 / 搬家:索引記的舊路徑已不存在,而且全庫只有一篇帶這個 uid ⇒ True。兩篇都帶(真的複製)⇒ False。"""
+    olds = [i.get("path") for i in uidx if i.get("uid") == uid]
+    return carriers.get(uid, 0) == 1 and all(not o or not (vault / o).exists() for o in olds)
 
 
 def _fix_sync(vault: Path) -> list:
@@ -446,7 +663,8 @@ def _fix_sync(vault: Path) -> list:
 def mkdir(vault: Path, title: str, parent: str = "") -> dict:
     """新增 uid 資料夾(包 uid_layout_convert.folder_add;同一個父夾已有同名 ⇒ 回原本那個)。"""
     try:
-        return U.folder_add(Path(vault).resolve(), parent or "", title)
+        with _locked(Path(vault).resolve()):
+            return U.folder_add(Path(vault).resolve(), parent or "", title)
     except SystemExit as exc:
         raise VaultError(str(exc.code))
 
@@ -498,13 +716,20 @@ def main(argv=None) -> int:
     n.add_argument("--title", default="", help=T("help_title"))
     n.add_argument("--folder", default="", help=T("help_folder"))
     n.add_argument("--body", default="", help=T("help_body"))
+    n.add_argument("--meta-json", default=None, help=T("help_meta_json"))
+    n.add_argument("--appendable", action="store_true", help=T("help_appendable"))
+    a = sub.add_parser("append", help=T("help_append"))
+    a.add_argument("--uid", required=True, help=T("help_append_uid"))
+    ab = a.add_mutually_exclusive_group()
+    ab.add_argument("--body", default="", help=T("help_body"))
+    ab.add_argument("--body-file", default="", help=T("help_body_file"))
     d = sub.add_parser("doctor", help=T("help_doctor"))
     d.add_argument("--fix", action="store_true", help=T("help_fix"))
     d.add_argument("--backup-dir", help=U.T("help_folder_backup"))
     k = sub.add_parser("mkdir", help=T("help_mkdir"))
     k.add_argument("--title", required=True, help=T("help_mkdir_title"))
     k.add_argument("--parent", default="", help=U.T("help_folder_parent"))
-    for p in (n, d, k):
+    for p in (n, d, k, a):
         p.add_argument("--vault", default="", help=T("help_vault"))
         p.add_argument("--json", action="store_true", help=T("help_json"))
     args = ap.parse_args(argv)
@@ -520,12 +745,35 @@ def main(argv=None) -> int:
             res = mkdir(vault, args.title, args.parent)
             print(json.dumps(res, ensure_ascii=False) if args.json else T("mkdir_done", {"title": res["title"], "path": res["folderPath"]}))
             return 0
+        if args.cmd == "append":
+            body = args.body
+            if args.body_file:                            # 最多讀上限 + 1 位元組,超過的交給 append 拒(不把 /dev/zero 讀到底)
+                if args.body_file == "-":
+                    raw = sys.stdin.buffer.read(APPEND_MAX + 1) if hasattr(sys.stdin, "buffer") else sys.stdin.read(APPEND_MAX + 1).encode("utf-8")
+                else:
+                    with open(args.body_file, "rb") as fh:
+                        raw = fh.read(APPEND_MAX + 1)
+                if len(raw) > APPEND_MAX:
+                    raise VaultError(T("err_append_too_big", {"size": "> %d" % APPEND_MAX, "max": APPEND_MAX}))
+                try:
+                    body = raw.decode("utf-8", errors="strict")
+                except UnicodeDecodeError:
+                    raise VaultError(T("err_text_not_utf8", {"key": "--body-file"}))
+            res = append(vault, args.uid, body)
+            print(json.dumps(res, ensure_ascii=False) if args.json else T("append_done", {"path": res["path"], "bytes": res["bytes"]}))
+            return 0
         if args.cmd == "newpost":
-            res = newpost(vault, args.title, args.folder, args.body)
+            meta = None
+            if args.meta_json is not None:
+                try:
+                    meta = json.loads(args.meta_json)
+                except ValueError:
+                    raise VaultError(T("err_meta_bad_json"))
+            res = newpost(vault, args.title, args.folder, args.body, meta=meta, appendable=args.appendable)
             print(json.dumps(res, ensure_ascii=False) if args.json else T("newpost_done", {"title": res["title"], "path": res["path"]}))
             return 0
         res = doctor(vault, args.fix, Path(args.backup_dir) if args.backup_dir else None)
-    except (VaultError, SystemExit) as exc:
+    except (VaultError, SystemExit, OSError, UnicodeError) as exc:
         if isinstance(exc, SystemExit) and not isinstance(exc.code, str):
             raise
         print(str(exc.code if isinstance(exc, SystemExit) else exc), file=sys.stderr)
