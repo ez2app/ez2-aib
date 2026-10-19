@@ -78,6 +78,8 @@ HOLD_WHY = {
     "pane_dead": "收件席的視窗已結束(pane_dead),不投往重用的窗號;重開那一席後 requeue",
     # 全球對談第 8.1 節:陌生(或未驗證)的外部席來信,進來就待審;只有人能放行(requeue)或刪
     "global_stranger": "外部陌生,待主人放行(線上對話)",
+    # 10-19 Andy:回主人本人(艦長室 Touch ID 寄出)那封的線上來信 ⇒ 只在艦長室看,不進 AI 框;主人要給 AI 才放行
+    "human_reply": "回主人本人的線上信:只在艦長室看,不進 AI 框",
 }
 # ── 第 70 項 P2:狀態、種類、轉移表(只住這裡一份;畫面與任務區讀 payload,不自己算)──
 # status 的完整集合。`updated` 不是 status:是衍生旗標 is_update(supersedes 非空且還沒讀),畫面掛角標。
@@ -329,6 +331,8 @@ def _global_or_none(value):
            "relation": rel if rel in ("own", "paired", "friend") else None}
     if value.get("author") in GF.AUTHORS:      # 第 35 節第 2 點:寄件方自報誰寫的;舊列、沒帶的不加這欄
         out["author"] = value["author"]
+    if value.get("human_reply") is True:       # 10-19:回主人本人那封的;只給艦長室
+        out["human_reply"] = True
     return out
 
 
@@ -1116,6 +1120,7 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
 
 # ── 全球來信的投遞狀態(開發文件第 22.2 節 delivery/;轉接程式照它寄回條)──
 GLOBAL_STRANGER_WHY = HOLD_WHY["global_stranger"]
+HUMAN_REPLY_WHY = HOLD_WHY["human_reply"]
 
 
 def global_queue_pos(seat, item_id, env=None):
@@ -2652,6 +2657,8 @@ def _row(item, seat, now, index=None):
         owner = (GF.parse_address(str(g.get("addr") or "")) or {}).get("owner")
         row["global"]["contact_key"] = "global:" + owner if owner else None
         row["global"]["relation"] = g.get("relation")
+        if g.get("human_reply") is True:
+            row["global"]["human_reply"] = True
     if index is not None:
         row["index"] = index
     return row
