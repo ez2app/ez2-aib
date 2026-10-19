@@ -842,6 +842,8 @@ async def _send_to(target, own, gw, mine):
 # ── 收件(第 8.1 節)與回條(第 6.2、8.1 節第 9 步)──
 BACKFILL = 2 * 86400 + 600       # gift wrap 時間戳往回亂數最多 2 天 ⇒ 補收要往回 2 天 10 分
 KEEP = 7 * 86400                 # 去重紀錄保留 7 天
+SEEN_KEY_LEN = 18                # 去重鍵只存「e:/m: + 前 16 個十六進位」(64 位元,撞號可略);全長 64 碼的 event id 一週就撐爆 64 KB
+SEEN_MAX = 1500                  # 去重紀錄最多幾筆(短鍵每筆約 30 bytes ⇒ 約 45 KB,留在 atomic_json 64 KB 上限內);超過丟最舊的
 RESUB_EVERY = 30                 # 秒;席的金鑰有變(新席、封存)就重新訂閱
 RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired")   # read 另走一批一次(1.8)
 # 拒收原因碼(回條 aib-reason 標籤;寄件端 dm-ctl 照碼翻成一句話)。只放碼,不放內文
@@ -958,6 +960,12 @@ class Ledger(object):
         except (OSError, ValueError):
             self.st = {}
         self.st.setdefault("seen", {})
+        if any(len(k) > SEEN_KEY_LEN for k in self.st["seen"]):   # 舊版全長鍵 ⇒ 換短鍵(同一短鍵取較新的時間)
+            short = {}
+            for k, v in self.st["seen"].items():
+                sk = self._k(k)
+                short[sk] = max(v, short.get(sk, 0))
+            self.st["seen"] = short
         self.st.setdefault("last_at", 0)
         self.st.setdefault("delivery_sent", {})
         self.st.setdefault("read_pending", {})      # "<寄件人 npub>|<本席金鑰>" ⇒ {"refs": [...], "first": t}
@@ -965,17 +973,24 @@ class Ledger(object):
 
     def save(self):
         cut = time.time() - KEEP
-        self.st["seen"] = {k: v for k, v in self.st["seen"].items() if v >= cut}
+        seen = {k: v for k, v in self.st["seen"].items() if v >= cut}
+        if len(seen) > SEEN_MAX:          # 收得太兇(測試、好友多):寧可丟最舊的去重紀錄,也不要存不進去讓收信整條斷掉
+            seen = dict(sorted(seen.items(), key=lambda kv: kv[1])[-SEEN_MAX:])
+        self.st["seen"] = seen
         rcut = time.time() - REFUSE_EVERY_S
         self.st["refused_sent"] = {k: v for k, v in self.st["refused_sent"].items() if v >= rcut}
         write_json(str(self.p), self.st)
         os.chmod(str(self.p), 0o600)
 
+    @staticmethod
+    def _k(key):
+        return key[:SEEN_KEY_LEN]
+
     def seen(self, key):
-        return key in self.st["seen"]
+        return self._k(key) in self.st["seen"]
 
     def mark(self, key):
-        self.st["seen"][key] = int(time.time())
+        self.st["seen"][self._k(key)] = int(time.time())
 
     def received(self, msgid, rec=None):
         p = self.root / "received" / (msgid + ".json")
