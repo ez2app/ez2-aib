@@ -4219,8 +4219,10 @@ _REVEAL_GLOBAL = {"on": False}
 
 
 def _is_global_hold(d):
+    # external_im(Telegram 等)也算:網路上任何人都能私訊機器人,放行前內文同樣不給 AI 看
     return isinstance(d, dict) and d.get("status") == HOLD_STATUS and (
-        isinstance(d.get("global"), dict) or d.get("sender_kind") in GLOBAL_SENDER_KINDS)
+        isinstance(d.get("global"), dict) or isinstance(d.get("im"), dict)
+        or d.get("sender_kind") in GLOBAL_SENDER_KINDS + ("external_im",))
 
 
 def redact_global_hold(obj):
@@ -4886,6 +4888,9 @@ def main(argv=None, env=None):
         item = _load_item(args.seat, args.id, env)
         if not item:
             return 2
+        if _is_global_hold(item) and not _REVEAL_GLOBAL["on"]:   # 陌生全球 / Telegram 待審:跟 list 一樣不印內文(人用的預覽帶 --reveal-global)
+            sys.stdout.write(GLOBAL_HOLD_PLACEHOLDER + "\n")
+            return 0
         if getattr(args, "with_age", False) and item.get("msg"):
             sys.stdout.write(delivery_text(item))
             if not delivery_text(item).endswith("\n"):
