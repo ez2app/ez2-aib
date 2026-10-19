@@ -144,7 +144,7 @@ class Knife(unittest.TestCase):
 
     def test_k2_triage_no_filter(self):
         self._knife("src/cockpit/dm_triage.py",
-                    '            and not (isinstance(r.get("global"), dict) and r["global"].get("human_reply") is True)]', "]",
+                    '            and not (isinstance(r.get("global"), dict) and r["global"].get("human_reply") is True)\n', "",
                     "Core.test_h3_not_shown_to_ai")
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")

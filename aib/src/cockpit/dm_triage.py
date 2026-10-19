@@ -165,7 +165,8 @@ def eligible_rows(rows):
     # 10-19:回主人本人那封的線上來信只給艦長室,不進 AI 要讀的分組(系統也就不會叫 AI 去讀)
     return [r for r in (rows or []) if isinstance(r, dict) and r.get("id")
             and str(r.get("status") or "queued") in TRIAGE_STATUSES
-            and not (isinstance(r.get("global"), dict) and r["global"].get("human_reply") is True)]
+            and not (isinstance(r.get("global"), dict) and r["global"].get("human_reply") is True)
+            and not r.get("im")]                       # 第 39 節:Telegram 來信只給艦長室
 
 
 def unread_ids(rows):
