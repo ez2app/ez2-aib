@@ -2116,6 +2116,8 @@
   "aib.dmctl.queued_sender_fallback": "대기 중 메시지의 원래 보낸 이({label})로 올바른 머리말을 만들 수 없어 전달자에서 도출한 보낸 이를 그대로 씀",
   "aib.dmctl.queued": "대기열에 넣음, 아직 상대 입력창에 도착하지 않음.",
   "aib.dmqueue.hold_notice": "입력창에 들어가지 못한 메시지가 {n}개 있습니다(사람 확인 대기, 새로 {new}개). 확인: aib dm-queue list --seat {seat}",
+  "aib.dmqueue.hold_sender_im": "외부 {net} #{tag}",
+  "aib.dmqueue.hold_sender_seat": "외부 aib 좌석 #{tag}",
   "aib.dmctl.resend_queued": "받는 자리가 바빠서 한 번 다시 보내도 들어가지 않음. 대기열에 넣음, 받는 자리가 한가해지면 보냄(queue_id={id}, 다시 보내지 말 것).",
   "aib.dmctl.hold_notify_idle": "사람 확인 대기로 넘김: 자동으로 다시 보내지 않음. 받는 자리가 한가할 때 알림을 받음.",
   "aib.dmctl.hold_notify_none": "사람 확인 대기로 넘김: 자동으로 다시 보내지 않음. 이 선실은 메시지 대기열이 꺼져 있어 받는 자리는 알림을 **받지 못함**. 직접 알려 주세요.",
