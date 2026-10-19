@@ -182,12 +182,19 @@ def clean_seat_look(v):
 
 USE_RE = __import__("re").compile(r"^[a-z][0-9]{1,4}\Z")   # 新辦公室(@74e8b 10-19):這席正站在哪個版面物件前(物件 id,例 m13)
 SEAT_CODE_RE = __import__("re").compile(r"^[0-9a-z]{5}\Z")
+CELL_RE = __import__("re").compile(r"^[a-z0-9-]{1,24}:[0-9]{1,3}:[0-9]{1,3}:(s[0-9]{1,3}|-)\Z")   # 區塊 key <世界>:<x>:<y>:<副本>
 MEET_GROUPS_MAX, MEET_SIZE_MAX = 8, 16
 
 
 def clean_use(v):
     """版面物件 id:合 USE_RE 才帶;不帶原因、不帶數字(艦長室定義物件是什麼)。不合 ⇒ None。"""
     return v if isinstance(v, str) and USE_RE.match(v) else None
+
+
+def clean_cell(v):
+    """這席在哪一區:合 CELL_RE 且沒有副本號(「-」)才帶 —— 好友快照只放主人自己的島 / 辦公室;
+    在廣場哪個副本只給要跟過去的朋友,不進快照。不合 ⇒ None。"""
+    return v if isinstance(v, str) and CELL_RE.match(v) and v.endswith(":-") else None
 
 
 def clean_meet(v, seat_codes):
@@ -327,6 +334,8 @@ def build(env=None, now=None, with_rooms=False, with_status=False, with_state=Tr
                               stars=e.get("stars") if isinstance(e.get("stars"), int) else None))
             if clean_use(e.get("use")):        # 新辦公室:只帶物件 id,沒在用就沒這鍵
                 seats[-1]["use"] = e["use"]
+            if clean_cell(e.get("cell")):      # 在哪一區(只限沒副本的島 / 辦公室區塊)
+                seats[-1]["cell"] = e["cell"]
         ship = dict(mine.get("ship")) if isinstance(mine.get("ship"), dict) else {}
         cap = ship.get("captain")
         if isinstance(cap, dict):          # @74e8b 11:09:艦長(真人)那一格 {seat, name, avatar};席要是公開的,不然不帶席碼
