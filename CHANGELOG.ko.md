@@ -4,6 +4,14 @@
 
 버전은 `pyproject.toml`의 `version`을 따릅니다. 릴리스는 `v<version>` 태그이며, 관리자가 만듭니다.
 
+## 0.1.25
+
+- **함장실에서 본인이 보낸 메시지에 대한 답장은 함장실에만**: 온라인 답장이 주인이 Touch ID로 직접 보낸 메시지에 대한 것이면 주인 확인 대기로 두고 AI 칸에는 넣지 않습니다. 주인이 AI에게 넘길 수 있습니다.
+- **Telegram 연동 첫걸음**: `aib chat telegram on --seat`(Touch ID) / `off` / `status` / `check` / `allow` / `block` / `send`. 봇에게 온 개인 텍스트 메시지는 좌석 대기열에 들어가 함장실에서만 보입니다(AI 칸에는 들어가지 않음). 답장은 함장실에서. 봇 토큰은 `aib secret ask TELEGRAM_BOT_TOKEN`으로 저장하며 출력하지 않습니다. 솔직히 말하면 토큰이 이 컴퓨터에 있으므로 같은 사용자로 도는 AI는 읽을 수 있고, Telegram 봇 대화는 종단 간 암호화가 아닙니다.
+- **`aib chat recent --json [--minutes N]`**: 최근 온라인 / Telegram 개인 메시지 송수신(시간, 방향, 경로, 상대, 결과). 함장실 우편실 화면용이며 내용은 포함하지 않습니다.
+- **친구 방문 스냅숏에 항목 추가**: 공개 좌석이 쓰는 레이아웃 물건, 회의 중인 공개 좌석, 좌석이 있는 구역(샤드 번호가 없는 구역만), 수집한 장식 요약. 각 항목은 보내는 쪽과 받는 쪽에서 모두 검사하고, 맞지 않으면 뺍니다.
+- **`aib vault newpost --meta-json` / `--appendable`과 `aib vault append`**: 플러그인이 허용 목록의 frontmatter 항목을 쓸 수 있습니다(uid / routeKey / created 같은 핵심 항목은 불가, privacy_level은 올리는 방향만, 제어·방향·폭 없는 문자는 제거, 형식이 틀리면 전체 거부). `--appendable`로 만들고 같은 쓰기 경로에 있는 노트에 이어 쓸 수도 있습니다(한 번에 64 KB까지). 금고 쓰기에 잠금을 추가해 newpost / append / mkdir / doctor --fix가 차례로 실행됩니다.
+
 ## 0.1.24
 
 - **휴대폰을 주인 휴대폰으로 페어링**: `aib chat pair start`(Touch ID)로 QR 코드를 보여 줍니다. 휴대폰이 일회용 코드(10자, 5분)를 보내면 Touch ID 창을 한 번 더 띄워 휴대폰의 npub를 보여 주고, 본인이 승인해야 추가됩니다. 최대 3대. `aib chat pair revoke <npub 앞부분|all>`(Touch ID). 휴대폰에서 온 말이 `指令:`, `!`, `gm `으로 시작하면 지시, 그 밖에는 논의(답만 함)입니다. 보안 설정(페어링, 기기 목록, 주인 키, 깨우기, 친구, 공유, Touch ID / PIN, 금고, 플러그인, 라이선스)은 여전히 컴퓨터에서 Touch ID가 필요합니다. 재전송되었거나 시간 차이가 큰 메시지는 거부합니다.

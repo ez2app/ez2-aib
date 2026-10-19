@@ -4,6 +4,14 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.25
+
+- **回覆主人本人從艦長室寄的信，只進艦長室**:線上回信若是回主人按 Touch ID 親自寄出的那封，會留給主人審，不送進 AI 框;主人要給 AI 再放行。
+- **Telegram 第一步**:`aib chat telegram on --seat`(Touch ID)/ `off` / `status` / `check` / `allow` / `block` / `send`。私訊機器人的文字會進席位佇列、只在艦長室顯示(不進 AI 框),從艦長室回覆。機器人金鑰用 `aib secret ask TELEGRAM_BOT_TOKEN` 存、不會印出。照實說：金鑰在這台電腦，同帳號的 AI 讀得到;Telegram 機器人私訊不是端對端加密。
+- **`aib chat recent --json [--minutes N]`**:最近的線上 / Telegram 私訊收發(時間、方向、管道、聯絡人、結果),給艦長室的收發室畫面用;不含內容。
+- **好友參觀快照多幾欄**:公開席正在用哪個版面物件、哪幾位公開席在開會、這席在哪一區(只帶沒有副本號的區)、收藏擺設摘要。每一欄送端驗一次、收端再驗一次，不合就拿掉。
+- **`aib vault newpost --meta-json` / `--appendable` 與 `aib vault append`**:外掛可以寫白名單裡的 frontmatter 欄位(uid / routeKey / created 等核心欄位不准給;privacy_level 只能調高;控制、方向、零寬字元會清掉;型別錯整筆拒),也能接著寫用 `--appendable` 建、還在同一條寫入路由下的那篇(每次最多 64 KB)。寫庫加了鎖,newpost / append / mkdir / doctor --fix 會排隊一個一個來。
+
 ## 0.1.24
 
 - **手機配成主人手機**:`aib chat pair start`(Touch ID)顯示 QR 碼;手機傳回一次性配對碼(10 碼、5 分鐘)後，再跳一次 Touch ID 視窗、顯示手機的 npub,本人按了才配上。最多 3 支;`aib chat pair revoke <npub 開頭|all>`(Touch ID)。手機傳來的話開頭是 `指令:`、`!` 或 `gm ` 算指令，其他算討論(只回話不動手)。安全設定(配對、機器清單、主人金鑰、叫醒、好友、分享、Touch ID / PIN、金鑰櫃、外掛、授權)仍要在電腦上按 Touch ID。重播或時間差太大的訊息會被拒收。
