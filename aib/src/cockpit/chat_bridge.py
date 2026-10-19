@@ -1131,6 +1131,7 @@ def room_payload(owner, env=None, now=None):
     return {"v": 1, "owner": owner, "room_at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
             "ship": r.get("ship") or {}, "cabins": r.get("cabins") or [], "seats": seats,
             "layout": r.get("layout"), "layout_omitted": bool(r.get("layout_omitted")),
+            "decor": RS.clean_decor(r.get("decor")),
             "meet": RS.clean_meet(r.get("meet"), {s.get("seat") for s in seats})}
 
 
