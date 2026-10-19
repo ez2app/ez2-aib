@@ -1123,9 +1123,11 @@ def room_payload(owner, env=None, now=None):
     import room_snapshot as RS
     r = rec["snap"]["rooms"]
     seats = [s for s in (r.get("seats") or []) if isinstance(s, dict)]
-    for s in seats:                       # 收端再驗一次(寄件端可能是舊版或亂寫的):use 不合就拿掉
+    for s in seats:                       # 收端再驗一次(寄件端可能是舊版或亂寫的):use / cell 不合就拿掉
         if "use" in s and not RS.clean_use(s.get("use")):
             s.pop("use")
+        if "cell" in s and not RS.clean_cell(s.get("cell")):
+            s.pop("cell")
     return {"v": 1, "owner": owner, "room_at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
             "ship": r.get("ship") or {}, "cabins": r.get("cabins") or [], "seats": seats,
             "layout": r.get("layout"), "layout_omitted": bool(r.get("layout_omitted")),
