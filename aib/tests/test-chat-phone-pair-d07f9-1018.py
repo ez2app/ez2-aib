@@ -262,6 +262,16 @@ class Network(Net):
             got += [(it.get("msg") or it.get("body") or it.get("text"), it.get("sender_kind")) for it in DQ.list_items(seat, self.env)]
         return got
 
+    def phone_rows(self):
+        """手機傳來的信 ⇒ [(kind, 內文, verified)]:收件匣 + 已匯入佇列的(轉接程式很快搬走收件匣檔;
+        10-19 機器忙時只看收件匣會撲空 ⇒ 兩邊都看)。"""
+        import dm_queue as DQ
+        rows = [(r.get("kind"), r.get("content"), r.get("verified")) for r in self.inbox() if r.get("class") == "paired"]
+        for seat in DQ.all_seats(self.env):
+            rows += [(it.get("kind"), it.get("msg"), (it.get("global") or {}).get("verified"))
+                     for it in DQ.list_items(seat, self.env) if it.get("sender_kind") == "owner_paired"]
+        return rows
+
     def test_n1_phone_flow(self):
         code = self.start()
         self.phone(PHONE_SK, [code], dm_relays=True)
@@ -272,15 +282,14 @@ class Network(Net):
         self.assertEqual(rc, 0, txt)
         self.assertTrue(CP.is_paired(PHONE, self.env))
         self.phone(PHONE_SK, ["gm 跑一次測試"])
-        self.assertTrue(self.b.wait_for(lambda: any(r.get("class") == "paired" for r in self.inbox()), 20), self.inbox())
-        got = [r for r in self.inbox() if r.get("class") == "paired"][0]
-        self.assertEqual((got["kind"], got["content"], got["verified"]), ("order", "跑一次測試", True))
+        self.assertTrue(self.b.wait_for(lambda: self.phone_rows(), 20), self.phone_rows())
+        self.assertEqual(self.phone_rows()[0], ("order", "跑一次測試", True))
         self.assertEqual(CP.last_command(self.b.root)["head"], "跑一次測試")
         self.assertTrue(self.b.wait_for(lambda: any("收到指令" in t for t in self.phone(PHONE_SK, fetch=True)), 20),
                         "手機要收到「收到指令」")
         self.phone(PHONE_SK, ["好啊"])
-        self.assertTrue(self.b.wait_for(lambda: any(r.get("content") == "好啊" for r in self.inbox()), 20), self.inbox())
-        self.assertEqual([r for r in self.inbox() if r.get("content") == "好啊"][0]["kind"], "other", "討論不是指令")
+        self.assertTrue(self.b.wait_for(lambda: any(c == "好啊" for _k, c, _v in self.phone_rows()), 20), self.phone_rows())
+        self.assertEqual([k for k, c, _v in self.phone_rows() if c == "好啊"][0], "other", "討論不是指令")
         fake_sk = "%064x" % 0x9555                              # @abb89 F1:AI 自己產金鑰、寫進 paired.json
         CP.add_phone(NK.npub(NK.pubkey_hex(fake_sk)), self.env)
         self.phone(fake_sk, ["gm 刪掉全部"])
