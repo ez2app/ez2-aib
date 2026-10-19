@@ -18,6 +18,8 @@
           · 在 Obsidian 手動建的資料夾(不是 fld_ 名)⇒ 改成 folderId 並登記(標題 = 原名)
           · 手動建的筆記(例「未命名.md」)⇒ 補 uid、改名 <uid>.md,原名留在 title / aliases,
             正文裡 [[原名]] 這種連結改成 [[uid|原名]]
+          · 在 Obsidian 只改名 / 搬走(索引記的舊路徑已不在、全庫只有這篇帶這個 uid)⇒ 當搬家:沿用原 uid、改回 <uid>.md;
+            兩篇帶同一個 uid(複製出來的)⇒ 換新 uid,並拿掉 append_route 與 record_id(複本不是那筆紀錄)
           · 檔名是 uid 但 frontmatter 沒有 uid ⇒ 補上
           · 索引裡有、硬碟上已不在的資料夾 ⇒ 從索引拿掉
           · uid 重複、檔名與 frontmatter 的 uid 不一致 ⇒ 只列出來,要人看
@@ -536,6 +538,7 @@ def _doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_
     by_id = {i["folderId"]: i for i in fid}
     used = {i.get("uid") for i in uidx} | {p.stem for p in vault.rglob("*.md") if U.UID_RE.match(p.stem)}
     cur = _problems(vault)
+    carriers = _uid_carriers(vault)
     for rel in dict.fromkeys(cur["md_not_uid_name"] + cur["md_no_uid"]):   # 兩份清單都有的(檔名與 uid 都缺)只處理一次
         p = vault / rel
         text = p.read_text(encoding="utf-8", errors="replace")
@@ -543,10 +546,16 @@ def _doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_
         kv = U.fm_lines_to_map(old_fm) if old_fm is not None else {}
         named_uid = U.UID_RE.match(p.stem) is not None
         have = (kv.get("uid") or "").strip().strip("\"'")
-        uid = p.stem if named_uid else (have if U.UID_RE.match(have) and have not in used else U.mint_uid(int(p.stat().st_mtime * 1000), used))
+        if named_uid:
+            uid = p.stem
+        elif U.UID_RE.match(have) and (have not in used or _moved_alone(vault, have, uidx, carriers)):
+            uid = have                              # 沒人用過,或只是改名 / 搬家(舊路徑已不在、全庫只有這篇帶它)⇒ 沿用
+        else:
+            uid = U.mint_uid(int(p.stat().st_mtime * 1000), used)
         used.add(uid)
-        if old_fm is not None and uid != have:      # 換了新 uid(例 Obsidian 複製出來的那篇)⇒ 不是 newpost 建的,拿掉可接著寫的標記
-            old_fm = "\n".join(ln for ln in old_fm.splitlines() if not ln.startswith(APPEND_KEY + ":"))
+        if old_fm is not None and uid != have:      # 換了新 uid(例 Obsidian 複製出來的那篇)⇒ 不是那筆紀錄、也不是 newpost 建的那篇
+            old_fm = "\n".join(ln for ln in old_fm.splitlines()
+                                if not ln.startswith((APPEND_KEY + ":", "record_id:")))
         title = (kv.get("title") or "").strip().strip("\"'") or (p.stem if not named_uid else uid)
         parent = p.parent.name if U.FOLDER_ID_RE.match(p.parent.name) else ""
         fs = _fm_set(uid, title, parent, by_id, ms, kv.get("orig_name", "").strip("\"'") or p.name, old_kv=kv)
@@ -582,6 +591,28 @@ def _doctor(vault: Path, fix: bool = False, backup_dir: Path | None = None, now_
     out["problems_after"] = after
     out["ok"] = not any(v for k, v in after.items())
     return out
+
+
+def _uid_carriers(vault: Path) -> dict:
+    """全庫每個 uid 有幾篇帶著(檔名或 frontmatter uid,同一篇只算一次)。"""
+    n: dict = {}
+    for dp, dn, fn in os.walk(vault):
+        dn[:] = [x for x in dn if x not in U.SKIP_DIRS and not x.startswith(".")]
+        for f in fn:
+            if not f.endswith(".md"):
+                continue
+            p = Path(dp, f)
+            fm, _b = U.split_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+            have = (U.fm_lines_to_map(fm).get("uid", "") if fm is not None else "").strip().strip("\"'")
+            for u in {x for x in (p.stem, have) if U.UID_RE.match(x)}:
+                n[u] = n.get(u, 0) + 1
+    return n
+
+
+def _moved_alone(vault: Path, uid: str, uidx: list, carriers: dict) -> bool:
+    """改名 / 搬家:索引記的舊路徑已不存在,而且全庫只有一篇帶這個 uid ⇒ True。兩篇都帶(真的複製)⇒ False。"""
+    olds = [i.get("path") for i in uidx if i.get("uid") == uid]
+    return carriers.get(uid, 0) == 1 and all(not o or not (vault / o).exists() for o in olds)
 
 
 def _fix_sync(vault: Path) -> list:

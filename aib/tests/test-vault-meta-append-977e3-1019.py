@@ -19,11 +19,15 @@ A5 CLI append --body-file -(標準輸入)⇒ 0
 A6 另一個行程拿著庫的寫入鎖 ⇒ append 等著(不同時改);doctor --fix 也排隊;鎖檔是符號連結 ⇒ 不跟、不清空目標
 A8 Obsidian 複製出來的那篇(<uid> 1.md)經 doctor --fix 換成新 uid ⇒ 拿掉 append_route,append 拒;原篇照樣可接
 A9 壞 UTF-8 的錯誤訊息講的是那個參數(不是 --meta-json)
+A10 在 Obsidian 只改名(舊路徑已不在、全庫只有這篇帶這個 uid)⇒ doctor --fix 當搬家:沿用原 uid、索引路徑更新、
+    append_route / record_id 保留,照樣可接
+A11 複本換新 uid ⇒ record_id 拿掉(source 保留)、原篇不動;原篇也改了名、兩篇都帶同一個 uid ⇒ 兩篇都換新、都不可接
 A7 CLI:--body 與 --body-file 同時給 ⇒ 結束碼 2;--body-file 超過上限 ⇒ 拒(只讀上限 + 1)
 刀(複本,走 run_guarded):Y1 不認得的鍵當字串收 ⇒ M2 紅;Y2 拿掉 privacy 只能調高 ⇒ M4 紅;Y3 不清字元 ⇒ M5 紅;
    Y4 拿掉 appendable 檢查 ⇒ A2 紅;Y5 拿掉路由比對 ⇒ A3 紅;Y6 拿掉大小上限 ⇒ A4 紅;Y7 拿掉鎖 ⇒ A6 紅;
    Y8 不清 U+2028 ⇒ M5b 紅;Y9 不驗 UTF-8 ⇒ M7 紅;Y10 不比檔內 uid ⇒ A3 紅;Y11 路由只看 kind=route ⇒ A3 紅;
-   Y12 doctor --fix 不上鎖 ⇒ A6 紅;Y13 換 uid 不拿掉標記 ⇒ A8 紅
+   Y12 doctor --fix 不上鎖 ⇒ A6 紅;Y13 換 uid 不拿掉標記 ⇒ A8 紅;Y14 改名不認搬家 ⇒ A10 紅;
+   Y15 不數全庫幾篇帶這個 uid ⇒ A11 紅;Y16 複本留 record_id ⇒ A11 紅
 I1 新鍵四語都有、英文值沒有中日韓字、佔位符一致
 I2 privacy 等級順序跟 brain_write_plan.PRIVACY_ORDER 一樣
 測試明寫 EZ2_AIB_STATE_ROOT 與暫存 EZ2_VAULT_DIR,不碰真庫。
@@ -340,6 +344,48 @@ class TestAppend(Base):
         VC.append(self.v, a["uid"], "原篇照樣可接")
         self.ok_verify()
 
+    def test_A10_rename_keeps_uid(self, _lic):
+        a = VC.newpost(self.v, "原篇", folder=WORK, appendable=True, meta={"record_id": "rec:1"})
+        src = self.v / a["path"]
+        os.replace(src, src.with_name("會議紀錄.md"))
+        res = VC.doctor(self.v, True, self.tmp / "bk")
+        self.assertTrue(res["ok"], res.get("left"))
+        self.assertEqual(sorted(p.stem for p in (self.v / WORK).glob("*.md")), sorted([a["uid"], "3aaaa1"]))
+        kv = self.fm(a["path"])
+        self.assertEqual(kv["uid"], a["uid"])
+        self.assertIn("append_route", kv)
+        self.assertEqual(json.loads(kv["record_id"]), "rec:1")
+        self.assertEqual({i["uid"]: i["path"] for i in self.index("uid-index.json")["items"]}[a["uid"]], a["path"])
+        VC.append(self.v, a["uid"], "改名後照樣可接")
+        self.ok_verify()
+
+    def test_A11_copy_drops_record_id(self, _lic):
+        meta = {"record_id": "rec:1", "source": [{"kind": "dm", "id": "q_1", "t": 1}]}
+        a = VC.newpost(self.v, "原篇", folder=WORK, appendable=True, meta=meta)
+        src = self.v / a["path"]
+        shutil.copy(src, src.with_name(a["uid"] + " 1.md"))
+        self.assertTrue(VC.doctor(self.v, True, self.tmp / "bk")["ok"])
+        new = [p for p in (self.v / WORK).glob("*.md") if p.stem not in (a["uid"], "3aaaa1")]
+        self.assertEqual(len(new), 1)
+        kv = self.fm(str(new[0].relative_to(self.v)))
+        self.assertNotIn("record_id", kv)
+        self.assertEqual(json.loads(kv["source"]), meta["source"])
+        self.assertEqual(json.loads(self.fm(a["path"])["record_id"]), "rec:1")
+        # 原篇也改了名 ⇒ 兩篇都帶同一個 uid,不是搬家 ⇒ 兩篇都換新、都不可接
+        b = VC.newpost(self.v, "另一篇", folder=WORK, appendable=True, meta=meta)
+        src = self.v / b["path"]
+        shutil.copy(src, src.with_name("複本.md"))
+        os.replace(src, src.with_name("改名.md"))
+        self.assertTrue(VC.doctor(self.v, True, self.tmp / "bk2")["ok"])
+        self.assertFalse((self.v / b["path"]).exists())
+        fresh = [p for p in (self.v / WORK).glob("*.md") if p.stem not in (a["uid"], new[0].stem, "3aaaa1")]
+        self.assertEqual(len(fresh), 2)
+        for p in fresh:
+            kv = self.fm(str(p.relative_to(self.v)))
+            self.assertNotIn("record_id", kv)
+            self.assertNotIn("append_route", kv)
+        self.ok_verify()
+
     def test_A9_utf8_message_names_the_arg(self, _lic):
         a = VC.newpost(self.v, "x", folder=WORK, appendable=True)
         with self.assertRaises(VC.VaultError) as cm:
@@ -416,6 +462,16 @@ class Knife(unittest.TestCase):
 
     def test_Y13_copy_keeps_mark(self):
         self._knife("        if old_fm is not None and uid != have:", "        if False:", "TestAppend.test_A8_obsidian_copy_not_appendable")
+
+    def test_Y14_rename_not_move(self):
+        self._knife("(have not in used or _moved_alone(vault, have, uidx, carriers))", "have not in used",
+                    "TestAppend.test_A10_rename_keeps_uid")
+
+    def test_Y15_carriers_not_counted(self):
+        self._knife("    return carriers.get(uid, 0) == 1 and all(", "    return all(", "TestAppend.test_A11_copy_drops_record_id")
+
+    def test_Y16_copy_keeps_record_id(self):
+        self._knife('(APPEND_KEY + ":", "record_id:")', '(APPEND_KEY + ":",)', "TestAppend.test_A11_copy_drops_record_id")
 
 
 class TestI18n(unittest.TestCase):
