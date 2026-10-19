@@ -78,6 +78,10 @@ HOLD_WHY = {
     "pane_dead": "收件席的視窗已結束(pane_dead),不投往重用的窗號;重開那一席後 requeue",
     # 全球對談第 8.1 節:陌生(或未驗證)的外部席來信,進來就待審;只有人能放行(requeue)或刪
     "global_stranger": "外部陌生,待主人放行(線上對話)",
+    # 10-19 Andy:回主人本人(艦長室 Touch ID 寄出)那封的線上來信 ⇒ 只在艦長室看,不進 AI 框;主人要給 AI 才放行
+    "human_reply": "回主人本人的線上信:只在艦長室看,不進 AI 框",
+    # 第 39 節第一步:Telegram 來信一律只在艦長室看(進 AI 框要第二步的 Telegram 外框,做好前不准放行)
+    "im_room": "Telegram 來信:只在艦長室看,不進 AI 框",
 }
 # ── 第 70 項 P2:狀態、種類、轉移表(只住這裡一份;畫面與任務區讀 payload,不自己算)──
 # status 的完整集合。`updated` 不是 status:是衍生旗標 is_update(supersedes 非空且還沒讀),畫面掛角標。
@@ -91,7 +95,8 @@ WAITING_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered")
 KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "notice")   # notice:10-13 S7-2 知會,讀過即備存
 BROADCAST_KINDS = frozenset(("order", "rule", "pipeline"))
 # 寄件端量到的來源;v1 的 "ai" 讀進來當 seat。human 只在送信端三條件全量到時才會出現(dm-ctl 那一刀)。
-SENDER_KINDS = ("seat", "seat_claimed", "human", "system", "unknown", "external_seat", "owner_paired")
+SENDER_KINDS = ("seat", "seat_claimed", "human", "system", "unknown", "external_seat", "owner_paired", "external_im")
+# external_im(開發文件第 39 節):別的通訊軟體(Telegram)經轉接程式收進來的;永遠不是 human,來源 telegram:<user_id>
 # external_seat / owner_paired(全球席位對談,開發文件第 8.1 節):別人的 aib 席經 Nostr 寄來 / 主人配對過的手機。
 #   只由全球收件匯入器(dm_global_files.queue_fields)給;**都不是 human**,也不會被升成 human。
 #   來源欄必須是 nostr:<npub>,對不上就降成 unknown(見 _new_item)。
@@ -160,6 +165,7 @@ TRANSITION_REASON = {
     "actor_missing": "要帶 --by(收件席讀完請用 read,不要 delete)",
     "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit),或用 --why 寫結案理由",
     "not_found": "這封信已經不在了",
+    "im_room_only": "Telegram 來信只在艦長室看,還不能放進 AI 框(第 39 節第二步做好前)",
 }
 ACTOR_FORMAT_HINT = "--by 格式不對(收到 %(given)s):收件席寫 seat:%(seat)s,真人寫 human:<名字>,系統寫 system"
 TZ_NAME = "Asia/Taipei"
@@ -288,14 +294,36 @@ ORIGIN_NAME_RE = re.compile(r"^[0-9A-Za-z._-]{1,64}$")
 XHOST_ORIGIN_RE = re.compile(r"^xhost:[0-9A-Fa-f:.]{2,45}$")
 # 全球收件(開發文件第 8.1 節):nostr:<寄件席 npub>。同 xhost:,重投時靠它還原全球抬頭(附錄 C-1 那個坑)。
 NOSTR_ORIGIN_RE = re.compile(r"^nostr:npub1[02-9ac-hj-np-z]{58}$")
+# 第 39 節:telegram:<user_id>(Telegram 使用者 id 是正整數)
+IM_ORIGIN_RE = re.compile(r"^telegram:[1-9][0-9]{0,19}$")
+IM_NETS = ("telegram",)
 
 
 def _origin_or_none(value):
     """寄件來源機器名(sender_origin 推的腳本名或五碼,或 xhost:<IP>、nostr:<npub>);不合形回 None。"""
     v = str(value or "").strip()
-    if ORIGIN_NAME_RE.fullmatch(v) or XHOST_ORIGIN_RE.fullmatch(v) or NOSTR_ORIGIN_RE.fullmatch(v):
+    if ORIGIN_NAME_RE.fullmatch(v) or XHOST_ORIGIN_RE.fullmatch(v) or NOSTR_ORIGIN_RE.fullmatch(v) \
+            or IM_ORIGIN_RE.fullmatch(v):
         return v
     return None
+
+
+def _im_or_none(value):
+    """第 39 節:別的通訊軟體來信的欄位 ⇒ 驗過的 dict;任何一欄不合就整欄 None。只收 net / id / shown / relation。"""
+    if not isinstance(value, dict) or value.get("net") not in IM_NETS:
+        return None
+    uid = str(value.get("id") or "")
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", uid):
+        return None
+    shown = value.get("shown")
+    if not isinstance(shown, str) or not shown.strip():
+        return None
+    shown = "".join(ch for ch in shown if ch.isprintable())[:64].strip() or None
+    if shown is None:
+        return None
+    rel = value.get("relation")
+    return {"net": value["net"], "id": uid, "shown": shown,
+            "relation": rel if rel in ("owner", "friend", "stranger") else "stranger"}
 
 
 def _global_or_none(value):
@@ -329,6 +357,8 @@ def _global_or_none(value):
            "relation": rel if rel in ("own", "paired", "friend") else None}
     if value.get("author") in GF.AUTHORS:      # 第 35 節第 2 點:寄件方自報誰寫的;舊列、沒帶的不加這欄
         out["author"] = value["author"]
+    if value.get("human_reply") is True:       # 10-19:回主人本人那封的;只給艦長室
+        out["human_reply"] = True
     return out
 
 
@@ -986,7 +1016,7 @@ def _new_item(seat, msg, sender_label, sender_kind="unknown", session_uuid="", w
               provider="", priority="normal", env=None, now=None, origin=None,
               thread=None, kind=None, sender_seat=None, human_id=None, expires=None, status="queued",
               sender_source=None, hub=None, sender_hub=None, sender_origin=None, closes=None,
-              global_info=None):
+              global_info=None, im_info=None):
     if not SEAT_RE.fullmatch(seat or ""):
         raise ValueError("seat")
     body = msg if isinstance(msg, str) else ""
@@ -1005,6 +1035,8 @@ def _new_item(seat, msg, sender_label, sender_kind="unknown", session_uuid="", w
     seat_claim = (sender_seat or "").strip().lower() or None
     # 全球寄件人種類要配 nostr: 來源;對不上 ⇒ 降 unknown(失效方向落低權格,同上兩條)。
     if sk in GLOBAL_SENDER_KINDS and not NOSTR_ORIGIN_RE.fullmatch(str(sender_origin or "").strip()):
+        sk = "unknown"
+    if sk == "external_im" and not IM_ORIGIN_RE.fullmatch(str(sender_origin or "").strip()):
         sk = "unknown"
     if sk == "seat_claimed" and not seat_claim:
         # 形狀照上面那條 human:**標記了弱身分卻沒有身分值**,那個標記就沒有意義。
@@ -1070,6 +1102,10 @@ def _new_item(seat, msg, sender_label, sender_kind="unknown", session_uuid="", w
         g = _global_or_none(global_info)
         if g is not None:
             item["global"] = g
+    if im_info is not None and sk == "external_im":
+        m = _im_or_none(im_info)
+        if m is not None and "telegram:" + m["id"] == item["sender_origin"]:
+            item["im"] = m
     return item
 
 
@@ -1078,7 +1114,7 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
             env=None, now=None, origin=None,
             thread=None, kind=None, sender_seat=None, human_id=None, expires=None,
             sender_source=None, hub=None, sender_hub=None, sender_origin=None, no_relay=False, closes=None,
-            attempts=None, global_info=None, status="queued", hold_why=None):
+            attempts=None, global_info=None, status="queued", hold_why=None, im_info=None):
     # status=hold_human:全球收件匯入器給陌生來信用 —— **建立時就是待審**,不是先排隊再轉待審
     #   (中間那一刻排空器可能已經領走、貼進框;盤點 10-16 第 3 項)。
     status = HOLD_STATUS if status == HOLD_STATUS else "queued"
@@ -1086,7 +1122,7 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
                      wid=wid, provider=provider, priority=priority, env=env, now=now, origin=origin,
                      thread=thread, kind=kind, sender_seat=sender_seat, human_id=human_id, expires=expires,
                      sender_source=sender_source, hub=hub, sender_hub=sender_hub, sender_origin=sender_origin,
-                     closes=closes, global_info=global_info, status=status)
+                     closes=closes, global_info=global_info, status=status, im_info=im_info)
     if status == HOLD_STATUS:
         item["hold_why"] = str(hold_why) if hold_why else HOLD_WHY["global_stranger"]
         item["held_at"] = item["ts"]
@@ -1116,6 +1152,8 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
 
 # ── 全球來信的投遞狀態(開發文件第 22.2 節 delivery/;轉接程式照它寄回條)──
 GLOBAL_STRANGER_WHY = HOLD_WHY["global_stranger"]
+HUMAN_REPLY_WHY = HOLD_WHY["human_reply"]
+IM_ROOM_WHY = HOLD_WHY["im_room"]
 
 
 def global_queue_pos(seat, item_id, env=None):
@@ -1247,6 +1285,12 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         return refuse("actor")
     if to == "read" and frm == HOLD_STATUS and cls == "seat" and item.get("global"):
         return refuse("actor")        # 陌生全球來信待審中:收件席自己不准讀(主人放行才給 AI;盤點 10-16 第 2 項)
+    if item.get("im") or item.get("sender_kind") == "external_im":
+        # 第 39 節第一步:Telegram 來信只在艦長室;沒有 Telegram 外框前,放行會被當成本機寄件人貼進 AI 框 ⇒ 一律不准
+        if to in ("queued", "claimed", "delivered"):
+            return refuse("im_room_only")
+        if to == "read" and cls == "seat":
+            return refuse("actor")
     if to == "deleted" and cls == "system" and why != AUTO_DELETE_WHY:
         return refuse("actor")        # 系統只准刪「備存滿 30 天」那一種(the maintainer 09-30 17:1x)
     if to == "read" and cls == "system" and why != AUTO_READ_WHY:
@@ -1861,7 +1905,8 @@ def _hold_ids_now(seat, env, now):
     """現在還在人審、沒過期的信(舊在前)。"""
     # 全球陌生來信不算:這則提示是貼給收件席(AI)看的,叫它去 list;那種信要主人放行,不是 AI 的事(盤點 10-16 第 2 項)
     rows = [i for i in _all_items(seat, env=env)
-            if i.get("status") == HOLD_STATUS and not i.get("expired") and not _expired(i, now) and not i.get("global")]
+            if i.get("status") == HOLD_STATUS and not i.get("expired") and not _expired(i, now) and not i.get("global")
+            and not i.get("im")]
     rows.sort(key=lambda i: (int(i.get("ts") or 0), i.get("id") or ""))
     return rows
 
@@ -2652,6 +2697,13 @@ def _row(item, seat, now, index=None):
         owner = (GF.parse_address(str(g.get("addr") or "")) or {}).get("owner")
         row["global"]["contact_key"] = "global:" + owner if owner else None
         row["global"]["relation"] = g.get("relation")
+        if g.get("human_reply") is True:
+            row["global"]["human_reply"] = True
+    m = item.get("im")
+    if isinstance(m, dict):
+        # 第 39 節:別的通訊軟體來信;contact_key 連艦長室通訊錄那一筆(telegram:<user_id>)
+        row["im"] = {"net": m.get("net"), "shown": m.get("shown"), "relation": m.get("relation"),
+                     "contact_key": "%s:%s" % (m.get("net"), m.get("id"))}
     if index is not None:
         row["index"] = index
     return row
@@ -2720,7 +2772,8 @@ def tabs_payload(seat, env=None, now=None):
         "expired": sum(1 for r in waiting if r["expired_now"]),
         "update": sum(1 for r in waiting if r["is_update"]),
         # 全球陌生來信另計:「待人處理」會被 hook 貼給 AI 看,那種信不是 AI 能處理的(盤點 10-16 第 2 項)
-        "hold": sum(1 for r in waiting if r["status"] == HOLD_STATUS and not r.get("global")),
+        "hold": sum(1 for r in waiting if r["status"] == HOLD_STATUS and not r.get("global") and not r.get("im")),
+        "im_hold": sum(1 for r in waiting if r["status"] == HOLD_STATUS and r.get("im")),
         "global_hold": sum(1 for r in waiting if r["status"] == HOLD_STATUS and r.get("global")),
         "decide": sum(1 for r in waiting if r["kind"] == "decide"),
         "human": sum(1 for r in waiting if r["sender_kind"] == "human"),
@@ -4166,8 +4219,10 @@ _REVEAL_GLOBAL = {"on": False}
 
 
 def _is_global_hold(d):
+    # external_im(Telegram 等)也算:網路上任何人都能私訊機器人,放行前內文同樣不給 AI 看
     return isinstance(d, dict) and d.get("status") == HOLD_STATUS and (
-        isinstance(d.get("global"), dict) or d.get("sender_kind") in GLOBAL_SENDER_KINDS)
+        isinstance(d.get("global"), dict) or isinstance(d.get("im"), dict)
+        or d.get("sender_kind") in GLOBAL_SENDER_KINDS + ("external_im",))
 
 
 def redact_global_hold(obj):
@@ -4396,7 +4451,7 @@ def upkeep(env=None, now=None, alive_fn=None, hold_fn=None, deliver_fn=None, dry
 
 
 _TRANSITION_RC = {"rev_mismatch": 5, "no_rev": 6, "actor": 7, "actor_missing": 7,
-                  "transition": 8, "evidence": 9, "not_found": 4}
+                  "transition": 8, "evidence": 9, "not_found": 4, "im_room_only": 8}
 
 
 def _v2_kw(args):
@@ -4833,6 +4888,9 @@ def main(argv=None, env=None):
         item = _load_item(args.seat, args.id, env)
         if not item:
             return 2
+        if _is_global_hold(item) and not _REVEAL_GLOBAL["on"]:   # 陌生全球 / Telegram 待審:跟 list 一樣不印內文(人用的預覽帶 --reveal-global)
+            sys.stdout.write(GLOBAL_HOLD_PLACEHOLDER + "\n")
+            return 0
         if getattr(args, "with_age", False) and item.get("msg"):
             sys.stdout.write(delivery_text(item))
             if not delivery_text(item).endswith("\n"):

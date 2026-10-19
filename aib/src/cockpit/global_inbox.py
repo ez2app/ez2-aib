@@ -54,13 +54,20 @@ def import_once(root=None, env=None):
              "country_status": qf["country_status"], "tz_country": qf["tz_country"], "relation": qf["class"]}
         if qf["author"]:
             g["author"] = qf["author"]
+        # 10-19 Andy 選 1:回「主人本人從艦長室寄的」那封 ⇒ 只進艦長室,不進 AI 框(建立時就待審、不叫 AI)。
+        #   只防「自動塞給 AI」;同帳號 AI 讀得到佇列檔、刪得掉寄出帳,這不是防線
+        human_reply = GF.sent_author(root, rec.get("reply_to")) == "human"
+        if human_reply:
+            g["human_reply"] = True
         kind = rec.get("kind") if rec.get("kind") in DQ.KINDS else None
         thread = rec.get("thread") if isinstance(rec.get("thread"), str) and DQ.THREAD_RE.fullmatch(rec["thread"]) else None
         try:
             item = DQ.enqueue(seat, rec["content"], qf["shown_name"], sender_kind=qf["sender_kind"],
                               priority=qf["priority"], env=env, sender_origin=qf["sender_origin"],
                               thread=thread, kind=kind, expires=rec.get("expires"), global_info=g,
-                              status=qf["status"], hold_why=DQ.GLOBAL_STRANGER_WHY)
+                              status=DQ.HOLD_STATUS if human_reply else qf["status"],
+                              hold_why=DQ.GLOBAL_STRANGER_WHY if qf["status"] == DQ.HOLD_STATUS or not human_reply
+                              else DQ.HUMAN_REPLY_WHY)
         except (ValueError, OSError) as err:
             out.append(_refuse(root, msgid, path, "enqueue:%s" % type(err).__name__))
             continue

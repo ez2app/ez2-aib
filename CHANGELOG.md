@@ -4,6 +4,14 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.25
+
+- **Replies to a message you sent yourself from the captain room stay in the captain room**: when an online reply points to a message the owner sent in person (Touch ID), it is held for the owner and is not handed to the AI box. The owner can release it to the AI.
+- **Telegram, step one**: `aib chat telegram on --seat` (Touch ID) / `off` / `status` / `check` / `allow` / `block` / `send`. Private text messages to your bot go to the seat's queue and are shown only in the captain room (never the AI box); you reply from the captain room. The bot token is stored with `aib secret ask TELEGRAM_BOT_TOKEN` and is never printed. Plainly: the token is on this computer, so an AI running as the same user can read it, and Telegram bot chats are not end-to-end encrypted.
+- **`aib chat recent --json [--minutes N]`**: recent online / Telegram private messages sent and received (time, direction, network, contact, result) for the captain room's mail view. No message content.
+- **Friend visit snapshots carry a few more fields**: which layout item each public seat is using, which public seats are in a meeting, which area a seat is in (only areas without a shard number), and a short summary of collected decor. Each field is checked on the sending side and again on the receiving side; anything that does not fit is dropped.
+- **`aib vault newpost --meta-json` / `--appendable` and `aib vault append`**: plugins can add allow-listed frontmatter fields (core fields such as uid / routeKey / created cannot be set; privacy_level can only be raised; control, direction and zero-width characters are removed; a wrong type rejects the whole call) and append to a note created with `--appendable` under the same write route (64 KB per append). Writes to the vault now take a lock so newpost / append / mkdir / doctor --fix run one at a time.
+
 ## 0.1.24
 
 - **Pair your phone as the owner's phone**: `aib chat pair start` (Touch ID) shows a QR code; after the phone sends back the one-time code (10 characters, 5 minutes), a second Touch ID window shows the phone's npub before it is added. Up to 3 phones; `aib chat pair revoke <npub prefix|all>` (Touch ID). Messages from the phone that start with `指令:`, `!` or `gm ` are instructions; everything else is discussion (reply only). Security settings (pairing, devices, owner key, wake, friends, sharing, Touch ID / PIN, secret store, plugins, license) still need Touch ID on the computer. Replayed or out-of-time messages are rejected.

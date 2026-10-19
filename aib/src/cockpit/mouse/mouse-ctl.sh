@@ -605,7 +605,7 @@ pending_queue_confirm() {
   # 取消排第一項,選單開在游標處。Esc/點外面=取消。
   local verb="$1" clabel="$2" flag="$3"
   local preview="" title=""
-  preview="$("$EZ2_PY3" "$COCKPIT/dm_queue.py" show --seat "$QSEAT" --id "$QITEM" 2>/dev/null || true)"
+  preview="$("$EZ2_PY3" "$COCKPIT/dm_queue.py" --reveal-global show --seat "$QSEAT" --id "$QITEM" 2>/dev/null || true)"
   preview="$(printf '%s' "$preview" | tr '\n\r[]\"' '    ')"
   preview="${preview#"${preview%%[![:space:]]*}"}"
   preview="${preview:0:36}"

@@ -567,8 +567,10 @@ class Sender(object):
         # 寄出帳:對方回條回來時,只收「我寄給的那個 npub」簽的(防有人冒充對方亂回條)。
         # 要在寄之前寫:公開站回 OK 可能比對方的回條還慢(10-16 實機驗收 5 則掉 3 張 held 回條)
         (self.root / "sent").mkdir(exist_ok=True)
-        write_json(str(self.root / "sent" / (msgid + ".json")), {"v": 1, "to": res["seat"]["npub"], "at": int(time.time()),
-                                                                  "op": rec.get("op") or "send", "owner": res.get("owner")})
+        sent = {"v": 1, "to": res["seat"]["npub"], "at": int(time.time()), "op": rec.get("op") or "send", "owner": res.get("owner")}
+        if rec.get("author") in GF.AUTHORS:   # 10-19 Andy:回「主人本人寄的」那封的信只進艦長室,收件時要查得到
+            sent["author"] = rec["author"]
+        write_json(str(self.root / "sent" / (msgid + ".json")), sent)
         try:
             ok = await _send_to(target, own, gw, mine)
         except Exception as err:   # noqa: BLE001
@@ -1565,6 +1567,8 @@ async def serve(root):
     last_unconfirmed = 0.0
     watch = CP.SleepWatch(root)
     recv_task = asyncio.ensure_future(receiver.run(stop))
+    import chat_telegram as TG                                # 第 39 節:Telegram 互串(關著就只是每 10 秒看一次開關)
+    tg_task = asyncio.ensure_future(TG.serve_loop(root, stop))
     for left in sorted((root / "sending").glob("*.json")):     # 上次掛掉時領了還沒寄完的:當重試處理
         if not (root / "sending" / (left.stem + ".try")).exists():
             write_json(str(root / "sending" / (left.stem + ".try")), {"n": 0, "next": 0, "why": "restart"})
@@ -1619,6 +1623,7 @@ async def serve(root):
             await asyncio.wait_for(recv_task, 10)
         except Exception:   # noqa: BLE001
             recv_task.cancel()
+        tg_task.cancel()
         try:
             (Path(root) / "heartbeat.json").unlink()
         except FileNotFoundError:
