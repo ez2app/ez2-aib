@@ -184,6 +184,8 @@ USE_RE = __import__("re").compile(r"^[a-z][0-9]{1,4}\Z")   # 新辦公室(@74e8b
 SEAT_CODE_RE = __import__("re").compile(r"^[0-9a-z]{5}\Z")
 CELL_RE = __import__("re").compile(r"^[a-z0-9-]{1,24}:[0-9]{1,3}:[0-9]{1,3}:(s[0-9]{1,3}|-)\Z")   # 區塊 key <世界>:<x>:<y>:<副本>
 MEET_GROUPS_MAX, MEET_SIZE_MAX = 8, 16
+DECOR_TYPE_RE = __import__("re").compile(r"^[a-z]{1,24}\Z")
+DECOR_SSR_MAX, DECOR_SR_MAX = 12, 999
 
 
 def clean_use(v):
@@ -195,6 +197,20 @@ def clean_cell(v):
     """這席在哪一區:合 CELL_RE 且沒有副本號(「-」)才帶 —— 好友快照只放主人自己的島 / 辦公室;
     在廣場哪個副本只給要跟過去的朋友,不進快照。不合 ⇒ None。"""
     return v if isinstance(v, str) and CELL_RE.match(v) and v.endswith(":-") else None
+
+
+def clean_decor(v):
+    """收藏擺設摘要 {"ssr": [type…], "sr": int}(@74e8b 10-19):ssr 小寫字母 1–24 字、去重後最多 12 個;
+    sr 0–999 整數。只帶這兩鍵;任何一處不合 ⇒ None(整個不帶)。"""
+    if not isinstance(v, dict):
+        return None
+    ssr, sr = v.get("ssr"), v.get("sr")
+    if not isinstance(ssr, list) or not all(isinstance(t, str) and DECOR_TYPE_RE.match(t) for t in ssr):
+        return None
+    ssr = list(dict.fromkeys(ssr))
+    if len(ssr) > DECOR_SSR_MAX or type(sr) is not int or not 0 <= sr <= DECOR_SR_MAX:
+        return None
+    return {"ssr": ssr, "sr": sr}
 
 
 def clean_meet(v, seat_codes):
@@ -349,6 +365,8 @@ def build(env=None, now=None, with_rooms=False, with_status=False, with_state=Tr
                          "seats": seats, "layout": mine.get("layout") if isinstance(mine.get("layout"), (dict, list)) else None,
                          "layout_omitted": False,
                          "meet": clean_meet(mine.get("meet"), {x["seat"] for x in seats})}
+        if clean_decor(mine.get("decor")):    # 收藏擺設摘要:不合就整個不帶
+            snap["rooms"]["decor"] = clean_decor(mine.get("decor"))
     return snap
 
 
