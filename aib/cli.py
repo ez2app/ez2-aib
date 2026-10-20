@@ -73,7 +73,11 @@ def _update(args):
               '[ -n "$s" ] || { echo "aib update: could not download the installer from: $0" >&2; exit 5; }; '
               'bash -c "$s" aib-install "$@"; rc=$?; '
               '[ "$rc" -ne 0 ] || [ ! -f "$AIB_UPDATE_HOOK" ] || "$AIB_UPDATE_PY" "$AIB_UPDATE_HOOK" ensure-all >&2; '
+              '[ "$rc" -ne 0 ] || [ ! -f "$AIB_UPDATE_BRIDGE" ] || "$AIB_UPDATE_PY" "$AIB_UPDATE_BRIDGE" restart >&2 || true; '
               'exit "$rc"')
+    # 10-20 @abb89(會員清單 #14):升級成功後用**升級後**那份 chat_bridge.py restart 換掉還在跑舊碼的轉接程式
+    #   (只送自己記下的 pid;沒在跑就什麼都不做;重啟失敗不影響升級結束碼)。
+    os.environ["AIB_UPDATE_BRIDGE"] = os.path.join(HERE, "src", "cockpit", "chat_bridge.py")
     # 10-15(維護者「安裝 / 升級時就裝」):升級完成後用**升級後**這份的 ensure-all 把這台有裝的 AI CLI 都裝上
     #   CTX 用量表的 hook(網站上的安裝程式若還是舊版,也不會漏);安裝程式失敗 ⇒ 不裝,結束碼原樣傳回。
     os.environ["AIB_UPDATE_PY"] = sys.executable

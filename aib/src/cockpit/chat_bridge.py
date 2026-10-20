@@ -1629,6 +1629,34 @@ def power_lines(env):
     return lines
 
 
+def restart_bridge(env, out, wait_s=10):
+    """aib chat restart(10-20 @abb89,會員清單 #14):升版後轉接程式還跑著舊程式碼 ⇒ 只對 status.json 記下、而且命令列
+    真的是 chat_bridge.py run 的那個 pid 送 SIGTERM(不准寬 pkill);外面的 sh 迴圈會自己再起,沒迴圈的(tmux 直接起的)
+    由 ensure-window 看到 pane 死了再 respawn。沒在跑 ⇒ 0 什麼都不做;pid 對不上 ⇒ 2 不碰。"""
+    root = bridge_root(env)
+    st = read_status(root) or {}
+    pid = st.get("pid")
+    if st.get("state") in (None, "stopped") or not pid_alive(pid):
+        out.write(T("restart_not_running") + "\n")
+        return 0
+    if not _pid_is_bridge(pid):
+        out.write(T("restart_pid_mismatch", pid=pid) + "\n")
+        return 2
+    os.kill(pid, signal.SIGTERM)
+    end = time.time() + wait_s
+    while time.time() < end and pid_alive(pid):
+        time.sleep(0.2)
+    if pid_alive(pid):
+        out.write(T("restart_still_alive", pid=pid) + "\n")
+        return 2
+    act = "-"
+    sock = hub_socket(env)
+    if sock and SOCKET_RE.match(sock):
+        act, _wid = ensure_window(sock, env)
+    out.write(T("restart_done", pid=pid, act=act) + "\n")
+    return 0
+
+
 def cmd_awake(a, env, out):
     """aib chat awake [on|off]:轉接程式當班時,接電源就撐著不睡(caffeinate -s;只在 Mac)。改了下次當班生效。"""
     import chat_power as CP
@@ -1740,6 +1768,7 @@ def main(argv=None, env=None, out=sys.stdout):
     pr.add_argument("--json", action="store_true")
     aw = sub.add_parser("awake", help=T("help.awake"))
     aw.add_argument("value", nargs="?", choices=("on", "off"))
+    sub.add_parser("restart", help=T("help.restart"))
     ow = sub.add_parser("owner", help=T("help.owner"))
     ow.add_argument("action", choices=("protect", "status", "repair"))
     ow.add_argument("--json", action="store_true")
@@ -1855,6 +1884,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":
         return 0 if is_enabled(env) else 1
+    if a.cmd == "restart":
+        return restart_bridge(env, out)
     if a.cmd == "ensure-window":
         sock = a.socket or hub_socket(env)
         if not sock or not SOCKET_RE.match(sock):
