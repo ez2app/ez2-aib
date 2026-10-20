@@ -111,7 +111,7 @@ class E2E(BASE.Box):
             do_stop=lambda c, hard=False, env=None, window_only=False: SA.do_stop(c, hard=hard, env=env, window_only=window_only, **common),
             do_answer=lambda c, ch, ask_id=None, free_text=None, env=None, grant=None: SA.do_answer(
                 c, ch, ask_id=ask_id, free_text=free_text, env=env, screen=me.screen, grant=grant, grant_keys=keys, machine=(FP, {ACCT}), **common),
-            do_unlocked=SA.do_unlocked, do_lock=SA.do_lock)
+            do_unlocked=SA.do_unlocked, do_lock=SA.do_lock, remote_left=SA.remote_left)
 
     def start_link(self, keys, token=TOKEN):
         self.out = {}
@@ -144,7 +144,7 @@ class E2E(BASE.Box):
         p = ph.cmd("pending")
         aid = p["ask"]["id"]
         self.assertIn(":", aid, "ask id 有冒號(@9f808 值域已放寬)")
-        q = self.RG.question_hash(p["ask"]["prompt"])          # 手機對「顯示給本人看的題目」算
+        q = self.RG.question_hash(p["ask"]["prompt"], p["ask"]["options"])          # 手機對「顯示給本人看的題目 + 選項」算
         st, ag = ph.req("POST", "/answer-grant", {"machine": FP, "seat": CODE, "ask_id": aid, "choice": "1", "q_sha256": q, "nonce": "a" * 24})
         r = ph.cmd("answer", grant=ag, choice="1", ask_id=aid)
         self.assertEqual((r["ok"], r["via"]), (True, "remote-grant"), r)

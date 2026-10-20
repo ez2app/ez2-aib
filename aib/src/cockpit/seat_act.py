@@ -89,6 +89,22 @@ def unlock_left(code, env=None, now=None):
     return max(0, until - int(now or time.time()))
 
 
+def unlock_via(code, env=None):
+    """視窗是誰開的:"touchid"(本人在 Mac 上)/ "remote-grant"(手機 + ez2.page 解鎖單);沒開 / 舊檔沒記 ⇒ None"""
+    if unlock_left(code, env) <= 0:
+        return None
+    try:
+        v = json.loads(unlock_path(code, env).read_text(encoding="utf-8")).get("via")
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+    return v if v in ("touchid", "remote-grant") else None
+
+
+def remote_left(code, env=None, now=None):
+    """手機那頭看得到的視窗剩幾秒：只認解鎖單開的(@abb89 10-21:本人在 Mac 上 Touch ID 開的不算，免得 ez2.page 登入被偷時趁本人開著視窗打字進來)"""
+    return unlock_left(code, env, now) if unlock_via(code, env) == "remote-grant" else 0
+
+
 def unlock_minutes(env=None):
     e = os.environ if env is None else env
     try:
@@ -107,9 +123,11 @@ def clamp_minutes(m):
         return None
 
 
-def grant_unlock(code, env=None, minutes=None):
+def grant_unlock(code, env=None, minutes=None, via=None):
+    """via = 這次是誰開的;None = 視窗本來開著就沿用原本的、沒開就算 touchid"""
     from atomic_json import write_json
     m = unlock_minutes(env) if clamp_minutes(minutes) is None else clamp_minutes(minutes)
+    via = via or unlock_via(code, env) or "touchid"
     p = unlock_path(code, env)
     p.parent.mkdir(parents=True, exist_ok=True)
     if m <= 0:
@@ -118,7 +136,7 @@ def grant_unlock(code, env=None, minutes=None):
         except FileNotFoundError:
             pass
         return 0
-    write_json(str(p), {"v": V, "seat": code, "until": int(time.time()) + m * 60, "idle_s": m * 60, "at": int(time.time())})
+    write_json(str(p), {"v": V, "seat": code, "until": int(time.time()) + m * 60, "idle_s": m * 60, "at": int(time.time()), "via": via})
     os.chmod(p, 0o600)
     return m * 60
 
@@ -268,7 +286,7 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
     if pend.get("at_prompt") is not True:
         out["why"], out["detail"] = "not-at-prompt", "busy=%s" % pend.get("busy")
         return out, 2
-    left = unlock_left(code, env)
+    left = remote_left(code, env) if window_only else unlock_left(code, env)
     m = unlock_minutes(env) if clamp_minutes(minutes) is None else clamp_minutes(minutes)
     reason = reason_for("input", code, text, m)
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
@@ -283,7 +301,7 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
             out["why"] = why
             log_action(code, "input", env, ok=False, why=why, chars=len(text))
             return out, 3
-        left = grant_unlock(code, env, m)
+        left = grant_unlock(code, env, m, via="touchid")
     ok, why = send_text(rec, text, tmux=tmux, run=run)
     if ok and out["via"] == "unlock-window":
         left = refresh_unlock(code, env) or left        # 真人剛下指令 ⇒ 閒置倒數重來
@@ -318,7 +336,7 @@ def do_unlock(code, minutes=None, env=None, touchid=None, touchid_available=None
             log_action(code, "unlock", env, ok=False, why=out["why"])
             return out, 3
         out["via"], out["auth"] = "remote-grant", grant.get("auth")
-        left = grant_unlock(code, env, gm)
+        left = grant_unlock(code, env, gm, via="remote-grant")
         out.update(ok=True, unlock_left_s=left, minutes=gm)
         log_action(code, "unlock", env, ok=True, via="remote-grant", minutes=gm, auth=grant.get("auth"))
         return out, 0
@@ -442,7 +460,7 @@ def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, 
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
     if grant is not None:
         import remote_grant
-        _ok, gwhy = remote_grant.verify_answer(grant, code, ask["id"], choice, free_text, env, keys=grant_keys, machine=machine, question=ask.get("prompt") or "")
+        _ok, gwhy = remote_grant.verify_answer(grant, code, ask["id"], choice, free_text, env, keys=grant_keys, machine=machine, question=ask)
         out["via"], why = "remote-grant", (None if _ok else "grant_" + gwhy)
     else:
         out["via"], why = prove(reason, env, touchid, touchid_available, platform)      # 每次都驗,不吃免重驗視窗
@@ -484,7 +502,7 @@ def do_stop(code, hard=False, env=None, touchid=None, touchid_available=None, pl
     reason = reason_for("stop_hard" if hard else "stop", code, (doing or {}).get("text") or "")
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
     if window_only:
-        if unlock_left(code, env) <= 0:
+        if remote_left(code, env) <= 0:
             out["why"] = "locked"
             return out, 3
         out["via"], why = "unlock-window", None
