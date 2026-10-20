@@ -49,6 +49,8 @@ ACCT = "t_lfu0327"
 FP = __import__("hashlib").sha256(("ez2-aib-machine-v1:" + MID).encode()).hexdigest()
 MACHINE = (FP, {ACCT})
 VECTORS = [{"input": "要執行 rm -rf build 嗎?", "normalized": "要執行 rm -rf build 嗎?", "q_sha256": "188c49c8425c5c39dafd62d7ddc85ac786e69a3c8f8b04c0be3b61e657f26812"}, {"input": "  Allow\n\n  edit   to  src/a.js?\t", "normalized": "Allow edit to src/a.js?", "q_sha256": "d7db72f25bd3574efe33ff2acf3e4a43a019e79b084f2a284c8fe10e3b7d6d4d"}, {"input": "Café 　 ok", "normalized": "Café ok", "q_sha256": "2fb8472040949c165115548d723b34e7da3c761d5eb4eb991c8c45f10499f6ac"}, {"input": "", "normalized": "", "q_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}, {"input": " x y ", "normalized": "x y", "q_sha256": "887fcea6a80333c6c02ae7e79735f0edad8d811f0b61431495f796f4bf6a7c19"}]  # @9f808 VECTORS-question-sha256(兩邊各放一份)
+# v2(@abb89 10-21):正文 + 選項;一行一段、選項 = key TAB label;第 2、3 組只換選項順序 ⇒ 雜湊不同
+VECTORS_V2 = [{"prompt": "Do you want to proceed?", "options": [{"key": "1", "label": "Yes"}, {"key": "2", "label": "Yes, and don't ask again"}, {"key": "3", "label": "No, and tell Claude what to do differently"}], "joined": "Do you want to proceed?\n1\tYes\n2\tYes, and don't ask again\n3\tNo, and tell Claude what to do differently", "q_sha256": "0f2bc16ef06d156791062056d471c7d02c71d258dc772248b6a14316c07eaca9"}, {"prompt": "要執行 rm -rf build 嗎?", "options": [{"key": "1", "label": "允許刪除"}, {"key": "2", "label": "拒絕"}], "joined": "要執行 rm -rf build 嗎?\n1\t允許刪除\n2\t拒絕", "q_sha256": "31412cf33cc7a8f45d6d42b06ba262ba5d863e05d39a3944350c91c770eafcb7"}, {"prompt": "要執行 rm -rf build 嗎?", "options": [{"key": "1", "label": "拒絕"}, {"key": "2", "label": "允許刪除"}], "joined": "要執行 rm -rf build 嗎?\n1\t拒絕\n2\t允許刪除", "q_sha256": "e61d22e7b64323037bba2cb62735fbee2f4ff55e0539f6fc8022ca8fe071988d"}, {"prompt": "  Allow\n edit?\t", "options": [{"key": " 1 ", "label": "  Café　ok  "}, {"key": "2", "label": ""}], "joined": "Allow edit?\n1\tCafé ok\n2\t", "q_sha256": "0ea40a1c71c2701a1a29fa69448d14068cbcc5463c93fb9ab7dbb82334b2dc2a"}, {"prompt": "只有正文", "options": [], "joined": "只有正文", "q_sha256": "45860b6fa6311990feaef94f83407a01a3ca8f9f480cfad1007e1b3d9fbdb321"}]
 EXAMPLE = '{"pubkey": {"kid": "6c0748f51a15a6c0", "alg": "Ed25519", "pub_b64": "FdR6iDS3oZQSQbeme6vsPV5wSdoxWYpcKMtw/9FJflw="}, "canonical": "{\\"account_id\\":\\"acct_example0001\\",\\"auth\\":\\"line\\",\\"exp\\":1792540920,\\"iat\\":1792540800,\\"kid\\":\\"6c0748f51a15a6c0\\",\\"kind\\":\\"seat-unlock\\",\\"machine\\":\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\",\\"minutes\\":10,\\"nonce\\":\\"bm9uY2UtZXhhbXBsZS0wMDAx\\",\\"seat\\":\\"9f808\\",\\"v\\":1}", "envelope": {"grant": {"v": 1, "kind": "seat-unlock", "kid": "6c0748f51a15a6c0", "account_id": "acct_example0001", "machine": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "seat": "9f808", "minutes": 10, "nonce": "bm9uY2UtZXhhbXBsZS0wMDAx", "iat": 1792540800, "exp": 1792540920, "auth": "line"}, "sig": "P-pgcu_9UfpEMf38JXzV2yuNMLR7g0CEgJ5SIy-LcEsQt4kaCNOoJP0OKwhSNLunCwz9VgTlLjWaipg-E-iXAg"}}'
 
 
@@ -183,7 +185,8 @@ class Grant(BASE.Box):
 
     def q(self):
         import seat_panel
-        return self.RG.question_hash(seat_panel.pending(CODE, state_root=str(self.state), screen=BASE.PERMISSION)[0]["ask"].get("prompt") or "")
+        ask = seat_panel.pending(CODE, state_root=str(self.state), screen=BASE.PERMISSION)[0]["ask"]
+        return self.RG.question_hash(ask.get("prompt") or "", self.RG.ask_view(ask)["options"])
 
     def answer(self, g, choice="1", **kw):
         return self.act(self.SA.do_answer, CODE, choice, screen=BASE.PERMISSION, grant=g, grant_keys=KEYS, machine=MACHINE, **kw)
@@ -228,6 +231,55 @@ class Grant(BASE.Box):
         self.assertNotIn("management_key", self.RG.remote_cfg()["allow"])
         res, rc = self.unlock(make(auth="management_key"))
         self.assertEqual(res["why"], "grant_auth-not-allowed", "管理金鑰登入簽的單本機預設不收")
+
+    def test_g11_options_in_hash(self):
+        """@abb89 10-21:選項也進雜湊(只換選項標籤 ⇒ 對不上);沒選項 = 舊算法;題目被截過 ⇒ 只能在電腦上答"""
+        for v in VECTORS_V2:
+            self.assertEqual(self.RG.question_hash(v["prompt"], v["options"]), v["q_sha256"], v)
+        for v in VECTORS:
+            self.assertEqual(self.RG.question_hash(v["input"], []), v["q_sha256"], "沒選項 ⇒ 跟舊的一樣")
+        import seat_panel
+        ask = seat_panel.pending(CODE, state_root=str(self.state), screen=BASE.PERMISSION)[0]["ask"]
+        opts = self.RG.ask_view(ask)["options"]
+        self.assertGreaterEqual(len(opts), 2, ask)
+        swapped = [dict(o, label=opts[-1]["label"] if i == 0 else o["label"]) for i, o in enumerate(opts)]
+        self.on()
+        now = int(time.time())
+        base = dict(kind="seat-answer", ask_id=ask["id"], choice="1", exp=now + 100)
+        for q in (self.RG.question_hash(ask["prompt"], swapped), self.RG.question_hash(ask["prompt"]), self.RG.question_hash(ask["prompt"], opts[:1])):
+            res, rc = self.answer(make(**dict(base, q_sha256=q)))
+            self.assertEqual((rc, res["why"]), (3, "grant_question_mismatch"), res)
+        self.assertEqual(self.keys(), [])
+        long_ask = dict(ask, prompt="x" * (self.RG.ASK_PROMPT_MAX + 1))
+        self.assertTrue(self.RG.ask_view(long_ask)["truncated"])
+        self.assertEqual(self.RG.verify_answer(make(**dict(base, q_sha256="0" * 64)), CODE, ask["id"], "1", keys=KEYS, machine=MACHINE, question=long_ask)[1],
+                         "question_truncated")
+        self.assertTrue(self.RG.ask_view(dict(ask, options=[{"key": "1", "label": "y" * 121}]))["truncated"])
+        self.assertFalse(self.RG.ask_view(ask)["truncated"])
+
+    def test_g12_remote_window_only(self):
+        """@abb89 10-21:手機來的 input / stop 只認解鎖單開的視窗;本人在 Mac 上 Touch ID 開的不算"""
+        self.on()
+        self.act(self.SA.do_unlock, CODE, 10)                       # Mac 上 Touch ID 開
+        self.assertEqual(self.SA.unlock_via(CODE), "touchid")
+        self.assertGreater(self.SA.unlock_left(CODE), 0)
+        self.assertEqual(self.SA.remote_left(CODE), 0)
+        res, rc = self.act(self.SA.do_input, CODE, "偷打", screen=BASE.PROMPT, window_only=True)
+        self.assertEqual((rc, res["why"]), (3, "locked"), res)
+        res, rc = self.act(self.SA.do_stop, CODE, window_only=True)
+        self.assertEqual((rc, res["why"]), (3, "locked"), res)
+        self.assertEqual(self.keys(), [], "Mac 開的視窗不讓手機打字 / 停")
+        res, rc = self.unlock(make())                               # 手機解鎖單開
+        self.assertEqual(rc, 0, res)
+        self.assertEqual(self.SA.unlock_via(CODE), "remote-grant")
+        self.assertGreater(self.SA.remote_left(CODE), 0)
+        n = len(self.asked)
+        self.act(self.SA.do_unlock, CODE, 15)                        # 視窗開著在 Mac 上改分鐘 ⇒ 不彈、沿用原本是誰開的
+        self.assertEqual((len(self.asked), self.SA.unlock_via(CODE)), (n, "remote-grant"))
+        res, rc = self.act(self.SA.do_input, CODE, "手機打", screen=BASE.PROMPT, window_only=True)
+        self.assertEqual((rc, res["via"]), (0, "unlock-window"), res)
+        self.SA.unlock_path(CODE).write_text(json.dumps({"v": 1, "seat": CODE, "until": int(time.time()) + 600, "idle_s": 600}), encoding="utf-8")
+        self.assertEqual(self.SA.remote_left(CODE), 0, "舊檔沒記 via ⇒ 不算解鎖單開的")
 
     def test_g6_pinned(self):
         self.assertEqual(self.RG.TRUSTED_GRANT_KEYS, {}, "正式公鑰清單改了 ⇒ 要維護者點頭再改這行")
@@ -276,8 +328,16 @@ class Knife(unittest.TestCase):
                     '        out["via"], why = "remote-grant", None', "Grant.test_g9_answer")
 
     def test_k5_no_question_hash(self):
-        self._knife("src/cockpit/remote_grant.py", '        if not isinstance(q, str) or not re.fullmatch(r"[0-9a-f]{64}", q) or question is None or q != question_hash(question):',
+        self._knife("src/cockpit/remote_grant.py", '        if not isinstance(q, str) or not re.fullmatch(r"[0-9a-f]{64}", q) or want is None or q != want:',
                     "        if False:", "Grant.test_g10_question_hash")
+
+    def test_k6_options_not_hashed(self):
+        self._knife("src/cockpit/remote_grant.py", '        want = question_hash(question.get("prompt"), ask_view(question)["options"])',
+                    '        want = question_hash(question.get("prompt"))', "Grant.test_g11_options_in_hash")
+
+    def test_k7_mac_window_counts(self):
+        self._knife("src/cockpit/seat_act.py", '    return unlock_left(code, env, now) if unlock_via(code, env) == "remote-grant" else 0',
+                    '    return unlock_left(code, env, now)', "Grant.test_g12_remote_window_only")
 
 
 if __name__ == "__main__":

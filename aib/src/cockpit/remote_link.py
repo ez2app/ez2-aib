@@ -7,12 +7,12 @@
 - 網址固定 https://ez2.page/api/v1/remote/*,憑證 = aib page bind 存的助理憑證(Bearer);不從環境變數換網址(測試從參數注入)。
 - 指令四種:
   unlock   = 一定要帶伺服器簽的解鎖單(seat_act.do_unlock grant=…;驗簽在 remote_grant)
-  input    = 只在視窗開著時送(window_only ⇒ 沒開回 locked,不在 Mac 上彈 Touch ID)
-  stop     = 同上，視窗開著才停
+  input    = 只在視窗開著時送(window_only ⇒ 沒開回 locked,不在 Mac 上彈 Touch ID);視窗要是解鎖單開的(@abb89 10-21:本人在 Mac 上 Touch ID 開的不算)
+  stop     = 同上，解鎖單開的視窗開著才停
   lock     = 立刻上鎖(收權限方向，不用單子)
-  unlocked = 只讀剩幾秒
-  pending  = 讀那一席現在有沒有在問(黃框題目 + 選項 + ask_id);視窗開著才給
-  answer   = 回答黃框(手機要對顯示的題目算 q_sha256 放進單子;核心對真題目驗，題目超過 4000 字被截 ⇒ 對不上就拒):每次都要一張回答單(kind=seat-answer,綁 ask_id + choice + 自填字雜湊;@abb89 10-21 裁「視窗不能替 answer 免驗」)
+  unlocked = 只讀解鎖單開的視窗剩幾秒
+  pending  = 讀那一席現在有沒有在問(remote_grant.ask_view:題目 + 選項 + ask_id、截過就標 truncated);解鎖單開的視窗開著才給
+  answer   = 回答黃框(手機對顯示的題目正文 + 選項算 q_sha256 放進單子;核心對真題目驗;截過的題目只能在電腦上答):每次都要一張回答單(kind=seat-answer,綁 ask_id + choice + 自填字雜湊;@abb89 10-21 裁「視窗不能替 answer 免驗」)
   seats    = 這台有哪些席(手機選席用):只給席碼 / 角色 / 廠商 / 視窗剩幾秒;不給專案名、路徑、session
   transcript = 讀那一席的對話(手機看回覆用):也要視窗開著;遮敏感字(seat_panel redact)、每則截 2000 字、一次最多 40 則;
              不給本機路徑、工具輸入 / 結果、thinking(slim_transcript)
@@ -117,16 +117,15 @@ def handle(msg, env=None, act=None):
             return {"ok": False, "action": "answer", "seat": seat, "why": "bad-choice"}
         res, _rc = SA.do_answer(seat, choice, ask_id=ask_id, free_text=text, env=env, grant=msg["grant"])
     elif op in ("transcript", "pending"):
-        left = SA.do_unlocked(seat, env=env)[0].get("unlock_left_s") or 0
-        if left <= 0:
+        if SA.remote_left(seat, env) <= 0:   # 只認解鎖單開的視窗(本人在 Mac 上開的不算)
             return {"ok": False, "action": op, "seat": seat, "why": "locked"}
+        import remote_grant
         import seat_panel
         if op == "pending":
             res, _rc = seat_panel.pending(seat, state_root=None if env is None else env.get("EZ2_AIB_STATE_ROOT"), env=env)
             ask = res.get("ask") if isinstance(res.get("ask"), dict) else None
             return {"ok": res.get("ok") is True, "action": "pending", "seat": seat, "at_prompt": res.get("at_prompt") is True, "busy": res.get("busy"),
-                    "ask": None if not ask else {"id": ask.get("id"), "type": ask.get("type"), "prompt": str(ask.get("prompt") or "")[:4000],
-                                                 "options": [{"key": o.get("key"), "label": str(o.get("label") or "")[:120]} for o in ask.get("options") or []][:9]}}
+                    "ask": None if not ask else remote_grant.ask_view(ask)}
         off = msg.get("offset")
         sess = msg.get("session")
         res, _rc = seat_panel.transcript(seat, offset=off if type(off) is int and off >= 0 else 0, limit=TRANSCRIPT_LIMIT, clip=TRANSCRIPT_CLIP,
@@ -134,7 +133,7 @@ def handle(msg, env=None, act=None):
                                          session=sess if isinstance(sess, str) and len(sess) <= 64 else None)
         res = slim_transcript(res)
     else:
-        res, _rc = SA.do_unlocked(seat, env=env)
+        res = {"ok": True, "action": "unlocked", "seat": seat, "unlock_left_s": SA.remote_left(seat, env)}   # 手機看到的 = 解鎖單開的視窗
     return res
 
 
@@ -161,7 +160,7 @@ def seats(env=None, SA=None):
             continue
         role = str(r.get("role") or "")
         rows.append({"seat": code, "role": role if ROLE_RE.fullmatch(role) else "", "provider": str(r.get("provider") or "")[:16],
-                     "unlock_left_s": SA.do_unlocked(code, env=env)[0].get("unlock_left_s") or 0})
+                     "unlock_left_s": SA.remote_left(code, env)})
     return {"ok": True, "action": "seats", "seats": rows[:40]}
 
 
