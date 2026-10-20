@@ -4772,6 +4772,7 @@
   "aib.seat.panel.touchid_stop_hard": "aib: 본인으로 @{seat} 강제 중단(Ctrl-C): \"{text}\"",
   "aib.seat.panel.touchid_unlock": "aib: @{seat} 잠금 해제: {min}분 동안 아무 입력이 없으면 다시 잠김(그동안 선장실 입력은 다시 묻지 않음)",
   "aib.seat.panel.touchid_unlock_tail": " (해제 후 {min}분 동안 입력이 없으면 다시 잠김)",
+  "aib.seat.panel.touchid_remote_on": "휴대폰 원격 잠금 해제 켜기(ez2.page에서 본인 확인된 해제권으로 좌석 창을 열 수 있음)",
   "aib.chat.send_why_touchid": "보내지 않음: Touch ID 통과 실패({why}). 다시 보내고 지문이나 로그인 암호로 확인하세요",
   "aib.chat.send_why_touchid_off": "보내지 않음: 이 Mac에서 Touch ID가 꺼져 있습니다(AIB_TOUCHID=0). Mac에서 대신 보내기는 Touch ID만 받고 PIN은 받지 않습니다. AIB_TOUCHID=0을 지우고 다시 보내세요",
   "aib.chat.send_why_touchid_unavailable": "보내지 않음: 이 Mac에서 지금 Touch ID / 로그인 암호 창을 띄울 수 없습니다. Mac에서 대신 보내기는 Touch ID만 받고 PIN은 받지 않습니다",

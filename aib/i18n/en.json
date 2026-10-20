@@ -4772,6 +4772,7 @@
   "aib.seat.panel.touchid_stop_hard": "aib: force-interrupt @{seat} (Ctrl-C) as you: \"{text}\"",
   "aib.seat.panel.touchid_unlock": "aib: unlock @{seat}: locks again after {min} idle minutes (typing from the captain room won't ask again until then)",
   "aib.seat.panel.touchid_unlock_tail": " (then locks after {min} idle minutes)",
+  "aib.seat.panel.touchid_remote_on": "Turn on phone remote unlock (unlock grants verified by ez2.page can then open seat windows)",
   "aib.chat.send_why_touchid": "Not sent: Touch ID did not pass ({why}); send again and confirm with your fingerprint or login password",
   "aib.chat.send_why_touchid_off": "Not sent: Touch ID is turned off on this Mac (AIB_TOUCHID=0). On a Mac, sending for you only accepts Touch ID, not a PIN; remove AIB_TOUCHID=0 and send again",
   "aib.chat.send_why_touchid_unavailable": "Not sent: this Mac cannot show the Touch ID / login password window right now. On a Mac, sending for you only accepts Touch ID, not a PIN",

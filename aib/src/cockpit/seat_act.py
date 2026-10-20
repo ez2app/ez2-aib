@@ -287,8 +287,12 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
     return out, (0 if ok else 4)
 
 
-def do_unlock(code, minutes=None, env=None, touchid=None, touchid_available=None, platform=None):
-    """先解鎖不送字(頁面的 🔒 鈕、手機下指令前)。一樣 Touch ID、一樣擋席位呼叫;已經開著 ⇒ 不彈、照新分鐘重算。"""
+def do_unlock(code, minutes=None, env=None, touchid=None, touchid_available=None, platform=None, grant=None, keys=None, machine=None):
+    """先解鎖不送字(頁面的 🔒 鈕、手機下指令前)。一樣 Touch ID、一樣擋席位呼叫;已經開著 ⇒ 不彈、照新分鐘重算。
+
+    grant = 手機在 ez2.page 驗過本人後、伺服器簽的解鎖單(remote_grant.verify;keys / machine 只給測試注入)。
+    有單子 ⇒ 不彈 Touch ID、分鐘照單子(再被本機上限夾);單子不過 ⇒ 拒，不退回 Touch ID(手機那頭沒人按得到)。
+    """
     env = dict(os.environ if env is None else env)
     out = _out(False, code, "unlock")
     if caller_is_seat(env):
@@ -301,6 +305,18 @@ def do_unlock(code, minutes=None, env=None, touchid=None, touchid_available=None
     if m <= 0:
         out["why"] = "zero-minutes"
         return out, 2
+    if grant is not None:
+        import remote_grant
+        gm, why = remote_grant.verify(grant, code, env, keys=keys, machine=machine)
+        if why:
+            out.update(via="remote-grant", why="grant_" + why)
+            log_action(code, "unlock", env, ok=False, why=out["why"])
+            return out, 3
+        out["via"], out["auth"] = "remote-grant", grant.get("auth")
+        left = grant_unlock(code, env, gm)
+        out.update(ok=True, unlock_left_s=left, minutes=gm)
+        log_action(code, "unlock", env, ok=True, via="remote-grant", minutes=gm, auth=grant.get("auth"))
+        return out, 0
     reason = T("touchid_unlock", seat=code, min=m)
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
     if unlock_left(code, env) > 0:
@@ -327,6 +343,33 @@ def do_unlocked(code, env=None):
         except (OSError, ValueError, AttributeError, TypeError):
             idle = 0
     return _out(True, code, "unlocked", via="none", unlock_left_s=left, idle_s=idle, default_min=unlock_minutes(env)), 0
+
+
+def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_available=None, platform=None):
+    """手機遠端解鎖總開關(remote_grant.remote_cfg)。on 要本機 Touch ID、擋席位呼叫;off / status 不問。"""
+    import remote_grant
+    env = dict(os.environ if env is None else env)
+    out = {"ok": False, "action": "remote", "state": state}
+    if state == "on":
+        if caller_is_seat(env):
+            out["why"] = "caller-is-seat"
+            return out, 3
+        out["via"], why = prove(T("touchid_remote_on"), env, touchid, touchid_available, platform)
+        if why:
+            out["why"] = why
+            return out, 3
+        cfg = remote_grant.set_remote(True, env, max_min=max_min, allow=allow)
+    elif state == "off":
+        cfg = remote_grant.set_remote(False, env)
+    elif state == "status":
+        cfg = remote_grant.remote_cfg(env)
+    else:
+        out["why"] = "bad-state"
+        return out, 2
+    mid, accts = remote_grant.this_machine(env)
+    out.update(ok=True, on=cfg["on"], max_min=cfg["max_min"], allow=cfg["allow"], bound=bool(mid and accts),
+               keys=len(remote_grant.TRUSTED_GRANT_KEYS))
+    return out, 0
 
 
 def do_lock(code, env=None):
@@ -446,6 +489,11 @@ def main(argv=None, out=sys.stdout):
     u = sub.add_parser("unlock")
     u.add_argument("code")
     u.add_argument("--min", type=int)
+    u.add_argument("--grant", help="伺服器簽的解鎖單 JSON 檔;- = 從 stdin 讀")
+    rm = sub.add_parser("remote")
+    rm.add_argument("state", choices=("on", "off", "status"))
+    rm.add_argument("--max-min", type=int)
+    rm.add_argument("--allow", help="passkey,line,password 的子集")
     lk = sub.add_parser("lock")
     lk.add_argument("code")
     st = sub.add_parser("unlocked")
@@ -458,7 +506,7 @@ def main(argv=None, out=sys.stdout):
     s = sub.add_parser("stop")
     s.add_argument("code")
     s.add_argument("--hard", action="store_true")
-    for p in (i, a, s, u, lk, st):
+    for p in (i, a, s, u, lk, st, rm):
         p.add_argument("--json", action="store_true")
     ns = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
     if ns.cmd == "input":
@@ -471,7 +519,17 @@ def main(argv=None, out=sys.stdout):
                 return 2
         res, rc = do_input(ns.code, text, minutes=ns.unlock_min)
     elif ns.cmd == "unlock":
-        res, rc = do_unlock(ns.code, ns.min)
+        grant = None
+        if ns.grant:
+            try:
+                raw = sys.stdin.read() if ns.grant == "-" else Path(ns.grant).read_text(encoding="utf-8")
+                grant = json.loads(raw)
+            except (OSError, ValueError):
+                out.write(json.dumps(_out(False, ns.code, "unlock", why="bad-file"), ensure_ascii=False) + "\n")
+                return 2
+        res, rc = do_unlock(ns.code, ns.min, grant=grant)
+    elif ns.cmd == "remote":
+        res, rc = do_remote(ns.state, max_min=ns.max_min, allow=ns.allow.split(",") if ns.allow else None)
     elif ns.cmd == "lock":
         res, rc = do_lock(ns.code)
     elif ns.cmd == "unlocked":
