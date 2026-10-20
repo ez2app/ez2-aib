@@ -4808,5 +4808,11 @@
   "aib.secret.btn_ok": "저장",
   "aib.secret.btn_cancel": "취소",
   "aib.rightai.mouse_hint1": "🖱 클릭이 안 되면",
-  "aib.rightai.mouse_hint2": "보기→마우스 보고 허용"
+  "aib.rightai.mouse_hint2": "보기→마우스 보고 허용",
+  "aib.vault_cli.help_vtitle": "(읽기 전용) Vault 경로를 제목 경로로 바꾸고 Obsidian 열기 링크를 붙입니다",
+  "aib.vault_cli.help_vtitle_paths": "절대 경로 또는 Vault 안의 상대 경로(여러 개 가능)",
+  "aib.vault_cli.help_vtitle_stdin": "표준 입력에서도 한 줄에 하나씩 경로를 읽습니다",
+  "aib.vault_cli.err_vtitle_none": "경로가 없습니다: 경로를 주거나 --stdin 을 붙이세요",
+  "aib.vault_cli.err_vtitle_too_many": "경로가 너무 많습니다: {count}개, 한 번에 최대 {max}개입니다",
+  "aib.vault_cli.vtitle_outside": "(Vault 밖입니다)"
 }

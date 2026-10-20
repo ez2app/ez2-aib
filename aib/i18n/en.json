@@ -4808,5 +4808,11 @@
   "aib.secret.btn_ok": "Save",
   "aib.secret.btn_cancel": "Cancel",
   "aib.rightai.mouse_hint1": "🖱 Can't click?",
-  "aib.rightai.mouse_hint2": "View→Allow Mouse Reporting"
+  "aib.rightai.mouse_hint2": "View→Allow Mouse Reporting",
+  "aib.vault_cli.help_vtitle": "(read-only) turn vault paths into title paths, with an Obsidian open link",
+  "aib.vault_cli.help_vtitle_paths": "absolute paths or paths relative to the vault; several allowed",
+  "aib.vault_cli.help_vtitle_stdin": "also read one path per line from standard input",
+  "aib.vault_cli.err_vtitle_none": "no paths given: pass paths or --stdin",
+  "aib.vault_cli.err_vtitle_too_many": "too many paths: {count}, at most {max} at a time",
+  "aib.vault_cli.vtitle_outside": "(not in the vault)"
 }

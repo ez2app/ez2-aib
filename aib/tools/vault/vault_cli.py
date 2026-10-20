@@ -33,6 +33,10 @@
           · (0.1.18)aliases 裡沒有 title ⇒ 補進去(Obsidian 快速切換只比對檔名與別名,沒有就用標題找不到)
     aib vault mkdir --title 名稱 [--parent folderId] [--vault V] [--json]
         新增 uid 資料夾並登記(Obsidian 的 obsidian-labels「新增資料夾」按鈕呼叫的就是這個)
+    aib vault title <路徑…> [--stdin] [--vault V] [--json]
+        (0.1.29)只讀:把 Vault 裡的路徑(fld_xxx/…/<uid>.md)換成標題路徑(06-工作區 Work/…/筆記標題),
+        附 obsidian://open 連結;對話面板用它把紀錄裡的路徑顯示成看得懂的名字。絕對路徑或 Vault 內相對路徑都收,
+        Vault 外的回 in_vault false。標題只從 labels.json 取,不開筆記本身(不讀正文)。--stdin 每行一個路徑。
 離開碼:0 沒問題 / 已修好、1 有問題(只列沒修)、2 用法或錯誤、3 沒有授權。
 """
 from __future__ import annotations
@@ -47,6 +51,7 @@ import re
 import sys
 import tarfile
 import time
+import urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -66,6 +71,7 @@ PRIVACY_DEFAULT = "internal"
 INVISIBLE_RE = re.compile("[\x00-\x1f\x7f-\x9f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
 APPEND_KEY = "append_route"
 APPEND_MAX = 64 * 1024
+TITLE_MAX = 1000                            # aib vault title 一次最多幾個路徑
 
 
 def T(key, params=None):
@@ -708,6 +714,61 @@ def _adopt_folder(vault: Path, rel: str) -> dict:
     return {"path": rel, "new_path": new_path, "folderId": new_id, "title": title}
 
 
+# ---------------------------------------------------------------- title(只讀)
+def _label(entry, fallback: str) -> str:
+    """labels 一筆 ⇒ 目前語系的名字(沒翻 ⇒ title);拿掉方向字元 / 零寬字(面板照字顯示,不讓標題偽裝成別的路徑)。"""
+    if not isinstance(entry, dict):
+        return fallback
+    i18n = entry.get("i18n") if isinstance(entry.get("i18n"), dict) else {}
+    name = INVISIBLE_RE.sub("", str(i18n.get(U.LOC) or entry.get("title") or "")).strip()
+    return name or fallback
+
+
+def titles(vault: Path, paths: list) -> list:
+    """路徑 ⇒ 標題路徑。只讀 labels.json;Vault 外 / 往上跳出 Vault 的一律 in_vault false、不給標題。"""
+    if len(paths) > TITLE_MAX:
+        raise VaultError(T("err_vtitle_too_many", {"count": len(paths), "max": TITLE_MAX}))
+    lab = U.load_json(vault / ".ez2/display/labels.json", {})
+    folders = lab.get("folders") if isinstance(lab.get("folders"), dict) else {}
+    notes = lab.get("notes") if isinstance(lab.get("notes"), dict) else {}
+    out = []
+    for raw in paths:
+        raw = str(raw)
+        s = os.path.expanduser(raw.strip())
+        if os.path.isabs(s):
+            try:                                          # realpath:Vault 裡的符號連結指到外面 ⇒ 算外面
+                rel = Path(os.path.realpath(s)).relative_to(vault).as_posix()
+            except ValueError:
+                out.append({"path": raw, "in_vault": False})
+                continue
+        else:
+            rel = os.path.normpath(s).replace(os.sep, "/") if s else "."
+            if rel == ".." or rel.startswith("../"):
+                out.append({"path": raw, "in_vault": False})
+                continue
+        rel = "" if rel == "." else rel
+        parts = rel.split("/") if rel else []
+        names, kind, ident = [], "other", ""
+        for n, seg in enumerate(parts):
+            last = n == len(parts) - 1
+            if last and seg.endswith(".md") and seg[:-3] in notes:
+                names.append(_label(notes[seg[:-3]], seg))
+                kind, ident = "note", seg[:-3]
+            elif seg in folders:
+                names.append(_label(folders[seg], seg))
+                if last:
+                    kind, ident = "folder", seg
+            else:
+                names.append(seg)
+        item = {"path": raw, "in_vault": True, "rel": rel, "title_path": "/".join(names),
+                "title": names[-1] if names else vault.name, "kind": kind if parts else "vault", "id": ident}
+        if not (parts and parts[0].startswith(".")):     # .ez2 / .obsidian 在 Obsidian 裡打不開,不給連結
+            item["obsidian"] = "obsidian://open?vault=%s&file=%s" % (urllib.parse.quote(vault.name, safe=""),
+                                                                    urllib.parse.quote(rel, safe=""))
+        out.append(item)
+    return out
+
+
 # ---------------------------------------------------------------- CLI
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="aib vault", description=T("help_desc"))
@@ -729,7 +790,10 @@ def main(argv=None) -> int:
     k = sub.add_parser("mkdir", help=T("help_mkdir"))
     k.add_argument("--title", required=True, help=T("help_mkdir_title"))
     k.add_argument("--parent", default="", help=U.T("help_folder_parent"))
-    for p in (n, d, k, a):
+    t = sub.add_parser("title", help=T("help_vtitle"))
+    t.add_argument("paths", nargs="*", help=T("help_vtitle_paths"))
+    t.add_argument("--stdin", action="store_true", help=T("help_vtitle_stdin"))
+    for p in (n, d, k, a, t):
         p.add_argument("--vault", default="", help=T("help_vault"))
         p.add_argument("--json", action="store_true", help=T("help_json"))
     args = ap.parse_args(argv)
@@ -741,6 +805,19 @@ def main(argv=None) -> int:
         return 3
     try:
         vault = resolve_vault(args.vault)
+        if args.cmd == "title":
+            paths = list(args.paths)
+            if args.stdin:
+                paths += [ln for ln in sys.stdin.read().splitlines() if ln.strip()]
+            if not paths:
+                raise VaultError(T("err_vtitle_none"))
+            res = titles(vault, paths)
+            if args.json:
+                print(json.dumps({"vault": vault.name, "items": res}, ensure_ascii=False))
+            else:
+                for it in res:
+                    print("%s\t%s" % (it["path"], it["title_path"] if it["in_vault"] else T("vtitle_outside")))
+            return 0
         if args.cmd == "mkdir":
             res = mkdir(vault, args.title, args.parent)
             print(json.dumps(res, ensure_ascii=False) if args.json else T("mkdir_done", {"title": res["title"], "path": res["folderPath"]}))

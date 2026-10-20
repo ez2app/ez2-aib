@@ -4808,5 +4808,11 @@
   "aib.secret.btn_ok": "儲存",
   "aib.secret.btn_cancel": "取消",
   "aib.rightai.mouse_hint1": "🖱 點不到席位?",
-  "aib.rightai.mouse_hint2": "顯示方式→允許滑鼠回報"
+  "aib.rightai.mouse_hint2": "顯示方式→允許滑鼠回報",
+  "aib.vault_cli.help_vtitle": "(只讀)把 Vault 路徑換成標題路徑,附 Obsidian 開啟連結",
+  "aib.vault_cli.help_vtitle_paths": "絕對路徑或 Vault 內相對路徑,可多個",
+  "aib.vault_cli.help_vtitle_stdin": "另從標準輸入每行讀一個路徑",
+  "aib.vault_cli.err_vtitle_none": "沒有給路徑:帶路徑參數或 --stdin",
+  "aib.vault_cli.err_vtitle_too_many": "路徑太多:{count} 個,一次最多 {max} 個",
+  "aib.vault_cli.vtitle_outside": "(不在 Vault 裡)"
 }
