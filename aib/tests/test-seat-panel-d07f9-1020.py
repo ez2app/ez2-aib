@@ -225,6 +225,13 @@ class Pending(Box):
         self.assertEqual(res["ask"]["id"], res2["ask"]["id"], "同一題 id 不變")
         res, _ = self.SP.pending(CODE, screen=SCREEN_THINKING)
         self.assertEqual((res["busy"], res["at_prompt"]), ("thinking", False))
+        # 10-20 實機(cc203):提示列下面接狀態列 + 十幾行空行;提示列裡有沒送出的草稿 ⇒ idle 但不准打字
+        real = "⏺ 狀態列已更新。\n✻ Crunched for 17s · done 下午10:01\n" + "─" * 40 + "\n❯\xa0了解用戶新訊息\n" + "─" * 40 + \
+               "\n  ⚠ aib-boards: CTX 17% · 艙 6ddf · root@cc203 · dm 0\n  📌【我很閒】\n  ⏵⏵ bypass permissions on\n" + "\n" * 14
+        res, _ = self.SP.pending(CODE, screen=real)
+        self.assertEqual((res["busy"], res["at_prompt"]), ("idle", False), res)
+        res, _ = self.SP.pending(CODE, screen=real.replace("❯\xa0了解用戶新訊息", "❯\xa0"))
+        self.assertEqual((res["busy"], res["at_prompt"]), ("idle", True), res)
         self.write(ask_rec("a1", "toolu_ask1", answered=True) + [json.dumps({"type": "queue-operation", "sessionId": SESS})] * 2)
         res, _ = self.SP.pending(CODE, screen=SCREEN_THINKING)
         self.assertEqual(res["queued"], 2)

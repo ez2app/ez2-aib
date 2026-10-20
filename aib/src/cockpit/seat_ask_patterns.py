@@ -19,7 +19,8 @@ TAIL_LINES = 40
 _CLAUDE_ASK = re.compile(r"(Do you want to (?:proceed|make this edit|run this command|allow|create|delete|overwrite)[^\n]*\?|"
                          r"Allow (?:this|once|always)[^\n]*\?|Would you like to[^\n]*\?)")
 _OPTION = re.compile(r"^\s*(?:❯\s*)?(\d)\.\s+(.+?)\s*$")
-_CLAUDE_PROMPT = re.compile(r"^\s*(?:│\s*)?[❯>]\s*$|^\s*(?:│\s*)?[❯>] ")
+_CLAUDE_PROMPT = re.compile(r"^\s*(?:│\s*)?[❯>](?:\s|$)")   # 10-20 實機:提示列的 ❯ 後面是 NBSP(\xa0),用 \s 不用空格
+_CLAUDE_PROMPT_EMPTY = re.compile(r"^\s*(?:│\s*)?[❯>]\s*(?:│\s*)?$")   # 提示列空的才准打字(有草稿 = 人正在打,10-20 實機 cc203)
 _CLAUDE_THINKING = re.compile(r"[⠁⠂⠄⡀⢀⠠⠐⠈⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✻✽✶✳✢·]\s*\S*(?:ing|…)|esc to interrupt|Thinking…|Brewing|Working", re.I)
 _PAGER = re.compile(r"^\(END\)$|^:$|^-- (?:INSERT|NORMAL|VISUAL) --|^~\s*$", re.M)
 _CLAUDE_ESC_CANCEL = re.compile(r"Esc to cancel", re.I)
@@ -32,7 +33,10 @@ PROVIDERS = ("claude", "grok", "codex")
 
 
 def tail(screen, n=TAIL_LINES):
+    """最後 n 行;先去掉畫面底部的空行(capture-pane 會把 pane 底下的空行也給出來,10-20 實機:提示列被 12 行空行擠出視野)。"""
     lines = (screen or "").splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
     return lines[-n:] if n else lines
 
 
@@ -66,7 +70,7 @@ def ask_id(ask):
 
 
 def busy_state(screen, provider="claude"):
-    lines = [_strip_ansi(x) for x in tail(screen, 12)]
+    lines = [_strip_ansi(x) for x in tail(screen, 20)]
     text = "\n".join(lines)
     if provider == "grok":
         if _GROK_THINKING.search(text) and "Enter:send" not in text:
@@ -83,7 +87,7 @@ def at_prompt(screen, provider="claude"):
     """C1 送鍵前的門:提示列在等人打字才算(10-20 @abb89 第六節:在 less / vim / 權限框 / 思考中一律拒)。"""
     if permission_ask(screen, provider):
         return False
-    lines = [_strip_ansi(x) for x in tail(screen, 12)]
+    lines = [_strip_ansi(x) for x in tail(screen, 20)]
     text = "\n".join(lines)
     if _PAGER.search(text):
         return False
@@ -91,4 +95,4 @@ def at_prompt(screen, provider="claude"):
         return bool(_GROK_PROMPT.search(text)) and not _GROK_THINKING.search(text.replace("Esc:cancel", ""))
     if _CLAUDE_THINKING.search(text) or _CLAUDE_ESC_CANCEL.search(text):
         return False
-    return any(_CLAUDE_PROMPT.match(l) for l in lines)
+    return any(_CLAUDE_PROMPT_EMPTY.match(l) for l in lines)
