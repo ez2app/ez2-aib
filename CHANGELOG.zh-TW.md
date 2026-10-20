@@ -4,6 +4,14 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.33
+
+- **解鎖後持續下指令就不會上鎖**:Touch ID 過了之後，打字進席位的免重驗視窗改成「閒置才倒數」,每送一次指令就重新計時。解鎖時可以選分鐘(`aib seat input --unlock-min N`,0–60);`aib seat unlock <席> [--min N]` 先解鎖不送字、`aib seat lock <席>` 立刻上鎖、`aib seat unlocked <席>` 看還剩多久。視窗仍是本機檔、只防誤操作;回答 / 停止照舊每次驗。
+- **手機解鎖單(預設關)**:`aib seat unlock <席> --grant <檔|->` 接受 ez2.page 伺服器在手機驗過本人(passkey、LINE + 密碼、或密碼)後簽的解鎖單。檢查：寫死的公鑰清單(目前是空的 ⇒ 一律拒)、簽章、這台機器與綁定帳號、席位、5 分鐘內有效、nonce 沒用過。`aib seat remote on`(Touch ID)/ `off` / `status` 是總開關。
+- **轉接程式可以登入就起、不用開艙**:`aib chat install-boot` 裝 LaunchAgent(macOS、要明確安裝),`aib chat uninstall-boot` 拆;跟艙裡那支共用同一把單例鎖，開發 worktree 裡拒裝。
+- **重開艙後公開席自動接回**:公開改成跟人格走，同一人格重開的席位自動恢復公開，不用重設。
+- **截圖編輯器開在框選那台螢幕**:接延伸螢幕時，編輯器開在游標那台並置中，縮放比率也用那台的。
+
 ## 0.1.32
 
 - **一鍵開放艦長室給好友**:`aib chat open <好友>` 一次做完「在不在 + 艦長室內部」兩個分享等級並通知對方;`aib chat visit <好友>` 送參觀請求,對方 `aib chat visit accept|reject` 一鍵同意或拒絕;`aib chat visits` 看誰在等。不用再兩台各打一次、也不用貼 npub。

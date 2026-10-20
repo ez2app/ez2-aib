@@ -4,6 +4,14 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.33
+
+- **Unlock stays open while you keep working**: after Touch ID, the no-reprompt window for typing into a seat now counts down only while you are idle; every command you send restarts the countdown. Choose the minutes when unlocking (`aib seat input --unlock-min N`, 0–60); `aib seat unlock <seat> [--min N]` unlocks without sending, `aib seat lock <seat>` locks at once, `aib seat unlocked <seat>` shows what is left. The window is still a local file and only guards against mistakes; answer / stop still verify every time.
+- **Phone unlock tickets (off by default)**: `aib seat unlock <seat> --grant <file|->` accepts an unlock ticket signed by the ez2.page server after it verified you on your phone (passkey, LINE + password, or password). Checks: pinned public key list (empty for now ⇒ every ticket is refused), signature, this machine and bound account, seat, ≤ 5-minute lifetime, unused nonce. `aib seat remote on` (Touch ID) / `off` / `status` is the master switch.
+- **Chat bridge can start at login without opening a cabin**: `aib chat install-boot` installs a LaunchAgent (macOS, explicit opt-in), `aib chat uninstall-boot` removes it; it shares the existing single-instance lock with the cabin's bridge and refuses to install from a development worktree.
+- **Public seats come back after reopening the cabin**: being public now follows the persona, so a reopened seat with the same persona is public again without redoing it.
+- **Screenshot editor opens on the display you captured**: on an extended display it opens and centers on the screen under the cursor and uses that screen's scale.
+
 ## 0.1.32
 
 - **Open your captain's room to a friend in one step**: `aib chat open <friend>` sets both share levels (presence + room interior) and tells the other side; `aib chat visit <friend>` sends a visit request, which the owner accepts or rejects with `aib chat visit accept|reject`; `aib chat visits` lists who is waiting. No more two CLI commands on two machines, no npub pasting.
