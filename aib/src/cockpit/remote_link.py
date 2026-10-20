@@ -10,6 +10,8 @@
   input    = 只在視窗開著時送(window_only ⇒ 沒開回 locked,不在 Mac 上彈 Touch ID)
   stop     = 同上，視窗開著才停
   unlocked = 只讀剩幾秒
+  pending  = 讀那一席現在有沒有在問(黃框題目 + 選項 + ask_id);視窗開著才給
+  answer   = 回答黃框：每次都要一張回答單(kind=seat-answer,綁 ask_id + choice + 自填字雜湊;@abb89 10-21 裁「視窗不能替 answer 免驗」)
   transcript = 讀那一席的對話(手機看回覆用):也要視窗開著;遮敏感字(seat_panel redact)、每則截 2000 字、一次最多 40 則
 - 伺服器回的東西是資料不是指令：只認上面四種 op、席碼格式、字數上限;其餘一律回 bad-op。
 - 憑證不印、不寫檔、不進 argv。
@@ -34,7 +36,7 @@ POLL_S = 25
 MAX_BODY = 96 * 1024
 SEAT_RE = re.compile(r"[0-9a-z]{5}")
 ID_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")
-OPS = ("unlock", "input", "stop", "unlocked", "transcript")
+OPS = ("unlock", "input", "stop", "unlocked", "transcript", "pending", "answer")
 TRANSCRIPT_LIMIT = 40
 TRANSCRIPT_CLIP = 2000
 
@@ -99,11 +101,21 @@ def handle(msg, env=None, act=None):
         res, _rc = SA.do_input(seat, msg.get("text"), env=env, window_only=True)
     elif op == "stop":
         res, _rc = SA.do_stop(seat, hard=msg.get("hard") is True, env=env, window_only=True)
-    elif op == "transcript":
+    elif op == "answer":
+        if not isinstance(msg.get("grant"), dict):
+            return {"ok": False, "action": "answer", "seat": seat, "why": "grant-required"}
+        choice, ask_id, text = msg.get("choice"), msg.get("ask_id"), msg.get("text")
+        if not isinstance(choice, str) or not isinstance(ask_id, str) or (text is not None and not isinstance(text, str)):
+            return {"ok": False, "action": "answer", "seat": seat, "why": "bad-choice"}
+        res, _rc = SA.do_answer(seat, choice, ask_id=ask_id, free_text=text, env=env, grant=msg["grant"])
+    elif op in ("transcript", "pending"):
         left = SA.do_unlocked(seat, env=env)[0].get("unlock_left_s") or 0
         if left <= 0:
-            return {"ok": False, "action": "transcript", "seat": seat, "why": "locked"}
+            return {"ok": False, "action": op, "seat": seat, "why": "locked"}
         import seat_panel
+        if op == "pending":
+            res, _rc = seat_panel.pending(seat, state_root=None if env is None else env.get("EZ2_AIB_STATE_ROOT"), env=env)
+            return res
         off = msg.get("offset")
         sess = msg.get("session")
         res, _rc = seat_panel.transcript(seat, offset=off if type(off) is int and off >= 0 else 0, limit=TRANSCRIPT_LIMIT, clip=TRANSCRIPT_CLIP,

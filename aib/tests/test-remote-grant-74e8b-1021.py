@@ -11,8 +11,9 @@ G4 分鐘被本機上限夾;單子不過不寫視窗、不退回 Touch ID
 G5 這台的身分從 ez2.page 綁定檔讀(machine.json + 綁到這台的頁);綁的是別台 ⇒ 拒
 G6 公鑰清單釘住：正式清單目前空 ⇒ 一律 unknown-key;程式不從環境變數 / 設定檔讀公鑰
 G8 ez2.page 範例單(外層 {grant, sig}、一次性測試鑰)驗得過、canonical 兩邊一致;改一個字不過
+G9 回答單(@abb89 裁):綁 ask_id + choice(+ 自填字雜湊)、2 分鐘;對上 ⇒ 不彈 Touch ID 照答;換選項 / 換題 / 視窗開著也沒單子的另一題 ⇒ 拒;同一張不能用兩次
 G7 入口:aib seat remote status、aib seat unlock --grant(關著 ⇒ rc 3);四語字串
-刀(複本):K1 不驗簽 ⇒ G3 紅;K2 不擋重放 ⇒ G3 紅;K3 on 不驗 Touch ID ⇒ G2 紅
+刀(複本):K1 不驗簽 ⇒ G3 紅;K2 不擋重放 ⇒ G3 紅;K3 on 不驗 Touch ID ⇒ G2 紅;K4 answer 不驗回答單 ⇒ G9 紅
 """
 import base64
 import importlib.util
@@ -174,6 +175,38 @@ class Grant(BASE.Box):
         env["grant"]["minutes"] = 60
         self.assertEqual(self.RG.verify(env, g["seat"], now=g["iat"] + 10, keys=keys, machine=(g["machine"], {g["account_id"]}))[1], "bad-sig")
 
+    def ask_id(self):
+        import seat_panel
+        return seat_panel.pending(CODE, state_root=str(self.state), screen=BASE.PERMISSION)[0]["ask"]["id"]
+
+    def answer(self, g, choice="1", **kw):
+        return self.act(self.SA.do_answer, CODE, choice, screen=BASE.PERMISSION, grant=g, grant_keys=KEYS, machine=MACHINE, **kw)
+
+    def test_g9_answer(self):
+        self.on()
+        self.asked.clear()
+        aid = self.ask_id()
+        now = int(time.time())
+        ans = dict(kind="seat-answer", ask_id=aid, choice="1", exp=now + 100)
+        ans.pop("minutes", None)
+        g = make(**ans)
+        res, rc = self.answer(g)
+        self.assertEqual((rc, res["via"], res["keys"]), (0, "remote-grant", ["1"]), res)
+        self.assertEqual(self.asked, [], "有回答單就不彈 Touch ID")
+        res, rc = self.answer(g)
+        self.assertEqual(res["why"], "grant_replayed")
+        for bad, why, ch in ((make(**dict(ans, choice="3")), "grant_wrong-answer", "1"),
+                             (make(**dict(ans, ask_id="screen:deadbeef")), "grant_wrong-answer", "1"),
+                             (make(**dict(ans, exp=now + 300)), "grant_expired", "1"),
+                             (make(**dict(ans, kind="seat-unlock")), "grant_bad-grant", "1"),
+                             (make(**dict(ans, text_sha256=self.RG.text_hash("別的字"))), "grant_wrong-answer", "1")):
+            res, rc = self.answer(bad, ch)
+            self.assertEqual((rc, res["why"]), (3, why), res)
+        self.act(self.SA.do_unlock, CODE, 10)
+        res, rc = self.answer(make(**dict(ans, choice="3")), "1")
+        self.assertEqual(res["why"], "grant_wrong-answer", "視窗開著也不能替 answer 免驗")
+        self.assertEqual(len(self.asked), 1, "只有剛剛那次 unlock 彈過")
+
     def test_g6_pinned(self):
         self.assertEqual(self.RG.TRUSTED_GRANT_KEYS, {}, "正式公鑰清單改了 ⇒ 要維護者點頭再改這行")
         self.on()
@@ -215,6 +248,10 @@ class Knife(unittest.TestCase):
     def test_k3_on_no_touchid(self):
         self._knife("src/cockpit/seat_act.py", '        out["via"], why = prove(T("touchid_remote_on"), env, touchid, touchid_available, platform)',
                     '        out["via"], why = "touchid", None', "Grant.test_g2_switch")
+
+    def test_k4_answer_unchecked(self):
+        self._knife("src/cockpit/seat_act.py", '        out["via"], why = "remote-grant", (None if _ok else "grant_" + gwhy)',
+                    '        out["via"], why = "remote-grant", None', "Grant.test_g9_answer")
 
 
 if __name__ == "__main__":

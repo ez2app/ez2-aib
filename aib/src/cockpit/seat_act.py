@@ -406,7 +406,8 @@ def _answer_keys(ask, choice, free_text):
 
 
 def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, touchid=None, touchid_available=None, platform=None,
-              tmux="tmux", run=subprocess.run):
+              tmux="tmux", run=subprocess.run, grant=None, grant_keys=None, machine=None):
+    """grant = 手機那頭的回答單(remote_grant.verify_answer:綁這一題 + 這個選項，一次一張);沒有就照舊每次 Touch ID"""
     env = dict(os.environ if env is None else env)
     out = _out(False, code, "answer")
     if caller_is_seat(env):
@@ -434,7 +435,12 @@ def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, 
     label = next((o.get("label") for o in ask.get("options") or [] if o["key"] == keys[0]), free_text or choice)
     reason = reason_for("answer", code, "%s → %s" % (ask.get("prompt", "")[:20], label))
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
-    out["via"], why = prove(reason, env, touchid, touchid_available, platform)      # 每次都驗,不吃免重驗視窗
+    if grant is not None:
+        import remote_grant
+        _ok, gwhy = remote_grant.verify_answer(grant, code, ask["id"], choice, free_text, env, keys=grant_keys, machine=machine)
+        out["via"], why = "remote-grant", (None if _ok else "grant_" + gwhy)
+    else:
+        out["via"], why = prove(reason, env, touchid, touchid_available, platform)      # 每次都驗,不吃免重驗視窗
     if why:
         out["why"] = why
         log_action(code, "answer", env, ok=False, why=why, ask_id=ask["id"])
