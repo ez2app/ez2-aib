@@ -350,9 +350,12 @@ def do_unlocked(code, env=None):
     return _out(True, code, "unlocked", via="none", unlock_left_s=left, idle_s=idle, default_min=unlock_minutes(env)), 0
 
 
-def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_available=None, platform=None):
-    """手機遠端解鎖總開關(remote_grant.remote_cfg)。on 要本機 Touch ID、擋席位呼叫;off / status 不問。"""
+def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_available=None, platform=None, link_ctl=None):
+    """手機遠端解鎖總開關(remote_grant.remote_cfg)。on 要本機 Touch ID、擋席位呼叫;off / status 不問。
+    一鍵:on 之後順手在背景起 aib seat remote link(還沒綁 ez2.page 就不起、回 link_why);off 一起停。link_ctl 只給測試注入。"""
     import remote_grant
+    import remote_link
+    ctl = link_ctl or remote_link
     env = dict(os.environ if env is None else env)
     out = {"ok": False, "action": "remote", "state": state}
     if state == "on":
@@ -364,8 +367,10 @@ def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_a
             out["why"] = why
             return out, 3
         cfg = remote_grant.set_remote(True, env, max_min=max_min, allow=allow)
+        out["link_pid"], out["link_why"] = ctl.start_bg(env)
     elif state == "off":
         cfg = remote_grant.set_remote(False, env)
+        ctl.stop_bg(env)
     elif state == "status":
         cfg = remote_grant.remote_cfg(env)
     else:
@@ -373,7 +378,7 @@ def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_a
         return out, 2
     mid, accts = remote_grant.this_machine(env)
     out.update(ok=True, on=cfg["on"], max_min=cfg["max_min"], allow=cfg["allow"], bound=bool(mid and accts),
-               machine_fp=mid,
+               machine_fp=mid, link=bool(ctl.running(env)),
                keys=len(remote_grant.TRUSTED_GRANT_KEYS))
     return out, 0
 
