@@ -10,6 +10,7 @@ G3 拒：改欄位(簽章不符)/ 不認得的 kid / 別台 / 別帳號 / 別席
 G4 分鐘被本機上限夾;單子不過不寫視窗、不退回 Touch ID
 G5 這台的身分從 ez2.page 綁定檔讀(machine.json + 綁到這台的頁);綁的是別台 ⇒ 拒
 G6 公鑰清單釘住：正式清單目前空 ⇒ 一律 unknown-key;程式不從環境變數 / 設定檔讀公鑰
+G8 ez2.page 範例單(外層 {grant, sig}、一次性測試鑰)驗得過、canonical 兩邊一致;改一個字不過
 G7 入口:aib seat remote status、aib seat unlock --grant(關著 ⇒ rc 3);四語字串
 刀(複本):K1 不驗簽 ⇒ G3 紅;K2 不擋重放 ⇒ G3 紅;K3 on 不驗 Touch ID ⇒ G2 紅
 """
@@ -44,6 +45,7 @@ KEYS = {KID: "ed25519:" + ed25519.public_key(SEED).hex()}
 MID = "6f1c1d1e-0000-4000-8000-000000000001"
 ACCT = "t_lfu0327"
 MACHINE = (MID, {ACCT})
+EXAMPLE = '{"pubkey": {"kid": "6c0748f51a15a6c0", "alg": "Ed25519", "pub_b64": "FdR6iDS3oZQSQbeme6vsPV5wSdoxWYpcKMtw/9FJflw="}, "canonical": "{\\"account_id\\":\\"acct_example0001\\",\\"auth\\":\\"line\\",\\"exp\\":1792540920,\\"iat\\":1792540800,\\"kid\\":\\"6c0748f51a15a6c0\\",\\"kind\\":\\"seat-unlock\\",\\"machine\\":\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\",\\"minutes\\":10,\\"nonce\\":\\"bm9uY2UtZXhhbXBsZS0wMDAx\\",\\"seat\\":\\"9f808\\",\\"v\\":1}", "envelope": {"grant": {"v": 1, "kind": "seat-unlock", "kid": "6c0748f51a15a6c0", "account_id": "acct_example0001", "machine": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "seat": "9f808", "minutes": 10, "nonce": "bm9uY2UtZXhhbXBsZS0wMDAx", "iat": 1792540800, "exp": 1792540920, "auth": "line"}, "sig": "P-pgcu_9UfpEMf38JXzV2yuNMLR7g0CEgJ5SIy-LcEsQt4kaCNOoJP0OKwhSNLunCwz9VgTlLjWaipg-E-iXAg"}}'
 
 
 def make(seed=SEED, **kw):
@@ -116,6 +118,9 @@ class Grant(BASE.Box):
             (make(iat=now + 600, exp=now + 700), "expired"),
             (make(auth="sms"), "auth-not-allowed"),
             (make(nonce="short"), "bad-grant"),
+            (make(minutes=10.0), "bad-grant"),
+            (make(minutes=0), "bad-grant"),
+            (make(iat=now + 45, exp=now + 100), "expired"),
             (make(v=2), "bad-grant"),
             (make(kind="license"), "bad-grant"),
             ("not-a-dict", "bad-grant"),
@@ -152,6 +157,19 @@ class Grant(BASE.Box):
         self.assertEqual(rc, 0, res)
         res, rc = self.unlock(make(account_id="t_x"), machine=None)
         self.assertEqual(res["why"], "grant_wrong-account", "綁在別台的頁不算")
+
+    def test_g8_ez2page_example(self):
+        """@9f808 給的範例單(一次性測試鑰、外層 {grant, sig}):用本機驗得過;改一個字就不過"""
+        ex = json.loads(EXAMPLE)
+        keys = {ex["pubkey"]["kid"]: self.RG.pub_from_b64(ex["pubkey"]["pub_b64"])}
+        g = ex["envelope"]["grant"]
+        self.RG.set_remote(True)
+        mins, why = self.RG.verify(ex["envelope"], g["seat"], now=g["iat"] + 10, keys=keys, machine=(g["machine"], {g["account_id"]}))
+        self.assertEqual((mins, why), (10, None))
+        self.assertEqual(signing.canonical(g).decode(), ex["canonical"], "兩邊 canonical 一致")
+        env = json.loads(EXAMPLE)["envelope"]
+        env["grant"]["minutes"] = 60
+        self.assertEqual(self.RG.verify(env, g["seat"], now=g["iat"] + 10, keys=keys, machine=(g["machine"], {g["account_id"]}))[1], "bad-sig")
 
     def test_g6_pinned(self):
         self.assertEqual(self.RG.TRUSTED_GRANT_KEYS, {}, "正式公鑰清單改了 ⇒ 要維護者點頭再改這行")

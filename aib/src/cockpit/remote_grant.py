@@ -10,7 +10,7 @@
 防線(GUIDE-same-user-ai-threat-model「簽章」那一類):
 - 公鑰清單寫死在這支(已簽版本);**不從設定檔 / 環境變數讀**(那等於可換)。改清單要維護者點頭,測試釘著。
 - 驗:v / kind / kid 在清單 / Ed25519 簽章(canonical JSON,去掉 sig)/ machine = 這台 machine.json / account_id = 這台綁的帳號 /
-  seat 對 / 沒過期(exp - iat ≤ 5 分鐘、iat 不在未來 60 秒以外)/ nonce 沒用過 / auth 在允許清單。
+  seat 對 / 沒過期(now ∈ [iat - 30 秒, exp]、exp - iat ≤ 5 分鐘)/ 數字只收整數/ nonce 沒用過 / auth 在允許清單。
 - 本機總開關 remote.json:預設關;**打開要本機 Touch ID**(aib seat remote on),關一鍵。⚠ 這是本機檔、AI 改得到:只防「伺服器被拿下就能對本機下指令」
   這種情況下本人沒打開的機器;不宣稱擋得住本機 AI。
 - 用過的 nonce 記在本機(AI 刪得掉 ⇒ 只防網路重放;單子 5 分鐘內過期把重放窗壓小)。
@@ -31,7 +31,7 @@ for p in (HERE, HERE.parent):
 V = 1
 KIND = "seat-unlock"
 MAX_LIFE_S = 300
-SKEW_S = 60
+SKEW_S = 30
 AUTHS = ("passkey", "line", "password")
 SEAT_RE = re.compile(r"[0-9a-z]{5}")
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
@@ -50,6 +50,14 @@ def state_root(env=None):
 def _canonical(obj):
     from entitlement import signing
     return signing.canonical(obj)
+
+
+def pub_from_b64(pub_b64):
+    """ez2.page 給的 32 位元組原始公鑰(標準 base64)⇒ 清單用的 "ed25519:<hex>" """
+    raw = _b64(pub_b64)
+    if len(raw) != 32:
+        raise ValueError("ed25519 公鑰要 32 位元組")
+    return "ed25519:" + raw.hex()
 
 
 def _b64(text):
@@ -136,6 +144,8 @@ def verify(grant, seat, env=None, now=None, keys=None, machine=None):
     """單子 dict ⇒ (minutes, None) 或 (None, why)。keys / machine 只給測試注入(正式一律用寫死的清單、這台的綁定)。"""
     from entitlement import ed25519
     t = int(now or time.time())
+    if isinstance(grant, dict) and isinstance(grant.get("grant"), dict):
+        grant = dict(grant["grant"], sig=grant.get("sig"))   # ez2.page 發的外層 {grant, sig}
     if not isinstance(grant, dict):
         return None, "bad-grant"
     cfg = remote_cfg(env)
@@ -162,9 +172,8 @@ def verify(grant, seat, env=None, now=None, keys=None, machine=None):
         return None, "wrong-account"
     if grant.get("seat") != seat or not isinstance(seat, str) or not SEAT_RE.fullmatch(seat):
         return None, "wrong-seat"
-    try:
-        iat, exp, mins = int(grant["iat"]), int(grant["exp"]), int(grant["minutes"])
-    except (KeyError, TypeError, ValueError):
+    iat, exp, mins = grant.get("iat"), grant.get("exp"), grant.get("minutes")
+    if not all(type(x) is int for x in (iat, exp, mins)) or not 1 <= mins <= 60:
         return None, "bad-grant"
     if iat > t + SKEW_S or exp <= t or exp - iat > MAX_LIFE_S:
         return None, "expired"
