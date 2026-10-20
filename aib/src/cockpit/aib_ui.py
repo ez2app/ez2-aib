@@ -4,7 +4,7 @@
 """`aib`(不帶參數)預設開艦長室 + `aib ui room|terminal`(10-20 Andy 裁;SPEC-chat-panel 第 0、5 節 C8)。
 
 - 設定在 <狀態根>/ui.json {"ui": "room"|"terminal"},預設 room;`aib ui terminal` 之後 `aib` 回到印說明(傳統駕駛艙)。
-- room:先 `aib room status`(艦長室外掛);沒在跑 ⇒ `aib room open`把伺服器起來(用假的 `open` 擋掉它順手開的系統瀏覽器,
+- room:先 `aib room status`(艦長室外掛);沒在跑 ⇒ `aib room open`把伺服器起來(帶 --no-browser 不開系統瀏覽器,
   因為 Andy 裁「不帶網址」);然後開**應用程式視窗**:有 Chrome / Edge / Brave ⇒ `--app=http://127.0.0.1:<埠>/`
   + 獨立 profile(<狀態根>/captain-room/browser-profile,不碰使用者平常的瀏覽器)+ --no-first-run --no-default-browser-check;
   都沒有 ⇒ 退回系統預設瀏覽器(有網址列)並印一行說明。
@@ -14,10 +14,8 @@
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -98,28 +96,17 @@ def room_has_no_browser(run=subprocess.run):
 
 
 def ensure_room(run=subprocess.run):
-    """回 (url 或 None, why)。沒在跑就叫 aib room open 起伺服器:新外掛帶 --no-browser;舊外掛用假的 open 擋掉它開的系統瀏覽器。"""
+    """回 (url 或 None, why)。沒在跑就叫 aib room open --no-browser 起伺服器(外掛 0.1.33 起有這個旗標;兩台 10-21 都已 0.1.34)。
+    第二波 #7:拿掉 #202 用假 open 擋系統瀏覽器的臨時措施;外掛太舊 ⇒ 不起、回 room-too-old(人話叫他換外掛),不再偷偷開瀏覽器。"""
     st = room_status(run)
     if st.get("alive") and st.get("url"):
         return st["url"], None
-    if room_has_no_browser(run):
-        try:
-            run([_aib_bin(), "room", "open", "--no-browser"], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError):
-            return None, "room-start-failed"
-    else:
-        shim = tempfile.mkdtemp(prefix="aib-ui-noopen-")
-        try:
-            p = Path(shim) / "open"
-            p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            p.chmod(p.stat().st_mode | stat.S_IXUSR)
-            env = dict(os.environ, PATH=shim + os.pathsep + os.environ.get("PATH", ""))
-            try:
-                run([_aib_bin(), "room", "open"], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=env)
-            except (OSError, subprocess.SubprocessError):
-                return None, "room-start-failed"
-        finally:
-            shutil.rmtree(shim, ignore_errors=True)
+    if not room_has_no_browser(run):
+        return None, "room-too-old"
+    try:
+        run([_aib_bin(), "room", "open", "--no-browser"], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None, "room-start-failed"
     st = room_status(run)
     if st.get("alive") and st.get("url"):
         return st["url"], None
@@ -164,7 +151,7 @@ def open_room(out=None, env=None, run=subprocess.run, popen=subprocess.Popen, ex
         return 2
     url, why = ensure_room(run)
     if not url:
-        out.write(T("room_failed", why=why) + "\n")
+        out.write(T("room_too_old" if why == "room-too-old" else "room_failed", why=why) + "\n")
         return 2
     how, detail = open_app_window(url, env, popen=popen, exists=exists, run=run)
     if how == "app":

@@ -4772,6 +4772,7 @@
   "aib.ui.set_terminal": "설정됨: 이제 aib만 치면 설명 출력, 기존 조종석(선장실 열기: aib room)",
   "aib.ui.room_missing": "이 기기에는 선장실 플러그인이 없습니다(aib plugins install <패키지>). 터미널로 계속합니다:",
   "aib.ui.room_failed": "선장실을 시작하지 못했습니다({why}). 터미널로 계속합니다:",
+  "aib.ui.room_too_old": "선장실 플러그인이 너무 오래됨(aib room open --no-browser 는 0.1.33 이상 필요; aib plugins install <패키지> 로 갱신). 터미널로 계속합니다:",
   "aib.ui.opened_app": "선장실을 독립 창으로 열었습니다({browser}). 창을 닫아도 자리에는 영향 없음. 터미널로 돌아가기: aib ui terminal",
   "aib.ui.opened_browser": "Chrome / Edge / Brave가 없어 기본 브라우저로 열었습니다(주소창 보임). 하나를 설치하면 독립 창이 됩니다",
   "aib.ui.open_failed": "선장실은 실행 중이지만 창을 열 수 없습니다. 직접 여세요: {url}",
