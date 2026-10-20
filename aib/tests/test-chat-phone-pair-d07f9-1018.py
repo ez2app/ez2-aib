@@ -233,6 +233,11 @@ asyncio.run(main())
 """
 
 
+# 等「會發生的事」的上限:全套一起跑時機器很忙(10-20 @abb89:全套紅一次、單跑 3 次綠),
+# 條件一成立就回，綠的時候不會變慢;「不准發生」的那幾段照舊短等。
+SLOW = 90
+
+
 class Network(Net):
     """真的走一遍:拋棄式手機金鑰經本機假中繼站傳 NIP-17 給這台的公開席。"""
     test_p5_cli = None
@@ -240,7 +245,7 @@ class Network(Net):
     def setUp(self):
         super().setUp()
         self.b.start_run()
-        self.assertTrue(self.b.wait_for(lambda: self.b.status().get("state") == "published", 40), self.b.status())
+        self.assertTrue(self.b.wait_for(lambda: self.b.status().get("state") == "published", SLOW), self.b.status())
 
     def phone(self, sk, texts=(), fetch=False, dm_relays=False):
         py = Path(RT.NOSTR_VENV) / "bin" / "python"
@@ -275,20 +280,20 @@ class Network(Net):
     def test_n1_phone_flow(self):
         code = self.start()
         self.phone(PHONE_SK, [code], dm_relays=True)
-        self.assertTrue(self.b.wait_for(lambda: (CP.read_pending(self.b.root) or {}).get("candidates"), 20), "候選沒進來")
+        self.assertTrue(self.b.wait_for(lambda: (CP.read_pending(self.b.root) or {}).get("candidates"), SLOW), "候選沒進來")
         # 看到候選之後再等 3 秒都沒被配上才算(自動配的寫法是先記候選、緊接著寫 paired.json,只看一眼會剛好落在兩次寫之間)
         self.assertFalse(self.b.wait_for(lambda: CP.is_paired(PHONE, self.env), 3), "傳對碼不准自動配")
         rc, txt = self.run_cli("pair", "confirm")
         self.assertEqual(rc, 0, txt)
         self.assertTrue(CP.is_paired(PHONE, self.env))
         self.phone(PHONE_SK, ["gm 跑一次測試"])
-        self.assertTrue(self.b.wait_for(lambda: self.phone_rows(), 20), self.phone_rows())
+        self.assertTrue(self.b.wait_for(lambda: self.phone_rows(), SLOW), self.phone_rows())
         self.assertEqual(self.phone_rows()[0], ("order", "跑一次測試", True))
         self.assertEqual(CP.last_command(self.b.root)["head"], "跑一次測試")
-        self.assertTrue(self.b.wait_for(lambda: any("收到指令" in t for t in self.phone(PHONE_SK, fetch=True)), 20),
+        self.assertTrue(self.b.wait_for(lambda: any("收到指令" in t for t in self.phone(PHONE_SK, fetch=True)), SLOW),
                         "手機要收到「收到指令」")
         self.phone(PHONE_SK, ["好啊"])
-        self.assertTrue(self.b.wait_for(lambda: any(c == "好啊" for _k, c, _v in self.phone_rows()), 20), self.phone_rows())
+        self.assertTrue(self.b.wait_for(lambda: any(c == "好啊" for _k, c, _v in self.phone_rows()), SLOW), self.phone_rows())
         self.assertEqual([k for k, c, _v in self.phone_rows() if c == "好啊"][0], "other", "討論不是指令")
         fake_sk = "%064x" % 0x9555                              # @abb89 F1:AI 自己產金鑰、寫進 paired.json
         CP.add_phone(NK.npub(NK.pubkey_hex(fake_sk)), self.env)
