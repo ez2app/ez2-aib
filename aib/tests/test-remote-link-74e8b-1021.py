@@ -126,6 +126,9 @@ class Link(BASE.Box):
         res = r.replies[1]["result"]
         self.assertNotEqual(res.get("why"), "locked", res)
         self.assertIn("events", res, res)
+        self.assertNotIn("file", res, "不給本機路徑")
+        self.assertNotIn(str(self.home), json.dumps(res, ensure_ascii=False))
+        self.assertTrue(all(set(e) == {"id", "ts", "kind", "text"} for e in res["events"]), res["events"])
 
     def test_l7_answer_pending(self):
         r = Relay({"id": "m-ans-00001", "op": "answer", "seat": CODE, "choice": "1", "ask_id": "screen:x"},

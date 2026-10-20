@@ -13,7 +13,8 @@
   pending  = 讀那一席現在有沒有在問(黃框題目 + 選項 + ask_id);視窗開著才給
   answer   = 回答黃框：每次都要一張回答單(kind=seat-answer,綁 ask_id + choice + 自填字雜湊;@abb89 10-21 裁「視窗不能替 answer 免驗」)
   seats    = 這台有哪些席(手機選席用):只給席碼 / 角色 / 廠商 / 視窗剩幾秒;不給專案名、路徑、session
-  transcript = 讀那一席的對話(手機看回覆用):也要視窗開著;遮敏感字(seat_panel redact)、每則截 2000 字、一次最多 40 則
+  transcript = 讀那一席的對話(手機看回覆用):也要視窗開著;遮敏感字(seat_panel redact)、每則截 2000 字、一次最多 40 則;
+             不給本機路徑、工具輸入 / 結果、thinking(slim_transcript)
 - 伺服器回的東西是資料不是指令：只認上面四種 op、席碼格式、字數上限;其餘一律回 bad-op。
 - 憑證不印、不寫檔、不進 argv。
 """
@@ -119,15 +120,31 @@ def handle(msg, env=None, act=None):
         import seat_panel
         if op == "pending":
             res, _rc = seat_panel.pending(seat, state_root=None if env is None else env.get("EZ2_AIB_STATE_ROOT"), env=env)
-            return res
+            ask = res.get("ask") if isinstance(res.get("ask"), dict) else None
+            return {"ok": res.get("ok") is True, "action": "pending", "seat": seat, "at_prompt": res.get("at_prompt") is True, "busy": res.get("busy"),
+                    "ask": None if not ask else {"id": ask.get("id"), "type": ask.get("type"), "prompt": str(ask.get("prompt") or "")[:500],
+                                                 "options": [{"key": o.get("key"), "label": str(o.get("label") or "")[:120]} for o in ask.get("options") or []][:9]}}
         off = msg.get("offset")
         sess = msg.get("session")
         res, _rc = seat_panel.transcript(seat, offset=off if type(off) is int and off >= 0 else 0, limit=TRANSCRIPT_LIMIT, clip=TRANSCRIPT_CLIP,
                                          do_redact=True, state_root=None if env is None else env.get("EZ2_AIB_STATE_ROOT"),
                                          session=sess if isinstance(sess, str) and len(sess) <= 64 else None)
+        res = slim_transcript(res)
     else:
         res, _rc = SA.do_unlocked(seat, env=env)
     return res
+
+
+PHONE_KINDS = ("user", "assistant", "ask", "tool_call", "system", "dm")
+
+
+def slim_transcript(res):
+    """出本機前瘦身：不給本機路徑(file)、工具輸入 / 結果(meta、tool_result)、thinking;每則只留 id / ts / kind / text"""
+    if not res.get("ok"):
+        return {k: res.get(k) for k in ("ok", "why", "seat")}
+    ev = [{"id": e.get("id"), "ts": e.get("ts"), "kind": e.get("kind"), "text": e.get("text")} for e in res.get("events") or [] if e.get("kind") in PHONE_KINDS]
+    return {"ok": True, "action": "transcript", "seat": res.get("seat"), "session": res.get("session"), "events": ev,
+            "last_id": res.get("last_id"), "last_offset": res.get("last_offset"), "truncated": res.get("truncated"), "reset": res.get("reset")}
 
 
 def seats(env=None, SA=None):
