@@ -403,6 +403,7 @@ def _receipt(root, msgid, stage, detail=None):
 CLOCK_EVERY = float(os.environ.get("AIB_CHAT_CLOCK_EVERY") or 600)   # 秒
 CLOCK_WARN_S = float(os.environ.get("AIB_CHAT_CLOCK_WARN") or 3)     # 驗收第 10 項:慢 3 秒就警告
 OFFLINE_AFTER = float(os.environ.get("AIB_CHAT_OFFLINE_AFTER") or 300)   # 第 20.1 節:全部站斷線超過 5 分鐘 ⇒ 離線
+RECV_OK_S = float(os.environ.get("AIB_CHAT_RECV_OK_S") or 60)            # 10-20:收信 session 撐過這麼久才算正常,連續失敗歸零
 
 
 def audit(root, direction, msgid, peer, result):
@@ -1012,6 +1013,18 @@ class Receiver(object):
         self.led = Ledger(root)
         self.client = None
         self.orphans = []      # 查不到寄出帳的回條:[(到期, ref, stage, tags, from_npub)](第 27.8 節)
+        # 10-20 @abb89(會員清單 E 段):收信連續失敗 ⇒ 警報。Pro 13 從 10-19 11:20 起每 5 秒重來、20 小時沒人發現。
+        #   n = 連續幾次「一下就斷」;一段 session 撐過 RECV_OK_S 才算正常、歸零。寫進 worker-status.json,aib chat status 印 ⚠。
+        self.fail = {"n": 0, "since": None, "why": None}
+
+    def _recv_failed(self, why):
+        f = self.fail
+        f["n"] += 1
+        f["why"] = why
+        f["since"] = f["since"] or int(time.time())
+
+    def _recv_ok(self):
+        self.fail = {"n": 0, "since": None, "why": None}
 
     def _our_seats(self):
         m = NK.read_map()
@@ -1024,9 +1037,15 @@ class Receiver(object):
             if not seats:
                 await _sleep_or_stop(stop, 5)
                 continue
+            t0 = time.time()
             try:
                 await self._session(stop, seats)
+                if time.time() - t0 >= RECV_OK_S:
+                    self._recv_ok()
             except Exception as err:   # noqa: BLE001  斷線、站掛掉:5 秒後重來(下一輪會補收)
+                if time.time() - t0 >= RECV_OK_S:
+                    self._recv_ok()                         # 撐了一陣子才斷 = 普通斷線,不是連續失敗
+                self._recv_failed(type(err).__name__)
                 sys.stderr.write("recv:%s\n" % type(err).__name__)
                 await _sleep_or_stop(stop, 5)
 
@@ -1554,7 +1573,8 @@ async def write_worker_status(root, receiver, state):
     offline = up == 0 and now - state.get("last_up", state["started"]) >= OFFLINE_AFTER
     pend = len(list((Path(root) / "outbox").glob("*.json"))) + len(list((Path(root) / "sending").glob("*.json")))
     rec = {"v": 1, "at": int(now), "pid": os.getpid(), "relays": rel, "up": up, "total": len(rel), "offline": offline,
-           "today": today_counts(root), "pending": pend, "clock": state.get("clock")}
+           "today": today_counts(root), "pending": pend, "clock": state.get("clock"),
+           "recv_fail": dict(getattr(receiver, "fail", None) or {"n": 0, "since": None, "why": None})}
     write_json(str(Path(root) / "worker-status.json"), rec)
     os.chmod(str(Path(root) / "worker-status.json"), 0o600)
 

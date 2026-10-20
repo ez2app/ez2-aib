@@ -4374,6 +4374,7 @@
   "aib.chat.status_today": "本日:送信 {sent}、受信 {received}、失敗 {failed}。送信待ち {pending}",
   "aib.chat.status_clock_ok": "時計:リレーとの差 {offset} 秒(正常)",
   "aib.chat.status_clock_warn": "⚠ 時計:リレーとの差 {offset} 秒。時刻を合わせてください(システム設定 → 日付と時刻 → 自動設定)。受領通知と期限の判定がずれます",
+  "aib.chat.status_recv_failing": "⚠ 受信が {n} 回連続で失敗({why}、{mins} 分間):メールが届きません。aib chat off のあと aib chat on を試し、それでも失敗するなら報告してください",
   "aib.chat.status_clock_unknown": "時計:未計測(または計測不可)",
   "aib.chat.prepare_venv_ok": "オンライン対話:nostr-sdk 準備済み({pin})",
   "aib.chat.prepare_venv_failed": "オンライン対話:nostr-sdk を導入できませんでした({pin}、多くはネットワーク)。後で aib chat prepare を実行",
