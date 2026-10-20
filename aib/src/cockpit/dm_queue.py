@@ -4225,6 +4225,32 @@ def _is_global_hold(d):
         or d.get("sender_kind") in GLOBAL_SENDER_KINDS + ("external_im",))
 
 
+def _hold_sender_label(d):
+    """待審外部信的寄件人:不給對方自取的顯示名(也是注入面),換成固定字 + 聯絡人鍵 sha256 前 4 碼。
+    同一位寄件人代號固定,AI 分得出是不是同一人,但讀不到任何對方寫的字。"""
+    m = d.get("im") if isinstance(d.get("im"), dict) else None
+    g = d.get("global") if isinstance(d.get("global"), dict) else None
+    # 原始信有 im.id / global.addr;_row 出來的列只剩 im.contact_key / global.sender_id(= sha256(addr) 前 12 碼),兩邊代號一樣
+    if m:
+        key, net = m.get("contact_key") or "%s:%s" % (m.get("net"), m.get("id")), str(m.get("net") or "")
+    else:
+        key, net = (g or {}).get("addr") or d.get("sender_origin") or d.get("id") or "", ""
+    if not m and d.get("sender_kind") == "external_im":
+        net = str(d.get("sender_origin") or "").partition(":")[0]
+    sid = (g or {}).get("sender_id")
+    tag = sid[:4] if not m and not (g or {}).get("addr") and isinstance(sid, str) and len(sid) >= 4 \
+        else hashlib.sha256(str(key).encode("utf-8")).hexdigest()[:4]
+    net = {"telegram": "Telegram"}.get(net, net)
+    try:
+        import i18n_lib as _I18N
+        loc = _I18N.resolve_locale()
+        if net:
+            return _I18N.t("aib.dmqueue.hold_sender_im", {"net": net, "tag": tag}, locale=loc)
+        return _I18N.t("aib.dmqueue.hold_sender_seat", {"tag": tag}, locale=loc)
+    except Exception:  # noqa: BLE001 —— 字典壞了也不能退回對方自取的名字(字面備援,與 zh-TW 同義)
+        return ("外部 %s #%s" % (net, tag)) if net else ("外部 aib 席 #%s" % tag)
+
+
 def redact_global_hold(obj):
     """陌生(未放行)的全球來信:內文換成固定一行、拿掉位址與 npub(盤點 10-16 第 2 項)。
     待審就是「主人看過才給 AI」;命令列(list / show / tabs,MCP aib_inbox 也走這裡)與交接預填都會被 AI 讀到。
@@ -4238,8 +4264,17 @@ def redact_global_hold(obj):
         for k in ("msg", "body", "text", "preview"):
             if k in out:
                 out[k] = GLOBAL_HOLD_PLACEHOLDER
+        label = _hold_sender_label(obj)
         if isinstance(out.get("global"), dict):
-            out["global"] = {k: v for k, v in out["global"].items() if k in ("shown", "verified", "same_name", "reply_code")}
+            out["global"] = {k: v for k, v in out["global"].items() if k in ("verified", "same_name", "reply_code", "sender_id")}
+            out["global"]["shown"] = label
+        if isinstance(out.get("im"), dict):
+            out["im"] = {k: v for k, v in out["im"].items() if k in ("net", "relation", "contact_key")}
+            out["im"]["shown"] = label
+        for k in ("sender", "sender_label"):
+            if k in out:
+                pre = HOLD_LABEL + "·"
+                out[k] = (pre if str(out[k]).startswith(pre) else "") + label
         out.pop("sender_origin", None)
         out["msg_hidden"] = True
     return out

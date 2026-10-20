@@ -2116,6 +2116,8 @@
   "aib.dmctl.queued_sender_fallback": "the queued message's original sender ({label}) cannot form a valid header; using the sender derived from the deliverer as before",
   "aib.dmctl.queued": "queued, not yet in the other seat's input box.",
   "aib.dmqueue.hold_notice": "You have {n} message(s) that never reached your input box (held for review, {new} new). See: aib dm-queue list --seat {seat}",
+  "aib.dmqueue.hold_sender_im": "External {net} #{tag}",
+  "aib.dmqueue.hold_sender_seat": "External aib seat #{tag}",
   "aib.dmctl.resend_queued": "the receiving seat is busy and the one resend did not get in either; queued, it will be delivered when the seat is idle (queue_id={id}; do not resend).",
   "aib.dmctl.hold_notify_idle": "held for review: this message will not be resent automatically; the receiving seat gets a notice when it is idle.",
   "aib.dmctl.hold_notify_none": "held for review: this message will not be resent automatically; message queueing is off in this cabin, so the receiving seat will NOT get a notice. Tell them directly.",
