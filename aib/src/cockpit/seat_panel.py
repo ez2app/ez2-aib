@@ -432,7 +432,8 @@ def pending(code, state_root=None, screen=None, env=None):
     if rec is None:
         return {"v": V, "ok": False, "why": "no-seat", "seat": code}, 2
     provider = str(rec.get("provider") or "claude")
-    out = {"v": V, "ok": True, "seat": code, "ask": None, "busy": "unknown", "queued": 0, "at_prompt": None, "hold_count": None, "now": None}
+    out = {"v": V, "ok": True, "seat": code, "ask": None, "busy": "unknown", "queued": 0, "at_prompt": None, "hold_count": None,
+           "human_mail": None, "now": None}
     path = transcript_path(rec)
     if path:
         try:
@@ -462,7 +463,10 @@ def pending(code, state_root=None, screen=None, env=None):
         out["at_prompt"] = False
     try:
         import dm_queue as DQ
-        out["hold_count"] = sum(1 for it in DQ.list_items(code, env) if it.get("status") == DQ.HOLD_STATUS)
+        held = [it for it in DQ.list_items(code, env) if it.get("status") == DQ.HOLD_STATUS]
+        out["hold_count"] = len(held)
+        import room_events as RE
+        out["human_mail"] = sum(1 for it in held if RE.mail_why(it))   # 第二波 #6:這一席待審區裡「給本人的信」(角標)
     except Exception:  # noqa: BLE001
         out["hold_count"] = None
     try:
