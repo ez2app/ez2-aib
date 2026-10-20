@@ -4,6 +4,14 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.32
+
+- **Open your captain's room to a friend in one step**: `aib chat open <friend>` sets both share levels (presence + room interior) and tells the other side; `aib chat visit <friend>` sends a visit request, which the owner accepts or rejects with `aib chat visit accept|reject`; `aib chat visits` lists who is waiting. No more two CLI commands on two machines, no npub pasting.
+- **Send mail by friend name**: `aib chat send` and the captain's room accept a friend's or one of your machines' nickname (case-insensitive) and resolve it to the global address; a non-friend or blocked name returns unknown_contact, a malformed address still returns bad_address. `aib chat address <friend>` shows the address.
+- **Mail for you that lands in the review box raises an event**: readable with `aib chat events` (for BB Call / badges) and visible in the chat panel; the sender's receipt gains a hint that you will see it in the room inbox (codes unchanged).
+- **Friend snapshots carry a last-updated time**: when the other side built it, when you received it, and how many seconds ago, so the page can show "updating / last updated".
+- **Handoff adds a vault check line**: read-only, numbers only, 20-second cap; skipped when no vault, not a uid vault, or not licensed.
+
 ## 0.1.31
 
 - **`aib` with no arguments opens the captain's room**: in an app window (Chrome / Edge / Brave app mode with its own profile, no address bar; without any of them it falls back to the default browser and says so); when the plugin is missing or will not start it prints the usage as before. `aib ui room` / `aib ui terminal` switch and are remembered. When the plugin supports `--no-browser`, starting the server no longer opens an extra browser tab.
