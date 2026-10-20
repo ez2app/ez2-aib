@@ -123,6 +123,7 @@ def main():
             # 10-20 Pro 13:git 原始碼裝的 aib 不是 import 得到的套件,外掛(例 captain-room room.py)找不到核心 ⇒
             # 由跑它的這個 aib 告訴它核心在哪;直接蓋掉,不沿用環境裡別艙 / 別版留下的值
             os.environ["AIB_CORE_DIR"] = HERE
+            os.environ["EZ2_AIB_ROOT"] = HERE   # 外掛再叫的 seat-info.py 靠這個找駕駛艙模組;艙外(ssh / launchd)起的沒有 ⇒ 一席都列不出來
             runner = [sys.executable] if str(script).endswith(".py") else ["/bin/bash"]
             os.execv(runner[0], runner + [str(script)] + sys.argv[2:])
         if plugin is not None and not aib_plugins.overrides_builtin(plugin):

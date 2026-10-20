@@ -6,7 +6,8 @@ captain-room 的 room.py 找不到核心 ⇒ `aib room` 報「cannot find the ai
 沙盒 HOME 裝一支假外掛 probe(commands: aibprobe),它照 room.py 的找法:AIB_CORE_DIR 底下要有 src/cockpit/cabin_restart.py。
 C1 原始碼裝(這個倉的 cli.py):外掛拿到的 AIB_CORE_DIR = 倉的 aib 資料夾,找得到核心
 C2 裝在別處(仿 pip:套件資料夾複製到 site/aib):AIB_CORE_DIR = 那份套件資料夾,不是倉
-C3 環境裡留著別處的 AIB_CORE_DIR ⇒ 蓋掉，用正在跑的這個 aib
+C3 環境裡留著別處的 AIB_CORE_DIR / EZ2_AIB_ROOT ⇒ 蓋掉，用正在跑的這個 aib
+    (EZ2_AIB_ROOT:外掛再叫的 seat-info.py 靠它找駕駛艙模組;10-20 Pro 13 從 ssh 起的艦長室少了它 ⇒ 一席都列不出來)
 刀(複本):K1 拿掉那一行 ⇒ C1 紅
 """
 import json
@@ -28,7 +29,7 @@ PROBE = r'''
 import json, os
 core = os.environ.get("AIB_CORE_DIR")
 ok = bool(core) and os.path.isfile(os.path.join(core, "src/cockpit/cabin_restart.py"))
-print(json.dumps({"core": core, "ok": ok}))
+print(json.dumps({"core": core, "ok": ok, "root": os.environ.get("EZ2_AIB_ROOT")}))
 '''
 
 
@@ -66,6 +67,7 @@ class CoreDir(unittest.TestCase):
         got = self.run_aib(self.checkout_parent())
         self.assertEqual(Path(got["core"]).resolve(), ROOT.resolve())
         self.assertTrue(got["ok"], got)
+        self.assertEqual(got["root"], got["core"], "seat-info 用的 EZ2_AIB_ROOT 也要一起帶")
 
     def test_c2_installed_elsewhere(self):
         site = self.tmp / "site" / "aib"
@@ -81,8 +83,10 @@ class CoreDir(unittest.TestCase):
         self.assertTrue(got["ok"], got)
 
     def test_c3_stale_env_overridden(self):
-        got = self.run_aib(self.checkout_parent(), {"AIB_CORE_DIR": str(self.tmp / "old-aib")})
+        got = self.run_aib(self.checkout_parent(), {"AIB_CORE_DIR": str(self.tmp / "old-aib"),
+                                                     "EZ2_AIB_ROOT": str(self.tmp / "old-aib")})
         self.assertEqual(Path(got["core"]).resolve(), ROOT.resolve())
+        self.assertEqual(Path(got["root"]).resolve(), ROOT.resolve())
 
 
 class Knife(unittest.TestCase):
