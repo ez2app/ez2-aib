@@ -168,6 +168,16 @@ function buildMenu(app) {
   app.mainMenu = main;
 }
 
+// 游標所在的螢幕;找不到就退回主螢幕
+function pickScreen() {
+  var p = $.NSEvent.mouseLocation, all = $.NSScreen.screens;
+  for (var i = 0; i < all.count; i++) {
+    var s = all.objectAtIndex(i), f = s.frame;
+    if (p.x >= f.origin.x && p.x < f.origin.x + f.size.width && p.y >= f.origin.y && p.y < f.origin.y + f.size.height) return s;
+  }
+  return $.NSScreen.mainScreen;
+}
+
 function run(argv) {
   G.tmp = argv[0]; G.outDir = argv[1]; G.dir = argv[2];
   G.prefsPath = $.NSHomeDirectory().js + "/.ez2-aib/shot/prefs.json";
@@ -200,7 +210,8 @@ function run(argv) {
     "window.__EZ2_SHOT__=" + JSON.stringify(init) + ";", $.WKUserScriptInjectionTimeAtDocumentStart, true));
   ucc.addScriptMessageHandlerName($.Ez2ShotHandler.alloc.init, "ez2");
 
-  var screen = $.NSScreen.mainScreen;
+  // 10-21 維護者:在延伸螢幕框選 ⇒ 編輯器跑去主螢幕、看不到。改開在游標那台(剛框完游標一定還在那台),縮放比率也用那台的
+  var screen = pickScreen();
   var vis = screen.visibleFrame;
   var scale = screen.backingScaleFactor || 1;
   var w = Math.min(Math.max(pxW / scale + 80, 760), vis.size.width * 0.92);
@@ -214,7 +225,7 @@ function run(argv) {
   win.contentView.addSubview(web);
   G.web = web; G.win = win;
   web.loadFileURLAllowingReadAccessToURL($.NSURL.fileURLWithPath(G.dir + "/editor.html"), $.NSURL.fileURLWithPath(G.dir));
-  win.center;
+  win.setFrameOrigin($.NSMakePoint(vis.origin.x + (vis.size.width - w) / 2, vis.origin.y + (vis.size.height - h) / 2));   // 置中在那台螢幕(win.center 只會置中在主螢幕)
   win.makeKeyAndOrderFront(null);
   app.activateIgnoringOtherApps(true);
   app.run;
