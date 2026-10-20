@@ -442,7 +442,7 @@ def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, 
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
     if grant is not None:
         import remote_grant
-        _ok, gwhy = remote_grant.verify_answer(grant, code, ask["id"], choice, free_text, env, keys=grant_keys, machine=machine)
+        _ok, gwhy = remote_grant.verify_answer(grant, code, ask["id"], choice, free_text, env, keys=grant_keys, machine=machine, question=ask.get("prompt") or "")
         out["via"], why = "remote-grant", (None if _ok else "grant_" + gwhy)
     else:
         out["via"], why = prove(reason, env, touchid, touchid_available, platform)      # 每次都驗,不吃免重驗視窗

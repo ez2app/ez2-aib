@@ -12,8 +12,9 @@ G5 這台的身分從 ez2.page 綁定檔讀(machine.json + 綁到這台的頁);�
 G6 公鑰清單釘住：正式清單目前空 ⇒ 一律 unknown-key;程式不從環境變數 / 設定檔讀公鑰
 G8 ez2.page 範例單(外層 {grant, sig}、一次性測試鑰)驗得過、canonical 兩邊一致;改一個字不過
 G9 回答單(@abb89 裁):綁 ask_id + choice(+ 自填字雜湊)、2 分鐘;對上 ⇒ 不彈 Touch ID 照答;換選項 / 換題 / 視窗開著也沒單子的另一題 ⇒ 拒;同一張不能用兩次
+G10 題目雜湊 q_sha256(@abb89 05:4x 裁):ez2.page 同規則 + 5 組測試向量;假題目 / 沒帶 ⇒ 拒;管理金鑰登入預設不收
 G7 入口:aib seat remote status、aib seat unlock --grant(關著 ⇒ rc 3);四語字串
-刀(複本):K1 不驗簽 ⇒ G3 紅;K2 不擋重放 ⇒ G3 紅;K3 on 不驗 Touch ID ⇒ G2 紅;K4 answer 不驗回答單 ⇒ G9 紅
+刀(複本):K1 不驗簽 ⇒ G3 紅;K2 不擋重放 ⇒ G3 紅;K3 on 不驗 Touch ID ⇒ G2 紅;K4 answer 不驗回答單 ⇒ G9 紅;K5 不比題目雜湊 ⇒ G10 紅
 """
 import base64
 import importlib.util
@@ -47,6 +48,7 @@ MID = "6f1c1d1e-0000-4000-8000-000000000001"
 ACCT = "t_lfu0327"
 FP = __import__("hashlib").sha256(("ez2-aib-machine-v1:" + MID).encode()).hexdigest()
 MACHINE = (FP, {ACCT})
+VECTORS = [{"input": "要執行 rm -rf build 嗎?", "normalized": "要執行 rm -rf build 嗎?", "q_sha256": "188c49c8425c5c39dafd62d7ddc85ac786e69a3c8f8b04c0be3b61e657f26812"}, {"input": "  Allow\n\n  edit   to  src/a.js?\t", "normalized": "Allow edit to src/a.js?", "q_sha256": "d7db72f25bd3574efe33ff2acf3e4a43a019e79b084f2a284c8fe10e3b7d6d4d"}, {"input": "Café 　 ok", "normalized": "Café ok", "q_sha256": "2fb8472040949c165115548d723b34e7da3c761d5eb4eb991c8c45f10499f6ac"}, {"input": "", "normalized": "", "q_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}, {"input": " x y ", "normalized": "x y", "q_sha256": "887fcea6a80333c6c02ae7e79735f0edad8d811f0b61431495f796f4bf6a7c19"}]  # @9f808 VECTORS-question-sha256(兩邊各放一份)
 EXAMPLE = '{"pubkey": {"kid": "6c0748f51a15a6c0", "alg": "Ed25519", "pub_b64": "FdR6iDS3oZQSQbeme6vsPV5wSdoxWYpcKMtw/9FJflw="}, "canonical": "{\\"account_id\\":\\"acct_example0001\\",\\"auth\\":\\"line\\",\\"exp\\":1792540920,\\"iat\\":1792540800,\\"kid\\":\\"6c0748f51a15a6c0\\",\\"kind\\":\\"seat-unlock\\",\\"machine\\":\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\",\\"minutes\\":10,\\"nonce\\":\\"bm9uY2UtZXhhbXBsZS0wMDAx\\",\\"seat\\":\\"9f808\\",\\"v\\":1}", "envelope": {"grant": {"v": 1, "kind": "seat-unlock", "kid": "6c0748f51a15a6c0", "account_id": "acct_example0001", "machine": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "seat": "9f808", "minutes": 10, "nonce": "bm9uY2UtZXhhbXBsZS0wMDAx", "iat": 1792540800, "exp": 1792540920, "auth": "line"}, "sig": "P-pgcu_9UfpEMf38JXzV2yuNMLR7g0CEgJ5SIy-LcEsQt4kaCNOoJP0OKwhSNLunCwz9VgTlLjWaipg-E-iXAg"}}'
 
 
@@ -179,6 +181,10 @@ class Grant(BASE.Box):
         import seat_panel
         return seat_panel.pending(CODE, state_root=str(self.state), screen=BASE.PERMISSION)[0]["ask"]["id"]
 
+    def q(self):
+        import seat_panel
+        return self.RG.question_hash(seat_panel.pending(CODE, state_root=str(self.state), screen=BASE.PERMISSION)[0]["ask"].get("prompt") or "")
+
     def answer(self, g, choice="1", **kw):
         return self.act(self.SA.do_answer, CODE, choice, screen=BASE.PERMISSION, grant=g, grant_keys=KEYS, machine=MACHINE, **kw)
 
@@ -187,7 +193,7 @@ class Grant(BASE.Box):
         self.asked.clear()
         aid = self.ask_id()
         now = int(time.time())
-        ans = dict(kind="seat-answer", ask_id=aid, choice="1", exp=now + 100)
+        ans = dict(kind="seat-answer", ask_id=aid, choice="1", exp=now + 100, q_sha256=self.q())
         ans.pop("minutes", None)
         g = make(**ans)
         res, rc = self.answer(g)
@@ -206,6 +212,22 @@ class Grant(BASE.Box):
         res, rc = self.answer(make(**dict(ans, choice="3")), "1")
         self.assertEqual(res["why"], "grant_wrong-answer", "視窗開著也不能替 answer 免驗")
         self.assertEqual(len(self.asked), 1, "只有剛剛那次 unlock 彈過")
+
+    def test_g10_question_hash(self):
+        """@abb89 05:4x:回答單綁真題目雜湊(ez2.page 同規則 + 同一組向量);假題目 / 沒帶 ⇒ grant_question_mismatch;管理金鑰預設不收"""
+        for v in VECTORS:
+            self.assertEqual((self.RG.question_norm(v["input"]), self.RG.question_hash(v["input"])), (v["normalized"], v["q_sha256"]), v)
+        self.on()
+        aid, now = self.ask_id(), int(time.time())
+        base = dict(kind="seat-answer", ask_id=aid, choice="1", exp=now + 100)
+        for q in (self.RG.question_hash("要執行 rm -rf build 嗎?"), None, "x" * 64):
+            g = make(**dict(base, q_sha256=q)) if q else make(**base)
+            res, rc = self.answer(g)
+            self.assertEqual((rc, res["why"]), (3, "grant_question_mismatch"), (q, res))
+        self.assertEqual(self.keys(), [], "假題目的單子什麼都不送")
+        self.assertNotIn("management_key", self.RG.remote_cfg()["allow"])
+        res, rc = self.unlock(make(auth="management_key"))
+        self.assertEqual(res["why"], "grant_auth-not-allowed", "管理金鑰登入簽的單本機預設不收")
 
     def test_g6_pinned(self):
         self.assertEqual(self.RG.TRUSTED_GRANT_KEYS, {}, "正式公鑰清單改了 ⇒ 要維護者點頭再改這行")
@@ -252,6 +274,10 @@ class Knife(unittest.TestCase):
     def test_k4_answer_unchecked(self):
         self._knife("src/cockpit/seat_act.py", '        out["via"], why = "remote-grant", (None if _ok else "grant_" + gwhy)',
                     '        out["via"], why = "remote-grant", None', "Grant.test_g9_answer")
+
+    def test_k5_no_question_hash(self):
+        self._knife("src/cockpit/remote_grant.py", '        if not isinstance(q, str) or not re.fullmatch(r"[0-9a-f]{64}", q) or question is None or q != question_hash(question):',
+                    "        if False:", "Grant.test_g10_question_hash")
 
 
 if __name__ == "__main__":
