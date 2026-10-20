@@ -4846,5 +4846,9 @@
   "aib.vault_cli.help_vtitle_stdin": "표준 입력에서도 한 줄에 하나씩 경로를 읽습니다",
   "aib.vault_cli.err_vtitle_none": "경로가 없습니다: 경로를 주거나 --stdin 을 붙이세요",
   "aib.vault_cli.err_vtitle_too_many": "경로가 너무 많습니다: {count}개, 한 번에 최대 {max}개입니다",
-  "aib.vault_cli.vtitle_outside": "(Vault 밖입니다)"
+  "aib.vault_cli.vtitle_outside": "(Vault 밖입니다)",
+  "aib.handoff.fact.vault": "Vault 점검(aib vault doctor 읽기 전용, 고칠 때는 본인 확인 후 먼저 백업)",
+  "aib.handoff.fact.vault_ok": "문제 없음",
+  "aib.handoff.fact.vault_found": "문제 있음: {detail}",
+  "aib.handoff.fact.vault_skip": "실행 안 함({why})"
 }

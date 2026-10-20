@@ -4846,5 +4846,9 @@
   "aib.vault_cli.help_vtitle_stdin": "also read one path per line from standard input",
   "aib.vault_cli.err_vtitle_none": "no paths given: pass paths or --stdin",
   "aib.vault_cli.err_vtitle_too_many": "too many paths: {count}, at most {max} at a time",
-  "aib.vault_cli.vtitle_outside": "(not in the vault)"
+  "aib.vault_cli.vtitle_outside": "(not in the vault)",
+  "aib.handoff.fact.vault": "Vault check (read-only aib vault doctor; fixing still needs the owner's OK and a backup first)",
+  "aib.handoff.fact.vault_ok": "no problems",
+  "aib.handoff.fact.vault_found": "problems: {detail}",
+  "aib.handoff.fact.vault_skip": "not run ({why})"
 }
