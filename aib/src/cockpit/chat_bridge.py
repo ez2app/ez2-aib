@@ -1159,6 +1159,16 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
     return {"v": 1, "at": int(now), "minutes": int(minutes), "rows": rows}
 
 
+def _snap_times(rec, now):
+    """第二波 #5(NOTE A3「開了分享後 10–50 秒才看得到,頁面沒提示」):updated_at = 對方組快照的時間(built_at,
+    舊版沒帶就退回收到的時間)、received_at = 我這邊收到的時間、age_s = 距今幾秒;頁面顯示「更新中 / 最後更新」。"""
+    import room_snapshot as RS
+    received = int(rec["at"])
+    built = RS.clean_built_at((rec.get("snap") or {}).get("built_at"))
+    updated = built or received
+    return {"updated_at": updated, "received_at": received, "age_s": max(0, int(now) - updated), "built_at": built}
+
+
 def room_payload(owner, env=None, now=None):
     """aib chat room <主人> --json(第 34.4 節):好友分享來的房間快照 + fresh;不是好友 / 我的機器 ⇒ None。"""
     import chat_roster as CR
@@ -1177,6 +1187,7 @@ def room_payload(owner, env=None, now=None):
         if "cell" in s and not RS.clean_cell(s.get("cell")):
             s.pop("cell")
     return {"v": 1, "owner": owner, "room_at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
+            **_snap_times(rec, now),
             "ship": r.get("ship") or {}, "cabins": r.get("cabins") or [], "seats": seats,
             "layout": r.get("layout"), "layout_omitted": bool(r.get("layout_omitted")),
             "decor": RS.clean_decor(r.get("decor")),
@@ -1194,6 +1205,7 @@ def island_payload(owner, env=None, now=None):
         return None
     snap = rec["snap"]
     return {"v": 1, "owner": owner, "at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
+            **_snap_times(rec, now),
             "island": snap.get("island") or {}, "people": snap.get("people") or [],
             "has_room": isinstance(snap.get("rooms"), dict)}
 
@@ -1272,7 +1284,9 @@ def cmd_space(a, env, out):
     owners = [f["owner"] for f in CR.read_friends(env, "mine")] + [f["owner"] for f in CR.read_friends(env)]
     st = GF.read_space_status(bridge_root(env)) or {}
     pl = {"v": 1, "default": sp["default"], "peers": {o: CR.space_level(o, env) for o in dict.fromkeys(owners)},
-          "last_error": {k: st.get(k) for k in ("at", "reason", "wire_bytes", "limit")} if st.get("reason") else None}
+          "last_error": {k: st.get(k) for k in ("at", "reason", "wire_bytes", "limit")} if st.get("reason") else None,
+          # 第二波 #5:我這邊最近一次送出快照的時間(頁面顯示「我的房間最後送出」;沒送過 / 上次失敗 ⇒ None)
+          "last_sent": {k: st.get(k) for k in ("at", "wire_bytes", "dropped")} if st.get("at") and not st.get("reason") else None}
     if a.json:
         out.write(json.dumps(pl, ensure_ascii=False) + "\n")
         return 0
