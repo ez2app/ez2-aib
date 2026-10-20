@@ -9,6 +9,7 @@
   unlock   = 一定要帶伺服器簽的解鎖單(seat_act.do_unlock grant=…;驗簽在 remote_grant)
   input    = 只在視窗開著時送(window_only ⇒ 沒開回 locked,不在 Mac 上彈 Touch ID)
   stop     = 同上，視窗開著才停
+  lock     = 立刻上鎖(收權限方向，不用單子)
   unlocked = 只讀剩幾秒
   pending  = 讀那一席現在有沒有在問(黃框題目 + 選項 + ask_id);視窗開著才給
   answer   = 回答黃框：每次都要一張回答單(kind=seat-answer,綁 ask_id + choice + 自填字雜湊;@abb89 10-21 裁「視窗不能替 answer 免驗」)
@@ -38,7 +39,7 @@ POLL_S = 25
 MAX_BODY = 96 * 1024
 SEAT_RE = re.compile(r"[0-9a-z]{5}")
 ID_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")
-OPS = ("unlock", "input", "stop", "unlocked", "transcript", "pending", "answer", "seats")
+OPS = ("unlock", "lock", "input", "stop", "unlocked", "transcript", "pending", "answer", "seats")
 ROLE_RE = re.compile(r"[\w .:/-]{0,40}")
 TRANSCRIPT_LIMIT = 40
 TRANSCRIPT_CLIP = 2000
@@ -102,6 +103,8 @@ def handle(msg, env=None, act=None):
         if not isinstance(msg.get("grant"), dict):
             return {"ok": False, "action": "unlock", "seat": seat, "why": "grant-required"}
         res, _rc = SA.do_unlock(seat, None, env=env, grant=msg["grant"])
+    elif op == "lock":
+        res, _rc = SA.do_lock(seat, env=env)
     elif op == "input":
         res, _rc = SA.do_input(seat, msg.get("text"), env=env, window_only=True)
     elif op == "stop":

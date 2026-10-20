@@ -81,7 +81,7 @@ class Link(BASE.Box):
                                                                          touchid_available=lambda: True, platform="darwin"),
             do_stop=lambda c, hard=False, env=None, window_only=False: SA.do_stop(c, hard=hard, env=env, window_only=window_only, touchid=t,
                                                                                 touchid_available=lambda: True, platform="darwin"),
-            do_unlocked=SA.do_unlocked)
+            do_unlocked=SA.do_unlocked, do_lock=SA.do_lock, do_answer=SA.do_answer)
 
     def run_link(self, relay, n):
         out = None
@@ -93,10 +93,13 @@ class Link(BASE.Box):
         r = Relay({"id": "m-unlock-01", "op": "unlock", "seat": CODE, "grant": grant()},
                   {"id": "m-input-002", "op": "input", "seat": CODE, "text": "跑一下測試"},
                   {"id": "m-stop-0003", "op": "stop", "seat": CODE},
-                  {"id": "m-left-0004", "op": "unlocked", "seat": CODE})
-        self.run_link(r, 4)
+                  {"id": "m-left-0004", "op": "unlocked", "seat": CODE},
+                  {"id": "m-lock-0005", "op": "lock", "seat": CODE},
+                  {"id": "m-input-006", "op": "input", "seat": CODE, "text": "上鎖後"})
+        self.run_link(r, 6)
         res = {x["id"]: x["result"] for x in r.replies}
-        self.assertEqual(list(res), ["m-unlock-01", "m-input-002", "m-stop-0003", "m-left-0004"])
+        self.assertEqual(list(res), ["m-unlock-01", "m-input-002", "m-stop-0003", "m-left-0004", "m-lock-0005", "m-input-006"])
+        self.assertEqual(res.pop("m-input-006")["why"], "locked", "手機點膠囊上鎖 ⇒ 之後打字被拒")
         self.assertTrue(all(v.get("ok") for v in res.values()), res)
         self.assertEqual((res["m-unlock-01"]["via"], res["m-input-002"]["via"], res["m-stop-0003"]["via"]), ("remote-grant", "unlock-window", "unlock-window"))
         self.assertGreater(res["m-left-0004"]["unlock_left_s"], 590)
