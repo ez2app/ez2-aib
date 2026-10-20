@@ -99,15 +99,40 @@ def _lease(args):
     return rc
 
 
+def _ui_mod():
+    sys.path.insert(0, os.path.join(HERE, "src", "cockpit"))
+    import aib_ui
+    return aib_ui
+
+
+def _ui_open_room():
+    """`aib` 不帶參數:ui.json 是 room(預設)⇒ 開艦長室;terminal ⇒ 回 2 讓呼叫端印說明。任何例外都退回印說明,不卡住。"""
+    try:
+        ui = _ui_mod()
+        if ui.get_mode() != "room":
+            return 2
+        return ui.open_room()
+    except Exception:  # noqa: BLE001
+        return 2
+
+
 def main():
     """pip / pipx 裝好之後的 `aib` 指令進到這裡(pyproject.toml 的 project.scripts)。"""
     # 最外層那次 aib 寫的值被艙內繼承;艙內 LANG 被 cockpit-full.sh 強制成 en_US 也不會蓋掉(setdefault)
     os.environ.setdefault("EZ2_AIB_LOCALE_SYSTEM", _locale())
     # 10-12 新用戶全面檢查:Python 編譯快取不寫進安裝資料夾(看起來像被改過、也會擋 aib update);放 ~/.cache/ez2-aib
     os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(os.path.expanduser("~"), ".cache", "ez2-aib", "pycache"))
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+    if len(sys.argv) < 2:
+        # 10-20 Andy 裁「aib 預設開艦長室」:room 模式開應用程式視窗(不帶網址);開不了或 aib ui terminal ⇒ 照舊印說明
+        if _ui_open_room() == 0:
+            return 0
         sys.stdout.write(__doc__)
         return 2
+    if sys.argv[1] in ("-h", "--help", "help"):
+        sys.stdout.write(__doc__)
+        return 2
+    if sys.argv[1] == "ui":
+        return _ui_mod().main(sys.argv[2:])
     if sys.argv[1] == "update":
         return _update(sys.argv[2:])
     if sys.argv[1] == "lease":
