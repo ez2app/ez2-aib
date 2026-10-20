@@ -4,6 +4,12 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.26
+
+- **Online receiving no longer breaks because the dedup record grows too large**: the dedup record now stores short keys and keeps at most 1,500 entries; old files are converted the first time they are read. Before, the record could pass 64 KB within a week, fail to save, and keep the receiver reconnecting.
+- **Held outside messages no longer show the sender's self-chosen name to AI**: for Telegram and unknown aib seats still waiting for owner review, the command line and AI now see the sender as "External Telegram #tag" / "External aib seat #tag"; the tag stays the same for the same sender.
+- **Friend visit snapshots can carry collection titles**: only 7 fixed titles are allowed; anything else drops just the titles.
+
 ## 0.1.25
 
 - **Replies to a message you sent yourself from the captain room stay in the captain room**: when an online reply points to a message the owner sent in person (Touch ID), it is held for the owner and is not handed to the AI box. The owner can release it to the AI.
