@@ -861,6 +861,8 @@ if [ "${1:-}" = "seat" ]; then
     transcript|pending) exec "${EZ2_PY3:-python3}" "$HERE/seat_panel.py" "${@:2}" ;;
     # 本人動作(打字進席位 / 回答詢問 / 停止):一律 Touch ID;AI 席位呼叫擋;邏輯全在 seat_act.py
     input|answer|stop) exec "${EZ2_PY3:-python3}" "$HERE/seat_act.py" "${@:2}" ;;
+    # 開終端機附到那一席(面板 P5 鈕;只看不打字,不經 Touch ID)
+    attach) exec "${EZ2_PY3:-python3}" "$HERE/seat_attach.py" "${@:3}" ;;
     onboard) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/seat_onboard.py" "$@" ;;
     # 只轉呼叫,邏輯全在 seat_socket_backfill.py(cap 04:50 裁的檔案域)
     socket-backfill) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/seat_socket_backfill.py" "$@" ;;
