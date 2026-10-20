@@ -9,7 +9,7 @@
 
 防線(GUIDE-same-user-ai-threat-model「簽章」那一類):
 - 公鑰清單寫死在這支(已簽版本);**不從設定檔 / 環境變數讀**(那等於可換)。改清單要維護者點頭,測試釘著。
-- 驗:v / kind / kid 在清單 / Ed25519 簽章(canonical JSON,去掉 sig)/ machine = 這台 machine.json / account_id = 這台綁的帳號 /
+- 驗:v / kind / kid 在清單 / Ed25519 簽章(canonical JSON,去掉 sig)/ machine = 這台指紋(machine_fp(machine.json uuid))/ account_id = 這台綁的帳號 /
   seat 對 / 沒過期(now ∈ [iat - 30 秒, exp]、exp - iat ≤ 5 分鐘)/ 數字只收整數/ nonce 沒用過 / auth 在允許清單。
 - 本機總開關 remote.json:預設關;**打開要本機 Touch ID**(aib seat remote on),關一鍵。⚠ 這是本機檔、AI 改得到:只防「伺服器被拿下就能對本機下指令」
   這種情況下本人沒打開的機器;不宣稱擋得住本機 AI。
@@ -30,9 +30,14 @@ for p in (HERE, HERE.parent):
 
 V = 1
 KIND = "seat-unlock"
+ANSWER_KIND = "seat-answer"
 MAX_LIFE_S = 300
+ANSWER_LIFE_S = 120
 SKEW_S = 30
-AUTHS = ("passkey", "line", "password")
+AUTHS = ("passkey", "password", "management_key", "line", "facebook", "google", "apple", "instagram", "threads")   # ez2.page 簽單時的「再驗」方式
+DEFAULT_ALLOW = tuple(a for a in AUTHS if a != "management_key")   # @abb89 10-21 05:4x 裁：管理金鑰登入不能簽解鎖 / 回答單(伺服器擋，本機預設也不收)
+# 題目雜湊的空白字元集(跟 ez2.page 同一份;不用 \s,JS / Python 不一樣):\t\n\v\f\r 空格 U+0085 U+00A0 U+1680 U+2000–200A U+2028 U+2029 U+202F U+205F U+3000
+Q_WS = re.compile("[\t\n\x0b\x0c\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+")
 SEAT_RE = re.compile(r"[0-9a-z]{5}")
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
@@ -76,8 +81,8 @@ def remote_cfg(env=None):
     try:
         d = json.loads(remote_path(env).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"on": False, "max_min": 60, "allow": list(AUTHS)}
-    allow = [a for a in (d.get("allow") or AUTHS) if a in AUTHS] if isinstance(d.get("allow"), list) else list(AUTHS)
+        return {"on": False, "max_min": 60, "allow": list(DEFAULT_ALLOW)}
+    allow = [a for a in (d.get("allow") or DEFAULT_ALLOW) if a in AUTHS] if isinstance(d.get("allow"), list) else list(DEFAULT_ALLOW)
     try:
         mx = max(1, min(60, int(d.get("max_min") or 60)))
     except (TypeError, ValueError):
@@ -100,8 +105,14 @@ def set_remote(on, env=None, max_min=None, allow=None):
     return cur
 
 
+def machine_fp(machine_id):
+    """給 ez2.page 綁機器用的指紋(hex64):sha256 前綴 + machine.json uuid;uuid 本身不出本機"""
+    import hashlib
+    return hashlib.sha256(("ez2-aib-machine-v1:" + str(machine_id)).encode("utf-8")).hexdigest()
+
+
 def this_machine(env=None):
-    """(machine_id, {account_id…}):ez2.page 綁定時的 machine.json uuid、綁到這台(記錄的 machine_id 相同)的每一頁 tenant_id;沒綁 ⇒ (None, set())"""
+    """(機器指紋, {account_id…}):machine_fp(machine.json uuid)、綁到這台(記錄的 machine_id 相同)的每一頁 tenant_id;沒綁 ⇒ (None, set())"""
     e = dict(os.environ if env is None else env)
     if str(HERE / "page") not in sys.path:
         sys.path.insert(0, str(HERE / "page"))
@@ -115,7 +126,7 @@ def this_machine(env=None):
     if not isinstance(m, str) or not m:
         return None, set()
     accts = {str(r.get("tenant_id")) for r in recs if r.get("machine_id") == m and r.get("tenant_id") not in (None, "")}
-    return m, accts
+    return machine_fp(m), accts
 
 
 def _seen_path(env=None):
@@ -140,8 +151,8 @@ def _seen(env, nonce, exp, now, mark):
     return False
 
 
-def verify(grant, seat, env=None, now=None, keys=None, machine=None):
-    """單子 dict ⇒ (minutes, None) 或 (None, why)。keys / machine 只給測試注入(正式一律用寫死的清單、這台的綁定)。"""
+def _verify(grant, seat, kind, max_life, extra, env=None, now=None, keys=None, machine=None):
+    """共用驗單：外層拆開 → 開關 → v / kind / kid / 簽章 → 機器 / 帳號 / 席 → 時間 → auth → extra(單子)→ nonce。回 (單子, None) 或 (None, why)"""
     from entitlement import ed25519
     t = int(now or time.time())
     if isinstance(grant, dict) and isinstance(grant.get("grant"), dict):
@@ -151,7 +162,7 @@ def verify(grant, seat, env=None, now=None, keys=None, machine=None):
     cfg = remote_cfg(env)
     if not cfg["on"]:
         return None, "remote-off"
-    if grant.get("v") != V or grant.get("kind") != KIND:
+    if grant.get("v") != V or grant.get("kind") != kind:
         return None, "bad-grant"
     keyset = TRUSTED_GRANT_KEYS if keys is None else keys
     kid = grant.get("kid")
@@ -172,16 +183,61 @@ def verify(grant, seat, env=None, now=None, keys=None, machine=None):
         return None, "wrong-account"
     if grant.get("seat") != seat or not isinstance(seat, str) or not SEAT_RE.fullmatch(seat):
         return None, "wrong-seat"
-    iat, exp, mins = grant.get("iat"), grant.get("exp"), grant.get("minutes")
-    if not all(type(x) is int for x in (iat, exp, mins)) or not 1 <= mins <= 60:
+    iat, exp = grant.get("iat"), grant.get("exp")
+    if not all(type(x) is int for x in (iat, exp)):
         return None, "bad-grant"
-    if iat > t + SKEW_S or exp <= t or exp - iat > MAX_LIFE_S:
+    if iat > t + SKEW_S or exp <= t or exp - iat > max_life:
         return None, "expired"
     if grant.get("auth") not in cfg["allow"]:
         return None, "auth-not-allowed"
+    why = extra(grant)
+    if why:
+        return None, why
     nonce = grant.get("nonce")
     if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
         return None, "bad-grant"
     if _seen(env, nonce, exp, t, mark=True):
         return None, "replayed"
-    return max(1, min(cfg["max_min"], mins)), None
+    return grant, None
+
+
+def verify(grant, seat, env=None, now=None, keys=None, machine=None):
+    """解鎖單 ⇒ (minutes, None) 或 (None, why)。keys / machine 只給測試注入(正式一律用寫死的清單、這台的綁定)。"""
+    def minutes_ok(g):
+        m = g.get("minutes")
+        return None if type(m) is int and 1 <= m <= 60 else "bad-grant"
+    g, why = _verify(grant, seat, KIND, MAX_LIFE_S, minutes_ok, env, now, keys, machine)
+    if why:
+        return None, why
+    return max(1, min(remote_cfg(env)["max_min"], g["minutes"])), None
+
+
+def question_norm(text):
+    """NFC → 連續空白合成一個空格 → 去頭尾(ez2.page 同規則，測試向量兩邊各放一份)"""
+    import unicodedata
+    return Q_WS.sub(" ", unicodedata.normalize("NFC", str(text or ""))).strip(" ")
+
+
+def question_hash(text):
+    import hashlib
+    return hashlib.sha256(question_norm(text).encode("utf-8")).hexdigest()
+
+
+def text_hash(text):
+    import hashlib
+    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+
+
+def verify_answer(grant, seat, ask_id, choice, free_text=None, env=None, now=None, keys=None, machine=None, question=None):
+    """回答單(@abb89 10-21 裁：每答一次一張、kind=seat-answer、綁 ask_id + choice + 自填字 sha256、exp ≤ 2 分鐘;視窗不能替 answer 免驗)⇒ (True, None) 或 (None, why)
+    question = 核心自己從那一席抓的真題目;單子的 q_sha256 要等於它的雜湊(05:4x 裁：防本機在中繼塞假題目讓本人核准)"""
+    def same_answer(g):
+        q = g.get("q_sha256")
+        if not isinstance(q, str) or not re.fullmatch(r"[0-9a-f]{64}", q) or question is None or q != question_hash(question):
+            return "question_mismatch"
+        if g.get("ask_id") != ask_id or g.get("choice") != str(choice):
+            return "wrong-answer"
+        want = text_hash(free_text) if free_text else None
+        return None if g.get("text_sha256") == want else "wrong-answer"
+    g, why = _verify(grant, seat, ANSWER_KIND, ANSWER_LIFE_S, same_answer, env, now, keys, machine)
+    return (True, None) if not why else (None, why)
