@@ -63,6 +63,29 @@ def parse_ac(text):
     return None
 
 
+def parse_charging(text):
+    """`pmset -g batt` 第二行 `…; charging;` ⇒ True;`not charging` / `discharging` ⇒ False;讀不到 ⇒ None。
+    (10-20 Pro 13:接了 15 W 手機充電頭 ⇒ 'AC Power' 但 not charging,電池照樣往下掉。)"""
+    m = re.search(r";\s*(not charging|discharging|charging|charged|finishing charge|AC attached; not charging)\b", text or "")
+    if not m:
+        return None
+    return m.group(1) in ("charging", "charged", "finishing charge")
+
+
+def parse_pct(text):
+    """`pmset -g batt` 的 `31%;` ⇒ 31;讀不到 ⇒ None。"""
+    m = re.search(r"\b(\d{1,3})%;", text or "")
+    return int(m.group(1)) if m else None
+
+
+def parse_watts(text):
+    """`pmset -g ac` 的 ` Wattage (W) = 15` ⇒ 15;`No adapter attached.` ⇒ 0;讀不到 ⇒ None。"""
+    if "No adapter attached" in (text or ""):
+        return 0
+    m = re.search(r"Wattage\s*\(W\)\s*=\s*(\d+)", text or "")
+    return int(m.group(1)) if m else None
+
+
 def keep_path(root):
     return Path(root) / "power-keep.json"
 
@@ -88,12 +111,15 @@ def power_info(root, platform=None, pmset=None):
     """這台的電源與睡眠設定。非 Mac ⇒ sleeps None(不知道,不亂講)。pmset 只給測試換掉。"""
     platform = sys.platform if platform is None else platform
     if platform != "darwin":
-        return {"sleeps": None, "sleep_min": None, "ac": None, "kept_awake": False}
+        return {"sleeps": None, "sleep_min": None, "ac": None, "kept_awake": False, "charging": None, "pct": None, "watts": None}
     get = pmset or _pmset
-    sleep_min, ac = parse_sleep_min(get("-g")), parse_ac(get("-g", "batt"))
+    batt = get("-g", "batt")
+    sleep_min, ac = parse_sleep_min(get("-g")), parse_ac(batt)
     keep = kept_awake(root)
     sleeps = None if sleep_min is None else (sleep_min > 0 and not (keep and ac is not False))
-    return {"sleeps": sleeps, "sleep_min": sleep_min, "ac": ac, "kept_awake": keep}
+    # 10-20 @abb89 #16 核心這半:電池 / 外接 / 瓦數 / 在不在充 —— 會員看得出「接了電但沒在充」
+    return {"sleeps": sleeps, "sleep_min": sleep_min, "ac": ac, "kept_awake": keep,
+            "charging": parse_charging(batt), "pct": parse_pct(batt), "watts": parse_watts(get("-g", "ac")) if ac else 0}
 
 
 def power_path(root):
@@ -146,6 +172,14 @@ def clean_power(p):
     for k, lo, hi in (("sleep_min", 0, 10000), ("last_wake", 0, 1 << 34), ("beat", 1, 86400)):
         v = p.get(k)
         out[k] = v if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi else None
+    # 10-20:電源欄(charging / pct / watts,@74e8b 頁面用)—— 對方有送才有這幾個鍵;舊版沒送 ⇒ 沒鍵(machine_state 補 None)
+    if "charging" in p:
+        v = p.get("charging")
+        out["charging"] = v if isinstance(v, bool) or v is None else None
+    for k, lo, hi in (("pct", 0, 100), ("watts", 0, 5000)):
+        if k in p:
+            v = p.get(k)
+            out[k] = v if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi else None
     return out
 
 
@@ -157,7 +191,7 @@ def machine_state(cell, now):
     p = clean_power((cell or {}).get("power")) or {}
     beat = p.get("beat") or 900
     out = {"state": "unknown", "since": at or None}
-    out.update({k: p.get(k) for k in ("sleeps", "sleep_min", "ac", "kept_awake", "last_wake")})
+    out.update({k: p.get(k) for k in ("sleeps", "sleep_min", "ac", "kept_awake", "last_wake", "charging", "pct", "watts")})
     if not at:
         return out
     if now - at <= beat * 1.5 + 120:

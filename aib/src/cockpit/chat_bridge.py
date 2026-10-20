@@ -590,6 +590,8 @@ def status_record(env):
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
+    import chat_power as CP
+    rec["power"] = CP.power_info(root)       # 10-20 @abb89 #16:ac / charging / pct / watts / sleeps / sleep_min / kept_awake(艦長室頁面讀這個)
     rec["healthy"], rec["why"] = health(rec)
     rec["backup"] = backup_state(env)
     return rec
@@ -1608,6 +1610,22 @@ def cmd_status(a, env, out):
     return 0
 
 
+def power_supply_lines(info):
+    """10-20 @abb89 #16 核心這半:電源一行(外接幾瓦 / 電池幾 %);接了電卻沒在充(充電頭太弱)⇒ ⚠。非 Mac(ac None)⇒ 不印。"""
+    ac = info.get("ac")
+    if ac is None:
+        return []
+    pct = info.get("pct")
+    pct_s = "%d%%" % pct if isinstance(pct, int) else "?"
+    if not ac:
+        return [T("status_power_on_battery", pct=pct_s)]
+    watts = info.get("watts")
+    watts_s = "%d W" % watts if isinstance(watts, int) and watts > 0 else "?"
+    if info.get("charging") is False:
+        return [T("status_power_not_charging", watts=watts_s, pct=pct_s)]
+    return [T("status_power_ac", watts=watts_s, pct=pct_s)]
+
+
 def power_lines(env):
     """10-18 Andy:這台會不會睡、有沒有撐著;自己的其他機器版本落後(只提醒自己的機器,不對好友)。"""
     import chat_power as CP
@@ -1615,6 +1633,7 @@ def power_lines(env):
     root = bridge_root(env)
     lines = []
     info = CP.power_info(root)
+    lines += power_supply_lines(info)
     if info["sleep_min"]:
         key = "status_power_kept" if info["kept_awake"] and info["ac"] else (
             "status_power_battery" if info["kept_awake"] else "status_power_sleeps")
