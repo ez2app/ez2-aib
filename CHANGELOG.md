@@ -4,6 +4,12 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.34
+
+- **Command seats from your phone (off by default, not live yet)**: `aib seat remote on` (Touch ID) turns on the switch and starts `aib seat remote link` in the background, which only connects out to ez2.page and long-polls for commands; `off` stops both. Unlock needs a server-signed ticket; typing, stopping and reading a seat only work while that window is open; every answer needs its own ticket bound to the question, the choice and your typed text, and the core checks the question against the real one on screen. The trusted key list is still empty, so every ticket is refused until the maintainer approves the production key.
+- **Phone seat list and transcript are slimmed before leaving the machine**: seat code / role / provider / time left only; no paths, project names, tool input/output or thinking.
+- **Signing-in with the management key cannot sign tickets** (refused by default on this machine too).
+
 ## 0.1.33
 
 - **Unlock stays open while you keep working**: after Touch ID, the no-reprompt window for typing into a seat now counts down only while you are idle; every command you send restarts the countdown. Choose the minutes when unlocking (`aib seat input --unlock-min N`, 0–60); `aib seat unlock <seat> [--min N]` unlocks without sending, `aib seat lock <seat>` locks at once, `aib seat unlocked <seat>` shows what is left. The window is still a local file and only guards against mistakes; answer / stop still verify every time.
