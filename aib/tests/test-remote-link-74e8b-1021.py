@@ -5,6 +5,7 @@
 
 (GUIDE 檢查表:防線仍是 remote_grant 的伺服器簽章;這支只轉送，伺服器回的是資料 ⇒ 只認四種 op)
 L1 假中繼一輪:unlock(帶單子)→ input → stop → unlocked 全過、Mac 上一次 Touch ID 都沒彈、每則都回條(id 對上)
+L6 transcript:視窗開著才給、遮敏感字;沒開 ⇒ locked
 L2 視窗沒開:input / stop 回 locked 不彈 Touch ID;unlock 沒帶單子 ⇒ grant-required;怪 op / 怪席碼 ⇒ 拒
 L3 總開關關 ⇒ 不連;跑到一半關掉 ⇒ 停;401 ⇒ unauthorized 停;連不上 ⇒ 退避
 L4 真的 HTTP(本機假伺服器):Bearer 在標頭、不在網址;204 = 沒事;回應太大 ⇒ 當沒收到
@@ -111,6 +112,17 @@ class Link(BASE.Box):
         self.assertEqual(why, ["locked", "locked", "grant-required", "bad-op", "bad-seat"])
         self.assertEqual(self.asked, [], "視窗沒開也不在 Mac 上彈 Touch ID")
         self.assertEqual(self.keys(), [], "什麼都沒送進席位")
+
+    def test_l6_transcript(self):
+        r = Relay({"id": "m-read-0001", "op": "transcript", "seat": CODE})
+        self.run_link(r, 1)
+        self.assertEqual(r.replies[0]["result"]["why"], "locked", "視窗沒開不給看")
+        r = Relay({"id": "m-unlock-02", "op": "unlock", "seat": CODE, "grant": grant()},
+                  {"id": "m-read-0003", "op": "transcript", "seat": CODE, "offset": 0})
+        self.run_link(r, 2)
+        res = r.replies[1]["result"]
+        self.assertNotEqual(res.get("why"), "locked", res)
+        self.assertIn("events", res, res)
 
     def test_l3_switch_and_errors(self):
         self.RG.set_remote(False)
