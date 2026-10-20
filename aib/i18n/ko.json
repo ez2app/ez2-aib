@@ -4817,5 +4817,11 @@
   "aib.vault_cli.err_mobile_symlink": "{path} 은(는) 심볼릭 링크라 따라가지 않고 쓰지 않았습니다",
   "aib.vault_cli.mobile_done": "Vault 에 넣었습니다: {path}(만료 {expires}). Vault 가 휴대폰에 동기화되면 그곳의 라벨 플러그인이 켜집니다",
   "aib.vault_cli.mobile_removed": "Vault 에서 {path} 을(를) 제거했습니다",
-  "aib.vault_cli.mobile_absent": "Vault 에 {path} 이(가) 없었습니다"
+  "aib.vault_cli.mobile_absent": "Vault 에 {path} 이(가) 없었습니다",
+  "aib.vault_cli.help_vtitle": "(읽기 전용) Vault 경로를 제목 경로로 바꾸고 Obsidian 열기 링크를 붙입니다",
+  "aib.vault_cli.help_vtitle_paths": "절대 경로 또는 Vault 안의 상대 경로(여러 개 가능)",
+  "aib.vault_cli.help_vtitle_stdin": "표준 입력에서도 한 줄에 하나씩 경로를 읽습니다",
+  "aib.vault_cli.err_vtitle_none": "경로가 없습니다: 경로를 주거나 --stdin 을 붙이세요",
+  "aib.vault_cli.err_vtitle_too_many": "경로가 너무 많습니다: {count}개, 한 번에 최대 {max}개입니다",
+  "aib.vault_cli.vtitle_outside": "(Vault 밖입니다)"
 }

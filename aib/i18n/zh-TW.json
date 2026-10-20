@@ -4817,5 +4817,11 @@
   "aib.vault_cli.err_mobile_symlink": "{path} 是符號連結,不跟、沒有寫",
   "aib.vault_cli.mobile_done": "已放進 Vault:{path}(到期 {expires});Vault 同步到手機後,手機上的標題外掛就會開",
   "aib.vault_cli.mobile_removed": "已從 Vault 拿掉 {path}",
-  "aib.vault_cli.mobile_absent": "Vault 裡本來就沒有 {path}"
+  "aib.vault_cli.mobile_absent": "Vault 裡本來就沒有 {path}",
+  "aib.vault_cli.help_vtitle": "(只讀)把 Vault 路徑換成標題路徑,附 Obsidian 開啟連結",
+  "aib.vault_cli.help_vtitle_paths": "絕對路徑或 Vault 內相對路徑,可多個",
+  "aib.vault_cli.help_vtitle_stdin": "另從標準輸入每行讀一個路徑",
+  "aib.vault_cli.err_vtitle_none": "沒有給路徑:帶路徑參數或 --stdin",
+  "aib.vault_cli.err_vtitle_too_many": "路徑太多:{count} 個,一次最多 {max} 個",
+  "aib.vault_cli.vtitle_outside": "(不在 Vault 裡)"
 }

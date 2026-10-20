@@ -4817,5 +4817,11 @@
   "aib.vault_cli.err_mobile_symlink": "{path} is a symbolic link; not followed, nothing written",
   "aib.vault_cli.mobile_done": "put in the vault: {path} (expires {expires}); once the vault syncs to the phone, the labels plugin there turns on",
   "aib.vault_cli.mobile_removed": "removed {path} from the vault",
-  "aib.vault_cli.mobile_absent": "{path} was not in the vault"
+  "aib.vault_cli.mobile_absent": "{path} was not in the vault",
+  "aib.vault_cli.help_vtitle": "(read-only) turn vault paths into title paths, with an Obsidian open link",
+  "aib.vault_cli.help_vtitle_paths": "absolute paths or paths relative to the vault; several allowed",
+  "aib.vault_cli.help_vtitle_stdin": "also read one path per line from standard input",
+  "aib.vault_cli.err_vtitle_none": "no paths given: pass paths or --stdin",
+  "aib.vault_cli.err_vtitle_too_many": "too many paths: {count}, at most {max} at a time",
+  "aib.vault_cli.vtitle_outside": "(not in the vault)"
 }
