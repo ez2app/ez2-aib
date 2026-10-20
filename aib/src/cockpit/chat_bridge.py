@@ -1559,6 +1559,21 @@ def cmd_backup(a, env, out):
     return 0
 
 
+RECV_FAIL_WARN = 3   # 10-20 @abb89(會員清單 E 段):收信連續失敗幾次就警報(Pro 13 每 5 秒重來、20 小時沒人發現)
+
+
+def recv_fail_line(w, now=None):
+    """工人回報的 recv_fail {n, since, why}:連續 n ≥ RECV_FAIL_WARN ⇒ ⚠ 那一行;不然 None。"""
+    rf = (w or {}).get("recv_fail") or {}
+    n = rf.get("n") if isinstance(rf.get("n"), int) else 0
+    if n < RECV_FAIL_WARN:
+        return None
+    since = rf.get("since") if isinstance(rf.get("since"), int) else None
+    mins = max(1, int(((time.time() if now is None else now) - since) // 60)) if since else 1
+    import touchid_approve as TA                                  # why 是例外類名,照舊清字元再印
+    return T("status_recv_failing", n=n, why=TA.clean(str(rf.get("why") or "?"), 40), mins=mins)
+
+
 def cmd_status(a, env, out):
     rec = status_record(env)
     if a.json:
@@ -1589,6 +1604,9 @@ def cmd_status(a, env, out):
             out.write(T("status_clock_unknown") + "\n")
         else:
             out.write(T("status_clock_warn" if c.get("warn") else "status_clock_ok", offset=c["offset"]) + "\n")
+        line = recv_fail_line(w)
+        if line:
+            out.write(line + "\n")
     out.write(T("status_heartbeat_" + ("yes" if rec["heartbeat"] else "no")) + "\n")
     import chat_owner_cli as OC
     if OC.owner_status(env)["role"] == "both":

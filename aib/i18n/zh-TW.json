@@ -4374,6 +4374,7 @@
   "aib.chat.status_today": "今天:寄出 {sent}、收到 {received}、失敗 {failed};待寄 {pending}",
   "aib.chat.status_clock_ok": "時鐘:跟中繼站差 {offset} 秒(正常)",
   "aib.chat.status_clock_warn": "⚠ 時鐘:跟中繼站差 {offset} 秒;請校時(系統設定 → 日期與時間 → 自動設定),不然回條與過期判斷會錯",
+  "aib.chat.status_recv_failing": "⚠ 收信連續失敗 {n} 次({why},已 {mins} 分鐘):信進不來;先 aib chat off 再 aib chat on,還是失敗請回報",
   "aib.chat.status_clock_unknown": "時鐘:還沒量(或量不到)",
   "aib.chat.prepare_venv_ok": "線上對話:nostr-sdk 已備好({pin})",
   "aib.chat.prepare_venv_failed": "線上對話:nostr-sdk 沒裝成({pin},多半是網路);之後跑 aib chat prepare 再補",

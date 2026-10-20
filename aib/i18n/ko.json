@@ -4374,6 +4374,7 @@
   "aib.chat.status_today": "오늘: 보냄 {sent}, 받음 {received}, 실패 {failed}; 보낼 대기 {pending}",
   "aib.chat.status_clock_ok": "시계: 릴레이와 {offset}초 차이(정상)",
   "aib.chat.status_clock_warn": "⚠ 시계: 릴레이와 {offset}초 차이. 시간을 맞추세요(시스템 설정 → 날짜 및 시간 → 자동 설정). 수신 확인과 만료 판단이 틀어집니다",
+  "aib.chat.status_recv_failing": "⚠ 수신이 {n}회 연속 실패({why}, {mins}분째): 편지가 들어오지 않습니다. aib chat off 후 aib chat on을 해 보고, 계속 실패하면 보고하세요",
   "aib.chat.status_clock_unknown": "시계: 아직 측정 안 됨(또는 측정 불가)",
   "aib.chat.prepare_venv_ok": "온라인 대화: nostr-sdk 준비됨({pin})",
   "aib.chat.prepare_venv_failed": "온라인 대화: nostr-sdk 설치 실패({pin}, 대개 네트워크). 나중에 aib chat prepare 실행",
