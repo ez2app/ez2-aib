@@ -6,6 +6,7 @@
 全程真的 HTTP;只有公鑰清單 / 網址從參數注入(正式程式寫死、不從環境變數換 ⇒ E3 證明假伺服器簽的單子正式清單一律拒)。
 E1 一輪:選席 → 解鎖單 → 打字(進到席位)→ 看對話(不帶本機路徑)→ 回答單答題 → 停止 → 上鎖 → 再打字被拒;Mac 上沒彈 Touch ID
 E2 憑證不對 ⇒ link 停在 unauthorized;機器指紋不對 ⇒ 403
+E4 機器指紋測試向量(跟 ez2.page 兩邊各放一份同樣的):uuid 6f1c1d1e-0000-4000-8000-000000000001 ⇒ 89e13cddf7e05b0867bcfa94ff6d636444428fcd4c4509cdc6fb368bc883aa2f
 E3 不注入測試公鑰(= 正式清單，目前空)⇒ 解鎖單 grant_unknown-key,什麼都沒送進席位
 """
 import importlib.util
@@ -175,6 +176,10 @@ class E2E(BASE.Box):
         self.assertEqual(r["why"], "grant_unknown-key", "正式清單空 ⇒ 假伺服器簽的單子一律拒")
         self.assertEqual(ph.cmd("input", text="嗨")["why"], "locked")
         self.assertEqual(self.keys(), [])
+
+    def test_e4_fp_vector(self):
+        self.assertEqual(self.RG.machine_fp("6f1c1d1e-0000-4000-8000-000000000001"), "89e13cddf7e05b0867bcfa94ff6d636444428fcd4c4509cdc6fb368bc883aa2f")
+        self.assertEqual(self.RG.machine_fp("00000000-0000-4000-8000-000000000000"), "53fb497e86648f5ac1020d2dbe2d44d7ca32cc13d67a3d1b56d3d25e18e40f2e")
 
 
 if __name__ == "__main__":
