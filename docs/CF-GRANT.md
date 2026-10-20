@@ -2,27 +2,48 @@
 
 # Temporary Cloudflare keys (`aib cf grant`)
 
-Instead of leaving a long-lived, broad Cloudflare key on a server, `aib cf grant` asks for Touch ID every time and then
-creates a token that only works for **one zone**, **only the permissions you name**, **only from the target server's IP
-addresses**, and **expires after 1–60 minutes** (10 by default). The token is written straight to the server over ssh
-stdin (file mode 600); its value is never printed, logged or passed as an argument.
+Keep no long-lived, high-privilege Cloudflare key on servers. `aib cf grant` asks for Touch ID every time, then mints a token that is
+**limited to one zone**, **limited to the permissions you name**, **usable only from the target server's IPs**, and **expires after 1–10 minutes** (default 10).
+The token lives only in memory and goes to the server over ssh stdin (mode 600). It never touches this Mac's disk, is never printed, logged or passed as an argument.
 
 ```
-aib secret ask CF_TOKEN_MINTER                      # once: store the minter key (Touch ID)
+aib secret ask CF_TOKEN_MINTER                      # once: seal the minter key into this Mac's Secure Enclave
 aib cf grant ez2.app dns-write --push eu01:/etc/ez2-cloud/grant.env --dry-run
 aib cf grant ez2.app dns-write --push eu01:/etc/ez2-cloud/grant.env --ttl 10m --var CF_API_TOKEN
 aib cf list
 aib cf revoke <token_id>
 ```
 
-- **Minter key**: in the Cloudflare dashboard create a token with only **API Tokens Write** (add **Zone Read** on the zones
-  you will grant for, so the zone can be looked up), then store it with `aib secret ask CF_TOKEN_MINTER`. It stays in this
-  Mac's encrypted vault; no server needs it.
+## What the defence actually is
+
+- **The minter key is sealed in this Mac's Secure Enclave only.** Create a Cloudflare token with only **API Tokens Write** (plus **Zone Read**
+  on the zones you will grant for, so the zone can be looked up), then run `aib secret ask CF_TOKEN_MINTER` yourself. The value is encrypted with a
+  Secure Enclave key (CryptoKit `SecureEnclave.P256`, access control `biometryCurrentSet`) into `~/.ez2-aib/secrets/se/CF_TOKEN_MINTER.sealed`.
+- **Every use of the minter makes the system itself ask for Touch ID.** Unsealing needs a key agreement inside the Secure Enclave, and that key
+  requires biometrics on every use. macOS / the Secure Enclave enforce this, not an aib check. A copied sealed file is useless: only this Mac's Secure
+  Enclave plus your fingerprint can open it. Changing enrolled fingerprints invalidates it; run `aib secret ask CF_TOKEN_MINTER` again.
+- **aib writes the prompt text**: zone, permissions, TTL and target host. Read it before you touch. One approval mints one token.
+- **The minter is never allowed in a file.** The key store (`cloudflare.env`, including LINE fill-in) refuses `CF_TOKEN_MINTER`; if a file already
+  holds that line, `grant` / `list` / `revoke` refuse (`minter_in_file`). Seal it as above, then delete that line.
+- **The audit log is a record, not a defence.** Each attempt that reaches the unseal step (approved or refused) appends a line to
+  `~/.ez2-aib/audit/cf-grant.jsonl` (no values).
+
+## Other rules
+
 - **Permissions** (allow-list): `dns-read` `dns-write` `cache-purge` `zone-read` `waf-write` `ssl-write` `routes-write` `workers-write`.
-- **IP lock**: the address ssh connects to, plus the server's own outgoing IPv4/IPv6 as Cloudflare sees it, plus any `--ip CIDR`.
-  If no address can be found, nothing is created.
-- **Touch ID** is required for `grant` and `revoke`; there is no flag or variable to skip it. Not on a Mac ⇒ nothing is created.
-- If the token cannot be delivered to the server it is deleted immediately.
-- Every approval (granted or refused) is appended to `~/.ez2-aib/audit/cf-grant.jsonl` (no values).
-- Background jobs that cannot wait for a fingerprint (certificate renewal, cache purges) should get their own small,
-  IP-locked long-lived token instead; this command is for changes a person approves.
+- **IP lock**: the address ssh connects to + the server's own IPv4/IPv6 egress to Cloudflare + any `--ip CIDR`. If none can be found, nothing is minted.
+- There is no flag or environment variable that skips Touch ID; not a Mac ⇒ nothing is minted. `AIB_TOUCHID=0` only turns it off.
+- `--dry-run` checks arguments and the IP lock and prints the plan. Looking up the zone needs the minter (= a fingerprint), so dry-run does not call Cloudflare.
+- If the token cannot be delivered, it is deleted at once.
+- Automated jobs that cannot wait for a fingerprint (certificate renewal, cache purge) should get their own small, zone-limited, IP-locked token; this command is for changes a person approves.
+- First use builds a small helper with the Command Line Tools `swiftc` (`~/.ez2-aib/bin/aib-sehelper`, source in `aib/src/cockpit/sehelper/`);
+  it is rebuilt only when the source changes. Without `swiftc` you are told to install the Command Line Tools.
+
+## Remaining risk (stated plainly)
+
+- **Programs in the same account can change user-writable code.** `~/.ez2-aib/bin/aib-sehelper` and aib itself live where your account can write.
+  An AI in the same account that replaces them can, at the moment you **approve one legitimate request**, also take the minter unsealed for it.
+  The Secure Enclave stops "getting it without your fingerprint"; it cannot stop "you touched, but the program had been swapped". Follow-up: install the
+  helper in a root-owned location and check its hash against a signed manifest before running it (not in this version; for the integrator to decide).
+- The minter can mint tokens of any permission; its safety rests entirely on the Secure Enclave gate above. As a second layer, give the minter an IP
+  restriction in the Cloudflare dashboard (only your Mac's / office's egress).

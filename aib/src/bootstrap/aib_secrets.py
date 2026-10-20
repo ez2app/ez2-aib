@@ -108,9 +108,10 @@ LAYOUT = (
       ("STRIPE_WEBHOOK_SECRET", "Stripe webhook 簽名", "payment", "payment", False))),
     # 10-21 @ee4f8(PROPOSAL-gaps E):原本沒有 Cloudflare 類,`aib secret ask CF_WORKER_TOKEN` 回 unknown_name。
     # CF_ / CLOUDFLARE_ 開頭的名字都落這一檔;伺服器專用的 token 用 --remote-only 送,不佔這格。
+    # 母鑰 CF_TOKEN_MINTER 不准放這裡(SE_ONLY,@abb89 審 #222):本機檔同帳號 AI 讀得到 ⇒ 只放 Secure Enclave 封存。
     ("cloudflare.env", "cloudflare", "type",
-     "Cloudflare。CF_TOKEN_MINTER 只給「API Tokens Write」,aib cf grant 用它現開短命 token;不放 global key。",
-     (("CF_TOKEN_MINTER", "Cloudflare 母鑰(只能開 token)", "cf-grant", "cf-grant", False),)),
+     "Cloudflare。只放給本機工具用的一般 token;不放 global key,也不放 CF_TOKEN_MINTER(那把只進 Secure Enclave)。",
+     (("CF_API_TOKEN", "Cloudflare API token(限權限的一般 token)", "cf-tools", "cf-tools", False),)),
     ("social/line.env", "line", "social",
      "LINE 官方帳號。在 LINE Developers 的 Channel 頁複製。多帳號:LINE_SHOP2_CHANNEL_SECRET。",
      (("LINE_CHANNEL_SECRET", "Messaging API 頻道密鑰", "support-intake", "support-intake", True),
@@ -274,6 +275,10 @@ def _name_maps():
 
 
 EXACT_FILES, PREFIX_TABLE = _name_maps()
+
+
+# 只准放 Secure Enclave 的名字(se_vault.SE_ONLY 同一份):金鑰櫃檔案一律拒寫(@abb89 審 #222)
+SE_ONLY_NAMES = ("CF_TOKEN_MINTER",)
 
 
 def file_for_name(name):

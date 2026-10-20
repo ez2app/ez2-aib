@@ -236,7 +236,7 @@ def push(name, value, host, path, owner=None, run=subprocess.run, pin=None):
 
 
 def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_available=None,
-            opener=None, ssh_run=None, getpass_fn=None, isatty=None, out=sys.stdout, err=sys.stderr):
+            opener=None, ssh_run=None, getpass_fn=None, isatty=None, out=sys.stdout, err=sys.stderr, seal=None):
     import argparse
     import aib_secrets as S
     import secret_collect as SC
@@ -259,6 +259,8 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         res["why"] = "unknown_name"
         return done(2)
     res["file"] = rel
+    if a.name in S.SE_ONLY_NAMES:
+        return _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal)
     target = pin = None
     if a.push:
         try:
@@ -304,6 +306,40 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
                 return done(4 if not a.remote_only else 2)   # 4 = 本機已寫、遠端沒送到
             res["pushed"] = where
         res["ok"] = True
+        return done(0)
+    finally:
+        value = None  # noqa: F841
+
+
+def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal):
+    """只准放 Secure Enclave 的名字(CF_TOKEN_MINTER):輸入框 → Touch ID → SE 封存;不寫金鑰櫃檔、不推遠端
+    (@abb89 審 #222:母鑰在本機檔 = 同帳號 AI 讀得到;推到伺服器 = 又放回伺服器上)。"""
+    import se_vault as SV
+    res["file"] = "se:" + a.name
+    if a.push or a.remote_only or a.check:
+        res["why"] = "se_only_local"
+        err.write(_t("aib.secret.se_only_hint", {"name": a.name}) + "\n")
+        return done(2)
+    if platform != "darwin":
+        res["why"] = "not_mac"
+        return done(2)
+    dest = _t("aib.secret.dest_se")
+    value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty)
+    if value is None:
+        res["why"] = why
+        if why == "no_gui":
+            err.write(_t("aib.secret.no_gui_hint") + "\n")
+        return done(2)
+    try:
+        why = prove_human(a.name, dest, env, platform, touchid=touchid, touchid_available=touchid_available)
+        if why:
+            res["why"] = why
+            return done(2)
+        fp, why = (seal or SV.seal)(a.name, value, env=env)
+        if why:
+            res["why"] = "seal_" + why
+            return done(2)
+        res.update(ok=True, local=False, fingerprint=fp, sealed=True)
         return done(0)
     finally:
         value = None  # noqa: F841
