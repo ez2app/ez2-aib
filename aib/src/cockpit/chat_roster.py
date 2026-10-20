@@ -411,6 +411,21 @@ def set_public(seat5, on, env=None):
     return rec
 
 
+def swap_public(old_seat5, new_seat5, env=None):
+    """第二波 #6 / NOTE #23(10-21 @abb89 裁「公開跟人格走」):重開艙後同人格的新席接上舊席的公開身分。
+    金鑰本來就跟人格(nostr_keys.sync_seats 回 moved),這裡只把 profile.public 裡的舊席碼換成新席碼;
+    舊席碼不在 public 裡 ⇒ 不動、回 False。名冊 publish_roster 每輪比內容雜湊,席碼換了自然重發。"""
+    if not (_SEAT_RE.match(old_seat5 or "") and _SEAT_RE.match(new_seat5 or "")) or old_seat5 == new_seat5:
+        return False
+    rec = read_profile(env)
+    pub = list((rec or {}).get("public") or [])
+    if not rec or old_seat5 not in pub:
+        return False
+    rec["public"] = sorted({s for s in pub if s != old_seat5} | {new_seat5})
+    _save_profile(rec, env)
+    return True
+
+
 MAX_RELAYS = 6     # 第 27.9 節:每多一站,每則信就多寄一份、多一個會限流或封人的對象
 
 
