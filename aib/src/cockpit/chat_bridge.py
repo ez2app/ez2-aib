@@ -1383,6 +1383,58 @@ def cmd_send(a, env, out):
     return res["rc"]
 
 
+def cmd_visit(a, env, out):
+    """第二波 #1(NOTE-member-ux A1 / A2):
+    aib chat open <好友>                     一鍵開放艦長室(share status + space room)並通知對方
+    aib chat visit <好友>                    送參觀請求
+    aib chat visit accept|reject <好友>      同意(= open)/ 拒絕
+    aib chat visits [--json]                 收到的請求、我送出的、我開給誰、誰開給我"""
+    import chat_visit as CVI
+    root = bridge_root(env)
+    if a.cmd == "visits":
+        pl = CVI.payload(env)
+        if a.json:
+            out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+            return 0
+        if not pl["incoming"] and not pl["outgoing"]:
+            out.write(T("visits_none") + "\n")
+        for r in pl["incoming"]:
+            out.write(T("visits_in_row", name=r.get("name") or "-", owner=r["owner"], status=T("visit_st_" + r["status"]),
+                        when=time.strftime("%m-%d %H:%M", time.localtime(int(r.get("at") or 0)))) + "\n")
+        for r in pl["outgoing"]:
+            out.write(T("visits_out_row", name=r.get("name") or "-", owner=r["owner"], status=T("visit_st_" + r["status"]),
+                        when=time.strftime("%m-%d %H:%M", time.localtime(int(r.get("at") or 0)))) + "\n")
+        for o, lv in pl["open_to"].items():
+            out.write(T("visits_open_row", owner=o, share=T("share_" + lv["share"]), space=T("space_" + lv["space"])) + "\n")
+        return 0
+    action, who = ("open", a.who) if a.cmd == "open" else (
+        (a.who, a.who2) if a.who in ("accept", "reject") else ("request", a.who))
+    if not who:
+        out.write(T("visit_usage") + "\n")
+        return 2
+    if action in ("request", "open", "accept") and not GF.bridge_alive(root):
+        out.write(T("visit_bridge_off") + "\n")
+        return 2
+    try:
+        if action in ("open", "accept"):
+            res = CVI.open_to(env, root, who)
+            key = "open_done"
+        elif action == "reject":
+            res = CVI.reject(env, root, who)
+            key = "visit_rejected"
+        else:
+            res = CVI.request(env, root, who)
+            key = "visit_sent"
+    except CVI.VisitError as err:
+        out.write(T("visit_" + str(err)) + "\n")
+        return 2
+    if a.json:
+        out.write(json.dumps({"v": 1, "action": action, "result": res}, ensure_ascii=False) + "\n")
+    else:
+        out.write(T(key, owner=res["owner"]) + "\n")
+    return 0
+
+
 def cmd_room(a, env, out):
     import chat_roster as CR
     owner = CR.friend_owner(a.who or "")
@@ -1781,6 +1833,15 @@ def main(argv=None, env=None, out=sys.stdout):
     of.add_argument("args", nargs="*")
     of.add_argument("--unit", type=int)
     of.add_argument("--json", action="store_true")
+    op_ = sub.add_parser("open", help=T("help.open"))          # 第二波 #1:一鍵開放艦長室給好友(share status + space room + 通知)
+    op_.add_argument("who")
+    op_.add_argument("--json", action="store_true")
+    vi = sub.add_parser("visit", help=T("help.visit"))         # 參觀請求 / accept / reject
+    vi.add_argument("who")
+    vi.add_argument("who2", nargs="?")
+    vi.add_argument("--json", action="store_true")
+    vs = sub.add_parser("visits", help=T("help.visits"))
+    vs.add_argument("--json", action="store_true")
     ofs = sub.add_parser("offers", help=T("help.offers"))
     ofs.add_argument("who")
     ofs.add_argument("--json", action="store_true")
@@ -1925,6 +1986,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_offers(a, env, out)
     if a.cmd == "space":
         return cmd_space(a, env, out)
+    if a.cmd in ("open", "visit", "visits"):
+        return cmd_visit(a, env, out)
     if a.cmd == "friends":
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":
