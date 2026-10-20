@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -172,6 +173,42 @@ class Events(Box):
         self.assertIn("第二行", dms[1]["text"])
         self.assertIsNone(dms[2]["meta"]["relay_text"], "狀態根外的檔不准讀")
         self.assertNotIn("root:", json.dumps(res, ensure_ascii=False))
+
+    def test_t3b_follow(self):
+        """--follow(長輪詢):沒新東西等到 wait 秒才回空;等待中有人追加 ⇒ 立刻回新事件;換了紀錄檔 ⇒ 從頭讀 + reset。"""
+        import threading
+        self.write([rec("user", "舊的", "u0")])
+        base = self.transcript(limit=0)
+        off = base["last_offset"]
+        t0 = time.time()
+        clock = [0.0]
+        empty = self.transcript(offset=off, follow=True, wait=3, sleep=lambda s: clock.__setitem__(0, clock[0] + s), clock=lambda: clock[0])
+        self.assertEqual((empty["events"], empty["last_offset"], empty["reset"]), ([], off, False))
+        self.assertGreaterEqual(clock[0], 3, "沒新東西要等滿 wait")
+        self.assertLess(time.time() - t0, 2, "假時鐘,不是真的睡")
+
+        def appender():
+            time.sleep(0.4)
+            with self.jsonl.open("a", encoding="utf-8") as fh:
+                fh.write(rec("assistant", [{"type": "text", "text": "新回覆"}], "a-new") + "\n")
+        threading.Thread(target=appender, daemon=True).start()
+        t0 = time.time()
+        got = self.transcript(offset=off, follow=True, wait=10)
+        self.assertEqual([e["text"] for e in got["events"]], ["新回覆"])
+        self.assertLess(time.time() - t0, 5, "有新東西就立刻回,不等滿 10 秒")
+        self.assertGreater(got["last_offset"], off)
+        # 換檔(壓縮 / 接回 ⇒ 席位檔換 session_uuid、新 jsonl)
+        new_sess = "22222222-2222-4333-8444-5555550ab12"
+        (self.proj / (new_sess + ".jsonl")).write_text(rec("user", "新對話第一句", "n1").replace(SESS, new_sess) + "\n", encoding="utf-8")
+        import json as _j
+        f = next(self.state.glob("instances/*/seats/w3.json"))
+        d = _j.loads(f.read_text()); d["session_uuid"] = new_sess; f.write_text(_j.dumps(d))
+        got2 = self.transcript(offset=got["last_offset"], session=got["session"], follow=True, wait=5)
+        self.assertTrue(got2["reset"], got2)
+        self.assertEqual([e["text"] for e in got2["events"]], ["新對話第一句"])
+        self.assertEqual(got2["session"], new_sess)
+        got3 = self.transcript(offset=10 ** 9, follow=False)      # offset 比檔還長(檔被換掉 / 截短)⇒ 也 reset
+        self.assertTrue(got3["reset"])
 
     def test_t3_cursors(self):
         lines = [rec("user", "第 %d 句 secret deadbeefdeadbeefdeadbeefdeadbeefdead a@b.co 10.0.0.1" % i, "u%d" % i) for i in range(10)]
