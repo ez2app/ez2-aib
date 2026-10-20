@@ -63,7 +63,7 @@ def http(method, url, token, body=None, timeout=POLL_S + 10):
 
 
 def target(env=None):
-    """(token, machine_id) 或 (None, why)。只吃綁到這台的那一頁。"""
+    """((token, 機器指紋), None) 或 (None, why)。只吃綁到這台的那一頁。"""
     e = dict(os.environ if env is None else env)
     if str(HERE / "page") not in sys.path:
         sys.path.insert(0, str(HERE / "page"))
@@ -74,11 +74,12 @@ def target(env=None):
         return None, "bind-ambiguous"
     if not rec:
         return None, "not-bound"
-    mid, _accts = __import__("remote_grant").this_machine(e)
+    import remote_grant
+    fp, _accts = remote_grant.this_machine(e)
     tok = rec.get("assistant_token")
-    if not mid or rec.get("machine_id") != mid or not isinstance(tok, str) or not tok:
+    if not fp or remote_grant.machine_fp(rec.get("machine_id")) != fp or not isinstance(tok, str) or not tok:
         return None, "not-bound"
-    return (tok, mid), None
+    return (tok, fp), None
 
 
 def handle(msg, env=None, act=None):

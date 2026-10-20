@@ -9,7 +9,7 @@
 
 防線(GUIDE-same-user-ai-threat-model「簽章」那一類):
 - 公鑰清單寫死在這支(已簽版本);**不從設定檔 / 環境變數讀**(那等於可換)。改清單要維護者點頭,測試釘著。
-- 驗:v / kind / kid 在清單 / Ed25519 簽章(canonical JSON,去掉 sig)/ machine = 這台 machine.json / account_id = 這台綁的帳號 /
+- 驗:v / kind / kid 在清單 / Ed25519 簽章(canonical JSON,去掉 sig)/ machine = 這台指紋(machine_fp(machine.json uuid))/ account_id = 這台綁的帳號 /
   seat 對 / 沒過期(now ∈ [iat - 30 秒, exp]、exp - iat ≤ 5 分鐘)/ 數字只收整數/ nonce 沒用過 / auth 在允許清單。
 - 本機總開關 remote.json:預設關;**打開要本機 Touch ID**(aib seat remote on),關一鍵。⚠ 這是本機檔、AI 改得到:只防「伺服器被拿下就能對本機下指令」
   這種情況下本人沒打開的機器;不宣稱擋得住本機 AI。
@@ -32,7 +32,7 @@ V = 1
 KIND = "seat-unlock"
 MAX_LIFE_S = 300
 SKEW_S = 30
-AUTHS = ("passkey", "line", "password")
+AUTHS = ("passkey", "password", "management_key", "line", "facebook", "google", "apple", "instagram", "threads")   # ez2.page 簽單時的「再驗」方式
 SEAT_RE = re.compile(r"[0-9a-z]{5}")
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
@@ -100,8 +100,14 @@ def set_remote(on, env=None, max_min=None, allow=None):
     return cur
 
 
+def machine_fp(machine_id):
+    """給 ez2.page 綁機器用的指紋(hex64):sha256 前綴 + machine.json uuid;uuid 本身不出本機"""
+    import hashlib
+    return hashlib.sha256(("ez2-aib-machine-v1:" + str(machine_id)).encode("utf-8")).hexdigest()
+
+
 def this_machine(env=None):
-    """(machine_id, {account_id…}):ez2.page 綁定時的 machine.json uuid、綁到這台(記錄的 machine_id 相同)的每一頁 tenant_id;沒綁 ⇒ (None, set())"""
+    """(機器指紋, {account_id…}):machine_fp(machine.json uuid)、綁到這台(記錄的 machine_id 相同)的每一頁 tenant_id;沒綁 ⇒ (None, set())"""
     e = dict(os.environ if env is None else env)
     if str(HERE / "page") not in sys.path:
         sys.path.insert(0, str(HERE / "page"))
@@ -115,7 +121,7 @@ def this_machine(env=None):
     if not isinstance(m, str) or not m:
         return None, set()
     accts = {str(r.get("tenant_id")) for r in recs if r.get("machine_id") == m and r.get("tenant_id") not in (None, "")}
-    return m, accts
+    return machine_fp(m), accts
 
 
 def _seen_path(env=None):

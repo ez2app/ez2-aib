@@ -373,6 +373,7 @@ def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_a
         return out, 2
     mid, accts = remote_grant.this_machine(env)
     out.update(ok=True, on=cfg["on"], max_min=cfg["max_min"], allow=cfg["allow"], bound=bool(mid and accts),
+               machine_fp=mid,
                keys=len(remote_grant.TRUSTED_GRANT_KEYS))
     return out, 0
 

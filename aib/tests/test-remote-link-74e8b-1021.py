@@ -40,11 +40,12 @@ CODE, PROMPT = BASE.CODE, BASE.PROMPT
 SEED = bytes(range(32))
 KEYS = {"t1": "ed25519:" + ed25519.public_key(SEED).hex()}
 MID, ACCT = "6f1c1d1e-0000-4000-8000-000000000001", "t_lfu0327"
+FP = __import__("hashlib").sha256(("ez2-aib-machine-v1:" + MID).encode()).hexdigest()
 
 
 def grant(**kw):
     now = int(time.time())
-    g = {"v": 1, "kind": "seat-unlock", "kid": "t1", "machine": MID, "seat": CODE, "minutes": 10, "nonce": base64.urlsafe_b64encode(os.urandom(18)).decode(),
+    g = {"v": 1, "kind": "seat-unlock", "kid": "t1", "machine": FP, "seat": CODE, "minutes": 10, "nonce": base64.urlsafe_b64encode(os.urandom(18)).decode(),
          "iat": now, "exp": now + 120, "account_id": ACCT, "auth": "passkey"}
     g.update(kw)
     return {"grant": g, "sig": base64.urlsafe_b64encode(ed25519.sign(SEED, signing.canonical(g))).decode().rstrip("=")}
@@ -73,7 +74,7 @@ class Link(BASE.Box):
         self.RG.set_remote(True)
         SA, t = self.SA, self.tid()
         self.fake = types.SimpleNamespace(
-            do_unlock=lambda c, m, env=None, grant=None: SA.do_unlock(c, m, env=env, grant=grant, keys=KEYS, machine=(MID, {ACCT}), touchid=t),
+            do_unlock=lambda c, m, env=None, grant=None: SA.do_unlock(c, m, env=env, grant=grant, keys=KEYS, machine=(FP, {ACCT}), touchid=t),
             do_input=lambda c, x, env=None, window_only=False: SA.do_input(c, x, env=env, screen=PROMPT, window_only=window_only, touchid=t,
                                                                          touchid_available=lambda: True, platform="darwin"),
             do_stop=lambda c, hard=False, env=None, window_only=False: SA.do_stop(c, hard=hard, env=env, window_only=window_only, touchid=t,
@@ -83,7 +84,7 @@ class Link(BASE.Box):
     def run_link(self, relay, n):
         out = None
         for _ in range(n):
-            out = self.RL.link("tok-secret", MID, base="http://relay.test", call=relay, once=True, act=self.fake, sleep=lambda s: None)
+            out = self.RL.link("tok-secret", FP, base="http://relay.test", call=relay, once=True, act=self.fake, sleep=lambda s: None)
         return out
 
     def test_l1_round(self):
@@ -98,7 +99,7 @@ class Link(BASE.Box):
         self.assertEqual((res["m-unlock-01"]["via"], res["m-input-002"]["via"], res["m-stop-0003"]["via"]), ("remote-grant", "unlock-window", "unlock-window"))
         self.assertGreater(res["m-left-0004"]["unlock_left_s"], 590)
         self.assertEqual(self.asked, [], "遠端過來的一次 Touch ID 都不彈")
-        self.assertTrue(all(x["machine"] == MID for x in r.replies))
+        self.assertTrue(all(x["machine"] == FP for x in r.replies))
         self.assertIn("跑一下測試", "\n".join(self.keys()))
 
     def test_l2_locked(self):
@@ -185,7 +186,7 @@ class Link(BASE.Box):
         d.mkdir(parents=True)
         (d / "machine.json").write_text(json.dumps({"id": MID, "name": "mac"}))
         (d / "t_lfu0327.p1.json").write_text(json.dumps({"tenant_id": ACCT, "page_id": "p1", "machine_id": MID, "assistant_token": "tok-x"}))
-        self.assertEqual(self.RL.target(), (("tok-x", MID), None))
+        self.assertEqual(self.RL.target(), (("tok-x", FP), None))
         self.RG.set_remote(False)
         res, rc = self.RL.main_link(once=True, out=open(os.devnull, "w"))
         self.assertEqual((rc, res["why"]), (3, "remote-off"), "關著就不連(測試不碰正式站)")
