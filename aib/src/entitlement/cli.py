@@ -121,11 +121,59 @@ def cmd_activate(argv: List[str], action: str = "activate") -> int:
     return _print_json({"ok": True, "expires_at": token.get("expires_at"), "path": str(resolve_home() / binding.ACTIVATION_FILE)}, 0)
 
 
+BACKUPS_KEEP = 2
+
+
+def cmd_install(argv: List[str]) -> int:
+    """aib license install <檔>(10-20 @abb89,會員清單 #9):驗簽章與到期,放到 <home>/license.json(0600);
+    有舊檔先備份 license.json.bak-<月日-時分>,只留最近 BACKUPS_KEEP 份。只印 tier / addons / 到期 / 路徑,不印簽章。"""
+    import os
+    import shutil
+    import time
+    from pathlib import Path
+    from . import signing
+    from .store import read_license_obj, resolve_license_path
+    from .tier import _parse_expires_at, _utc_now
+    if len(argv) != 1:
+        return _print_json({"ok": False, "error": "usage: aib license install <file>"}, 2)
+    src = Path(argv[0]).expanduser()
+    obj = read_license_obj(path=src)
+    if obj is None:
+        return _print_json({"ok": False, "error": "not-a-license-file"}, 2)
+    ver = signing.verify_object(obj)
+    if ver != signing.OK:
+        return _print_json({"ok": False, "error": "signature-%s" % ver}, 3)
+    exp = _parse_expires_at(obj.get("expires_at"))
+    if exp is not None and exp <= _utc_now():
+        return _print_json({"ok": False, "error": "expired", "expires_at": obj.get("expires_at")}, 3)
+    dest = resolve_license_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    backup = None
+    if dest.exists():
+        backup = dest.with_name("%s.bak-%s" % (dest.name, time.strftime("%m%d-%H%M%S")))
+        shutil.copy2(dest, backup)
+        os.chmod(backup, 0o600)
+        old = sorted(dest.parent.glob(dest.name + ".bak-*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in old[BACKUPS_KEEP:]:
+            p.unlink()
+    tmp = dest.with_name("%s.%d.tmp" % (dest.name, os.getpid()))
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, ensure_ascii=False, indent=1)
+        fh.write("\n")
+    os.replace(tmp, dest)
+    os.chmod(dest, 0o600)
+    addons = [a for a in (obj.get("addons") or []) if isinstance(a, str)]
+    return _print_json({"ok": True, "tier": obj.get("tier"), "addons": addons, "expires_at": obj.get("expires_at"),
+                        "path": str(dest), "backup": str(backup) if backup else None}, 0)
+
+
 def main(argv: List[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in ("-h", "--help", "help"):
         sys.stderr.write(
-            "usage: aib-entitlement status|device-id|activate|deactivate|issue|revoke\n"
+            "usage: aib-entitlement status|device-id|activate|deactivate|install|issue|revoke\n"
+            "  install <file>  verify a signed license.json and put it in place (0600; old one backed up)\n"
             "  device-id   this machine's id under the license (for offline binding)\n"
             "  activate    activate this machine online (license with activation_url)\n"
             "  deactivate  free this machine's slot (do it before switching computers)\n"
@@ -142,6 +190,8 @@ def main(argv: List[str] | None = None) -> int:
         return cmd_issue(rest)
     if cmd == "revoke":
         return cmd_revoke(rest)
+    if cmd == "install":
+        return cmd_install(rest)
     if cmd == "device-id":
         return cmd_device_id(rest)
     if cmd == "activate":

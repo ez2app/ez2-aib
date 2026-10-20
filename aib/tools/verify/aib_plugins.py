@@ -156,16 +156,160 @@ def get(repo, what, env=None):
     return None, None, why
 
 
+MAX_PKG_BYTES = 64 * 1024 * 1024
+UNSIGNED_OK = False   # 付費外掛一律要信任鑰匙簽過;沒有 --allow-unsigned 這種門(刀測翻這個)
+USAGE = "usage: aib plugins licensed <addon> [--json]\n       aib plugins install <folder | .tgz | .zip | https://…> [--json]"
+
+
+def _safe_members(names):
+    """壓縮檔裡每個路徑都要是相對、不往上爬、不是絕對;不合 ⇒ 回那個名字。"""
+    for n in names:
+        p = Path(n)
+        if not n or n.startswith(("/", "\\")) or p.is_absolute() or ".." in p.parts or n.startswith("~"):
+            return n
+    return None
+
+
+def _extract(blob, into):
+    """.tgz / .tar / .zip ⇒ 解到 into(自己的空資料夾);只解一般檔與資料夾(連結、裝置一律不要)。回 (ok, why)。"""
+    import io
+    import tarfile
+    import zipfile
+    data = blob.read_bytes() if isinstance(blob, Path) else blob
+    if data[:4] == b"PK\x03\x04":
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            bad = _safe_members(z.namelist())
+            if bad:
+                return False, "unsafe-path:%s" % bad
+            for info in z.infolist():
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    return False, "symlink:%s" % info.filename
+            z.extractall(into)
+        return True, ""
+    try:
+        tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:*")
+    except tarfile.TarError:
+        return False, "not-an-archive"
+    with tf:
+        members = tf.getmembers()
+        bad = _safe_members([m.name for m in members])
+        if bad:
+            return False, "unsafe-path:%s" % bad
+        for m in members:
+            if not (m.isfile() or m.isdir()):
+                return False, "not-a-file:%s" % m.name
+        if hasattr(tarfile, "data_filter"):
+            tf.extractall(into, filter="data")
+        else:
+            tf.extractall(into)
+    return True, ""
+
+
+def _fetch(src, work):
+    """資料夾 / 壓縮檔 / 網址 ⇒ 裝著 aib-ext.json 的資料夾(在 work 底下或就是那個資料夾)。回 (Path 或 None, why)。"""
+    sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+    import aib_ext
+    src = str(src)
+    if src.startswith(("https://", "http://127.0.0.1", "http://localhost")):
+        import urllib.request
+        try:
+            with urllib.request.urlopen(src, timeout=60) as r:
+                data = r.read(MAX_PKG_BYTES + 1)
+        except Exception as exc:  # noqa: BLE001
+            return None, "download-failed:%s" % type(exc).__name__
+        if len(data) > MAX_PKG_BYTES:
+            return None, "too-big"
+    elif src.startswith("http://"):
+        return None, "https-only"
+    else:
+        p = Path(src).expanduser()
+        if p.is_dir():
+            return (p if (p / aib_ext.MANIFEST).is_file() else None), ("" if (p / aib_ext.MANIFEST).is_file() else "no-manifest")
+        if not p.is_file():
+            return None, "not-found"
+        if p.stat().st_size > MAX_PKG_BYTES:
+            return None, "too-big"
+        data = p.read_bytes()
+    into = Path(work) / "pkg"
+    into.mkdir()
+    ok, why = _extract(data, into)
+    if not ok:
+        return None, why
+    if (into / aib_ext.MANIFEST).is_file():
+        return into, ""
+    subs = [d for d in into.iterdir() if d.is_dir() and (d / aib_ext.MANIFEST).is_file()]
+    return (subs[0], "") if len(subs) == 1 else (None, "no-manifest")
+
+
+def install(src, as_json=False, out=sys.stdout):
+    """aib plugins install <來源>(10-20 @abb89,會員清單 #9):驗簽章、放到 ~/.ez2-aib/plugins/<名>、順便說有沒有授權。
+    驗法一律走 aib_ext.inspect(信任鑰匙簽章 + 檔案雜湊 + requires_aib),不另寫;只收 kind = plugin。
+    下載 / 解壓都在自己的暫存夾,驗過才搬;驗不過一個檔都不留。rc:0 裝好;3 驗不過 / 不是外掛;2 來源拿不到。"""
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+    import aib_ext
+    import ext_kinds as K
+    work = tempfile.mkdtemp(prefix="aib-plugin-in-")
+    res = {"ok": False, "src": str(src)}
+    try:
+        folder, why = _fetch(src, work)
+        if folder is None:
+            res["error"] = why
+            print(json.dumps(res, ensure_ascii=False)) if as_json else print("aib plugins install: %s" % why, file=sys.stderr)
+            return 2
+        m, probs = aib_ext.inspect(folder, allow_unsigned=UNSIGNED_OK)
+        if not probs and K.kind_of_label(str(m.get("kind") or "")) != "plugin":
+            probs = ["not-a-plugin:%s" % m.get("kind")]
+        if probs:
+            res["error"] = "rejected"
+            res["problems"] = [str(p) for p in probs]
+            if as_json:
+                print(json.dumps(res, ensure_ascii=False))
+            else:
+                for p in probs:
+                    print("aib plugins install: %s" % p, file=sys.stderr)
+            return 3
+        rc = aib_ext.install(folder, allow_unsigned=UNSIGNED_OK, out=(io_null() if as_json else out), enable_engines=False)
+        if rc:
+            res["error"] = "install-rc-%d" % rc
+            print(json.dumps(res, ensure_ascii=False)) if as_json else print("aib plugins install: rc %d" % rc, file=sys.stderr)
+            return rc
+        try:                                                   # requires_addon 在外掛自己的 plugin.json(aib-ext.json 是簽章包的說明)
+            pm = json.loads((Path(folder) / "plugin.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pm = {}
+        addon = m.get("requires_addon") or (pm.get("requires_addon") if isinstance(pm, dict) else None)
+        ok, lwhy = licensed({"requires_addon": addon}) if addon else (True, "free")
+        res.update({"ok": True, "name": m["name"], "version": m.get("version"), "path": str(aib_ext.target("plugin", m["name"])),
+                    "addon": addon, "licensed": bool(ok), "why": lwhy})
+        if as_json:
+            print(json.dumps(res, ensure_ascii=False))
+        elif addon:
+            print("%s: %s (%s)" % (addon, "licensed" if ok else "not licensed", lwhy), file=out)
+        return 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def io_null():
+    import io
+    return io.StringIO()
+
+
 def main(argv=None):
     """aib plugins licensed <外掛名> [--json](10-15:Obsidian 標題外掛等**不在 aib 行程裡**的付費外掛,
     問 aib 這台有沒有授權用的;判準就是 licensed(),不另寫一份)。有授權 ⇒ rc 0;沒有 ⇒ rc 1;用法錯 ⇒ rc 2。
     輸出 {"addon", "licensed", "why", "signature_enforced"};signature_enforced=False 表示授權簽章檢查還是草稿,
-    擋不住自己寫的授權檔(照實說,不假裝安全)。"""
+    擋不住自己寫的授權檔(照實說,不假裝安全)。
+    aib plugins install <來源> [--json](10-20):見 install()。"""
     a = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in a
     a = [x for x in a if x != "--json"]
+    if len(a) == 2 and a[0] == "install":
+        return install(a[1], as_json=as_json)
     if len(a) != 2 or a[0] != "licensed" or not a[1].replace("-", "").replace("_", "").isalnum():
-        print("usage: aib plugins licensed <addon> [--json]", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     ok, why = licensed({"requires_addon": a[1]})
     out = {"addon": a[1], "licensed": bool(ok), "why": why, "signature_enforced": license_check_enforced()}
