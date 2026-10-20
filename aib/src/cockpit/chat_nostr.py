@@ -679,6 +679,18 @@ class Sender(object):
                 p.unlink(missing_ok=True)
                 audit(self.root, "offer-out", "-", rec.get("to"), "buy")
 
+    async def push_visits(self, now=None):
+        """visit-out 裡的參觀請求 / 開放 / 拒絕送出去;送不出去留著下一輪再試,超過 EXPIRE_S 就丟。"""
+        import chat_visit as CVI
+        now = time.time() if now is None else now
+        for p, rec in CVI.queued(self.root):
+            if now - int(rec.get("at") or 0) >= CVI.EXPIRE_S:
+                p.unlink(missing_ok=True)
+                continue
+            if await self._send_owner_msg(rec.get("to"), "visit", json.dumps(rec["msg"], ensure_ascii=False)):
+                p.unlink(missing_ok=True)
+                audit(self.root, "visit-out", "-", rec.get("to"), rec["msg"].get("op"))
+
     async def _push_card(self, tgt, owner, frm, now):
         """名片(第 32 節,Andy 23:5x「社群只給好友看」):我宣告的社群帳號私下送給這位好友 / 我的機器;
         內容有變就送,沒變一天一次。分享等級 off 也照送(名片跟在線狀態是兩回事);陌生人不會在 targets 裡。"""
@@ -1199,6 +1211,23 @@ class Receiver(object):
         got = CO.buyer_reply(None, owner, msg)
         audit(self.root, "offer-in", "-", from_npub, (got or {}).get("status") or "ignored")
 
+    async def on_visit(self, rumor, tags, from_npub):
+        """參觀請求 / 開放 / 拒絕(第二波 #1,chat_visit):只收驗得到名冊的好友 / 我的機器;記帳,不進佇列、不回條。"""
+        import chat_visit as CVI
+        parsed = GF.parse_address(tags.get("aib-from") or "") or {}
+        owner = parsed.get("owner")
+        if not owner or CR.is_blocked(owner) or not (CR.is_mine(owner) or CR.is_friend(owner)):
+            return
+        rc, res = await self.sender._resolve(tags.get("aib-from"))
+        if rc != 0 or res["seat"]["npub"] != from_npub:
+            return
+        msg = CVI.parse(rumor.content())
+        if msg is None:
+            audit(self.root, "visit-in", "-", from_npub, "bad")
+            return
+        got = CVI.on_incoming(None, owner, msg)
+        audit(self.root, "visit-in", "-", from_npub, "%s:%s" % (msg["op"], got or "ignored"))
+
     async def on_card(self, rumor, tags, from_npub):
         """名片(第 32 節):好友 / 我的其他機器私下送來的社群帳號。陌生、封鎖 ⇒ 靜默丟;不進佇列、不回條。"""
         parsed = GF.parse_address(tags.get("aib-from") or "") or {}
@@ -1302,6 +1331,8 @@ class Receiver(object):
             return await self.on_room(rumor, tags, from_npub)
         if kind == "offer":
             return await self.on_offer(rumor, tags, from_npub)
+        if kind == "visit":
+            return await self.on_visit(rumor, tags, from_npub)
         if kind == "unknown":
             # 對方版本比這台新:不進 AI 框、不回條;記一行好查(型別名截短,不記內容)
             audit(self.root, "in", msgid, from_npub, "unknown-type:" + str(tags.get("aib-type"))[:32])
@@ -1642,6 +1673,10 @@ async def serve(root):
                 await sender.push_offers()
             except Exception as err:   # noqa: BLE001
                 sys.stderr.write("offers:%s\n" % type(err).__name__)
+            try:
+                await sender.push_visits()
+            except Exception as err:   # noqa: BLE001
+                sys.stderr.write("visits:%s\n" % type(err).__name__)
             if time.time() - last_presence >= PRESENCE_TICK_S:
                 last_presence = time.time()
                 try:

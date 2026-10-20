@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import sys
+import time
 import zlib
 from pathlib import Path
 
@@ -369,7 +370,8 @@ def build(env=None, now=None, with_rooms=False, with_status=False, with_state=Tr
     attach_looks(people, mine.get("seats") if isinstance(mine, dict) else None)   # 島上走動的人也穿得出自己的樣子(好友看得到)
     isl = clean_island(scrub(island) if isinstance(island, dict) else _read_json(island_path(env), SPACE_RAW_MAX),
                        with_offers=offers_host(env) if with_offers is None else with_offers)
-    snap = {"v": 3 if has_k_fields(isl) else 2, "island": isl, "people": people, "rooms": None}
+    snap = {"v": 3 if has_k_fields(isl) else 2, "island": isl, "people": people, "rooms": None,
+            "built_at": int(time.time() if now is None else now)}    # 第二波 #5:對方頁面顯示「最後更新」用的是這個,不是收到的時間
     if with_rooms:
         extra = mine.get("seats") if isinstance(mine.get("seats"), dict) else {}
         seats = []
@@ -399,6 +401,13 @@ def build(env=None, now=None, with_rooms=False, with_status=False, with_state=Tr
         if clean_decor(mine.get("decor")):    # 收藏擺設摘要:不合就整個不帶
             snap["rooms"]["decor"] = clean_decor(mine.get("decor"))
     return snap
+
+
+def clean_built_at(v):
+    """對方快照自報的組裝時間:正整數、不在未來一小時以上才信;舊版沒帶 ⇒ None(頁面退回用收到的時間)。"""
+    if isinstance(v, bool) or not isinstance(v, int) or v <= 0 or v > int(time.time()) + 3600:
+        return None
+    return v
 
 
 def _enc(x):
@@ -437,6 +446,7 @@ def decode(text):
     if not isinstance(snap, dict) or snap.get("v") not in (2, 3) or not isinstance(snap.get("people"), list):
         return None
     snap = scrub(snap)
+    snap["built_at"] = clean_built_at(snap.get("built_at"))
     for p in snap["people"]:                            # 收件端自己再驗一次外觀:不合就拿掉,不影響其他欄位
         if isinstance(p, dict) and "look" in p and not clean_seat_look(p["look"]):
             p.pop("look")

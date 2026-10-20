@@ -131,6 +131,33 @@ def pick_seat(cabin, env):
     return pick["seat5"] if pick else None
 
 
+def resolve_to(to, env):
+    """第二波 #4:收件人可以寫 <主人 npub>/<艙>/<席>(照舊)、主人 npub、或好友 / 我的機器的備註名(不分大小寫、去頭尾空白)。
+    回 (位址, 怎麼來的 address / captain / first);解不出 ⇒ (None, why):bad_address(空)/ unknown_contact(不是好友或沒位址)。"""
+    import chat_roster as CR
+    import dm_global_files as GF
+    t = (to or "").strip()
+    if not t:
+        return None, "bad_address"
+    parsed = GF.parse_address(t)
+    if parsed and ("owner" in parsed or "seat_npub" in parsed and "/" in t):
+        return t, "address"
+    owner = CR.friend_owner(t) if parsed else None
+    if not owner:
+        want = t.casefold()
+        for f in CR.read_friends(env) + CR.read_friends(env, "mine"):
+            if (f.get("name") or "").strip().casefold() == want and want:
+                owner = f["owner"]
+                break
+    if not owner:
+        return None, "bad_address"          # 既有契約:不是位址、不是 npub、也不是好友名 ⇒ bad_address(艦長室認這個碼)
+    if CR.is_blocked(owner, env) or not (CR.is_friend(owner, env) or CR.is_mine(owner, env)):
+        return None, "unknown_contact"      # 形狀對(npub / 名字)但不能寄:封鎖、不是好友
+    root = Path(env.get("AIB_CHAT_BRIDGE_DIR") or GF.default_root(env))
+    addr, why = GF.default_address(root, owner, env)
+    return (addr, why) if addr else (None, "unknown_contact")
+
+
 def _who(to, env):
     """視窗上顯示的收件人:好友備註名 > 名冊名 > 主人 npub 縮寫。"""
     import chat_roster as CR
@@ -170,10 +197,12 @@ def send(to, text, pin, cabin, env=None, wait=None, touchid=None, touchid_availa
     touchid / touchid_available / platform 只給測試換掉(真用時就是 touchid_approve 那一套)。"""
     import dm_global_files as GF
     env = dict(os.environ if env is None else env)
-    out = {"v": 1, "rc": 2, "stage": "abort", "msgid": None, "seat": None, "via": None, "why": None, "detail": ""}
-    if not GF.parse_address(to or ""):
-        out["why"] = "bad_address"
+    out = {"v": 1, "rc": 2, "stage": "abort", "msgid": None, "seat": None, "via": None, "why": None, "detail": "", "to": None}
+    to, how = resolve_to(to, env)                       # 第二波 #4:位址 / 主人 npub / 好友名都收
+    if not to:
+        out["why"] = how
         return out
+    out["to"], out["to_why"] = to, how
     if not isinstance(text, str) or not text.strip():
         out["why"] = "empty"
         return out

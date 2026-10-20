@@ -106,7 +106,7 @@ def new_msgid():
 # 收件端認得的 aib-type。新版加新型別時,舊版收件端不認得 ⇒ 以前會當一般信送進 AI 框
 # (10-17 Pro 轉接程式還跑 0.1.16 以前的碼,Mini 的島快照 aib-type=space 進了 @d07f9 待審框)。
 # 一般信:aib-type=dm,或根本不是 aib 寄件人(沒有 aib-type)。receipt 在進 on_dm 之前就分走了,不在這裡。
-INBOUND_TYPES = ("dm", "friend-request", "presence", "card", "space", "offer")
+INBOUND_TYPES = ("dm", "friend-request", "presence", "card", "space", "offer", "visit")   # visit:參觀請求 / 開放(chat_visit)
 
 
 def inbound_kind(tags):
@@ -544,6 +544,24 @@ REFUSE_TEXT = {
 }
 # no_seat 不翻成句子:艦長室(captain-room #17)認 detail == "no_seat" 自己講人話;翻了它就認不得(0.1.23 整合時 test-chat-send S4 抓到)
 REQUEST_NOTE_MAX = 140      # 好友申請附的一句話(第 29.4 節)
+# 第二波 #6(10-21):回「對方本人寫的」那封 ⇒ 對方那邊建立時就待審(human_reply),回條只回 held、detail 空,
+#   寄件端只看到 stage=held 不知道對方要去哪看。補一句人話 hint;**detail 代碼不動**(艦長室 / dm-ctl 照 detail 判)。
+#   判法 = 我佇列裡那封原信的 global.author == human,跟對方那邊判 sent_author 用的是同一個 aib-author 標籤。
+HELD_HUMAN_HINT = "對方本人會在艦長室收件匣看到這封(不進對方 AI 的框);等本人看了才會有回音"
+
+
+def reply_to_human(seat, msgid, env=None):
+    """我(收件席)正在回的那封原信是不是對方本人寫的(佇列裡 global.author == human)。找不到那封 ⇒ False。"""
+    import dm_queue
+    item = dm_queue.by_msgid(seat, msgid, env)
+    return bool(item) and (item.get("global") or {}).get("author") == "human"
+
+
+def with_hint(res, to_human):
+    """寄件結果補 hint:只在 stage=held 而且回的是本人寫的信;其他情況不加鍵。"""
+    if to_human and isinstance(res, dict) and res.get("stage") == "held":
+        res["hint"] = HELD_HUMAN_HINT
+    return res
 
 
 def outcome(receipts, op="send", verify=False):
@@ -863,6 +881,25 @@ def read_space_status(root):
     return rec if isinstance(rec, dict) else None
 
 
+def default_address(root, owner, env=None):
+    """第二波 #4(NOTE B5「全球位址太難」):一位主人 ⇒ 給他寄信的預設位址 (addr, why)。
+    why = captain(他房間快照裡標的艦長席)/ first(聯絡人快照第一個公開席)/ None(什麼都不知道 ⇒ addr None)。
+    只讀本機檔、不連網;位址一律 <主人 npub>/<艙>/<席>,頁面與 aib chat send 用它,不讓人打位址。"""
+    if not NPUB_FULL_RE.match(owner or ""):
+        return None, None
+    rec = read_room(root, owner)
+    rooms = ((rec or {}).get("snap") or {}).get("rooms")
+    if isinstance(rooms, dict):
+        cap = ((rooms.get("ship") or {}).get("captain") or {}).get("seat") if isinstance(rooms.get("ship"), dict) else None
+        for s in rooms.get("seats") or []:
+            if isinstance(s, dict) and cap and s.get("seat") == cap:
+                return "%s/%s/%s" % (owner, s.get("cabin") or "main", cap), "captain"
+    for x in (read_peers(root).get(owner) or {}).get("seats") or []:
+        if isinstance(x, dict) and x.get("seat"):
+            return "%s/%s/%s" % (owner, x.get("cabin") or "main", x["seat"]), "first"
+    return None, None
+
+
 def read_room(root, owner):
     if not NPUB_FULL_RE.match(owner or ""):
         return None
@@ -950,6 +987,7 @@ def _cli(argv):
         to, reply_to = hit
     if not to:
         return _bail("abort", "沒有收件位址")
+    to_human = bool(reply_to) and reply_to_human(who["seat"], reply_to)
     root = Path(a.root) if a.root else default_root()
     ensure_dirs(root)
     rec = {"v": VERSION, "msgid": new_msgid(), "created_at": int(time.time()), "op": a.op,
@@ -967,10 +1005,12 @@ def _cli(argv):
     if a.expires is not None:
         rec["expires"] = a.expires
     wait = a.wait if a.wait is not None else int(os.environ.get("AIB_DM_GLOBAL_WAIT") or WAIT_DEFAULT)
-    res = send_and_wait(root, rec, wait=wait, verify=a.verify)
+    res = with_hint(send_and_wait(root, rec, wait=wait, verify=a.verify), to_human)
     detail = (res["detail"] or "").replace("\n", " ")
-    print("stage=%s rc=%d msgid=%s pos=%s detail=%s" % (res["stage"], res["rc"], res["msgid"] or "-",
-                                                        res["pos"] or "-", detail))
+    # hint 放在 detail 前面:dm-ctl 取 detail 是「 detail= 之後到行尾」,放後面會被吃進 detail(代碼就變了)
+    print("stage=%s rc=%d msgid=%s pos=%s%s detail=%s" % (res["stage"], res["rc"], res["msgid"] or "-",
+                                                          res["pos"] or "-",
+                                                          (" hint=" + res["hint"]) if res.get("hint") else "", detail))
     return res["rc"]
 
 

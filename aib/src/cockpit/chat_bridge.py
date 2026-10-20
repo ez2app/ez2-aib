@@ -940,7 +940,10 @@ def contacts_payload(env=None):
 
     def row(owner, relation, label=None, source=None, extra=None):
         p = peers.get(owner) or {}
+        # 第二波 #4:頁面「選人就好」,位址核心挑;只給能寄的關係(封鎖 / 拒收 / 對方申請中的不給位址)
+        addr, addr_why = GF.default_address(root, owner, env) if relation in ("mine", "friend", "request_out") else (None, None)
         r = rows.setdefault(owner, {"key": "global:" + owner, "owner": owner, "relation": relation, "label": label,
+                                    "addr": addr, "addr_why": addr_why,
                                     "display_name": p.get("display_name"), "country": p.get("country"),
                                     "seats": [dict(x, addr="%s/%s/%s" % (owner, x.get("cabin") or "main", x.get("seat")), ai=True)
                                               for x in p.get("seats") or [] if x.get("seat")],
@@ -1021,6 +1024,32 @@ def cmd_contacts(a, env, out):
     for r in pl["contacts"]:
         out.write(T("contacts_row", rel=T("rel_" + r["relation"]), name=r.get("label") or r.get("display_name") or "-",
                     country=r.get("country") or "-", owner=r["owner"], n=len(r["seats"])) + "\n")
+    return 0
+
+
+def address_payload(who, env=None):
+    """aib chat address <好友|名字|npub> --json:{"owner","addr","why","name","seats"};解不出 ⇒ None。"""
+    import chat_human as CH
+    addr, why = CH.resolve_to(who, env)
+    if not addr:
+        return None
+    owner = (GF.parse_address(addr) or {}).get("owner")
+    import chat_roster as CR
+    name = next((f.get("name") for f in CR.read_friends(env) + CR.read_friends(env, "mine") if f["owner"] == owner), None)
+    seats = [dict(x, addr="%s/%s/%s" % (owner, x.get("cabin") or "main", x.get("seat")))
+             for x in (GF.read_peers(bridge_root(env)).get(owner) or {}).get("seats") or [] if x.get("seat")]
+    return {"v": 1, "owner": owner, "addr": addr, "why": why, "name": name, "seats": seats}
+
+
+def cmd_address(a, env, out):
+    pl = address_payload(a.who, env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0 if pl else 2
+    if not pl:
+        out.write(T("address_none", who=a.who) + "\n")
+        return 2
+    out.write(T("address_row", name=pl["name"] or "-", addr=pl["addr"], why=T("address_why_" + pl["why"])) + "\n")
     return 0
 
 
@@ -1159,6 +1188,16 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
     return {"v": 1, "at": int(now), "minutes": int(minutes), "rows": rows}
 
 
+def _snap_times(rec, now):
+    """第二波 #5(NOTE A3「開了分享後 10–50 秒才看得到,頁面沒提示」):updated_at = 對方組快照的時間(built_at,
+    舊版沒帶就退回收到的時間)、received_at = 我這邊收到的時間、age_s = 距今幾秒;頁面顯示「更新中 / 最後更新」。"""
+    import room_snapshot as RS
+    received = int(rec["at"])
+    built = RS.clean_built_at((rec.get("snap") or {}).get("built_at"))
+    updated = built or received
+    return {"updated_at": updated, "received_at": received, "age_s": max(0, int(now) - updated), "built_at": built}
+
+
 def room_payload(owner, env=None, now=None):
     """aib chat room <主人> --json(第 34.4 節):好友分享來的房間快照 + fresh;不是好友 / 我的機器 ⇒ None。"""
     import chat_roster as CR
@@ -1177,6 +1216,7 @@ def room_payload(owner, env=None, now=None):
         if "cell" in s and not RS.clean_cell(s.get("cell")):
             s.pop("cell")
     return {"v": 1, "owner": owner, "room_at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
+            **_snap_times(rec, now),
             "ship": r.get("ship") or {}, "cabins": r.get("cabins") or [], "seats": seats,
             "layout": r.get("layout"), "layout_omitted": bool(r.get("layout_omitted")),
             "decor": RS.clean_decor(r.get("decor")),
@@ -1194,6 +1234,7 @@ def island_payload(owner, env=None, now=None):
         return None
     snap = rec["snap"]
     return {"v": 1, "owner": owner, "at": rec["at"], "fresh": now - int(rec["at"]) < GF.ROOM_FRESH_S,
+            **_snap_times(rec, now),
             "island": snap.get("island") or {}, "people": snap.get("people") or [],
             "has_room": isinstance(snap.get("rooms"), dict)}
 
@@ -1272,7 +1313,9 @@ def cmd_space(a, env, out):
     owners = [f["owner"] for f in CR.read_friends(env, "mine")] + [f["owner"] for f in CR.read_friends(env)]
     st = GF.read_space_status(bridge_root(env)) or {}
     pl = {"v": 1, "default": sp["default"], "peers": {o: CR.space_level(o, env) for o in dict.fromkeys(owners)},
-          "last_error": {k: st.get(k) for k in ("at", "reason", "wire_bytes", "limit")} if st.get("reason") else None}
+          "last_error": {k: st.get(k) for k in ("at", "reason", "wire_bytes", "limit")} if st.get("reason") else None,
+          # 第二波 #5:我這邊最近一次送出快照的時間(頁面顯示「我的房間最後送出」;沒送過 / 上次失敗 ⇒ None)
+          "last_sent": {k: st.get(k) for k in ("at", "wire_bytes", "dropped")} if st.get("at") and not st.get("reason") else None}
     if a.json:
         out.write(json.dumps(pl, ensure_ascii=False) + "\n")
         return 0
@@ -1381,6 +1424,58 @@ def cmd_send(a, env, out):
     else:
         out.write(T("send_done", stage=res["stage"], seat=res["seat"] or "-", detail=res["detail"] or "") + "\n")
     return res["rc"]
+
+
+def cmd_visit(a, env, out):
+    """第二波 #1(NOTE-member-ux A1 / A2):
+    aib chat open <好友>                     一鍵開放艦長室(share status + space room)並通知對方
+    aib chat visit <好友>                    送參觀請求
+    aib chat visit accept|reject <好友>      同意(= open)/ 拒絕
+    aib chat visits [--json]                 收到的請求、我送出的、我開給誰、誰開給我"""
+    import chat_visit as CVI
+    root = bridge_root(env)
+    if a.cmd == "visits":
+        pl = CVI.payload(env)
+        if a.json:
+            out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+            return 0
+        if not pl["incoming"] and not pl["outgoing"]:
+            out.write(T("visits_none") + "\n")
+        for r in pl["incoming"]:
+            out.write(T("visits_in_row", name=r.get("name") or "-", owner=r["owner"], status=T("visit_st_" + r["status"]),
+                        when=time.strftime("%m-%d %H:%M", time.localtime(int(r.get("at") or 0)))) + "\n")
+        for r in pl["outgoing"]:
+            out.write(T("visits_out_row", name=r.get("name") or "-", owner=r["owner"], status=T("visit_st_" + r["status"]),
+                        when=time.strftime("%m-%d %H:%M", time.localtime(int(r.get("at") or 0)))) + "\n")
+        for o, lv in pl["open_to"].items():
+            out.write(T("visits_open_row", owner=o, share=T("share_" + lv["share"]), space=T("space_" + lv["space"])) + "\n")
+        return 0
+    action, who = ("open", a.who) if a.cmd == "open" else (
+        (a.who, a.who2) if a.who in ("accept", "reject") else ("request", a.who))
+    if not who:
+        out.write(T("visit_usage") + "\n")
+        return 2
+    if action in ("request", "open", "accept") and not GF.bridge_alive(root):
+        out.write(T("visit_bridge_off") + "\n")
+        return 2
+    try:
+        if action in ("open", "accept"):
+            res = CVI.open_to(env, root, who)
+            key = "open_done"
+        elif action == "reject":
+            res = CVI.reject(env, root, who)
+            key = "visit_rejected"
+        else:
+            res = CVI.request(env, root, who)
+            key = "visit_sent"
+    except CVI.VisitError as err:
+        out.write(T("visit_" + str(err)) + "\n")
+        return 2
+    if a.json:
+        out.write(json.dumps({"v": 1, "action": action, "result": res}, ensure_ascii=False) + "\n")
+    else:
+        out.write(T(key, owner=res["owner"]) + "\n")
+    return 0
 
 
 def cmd_room(a, env, out):
@@ -1781,6 +1876,15 @@ def main(argv=None, env=None, out=sys.stdout):
     of.add_argument("args", nargs="*")
     of.add_argument("--unit", type=int)
     of.add_argument("--json", action="store_true")
+    op_ = sub.add_parser("open", help=T("help.open"))          # 第二波 #1:一鍵開放艦長室給好友(share status + space room + 通知)
+    op_.add_argument("who")
+    op_.add_argument("--json", action="store_true")
+    vi = sub.add_parser("visit", help=T("help.visit"))         # 參觀請求 / accept / reject
+    vi.add_argument("who")
+    vi.add_argument("who2", nargs="?")
+    vi.add_argument("--json", action="store_true")
+    vs = sub.add_parser("visits", help=T("help.visits"))
+    vs.add_argument("--json", action="store_true")
     ofs = sub.add_parser("offers", help=T("help.offers"))
     ofs.add_argument("who")
     ofs.add_argument("--json", action="store_true")
@@ -1795,6 +1899,10 @@ def main(argv=None, env=None, out=sys.stdout):
     rc = sub.add_parser("recent")
     rc.add_argument("--json", action="store_true")
     rc.add_argument("--minutes", type=int, default=RECENT_MINUTES)
+    ev = sub.add_parser("events")       # 第二波 #6:艦長室 BB Call / 角標(給本人的信落進待審的事件)
+    ev.add_argument("--json", action="store_true")
+    ev.add_argument("--since", type=int, default=0)
+    ev.add_argument("--limit", type=int, default=None)
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
     pr = sub.add_parser("pair", help=T("help.pair"))
@@ -1817,6 +1925,9 @@ def main(argv=None, env=None, out=sys.stdout):
     dv.add_argument("target", nargs="?", help=T("help.devices_target"))
     dv.add_argument("--name", help=T("help.join_name"))
     dv.add_argument("--json", action="store_true")
+    ad = sub.add_parser("address", help=T("help.address"))     # 第二波 #4
+    ad.add_argument("who")
+    ad.add_argument("--json", action="store_true")
     ct = sub.add_parser("contacts", help=T("help.contacts"))
     ct.add_argument("--json", action="store_true")
     ct.add_argument("--refresh", metavar="NPUB|all", help=T("help.contacts_refresh"))
@@ -1866,6 +1977,10 @@ def main(argv=None, env=None, out=sys.stdout):
     if a.cmd == "recent":
         out.write(json.dumps(recent_payload(env, minutes=a.minutes), ensure_ascii=False) + "\n")
         return 0
+    if a.cmd == "events":
+        import room_events as RE
+        out.write(json.dumps(RE.payload(env, since=a.since, limit=a.limit or RE.READ_MAX), ensure_ascii=False) + "\n")
+        return 0
     if a.cmd == "awake":
         return cmd_awake(a, env, out)
     if a.cmd == "pair":
@@ -1896,6 +2011,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_requests(a, env, out)
     if a.cmd == "contacts":
         return cmd_contacts(a, env, out)
+    if a.cmd == "address":
+        return cmd_address(a, env, out)
     if a.cmd == "share":
         return cmd_share(a, env, out)
     if a.cmd in ("social", "nip05"):
@@ -1917,6 +2034,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_offers(a, env, out)
     if a.cmd == "space":
         return cmd_space(a, env, out)
+    if a.cmd in ("open", "visit", "visits"):
+        return cmd_visit(a, env, out)
     if a.cmd == "friends":
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":
