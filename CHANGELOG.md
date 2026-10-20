@@ -4,6 +4,11 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.27
+
+- **Friend visit snapshots can carry travel collections**: how many souvenirs, how many stamp sets, which ones are on display (up to 6), and which continents are complete; only souvenir IDs and numbers, no seats, dates, or places visited. Checked when sending and again when receiving; anything invalid drops just this field.
+- The phone-pairing network test waits longer, so it no longer fails now and then on a busy machine (test only).
+
 ## 0.1.26
 
 - **Online receiving no longer breaks because the dedup record grows too large**: the dedup record now stores short keys and keeps at most 1,500 entries; old files are converted the first time they are read. Before, the record could pass 64 KB within a week, fail to save, and keep the receiver reconnecting.

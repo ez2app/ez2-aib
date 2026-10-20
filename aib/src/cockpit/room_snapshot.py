@@ -187,6 +187,9 @@ MEET_GROUPS_MAX, MEET_SIZE_MAX = 8, 16
 DECOR_TYPE_RE = __import__("re").compile(r"^[a-z]{1,24}\Z")
 DECOR_SSR_MAX, DECOR_SR_MAX = 12, 999
 DECOR_TITLES = ("plant", "furn", "lamp", "wall", "drink", "desk", "fun")   # 收藏稱號(@74e8b 10-19),只准這 7 個
+DECOR_SV_ID_RE = __import__("re").compile(r"^i_sv_[a-z0-9_]{1,40}\Z")       # 旅行紀念品 id(@74e8b 10-20)
+DECOR_SV_CONT = ("asia", "europe", "americas", "mea", "oceania")
+DECOR_SV_SHOW_MAX, DECOR_SV_NUM_MAX = 6, 999
 
 
 def clean_use(v):
@@ -202,7 +205,8 @@ def clean_cell(v):
 
 def clean_decor(v):
     """收藏擺設摘要 {"ssr": [type…], "sr": int, "titles": [稱號…]}(@74e8b 10-19):ssr 小寫字母 1–24 字、去重後最多 12 個;
-    sr 0–999 整數;ssr / sr 任何一處不合 ⇒ None(整個不帶)。titles 只准 DECOR_TITLES 裡的、去重;不合只丟 titles。"""
+    sr 0–999 整數;ssr / sr 任何一處不合 ⇒ None(整個不帶)。titles 只准 DECOR_TITLES 裡的、去重;不合只丟 titles。
+    sv(旅行收藏，@74e8b 10-20)見 clean_decor_sv;不合只丟 sv。"""
     if not isinstance(v, dict):
         return None
     ssr, sr = v.get("ssr"), v.get("sr")
@@ -215,7 +219,29 @@ def clean_decor(v):
     titles = v.get("titles")
     if isinstance(titles, list) and titles and all(isinstance(t, str) and t in DECOR_TITLES for t in titles):
         out["titles"] = list(dict.fromkeys(titles))
+    sv = clean_decor_sv(v.get("sv"))
+    if sv is not None:
+        out["sv"] = sv
     return out
+
+
+def clean_decor_sv(v):
+    """{"n": 拿到幾種, "m": 共幾種, "sets": 集章幾地(都 0–999 整數), "show": [紀念品 id…], "cont": [洲…]}:
+    show 合 DECOR_SV_ID_RE、去重後最多 6 個;cont 只准 DECOR_SV_CONT、去重。任何一處不合 ⇒ None;別的鍵不帶。"""
+    if not isinstance(v, dict):
+        return None
+    nums = [v.get(k) for k in ("n", "m", "sets")]
+    if not all(type(x) is int and 0 <= x <= DECOR_SV_NUM_MAX for x in nums):
+        return None
+    show, cont = v.get("show"), v.get("cont")
+    if not isinstance(show, list) or not all(isinstance(t, str) and DECOR_SV_ID_RE.match(t) for t in show):
+        return None
+    if not isinstance(cont, list) or not all(isinstance(t, str) and t in DECOR_SV_CONT for t in cont):
+        return None
+    show = list(dict.fromkeys(show))
+    if len(show) > DECOR_SV_SHOW_MAX:
+        return None
+    return {"n": nums[0], "m": nums[1], "sets": nums[2], "show": show, "cont": list(dict.fromkeys(cont))}
 
 
 def clean_meet(v, seat_codes):
