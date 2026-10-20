@@ -1795,6 +1795,10 @@ def main(argv=None, env=None, out=sys.stdout):
     rc = sub.add_parser("recent")
     rc.add_argument("--json", action="store_true")
     rc.add_argument("--minutes", type=int, default=RECENT_MINUTES)
+    ev = sub.add_parser("events")       # 第二波 #6:艦長室 BB Call / 角標(給本人的信落進待審的事件)
+    ev.add_argument("--json", action="store_true")
+    ev.add_argument("--since", type=int, default=0)
+    ev.add_argument("--limit", type=int, default=None)
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
     pr = sub.add_parser("pair", help=T("help.pair"))
@@ -1865,6 +1869,10 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_lookup(a, env, out)
     if a.cmd == "recent":
         out.write(json.dumps(recent_payload(env, minutes=a.minutes), ensure_ascii=False) + "\n")
+        return 0
+    if a.cmd == "events":
+        import room_events as RE
+        out.write(json.dumps(RE.payload(env, since=a.since, limit=a.limit or RE.READ_MAX), ensure_ascii=False) + "\n")
         return 0
     if a.cmd == "awake":
         return cmd_awake(a, env, out)

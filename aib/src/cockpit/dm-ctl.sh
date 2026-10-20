@@ -1037,7 +1037,7 @@ _whoami_token() {
 #   rc 照第 7.1 節:0 已到 / 已排進對方佇列;2 沒送出(轉接程式沒開、推不出寄件席、被拒、逾時已撤回);
 #   3 對方待審;4 已交出、不知道到沒(勿重送)。不 record 進本機佇列歷史(全球歷史在回條檔)。
 _global_send() {
-  local ident out rc stage msgid pos detail
+  local ident out rc stage msgid pos detail hint
   local -a gargs=(send-and-wait)
   if [ -n "$DM_REPLY" ]; then gargs+=(--reply-code "$DM_REPLY"); else gargs+=(--to "$_GL_OUT_ADDR"); fi
   ident="$(_whoami_token)"
@@ -1054,6 +1054,7 @@ _global_send() {
   msgid="$(printf '%s\n' "$out" | sed -n 's/.* msgid=\([^ ]*\) .*/\1/p')"
   pos="$(printf '%s\n' "$out" | sed -n 's/.* pos=\([^ ]*\) .*/\1/p')"
   detail="${out#* detail=}"; [ "$detail" = "$out" ] && detail=""
+  hint="$(printf '%s\n' "$out" | sed -n 's/^stage=.* hint=\(.*\) detail=.*/\1/p')"   # 第二波 #6:人話提示,不進 detail
   case "$rc" in 0|2|3|4) ;; *) rc=4; stage="${stage:-unknown}"; detail="send-and-wait 回了契約外的結果;勿重送" ;; esac
   [ -n "$stage" ] || { rc=2; stage="abort"; detail="send-and-wait 沒有輸出,一個字都沒送"; }
   _RECORD_ELIGIBLE=0
@@ -1061,6 +1062,7 @@ _global_send() {
   [ -n "$pos" ] && [ "$pos" != "-" ] && _RESULT_REASON="pos=$pos"
   emit_json "$rc" "$stage" "$detail"
   [ -n "$detail" ] && echo "aib-dm-ctl: 全球:$detail" >&2
+  [ -n "$hint" ] && echo "aib-dm-ctl: 全球:$hint" >&2
   return "$rc"
 }
 # 跨主機寄件(上面「跨主機」那段):推導寄件人 ⇒ ssh 交給收件機的 aib dm;rc 與 RESULT 行照收件機的。

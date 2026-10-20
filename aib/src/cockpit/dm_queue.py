@@ -1147,6 +1147,14 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
     _write_item(seat, item, env)
     _order_append(seat, item_id, env)
     log_send(seat, msg, sender_label, "queued", queue_id=item_id, env=env, now=now)
+    if status == HOLD_STATUS:
+        # 第二波 #6(10-21):「給本人的信」(回主人信 / Telegram)落進待審 ⇒ 記一筆艦長室事件(BB Call / 角標)。
+        #   不是這兩種的 note_human_mail 自己回 None;事件記不進去不擋收信(信已經在佇列了)。
+        try:
+            import room_events
+            room_events.note_human_mail(seat, item, env=env, now=now)
+        except Exception:   # noqa: BLE001
+            pass
     return item
 
 
@@ -2616,6 +2624,17 @@ def by_reply_code(seat, code, env=None, now=None):
                 fresh = False
             if fresh:
                 return item
+    return None
+
+
+def by_msgid(seat, msgid, env=None):
+    """收件席佇列裡全球 msgid 等於這個的那一封(寄件端判「我回的是不是本人寫的信」用);找不到回 None。"""
+    if not isinstance(msgid, str) or not msgid:
+        return None
+    for item in _all_items(seat, env=env):
+        g = item.get("global")
+        if isinstance(g, dict) and g.get("msgid") == msgid:
+            return item
     return None
 
 
