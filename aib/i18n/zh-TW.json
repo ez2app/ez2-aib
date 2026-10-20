@@ -4846,5 +4846,9 @@
   "aib.vault_cli.help_vtitle_stdin": "另從標準輸入每行讀一個路徑",
   "aib.vault_cli.err_vtitle_none": "沒有給路徑:帶路徑參數或 --stdin",
   "aib.vault_cli.err_vtitle_too_many": "路徑太多:{count} 個,一次最多 {max} 個",
-  "aib.vault_cli.vtitle_outside": "(不在 Vault 裡)"
+  "aib.vault_cli.vtitle_outside": "(不在 Vault 裡)",
+  "aib.handoff.fact.vault": "Vault 檢查(只讀 aib vault doctor;要修照規矩問本人、先備份)",
+  "aib.handoff.fact.vault_ok": "沒問題",
+  "aib.handoff.fact.vault_found": "有問題:{detail}",
+  "aib.handoff.fact.vault_skip": "沒跑({why})"
 }

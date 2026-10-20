@@ -4846,5 +4846,9 @@
   "aib.vault_cli.help_vtitle_stdin": "標準入力からも 1 行に 1 つずつパスを読みます",
   "aib.vault_cli.err_vtitle_none": "パスがありません:パスを指定するか --stdin を付けてください",
   "aib.vault_cli.err_vtitle_too_many": "パスが多すぎます:{count} 個、一度に最大 {max} 個です",
-  "aib.vault_cli.vtitle_outside": "(Vault の外です)"
+  "aib.vault_cli.vtitle_outside": "(Vault の外です)",
+  "aib.handoff.fact.vault": "Vault 点検(aib vault doctor 読み取りのみ。直すときは本人に確認し、先にバックアップ)",
+  "aib.handoff.fact.vault_ok": "問題なし",
+  "aib.handoff.fact.vault_found": "問題あり:{detail}",
+  "aib.handoff.fact.vault_skip": "未実行({why})"
 }

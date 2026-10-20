@@ -782,6 +782,36 @@ def stuck_dm(code: str, env=None, limit: int = 10, hours: float = 48, now=None) 
     return {"out": sorted(out, key=key)[:limit], "in": sorted(inn, key=key)[:limit],
             "out_total": len(out), "in_total": len(inn)}
 
+VAULT_DOCTOR_TIMEOUT_S = 20
+
+
+def vault_doctor_brief(env=None) -> dict:
+    """aib vault doctor --json(只讀)⇒ {ok, problems: {類別: 篇數}};不帶路徑與內容,只帶數字。
+    沒設 EZ2_VAULT_DIR / 不是 uid 庫 ⇒ skipped no_vault(不起子行程);沒授權(rc 3)⇒ skipped not_licensed;其他 ⇒ error。"""
+    env = dict(os.environ if env is None else env)
+    raw = env.get("EZ2_VAULT_DIR") or env.get("EZ2_VAULT_ROOT") or ""
+    if not raw or not (Path(os.path.expanduser(raw)) / ".ez2" / "index" / "folder-id-index.json").is_file():
+        return {"skipped": "no_vault"}              # 沒設 / 不是 uid 庫:不起子行程
+    t = min(VAULT_DOCTOR_TIMEOUT_S, _remaining(VAULT_DOCTOR_TIMEOUT_S))
+    if t <= 0.05:
+        return {"error": "budget"}
+    try:
+        p = subprocess.run([sys.executable, str(REPO_ROOT / "tools" / "vault" / "vault_cli.py"), "doctor", "--json"],
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=t, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"error": type(exc).__name__}
+    if p.returncode == 3:
+        return {"skipped": "not_licensed"}
+    if p.returncode not in (0, 1):
+        return {"skipped": "no_vault"} if p.returncode == 2 else {"error": "rc=%d" % p.returncode}
+    try:
+        doc = json.loads(p.stdout)
+    except ValueError:
+        return {"error": "bad-json"}
+    probs = {k: len(v) for k, v in (doc.get("problems") or {}).items() if isinstance(v, list) and v}
+    return {"ok": not probs, "problems": probs}
+
+
 def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
     code = seat.get("code") or ""
     rec = seat.get("record") or {}
@@ -919,6 +949,10 @@ def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
             facts["stuck_dm"] = stuck_dm(code)
         except Exception as exc:  # noqa: BLE001
             miss.append({"item": "stuck_dm", "why": repr(exc)[:200]})
+    # Vault 只讀檢查(10-21 維護者准 @977e3:真庫會慢慢漂移,沒人定期看)⇒ 交接時把 aib vault doctor 的數字寫進機器事實;
+    #   只列不修(--fix 照規矩問本人、先備份)。沒設 Vault / 不是 uid 庫 / 沒授權 ⇒ 記 skipped,不算量不到。
+    if not over("vault"):
+        facts["vault"] = vault_doctor_brief()
     # review 帳
     if code:
         hits = sorted(glob.glob(str(pending_dir(home) / ("REVIEW-LOOP-*%s*.md" % code))),
@@ -1127,6 +1161,15 @@ def render_draft(facts: dict, auto: bool = False) -> str:
                                               for r in sd.get("out") or []] +
                                              ["%s←@%s %s(%s)" % (r.get("id"), r.get("seat"), r.get("status"), r.get("why") or "-")
                                               for r in sd.get("in") or []]) or "-"))
+    vd = facts.get("vault")
+    if isinstance(vd, dict) and vd:
+        if vd.get("skipped") or vd.get("error"):
+            val = T("aib.handoff.fact.vault_skip", why=vd.get("skipped") or vd.get("error"))
+        elif vd.get("ok"):
+            val = T("aib.handoff.fact.vault_ok")
+        else:
+            val = T("aib.handoff.fact.vault_found", detail=", ".join("%s %d" % kv for kv in sorted(vd["problems"].items())))
+        lines.append("- %s: %s" % (T("aib.handoff.fact.vault"), val))
     rv = facts.get("review") or {}
     if rv.get("file"):
         lines += ["", "### " + T("aib.handoff.fact.review", file=rv["file"])] + ["    " + ln for ln in rv["tail"]]
