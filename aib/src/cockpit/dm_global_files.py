@@ -863,6 +863,25 @@ def read_space_status(root):
     return rec if isinstance(rec, dict) else None
 
 
+def default_address(root, owner, env=None):
+    """第二波 #4(NOTE B5「全球位址太難」):一位主人 ⇒ 給他寄信的預設位址 (addr, why)。
+    why = captain(他房間快照裡標的艦長席)/ first(聯絡人快照第一個公開席)/ None(什麼都不知道 ⇒ addr None)。
+    只讀本機檔、不連網;位址一律 <主人 npub>/<艙>/<席>,頁面與 aib chat send 用它,不讓人打位址。"""
+    if not NPUB_FULL_RE.match(owner or ""):
+        return None, None
+    rec = read_room(root, owner)
+    rooms = ((rec or {}).get("snap") or {}).get("rooms")
+    if isinstance(rooms, dict):
+        cap = ((rooms.get("ship") or {}).get("captain") or {}).get("seat") if isinstance(rooms.get("ship"), dict) else None
+        for s in rooms.get("seats") or []:
+            if isinstance(s, dict) and cap and s.get("seat") == cap:
+                return "%s/%s/%s" % (owner, s.get("cabin") or "main", cap), "captain"
+    for x in (read_peers(root).get(owner) or {}).get("seats") or []:
+        if isinstance(x, dict) and x.get("seat"):
+            return "%s/%s/%s" % (owner, x.get("cabin") or "main", x["seat"]), "first"
+    return None, None
+
+
 def read_room(root, owner):
     if not NPUB_FULL_RE.match(owner or ""):
         return None

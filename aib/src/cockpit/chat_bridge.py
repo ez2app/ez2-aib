@@ -940,7 +940,10 @@ def contacts_payload(env=None):
 
     def row(owner, relation, label=None, source=None, extra=None):
         p = peers.get(owner) or {}
+        # 第二波 #4:頁面「選人就好」,位址核心挑;只給能寄的關係(封鎖 / 拒收 / 對方申請中的不給位址)
+        addr, addr_why = GF.default_address(root, owner, env) if relation in ("mine", "friend", "request_out") else (None, None)
         r = rows.setdefault(owner, {"key": "global:" + owner, "owner": owner, "relation": relation, "label": label,
+                                    "addr": addr, "addr_why": addr_why,
                                     "display_name": p.get("display_name"), "country": p.get("country"),
                                     "seats": [dict(x, addr="%s/%s/%s" % (owner, x.get("cabin") or "main", x.get("seat")), ai=True)
                                               for x in p.get("seats") or [] if x.get("seat")],
@@ -1021,6 +1024,32 @@ def cmd_contacts(a, env, out):
     for r in pl["contacts"]:
         out.write(T("contacts_row", rel=T("rel_" + r["relation"]), name=r.get("label") or r.get("display_name") or "-",
                     country=r.get("country") or "-", owner=r["owner"], n=len(r["seats"])) + "\n")
+    return 0
+
+
+def address_payload(who, env=None):
+    """aib chat address <好友|名字|npub> --json:{"owner","addr","why","name","seats"};解不出 ⇒ None。"""
+    import chat_human as CH
+    addr, why = CH.resolve_to(who, env)
+    if not addr:
+        return None
+    owner = (GF.parse_address(addr) or {}).get("owner")
+    import chat_roster as CR
+    name = next((f.get("name") for f in CR.read_friends(env) + CR.read_friends(env, "mine") if f["owner"] == owner), None)
+    seats = [dict(x, addr="%s/%s/%s" % (owner, x.get("cabin") or "main", x.get("seat")))
+             for x in (GF.read_peers(bridge_root(env)).get(owner) or {}).get("seats") or [] if x.get("seat")]
+    return {"v": 1, "owner": owner, "addr": addr, "why": why, "name": name, "seats": seats}
+
+
+def cmd_address(a, env, out):
+    pl = address_payload(a.who, env)
+    if a.json:
+        out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+        return 0 if pl else 2
+    if not pl:
+        out.write(T("address_none", who=a.who) + "\n")
+        return 2
+    out.write(T("address_row", name=pl["name"] or "-", addr=pl["addr"], why=T("address_why_" + pl["why"])) + "\n")
     return 0
 
 
@@ -1817,6 +1846,9 @@ def main(argv=None, env=None, out=sys.stdout):
     dv.add_argument("target", nargs="?", help=T("help.devices_target"))
     dv.add_argument("--name", help=T("help.join_name"))
     dv.add_argument("--json", action="store_true")
+    ad = sub.add_parser("address", help=T("help.address"))     # 第二波 #4
+    ad.add_argument("who")
+    ad.add_argument("--json", action="store_true")
     ct = sub.add_parser("contacts", help=T("help.contacts"))
     ct.add_argument("--json", action="store_true")
     ct.add_argument("--refresh", metavar="NPUB|all", help=T("help.contacts_refresh"))
@@ -1896,6 +1928,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_requests(a, env, out)
     if a.cmd == "contacts":
         return cmd_contacts(a, env, out)
+    if a.cmd == "address":
+        return cmd_address(a, env, out)
     if a.cmd == "share":
         return cmd_share(a, env, out)
     if a.cmd in ("social", "nip05"):
