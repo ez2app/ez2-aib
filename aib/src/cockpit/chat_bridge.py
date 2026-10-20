@@ -247,9 +247,14 @@ def sync_keys(env=None):
     import nostr_keys as NK
     try:
         NK.ensure_owner(env)
-        return NK.sync_seats(NK.live_seats(env=env), env), None
+        acts = NK.sync_seats(NK.live_seats(env=env), env)
     except Exception as err:   # noqa: BLE001  金鑰出錯不得讓轉接程式死掉;狀態檔記錯誤種類(不記內容)
         return [], type(err).__name__
+    import chat_roster as CR
+    for act in acts:                      # NOTE #23:主金鑰搬到同人格的新席(重開艙)⇒ 公開身分跟著搬,不用人再 publish
+        if act[0] == "moved" and len(act) >= 4 and CR.swap_public(act[3], act[2], env):
+            acts.append(("public_moved", act[1], act[2], act[3]))
+    return acts, None
 
 
 def _leader_tick(root, env=None):
