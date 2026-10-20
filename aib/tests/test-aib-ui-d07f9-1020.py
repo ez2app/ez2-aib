@@ -52,14 +52,18 @@ class Box(unittest.TestCase):
         self.envp.stop()
         self.td.cleanup()
 
-    def fake_run(self, alive=True, after_open=True):
+    def fake_run(self, alive=True, after_open=True, no_browser=False):
         state = {"alive": alive}
 
         def run(argv, **kw):
             self.runs.append((argv, kw))
+            if argv[1:4] == ["room", "open", "--help"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="usage: aib room open [--cabin C] [--port P]" + (" [--no-browser]" if no_browser else ""), stderr="")
             if argv[1:3] == ["room", "status"]:
                 return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"alive": state["alive"], "url": URL, "pid": 1}), stderr="")
             if argv[1:3] == ["room", "open"]:
+                if "--no-browser" in argv and not no_browser:
+                    return subprocess.CompletedProcess(argv, 2, stdout="", stderr="unrecognized arguments: --no-browser")
                 state["alive"] = after_open
                 return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
@@ -119,16 +123,25 @@ class Ui(Box):
         rc = self.UI.open_room(out=buf, run=self.fake_run(alive=False, after_open=True), popen=self.fake_popen,
                                exists=self.exists_for("Google Chrome"), installed=True)
         self.assertEqual(rc, 0, buf.getvalue())
-        opens = [(a, k) for a, k in self.runs if a[1:3] == ["room", "open"]]
+        opens = [(a, k) for a, k in self.runs if a[1:3] == ["room", "open"] and a[3:4] != ["--help"]]
         self.assertEqual(len(opens), 1)
         first = opens[0][1]["env"]["PATH"].split(os.pathsep)[0]
-        self.assertIn("aib-ui-noopen", first, "PATH 最前面要是擋系統瀏覽器的假 open")
+        self.assertIn("aib-ui-noopen", first, "舊外掛:PATH 最前面要是擋系統瀏覽器的假 open")
+        self.assertNotIn("--no-browser", opens[0][0], "舊外掛不認 --no-browser,不能帶")
+        self.runs.clear()
+        rc = self.UI.open_room(out=io.StringIO(), run=self.fake_run(alive=False, after_open=True, no_browser=True), popen=self.fake_popen,
+                               exists=self.exists_for("Google Chrome"), installed=True)
+        self.assertEqual(rc, 0)
+        opens = [(a, k) for a, k in self.runs if a[1:3] == ["room", "open"] and a[3:4] != ["--help"]]
+        self.assertEqual(opens[0][0][3:], ["--no-browser"], "新外掛(0.1.33+):帶 --no-browser、不用假 open")
+        self.assertNotIn("env", opens[0][1])
+        self.popens.clear()
         buf = io.StringIO()
         rc = self.UI.open_room(out=buf, run=self.fake_run(alive=False, after_open=False), popen=self.fake_popen,
                                exists=self.exists_for("Google Chrome"), installed=True)
         self.assertEqual(rc, 2)
         self.assertIn("起不來", buf.getvalue())
-        self.assertEqual(len([1 for a, _ in self.popens]), 1, "起不來就不開視窗")
+        self.assertEqual(self.popens, [], "起不來就不開視窗")
 
     def test_u5_plugin_missing(self):
         buf = io.StringIO()

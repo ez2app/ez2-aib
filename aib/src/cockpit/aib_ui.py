@@ -88,23 +88,38 @@ def room_status(run=subprocess.run):
         return {}
 
 
+def room_has_no_browser(run=subprocess.run):
+    """外掛 0.1.33 起 aib room open 有 --no-browser(@74e8b 10-20);舊外掛不認這個旗標會 rc 2 ⇒ 先看 --help。"""
+    try:
+        r = run([_aib_bin(), "room", "open", "--help"], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+        return "--no-browser" in ((r.stdout or "") + (r.stderr or ""))
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def ensure_room(run=subprocess.run):
-    """回 (url 或 None, why)。沒在跑就叫 aib room open 起伺服器,但用假的 open 擋掉它開的系統瀏覽器。"""
+    """回 (url 或 None, why)。沒在跑就叫 aib room open 起伺服器:新外掛帶 --no-browser;舊外掛用假的 open 擋掉它開的系統瀏覽器。"""
     st = room_status(run)
     if st.get("alive") and st.get("url"):
         return st["url"], None
-    shim = tempfile.mkdtemp(prefix="aib-ui-noopen-")
-    try:
-        p = Path(shim) / "open"
-        p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        p.chmod(p.stat().st_mode | stat.S_IXUSR)
-        env = dict(os.environ, PATH=shim + os.pathsep + os.environ.get("PATH", ""))
+    if room_has_no_browser(run):
         try:
-            run([_aib_bin(), "room", "open"], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=env)
+            run([_aib_bin(), "room", "open", "--no-browser"], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError):
             return None, "room-start-failed"
-    finally:
-        shutil.rmtree(shim, ignore_errors=True)
+    else:
+        shim = tempfile.mkdtemp(prefix="aib-ui-noopen-")
+        try:
+            p = Path(shim) / "open"
+            p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            p.chmod(p.stat().st_mode | stat.S_IXUSR)
+            env = dict(os.environ, PATH=shim + os.pathsep + os.environ.get("PATH", ""))
+            try:
+                run([_aib_bin(), "room", "open"], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=env)
+            except (OSError, subprocess.SubprocessError):
+                return None, "room-start-failed"
+        finally:
+            shutil.rmtree(shim, ignore_errors=True)
     st = room_status(run)
     if st.get("alive") and st.get("url"):
         return st["url"], None
