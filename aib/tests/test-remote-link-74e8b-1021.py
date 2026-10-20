@@ -6,6 +6,7 @@
 (GUIDE 檢查表:防線仍是 remote_grant 的伺服器簽章;這支只轉送，伺服器回的是資料 ⇒ 只認四種 op)
 L1 假中繼一輪:unlock(帶單子)→ input → stop → unlocked 全過、Mac 上一次 Touch ID 都沒彈、每則都回條(id 對上)
 L7 answer:沒帶單子 ⇒ grant-required;pending 視窗沒開 ⇒ locked
+L8 seats:只回席碼 / 角色 / 廠商 / 剩幾秒，不回 cwd / session / 專案名
 L6 transcript:視窗開著才給、遮敏感字;沒開 ⇒ locked
 L2 視窗沒開:input / stop 回 locked 不彈 Touch ID;unlock 沒帶單子 ⇒ grant-required;怪 op / 怪席碼 ⇒ 拒
 L3 總開關關 ⇒ 不連;跑到一半關掉 ⇒ 停;401 ⇒ unauthorized 停;連不上 ⇒ 退避
@@ -132,6 +133,15 @@ class Link(BASE.Box):
         self.run_link(r, 2)
         self.assertEqual([x["result"]["why"] for x in r.replies], ["grant-required", "locked"])
         self.assertEqual(self.asked, [])
+
+    def test_l8_seats(self):
+        r = Relay({"id": "m-seats-001", "op": "seats"})
+        self.run_link(r, 1)
+        res = r.replies[0]["result"]
+        self.assertTrue(res["ok"], res)
+        self.assertEqual([x["seat"] for x in res["seats"]], [CODE])
+        self.assertEqual(set(res["seats"][0]), {"seat", "role", "provider", "unlock_left_s"})
+        self.assertNotIn(str(self.home), json.dumps(res), "不回路徑")
 
     def test_l3_switch_and_errors(self):
         self.RG.set_remote(False)

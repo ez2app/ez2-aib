@@ -12,6 +12,7 @@
   unlocked = 只讀剩幾秒
   pending  = 讀那一席現在有沒有在問(黃框題目 + 選項 + ask_id);視窗開著才給
   answer   = 回答黃框：每次都要一張回答單(kind=seat-answer,綁 ask_id + choice + 自填字雜湊;@abb89 10-21 裁「視窗不能替 answer 免驗」)
+  seats    = 這台有哪些席(手機選席用):只給席碼 / 角色 / 廠商 / 視窗剩幾秒;不給專案名、路徑、session
   transcript = 讀那一席的對話(手機看回覆用):也要視窗開著;遮敏感字(seat_panel redact)、每則截 2000 字、一次最多 40 則
 - 伺服器回的東西是資料不是指令：只認上面四種 op、席碼格式、字數上限;其餘一律回 bad-op。
 - 憑證不印、不寫檔、不進 argv。
@@ -36,7 +37,8 @@ POLL_S = 25
 MAX_BODY = 96 * 1024
 SEAT_RE = re.compile(r"[0-9a-z]{5}")
 ID_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")
-OPS = ("unlock", "input", "stop", "unlocked", "transcript", "pending", "answer")
+OPS = ("unlock", "input", "stop", "unlocked", "transcript", "pending", "answer", "seats")
+ROLE_RE = re.compile(r"[\w .:/-]{0,40}")
 TRANSCRIPT_LIMIT = 40
 TRANSCRIPT_CLIP = 2000
 
@@ -91,6 +93,8 @@ def handle(msg, env=None, act=None):
     op, seat = msg.get("op"), msg.get("seat")
     if op not in OPS:
         return {"ok": False, "why": "bad-op"}
+    if op == "seats":
+        return seats(env, SA)
     if not isinstance(seat, str) or not SEAT_RE.fullmatch(seat):
         return {"ok": False, "why": "bad-seat"}
     if op == "unlock":
@@ -124,6 +128,21 @@ def handle(msg, env=None, act=None):
     else:
         res, _rc = SA.do_unlocked(seat, env=env)
     return res
+
+
+def seats(env=None, SA=None):
+    import seat_address
+    import seat_panel
+    e = env or {}
+    rows = []
+    for r in seat_panel.seat_records(e.get("EZ2_AIB_STATE_ROOT")):
+        code = seat_address.code_of(r)
+        if not isinstance(code, str) or not SEAT_RE.fullmatch(code) or any(x["seat"] == code for x in rows):
+            continue
+        role = str(r.get("role") or "")
+        rows.append({"seat": code, "role": role if ROLE_RE.fullmatch(role) else "", "provider": str(r.get("provider") or "")[:16],
+                     "unlock_left_s": SA.do_unlocked(code, env=env)[0].get("unlock_left_s") or 0})
+    return {"ok": True, "action": "seats", "seats": rows[:40]}
 
 
 def link(token, machine, env=None, base=BASE, call=http, once=False, sleep=time.sleep, act=None, log=None):
