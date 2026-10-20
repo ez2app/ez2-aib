@@ -4,6 +4,12 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.31
+
+- **`aib` with no arguments opens the captain's room**: in an app window (Chrome / Edge / Brave app mode with its own profile, no address bar; without any of them it falls back to the default browser and says so); when the plugin is missing or will not start it prints the usage as before. `aib ui room` / `aib ui terminal` switch and are remembered. When the plugin supports `--no-browser`, starting the server no longer opens an extra browser tab.
+- **Chat panel: seat busy state detected correctly**: a non-breaking space after the prompt, blank lines at the bottom of the screen, and a draft in the prompt (someone typing) no longer confuse it; nothing is typed in while a draft is present.
+- **Transcript long polling**: `aib seat transcript --follow --wait N` (up to 60 s) waits from the last position and returns only when there is a new event; it checks the file size instead of re-reading; when the seat switched conversations or the file shrank it reads from the start and flags a reset.
+
 ## 0.1.30
 
 - **Core commands for the captain's room chat panel (phase 1)**, all under `aib seat …`:
