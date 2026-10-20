@@ -191,6 +191,70 @@ def link(token, machine, env=None, base=BASE, call=http, once=False, sleep=time.
             return {"ok": True, "action": "remote-link", "handled": done, "status": status}, 0
 
 
+# ── 背景跑(aib seat remote on 一鍵：開關 + 起連線;off 一起停)──
+
+def _paths(env=None):
+    import remote_grant
+    d = remote_grant.state_root(env) / "panel-unlock"
+    return d / "remote-link.pid", remote_grant.state_root(env) / "logs" / "remote-link.log"
+
+
+def _is_link(pid, ps=None):
+    """pid 還活著、而且真的是 aib seat remote link(防 pid 被別的程式重用 ⇒ 誤殺)"""
+    import subprocess
+    try:
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    try:
+        cmd = (ps or (lambda p: subprocess.run(["ps", "-o", "command=", "-p", str(p)], capture_output=True, text=True, timeout=5).stdout))(pid)
+    except Exception:   # ps 不能用 ⇒ 當作不是，寧可不殺
+        return False
+    return "seat_act.py" in cmd and "remote" in cmd and "link" in cmd
+
+
+def running(env=None, ps=None):
+    pidf, _log = _paths(env)
+    try:
+        pid = int(pidf.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return pid if _is_link(pid, ps) else None
+
+
+def start_bg(env=None, spawn=None, ps=None):
+    """((pid, None) | (None, why))。已在跑 ⇒ 回原本那支;還沒綁 ez2.page ⇒ 不起"""
+    import subprocess
+    pid = running(env, ps)
+    if pid:
+        return pid, None
+    _t, why = target(env)
+    if why:
+        return None, why
+    pidf, log = _paths(env)
+    pidf.parent.mkdir(parents=True, exist_ok=True)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    e = dict(os.environ if env is None else env)
+    with open(log, "ab") as fh:
+        p = (spawn or subprocess.Popen)([sys.executable, str(HERE / "seat_act.py"), "remote", "link"], stdin=subprocess.DEVNULL, stdout=fh,
+                                         stderr=subprocess.STDOUT, start_new_session=True, env=e, cwd=str(HERE))
+    pidf.write_text(str(p.pid), encoding="utf-8")
+    return p.pid, None
+
+
+def stop_bg(env=None, ps=None, kill=None):
+    import signal
+    pidf, _log = _paths(env)
+    pid = running(env, ps)
+    if pid:
+        (kill or os.kill)(pid, signal.SIGTERM)
+    try:
+        pidf.unlink()
+    except OSError:
+        pass
+    return pid
+
+
 def main_link(once=False, out=sys.stdout, env=None):
     import remote_grant
     if not remote_grant.remote_cfg(env)["on"]:

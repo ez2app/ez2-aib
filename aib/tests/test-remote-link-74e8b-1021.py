@@ -7,6 +7,7 @@
 L1 假中繼一輪:unlock(帶單子)→ input → stop → unlocked 全過、Mac 上一次 Touch ID 都沒彈、每則都回條(id 對上)
 L7 answer:沒帶單子 ⇒ grant-required;pending 視窗沒開 ⇒ locked
 L8 seats:只回席碼 / 角色 / 廠商 / 剩幾秒，不回 cwd / session / 專案名
+L9 一鍵:remote on ⇒ 背景起 link(沒綁 ⇒ 不起、回 not-bound);已在跑不重起;off ⇒ 停;pid 被別的程式重用 ⇒ 不殺
 L6 transcript:視窗開著才給、遮敏感字;沒開 ⇒ locked
 L2 視窗沒開:input / stop 回 locked 不彈 Touch ID;unlock 沒帶單子 ⇒ grant-required;怪 op / 怪席碼 ⇒ 拒
 L3 總開關關 ⇒ 不連;跑到一半關掉 ⇒ 停;401 ⇒ unauthorized 停;連不上 ⇒ 退避
@@ -148,6 +149,45 @@ class Link(BASE.Box):
         self.assertEqual([x["seat"] for x in res["seats"]], [CODE])
         self.assertEqual(set(res["seats"][0]), {"seat", "role", "provider", "unlock_left_s"})
         self.assertNotIn(str(self.home), json.dumps(res), "不回路徑")
+
+    def bind(self):
+        d = self.state / "auth" / "page"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "machine.json").write_text(json.dumps({"id": MID, "name": "mac"}))
+        (d / "t_lfu0327.p1.json").write_text(json.dumps({"tenant_id": ACCT, "page_id": "p1", "machine_id": MID, "assistant_token": "tok-x"}))
+
+    def test_l9_one_click(self):
+        spawned, killed = [], []
+        me = os.getpid()
+        link_ps = lambda pid: "python3 /x/seat_act.py remote link"
+        other_ps = lambda pid: "/usr/bin/vim notes.txt"
+
+        def spawn(args, **kw):
+            spawned.append(args)
+            self.assertTrue(kw.get("start_new_session"))
+            return types.SimpleNamespace(pid=me)
+        pid, why = self.RL.start_bg(spawn=spawn, ps=link_ps)
+        self.assertEqual((pid, why, spawned), (None, "not-bound", []), "還沒綁 ⇒ 不起")
+        self.bind()
+        pid, why = self.RL.start_bg(spawn=spawn, ps=link_ps)
+        self.assertEqual((pid, why), (me, None))
+        self.assertTrue(spawned[0][1].endswith("seat_act.py") and spawned[0][2:] == ["remote", "link"], spawned)
+        self.assertEqual(self.RL.start_bg(spawn=spawn, ps=link_ps), (me, None))
+        self.assertEqual(len(spawned), 1, "已在跑不重起")
+        self.assertIsNone(self.RL.running(ps=other_ps), "pid 被別的程式重用 ⇒ 不算")
+        self.assertIsNone(self.RL.stop_bg(ps=other_ps, kill=lambda p, sg: killed.append(p)))
+        self.assertEqual(killed, [], "不是 link 就不殺")
+        self.RL.start_bg(spawn=spawn, ps=link_ps)
+        self.assertEqual(self.RL.stop_bg(ps=link_ps, kill=lambda p, sg: killed.append(p)), me)
+        self.assertEqual(killed, [me])
+        calls = []
+        ctl = types.SimpleNamespace(start_bg=lambda env: calls.append("start") or (4242, None), stop_bg=lambda env: calls.append("stop"),
+                                    running=lambda env: 4242 if calls and calls[-1] == "start" else None)
+        res, rc = self.act(self.SA.do_remote, "on", link_ctl=ctl)
+        self.assertEqual((rc, res["link_pid"], res["link"], res["machine_fp"]), (0, 4242, True, FP), res)
+        res, rc = self.act(self.SA.do_remote, "off", link_ctl=ctl)
+        self.assertEqual((rc, res["link"], calls), (0, False, ["start", "stop"]))
+        self.assertEqual(len(self.asked), 1, "on 彈一次 Touch ID、off 不問")
 
     def test_l3_switch_and_errors(self):
         self.RG.set_remote(False)
