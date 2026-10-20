@@ -3,7 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """對話面板核心 C1 / C4 / C5(10-20 Andy「對話面板放核心免費」;@abb89 SPEC-chat-panel 第 1、6 節):
 
-  aib seat input  <席碼> --text … | --file …      把字打進那一席的提示列(Touch ID;同席 10 分鐘內免重驗)
+  aib seat input  <席碼> --text … | --file … [--unlock-min N]   把字打進那一席的提示列(Touch ID;過了之後同席免重驗,
+                                                  真人 N 分鐘沒再下指令才上鎖;N 預設 window.json / 10)
+  aib seat unlock <席碼> [--min N]                 先解鎖不送字(Touch ID;一樣是閒置 N 分鐘才上鎖)
+  aib seat lock   <席碼>                           馬上上鎖(不用 Touch ID;上鎖只會更安全)
   aib seat answer <席碼> <key|yes|no> [--ask-id ID] [--text …]   回答那一席正在問的(每次 Touch ID)
   aib seat stop   <席碼> [--hard]                 軟停 = Esc;硬停 = Ctrl-C(每次 Touch ID)
 
@@ -11,7 +14,8 @@
 - 本人證明只認 Touch ID(touchid_approve;視窗那句由核心組、TA.clean);關掉 / 不能用 / 取消 / 逾時一律拒,不退 PIN。
 - 呼叫者是 aib 席位(tmux 席位 pane、或帶 Claude / Codex 的對話 id 環境變數)⇒ 直接拒(AI 不准用這條路操控別席)。
 - 送鍵前先看畫面:那一席要在提示列等人打字(seat_ask_patterns.at_prompt);在權限框 / 選擇題 / 思考中 / less / vim ⇒ 拒。
-- 免重驗視窗(只套 input):Touch ID 過了之後寫 <狀態根>/panel-unlock/<席碼>.json {until};**這是本機檔,AI 改得到,只防本人誤操作**,
+- 免重驗視窗(只套 input):Touch ID 過了之後寫 <狀態根>/panel-unlock/<席碼>.json {until, idle_s};
+  10-21 Andy「解鎖下指令時沒有時限，真人不下指令之後才倒數」⇒ 視窗內每送出一次就把 until 往後推到 now + idle_s(閒置倒數);**這是本機檔,AI 改得到,只防本人誤操作**,
   不是防線(Andy 10-20 第 39 節 Z 已承認視窗內擋不住);answer / stop 每次都驗。
 - 每次動作寫 <狀態根>/logs/seat-panel-actions.jsonl。
 """
@@ -94,9 +98,17 @@ def unlock_minutes(env=None):
         return UNLOCK_MIN_DEFAULT
 
 
+def clamp_minutes(m):
+    """解鎖分鐘：0(每次都驗)… 60;不是整數 ⇒ None(用預設)"""
+    try:
+        return max(0, min(60, int(m)))
+    except (TypeError, ValueError):
+        return None
+
+
 def grant_unlock(code, env=None, minutes=None):
     from atomic_json import write_json
-    m = unlock_minutes(env) if minutes is None else minutes
+    m = unlock_minutes(env) if clamp_minutes(minutes) is None else clamp_minutes(minutes)
     p = unlock_path(code, env)
     p.parent.mkdir(parents=True, exist_ok=True)
     if m <= 0:
@@ -105,9 +117,36 @@ def grant_unlock(code, env=None, minutes=None):
         except FileNotFoundError:
             pass
         return 0
-    write_json(str(p), {"v": V, "seat": code, "until": int(time.time()) + m * 60, "at": int(time.time())})
+    write_json(str(p), {"v": V, "seat": code, "until": int(time.time()) + m * 60, "idle_s": m * 60, "at": int(time.time())})
     os.chmod(p, 0o600)
     return m * 60
+
+
+def refresh_unlock(code, env=None, now=None):
+    """視窗還開著 ⇒ until 推到 now + idle_s(真人剛下指令,重新閒置倒數);回剩幾秒,沒開 ⇒ 0。只防誤操作:本機檔,AI 改得到。"""
+    from atomic_json import write_json
+    t = int(now or time.time())
+    try:
+        p = unlock_path(code, env)
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        until = int(rec.get("until") or 0)
+        idle = int(rec.get("idle_s") or unlock_minutes(env) * 60)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return 0
+    if until <= t or idle <= 0:
+        return 0
+    rec.update(until=t + idle, idle_s=idle)
+    write_json(str(p), rec)
+    os.chmod(p, 0o600)
+    return idle
+
+
+def lock_now(code, env=None):
+    try:
+        unlock_path(code, env).unlink()
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def prove(reason, env, touchid=None, touchid_available=None, platform=None):
@@ -127,9 +166,12 @@ def prove(reason, env, touchid=None, touchid_available=None, platform=None):
     return "touchid", None if res.get("ok") is True else "touchid_" + str(res.get("why") or "failed").split(":")[0]
 
 
-def reason_for(action, code, text):
+def reason_for(action, code, text, minutes=None):
     import touchid_approve as TA
-    return T("touchid_" + action, seat=code, text=TA.clean(text or "", 40))
+    r = T("touchid_" + action, seat=code, text=TA.clean(text or "", 40))
+    if action == "input" and minutes:
+        r += T("touchid_unlock_tail", min=minutes)   # 本人按指紋前看得到「之後閒置 N 分鐘才上鎖」
+    return r
 
 
 # ── tmux ──
@@ -200,7 +242,7 @@ def log_action(code, action, env=None, **fields):
 
 # ── C1 ──
 
-def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run):
+def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run, minutes=None):
     env = dict(os.environ if env is None else env)
     out = _out(False, code, "input")
     if caller_is_seat(env):
@@ -224,7 +266,8 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
         out["why"], out["detail"] = "not-at-prompt", "busy=%s" % pend.get("busy")
         return out, 2
     left = unlock_left(code, env)
-    reason = reason_for("input", code, text)
+    m = unlock_minutes(env) if clamp_minutes(minutes) is None else clamp_minutes(minutes)
+    reason = reason_for("input", code, text, m)
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
     if left > 0:
         out["via"] = "unlock-window"
@@ -234,11 +277,51 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
             out["why"] = why
             log_action(code, "input", env, ok=False, why=why, chars=len(text))
             return out, 3
-        left = grant_unlock(code, env)
+        left = grant_unlock(code, env, m)
     ok, why = send_text(rec, text, tmux=tmux, run=run)
+    if ok and out["via"] == "unlock-window":
+        left = refresh_unlock(code, env) or left        # 真人剛下指令 ⇒ 閒置倒數重來
     out.update(ok=ok, why=(None if ok else why), unlock_left_s=left, chars=len(text))
     log_action(code, "input", env, ok=ok, why=why or None, via=out["via"], chars=len(text))
     return out, (0 if ok else 4)
+
+
+def do_unlock(code, minutes=None, env=None, touchid=None, touchid_available=None, platform=None):
+    """先解鎖不送字(頁面的 🔒 鈕、手機下指令前)。一樣 Touch ID、一樣擋席位呼叫;已經開著 ⇒ 不彈、照新分鐘重算。"""
+    env = dict(os.environ if env is None else env)
+    out = _out(False, code, "unlock")
+    if caller_is_seat(env):
+        out["why"] = "caller-is-seat"
+        return out, 3
+    if not isinstance(code, str) or SPN.find_seat(code, str(state_root(env))) is None:
+        out["why"] = "no-seat"
+        return out, 2
+    m = unlock_minutes(env) if clamp_minutes(minutes) is None else clamp_minutes(minutes)
+    if m <= 0:
+        out["why"] = "zero-minutes"
+        return out, 2
+    reason = T("touchid_unlock", seat=code, min=m)
+    out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
+    if unlock_left(code, env) > 0:
+        out["via"] = "unlock-window"
+    else:
+        out["via"], why = prove(reason, env, touchid, touchid_available, platform)
+        if why:
+            out["why"] = why
+            log_action(code, "unlock", env, ok=False, why=why)
+            return out, 3
+    left = grant_unlock(code, env, m)
+    out.update(ok=True, unlock_left_s=left, minutes=m)
+    log_action(code, "unlock", env, ok=True, via=out["via"], minutes=m)
+    return out, 0
+
+
+def do_lock(code, env=None):
+    env = dict(os.environ if env is None else env)
+    out = _out(True, code, "lock", via="none", unlock_left_s=0)
+    out["was_open"] = lock_now(code, env)
+    log_action(code, "lock", env, ok=True)
+    return out, 0
 
 
 # ── C4 ──
@@ -346,6 +429,12 @@ def main(argv=None, out=sys.stdout):
     i.add_argument("code")
     i.add_argument("--text")
     i.add_argument("--file")
+    i.add_argument("--unlock-min", type=int)
+    u = sub.add_parser("unlock")
+    u.add_argument("code")
+    u.add_argument("--min", type=int)
+    lk = sub.add_parser("lock")
+    lk.add_argument("code")
     a = sub.add_parser("answer")
     a.add_argument("code")
     a.add_argument("choice")
@@ -354,7 +443,7 @@ def main(argv=None, out=sys.stdout):
     s = sub.add_parser("stop")
     s.add_argument("code")
     s.add_argument("--hard", action="store_true")
-    for p in (i, a, s):
+    for p in (i, a, s, u, lk):
         p.add_argument("--json", action="store_true")
     ns = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
     if ns.cmd == "input":
@@ -365,7 +454,11 @@ def main(argv=None, out=sys.stdout):
             except OSError:
                 out.write(json.dumps(_out(False, ns.code, "input", why="bad-file"), ensure_ascii=False) + "\n")
                 return 2
-        res, rc = do_input(ns.code, text)
+        res, rc = do_input(ns.code, text, minutes=ns.unlock_min)
+    elif ns.cmd == "unlock":
+        res, rc = do_unlock(ns.code, ns.min)
+    elif ns.cmd == "lock":
+        res, rc = do_lock(ns.code)
     elif ns.cmd == "answer":
         res, rc = do_answer(ns.code, ns.choice, ask_id=ns.ask_id, free_text=ns.text)
     elif ns.cmd == "stop":
