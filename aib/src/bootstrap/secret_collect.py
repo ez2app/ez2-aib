@@ -254,6 +254,8 @@ def put_secret(name, plaintext, env=None):
     rel = S.file_for_name(name)
     if rel is None:
         raise S.SecretError(S.MISSING_FILE, name, "unknown name")
+    if name in S.SE_ONLY_NAMES:      # 母鑰只進 Secure Enclave;檔案(含 LINE 補填)一律拒(@abb89 審 #222)
+        raise S.SecretError("se_only", name, "Secure Enclave only")
     if not isinstance(plaintext, str) or not plaintext.strip():
         raise S.SecretError(S.MISSING_LINE, name, "empty fill")
     d = S.secrets_dir(env)
