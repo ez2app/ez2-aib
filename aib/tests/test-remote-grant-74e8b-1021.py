@@ -11,8 +11,9 @@ G4 分鐘被本機上限夾;單子不過不寫視窗、不退回 Touch ID
 G5 這台的身分從 ez2.page 綁定檔讀(machine.json + 綁到這台的頁);綁的是別台 ⇒ 拒
 G6 公鑰清單釘住：正式清單目前空 ⇒ 一律 unknown-key;程式不從環境變數 / 設定檔讀公鑰
 G8 ez2.page 範例單(外層 {grant, sig}、一次性測試鑰)驗得過、canonical 兩邊一致;改一個字不過
+G9 回答單(@abb89 裁):綁 ask_id + choice(+ 自填字雜湊)、2 分鐘;對上 ⇒ 不彈 Touch ID 照答;換選項 / 換題 / 視窗開著也沒單子的另一題 ⇒ 拒;同一張不能用兩次
 G7 入口:aib seat remote status、aib seat unlock --grant(關著 ⇒ rc 3);四語字串
-刀(複本):K1 不驗簽 ⇒ G3 紅;K2 不擋重放 ⇒ G3 紅;K3 on 不驗 Touch ID ⇒ G2 紅
+刀(複本):K1 不驗簽 ⇒ G3 紅;K2 不擋重放 ⇒ G3 紅;K3 on 不驗 Touch ID ⇒ G2 紅;K4 answer 不驗回答單 ⇒ G9 紅
 """
 import base64
 import importlib.util
@@ -44,13 +45,14 @@ KID = "test-1021"
 KEYS = {KID: "ed25519:" + ed25519.public_key(SEED).hex()}
 MID = "6f1c1d1e-0000-4000-8000-000000000001"
 ACCT = "t_lfu0327"
-MACHINE = (MID, {ACCT})
+FP = __import__("hashlib").sha256(("ez2-aib-machine-v1:" + MID).encode()).hexdigest()
+MACHINE = (FP, {ACCT})
 EXAMPLE = '{"pubkey": {"kid": "6c0748f51a15a6c0", "alg": "Ed25519", "pub_b64": "FdR6iDS3oZQSQbeme6vsPV5wSdoxWYpcKMtw/9FJflw="}, "canonical": "{\\"account_id\\":\\"acct_example0001\\",\\"auth\\":\\"line\\",\\"exp\\":1792540920,\\"iat\\":1792540800,\\"kid\\":\\"6c0748f51a15a6c0\\",\\"kind\\":\\"seat-unlock\\",\\"machine\\":\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\",\\"minutes\\":10,\\"nonce\\":\\"bm9uY2UtZXhhbXBsZS0wMDAx\\",\\"seat\\":\\"9f808\\",\\"v\\":1}", "envelope": {"grant": {"v": 1, "kind": "seat-unlock", "kid": "6c0748f51a15a6c0", "account_id": "acct_example0001", "machine": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "seat": "9f808", "minutes": 10, "nonce": "bm9uY2UtZXhhbXBsZS0wMDAx", "iat": 1792540800, "exp": 1792540920, "auth": "line"}, "sig": "P-pgcu_9UfpEMf38JXzV2yuNMLR7g0CEgJ5SIy-LcEsQt4kaCNOoJP0OKwhSNLunCwz9VgTlLjWaipg-E-iXAg"}}'
 
 
 def make(seed=SEED, **kw):
     now = int(time.time())
-    g = {"v": 1, "kind": "seat-unlock", "kid": KID, "machine": MID, "seat": CODE, "minutes": 10,
+    g = {"v": 1, "kind": "seat-unlock", "kid": KID, "machine": FP, "seat": CODE, "minutes": 10,
          "nonce": base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("="), "iat": now, "exp": now + 120,
          "account_id": ACCT, "auth": "passkey"}
     g.update(kw)
@@ -110,13 +112,14 @@ class Grant(BASE.Box):
             (bad, "bad-sig"),
             (make(seed=OTHER), "bad-sig"),
             (make(kid="nope"), "unknown-key"),
-            (make(machine="6f1c1d1e-0000-4000-8000-000000000999"), "wrong-machine"),
+            (make(machine="b" * 64), "wrong-machine"),
             (make(account_id="t_other"), "wrong-account"),
             (make(seat="zz999"), "wrong-seat"),
             (make(iat=now - 400, exp=now - 100), "expired"),
             (make(iat=now, exp=now + 3600), "expired"),
             (make(iat=now + 600, exp=now + 700), "expired"),
             (make(auth="sms"), "auth-not-allowed"),
+            (make(machine=MID), "wrong-machine"),
             (make(nonce="short"), "bad-grant"),
             (make(minutes=10.0), "bad-grant"),
             (make(minutes=0), "bad-grant"),
@@ -149,10 +152,11 @@ class Grant(BASE.Box):
         d = self.state / "auth" / "page"
         d.mkdir(parents=True)
         (d / "machine.json").write_text(json.dumps({"id": MID, "name": "mac"}))
-        self.assertEqual(self.RG.this_machine(), (MID, set()), "還沒綁頁 ⇒ 沒有帳號")
+        self.assertEqual(self.RG.this_machine(), (FP, set()), "還沒綁頁 ⇒ 沒有帳號")
         (d / "t_lfu0327.p1.json").write_text(json.dumps({"tenant_id": ACCT, "page_id": "p1", "machine_id": MID}))
         (d / "t_x.p2.json").write_text(json.dumps({"tenant_id": "t_x", "page_id": "p2", "machine_id": "other"}))
-        self.assertEqual(self.RG.this_machine(), (MID, {ACCT}))
+        self.assertEqual(self.RG.this_machine(), (FP, {ACCT}))
+        self.assertNotIn(MID, json.dumps(self.act(self.SA.do_remote, "status")[0]), "uuid 本身不出本機")
         res, rc = self.unlock(make(), machine=None)
         self.assertEqual(rc, 0, res)
         res, rc = self.unlock(make(account_id="t_x"), machine=None)
@@ -170,6 +174,38 @@ class Grant(BASE.Box):
         env = json.loads(EXAMPLE)["envelope"]
         env["grant"]["minutes"] = 60
         self.assertEqual(self.RG.verify(env, g["seat"], now=g["iat"] + 10, keys=keys, machine=(g["machine"], {g["account_id"]}))[1], "bad-sig")
+
+    def ask_id(self):
+        import seat_panel
+        return seat_panel.pending(CODE, state_root=str(self.state), screen=BASE.PERMISSION)[0]["ask"]["id"]
+
+    def answer(self, g, choice="1", **kw):
+        return self.act(self.SA.do_answer, CODE, choice, screen=BASE.PERMISSION, grant=g, grant_keys=KEYS, machine=MACHINE, **kw)
+
+    def test_g9_answer(self):
+        self.on()
+        self.asked.clear()
+        aid = self.ask_id()
+        now = int(time.time())
+        ans = dict(kind="seat-answer", ask_id=aid, choice="1", exp=now + 100)
+        ans.pop("minutes", None)
+        g = make(**ans)
+        res, rc = self.answer(g)
+        self.assertEqual((rc, res["via"], res["keys"]), (0, "remote-grant", ["1"]), res)
+        self.assertEqual(self.asked, [], "有回答單就不彈 Touch ID")
+        res, rc = self.answer(g)
+        self.assertEqual(res["why"], "grant_replayed")
+        for bad, why, ch in ((make(**dict(ans, choice="3")), "grant_wrong-answer", "1"),
+                             (make(**dict(ans, ask_id="screen:deadbeef")), "grant_wrong-answer", "1"),
+                             (make(**dict(ans, exp=now + 300)), "grant_expired", "1"),
+                             (make(**dict(ans, kind="seat-unlock")), "grant_bad-grant", "1"),
+                             (make(**dict(ans, text_sha256=self.RG.text_hash("別的字"))), "grant_wrong-answer", "1")):
+            res, rc = self.answer(bad, ch)
+            self.assertEqual((rc, res["why"]), (3, why), res)
+        self.act(self.SA.do_unlock, CODE, 10)
+        res, rc = self.answer(make(**dict(ans, choice="3")), "1")
+        self.assertEqual(res["why"], "grant_wrong-answer", "視窗開著也不能替 answer 免驗")
+        self.assertEqual(len(self.asked), 1, "只有剛剛那次 unlock 彈過")
 
     def test_g6_pinned(self):
         self.assertEqual(self.RG.TRUSTED_GRANT_KEYS, {}, "正式公鑰清單改了 ⇒ 要維護者點頭再改這行")
@@ -212,6 +248,10 @@ class Knife(unittest.TestCase):
     def test_k3_on_no_touchid(self):
         self._knife("src/cockpit/seat_act.py", '        out["via"], why = prove(T("touchid_remote_on"), env, touchid, touchid_available, platform)',
                     '        out["via"], why = "touchid", None', "Grant.test_g2_switch")
+
+    def test_k4_answer_unchecked(self):
+        self._knife("src/cockpit/seat_act.py", '        out["via"], why = "remote-grant", (None if _ok else "grant_" + gwhy)',
+                    '        out["via"], why = "remote-grant", None', "Grant.test_g9_answer")
 
 
 if __name__ == "__main__":

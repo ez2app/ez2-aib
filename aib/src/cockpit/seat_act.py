@@ -243,7 +243,9 @@ def log_action(code, action, env=None, **fields):
 
 # ── C1 ──
 
-def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run, minutes=None):
+def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run, minutes=None,
+             window_only=False):
+    """window_only = 手機遠端過來的(remote_link):視窗沒開 ⇒ 拒 locked,不在 Mac 上彈 Touch ID(手機那頭沒人按得到)"""
     env = dict(os.environ if env is None else env)
     out = _out(False, code, "input")
     if caller_is_seat(env):
@@ -272,6 +274,9 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
     if left > 0:
         out["via"] = "unlock-window"
+    elif window_only:
+        out["why"] = "locked"
+        return out, 3
     else:
         out["via"], why = prove(reason, env, touchid, touchid_available, platform)
         if why:
@@ -368,6 +373,7 @@ def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_a
         return out, 2
     mid, accts = remote_grant.this_machine(env)
     out.update(ok=True, on=cfg["on"], max_min=cfg["max_min"], allow=cfg["allow"], bound=bool(mid and accts),
+               machine_fp=mid,
                keys=len(remote_grant.TRUSTED_GRANT_KEYS))
     return out, 0
 
@@ -400,7 +406,8 @@ def _answer_keys(ask, choice, free_text):
 
 
 def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, touchid=None, touchid_available=None, platform=None,
-              tmux="tmux", run=subprocess.run):
+              tmux="tmux", run=subprocess.run, grant=None, grant_keys=None, machine=None):
+    """grant = 手機那頭的回答單(remote_grant.verify_answer:綁這一題 + 這個選項，一次一張);沒有就照舊每次 Touch ID"""
     env = dict(os.environ if env is None else env)
     out = _out(False, code, "answer")
     if caller_is_seat(env):
@@ -428,7 +435,12 @@ def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, 
     label = next((o.get("label") for o in ask.get("options") or [] if o["key"] == keys[0]), free_text or choice)
     reason = reason_for("answer", code, "%s → %s" % (ask.get("prompt", "")[:20], label))
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
-    out["via"], why = prove(reason, env, touchid, touchid_available, platform)      # 每次都驗,不吃免重驗視窗
+    if grant is not None:
+        import remote_grant
+        _ok, gwhy = remote_grant.verify_answer(grant, code, ask["id"], choice, free_text, env, keys=grant_keys, machine=machine)
+        out["via"], why = "remote-grant", (None if _ok else "grant_" + gwhy)
+    else:
+        out["via"], why = prove(reason, env, touchid, touchid_available, platform)      # 每次都驗,不吃免重驗視窗
     if why:
         out["why"] = why
         log_action(code, "answer", env, ok=False, why=why, ask_id=ask["id"])
@@ -444,7 +456,8 @@ def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, 
 
 # ── C5 ──
 
-def do_stop(code, hard=False, env=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run):
+def do_stop(code, hard=False, env=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run, window_only=False):
+    """window_only = 手機遠端過來的：視窗開著 ⇒ 不彈 Touch ID 直接停;沒開 ⇒ 拒 locked"""
     env = dict(os.environ if env is None else env)
     out = _out(False, code, "stop")
     if caller_is_seat(env):
@@ -465,7 +478,13 @@ def do_stop(code, hard=False, env=None, touchid=None, touchid_available=None, pl
             doing = None
     reason = reason_for("stop_hard" if hard else "stop", code, (doing or {}).get("text") or "")
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
-    out["via"], why = prove(reason, env, touchid, touchid_available, platform)
+    if window_only:
+        if unlock_left(code, env) <= 0:
+            out["why"] = "locked"
+            return out, 3
+        out["via"], why = "unlock-window", None
+    else:
+        out["via"], why = prove(reason, env, touchid, touchid_available, platform)
     if why:
         out["why"] = why
         log_action(code, "stop", env, ok=False, why=why, hard=hard)
@@ -491,7 +510,8 @@ def main(argv=None, out=sys.stdout):
     u.add_argument("--min", type=int)
     u.add_argument("--grant", help="伺服器簽的解鎖單 JSON 檔;- = 從 stdin 讀")
     rm = sub.add_parser("remote")
-    rm.add_argument("state", choices=("on", "off", "status"))
+    rm.add_argument("state", choices=("on", "off", "status", "link"))
+    rm.add_argument("--once", action="store_true", help="link:只收一輪(測試 / 除錯)")
     rm.add_argument("--max-min", type=int)
     rm.add_argument("--allow", help="passkey,line,password 的子集")
     lk = sub.add_parser("lock")
@@ -528,6 +548,9 @@ def main(argv=None, out=sys.stdout):
                 out.write(json.dumps(_out(False, ns.code, "unlock", why="bad-file"), ensure_ascii=False) + "\n")
                 return 2
         res, rc = do_unlock(ns.code, ns.min, grant=grant)
+    elif ns.cmd == "remote" and ns.state == "link":
+        import remote_link
+        res, rc = remote_link.main_link(once=ns.once, out=out)
     elif ns.cmd == "remote":
         res, rc = do_remote(ns.state, max_min=ns.max_min, allow=ns.allow.split(",") if ns.allow else None)
     elif ns.cmd == "lock":
