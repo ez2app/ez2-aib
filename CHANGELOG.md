@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.29
+
+- **`aib vault title <path…>`**: turns vault paths (folder and note ids) into readable title paths with an Obsidian open link; reads only the title index, never note bodies, and gives no title for paths outside the vault. Used by the captain's room chat panel; no add-on license needed.
+- **Alarm on repeated receive failures**: when the receiving connection drops right away three times in a row, `aib chat status` prints a warning and records it in the status file; a session that lasts 60 seconds counts as normal. One of two machines once went 20 hours without receiving mail and nobody noticed.
+- **`aib chat restart`, and the bridge restarts itself after an update**: only the process recorded in the status file whose command line really is the bridge gets the stop signal, then a 10-second wait and a respawn if its window died; a successful `aib update` restarts the bridge with the upgraded code instead of leaving the old code running.
+- **Status reports power**: `aib chat status` adds a line with the adapter wattage and battery level; plugged in but not charging (a weak adapter) shows ⚠, and running on battery is stated too. `--json` adds a power object; a friend's online status also carries charging / level / wattage when the other side sends it (older versions are unaffected). The captain's room battery warning reads this.
+
 ## 0.1.28
 
 - **`aib plugins install <folder | .tgz | .zip | https://…>`**: one command to install a plugin. It checks the trusted-key signature, every file hash and the required core version before anything lands in the plugins folder; archives with paths that climb up, links, or more than 64 MB are refused. Installing again replaces (same command to upgrade). It also tells you whether the plugin's license is active.

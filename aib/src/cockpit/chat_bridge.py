@@ -590,6 +590,8 @@ def status_record(env):
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
+    import chat_power as CP
+    rec["power"] = CP.power_info(root)       # 10-20 @abb89 #16:ac / charging / pct / watts / sleeps / sleep_min / kept_awake(艦長室頁面讀這個)
     rec["healthy"], rec["why"] = health(rec)
     rec["backup"] = backup_state(env)
     return rec
@@ -1559,6 +1561,21 @@ def cmd_backup(a, env, out):
     return 0
 
 
+RECV_FAIL_WARN = 3   # 10-20 @abb89(會員清單 E 段):收信連續失敗幾次就警報(Pro 13 每 5 秒重來、20 小時沒人發現)
+
+
+def recv_fail_line(w, now=None):
+    """工人回報的 recv_fail {n, since, why}:連續 n ≥ RECV_FAIL_WARN ⇒ ⚠ 那一行;不然 None。"""
+    rf = (w or {}).get("recv_fail") or {}
+    n = rf.get("n") if isinstance(rf.get("n"), int) else 0
+    if n < RECV_FAIL_WARN:
+        return None
+    since = rf.get("since") if isinstance(rf.get("since"), int) else None
+    mins = max(1, int(((time.time() if now is None else now) - since) // 60)) if since else 1
+    import touchid_approve as TA                                  # why 是例外類名,照舊清字元再印
+    return T("status_recv_failing", n=n, why=TA.clean(str(rf.get("why") or "?"), 40), mins=mins)
+
+
 def cmd_status(a, env, out):
     rec = status_record(env)
     if a.json:
@@ -1589,6 +1606,9 @@ def cmd_status(a, env, out):
             out.write(T("status_clock_unknown") + "\n")
         else:
             out.write(T("status_clock_warn" if c.get("warn") else "status_clock_ok", offset=c["offset"]) + "\n")
+        line = recv_fail_line(w)
+        if line:
+            out.write(line + "\n")
     out.write(T("status_heartbeat_" + ("yes" if rec["heartbeat"] else "no")) + "\n")
     import chat_owner_cli as OC
     if OC.owner_status(env)["role"] == "both":
@@ -1608,6 +1628,22 @@ def cmd_status(a, env, out):
     return 0
 
 
+def power_supply_lines(info):
+    """10-20 @abb89 #16 核心這半:電源一行(外接幾瓦 / 電池幾 %);接了電卻沒在充(充電頭太弱)⇒ ⚠。非 Mac(ac None)⇒ 不印。"""
+    ac = info.get("ac")
+    if ac is None:
+        return []
+    pct = info.get("pct")
+    pct_s = "%d%%" % pct if isinstance(pct, int) else "?"
+    if not ac:
+        return [T("status_power_on_battery", pct=pct_s)]
+    watts = info.get("watts")
+    watts_s = "%d W" % watts if isinstance(watts, int) and watts > 0 else "?"
+    if info.get("charging") is False:
+        return [T("status_power_not_charging", watts=watts_s, pct=pct_s)]
+    return [T("status_power_ac", watts=watts_s, pct=pct_s)]
+
+
 def power_lines(env):
     """10-18 Andy:這台會不會睡、有沒有撐著;自己的其他機器版本落後(只提醒自己的機器,不對好友)。"""
     import chat_power as CP
@@ -1615,6 +1651,7 @@ def power_lines(env):
     root = bridge_root(env)
     lines = []
     info = CP.power_info(root)
+    lines += power_supply_lines(info)
     if info["sleep_min"]:
         key = "status_power_kept" if info["kept_awake"] and info["ac"] else (
             "status_power_battery" if info["kept_awake"] else "status_power_sleeps")
@@ -1627,6 +1664,34 @@ def power_lines(env):
                 tuple(int(x) for x in v.split(".")) < tuple(int(x) for x in mine_ver.split(".")):
             lines.append(T("status_mine_old", name=f.get("name") or f["owner"][:16], v=v, mine=mine_ver))
     return lines
+
+
+def restart_bridge(env, out, wait_s=10):
+    """aib chat restart(10-20 @abb89,會員清單 #14):升版後轉接程式還跑著舊程式碼 ⇒ 只對 status.json 記下、而且命令列
+    真的是 chat_bridge.py run 的那個 pid 送 SIGTERM(不准寬 pkill);外面的 sh 迴圈會自己再起,沒迴圈的(tmux 直接起的)
+    由 ensure-window 看到 pane 死了再 respawn。沒在跑 ⇒ 0 什麼都不做;pid 對不上 ⇒ 2 不碰。"""
+    root = bridge_root(env)
+    st = read_status(root) or {}
+    pid = st.get("pid")
+    if st.get("state") in (None, "stopped") or not pid_alive(pid):
+        out.write(T("restart_not_running") + "\n")
+        return 0
+    if not _pid_is_bridge(pid):
+        out.write(T("restart_pid_mismatch", pid=pid) + "\n")
+        return 2
+    os.kill(pid, signal.SIGTERM)
+    end = time.time() + wait_s
+    while time.time() < end and pid_alive(pid):
+        time.sleep(0.2)
+    if pid_alive(pid):
+        out.write(T("restart_still_alive", pid=pid) + "\n")
+        return 2
+    act = "-"
+    sock = hub_socket(env)
+    if sock and SOCKET_RE.match(sock):
+        act, _wid = ensure_window(sock, env)
+    out.write(T("restart_done", pid=pid, act=act) + "\n")
+    return 0
 
 
 def cmd_awake(a, env, out):
@@ -1740,6 +1805,7 @@ def main(argv=None, env=None, out=sys.stdout):
     pr.add_argument("--json", action="store_true")
     aw = sub.add_parser("awake", help=T("help.awake"))
     aw.add_argument("value", nargs="?", choices=("on", "off"))
+    sub.add_parser("restart", help=T("help.restart"))
     ow = sub.add_parser("owner", help=T("help.owner"))
     ow.add_argument("action", choices=("protect", "status", "repair"))
     ow.add_argument("--json", action="store_true")
@@ -1855,6 +1921,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":
         return 0 if is_enabled(env) else 1
+    if a.cmd == "restart":
+        return restart_bridge(env, out)
     if a.cmd == "ensure-window":
         sock = a.socket or hub_socket(env)
         if not sock or not SOCKET_RE.match(sock):
