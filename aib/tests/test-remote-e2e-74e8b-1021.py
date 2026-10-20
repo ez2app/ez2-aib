@@ -144,7 +144,8 @@ class E2E(BASE.Box):
         p = ph.cmd("pending")
         aid = p["ask"]["id"]
         self.assertIn(":", aid, "ask id 有冒號(@9f808 值域已放寬)")
-        st, ag = ph.req("POST", "/answer-grant", {"machine": FP, "seat": CODE, "ask_id": aid, "choice": "1", "nonce": "a" * 24})
+        q = self.RG.question_hash(p["ask"]["prompt"])          # 手機對「顯示給本人看的題目」算
+        st, ag = ph.req("POST", "/answer-grant", {"machine": FP, "seat": CODE, "ask_id": aid, "choice": "1", "q_sha256": q, "nonce": "a" * 24})
         r = ph.cmd("answer", grant=ag, choice="1", ask_id=aid)
         self.assertEqual((r["ok"], r["via"]), (True, "remote-grant"), r)
         self.assertEqual(ph.cmd("answer", grant=ag, choice="1", ask_id=aid)["why"], "grant_replayed", "同一張不能答兩次")

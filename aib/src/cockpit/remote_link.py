@@ -12,7 +12,7 @@
   lock     = 立刻上鎖(收權限方向，不用單子)
   unlocked = 只讀剩幾秒
   pending  = 讀那一席現在有沒有在問(黃框題目 + 選項 + ask_id);視窗開著才給
-  answer   = 回答黃框：每次都要一張回答單(kind=seat-answer,綁 ask_id + choice + 自填字雜湊;@abb89 10-21 裁「視窗不能替 answer 免驗」)
+  answer   = 回答黃框(手機要對顯示的題目算 q_sha256 放進單子;核心對真題目驗，題目超過 4000 字被截 ⇒ 對不上就拒):每次都要一張回答單(kind=seat-answer,綁 ask_id + choice + 自填字雜湊;@abb89 10-21 裁「視窗不能替 answer 免驗」)
   seats    = 這台有哪些席(手機選席用):只給席碼 / 角色 / 廠商 / 視窗剩幾秒;不給專案名、路徑、session
   transcript = 讀那一席的對話(手機看回覆用):也要視窗開著;遮敏感字(seat_panel redact)、每則截 2000 字、一次最多 40 則;
              不給本機路徑、工具輸入 / 結果、thinking(slim_transcript)
@@ -125,7 +125,7 @@ def handle(msg, env=None, act=None):
             res, _rc = seat_panel.pending(seat, state_root=None if env is None else env.get("EZ2_AIB_STATE_ROOT"), env=env)
             ask = res.get("ask") if isinstance(res.get("ask"), dict) else None
             return {"ok": res.get("ok") is True, "action": "pending", "seat": seat, "at_prompt": res.get("at_prompt") is True, "busy": res.get("busy"),
-                    "ask": None if not ask else {"id": ask.get("id"), "type": ask.get("type"), "prompt": str(ask.get("prompt") or "")[:500],
+                    "ask": None if not ask else {"id": ask.get("id"), "type": ask.get("type"), "prompt": str(ask.get("prompt") or "")[:4000],
                                                  "options": [{"key": o.get("key"), "label": str(o.get("label") or "")[:120]} for o in ask.get("options") or []][:9]}}
         off = msg.get("offset")
         sess = msg.get("session")

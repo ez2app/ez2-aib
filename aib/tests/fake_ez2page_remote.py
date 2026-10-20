@@ -8,7 +8,7 @@
     GET  /api/v1/remote/machines        → {machines:[{fp,name}]}
     GET  /api/v1/remote/session         → {csrf_token, reauth_required}
     POST /api/v1/remote/unlock-grant    {machine, seat, minutes, nonce}                     → {grant, sig}
-    POST /api/v1/remote/answer-grant    {machine, seat, ask_id, choice, text_sha256?, nonce} → {grant, sig}
+    POST /api/v1/remote/answer-grant    {machine, seat, ask_id, choice, q_sha256, text_sha256?, nonce} → {grant, sig}
     POST /api/v1/remote/cmd             {machine, op, seat, …}                              → {id}
     GET  /api/v1/remote/result?id=      → 200 {done:true, result} / 202 {done:false}
   本機端(Bearer = 綁定的助理憑證):
@@ -141,8 +141,10 @@ class Fake:
                     return self._json(200, fake.sign({"kind": "seat-unlock", "machine": b["machine"], "seat": b.get("seat"),
                                                      "minutes": int(b.get("minutes") or 10), "nonce": b.get("nonce")}))
                 if u.path == PREFIX + "/answer-grant":
+                    if not re.fullmatch(r"[0-9a-f]{64}", str(b.get("q_sha256") or "")):
+                        return self._json(422, {"code": "ANSWER_INVALID"})
                     g = {"kind": "seat-answer", "machine": b["machine"], "seat": b.get("seat"), "ask_id": b.get("ask_id"),
-                         "choice": b.get("choice"), "nonce": b.get("nonce")}
+                         "choice": b.get("choice"), "nonce": b.get("nonce"), "q_sha256": b["q_sha256"]}
                     if b.get("text_sha256"):
                         g["text_sha256"] = b["text_sha256"]
                     return self._json(200, fake.sign(g))

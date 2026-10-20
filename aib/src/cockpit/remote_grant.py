@@ -35,6 +35,9 @@ MAX_LIFE_S = 300
 ANSWER_LIFE_S = 120
 SKEW_S = 30
 AUTHS = ("passkey", "password", "management_key", "line", "facebook", "google", "apple", "instagram", "threads")   # ez2.page 簽單時的「再驗」方式
+DEFAULT_ALLOW = tuple(a for a in AUTHS if a != "management_key")   # @abb89 10-21 05:4x 裁：管理金鑰登入不能簽解鎖 / 回答單(伺服器擋，本機預設也不收)
+# 題目雜湊的空白字元集(跟 ez2.page 同一份;不用 \s,JS / Python 不一樣):\t\n\v\f\r 空格 U+0085 U+00A0 U+1680 U+2000–200A U+2028 U+2029 U+202F U+205F U+3000
+Q_WS = re.compile("[\t\n\x0b\x0c\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+")
 SEAT_RE = re.compile(r"[0-9a-z]{5}")
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
@@ -78,8 +81,8 @@ def remote_cfg(env=None):
     try:
         d = json.loads(remote_path(env).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"on": False, "max_min": 60, "allow": list(AUTHS)}
-    allow = [a for a in (d.get("allow") or AUTHS) if a in AUTHS] if isinstance(d.get("allow"), list) else list(AUTHS)
+        return {"on": False, "max_min": 60, "allow": list(DEFAULT_ALLOW)}
+    allow = [a for a in (d.get("allow") or DEFAULT_ALLOW) if a in AUTHS] if isinstance(d.get("allow"), list) else list(DEFAULT_ALLOW)
     try:
         mx = max(1, min(60, int(d.get("max_min") or 60)))
     except (TypeError, ValueError):
@@ -209,14 +212,29 @@ def verify(grant, seat, env=None, now=None, keys=None, machine=None):
     return max(1, min(remote_cfg(env)["max_min"], g["minutes"])), None
 
 
+def question_norm(text):
+    """NFC → 連續空白合成一個空格 → 去頭尾(ez2.page 同規則，測試向量兩邊各放一份)"""
+    import unicodedata
+    return Q_WS.sub(" ", unicodedata.normalize("NFC", str(text or ""))).strip(" ")
+
+
+def question_hash(text):
+    import hashlib
+    return hashlib.sha256(question_norm(text).encode("utf-8")).hexdigest()
+
+
 def text_hash(text):
     import hashlib
     return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
 
 
-def verify_answer(grant, seat, ask_id, choice, free_text=None, env=None, now=None, keys=None, machine=None):
-    """回答單(@abb89 10-21 裁：每答一次一張、kind=seat-answer、綁 ask_id + choice + 自填字 sha256、exp ≤ 2 分鐘;視窗不能替 answer 免驗)⇒ (True, None) 或 (None, why)"""
+def verify_answer(grant, seat, ask_id, choice, free_text=None, env=None, now=None, keys=None, machine=None, question=None):
+    """回答單(@abb89 10-21 裁：每答一次一張、kind=seat-answer、綁 ask_id + choice + 自填字 sha256、exp ≤ 2 分鐘;視窗不能替 answer 免驗)⇒ (True, None) 或 (None, why)
+    question = 核心自己從那一席抓的真題目;單子的 q_sha256 要等於它的雜湊(05:4x 裁：防本機在中繼塞假題目讓本人核准)"""
     def same_answer(g):
+        q = g.get("q_sha256")
+        if not isinstance(q, str) or not re.fullmatch(r"[0-9a-f]{64}", q) or question is None or q != question_hash(question):
+            return "question_mismatch"
         if g.get("ask_id") != ask_id or g.get("choice") != str(choice):
             return "wrong-answer"
         want = text_hash(free_text) if free_text else None
