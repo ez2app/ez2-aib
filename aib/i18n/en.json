@@ -4808,5 +4808,14 @@
   "aib.secret.btn_ok": "Save",
   "aib.secret.btn_cancel": "Cancel",
   "aib.rightai.mouse_hint1": "🖱 Can't click?",
-  "aib.rightai.mouse_hint2": "View→Allow Mouse Reporting"
+  "aib.rightai.mouse_hint2": "View→Allow Mouse Reporting",
+  "aib.vault_cli.help_mobile_license": "put a copy of this machine's license in the vault (.ez2/license.json) for the Obsidian labels plugin on phones to verify",
+  "aib.vault_cli.help_mobile_remove": "remove that license from the vault (phones turn off at their next check)",
+  "aib.vault_cli.err_mobile_no_license": "this machine has no license file, so there is nothing to put in the vault",
+  "aib.vault_cli.err_mobile_unsigned": "the license is not signed by a trusted key, so phones could not verify it; nothing was written",
+  "aib.vault_cli.err_mobile_bound": "this license is bound to machines and phones cannot check a machine id, so nothing was written; phones need an unbound license",
+  "aib.vault_cli.err_mobile_symlink": "{path} is a symbolic link; not followed, nothing written",
+  "aib.vault_cli.mobile_done": "put in the vault: {path} (expires {expires}); once the vault syncs to the phone, the labels plugin there turns on",
+  "aib.vault_cli.mobile_removed": "removed {path} from the vault",
+  "aib.vault_cli.mobile_absent": "{path} was not in the vault"
 }

@@ -708,6 +708,43 @@ def _adopt_folder(vault: Path, rel: str) -> dict:
     return {"path": rel, "new_path": new_path, "folderId": new_id, "title": title}
 
 
+# ---------------------------------------------------------------- 手機授權
+MOBILE_LICENSE = ".ez2/license.json"
+
+
+def mobile_license(vault: Path, remove: bool = False, env=None) -> dict:
+    """把這台的授權複製一份到 <vault>/.ez2/license.json(10-20 維護者選方案 A):手機上的 Obsidian 標題外掛
+    沒有 aib,隨 Vault 同步拿到這份、自己驗簽章。只收受信鑰匙簽的、沒綁機器的授權(手機驗不了機器碼);
+    內容原樣照抄(簽章蓋的是內容,不是排版)。remove ⇒ 從 Vault 拿掉(手機下次檢查就關)。
+    授權檔跟著 Vault 走:Vault 給誰、授權就給誰,這跟把授權檔交給對方一樣。"""
+    dest = Path(vault) / MOBILE_LICENSE
+    with _locked(vault):
+        if remove:
+            if dest.is_symlink() or dest.exists():
+                dest.unlink()
+                return {"path": MOBILE_LICENSE, "removed": True}
+            return {"path": MOBILE_LICENSE, "removed": False}
+        sys.path.insert(0, str(ROOT / "src"))
+        from entitlement.signing import PREFIX, verify_object, OK
+        from entitlement.store import read_license_obj
+        obj = read_license_obj(env=env)
+        if not isinstance(obj, dict):
+            raise VaultError(T("err_mobile_no_license"))
+        if not str(obj.get("signature") or "").startswith(PREFIX) or verify_object(obj) != OK:
+            raise VaultError(T("err_mobile_unsigned"))
+        if obj.get("devices") is not None or obj.get("activation_url"):
+            raise VaultError(T("err_mobile_bound"))
+        text = json.dumps(obj, ensure_ascii=False, indent=1) + "\n"
+        if dest.is_symlink():
+            raise VaultError(T("err_mobile_symlink", {"path": MOBILE_LICENSE}))
+        same = dest.is_file() and dest.read_text(encoding="utf-8") == text
+        if not same:
+            tmp = dest.with_name(".license.json.tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, dest)
+        return {"path": MOBILE_LICENSE, "changed": not same, "expires_at": obj.get("expires_at")}
+
+
 # ---------------------------------------------------------------- CLI
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="aib vault", description=T("help_desc"))
@@ -729,7 +766,9 @@ def main(argv=None) -> int:
     k = sub.add_parser("mkdir", help=T("help_mkdir"))
     k.add_argument("--title", required=True, help=T("help_mkdir_title"))
     k.add_argument("--parent", default="", help=U.T("help_folder_parent"))
-    for p in (n, d, k, a):
+    m = sub.add_parser("mobile-license", help=T("help_mobile_license"))
+    m.add_argument("--remove", action="store_true", help=T("help_mobile_remove"))
+    for p in (n, d, k, a, m):
         p.add_argument("--vault", default="", help=T("help_vault"))
         p.add_argument("--json", action="store_true", help=T("help_json"))
     args = ap.parse_args(argv)
@@ -744,6 +783,14 @@ def main(argv=None) -> int:
         if args.cmd == "mkdir":
             res = mkdir(vault, args.title, args.parent)
             print(json.dumps(res, ensure_ascii=False) if args.json else T("mkdir_done", {"title": res["title"], "path": res["folderPath"]}))
+            return 0
+        if args.cmd == "mobile-license":
+            res = mobile_license(vault, args.remove)
+            if args.json:
+                print(json.dumps(res, ensure_ascii=False))
+            else:
+                print(T("mobile_removed" if res.get("removed") else ("mobile_absent" if args.remove else "mobile_done"),
+                        {"path": res["path"], "expires": res.get("expires_at") or "-"}))
             return 0
         if args.cmd == "append":
             body = args.body
