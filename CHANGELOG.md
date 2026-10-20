@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.28
+
+- **`aib plugins install <folder | .tgz | .zip | https://…>`**: one command to install a plugin. It checks the trusted-key signature, every file hash and the required core version before anything lands in the plugins folder; archives with paths that climb up, links, or more than 64 MB are refused. Installing again replaces (same command to upgrade). It also tells you whether the plugin's license is active.
+- **`aib license install <file>`**: puts a signed license file in place (mode 0600); the old one is backed up and only the two newest backups are kept. A bad signature or an expired file leaves the old one untouched.
+- **Plugins find the core**: running a plugin now always passes the location of the aib that is running (AIB_CORE_DIR, EZ2_AIB_ROOT), so plugins started from a source checkout, over ssh or by a boot item no longer show an empty seat list because they could not find the cockpit modules.
+- **`aib vault mobile-license`**: copies a signed, non-device-bound license into the vault's `.ez2/license.json` so the Obsidian title plugin on a phone can verify it; `--remove` takes it out.
+
 ## 0.1.27
 
 - **Friend visit snapshots can carry travel collections**: how many souvenirs, how many stamp sets, which ones are on display (up to 6), and which continents are complete; only souvenir IDs and numbers, no seats, dates, or places visited. Checked when sending and again when receiving; anything invalid drops just this field.
