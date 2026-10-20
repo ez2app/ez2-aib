@@ -7,6 +7,7 @@
                                                   真人 N 分鐘沒再下指令才上鎖;N 預設 window.json / 10)
   aib seat unlock <席碼> [--min N]                 先解鎖不送字(Touch ID;一樣是閒置 N 分鐘才上鎖)
   aib seat lock   <席碼>                           馬上上鎖(不用 Touch ID;上鎖只會更安全)
+  aib seat unlocked <席碼>                         只讀：視窗還剩幾秒、閒置幾分鐘上鎖(頁面重整後顯示用)
   aib seat answer <席碼> <key|yes|no> [--ask-id ID] [--text …]   回答那一席正在問的(每次 Touch ID)
   aib seat stop   <席碼> [--hard]                 軟停 = Esc;硬停 = Ctrl-C(每次 Touch ID)
 
@@ -316,6 +317,18 @@ def do_unlock(code, minutes=None, env=None, touchid=None, touchid_available=None
     return out, 0
 
 
+def do_unlocked(code, env=None):
+    env = dict(os.environ if env is None else env)
+    left = unlock_left(code, env)
+    idle = 0
+    if left > 0:
+        try:
+            idle = int(json.loads(unlock_path(code, env).read_text(encoding="utf-8")).get("idle_s") or 0)
+        except (OSError, ValueError, AttributeError, TypeError):
+            idle = 0
+    return _out(True, code, "unlocked", via="none", unlock_left_s=left, idle_s=idle, default_min=unlock_minutes(env)), 0
+
+
 def do_lock(code, env=None):
     env = dict(os.environ if env is None else env)
     out = _out(True, code, "lock", via="none", unlock_left_s=0)
@@ -435,6 +448,8 @@ def main(argv=None, out=sys.stdout):
     u.add_argument("--min", type=int)
     lk = sub.add_parser("lock")
     lk.add_argument("code")
+    st = sub.add_parser("unlocked")
+    st.add_argument("code")
     a = sub.add_parser("answer")
     a.add_argument("code")
     a.add_argument("choice")
@@ -443,7 +458,7 @@ def main(argv=None, out=sys.stdout):
     s = sub.add_parser("stop")
     s.add_argument("code")
     s.add_argument("--hard", action="store_true")
-    for p in (i, a, s, u, lk):
+    for p in (i, a, s, u, lk, st):
         p.add_argument("--json", action="store_true")
     ns = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
     if ns.cmd == "input":
@@ -459,6 +474,8 @@ def main(argv=None, out=sys.stdout):
         res, rc = do_unlock(ns.code, ns.min)
     elif ns.cmd == "lock":
         res, rc = do_lock(ns.code)
+    elif ns.cmd == "unlocked":
+        res, rc = do_unlocked(ns.code)
     elif ns.cmd == "answer":
         res, rc = do_answer(ns.code, ns.choice, ask_id=ns.ask_id, free_text=ns.text)
     elif ns.cmd == "stop":

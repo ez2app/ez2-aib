@@ -9,7 +9,7 @@ U2 --unlock-min 3 ⇒ Touch ID 那句帶「3 分鐘」、記錄 idle_s = 180;超
 U3 aib seat unlock:彈一次 Touch ID ⇒ 之後打字不彈;開著時再 unlock 不彈;lock ⇒ 下次打字又彈
 U4 unlock 擋席位呼叫;Touch ID 取消 / 不能用 ⇒ 拒、沒寫視窗;0 分鐘 ⇒ 拒
 U5 過期的視窗不會被推回來(refresh 回 0、下次照彈)
-U6 入口:aib seat lock 回 ok;aib seat unlock 在 AIB_TOUCHID=0 ⇒ rc 3
+U6 入口:aib seat lock 回 ok;aib seat unlocked 回剩幾秒 + idle_s(不彈 Touch ID);aib seat unlock 在 AIB_TOUCHID=0 ⇒ rc 3
 刀(複本):K1 送出後不推 until ⇒ U1 紅;K2 unlock 不驗 Touch ID ⇒ U4 紅
 """
 import importlib.util
@@ -76,10 +76,16 @@ class Idle(BASE.Box):
         res, rc = self.act(self.SA.do_unlock, CODE, 5)
         self.assertEqual((rc, res["via"], res["unlock_left_s"]), (0, "unlock-window", 300))
         self.assertEqual(len(self.asked), 1, "開著時不重彈")
+        st, rc = self.SA.do_unlocked(CODE)
+        self.assertEqual((rc, st["idle_s"]), (0, 300))
+        self.assertGreater(st["unlock_left_s"], 290)
         res, rc = self.SA.do_lock(CODE)
         self.assertEqual((rc, res["was_open"]), (0, True))
         self.act(self.SA.do_input, CODE, "再一句", screen=PROMPT)
         self.assertEqual(len(self.asked), 2, "上鎖後又要 Touch ID")
+        self.SA.do_lock(CODE)
+        st, rc = self.SA.do_unlocked(CODE)
+        self.assertEqual((st["unlock_left_s"], st["idle_s"], st["default_min"]), (0, 0, 10))
 
     def test_u4_unlock_gates(self):
         env = dict(os.environ, CLAUDE_CODE_SESSION_ID="x")
@@ -106,6 +112,8 @@ class Idle(BASE.Box):
         p = subprocess.run(["bash", str(COCKPIT / "aib"), "seat", "lock", CODE, "--json"], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr[-300:])
         self.assertEqual(json.loads(p.stdout.strip().splitlines()[-1])["action"], "lock")
+        p = subprocess.run(["bash", str(COCKPIT / "aib"), "seat", "unlocked", CODE, "--json"], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        self.assertEqual((p.returncode, json.loads(p.stdout.strip().splitlines()[-1])["unlock_left_s"]), (0, 0), p.stderr[-300:])
         env = dict(os.environ, AIB_TOUCHID="0")
         p = subprocess.run(["bash", str(COCKPIT / "aib"), "seat", "unlock", CODE, "--min", "5", "--json"], capture_output=True, text=True, timeout=120, env=env, stdin=subprocess.DEVNULL)
         self.assertEqual(p.returncode, 3, p.stdout + p.stderr[-300:])
