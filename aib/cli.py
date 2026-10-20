@@ -121,6 +121,8 @@ def main():
         script, plugin, why = aib_plugins.find_command(sys.argv[1])
         if script is not None:
             runner = [sys.executable] if str(script).endswith(".py") else ["/bin/bash"]
+            # 10-20:從原始碼跑(bin/aib)時,新行程 import 不到 aib ⇒ 外掛找不到核心;告訴它核心在哪
+            os.environ.setdefault("AIB_CORE_DIR", HERE)
             os.execv(runner[0], runner + [str(script)] + sys.argv[2:])
         if plugin is not None and not aib_plugins.overrides_builtin(plugin):
             sys.stderr.write("aib: '%s' comes from plugin '%s', which cannot run here (%s)\n" % (sys.argv[1], plugin, why))
