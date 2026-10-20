@@ -4808,5 +4808,14 @@
   "aib.secret.btn_ok": "保存",
   "aib.secret.btn_cancel": "キャンセル",
   "aib.rightai.mouse_hint1": "🖱 クリックできない?",
-  "aib.rightai.mouse_hint2": "表示→マウス報告を許可"
+  "aib.rightai.mouse_hint2": "表示→マウス報告を許可",
+  "aib.vault_cli.help_mobile_license": "この端末のライセンスを Vault(.ez2/license.json)に複製し、スマホの Obsidian ラベルプラグインが署名を検証できるようにします",
+  "aib.vault_cli.help_mobile_remove": "Vault からそのライセンスを削除します(スマホは次の確認で停止)",
+  "aib.vault_cli.err_mobile_no_license": "この端末にライセンスファイルがないため、Vault に置くものがありません",
+  "aib.vault_cli.err_mobile_unsigned": "ライセンスに信頼された鍵の署名がないため、スマホで検証できません。書き込んでいません",
+  "aib.vault_cli.err_mobile_bound": "このライセンスは端末に紐づいており、スマホでは端末 ID を確認できないため書き込んでいません。スマホには紐づけなしのライセンスが必要です",
+  "aib.vault_cli.err_mobile_symlink": "{path} はシンボリックリンクのため、たどらず書き込んでいません",
+  "aib.vault_cli.mobile_done": "Vault に置きました:{path}(期限 {expires})。Vault がスマホに同期されると、スマホのラベルプラグインが有効になります",
+  "aib.vault_cli.mobile_removed": "Vault から {path} を削除しました",
+  "aib.vault_cli.mobile_absent": "Vault に {path} はありませんでした"
 }

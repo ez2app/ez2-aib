@@ -4808,5 +4808,14 @@
   "aib.secret.btn_ok": "저장",
   "aib.secret.btn_cancel": "취소",
   "aib.rightai.mouse_hint1": "🖱 클릭이 안 되면",
-  "aib.rightai.mouse_hint2": "보기→마우스 보고 허용"
+  "aib.rightai.mouse_hint2": "보기→마우스 보고 허용",
+  "aib.vault_cli.help_mobile_license": "이 기기의 라이선스를 Vault(.ez2/license.json)에 복사해 휴대폰의 Obsidian 라벨 플러그인이 서명을 검증하게 합니다",
+  "aib.vault_cli.help_mobile_remove": "Vault 에서 그 라이선스를 제거합니다(휴대폰은 다음 확인 때 꺼짐)",
+  "aib.vault_cli.err_mobile_no_license": "이 기기에 라이선스 파일이 없어 Vault 에 넣을 것이 없습니다",
+  "aib.vault_cli.err_mobile_unsigned": "라이선스에 신뢰된 키의 서명이 없어 휴대폰에서 검증할 수 없습니다. 쓰지 않았습니다",
+  "aib.vault_cli.err_mobile_bound": "이 라이선스는 기기에 묶여 있어 휴대폰에서 기기 ID 를 확인할 수 없으므로 쓰지 않았습니다. 휴대폰에는 기기에 묶이지 않은 라이선스가 필요합니다",
+  "aib.vault_cli.err_mobile_symlink": "{path} 은(는) 심볼릭 링크라 따라가지 않고 쓰지 않았습니다",
+  "aib.vault_cli.mobile_done": "Vault 에 넣었습니다: {path}(만료 {expires}). Vault 가 휴대폰에 동기화되면 그곳의 라벨 플러그인이 켜집니다",
+  "aib.vault_cli.mobile_removed": "Vault 에서 {path} 을(를) 제거했습니다",
+  "aib.vault_cli.mobile_absent": "Vault 에 {path} 이(가) 없었습니다"
 }

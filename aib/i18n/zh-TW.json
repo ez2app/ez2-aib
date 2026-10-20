@@ -4808,5 +4808,14 @@
   "aib.secret.btn_ok": "儲存",
   "aib.secret.btn_cancel": "取消",
   "aib.rightai.mouse_hint1": "🖱 點不到席位?",
-  "aib.rightai.mouse_hint2": "顯示方式→允許滑鼠回報"
+  "aib.rightai.mouse_hint2": "顯示方式→允許滑鼠回報",
+  "aib.vault_cli.help_mobile_license": "把這台的授權放一份進 Vault(.ez2/license.json),給手機上的 Obsidian 標題外掛驗章",
+  "aib.vault_cli.help_mobile_remove": "從 Vault 拿掉那份授權(手機下次檢查就關)",
+  "aib.vault_cli.err_mobile_no_license": "這台沒有授權檔,沒有東西可以放進 Vault",
+  "aib.vault_cli.err_mobile_unsigned": "授權沒有受信鑰匙的簽章,手機驗不過,沒有放",
+  "aib.vault_cli.err_mobile_bound": "這份授權綁了機器,手機驗不了機器碼,沒有放;要給手機用請發不綁機器的授權",
+  "aib.vault_cli.err_mobile_symlink": "{path} 是符號連結,不跟、沒有寫",
+  "aib.vault_cli.mobile_done": "已放進 Vault:{path}(到期 {expires});Vault 同步到手機後,手機上的標題外掛就會開",
+  "aib.vault_cli.mobile_removed": "已從 Vault 拿掉 {path}",
+  "aib.vault_cli.mobile_absent": "Vault 裡本來就沒有 {path}"
 }
