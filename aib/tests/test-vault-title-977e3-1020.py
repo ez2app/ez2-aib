@@ -5,8 +5,9 @@ T1 絕對路徑:筆記 / 巢狀資料夾 / 資料夾本身 ⇒ title_path、kind
 T2 相對路徑:Vault 根、索引沒有的段落照原名、.ez2 底下不給 obsidian 連結
 T3 Vault 外:絕對路徑在外、../ 跳出去、Vault 裡的符號連結指到外面 ⇒ in_vault false,不給標題
 T4 標題只取 labels:筆記檔裡寫別的 title 不採用、檔不在也照給;方向字元 / 零寬字從標題拿掉
-T5 CLI:--json rc 0;--stdin;沒路徑 rc 2;超過上限 rc 2;沒授權(obsidian-labels 加購)rc 3;不寫任何檔
-刀(複本,走 run_guarded):K1 不擋 ../ ⇒ T3 紅;K2 不解符號連結 ⇒ T3 紅;K3 不清隱形字 ⇒ T4 紅
+T5 CLI:--json rc 0;--stdin;沒路徑 rc 2;超過上限 rc 2;不寫任何檔
+T6 沒有 obsidian-labels 授權也能查(10-20 @abb89 裁:面板是免費核心);mkdir 等其他子指令照舊 rc 3
+刀(複本,走 run_guarded):K1 不擋 ../ ⇒ T3 紅;K2 不解符號連結 ⇒ T3 紅;K3 不清隱形字 ⇒ T4 紅;K4 title 也驗授權 ⇒ T6 紅
 I1 新鍵四語都有、英文值沒有中日韓字、佔位符一致
 測試明寫 EZ2_AIB_STATE_ROOT、EZ2_AIB_HOME 與暫存 Vault,不碰真庫。
 """
@@ -107,11 +108,18 @@ class TestTitle(Base):
         with mock.patch.object(VC, "licensed", return_value=(True, "addon")), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(VC.main(["title"]), 2)
             self.assertEqual(VC.main(["title"] + ["x"] * (VC.TITLE_MAX + 1)), 2)
-        with mock.patch.object(VC, "licensed", return_value=(False, "addon-missing:obsidian-labels")), \
-                contextlib.redirect_stdout(io.StringIO()) as o:
-            self.assertEqual(VC.main(["title", WORK, "--json"]), 3)
-        self.assertFalse(json.loads(o.getvalue())["licensed"])
         self.assertEqual(snapshot(self.v), before, "title is read-only")
+
+    def test_T6_free_without_license(self):
+        """對話面板是免費核心:沒有 obsidian-labels 也查得到;其他子指令照舊 rc 3。"""
+        with mock.patch.object(VC, "licensed", return_value=(False, "addon-missing:obsidian-labels")):
+            with contextlib.redirect_stdout(io.StringIO()) as o:
+                self.assertEqual(VC.main(["title", WORK, "--json"]), 0)
+            self.assertEqual(json.loads(o.getvalue())["items"][0]["title"], "06-工作區 Work")
+            with contextlib.redirect_stdout(io.StringIO()) as o:
+                self.assertEqual(VC.main(["mkdir", "--title", "x", "--json"]), 3)
+            self.assertFalse(json.loads(o.getvalue())["licensed"])
+        self.assertFalse(any(p.name == "x" for p in self.v.iterdir()))
 
 
 class Knife(unittest.TestCase):
@@ -131,6 +139,11 @@ class Knife(unittest.TestCase):
     def test_K3_invisible_kept(self):
         self._knife('INVISIBLE_RE.sub("", str(i18n.get(U.LOC) or entry.get("title") or ""))',
                     'str(i18n.get(U.LOC) or entry.get("title") or "")', "TestTitle.test_T4_labels_only_and_invisible_stripped")
+
+
+    def test_K4_title_gated(self):
+        self._knife('ok, why = (True, "free") if args.cmd == "title" else licensed()', "ok, why = licensed()",
+                    "TestTitle.test_T6_free_without_license")
 
 
 class TestI18n(unittest.TestCase):

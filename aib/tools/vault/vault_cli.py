@@ -37,6 +37,7 @@
         (0.1.29)只讀:把 Vault 裡的路徑(fld_xxx/…/<uid>.md)換成標題路徑(06-工作區 Work/…/筆記標題),
         附 obsidian://open 連結;對話面板用它把紀錄裡的路徑顯示成看得懂的名字。絕對路徑或 Vault 內相對路徑都收,
         Vault 外的回 in_vault false。標題只從 labels.json 取,不開筆記本身(不讀正文)。--stdin 每行一個路徑。
+        這支不驗 obsidian-labels 授權(對話面板是免費核心);下面的離開碼 3 只適用其他子指令。
 離開碼:0 沒問題 / 已修好、1 有問題(只列沒修)、2 用法或錯誤、3 沒有授權。
 """
 from __future__ import annotations
@@ -797,7 +798,8 @@ def main(argv=None) -> int:
         p.add_argument("--vault", default="", help=T("help_vault"))
         p.add_argument("--json", action="store_true", help=T("help_json"))
     args = ap.parse_args(argv)
-    ok, why = licensed()
+    # title 只讀 labels.json、給免費的對話面板用 ⇒ 不驗 obsidian-labels(10-20 @abb89 裁);其餘子指令照舊要授權
+    ok, why = (True, "free") if args.cmd == "title" else licensed()
     if not ok:
         msg = {"licensed": False, "addon": ADDON, "why": why}
         print(json.dumps(msg) if args.json else T("err_not_licensed", {"addon": ADDON, "why": why}),
