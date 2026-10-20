@@ -2116,6 +2116,8 @@
   "aib.dmctl.queued_sender_fallback": "待ちの一件の元の送り手({label})では正しい見出しを作れない、配達者から導いた送り手を従来どおり使う",
   "aib.dmctl.queued": "待ちに入れた。まだ相手の入力欄には届いていない。",
   "aib.dmqueue.hold_notice": "入力欄に届いていないメッセージが {n} 件あります(人の確認待ち、新着 {new} 件)。確認:aib dm-queue list --seat {seat}",
+  "aib.dmqueue.hold_sender_im": "外部 {net} #{tag}",
+  "aib.dmqueue.hold_sender_seat": "外部 aib 席 #{tag}",
   "aib.dmctl.resend_queued": "受信席が忙しく、1 回の再送でも入らなかった。待ちに入れた、受信席が空いたら送る(queue_id={id}、再送不要)。",
   "aib.dmctl.hold_notify_idle": "人の確認待ちに回した:自動では再送しない。受信席が空いたときに通知が届く。",
   "aib.dmctl.hold_notify_none": "人の確認待ちに回した:自動では再送しない。この艙はメッセージ待ちが無効なので受信席には通知が**届かない**。直接伝えてください。",

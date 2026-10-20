@@ -186,6 +186,7 @@ CELL_RE = __import__("re").compile(r"^[a-z0-9-]{1,24}:[0-9]{1,3}:[0-9]{1,3}:(s[0
 MEET_GROUPS_MAX, MEET_SIZE_MAX = 8, 16
 DECOR_TYPE_RE = __import__("re").compile(r"^[a-z]{1,24}\Z")
 DECOR_SSR_MAX, DECOR_SR_MAX = 12, 999
+DECOR_TITLES = ("plant", "furn", "lamp", "wall", "drink", "desk", "fun")   # 收藏稱號(@74e8b 10-19),只准這 7 個
 
 
 def clean_use(v):
@@ -200,8 +201,8 @@ def clean_cell(v):
 
 
 def clean_decor(v):
-    """收藏擺設摘要 {"ssr": [type…], "sr": int}(@74e8b 10-19):ssr 小寫字母 1–24 字、去重後最多 12 個;
-    sr 0–999 整數。只帶這兩鍵;任何一處不合 ⇒ None(整個不帶)。"""
+    """收藏擺設摘要 {"ssr": [type…], "sr": int, "titles": [稱號…]}(@74e8b 10-19):ssr 小寫字母 1–24 字、去重後最多 12 個;
+    sr 0–999 整數;ssr / sr 任何一處不合 ⇒ None(整個不帶)。titles 只准 DECOR_TITLES 裡的、去重;不合只丟 titles。"""
     if not isinstance(v, dict):
         return None
     ssr, sr = v.get("ssr"), v.get("sr")
@@ -210,7 +211,11 @@ def clean_decor(v):
     ssr = list(dict.fromkeys(ssr))
     if len(ssr) > DECOR_SSR_MAX or type(sr) is not int or not 0 <= sr <= DECOR_SR_MAX:
         return None
-    return {"ssr": ssr, "sr": sr}
+    out = {"ssr": ssr, "sr": sr}
+    titles = v.get("titles")
+    if isinstance(titles, list) and titles and all(isinstance(t, str) and t in DECOR_TITLES for t in titles):
+        out["titles"] = list(dict.fromkeys(titles))
+    return out
 
 
 def clean_meet(v, seat_codes):

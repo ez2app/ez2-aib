@@ -2116,6 +2116,8 @@
   "aib.dmctl.queued_sender_fallback": "排隊那一則的原寄件人({label})組不出合格抬頭,照舊用投遞者推導的寄件人",
   "aib.dmctl.queued": "已排入暫存,尚未送到對方輸入框。",
   "aib.dmqueue.hold_notice": "你有 {n} 封信沒送進框(人審,新增 {new} 封),看:aib dm-queue list --seat {seat}",
+  "aib.dmqueue.hold_sender_im": "外部 {net} #{tag}",
+  "aib.dmqueue.hold_sender_seat": "外部 aib 席 #{tag}",
   "aib.dmctl.resend_queued": "收件席忙,重送一次仍沒進框;已排入佇列,收件席空了會送(queue_id={id},不必再重送)。",
   "aib.dmctl.hold_notify_idle": "轉人審:這封不會自動再送;收件席空閒時會收到提示。",
   "aib.dmctl.hold_notify_none": "轉人審:這封不會自動再送;本艙沒開信件排隊,收件席**不會**收到提示,請直接告訴對方。",
