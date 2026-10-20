@@ -106,6 +106,11 @@ LAYOUT = (
      "收款。定 provider 後才填。",
      (("STRIPE_SECRET_KEY", "Stripe 密鑰", "payment", "payment", False),
       ("STRIPE_WEBHOOK_SECRET", "Stripe webhook 簽名", "payment", "payment", False))),
+    # 10-21 @ee4f8(PROPOSAL-gaps E):原本沒有 Cloudflare 類,`aib secret ask CF_WORKER_TOKEN` 回 unknown_name。
+    # CF_ / CLOUDFLARE_ 開頭的名字都落這一檔;伺服器專用的 token 用 --remote-only 送,不佔這格。
+    ("cloudflare.env", "cloudflare", "type",
+     "Cloudflare。CF_TOKEN_MINTER 只給「API Tokens Write」,aib cf grant 用它現開短命 token;不放 global key。",
+     (("CF_TOKEN_MINTER", "Cloudflare 母鑰(只能開 token)", "cf-grant", "cf-grant", False),)),
     ("social/line.env", "line", "social",
      "LINE 官方帳號。在 LINE Developers 的 Channel 頁複製。多帳號:LINE_SHOP2_CHANNEL_SECRET。",
      (("LINE_CHANNEL_SECRET", "Messaging API 頻道密鑰", "support-intake", "support-intake", True),

@@ -49,6 +49,9 @@ _HOST = re.compile(r"^[A-Za-z0-9._@-]{1,128}$")
 _PATH = re.compile(r"^/[A-Za-z0-9._/-]{1,255}$")
 _OWNER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _HOSTNAME = re.compile(r"^[A-Za-z0-9._:%-]{1,253}$")   # resolve() 解出的 hostname(含 IPv6)
+# 叫不出視窗的 AppleScript 錯誤碼(10-21 @ee4f8:AI 席的 shell 跑 secret ask 只回 error,本人不知道要自己 ! 跑)。
+# -1713 = 不准跟使用者互動、-1743 = 沒授權送 Apple 事件、-10827 = 不在圖形登入工作階段。只認這幾個;其他照舊 error,不猜。
+NO_GUI_CODES = ("-1713", "-1743", "-10827")
 
 JXA = r"""
 var app = Application.currentApplication();
@@ -59,7 +62,8 @@ try {
   var r = app.displayDialog(__PROMPT__, {withTitle: __TITLE__, defaultAnswer: "", hiddenAnswer: true,
     buttons: [__CANCEL__, __OK__], defaultButton: __OK__, cancelButton: __CANCEL__, givingUpAfter: __WAIT__});
   out = r.gaveUp ? {ok: false, why: "timeout"} : {ok: true, nonce: __NONCE__, value: r.textReturned};
-} catch (e) { out = {ok: false, why: (String(e).indexOf("-128") >= 0 || String(e).indexOf("cancel") >= 0) ? "cancel" : "error"}; }
+} catch (e) { out = {ok: false, why: (String(e).indexOf("-128") >= 0 || String(e).indexOf("cancel") >= 0) ? "cancel" : "error",
+                     code: (e && e.errorNumber !== undefined) ? String(e.errorNumber) : ""}; }
 JSON.stringify(out);
 """
 
@@ -110,7 +114,10 @@ def dialog(prompt, title, run=subprocess.run, wait=WAIT_S):
     except ValueError:
         out = None
     if not isinstance(out, dict):
-        return {"ok": False, "why": "unreadable"}
+        err = str(getattr(r, "stderr", "") or "")
+        return {"ok": False, "why": "no_gui" if any("(%s)" % c in err for c in NO_GUI_CODES) else "unreadable"}
+    if out.get("ok") is not True and out.get("why") == "error" and str(out.get("code") or "") in NO_GUI_CODES:
+        return {"ok": False, "why": "no_gui"}
     if out.get("ok") is True and out.get("nonce") == nonce and isinstance(out.get("value"), str):
         return {"ok": True, "why": "ok", "value": out["value"].strip()}
     if out.get("ok") is True:
@@ -229,7 +236,7 @@ def push(name, value, host, path, owner=None, run=subprocess.run, pin=None):
 
 
 def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_available=None,
-            opener=None, ssh_run=None, getpass_fn=None, isatty=None, out=sys.stdout):
+            opener=None, ssh_run=None, getpass_fn=None, isatty=None, out=sys.stdout, err=sys.stderr):
     import argparse
     import aib_secrets as S
     import secret_collect as SC
@@ -268,6 +275,8 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
     value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty)
     if value is None:
         res["why"] = why
+        if why == "no_gui":
+            err.write(_t("aib.secret.no_gui_hint") + "\n")
         return done(2)
     try:
         if a.check:

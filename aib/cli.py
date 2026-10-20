@@ -7,6 +7,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib ship <subcommand> …     pre-push check, package, release (see `aib ship --help`)
     aib support [--confirm]     collect a de-identified bug report pack (nothing is sent; you attach it to an issue)
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
+    aib cf grant <zone> <perm> --push host:/path   Touch ID, then a minutes-long, IP-locked Cloudflare token (`aib cf --help`)
     aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
     aib uninstall [--all] [--yes]   remove aib from this computer (lists first; --yes removes; --all also records)

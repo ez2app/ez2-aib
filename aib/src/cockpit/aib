@@ -745,6 +745,12 @@ if [ "${1:-}" = "secret" ]; then
   exec "$T_PY3" "$HERE/secret_ask.py" "$@"
 fi
 
+# aib cf grant / list / revoke(維護者 10-21):每次動 Cloudflare 先 Touch ID,再現開限網域、限權限、鎖 IP、幾分鐘就過期的 token。委派 cf_grant.py。
+if [ "${1:-}" = "cf" ]; then
+  shift
+  exec "$T_PY3" "$HERE/cf_grant.py" "$@"
+fi
+
 # 10-14 aib-languages:看 / 切整台 AIB 的語言(設定檔,所有每輪重算的畫面跟著換;不碰 tmux 環境)
 if [ "${1:-}" = "lang" ]; then
   shift
