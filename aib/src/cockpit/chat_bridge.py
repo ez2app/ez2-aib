@@ -140,7 +140,12 @@ def _pid_is_bridge(pid):
         out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
         return False
-    return "chat_bridge.py" in out and " run" in out
+    return _cmdline_is_bridge(out)
+
+
+def _cmdline_is_bridge(cmdline):
+    """命令列是轉接程式本尊(run 或開機項的 boot-run)。"""
+    return "chat_bridge.py" in cmdline and (" run" in cmdline or " boot-run" in cmdline)
 
 
 # ── 常駐 ──
@@ -166,6 +171,7 @@ def run(env=None, tick=None, max_ticks=None, out=sys.stdout):
 
     def _on_term(_sig, _frm):
         stop["now"] = True
+        _BOOT_TERM["got"] = True            # 開機項的迴圈看這個決定退出(讓 launchd 重拉)還是繼續
     signal.signal(signal.SIGTERM, _on_term)
     signal.signal(signal.SIGINT, _on_term)
 
@@ -208,6 +214,137 @@ def run(env=None, tick=None, max_ticks=None, out=sys.stdout):
 
 
 IMPORT_EVERY = 1.0                         # 秒;全球來信匯入佇列(寄件端等 delivered 最多 20 秒,不能等一整輪)
+
+# ── 開機自起(第二波 #6 / NOTE #22;10-21 @abb89 裁)──────────────────────────────────────────
+# 轉接程式脫離艙:登入後 launchd 直接跑 `chat_bridge.py boot-run`,不開艙、不開席(Andy 10-10「開機只顯示選單」那條不動)。
+# 只有 `aib chat install-boot` 明確裝才有(預設不裝)、`uninstall-boot` 可拆。單例靠現有 bridge.lock:艙視窗那支起來時
+# 若開機項已當班,它就待命(standby),反之亦然;艙沒開時當班的只收信進待審、發在線 / 名冊,投遞等艙回來(note_global_pending)。
+# 這不是防線:LaunchAgent 檔同帳號 AI 寫得到,它起的只是本機的 aib,跟 AI 自己跑 aib chat on 同一信任等級。
+BOOT_LABEL = "com.ez2.aib-chat-bridge"
+BOOT_POLL_S = 30                            # 開關關著時,boot-run 每這麼久看一次開關
+BOOT_THROTTLE_S = 10                        # launchd:退出後至少隔這麼久再拉
+_BOOT_PATH_EXTRA = ("/opt/homebrew/bin", "/usr/local/bin")   # launchd 的 PATH 沒有 Homebrew ⇒ 工人找不到 tmux / caffeinate
+_BOOT_ENV_KEEP = ("HOME", "LANG", "EZ2_AIB_STATE_ROOT", "EZ2_AIB_ROOT", "AIB_CORE_DIR", "EZ2_AIB_LOCALE",
+                  "AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR")    # 只帶路徑類;不帶 token / 金鑰 / 開關
+_BOOT_TERM = {"got": False}
+
+
+def boot_plist_path(home=None):
+    return Path(home or os.path.expanduser("~")) / "Library" / "LaunchAgents" / (BOOT_LABEL + ".plist")
+
+
+def boot_plist(env=None, python=None, script=None, log=None):
+    """LaunchAgent 內容(dict,給 plistlib)。PATH 用安裝當下的 PATH 加 Homebrew;環境只帶 _BOOT_ENV_KEEP 裡有設的。"""
+    env = os.environ if env is None else env
+    parts = [d for d in (env.get("PATH") or "").split(os.pathsep) if d]
+    for extra in _BOOT_PATH_EXTRA:
+        if extra not in parts:
+            parts.append(extra)
+    ev = {k: str(env[k]) for k in _BOOT_ENV_KEEP if env.get(k)}
+    ev["PATH"] = os.pathsep.join(parts)
+    ev.setdefault("HOME", os.path.expanduser("~"))
+    logp = str(log or (chat_home(env) / "launchd.log"))
+    return {"Label": BOOT_LABEL,
+            "ProgramArguments": [python or sys.executable, script or str(HERE / "chat_bridge.py"), "boot-run"],
+            "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": BOOT_THROTTLE_S, "ProcessType": "Background",
+            "EnvironmentVariables": ev, "StandardOutPath": logp, "StandardErrorPath": logp}
+
+
+def boot_installed(home=None):
+    return boot_plist_path(home).is_file()
+
+
+def _launchctl(*args):
+    try:
+        p = subprocess.run(["launchctl"] + list(args), capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
+        return p.returncode, (p.stderr or p.stdout).strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, str(exc)
+
+
+def _dev_worktree(here=None):
+    """這支程式在開發 worktree 裡 ⇒ 回那棵樹的路徑(開機項指到 worktree,樹一刪就壞);正本樹 / 不是 git 樹 ⇒ None。"""
+    here = str(here or HERE)
+
+    def git(*a):
+        try:
+            p = subprocess.run(["git", "-C", here] + list(a), capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+            return p.stdout if p.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError):
+            return None
+    top = (git("rev-parse", "--show-toplevel") or "").strip()
+    lst = git("worktree", "list", "--porcelain") or ""
+    canon = next((ln[len("worktree "):] for ln in lst.splitlines() if ln.startswith("worktree ")), "")
+    if not top or not canon:
+        return None
+    return None if os.path.realpath(top) == os.path.realpath(canon) else top
+
+
+def install_boot(env=None, out=sys.stdout, home=None, platform=None, launchctl=_launchctl, plist=None, dev_tree=None):
+    """aib chat install-boot:寫 LaunchAgent 並 bootstrap(登入即起;現在也立刻起)。只 macOS;開發樹拒(樹一刪開機就壞)。"""
+    import plistlib
+    env = os.environ if env is None else env
+    if (platform or sys.platform) != "darwin":
+        out.write(T("boot_mac_only") + "\n")
+        return 2
+    dev = _dev_worktree() if dev_tree is None else dev_tree
+    if dev and env.get("AIB_ALLOW_FOREIGN_BINDINGS") != "1":
+        out.write(T("boot_dev_tree", path=dev) + "\n")
+        return 1
+    path = boot_plist_path(home)
+    data = plist or boot_plist(env)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Path(data["StandardOutPath"]).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        plistlib.dump(data, fh)
+    os.chmod(path, 0o600)
+    domain = "gui/%d" % os.getuid()
+    launchctl("bootout", "%s/%s" % (domain, BOOT_LABEL))          # 舊的先拿掉(沒裝過會失敗,不管)
+    rc, err = launchctl("bootstrap", domain, str(path))
+    if rc != 0:
+        out.write(T("boot_bootstrap_fail", path=str(path), err=err) + "\n")
+        return 1
+    out.write(T("boot_installed", path=str(path), log=data["StandardOutPath"]) + "\n")
+    return 0
+
+
+def uninstall_boot(out=sys.stdout, home=None, launchctl=_launchctl):
+    path = boot_plist_path(home)
+    launchctl("bootout", "gui/%d/%s" % (os.getuid(), BOOT_LABEL))
+    if path.exists():
+        path.unlink()
+        out.write(T("boot_removed", path=str(path)) + "\n")
+    else:
+        out.write(T("boot_not_installed", path=str(path)) + "\n")
+    return 0
+
+
+def boot_kickstart(home=None, launchctl=_launchctl):
+    """aib chat on 之後,開機項已裝 ⇒ 叫它現在就起(不等下次登入)。回 True = launchctl 收了。"""
+    if not boot_installed(home):
+        return False
+    rc, _err = launchctl("kickstart", "gui/%d/%s" % (os.getuid(), BOOT_LABEL))
+    return rc == 0
+
+
+def boot_run(env=None, out=sys.stdout, run_fn=None, sleep=time.sleep, max_loops=None):
+    """launchd 跑的那支:開關開著 ⇒ run()(當班或待命);run 回來(開關關了 / aib chat restart 送 SIGTERM)⇒
+    SIGTERM 就退出讓 launchd 隔 BOOT_THROTTLE_S 再拉(= 重啟換新碼);開關關著 ⇒ 每 BOOT_POLL_S 看一次。永不自己結束。"""
+    env = os.environ if env is None else env
+    run_fn = run_fn or run
+    loops = 0
+    while True:
+        loops += 1
+        if is_enabled(env):
+            _BOOT_TERM["got"] = False
+            run_fn(env, out=out)
+            if _BOOT_TERM["got"]:
+                return 0
+            sleep(RESTART_GAP)
+        else:
+            sleep(BOOT_POLL_S)
+        if max_loops is not None and loops >= max_loops:
+            return 0
 
 
 def _sleep(seconds, stop, every=None):
@@ -471,6 +608,10 @@ def cmd_on(a, env, out):
     else:
         out.write(T("window_no_hub") + "\n")
     out.write(T("public_hint") + "\n")
+    if boot_installed():
+        out.write(T("boot_kickstart_" + ("ok" if boot_kickstart() else "fail")) + "\n")
+    elif sys.platform == "darwin":
+        out.write(T("boot_hint") + "\n")
     if not backup_state(env)["at"]:
         out.write(T("backup_hint") + "\n")             # 第 37.4 節:主人金鑰只在這台,硬碟壞 / 重灌就沒了
     return 0
@@ -1919,6 +2060,9 @@ def main(argv=None, env=None, out=sys.stdout):
     aw = sub.add_parser("awake", help=T("help.awake"))
     aw.add_argument("value", nargs="?", choices=("on", "off"))
     sub.add_parser("restart", help=T("help.restart"))
+    sub.add_parser("install-boot", help=T("help.install_boot"))      # 第二波 #6:登入即起轉接程式(不開艙)
+    sub.add_parser("uninstall-boot", help=T("help.uninstall_boot"))
+    sub.add_parser("boot-run")                                        # launchd 用,不給人打
     ow = sub.add_parser("owner", help=T("help.owner"))
     ow.add_argument("action", choices=("protect", "status", "repair"))
     ow.add_argument("--json", action="store_true")
@@ -1996,6 +2140,12 @@ def main(argv=None, env=None, out=sys.stdout):
         return {"owner": OC.cmd_owner, "join": OC.cmd_join, "devices": OC.cmd_devices}[a.cmd](a, env, out)
     if a.cmd == "run":
         return run(env, out=out)
+    if a.cmd == "boot-run":
+        return boot_run(env, out=out)
+    if a.cmd == "install-boot":
+        return install_boot(env, out)
+    if a.cmd == "uninstall-boot":
+        return uninstall_boot(out)
     if a.cmd == "prepare":
         return cmd_prepare(a, env, out)
     if a.cmd == "auto":
