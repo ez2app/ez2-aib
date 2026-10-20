@@ -339,16 +339,53 @@ def clip_events(events, clip):
     return out
 
 
+FOLLOW_WAIT_DEFAULT, FOLLOW_WAIT_MAX, FOLLOW_POLL_S = 20, 60, 0.5
+
+
+def _wait_for_growth(rec, path, offset, wait, sleep=time.sleep, clock=time.time):
+    """--follow:等到紀錄檔長過 offset、或那一席換了紀錄檔(壓縮 / 接回),或 wait 秒到。回 (path_now, grew)。
+    只看 stat(不重讀檔),每 FOLLOW_POLL_S 看一次。"""
+    end = clock() + max(0, min(FOLLOW_WAIT_MAX, wait))
+    while True:
+        try:
+            if os.path.getsize(path) > offset:
+                return path, True
+        except OSError:
+            return path, True                      # 檔案不見了 ⇒ 讓呼叫端重讀、回 reset
+        now_path = transcript_path(rec)
+        if now_path and now_path != path:
+            return now_path, True
+        if clock() >= end:
+            return path, False
+        sleep(FOLLOW_POLL_S)
+
+
 def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMIT_DEFAULT, clip=0,
-               with_thinking=False, with_sidechain=False, do_redact=False, state_root=None):
+               with_thinking=False, with_sidechain=False, do_redact=False, state_root=None, follow=False, wait=FOLLOW_WAIT_DEFAULT,
+               session=None, sleep=time.sleep, clock=time.time):
     rec = find_seat(code, state_root)
     if rec is None:
         return {"v": V, "ok": False, "why": "no-seat", "seat": code}, 2
     path = transcript_path(rec)
     if path is None:
         return {"v": V, "ok": False, "why": "no-transcript", "seat": code, "session": rec.get("session_uuid")}, 4
+    rotated = False
+    cur_sess = str(rec.get("session_uuid") or "").lower()
+    if offset and not (since or before or only_id):
+        # 頁面帶上一輪的 session + last_offset 來:席換了對話(壓縮 / 接回 / /clear)或檔比 offset 還短 ⇒ 從頭讀 + reset
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if (session and session.lower() != cur_sess) or offset > size:
+            offset, rotated = 0, True
+    if follow and offset and not (since or before or only_id):
+        # 長輪詢(v0.6):頁面帶上一輪的 last_offset 來等,有新東西才回;換檔 ⇒ 從頭讀並 reset
+        path2, _grew = _wait_for_growth(rec, path, offset, wait, sleep=sleep, clock=clock)
+        if path2 != path:
+            path, offset, rotated = path2, 0, True
     events, pending, _q, end, sessions = events_from_jsonl(path, with_thinking, with_sidechain, offset if offset and not (since or before or only_id) else 0)
-    reset, since_lost = False, False
+    reset, since_lost = rotated, False
     if only_id:
         events = [e for e in events if e["id"] == only_id]
     elif since:
@@ -458,6 +495,9 @@ def main(argv=None, out=sys.stdout):
     t.add_argument("--with-thinking", action="store_true")
     t.add_argument("--with-sidechain", action="store_true")
     t.add_argument("--redact", action="store_true")
+    t.add_argument("--follow", action="store_true", help="帶 --offset 時:等到有新事件(或 --wait 秒)才回")
+    t.add_argument("--wait", type=int, default=FOLLOW_WAIT_DEFAULT)
+    t.add_argument("--session", help="上一輪回傳的 session;跟現在不同 ⇒ 從頭讀並 reset")
     t.add_argument("--json", action="store_true")
     p = sub.add_parser("pending")
     p.add_argument("code")
@@ -465,7 +505,8 @@ def main(argv=None, out=sys.stdout):
     a = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
     if a.cmd == "transcript":
         res, rc = transcript(a.code, since=a.since, before=a.before, only_id=a.only_id, offset=a.offset, limit=a.limit, clip=a.clip,
-                             with_thinking=a.with_thinking, with_sidechain=a.with_sidechain, do_redact=a.redact)
+                             with_thinking=a.with_thinking, with_sidechain=a.with_sidechain, do_redact=a.redact,
+                             follow=a.follow, wait=a.wait, session=a.session)
         if a.json or not res.get("ok"):
             out.write(json.dumps(res, ensure_ascii=False) + "\n")
         else:
