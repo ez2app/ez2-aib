@@ -4,6 +4,16 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.30
+
+- **Core commands for the captain's room chat panel (phase 1)**, all under `aib seat …`:
+  - `aib seat transcript <seat>`: reads that seat's conversation log (Claude Code's transcript file) as a list of events (what you said, what the AI said, tool calls and results, option questions, system events); long relayed messages are expanded; only files under the state root are read; big files are read incrementally by offset.
+  - `aib seat pending <seat>`: whether that seat is waiting for your answer (option questions from the log, permission prompts from the screen).
+  - `aib seat input <seat> --text …`: types text into that seat's prompt. Needs Touch ID; sends nothing while the seat is waiting for an answer or is not at its prompt; control characters, empty text and more than 64 KB are refused. The 10-minute re-check window only guards against your own slips; it is not a security boundary.
+  - `aib seat answer <seat> <option>` and `aib seat stop <seat>`: answer a question, or stop (Esc / Ctrl-C). Touch ID every time; an answer carries the question id and is dropped if the question changed.
+  - `aib seat attach <seat>`: opens a new Terminal window attached to that seat.
+  - All of these refuse calls made from inside a seat window (so an AI seat cannot drive another seat); every action is logged.
+
 ## 0.1.29
 
 - **`aib vault title <path…>`**: turns vault paths (folder and note ids) into readable title paths with an Obsidian open link; reads only the title index, never note bodies, and gives no title for paths outside the vault. Used by the captain's room chat panel; no add-on license needed.
