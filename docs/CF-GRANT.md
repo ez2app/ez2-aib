@@ -30,7 +30,7 @@ aib cf revoke <token_id>
 
 ## Other rules
 
-- **Permissions** (allow-list): `dns-read` `dns-write` `cache-purge` `zone-read` `waf-write` `ssl-write` `routes-write` `workers-write`.
+- **Permissions** (allow-list): `dns-read` `dns-write` `cache-purge` `zone-read` `waf-write` `ssl-write` `routes-write` `workers-write` `redirect-read` `redirect-write` `bulk-redirect-read` `rule-lists-read`.
 - **IP lock**: the address ssh connects to + the server's own IPv4/IPv6 egress to Cloudflare + any `--ip CIDR`. If none can be found, nothing is minted.
 - There is no flag or environment variable that skips Touch ID; not a Mac ⇒ nothing is minted. `AIB_TOUCHID=0` only turns it off.
 - `--dry-run` checks arguments and the IP lock and prints the plan. Looking up the zone needs the minter (= a fingerprint), so dry-run does not call Cloudflare.

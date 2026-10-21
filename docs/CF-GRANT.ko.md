@@ -29,7 +29,7 @@ aib cf revoke <token_id>
 
 ## 그 밖의 규칙
 
-- **권한**(허용 목록): `dns-read` `dns-write` `cache-purge` `zone-read` `waf-write` `ssl-write` `routes-write` `workers-write`.
+- **권한**(허용 목록): `dns-read` `dns-write` `cache-purge` `zone-read` `waf-write` `ssl-write` `routes-write` `workers-write` `redirect-read` `redirect-write` `bulk-redirect-read` `rule-lists-read`.
 - **IP 잠금**: ssh가 접속하는 주소 + 서버 자신의 Cloudflare 출구 IPv4/IPv6 + 추가 `--ip CIDR`. 하나도 찾지 못하면 발급하지 않습니다.
 - Touch ID를 건너뛰는 플래그나 환경 변수는 없습니다. Mac이 아니면 발급하지 않습니다. `AIB_TOUCHID=0` 은 끄기만 합니다.
 - `--dry-run` 은 인수와 IP 잠금을 확인하고 계획을 출력합니다. 존 조회에는 마스터 키(= 지문)가 필요하므로 dry-run은 Cloudflare를 호출하지 않습니다.
