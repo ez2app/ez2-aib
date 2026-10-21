@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""aib seat remote status --json 的 remote_ready / remote_why(@74e8b 10-21 聯動表第 1 項;伺服器 ready 路徑等 @9f808 定案)。
+"""aib seat remote status --json 的 remote_ready / remote_why(@74e8b 10-21 聯動表第 1 項;伺服器照 @abb89 裁示 L1 讀公開功能清單 GET /api/v1/page/features 的 features.remote)。
 網路、本機連線全換假的;EZ2_AIB_STATE_ROOT 指暫存。
 
 R1 沒綁 ⇒ remote_why not_bound、不打伺服器(server_ready None)、帶 hint
 R2 綁了、連線沒在跑 ⇒ link_stopped、不打伺服器
 R3 綁了 + 連線在跑 + 伺服器 ready ⇒ remote_ready true、remote_why None、沒 hint
-R4 伺服器 404 / 500 / ready:false / 回應不是 JSON ⇒ server_not_ready;連不上 ⇒ server_unreachable
-R5 只讀:status 跑完暫存目錄一個檔都沒多(不建 machine.json、不建 pid 檔)
+R4 伺服器 404 / 500 / features.remote 不是 true / 格式不對 / 回應不是 JSON ⇒ server_not_ready;連不上 ⇒ server_unreachable
+R5 只讀:status 跑完暫存目錄一個檔都沒多(不建 machine.json、不建 pid 檔;唯一會寫的是 R7 的功能清單快取)
 R6 CLI aib seat remote status --json 帶這幾個欄位;四語都有 hint
+R7 fetch_features 快取(doctor 共用):60 秒內吃快取、滿 60 秒重問;200 / 404 快取，連不上 / 5xx 不快取;檔 600、只存 at/status/features;壞檔 / 未來時間當沒有
 刀(複本):K1 拿掉「綁了沒」那一關 ⇒ R1 紅
 """
 import io
@@ -18,7 +19,6 @@ import sys
 import tempfile
 import types
 import unittest
-import urllib.error
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -33,31 +33,6 @@ from aib_proc_guard import run_guarded  # noqa: E402
 
 MID = "6b1f3c2e-8f0a-4d5b-9c1e-2a3b4c5d6e7f"
 KEYS = ("remote_ready", "remote_why", "link_running", "server_ready")
-
-
-class Resp:
-    def __init__(self, status, body):
-        self.status, self.body = status, body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def read(self, n=-1):
-        return self.body
-
-
-class Opener:
-    def __init__(self, result):
-        self.result, self.calls = result, []
-
-    def open(self, req, timeout=None):
-        self.calls.append((req.full_url, req.get_method(), req.get_header("Authorization"), timeout))
-        if isinstance(self.result, Exception):
-            raise self.result
-        return self.result
 
 
 class Base(unittest.TestCase):
@@ -78,8 +53,8 @@ class Base(unittest.TestCase):
                                                        "assistant_token": "tok-x"}))
 
     def ctl(self, running=False, ready=(True, None)):
-        def server_ready():
-            self.server_calls.append(1)
+        def server_ready(env=None):
+            self.server_calls.append(env)
             return ready
         return types.SimpleNamespace(running=lambda env: 4242 if running else None, server_ready=server_ready,
                                      start_bg=lambda env: (None, "x"), stop_bg=lambda env: None)
@@ -109,27 +84,70 @@ class Status(Base):
         res = self.status(running=True)
         self.assertEqual([res[k] for k in KEYS], [True, None, True, True])
         self.assertNotIn("hint", res)
-        self.assertEqual(self.server_calls, [1])
+        self.assertEqual(self.server_calls, [self.env], "狀態根照傳(快取放在這台的狀態根底下)")
         res = self.status(running=True, ready=(False, "server_not_ready"))
         self.assertEqual([res[k] for k in KEYS], [False, "server_not_ready", True, False])
 
+    def call(self, status, body=None):
+        calls = []
+
+        def call(method, url, token, body_=None, timeout=None):
+            calls.append((method, url, token, timeout))
+            return status, body
+        call.calls = calls
+        return call
+
     def test_r4_server_ready_parsing(self):
+        good = {"features": {"remote": True, "quote": False, "unbind": False}}
         cases = [
-            (Resp(200, b'{"ready": true}'), (True, None)),
-            (Resp(200, b'{"ready": "yes"}'), (False, "server_not_ready")),
-            (Resp(200, b'{"ready": false}'), (False, "server_not_ready")),
-            (Resp(200, b"<html>"), (False, "server_not_ready")),
-            (urllib.error.HTTPError("u", 404, "nf", {}, io.BytesIO(b"")), (False, "server_not_ready")),
-            (urllib.error.HTTPError("u", 500, "x", {}, io.BytesIO(b"")), (False, "server_not_ready")),
-            (urllib.error.URLError("down"), (False, "server_unreachable")),
-            (OSError("reset"), (False, "server_unreachable")),
+            ((200, good), (True, None)),
+            ((200, {"features": {"remote": "yes"}}), (False, "server_not_ready")),
+            ((200, {"features": {"remote": False, "quote": True}}), (False, "server_not_ready")),
+            ((200, {"features": {}}), (False, "server_not_ready")),
+            ((200, {"features": [True]}), (False, "server_not_ready")),
+            ((200, {"remote": True}), (False, "server_not_ready")),
+            ((200, None), (False, "server_not_ready")),
+            ((404, None), (False, "server_not_ready")),
+            ((500, None), (False, "server_not_ready")),
+            ((0, None), (False, "server_unreachable")),
         ]
-        for result, want in cases:
-            op = Opener(result)
-            self.assertEqual(RL.server_ready(base="http://page.test", opener=op), want, result)
-            url, method, auth, timeout = op.calls[0]
-            self.assertEqual((url, method, auth), ("http://page.test" + RL.READY_PATH, "GET", None), "公開那支、不帶憑證")
+        for n, ((status, body), want) in enumerate(cases):
+            c = self.call(status, body)
+            self.assertEqual(RL.server_ready(self.env, call=c, now=1000.0 + n * 100, base="http://page.test"), want, (status, body))
+            method, url, token, timeout = c.calls[0]
+            self.assertEqual((method, url, token), ("GET", "http://page.test" + RL.FEATURES_PATH, None), "公開那支、不帶憑證")
             self.assertLessEqual(timeout, 5)
+        feats, why = RL.fetch_features(self.env, call=self.call(200, {"features": {"remote": True, "quote": 1, "unbind": False}}),
+                                       now=99999.0)
+        self.assertEqual((feats, why), ({"remote": True, "unbind": False}, None), "只留 bool")
+
+    def test_r7_shared_cache(self):
+        path = RL.features_cache_path(self.env)
+        self.assertTrue(str(path).startswith(str(self.state)), "快取在明寫的狀態根底下")
+        c = self.call(200, {"features": {"remote": True, "quote": False}})
+        self.assertEqual(RL.fetch_features(self.env, call=c, now=1000.0), ({"remote": True, "quote": False}, None))
+        self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
+        self.assertEqual(sorted(json.loads(path.read_text())), ["at", "features", "status"], "只存 at / status / features")
+        c2 = self.call(200, {"features": {"remote": False}})
+        self.assertEqual(RL.server_ready(self.env, call=c2, now=1059.0), (True, None), "60 秒內吃快取")
+        self.assertEqual(c2.calls, [])
+        self.assertEqual(RL.server_ready(self.env, call=c2, now=1060.0), (False, "server_not_ready"), "滿 60 秒重問")
+        self.assertEqual(len(c2.calls), 1)
+        c404 = self.call(404)
+        self.assertEqual(RL.fetch_features(self.env, call=c404, now=2000.0), (None, "server_not_ready"))
+        self.assertEqual(RL.fetch_features(self.env, call=self.call(200, {"features": {"remote": True}}), now=2030.0),
+                         (None, "server_not_ready"), "404 也快取")
+        down = self.call(0)
+        self.assertEqual(RL.fetch_features(self.env, call=down, now=3000.0), (None, "server_unreachable"))
+        self.assertEqual(json.loads(path.read_text())["at"], 2000.0, "連不上不寫快取")
+        c500 = self.call(500)
+        RL.fetch_features(self.env, call=c500, now=3001.0)
+        again = self.call(200, {"features": {"remote": True}})
+        self.assertEqual(RL.fetch_features(self.env, call=again, now=3002.0), ({"remote": True}, None), "5xx 不快取")
+        path.write_text("{bad")
+        self.assertEqual(RL.fetch_features(self.env, call=self.call(404), now=4000.0), (None, "server_not_ready"), "壞快取當沒有")
+        path.write_text(json.dumps({"at": 5000.0, "status": 200, "features": {"remote": True}}))
+        self.assertEqual(RL.fetch_features(self.env, call=self.call(0), now=4990.0), (None, "server_unreachable"), "未來時間的快取不算")
 
     def test_r5_read_only(self):
         def snap():

@@ -419,7 +419,8 @@ def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_a
                keys=len(remote_grant.TRUSTED_GRANT_KEYS))
     out.update(_bind_info(env))
     if state == "status":
-        out.update(remote_ready(out["bound"], out["link"], getattr(ctl, "server_ready", lambda: (None, None))))
+        ready = getattr(ctl, "server_ready", None)
+        out.update(remote_ready(out["bound"], out["link"], (lambda: ready(env)) if ready else (lambda: (None, None))))
     return out, 0
 
 

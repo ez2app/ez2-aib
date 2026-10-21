@@ -48,7 +48,9 @@ TRANSCRIPT_CLIP = 2000
 def http(method, url, token, body=None, timeout=POLL_S + 10):
     """(status, dict|None);連不上 ⇒ (0, None)"""
     data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
-    headers = {"accept": "application/json", "user-agent": USER_AGENT, "authorization": "Bearer " + token}
+    headers = {"accept": "application/json", "user-agent": USER_AGENT}
+    if token is not None:   # None = 公開端點(功能清單),不帶憑證
+        headers["authorization"] = "Bearer " + token
     if data is not None:
         headers["content-type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -68,29 +70,70 @@ def http(method, url, token, body=None, timeout=POLL_S + 10):
     return status, d if isinstance(d, dict) else None
 
 
-READY_PATH = PREFIX + "/ready"   # 公開、不帶憑證;路徑等 @9f808 定案(10-21 @74e8b 聯動表第 1 項)
-READY_TIMEOUT_S = 3
+# @abb89 裁示 L1(10-21):伺服器不另開 remote/ready,只有公開的功能清單(可快取 60 秒)
+#   {"features": {"remote": bool, "quote": bool, "unbind": bool}}
+# aib doctor 的功能清單檢查也走 fetch_features,同一份快取。
+FEATURES_PATH = "/api/v1/page/features"
+FEATURES_TIMEOUT_S = 3
+FEATURES_TTL_S = 60
+FEATURES_CACHED_STATUS = (200, 404)   # 成功跟「伺服器還沒有這支」都快取;連不上 / 5xx 不快取,下次再問
+MAX_FEATURES = 32
 
 
-def server_ready(base=BASE, opener=None, timeout=READY_TIMEOUT_S):
-    """(ready: bool, why: None | "server_not_ready" | "server_unreachable")。
-    200 + {"ready": true} 才算;404(伺服器還沒有這支)/ 其他狀態 / 回應不對 ⇒ not_ready;連不上 ⇒ unreachable。"""
-    req = urllib.request.Request(base + READY_PATH, headers={"accept": "application/json", "user-agent": USER_AGENT}, method="GET")
+def features_cache_path(env=None):
+    import remote_grant
+    return remote_grant.state_root(env) / "cache" / "page-features.json"
+
+
+def _features_of(status, d):
+    """200 + {"features": {名: bool}} ⇒ 只留 bool 值的 dict;其他 ⇒ None"""
+    feats = d.get("features") if status == 200 and isinstance(d, dict) else None
+    if not isinstance(feats, dict):
+        return None
+    return {str(k)[:40]: v for k, v in list(feats.items())[:MAX_FEATURES] if isinstance(v, bool)}
+
+
+def _read_cache(path, now):
     try:
-        with (opener or urllib.request.build_opener()).open(req, timeout=timeout) as r:
-            status, raw = r.status, r.read(4096)
-    except urllib.error.HTTPError as exc:
-        exc.close()
-        return False, "server_not_ready"
-    except (urllib.error.URLError, OSError, ValueError):
-        return False, "server_unreachable"
-    try:
-        d = json.loads(raw.decode("utf-8"))
-    except ValueError:
-        d = None
-    if status == 200 and isinstance(d, dict) and d.get("ready") is True:
-        return True, None
-    return False, "server_not_ready"
+        c = json.loads(path.read_text(encoding="utf-8"))
+        at, status = float(c["at"]), int(c["status"])
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    if status not in FEATURES_CACHED_STATUS or not 0 <= now - at < FEATURES_TTL_S:
+        return None
+    feats = c.get("features")
+    return status, (feats if isinstance(feats, dict) and all(isinstance(v, bool) for v in feats.values()) else None)
+
+
+def fetch_features(env=None, call=http, now=None, base=BASE):
+    """ez2.page 開了哪些功能:(features: {名: bool} | None, why: None | "server_not_ready" | "server_unreachable")。
+    快取 60 秒在 <state>/cache/page-features.json(原子寫、600、只存 {at, status, features},不含帳號資料)。
+    404 / 其他狀態 / 格式不對 ⇒ (None, server_not_ready);連不上 ⇒ (None, server_unreachable)。"""
+    now = time.time() if now is None else now
+    path = features_cache_path(env)
+    hit = _read_cache(path, now)
+    if hit:
+        status, feats = hit
+    else:
+        status, d = call("GET", base + FEATURES_PATH, None, timeout=FEATURES_TIMEOUT_S)
+        if not status:
+            return None, "server_unreachable"
+        feats = _features_of(status, d)
+        if status in FEATURES_CACHED_STATUS:
+            try:
+                from atomic_json import write_json
+                write_json(str(path), {"at": now, "status": status, "features": feats})
+            except Exception:  # noqa: BLE001  快取寫不進去不影響結果
+                pass
+    return (feats, None) if feats is not None else (None, "server_not_ready")
+
+
+def server_ready(env=None, call=http, now=None, base=BASE):
+    """(ready: bool, why):功能清單裡 remote is True 才算;其他照 fetch_features 的 why(remote 沒開 ⇒ server_not_ready)。"""
+    feats, why = fetch_features(env, call=call, now=now, base=base)
+    if why:
+        return False, why
+    return (True, None) if feats.get("remote") is True else (False, "server_not_ready")
 
 
 def target(env=None):
