@@ -119,7 +119,9 @@ class CronPath(unittest.TestCase):
 
     def run_sh(self, path, dirs):
         import subprocess
-        r = subprocess.run(["/bin/bash", "-c", self.stanza() + 'printf "%s|%s" "$PATH" "$(command -v tmux || true)"'],
+        # 比「這段跑之前 / 之後」的 PATH:aib test 底下 bash 會被 shim 包、PATH 前面多一層,不能比整條字串
+        r = subprocess.run(["/bin/bash", "-c", 'before="$PATH"\n' + self.stanza()
+                            + 'printf "%s|%s|%s" "$before" "$PATH" "$(command -v tmux || true)"'],
                            env={"PATH": path, "AIB_TMUX_FALLBACK_DIRS": dirs}, capture_output=True, text=True, timeout=30)
         return r.stdout.split("|")
 
@@ -128,12 +130,12 @@ class CronPath(unittest.TestCase):
             fake = Path(b) / "tmux"
             fake.write_text("#!/bin/sh\nexit 0\n")
             fake.chmod(0o755)
-            path, found = self.run_sh("/usr/bin:/bin", "%s %s" % (a, b))
-            self.assertEqual((path, found), ("%s:/usr/bin:/bin" % b, str(fake)), "補上有 tmux 的那個")
-            path, found = self.run_sh("/usr/bin:/bin", a)
-            self.assertEqual(path, "/usr/bin:/bin", "備援也沒有 ⇒ 不動")
-            path, found = self.run_sh("%s:/usr/bin:/bin" % b, a)
-            self.assertEqual(path, "%s:/usr/bin:/bin" % b, "已經找得到 ⇒ 不動")
+            before, path, found = self.run_sh("/usr/bin:/bin", "%s %s" % (a, b))
+            self.assertEqual((path, found), ("%s:%s" % (b, before), str(fake)), "補上有 tmux 的那個")
+            before, path, found = self.run_sh("/usr/bin:/bin", a)
+            self.assertEqual(path, before, "備援也沒有 ⇒ 不動")
+            before, path, found = self.run_sh("%s:/usr/bin:/bin" % b, a)
+            self.assertEqual((path, found), (before, str(fake)), "已經找得到 ⇒ 不動")
 
 
 class Knife(unittest.TestCase):
