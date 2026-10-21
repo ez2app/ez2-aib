@@ -151,6 +151,9 @@ class Core(Base):
 class Cli(Base):
     def run_cb(self, *argv):
         CB = _load_cb()
+        # 10-21:open / accept / space / share 要本人 Touch ID(chat_bridge.human_gate);測試一律換成假指紋,絕不彈真視窗
+        CB.HUMAN_GATE["prove"] = lambda reason, env: ("touchid", None)
+        CB.HUMAN_GATE["caller_is_seat"] = lambda env: False
         buf = io.StringIO()
         rc = CB.main(list(argv), env=self.env, out=buf)
         return rc, buf.getvalue()

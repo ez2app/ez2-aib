@@ -127,11 +127,11 @@ class Box(unittest.TestCase):
         b.cli("friend", "add", FRIEND)
         b.cli("mine", "add", OTHER)
         self.assertEqual(json.loads(b.cli("space", "--json").stdout)["peers"], {OTHER: "island", FRIEND: "island"}, "預設 island")
-        self.assertEqual(b.cli("space", "--default", "room").returncode, 2, "room 不准當預設")
-        self.assertEqual(b.cli("space", FRIEND, "room").returncode, 0)
+        self.assertEqual(b.cli("space", "--default", "room").returncode, 2, "room 不准當預設(門之前就擋,不彈指紋)")
+        import chat_roster as CR
+        CR.set_space("room", FRIEND, b.env())              # 10-21:改分享等級要本人 Touch ID(門在 CLI),測試直接走函式
         self.assertEqual(json.loads(b.cli("space", "--json").stdout)["peers"][FRIEND], "room")
         self.assertEqual(b.cli("share", FRIEND, "room").returncode, 2, "在線梯子沒有 room 了")
-        import chat_roster as CR
         stranger = NK.npub(NK.pubkey_hex("%064x" % 123))
         self.assertEqual(CR.space_level(stranger, b.env()), "none")
 
