@@ -6,8 +6,10 @@
 手機遠端只認 machine_id 對上這台的那一頁;以前只有 --serial 綁的有 machine_id ⇒ 配對碼綁的會員打開遠端只看到「沒綁」。
 B1 配對碼:/bind/start 帶 machine {id, name}(跟 serial 同一份 machine.json);bound 回 machine_id ⇒ 存檔、remote_link.target 認得到
 B2 bound 回的 machine_id 不是這台 ⇒ 不存檔
-B3 舊伺服器(還不收 machine,回 400)⇒ 不帶 machine 再要一次、照舊綁(沒有 machine_id,遠端仍是 not-bound)
+B3 舊伺服器(還不收 machine,回 400 page_api_seat_label_invalid)⇒ 不帶 machine 再要一次、照舊綁(沒有 machine_id,遠端仍是 not-bound)
 B4 /bind/start 其他錯(例如 5xx)不重試、照舊報錯
+B5 新伺服器嫌 machine 本身不合格(400 page_api_body_invalid)⇒ 不退回、照報錯(不靜靜綁成沒機器的)
+B2 錯誤訊息要叫人去 /manage/aib 解除剛綁的那把(伺服器已發出、佔名額)
 """
 import os
 import sys
@@ -37,7 +39,7 @@ class FakeApi:
         if self.err:
             raise self.err
         if machine and self.reject:
-            raise ApiError(400, "page_api_validation_failed")
+            raise ApiError(400, "page_api_seat_label_invalid")
         return {"pair_code": "ABCD-1234", "bind_ticket": "t" * 20, "confirm_url": "https://ez2.page/manage/aib",
                 "expires_at": (NOW + timedelta(minutes=10)).isoformat()}
 
@@ -74,8 +76,9 @@ class Bind(unittest.TestCase):
         self.assertEqual(tok[0], TOKEN)
 
     def test_b2_wrong_machine(self):
-        with self.assertRaises(B.BindError):
+        with self.assertRaises(B.BindError) as cm:
             self.run_bind(FakeApi(machine_id="00000000-0000-4000-8000-000000000000"))
+        self.assertIn("ez2.page/manage/aib", str(cm.exception), "叫人去解除孤兒憑證")
         self.assertEqual(store.list_tokens(self.env) if hasattr(store, "list_tokens") else [], [], "不存檔")
 
     def test_b3_old_server(self):
@@ -91,6 +94,12 @@ class Bind(unittest.TestCase):
         with self.assertRaises(B.BindError):
             self.run_bind(api)
         self.assertEqual(len(api.starts), 1, "不是 400 不重試")
+
+    def test_b5_machine_invalid_not_fallback(self):
+        api = FakeApi(start_error=ApiError(400, "page_api_body_invalid", details=["machine"]))
+        with self.assertRaises(B.BindError):
+            self.run_bind(api)
+        self.assertEqual(len(api.starts), 1, "machine 不合格 ⇒ 不退回不帶 machine")
 
 
 if __name__ == "__main__":

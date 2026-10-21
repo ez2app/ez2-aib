@@ -46,6 +46,10 @@ def _now(clock=None):
     return (clock or (lambda: datetime.now(timezone.utc)))()
 
 
+# 舊伺服器對 /bind/start 多出來的 machine 鍵回這個碼(exact 檢查那支);只有它才退回不帶 machine(10-21 @9f808)
+OLD_SERVER_NO_MACHINE = "page_api_seat_label_invalid"
+
+
 def run_bind(api, seat_label, out, environ=None, sleep=None, clock=None,
              poll_seconds=POLL_SECONDS):
     """跑完整個配對流程。回 (憑證記錄, 落檔路徑)。
@@ -58,8 +62,8 @@ def run_bind(api, seat_label, out, environ=None, sleep=None, clock=None,
         try:
             started = api.bind_start(seat_label, machine)
         except ApiError as exc:
-            if exc.http_status != 400:
-                raise
+            if exc.code != OLD_SERVER_NO_MACHINE:
+                raise   # 其他 400(例如 page_api_body_invalid details [machine] = machine.json 本身不合格)照報，不靜靜綁成沒機器的
             started, machine = api.bind_start(seat_label), None   # 舊伺服器還不收 machine ⇒ 照舊綁(手機遠端要等伺服器更新後重綁)
     except ApiError as exc:
         raise BindError(_start_error_text(exc))
@@ -82,7 +86,8 @@ def run_bind(api, seat_label, out, environ=None, sleep=None, clock=None,
         status = polled.get("status")
         if status == BOUND:
             if machine and polled.get("machine_id") not in (None, machine["id"]):
-                raise BindError("伺服器發的憑證綁的不是這台機器,不存檔")
+                raise BindError("伺服器發的憑證綁的不是這台機器,不存檔;"
+                                "請到 https://ez2.page/manage/aib 把剛綁的那把解除(不然它會佔一個名額到過期)")
             record = dict(polled)
             record["bound_at"] = _now(clock).isoformat()
             record["seat_label"] = seat_label
