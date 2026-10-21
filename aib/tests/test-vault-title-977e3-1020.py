@@ -91,7 +91,7 @@ class TestTitle(Base):
         (self.v / WORK / SUB / "ab12cd.md").unlink()
         self.assertEqual(VC.titles(self.v, [WORK + "/" + SUB + "/ab12cd.md"])[0]["title"], "會議紀錄")
         lab = json.loads((self.v / ".ez2/display/labels.json").read_text(encoding="utf-8"))
-        lab["folders"][WORK]["i18n"][U.LOC] = "06-‮工作區​ Work"
+        lab["folders"][WORK]["i18n"][U.LOC] = "06-\u202e工作區\u200b Work"
         (self.v / ".ez2/display/labels.json").write_text(json.dumps(lab, ensure_ascii=False), encoding="utf-8")
         self.assertEqual(VC.titles(self.v, [WORK])[0]["title"], "06-工作區 Work")
 
