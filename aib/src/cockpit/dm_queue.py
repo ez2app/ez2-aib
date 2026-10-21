@@ -163,7 +163,7 @@ TRANSITION_REASON = {
     "transition": "這個狀態不能這樣改",
     "actor": "這個動作不是你能做的",
     "actor_missing": "要帶 --by(收件席讀完請用 read,不要 delete)",
-    "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit),或用 --why 寫結案理由",
+    "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit / github.com/ez2app 的 PR 網址),或用 --why 寫結案理由",
     "not_found": "這封信已經不在了",
     "im_room_only": "Telegram 來信只在艦長室看,還不能放進 AI 框(第 39 節第二步做好前)",
 }
@@ -1374,6 +1374,9 @@ _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 MEASURED_SOURCES = ("pane_pid_chain", "bg_fork_chain")
 
 
+_PR_URL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|commit)/[0-9a-f]{1,40}/?")
+
+
 def evidence_kind(seat, evidence, env=None):
     """完成證據的種類:file(存在的檔)/ dm(這一席寄出、某一席佇列裡查得到的信)/ commit(本倉查得到)/ None。"""
     ev = evidence.strip() if isinstance(evidence, str) else ""
@@ -1385,6 +1388,8 @@ def evidence_kind(seat, evidence, env=None):
             if it and it.get("sender_seat") == seat and it.get("sender_source") in MEASURED_SOURCES:
                 return "dm"           # 審查:只認量到的寄件身分(label 推出來的 @席碼不算)
         return None
+    if _PR_URL_RE.fullmatch(ev):
+        return "pr"               # 10-21 CLI 好用:開源 / 外掛倉的 PR 網址(開了 PR 才結案,最常見的證據)
     if _SHA_RE.fullmatch(ev):
         try:
             r = subprocess.run(["git", "-C", str(_HERE.parents[1]), "cat-file", "-e", ev + "^{commit}"],
@@ -3663,6 +3668,32 @@ REV_REASON = {
     "not_found": "這封信已經不在了",
 }
 CLI_NO_REV_HINT = "%(cmd)s 要帶 --if-rev:這封現在是 --if-rev %(rev)s(list --tab waiting 每列都有 rev)"
+CLI_NO_SEAT_HINT = ("%(cmd)s 要帶 --seat:這裡量不到你是哪一席(不在 aib 席位裡)。"
+                    "例:dm_queue.py %(cmd)s --seat <席碼> --id %(id)s --if-rev <rev>")
+
+
+def self_seat_code():
+    """呼叫的那一席的席碼(seat_who.self_seat_uuid 末五碼;tmux pane 量到、交叉驗過);量不到 ⇒ None(不猜)。"""
+    try:
+        import seat_who
+        u = seat_who.self_seat_uuid()
+    except Exception:  # noqa: BLE001
+        return None
+    code = u[-5:].lower() if isinstance(u, str) and len(u) >= 5 else None
+    return code if code and re.fullmatch(r"[0-9a-f]{5}", code) else None
+
+
+def _cli_retry(args, rev, why=None):
+    """出錯時給一整行能直接複製的指令(用量到 / 帶來的值補齊)。"""
+    parts = ["python3", "dm_queue.py", args.cmd, "--seat", args.seat, "--id", args.id, "--by", args.by,
+             "--if-rev", str(rev) if rev is not None else "<rev>"]
+    if getattr(args, "done", False):
+        parts.append("--done")
+    if args.evidence:
+        parts += ["--evidence", args.evidence]
+    elif args.cmd == "done" or getattr(args, "done", False):
+        parts += ["--why", '"%s"' % (args.why or why or "<一句結案理由>")]
+    return " ".join(parts)
 BYPASS_MARK = "rev_bypass=explicit-no-rev-check"
 BYPASS_LOG = "rev-bypass.log"
 
@@ -4580,9 +4611,9 @@ def main(argv=None, env=None):
 
     for name in ("read", "done"):
         sp = sub.add_parser(name)
-        sp.add_argument("--seat", required=True)
+        sp.add_argument("--seat", default=None)      # 10-21 CLI 好用:不帶 ⇒ 呼叫的那一席(席位 pane 量到的)
         sp.add_argument("--id", required=True)
-        sp.add_argument("--by", required=True)       # seat:<收件席>
+        sp.add_argument("--by", default=None)        # seat:<收件席>;不帶 ⇒ seat:<--seat>
         sp.add_argument("--if-rev", type=int, default=None)
         sp.add_argument("--no-rev-check", action="store_true")
         sp.add_argument("--evidence", default=None)
@@ -4804,17 +4835,27 @@ def main(argv=None, env=None):
         return 0
 
     if args.cmd in ("read", "done"):
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage", "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": args.id}})
+                return 2
+        if not args.by:
+            args.by = "seat:" + args.seat
         if args.if_rev is None and not args.no_rev_check:
             # 10-05 a seat:CLI 沒有「重畫」可按;直接說要帶什麼、這封現在幾號。
+            # 10-21 CLI 好用:不自動帶現值(艦長 07:06 裁 fail-closed),但給一整行可以直接複製的正確指令
             _ok, _rs, cur = rev_check(args.seat, args.id, None, env)
             _print_json({"ok": False, "reason": "no_rev", "rev": cur, "message": CLI_NO_REV_HINT % {
-                "cmd": args.cmd, "rev": cur if cur is not None else "<list --tab waiting 那一列的 rev>"}})
+                "cmd": args.cmd, "rev": cur if cur is not None else "<list --tab waiting 那一列的 rev>"},
+                "try": _cli_retry(args, cur)})
             return 6
         if args.no_rev_check and args.if_rev is None:
             note_rev_bypass(env, args.cmd, args.seat, args.id)
         closing = args.cmd == "done" or getattr(args, "done", False)
         if closing and not (args.evidence or args.why):
-            _print_json({"ok": False, "reason": "evidence", "message": TRANSITION_REASON["evidence"]})
+            _print_json({"ok": False, "reason": "evidence", "message": TRANSITION_REASON["evidence"],
+                         "try": _cli_retry(args, args.if_rev, why="<一句結案理由>")})
             return _TRANSITION_RC["evidence"]
         if args.cmd == "read" and not args.done:
             out = mark_read(args.seat, args.id, args.by, env=env, if_rev=args.if_rev,
