@@ -53,8 +53,14 @@ def run_bind(api, seat_label, out, environ=None, sleep=None, clock=None,
     `out` 是一個吃字串的函式(印給人看的那幾行)。
     """
     sleep = sleep or _time.sleep
+    machine = store.machine_identity(environ)
     try:
-        started = api.bind_start(seat_label)
+        try:
+            started = api.bind_start(seat_label, machine)
+        except ApiError as exc:
+            if exc.http_status != 400:
+                raise
+            started, machine = api.bind_start(seat_label), None   # 舊伺服器還不收 machine ⇒ 照舊綁(手機遠端要等伺服器更新後重綁)
     except ApiError as exc:
         raise BindError(_start_error_text(exc))
 
@@ -75,6 +81,8 @@ def run_bind(api, seat_label, out, environ=None, sleep=None, clock=None,
             raise BindError(_poll_error_text(exc))
         status = polled.get("status")
         if status == BOUND:
+            if machine and polled.get("machine_id") not in (None, machine["id"]):
+                raise BindError("伺服器發的憑證綁的不是這台機器,不存檔")
             record = dict(polled)
             record["bound_at"] = _now(clock).isoformat()
             record["seat_label"] = seat_label
