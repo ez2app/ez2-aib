@@ -4,6 +4,12 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.36
+
+- **配對碼綁定也認得這台 Mac**:`aib page bind`(配對碼)現在跟 `--serial` 一樣帶上這台機器的 id,手機遠端認得到用配對碼綁的頁。伺服器回的憑證如果綁的是別台機器，就不存檔。舊伺服器還不收的話，照舊綁。
+- **手機遠端的回覆不超過中繼上限**:回覆裁到 96KB 以內(先丟最舊的對話);還是太大就告訴手機 `result_too_large`。中繼忙(429 / 5xx)時再送一次，每一筆指令 id 都記下來方便事後對帳。
+- **文件**:`aib cf grant` 上線手冊(docs/CF-GRANT.*)。
+
 ## 0.1.35
 
 - **Cloudflare 改動每次都要 Touch ID**:`aib cf grant <zone> <權限>[,…] --push 主機:/絕對路徑 [--ttl 10m]` 會現開一把短效 token，只限一個 zone、白名單權限、目的主機的 IP，經 ssh stdin 寫到目的主機；送不到就立刻撤銷。用來開 token 的母鑰由這台 Mac 的 Secure Enclave 封存，每次使用都由系統強制生物辨識，不存在金鑰櫃檔案裡。另有 `aib cf list` / `aib cf revoke <id>`。金鑰櫃新增 Cloudflare 類別;`aib secret ask` 叫不出視窗時回報 `no_gui`。
