@@ -36,6 +36,14 @@ class StoreError(Exception):
     """存取憑證檔失敗。一律拋出,不靜默 —— 呼叫端要決定是重新配對還是停手。"""
 
 
+class MachineIdentityMissing(StoreError):
+    """這台綁過(憑證帶 machine_id)但 machine.json 不見了:不自動生新身分(@74e8b 10-21 需求)。
+
+    防手滑、不是防線:AI 刪得掉 machine.json 也刪得掉憑證。要重來 ⇒ 先 aib page unbind(--local-only)再綁。
+    """
+    code = "page_machine_identity_missing"
+
+
 def _check_id(name, value):
     if not isinstance(value, str) or not ID_RE.match(value):
         raise StoreError(
@@ -133,6 +141,10 @@ def machine_identity(environ=None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         record = _read(machine_path)
         if record is None:
+            if any(r.get("machine_id") for r in list_tokens(environ)):
+                raise MachineIdentityMissing(
+                    "這台綁過但機器識別檔 machine.json 不見了,不自動換新身分;"
+                    "先跑 aib page unbind(或 --local-only)清掉舊憑證再綁")
             record = {"id": str(uuid.uuid4()), "name": socket.gethostname()[:64] or "AIB"}
             atomic_json.write_json(machine_path, record)
         try:

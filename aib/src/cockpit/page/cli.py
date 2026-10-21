@@ -110,11 +110,15 @@ def cmd_unbind(args, environ):
         if args.tenant or args.page or store.list_tokens(environ):
             raise
         record = None
-    res, rc = unbind_mod.unbind(record, _api_for(record, args, environ) if record else None, environ)
+    local_only = getattr(args, "local_only", False)
+    api = _api_for(record, args, environ) if record and not local_only else None
+    res, rc = unbind_mod.unbind(record, api, environ, local_only=local_only)
     if args.json:
         _out(_json.dumps(res, ensure_ascii=False))
     elif res.get("ok"):
         _out(_m("unbind_" + res["state"], slug=res.get("slug") or ""))
+        if res.get("hint"):
+            _out(res["hint"])
     else:
         _out(res.get("hint") or res["why"])
     return rc
@@ -584,6 +588,7 @@ def build_parser():
     p_unbind = sub.add_parser("unbind", help=_h("unbind"), description=_h("unbind"))
     p_unbind.add_argument("--tenant", help=_h("tenant"))
     p_unbind.add_argument("--page", help=_h("page"))
+    p_unbind.add_argument("--local-only", action="store_true", help=_h("unbind_local_only"))
     p_unbind.add_argument("--json", action="store_true")
     p_unbind.set_defaults(func=cmd_unbind)
 

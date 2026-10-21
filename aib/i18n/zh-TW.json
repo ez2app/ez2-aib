@@ -4909,5 +4909,7 @@
   "aib.page.unbind_hint.touchid_off": "Touch ID 關著,解除綁定要本人按指紋;什麼都沒動",
   "aib.page.unbind_hint.touchid_unavailable": "這台叫不出 Touch ID;請到 {url} 撤銷這台",
   "aib.page.unbind_hint.server_unsupported": "ez2.page 還沒開放從這台撤銷,本機憑證沒動;請到 {url} 撤銷這台,再跑一次 aib page unbind 清本機",
-  "aib.page.unbind_note.page_api_token_invalid": "ez2.page 上已經沒有這台的憑證(可能在後台撤銷過);本機這份照樣清掉"
+  "aib.page.unbind_note.page_api_token_invalid": "ez2.page 上已經沒有這台的憑證(可能在後台撤銷過);本機這份照樣清掉",
+  "aib.page.help.unbind_local_only": "只清這台的憑證，不叫伺服器、不跳 Touch ID;ez2.page 上那把要另外到後台撤銷",
+  "aib.page.unbind_note.local_only": "只清了這台;ez2.page 上這台的憑證還有效，請到 {url} 撤銷"
 }

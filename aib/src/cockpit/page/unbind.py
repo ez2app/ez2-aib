@@ -78,14 +78,24 @@ def _fail(why, rc, **extra):
     return out, rc
 
 
-def unbind(record, api, env=None, prove=None):
-    """record:store 讀出的那一份(None = 這台沒綁)。api:帶這把 token 的 PageApi。prove(reason, env) ⇒ (via, why)。"""
+def unbind(record, api, env=None, prove=None, local_only=False):
+    """record:store 讀出的那一份(None = 這台沒綁)。api:帶這把 token 的 PageApi。prove(reason, env) ⇒ (via, why)。
+
+    local_only:只清本機(@74e8b 10-21 需求)。不叫伺服器、不跳 Touch ID —— 本機憑證檔 AI 本來就刪得掉,
+    擋了也不算防線;伺服器上那把還活著 ⇒ 回 server=skipped + manage_url + hint 提醒去後台撤銷。
+    """
     import seat_act as SA
     e = dict(os.environ if env is None else env)
     swept = sweep_leftovers(e)
     if not record:
         return {"ok": True, "state": "not_bound", "swept": swept}, 0
     slug = record.get("slug") or record.get("page_id") or ""
+    if local_only:
+        removed = remove_local(record, e)
+        return {"ok": True, "state": "unbound", "slug": slug, "server": "skipped", "manage_url": MANAGE_URL,
+                "local": "removed" if removed else "absent", "swept": swept, "detail": None,
+                "hint": _t("aib.page.unbind_note.local_only", {"url": MANAGE_URL},
+                           "只清了這台;ez2.page 上這台的憑證還有效,請到 %s 撤銷" % MANAGE_URL)}, 0
     _via, why = (prove or SA.prove)(reason(slug), e)
     if why:
         return _fail(why, 2, state="bound", slug=slug)

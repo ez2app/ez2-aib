@@ -4909,5 +4909,7 @@
   "aib.page.unbind_hint.touchid_off": "Touch ID がオフです。連携解除には本人の指紋が必要です。何も変更していません",
   "aib.page.unbind_hint.touchid_unavailable": "このマシンでは Touch ID を使えません。{url} でこのマシンを取り消してください",
   "aib.page.unbind_hint.server_unsupported": "ez2.page はまだこのマシンからの取り消しに対応していないため、ローカルの認証情報はそのままです。{url} で取り消してから、もう一度 aib page unbind を実行してください",
-  "aib.page.unbind_note.page_api_token_invalid": "ez2.page にはこのマシンの認証情報がもうありません(管理画面で取り消された可能性があります)。ローカルの分も削除します"
+  "aib.page.unbind_note.page_api_token_invalid": "ez2.page にはこのマシンの認証情報がもうありません(管理画面で取り消された可能性があります)。ローカルの分も削除します",
+  "aib.page.help.unbind_local_only": "このマシンの認証情報だけを削除します(サーバーへの連絡と Touch ID なし)。ez2.page 側は管理画面で別途取り消してください",
+  "aib.page.unbind_note.local_only": "このマシンからのみ削除しました。ez2.page 上の認証情報はまだ有効です。{url} で取り消してください"
 }
