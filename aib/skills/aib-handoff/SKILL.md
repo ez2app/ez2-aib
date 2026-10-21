@@ -37,7 +37,8 @@ aib memory tidy collect --out /private/tmp/tidy-<席碼>.md      # 照草稿說�
 aib memory tidy apply --file /private/tmp/tidy-<席碼>.md
 
 # B. 給 the maintainer 的總結(七段總回報;本輪沒整理會 rc 2)
-aib summary write --file <總回報輸入.json>
+aib summary template --out /private/tmp/sum-<席碼>.json        # 過得了格式檢查的最小範本,照著改
+aib summary write --file /private/tmp/sum-<席碼>.json
 ```
 
 整理或總結失敗**不擋交接**:照下面三步交接,交接檔與收據會記下「本輪整理 / 總結有沒有做」,

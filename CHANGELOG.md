@@ -4,6 +4,17 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.37
+
+- **One-tap phone binding, core side**: `aib page bind --start / --poll / --confirm / --cancel --json` lets the captain room run the whole pairing. A two-digit confirmation number is shown only on screen (never written to a file, a log or the QR); polling never asks for Touch ID, only `--confirm` does. `--cancel` after the phone confirmed returns the page where the credential can be removed. `aib page remote status` now includes the page slug and days left on the binding.
+- **Binding hints point to the right page**: the "remove the credential" hint uses the server's `confirm_url` (https only, otherwise ez2.page/manage/aib). Falling back to binding without machine id now happens only for servers that really do not know it.
+- **Opening your captain room needs you**: `aib chat open`, `visit accept`, and changing `space` / `share` levels ask for Touch ID every time and refuse when called from an AI seat. Reading settings, sending a visit request and declining do not ask.
+- **Captain room reloads itself after updates**: after `aib update` or installing the captain-room plugin, a running captain room is told to switch to the new code (only when the version actually changed; local http only).
+- **Receipts say whether the person has seen it**: messages waiting for the person are kept 7 days, and the sender gets a daily "still waiting (day N)"; the sender sees "read by the person" separately from an AI having read it; held messages carry a short reason code.
+- **New helper commands**: `aib seat caps` (which features this core has, for the local page only), `aib chrome orphans` (automation Chrome left running and which seat started it; lists only, never kills), `aib summary template` (a minimal report input that passes the format check).
+- **dm queue is easier to use**: `read` / `done` work out the seat by themselves, suggest a complete command to copy when something is missing, and accept a PR link as evidence; scheduled sends find Homebrew's tmux.
+- **Cloudflare grants**: `aib cf grant` can grant redirect rules (zone read/write) and read-only bulk redirect and rule lists.
+
 ## 0.1.36
 
 - **Pairing-code binding knows this Mac**: `aib page bind` (pairing code) now sends this machine's id, like `--serial` does, so phone remote recognises pages bound by code. If the server says the credential belongs to a different machine, nothing is saved. Older servers that do not accept it still bind as before.

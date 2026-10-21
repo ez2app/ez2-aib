@@ -64,9 +64,13 @@ _SEAT = re.compile(r"^[0-9a-z]{4,8}$")
 
 PRIORITIES = ("urgent", "important", "normal", "reminder")   # 與 dm_queue.PRIORITIES 同序
 RECEIPT_STAGES = ("resolved", "relayed", "queued", "delivered", "held", "refused", "expired", "read", "failed",
-                  "unconfirmed")   # 10-18:交出 24 小時還沒有對方回條(寄件人要知道可能沒收到)
+                  "unconfirmed",   # 10-18:交出 24 小時還沒有對方回條(寄件人要知道可能沒收到)
+                  "still_waiting")  # 10-21 回條語意:給對方本人的信還在待審(帶 days);不是終局,之後還會有 read / expired
 RECEIPT_FINAL = ("delivered", "held", "refused", "expired", "failed")
-DELIVERY_STATES = ("queued", "delivered", "held", "refused", "expired", "read")
+DELIVERY_STATES = ("queued", "delivered", "held", "refused", "expired", "read", "still_waiting")
+# 10-21 回條語意:held 的原因碼(aib-reason)。寄件端只拿來顯示(@ee4f8:不准拿來判放行 / 權限 / 過期、未知值當沒帶、不原樣印進頁面)
+HELD_REASONS = ("human_reply", "stranger")
+WAIT_DAYS_MAX = 30          # still_waiting 的 days 上限(收件端留 7 天;多給一點餘裕,超過的當壞值)
 INBOX_CLASSES = ("own", "paired", "friend", "stranger")
 # 國別(Andy 10-15 18:1x:「全球要能判斷國別」;裁:抬頭加國別、申報 + 時區佐證、用於顯示 / 預設回信語言 / 法規)
 COUNTRY_RE = re.compile(r"^[A-Z]{2}$")                      # ISO 3166-1 alpha-2,主人在名冊申報
@@ -214,6 +218,8 @@ def check_receipt(rec):
     _need(rec, "stage", lambda v: v in RECEIPT_STAGES, "不認得的階段")
     _opt(rec, "pos", lambda v: _is_int(v) and v > 0, "要是正整數")
     _opt(rec, "detail", _is_str, "要是字串")
+    _opt(rec, "days", lambda v: _is_int(v) and 1 <= v <= WAIT_DAYS_MAX, "要是 1–30 的整數")
+    _opt(rec, "by", lambda v: v == "human", "只能是 human")
     return rec
 
 
@@ -223,7 +229,10 @@ def check_delivery(rec):
     _need(rec, "at", _is_int, "要是非負整數(UTC 秒)")
     _need(rec, "state", lambda v: v in DELIVERY_STATES, "不認得的狀態")
     _opt(rec, "pos", lambda v: _is_int(v) and v > 0, "要是正整數")
-    _opt(rec, "reason", lambda v: v in REFUSE_TEXT, "不認得的拒收原因")
+    _opt(rec, "reason", lambda v: v in (REFUSE_TEXT if rec.get("state") == "refused" else HELD_REASONS if rec.get("state") == "held" else ()),
+         "不認得的原因碼")
+    _opt(rec, "days", lambda v: _is_int(v) and 1 <= v <= WAIT_DAYS_MAX and rec.get("state") == "still_waiting", "days 只給 still_waiting、1–30")
+    _opt(rec, "by", lambda v: v == "human" and rec.get("state") == "read", "by 只給 read、只能是 human")
     return rec
 
 

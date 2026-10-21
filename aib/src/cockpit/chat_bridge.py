@@ -1199,6 +1199,40 @@ def cmd_address(a, env, out):
     return 0
 
 
+# ── 本人才能開門(10-21 @abb89 裁 #209:open / visit accept 接 Touch ID,既有 space <npub> room 與 share 升級成同一道門)──
+# 跟 C1 / C4 / C5(seat_act)同一套:呼叫者是 aib 席位 ⇒ 拒;Touch ID 關掉 / 不能用 / 取消 / 逾時 / 忙線 ⇒ 拒,不退 PIN。
+# 只擋「寫」(改分享等級、開放、同意參觀);讀(--json、space check、visits)不擋。
+# 誠實講:share.json 是本機檔,同帳號 AI 直接改檔一樣過 —— 這道門擋的是「AI 用 CLI 自己開」與「頁面被 AI 代按」,
+# 不是終極防線;要真防線得簽章分享設定、轉接程式送快照前驗簽(GUIDE 第 3 條),列另一題。
+HUMAN_GATE = {"prove": None, "caller_is_seat": None}      # 只給行程內測試換掉(假 Touch ID);子行程沒有縫,真機就是真 Touch ID
+GATE_RC = {"seat": 2, "touchid": 3}
+
+
+def human_gate(reason, env, out, as_json=False):
+    """回 None = 過;否則回 rc(2 = 席位呼叫、3 = Touch ID 拒)並已印一行。"""
+    import seat_act as SA
+    is_seat = (HUMAN_GATE["caller_is_seat"] or SA.caller_is_seat)(env)
+    if is_seat:
+        why = "seat_caller"
+        out.write((json.dumps({"v": 1, "ok": False, "why": why}) if as_json else T("gate_seat")) + "\n")
+        return GATE_RC["seat"]
+    _via, why = (HUMAN_GATE["prove"] or SA.prove)(reason, env)
+    if why:
+        key = "gate_" + why if why in ("touchid_off", "touchid_unavailable") else "gate_touchid"
+        out.write((json.dumps({"v": 1, "ok": False, "why": why}) if as_json else T(key, why=why)) + "\n")
+        return GATE_RC["touchid"]
+    return None
+
+
+def gate_reason(kind, who, env, level=None):
+    """Touch ID 視窗那一句:只由核心組,名字先過 TA.clean。who=None ⇒ 改預設(全部好友)。"""
+    import chat_human as CH
+    import touchid_approve as TA
+    if who is None:
+        return T("touchid_" + kind + "_default", level=level or "-")
+    return T("touchid_" + kind, who=TA.clean(CH._who(who, env), 32), level=level or "-")
+
+
 def share_payload(env=None):
     """第 30.2 節(@74e8b 22:51 要的形狀):{"default", "peers": {npub: 實際等級}};好友與我的其他機器都填好
     (mine 沒設 ⇒ status、好友沒設 ⇒ default)。"""
@@ -1211,13 +1245,17 @@ def share_payload(env=None):
 def cmd_share(a, env, out):
     """aib chat share [<主人 npub> off|online|status] [--default off|online|status] [--json]。"""
     import chat_roster as CR
+    if a.who and a.level is None:
+        out.write(T("share_need_level") + "\n")
+        return 2
+    if a.default or a.who:                   # 改分享等級 = 本人的動作(同一道門)
+        rc = human_gate(gate_reason("share", a.who if a.who else None, env, a.level or a.default), env, out, a.json)
+        if rc is not None:
+            return rc
     try:
         if a.default:
             CR.set_share(a.default, None, env)
         if a.who:
-            if a.level is None:
-                out.write(T("share_need_level") + "\n")
-                return 2
             CR.set_share(a.level, a.who, env)
     except CR.RosterError as err:
         out.write(T("profile_" + str(err)) + "\n")
@@ -1329,9 +1367,35 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
                 if owner:
                     out_last[r.get("msgid")] = {"at": at, "dir": "out", "net": "nostr", "contact_key": "global:" + owner,
                                                 "result": res}
+    for msgid, row in out_last.items():
+        rc = last_receipt(root, msgid)
+        if rc:
+            row["receipt"] = rc
     rows += list(out_last.values())
     rows.sort(key=lambda x: x["at"])
     return {"v": 1, "at": int(now), "minutes": int(minutes), "rows": rows}
+
+
+def last_receipt(root, msgid):
+    """10-21 回條語意:寄出那封對方最後回的那一張 ⇒ {"stage","at"[,"days"][,"by"][,"detail"]};沒有 ⇒ None。
+    寄件人(艦長室收發室)據此分得出「還在等本人看(第 N 天)」「本人已讀」「被丟掉 / 過期」。detail 只放白名單碼。"""
+    if not isinstance(msgid, str) or not GF.MSGID_RE.match(msgid):
+        return None
+    try:
+        recs = GF.read_receipts(root, msgid)
+    except Exception:  # noqa: BLE001
+        return None
+    if not recs:
+        return None
+    r = recs[-1]
+    out = {"stage": r.get("stage"), "at": r.get("at")}
+    if isinstance(r.get("days"), int):
+        out["days"] = r["days"]
+    if r.get("by") == "human":
+        out["by"] = "human"
+    if r.get("detail") in tuple(GF.HELD_REASONS) + tuple(GF.REFUSE_TEXT):
+        out["detail"] = r["detail"]
+    return out
 
 
 def _snap_times(rec, now):
@@ -1444,13 +1508,20 @@ def cmd_space(a, env, out):
                         limit=pl["limit"] // 1024, over=pl["over"] or "-",
                         errors=", ".join(e["field"] for e in pl["errors"]) or "-") + "\n")
         return 0 if pl["ok"] else 1
+    if a.who and a.level is None:
+        out.write(T("space_need_level") + "\n")
+        return 2
+    if a.default == "room":
+        out.write(T("profile_bad_space") + "\n")
+        return 2
+    if a.default or a.who:                   # 開空間 = 本人的動作(同一道門;不然 open 有門、space 沒門等於沒門)
+        rc = human_gate(gate_reason("space", a.who if a.who else None, env, a.level or a.default), env, out, a.json)
+        if rc is not None:
+            return rc
     try:
         if a.default:
             CR.set_space(a.default, None, env)
         if a.who:
-            if a.level is None:
-                out.write(T("space_need_level") + "\n")
-                return 2
             CR.set_space(a.level, a.who, env)
     except CR.RosterError as err:
         out.write(T("profile_" + str(err)) + "\n")
@@ -1604,6 +1675,10 @@ def cmd_visit(a, env, out):
     if action in ("request", "open", "accept") and not GF.bridge_alive(root):
         out.write(T("visit_bridge_off") + "\n")
         return 2
+    if action in ("open", "accept"):         # 開放艦長室 = 本人的動作:Touch ID(10-21 @abb89 裁);送請求 / 拒絕不用
+        rc = human_gate(gate_reason("open", who, env), env, out, a.json)
+        if rc is not None:
+            return rc
     try:
         if action in ("open", "accept"):
             res = CVI.open_to(env, root, who)

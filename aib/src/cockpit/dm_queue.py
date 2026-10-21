@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -130,7 +131,7 @@ TRANSITIONS = {
     # 少這一列,規矩 3 的機器版會變成「讀完被拒、然後 drain 再貼一次」)。hold 的信收件席親口說看到了,hold 就解了。
     # claimed → read 刻意不開:排空器手上正在貼。
     ("queued", "read"): ("seat",),
-    (HOLD_STATUS, "read"): ("seat",),
+    (HOLD_STATUS, "read"): ("seat", "human"),   # 10-21 回條語意:本人在收件匣看了 ⇒ 寄件人收到「本人已讀」
     ("delivered", "done"): ("seat",),
     ("read", "done"): ("seat",),
     ("delivered", "archived"): ("system",),
@@ -163,7 +164,7 @@ TRANSITION_REASON = {
     "transition": "這個狀態不能這樣改",
     "actor": "這個動作不是你能做的",
     "actor_missing": "要帶 --by(收件席讀完請用 read,不要 delete)",
-    "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit),或用 --why 寫結案理由",
+    "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit / github.com/ez2app 的 PR 網址),或用 --why 寫結案理由",
     "not_found": "這封信已經不在了",
     "im_room_only": "Telegram 來信只在艦長室看,還不能放進 AI 框(第 39 節第二步做好前)",
 }
@@ -1177,8 +1178,9 @@ def global_queue_pos(seat, item_id, env=None):
     return None
 
 
-def global_delivery(item, state, seat=None, env=None, now=None):
-    """全球來信的狀態變化寫進 delivery/<msgid>.jsonl。不是全球信、寫不進去 ⇒ 不做事(**不准擋佇列本身**)。"""
+def global_delivery(item, state, seat=None, env=None, now=None, reason=None, days=None, by=None):
+    """全球來信的狀態變化寫進 delivery/<msgid>.jsonl。不是全球信、寫不進去 ⇒ 不做事(**不准擋佇列本身**)。
+    10-21 回條語意:held 帶原因碼(GF.HELD_REASONS)、still_waiting 帶 days、read 帶 by=human(本人已讀);只放碼,不放內文。"""
     g = item.get("global") if isinstance(item, dict) else None
     if not isinstance(g, dict) or not g.get("msgid"):
         return False
@@ -1189,6 +1191,12 @@ def global_delivery(item, state, seat=None, env=None, now=None):
             pos = global_queue_pos(seat, item["id"], env)
             if pos:
                 rec["pos"] = pos
+        if reason:
+            rec["reason"] = reason
+        if days:
+            rec["days"] = int(days)
+        if by:
+            rec["by"] = by
         GF.append_delivery(GF.default_root(env), g["msgid"], rec)
         return True
     except Exception:   # noqa: BLE001  回條是附加功能:寫壞了寄件端只是等到逾時(rc 4),不能讓投遞失敗
@@ -1210,6 +1218,8 @@ def _global_delivery_for_transition(item, frm, to, cls, why, seat, env, now):
         return global_delivery(item, "refused", seat, env, now)       # 沒送就被刪 = 對方沒收
     if to == "read" and cls == "seat":
         return global_delivery(item, "read", seat, env, now)          # 系統代標(通知組)不算已讀(第 10 節)
+    if to == "read" and cls == "human" and frm == HOLD_STATUS:
+        return global_delivery(item, "read", seat, env, now, by="human")   # 本人在收件匣看了(只回「已讀 + 時間」,不帶做了什麼)
     if to == "done" and frm == "delivered" and cls == "seat":
         return global_delivery(item, "read", seat, env, now)          # 跳過「已讀」直接結案也是讀了(第 10 節:read_at 或 done_at)
     return False
@@ -1293,6 +1303,8 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         return refuse("actor")
     if to == "read" and frm == HOLD_STATUS and cls == "seat" and item.get("global"):
         return refuse("actor")        # 陌生全球來信待審中:收件席自己不准讀(主人放行才給 AI;盤點 10-16 第 2 項)
+    if to == "read" and cls == "human" and _human_from_seat("human:x", env):
+        return refuse("actor")        # 10-21:本人已讀會變成回條,AI 席位不准用 --by human: 冒充
     if item.get("im") or item.get("sender_kind") == "external_im":
         # 第 39 節第一步:Telegram 來信只在艦長室;沒有 Telegram 外框前,放行會被當成本機寄件人貼進 AI 框 ⇒ 一律不准
         if to in ("queued", "claimed", "delivered"):
@@ -1374,6 +1386,9 @@ _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 MEASURED_SOURCES = ("pane_pid_chain", "bg_fork_chain")
 
 
+_PR_URL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|commit)/[0-9a-f]{1,40}/?")
+
+
 def evidence_kind(seat, evidence, env=None):
     """完成證據的種類:file(存在的檔)/ dm(這一席寄出、某一席佇列裡查得到的信)/ commit(本倉查得到)/ None。"""
     ev = evidence.strip() if isinstance(evidence, str) else ""
@@ -1385,6 +1400,8 @@ def evidence_kind(seat, evidence, env=None):
             if it and it.get("sender_seat") == seat and it.get("sender_source") in MEASURED_SOURCES:
                 return "dm"           # 審查:只認量到的寄件身分(label 推出來的 @席碼不算)
         return None
+    if _PR_URL_RE.fullmatch(ev):
+        return "pr"               # 10-21 CLI 好用:開源 / 外掛倉的 PR 網址(開了 PR 才結案,最常見的證據)
     if _SHA_RE.fullmatch(ev):
         try:
             r = subprocess.run(["git", "-C", str(_HERE.parents[1]), "cat-file", "-e", ev + "^{commit}"],
@@ -1407,6 +1424,19 @@ def _after_read(seat, item_id, env=None, now=None):
     if not it or it.get("kind") != "notice" or it.get("status") != "read":
         return None
     return _transition(seat, item_id, "archived", "system", env=env, now=now, why="notice_read")
+
+
+HUMAN_ACTOR_GATE = {"caller_is_seat": None}    # 只給行程內測試換掉
+
+
+def _human_from_seat(actor, env):
+    """--by human:… 卻是 AI 席位叫的 ⇒ True(本人已讀會變成回條告訴寄件人,不准席位冒充)。
+    跟 seat_act 同一個判法(tmux pane / 對話 id 環境變數)。誠實講:不在席位環境裡的同帳號行程一樣能冒充,這是通知不是防線。"""
+    if parse_actor(actor)[0] != "human":
+        return False
+    import seat_act as SA
+    e = dict(os.environ if env is None else env)
+    return bool((HUMAN_ACTOR_GATE["caller_is_seat"] or SA.caller_is_seat)(e))
 
 
 def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_check=None):
@@ -2870,7 +2900,11 @@ EXPIRED_HOLD_WHY = "已到期(expires %s),未投;人 requeue 或 delete"
 # ── 第 13 項:私訊過期標記(只標記、不刪、不改 status、不碰 TRANSITIONS 與 order 移除)──
 # expired 是旗標(expired/expired_at/expired_why),不是 status;畫面端與右欄看 expired_now 決定「不再算卡住」。
 # 可逆(審 2/3):requeue 清 expired 三欄;席又活過來(查到窗且 pane 活)時 expire_sweep 清 seat_closed 標記。
-HOLD_HUMAN_EXPIRE_S = 24 * 3600          # hold_human 超過 24 小時自動標 expired
+HOLD_HUMAN_EXPIRE_S = 24 * 3600          # hold_human 超過 24 小時自動標 expired(陌生來信等;防垃圾堆積)
+HOLD_HUMAN_KEEP_LONG_S = 7 * 24 * 3600   # 10-21 回條語意:給本人的信(human_reply / im_room)留 7 天,跟回條保留一致
+HOLD_LONG_WHYS = ("human_reply", "im_room")
+STILL_WAITING_EVERY_S = 24 * 3600        # 給本人的全球信還在待審 ⇒ 每滿一天送一張 still_waiting(帶 days),到 7 天才 expired
+EXPIRED_WHY_HOLD_7D = "hold_7d"          # 給本人的信待審超過 7 天
 EXPIRED_WHY_SEAT_CLOSED = "seat_closed"  # 收件席已關(查到窗且 pane_dead=1 連續多輪或超時才坐實;查無窗一律不標)
 EXPIRED_WHY_HOLD_24H = "hold_24h"        # 待人處理超過 24 小時
 SEAT_LIVENESS_SCHEMA = "aib-dm-queue-seat-liveness/v1"
@@ -3012,14 +3046,40 @@ def _expired(item, now):
         return False
 
 
-def _hold_expired(item, now):
-    """hold_human 且 held_at 超過 24 小時(第 13 項)。held_at 量不到不猜(不標)。"""
-    held = item.get("held_at")
+def hold_why_key(item):
+    """hold_why 存的是句子;倒回 HOLD_WHY 的鍵(human_reply / im_room / global_stranger …);對不到 ⇒ None。"""
+    why = item.get("hold_why") if isinstance(item, dict) else None
+    return next((k for k, v in HOLD_WHY.items() if v == why), None)
+
+
+def _hold_limit_s(item):
+    return HOLD_HUMAN_KEEP_LONG_S if hold_why_key(item) in HOLD_LONG_WHYS else HOLD_HUMAN_EXPIRE_S
+
+
+def _held_age(item, now):
     try:
-        held = int(held)
+        return int(now) - int(item.get("held_at"))
     except (TypeError, ValueError):
-        return False
-    return (int(now) - held) > HOLD_HUMAN_EXPIRE_S
+        return None
+
+
+def _hold_expired(item, now):
+    """hold_human 且 held_at 超過期限(第 13 項:24 小時;給本人的信 7 天)。held_at 量不到不猜(不標)。"""
+    age = _held_age(item, now)
+    return age is not None and age > _hold_limit_s(item)
+
+
+def _still_waiting_days(item, now):
+    """給本人的全球信還在待審、還沒過期 ⇒ 該送第幾天的 still_waiting(已送過同一天 ⇒ None)。"""
+    if item.get("status") != HOLD_STATUS or item.get("expired") or not item.get("global"):
+        return None
+    if hold_why_key(item) not in HOLD_LONG_WHYS:
+        return None
+    age = _held_age(item, now)
+    if age is None or age > _hold_limit_s(item):
+        return None
+    days = age // STILL_WAITING_EVERY_S
+    return days if days >= 1 and days > int(item.get("still_waiting_days") or 0) else None
 
 
 def _liveness_path(seat, env=None):
@@ -3106,7 +3166,7 @@ def _expire_reason(item, closed, now):
     if closed:
         return EXPIRED_WHY_SEAT_CLOSED
     if item.get("status") == HOLD_STATUS and _hold_expired(item, now):
-        return EXPIRED_WHY_HOLD_24H
+        return EXPIRED_WHY_HOLD_7D if _hold_limit_s(item) == HOLD_HUMAN_KEEP_LONG_S else EXPIRED_WHY_HOLD_24H
     return None
 
 
@@ -3132,10 +3192,19 @@ def expire_sweep(seat=None, env=None, now=None, dry_run=False):
                     item["expired_why"] = why
                     _write_item(s, item, env)
                     row["ok"] = True
-                    if why == EXPIRED_WHY_HOLD_24H and item.get("global"):
+                    if why in (EXPIRED_WHY_HOLD_24H, EXPIRED_WHY_HOLD_7D) and item.get("global"):
                         # 待審 24 小時沒人處理 ⇒ 寄件人收到 expired;信留著、標過期,人之後仍可放行或刪(Andy 10-16 裁)
                         #   收件席已關(seat_closed)不送:席重開就清掉,不是終局
                         global_delivery(item, "expired", s, env, now)
+                out.append(row)
+            elif _still_waiting_days(item, now) is not None:
+                days = _still_waiting_days(item, now)
+                row = {"seat": s, "id": item["id"], "why": "still_waiting", "days": days}
+                if not dry_run:
+                    item["still_waiting_days"] = days        # 先記再送:同一天只送一張(送失敗也不重送;明天再一張)
+                    _write_item(s, item, env)
+                    global_delivery(item, "still_waiting", s, env, now, days=days)
+                    row["ok"] = True
                 out.append(row)
             elif state == "alive" and item.get("expired") and item.get("expired_why") == EXPIRED_WHY_SEAT_CLOSED:
                 row = {"seat": s, "id": item["id"], "why": "seat_reopened", "cleared": True}
@@ -3663,6 +3732,34 @@ REV_REASON = {
     "not_found": "這封信已經不在了",
 }
 CLI_NO_REV_HINT = "%(cmd)s 要帶 --if-rev:這封現在是 --if-rev %(rev)s(list --tab waiting 每列都有 rev)"
+CLI_NO_SEAT_HINT = ("%(cmd)s 要帶 --seat:這裡量不到你是哪一席(不在 aib 席位裡)。"
+                    "例:dm_queue.py %(cmd)s --seat <席碼> --id %(id)s --if-rev <rev>")
+
+
+def self_seat_code():
+    """呼叫的那一席的席碼(seat_who.self_seat_uuid 末五碼;tmux pane 量到、交叉驗過);量不到 ⇒ None(不猜)。"""
+    try:
+        import seat_who
+        u = seat_who.self_seat_uuid()
+    except Exception:  # noqa: BLE001
+        return None
+    code = u[-5:].lower() if isinstance(u, str) and len(u) >= 5 else None
+    return code if code and re.fullmatch(r"[0-9a-f]{5}", code) else None
+
+
+def _cli_retry(args, rev, why=None):
+    """出錯時給一整行能直接複製的指令(用量到 / 帶來的值補齊)。"""
+    parts = ["python3", "dm_queue.py", args.cmd, "--seat", args.seat, "--id", args.id, "--by", args.by,
+             "--if-rev", str(rev) if rev is not None else "<rev>"]
+    if getattr(args, "done", False):
+        parts.append("--done")
+    if args.evidence:
+        parts += ["--evidence", args.evidence]
+    elif args.cmd == "done" or getattr(args, "done", False):
+        parts += ["--why", args.why or why or "<一句結案理由>"]
+    return shlex.join(parts)      # 每個值都 shlex.quote:證據 / 理由帶空白或引號,複製貼上也不斷(@abb89 #242 審)
+
+
 BYPASS_MARK = "rev_bypass=explicit-no-rev-check"
 BYPASS_LOG = "rev-bypass.log"
 
@@ -4580,9 +4677,9 @@ def main(argv=None, env=None):
 
     for name in ("read", "done"):
         sp = sub.add_parser(name)
-        sp.add_argument("--seat", required=True)
+        sp.add_argument("--seat", default=None)      # 10-21 CLI 好用:不帶 ⇒ 呼叫的那一席(席位 pane 量到的)
         sp.add_argument("--id", required=True)
-        sp.add_argument("--by", required=True)       # seat:<收件席>
+        sp.add_argument("--by", default=None)        # seat:<收件席>;不帶 ⇒ seat:<--seat>
         sp.add_argument("--if-rev", type=int, default=None)
         sp.add_argument("--no-rev-check", action="store_true")
         sp.add_argument("--evidence", default=None)
@@ -4804,17 +4901,27 @@ def main(argv=None, env=None):
         return 0
 
     if args.cmd in ("read", "done"):
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage", "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": args.id}})
+                return 2
+        if not args.by:
+            args.by = "seat:" + args.seat
         if args.if_rev is None and not args.no_rev_check:
             # 10-05 a seat:CLI 沒有「重畫」可按;直接說要帶什麼、這封現在幾號。
+            # 10-21 CLI 好用:不自動帶現值(艦長 07:06 裁 fail-closed),但給一整行可以直接複製的正確指令
             _ok, _rs, cur = rev_check(args.seat, args.id, None, env)
             _print_json({"ok": False, "reason": "no_rev", "rev": cur, "message": CLI_NO_REV_HINT % {
-                "cmd": args.cmd, "rev": cur if cur is not None else "<list --tab waiting 那一列的 rev>"}})
+                "cmd": args.cmd, "rev": cur if cur is not None else "<list --tab waiting 那一列的 rev>"},
+                "try": _cli_retry(args, cur)})
             return 6
         if args.no_rev_check and args.if_rev is None:
             note_rev_bypass(env, args.cmd, args.seat, args.id)
         closing = args.cmd == "done" or getattr(args, "done", False)
         if closing and not (args.evidence or args.why):
-            _print_json({"ok": False, "reason": "evidence", "message": TRANSITION_REASON["evidence"]})
+            _print_json({"ok": False, "reason": "evidence", "message": TRANSITION_REASON["evidence"],
+                         "try": _cli_retry(args, args.if_rev, why="<一句結案理由>")})
             return _TRANSITION_RC["evidence"]
         if args.cmd == "read" and not args.done:
             out = mark_read(args.seat, args.id, args.by, env=env, if_rev=args.if_rev,

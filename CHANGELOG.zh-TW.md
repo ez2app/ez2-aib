@@ -4,6 +4,17 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.37
+
+- **一鍵綁手機(核心)**:`aib page bind --start / --poll / --confirm / --cancel --json` 讓艦長室跑完整個配對。兩位數確認數字只顯示在畫面上(不落檔、不進 log、不進 QR);等待時不彈 Touch ID,只有 `--confirm` 才彈。手機已確認後按取消，會給可以解除那把憑證的頁面。`aib page remote status` 多帶頁面代號與綁定剩幾天。
+- **綁定提示指向正確的頁面**:「去解除憑證」的提示改用伺服器回的 `confirm_url`(只收 https,否則用 ez2.page/manage/aib)。只有伺服器真的不認得機器 id 時，才退回不帶機器綁定。
+- **開放艦長室要本人**:`aib chat open`、`visit accept`、改 `space` / `share` 等級每次都要 Touch ID,AI 席位叫的一律拒。讀設定、送拜訪請求、婉拒不用。
+- **更新後艦長室自己換新**:`aib update` 或裝艦長室外掛之後，開著的艦長室會換成新程式(版本真的不同才換;只接本機 http)。
+- **回條分得出本人看了沒**:等本人看的信留 7 天，寄件人每天收到「還在等(第 N 天)」;「本人已讀」跟 AI 已讀分開顯示;暫緩的信帶簡短原因碼。
+- **新的小指令**:`aib seat caps`(這份核心有哪些功能，只給本機頁面)、`aib chrome orphans`(沒收掉的自動化 Chrome 與是哪一席起的;只列不殺)、`aib summary template`(過得了格式檢查的最小總回報範本)。
+- **dm 佇列更好用**:`read` / `done` 自己量出是哪一席、缺東西時給一整行可以複製的指令、PR 網址可以當證據;排程送信找得到 Homebrew 的 tmux。
+- **Cloudflare 授權**:`aib cf grant` 可以開轉址規則(zone 讀寫)與唯讀的大量轉址、規則清單。
+
 ## 0.1.36
 
 - **配對碼綁定也認得這台 Mac**:`aib page bind`(配對碼)現在跟 `--serial` 一樣帶上這台機器的 id,手機遠端認得到用配對碼綁的頁。伺服器回的憑證如果綁的是別台機器，就不存檔。舊伺服器還不收的話，照舊綁。

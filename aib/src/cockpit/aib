@@ -315,6 +315,13 @@ if [ "${1:-}" = "brain" ]; then
   export PYTHONDONTWRITEBYTECODE=1
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/aib_brain.py" "$@"
 fi
+# aib chrome orphans [--all] [--json] -> src/cockpit/chrome_orphans.py(10-21 PROPOSAL-gaps v3 第 7 件 D):
+#   列沒人收的自動化 Chrome 與起它的席碼;只列不殺。
+if [ "${1:-}" = "chrome" ]; then
+  shift
+  export PYTHONDONTWRITEBYTECODE=1
+  aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/chrome_orphans.py" "$@"
+fi
 # aib plugins licensed <外掛> [--json] -> tools/verify/aib_plugins.py(10-15:不在 aib 行程裡的付費外掛,例 Obsidian 標題外掛,
 #   用它問這台有沒有授權;判準同 aib 載入外掛時的 licensed())。
 if [ "${1:-}" = "plugins" ]; then
@@ -336,7 +343,7 @@ if [ "${1:-}" = "records" ]; then
   export PYTHONDONTWRITEBYTECODE=1 AIB_RECORDS_PROG="aib records"
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/memory/aib_records.py" "$@"
 fi
-# aib summary write|status -> src/cockpit/aib_summary.py(10-13 a seat 記憶整理第 5 包,the maintainer「總結與交接分開,兩個都做」):
+# aib summary write|status|template -> src/cockpit/aib_summary.py(10-13 a seat 記憶整理第 5 包,the maintainer「總結與交接分開,兩個都做」):
 #   給 the maintainer 的七段總回報;先確認本輪整理過(aib memory tidy)才寫,留總結收據。
 if [ "${1:-}" = "summary" ]; then
   shift
@@ -865,6 +872,8 @@ if [ "${1:-}" = "seat" ]; then
     detect) shift 2; exec "${EZ2_PY3:-python3}" "$HERE/seat-detect.py" "$@" ;;
     # 對話面板(10-20 Andy「對話面板放核心免費」):只讀那一席的對話紀錄 + 畫面,不送鍵;邏輯全在 seat_panel.py
     transcript|pending) exec "${EZ2_PY3:-python3}" "$HERE/seat_panel.py" "${@:2}" ;;
+    # 這份核心有哪些能力(穩定 key;外掛照 key 決定顯不顯示,不看版本號;只給本機)
+    caps) exec "${EZ2_PY3:-python3}" "$HERE/caps.py" "${@:3}" ;;
     # 本人動作(打字進席位 / 回答詢問 / 停止):一律 Touch ID;AI 席位呼叫擋;邏輯全在 seat_act.py
     input|answer|stop|unlock|lock|unlocked|remote) exec "${EZ2_PY3:-python3}" "$HERE/seat_act.py" "${@:2}" ;;
     # 開終端機附到那一席(面板 P5 鈕;只看不打字,不經 Touch ID)
