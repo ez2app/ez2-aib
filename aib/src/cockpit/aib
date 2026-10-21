@@ -752,6 +752,19 @@ if [ "${1:-}" = "secret" ]; then
   exec "$T_PY3" "$HERE/secret_ask.py" "$@"
 fi
 
+# aib quote key init|status / add / verify(10-21 PROPOSAL-gaps v3 第 7 項):本人原話用 Secure Enclave 簽成 evt,
+#   每次簽都要指紋;只用公鑰驗,信任根 = ez2.page 伺服器簽的鑰證書。委派 aib_quote.py。
+if [ "${1:-}" = "quote" ]; then
+  shift
+  exec "$T_PY3" "$HERE/aib_quote.py" "$@"
+fi
+
+# aib temp add/list/check/done(10-21 @ee4f8 第十件):臨時主機變更登記到期日與拆法,過期 aib doctor / aib temp check 會亮。委派 aib_temp.py。
+if [ "${1:-}" = "temp" ]; then
+  shift
+  exec "$T_PY3" "$HERE/aib_temp.py" "$@"
+fi
+
 # aib cf grant / list / revoke(維護者 10-21):每次動 Cloudflare 先 Touch ID,再現開限網域、限權限、鎖 IP、幾分鐘就過期的 token。委派 cf_grant.py。
 if [ "${1:-}" = "cf" ]; then
   shift

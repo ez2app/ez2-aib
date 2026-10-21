@@ -4,6 +4,14 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.38
+
+- **Signed quotes of your own words**: `aib quote key init` creates a signing key in this Mac's Secure Enclave; `aib quote add "<words>"` asks for Touch ID every time, and anyone can verify the result with the public key alone (`aib quote verify`). A quote is limited to 200 characters so the fingerprint window can show all of it; longer text is refused, never cut. The trust root is a key certificate signed by the ez2.page server; until that side is live, results are marked as "root not verified".
+- **Unbind this Mac**: `aib page unbind` asks for Touch ID, asks ez2.page to revoke this Mac's credential, and only then removes the local copy (atomic; safe to rerun if interrupted). If the server does not support it yet, it says so, links to the dashboard and leaves the local copy alone. `--json` is for the captain room card.
+- **Forward long-waiting mail to your phone (off by default)**: after `aib chat phone-forward on`, mail waiting for you for too long sends one line, "N new messages in your captain room", to the phones you signed; no content, sender or seat code, and capped per hour.
+- **Temporary host changes get an expiry date**: `aib temp add/list/check/done` records when a temporary change should be undone and how; overdue items show up in `aib doctor` and `aib temp check`.
+- **Fix**: the dm latency check in `aib doctor` always measures the store doctor was given, instead of one picked up from an outside environment variable.
+
 ## 0.1.37
 
 - **One-tap phone binding, core side**: `aib page bind --start / --poll / --confirm / --cancel --json` lets the captain room run the whole pairing. A two-digit confirmation number is shown only on screen (never written to a file, a log or the QR); polling never asks for Touch ID, only `--confirm` does. `--cancel` after the phone confirmed returns the page where the credential can be removed. `aib page remote status` now includes the page slug and days left on the binding.

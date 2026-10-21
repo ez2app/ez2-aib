@@ -4,6 +4,14 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.38
+
+- **本人原話簽章**:`aib quote key init` 在這台的 Secure Enclave 建一把簽章鑰;`aib quote add "<原話>"` 每次都要 Touch ID,簽成之後任何人只用公鑰就能驗(`aib quote verify`)。一則最多 200 字，指紋視窗才放得下全文;超過直接拒、不截斷。信任根是 ez2.page 伺服器簽的鑰證書，伺服器端上線前驗出來都標「根未驗證」。
+- **解除這台的綁定**:`aib page unbind` 先要 Touch ID,再請 ez2.page 撤銷這台的憑證，成功才刪本機那份(原子刪除，中途斷掉重跑即可)。伺服器還不支援時會明講並給後台連結，本機不動。`--json` 給艦長室卡片用。
+- **長時間沒看的信轉到手機(預設關)**:`aib chat phone-forward on` 之後，等本人看的信放太久，會送一行「艦長室有 N 封新信」到你簽過名的手機;不帶內文、寄件人或席碼，每小時有上限。
+- **臨時主機變更有到期日**:`aib temp add/list/check/done` 登記臨時改動的到期日與拆法，過期時 `aib doctor` 與 `aib temp check` 會亮。
+- **修正**:`aib doctor` 的 dm 延遲一律量 doctor 指定的那個庫，不會被外面設的環境變數帶去別的庫。
+
 ## 0.1.37
 
 - **一鍵綁手機(核心)**:`aib page bind --start / --poll / --confirm / --cancel --json` 讓艦長室跑完整個配對。兩位數確認數字只顯示在畫面上(不落檔、不進 log、不進 QR);等待時不彈 Touch ID,只有 `--confirm` 才彈。手機已確認後按取消，會給可以解除那把憑證的頁面。`aib page remote status` 多帶頁面代號與綁定剩幾天。
