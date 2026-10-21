@@ -86,7 +86,7 @@ class Box(unittest.TestCase):
     def test_j3_build(self):
         (self.b.chat / "room.json").write_text(json.dumps({
             "v": 1, "ship": {"name": "Ez2 號", "ip": "10.0.0.1",
-                             "captain": {"seat": self.codes[0], "name": "Andy", "avatar": "🧑‍✈️", "ip": "x"}},
+                             "captain": {"seat": self.codes[0], "name": "Andy", "avatar": "🧑\u200d✈️", "ip": "x"}},
             "seats": {self.codes[0]: {"floor": "3F", "lv": 9, "stars": 5, "name": "假名", "role": "假角色", "ctx": 90},
                       self.codes[1]: {"floor": "1F", "lv": 1}}}))
         (self.b.chat / "island.json").write_text(json.dumps({

@@ -174,7 +174,7 @@ class Inbox(Base):
                     self.assertIn(q["sender_kind"], ("external_seat", "owner_paired"))
 
     def test_f6_display_name(self):
-        ok = {"Andy": "Andy", "  安迪  ": "安迪", "Andy​\nLin": "AndyLin", "a  b": "a b", "店長 小美": "店長 小美"}
+        ok = {"Andy": "Andy", "  安迪  ": "安迪", "Andy\u200b\nLin": "AndyLin", "a  b": "a b", "店長 小美": "店長 小美"}
         for raw, want in ok.items():
             self.assertEqual(G.clean_display_name(raw), want, raw)
         for raw in ("", "   ", "x" * 33, "IP:100.114.152.121/6ddf/AIB工程師", "Andy >> 你", "andy@ez2.app",
