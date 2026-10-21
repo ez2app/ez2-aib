@@ -4969,5 +4969,9 @@
   "aib.chat.phone_forward.bad_minutes": "--minutes must be between 1 and 1440",
   "aib.chat.phone_forward.bad_per_hour": "--per-hour must be between 1 and 12",
   "aib.page.help.unbind_local_only": "Only remove this machine's credential, without contacting the server or Touch ID; revoke it on ez2.page separately",
-  "aib.page.unbind_note.local_only": "Removed on this machine only; its credential is still valid on ez2.page, revoke it at {url}"
+  "aib.page.unbind_note.local_only": "Removed on this machine only; its credential is still valid on ez2.page, revoke it at {url}",
+  "aib.seat.panel.remote_why_not_bound": "This machine is not bound to ez2.page yet (run aib page bind first)",
+  "aib.seat.panel.remote_why_link_stopped": "The phone remote link is not running (aib seat remote on starts it)",
+  "aib.seat.panel.remote_why_server_not_ready": "ez2.page remote control is not available yet",
+  "aib.seat.panel.remote_why_server_unreachable": "Cannot reach ez2.page"
 }

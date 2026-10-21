@@ -368,6 +368,25 @@ def do_unlocked(code, env=None):
     return _out(True, code, "unlocked", via="none", unlock_left_s=left, idle_s=idle, default_min=unlock_minutes(env)), 0
 
 
+REMOTE_WHYS = ("not_bound", "link_stopped", "server_not_ready", "server_unreachable")
+
+
+def remote_ready(bound, link_running, ready_fn):
+    """遙控頁「上線了沒」(@74e8b 聯動表第 1 項):依序看綁了沒 → 本機連線在跑沒 → 伺服器說 ready 沒。
+    前面不成立就不打伺服器(server_ready = None)。remote_why 是契約代碼，人話另放 hint。"""
+    out = {"remote_ready": False, "remote_why": None, "link_running": bool(link_running), "server_ready": None}
+    if not bound:
+        out["remote_why"] = "not_bound"
+    elif not link_running:
+        out["remote_why"] = "link_stopped"
+    else:
+        out["server_ready"], out["remote_why"] = ready_fn()
+        out["remote_ready"] = out["server_ready"] is True and out["remote_why"] is None
+    if out["remote_why"]:
+        out["hint"] = T("remote_why_" + out["remote_why"])
+    return out
+
+
 def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_available=None, platform=None, link_ctl=None):
     """手機遠端解鎖總開關(remote_grant.remote_cfg)。on 要本機 Touch ID、擋席位呼叫;off / status 不問。
     一鍵:on 之後順手在背景起 aib seat remote link(還沒綁 ez2.page 就不起、回 link_why);off 一起停。link_ctl 只給測試注入。"""
@@ -399,6 +418,9 @@ def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_a
                machine_fp=mid, link=bool(ctl.running(env)),
                keys=len(remote_grant.TRUSTED_GRANT_KEYS))
     out.update(_bind_info(env))
+    if state == "status":
+        ready = getattr(ctl, "server_ready", None)
+        out.update(remote_ready(out["bound"], out["link"], (lambda: ready(env)) if ready else (lambda: (None, None))))
     return out, 0
 
 

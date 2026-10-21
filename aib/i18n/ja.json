@@ -4969,5 +4969,9 @@
   "aib.chat.phone_forward.bad_minutes": "--minutes は 1〜1440 で指定してください",
   "aib.chat.phone_forward.bad_per_hour": "--per-hour は 1〜12 で指定してください",
   "aib.page.help.unbind_local_only": "このマシンの認証情報だけを削除します(サーバーへの連絡と Touch ID なし)。ez2.page 側は管理画面で別途取り消してください",
-  "aib.page.unbind_note.local_only": "このマシンからのみ削除しました。ez2.page 上の認証情報はまだ有効です。{url} で取り消してください"
+  "aib.page.unbind_note.local_only": "このマシンからのみ削除しました。ez2.page 上の認証情報はまだ有効です。{url} で取り消してください",
+  "aib.seat.panel.remote_why_not_bound": "このマシンはまだ ez2.page に紐付いていません(先に aib page bind を実行)",
+  "aib.seat.panel.remote_why_link_stopped": "スマホのリモート接続が動いていません(aib seat remote on で一緒に起動)",
+  "aib.seat.panel.remote_why_server_not_ready": "ez2.page のリモート操作はまだ公開されていません",
+  "aib.seat.panel.remote_why_server_unreachable": "ez2.page に接続できません"
 }
