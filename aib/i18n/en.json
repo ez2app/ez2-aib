@@ -4967,5 +4967,18 @@
   "aib.chat.phone_forward.status_on": "Phone forward: on (after {minutes} minutes unread, one line goes to your paired phone, at most {per_hour} per hour; no content or names)",
   "aib.chat.phone_forward.status_off": "Phone forward: off (to turn on: aib chat phone-forward on)",
   "aib.chat.phone_forward.bad_minutes": "--minutes must be between 1 and 1440",
-  "aib.chat.phone_forward.bad_per_hour": "--per-hour must be between 1 and 12"
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour must be between 1 and 12",
+  "aib.page.help.unbind_local_only": "Only remove this machine's credential, without contacting the server or Touch ID; revoke it on ez2.page separately",
+  "aib.page.unbind_note.local_only": "Removed on this machine only; its credential is still valid on ez2.page, revoke it at {url}",
+  "aib.seat.panel.remote_why_not_bound": "This machine is not bound to ez2.page yet (run aib page bind first)",
+  "aib.seat.panel.remote_why_link_stopped": "The phone remote link is not running (aib seat remote on starts it)",
+  "aib.seat.panel.remote_why_server_not_ready": "ez2.page remote control is not available yet",
+  "aib.seat.panel.remote_why_server_unreachable": "Cannot reach ez2.page",
+  "aib.chat.phone_forward.touchid_reason": "Turn on BB Call phone forwarding: after {minutes} minutes, send \"N new letters\" to your paired phones, at most {per_hour} per hour",
+  "aib.chat.phone_forward.hint_touchid": "Turning on or loosening BB Call phone forwarding needs your Touch ID; nothing was changed (turning it off needs none)",
+  "aib.doctor.check.page_features.skipped": "Skipped the ez2.page feature list (AIB_DOCTOR_NO_NET=1)",
+  "aib.doctor.check.page_features.unreachable": "Could not reach ez2.page, so the server feature list is unknown (local setup unaffected)",
+  "aib.doctor.check.page_features.no_endpoint": "ez2.page does not offer a feature list yet; some features may wait for the server",
+  "aib.doctor.check.page_features.ok": "ez2.page enabled: {on}; not yet: {off}",
+  "aib.doctor.check.page_features.not_bound": "This machine is not bound to ez2.page; skipped the feature list (no network)"
 }

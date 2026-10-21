@@ -155,8 +155,8 @@ class TestMeta(Base):
         self.assertEqual(self.fm(b["path"])["privacy_level"], "internal")
 
     def test_M5_clean_invisible(self, _lic):
-        dirty = "會‮議​\nuid: 3evil1\x07"
-        a = VC.newpost(self.v, "x", meta={"record_type": dirty, "people": ["A⁦ndy﻿"], "source": [{"kind": "d‍m\r\n"}]})
+        dirty = "會\u202e議\u200b\nuid: 3evil1\x07"
+        a = VC.newpost(self.v, "x", meta={"record_type": dirty, "people": ["A\u2066ndy\ufeff"], "source": [{"kind": "d\u200dm\r\n"}]})
         kv = self.fm(a["path"])
         self.assertEqual(json.loads(kv["record_type"]), "會議uid: 3evil1")
         self.assertEqual(json.loads(kv["people"]), ["Andy"])

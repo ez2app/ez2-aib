@@ -4,6 +4,15 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.39
+
+- **Remove only this Mac's credential**: `aib page unbind --local-only` deletes the local copy without contacting the server or asking for Touch ID, and reminds you to revoke the server copy on the ez2.page dashboard. If this Mac was bound but its machine identity file is gone, `aib page bind` now refuses instead of quietly creating a new identity.
+- **Is the remote page live?**: `aib seat remote status --json` now has `remote_ready` / `remote_why`, checking in order whether this Mac is bound, the local link is running, and the server has the feature turned on. It only decides what the page shows.
+- **`aib doctor` lists ez2.page features**: it shares the same 60-second cache as above. No answer or no connection is a note, not a failure; an unbound Mac makes no network call.
+- **Turning on BB Call phone forwarding needs you**: turning it on, or shortening the wait / raising the hourly limit, asks for Touch ID; turning it off or checking status does not.
+- **No invisible characters in source**: a new check requires zero-width and direction-control characters to be written as escapes (for example `\u200b`).
+- **Core ↔ ez2.page contract file**: `aib/contracts/page-api.json`; tests compare the requests actually sent against it.
+
 ## 0.1.38
 
 - **Signed quotes of your own words**: `aib quote key init` creates a signing key in this Mac's Secure Enclave; `aib quote add "<words>"` asks for Touch ID every time, and anyone can verify the result with the public key alone (`aib quote verify`). A quote is limited to 200 characters so the fingerprint window can show all of it; longer text is refused, never cut. The trust root is a key certificate signed by the ez2.page server; until that side is live, results are marked as "root not verified".

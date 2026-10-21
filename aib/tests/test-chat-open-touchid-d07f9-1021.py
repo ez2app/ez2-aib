@@ -58,7 +58,7 @@ class Base(unittest.TestCase):
                     "AIB_CHAT_HOME": str(self.td / "chat"), "EZ2_AIB_LOCALE": "zh-TW", "PATH": "/usr/bin:/bin"}
         GF.ensure_dirs(self.root)
         GF.write_heartbeat(self.root)
-        CR.add_friend(FRIEND, "Pro 13 ‮藏", self.env)
+        CR.add_friend(FRIEND, "Pro 13 \u202e藏", self.env)
         self.CB = _load_cb()
         self.asked, self.seat_calls = [], []
         self.gate(ok=True)
@@ -169,7 +169,7 @@ class Gate(Base):
     def test_g6_reason_text(self):
         self.run_cb("open", FRIEND)
         self.assertIn("Pro 13", self.asked[-1])
-        self.assertNotIn("‮", self.asked[-1], "方向控制字元要拿掉")
+        self.assertNotIn("\u202e", self.asked[-1], "方向控制字元要拿掉")
         self.assertIn("艦長室", self.asked[-1])
         self.run_cb("space", FRIEND, "room")
         self.assertIn("room", self.asked[-1])

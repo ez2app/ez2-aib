@@ -190,15 +190,15 @@ class Diff(unittest.TestCase):
 
     def test_D6_printed_text_is_clean(self):
         raw = self._card()
-        raw["title"] = "De‮mo​"
+        raw["title"] = "De\u202emo\u200b"
         self.card.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
         doc = json.loads(self.cand.read_text(encoding="utf-8"))
         doc["constitution"]["red_lines"] = ["ok\x1b[2K\x1b[1Ahidden"]
-        doc["constitution"]["goals"] = ["g‮1"]
+        doc["constitution"]["goals"] = ["g\u202e1"]
         self.cand.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
         rc, _, out = self._approve()
         self.assertEqual(rc, 0)
-        for bad in ("\x1b", "‮", "​"):
+        for bad in ("\x1b", "\u202e", "\u200b"):
             self.assertNotIn(bad, out, repr(bad))
         self.assertIn("hidden", out, "字濾掉、內容留著")
 

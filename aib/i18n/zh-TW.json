@@ -4967,5 +4967,18 @@
   "aib.chat.phone_forward.status_on": "轉手機:開(信放 {minutes} 分鐘沒看就轉一行到配對的手機,每小時最多 {per_hour} 則;不帶內文和名字)",
   "aib.chat.phone_forward.status_off": "轉手機:關(要開:aib chat phone-forward on)",
   "aib.chat.phone_forward.bad_minutes": "--minutes 要在 1 到 1440 之間",
-  "aib.chat.phone_forward.bad_per_hour": "--per-hour 要在 1 到 12 之間"
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour 要在 1 到 12 之間",
+  "aib.page.help.unbind_local_only": "只清這台的憑證，不叫伺服器、不跳 Touch ID;ez2.page 上那把要另外到後台撤銷",
+  "aib.page.unbind_note.local_only": "只清了這台;ez2.page 上這台的憑證還有效，請到 {url} 撤銷",
+  "aib.seat.panel.remote_why_not_bound": "這台還沒綁 ez2.page(先跑 aib page bind)",
+  "aib.seat.panel.remote_why_link_stopped": "手機遠端連線沒在跑(aib seat remote on 會一起起)",
+  "aib.seat.panel.remote_why_server_not_ready": "ez2.page 遙控還沒開放",
+  "aib.seat.panel.remote_why_server_unreachable": "連不上 ez2.page",
+  "aib.chat.phone_forward.touchid_reason": "打開 BB Call 轉手機:給本人的信躺 {minutes} 分鐘就送「有 N 封新信」到已配對手機,每小時最多 {per_hour} 則",
+  "aib.chat.phone_forward.hint_touchid": "要本人按 Touch ID 才能打開或放寬 BB Call 轉手機;沒按所以什麼都沒改(關掉不用按)",
+  "aib.doctor.check.page_features.skipped": "沒查 ez2.page 功能清單(AIB_DOCTOR_NO_NET=1)",
+  "aib.doctor.check.page_features.unreachable": "連不上 ez2.page,查不到伺服器開了哪些功能(不影響本機)",
+  "aib.doctor.check.page_features.no_endpoint": "ez2.page 還沒提供功能清單;核心有些功能可能要等伺服器開了才能用",
+  "aib.doctor.check.page_features.ok": "ez2.page 已開：{on};還沒開：{off}",
+  "aib.doctor.check.page_features.not_bound": "這台還沒綁 ez2.page,略過功能清單(沒連網路)"
 }
