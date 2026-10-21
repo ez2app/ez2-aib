@@ -13,12 +13,12 @@
 biometryCurrentSet)。每次要用母鑰,系統本身彈 Touch ID —— 由 SE 強制,不是靠我們自己的 prove()。金鑰櫃檔案裡有母鑰
 ⇒ 直接拒絕(minter_in_file),不會拿來用。稽核紀錄只是紀錄,不算防線。
 
-流程:驗參數 → ssh -G 解出目的主機(同 secret_ask.resolve)→ 問目的主機對 Cloudflare 的出口 IP → 組好視窗那句話
+流程:驗參數 → 用 SSH 設定(-G)解出目的主機(同 secret_ask.resolve)→ 問目的主機對 Cloudflare 的出口 IP → 組好視窗那句話
 (zone、權限、ttl、目的主機,經 TA.clean)→ SE 解封母鑰(系統 Touch ID = 唯一一次核准)→ 查 zone / 權限群組 id →
-POST /user/tokens(expires_on、not_before、request.ip 鎖)→ 經 ssh stdin 寫 VAR=value 到目的主機(同 secret_ask.push,600)。
+POST /user/tokens(expires_on、not_before、request.ip 鎖)→ 經 SSH 的 stdin 寫 VAR=value 到目的主機(同 secret_ask.push,600)。
 
 規矩:
-  - 值只在記憶體與 ssh 的 stdin;不印、不進 argv、不落本機磁碟、不寫 log / 稽核。輸出只有 token id、指紋(sha256 前 8 碼)。
+  - 值只在記憶體與 SSH 的 stdin;不印、不進 argv、不落本機磁碟、不寫 log / 稽核。輸出只有 token id、指紋(sha256 前 8 碼)。
   - 權限只收白名單短名(PERMS);ttl 只收 1–10 分鐘;一定鎖 IP,解不出 IP 就拒(沒有「不鎖」的選項)。
   - 沒有略過 Touch ID 的旗標或環境變數;不是 Mac / 沒過 ⇒ 不建。AIB_TOUCHID=0 只會關掉(失效往低權)。
   - 送不到目的主機 ⇒ 立刻用母鑰把剛建的 token 刪掉,不留一把沒人管的鑰匙在外面。
