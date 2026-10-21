@@ -90,6 +90,33 @@ class Link(BASE.Box):
             out = self.RL.link("tok-secret", FP, base="http://relay.test", call=relay, once=True, act=self.fake, sleep=lambda s: None)
         return out
 
+    def test_l10_result_size(self):
+        """@9f808 中繼規格:result ≤ 96KB(先丟最舊的對話)、413 ⇒ result_too_large、429 / 5xx ⇒ 再送一次;每筆 cmd id 都記"""
+        RL = self.RL
+        big = {"ok": True, "action": "transcript", "seat": CODE, "events": [{"id": "e%d" % i, "ts": i, "kind": "assistant", "text": "字" * 2000} for i in range(40)]}
+        out = RL.fit_result(big)
+        self.assertLessEqual(len(json.dumps(out, ensure_ascii=False).encode("utf-8")), 96 * 1024)
+        self.assertTrue(out["truncated"])
+        self.assertEqual(out["events"][-1]["id"], "e39", "留最新的")
+        self.assertEqual(len(big["events"]), 40, "不改原本的")
+        self.assertEqual(RL.fit_result({"ok": True, "action": "pending", "x": "y" * 200000})["error"], "result_too_large")
+        small = {"ok": True}
+        self.assertIs(RL.fit_result(small), small)
+        sent = []
+
+        def call(st):
+            seq = list(st)
+            return lambda m, u, t, b=None: (sent.append(b["result"]), (seq.pop(0), None))[1]
+        self.assertEqual(RL.reply(call([413, 200]), "http://r", "t", FP, "m-1", big, sleep=lambda s: None), 200)
+        self.assertEqual(sent[-1]["error"], "result_too_large")
+        sent.clear()
+        self.assertEqual(RL.reply(call([503, 200]), "http://r", "t", FP, "m-2", small, sleep=lambda s: None), 200)
+        self.assertEqual(sent, [small, small], "5xx ⇒ 同一份再送一次")
+        rows = []
+        r = Relay({"id": "m-left-0001", "op": "unlocked", "seat": CODE})
+        RL.link("tok-secret", FP, base="http://relay.test", call=r, once=True, act=self.fake, sleep=lambda s: None, log=rows.append)
+        self.assertEqual((rows[0]["id"], rows[0]["reply"]), ("m-left-0001", 200), rows)
+
     def test_l1_round(self):
         r = Relay({"id": "m-unlock-01", "op": "unlock", "seat": CODE, "grant": grant()},
                   {"id": "m-input-002", "op": "input", "seat": CODE, "text": "跑一下測試"},
