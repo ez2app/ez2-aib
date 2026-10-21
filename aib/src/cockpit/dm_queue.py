@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -3692,8 +3693,10 @@ def _cli_retry(args, rev, why=None):
     if args.evidence:
         parts += ["--evidence", args.evidence]
     elif args.cmd == "done" or getattr(args, "done", False):
-        parts += ["--why", '"%s"' % (args.why or why or "<一句結案理由>")]
-    return " ".join(parts)
+        parts += ["--why", args.why or why or "<一句結案理由>"]
+    return shlex.join(parts)      # 每個值都 shlex.quote:證據 / 理由帶空白或引號,複製貼上也不斷(@abb89 #242 審)
+
+
 BYPASS_MARK = "rev_bypass=explicit-no-rev-check"
 BYPASS_LOG = "rev-bypass.log"
 

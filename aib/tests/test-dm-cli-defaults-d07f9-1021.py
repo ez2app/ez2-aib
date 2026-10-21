@@ -9,6 +9,7 @@ D3 沒帶 --if-rev 照舊拒(艦長 07:06 裁 fail-closed,不自動帶現值),�
    照它跑就過
 D4 done 沒證據 ⇒ "try" 帶 --why 範例
 D5 證據認 github.com/ez2app 的 PR / commit 網址(kind=pr);別的網址不認
+D7 "try" 每個值都 shlex.quote:證據 / 理由帶空白、引號,shlex.split 回來一字不差;照它跑走到證據檢查,不是參數錯
 D6 dm-ctl 在 cron 的最小 PATH 找不到 tmux ⇒ 補上 Homebrew 位置;已經找得到 / 備援位置也沒有 ⇒ PATH 不動
 刀(複本):K1 --by 不補預設 ⇒ D2 紅
 """
@@ -109,6 +110,23 @@ class Cli(Base):
         rc, out = self.cli("read", "--done", "--id", it["id"], "--if-rev", str(Q.item_rev(it)), "--evidence", PR)
         self.assertEqual(rc, 0, out)
         self.assertEqual(Q._load_item(SEAT, it["id"], self.env).get("done_kind"), "pr")
+
+
+    def test_d7_try_quoted(self):
+        ev = "已修 見 #233 'v2' \"x\""
+        it = self.item()
+        rc, out = self.cli("read", "--done", "--id", it["id"], "--evidence", ev)
+        self.assertEqual((rc, out["reason"]), (6, "no_rev"))
+        argv = shlex.split(out["try"])
+        self.assertEqual(argv[argv.index("--evidence") + 1], ev)
+        rc, out = self.cli(*argv[2:])
+        self.assertEqual(out["reason"], "evidence", "整行照拆、走到證據檢查(文字不算證據),不是參數錯")
+        self.assertEqual(self.status(it["id"]), "read")
+        it = self.item()
+        why = "回過了 'ok'"
+        rc, out = self.cli("done", "--id", it["id"], "--why", why)
+        argv = shlex.split(out["try"])
+        self.assertEqual(argv[argv.index("--why") + 1], why)
 
 
 class CronPath(unittest.TestCase):
