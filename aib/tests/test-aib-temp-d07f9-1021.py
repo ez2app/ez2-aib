@@ -163,7 +163,7 @@ class Knife(unittest.TestCase):
 class Knife2(unittest.TestCase):
     def test_k2_setdefault(self):
         name = Path(__file__).name
-        with knife_copy(REPO, "src/bootstrap/aib_doctor.py", '    env["EZ2_AIB_STATE_ROOT"] = str(state_root)',
+        with knife_copy(REPO, "src/bootstrap/aib_doctor.py", '    env["EZ2_AIB_STATE_ROOT"] = str(state_root)          # 一律讀 doctor 指定的庫(外面設了別的也不蓋過)',   # 錨帶尾註:dm_latency 與 temp 兩行同碼(0.1.38 整合)
                         '    env.setdefault("EZ2_AIB_STATE_ROOT", str(state_root))', tests=(name,)) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "Temp.test_t5_doctor"], cwd=str(root),
                             max_procs=40, timeout=300)
