@@ -8,8 +8,11 @@
 C1 契約檔格式:前綴跟 api.API_PREFIX 一樣;每支端點都有 method / path / status / auth
 C2 bind_revoke 實際送出的請求(從 urllib 那層攔)= 契約的 method + 前綴 + path、帶 bearer、本體空
 C3 契約的 already_revoked 每個碼 ⇒ unbind 當成功、清本機;unsupported 每個 HTTP ⇒ detail = 契約的 core_detail、本機沒動
-C4 quote-key 那幾支(planned):路徑都在同前綴下、pop 訊息前綴照契約、證書欄位含 kid / sig
-刀(複本):K1 把 bind_revoke 改回送 {} ⇒ C2 紅
+C4 quote-key 那幾支(planned):路徑都在同前綴下、pop 訊息前綴照契約、證書欄位含 kid / sig;
+   核心還沒有這幾支的呼叫端(register / rotate 未做)⇒ 契約標 core_client 還沒有,做了再加攔請求的測試
+C5 核心已有的 quote 部分 = 證書驗簽:照契約欄位 / kind / kid 格式 / sig 格式造的證書 aib_quote.cert_ok 收;
+   少任一驗簽要的欄位、kind 不對、sig 帶 padding ⇒ 不收
+刀(複本):K1 把 bind_revoke 改回送 {} ⇒ C2 紅;K2 cert_ok 認的 kind 跟契約不同 ⇒ C5 紅
 """
 import io
 import json
@@ -22,9 +25,13 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-for _p in (REPO / "src" / "cockpit" / "page", REPO / "src" / "cockpit", HERE):
+for _p in (REPO / "src" / "cockpit" / "page", REPO / "src" / "cockpit", REPO / "src", HERE):
     sys.path.insert(0, str(_p))
+import aib_quote as AQ  # noqa: E402
 import api as A  # noqa: E402
+import base64  # noqa: E402
+import hashlib  # noqa: E402
+from entitlement import ed25519  # noqa: E402
 import store  # noqa: E402
 import unbind as UB  # noqa: E402
 from aib_knife_copy import knife_copy  # noqa: E402
@@ -129,12 +136,47 @@ class Contract(unittest.TestCase):
             self.assertIn(f, E["quote_key_certs"]["cert_fields"])
 
 
+class QuoteCert(unittest.TestCase):
+    def _cert(self, seed=b"\x05" * 32):
+        cc = E["quote_key_certs"]
+        spub = ed25519.public_key(seed)
+        kid = cc["kid_format"].split(":", 1)[0] + ":" + hashlib.sha256(spub).hexdigest()
+        self.assertEqual(kid, AQ.kid_of(spub))
+        pub = b"\x04" + bytes(range(64))
+        vals = {"v": 1, "kind": cc["cert_kind"], "account_id": "acct_1", "key_fp": AQ.key_fp(pub),
+                "pub_x963_b64": base64.b64encode(pub).decode(), "machine_label": "Pro",
+                "registered_at": "2026-10-21T11:00:00+00:00", "revoked_at": None, "kid": kid}
+        cert = {f: vals[f] for f in cc["cert_fields"] if f != "sig"}
+        cert["sig"] = base64.urlsafe_b64encode(ed25519.sign(seed, AQ.canonical(cert))).decode().rstrip("=")
+        self.assertEqual(sorted(cert), sorted(cc["cert_fields"]))
+        return cert, {kid: "ed25519:" + spub.hex()}
+
+    def test_c5_cert_per_contract(self):
+        cert, trusted = self._cert()
+        self.assertEqual(len(cert["sig"]), 86, E["quote_key_certs"]["sig_format"])
+        self.assertTrue(AQ.cert_ok(cert, trusted))
+        for f in ("kind", "kid", "sig", "key_fp", "pub_x963_b64", "registered_at", "v"):
+            self.assertFalse(AQ.cert_ok({k: v for k, v in cert.items() if k != f}, trusted), f)
+        self.assertFalse(AQ.cert_ok(dict(cert, sig=cert["sig"] + "=="), trusted), "sig 不補等號")
+        self.assertFalse(AQ.cert_ok(cert), "出貨清單空 ⇒ 不收")
+
+
 class Knife(unittest.TestCase):
     def test_k1_body_back(self):
         name = Path(__file__).name
         with knife_copy(REPO, "src/cockpit/page/api.py", 'return self._request("POST", "/bind/revoke")',
                         'return self._request("POST", "/bind/revoke", {})', tests=(name,)) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "Contract.test_c2_revoke_request"],
+                            cwd=str(root), max_procs=40, timeout=300)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+
+    def test_k2_kind_drift(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/aib_quote.py", 'cert.get("kind") != "aib-quote-key"',
+                        'cert.get("kind") != "aib-quote-key-v0"', tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "QuoteCert.test_c5_cert_per_contract"],
                             cwd=str(root), max_procs=40, timeout=300)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)

@@ -2,7 +2,10 @@
   "v": 1,
   "about": "核心(aib)跟 ez2.page 伺服器之間的介面契約。兩邊的測試都照這份驗;改契約要兩邊同一輪改、PR 互相連結。錯誤碼是契約(回 detail 原樣,人話另放 hint)。",
   "prefix": "/api/v1/page",
-  "error_body": {"code_field": "error", "request_id_field": "request_id"},
+  "error_body": {
+    "code_field": "error",
+    "request_id_field": "request_id"
+  },
   "endpoints": {
     "bind_revoke": {
       "status": "core-ready",
@@ -14,13 +17,32 @@
       "body": "empty",
       "body_note": "帶本體 ⇒ 400 page_api_body_invalid",
       "machine_id": false,
-      "ok": {"http": 200, "fields": ["ok", "revoked", "token_id", "request_id"]},
+      "ok": {
+        "http": 200,
+        "fields": [
+          "ok",
+          "revoked",
+          "token_id",
+          "request_id"
+        ]
+      },
       "already_revoked": {
         "http": 401,
-        "codes": ["page_api_token_revoked", "page_api_token_expired", "page_api_token_invalid"],
+        "codes": [
+          "page_api_token_revoked",
+          "page_api_token_expired",
+          "page_api_token_invalid"
+        ],
         "core": "當成功、清本機;page_api_token_invalid 多一行 hint"
       },
-      "unsupported": {"http": [404, 405], "core_detail": "page_unbind_unsupported", "core": "不動本機"},
+      "unsupported": {
+        "http": [
+          404,
+          405
+        ],
+        "core_detail": "page_unbind_unsupported",
+        "core": "不動本機"
+      },
       "core_cli": "aib page unbind [--json]"
     },
     "quote_key_start": {
@@ -29,10 +51,30 @@
       "method": "POST",
       "path": "/quote-key/start",
       "auth": "bearer",
-      "body": {"key_fp": "sha256:<hex>(對 65 位元組未壓縮 P-256 公鑰)", "pub_x963_b64": "str", "machine_label": "str", "replaces": "選填,舊 key_fp"},
-      "ok": {"http": 200, "fields": ["reg_id", "confirm_digits", "confirm_link", "expires_at"]},
-      "errors": {"quote_key_fp_mismatch": 400, "quote_key_exists": 409, "quote_key_replace_invalid": 409},
-      "secret_fields": {"confirm_digits": "只印畫面:不進 log / 檔 / QR / 網址;confirm_link 只帶 reg"}
+      "body": {
+        "key_fp": "sha256:<hex>(對 65 位元組未壓縮 P-256 公鑰)",
+        "pub_x963_b64": "str",
+        "machine_label": "str",
+        "replaces": "選填,舊 key_fp"
+      },
+      "ok": {
+        "http": 200,
+        "fields": [
+          "reg_id",
+          "confirm_digits",
+          "confirm_link",
+          "expires_at"
+        ]
+      },
+      "errors": {
+        "quote_key_fp_mismatch": 400,
+        "quote_key_exists": 409,
+        "quote_key_replace_invalid": 409
+      },
+      "secret_fields": {
+        "confirm_digits": "只印畫面:不進 log / 檔 / QR / 網址;confirm_link 只帶 reg"
+      },
+      "core_client": "還沒有(register / rotate 未做)"
     },
     "quote_key_pop": {
       "status": "planned",
@@ -40,36 +82,80 @@
       "method": "POST",
       "path": "/quote-key/pop",
       "auth": "bearer",
-      "body": {"reg_id": "str", "pop_sig_der_b64": "ECDSA P-256 SHA-256,DER,標準 base64"},
+      "body": {
+        "reg_id": "str",
+        "pop_sig_der_b64": "ECDSA P-256 SHA-256,DER,標準 base64"
+      },
       "pop_message_prefix": "ez2-aib-quote-pop-v1:",
       "pop_message": "UTF-8 \"ez2-aib-quote-pop-v1:\" + reg_id",
-      "core": "跟登錄同一次 Touch ID 簽;pop 送失敗 ⇒ cancel 該 reg;沒驗過 pop 的 reg 手機確認回連結無效"
+      "core": "跟登錄同一次 Touch ID 簽;pop 送失敗 ⇒ cancel 該 reg;沒驗過 pop 的 reg 手機確認回連結無效",
+      "core_client": "還沒有(register / rotate 未做)"
     },
     "quote_key_poll": {
       "status": "planned",
       "method": "POST",
       "path": "/quote-key/poll",
       "auth": "bearer",
-      "body": {"reg_id": "str"},
-      "ok": {"http": 200, "fields": ["state"], "states": ["waiting", "confirmed", "expired", "cancelled"], "on_confirmed": ["cert", "revoke"]}
+      "body": {
+        "reg_id": "str"
+      },
+      "ok": {
+        "http": 200,
+        "fields": [
+          "state"
+        ],
+        "states": [
+          "waiting",
+          "confirmed",
+          "expired",
+          "cancelled"
+        ],
+        "on_confirmed": [
+          "cert",
+          "revoke"
+        ]
+      },
+      "core_client": "還沒有(register / rotate 未做)"
     },
     "quote_key_cancel": {
       "status": "planned",
       "method": "POST",
       "path": "/quote-key/cancel",
       "auth": "bearer",
-      "body": {"reg_id": "str"}
+      "body": {
+        "reg_id": "str"
+      },
+      "core_client": "還沒有(register / rotate 未做)"
     },
     "quote_key_certs": {
       "status": "planned",
       "method": "GET",
       "path": "/quote-key/certs",
       "auth": "bearer",
-      "ok": {"http": 200, "fields": ["certs"], "order": "registered_at"},
-      "cert_fields": ["v", "kind", "account_id", "key_fp", "pub_x963_b64", "machine_label", "registered_at", "revoked_at", "kid", "sig"],
+      "ok": {
+        "http": 200,
+        "fields": [
+          "certs"
+        ],
+        "order": "registered_at"
+      },
+      "cert_fields": [
+        "v",
+        "kind",
+        "account_id",
+        "key_fp",
+        "pub_x963_b64",
+        "machine_label",
+        "registered_at",
+        "revoked_at",
+        "kid",
+        "sig"
+      ],
       "cert_kind": "aib-quote-key",
       "kid_format": "ed25519:<sha256(32 位元組伺服器公鑰) hex>",
-      "sig_format": "base64url 不補等號,86 字;對 canonical JSON(去掉 sig)簽"
+      "sig_format": "base64url 不補等號,86 字;對 canonical JSON(去掉 sig)簽",
+      "core_client": "還沒有(register / rotate 未做)",
+      "core_verifies": "aib_quote.cert_ok(0.1.38 起):證書欄位 / kind / kid / sig 格式照這份驗"
     }
   }
 }
