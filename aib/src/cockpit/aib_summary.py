@@ -5,6 +5,7 @@
 總結與交接分開:交接(aib handoff)寫給下一個 AI;總結寫給 the maintainer,用七段總回報(tools/report/aib-report.py)。
   aib summary write --file <總回報輸入.json> [--seat 艙/席]   先確認本輪整理過(aib memory tidy)→ 渲染、落回報檔、播動畫 → 總結收據
   aib summary status [--seat 艙/席]                            這一席最後一張總結收據
+  aib summary template [--out <檔>]                            印一份過得了格式檢查的最小輸入(照著填,不用撞 lint 猜欄位)
 
 總結一定要先整理:本輪(交接一輪的起點之後)沒有整理收據 ⇒ rc 2,說先跑 aib memory tidy。
 (交接不一樣:整理失敗或沒整理不擋交接,只在交接檔與收據記下來。)
@@ -76,6 +77,29 @@ def _read(p):
         return {}
 
 
+# 最小輸入:七段都有、過 report-lint(葉子用 pending ⇒ 不要證據指令;反思帶「因為」⇒ 沒警告)。
+# 欄位規矩在 tools/report/aib-report.py validate();改那邊的必填欄位要一起改這裡(測試會跑渲染抓)。
+TEMPLATE = {
+    "title": "範本回報",
+    "tree": [{"id": "A", "title": "範本大項",
+              "children": [{"id": "A.1", "title": "範本子項", "status": "pending", "evidence": "尚未開始,這是範本"}]}],
+    "progress_text": "這是範本,還沒有開始任何工作。",
+    "stars": 1,
+    "progress": "auto",
+    "summary": "範本摘要:尚無內容。",
+    "reflection": "這一輪沒有新事,因為這只是範本。",
+    "footer": {"dispatched": 0, "executed": "尚無", "human_decision": "不需回應", "waiting_update": "尚無",
+               "next": "填入真實內容", "patrol_minutes": 30, "patrol": "再看一次"},
+}
+
+
+def template(out=""):
+    text = json.dumps(TEMPLATE, ensure_ascii=False, indent=1) + "\n"
+    if out:
+        Path(out).write_text(text, encoding="utf-8")
+    return text
+
+
 def write(report_json, seat="", runner=None):
     import memory_tidy
     ctx = memory_tidy.seat_info(seat)
@@ -107,7 +131,14 @@ def main(argv=None):
     w.add_argument("--seat", default="")
     s = sub.add_parser("status")
     s.add_argument("--seat", default="")
+    t = sub.add_parser("template")
+    t.add_argument("--out", default="")
     o = ap.parse_args(argv)
+    if o.cmd == "template":
+        text = template(o.out)
+        if not o.out:
+            sys.stdout.write(text)
+        return 0
     try:
         if o.cmd == "write":
             print(json.dumps(write(o.file, o.seat), ensure_ascii=False, indent=1))
