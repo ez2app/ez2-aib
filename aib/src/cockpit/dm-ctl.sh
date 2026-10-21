@@ -51,6 +51,14 @@
 # 流程:解析目標→推導發送席(**只可推導不可偽填**,無旗標可冒他席)→
 # 自動標頭→交 E2.7 咽喉(R30 lint+血緣閘一行未動)→v3 引擎安全投遞。
 set -uo pipefail
+# 10-21 PROPOSAL-gaps v3 C(@ee0bb):cron / launchd 的最小 PATH(/usr/bin:/bin)找不到 Homebrew 的 tmux
+#   ⇒ 以前直接報「hub 不可達」、信沒出去也沒留檔。找不到時補上常見的位置(只補 PATH,不改別的)。
+if ! command -v tmux >/dev/null 2>&1; then
+  for _tmux_dir in ${AIB_TMUX_FALLBACK_DIRS:-/opt/homebrew/bin /usr/local/bin}; do
+    if [ -x "$_tmux_dir/tmux" ]; then PATH="$_tmux_dir:$PATH"; export PATH; break; fi
+  done
+  unset _tmux_dir
+fi
 # ── 再入深度上限(@abb89 10-15 19:02,事故後第一道防線)──────────────────────────────
 #   本檔會再入自己(跳艙、自動重送、跨主機 / 全球推導寄件人、多目標逐席…)。10-15 18:4x 一層防護被刀測拿掉,
 #   推導寄件人那一輪無限再入,兩千多個 bash 塞滿整機行程表(右欄 AI 欄掛、別席全套 rc 127)。
