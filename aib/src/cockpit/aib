@@ -343,7 +343,7 @@ if [ "${1:-}" = "records" ]; then
   export PYTHONDONTWRITEBYTECODE=1 AIB_RECORDS_PROG="aib records"
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/memory/aib_records.py" "$@"
 fi
-# aib summary write|status -> src/cockpit/aib_summary.py(10-13 a seat 記憶整理第 5 包,the maintainer「總結與交接分開,兩個都做」):
+# aib summary write|status|template -> src/cockpit/aib_summary.py(10-13 a seat 記憶整理第 5 包,the maintainer「總結與交接分開,兩個都做」):
 #   給 the maintainer 的七段總回報;先確認本輪整理過(aib memory tidy)才寫,留總結收據。
 if [ "${1:-}" = "summary" ]; then
   shift
