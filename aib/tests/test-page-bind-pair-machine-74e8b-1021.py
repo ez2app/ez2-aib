@@ -10,6 +10,7 @@ B3 舊伺服器(還不收 machine,回 400 page_api_seat_label_invalid)⇒ 不帶
 B4 /bind/start 其他錯(例如 5xx)不重試、照舊報錯
 B5 新伺服器嫌 machine 本身不合格(400 page_api_body_invalid)⇒ 不退回、照報錯(不靜靜綁成沒機器的)
 B2 錯誤訊息要叫人去 /manage/aib 解除剛綁的那把(伺服器已發出、佔名額)
+B7 那句網址用伺服器回的 confirm_url(只收 https,不合格退回 ez2.page/manage/aib)
 """
 import os
 import sys
@@ -31,8 +32,8 @@ TOKEN = "ezp_" + "A" * 43
 
 
 class FakeApi:
-    def __init__(self, reject_machine=False, machine_id=None, start_error=None):
-        self.starts, self.reject, self.mid, self.err = [], reject_machine, machine_id, start_error
+    def __init__(self, reject_machine=False, machine_id=None, start_error=None, confirm_url="https://ez2.page/manage/aib"):
+        self.starts, self.reject, self.mid, self.err, self.curl = [], reject_machine, machine_id, start_error, confirm_url
 
     def bind_start(self, seat_label, machine=None):
         self.starts.append(machine)
@@ -40,7 +41,7 @@ class FakeApi:
             raise self.err
         if machine and self.reject:
             raise ApiError(400, "page_api_seat_label_invalid")
-        return {"pair_code": "ABCD-1234", "bind_ticket": "t" * 20, "confirm_url": "https://ez2.page/manage/aib",
+        return {"pair_code": "ABCD-1234", "bind_ticket": "t" * 20, "confirm_url": self.curl,
                 "expires_at": (NOW + timedelta(minutes=10)).isoformat()}
 
     def bind_poll(self, ticket):
@@ -94,6 +95,16 @@ class Bind(unittest.TestCase):
         with self.assertRaises(B.BindError):
             self.run_bind(api)
         self.assertEqual(len(api.starts), 1, "不是 400 不重試")
+
+    def test_b7_hint_uses_server_confirm_url(self):
+        bad = "00000000-0000-4000-8000-000000000000"
+        with self.assertRaises(B.BindError) as cm:
+            self.run_bind(FakeApi(machine_id=bad, confirm_url="https://lfu0327.ez2.page/manage/aib"))
+        self.assertIn("https://lfu0327.ez2.page/manage/aib", str(cm.exception), "用伺服器回的網址")
+        for junk in ("http://evil.example/manage/aib", "javascript:alert(1)", "https://a b", None):
+            with self.assertRaises(B.BindError) as cm:
+                self.run_bind(FakeApi(machine_id=bad, confirm_url=junk))
+            self.assertIn("https://ez2.page/manage/aib", str(cm.exception), "不是 https ⇒ 退回 ez2.page:%r" % (junk,))
 
     def test_b5_machine_invalid_not_fallback(self):
         api = FakeApi(start_error=ApiError(400, "page_api_body_invalid", details=["machine"]))
