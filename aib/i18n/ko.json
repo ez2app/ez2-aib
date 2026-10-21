@@ -4898,5 +4898,11 @@
   "aib.handoff.fact.vault": "Vault 점검(aib vault doctor 읽기 전용, 고칠 때는 본인 확인 후 먼저 백업)",
   "aib.handoff.fact.vault_ok": "문제 없음",
   "aib.handoff.fact.vault_found": "문제 있음: {detail}",
-  "aib.handoff.fact.vault_skip": "실행 안 함({why})"
+  "aib.handoff.fact.vault_skip": "실행 안 함({why})",
+  "aib.chat.bbcall_phone": "함장실에 새 편지가 {n}통 있습니다",
+  "aib.chat.help.phone_forward": "나에게 온 편지를 읽지 않은 채로 두면, 페어링한 휴대폰에 \"새 편지 N통\" 한 줄을 보냅니다(기본 꺼짐, 본문과 이름은 보내지 않음)",
+  "aib.chat.phone_forward.status_on": "휴대폰 전달: 켜짐({minutes}분 동안 읽지 않으면 페어링한 휴대폰에 한 줄, 시간당 최대 {per_hour}건. 본문과 이름은 보내지 않음)",
+  "aib.chat.phone_forward.status_off": "휴대폰 전달: 꺼짐(켜기: aib chat phone-forward on)",
+  "aib.chat.phone_forward.bad_minutes": "--minutes 는 1~1440 사이여야 합니다",
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour 는 1~12 사이여야 합니다"
 }

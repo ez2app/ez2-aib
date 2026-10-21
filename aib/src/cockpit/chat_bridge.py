@@ -2049,6 +2049,11 @@ def main(argv=None, env=None, out=sys.stdout):
     ev.add_argument("--json", action="store_true")
     ev.add_argument("--since", type=int, default=0)
     ev.add_argument("--limit", type=int, default=None)
+    pf = sub.add_parser("phone-forward", help=T("help.phone_forward"))   # BB Call 轉手機(預設關)
+    pf.add_argument("action", choices=("on", "off", "status"))
+    pf.add_argument("--minutes", type=int)
+    pf.add_argument("--per-hour", type=int, dest="per_hour")
+    pf.add_argument("--json", action="store_true")
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
     pr = sub.add_parser("pair", help=T("help.pair"))
@@ -2130,6 +2135,9 @@ def main(argv=None, env=None, out=sys.stdout):
         import room_events as RE
         out.write(json.dumps(RE.payload(env, since=a.since, limit=a.limit or RE.READ_MAX), ensure_ascii=False) + "\n")
         return 0
+    if a.cmd == "phone-forward":
+        import chat_phone_forward as PF
+        return PF.cmd(a, env, out)
     if a.cmd == "awake":
         return cmd_awake(a, env, out)
     if a.cmd == "pair":

@@ -4898,5 +4898,11 @@
   "aib.handoff.fact.vault": "Vault check (read-only aib vault doctor; fixing still needs the owner's OK and a backup first)",
   "aib.handoff.fact.vault_ok": "no problems",
   "aib.handoff.fact.vault_found": "problems: {detail}",
-  "aib.handoff.fact.vault_skip": "not run ({why})"
+  "aib.handoff.fact.vault_skip": "not run ({why})",
+  "aib.chat.bbcall_phone": "New letters waiting in your captain room: {n}",
+  "aib.chat.help.phone_forward": "When letters to you sit unread, send one line (\"N new letters are waiting\") to your paired phone (off by default; no content or names)",
+  "aib.chat.phone_forward.status_on": "Phone forward: on (after {minutes} minutes unread, one line goes to your paired phone, at most {per_hour} per hour; no content or names)",
+  "aib.chat.phone_forward.status_off": "Phone forward: off (to turn on: aib chat phone-forward on)",
+  "aib.chat.phone_forward.bad_minutes": "--minutes must be between 1 and 1440",
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour must be between 1 and 12"
 }

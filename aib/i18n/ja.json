@@ -4898,5 +4898,11 @@
   "aib.handoff.fact.vault": "Vault 点検(aib vault doctor 読み取りのみ。直すときは本人に確認し、先にバックアップ)",
   "aib.handoff.fact.vault_ok": "問題なし",
   "aib.handoff.fact.vault_found": "問題あり:{detail}",
-  "aib.handoff.fact.vault_skip": "未実行({why})"
+  "aib.handoff.fact.vault_skip": "未実行({why})",
+  "aib.chat.bbcall_phone": "艦長室に新しい手紙が {n} 通あります",
+  "aib.chat.help.phone_forward": "あなた宛ての手紙が未読のまま残っているとき、ペアリングしたスマホに「新しい手紙が N 通」と 1 行だけ送ります(既定はオフ。本文と名前は送りません)",
+  "aib.chat.phone_forward.status_on": "スマホ転送:オン({minutes} 分未読ならペアリングしたスマホに 1 行、1 時間に最大 {per_hour} 件。本文と名前は送りません)",
+  "aib.chat.phone_forward.status_off": "スマホ転送:オフ(オンにする:aib chat phone-forward on)",
+  "aib.chat.phone_forward.bad_minutes": "--minutes は 1〜1440 で指定してください",
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour は 1〜12 で指定してください"
 }
