@@ -4950,5 +4950,16 @@
   "aib.doctor.check.temp.ok": "Temporary host changes: {n} registered, none overdue",
   "aib.doctor.check.temp.overdue": "{n} temporary host changes are overdue and not removed: {items}",
   "aib.doctor.check.temp.overdue_remedy": "Undo them as aib temp list says, then aib temp done <id>; to keep one, register it again with a new due date",
-  "aib.doctor.check.temp.error": "Could not read the temporary change list: {error}"
+  "aib.doctor.check.temp.error": "Could not read the temporary change list: {error}",
+  "aib.page.help.unbind": "Unbind this machine from its ez2.page account (needs your Touch ID; revokes the server token first and only then deletes the local credential)",
+  "aib.page.touchid_unbind": "Unbind this machine from account {slug}",
+  "aib.page.unbind_unbound": "This machine is no longer bound to {slug}; run aib page bind to bind again",
+  "aib.page.unbind_not_bound": "This machine was not bound to ez2.page",
+  "aib.page.unbind_hint.server_refused": "The server did not revoke the token, so the local credential was left alone; try again later or revoke this machine at {url}",
+  "aib.page.unbind_hint.server_unreachable": "Could not reach ez2.page, so the local credential was left alone; run this again when you are online, or revoke this machine at {url}",
+  "aib.page.unbind_hint.touchid_cancel": "No fingerprint was given, so nothing changed",
+  "aib.page.unbind_hint.touchid_off": "Touch ID is off, and unbinding needs your fingerprint; nothing changed",
+  "aib.page.unbind_hint.touchid_unavailable": "Touch ID is not available on this machine; revoke this machine at {url}",
+  "aib.page.unbind_hint.server_unsupported": "ez2.page does not support revoking from this machine yet, so the local credential was left alone; revoke this machine at {url}, then run aib page unbind again to clean up locally",
+  "aib.page.unbind_note.page_api_token_invalid": "ez2.page no longer has this machine's credential (it may have been revoked in the dashboard); removing the local copy anyway"
 }
