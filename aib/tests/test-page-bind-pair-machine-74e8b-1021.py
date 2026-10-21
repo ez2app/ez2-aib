@@ -8,7 +8,7 @@ B1 配對碼:/bind/start 帶 machine {id, name}(跟 serial 同一份 machine.jso
 B2 bound 回的 machine_id 不是這台 ⇒ 不存檔
 B3 舊伺服器(還不收 machine,回 400)⇒ 不帶 machine 再要一次、照舊綁(沒有 machine_id,遠端仍是 not-bound)
 B4 /bind/start 其他錯(例如 5xx)不重試、照舊報錯
-B5 數字配對(@9f808 confirm_digits):兩位數照原樣印在終端機(前面的 0 留著);格式不對 / 舊伺服器沒有 ⇒ 不印
+B6 數字配對(@9f808 confirm_digits):兩位數照原樣印在終端機(前面的 0 留著);格式不對 / 舊伺服器沒有 ⇒ 不印
 """
 import os
 import sys
@@ -96,7 +96,7 @@ class Bind(unittest.TestCase):
             self.run_bind(api)
         self.assertEqual(len(api.starts), 1, "不是 400 不重試")
 
-    def test_b5_confirm_digits(self):
+    def test_b6_confirm_digits(self):
         self.run_bind(FakeApi(machine_id=self.machine["id"], digits="07"))
         self.assertTrue(any("確認數字 07" in l for l in self.lines), self.lines)
         for bad in ("7", "077", 7, "ab"):

@@ -398,7 +398,21 @@ def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_a
     out.update(ok=True, on=cfg["on"], max_min=cfg["max_min"], allow=cfg["allow"], bound=bool(mid and accts),
                machine_fp=mid, link=bool(ctl.running(env)),
                keys=len(remote_grant.TRUSTED_GRANT_KEYS))
+    out.update(_bind_info(env))
     return out, 0
+
+
+def _bind_info(env):
+    """充電座燈號(@abb89 ③、@9f808 days_left):綁到這台那一頁的 slug / bind_expires_at / days_left;沒綁 ⇒ 三個 None。"""
+    page_dir = os.path.join(HERE, "page")
+    if page_dir not in sys.path:
+        sys.path.insert(0, page_dir)
+    try:
+        import bind_bg
+        info = bind_bg.bound_here(env)
+    except Exception:  # noqa: BLE001  讀不到 = 灰燈,不讓 status 掛
+        info = None
+    return info or {"slug": None, "bind_expires_at": None, "days_left": None}
 
 
 def do_lock(code, env=None):
