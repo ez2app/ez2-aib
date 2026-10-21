@@ -10,6 +10,7 @@
 //   unseal --name N --dir D --reason R     系統彈 Touch ID ⇒ 明文只寫 stdout。
 //   se-create --name N --dir D             SE 簽章鑰(機器鑰,@74e8b 之後用)⇒ D/N.sekey,stdout 回公鑰。
 //   se-sign   --name N --dir D --reason R  系統彈 Touch ID ⇒ stdin 的資料簽 ECDSA P-256(SHA-256),stdout 回 base64 DER。
+//                                          reason 超過 maxSignReason 字 ⇒ reason_too_long(不截,視窗字就是要簽的原話)。
 //
 // 規矩:
 //   - 沒有任何略過生物辨識的旗標;accessControl 固定 [.privateKeyUsage, .biometryCurrentSet](換了指紋就失效,要重封)。
@@ -41,7 +42,15 @@ func usage() -> String {
     """
 }
 
-func cleanReason(_ s: String) -> String {
+// se-sign 的視窗字是要簽的原話本身(aib quote):截掉 = 本人沒看全就簽 ⇒ 超過這個長度直接拒,不截(@abb89 10-21 Q3)
+let maxSignReason = 320
+
+func cleanReason(_ s: String, limit: Int = 200) -> String {
+    let t = cleanFull(s)
+    return t.count > limit ? String(t.prefix(limit)) : t
+}
+
+func cleanFull(_ s: String) -> String {
     var out = ""
     for u in s.unicodeScalars {
         let v = u.value
@@ -52,8 +61,7 @@ func cleanReason(_ s: String) -> String {
             out.unicodeScalars.append(u)
         }
     }
-    let t = out.trimmingCharacters(in: .whitespaces)
-    return t.count > 200 ? String(t.prefix(200)) : t
+    return out.trimmingCharacters(in: .whitespaces)
 }
 
 func parseArgs(_ argv: [String]) throws -> (String, [String: String]) {
@@ -84,9 +92,9 @@ func accessControl() throws -> SecAccessControl {
     return ac
 }
 
-func context(_ reason: String) -> LAContext {
+func context(_ reason: String, limit: Int = 200) -> LAContext {
     let ctx = LAContext()
-    ctx.localizedReason = cleanReason(reason)
+    ctx.localizedReason = cleanReason(reason, limit: limit)
     ctx.touchIDAuthenticationAllowableReuseDuration = 0      // 每次都要按,不沿用剛剛那次
     return ctx
 }
@@ -218,7 +226,7 @@ func seSign(_ name: String, _ dir: String, _ reason: String) throws {
     guard !data.isEmpty, data.count <= 65536 else { throw Fail("bad_data") }
     guard SecureEnclave.isAvailable else { throw Fail("no_se") }
     let k = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: try b64(doc, "se_key"),
-                                                      authenticationContext: context(reason))
+                                                      authenticationContext: context(reason, limit: maxSignReason))
     let sig = try k.signature(for: data)                               // ← 這裡 SE 要求生物辨識
     print(sig.derRepresentation.base64EncodedString())
 }
@@ -241,7 +249,8 @@ struct Main {
                 try unseal(name, dir, reason)
             case "se-create": try seCreate(name, dir)
             case "se-sign":
-                guard !cleanReason(reason).isEmpty else { throw Fail("no_reason") }
+                guard !cleanFull(reason).isEmpty else { throw Fail("no_reason") }
+                guard cleanFull(reason).count <= maxSignReason else { throw Fail("reason_too_long") }
                 try seSign(name, dir, reason)
             default: throw Fail("usage")
             }

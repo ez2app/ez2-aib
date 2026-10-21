@@ -4898,5 +4898,9 @@
   "aib.handoff.fact.vault": "Vault 点検(aib vault doctor 読み取りのみ。直すときは本人に確認し、先にバックアップ)",
   "aib.handoff.fact.vault_ok": "問題なし",
   "aib.handoff.fact.vault_found": "問題あり:{detail}",
-  "aib.handoff.fact.vault_skip": "未実行({why})"
+  "aib.handoff.fact.vault_skip": "未実行({why})",
+  "aib.quote.touchid_reason": "これをあなたの発言として保存します(指紋 = あなたが言ったこと):{text}",
+  "aib.quote.help.usage": "使い方:aib quote key init|status [--json]\n        aib quote add \"<発言>\" [--seat <席>] [--json]\n        aib quote verify evt:q-… [--json]",
+  "aib.quote.hint.too_long": "発言は最大 {max} 文字です(指紋の画面に全文を表示するため)。いくつかに分けて保存してください。",
+  "aib.quote.hint.no_key": "この Mac にはまだ発言用の署名鍵がありません。先に aib quote key init を実行してください。"
 }

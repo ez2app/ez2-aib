@@ -4898,5 +4898,9 @@
   "aib.handoff.fact.vault": "Vault check (read-only aib vault doctor; fixing still needs the owner's OK and a backup first)",
   "aib.handoff.fact.vault_ok": "no problems",
   "aib.handoff.fact.vault_found": "problems: {detail}",
-  "aib.handoff.fact.vault_skip": "not run ({why})"
+  "aib.handoff.fact.vault_skip": "not run ({why})",
+  "aib.quote.touchid_reason": "Save this as your own words (fingerprint = you said this): {text}",
+  "aib.quote.help.usage": "usage: aib quote key init|status [--json]\n       aib quote add \"<words>\" [--seat <seat>] [--json]\n       aib quote verify evt:q-… [--json]",
+  "aib.quote.hint.too_long": "Quotes are limited to {max} characters so the fingerprint window can show all of it; split it into several quotes.",
+  "aib.quote.hint.no_key": "This Mac has no quote signing key yet: run aib quote key init first."
 }

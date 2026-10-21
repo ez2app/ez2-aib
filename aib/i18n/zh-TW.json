@@ -4898,5 +4898,9 @@
   "aib.handoff.fact.vault": "Vault 檢查(只讀 aib vault doctor;要修照規矩問本人、先備份)",
   "aib.handoff.fact.vault_ok": "沒問題",
   "aib.handoff.fact.vault_found": "有問題:{detail}",
-  "aib.handoff.fact.vault_skip": "沒跑({why})"
+  "aib.handoff.fact.vault_skip": "沒跑({why})",
+  "aib.quote.touchid_reason": "把這段存成你的原話(按指紋 = 這是你說的):{text}",
+  "aib.quote.help.usage": "用法:aib quote key init|status [--json]\n      aib quote add \"<原話>\" [--seat <席碼>] [--json]\n      aib quote verify evt:q-… [--json]",
+  "aib.quote.hint.too_long": "原話最多 {max} 字(指紋視窗要能完整顯示);請拆成幾則分別存。",
+  "aib.quote.hint.no_key": "這台還沒有原話簽章鑰:先跑 aib quote key init。"
 }
