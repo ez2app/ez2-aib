@@ -4975,5 +4975,6 @@
   "aib.doctor.check.page_features.skipped": "ez2.page 기능 목록은 확인하지 않았습니다(AIB_DOCTOR_NO_NET=1)",
   "aib.doctor.check.page_features.unreachable": "ez2.page 에 연결할 수 없어 서버 기능 목록을 확인하지 못했습니다(로컬에는 영향 없음)",
   "aib.doctor.check.page_features.no_endpoint": "ez2.page 가 아직 기능 목록을 제공하지 않습니다. 일부 기능은 서버 대응을 기다립니다",
-  "aib.doctor.check.page_features.ok": "ez2.page 사용 중: {on} / 아직: {off}"
+  "aib.doctor.check.page_features.ok": "ez2.page 사용 중: {on} / 아직: {off}",
+  "aib.doctor.check.page_features.not_bound": "이 기기는 ez2.page 에 연결되지 않아 기능 목록을 건너뜁니다(네트워크 없음)"
 }

@@ -4975,5 +4975,6 @@
   "aib.doctor.check.page_features.skipped": "沒查 ez2.page 功能清單(AIB_DOCTOR_NO_NET=1)",
   "aib.doctor.check.page_features.unreachable": "連不上 ez2.page,查不到伺服器開了哪些功能(不影響本機)",
   "aib.doctor.check.page_features.no_endpoint": "ez2.page 還沒提供功能清單;核心有些功能可能要等伺服器開了才能用",
-  "aib.doctor.check.page_features.ok": "ez2.page 已開：{on};還沒開：{off}"
+  "aib.doctor.check.page_features.ok": "ez2.page 已開：{on};還沒開：{off}",
+  "aib.doctor.check.page_features.not_bound": "這台還沒綁 ez2.page,略過功能清單(沒連網路)"
 }

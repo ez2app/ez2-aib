@@ -614,15 +614,19 @@ PAGE_FEATURE_NAME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,39}")
 
 def check_page_features(state_root, repo_root, env=None, call=None, now=None):
     """功能清單 ⇒ OK 列出已開 / 還沒開;伺服器還沒有這支 / 連不上 ⇒ NOTE(不算失敗,也不擋)。
-    AIB_DOCTOR_NO_NET=1 ⇒ 不連網路(測試 / 離線)。名稱只印小寫英數那些,伺服器亂回的字不直接印。"""
+    AIB_DOCTOR_NO_NET=1 或這台沒綁 ez2.page ⇒ 不連網路(測試 / 離線)。名稱只印小寫英數那些,伺服器亂回的字不直接印。"""
     env = dict(os.environ if env is None else env)
     env["EZ2_AIB_STATE_ROOT"] = str(state_root)          # 快取寫在 doctor 指定的庫(外面設了別的也不蓋過)
     if str(env.get("AIB_DOCTOR_NO_NET", "")).strip() == "1":
         return _result("page_features", NOTE, _C("page_features.skipped"))
     cock = str(Path(repo_root) / "src" / "cockpit")
     try:
-        if cock not in sys.path:
-            sys.path.insert(0, cock)
+        for d in (cock, str(Path(cock) / "page")):
+            if d not in sys.path:
+                sys.path.insert(0, d)
+        import store
+        if not store.list_tokens(env):                   # 這台沒綁 ez2.page ⇒ 不連網路(也讓沒綁的測試 / CI 不打外網)
+            return _result("page_features", NOTE, _C("page_features.not_bound"))
         import remote_link as RL
         feats, why = RL.fetch_features(env, call=call or RL.http, now=now)
     except Exception as exc:  # noqa: BLE001
