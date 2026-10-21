@@ -121,9 +121,11 @@ class PageApi:
 
     # ---- 端點(規格 §二總表) ----------------------------------------------
 
-    def bind_start(self, seat_label):
-        return self._request("POST", "/bind/start", {"seat_label": seat_label},
-                             auth=False)
+    def bind_start(self, seat_label, machine=None):
+        body = {"seat_label": seat_label}
+        if machine:
+            body["machine"] = machine   # 10-21 @9f808:配對碼也綁機器(跟 /bind/serial 同形狀)
+        return self._request("POST", "/bind/start", body, auth=False)
 
     def bind_serial(self, serial, seat_label, machine):
         return self._request("POST", "/bind/serial", {
