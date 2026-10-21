@@ -144,7 +144,7 @@ class Quote(Base):
         n = len(self.se.calls)
         self.assertEqual(self.add("字" * 201), (None, "too_long"))
         self.assertEqual(len(self.se.calls), n, "超長不叫 helper")
-        r, why = self.add("​".join("字" * 200))
+        r, why = self.add("\u200b".join("字" * 200))
         self.assertIsNone(why, "零寬字清掉後不算字")
 
     def test_q3_fail_closed(self):
