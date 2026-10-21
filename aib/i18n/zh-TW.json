@@ -4898,5 +4898,7 @@
   "aib.handoff.fact.vault": "Vault 檢查(只讀 aib vault doctor;要修照規矩問本人、先備份)",
   "aib.handoff.fact.vault_ok": "沒問題",
   "aib.handoff.fact.vault_found": "有問題:{detail}",
-  "aib.handoff.fact.vault_skip": "沒跑({why})"
+  "aib.handoff.fact.vault_skip": "沒跑({why})",
+  "aib.room_reload.reloaded": "艦長室換成新版了({old} → {new}),畫面會自己重新連上",
+  "aib.room_reload.failed": "艦長室還在跑舊版({old}),新版是 {new};請關掉艦長室再開一次"
 }

@@ -4898,5 +4898,7 @@
   "aib.handoff.fact.vault": "Vault check (read-only aib vault doctor; fixing still needs the owner's OK and a backup first)",
   "aib.handoff.fact.vault_ok": "no problems",
   "aib.handoff.fact.vault_found": "problems: {detail}",
-  "aib.handoff.fact.vault_skip": "not run ({why})"
+  "aib.handoff.fact.vault_skip": "not run ({why})",
+  "aib.room_reload.reloaded": "The captain room switched to the new version ({old} → {new}); the page reconnects by itself",
+  "aib.room_reload.failed": "The captain room is still running the old version ({old}); the new one is {new}. Close the captain room and open it again"
 }
