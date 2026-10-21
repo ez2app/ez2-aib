@@ -44,3 +44,30 @@ aib cf revoke <token_id>
   同帳號的 AI 若把它們改掉,可以在本人**核准一次合法請求**時,順便把那次解出來的母鑰帶走。Secure Enclave 擋得住「沒有本人按指紋就拿到」,
   擋不住「本人按了、但跑的程式已被換掉」。後續建議:把輔助程式裝到 root 擁有的位置,執行前比對簽章清單的雜湊(這一版沒做,待整合席裁)。
 - 母鑰本身能開任何權限的 token;它的安全完全靠上面那道 Secure Enclave 防線。Cloudflare 後台請替母鑰設 IP 限制(只准你的 Mac / 辦公室出口)當第二道。
+
+## 上線手冊
+
+整個流程分三段。第 ① 段只由本人操作;第 ③ 段每一項都屬正式環境，逐項等本人點頭。
+
+### ① 建母鑰並封進 Secure Enclave(本人自己做，AI 不經手)
+1. Cloudflare 後台 → My Profile → API Tokens → Create Custom Token:
+   - 權限：User → **API Tokens: Edit**;Zone → **Zone: Read**(要核發的網域，或 All zones)。
+   - 建議加 Client IP Address Filtering = 這台 Mac 的出口 IP(IP 不固定就不加)。
+2. 在終端機自己跑(Claude Code 裡用 `!`,一整行、前面不要空格):`!aib secret ask CF_TOKEN_MINTER`
+   遮字框貼上 → 指紋。值只從輸入框進 Secure Enclave 封存檔，不進對話、不寫任何 `.env`。
+3. `aib cf list` 會跳指紋、列得出帳號 token ⇒ 母鑰可用。
+
+### ② 真機實測(本人在旁按指紋)
+1. `aib cf grant <zone> zone-read --push <host>:/root/cf-grant-test.env --ttl 2m --why "上線實測" --dry-run`:看計畫，IP 鎖要含目的主機的 IPv4 / IPv6。
+2. 拿掉 `--dry-run` 再跑：視窗要寫明網域、權限、2m、目的主機;按下。
+3. 在目的主機用那把 token:`/user/tokens/verify` 是 active;讀該網域成功;讀 DNS 被拒。
+4. 2 分鐘後再 verify ⇒ 失效;`aib cf list` 看得到它過期。
+5. 再跑一次 grant,視窗按「取消」⇒ 不建 token,稽核紀錄多一筆被拒。
+6. 刪掉目的主機上的測試檔(單一目標)，結果記錄並回報。
+
+### ③ 撤掉舊的大鑰匙(正式環境，逐項等本人點頭)
+先把等不了指紋的自動工作(續憑證、清快取…)換成限網域、鎖 IP 的小 token,再撤：
+1. 本機金鑰櫃若還有母鑰舊行 ⇒ 本人刪掉那一行。
+2. 伺服器上的 global key 與大範圍 token:先備份，再從設定檔移除;同目錄的舊備份檔也含同一把，要一起處理。
+3. Cloudflare 後台撤銷大範圍 token;global key 由本人 **Change / Roll**(global key 不能只停用)。
+4. 撤完 24 小時內看憑證續期、快取清除、網域稽核等排程紀錄都正常。
