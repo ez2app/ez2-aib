@@ -220,6 +220,22 @@ class CfGrant(Base):
         self.assertEqual(pol[1], {"effect": "allow", "permission_groups": [{"id": "g-workers-scripts-write"}],
                                   "resources": {"com.cloudflare.api.account." + AID: "*"}})
 
+    def test_g3b_redirect_perms(self):
+        # 邊緣轉址:Single Redirect 寫只給那個 zone;Bulk Redirect / 清單只讀、只給那個帳號
+        self.assertEqual(CG.parse_perms("rule-lists-read,redirect-write,bulk-redirect-read"),
+                         ("redirect-write", "bulk-redirect-read", "rule-lists-read"))
+        self.assertEqual({p: s for p, (_n, s) in CG.PERMS.items() if "redirect" in p or "lists" in p},
+                         {"redirect-read": "zone", "redirect-write": "zone", "bulk-redirect-read": "account", "rule-lists-read": "account"})
+        self.assertNotIn("Write", CG.PERMS["bulk-redirect-read"][0] + CG.PERMS["rule-lists-read"][0])
+        rc, res = self.grant(["ez2.app", "redirect-write,bulk-redirect-read,rule-lists-read", "--push", "eu01:/etc/x.env"])
+        self.assertEqual(rc, 0, res)
+        pol = self.posts()[0][2]["policies"]
+        self.assertEqual(pol[0], {"effect": "allow", "permission_groups": [{"id": "g-dynamic-url-redirects-write"}],
+                                  "resources": {"com.cloudflare.api.account.zone." + ZID: "*"}})
+        self.assertEqual(pol[1], {"effect": "allow",
+                                  "permission_groups": [{"id": "g-mass-url-redirects-read"}, {"id": "g-account-rule-lists-read"}],
+                                  "resources": {"com.cloudflare.api.account." + AID: "*"}})
+
     def test_g4_touchid_gate(self):
         for kw, why in (({"touch": Unseal(ok=False, why="cancel")}, "touchid_cancel"),
                         ({"touch": Unseal(ok=False, why="no_biometry")}, "touchid_unavailable"),

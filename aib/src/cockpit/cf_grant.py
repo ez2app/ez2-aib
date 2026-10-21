@@ -56,6 +56,11 @@ PERMS = {
     "ssl-write": ("SSL and Certificates Write", "zone"),
     "routes-write": ("Workers Routes Write", "zone"),
     "workers-write": ("Workers Scripts Write", "account"),
+    # 邊緣轉址(10-21 suntan apex→www):Single Redirect 寫在 zone;Bulk Redirect 與其清單在帳號層,只給讀(看會不會撞)
+    "redirect-read": ("Dynamic URL Redirects Read", "zone"),
+    "redirect-write": ("Dynamic URL Redirects Write", "zone"),
+    "bulk-redirect-read": ("Mass URL Redirects Read", "account"),
+    "rule-lists-read": ("Account Rule Lists Read", "account"),
 }
 TTL_MIN, TTL_MAX, TTL_DEFAULT = 1, 10, 10      # 分鐘(@abb89 審:≤ 10)
 _ZONE = re.compile(r"^(?=.{3,253}$)[a-z0-9-]+(\.[a-z0-9-]+)+$")
