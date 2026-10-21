@@ -5,7 +5,7 @@
 契約:pending/CONTRACT-bind-start-poll-74e8b-1021.md(@74e8b 起草、@abb89 14:5x 審),加 @abb89 的四條:
   1. start 帶出伺服器發的 confirm_digits(兩位**字串**,前導 0 留著);它只走 stdout 給呼叫端畫在畫面上,
      **不寫進狀態檔、不進 log、不進 qr_url / liff_url**。伺服器沒給兩位數 ⇒ start 回 ok:false(艦長室不開卡片)。
-  2. poll 不彈 Touch ID:伺服器說綁好了 ⇒ state=confirm_local + slug;本人在頁面按了才叫 --confirm(這一步才彈)。
+  2. poll 不彈 Touch ID:伺服器說綁好了 ⇒ state=confirm_local + slug + token_expires_at(憑證到期,不是配對碼到期;@74e8b);本人在頁面按了才叫 --confirm(這一步才彈)。
   3. 「24 小時內只問一次」只限同機同帳號、紀錄要 Secure Enclave 簽 —— 這版**沒做免問**,每次 confirm 都彈 Touch ID
      (比契約嚴、不比契約鬆;免問那段要 SE 簽 + 驗簽,另開一張)。
   4. state 多 cancelled;poll 到 expires_at 為止。
@@ -206,7 +206,7 @@ def poll(api, env=None, clock=None):
             return {"ok": True, "state": "expired", "why": "confirm-timeout", "manage_url": MANAGE_URL}, 0
         rec = p.get("record") or {}
         return {"ok": True, "state": "confirm_local", "slug": rec.get("slug") or rec.get("page_id"),
-                "expires_at": rec.get("expires_at")}, 0
+                "token_expires_at": rec.get("expires_at")}, 0
     exp = _iso(p.get("expires_at"))
     if exp is None or now >= exp:
         clear_pending(env)
@@ -239,7 +239,7 @@ def poll(api, env=None, clock=None):
     p.update(state="confirm_local", record=dict(polled), confirmable_at=now.isoformat())
     _write_pending(p, env)
     return {"ok": True, "state": "confirm_local", "slug": polled.get("slug") or polled.get("page_id"),
-            "expires_at": polled.get("expires_at")}, 0
+            "token_expires_at": polled.get("expires_at")}, 0
 
 
 def confirm(env=None, clock=None, prove=None, caller_is_seat=None, reason_fn=None):

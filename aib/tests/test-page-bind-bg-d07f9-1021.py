@@ -217,6 +217,8 @@ class Poll(Base):
         api.poll_status = "bound"
         res, rc = self.poll(api)
         self.assertEqual((rc, res["state"], res["slug"]), (0, "confirm_local", "lfu0327"))
+        self.assertEqual(res["token_expires_at"], (NOW + timedelta(days=30)).isoformat(), "憑證到期,不跟配對碼的 expires_at 同名")
+        self.assertNotIn("expires_at", res)
         self.assertEqual(self.tokens(), [], "poll 不寫正式憑證")
         self.assertEqual(self.asked, [], "poll 不彈指紋")
         n = len(api.polls)
