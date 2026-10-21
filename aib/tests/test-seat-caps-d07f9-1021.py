@@ -8,6 +8,7 @@ A2 key 跟著程式走:檢查不過(檔不在、函式不在)⇒ key 不出現;k
 A3 不 import 任何被檢查的模組(不會有副作用):跑完 sys.modules 沒多 seat_act / chat_bridge
 A4 --write-vault:寫 <EZ2_VAULT_DIR>/.ez2/caps.json(跟 --json 同內容);沒設 EZ2_VAULT_DIR ⇒ rc 2 why=no-vault、不猜位置
 A5 aib seat caps 有接上、說明四語都有;不認得的參數 rc 2
+A6 版本讀 aib/VERSION(唯一來源):暫存樹只有 VERSION、沒 pyproject 也讀得到;跟真樹的 VERSION 一致
 刀(複本):K1 檢查一律回 True ⇒ A2 紅
 """
 import io
@@ -83,6 +84,16 @@ class Caps(unittest.TestCase):
             self.assertIn("  caps [--json] [--write-vault]", d["aib.seat.help.usage"], lang)
         self.assertEqual(self.run_main("--bogus")[0], 2)
         self.assertEqual(self.run_main("--help")[0], 0)
+
+    def test_a6_version_file(self):
+        self.assertEqual(C.aib_version(), (REPO / "VERSION").read_text(encoding="utf-8").strip())
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "site" / "aib"
+            root.mkdir(parents=True)
+            (root / "VERSION").write_text("9.8.7\n", encoding="utf-8")
+            self.assertEqual(C.aib_version(root), "9.8.7")
+            (root / "VERSION").unlink()
+            self.assertIsNone(C.aib_version(root), "兩個都沒有 ⇒ null,不猜")
 
 
 class Knife(unittest.TestCase):

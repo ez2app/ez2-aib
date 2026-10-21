@@ -77,8 +77,16 @@ CAPS = {
 }
 
 
-def aib_version():
-    for p in (ROOT.parent / "pyproject.toml", ROOT / "pyproject.toml"):
+def aib_version(root=None):
+    """aib/VERSION 是唯一版本來源(aib 入口註明;PyPI 裝的樹沒有 pyproject);pyproject 只當退路。"""
+    root = Path(root) if root else ROOT
+    try:
+        v = (root / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        v = ""
+    if v:
+        return v
+    for p in (root.parent / "pyproject.toml", root / "pyproject.toml"):
         try:
             m = re.search(r'^version\s*=\s*"([^"]+)"', p.read_text(encoding="utf-8"), re.M)
         except OSError:
