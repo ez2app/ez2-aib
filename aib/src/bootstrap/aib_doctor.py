@@ -587,9 +587,11 @@ def check_temp(state_root, repo_root, env=None, now=None):
     """aib temp 登記的臨時主機變更(@ee4f8 第十件):過期沒拆 ⇒ MANUAL(要人去拆或延);沒登記 / 都沒到期 ⇒ OK。
     清單是本機檔,這項只防忘記。"""
     env = dict(os.environ if env is None else env)
-    env.setdefault("EZ2_AIB_STATE_ROOT", str(state_root))
+    env["EZ2_AIB_STATE_ROOT"] = str(state_root)          # 一律讀 doctor 指定的庫(外面設了別的也不蓋過)
+    cock = str(Path(repo_root) / "src" / "cockpit")
     try:
-        sys.path.insert(0, str(Path(repo_root) / "src" / "cockpit"))
+        if cock not in sys.path:
+            sys.path.insert(0, cock)
         import aib_temp
         rows = aib_temp.listing(env, now=now)
     except Exception as exc:  # noqa: BLE001

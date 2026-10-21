@@ -6,10 +6,10 @@ T1 add ⇒ 回 tmp-xxxxxx、存 host / desc / undo / until / seat;YYYY-MM-DD ⇒
 T2 欄位檢查:空白 / 超長 / until 已過 / ISO 沒時區 / 席碼不對 ⇒ 拒,不寫檔;控制 / 零寬字清掉
 T3 list 照到期排、過期的標 overdue;check 有過期 rc 1、沒有 rc 0
 T4 done ⇒ 從 list 消失(--all 看得到);再 done 一次 ⇒ already_done;id 不對 ⇒ bad_id / not_found
-T5 aib doctor:過期沒拆 ⇒ MANUAL(列 id / 主機 / 席);沒有 ⇒ OK
+T5 aib doctor:過期沒拆 ⇒ MANUAL(列 id / 主機 / 席);沒有 ⇒ OK;一律讀 doctor 傳進來的庫(環境變數指別處也一樣)
 T6 上限:還沒拆的滿 MAX_OPEN ⇒ too_many;拆過超過 30 天的會被清掉
 T7 aib temp 接上、四語都有、--bogus rc 2
-刀(複本):K1 overdue 判斷永遠 False ⇒ T3 紅
+刀(複本):K1 overdue 判斷永遠 False ⇒ T3 紅;K2 doctor 改回 setdefault ⇒ T5 紅
 """
 import datetime
 import io
@@ -110,6 +110,12 @@ class Temp(Base):
         self.assertIn("eu01-sftp", r["detail"])
         self.assertIn("abcde", r["detail"])
         self.assertTrue(r["remedy"])
+        with tempfile.TemporaryDirectory() as other:
+            r = aib_doctor.check_temp(self.root, REPO, env=dict(self.env, EZ2_AIB_STATE_ROOT=other),
+                                      now=NOW + datetime.timedelta(days=1))
+            self.assertEqual(r["status"], aib_doctor.MANUAL, "環境變數指 A、doctor 傳 B ⇒ 讀 B")
+            r = aib_doctor.check_temp(Path(other), REPO, env=self.env, now=NOW + datetime.timedelta(days=1))
+            self.assertEqual(r["status"], aib_doctor.OK)
 
     def test_t6_limits(self):
         old = self.add()
@@ -149,6 +155,17 @@ class Knife(unittest.TestCase):
                         'overdue=bool(not i.get("done_at") and u is not None and u <= t)', "overdue=False",
                         tests=(name,)) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "Temp.test_t3_list_check"], cwd=str(root),
+                            max_procs=40, timeout=300)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+
+class Knife2(unittest.TestCase):
+    def test_k2_setdefault(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/bootstrap/aib_doctor.py", '    env["EZ2_AIB_STATE_ROOT"] = str(state_root)',
+                        '    env.setdefault("EZ2_AIB_STATE_ROOT", str(state_root))', tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Temp.test_t5_doctor"], cwd=str(root),
                             max_procs=40, timeout=300)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
