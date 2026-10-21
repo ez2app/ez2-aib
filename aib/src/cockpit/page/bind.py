@@ -72,9 +72,6 @@ def run_bind(api, seat_label, out, environ=None, sleep=None, clock=None,
     deadline = _parse_iso(started.get("expires_at"))
 
     out("到 %s 輸入配對碼 %s(10 分鐘內有效)" % (confirm_url, pair_code))
-    digits = started.get("confirm_digits")   # 10-21 @abb89 數字配對(@9f808):手機確認頁要本人親手打;只印在這個畫面,不寫檔、不進 log
-    if isinstance(digits, str) and re.fullmatch(r"[0-9]{2}", digits):
-        out("手機上還要輸入確認數字 %s(只顯示在這台,不要傳給別人)" % digits)
     out("(這個視窗會每 %d 秒問一次,你按完確認就會自己往下走)" % poll_seconds)
 
     while True:
@@ -165,7 +162,7 @@ def _start_error_text(exc):
 
 def _poll_error_text(exc):
     if exc.code == "page_api_bind_expired":
-        return ("配對碼已經過期、被取走了，或確認數字錯了 3 次。如果不是你取的,先到 ez2.page 後台看「AI 助理」頁;"
+        return ("配對碼已經過期或已經被取走了。如果不是你取的,先到 ez2.page 後台看「AI 助理」頁;"
                 "否則重跑 `aib page bind`")
     if exc.code == "page_api_bind_ticket_unknown":
         return "這張配對憑單伺服器不認得(可能是 PAGE 重啟過),重跑 `aib page bind`"
