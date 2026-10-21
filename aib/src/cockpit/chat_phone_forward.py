@@ -11,7 +11,10 @@
   - 同一封只轉一次;每小時最多 per_hour 則(防狂寄信把手機轟炸);一次送出涵蓋當下所有該轉的信。
   - 走 Nostr 私訊、用這台的機器金鑰簽,不經 ez2.page(@9f808)。Telegram 那條要先有「主人自己的 Telegram」欄位,另開。
   - 帶名字(include_name)還沒做:之後加,開的時候要提示「名字會留在手機鎖屏 / Telegram 雲端」。
-開關是本機檔,AI 改得到;最壞是主人手機多 / 少收到「有 N 封新信」,不碰內文,所以不加 Touch ID。
+開關是本機檔,AI 改得到;最壞是主人手機多 / 少收到「有 N 封新信」,不碰內文。
+正式入口(aib chat phone-forward)放寬時要本人 Touch ID(Andy 10-21 夜「建議全部做」第 7 件):
+  打開、或開著時把 minutes 調短 / per_hour 調高 ⇒ seat_act.prove,沒過什麼都不寫(rc 2)。關、查狀態不用。
+  這只擋走正式入口的代按;檔案本身 AI 照樣改得到 —— 真正的保護仍是「只送數量」+「只送主人簽過的手機」。
 """
 import json
 import os
@@ -162,20 +165,53 @@ async def tick(env, now, phones_fn, send_fn):
     return "sent"
 
 
-def cmd(a, env, out):
+def loosens(cur, on=None, minutes=None, per_hour=None):
+    """這次改完會不會比現在送得更多:打開,或開著時 minutes 變短 / per_hour 變多。"""
+    new_on = cur["on"] if on is None else bool(on)
+    if not new_on:
+        return False
+    return (not cur["on"] or (minutes is not None and minutes < cur["minutes"])
+            or (per_hour is not None and per_hour > cur["per_hour"]))
+
+
+def _bad(minutes, per_hour):
+    for v, (lo, hi), why in ((minutes, MINUTES_RANGE, "bad_minutes"), (per_hour, PER_HOUR_RANGE, "bad_per_hour")):
+        if v is not None and not (lo <= v <= hi):
+            return why
+    return None
+
+
+def cmd(a, env, out, prove=None):
     """aib chat phone-forward on|off|status [--minutes N] [--per-hour K] [--json]"""
     import i18n_lib
 
     def T(key, params=None):
         return i18n_lib.t("aib.chat.phone_forward." + key, params or {}, locale=i18n_lib.resolve_locale())
     on = {"on": True, "off": False}.get(a.action)
+    e = dict(os.environ if env is None else env)
     if a.action == "status" and a.minutes is None and a.per_hour is None:
         rec = load(env)
         res, why = {k: rec[k] for k in ("on", "minutes", "per_hour")}, None
     else:
-        res, why = configure(env, on=on, minutes=a.minutes, per_hour=a.per_hour)
+        why = _bad(a.minutes, a.per_hour)
+        if not why and loosens(load(env), on, a.minutes, a.per_hour):
+            if prove is None:
+                import seat_act as SA
+                prove = SA.prove
+            cur = load(env)
+            _via, why = prove(T("touchid_reason", {"minutes": a.minutes or cur["minutes"],
+                                                   "per_hour": a.per_hour or cur["per_hour"]}), e)
+        res = None
+        if not why:
+            res, why = configure(env, on=on, minutes=a.minutes, per_hour=a.per_hour)
     if why:
-        out.write((json.dumps({"ok": False, "why": why}) if a.json else T(why)) + "\n")
+        if a.json:
+            body = {"ok": False, "why": why}
+            if why.startswith("touchid_"):
+                body["hint"] = T("hint_touchid")
+            out.write(json.dumps(body, ensure_ascii=False) + "\n")
+        else:
+            out.write((T("hint_touchid") if why.startswith("touchid_") else T(why)) + "\n")
         return 2
     if a.json:
         out.write(json.dumps(dict(res, ok=True)) + "\n")

@@ -4904,5 +4904,7 @@
   "aib.chat.phone_forward.status_on": "Phone forward: on (after {minutes} minutes unread, one line goes to your paired phone, at most {per_hour} per hour; no content or names)",
   "aib.chat.phone_forward.status_off": "Phone forward: off (to turn on: aib chat phone-forward on)",
   "aib.chat.phone_forward.bad_minutes": "--minutes must be between 1 and 1440",
-  "aib.chat.phone_forward.bad_per_hour": "--per-hour must be between 1 and 12"
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour must be between 1 and 12",
+  "aib.chat.phone_forward.touchid_reason": "Turn on BB Call phone forwarding: after {minutes} minutes, send \"N new letters\" to your paired phones, at most {per_hour} per hour",
+  "aib.chat.phone_forward.hint_touchid": "Turning on or loosening BB Call phone forwarding needs your Touch ID; nothing was changed (turning it off needs none)"
 }

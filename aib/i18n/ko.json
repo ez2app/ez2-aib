@@ -4904,5 +4904,7 @@
   "aib.chat.phone_forward.status_on": "휴대폰 전달: 켜짐({minutes}분 동안 읽지 않으면 페어링한 휴대폰에 한 줄, 시간당 최대 {per_hour}건. 본문과 이름은 보내지 않음)",
   "aib.chat.phone_forward.status_off": "휴대폰 전달: 꺼짐(켜기: aib chat phone-forward on)",
   "aib.chat.phone_forward.bad_minutes": "--minutes 는 1~1440 사이여야 합니다",
-  "aib.chat.phone_forward.bad_per_hour": "--per-hour 는 1~12 사이여야 합니다"
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour 는 1~12 사이여야 합니다",
+  "aib.chat.phone_forward.touchid_reason": "BB Call 휴대폰 전달 켜기: 본인 앞 편지가 {minutes}분 넘게 쌓이면 페어링된 휴대폰으로 「새 편지 N 통」, 시간당 최대 {per_hour}건",
+  "aib.chat.phone_forward.hint_touchid": "BB Call 휴대폰 전달을 켜거나 완화하려면 본인 Touch ID 가 필요합니다. 아무것도 바꾸지 않았습니다(끄기는 필요 없음)"
 }
