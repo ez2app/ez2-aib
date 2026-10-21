@@ -285,5 +285,11 @@ def _reason(slug):
 
 
 def cancel(env=None):
+    """作廢本機這張。伺服器已經說綁好了(confirm_local)才取消 ⇒ 那把憑證已發出、會佔一個名額到過期,
+    帶 manage_url 讓頁面叫人去後台解除(@abb89 審 #233 ①)。"""
+    p = read_pending(env)
     clear_pending(env)
-    return {"ok": True, "state": "cancelled"}, 0
+    res = {"ok": True, "state": "cancelled"}
+    if p and p.get("state") == "confirm_local":
+        res["manage_url"] = MANAGE_URL
+    return res, 0

@@ -12,7 +12,7 @@ S3 poll:none;pending ⇒ waiting;bound ⇒ confirm_local + slug、**不彈指紋
    declined;別台的憑證 ⇒ wrong-machine 不存
 S4 confirm:waiting ⇒ not-ready;席位呼叫 ⇒ rc 2、不彈、還留著;指紋拒 ⇒ declined、清掉、沒憑證;指紋過 ⇒ bound、憑證 0600、days_left;
    視窗那句帶 slug;按太晚 ⇒ expired
-S5 cancel ⇒ cancelled、清掉
+S5 cancel ⇒ cancelled、清掉;confirm_local 時取消 ⇒ 帶 manage_url(憑證已發出,要去後台解除)
 S6 確認數字與配對碼從頭到尾不落地:整個狀態根掃不到 confirm_digits 鍵、掃不到配對碼
 S7 remote status 帶 slug / bind_expires_at / days_left;沒綁 ⇒ None 而且不建 machine.json
 S8 CLI:--start 印一行 JSON;--start 跟 --serial 互斥;--confirm 在 AIB_TOUCHID=0 ⇒ declined(不彈真指紋)
@@ -303,6 +303,10 @@ class Confirm(Base):
         self.assertEqual(BG.cancel(self.env), ({"ok": True, "state": "cancelled"}, 0))
         self.assertIsNone(self.pending_raw())
         self.assertEqual(BG.cancel(self.env)[0]["state"], "cancelled")
+        self.ready()                                   # 伺服器已發出憑證才取消 ⇒ 叫人去後台解除
+        self.assertEqual(BG.cancel(self.env), ({"ok": True, "state": "cancelled", "manage_url": BG.MANAGE_URL}, 0))
+        self.assertIsNone(self.pending_raw())
+        self.assertEqual(self.tokens(), [])
 
     def test_s6_digits_never_on_disk(self):
         def scan(step):
