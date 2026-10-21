@@ -144,15 +144,16 @@ class CronPath(unittest.TestCase):
         return r.stdout.split("|")
 
     def test_d6_cron_path(self):
-        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+        # 最小 PATH 用空資料夾:Linux runner 的 /usr/bin 本來就有 tmux,用 /usr/bin:/bin 測不到「找不到才補」
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as bare:
             fake = Path(b) / "tmux"
             fake.write_text("#!/bin/sh\nexit 0\n")
             fake.chmod(0o755)
-            before, path, found = self.run_sh("/usr/bin:/bin", "%s %s" % (a, b))
+            before, path, found = self.run_sh(bare, "%s %s" % (a, b))
             self.assertEqual((path, found), ("%s:%s" % (b, before), str(fake)), "補上有 tmux 的那個")
-            before, path, found = self.run_sh("/usr/bin:/bin", a)
+            before, path, found = self.run_sh(bare, a)
             self.assertEqual(path, before, "備援也沒有 ⇒ 不動")
-            before, path, found = self.run_sh("%s:/usr/bin:/bin" % b, a)
+            before, path, found = self.run_sh("%s:%s" % (b, bare), a)
             self.assertEqual((path, found), (before, str(fake)), "已經找得到 ⇒ 不動")
 
 

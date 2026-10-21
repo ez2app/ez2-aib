@@ -10,6 +10,7 @@ I1 新鍵四語都有、佔位符一致、英文值沒有中日韓字
 刀(複本,走 run_guarded):K1 拿掉 --help 那條 ⇒ H1 紅;K2 newpost 退回不帶路徑的舊鍵 ⇒ H4 紅
 """
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -73,9 +74,10 @@ class InboxHint(unittest.TestCase):
             self.assertIn("--seat {code}", m.group(0), lang)
         p = subprocess.run([sys.executable, str(ROOT / "src" / "cockpit" / "dm_queue.py"), "read", "--id", "q_x",
                             "--by", "seat:abcde", "--if-rev", "1"], capture_output=True, text=True, timeout=60,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, env={k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")})
         self.assertEqual(p.returncode, 2)
-        self.assertIn("--seat", p.stderr)          # 提示沒帶 --seat 就是這個錯;帶了才照著打得動
+        # 提示沒帶 --seat 就是這個錯;帶了才照著打得動(0.1.37 #242 起量不到席位時回 JSON 在 stdout)
+        self.assertIn("--seat", p.stdout + p.stderr)
 
 
 class DirMissing(unittest.TestCase):

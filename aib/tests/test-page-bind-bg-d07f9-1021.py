@@ -371,7 +371,8 @@ class Cli(Base):
         with redirect_stdout(buf):
             rc = C.main(["bind", "--confirm", "--json"], environ=env)
         res = json.loads(buf.getvalue())
-        self.assertEqual((res["state"], res.get("why"), res)[:2], ("declined", "touchid_off"), "AIB_TOUCHID=0 ⇒ 拒,不彈真指紋")
+        self.assertEqual((res["state"], res.get("why"), res)[:2], ("declined", "touchid_off" if sys.platform == "darwin" else "touchid_unavailable"),
+                         "AIB_TOUCHID=0 ⇒ 拒,不彈真指紋(非 Mac 先回 touchid_unavailable)")
         self.assertEqual(self.tokens(), [])
 
     def test_s9_i18n(self):
