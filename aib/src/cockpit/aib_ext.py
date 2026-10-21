@@ -822,6 +822,8 @@ def install(folder, allow_unsigned=False, out=sys.stdout, enable_engines=True, e
                               "path": str(dst)}) + "\n")
     if kind == "theme":
         out.write(T("theme_hint", {"name": m["name"]}) + "\n")
+    if kind == "plugin":
+        reload_room_after_install(m, out)
     if m.get("engines"):
         st = _read_state(m["name"])
         st["allow_unsigned"] = bool(allow_unsigned and not signed_ok(m))   # 記下來:之後 enable --trust-hooks 要看來源有沒有被信任
@@ -834,6 +836,22 @@ def install(folder, allow_unsigned=False, out=sys.stdout, enable_engines=True, e
             return enable(m["name"], engines=engines, out=out, kind=kind, changes=changes)
         out.write(T("not_enabled", {"name": m["name"]}) + "\n")
     return 0
+
+
+def reload_room_after_install(manifest, out, env=None):
+    """裝的是艦長室外掛(commands 有 room)⇒ 跟 aib update 一樣叫 room_reload:還在跑舊碼就送 /api/reload(@abb89 審 #234 ②)。
+    沒在跑 / 版本一樣 ⇒ 什麼都不做;出錯只吞掉,不影響安裝結果。"""
+    cmds = manifest.get("commands")
+    if not (isinstance(cmds, dict) and isinstance(cmds.get("room"), str)):
+        return None
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import room_reload
+        room_reload.main([], out=out, env=env)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def bundled_dir():

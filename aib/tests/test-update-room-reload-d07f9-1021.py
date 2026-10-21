@@ -11,7 +11,8 @@ R5 url 不是本機 http ⇒ 不送(token 不外流)
 R6 真的起一台本機 HTTP:POST /api/reload、X-Captain-Token 帶上、沒有 Origin、body why=aib update
 R7 aib update 腳本:升級成功才跑、在轉接程式 restart 之後、指到升級後那份 room_reload.py
 R8 token 不出現在任何輸出;四語字典
-刀(複本):K1 不比版本 ⇒ R2 紅;K2 update 腳本沒掛 ⇒ R7 紅
+R9 aib ext install 裝的是艦長室外掛(commands 有 room)⇒ 也叫 room_reload;別的外掛 / 佈景不叫;room_reload 炸了不影響安裝
+刀(複本):K1 不比版本 ⇒ R2 紅;K2 update 腳本沒掛 ⇒ R7 紅;K3 ext install 沒掛 ⇒ R9 紅
 """
 import http.server
 import importlib.util
@@ -185,6 +186,27 @@ class Wire(Base):
         self.assertTrue(seen["room"] and seen["room"].endswith("src/cockpit/room_reload.py") and os.path.isfile(seen["room"]))
 
 
+class ExtInstall(Base):
+    def test_r9_ext_install_hook(self):
+        import aib_ext as AE
+        calls = []
+        with mock.patch.object(RR, "reload_room", lambda env=None, **kw: calls.append(env) or {"result": "same"}):
+            self.assertIsNone(AE.reload_room_after_install({"name": "x", "commands": {"other": "o.py"}}, io.StringIO(), env=self.env))
+            self.assertIsNone(AE.reload_room_after_install({"name": "x"}, io.StringIO(), env=self.env))
+            self.assertEqual(calls, [])
+            self.assertTrue(AE.reload_room_after_install({"name": "captain-room", "commands": {"room": "r.py"}}, io.StringIO(), env=self.env))
+            self.assertEqual(calls, [self.env])
+
+        def boom(env=None, **kw):
+            raise RuntimeError("x")
+        with mock.patch.object(RR, "reload_room", boom):
+            self.assertFalse(AE.reload_room_after_install({"commands": {"room": "r.py"}}, io.StringIO(), env=self.env), "炸了吞掉")
+        src = (COCKPIT / "aib_ext.py").read_text(encoding="utf-8")
+        i = src.index("def install(folder")
+        body = src[i:src.index("\ndef ", i + 10)]
+        self.assertIn('if kind == "plugin":\n        reload_room_after_install(m, out)', body, "install() 裝外掛後要叫")
+
+
 class Knife(unittest.TestCase):
     def _knife(self, rel, needle, repl, cell):
         name = Path(__file__).name
@@ -195,6 +217,9 @@ class Knife(unittest.TestCase):
 
     def test_k1_no_version_check(self):
         self._knife("src/cockpit/room_reload.py", "    if running == disk:\n", "    if False:\n", "Logic.test_r2_same_version")
+
+    def test_k3_ext_install_not_wired(self):
+        self._knife("src/cockpit/aib_ext.py", '        reload_room_after_install(m, out)\n', "        pass\n", "ExtInstall.test_r9_ext_install_hook")
 
     def test_k2_update_not_wired(self):
         self._knife("cli.py", '''              '[ "$rc" -ne 0 ] || [ ! -f "$AIB_UPDATE_ROOM" ] || "$AIB_UPDATE_PY" "$AIB_UPDATE_ROOM" >&2 || true; '\n''', "",
