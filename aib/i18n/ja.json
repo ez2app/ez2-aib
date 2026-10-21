@@ -4967,5 +4967,9 @@
   "aib.chat.phone_forward.status_on": "スマホ転送:オン({minutes} 分未読ならペアリングしたスマホに 1 行、1 時間に最大 {per_hour} 件。本文と名前は送りません)",
   "aib.chat.phone_forward.status_off": "スマホ転送:オフ(オンにする:aib chat phone-forward on)",
   "aib.chat.phone_forward.bad_minutes": "--minutes は 1〜1440 で指定してください",
-  "aib.chat.phone_forward.bad_per_hour": "--per-hour は 1〜12 で指定してください"
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour は 1〜12 で指定してください",
+  "aib.seat.panel.remote_why_not_bound": "このマシンはまだ ez2.page に紐付いていません(先に aib page bind を実行)",
+  "aib.seat.panel.remote_why_link_stopped": "スマホのリモート接続が動いていません(aib seat remote on で一緒に起動)",
+  "aib.seat.panel.remote_why_server_not_ready": "ez2.page のリモート操作はまだ公開されていません",
+  "aib.seat.panel.remote_why_server_unreachable": "ez2.page に接続できません"
 }

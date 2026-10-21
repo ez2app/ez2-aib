@@ -4967,5 +4967,9 @@
   "aib.chat.phone_forward.status_on": "휴대폰 전달: 켜짐({minutes}분 동안 읽지 않으면 페어링한 휴대폰에 한 줄, 시간당 최대 {per_hour}건. 본문과 이름은 보내지 않음)",
   "aib.chat.phone_forward.status_off": "휴대폰 전달: 꺼짐(켜기: aib chat phone-forward on)",
   "aib.chat.phone_forward.bad_minutes": "--minutes 는 1~1440 사이여야 합니다",
-  "aib.chat.phone_forward.bad_per_hour": "--per-hour 는 1~12 사이여야 합니다"
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour 는 1~12 사이여야 합니다",
+  "aib.seat.panel.remote_why_not_bound": "이 기기는 아직 ez2.page 에 연결되지 않았습니다(먼저 aib page bind 실행)",
+  "aib.seat.panel.remote_why_link_stopped": "휴대폰 원격 연결이 실행 중이 아닙니다(aib seat remote on 이 함께 시작)",
+  "aib.seat.panel.remote_why_server_not_ready": "ez2.page 원격 제어가 아직 열리지 않았습니다",
+  "aib.seat.panel.remote_why_server_unreachable": "ez2.page 에 연결할 수 없습니다"
 }

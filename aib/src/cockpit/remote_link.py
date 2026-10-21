@@ -68,6 +68,31 @@ def http(method, url, token, body=None, timeout=POLL_S + 10):
     return status, d if isinstance(d, dict) else None
 
 
+READY_PATH = PREFIX + "/ready"   # 公開、不帶憑證;路徑等 @9f808 定案(10-21 @74e8b 聯動表第 1 項)
+READY_TIMEOUT_S = 3
+
+
+def server_ready(base=BASE, opener=None, timeout=READY_TIMEOUT_S):
+    """(ready: bool, why: None | "server_not_ready" | "server_unreachable")。
+    200 + {"ready": true} 才算;404(伺服器還沒有這支)/ 其他狀態 / 回應不對 ⇒ not_ready;連不上 ⇒ unreachable。"""
+    req = urllib.request.Request(base + READY_PATH, headers={"accept": "application/json", "user-agent": USER_AGENT}, method="GET")
+    try:
+        with (opener or urllib.request.build_opener()).open(req, timeout=timeout) as r:
+            status, raw = r.status, r.read(4096)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        return False, "server_not_ready"
+    except (urllib.error.URLError, OSError, ValueError):
+        return False, "server_unreachable"
+    try:
+        d = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        d = None
+    if status == 200 and isinstance(d, dict) and d.get("ready") is True:
+        return True, None
+    return False, "server_not_ready"
+
+
 def target(env=None):
     """((token, 機器指紋), None) 或 (None, why)。只吃綁到這台的那一頁。"""
     e = dict(os.environ if env is None else env)
