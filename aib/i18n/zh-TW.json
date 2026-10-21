@@ -4925,5 +4925,9 @@
   "aib.chrome.row": "pid {pid}  已跑 {age}  {who}  {kind}  {dir}",
   "aib.chrome.orphan": "孤兒(起它的那支已結束)",
   "aib.chrome.parent": "父行程 {ppid}",
-  "aib.chrome.hint": "收掉請找起它的那一席;自己的用 kill <pid>,不要寬 pkill"
+  "aib.chrome.hint": "收掉請找起它的那一席;自己的用 kill <pid>,不要寬 pkill",
+  "aib.quote.touchid_reason": "把這段存成你的原話(按指紋 = 這是你說的):{text}",
+  "aib.quote.help.usage": "用法:aib quote key init|status [--json]\n      aib quote add \"<原話>\" [--seat <席碼>] [--json]\n      aib quote verify evt:q-… [--json]",
+  "aib.quote.hint.too_long": "原話最多 {max} 字(指紋視窗要能完整顯示);請拆成幾則分別存。",
+  "aib.quote.hint.no_key": "這台還沒有原話簽章鑰:先跑 aib quote key init。"
 }

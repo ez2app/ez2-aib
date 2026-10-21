@@ -4925,5 +4925,9 @@
   "aib.chrome.row": "pid {pid}  running {age}  {who}  {kind}  {dir}",
   "aib.chrome.orphan": "orphan (its launcher has exited)",
   "aib.chrome.parent": "parent {ppid}",
-  "aib.chrome.hint": "ask the seat that started it to clean up; for your own use kill <pid>, never a broad pkill"
+  "aib.chrome.hint": "ask the seat that started it to clean up; for your own use kill <pid>, never a broad pkill",
+  "aib.quote.touchid_reason": "Save this as your own words (fingerprint = you said this): {text}",
+  "aib.quote.help.usage": "usage: aib quote key init|status [--json]\n       aib quote add \"<words>\" [--seat <seat>] [--json]\n       aib quote verify evt:q-… [--json]",
+  "aib.quote.hint.too_long": "Quotes are limited to {max} characters so the fingerprint window can show all of it; split it into several quotes.",
+  "aib.quote.hint.no_key": "This Mac has no quote signing key yet: run aib quote key init first."
 }
