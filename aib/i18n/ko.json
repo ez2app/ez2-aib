@@ -4898,5 +4898,14 @@
   "aib.handoff.fact.vault": "Vault 점검(aib vault doctor 읽기 전용, 고칠 때는 본인 확인 후 먼저 백업)",
   "aib.handoff.fact.vault_ok": "문제 없음",
   "aib.handoff.fact.vault_found": "문제 있음: {detail}",
-  "aib.handoff.fact.vault_skip": "실행 안 함({why})"
+  "aib.handoff.fact.vault_skip": "실행 안 함({why})",
+  "aib.chrome.help": "자동화 Chrome 점검",
+  "aib.chrome.help_orphans": "아무도 정리하지 않은 자동화 Chrome 목록(목록만, 종료하지 않음)",
+  "aib.chrome.help_all": "부모 프로세스가 살아 있는 것도 함께 표시",
+  "aib.chrome.ps_failed": "aib chrome: ps 실행 실패, 측정 불가",
+  "aib.chrome.none": "방치된 자동화 Chrome이 없습니다",
+  "aib.chrome.row": "pid {pid}  실행 {age}  {who}  {kind}  {dir}",
+  "aib.chrome.orphan": "고아(실행한 쪽이 종료됨)",
+  "aib.chrome.parent": "부모 {ppid}",
+  "aib.chrome.hint": "실행한 좌석에 정리를 요청하세요. 자기 것은 kill <pid>로, 넓은 pkill은 쓰지 마세요"
 }

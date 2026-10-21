@@ -4898,5 +4898,14 @@
   "aib.handoff.fact.vault": "Vault check (read-only aib vault doctor; fixing still needs the owner's OK and a backup first)",
   "aib.handoff.fact.vault_ok": "no problems",
   "aib.handoff.fact.vault_found": "problems: {detail}",
-  "aib.handoff.fact.vault_skip": "not run ({why})"
+  "aib.handoff.fact.vault_skip": "not run ({why})",
+  "aib.chrome.help": "automation Chrome inventory",
+  "aib.chrome.help_orphans": "list automation Chrome that nobody cleaned up (list only, never kills)",
+  "aib.chrome.help_all": "also list ones whose parent is still running",
+  "aib.chrome.ps_failed": "aib chrome: ps failed, nothing measured",
+  "aib.chrome.none": "no orphaned automation Chrome",
+  "aib.chrome.row": "pid {pid}  running {age}  {who}  {kind}  {dir}",
+  "aib.chrome.orphan": "orphan (its launcher has exited)",
+  "aib.chrome.parent": "parent {ppid}",
+  "aib.chrome.hint": "ask the seat that started it to clean up; for your own use kill <pid>, never a broad pkill"
 }

@@ -4898,5 +4898,14 @@
   "aib.handoff.fact.vault": "Vault 檢查(只讀 aib vault doctor;要修照規矩問本人、先備份)",
   "aib.handoff.fact.vault_ok": "沒問題",
   "aib.handoff.fact.vault_found": "有問題:{detail}",
-  "aib.handoff.fact.vault_skip": "沒跑({why})"
+  "aib.handoff.fact.vault_skip": "沒跑({why})",
+  "aib.chrome.help": "自動化 Chrome 的盤點",
+  "aib.chrome.help_orphans": "列出沒人收的自動化 Chrome(只列不殺)",
+  "aib.chrome.help_all": "連還有父行程的一起列",
+  "aib.chrome.ps_failed": "aib chrome:ps 跑不了,量不到",
+  "aib.chrome.none": "沒有沒人收的自動化 Chrome",
+  "aib.chrome.row": "pid {pid}  已跑 {age}  {who}  {kind}  {dir}",
+  "aib.chrome.orphan": "孤兒(起它的那支已結束)",
+  "aib.chrome.parent": "父行程 {ppid}",
+  "aib.chrome.hint": "收掉請找起它的那一席;自己的用 kill <pid>,不要寬 pkill"
 }
