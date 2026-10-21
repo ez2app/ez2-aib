@@ -7,7 +7,7 @@
 `aib chat open <好友>`(share status + space room + 送 open 通知)、`aib chat visit <好友>`(送參觀請求)、
 `aib chat visit accept|reject <好友>`、`aib chat visits --json`(頁面:收到 / 送出 / 我開給誰 / 誰開給我)。
 訊息 aib-type=visit,主人層級私訊,body {"op": request|open|reject, "nonce", "at"};visits.json 記帳;visit-out 待送。
-這不是防線:信任等級跟現有 `aib chat space <npub> room` 一樣(本機 CLI 就能開);本人證明列下一版給 @abb89 裁。
+open / accept 要本人 Touch ID(chat_bridge.human_gate,見 test-chat-open-touchid-d07f9-1021.py);本檔改等級走行程內假指紋。
 
 V1 request:好友 ⇒ out=sent + visit-out 一檔 op=request;陌生 / 封鎖 ⇒ not_friend、不寫檔
 V2 open_to:share → status、space → room;對方有 pending ⇒ 標 accepted、送 open 用同一 nonce、answered=True;沒 pending ⇒ 新 nonce
@@ -151,6 +151,9 @@ class Core(Base):
 class Cli(Base):
     def run_cb(self, *argv):
         CB = _load_cb()
+        # 10-21:open / accept / space / share 要本人 Touch ID(chat_bridge.human_gate);測試一律換成假指紋,絕不彈真視窗
+        CB.HUMAN_GATE["prove"] = lambda reason, env: ("touchid", None)
+        CB.HUMAN_GATE["caller_is_seat"] = lambda env: False
         buf = io.StringIO()
         rc = CB.main(list(argv), env=self.env, out=buf)
         return rc, buf.getvalue()

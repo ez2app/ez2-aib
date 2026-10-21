@@ -279,8 +279,9 @@ def up(d, venv, out=sys.stdout):
     # 關係
     andy.cli("friend", "add", b_addr, "--name", "Bob 客戶", check=True)
     bob.cli("friend", "add", a_addr, check=True)
-    bob.cli("share", andy.owner(), "status", check=True)        # 在線分享到 📌 狀態列
-    bob.cli("space", andy.owner(), "room", check=True)          # 第 34 節 v2:Bob 讓 Andy 走進他的島與艦長室
+    import chat_roster as CR                                    # 10-21:改分享等級要本人 Touch ID(門在 CLI),這裡直接走函式
+    CR.set_share("status", andy.owner(), bob.env())             # 在線分享到 📌 狀態列
+    CR.set_space("room", andy.owner(), bob.env())               # 第 34 節 v2:Bob 讓 Andy 走進他的島與艦長室
     (bob.chat / "island.json").write_text(json.dumps({          # 艦長室寫的島(故意夾禁止欄位與超出範圍的值測過濾)
         "v": 1, "name": "Bob 港", "size": {"w": 24, "h": 16}, "age": 2, "res": {"wood": 30, "stone": 12},
         "owner": {"name": "Bob", "avatar": {"emoji": "🧔", "bg": "#2a6"}},

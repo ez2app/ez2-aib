@@ -90,12 +90,21 @@ class Core(unittest.TestCase):
         b.cli("mine", "add", P[2])
         pl = js(b.cli("share", "--json"))
         self.assertEqual((pl["default"], pl["peers"]), ("online", {P[2]: "status", P[0]: "online", P[1]: "online"}))
-        r = b.cli("share", P[1], "off")
-        self.assertEqual(r.returncode, 0)
-        self.assertEqual(r.stdout.strip().count("\n"), 0, "改一位只回那一位:" + r.stdout)
-        self.assertIn(P[1], r.stdout)
-        self.assertNotIn("aib.chat.", r.stdout, "字典鍵沒翻到")
-        self.assertEqual(b.cli("share", "--default", "status").returncode, 0)
+        # 10-21:改分享等級要本人 Touch ID(門在 CLI);行程內換掉門測輸出,子行程只讀
+        import io
+        import importlib.util as _ilu
+        _sp = _ilu.spec_from_file_location("chat_bridge_g", str(REPO / "src" / "cockpit" / "chat_bridge.py"))
+        CBg = _ilu.module_from_spec(_sp)
+        _sp.loader.exec_module(CBg)
+        CBg.HUMAN_GATE["prove"] = lambda reason, env: ("touchid", None)
+        CBg.HUMAN_GATE["caller_is_seat"] = lambda env: False
+        buf = io.StringIO()
+        self.assertEqual(CBg.main(["share", P[1], "off"], env=b.env(), out=buf), 0, buf.getvalue())
+        r_out = buf.getvalue()
+        self.assertEqual(r_out.strip().count("\n"), 0, "改一位只回那一位:" + r_out)
+        self.assertIn(P[1], r_out)
+        self.assertNotIn("aib.chat.", r_out, "字典鍵沒翻到")
+        self.assertEqual(CBg.main(["share", "--default", "status"], env=b.env(), out=io.StringIO()), 0)
         pl = js(b.cli("share", "--json"))
         self.assertEqual(pl["peers"], {P[2]: "status", P[0]: "status", P[1]: "off"})
         import chat_roster as CR
@@ -159,7 +168,8 @@ class Network(unittest.TestCase):
         self.assertTrue(b.wait_for(lambda: a.owner in self.world(b), 40), GF.read_world(b.root))
         s = self.world(b)[a.owner]["seats"][0]
         self.assertEqual((s["seat"], s["state"], s["now"]), (x, "online", None), "等級 online 不准帶狀態列")
-        self.assertEqual(a.cli("share", b.owner, "status").returncode, 0)
+        import chat_roster as CR
+        CR.set_share("status", b.owner, a.env())           # 10-21:改分享等級要本人 Touch ID,測試直接走函式
         self.assertTrue(b.wait_for(lambda: (self.world(b)[a.owner]["seats"][0].get("now") or "") == "畫世界地圖", 40),
                         self.world(b))
         self.assertEqual(self.items(b, y), [], "presence 不准進佇列")
@@ -168,7 +178,8 @@ class Network(unittest.TestCase):
         a, x, b, y = self.pair(b_friends_a=False)
         time.sleep(8)
         self.assertEqual(GF.read_world(b.root), {}, "不是好友送來的 presence 要丟")
-        a.cli("share", b.owner, "off")          # 先關再加好友:反過來的話,兩步之間 A 那一輪在線剛好送出就會被收(時序競態)
+        import chat_roster as CR
+        CR.set_share("off", b.owner, a.env())   # 先關再加好友:反過來的話,兩步之間 A 那一輪在線剛好送出就會被收(時序競態)
         b.cli("friend", "add", a.owner)
         time.sleep(8)
         self.assertEqual(GF.read_world(b.root), {}, "等級 off 不准送")
