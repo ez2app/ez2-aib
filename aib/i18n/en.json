@@ -4915,5 +4915,14 @@
   "aib.handoff.fact.vault_found": "problems: {detail}",
   "aib.handoff.fact.vault_skip": "not run ({why})",
   "aib.room_reload.reloaded": "The captain room switched to the new version ({old} → {new}); the page reconnects by itself",
-  "aib.room_reload.failed": "The captain room is still running the old version ({old}); the new one is {new}. Close the captain room and open it again"
+  "aib.room_reload.failed": "The captain room is still running the old version ({old}); the new one is {new}. Close the captain room and open it again",
+  "aib.chrome.help": "automation Chrome inventory",
+  "aib.chrome.help_orphans": "list automation Chrome that nobody cleaned up (list only, never kills)",
+  "aib.chrome.help_all": "also list ones whose parent is still running",
+  "aib.chrome.ps_failed": "aib chrome: ps failed, nothing measured",
+  "aib.chrome.none": "no orphaned automation Chrome",
+  "aib.chrome.row": "pid {pid}  running {age}  {who}  {kind}  {dir}",
+  "aib.chrome.orphan": "orphan (its launcher has exited)",
+  "aib.chrome.parent": "parent {ppid}",
+  "aib.chrome.hint": "ask the seat that started it to clean up; for your own use kill <pid>, never a broad pkill"
 }

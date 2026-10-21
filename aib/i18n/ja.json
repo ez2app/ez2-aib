@@ -4915,5 +4915,14 @@
   "aib.handoff.fact.vault_found": "問題あり:{detail}",
   "aib.handoff.fact.vault_skip": "未実行({why})",
   "aib.room_reload.reloaded": "艦長室を新しい版に切り替えました({old} → {new})。画面は自動で再接続します",
-  "aib.room_reload.failed": "艦長室はまだ古い版({old})で動いています。新しい版は {new} です。艦長室を閉じてもう一度開いてください"
+  "aib.room_reload.failed": "艦長室はまだ古い版({old})で動いています。新しい版は {new} です。艦長室を閉じてもう一度開いてください",
+  "aib.chrome.help": "自動化 Chrome の棚卸し",
+  "aib.chrome.help_orphans": "誰も片付けていない自動化 Chrome を一覧(一覧のみ、終了はしない)",
+  "aib.chrome.help_all": "親プロセスが生きているものも一覧",
+  "aib.chrome.ps_failed": "aib chrome:ps が動かず、計測できません",
+  "aib.chrome.none": "放置された自動化 Chrome はありません",
+  "aib.chrome.row": "pid {pid}  稼働 {age}  {who}  {kind}  {dir}",
+  "aib.chrome.orphan": "孤児(起動元が終了済み)",
+  "aib.chrome.parent": "親 {ppid}",
+  "aib.chrome.hint": "起動した席に片付けを依頼してください。自分のものは kill <pid> で。広い pkill は使わない"
 }
