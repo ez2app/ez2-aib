@@ -82,7 +82,7 @@ class Link(BASE.Box):
                                                                          touchid_available=lambda: True, platform="darwin"),
             do_stop=lambda c, hard=False, env=None, window_only=False: SA.do_stop(c, hard=hard, env=env, window_only=window_only, touchid=t,
                                                                                 touchid_available=lambda: True, platform="darwin"),
-            do_unlocked=SA.do_unlocked, do_lock=SA.do_lock, do_answer=SA.do_answer)
+            do_unlocked=SA.do_unlocked, do_lock=SA.do_lock, do_answer=SA.do_answer, remote_left=SA.remote_left)
 
     def run_link(self, relay, n):
         out = None

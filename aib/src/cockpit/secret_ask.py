@@ -49,6 +49,9 @@ _HOST = re.compile(r"^[A-Za-z0-9._@-]{1,128}$")
 _PATH = re.compile(r"^/[A-Za-z0-9._/-]{1,255}$")
 _OWNER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _HOSTNAME = re.compile(r"^[A-Za-z0-9._:%-]{1,253}$")   # resolve() 解出的 hostname(含 IPv6)
+# 叫不出視窗的 AppleScript 錯誤碼(10-21 @ee4f8:AI 席的 shell 跑 secret ask 只回 error,本人不知道要自己 ! 跑)。
+# -1713 = 不准跟使用者互動、-1743 = 沒授權送 Apple 事件、-10827 = 不在圖形登入工作階段。只認這幾個;其他照舊 error,不猜。
+NO_GUI_CODES = ("-1713", "-1743", "-10827")
 
 JXA = r"""
 var app = Application.currentApplication();
@@ -59,7 +62,8 @@ try {
   var r = app.displayDialog(__PROMPT__, {withTitle: __TITLE__, defaultAnswer: "", hiddenAnswer: true,
     buttons: [__CANCEL__, __OK__], defaultButton: __OK__, cancelButton: __CANCEL__, givingUpAfter: __WAIT__});
   out = r.gaveUp ? {ok: false, why: "timeout"} : {ok: true, nonce: __NONCE__, value: r.textReturned};
-} catch (e) { out = {ok: false, why: (String(e).indexOf("-128") >= 0 || String(e).indexOf("cancel") >= 0) ? "cancel" : "error"}; }
+} catch (e) { out = {ok: false, why: (String(e).indexOf("-128") >= 0 || String(e).indexOf("cancel") >= 0) ? "cancel" : "error",
+                     code: (e && e.errorNumber !== undefined) ? String(e.errorNumber) : ""}; }
 JSON.stringify(out);
 """
 
@@ -110,7 +114,10 @@ def dialog(prompt, title, run=subprocess.run, wait=WAIT_S):
     except ValueError:
         out = None
     if not isinstance(out, dict):
-        return {"ok": False, "why": "unreadable"}
+        err = str(getattr(r, "stderr", "") or "")
+        return {"ok": False, "why": "no_gui" if any("(%s)" % c in err for c in NO_GUI_CODES) else "unreadable"}
+    if out.get("ok") is not True and out.get("why") == "error" and str(out.get("code") or "") in NO_GUI_CODES:
+        return {"ok": False, "why": "no_gui"}
     if out.get("ok") is True and out.get("nonce") == nonce and isinstance(out.get("value"), str):
         return {"ok": True, "why": "ok", "value": out["value"].strip()}
     if out.get("ok") is True:
@@ -229,7 +236,7 @@ def push(name, value, host, path, owner=None, run=subprocess.run, pin=None):
 
 
 def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_available=None,
-            opener=None, ssh_run=None, getpass_fn=None, isatty=None, out=sys.stdout):
+            opener=None, ssh_run=None, getpass_fn=None, isatty=None, out=sys.stdout, err=sys.stderr, seal=None):
     import argparse
     import aib_secrets as S
     import secret_collect as SC
@@ -252,6 +259,8 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         res["why"] = "unknown_name"
         return done(2)
     res["file"] = rel
+    if a.name in S.SE_ONLY_NAMES:
+        return _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal)
     target = pin = None
     if a.push:
         try:
@@ -268,6 +277,8 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
     value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty)
     if value is None:
         res["why"] = why
+        if why == "no_gui":
+            err.write(_t("aib.secret.no_gui_hint") + "\n")
         return done(2)
     try:
         if a.check:
@@ -295,6 +306,40 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
                 return done(4 if not a.remote_only else 2)   # 4 = 本機已寫、遠端沒送到
             res["pushed"] = where
         res["ok"] = True
+        return done(0)
+    finally:
+        value = None  # noqa: F841
+
+
+def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal):
+    """只准放 Secure Enclave 的名字(CF_TOKEN_MINTER):輸入框 → Touch ID → SE 封存;不寫金鑰櫃檔、不推遠端
+    (@abb89 審 #222:母鑰在本機檔 = 同帳號 AI 讀得到;推到伺服器 = 又放回伺服器上)。"""
+    import se_vault as SV
+    res["file"] = "se:" + a.name
+    if a.push or a.remote_only or a.check:
+        res["why"] = "se_only_local"
+        err.write(_t("aib.secret.se_only_hint", {"name": a.name}) + "\n")
+        return done(2)
+    if platform != "darwin":
+        res["why"] = "not_mac"
+        return done(2)
+    dest = _t("aib.secret.dest_se")
+    value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty)
+    if value is None:
+        res["why"] = why
+        if why == "no_gui":
+            err.write(_t("aib.secret.no_gui_hint") + "\n")
+        return done(2)
+    try:
+        why = prove_human(a.name, dest, env, platform, touchid=touchid, touchid_available=touchid_available)
+        if why:
+            res["why"] = why
+            return done(2)
+        fp, why = (seal or SV.seal)(a.name, value, env=env)
+        if why:
+            res["why"] = "seal_" + why
+            return done(2)
+        res.update(ok=True, local=False, fingerprint=fp, sealed=True)
         return done(0)
     finally:
         value = None  # noqa: F841

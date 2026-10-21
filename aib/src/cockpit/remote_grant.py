@@ -218,9 +218,25 @@ def question_norm(text):
     return Q_WS.sub(" ", unicodedata.normalize("NFC", str(text or ""))).strip(" ")
 
 
-def question_hash(text):
+ASK_PROMPT_MAX, ASK_LABEL_MAX, ASK_OPTS_MAX = 4000, 120, 9
+
+
+def ask_view(ask):
+    """手機看到的那份題目(pending 出本機、回答單驗雜湊都用這份)。題目 / 選項超過上限 ⇒ truncated:手機只能看、不能從手機答(截掉的那段本人沒看到)"""
+    prompt = str(ask.get("prompt") or "")
+    rows = [{"key": str(o.get("key") or ""), "label": str(o.get("label") or "")} for o in ask.get("options") or [] if isinstance(o, dict)]
+    cut = len(prompt) > ASK_PROMPT_MAX or len(rows) > ASK_OPTS_MAX or any(len(r["label"]) > ASK_LABEL_MAX for r in rows)
+    return {"id": ask.get("id"), "type": ask.get("type"), "prompt": prompt[:ASK_PROMPT_MAX],
+            "options": [{"key": r["key"], "label": r["label"][:ASK_LABEL_MAX]} for r in rows[:ASK_OPTS_MAX]], "truncated": cut}
+
+
+def question_hash(text, options=None):
+    """題目正文 + 每個選項(依序)一起算(@abb89 10-21:只算正文的話，本機可以只把選項標籤換掉讓本人按錯)。
+    一行一段：第一行 = 正文;之後每個選項一行 = key + TAB + label;每段各自正規化(正規化後不會有換行 / TAB,當分隔安全)。
+    沒有選項 ⇒ 跟只算正文一樣(舊的 5 組向量照樣對)。"""
     import hashlib
-    return hashlib.sha256(question_norm(text).encode("utf-8")).hexdigest()
+    lines = [question_norm(text)] + [question_norm(o.get("key")) + "\t" + question_norm(o.get("label")) for o in options or []]
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
 def text_hash(text):
@@ -230,14 +246,22 @@ def text_hash(text):
 
 def verify_answer(grant, seat, ask_id, choice, free_text=None, env=None, now=None, keys=None, machine=None, question=None):
     """回答單(@abb89 10-21 裁：每答一次一張、kind=seat-answer、綁 ask_id + choice + 自填字 sha256、exp ≤ 2 分鐘;視窗不能替 answer 免驗)⇒ (True, None) 或 (None, why)
-    question = 核心自己從那一席抓的真題目;單子的 q_sha256 要等於它的雜湊(05:4x 裁：防本機在中繼塞假題目讓本人核准)"""
+    question = 核心自己從那一席抓的真題目(ask dict:正文 + 選項);單子的 q_sha256 要等於它的雜湊(05:4x 裁：防本機在中繼塞假題目讓本人核准)。
+    題目太長被截過(ask_view truncated)⇒ question_truncated,只能在電腦上答"""
+    if isinstance(question, dict):
+        if ask_view(question)["truncated"]:
+            return None, "question_truncated"
+        want = question_hash(question.get("prompt"), ask_view(question)["options"])
+    else:
+        want = None if question is None else question_hash(question)
+
     def same_answer(g):
         q = g.get("q_sha256")
-        if not isinstance(q, str) or not re.fullmatch(r"[0-9a-f]{64}", q) or question is None or q != question_hash(question):
+        if not isinstance(q, str) or not re.fullmatch(r"[0-9a-f]{64}", q) or want is None or q != want:
             return "question_mismatch"
         if g.get("ask_id") != ask_id or g.get("choice") != str(choice):
             return "wrong-answer"
-        want = text_hash(free_text) if free_text else None
-        return None if g.get("text_sha256") == want else "wrong-answer"
+        want_t = text_hash(free_text) if free_text else None
+        return None if g.get("text_sha256") == want_t else "wrong-answer"
     g, why = _verify(grant, seat, ANSWER_KIND, ANSWER_LIFE_S, same_answer, env, now, keys, machine)
     return (True, None) if not why else (None, why)

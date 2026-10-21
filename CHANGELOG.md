@@ -4,6 +4,12 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.35
+
+- **Cloudflare changes need Touch ID every time**: `aib cf grant <zone> <perm>[,…] --push HOST:/abs/path [--ttl 10m]` opens a short-lived token limited to one zone, whitelisted permissions and the destination's IPs, writes it to the destination over ssh stdin, and deletes it again if delivery fails. The minting key is sealed by this Mac's Secure Enclave (biometrics required on every use, enforced by the system); it is never stored in the secrets file. `aib cf list` / `aib cf revoke <id>`. The key cabinet gains a Cloudflare category; `aib secret ask` reports `no_gui` when it cannot show a window.
+- **Phone answers cover the options too**: the question fingerprint in an answer ticket now includes every option (key and label), so the options cannot be swapped on the phone; a question too long to show in full can only be answered on the computer.
+- **Phone commands only use phone-opened windows**: typing, stopping and reading a seat from the phone only work in a window opened by a server-signed ticket, not one you opened on the Mac with Touch ID.
+
 ## 0.1.34
 
 - **Command seats from your phone (off by default, not live yet)**: `aib seat remote on` (Touch ID) turns on the switch and starts `aib seat remote link` in the background, which only connects out to ez2.page and long-polls for commands; `off` stops both. Unlock needs a server-signed ticket; typing, stopping and reading a seat only work while that window is open; every answer needs its own ticket bound to the question, the choice and your typed text, and the core checks the question against the real one on screen. The trusted key list is still empty, so every ticket is refused until the maintainer approves the production key.
