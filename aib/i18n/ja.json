@@ -4375,6 +4375,7 @@
   "aib.chat.receipt.refused": "相手はこのメッセージを受け取りませんでした。",
   "aib.chat.receipt.expired": "期限切れのため届きませんでした。",
   "aib.chat.receipt.read": "既読",
+  "aib.chat.receipt.still_waiting": "まだ本人の確認待ちです",
   "aib.chat.status_relays": "リレー:{up}/{total} 接続中",
   "aib.chat.status_offline": "⚠ オンライン対話がオフライン:リレー {up}/{total}、5 分以上すべて切断(送受信できません)",
   "aib.chat.status_today": "本日:送信 {sent}、受信 {received}、失敗 {failed}。送信待ち {pending}",

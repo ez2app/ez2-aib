@@ -77,7 +77,11 @@ def import_once(root=None, env=None):
             if item.get("status") != DQ.HOLD_STATUS:
                 DQ.hold_item(seat, item["id"], DQ.GLOBAL_STRANGER_WHY, env=env)
         state = "held" if item.get("status") == DQ.HOLD_STATUS else "queued"
-        DQ.global_delivery(item, state, seat, env)
+        # 10-21 回條語意:held 帶原因碼(只放碼;寄件端只拿來顯示,不拿來判放行 / 權限 / 過期)
+        reason = None
+        if state == "held":
+            reason = "human_reply" if DQ.hold_why_key(item) == "human_reply" else "stranger"
+        DQ.global_delivery(item, state, seat, env, reason=reason)
         if state == "queued":
             DQ.note_global_pending(env)        # 沒開佇列的艙,排空器看這個記號才去投(全球信不受授權限制)
         try:

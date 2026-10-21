@@ -858,7 +858,8 @@ KEEP = 7 * 86400                 # 去重紀錄保留 7 天
 SEEN_KEY_LEN = 18                # 去重鍵只存「e:/m: + 前 16 個十六進位」(64 位元,撞號可略);全長 64 碼的 event id 一週就撐爆 64 KB
 SEEN_MAX = 1500                  # 去重紀錄最多幾筆(短鍵每筆約 30 bytes ⇒ 約 45 KB,留在 atomic_json 64 KB 上限內);超過丟最舊的
 RESUB_EVERY = 30                 # 秒;席的金鑰有變(新席、封存)就重新訂閱
-RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired")   # read 另走一批一次(1.8)
+RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired", "still_waiting")   # read 另走一批一次(1.8)
+RECEIPT_STAGES_IN = RECEIPT_STAGES_OUT + ("read",)
 # 拒收原因碼(回條 aib-reason 標籤;寄件端 dm-ctl 照碼翻成一句話)。只放碼,不放內文
 REFUSE_REASONS = ("not_friend", "unverified")
 READ_BATCH_S = float(os.environ.get("AIB_CHAT_READ_BATCH") or 30)   # 秒;同一寄件人同一席這段時間內讀的合成一張(第 10 節)
@@ -1125,7 +1126,7 @@ class Receiver(object):
         """回條:每一個 aib-ref 都要是「我寄給這個 npub 的信」才收(已讀一張可帶多個 ref,1.8)。
         查不到寄出帳的先暫存 ORPHAN_KEEP_S 秒再比(第 27.8 節:寄出帳可能比回條晚寫);冒充的直接丟。"""
         stage = tags.get("aib-receipt", "")
-        if stage not in ("queued", "delivered", "held", "refused", "expired", "read"):
+        if stage not in RECEIPT_STAGES_IN:     # 舊版收到不認得的(例 still_waiting)就略過,不報錯
             return
         for ref in (refs or [tags.get("aib-ref", "")])[:200]:
             if not GF.MSGID_RE.match(ref or ""):
@@ -1163,6 +1164,14 @@ class Receiver(object):
             r["pos"] = int(pos)
         if stage == "refused" and tags.get("aib-reason") in REFUSE_REASONS:
             r["detail"] = tags["aib-reason"]
+        # 10-21 回條語意:只收白名單裡的碼,只拿來顯示;未知值當沒帶
+        if stage == "held" and tags.get("aib-reason") in GF.HELD_REASONS:
+            r["detail"] = tags["aib-reason"]
+        days = tags.get("aib-days", "")
+        if stage == "still_waiting" and days.isdigit() and 1 <= int(days) <= GF.WAIT_DAYS_MAX:
+            r["days"] = int(days)
+        if stage == "read" and tags.get("aib-read-by") == "human":
+            r["by"] = "human"
         GF.append_receipt(self.root, ref, r)
         audit(self.root, "receipt-in", ref, from_npub, stage)
         req = {"held": "pending", "delivered": "accepted", "refused": "rejected"}.get(stage)
@@ -1475,7 +1484,7 @@ class Receiver(object):
         finally:
             await c.shutdown()
 
-    async def send_receipt(self, msgid, stage, pos=None, refs=None, reason=None):
+    async def send_receipt(self, msgid, stage, pos=None, refs=None, reason=None, days=None, by=None):
         """回條寄回原寄件席(第 6.2 節)。只回 aib 寄件人(一般 Nostr App 收到一則看不懂的字沒用)。
         refs:已讀一批一次時,同一張回條帶的全部 msgid(第一個 = msgid)。
         reason:拒收的原因碼(REFUSE_REASONS),寄件端照碼顯示給人看;不帶任何內文。"""
@@ -1489,8 +1498,12 @@ class Receiver(object):
             [["aib-ref", r] for r in (refs or [msgid])]
         if pos:
             t.append(["aib-queue-pos", str(pos)])
-        if reason in REFUSE_REASONS:
+        if (stage == "refused" and reason in REFUSE_REASONS) or (stage == "held" and reason in GF.HELD_REASONS):
             t.append(["aib-reason", reason])
+        if stage == "still_waiting" and isinstance(days, int) and 1 <= days <= GF.WAIT_DAYS_MAX:
+            t.append(["aib-days", str(days)])
+        if stage == "read" and by == "human":
+            t.append(["aib-read-by", "human"])        # 本人已讀:只帶「已讀 + 時間」,不帶本人做了什麼
         keys = _keys(rec["key"])
         gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(rec["from"]), _receipt_text(stage, rec.get("lang")),
                                       rumor_extra_tags=[N.Tag.parse(x) for x in t])
@@ -1519,7 +1532,9 @@ class Receiver(object):
             done = sent.get(msgid, 0)
             for r in lines[done:]:
                 if r.get("state") in RECEIPT_STAGES_OUT:
-                    await self.send_receipt(msgid, r["state"], r.get("pos"), reason=r.get("reason"))
+                    await self.send_receipt(msgid, r["state"], r.get("pos"), reason=r.get("reason"), days=r.get("days"))
+                elif r.get("state") == "read" and r.get("by") == "human":
+                    await self.send_receipt(msgid, "read", by="human")    # 本人已讀不跟 AI 的已讀併一批(寄件人要分得出來)
                 elif r.get("state") == "read":
                     self._queue_read(msgid)
                 done += 1
@@ -1555,7 +1570,7 @@ class Receiver(object):
 
 
 _RECEIPT_TEXT = {"queued": "已排隊", "delivered": "已送達", "held": "待對方審核", "refused": "對方未收", "expired": "已過期",
-                 "read": "已讀"}
+                 "read": "已讀", "still_waiting": "還在等對方本人看"}
 
 
 def _receipt_text(stage, lang):

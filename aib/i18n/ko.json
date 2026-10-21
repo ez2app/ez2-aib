@@ -4375,6 +4375,7 @@
   "aib.chat.receipt.refused": "상대가 이 메시지를 받지 않았습니다.",
   "aib.chat.receipt.expired": "만료되어 전달되지 않았습니다.",
   "aib.chat.receipt.read": "읽음",
+  "aib.chat.receipt.still_waiting": "아직 본인이 확인하기를 기다리는 중",
   "aib.chat.status_relays": "릴레이: {up}/{total} 연결됨",
   "aib.chat.status_offline": "⚠ 온라인 대화 오프라인: 릴레이 {up}/{total}, 5분 넘게 모두 끊김(송수신 불가)",
   "aib.chat.status_today": "오늘: 보냄 {sent}, 받음 {received}, 실패 {failed}; 보낼 대기 {pending}",
