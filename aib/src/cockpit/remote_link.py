@@ -164,6 +164,39 @@ def seats(env=None, SA=None):
     return {"ok": True, "action": "seats", "seats": rows[:40]}
 
 
+RESULT_MAX = 96 * 1024 - 512   # 中繼收 result 上限 96KB(JSON 字串);留點餘裕給外層 {id, machine}
+
+
+def _size(d):
+    return len(json.dumps(d, ensure_ascii=False).encode("utf-8"))   # 位元組數 ≥ JS 字串長度 ⇒ 這邊過了中繼一定過
+
+
+def fit_result(res):
+    """回條裁到 96KB 內:對話先丟最舊的幾則(標 truncated);還是太大 ⇒ {ok:false, error:"result_too_large"}"""
+    if _size(res) <= RESULT_MAX:
+        return res
+    ev = res.get("events")
+    if isinstance(ev, list):
+        res = dict(res, events=list(ev), truncated=True)
+        while res["events"] and _size(res) > RESULT_MAX:
+            res["events"].pop(0)
+        if _size(res) <= RESULT_MAX:
+            return res
+    return {"ok": False, "action": res.get("action"), "seat": res.get("seat"), "error": "result_too_large", "why": "result_too_large"}
+
+
+def reply(call, base, token, machine, mid, res, sleep=time.sleep):
+    """POST /reply;413 ⇒ 改回 result_too_large;429 / 5xx ⇒ 等一下再送一次(派送後 30 秒內要回)。回最後的 HTTP 狀態"""
+    url = "%s%s/reply" % (base, PREFIX)
+    st, _d = call("POST", url, token, {"id": mid, "machine": machine, "result": res})
+    if st == 413:
+        st, _d = call("POST", url, token, {"id": mid, "machine": machine, "result": {"ok": False, "error": "result_too_large", "why": "result_too_large"}})
+    elif st == 429 or (isinstance(st, int) and st >= 500):
+        sleep(2)
+        st, _d = call("POST", url, token, {"id": mid, "machine": machine, "result": res})
+    return st
+
+
 def link(token, machine, env=None, base=BASE, call=http, once=False, sleep=time.sleep, act=None, log=None):
     """長輪詢主迴圈;回 (summary, rc)。base / call / sleep 只給測試注入。"""
     import remote_grant
@@ -174,11 +207,11 @@ def link(token, machine, env=None, base=BASE, call=http, once=False, sleep=time.
         status, msg = call("GET", "%s%s/next?machine=%s" % (base, PREFIX, machine), token)
         if status == 200 and msg and ID_RE.fullmatch(str(msg.get("id") or "")):
             errs = 0
-            res = handle(msg, env, act)
-            call("POST", "%s%s/reply" % (base, PREFIX), token, {"id": msg["id"], "machine": machine, "result": res})
+            res = fit_result(handle(msg, env, act))
+            rs = reply(call, base, token, machine, msg["id"], res, sleep)
             done += 1
-            if log:
-                log({"id": msg["id"], "op": msg.get("op"), "seat": msg.get("seat"), "ok": res.get("ok"), "why": res.get("why")})
+            if log:   # 每一筆 cmd id 都記(回條沒簽章 ⇒ 本人事後對帳用;@9f808 10-21)
+                log({"id": msg["id"], "op": msg.get("op"), "seat": msg.get("seat"), "ok": res.get("ok"), "why": res.get("why") or res.get("error"), "reply": rs})
         elif status == 204:
             errs = 0
         elif status in (401, 403):

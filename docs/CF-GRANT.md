@@ -47,3 +47,30 @@ aib cf revoke <token_id>
   helper in a root-owned location and check its hash against a signed manifest before running it (not in this version; for the integrator to decide).
 - The minter can mint tokens of any permission; its safety rests entirely on the Secure Enclave gate above. As a second layer, give the minter an IP
   restriction in the Cloudflare dashboard (only your Mac's / office's egress).
+
+## Rollout runbook
+
+Three stages. Stage ① is done by the owner alone; every step of stage ③ touches production and waits for the owner's go-ahead.
+
+### ① Create the minter and seal it into the Secure Enclave (owner only; no AI involved)
+1. Cloudflare dashboard → My Profile → API Tokens → Create Custom Token:
+   - Permissions: User → **API Tokens: Edit**; Zone → **Zone: Read** (the zones you will grant for, or All zones).
+   - Recommended: Client IP Address Filtering = this Mac's egress IP (skip if it is not fixed).
+2. Run it yourself in a terminal (in Claude Code with `!`, one line, no leading space): `!aib secret ask CF_TOKEN_MINTER`
+   Paste into the masked box → fingerprint. The value goes from the box into the sealed Secure Enclave file only; never into the chat or any `.env`.
+3. `aib cf list` asks for a fingerprint and lists the account's tokens ⇒ the minter works.
+
+### ② Real-device test (owner present to touch the sensor)
+1. `aib cf grant <zone> zone-read --push <host>:/root/cf-grant-test.env --ttl 2m --why "rollout test" --dry-run`: check the plan; the IP lock must include the target host's IPv4 / IPv6.
+2. Run again without `--dry-run`: the dialog must name the zone, permission, 2m and target host; approve.
+3. On the target host with that token: `/user/tokens/verify` is active; reading the zone works; reading DNS is refused.
+4. After 2 minutes verify again ⇒ expired; `aib cf list` shows it expired.
+5. Run grant once more and press Cancel ⇒ no token is created and the audit log gets a refused entry.
+6. Delete the test file on the target host (single target), record and report the results.
+
+### ③ Retire the old broad keys (production; one step at a time, each with the owner's go-ahead)
+First move unattended jobs that cannot wait for a fingerprint (certificate renewal, cache purge, …) to zone-limited, IP-locked small tokens, then:
+1. If the local vault still has an old minter line ⇒ the owner deletes that line.
+2. Global key and broad tokens on servers: back up, then remove them from the config files; old backup copies in the same directory hold the same keys and must be handled too.
+3. Revoke the broad token in the Cloudflare dashboard; the owner **Changes / Rolls** the global key (it cannot just be disabled).
+4. Within 24 hours check the logs of certificate renewal, cache purge, domain audit and similar jobs.

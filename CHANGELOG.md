@@ -4,6 +4,12 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.36
+
+- **Pairing-code binding knows this Mac**: `aib page bind` (pairing code) now sends this machine's id, like `--serial` does, so phone remote recognises pages bound by code. If the server says the credential belongs to a different machine, nothing is saved. Older servers that do not accept it still bind as before.
+- **Phone remote replies stay within the relay limit**: replies are trimmed to 96 KB (oldest conversation lines dropped first); if still too large the phone is told `result_too_large`. A busy relay (429 / 5xx) gets one retry, and every command id is logged for later checking.
+- **Docs**: rollout guide for `aib cf grant` (docs/CF-GRANT.*).
+
 ## 0.1.35
 
 - **Cloudflare changes need Touch ID every time**: `aib cf grant <zone> <perm>[,…] --push HOST:/abs/path [--ttl 10m]` opens a short-lived token limited to one zone, whitelisted permissions and the destination's IPs, writes it to the destination over ssh stdin, and deletes it again if delivery fails. The minting key is sealed by this Mac's Secure Enclave (biometrics required on every use, enforced by the system); it is never stored in the secrets file. `aib cf list` / `aib cf revoke <id>`. The key cabinet gains a Cloudflare category; `aib secret ask` reports `no_gui` when it cannot show a window.
