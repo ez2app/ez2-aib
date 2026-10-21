@@ -10,7 +10,8 @@ P5 每小時上限 per_hour:到了 ⇒ cap,不記成已轉(下個小時再送)
 P6 沒配對(主人簽的清單裡沒有手機)⇒ no_phone、不記;全部手機送失敗 ⇒ send_failed、不記;一支成功就算
 P7 CLI on / off / status、範圍外 rc 2;設定檔 600;檔案亂寫(on="yes"、minutes=0)⇒ 當預設
 P8 接上:chat_nostr 主迴圈有 tick、只用 _signed_phones 當收件人、用機器金鑰;四語都有
-刀(複本):K1 不檢查 on ⇒ P1 紅;K2 拿掉每小時上限 ⇒ P5 紅
+P9 打開 / 開著時調短 minutes / 調高 per_hour 要 Touch ID;沒過不寫、rc 2、帶 hint;收緊 / 關 / 查不跳;範圍外先擋
+刀(複本):K1 不檢查 on ⇒ P1 紅;K2 拿掉每小時上限 ⇒ P5 紅;K3 不看 Touch ID 結果 ⇒ P9 紅
 """
 import asyncio
 import io
@@ -123,7 +124,7 @@ class Forward(Base):
     def test_p7_cli_and_file(self):
         a = SimpleNamespace(action="on", minutes=30, per_hour=2, json=True)
         buf = io.StringIO()
-        self.assertEqual(PF.cmd(a, self.env, buf), 0)
+        self.assertEqual(PF.cmd(a, self.env, buf, prove=lambda r, e: ("touchid", None)), 0)
         self.assertEqual(json.loads(buf.getvalue()), {"ok": True, "on": True, "minutes": 30, "per_hour": 2})
         self.assertEqual(stat.S_IMODE(PF.path(self.env).stat().st_mode), 0o600)
         for kw, why in ((dict(minutes=0), "bad_minutes"), (dict(per_hour=99), "bad_per_hour")):
@@ -138,6 +139,44 @@ class Forward(Base):
         rec = PF.load(self.env)
         self.assertEqual((rec["on"], rec["minutes"], rec["per_hour"]), (False, 15, 3))
 
+    def test_p9_touchid_to_loosen(self):
+        asked = []
+
+        def prove(why):
+            def p(reason, env):
+                asked.append(reason)
+                return "touchid", why
+            return p
+
+        def run(action, minutes=None, per_hour=None, why=None):
+            buf = io.StringIO()
+            rc = PF.cmd(SimpleNamespace(action=action, minutes=minutes, per_hour=per_hour, json=True), self.env, buf,
+                        prove=prove(why))
+            return rc, json.loads(buf.getvalue())
+        for why in ("touchid_cancel", "touchid_off", "touchid_unavailable"):
+            rc, res = run("on", why=why)
+            self.assertEqual((rc, res["why"]), (2, why))
+            self.assertTrue(res.get("hint"))
+            self.assertFalse(PF.path(self.env).exists(), "沒過什麼都不寫")
+        n = len(asked)
+        rc, res = run("on", minutes=20)
+        self.assertEqual((rc, res["on"]), (0, True))
+        self.assertEqual(len(asked), n + 1)
+        self.assertIn("20", asked[-1])
+        for kw in (dict(minutes=5), dict(per_hour=6)):
+            rc, res = run("status", why="touchid_cancel", **kw)
+            self.assertEqual((rc, res["why"]), (2, "touchid_cancel"), kw)
+        self.assertEqual((PF.load(self.env)["minutes"], PF.load(self.env)["per_hour"]), (20, 3))
+        n = len(asked)
+        for action, kw in (("status", dict(minutes=60)), ("status", dict(per_hour=1)), ("status", {}), ("off", {})):
+            rc, res = run(action, why="touchid_cancel", **kw)
+            self.assertEqual(rc, 0, (action, kw))
+        self.assertEqual(len(asked), n, "收緊 / 查狀態 / 關掉不跳 Touch ID")
+        self.assertFalse(PF.load(self.env)["on"])
+        rc, res = run("on", minutes=0, why="touchid_cancel")
+        self.assertEqual(res["why"], "bad_minutes", "範圍外先擋,不白跳 Touch ID")
+        self.assertEqual(len(asked), n)
+
     def test_p8_wired(self):
         src = (COCKPIT / "chat_nostr.py").read_text(encoding="utf-8")
         self.assertIn("await PF.tick(None, time.time(), receiver._signed_phones, receiver._notify_phone)", src)
@@ -151,6 +190,7 @@ class Forward(Base):
         for lang in ("zh-TW", "en", "ja", "ko"):
             d = json.loads((REPO / "i18n" / (lang + ".json")).read_text(encoding="utf-8"))
             for k in ("aib.chat.bbcall_phone", "aib.chat.help.phone_forward", "aib.chat.phone_forward.status_on",
+                      "aib.chat.phone_forward.touchid_reason", "aib.chat.phone_forward.hint_touchid",
                       "aib.chat.phone_forward.status_off", "aib.chat.phone_forward.bad_minutes",
                       "aib.chat.phone_forward.bad_per_hour"):
                 self.assertIn(k, d, (lang, k))
@@ -167,6 +207,9 @@ class Knife(unittest.TestCase):
 
     def test_k1_ignore_switch(self):
         self._knife('    if not rec["on"]:\n        return None, [], "off"\n', "", "Forward.test_p1_default_off")
+
+    def test_k3_no_touchid(self):
+        self._knife("            _via, why = prove(", "            _via, _why = prove(", "Forward.test_p9_touchid_to_loosen")
 
     def test_k2_no_cap(self):
         self._knife('    if sum(1 for t in rec["log"] if now - t < 3600) >= rec["per_hour"]:\n        return None, ids, "cap"\n',
