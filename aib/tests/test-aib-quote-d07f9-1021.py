@@ -11,7 +11,9 @@ Q5 同帳號 AI 換掉 .sekey、用自己的鑰簽 ⇒ 永遠不是 ok(證書只
 Q6 出貨的 TRUSTED_QUOTE_KEYS 是空的(fail closed;改要維護者點頭)
 Q7 P-256 驗章:RFC 6979 A.2.5 向量對;非最短 DER、r=0、不在曲線上的公鑰 ⇒ False
 Q8 aib quote 接上、四語都有;helper 的 se-sign 超長回 reason_too_long、不截
-刀(複本):K1 驗章一律 True ⇒ Q7 紅;K2 證書不查 kid ⇒ Q4 紅;K3 拿掉上限 ⇒ Q2 紅;K4 本機鑰驗過就當 ok ⇒ Q1 紅
+Q9 伺服器格式(@9f808 19:32):sig base64url 不帶 padding、kid = sha256(原始公鑰);格式不對 / kid 對不上 ⇒ 不算
+刀(複本):K1 驗章一律 True ⇒ Q7 紅;K2 證書不驗伺服器簽章 ⇒ Q4 紅;K3 拿掉上限 ⇒ Q2 紅;K4 本機鑰驗過就當 ok ⇒ Q1 紅;
+   K5 不比 kid 跟公鑰 ⇒ Q9 紅
 """
 import base64
 import hashlib
@@ -36,8 +38,13 @@ from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 
 SERVER_SEED = bytes(range(32))
-SERVER_KID = "ed25519:" + ed25519.public_key(SERVER_SEED).hex()
-TRUSTED = {SERVER_KID: SERVER_KID}
+SERVER_PUB = ed25519.public_key(SERVER_SEED)
+SERVER_KID = "ed25519:" + hashlib.sha256(SERVER_PUB).hexdigest()      # @9f808:kid = sha256(原始公鑰)
+TRUSTED = {SERVER_KID: "ed25519:" + SERVER_PUB.hex()}
+
+
+def b64url(raw):
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
 def _der_int(v):
@@ -91,7 +98,7 @@ def cert_for(pub, registered_at, revoked_at=None, seed=SERVER_SEED, kid=SERVER_K
     c = {"v": 1, "kind": "aib-quote-key", "account_id": "acct-1", "key_fp": AQ.key_fp(pub),
          "pub_x963_b64": base64.b64encode(pub).decode(), "machine_label": "test-mac",
          "registered_at": registered_at, "revoked_at": revoked_at, "kid": kid}
-    c["sig"] = base64.b64encode(ed25519.sign(seed, AQ.canonical(c))).decode()
+    c["sig"] = b64url(ed25519.sign(seed, AQ.canonical(c)))
     return c
 
 
@@ -165,7 +172,7 @@ class Quote(Base):
         evt = self._signed("2026-10-21T12:00:00+00:00")
         good = [cert_for(pub, "2026-10-21T11:00:00+00:00")]
         self.assertEqual(AQ.verify(evt, self.env, certs=good, trusted=TRUSTED)["status"], "ok")
-        other = ed25519.public_key(b"\x07" * 32).hex()
+        other = hashlib.sha256(ed25519.public_key(b"\x07" * 32)).hexdigest()
         bad_kid = [cert_for(pub, "2026-10-21T11:00:00+00:00", seed=b"\x07" * 32, kid="ed25519:" + other)]
         self.assertEqual(AQ.verify(evt, self.env, certs=bad_kid, trusted=TRUSTED)["status"], "unverified-root")
         forged = dict(good[0], registered_at="2026-10-01T00:00:00+00:00")
@@ -185,6 +192,25 @@ class Quote(Base):
         f.write_text(json.dumps(dict(rec, sig_der_b64=base64.b64encode(bytes(sig)).decode())))
         self.assertEqual(AQ.verify(evt, self.env, certs=good, trusted=TRUSTED)["status"], "bad-sig")
         self.assertEqual(AQ.verify("evt:q-0000000000000000", self.env)["status"], "not-found")
+
+    def test_q9_server_wire_format(self):
+        """@9f808 伺服器格式:sig = base64url 不帶 padding;kid = sha256(原始公鑰);kid 跟清單公鑰對不上 / 標準 base64 / 帶 = ⇒ 不算。"""
+        self.init_key()
+        pub = AQ.local_pub(self.env)
+        evt = self._signed("2026-10-21T12:00:00+00:00")
+        c = cert_for(pub, "2026-10-21T11:00:00+00:00")
+        self.assertNotIn("=", c["sig"])
+        self.assertTrue(AQ.cert_ok(c, TRUSTED))
+        self.assertEqual(AQ.kid_of(SERVER_PUB), SERVER_KID)
+        raw = base64.urlsafe_b64decode(c["sig"] + "==")
+        self.assertFalse(AQ.cert_ok(dict(c, sig=base64.urlsafe_b64encode(raw).decode()), TRUSTED), "帶 padding 不收")
+        std = base64.b64encode(raw).decode().rstrip("=")
+        if std != c["sig"]:
+            self.assertFalse(AQ.cert_ok(dict(c, sig=std), TRUSTED), "標準 base64 字元不收")
+        alias = "ed25519:" + "ab" * 32
+        renamed = cert_for(pub, "2026-10-21T11:00:00+00:00", kid=alias)          # 真伺服器簽的,但 kid 不是 sha256(公鑰)
+        self.assertFalse(AQ.cert_ok(renamed, {alias: "ed25519:" + SERVER_PUB.hex()}), "kid 跟清單公鑰的 sha256 對不上")
+        self.assertEqual(AQ.verify(evt, self.env, certs=[c], trusted=TRUSTED)["status"], "ok")
 
     def test_q5_ai_swaps_key(self):
         self.init_key()
@@ -252,13 +278,17 @@ class Knife(unittest.TestCase):
                     '    """pub:65 位元組 X9.63;msg:原文(這裡做 SHA-256);sig:DER。對 ⇒ True。"""\n    return True\n',
                     "Quote.test_q7_p256_vectors")
 
-    def test_k2_no_kid_check(self):
-        self._knife("src/cockpit/aib_quote.py", "    if kid not in trusted:\n        return False\n",
-                    "    if kid not in trusted:\n        trusted = {kid: kid}\n", "Quote.test_q4_server_certs")
+    def test_k2_no_server_sig_check(self):
+        self._knife("src/cockpit/aib_quote.py", "        return ed25519.verify(server_pub, canonical(body), sig)\n",
+                    "        return True\n", "Quote.test_q4_server_certs")
 
     def test_k3_no_limit(self):
         self._knife("src/cockpit/aib_quote.py", "    if len(t) > QUOTE_MAX:\n        return None, \"too_long\"\n", "",
                     "Quote.test_q2_limit_codepoints_full_reason")
+
+    def test_k5_no_kid_pub_match(self):
+        self._knife("src/cockpit/aib_quote.py", "    if len(server_pub) != 32 or kid_of(server_pub) != kid:\n",
+                    "    if len(server_pub) != 32:\n", "Quote.test_q9_server_wire_format")
 
     def test_k4_local_key_counts(self):
         self._knife("src/cockpit/aib_quote.py", 'res["status"] = "unverified-root" if local_ok else "bad-sig"',
