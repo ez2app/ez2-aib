@@ -583,6 +583,24 @@ def check_dm_latency(state_root, repo_root, env=None, now=None):
     return _result("dm_latency", OK, " | ".join(rows) if rows else _C("dm_latency.no_seats"))
 
 
+def check_temp(state_root, repo_root, env=None, now=None):
+    """aib temp 登記的臨時主機變更(@ee4f8 第十件):過期沒拆 ⇒ MANUAL(要人去拆或延);沒登記 / 都沒到期 ⇒ OK。
+    清單是本機檔,這項只防忘記。"""
+    env = dict(os.environ if env is None else env)
+    env.setdefault("EZ2_AIB_STATE_ROOT", str(state_root))
+    try:
+        sys.path.insert(0, str(Path(repo_root) / "src" / "cockpit"))
+        import aib_temp
+        rows = aib_temp.listing(env, now=now)
+    except Exception as exc:  # noqa: BLE001
+        return _result("temp", NOTE, _C("temp.error", error=repr(exc)))
+    late = [r for r in rows if r["overdue"]]
+    if late:
+        return _result("temp", MANUAL, _C("temp.overdue", n=len(late), items=_join(
+            "%s %s(%s)" % (r["id"], r["host"], r.get("seat") or "?") for r in late)), _C("temp.overdue_remedy"))
+    return _result("temp", OK, _C("temp.ok", n=len(rows)))
+
+
 def _cabin_env_mod(repo_root):
     cock = Path(repo_root) / "src" / "cockpit"
     if str(cock) not in sys.path:
@@ -736,6 +754,7 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
     checks.append(check_cards_projection(state_root, repo_root))
     checks += provider_checks(providers, explicit_providers)
     checks.append(check_dm_latency(state_root, repo_root))
+    checks.append(check_temp(state_root, repo_root))
     return checks
 
 
