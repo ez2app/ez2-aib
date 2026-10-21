@@ -1301,9 +1301,9 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
     if cls == "seat" and ident != seat:
         return refuse("actor")
     if to == "read" and frm == HOLD_STATUS and cls == "seat" and item.get("global"):
-        return refuse("actor")
+        return refuse("actor")        # 陌生全球來信待審中:收件席自己不准讀(主人放行才給 AI;盤點 10-16 第 2 項)
     if to == "read" and cls == "human" and _human_from_seat("human:x", env):
-        return refuse("actor")        # 10-21:本人已讀會變成回條,AI 席位不准用 --by human: 冒充        # 陌生全球來信待審中:收件席自己不准讀(主人放行才給 AI;盤點 10-16 第 2 項)
+        return refuse("actor")        # 10-21:本人已讀會變成回條,AI 席位不准用 --by human: 冒充
     if item.get("im") or item.get("sender_kind") == "external_im":
         # 第 39 節第一步:Telegram 來信只在艦長室;沒有 Telegram 外框前,放行會被當成本機寄件人貼進 AI 框 ⇒ 一律不准
         if to in ("queued", "claimed", "delivered"):
