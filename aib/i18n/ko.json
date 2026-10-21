@@ -4904,5 +4904,7 @@
   "aib.handoff.fact.vault": "Vault 점검(aib vault doctor 읽기 전용, 고칠 때는 본인 확인 후 먼저 백업)",
   "aib.handoff.fact.vault_ok": "문제 없음",
   "aib.handoff.fact.vault_found": "문제 있음: {detail}",
-  "aib.handoff.fact.vault_skip": "실행 안 함({why})"
+  "aib.handoff.fact.vault_skip": "실행 안 함({why})",
+  "aib.room_reload.reloaded": "함장실을 새 버전으로 바꿨습니다({old} → {new}). 화면은 자동으로 다시 연결됩니다",
+  "aib.room_reload.failed": "함장실이 아직 이전 버전({old})으로 실행 중입니다. 새 버전은 {new}입니다. 함장실을 닫고 다시 여세요"
 }

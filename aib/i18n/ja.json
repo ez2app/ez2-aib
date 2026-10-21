@@ -4904,5 +4904,7 @@
   "aib.handoff.fact.vault": "Vault 点検(aib vault doctor 読み取りのみ。直すときは本人に確認し、先にバックアップ)",
   "aib.handoff.fact.vault_ok": "問題なし",
   "aib.handoff.fact.vault_found": "問題あり:{detail}",
-  "aib.handoff.fact.vault_skip": "未実行({why})"
+  "aib.handoff.fact.vault_skip": "未実行({why})",
+  "aib.room_reload.reloaded": "艦長室を新しい版に切り替えました({old} → {new})。画面は自動で再接続します",
+  "aib.room_reload.failed": "艦長室はまだ古い版({old})で動いています。新しい版は {new} です。艦長室を閉じてもう一度開いてください"
 }
