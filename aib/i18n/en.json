@@ -4967,5 +4967,7 @@
   "aib.chat.phone_forward.status_on": "Phone forward: on (after {minutes} minutes unread, one line goes to your paired phone, at most {per_hour} per hour; no content or names)",
   "aib.chat.phone_forward.status_off": "Phone forward: off (to turn on: aib chat phone-forward on)",
   "aib.chat.phone_forward.bad_minutes": "--minutes must be between 1 and 1440",
-  "aib.chat.phone_forward.bad_per_hour": "--per-hour must be between 1 and 12"
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour must be between 1 and 12",
+  "aib.page.help.unbind_local_only": "Only remove this machine's credential, without contacting the server or Touch ID; revoke it on ez2.page separately",
+  "aib.page.unbind_note.local_only": "Removed on this machine only; its credential is still valid on ez2.page, revoke it at {url}"
 }

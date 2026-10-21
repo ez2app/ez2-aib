@@ -4967,5 +4967,7 @@
   "aib.chat.phone_forward.status_on": "휴대폰 전달: 켜짐({minutes}분 동안 읽지 않으면 페어링한 휴대폰에 한 줄, 시간당 최대 {per_hour}건. 본문과 이름은 보내지 않음)",
   "aib.chat.phone_forward.status_off": "휴대폰 전달: 꺼짐(켜기: aib chat phone-forward on)",
   "aib.chat.phone_forward.bad_minutes": "--minutes 는 1~1440 사이여야 합니다",
-  "aib.chat.phone_forward.bad_per_hour": "--per-hour 는 1~12 사이여야 합니다"
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour 는 1~12 사이여야 합니다",
+  "aib.page.help.unbind_local_only": "이 기기의 인증 정보만 삭제합니다(서버 호출·Touch ID 없음). ez2.page 쪽은 관리 화면에서 따로 취소하세요",
+  "aib.page.unbind_note.local_only": "이 기기에서만 삭제했습니다. ez2.page 의 인증 정보는 아직 유효하니 {url} 에서 취소하세요"
 }
