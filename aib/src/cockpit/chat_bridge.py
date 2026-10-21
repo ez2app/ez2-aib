@@ -1329,9 +1329,35 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
                 if owner:
                     out_last[r.get("msgid")] = {"at": at, "dir": "out", "net": "nostr", "contact_key": "global:" + owner,
                                                 "result": res}
+    for msgid, row in out_last.items():
+        rc = last_receipt(root, msgid)
+        if rc:
+            row["receipt"] = rc
     rows += list(out_last.values())
     rows.sort(key=lambda x: x["at"])
     return {"v": 1, "at": int(now), "minutes": int(minutes), "rows": rows}
+
+
+def last_receipt(root, msgid):
+    """10-21 回條語意:寄出那封對方最後回的那一張 ⇒ {"stage","at"[,"days"][,"by"][,"detail"]};沒有 ⇒ None。
+    寄件人(艦長室收發室)據此分得出「還在等本人看(第 N 天)」「本人已讀」「被丟掉 / 過期」。detail 只放白名單碼。"""
+    if not isinstance(msgid, str) or not GF.MSGID_RE.match(msgid):
+        return None
+    try:
+        recs = GF.read_receipts(root, msgid)
+    except Exception:  # noqa: BLE001
+        return None
+    if not recs:
+        return None
+    r = recs[-1]
+    out = {"stage": r.get("stage"), "at": r.get("at")}
+    if isinstance(r.get("days"), int):
+        out["days"] = r["days"]
+    if r.get("by") == "human":
+        out["by"] = "human"
+    if r.get("detail") in tuple(GF.HELD_REASONS) + tuple(GF.REFUSE_TEXT):
+        out["detail"] = r["detail"]
+    return out
 
 
 def _snap_times(rec, now):

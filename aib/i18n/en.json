@@ -4369,6 +4369,7 @@
   "aib.chat.receipt.refused": "The recipient did not accept this message.",
   "aib.chat.receipt.expired": "Expired; not delivered.",
   "aib.chat.receipt.read": "Read",
+  "aib.chat.receipt.still_waiting": "Still waiting for the person to read it",
   "aib.chat.status_relays": "Relays: {up}/{total} connected",
   "aib.chat.status_offline": "⚠ Online chat offline: relays {up}/{total}, all disconnected for over 5 minutes (nothing in or out)",
   "aib.chat.status_today": "Today: sent {sent}, received {received}, failed {failed}; waiting to send {pending}",
