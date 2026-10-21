@@ -4961,5 +4961,11 @@
   "aib.page.unbind_hint.touchid_off": "Touch ID is off, and unbinding needs your fingerprint; nothing changed",
   "aib.page.unbind_hint.touchid_unavailable": "Touch ID is not available on this machine; revoke this machine at {url}",
   "aib.page.unbind_hint.server_unsupported": "ez2.page does not support revoking from this machine yet, so the local credential was left alone; revoke this machine at {url}, then run aib page unbind again to clean up locally",
-  "aib.page.unbind_note.page_api_token_invalid": "ez2.page no longer has this machine's credential (it may have been revoked in the dashboard); removing the local copy anyway"
+  "aib.page.unbind_note.page_api_token_invalid": "ez2.page no longer has this machine's credential (it may have been revoked in the dashboard); removing the local copy anyway",
+  "aib.chat.bbcall_phone": "New letters waiting in your captain room: {n}",
+  "aib.chat.help.phone_forward": "When letters to you sit unread, send one line (\"N new letters are waiting\") to your paired phone (off by default; no content or names)",
+  "aib.chat.phone_forward.status_on": "Phone forward: on (after {minutes} minutes unread, one line goes to your paired phone, at most {per_hour} per hour; no content or names)",
+  "aib.chat.phone_forward.status_off": "Phone forward: off (to turn on: aib chat phone-forward on)",
+  "aib.chat.phone_forward.bad_minutes": "--minutes must be between 1 and 1440",
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour must be between 1 and 12"
 }

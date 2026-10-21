@@ -27,6 +27,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import nostr_sdk as N  # noqa: E402  只有 venv 裡有;核心沒有這一行
 import chat_devices as DV  # noqa: E402
+import chat_phone_forward as PF  # noqa: E402
 import chat_power as CP  # noqa: E402
 import chat_roster as CR  # noqa: E402
 import dm_global_files as GF  # noqa: E402
@@ -1484,6 +1485,26 @@ class Receiver(object):
         finally:
             await c.shutdown()
 
+    async def _notify_phone(self, to_npub, text):
+        """BB Call 轉手機(chat_phone_forward):用這台的機器金鑰送一行純文字到主人手機。沒有機器金鑰 / 失敗 ⇒ False,只記 audit。"""
+        if not (NK.read_map().get("device") or {}).get("npub"):
+            audit(self.root, "out", "-", to_npub, "bbcall:no-device")
+            return False
+        rc, res = await self.sender._resolve(to_npub)
+        if rc != 0:
+            audit(self.root, "out", "-", to_npub, "bbcall:" + str(res.get("why")))
+            return False
+        keys = _keys("device")
+        gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(to_npub), text)
+        keys = None
+        c = await _client(res["dm_relays"])
+        try:
+            out = await c.send_event(gw)
+            audit(self.root, "out", "-", to_npub, "bbcall" if out.success else "bbcall:failed")
+            return bool(out.success)
+        finally:
+            await c.shutdown()
+
     async def send_receipt(self, msgid, stage, pos=None, refs=None, reason=None, days=None, by=None):
         """回條寄回原寄件席(第 6.2 節)。只回 aib 寄件人(一般 Nostr App 收到一則看不懂的字沒用)。
         refs:已讀一批一次時,同一張回條帶的全部 msgid(第一個 = msgid)。
@@ -1646,6 +1667,7 @@ async def serve(root):
     last_presence = 0.0
     last_verify = 0.0
     last_unconfirmed = 0.0
+    last_bbcall = 0.0
     watch = CP.SleepWatch(root)
     recv_task = asyncio.ensure_future(receiver.run(stop))
     import chat_telegram as TG                                # 第 39 節:Telegram 互串(關著就只是每 10 秒看一次開關)
@@ -1698,6 +1720,12 @@ async def serve(root):
                     await sender.push_presence()
                 except Exception as err:   # noqa: BLE001
                     sys.stderr.write("presence:%s\n" % type(err).__name__)
+            if time.time() - last_bbcall >= PF.TICK_S:              # BB Call 轉手機(預設關;關著只讀一次設定檔)
+                last_bbcall = time.time()
+                try:
+                    await PF.tick(None, time.time(), receiver._signed_phones, receiver._notify_phone)
+                except Exception as err:   # noqa: BLE001
+                    sys.stderr.write("bbcall:%s\n" % type(err).__name__)
             try:
                 await asyncio.wait_for(stop.wait(), POLL)
             except asyncio.TimeoutError:

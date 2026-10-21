@@ -4961,5 +4961,11 @@
   "aib.page.unbind_hint.touchid_off": "Touch ID 가 꺼져 있습니다. 연결 해제에는 본인 지문이 필요합니다. 아무것도 바꾸지 않았습니다",
   "aib.page.unbind_hint.touchid_unavailable": "이 기기에서는 Touch ID 를 쓸 수 없습니다. {url} 에서 이 기기를 취소하세요",
   "aib.page.unbind_hint.server_unsupported": "ez2.page 가 아직 이 기기에서의 취소를 지원하지 않아 로컬 인증 정보는 그대로입니다. {url} 에서 취소한 뒤 aib page unbind 를 다시 실행하세요",
-  "aib.page.unbind_note.page_api_token_invalid": "ez2.page 에 이 기기의 인증 정보가 더 이상 없습니다(관리 화면에서 취소되었을 수 있음). 로컬 사본도 삭제합니다"
+  "aib.page.unbind_note.page_api_token_invalid": "ez2.page 에 이 기기의 인증 정보가 더 이상 없습니다(관리 화면에서 취소되었을 수 있음). 로컬 사본도 삭제합니다",
+  "aib.chat.bbcall_phone": "함장실에 새 편지가 {n}통 있습니다",
+  "aib.chat.help.phone_forward": "나에게 온 편지를 읽지 않은 채로 두면, 페어링한 휴대폰에 \"새 편지 N통\" 한 줄을 보냅니다(기본 꺼짐, 본문과 이름은 보내지 않음)",
+  "aib.chat.phone_forward.status_on": "휴대폰 전달: 켜짐({minutes}분 동안 읽지 않으면 페어링한 휴대폰에 한 줄, 시간당 최대 {per_hour}건. 본문과 이름은 보내지 않음)",
+  "aib.chat.phone_forward.status_off": "휴대폰 전달: 꺼짐(켜기: aib chat phone-forward on)",
+  "aib.chat.phone_forward.bad_minutes": "--minutes 는 1~1440 사이여야 합니다",
+  "aib.chat.phone_forward.bad_per_hour": "--per-hour 는 1~12 사이여야 합니다"
 }
