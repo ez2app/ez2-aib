@@ -4898,5 +4898,16 @@
   "aib.handoff.fact.vault": "Vault 점검(aib vault doctor 읽기 전용, 고칠 때는 본인 확인 후 먼저 백업)",
   "aib.handoff.fact.vault_ok": "문제 없음",
   "aib.handoff.fact.vault_found": "문제 있음: {detail}",
-  "aib.handoff.fact.vault_skip": "실행 안 함({why})"
+  "aib.handoff.fact.vault_skip": "실행 안 함({why})",
+  "aib.page.help.unbind": "이 기기와 ez2.page 계정의 연결을 해제합니다(본인 Touch ID 필요. 서버 쪽을 먼저 취소하고 성공하면 로컬 인증 정보를 삭제)",
+  "aib.page.touchid_unbind": "이 기기와 계정 {slug} 의 연결 해제",
+  "aib.page.unbind_unbound": "이 기기와 {slug} 의 연결을 해제했습니다. 다시 연결하려면 aib page bind",
+  "aib.page.unbind_not_bound": "이 기기는 원래 ez2.page 와 연결되어 있지 않습니다",
+  "aib.page.unbind_hint.server_refused": "서버에서 취소되지 않아 로컬 인증 정보는 그대로입니다. 나중에 다시 시도하거나 {url} 에서 이 기기를 취소하세요",
+  "aib.page.unbind_hint.server_unreachable": "ez2.page 에 연결할 수 없어 로컬 인증 정보는 그대로입니다. 연결되면 다시 실행하거나 {url} 에서 취소하세요",
+  "aib.page.unbind_hint.touchid_cancel": "지문을 누르지 않아 아무것도 바꾸지 않았습니다",
+  "aib.page.unbind_hint.touchid_off": "Touch ID 가 꺼져 있습니다. 연결 해제에는 본인 지문이 필요합니다. 아무것도 바꾸지 않았습니다",
+  "aib.page.unbind_hint.touchid_unavailable": "이 기기에서는 Touch ID 를 쓸 수 없습니다. {url} 에서 이 기기를 취소하세요",
+  "aib.page.unbind_hint.server_unsupported": "ez2.page 가 아직 이 기기에서의 취소를 지원하지 않아 로컬 인증 정보는 그대로입니다. {url} 에서 취소한 뒤 aib page unbind 를 다시 실행하세요",
+  "aib.page.unbind_note.page_api_token_invalid": "ez2.page 에 이 기기의 인증 정보가 더 이상 없습니다(관리 화면에서 취소되었을 수 있음). 로컬 사본도 삭제합니다"
 }

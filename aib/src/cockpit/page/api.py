@@ -132,6 +132,10 @@ class PageApi:
             "serial": serial, "seat_label": seat_label, "machine": machine,
         }, auth=False)
 
+    def bind_revoke(self):
+        # 契約(@9f808 10-21):bearer = 要撤銷的那把、body 必須空(帶 body ⇒ 400 page_api_body_invalid)
+        return self._request("POST", "/bind/revoke")
+
     def bind_poll(self, bind_ticket):
         return self._request("POST", "/bind/poll", {"bind_ticket": bind_ticket},
                              auth=False)

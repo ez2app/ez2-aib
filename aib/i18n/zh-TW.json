@@ -4898,5 +4898,16 @@
   "aib.handoff.fact.vault": "Vault 檢查(只讀 aib vault doctor;要修照規矩問本人、先備份)",
   "aib.handoff.fact.vault_ok": "沒問題",
   "aib.handoff.fact.vault_found": "有問題:{detail}",
-  "aib.handoff.fact.vault_skip": "沒跑({why})"
+  "aib.handoff.fact.vault_skip": "沒跑({why})",
+  "aib.page.help.unbind": "解除這台跟 ez2.page 帳號的綁定(要本人 Touch ID;先撤銷伺服器那把,成功才刪本機憑證)",
+  "aib.page.touchid_unbind": "解除這台跟帳號 {slug} 的綁定",
+  "aib.page.unbind_unbound": "已解除這台跟 {slug} 的綁定;要重綁跑 aib page bind",
+  "aib.page.unbind_not_bound": "這台本來就沒有綁 ez2.page",
+  "aib.page.unbind_hint.server_refused": "伺服器沒有撤銷成功,本機憑證沒動;可以稍後再試,或到 {url} 撤銷這台",
+  "aib.page.unbind_hint.server_unreachable": "連不上 ez2.page,本機憑證沒動;網路好了再跑一次,或到 {url} 撤銷這台",
+  "aib.page.unbind_hint.touchid_cancel": "沒有按指紋,什麼都沒動",
+  "aib.page.unbind_hint.touchid_off": "Touch ID 關著,解除綁定要本人按指紋;什麼都沒動",
+  "aib.page.unbind_hint.touchid_unavailable": "這台叫不出 Touch ID;請到 {url} 撤銷這台",
+  "aib.page.unbind_hint.server_unsupported": "ez2.page 還沒開放從這台撤銷,本機憑證沒動;請到 {url} 撤銷這台,再跑一次 aib page unbind 清本機",
+  "aib.page.unbind_note.page_api_token_invalid": "ez2.page 上已經沒有這台的憑證(可能在後台撤銷過);本機這份照樣清掉"
 }

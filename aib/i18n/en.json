@@ -4898,5 +4898,16 @@
   "aib.handoff.fact.vault": "Vault check (read-only aib vault doctor; fixing still needs the owner's OK and a backup first)",
   "aib.handoff.fact.vault_ok": "no problems",
   "aib.handoff.fact.vault_found": "problems: {detail}",
-  "aib.handoff.fact.vault_skip": "not run ({why})"
+  "aib.handoff.fact.vault_skip": "not run ({why})",
+  "aib.page.help.unbind": "Unbind this machine from its ez2.page account (needs your Touch ID; revokes the server token first and only then deletes the local credential)",
+  "aib.page.touchid_unbind": "Unbind this machine from account {slug}",
+  "aib.page.unbind_unbound": "This machine is no longer bound to {slug}; run aib page bind to bind again",
+  "aib.page.unbind_not_bound": "This machine was not bound to ez2.page",
+  "aib.page.unbind_hint.server_refused": "The server did not revoke the token, so the local credential was left alone; try again later or revoke this machine at {url}",
+  "aib.page.unbind_hint.server_unreachable": "Could not reach ez2.page, so the local credential was left alone; run this again when you are online, or revoke this machine at {url}",
+  "aib.page.unbind_hint.touchid_cancel": "No fingerprint was given, so nothing changed",
+  "aib.page.unbind_hint.touchid_off": "Touch ID is off, and unbinding needs your fingerprint; nothing changed",
+  "aib.page.unbind_hint.touchid_unavailable": "Touch ID is not available on this machine; revoke this machine at {url}",
+  "aib.page.unbind_hint.server_unsupported": "ez2.page does not support revoking from this machine yet, so the local credential was left alone; revoke this machine at {url}, then run aib page unbind again to clean up locally",
+  "aib.page.unbind_note.page_api_token_invalid": "ez2.page no longer has this machine's credential (it may have been revoked in the dashboard); removing the local copy anyway"
 }

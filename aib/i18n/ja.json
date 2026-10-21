@@ -4898,5 +4898,16 @@
   "aib.handoff.fact.vault": "Vault 点検(aib vault doctor 読み取りのみ。直すときは本人に確認し、先にバックアップ)",
   "aib.handoff.fact.vault_ok": "問題なし",
   "aib.handoff.fact.vault_found": "問題あり:{detail}",
-  "aib.handoff.fact.vault_skip": "未実行({why})"
+  "aib.handoff.fact.vault_skip": "未実行({why})",
+  "aib.page.help.unbind": "このマシンと ez2.page アカウントの連携を解除します(本人の Touch ID が必要。先にサーバー側を取り消し、成功したらローカルの認証情報を削除)",
+  "aib.page.touchid_unbind": "このマシンとアカウント {slug} の連携を解除",
+  "aib.page.unbind_unbound": "このマシンと {slug} の連携を解除しました。もう一度連携するには aib page bind",
+  "aib.page.unbind_not_bound": "このマシンはもともと ez2.page と連携していません",
+  "aib.page.unbind_hint.server_refused": "サーバーで取り消せなかったため、ローカルの認証情報はそのままです。あとで再試行するか、{url} でこのマシンを取り消してください",
+  "aib.page.unbind_hint.server_unreachable": "ez2.page に接続できないため、ローカルの認証情報はそのままです。接続できるようになったら再実行するか、{url} で取り消してください",
+  "aib.page.unbind_hint.touchid_cancel": "指紋が押されなかったので、何も変更していません",
+  "aib.page.unbind_hint.touchid_off": "Touch ID がオフです。連携解除には本人の指紋が必要です。何も変更していません",
+  "aib.page.unbind_hint.touchid_unavailable": "このマシンでは Touch ID を使えません。{url} でこのマシンを取り消してください",
+  "aib.page.unbind_hint.server_unsupported": "ez2.page はまだこのマシンからの取り消しに対応していないため、ローカルの認証情報はそのままです。{url} で取り消してから、もう一度 aib page unbind を実行してください",
+  "aib.page.unbind_note.page_api_token_invalid": "ez2.page にはこのマシンの認証情報がもうありません(管理画面で取り消された可能性があります)。ローカルの分も削除します"
 }
