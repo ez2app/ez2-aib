@@ -28,6 +28,7 @@ exit: 0 沒有 fail 也沒有 manual(note 不影響)· 1 有 fail 或 manual · 
 
 import argparse
 import json
+import re
 import os
 import shutil
 import stat
@@ -605,6 +606,37 @@ def check_temp(state_root, repo_root, env=None, now=None):
     return _result("temp", OK, _C("temp.ok", n=len(rows)))
 
 
+# ez2.page 開了哪些功能(Andy 10-21 夜「建議全部做」第 4 件;@abb89 裁 L1:伺服器只有 GET /api/v1/page/features)。
+# 核心常比伺服器先上(例:unbind 回 page_unbind_unsupported),會員要分得出「自己的問題」還是「伺服器還沒開」。
+# 抓取跟 60 秒快取一律走 remote_link.fetch_features(跟 aib seat remote status 同一份,@abb89 裁)。
+PAGE_FEATURE_NAME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,39}")
+
+
+def check_page_features(state_root, repo_root, env=None, call=None, now=None):
+    """功能清單 ⇒ OK 列出已開 / 還沒開;伺服器還沒有這支 / 連不上 ⇒ NOTE(不算失敗,也不擋)。
+    AIB_DOCTOR_NO_NET=1 ⇒ 不連網路(測試 / 離線)。名稱只印小寫英數那些,伺服器亂回的字不直接印。"""
+    env = dict(os.environ if env is None else env)
+    env["EZ2_AIB_STATE_ROOT"] = str(state_root)          # 快取寫在 doctor 指定的庫(外面設了別的也不蓋過)
+    if str(env.get("AIB_DOCTOR_NO_NET", "")).strip() == "1":
+        return _result("page_features", NOTE, _C("page_features.skipped"))
+    cock = str(Path(repo_root) / "src" / "cockpit")
+    try:
+        if cock not in sys.path:
+            sys.path.insert(0, cock)
+        import remote_link as RL
+        feats, why = RL.fetch_features(env, call=call or RL.http, now=now)
+    except Exception as exc:  # noqa: BLE001
+        return _result("page_features", NOTE, _C("page_features.unreachable") + " (%s)" % type(exc).__name__)
+    if why or feats is None:
+        return _result("page_features", NOTE,
+                       _C("page_features.unreachable" if why == "server_unreachable" else "page_features.no_endpoint"))
+    named = {k: v for k, v in feats.items() if PAGE_FEATURE_NAME.fullmatch(k)}
+    on = sorted(k for k, v in named.items() if v)
+    off = sorted(k for k, v in named.items() if not v)
+    return _result("page_features", OK, _C("page_features.ok", on=_join(on) or _T("aib.doctor.none"),
+                                           off=_join(off) or _T("aib.doctor.none")))
+
+
 def _cabin_env_mod(repo_root):
     cock = Path(repo_root) / "src" / "cockpit"
     if str(cock) not in sys.path:
@@ -759,6 +791,7 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
     checks += provider_checks(providers, explicit_providers)
     checks.append(check_dm_latency(state_root, repo_root))
     checks.append(check_temp(state_root, repo_root))
+    checks.append(check_page_features(state_root, repo_root))
     return checks
 
 

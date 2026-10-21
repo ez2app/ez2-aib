@@ -4971,5 +4971,9 @@
   "aib.seat.panel.remote_why_not_bound": "このマシンはまだ ez2.page に紐付いていません(先に aib page bind を実行)",
   "aib.seat.panel.remote_why_link_stopped": "スマホのリモート接続が動いていません(aib seat remote on で一緒に起動)",
   "aib.seat.panel.remote_why_server_not_ready": "ez2.page のリモート操作はまだ公開されていません",
-  "aib.seat.panel.remote_why_server_unreachable": "ez2.page に接続できません"
+  "aib.seat.panel.remote_why_server_unreachable": "ez2.page に接続できません",
+  "aib.doctor.check.page_features.skipped": "ez2.page の機能一覧は確認していません(AIB_DOCTOR_NO_NET=1)",
+  "aib.doctor.check.page_features.unreachable": "ez2.page に接続できず、サーバーの機能一覧を確認できません(ローカルには影響なし)",
+  "aib.doctor.check.page_features.no_endpoint": "ez2.page はまだ機能一覧を提供していません。サーバー側の対応待ちの機能があります",
+  "aib.doctor.check.page_features.ok": "ez2.page で有効:{on}/未対応:{off}"
 }

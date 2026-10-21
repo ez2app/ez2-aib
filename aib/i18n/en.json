@@ -4971,5 +4971,9 @@
   "aib.seat.panel.remote_why_not_bound": "This machine is not bound to ez2.page yet (run aib page bind first)",
   "aib.seat.panel.remote_why_link_stopped": "The phone remote link is not running (aib seat remote on starts it)",
   "aib.seat.panel.remote_why_server_not_ready": "ez2.page remote control is not available yet",
-  "aib.seat.panel.remote_why_server_unreachable": "Cannot reach ez2.page"
+  "aib.seat.panel.remote_why_server_unreachable": "Cannot reach ez2.page",
+  "aib.doctor.check.page_features.skipped": "Skipped the ez2.page feature list (AIB_DOCTOR_NO_NET=1)",
+  "aib.doctor.check.page_features.unreachable": "Could not reach ez2.page, so the server feature list is unknown (local setup unaffected)",
+  "aib.doctor.check.page_features.no_endpoint": "ez2.page does not offer a feature list yet; some features may wait for the server",
+  "aib.doctor.check.page_features.ok": "ez2.page enabled: {on}; not yet: {off}"
 }
