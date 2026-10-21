@@ -11,9 +11,9 @@ Q5 同帳號 AI 換掉 .sekey、用自己的鑰簽 ⇒ 永遠不是 ok(證書只
 Q6 出貨的 TRUSTED_QUOTE_KEYS 是空的(fail closed;改要維護者點頭)
 Q7 P-256 驗章:RFC 6979 A.2.5 向量對;非最短 DER、r=0、不在曲線上的公鑰 ⇒ False
 Q8 aib quote 接上、四語都有;helper 的 se-sign 超長回 reason_too_long、不截
-Q9 伺服器格式(@9f808 19:32):sig base64url 不帶 padding、kid = sha256(原始公鑰);格式不對 / kid 對不上 ⇒ 不算
+Q9 伺服器格式(@9f808 19:32):sig base64url 不帶 padding、kid = sha256(原始公鑰);格式不對 / 尾巴帶換行 / kid 對不上 ⇒ 不算
 刀(複本):K1 驗章一律 True ⇒ Q7 紅;K2 證書不驗伺服器簽章 ⇒ Q4 紅;K3 拿掉上限 ⇒ Q2 紅;K4 本機鑰驗過就當 ok ⇒ Q1 紅;
-   K5 不比 kid 跟公鑰 ⇒ Q9 紅
+   K5 不比 kid 跟公鑰 ⇒ Q9 紅;K6 sig 用 match + $(放過結尾換行)⇒ Q9 紅
 """
 import base64
 import hashlib
@@ -192,6 +192,7 @@ class Quote(Base):
         f.write_text(json.dumps(dict(rec, sig_der_b64=base64.b64encode(bytes(sig)).decode())))
         self.assertEqual(AQ.verify(evt, self.env, certs=good, trusted=TRUSTED)["status"], "bad-sig")
         self.assertEqual(AQ.verify("evt:q-0000000000000000", self.env)["status"], "not-found")
+        self.assertEqual(AQ.verify(evt + "\n", self.env)["status"], "bad-evt")
 
     def test_q9_server_wire_format(self):
         """@9f808 伺服器格式:sig = base64url 不帶 padding;kid = sha256(原始公鑰);kid 跟清單公鑰對不上 / 標準 base64 / 帶 = ⇒ 不算。"""
@@ -204,6 +205,7 @@ class Quote(Base):
         self.assertEqual(AQ.kid_of(SERVER_PUB), SERVER_KID)
         raw = base64.urlsafe_b64decode(c["sig"] + "==")
         self.assertFalse(AQ.cert_ok(dict(c, sig=base64.urlsafe_b64encode(raw).decode()), TRUSTED), "帶 padding 不收")
+        self.assertFalse(AQ.cert_ok(dict(c, sig=c["sig"] + "\n"), TRUSTED), "尾巴帶換行不收")
         std = base64.b64encode(raw).decode().rstrip("=")
         if std != c["sig"]:
             self.assertFalse(AQ.cert_ok(dict(c, sig=std), TRUSTED), "標準 base64 字元不收")
@@ -289,6 +291,10 @@ class Knife(unittest.TestCase):
     def test_k5_no_kid_pub_match(self):
         self._knife("src/cockpit/aib_quote.py", "    if len(server_pub) != 32 or kid_of(server_pub) != kid:\n",
                     "    if len(server_pub) != 32:\n", "Quote.test_q9_server_wire_format")
+
+    def test_k6_sig_match_not_full(self):
+        self._knife("src/cockpit/aib_quote.py", '    if not SIG_RE.fullmatch(str(cert.get("sig") or "")):',
+                    '    if not re.match(r"^[A-Za-z0-9_-]{86}$", str(cert.get("sig") or "")):', "Quote.test_q9_server_wire_format")
 
     def test_k4_local_key_counts(self):
         self._knife("src/cockpit/aib_quote.py", 'res["status"] = "unverified-root" if local_ok else "bad-sig"',

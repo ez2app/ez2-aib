@@ -35,13 +35,13 @@ for _p in (HERE, HERE.parent):
 
 QUOTE_MAX = 200              # 原話上限(清理後碼位數;@abb89 Q3)
 KEY_NAME = "AIB_QUOTE"       # aib-sehelper 的鑰名(^[A-Z][A-Z0-9_]{1,63}$)
-EVT_RE = re.compile(r"^evt:q-[0-9a-f]{16}$")
+EVT_RE = re.compile(r"evt:q-[0-9a-f]{16}")      # 一律 fullmatch
 
 # kid ⇒ 公鑰。kid = "ed25519:" + sha256(伺服器 32 位元組原始公鑰) 的 64 hex(@9f808 10-21 19:32);
 #   值 = "ed25519:<原始公鑰 64 hex>"。ez2.page 簽 quote 鑰證書的專用鑰(不跟解鎖單 / 授權 / 外掛簽章共用);私鑰只在伺服器。
 #   空 = 還沒有正式鑰 ⇒ 所有證書不算數 ⇒ verify 一律 unverified-root(fail closed)。改這份清單要 Andy 核。
 TRUSTED_QUOTE_KEYS = {}
-SIG_RE = re.compile(r"^[A-Za-z0-9_-]{86}$")      # 64 位元組 Ed25519 簽章,base64url 不帶 padding(伺服器格式)
+SIG_RE = re.compile(r"[A-Za-z0-9_-]{86}")      # 64 位元組 Ed25519 簽章,base64url 不帶 padding;一律 fullmatch($ 會放過結尾換行)
 
 
 def kid_of(pub32):
@@ -161,7 +161,7 @@ def cert_ok(cert, trusted=None):
         return False
     if len(server_pub) != 32 or kid_of(server_pub) != kid:
         return False
-    if not SIG_RE.match(str(cert.get("sig") or "")):
+    if not SIG_RE.fullmatch(str(cert.get("sig") or "")):
         return False
     try:
         pub = base64.b64decode(cert.get("pub_x963_b64") or "", validate=True)
@@ -237,7 +237,7 @@ def verify(evt, env=None, certs=None, certs_at=None, trusted=None):
     from entitlement import p256
     env = _env(env)
     res = {"evt": evt, "status": "not-found"}
-    if not EVT_RE.match(str(evt or "")):
+    if not EVT_RE.fullmatch(str(evt or "")):
         res["status"] = "bad-evt"
         return res
     try:
