@@ -4,6 +4,15 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.39
+
+- **只清這台的憑證**:`aib page unbind --local-only` 只刪本機那份，不連伺服器、不跳 Touch ID,並提醒你到 ez2.page 後台撤銷伺服器上那把。這台綁過、但機器識別檔不見了時，`aib page bind` 會拒絕，不會自動換一個新身分。
+- **遙控頁「上線了沒」**:`aib seat remote status --json` 多了 `remote_ready` / `remote_why`,依序看這台有沒有綁、本機連線有沒有在跑、伺服器有沒有開這項功能。這只用來決定畫面怎麼顯示。
+- **`aib doctor` 列出 ez2.page 開了哪些功能**:跟上面共用同一份 60 秒快取。伺服器沒回、連不上，只提醒不算失敗;這台沒綁就不連網。
+- **BB Call 轉手機打開要本人**:打開，或把時間調短、次數調高，要 Touch ID;關掉、查狀態不用。
+- **原始碼不准夾隱形字元**:新增檢查，零寬或方向控制字元一律要寫成跳脫(例如 `\u200b`)。
+- **核心 ↔ ez2.page 介面約定檔**:`aib/contracts/page-api.json`,測試照它比對實際送出的請求。
+
 ## 0.1.38
 
 - **本人原話簽章**:`aib quote key init` 在這台的 Secure Enclave 建一把簽章鑰;`aib quote add "<原話>"` 每次都要 Touch ID,簽成之後任何人只用公鑰就能驗(`aib quote verify`)。一則最多 200 字，指紋視窗才放得下全文;超過直接拒、不截斷。信任根是 ez2.page 伺服器簽的鑰證書，伺服器端上線前驗出來都標「根未驗證」。
