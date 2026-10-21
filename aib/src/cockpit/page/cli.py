@@ -22,6 +22,7 @@ for _p in (_HERE, _COCKPIT):
         sys.path.insert(0, _p)
 
 import bind as bind_mod          # noqa: E402
+import bind_bg                   # noqa: E402  (0.1.37 一鍵綁定:--start / --poll / --confirm / --cancel --json)
 import chat as chat_mod          # noqa: E402
 import intake as intake_mod      # noqa: E402
 import intake_sources            # noqa: E402
@@ -83,8 +84,24 @@ def _pick_record(args, environ):
     return store.only_token(environ)
 
 
+def _cmd_bind_bg(args, environ, label):
+    """不阻塞的四步(艦長室用)。一律印一行 JSON;confirm_digits 只在這一行 stdout,不落檔、不進 log。"""
+    if args.bg == "start":
+        res, rc = bind_bg.start(_api_for(None, args, environ), label or "AIB", env=environ)
+    elif args.bg == "poll":
+        res, rc = bind_bg.poll(_api_for(None, args, environ), env=environ)
+    elif args.bg == "confirm":
+        res, rc = bind_bg.confirm(env=environ)
+    else:
+        res, rc = bind_bg.cancel(env=environ)
+    print(json.dumps(res, ensure_ascii=False), flush=True)
+    return rc
+
+
 def cmd_bind(args, environ):
     seat = _seat_addr(args, environ)
+    if getattr(args, "bg", None):
+        return _cmd_bind_bg(args, environ, args.seat_label or (("%s %s" % (seat, args.role)).strip() if seat else ""))
     label = args.seat_label or (("%s %s" % (seat, args.role)).strip() if seat else "")
     if args.serial and not label:
         label = "AIB"
@@ -560,6 +577,9 @@ def build_parser():
     mode = p_bind.add_mutually_exclusive_group()
     mode.add_argument("--serial", help=_h("serial"))
     mode.add_argument("--pair", action="store_true", help=_h("pair"))
+    for flag in ("start", "poll", "confirm", "cancel"):
+        mode.add_argument("--" + flag, dest="bg", action="store_const", const=flag, help=_h("bind_" + flag))
+    p_bind.add_argument("--json", action="store_true", help=_h("bind_json"))
     p_bind.set_defaults(func=cmd_bind)
 
     p_chat = sub.add_parser("chat", help=_h("chat"), description=_h("chat"))

@@ -11,6 +11,7 @@ B4 /bind/start 其他錯(例如 5xx)不重試、照舊報錯
 B5 新伺服器嫌 machine 本身不合格(400 page_api_body_invalid)⇒ 不退回、照報錯(不靜靜綁成沒機器的)
 B2 錯誤訊息要叫人去 /manage/aib 解除剛綁的那把(伺服器已發出、佔名額)
 B7 那句網址用伺服器回的 confirm_url(只收 https,不合格退回 ez2.page/manage/aib)
+B6 數字配對(@9f808 confirm_digits):兩位數照原樣印在終端機(前面的 0 留著);格式不對 / 舊伺服器沒有 ⇒ 不印
 """
 import os
 import sys
@@ -32,8 +33,8 @@ TOKEN = "ezp_" + "A" * 43
 
 
 class FakeApi:
-    def __init__(self, reject_machine=False, machine_id=None, start_error=None, confirm_url="https://ez2.page/manage/aib"):
-        self.starts, self.reject, self.mid, self.err, self.curl = [], reject_machine, machine_id, start_error, confirm_url
+    def __init__(self, reject_machine=False, machine_id=None, start_error=None, confirm_url="https://ez2.page/manage/aib", digits=None):
+        self.starts, self.reject, self.mid, self.err, self.curl, self.digits = [], reject_machine, machine_id, start_error, confirm_url, digits
 
     def bind_start(self, seat_label, machine=None):
         self.starts.append(machine)
@@ -41,8 +42,11 @@ class FakeApi:
             raise self.err
         if machine and self.reject:
             raise ApiError(400, "page_api_seat_label_invalid")
-        return {"pair_code": "ABCD-1234", "bind_ticket": "t" * 20, "confirm_url": self.curl,
-                "expires_at": (NOW + timedelta(minutes=10)).isoformat()}
+        rec = {"pair_code": "ABCD-1234", "bind_ticket": "t" * 20, "confirm_url": self.curl,
+               "expires_at": (NOW + timedelta(minutes=10)).isoformat()}
+        if self.digits is not None:
+            rec["confirm_digits"] = self.digits
+        return rec
 
     def bind_poll(self, ticket):
         rec = {"status": "bound", "assistant_token": TOKEN, "token_id": "tk1", "tenant_id": "t_lfu0327", "page_id": "p1", "slug": "lfu0327",
@@ -111,6 +115,17 @@ class Bind(unittest.TestCase):
         with self.assertRaises(B.BindError):
             self.run_bind(api)
         self.assertEqual(len(api.starts), 1, "machine 不合格 ⇒ 不退回不帶 machine")
+
+    def test_b6_confirm_digits(self):
+        self.run_bind(FakeApi(machine_id=self.machine["id"], digits="07"))
+        self.assertTrue(any("確認數字 07" in l for l in self.lines), self.lines)
+        for bad in ("7", "077", 7, "ab"):
+            self.lines.clear()
+            self.run_bind(FakeApi(machine_id=self.machine["id"], digits=bad))
+            self.assertFalse(any("確認數字" in l for l in self.lines), bad)
+        self.lines.clear()
+        self.run_bind(FakeApi(machine_id=self.machine["id"]))
+        self.assertFalse(any("確認數字" in l for l in self.lines), "舊伺服器沒有 ⇒ 不印")
 
 
 if __name__ == "__main__":
