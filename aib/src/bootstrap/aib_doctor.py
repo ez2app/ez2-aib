@@ -549,10 +549,12 @@ def check_dm_latency(state_root, repo_root, env=None, now=None):
     """第 70 項 P6 後半(需求 §八 2):每席信的 sent_at→delivered_at / →read_at 的 p50/p95 與最舊未讀,每天印得出來的數字。
     沒有樣本印「量不到」但不算失敗(沒信不是病);佇列裡有壞檔才 FAIL。歷史 18–32 分只作事故紀錄,不當比較基準。"""
     env = dict(os.environ if env is None else env)
-    env.setdefault("EZ2_AIB_STATE_ROOT", str(state_root))
+    env["EZ2_AIB_STATE_ROOT"] = str(state_root)          # 一律讀 doctor 指定的庫(外面設了別的也不蓋過;@abb89 #246 審)
     now = int(time.time() if now is None else now)
+    cock = str(Path(repo_root) / "src" / "cockpit")
     try:
-        sys.path.insert(0, str(Path(repo_root) / "src" / "cockpit"))
+        if cock not in sys.path:
+            sys.path.insert(0, cock)
         import dm_queue as Q
     except Exception as exc:  # noqa: BLE001
         return _result("dm_latency", FAIL, _C("dm_latency.import_error", error=repr(exc)),
