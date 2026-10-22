@@ -32,7 +32,7 @@ from aib_proc_guard import run_guarded  # noqa: E402
 C = json.loads((REPO / "contracts" / "page-api.json").read_text(encoding="utf-8"))
 FP_A = "a" * 8 + "1" * 56
 MACHINES = [{"fp": FP_A, "name": "舊筆電", "last_used_at": "2026-10-20T10:00:00Z", "live_tokens": 1, "this": False}]
-ROTATED = "這台的 EZP- 序號已換新，舊序號不能再綁;其他台照常用，之後新綁機器請到 ez2.page 後台看新序號"
+ROTATED = "你帳號的 EZP- 序號已換新，舊序號不能再綁;其他台照常用，之後新綁機器請到 ez2.page 後台看新序號"
 KEPT = "序號可能留在那台的終端機紀錄，請到後台重發序號"
 NOTHING = "序號沒換成，這次什麼都沒撤;可以再跑一次"
 BIND_ROTATED = "這個序號已在遺失裝置撤銷時換新，請登入 ez2.page 後台取新序號"
@@ -119,9 +119,12 @@ class Serial(Base):
         self.assertEqual(rc, 1)
         self.assertNotIn("serial_rotated", res["page"])
         self.assertNotIn(res["page"].get("hint"), (ROTATED, KEPT))
+        res, rc = self.lost(FakeApi(True, err=A.ApiError(404, None)))   # 舊伺服器沒這支 ⇒ unsupported
+        self.assertEqual(res["page"]["state"], "unsupported")
+        self.assertNotIn(res["page"].get("hint"), (ROTATED, KEPT))
 
     def test_s5_rotate_failed(self):
-        for http in (500, 502, 504, 409):   # 契約只定 503;別的狀態碼不保證什麼都沒撤
+        for http in (400, 403, 409, 500, 502, 504):   # 契約只定 503;別的狀態碼不保證什麼都沒撤
             res, rc = self.lost(FakeApi(err=A.ApiError(http, "page_device_serial_rotate_failed")))
             self.assertEqual(res["page"]["why"], "page_refused", http)
         err = A.ApiError(503, "page_device_serial_rotate_failed", body={"error": "page_device_serial_rotate_failed"})
@@ -152,6 +155,13 @@ class Serial(Base):
             B.run_serial_bind(Api("page_api_serial_rotated"), "EZP-ABCD-EFGH-JKMN", "seat", lambda *_: None,
                               environ=self.env)
         self.assertEqual(str(cm.exception), en)
+        import i18n_lib
+        orig_t = i18n_lib.t
+        i18n_lib.t = lambda key, *a, **k: "!!" + key   # 字典缺鍵
+        try:
+            self.assertEqual(B._serial_rotated_text(), BIND_ROTATED)
+        finally:
+            i18n_lib.t = orig_t
 
 
 class Wording(unittest.TestCase):
@@ -174,6 +184,24 @@ class Wording(unittest.TestCase):
                 for key in ("device.serial_rotated", "device.serial_kept", "device.hint.page_serial_rotate_failed",
                             "page.bind.serial_rotated"):
                     self.assertFalse(any("\u4e00" <= ch <= "\u9fff" for ch in d["aib." + key]), (loc, key))
+
+    def test_s4_meaning_pinned_per_locale(self):
+        pins = {   # 鍵 ⇒ 各語只該出現在這一鍵的關鍵字(擋外語句子對調 / 換成別句)
+            "zh-TW": {"device.serial_rotated": "舊序號不能再綁", "device.serial_kept": "終端機紀錄",
+                      "device.hint.page_serial_rotate_failed": "什麼都沒撤", "page.bind.serial_rotated": "遺失裝置撤銷時"},
+            "en": {"device.serial_rotated": "can no longer bind", "device.serial_kept": "terminal history",
+                   "device.hint.page_serial_rotate_failed": "nothing was revoked", "page.bind.serial_rotated": "lost device"},
+            "ja": {"device.serial_rotated": "もう連携できません", "device.serial_kept": "ターミナル履歴",
+                   "device.hint.page_serial_rotate_failed": "何も取り消していません", "page.bind.serial_rotated": "紛失端末"},
+            "ko": {"device.serial_rotated": "더 이상 연결할 수 없습니다", "device.serial_kept": "터미널 기록",
+                   "device.hint.page_serial_rotate_failed": "아무것도 취소하지 않았습니다", "page.bind.serial_rotated": "분실 기기"},
+        }
+        for loc, want in pins.items():
+            d = json.loads((REPO / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
+            for key, pin in want.items():
+                for other in want:
+                    self.assertEqual(pin in d["aib." + other], other == key, (loc, key, other))
+            self.assertNotIn(want["device.hint.page_serial_rotate_failed"], d["aib.device.hint.page_audit_failed"], loc)
 
     def test_s4_contract_codes_match_core(self):
         E = C["endpoints"]

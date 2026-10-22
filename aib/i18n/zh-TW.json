@@ -4999,7 +4999,7 @@
   "aib.device.step_page_revoked": "✓ ez2.page:{fp} 撤了 {n} 把",
   "aib.device.step_page_failed": "✗ ez2.page:{fp} 沒撤成",
   "aib.device.step_page_unsupported": "… ez2.page 還沒開放從這裡撤({fp})",
-  "aib.device.serial_rotated": "這台的 EZP- 序號已換新，舊序號不能再綁;其他台照常用，之後新綁機器請到 ez2.page 後台看新序號",
+  "aib.device.serial_rotated": "你帳號的 EZP- 序號已換新，舊序號不能再綁;其他台照常用，之後新綁機器請到 ez2.page 後台看新序號",
   "aib.device.serial_kept": "序號可能留在那台的終端機紀錄，請到後台重發序號",
   "aib.page.bind.serial_rotated": "這個序號已在遺失裝置撤銷時換新，請登入 ez2.page 後台取新序號",
   "aib.device.hint.page_unknown": "這個帳號底下找不到那台",

@@ -174,7 +174,7 @@ def _serial_rotated_text():
         text = i18n_lib.t("aib.page.bind.serial_rotated", None, locale=i18n_lib.resolve_locale())
     except Exception:  # noqa: BLE001
         text = ""
-    return text if text and not text.startswith("!!") else "這個序號已在遺失裝置撤銷時換新,請登入 ez2.page 後台取新序號"
+    return text if text and not text.startswith("!!") else "這個序號已在遺失裝置撤銷時換新，請登入 ez2.page 後台取新序號"
 
 
 def _start_error_text(exc):
