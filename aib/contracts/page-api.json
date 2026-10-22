@@ -262,7 +262,7 @@
      "agreed": "Andy 10-23 04:3x 選「撤銷時自動換序號」;@abb89 10-23 04:36 派、04:4x 補細節;@9f808 10-23 04:37 伺服器做法;@9f808 10-23 04:4x 對過 OK",
      "when": "真的撤到 ≥1 把才換;全部 already_revoked / expired ⇒ false",
      "known_gap": "稽核 503 後重跑 ⇒ 全部 already_revoked、serial_rotated=false ⇒ 核心印「到後台重發序號」,但序號其實第一次已換;多重發一次、沒有安全風險(取捨:核心不記上一次結果)",
-     "new_serial": "新序號只在後台「取得新序號」拿(管理金鑰再驗 或 5 分鐘內社群登入,@abb89 裁 A+B);API 永遠拿不到;每按一次重產一組"
+     "new_serial": "新序號只在後台「取得新序號」拿(管理金鑰再驗 或 5 分鐘內真的登入過(社群或管理金鑰登入都算),@abb89 裁 A+B);API 永遠拿不到;每按一次重產一組"
     }
    },
    "serial_rotate_failed": {
@@ -270,7 +270,7 @@
     "codes": [
      "page_device_serial_rotate_failed"
     ],
-    "server": "換號在寫 token 之前;換號失敗 ⇒ 什麼都沒撤",
+    "server": "換號在寫 token 之前;換號或撤銷落檔失敗 ⇒ 什麼都沒撤",
     "core": "只在 503 + 這個碼時 why = page_serial_rotate_failed(別的狀態碼帶這碼 ⇒ 照一般規則判(429 限流 / 404・405 未支援 / 其餘 page_refused),不保證什麼都沒撤;沒帶碼或別的碼的 503 照舊 page_audit_failed)(不是 page_audit_failed:那個是撤銷已成立);hint 說什麼都沒撤、可以再跑一次;detail 原碼"
    },
    "self": {
