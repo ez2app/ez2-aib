@@ -124,6 +124,19 @@ class Serial(Base):
         self.assertEqual(res["page"]["state"], "unsupported")
         self.assertNotIn(res["page"].get("hint"), (ROTATED, KEPT))
 
+    def test_s3_chat_failed_page_revoked(self):
+        devs = [{"code": "qq7xk2ma", "name": "舊手機", "role": "machine", "npub": "npub1qq7xk2ma", "this": False}]
+        orig = DL.chat_devices
+        DL.chat_devices = lambda env: ([dict(d) for d in devs], None)
+        try:
+            for rotated, line in ((True, ROTATED), (MISSING, KEPT)):   # 聊天那步失敗不影響 page 那步的序號句
+                res, rc = DL.lost(self.env, chat="qq7xk2ma", page=FP_A[:8], prove=lambda r, e: None,
+                                  api=FakeApi(rotated), sign=lambda *a, **k: (1, None), out=io.StringIO())
+                self.assertEqual((res["chat"]["state"], res["page"]["state"], rc), ("failed", "revoked", 1))
+                self.assertEqual(res["page"]["hint"], line)
+        finally:
+            DL.chat_devices = orig
+
     def test_s5_rotate_failed(self):
         for http, why in ((400, "page_refused"), (403, "page_refused"), (409, "page_refused"), (500, "page_refused"),
                           (502, "page_refused"), (504, "page_refused"), (429, "page_rate_limited"),
@@ -203,11 +216,22 @@ class Wording(unittest.TestCase):
             "ko": {"device.serial_rotated": "더 이상 연결할 수 없습니다", "device.serial_kept": "터미널 기록",
                    "device.hint.page_serial_rotate_failed": "아무것도 취소하지 않았습니다", "page.bind.serial_rotated": "분실 기기"},
         }
+        also = {   # 第二個釘:其他台照常 / 可以再跑 / 去重發(擋句意改反或刪半句)
+            "zh-TW": {"device.serial_rotated": "其他台照常用", "device.serial_kept": "重發序號",
+                      "device.hint.page_serial_rotate_failed": "可以再跑", "page.bind.serial_rotated": "取新序號"},
+            "en": {"device.serial_rotated": "keep working", "device.serial_kept": "reissue",
+                   "device.hint.page_serial_rotate_failed": "run it again", "page.bind.serial_rotated": "get the new serial"},
+            "ja": {"device.serial_rotated": "そのまま使えます", "device.serial_kept": "再発行",
+                   "device.hint.page_serial_rotate_failed": "もう一度実行できます", "page.bind.serial_rotated": "取得"},
+            "ko": {"device.serial_rotated": "그대로 사용할 수 있으며", "device.serial_kept": "재발급",
+                   "device.hint.page_serial_rotate_failed": "다시 실행할 수 있습니다", "page.bind.serial_rotated": "받으세요"},
+        }
         for loc, want in pins.items():
             d = json.loads((REPO / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
             for key, pin in want.items():
                 for other in want:
                     self.assertEqual(pin in d["aib." + other], other == key, (loc, key, other))
+                self.assertIn(also[loc][key], d["aib." + key], (loc, key))
             self.assertNotIn(want["device.hint.page_serial_rotate_failed"], d["aib.device.hint.page_audit_failed"], loc)
 
     def test_s4_contract_codes_match_core(self):
