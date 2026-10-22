@@ -4,6 +4,11 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.41
+
+- **新指令 `aib device list` / `aib device lost`**:電腦或手機遺失時，從還在手上的電腦撤銷它。先列出那台的名稱與最後上線日期，再按一次 Touch ID(視窗字寫明是哪一台),接著把它從主人簽的聊天裝置清單移除(主人密語照問),並一次撤掉那台在 ez2.page 的全部憑證，每一步、每一把各自回結果。不會撤到正在用的這台，手機遙控也叫不動這支指令。ez2.page 端點上線前,page 那步回 `page_device_revoke_unsupported` 並指向後台。加 `--json` 時，聊天那步回 `chat_needs_terminal`,什麼都不動。
+- **介面約定檔加上裝置撤銷**:`GET /api/v1/page/machines` 與 `POST /api/v1/page/machines/{fp}/revoke` 寫進 `aib/contracts/page-api.json`,含錯誤碼、每個帳號的次數上限、Email + LINE 通知與威脅模型說明。
+
 ## 0.1.40
 
 - **畫面字讀一次就記住**:字典檔只在變動時重讀(依檔案身分與修改時間判斷),安全檢查照舊每次做;`aib chat --help` 從約 1.2 秒降到 0.1 秒，輸出不變。

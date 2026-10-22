@@ -4,6 +4,11 @@
 
 버전은 `pyproject.toml`의 `version`을 따릅니다. 릴리스는 `v<version>` 태그이며, 관리자가 만듭니다.
 
+## 0.1.41
+
+- **새 명령 `aib device list` / `aib device lost`**: 컴퓨터나 휴대폰을 잃어버렸을 때 아직 가지고 있는 컴퓨터에서 해제합니다. 먼저 대상의 이름과 마지막 접속일을 보여 주고, Touch ID를 한 번(창에 대상을 명시) 받은 뒤, 주인이 서명한 채팅 기기 목록에서 빼고(주인 암호는 그대로 필요) 그 기기의 ez2.page 토큰을 한꺼번에 해제합니다. 단계별·토큰별 결과를 따로 돌려줍니다. 지금 쓰는 기기는 해제하지 않으며, 휴대폰 원격에서는 실행할 수 없습니다. ez2.page 쪽 엔드포인트가 열리기 전에는 page 단계가 `page_device_revoke_unsupported`를 돌려주고 관리 화면을 안내합니다. `--json`일 때 채팅 단계는 아무것도 바꾸지 않고 `chat_needs_terminal`을 돌려줍니다.
+- **인터페이스 정의 파일에 기기 해제 추가**: `GET /api/v1/page/machines`와 `POST /api/v1/page/machines/{fp}/revoke`를 `aib/contracts/page-api.json`에 넣었습니다(오류 코드, 계정별 횟수 제한, Email + LINE 알림, 위협 모델 메모 포함).
+
 ## 0.1.40
 
 - **화면 문구는 한 번 읽고 기억**: 번역 파일은 바뀔 때만 다시 읽고(파일 식별과 수정 시각으로 판단) 안전 검사는 매번 그대로 합니다. `aib chat --help`가 약 1.2초에서 0.1초로 줄었고 출력은 같습니다.
