@@ -108,6 +108,7 @@ class Serial(Base):
     def test_s3_json_and_failures(self):
         rc, text = self.cli(FakeApi(True), "--json")
         self.assertIs(json.loads(text)["page"]["serial_rotated"], True)
+        self.assertEqual(json.loads(text)["page"]["hint"], ROTATED)   # 艦長室卡片走 --json,一樣拿得到這句
         rc, text = self.cli(FakeApi(), "--json")
         self.assertIs(json.loads(text)["page"]["serial_rotated"], False)
         leak = {"serial": "EZP-NEWA-NEWB-NEWC", "new_serial": "EZP-NEWA-NEWB-NEWC"}   # 契約:回應不帶新序號;帶了也不准印
@@ -235,7 +236,6 @@ class Knife(unittest.TestCase):
     def test_k2_no_serial_line(self):
         self._knife("src/cockpit/device_lost.py", '        res["page"]["hint"] = T("serial_rotated"',
                     '        res["page"]["nohint"] = T("serial_rotated"', "Serial.test_s1_rotated")
-
 
     def test_k3_rotate_failed_as_audit(self):
         self._knife("src/cockpit/device_lost.py", '    if code == "page_device_serial_rotate_failed" and http == 503:\n',
