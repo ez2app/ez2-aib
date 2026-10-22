@@ -187,6 +187,93 @@
    "core_cache": "<state>/cache/page-features.json,60 秒,只存 {at, status, features};200 / 404 快取,連不上 / 5xx 不快取",
    "core_display_only": "remote_ready / 快取檔 AI 改得到 ⇒ 只給頁面顯示,不准當任何放行條件",
    "core_client": "remote_link.fetch_features(aib seat remote status --json、aib doctor 共用)"
+  },
+  "machines_list": {
+   "status": "planned",
+   "agreed": "草案 @d07f9 10-22,等 @9f808 OK(Andy 10-22「全照建議」第 1–3 題)",
+   "method": "GET",
+   "path": "/machines",
+   "auth": "bearer",
+   "auth_note": "同帳號任一把有效 token;只列這個帳號底下的機器",
+   "body": "none",
+   "ok": {
+    "http": 200,
+    "fields": [
+     "machines",
+     "request_id"
+    ],
+    "machine_fields": [
+     "machine_id",
+     "name",
+     "last_seen_at",
+     "token_count",
+     "is_self"
+    ],
+    "note": "name 由伺服器存的機器名(machine.json name);核心顯示前照樣 clean;is_self = 發請求這把 token 所在的機器"
+   },
+   "core": "撤之前列出名稱 + 最後上線時間,本人看過才按 Touch ID",
+   "core_client": "還沒有(核心 0.1.41 aib device lost)"
+  },
+  "machine_revoke": {
+   "status": "planned",
+   "agreed": "草案 @d07f9 10-22,等 @9f808 OK;Andy 10-22 第 2 題:machine_id 一次撤全部、每把回結果",
+   "method": "POST",
+   "path": "/machines/{machine_id}/revoke",
+   "auth": "bearer",
+   "auth_note": "發起端 = 還在手上的那台電腦的 token(同帳號);只准撤同 account_id 底下的機器",
+   "path_params": {
+    "machine_id": "UUID(那台 machine.json 的 id)"
+   },
+   "body": "empty",
+   "body_note": "帶本體 ⇒ 400 page_api_body_invalid(跟 bind_revoke 同規則)",
+   "ok": {
+    "http": 200,
+    "fields": [
+     "ok",
+     "machine_id",
+     "results",
+     "request_id"
+    ],
+    "result_fields": [
+     "token_id",
+     "page_id",
+     "result",
+     "code"
+    ],
+    "results": [
+     "revoked",
+     "already_revoked",
+     "failed"
+    ],
+    "note": "每一把 token 一列;failed 帶 code;全部 already_revoked 也回 200"
+   },
+   "errors": {
+    "page_machine_not_found": 404,
+    "page_machine_is_self": 409,
+    "page_machine_revoke_rate_limited": 429
+   },
+   "errors_note": "不是這個帳號的 machine_id 也回 page_machine_not_found(不讓人探別帳號有沒有這台);撤自己請用 bind_revoke",
+   "unsupported": {
+    "http": [
+     404,
+     405
+    ],
+    "rule": "404 而且 error 不是 page_machine_not_found、或 405 ⇒ 伺服器還沒有這支",
+    "core_detail": "page_device_revoke_unsupported",
+    "core": "不動本機、聊天那步照做;hint 指後台"
+   },
+   "server_side": [
+    "每撤一台:通知註冊 Email + LINE(含機器名、時間、發起機器名),寫稽核",
+    "限流:同帳號每小時最多 5 台,超過 429",
+    "範圍 v1 只有 page token;quote key 等 register 做完再加(Andy 第 1 題)"
+   ],
+   "threat_model": {
+    "risk": "核心這邊一次 Touch ID 只擋正式指令;同帳號 AI 拿得到這台 token 可以直接打這支 ⇒ 撤掉本人別台(阻斷服務,不是提權:撤了可重綁、不會多拿權限)",
+    "mitigation": "伺服器每撤一台都通知 Email + LINE、限流、不准撤自己;撤銷只減權限",
+    "open": "要不要伺服器端也要本人證明(例如手機確認或 quote 簽章)— 請 @abb89 裁;quote 登錄做完後可改成要 quote 簽章"
+   },
+   "core": "aib device lost <機器碼> [--json]:一次 Touch ID(視窗字核心組、寫明撤哪台)→ ① 聊天清單撤那台(主人簽新清單)② 打這支;兩步結果分開回;只從電腦發起",
+   "core_client": "還沒有(核心 0.1.41)"
   }
  }
 }

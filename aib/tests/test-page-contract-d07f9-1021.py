@@ -14,6 +14,8 @@ C5 核心已有的 quote 部分 = 證書驗簽:照契約欄位 / kind / kid 格�
    少任一驗簽要的欄位、kind 不對、sig 帶 padding ⇒ 不收
 C6 page_features:remote_link 實際送出的 = 契約 method + 前綴 + path、不帶 Authorization;只收字面 true;
    契約列的三個功能都讀得到;404 ⇒ server_not_ready、連不上 ⇒ server_unreachable
+C7 遺失裝置(planned,Andy 10-22 裁):machines_list / machine_revoke 在同前綴、machine_revoke 本體空、
+   每把回 result、錯誤碼與 unsupported 規則齊、威脅模型段有寫;核心還沒有呼叫端(0.1.41)
 刀(複本):K1 把 bind_revoke 改回送 {} ⇒ C2 紅;K2 cert_ok 認的 kind 跟契約不同 ⇒ C5 紅;K3 FEATURES_PATH 漂掉 ⇒ C6 紅
 """
 import io
@@ -195,6 +197,24 @@ class Features(unittest.TestCase):
             env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name}
             self.assertEqual(RL.fetch_features(env, call=call(status, None), now=1000.0, base="https://x"),
                              (None, why_want))
+
+
+class LostDevice(unittest.TestCase):
+    def test_c7_machine_revoke_planned(self):
+        ls, rv = E["machines_list"], E["machine_revoke"]
+        self.assertEqual((ls["method"], ls["path"], rv["method"], rv["path"]),
+                         ("GET", "/machines", "POST", "/machines/{machine_id}/revoke"))
+        for f in ("machine_id", "name", "last_seen_at", "is_self"):
+            self.assertIn(f, ls["ok"]["machine_fields"])
+        self.assertEqual(rv["body"], "empty")
+        self.assertEqual(set(rv["ok"]["results"]), {"revoked", "already_revoked", "failed"})
+        self.assertIn("token_id", rv["ok"]["result_fields"])
+        self.assertEqual(rv["errors"]["page_machine_not_found"], 404)
+        self.assertEqual(rv["unsupported"]["core_detail"], "page_device_revoke_unsupported")
+        self.assertTrue(rv["threat_model"]["risk"] and rv["threat_model"]["mitigation"])
+        for ep in (ls, rv):
+            self.assertEqual(ep["status"], "planned")
+            self.assertIn("還沒有", ep["core_client"])
 
 
 class Knife(unittest.TestCase):
