@@ -61,6 +61,16 @@ class Base(unittest.TestCase):
         td = tempfile.TemporaryDirectory(prefix="aib-serial-")
         self.addCleanup(td.cleanup)
         self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "EZ2_AIB_LOCALE": "zh-TW"}
+        saved = {k: os.environ.get(k) for k in ("EZ2_AIB_LOCALE", "EZ2_AIB_STATE_ROOT")}
+        os.environ.update({"EZ2_AIB_LOCALE": "zh-TW", "EZ2_AIB_STATE_ROOT": td.name})   # T() 讀行程環境、不讀 env
+
+        def restore():
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(restore)
 
     def lost(self, api):
         return DL.lost(self.env, page=FP_A[:8], prove=lambda r, e: None, api=api, out=io.StringIO())
@@ -111,7 +121,7 @@ class Serial(Base):
         self.assertNotIn(res["page"].get("hint"), (ROTATED, KEPT))
 
     def test_s5_rotate_failed(self):
-        for http in (500, 409):   # 契約只定 503;別的狀態碼不保證什麼都沒撤
+        for http in (500, 502, 504, 409):   # 契約只定 503;別的狀態碼不保證什麼都沒撤
             res, rc = self.lost(FakeApi(err=A.ApiError(http, "page_device_serial_rotate_failed")))
             self.assertEqual(res["page"]["why"], "page_refused", http)
         err = A.ApiError(503, "page_device_serial_rotate_failed", body={"error": "page_device_serial_rotate_failed"})
@@ -129,10 +139,6 @@ class Serial(Base):
 
             def bind_serial(self, serial, seat_label, machine):
                 raise A.ApiError(401, self.code, body={"error": self.code})
-        old = os.environ.get("EZ2_AIB_LOCALE")
-        os.environ["EZ2_AIB_LOCALE"] = "zh-TW"
-        self.addCleanup(lambda: os.environ.pop("EZ2_AIB_LOCALE") if old is None
-                        else os.environ.__setitem__("EZ2_AIB_LOCALE", old))
         msgs = []
         for code in ("page_api_serial_rotated", "page_api_serial_stale"):
             with self.assertRaises(B.BindError) as cm:
@@ -140,6 +146,12 @@ class Serial(Base):
             msgs.append(str(cm.exception))
         self.assertEqual(msgs[0], BIND_ROTATED)
         self.assertNotEqual(msgs[0], msgs[1])
+        en = json.loads((REPO / "i18n" / "en.json").read_text(encoding="utf-8"))["aib.page.bind.serial_rotated"]
+        os.environ["EZ2_AIB_LOCALE"] = "en"   # Base 的 cleanup 會還原
+        with self.assertRaises(B.BindError) as cm:
+            B.run_serial_bind(Api("page_api_serial_rotated"), "EZP-ABCD-EFGH-JKMN", "seat", lambda *_: None,
+                              environ=self.env)
+        self.assertEqual(str(cm.exception), en)
 
 
 class Wording(unittest.TestCase):
@@ -157,6 +169,11 @@ class Wording(unittest.TestCase):
             self.assertNotEqual(d["aib.device.serial_rotated"], d["aib.device.serial_kept"], loc)
             self.assertNotEqual(d["aib.device.hint.page_serial_rotate_failed"], d["aib.device.hint.page_audit_failed"], loc)
             self.assertNotEqual(d["aib.page.bind.serial_rotated"], d["aib.device.serial_rotated"], loc)
+            self.assertNotEqual(d["aib.device.hint.page_serial_rotate_failed"], d["aib.device.hint.page_refused"], loc)
+            if loc in ("en", "ko"):   # 外語沒被換成中文原句
+                for key in ("device.serial_rotated", "device.serial_kept", "device.hint.page_serial_rotate_failed",
+                            "page.bind.serial_rotated"):
+                    self.assertFalse(any("\u4e00" <= ch <= "\u9fff" for ch in d["aib." + key]), (loc, key))
 
     def test_s4_contract_codes_match_core(self):
         E = C["endpoints"]
