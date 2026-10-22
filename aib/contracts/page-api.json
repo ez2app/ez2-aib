@@ -247,6 +247,7 @@
      "request_id",
      "serial_rotated"
     ],
+    "fields_note": "serial_rotated 是 0.1.42 起才有的可選欄;舊伺服器沒有 ⇒ 當 false(見下面 serial_rotated.absent)",
     "results_item": {
      "kind": "page_token(之後會加 quote_key;核心遇到不認得的 kind 原樣列出、不當失敗)",
      "id": "page_token ⇒ token_id",

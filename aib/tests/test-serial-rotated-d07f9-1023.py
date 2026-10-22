@@ -138,6 +138,10 @@ class Serial(Base):
                                   api=FakeApi(rotated), sign=lambda *a, **k: (1, None), out=io.StringIO())
                 self.assertEqual((res["chat"]["state"], res["page"]["state"], rc), ("failed", "revoked", 1))
                 self.assertEqual(res["page"]["hint"], line)
+            for sign_rc in (0, 1):   # 只撤聊天(沒帶 --page):page 那步 skipped、不帶序號句、不當掉
+                res, rc = DL.lost(self.env, chat="qq7xk2ma", prove=lambda r, e: None,
+                                  sign=lambda *a, rc=sign_rc, **k: (rc, None), out=io.StringIO())
+                self.assertEqual((res["page"], rc), ({"state": "skipped"}, sign_rc), sign_rc)
         finally:
             DL.chat_devices = orig
 
