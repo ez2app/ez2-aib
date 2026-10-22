@@ -4,6 +4,11 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.40
+
+- **畫面字讀一次就記住**:字典檔只在變動時重讀(依檔案身分與修改時間判斷),安全檢查照舊每次做;`aib chat --help` 從約 1.2 秒降到 0.1 秒，輸出不變。
+- **介面約定檔加上 ez2.page 功能清單**:`GET /api/v1/page/features` 寫進 `aib/contracts/page-api.json`,測試照它比對核心實際送出的請求。
+
 ## 0.1.39
 
 - **只清這台的憑證**:`aib page unbind --local-only` 只刪本機那份，不連伺服器、不跳 Touch ID,並提醒你到 ez2.page 後台撤銷伺服器上那把。這台綁過、但機器識別檔不見了時，`aib page bind` 會拒絕，不會自動換一個新身分。

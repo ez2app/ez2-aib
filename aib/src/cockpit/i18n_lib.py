@@ -77,6 +77,13 @@ def _reject_duplicate_keys(pairs):
     return data
 
 
+# 10-21 @d07f9:i18n_lib.t() 每次新建 Translator ⇒ 每個 T() 都重讀、重驗兩份字典(一份約 11 毫秒);
+#   aib chat --help 74 次 T() = 1.1 秒。Translator 自己載的那份照 (路徑, inode, mtime_ns, 大小) 快取:
+#   檔一換(改值 / 換檔)鍵就變 ⇒ 重讀;lstat 檢查與 i18nload 追蹤每次照做;給呼叫端整份的(非 _keyed)不走快取。
+_KEYED_CACHE = {}
+_KEYED_CACHE_MAX = 16
+
+
 def load_dict(locale, i18n_dir=None, _keyed=False, _quiet=False):
     """_keyed:Translator 自己載(之後只經 t()/逐鍵取值用)—— 不算「整份都用到」;
     其他呼叫端拿到的是整份 dict ⇒ 記 "@whole"。_quiet:測試沿用的重算端拿來驗字典,不寫任何追蹤紀錄。"""
@@ -87,11 +94,14 @@ def load_dict(locale, i18n_dir=None, _keyed=False, _quiet=False):
         else:
             _keylog("@whole")
     try:
-        mode = path.lstat().st_mode
+        st = path.lstat()
     except OSError as err:
         raise I18nError("i18n dictionary unreadable: %s (%s)" % (path, err))
-    if not stat.S_ISREG(mode):
+    if not stat.S_ISREG(st.st_mode):
         raise I18nError("i18n dictionary must be a regular non-symlink file: %s" % path)
+    cache_key = (os.path.abspath(str(path)), st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+    if _keyed and cache_key in _KEYED_CACHE:
+        return _KEYED_CACHE[cache_key]
     try:
         with open(path, encoding="utf-8") as fh:
             # 10-12 a seat:不經 json.load / json.loads —— 測試沿用以鍵為單位時(AIB_KEYED_FILES,aib 自己的倉自動偵測到
@@ -120,6 +130,10 @@ def load_dict(locale, i18n_dir=None, _keyed=False, _quiet=False):
     if bad_placeholders:
         raise I18nError("i18n dictionary has malformed placeholders: %s (%s)" %
                         (path, bad_placeholders))
+    if _keyed:
+        if len(_KEYED_CACHE) >= _KEYED_CACHE_MAX:
+            _KEYED_CACHE.clear()
+        _KEYED_CACHE[cache_key] = data
     return data
 
 

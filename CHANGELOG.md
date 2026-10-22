@@ -4,6 +4,11 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.40
+
+- **Screen text is loaded once**: translation files are re-read only when they change (checked by file identity and modification time), with the safety checks still run every time; `aib chat --help` goes from about 1.2 s to 0.1 s with identical output.
+- **Contract file covers the ez2.page feature list**: `GET /api/v1/page/features` is now in `aib/contracts/page-api.json`, and tests compare the requests core actually sends against it.
+
 ## 0.1.39
 
 - **Remove only this Mac's credential**: `aib page unbind --local-only` deletes the local copy without contacting the server or asking for Touch ID, and reminds you to revoke the server copy on the ez2.page dashboard. If this Mac was bound but its machine identity file is gone, `aib page bind` now refuses instead of quietly creating a new identity.

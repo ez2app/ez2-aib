@@ -12,7 +12,9 @@ C4 quote-key 那幾支(planned):路徑都在同前綴下、pop 訊息前綴照�
    核心還沒有這幾支的呼叫端(register / rotate 未做)⇒ 契約標 core_client 還沒有,做了再加攔請求的測試
 C5 核心已有的 quote 部分 = 證書驗簽:照契約欄位 / kind / kid 格式 / sig 格式造的證書 aib_quote.cert_ok 收;
    少任一驗簽要的欄位、kind 不對、sig 帶 padding ⇒ 不收
-刀(複本):K1 把 bind_revoke 改回送 {} ⇒ C2 紅;K2 cert_ok 認的 kind 跟契約不同 ⇒ C5 紅
+C6 page_features:remote_link 實際送出的 = 契約 method + 前綴 + path、不帶 Authorization;只收字面 true;
+   契約列的三個功能都讀得到;404 ⇒ server_not_ready、連不上 ⇒ server_unreachable
+刀(複本):K1 把 bind_revoke 改回送 {} ⇒ C2 紅;K2 cert_ok 認的 kind 跟契約不同 ⇒ C5 紅;K3 FEATURES_PATH 漂掉 ⇒ C6 紅
 """
 import io
 import json
@@ -161,6 +163,40 @@ class QuoteCert(unittest.TestCase):
         self.assertFalse(AQ.cert_ok(cert), "出貨清單空 ⇒ 不收")
 
 
+class Features(unittest.TestCase):
+    def setUp(self):
+        td = tempfile.TemporaryDirectory(prefix="aib-contract-feat-")
+        self.addCleanup(td.cleanup)
+        self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name}
+
+    def test_c6_features_per_contract(self):
+        import remote_link as RL
+        ep = E["page_features"]
+        sent = []
+
+        def call(status, d):
+            def c(method, url, token, body=None, timeout=None):
+                sent.append((method, url, token, body))
+                return status, d
+            return c
+        feats = {k: True for k in ep["ok"]["features"]}
+        feats["quote"] = "true"
+        got, why = RL.fetch_features(self.env, call=call(200, {"features": feats}), now=1000.0, base="https://x")
+        self.assertEqual(sent, [(ep["method"], "https://x" + C["prefix"] + ep["path"], None, None)])
+        self.assertIsNone(why)
+        self.assertNotIn("quote", got, "字串 \"true\" 不算")
+        for k in ("remote", "unbind"):
+            self.assertIs(got[k], True)
+        self.assertEqual(RL.server_ready(self.env, call=call(500, None), now=1001.0, base="https://x"), (True, None),
+                         "60 秒內走快取")
+        for status, why_want in ((404, "server_not_ready"), (0, "server_unreachable")):
+            td = tempfile.TemporaryDirectory(prefix="aib-contract-feat-")
+            self.addCleanup(td.cleanup)
+            env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name}
+            self.assertEqual(RL.fetch_features(env, call=call(status, None), now=1000.0, base="https://x"),
+                             (None, why_want))
+
+
 class Knife(unittest.TestCase):
     def test_k1_body_back(self):
         name = Path(__file__).name
@@ -177,6 +213,15 @@ class Knife(unittest.TestCase):
         with knife_copy(REPO, "src/cockpit/aib_quote.py", 'cert.get("kind") != "aib-quote-key"',
                         'cert.get("kind") != "aib-quote-key-v0"', tests=(name,)) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "QuoteCert.test_c5_cert_per_contract"],
+                            cwd=str(root), max_procs=40, timeout=300)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+    def test_k3_features_path_drift(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/remote_link.py", 'FEATURES_PATH = "/api/v1/page/features"',
+                        'FEATURES_PATH = "/api/v1/remote/ready"', tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Features.test_c6_features_per_contract"],
                             cwd=str(root), max_procs=40, timeout=300)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
