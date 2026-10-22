@@ -140,6 +140,7 @@ def run_serial_bind(api, serial, seat_label, out, environ=None, clock=None):
         messages = {
             "page_api_serial_invalid": "序號不對,到 ez2.page 後台「AI 助理」看序號或重發",
             "page_api_serial_stale": "序號已重發過,舊的作廢;用後台新序號",
+            "page_api_serial_rotated": _serial_rotated_text(),
             "page_api_token_limit_reached": "這個頁面已綁 3 台(上限),到 ez2.page 後台解綁一台再來",
         }
         raise BindError(messages.get(exc.code) or _start_error_text(exc))
@@ -164,6 +165,16 @@ def run_serial_bind(api, serial, seat_label, out, environ=None, clock=None):
     saved, _source = store.save_token(record, environ)
     out("已綁 %s,到期 %s" % (record.get("slug") or record["page_id"], _human_date(record["expires_at"])))
     return record, saved
+
+
+def _serial_rotated_text():
+    """遺失裝置撤銷時伺服器換了序號(0.1.42,Andy 10-23);四語,字典讀不到用中文。"""
+    try:
+        import i18n_lib
+        text = i18n_lib.t("aib.page.bind.serial_rotated", None, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001
+        text = ""
+    return text if text and not text.startswith("!!") else "這個序號已在遺失裝置撤銷時換新，請登入 ez2.page 後台取新序號"
 
 
 def _start_error_text(exc):

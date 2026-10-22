@@ -570,7 +570,8 @@ def write_error_text(exc):
     if code == "page_api_token_expired":
         return "與 ez2.page 的連線已過期(30 天),跑 `aib page bind` 重新配對就好"
     if code == "page_api_token_revoked":
-        return ("你在 ez2.page 後台解除了這個助理,所以我不能再寫。"
+        import revoked_note   # 0.1.42:伺服器有帶撤的時間 / 誰撤的 ⇒ 講清楚;舊伺服器照舊那句
+        return revoked_note.note(exc) or ("你在 ez2.page 後台解除了這個助理,所以我不能再寫。"
                 "如果不是你解除的,先去後台的「AI 助理」頁看一下")
     if code == "page_api_publish_requires_human":
         body = exc.body or {}
