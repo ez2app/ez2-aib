@@ -104,6 +104,10 @@ class Serial(Base):
             self.assertEqual(rc, 0, res)
             self.assertIs(res["page"]["serial_rotated"], False, v)
             self.assertEqual(res["page"]["hint"], KEPT, v)
+        rc, text = self.cli(FakeApi())   # 舊伺服器:終端機也要提醒去重發
+        lines = text.splitlines()
+        i = next(n for n, ln in enumerate(lines) if ln.startswith("✓ ez2.page"))
+        self.assertEqual(lines[i + 1], "  " + KEPT)
 
     def test_s3_json_and_failures(self):
         rc, text = self.cli(FakeApi(True), "--json")
@@ -237,7 +241,7 @@ class Wording(unittest.TestCase):
     def test_s4_contract_codes_match_core(self):
         E = C["endpoints"]
         f = E["machine_revoke"]["serial_rotate_failed"]
-        self.assertEqual(f["http"], 503)
+        self.assertEqual((f["http"], f["codes"]), (503, ["page_device_serial_rotate_failed"]))
         for code in f["codes"]:
             self.assertEqual(DL._page_err(A.ApiError(f["http"], code))[0], "page_serial_rotate_failed", code)
         b = E["bind_serial"]
