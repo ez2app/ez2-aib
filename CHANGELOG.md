@@ -4,6 +4,11 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.42
+
+- **A revoked machine says when and by whom**: when ez2.page refuses a machine because it was revoked, aib now prints the time and the name of the device that revoked it, plus where to manage devices, instead of a bare credential error.
+- **Lost-device revoke can replace the EZP- serial**: if ez2.page reports `serial_rotated`, `aib device lost` says the account's EZP- serial has been replaced, the old one can no longer bind, other machines keep working, and new machines need the new serial from the web dashboard. If the server does not rotate it, aib reminds you that the serial may still be in that machine's terminal history and to reissue it. If rotation fails, nothing is revoked and aib says it is safe to run again. `aib page bind` with a replaced serial explains where to get the new one. The new serial is never returned by the API or printed by aib.
+
 ## 0.1.41
 
 - **New `aib device list` / `aib device lost`**: when a computer or phone is lost, revoke it from a computer you still have. It lists the target's name and last-seen date first, then asks for one Touch ID (the dialog text names the device), then removes it from the owner-signed chat device list (owner passphrase still required) and revokes every ez2.page token of that machine at once, reporting each step and each token separately. It never revokes the machine you are on, and it cannot be started from the phone remote. Until ez2.page offers the endpoint, the page step reports `page_device_revoke_unsupported` and points to the web dashboard. With `--json`, the chat step answers `chat_needs_terminal` without changing anything.

@@ -33,7 +33,22 @@
      "page_api_token_expired",
      "page_api_token_invalid"
     ],
-    "core": "當成功、清本機;page_api_token_invalid 多一行 hint"
+    "core": "當成功、清本機;page_api_token_invalid 多一行 hint",
+    "revoked_body": {
+     "status": "planned",
+     "http": 401,
+     "code": "page_api_token_revoked",
+     "fields": [
+      "revoked_at",
+      "revoked_by_name",
+      "manage_url"
+     ],
+     "revoked_at": "ISO(撤銷落檔時間)",
+     "revoked_by_name": "str|null(只有遺失裝置撤銷 = 發起那台的名字;後台 / unbind 撤的一律 null)",
+     "manage_url": "https://ez2.page/manage/aib",
+     "core": "印「這台在 {revoked_at} 被 {revoked_by_name} 撤了;不是你?到 {manage_url}」;名字去控制 / 隱形字元、截 32 字;null ⇒ 不講被誰;manage_url 不是 https://ez2.page/ 開頭 ⇒ 用常數;舊伺服器不帶 ⇒ 照舊那句。detail 仍是原碼,這句放 hint",
+     "agreed": "@9f808 10-22 15:33(伺服器分支 page/device-revoke-9f808-1022);@abb89 10-22 15:23 排 0.1.42"
+    }
    },
    "unsupported": {
     "http": [
@@ -229,14 +244,34 @@
      "ok",
      "fp",
      "results",
-     "request_id"
+     "request_id",
+     "serial_rotated"
     ],
+    "fields_note": "serial_rotated 是 0.1.42 起才有的可選欄;舊伺服器沒有 ⇒ 當 false(見下面 serial_rotated.absent)",
     "results_item": {
      "kind": "page_token(之後會加 quote_key;核心遇到不認得的 kind 原樣列出、不當失敗)",
      "id": "page_token ⇒ token_id",
      "outcome": "revoked | already_revoked | expired"
     },
-    "note": "那台底下每一把(含已撤 / 過期的)各回一筆;全部撤完才回 200。撤銷先落檔、後寫稽核(device_revoke);稽核寫失敗 ⇒ 503,但撤銷已成立,重打會全是 already_revoked(同 RV8)"
+    "note": "那台底下每一把(含已撤 / 過期的)各回一筆;全部撤完才回 200。撤銷先落檔、後寫稽核(device_revoke);稽核寫失敗 ⇒ 503,但撤銷已成立(換號失敗的 503 page_device_serial_rotate_failed 除外,見 serial_rotate_failed),重打會全是 already_revoked(同 RV8)",
+    "serial_rotated": {
+     "type": "bool",
+     "meaning": "這次遺失裝置撤銷順手把帳號的 EZP- 綁定序號換新 ⇒ 舊序號立刻不能再綁;其他台照常用,之後新綁機器要用新序號(只在後台登入後看得到)",
+     "absent": "舊伺服器沒有這欄 ⇒ 核心當 false",
+     "core": "只認 JSON true;true ⇒ 印「序號已換新」那句,false / 沒這欄(含全部 already_revoked / expired 沒換號)⇒ 印「到後台重發序號」;--json 在 page 那步帶 serial_rotated(bool)和同一句 hint。回應不帶新序號、核心也不印",
+     "agreed": "Andy 10-23 04:3x 選「撤銷時自動換序號」;@abb89 10-23 04:36 派、04:4x 補細節;@9f808 10-23 04:37 伺服器做法;@9f808 10-23 04:4x 對過 OK",
+     "when": "真的撤到 ≥1 把才換;全部 already_revoked / expired ⇒ false",
+     "known_gap": "稽核 503 後重跑 ⇒ 全部 already_revoked、serial_rotated=false ⇒ 核心印「到後台重發序號」,但序號其實第一次已換;多重發一次、沒有安全風險(取捨:核心不記上一次結果)",
+     "new_serial": "新序號只在後台「取得新序號」拿(管理金鑰再驗 或 5 分鐘內真的登入過(社群或管理金鑰登入都算),@abb89 裁 A+B);API 永遠拿不到;每按一次重產一組"
+    }
+   },
+   "serial_rotate_failed": {
+    "http": 503,
+    "codes": [
+     "page_device_serial_rotate_failed"
+    ],
+    "server": "換號在寫 token 之前;換號或撤銷落檔失敗 ⇒ 什麼都沒撤",
+    "core": "只在 503 + 這個碼時 why = page_serial_rotate_failed(別的狀態碼帶這碼 ⇒ 照一般規則判(429 限流 / 404・405 未支援 / 其餘 page_refused),不保證什麼都沒撤;沒帶碼或別的碼的 503 照舊 page_audit_failed)(不是 page_audit_failed:那個是撤銷已成立);hint 說什麼都沒撤、可以再跑一次;detail 原碼"
    },
    "self": {
     "http": 409,
@@ -260,7 +295,22 @@
      "page_api_token_invalid",
      "page_api_token_missing"
     ],
-    "core": "呼叫者這把本身不能用 ⇒ 失敗，hint 指後台 /manage/aib"
+    "core": "呼叫者這把本身不能用 ⇒ 失敗，hint 指後台 /manage/aib",
+    "revoked_body": {
+     "status": "planned",
+     "http": 401,
+     "code": "page_api_token_revoked",
+     "fields": [
+      "revoked_at",
+      "revoked_by_name",
+      "manage_url"
+     ],
+     "revoked_at": "ISO(撤銷落檔時間)",
+     "revoked_by_name": "str|null(只有遺失裝置撤銷 = 發起那台的名字;後台 / unbind 撤的一律 null)",
+     "manage_url": "https://ez2.page/manage/aib",
+     "core": "印「這台在 {revoked_at} 被 {revoked_by_name} 撤了;不是你?到 {manage_url}」;名字去控制 / 隱形字元、截 32 字;null ⇒ 不講被誰;manage_url 不是 https://ez2.page/ 開頭 ⇒ 用常數;舊伺服器不帶 ⇒ 照舊那句。detail 仍是原碼,這句放 hint",
+     "agreed": "@9f808 10-22 15:33(伺服器分支 page/device-revoke-9f808-1022);@abb89 10-22 15:23 排 0.1.42"
+    }
    },
    "recovery_cooldown": "帳號找回冷卻期間這支照樣可以用(冷卻中只能撤不能加)",
    "unsupported": {
@@ -282,8 +332,8 @@
    },
    "notify": {
     "channels": [
-     "email",
-     "line"
+     "line",
+     "email"
     ],
     "to": "註冊 Email + 綁定的 LINE",
     "content": [
@@ -293,7 +343,11 @@
     ],
     "when": "撤銷落檔之後送;送失敗不回滾撤銷;稽核記通知結果",
     "response": "回應不帶 notified 欄位",
-    "why": "AI 繞過 Touch ID 撤本人機器時,本人能發現(@abb89 10:25)"
+    "why": "AI 繞過 Touch ID 撤本人機器時,本人能發現(@abb89 10:25)",
+    "channels_status": {
+     "line": "盡力而為",
+     "email": "待 a(Andy 待辦)"
+    }
    },
    "rate_limit": {
     "http": 429,
@@ -303,6 +357,24 @@
     "rule": "同帳號每小時最多 5 台;只數真的撤到 ≥1 把的那一台,全部 already_revoked 的重打不算(503 後重試不會被擋)",
     "core_hint": "一小時後再試,或到後台撤"
    }
+  },
+  "bind_serial": {
+   "status": "partial",
+   "method": "POST",
+   "path": "/bind/serial",
+   "auth": "none",
+   "auth_note": "不帶 bearer;本體帶 serial / seat_label / machine(api.py bind_serial auth=False)",
+   "about": "這裡只記序號被換的錯誤碼;其餘欄位照 src/cockpit/page/bind.py run_serial_bind",
+   "serial_rotated": {
+    "http": 401,
+    "codes": [
+     "page_api_serial_rotated"
+    ],
+    "server": "舊序號在遺失裝置撤銷時被換掉(跟手動重發的 page_api_serial_stale 分開)",
+    "core": "aib page bind 印「這個序號已在遺失裝置撤銷時換新,請登入 ez2.page 後台取新序號」(四語,鍵 aib.page.bind.serial_rotated)",
+    "note": "只有遺失裝置撤銷換掉的那一代記成 rotated;後台「取得新序號」每按一次換一組,上一組再打 /bind/serial ⇒ page_api_serial_invalid(不是 rotated)"
+   },
+   "agreed": "@abb89 10-23 04:4x;@9f808 10-23 04:37、04:4x 對過 OK"
   }
  }
 }

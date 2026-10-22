@@ -4999,12 +4999,16 @@
   "aib.device.step_page_revoked": "✓ ez2.page:{fp} 撤了 {n} 把",
   "aib.device.step_page_failed": "✗ ez2.page:{fp} 沒撤成",
   "aib.device.step_page_unsupported": "… ez2.page 還沒開放從這裡撤({fp})",
+  "aib.device.serial_rotated": "你帳號的 EZP- 序號已換新，舊序號不能再綁;其他台照常用，之後新綁機器請到 ez2.page 後台看新序號",
+  "aib.device.serial_kept": "序號可能留在那台的終端機紀錄，請到後台重發序號",
+  "aib.page.bind.serial_rotated": "這個序號已在遺失裝置撤銷時換新，請登入 ez2.page 後台取新序號",
   "aib.device.hint.page_unknown": "這個帳號底下找不到那台",
   "aib.device.hint.page_is_self": "那是這台自己;要解除這台請用 aib page unbind",
   "aib.device.hint.page_rate_limited": "一小時後再試,或到 {url} 撤",
   "aib.device.hint.page_caller_dead": "這台的 ez2.page 憑證已失效;請到 {url} 撤那台",
   "aib.device.hint.page_unsupported": "ez2.page 還沒開放從這裡撤;請到 {url} 撤那台",
   "aib.device.hint.page_audit_failed": "撤銷已成立但伺服器記錄失敗;可再跑一次確認(會顯示已撤)",
+  "aib.device.hint.page_serial_rotate_failed": "序號沒換成，這次什麼都沒撤;可以再跑一次",
   "aib.device.hint.page_refused": "ez2.page 拒絕了;請到 {url} 撤",
   "aib.device.hint.page_unreachable": "連不上 ez2.page;稍後再試,或到 {url} 撤",
   "aib.device.hint.page_not_bound": "這台沒綁 ez2.page,ez2.page 那邊請到 {url} 撤",
@@ -5023,5 +5027,7 @@
   "aib.device.targets_head": "要撤的裝置(確認是遺失的那台再按 Touch ID):",
   "aib.device.target_chat": "  聊天  {code}  {name}",
   "aib.device.target_page": "  ez2.page  {fp}  {name}  最後上線 {at}",
-  "aib.device.hint.chat_needs_terminal": "聊天那步要在終端機輸入主人密語:請到終端機跑 aib device lost --chat <機器碼>(卡片先只撤 ez2.page);什麼都沒動"
+  "aib.device.hint.chat_needs_terminal": "聊天那步要在終端機輸入主人密語:請到終端機跑 aib device lost --chat <機器碼>(卡片先只撤 ez2.page);什麼都沒動",
+  "aib.page.revoked_note.by": "這台在 {at} 被「{name}」撤了;不是你?到 {url}",
+  "aib.page.revoked_note.at": "這台在 {at} 被撤了;不是你?到 {url}"
 }

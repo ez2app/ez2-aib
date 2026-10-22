@@ -4999,12 +4999,16 @@
   "aib.device.step_page_revoked": "✓ ez2.page: {fp} 인증 정보 {n}개 처리",
   "aib.device.step_page_failed": "✗ ez2.page: {fp} 취소 실패",
   "aib.device.step_page_unsupported": "… ez2.page 가 아직 여기서의 취소를 지원하지 않음({fp})",
+  "aib.device.serial_rotated": "EZP- 일련번호를 새로 바꿨습니다. 이전 일련번호로는 더 이상 연결할 수 없습니다. 다른 기기는 그대로 사용할 수 있으며, 앞으로 새 기기를 연결할 때는 ez2.page 관리 화면에서 새 일련번호를 확인하세요",
+  "aib.device.serial_kept": "일련번호가 그 기기의 터미널 기록에 남아 있을 수 있습니다. 관리 화면에서 일련번호를 재발급하세요",
+  "aib.page.bind.serial_rotated": "이 일련번호는 분실 기기 취소 때 새로 바뀌었습니다. ez2.page 관리 화면에 로그인해 새 일련번호를 받으세요",
   "aib.device.hint.page_unknown": "이 계정에 해당 기기가 없습니다",
   "aib.device.hint.page_is_self": "이 기기 자신입니다. aib page unbind 를 사용하세요",
   "aib.device.hint.page_rate_limited": "한 시간 뒤 다시 시도하거나 {url} 에서 취소하세요",
   "aib.device.hint.page_caller_dead": "이 기기의 ez2.page 인증 정보가 유효하지 않습니다. {url} 에서 취소하세요",
   "aib.device.hint.page_unsupported": "ez2.page 가 아직 지원하지 않습니다. {url} 에서 취소하세요",
   "aib.device.hint.page_audit_failed": "취소는 되었지만 서버 기록에 실패했습니다. 다시 실행해 확인하세요",
+  "aib.device.hint.page_serial_rotate_failed": "일련번호를 바꾸지 못해 아무것도 취소하지 않았습니다. 다시 실행할 수 있습니다",
   "aib.device.hint.page_refused": "ez2.page 가 거부했습니다. {url} 에서 취소하세요",
   "aib.device.hint.page_unreachable": "ez2.page 에 연결할 수 없습니다. 나중에 다시 시도하거나 {url} 에서 취소하세요",
   "aib.device.hint.page_not_bound": "이 기기는 ez2.page 에 연결되지 않았습니다. {url} 에서 취소하세요",
@@ -5023,5 +5027,7 @@
   "aib.device.targets_head": "취소할 기기(분실한 기기인지 확인 후 Touch ID):",
   "aib.device.target_chat": "  채팅  {code}  {name}",
   "aib.device.target_page": "  ez2.page  {fp}  {name}  마지막 사용 {at}",
-  "aib.device.hint.chat_needs_terminal": "채팅 단계는 터미널에서 주인 암호가 필요합니다. 터미널에서 aib device lost --chat <코드> 를 실행하세요. 아무것도 변경하지 않았습니다"
+  "aib.device.hint.chat_needs_terminal": "채팅 단계는 터미널에서 주인 암호가 필요합니다. 터미널에서 aib device lost --chat <코드> 를 실행하세요. 아무것도 변경하지 않았습니다",
+  "aib.page.revoked_note.by": "이 기기는 {at}에 \"{name}\"(이)가 해제했습니다. 본인이 아니면 {url} 로 가세요",
+  "aib.page.revoked_note.at": "이 기기는 {at}에 해제되었습니다. 본인이 아니면 {url} 로 가세요"
 }
