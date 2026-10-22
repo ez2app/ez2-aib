@@ -190,90 +190,100 @@
   },
   "machines_list": {
    "status": "planned",
-   "agreed": "草案 @d07f9 10-22,等 @9f808 OK(Andy 10-22「全照建議」第 1–3 題)",
    "method": "GET",
    "path": "/machines",
    "auth": "bearer",
-   "auth_note": "同帳號任一把有效 token;只列這個帳號底下的機器",
+   "auth_note": "任何一把還活著的 bearer;只列同一個帳號(tenant)底下的機器",
    "body": "none",
    "ok": {
     "http": 200,
     "fields": [
+     "ok",
      "machines",
      "request_id"
     ],
-    "machine_fields": [
-     "machine_id",
-     "name",
-     "last_seen_at",
-     "token_count",
-     "is_self"
-    ],
-    "note": "name 由伺服器存的機器名(machine.json name);核心顯示前照樣 clean;is_self = 發請求這把 token 所在的機器"
+    "machines_item": {
+     "fp": "64 hex = sha256(\"ez2-aib-machine-v1:\" + machine_id)(跟 GET /api/v1/remote/machines 同一個指紋;不回 machine_id 原值 / token_id)",
+     "name": "str(配對時自報的機器名，可空)",
+     "last_used_at": "ISO 或 null(這台底下所有沒撤的 token 最近一次)",
+     "live_tokens": "int(沒撤、沒過期的把數)",
+     "this": "bool(= 呼叫這支的那把 bearer 所在的機器)"
+    }
    },
-   "core": "撤之前列出名稱 + 最後上線時間,本人看過才按 Touch ID",
+   "core": "撤之前印出名稱 + 最後上線時間給本人看(提案「撤之前要本人看過才按」);Touch ID 視窗字用這裡的 name",
+   "agreed": "@9f808 草稿 10-22 10:22;@abb89 形狀 OK 10:23;Andy 10-22「全照建議」",
    "core_client": "還沒有(核心 0.1.41 aib device lost)"
   },
   "machine_revoke": {
    "status": "planned",
-   "agreed": "草案 @d07f9 10-22,等 @9f808 OK;Andy 10-22 第 2 題:machine_id 一次撤全部、每把回結果",
    "method": "POST",
-   "path": "/machines/{machine_id}/revoke",
+   "path": "/machines/{fp}/revoke",
    "auth": "bearer",
-   "auth_note": "發起端 = 還在手上的那台電腦的 token(同帳號);只准撤同 account_id 底下的機器",
-   "path_params": {
-    "machine_id": "UUID(那台 machine.json 的 id)"
-   },
+   "auth_note": "還在手上的那台的 bearer;只准撤同一個帳號底下的機器。Touch ID 在核心(伺服器驗不到;同帳號 AI 直接打這支只能撤本人自己的機器 = 阻斷服務、不是提權,提案已記)",
    "body": "empty",
-   "body_note": "帶本體 ⇒ 400 page_api_body_invalid(跟 bind_revoke 同規則)",
+   "body_note": "帶本體 ⇒ 400 page_api_body_invalid(同 bind_revoke)",
+   "path_note": "fp 不是 64 位小寫 hex ⇒ 400 page_device_fp_invalid",
    "ok": {
     "http": 200,
     "fields": [
      "ok",
-     "machine_id",
+     "fp",
      "results",
      "request_id"
     ],
-    "result_fields": [
-     "token_id",
-     "page_id",
-     "result",
-     "code"
-    ],
-    "results": [
-     "revoked",
-     "already_revoked",
-     "failed"
-    ],
-    "note": "每一把 token 一列;failed 帶 code;全部 already_revoked 也回 200"
+    "results_item": {
+     "kind": "page_token(之後會加 quote_key;核心遇到不認得的 kind 原樣列出、不當失敗)",
+     "id": "page_token ⇒ token_id",
+     "outcome": "revoked | already_revoked | expired"
+    },
+    "note": "那台底下每一把(含已撤 / 過期的)各回一筆;全部撤完才回 200。撤銷先落檔、後寫稽核(device_revoke);稽核寫失敗 ⇒ 503,但撤銷已成立,重打會全是 already_revoked(同 RV8)"
    },
-   "errors": {
-    "page_machine_not_found": 404,
-    "page_machine_is_self": 409,
-    "page_machine_revoke_rate_limited": 429
+   "self": {
+    "http": 409,
+    "codes": [
+     "page_device_revoke_self"
+    ],
+    "core": "fp 是呼叫者自己這台 ⇒ 不做;hint 指 aib page unbind"
    },
-   "errors_note": "不是這個帳號的 machine_id 也回 page_machine_not_found(不讓人探別帳號有沒有這台);撤自己請用 bind_revoke",
+   "unknown": {
+    "http": 404,
+    "codes": [
+     "page_device_unknown"
+    ],
+    "core": "這個帳號底下從沒有這台(別帳號的機器也回這個，不洩漏存不存在)"
+   },
+   "caller_dead": {
+    "http": 401,
+    "codes": [
+     "page_api_token_revoked",
+     "page_api_token_expired",
+     "page_api_token_invalid",
+     "page_api_token_missing"
+    ],
+    "core": "呼叫者這把本身不能用 ⇒ 失敗，hint 指後台 /manage/aib"
+   },
+   "recovery_cooldown": "帳號找回冷卻期間這支照樣可以用(冷卻中只能撤不能加)",
    "unsupported": {
     "http": [
      404,
      405
     ],
-    "rule": "404 而且 error 不是 page_machine_not_found、或 405 ⇒ 伺服器還沒有這支",
     "core_detail": "page_device_revoke_unsupported",
-    "core": "不動本機、聊天那步照做;hint 指後台"
+    "core": "hint 指向後台;伺服器還沒有這支 = 404 page_api_not_found(或 405)⇒ 當 unsupported;404 page_device_unknown 是「有這支、但沒這台」,兩個看 error 欄分辨"
    },
-   "server_side": [
-    "每撤一台:通知註冊 Email + LINE(含機器名、時間、發起機器名),寫稽核",
-    "限流:同帳號每小時最多 5 台,超過 429",
-    "範圍 v1 只有 page token;quote key 等 register 做完再加(Andy 第 1 題)"
-   ],
+   "core_cli": "aib device lost <機器碼|手機碼> [--json]",
+   "threat_note": "bearer 在本機檔，同帳號 AI 可繞過核心 Touch ID 直接打這支 ⇒ 目前只算『阻斷服務、非提權』(Andy 10-22 裁示時接受的是這個前提);quote register 上線後改成要 SE 簽章(quote key)才放行，排進 quote 那一期(@abb89 10-22 10:23)",
+   "agreed": "@9f808 草稿 10-22 10:22;@abb89 形狀 OK 10:23;Andy 10-22「全照建議」",
+   "core_client": "還沒有(核心 0.1.41 aib device lost)",
    "threat_model": {
-    "risk": "核心這邊一次 Touch ID 只擋正式指令;同帳號 AI 拿得到這台 token 可以直接打這支 ⇒ 撤掉本人別台(阻斷服務,不是提權:撤了可重綁、不會多拿權限)",
-    "mitigation": "伺服器每撤一台都通知 Email + LINE、限流、不准撤自己;撤銷只減權限",
-    "open": "要不要伺服器端也要本人證明(例如手機確認或 quote 簽章)— 請 @abb89 裁;quote 登錄做完後可改成要 quote 簽章"
+    "risk": "bearer 在本機檔,同帳號 AI 可繞過核心 Touch ID 直接打 revoke ⇒ 撤掉本人別台",
+    "accepted": "目前只算「阻斷服務、非提權」(撤了可重綁、撤銷只減權限);Andy 10-22 裁示時接受的就是這個前提(@abb89 10:23)",
+    "next": "quote register 上線後,revoke 改成要 SE 簽章(quote key)才放行,排進 quote 那一期"
    },
-   "core": "aib device lost <機器碼> [--json]:一次 Touch ID(視窗字核心組、寫明撤哪台)→ ① 聊天清單撤那台(主人簽新清單)② 打這支;兩步結果分開回;只從電腦發起",
-   "core_client": "還沒有(核心 0.1.41)"
+   "server_side_suggested": [
+    "(@d07f9 建議,待 @9f808 定)每撤一台通知註冊 Email + LINE(機器名、時間、發起機器名)",
+    "(建議)同帳號每小時上限,超過 429"
+   ]
   }
  }
 }
