@@ -8,6 +8,7 @@
 
 - **新指令 `aib device list` / `aib device lost`**:電腦或手機遺失時，從還在手上的電腦撤銷它。先列出那台的名稱與最後上線日期，再按一次 Touch ID(視窗字寫明是哪一台),接著把它從主人簽的聊天裝置清單移除(主人密語照問),並一次撤掉那台在 ez2.page 的全部憑證，每一步、每一把各自回結果。不會撤到正在用的這台，手機遙控也叫不動這支指令。ez2.page 端點上線前,page 那步回 `page_device_revoke_unsupported` 並指向後台。加 `--json` 時，聊天那步回 `chat_needs_terminal`,什麼都不動。
 - **介面約定檔加上裝置撤銷**:`GET /api/v1/page/machines` 與 `POST /api/v1/page/machines/{fp}/revoke` 寫進 `aib/contracts/page-api.json`,含錯誤碼、每個帳號的次數上限、Email + LINE 通知與威脅模型說明。
+- **`aib chat off` 每次都正常結束**:聊天轉接程式正在收尾時剛好收到 off,原本可能被直接終止而不是正常退出;現在決定結束後就不理會遲到的停止訊號。
 
 ## 0.1.40
 

@@ -8,6 +8,7 @@
 
 - **새 명령 `aib device list` / `aib device lost`**: 컴퓨터나 휴대폰을 잃어버렸을 때 아직 가지고 있는 컴퓨터에서 해제합니다. 먼저 대상의 이름과 마지막 접속일을 보여 주고, Touch ID를 한 번(창에 대상을 명시) 받은 뒤, 주인이 서명한 채팅 기기 목록에서 빼고(주인 암호는 그대로 필요) 그 기기의 ez2.page 토큰을 한꺼번에 해제합니다. 단계별·토큰별 결과를 따로 돌려줍니다. 지금 쓰는 기기는 해제하지 않으며, 휴대폰 원격에서는 실행할 수 없습니다. ez2.page 쪽 엔드포인트가 열리기 전에는 page 단계가 `page_device_revoke_unsupported`를 돌려주고 관리 화면을 안내합니다. `--json`일 때 채팅 단계는 아무것도 바꾸지 않고 `chat_needs_terminal`을 돌려줍니다.
 - **인터페이스 정의 파일에 기기 해제 추가**: `GET /api/v1/page/machines`와 `POST /api/v1/page/machines/{fp}/revoke`를 `aib/contracts/page-api.json`에 넣었습니다(오류 코드, 계정별 횟수 제한, Email + LINE 알림, 위협 모델 메모 포함).
+- **`aib chat off`가 매번 정상 종료**: 채팅 중계가 마무리 중일 때 off를 받으면 정상 종료 대신 강제 종료될 수 있었습니다. 이제 종료를 결정한 뒤에는 늦게 온 중지 신호를 무시합니다.
 
 ## 0.1.40
 

@@ -8,6 +8,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 
 - **New `aib device list` / `aib device lost`**: when a computer or phone is lost, revoke it from a computer you still have. It lists the target's name and last-seen date first, then asks for one Touch ID (the dialog text names the device), then removes it from the owner-signed chat device list (owner passphrase still required) and revokes every ez2.page token of that machine at once, reporting each step and each token separately. It never revokes the machine you are on, and it cannot be started from the phone remote. Until ez2.page offers the endpoint, the page step reports `page_device_revoke_unsupported` and points to the web dashboard. With `--json`, the chat step answers `chat_needs_terminal` without changing anything.
 - **Contract file covers device revoke**: `GET /api/v1/page/machines` and `POST /api/v1/page/machines/{fp}/revoke` are in `aib/contracts/page-api.json`, including error codes, the per-account rate limit, the Email + LINE notice, and the threat-model note.
+- **`aib chat off` exits cleanly every time**: if the chat bridge was already finishing when `off` arrived, it could end with a kill signal instead of a normal exit. It now ignores late stop signals once it has decided to exit.
 
 ## 0.1.40
 
