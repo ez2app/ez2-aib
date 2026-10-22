@@ -33,7 +33,22 @@
      "page_api_token_expired",
      "page_api_token_invalid"
     ],
-    "core": "當成功、清本機;page_api_token_invalid 多一行 hint"
+    "core": "當成功、清本機;page_api_token_invalid 多一行 hint",
+    "revoked_body": {
+     "status": "planned",
+     "http": 401,
+     "code": "page_api_token_revoked",
+     "fields": [
+      "revoked_at",
+      "revoked_by_name",
+      "manage_url"
+     ],
+     "revoked_at": "ISO(撤銷落檔時間)",
+     "revoked_by_name": "str|null(只有遺失裝置撤銷 = 發起那台的名字;後台 / unbind 撤的一律 null)",
+     "manage_url": "https://ez2.page/manage/aib",
+     "core": "印「這台在 {revoked_at} 被 {revoked_by_name} 撤了;不是你?到 {manage_url}」;名字去控制 / 隱形字元、截 32 字;null ⇒ 不講被誰;manage_url 不是 https://ez2.page/ 開頭 ⇒ 用常數;舊伺服器不帶 ⇒ 照舊那句。detail 仍是原碼,這句放 hint",
+     "agreed": "@9f808 10-22 15:33(伺服器分支 page/device-revoke-9f808-1022);@abb89 10-22 15:23 排 0.1.42"
+    }
    },
    "unsupported": {
     "http": [
@@ -260,7 +275,22 @@
      "page_api_token_invalid",
      "page_api_token_missing"
     ],
-    "core": "呼叫者這把本身不能用 ⇒ 失敗，hint 指後台 /manage/aib"
+    "core": "呼叫者這把本身不能用 ⇒ 失敗，hint 指後台 /manage/aib",
+    "revoked_body": {
+     "status": "planned",
+     "http": 401,
+     "code": "page_api_token_revoked",
+     "fields": [
+      "revoked_at",
+      "revoked_by_name",
+      "manage_url"
+     ],
+     "revoked_at": "ISO(撤銷落檔時間)",
+     "revoked_by_name": "str|null(只有遺失裝置撤銷 = 發起那台的名字;後台 / unbind 撤的一律 null)",
+     "manage_url": "https://ez2.page/manage/aib",
+     "core": "印「這台在 {revoked_at} 被 {revoked_by_name} 撤了;不是你?到 {manage_url}」;名字去控制 / 隱形字元、截 32 字;null ⇒ 不講被誰;manage_url 不是 https://ez2.page/ 開頭 ⇒ 用常數;舊伺服器不帶 ⇒ 照舊那句。detail 仍是原碼,這句放 hint",
+     "agreed": "@9f808 10-22 15:33(伺服器分支 page/device-revoke-9f808-1022);@abb89 10-22 15:23 排 0.1.42"
+    }
    },
    "recovery_cooldown": "帳號找回冷卻期間這支照樣可以用(冷卻中只能撤不能加)",
    "unsupported": {
@@ -282,8 +312,8 @@
    },
    "notify": {
     "channels": [
-     "email",
-     "line"
+     "line",
+     "email"
     ],
     "to": "註冊 Email + 綁定的 LINE",
     "content": [
@@ -293,7 +323,11 @@
     ],
     "when": "撤銷落檔之後送;送失敗不回滾撤銷;稽核記通知結果",
     "response": "回應不帶 notified 欄位",
-    "why": "AI 繞過 Touch ID 撤本人機器時,本人能發現(@abb89 10:25)"
+    "why": "AI 繞過 Touch ID 撤本人機器時,本人能發現(@abb89 10:25)",
+    "channels_status": {
+     "line": "盡力而為",
+     "email": "待 a(Andy 待辦)"
+    }
    },
    "rate_limit": {
     "http": 429,

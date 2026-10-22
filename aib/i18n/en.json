@@ -5023,5 +5023,7 @@
   "aib.device.targets_head": "Devices to revoke (confirm it's the lost one before Touch ID):",
   "aib.device.target_chat": "  chat  {code}  {name}",
   "aib.device.target_page": "  ez2.page  {fp}  {name}  last used {at}",
-  "aib.device.hint.chat_needs_terminal": "The chat step needs the owner passphrase in a terminal: run aib device lost --chat <code> there (the card only revokes ez2.page); nothing was changed"
+  "aib.device.hint.chat_needs_terminal": "The chat step needs the owner passphrase in a terminal: run aib device lost --chat <code> there (the card only revokes ez2.page); nothing was changed",
+  "aib.page.revoked_note.by": "This machine was revoked at {at} by \"{name}\". Not you? Go to {url}",
+  "aib.page.revoked_note.at": "This machine was revoked at {at}. Not you? Go to {url}"
 }

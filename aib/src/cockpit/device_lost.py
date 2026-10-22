@@ -116,7 +116,8 @@ def _page_err(exc):
     if code == "page_device_revoke_rate_limited" or http == 429:
         return "page_rate_limited", code or "http_429"
     if code in CALLER_DEAD:
-        return "page_caller_dead", code
+        import revoked_note   # 0.1.42:這台自己被撤 ⇒ 第三格帶「何時被誰撤」(舊伺服器 = "")
+        return "page_caller_dead", code, revoked_note.note(exc)
     if http in (404, 405):
         return "page_unsupported", UNSUPPORTED
     if http == 503:
@@ -162,9 +163,12 @@ def _page_revoke(api, m):
     try:
         res = api.machine_revoke(m["fp"])
     except ApiError as exc:
-        why, detail = _page_err(exc)
-        return {"state": "unsupported" if why == "page_unsupported" else "failed", "why": why, "detail": detail,
+        why, detail, *rest = _page_err(exc)
+        step = {"state": "unsupported" if why == "page_unsupported" else "failed", "why": why, "detail": detail,
                 "fp": m["fp"]}
+        if rest and rest[0]:
+            step["revoked_note"] = rest[0]
+        return step
     except TransportError:
         return {"state": "failed", "why": "page_unreachable", "detail": "transport", "fp": m["fp"]}
     results = [{"kind": str(r.get("kind") or ""), "id": str(r.get("id") or ""), "outcome": str(r.get("outcome") or "")}
@@ -174,6 +178,8 @@ def _page_revoke(api, m):
 
 def _hint(step):
     why = step.get("why")
+    if step.get("revoked_note"):
+        return step["revoked_note"]
     return T("hint." + why, url=MANAGE_URL) if why else ""
 
 
@@ -211,6 +217,8 @@ def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None, a
         m, err = _pick_page(api, page)
         if err:
             res = {"ok": False, "why": err[0], "detail": err[1]}
+            if len(err) > 2 and err[2]:
+                res["revoked_note"] = err[2]
             res["hint"] = _hint(res)
             return res, 2
     items, targets = [], []
@@ -257,6 +265,8 @@ def list_all(env, api=None):
     else:
         ms, err = page_machines(api)
         res["page"] = {"machines": ms or [], "why": err[0] if err else None, "detail": err[1] if err else None}
+        if err and len(err) > 2 and err[2]:
+            res["page"]["hint"] = err[2]
     return res
 
 
@@ -272,7 +282,8 @@ def _print_list(res, out):
         out.write(T("list_page_row", fp=m["fp"][:12], name=m["name"] or "-", at=m.get("last_used_at") or "-",
                     this=T("this") if m["this"] else "") + "\n")
     if res["page"]["why"]:
-        out.write("  " + (T("hint." + res["page"]["why"], url=MANAGE_URL) or res["page"]["why"]) + "\n")
+        out.write("  " + (res["page"].get("hint") or T("hint." + res["page"]["why"], url=MANAGE_URL)
+                          or res["page"]["why"]) + "\n")
 
 
 def main(argv=None, env=None, out=None):

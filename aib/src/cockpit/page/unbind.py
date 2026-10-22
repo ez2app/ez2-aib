@@ -100,6 +100,7 @@ def unbind(record, api, env=None, prove=None, local_only=False):
     if why:
         return _fail(why, 2, state="bound", slug=slug)
     server, note = "revoked", None
+    revoked_hint = ""
     try:
         api.bind_revoke()
     except ApiError as exc:
@@ -111,6 +112,8 @@ def unbind(record, api, env=None, prove=None, local_only=False):
                          manage_url=MANAGE_URL)
         server = "already"
         note = exc.code
+        import revoked_note
+        revoked_hint = revoked_note.note(exc)   # 0.1.42:伺服器說何時被誰撤 ⇒ hint(detail 照舊是原碼)
     except TransportError:
         return _fail("server_unreachable", 1, state="bound", slug=slug, detail="transport", manage_url=MANAGE_URL)
     removed = remove_local(record, e)
@@ -119,4 +122,6 @@ def unbind(record, api, env=None, prove=None, local_only=False):
     if note in NOTE_CODES:
         out["hint"] = _t("aib.page.unbind_note." + note, {"url": MANAGE_URL},
                          "ez2.page 上已經沒有這台的憑證;本機這份照樣清掉")
+    if revoked_hint:
+        out["hint"] = revoked_hint
     return out, 0

@@ -5023,5 +5023,7 @@
   "aib.device.targets_head": "取り消す端末(紛失したものか確認してから Touch ID):",
   "aib.device.target_chat": "  チャット  {code}  {name}",
   "aib.device.target_page": "  ez2.page  {fp}  {name}  最終利用 {at}",
-  "aib.device.hint.chat_needs_terminal": "チャットの手順はターミナルでオーナーのパスフレーズが必要です。ターミナルで aib device lost --chat <コード> を実行してください。何も変更していません"
+  "aib.device.hint.chat_needs_terminal": "チャットの手順はターミナルでオーナーのパスフレーズが必要です。ターミナルで aib device lost --chat <コード> を実行してください。何も変更していません",
+  "aib.page.revoked_note.by": "このマシンは {at} に「{name}」によって取り消されました。心当たりがなければ {url} へ",
+  "aib.page.revoked_note.at": "このマシンは {at} に取り消されました。心当たりがなければ {url} へ"
 }

@@ -732,6 +732,10 @@ def main(argv=None, environ=None):
     except ApiError as exc:
         # 走到這裡代表某條路忘了翻成人話 —— 印出原碼,不要假裝看得懂
         print("aib page: " + _m("api_untranslated", code=exc.code or "?", status=exc.http_status), file=sys.stderr)
+        import revoked_note
+        note = revoked_note.note(exc)   # 0.1.42:被撤 ⇒ 多一行「何時被誰撤、不是你到後台」
+        if note:
+            print("aib page: " + note, file=sys.stderr)
         return 1
 
 
