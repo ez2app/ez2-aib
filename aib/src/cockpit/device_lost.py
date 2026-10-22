@@ -120,6 +120,8 @@ def _page_err(exc):
         return "page_caller_dead", code, revoked_note.note(exc)
     if http in (404, 405):
         return "page_unsupported", UNSUPPORTED
+    if code == "page_device_serial_rotate_failed":
+        return "page_serial_rotate_failed", code          # 契約:換號在撤之前,失敗 ⇒ 什麼都沒撤,可再打
     if http == 503:
         return "page_audit_failed", code or "http_503"       # 契約:撤銷已成立,重打會全是 already_revoked
     return "page_refused", code or "http_%s" % http
@@ -173,7 +175,9 @@ def _page_revoke(api, m):
         return {"state": "failed", "why": "page_unreachable", "detail": "transport", "fp": m["fp"]}
     results = [{"kind": str(r.get("kind") or ""), "id": str(r.get("id") or ""), "outcome": str(r.get("outcome") or "")}
                for r in (res or {}).get("results") or [] if isinstance(r, dict)]   # 不認得的 kind 照列、不當失敗
-    return {"state": "revoked", "fp": m["fp"], "name": m.get("name") or "", "results": results}
+    rotated = (res or {}).get("serial_rotated") is True   # 舊伺服器沒這欄 / 不是 JSON true ⇒ 當沒換
+    return {"state": "revoked", "fp": m["fp"], "name": m.get("name") or "", "results": results,
+            "serial_rotated": rotated}
 
 
 def _hint(step):
@@ -249,6 +253,8 @@ def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None, a
         h = _hint(res[k])
         if h:
             res[k]["hint"] = h
+    if res["page"]["state"] == "revoked":   # 0.1.42:撤銷時自動換 EZP- 序號(Andy 10-23)
+        res["page"]["hint"] = T("serial_rotated" if res["page"]["serial_rotated"] else "serial_kept")
     res["ok"] = all(res[k]["state"] in ("revoked", "skipped") for k in ("chat", "page"))
     return res, 0 if res["ok"] else 1
 

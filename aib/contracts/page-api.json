@@ -244,14 +244,31 @@
      "ok",
      "fp",
      "results",
-     "request_id"
+     "request_id",
+     "serial_rotated"
     ],
     "results_item": {
      "kind": "page_token(之後會加 quote_key;核心遇到不認得的 kind 原樣列出、不當失敗)",
      "id": "page_token ⇒ token_id",
      "outcome": "revoked | already_revoked | expired"
     },
-    "note": "那台底下每一把(含已撤 / 過期的)各回一筆;全部撤完才回 200。撤銷先落檔、後寫稽核(device_revoke);稽核寫失敗 ⇒ 503,但撤銷已成立,重打會全是 already_revoked(同 RV8)"
+    "note": "那台底下每一把(含已撤 / 過期的)各回一筆;全部撤完才回 200。撤銷先落檔、後寫稽核(device_revoke);稽核寫失敗 ⇒ 503,但撤銷已成立,重打會全是 already_revoked(同 RV8)",
+    "serial_rotated": {
+     "type": "bool",
+     "meaning": "這次遺失裝置撤銷順手把帳號的 EZP- 綁定序號換新 ⇒ 舊序號立刻不能再綁;其他台照常用,之後新綁機器要用新序號(只在後台登入後看得到)",
+     "absent": "舊伺服器沒有這欄 ⇒ 核心當 false",
+     "core": "只認 JSON true;true ⇒ 印「序號已換新」那句,false / 沒這欄 ⇒ 印「到後台重發序號」;--json 在 page 那步帶 serial_rotated(bool)。回應不帶新序號、核心也不印",
+     "agreed": "Andy 10-23 04:3x 選「撤銷時自動換序號」;@abb89 10-23 04:36 派、04:4x 補細節;@9f808 10-23 04:37 伺服器做法",
+     "when": "真的撤到 ≥1 把才換;全部 already_revoked / expired ⇒ false"
+    }
+   },
+   "serial_rotate_failed": {
+    "http": 503,
+    "codes": [
+     "page_device_serial_rotate_failed"
+    ],
+    "server": "換號在寫 token 之前;換號失敗 ⇒ 什麼都沒撤",
+    "core": "why = page_serial_rotate_failed(不是 page_audit_failed:那個是撤銷已成立);hint 說什麼都沒撤、可以再跑一次;detail 原碼"
    },
    "self": {
     "http": 409,
@@ -337,6 +354,23 @@
     "rule": "同帳號每小時最多 5 台;只數真的撤到 ≥1 把的那一台,全部 already_revoked 的重打不算(503 後重試不會被擋)",
     "core_hint": "一小時後再試,或到後台撤"
    }
+  },
+  "bind_serial": {
+   "status": "partial",
+   "method": "POST",
+   "path": "/bind/serial",
+   "auth": "none",
+   "auth_note": "不帶 bearer;本體帶 serial / seat_label / machine(api.py bind_serial auth=False)",
+   "about": "這裡只記序號被換的錯誤碼;其餘欄位照 src/cockpit/page/bind.py run_serial_bind",
+   "serial_rotated": {
+    "http": 401,
+    "codes": [
+     "page_api_serial_rotated"
+    ],
+    "server": "舊序號在遺失裝置撤銷時被換掉(跟手動重發的 page_api_serial_stale 分開)",
+    "core": "aib page bind 印「這個序號已在遺失裝置撤銷時換新,請登入 ez2.page 後台取新序號」(四語,鍵 aib.page.bind.serial_rotated)"
+   },
+   "agreed": "@abb89 10-23 04:4x;@9f808 10-23 04:37"
   }
  }
 }
