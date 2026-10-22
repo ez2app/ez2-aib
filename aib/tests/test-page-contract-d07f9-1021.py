@@ -15,7 +15,7 @@ C5 核心已有的 quote 部分 = 證書驗簽:照契約欄位 / kind / kid 格�
 C6 page_features:remote_link 實際送出的 = 契約 method + 前綴 + path、不帶 Authorization;只收字面 true;
    契約列的三個功能都讀得到;404 ⇒ server_not_ready、連不上 ⇒ server_unreachable
 C7 遺失裝置(planned,照 @9f808 草稿;Andy 10-22 裁):GET /machines 回 fp / name / last_used_at / live_tokens / this;
-   POST /machines/{fp}/revoke 本體空、每把一筆 outcome、409 self / 404 unknown / unsupported 規則、威脅模型段;核心還沒有呼叫端(0.1.41)
+   POST /machines/{fp}/revoke 本體空、每把一筆 outcome、409 self / 404 unknown / unsupported 規則、威脅模型段、通知 Email+LINE、429 限流;核心還沒有呼叫端(0.1.41)
 刀(複本):K1 把 bind_revoke 改回送 {} ⇒ C2 紅;K2 cert_ok 認的 kind 跟契約不同 ⇒ C5 紅;K3 FEATURES_PATH 漂掉 ⇒ C6 紅
 """
 import io
@@ -212,6 +212,9 @@ class LostDevice(unittest.TestCase):
         self.assertEqual((rv["unknown"]["http"], rv["unknown"]["codes"]), (404, ["page_device_unknown"]))
         self.assertEqual(rv["unsupported"]["core_detail"], "page_device_revoke_unsupported")
         self.assertTrue(all(rv["threat_model"][k] for k in ("risk", "accepted", "next")))
+        self.assertEqual(set(rv["notify"]["channels"]), {"email", "line"})
+        self.assertEqual((rv["rate_limit"]["http"], rv["rate_limit"]["codes"]), (429, ["page_device_revoke_rate_limited"]))
+        self.assertNotIn("server_side_suggested", rv, "建議已轉正式欄位")
         for ep in (ls, rv):
             self.assertEqual(ep["status"], "planned")
             self.assertIn("還沒有", ep["core_client"])

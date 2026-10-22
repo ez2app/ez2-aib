@@ -280,10 +280,29 @@
     "accepted": "目前只算「阻斷服務、非提權」(撤了可重綁、撤銷只減權限);Andy 10-22 裁示時接受的就是這個前提(@abb89 10:23)",
     "next": "quote register 上線後,revoke 改成要 SE 簽章(quote key)才放行,排進 quote 那一期"
    },
-   "server_side_suggested": [
-    "(@d07f9 建議,待 @9f808 定)每撤一台通知註冊 Email + LINE(機器名、時間、發起機器名)",
-    "(建議)同帳號每小時上限,超過 429"
-   ]
+   "notify": {
+    "channels": [
+     "email",
+     "line"
+    ],
+    "to": "註冊 Email + 綁定的 LINE",
+    "content": [
+     "機器名",
+     "時間",
+     "發起機器名"
+    ],
+    "when": "撤銷落檔之後送;送失敗不回滾撤銷;稽核記通知結果",
+    "response": "回應不帶 notified 欄位",
+    "why": "AI 繞過 Touch ID 撤本人機器時,本人能發現(@abb89 10:25)"
+   },
+   "rate_limit": {
+    "http": 429,
+    "codes": [
+     "page_device_revoke_rate_limited"
+    ],
+    "rule": "同帳號每小時最多 5 台;只數真的撤到 ≥1 把的那一台,全部 already_revoked 的重打不算(503 後重試不會被擋)",
+    "core_hint": "一小時後再試,或到後台撤"
+   }
   }
  }
 }
