@@ -759,6 +759,13 @@ if [ "${1:-}" = "quote" ]; then
   exec "$T_PY3" "$HERE/aib_quote.py" "$@"
 fi
 
+# aib device list / lost(Andy 10-22「全照建議」遺失裝置):一次本人證明 ⇒ 聊天清單撤那台 + ez2.page 撤那台全部 token;
+#   只從電腦發起(不進遙控白名單)。委派 device_lost.py。
+if [ "${1:-}" = "device" ]; then
+  shift
+  exec "$T_PY3" "$HERE/device_lost.py" "$@"
+fi
+
 # aib temp add/list/check/done(10-21 @ee4f8 第十件):臨時主機變更登記到期日與拆法,過期 aib doctor / aib temp check 會亮。委派 aib_temp.py。
 if [ "${1:-}" = "temp" ]; then
   shift

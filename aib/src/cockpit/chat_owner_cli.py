@@ -54,13 +54,15 @@ def _base_roster(env):
         return None
 
 
-def _proof_then_pass(reason, env, root, out, twice=False):
-    """本人證明 ⇒ 密語。回密語;不過 ⇒ None(已印原因)。"""
-    out.write(_t("owner_proof_reason", reason=reason) + "\n")       # 非 Mac 也看得到要核准什麼(名稱 + 指紋)
-    why = PROVE(reason, env, root=root)
-    if why:
-        out.write(_t("owner_proof_failed", why=why) + "\n")
-        return None
+def _proof_then_pass(reason, env, root, out, twice=False, proved=False):
+    """本人證明 ⇒ 密語。回密語;不過 ⇒ None(已印原因)。
+    proved=True:呼叫端剛做過同一次本人證明(aib device lost 一次 Touch ID 涵蓋全部步驟)⇒ 不再跳第二次;密語照問。"""
+    if not proved:
+        out.write(_t("owner_proof_reason", reason=reason) + "\n")   # 非 Mac 也看得到要核准什麼(名稱 + 指紋)
+        why = PROVE(reason, env, root=root)
+        if why:
+            out.write(_t("owner_proof_failed", why=why) + "\n")
+            return None
     out.write(_t("owner_pass_hint") + "\n")
     try:
         pw = READ_PASS(_t("owner_pass_ask"))
@@ -267,7 +269,7 @@ def cmd_devices(a, env, out):
     return 0
 
 
-def sign_list_change(env, out, reason_base, mutate):
+def sign_list_change(env, out, reason_base, mutate, proved=False):
     """主人簽的機器清單改一筆(手機配對 / 撤銷共用;第 33 節 F1):主人金鑰要先加密;底從中繼站抓驗過簽章那份;
     列差異 ⇒ 本人證明(視窗字 = reason_base + 差異)⇒ 主人密語 ⇒ 簽、發、記本機。mutate(cur, now) ⇒ 新清單。
     回 (rc, 新清單或 None)。"""
@@ -293,7 +295,7 @@ def sign_list_change(env, out, reason_base, mutate):
     _show_diff(out, diff, nxt, verified, cur, stale=bool(relay) and not verified)
     reason = "%s%s %s" % ("" if verified else _t("devices_base_stale_short") + " ", reason_base,
                           _t("devices_diff_short", a=len(diff["added"]), r=len(diff["removed"]), n=diff["total"]))
-    pw = _proof_then_pass(reason, env, root, out)
+    pw = _proof_then_pass(reason, env, root, out, proved=proved)
     if pw is None:
         return 2, None
     try:
