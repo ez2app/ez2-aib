@@ -4988,7 +4988,7 @@
   "aib.device.help.page": "ez2.page 那台的指紋(至少前 8 碼)",
   "aib.device.touchid_reason": "撤銷遺失的裝置:{items}",
   "aib.device.item_chat": "聊天「{name}」({code})",
-  "aib.device.item_page": "ez2.page「{name}」({fp})",
+  "aib.device.item_page": "ez2.page「{name}」({fp},最後上線 {at})",
   "aib.device.list_chat_head": "聊天清單(主人簽的):",
   "aib.device.list_chat_row": "  {code}  {name}  {role} {this}",
   "aib.device.list_page_head": "ez2.page 機器:",
@@ -5019,5 +5019,9 @@
   "aib.device.hint.nothing_to_revoke": "要撤哪台?給 --chat 或 --page(aib device list 看)",
   "aib.device.hint.touchid_cancel": "本人沒按確認,什麼都沒動",
   "aib.device.hint.touchid_off": "Touch ID 被關掉了,什麼都沒動",
-  "aib.device.hint.touchid_unavailable": "這台叫不出 Touch ID,什麼都沒動"
+  "aib.device.hint.touchid_unavailable": "這台叫不出 Touch ID,什麼都沒動",
+  "aib.device.targets_head": "要撤的裝置(確認是遺失的那台再按 Touch ID):",
+  "aib.device.target_chat": "  聊天  {code}  {name}",
+  "aib.device.target_page": "  ez2.page  {fp}  {name}  最後上線 {at}",
+  "aib.device.hint.chat_needs_terminal": "聊天那步要在終端機輸入主人密語:請到終端機跑 aib device lost --chat <機器碼>(卡片先只撤 ez2.page);什麼都沒動"
 }

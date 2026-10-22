@@ -4988,7 +4988,7 @@
   "aib.device.help.page": "ez2.page 기기의 지문(앞 8자 이상)",
   "aib.device.touchid_reason": "분실 기기 취소: {items}",
   "aib.device.item_chat": "채팅 \"{name}\" ({code})",
-  "aib.device.item_page": "ez2.page \"{name}\" ({fp})",
+  "aib.device.item_page": "ez2.page \"{name}\" ({fp}, 마지막 사용 {at})",
   "aib.device.list_chat_head": "채팅 목록(주인 서명):",
   "aib.device.list_chat_row": "  {code}  {name}  {role} {this}",
   "aib.device.list_page_head": "ez2.page 기기:",
@@ -5019,5 +5019,9 @@
   "aib.device.hint.nothing_to_revoke": "--chat 또는 --page 를 지정하세요",
   "aib.device.hint.touchid_cancel": "확인되지 않아 아무것도 변경하지 않았습니다",
   "aib.device.hint.touchid_off": "Touch ID 가 꺼져 있어 아무것도 변경하지 않았습니다",
-  "aib.device.hint.touchid_unavailable": "Touch ID 를 사용할 수 없어 아무것도 변경하지 않았습니다"
+  "aib.device.hint.touchid_unavailable": "Touch ID 를 사용할 수 없어 아무것도 변경하지 않았습니다",
+  "aib.device.targets_head": "취소할 기기(분실한 기기인지 확인 후 Touch ID):",
+  "aib.device.target_chat": "  채팅  {code}  {name}",
+  "aib.device.target_page": "  ez2.page  {fp}  {name}  마지막 사용 {at}",
+  "aib.device.hint.chat_needs_terminal": "채팅 단계는 터미널에서 주인 암호가 필요합니다. 터미널에서 aib device lost --chat <코드> 를 실행하세요. 아무것도 변경하지 않았습니다"
 }

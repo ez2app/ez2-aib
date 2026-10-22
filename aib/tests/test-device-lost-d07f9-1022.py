@@ -12,7 +12,9 @@ D6 參數:都沒給 / 機器碼格式錯 / fp 格式錯 ⇒ rc 2;fp 前綴對到
 D7 送出的請求照契約(urllib 層攔):GET /machines、POST /machines/{fp}/revoke 本體空、帶 bearer
 D8 sign_list_change proved=True ⇒ 不跳第二次證明、密語照問;預設照舊跳證明
 D9 只從電腦:遙控 OPS 沒有這支;aib 入口有接;四語都有
-刀(複本):K1 拿掉本人證明那關 ⇒ D2 紅;K2 proved 預設也跳過證明 ⇒ D8 紅
+D10 撤之前列出要撤的每台(名稱、碼 / fp 前 8、最後上線),在本人證明之前印出;--json 放進 targets;視窗字含最後上線日期
+D11 --json + 要撤聊天 ⇒ chat_needs_terminal rc 2:不跳證明、不簽、不打伺服器;只撤 page 的 --json 照常
+刀(複本):K1 拿掉本人證明那關 ⇒ D2 紅;K2 proved 預設也跳過證明 ⇒ D8 紅;K3 拿掉 --json 擋聊天 ⇒ D11 紅
 """
 import io
 import json
@@ -34,7 +36,7 @@ from aib_proc_guard import run_guarded  # noqa: E402
 FP_A = "a" * 8 + "1" * 56
 FP_B = "a" * 8 + "2" * 56
 FP_ME = "c" * 64
-DEVS = [{"code": "qq7xk2ma", "name": "Andy‮MBP", "role": "machine", "npub": "npub1qq7xk2ma", "this": False},
+DEVS = [{"code": "qq7xk2ma", "name": "Andy\u202eMBP", "role": "machine", "npub": "npub1qq7xk2ma", "this": False},
         {"code": "zz9me000", "name": "這台", "role": "machine", "npub": "npub1zz9me000", "this": True}]
 MACHINES = [{"fp": FP_A, "name": "舊筆電", "last_used_at": "2026-10-20T10:00:00Z", "live_tokens": 1, "this": False},
             {"fp": FP_ME, "name": "這台", "last_used_at": None, "live_tokens": 1, "this": True}]
@@ -91,7 +93,7 @@ class Lost(Base):
         self.assertEqual(len(self.reasons), 1, "本人證明只跳一次")
         self.assertIn("qq7xk2ma", self.reasons[0])
         self.assertIn(FP_A[:8], self.reasons[0])
-        self.assertNotIn("‮", self.reasons[0], "名稱清過方向字元")
+        self.assertNotIn("\u202e", self.reasons[0], "名稱清過方向字元")
         self.assertEqual([p for _r, p in self.signed], [True])
         self.assertEqual(api.calls, [FP_A])
         self.assertEqual((res["chat"]["state"], res["page"]["state"]), ("revoked", "revoked"))
@@ -144,6 +146,39 @@ class Lost(Base):
                                   api=FakeApi(machines=MACHINES + [dict(MACHINES[0], fp=FP_B)]))
         self.assertEqual((rc, res["why"]), (2, "page_ambiguous"))
         self.assertEqual(self.reasons, [], "參數錯不跳證明")
+
+
+class Show(Base):
+    def test_d10_targets_before_proof(self):
+        out = io.StringIO()
+        seen = []
+
+        def p(reason, env):
+            seen.append(out.getvalue())
+            self.reasons.append(reason)
+            return None
+        res, rc = DL.lost(self.env, chat="qq7xk2ma", page=FP_A[:8], prove=p, api=FakeApi(), sign=self.sign(), out=out)
+        self.assertEqual(rc, 0, res)
+        printed = seen[0]
+        for want in ("qq7xk2ma", FP_A[:8], "舊筆電", "2026-10-20"):
+            self.assertIn(want, printed, "證明之前就印出:" + want)
+        self.assertNotIn("\u202e", printed)
+        self.assertIn("2026-10-20", self.reasons[0], "視窗字含最後上線日期")
+        self.assertEqual([t["kind"] for t in res["targets"]], ["chat", "page"])
+        self.assertEqual(res["targets"][1]["last_used_at"], "2026-10-20T10:00:00Z")
+        out2 = io.StringIO()
+        res, rc = DL.lost(self.env, page=FP_A[:8], prove=self.prove(), api=FakeApi(), out=out2, as_json=True)
+        self.assertEqual((rc, out2.getvalue()), (0, ""), "--json 不往 stdout 印列表(會弄壞 JSON)")
+        self.assertEqual(res["targets"][0]["fp"], FP_A[:8])
+
+    def test_d11_json_chat_needs_terminal(self):
+        api = FakeApi()
+        res, rc = DL.lost(self.env, chat="qq7xk2ma", page=FP_A[:8], prove=self.prove(), api=api, sign=self.sign(),
+                          out=io.StringIO(), as_json=True)
+        self.assertEqual((rc, res["why"], self.reasons, self.signed, api.calls), (2, "chat_needs_terminal", [], [], []))
+        self.assertIn("終端機", res["hint"])
+        res, rc = DL.lost(self.env, page=FP_A[:8], prove=self.prove(), api=api, out=io.StringIO(), as_json=True)
+        self.assertEqual((rc, res["page"]["state"]), (0, "revoked"), "只撤 page 的卡片照常")
 
 
 class _Resp:
@@ -205,7 +240,8 @@ class Owner(unittest.TestCase):
         self.assertIn('exec "$T_PY3" "$HERE/device_lost.py"', (REPO / "src" / "cockpit" / "aib").read_text(encoding="utf-8"))
         keys = ["aib.device." + k for k in ("help.usage", "touchid_reason", "item_chat", "item_page", "step_page_revoked",
                                              "step_page_unsupported", "hint.page_unsupported", "hint.page_rate_limited",
-                                             "hint.chat_sign_failed", "hint.touchid_cancel")]
+                                             "hint.chat_sign_failed", "hint.touchid_cancel", "targets_head", "target_page",
+                                             "hint.chat_needs_terminal")]
         for lang in ("zh-TW", "en", "ja", "ko"):
             d = json.loads((REPO / "i18n" / (lang + ".json")).read_text(encoding="utf-8"))
             for k in keys:
@@ -221,12 +257,16 @@ class Knife(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 
     def test_k1_no_proof_gate(self):
-        self._knife("src/cockpit/device_lost.py", "    if why:\n        res = {\"ok\": False, \"why\": why, \"chat\"",
-                    "    if False:\n        res = {\"ok\": False, \"why\": why, \"chat\"", "Lost.test_d2_proof_refused")
+        self._knife("src/cockpit/device_lost.py", "    if why:\n        res = {\"ok\": False, \"why\": why, \"targets\"",
+                    "    if False:\n        res = {\"ok\": False, \"why\": why, \"targets\"", "Lost.test_d2_proof_refused")
 
     def test_k2_proved_default_skips(self):
         self._knife("src/cockpit/chat_owner_cli.py", "    if not proved:\n", "    if False:\n",
                     "Owner.test_d8_proved_skips_second_proof")
+
+    def test_k3_json_chat_allowed(self):
+        self._knife("src/cockpit/device_lost.py", "    if chat and as_json:\n", "    if False:\n",
+                    "Show.test_d11_json_chat_needs_terminal")
 
 
 if __name__ == "__main__":

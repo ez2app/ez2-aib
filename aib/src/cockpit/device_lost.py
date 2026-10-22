@@ -177,8 +177,13 @@ def _hint(step):
     return T("hint." + why, url=MANAGE_URL) if why else ""
 
 
-def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None):
-    """回 (結果 dict, rc)。prove(reason, env) ⇒ None 過 / 原因碼。api / sign 只給測試換。"""
+def _day(at):
+    return str(at or "")[:10] or "-"
+
+
+def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None, as_json=False):
+    """回 (結果 dict, rc)。prove(reason, env) ⇒ None 過 / 原因碼。api / sign 只給測試換。
+    as_json:艦長室卡片走這條,沒有終端機 ⇒ 聊天那步(要互動輸主人密語)一律先回 chat_needs_terminal、什麼都不動。"""
     import chat_owner as CO
     out = out or sys.stdout
     chat, page = (chat or "").strip().lower(), (page or "").strip().lower()
@@ -188,6 +193,10 @@ def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None):
         return {"ok": False, "why": "chat_bad_code"}, 2
     if page and not FP_PREFIX_RE.fullmatch(page):
         return {"ok": False, "why": "page_bad_fp"}, 2
+    if chat and as_json:
+        res = {"ok": False, "why": "chat_needs_terminal"}
+        res["hint"] = _hint(res)
+        return res, 2
     dev = m = None
     if chat:
         devs, why = chat_devices(env)
@@ -204,18 +213,28 @@ def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None):
             res = {"ok": False, "why": err[0], "detail": err[1]}
             res["hint"] = _hint(res)
             return res, 2
-    items = []
-    if dev:
-        items.append(T("item_chat", name=dev["name"] or "-", code=dev["code"]) or "chat %s" % dev["code"])
+    items, targets = [], []
+    if dev:   # 視窗字 / 列表用到的名稱在這裡再清一次(來源不管是聊天清單還是伺服器回的)
+        name = _clean(dev["name"], 32) or "-"
+        targets.append({"kind": "chat", "code": dev["code"], "name": name})
+        items.append(T("item_chat", name=name, code=dev["code"]) or "chat %s" % dev["code"])
     if m:
-        items.append(T("item_page", name=m.get("name") or "-", fp=m["fp"][:8]) or "page %s" % m["fp"][:8])
+        name = _clean(m.get("name"), 32) or "-"
+        targets.append({"kind": "page", "fp": m["fp"][:8], "name": name, "last_used_at": m.get("last_used_at")})
+        items.append(T("item_page", name=name, fp=m["fp"][:8], at=_day(m.get("last_used_at"))) or "page %s" % m["fp"][:8])
+    if not as_json:   # 提案:撤之前印出名稱 + 最後上線,本人看過才按
+        out.write(T("targets_head") + "\n")
+        for t in targets:
+            out.write(T("target_" + t["kind"], name=t["name"], code=t.get("code") or "", fp=t.get("fp") or "",
+                        at=_day(t.get("last_used_at"))) + "\n")
+        out.flush()
     reason = T("touchid_reason", items="、".join(items)) or "撤銷遺失的裝置:" + "、".join(items)
     why = (prove or (lambda r, e: CO.prove(r, e)))(reason, env)
     if why:
-        res = {"ok": False, "why": why, "chat": {"state": "skipped"}, "page": {"state": "skipped"}}
+        res = {"ok": False, "why": why, "targets": targets, "chat": {"state": "skipped"}, "page": {"state": "skipped"}}
         res["hint"] = _hint(res)
         return res, 2
-    res = {"ok": True}
+    res = {"ok": True, "targets": targets}
     res["chat"] = _chat_revoke(env, out, dev, reason, sign=sign) if dev else {"state": "skipped"}
     res["page"] = _page_revoke(api, m) if m else {"state": "skipped"}
     for k in ("chat", "page"):
@@ -276,7 +295,7 @@ def main(argv=None, env=None, out=None):
             _print_list(res, out)
         return 0
     if a.action == "lost":
-        res, rc = lost(env, chat=a.chat, page=a.page, out=out)
+        res, rc = lost(env, chat=a.chat, page=a.page, out=out, as_json=a.json)
         if a.json:
             out.write(json.dumps(res, ensure_ascii=False) + "\n")
             return rc

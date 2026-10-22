@@ -4988,7 +4988,7 @@
   "aib.device.help.page": "Fingerprint of the machine on ez2.page (at least 8 characters)",
   "aib.device.touchid_reason": "Revoke lost device: {items}",
   "aib.device.item_chat": "chat \"{name}\" ({code})",
-  "aib.device.item_page": "ez2.page \"{name}\" ({fp})",
+  "aib.device.item_page": "ez2.page \"{name}\" ({fp}, last used {at})",
   "aib.device.list_chat_head": "Chat list (owner-signed):",
   "aib.device.list_chat_row": "  {code}  {name}  {role} {this}",
   "aib.device.list_page_head": "ez2.page machines:",
@@ -5019,5 +5019,9 @@
   "aib.device.hint.nothing_to_revoke": "Which device? Give --chat or --page (see aib device list)",
   "aib.device.hint.touchid_cancel": "Not confirmed; nothing was changed",
   "aib.device.hint.touchid_off": "Touch ID is turned off; nothing was changed",
-  "aib.device.hint.touchid_unavailable": "Touch ID isn't available here; nothing was changed"
+  "aib.device.hint.touchid_unavailable": "Touch ID isn't available here; nothing was changed",
+  "aib.device.targets_head": "Devices to revoke (confirm it's the lost one before Touch ID):",
+  "aib.device.target_chat": "  chat  {code}  {name}",
+  "aib.device.target_page": "  ez2.page  {fp}  {name}  last used {at}",
+  "aib.device.hint.chat_needs_terminal": "The chat step needs the owner passphrase in a terminal: run aib device lost --chat <code> there (the card only revokes ez2.page); nothing was changed"
 }
