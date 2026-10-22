@@ -229,6 +229,16 @@ _BOOT_ENV_KEEP = ("HOME", "LANG", "EZ2_AIB_STATE_ROOT", "EZ2_AIB_ROOT", "AIB_COR
 _BOOT_TERM = {"got": False}
 
 
+def _exiting(rc):
+    """run / boot-run 已經決定結束(狀態寫了、工人停了、鎖放了)⇒ 之後的 SIGTERM 一律忽略再退出。
+    Python 拆直譯器時會把我們裝的 SIGTERM 處理換回系統預設;aib chat off 讀狀態時當班剛好在收尾,
+    照樣送 SIGTERM ⇒ 打在那個空檔就被預設動作殺掉,結束碼 -15(10-22 #263 CI;#258 後變快更常撞到)。
+    SIG_IGN 拆直譯器時不會被換回,所以這個空檔不會再死。只在「已經要結束」之後才換,跑的時候照舊收 SIGTERM。"""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    return rc
+
+
 def boot_plist_path(home=None):
     return Path(home or os.path.expanduser("~")) / "Library" / "LaunchAgents" / (BOOT_LABEL + ".plist")
 
@@ -2221,10 +2231,9 @@ def main(argv=None, env=None, out=sys.stdout):
     if a.cmd in ("owner", "join", "devices"):
         import chat_owner_cli as OC                     # 第 37.7 節 K2
         return {"owner": OC.cmd_owner, "join": OC.cmd_join, "devices": OC.cmd_devices}[a.cmd](a, env, out)
-    if a.cmd == "run":
-        return run(env, out=out)
-    if a.cmd == "boot-run":
-        return boot_run(env, out=out)
+    if a.cmd in ("run", "boot-run"):
+        rc = (run if a.cmd == "run" else boot_run)(env, out=out)
+        return _exiting(rc)
     if a.cmd == "install-boot":
         return install_boot(env, out)
     if a.cmd == "uninstall-boot":

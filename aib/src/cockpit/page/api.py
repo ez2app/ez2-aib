@@ -136,6 +136,14 @@ class PageApi:
         # 契約(@9f808 10-21):bearer = 要撤銷的那把、body 必須空(帶 body ⇒ 400 page_api_body_invalid)
         return self._request("POST", "/bind/revoke")
 
+    def machines_list(self):
+        # 契約 machines_list(@9f808 10-22,核心 #261):同帳號機器 fp / name / last_used_at / live_tokens / this
+        return self._request("GET", "/machines")
+
+    def machine_revoke(self, fp):
+        # 契約 machine_revoke:本體空;那台每把 token 各回一筆 {kind, id, outcome}
+        return self._request("POST", "/machines/%s/revoke" % fp)
+
     def bind_poll(self, bind_ticket):
         return self._request("POST", "/bind/poll", {"bind_ticket": bind_ticket},
                              auth=False)

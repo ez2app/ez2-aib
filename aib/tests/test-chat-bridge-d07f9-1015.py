@@ -15,8 +15,10 @@ C6 off 不亂殺:status 裡的 pid 是別的程式(不是 chat_bridge.py run)⇒
 C7 清舊檔:receipts 裡 8 天前的檔被清、outbox 的待寄檔不動
 C8 sys.chat 窗:沒有就開(@aib_role、remain-on-exit)、有就不動、pane 死了 respawn
 C9 aib chat 分派:bin/aib chat status --json 走得到 chat_bridge.py
+C10 run / boot-run 決定結束後 SIGTERM 換成 SIG_IGN(Python 拆直譯器不會換回預設)⇒ off 打在收尾空檔不會變 -15
+   (10-22 #263 CI:test_c5 偶發 a.returncode -15;本機 25 次紅 4 次,修後 50 次 0 紅)
 Z1 英文介面 status / on / off 沒有中日韓字、沒有缺鍵;四語 aib.chat.* 同鍵、佔位符一致
-刀(複本):K1 拿掉「刪殘留心跳」⇒ C3 紅;K2 拿掉 off 的「確認是轉接程式」⇒ C6 紅
+刀(複本):K1 拿掉「刪殘留心跳」⇒ C3 紅;K2 拿掉 off 的「確認是轉接程式」⇒ C6 紅;K3 結束時不改 SIG_IGN ⇒ C10 紅
 """
 import json
 import os
@@ -308,6 +310,20 @@ class Lang(Base):
                                  sorted(re.findall(r"\{\w+\}", dicts["zh-TW"][k])), "%s %s" % (lg, k))
 
 
+class Exit(Base):
+    SCRIPT = ("import sys,signal\nsys.path.insert(0, sys.argv[1])\nimport chat_bridge as CB\n"
+              "if sys.argv[2] == 'boot-run':\n    CB.boot_run = lambda env=None, out=None: 0\n"
+              "rc = CB.main([sys.argv[2]])\n"
+              "print(rc, signal.getsignal(signal.SIGTERM) is signal.SIG_IGN, signal.getsignal(signal.SIGINT) is signal.SIG_IGN)\n")
+
+    def test_c10_exit_ignores_late_sigterm(self):
+        for cmd in ("run", "boot-run"):
+            r = subprocess.run([sys.executable, "-c", self.SCRIPT, str(COCKPIT), cmd], capture_output=True, text=True,
+                               env=self.b.env(), timeout=30)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "0 True True", cmd + ":結束後 SIGTERM / SIGINT 要是 SIG_IGN")
+
+
 class Knife(unittest.TestCase):
     def _knife(self, needle, replacement, cell):
         name = Path(__file__).name
@@ -321,6 +337,10 @@ class Knife(unittest.TestCase):
 
     def test_k2_off_without_identity_check(self):
         self._knife("pid_alive(pid) and _pid_is_bridge(pid):", "pid_alive(pid):", "Leader.test_c6_off_never_signals_a_stranger")
+
+    def test_k3_exit_keeps_handler(self):
+        self._knife("    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n    signal.signal(signal.SIGINT, signal.SIG_IGN)\n    return rc\n",
+                    "    return rc\n", "Exit.test_c10_exit_ignores_late_sigterm")
 
 
 if __name__ == "__main__":
