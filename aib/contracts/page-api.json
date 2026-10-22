@@ -257,7 +257,7 @@
      "type": "bool",
      "meaning": "這次遺失裝置撤銷順手把帳號的 EZP- 綁定序號換新 ⇒ 舊序號立刻不能再綁;其他台照常用,之後新綁機器要用新序號(只在後台登入後看得到)",
      "absent": "舊伺服器沒有這欄 ⇒ 核心當 false",
-     "core": "只認 JSON true;true ⇒ 印「序號已換新」那句,false / 沒這欄 ⇒ 印「到後台重發序號」;--json 在 page 那步帶 serial_rotated(bool)。回應不帶新序號、核心也不印",
+     "core": "只認 JSON true;true ⇒ 印「序號已換新」那句,false / 沒這欄(含全部 already_revoked / expired 沒換號)⇒ 印「到後台重發序號」;--json 在 page 那步帶 serial_rotated(bool)。回應不帶新序號、核心也不印",
      "agreed": "Andy 10-23 04:3x 選「撤銷時自動換序號」;@abb89 10-23 04:36 派、04:4x 補細節;@9f808 10-23 04:37 伺服器做法",
      "when": "真的撤到 ≥1 把才換;全部 already_revoked / expired ⇒ false"
     }
@@ -268,7 +268,7 @@
      "page_device_serial_rotate_failed"
     ],
     "server": "換號在寫 token 之前;換號失敗 ⇒ 什麼都沒撤",
-    "core": "why = page_serial_rotate_failed(不是 page_audit_failed:那個是撤銷已成立);hint 說什麼都沒撤、可以再跑一次;detail 原碼"
+    "core": "只在 503 + 這個碼時 why = page_serial_rotate_failed(別的狀態碼帶這碼 ⇒ page_refused,不保證什麼都沒撤)(不是 page_audit_failed:那個是撤銷已成立);hint 說什麼都沒撤、可以再跑一次;detail 原碼"
    },
    "self": {
     "http": 409,

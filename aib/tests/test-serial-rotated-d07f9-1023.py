@@ -40,8 +40,8 @@ MISSING = object()
 
 
 class FakeApi:
-    def __init__(self, rotated=MISSING, err=None):
-        self.rotated, self.err = rotated, err
+    def __init__(self, rotated=MISSING, err=None, extra=None):
+        self.rotated, self.err, self.extra = rotated, err, extra or {}
 
     def machines_list(self):
         return {"ok": True, "machines": MACHINES}
@@ -52,6 +52,7 @@ class FakeApi:
         res = {"ok": True, "fp": fp, "results": [{"kind": "page_token", "id": "tok_1", "outcome": "revoked"}]}
         if self.rotated is not MISSING:
             res["serial_rotated"] = self.rotated
+        res.update(self.extra)
         return res
 
 
@@ -99,13 +100,20 @@ class Serial(Base):
         self.assertIs(json.loads(text)["page"]["serial_rotated"], True)
         rc, text = self.cli(FakeApi(), "--json")
         self.assertIs(json.loads(text)["page"]["serial_rotated"], False)
+        leak = {"serial": "EZP-NEWA-NEWB-NEWC", "new_serial": "EZP-NEWA-NEWB-NEWC"}   # 契約:回應不帶新序號;帶了也不准印
+        for extra in ((), ("--json",)):
+            rc, text = self.cli(FakeApi(True, extra=leak), *extra)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("NEWA", text, extra)
         res, rc = self.lost(FakeApi(True, err=A.ApiError(404, "page_device_unknown", body={"error": "page_device_unknown"})))
         self.assertEqual(rc, 1)
         self.assertNotIn("serial_rotated", res["page"])
         self.assertNotIn(res["page"].get("hint"), (ROTATED, KEPT))
 
-
     def test_s5_rotate_failed(self):
+        for http in (500, 409):   # 契約只定 503;別的狀態碼不保證什麼都沒撤
+            res, rc = self.lost(FakeApi(err=A.ApiError(http, "page_device_serial_rotate_failed")))
+            self.assertEqual(res["page"]["why"], "page_refused", http)
         err = A.ApiError(503, "page_device_serial_rotate_failed", body={"error": "page_device_serial_rotate_failed"})
         res, rc = self.lost(FakeApi(True, err=err))
         self.assertEqual(rc, 1)
@@ -146,6 +154,19 @@ class Wording(unittest.TestCase):
                         "page.bind.serial_rotated"):
                 self.assertTrue(d.get("aib." + key, "").strip(), (loc, key))
             self.assertIn("EZP-", d["aib.device.serial_rotated"], loc)
+            self.assertNotEqual(d["aib.device.serial_rotated"], d["aib.device.serial_kept"], loc)
+            self.assertNotEqual(d["aib.device.hint.page_serial_rotate_failed"], d["aib.device.hint.page_audit_failed"], loc)
+            self.assertNotEqual(d["aib.page.bind.serial_rotated"], d["aib.device.serial_rotated"], loc)
+
+    def test_s4_contract_codes_match_core(self):
+        E = C["endpoints"]
+        f = E["machine_revoke"]["serial_rotate_failed"]
+        self.assertEqual(f["http"], 503)
+        for code in f["codes"]:
+            self.assertEqual(DL._page_err(A.ApiError(f["http"], code))[0], "page_serial_rotate_failed", code)
+        b = E["bind_serial"]
+        self.assertEqual((b["method"], b["path"], b["auth"]), ("POST", "/bind/serial", "none"))
+        self.assertEqual((b["serial_rotated"]["http"], b["serial_rotated"]["codes"]), (401, ["page_api_serial_rotated"]))
 
 
 class Knife(unittest.TestCase):
@@ -166,7 +187,7 @@ class Knife(unittest.TestCase):
 
 
     def test_k3_rotate_failed_as_audit(self):
-        self._knife("src/cockpit/device_lost.py", '    if code == "page_device_serial_rotate_failed":\n',
+        self._knife("src/cockpit/device_lost.py", '    if code == "page_device_serial_rotate_failed" and http == 503:\n',
                     '    if False:\n', "Serial.test_s5_rotate_failed")
 
 

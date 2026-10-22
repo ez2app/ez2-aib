@@ -120,7 +120,7 @@ def _page_err(exc):
         return "page_caller_dead", code, revoked_note.note(exc)
     if http in (404, 405):
         return "page_unsupported", UNSUPPORTED
-    if code == "page_device_serial_rotate_failed":
+    if code == "page_device_serial_rotate_failed" and http == 503:
         return "page_serial_rotate_failed", code          # 契約:換號在撤之前,失敗 ⇒ 什麼都沒撤,可再打
     if http == 503:
         return "page_audit_failed", code or "http_503"       # 契約:撤銷已成立,重打會全是 already_revoked
