@@ -124,9 +124,14 @@ class Serial(Base):
         self.assertNotIn(res["page"].get("hint"), (ROTATED, KEPT))
 
     def test_s5_rotate_failed(self):
-        for http in (400, 403, 409, 500, 502, 504):   # 契約只定 503;別的狀態碼不保證什麼都沒撤
+        for http, why in ((400, "page_refused"), (403, "page_refused"), (409, "page_refused"), (500, "page_refused"),
+                          (502, "page_refused"), (504, "page_refused"), (429, "page_rate_limited"),
+                          (404, "page_unsupported"), (405, "page_unsupported")):   # 契約只定 503;別的照一般規則
             res, rc = self.lost(FakeApi(err=A.ApiError(http, "page_device_serial_rotate_failed")))
-            self.assertEqual(res["page"]["why"], "page_refused", http)
+            self.assertEqual(res["page"]["why"], why, http)
+        for code, detail in ((None, "http_503"), ("page_device_audit_failed", "page_device_audit_failed")):
+            res, rc = self.lost(FakeApi(err=A.ApiError(503, code)))   # 沒帶碼(閘道回的)/ 別的碼 ⇒ 撤銷可能已成立
+            self.assertEqual((res["page"]["why"], res["page"]["detail"]), ("page_audit_failed", detail), code)
         err = A.ApiError(503, "page_device_serial_rotate_failed", body={"error": "page_device_serial_rotate_failed"})
         res, rc = self.lost(FakeApi(True, err=err))
         self.assertEqual(rc, 1)
@@ -157,9 +162,10 @@ class Serial(Base):
         self.assertEqual(str(cm.exception), en)
         import i18n_lib
         orig_t = i18n_lib.t
-        i18n_lib.t = lambda key, *a, **k: "!!" + key   # 字典缺鍵
         try:
-            self.assertEqual(B._serial_rotated_text(), BIND_ROTATED)
+            for fake in (lambda key, *a, **k: "!!" + key, lambda *a, **k: ""):   # 字典缺鍵 / 讀不到
+                i18n_lib.t = fake
+                self.assertEqual(B._serial_rotated_text(), BIND_ROTATED)
         finally:
             i18n_lib.t = orig_t
 

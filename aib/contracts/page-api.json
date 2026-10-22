@@ -270,7 +270,7 @@
      "page_device_serial_rotate_failed"
     ],
     "server": "換號在寫 token 之前;換號失敗 ⇒ 什麼都沒撤",
-    "core": "只在 503 + 這個碼時 why = page_serial_rotate_failed(別的狀態碼帶這碼 ⇒ page_refused,不保證什麼都沒撤)(不是 page_audit_failed:那個是撤銷已成立);hint 說什麼都沒撤、可以再跑一次;detail 原碼"
+    "core": "只在 503 + 這個碼時 why = page_serial_rotate_failed(別的狀態碼帶這碼 ⇒ 照一般規則判(429 限流 / 404・405 未支援 / 其餘 page_refused),不保證什麼都沒撤;沒帶碼或別的碼的 503 照舊 page_audit_failed)(不是 page_audit_failed:那個是撤銷已成立);hint 說什麼都沒撤、可以再跑一次;detail 原碼"
    },
    "self": {
     "http": 409,
