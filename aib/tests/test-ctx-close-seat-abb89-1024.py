@@ -203,7 +203,11 @@ class Menu(unittest.TestCase):
         self.assertNotIn("@35", menu)
         log.unlink()
         self.run_ctl("--context", "pane", "ai-list", "5", "3", "%1", "sX", dry_last=False)   # 取不到艙身份
-        self.assertNotIn("--close-row", log.read_text() if log.exists() else "")
+        menu = log.read_text() if log.exists() else ""
+        self.assertNotIn("--close-row", menu)
+        # 第 4 輪審查:只是少了關閉項,選單本身與原本幾項照舊(跟 main 一樣讀 env 那一艙)
+        for item in ("display-menu", "detail-card.py", "--open-window @35", "--new-ai-menu", "--theme-menu"):
+            self.assertIn(item, menu, item)
 
     def test_three_args_without_session_keep_dry_run(self):
         # 審查 r2 A1:給了三格、沒給 session 時,--dry-run 不能被當成 session 吃掉
