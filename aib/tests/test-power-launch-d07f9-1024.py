@@ -10,9 +10,10 @@ D5 紀錄檔被亂寫(型別錯、控制字元、超長、不認得的品牌)⇒
 D6 aib power launch / fav 從總管 power_status.main 轉得到
 D7 第二大腦清單只讀資料夾身分索引:active + 有 routeKey;退役 / 怪代號 / 重複不列;沒索引 ⇒ []
 D9 model_choices:預設在前、再接之前出發用過的(去重、怪字串不列、別家不混);launch_days 記日子、最多 60 天
+D10 auto:沒紀錄 ⇒ no_recent;紅 / 黃燈 ⇒ 不自動;灰燈不擋;上次的人格 / 第二大腦不在了 ⇒ persona_gone / brain_gone;怪燈號當 unknown
 D8 launch --dry-run:開席 → newproj 兩步指令;怪品牌 / 模式 / 角色 / 模型(像旗標、帶分號)/ 不在清單的人格與大腦 ⇒ rc 2 bad;
    沒帶 --dry-run ⇒ rc 2 not_yet(不執行)
-刀(複本):K1 不截 20 筆 ⇒ D4 紅;K2 冠位人格照列 ⇒ D2 紅;K3 模型不驗 ⇒ D8 紅
+刀(複本):K1 不截 20 筆 ⇒ D4 紅;K2 冠位人格照列 ⇒ D2 紅;K3 模型不驗 ⇒ D8 紅;K4 黃燈照自動 ⇒ D10 紅
 """
 import io
 import json
@@ -38,6 +39,7 @@ import power_launch as PL  # noqa: E402
 import power_status as P  # noqa: E402
 
 C = json.loads((REPO / "contracts" / "power.json").read_text(encoding="utf-8"))
+PL._light = lambda brand: "unknown"          # 測試不叫真 CLI 量登入
 
 
 def write_cards(cards):
@@ -198,6 +200,29 @@ class Launch(unittest.TestCase):
         PL._save(d)
         self.assertEqual(PL.launch_days(), ["2026-10-24"])
 
+    def test_d10_auto(self):
+        write_index([{"folderId": "f1", "title": "x", "routeKey": "proj.x"}])
+        self.assertEqual(PL.launch_list()["auto"], {"ok": False, "why": "no_recent", "combo": None, "light": None})
+        PL.record_launch("codex", "gx", "aaa111", "proj.x", now=1000)
+        lights = {}
+        a = PL.launch_list(light=lambda b: lights.get(b, "green"))["auto"]
+        self.assertEqual((a["ok"], a["why"], a["light"], a["combo"]["brand"]), (True, None, "green", "codex"))
+        for lt, want in (("red", "light_red"), ("yellow", "light_yellow"), ("unknown", None), ("evil", None)):
+            lights["codex"] = lt
+            a = PL.launch_list(light=lambda b: lights.get(b))["auto"]
+            self.assertEqual((a["ok"], a["why"]), (want is None, want), lt)
+        self.assertEqual(a["light"], "unknown")
+        write_cards({"zzz999": {"name": "丙"}})
+        a = PL.launch_list(light=lambda b: "green")["auto"]
+        self.assertEqual((a["ok"], a["why"]), (False, "persona_gone"))
+        write_cards({"aaa111": {"name": "乙"}})
+        write_index([])
+        a = PL.launch_list(light=lambda b: "green")["auto"]
+        self.assertEqual((a["ok"], a["why"]), (False, "brain_gone"))
+        PL.record_launch("grok", now=2000)                               # 沒人格 / 大腦的組合不用驗
+        a = PL.launch_list(light=lambda b: "unknown")["auto"]
+        self.assertEqual((a["ok"], a["combo"]["brand"]), (True, "grok"))
+
 
 class Knife(unittest.TestCase):
     def _knife(self, needle, repl, case):
@@ -212,6 +237,9 @@ class Knife(unittest.TestCase):
 
     def test_k3_model_unchecked(self):
         self._knife("if model is not None and not MODEL_RE.match(model):", "if False:", "Launch.test_d8_plan")
+
+    def test_k4_yellow_autoruns(self):
+        self._knife('    if lt in ("red", "yellow"):', '    if lt == "red":', "Launch.test_d10_auto")
 
     def test_k2_crown_listed(self):
         self._knife(" if _s(u) and u != crown]", " if _s(u)]", "T.test_d2_personas")

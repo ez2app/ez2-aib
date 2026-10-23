@@ -143,11 +143,41 @@ def brains(vault=None):
     return sorted(out, key=lambda r: r["title"])
 
 
-def launch_list():
+def launch_list(light=None):
     favs = favorites()
     rec = recent()
+    ppl = personas(favs=set(favs))
+    br = brains()
     return {"ok": True, "detail": "power_launch_list", "models": models(), "model_choices": model_choices(rec),
-            "personas": personas(favs=set(favs)), "brains": brains(), "recent": rec, "favorites": favs}
+            "personas": ppl, "brains": br, "recent": rec, "favorites": favs,
+            "auto": auto_launch(rec, ppl, br, light=light)}
+
+
+def _light(brand):
+    try:
+        import power_login
+        return power_login.light_of(brand).get("light")
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def auto_launch(rec, ppl, br, light=None):
+    """第二次起「上次組合 3 秒自動出發」能不能跑(Andy 02:3x 全照建議):{ok, why, combo, light}。
+    紅 / 黃燈、上次的人格或第二大腦已經不在 ⇒ 不自動,停在動力室。灰燈(量不到)不擋。
+    待領獎勵也要停:獎勵由伺服器簽,這一期沒有待領的 ⇒ 不判。這是顯示用的建議,真出發仍走本人動作。"""
+    if not rec:
+        return {"ok": False, "why": "no_recent", "combo": None, "light": None}
+    last = rec[0]
+    lt = (light or _light)(last["brand"])
+    lt = lt if lt in ("green", "yellow", "red", "unknown") else "unknown"
+    why = None
+    if lt in ("red", "yellow"):
+        why = "light_" + lt
+    elif last["persona"] and last["persona"] not in {p["uid"] for p in ppl}:
+        why = "persona_gone"
+    elif last["brain"] and last["brain"] not in {b["route_key"] for b in br}:
+        why = "brain_gone"
+    return {"ok": why is None, "why": why, "combo": last, "light": lt}
 
 
 def model_choices(rec=None):

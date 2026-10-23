@@ -170,7 +170,8 @@
    "personas",
    "brains",
    "recent",
-   "favorites"
+   "favorites",
+   "auto"
   ],
   "detail": "power_launch_list",
   "rc": {
@@ -184,7 +185,8 @@
   "owner": "@d07f9 power_launch.py",
   "note": "真正出艦(開席 + 綁人格 + 綁大腦 ⇒ 進艦長室)細節待 Andy 確認;出艦成功時呼叫 power_launch.record_launch 記一筆。最愛 / 最近是本機方便用的資料,不是防線",
   "brains": "[{route_key, title}]:第二大腦清單 = Vault(EZ2_VAULT_DIR)資料夾身分索引 .ez2/index/folder-id-index.json 裡 active 且掛了 routeKey 的夾;不掃目錄猜;沒有 ⇒ [](頁面給「一鍵建一個」走 newproj)",
-  "model_choices": "{brand: [預設模型, 之前出發用過的模型…]};各家正式模型清單還沒有正本(providers.json 只有 default_requested_model),不猜模型 id"
+  "model_choices": "{brand: [預設模型, 之前出發用過的模型…]};各家正式模型清單還沒有正本(providers.json 只有 default_requested_model),不猜模型 id",
+  "auto": "{ok, why, combo, light}:上次組合 3 秒自動出發能不能跑;why = no_recent | light_red | light_yellow | persona_gone | brain_gone;灰燈(unknown)不擋;待領獎勵這一期沒有(伺服器簽)。只是建議，真出發仍是本人動作"
  },
  "fav_receipt": {
   "command": "aib power fav <人格 uid> [--off] [--json]",
@@ -243,5 +245,23 @@
    "2": "not_yet"
   },
   "note": "SSR1 艦隊擴編令 / UR1 全動力認證。序號只在伺服器驗、一次性、綁帳號、限頻、失敗不透露存在與否;本機不存、不回顯、不放指令列(ps 看得到)。序號來源 = 商店頁販售(Andy 02:2x),物品待定;收款 / 上架先問 Andy"
+ },
+ "crew_receipt": {
+  "command": "aib power why [set <代碼,…> [--other 一句] | clear] [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "why_rank",
+   "other",
+   "at"
+  ],
+  "detail": "power_why | power_why_set | power_why_cleared | power_why_bad",
+  "why_rank": "代碼陣列，順序 = 排名;代碼 = memory | multi_ai | coding | phone | sites | art | room | save | other(定案頁板 0 的九項);空 = 還沒選(頁面先出第一畫面)",
+  "other": "選了 other 才有，自填一句、去控制字元、最多 60 字",
+  "rc": {
+   "0": "ok",
+   "2": "代碼不認得 / 空(檔不動)"
+  },
+  "note": "SPEC-power-room §13;只存本機 state/power-crew.json、不上傳;只影響任務板 / 補給站 / 問 AI 的排序，不是權限"
  }
 }
