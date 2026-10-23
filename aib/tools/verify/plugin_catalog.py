@@ -43,8 +43,9 @@ def T(key, **kw):
 
 
 def _clean(s, n):
+    """伺服器的字:去控制 / 隱形字元、截長度;單獨代理字元(\\ud800,json.loads 照收)換成 ?,不然印出時當掉。"""
     import touchid_approve as TA
-    return TA.clean(str(s or ""), n)
+    return TA.clean(str(s or "").encode("utf-8", "replace").decode("utf-8"), n)
 
 
 def fail(detail, rc, **extra):
@@ -220,11 +221,14 @@ def fetch_signed(env, name, version=None, work=None, api=None, paid_api=None, ma
         if len(subs) != 1:
             return None, entry, fail("plugin_rejected", 3, problems=["no-manifest"])
         folder = subs[0]
-    m, probs = aib_ext.inspect(folder, allow_unsigned=aib_plugins.UNSIGNED_OK)
-    if not probs and K.kind_of_label(str(m.get("kind") or "")) != "plugin":
-        probs = ["not-a-plugin:%s" % m.get("kind")]
-    if not probs and (m.get("name"), m.get("version")) != (entry["name"], entry["version"]):
-        probs = ["catalog-mismatch:%s@%s" % (_clean(m.get("name"), 40), _clean(m.get("version"), 20))]
+    try:   # aib-ext.json 是伺服器給的、還沒驗:不是物件 / 巢狀太深 / 怪數字 / 代理字元讓 inspect 拋什麼都算驗不過
+        m, probs = aib_ext.inspect(folder, allow_unsigned=aib_plugins.UNSIGNED_OK)
+        if not probs and K.kind_of_label(str(m.get("kind") or "")) != "plugin":
+            probs = ["not-a-plugin:%s" % m.get("kind")]
+        if not probs and (m.get("name"), m.get("version")) != (entry["name"], entry["version"]):
+            probs = ["catalog-mismatch:%s@%s" % (_clean(m.get("name"), 40), _clean(m.get("version"), 20))]
+    except Exception:  # noqa: BLE001
+        probs = ["manifest-unreadable"]
     if probs:
         return None, entry, fail("plugin_rejected", 3, problems=[_clean(p, 200) for p in probs])
     return folder, entry, None
@@ -250,7 +254,10 @@ def license_get(env, addon, api=None, machine_id=None):
     obj = payload.get("license")
     if not isinstance(obj, dict) or addon not in [a for a in (obj.get("addons") or []) if isinstance(a, str)]:
         return fail("plugin_license_invalid", 3)   # 簽對但沒有要的加購 ⇒ 不落檔(不拿小授權蓋掉大的)
-    res, rc = ECLI.install_obj(obj)
+    try:
+        res, rc = ECLI.install_obj(obj)
+    except Exception:  # noqa: BLE001  伺服器給的授權怪到驗簽本身拋(例:代理字元)⇒ 驗不過、不落檔
+        return fail("plugin_license_invalid", 3)
     if rc:
         return fail("plugin_license_invalid", 3)
     activation = "needed" if obj.get("activation_url") else None

@@ -14,9 +14,10 @@ D7 付費外掛:沒綁 ⇒ plugin_not_bound、包一個請求都沒送;有綁 �
 D8 領授權:簽對 ⇒ 0600 落檔;簽錯 / 過期 / 不是物件 ⇒ plugin_license_invalid 不落檔;帶 activation_url ⇒ activation needed;沒買 ⇒ plugin_license_none
 D9 名稱不合格式 ⇒ plugin_name_invalid、不連網;CLI install 給名稱走目錄、給資料夾照舊
 D10 契約:伺服器碼 = plugins.codes;每個回條 detail 都在契約、四語都有 hint
-D4b 解開大小 / 成員數 / pax 大標頭超過上限 ⇒ too-big-unpacked(驗簽前就擋);壞 zip / 超長名 / bz2 ⇒ 拒收不當掉;包內成員名稱清過才進 problems
+D4b 解開大小 / 成員數 / pax 大標頭超過上限 ⇒ too-big-unpacked(驗簽前就擋);稀疏成員 / 壞 zip / 超長名 / bz2 ⇒ 拒收不當掉;包內成員名稱清過才進 problems
+    伺服器的 aib-ext.json 不是物件 / 太深 / 怪數字 / 代理字元 ⇒ plugin_rejected;目錄 / 授權帶單獨代理字元 ⇒ 印得出來、授權不落檔
 刀(複本):K1 不比 sha256 ⇒ D4 紅;K2 不比包名稱版本 ⇒ D5 紅;K3 付費包不帶憑證 ⇒ D7 紅;K4 不擋降版 ⇒ D6 紅;
-    K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅;K7 gzip 不限量解開 ⇒ D4b 紅(pax 大標頭)
+    K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅;K7 gzip 不限量解開 ⇒ D4b 紅(pax 大標頭);K8 收稀疏成員 ⇒ D4b 紅
 """
 import base64
 import hashlib
@@ -114,7 +115,7 @@ class Box(unittest.TestCase):
         k.start()
         self.addCleanup(k.stop)
 
-    def tgz(self, name="probe", version="0.0.1", sign=True, tamper=False, kind="plugin", addon=None, extra=None):
+    def tgz(self, name="probe", version="0.0.1", sign=True, tamper=False, kind="plugin", addon=None, extra=None, manifest_raw=None):
         d = self.tmp / ("src-%s-%s" % (name, version))
         if d.exists():
             shutil.rmtree(d)
@@ -127,7 +128,7 @@ class Box(unittest.TestCase):
         m = {"name": name, "kind": kind, "version": version, "requires_aib": "0.1.0", "files": aib_ext._hashes(d)}
         if sign:
             resign(m)
-        (d / aib_ext.MANIFEST).write_text(json.dumps(m), encoding="utf-8")
+        (d / aib_ext.MANIFEST).write_text(manifest_raw if manifest_raw is not None else json.dumps(m), encoding="utf-8")
         if tamper:
             (d / "probe.py").write_text("print('evil')\n", encoding="utf-8")
         buf = io.BytesIO()
@@ -183,6 +184,17 @@ class Catalog(Box):
         self.assertEqual((rc, res["detail"]), (4, "plugin_unreachable"), "讀到一半斷")
         res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer({"/plugins/catalog": (200, b"[" * 60000)})))
         self.assertIn(rc, (3, 4), res)
+        sur = {"/plugins/catalog": (200, json.dumps({"ok": True, "v": 1, "plugins": [dict(good, summary="a\\ud800b", price="\\ud800")]})
+                                    .replace("\\\\ud800", "\\ud800").encode())}
+        res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer(sur)))
+        self.assertEqual(rc, 0, res)
+        for as_json in (True, False):
+            out = io.BytesIO()
+            w = io.TextIOWrapper(out, encoding="utf-8")       # 同真的 stdout:strict 編碼,代理字元會拋
+            with redirect_stdout(w):
+                AP._emit(res, rc, as_json=as_json)
+                w.flush()
+            self.assertIn(b"?", out.getvalue(), as_json)
 
 
 class Install(Box):
@@ -247,6 +259,11 @@ class Install(Box):
                             ("bz2", b"BZh91AY&SY" + b"\0" * 100)):
             (self.tmp / label).mkdir()
             self.assertEqual(AP._extract(blob, self.tmp / label)[0], False, label)
+        sp = tarfile.TarInfo("probe/sparse.bin")
+        sp.type = tarfile.GNUTYPE_SPARSE                       # 照 sparse map 寫的量可以遠大於宣告的 size
+        data = self.tgz(extra=[(sp, b"")])
+        res, rc = self.install("probe", self.server([self.entry(data)], {("probe", "0.0.1"): data}))
+        self.assertEqual((rc, res["detail"], res["problems"]), (3, "plugin_rejected", ["not-a-file:probe/sparse.bin"]), "稀疏成員")
         link = tarfile.TarInfo("probe/\x1b[2J\u202eevil")
         link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
         data = self.tgz(extra=[(link, None)])
@@ -258,7 +275,11 @@ class Install(Box):
     def test_d5_rejected(self):
         for label, data in (("unsigned", self.tgz(sign=False)), ("tampered", self.tgz(tamper=True)),
                             ("other_plugin", self.tgz(name="hostguard")), ("other_version", self.tgz(version="0.0.2")),
-                            ("not_plugin", self.tgz(kind="skill"))):
+                            ("not_plugin", self.tgz(kind="skill")), ("manifest_list", self.tgz(manifest_raw="[]")),
+                            ("manifest_deep", self.tgz(manifest_raw="[" * 200000)),
+                            ("manifest_sup2", self.tgz(manifest_raw=json.dumps({"name": "probe", "kind": "plugin", "version": "0.0.1",
+                                                                                "requires_aib": "0.\u00b2", "files": {}}))),
+                            ("manifest_surrogate", self.tgz(manifest_raw='{"name": "probe", "kind": "plugin\\ud800", "version": "0.0.1"}'))):
             res, rc = self.install("probe", self.server([self.entry(data)], {("probe", "0.0.1"): data}))
             self.assertEqual((rc, res["detail"]), (3, "plugin_rejected"), (label, res))
             self.assertTrue(res["problems"], label)
@@ -330,7 +351,8 @@ class License(Box):
         bad = self.lic(note="evil")
         bad["signature"] = "ed25519:" + base64.b64encode(b"\0" * 64).decode()
         for body in ({"ok": True, "license": bad}, {"ok": True, "license": self.lic(expires_at="2020-01-01T00:00:00+00:00")},
-                     {"ok": True, "license": "x"}, {"ok": True}, {"ok": True, "license": self.lic(addons=["other"], tier="free")}):
+                     {"ok": True, "license": "x"}, {"ok": True}, {"ok": True, "license": self.lic(addons=["other"], tier="free")},
+                     {"ok": True, "license": dict(self.lic(), note="\ud800")}):
             res, rc, _ = self.get(200, body)
             self.assertEqual((rc, res["detail"]), (3, "plugin_license_invalid"), body)
             self.assertEqual(dest.read_text(), good, "驗不過不落檔")
@@ -425,6 +447,10 @@ class Knife(unittest.TestCase):
 
     def test_k7_gzip_unbounded(self):
         self._knife("data = _gunzip_bounded(data, MAX_UNPACK_BYTES)", "data = __import__('gzip').decompress(data)",
+                    "Install.test_d4b_unpack_limits", rel="tools/verify/aib_plugins.py")
+
+    def test_k8_sparse_accepted(self):
+        self._knife("if not (m.isfile() or m.isdir()) or m.issparse():", "if not (m.isfile() or m.isdir()):",
                     "Install.test_d4b_unpack_limits", rel="tools/verify/aib_plugins.py")
 
 

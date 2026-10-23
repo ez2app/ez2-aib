@@ -240,7 +240,7 @@ def _extract_inner(blob, into):
         if bad:
             return False, "unsafe-path:%s" % bad
         for m in members:
-            if not (m.isfile() or m.isdir()):
+            if not (m.isfile() or m.isdir()) or m.issparse():   # 稀疏:照 map 寫的量可以遠大於宣告的 size(審查員 10-24 第 3 輪)
                 return False, "not-a-file:%s" % m.name
         if hasattr(tarfile, "data_filter"):
             tf.extractall(into, members=members, filter="data")
@@ -376,17 +376,21 @@ def catalog_cmd(env=None, api=None):
     return {"ok": True, "detail": "plugin_catalog", "plugins": entries, "hint": ""}, 0
 
 
+def _safe(text):
+    return text.encode("utf-8", "replace").decode("utf-8")   # 漏網的單獨代理字元換成 ?,印出時不當掉
+
+
 def _emit(res, rc, as_json=False):
     if as_json:
-        print(json.dumps(res, ensure_ascii=False))
+        print(_safe(json.dumps(res, ensure_ascii=False)))
     elif res.get("detail") == "plugin_catalog":
         for e in res["plugins"]:
-            print("%-24s %-10s %s%s" % (e["name"], e["version"], e["price"] or ("-" if e["addon"] else "free"),
-                                        ("  " + e["summary"]) if e["summary"] else ""))
+            print(_safe("%-24s %-10s %s%s" % (e["name"], e["version"], e["price"] or ("-" if e["addon"] else "free"),
+                                              ("  " + e["summary"]) if e["summary"] else "")))
     else:
-        print(res.get("hint") or res.get("detail"), file=sys.stdout if res.get("ok") else sys.stderr)
+        print(_safe(str(res.get("hint") or res.get("detail"))), file=sys.stdout if res.get("ok") else sys.stderr)
         for p in res.get("problems") or ():
-            print("  " + p, file=sys.stderr)
+            print(_safe("  " + str(p)), file=sys.stderr)
     return rc
 
 
