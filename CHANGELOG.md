@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.46
+
+- **Opening another AI from the right-click menu works again**: one-shot resume flags (`AIB_REVIVE_SESSION_UUID` and friends) no longer leak into the tmux server, so a new seat is not mistaken for a resume of an old conversation.
+- **The (x) soft-close entry actually closes the seat**: confirming (x) now re-checks only whether the seat moved while the menu was open (and that its CPU is idle), instead of the 300-second rule meant for [X]. [X] is unchanged.
+- **`aib plugins license` keeps add-ons you already have**: if the licence installed on this machine covers more add-ons than the one fetched, it is no longer overwritten.
+- **Touch ID approval text filters more invisible characters**: C1 control characters, U+00AD and U+061C are removed before the text is shown.
+
 ## 0.1.45
 
 - **New `aib plugins install <name>[@version]`, `aib plugins catalog`, `aib plugins license <addon>`**: members can get add-ons straight from the ez2.page catalog. aib checks the size and sha256 the catalog lists, unpacks with limits (archive bombs, links and odd paths are refused), and installs only if the package's own signature checks out; nothing unsigned is ever loaded. Paid add-ons need this machine to be bound to ez2.page and the account to own the add-on. A newer installed version is not downgraded unless you name the version. `plugins license` fetches the licence your account owns and installs it the same way as `aib license install`. Results use the contract codes in `contracts/page-api.json` (`plugins.*`); `--json` gives the same receipt.

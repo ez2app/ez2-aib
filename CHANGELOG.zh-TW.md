@@ -4,6 +4,13 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.46
+
+- **右鍵另開 AI 又開得起來了**:一次性接回旗標(`AIB_REVIVE_SESSION_UUID` 等)不再留在 tmux 伺服器裡，新席不會被當成接回舊對話。
+- **(x) 軟關入口按確定真的關得掉**:確定時只重驗「選單開著期間有沒有再動」(再看一次 CPU 閒著),不再套 [X] 的 300 秒門檻。[X] 不變。
+- **`aib plugins license` 不蓋掉已有的加購**:本機已裝的授權涵蓋的加購比這次領到的多時，不再被覆蓋。
+- **Touch ID 核准文字多濾幾種隱形字元**:C1 控制字元、U+00AD、U+061C 顯示前先拿掉。
+
 ## 0.1.45
 
 - **新增 `aib plugins install <名稱>[@版本]`、`aib plugins catalog`、`aib plugins license <加購>`**:會員可以直接從 ez2.page 目錄拿外掛。aib 先比對目錄列的大小與 sha256,有上限地解壓(壓縮炸彈、連結、怪路徑一律拒收),包自己的簽章驗過才安裝;沒簽過的絕不載入。付費外掛要這台機器綁了 ez2.page、帳號買過才拿得到。已裝較新版時不會降版，除非你明寫版本。`plugins license` 領帳號買過的授權，跟 `aib license install` 用同一套檢查安裝。結果用 `contracts/page-api.json` 的契約代碼(`plugins.*`);`--json` 給同一份回條。
