@@ -32,6 +32,10 @@ FAKE_PROBE = r'''
 import json, os, sys
 a = sys.argv[1:]
 open(os.environ["FAKE_PROBE_LOG"], "a").write(json.dumps(a) + "\n")
+if "--sample-socket" in a:                       # 軟關的 CPU 取樣:FAKE_CPU = active / idle / unknown
+    st = os.environ.get("FAKE_CPU", "unknown")
+    print(json.dumps({"window": a[a.index("--window") + 1], "source": st, "killable": False, "idle_s": None}))
+    sys.exit(0 if st != "unknown" else 3)
 th = int(a[a.index("--threshold") + 1]) if "--threshold" in a else 300
 idle = int(os.environ["FAKE_IDLE"])
 ok = idle >= th
@@ -73,13 +77,13 @@ class ReleaseConfirmed(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_release(self, idle, *extra):
+    def run_release(self, idle, *extra, cpu="unknown"):
         st = self.tmp / "state"
         st.mkdir(exist_ok=True)
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.tmp),
                "EZ2_AIB_STATE_ROOT": str(self.tmp), "EZ2_AIB_HOME": str(self.tmp),
                "EZ2_COCKPIT_STATE_DIR": str(st), "EZ2_PY3": sys.executable,
-               "FAKE_IDLE": str(idle), "FAKE_PROBE_LOG": str(self.log)}
+               "FAKE_IDLE": str(idle), "FAKE_PROBE_LOG": str(self.log), "FAKE_CPU": cpu}
         r = subprocess.run(["bash", str(self.ck / "mouse" / "mouse-ctl.sh"), "--release-confirmed",
                             "@35", "aib-test", *extra, "--dry-run"],
                            env=env, capture_output=True, text=True, timeout=60)
@@ -89,7 +93,7 @@ class ReleaseConfirmed(unittest.TestCase):
     def test_soft_idle_since_menu_opened_is_released(self):
         out = self.run_release(45, "--soft-since", str(int(time.time()) - 30))
         self.assertIn("kill-window", out)
-        th = json.loads(self.log.read_text().splitlines()[-1])
+        th = [json.loads(ln) for ln in self.log.read_text().splitlines() if "--threshold" in ln][-1]
         self.assertIn("--threshold", th)
         self.assertLess(int(th[th.index("--threshold") + 1]), 300)
 
@@ -97,6 +101,19 @@ class ReleaseConfirmed(unittest.TestCase):
         out = self.run_release(5, "--soft-since", str(int(time.time()) - 30))
         self.assertNotIn("kill-window", out)
         self.assertIn("refused", out)
+
+    def test_soft_refused_while_cpu_busy(self):
+        out = self.run_release(45, "--soft-since", str(int(time.time()) - 30), cpu="active")
+        self.assertNotIn("kill-window", out)
+        self.assertIn("還在跑", out)
+        self.assertIn("/nonexistent/", self.log.read_text())     # dry-run 不碰真 tmux 的 socket
+        out = self.run_release(45, "--soft-since", str(int(time.time()) - 30), cpu="idle")
+        self.assertIn("kill-window", out)
+
+    def test_soft_activity_in_same_second_is_refused(self):
+        # 門檻至少 1 秒:選單開出同一秒內的活動(idle 0)也要擋
+        out = self.run_release(0, "--soft-since", str(int(time.time())))
+        self.assertNotIn("kill-window", out)
 
     def test_hard_x_keeps_300s_threshold(self):
         out = self.run_release(45)

@@ -3105,6 +3105,26 @@ except Exception: print("")' "${PROBE_OUT:-}" 2>/dev/null || echo "")"
       echo "$(date '+%F %T') release no-signal human-confirmed ($WIN): 放行(兩重明示)"         >> "$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" 2>/dev/null || true
       PROBE_RC=0
     fi
+    # 10-24(審查第 1 位):(x) 的 💤 看的是席位檔自報時間,對話檔可能幾分鐘前才寫過;席若正在跑一個很長的
+    #   工具呼叫,對話檔不會動,只看「選單開出後有沒有寫」會把它關掉。軟關再取一次 CPU(探針同一支):
+    #   還在跑 ⇒ 拒;量不到 ⇒ 照 08-29「兩重明示,無訊號不擋」。DRY 給一個不存在的絕對路徑,碰不到真 tmux。
+    if [ "$PROBE_RC" = "0" ] && [ ${#_PROBE_TH[@]} -gt 0 ] && [ "${ABORT_OPEN:-0}" != "1" ]; then
+      if [ "$DRY" = "1" ]; then
+        _CPU_SOCK="/nonexistent/aib-dry-socket"
+      else
+        _CPU_SOCK="$(env -u TMUX tmux -L "$HUB" display-message -p '#{socket_path}' 2>/dev/null || true)"
+      fi
+      _CPU_OUT=""
+      if [ -n "$_CPU_SOCK" ]; then
+        _CPU_OUT="$("$EZ2_PY3" "$COCKPIT/activity_probe.py" --window "$WIN" --sample-socket "$_CPU_SOCK" 2>/dev/null || true)"
+      fi
+      if [ "$("$EZ2_PY3" -c 'import json,sys
+try: print(json.loads(sys.argv[1]).get("source") or "")
+except Exception: print("")' "$_CPU_OUT" 2>/dev/null || echo "")" = "active" ]; then
+        PROBE_RC=3
+        PROBE_OUT='{"source": "busy"}'
+      fi
+    fi
     if [ "$PROBE_RC" != "0" ]; then
       REASON="$("$EZ2_PY3" -c 'import json,sys
 try:
@@ -3113,7 +3133,9 @@ except Exception:
     d = {}
 src = d.get("source")
 idle = d.get("idle_s")
-if src == "active":
+if src == "busy":
+    print("該席還在跑(CPU 有在動),取消釋放")
+elif src == "active":
     print("該席已恢復活動(閒置 %ss<門檻),取消釋放" % idle)
 else:
     print("拿不到活動跡證,拒絕釋放(寧缺勿假)")' "${PROBE_OUT:-}" 2>/dev/null \
