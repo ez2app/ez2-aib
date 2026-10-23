@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""開 agy 席不再卡在信任畫面(10-24 @abb89,右鍵另開 AI 實測;Andy「卡選項的新開席都要能自動選成功」)。
+"""開 agy / grok 席不再卡在信任畫面(10-24 @abb89,右鍵另開 AI 實測;Andy「卡選項的新開席都要能自動選成功」)。
 
 事故:右鍵 → 另開 AI → agy → dev1,席停在「Do you trust the contents of this project?」,開席單打不進去;
 menu-pick 也沒接手 —— 它的初篩只認「1. 2.」這種有編號的選項,agy 的是游標選單。
 另外 agy:dgrs 落在 plain 啟動,窗名寫 dgrs、實際每個工具都要人按。
+grok 1.0.67 也加了資料夾信任(~/.grok/trusted_folders.toml,問的是 git 根目錄),同一天第五家踩到。
 """
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,7 +21,8 @@ REPO = Path(__file__).resolve().parent.parent
 COCKPIT = REPO / "src" / "cockpit"
 sys.path.insert(0, str(COCKPIT))
 
-import agy_trust  # noqa: E402
+import folder_trust  # noqa: E402
+import tomllib  # noqa: E402
 import menu_pick  # noqa: E402
 
 AGY_TRUST_SCREEN = """Accessing workspace:
@@ -55,30 +58,75 @@ class AgyTrust(unittest.TestCase):
 
     def test_adds_folder_and_keeps_other_settings(self):
         self.cfg.write_text(json.dumps({"model": "m", "trustedWorkspaces": ["/a"], "permissions": {"allow": ["x"]}}))
-        self.assertEqual(agy_trust.ensure(self.proj, environ=self.env)[0], "added")
+        self.assertEqual(folder_trust.ensure("agy", self.proj, environ=self.env)[0], "added")
         d = json.loads(self.cfg.read_text())
         self.assertEqual(d["trustedWorkspaces"], ["/a", str(self.proj.resolve())])
         self.assertEqual(d["model"], "m")
         self.assertEqual(d["permissions"], {"allow": ["x"]})
-        self.assertEqual(agy_trust.ensure(self.proj, environ=self.env)[0], "already")
+        self.assertEqual(folder_trust.ensure("agy", self.proj, environ=self.env)[0], "already")
         self.assertEqual(len(json.loads(self.cfg.read_text())["trustedWorkspaces"]), 2)
 
     def test_missing_settings_file_is_created_in_existing_home(self):
-        self.assertEqual(agy_trust.ensure(self.proj, environ=self.env)[0], "added")
+        self.assertEqual(folder_trust.ensure("agy", self.proj, environ=self.env)[0], "added")
         self.assertEqual(json.loads(self.cfg.read_text()), {"trustedWorkspaces": [str(self.proj.resolve())]})
 
     def test_never_clobbers_unreadable_settings(self):
         for bad in ("{not json", "[1, 2]", json.dumps({"trustedWorkspaces": "oops"})):
             self.cfg.write_text(bad)
-            self.assertEqual(agy_trust.ensure(self.proj, environ=self.env)[0], "skip", bad)
+            self.assertEqual(folder_trust.ensure("agy", self.proj, environ=self.env)[0], "skip", bad)
             self.assertEqual(self.cfg.read_text(), bad)
 
     def test_no_agy_home_and_off_switch(self):
         env = {"GEMINI_CLI_HOME": str(self.tmp / "nothing")}
-        self.assertEqual(agy_trust.ensure(self.proj, environ=env)[0], "skip")
+        self.assertEqual(folder_trust.ensure("agy", self.proj, environ=env)[0], "skip")
         self.assertFalse((self.tmp / "nothing").exists())
-        self.assertEqual(agy_trust.ensure(self.proj, environ=dict(self.env, AIB_AGY_TRUST="0"))[0], "off")
+        self.assertEqual(folder_trust.ensure("agy", self.proj, environ=dict(self.env, AIB_FOLDER_TRUST="0"))[0], "off")
         self.assertFalse(self.cfg.exists())
+
+
+class GrokTrust(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.home = self.tmp / "grok"
+        self.home.mkdir()
+        self.cfg = self.home / "trusted_folders.toml"
+        self.repo = self.tmp / "repo"
+        (self.repo / "sub").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True, timeout=30)
+        self.env = {"GROK_HOME": str(self.home)}
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_trusts_git_root_and_keeps_existing_entries(self):
+        self.cfg.write_text('[folders."/a"]\ntrusted = true\ndecided_at = 1\n')
+        r = folder_trust.ensure("grok", self.repo / "sub", environ=self.env)
+        self.assertEqual(r, ("added", str(self.repo.resolve())))
+        d = tomllib.loads(self.cfg.read_text())["folders"]
+        self.assertIs(d["/a"]["trusted"], True)
+        self.assertIs(d[str(self.repo.resolve())]["trusted"], True)
+        self.assertEqual(folder_trust.ensure("grok", self.repo, environ=self.env)[0], "already")
+
+    def test_human_declined_is_respected(self):
+        root = str(self.repo.resolve())
+        body = '[folders."%s"]\ntrusted = false\ndecided_at = 1\n' % root
+        self.cfg.write_text(body)
+        self.assertEqual(folder_trust.ensure("grok", self.repo, environ=self.env), ("skip", "human_declined"))
+        self.assertEqual(self.cfg.read_text(), body)
+
+    def test_unreadable_toml_untouched_and_no_home(self):
+        self.cfg.write_text("[folders\n")
+        self.assertEqual(folder_trust.ensure("grok", self.repo, environ=self.env)[0], "skip")
+        self.assertEqual(self.cfg.read_text(), "[folders\n")
+        env = {"GROK_HOME": str(self.tmp / "nothing")}
+        self.assertEqual(folder_trust.ensure("grok", self.repo, environ=env)[0], "skip")
+        self.assertFalse((self.tmp / "nothing").exists())
+
+    def test_non_git_folder_uses_itself(self):
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        self.assertEqual(folder_trust.ensure("grok", plain, environ=self.env), ("added", str(plain.resolve())))
 
 
 class LaunchWiring(unittest.TestCase):
@@ -86,8 +134,9 @@ class LaunchWiring(unittest.TestCase):
         src = (COCKPIT / "provider-launch.sh").read_text(encoding="utf-8")
         self.assertIn("agy:dgrs)    ARGS=(--dangerously-skip-permissions)", src)
         self.assertIn("copilot:dgrs) ARGS=(--allow-all)", src)
-        self.assertIn('agy_trust.py" ensure "$PROJECT_DIR"', src)
-        self.assertLess(src.index('agy_trust.py" ensure'), src.index('cd "$PROJECT_DIR" || exit 2'))
+        self.assertIn('folder_trust.py" ensure "$PROVIDER" "$PROJECT_DIR"', src)
+        self.assertIn('[ "$PROVIDER" = "grok" ]; } && [ -f "$HERE/folder_trust.py" ]', src)
+        self.assertLess(src.index('folder_trust.py" ensure'), src.index('cd "$PROJECT_DIR" || exit 2'))
 
 
 class CursorMenuSuspect(unittest.TestCase):

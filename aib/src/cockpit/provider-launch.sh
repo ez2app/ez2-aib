@@ -323,11 +323,11 @@ if { [ "$PROVIDER" = "agy" ] || [ "$PROVIDER" = "copilot" ] || [ "$PROVIDER" = "
 fi
 # 10-14 a seat(the maintainer 02:3x「Codex /hooks 信任要自動」):上面兩段裝完,AIB 自己的掛點還沒信任 ⇒ Mac 彈窗
 #   [同意][不要],30 秒沒按 = 同意;同意才寫 config.toml 的 trusted_hash(先備份)。別人的掛點不碰;AIB_CODEX_HOOK_TRUST=0 關。
-# 10-24 @abb89(Andy「卡選項的新開席都要能自動選成功」):agy 第一次進一個資料夾會先問信不信任,
-#   開席單打不進那個畫面 ⇒ 席卡住。人在這個資料夾開席 = 要它在這裡做事 ⇒ 先寫進 agy 的信任清單
-#   (同 Codex 的 ensure_project_trusted);讀不懂設定檔就不動。AIB_AGY_TRUST=0 關。
-if [ "$PROVIDER" = "agy" ] && [ -f "$HERE/agy_trust.py" ]; then
-  "${EZ2_PY3:-python3}" "$HERE/agy_trust.py" ensure "$PROJECT_DIR" </dev/null >/dev/null 2>&1 || true
+# 10-24 @abb89(Andy「卡選項的新開席都要能自動選成功」):agy、grok(1.0.67 起)第一次進一個資料夾會先問信不信任,
+#   開席單打不進那個畫面 ⇒ 席卡住。人在這個資料夾開席 = 要它在這裡做事 ⇒ 先寫進該家的信任清單
+#   (同 Codex 的 ensure_project_trusted);讀不懂設定檔 / 人按過不信任就不動。AIB_FOLDER_TRUST=0 關。
+if { [ "$PROVIDER" = "agy" ] || [ "$PROVIDER" = "grok" ]; } && [ -f "$HERE/folder_trust.py" ]; then
+  "${EZ2_PY3:-python3}" "$HERE/folder_trust.py" ensure "$PROVIDER" "$PROJECT_DIR" </dev/null >/dev/null 2>&1 || true
 fi
 if [ "$PROVIDER" = "codex" ] && [ -t 0 ] && [ -f "$HERE/codex_hook_trust.py" ]; then
   "${EZ2_PY3:-python3}" "$HERE/codex_hook_trust.py" ensure </dev/null || true
