@@ -113,6 +113,26 @@ class ReleaseConfirmed(unittest.TestCase):
         out = self.run_release(45, "--soft-since")
         self.assertIn("refused", out)
 
+    def test_confirm_menu_carries_soft_since_only_for_soft(self):
+        # 審查第 1 位:選單端那一行(kill-idle 組 CONFIRM_ACTION)要有測試守
+        st = self.tmp / "state"
+        st.mkdir(exist_ok=True)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.tmp),
+               "EZ2_AIB_STATE_ROOT": str(self.tmp), "EZ2_COCKPIT_STATE_DIR": str(st),
+               "EZ2_PY3": sys.executable}
+        for soft in (True, False):
+            kill = {"start": 10, "end": 13}
+            if soft:
+                kill["soft"] = True
+            (st / "ai-rowmap.json").write_text(json.dumps([{"line": 5, "window": "@35", "kill": kill,
+                                                            "detail": {"label": "dev1@4fc4f", "status": "z"}}]))
+            r = subprocess.run(["bash", str(self.ck / "mouse" / "mouse-ctl.sh"), "--click", "ai-list", "11", "5",
+                                "aib-test", "--role", "right", "--dry-run"],
+                               env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("--release-confirmed @35", r.stdout)
+            self.assertEqual("--soft-since" in r.stdout, soft, r.stdout[-400:])
+
 
 if __name__ == "__main__":
     unittest.main()
