@@ -63,7 +63,9 @@ _BOX = re.compile(r"[│┃╭╮╰╯─━╻╹▄▀]")
 _CURSOR = re.compile(r"^\s*[❯›>▶●○◯◉]\s*")
 _OPT = re.compile(r"^\s*(?:[❯›>▶●○◯◉]\s*)?(?:\(?[0-9]{1,2}[.)]|\[[0-9a-zA-Z]\]|\([a-zA-Z]\))\s+\S")
 # 10-24:沒編號的游標選單(agy 信任畫面「> Yes, I trust this folder / No, exit」+「↑/↓ Navigate · enter Confirm」)
-_NAV = re.compile(r"↑\s*/?\s*↓|\benter\s+(?:to\s+)?(?:confirm|select)\b|\bnavigate\b", re.I)
+#   操作說明那一行要同時有上下鍵和 enter(只提到其中一個 = AI 回覆裡在講選單,不是選單)
+_NAV = re.compile(r"(?:↑\s*/?\s*↓|up\s*/\s*down).*\benter\b", re.I)
+_OPT_ROW = re.compile(r"^\s{2,}\S")         # 游標以外的選項行:縮排、不帶游標符號
 _ASK = re.compile(r"\?|\uff1f|Do you want|[Aa]llow|[Pp]roceed|[Cc]onfirm|[Aa]pprove|確認|要不要|是否|允許|Esc to cancel|enter to select",
                   re.I)
 
@@ -201,13 +203,24 @@ def suspect(screen, provider=None):
     near_bottom = bool(hits) and len(tail) - 1 - hits[-1] <= OPT_BOTTOM_SLACK
     if len(hits) >= 2 and near_bottom and any(_ASK.search(ln) for ln in tail):
         return True
-    # 游標選單:底部有「上下選、Enter 確認」的操作說明,它上面緊鄰一行游標選項 + 至少一行別的選項
+    # 游標選單:底部有「上下鍵 + enter」的操作說明;往上連著都是縮排選項行,再往上一行是游標選項
+    #   (中間夾一般文字就不算 —— 三家回顯使用者那句話的行首也是 ❯ › >);問句要在游標選項上面
     nav = [i for i, ln in enumerate(tail) if _NAV.search(ln)]
     if not nav or len(tail) - 1 - nav[-1] > OPT_BOTTOM_SLACK:
         return False
-    above = tail[max(0, nav[-1] - 8):nav[-1]]
-    cur = [i for i, ln in enumerate(above) if _CURSOR.match(ln) and _CURSOR.sub("", ln).strip()]
-    return bool(cur) and len(above) - cur[0] >= 2 and any(_ASK.search(ln) for ln in tail)
+    j = nav[-1] - 1
+    rows = 0
+    while j >= 0 and nav[-1] - j <= 8 and _OPT_ROW.match(tail[j]) and not _CURSOR.match(tail[j]):
+        rows += 1
+        j -= 1
+    if j < 0 or not (_CURSOR.match(tail[j]) and _CURSOR.sub("", tail[j]).strip()):
+        return False
+    # 游標可能停在中間:游標行上面也可以還有選項行;都跳過再找問句
+    k = j - 1
+    while k >= 0 and j - k <= 8 and _OPT_ROW.match(tail[k]) and not _CURSOR.match(tail[k]):
+        rows += 1
+        k -= 1
+    return rows >= 1 and any(_ASK.search(ln) for ln in tail[max(0, k - 4):k + 1])
 
 
 def screen_hash(screen):

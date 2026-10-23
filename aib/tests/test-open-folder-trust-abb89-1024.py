@@ -22,7 +22,10 @@ COCKPIT = REPO / "src" / "cockpit"
 sys.path.insert(0, str(COCKPIT))
 
 import folder_trust  # noqa: E402
-import tomllib  # noqa: E402
+try:
+    import tomllib  # noqa: E402
+except ImportError:          # Mac 系統 Python 3.9:grok 那條在正式程式也是跳過
+    tomllib = None
 import menu_pick  # noqa: E402
 
 AGY_TRUST_SCREEN = """Accessing workspace:
@@ -84,6 +87,7 @@ class AgyTrust(unittest.TestCase):
         self.assertFalse(self.cfg.exists())
 
 
+@unittest.skipIf(tomllib is None, "沒有 tomllib(Python < 3.11)")
 class GrokTrust(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -134,7 +138,7 @@ class LaunchWiring(unittest.TestCase):
         src = (COCKPIT / "provider-launch.sh").read_text(encoding="utf-8")
         self.assertIn("agy:dgrs)    ARGS=(--dangerously-skip-permissions)", src)
         self.assertIn("copilot:dgrs) ARGS=(--allow-all)", src)
-        self.assertIn('folder_trust.py" ensure "$PROVIDER" "$PROJECT_DIR"', src)
+        self.assertIn('folder_trust.py" ensure "$PROVIDER" "$PROJECT_DIR" </dev/null >/dev/null || true', src)
         self.assertIn('[ "$PROVIDER" = "grok" ]; } && [ -f "$HERE/folder_trust.py" ]', src)
         self.assertLess(src.index('folder_trust.py" ensure'), src.index('cd "$PROJECT_DIR" || exit 2'))
 
@@ -147,9 +151,36 @@ class CursorMenuSuspect(unittest.TestCase):
         for provider, screen in IDLE_SCREENS.items():
             self.assertFalse(menu_pick.suspect(screen, provider), provider)
 
+    def test_ai_talking_about_menus_is_not_a_menu(self):
+        # 審查第 1 位實測的三個誤判:回顯使用者那句話(❯ › >)+ AI 回覆裡提到選單操作
+        screens = {
+            "codex": "› agy 卡在信任畫面了嗎\n• 對,它底部是\n↑/↓ Navigate · enter Confirm\n我會改 suspect。\n"
+                     "› Ask Codex to do anything\n  ? for shortcuts\n",
+            "claude": "❯ 為什麼 agy 卡住\n⏺ 它在等你按\n↑/↓ Navigate 再 enter Confirm\n─────\n❯ \n─────\n"
+                      "  ⏵⏵ bypass permissions on\n",
+            "agy": "> 修好了嗎?\n• 已修好\n用 ↑/↓ 選\n> \nGemini 3.8 Flash\n",
+        }
+        for provider, screen in screens.items():
+            self.assertFalse(menu_pick.suspect(screen, provider), provider)
+
+    def test_cursor_in_middle_still_a_menu(self):
+        screen = ("Pick a theme?\n  Light\n> Dark\n  System\n  ↑/↓ to move · enter to select\n")
+        self.assertTrue(menu_pick.suspect(screen, "agy"))
+
     def test_nav_hint_far_above_bottom_is_not_a_menu(self):
         screen = AGY_TRUST_SCREEN + "\n".join("回報第 %d 行" % i for i in range(12)) + "\n> \n"
         self.assertFalse(menu_pick.suspect(screen, "agy"))
+
+
+class BridgeSystemNotice(unittest.TestCase):
+    def test_system_notice_is_system_card_not_unverified_seat(self):
+        import sand_bridge
+        kind, label = sand_bridge._dm_card("IP:100.1.1.1/6ddf/系統@aib >> IP:100.1.1.1/6ddf/未綁@6d76f "
+                                           "10-24 04:24(台北時間) 長訊已落檔")
+        self.assertEqual((kind, label), ("system", "AIB 系統"))
+        kind, _ = sand_bridge._dm_card("IP:100.1.1.1/6ddf/dev@abb89 >> IP:100.1.1.1/6ddf/dev1@6d76f "
+                                       "10-24 04:24(台北時間) hi")
+        self.assertEqual(kind, "dm")
 
 
 if __name__ == "__main__":

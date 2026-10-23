@@ -175,6 +175,9 @@ def main(argv=None):
         print("用法:folder_trust.py ensure <agy|grok> <資料夾> [--json]", file=sys.stderr)
         return 2
     result, why = ensure(argv[1], argv[2])
+    if result == "added":         # 動了人家的設定 ⇒ 開席畫面留一行看得到(審查第 2 位)
+        print("aib: 已把 %s 加進 %s 的信任清單(在這裡開席 = 要它在這裡做事;不要自動加:AIB_FOLDER_TRUST=0)"
+              % (why, argv[1]), file=sys.stderr)
     if as_json:
         print(json.dumps({"result": result, "detail": why}, ensure_ascii=False))
     return 0                          # 開席的附帶動作:成敗都不擋開席

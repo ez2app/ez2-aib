@@ -327,7 +327,7 @@ fi
 #   開席單打不進那個畫面 ⇒ 席卡住。人在這個資料夾開席 = 要它在這裡做事 ⇒ 先寫進該家的信任清單
 #   (同 Codex 的 ensure_project_trusted);讀不懂設定檔 / 人按過不信任就不動。AIB_FOLDER_TRUST=0 關。
 if { [ "$PROVIDER" = "agy" ] || [ "$PROVIDER" = "grok" ]; } && [ -f "$HERE/folder_trust.py" ]; then
-  "${EZ2_PY3:-python3}" "$HERE/folder_trust.py" ensure "$PROVIDER" "$PROJECT_DIR" </dev/null >/dev/null 2>&1 || true
+  "${EZ2_PY3:-python3}" "$HERE/folder_trust.py" ensure "$PROVIDER" "$PROJECT_DIR" </dev/null >/dev/null || true
 fi
 if [ "$PROVIDER" = "codex" ] && [ -t 0 ] && [ -f "$HERE/codex_hook_trust.py" ]; then
   "${EZ2_PY3:-python3}" "$HERE/codex_hook_trust.py" ensure </dev/null || true
