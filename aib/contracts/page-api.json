@@ -665,14 +665,69 @@
    "suspended"
   ],
   "item_states": [
+   "queued",
    "in_review",
    "rejected",
    "approved",
    "listed",
    "suspended"
   ],
-  "states_note": "包:queued ⇒ 伺服器重驗 ⇒ auto_failed(整包退,可重送)或 in_review;每件都有結果 ⇒ decided;suspended = 整包凍結(例送件那台被撤)。件:in_review ⇒ rejected / approved ⇒ listed(合進素材包後);任何件可被 suspended。一包可以核 8 退 2。核心遇到不認得的值 ⇒ 原樣印、當還在處理,不當失敗",
+  "states_note": "包:queued ⇒ 伺服器重驗 ⇒ auto_failed(整包退,可重送)或 in_review;每件都有結果 ⇒ decided;suspended = 整包凍結(例送件那台被撤)。件:queued(包還在 queued / auto_failed 時,件都停在 queued;整包退的原因看包的 reasons)⇒ in_review ⇒ rejected / approved ⇒ listed(合進素材包後);任何件可被 suspended。一包可以核 8 退 2。核心遇到不認得的值 ⇒ 原樣印、當還在處理,不當失敗",
   "limits_note": "上限數字(單檔 / 單包 / 解壓後 / 檔數 / 每日 / 總容量)全在伺服器端可設定、版本化的表,契約只定代碼;核心不寫死數字,照錯誤碼與 retry_after 顯示",
-  "notify_note": "通知範本碼(@0c105 templates.json)是事件不是狀態,對應:queued ⇒ submission_received;in_review ⇒ submission_reviewing;auto_failed ⇒ submission_needs_fix;decided ⇒ 有件 approved / listed 送 submission_approved({n} = 核准件數),有件 rejected 送 submission_rejected({n} = 退回件數)。範本裡的 {id} 用 status_object.id(sub_ 開頭)"
+  "notify_note": "通知範本碼(@0c105 templates.json)是事件不是狀態,對應:queued ⇒ submission_received;in_review ⇒ submission_reviewing;auto_failed ⇒ submission_needs_fix;decided ⇒ 有件 approved / listed 送 submission_approved({n} = 核准件數),有件 rejected 送 submission_rejected({n} = 退回件數)。範本裡的 {id} 用 status_object.id(sub_ 開頭)",
+  "cli_receipt": {
+   "status": "planned",
+   "about": "核心 `aib create submit <包.tar> --json` / `aib create status <編號> --json` 的回條(@abb89 10-23 13:36 草案 + @d07f9 對齊)",
+   "submit_ok": {
+    "fields": [
+     "ok",
+     "detail",
+     "submission",
+     "hint"
+    ],
+    "ok": true,
+    "detail": [
+     "creator_submitted",
+     "creator_submitted_existing"
+    ],
+    "submission": "creator.status_object 原樣(同 status 那支;編號欄名是 id)",
+    "note": "同包重送 ⇒ 同編號、detail creator_submitted_existing"
+   },
+   "submit_fail": {
+    "fields": [
+     "ok",
+     "detail",
+     "hint"
+    ],
+    "ok": false,
+    "detail": "creator.codes 裡的代碼,或下面 local_codes"
+   },
+   "status_ok": {
+    "fields": [
+     "ok",
+     "detail",
+     "submission",
+     "hint"
+    ],
+    "detail": [
+     "creator_status"
+    ],
+    "submission": "creator.status_object 原樣"
+   },
+   "local_codes": {
+    "creator_attest_cancelled": "Touch ID 取消 / 沒過 ⇒ 什麼都沒送",
+    "creator_unreachable": "連不到伺服器 / 伺服器 5xx;沒有收到編號 ⇒ 可以原包重送(冪等)",
+    "creator_unsupported": "伺服器沒有這組端點(404 / 405)",
+    "creator_package_unreadable": "tar 打不開 / 不是 ustar"
+   },
+   "rc": {
+    "0": "成功",
+    "2": "本機檢查擋(不送)",
+    "3": "伺服器拒(4xx,detail = 伺服器代碼)",
+    "4": "網路 / 伺服器錯",
+    "5": "Touch ID 取消"
+   },
+   "detail_note": "detail 是契約、不換人話;人話只在 hint"
+  }
  }
 }
