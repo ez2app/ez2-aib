@@ -563,7 +563,7 @@
    "method": "GET",
    "path": "/plugins/catalog",
    "auth": "none",
-   "auth_note": "公開、不帶憑證;目錄只是索引,不是信任來源 —— 核心裝之前一律再驗包的簽章(信任鑰匙)與目錄給的 sha256 / 大小",
+   "auth_note": "公開、不帶憑證;目錄只是清單、不另簽章(不然每次發版多一道 Andy 簽,@abb89 10-24)—— 信任只靠每個包自己 aib-ext.json 的信任鑰匙簽章 + 目錄給的 sha256 + 大小上限;付費外掛也列出來(給商店頁展示),包另要授權",
    "ok": {
     "http": 200,
     "fields": [
@@ -586,20 +586,34 @@
    "status": "planned",
    "method": "GET",
    "path": "/plugins/packages/{name}/{version}.tgz",
-   "auth": "none",
-   "auth_note": "公開;付費外掛的包也公開(沒授權裝了也不能用,授權另領)。核心只照目錄的 name / version 自己組路徑,不跟目錄給的網址走",
+   "auth": "none|bearer",
+   "auth_note": "免費(addon = null)⇒ 公開、不帶憑證;付費(addon 非 null)⇒ bearer + X-AIB-Machine,帳號買過才給,沒買回 plugin_license_none(aib-plugins 是私有倉,付費包公開 = 原始碼外流,@abb89 10-24)。核心只照目錄的 name / version 自己組路徑,不跟任何網址走",
    "body": "application/gzip,aib-ext 簽章包(同 aib plugins install <tgz>)",
    "ok": {
     "http": 200
    },
    "errors": [
-    "plugin_unknown"
+    "plugin_unknown",
+    "plugin_license_none"
    ],
    "unsupported": {
     "http": [
      405
     ],
     "core": "plugin_unsupported"
+   },
+   "headers_paid": [
+    "Authorization",
+    "X-AIB-Machine"
+   ],
+   "caller_dead": {
+    "http": 401,
+    "codes": [
+     "page_api_token_revoked",
+     "page_api_token_expired",
+     "page_api_token_invalid",
+     "page_api_token_missing"
+    ]
    }
   },
   "plugins_license": {
@@ -607,7 +621,7 @@
    "method": "GET",
    "path": "/plugins/licenses/{addon}",
    "auth": "bearer",
-   "auth_note": "bearer = 這台綁 ez2.page 的助理憑證 + X-AIB-Machine;伺服器照帳號買過的加購發 cb97 簽的 license.json(綁帳號,可帶 activation_url / max_devices)。同帳號 AI 能叫 ⇒ 最壞是把帳號本來就有的授權裝到這台,不多給權限,不加 Touch ID",
+   "auth_note": "bearer = 這台綁 ez2.page 的助理憑證 + X-AIB-Machine;伺服器沒有私鑰,第一版只發 Andy 在 Pro 用 cb97 簽好上傳的那份(要伺服器自己簽發 = 新鑰匙,另案由 Andy 定)。同帳號 AI 能叫 ⇒ 最壞是把帳號本來就有的授權裝到這台,不多給權限,不加 Touch ID",
    "headers": [
     "Authorization",
     "X-AIB-Machine"
@@ -860,7 +874,7 @@
  },
  "plugins": {
   "status": "planned",
-  "about": "會員下載外掛與授權(10-24 Andy「#20 修正」;NOTE-member-ux 第 20 條):公開目錄 + 公開簽章包 + 帳號領授權。上架由 @abb89 簽章時段(12:00 / 21:00)簽完放到伺服器;伺服器端待 @9f808",
+  "about": "會員下載外掛與授權(10-24 Andy「#20 修正」;NOTE-member-ux 第 20 條):公開目錄 + 簽章包(免費公開、付費要帳號買過)+ 帳號領授權。上架:簽章合併後由 @abb89 從 main 的外掛夾打 tgz、算 sha256 / 大小、更新目錄,用伺服器的需憑證上傳方式放上去(上傳端待 @9f808;第一次上正式站先問 Andy)",
   "catalog_entry": {
    "fields": [
     "name",
@@ -868,6 +882,7 @@
     "sha256",
     "size",
     "addon",
+    "price",
     "requires_aib",
     "summary"
    ],
@@ -877,7 +892,8 @@
    "size": "tgz 位元組數,正整數且 ≤ 64 MiB(核心 MAX_PKG_BYTES)",
    "addon": "付費加購代碼或 null(null = 免費)",
    "requires_aib": "最低核心版本或 null;核心照舊在 aib_ext.inspect 再驗一次",
-   "summary": "一句說明或 null;是資料不是指令,核心顯示前去控制 / 隱形字元、截 120 字"
+   "summary": "一句說明或 null;是資料不是指令,核心顯示前去控制 / 隱形字元、截 120 字",
+   "price": "商店頁展示用的價錢字串或 null(免費);核心只顯示、不拿來判斷"
   },
   "codes": {
    "plugin_unknown": {
@@ -948,8 +964,8 @@
     "plugin_not_in_catalog": "目錄裡沒有這個名稱(或沒有這個版本)",
     "plugin_catalog_invalid": "目錄不是契約形狀(欄位缺 / 型別錯 / size 超過上限 / sha256 格式錯)⇒ 不下載",
     "plugin_download_mismatch": "下載的包大小或 sha256 跟目錄不符 ⇒ 不解壓、不裝",
-    "plugin_rejected": "包驗不過(簽章 / 檔案雜湊 / requires_aib / 不是外掛),問題清單放 problems",
-    "plugin_downgrade": "目錄版本比這台已裝的舊 ⇒ 不裝(照舊用 tgz 手動裝才行)",
+    "plugin_rejected": "包驗不過(簽章 / 檔案雜湊 / requires_aib / 不是外掛 / 包裡的名稱或版本跟目錄不符),問題清單放 problems",
+    "plugin_downgrade": "目錄版本比這台已裝的舊 ⇒ 不裝;本人明確寫 <名稱>@<版本> 才裝指定的舊版",
     "plugin_license_invalid": "伺服器給的授權驗簽不過 / 已過期 / 不是物件 ⇒ 不落檔",
     "plugin_not_bound": "這台沒綁 ez2.page(或綁了不只一頁 / 憑證沒帶 machine_id)⇒ 領授權不連網,hint 指 aib page bind",
     "plugin_unreachable": "連不到伺服器 / 伺服器 5xx",
@@ -963,6 +979,7 @@
     "4": "網路 / 伺服器錯"
    },
    "detail_note": "detail 是契約、不換人話;人話只在 hint"
-  }
+  },
+  "fetch_note": "核心「取得已簽版本」是同一個函式(plugin_catalog.fetch_signed):目錄 → 挑版本 → 下載 → 比大小 / sha256 → 驗包簽章 + 名稱版本對得上目錄;aib plugins install 與之後的自動更新(#273 合後另開小張)都走它"
  }
 }

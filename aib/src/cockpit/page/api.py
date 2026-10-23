@@ -271,6 +271,44 @@ class PageApi:
         q = "?mine=1&limit=%d" % int(limit) + ("&cursor=" + urllib.parse.quote(cursor, safe="") if cursor else "")
         return self._request("GET", "/creator/submissions" + q)
 
+    # ---- 外掛下載(契約 page-api.json plugins_*)------------------------------
+
+    def plugins_catalog(self):
+        return self._request("GET", "/plugins/catalog", auth=False)
+
+    def _get_raw(self, path, headers, max_bytes):
+        request = urllib.request.Request(self._url(path), headers=headers, method="GET")
+        try:
+            with self._opener.open(request, timeout=max(self.timeout, 60)) as response:
+                return response.status, response.read(max_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read(64 * 1024)
+        except (urllib.error.URLError, OSError) as exc:
+            raise TransportError("連不上 %s:%s" % (self.base_url, exc))
+
+    def plugins_package(self, name, version, max_bytes, machine_id=None):
+        """GET 簽章包本體(tgz,不走 _request:那條只收 JSON)。免費包不帶憑證;付費包(呼叫端給 machine_id)帶 bearer + X-AIB-Machine。
+        回包的 bytes(最多讀 max_bytes + 1,呼叫端判太大);非 2xx ⇒ ApiError(同 _parse)。"""
+        headers = {"accept": "application/gzip", "user-agent": USER_AGENT}
+        if machine_id is not None:
+            if not self.token:
+                raise TransportError("這條路要憑證,但這台機器還沒綁:先跑 `aib page bind`")
+            headers.update({"authorization": "Bearer " + self.token, "x-aib-machine": machine_id})
+        path = "/plugins/packages/%s/%s.tgz" % (urllib.parse.quote(name, safe=""), urllib.parse.quote(version, safe=""))
+        status, raw = self._get_raw(path, headers, max_bytes)
+        if 200 <= status < 300:
+            return raw
+        self._parse(status, raw)
+        raise ApiError(status, "", message="HTTP %s" % status)
+
+    def plugins_license(self, addon, machine_id):
+        if not self.token:
+            raise TransportError("這條路要憑證,但這台機器還沒綁:先跑 `aib page bind`")
+        headers = {"accept": "application/json", "user-agent": USER_AGENT,
+                   "authorization": "Bearer " + self.token, "x-aib-machine": machine_id}
+        status, raw = self._get_raw("/plugins/licenses/" + urllib.parse.quote(addon, safe=""), headers, 256 * 1024)
+        return self._parse(status, raw)
+
     # ★ 這裡**刻意沒有** publish 方法,理由見檔頭第 3 點。要印「發布要你按」時,
     #   用 `post_draft()` 回應體裡的 preview.publish_url(規格 §5.2)。
 

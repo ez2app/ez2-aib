@@ -158,7 +158,8 @@ def get(repo, what, env=None):
 
 MAX_PKG_BYTES = 64 * 1024 * 1024
 UNSIGNED_OK = False   # 付費外掛一律要信任鑰匙簽過;沒有 --allow-unsigned 這種門(刀測翻這個)
-USAGE = "usage: aib plugins licensed <addon> [--json]\n       aib plugins install <folder | .tgz | .zip | https://…> [--json]"
+USAGE = ("usage: aib plugins licensed <addon> [--json]\n       aib plugins install <folder | .tgz | .zip | https://… | name[@version]> [--json]\n"
+         "       aib plugins catalog [--json]\n       aib plugins license <addon> [--json]")
 
 
 def _safe_members(names):
@@ -292,6 +293,59 @@ def install(src, as_json=False, out=sys.stdout):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def install_named(spec, env=None, **kw):
+    """aib plugins install <名稱>[@版本](10-24 #20):從 ez2.page 目錄拿已簽版本(plugin_catalog.fetch_signed),驗過才裝。
+    回 (回條, rc);回條欄位照契約 plugins.cli_receipt。"""
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+    import aib_ext
+    import plugin_catalog as PC
+    env = dict(os.environ) if env is None else env
+    parsed = PC.parse_spec(spec)
+    if parsed is None:
+        return PC.fail("plugin_name_invalid", 2)
+    name, version = parsed
+    work = tempfile.mkdtemp(prefix="aib-plugin-dl-")
+    try:
+        folder, entry, err = PC.fetch_signed(env, name, version, work=work, current=PC.installed_version(name), **kw)
+        if err:
+            return err
+        rc = aib_ext.install(folder, allow_unsigned=UNSIGNED_OK, out=io_null(), enable_engines=False)
+        if rc:
+            return PC.fail("plugin_rejected", 3, problems=["install-rc-%d" % rc])
+        ok, lwhy = licensed({"requires_addon": entry["addon"]}) if entry["addon"] else (True, "free")
+        return {"ok": True, "detail": "plugin_installed", "name": name, "version": entry["version"],
+                "path": str(aib_ext.target("plugin", name)), "addon": entry["addon"], "licensed": bool(ok),
+                "hint": PC.T("hint.plugin_installed" if ok else "hint.plugin_installed_unlicensed", addon=entry["addon"] or "")
+                or "plugin_installed"}, 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def catalog_cmd(env=None, api=None):
+    sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+    import plugin_catalog as PC
+    entries, err = PC.catalog(dict(os.environ) if env is None else env, api)
+    if err:
+        return err
+    return {"ok": True, "detail": "plugin_catalog", "plugins": entries, "hint": ""}, 0
+
+
+def _emit(res, rc, as_json=False):
+    if as_json:
+        print(json.dumps(res, ensure_ascii=False))
+    elif res.get("detail") == "plugin_catalog":
+        for e in res["plugins"]:
+            print("%-24s %-10s %s%s" % (e["name"], e["version"], e["price"] or ("-" if e["addon"] else "free"),
+                                        ("  " + e["summary"]) if e["summary"] else ""))
+    else:
+        print(res.get("hint") or res.get("detail"), file=sys.stdout if res.get("ok") else sys.stderr)
+        for p in res.get("problems") or ():
+            print("  " + p, file=sys.stderr)
+    return rc
+
+
 def io_null():
     import io
     return io.StringIO()
@@ -307,7 +361,14 @@ def main(argv=None):
     as_json = "--json" in a
     a = [x for x in a if x != "--json"]
     if len(a) == 2 and a[0] == "install":
+        if not Path(a[1]).expanduser().exists() and "/" not in a[1] and not a[1].startswith(("https:", "http:")):
+            return _emit(*install_named(a[1]), as_json=as_json)
         return install(a[1], as_json=as_json)
+    if a == ["catalog"]:
+        return _emit(*catalog_cmd(), as_json=as_json)
+    if len(a) == 2 and a[0] == "license":
+        import plugin_catalog as PC
+        return _emit(*PC.license_get(dict(os.environ), a[1]), as_json=as_json)
     if len(a) != 2 or a[0] != "licensed" or not a[1].replace("-", "").replace("_", "").isalnum():
         print(USAGE, file=sys.stderr)
         return 2
