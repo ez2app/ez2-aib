@@ -157,8 +157,11 @@ def get(repo, what, env=None):
 
 
 MAX_PKG_BYTES = 64 * 1024 * 1024
+MAX_UNPACK_BYTES = 2 * MAX_PKG_BYTES   # 解開後總大小上限(gzip 會先解到記憶體;外掛是程式 + 圖,正常遠小於這個)
+MAX_UNPACK_MEMBERS = 20000
 UNSIGNED_OK = False   # 付費外掛一律要信任鑰匙簽過;沒有 --allow-unsigned 這種門(刀測翻這個)
-USAGE = "usage: aib plugins licensed <addon> [--json]\n       aib plugins install <folder | .tgz | .zip | https://…> [--json]"
+USAGE = ("usage: aib plugins licensed <addon> [--json]\n       aib plugins install <folder | .tgz | .zip | https://… | name[@version]> [--json]\n"
+         "       aib plugins catalog [--json]\n       aib plugins license <addon> [--json]")
 
 
 def _safe_members(names):
@@ -170,38 +173,79 @@ def _safe_members(names):
     return None
 
 
+def _gunzip_bounded(data, limit):
+    """gzip ⇒ 解開的 bytes,最多 limit;超過 ⇒ None。一次最多吐 1 MiB,壓縮炸彈不會先整包解開。"""
+    import zlib
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    out, n, buf = [], 0, data
+    while not d.eof:
+        chunk = d.decompress(buf, 1 << 20)
+        buf = d.unconsumed_tail
+        n += len(chunk)
+        if n > limit:
+            return None
+        out.append(chunk)
+        if not chunk and not buf:
+            break
+    return b"".join(out)
+
+
 def _extract(blob, into):
-    """.tgz / .tar / .zip ⇒ 解到 into(自己的空資料夾);只解一般檔與資料夾(連結、裝置一律不要)。回 (ok, why)。"""
+    """.tgz / .tar / .zip ⇒ 解到 into(自己的空資料夾);只解一般檔與資料夾(連結、裝置一律不要)。回 (ok, why)。
+    驗簽前就擋壓縮炸彈(10-24 審查員兩輪):gzip 先有上限地解到記憶體(超過 MAX_UNPACK_BYTES ⇒ too-big-unpacked),
+    tarfile 讀長檔名 / pax 標頭也就有上限;成員數 ≤ MAX_UNPACK_MEMBERS、宣告的大小總和 ≤ MAX_UNPACK_BYTES;
+    size 負數 / offset 沒往後 ⇒ 壞檔(舊 tarfile CVE-2025-8194)。只收 gzip / 不壓縮的 tar / zip;解壓任何例外 ⇒ not-an-archive。"""
+    try:
+        return _extract_inner(blob, into)
+    except Exception:  # noqa: BLE001  壞包讓 zlib / zipfile / tarfile / 檔案系統拋什麼都一樣
+        return False, "not-an-archive"
+
+
+def _extract_inner(blob, into):
     import io
     import tarfile
     import zipfile
     data = blob.read_bytes() if isinstance(blob, Path) else blob
     if data[:4] == b"PK\x03\x04":
         with zipfile.ZipFile(io.BytesIO(data)) as z:
+            infos = z.infolist()
+            if len(infos) > MAX_UNPACK_MEMBERS or sum(i.file_size for i in infos) > MAX_UNPACK_BYTES:
+                return False, "too-big-unpacked"
             bad = _safe_members(z.namelist())
             if bad:
                 return False, "unsafe-path:%s" % bad
-            for info in z.infolist():
+            for info in infos:
                 if (info.external_attr >> 16) & 0o170000 == 0o120000:
                     return False, "symlink:%s" % info.filename
             z.extractall(into)
         return True, ""
-    try:
-        tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:*")
-    except tarfile.TarError:
-        return False, "not-an-archive"
+    if data[:2] == b"\x1f\x8b":
+        data = _gunzip_bounded(data, MAX_UNPACK_BYTES)
+        if data is None:
+            return False, "too-big-unpacked"
+    tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:")
     with tf:
-        members = tf.getmembers()
+        members, total, last = [], 0, -1
+        while True:
+            m = tf.next()
+            if m is None:
+                break
+            if m.size < 0 or m.offset <= last:
+                return False, "not-an-archive"
+            last, total = m.offset, total + m.size
+            members.append(m)
+            if len(members) > MAX_UNPACK_MEMBERS or total > MAX_UNPACK_BYTES:
+                return False, "too-big-unpacked"
         bad = _safe_members([m.name for m in members])
         if bad:
             return False, "unsafe-path:%s" % bad
         for m in members:
-            if not (m.isfile() or m.isdir()):
+            if not (m.isfile() or m.isdir()) or m.issparse():   # 稀疏:照 map 寫的量可以遠大於宣告的 size(審查員 10-24 第 3 輪)
                 return False, "not-a-file:%s" % m.name
         if hasattr(tarfile, "data_filter"):
-            tf.extractall(into, filter="data")
+            tf.extractall(into, members=members, filter="data")
         else:
-            tf.extractall(into)
+            tf.extractall(into, members=members)
     return True, ""
 
 
@@ -292,6 +336,64 @@ def install(src, as_json=False, out=sys.stdout):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def install_named(spec, env=None, **kw):
+    """aib plugins install <名稱>[@版本](10-24 #20):從 ez2.page 目錄拿已簽版本(plugin_catalog.fetch_signed),驗過才裝。
+    回 (回條, rc);回條欄位照契約 plugins.cli_receipt。"""
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+    import aib_ext
+    import plugin_catalog as PC
+    env = dict(os.environ) if env is None else env
+    parsed = PC.parse_spec(spec)
+    if parsed is None:
+        return PC.fail("plugin_name_invalid", 2)
+    name, version = parsed
+    work = tempfile.mkdtemp(prefix="aib-plugin-dl-")
+    try:
+        folder, entry, err = PC.fetch_signed(env, name, version, work=work, current=PC.installed_version(name), **kw)
+        if err:
+            return err
+        rc = aib_ext.install(folder, allow_unsigned=UNSIGNED_OK, out=io_null(), enable_engines=False)
+        if rc:
+            return PC.fail("plugin_rejected", 3, problems=["install-rc-%d" % rc])
+        addon = PC.requires_addon(folder)   # 照驗過簽的包說的,不照目錄(目錄沒簽)
+        ok, lwhy = licensed({"requires_addon": addon}) if addon else (True, "free")
+        return {"ok": True, "detail": "plugin_installed", "name": name, "version": entry["version"],
+                "path": str(aib_ext.target("plugin", name)), "addon": addon, "licensed": bool(ok),
+                "hint": PC.T("hint.plugin_installed" if ok else "hint.plugin_installed_unlicensed", addon=addon or "")
+                or "plugin_installed"}, 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def catalog_cmd(env=None, api=None):
+    sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+    import plugin_catalog as PC
+    entries, err = PC.catalog(dict(os.environ) if env is None else env, api)
+    if err:
+        return err
+    return {"ok": True, "detail": "plugin_catalog", "plugins": entries, "hint": ""}, 0
+
+
+def _safe(text):
+    return text.encode("utf-8", "replace").decode("utf-8")   # 漏網的單獨代理字元換成 ?,印出時不當掉
+
+
+def _emit(res, rc, as_json=False):
+    if as_json:
+        print(_safe(json.dumps(res, ensure_ascii=False)))
+    elif res.get("detail") == "plugin_catalog":
+        for e in res["plugins"]:
+            print(_safe("%-24s %-10s %s%s" % (e["name"], e["version"], e["price"] or ("-" if e["addon"] else "free"),
+                                              ("  " + e["summary"]) if e["summary"] else "")))
+    else:
+        print(_safe(str(res.get("hint") or res.get("detail"))), file=sys.stdout if res.get("ok") else sys.stderr)
+        for p in res.get("problems") or ():
+            print(_safe("  " + str(p)), file=sys.stderr)
+    return rc
+
+
 def io_null():
     import io
     return io.StringIO()
@@ -307,7 +409,16 @@ def main(argv=None):
     as_json = "--json" in a
     a = [x for x in a if x != "--json"]
     if len(a) == 2 and a[0] == "install":
+        sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+        import plugin_catalog as PC
+        if PC.parse_spec(a[1]) is not None and not Path(a[1]).expanduser().exists():   # 長得像名稱、本機又沒有 ⇒ 走目錄;其他照舊
+            return _emit(*install_named(a[1]), as_json=as_json)
         return install(a[1], as_json=as_json)
+    if a == ["catalog"]:
+        return _emit(*catalog_cmd(), as_json=as_json)
+    if len(a) == 2 and a[0] == "license":
+        import plugin_catalog as PC
+        return _emit(*PC.license_get(dict(os.environ), a[1]), as_json=as_json)
     if len(a) != 2 or a[0] != "licensed" or not a[1].replace("-", "").replace("_", "").isalnum():
         print(USAGE, file=sys.stderr)
         return 2

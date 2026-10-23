@@ -127,25 +127,33 @@ BACKUPS_KEEP = 2
 def cmd_install(argv: List[str]) -> int:
     """aib license install <檔>(10-20 @abb89,會員清單 #9):驗簽章與到期,放到 <home>/license.json(0600);
     有舊檔先備份 license.json.bak-<月日-時分>,只留最近 BACKUPS_KEEP 份。只印 tier / addons / 到期 / 路徑,不印簽章。"""
+    from pathlib import Path
+    from .store import read_license_obj
+    if len(argv) != 1:
+        return _print_json({"ok": False, "error": "usage: aib license install <file>"}, 2)
+    obj = read_license_obj(path=Path(argv[0]).expanduser())
+    if obj is None:
+        return _print_json({"ok": False, "error": "not-a-license-file"}, 2)
+    res, rc = install_obj(obj)
+    return _print_json(res, rc)
+
+
+def install_obj(obj):
+    """驗簽章與到期,放到 <home>/license.json(0600、留備份)。回 (回條, rc);aib license install 與 aib plugins license 共用。"""
     import os
     import shutil
     import time
-    from pathlib import Path
     from . import signing
-    from .store import read_license_obj, resolve_license_path
+    from .store import resolve_license_path
     from .tier import _parse_expires_at, _utc_now
-    if len(argv) != 1:
-        return _print_json({"ok": False, "error": "usage: aib license install <file>"}, 2)
-    src = Path(argv[0]).expanduser()
-    obj = read_license_obj(path=src)
-    if obj is None:
-        return _print_json({"ok": False, "error": "not-a-license-file"}, 2)
+    if not isinstance(obj, dict):
+        return {"ok": False, "error": "not-a-license-file"}, 2
     ver = signing.verify_object(obj)
     if ver != signing.OK:
-        return _print_json({"ok": False, "error": "signature-%s" % ver}, 3)
+        return {"ok": False, "error": "signature-%s" % ver}, 3
     exp = _parse_expires_at(obj.get("expires_at"))
     if exp is not None and exp <= _utc_now():
-        return _print_json({"ok": False, "error": "expired", "expires_at": obj.get("expires_at")}, 3)
+        return {"ok": False, "error": "expired", "expires_at": obj.get("expires_at")}, 3
     dest = resolve_license_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
     backup = None
@@ -164,8 +172,8 @@ def cmd_install(argv: List[str]) -> int:
     os.replace(tmp, dest)
     os.chmod(dest, 0o600)
     addons = [a for a in (obj.get("addons") or []) if isinstance(a, str)]
-    return _print_json({"ok": True, "tier": obj.get("tier"), "addons": addons, "expires_at": obj.get("expires_at"),
-                        "path": str(dest), "backup": str(backup) if backup else None}, 0)
+    return {"ok": True, "tier": obj.get("tier"), "addons": addons, "expires_at": obj.get("expires_at"),
+            "path": str(dest), "backup": str(backup) if backup else None}, 0
 
 
 def main(argv: List[str] | None = None) -> int:

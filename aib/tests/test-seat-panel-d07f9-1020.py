@@ -14,7 +14,9 @@ T3 游標:--since 增量、--since 找不到 ⇒ reset、--before 往上、--lim
 T4 pending:未回答的 AskUserQuestion ⇒ ask type=question(options 帶 description / preview);答過 ⇒ null;
    畫面權限框 ⇒ type=permission options 1/2/3、at_prompt False;提示列 ⇒ idle / at_prompt True;思考中 ⇒ thinking;排隊中 n 則
 T5 入口:bash src/cockpit/aib seat transcript <席> --json 接到 seat_panel;席碼不合 / 找不到 ⇒ rc 2 JSON
-刀(複本):K1 不濾壓縮摘要 ⇒ T1 紅;K2 不看 tool_result 就當沒回答 ⇒ T4 紅
+T6 讀尾端(10-24 @74e8b:1.5GB 檔從頭掃 26 秒):大檔第一次載入 / since / before / id / pending 只讀尾端、不夠再倍增;
+   結果跟整份讀一模一樣(含 limit 0、半行切在窗口邊界、排隊數、未回答提問)
+刀(複本):K1 不濾壓縮摘要 ⇒ T1 紅;K2 不看 tool_result 就當沒回答 ⇒ T4 紅;K3 不對齊行首 ⇒ T6 紅;K4 預設從檔頭讀 ⇒ T6 紅
 """
 import importlib.util
 import io
@@ -275,6 +277,67 @@ class Pending(Box):
         self.assertEqual(res["hold_count"], 0)
 
 
+class Tail(Box):
+    def big(self):
+        pad = "字" * 300
+        lines = [rec("user" if i % 2 else "assistant", "第 %d 句 %s" % (i, pad) if i % 2 else [{"type": "text", "text": "回 %d %s" % (i, pad)}],
+                     "e%04d" % i) for i in range(600)]
+        lines += ask_rec("a9", "toolu_ask9", answered=False)
+        lines += [json.dumps({"type": "queue-operation", "sessionId": SESS})] * 3
+        self.write(lines)
+
+    def both(self, fn):
+        """同一個呼叫:尾端窗口很小(逼它倍增好幾次)vs 整份讀,結果要一樣。"""
+        with mock.patch.object(self.SP, "TAIL_START", 4096):
+            small = fn()
+        with mock.patch.object(self.SP, "TAIL_START", 1 << 40):
+            full = fn()
+        return small, full
+
+    def test_t6_tail_matches_full(self):
+        self.big()
+        strip = lambda r: {k: v for k, v in r.items() if k not in ("at", "sessions_in_file")}
+        for kw in (dict(), dict(limit=5), dict(limit=0), dict(since="e0590"), dict(since="e0003"), dict(before="e0550", limit=10),
+                   dict(before="e0005"), dict(only_id="e0100"), dict(only_id="nope"), dict(since="nope")):
+            small, full = self.both(lambda: self.SP.transcript(CODE, **kw)[0])
+            self.assertEqual(strip(small), strip(full), kw)
+        small, full = self.both(lambda: self.SP.pending(CODE, screen=SCREEN_PROMPT)[0])
+        self.assertEqual(small, full)
+        self.assertEqual(small["queued"], 3)
+        self.assertEqual(small["ask"]["id"], "toolu_ask9:ask")
+
+    def test_t6b_reads_only_tail(self):
+        self.big()
+        seen = []
+        real = self.SP.events_from_jsonl
+
+        def spy(path, *a, **k):
+            seen.append(a[2] if len(a) > 2 else k.get("offset", 0))
+            return real(path, *a, **k)
+        size = self.jsonl.stat().st_size
+        with mock.patch.object(self.SP, "events_from_jsonl", spy), mock.patch.object(self.SP, "TAIL_START", 64 * 1024):
+            res = self.transcript(limit=20)
+            self.assertTrue(res["truncated"])
+            self.assertEqual(res["events"][-1]["id"], "toolu_ask9:ask")
+            self.assertTrue(seen and all(o > size // 2 for o in seen), (seen, size))
+            seen.clear()
+            self.SP.pending(CODE, screen=SCREEN_PROMPT)
+            self.assertTrue(seen and all(o > size // 2 for o in seen), (seen, size))
+
+    def test_t6c_window_cuts(self):
+        """窗口邊界:切在一行中間 ⇒ 跳過那半行;剛好切在行首 ⇒ 那一行要留著。"""
+        lines = [rec("user", "前 %d" % i, "p%d" % i) for i in range(50)] + [rec("user", "後", "last")]
+        self.write(lines)
+        data = self.jsonl.read_bytes()
+        start = data.rindex(b"\n", 0, len(data) - 1) + 1          # "last" 那一行的行首
+        ev, *_ = self.SP.events_from_jsonl(str(self.jsonl), offset=start, align=True)
+        self.assertEqual([e["id"] for e in ev], ["last"])
+        ev, *_ = self.SP.events_from_jsonl(str(self.jsonl), offset=start - 5, align=True)
+        self.assertEqual([e["id"] for e in ev], ["last"])
+        ev, *_ = self.SP.events_from_jsonl(str(self.jsonl), offset=start + 3, align=True)
+        self.assertEqual(ev, [])
+
+
 class Entry(Box):
     def test_t5_cli(self):
         self.write([rec("user", "hi", "u1")])
@@ -303,6 +366,12 @@ class Knife(unittest.TestCase):
     def test_k1_compact_summary_shown(self):
         self._knife('                if rec.get("isCompactSummary") or rec.get("isVisibleInTranscriptOnly"):\n',
                     '                if False:\n', "Events.test_t1_kinds")
+
+    def test_k3_no_align(self):
+        self._knife("            fh.seek(offset - 1)\n", "            fh.seek(offset)\n", "Tail.test_t6c_window_cuts")
+
+    def test_k4_reads_from_head(self):
+        self._knife("        off = max(0, size - win)\n", "        off = 0\n", "Tail.test_t6b_reads_only_tail")
 
     def test_k2_answered_ignored(self):
         self._knife('                        answered.add(tid)\n', '', "Pending.test_t4_pending")
