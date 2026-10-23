@@ -56,6 +56,11 @@ class TransportError(Exception):
     """連不上 / 逾時 / 回的不是 JSON。與 ApiError 分開:這一種重試有意義。"""
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None          # 不轉、不讀本體 ⇒ urllib 丟 HTTPError(code, fp)
+
+
 class PageApi:
     """一把 token 對一個頁面。沒有 token 也能用,但只能走 `public_html()`。"""
 
@@ -66,6 +71,9 @@ class PageApi:
         self.timeout = timeout
         # opener 可注入 ⇒ 尺用本機假伺服器跑,不碰正式站。
         self._opener = opener or urllib.request.build_opener()
+        # 抓外掛(_get_raw)不跟轉址:urllib 跟 3xx 前會先把轉址回應體整個讀進記憶體(不受 _read_capped 上限),
+        #   還會把 Authorization 帶到新位址(審查員 10-24 第 6 輪)。3xx 改走 HTTPError,錯誤體照 64 KiB 上限讀。
+        self._raw_opener = opener or urllib.request.build_opener(_NoRedirect)
 
     # ---- 低層 -------------------------------------------------------------
 
@@ -325,13 +333,18 @@ class PageApi:
 
     def _get_raw_once(self, request, max_bytes, deadline):
         try:
-            with self._opener.open(request, timeout=max(self.timeout, 60)) as response:
+            with self._raw_opener.open(request, timeout=max(self.timeout, 60)) as response:
                 return response.status, self._read_capped(response, max_bytes + 1, max(0.0, deadline - time.monotonic()))
         except urllib.error.HTTPError as exc:
             try:
                 return exc.code, self._read_capped(exc, 64 * 1024, max(0.0, deadline - time.monotonic()))
             except (http.client.HTTPException, OSError, TransportError):
                 return exc.code, b""
+            finally:
+                try:
+                    exc.close()
+                except Exception:  # noqa: BLE001 - 收連線失敗不影響回條
+                    pass
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:   # 回應讀到一半斷(IncompleteRead)也算連不上
             raise TransportError("連不上 %s:%s" % (self.base_url, type(exc).__name__))
 

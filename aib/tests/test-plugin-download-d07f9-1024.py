@@ -397,6 +397,16 @@ class License(Box):
         res, rc = PC.license_get(dict(os.environ), "probe", api=api(srv, token="ast_x"), machine_id=MID)
         return res, rc, srv
 
+    def test_d8b_license_odd_errors(self):
+        """授權端點回怪錯誤體 ⇒ rc 在契約內、不拋例外、license.json 不動(第 6 輪)。"""
+        dest = self.state / "license.json"
+        for st, body in ((403, {"error": "x", "details": 5}), (500, {"error": "x", "details": True}), (403, {"error": ["x"]}),
+                         (401, {"error": "page_api_token_revoked", "revoked_at": "0001-01-01T00:00:00+14:00"}),
+                         (200, b"not json"), (200, [1, 2])):
+            res, rc, _ = self.get(st, body)
+            self.assertIn(rc, (2, 3, 4), (st, body, res))
+            self.assertFalse(dest.exists())
+
     def test_d8_license(self):
         dest = self.state / "license.json"
         res, rc, srv = self.get(200, {"ok": True, "license": self.lic()})
@@ -441,7 +451,7 @@ class Cli(Box):
         buf = io.StringIO()
         with mock.patch.object(A.PageApi, "__init__", lambda s, base_url=None, token=None, **k: (
                 setattr(s, "base_url", "https://page.test"), setattr(s, "token", token), setattr(s, "timeout", 5),
-                setattr(s, "_opener", srv))[0]), redirect_stdout(buf):
+                setattr(s, "_opener", srv), setattr(s, "_raw_opener", srv))[0]), redirect_stdout(buf):
             rc = AP.main(["install", "probe", "--json"])
         self.assertEqual(rc, 0, buf.getvalue())
         self.assertEqual(json.loads(buf.getvalue().strip().splitlines()[-1])["detail"], "plugin_installed")
@@ -554,6 +564,79 @@ class Hard(Box):
         self.assertLessEqual(got["/plugins/packages/probe/0.0.1.tgz"], 64 * 1024)   # 錯誤體也只讀 64 KiB
         self.assertIn(rc, (2, 3, 4))
 
+    def test_h5_redirect_not_followed(self):
+        """伺服器回 302 + 巨大本體:不跟轉址、本體只讀 64 KiB(第 6 輪;urllib 預設會整個讀進記憶體再轉)。"""
+        import http.server
+        import threading
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                self.send_response(302)
+                self.send_header("Location", "/elsewhere")
+                self.send_header("Content-Length", str(8 * 1024 * 1024))
+                self.end_headers()
+                try:
+                    for _ in range(128):
+                        self.wfile.write(b"\0" * 65536)
+                except OSError:
+                    pass
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        api = A.PageApi(base_url="http://127.0.0.1:%d" % srv.server_address[1])
+        api.total_s = 10
+        st, raw = api._get_raw("/plugins/catalog", {}, 1024)
+        self.assertEqual(st, 302)
+        self.assertLessEqual(len(raw), 64 * 1024)
+        self.assertEqual([p for p in seen if p.endswith("/elsewhere")], [])
+
+    def test_h6_link_then_write_through(self):
+        """tar 先放資料夾連結、再往連結裡寫:自己的檢查先擋(not-a-file),3.9 沒有 data filter 也寫不出去(第 6 輪)。"""
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            ln = tarfile.TarInfo("probe/d")
+            ln.type = tarfile.SYMTYPE
+            ln.linkname = str(outside)
+            tf.addfile(ln)
+            f = tarfile.TarInfo("probe/d/evil")
+            f.size = 3
+            tf.addfile(f, io.BytesIO(b"pwn"))
+        into = self.tmp / "lk"
+        into.mkdir()
+        self.assertEqual(AP._extract(buf.getvalue(), into), (False, "not-a-file:probe/d"))
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_h7_gunzip_steps_bounded(self):
+        """gzip 一次最多吐 1 MiB:每次 decompress 都帶 max_length(拿掉上限 ⇒ 炸彈先整包解開才判太大)。"""
+        import gzip
+        import zlib
+        calls = []
+        real = zlib.decompressobj
+
+        class Spy:
+            def __init__(self, *a):
+                self.d = real(*a)
+
+            def decompress(self, data, max_length=0):
+                calls.append(max_length)
+                return self.d.decompress(data, max_length)
+
+            def __getattr__(self, name):
+                return getattr(self.d, name)
+        blob = gzip.compress(b"\0" * (8 << 20), 9)
+        with mock.patch.object(zlib, "decompressobj", Spy):
+            self.assertIsNone(AP._gunzip_bounded(blob, 2 << 20))
+        self.assertTrue(calls)
+        self.assertTrue(all(0 < c <= 1 << 20 for c in calls), calls[:5])
+
     def test_h4_package_odd_errors(self):
         data = self.tgz()
         for st, body in ((403, {"error": "x", "details": 5}), (500, {"error": "x", "details": True}),
@@ -614,6 +697,24 @@ class Knife(unittest.TestCase):
         self._knife('    except Exception:  # noqa: BLE001\n        return None, entry, fail("plugin_unreachable", 4)\n    if len(data)',
                     '    except ZeroDivisionError:\n        return None, entry, fail("plugin_unreachable", 4)\n    if len(data)',
                     "Hard.test_h4_package_odd_errors")
+
+    def test_k14_follow_redirect(self):
+        self._knife("self._raw_opener = opener or urllib.request.build_opener(_NoRedirect)",
+                    "self._raw_opener = opener or urllib.request.build_opener()", "Hard.test_h5_redirect_not_followed",
+                    rel="src/cockpit/page/api.py")
+
+    def test_k15_only_sparse_rejected(self):
+        self._knife("if not (m.isfile() or m.isdir()) or m.issparse():", "if m.issparse():",
+                    "Hard.test_h6_link_then_write_through", rel="tools/verify/aib_plugins.py")
+
+    def test_k16_gunzip_unbounded_step(self):
+        self._knife("chunk = d.decompress(buf, 1 << 20)", "chunk = d.decompress(buf)",
+                    "Hard.test_h7_gunzip_steps_bounded", rel="tools/verify/aib_plugins.py")
+
+    def test_k17_license_catch_all(self):
+        self._knife('    except Exception:  # noqa: BLE001\n        return fail("plugin_unreachable", 4)\n    obj = payload.get("license")',
+                    '    except ZeroDivisionError:\n        return fail("plugin_unreachable", 4)\n    obj = payload.get("license")',
+                    "License.test_d8b_license_odd_errors")
 
     def test_k10_no_total_deadline(self):
         self._knife("        t.join(total_s + 2)", "        t.join()", "Slow.test_d1c_total_deadline",
