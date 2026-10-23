@@ -224,7 +224,11 @@ case "$PROVIDER:$MODE" in
   # 讀數會紅:plain 啟動一樣起得來。這正是「名字宣稱在守、實際沒守」那一族。
   grok:dgrs)   ARGS=(--permission-mode bypassPermissions) ;;
   grok:safe)   ARGS=() ;;
-  *)           ARGS=() ;;   # agy/copilot:mode 旗標未確立,plain 啟動
+  # agy(CLI 1.4.6,10-24 @abb89 右鍵實測 --help):dgrs 的對應物是 --dangerously-skip-permissions。
+  #   先前落在 *) plain 啟動 ⇒ 窗名寫 dgrs、實際每個工具都要人按(跟上面 grok 同一族)。
+  agy:dgrs)    ARGS=(--dangerously-skip-permissions) ;;
+  agy:safe)    ARGS=() ;;
+  *)           ARGS=() ;;   # copilot:mode 旗標未確立,plain 啟動
 esac
 
 # The provider process always sees an explicit requested model.  This is only
@@ -316,6 +320,12 @@ if { [ "$PROVIDER" = "agy" ] || [ "$PROVIDER" = "copilot" ] || [ "$PROVIDER" = "
 fi
 # 10-14 a seat(the maintainer 02:3x「Codex /hooks 信任要自動」):上面兩段裝完,AIB 自己的掛點還沒信任 ⇒ Mac 彈窗
 #   [同意][不要],30 秒沒按 = 同意;同意才寫 config.toml 的 trusted_hash(先備份)。別人的掛點不碰;AIB_CODEX_HOOK_TRUST=0 關。
+# 10-24 @abb89(Andy「卡選項的新開席都要能自動選成功」):agy 第一次進一個資料夾會先問信不信任,
+#   開席單打不進那個畫面 ⇒ 席卡住。人在這個資料夾開席 = 要它在這裡做事 ⇒ 先寫進 agy 的信任清單
+#   (同 Codex 的 ensure_project_trusted);讀不懂設定檔就不動。AIB_AGY_TRUST=0 關。
+if [ "$PROVIDER" = "agy" ] && [ -f "$HERE/agy_trust.py" ]; then
+  "${EZ2_PY3:-python3}" "$HERE/agy_trust.py" ensure "$PROJECT_DIR" </dev/null >/dev/null 2>&1 || true
+fi
 if [ "$PROVIDER" = "codex" ] && [ -t 0 ] && [ -f "$HERE/codex_hook_trust.py" ]; then
   "${EZ2_PY3:-python3}" "$HERE/codex_hook_trust.py" ensure </dev/null || true
 fi

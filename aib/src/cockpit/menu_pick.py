@@ -62,6 +62,8 @@ AI_CMD = ["claude", "-p", "--output-format", "text", "--no-session-persistence",
 _BOX = re.compile(r"[│┃╭╮╰╯─━╻╹▄▀]")
 _CURSOR = re.compile(r"^\s*[❯›>▶●○◯◉]\s*")
 _OPT = re.compile(r"^\s*(?:[❯›>▶●○◯◉]\s*)?(?:\(?[0-9]{1,2}[.)]|\[[0-9a-zA-Z]\]|\([a-zA-Z]\))\s+\S")
+# 10-24:沒編號的游標選單(agy 信任畫面「> Yes, I trust this folder / No, exit」+「↑/↓ Navigate · enter Confirm」)
+_NAV = re.compile(r"↑\s*/?\s*↓|\benter\s+(?:to\s+)?(?:confirm|select)\b|\bnavigate\b", re.I)
 _ASK = re.compile(r"\?|\uff1f|Do you want|[Aa]llow|[Pp]roceed|[Cc]onfirm|[Aa]pprove|確認|要不要|是否|允許|Esc to cancel|enter to select",
                   re.I)
 
@@ -197,7 +199,15 @@ def suspect(screen, provider=None):
     hits = [i for i, ln in enumerate(tail) if _OPT.match(ln)]
     # 等人選的選單,選項貼在畫面最底下(下面頂多操作說明、狀態列幾行);回報裡的「1. 2. 3.」清單在上面 ⇒ 不算
     near_bottom = bool(hits) and len(tail) - 1 - hits[-1] <= OPT_BOTTOM_SLACK
-    return len(hits) >= 2 and near_bottom and any(_ASK.search(ln) for ln in tail)
+    if len(hits) >= 2 and near_bottom and any(_ASK.search(ln) for ln in tail):
+        return True
+    # 游標選單:底部有「上下選、Enter 確認」的操作說明,它上面緊鄰一行游標選項 + 至少一行別的選項
+    nav = [i for i, ln in enumerate(tail) if _NAV.search(ln)]
+    if not nav or len(tail) - 1 - nav[-1] > OPT_BOTTOM_SLACK:
+        return False
+    above = tail[max(0, nav[-1] - 8):nav[-1]]
+    cur = [i for i, ln in enumerate(above) if _CURSOR.match(ln) and _CURSOR.sub("", ln).strip()]
+    return bool(cur) and len(above) - cur[0] >= 2 and any(_ASK.search(ln) for ln in tail)
 
 
 def screen_hash(screen):
