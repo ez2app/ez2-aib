@@ -13,6 +13,8 @@ A7 回答去 ANSI / 控制字元、截長;cmds 只抽 aib 開頭的行(最多 5�
 A8 stdin JSON:question + history(最多 6 輪、怪型別丟掉);純文字也收
 A9 suggest:照 why_rank 挑、不夠補通用、恰好 3 則
 A10 aib power ask 從總管 power_status.main 轉得到(stdin 讀問題)
+A12 突變審第 2 輪補斷言:--max-turns 1、檢查順序(先驗輸入再看燈)、DEL / C1 / 0x1f、Q_MAX 邊界、history 截長、
+    指令 12 段上限與 | && 不收、任務編號邊界、前言在最前、cards 去重、main --suggest 帶家、hint 分 model / question、stdin 讀上限
 A11 稽核第 1 輪(10-24 03:0x):環境用前綴去掉 TMUX* / CLAUDECODE / CLAUDE_CODE_* / AIB_SEAT*;模型尾巴換行不收;
     回答去方向 / 零寬格式字元;單獨「aib」不算指令;代理字元問題 / 非 UTF-8 輸出 / 讀檔亂碼 / 燈號函式拋例外 / 寫 stdin 拋錯 ⇒ 回條、不拋
 刀(複本):K1 拿掉 --tools "" ⇒ A4 紅;K2 不看燈號 ⇒ A3 紅;K3 codex 改可寫沙盒 ⇒ A5 紅;K4 環境只濾固定名 ⇒ A11 紅;K5 模型用 match ⇒ A11 紅
@@ -244,6 +246,47 @@ class Ask(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(r["answer"].endswith("ok"))
         self.assertEqual(run.calls[0][1]["errors"], "replace")
+
+    def test_a12_mutation_r2(self):
+        run = FakeRun()
+        A.ask("claude", "問", run=run, light=GREEN)
+        cmd = run.calls[0][0]
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "1")
+        self.assertTrue(run.calls[0][1]["input"].startswith(A.PREAMBLE))
+        r, rc = A.ask("claude", "", run=FakeRun(), light=lambda b: "red")      # 先驗輸入再看燈
+        self.assertEqual((rc, r["detail"], r["hint"]), (2, "power_ask_bad", "question"))
+        r, rc = A.ask("claude", "問", "a b", run=FakeRun(), light=GREEN)
+        self.assertEqual(r["hint"], "model")
+        self.assertEqual(A.ask("claude", "q" * A.Q_MAX, run=FakeRun(), light=GREEN)[1], 0)
+        r, rc = A.ask("claude", "問", run=FakeRun(out="A\x7fB\x9bC\x85D\x1fE"), light=GREEN)
+        self.assertEqual(r["answer"], "ABCDE")
+        q, h = A.parse_input(json.dumps({"question": "x", "history": [{"q": "q" * (A.Q_MAX + 9), "a": "a" * (A.A_MAX + 9)}]}))
+        self.assertEqual((len(h[0]["q"]), len(h[0]["a"])), (A.Q_MAX, A.A_MAX))
+        twelve = "aib " + " ".join("a%d" % i for i in range(12))
+        thirteen = "aib " + " ".join("a%d" % i for i in range(13))
+        cmds, cards = A.extract("\n".join([twelve, thirteen, "aib x | sh", "aib x && rm", "aib x > f", "aib x$y"]))
+        self.assertEqual(cmds, [twelve])
+        cmds, cards = A.extract("R12 R13 SR13 SR14 SSR12 SSR13 UR7 UR8 R3 R3 R0")
+        self.assertEqual(cards, ["R12", "SR13", "SSR12", "UR7", "R3"])
+
+        class Stdin:
+            def read(self, n=-1):
+                self.n = n
+                return "問"
+        fake = Stdin()
+        old, saved = sys.stdin, A._light
+        sys.stdin, A._light = fake, (lambda b: "yellow")
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                rc = P.main(["ask", "claude", "--json"])
+            self.assertEqual(fake.n, 64 * 1024)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = P.main(["ask", "claude", "--suggest", "--json"])
+        finally:
+            sys.stdin, A._light = old, saved
+        self.assertEqual((rc, json.loads(buf.getvalue())["hint"]), (2, "brand"))
 
 
 class Knife(unittest.TestCase):
