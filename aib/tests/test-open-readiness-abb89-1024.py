@@ -205,5 +205,74 @@ class OnboardNoticeMarkedRead(Base):
         self.assertFalse(SO.mark_onboard_read("", it["id"], env=self.env))
 
 
+class ProbeTrustCleanup(Base):
+    """第 9 項:用量探針在暫存資料夾按了「信任」,agy / grok 的信任清單留下暫存路徑;收尾要拿掉。"""
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(COCKPIT))
+        import usage_probe as UP
+        self.UP = UP
+        self.fake_tmp = self.tmp / "T"
+        self.fake_tmp.mkdir()
+        self._old_tempdir = tempfile.tempdir
+        tempfile.tempdir = str(self.fake_tmp)
+        self.gem = self.tmp / "gem"
+        (self.gem / "antigravity-cli").mkdir(parents=True)
+        self.grok = self.tmp / "grok"
+        self.grok.mkdir()
+        self.penv = {"GEMINI_CLI_HOME": str(self.gem), "GROK_HOME": str(self.grok)}
+
+    def tearDown(self):
+        tempfile.tempdir = self._old_tempdir
+        super().tearDown()
+
+    def test_agy_drops_own_and_stale_probe_dirs_only(self):
+        own = self.fake_tmp / "ez2-usage-probe.own1"
+        stale = str(self.fake_tmp / "ez2-usage-probe.gone")
+        alive = self.fake_tmp / "ez2-usage-probe.alive"
+        alive.mkdir()
+        keep = ["/Users/x/proj", str(alive), str(self.fake_tmp / "not-a-probe")]
+        cfg = self.gem / "antigravity-cli" / "settings.json"
+        cfg.write_text(json.dumps({"model": "m", "trustedWorkspaces": keep + [str(own), stale]}))
+        os.chmod(cfg, 0o640)
+        own.mkdir()                     # 探針收尾時自己的資料夾可能還在 ⇒ 照樣拿掉
+        self.assertEqual(self.UP.forget_probe_trust(own, environ=self.penv), 2)
+        d = json.loads(cfg.read_text())
+        self.assertEqual(d["trustedWorkspaces"], keep)
+        self.assertEqual(d["model"], "m")
+        self.assertEqual(cfg.stat().st_mode & 0o777, 0o640)
+
+    def test_grok_drops_probe_blocks_and_keeps_others(self):
+        try:
+            import tomllib
+        except ImportError:
+            self.skipTest("沒有 tomllib")
+        stale = str(self.fake_tmp / "ez2-agy-quota-zz")
+        body = ('[folders."/Users/x/proj"]\ntrusted = true\ndecided_at = 1\n\n'
+                '[folders."%s"]\ntrusted = true\ndecided_at = 2\n\n'
+                '[folders."/tmp/other"]\ntrusted = false\ndecided_at = 3\n') % stale
+        cfg = self.grok / "trusted_folders.toml"
+        cfg.write_text(body)
+        self.assertEqual(self.UP.forget_probe_trust(None, environ=self.penv), 1)
+        left = tomllib.loads(cfg.read_text())["folders"]
+        self.assertEqual(set(left), {"/Users/x/proj", "/tmp/other"})
+        self.assertIs(left["/tmp/other"]["trusted"], False)
+
+    def test_symlink_and_unreadable_untouched(self):
+        real = self.tmp / "dot.json"
+        real.write_text(json.dumps({"trustedWorkspaces": [str(self.fake_tmp / "ez2-usage-probe.x")]}))
+        (self.gem / "antigravity-cli" / "settings.json").symlink_to(real)
+        (self.grok / "trusted_folders.toml").write_text("[folders\n")
+        self.assertEqual(self.UP.forget_probe_trust(None, environ=self.penv), 0)
+        self.assertIn("ez2-usage-probe.x", real.read_text())
+        self.assertEqual((self.grok / "trusted_folders.toml").read_text(), "[folders\n")
+
+    def test_probe_exit_and_agy_quota_call_cleanup(self):
+        src = (COCKPIT / "usage_probe.py").read_text(encoding="utf-8")
+        self.assertEqual(src.count("forget_probe_trust(self.cwd)"), 1)
+        self.assertEqual(src.count("forget_probe_trust(cwd)"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
