@@ -24,6 +24,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -300,14 +301,36 @@ class PageApi:
         return bytes(buf)
 
     def _get_raw(self, path, headers, max_bytes):
+        """整段(連線、狀態列 / 標頭、本體、錯誤體)共用一個總期限:放進背景執行緒,時間到就當連不上。
+        socket 逾時只管每一次讀;伺服器在標頭或錯誤體一次滴一個位元組,沒有總期限會拖好幾天。
+        時間到時那條執行緒(daemon)還卡在讀,行程結束時跟著收;回呼端拿到的一律是 TransportError。"""
         request = urllib.request.Request(self._url(path), headers=headers, method="GET")
+        total_s = getattr(self, "total_s", None) or max(self.timeout, 60) * 3
+        deadline = time.monotonic() + total_s
+        box = {}
+
+        def work():
+            try:
+                box["r"] = self._get_raw_once(request, max_bytes, deadline)
+            except BaseException as exc:  # noqa: BLE001 - 帶回主執行緒再丟
+                box["e"] = exc
+        t = threading.Thread(target=work, name="aib-page-get", daemon=True)
+        t.start()
+        t.join(total_s + 2)                      # 多 2 秒寬限:讓執行緒裡的讀取期限先到、照常收尾
+        if t.is_alive():
+            raise TransportError("回應超過 %d 秒" % total_s)
+        if "e" in box:
+            raise box["e"]
+        return box["r"]
+
+    def _get_raw_once(self, request, max_bytes, deadline):
         try:
             with self._opener.open(request, timeout=max(self.timeout, 60)) as response:
-                return response.status, self._read_capped(response, max_bytes + 1, max(self.timeout, 60) * 3)
+                return response.status, self._read_capped(response, max_bytes + 1, max(0.0, deadline - time.monotonic()))
         except urllib.error.HTTPError as exc:
             try:
-                return exc.code, exc.read(64 * 1024)
-            except (http.client.HTTPException, OSError):
+                return exc.code, self._read_capped(exc, 64 * 1024, max(0.0, deadline - time.monotonic()))
+            except (http.client.HTTPException, OSError, TransportError):
                 return exc.code, b""
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:   # 回應讀到一半斷(IncompleteRead)也算連不上
             raise TransportError("連不上 %s:%s" % (self.base_url, type(exc).__name__))

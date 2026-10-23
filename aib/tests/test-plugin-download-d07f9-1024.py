@@ -218,6 +218,41 @@ class Slow(unittest.TestCase):
                 A.PageApi._read_capped(Drip(), 10 ** 6, 100)    # 伺服器一次滴一個位元組:總時限到就停
         self.assertEqual(A.PageApi._read_capped(_Resp(200, b"abc"), 2, 100), b"ab")
 
+    def test_d1c_total_deadline(self):
+        """標頭階段 / 錯誤體慢滴也在總期限內收成 TransportError(第 5 輪)。"""
+        import threading
+        import time as _t
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+
+        class Hang:
+            def open(self, req, timeout=None):
+                gate.wait(6)                      # 標頭一直滴不完
+                return _Resp(200, b"{}")
+
+        class DripErr(urllib.error.HTTPError):
+            def __init__(self):
+                super().__init__("https://page.test/x", 500, "x", {}, None)
+
+            def read1(self, n):
+                _t.sleep(0.05)
+                return b"x"
+
+        class ErrOpen:
+            def open(self, req, timeout=None):
+                raise DripErr()
+        api = A.PageApi(base_url="https://page.test", opener=Hang())
+        api.total_s = 0.5
+        t0 = _t.monotonic()
+        with self.assertRaises(A.TransportError):
+            api._get_raw("/plugins/catalog", {}, 1024)
+        self.assertLess(_t.monotonic() - t0, 4.5)
+        api = A.PageApi(base_url="https://page.test", opener=ErrOpen())
+        api.total_s = 0.5
+        t0 = _t.monotonic()
+        self.assertEqual(api._get_raw("/plugins/catalog", {}, 1024), (500, b""))   # 錯誤體讀不完 ⇒ 只留狀態碼
+        self.assertLess(_t.monotonic() - t0, 4.5)
+
 
 class Install(Box):
     def test_d2_free_by_name(self):
@@ -475,6 +510,10 @@ class Knife(unittest.TestCase):
     def test_k8_sparse_accepted(self):
         self._knife("if not (m.isfile() or m.isdir()) or m.issparse():", "if not (m.isfile() or m.isdir()):",
                     "Install.test_d4b_unpack_limits", rel="tools/verify/aib_plugins.py")
+
+    def test_k10_no_total_deadline(self):
+        self._knife("        t.join(total_s + 2)", "        t.join()", "Slow.test_d1c_total_deadline",
+                    rel="src/cockpit/page/api.py")
 
     def test_k9_no_read_deadline(self):
         self._knife("            if time.monotonic() > deadline:\n", "            if False:\n", "Slow.test_d1b_read_deadline",
