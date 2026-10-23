@@ -44,6 +44,7 @@ import secrets
 import string
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 LIBRARY_ROUTE_KEY = "product.expert.agent_library"
@@ -227,6 +228,19 @@ def lint_messages(failures):
         out.append(T("aib.newrole.lint_headings_hint", {"headings": " / ".join(
             "## %s (%s)" % (h, T("aib.newrole.heading_" + k)) for h, k in REQUIRED_HEADINGS)}))
     return out
+
+
+def _mark_new_role(uid):
+    """真的新建一張角色卡 ⇒ 記最後一次 <狀態根>/state/run-marks/newrole.json = {at, uid}(動力室 SSR3 讀;
+    10-24 Andy 准)。覆寫不累積、不帶人設內容;寫不進去不影響建卡。沿用本檔的狀態根 AIB_HOME。"""
+    try:
+        d = AIB_HOME / "state" / "run-marks"
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / ("newrole.json.%d.tmp" % os.getpid())
+        tmp.write_text(json.dumps({"at": int(time.time()), "uid": uid}), encoding="utf-8")
+        os.replace(tmp, d / "newrole.json")
+    except (OSError, ValueError):
+        pass
 
 
 def commit_card(role_lib_dir, card_file, name):
@@ -998,6 +1012,8 @@ def main():
         except (OSError, RuntimeError, ValueError) as exc:
             log(str(exc), prefix="[x]")
             return 5
+        if not existed_before:
+            _mark_new_role(target_card_uid)
 
     # 10-12 新用戶:狀態樹還沒建(沒跑過 aib init)⇒ 先建,不讓卡已寫進 vault 卻在掃描那步卡住
     #   試跑不建(aib_init 會種 secrets 範本、帳本、說明檔;--dry-run 一個檔都不寫)。

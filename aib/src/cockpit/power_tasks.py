@@ -179,6 +179,7 @@ def _local_events(root, rows):
         "second_seat_same_role": len(roles) != len(set(roles)),
         "projects_3": sum(1 for n in _listdir(os.path.join(root, "projects")) if n.startswith("proj:")) >= 3,
         "doctor_run": os.path.isfile(os.path.join(st, "run-marks", "doctor.json")),
+        "newrole": os.path.isfile(os.path.join(st, "run-marks", "newrole.json")),
         "new_cabin": sum(1 for n in _listdir(os.path.join(root, "instances"))
                          if os.path.isdir(os.path.join(root, "instances", n, "seats"))) >= 2,
     }
@@ -222,7 +223,7 @@ DETECTABLE = frozenset(("power_opened", "born", "seat_registered", "persona_boun
                         "handoff_receipt", "two_providers_online", "aib_upgraded", "launch_streak_3", "launch_streak_7",
                         "launch_streak_30", "ssr_all_done", "now_written", "dm_sent", "dm_done", "memory_10",
                         "test_green", "second_seat_same_role", "projects_3", "doctor_run",
-                        "new_cabin"))
+                        "new_cabin", "newrole"))
 
 
 def onboarding_state(*, detector=None, now=None, today=None):
