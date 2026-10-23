@@ -14,11 +14,13 @@ D4b 每一家 id 都過白名單(bogus mode 拿到 invalid mode,不是 unsupport
 D5 EXPECTED_DGRS 每一家在 `case "$PROVIDER:$MODE"` 有自己的 `<id>:dgrs)`,不靠 `*)`
 D6 NO_DGRS 每一家在找 CLI(BIN=)之前就 exec 自家橋接(不會被當成原生 CLI 起)
 D7 真實呼叫形狀:帶 session uuid、預設首回合提示(不設 AIB_NO_ONBOARD)、claude/grok 接回(AIB_RESUME_UUID)、
-   claude 分出新席(帶第一句)/ 分出後重生、copilot 接回、codex 套組關、codex 接回,dgrs 旗標都還在
+   claude 分出新席(帶第一句)/ 分出後重生、從外層 provider-run-relogin.sh 進、codex 在 tmux 裡、copilot 接回、codex 套組關、codex 接回,dgrs 旗標都還在
 D8 codex 換帳後重組參數(_fresh_login_args)照 dgrs 帶回旗標
 D9 openrouter / typesafe / openrouterjev 帶型號又 AIB_NO_EFFORT=1 也開得起來(以前 PY3 沒設值,set -u 當場退)
 刀(PR 手跑在複本上,不在本檔):K1 拿掉 grok:dgrs ⇒ D1、D5 紅;K2 providers.json 加一家原生沒進表 ⇒ D3 紅;K3 白名單多一家 ⇒ D4 紅;
   K4 copilot 旗標清空 ⇒ D1 紅;K5 帶 session 時 ARGS= 洗掉旗標 ⇒ D7 紅;K6 拿掉橋接分支的 PY3= ⇒ D9 紅;
+  K8 外層 run_launch 把模式換成 safe、codex tmux 分支丟第一參 ⇒ D7 紅
+  (接著終端機才跑的段落([ -t 0 ])測試照不到,@abb89 裁排下一版)
   K7 agy / codex 首回合、copilot 接回、claude 分出 / 分出帶第一句 / 重生用 ARGS= 洗掉旗標 ⇒ D7 紅
 """
 import json
@@ -37,6 +39,7 @@ from aib_tmp_root import aib_tmp_root  # noqa: E402
 
 COCKPIT = ROOT / "src" / "cockpit"
 LAUNCH = COCKPIT / "provider-launch.sh"
+RELOGIN = COCKPIT / "provider-run-relogin.sh"   # aib 開席實際進的外層(aib_build_launch_cmd)
 PROVIDERS = COCKPIT / "providers.json"
 
 # 原生 CLI:dgrs 對應的旗標(版本 = 實測 --help 的那一版)
@@ -113,8 +116,10 @@ class Launch(unittest.TestCase):
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=60)
 
-    def run_launch(self, provider, mode, *extra, env=None):
-        p = self.launch(provider, mode, "dev", self.proj, *extra, env=env)
+    def run_launch(self, provider, mode, *extra, env=None, script=LAUNCH):
+        p = subprocess.run(["bash", str(script), provider, mode, "dev", self.proj, *extra],
+                           env={**self.env, **(env or {})}, cwd=self.proj, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         f = Path(self.argv, provider)
         self.assertTrue(f.exists(), f"{provider} {mode} 沒起到假 CLI rc={p.returncode}\n{p.stdout}{p.stderr}")
         argv = f.read_text(encoding="utf-8").splitlines()
@@ -155,20 +160,23 @@ class Launch(unittest.TestCase):
         with self.subTest(provider="claude", shape="fork"):
             # 真的分出時 aib 一定連第一句(AIB_FORK_PREAMBLE_FILE)一起帶
             pre = Path(self.tmp, "preamble.txt")
-            pre.write_text("PREAMBLE-LINE", encoding="utf-8")
+            # 真的第一句是多行;假 CLI 一參一行記,所以用單行但含空白(拆字會紅)、檔尾換行照真檔
+            pre.write_text("PREAMBLE LINE two\n", encoding="utf-8")
             argv = self.run_launch("claude", "dgrs", UUID, env={"AIB_FORK_FROM_SESSION_UUID": fork_from,
                                                                 "AIB_FORK_PREAMBLE_FILE": str(pre)})
             self.assertTrue(has_run(argv, EXPECTED_DGRS["claude"]), argv)
             self.assertTrue(has_run(argv, ["--resume", fork_from, "--fork-session", "--session-id", UUID]), argv)
-            self.assertEqual(argv[-1], "PREAMBLE-LINE", argv)
+            self.assertEqual(argv[-1], "PREAMBLE LINE two", argv)
         with self.subTest(provider="claude", shape="fork-respawn"):
             proj = Path(self.home, ".claude", "projects", "x")
             proj.mkdir(parents=True)
             Path(proj, UUID + ".jsonl").write_text("", encoding="utf-8")
-            argv = self.run_launch("claude", "dgrs", UUID, env={"AIB_FORK_FROM_SESSION_UUID": fork_from})
+            argv = self.run_launch("claude", "dgrs", UUID, env={"AIB_FORK_FROM_SESSION_UUID": fork_from,
+                                                                "AIB_FORK_PREAMBLE_FILE": str(pre)})
             self.assertTrue(has_run(argv, EXPECTED_DGRS["claude"]), argv)
             self.assertTrue(has_run(argv, ["--resume", UUID]), argv)
             self.assertNotIn("--fork-session", argv)
+            self.assertNotIn("PREAMBLE LINE two", argv)   # 重生不再送第一句
         for mode in ("dgrs", "safe"):
             with self.subTest(provider="copilot", shape="resume-" + mode):
                 argv = self.run_launch("copilot", mode, env={"AIB_RESUME_SESSION_UUID": UUID})
@@ -177,6 +185,21 @@ class Launch(unittest.TestCase):
                     self.assertTrue(has_run(argv, EXPECTED_DGRS["copilot"]), argv)
                 else:
                     self.assertFalse([a for a in argv if a.startswith("-") and a not in SAFE_OK], argv)
+        # 外層包裝:登記 / 頂列 / codex 停留選單關掉;codex 要有登入檔,不然外層當成沒登入重開
+        Path(self.home, ".codex").mkdir(exist_ok=True)
+        Path(self.home, ".codex", "auth.json").write_text("{}", encoding="utf-8")
+        wrap = {"AIB_SEAT_SELF_REGISTER": "0", "AIB_PANE_TOP": "0", "AIB_CODEX_HOLD": "0"}
+        for provider, flags in EXPECTED_DGRS.items():
+            with self.subTest(provider=provider, shape="relogin-wrapper"):
+                argv = self.run_launch(provider, "dgrs", env=wrap, script=RELOGIN)
+                self.assertTrue(has_run(argv, flags), argv)
+        # codex 預設在 tmux 裡開(走背景啟動那支);tmux 換成什麼都不做的假的
+        tmux = Path(self.bin, "faketmux")
+        tmux.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        tmux.chmod(0o755)
+        with self.subTest(provider="codex", shape="in-tmux"):
+            argv = self.run_launch("codex", "dgrs", env={"TMUX_PANE": "%99", "AIB_TMUX_BIN": str(tmux)})
+            self.assertTrue(has_run(argv, EXPECTED_DGRS["codex"]), argv)
         with self.subTest(provider="codex", shape="pack-off"):
             argv = self.run_launch("codex", "dgrs", env={"AIB_CODEX_PACK": "0"})
             self.assertTrue(has_run(argv, EXPECTED_DGRS["codex"]), argv)
