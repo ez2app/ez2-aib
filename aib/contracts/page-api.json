@@ -745,7 +745,8 @@
     "creator_attest_cancelled": "Touch ID 取消 / 沒過 ⇒ 什麼都沒送",
     "creator_unreachable": "連不到伺服器 / 伺服器 5xx;沒有收到編號 ⇒ 可以原包重送(冪等)",
     "creator_unsupported": "伺服器沒有這組端點(404 / 405)",
-    "creator_package_unreadable": "tar 打不開 / 不是 ustar"
+    "creator_package_unreadable": "tar 打不開 / 不是 ustar",
+    "creator_not_bound": "這台沒綁 ez2.page(或綁了不只一頁 / 憑證沒帶 machine_id)⇒ 什麼都沒送,hint 指 aib page bind"
    },
    "rc": {
     "0": "成功",
