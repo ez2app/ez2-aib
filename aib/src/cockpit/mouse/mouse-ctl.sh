@@ -127,6 +127,7 @@ DRY="${AIB_DRY_RUN:-0}"
 MODE=""
 ABORT_OPEN=0
 CLOSE_CABIN=0
+SOFT_SINCE=""
 PANE_ROLE=""
 ROLE=""; CX=""; CY=""; SESSION=""; SURFACE=""; PANE=""; WINDOW=""
 NEW_AI_ENGINE=""
@@ -218,6 +219,10 @@ while [ $# -gt 0 ]; do
       #   閒置重驗一定說 active 而拒殺;人已按 X 又按確定=兩重明示,這條旗標跳過那一關。
       ;;
     --abort-open) ABORT_OPEN=1 ;;      # 只跟 --release-confirmed 一起用;單獨給沒有意義但也不炸
+    --soft-since)                      # 10-24:(x) 軟關入口,帶選單開出的時間(epoch 秒);見 release-confirmed 段
+      SOFT_SINCE="${2:-}"
+      shift "$(( $# < 1 ? $# : 1 ))"
+      ;;
     --close-cabin) CLOSE_CABIN=1 ;;    # 09-14 the maintainer:關的是最後一席 ⇒ 關完席把整艙收掉(走 idle_reaper 收艙,不強制;見下方 close-cabin 段)
     --kill-focused-seat)
       # the maintainer 18:2x:右鍵「刪除聚焦窗格」。只殺席位窗,不用確認對話框,
@@ -2548,6 +2553,7 @@ print(it.get("hold_rc") if it.get("status") == Q.HOLD_STATUS and it.get("hold_rc
         WIN="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1])["window"])' "$ACTION")"
         LABEL="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("label") or "")' "$ACTION")"
         STATUS="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("status") or "")' "$ACTION")"
+        SOFT="$("$EZ2_PY3" -c 'import json,sys; print(1 if json.loads(sys.argv[1]).get("soft") is True else 0)' "$ACTION")"
         SESSION="${SESSION:-$EZ2_TMUX_SESSION}"
         HUB="$EZ2_AIHUB_SOCKET"
         if [ "$DRY" != "1" ]; then
@@ -2584,6 +2590,10 @@ print(it.get("hold_rc") if it.get("status") == Q.HOLD_STATUS and it.get("hold_rc
         printf -v SCRIPT_Q '%q' "$HERE/mouse-ctl.sh"
         printf -v WIN_Q '%q' "$WIN"
         printf -v SESSION_Q '%q' "$SESSION"
+        # 10-24:(x) 軟關帶選單開出的時間,執行端只問「之後有沒有再動」(見 release-confirmed 段)
+        if [ "$SOFT" = "1" ]; then
+          ABORT_FLAG="$ABORT_FLAG --soft-since $(date +%s)"
+        fi
         CONFIRM_ACTION="run-shell 'bash $SCRIPT_Q --release-confirmed $WIN_Q $SESSION_Q$ABORT_FLAG$RUNSHELL_REDIR'"
         # 取消也留痕(第三艦長二退要的不變量):按下確定後**必定**在
         # mouse-errors.log 留一行(殺了/拒了/取消了)。先前形狀是「按下去
@@ -3062,8 +3072,17 @@ EOF
     # ★命令替換必須包在 if 條件裡:本檔 set -euo pipefail,裸賦值一旦拿到
     # 非零就整支中止,rc 漏給 run-shell=錯誤畫面蓋艙(E2.13 鐵律破)。
     # 探針「拒殺」本來就是回非零的正常路徑,踩過一次(rc=3 漏出)。
+    # 10-24 @abb89(右鍵實測):(x) 是「有 💤、未達 [X] 門檻」的軟關入口(Andy 09-21),先前這裡照樣拿
+    #   300 秒門檻重驗 ⇒ 按 (x) 再按確定一定被拒,還誤報「已恢復活動」。軟關改問「選單開出之後有沒有再動」:
+    #   門檻 = 選單開著的秒數(至少 1)。這道重驗存在的原因(選單等人的期間席又活起來)照樣擋得住。
+    _PROBE_TH=()
+    if [[ "$SOFT_SINCE" =~ ^[0-9]{9,11}$ ]]; then
+      _SOFT_WAIT=$(( $(date +%s) - SOFT_SINCE ))
+      [ "$_SOFT_WAIT" -ge 1 ] || _SOFT_WAIT=1
+      _PROBE_TH=(--threshold "$_SOFT_WAIT")
+    fi
     if PROBE_OUT="$("$EZ2_PY3" "$COCKPIT/activity_probe.py" \
-         --window "$WIN" 2>/dev/null)"; then
+         --window "$WIN" ${_PROBE_TH[@]+"${_PROBE_TH[@]}"} 2>/dev/null)"; then
       PROBE_RC=0
     else
       PROBE_RC=$?
