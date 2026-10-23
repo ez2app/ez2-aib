@@ -36,6 +36,9 @@ TASKS = (
     ("SR6", "SR", "aib_upgraded", None), ("SR7", "SR", "test_green", None), ("SR8", "SR", "room_opened", "room"),
     ("SR9", "SR", "ai_room_opened", "room"), ("SR10", "SR", "decor_placed", "room"), ("SR11", "SR", "panel_input_sent", "room"),
     ("SR12", "SR", "launch_streak_3", None), ("SR13", "SR", "pet_stage_2", "server"),
+    # 地上 SR 重點三條(Andy 10-24 03:0x「三條一起先開」;編號 @abb89 03:14):偵測等 LINE 端(@9f808),分享 / 點擊要記誰
+    ("SR14", "SR", "line_affiliate_bound", "server"), ("SR15", "SR", "line_shared", "server"),
+    ("SR16", "SR", "share_tokens_viewed", "server"),
     ("SSR1", "SSR", "redeem_fleet", "server"), ("SSR2", "SSR", "new_cabin", None), ("SSR3", "SSR", "newrole", None),
     ("SSR4", "SSR", "projects_3", None), ("SSR5", "SSR", "dm_done_cross_seat", None), ("SSR6", "SSR", "mount_trained", "room"),
     ("SSR7", "SSR", "travel_sent", "room"), ("SSR8", "SSR", "souvenir_listed", "room"), ("SSR9", "SSR", "bbcall_read", "room"),
@@ -48,7 +51,7 @@ TASKS = (
 TASK_IDS = tuple(t[0] for t in TASKS)
 # 10-24 02:5x Andy「付費的內容，我希望到艦長室之後再出現」(SPEC §14):艦長室相關 + 序號兩條只在艦長室任務板出現;
 # 資料照記、偵測照接，動力室頁不列。動力室 = 免費純 CLI 的 30 條
-IN_ROOM = frozenset(("SR8", "SR9", "SR10", "SR11", "SSR1", "SSR6", "SSR7", "SSR8", "SSR9", "SSR10", "SSR12",
+IN_ROOM = frozenset(("SR8", "SR9", "SR10", "SR11", "SR14", "SR15", "SR16", "SSR1", "SSR6", "SSR7", "SSR8", "SSR9", "SSR10", "SSR12",
                      "UR1", "UR2", "UR3"))
 # SPEC §15(Andy 02:5x):SSR / UR 兩級鎖到「出發」之後才開;解鎖條件給代碼,頁面不自己猜。
 # 「降落地球」是否只指進艦長室待 Andy 確認 ⇒ 先用出發紀錄(R6 launch_recorded,記住了就一直開)

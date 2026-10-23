@@ -66,14 +66,14 @@ class Tasks(unittest.TestCase):
         ids = [t["id"] for t in st["tasks"]]
         self.assertEqual(len(ids), len(set(ids)))
         count = {k: sum(1 for t in st["tasks"] if t["tier"] == k) for k in PT.TIERS}
-        self.assertEqual(count, {"R": 12, "SR": 13, "SSR": 12, "UR": 7})
+        self.assertEqual(count, {"R": 12, "SR": 16, "SSR": 12, "UR": 7})
         for t in st["tasks"]:
             self.assertEqual(set(t), {"id", "tier", "where", "state", "since", "locked", "reward", "detect", "detectable",
                                       "requires"})
             self.assertIsNone(t["reward"])
             self.assertIn(t["requires"], (None, "room", "server", "skins"))
         self.assertEqual(st["all"], {"done": 0, "total": 30})
-        self.assertEqual(st["room"], {"done": 0, "total": 14})
+        self.assertEqual(st["room"], {"done": 0, "total": 17})
 
     def test_t2_sticky(self):
         st = PT.onboarding_state(detector=lambda r, m, t: {"seat_registered": True, "born": False}, now=NOW)
@@ -143,9 +143,12 @@ class Tasks(unittest.TestCase):
         st = PT.onboarding_state(detector=lambda r, m, t: {"room_opened": True, "seat_registered": True}, now=NOW)
         self.assertEqual([t["id"] for t in st["tasks"] if t["where"] == "power"], want)
         self.assertEqual(by_id(st)["SR8"]["state"], "done")                # 艦長室那條照記
-        self.assertEqual(st["room"], {"done": 1, "total": 14})
+        self.assertEqual(st["room"], {"done": 1, "total": 17})
         self.assertEqual(st["all"], {"done": 1, "total": 30})
         self.assertEqual(st["tiers"]["SR"]["done"], 0)
+        for i in ("SR14", "SR15", "SR16"):                                 # 地上三條:艦長室、偵測等 LINE 端
+            self.assertEqual((by_id(st)[i]["where"], by_id(st)[i]["detectable"], by_id(st)[i]["requires"]),
+                             ("room", False, "server"))
         for i in ("SSR1", "UR1"):                                          # 序號兩條歸艦長室
             self.assertEqual(by_id(st)[i]["where"], "room")
 
@@ -160,7 +163,7 @@ class Tasks(unittest.TestCase):
         self.assertEqual((t["SSR2"]["locked"], t["SSR6"]["locked"], t["UR3"]["locked"], t["SR8"]["locked"]),
                          (True, True, True, False))
         self.assertEqual((t["R3"]["since"], t["R4"]["since"]), (NOW, None))
-        self.assertEqual(st["room_tiers"], {"SR": {"done": 0, "total": 4, "locked": False, "unlock": None},
+        self.assertEqual(st["room_tiers"], {"SR": {"done": 0, "total": 7, "locked": False, "unlock": None},
                                             "SSR": {"done": 0, "total": 7, "locked": True, "unlock": "launch_recorded"},
                                             "UR": {"done": 0, "total": 3, "locked": True, "unlock": "launch_recorded"}})
         for tier in ("SSR", "UR"):

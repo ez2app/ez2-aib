@@ -103,18 +103,19 @@
    "room_tiers"
   ],
   "birth_done": "出生設定做過沒(做過就不再自動出現)",
-  "tasks": "[{id, tier, where, state, since, locked, reward, detect, detectable, requires}];id = R1–R12 / SR1–SR13 / SSR1–SSR12 / UR1–UR7(課程正本 pending/PLAN-power-curriculum-abb89-1024.md);tier = R | SR | SSR | UR;where = power(動力室任務板：免費純 CLI 30 條)| room(艦長室任務板：SR8–11、SSR1、SSR6–10、SSR12、UR1–3,Andy 02:5x「付費的內容到艦長室之後再出現」SPEC §14;動力室頁不列、不顯示鎖頭或購買入口);state = todo | done | claimed;detect = 偵測代碼;detectable = 核心現在偵測得到(false ⇒ 頁面照實顯示「還沒接上」,不准按鈕自己勾);requires = null | room(要艦長室外掛)| server(伺服器回條)| skins;reward 這一期一律 null",
+  "tasks": "[{id, tier, where, state, since, locked, reward, detect, detectable, requires}];id = R1–R12 / SR1–SR16 / SSR1–SSR12 / UR1–UR7(課程正本 pending/PLAN-power-curriculum-abb89-1024.md);tier = R | SR | SSR | UR;where = power(動力室任務板：免費純 CLI 30 條)| room(艦長室任務板：SR8–11、SR14–16、SSR1、SSR6–10、SSR12、UR1–3,Andy 02:5x「付費的內容到艦長室之後再出現」SPEC §14;動力室頁不列、不顯示鎖頭或購買入口);state = todo | done | claimed;detect = 偵測代碼;detectable = 核心現在偵測得到(false ⇒ 頁面照實顯示「還沒接上」,不准按鈕自己勾);requires = null | room(要艦長室外掛)| server(伺服器回條)| skins;reward 這一期一律 null",
   "owner": "@d07f9 的 onboarding_state()",
   "note": "領資源(claimed)由伺服器簽發,這一期只做 todo / done 偵測;伺服器沒上線 reward 一律 null",
   "birth_note": "birth_done = state/power-birth.json 有 at;只決定要不要先跑引導,不是防線",
   "tiers": "{R|SR|SSR|UR: {on, done, total, locked, unlock}};只算 where = power;on = 等級開關(關 = 收起不提醒、偵測照記;鎖著一律 false);locked / unlock = SPEC §15 鎖定與解鎖條件的偵測代碼(現為 launch_recorded,『降落地球』是否只指進艦長室待 Andy;解開 ⇒ unlock null)",
   "all": "{done, total}:動力室任務板全部(where = power,30 條)",
   "detect_note": "現在接上的偵測:power_opened(動力室頁寫過)、born、seat_registered、persona_bound、brain_bound、launch_recorded、handoff_receipt(自動存的不算)、two_providers_online、aib_upgraded(比第一次看到的版本新)、launch_streak_3/7/30(以今天或昨天結尾的連續出發日)、ssr_all_done。做完一次就記住;舊 id first_seat / bind_seat / first_handoff 搬到 R3 / R5 / R9",
-  "room": "{done, total}:艦長室任務板那 14 條(資料照記，顯示歸艦長室)",
+  "room": "{done, total}:艦長室任務板那 17 條(資料照記，顯示歸艦長室)",
   "since": "done 的時間(epoch 秒;todo ⇒ null),頁面拿來標「剛完成」",
   "locked": "這條所屬的等級鎖著沒(SPEC §15:SSR / UR 出發後才開);鎖著的頁面顯示虛線框 + 鎖頭、不可點，不顯示開關",
   "room_tiers": "{SR|SSR|UR: {done, total, locked, unlock}}:艦長室任務板分頁用(沒有 room 任務的等級不列)",
-  "i18n_note": "任務字鍵：動力室 30 條在核心 aib.power.page.task_<小寫 id>(標題)/ task_<小寫 id>_how(一句做法);艦長室 14 條的字由艦長室外掛出，鍵名同樣 task_<小寫 id> / task_<小寫 id>_how"
+  "i18n_note": "任務字鍵：動力室 30 條在核心 aib.power.page.task_<小寫 id>(標題)/ task_<小寫 id>_how(一句做法);艦長室 17 條的字由艦長室外掛出，鍵名同樣 task_<小寫 id> / task_<小寫 id>_how",
+  "ground_note": "SR14 綁 LINE 聯盟 / SR15 分享 LINE / SR16 看分享點擊 Ez2 Token(Andy 10-24 03:0x 三條一起先開):where room、requires server、偵測等 LINE 端(@9f808),分享 / 點擊要記誰"
  },
  "catalog": {
   "fields": [
