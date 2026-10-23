@@ -5062,5 +5062,6 @@
   "aib.create.hint.creator_revision_conflict": "Wrong revision (it must be higher than last time); re-export with the plugin",
   "aib.create.hint.creator_intake_paused": "Submissions are paused; resend the same package later",
   "aib.create.hint.creator_category_closed": "This category is not open yet",
-  "aib.create.hint.creator_item_unknown": "The resent package has an item it did not have; put new items in a new package"
+  "aib.create.hint.creator_item_unknown": "The resent package has an item it did not have; put new items in a new package",
+  "aib.create.hint.creator_refused": "The server refused this package"
 }

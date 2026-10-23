@@ -5062,5 +5062,6 @@
   "aib.create.hint.creator_revision_conflict": "버전 번호가 틀렸습니다(지난번보다 커야 함)",
   "aib.create.hint.creator_intake_paused": "제출이 일시 중지되었습니다. 나중에 같은 패키지로 다시",
   "aib.create.hint.creator_category_closed": "이 분류는 아직 열리지 않았습니다",
-  "aib.create.hint.creator_item_unknown": "다시 낸 패키지에 원래 없던 작품이 있습니다. 새 작품은 새 패키지로"
+  "aib.create.hint.creator_item_unknown": "다시 낸 패키지에 원래 없던 작품이 있습니다. 새 작품은 새 패키지로",
+  "aib.create.hint.creator_refused": "서버가 이 패키지를 거절했습니다"
 }

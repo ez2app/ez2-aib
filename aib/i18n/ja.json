@@ -5062,5 +5062,6 @@
   "aib.create.hint.creator_revision_conflict": "版番号が違います(前回より大きく)",
   "aib.create.hint.creator_intake_paused": "提出は一時停止中です。後で同じパッケージを再送",
   "aib.create.hint.creator_category_closed": "このカテゴリーはまだ開いていません",
-  "aib.create.hint.creator_item_unknown": "再提出に元になかった作品があります。新作は別パッケージで"
+  "aib.create.hint.creator_item_unknown": "再提出に元になかった作品があります。新作は別パッケージで",
+  "aib.create.hint.creator_refused": "サーバーがこのパッケージを受け付けませんでした"
 }

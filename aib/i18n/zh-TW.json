@@ -5062,5 +5062,6 @@
   "aib.create.hint.creator_revision_conflict": "版本號不對(要比上一次大);請用外掛重新出包",
   "aib.create.hint.creator_intake_paused": "送審暫停中,稍後原包再送",
   "aib.create.hint.creator_category_closed": "這個類別還沒開放",
-  "aib.create.hint.creator_item_unknown": "重送的包裡有原本沒有的作品;新作品請另開一包"
+  "aib.create.hint.creator_item_unknown": "重送的包裡有原本沒有的作品;新作品請另開一包",
+  "aib.create.hint.creator_refused": "伺服器沒收這包"
 }

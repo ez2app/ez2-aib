@@ -8,14 +8,16 @@ P2 壞包各回自己的碼:壓縮 / 不是 tar ⇒ unreadable;連結、..、絕
    副檔名或魔術位元組不對 ⇒ file_type_rejected;清單多 / 少 / 雜湊錯 ⇒ manifest_mismatch;帶 author ⇒ unknown_field;
    件的 kind 不一樣 ⇒ kind_mixed;schema 錯、rev 跟編號對不上 ⇒ schema_unsupported;編號格式錯 ⇒ id_invalid
 S1 送出:先本人證明、才連網;POST 本體 = tar 原樣、五個標頭;202 ⇒ creator_submitted、200 ⇒ creator_submitted_existing
-S2 本人證明沒過 ⇒ rc 5、一個請求都沒送
+S2 本人證明沒過 ⇒ rc 5、一個請求都沒送;S2b 正式路徑(不帶 prove,含 main)一定叫 chat_owner.prove
 S3 本機檢查擋 ⇒ rc 2、沒叫本人證明、沒送;沒綁 ⇒ rc 2 creator_not_bound;binding 從憑證拿 machine_id
 S4 伺服器錯:4xx 帶碼 ⇒ rc 3 原碼;401 被撤 ⇒ 原碼 + 何時被誰撤;404 沒碼 ⇒ creator_unsupported;
    503 帶碼 ⇒ rc 4 原碼;連不上 / 回應缺編號 ⇒ rc 4 creator_unreachable
 S5 重送:路徑 /creator/submissions/{id}/resubmit、X-AIB-Rev 照包
 S6 status:編號不合 ⇒ rc 2 不連網;文字輸出把伺服器給的字清掉控制 / 隱形字元,detail_url 不是 ez2.page 不印
 S7 --json 一行回條、rc 照傳;每個代碼四語都有 hint
-刀(複本):K1 不叫本人證明 ⇒ S2 紅;K2 不比雜湊 ⇒ P2 紅;K3 收連結 ⇒ P2 紅
+   稀疏成員 ⇒ path_rejected(小包補零吃爆記憶體);壞稀疏表 / 截斷 ⇒ unreadable(不帶 traceback)
+   伺服器純文字 413 / 415 ⇒ too_large / media_type_rejected;不認得的碼 ⇒ creator_refused(原碼清過才進 hint)
+刀(複本):K1 不叫本人證明 ⇒ S2 紅;K2 不比雜湊 ⇒ P2 紅;K3 收連結 / 稀疏 ⇒ P2 紅;K4 預設不叫本人證明 ⇒ S2b 紅
 """
 import hashlib
 import io
@@ -74,6 +76,24 @@ def make_tar(files=None, creator=None, manifest=None, extra=None, gz=False, link
     return buf.getvalue()
 
 
+def pax_tar(entries):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+        for ti, d in entries:
+            tf.addfile(ti, io.BytesIO(d))
+    return buf.getvalue()
+
+
+def sparse_tar(realsize, smap=None):
+    """GNU sparse 1.0(pax 標頭):512 位元組的包,讀出來會補零到 realsize(審查員 10-23 抓的小包吃爆記憶體)。"""
+    smap = smap or b"1\n%d\n0\n" % realsize
+    ti = tarfile.TarInfo("GNUSparseFile.0/x")
+    ti.size = 512
+    ti.pax_headers = {"GNU.sparse.major": "1", "GNU.sparse.minor": "0", "GNU.sparse.name": "assets/a.txt",
+                      "GNU.sparse.realsize": str(realsize)}
+    return pax_tar([(ti, smap + b"\0" * (512 - len(smap)))])
+
+
 class _Resp:
     def __init__(self, status, body):
         self.status, self._body = status, body
@@ -102,6 +122,12 @@ class FakeOpener:
         if self.status >= 400:
             raise urllib.error.HTTPError(req.full_url, self.status, "x", {}, io.BytesIO(raw))
         return _Resp(self.status, raw)
+
+
+class TextOpener(FakeOpener):
+    def open(self, req, timeout=None):
+        self.seen.append(req)
+        raise urllib.error.HTTPError(req.full_url, self.status, "x", {}, io.BytesIO(b"<html>413 Request Entity Too Large</html>"))
 
 
 class Base(unittest.TestCase):
@@ -175,9 +201,24 @@ class Package(unittest.TestCase):
             ("dup_item", make_tar(creator=dict(good, items=[{"item_id": "a"}, {"item_id": "a"}])),
              "creator_schema_unsupported"),
             ("badid", make_tar(creator=dict(good, rev=2, submission_id="sub_x")), "creator_id_invalid"),
+            ("sparse", sparse_tar(300 * 1024 * 1024), "creator_path_rejected"),
+            ("badsparse", sparse_tar(100, b"2\n0\n5\n"), "creator_package_unreadable"),
+            ("foo_dir", make_tar(extra={"foo/x.txt": b"x"}), "creator_path_rejected"),
+            ("manifest_empty", make_tar(manifest={"schema": "aib-creation-manifest/v1", "files": {}}),
+             "creator_manifest_mismatch"),
+            ("rev0", make_tar(creator=dict(good, rev=0)), "creator_schema_unsupported"),
+            ("rev_true", make_tar(creator=dict(good, rev=True)), "creator_schema_unsupported"),
+            ("rev1_with_id", make_tar(creator=dict(good, submission_id=SID)), "creator_schema_unsupported"),
         ]
         for label, data, want in cases:
             self.assertEqual(CC.read_package(data), (None, want), label)
+        dup = io.BytesIO()
+        with tarfile.open(fileobj=dup, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+            for _ in range(2):
+                ti = tarfile.TarInfo("assets/desk.png")
+                ti.size = len(PNG)
+                tf.addfile(ti, io.BytesIO(PNG))
+        self.assertEqual(CC.read_package(dup.getvalue()), (None, "creator_path_rejected"), "重名")
 
 
 class Submit(Base):
@@ -208,6 +249,24 @@ class Submit(Base):
         self.assertEqual(op.seen, [], "本人證明沒過 ⇒ 一個請求都不送")
         self.assertEqual(self.log, ["prove"])
 
+    def test_s2b_default_attest_path(self):
+        """正式路徑(不帶 prove)一定叫 chat_owner.prove;它說沒過 ⇒ rc 5、一個請求都不送(直接呼叫 + main 兩條)。"""
+        import chat_owner
+        calls = []
+        orig = chat_owner.prove
+        chat_owner.prove = lambda reason, env, **kw: calls.append(reason) or "touchid_cancelled"
+        self.addCleanup(setattr, chat_owner, "prove", orig)
+        op = FakeOpener(202)
+        api = A.PageApi(base_url="https://page.test", token=REC["assistant_token"], opener=op)
+        res, rc = CC.submit(self.env, self.tar(make_tar()), api=api, machine_id=MID)
+        self.assertEqual((rc, res["detail"], op.seen, len(calls)), (5, "creator_attest_cancelled", [], 1))
+        orig_b = CC.binding
+        CC.binding = lambda env: (api, MID)
+        self.addCleanup(setattr, CC, "binding", orig_b)
+        out = io.StringIO()
+        rc = CC.main(["submit", self.tar(make_tar(), "b.tar"), "--json"], env=self.env, out=out)
+        self.assertEqual((rc, json.loads(out.getvalue())["detail"], op.seen, len(calls)), (5, "creator_attest_cancelled", [], 2))
+
     def test_s3_local_block_and_binding(self):
         op = FakeOpener(202, log=self.log)
         res, rc = self.submit(make_tar(extra={"run.sh": b"x"}), op)
@@ -235,11 +294,19 @@ class Submit(Base):
                 (503, {"error": "creator_intake_paused"}, (4, "creator_intake_paused")),
                 (500, {}, (4, "creator_unreachable")),
                 (202, {"ok": True, "submission": {"id": "bad"}}, (4, "creator_unreachable")),
-                (202, {"ok": True}, (4, "creator_unreachable"))):
+                (202, {"ok": True}, (4, "creator_unreachable")),
+                (400, {"error": "something_new"}, (3, "creator_refused")),
+                (503, {"error": "something_new"}, (4, "creator_unreachable"))):
             res, rc = self.submit(data, FakeOpener(status, payload))
             self.assertEqual((rc, res["detail"]), want, (status, payload))
             self.assertFalse(res["ok"])
             self.assertTrue(res["hint"])
+        for status, want in ((413, "creator_too_large"), (415, "creator_media_type_rejected"), (400, "creator_refused")):
+            res, rc = self.submit(data, TextOpener(status))   # 前面的 CF / nginx 回純文字,沒有碼
+            self.assertEqual((rc, res["detail"]), (3, want), status)
+        res, rc = self.submit(data, FakeOpener(400, {"error": "weird\u202ecode"}))
+        self.assertEqual(res["detail"], "creator_refused")
+        self.assertNotIn("\u202e", res["hint"])
         res, rc = self.submit(data, FakeOpener(boom=True))
         self.assertEqual((rc, res["detail"]), (4, "creator_unreachable"))
         body = {"error": "page_api_token_revoked", "revoked_at": "2026-10-22T07:30:00Z", "revoked_by_name": "舊筆電",
@@ -285,6 +352,11 @@ class Status(Base):
         out = io.StringIO()
         CC._print_sub(good, out)
         self.assertIn("https://ez2.page/manage/creator/" + SID, out.getvalue())
+        out = io.StringIO()
+        CC._print_sub(sub_obj(items=7), out)
+        CC._print_sub(sub_obj(items=[{"item_id": "a", "reasons": 3}]), out)   # 型別不對也不當
+        op = FakeOpener(200, {"ok": True, "submissions": 5})
+        self.assertEqual(CC.list_mine(self.env, api=self.api(op))[0]["submissions"], [])
         op = FakeOpener(200, {"ok": True, "submissions": [sub_obj(), {"id": "bad"}], "next_cursor": "c2"})
         res, rc = CC.list_mine(self.env, api=self.api(op))
         self.assertEqual((rc, len(res["submissions"]), res["next_cursor"]), (0, 1, "c2"))
@@ -301,6 +373,8 @@ class Cli(Base):
         rc = CC.main(["submit", str(self.td / "nope.tar"), "--json"], env=self.env, out=out)
         self.assertEqual((rc, json.loads(out.getvalue())["detail"]), (2, "creator_package_unreadable"))
         cr = C["creator"]
+        served = {c for c, d in cr["codes"].items() if d["http"] is not None}
+        self.assertEqual(set(CC.SERVER_CODES), served, "核心認得的伺服器碼 = 契約裡有 http 的碼")
         codes = set(cr["codes"]) | set(cr["cli_receipt"]["local_codes"]) | set(cr["cli_receipt"]["submit_ok"]["detail"])
         codes -= {"creator_reported", "creator_admin_hold", "creator_merge_failed", "listing_signature_invalid",
                   "creator_attest_required"}    # 只出現在 reasons / 套用 / 定價那邊,不是 create 指令的回條
@@ -323,11 +397,15 @@ class Knife(unittest.TestCase):
         self._knife("    why = (prove or (lambda r, e: CO.prove(r, e)))(reason, env)\n", "    why = None\n",
                     "Submit.test_s2_attest_fails_nothing_sent")
 
+    def test_k4_default_attest_skipped(self):
+        self._knife("(lambda r, e: CO.prove(r, e))", "(lambda r, e: None)", "Submit.test_s2b_default_attest_path")
+
     def test_k2_no_hash_check(self):
         self._knife("hashlib.sha256(files[name]).hexdigest() != digest.lower()", "False", "Package.test_p2_bad")
 
     def test_k3_links_accepted(self):
-        self._knife("if not m.isfile() or name in files:", "if name in files:", "Package.test_p2_bad")
+        self._knife("if m.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or m.issparse() or name in files:",
+                    "if name in files:", "Package.test_p2_bad")
 
 
 if __name__ == "__main__":

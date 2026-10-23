@@ -33,6 +33,13 @@ TOP_FILES = ("creator.json", "MANIFEST.json", "GATE.json")
 EXT = {"assets": (".png", ".json", ".ogg", ".txt"), "prompts": (".txt",)}
 MAX_DEPTH = 4
 CALLER_DEAD = ("page_api_token_revoked", "page_api_token_expired", "page_api_token_invalid", "page_api_token_missing")
+# 契約 creator.codes 裡伺服器會回的碼(http 不是 null);不在這裡的碼 ⇒ creator_refused / creator_unreachable,detail 不帶契約外的字
+SERVER_CODES = ("creator_unknown_field", "creator_schema_unsupported", "creator_category_closed", "creator_manifest_mismatch",
+                "creator_path_rejected", "creator_file_type_rejected", "creator_too_large", "creator_quota_daily",
+                "creator_quota_total", "creator_machine_revoked", "creator_attest_required", "creator_submission_unknown",
+                "creator_submission_not_editable", "creator_revision_conflict", "creator_kind_mixed", "creator_item_unknown",
+                "creator_media_type_rejected", "creator_intake_paused")
+BARE_HTTP = {413: "creator_too_large", 415: "creator_media_type_rejected"}   # 前面的 CF / nginx 回純文字時沒有碼
 
 
 def T(key, **kw):
@@ -79,7 +86,15 @@ def _path_ok(name):
 
 
 def read_package(tar_bytes):
-    """回 (pkg, None) 或 (None, 代碼)。pkg = {creator, files{名: bytes}, manifest_sha256, kind, items, rev, submission_id}。"""
+    """回 (pkg, None) 或 (None, 代碼)。pkg = {creator, files{名: bytes}, manifest_sha256, kind, items, rev, submission_id}。
+    壞包讓 tarfile 拋什麼都一樣(例:壞的 GNU sparse 表拋 ValueError)⇒ creator_package_unreadable,不帶 traceback 結束。"""
+    try:
+        return _read_package(tar_bytes)
+    except Exception:  # noqa: BLE001
+        return None, "creator_package_unreadable"
+
+
+def _read_package(tar_bytes):
     try:
         tf = tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:")   # 只收沒壓縮的 tar
     except (tarfile.TarError, OSError, EOFError):
@@ -97,8 +112,8 @@ def read_package(tar_bytes):
                 return None, "creator_path_rejected"
             if m.isdir():
                 continue
-            if not m.isfile() or name in files:          # 連結 / 裝置檔 / 重名一律不收
-                return None, "creator_path_rejected"
+            if m.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or m.issparse() or name in files:
+                return None, "creator_path_rejected"   # 連結 / 裝置檔 / 重名 / 稀疏成員(讀出來會補零 = 小包吃爆記憶體)一律不收
             top = name.split("/")[0]
             if "/" not in name:
                 if name not in TOP_FILES:
@@ -170,16 +185,20 @@ def binding(env):
 
 
 def _server_err(exc):
-    """ApiError ⇒ (detail, rc, 額外)。伺服器的碼原樣帶出(契約);沒碼的照 HTTP 狀態。"""
+    """ApiError ⇒ (detail, rc, 額外)。契約裡的碼原樣帶出;沒碼 / 不認得的碼收成本機碼,原碼只放 hint。"""
     code, http = exc.code or "", exc.http_status
     if code in CALLER_DEAD:
         import revoked_note
         return code, 3, {"note": revoked_note.note(exc)}
-    if http in (404, 405) and not code.startswith("creator_"):
+    if code in SERVER_CODES:
+        return code, 4 if http >= 500 else 3, {}
+    if http in BARE_HTTP:
+        return BARE_HTTP[http], 3, {}
+    if http in (404, 405):
         return "creator_unsupported", 3, {}
     if http >= 500:
-        return code or "creator_unreachable", 4, {}
-    return code or "http_%s" % http, 3, {}
+        return "creator_unreachable", 4, {}
+    return "creator_refused", 3, {"raw": _clean(code or "http_%s" % http, 60)}
 
 
 def _submission(payload):
@@ -192,7 +211,9 @@ def _submission(payload):
 def _hint_for(detail, extra):
     if extra.get("note"):
         return extra["note"]
-    return T("hint." + detail) or T("hint.server_refused", code=detail) or detail
+    if extra.get("raw"):
+        return T("hint.server_refused", code=extra["raw"]) or extra["raw"]
+    return T("hint." + detail) or detail
 
 
 def submit(env, tar_path, prove=None, api=None, machine_id=None):
@@ -269,7 +290,8 @@ def list_mine(env, cursor=None, api=None):
     except ApiError as exc:
         detail, rc, extra = _server_err(exc)
         return {"ok": False, "detail": detail, "hint": _hint_for(detail, extra)}, rc
-    subs = [s for s in (payload.get("submissions") or []) if _submission({"submission": s})]
+    raw = payload.get("submissions")
+    subs = [s for s in (raw if isinstance(raw, list) else []) if _submission({"submission": s})]
     nxt = payload.get("next_cursor")
     return {"ok": True, "detail": "creator_list", "submissions": subs,
             "next_cursor": nxt if isinstance(nxt, str) else None, "hint": ""}, 0
@@ -278,10 +300,11 @@ def list_mine(env, cursor=None, api=None):
 # ── 終端機輸出(伺服器給的字是資料:一律先清控制 / 隱形字元)──
 def _print_sub(sub, out):
     out.write(T("line_head", id=sub["id"], state=_clean(sub.get("state"), 20), kind=_clean(sub.get("kind"), 24)) + "\n")
-    for it in sub.get("items") or []:
+    for it in sub.get("items") if isinstance(sub.get("items"), list) else []:
         if isinstance(it, dict):
             out.write("  " + T("line_item", item=_clean(it.get("item_id"), 40), state=_clean(it.get("state"), 20),
-                                reasons=",".join(_clean(r, 40) for r in (it.get("reasons") or []) if isinstance(r, str)))
+                                reasons=",".join(_clean(r, 40) for r in (it.get("reasons") if isinstance(it.get("reasons"), list) else [])
+                                                 if isinstance(r, str)))
                       + "\n")
             if it.get("hint"):
                 out.write("    " + _clean(it["hint"], 200) + "\n")
