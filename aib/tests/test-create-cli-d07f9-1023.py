@@ -16,8 +16,10 @@ S5 重送:路徑 /creator/submissions/{id}/resubmit、X-AIB-Rev 照包
 S6 status:編號不合 ⇒ rc 2 不連網;文字輸出把伺服器給的字清掉控制 / 隱形字元,detail_url 不是 ez2.page 不印
 S7 --json 一行回條、rc 照傳;每個代碼四語都有 hint
    稀疏成員 ⇒ path_rejected(小包補零吃爆記憶體);壞稀疏表 / 截斷 ⇒ unreadable(不帶 traceback)
+   標頭 size 負數(舊 tarfile 無限迴圈)、成員超過 MAX_MEMBERS ⇒ unreadable
    伺服器純文字 413 / 415 ⇒ too_large / media_type_rejected;不認得的碼 ⇒ creator_refused(原碼清過才進 hint)
-刀(複本):K1 不叫本人證明 ⇒ S2 紅;K2 不比雜湊 ⇒ P2 紅;K3 收連結 / 稀疏 ⇒ P2 紅;K4 預設不叫本人證明 ⇒ S2b 紅
+刀(複本):K1 不叫本人證明 ⇒ S2 紅;K2 不比雜湊 ⇒ P2 紅;K3 收連結 / 稀疏 ⇒ P2 紅;K4 預設不叫本人證明 ⇒ S2b 紅;
+    K5 不擋負 size / 倒退 offset / 成員超量 ⇒ P2 紅
 """
 import hashlib
 import io
@@ -92,6 +94,16 @@ def sparse_tar(realsize, smap=None):
     ti.pax_headers = {"GNU.sparse.major": "1", "GNU.sparse.minor": "0", "GNU.sparse.name": "assets/a.txt",
                       "GNU.sparse.realsize": str(realsize)}
     return pax_tar([(ti, smap + b"\0" * (512 - len(smap)))])
+
+
+def neg_size_tar():
+    """第二個標頭 size 用 base-256 寫成 -512(CVE-2025-8194):沒修的 tarfile 讀回同一個標頭、無限迴圈(審查員 10-23 第 2 輪)。"""
+    raw = bytearray(make_tar())
+    h = tarfile.open(fileobj=io.BytesIO(bytes(raw))).getmembers()[1].offset
+    raw[h + 124:h + 136] = tarfile.itn(-512, 12, tarfile.GNU_FORMAT)
+    raw[h + 148:h + 156] = b"        "
+    raw[h + 148:h + 156] = b"%06o\0 " % sum(raw[h:h + 512])
+    return bytes(raw)
 
 
 class _Resp:
@@ -219,6 +231,14 @@ class Package(unittest.TestCase):
                 ti.size = len(PNG)
                 tf.addfile(ti, io.BytesIO(PNG))
         self.assertEqual(CC.read_package(dup.getvalue()), (None, "creator_path_rejected"), "重名")
+        # 已修 CVE 的 tarfile 自己停在壞標頭 ⇒ 只讀到前段(manifest_mismatch);沒修的(3.9)靠我們的檢查回 unreadable。兩種都要拒收、不卡住
+        self.assertIn(CC.read_package(neg_size_tar())[1], ("creator_package_unreadable", "creator_manifest_mismatch"), "負 size")
+        old = CC.MAX_MEMBERS
+        CC.MAX_MEMBERS = 2
+        try:
+            self.assertEqual(CC.read_package(make_tar()), (None, "creator_package_unreadable"), "成員超過上限")
+        finally:
+            CC.MAX_MEMBERS = old
 
 
 class Submit(Base):
@@ -406,6 +426,9 @@ class Knife(unittest.TestCase):
     def test_k3_links_accepted(self):
         self._knife("if m.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or m.issparse() or name in files:",
                     "if name in files:", "Package.test_p2_bad")
+
+    def test_k5_neg_size_accepted(self):
+        self._knife("m.size < 0 or m.offset <= last or len(members) >= MAX_MEMBERS", "False", "Package.test_p2_bad")
 
 
 if __name__ == "__main__":

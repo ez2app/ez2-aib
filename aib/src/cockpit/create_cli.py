@@ -32,6 +32,7 @@ ITEM_RE = re.compile(r"[a-z0-9_]{1,40}")
 TOP_FILES = ("creator.json", "MANIFEST.json", "GATE.json")
 EXT = {"assets": (".png", ".json", ".ogg", ".txt"), "prompts": (".txt",)}
 MAX_DEPTH = 4
+MAX_MEMBERS = 10000
 CALLER_DEAD = ("page_api_token_revoked", "page_api_token_expired", "page_api_token_invalid", "page_api_token_missing")
 # 契約 creator.codes 裡伺服器會回的碼(http 不是 null);不在這裡的碼 ⇒ creator_refused / creator_unreachable,detail 不帶契約外的字
 SERVER_CODES = ("creator_unknown_field", "creator_schema_unsupported", "creator_category_closed", "creator_manifest_mismatch",
@@ -101,8 +102,17 @@ def _read_package(tar_bytes):
         return None, "creator_package_unreadable"
     files = {}
     with tf:
+        members, last = [], -1
         try:
-            members = tf.getmembers()
+            while True:
+                m = tf.next()
+                if m is None:
+                    break
+                # 標頭 size 寫負數 ⇒ 沒修 CVE-2025-8194 的 tarfile(/usr/bin/python3 3.9)讀回同一個標頭、無限迴圈吃記憶體
+                if m.size < 0 or m.offset <= last or len(members) >= MAX_MEMBERS:
+                    return None, "creator_package_unreadable"
+                last = m.offset
+                members.append(m)
         except (tarfile.TarError, OSError, EOFError):
             return None, "creator_package_unreadable"
         for m in members:
