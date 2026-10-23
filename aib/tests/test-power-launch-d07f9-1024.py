@@ -159,7 +159,8 @@ class Launch(unittest.TestCase):
         for kw, why in ((dict(brand="nope"), "brand"), (dict(brand="claude", mode="yolo"), "mode"),
                         (dict(brand="claude", role="Dev;x"), "role"), (dict(brand="claude", model="--dangerous"), "model"),
                         (dict(brand="claude", model="a;rm -rf"), "model"), (dict(brand="claude", persona="zzz"), "persona"),
-                        (dict(brand="claude", brain="proj.none"), "brain")):
+                        (dict(brand="claude", brain="proj.none"), "brain"), (dict(brand="claude", role="dev\n"), "role"),
+                        (dict(brand="claude", model="opus\n"), "model")):
             r, rc = PL.launch_plan(**kw)
             self.assertEqual((rc, r["detail"], r["hint"], r["steps"]), (2, "power_launch_bad", why, []), kw)
         buf = io.StringIO()
@@ -238,7 +239,7 @@ class Knife(unittest.TestCase):
         self._knife('d["recent"] = ([row] + old)[:RECENT_MAX]', 'd["recent"] = ([row] + old)', "T.test_d4_recent")
 
     def test_k3_model_unchecked(self):
-        self._knife("if model is not None and not MODEL_RE.match(model):", "if False:", "Launch.test_d8_plan")
+        self._knife("if model is not None and not MODEL_RE.fullmatch(model):", "if False:", "Launch.test_d8_plan")
 
     def test_k4_yellow_autoruns(self):
         self._knife('    if lt in ("red", "yellow"):', '    if lt == "red":', "Launch.test_d10_auto")

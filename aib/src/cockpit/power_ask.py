@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -31,7 +32,7 @@ A_MAX = 8000
 HISTORY_MAX = 6
 CMDS_MAX = 5
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]{0,95}$")
-_CMD_RE = re.compile(r"^\s*(?:\$\s*)?(aib(?: [A-Za-z0-9_./:=,@-]+){0,12})\s*$")
+_CMD_RE = re.compile(r"\s*(?:\$\s*)?(aib(?: [A-Za-z0-9_./:=,@-]+){1,12})\s*")
 _TASK_RE = re.compile(r"\b(UR[1-7]|SSR(?:1[0-2]|[1-9])|SR(?:1[0-3]|[1-9])|R(?:1[0-2]|[1-9]))\b")
 
 # 關工具的呼叫法;改這裡要先過同帳號 AI 威脅守則的檢查表
@@ -58,17 +59,22 @@ Rules:
 
 
 def _clean(s, limit, keep_newlines=True):
+    """去 ANSI、C0 / C1 控制字元、Unicode 格式字元(方向控制 U+202E / U+2066、零寬)與單獨代理字元。"""
     if not isinstance(s, str):
         return ""
     s = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", s)
     out = "".join(c for c in s if (c in "\n\t" and keep_newlines) or (ord(c) >= 32 and ord(c) != 127
-                                                                        and not 0x80 <= ord(c) < 0xa0))
+                                                                        and not 0x80 <= ord(c) < 0xa0
+                                                                        and unicodedata.category(c) not in ("Cf", "Cs")))
     return out.strip()[:limit]
 
 
+_ENV_DROP_PREFIX = ("TMUX", "CLAUDECODE", "CLAUDE_CODE_", "AIB_SEAT")
+
+
 def _clean_env():
-    drop = {"TMUX", "TMUX_PANE", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID"}
-    return {k: v for k, v in os.environ.items() if k not in drop and not k.startswith("AIB_SEAT")}
+    """子 CLI 不帶席位 / tmux / 父 Claude 工作階段的環境(訊息 token、socket、埠):不給它回連父席的路。"""
+    return {k: v for k, v in os.environ.items() if not k.startswith(_ENV_DROP_PREFIX)}
 
 
 def _light(brand):
@@ -121,7 +127,7 @@ def extract(answer):
     """回答裡的 aib 指令(給頁面複製,不執行)與任務卡編號。"""
     cmds, cards = [], []
     for line in answer.splitlines():
-        m = _CMD_RE.match(line.strip().strip("`"))
+        m = _CMD_RE.fullmatch(line.strip().strip("`"))
         if m and m.group(1) not in cmds:
             cmds.append(m.group(1))
     for m in _TASK_RE.finditer(answer):
@@ -139,12 +145,15 @@ def ask(brand, raw, model=None, *, run=None, light=None, which=shutil.which, tim
     """回 (回條, rc)。rc 0 ok;2 參數錯 / 不支援 / 沒登入;1 叫了但失敗。"""
     if brand not in BRANDS:
         return _receipt(False, "power_ask_unsupported", hint="claude / codex"), 2
-    if model is not None and not MODEL_RE.match(model):
+    if model is not None and not (isinstance(model, str) and MODEL_RE.fullmatch(model)):
         return _receipt(False, "power_ask_bad", brand, hint="model"), 2
     question, history = parse_input(raw)
     if not question or len(question) > Q_MAX:
         return _receipt(False, "power_ask_bad", brand, hint="question"), 2
-    lt = (light or _light)(brand)
+    try:
+        lt = (light or _light)(brand)
+    except Exception:  # noqa: BLE001
+        lt = "unknown"
     if lt != "green":
         return _receipt(False, "power_ask_login", brand, hint="aib power login %s" % brand), 2
     if run is None and not which(brand):
@@ -159,17 +168,19 @@ def ask(brand, raw, model=None, *, run=None, light=None, which=shutil.which, tim
             out_file = os.path.join(cwd, "last.txt")
             cmd = CODEX_CMD + (["-m", model] if model else []) + ["-o", out_file, "-"]
         try:
-            r = (run or subprocess.run)(cmd, input=prompt, capture_output=True, text=True, timeout=timeout,
-                                        cwd=cwd, env=_clean_env())
+            r = (run or subprocess.run)(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
+                                        errors="replace", timeout=timeout, cwd=cwd, env=_clean_env())
         except subprocess.TimeoutExpired:
             return _receipt(False, "power_ask_failed", brand, hint="timeout"), 1
         except OSError:
             return _receipt(False, "power_ask_failed", brand, hint="not_installed"), 1
-        text = r.stdout or ""
+        except (ValueError, UnicodeError):
+            return _receipt(False, "power_ask_failed", brand, hint="io"), 1
+        text = r.stdout if isinstance(r.stdout, str) else ""
         if out_file:
             try:
-                with open(out_file, encoding="utf-8") as f:
-                    text = f.read()
+                with open(out_file, encoding="utf-8", errors="replace") as f:
+                    text = f.read(A_MAX * 4)
             except OSError:
                 pass
         answer = _clean(text, A_MAX)

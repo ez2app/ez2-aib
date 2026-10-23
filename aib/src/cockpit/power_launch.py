@@ -137,7 +137,7 @@ def brains(vault=None):
         if not isinstance(it, dict) or it.get("status", "active") != "active":
             continue
         rk = _s(it.get("routeKey"))
-        if rk and rk not in seen and ROUTE_RE.match(rk):
+        if rk and rk not in seen and ROUTE_RE.fullmatch(rk):
             seen.add(rk)
             out.append({"route_key": rk, "title": _s(it.get("title")) or rk})
     return sorted(out, key=lambda r: r["title"])
@@ -191,7 +191,7 @@ def official_models():
     for p in provs:
         if not isinstance(p, dict) or p.get("id") not in out or not isinstance(p.get("models"), list):
             continue
-        rows = [m for m in p["models"] if isinstance(m, dict) and _s(m.get("id")) and MODEL_RE.match(m["id"])]
+        rows = [m for m in p["models"] if isinstance(m, dict) and _s(m.get("id")) and MODEL_RE.fullmatch(m["id"])]
         rows.sort(key=lambda m: m.get("default") is not True)
         out[p["id"]] = [m["id"] for m in rows]
     return out
@@ -206,7 +206,7 @@ def model_choices(rec=None):
         seen = [defaults[b]] if defaults[b] else []
         seen += [m for m in official[b] if m not in seen]
         for r in rec if rec is not None else recent():
-            if r["brand"] == b and r["model"] and r["model"] not in seen and MODEL_RE.match(r["model"]):
+            if r["brand"] == b and r["model"] and r["model"] not in seen and MODEL_RE.fullmatch(r["model"]):
                 seen.append(r["model"])
         out[b] = seen
     return out
@@ -227,9 +227,9 @@ def launch_plan(brand, model=None, persona=None, brain=None, role="dev", mode="s
         return bad("brand")
     if mode not in MODES:
         return bad("mode")
-    if not ROLE_RE.match(role or ""):
+    if not ROLE_RE.fullmatch(role or ""):
         return bad("role")
-    if model is not None and not MODEL_RE.match(model):
+    if model is not None and not MODEL_RE.fullmatch(model):
         return bad("model")
     if persona is not None and persona not in {p["uid"] for p in personas()}:
         return bad("persona")

@@ -13,7 +13,9 @@ A7 回答去 ANSI / 控制字元、截長;cmds 只抽 aib 開頭的行(最多 5�
 A8 stdin JSON:question + history(最多 6 輪、怪型別丟掉);純文字也收
 A9 suggest:照 why_rank 挑、不夠補通用、恰好 3 則
 A10 aib power ask 從總管 power_status.main 轉得到(stdin 讀問題)
-刀(複本):K1 拿掉 --tools "" ⇒ A4 紅;K2 不看燈號 ⇒ A3 紅;K3 codex 改可寫沙盒 ⇒ A5 紅
+A11 稽核第 1 輪(10-24 03:0x):環境用前綴去掉 TMUX* / CLAUDECODE / CLAUDE_CODE_* / AIB_SEAT*;模型尾巴換行不收;
+    回答去方向 / 零寬格式字元;單獨「aib」不算指令;代理字元問題 / 非 UTF-8 輸出 / 讀檔亂碼 / 燈號函式拋例外 / 寫 stdin 拋錯 ⇒ 回條、不拋
+刀(複本):K1 拿掉 --tools "" ⇒ A4 紅;K2 不看燈號 ⇒ A3 紅;K3 codex 改可寫沙盒 ⇒ A5 紅;K4 環境只濾固定名 ⇒ A11 紅;K5 模型用 match ⇒ A11 紅
 """
 import io
 import json
@@ -195,6 +197,54 @@ class Ask(unittest.TestCase):
             A._light = saved
         self.assertEqual((rc, r["detail"]), (2, "power_ask_login"))
 
+    def test_a11_audit_r1(self):
+        keys = ("TMUX_TMPDIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_SSE_PORT",
+                "CLAUDECODE", "AIB_SEAT_X")
+        for k in keys:
+            os.environ[k] = "x"
+        try:
+            run = FakeRun()
+            A.ask("claude", "問", run=run, light=GREEN)
+        finally:
+            for k in keys:
+                os.environ.pop(k)
+        env = run.calls[0][1]["env"]
+        for k in keys:
+            self.assertNotIn(k, env)
+        self.assertIn("PATH", env)
+        for m in ("x\n", "sonnet\n--tools", 5, ["a"]):
+            run = FakeRun()
+            r, rc = A.ask("claude", "問", m, run=run, light=GREEN)
+            self.assertEqual((rc, r["detail"]), (2, "power_ask_bad"), m)
+            self.assertEqual(run.calls, [])
+        r, rc = A.ask("claude", "問", run=FakeRun(out="aib\n看 \u202e這裡\u2066 與\u200b零寬\ufeff\naib doctor\n"), light=GREEN)
+        self.assertEqual(r["cmds"], ["aib doctor"])
+        for c in "\u202e\u2066\u200b\ufeff":
+            self.assertNotIn(c, r["answer"])
+        r, rc = A.ask("claude", json.dumps({"question": "\ud800"}), run=FakeRun(), light=GREEN)
+        self.assertEqual((rc, r["detail"]), (2, "power_ask_bad"))
+        r, rc = A.ask("claude", "a\ud800b", run=FakeRun(), light=GREEN)
+        self.assertEqual(rc, 0)
+        for exc in (UnicodeEncodeError("utf-8", "x", 0, 1, "bad"), ValueError("closed")):
+            r, rc = A.ask("claude", "問", run=FakeRun(exc=exc), light=GREEN)
+            self.assertEqual((rc, r["detail"], r["hint"]), (1, "power_ask_failed", "io"))
+
+        def boom(b):
+            raise RuntimeError("x")
+        r, rc = A.ask("claude", "問", run=FakeRun(), light=boom)
+        self.assertEqual((rc, r["detail"]), (2, "power_ask_login"))
+        run = FakeRun(last=None)
+        orig = run.__call__
+
+        def bad_file(cmd, **kw):
+            res = orig(cmd, **kw)
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"\xff\xfe ok")
+            return res
+        r, rc = A.ask("codex", "問", run=bad_file, light=GREEN)
+        self.assertEqual(rc, 0)
+        self.assertTrue(r["answer"].endswith("ok"))
+        self.assertEqual(run.calls[0][1]["errors"], "replace")
+
 
 class Knife(unittest.TestCase):
     def _knife(self, needle, repl, case):
@@ -212,6 +262,14 @@ class Knife(unittest.TestCase):
 
     def test_k3_codex_writable(self):
         self._knife('"-s", "read-only", "--ephemeral"', '"-s", "workspace-write", "--ephemeral"', "Ask.test_a5_codex")
+
+    def test_k4_env_fixed_names(self):
+        self._knife('_ENV_DROP_PREFIX = ("TMUX", "CLAUDECODE", "CLAUDE_CODE_", "AIB_SEAT")',
+                    '_ENV_DROP_PREFIX = ("TMUX_PANE", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "AIB_SEAT")', "Ask.test_a11_audit_r1")
+
+    def test_k5_model_match(self):
+        self._knife("(isinstance(model, str) and MODEL_RE.fullmatch(model))", "(isinstance(model, str) and MODEL_RE.match(model))",
+                    "Ask.test_a11_audit_r1")
 
 
 def tearDownModule():
