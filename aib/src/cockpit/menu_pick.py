@@ -270,6 +270,28 @@ Rules:
 </screen>"""
 
 
+_OPT_NUM = re.compile(r"^\s*(?:[❯›>▶●○◯◉▌]\s*)*\(?([0-9]{1,2})[.)]\s")
+
+
+def _bottom_run(rows, opts):
+    """最靠近底部那一串編號選項:從最後一個編號往回數,依序找 n-1、n-2 … 到 1(第 4 輪審查)。
+    不看行距 —— 選項折行、底下有說明行都會拉開間隔。數不出來(字母選項、編號不連續)⇒ 照舊全部。"""
+    def num(i):
+        m = _OPT_NUM.match(rows[i][1])
+        return int(m.group(1)) if m else None
+    want = num(opts[-1])
+    if want is None:
+        return opts
+    run = [opts[-1]]
+    for i in reversed(opts[:-1]):
+        if want <= 1:
+            break
+        if num(i) == want - 1:
+            run.append(i)
+            want -= 1
+    return list(reversed(run)) if want == 1 else opts
+
+
 def menu_block(screen):
     """只送選單那一塊給小模型(a seat 10-13 14:1x 防提示注入:畫面上方的檔案內容、網頁、別席訊息不能影響選哪一個)。
     有框(╭)⇒ 從包住選項的那個框頂往下;沒框 ⇒ 第一個選項往上最多 HEAD_LINES 行(問題與指令)。"""
@@ -279,15 +301,12 @@ def menu_block(screen):
     opts = [i for i, (_r, c) in enumerate(rows) if _OPT.match(c)]
     nav = [i for i, (_r, c) in enumerate(rows) if _NAV.search(c)]
     # 第 3 輪審查:上面歷史裡有「1. 2.」清單時,游標選單不能因此走編號分支(會從最早的編號一路送到底)
-    #   ⇒ 操作說明比最後一個編號更靠近底部 ⇒ 是游標選單
-    if opts and nav and nav[-1] > opts[-1]:
+    #   ⇒ 操作說明在最後一個編號下面、而且離它超過 OPT_BOTTOM_SLACK 行 ⇒ 是游標選單
+    #   (第 4 輪:Copilot 有框編號選單的頁尾也寫「↑↓ keys and Enter」,緊貼在選項下面,那仍是編號選單)
+    if opts and nav and nav[-1] - opts[-1] > OPT_BOTTOM_SLACK:
         opts = []
     if opts:
-        # 編號選單也只取最靠近底部那一串(相鄰選項間隔不超過 3 行),不取整份畫面最早的編號
-        k = len(opts) - 1
-        while k > 0 and opts[k] - opts[k - 1] <= 3:
-            k -= 1
-        opts = opts[k:]
+        opts = _bottom_run(rows, opts)
     if not opts:
         # 游標選單(沒編號):同一條護欄 —— 只送操作說明那一行往上的選項,再往上最多 HEAD_LINES 行(第 2 輪審查)
         if not nav:
