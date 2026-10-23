@@ -19,7 +19,7 @@ S7 --json 一行回條、rc 照傳;每個代碼四語都有 hint
    標頭 size 負數(舊 tarfile 無限迴圈)、成員超過 MAX_MEMBERS ⇒ unreadable
    伺服器純文字 413 / 415 ⇒ too_large / media_type_rejected;不認得的碼 ⇒ creator_refused(原碼清過才進 hint)
 刀(複本):K1 不叫本人證明 ⇒ S2 紅;K2 不比雜湊 ⇒ P2 紅;K3 收連結 / 稀疏 ⇒ P2 紅;K4 預設不叫本人證明 ⇒ S2b 紅;
-    K5 不擋負 size / 倒退 offset / 成員超量 ⇒ P2 紅
+    K5 不擋成員超量 ⇒ P2 紅
 """
 import hashlib
 import io
@@ -428,7 +428,8 @@ class Knife(unittest.TestCase):
                     "if name in files:", "Package.test_p2_bad")
 
     def test_k5_neg_size_accepted(self):
-        self._knife("m.size < 0 or m.offset <= last or len(members) >= MAX_MEMBERS", "False", "Package.test_p2_bad")
+        # 只砍成員上限:整條換 False 的話,沒修 CVE 的 3.9 讀 neg_size_tar 會無限迴圈、刀測逾時(第 3 輪審查員)
+        self._knife(" or len(members) >= MAX_MEMBERS:", ":", "Package.test_p2_bad")
 
 
 if __name__ == "__main__":
