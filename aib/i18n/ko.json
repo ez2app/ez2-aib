@@ -5048,7 +5048,6 @@
   "aib.auto_update.status.versions": "이 컴퓨터 {have}, 최신 정식 버전 {latest}({when} 확인)",
   "aib.auto_update.status.last_update": "마지막 자동 업데이트: {old} → {new}({when})",
   "aib.auto_update.status.last_result": "마지막 확인({when}): {why}",
-  "aib.auto_update.status.unsourced": "자동으로 바꾸지 않는 플러그인(aib 가 출처를 모름): {names}",
   "aib.auto_update.status.log": "기록: {path}",
   "aib.auto_update.doctor.on": "자동 업데이트 켜짐, 아직 확인 전",
   "aib.auto_update.doctor.on_last": "자동 업데이트 켜짐, 마지막 확인 {when}: {why}",
@@ -5079,5 +5078,18 @@
   "aib.auto_update.why.updated": "업데이트함",
   "aib.auto_update.why.plugins_failed": "바꾸지 못한 플러그인이 있습니다(서명 또는 검사 실패). 기록을 확인",
   "aib.doctor.check.auto_update.error": "자동 업데이트 상태를 읽을 수 없음: {error}",
-  "aib.doctor.check.auto_update.remedy": "aib update auto on 으로 켬(또는 릴리스마다 직접 aib update 실행)"
+  "aib.doctor.check.auto_update.remedy": "aib update auto on 으로 켬(또는 릴리스마다 직접 aib update 실행)",
+  "aib.auto_update.status.excluded": "자동 업데이트하지 않는 플러그인: {names}",
+  "aib.auto_update.status.excluded_behind": "서명된 새 버전이 있지만 제외 목록에 있음(바꿀지는 직접 정해서 수동으로): {names}",
+  "aib.auto_update.status.unsigned": "출처에 새 버전이 있지만 서명 검증에 실패해 설치하지 않음: {names}",
+  "aib.auto_update.status.plugin_source_offline": "마지막 확인 때 플러그인 출처(aib-plugins)에 연결하지 못해 유료 플러그인은 확인하지 않음",
+  "aib.auto_update.exclude.list": "자동 업데이트하지 않는 플러그인: {names}",
+  "aib.auto_update.exclude.none": "(없음)",
+  "aib.auto_update.exclude.added": "{name} 을(를) 자동 업데이트 대상에서 뺐습니다",
+  "aib.auto_update.exclude.already": "{name} 은(는) 이미 목록에 있습니다",
+  "aib.auto_update.exclude.removed": "{name} 을(를) 목록에서 뺐습니다. 앞으로 자동 업데이트합니다(서명된 버전만)",
+  "aib.auto_update.exclude.not_in": "{name} 은(는) 목록에 없습니다",
+  "aib.auto_update.exclude.bad_name": "플러그인 이름이 아닙니다: \"{name}\"",
+  "aib.auto_update.exclude.touchid_reason": "aib 가 플러그인 {name} 을(를) 자동 업데이트하도록 허용",
+  "aib.auto_update.exclude.needs_touchid": "{name} 은(는) 기본으로 자동 업데이트하지 않습니다(운영 배포 원본). 빼려면 본인 Touch ID 가 필요합니다({why}). 아무것도 바꾸지 않았습니다"
 }

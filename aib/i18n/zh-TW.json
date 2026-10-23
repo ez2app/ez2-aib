@@ -5048,7 +5048,6 @@
   "aib.auto_update.status.versions": "這台 {have};最新正式版 {latest}({when} 查的)",
   "aib.auto_update.status.last_update": "上次自動更新:{old} → {new}({when})",
   "aib.auto_update.status.last_result": "上次查({when}):{why}",
-  "aib.auto_update.status.unsourced": "不會自動換的外掛(aib 不知道來源):{names}",
   "aib.auto_update.status.log": "紀錄:{path}",
   "aib.auto_update.doctor.on": "自動更新開著;還沒查過",
   "aib.auto_update.doctor.on_last": "自動更新開著;上次查 {when}:{why}",
@@ -5079,5 +5078,18 @@
   "aib.auto_update.why.updated": "已更新",
   "aib.auto_update.why.plugins_failed": "有外掛沒換成(簽章或檢查沒過),看紀錄",
   "aib.doctor.check.auto_update.error": "讀不到自動更新狀態:{error}",
-  "aib.doctor.check.auto_update.remedy": "aib update auto on 打開(或每次發版後自己跑 aib update)"
+  "aib.doctor.check.auto_update.remedy": "aib update auto on 打開(或每次發版後自己跑 aib update)",
+  "aib.auto_update.status.excluded": "不自動更新的外掛:{names}",
+  "aib.auto_update.status.excluded_behind": "有新的簽章版但在不自動更新清單裡(要換請自己決定、手動裝):{names}",
+  "aib.auto_update.status.unsigned": "來源有新版但簽章驗不過,沒有裝:{names}",
+  "aib.auto_update.status.plugin_source_offline": "上次查時連不上外掛來源(aib-plugins),付費外掛這次沒查",
+  "aib.auto_update.exclude.list": "不自動更新的外掛:{names}",
+  "aib.auto_update.exclude.none": "(沒有)",
+  "aib.auto_update.exclude.added": "{name} 已加進不自動更新清單",
+  "aib.auto_update.exclude.already": "{name} 本來就在清單裡",
+  "aib.auto_update.exclude.removed": "{name} 拿出清單,之後會自動更新(只裝簽過的版本)",
+  "aib.auto_update.exclude.not_in": "{name} 不在清單裡",
+  "aib.auto_update.exclude.bad_name": "不是外掛名稱:「{name}」",
+  "aib.auto_update.exclude.touchid_reason": "允許 aib 自動更新外掛 {name}",
+  "aib.auto_update.exclude.needs_touchid": "{name} 預設不自動更新(它是正式站部署來源),拿掉要本人 Touch ID({why});什麼都沒改"
 }

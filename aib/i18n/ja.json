@@ -5048,7 +5048,6 @@
   "aib.auto_update.status.versions": "このパソコン {have}、最新の正式版 {latest}({when} に確認)",
   "aib.auto_update.status.last_update": "前回の自動更新:{old} → {new}({when})",
   "aib.auto_update.status.last_result": "前回の確認({when}):{why}",
-  "aib.auto_update.status.unsourced": "自動では更新しないプラグイン(入手元を aib が知らないもの):{names}",
   "aib.auto_update.status.log": "ログ:{path}",
   "aib.auto_update.doctor.on": "自動更新オン、まだ確認していません",
   "aib.auto_update.doctor.on_last": "自動更新オン、前回の確認 {when}:{why}",
@@ -5079,5 +5078,18 @@
   "aib.auto_update.why.updated": "更新しました",
   "aib.auto_update.why.plugins_failed": "更新できなかったプラグインがあります(署名か検査が不合格)。ログを確認",
   "aib.doctor.check.auto_update.error": "自動更新の状態を読めません:{error}",
-  "aib.doctor.check.auto_update.remedy": "aib update auto on でオン(またはリリースごとに aib update を自分で実行)"
+  "aib.doctor.check.auto_update.remedy": "aib update auto on でオン(またはリリースごとに aib update を自分で実行)",
+  "aib.auto_update.status.excluded": "自動更新しないプラグイン:{names}",
+  "aib.auto_update.status.excluded_behind": "署名済みの新しい版がありますが除外中(更新するかは自分で決めて手動で):{names}",
+  "aib.auto_update.status.unsigned": "入手元に新しい版がありますが署名の検証に失敗したため入れていません:{names}",
+  "aib.auto_update.status.plugin_source_offline": "前回の確認でプラグインの入手元(aib-plugins)に接続できず、有料プラグインは確認していません",
+  "aib.auto_update.exclude.list": "自動更新しないプラグイン:{names}",
+  "aib.auto_update.exclude.none": "(なし)",
+  "aib.auto_update.exclude.added": "{name} を自動更新の対象から外しました",
+  "aib.auto_update.exclude.already": "{name} はすでに一覧にあります",
+  "aib.auto_update.exclude.removed": "{name} を一覧から外しました。今後は自動更新します(署名済みの版のみ)",
+  "aib.auto_update.exclude.not_in": "{name} は一覧にありません",
+  "aib.auto_update.exclude.bad_name": "プラグイン名ではありません:「{name}」",
+  "aib.auto_update.exclude.touchid_reason": "aib がプラグイン {name} を自動更新することを許可",
+  "aib.auto_update.exclude.needs_touchid": "{name} は既定で自動更新しません(本番デプロイの元です)。外すには本人の Touch ID が必要です({why})。何も変更していません"
 }

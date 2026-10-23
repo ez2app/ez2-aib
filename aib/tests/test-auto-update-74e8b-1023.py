@@ -19,6 +19,12 @@ G7 落後太多(大 / 中版號不同,或差 5 個小版以上)⇒ refused_far_b
 P1 外掛簽章驗不過 ⇒ 不列進落後清單、不裝;install_plugin 遇到沒簽的直接 rc 3、不叫 aib_ext.install
 P2 簽章驗過、版本較舊 ⇒ 列進落後清單;核心不用更新時由 check 裝;install_plugin 一律 allow_unsigned=False
 P3 核心有更新時,外掛交給一行安裝(新版程式)的 aib ext auto,舊碼不自己裝
+X1 不自動更新清單:預設有 hostguard(沒設定檔、on / off 之後都還在);add / list / remove 一般外掛不用證明;
+   拿掉 hostguard 要本人證明,沒過 rc 2、清單不變;名稱不合法 rc 2
+X2 付費外掛來源 = aib-plugins main(測試用本機 bare 倉):簽章驗過、版本較舊 ⇒ git archive 出那個資料夾、走 aib ext install
+   真的換上新版;hostguard 在清單裡 ⇒ 有新簽章版也不換、status 列為排除;簽章驗不過 ⇒ 不裝、列為簽章沒過
+X3 核心這次有更新 ⇒ 付費外掛等下一次查(新碼在跑時才裝);外掛來源連不上 ⇒ 照樣做核心那部分,status 說來源連不上
+X4 git archive 出來的包有跑出資料夾的路徑 / 連結 ⇒ 不裝
 I1 四語字典同鍵、沒有 !!;aib update auto status / --json 走得通(子行程,暫存狀態根)
 """
 import importlib
@@ -105,7 +111,8 @@ class Base(unittest.TestCase):
     def run_check(self, **kw):
         args = dict(env=self.env, root=self.inst, now=NOW, platform="linux", home=self.home, rows=[],
                     do_fetch=AU.fetch, run_update=self.fake_update, lease=self.fake_lease, install=self.fake_install,
-                    ext_base=self.td / "noext", room=self.fake_room, dev_tree=False, lease_state=lambda e, n: None)
+                    ext_base=self.td / "noext", room=self.fake_room, dev_tree=False, lease_state=lambda e, n: None,
+                    plugin_fetch=lambda e: None)
         args.update(kw)
         return AU.check(**args)
 
@@ -403,6 +410,126 @@ class Plugins(Base):
         self.assertEqual(res["result"], "updated")
         self.assertEqual(len(self.updates), 1)
         self.assertEqual(self.installs, [])
+
+
+class Exclude(Base):
+    def test_x1_default_and_commands(self):
+        self.assertEqual(AU.read_excludes(self.env), ["hostguard"])
+        ctl = FakeCtl()
+        AU.cmd_off(self.env, out=io.StringIO(), home=self.home, launchctl=ctl)
+        AU.cmd_on(self.env, out=io.StringIO(), home=self.home, platform="linux", launchctl=ctl)
+        self.assertEqual(AU.read_excludes(self.env), ["hostguard"])
+        asked = []
+
+        def deny(reason, env, platform=None):
+            asked.append(reason)
+            return "touchid", "touchid_cancel"
+        out = io.StringIO()
+        self.assertEqual(AU.cmd_exclude("add", "captain-room", env=self.env, out=out, prove=deny), 0)
+        self.assertEqual(AU.read_excludes(self.env), ["captain-room", "hostguard"])
+        self.assertEqual(AU.cmd_exclude("remove", "captain-room", env=self.env, out=out, prove=deny), 0)
+        self.assertEqual(asked, [])
+        self.assertEqual(AU.cmd_exclude("remove", "hostguard", env=self.env, out=out, prove=deny), 2)
+        self.assertEqual(AU.read_excludes(self.env), ["hostguard"])
+        self.assertIn("hostguard", asked[0])
+        self.assertIn("Touch ID", out.getvalue())
+        self.assertEqual(AU.cmd_exclude("add", "../x", env=self.env, out=out), 2)
+        out = io.StringIO()
+        AU.cmd_exclude("list", env=self.env, out=out, as_json=True)
+        self.assertEqual(json.loads(out.getvalue())["exclude"], ["hostguard"])
+        self.assertEqual(AU.cmd_exclude("remove", "hostguard", env=self.env, out=io.StringIO(),
+                                        prove=lambda r, e, platform=None: ("touchid", None)), 0)
+        self.assertEqual(AU.read_excludes(self.env), [])
+        self.assertEqual(AU.read_setting(self.env), (True, "set"))     # 動清單不會改到開關
+
+
+class PaidSource(Base):
+    def paid_repo(self, plugins):
+        """aib-plugins 樣子的 bare 倉:{名: 新版號};這台裝的是 1.0.0。回 bare 倉路徑。"""
+        import aib_ext
+        src, bare = self.td / "plugsrc", self.td / "aib-plugins.git"
+        src.mkdir()
+        git(src, "-c", "init.defaultBranch=main", "init", "-q")
+        for name, ver in plugins.items():
+            d = src / name
+            d.mkdir()
+            (d / "plugin.json").write_text(json.dumps({"name": name, "module": "m.py", "version": ver}))
+            (d / "m.py").write_text("VERSION = %r\n" % ver)
+            (d / "aib-ext.json").write_text(json.dumps({"name": name, "kind": "plugin", "version": ver, "requires_aib": "0.0.1",
+                                                         "files": aib_ext._hashes(d), "signature": "ed25519:test"}))
+            inst = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / name
+            inst.mkdir(parents=True)
+            (inst / "aib-ext.json").write_text(json.dumps({"name": name, "kind": "plugin", "version": "1.0.0"}))
+            (inst / "plugin.json").write_text(json.dumps({"name": name, "module": "m.py", "version": "1.0.0"}))
+        git(src, "add", "-A")
+        git(src, "commit", "-q", "-m", "plugins")
+        git(self.td, "clone", "-q", "--bare", str(src), str(bare))
+        self.env["AIB_AUTO_UPDATE_PLUGIN_SOURCE"] = str(bare)
+        os.environ["AIB_AUTO_UPDATE_PLUGIN_SOURCE"] = str(bare)
+        return bare
+
+    def installed_version(self, name):
+        return json.loads((Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / name / "aib-ext.json").read_text())["version"]
+
+    def test_x2_signed_paid_updated_excluded_kept(self):
+        self.paid_repo({"demo-paid": "1.0.3", "hostguard": "2.0.0"})
+        self.make_repos(latest=None)
+        import aib_ext
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True), \
+                mock.patch.object(aib_ext, "reload_room_after_install", return_value=None):
+            res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=AU.install_plugin)
+        self.assertEqual(res["result"], "updated", res)
+        self.assertEqual(res["plugin_source"], "ok")
+        self.assertEqual(res["plugins_behind"], ["demo-paid"])
+        self.assertEqual(res["plugins_excluded"], ["hostguard"])
+        self.assertEqual(self.installed_version("demo-paid"), "1.0.3")
+        self.assertEqual(self.installed_version("hostguard"), "1.0.0")          # 有新簽章版也不換
+        p = AU.status_payload(self.env, platform="linux")
+        self.assertEqual((p["excluded"], p["plugins_excluded"]), (["hostguard"], ["hostguard"]))
+        self.assertIn("hostguard", "\n".join(AU.status_lines(p)))
+        self.assertFalse(list((Path(self.env["EZ2_AIB_STATE_ROOT"]) / "cache" / "auto-update").glob("stage-*")))
+
+    def test_x2b_signature_failure_not_installed(self):
+        self.paid_repo({"demo-paid": "1.0.3"})
+        self.make_repos(latest=None)
+        res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=AU.install_plugin)   # 真的 signed_ok:假簽章驗不過
+        self.assertEqual(res["result"], "up_to_date", res)
+        self.assertEqual(res["plugins_unsigned"], ["demo-paid"])
+        self.assertEqual(self.installed_version("demo-paid"), "1.0.0")
+        self.assertEqual(self.leases, [])
+        # 就算落後清單被動了手腳,裝的那一步自己也驗簽章:驗不過 rc 3、不叫 aib_ext.install
+        cache = AU.plugin_cache(self.env)
+        folder = AU.stage_paid(cache, "demo-paid", self.env)
+        import aib_ext
+        with mock.patch.object(aib_ext, "install") as inst:
+            self.assertEqual(AU.install_plugin(str(folder), io.StringIO()), 3)
+            inst.assert_not_called()
+
+    def test_x3_core_first_then_paid_and_offline(self):
+        self.paid_repo({"demo-paid": "1.0.3"})
+        self.make_repos()
+        import aib_ext
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True):
+            res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=self.fake_install)
+            self.assertEqual(res["result"], "updated")
+            self.assertEqual((len(self.updates), self.installs), (1, []))
+            res = self.run_check(now=NOW + 7200, plugin_fetch=AU.fetch_plugin_source, install=self.fake_install)
+            self.assertEqual(res["result"], "updated")
+            self.assertEqual((len(self.updates), len(self.installs)), (1, 1))
+        res = self.run_check(now=NOW + 99999, plugin_fetch=lambda e: None)
+        self.assertEqual((res["result"], res["plugin_source"]), ("up_to_date", "offline"))
+        self.assertIn("aib-plugins", "\n".join(AU.status_lines(AU.status_payload(self.env, platform="linux"))))
+
+    def test_x4_stage_refuses_escaping_paths(self):
+        bare = self.paid_repo({"demo-paid": "1.0.3"})
+        src = self.td / "plugsrc"
+        os.symlink("/etc/hosts", src / "demo-paid" / "link")
+        git(src, "add", "-A")
+        git(src, "commit", "-q", "-m", "link")
+        git(src, "push", "-q", str(bare), "main")
+        cache = AU.fetch_plugin_source(self.env)
+        self.assertIsNotNone(cache)
+        self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
 
 
 class Cli(Base):

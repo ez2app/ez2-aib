@@ -15,9 +15,15 @@
       預設開而還沒裝排程的舊安裝,開席那次查的時候順手裝上。開發用的 worktree 不裝(樹一刪排程就壞)。
       其他系統只有開席那次。
 查什麼(不另找伺服器,跟一行安裝用同一個來源):
-  核心:git fetch --tags origin,目標 = 一行安裝程式會裝的那一版(公開來源 = 最新的 v* 標籤;ssh 私有來源 = origin/main)。
-  外掛:這份 aib 附的 extensions/ 裡受信鑰匙簽過的包,這台已經裝了、版本比較舊的那幾個。
-       (付費外掛 ~/.ez2-aib/plugins 的來源核心不知道 ⇒ 只列出來,不自動換。)
+  核心:git fetch --tags origin,目標 = 一行安裝程式會裝的那一版(公開來源 = 最新的 v* 標籤;私有來源(git@ 開頭)= origin/main)。
+  外掛:(1) 這份 aib 附的 extensions/ 裡受信鑰匙簽過的包;(2) 付費外掛(<狀態根>/plugins)⇒ aib-plugins 倉的 main
+       (10-23 @abb89 裁)。兩種都只看這台已經裝了、版本比較舊、而且簽章驗得過(aib_ext.signed_ok)的那幾個。
+       aib-plugins 取法跟手動裝一樣:把倉裡那個資料夾原樣拿出來交給 aib ext install(這裡用 git fetch 到
+       <狀態根>/cache/auto-update/aib-plugins.git,再 git archive 出那一個資料夾);來源網址 AIB_AUTO_UPDATE_PLUGIN_SOURCE
+       可換(測試 / 鏡像用 —— 換成什麼都一樣要過簽章)。
+  不自動更新清單(設定檔 exclude):預設 hostguard(這台的 hostguard 是正式站部署來源,換版要主人點頭)。
+       `aib update auto exclude add|remove|list <外掛>`;拿掉預設那幾個要本人 Touch ID(只擋正式入口;設定檔本身 AI 改得到,
+       真正的保護仍是簽章)。清單裡的外掛永遠不自動換,status 會列出來。
 什麼時候才真的更新(有一項不合就這次不做,下次查再試):
   沒人拿著測試租約(aib lease;讀不到也當有人)、沒有推包 / git push / aib test 在跑、
   安裝目錄沒有改過沒提交的檔、是單純快轉(歷史分叉就不動)、在 main(或沒有分支)上、
@@ -37,6 +43,9 @@
 """
 import argparse
 import contextlib
+import io
+import shutil
+import tarfile
 import fcntl
 import json
 import os
@@ -66,7 +75,10 @@ LEASE_TTL_S = 45 * 60
 CLEAN_GAP = 5                        # 跟 install.sh clean_if_far 的 AIB_CLEAN_GAP 預設一樣
 _PATH_EXTRA = ("/opt/homebrew/bin", "/usr/local/bin")
 _AGENT_ENV_KEEP = ("HOME", "LANG", "EZ2_AIB_STATE_ROOT", "EZ2_AIB_HOME", "EZ2_AIB_LOCALE")   # 只帶路徑 / 語系,不帶 token / 開關
-_CHILD_ENV_DROP = ("AIB_INSTALL_URL",)   # 自動更新只用內建的官方安裝網址
+_CHILD_ENV_DROP = ("AIB_INSTALL_URL",)
+DEFAULT_EXCLUDE = ("hostguard",)     # 10-23 @abb89:這台的 hostguard = 正式站部署來源,換版要主人點頭
+PLUGIN_SOURCE = "git@github.com:ez2app/aib-plugins.git"   # 付費外掛的簽章來源(main);AIB_AUTO_UPDATE_PLUGIN_SOURCE 可換
+PLUGIN_BRANCH = "main"   # 自動更新只用內建的官方安裝網址
 SSH_HARDENED = "ssh -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes"
 BUSY_PATTERNS = (
     ("tests", re.compile(r"(?:^|[\s/])aib\s+test(?:\s|$)|tools/verify/test_entry\.py")),
@@ -126,8 +138,35 @@ def read_setting(env=None):
     return d["on"], "set"
 
 
+def _raw_setting(env=None):
+    try:
+        d = json.loads(setting_path(env).read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def write_setting(on, env=None, now=None):
-    _write_json(setting_path(env), {"v": 1, "on": bool(on), "at": int(time.time() if now is None else now)})
+    d = _raw_setting(env)
+    d.update(v=1, on=bool(on), at=int(time.time() if now is None else now))
+    d["exclude"] = read_excludes(env)
+    _write_json(setting_path(env), d)
+
+
+def read_excludes(env=None):
+    """不自動更新的外掛名單。設定檔沒寫過 exclude(或讀不懂)⇒ 預設 DEFAULT_EXCLUDE。"""
+    v = _raw_setting(env).get("exclude")
+    if not isinstance(v, list):
+        return list(DEFAULT_EXCLUDE)
+    return sorted({x for x in v if isinstance(x, str) and _ext().name_ok(x)})
+
+
+def write_excludes(names, env=None, now=None):
+    d = _raw_setting(env)
+    on, src = read_setting(env)
+    d.update(v=1, on=on if src != "unreadable" else False, at=int(time.time() if now is None else now))
+    d["exclude"] = sorted(set(names))
+    _write_json(setting_path(env), d)
 
 
 def read_status(env=None):
@@ -444,23 +483,84 @@ def install_plugin(folder, out):
     return X.install(folder, allow_unsigned=False, out=out)
 
 
-def unsourced_plugins(env=None):
-    """裝在 <EZ2_AIB_HOME>/plugins 的外掛(付費那種);核心不知道它們的來源 ⇒ 只列名字與版號,不自動換。"""
-    e = os.environ if env is None else env
-    base = Path(e.get("EZ2_AIB_HOME") or (Path(e.get("HOME") or Path.home()) / ".ez2-aib")) / "plugins"
-    out = []
+def plugin_cache(env=None):
+    return state_root(env) / "cache" / "auto-update" / "aib-plugins.git"
+
+
+def fetch_plugin_source(env=None):
+    """aib-plugins 的 main 抓到本機快取(bare);回快取路徑,抓不到 ⇒ None。不帶任何認證參數、不開互動提示。"""
+    env = dict(os.environ if env is None else env)
+    src = env.get("AIB_AUTO_UPDATE_PLUGIN_SOURCE") or PLUGIN_SOURCE
+    cache = plugin_cache(env)
+    e = dict(env, GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=SSH_HARDENED)
+    if not (cache / "HEAD").exists():
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        if _git(cache.parent, "init", "-q", "--bare", cache.name, env=e)[0] != 0:
+            return None
+    rc, _ = _git(cache, "fetch", "-q", "--no-tags", src, "+refs/heads/%s:refs/heads/%s" % (PLUGIN_BRANCH, PLUGIN_BRANCH),
+                 env=e, timeout=180)
+    return cache if rc == 0 else None
+
+
+def _source_manifest(cache, name):
+    rc, out = _git(cache, "show", "%s:%s/aib-ext.json" % (PLUGIN_BRANCH, name))
+    if rc != 0:
+        return None
     try:
-        dirs = sorted(p for p in base.iterdir() if p.is_dir())
+        m = json.loads(out)
+    except ValueError:
+        return None
+    return m if isinstance(m, dict) else None
+
+
+def paid_behind(cache, excluded=(), env=None):
+    """這台已裝的付費外掛(<狀態根>/plugins)在 aib-plugins main 有比較新、簽章驗得過的版本 ⇒ 列出來。
+    回 (落後清單, 被排除的清單, 簽章沒過的清單)。"""
+    X = _ext()
+    import ext_kinds as K
+    home = state_root(env) / K.KINDS["plugin"]["home"]
+    behind, skipped, unsigned = [], [], []
+    try:
+        dirs = sorted(p for p in home.iterdir() if p.is_dir() and not p.name.endswith(".installing"))
     except OSError:
-        return out
+        return behind, skipped, unsigned
     for d in dirs:
         try:
-            m = json.loads((d / "plugin.json").read_text(encoding="utf-8"))
+            have = json.loads((d / X.MANIFEST).read_text(encoding="utf-8")).get("version")
         except (OSError, ValueError):
             continue
-        if isinstance(m, dict) and m.get("name"):
-            out.append({"name": str(m["name"]), "version": str(m.get("version") or "?")})
-    return out
+        m = _source_manifest(cache, d.name) if cache else None
+        if not m or m.get("name") != d.name or K.kind_of_label(str(m.get("kind") or "")) != "plugin":
+            continue
+        if X._num(have) >= X._num(m.get("version")):
+            continue
+        if d.name in excluded:
+            skipped.append(d.name)
+        elif not X.signed_ok(m):
+            unsigned.append(d.name)
+        else:
+            behind.append({"name": d.name, "kind": "plugin", "have": have, "want": m.get("version"), "source": "aib-plugins"})
+    return behind, skipped, unsigned
+
+
+def stage_paid(cache, name, env=None):
+    """git archive 出 aib-plugins main 的那一個資料夾到暫存處;回資料夾路徑(失敗 ⇒ None)。路徑跑出去 / 連結一律拒。"""
+    rc = subprocess.run(["git", "-C", str(cache), "archive", "--format=tar", PLUGIN_BRANCH, name],
+                        capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
+    if rc.returncode != 0:
+        return None
+    stage = state_root(env) / "cache" / "auto-update" / ("stage-%d" % os.getpid())
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(rc.stdout)) as tf:
+        for mem in tf.getmembers():
+            parts = Path(mem.name).parts
+            if not parts or parts[0] != name or ".." in parts or Path(mem.name).is_absolute() \
+                    or not (mem.isfile() or mem.isdir()):
+                shutil.rmtree(stage, ignore_errors=True)
+                return None
+        tf.extractall(str(stage), **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))   # 上面已逐項檢查:只有一般檔與資料夾、都在 <name>/ 底下
+    return stage / name
 
 
 # ───────────────────────────── 查 / 更新 ─────────────────────────────
@@ -505,7 +605,8 @@ def _note_event(old, new, env, now):
 
 def check(env=None, why="schedule", now=None, root=None, platform=None, home=None, launchctl=_launchctl,
           rows=None, do_fetch=fetch, run_update=run_core_update, lease=_lease_cmd, install=install_plugin,
-          ext_base=None, room=_room_reload, dev_tree=None, lease_state=lease_busy):
+          ext_base=None, room=_room_reload, dev_tree=None, lease_state=lease_busy, plugin_fetch=fetch_plugin_source,
+          stage=stage_paid):
     """查一次,安全就更新。回 {"result": …, …};result 見 RESULTS。可注入的全部是外部動作(測試用)。"""
     env = dict(os.environ if env is None else env)
     root = Path(root or ROOT)
@@ -529,7 +630,7 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
             res.update(kw, result=result)
             if result not in ("checked_recently",):
                 st.update(last_result=result, last_result_at=int(now), last_why=why)
-                for k in ("have", "latest", "plugins_behind"):
+                for k in ("have", "latest", "plugins_behind", "plugins_excluded", "plugins_unsigned", "plugin_source"):
                     if k in res:
                         st[k] = res[k]
                 write_status(st, env)
@@ -553,8 +654,14 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
             return done("offline")
         plan = core_plan(root)
         res.update(have=plan["have"], latest=plan["latest"])
-        behind = plugins_behind(ext_base) if env.get("AIB_EXT_AUTO", "") != "0" else []
-        res["plugins_behind"] = [b["name"] for b in behind]
+        excluded = read_excludes(env)
+        behind = [b for b in plugins_behind(ext_base) if b["name"] not in excluded] \
+            if env.get("AIB_EXT_AUTO", "") != "0" else []
+        cache = plugin_fetch(env)
+        res["plugin_source"] = "ok" if cache else "offline"
+        paid, skipped, unsigned = paid_behind(cache, excluded, env) if cache else ([], [], [])
+        behind += paid
+        res.update(plugins_behind=[b["name"] for b in behind], plugins_excluded=skipped, plugins_unsigned=unsigned)
         if plan["why"] == "no_ref":
             return done("no_ref")
         if not plan["behind"] and not behind:
@@ -578,10 +685,13 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
                 if rc != 0:
                     return done("failed", have=ref_version(root, "HEAD"))
             # 核心換了 ⇒ 一行安裝已用**新版**程式跑過 aib ext auto,這支舊碼不再自己裝;核心沒換才在這裡裝落後的外掛
-            import io
             buf, plugin_rows = io.StringIO(), []
+            #   付費外掛也一樣等下一次查(新版外掛可能要新版核心;下一次是新碼在跑)
             for b in ([] if plan["behind"] else behind):
-                r = install(b["dir"], buf)
+                folder = b.get("dir") or stage(cache, b["name"], env)
+                r = install(str(folder), buf) if folder else 3
+                if not b.get("dir"):
+                    shutil.rmtree(state_root(env) / "cache" / "auto-update" / ("stage-%d" % os.getpid()), ignore_errors=True)
                 plugin_rows.append({"name": b["name"], "from": b["have"], "to": b["want"], "rc": r})
                 log("plugin %s %s -> %s rc=%s" % (b["name"], b["have"], b["want"], r), env, now)
             res["plugins"] = plugin_rows
@@ -617,7 +727,9 @@ def status_payload(env=None, home=None, platform=None):
             "last_check": st.get("last_check"), "last_result": st.get("last_result"),
             "last_result_at": st.get("last_result_at"), "last_update": st.get("last_update"),
             "plugins_behind": st.get("plugins_behind") or [], "last_plugins": st.get("last_plugins") or [],
-            "unsourced_plugins": [p["name"] for p in unsourced_plugins(env)], "log": str(log_path(env))}
+            "excluded": read_excludes(env), "plugins_excluded": st.get("plugins_excluded") or [],
+            "plugins_unsigned": st.get("plugins_unsigned") or [], "plugin_source": st.get("plugin_source"),
+            "log": str(log_path(env))}
 
 
 def status_lines(p):
@@ -631,8 +743,13 @@ def status_lines(p):
         out.append(T("status.last_update", old=lu.get("from") or "?", new=lu["to"], when=_when(lu.get("at"))))
     if p.get("last_result"):
         out.append(T("status.last_result", why=T("why." + p["last_result"]), when=_when(p.get("last_result_at"))))
-    if p.get("unsourced_plugins"):
-        out.append(T("status.unsourced", names=", ".join(p["unsourced_plugins"])))
+    out.append(T("status.excluded", names=", ".join(p["excluded"]) or T("exclude.none")))
+    if p.get("plugins_excluded"):
+        out.append(T("status.excluded_behind", names=", ".join(p["plugins_excluded"])))
+    if p.get("plugins_unsigned"):
+        out.append(T("status.unsigned", names=", ".join(p["plugins_unsigned"])))
+    if p.get("plugin_source") == "offline":
+        out.append(T("status.plugin_source_offline"))
     out.append(T("status.log", path=p["log"]))
     return out
 
@@ -669,6 +786,42 @@ def cmd_off(env=None, out=sys.stdout, home=None, launchctl=_launchctl):
     return 0
 
 
+def cmd_exclude(action, name=None, env=None, out=sys.stdout, as_json=False, prove=None, platform=None):
+    """exclude add|remove|list。拿掉預設清單裡的(hostguard)要本人 Touch ID;加、列不用。"""
+    env = os.environ if env is None else env
+    cur = read_excludes(env)
+    if action == "list":
+        out.write((json.dumps({"exclude": cur, "default": list(DEFAULT_EXCLUDE)}, ensure_ascii=False) if as_json
+                   else T("exclude.list", names=", ".join(cur) or T("exclude.none"))) + "\n")
+        return 0
+    if not name or not _ext().name_ok(name):
+        out.write(T("exclude.bad_name", name=name or "") + "\n")
+        return 2
+    if action == "add":
+        if name in cur:
+            out.write(T("exclude.already", name=name) + "\n")
+            return 0
+        write_excludes(cur + [name], env)
+        out.write(T("exclude.added", name=name) + "\n")
+        log("exclude add %s" % name, env)
+        return 0
+    if name not in cur:
+        out.write(T("exclude.not_in", name=name) + "\n")
+        return 0
+    if name in DEFAULT_EXCLUDE:
+        if prove is None:
+            import seat_act
+            prove = seat_act.prove
+        _via, why = prove(T("exclude.touchid_reason", name=name), env, platform=platform)
+        if why:
+            out.write(T("exclude.needs_touchid", name=name, why=why) + "\n")
+            return 2
+    write_excludes([n for n in cur if n != name], env)
+    out.write(T("exclude.removed", name=name) + "\n")
+    log("exclude remove %s" % name, env)
+    return 0
+
+
 def _detach():
     """開席那次:fork 一份到背景、脫離終端機(席位關掉也不會被帶走),父行程立刻回去。"""
     if os.fork() > 0:
@@ -682,7 +835,9 @@ def _detach():
 def main(argv=None, out=sys.stdout):
     argv = list(sys.argv[1:] if argv is None else argv)
     ap = argparse.ArgumentParser(prog="aib update auto", description=T("help.desc"))
-    ap.add_argument("action", nargs="?", default="status", choices=["on", "off", "status", "check"])
+    ap.add_argument("action", nargs="?", default="status", choices=["on", "off", "status", "check", "exclude"])
+    ap.add_argument("sub", nargs="?", choices=["add", "remove", "list"])
+    ap.add_argument("name", nargs="?")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--why", default="schedule", choices=["schedule", "seat-open", "manual"])
     ap.add_argument("--detach", action="store_true")
@@ -691,6 +846,8 @@ def main(argv=None, out=sys.stdout):
         return cmd_on(out=out)
     if a.action == "off":
         return cmd_off(out=out)
+    if a.action == "exclude":
+        return cmd_exclude(a.sub or "list", a.name, out=out, as_json=a.json)
     if a.action == "check":
         if a.detach:
             _detach()

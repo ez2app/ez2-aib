@@ -5048,7 +5048,6 @@
   "aib.auto_update.status.versions": "This computer {have}; latest release {latest} (checked {when})",
   "aib.auto_update.status.last_update": "Last auto update: {old} → {new} ({when})",
   "aib.auto_update.status.last_result": "Last check ({when}): {why}",
-  "aib.auto_update.status.unsourced": "Not updated automatically (aib does not know where they come from): {names}",
   "aib.auto_update.status.log": "Log: {path}",
   "aib.auto_update.doctor.on": "auto update on; not checked yet",
   "aib.auto_update.doctor.on_last": "auto update on; last check {when}: {why}",
@@ -5079,5 +5078,18 @@
   "aib.auto_update.why.updated": "updated",
   "aib.auto_update.why.plugins_failed": "a plugin was not updated (signature or check failed); see the log",
   "aib.doctor.check.auto_update.error": "cannot read the auto update status: {error}",
-  "aib.doctor.check.auto_update.remedy": "aib update auto on turns it on (or run aib update yourself after each release)"
+  "aib.doctor.check.auto_update.remedy": "aib update auto on turns it on (or run aib update yourself after each release)",
+  "aib.auto_update.status.excluded": "Never auto-updated: {names}",
+  "aib.auto_update.status.excluded_behind": "Newer signed version exists but excluded (update by hand when you decide): {names}",
+  "aib.auto_update.status.unsigned": "Newer version in the source failed the signature check, not installed: {names}",
+  "aib.auto_update.status.plugin_source_offline": "Plugin source (aib-plugins) could not be reached at the last check; paid plugins were not checked",
+  "aib.auto_update.exclude.list": "Never auto-updated: {names}",
+  "aib.auto_update.exclude.none": "(none)",
+  "aib.auto_update.exclude.added": "{name} will not be auto-updated",
+  "aib.auto_update.exclude.already": "{name} is already on the list",
+  "aib.auto_update.exclude.removed": "{name} will be auto-updated again (signed versions only)",
+  "aib.auto_update.exclude.not_in": "{name} is not on the list",
+  "aib.auto_update.exclude.bad_name": "not a plugin name: \"{name}\"",
+  "aib.auto_update.exclude.touchid_reason": "Allow aib to auto-update the plugin {name}",
+  "aib.auto_update.exclude.needs_touchid": "{name} is excluded by default (it is the production deploy source); taking it off needs your Touch ID ({why}); nothing changed"
 }

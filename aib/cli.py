@@ -53,6 +53,8 @@ Installed with pipx? Use `pipx upgrade ez2-aib` instead.
     aib update auto on|off|status [--json]
                 update by itself when a new version is released (default on): checked when a seat opens and,
                 on macOS, every 6 hours; only fast-forwards, only signed plugins, never while tests or a push run
+    aib update auto exclude add|remove|list <plugin>
+                plugins that are never auto-updated (hostguard by default)
 """
 
 
