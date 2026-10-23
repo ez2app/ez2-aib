@@ -4394,6 +4394,8 @@
   "aib.ext.legacy_plugin": "お知らせ:古い {id} がまだ残っています(廃止済み、aib-boards に置き換え)。削除するには:{cmd}",
   "aib.ext.auto_off": "AIB_EXT_AUTO=0:同梱の mod は自動インストールしない",
   "aib.ext.auto_unsigned": "– {name} は信頼された鍵で署名されていないため自動インストールしない(自分で入れるには aib ext install --allow-unsigned)",
+  "aib.ext.auto_modified": "– {name} はインストール先フォルダにあなたが追加 / 変更したファイルがあるため自動で入れ替えない(入れ替えるには自分で aib ext install)",
+  "aib.ext.keep_left": "– 保持するフォルダの一部を戻せなかった。{path} にそのまま残っている(削除していない)",
   "aib.ext.restart_hint": "インストール / 更新:{names}。各席で /restart すると有効になります(元の会話に戻ります)",
   "aib.who_owns.empty_query": "調べるキーワードか文を指定してください",
   "aib.who_owns.head_reopen": "「{query}」には担当がいます。その席を開き直してください:",

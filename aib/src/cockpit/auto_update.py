@@ -50,7 +50,6 @@ import stat
 import tarfile
 import tempfile
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -83,7 +82,7 @@ _AGENT_ENV_KEEP = ("HOME", "LANG", "EZ2_AIB_STATE_ROOT", "EZ2_AIB_HOME", "EZ2_AI
 #   AIB_SOURCE / AIB_INSTALL_URL…(會換安裝程式、換發版公鑰、換來源),bash 也吃 BASH_ENV ⇒ 一律不帶，只留路徑 / 語系 / 代理 / ssh-agent
 _CHILD_ENV_KEEP = _AGENT_ENV_KEEP + ("PATH", "TMPDIR", "TERM", "USER", "LOGNAME", "SSH_AUTH_SOCK",
                                      "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-                                     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY")
+                                     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "AIB_EXT_AUTO")
 _CHILD_ENV_KEEP_PREFIX = ("LC_",)
 DEFAULT_EXCLUDE = ("hostguard",)     # 10-23 @abb89:這台的 hostguard = 正式站部署來源,換版要主人點頭
 PLUGIN_SOURCE = "git@github.com:ez2app/aib-plugins.git"   # 付費外掛的簽章來源(main);AIB_AUTO_UPDATE_PLUGIN_SOURCE 可換
@@ -602,61 +601,24 @@ def _read_obj(path):
     return d if isinstance(d, dict) else None
 
 
-KEEP_RX = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]{0,63}")
-LOCAL_CHANGES_MAX = 20
-
-
 def keep_dirs(m):
-    """外掛 manifest 宣告換版時要留下的最上層資料夾(例:.venv);名字不合格的不算。"""
-    k = m.get("keep") if isinstance(m, dict) else None
-    if not isinstance(k, list):
-        return []
-    return sorted({x for x in k if isinstance(x, str) and KEEP_RX.fullmatch(x) and x not in (".", "..", _ext().MANIFEST)})
+    return _ext().keep_dirs(m)
 
 
 def local_changes(b):
-    """已裝那份跟它自己 manifest 的 files 比 ⇒ 改過 / 多出來 / 連結的相對路徑(最多 20 個);
-    keep 夾(以來源新版 manifest 宣告為準)、位元碼、manifest 本身不算。量不到 ⇒ ["?"](寧可不換)。"""
+    """已裝那份跟它自己 manifest 的 files 比(aib_ext.local_changes);keep 夾以來源新版 manifest 為準。量不到 ⇒ ["?"]。"""
     X = _ext()
     try:
         d = X.target(b["kind"], b["name"])
     except (KeyError, ValueError):
         return ["?"]
-    mine = _read_obj(d / X.MANIFEST)
-    files = mine.get("files") if mine else None
-    if not isinstance(files, dict):
-        return ["?"]
     src = _read_obj(Path(b["dir"]) / X.MANIFEST) if b.get("dir") else b.get("manifest")
-    keep = set(keep_dirs(src or {}))
-    hits = []
-    for root, dirs, names in os.walk(d):
-        rel_root = Path(root).relative_to(d)
-        if rel_root == Path("."):
-            dirs[:] = [x for x in dirs if x not in keep]
-        for x in list(dirs):
-            if x == X.BYTECODE_DIR:
-                dirs.remove(x)
-            elif os.path.islink(os.path.join(root, x)):
-                dirs.remove(x)
-                hits.append((rel_root / x).as_posix())
-        for x in names:
-            rel = (rel_root / x).as_posix()
-            fp = Path(root) / x
-            if rel == X.MANIFEST or X._is_bytecode(Path(rel)):
-                continue
-            try:
-                if fp.is_symlink() or rel not in files or hashlib.sha256(fp.read_bytes()).hexdigest() != files[rel]:
-                    hits.append(rel)
-            except OSError:
-                hits.append(rel)
-            if len(hits) >= LOCAL_CHANGES_MAX:
-                return hits
-    return hits
+    return X.local_changes(d, src)
 
 
 def install_plugin(folder, out):
     """跟 aib ext install 同一條路;一律驗簽章(不給 --allow-unsigned)。回結束碼。
-    自動路徑另外守兩件事:keep 夾(例:外掛自己建的 .venv)搬到新版裡;啟用狀態照原樣(停用的不會被自動打開)。"""
+    自動路徑另外守兩件事(aib_ext.install_keeping):keep 夾搬到新版裡;啟用狀態照原樣(停用的不會被自動打開)。"""
     X = _ext()
     import ext_kinds as K
     m = _read_obj(Path(folder) / X.MANIFEST)
@@ -666,24 +628,7 @@ def install_plugin(folder, out):
         dst = X.target(K.kind_of_label(str(m.get("kind") or "")), str(m.get("name") or ""))
     except ValueError:
         return 3
-    st = X._read_state(m["name"])
-    on = sorted(a for a, v in (st.get("enabled") or {}).items() if v)
-    enable = bool(on) or bool(st.get("claude_mod"))
-    held = Path(tempfile.mkdtemp(prefix=".keep-", dir=str(dst.parent))) if dst.is_dir() else None
-    moved = []
-    try:
-        for k in (keep_dirs(m) if held else []):
-            s = dst / k
-            if s.is_dir() and not s.is_symlink():
-                os.rename(s, held / k)
-                moved.append(k)
-        return X.install(folder, allow_unsigned=False, out=out, enable_engines=enable, engines=on or None)
-    finally:
-        for k in moved:   # 裝好 ⇒ 搬進新版;沒裝成(舊的還在)⇒ 搬回原處
-            if dst.is_dir() and not os.path.lexists(dst / k):
-                os.rename(held / k, dst / k)
-        if held:
-            shutil.rmtree(held, ignore_errors=True)
+    return X.install_keeping(folder, m, dst, out=out)
 
 
 def plugin_cache(env=None):
@@ -784,6 +729,7 @@ def _child_env(env):
     # git / install.sh 的 ssh 一律加固:install.sh 只在 SOURCE 是 git@ / ssh:// 才自己 export,insteadOf 改寫成 ssh 時會漏
     e = {k: str(v) for k, v in env.items() if k in _CHILD_ENV_KEEP or k.startswith(_CHILD_ENV_KEEP_PREFIX)}
     e.update(GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=SSH_HARDENED)
+    e["AIB_EXT_AUTO_GUARD"] = "1"     # 新版的 aib ext auto 不換使用者改過的附帶外掛、keep 夾與啟用狀態照原樣
     return e
 
 

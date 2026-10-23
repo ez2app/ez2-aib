@@ -338,7 +338,8 @@ class Gates(Base):
             self.assertIn(o, AU.SSH_HARDENED)
         self.assertEqual(self.updates[0]["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual([k for k in self.updates[0] if k.startswith(("AIB_", "GIT_", "PYTHON", "DYLD_", "LD_"))
-                          and k not in ("GIT_SSH_COMMAND", "GIT_TERMINAL_PROMPT")], [])
+                          and k not in ("GIT_SSH_COMMAND", "GIT_TERMINAL_PROMPT", "AIB_EXT_AUTO_GUARD")], [])
+        self.assertEqual(self.updates[0]["AIB_EXT_AUTO_GUARD"], "1")      # 新版 aib ext auto 走不蓋使用者檔那條
         for k in ("SSH_AUTH_SOCK", "LC_ALL", "HTTPS_PROXY", "HOME", "EZ2_AIB_STATE_ROOT"):
             self.assertEqual(self.updates[0].get(k), env[k], k)
         self.assertEqual(self.leases, ["acquire", "release"])
@@ -722,6 +723,62 @@ class PaidSource(Base):
         self.assertEqual([(c["enable_engines"], c["engines"]) for c in calls], [(False, None), (True, ["codex"])])
         self.assertTrue(all(c["allow_unsigned"] is False for c in calls))
         shutil.rmtree(Path(folder).parent, ignore_errors=True)
+
+    def test_x5d_keep_dir_wins_over_same_name_in_new_version(self):
+        # 新版包自己也帶同名的 keep 夾 ⇒ 以使用者那份為準、不丟;沒裝成 ⇒ 搬回原處;暫存夾不留
+        import aib_ext
+        dst = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / "demo"
+        (dst / "data").mkdir(parents=True)
+        (dst / "data" / "user.db").write_text("USERDATA", encoding="utf-8")
+
+        def new_version(folder, **kw):
+            shutil.rmtree(dst)
+            (dst / "data").mkdir(parents=True)
+            (dst / "data" / "defaults.json").write_text("{}", encoding="utf-8")
+            return 0
+
+        m = {"name": "demo", "kind": "plugin", "keep": ["data"]}
+        with mock.patch.object(aib_ext, "install", side_effect=new_version):
+            self.assertEqual(aib_ext.install_keeping("x", m, dst, out=io.StringIO()), 0)
+        self.assertEqual(sorted(p.name for p in (dst / "data").iterdir()), ["user.db"])
+        self.assertEqual((dst / "data" / "user.db").read_text(encoding="utf-8"), "USERDATA")
+        with mock.patch.object(aib_ext, "install", return_value=3):
+            self.assertEqual(aib_ext.install_keeping("x", m, dst, out=io.StringIO()), 3)
+        self.assertEqual((dst / "data" / "user.db").read_text(encoding="utf-8"), "USERDATA")
+        self.assertEqual([p.name for p in dst.parent.iterdir() if p.name.startswith(".keep-")], [])
+
+    def test_x5e_bundled_auto_guarded_when_run_by_auto_update(self):
+        # 核心自動更新跑 aib update ⇒ install.sh 用新版 aib ext auto 換附帶外掛:帶 AIB_EXT_AUTO_GUARD=1 時
+        # 使用者加 / 改過檔的不換、停用的不打開;沒帶(本人手動 aib update)照舊
+        import aib_ext
+        ext = self.td / "extensions"
+        root = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins"
+        for name in ("bund", "quiet"):
+            d = ext / name
+            d.mkdir(parents=True)
+            (d / "m.py").write_text("V = 2\n")
+            (d / "aib-ext.json").write_text(json.dumps({"name": name, "kind": "plugin", "version": "1.1.0",
+                                                        "files": aib_ext._hashes(d), "signature": "ed25519:test"}))
+            inst = root / name
+            inst.mkdir(parents=True)
+            (inst / "m.py").write_text("V = 1\n")
+            (inst / "aib-ext.json").write_text(json.dumps({"name": name, "kind": "plugin", "version": "1.0.0",
+                                                           "files": aib_ext._hashes(inst)}))
+        (root / "bund" / "notes.txt").write_text("mine", encoding="utf-8")       # 使用者自己加的檔
+        calls = []
+        fake = lambda f, **kw: calls.append((Path(f).name, kw.get("enable_engines", True))) or 0
+        guard = {"AIB_EXT_AUTO_GUARD": "1"}
+        out = io.StringIO()
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True), mock.patch.object(aib_ext, "install", side_effect=fake):
+            aib_ext.auto_install(out=out, src=ext, env=guard)
+            self.assertEqual(calls, [("quiet", False)])          # bund 不換;quiet 停用中 ⇒ 換了也不打開
+            self.assertIn("bund", out.getvalue())
+            calls.clear()
+            aib_ext.auto_install(out=io.StringIO(), src=ext, env={})
+            self.assertEqual([c[0] for c in calls], ["bund", "quiet"])
+        self.assertEqual((root / "bund" / "notes.txt").read_text(encoding="utf-8"), "mine")
+        e = AU._child_env({"AIB_EXT_AUTO": "0", "AIB_EXT_AUTO_GUARD": "0", "PATH": "/usr/bin"})
+        self.assertEqual((e["AIB_EXT_AUTO"], e["AIB_EXT_AUTO_GUARD"]), ("0", "1"))   # 本人的全關照帶;守門一律開
 
     def test_x2b_signature_failure_not_installed(self):
         self.paid_repo({"demo-paid": "1.0.3"})

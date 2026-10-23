@@ -4394,6 +4394,8 @@
   "aib.ext.legacy_plugin": "提醒:舊的 {id} 還在(已停用,由 aib-boards 取代)。要移除:{cmd}",
   "aib.ext.auto_off": "AIB_EXT_AUTO=0:不自動裝附帶的 mod",
   "aib.ext.auto_unsigned": "– {name} 沒有受信鑰匙的簽章,不自動裝(要裝請自己 aib ext install --allow-unsigned)",
+  "aib.ext.auto_modified": "– {name} 已裝的資料夾裡有你自己加 / 改過的檔，不自動換(要換請自己 aib ext install)",
+  "aib.ext.keep_left": "– 有保留的資料夾沒搬回去，還在 {path}(沒有刪)",
   "aib.ext.restart_hint": "已裝好 / 更新:{names}。每席 /restart 生效(會接回原對話)",
   "aib.who_owns.empty_query": "請給要查的關鍵字或句子",
   "aib.who_owns.head_reopen": "「{query}」已經有人負責,建議重開那一席:",

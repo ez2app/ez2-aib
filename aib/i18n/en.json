@@ -4394,6 +4394,8 @@
   "aib.ext.legacy_plugin": "Note: the old {id} is still installed (retired, replaced by aib-boards). To remove it: {cmd}",
   "aib.ext.auto_off": "AIB_EXT_AUTO=0: bundled mods are not installed automatically",
   "aib.ext.auto_unsigned": "– {name} is not signed by a trusted key, so it is not installed automatically (to install it yourself: aib ext install --allow-unsigned)",
+  "aib.ext.auto_modified": "– {name}: files inside the installed folder were added or changed by you, so it is not replaced automatically (to replace it yourself: aib ext install)",
+  "aib.ext.keep_left": "– could not move some kept folders back; they are still in {path} (nothing was deleted)",
   "aib.ext.restart_hint": "Installed / updated: {names}. Type /restart in each seat for it to take effect (it resumes the same conversation)",
   "aib.who_owns.empty_query": "give a keyword or sentence to look up",
   "aib.who_owns.head_reopen": "\"{query}\" already has an owner; reopen that seat:",
