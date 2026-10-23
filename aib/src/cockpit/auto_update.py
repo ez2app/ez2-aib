@@ -46,6 +46,7 @@ import argparse
 import contextlib
 import io
 import shutil
+import stat
 import tarfile
 import tempfile
 import fcntl
@@ -234,16 +235,40 @@ def write_status(d, env=None):
         pass
 
 
-def log(msg, env=None, now=None):
-    """一行:時間 + 訊息(只放原因、版號;不放任何 token / 網址參數)。寫不出不擋。"""
+def _open_log(env=None):
+    """附加模式開紀錄檔;紀錄檔是連結 / 不是一般檔 ⇒ None(不寫,也不寫穿到連結指的檔)。
+    太大 ⇒ 只讀最後 LOG_MAX/2,寫到暫存檔再 os.replace(換掉的是路徑本身)。"""
     p = log_path(env)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        if p.exists() and p.stat().st_size > LOG_MAX:
-            keep = p.read_bytes()[-LOG_MAX // 2:]
-            p.write_bytes(keep[keep.find(b"\n") + 1:])
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() if now is None else now))
-        with open(p, "a", encoding="utf-8") as fh:
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            st = None
+        if st is not None and not stat.S_ISREG(st.st_mode):
+            return None
+        if st is not None and st.st_size > LOG_MAX:
+            fd = os.open(str(p), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "rb") as fh:
+                fh.seek(-(LOG_MAX // 2), os.SEEK_END)
+                keep = fh.read()
+            tmp = p.with_name(p.name + ".tmp.%d" % os.getpid())
+            tmp.write_bytes(keep[keep.find(b"\n") + 1:])
+            os.replace(tmp, p)
+        fd = os.open(str(p), os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        return os.fdopen(fd, "a", encoding="utf-8")
+    except OSError:
+        return None
+
+
+def log(msg, env=None, now=None):
+    """一行:時間 + 訊息(只放原因、版號;不放任何 token / 網址參數)。寫不出不擋。"""
+    fh = _open_log(env)
+    if fh is None:
+        return
+    try:
+        with fh:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() if now is None else now))
             fh.write("%s %s\n" % (stamp, msg))
     except OSError:
         pass
@@ -508,31 +533,38 @@ def plugins_behind(base=None):
     if not base.is_dir():
         return out
     for d in sorted(p for p in base.iterdir() if p.is_dir()):
-        try:
-            m = json.loads((d / X.MANIFEST).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        m = _read_obj(d / X.MANIFEST)
+        if m is None:
             continue
         kind = K.kind_of_label(str(m.get("kind") or ""))
         if kind not in K.INSTALLABLE or m.get("requires_addon") or not X.signed_ok(m):
             continue
         try:
             dst = X.target(kind, str(m.get("name") or ""))
-            have = json.loads((dst / X.MANIFEST).read_text(encoding="utf-8")).get("version")
-        except (ValueError, OSError):
+        except ValueError:
+            continue
+        have = (_read_obj(dst / X.MANIFEST) or {}).get("version")
+        if have is None:
             continue
         if X._num(have) < X._num(m.get("version")):
             out.append({"name": m["name"], "kind": kind, "have": have, "want": m.get("version"), "dir": str(d)})
     return out
 
 
+def _read_obj(path):
+    """JSON 檔 ⇒ dict;讀不到 / 不是 JSON / 不是物件(例:清單)⇒ None。"""
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
 def install_plugin(folder, out):
     """跟 aib ext install 同一條路;一律驗簽章(不給 --allow-unsigned)。回結束碼。"""
     X = _ext()
-    try:
-        m = json.loads((Path(folder) / X.MANIFEST).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return 3
-    if not X.signed_ok(m):
+    m = _read_obj(Path(folder) / X.MANIFEST)
+    if m is None or not X.signed_ok(m):
         return 3
     return X.install(folder, allow_unsigned=False, out=out)
 
@@ -579,10 +611,12 @@ def paid_behind(cache, excluded=(), env=None):
     except OSError:
         return behind, skipped, unsigned
     for d in dirs:
-        try:
-            have = json.loads((d / X.MANIFEST).read_text(encoding="utf-8")).get("version")
-        except (OSError, ValueError):
+        mine = _read_obj(d / X.MANIFEST)
+        if mine is None:
+            if (d / X.MANIFEST).exists():
+                log("plugin %s skipped: installed manifest is not a JSON object" % d.name, env)
             continue
+        have = mine.get("version")
         m = _source_manifest(cache, d.name) if cache else None
         if not m or m.get("name") != d.name or K.kind_of_label(str(m.get("kind") or "")) != "plugin":
             continue
@@ -609,14 +643,20 @@ def stage_paid(cache, name, env=None):
         stage = Path(tempfile.mkdtemp(prefix="stage-", dir=str(base)))   # 每次新建、名字隨機:不沿用任何既有路徑 / 連結
     except OSError:
         return None
-    with tarfile.open(fileobj=io.BytesIO(rc.stdout)) as tf:
-        for mem in tf.getmembers():
-            parts = Path(mem.name).parts
-            if not parts or parts[0] != name or ".." in parts or Path(mem.name).is_absolute() \
-                    or not (mem.isfile() or mem.isdir()):
-                shutil.rmtree(stage, ignore_errors=True)
-                return None
-        tf.extractall(str(stage), **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))   # 上面已逐項檢查:只有一般檔與資料夾、都在 <name>/ 底下
+    try:
+        with tarfile.open(fileobj=io.BytesIO(rc.stdout)) as tf:
+            for mem in tf.getmembers():
+                parts = Path(mem.name).parts
+                if not parts or parts[0] != name or ".." in parts or Path(mem.name).is_absolute() \
+                        or not (mem.isfile() or mem.isdir()):
+                    shutil.rmtree(stage, ignore_errors=True)
+                    log("plugin %s skipped: archive has a path outside the folder or a link" % name, env)
+                    return None
+            tf.extractall(str(stage), **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))   # 上面已逐項檢查:只有一般檔與資料夾、都在 <name>/ 底下
+    except (OSError, tarfile.TarError) as exc:     # 磁碟滿 / 包壞掉 ⇒ 不留半個資料夾,這次不裝
+        shutil.rmtree(stage, ignore_errors=True)
+        log("plugin %s skipped: extract failed (%s)" % (name, type(exc).__name__), env)
+        return None
     return stage / name
 
 
@@ -632,10 +672,9 @@ def _child_env(env):
 def run_core_update(env, root=None):
     """跑這份 aib 的 aib update(一行安裝程式:只快轉、不蓋本機改動);輸出接到 auto-update.log。回結束碼。"""
     root = root or ROOT
-    lp = log_path(env)
-    lp.parent.mkdir(parents=True, exist_ok=True)
+    fh = _open_log(env)
     try:
-        with open(lp, "a", encoding="utf-8") as fh:
+        with (fh or open(os.devnull, "w")) as fh:
             p = subprocess.run([sys.executable, str(root / "bin" / "aib"), "update"], stdin=subprocess.DEVNULL,
                                stdout=fh, stderr=subprocess.STDOUT, env=_child_env(env), cwd=str(root),
                                timeout=UPDATE_TIMEOUT_S)

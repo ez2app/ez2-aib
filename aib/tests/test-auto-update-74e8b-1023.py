@@ -30,6 +30,14 @@ R2 狀態檔 JSON 合法但型別不對(字串 / 清單 / 整數 last_result)⇒
    status / doctor 一律不當掉;狀態檔根本不是 dict 也一樣
 R3 鎖檔位置是資料夾 ⇒ 回 busy,不丟例外
 R4 付費外掛暫存資料夾:裝的那步丟例外也會清掉;既有的 stage-<pid> 連結不會被沿用
+A1 stage_paid 的路徑過濾(舊 Python 沒有 tarfile data filter 時是唯一防線):假的 git archive 吐
+   demo/../../evil、/abs/evil、other/evil 三種包 ⇒ 都回 None,哪裡都沒寫出檔
+A2 核心與外掛來源的 git fetch:環境一定帶 GIT_SSH_COMMAND(BatchMode=yes、ForwardAgent=no、ClearAllForwardings=yes)
+   與 GIT_TERMINAL_PROMPT=0
+A3 本機比正式版新(main 上多一個自己的提交)⇒ up_to_date,不往回退、不更新
+A4 紀錄檔是連結 ⇒ 不寫、連結指的檔一個位元組都不動;太大的一般紀錄檔只留後半、從整行開始、換掉的是檔本身
+A5 解開付費外掛時磁碟滿(extractall 丟 ENOSPC)⇒ 回 None、不留 stage-*、記一行原因;check 照跑回 plugins_failed
+A6 付費外掛 / 附帶外掛的說明檔是合法 JSON 但不是物件(清單)⇒ 跳過那一個並記原因,其他照常
 I1 四語字典同鍵、沒有 !!;aib update auto status / --json 走得通(子行程,暫存狀態根)
 """
 import importlib
@@ -40,6 +48,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -611,6 +620,116 @@ class Robust(Base):
         self.assertEqual(self.leases, ["acquire", "release"])
         self.assertEqual(sorted(p.name for p in base.glob("stage-*")), ["stage-%d" % os.getpid()])   # 只剩那個沒被碰的連結
         self.assertEqual(list(decoy.iterdir()), [])
+
+
+class Audit(Base):
+    def test_a1_stage_path_filter(self):
+        base = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "cache" / "auto-update"
+        for bad in ("demo/../../evil", "/abs/evil", "other/evil"):
+            with self.subTest(member=bad):
+                buf = io.BytesIO()
+                with tarfile.open(fileobj=buf, mode="w") as tf:
+                    for name, data in (("demo/ok.txt", b"ok"), (bad, b"evil")):
+                        ti = tarfile.TarInfo(name)
+                        ti.size = len(data)
+                        tf.addfile(ti, io.BytesIO(data))
+                fake = mock.Mock(return_value=subprocess.CompletedProcess([], 0, stdout=buf.getvalue(), stderr=b""))
+                with mock.patch.object(AU.subprocess, "run", fake):
+                    self.assertIsNone(AU.stage_paid(self.td / "cache.git", "demo", self.env))
+                self.assertEqual(fake.call_args.args[0][3:], ["archive", "--format=tar", "main", "demo"])
+                self.assertEqual(list(base.glob("stage-*")), [])
+                self.assertEqual([p for p in self.td.rglob("evil")], [])
+                # 要是自己的路徑檢查擋下的(新版 Python 的 data filter 也會擋,但 3.9 沒有)
+                self.assertIn("path outside the folder", AU.log_path(self.env).read_text(encoding="utf-8"))
+                AU.log_path(self.env).unlink()
+                self.assertFalse(Path("/abs/evil").exists())
+
+    def test_a2_fetch_is_hardened(self):
+        calls = []
+
+        def fake_git(root, *args, env=None, timeout=30):
+            calls.append((args, dict(env or {})))
+            return 0, ""
+        with mock.patch.object(AU, "_git", fake_git):
+            AU.fetch(self.td, self.env)
+            AU.fetch_plugin_source(dict(self.env, AIB_AUTO_UPDATE_PLUGIN_SOURCE="git@example.invalid:x/y.git"))
+        fetches = [(a, e) for a, e in calls if "fetch" in a]
+        self.assertEqual(len(fetches), 2, calls)
+        for args, env in fetches:
+            ssh = env.get("GIT_SSH_COMMAND", "")
+            for opt in ("BatchMode=yes", "ForwardAgent=no", "ClearAllForwardings=yes"):
+                self.assertIn(opt, ssh, args)
+            self.assertEqual(env.get("GIT_TERMINAL_PROMPT"), "0", args)
+
+    def test_a3_local_ahead_no_downgrade(self):
+        self.make_repos()
+        git(self.inst, "fetch", "-q", "--tags", "origin")
+        git(self.inst, "merge", "-q", "--ff-only", "v0.1.2")
+        (self.inst / "mine.txt").write_text("local\n")
+        git(self.inst, "add", "mine.txt")
+        git(self.inst, "commit", "-q", "-m", "local ahead")
+        before = git(self.inst, "rev-parse", "HEAD")
+        self.assertEqual(self.run_check()["result"], "up_to_date")
+        self.assertEqual((self.updates, self.leases, git(self.inst, "rev-parse", "HEAD")), ([], [], before))
+
+
+class Audit2(Base):
+    def test_a4_log_symlink_and_truncate(self):
+        lp = AU.log_path(self.env)
+        lp.parent.mkdir(parents=True)
+        target = self.td / "precious.txt"
+        target.write_bytes(b"x" * 360 * 1024)
+        os.symlink(str(target), str(lp))
+        # 兩道各自都要擋得住:只剩 lstat 檢查(沒有 O_NOFOLLOW)、只剩 O_NOFOLLOW(lstat 檢查失效)
+        for patch in (mock.patch.object(AU.os, "O_NOFOLLOW", 0, create=True),
+                      mock.patch.object(AU.stat, "S_ISREG", return_value=True)):
+            with self.subTest(patch=patch.attribute):
+                with patch:
+                    AU.log("hello", self.env)
+                self.assertTrue(lp.is_symlink())
+                self.assertEqual(target.read_bytes(), b"x" * 360 * 1024)
+        lp.unlink()
+        lines = b"".join(b"line %06d\n" % i for i in range(40000))
+        self.assertGreater(len(lines), AU.LOG_MAX)
+        lp.write_bytes(lines)
+        AU.log("tail-marker", self.env)
+        data = lp.read_bytes()
+        self.assertLessEqual(len(data), AU.LOG_MAX // 2 + 100)
+        self.assertTrue(data.startswith(b"line "))
+        self.assertIn(b"line 039999\n", data)
+        self.assertTrue(data.rstrip().endswith(b"tail-marker"))
+        self.assertFalse(lp.is_symlink())
+
+    def test_a5_extract_disk_full(self):
+        import errno
+        PaidSource.paid_repo(self, {"demo-paid": "1.0.3"})
+        cache = AU.fetch_plugin_source(self.env)
+        base = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "cache" / "auto-update"
+        with mock.patch.object(tarfile.TarFile, "extractall", side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
+            self.assertEqual(list(base.glob("stage-*")), [])
+            self.assertIn("extract failed", AU.log_path(self.env).read_text(encoding="utf-8"))
+            self.make_repos(latest=None)
+            import aib_ext
+            with mock.patch.object(aib_ext, "signed_ok", return_value=True):
+                res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=AU.install_plugin)
+        self.assertEqual(res["result"], "plugins_failed", res)
+        self.assertEqual(list(base.glob("stage-*")), [])
+
+    def test_a6_non_object_manifest(self):
+        PaidSource.paid_repo(self, {"demo-paid": "1.0.3", "zz-broken": "1.0.3"})
+        (Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / "zz-broken" / "aib-ext.json").write_text("[1, 2]")
+        cache = AU.fetch_plugin_source(self.env)
+        import aib_ext
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True):
+            behind, _skip, _uns = AU.paid_behind(cache, (), self.env)
+        self.assertEqual([b["name"] for b in behind], ["demo-paid"])
+        self.assertIn("zz-broken skipped", AU.log_path(self.env).read_text(encoding="utf-8"))
+        ext = self.td / "ext" / "listy"
+        ext.mkdir(parents=True)
+        (ext / "aib-ext.json").write_text('["not", "an", "object"]')
+        self.assertEqual(AU.plugins_behind(self.td / "ext"), [])
+        self.assertEqual(AU.install_plugin(str(ext), io.StringIO()), 3)
 
 
 class Cli(Base):
