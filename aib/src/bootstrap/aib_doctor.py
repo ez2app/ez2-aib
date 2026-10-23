@@ -606,6 +606,23 @@ def check_temp(state_root, repo_root, env=None, now=None):
     return _result("temp", OK, _C("temp.ok", n=len(rows)))
 
 
+def check_auto_update(state_root, repo_root, env=None):
+    """aib update auto(10-23 Andy「更新版本要自動 aib update」):開著 ⇒ OK 一行(上次自動更新到哪版 / 上次查的結果);
+    關著 / 設定檔讀不懂 ⇒ NOTE(不算失敗)。只讀設定與狀態檔,不連網路。"""
+    env = dict(os.environ if env is None else env)
+    env["EZ2_AIB_STATE_ROOT"] = str(state_root)
+    cock = str(Path(repo_root) / "src" / "cockpit")
+    try:
+        if cock not in sys.path:
+            sys.path.insert(0, cock)
+        import auto_update
+        status, line = auto_update.doctor_line(env)
+    except Exception as exc:  # noqa: BLE001
+        return _result("auto_update", NOTE, _C("auto_update.error", error=type(exc).__name__))
+    return _result("auto_update", OK if status == "ok" else NOTE, line,
+                   "" if status == "ok" else _C("auto_update.remedy"))
+
+
 # ez2.page 開了哪些功能(Andy 10-21 夜「建議全部做」第 4 件;@abb89 裁 L1:伺服器只有 GET /api/v1/page/features)。
 # 核心常比伺服器先上(例:unbind 回 page_unbind_unsupported),會員要分得出「自己的問題」還是「伺服器還沒開」。
 # 抓取跟 60 秒快取一律走 remote_link.fetch_features(跟 aib seat remote status 同一份,@abb89 裁)。
@@ -795,6 +812,7 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
     checks += provider_checks(providers, explicit_providers)
     checks.append(check_dm_latency(state_root, repo_root))
     checks.append(check_temp(state_root, repo_root))
+    checks.append(check_auto_update(state_root, repo_root))
     checks.append(check_page_features(state_root, repo_root))
     return checks
 

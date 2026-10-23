@@ -46,6 +46,7 @@ import re
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -868,6 +869,93 @@ def _same_copy(src, dst):
     return a == b and b.get("files") == _hashes(dst)
 
 
+GUARD_ENV = "AIB_EXT_AUTO_GUARD"    # 自動更新跑 aib update 時設 1:aib ext auto 改走 install_keeping、不換使用者改過的外掛
+KEEP_RX = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]{0,63}")
+LOCAL_CHANGES_MAX = 20
+
+
+def keep_dirs(m):
+    """外掛 manifest 宣告換版時要留下的最上層資料夾(例:.venv);名字不合格的不算。"""
+    k = m.get("keep") if isinstance(m, dict) else None
+    if not isinstance(k, list):
+        return []
+    return sorted({x for x in k if isinstance(x, str) and KEEP_RX.fullmatch(x) and x not in (".", "..", MANIFEST)})
+
+
+def local_changes(dst, src_manifest=None):
+    """已裝那份(dst)跟它自己 manifest 的 files 比 ⇒ 改過 / 多出來 / 連結的相對路徑(最多 20 個);
+    keep 夾(以新版 manifest 宣告為準)、位元碼、manifest 本身不算。量不到 ⇒ ["?"](寧可不換)。"""
+    d = Path(dst)
+    try:
+        mine = json.loads((d / MANIFEST).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        mine = None
+    files = mine.get("files") if isinstance(mine, dict) else None
+    if not isinstance(files, dict):
+        return ["?"]
+    keep = set(keep_dirs(src_manifest or {}))
+    hits = []
+    for root, dirs, names in os.walk(d):
+        rel_root = Path(root).relative_to(d)
+        if rel_root == Path("."):
+            dirs[:] = [x for x in dirs if x not in keep]
+        for x in list(dirs):
+            if x == BYTECODE_DIR:
+                dirs.remove(x)
+            elif os.path.islink(os.path.join(root, x)):
+                dirs.remove(x)
+                hits.append((rel_root / x).as_posix())
+        for x in names:
+            rel = (rel_root / x).as_posix()
+            fp = Path(root) / x
+            if rel == MANIFEST or _is_bytecode(Path(rel)):
+                continue
+            try:
+                if fp.is_symlink() or rel not in files or hashlib.sha256(fp.read_bytes()).hexdigest() != files[rel]:
+                    hits.append(rel)
+            except OSError:
+                hits.append(rel)
+            if len(hits) >= LOCAL_CHANGES_MAX:
+                return hits
+    return hits
+
+
+def install_keeping(folder, m, dst, out=sys.stdout, changes=None):
+    """沒人在場的換版(自動更新)用:keep 夾搬進新版(新版也帶同名夾 ⇒ 以使用者那份為準);啟用狀態照原樣(停用的不打開)。
+    一律驗簽章。暫存夾裡還有搬不回去的東西 ⇒ 不刪、照實說在哪。回結束碼。"""
+    dst = Path(dst)
+    st = _read_state(m["name"])
+    on = sorted(a for a, v in (st.get("enabled") or {}).items() if v)
+    enable = bool(on) or bool(st.get("claude_mod"))
+    held = Path(tempfile.mkdtemp(prefix=".keep-", dir=str(dst.parent))) if dst.is_dir() else None
+    moved = []
+    try:
+        for k in (keep_dirs(m) if held else []):
+            s = dst / k
+            if s.is_dir() and not s.is_symlink():
+                os.rename(s, held / k)
+                moved.append(k)
+        return install(folder, allow_unsigned=False, out=out, enable_engines=enable, engines=on or None, changes=changes)
+    finally:
+        for k in moved:   # 裝好 ⇒ 搬進新版;沒裝成(舊的還在)⇒ 搬回原處
+            try:
+                if not dst.is_dir():
+                    continue
+                t = dst / k
+                if t.is_symlink() or t.is_file():
+                    t.unlink()
+                elif t.is_dir():
+                    shutil.rmtree(t)          # 新版自己帶的同名夾 ⇒ 讓位給使用者那份
+                os.rename(held / k, t)
+            except OSError:
+                pass
+        if held:
+            try:
+                os.rmdir(held)
+            except OSError:
+                out.write(T("keep_left", {"path": str(held)}) + "\n")
+
+
 def auto_install(out=sys.stdout, src=None, env=None):
     """裝 extensions/ 裡 aib 自帶的延伸外掛(mod、skill…,受信鑰匙簽過、沒有 requires_addon);清單讀各包 aib-ext.json,不寫死。
     10-16 the maintainer:extensions/ 是 aib 自己的延伸外掛,不是付費外掛(付費的在 aib-plugins 倉,這裡不碰)、5 個全裝。
@@ -880,6 +968,7 @@ def auto_install(out=sys.stdout, src=None, env=None):
     if not base.is_dir():
         return 0
     changes, rc = [], 0
+    guard = env.get(GUARD_ENV, "") == "1"
     for d in sorted(p for p in base.iterdir() if p.is_dir()):
         try:
             m = json.loads((d / MANIFEST).read_text(encoding="utf-8"))
@@ -904,7 +993,14 @@ def auto_install(out=sys.stdout, src=None, env=None):
                 rc = claude_register(name, dst, out, changes) or rc
             continue
         before = len(changes)
-        r = install(d, out=out, changes=changes)
+        if guard and dst.is_dir():
+            # 自動更新叫的(沒人在場):使用者在外掛夾裡加 / 改過檔 ⇒ 不換;換的話 keep 夾與啟用狀態照原樣
+            if local_changes(dst, m):
+                out.write(T("auto_modified", {"name": name}) + "\n")
+                continue
+            r = install_keeping(d, m, dst, out=out, changes=changes)
+        else:
+            r = install(d, out=out, changes=changes)
         if r == 0 and len(changes) == before:
             changes.append(name)
         rc = r or rc
