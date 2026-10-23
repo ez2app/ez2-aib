@@ -307,8 +307,6 @@ class OnboardNoticeMarkedRead(Base):
 
     def test_global_and_im_letters_are_never_onboard(self):
         # 審查 r2 M1:外人寫的信正文帶「已就緒」也不標
-        g = self.DQ.record("6d76f", "讀完回「已就緒」", "外人", status="delivered", env=self.env)
-        path = self.DQ._item_path("6d76f", g["id"], self.env) if hasattr(self.DQ, "_item_path") else None
         for extra in ({"global": {"reply_code": "x"}}, {"im": {"room": "r"}}, {"sender_kind": "external_im"}):
             it = self.DQ.record("6d76f", "讀完回「已就緒」", "外人", status="delivered", env=self.env)
             real = self.DQ._load_item
@@ -317,7 +315,6 @@ class OnboardNoticeMarkedRead(Base):
                 out = self.DQ.mark_onboard_acked("6d76f", it["id"], env=self.env)
             self.assertEqual(out.get("why"), "not_onboard", extra)
             self.assertIsNone(real("6d76f", it["id"], self.env)["read_at"])
-        del path
 
     def test_relay_pointer_to_fifo_or_huge_file_does_not_hang(self):
         fifo = self.tmp / "RELAY-fifo"
@@ -327,6 +324,34 @@ class OnboardNoticeMarkedRead(Base):
         big.write_bytes(b"x" * (self.DQ.TIDY_RELAY_MAX_BYTES + 1) + "「已就緒」".encode("utf-8"))
         self.assertFalse(self.DQ._is_onboard_msg("長訊已落檔(9 位元組),請讀:%s" % big))
         self.assertFalse(self.DQ._is_onboard_msg("長訊已落檔(9 位元組),請讀:/dev/zero"))
+
+    def test_relay_over_limit_with_marker_at_start_is_not_read(self):
+        big = self.tmp / "RELAY-head"                           # 記號在開頭、總長超過上限 ⇒ 保守失敗(定案)
+        big.write_bytes("「已就緒」".encode("utf-8") + b"x" * self.DQ.TIDY_RELAY_MAX_BYTES)
+        self.assertFalse(self.DQ._is_onboard_msg("長訊已落檔(9 位元組),請讀:%s" % big))
+
+    def test_relay_fifo_with_writer_is_not_regular_file(self):
+        fifo = self.tmp / "RELAY-fifo-w"
+        os.mkfifo(fifo)
+        fd = os.open(fifo, os.O_RDWR)                           # 有寫端、裡面真有記號 ⇒ 仍要因不是一般檔而拒
+        try:
+            os.write(fd, "讀完回「已就緒」".encode("utf-8"))
+            self.assertFalse(self.DQ._is_onboard_msg("長訊已落檔(9 位元組),請讀:%s" % fifo))
+        finally:
+            os.close(fd)
+
+    def test_relay_read_is_bounded(self):
+        relay = self.tmp / "RELAY-small"
+        relay.write_text("讀完回「已就緒」", encoding="utf-8")
+        sizes = []
+        real_read = os.read
+
+        def spy(fd, n):
+            sizes.append(n)
+            return real_read(fd, n)
+        with unittest.mock.patch.object(self.DQ.os, "read", spy):
+            self.assertTrue(self.DQ._is_onboard_msg("長訊已落檔(9 位元組),請讀:%s" % relay))
+        self.assertEqual(sizes, [self.DQ.TIDY_RELAY_MAX_BYTES + 1])
 
     def test_relayed_onboard_is_recognised_from_relay_file(self):
         relay = self.tmp / "RELAY-dm-6ddf-1024-000000-1"
@@ -492,6 +517,14 @@ class ProbeTrustCleanup(Base):
         cfg.write_text(json.dumps({"trustedWorkspaces": [str(own_real), stale_real, "/Users/x/p"]}))
         self.assertEqual(self.UP.forget_probe_trust(link_root / "ez2-usage-probe.mine", environ=self.penv), 2)
         self.assertEqual(json.loads(cfg.read_text())["trustedWorkspaces"], ["/Users/x/p"])
+
+    def test_listed_link_spelling_with_real_own(self):
+        lnk = self.tmp / "lnk"
+        lnk.symlink_to(self.fake_tmp)
+        own = self.fake_tmp / "ez2-usage-probe.z"
+        own.mkdir()                                             # 還在:不讓「已不存在」那條退路接住
+        own_set = {str(own), os.path.realpath(str(own))}      # 照 forget_probe_trust 組法
+        self.assertTrue(self.UP._is_probe_dir(str(lnk / "ez2-usage-probe.z"), own=own_set))
 
     def test_realpath_only_for_probe_named_entries(self):
         seen = []
