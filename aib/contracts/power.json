@@ -56,7 +56,8 @@
   "hint": "人話或 null",
   "reset_at": "額度恢復時間(epoch 秒)或 null,量得到才給",
   "login_cmd": "本人要跑的登入指令字串(給頁面一鍵複製)或 null;aib 一律 null",
-  "owner": "installed / local / latest / update / can_update = @abb89(cli_versions.check);light / reason / hint / reset_at / login_cmd = @d07f9 的 light_of(key)"
+  "owner": "installed / local / latest / update / can_update = @abb89(cli_versions.check);light / reason / hint / reset_at / login_cmd = @d07f9 的 light_of(key)",
+  "light_rule": "@d07f9 light_of:登入狀態只問 CLI 自己的狀態指令(claude auth status --json 的 loggedIn、codex login status 的 rc),只取有沒有登入、不讀帳號;沒狀態指令的家(grok / copilot / agy)= 量不到。順序:沒登入 ⇒ yellow login_missing;usage_probe 新鮮紀錄任一窗 >= 上限 ⇒ red quota_reached(reset_at = 到上限各窗最晚恢復時間);登入著 ⇒ green;量不到 ⇒ unknown。登入狀態快取 10 分鐘,login 後清掉。login_expired 保留:CLI 狀態指令分不出「過期」與「沒登入」,現在一律回 login_missing"
  },
  "health_row": {
   "fields": [
@@ -100,7 +101,9 @@
   "birth_done": "出生設定做過沒(做過就不再自動出現)",
   "tasks": "[{id, state, reward}];state = todo | done | claimed;done 由核心實際偵測,不是頁面按鈕;reward 是伺服器定的資源描述或 null",
   "owner": "@d07f9 的 onboarding_state()",
-  "note": "領資源(claimed)由伺服器簽發,這一期只做 todo / done 偵測;伺服器沒上線 reward 一律 null"
+  "note": "領資源(claimed)由伺服器簽發,這一期只做 todo / done 偵測;伺服器沒上線 reward 一律 null",
+  "task_ids": "first_seat(這台有過席)| bind_seat(有席人格 + 專案 + 第二大腦都綁好)| first_handoff(做過一次 aib handoff,自動存的不算);偵測到就記在 state/power-onboarding.json,之後一直 done。其他任務(換裝 / 綁手機 / 孵蛋)等核心偵測得到再加",
+  "birth_note": "birth_done = state/power-birth.json 有 at;只決定要不要先跑引導,不是防線"
  },
  "catalog": {
   "fields": [
@@ -130,18 +133,27 @@
   "note": "aib 走 aib update;其他家走 cli_versions.do_update(共用 update_lock、壞了自動裝回);agy 走 update_self_checking。升級只換官方版本,不加 Touch ID"
  },
  "login_receipt": {
-  "command": "aib power login <key> [--no-open] [--json]",
+  "command": "aib power login <key> [--no-open] [--force] [--json]",
   "fields": [
    "ok",
    "detail",
    "key",
    "url",
+   "code",
    "opened",
    "hint"
   ],
   "detail": "power_login_url | power_login_done | power_login_unsupported | power_login_failed",
   "url": "該家 CLI 自己印出的 OAuth 鏈結(只收 https://);我們不經手帳密 / token",
   "opened": "已自動用瀏覽器開(--no-open 時 false);false ⇒ 頁面顯示 url + 一鍵複製",
-  "owner": "@d07f9 power_login.py"
+  "owner": "@d07f9 power_login.py",
+  "code": "裝置碼流程(codex / grok / copilot)CLI 印的一次性代碼,頁面顯示給本人在網頁上輸入;沒有 ⇒ null",
+  "rc": {
+   "0": "power_login_url / power_login_done",
+   "1": "power_login_failed",
+   "2": "參數錯 / power_login_unsupported"
+  },
+  "flow": "已登入且沒到上限 ⇒ power_login_done、不起流程(--force 照起)。否則背景起該家 CLI 的登入(codex / grok / copilot 走裝置碼,claude 走 claude auth login;agy 沒有登入子指令 ⇒ unsupported),最多等 20 秒抓它印的第一個 https 鏈結;CLI 背景最多活 15 分鐘。claude 自己開瀏覽器 ⇒ opened false。failed 的 hint = 本人要跑的指令 + (cli_missing | spawn_failed | no_url)",
+  "note": "AI 席也叫得動,但只是起登入流程;完成 OAuth 一定是真人在瀏覽器裡做,所以不加 Touch ID"
  }
 }
