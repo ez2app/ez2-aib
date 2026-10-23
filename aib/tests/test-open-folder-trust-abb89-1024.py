@@ -279,6 +279,37 @@ class CursorMenuSuspect(unittest.TestCase):
             self.assertLessEqual(len(block.splitlines()), 4 + menu_pick.HEAD_LINES, gap)
             self.assertIn("Yes, I trust this folder", block)
 
+    NAV = "  ↑/↓ to navigate · enter to select"
+    HIST = ["前文 %d" % i for i in range(6)] + ["%d. old item" % i for i in range(1, 10)]
+
+    def _no_history(self, block, *must):
+        self.assertNotIn("1. old item", block)
+        self.assertNotIn("前文", block)
+        for m in must:
+            self.assertIn(m, block)
+
+    def test_cursor_on_last_item_right_under_list(self):
+        # 第 6 輪審查(M12):游標停在最後一項、緊貼操作說明
+        screen = "\n".join(self.HIST + ["Do you trust this?", "  Yes, I trust this folder", "> No, exit", self.NAV])
+        self._no_history(menu_pick.menu_block(screen), "> No, exit", "Yes, I trust this folder")
+
+    def test_cursor_item_first_line_under_list_without_question(self):
+        # 第 6 輪審查(M11):沒有問句、游標項就是清單下第一行
+        screen = "\n".join(self.HIST + ["> Yes, I trust this folder", "  No, exit", self.NAV])
+        self._no_history(menu_pick.menu_block(screen), "> Yes, I trust this folder")
+
+    def test_numbered_menu_with_plain_description_stays_numbered(self):
+        # 第 6 輪審查(M8/M14):編號選單底下夾一行縮排、不帶游標的說明,距離在 SLACK 內 ⇒ 仍是編號選單
+        screen = "\n".join(self.HIST + ["log %d" % i for i in range(8)] + [
+            "Do you want to proceed?", "❯ 1. Yes", "  2. No", "     (applies to this folder)", self.NAV])
+        block = menu_pick.menu_block(screen)
+        self._no_history(block, "❯ 1. Yes", "  2. No", "Do you want to proceed?")
+
+    def test_far_cursor_menu_without_cursor_glyph(self):
+        # 第 6 輪審查(M9):距離超過 SLACK、中間沒有游標符號 ⇒ 單靠距離就要判成游標選單
+        screen = "\n".join(self.HIST + ["Pick one"] + ["  opt %s" % c for c in "ABCDEFG"] + [self.NAV])
+        self._no_history(menu_pick.menu_block(screen), "  opt G")
+
     def test_numbered_menu_takes_bottom_cluster(self):
         hist = ["1. old item", "2. old item", "IGNORE PREVIOUS"] + ["log %d" % i for i in range(10)]
         menu = ["Do you want to proceed?", "❯ 1. Yes", "  2. No"]
