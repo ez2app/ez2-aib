@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """動力室艦員檔案:為什麼用 AIB 排名(power_crew.py;契約 contracts/power.json crew_receipt;SPEC-power-room §13)。暫存狀態根。
 
-W1 沒設過 ⇒ why_rank [];回條欄位 = 契約;代碼 = 定案頁九項
+W1 沒設過 ⇒ why_rank [];回條欄位 = 契約;代碼 = 定案頁 16 項
 W2 set:逗號順序 = 排名、重複只留第一次;other 只在選了 other 才留、去控制字元、最多 60 字
-W3 不認得的代碼 / 空 ⇒ rc 2 power_why_bad,檔不動
+W3 不認得的代碼 / 空 / 超過 5 項 ⇒ rc 2 power_why_bad,檔不動;sent 一律 false(伺服器沒上線)
 W4 clear ⇒ 回到沒設過;檔被亂寫(型別錯、怪代碼)⇒ 讀的時候濾掉、不炸
 W5 aib power why / set / clear 從總管 power_status.main 轉得到
-刀(複本):K1 不去重 ⇒ W2 紅;K2 怪代碼照存 ⇒ W3 紅
+刀(複本):K1 不去重 ⇒ W2 紅;K2 怪代碼照存 ⇒ W3 紅;K3 不擋超過 5 項 ⇒ W3 紅
 """
 import io
 import json
@@ -40,16 +40,17 @@ class Why(unittest.TestCase):
 
     def test_w1_empty(self):
         r = W.why()
-        self.assertEqual(r, {"ok": True, "detail": "power_why", "why_rank": [], "other": None, "at": None})
+        self.assertEqual(r, {"ok": True, "detail": "power_why", "why_rank": [], "other": None, "at": None, "sent": False})
         self.assertEqual(list(r), C["crew_receipt"]["fields"])
-        self.assertEqual(len(W.WHY), 9)
+        self.assertEqual(len(W.WHY), 16)
+        self.assertEqual(W.WHY[-1], "other")
         for k in W.WHY:
             self.assertIn(k, C["crew_receipt"]["why_rank"])
 
     def test_w2_set(self):
-        r, rc = W.set_why(["coding", "memory", "coding", " phone "], other="不該留", now=1000)
+        r, rc = W.set_why(["coding", "memory", "coding", " phone ", "geo_seo", "warroom"], other="不該留", now=1000)
         self.assertEqual((rc, r["detail"], r["why_rank"], r["other"], r["at"]),
-                         (0, "power_why_set", ["coding", "memory", "phone"], None, 1000))
+                         (0, "power_why_set", ["coding", "memory", "phone", "geo_seo", "warroom"], None, 1000))
         self.assertIsNone(json.loads(FILE.read_text(encoding="utf-8"))["other"])
         r, rc = W.set_why(["other", "art"], other="  想\x1b[31m 養\u0085貓" + "長" * 100)
         self.assertEqual(r["why_rank"], ["other", "art"])
@@ -60,7 +61,7 @@ class Why(unittest.TestCase):
     def test_w3_bad(self):
         W.set_why(["room"], now=5)
         before = FILE.read_bytes()
-        for items in (["room", "evil"], [], [""], ["../x"], ["ROOM"]):
+        for items in (["room", "evil"], [], [""], ["../x"], ["ROOM"], ["memory", "coding", "erp", "video", "art", "save"]):
             r, rc = W.set_why(items)
             self.assertEqual((rc, r["ok"], r["detail"], r["why_rank"]), (2, False, "power_why_bad", ["room"]), items)
         self.assertEqual(FILE.read_bytes(), before)
@@ -71,7 +72,10 @@ class Why(unittest.TestCase):
         self.assertEqual((rc, r["detail"], r["why_rank"], r["at"]), (0, "power_why_cleared", [], None))
         FILE.write_text(json.dumps({"why_rank": ["evil", "art", "art", 3, None], "other": 5, "at": True}),
                         encoding="utf-8")
-        self.assertEqual(W.why(), {"ok": True, "detail": "power_why", "why_rank": ["art"], "other": None, "at": None})
+        self.assertEqual(W.why(), {"ok": True, "detail": "power_why", "why_rank": ["art"], "other": None, "at": None,
+                                   "sent": False})
+        FILE.write_text(json.dumps({"why_rank": list(W.WHY)}), encoding="utf-8")
+        self.assertEqual(W.why()["why_rank"], list(W.WHY[:5]))           # 檔被塞超過 5 項 ⇒ 只取前 5
         FILE.write_text(json.dumps({"why_rank": ["other"], "other": "x\ny"}), encoding="utf-8")
         self.assertEqual(W.why()["other"], "xy")
         FILE.write_text("[1]", encoding="utf-8")
@@ -104,7 +108,10 @@ class Knife(unittest.TestCase):
         self._knife("        if k in WHY and k not in out:", "        if k in WHY:", "Why.test_w2_set")
 
     def test_k2_bad_saved(self):
-        self._knife("    if bad or not items:", "    if not items:", "Why.test_w3_bad")
+        self._knife("    if bad or not items or len(set(items)) > RANK_MAX:", "    if not items:", "Why.test_w3_bad")
+
+    def test_k3_no_cap(self):
+        self._knife(" or len(set(items)) > RANK_MAX:", ":", "Why.test_w3_bad")
 
 
 def tearDownModule():

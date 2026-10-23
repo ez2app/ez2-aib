@@ -7,8 +7,10 @@
   aib power why clear [--json]                   清掉(第一畫面會再出現)
 
 10-24 02:4x Andy:「一開始最主要的地方，讓他選為什麼要用 AIB?多選，但要排序」。
-- 只存本機 state/power-crew.json、不上傳(要不要匿名回傳統計另問 Andy)。
-- 用途:任務板 / 補給站 / 問 AI 依排名排序 —— 只影響顯示順序,不是權限。
+- 最多 5 項(排 1–5 名);超過 ⇒ power_why_bad,檔不動。
+- 10-24 02:5x Andy 改成結果送伺服器(推薦擴充 + 依名次發銅、每帳號一次、伺服器簽);伺服器還沒上線 ⇒ 先存本機
+  state/power-crew.json,sent 一律 false,上線後由送出那步補。名次獎勵 / 擴充推薦不在本機判。
+- 用途(本機):任務板 / 問 AI 建議問題依排名排序 —— 只影響顯示順序,不是權限。
 - 「其他」自填一句:去控制字元、最多 60 字;檔是同帳號寫得到的,讀的時候照資料看。
 """
 import argparse
@@ -23,8 +25,10 @@ if HERE not in sys.path:
 
 import seats_dir_lib  # noqa: E402
 
-# 順序 = 定案頁板 0 的選項順序
-WHY = ("memory", "multi_ai", "coding", "phone", "sites", "art", "room", "save", "other")
+# 順序 = 定案頁板 0 的選項順序(SPEC §13:10-24 03:0x 共 16 項)
+WHY = ("memory", "multi_ai", "coding", "automation", "ecommerce", "geo_seo", "support", "video", "erp", "warroom",
+       "phone", "sites", "art", "room", "save", "other")
+RANK_MAX = 5
 OTHER_MAX = 60
 
 
@@ -62,7 +66,7 @@ def _rank(items):
     for k in items if isinstance(items, list) else []:
         if k in WHY and k not in out:
             out.append(k)
-    return out
+    return out[:RANK_MAX]
 
 
 def why():
@@ -72,14 +76,14 @@ def why():
     at = d.get("at")
     return {"ok": True, "detail": "power_why", "why_rank": rank,
             "other": _other(d.get("other")) if "other" in rank else None,
-            "at": at if isinstance(at, int) and not isinstance(at, bool) else None}
+            "at": at if isinstance(at, int) and not isinstance(at, bool) else None, "sent": False}
 
 
 def set_why(items, other=None, now=None):
     """回 (回條, rc)。items = 代碼清單(順序 = 排名)。不認得的代碼 / 空 ⇒ rc 2,檔不動。"""
     items = [x.strip() for x in items if isinstance(x, str) and x.strip()]
     bad = [x for x in items if x not in WHY]
-    if bad or not items:
+    if bad or not items or len(set(items)) > RANK_MAX:
         r = why()
         r.update(ok=False, detail="power_why_bad")
         return r, 2
@@ -96,7 +100,7 @@ def set_why(items, other=None, now=None):
 
 def clear():
     d = _load()
-    for k in ("why_rank", "other", "at"):
+    for k in ("why_rank", "other", "at", "sent"):
         d.pop(k, None)
     _save(d)
     r = why()

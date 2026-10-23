@@ -180,12 +180,31 @@ def auto_launch(rec, ppl, br, light=None):
     return {"ok": why is None, "why": why, "combo": last, "light": lt}
 
 
+def official_models():
+    """品牌 → providers.json 的 models 陣列裡的 id(預設在前);沒列的家 ⇒ []。不自己猜 id。"""
+    out = {b: [] for b in BRANDS}
+    try:
+        with open(os.path.join(HERE, "providers.json"), encoding="utf-8") as f:
+            provs = json.load(f).get("providers") or []
+    except (OSError, ValueError, AttributeError):
+        return out
+    for p in provs:
+        if not isinstance(p, dict) or p.get("id") not in out or not isinstance(p.get("models"), list):
+            continue
+        rows = [m for m in p["models"] if isinstance(m, dict) and _s(m.get("id")) and MODEL_RE.match(m["id"])]
+        rows.sort(key=lambda m: m.get("default") is not True)
+        out[p["id"]] = [m["id"] for m in rows]
+    return out
+
+
 def model_choices(rec=None):
-    """{品牌: [預設模型, 之前出發用過的模型…]}。各家正式模型清單還沒有正本(providers.json 只有預設)⇒ 不自己猜 id。"""
+    """{品牌: [預設模型, providers.json 列的正式模型…, 之前出發用過的模型…]}(去重)。"""
     out = {}
     defaults = models()
+    official = official_models()
     for b in BRANDS:
         seen = [defaults[b]] if defaults[b] else []
+        seen += [m for m in official[b] if m not in seen]
         for r in rec if rec is not None else recent():
             if r["brand"] == b and r["model"] and r["model"] not in seen and MODEL_RE.match(r["model"]):
                 seen.append(r["model"])

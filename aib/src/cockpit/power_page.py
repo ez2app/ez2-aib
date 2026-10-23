@@ -76,6 +76,7 @@ def render(st, now=None):
     ais = "".join(ai_card(a) for a in st.get("ais") or [] if isinstance(a, dict))
     ob = st.get("onboarding") if isinstance(st.get("onboarding"), dict) else {}
     tasks = [t for t in ob.get("tasks") or [] if isinstance(t, dict)]
+    tasks = [t for t in tasks if t.get("where", "power") == "power"]       # 艦長室那幾條只在艦長室出現(SPEC §14)
     done = sum(1 for t in tasks if t.get("state") in ("done", "claimed"))
     tiers = ob.get("tiers") if isinstance(ob.get("tiers"), dict) else {}
     tier_line = " · ".join("%s %s/%s" % (_e(k), _e((v or {}).get("done", 0)), _e((v or {}).get("total", 0)))
@@ -86,7 +87,7 @@ def render(st, now=None):
         "✅" if t.get("state") in ("done", "claimed") else "⬜",
         _e(T("task_" + str(t.get("id")).lower())),
         "" if t.get("detectable", True) else ' <span class="soon">%s</span>' % _e(T("task_soon")))
-        for t in tasks if t.get("tier", "R") == "R")
+        for t in tasks if t.get("tier", "R") == "R" and t.get("where", "power") == "power")
     health_li = "".join('<li class="%s">%s %s%s</li>' % (
         "ok" if h.get("ok") else ("na" if h.get("ok") is None else "bad"),
         "✅" if h.get("ok") else ("·" if h.get("ok") is None else "⚠️"), _e(h.get("key")),

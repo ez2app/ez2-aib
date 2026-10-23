@@ -54,7 +54,9 @@ def status():
             "onboarding": {"birth_done": False, "tasks": [{"id": "R1", "tier": "R", "state": "done", "reward": None, "detectable": True},
                                                           {"id": "R2", "tier": "R", "state": "todo", "reward": None, "detectable": True},
                                                           {"id": "R8", "tier": "R", "state": "todo", "reward": None, "detectable": False},
-                                                          {"id": "SR1", "tier": "SR", "state": "todo", "reward": None, "detectable": True}],
+                                                          {"id": "SR1", "tier": "SR", "state": "todo", "reward": None, "detectable": True},
+                                                          {"id": "R99", "tier": "R", "where": "room", "state": "todo",
+                                                           "reward": None, "detectable": True}],
                            "tiers": {"R": {"on": True, "done": 1, "total": 3}, "SR": {"on": True, "done": 0, "total": 1}},
                            "all": {"done": 1, "total": 4}},
             "catalog": {"available": False, "items": []}, "hint": None}
@@ -87,6 +89,7 @@ class Page(unittest.TestCase):
         self.assertIn("SR 0/1", h)
         self.assertIn(PG.T("task_soon"), h)                      # 偵測不到的條照實標
         self.assertNotIn(PG.T("task_sr1"), h)                     # 極簡頁只列 R
+        self.assertNotIn("task_r99", h)                              # where = room 的不列(SPEC §14)
         self.assertIn(PG._when(2_000_000_000), h)
         h = PG.render({"ais": "junk", "onboarding": None, "health": [None, 3], "binding": []})   # 怪資料不炸
         self.assertIn("0/0", h)

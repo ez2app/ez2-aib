@@ -42,8 +42,8 @@ CODEX_CMD = ["codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--eph
 BRANDS = ("claude", "codex")
 
 # 建議問題(代碼;字在頁面 i18n)。照「為什麼用 AIB」排名挑對應的,不夠再補通用的
-SUGGEST = {"memory": "q_memory", "multi_ai": "q_multi_ai", "coding": "q_coding", "phone": "q_phone",
-           "sites": "q_sites", "art": "q_art", "room": "q_room", "save": "q_save"}
+SUGGEST = {k: "q_" + k for k in ("memory", "multi_ai", "coding", "automation", "ecommerce", "geo_seo", "support",
+                                  "video", "erp", "warroom", "phone", "sites", "art", "room", "save")}
 SUGGEST_BASE = ("q_first_seat", "q_lights", "q_handoff")
 
 PREAMBLE = """You are the help desk inside the aib Power Room. aib is a command-line cockpit that runs several AI \

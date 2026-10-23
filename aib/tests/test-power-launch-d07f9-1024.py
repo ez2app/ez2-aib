@@ -174,13 +174,15 @@ class Launch(unittest.TestCase):
     def test_d9_choices_days(self):
         prov = json.loads((REPO / "src" / "cockpit" / "providers.json").read_text(encoding="utf-8"))["providers"]
         want = [p["default_requested_model"] for p in prov if p.get("id") == "claude"][0]
-        self.assertEqual(PL.model_choices()["claude"], [want])
+        official = [m["id"] for m in [p for p in prov if p.get("id") == "claude"][0]["models"]]
+        self.assertEqual(PL.model_choices()["claude"], [want] + [m for m in official if m != want])
+        self.assertEqual(PL.model_choices()["grok"], [m for m in [PL.models()["grok"]] if m])   # 沒列的家不猜
         PL.record_launch("claude", "m-old", now=1000)
         PL.record_launch("claude", want, now=1001)
         PL.record_launch("codex", "gx", now=1002)
         PL.record_launch("claude", "m-new", now=1003)
         got = PL.launch_list()["model_choices"]
-        self.assertEqual(got["claude"], [want, "m-new", "m-old"])
+        self.assertEqual(got["claude"], [want] + [m for m in official if m != want] + ["m-new", "m-old"])
         self.assertIn("gx", got["codex"])
         self.assertNotIn("gx", got["claude"])
         self.assertEqual(set(got), set(PL.BRANDS))

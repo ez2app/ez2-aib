@@ -12,7 +12,8 @@ T7 detect:aib 版本比第一次看到的新 ⇒ aib_upgraded;第一次只記 fi
 T8 detect:座位 / 人格 / 第二大腦 / 兩家以上在線 / 交接單(自動存的不算)/ 連續出發
 T9 redeem:讀 stdin 一行、不回顯、rc 2 power_redeem_not_yet;aib power tier / redeem 從總管 power_status.main 轉得到
 T10 detectable:沒有偵測器的條 = false(頁面照實標)
-刀(複本):K1 done 不記住 ⇒ T2 紅;K2 舊 id 不搬 ⇒ T3 紅;K3 關等級連偵測都停 ⇒ T4 紅
+T11 where(SPEC §14):動力室 30 條 = R1–12、SR1–7 + 12–13、SSR2–5 + 11、UR4–7;其餘 14 條 room;tiers / all 只算 power、room 另算
+刀(複本):K1 done 不記住 ⇒ T2 紅;K2 舊 id 不搬 ⇒ T3 紅;K3 關等級連偵測都停 ⇒ T4 紅;K4 艦長室的條照列動力室 ⇒ T11 紅
 """
 import datetime
 import io
@@ -65,10 +66,11 @@ class Tasks(unittest.TestCase):
         count = {k: sum(1 for t in st["tasks"] if t["tier"] == k) for k in PT.TIERS}
         self.assertEqual(count, {"R": 12, "SR": 13, "SSR": 12, "UR": 7})
         for t in st["tasks"]:
-            self.assertEqual(set(t), {"id", "tier", "state", "reward", "detect", "detectable", "requires"})
+            self.assertEqual(set(t), {"id", "tier", "where", "state", "reward", "detect", "detectable", "requires"})
             self.assertIsNone(t["reward"])
             self.assertIn(t["requires"], (None, "room", "server", "skins"))
-        self.assertEqual(st["all"], {"done": 0, "total": 44})
+        self.assertEqual(st["all"], {"done": 0, "total": 30})
+        self.assertEqual(st["room"], {"done": 0, "total": 14})
 
     def test_t2_sticky(self):
         st = PT.onboarding_state(detector=lambda r, m, t: {"seat_registered": True, "born": False}, now=NOW)
@@ -104,9 +106,9 @@ class Tasks(unittest.TestCase):
         self.assertFalse(st["tiers"]["SR"]["on"])
         self.assertTrue(st["tiers"]["R"]["on"])
         self.assertEqual(by_id(st)["SR1"]["state"], "done")                # 關了偵測照記
-        self.assertEqual(st["tiers"]["SR"], {"on": False, "done": 1, "total": 13})
+        self.assertEqual(st["tiers"]["SR"], {"on": False, "done": 1, "total": 9})
         self.assertEqual(st["tiers"]["R"]["done"], 1)
-        self.assertEqual(st["all"], {"done": 2, "total": 44})
+        self.assertEqual(st["all"], {"done": 2, "total": 30})
         PT.set_tier("SR", True)
         self.assertTrue(PT.onboarding_state(detector=lambda r, m, t: {}, now=NOW)["tiers"]["SR"]["on"])
         for bad in ("X", "r", "", "R;rm"):
@@ -131,6 +133,18 @@ class Tasks(unittest.TestCase):
         self.assertEqual(t["SSR1"]["requires"], "server")
         codes = {code for _i, _t, code, _r in PT.TASKS}
         self.assertTrue(PT.DETECTABLE <= codes)
+
+    def test_t11_where(self):
+        want = (["R%d" % i for i in range(1, 13)] + ["SR%d" % i for i in (1, 2, 3, 4, 5, 6, 7, 12, 13)]
+                + ["SSR%d" % i for i in (2, 3, 4, 5, 11)] + ["UR%d" % i for i in (4, 5, 6, 7)])
+        st = PT.onboarding_state(detector=lambda r, m, t: {"room_opened": True, "seat_registered": True}, now=NOW)
+        self.assertEqual([t["id"] for t in st["tasks"] if t["where"] == "power"], want)
+        self.assertEqual(by_id(st)["SR8"]["state"], "done")                # 艦長室那條照記
+        self.assertEqual(st["room"], {"done": 1, "total": 14})
+        self.assertEqual(st["all"], {"done": 1, "total": 30})
+        self.assertEqual(st["tiers"]["SR"]["done"], 0)
+        for i in ("SSR1", "UR1"):                                          # 序號兩條歸艦長室
+            self.assertEqual(by_id(st)[i]["where"], "room")
 
 
 class Streak(unittest.TestCase):
@@ -256,6 +270,9 @@ class Knife(unittest.TestCase):
         self._knife("        if ok is True and tid and tid not in seen:",
                     "        if ok is True and tid and tid not in seen and (memo.get('tiers') or {}).get(tid.rstrip('0123456789')) is not False:",
                     "Tasks.test_t4_tiers")
+
+    def test_k4_room_in_power(self):
+        self._knife('"where": "room" if tid in IN_ROOM else "power"', '"where": "power"', "Tasks.test_t11_where")
 
 
 def tearDownModule():

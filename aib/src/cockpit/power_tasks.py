@@ -7,6 +7,7 @@
   之後一直算 done(席收掉了也不會變回未完成)。核心還偵測不到的條 detectable = false,頁面照實顯示,不准讓按鈕自己勾。
 - 獎勵(claimed)由伺服器簽,這一期不做;reward 一律 null。
 - SSR1 艦隊擴編令 / UR1 全動力認證 = 輸入購買序號兌換(伺服器驗);核心只留 aib power redeem 介面,回 not_yet。
+- where = power(動力室任務板,免費純 CLI 30 條)| room(艦長室任務板);tiers / all 只算 power,room 另給總數。
 - 等級開關:開 = 顯示並提醒;關 = 收起不提醒,但偵測照記(之後打開補勾)。
 - 這份紀錄檔是同帳號寫得到的本機檔,只當「顯示誰做過」用,不是防線;領獎一律伺服器判。
 """
@@ -45,6 +46,10 @@ TASKS = (
     ("UR6", "UR", "pet_stage_final", "server"), ("UR7", "UR", "ssr_all_done", None),
 )
 TASK_IDS = tuple(t[0] for t in TASKS)
+# 10-24 02:5x Andy「付費的內容，我希望到艦長室之後再出現」(SPEC §14):艦長室相關 + 序號兩條只在艦長室任務板出現;
+# 資料照記、偵測照接，動力室頁不列。動力室 = 免費純 CLI 的 30 條
+IN_ROOM = frozenset(("SR8", "SR9", "SR10", "SR11", "SSR1", "SSR6", "SSR7", "SSR8", "SSR9", "SSR10", "SSR12",
+                     "UR1", "UR2", "UR3"))
 LEGACY = {"first_seat": "R3", "bind_seat": "R5", "first_handoff": "R9"}   # 10-24 第一版的三條 ⇒ 搬到新編號
 
 
@@ -164,7 +169,8 @@ DETECTABLE = frozenset(("power_opened", "born", "seat_registered", "persona_boun
 
 
 def onboarding_state(*, detector=None, now=None, today=None):
-    """{birth_done, tasks:[{id, tier, state, reward, detect, detectable, requires}], tiers:{級: {on, done, total}}, all:{done, total}}。"""
+    """{birth_done, tasks:[{id, tier, where, state, reward, detect, detectable, requires}], tiers:{級: {on, done, total}},
+    all:{done, total}, room:{done, total}};tiers / all 只算 where = power。"""
     root = seats_dir_lib.state_root()[0]
     now = time.time() if now is None else now
     memo = _load(_path())
@@ -190,14 +196,16 @@ def onboarding_state(*, detector=None, now=None, today=None):
         memo["done"] = seen
         _save(_path(), memo)
     tiers_on = memo.get("tiers") if isinstance(memo.get("tiers"), dict) else {}
-    tasks = [{"id": tid, "tier": tier, "state": "done" if tid in seen else "todo", "reward": None, "detect": code,
+    tasks = [{"id": tid, "tier": tier, "where": "room" if tid in IN_ROOM else "power",
+              "state": "done" if tid in seen else "todo", "reward": None, "detect": code,
               "detectable": code in DETECTABLE, "requires": req} for tid, tier, code, req in TASKS]
-    tiers = {}
-    for t in TIERS:
-        mine = [x for x in tasks if x["tier"] == t]
-        tiers[t] = {"on": tiers_on.get(t) is not False, "done": sum(x["state"] == "done" for x in mine), "total": len(mine)}
-    return {"birth_done": bool(_load(birth_path()).get("at")), "tasks": tasks, "tiers": tiers,
-            "all": {"done": sum(x["state"] == "done" for x in tasks), "total": len(tasks)}}
+
+    def count(rows):
+        return {"done": sum(x["state"] == "done" for x in rows), "total": len(rows)}
+    power = [x for x in tasks if x["where"] == "power"]
+    tiers = {t: dict(on=tiers_on.get(t) is not False, **count([x for x in power if x["tier"] == t])) for t in TIERS}
+    return {"birth_done": bool(_load(birth_path()).get("at")), "tasks": tasks, "tiers": tiers, "all": count(power),
+            "room": count([x for x in tasks if x["where"] == "room"])}
 
 
 def set_tier(tier, on):
