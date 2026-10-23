@@ -50,6 +50,7 @@ import stat
 import tarfile
 import tempfile
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -180,7 +181,7 @@ def write_excludes(names, env=None, now=None):
 CLOCK_SKEW_S = 5 * 60               # 時間戳比現在晚超過這麼多 ⇒ 當成時鐘跳過,不算數
 _TS_KEYS = ("last_check", "last_attempt", "last_result_at")
 _STR_KEYS = ("have", "latest", "last_why", "plugin_source")
-_LIST_KEYS = ("plugins_behind", "plugins_excluded", "plugins_unsigned")
+_LIST_KEYS = ("plugins_behind", "plugins_excluded", "plugins_unsigned", "plugins_modified")
 _RESULT_RX = re.compile(r"[a-z_]{1,40}")
 
 
@@ -592,13 +593,88 @@ def _read_obj(path):
     return d if isinstance(d, dict) else None
 
 
-def install_plugin(folder, out):
-    """跟 aib ext install 同一條路;一律驗簽章(不給 --allow-unsigned)。回結束碼。"""
+KEEP_RX = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]{0,63}")
+LOCAL_CHANGES_MAX = 20
+
+
+def keep_dirs(m):
+    """外掛 manifest 宣告換版時要留下的最上層資料夾(例:.venv);名字不合格的不算。"""
+    k = m.get("keep") if isinstance(m, dict) else None
+    if not isinstance(k, list):
+        return []
+    return sorted({x for x in k if isinstance(x, str) and KEEP_RX.fullmatch(x) and x not in (".", "..", _ext().MANIFEST)})
+
+
+def local_changes(b):
+    """已裝那份跟它自己 manifest 的 files 比 ⇒ 改過 / 多出來 / 連結的相對路徑(最多 20 個);
+    keep 夾(以來源新版 manifest 宣告為準)、位元碼、manifest 本身不算。量不到 ⇒ ["?"](寧可不換)。"""
     X = _ext()
+    try:
+        d = X.target(b["kind"], b["name"])
+    except (KeyError, ValueError):
+        return ["?"]
+    mine = _read_obj(d / X.MANIFEST)
+    files = mine.get("files") if mine else None
+    if not isinstance(files, dict):
+        return ["?"]
+    src = _read_obj(Path(b["dir"]) / X.MANIFEST) if b.get("dir") else b.get("manifest")
+    keep = set(keep_dirs(src or {}))
+    hits = []
+    for root, dirs, names in os.walk(d):
+        rel_root = Path(root).relative_to(d)
+        if rel_root == Path("."):
+            dirs[:] = [x for x in dirs if x not in keep]
+        for x in list(dirs):
+            if x == X.BYTECODE_DIR:
+                dirs.remove(x)
+            elif os.path.islink(os.path.join(root, x)):
+                dirs.remove(x)
+                hits.append((rel_root / x).as_posix())
+        for x in names:
+            rel = (rel_root / x).as_posix()
+            fp = Path(root) / x
+            if rel == X.MANIFEST or X._is_bytecode(Path(rel)):
+                continue
+            try:
+                if fp.is_symlink() or rel not in files or hashlib.sha256(fp.read_bytes()).hexdigest() != files[rel]:
+                    hits.append(rel)
+            except OSError:
+                hits.append(rel)
+            if len(hits) >= LOCAL_CHANGES_MAX:
+                return hits
+    return hits
+
+
+def install_plugin(folder, out):
+    """跟 aib ext install 同一條路;一律驗簽章(不給 --allow-unsigned)。回結束碼。
+    自動路徑另外守兩件事:keep 夾(例:外掛自己建的 .venv)搬到新版裡;啟用狀態照原樣(停用的不會被自動打開)。"""
+    X = _ext()
+    import ext_kinds as K
     m = _read_obj(Path(folder) / X.MANIFEST)
     if m is None or not X.signed_ok(m):
         return 3
-    return X.install(folder, allow_unsigned=False, out=out)
+    try:
+        dst = X.target(K.kind_of_label(str(m.get("kind") or "")), str(m.get("name") or ""))
+    except ValueError:
+        return 3
+    st = X._read_state(m["name"])
+    on = sorted(a for a, v in (st.get("enabled") or {}).items() if v)
+    enable = bool(on) or bool(st.get("claude_mod"))
+    held = Path(tempfile.mkdtemp(prefix=".keep-", dir=str(dst.parent))) if dst.is_dir() else None
+    moved = []
+    try:
+        for k in (keep_dirs(m) if held else []):
+            s = dst / k
+            if s.is_dir() and not s.is_symlink():
+                os.rename(s, held / k)
+                moved.append(k)
+        return X.install(folder, allow_unsigned=False, out=out, enable_engines=enable, engines=on or None)
+    finally:
+        for k in moved:   # 裝好 ⇒ 搬進新版;沒裝成(舊的還在)⇒ 搬回原處
+            if dst.is_dir() and not os.path.lexists(dst / k):
+                os.rename(held / k, dst / k)
+        if held:
+            shutil.rmtree(held, ignore_errors=True)
 
 
 def plugin_cache(env=None):
@@ -659,7 +735,8 @@ def paid_behind(cache, excluded=(), env=None):
         elif not X.signed_ok(m):
             unsigned.append(d.name)
         else:
-            behind.append({"name": d.name, "kind": "plugin", "have": have, "want": m.get("version"), "source": "aib-plugins"})
+            behind.append({"name": d.name, "kind": "plugin", "have": have, "want": m.get("version"), "source": "aib-plugins",
+                           "manifest": m})
     return behind, skipped, unsigned
 
 
@@ -766,7 +843,7 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
             res.update(kw, result=result)
             if result not in ("checked_recently",) or skew:
                 st.update(last_result=result, last_result_at=int(now), last_why=why)
-                for k in ("have", "latest", "plugins_behind", "plugins_excluded", "plugins_unsigned", "plugin_source"):
+                for k in ("have", "latest", "plugins_behind", "plugins_excluded", "plugins_unsigned", "plugins_modified", "plugin_source"):
                     if k in res:
                         st[k] = res[k]
                 write_status(st, env)
@@ -797,7 +874,11 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
         res["plugin_source"] = "ok" if cache else "offline"
         paid, skipped, unsigned = paid_behind(cache, excluded, env) if cache else ([], [], [])
         behind += paid
-        res.update(plugins_behind=[b["name"] for b in behind], plugins_excluded=skipped, plugins_unsigned=unsigned)
+        # 外掛資料夾裡有使用者 / 執行期自己的檔(改過、多出來;外掛宣告的 keep 夾除外)⇒ 自動路徑不換，交本人 aib ext install
+        modified = [b["name"] for b in behind if local_changes(b)]
+        behind = [b for b in behind if b["name"] not in modified]
+        res.update(plugins_behind=[b["name"] for b in behind], plugins_excluded=skipped, plugins_unsigned=unsigned,
+                   plugins_modified=modified)
         if plan["why"] == "no_ref":
             return done("no_ref")
         if not plan["behind"] and not behind:
@@ -868,7 +949,8 @@ def status_payload(env=None, home=None, platform=None, now=None):
             "last_result_at": st.get("last_result_at"), "last_update": st.get("last_update"),
             "plugins_behind": st.get("plugins_behind") or [], "last_plugins": st.get("last_plugins") or [],
             "excluded": read_excludes(env), "plugins_excluded": st.get("plugins_excluded") or [],
-            "plugins_unsigned": st.get("plugins_unsigned") or [], "plugin_source": st.get("plugin_source"),
+            "plugins_unsigned": st.get("plugins_unsigned") or [], "plugins_modified": st.get("plugins_modified") or [],
+            "plugin_source": st.get("plugin_source"),
             "clock_skew": bool(st.get("clock_skew")), "log": str(log_path(env))}
 
 
@@ -888,6 +970,8 @@ def status_lines(p):
         out.append(T("status.excluded_behind", names=", ".join(p["plugins_excluded"])))
     if p.get("plugins_unsigned"):
         out.append(T("status.unsigned", names=", ".join(p["plugins_unsigned"])))
+    if p.get("plugins_modified"):
+        out.append(T("status.modified", names=", ".join(p["plugins_modified"])))
     if p.get("plugin_source") == "offline":
         out.append(T("status.plugin_source_offline"))
     if p.get("clock_skew"):

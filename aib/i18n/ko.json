@@ -5117,6 +5117,7 @@
   "aib.auto_update.status.excluded": "자동 업데이트하지 않는 플러그인: {names}",
   "aib.auto_update.status.excluded_behind": "서명된 새 버전이 있지만 제외 목록에 있음(바꿀지는 직접 정해서 수동으로): {names}",
   "aib.auto_update.status.unsigned": "출처에 새 버전이 있지만 서명 검증에 실패해 설치하지 않음: {names}",
+  "aib.auto_update.status.modified": "이 플러그인 폴더에 직접 바꾸거나 추가한 파일이 있어 자동 업데이트가 교체하지 않았습니다(덮어쓰기 방지). 업데이트하려면 직접 aib ext install 을 실행하세요: {names}",
   "aib.auto_update.status.plugin_source_offline": "마지막 확인 때 플러그인 출처(aib-plugins)에 연결하지 못해 유료 플러그인은 확인하지 않음",
   "aib.auto_update.exclude.list": "자동 업데이트하지 않는 플러그인: {names}",
   "aib.auto_update.exclude.none": "(없음)",

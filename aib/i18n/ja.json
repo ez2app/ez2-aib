@@ -5117,6 +5117,7 @@
   "aib.auto_update.status.excluded": "自動更新しないプラグイン:{names}",
   "aib.auto_update.status.excluded_behind": "署名済みの新しい版がありますが除外中(更新するかは自分で決めて手動で):{names}",
   "aib.auto_update.status.unsigned": "入手元に新しい版がありますが署名の検証に失敗したため入れていません:{names}",
+  "aib.auto_update.status.modified": "これらのプラグインのフォルダに変更・追加されたファイルがあるため、自動更新では入れ替えていません(上書き防止)。更新するには aib ext install を自分で実行してください:{names}",
   "aib.auto_update.status.plugin_source_offline": "前回の確認でプラグインの入手元(aib-plugins)に接続できず、有料プラグインは確認していません",
   "aib.auto_update.exclude.list": "自動更新しないプラグイン:{names}",
   "aib.auto_update.exclude.none": "(なし)",

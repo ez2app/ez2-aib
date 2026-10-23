@@ -5117,6 +5117,7 @@
   "aib.auto_update.status.excluded": "不自動更新的外掛:{names}",
   "aib.auto_update.status.excluded_behind": "有新的簽章版但在不自動更新清單裡(要換請自己決定、手動裝):{names}",
   "aib.auto_update.status.unsigned": "來源有新版但簽章驗不過,沒有裝:{names}",
+  "aib.auto_update.status.modified": "這幾個外掛的資料夾裡有你自己改過或多出來的檔，自動更新沒有換(免得蓋掉);要換請自己跑 aib ext install:{names}",
   "aib.auto_update.status.plugin_source_offline": "上次查時連不上外掛來源(aib-plugins),付費外掛這次沒查",
   "aib.auto_update.exclude.list": "不自動更新的外掛:{names}",
   "aib.auto_update.exclude.none": "(沒有)",

@@ -5117,6 +5117,7 @@
   "aib.auto_update.status.excluded": "Never auto-updated: {names}",
   "aib.auto_update.status.excluded_behind": "Newer signed version exists but excluded (update by hand when you decide): {names}",
   "aib.auto_update.status.unsigned": "Newer version in the source failed the signature check, not installed: {names}",
+  "aib.auto_update.status.modified": "These plugins have files you changed or added in their folders, so auto-update left them alone (to avoid overwriting); run aib ext install yourself to update: {names}",
   "aib.auto_update.status.plugin_source_offline": "Plugin source (aib-plugins) could not be reached at the last check; paid plugins were not checked",
   "aib.auto_update.exclude.list": "Never auto-updated: {names}",
   "aib.auto_update.exclude.none": "(none)",

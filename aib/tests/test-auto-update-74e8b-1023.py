@@ -451,7 +451,7 @@ class Plugins(Base):
                                                      "requires_aib": "0.0.1", "files": {}, "signature": signature}))
         inst = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "skills" / "demo-skill"
         inst.mkdir(parents=True)
-        (inst / "aib-ext.json").write_text(json.dumps({"name": "demo-skill", "kind": "skill", "version": have}))
+        (inst / "aib-ext.json").write_text(json.dumps({"name": "demo-skill", "kind": "skill", "version": have, "files": {}}))
         return base, d
 
     def test_p1_unsigned_never_installed(self):
@@ -566,8 +566,9 @@ class PaidSource(Base):
                                                              **((meta or {}).get(name) or {}))))
             inst = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / name
             inst.mkdir(parents=True)
-            (inst / "aib-ext.json").write_text(json.dumps({"name": name, "kind": "plugin", "version": "1.0.0"}))
             (inst / "plugin.json").write_text(json.dumps({"name": name, "module": "m.py", "version": "1.0.0"}))
+            (inst / "aib-ext.json").write_text(json.dumps({"name": name, "kind": "plugin", "version": "1.0.0",
+                                                           "files": aib_ext._hashes(inst)}))   # 已裝那份跟自己的 files 一致 = 沒被改過
         git(src, "add", "-A")
         git(src, "commit", "-q", "-m", "plugins")
         git(self.td, "clone", "-q", "--bare", str(src), str(bare))
@@ -635,6 +636,53 @@ class PaidSource(Base):
         self.assertEqual(res.get("plugins_behind") or [], [])
         self.assertEqual((self.installed_version("demo-paid"), self.installed_version("other")), ("1.0.0", "1.0.0"))
         self.assertEqual(self.leases, [])
+
+    def test_x5_user_files_in_plugin_not_overwritten(self):
+        # 外掛資料夾裡有使用者自己加 / 改的檔 ⇒ 自動路徑不換(交本人 aib ext install),檔都還在
+        self.paid_repo({"demo-paid": "1.0.3", "other": "1.0.3"})
+        root = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins"
+        (root / "demo-paid" / "user-notes.txt").write_text("mine", encoding="utf-8")
+        (root / "other" / "m.py").write_text("VERSION = 'edited by me'\n", encoding="utf-8")
+        self.make_repos(latest=None)
+        res, _ = self._paid_check_signed()
+        self.assertEqual(res["result"], "up_to_date", res)
+        self.assertEqual(sorted(res["plugins_modified"]), ["demo-paid", "other"])
+        self.assertEqual((root / "demo-paid" / "user-notes.txt").read_text(encoding="utf-8"), "mine")
+        self.assertIn("edited by me", (root / "other" / "m.py").read_text(encoding="utf-8"))
+        self.assertEqual((self.installed_version("demo-paid"), self.installed_version("other")), ("1.0.0", "1.0.0"))
+        p = AU.status_payload(self.env, platform="linux")
+        self.assertEqual(sorted(p["plugins_modified"]), ["demo-paid", "other"])
+        self.assertIn("aib ext install", "\n".join(AU.status_lines(p)))
+
+    def test_x5b_declared_keep_dir_carried_over(self):
+        # 外掛宣告 keep: [".venv"](外掛自己的 install.sh 建在資料夾裡的環境)⇒ 照換版，.venv 搬進新版
+        self.paid_repo({"demo-paid": "1.0.3"}, meta={"demo-paid": {"keep": [".venv", "../x", "a/b"]}})
+        venv = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / "demo-paid" / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin" / "python").write_text("#!venv\n", encoding="utf-8")
+        self.make_repos(latest=None)
+        res, _ = self._paid_check_signed()
+        self.assertEqual(res["result"], "updated", res)
+        self.assertEqual(res["plugins_modified"], [])
+        self.assertEqual(self.installed_version("demo-paid"), "1.0.3")
+        self.assertEqual((venv / "bin" / "python").read_text(encoding="utf-8"), "#!venv\n")
+        self.assertEqual([p.name for p in venv.parent.parent.iterdir() if p.name.startswith(".keep-")], [])
+        self.assertEqual(AU.keep_dirs({"keep": [".venv", "../x", "a/b", "..", "aib-ext.json", 3]}), [".venv"])
+
+    def test_x5c_enabled_state_kept(self):
+        # 停用的外掛換版後仍停用;啟用過哪幾家就只帶那幾家
+        import aib_ext
+        self.paid_repo({"demo-paid": "1.0.3"})
+        folder = AU.stage_paid(AU.fetch_plugin_source(self.env), "demo-paid", self.env)
+        calls = []
+        fake = lambda f, **kw: calls.append(kw) or 0
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True), mock.patch.object(aib_ext, "install", side_effect=fake):
+            self.assertEqual(AU.install_plugin(str(folder), io.StringIO()), 0)
+            aib_ext._write_state("demo-paid", {"enabled": {"codex": {"files": []}}})
+            self.assertEqual(AU.install_plugin(str(folder), io.StringIO()), 0)
+        self.assertEqual([(c["enable_engines"], c["engines"]) for c in calls], [(False, None), (True, ["codex"])])
+        self.assertTrue(all(c["allow_unsigned"] is False for c in calls))
+        shutil.rmtree(Path(folder).parent, ignore_errors=True)
 
     def test_x2b_signature_failure_not_installed(self):
         self.paid_repo({"demo-paid": "1.0.3"})
