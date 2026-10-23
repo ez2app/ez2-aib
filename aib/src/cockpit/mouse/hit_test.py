@@ -292,7 +292,9 @@ def hit_ai_rows(rowmap, y, x=None):
                         return {"action": "kill-idle",
                                 "window": str(r["window"]),
                                 "label": _safe_text(detail.get("label"), 48),
-                                "status": _safe_text(detail.get("status"), 16)}
+                                "status": _safe_text(detail.get("status"), 16),
+                                # 10-24:(x) 軟關(未達 [X] 門檻)—— 執行端改問「選單開出後有沒有再動」
+                                "soft": kill.get("soft") is True}
             # L2-03:第二/三行的綁定入口(spans,與 kill 同機制:精準命中才算,
             # 行內其他處照舊跳窗)。action 白名單在這裡收口——rowmap 是渲染
             # 產物,但 mouse-ctl 只認這四個 verb,別的一律當沒點到。
