@@ -48,6 +48,34 @@ class HitClose(unittest.TestCase):
         self.assertEqual(hit_test.hit_ai_close([IDLE], 9), hit_test.PASSTHROUGH)
         self.assertEqual(hit_test.hit_ai_close([dict(IDLE, kill_pending=True)], 3), hit_test.PASSTHROUGH)
         self.assertEqual(hit_test.hit_ai_close([IDLE], "x"), hit_test.PASSTHROUGH)
+        # 審查 r1(M2/M3):kill 不是 dict、window 空 ⇒ 不給
+        for bad in (True, "yes", 1, [20, 23]):
+            self.assertEqual(hit_test.hit_ai_close([dict(IDLE, kill=bad)], 3), hit_test.PASSTHROUGH, bad)
+        self.assertEqual(hit_test.hit_ai_close([dict(IDLE, window="")], 3), hit_test.PASSTHROUGH)
+
+    def test_soft_must_be_exactly_true(self):
+        for v in ("yes", 1, "true"):
+            row = dict(IDLE, kill={"start": 20, "end": 23, "soft": v})
+            self.assertIs(hit_test.hit_ai_close([row], 3)["soft"], False, v)
+
+    def test_label_is_sanitised(self):
+        row = dict(IDLE, detail=dict(IDLE["detail"], label="dev1\x1b[31m\nX"))
+        label = hit_test.hit_ai_close([row], 3)["label"]
+        self.assertNotIn("\x1b", label)
+        self.assertNotIn("\n", label)
+
+    def test_close_intent_only_for_ai_list(self):
+        st = Path(tempfile.mkdtemp())
+        try:
+            (st / "ai-rowmap.json").write_text(json.dumps([IDLE], ensure_ascii=False), encoding="utf-8")
+            for role, want in (("ai-list", "kill-idle"), ("tabs", hit_test.PASSTHROUGH.get("action"))):
+                r = subprocess.run([sys.executable, str(MOUSE / "hit_test.py"), "--role", role, "--x", "5", "--y", "3",
+                                    "--intent", "close", "--state-dir", str(st)],
+                                   capture_output=True, text=True, timeout=30)
+                self.assertEqual(json.loads(r.stdout).get("action"), want, role)
+        finally:
+            import shutil
+            shutil.rmtree(st, ignore_errors=True)
 
 
 class Menu(unittest.TestCase):
@@ -63,11 +91,23 @@ class Menu(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def run_ctl(self, *args):
-        r = subprocess.run(["bash", str(MOUSE / "mouse-ctl.sh"), *args, "--dry-run"], env=self.env,
-                           capture_output=True, text=True, timeout=30)
+    BASH = "/bin/bash" if os.path.exists("/bin/bash") else "bash"     # Mac 上真的用內建 3.2 跑
+
+    def run_ctl(self, *args, dry_last=True):
+        argv = [self.BASH, str(MOUSE / "mouse-ctl.sh"), *args] + (["--dry-run"] if dry_last else [])
+        r = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
+
+    def fake_tmux(self):
+        # 只記錄、不連真 tmux:真的叫到 tmux 就留一行(用來抓「--dry-run 被吃掉」)
+        b = self.tmp / "bin"
+        b.mkdir(exist_ok=True)
+        log = self.tmp / "tmux.log"
+        (b / "tmux").write_text("#!/bin/sh\necho \"$@\" >> %s\nexit 1\n" % log)
+        os.chmod(b / "tmux", 0o700)
+        self.env["PATH"] = "%s:%s" % (b, self.env["PATH"])
+        return log
 
     def label(self):
         import i18n_lib
@@ -99,6 +139,44 @@ class Menu(unittest.TestCase):
         self.assertNotIn("display-menu", out)
         self.assertNotIn("release-confirmed", out)
 
+    def test_close_row_never_runs_click_preambles(self):
+        # 審查 r1 M1:標題列(y<=1)不能變成切分頁;捲軸前置也不碰
+        (self.st / "scrollbar-grab").write_text("1")
+        for y in ("0", "1", "abc"):
+            out = self.run_ctl("--role", "right", "--close-row", "ai-list", "5", y, "s1")
+            self.assertNotIn("right-tab", out, y)
+            self.assertNotIn("display-menu", out, y)
+        self.assertFalse((self.tmp / "right-tab").exists())
+        self.assertTrue((self.st / "scrollbar-grab").exists())
+        self.assertEqual(self.run_ctl("--role", "bottom", "--close-row", "ai-list", "5", "3", "s1"), "")   # 底部分頁列
+
+    def test_short_args_keep_dry_run(self):
+        # 審查 r1 M2:參數短少時 --dry-run 不能被當成角色 / 座標吃掉(吃掉就會去碰真 tmux)
+        log = self.fake_tmux()
+        for args in ([], ["ai-list"], ["ai-list", "5"]):
+            self.run_ctl("--role", "right", "--close-row", *args, "--dry-run", dry_last=False)
+        self.assertFalse(log.exists() and log.read_text().strip(), log.read_text() if log.exists() else "")
+
+    def test_plain_click_unchanged(self):
+        # 審查 r1 M10:--click 預設意圖仍是 click:點列中間跳窗、點 [X] 格彈確認
+        mid = self.run_ctl("--role", "right", "--click", "ai-list", "5", "3", "s1")
+        self.assertIn("select-window -t aihub:@35", mid)
+        self.assertNotIn("display-menu", mid)
+        x = self.run_ctl("--role", "right", "--click", "ai-list", "21", "3", "s1")
+        self.assertIn("--release-confirmed @35", x)
+
+    def test_no_close_item_without_window_or_on_title_rows(self):
+        # 審查 r1 M13:detail 拿不到 window ⇒ 不給「關閉這一席」;非數字座標不嵌進 run-shell
+        (self.st / "ai-rowmap.json").write_text(json.dumps([dict(IDLE, detail={"label": ""})], ensure_ascii=False),
+                                                encoding="utf-8")
+        out = self.run_ctl("--context", "pane", "ai-list", "5", "3", "%1", "s1")
+        self.assertNotIn("--close-row", out)
+        (self.st / "ai-rowmap.json").write_text(json.dumps([IDLE], ensure_ascii=False), encoding="utf-8")
+        out = self.run_ctl("--context", "pane", "ai-list", "5' ; run-shell 'x", "3", "%1", "s1")
+        close_item = out.split(self.label(), 1)[1]                         # 只看新加的那一項
+        self.assertIn("--close-row ai-list 0 3 ", close_item)
+        self.assertNotIn("run-shell 'x", close_item)
+
     def test_close_seat_label_in_every_language(self):
         for lang in ("zh-TW", "en", "ja", "ko"):
             d = json.loads((REPO / "i18n" / ("%s.json" % lang)).read_text(encoding="utf-8"))
@@ -107,6 +185,10 @@ class Menu(unittest.TestCase):
     def test_no_bash4_only_syntax(self):
         src = (MOUSE / "mouse-ctl.sh").read_text(encoding="utf-8")
         self.assertNotIn(";&\n", src)                                       # Mac 內建 bash 3.2 不認
+        if os.path.exists("/bin/bash"):
+            r = subprocess.run(["/bin/bash", "-n", str(MOUSE / "mouse-ctl.sh")], capture_output=True, text=True,
+                               timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
 
 
 if __name__ == "__main__":

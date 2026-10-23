@@ -152,13 +152,14 @@ while [ $# -gt 0 ]; do
     --close-row)
       # 10-24 @abb89:右鍵「關閉這一席」的回呼。走 --click 同一條路,只是命中器用 close 意圖
       #   (整列都算、只認有 [X]/(x) 的列)⇒ 彈的是跟點 [X] 同一個確認選單,真關照舊只在 --release-confirmed。
+      #   審查 r1 M2:參數逐格判 --* / 空,短少時不把 --dry-run 當成角色 / 座標吃掉
       HIT_INTENT="close"
       MODE="click"
-      ROLE="${2:-}"
-      CX="${3:-}"
-      CY="${4:-}"
-      case "${5:-}" in --*|"") ;; *) SESSION="$5"; shift ;; esac
-      shift "$(( $# < 3 ? $# : 3 ))"
+      for _slot in ROLE CX CY SESSION; do
+        case "${2:-}" in --*|"") break ;; esac
+        printf -v "$_slot" '%s' "$2"
+        shift
+      done
       ;;
     --click)
       MODE="click"
@@ -1545,6 +1546,12 @@ WHEEL_ACTION="{\"action\":\"fold-scroll\",\"dir\":\"$WHEEL_DIR\",\"rows\":3}"
       review) ROLE=pending-review ;;
       hub-frame) ROLE=hub-frame ;;
     esac
+    # 右鍵「關閉這一席」(審查 r1 M1):只在 ai-list 內容列(y>=2)才往下走,
+    #   不讓 --close-row 經過下面的捲軸 / 分頁切換前置動作
+    if [ "$HIT_INTENT" = "close" ]; then
+      case "${CY:-}" in ''|*[!0-9]*) exit 0 ;; esac
+      [ "$ROLE" = "ai-list" ] && [ "$CY" -ge 2 ] || exit 0
+    fi
     # ★點擊也要從被點 session 重導艙身份（wheel／殺席已做；click 先前漏做）
     # 否則 hit_test 讀錯艙 hub-frame-rowmap、toggle 寫錯艙 panel-layout ⇒ 畫面零反應。
     SESSION="${SESSION:-$EZ2_TMUX_SESSION}"
@@ -3309,7 +3316,10 @@ else:
     #   彈的是跟點 [X] 同一個確認選單(取消排第一、真關只在 --release-confirmed、軟關帶 --soft-since)。
     CLOSE_ACTION=""
     CLOSE_TITLE=""
-    if [ -n "$WINDOW" ]; then
+    _CX_OK="${CX:-0}"; _CY_OK="${CY:-0}"
+    case "$_CX_OK" in *[!0-9]*) _CX_OK=0 ;; esac          # 座標只收數字才嵌進 run-shell 字串
+    case "$_CY_OK" in *[!0-9]*) _CY_OK=0 ;; esac
+    if [ -n "$WINDOW" ] && [ "$_CY_OK" -ge 2 ]; then
       _CLOSE_HIT="$("$EZ2_PY3" "$HERE/hit_test.py" --role "$ROLE" \
         --x "${CX:-0}" --y "${CY:-0}" --intent close \
         --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null || true)"
@@ -3320,7 +3330,7 @@ else:
           if [ -n "$CLOSE_TITLE" ]; then
             printf -v SCRIPT_Q '%q' "$HERE/mouse-ctl.sh"
             printf -v SESSION_ARG_Q '%q' "$SESSION"
-            CLOSE_ACTION="run-shell 'bash $SCRIPT_Q --role right --close-row ai-list ${CX:-0} ${CY:-0} $SESSION_ARG_Q$RUNSHELL_REDIR'"
+            CLOSE_ACTION="run-shell 'bash $SCRIPT_Q --role right --close-row ai-list $_CX_OK $_CY_OK $SESSION_ARG_Q$RUNSHELL_REDIR'"
           fi
           ;;
       esac
