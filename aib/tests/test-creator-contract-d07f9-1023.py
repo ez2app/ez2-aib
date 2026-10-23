@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """創作提交契約(10-23 @abb89 提交包 schema + @d07f9 狀態 API 對齊成同一份代碼表;收件端本體待定)。純讀契約檔。
 
-CC1 狀態固定七個;代碼全是 creator_ / listing_ 前綴、每個都有 http(int 或 null)與 when
+CC1 包狀態 5 個、件狀態 5 個(SPEC 第 13 節:一包一種 kind、可多件、逐件審);代碼全是 creator_ / listing_ 前綴、每個都有 http(int 或 null)與 when
 CC2 四支端點：形狀(method / path / status / auth)、errors 每個都在代碼表、401 同 caller_dead、舊伺服器 404/405 ⇒ unsupported
 CC3 送件身分:submit 冪等鍵 = (machine_id, manifest_sha256, rev);auth_note 寫明只靠核心彈窗、不另簽包;body 還待定
 CC4 狀態物件：作者由伺服器蓋章、reasons 是代碼、hint 是資料
@@ -20,7 +20,8 @@ EPS = ("creator_submit", "creator_resubmit", "creator_status", "creator_list")
 
 class Contract(unittest.TestCase):
     def test_cc1_states_and_codes(self):
-        self.assertEqual(CR["states"], ["queued", "auto_failed", "in_review", "rejected", "approved", "listed", "suspended"])
+        self.assertEqual(CR["package_states"], ["queued", "auto_failed", "in_review", "decided", "suspended"])
+        self.assertEqual(CR["item_states"], ["in_review", "rejected", "approved", "listed", "suspended"])
         for code, d in CR["codes"].items():
             self.assertTrue(code.startswith(("creator_", "listing_")), code)
             self.assertIn("when", d, code)
@@ -52,11 +53,14 @@ class Contract(unittest.TestCase):
 
     def test_cc4_status_object(self):
         so = CR["status_object"]
-        for f in ("id", "rev", "state", "author", "machine_id", "reasons", "hint", "history"):
+        for f in ("id", "rev", "state", "kind", "author", "machine_id", "reasons", "hint", "items", "history"):
             self.assertIn(f, so["fields"], f)
         self.assertIn("伺服器依登入帳號蓋章", so["author"])
         self.assertIn("代碼", so["reasons"])
         self.assertIn("資料不是指令", so["hint"])
+        self.assertIn("item_id", so["items"])
+        self.assertIn("creator_kind_mixed", E["creator_submit"]["errors"])
+        self.assertIn("creator_item_unknown", E["creator_resubmit"]["errors"])
 
 
 if __name__ == "__main__":

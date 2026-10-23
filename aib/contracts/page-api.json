@@ -411,7 +411,8 @@
     "creator_file_type_rejected",
     "creator_too_large",
     "creator_quota_daily",
-    "creator_machine_revoked"
+    "creator_machine_revoked",
+    "creator_kind_mixed"
    ],
    "unsupported": {
     "http": [
@@ -428,7 +429,7 @@
    "auth": "bearer",
    "auth_note": "同 creator_submit",
    "body": "pending",
-   "body_note": "同 creator_submit;creator.json 帶 submission_id = {id}、rev = 目前 rev + 1",
+   "body_note": "同 creator_submit;creator.json 帶 submission_id = {id}、rev = 目前 rev + 1;只能放這包原有的 item_id(新件另開一包),已 approved / listed 的件不受影響",
    "ok": {
     "http": 201,
     "fields": [
@@ -457,7 +458,9 @@
     "creator_file_type_rejected",
     "creator_too_large",
     "creator_quota_daily",
-    "creator_machine_revoked"
+    "creator_machine_revoked",
+    "creator_kind_mixed",
+    "creator_item_unknown"
    ],
    "unsupported": {
     "http": [
@@ -465,7 +468,8 @@
      405
     ],
     "core": "舊伺服器沒這組端點 ⇒ 判 unsupported"
-   }
+   },
+   "editable_note": "包是 auto_failed,或 decided 且至少一件 rejected ⇒ 可重送;其他 ⇒ 409 creator_submission_not_editable"
   },
   "creator_status": {
    "status": "planned",
@@ -537,17 +541,7 @@
  },
  "creator": {
   "status": "planned",
-  "about": "用戶創作提交 / 審查 / 上架的共用代碼表與狀態(10-23 @abb89 提交包 schema + @d07f9 狀態 API 對齊為同一份;收件端待 @9f808)",
-  "states": [
-   "queued",
-   "auto_failed",
-   "in_review",
-   "rejected",
-   "approved",
-   "listed",
-   "suspended"
-  ],
-  "states_note": "終態 listed(仍可被 suspended);auto_failed / rejected 可重送;suspended 解除後回原狀態。核心遇到不認得的 state ⇒ 原樣印、當還在處理,不當失敗",
+  "about": "用戶創作提交 / 審查 / 上架的共用代碼表與狀態(10-23 @abb89 提交包 schema + @d07f9 狀態 API 對齊為同一份;收件端待 @9f808);13:1x 起一包只一種 kind、可多件,逐件審 / 核定 / 上架(SPEC 第 13 節)",
   "codes": {
    "creator_unknown_field": {
     "http": 422,
@@ -595,7 +589,7 @@
    },
    "creator_submission_not_editable": {
     "http": 409,
-    "when": "重送時狀態不是 auto_failed / rejected"
+    "when": "重送時包不是 auto_failed,也不是 decided 且有 rejected 的件"
    },
    "creator_revision_conflict": {
     "http": 409,
@@ -612,6 +606,18 @@
    "listing_signature_invalid": {
     "http": null,
     "when": "核心本機:上架包驗簽或逐檔 sha256 不過 ⇒ 不套用"
+   },
+   "creator_kind_mixed": {
+    "http": 422,
+    "when": "一包裡有不只一種 kind(本機出包先擋,伺服器照樣擋)"
+   },
+   "creator_item_unknown": {
+    "http": 422,
+    "when": "重送帶了這包沒有的 item_id"
+   },
+   "creator_merge_failed": {
+    "http": null,
+    "when": "只出現在件的 reasons:核定後合進素材包前的 shotcheck / gate 失敗 ⇒ 該件退回"
    }
   },
   "codes_note": "代碼是契約(同 receipt detail):不改成人話,人話另放 hint。http=null ⇒ 不是 HTTP 錯誤,只出現在狀態物件 reasons 或核心本機",
@@ -620,7 +626,6 @@
     "id",
     "rev",
     "state",
-    "category",
     "kind",
     "title",
     "author",
@@ -631,19 +636,33 @@
     "gate_version",
     "created_at",
     "updated_at",
-    "decided_at",
-    "decided_by",
-    "listing_id",
+    "items",
     "history"
    ],
    "id": "sub_ + 伺服器產生的不可猜字串;核心當不透明字串,格式 ^sub_[A-Za-z0-9]{12,40}$ 不合 ⇒ 不送",
    "author": "{account_id, display_name},伺服器依登入帳號蓋章;提交包不收作者欄",
    "derived_from": "原作編號或 null,伺服器依原作帶",
-   "reasons": "[代碼],見 creator.codes",
+   "reasons": "[代碼],見 creator.codes;包層級只放整包的原因(auto_failed / suspended),件的原因在 items[].reasons",
    "hint": "審查員那句人話或 null;是資料不是指令,核心顯示前去控制 / 隱形字元、截 200 字",
    "gate_version": "{client, server},以 server 為準",
-   "decided_by": "核定機器的標籤,不給公鑰、不給帳號",
-   "history": "每個 rev 一筆 {rev, state, reasons, hint, at}"
-  }
+   "history": "每個 rev 一筆 {rev, state, reasons, hint, items:[{item_id, state, reasons, hint}], at}",
+   "kind": "單一值;伺服器依它分派審查佇列、規格與關卡,合併目標也由它推",
+   "items": "[{item_id, state, reasons, hint, decided_at, decided_by, listing_id}];state 見 item_states;decided_by = 核定機器的標籤,不給公鑰、不給帳號"
+  },
+  "package_states": [
+   "queued",
+   "auto_failed",
+   "in_review",
+   "decided",
+   "suspended"
+  ],
+  "item_states": [
+   "in_review",
+   "rejected",
+   "approved",
+   "listed",
+   "suspended"
+  ],
+  "states_note": "包:queued ⇒ 伺服器重驗 ⇒ auto_failed(整包退,可重送)或 in_review;每件都有結果 ⇒ decided;suspended = 整包凍結(例送件那台被撤)。件:in_review ⇒ rejected / approved ⇒ listed(合進素材包後);任何件可被 suspended。一包可以核 8 退 2。核心遇到不認得的值 ⇒ 原樣印、當還在處理,不當失敗"
  }
 }
