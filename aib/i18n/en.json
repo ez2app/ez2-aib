@@ -5077,6 +5077,7 @@
   "aib.plugins.hint.plugin_rejected": "The package failed verification (signature / files / version); not installed",
   "aib.plugins.hint.plugin_downgrade": "Catalog version {version} is older than the installed {current}; not installed. To really install it, write <name>@{version}",
   "aib.plugins.hint.plugin_license_invalid": "The license from the server failed verification or has expired; not written",
+  "aib.plugins.hint.plugin_license_fewer": "The license on this machine is still valid and also covers {addons}; the new one would drop them, so it was not replaced. To replace it, run aib license install <file> yourself",
   "aib.plugins.hint.plugin_not_bound": "This machine is not bound to ez2.page (paid plugins and licenses come from your account): run aib page bind first",
   "aib.plugins.hint.plugin_unreachable": "Could not reach ez2.page; try again later",
   "aib.plugins.hint.plugin_unsupported": "The server does not offer plugin downloads yet",

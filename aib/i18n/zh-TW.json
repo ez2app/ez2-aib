@@ -5077,6 +5077,7 @@
   "aib.plugins.hint.plugin_rejected": "包驗不過(簽章 / 檔案 / 版本),沒有安裝",
   "aib.plugins.hint.plugin_downgrade": "目錄的 {version} 比這台已裝的 {current} 舊,沒有安裝;真的要裝舊版請寫 <名稱>@{version}",
   "aib.plugins.hint.plugin_license_invalid": "伺服器給的授權驗不過或已過期,沒有寫入",
+  "aib.plugins.hint.plugin_license_fewer": "這台現有的授權還有效，而且多了 {addons};新授權會少掉它們，所以沒有換。要換請自己跑 aib license install <檔>",
   "aib.plugins.hint.plugin_not_bound": "這台還沒綁 ez2.page(付費外掛與授權要用帳號領):先跑 aib page bind",
   "aib.plugins.hint.plugin_unreachable": "連不到 ez2.page,稍後再試",
   "aib.plugins.hint.plugin_unsupported": "伺服器還沒有外掛下載功能",
