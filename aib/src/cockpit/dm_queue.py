@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -156,6 +157,13 @@ TRANSITIONS[("archived", "deleted")] = ("human", "system")
 #   由系統代標已讀,why 必須是 AUTO_READ_WHY(_transition 裡查),信檔記 read_by=system / read_why。
 #   只開 queued/delivered → read;人審(hold_human)不代標 —— 那是等真人看的。
 AUTO_READ_WHY = "auto_notice"
+# 10-24 @abb89(右鍵開席實測:開席單讀過、席也回了「已就緒」,read_at 還是 null ⇒ 狀態列一直「未讀 dm 1」):
+#   seat_onboard 的回執守望看到「已就緒 / 已更新」時,替那一席把**它自己投遞的那一封**(投遞時拿到的 id)標已讀。
+#   只認這個 why、只走 queued/delivered → read;別封信不會因此被標。
+ONBOARD_ACK_WHY = "onboard_acked"
+SYSTEM_READ_WHYS = (AUTO_READ_WHY, ONBOARD_ACK_WHY)
+# 開席單一定帶的回執字(放在「」裡;seat_onboard.ACK_TOKENS 一改這裡要跟著改,測試會比對)
+ONBOARD_MARKERS = ("「已就緒」", "「已更新」")
 TRANSITIONS[("queued", "read")] = ("seat", "system")
 TRANSITIONS[("delivered", "read")] = ("seat", "system")
 ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping", "notice_read")   # 後兩個:stage-tidy 機器層(10-13)
@@ -1313,7 +1321,7 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
             return refuse("actor")
     if to == "deleted" and cls == "system" and why != AUTO_DELETE_WHY:
         return refuse("actor")        # 系統只准刪「備存滿 30 天」那一種(the maintainer 09-30 17:1x)
-    if to == "read" and cls == "system" and why != AUTO_READ_WHY:
+    if to == "read" and cls == "system" and why not in SYSTEM_READ_WHYS:
         return refuse("actor")        # 系統只准代標「通知」組已讀(the maintainer 09-30 18:2x)
     done_kind = None
     if to == "done":
@@ -1442,6 +1450,47 @@ def _human_from_seat(actor, env):
 def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_check=None):
     out = _transition(seat, item_id, "read", actor, env=env, now=now, if_rev=if_rev,
                       no_rev_check=no_rev_check)
+    if out.get("ok"):
+        _after_read(seat, item_id, env=env, now=now)
+    return out
+
+
+def _onboard_relay_text(path):
+    """開席單長訊落檔:只讀一般檔、不阻塞、限量(FIFO / /dev/zero / 讀時變大都不會卡住開席);讀不到 ⇒ None。"""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        raw = os.read(fd, TIDY_RELAY_MAX_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return None if len(raw) > TIDY_RELAY_MAX_BYTES else raw.decode("utf-8", "replace")
+
+
+def _is_onboard_msg(msg):
+    """這封是不是開席單:正文(長訊 ⇒ 落檔內容)裡有帶「」的回執字。只防 id 傳錯,不是防線(同帳號 AI 本來就能改信檔)。"""
+    path = DR.relay_path_of(msg)
+    text = _onboard_relay_text(path) if path else msg
+    return isinstance(text, str) and any(m in text for m in ONBOARD_MARKERS)
+
+
+def mark_onboard_acked(seat, item_id, env=None, now=None):
+    """開席單回執到了 ⇒ 系統代標那一封已讀(ONBOARD_ACK_WHY)。已讀 / 已結 / 人審中 ⇒ 不動,回 ok=False;
+    不是開席單(例如真人來信)⇒ 不動,回 why=not_onboard。"""
+    it = _load_item(seat, item_id, env)
+    if not it or it.get("status") not in ("queued", "delivered"):
+        return {"ok": False, "why": "not_unread"}
+    # 全球 / IM 來信是外人寫的,正文帶「已就緒」也不是開席單(審查 r2 M1)
+    if _is_global_item(it) or it.get("im") or it.get("sender_kind") == "external_im" \
+            or not _is_onboard_msg(it.get("msg")):
+        return {"ok": False, "why": "not_onboard"}
+    out = _transition(seat, item_id, "read", "system", env=env, now=now, why=ONBOARD_ACK_WHY,
+                      if_rev=it.get("rev"), no_rev_check=False)
     if out.get("ok"):
         _after_read(seat, item_id, env=env, now=now)
     return out
