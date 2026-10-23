@@ -95,7 +95,8 @@ class Pure(unittest.TestCase):
             env = _env_with(dict(OTHERS, AIB_CORE_DIR=str(self.core)), self.home, repo)
             for k in OTHERS:
                 self.assertNotIn(k, env, (repo, k))
-            self.assertEqual(sorted(k for k in env if k.startswith("AIB_")),
+            passthru = ("AIB_TEST_PYTHON", "AIB_TEST_NOSTR_VENV")   # runner.py 本來就照抄的(跑全套時外層會帶 AIB_TEST_NOSTR_VENV)
+            self.assertEqual(sorted(k for k in env if k.startswith("AIB_") and k not in passthru),
                              [] if repo == REPO else ["AIB_CORE_DIR"], repo)
 
 
