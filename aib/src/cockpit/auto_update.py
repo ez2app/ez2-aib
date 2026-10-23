@@ -610,7 +610,7 @@ def fetch_plugin_source(env=None):
     env = dict(os.environ if env is None else env)
     src = env.get("AIB_AUTO_UPDATE_PLUGIN_SOURCE") or PLUGIN_SOURCE
     cache = plugin_cache(env)
-    e = dict(_child_env(env), GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=SSH_HARDENED)
+    e = _child_env(env)
     if not (cache / "HEAD").exists():
         cache.parent.mkdir(parents=True, exist_ok=True)
         if _git(cache.parent, "init", "-q", "--bare", cache.name, env=e)[0] != 0:
@@ -695,7 +695,10 @@ def stage_paid(cache, name, env=None):
 # ───────────────────────────── 查 / 更新 ─────────────────────────────
 
 def _child_env(env):
-    return {k: str(v) for k, v in env.items() if k in _CHILD_ENV_KEEP or k.startswith(_CHILD_ENV_KEEP_PREFIX)}
+    # git / install.sh 的 ssh 一律加固:install.sh 只在 SOURCE 是 git@ / ssh:// 才自己 export,insteadOf 改寫成 ssh 時會漏
+    e = {k: str(v) for k, v in env.items() if k in _CHILD_ENV_KEEP or k.startswith(_CHILD_ENV_KEEP_PREFIX)}
+    e.update(GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=SSH_HARDENED)
+    return e
 
 
 def run_core_update(env, root=None):

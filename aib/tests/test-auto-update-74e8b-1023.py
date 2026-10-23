@@ -329,8 +329,13 @@ class Gates(Base):
         res = self.run_check(env=env)
         self.assertEqual(res["result"], "updated", res)
         self.assertEqual(len(self.updates), 1)
-        self.assertEqual(sorted(set(bad) & set(self.updates[0])), [])
-        self.assertEqual([k for k in self.updates[0] if k.startswith(("AIB_", "GIT_", "PYTHON", "DYLD_", "LD_"))], [])
+        self.assertEqual(sorted(set(bad) & set(self.updates[0])), ["GIT_SSH_COMMAND"])
+        self.assertEqual(self.updates[0]["GIT_SSH_COMMAND"], AU.SSH_HARDENED)   # 換成加固版(insteadOf 改寫成 ssh 時 install.sh 不會自己補)
+        for o in ("BatchMode=yes", "ForwardAgent=no", "ClearAllForwardings=yes"):
+            self.assertIn(o, AU.SSH_HARDENED)
+        self.assertEqual(self.updates[0]["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual([k for k in self.updates[0] if k.startswith(("AIB_", "GIT_", "PYTHON", "DYLD_", "LD_"))
+                          and k not in ("GIT_SSH_COMMAND", "GIT_TERMINAL_PROMPT")], [])
         for k in ("SSH_AUTH_SOCK", "LC_ALL", "HTTPS_PROXY", "HOME", "EZ2_AIB_STATE_ROOT"):
             self.assertEqual(self.updates[0].get(k), env[k], k)
         self.assertEqual(self.leases, ["acquire", "release"])
