@@ -7,7 +7,7 @@
 
 10-24 Andy:「要有一個點擊他選的 AI 在這個視窗中，即時對話用來 Q&A」+ @abb89 硬線「只回答、不動手」。
 - 只叫得動能驗證關工具的家:claude(--tools "" + --strict-mcp-config 不載 MCP + 關 skill / 指令)、
-  codex(唯讀沙盒 + 清空 MCP + 不留對話)。其他家 ⇒ power_ask_unsupported(驗不了就不叫,同帳號 AI 威脅守則)。
+  codex(唯讀沙盒 + 關外掛 / apps / shell / 電腦與瀏覽器操作 + 逐個停用 MCP 並重列確認 + 不留對話)。其他家 ⇒ power_ask_unsupported(驗不了就不叫,同帳號 AI 威脅守則)。
 - 那家不是綠燈 ⇒ power_ask_login,頁面導去登入;不偷換別家。
 - 問題走 stdin(ps 看不到),跑在空的暫存目錄、跑完刪;不寫進任何席位、不存對話。
 - 回答裡的指令只抽出來給頁面「複製」,核心不執行;回答去控制字元、有長度上限。
@@ -38,8 +38,13 @@ _TASK_RE = re.compile(r"\b(UR[1-7]|SSR(?:1[0-2]|[1-9])|SR(?:1[0-3]|[1-9])|R(?:1[
 # 關工具的呼叫法;改這裡要先過同帳號 AI 威脅守則的檢查表
 CLAUDE_CMD = ["claude", "-p", "--output-format", "text", "--no-session-persistence", "--tools", "",
               "--strict-mcp-config", "--disable-slash-commands", "--max-turns", "1"]
-CODEX_CMD = ["codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--ephemeral", "--color", "never",
-             "-c", "mcp_servers={}"]
+CODEX_CMD = ["codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--ephemeral", "--color", "never"]
+# 10-24 03:2x 實跑發現 -c mcp_servers={} 是合併不是取代(設定檔的 node_repl 等照開)⇒ 改成:關外掛 / apps / shell /
+# 電腦與瀏覽器操作,再列 MCP、逐個停用、重列確認全關;驗不過就不叫(power_ask_unsupported hint mcp_not_disabled)
+CODEX_LOCK = ["-c", "features.plugins=false", "-c", "features.apps=false", "-c", "features.shell_tool=false",
+              "-c", "features.computer_use=false", "-c", "features.browser_use=false"]
+_MCP_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+MCP_LIST_TIMEOUT_S = 30
 BRANDS = ("claude", "codex")
 
 # 建議問題(代碼;字在頁面 i18n)。照「為什麼用 AIB」排名挑對應的,不夠再補通用的
@@ -55,6 +60,13 @@ Rules:
 - If a beginner task card helps, mention its id (R1-R12, SR1-SR13, SSR1-SSR12, UR1-UR7).
 - Never ask for or repeat passwords, keys, tokens or purchase serials.
 - Be brief. Answer in the same language as the question.
+Common commands (from the beginner curriculum; do not invent others, say "see aib --help" when unsure):
+- open a seat: aib <brand> safe <role>   e.g. aib claude safe dev   (brand = claude / codex / grok / copilot / agy)
+- open a new cabin: aib <brand> safe <role> new
+- bind a persona: aib persona   ·   second-brain project: aib newproj   ·   write memory: aib memory write
+- status line: aib now "<main item>" 1/3   ·   message a seat: aib dm <cabin>/<seat> "<text>"
+- end-of-shift handoff: aib handoff   ·   health check: aib doctor   ·   tests: aib test
+- log in an AI: aib power login <brand>   ·   upgrade aib: aib update   ·   problem report: aib support
 """
 
 
@@ -83,6 +95,29 @@ def _light(brand):
         return power_login.light_of(brand).get("light")
     except Exception:  # noqa: BLE001
         return "unknown"
+
+
+def _mcp_enabled(flags, run):
+    """codex <flags> mcp list --json ⇒ 還開著的伺服器名稱;讀不懂 ⇒ None。"""
+    try:
+        r = run(["codex"] + flags + ["mcp", "list", "--json"], capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=MCP_LIST_TIMEOUT_S, stdin=subprocess.DEVNULL, env=_clean_env())
+        rows = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
+        return None
+    return [x.get("name") for x in rows if x.get("enabled") is not False]
+
+
+def codex_lockdown(run):
+    """回 codex 要加的關工具旗標;關不乾淨(還有 MCP 開著 / 名稱怪 / 讀不懂)⇒ None。"""
+    on = _mcp_enabled(CODEX_LOCK, run)
+    if on is None or not all(isinstance(n, str) and _MCP_NAME_RE.fullmatch(n) for n in on):
+        return None
+    # codex 的 -c 照「.」直接切、不認 TOML 引號(加引號會變成另一台叫 "x" 的伺服器)⇒ 名稱只收 [A-Za-z0-9_-]、不加引號
+    flags = CODEX_LOCK + [x for n in on for x in ("-c", "mcp_servers.%s.enabled=false" % n)]
+    return flags if _mcp_enabled(flags, run) == [] else None
 
 
 def suggest(rank=None):
@@ -165,8 +200,11 @@ def ask(brand, raw, model=None, *, run=None, light=None, which=shutil.which, tim
             cmd = CLAUDE_CMD + (["--model", model] if model else [])
             out_file = None
         else:
+            lock = codex_lockdown(run or subprocess.run)
+            if lock is None:
+                return _receipt(False, "power_ask_unsupported", brand, hint="mcp_not_disabled"), 2
             out_file = os.path.join(cwd, "last.txt")
-            cmd = CODEX_CMD + (["-m", model] if model else []) + ["-o", out_file, "-"]
+            cmd = CODEX_CMD + lock + (["-m", model] if model else []) + ["-o", out_file, "-"]
         try:
             r = (run or subprocess.run)(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
                                         errors="replace", timeout=timeout, cwd=cwd, env=_clean_env())

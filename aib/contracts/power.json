@@ -289,12 +289,12 @@
   "cmds": "回答裡的 aib 指令(最多 5 條)— 只給頁面複製到剪貼簿，核心與頁面都不執行",
   "cards": "回答提到的任務卡編號(R1–UR7),頁面可給「開 Rx 教學卡」",
   "suggest": "3 個建議問題代碼 q_<why 代碼>(other 除外),不夠補 q_first_seat / q_lights / q_handoff;照 why_rank 排",
-  "hint": "login ⇒ 「aib power login <家>」;unsupported ⇒ 支援的家;failed ⇒ timeout / not_installed / rc=N;bad ⇒ model / question / brand",
+  "hint": "login ⇒ 「aib power login <家>」;unsupported ⇒ 支援的家 / mcp_not_disabled(codex MCP 關不乾淨);failed ⇒ timeout / not_installed / rc=N;bad ⇒ model / question / brand",
   "rc": {
    "0": "ok / suggest",
    "1": "叫了但失敗",
    "2": "不支援 / 參數錯 / 沒綠燈"
   },
-  "note": "SPEC-power-room §12 硬線：只回答、不動手。只叫驗得了關工具的家:claude(--tools \"\" + --strict-mcp-config + --disable-slash-commands)、codex(-s read-only + mcp_servers={} + --ephemeral);其他家 unsupported。非綠燈 ⇒ login,不偷換別家。問題走 stdin、空暫存目錄、跑完刪;不寫席位、不存對話;history 最多 6 輪由頁面帶。用的是使用者自己的訂閱，頁面首次送字前提示"
+  "note": "SPEC-power-room §12 硬線：只回答、不動手。只叫驗得了關工具的家:claude(--tools \"\" + --strict-mcp-config + --disable-slash-commands)、codex(-s read-only + --ephemeral + 關 features plugins / apps / shell_tool / computer_use / browser_use + 列 MCP 逐個 mcp_servers.<名>.enabled=false 再重列確認全關，關不乾淨 ⇒ unsupported hint mcp_not_disabled;10-24 03:2x 實跑發現 mcp_servers={} 只合併不清空);其他家 unsupported。非綠燈 ⇒ login,不偷換別家。問題走 stdin、空暫存目錄、跑完刪;不寫席位、不存對話;history 最多 6 輪由頁面帶。用的是使用者自己的訂閱，頁面首次送字前提示"
  }
 }

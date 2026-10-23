@@ -13,11 +13,13 @@ A7 回答去 ANSI / 控制字元、截長;cmds 只抽 aib 開頭的行(最多 5�
 A8 stdin JSON:question + history(最多 6 輪、怪型別丟掉);純文字也收
 A9 suggest:照 why_rank 挑、不夠補通用、恰好 3 則
 A10 aib power ask 從總管 power_status.main 轉得到(stdin 讀問題)
+A13 codex 關工具(10-24 03:2x 實跑發現 mcp_servers={} 只合併不清空):關外掛 / apps / shell / 電腦 / 瀏覽器,列 MCP、逐個停用、
+    重列確認全關;還有開著的 / 名稱怪(含引號、點、空白)/ 列不出來 / 讀不懂 ⇒ unsupported mcp_not_disabled、不叫 exec
 A12 突變審第 2 輪補斷言:--max-turns 1、檢查順序(先驗輸入再看燈)、DEL / C1 / 0x1f、Q_MAX 邊界、history 截長、
     指令 12 段上限與 | && 不收、任務編號邊界、前言在最前、cards 去重、main --suggest 帶家、hint 分 model / question、stdin 讀上限
 A11 稽核第 1 輪(10-24 03:0x):環境用前綴去掉 TMUX* / CLAUDECODE / CLAUDE_CODE_* / AIB_SEAT*;模型尾巴換行不收;
     回答去方向 / 零寬格式字元;單獨「aib」不算指令;代理字元問題 / 非 UTF-8 輸出 / 讀檔亂碼 / 燈號函式拋例外 / 寫 stdin 拋錯 ⇒ 回條、不拋
-刀(複本):K1 拿掉 --tools "" ⇒ A4 紅;K2 不看燈號 ⇒ A3 紅;K3 codex 改可寫沙盒 ⇒ A5 紅;K4 環境只濾固定名 ⇒ A11 紅;K5 模型用 match ⇒ A11 紅
+刀(複本):K1 拿掉 --tools "" ⇒ A4 紅;K2 不看燈號 ⇒ A3 紅;K3 codex 改可寫沙盒 ⇒ A5 紅;K4 環境只濾固定名 ⇒ A11 紅;K5 模型用 match ⇒ A11 紅;K6 停用後不重列確認 ⇒ A13 紅;K7 不關外掛 ⇒ A5 紅
 """
 import io
 import json
@@ -46,11 +48,33 @@ C = json.loads((REPO / "contracts" / "power.json").read_text(encoding="utf-8"))
 GREEN = (lambda b: "green")
 
 
+# 假 codex 的 MCP(名稱, 預設開著, 外掛帶的):照 10-24 03:2x 本機實測行為 —— features.plugins=false 拿掉外掛帶的;
+# -c mcp_servers.<名>.enabled=false 停用;停用一台不存在的(含加了引號的名字)⇒ rc 1「invalid transport」
+MCP = (("node_repl", True, False), ("openaiDeveloperDocs", True, False), ("cua_repl", True, True),
+       ("computer-use", False, False))
+
+
+def mcp_list(cmd, servers):
+    opts = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-c"]
+    rows = [(n, on) for n, on, plugin in servers if not (plugin and "features.plugins=false" in opts)]
+    names = {n for n, _ in rows}
+    for o in opts:
+        if o.startswith("mcp_servers.") and o.endswith(".enabled=false"):
+            name = o[len("mcp_servers."):-len(".enabled=false")]
+            if name not in names:
+                return subprocess.CompletedProcess(cmd, 1, "", "invalid transport")
+            rows = [(n, False if n == name else on) for n, on in rows]
+    return subprocess.CompletedProcess(cmd, 0, json.dumps([{"name": n, "enabled": on} for n, on in rows]), "")
+
+
 class FakeRun:
-    def __init__(self, rc=0, out="好的。\n", last=None, exc=None):
-        self.calls, self.rc, self.out, self.last, self.exc = [], rc, out, last, exc
+    def __init__(self, rc=0, out="好的。\n", last=None, exc=None, mcp=MCP):
+        self.calls, self.rc, self.out, self.last, self.exc, self.mcp, self.mcp_calls = [], rc, out, last, exc, mcp, []
 
     def __call__(self, cmd, **kw):
+        if cmd[:1] == ["codex"] and cmd[-3:] == ["mcp", "list", "--json"]:
+            self.mcp_calls.append((list(cmd), kw))
+            return mcp_list(cmd, self.mcp)
         self.calls.append((list(cmd), kw))
         self.cwd_seen = kw.get("cwd")
         self.cwd_existed = os.path.isdir(kw.get("cwd") or "")
@@ -123,7 +147,15 @@ class Ask(unittest.TestCase):
         cmd, kw = run.calls[0]
         self.assertEqual(cmd[:2], ["codex", "exec"])
         self.assertEqual(cmd[cmd.index("-s") + 1], "read-only")
-        self.assertEqual(cmd[cmd.index("-c") + 1], "mcp_servers={}")
+        opts = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-c"]
+        for f in ("features.plugins=false", "features.apps=false", "features.shell_tool=false",
+                  "features.computer_use=false", "features.browser_use=false",
+                  "mcp_servers.node_repl.enabled=false", "mcp_servers.openaiDeveloperDocs.enabled=false"):
+            self.assertIn(f, opts)
+        self.assertNotIn("mcp_servers.cua_repl.enabled=false", opts)       # 外掛帶的關外掛就沒了，不另停(會 invalid transport)
+        self.assertEqual(len(run.mcp_calls), 2)                            # 列 → 停用 → 重列確認
+        checked = run.mcp_calls[1][0]
+        self.assertEqual([checked[i + 1] for i, a in enumerate(checked) if a == "-c"], opts)   # 重列確認的就是實際帶的那組
         self.assertIn("--ephemeral", cmd)
         self.assertEqual(cmd[-1], "-")
         self.assertEqual(cmd[cmd.index("-m") + 1], "gpt-6")
@@ -240,7 +272,8 @@ class Ask(unittest.TestCase):
 
         def bad_file(cmd, **kw):
             res = orig(cmd, **kw)
-            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"\xff\xfe ok")
+            if "-o" in cmd:
+                Path(cmd[cmd.index("-o") + 1]).write_bytes(b"\xff\xfe ok")
             return res
         r, rc = A.ask("codex", "問", run=bad_file, light=GREEN)
         self.assertEqual(rc, 0)
@@ -288,6 +321,39 @@ class Ask(unittest.TestCase):
             sys.stdin, A._light = old, saved
         self.assertEqual((rc, json.loads(buf.getvalue())["hint"]), (2, "brand"))
 
+    def test_a13_codex_lockdown(self):
+        run = FakeRun()
+        A.ask("codex", "問", run=run, light=GREEN)
+        self.assertEqual(len(run.calls), 1)
+        for servers, why in (((("we.ird", True, False),), "dot"), (((' "q"', True, False),), "quote"),
+                             (((("x" * 65), True, False),), "long")):
+            run = FakeRun(mcp=servers)
+            r, rc = A.ask("codex", "問", run=run, light=GREEN)
+            self.assertEqual((rc, r["detail"], r["hint"]), (2, "power_ask_unsupported", "mcp_not_disabled"), why)
+            self.assertEqual(run.calls, [], why)
+
+        class Stubborn(FakeRun):                                            # 停用了還說開著 ⇒ 不叫
+            def __call__(self, cmd, **kw):
+                if cmd[-3:] == ["mcp", "list", "--json"]:
+                    self.mcp_calls.append(cmd)
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps([{"name": "node_repl", "enabled": True}]), "")
+                return super().__call__(cmd, **kw)
+        for run in (Stubborn(),):
+            r, rc = A.ask("codex", "問", run=run, light=GREEN)
+            self.assertEqual((rc, r["hint"], run.calls), (2, "mcp_not_disabled", []))
+        for out in ("not json", "{}", "[1]", ""):
+            class Odd(FakeRun):
+                def __call__(self, cmd, _out=out, **kw):
+                    if cmd[-3:] == ["mcp", "list", "--json"]:
+                        return subprocess.CompletedProcess(cmd, 0, _out, "")
+                    return super().__call__(cmd, **kw)
+            run = Odd()
+            r, rc = A.ask("codex", "問", run=run, light=GREEN)
+            self.assertEqual((rc, r["hint"], run.calls), (2, "mcp_not_disabled", []), out)
+        run = FakeRun(mcp=())                                               # 本來就沒有 MCP ⇒ 照叫
+        self.assertEqual(A.ask("codex", "問", run=run, light=GREEN)[1], 0)
+        self.assertEqual(A.codex_lockdown(lambda *a, **k: (_ for _ in ()).throw(OSError("x"))), None)
+
 
 class Knife(unittest.TestCase):
     def _knife(self, needle, repl, case):
@@ -302,6 +368,12 @@ class Knife(unittest.TestCase):
 
     def test_k2_no_light(self):
         self._knife('    if lt != "green":', '    if False:', "Ask.test_a3_login")
+
+    def test_k6_no_recheck(self):
+        self._knife("    return flags if _mcp_enabled(flags, run) == [] else None", "    return flags", "Ask.test_a13_codex_lockdown")
+
+    def test_k7_plugins_on(self):
+        self._knife('CODEX_LOCK = ["-c", "features.plugins=false", ', 'CODEX_LOCK = [', "Ask.test_a5_codex")
 
     def test_k3_codex_writable(self):
         self._knife('"-s", "read-only", "--ephemeral"', '"-s", "workspace-write", "--ephemeral"', "Ask.test_a5_codex")
