@@ -218,11 +218,32 @@ class Login(unittest.TestCase):
         os.environ["PATH"] = str(d) + os.pathsep + old
         self.addCleanup(os.environ.__setitem__, "PATH", old)
 
+    def _popen(self):
+        """包一層 Popen:記下自己起的行程組,測完只殺自己那一組(start_new_session ⇒ pgid = pid)。"""
+        import subprocess
+
+        def popen(*a, **kw):
+            proc = subprocess.Popen(*a, **kw)
+            self.addCleanup(self._reap, proc)
+            return proc
+        return popen
+
+    @staticmethod
+    def _reap(proc):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.wait(5)
+        except Exception:  # noqa: BLE001
+            pass
+
     def test_g2_spawn_real(self):
         d = self._fake_cli("codex", "printf '\\033[1mOpen\\033[0m https://auth.openai.com/codex/device.\\n'\n"
                                     "printf 'code: WXYZ-1234\\n'\nsleep 30\n")
         self._with_path(d)
-        url, code, err = L.spawn_login("codex", wait_s=10, lifetime=3)
+        url, code, err = L.spawn_login("codex", wait_s=10, lifetime=3, popen=self._popen())
         self.assertEqual((url, code, err), ("https://auth.openai.com/codex/device", "WXYZ-1234", None))
         log = Path(TMP) / "state" / "power-login-codex.log"
         self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
@@ -233,7 +254,7 @@ class Login(unittest.TestCase):
 
         d2 = self._fake_cli("grok", "echo 'see http://insecure.example/x'\nsleep 5\n")
         self._with_path(d2)
-        url, code, err = L.spawn_login("grok", wait_s=1.5, lifetime=2)
+        url, code, err = L.spawn_login("grok", wait_s=1.5, lifetime=2, popen=self._popen())
         self.assertEqual((url, err), (None, "no_url"))
         os.environ["PATH"] = "/nonexistent"
         self.assertEqual(L.spawn_login("copilot", wait_s=1)[2], "cli_missing")
