@@ -104,8 +104,14 @@ class ReleaseConfirmed(unittest.TestCase):
         self.assertNotIn("--threshold", self.log.read_text())
 
     def test_bad_soft_since_falls_back_to_hard(self):
-        out = self.run_release(45, "--soft-since", "abc")
-        self.assertNotIn("kill-window", out)
+        for bad in ("abc", "0999999999", str(int(time.time()) + 3600)):   # 非數字 / 前導零 / 未來
+            out = self.run_release(45, "--soft-since", bad)
+            self.assertNotIn("kill-window", out, bad)
+
+    def test_soft_since_without_value_keeps_next_flag(self):
+        # 沒接值時不能把 --dry-run 吃掉(吃掉就走真路徑)
+        out = self.run_release(45, "--soft-since")
+        self.assertIn("refused", out)
 
 
 if __name__ == "__main__":

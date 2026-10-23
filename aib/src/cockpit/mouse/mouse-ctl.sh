@@ -221,7 +221,7 @@ while [ $# -gt 0 ]; do
     --abort-open) ABORT_OPEN=1 ;;      # 只跟 --release-confirmed 一起用;單獨給沒有意義但也不炸
     --soft-since)                      # 10-24:(x) 軟關入口,帶選單開出的時間(epoch 秒);見 release-confirmed 段
       SOFT_SINCE="${2:-}"
-      shift "$(( $# < 1 ? $# : 1 ))"
+      case "$SOFT_SINCE" in --*|"") SOFT_SINCE="" ;; *) shift "$(( $# < 1 ? $# : 1 ))" ;; esac  # 沒接值不吃下一個旗標
       ;;
     --close-cabin) CLOSE_CABIN=1 ;;    # 09-14 the maintainer:關的是最後一席 ⇒ 關完席把整艙收掉(走 idle_reaper 收艙,不強制;見下方 close-cabin 段)
     --kill-focused-seat)
@@ -3076,10 +3076,13 @@ EOF
     #   300 秒門檻重驗 ⇒ 按 (x) 再按確定一定被拒,還誤報「已恢復活動」。軟關改問「選單開出之後有沒有再動」:
     #   門檻 = 選單開著的秒數(至少 1)。這道重驗存在的原因(選單等人的期間席又活起來)照樣擋得住。
     _PROBE_TH=()
-    if [[ "$SOFT_SINCE" =~ ^[0-9]{9,11}$ ]]; then
+    #   時間在未來(手打 / 時鐘往回調)⇒ 不放寬，照 [X] 的 300 秒;不收前導零(bash 算術會當八進位、set -e 中止)。
+    if [[ "$SOFT_SINCE" =~ ^[1-9][0-9]{8,10}$ ]]; then
       _SOFT_WAIT=$(( $(date +%s) - SOFT_SINCE ))
-      [ "$_SOFT_WAIT" -ge 1 ] || _SOFT_WAIT=1
-      _PROBE_TH=(--threshold "$_SOFT_WAIT")
+      if [ "$_SOFT_WAIT" -ge 0 ]; then
+        [ "$_SOFT_WAIT" -ge 1 ] || _SOFT_WAIT=1
+        _PROBE_TH=(--threshold "$_SOFT_WAIT")
+      fi
     fi
     if PROBE_OUT="$("$EZ2_PY3" "$COCKPIT/activity_probe.py" \
          --window "$WIN" ${_PROBE_TH[@]+"${_PROBE_TH[@]}"} 2>/dev/null)"; then
