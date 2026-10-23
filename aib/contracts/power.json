@@ -163,6 +163,7 @@
    "detail",
    "models",
    "personas",
+   "brains",
    "recent",
    "favorites"
   ],
@@ -176,7 +177,8 @@
   "recent": "[{brand, model, persona, brain, at}] 最多 20 筆、新的在前;同一組只留最新一筆;persona = 人格 uid、brain = 第二大腦路由鍵",
   "favorites": "[人格 uid],新加的在前",
   "owner": "@d07f9 power_launch.py",
-  "note": "真正出艦(開席 + 綁人格 + 綁大腦 ⇒ 進艦長室)細節待 Andy 確認;出艦成功時呼叫 power_launch.record_launch 記一筆。最愛 / 最近是本機方便用的資料,不是防線"
+  "note": "真正出艦(開席 + 綁人格 + 綁大腦 ⇒ 進艦長室)細節待 Andy 確認;出艦成功時呼叫 power_launch.record_launch 記一筆。最愛 / 最近是本機方便用的資料,不是防線",
+  "brains": "[{route_key, title}]:第二大腦清單 = Vault(EZ2_VAULT_DIR)資料夾身分索引 .ez2/index/folder-id-index.json 裡 active 且掛了 routeKey 的夾;不掃目錄猜;沒有 ⇒ [](頁面給「一鍵建一個」走 newproj)"
  },
  "fav_receipt": {
   "command": "aib power fav <人格 uid> [--off] [--json]",
@@ -191,5 +193,21 @@
    "0": "set / cleared",
    "2": "參數錯 / unknown(uid 不在人格清單)"
   }
+ },
+ "launch_plan_receipt": {
+  "command": "aib power launch <brand> --dry-run [--model M] [--persona UID] [--brain 路由代號] [--role R] [--mode safe|dgrs] [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "steps",
+   "hint"
+  ],
+  "detail": "power_launch_plan | power_launch_bad | power_launch_not_yet",
+  "rc": {
+   "0": "plan",
+   "2": "參數錯(bad,hint = 哪一欄)/ not_yet(沒帶 --dry-run)"
+  },
+  "steps": "[{step: open | bind, argv}];open = aib <brand> <mode> <role> new [--model M](與 aib seat open 同一條主流程);bind = aib newproj --seat <new-seat> [--persona-uid] [--folder](人格 + 第二大腦一起綁,帶路由契約);<new-seat> 由 open 的回條填",
+  "note": "10-24 @abb89:出艦組現成指令、依序跑、每步看回條、失敗就停;開席是本人動作,真執行時 AI 席要擋(同 seat_act 判法)。角色 / safe·dgrs 預設等 Andy 挑版時問;現在只有乾跑,頁面先複製指令"
  }
 }

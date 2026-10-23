@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """艦長動力室「出艦台」的資料(契約 contracts/power.json launch 段)。
 
-  aib power launch --list [--json]     品牌與預設模型、人格清單(含最愛)、最近 20 次出艦
+  aib power launch --list [--json]     品牌與預設模型、人格清單(含最愛)、第二大腦清單、最近 20 次出艦
+  aib power launch <家> --dry-run [--model M] [--persona UID] [--brain 路由代號] [--role R] [--mode safe|dgrs]
+                                       只印出艦要跑的指令(開席 → newproj 綁人格 + 第二大腦),不執行
   aib power fav <人格 uid> [--off]      人格加 / 取消最愛
 
 10-24 Andy 01:1x:「選擇 ai 品牌與模型、人格、第二大腦,綁定後登入艦長室開始任務;第二次就可以選之前綁定過的前 20 個記錄,
@@ -13,6 +15,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
@@ -105,10 +108,79 @@ def favorites():
     return [u for u in (_load().get("favorites") or []) if _s(u)]
 
 
+def _vault():
+    v = os.environ.get("EZ2_VAULT_DIR")
+    if v:
+        return v
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "persona_route"))
+        import route_register
+        return route_register.default_vault()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def brains(vault=None):
+    """[{route_key, title}]:第二大腦清單只讀資料夾身分索引裡掛了路由代號的夾(folder-add --route-key 寫的那份);
+    不掃 Vault 目錄猜。沒有 ⇒ 空清單(頁面給「一鍵建一個」走 newproj)。"""
+    vault = vault or _vault()
+    if not vault:
+        return []
+    try:
+        with open(os.path.join(vault, ".ez2", "index", "folder-id-index.json"), encoding="utf-8") as f:
+            items = json.load(f).get("items") or []
+    except (OSError, ValueError, AttributeError):
+        return []
+    out, seen = [], set()
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict) or it.get("status", "active") != "active":
+            continue
+        rk = _s(it.get("routeKey"))
+        if rk and rk not in seen and ROUTE_RE.match(rk):
+            seen.add(rk)
+            out.append({"route_key": rk, "title": _s(it.get("title")) or rk})
+    return sorted(out, key=lambda r: r["title"])
+
+
 def launch_list():
     favs = favorites()
     return {"ok": True, "detail": "power_launch_list", "models": models(), "personas": personas(favs=set(favs)),
-            "recent": recent(), "favorites": favs}
+            "brains": brains(), "recent": recent(), "favorites": favs}
+
+
+MODES = ("safe", "dgrs")
+ROLE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]{0,95}$")
+ROUTE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def launch_plan(brand, model=None, persona=None, brain=None, role="dev", mode="safe"):
+    """回 (回條, rc)。只組指令(乾跑):① aib <家> <safe|dgrs> <角色> new [--model] 開席 ② aib newproj 綁人格 + 第二大腦。
+    ② 要等 ① 開出席碼才填得上(<新席>)。真的執行(本人動作、AI 席要擋)等 Andy 挑版時定。"""
+    def bad(why):
+        return {"ok": False, "detail": "power_launch_bad", "steps": [], "hint": why}, 2
+    if brand not in BRANDS:
+        return bad("brand")
+    if mode not in MODES:
+        return bad("mode")
+    if not ROLE_RE.match(role or ""):
+        return bad("role")
+    if model is not None and not MODEL_RE.match(model):
+        return bad("model")
+    if persona is not None and persona not in {p["uid"] for p in personas()}:
+        return bad("persona")
+    if brain is not None and brain not in {b["route_key"] for b in brains()}:
+        return bad("brain")
+    open_argv = ["aib", brand, mode, role, "new"] + (["--model", model] if model else [])
+    steps = [{"step": "open", "argv": open_argv}]
+    if persona or brain:
+        bind = ["aib", "newproj", "--seat", "<new-seat>"]
+        if persona:
+            bind += ["--persona-uid", persona]
+        if brain:
+            bind += ["--folder", brain]
+        steps.append({"step": "bind", "argv": bind})
+    return {"ok": True, "detail": "power_launch_plan", "steps": steps, "hint": None}, 0
 
 
 def set_fav(uid, on=True):
@@ -143,7 +215,14 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="aib power")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("launch")
-    s.add_argument("--list", action="store_true", required=True)
+    s.add_argument("brand", nargs="?")
+    s.add_argument("--list", action="store_true")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--model")
+    s.add_argument("--persona")
+    s.add_argument("--brain")
+    s.add_argument("--role", default="dev")
+    s.add_argument("--mode", default="safe")
     s.add_argument("--json", action="store_true")
     f = sub.add_parser("fav")
     f.add_argument("uid")
@@ -153,8 +232,13 @@ def main(argv=None):
         a = p.parse_args(argv)
     except SystemExit:
         return 2
-    if a.cmd == "launch":
+    if a.cmd == "launch" and a.list and not a.brand:
         r, rc = launch_list(), 0
+    elif a.cmd == "launch" and a.brand and a.dry_run and not a.list:
+        r, rc = launch_plan(a.brand, a.model, a.persona, a.brain, a.role, a.mode)
+    elif a.cmd == "launch":
+        # 真出艦(依序跑開席 / 綁定、每步看回條、失敗就停)等 Andy 挑版定細節;現在只有 --list 與 --dry-run
+        r, rc = {"ok": False, "detail": "power_launch_not_yet", "steps": [], "hint": "--dry-run"}, 2
     else:
         r, rc = set_fav(a.uid, on=not a.off)
     print(json.dumps(r, ensure_ascii=False) if a.json else json.dumps(r, ensure_ascii=False, indent=1))
