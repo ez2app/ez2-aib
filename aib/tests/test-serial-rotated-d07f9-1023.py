@@ -4,6 +4,7 @@
 
 S1 伺服器回 serial_rotated: true ⇒ page 那步 serial_rotated True、hint =「序號已換新」那句;終端機印在 ✓ 那行底下
 S2 false / 沒這欄(舊伺服器)/ 不是 JSON true("true"、1)⇒ 當沒換、hint =「到後台重發序號」
+S2b 全 already_revoked / expired 但 serial_rotated true(0.1.43 契約 when)⇒ 照印換新那句
 S3 --json 的 page 那步帶 serial_rotated(bool);撤失敗 / 沒撤 page ⇒ 不印序號那句
 S4 契約 ok.fields 有 serial_rotated、有說明;四語都有兩鍵
 S5 503 page_device_serial_rotate_failed ⇒ why page_serial_rotate_failed(不是 page_audit_failed「撤銷已成立」)、detail 原碼、
@@ -108,6 +109,19 @@ class Serial(Base):
         lines = text.splitlines()
         i = next(n for n, ln in enumerate(lines) if ln.startswith("✓ ez2.page"))
         self.assertEqual(lines[i + 1], "  " + KEPT)
+
+    def test_s2b_all_already_revoked_but_rotated(self):
+        # 0.1.43 契約 when:沒撤到活 token(全 already_revoked / expired)也可能 true(@9f808 #54 第 5 輪)⇒ 照印換新那句
+        done = [{"kind": "page_token", "id": "tok_1", "outcome": "already_revoked"},
+                {"kind": "page_token", "id": "tok_2", "outcome": "expired"}]
+        res, rc = self.lost(FakeApi(True, extra={"results": done}))
+        self.assertEqual(rc, 0, res)
+        self.assertEqual([r["outcome"] for r in res["page"]["results"]], ["already_revoked", "expired"])
+        self.assertIs(res["page"]["serial_rotated"], True)
+        self.assertEqual(res["page"]["hint"], ROTATED)
+        rc, text = self.cli(FakeApi(True, extra={"results": done}))
+        self.assertIn("  " + ROTATED, text.splitlines())
+        self.assertNotIn(KEPT, text)
 
     def test_s3_json_and_failures(self):
         rc, text = self.cli(FakeApi(True), "--json")
