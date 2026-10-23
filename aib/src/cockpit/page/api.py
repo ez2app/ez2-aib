@@ -21,8 +21,11 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,6 +56,11 @@ class TransportError(Exception):
     """連不上 / 逾時 / 回的不是 JSON。與 ApiError 分開:這一種重試有意義。"""
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None          # 不轉、不讀本體 ⇒ urllib 丟 HTTPError(code, fp)
+
+
 class PageApi:
     """一把 token 對一個頁面。沒有 token 也能用,但只能走 `public_html()`。"""
 
@@ -63,6 +71,9 @@ class PageApi:
         self.timeout = timeout
         # opener 可注入 ⇒ 尺用本機假伺服器跑,不碰正式站。
         self._opener = opener or urllib.request.build_opener()
+        # 抓外掛(_get_raw)不跟轉址:urllib 跟 3xx 前會先把轉址回應體整個讀進記憶體(不受 _read_capped 上限),
+        #   還會把 Authorization 帶到新位址(審查員 10-24 第 6 輪)。3xx 改走 HTTPError,錯誤體照 64 KiB 上限讀。
+        self._raw_opener = opener or urllib.request.build_opener(_NoRedirect)
 
     # ---- 低層 -------------------------------------------------------------
 
@@ -105,6 +116,8 @@ class PageApi:
         text = (raw or b"").decode("utf-8", "replace")
         try:
             payload = json.loads(text) if text.strip() else {}
+        except RecursionError:                                # 舊直譯器遇到極深巢狀(例 6 萬層 [)
+            raise TransportError("回應巢狀太深(HTTP %s)" % status)
         except ValueError:
             # 413/415/405 規格說是純文字;這時 code 用 HTTP 狀態表示,不編一個假碼。
             if 200 <= status < 300:
@@ -270,6 +283,93 @@ class PageApi:
     def creator_list(self, cursor=None, limit=20):
         q = "?mine=1&limit=%d" % int(limit) + ("&cursor=" + urllib.parse.quote(cursor, safe="") if cursor else "")
         return self._request("GET", "/creator/submissions" + q)
+
+    # ---- 外掛下載(契約 page-api.json plugins_*)------------------------------
+
+    def plugins_catalog(self, max_bytes=1024 * 1024):
+        """公開目錄;回應(含錯誤體)最多讀 max_bytes,太大 ⇒ 回 {}(呼叫端判 plugin_catalog_invalid)。"""
+        status, raw = self._get_raw("/plugins/catalog", {"accept": "application/json", "user-agent": USER_AGENT}, max_bytes)
+        if 200 <= status < 300 and len(raw) > max_bytes:
+            return {}
+        return self._parse(status, raw)
+
+    @staticmethod
+    def _read_capped(response, limit, total_s):
+        """最多讀 limit 位元組、總共最多 total_s 秒(socket 逾時只管每次讀;伺服器一次滴一個位元組會拖不完)。"""
+        deadline = time.monotonic() + total_s
+        read = getattr(response, "read1", None) or response.read
+        buf = bytearray()
+        while len(buf) < limit:
+            if time.monotonic() > deadline:
+                raise TransportError("回應讀超過 %d 秒" % total_s)
+            chunk = read(min(65536, limit - len(buf)))
+            if not chunk:
+                break
+            buf += chunk
+        return bytes(buf)
+
+    def _get_raw(self, path, headers, max_bytes):
+        """整段(連線、狀態列 / 標頭、本體、錯誤體)共用一個總期限:放進背景執行緒,時間到就當連不上。
+        socket 逾時只管每一次讀;伺服器在標頭或錯誤體一次滴一個位元組,沒有總期限會拖好幾天。
+        時間到時那條執行緒(daemon)還卡在讀,行程結束時跟著收;回呼端拿到的一律是 TransportError。"""
+        request = urllib.request.Request(self._url(path), headers=headers, method="GET")
+        total_s = getattr(self, "total_s", None) or max(self.timeout, 60) * 3
+        deadline = time.monotonic() + total_s
+        box = {}
+
+        def work():
+            try:
+                box["r"] = self._get_raw_once(request, max_bytes, deadline)
+            except BaseException as exc:  # noqa: BLE001 - 帶回主執行緒再丟
+                box["e"] = exc
+        t = threading.Thread(target=work, name="aib-page-get", daemon=True)
+        t.start()
+        t.join(total_s + 2)                      # 多 2 秒寬限:讓執行緒裡的讀取期限先到、照常收尾
+        if t.is_alive():
+            raise TransportError("回應超過 %d 秒" % total_s)
+        if "e" in box:
+            raise box["e"]
+        return box["r"]
+
+    def _get_raw_once(self, request, max_bytes, deadline):
+        try:
+            with self._raw_opener.open(request, timeout=max(self.timeout, 60)) as response:
+                return response.status, self._read_capped(response, max_bytes + 1, max(0.0, deadline - time.monotonic()))
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, self._read_capped(exc, 64 * 1024, max(0.0, deadline - time.monotonic()))
+            except (http.client.HTTPException, OSError, TransportError):
+                return exc.code, b""
+            finally:
+                try:
+                    exc.close()
+                except Exception:  # noqa: BLE001 - 收連線失敗不影響回條
+                    pass
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:   # 回應讀到一半斷(IncompleteRead)也算連不上
+            raise TransportError("連不上 %s:%s" % (self.base_url, type(exc).__name__))
+
+    def plugins_package(self, name, version, max_bytes, machine_id=None):
+        """GET 簽章包本體(tgz,不走 _request:那條只收 JSON)。免費包不帶憑證;付費包(呼叫端給 machine_id)帶 bearer + X-AIB-Machine。
+        回包的 bytes(最多讀 max_bytes + 1,呼叫端判太大);非 2xx ⇒ ApiError(同 _parse)。"""
+        headers = {"accept": "application/gzip", "user-agent": USER_AGENT}
+        if machine_id is not None:
+            if not self.token:
+                raise TransportError("這條路要憑證,但這台機器還沒綁:先跑 `aib page bind`")
+            headers.update({"authorization": "Bearer " + self.token, "x-aib-machine": machine_id})
+        path = "/plugins/packages/%s/%s.tgz" % (urllib.parse.quote(name, safe=""), urllib.parse.quote(version, safe=""))
+        status, raw = self._get_raw(path, headers, max_bytes)
+        if 200 <= status < 300:
+            return raw
+        self._parse(status, raw)
+        raise ApiError(status, "", message="HTTP %s" % status)
+
+    def plugins_license(self, addon, machine_id):
+        if not self.token:
+            raise TransportError("這條路要憑證,但這台機器還沒綁:先跑 `aib page bind`")
+        headers = {"accept": "application/json", "user-agent": USER_AGENT,
+                   "authorization": "Bearer " + self.token, "x-aib-machine": machine_id}
+        status, raw = self._get_raw("/plugins/licenses/" + urllib.parse.quote(addon, safe=""), headers, 256 * 1024)
+        return self._parse(status, raw)
 
     # ★ 這裡**刻意沒有** publish 方法,理由見檔頭第 3 點。要印「發布要你按」時,
     #   用 `post_draft()` 回應體裡的 preview.publish_url(規格 §5.2)。
