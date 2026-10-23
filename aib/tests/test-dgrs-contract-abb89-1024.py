@@ -14,12 +14,12 @@ D4b 每一家 id 都過白名單(bogus mode 拿到 invalid mode,不是 unsupport
 D5 EXPECTED_DGRS 每一家在 `case "$PROVIDER:$MODE"` 有自己的 `<id>:dgrs)`,不靠 `*)`
 D6 NO_DGRS 每一家在找 CLI(BIN=)之前就 exec 自家橋接(不會被當成原生 CLI 起)
 D7 真實呼叫形狀:帶 session uuid、預設首回合提示(不設 AIB_NO_ONBOARD)、claude/grok 接回(AIB_RESUME_UUID)、
-   claude 分出新席 / 分出後重生、copilot 接回、codex 套組關、codex 接回,dgrs 旗標都還在
+   claude 分出新席(帶第一句)/ 分出後重生、copilot 接回、codex 套組關、codex 接回,dgrs 旗標都還在
 D8 codex 換帳後重組參數(_fresh_login_args)照 dgrs 帶回旗標
 D9 openrouter / typesafe / openrouterjev 帶型號又 AIB_NO_EFFORT=1 也開得起來(以前 PY3 沒設值,set -u 當場退)
 刀(PR 手跑在複本上,不在本檔):K1 拿掉 grok:dgrs ⇒ D1、D5 紅;K2 providers.json 加一家原生沒進表 ⇒ D3 紅;K3 白名單多一家 ⇒ D4 紅;
   K4 copilot 旗標清空 ⇒ D1 紅;K5 帶 session 時 ARGS= 洗掉旗標 ⇒ D7 紅;K6 拿掉橋接分支的 PY3= ⇒ D9 紅;
-  K7 agy / codex 首回合、copilot 接回、claude 分出 / 重生用 ARGS= 洗掉旗標 ⇒ D7 紅
+  K7 agy / codex 首回合、copilot 接回、claude 分出 / 分出帶第一句 / 重生用 ARGS= 洗掉旗標 ⇒ D7 紅
 """
 import json
 import os
@@ -153,9 +153,14 @@ class Launch(unittest.TestCase):
                     self.assertIn("--prompt-interactive", argv)
         fork_from = "1f1e1d1c-1b1a-4918-8716-151413121110"
         with self.subTest(provider="claude", shape="fork"):
-            argv = self.run_launch("claude", "dgrs", UUID, env={"AIB_FORK_FROM_SESSION_UUID": fork_from})
+            # 真的分出時 aib 一定連第一句(AIB_FORK_PREAMBLE_FILE)一起帶
+            pre = Path(self.tmp, "preamble.txt")
+            pre.write_text("PREAMBLE-LINE", encoding="utf-8")
+            argv = self.run_launch("claude", "dgrs", UUID, env={"AIB_FORK_FROM_SESSION_UUID": fork_from,
+                                                                "AIB_FORK_PREAMBLE_FILE": str(pre)})
             self.assertTrue(has_run(argv, EXPECTED_DGRS["claude"]), argv)
             self.assertTrue(has_run(argv, ["--resume", fork_from, "--fork-session", "--session-id", UUID]), argv)
+            self.assertEqual(argv[-1], "PREAMBLE-LINE", argv)
         with self.subTest(provider="claude", shape="fork-respawn"):
             proj = Path(self.home, ".claude", "projects", "x")
             proj.mkdir(parents=True)
