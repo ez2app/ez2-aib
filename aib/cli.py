@@ -10,6 +10,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib cf grant <zone> <perm> --push host:/path   Touch ID, then a minutes-long, IP-locked Cloudflare token (`aib cf --help`)
     aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
+    aib update auto on|off|status   update automatically when a new version is released (default on)
     aib uninstall [--all] [--yes]   remove aib from this computer (lists first; --yes removes; --all also records)
     aib <provider> <dgrs|safe> <role>   open an AI seat in the cockpit (macOS + tmux; see `aib --help-cockpit`)
     aib <other commands> …      everything else goes to the cockpit (seats, fleet, handoff, new project / role)
@@ -48,6 +49,10 @@ folder (the same as running the install line again). It only fast-forwards; your
 
     --tools     also ask again which AI tools to add
 Installed with pipx? Use `pipx upgrade ez2-aib` instead.
+
+    aib update auto on|off|status [--json]
+                update by itself when a new version is released (default on): checked when a seat opens and,
+                on macOS, every 6 hours; only fast-forwards, only signed plugins, never while tests or a push run
 """
 
 
@@ -61,6 +66,11 @@ def _update(args):
     if any(a in ("-h", "--help") for a in args):
         sys.stdout.write(UPDATE_HELP)     # 10-15 稽核 C13:說明要先印、不下載、不建安裝紀錄
         return 0
+    if args[:1] == ["auto"]:
+        # 10-23 Andy「更新版本要自動 aib update」:開關 / 狀態;查與更新本身在 auto_update.py(開席與排程叫它)
+        sys.path.insert(0, os.path.join(HERE, "src", "cockpit"))
+        import auto_update
+        return auto_update.main(list(args[1:]))
     root = os.path.dirname(HERE)          # 從 checkout 跑(bin/aib):HERE = <checkout>/aib
     if not os.path.isdir(os.path.join(root, ".git")):
         sys.stderr.write("aib update: this aib (%s) is not a git checkout, so it was not installed by the one-line "
