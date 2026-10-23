@@ -277,9 +277,19 @@ def menu_block(screen):
     rows = [(ln, _BOX.sub(" ", ln).rstrip()) for ln in raw]
     rows = [(r, c) for r, c in rows if c.strip() or "╭" in r or "╰" in r]
     opts = [i for i, (_r, c) in enumerate(rows) if _OPT.match(c)]
+    nav = [i for i, (_r, c) in enumerate(rows) if _NAV.search(c)]
+    # 第 3 輪審查:上面歷史裡有「1. 2.」清單時,游標選單不能因此走編號分支(會從最早的編號一路送到底)
+    #   ⇒ 操作說明比最後一個編號更靠近底部 ⇒ 是游標選單
+    if opts and nav and nav[-1] > opts[-1]:
+        opts = []
+    if opts:
+        # 編號選單也只取最靠近底部那一串(相鄰選項間隔不超過 3 行),不取整份畫面最早的編號
+        k = len(opts) - 1
+        while k > 0 and opts[k] - opts[k - 1] <= 3:
+            k -= 1
+        opts = opts[k:]
     if not opts:
         # 游標選單(沒編號):同一條護欄 —— 只送操作說明那一行往上的選項,再往上最多 HEAD_LINES 行(第 2 輪審查)
-        nav = [i for i, (_r, c) in enumerate(rows) if _NAV.search(c)]
         if not nav:
             return "\n".join(c for _r, c in rows[-SCAN_LINES:] if c.strip())
         first = nav[-1]

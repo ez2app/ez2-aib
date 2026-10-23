@@ -115,8 +115,8 @@ def grok_trust_path(environ=None):
     return Path(base) / "trusted_folders.toml"
 
 
-_GIT_ENV_DROP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_INDEX_FILE",
-                 "GIT_DISCOVERY_ACROSS_FILESYSTEM")
+# GIT_CEILING_DIRECTORIES 留著:人設它多半是不讓 git 往上找到家目錄的 dotfiles 倉(第 3 輪審查)
+_GIT_ENV_DROP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
 
 
 def grok_root(folder):
