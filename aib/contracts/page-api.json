@@ -643,6 +643,7 @@
     "created_at",
     "updated_at",
     "items",
+    "detail_url",
     "history"
    ],
    "id": "sub_ + 伺服器產生的不可猜字串;核心當不透明字串,格式 ^sub_[A-Za-z0-9]{12,40}$ 不合 ⇒ 不送",
@@ -653,7 +654,8 @@
    "gate_version": "{client, server},以 server 為準",
    "history": "每個 rev 一筆 {rev, state, reasons, hint, items:[{item_id, state, reasons, hint}], at}",
    "kind": "單一值;伺服器依它分派審查佇列、規格與關卡,合併目標也由它推",
-   "items": "[{item_id, state, reasons, hint, decided_at, decided_by, listing_id}];state 見 item_states;decided_by = 核定機器的標籤,不給公鑰、不給帳號"
+   "items": "[{item_id, state, reasons, hint, decided_at, decided_by, listing_id}];state 見 item_states;decided_by = 核定機器的標籤,不給公鑰、不給帳號",
+   "detail_url": "這件提交的詳情頁,一定是 https://ez2.page/ 開頭(核心 / 通知不是這個開頭就不顯示連結)"
   },
   "package_states": [
    "queued",
@@ -670,6 +672,7 @@
    "suspended"
   ],
   "states_note": "包:queued ⇒ 伺服器重驗 ⇒ auto_failed(整包退,可重送)或 in_review;每件都有結果 ⇒ decided;suspended = 整包凍結(例送件那台被撤)。件:in_review ⇒ rejected / approved ⇒ listed(合進素材包後);任何件可被 suspended。一包可以核 8 退 2。核心遇到不認得的值 ⇒ 原樣印、當還在處理,不當失敗",
-  "limits_note": "上限數字(單檔 / 單包 / 解壓後 / 檔數 / 每日 / 總容量)全在伺服器端可設定、版本化的表,契約只定代碼;核心不寫死數字,照錯誤碼與 retry_after 顯示"
+  "limits_note": "上限數字(單檔 / 單包 / 解壓後 / 檔數 / 每日 / 總容量)全在伺服器端可設定、版本化的表,契約只定代碼;核心不寫死數字,照錯誤碼與 retry_after 顯示",
+  "notify_note": "通知範本碼(@0c105 templates.json)是事件不是狀態,對應:queued ⇒ submission_received;in_review ⇒ submission_reviewing;auto_failed ⇒ submission_needs_fix;decided ⇒ 有件 approved / listed 送 submission_approved({n} = 核准件數),有件 rejected 送 submission_rejected({n} = 退回件數)。範本裡的 {id} 用 status_object.id(sub_ 開頭)"
  }
 }
