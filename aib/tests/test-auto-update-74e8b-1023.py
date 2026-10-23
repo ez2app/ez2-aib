@@ -436,6 +436,24 @@ class Gates(Base):
         self.assertEqual(self.run_check(env=dict(self.env, AIB_AUTO_UPDATE="0"))["result"], "disabled_env")
         self.assertEqual(self.updates, [])
 
+    def test_g9b_hold_offline_or_local_only_is_normal(self):
+        src, bare = self.make_repos()
+        (src / AU.HOLD_FILE).write_text("x\n", encoding="utf-8")
+        git(src, "add", AU.HOLD_FILE)
+        git(src, "commit", "-q", "-m", "hold")              # 沒推上 origin ⇒ 不算
+        self.assertEqual(self.run_check(do_fetch=lambda r, e: False)["result"], "offline")   # 連不上 ⇒ 照一般離線，不重試
+        self.assertEqual(self.updates, [])
+        self.assertEqual(self.run_check()["result"], "updated")
+        self.assertEqual(len(self.updates), 1)
+
+    def test_g4b_manual_update_running_is_busy(self):
+        self.make_repos()
+        res = self.run_check(rows=[(424242, "/usr/bin/python3 /Users/x/.local/bin/aib update")])
+        self.assertEqual(res["result"], "refused_updating")
+        self.assertEqual(self.updates, [])
+        self.assertIsNone(AU.busy_procs([(424243, "/usr/bin/python3 /Users/x/.local/bin/aib update auto")]))
+        self.assertIsNone(AU.busy_procs([(424244, "vim aib updates.txt")]))
+
     def test_g8_not_git(self):
         (self.td / "plain").mkdir()
         self.inst = self.td / "plain"
@@ -609,6 +627,27 @@ class PaidSource(Base):
         root = Path(self.env["EZ2_AIB_STATE_ROOT"])
         return sorted(str(p.relative_to(root)) for sub in ("plugins", "skills") if (root / sub).is_dir()
                       for p in (root / sub).iterdir())
+
+    def test_x6_official_hold_pauses_core_and_plugins(self):
+        self.paid_repo({"demo-paid": "1.0.3"})
+        src, bare = self.make_repos()
+        (src / AU.HOLD_FILE).write_text("維護中\n", encoding="utf-8")
+        git(src, "add", AU.HOLD_FILE)
+        git(src, "commit", "-q", "-m", "hold")
+        git(src, "push", "-q", str(bare), "main")
+        before = git(self.inst, "rev-parse", "HEAD")
+        import aib_ext
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True), \
+                mock.patch.object(aib_ext, "reload_room_after_install", return_value=None):
+            res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=AU.install_plugin)
+            self.assertEqual(res["result"], "paused", res)
+            # 本機環境變數 / 本機檔都推不動:暫停只看遠端官方 main
+            res = self.run_check(env=dict(self.env, AIB_AUTO_UPDATE="1", AIB_AUTO_UPDATE_FORCE="1"),
+                                 plugin_fetch=AU.fetch_plugin_source, install=AU.install_plugin)
+            self.assertEqual(res["result"], "paused", res)
+        self.assertEqual((self.updates, git(self.inst, "rev-parse", "HEAD")), ([], before))
+        self.assertEqual(self.installed_version("demo-paid"), "1.0.0")
+        self.assertIn("aib.auto_update.why.paused", json.loads((REPO / "i18n" / "en.json").read_text(encoding="utf-8")))
 
     def test_x2c_source_name_mismatch_not_installed(self):
         # 倉裡 demo-paid/ 的 manifest 寫別的名字 ⇒ 不算落後、不裝(裝的那步用 manifest 名，會變成裝到沒裝過的外掛)
@@ -946,8 +985,8 @@ class Cli(Base):
         for loc, d in dicts.items():
             self.assertEqual(set(d), set(dicts["en"]), loc)
         for r in ("off", "unreadable", "busy", "not_git", "dev_tree", "checked_recently", "too_soon", "offline", "no_ref",
-                  "up_to_date", "failed", "updated", "plugins_failed", "disabled_env") + tuple(
-                "refused_" + w for w in ("lease", "tests", "shipping", "push", "dirty", "diverged", "branch", "far_behind")):
+                  "up_to_date", "failed", "updated", "plugins_failed", "disabled_env", "paused") + tuple(
+                "refused_" + w for w in ("lease", "tests", "updating", "shipping", "push", "dirty", "diverged", "branch", "far_behind")):
             self.assertIn("aib.auto_update.why." + r, dicts["en"], r)
         r = self.aib("status")
         self.assertEqual(r.returncode, 0, r.stderr)

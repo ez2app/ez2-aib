@@ -5103,6 +5103,8 @@
   "aib.auto_update.why.refused_push": "a git push is running; will try at the next check",
   "aib.auto_update.why.too_soon": "updated less than an hour ago; will try at the next check",
   "aib.auto_update.why.offline": "could not reach the source; will try at the next check",
+  "aib.auto_update.why.paused": "the maintainers paused auto-update (a problem was found in a new release); nothing was changed, and the next check after they resume will update as usual",
+  "aib.auto_update.why.refused_updating": "you are running aib update yourself; not updating separately this time",
   "aib.auto_update.why.no_ref": "the source has no release to update to",
   "aib.auto_update.why.up_to_date": "already the latest",
   "aib.auto_update.why.refused_dirty": "this install has files you changed and did not commit, so it was not updated (aib update says what to do)",

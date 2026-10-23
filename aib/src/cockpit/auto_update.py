@@ -91,6 +91,7 @@ PLUGIN_BRANCH = "main"   # 自動更新只用內建的官方安裝網址
 SSH_HARDENED = "ssh -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes"
 BUSY_PATTERNS = (
     ("tests", re.compile(r"(?:^|[\s/])aib\s+test(?:\s|$)|tools/verify/test_entry\.py")),
+    ("updating", re.compile(r"(?:^|[\s/])aib\s+update(?!\s+auto)(?:\s|$)|aib-install")),   # 本人手動跑的 aib update(自動更新自己是 aib update auto)
     ("shipping", re.compile(r"(?:^|[\s/])aib\s+ship(?:\s|$)|tools/release/ship\.py")),
     ("push", re.compile(r"(?:^|[\s/])git(?:\s+-[Cc]\s+\S+)*\s+push(?:\s|$)|git-receive-pack|git-send-pack")),
 )
@@ -457,6 +458,14 @@ def fetch(root, env=None):
     e.update(GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=SSH_HARDENED)
     rc, _ = _git(root, "fetch", "-q", "--tags", "origin", env=e, timeout=120)
     return rc == 0
+
+
+HOLD_FILE = "AUTO_UPDATE_HOLD"     # 官方公開倉 main 上的固定檔:有 ⇒ 全部會員的自動更新先停(維護者出事時一個 commit 喊停)
+
+
+def hold_on(root):
+    """fetch 成功之後才看：遠端追蹤分支 origin/main 上有沒有暫停記號。只會讓更新停，不讀本機檔 / 環境變數(沒有「強制更新」這回事)。"""
+    return _git(root, "cat-file", "-e", "refs/remotes/origin/main:" + HOLD_FILE)[0] == 0
 
 
 def core_plan(root):
@@ -865,6 +874,8 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
         st["last_check"] = int(now)
         if not do_fetch(root, env):
             return done("offline")
+        if hold_on(root):
+            return done("paused")        # 官方倉 main 放了暫停記號 ⇒ 核心、外掛全部不換
         plan = core_plan(root)
         res.update(have=plan["have"], latest=plan["latest"])
         excluded = read_excludes(env)

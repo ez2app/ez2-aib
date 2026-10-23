@@ -5103,6 +5103,8 @@
   "aib.auto_update.why.refused_push": "git push 正在跑,下次查再試",
   "aib.auto_update.why.too_soon": "一小時內才更新過,下次查再試",
   "aib.auto_update.why.offline": "連不上來源,下次查再試",
+  "aib.auto_update.why.paused": "維護者暫停了自動更新(官方發現新版有問題),先不換;恢復後下次查會照常更新",
+  "aib.auto_update.why.refused_updating": "你自己正在跑 aib update,這次不另外更新",
   "aib.auto_update.why.no_ref": "來源沒有可更新的正式版",
   "aib.auto_update.why.up_to_date": "已是最新",
   "aib.auto_update.why.refused_dirty": "安裝目錄有你改過、還沒提交的檔,沒有更新(aib update 會說怎麼辦)",
