@@ -259,6 +259,9 @@ class Gates(Base):
         # 放掉 ⇒ 可以更新
         Path(self.env["AIB_HOST_LEASE_FILE"]).unlink()
         self.assertIsNone(AU.lease_busy(self.env, time.time()))
+        # 租約模組量不到(丟例外)⇒ 當有人在用
+        with mock.patch.object(AU, "_host_lease", side_effect=RuntimeError("boom")):
+            self.assertEqual(AU.lease_busy(self.env, time.time()), "lease")
 
     def test_g2_dirty(self):
         self.make_repos()
@@ -392,6 +395,20 @@ class Gates(Base):
         self.assertEqual(RE.read(self.env)[0], [])
         self.assertEqual(self.run_check(now=NOW + 60, run_update=lambda e, r: self.updates.append(e) or 0)["result"], "too_soon")
         self.assertEqual(len(self.updates), 1)
+
+    def test_g6d_run_core_update_child_env(self):
+        # 第二道防線:run_core_update 自己也只帶白名單 + 加固 ssh(就算呼叫端傳進整份環境)
+        seen = []
+        def fake_run(argv, **kw):
+            seen.append(kw.get("env"))
+            return subprocess.CompletedProcess(argv, 0)
+        dirty = dict(self.env, AIB_INSTALL_URL="file:///tmp/evil.sh", GIT_SSH_COMMAND="ssh -o ForwardAgent=yes", BASH_ENV="/tmp/e")
+        with mock.patch.object(AU.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(AU.run_core_update(dirty, self.td), 0)
+        self.assertEqual(len(seen), 1)
+        self.assertNotIn("AIB_INSTALL_URL", seen[0])
+        self.assertNotIn("BASH_ENV", seen[0])
+        self.assertEqual(seen[0]["GIT_SSH_COMMAND"], AU.SSH_HARDENED)
 
     def test_g6b_update_fails(self):
         self.make_repos()
@@ -533,8 +550,8 @@ class Exclude(Base):
 
 
 class PaidSource(Base):
-    def paid_repo(self, plugins):
-        """aib-plugins 樣子的 bare 倉:{名: 新版號};這台裝的是 1.0.0。回 bare 倉路徑。"""
+    def paid_repo(self, plugins, meta=None):
+        """aib-plugins 樣子的 bare 倉:{名: 新版號};這台裝的是 1.0.0。meta={名: 倉裡 aib-ext.json 要蓋掉的欄位}。回 bare 倉路徑。"""
         import aib_ext
         src, bare = self.td / "plugsrc", self.td / "aib-plugins.git"
         src.mkdir()
@@ -544,8 +561,9 @@ class PaidSource(Base):
             d.mkdir()
             (d / "plugin.json").write_text(json.dumps({"name": name, "module": "m.py", "version": ver}))
             (d / "m.py").write_text("VERSION = %r\n" % ver)
-            (d / "aib-ext.json").write_text(json.dumps({"name": name, "kind": "plugin", "version": ver, "requires_aib": "0.0.1",
-                                                         "files": aib_ext._hashes(d), "signature": "ed25519:test"}))
+            (d / "aib-ext.json").write_text(json.dumps(dict({"name": name, "kind": "plugin", "version": ver, "requires_aib": "0.0.1",
+                                                              "files": aib_ext._hashes(d), "signature": "ed25519:test"},
+                                                             **((meta or {}).get(name) or {}))))
             inst = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / name
             inst.mkdir(parents=True)
             (inst / "aib-ext.json").write_text(json.dumps({"name": name, "kind": "plugin", "version": "1.0.0"}))
@@ -577,6 +595,46 @@ class PaidSource(Base):
         self.assertEqual((p["excluded"], p["plugins_excluded"]), (["hostguard"], ["hostguard"]))
         self.assertIn("hostguard", "\n".join(AU.status_lines(p)))
         self.assertFalse(list((Path(self.env["EZ2_AIB_STATE_ROOT"]) / "cache" / "auto-update").glob("stage-*")))
+
+    def _paid_check_signed(self):
+        import aib_ext
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True), \
+                mock.patch.object(aib_ext, "reload_room_after_install", return_value=None), \
+                mock.patch.object(AU, "install_plugin", wraps=AU.install_plugin) as inst:
+            res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=AU.install_plugin)
+        return res, inst
+
+    def _state_dirs(self):
+        root = Path(self.env["EZ2_AIB_STATE_ROOT"])
+        return sorted(str(p.relative_to(root)) for sub in ("plugins", "skills") if (root / sub).is_dir()
+                      for p in (root / sub).iterdir())
+
+    def test_x2c_source_name_mismatch_not_installed(self):
+        # 倉裡 demo-paid/ 的 manifest 寫別的名字 ⇒ 不算落後、不裝(裝的那步用 manifest 名，會變成裝到沒裝過的外掛)
+        self.paid_repo({"demo-paid": "1.0.3"}, meta={"demo-paid": {"name": "evil"}})
+        self.make_repos(latest=None)
+        res, _ = self._paid_check_signed()
+        self.assertEqual(res["result"], "up_to_date", res)
+        self.assertEqual(res.get("plugins_behind") or [], [])
+        self.assertEqual(self._state_dirs(), ["plugins/demo-paid"])
+        self.assertEqual(self.installed_version("demo-paid"), "1.0.0")
+
+    def test_x2d_source_kind_not_plugin_not_installed(self):
+        self.paid_repo({"demo-paid": "1.0.3"}, meta={"demo-paid": {"kind": "skill"}})
+        self.make_repos(latest=None)
+        res, _ = self._paid_check_signed()
+        self.assertEqual(res["result"], "up_to_date", res)
+        self.assertEqual(res.get("plugins_behind") or [], [])
+        self.assertEqual(self._state_dirs(), ["plugins/demo-paid"])
+
+    def test_x2e_same_or_older_version_not_reinstalled(self):
+        self.paid_repo({"demo-paid": "1.0.0", "other": "0.9.0"})
+        self.make_repos(latest=None)
+        res, _ = self._paid_check_signed()
+        self.assertEqual(res["result"], "up_to_date", res)
+        self.assertEqual(res.get("plugins_behind") or [], [])
+        self.assertEqual((self.installed_version("demo-paid"), self.installed_version("other")), ("1.0.0", "1.0.0"))
+        self.assertEqual(self.leases, [])
 
     def test_x2b_signature_failure_not_installed(self):
         self.paid_repo({"demo-paid": "1.0.3"})
