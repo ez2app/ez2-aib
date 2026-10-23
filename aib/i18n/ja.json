@@ -5091,5 +5091,6 @@
   "aib.auto_update.exclude.not_in": "{name} は一覧にありません",
   "aib.auto_update.exclude.bad_name": "プラグイン名ではありません:「{name}」",
   "aib.auto_update.exclude.touchid_reason": "aib がプラグイン {name} を自動更新することを許可",
-  "aib.auto_update.exclude.needs_touchid": "{name} は既定で自動更新しません(本番デプロイの元です)。外すには本人の Touch ID が必要です({why})。何も変更していません"
+  "aib.auto_update.exclude.needs_touchid": "{name} は既定で自動更新しません(本番デプロイの元です)。外すには本人の Touch ID が必要です({why})。何も変更していません",
+  "aib.auto_update.status.clock_skew": "時計のずれ:保存された時刻が現在より先でした(時計が進んだことがあります)。無視して通常どおり確認します"
 }

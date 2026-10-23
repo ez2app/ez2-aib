@@ -5091,5 +5091,6 @@
   "aib.auto_update.exclude.not_in": "{name} is not on the list",
   "aib.auto_update.exclude.bad_name": "not a plugin name: \"{name}\"",
   "aib.auto_update.exclude.touchid_reason": "Allow aib to auto-update the plugin {name}",
-  "aib.auto_update.exclude.needs_touchid": "{name} is excluded by default (it is the production deploy source); taking it off needs your Touch ID ({why}); nothing changed"
+  "aib.auto_update.exclude.needs_touchid": "{name} is excluded by default (it is the production deploy source); taking it off needs your Touch ID ({why}); nothing changed",
+  "aib.auto_update.status.clock_skew": "Clock skew: saved times were in the future (the clock jumped); they were ignored and checking goes on as normal"
 }

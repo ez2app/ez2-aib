@@ -25,6 +25,11 @@ X2 付費外掛來源 = aib-plugins main(測試用本機 bare 倉):簽章驗過�
    真的換上新版;hostguard 在清單裡 ⇒ 有新簽章版也不換、status 列為排除;簽章驗不過 ⇒ 不裝、列為簽章沒過
 X3 核心這次有更新 ⇒ 付費外掛等下一次查(新碼在跑時才裝);外掛來源連不上 ⇒ 照樣做核心那部分,status 說來源連不上
 X4 git archive 出來的包有跑出資料夾的路徑 / 連結 ⇒ 不裝
+R1 時鐘跳過:狀態檔時間戳在未來(含 9999999999)⇒ 不算數、照常查與更新,status 標 clock_skew;下一次正常就清掉
+R2 狀態檔 JSON 合法但型別不對(字串 / 清單 / 整數 last_result)⇒ check 不當掉、照常跑並重寫成乾淨的檔;
+   status / doctor 一律不當掉;狀態檔根本不是 dict 也一樣
+R3 鎖檔位置是資料夾 ⇒ 回 busy,不丟例外
+R4 付費外掛暫存資料夾:裝的那步丟例外也會清掉;既有的 stage-<pid> 連結不會被沿用
 I1 四語字典同鍵、沒有 !!;aib update auto status / --json 走得通(子行程,暫存狀態根)
 """
 import importlib
@@ -530,6 +535,82 @@ class PaidSource(Base):
         cache = AU.fetch_plugin_source(self.env)
         self.assertIsNotNone(cache)
         self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
+
+
+class Robust(Base):
+    def write_raw_status(self, d):
+        p = AU.status_path(self.env)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(d), encoding="utf-8")
+
+    def test_r1_clock_skew(self):
+        self.make_repos()
+        self.write_raw_status({"last_attempt": 9999999999, "last_check": NOW + 3600, "last_result_at": NOW + 99999})
+        res = self.run_check(why="seat-open")
+        self.assertEqual(res["result"], "updated", res)
+        self.assertTrue(res["clock_skew"])
+        p = AU.status_payload(self.env, platform="linux", now=NOW)
+        self.assertTrue(p["clock_skew"])
+        self.assertIn("時鐘跳過", "\n".join(AU.status_lines(p)))
+        self.assertEqual(AU.read_status(self.env, NOW)["last_attempt"], int(NOW))
+        self.assertEqual(self.run_check(now=NOW + 7200)["result"], "up_to_date")
+        self.assertFalse(AU.status_payload(self.env, platform="linux", now=NOW + 7200)["clock_skew"])
+        # 5 分鐘以內的小誤差照舊算數
+        self.write_raw_status({"last_attempt": NOW + 100})
+        self.assertEqual(self.run_check(now=NOW)["result"], "too_soon")
+
+    def test_r2_bad_types(self):
+        self.make_repos()
+        bad = {"last_attempt": "x", "last_check": [1], "last_result": 5, "last_result_at": "y", "have": 3,
+               "plugins_behind": "demo", "last_update": "x", "last_plugins": [1, "a"], "plugin_source": {"a": 1}}
+        self.write_raw_status(bad)
+        for fn in (lambda: AU.status_payload(self.env, platform="linux"), lambda: AU.doctor_line(self.env)):
+            fn()
+        AU.status_lines(AU.status_payload(self.env, platform="linux"))
+        res = self.run_check()
+        self.assertEqual(res["result"], "updated", res)
+        raw = json.loads(AU.status_path(self.env).read_text(encoding="utf-8"))
+        self.assertIsInstance(raw["last_attempt"], int)
+        self.assertEqual(raw["last_result"], "updated")
+        self.assertEqual(raw.get("last_plugins", []), [])
+        for d in ([1, 2], "str", 7, {"last_update": {"to": 1, "at": "x"}, "last_result": "Bad Result!"},
+                  {"last_result_at": True, "last_check": float("nan")}):
+            self.write_raw_status(d)
+            p = AU.status_payload(self.env, platform="linux")
+            AU.status_lines(p)
+            AU.doctor_line(self.env)
+            self.assertIsNone(p["last_update"])
+        self.write_raw_status({"last_result": 5})
+        r = subprocess.run([sys.executable, str(REPO.parent / "bin" / "aib"), "update", "auto", "status"],
+                           capture_output=True, text=True, env=dict(os.environ), stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_r3_lock_is_directory(self):
+        self.make_repos()
+        lock = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "state" / AU.LOCK
+        lock.mkdir(parents=True)
+        self.assertEqual(self.run_check()["result"], "busy")
+        self.assertEqual(self.updates, [])
+
+    def test_r4_stage_cleanup(self):
+        PaidSource.paid_repo(self, {"demo-paid": "1.0.3"})
+        self.make_repos(latest=None)
+        base = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "cache" / "auto-update"
+        base.mkdir(parents=True, exist_ok=True)
+        decoy = self.td / "decoy"
+        decoy.mkdir()
+        os.symlink(str(decoy), str(base / ("stage-%d" % os.getpid())))
+
+        def boom(folder, out):
+            raise RuntimeError("install blew up")
+        import aib_ext
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True):
+            with self.assertRaises(RuntimeError):
+                self.run_check(plugin_fetch=AU.fetch_plugin_source, install=boom)
+        self.assertEqual(self.leases, ["acquire", "release"])
+        self.assertEqual(sorted(p.name for p in base.glob("stage-*")), ["stage-%d" % os.getpid()])   # 只剩那個沒被碰的連結
+        self.assertEqual(list(decoy.iterdir()), [])
 
 
 class Cli(Base):

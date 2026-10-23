@@ -5091,5 +5091,6 @@
   "aib.auto_update.exclude.not_in": "{name} 은(는) 목록에 없습니다",
   "aib.auto_update.exclude.bad_name": "플러그인 이름이 아닙니다: \"{name}\"",
   "aib.auto_update.exclude.touchid_reason": "aib 가 플러그인 {name} 을(를) 자동 업데이트하도록 허용",
-  "aib.auto_update.exclude.needs_touchid": "{name} 은(는) 기본으로 자동 업데이트하지 않습니다(운영 배포 원본). 빼려면 본인 Touch ID 가 필요합니다({why}). 아무것도 바꾸지 않았습니다"
+  "aib.auto_update.exclude.needs_touchid": "{name} 은(는) 기본으로 자동 업데이트하지 않습니다(운영 배포 원본). 빼려면 본인 Touch ID 가 필요합니다({why}). 아무것도 바꾸지 않았습니다",
+  "aib.auto_update.status.clock_skew": "시계 어긋남: 저장된 시각이 현재보다 늦었습니다(시계가 앞으로 뛴 적이 있음). 무시하고 평소처럼 확인합니다"
 }

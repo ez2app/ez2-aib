@@ -23,7 +23,8 @@
        可換(測試 / 鏡像用 —— 換成什麼都一樣要過簽章)。
   不自動更新清單(設定檔 exclude):預設 hostguard(這台的 hostguard 是正式站部署來源,換版要主人點頭)。
        `aib update auto exclude add|remove|list <外掛>`;拿掉預設那幾個要本人 Touch ID(只擋正式入口;設定檔本身 AI 改得到,
-       真正的保護仍是簽章)。清單裡的外掛永遠不自動換,status 會列出來。
+       真正的保護仍是簽章)。清單裡的外掛,自動更新這支不會換(status 會列出來);但附帶的外掛(extensions/)在核心
+       更新時,一行安裝程式的 aib ext auto 照舊會換成新簽的那份 —— 那條不看這份清單。hostguard 不在 extensions/,不受影響。
 什麼時候才真的更新(有一項不合就這次不做,下次查再試):
   沒人拿著測試租約(aib lease;讀不到也當有人)、沒有推包 / git push / aib test 在跑、
   安裝目錄沒有改過沒提交的檔、是單純快轉(歷史分叉就不動)、在 main(或沒有分支)上、
@@ -46,6 +47,7 @@ import contextlib
 import io
 import shutil
 import tarfile
+import tempfile
 import fcntl
 import json
 import os
@@ -169,12 +171,60 @@ def write_excludes(names, env=None, now=None):
     _write_json(setting_path(env), d)
 
 
-def read_status(env=None):
+CLOCK_SKEW_S = 5 * 60               # 時間戳比現在晚超過這麼多 ⇒ 當成時鐘跳過,不算數
+_TS_KEYS = ("last_check", "last_attempt", "last_result_at")
+_STR_KEYS = ("have", "latest", "last_why", "plugin_source")
+_LIST_KEYS = ("plugins_behind", "plugins_excluded", "plugins_unsigned")
+_RESULT_RX = re.compile(r"[a-z_]{1,40}")
+
+
+def _num_ok(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) < 1e12
+
+
+def clean_status(d, now=None):
+    """狀態檔內容 ⇒ (清過的 dict, 有沒有時鐘跳過)。型別不對的欄位當作沒有;比現在晚超過 CLOCK_SKEW_S 的時間戳也丟掉
+    (時鐘曾經往前跳過,不然之後每次都 too_soon 到真的時間追上)。狀態檔是本機檔、誰都改得到 ⇒ 這裡只求不當掉、不卡死。"""
+    now = time.time() if now is None else now
+    out, skew = {}, False
+    if not isinstance(d, dict):
+        return out, skew
+    for k in _TS_KEYS:
+        v = d.get(k)
+        if _num_ok(v):
+            if v > now + CLOCK_SKEW_S:
+                skew = True
+            else:
+                out[k] = int(v)
+    for k in _STR_KEYS:
+        if isinstance(d.get(k), str) and len(d[k]) <= 64:
+            out[k] = d[k]
+    if isinstance(d.get("last_result"), str) and _RESULT_RX.fullmatch(d["last_result"]):
+        out["last_result"] = d["last_result"]
+    for k in _LIST_KEYS:
+        v = d.get(k)
+        if isinstance(v, list):
+            out[k] = [x for x in v if isinstance(x, str)][:50]
+    lu = d.get("last_update")
+    if isinstance(lu, dict) and isinstance(lu.get("to"), str) and _num_ok(lu.get("at")):
+        out["last_update"] = {"from": lu.get("from") if isinstance(lu.get("from"), str) else None, "to": lu["to"],
+                              "at": int(lu["at"])}
+    lp = d.get("last_plugins")
+    if isinstance(lp, list):
+        out["last_plugins"] = [{k: x.get(k) for k in ("name", "from", "to", "rc", "at")} for x in lp
+                               if isinstance(x, dict) and isinstance(x.get("name"), str)][:50]
+    if d.get("clock_skew") is True or skew:
+        out["clock_skew"] = True
+    return out, skew
+
+
+def read_status(env=None, now=None):
+    """清過的狀態(見 clean_status)。讀不到 / 不是 JSON ⇒ {}。"""
     try:
         d = json.loads(status_path(env).read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
+    return clean_status(d, now)[0]
 
 
 def write_status(d, env=None):
@@ -203,8 +253,12 @@ def log(msg, env=None, now=None):
 def _lock(env=None):
     """同一時間只有一個在查 / 更新;搶不到 ⇒ yield False(這次跳過)。"""
     p = state_root(env) / "state" / LOCK
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(p, "a")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(p, "a")
+    except OSError:                  # 鎖檔位置是資料夾 / 權限壞 ⇒ 不知道別人在不在跑 ⇒ 這次不做
+        yield False
+        return
     try:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -549,9 +603,12 @@ def stage_paid(cache, name, env=None):
                         capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
     if rc.returncode != 0:
         return None
-    stage = state_root(env) / "cache" / "auto-update" / ("stage-%d" % os.getpid())
-    shutil.rmtree(stage, ignore_errors=True)
-    stage.mkdir(parents=True)
+    base = state_root(env) / "cache" / "auto-update"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix="stage-", dir=str(base)))   # 每次新建、名字隨機:不沿用任何既有路徑 / 連結
+    except OSError:
+        return None
     with tarfile.open(fileobj=io.BytesIO(rc.stdout)) as tf:
         for mem in tf.getmembers():
             parts = Path(mem.name).parts
@@ -624,11 +681,19 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
     with _lock(env) as got:
         if not got:
             return dict(res, result="busy")
-        st = read_status(env)
+        try:
+            raw = json.loads(status_path(env).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = {}
+        st, skew = clean_status(raw, now)
+        st.pop("clock_skew", None)           # 只記這一次有沒有看到;下一次正常就清掉
+        if skew:
+            st["clock_skew"] = res["clock_skew"] = True
+            log("clock_skew: status timestamps in the future were ignored", env, now)
 
         def done(result, **kw):
             res.update(kw, result=result)
-            if result not in ("checked_recently",):
+            if result not in ("checked_recently",) or skew:
                 st.update(last_result=result, last_result_at=int(now), last_why=why)
                 for k in ("have", "latest", "plugins_behind", "plugins_excluded", "plugins_unsigned", "plugin_source"):
                     if k in res:
@@ -689,9 +754,11 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
             #   付費外掛也一樣等下一次查(新版外掛可能要新版核心;下一次是新碼在跑)
             for b in ([] if plan["behind"] else behind):
                 folder = b.get("dir") or stage(cache, b["name"], env)
-                r = install(str(folder), buf) if folder else 3
-                if not b.get("dir"):
-                    shutil.rmtree(state_root(env) / "cache" / "auto-update" / ("stage-%d" % os.getpid()), ignore_errors=True)
+                try:
+                    r = install(str(folder), buf) if folder else 3
+                finally:
+                    if folder and not b.get("dir"):
+                        shutil.rmtree(Path(folder).parent, ignore_errors=True)   # stage_paid 建的 stage-* 整個拿掉
                 plugin_rows.append({"name": b["name"], "from": b["have"], "to": b["want"], "rc": r})
                 log("plugin %s %s -> %s rc=%s" % (b["name"], b["have"], b["want"], r), env, now)
             res["plugins"] = plugin_rows
@@ -718,9 +785,9 @@ def _when(epoch):
         return "?"
 
 
-def status_payload(env=None, home=None, platform=None):
+def status_payload(env=None, home=None, platform=None, now=None):
     on, src = read_setting(env)
-    st = read_status(env)
+    st = read_status(env, now)
     plat = platform or sys.platform
     return {"on": on, "source": src, "schedule": ("installed" if agent_installed(home) else "missing") if plat == "darwin"
             else "not_mac", "interval_s": INTERVAL_S, "have": st.get("have"), "latest": st.get("latest"),
@@ -729,7 +796,7 @@ def status_payload(env=None, home=None, platform=None):
             "plugins_behind": st.get("plugins_behind") or [], "last_plugins": st.get("last_plugins") or [],
             "excluded": read_excludes(env), "plugins_excluded": st.get("plugins_excluded") or [],
             "plugins_unsigned": st.get("plugins_unsigned") or [], "plugin_source": st.get("plugin_source"),
-            "log": str(log_path(env))}
+            "clock_skew": bool(st.get("clock_skew")), "log": str(log_path(env))}
 
 
 def status_lines(p):
@@ -750,13 +817,15 @@ def status_lines(p):
         out.append(T("status.unsigned", names=", ".join(p["plugins_unsigned"])))
     if p.get("plugin_source") == "offline":
         out.append(T("status.plugin_source_offline"))
+    if p.get("clock_skew"):
+        out.append(T("status.clock_skew"))
     out.append(T("status.log", path=p["log"]))
     return out
 
 
-def doctor_line(env=None):
+def doctor_line(env=None, now=None):
     """(ok|note, 一行)。aib doctor 用。唯讀。"""
-    p = status_payload(env)
+    p = status_payload(env, now=now)
     if not p["on"]:
         return "note", T("doctor.unreadable" if p["source"] == "unreadable" else "doctor.off")
     lu = p.get("last_update")
