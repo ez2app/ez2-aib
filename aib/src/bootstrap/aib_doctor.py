@@ -801,7 +801,7 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
     return checks
 
 
-def main(argv=None, mark=True):
+def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="aib doctor", description=_T("aib.doctor.help.description"))
     parser.add_argument("--state-root",
@@ -833,9 +833,9 @@ def main(argv=None, mark=True):
                          ensure_ascii=False, indent=2))
     else:
         for c in checks:
-            mark = {OK: "OK  ", FAIL: "FAIL", MANUAL: _T("aib.doctor.mark_manual"),
-                    NOTE: _T("aib.doctor.mark_note")}[c["status"]]
-            line = "%s %-24s %s" % (mark, c["id"], c["detail"])
+            tag = {OK: "OK  ", FAIL: "FAIL", MANUAL: _T("aib.doctor.mark_manual"),
+                   NOTE: _T("aib.doctor.mark_note")}[c["status"]]      # 別叫 mark:會蓋掉 main 的 mark 參數
+            line = "%s %-24s %s" % (tag, c["id"], c["detail"])
             if c["status"] != OK and c["remedy"]:
                 line += "\n         -> %s" % c["remedy"]
             print(line)
@@ -845,8 +845,7 @@ def main(argv=None, mark=True):
             print(_T("aib.doctor.manual_note"))
 
     rc = 0 if (counts[FAIL] == 0 and counts[MANUAL] == 0) else 1
-    if mark:                      # aib support 借 doctor 的結果時不記(不是本人跑 doctor)
-        _mark_run(args.state_root, rc)
+    _mark_run(args.state_root, rc)
     return rc
 
 

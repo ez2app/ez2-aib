@@ -5,6 +5,7 @@
 M1 main 跑完 ⇒ 檔只有 at / rc、rc 跟 main 回的一樣;再跑一次是覆寫、不累積
 M2 寫不進去(run-marks 是檔不是夾)⇒ doctor 照樣回原本的 rc、不炸
 M3 run_all 給別支呼叫 ⇒ 不記
+M4 文字輸出(不帶 --json)也照記 {at, rc}(10-24 突變審:迴圈變數曾叫 mark)
 刀(複本):K1 main 不記 ⇒ M1 紅
 """
 import json
@@ -57,6 +58,14 @@ class Mark(unittest.TestCase):
             (Path(root) / "state").mkdir()
             (Path(root) / "state" / "run-marks").write_text("x")
             self.assertEqual(self._main(root, D.OK), 0)
+
+    def test_m4_text_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            D.run_all = _fake(D.FAIL)
+            with redirect_stdout(StringIO()):
+                self.assertEqual(D.main(["--state-root", root]), 1)
+            got = json.loads((Path(root) / "state" / "run-marks" / "doctor.json").read_text())
+            self.assertEqual(got["rc"], 1)
 
     def test_m3_run_all_no_mark(self):
         with tempfile.TemporaryDirectory() as root:

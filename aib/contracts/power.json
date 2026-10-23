@@ -288,9 +288,9 @@
    "sent"
   ],
   "detail": "support_preview | support_written | support_write_failed",
-  "sections": "versions | plugins | doctor | logins | cabins | failures(只收這六段;10-24 Andy 准精簡版)",
+  "sections": "versions | plugins | doctor | logins | cabins | failures(只收這六段;10-24 Andy 准精簡版)。doctor 只收只讀、說明只有機器資料的幾項:python_version / git_present / state_root_perms / schemas_readable / provider_*(雙審第 1 輪:整套 doctor 會寫檔、連網、說明帶交接檔名 / 席位檔欄位 / 客戶主機名 / 艙短號,不借)",
   "excluded": "messages | vault | project_names | persona | secrets | licenses | log_text | cabin_seat_ids(一律不收)",
-  "file": "--write 才有:<狀態根>/support/aib-support-<時間>.json(0600,夾 0700),家目錄換 ~;沒 --write ⇒ null、一個檔都不寫",
+  "file": "--write 才有:<狀態根>/support/aib-support-<時間>[-n].json(0600,夾 0700、既有夾也收緊;同一秒再寫加 -2…不蓋),家目錄換 ~;沒 --write ⇒ null、一個檔都不寫",
   "redacted": "像金鑰的字串換成 [redacted] 的處數(家目錄 / 使用者 / 暫存路徑 / 艙號 / 席號另外照換、不算處數)",
   "sent": "一律 false:只在本機,寄不寄由本人決定",
   "rc": {

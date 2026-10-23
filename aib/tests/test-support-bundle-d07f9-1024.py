@@ -2,13 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """aib support 問題回報包(support_bundle.py;契約 contracts/power.json support_receipt;10-24 Andy 准精簡版)。暫存狀態根。
 
-S1 沒 --write ⇒ support_preview、file null、一個檔都不寫(support/ 與 run-marks 都不出現);欄位 = 契約
-S2 --write ⇒ 檔 0600、夾 0700、只有六段 + schema / at;記 run-marks/support.json;回條 file 是 ~ 開頭
-S3 不收的東西真的不在檔裡:席位檔的專案名 / 艙號 / 席號、dm 寄送紀錄的內文欄位、Vault 路徑下的筆記、金鑰檔內容
+S1 沒 --write ⇒ support_preview、file null、一個檔都不寫(連綁了 ez2.page 也不連網寫快取、不重產角色卡清單);欄位 = 契約
+S2 --write ⇒ 檔 0600、夾 0700、只有六段 + schema / at、doctor 每筆只有 id / status / detail;記 run-marks/support.json;
+   回條 file 只把家目錄換 ~(本人要找得到檔)
+S3 不收的東西真的不在檔裡:席位檔的專案名 / 艙號 / 席號、dm 寄送紀錄的內文欄位、金鑰檔內容;
+   10-24 稽核種子:交接單檔名帶專案名、壞席位檔欄位原文、temp 過期項目的客戶主機名 IP、EZ2_AIB_INSTANCE 艙短號、
+   dm 佇列夾名 ⇒ doctor 只收 DOCTOR_PURE + provider_*,這些一律不在檔裡
 S4 redact:家目錄 → ~、使用者 → <user>、暫存路徑 → <tmp>、艙號 → <cabin>、席號 → <seat>、像金鑰的字串 → [redacted](算處數)
 S5 failures 只留不成功的代碼 + 時間、最多 20 筆;怪代碼 / 成功的不收
+S7 失敗代碼的邊角:成功的四種 / 怪代碼 / 時間不是數字 / 面板沒有 ok / 大檔只讀尾端、切半的第一行丟掉;角色超過 32 字 ⇒ ?;寫不進去 ⇒ rc 1、不記
+S8 不叫整套 doctor(run_all / main / 探針 / 角色卡清單重產),只叫 DOCTOR_PURE + 各家 AI 工具
 S6 借 doctor 結果不記 R10(run-marks/doctor.json 不出現);aib support 從 aib 啟動器轉得到;power_tasks 讀 support.json ⇒ support_bundle
-刀(複本):K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅
+刀(複本):K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
 """
 import io
 import json
@@ -18,6 +23,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -36,6 +42,7 @@ import support_bundle as S  # noqa: E402
 C = json.loads((REPO / "contracts" / "power.json").read_text(encoding="utf-8"))["support_receipt"]
 SECRET_TOKEN = "ghp_" + "Z" * 36
 PROJECT = "機密專案甲"
+HOSTIP = "eu01.client-shop.example 203.0.113.7"
 
 
 def seed(root):
@@ -61,6 +68,16 @@ def seed(root):
     sec = r / "secrets"
     sec.mkdir()
     (sec / "push.env").write_text("TOKEN=" + SECRET_TOKEN)
+    (r / "pending").mkdir()
+    (r / "pending" / ("HANDOFF-%s-x.md" % PROJECT)).write_text("x", encoding="utf-8")
+    (r / "seats").mkdir()
+    (r / "seats" / "w1A2B3.json").write_text(json.dumps({"schema": PROJECT, "window_id": PROJECT}, ensure_ascii=False),
+                                             encoding="utf-8")
+    (r / "temp").mkdir()
+    (r / "temp" / "changes.json").write_text(json.dumps([{"id": "tmp-abc123", "host": HOSTIP, "until": 1}]))
+    (st / "dm-queue" / "71c97a").mkdir(parents=True)
+    (r / "page").mkdir()
+    (r / "page" / "t1.p1.json").write_text("{}")
 
 
 class Support(unittest.TestCase):
@@ -68,6 +85,12 @@ class Support(unittest.TestCase):
         shutil.rmtree(TMP, ignore_errors=True)
         os.makedirs(TMP)
         seed(TMP)
+        self._env = dict(os.environ)
+        os.environ["EZ2_AIB_INSTANCE"] = "20261015-123456-6ddf"
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
 
     def test_s1_preview_writes_nothing(self):
         before = sorted(str(p) for p in Path(TMP).rglob("*"))
@@ -89,12 +112,23 @@ class Support(unittest.TestCase):
         self.assertTrue((Path(TMP) / "state" / "run-marks" / "support.json").is_file())
         self.assertEqual(body["cabins"], [{"seats": 2, "roles": ["?", "dev"]}])
         self.assertEqual(body["logins"], {"claude": True})
+        self.assertEqual(r["file"], S.show_path(str(files[0])))
+        self.assertEqual(S.show_path("/Users/x/.ez2-aib/support/a.json", home="/Users/x"), "~/.ez2-aib/support/a.json")
+        self.assertEqual(S.show_path("/Users/xy/a.json", home="/Users/x"), "/Users/xy/a.json")
+        self.assertTrue(body["doctor"]["checks"])
+        for c in body["doctor"]["checks"]:
+            self.assertEqual(sorted(c), ["detail", "id", "status"])
 
     def test_s3_excluded(self):
         S.run(write=True)
         text = next((Path(TMP) / "support").glob("aib-support-*.json")).read_text(encoding="utf-8")
-        for bad in (PROJECT, "9a8b7", "1c2d3", "20261014-133230-abcd", "dm 內文", "面板原文", SECRET_TOKEN, TMP):
+        for bad in (PROJECT, "9a8b7", "1c2d3", "20261014-133230-abcd", "dm 內文", "面板原文", SECRET_TOKEN, TMP,
+                    "client-shop", "203.0.113.7", "6ddf", "71c97a", "w1A2B3", "tmp-abc123"):
             self.assertNotIn(bad, text, bad)
+        ids = {c["id"] for c in json.loads(text)["doctor"]["checks"]}
+        self.assertTrue(ids)
+        for i in ids:
+            self.assertTrue(i in S.DOCTOR_PURE or i.startswith("provider_"), i)
 
     def test_s4_redact(self):
         home = "/Users/someone"
@@ -102,8 +136,22 @@ class Support(unittest.TestCase):
                                  "cabin 20261014-133230-6ddf", "seat 0c105 @abb89", "k " + SECRET_TOKEN,
                                  "nsec1" + "q" * 40, "plain words 12345"]}, home=home, user="someone")
         self.assertEqual(got["a"], ["~/x", "by <user> here", "<tmp>", "cabin <cabin>", "seat <seat> <seat>",
-                                    "k [redacted]", "[redacted]", "plain words 12345"])
+                                    "k [redacted]", "[redacted]", "plain words <seat>"])     # 全數字也當席號(寧可多遮)
+        got, _ = S.redact(["D07F9", "seat_d07f9", "wd07f9.json", "20261024-120000-6DDF", "/USERS/SOMEONE/x",
+                           "/Users/someone_old", "SomeOne", "/TMP/q", "Bearer " + "a1" * 10, "c" * 32,
+                           "AIza" + "B" * 32, "sk_live_" + "C" * 12, "glpat-" + "d" * 20, "hf_" + "E" * 22],
+                          home=home, user="someone")
+        self.assertEqual(got, ["<seat>", "seat_<seat>", "<seat>.json", "<cabin>", "~/x", "/Users/someone_old", "<user>",
+                               "<tmp>", "[redacted]", "[redacted]", "[redacted]", "[redacted]", "[redacted]",
+                               "[redacted]"])
+        self.assertEqual(S.redact({home + "/k": {SECRET_TOKEN: 1}}, home=home, user="zz")[0], {"~/k": {"[redacted]": 1}})
         self.assertEqual(n, 2)
+        self.assertEqual(S.redact(["ab cd"], home="/h", user="ab")[0], ["ab cd"])          # 太短的名字不換
+        self.assertEqual(S.redact(["someoneelse"], home="/h", user="someone")[0], ["someoneelse"])
+        self.assertEqual(S.redact(["%s %s" % (SECRET_TOKEN, SECRET_TOKEN)], home="/h", user="zz")[1], 2)
+        for key in ("f" * 40, "sk-" + "a" * 20, "AKIA" + "B" * 16, "eyJ" + "a" * 10 + "." + "b" * 10,
+                    "-----BEGIN RSA PRIVATE KEY-----", "Q" * 48, "xoxb-" + "1" * 12, "github_pat_" + "x" * 22):
+            self.assertEqual(S.redact([key], home="/h", user="zz")[0], ["[redacted]"], key)
 
     def test_s5_failures(self):
         f = S.failures(TMP)
@@ -112,6 +160,69 @@ class Support(unittest.TestCase):
         for row in f:
             self.assertEqual(sorted(row), ["at", "code", "source"])
             self.assertNotIn(row["code"], ("queued", "Bad Code!", "stop"))
+
+    def test_s7_edges(self):
+        root = Path(TMP) / "edge"
+        (root / "logs").mkdir(parents=True)
+        rows = [{"outcome": o, "ts": i} for i, o in enumerate(("delivered", "delivered_direct", "read", "done", "queued"))]
+        rows += [{"outcome": "Bad Code!", "ts": 7}, {"outcome": "blocked_unconfirmed", "ts": "x"}]
+        (root / "logs" / "dm-send.jsonl").write_text("".join(json.dumps(x) + "\n" for x in rows), encoding="utf-8")
+        (root / "logs" / "seat-panel-actions.jsonl").write_text(json.dumps({"action": "input2", "at": 5}) + "\n")
+        self.assertEqual([(r["code"], r["at"]) for r in S.failures(str(root))], [("blocked_unconfirmed", None)])
+        big = json.dumps({"outcome": "old_one", "ts": 1}) + "\n"
+        cut = json.dumps({"outcome": "half_line", "pad": "y" * S.TAIL_BYTES, "ts": 2})   # 比讀取窗口長 ⇒ 切點在它中間
+        tail = json.dumps({"outcome": "new_one", "ts": 3}) + "\n"
+        body = big + cut + "\n" + tail
+        (root / "logs" / "dm-send.jsonl").write_text(body, encoding="utf-8")
+        (root / "logs" / "seat-panel-actions.jsonl").write_text("")
+        got = [r["code"] for r in S.failures(str(root))]
+        self.assertNotIn("old_one", got)                                  # 只讀尾端
+        self.assertIn("new_one", got)
+        start = len(body.encode()) - S.TAIL_BYTES                         # 切點落在 half_line 那行中間 ⇒ 那行丟掉
+        line_at = len(big.encode())
+        self.assertTrue(line_at < start < line_at + len(cut.encode()), (line_at, start))
+        self.assertNotIn("half_line", got)
+        seats = root / "instances" / "c" / "seats"
+        seats.mkdir(parents=True)
+        (seats / "w1.json").write_text(json.dumps({"role": "a" * 33}))
+        (seats / "w2.json").write_text(json.dumps({"role": "a" * 32}))
+        self.assertEqual(S.cabins(str(root))[0]["roles"], ["?", "a" * 32])
+        (root / "logs" / "dm-send.jsonl").write_text('{"outcome": "x1", "ts": Infinity}\n{"outcome": "x2", "ts": true}\n')
+        self.assertEqual([r["at"] for r in S.failures(str(root))], [None, None])
+        (Path(TMP) / "support").mkdir(mode=0o755)
+        os.chmod(Path(TMP) / "support", 0o755)
+        S.time.time = lambda: 1792780000.5
+        try:
+            a, _ = S.run(write=True)
+            b, _ = S.run(write=True)
+        finally:
+            S.time.time = time.time
+        self.assertNotEqual(a["file"], b["file"])
+        self.assertEqual(stat.S_IMODE((Path(TMP) / "support").stat().st_mode), 0o700)
+        self.assertEqual(sorted(p.name for p in (Path(TMP) / "support").iterdir()),
+                         ["aib-support-%s-2.json" % S.time.strftime("%Y%m%d-%H%M%S", S.time.localtime(1792780000)),
+                          "aib-support-%s.json" % S.time.strftime("%Y%m%d-%H%M%S", S.time.localtime(1792780000))])
+        shutil.rmtree(Path(TMP) / "support")
+        (Path(TMP) / "state" / "run-marks" / "support.json").unlink()
+        (Path(TMP) / "support").write_text("x")
+        r, rc = S.run(write=True)
+        self.assertEqual((rc, r["ok"], r["detail"]), (1, False, "support_write_failed"))
+        self.assertFalse((Path(TMP) / "state" / "run-marks" / "support.json").exists())
+
+    def test_s8_no_whole_doctor(self):
+        sys.path.insert(0, str(REPO / "src" / "bootstrap"))
+        import aib_doctor as D
+
+        def boom(*a, **k):
+            raise AssertionError("aib support 不准借整套 doctor(會寫檔、連網、說明帶專案名)")
+        real = (D.run_all, D.main, D.check_writable, D.check_cards_projection)
+        D.run_all = D.main = D.check_writable = D.check_cards_projection = boom
+        try:
+            got = S.doctor(TMP)
+        finally:
+            D.run_all, D.main, D.check_writable, D.check_cards_projection = real
+        self.assertNotIn("error", got)
+        self.assertEqual([c["id"] for c in got["checks"]][:4], list(S.DOCTOR_PURE))
 
     def test_s6_doctor_unmarked_dispatch_detect(self):
         S.run()
@@ -130,18 +241,35 @@ class Support(unittest.TestCase):
 
 
 class Knife(unittest.TestCase):
-    def _knife(self, needle, repl, case):
+    def _knife(self, needle, repl, case, extra=None):
         name = Path(__file__).name
         with knife_copy(REPO, "src/cockpit/support_bundle.py", needle, repl, tests=(name,)) as root:
+            if extra:                                   # 同一份複本再砍第二刀(錨一樣要恰好一次)
+                f = root / "src" / "cockpit" / "support_bundle.py"
+                t = f.read_text(encoding="utf-8")
+                self.assertEqual(t.count(extra[0]), 1, "第二刀的錨不是恰好一次")
+                f.write_text(t.replace(extra[0], extra[1]), encoding="utf-8")
             r = run_guarded([sys.executable, str(root / "tests" / name), case], cwd=str(root), max_procs=40, timeout=120)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 
     def test_k1_no_secret_mask(self):
-        self._knife('        v, k = SECRET.subn("[redacted]", v)\n', "        k = 0\n", "Support.test_s4_redact")
+        self._knife('        v, k = SECRET.subn("[redacted]", v)', "        k = 0", "Support.test_s4_redact")
 
     def test_k2_preview_writes(self):
         self._knife("    if not write:\n        return r, 0\n", "", "Support.test_s1_preview_writes_nothing")
+
+    def test_k4_whole_doctor_no_allowlist(self):
+        self._knife("""              and (c.get("id") in DOCTOR_PURE or str(c.get("id")).startswith("provider_"))]""",
+                    "]", "Support.test_s3_excluded", extra=(
+                        "        got = [D.check_python(), D.check_git(), D.check_state_root_perms(root), D.check_schemas(REPO)]\n"
+                        "        got += D.provider_checks(_providers(), False)\n",
+                        "        got = D.run_all(root, REPO, _providers(), False)\n"))
+
+    def test_k5_whole_doctor(self):
+        self._knife("        got = [D.check_python(), D.check_git(), D.check_state_root_perms(root), D.check_schemas(REPO)]\n"
+                    "        got += D.provider_checks(_providers(), False)\n",
+                    "        got = D.run_all(root, REPO, _providers(), False)\n", "Support.test_s8_no_whole_doctor")
 
     def test_k3_project_leak(self):
         self._knife('        out.append({"seats": len(roles), "roles": sorted(roles)})',
