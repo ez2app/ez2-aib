@@ -161,6 +161,8 @@ AUTO_READ_WHY = "auto_notice"
 #   只認這個 why、只走 queued/delivered → read;別封信不會因此被標。
 ONBOARD_ACK_WHY = "onboard_acked"
 SYSTEM_READ_WHYS = (AUTO_READ_WHY, ONBOARD_ACK_WHY)
+# 開席單一定帶的回執字(放在「」裡;seat_onboard.ACK_TOKENS 一改這裡要跟著改,測試會比對)
+ONBOARD_MARKERS = ("「已就緒」", "「已更新」")
 TRANSITIONS[("queued", "read")] = ("seat", "system")
 TRANSITIONS[("delivered", "read")] = ("seat", "system")
 ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping", "notice_read")   # 後兩個:stage-tidy 機器層(10-13)
@@ -1452,11 +1454,22 @@ def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_chec
     return out
 
 
+def _is_onboard_msg(msg):
+    """這封是不是開席單:正文(長訊 ⇒ 落檔內容)裡有帶「」的回執字。只防 id 傳錯,不是防線(同帳號 AI 本來就能改信檔)。"""
+    text = _relay_text(msg)
+    if text is False:
+        text = msg
+    return isinstance(text, str) and any(m in text for m in ONBOARD_MARKERS)
+
+
 def mark_onboard_acked(seat, item_id, env=None, now=None):
-    """開席單回執到了 ⇒ 系統代標那一封已讀(ONBOARD_ACK_WHY)。已讀 / 已結 / 人審中 ⇒ 不動,回 ok=False。"""
+    """開席單回執到了 ⇒ 系統代標那一封已讀(ONBOARD_ACK_WHY)。已讀 / 已結 / 人審中 ⇒ 不動,回 ok=False;
+    不是開席單(例如真人來信)⇒ 不動,回 why=not_onboard。"""
     it = _load_item(seat, item_id, env)
     if not it or it.get("status") not in ("queued", "delivered"):
         return {"ok": False, "why": "not_unread"}
+    if not _is_onboard_msg(it.get("msg")):
+        return {"ok": False, "why": "not_onboard"}
     out = _transition(seat, item_id, "read", "system", env=env, now=now, why=ONBOARD_ACK_WHY,
                       if_rev=it.get("rev"), no_rev_check=False)
     if out.get("ok"):

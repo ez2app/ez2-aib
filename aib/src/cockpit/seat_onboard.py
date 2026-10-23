@@ -1372,7 +1372,7 @@ def write_baseline_file(window, seat_id, text):
 def mark_onboard_read(queue_seat, queue_id, env=None):
     """10-24 @abb89:回執到了 ⇒ 把這次投遞的那一封開席單標已讀(不然狀態列一直「未讀 dm 1」)。
     沒有 id(直貼、乾跑、橋接席)⇒ 不做;標不了只落錯誤檔,不改開席結果。"""
-    if not (queue_seat and queue_id):
+    if not (queue_seat and str(queue_id or "").startswith("q_")):    # dm-ctl 記錄失敗時回 id=FAILED
         return False
     try:
         import dm_queue as DQ
@@ -1706,12 +1706,13 @@ def onboard_one(window, seat_id, role, template_text, sha, ledger_path,
         # O4:脫離守望用載入窗,不用呼叫端傳來的同步 timeout。
         spawn_ack_watcher(window, seat_id, sha, baseline, ledger_path,
                           DETACHED_ACK_TIMEOUT_S, interval_s, ack_token=expected_ack,
-                          queue_seat=sent_to if dm_result.get("id") else "", queue_id=dm_result.get("id") or "")
+                          queue_seat=target_code if (target_code and dm_result.get("id")) else "",
+                          queue_id=dm_result.get("id") or "")
         return "pending"
     if wait_ack(window, baseline, timeout_s, interval_s, sleep=sleep, ack_tokens=(expected_ack,)):
         record(ledger_path, "message.inbound", seat_id, window, sha)
-        if dm_result.get("id"):
-            mark_onboard_read(sent_to, dm_result["id"], env=env)
+        if target_code and dm_result.get("id"):      # 只認明傳的收件席碼(窗號不是佇列的席碼)
+            mark_onboard_read(target_code, dm_result["id"], env=env)
         try:
             open_attempt.mark_ready_for_window(
                 env.get("EZ2_AIB_INSTANCE_HOME"), window)

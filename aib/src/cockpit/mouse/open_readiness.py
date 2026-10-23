@@ -111,7 +111,8 @@ def label_suffix(state, detail, locale=None):
         text = i18n_lib.t(key, locale=locale)
     except Exception:  # noqa: BLE001
         return ""
-    return "" if not text or text == key else text
+    # i18n_lib.t 找不到鍵回 "!!鍵!!" ⇒ 當成沒字(main 退回 ok),選單上不出現 !!aib.context…!!
+    return "" if not text or text == key or text.startswith("!!") else text
 
 
 def ask_key(provider, environ=None, runner=None, locale=None):
@@ -121,7 +122,10 @@ def ask_key(provider, environ=None, runner=None, locale=None):
     state, name = check(provider, environ)
     if state != "need_key":
         return ""
-    cmd = ["bash", str(COCKPIT / "aib"), "secret", "ask", name]
+    # 測試用:EZ2_OPEN_READINESS_AIB 換成樁,dry-run 被突變吃掉也不會在真人螢幕叫出輸入框 / Touch ID。
+    #   不是防線(同帳號程式本來就能換檔);真正擋 AI 替人存金鑰的是 secret ask 自己的 Touch ID。
+    aib_bin = _env(environ).get("EZ2_OPEN_READINESS_AIB") or str(COCKPIT / "aib")
+    cmd = ["bash", aib_bin, "secret", "ask", name]
     try:
         rc = (runner or subprocess.run)(cmd, stdin=subprocess.DEVNULL, timeout=600).returncode
     except (OSError, subprocess.TimeoutExpired):
