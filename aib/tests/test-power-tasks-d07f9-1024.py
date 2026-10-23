@@ -12,8 +12,10 @@ T7 detect:aib 版本比第一次看到的新 ⇒ aib_upgraded;第一次只記 fi
 T8 detect:座位 / 人格 / 第二大腦 / 兩家以上在線 / 交接單(自動存的不算)/ 連續出發
 T9 redeem:讀 stdin 一行、不回顯、rc 2 power_redeem_not_yet;aib power tier / redeem 從總管 power_status.main 轉得到
 T10 detectable:沒有偵測器的條 = false(頁面照實標)
+T12 SPEC §15:沒出發 ⇒ SSR / UR locked、unlock = launch_recorded、on false、每條 locked、tier on 回 power_tier_locked;
+    出發過(記住)⇒ 解鎖、unlock null;room_tiers 分級數字;since = done 時間
 T11 where(SPEC §14):動力室 30 條 = R1–12、SR1–7 + 12–13、SSR2–5 + 11、UR4–7;其餘 14 條 room;tiers / all 只算 power、room 另算
-刀(複本):K1 done 不記住 ⇒ T2 紅;K2 舊 id 不搬 ⇒ T3 紅;K3 關等級連偵測都停 ⇒ T4 紅;K4 艦長室的條照列動力室 ⇒ T11 紅
+刀(複本):K1 done 不記住 ⇒ T2 紅;K2 舊 id 不搬 ⇒ T3 紅;K3 關等級連偵測都停 ⇒ T4 紅;K4 艦長室的條照列動力室 ⇒ T11 紅;K5 不鎖 SSR / UR ⇒ T12 紅
 """
 import datetime
 import io
@@ -66,7 +68,8 @@ class Tasks(unittest.TestCase):
         count = {k: sum(1 for t in st["tasks"] if t["tier"] == k) for k in PT.TIERS}
         self.assertEqual(count, {"R": 12, "SR": 13, "SSR": 12, "UR": 7})
         for t in st["tasks"]:
-            self.assertEqual(set(t), {"id", "tier", "where", "state", "reward", "detect", "detectable", "requires"})
+            self.assertEqual(set(t), {"id", "tier", "where", "state", "since", "locked", "reward", "detect", "detectable",
+                                      "requires"})
             self.assertIsNone(t["reward"])
             self.assertIn(t["requires"], (None, "room", "server", "skins"))
         self.assertEqual(st["all"], {"done": 0, "total": 30})
@@ -106,7 +109,7 @@ class Tasks(unittest.TestCase):
         self.assertFalse(st["tiers"]["SR"]["on"])
         self.assertTrue(st["tiers"]["R"]["on"])
         self.assertEqual(by_id(st)["SR1"]["state"], "done")                # 關了偵測照記
-        self.assertEqual(st["tiers"]["SR"], {"on": False, "done": 1, "total": 9})
+        self.assertEqual(st["tiers"]["SR"], {"on": False, "done": 1, "total": 9, "locked": False, "unlock": None})
         self.assertEqual(st["tiers"]["R"]["done"], 1)
         self.assertEqual(st["all"], {"done": 2, "total": 30})
         PT.set_tier("SR", True)
@@ -145,6 +148,31 @@ class Tasks(unittest.TestCase):
         self.assertEqual(st["tiers"]["SR"]["done"], 0)
         for i in ("SSR1", "UR1"):                                          # 序號兩條歸艦長室
             self.assertEqual(by_id(st)[i]["where"], "room")
+
+    def test_t12_locks(self):
+        st = PT.onboarding_state(detector=lambda r, m, t: {"seat_registered": True}, now=NOW)
+        self.assertEqual(list(st), C["onboarding"]["fields"])
+        for t in ("SSR", "UR"):
+            self.assertEqual((st["tiers"][t]["locked"], st["tiers"][t]["unlock"], st["tiers"][t]["on"]),
+                             (True, "launch_recorded", False))
+        self.assertEqual((st["tiers"]["R"]["locked"], st["tiers"]["SR"]["unlock"]), (False, None))
+        t = by_id(st)
+        self.assertEqual((t["SSR2"]["locked"], t["SSR6"]["locked"], t["UR3"]["locked"], t["SR8"]["locked"]),
+                         (True, True, True, False))
+        self.assertEqual((t["R3"]["since"], t["R4"]["since"]), (NOW, None))
+        self.assertEqual(st["room_tiers"], {"SR": {"done": 0, "total": 4, "locked": False, "unlock": None},
+                                            "SSR": {"done": 0, "total": 7, "locked": True, "unlock": "launch_recorded"},
+                                            "UR": {"done": 0, "total": 3, "locked": True, "unlock": "launch_recorded"}})
+        for tier in ("SSR", "UR"):
+            r, rc = PT.set_tier(tier, True)
+            self.assertEqual((rc, r["detail"], r["tier"]), (2, "power_tier_locked", tier))
+        self.assertEqual(PT.set_tier("SR", True)[1], 0)
+        PT.onboarding_state(detector=lambda r, m, t: {"launch_recorded": True}, now=NOW + 5)
+        st = PT.onboarding_state(detector=lambda r, m, t: {}, now=NOW + 9)          # 記住了 ⇒ 一直開
+        self.assertEqual((st["tiers"]["SSR"]["locked"], st["tiers"]["SSR"]["unlock"], st["tiers"]["SSR"]["on"]),
+                         (False, None, True))
+        self.assertFalse(by_id(st)["UR3"]["locked"])
+        self.assertEqual(PT.set_tier("UR", False)[1], 0)
 
 
 class Streak(unittest.TestCase):
@@ -243,6 +271,11 @@ class Redeem(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             rc = P.main(["tier", "UR", "off", "--json"])
+        self.assertEqual((rc, json.loads(buf.getvalue())["detail"]), (2, "power_tier_locked"))   # 還沒出發 ⇒ 鎖著
+        PT.onboarding_state(detector=lambda r, m, t: {"launch_recorded": True}, now=NOW)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = P.main(["tier", "UR", "off", "--json"])
         self.assertEqual((rc, json.loads(buf.getvalue())), (0, {"ok": True, "detail": "power_tier_set", "tier": "UR",
                                                                  "on": False}))
         with redirect_stdout(io.StringIO()):
@@ -270,6 +303,9 @@ class Knife(unittest.TestCase):
         self._knife("        if ok is True and tid and tid not in seen:",
                     "        if ok is True and tid and tid not in seen and (memo.get('tiers') or {}).get(tid.rstrip('0123456789')) is not False:",
                     "Tasks.test_t4_tiers")
+
+    def test_k5_no_lock(self):
+        self._knife('UNLOCK = {"SSR": "launch_recorded", "UR": "launch_recorded"}', "UNLOCK = {}", "Tasks.test_t12_locks")
 
     def test_k4_room_in_power(self):
         self._knife('"where": "room" if tid in IN_ROOM else "power"', '"where": "power"', "Tasks.test_t11_where")

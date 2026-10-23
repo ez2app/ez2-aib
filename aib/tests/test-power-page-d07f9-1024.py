@@ -57,7 +57,8 @@ def status():
                                                           {"id": "SR1", "tier": "SR", "state": "todo", "reward": None, "detectable": True},
                                                           {"id": "R99", "tier": "R", "where": "room", "state": "todo",
                                                            "reward": None, "detectable": True}],
-                           "tiers": {"R": {"on": True, "done": 1, "total": 3}, "SR": {"on": True, "done": 0, "total": 1}},
+                           "tiers": {"R": {"on": True, "done": 1, "total": 3}, "SR": {"on": True, "done": 0, "total": 1},
+                                     "SSR": {"on": False, "done": 0, "total": 5, "locked": True, "unlock": "launch_recorded"}},
                            "all": {"done": 1, "total": 4}},
             "catalog": {"available": False, "items": []}, "hint": None}
 
@@ -87,6 +88,8 @@ class Page(unittest.TestCase):
         self.assertIn("1/4", h)
         self.assertIn("R 1/3", h)
         self.assertIn("SR 0/1", h)
+        self.assertIn("SSR 🔒 " + PG.T("tier_locked"), h)
+        self.assertNotIn("SSR 0/5", h)
         self.assertIn(PG.T("task_soon"), h)                      # 偵測不到的條照實標
         self.assertNotIn(PG.T("task_sr1"), h)                     # 極簡頁只列 R
         self.assertNotIn("task_r99", h)                              # where = room 的不列(SPEC §14)
@@ -133,8 +136,13 @@ class Page(unittest.TestCase):
             self.assertIn("aib.power.page." + k, got["zh-TW"], k)
         for light in PG.LIGHT_COLOR:
             self.assertIn("aib.power.page.light_" + light, got["zh-TW"])
-        for n in range(1, 13):
-            self.assertIn("aib.power.page.task_r%d" % n, got["zh-TW"])
+        import power_tasks
+        for tid, _tier, _code, _req in power_tasks.TASKS:                  # 動力室 30 條:標題 + 做法四語齊
+            if tid in power_tasks.IN_ROOM:
+                continue
+            for suffix in ("", "_how"):
+                for loc in got:
+                    self.assertIn("aib.power.page.task_%s%s" % (tid.lower(), suffix), got[loc], (loc, tid))
 
 
 class Knife(unittest.TestCase):

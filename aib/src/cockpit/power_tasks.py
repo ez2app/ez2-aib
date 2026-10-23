@@ -50,6 +50,9 @@ TASK_IDS = tuple(t[0] for t in TASKS)
 # 資料照記、偵測照接，動力室頁不列。動力室 = 免費純 CLI 的 30 條
 IN_ROOM = frozenset(("SR8", "SR9", "SR10", "SR11", "SSR1", "SSR6", "SSR7", "SSR8", "SSR9", "SSR10", "SSR12",
                      "UR1", "UR2", "UR3"))
+# SPEC §15(Andy 02:5x):SSR / UR 兩級鎖到「出發」之後才開;解鎖條件給代碼,頁面不自己猜。
+# 「降落地球」是否只指進艦長室待 Andy 確認 ⇒ 先用出發紀錄(R6 launch_recorded,記住了就一直開)
+UNLOCK = {"SSR": "launch_recorded", "UR": "launch_recorded"}
 LEGACY = {"first_seat": "R3", "bind_seat": "R5", "first_handoff": "R9"}   # 10-24 第一版的三條 ⇒ 搬到新編號
 
 
@@ -169,8 +172,9 @@ DETECTABLE = frozenset(("power_opened", "born", "seat_registered", "persona_boun
 
 
 def onboarding_state(*, detector=None, now=None, today=None):
-    """{birth_done, tasks:[{id, tier, where, state, reward, detect, detectable, requires}], tiers:{級: {on, done, total}},
-    all:{done, total}, room:{done, total}};tiers / all 只算 where = power。"""
+    """{birth_done, tasks:[{id, tier, where, state, since, locked, reward, detect, detectable, requires}],
+    tiers:{級: {on, done, total, locked, unlock}}, all:{done, total}, room:{done, total}, room_tiers:{級: {done, total, locked, unlock}}};
+    tiers / all 只算 where = power。"""
     root = seats_dir_lib.state_root()[0]
     now = time.time() if now is None else now
     memo = _load(_path())
@@ -196,16 +200,35 @@ def onboarding_state(*, detector=None, now=None, today=None):
         memo["done"] = seen
         _save(_path(), memo)
     tiers_on = memo.get("tiers") if isinstance(memo.get("tiers"), dict) else {}
+    locked = _locked(seen)
     tasks = [{"id": tid, "tier": tier, "where": "room" if tid in IN_ROOM else "power",
-              "state": "done" if tid in seen else "todo", "reward": None, "detect": code,
+              "state": "done" if tid in seen else "todo", "since": int(seen[tid]) if tid in seen else None,
+              "locked": locked[tier], "reward": None, "detect": code,
               "detectable": code in DETECTABLE, "requires": req} for tid, tier, code, req in TASKS]
 
     def count(rows):
         return {"done": sum(x["state"] == "done" for x in rows), "total": len(rows)}
+
+    def by_tier(rows, with_on):
+        out = {}
+        for t in TIERS:
+            mine = [x for x in rows if x["tier"] == t]
+            if not mine:
+                continue
+            row = {"on": tiers_on.get(t) is not False and not locked[t]} if with_on else {}
+            row.update(count(mine), locked=locked[t], unlock=UNLOCK.get(t) if locked[t] else None)
+            out[t] = row
+        return out
     power = [x for x in tasks if x["where"] == "power"]
-    tiers = {t: dict(on=tiers_on.get(t) is not False, **count([x for x in power if x["tier"] == t])) for t in TIERS}
-    return {"birth_done": bool(_load(birth_path()).get("at")), "tasks": tasks, "tiers": tiers, "all": count(power),
-            "room": count([x for x in tasks if x["where"] == "room"])}
+    room = [x for x in tasks if x["where"] == "room"]
+    return {"birth_done": bool(_load(birth_path()).get("at")), "tasks": tasks, "tiers": by_tier(power, True),
+            "all": count(power), "room": count(room), "room_tiers": by_tier(room, False)}
+
+
+def _locked(seen):
+    """{級: 鎖著沒};解鎖條件 = UNLOCK 的偵測代碼對應的任務做過(記住了就一直開)。"""
+    by_code = {code: tid for tid, _tier, code, _req in TASKS}
+    return {t: bool(UNLOCK.get(t)) and by_code.get(UNLOCK[t]) not in seen for t in TIERS}
 
 
 def set_tier(tier, on):
@@ -213,6 +236,9 @@ def set_tier(tier, on):
     if tier not in TIERS:
         return {"ok": False, "detail": "power_tier_unknown", "tier": None, "on": None}, 2
     memo = _load(_path())
+    done = memo.get("done") if isinstance(memo.get("done"), dict) else {}
+    if _locked({LEGACY.get(k, k) for k in done})[tier]:
+        return {"ok": False, "detail": "power_tier_locked", "tier": tier, "on": None}, 2
     tiers = memo.get("tiers") if isinstance(memo.get("tiers"), dict) else {}
     tiers[tier] = bool(on)
     memo["tiers"] = tiers
@@ -228,6 +254,10 @@ def redeem(read=None):
     except Exception:  # noqa: BLE001
         pass
     return {"ok": False, "detail": "power_redeem_not_yet", "item": None, "hint": None}, 2
+
+
+# 序號兌換成功時 item 的固定代碼(頁面查 i18n,不顯示核心 / 伺服器原文);伺服器上線前不會回
+REDEEM_ITEMS = ("ssr1_fleet", "ur1_full_power")
 
 
 def main(argv=None):

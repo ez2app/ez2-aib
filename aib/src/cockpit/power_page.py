@@ -79,8 +79,9 @@ def render(st, now=None):
     tasks = [t for t in tasks if t.get("where", "power") == "power"]       # 艦長室那幾條只在艦長室出現(SPEC §14)
     done = sum(1 for t in tasks if t.get("state") in ("done", "claimed"))
     tiers = ob.get("tiers") if isinstance(ob.get("tiers"), dict) else {}
-    tier_line = " · ".join("%s %s/%s" % (_e(k), _e((v or {}).get("done", 0)), _e((v or {}).get("total", 0)))
-                           for k, v in tiers.items() if isinstance(v, dict))
+    tier_line = " · ".join(("%s 🔒 %s" % (_e(k), _e(T("tier_locked"))) if v.get("locked") else
+                            "%s %s/%s" % (_e(k), _e(v.get("done", 0)), _e(v.get("total", 0))))
+                           for k, v in tiers.items() if isinstance(v, dict))     # SSR / UR 出發後才開(SPEC §15)
     # 極簡頁只列 R(新手)這一級;其他等級看數字,完整任務板在正式頁
     task_li = "".join('<li class="%s">%s %s%s</li>' % (
         "ok" if t.get("state") in ("done", "claimed") else "todo",
