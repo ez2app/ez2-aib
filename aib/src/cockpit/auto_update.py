@@ -78,7 +78,12 @@ LEASE_TTL_S = 45 * 60
 CLEAN_GAP = 5                        # 跟 install.sh clean_if_far 的 AIB_CLEAN_GAP 預設一樣
 _PATH_EXTRA = ("/opt/homebrew/bin", "/usr/local/bin")
 _AGENT_ENV_KEEP = ("HOME", "LANG", "EZ2_AIB_STATE_ROOT", "EZ2_AIB_HOME", "EZ2_AIB_LOCALE")   # 只帶路徑 / 語系,不帶 token / 開關
-_CHILD_ENV_DROP = ("AIB_INSTALL_URL",)
+# 跑 aib update 的子行程只帶白名單:開席那條會整份繼承真人終端機的環境,而 install.sh 認 AIB_PACKAGE_* / AIB_ALLOWED_SIGNERS /
+#   AIB_SOURCE / AIB_INSTALL_URL…(會換安裝程式、換發版公鑰、換來源),bash 也吃 BASH_ENV ⇒ 一律不帶，只留路徑 / 語系 / 代理 / ssh-agent
+_CHILD_ENV_KEEP = _AGENT_ENV_KEEP + ("PATH", "TMPDIR", "TERM", "USER", "LOGNAME", "SSH_AUTH_SOCK",
+                                     "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+                                     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY")
+_CHILD_ENV_KEEP_PREFIX = ("LC_",)
 DEFAULT_EXCLUDE = ("hostguard",)     # 10-23 @abb89:這台的 hostguard = 正式站部署來源,換版要主人點頭
 PLUGIN_SOURCE = "git@github.com:ez2app/aib-plugins.git"   # 付費外掛的簽章來源(main);AIB_AUTO_UPDATE_PLUGIN_SOURCE 可換
 PLUGIN_BRANCH = "main"   # 自動更新只用內建的官方安裝網址
@@ -332,7 +337,7 @@ def _launchctl(*args):
 def _git(root, *args, env=None, timeout=30):
     try:
         p = subprocess.run(["git", "-C", str(root)] + list(args), capture_output=True, text=True, timeout=timeout,
-                           stdin=subprocess.DEVNULL, env=env)
+                           stdin=subprocess.DEVNULL, env=_child_env(os.environ) if env is None else env)   # 席位帶來的 GIT_DIR 等不帶
         return p.returncode, p.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return 1, ""
@@ -422,7 +427,7 @@ def far_behind(old, new, gap=CLEAN_GAP):
 
 
 def fetch(root, env=None):
-    e = dict(os.environ if env is None else env)
+    e = _child_env(os.environ if env is None else env)
     e.update(GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=SSH_HARDENED)
     rc, _ = _git(root, "fetch", "-q", "--tags", "origin", env=e, timeout=120)
     return rc == 0
@@ -578,7 +583,7 @@ def fetch_plugin_source(env=None):
     env = dict(os.environ if env is None else env)
     src = env.get("AIB_AUTO_UPDATE_PLUGIN_SOURCE") or PLUGIN_SOURCE
     cache = plugin_cache(env)
-    e = dict(env, GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=SSH_HARDENED)
+    e = dict(_child_env(env), GIT_TERMINAL_PROMPT="0", GIT_SSH_COMMAND=SSH_HARDENED)
     if not (cache / "HEAD").exists():
         cache.parent.mkdir(parents=True, exist_ok=True)
         if _git(cache.parent, "init", "-q", "--bare", cache.name, env=e)[0] != 0:
@@ -634,7 +639,7 @@ def paid_behind(cache, excluded=(), env=None):
 def stage_paid(cache, name, env=None):
     """git archive 出 aib-plugins main 的那一個資料夾到暫存處;回資料夾路徑(失敗 ⇒ None)。路徑跑出去 / 連結一律拒。"""
     rc = subprocess.run(["git", "-C", str(cache), "archive", "--format=tar", PLUGIN_BRANCH, name],
-                        capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
+                        capture_output=True, stdin=subprocess.DEVNULL, timeout=120, env=_child_env(os.environ))
     if rc.returncode != 0:
         return None
     base = state_root(env) / "cache" / "auto-update"
@@ -663,10 +668,7 @@ def stage_paid(cache, name, env=None):
 # ───────────────────────────── 查 / 更新 ─────────────────────────────
 
 def _child_env(env):
-    e = dict(env)
-    for k in _CHILD_ENV_DROP:
-        e.pop(k, None)
-    return e
+    return {k: str(v) for k, v in env.items() if k in _CHILD_ENV_KEEP or k.startswith(_CHILD_ENV_KEEP_PREFIX)}
 
 
 def run_core_update(env, root=None):
@@ -784,7 +786,7 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
         try:
             old = plan["have"]
             if plan["behind"]:
-                rc = run_update(_child_env(env), root)       # 子行程不帶 AIB_INSTALL_URL:只用內建的官方安裝網址
+                rc = run_update(_child_env(env), root)       # 子行程只帶白名單(不帶 AIB_INSTALL_URL / AIB_PACKAGE_* 等):只用內建的官方安裝網址
                 res["update_rc"] = rc
                 if rc != 0:
                     return done("failed", have=ref_version(root, "HEAD"))

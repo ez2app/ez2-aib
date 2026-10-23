@@ -13,7 +13,7 @@ G2 安裝目錄有沒提交的改動 ⇒ refused_dirty、不更新
 G3 一小時內才更新過 ⇒ too_soon;開席 10 分鐘內查過 ⇒ checked_recently(不連網路)
 G4 正在跑 aib test / 推包 / git push ⇒ refused_tests / refused_shipping / refused_push;自己的 pid 不算
 G5 只快轉:本機有自己的提交(歷史分叉)⇒ refused_diverged;在別的分支 ⇒ refused_branch;本機比正式版新 ⇒ up_to_date
-G6 安全 ⇒ 跑一次 update(子環境沒有 AIB_INSTALL_URL)、拿租約再放掉、記 last_update、艦長室事件只帶版號、叫 room reload;
+G6 安全 ⇒ 跑一次 update(子環境只帶白名單:沒有 AIB_* / GIT_* / BASH_ENV…)、拿租約再放掉、記 last_update、艦長室事件只帶版號、叫 room reload;
    doctor 一行「已自動更新到」;接著再查 ⇒ too_soon,過兩小時 ⇒ up_to_date
 G7 落後太多(大 / 中版號不同,或差 5 個小版以上)⇒ refused_far_behind;連不上來源 ⇒ offline;AIB_AUTO_UPDATE=0 ⇒ 什麼都不做
 P1 外掛簽章驗不過 ⇒ 不列進落後清單、不裝;install_plugin 遇到沒簽的直接 rc 3、不叫 aib_ext.install
@@ -314,11 +314,21 @@ class Gates(Base):
 
     def test_g6_update_success(self):
         self.make_repos()
-        env = dict(self.env, AIB_INSTALL_URL="file:///tmp/evil-installer.sh")
+        # 開席那條整份繼承真人終端機的環境:install.sh 認的改來源 / 換安裝程式 / 換公鑰變數、bash 的 BASH_ENV、git 的 GIT_* 一律不帶
+        bad = {"AIB_INSTALL_URL": "file:///tmp/evil-installer.sh", "AIB_PACKAGE_INSTALLER": "/tmp/evil.sh",
+               "AIB_PACKAGE_BUNDLE_DIR": "/tmp/evil", "AIB_PACKAGE_BASE": "file:///tmp/evil", "AIB_PACKAGE_INSTALLER_URL": "file:///tmp/e",
+               "AIB_PACKAGE_INSTALLER_SHA256": "0" * 64, "AIB_ALLOWED_SIGNERS": "/tmp/evil-signers", "AIB_SOURCE": "file:///tmp/evil.git",
+               "AIB_DIR": "/tmp/elsewhere", "AIB_BREW_INSTALL_URL": "file:///tmp/b.sh", "AIB_CLEAN_GAP": "99999",
+               "BASH_ENV": "/tmp/evil-bashenv", "ENV": "/tmp/evil-env", "GIT_SSH_COMMAND": "evil", "GIT_DIR": "/tmp/x",
+               "PYTHONPATH": "/tmp/evil-py", "DYLD_INSERT_LIBRARIES": "/tmp/e.dylib", "GH_TOKEN": "ghp_secret"}
+        env = dict(self.env, SSH_AUTH_SOCK="/tmp/agent.sock", LC_ALL="zh_TW.UTF-8", HTTPS_PROXY="http://127.0.0.1:3128", **bad)
         res = self.run_check(env=env)
         self.assertEqual(res["result"], "updated", res)
         self.assertEqual(len(self.updates), 1)
-        self.assertNotIn("AIB_INSTALL_URL", self.updates[0])
+        self.assertEqual(sorted(set(bad) & set(self.updates[0])), [])
+        self.assertEqual([k for k in self.updates[0] if k.startswith(("AIB_", "GIT_", "PYTHON", "DYLD_", "LD_"))], [])
+        for k in ("SSH_AUTH_SOCK", "LC_ALL", "HTTPS_PROXY", "HOME", "EZ2_AIB_STATE_ROOT"):
+            self.assertEqual(self.updates[0].get(k), env[k], k)
         self.assertEqual(self.leases, ["acquire", "release"])
         self.assertEqual(self.rooms, [1])
         self.assertEqual((self.inst / "aib" / "VERSION").read_text().strip(), "0.1.2")
@@ -414,6 +424,27 @@ class Plugins(Base):
             self.installs.clear()
             res = self.run_check(ext_base=base, now=NOW + 7200, install=lambda f, o: 3)
             self.assertEqual(res["result"], "plugins_failed")
+
+    def test_p2b_signed_but_not_installed_or_excluded_skipped(self):
+        """附帶的包簽過、但這台沒裝過 ⇒ 不列、不裝;裝過但在不自動更新清單 ⇒ 也不裝。"""
+        base, d = self.ext()
+        fresh = base / "fresh-skill"
+        fresh.mkdir()
+        (fresh / "aib-ext.json").write_text(json.dumps({"name": "fresh-skill", "kind": "skill", "version": "2.0.0",
+                                                         "requires_aib": "0.0.1", "files": {}, "signature": "ed25519:x"}))
+        import aib_ext
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True):
+            self.assertEqual([r["name"] for r in AU.plugins_behind(base)], ["demo-skill"])
+            self.make_repos(latest=None)
+            res = self.run_check(ext_base=base)
+            self.assertEqual(res["result"], "updated", res)
+            self.assertEqual(self.installs, [str(d)])
+            self.assertNotIn(str(fresh), self.installs)
+            self.installs.clear()
+            AU.write_excludes(["hostguard", "demo-skill"], self.env)
+            res = self.run_check(ext_base=base, now=NOW + 7200)
+            self.assertNotIn("demo-skill", res.get("plugins_behind", []))
+            self.assertEqual(self.installs, [])
 
     def test_p3_core_update_leaves_plugins_to_installer(self):
         base, d = self.ext()
