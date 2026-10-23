@@ -69,6 +69,11 @@ TMP_ROOT = "/private/tmp" if os.path.isdir("/private/tmp") and os.access("/priva
 PROBE_HOME = os.path.join(TMP_ROOT, ".aib-verify-probe-home")   # HOME 在環境指紋裡本來就排除(VOLATILE_ENV),值不影響鑰匙
 
 
+def _is_core_tree(root: Path) -> bool:
+    """這棵是核心倉(倉根 = aib/ 或它的上一層 ez2-aib)。"""
+    return any((r / "src" / "cockpit" / "aib").is_file() for r in (root, root / "aib"))
+
+
 def clean_test_env(home: str, repo_root: str | Path = ROOT) -> dict[str, str]:
     """以 env -i 語意組出明列白名單的測試環境。"""
     path = "/opt/homebrew/opt/flock/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -99,6 +104,12 @@ def clean_test_env(home: str, repo_root: str | Path = ROOT) -> dict[str, str]:
             env[k] = os.environ[k]
     if os.environ.get("VIRTUAL_ENV") and os.path.isdir(os.path.join(os.environ["VIRTUAL_ENV"], "bin")):
         env["PATH"] = os.path.join(os.environ["VIRTUAL_ENV"], "bin") + os.pathsep + env["PATH"]
+    # 10-23(@74e8b 回報、@abb89 派):外掛倉(aib-plugins)的測試靠 AIB_CORE_DIR 找核心(seat_address、roles…),
+    #   以前一起被洗掉 ⇒ 38/135 紅 No module named。只對「不是核心倉」的樹放這一個:明講的值是資料夾就照抄,
+    #   沒講就帶正在跑的核心(ROOT)。核心倉自己照舊不帶(環境指紋不變);其他 AIB_* 照舊不放行。
+    if not _is_core_tree(root):
+        core = os.environ.get("AIB_CORE_DIR") or ""
+        env["AIB_CORE_DIR"] = core if os.path.isabs(core) and os.path.isdir(core) else str(ROOT)
     # ★ review r13(畫面向)撤回 r12 的放行:真 tmux 開關**不**帶進來。aib test 就地在測試檔所在的樹跑(test_entry
     #   不抄副本),而有真 tmux 測試的刀直接改寫 ROOT 下的產品檔(test-cabin-door-whitelist-c37be.py 把艙門拆掉、
     #   逾時被強殺時 finally 不跑 ⇒ 正在用的產品樹停在沒有門的狀態)。真 tmux 測試維持「直接執行、自己負責」,

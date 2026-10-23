@@ -122,12 +122,11 @@ class Ui(Box):
         buf = io.StringIO()
         rc = self.UI.open_room(out=buf, run=self.fake_run(alive=False, after_open=True), popen=self.fake_popen,
                                exists=self.exists_for("Google Chrome"), installed=True)
-        self.assertEqual(rc, 0, buf.getvalue())
+        self.assertEqual(rc, 2, buf.getvalue())
         opens = [(a, k) for a, k in self.runs if a[1:3] == ["room", "open"] and a[3:4] != ["--help"]]
-        self.assertEqual(len(opens), 1)
-        first = opens[0][1]["env"]["PATH"].split(os.pathsep)[0]
-        self.assertIn("aib-ui-noopen", first, "舊外掛:PATH 最前面要是擋系統瀏覽器的假 open")
-        self.assertNotIn("--no-browser", opens[0][0], "舊外掛不認 --no-browser,不能帶")
+        self.assertEqual(opens, [], "第二波 #7:舊外掛(沒 --no-browser)不起伺服器、不再用假 open 偷擋瀏覽器")
+        self.assertIn("太舊", buf.getvalue())
+        self.assertEqual(self.popens, [], "外掛太舊就不開視窗")
         self.runs.clear()
         rc = self.UI.open_room(out=io.StringIO(), run=self.fake_run(alive=False, after_open=True, no_browser=True), popen=self.fake_popen,
                                exists=self.exists_for("Google Chrome"), installed=True)
@@ -137,7 +136,7 @@ class Ui(Box):
         self.assertNotIn("env", opens[0][1])
         self.popens.clear()
         buf = io.StringIO()
-        rc = self.UI.open_room(out=buf, run=self.fake_run(alive=False, after_open=False), popen=self.fake_popen,
+        rc = self.UI.open_room(out=buf, run=self.fake_run(alive=False, after_open=False, no_browser=True), popen=self.fake_popen,
                                exists=self.exists_for("Google Chrome"), installed=True)
         self.assertEqual(rc, 2)
         self.assertIn("起不來", buf.getvalue())

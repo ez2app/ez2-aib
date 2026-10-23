@@ -4772,6 +4772,7 @@
   "aib.ui.set_terminal": "Done: plain `aib` now prints help / classic cockpit (open the room with: aib room)",
   "aib.ui.room_missing": "The Captain's Room plugin is not installed here (aib plugins install <package>); using the terminal:",
   "aib.ui.room_failed": "The Captain's Room did not start ({why}); using the terminal:",
+  "aib.ui.room_too_old": "The Captain's Room plugin is too old (0.1.33+ needed for aib room open --no-browser; update with aib plugins install <package>); using the terminal:",
   "aib.ui.opened_app": "Captain's Room opened in its own window ({browser}); closing it does not affect the seats. Back to terminal: aib ui terminal",
   "aib.ui.opened_browser": "No Chrome / Edge / Brave here, so the Captain's Room opened in the default browser (with an address bar); install one of them for a standalone window",
   "aib.ui.open_failed": "The Captain's Room is running but no window could be opened; open it yourself: {url}",
