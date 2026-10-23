@@ -9,6 +9,7 @@ D4 record_launch:同一組移到最前、最多 20 筆;不認得的品牌丟 Val
 D5 紀錄檔被亂寫(型別錯、控制字元、超長、不認得的品牌)⇒ 讀的時候濾掉、不炸
 D6 aib power launch / fav 從總管 power_status.main 轉得到
 D7 第二大腦清單只讀資料夾身分索引:active + 有 routeKey;退役 / 怪代號 / 重複不列;沒索引 ⇒ []
+D9 model_choices:預設在前、再接之前出發用過的(去重、怪字串不列、別家不混);launch_days 記日子、最多 60 天
 D8 launch --dry-run:開席 → newproj 兩步指令;怪品牌 / 模式 / 角色 / 模型(像旗標、帶分號)/ 不在清單的人格與大腦 ⇒ rc 2 bad;
    沒帶 --dry-run ⇒ rc 2 not_yet(不執行)
 刀(複本):K1 不截 20 筆 ⇒ D4 紅;K2 冠位人格照列 ⇒ D2 紅;K3 模型不驗 ⇒ D8 紅
@@ -167,6 +168,35 @@ class Launch(unittest.TestCase):
         with redirect_stdout(buf):
             rc = P.main(["launch", "claude", "--dry-run", "--json"])
         self.assertEqual((rc, json.loads(buf.getvalue())["detail"]), (0, "power_launch_plan"))
+
+    def test_d9_choices_days(self):
+        prov = json.loads((REPO / "src" / "cockpit" / "providers.json").read_text(encoding="utf-8"))["providers"]
+        want = [p["default_requested_model"] for p in prov if p.get("id") == "claude"][0]
+        self.assertEqual(PL.model_choices()["claude"], [want])
+        PL.record_launch("claude", "m-old", now=1000)
+        PL.record_launch("claude", want, now=1001)
+        PL.record_launch("codex", "gx", now=1002)
+        PL.record_launch("claude", "m-new", now=1003)
+        got = PL.launch_list()["model_choices"]
+        self.assertEqual(got["claude"], [want, "m-new", "m-old"])
+        self.assertIn("gx", got["codex"])
+        self.assertNotIn("gx", got["claude"])
+        self.assertEqual(set(got), set(PL.BRANDS))
+        d = PL._load()
+        d["recent"].insert(0, {"brand": "claude", "model": "--evil x", "at": 5})
+        PL._save(d)
+        self.assertNotIn("--evil x", PL.model_choices()["claude"])
+        days = PL.launch_days()
+        self.assertEqual(len(days), 1)
+        for i in range(70):
+            PL.record_launch("grok", now=86400 * (20000 + i))
+        days = PL.launch_days()
+        self.assertEqual(len(days), PL.DAYS_MAX)
+        self.assertEqual(days, sorted(days))
+        d = PL._load()
+        d["days"] = ["2026-10-24", "x", 3, "2026-10-24;rm"]
+        PL._save(d)
+        self.assertEqual(PL.launch_days(), ["2026-10-24"])
 
 
 class Knife(unittest.TestCase):

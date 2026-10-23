@@ -27,6 +27,7 @@ import seats_dir_lib  # noqa: E402
 
 BRANDS = ("claude", "codex", "grok", "copilot", "agy")
 RECENT_MAX = 20
+DAYS_MAX = 60
 _TEXT_MAX = 128
 
 
@@ -144,8 +145,22 @@ def brains(vault=None):
 
 def launch_list():
     favs = favorites()
-    return {"ok": True, "detail": "power_launch_list", "models": models(), "personas": personas(favs=set(favs)),
-            "brains": brains(), "recent": recent(), "favorites": favs}
+    rec = recent()
+    return {"ok": True, "detail": "power_launch_list", "models": models(), "model_choices": model_choices(rec),
+            "personas": personas(favs=set(favs)), "brains": brains(), "recent": rec, "favorites": favs}
+
+
+def model_choices(rec=None):
+    """{品牌: [預設模型, 之前出發用過的模型…]}。各家正式模型清單還沒有正本(providers.json 只有預設)⇒ 不自己猜 id。"""
+    out = {}
+    defaults = models()
+    for b in BRANDS:
+        seen = [defaults[b]] if defaults[b] else []
+        for r in rec if rec is not None else recent():
+            if r["brand"] == b and r["model"] and r["model"] not in seen and MODEL_RE.match(r["model"]):
+                seen.append(r["model"])
+        out[b] = seen
+    return out
 
 
 MODES = ("safe", "dgrs")
@@ -206,8 +221,15 @@ def record_launch(brand, model=None, persona=None, brain=None, now=None):
     d = _load()
     old = [r for r in recent() if (r["brand"], r["model"], r["persona"], r["brain"]) != key]
     d["recent"] = ([row] + old)[:RECENT_MAX]
+    day = time.strftime("%Y-%m-%d", time.localtime(row["at"]))
+    d["days"] = sorted(set(launch_days()) | {day})[-DAYS_MAX:]      # 連續出發天數(任務 SR12 / SSR11 / UR5)
     _save(d)
     return row
+
+
+def launch_days():
+    """出過發的日子('YYYY-MM-DD',最多留 DAYS_MAX 天)。"""
+    return [x for x in (_load().get("days") or []) if isinstance(x, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", x)]
 
 
 def main(argv=None):

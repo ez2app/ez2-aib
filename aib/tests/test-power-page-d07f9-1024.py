@@ -51,9 +51,12 @@ def status():
                        {"key": "disk", "ok": True, "value": 50.0, "hint": None},
                        {"key": "touchid", "ok": None, "value": None, "hint": None}],
             "auto_update": None, "binding": {"seats": 3, "ok": 1, "not_ok": []},
-            "onboarding": {"birth_done": False, "tasks": [{"id": "first_seat", "state": "done", "reward": None},
-                                                          {"id": "bind_seat", "state": "todo", "reward": None},
-                                                          {"id": "first_handoff", "state": "todo", "reward": None}]},
+            "onboarding": {"birth_done": False, "tasks": [{"id": "R1", "tier": "R", "state": "done", "reward": None, "detectable": True},
+                                                          {"id": "R2", "tier": "R", "state": "todo", "reward": None, "detectable": True},
+                                                          {"id": "R8", "tier": "R", "state": "todo", "reward": None, "detectable": False},
+                                                          {"id": "SR1", "tier": "SR", "state": "todo", "reward": None, "detectable": True}],
+                           "tiers": {"R": {"on": True, "done": 1, "total": 3}, "SR": {"on": True, "done": 0, "total": 1}},
+                           "all": {"done": 1, "total": 4}},
             "catalog": {"available": False, "items": []}, "hint": None}
 
 
@@ -79,7 +82,11 @@ class Page(unittest.TestCase):
         h = PG.render(status())
         self.assertIn("default-src 'none'", h)
         self.assertEqual(re.findall(r'(?:src|href)\s*=\s*"?https?:', h), [])
-        self.assertIn("1/3", h)
+        self.assertIn("1/4", h)
+        self.assertIn("R 1/3", h)
+        self.assertIn("SR 0/1", h)
+        self.assertIn(PG.T("task_soon"), h)                      # 偵測不到的條照實標
+        self.assertNotIn(PG.T("task_sr1"), h)                     # 極簡頁只列 R
         self.assertIn(PG._when(2_000_000_000), h)
         h = PG.render({"ais": "junk", "onboarding": None, "health": [None, 3], "binding": []})   # 怪資料不炸
         self.assertIn("0/0", h)
@@ -123,8 +130,8 @@ class Page(unittest.TestCase):
             self.assertIn("aib.power.page." + k, got["zh-TW"], k)
         for light in PG.LIGHT_COLOR:
             self.assertIn("aib.power.page.light_" + light, got["zh-TW"])
-        for t in ("first_seat", "bind_seat", "first_handoff"):
-            self.assertIn("aib.power.page.task_" + t, got["zh-TW"])
+        for n in range(1, 13):
+            self.assertIn("aib.power.page.task_r%d" % n, got["zh-TW"])
 
 
 class Knife(unittest.TestCase):

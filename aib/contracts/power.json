@@ -96,14 +96,18 @@
  "onboarding": {
   "fields": [
    "birth_done",
-   "tasks"
+   "tasks",
+   "tiers",
+   "all"
   ],
   "birth_done": "出生設定做過沒(做過就不再自動出現)",
-  "tasks": "[{id, state, reward}];state = todo | done | claimed;done 由核心實際偵測,不是頁面按鈕;reward 是伺服器定的資源描述或 null",
+  "tasks": "[{id, tier, state, reward, detect, detectable, requires}];id = R1–R12 / SR1–SR13 / SSR1–SSR12 / UR1–UR7(課程正本 pending/PLAN-power-curriculum-abb89-1024.md);tier = R | SR | SSR | UR;state = todo | done | claimed;detect = 偵測代碼;detectable = 核心現在偵測得到(false ⇒ 頁面照實顯示「還沒接上」,不准按鈕自己勾);requires = null | room(要艦長室外掛)| server(伺服器回條)| skins;reward 這一期一律 null",
   "owner": "@d07f9 的 onboarding_state()",
   "note": "領資源(claimed)由伺服器簽發,這一期只做 todo / done 偵測;伺服器沒上線 reward 一律 null",
-  "task_ids": "first_seat(這台有過席)| bind_seat(有席人格 + 專案 + 第二大腦都綁好)| first_handoff(做過一次 aib handoff,自動存的不算);偵測到就記在 state/power-onboarding.json,之後一直 done。其他任務(換裝 / 綁手機 / 孵蛋)等核心偵測得到再加",
-  "birth_note": "birth_done = state/power-birth.json 有 at;只決定要不要先跑引導,不是防線"
+  "birth_note": "birth_done = state/power-birth.json 有 at;只決定要不要先跑引導,不是防線",
+  "tiers": "{R|SR|SSR|UR: {on, done, total}};on = 等級開關(關 = 收起不提醒、偵測照記)",
+  "all": "{done, total}:全部等級(全部完成大禮用)",
+  "detect_note": "現在接上的偵測:power_opened(動力室頁寫過)、born、seat_registered、persona_bound、brain_bound、launch_recorded、handoff_receipt(自動存的不算)、two_providers_online、aib_upgraded(比第一次看到的版本新)、launch_streak_3/7/30(以今天或昨天結尾的連續出發日)、ssr_all_done。做完一次就記住;舊 id first_seat / bind_seat / first_handoff 搬到 R3 / R5 / R9"
  },
  "catalog": {
   "fields": [
@@ -162,6 +166,7 @@
    "ok",
    "detail",
    "models",
+   "model_choices",
    "personas",
    "brains",
    "recent",
@@ -178,7 +183,8 @@
   "favorites": "[人格 uid],新加的在前",
   "owner": "@d07f9 power_launch.py",
   "note": "真正出艦(開席 + 綁人格 + 綁大腦 ⇒ 進艦長室)細節待 Andy 確認;出艦成功時呼叫 power_launch.record_launch 記一筆。最愛 / 最近是本機方便用的資料,不是防線",
-  "brains": "[{route_key, title}]:第二大腦清單 = Vault(EZ2_VAULT_DIR)資料夾身分索引 .ez2/index/folder-id-index.json 裡 active 且掛了 routeKey 的夾;不掃目錄猜;沒有 ⇒ [](頁面給「一鍵建一個」走 newproj)"
+  "brains": "[{route_key, title}]:第二大腦清單 = Vault(EZ2_VAULT_DIR)資料夾身分索引 .ez2/index/folder-id-index.json 裡 active 且掛了 routeKey 的夾;不掃目錄猜;沒有 ⇒ [](頁面給「一鍵建一個」走 newproj)",
+  "model_choices": "{brand: [預設模型, 之前出發用過的模型…]};各家正式模型清單還沒有正本(providers.json 只有 default_requested_model),不猜模型 id"
  },
  "fav_receipt": {
   "command": "aib power fav <人格 uid> [--off] [--json]",
@@ -209,5 +215,33 @@
   },
   "steps": "[{step: open | bind, argv}];open = aib <brand> <mode> <role> new [--model M](與 aib seat open 同一條主流程);bind = aib newproj --seat <new-seat> [--persona-uid] [--folder](人格 + 第二大腦一起綁,帶路由契約);<new-seat> 由 open 的回條填",
   "note": "10-24 @abb89:出艦組現成指令、依序跑、每步看回條、失敗就停;開席是本人動作,真執行時 AI 席要擋(同 seat_act 判法)。角色 / safe·dgrs 預設等 Andy 挑版時問;現在只有乾跑,頁面先複製指令"
+ },
+ "tier_receipt": {
+  "command": "aib power tier <R|SR|SSR|UR> on|off [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "tier",
+   "on"
+  ],
+  "detail": "power_tier_set | power_tier_unknown",
+  "rc": {
+   "0": "set",
+   "2": "參數錯 / unknown"
+  }
+ },
+ "redeem_receipt": {
+  "command": "aib power redeem [--json](序號從 stdin 讀)",
+  "fields": [
+   "ok",
+   "detail",
+   "item",
+   "hint"
+  ],
+  "detail": "power_redeem_not_yet(兌換伺服器上線前一律這個)",
+  "rc": {
+   "2": "not_yet"
+  },
+  "note": "SSR1 艦隊擴編令 / UR1 全動力認證。序號只在伺服器驗、一次性、綁帳號、限頻、失敗不透露存在與否;本機不存、不回顯、不放指令列(ps 看得到)。序號來源 = 商店頁販售(Andy 02:2x),物品待定;收款 / 上架先問 Andy"
  }
 }

@@ -7,13 +7,12 @@ L2 codex:login status rc 0 ⇒ green;非 0 ⇒ yellow
 L3 額度:新鮮紀錄任一窗 >= 上限 ⇒ red quota_reached,reset_at 取最晚;過期 / 99% / 別家 / 怪值不算;沒登入優先 yellow
 L4 登入狀態快取 10 分鐘;refresh 重問;forget_login 清掉
 L5 沒狀態指令的家(grok)⇒ unknown;額度到上限仍 red
-O1 新手任務:偵測到 ⇒ done,之後偵測不到也維持 done;birth_done 看 power-birth.json;id 順序固定、reward null
 G1 login:agy / 不認得 ⇒ rc 2 unsupported;已 green ⇒ rc 0 done 不起流程;拿到鏈結 ⇒ rc 0 url + code + 開瀏覽器;
    --no-open / claude ⇒ opened false;起不來 ⇒ rc 1 failed + hint 有本人指令
 G2 spawn_login 真起假 CLI:去掉 ANSI 抓第一個 https 鏈結 + 裝置碼;只印 http:// ⇒ no_url;背景行程到時被砍
 G3 _clean_url:控制字元截斷、尾巴標點去掉、超長不收
 C1 回條欄位 = 契約;light_of 五格;power_status 接得上(ais 的燈號來自這支)
-刀(複本):K1 沒登入不判 yellow ⇒ L1 紅;K2 不看新鮮度 ⇒ L3 紅;K3 done 不記住 ⇒ O1 紅
+刀(複本):K1 沒登入不判 yellow ⇒ L1 紅;K2 不看新鮮度 ⇒ L3 紅(新手任務的測試在 test-power-tasks)
 """
 import json
 import os
@@ -143,35 +142,6 @@ class Light(unittest.TestCase):
         self.assertEqual((r["light"], r["reason"]), ("unknown", "probe_failed"))
 
 
-class Onboarding(unittest.TestCase):
-    def setUp(self):
-        clear_state()
-
-    def test_o1_tasks(self):
-        r = L.onboarding_state(detect=lambda root: {"first_seat": True}, now=NOW)
-        self.assertEqual([t["id"] for t in r["tasks"]], list(L.TASK_IDS))
-        st = {t["id"]: t["state"] for t in r["tasks"]}
-        self.assertEqual(st, {"first_seat": "done", "bind_seat": "todo", "first_handoff": "todo"})
-        self.assertTrue(all(t["reward"] is None and set(t) == {"id", "state", "reward"} for t in r["tasks"]))
-        self.assertFalse(r["birth_done"])
-        r = L.onboarding_state(detect=lambda root: {}, now=NOW + 1)               # 席收掉了 ⇒ 仍算做過
-        self.assertEqual({t["id"]: t["state"] for t in r["tasks"]}["first_seat"], "done")
-        r = L.onboarding_state(detect=lambda root: 1 / 0, now=NOW + 2)            # 偵測炸了 ⇒ 不拖垮
-        self.assertEqual({t["id"]: t["state"] for t in r["tasks"]}["first_seat"], "done")
-        L._save(L.birth_path(), {"at": NOW})
-        self.assertTrue(L.onboarding_state(detect=lambda root: {})["birth_done"])
-        self.assertEqual(list(r), C["onboarding"]["fields"])
-
-    def test_o2_detect_handoff(self):
-        pend = Path(TMP) / "pending"
-        pend.mkdir(exist_ok=True)
-        (pend / "HANDOFF-abcde-AUTO-1024-0100.md").write_text("x")
-        self.assertFalse(L._detect(TMP)["first_handoff"])
-        (pend / "HANDOFF-abcde-1024-0100.md").write_text("x")
-        self.assertTrue(L._detect(TMP)["first_handoff"])
-        shutil.rmtree(pend)
-
-
 class Login(unittest.TestCase):
     def setUp(self):
         clear_state()
@@ -295,8 +265,6 @@ class Contract(unittest.TestCase):
         self.assertEqual(got["aib"]["light"], "green")
         for a in got.values():
             self.assertEqual(list(a), C["ai_row"]["fields"])
-        for k in L.TASK_IDS:
-            self.assertIn(k, C["onboarding"]["task_ids"])
         for light in ("off", "green", "yellow", "red", "unknown"):
             self.assertIn(light, C["ai_row"]["light"])
         for reason in ("login_missing", "quota_reached", "probe_failed"):
@@ -318,9 +286,6 @@ class Knife(unittest.TestCase):
         self._knife("if age is None or age > UP.STALE_S or pct < UP.USAGE_BLOCK_PCT:", "if pct < UP.USAGE_BLOCK_PCT:",
                     "Light.test_l3_quota")
 
-    def test_k3_done_not_sticky(self):
-        self._knife('"state": "done" if isinstance(seen.get(t), (int, float)) else "todo"',
-                    '"state": "done" if got.get(t) is True else "todo"', "Onboarding.test_o1_tasks")
 
 
 def tearDownModule():

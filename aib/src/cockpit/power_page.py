@@ -77,9 +77,16 @@ def render(st, now=None):
     ob = st.get("onboarding") if isinstance(st.get("onboarding"), dict) else {}
     tasks = [t for t in ob.get("tasks") or [] if isinstance(t, dict)]
     done = sum(1 for t in tasks if t.get("state") in ("done", "claimed"))
-    task_li = "".join('<li class="%s">%s %s</li>' % ("ok" if t.get("state") in ("done", "claimed") else "todo",
-                                                   "✅" if t.get("state") in ("done", "claimed") else "⬜",
-                                                   _e(T("task_" + str(t.get("id"))))) for t in tasks)
+    tiers = ob.get("tiers") if isinstance(ob.get("tiers"), dict) else {}
+    tier_line = " · ".join("%s %s/%s" % (_e(k), _e((v or {}).get("done", 0)), _e((v or {}).get("total", 0)))
+                           for k, v in tiers.items() if isinstance(v, dict))
+    # 極簡頁只列 R(新手)這一級;其他等級看數字,完整任務板在正式頁
+    task_li = "".join('<li class="%s">%s %s%s</li>' % (
+        "ok" if t.get("state") in ("done", "claimed") else "todo",
+        "✅" if t.get("state") in ("done", "claimed") else "⬜",
+        _e(T("task_" + str(t.get("id")).lower())),
+        "" if t.get("detectable", True) else ' <span class="soon">%s</span>' % _e(T("task_soon")))
+        for t in tasks if t.get("tier", "R") == "R")
     health_li = "".join('<li class="%s">%s %s%s</li>' % (
         "ok" if h.get("ok") else ("na" if h.get("ok") is None else "bad"),
         "✅" if h.get("ok") else ("·" if h.get("ok") is None else "⚠️"), _e(h.get("key")),
@@ -108,11 +115,11 @@ animation:breathe 3s ease-in-out infinite}.mod .lamp{width:10px;height:10px;bord
 code{font-size:14px;color:var(--fg);background:#161d33;padding:2px 6px;border-radius:4px;word-break:break-all}
 .cp{font:inherit;font-size:14px;color:var(--bg);background:var(--acc);border:0;border-radius:4px;padding:2px 10px;cursor:pointer}
 ul{list-style:none;margin:0;padding:0}li{padding:4px 0}li.bad{color:#ffb3ba}li.todo{color:var(--dim)}
-.foot{color:var(--dim);font-size:14px;margin-top:8px}
+.foot{color:var(--dim);font-size:14px;margin-top:8px}.soon{font-size:13px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 6px}
 </style></head><body>
 <h1>%(title)s</h1><div class="sub">%(snapshot)s</div>
 <div class="bay" id="core"><h2>%(core)s</h2><div class="grid">%(ais)s</div></div>
-<div class="bay" id="tasks"><h2>%(tasks_h)s · %(done)d/%(total)d</h2><ul>%(task_li)s</ul></div>
+<div class="bay" id="tasks"><h2>%(tasks_h)s · %(done)d/%(total)d</h2><div class="sub">%(tier_line)s</div><ul>%(task_li)s</ul></div>
 <div class="bay" id="binding"><h2>%(binding_h)s</h2><div>%(binding)s</div></div>
 <div class="bay" id="health"><h2>%(health_h)s</h2><ul>%(health_li)s</ul></div>
 <div class="foot">%(refresh)s</div>
@@ -123,7 +130,7 @@ document.querySelectorAll('.cp').forEach(function(b){b.addEventListener('click',
 </script>
 </body></html>
 """ % {"title": _e(T("title")), "snapshot": _e(T("snapshot", when=_when(now))), "core": _e(T("core")), "ais": ais,
-       "tasks_h": _e(T("tasks")), "done": done, "total": len(tasks), "task_li": task_li,
+       "tasks_h": _e(T("tasks")), "done": done, "total": len(tasks), "task_li": task_li, "tier_line": tier_line,
        "binding_h": _e(T("binding")), "binding": _e(T("binding_line", ok=b.get("ok", 0), seats=b.get("seats", 0))),
        "health_h": _e(T("health")), "health_li": health_li, "refresh": _e(T("refresh")),
        "copied": json.dumps(T("copied"), ensure_ascii=False).replace("<", "\\u003c")}

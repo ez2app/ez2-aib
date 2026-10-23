@@ -245,6 +245,9 @@ def main(argv=None):
     if argv and argv[0] in ("launch", "fav"):           # 出艦台資料(@d07f9 power_launch.py)
         import power_launch
         return power_launch.main(argv)
+    if argv and argv[0] in ("tier", "redeem"):          # 任務板等級開關 / 序號兌換(@d07f9 power_tasks.py)
+        import power_tasks
+        return power_tasks.main(argv)
     p = argparse.ArgumentParser(prog="aib power")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("status")

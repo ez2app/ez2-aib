@@ -11,11 +11,10 @@
   帳號 / 信箱 / token 一律不讀不回。沒有狀態指令的家照實回 unknown,不猜。
 - 額度只讀 usage_probe 已量好的紀錄(不另打網路):新鮮且任一窗 >= 上限 ⇒ red quota_reached + reset_at。
 - login 只起 CLI 自己的流程;鏈結由它產生,我們不經手帳密 / token。完成 OAuth 一定是真人在瀏覽器裡做。
-- 新手任務的「做完」由核心實際偵測(真的有席、真的交接過),偵測到就記下(之後不會變回未完成)。
+- 新手任務(課程 R / SR / SSR / UR)在 power_tasks.py:「做完」由核心實際偵測,偵測到就記下(之後不會變回未完成)。
 回條 detail / reason 是契約代碼,人話只在 hint。
 """
 import argparse
-import glob
 import json
 import os
 import re
@@ -197,54 +196,11 @@ def light_of(key, *, run=None, records=None, now=None, refresh=False):
 
 
 # ---------- 新手任務 ----------
+# 課程(R / SR / SSR / UR)與偵測在 power_tasks.py;這裡只留總管要的介面。
 
-TASK_IDS = ("first_seat", "bind_seat", "first_handoff")
-
-
-def _detect(root):
-    """現在偵測得到的任務(做完 = True)。偵測不到的照實當沒做。"""
-    done = {t: False for t in TASK_IDS}
-    try:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "src", "identity"))
-        import bindme
-        rows = [r for r in bindme.status(root) if r.get("problem") != "bot"]
-    except Exception:  # noqa: BLE001
-        rows = []
-    done["first_seat"] = bool(rows)
-    done["bind_seat"] = any(r.get("problem") == "ok" and r.get("brain_bound") for r in rows)
-    hand = [p for p in glob.glob(os.path.join(root, "pending", "HANDOFF-*.md")) if "-AUTO-" not in os.path.basename(p)]
-    done["first_handoff"] = bool(hand)
-    return done
-
-
-def birth_path():
-    return os.path.join(state_dir(), "power-birth.json")
-
-
-def onboarding_state(*, detect=None, now=None):
-    """{birth_done, tasks:[{id, state, reward}]}。做完一次就記在 power-onboarding.json,之後一直算 done。
-
-    出生記號只決定要不要先跑引導,不是防線(同帳號 AI 寫得到這個檔)。領資源(claimed)這一期不做,reward 一律 null。
-    """
-    root = seats_dir_lib.state_root()[0]
-    now = time.time() if now is None else now
-    path = os.path.join(state_dir(), "power-onboarding.json")
-    memo = _load(path)
-    seen = memo.get("done") if isinstance(memo.get("done"), dict) else {}
-    try:
-        got = (detect or _detect)(root)
-    except Exception:  # noqa: BLE001
-        got = {}
-    changed = False
-    for t in TASK_IDS:
-        if got.get(t) is True and not isinstance(seen.get(t), (int, float)):
-            seen[t] = int(now)
-            changed = True
-    if changed:
-        _save(path, {"done": seen})
-    tasks = [{"id": t, "state": "done" if isinstance(seen.get(t), (int, float)) else "todo", "reward": None}
-             for t in TASK_IDS]
-    return {"birth_done": bool(_load(birth_path()).get("at")), "tasks": tasks}
+def onboarding_state(**kw):
+    import power_tasks
+    return power_tasks.onboarding_state(**kw)
 
 
 # ---------- aib power login ----------
