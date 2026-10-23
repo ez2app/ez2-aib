@@ -12,8 +12,8 @@ T7 detect:aib 版本比第一次看到的新 ⇒ aib_upgraded;第一次只記 fi
 T8 detect:座位 / 人格 / 第二大腦 / 兩家以上在線 / 交接單(自動存的不算)/ 連續出發
 T9 redeem:讀 stdin 一行、不回顯、rc 2 power_redeem_not_yet;aib power tier / redeem 從總管 power_status.main 轉得到
 T10 detectable:沒有偵測器的條 = false(頁面照實標)
-T13 本機真事件:seat-now / dm 寄出紀錄 / dm 佇列稽核轉 done / 記憶 ≥ 10 筆 / aib test rc 0 / 同角色兩席 / 專案 ≥ 3;
-    沒有或不夠 ⇒ 不算;稽核只有 read、rc 1、9 筆記憶、2 個專案 ⇒ 不算
+T13 本機真事件:seat-now / dm 寄出紀錄 / dm 佇列稽核轉 done / 記憶 ≥ 10 筆 / aib test rc 0 / 同角色兩席 / 專案 ≥ 3 / doctor 跑過 / 兩座以上的艙;
+    沒有或不夠 ⇒ 不算;稽核只有 read、rc 1、9 筆記憶、2 個專案、只有 doctor 暫存檔、一座艙(另一個夾沒有 seats)⇒ 不算
 T12 SPEC §15:沒出發 ⇒ SSR / UR locked、unlock = launch_recorded、on false、每條 locked、tier on 回 power_tier_locked;
     出發過(記住)⇒ 解鎖、unlock null;room_tiers 分級數字;since = done 時間
 T11 where(SPEC §14):動力室 30 條 = R1–12、SR1–7 + 12–13、SSR2–5 + 11、UR4–7;其餘 14 條 room;tiers / all 只算 power、room 另算
@@ -134,6 +134,7 @@ class Tasks(unittest.TestCase):
         t = by_id(st)
         self.assertTrue(t["R3"]["detectable"])
         self.assertFalse(t["R11"]["detectable"])                           # device_bound 還沒接
+        self.assertTrue(t["R10"]["detectable"])                            # doctor_run 10-24 接上
         self.assertTrue(t["R8"]["detectable"])
         self.assertFalse(t["SSR1"]["detectable"])
         self.assertEqual(t["SSR1"]["requires"], "server")
@@ -223,7 +224,8 @@ class Detect(unittest.TestCase):
 
     def test_t13_local_events(self):
         root = Path(TMP)
-        keys = ("now_written", "dm_sent", "dm_done", "memory_10", "test_green", "second_seat_same_role", "projects_3")
+        keys = ("now_written", "dm_sent", "dm_done", "memory_10", "test_green", "second_seat_same_role", "projects_3",
+                "doctor_run", "new_cabin")
         for k in keys:
             self.assertNotIn(k, PT.detect(TMP, {}, TODAY))
         st = root / "state"
@@ -239,6 +241,11 @@ class Detect(unittest.TestCase):
         (root / "projects").mkdir()
         for n in ("proj:a", "proj:b", "other"):
             (root / "projects" / n).mkdir()
+        (st / "run-marks").mkdir()
+        (st / "run-marks" / "doctor.json.1.tmp").write_text("{}")
+        (root / "instances" / "c1" / "seats").mkdir(parents=True)
+        (root / "instances" / "c2").mkdir()
+        (root / "instances" / "c3.txt").write_text("")
         PT._rows = lambda r: [{"role": "dev"}, {"role": "pm"}, {"role": ""}, {"role": ""}]
         got = PT.detect(TMP, {}, TODAY)
         for k in keys:
@@ -250,11 +257,13 @@ class Detect(unittest.TestCase):
         (root / "memory-index" / "notes.jsonl").write_text("{}\n" * 10)
         (root / "verify-shadow" / "verify-1.rows.jsonl").write_text(json.dumps({"test": "t", "rc": 0, "x": 1}) + "\n")
         (root / "projects" / "proj:c").mkdir()
+        (st / "run-marks" / "doctor.json").write_text("{}")
+        (root / "instances" / "c2" / "seats").mkdir()
         PT._rows = lambda r: [{"role": "dev"}, {"role": "dev"}]
         got = PT.detect(TMP, {}, TODAY)
         for k in keys:
             self.assertIs(got.get(k), True, k)
-        for k in ("state", "memory-index", "verify-shadow", "projects"):
+        for k in ("state", "memory-index", "verify-shadow", "projects", "instances"):
             shutil.rmtree(root / k)
 
     def test_t8_detect(self):

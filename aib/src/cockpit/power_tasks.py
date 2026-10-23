@@ -178,6 +178,9 @@ def _local_events(root, rows):
         "test_green": any(_tail_has(p, '"rc": 0,') for p in glob.glob(os.path.join(root, "verify-shadow", "verify-*.rows.jsonl"))),
         "second_seat_same_role": len(roles) != len(set(roles)),
         "projects_3": sum(1 for n in _listdir(os.path.join(root, "projects")) if n.startswith("proj:")) >= 3,
+        "doctor_run": os.path.isfile(os.path.join(st, "run-marks", "doctor.json")),
+        "new_cabin": sum(1 for n in _listdir(os.path.join(root, "instances"))
+                         if os.path.isdir(os.path.join(root, "instances", n, "seats"))) >= 2,
     }
 
 
@@ -218,7 +221,8 @@ def detect(root, memo, today=None):
 DETECTABLE = frozenset(("power_opened", "born", "seat_registered", "persona_bound", "brain_bound", "launch_recorded",
                         "handoff_receipt", "two_providers_online", "aib_upgraded", "launch_streak_3", "launch_streak_7",
                         "launch_streak_30", "ssr_all_done", "now_written", "dm_sent", "dm_done", "memory_10",
-                        "test_green", "second_seat_same_role", "projects_3"))
+                        "test_green", "second_seat_same_role", "projects_3", "doctor_run",
+                        "new_cabin"))
 
 
 def onboarding_state(*, detector=None, now=None, today=None):

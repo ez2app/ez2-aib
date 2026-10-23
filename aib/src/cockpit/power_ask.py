@@ -66,7 +66,7 @@ Common commands (from the beginner curriculum; do not invent others, say "see ai
 - bind a persona: aib persona   ·   second-brain project: aib newproj   ·   write memory: aib memory write
 - status line: aib now "<main item>" 1/3   ·   message a seat: aib dm <cabin>/<seat> "<text>"
 - end-of-shift handoff: aib handoff   ·   health check: aib doctor   ·   tests: aib test
-- log in an AI: aib power login <brand>   ·   upgrade aib: aib update   ·   problem report: aib support
+- log in an AI: aib power login <brand>   ·   upgrade aib: aib update
 """
 
 
