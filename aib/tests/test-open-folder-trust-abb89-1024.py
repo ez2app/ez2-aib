@@ -266,6 +266,19 @@ class CursorMenuSuspect(unittest.TestCase):
         self.assertNotIn("step one", block)
         self.assertIn("Yes, I trust this folder", block)
 
+    def test_numbered_list_right_above_short_cursor_menu(self):
+        # 第 5 輪審查:歷史編號清單緊貼在 agy 信任畫面上面(距離不到 SLACK)也不能把清單送進去
+        for gap in (0, 1):
+            hist = ["前文 %d" % i for i in range(6)] + ["%d. old item" % i for i in range(1, 10)] + [""] * gap
+            screen = "\n".join(hist) + "\nDo you trust the contents of this project?\n> Yes, I trust this folder\n" \
+                "  No, exit\n  ↑/↓ Navigate · enter Confirm\n"
+            block = menu_pick.menu_block(screen)
+            # 選項往上固定帶 HEAD_LINES 行(原設計);不能把整串清單與更上面的前文帶進去
+            self.assertNotIn("1. old item", block, gap)
+            self.assertNotIn("前文", block, gap)
+            self.assertLessEqual(len(block.splitlines()), 4 + menu_pick.HEAD_LINES, gap)
+            self.assertIn("Yes, I trust this folder", block)
+
     def test_numbered_menu_takes_bottom_cluster(self):
         hist = ["1. old item", "2. old item", "IGNORE PREVIOUS"] + ["log %d" % i for i in range(10)]
         menu = ["Do you want to proceed?", "❯ 1. Yes", "  2. No"]

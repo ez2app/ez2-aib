@@ -303,7 +303,9 @@ def menu_block(screen):
     # 第 3 輪審查:上面歷史裡有「1. 2.」清單時,游標選單不能因此走編號分支(會從最早的編號一路送到底)
     #   ⇒ 操作說明在最後一個編號下面、而且離它超過 OPT_BOTTOM_SLACK 行 ⇒ 是游標選單
     #   (第 4 輪:Copilot 有框編號選單的頁尾也寫「↑↓ keys and Enter」,緊貼在選項下面,那仍是編號選單)
-    if opts and nav and nav[-1] - opts[-1] > OPT_BOTTOM_SLACK:
+    #   (第 5 輪:游標選單很短、上面緊貼歷史編號清單時,距離不到 SLACK ⇒ 另看兩者之間有沒有「帶游標、不是編號」的行)
+    if opts and nav and nav[-1] > opts[-1] and (nav[-1] - opts[-1] > OPT_BOTTOM_SLACK or any(
+            _CURSOR.match(rows[i][1]) and not _OPT.match(rows[i][1]) for i in range(opts[-1] + 1, nav[-1]))):
         opts = []
     if opts:
         opts = _bottom_run(rows, opts)
