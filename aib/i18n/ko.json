@@ -39,6 +39,7 @@
   "aib.context.menu.focus_pane": "창에 포커스",
   "aib.context.menu.kill_focused_pane": "포커스 좌석 삭제",
   "aib.context.menu.new_ai": "AI 추가",
+  "aib.context.menu.close_seat": "이 자리 닫기",
   "aib.context.menu.new_ai_hang": "어느 함장 아래에 둘지",
   "aib.context.menu.new_ai_hang_default": "(기본)",
   "aib.context.menu.new_ai_role": "역할 선택",

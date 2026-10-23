@@ -39,6 +39,7 @@
   "aib.context.menu.focus_pane": "ペインにフォーカス",
   "aib.context.menu.kill_focused_pane": "フォーカス席を削除",
   "aib.context.menu.new_ai": "AI を追加",
+  "aib.context.menu.close_seat": "この席を閉じる",
   "aib.context.menu.new_ai_hang": "どの艦長の下に付けるか",
   "aib.context.menu.new_ai_hang_default": "（既定）",
   "aib.context.menu.new_ai_role": "役割を選ぶ",

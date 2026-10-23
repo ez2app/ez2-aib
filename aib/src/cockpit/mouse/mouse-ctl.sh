@@ -5,6 +5,8 @@
 #   mouse-ctl.sh --install [--dry-run]        綁 tmux 滑鼠鍵
 #   mouse-ctl.sh --click <role> <x> <y> [session] [--dry-run]   處理一次點擊
 #   mouse-ctl.sh --context <surface> <role> <x> <y> <pane> <session> [--dry-run]
+#   mouse-ctl.sh --role right --close-row ai-list <x> <y> [session] [--dry-run]
+#                                                  右鍵「關閉這一席」:彈 [X] 同一個確認選單
 #   mouse-ctl.sh --release-confirmed <window> [session] [--dry-run]
 #                                                  [X] 確認選單按「確定」後的真殺
 #   ⚠ --dry-run 對釋放路徑的診斷力是**零**:DRY 全程不碰真 tmux(治具以
@@ -129,6 +131,7 @@ ABORT_OPEN=0
 CLOSE_CABIN=0
 SOFT_SINCE=""
 PANE_ROLE=""
+HIT_INTENT="click"
 ROLE=""; CX=""; CY=""; SESSION=""; SURFACE=""; PANE=""; WINDOW=""
 NEW_AI_ENGINE=""
 NEW_AI_ROLE=""
@@ -146,6 +149,17 @@ while [ $# -gt 0 ]; do
     --leftover-confirmed) MODE="leftover-confirmed" ;;
     --role)
       PANE_ROLE="${2:-}"; shift "$(( $# < 1 ? $# : 1 ))" ;;
+    --close-row)
+      # 10-24 @abb89:右鍵「關閉這一席」的回呼。走 --click 同一條路,只是命中器用 close 意圖
+      #   (整列都算、只認有 [X]/(x) 的列)⇒ 彈的是跟點 [X] 同一個確認選單,真關照舊只在 --release-confirmed。
+      HIT_INTENT="close"
+      MODE="click"
+      ROLE="${2:-}"
+      CX="${3:-}"
+      CY="${4:-}"
+      case "${5:-}" in --*|"") ;; *) SESSION="$5"; shift ;; esac
+      shift "$(( $# < 3 ? $# : 3 ))"
+      ;;
     --click)
       MODE="click"
       ROLE="${2:-}"
@@ -1581,12 +1595,16 @@ for name, val in (("ai", "2"), ("usage", "1"), ("left", "3")):
     fi
     if ! ACTION="$("$EZ2_PY3" "$HERE/hit_test.py" --role "$ROLE" \
           --x "${CX:-0}" --y "${CY:-0}" --cabin "${EZ2_AIB_INSTANCE:-}" \
-          --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null)"; then
+          --intent "$HIT_INTENT" --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null)"; then
       exit 0
     fi
     if ! KIND="$("$EZ2_PY3" -c \
           'import json,sys; print(json.loads(sys.argv[1])["action"])' \
           "$ACTION" 2>/dev/null)"; then
+      exit 0
+    fi
+    # 右鍵「關閉這一席」只准走 [X] 那一支(確認選單);命中器給別的一律當沒點到
+    if [ "$HIT_INTENT" = "close" ] && [ "$KIND" != "kill-idle" ]; then
       exit 0
     fi
     case "$KIND" in
@@ -3287,6 +3305,27 @@ else:
       fi
     fi
 
+    # 10-24 @abb89:右鍵「關閉這一席」—— 只有那一列本來就有 [X]/(x) 才出現;點了回呼 --close-row,
+    #   彈的是跟點 [X] 同一個確認選單(取消排第一、真關只在 --release-confirmed、軟關帶 --soft-since)。
+    CLOSE_ACTION=""
+    CLOSE_TITLE=""
+    if [ -n "$WINDOW" ]; then
+      _CLOSE_HIT="$("$EZ2_PY3" "$HERE/hit_test.py" --role "$ROLE" \
+        --x "${CX:-0}" --y "${CY:-0}" --intent close \
+        --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null || true)"
+      case "$_CLOSE_HIT" in
+        *'"kill-idle"'*)
+          CLOSE_TITLE="$("$EZ2_PY3" "$COCKPIT/i18n_lib.py" \
+            aib.context.menu.close_seat 2>/dev/null | sed -n '1p' || true)"
+          if [ -n "$CLOSE_TITLE" ]; then
+            printf -v SCRIPT_Q '%q' "$HERE/mouse-ctl.sh"
+            printf -v SESSION_ARG_Q '%q' "$SESSION"
+            CLOSE_ACTION="run-shell 'bash $SCRIPT_Q --role right --close-row ai-list ${CX:-0} ${CY:-0} $SESSION_ARG_Q$RUNSHELL_REDIR'"
+          fi
+          ;;
+      esac
+    fi
+
     printf -v PANE_ARG_Q '%q' "$PANE"
     # the maintainer 09-11:右鍵不要「聚焦窗格」「刪除聚焦窗格」。另開 AI / 主題底色留下。
     # ---- 「另開 AI」項(08-14 the maintainer 直令)-----------------------------------
@@ -3331,13 +3370,16 @@ else:
           "$DETAILS_LABEL" d "$DETAIL_ACTION" \
           "$OPEN_LABEL" o "$OPEN_ACTION" \
           ${NEW_AI_ACTION:+"$NEW_AI_TITLE" n "$NEW_AI_ACTION"} \
-          ${THEME_ACTION:+"$THEME_TITLE" t "$THEME_ACTION"}
+          ${THEME_ACTION:+"$THEME_TITLE" t "$THEME_ACTION"} \
+          ${CLOSE_ACTION:+"$CLOSE_TITLE" x "$CLOSE_ACTION"}
       else
+        # 「關閉這一席」排最後(離游標最遠);點了還有一道確認選單,不是直關
         env -u TMUX tmux display-menu -O -M -T "$TITLE" -t "$PANE" ${MENU_POS[@]+"${MENU_POS[@]}"} \
           "$DETAILS_LABEL" d "$DETAIL_ACTION" \
           "$OPEN_LABEL" o "$OPEN_ACTION" \
           ${NEW_AI_ACTION:+"$NEW_AI_TITLE" n "$NEW_AI_ACTION"} \
           ${THEME_ACTION:+"$THEME_TITLE" t "$THEME_ACTION"} \
+          ${CLOSE_ACTION:+"$CLOSE_TITLE" x "$CLOSE_ACTION"} \
           >/dev/null 2>&1 || true
       fi
     elif [ "$DRY" = "1" ]; then
