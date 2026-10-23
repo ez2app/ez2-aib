@@ -5127,5 +5127,7 @@
   "aib.auto_update.exclude.bad_name": "not a plugin name: \"{name}\"",
   "aib.auto_update.exclude.touchid_reason": "Allow aib to auto-update the plugin {name}",
   "aib.auto_update.exclude.needs_touchid": "{name} is excluded by default (it is the production deploy source); taking it off needs your Touch ID ({why}); nothing changed",
-  "aib.auto_update.status.clock_skew": "Clock skew: saved times were in the future (the clock jumped); they were ignored and checking goes on as normal"
+  "aib.auto_update.status.clock_skew": "Clock skew: saved times were in the future (the clock jumped); they were ignored and checking goes on as normal",
+  "aib.auto_update.why.refused_source": "This copy was not installed from the public release (private or your own repo); not auto-updating. Run aib update yourself",
+  "aib.auto_update.why.no_change": "aib update finished but the version did not change; see the log. Will try again later"
 }

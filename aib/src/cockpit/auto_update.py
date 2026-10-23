@@ -393,11 +393,36 @@ def remove_agent(home=None, launchctl=_launchctl):
 
 # ───────────────────────────── 版本 ─────────────────────────────
 
-def release_ref(root):
-    """一行安裝程式會裝的那一版(install.sh release_ref):公開來源 ⇒ 最新 v* 標籤;ssh 私有來源 / 沒有標籤 ⇒ origin/main。"""
+PUBLIC_SOURCE = "https://github.com/ez2app/ez2-aib.git"   # 跟 install.sh PUBLIC_SOURCE 一樣
+
+
+def norm_src(url):
+    """照 install.sh _norm_src:git@ / ssh://(含 :22)/ https / http / git:// 一律化成 https://<主機>/<擁有者>/<倉庫>(小寫);
+    本機路徑照舊。git 全域 insteadOf 把 https 換成 git@ 時，同一個倉庫仍算同一個來源。"""
+    x = (url or "").strip()
+    x = x[:-1] if x.endswith("/") else x
+    x = x[:-4] if x.endswith(".git") else x
+    if re.match(r"^git@[^:]+:", x):
+        host, rest = x[4:].split(":", 1)
+        x = host + "/" + rest
+    elif re.match(r"^(ssh|https?|git)://", x):
+        x = x.split("://", 1)[1]
+        x = x.split("@", 1)[1] if "@" in x.split("/", 1)[0] else x
+        x = x.replace(":22/", "/", 1)
+    else:
+        return x
+    return ("https://" + x).lower()
+
+
+def public_install(root):
+    """這份是不是從公開版裝的。子行程不帶 AIB_SOURCE ⇒ install.sh 一律以公開來源判 same_source;不是公開版 ⇒ 它會回 2。"""
     _rc, url = _git(root, "remote", "get-url", "origin")
-    if url.startswith(("ssh://", "git@")):
-        return "origin/main"
+    return norm_src(url) == norm_src(PUBLIC_SOURCE)
+
+
+def release_ref(root):
+    """一行安裝程式會裝的那一版(install.sh release_ref):子行程只帶白名單 ⇒ 來源一律是公開版 ⇒ 最新 v* 標籤;
+    沒有標籤 ⇒ origin/main。(origin 看起來像 ssh 不算:insteadOf 會把 https 寫成 git@,install.sh 照樣裝標籤)"""
     _rc, tags = _git(root, "tag", "-l", "v[0-9]*", "--sort=-v:refname")
     tag = tags.splitlines()[0].strip() if tags else ""
     return tag or "origin/main"
@@ -439,14 +464,16 @@ def core_plan(root):
     _rc, before = _git(root, "rev-parse", "HEAD")
     rc, after = _git(root, "rev-parse", "%s^{commit}" % want)
     plan = {"want": want, "have": ref_version(root, "HEAD"), "latest": ref_version(root, want) if rc == 0 else None,
-            "behind": False, "why": None}
+            "behind": False, "why": None, "head": before}
     if rc != 0 or not after:
         plan["why"] = "no_ref"
         return plan
     if before == after or _git(root, "merge-base", "--is-ancestor", after, before)[0] == 0:
         return plan                                           # 已在這版、或比正式版還新 ⇒ 不往回退
     plan["behind"] = True
-    if _git(root, "status", "--porcelain", "--untracked-files=no")[1]:
+    if not public_install(root):
+        plan["why"] = "source"                                # 私有 / 自己的倉:install.sh same_source 一定擋，別每小時去撞
+    elif _git(root, "status", "--porcelain", "--untracked-files=no")[1]:
         plan["why"] = "dirty"
     elif _git(root, "merge-base", "--is-ancestor", before, after)[0] != 0:
         plan["why"] = "diverged"
@@ -790,6 +817,8 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
                 res["update_rc"] = rc
                 if rc != 0:
                     return done("failed", have=ref_version(root, "HEAD"))
+                if _git(root, "rev-parse", "HEAD")[1] == plan.get("head"):
+                    return done("no_change", have=ref_version(root, "HEAD"))   # 跑完 rc 0 但沒動 ⇒ 不記成 updated(1 小時內不再跑)
             # 核心換了 ⇒ 一行安裝已用**新版**程式跑過 aib ext auto,這支舊碼不再自己裝;核心沒換才在這裡裝落後的外掛
             buf, plugin_rows = io.StringIO(), []
             #   付費外掛也一樣等下一次查(新版外掛可能要新版核心;下一次是新碼在跑)

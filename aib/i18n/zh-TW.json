@@ -5127,5 +5127,7 @@
   "aib.auto_update.exclude.bad_name": "不是外掛名稱:「{name}」",
   "aib.auto_update.exclude.touchid_reason": "允許 aib 自動更新外掛 {name}",
   "aib.auto_update.exclude.needs_touchid": "{name} 預設不自動更新(它是正式站部署來源),拿掉要本人 Touch ID({why});什麼都沒改",
-  "aib.auto_update.status.clock_skew": "時鐘跳過:存下來的時間比現在還晚(系統時鐘曾往前跳),已不算數、照常查"
+  "aib.auto_update.status.clock_skew": "時鐘跳過:存下來的時間比現在還晚(系統時鐘曾往前跳),已不算數、照常查",
+  "aib.auto_update.why.refused_source": "這份不是從公開版裝的(私有或自己的倉庫),不自動更新;要更新請自己跑 aib update",
+  "aib.auto_update.why.no_change": "aib update 跑完了但版本沒變,看紀錄;之後再試"
 }

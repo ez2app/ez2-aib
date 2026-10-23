@@ -102,6 +102,10 @@ class Base(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         self.updates, self.leases, self.rooms, self.installs = [], [], [], []
+        # 測試的「公開來源」= 本機 bare 倉(make_repos 建在這個位置);真的公開網址另由 test_g8 驗
+        p2 = mock.patch.object(AU, "PUBLIC_SOURCE", str(self.td / "origin.git"))
+        p2.start()
+        self.addCleanup(p2.stop)
 
     # 假的「一行安裝」:跟 install.sh 一樣只快轉到最新 v* 標籤
     def fake_update(self, env, root):
@@ -349,6 +353,41 @@ class Gates(Base):
         # 事件只收像版號的字
         self.assertIsNone(RE.note_aib_updated("0.1.2", "\x1b[31mhi", env=self.env))
 
+    def test_g8_source_like_install_sh(self):
+        """來源判法跟 install.sh 一樣:insteadOf 把 https 寫成 git@ 仍是公開版 ⇒ 目標是最新 v* 標籤(不是 origin/main);
+        別的倉 / fork ⇒ 不是公開版。"""
+        for u in ("https://github.com/ez2app/ez2-aib.git", "git@github.com:EZ2App/ez2-aib.git", "ssh://git@github.com:22/ez2app/ez2-aib",
+                  "http://github.com/ez2app/ez2-aib/", "git://github.com/ez2app/ez2-aib.git"):
+            self.assertEqual(AU.norm_src(u), "https://github.com/ez2app/ez2-aib", u)
+        self.assertNotEqual(AU.norm_src("git@github.com:someone/ez2-aib.git"), AU.norm_src(AU.PUBLIC_SOURCE))
+        self.make_repos()
+        with mock.patch.object(AU, "PUBLIC_SOURCE", "https://github.com/ez2app/ez2-aib.git"):
+            git(self.inst, "remote", "set-url", "origin", "git@github.com:ez2app/ez2-aib.git")
+            self.assertTrue(AU.public_install(self.inst))
+            self.assertEqual(AU.release_ref(self.inst), "v0.1.1")
+            git(self.inst, "remote", "set-url", "origin", "git@github.com:someone/ez2-aib.git")
+            self.assertFalse(AU.public_install(self.inst))
+
+    def test_g9_not_public_install_refused_without_running(self):
+        """私有 / 自己的倉(install.sh same_source 一定回 2)⇒ refused_source,不叫 aib update、不每小時撞。"""
+        self.make_repos()
+        with mock.patch.object(AU, "PUBLIC_SOURCE", "https://github.com/ez2app/ez2-aib.git"):
+            res = self.run_check()
+            self.assertEqual(res["result"], "refused_source", res)
+            self.assertEqual(self.run_check(now=NOW + 7200)["result"], "refused_source")
+        self.assertEqual(self.updates, [])
+        self.assertEqual(self.leases, [])
+
+    def test_g10_update_rc0_but_head_unchanged_not_updated(self):
+        """aib update 回 0 但 HEAD 沒動(例:main 比標籤新、或安裝程式沒快轉)⇒ no_change,不記成 updated、1 小時內不再跑。"""
+        self.make_repos()
+        res = self.run_check(run_update=lambda e, r: self.updates.append(e) or 0)
+        self.assertEqual(res["result"], "no_change", res)
+        self.assertNotIn("last_update", AU.read_status(self.env))
+        self.assertEqual(RE.read(self.env)[0], [])
+        self.assertEqual(self.run_check(now=NOW + 60, run_update=lambda e, r: self.updates.append(e) or 0)["result"], "too_soon")
+        self.assertEqual(len(self.updates), 1)
+
     def test_g6b_update_fails(self):
         self.make_repos()
         res = self.run_check(run_update=lambda e, r: self.updates.append(e) or 5)
@@ -575,6 +614,25 @@ class PaidSource(Base):
         cache = AU.fetch_plugin_source(self.env)
         self.assertIsNotNone(cache)
         self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
+        # 要是自己那行檢查擋的(不是新版 Python 的 data filter 代擋):舊 Python(3.9)沒有 data filter,那行是唯一防線
+        self.assertIn("demo-paid skipped: archive has a path outside the folder or a link", AU.log_path(self.env).read_text(encoding="utf-8"))
+        self.assertEqual(list((AU.state_root(self.env) / "cache" / "auto-update").glob("stage-*")), [])
+
+    def test_x4b_stage_refuses_inner_relative_link(self):
+        """夾內相對連結(data filter 會放行)⇒ 一樣不解;另把 data filter 拿掉(模擬 3.9)再跑一次。"""
+        bare = self.paid_repo({"demo-paid": "1.0.3"})
+        src = self.td / "plugsrc"
+        os.symlink("aib-ext.json", src / "demo-paid" / "inner")
+        git(src, "add", "-A")
+        git(src, "commit", "-q", "-m", "inner link")
+        git(src, "push", "-q", str(bare), "main")
+        cache = AU.fetch_plugin_source(self.env)
+        self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
+        with mock.patch.object(AU.tarfile, "data_filter", None, create=True):
+            delattr(AU.tarfile, "data_filter")
+            self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
+        self.assertEqual(list((AU.state_root(self.env) / "cache" / "auto-update").glob("stage-*")), [])
+        self.assertEqual(AU.log_path(self.env).read_text(encoding="utf-8").count("archive has a path outside the folder or a link"), 2)
 
 
 class Robust(Base):
