@@ -165,9 +165,12 @@ def open_room(out=None, env=None, run=subprocess.run, popen=subprocess.Popen, ex
 
 
 def main(argv=None, out=None):
-    """aib ui [room|terminal]:看 / 設。"""
+    """aib ui [room|terminal]:看 / 設;aib ui power:開艦長動力室。"""
     out = sys.stdout if out is None else out       # 呼叫時才取 sys.stdout(cli 測試會換掉它)
     a = list(sys.argv[1:] if argv is None else argv)
+    if a == ["power"]:                              # 艦長動力室極簡頁(power_page.py);不是模式,不改 aib 預設
+        import power_page
+        return power_page.open_power(out=out)
     if a and a[0] in UI_MODES:
         set_mode(a[0])
         out.write(T("set_" + a[0]) + "\n")
