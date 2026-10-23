@@ -14,9 +14,9 @@ D7 付費外掛:沒綁 ⇒ plugin_not_bound、包一個請求都沒送;有綁 �
 D8 領授權:簽對 ⇒ 0600 落檔;簽錯 / 過期 / 不是物件 ⇒ plugin_license_invalid 不落檔;帶 activation_url ⇒ activation needed;沒買 ⇒ plugin_license_none
 D9 名稱不合格式 ⇒ plugin_name_invalid、不連網;CLI install 給名稱走目錄、給資料夾照舊
 D10 契約:伺服器碼 = plugins.codes;每個回條 detail 都在契約、四語都有 hint
-D4b 解開大小 / 成員數超過上限 ⇒ too-big-unpacked(驗簽前就擋);包內成員名稱清過才進 problems
+D4b 解開大小 / 成員數 / pax 大標頭超過上限 ⇒ too-big-unpacked(驗簽前就擋);壞 zip / 超長名 / bz2 ⇒ 拒收不當掉;包內成員名稱清過才進 problems
 刀(複本):K1 不比 sha256 ⇒ D4 紅;K2 不比包名稱版本 ⇒ D5 紅;K3 付費包不帶憑證 ⇒ D7 紅;K4 不擋降版 ⇒ D6 紅;
-    K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅
+    K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅;K7 gzip 不限量解開 ⇒ D4b 紅(pax 大標頭)
 """
 import base64
 import hashlib
@@ -30,6 +30,7 @@ import tarfile
 import tempfile
 import unittest
 import urllib.error
+import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -228,6 +229,24 @@ class Install(Box):
                 res, rc = self.install("probe", self.server([self.entry(data)], {("probe", "0.0.1"): data}))
             self.assertEqual((rc, res["detail"], res["problems"]), (3, "plugin_rejected", ["too-big-unpacked"]), label)
             self.assertFalse(self.installed().exists(), label)
+        pax = tarfile.TarInfo("probe/pax.txt")
+        pax.pax_headers = {"comment": "x" * 50000}            # 標頭本身就大:tarfile 在 next() 裡整段讀進記憶體
+        bomb2 = self.tgz(extra=[(pax, b"")])
+        with mock.patch.multiple(AP, MAX_UNPACK_BYTES=20000):
+            ok, why = AP._extract(bomb2, self.tmp / "x1")
+        self.assertEqual((ok, why), (False, "too-big-unpacked"), "pax 大標頭也算進上限")
+        (self.tmp / "x2").mkdir()
+        zbad = io.BytesIO()
+        with zipfile.ZipFile(zbad, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("a.txt", "hello " * 200)
+        raw = bytearray(zbad.getvalue())
+        raw[40:60] = b"\xff" * 20                             # 壓縮資料壞掉 ⇒ zlib.error
+        long = tarfile.TarInfo("n" * 1000)                    # 名稱檢查過得了、檔案系統寫不了
+        long.size = 1
+        for label, blob in (("bad_zip", bytes(raw)), ("long_name", self.tgz(extra=[(long, b"x")])),
+                            ("bz2", b"BZh91AY&SY" + b"\0" * 100)):
+            (self.tmp / label).mkdir()
+            self.assertEqual(AP._extract(blob, self.tmp / label)[0], False, label)
         link = tarfile.TarInfo("probe/\x1b[2J\u202eevil")
         link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
         data = self.tgz(extra=[(link, None)])
@@ -403,6 +422,10 @@ class Knife(unittest.TestCase):
     def test_k6_license_without_addon(self):
         self._knife(' or addon not in [a for a in (obj.get("addons") or []) if isinstance(a, str)]', "",
                     "License.test_d8_license")
+
+    def test_k7_gzip_unbounded(self):
+        self._knife("data = _gunzip_bounded(data, MAX_UNPACK_BYTES)", "data = __import__('gzip').decompress(data)",
+                    "Install.test_d4b_unpack_limits", rel="tools/verify/aib_plugins.py")
 
 
 if __name__ == "__main__":

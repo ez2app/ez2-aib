@@ -157,7 +157,7 @@ def get(repo, what, env=None):
 
 
 MAX_PKG_BYTES = 64 * 1024 * 1024
-MAX_UNPACK_BYTES = 4 * MAX_PKG_BYTES   # 解開後總大小上限(外掛是程式 + 圖,正常遠小於這個)
+MAX_UNPACK_BYTES = 2 * MAX_PKG_BYTES   # 解開後總大小上限(gzip 會先解到記憶體;外掛是程式 + 圖,正常遠小於這個)
 MAX_UNPACK_MEMBERS = 20000
 UNSIGNED_OK = False   # 付費外掛一律要信任鑰匙簽過;沒有 --allow-unsigned 這種門(刀測翻這個)
 USAGE = ("usage: aib plugins licensed <addon> [--json]\n       aib plugins install <folder | .tgz | .zip | https://… | name[@version]> [--json]\n"
@@ -173,49 +173,69 @@ def _safe_members(names):
     return None
 
 
+def _gunzip_bounded(data, limit):
+    """gzip ⇒ 解開的 bytes,最多 limit;超過 ⇒ None。一次最多吐 1 MiB,壓縮炸彈不會先整包解開。"""
+    import zlib
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    out, n, buf = [], 0, data
+    while not d.eof:
+        chunk = d.decompress(buf, 1 << 20)
+        buf = d.unconsumed_tail
+        n += len(chunk)
+        if n > limit:
+            return None
+        out.append(chunk)
+        if not chunk and not buf:
+            break
+    return b"".join(out)
+
+
 def _extract(blob, into):
     """.tgz / .tar / .zip ⇒ 解到 into(自己的空資料夾);只解一般檔與資料夾(連結、裝置一律不要)。回 (ok, why)。
-    解之前先數:成員數 ≤ MAX_UNPACK_MEMBERS、宣告的解開大小總和 ≤ MAX_UNPACK_BYTES(壓縮炸彈在驗簽前就擋;10-24 審查員)。
-    tar 一個一個讀(tf.next),超過就停,不先整條解一遍;size 負數 / offset 沒往後 ⇒ 當壞檔(舊 tarfile CVE-2025-8194)。"""
+    驗簽前就擋壓縮炸彈(10-24 審查員兩輪):gzip 先有上限地解到記憶體(超過 MAX_UNPACK_BYTES ⇒ too-big-unpacked),
+    tarfile 讀長檔名 / pax 標頭也就有上限;成員數 ≤ MAX_UNPACK_MEMBERS、宣告的大小總和 ≤ MAX_UNPACK_BYTES;
+    size 負數 / offset 沒往後 ⇒ 壞檔(舊 tarfile CVE-2025-8194)。只收 gzip / 不壓縮的 tar / zip;解壓任何例外 ⇒ not-an-archive。"""
+    try:
+        return _extract_inner(blob, into)
+    except Exception:  # noqa: BLE001  壞包讓 zlib / zipfile / tarfile / 檔案系統拋什麼都一樣
+        return False, "not-an-archive"
+
+
+def _extract_inner(blob, into):
     import io
     import tarfile
     import zipfile
     data = blob.read_bytes() if isinstance(blob, Path) else blob
     if data[:4] == b"PK\x03\x04":
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as z:
-                infos = z.infolist()
-                if len(infos) > MAX_UNPACK_MEMBERS or sum(i.file_size for i in infos) > MAX_UNPACK_BYTES:
-                    return False, "too-big-unpacked"
-                bad = _safe_members(z.namelist())
-                if bad:
-                    return False, "unsafe-path:%s" % bad
-                for info in infos:
-                    if (info.external_attr >> 16) & 0o170000 == 0o120000:
-                        return False, "symlink:%s" % info.filename
-                z.extractall(into)
-        except (zipfile.BadZipFile, OSError, EOFError, ValueError):
-            return False, "not-an-archive"
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            infos = z.infolist()
+            if len(infos) > MAX_UNPACK_MEMBERS or sum(i.file_size for i in infos) > MAX_UNPACK_BYTES:
+                return False, "too-big-unpacked"
+            bad = _safe_members(z.namelist())
+            if bad:
+                return False, "unsafe-path:%s" % bad
+            for info in infos:
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    return False, "symlink:%s" % info.filename
+            z.extractall(into)
         return True, ""
-    try:
-        tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:*")
-    except (tarfile.TarError, OSError, EOFError):
-        return False, "not-an-archive"
+    if data[:2] == b"\x1f\x8b":
+        data = _gunzip_bounded(data, MAX_UNPACK_BYTES)
+        if data is None:
+            return False, "too-big-unpacked"
+    tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:")
     with tf:
         members, total, last = [], 0, -1
-        try:
-            while True:
-                m = tf.next()
-                if m is None:
-                    break
-                if m.size < 0 or m.offset <= last:
-                    return False, "not-an-archive"
-                last, total = m.offset, total + m.size
-                members.append(m)
-                if len(members) > MAX_UNPACK_MEMBERS or total > MAX_UNPACK_BYTES:
-                    return False, "too-big-unpacked"
-        except (tarfile.TarError, OSError, EOFError, ValueError):
-            return False, "not-an-archive"
+        while True:
+            m = tf.next()
+            if m is None:
+                break
+            if m.size < 0 or m.offset <= last:
+                return False, "not-an-archive"
+            last, total = m.offset, total + m.size
+            members.append(m)
+            if len(members) > MAX_UNPACK_MEMBERS or total > MAX_UNPACK_BYTES:
+                return False, "too-big-unpacked"
         bad = _safe_members([m.name for m in members])
         if bad:
             return False, "unsafe-path:%s" % bad
