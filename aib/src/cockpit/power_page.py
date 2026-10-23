@@ -20,6 +20,9 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 NAMES = {"claude": "Claude", "codex": "Codex", "grok": "Grok", "copilot": "Copilot", "agy": "Antigravity", "aib": "aib"}
+# 品牌色(Andy 10-24 01:5x 版型定案:動力核心圓圈光 = 品牌色;狀態改右上小燈)
+BRAND_COLOR = {"claude": "#D97757", "codex": "#10A37F", "grok": "#E8E8E8", "copilot": "#8534F3", "agy": "#4285F4",
+               "aib": "#7fd8ff"}
 LIGHT_COLOR = {"green": "#3ddc84", "yellow": "#ffd23f", "red": "#ff4d5e", "unknown": "#7a86a8", "off": "#2a3047"}
 
 
@@ -62,8 +65,10 @@ def ai_card(a):
         acts.append(_copy_btn("aib power upgrade %s" % key))
     if acts:
         rows.append('<div class="acts">%s</div>' % "".join('<div class="act">%s</div>' % x for x in acts))
-    return ('<section class="mod %s"><header><i style="background:%s"></i><h3>%s</h3></header>%s</section>'
-            % (_e(light), LIGHT_COLOR[light], _e(NAMES.get(key, key)), "".join(rows)))
+    ring = BRAND_COLOR.get(key, "#7a86a8")
+    return ('<section class="mod %s" style="--ring:%s"><header><b class="ring"></b><h3>%s</h3>'
+            '<i class="lamp" style="background:%s"></i></header>%s</section>'
+            % (_e(light), ring, _e(NAMES.get(key, key)), LIGHT_COLOR[light], "".join(rows)))
 
 
 def render(st, now=None):
@@ -96,7 +101,9 @@ h1{margin:0 0 4px;font-size:26px;letter-spacing:.08em}h2{font-size:18px;color:va
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
 .mod{border:1px solid var(--line);border-radius:8px;padding:12px;background:#0b1020}.mod.off{opacity:.5}
 .mod header{display:flex;align-items:center;gap:8px}.mod h3{margin:0;font-size:18px}
-.mod i{width:12px;height:12px;border-radius:50%%;display:inline-block;box-shadow:0 0 8px currentColor}
+.mod .ring{width:18px;height:18px;border-radius:50%%;border:3px solid var(--ring);box-shadow:0 0 10px var(--ring);
+animation:breathe 3s ease-in-out infinite}.mod .lamp{width:10px;height:10px;border-radius:50%%;margin-left:auto}
+@keyframes breathe{50%%{box-shadow:0 0 2px var(--ring)}}@media (prefers-reduced-motion:reduce){.mod .ring{animation:none}}
 .ver,.note,.hint{font-size:15px;color:var(--dim)}.act{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
 code{font-size:14px;color:var(--fg);background:#161d33;padding:2px 6px;border-radius:4px;word-break:break-all}
 .cp{font:inherit;font-size:14px;color:var(--bg);background:var(--acc);border:0;border-radius:4px;padding:2px 10px;cursor:pointer}
