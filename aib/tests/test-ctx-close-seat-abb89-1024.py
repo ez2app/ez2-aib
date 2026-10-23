@@ -99,12 +99,19 @@ class Menu(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
-    def fake_tmux(self):
-        # 只記錄、不連真 tmux:真的叫到 tmux 就留一行(用來抓「--dry-run 被吃掉」)
+    def fake_tmux(self, cabins=None):
+        # 只記錄、不連真 tmux:真的叫到 tmux 就留一行(用來抓「--dry-run 被吃掉」)。
+        # cabins={session: 狀態夾} ⇒ 那個 session 的艙身份查詢照實回(不記)
         b = self.tmp / "bin"
         b.mkdir(exist_ok=True)
         log = self.tmp / "tmux.log"
-        (b / "tmux").write_text("#!/bin/sh\necho \"$@\" >> %s\nexit 1\n" % log)
+        cases = "".join(
+            "  *'show-option -qv -t %s @aib_instance'*) echo inst-%s ;;\n"
+            "  *'show-option -qv -t %s @aib_hub_socket'*) echo hub-%s ;;\n"
+            "  *'show-option -qv -t %s @aib_state_dir'*) echo %s ;;\n" % (k, k, k, k, k, v)
+            for k, v in (cabins or {}).items())
+        (b / "tmux").write_text("#!/bin/sh\ncase \"$*\" in\n%s  *) echo \"$@\" >> %s; exit 1 ;;\nesac\n"
+                                % (cases, log))
         os.chmod(b / "tmux", 0o700)
         self.env["PATH"] = "%s:%s" % (b, self.env["PATH"])
         return log
@@ -162,11 +169,41 @@ class Menu(unittest.TestCase):
 
     def test_close_row_refuses_when_row_changed_or_no_window_given(self):
         # 審查 r2 S1:選單開著時右欄重排,同一行換成別席 ⇒ 不彈確認
-        for extra in ([], ["--expect-window", "@99"], ["--expect-window"]):
+        for extra in ([], ["--expect-window", "@99"], ["--expect-window"],
+                      ["--expect-window", "@3"], ["--expect-window", "@350"]):         # 不是前綴比對
             out = self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "3", "s1", *extra)
             self.assertNotIn("display-menu", out, extra)
-        self.assertEqual(self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "99999", "s1",
+
+    def test_expect_window_without_value_keeps_dry_run(self):
+        # 審查 r3(M5/M6):--expect-window 沒接值時不能把 --dry-run 當成窗 id 吃掉
+        log = self.fake_tmux()
+        self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "3", "s1", "--expect-window", "--dry-run",
+                     dry_last=False)
+        self.assertFalse(log.exists() and log.read_text().strip())
+
+    def test_row_number_limited_to_four_digits(self):
+        # 審查 r3(M10–M12):第 12345 行就算有 [X] 也不收(座標只收 1–4 位數)
+        (self.st / "ai-rowmap.json").write_text(json.dumps([dict(IDLE, line=12345), dict(IDLE, line=1234)],
+                                                           ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "12345", "s1",
                                       "--expect-window", "@35"), "")
+        self.assertIn("--release-confirmed @35", self.run_ctl("--role", "right", "--close-row", "ai-list", "5",
+                                                             "1234", "s1", "--expect-window", "@35"))
+
+    def test_context_reads_the_clicked_cabins_rowmap(self):
+        # 審查 r3 M1:多艙時右鍵選單要讀被點那一艙的 rowmap(run-shell 環境是第一艙的)
+        st_b = self.tmp / "stB"
+        st_b.mkdir()
+        (st_b / "ai-rowmap.json").write_text(json.dumps([dict(IDLE, window="@40")], ensure_ascii=False),
+                                             encoding="utf-8")
+        log = self.fake_tmux({"sB": st_b})
+        self.run_ctl("--context", "pane", "ai-list", "5", "3", "%1", "sB", dry_last=False)
+        menu = log.read_text()
+        self.assertIn("--close-row ai-list 5 3 sB --expect-window @40", menu)
+        self.assertNotIn("@35", menu)
+        log.unlink()
+        self.run_ctl("--context", "pane", "ai-list", "5", "3", "%1", "sX", dry_last=False)   # 取不到艙身份
+        self.assertNotIn("--close-row", log.read_text() if log.exists() else "")
 
     def test_three_args_without_session_keep_dry_run(self):
         # 審查 r2 A1:給了三格、沒給 session 時,--dry-run 不能被當成 session 吃掉
@@ -184,7 +221,7 @@ class Menu(unittest.TestCase):
 
     def test_real_menu_carries_session_and_window(self):
         # 審查 r2 C9 / C11:真跑那份選單也有這一項,回呼帶 session(多艙不重導錯艙)與窗 id
-        log = self.fake_tmux()
+        log = self.fake_tmux({"s1": self.st})
         self.run_ctl("--context", "pane", "ai-list", "5", "3", "%1", "s1", dry_last=False)
         self.assertIn("--close-row ai-list 5 3 s1 --expect-window @35", log.read_text())
 

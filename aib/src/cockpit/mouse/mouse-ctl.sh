@@ -3291,6 +3291,10 @@ else:
     exec 2>/dev/null
     case "$SURFACE" in pane|border|status) ;; *) exit 0 ;; esac
     SESSION="${SESSION:-$EZ2_TMUX_SESSION}"
+    # 審查 #287 r3 M1:run-shell 的環境是伺服器第一個艙的;右鍵選單讀的 rowmap 要是**被點的那一艙**
+    #   (否則第二艙以後「詳情 / 開啟」對到別艙同一行、「關閉這一席」帶錯窗 id)。取不到艙身份 ⇒ 不給關閉項。
+    CTX_CABIN_OK=0
+    aib_cabin_env_from_session "$SESSION" && CTX_CABIN_OK=1
     [ -n "$PANE" ] || PANE="="
     LABEL_BLOCK="$("$EZ2_PY3" "$COCKPIT/i18n_lib.py" \
       "aib.context.surface.${SURFACE}" \
@@ -3331,7 +3335,7 @@ else:
     _CX_OK="${CX:-0}"; _CY_OK="${CY:-0}"
     case "$_CX_OK" in *[!0-9]*) _CX_OK=0 ;; esac          # 座標只收數字才嵌進 run-shell 字串
     case "$_CY_OK" in *[!0-9]*) _CY_OK=0 ;; esac
-    if [ -n "$WINDOW" ] && [ "$_CY_OK" -ge 2 ]; then
+    if [ "$CTX_CABIN_OK" = "1" ] && [ -n "$WINDOW" ] && [ "$_CY_OK" -ge 2 ]; then
       _CLOSE_HIT="$("$EZ2_PY3" "$HERE/hit_test.py" --role "$ROLE" \
         --x "${CX:-0}" --y "${CY:-0}" --intent close \
         --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null || true)"
