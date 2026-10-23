@@ -143,6 +143,51 @@ def _vkey(v):
         return None
 
 
+TAIL_BYTES = 256 * 1024
+
+
+def _tail_has(path, needle, limit=TAIL_BYTES):
+    """檔尾 limit 位元組裡有沒有 needle(大檔不整份讀)。"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - limit))
+            return needle.encode("utf-8") in f.read(limit)
+    except OSError:
+        return False
+
+
+def _lines_at_least(path, n, limit=4 * 1024 * 1024):
+    try:
+        with open(path, "rb") as f:
+            return f.read(limit).count(b"\n") >= n
+    except OSError:
+        return False
+
+
+def _local_events(root, rows):
+    """本機真事件(10-24 03:3x 接上):都是 aib 自己寫的紀錄檔;同帳號寫得到,只當「顯示做過沒」,領獎由伺服器判。"""
+    st = os.path.join(root, "state")
+    roles = [r.get("role") for r in rows if isinstance(r.get("role"), str) and r.get("role")]
+    return {
+        "now_written": bool(glob.glob(os.path.join(st, "seat-now", "*.json"))),
+        "dm_sent": os.path.isfile(os.path.join(st, "aib-dm-sent-v3.tsv"))
+        and os.path.getsize(os.path.join(st, "aib-dm-sent-v3.tsv")) > 0,
+        "dm_done": any(_tail_has(p, '"to": "done"') for p in glob.glob(os.path.join(st, "dm-queue", "*", "audit.jsonl"))),
+        "memory_10": _lines_at_least(os.path.join(root, "memory-index", "notes.jsonl"), 10),
+        "test_green": any(_tail_has(p, '"rc": 0,') for p in glob.glob(os.path.join(root, "verify-shadow", "verify-*.rows.jsonl"))),
+        "second_seat_same_role": len(roles) != len(set(roles)),
+        "projects_3": sum(1 for n in _listdir(os.path.join(root, "projects")) if n.startswith("proj:")) >= 3,
+    }
+
+
+def _listdir(path):
+    try:
+        return os.listdir(path)
+    except OSError:
+        return []
+
+
 def detect(root, memo, today=None):
     """{偵測代碼: True};只回偵測得到的(偵測不到 / 沒有偵測器的不在裡面)。memo 是紀錄檔(放 first_version 用)。"""
     rows = _rows(root)
@@ -160,6 +205,7 @@ def detect(root, memo, today=None):
         "two_providers_online": len({r.get("provider") for r in rows if r.get("provider")}) >= 2,
         "launch_streak_3": st >= 3, "launch_streak_7": st >= 7, "launch_streak_30": st >= 30,
     }
+    got.update(_local_events(root, rows))
     ver = _aib_version()
     first = memo.get("first_version")
     if ver and not first:
@@ -171,7 +217,8 @@ def detect(root, memo, today=None):
 
 DETECTABLE = frozenset(("power_opened", "born", "seat_registered", "persona_bound", "brain_bound", "launch_recorded",
                         "handoff_receipt", "two_providers_online", "aib_upgraded", "launch_streak_3", "launch_streak_7",
-                        "launch_streak_30", "ssr_all_done"))
+                        "launch_streak_30", "ssr_all_done", "now_written", "dm_sent", "dm_done", "memory_10",
+                        "test_green", "second_seat_same_role", "projects_3"))
 
 
 def onboarding_state(*, detector=None, now=None, today=None):

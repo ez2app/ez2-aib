@@ -12,10 +12,12 @@ T7 detect:aib 版本比第一次看到的新 ⇒ aib_upgraded;第一次只記 fi
 T8 detect:座位 / 人格 / 第二大腦 / 兩家以上在線 / 交接單(自動存的不算)/ 連續出發
 T9 redeem:讀 stdin 一行、不回顯、rc 2 power_redeem_not_yet;aib power tier / redeem 從總管 power_status.main 轉得到
 T10 detectable:沒有偵測器的條 = false(頁面照實標)
+T13 本機真事件:seat-now / dm 寄出紀錄 / dm 佇列稽核轉 done / 記憶 ≥ 10 筆 / aib test rc 0 / 同角色兩席 / 專案 ≥ 3;
+    沒有或不夠 ⇒ 不算;稽核只有 read、rc 1、9 筆記憶、2 個專案 ⇒ 不算
 T12 SPEC §15:沒出發 ⇒ SSR / UR locked、unlock = launch_recorded、on false、每條 locked、tier on 回 power_tier_locked;
     出發過(記住)⇒ 解鎖、unlock null;room_tiers 分級數字;since = done 時間
 T11 where(SPEC §14):動力室 30 條 = R1–12、SR1–7 + 12–13、SSR2–5 + 11、UR4–7;其餘 14 條 room;tiers / all 只算 power、room 另算
-刀(複本):K1 done 不記住 ⇒ T2 紅;K2 舊 id 不搬 ⇒ T3 紅;K3 關等級連偵測都停 ⇒ T4 紅;K4 艦長室的條照列動力室 ⇒ T11 紅;K5 不鎖 SSR / UR ⇒ T12 紅
+刀(複本):K1 done 不記住 ⇒ T2 紅;K2 舊 id 不搬 ⇒ T3 紅;K3 關等級連偵測都停 ⇒ T4 紅;K4 艦長室的條照列動力室 ⇒ T11 紅;K5 不鎖 SSR / UR ⇒ T12 紅;K6 讀了就算結案 ⇒ T13 紅
 """
 import datetime
 import io
@@ -131,7 +133,8 @@ class Tasks(unittest.TestCase):
         st = PT.onboarding_state(detector=lambda r, m, t: {}, now=NOW)
         t = by_id(st)
         self.assertTrue(t["R3"]["detectable"])
-        self.assertFalse(t["R8"]["detectable"])                            # dm_sent 還沒接
+        self.assertFalse(t["R11"]["detectable"])                           # device_bound 還沒接
+        self.assertTrue(t["R8"]["detectable"])
         self.assertFalse(t["SSR1"]["detectable"])
         self.assertEqual(t["SSR1"]["requires"], "server")
         codes = {code for _i, _t, code, _r in PT.TASKS}
@@ -217,6 +220,42 @@ class Detect(unittest.TestCase):
         shutil.rmtree(Path(TMP) / "state", ignore_errors=True)
         PT.onboarding_state(now=NOW, today=TODAY)
         self.assertEqual(memo()["first_version"], "0.1.44")
+
+    def test_t13_local_events(self):
+        root = Path(TMP)
+        keys = ("now_written", "dm_sent", "dm_done", "memory_10", "test_green", "second_seat_same_role", "projects_3")
+        for k in keys:
+            self.assertNotIn(k, PT.detect(TMP, {}, TODAY))
+        st = root / "state"
+        (st / "seat-now").mkdir(parents=True)
+        (st / "seat-now" / "x.line").write_text("x")
+        (st / "aib-dm-sent-v3.tsv").write_text("")
+        (st / "dm-queue" / "abc12").mkdir(parents=True)
+        (st / "dm-queue" / "abc12" / "audit.jsonl").write_text(json.dumps({"from": "queued", "to": "read"}) + "\n")
+        (root / "memory-index").mkdir()
+        (root / "memory-index" / "notes.jsonl").write_text("{}\n" * 9)
+        (root / "verify-shadow").mkdir()
+        (root / "verify-shadow" / "verify-1.rows.jsonl").write_text(json.dumps({"test": "t", "rc": 1, "x": 0}) + "\n")
+        (root / "projects").mkdir()
+        for n in ("proj:a", "proj:b", "other"):
+            (root / "projects" / n).mkdir()
+        PT._rows = lambda r: [{"role": "dev"}, {"role": "pm"}, {"role": ""}, {"role": ""}]
+        got = PT.detect(TMP, {}, TODAY)
+        for k in keys:
+            self.assertNotIn(k, got, k)                                    # 都差一點 ⇒ 不算
+        (st / "seat-now" / "x.json").write_text("{}")
+        (st / "aib-dm-sent-v3.tsv").write_text("2026-10-24\tx\n")
+        with open(st / "dm-queue" / "abc12" / "audit.jsonl", "a") as f:
+            f.write(json.dumps({"from": "read", "to": "done"}) + "\n")
+        (root / "memory-index" / "notes.jsonl").write_text("{}\n" * 10)
+        (root / "verify-shadow" / "verify-1.rows.jsonl").write_text(json.dumps({"test": "t", "rc": 0, "x": 1}) + "\n")
+        (root / "projects" / "proj:c").mkdir()
+        PT._rows = lambda r: [{"role": "dev"}, {"role": "dev"}]
+        got = PT.detect(TMP, {}, TODAY)
+        for k in keys:
+            self.assertIs(got.get(k), True, k)
+        for k in ("state", "memory-index", "verify-shadow", "projects"):
+            shutil.rmtree(root / k)
 
     def test_t8_detect(self):
         self.assertEqual(PT.detect(TMP, {}, TODAY), {})
@@ -309,6 +348,9 @@ class Knife(unittest.TestCase):
 
     def test_k5_no_lock(self):
         self._knife('UNLOCK = {"SSR": "launch_recorded", "UR": "launch_recorded"}', "UNLOCK = {}", "Tasks.test_t12_locks")
+
+    def test_k6_read_counts_as_done(self):
+        self._knife("""_tail_has(p, '"to": "done"')""", """_tail_has(p, '"to": "')""", "Detect.test_t13_local_events")
 
     def test_k4_room_in_power(self):
         self._knife('"where": "room" if tid in IN_ROOM else "power"', '"where": "power"', "Tasks.test_t11_where")
