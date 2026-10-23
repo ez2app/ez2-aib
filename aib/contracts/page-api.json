@@ -746,7 +746,8 @@
     "creator_unreachable": "連不到伺服器 / 伺服器 5xx;沒有收到編號 ⇒ 可以原包重送(冪等)",
     "creator_unsupported": "伺服器沒有這組端點(404 / 405)",
     "creator_package_unreadable": "tar 打不開 / 不是 ustar",
-    "creator_not_bound": "這台沒綁 ez2.page(或綁了不只一頁 / 憑證沒帶 machine_id)⇒ 什麼都沒送,hint 指 aib page bind"
+    "creator_not_bound": "這台沒綁 ez2.page(或綁了不只一頁 / 憑證沒帶 machine_id)⇒ 什麼都沒送,hint 指 aib page bind",
+    "creator_id_invalid": "編號不是 sub_ + 12–40 位英數(status 的參數,或重送包 creator.json 的 submission_id)⇒ 不送"
    },
    "rc": {
     "0": "成功",
@@ -755,7 +756,22 @@
     "4": "網路 / 伺服器錯",
     "5": "Touch ID 取消"
    },
-   "detail_note": "detail 是契約、不換人話;人話只在 hint"
+   "detail_note": "detail 是契約、不換人話;人話只在 hint",
+   "list_ok": {
+    "fields": [
+     "ok",
+     "detail",
+     "submissions",
+     "next_cursor",
+     "hint"
+    ],
+    "detail": [
+     "creator_list"
+    ],
+    "submissions": "[creator.status_object 原樣]",
+    "next_cursor": "str|null"
+   },
+   "text_note": "不帶 --json 時印人話;伺服器給的字(state / reasons / hint / item_id)是資料,印之前去控制 / 隱形字元並截長;detail_url 不是 https://ez2.page/ 開頭就不印"
   }
  }
 }
