@@ -1,7 +1,7 @@
 {
   "name": "aib-boards",
   "kind": "mod",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "requires_aib": "0.1.6",
   "built_from": "0.70.11",
   "title": "AIB 席位 mod(Claude Code 介面:每席一台電腦、身分、CTX、信件卡片)",
