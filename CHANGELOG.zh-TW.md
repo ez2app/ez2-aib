@@ -4,6 +4,10 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.44
+
+- **新增 `aib create submit / status / list`(收件服務尚未開放)**:把外掛或 skill 做好的作品提交包(`.tar`)送審，之後查狀態、列出自己送過的。aib 會先在本機檢查包(路徑、檔案類型、清單雜湊、每個檔的大小),送出前要一次 Touch ID,再顯示伺服器的審核狀態。收件服務開放前,`submit` 會回 `creator_unsupported`,不會存任何東西。結果用 `contracts/page-api.json` 的契約代碼(`creator.*`);`--json` 給同一份回條。
+
 ## 0.1.43
 
 - **艦長室外掛太舊時,`aib` 不再開瀏覽器**:`aib`(預設艦長室)一律用 `aib room open --no-browser` 起艦長室。裝的外掛太舊、不支援時(0.1.33 以前),不起伺服器、不開任何視窗，回 `room-too-old`、提醒你更新外掛，改顯示終端機說明。

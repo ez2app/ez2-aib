@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -240,6 +241,35 @@ class PageApi:
         """用量收據(規格 v2 §十三)。與 `/draft` **完全分開的一條路**:
         它失敗不准影響草稿寫入(§13.5 第 1 條),所以這裡不共用任何重試或狀態。"""
         return self._request("POST", "/usage", receipt)
+
+    # ---- 作品提交(契約 page-api.json creator_*)----------------------------
+
+    def creator_upload(self, path, tar_bytes, machine_id, manifest_sha256, rev):
+        """POST 本體直接是 tar(不走 _request:那條只收 JSON、上限 256KB;大小上限在伺服器設定表,這裡不寫死)。
+        回 (http 狀態, 回應) —— 202 新件、200 同包冪等回原件,呼叫端要分得出來。"""
+        if not self.token:
+            raise TransportError("這條路要憑證,但這台機器還沒綁:先跑 `aib page bind`")
+        headers = {"accept": "application/json", "user-agent": USER_AGENT, "content-type": "application/x-tar",
+                   "authorization": "Bearer " + self.token, "x-aib-machine": machine_id,
+                   "x-aib-manifest-sha256": manifest_sha256, "x-aib-rev": str(int(rev))}
+        request = urllib.request.Request(self._url(path), data=bytes(tar_bytes), headers=headers, method="POST")
+        try:
+            with self._opener.open(request, timeout=max(self.timeout, 60)) as response:
+                raw = response.read()
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            raw = exc.read()
+            status = exc.code
+        except (urllib.error.URLError, OSError) as exc:
+            raise TransportError("連不上 %s:%s" % (self.base_url, exc))
+        return status, self._parse(status, raw)
+
+    def creator_status(self, submission_id):
+        return self._request("GET", "/creator/submissions/" + submission_id)
+
+    def creator_list(self, cursor=None, limit=20):
+        q = "?mine=1&limit=%d" % int(limit) + ("&cursor=" + urllib.parse.quote(cursor, safe="") if cursor else "")
+        return self._request("GET", "/creator/submissions" + q)
 
     # ★ 這裡**刻意沒有** publish 方法,理由見檔頭第 3 點。要印「發布要你按」時,
     #   用 `post_draft()` 回應體裡的 preview.publish_url(規格 §5.2)。

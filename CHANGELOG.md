@@ -4,6 +4,10 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.44
+
+- **New `aib create submit / status / list` (submission service not open yet)**: send a finished creation package (a `.tar` made by an add-on or skill) for review, then check its status or list what you have sent. aib checks the package locally first (paths, file types, manifest hashes, size of each member), asks for one Touch ID before sending, and prints the server's review state. Until the submission service opens, `submit` answers `creator_unsupported` and nothing is stored. Results use the contract codes in `contracts/page-api.json` (`creator.*`); `--json` gives the same receipt.
+
 ## 0.1.43
 
 - **`aib` no longer opens a browser when the Captain Room add-on is too old**: `aib` (room by default) always starts the room with `aib room open --no-browser`. If the installed add-on is too old to support that (0.1.33 and earlier), aib does not start the server or open any window; it answers `room-too-old`, tells you to update the add-on, and falls back to the terminal help.
