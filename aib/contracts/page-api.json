@@ -382,16 +382,16 @@
    "path": "/creator/submissions",
    "auth": "bearer",
    "auth_note": "bearer + machine_id + 請求帶 manifest_sha256;不另簽包(綁定那台沒有私鑰,再簽一層在同帳號 AI 模型下不多擋)。本人證明只靠核心 Touch ID 彈窗,伺服器驗不到 ⇒ 接受:提交只是送審,後面有審查與核定;同帳號 AI 繞過最壞是多一件待審、吃當日額度(@abb89 10-23 裁)",
-   "body": "pending",
-   "body_note": "一支直接上傳 tar 或先開編號再上傳、是否可續傳 ⇒ 待收件端定",
-   "idempotent": "同一 (machine_id, manifest_sha256, rev) 重送 ⇒ 回原編號的狀態物件,不另開件",
+   "body": "tar",
+   "body_note": "本體直接是 ustar tar,一次傳完、不做續傳(斷了整包重送,靠冪等鍵不重開件);不簽名、不用 multipart。未驗身分 ⇒ 401,不收本體",
+   "idempotent": "同一 (machine_id, manifest_sha256, rev) 重送 ⇒ 200 + 原編號的狀態物件,不另開件",
    "ok": {
-    "http": 201,
+    "http": 202,
     "fields": [
      "ok",
      "submission"
     ],
-    "submission": "creator.status_object"
+    "submission": "creator.status_object(state = queued)"
    },
    "caller_dead": {
     "http": 401,
@@ -403,17 +403,19 @@
     ]
    },
    "errors": [
-    "creator_unknown_field",
-    "creator_schema_unsupported",
     "creator_category_closed",
-    "creator_manifest_mismatch",
-    "creator_path_rejected",
     "creator_file_type_rejected",
-    "creator_too_large",
-    "creator_quota_daily",
-    "creator_machine_revoked",
+    "creator_intake_paused",
     "creator_kind_mixed",
-    "creator_quota_total"
+    "creator_machine_revoked",
+    "creator_manifest_mismatch",
+    "creator_media_type_rejected",
+    "creator_path_rejected",
+    "creator_quota_daily",
+    "creator_quota_total",
+    "creator_schema_unsupported",
+    "creator_too_large",
+    "creator_unknown_field"
    ],
    "unsupported": {
     "http": [
@@ -421,18 +423,25 @@
      405
     ],
     "core": "舊伺服器沒這組端點 ⇒ 判 unsupported"
+   },
+   "headers": {
+    "Authorization": "Bearer <綁定 token>",
+    "X-AIB-Machine": "machine_id",
+    "X-AIB-Manifest-Sha256": "MANIFEST.json 的 sha256(小寫 hex)",
+    "X-AIB-Rev": "整數",
+    "Content-Type": "application/x-tar"
    }
   },
   "creator_resubmit": {
    "status": "planned",
    "method": "POST",
-   "path": "/creator/submissions/{id}/revisions",
+   "path": "/creator/submissions/{id}/resubmit",
    "auth": "bearer",
    "auth_note": "同 creator_submit",
-   "body": "pending",
-   "body_note": "同 creator_submit;creator.json 帶 submission_id = {id}、rev = 目前 rev + 1;只能放這包原有的 item_id(新件另開一包),已 approved / listed 的件不受影響",
+   "body": "tar",
+   "body_note": "同 creator_submit;X-AIB-Rev 要比目前 rev 大,否則 409 creator_revision_conflict;只能放這包原有的 item_id(新件另開一包),已 approved / listed 的件不受影響",
    "ok": {
-    "http": 201,
+    "http": 202,
     "fields": [
      "ok",
      "submission"
@@ -449,20 +458,22 @@
     ]
    },
    "errors": [
-    "creator_submission_unknown",
-    "creator_submission_not_editable",
-    "creator_revision_conflict",
-    "creator_unknown_field",
-    "creator_schema_unsupported",
-    "creator_manifest_mismatch",
-    "creator_path_rejected",
     "creator_file_type_rejected",
-    "creator_too_large",
-    "creator_quota_daily",
-    "creator_machine_revoked",
-    "creator_kind_mixed",
+    "creator_intake_paused",
     "creator_item_unknown",
-    "creator_quota_total"
+    "creator_kind_mixed",
+    "creator_machine_revoked",
+    "creator_manifest_mismatch",
+    "creator_media_type_rejected",
+    "creator_path_rejected",
+    "creator_quota_daily",
+    "creator_quota_total",
+    "creator_revision_conflict",
+    "creator_schema_unsupported",
+    "creator_submission_not_editable",
+    "creator_submission_unknown",
+    "creator_too_large",
+    "creator_unknown_field"
    ],
    "unsupported": {
     "http": [
@@ -471,7 +482,15 @@
     ],
     "core": "舊伺服器沒這組端點 ⇒ 判 unsupported"
    },
-   "editable_note": "包是 auto_failed,或 decided 且至少一件 rejected ⇒ 可重送;其他 ⇒ 409 creator_submission_not_editable"
+   "editable_note": "包是 auto_failed,或 decided 且至少一件 rejected ⇒ 可重送;其他 ⇒ 409 creator_submission_not_editable",
+   "headers": {
+    "Authorization": "Bearer <綁定 token>",
+    "X-AIB-Machine": "machine_id",
+    "X-AIB-Manifest-Sha256": "MANIFEST.json 的 sha256(小寫 hex)",
+    "X-AIB-Rev": "整數",
+    "Content-Type": "application/x-tar"
+   },
+   "idempotent": "同一 (machine_id, manifest_sha256, rev) 重送 ⇒ 200 + 原編號的狀態物件,不另開件"
   },
   "creator_status": {
    "status": "planned",
@@ -543,7 +562,7 @@
  },
  "creator": {
   "status": "planned",
-  "about": "用戶創作提交 / 審查 / 上架的共用代碼表與狀態(10-23 @abb89 提交包 schema + @d07f9 狀態 API 對齊為同一份;收件端待 @9f808);13:1x 起一包只一種 kind、可多件,逐件審 / 核定 / 上架(SPEC 第 13 節)",
+  "about": "用戶創作提交 / 審查 / 上架的共用代碼表與狀態(10-23 @abb89 提交包 schema + @d07f9 狀態 API 對齊為同一份;收件端待 @9f808);13:1x 起一包只一種 kind、可多件,逐件審 / 核定 / 上架(SPEC 第 13 節);收件端 @9f808 13:51 定(一支、直接帶 tar、不續傳)",
   "codes": {
    "creator_unknown_field": {
     "http": 422,
@@ -595,7 +614,7 @@
    },
    "creator_revision_conflict": {
     "http": 409,
-    "when": "rev 撞到(兩台同時重送);帶 current_rev"
+    "when": "rev 沒有比目前大(含兩台同時重送撞號);帶 current_rev"
    },
    "creator_reported": {
     "http": null,
@@ -624,6 +643,14 @@
    "creator_quota_total": {
     "http": 429,
     "when": "這位創作者的總容量上限已滿(數字在伺服器設定表);不帶 retry_after,要先下架 / 刪舊件"
+   },
+   "creator_media_type_rejected": {
+    "http": 415,
+    "when": "本體不是 application/x-tar"
+   },
+   "creator_intake_paused": {
+    "http": 503,
+    "when": "收件總開關關著(管理暫停收件);稍後再送,原包重送冪等"
    }
   },
   "codes_note": "代碼是契約(同 receipt detail):不改成人話,人話另放 hint。http=null ⇒ 不是 HTTP 錯誤,只出現在狀態物件 reasons 或核心本機",

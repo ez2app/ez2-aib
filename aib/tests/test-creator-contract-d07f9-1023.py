@@ -4,7 +4,7 @@
 
 CC1 包狀態 5 個、件狀態 6 個(SPEC 第 13 節:一包一種 kind、可多件、逐件審);代碼全是 creator_ / listing_ 前綴、每個都有 http(int 或 null)與 when
 CC2 四支端點：形狀(method / path / status / auth)、errors 每個都在代碼表、401 同 caller_dead、舊伺服器 404/405 ⇒ unsupported
-CC3 送件身分:submit 冪等鍵 = (machine_id, manifest_sha256, rev);auth_note 寫明只靠核心彈窗、不另簽包;body 還待定
+CC3 送件身分:submit 冪等鍵 = (machine_id, manifest_sha256, rev);auth_note 寫明只靠核心彈窗、不另簽包;收件端:一支、直接帶 tar、五個標頭、新件 202 / 冪等 200
 CC4 狀態物件：作者由伺服器蓋章、reasons 是代碼、hint 是資料
 CC5 核心 submit / status 回條:submission = 狀態物件原樣(欄名 id)、rc 0/2/3/4/5、本機碼不跟伺服器碼重名
 """
@@ -49,7 +49,10 @@ class Contract(unittest.TestCase):
         self.assertIn("(machine_id, manifest_sha256, rev)", s["idempotent"])
         self.assertIn("不另簽包", s["auth_note"])
         self.assertIn("Touch ID", s["auth_note"])
-        self.assertEqual(s["body"], "pending")
+        self.assertEqual((s["body"], s["headers"]["Content-Type"], s["ok"]["http"]), ("tar", "application/x-tar", 202))
+        self.assertEqual(set(s["headers"]), {"Authorization", "X-AIB-Machine", "X-AIB-Manifest-Sha256", "X-AIB-Rev", "Content-Type"})
+        self.assertIn("200", s["idempotent"])
+        self.assertTrue(E["creator_resubmit"]["path"].endswith("/resubmit"))
         self.assertIn("creator_machine_revoked", s["errors"])
 
     def test_cc4_status_object(self):
