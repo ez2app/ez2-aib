@@ -412,7 +412,8 @@
     "creator_too_large",
     "creator_quota_daily",
     "creator_machine_revoked",
-    "creator_kind_mixed"
+    "creator_kind_mixed",
+    "creator_quota_total"
    ],
    "unsupported": {
     "http": [
@@ -460,7 +461,8 @@
     "creator_quota_daily",
     "creator_machine_revoked",
     "creator_kind_mixed",
-    "creator_item_unknown"
+    "creator_item_unknown",
+    "creator_quota_total"
    ],
    "unsupported": {
     "http": [
@@ -573,7 +575,7 @@
    },
    "creator_quota_daily": {
     "http": 429,
-    "when": "每帳號每日件數 / MB 上限;帶 retry_after 秒"
+    "when": "每帳號每日件數 / MB 上限(新創作者前 7 天另有較低上限);帶 retry_after 秒;數字在伺服器設定表"
    },
    "creator_machine_revoked": {
     "http": 403,
@@ -618,6 +620,10 @@
    "creator_merge_failed": {
     "http": null,
     "when": "只出現在件的 reasons:核定後合進素材包前的 shotcheck / gate 失敗 ⇒ 該件退回"
+   },
+   "creator_quota_total": {
+    "http": 429,
+    "when": "這位創作者的總容量上限已滿(數字在伺服器設定表);不帶 retry_after,要先下架 / 刪舊件"
    }
   },
   "codes_note": "代碼是契約(同 receipt detail):不改成人話,人話另放 hint。http=null ⇒ 不是 HTTP 錯誤,只出現在狀態物件 reasons 或核心本機",
@@ -663,6 +669,7 @@
    "listed",
    "suspended"
   ],
-  "states_note": "包:queued ⇒ 伺服器重驗 ⇒ auto_failed(整包退,可重送)或 in_review;每件都有結果 ⇒ decided;suspended = 整包凍結(例送件那台被撤)。件:in_review ⇒ rejected / approved ⇒ listed(合進素材包後);任何件可被 suspended。一包可以核 8 退 2。核心遇到不認得的值 ⇒ 原樣印、當還在處理,不當失敗"
+  "states_note": "包:queued ⇒ 伺服器重驗 ⇒ auto_failed(整包退,可重送)或 in_review;每件都有結果 ⇒ decided;suspended = 整包凍結(例送件那台被撤)。件:in_review ⇒ rejected / approved ⇒ listed(合進素材包後);任何件可被 suspended。一包可以核 8 退 2。核心遇到不認得的值 ⇒ 原樣印、當還在處理,不當失敗",
+  "limits_note": "上限數字(單檔 / 單包 / 解壓後 / 檔數 / 每日 / 總容量)全在伺服器端可設定、版本化的表,契約只定代碼;核心不寫死數字,照錯誤碼與 retry_after 顯示"
  }
 }
