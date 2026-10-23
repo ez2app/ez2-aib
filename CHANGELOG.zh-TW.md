@@ -4,6 +4,11 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.45
+
+- **新增 `aib plugins install <名稱>[@版本]`、`aib plugins catalog`、`aib plugins license <加購>`**:會員可以直接從 ez2.page 目錄拿外掛。aib 先比對目錄列的大小與 sha256,有上限地解壓(壓縮炸彈、連結、怪路徑一律拒收),包自己的簽章驗過才安裝;沒簽過的絕不載入。付費外掛要這台機器綁了 ez2.page、帳號買過才拿得到。已裝較新版時不會降版，除非你明寫版本。`plugins license` 領帳號買過的授權，跟 `aib license install` 用同一套檢查安裝。結果用 `contracts/page-api.json` 的契約代碼(`plugins.*`);`--json` 給同一份回條。
+- **席位面板開大份對話紀錄快很多**:席位面板和待處理檢查改成只讀對話紀錄尾端，不夠才往前讀(243 MB 的紀錄從約 2 秒降到 0.2 秒)。
+
 ## 0.1.44
 
 - **新增 `aib create submit / status / list`(收件服務尚未開放)**:把外掛或 skill 做好的作品提交包(`.tar`)送審，之後查狀態、列出自己送過的。aib 會先在本機檢查包(路徑、檔案類型、清單雜湊、每個檔的大小),送出前要一次 Touch ID,再顯示伺服器的審核狀態。收件服務開放前,`submit` 會回 `creator_unsupported`,不會存任何東西。結果用 `contracts/page-api.json` 的契約代碼(`creator.*`);`--json` 給同一份回條。

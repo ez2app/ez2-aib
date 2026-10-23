@@ -4,6 +4,11 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.45
+
+- **New `aib plugins install <name>[@version]`, `aib plugins catalog`, `aib plugins license <addon>`**: members can get add-ons straight from the ez2.page catalog. aib checks the size and sha256 the catalog lists, unpacks with limits (archive bombs, links and odd paths are refused), and installs only if the package's own signature checks out; nothing unsigned is ever loaded. Paid add-ons need this machine to be bound to ez2.page and the account to own the add-on. A newer installed version is not downgraded unless you name the version. `plugins license` fetches the licence your account owns and installs it the same way as `aib license install`. Results use the contract codes in `contracts/page-api.json` (`plugins.*`); `--json` gives the same receipt.
+- **Seat panel opens large transcripts much faster**: the seat panel and its pending check now read only the end of the transcript, going further back only when needed (a 243 MB transcript went from about 2 s to 0.2 s).
+
 ## 0.1.44
 
 - **New `aib create submit / status / list` (submission service not open yet)**: send a finished creation package (a `.tar` made by an add-on or skill) for review, then check its status or list what you have sent. aib checks the package locally first (paths, file types, manifest hashes, size of each member), asks for one Touch ID before sending, and prints the server's review state. Until the submission service opens, `submit` answers `creator_unsupported` and nothing is stored. Results use the contract codes in `contracts/page-api.json` (`creator.*`); `--json` gives the same receipt.
