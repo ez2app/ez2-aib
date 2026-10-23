@@ -474,6 +474,97 @@ class Contract(Box):
                 self.assertTrue(("aib.plugins.hint." + code) in d, (lang, code))
 
 
+class Hard(Box):
+    """第 5 輪突變審補的硬線測試(審查員探針改寫):路徑穿越、zip 上限、本體讀取上限、下載包怪錯誤體。"""
+
+    def _tar_with(self, name):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            ti = tarfile.TarInfo(name)
+            ti.size = 3
+            tf.addfile(ti, io.BytesIO(b"pwn"))
+        return buf.getvalue()
+
+    def _zip_with(self, name):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr(name, "pwn")
+        return buf.getvalue()
+
+    def test_h1_traversal(self):
+        for label, blob in (("tar..", self._tar_with("probe/../../escape-t1")),
+                            ("tarabs", self._tar_with(str(self.tmp / "escape-t2"))),
+                            ("zip..", self._zip_with("../../escape-z1")),
+                            ("zipabs", self._zip_with(str(self.tmp / "escape-z2")))):
+            res, rc = self.install("probe", self.server([self.entry(blob)], {("probe", "0.0.1"): blob}))
+            self.assertEqual(rc, 3, label)
+            self.assertFalse(self.installed().exists(), label)
+        hits = [str(p) for p in Path(self.tmp).rglob("escape-*")] + [str(p) for p in Path(tempfile.gettempdir()).glob("escape-*")]
+        self.assertEqual(hits, [])
+        for label, blob in (("tar..", self._tar_with("probe/../../escape-t1")), ("tarabs", self._tar_with("/escape-t2")),
+                            ("zip..", self._zip_with("../../escape-z1"))):
+            into = self.tmp / ("x-" + label)
+            into.mkdir()
+            ok, why = AP._extract(blob, into)
+            self.assertEqual((ok, why.split(":")[0]), (False, "unsafe-path"), label)   # 自己的檢查先擋(3.9 沒有 data filter)
+
+    def test_h2_zip_limits(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for i in range(3):
+                z.writestr("probe/z%d" % i, b"\0" * 3000)
+        (self.tmp / "zb").mkdir()
+        with mock.patch.multiple(AP, MAX_UNPACK_BYTES=4000):
+            self.assertEqual(AP._extract(buf.getvalue(), self.tmp / "zb"), (False, "too-big-unpacked"))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for i in range(30):
+                z.writestr("probe/f%d" % i, b"")
+        (self.tmp / "zm").mkdir()
+        with mock.patch.multiple(AP, MAX_UNPACK_MEMBERS=20):
+            self.assertEqual(AP._extract(buf.getvalue(), self.tmp / "zm"), (False, "too-big-unpacked"))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            zi = zipfile.ZipInfo("probe/link")
+            zi.external_attr = 0o120777 << 16
+            z.writestr(zi, "/etc/passwd")
+        (self.tmp / "zs").mkdir()
+        ok, why = AP._extract(buf.getvalue(), self.tmp / "zs")
+        self.assertEqual((ok, why.split(":")[0]), (False, "symlink"))
+
+    def test_h3_body_read_capped(self):
+        data = self.tgz()
+        srv = self.server([self.entry(data)], {("probe", "0.0.1"): data + b"\0" * (5 * 1024 * 1024)})
+        got = {}
+        orig = A.PageApi._get_raw
+
+        def spy(api, path, headers, max_bytes):
+            st, raw = orig(api, path, headers, max_bytes)
+            got[path] = len(raw)
+            return st, raw
+        with mock.patch.object(A.PageApi, "_get_raw", spy):
+            res, rc = self.install("probe", srv)
+        self.assertEqual(rc, 3)
+        self.assertLessEqual(got["/plugins/packages/probe/0.0.1.tgz"], len(data) + 1)
+        big = json.dumps({"error": "x", "pad": "y" * (200 * 1024)}).encode()
+        srv = self.server([self.entry(data)], {}, extra={"/plugins/packages/probe/0.0.1.tgz": (500, big)})
+        got.clear()
+        with mock.patch.object(A.PageApi, "_get_raw", spy):
+            res, rc = self.install("probe", srv)
+        self.assertLessEqual(got["/plugins/packages/probe/0.0.1.tgz"], 64 * 1024)   # 錯誤體也只讀 64 KiB
+        self.assertIn(rc, (2, 3, 4))
+
+    def test_h4_package_odd_errors(self):
+        data = self.tgz()
+        for st, body in ((403, {"error": "x", "details": 5}), (500, {"error": "x", "details": True}),
+                         (401, {"error": "page_api_token_revoked", "revoked_at": "0001-01-01T00:00:00+14:00"}),
+                         (403, {"error": ["x"]}), (200, b"")):
+            srv = self.server([self.entry(data)], {}, extra={"/plugins/packages/probe/0.0.1.tgz": (st, body)})
+            res, rc = self.install("probe", srv)
+            self.assertIn(rc, (2, 3, 4), (st, body, res))
+            self.assertFalse(self.installed().exists())
+
+
 class Knife(unittest.TestCase):
     def _knife(self, needle, repl, case, rel="tools/verify/plugin_catalog.py"):
         name = Path(__file__).name
@@ -510,6 +601,19 @@ class Knife(unittest.TestCase):
     def test_k8_sparse_accepted(self):
         self._knife("if not (m.isfile() or m.isdir()) or m.issparse():", "if not (m.isfile() or m.isdir()):",
                     "Install.test_d4b_unpack_limits", rel="tools/verify/aib_plugins.py")
+
+    def test_k11_zip_unbounded(self):
+        self._knife("if len(infos) > MAX_UNPACK_MEMBERS or sum(i.file_size for i in infos) > MAX_UNPACK_BYTES:",
+                    "if False:", "Hard.test_h2_zip_limits", rel="tools/verify/aib_plugins.py")
+
+    def test_k12_body_read_all(self):
+        self._knife("self._read_capped(response, max_bytes + 1, max(0.0, deadline - time.monotonic()))",
+                    "response.read()", "Hard.test_h3_body_read_capped", rel="src/cockpit/page/api.py")
+
+    def test_k13_package_catch_all(self):
+        self._knife('    except Exception:  # noqa: BLE001\n        return None, entry, fail("plugin_unreachable", 4)\n    if len(data)',
+                    '    except ZeroDivisionError:\n        return None, entry, fail("plugin_unreachable", 4)\n    if len(data)',
+                    "Hard.test_h4_package_odd_errors")
 
     def test_k10_no_total_deadline(self):
         self._knife("        t.join(total_s + 2)", "        t.join()", "Slow.test_d1c_total_deadline",
