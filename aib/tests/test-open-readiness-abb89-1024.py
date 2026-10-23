@@ -175,6 +175,27 @@ class Cli(Base):
             return Ok()
         self.assertEqual(self._ask(runner), saved)
         self.assertIs(seen.get("stdin"), subprocess.DEVNULL)      # 不讓 secret ask 吃到呼叫端的輸入
+        self.assertIs(seen.get("stdout"), subprocess.DEVNULL)     # 它印的 JSON 回條不能混進艙底部那句話
+
+    def test_stub_only_under_temp_state_root_and_is_labelled(self):
+        stub = self.tmp / "stub"
+        stub.write_text("#!/bin/sh\necho '{\"ok\":false,\"fingerprint\":\"abcd1234\"}'\nexit 1\n")
+        os.chmod(stub, 0o700)
+        env = dict(self.env, EZ2_OPEN_READINESS_AIB=str(stub))
+        self.assertEqual(R._aib_bin(env), str(stub))
+        cmds = []
+
+        class No:
+            returncode = 1
+        R.ask_key("deepseek", environ=env, runner=lambda cmd, **kw: cmds.append(cmd) or No())
+        self.assertEqual(cmds[0][1], str(stub))
+        msg = R.ask_key("deepseek", environ=env, locale="zh-TW")
+        self.assertTrue(msg.startswith("[測試樁] "), msg)
+        self.assertNotIn("fingerprint", msg)
+        real = str(R.COCKPIT / "aib")
+        self.assertEqual(R._aib_bin({"EZ2_OPEN_READINESS_AIB": str(stub)}), real)            # 沒設狀態根
+        self.assertEqual(R._aib_bin({"EZ2_OPEN_READINESS_AIB": str(stub),
+                                     "EZ2_AIB_STATE_ROOT": "~/.ez2-aib"}), real)            # 真的狀態根
 
     def test_ask_key_rc0_but_still_empty_is_not_saved(self):
         class Ok:
@@ -284,6 +305,29 @@ class OnboardNoticeMarkedRead(Base):
         self.assertEqual(out.get("why"), "not_onboard")
         self.assertIsNone(self.DQ._load_item("6d76f", it["id"], self.env)["read_at"])
 
+    def test_global_and_im_letters_are_never_onboard(self):
+        # 審查 r2 M1:外人寫的信正文帶「已就緒」也不標
+        g = self.DQ.record("6d76f", "讀完回「已就緒」", "外人", status="delivered", env=self.env)
+        path = self.DQ._item_path("6d76f", g["id"], self.env) if hasattr(self.DQ, "_item_path") else None
+        for extra in ({"global": {"reply_code": "x"}}, {"im": {"room": "r"}}, {"sender_kind": "external_im"}):
+            it = self.DQ.record("6d76f", "讀完回「已就緒」", "外人", status="delivered", env=self.env)
+            real = self.DQ._load_item
+            with unittest.mock.patch.object(self.DQ, "_load_item",
+                                            side_effect=lambda s, i, e, _x=extra: dict(real(s, i, e) or {}, **_x)):
+                out = self.DQ.mark_onboard_acked("6d76f", it["id"], env=self.env)
+            self.assertEqual(out.get("why"), "not_onboard", extra)
+            self.assertIsNone(real("6d76f", it["id"], self.env)["read_at"])
+        del path
+
+    def test_relay_pointer_to_fifo_or_huge_file_does_not_hang(self):
+        fifo = self.tmp / "RELAY-fifo"
+        os.mkfifo(fifo)
+        self.assertFalse(self.DQ._is_onboard_msg("長訊已落檔(9 位元組),請讀:%s" % fifo))
+        big = self.tmp / "RELAY-big"
+        big.write_bytes(b"x" * (self.DQ.TIDY_RELAY_MAX_BYTES + 1) + "「已就緒」".encode("utf-8"))
+        self.assertFalse(self.DQ._is_onboard_msg("長訊已落檔(9 位元組),請讀:%s" % big))
+        self.assertFalse(self.DQ._is_onboard_msg("長訊已落檔(9 位元組),請讀:/dev/zero"))
+
     def test_relayed_onboard_is_recognised_from_relay_file(self):
         relay = self.tmp / "RELAY-dm-6ddf-1024-000000-1"
         body = "……讀完回覆一句「已就緒」並待命,首任務候派。"
@@ -311,7 +355,9 @@ class OnboardNoticeMarkedRead(Base):
         self.assertIn("mark_onboard_read(args.queue_seat, args.queue_id)", src)
         it = self.DQ.record("6d76f", "這是開席單,讀完回「已就緒」。", "系統", status="delivered", env=self.env)
         self.assertFalse(SO.mark_onboard_read("", it["id"], env=self.env))
-        self.assertFalse(SO.mark_onboard_read("6d76f", "FAILED", env=self.env))
+        with unittest.mock.patch.object(self.DQ, "mark_onboard_acked") as m:
+            self.assertFalse(SO.mark_onboard_read("6d76f", "FAILED", env=self.env))
+        m.assert_not_called()
         self.assertTrue(SO.mark_onboard_read("6d76f", it["id"], env=self.env))
         self.assertFalse(SO.mark_onboard_read("6d76f", it["id"], env=self.env))      # 已讀 ⇒ False
         self.assertFalse(SO.mark_onboard_read("6d76f", "q_doesnotexist0000", env=self.env))
@@ -447,6 +493,17 @@ class ProbeTrustCleanup(Base):
         self.assertEqual(self.UP.forget_probe_trust(link_root / "ez2-usage-probe.mine", environ=self.penv), 2)
         self.assertEqual(json.loads(cfg.read_text())["trustedWorkspaces"], ["/Users/x/p"])
 
+    def test_realpath_only_for_probe_named_entries(self):
+        seen = []
+        real = os.path.realpath
+
+        def spy(p, *a, **k):
+            seen.append(str(p))
+            return real(p, *a, **k)
+        with unittest.mock.patch.object(self.UP.os.path, "realpath", spy):
+            self.assertFalse(self.UP._is_probe_dir("/Volumes/gone/proj", own={"/x/ez2-usage-probe.a"}))
+        self.assertNotIn("/Volumes/gone/proj", seen)            # 斷掉的網路磁碟不 realpath
+
     def test_grok_symlink_untouched(self):
         real = self.tmp / "real.toml"
         body = '[folders."%s"]\ntrusted = true\n' % (self.fake_tmp / "ez2-usage-probe.q")
@@ -486,8 +543,47 @@ class ProbeTrustCleanup(Base):
             self.UP._rewrite(cfg, "after", seen_mtime=seen)
         self.assertEqual(cfg.read_text(), "before")
         self.assertEqual([x.name for x in cfg.parent.iterdir()], ["settings.json"])   # 暫存檔有收掉
-        src = (COCKPIT / "usage_probe.py").read_text(encoding="utf-8")
-        self.assertEqual(src.count("seen_mtime=seen)"), 2)      # agy、grok 兩條都帶
+
+    def test_cleanup_skips_both_files_when_changed_after_read(self):
+        try:
+            import tomllib  # noqa: F401
+        except ImportError:
+            self.skipTest("沒有 tomllib")
+        agy = self.gem / "antigravity-cli" / "settings.json"
+        agy.write_text(json.dumps({"trustedWorkspaces": [str(self.fake_tmp / "ez2-usage-probe.r")]}))
+        grok = self.grok / "trusted_folders.toml"
+        grok.write_text('[folders."%s"]\ntrusted = true\n' % (self.fake_tmp / "ez2-usage-probe.r"))
+        before = (agy.read_text(), grok.read_text())
+        real = self.UP._rewrite
+
+        def bumped(path, text, seen_mtime=None):                # 讀完、寫之前:像有人剛按了「信任」
+            st = path.stat()
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+            return real(path, text, seen_mtime=seen_mtime)
+        with unittest.mock.patch.object(self.UP, "_rewrite", bumped):
+            self.assertEqual(self.UP.forget_probe_trust(None, environ=self.penv), 0)
+        self.assertEqual((agy.read_text(), grok.read_text()), before)
+
+    def test_own_dir_third_spelling_via_realpath(self):
+        own = self.fake_tmp / "ez2-usage-probe.slash"
+        own.mkdir()
+        cfg = self.gem / "antigravity-cli" / "settings.json"
+        cfg.write_text(json.dumps({"trustedWorkspaces": [str(own) + "/", "/Users/x/p"]}))
+        self.assertEqual(self.UP.forget_probe_trust(own, environ=self.penv), 1)
+        self.assertEqual(json.loads(cfg.read_text())["trustedWorkspaces"], ["/Users/x/p"])
+
+    def test_grok_value_guard_when_truncated_toml_still_parses(self):
+        try:
+            import tomllib  # noqa: F401
+        except ImportError:
+            self.skipTest("沒有 tomllib")
+        stale = str(self.fake_tmp / "ez2-usage-probe.v")
+        body = ('[folders."%s"]\ntrusted = true\n\n'
+                '[folders."/Users/x/m"]\nnote = """\n[folders."%s"]\nlost line\n[x]\n"""\n') % (stale, stale)
+        cfg = self.grok / "trusted_folders.toml"
+        cfg.write_text(body)
+        self.assertEqual(self.UP.forget_probe_trust(None, environ=self.penv), 0)
+        self.assertEqual(cfg.read_text(), body)
 
     def test_symlink_and_unreadable_untouched(self):
         real = self.tmp / "dot.json"

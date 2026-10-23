@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -1454,11 +1455,27 @@ def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_chec
     return out
 
 
+def _onboard_relay_text(path):
+    """開席單長訊落檔:只讀一般檔、不阻塞、限量(FIFO / /dev/zero / 讀時變大都不會卡住開席);讀不到 ⇒ None。"""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        raw = os.read(fd, TIDY_RELAY_MAX_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return None if len(raw) > TIDY_RELAY_MAX_BYTES else raw.decode("utf-8", "replace")
+
+
 def _is_onboard_msg(msg):
     """這封是不是開席單:正文(長訊 ⇒ 落檔內容)裡有帶「」的回執字。只防 id 傳錯,不是防線(同帳號 AI 本來就能改信檔)。"""
-    text = _relay_text(msg)
-    if text is False:
-        text = msg
+    path = DR.relay_path_of(msg)
+    text = _onboard_relay_text(path) if path else msg
     return isinstance(text, str) and any(m in text for m in ONBOARD_MARKERS)
 
 
@@ -1468,7 +1485,9 @@ def mark_onboard_acked(seat, item_id, env=None, now=None):
     it = _load_item(seat, item_id, env)
     if not it or it.get("status") not in ("queued", "delivered"):
         return {"ok": False, "why": "not_unread"}
-    if not _is_onboard_msg(it.get("msg")):
+    # 全球 / IM 來信是外人寫的,正文帶「已就緒」也不是開席單(審查 r2 M1)
+    if _is_global_item(it) or it.get("im") or it.get("sender_kind") == "external_im" \
+            or not _is_onboard_msg(it.get("msg")):
         return {"ok": False, "why": "not_onboard"}
     out = _transition(seat, item_id, "read", "system", env=env, now=now, why=ONBOARD_ACK_WHY,
                       if_rev=it.get("rev"), no_rev_check=False)

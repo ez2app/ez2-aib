@@ -1120,12 +1120,14 @@ PROBE_DIR_PREFIXES = ("ez2-usage-probe.", "ez2-agy-quota-")
 
 def _is_probe_dir(path, own=()):
     p = str(path or "")
-    if p in own or (own and os.path.realpath(p) in own):     # 清單裡是 /private/var、own 給的是 /var(或反過來)
+    if p in own:
+        return True
+    parent, base = os.path.split(p.rstrip("/"))
+    if not base.startswith(PROBE_DIR_PREFIXES):         # 只對探針名的那幾筆 realpath(斷掉的網路磁碟不會卡收尾)
+        return False
+    if own and os.path.realpath(p) in own:              # 清單裡是 /private/var、own 給的是 /var(或反過來)
         return True
     tmp_roots = {os.path.realpath(tempfile.gettempdir()), tempfile.gettempdir()}
-    parent, base = os.path.split(p.rstrip("/"))
-    if not base.startswith(PROBE_DIR_PREFIXES):
-        return False
     if parent not in tmp_roots and os.path.realpath(parent) not in tmp_roots:
         return False
     return not os.path.exists(p)

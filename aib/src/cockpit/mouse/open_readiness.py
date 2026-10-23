@@ -115,6 +115,23 @@ def label_suffix(state, detail, locale=None):
     return "" if not text or text == key or text.startswith("!!") else text
 
 
+def _aib_bin(environ):
+    """測試用:EZ2_OPEN_READINESS_AIB 換成樁,dry-run 被突變吃掉也不會在真人螢幕叫出輸入框 / Touch ID。
+    只在狀態根明設、而且不是真的 ~/.ez2-aib 時才讀(殘留在真人 shell / tmux 全域環境也不生效);用到樁回話帶「[測試樁]」。
+    不是防線(同帳號程式本來就能換檔);真正擋 AI 替人存金鑰的是 secret ask 自己的 Touch ID。"""
+    env = _env(environ)
+    real = str(COCKPIT / "aib")
+    stub, root = env.get("EZ2_OPEN_READINESS_AIB") or "", env.get("EZ2_AIB_STATE_ROOT") or ""
+    if not (stub and root):
+        return real
+    try:
+        if os.path.realpath(os.path.expanduser(root)) == os.path.realpath(os.path.expanduser("~/.ez2-aib")):
+            return real
+    except OSError:
+        return real
+    return stub
+
+
 def ask_key(provider, environ=None, runner=None, locale=None):
     """缺金鑰那一項點下去:叫出 aib secret ask(遮字框 + Touch ID;值不經過這裡),回一句給艙底部看的話。"""
     import subprocess
@@ -122,17 +139,19 @@ def ask_key(provider, environ=None, runner=None, locale=None):
     state, name = check(provider, environ)
     if state != "need_key":
         return ""
-    # 測試用:EZ2_OPEN_READINESS_AIB 換成樁,dry-run 被突變吃掉也不會在真人螢幕叫出輸入框 / Touch ID。
-    #   不是防線(同帳號程式本來就能換檔);真正擋 AI 替人存金鑰的是 secret ask 自己的 Touch ID。
-    aib_bin = _env(environ).get("EZ2_OPEN_READINESS_AIB") or str(COCKPIT / "aib")
+    aib_bin, stub = _aib_bin(environ), ""
+    if aib_bin != str(COCKPIT / "aib"):
+        stub = "[測試樁] "
     cmd = ["bash", aib_bin, "secret", "ask", name]
     try:
-        rc = (runner or subprocess.run)(cmd, stdin=subprocess.DEVNULL, timeout=600).returncode
+        # stdout 丟掉:secret ask 會印 JSON 回條(含指紋),不能混進艙底部那句話
+        rc = (runner or subprocess.run)(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        timeout=600).returncode
     except (OSError, subprocess.TimeoutExpired):
         rc = 1
     saved = rc == 0 and check(provider, environ)[0] == "ok"
     key = "aib.context.menu.key_saved" if saved else "aib.context.menu.key_not_saved"
-    return i18n_lib.t(key, {"name": name, "engine": provider}, locale=locale)
+    return stub + i18n_lib.t(key, {"name": name, "engine": provider}, locale=locale)
 
 
 def main(argv=None):
