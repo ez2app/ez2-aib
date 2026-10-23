@@ -6,8 +6,22 @@
  "codes_note": "detail / reason 是契約代碼,不改成人話;人話只放 hint。伺服器 / CLI 給的字是資料,頁面顯示前去控制與隱形字元。",
  "status_receipt": {
   "command": "aib power status [--refresh] --json",
-  "rc": {"0": "有回條(就算某些欄位量不到)", "2": "參數錯"},
-  "fields": ["ok", "v", "detail", "ais", "health", "auto_update", "binding", "onboarding", "catalog", "hint"],
+  "rc": {
+   "0": "有回條(就算某些欄位量不到)",
+   "2": "參數錯"
+  },
+  "fields": [
+   "ok",
+   "v",
+   "detail",
+   "ais",
+   "health",
+   "auto_update",
+   "binding",
+   "onboarding",
+   "catalog",
+   "hint"
+  ],
   "v": 1,
   "detail": "power_status",
   "ais": "[power.ai_row],順序 claude / codex / grok / copilot / agy / aib",
@@ -18,7 +32,19 @@
   "catalog": "power.catalog"
  },
  "ai_row": {
-  "fields": ["key", "installed", "local", "latest", "update", "can_update", "light", "reason", "hint", "reset_at", "login_cmd"],
+  "fields": [
+   "key",
+   "installed",
+   "local",
+   "latest",
+   "update",
+   "can_update",
+   "light",
+   "reason",
+   "hint",
+   "reset_at",
+   "login_cmd"
+  ],
   "key": "claude | codex | grok | copilot | agy | aib",
   "installed": "true / false(local 量得到 = true)",
   "local": "本機版本字串或 null",
@@ -33,7 +59,12 @@
   "owner": "installed / local / latest / update / can_update = @abb89(cli_versions.check);light / reason / hint / reset_at / login_cmd = @d07f9 的 light_of(key)"
  },
  "health_row": {
-  "fields": ["key", "ok", "value", "hint"],
+  "fields": [
+   "key",
+   "ok",
+   "value",
+   "hint"
+  ],
   "key": "tmux | python | node | git | disk | touchid | net_github | net_pypi | net_page",
   "ok": "true / false / null(這個平台不適用,例如非 Mac 的 touchid)",
   "value": "量到的值(版本 / 剩餘 GB)或 null",
@@ -41,36 +72,73 @@
   "net_note": "連線檢查只做 HEAD / 短逾時(3 秒),不帶任何憑證;status 的快取 10 分鐘,--refresh 才重量"
  },
  "auto_update": {
-  "fields": ["enabled", "exclude", "paused", "last_run", "last_result"],
+  "fields": [
+   "enabled",
+   "exclude",
+   "paused",
+   "last_run",
+   "last_result"
+  ],
   "note": "讀 #273 的設定與狀態檔;#273 合進 main 前回 null"
  },
  "binding": {
-  "fields": ["persona", "project", "brain", "ok"],
-  "note": "這台的第一艦長席(沒有席就看預設)有沒有綁人格 / 專案 / 第二大腦;只回有沒有與顯示名稱,不回路徑"
+  "fields": [
+   "seats",
+   "ok",
+   "not_ok"
+  ],
+  "seats": "這台在跑的席數(bot 席不算)",
+  "ok": "人格 + 專案 + 第二大腦都綁好的席數",
+  "not_ok": "[{code, problem, brain}];problem 同 aib bindme(ok / no_project / no_persona / none / route_unresolved / crown_persona)",
+  "note": "只回席碼與代碼,不回路徑、人格名稱"
  },
  "onboarding": {
-  "fields": ["birth_done", "tasks"],
+  "fields": [
+   "birth_done",
+   "tasks"
+  ],
   "birth_done": "出生設定做過沒(做過就不再自動出現)",
   "tasks": "[{id, state, reward}];state = todo | done | claimed;done 由核心實際偵測,不是頁面按鈕;reward 是伺服器定的資源描述或 null",
   "owner": "@d07f9 的 onboarding_state()",
   "note": "領資源(claimed)由伺服器簽發,這一期只做 todo / done 偵測;伺服器沒上線 reward 一律 null"
  },
  "catalog": {
-  "fields": ["available", "items"],
+  "fields": [
+   "available",
+   "items"
+  ],
   "available": "false = #20 外掛目錄還沒上線(items 空)",
   "items": "[{name, kind: skill|plugin, version, free, installed, summary}],來源 = #20 公開目錄;只列簽章版"
  },
  "upgrade_receipt": {
   "command": "aib power upgrade <key> [--json]",
   "key": "claude | codex | grok | copilot | agy | aib",
-  "fields": ["ok", "detail", "key", "old", "new", "hint"],
+  "fields": [
+   "ok",
+   "detail",
+   "key",
+   "old",
+   "new",
+   "hint"
+  ],
   "detail": "power_upgraded | power_upgrade_already | power_upgrade_rolled_back | power_upgrade_failed | power_upgrade_locked | power_upgrade_unsupported | power_upgrade_not_installed",
-  "rc": {"0": "updated / already", "1": "failed / rolled_back / locked", "2": "參數錯 / unsupported / not_installed"},
+  "rc": {
+   "0": "updated / already",
+   "1": "failed / rolled_back / locked",
+   "2": "參數錯 / unsupported / not_installed"
+  },
   "note": "aib 走 aib update;其他家走 cli_versions.do_update(共用 update_lock、壞了自動裝回);agy 走 update_self_checking。升級只換官方版本,不加 Touch ID"
  },
  "login_receipt": {
   "command": "aib power login <key> [--no-open] [--json]",
-  "fields": ["ok", "detail", "key", "url", "opened", "hint"],
+  "fields": [
+   "ok",
+   "detail",
+   "key",
+   "url",
+   "opened",
+   "hint"
+  ],
   "detail": "power_login_url | power_login_done | power_login_unsupported | power_login_failed",
   "url": "該家 CLI 自己印出的 OAuth 鏈結(只收 https://);我們不經手帳密 / token",
   "opened": "已自動用瀏覽器開(--no-open 時 false);false ⇒ 頁面顯示 url + 一鍵複製",

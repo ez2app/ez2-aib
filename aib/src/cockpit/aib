@@ -773,6 +773,13 @@ if [ "${1:-}" = "create" ]; then
   exec "$T_PY3" "$HERE/create_cli.py" "$@"
 fi
 
+# aib power status / upgrade / login(10-24 Andy「動力室準備開發」):艦長動力室(新艦長第一站)的資料與按鈕;
+#   契約 contracts/power.json。委派 power_status.py(login 再轉 power_login.py)。
+if [ "${1:-}" = "power" ]; then
+  shift
+  exec "$T_PY3" "$HERE/power_status.py" "$@"
+fi
+
 # aib temp add/list/check/done(10-21 @ee4f8 第十件):臨時主機變更登記到期日與拆法,過期 aib doctor / aib temp check 會亮。委派 aib_temp.py。
 if [ "${1:-}" = "temp" ]; then
   shift
