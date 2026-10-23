@@ -156,6 +156,11 @@ TRANSITIONS[("archived", "deleted")] = ("human", "system")
 #   由系統代標已讀,why 必須是 AUTO_READ_WHY(_transition 裡查),信檔記 read_by=system / read_why。
 #   只開 queued/delivered → read;人審(hold_human)不代標 —— 那是等真人看的。
 AUTO_READ_WHY = "auto_notice"
+# 10-24 @abb89(右鍵開席實測:開席單讀過、席也回了「已就緒」,read_at 還是 null ⇒ 狀態列一直「未讀 dm 1」):
+#   seat_onboard 的回執守望看到「已就緒 / 已更新」時,替那一席把**它自己投遞的那一封**(投遞時拿到的 id)標已讀。
+#   只認這個 why、只走 queued/delivered → read;別封信不會因此被標。
+ONBOARD_ACK_WHY = "onboard_acked"
+SYSTEM_READ_WHYS = (AUTO_READ_WHY, ONBOARD_ACK_WHY)
 TRANSITIONS[("queued", "read")] = ("seat", "system")
 TRANSITIONS[("delivered", "read")] = ("seat", "system")
 ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping", "notice_read")   # 後兩個:stage-tidy 機器層(10-13)
@@ -1313,7 +1318,7 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
             return refuse("actor")
     if to == "deleted" and cls == "system" and why != AUTO_DELETE_WHY:
         return refuse("actor")        # 系統只准刪「備存滿 30 天」那一種(the maintainer 09-30 17:1x)
-    if to == "read" and cls == "system" and why != AUTO_READ_WHY:
+    if to == "read" and cls == "system" and why not in SYSTEM_READ_WHYS:
         return refuse("actor")        # 系統只准代標「通知」組已讀(the maintainer 09-30 18:2x)
     done_kind = None
     if to == "done":
@@ -1442,6 +1447,18 @@ def _human_from_seat(actor, env):
 def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_check=None):
     out = _transition(seat, item_id, "read", actor, env=env, now=now, if_rev=if_rev,
                       no_rev_check=no_rev_check)
+    if out.get("ok"):
+        _after_read(seat, item_id, env=env, now=now)
+    return out
+
+
+def mark_onboard_acked(seat, item_id, env=None, now=None):
+    """開席單回執到了 ⇒ 系統代標那一封已讀(ONBOARD_ACK_WHY)。已讀 / 已結 / 人審中 ⇒ 不動,回 ok=False。"""
+    it = _load_item(seat, item_id, env)
+    if not it or it.get("status") not in ("queued", "delivered"):
+        return {"ok": False, "why": "not_unread"}
+    out = _transition(seat, item_id, "read", "system", env=env, now=now, why=ONBOARD_ACK_WHY,
+                      if_rev=it.get("rev"), no_rev_check=False)
     if out.get("ok"):
         _after_read(seat, item_id, env=env, now=now)
     return out

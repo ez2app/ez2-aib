@@ -5084,5 +5084,11 @@
   "aib.plugins.hint.plugin_license_none": "This account has not bought this add-on",
   "aib.plugins.hint.plugin_license_device_limit": "This license is on its maximum number of machines: run aib license deactivate on the old one first",
   "aib.plugins.hint.plugin_refused": "The server refused",
-  "aib.plugins.hint.server_refused": "The server refused ({code})"
+  "aib.plugins.hint.server_refused": "The server refused ({code})",
+  "aib.context.menu.need_key": "(no API key — click to add)",
+  "aib.context.menu.bot_no_doorbell": "(no agent has a doorbell)",
+  "aib.context.menu.bot_no_codex_thread": "(not linked to Codex desktop)",
+  "aib.context.menu.bot_no_muse_conv": "(no Muse conversation bound)",
+  "aib.context.menu.key_saved": "{name} saved. Click \"New AI → {engine}\" again to open the seat",
+  "aib.context.menu.key_not_saved": "{name} was not saved (cancelled or Touch ID not passed); {engine} not opened"
 }

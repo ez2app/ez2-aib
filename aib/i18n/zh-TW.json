@@ -5084,5 +5084,11 @@
   "aib.plugins.hint.plugin_license_none": "這個帳號沒有買這個加購",
   "aib.plugins.hint.plugin_license_device_limit": "這份授權的電腦數已滿:先在舊電腦跑 aib license deactivate",
   "aib.plugins.hint.plugin_refused": "伺服器拒絕了",
-  "aib.plugins.hint.server_refused": "伺服器拒絕了({code})"
+  "aib.plugins.hint.server_refused": "伺服器拒絕了({code})",
+  "aib.context.menu.need_key": "(缺金鑰,點了填)",
+  "aib.context.menu.bot_no_doorbell": "(沒有 agent 接門鈴)",
+  "aib.context.menu.bot_no_codex_thread": "(還沒連 Codex 桌面版)",
+  "aib.context.menu.bot_no_muse_conv": "(還沒綁 Muse 對話)",
+  "aib.context.menu.key_saved": "{name} 已存好,再點一次「另開 AI → {engine}」就能開席",
+  "aib.context.menu.key_not_saved": "{name} 沒有存進金鑰櫃(取消或沒過 Touch ID),{engine} 先不開席"
 }

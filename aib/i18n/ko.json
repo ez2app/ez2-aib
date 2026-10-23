@@ -5084,5 +5084,11 @@
   "aib.plugins.hint.plugin_license_none": "이 계정은 이 애드온을 구매하지 않았습니다",
   "aib.plugins.hint.plugin_license_device_limit": "이 라이선스의 기기 수가 가득 찼습니다. 먼저 이전 기기에서 aib license deactivate 를 실행하세요",
   "aib.plugins.hint.plugin_refused": "서버가 거부했습니다",
-  "aib.plugins.hint.server_refused": "서버가 거부했습니다({code})"
+  "aib.plugins.hint.server_refused": "서버가 거부했습니다({code})",
+  "aib.context.menu.need_key": "(API 키 없음 · 클릭해서 입력)",
+  "aib.context.menu.bot_no_doorbell": "(초인종 연결된 agent 없음)",
+  "aib.context.menu.bot_no_codex_thread": "(Codex 데스크톱 미연결)",
+  "aib.context.menu.bot_no_muse_conv": "(Muse 대화 미연결)",
+  "aib.context.menu.key_saved": "{name} 저장 완료. 「{engine}」을 다시 누르면 자리가 열립니다",
+  "aib.context.menu.key_not_saved": "{name} 저장 안 됨(취소 또는 Touch ID 미통과). {engine} 은 열지 않습니다"
 }

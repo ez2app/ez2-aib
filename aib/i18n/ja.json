@@ -5084,5 +5084,11 @@
   "aib.plugins.hint.plugin_license_none": "このアカウントはこのアドオンを購入していません",
   "aib.plugins.hint.plugin_license_device_limit": "このライセンスの台数上限に達しています。古いマシンで先に aib license deactivate を実行してください",
   "aib.plugins.hint.plugin_refused": "サーバーが拒否しました",
-  "aib.plugins.hint.server_refused": "サーバーが拒否しました({code})"
+  "aib.plugins.hint.server_refused": "サーバーが拒否しました({code})",
+  "aib.context.menu.need_key": "(API キー未設定・クリックで入力)",
+  "aib.context.menu.bot_no_doorbell": "(ドアベル接続済みの agent なし)",
+  "aib.context.menu.bot_no_codex_thread": "(Codex デスクトップ未接続)",
+  "aib.context.menu.bot_no_muse_conv": "(Muse の会話が未バインド)",
+  "aib.context.menu.key_saved": "{name} を保存しました。もう一度「{engine}」を選ぶと席を開けます",
+  "aib.context.menu.key_not_saved": "{name} は保存されませんでした(キャンセルまたは Touch ID 未通過)。{engine} は開きません"
 }

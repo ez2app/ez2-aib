@@ -1369,8 +1369,22 @@ def write_baseline_file(window, seat_id, text):
         return None
 
 
+def mark_onboard_read(queue_seat, queue_id, env=None):
+    """10-24 @abb89:回執到了 ⇒ 把這次投遞的那一封開席單標已讀(不然狀態列一直「未讀 dm 1」)。
+    沒有 id(直貼、乾跑、橋接席)⇒ 不做;標不了只落錯誤檔,不改開席結果。"""
+    if not (queue_seat and queue_id):
+        return False
+    try:
+        import dm_queue as DQ
+        out = DQ.mark_onboard_acked(queue_seat, queue_id, env=env)
+    except Exception as err:  # noqa: BLE001
+        watch_error_note("開席單標不了已讀 seat=%s id=%s: %s" % (queue_seat, queue_id, err))
+        return False
+    return bool(out.get("ok"))
+
+
 def spawn_ack_watcher(window, seat_id, sha, baseline, ledger_path,
-                      timeout_s, interval_s, ack_token=None):
+                      timeout_s, interval_s, ack_token=None, queue_seat="", queue_id=""):
     """把「等回執」丟到脫離的子行程,自己立刻回來。
 
     ★★ 這不是效能優化,是修一個真缺陷。第一版讓 `aib seat open` 同步等
@@ -1401,6 +1415,8 @@ def spawn_ack_watcher(window, seat_id, sha, baseline, ledger_path,
             cmd += ["--baseline-file", baseline_file]
         if ack_token in ACK_TOKENS:
             cmd += ["--ack-token", ack_token]
+        if queue_seat and queue_id:
+            cmd += ["--queue-seat", str(queue_seat), "--queue-id", str(queue_id)]
         subprocess.Popen(cmd, start_new_session=True,
                          stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL,
@@ -1689,10 +1705,13 @@ def onboard_one(window, seat_id, role, template_text, sha, ledger_path,
     if detach_ack:
         # O4:脫離守望用載入窗,不用呼叫端傳來的同步 timeout。
         spawn_ack_watcher(window, seat_id, sha, baseline, ledger_path,
-                          DETACHED_ACK_TIMEOUT_S, interval_s, ack_token=expected_ack)
+                          DETACHED_ACK_TIMEOUT_S, interval_s, ack_token=expected_ack,
+                          queue_seat=sent_to if dm_result.get("id") else "", queue_id=dm_result.get("id") or "")
         return "pending"
     if wait_ack(window, baseline, timeout_s, interval_s, sleep=sleep, ack_tokens=(expected_ack,)):
         record(ledger_path, "message.inbound", seat_id, window, sha)
+        if dm_result.get("id"):
+            mark_onboard_read(sent_to, dm_result["id"], env=env)
         try:
             open_attempt.mark_ready_for_window(
                 env.get("EZ2_AIB_INSTANCE_HOME"), window)
@@ -1769,6 +1788,8 @@ def main(argv=None):
     p.add_argument("--seat-id", default="")
     p.add_argument("--sha", default="")
     p.add_argument("--baseline", type=int, default=0)
+    p.add_argument("--queue-seat", default="", help="(內部)這次開席單落在哪一席的佇列")
+    p.add_argument("--queue-id", default="", help="(內部)這次開席單的佇列 id;回執到了標已讀")
     p.add_argument("--ack-token", default="",
                    help="這一次該回的回執字(已就緒/已更新);不給=兩種都認")
     p.add_argument("--baseline-file", default="",
@@ -1947,6 +1968,7 @@ def main(argv=None):
         if why == "acked":
             record(led, "message.inbound", args.seat_id, args.window,
                    args.sha)
+            mark_onboard_read(args.queue_seat, args.queue_id)
             # O1:三格碼表的最後一個事件(席位讀完開席單)。碼表不擋任何事:失敗只落錯誤檔。
             try:
                 open_attempt.mark_ready_for_window(os.environ.get("EZ2_AIB_INSTANCE_HOME"), args.window)
