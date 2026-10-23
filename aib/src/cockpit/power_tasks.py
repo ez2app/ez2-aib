@@ -25,7 +25,7 @@ import seats_dir_lib  # noqa: E402
 
 TIERS = ("R", "SR", "SSR", "UR")
 
-# (編號, 等級, 偵測代碼, 需要):需要 = None | "room"(艦長室外掛) | "server"(伺服器回條) | "skins"(皮膚開關)| "command"(指令還沒做:UR4 aib support 等 Andy 定隱私範圍,@abb89 10-24)
+# (編號, 等級, 偵測代碼, 需要):需要 = None | "room"(艦長室外掛) | "server"(伺服器回條) | "skins"(皮膚開關)| "command"(指令還沒做;10-24 UR4 aib support 做好後暫時沒有條用它)
 TASKS = (
     ("R1", "R", "power_opened", None), ("R2", "R", "born", None), ("R3", "R", "seat_registered", None),
     ("R4", "R", "persona_bound", None), ("R5", "R", "brain_bound", None), ("R6", "R", "launch_recorded", None),
@@ -45,7 +45,7 @@ TASKS = (
     ("SSR10", "SSR", "adventure_explored", "room"), ("SSR11", "SSR", "launch_streak_7", None),
     ("SSR12", "SSR", "pet_stage_3", "server"),
     ("UR1", "UR", "redeem_full_power", "server"), ("UR2", "UR", "creation_submitted", "server"),
-    ("UR3", "UR", "boss_defeated", "server"), ("UR4", "UR", "support_bundle", "command"), ("UR5", "UR", "launch_streak_30", None),
+    ("UR3", "UR", "boss_defeated", "server"), ("UR4", "UR", "support_bundle", None), ("UR5", "UR", "launch_streak_30", None),
     ("UR6", "UR", "pet_stage_final", "server"), ("UR7", "UR", "ssr_all_done", None),
 )
 TASK_IDS = tuple(t[0] for t in TASKS)
@@ -180,6 +180,7 @@ def _local_events(root, rows):
         "projects_3": sum(1 for n in _listdir(os.path.join(root, "projects")) if n.startswith("proj:")) >= 3,
         "doctor_run": os.path.isfile(os.path.join(st, "run-marks", "doctor.json")),
         "newrole": os.path.isfile(os.path.join(st, "run-marks", "newrole.json")),
+        "support_bundle": os.path.isfile(os.path.join(st, "run-marks", "support.json")),
         "new_cabin": sum(1 for n in _listdir(os.path.join(root, "instances"))
                          if os.path.isdir(os.path.join(root, "instances", n, "seats"))) >= 2,
     }
@@ -223,7 +224,8 @@ DETECTABLE = frozenset(("power_opened", "born", "seat_registered", "persona_boun
                         "handoff_receipt", "two_providers_online", "aib_upgraded", "launch_streak_3", "launch_streak_7",
                         "launch_streak_30", "ssr_all_done", "now_written", "dm_sent", "dm_done", "memory_10",
                         "test_green", "second_seat_same_role", "projects_3", "doctor_run",
-                        "new_cabin", "newrole"))
+                        "new_cabin", "newrole",
+                        "support_bundle"))
 
 
 def onboarding_state(*, detector=None, now=None, today=None):

@@ -801,7 +801,7 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
     return checks
 
 
-def main(argv=None):
+def main(argv=None, mark=True):
     parser = argparse.ArgumentParser(
         prog="aib doctor", description=_T("aib.doctor.help.description"))
     parser.add_argument("--state-root",
@@ -845,7 +845,8 @@ def main(argv=None):
             print(_T("aib.doctor.manual_note"))
 
     rc = 0 if (counts[FAIL] == 0 and counts[MANUAL] == 0) else 1
-    _mark_run(args.state_root, rc)
+    if mark:                      # aib support 借 doctor 的結果時不記(不是本人跑 doctor)
+        _mark_run(args.state_root, rc)
     return rc
 
 

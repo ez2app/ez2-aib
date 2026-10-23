@@ -138,7 +138,7 @@ class Tasks(unittest.TestCase):
         self.assertTrue(t["R8"]["detectable"])
         self.assertFalse(t["SSR1"]["detectable"])
         self.assertEqual(t["SSR1"]["requires"], "server")
-        self.assertEqual((t["UR4"]["requires"], t["UR4"]["detectable"]), ("command", False))   # aib support 還沒做
+        self.assertEqual((t["UR4"]["requires"], t["UR4"]["detectable"]), (None, True))      # aib support 10-24 做好
         codes = {code for _i, _t, code, _r in PT.TASKS}
         self.assertTrue(PT.DETECTABLE <= codes)
 

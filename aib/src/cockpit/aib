@@ -228,6 +228,11 @@ if [ "${1:-}" = "init" ]; then
   shift
   exec "$T_PY3" "$AIB_SOURCE_ROOT/src/bootstrap/aib_init.py" "$@"
 fi
+# aib support(10-24 Andy 准精簡版;動力室 UR4):打包問題回報。沒 --write 只列會收什麼;--write 才在本機寫檔,不上傳。委派 support_bundle.py。
+if [ "${1:-}" = "support" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/src/cockpit/support_bundle.py" "$@"
+fi
 # aib doctor(10-12 新用戶全面檢查:體檢工具早就寫好,但 aib 指令叫不到它)—— 唯讀,逐項列出這台還缺什麼、怎麼補。
 if [ "${1:-}" = "doctor" ]; then
   shift
