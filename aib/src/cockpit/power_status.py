@@ -245,6 +245,9 @@ def main(argv=None):
     if argv and argv[0] in ("launch", "fav"):           # 出艦台資料(@d07f9 power_launch.py)
         import power_launch
         return power_launch.main(argv)
+    if argv and argv[0] == "ask":                        # 問 AI 抽屜:只回答、不動手(@d07f9 power_ask.py)
+        import power_ask
+        return power_ask.main(argv)
     if argv and argv[0] == "why":                        # 艦員檔案:為什麼用 AIB 排名(@d07f9 power_crew.py)
         import power_crew
         return power_crew.main(argv)
