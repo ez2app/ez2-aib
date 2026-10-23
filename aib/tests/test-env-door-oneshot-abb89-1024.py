@@ -54,6 +54,14 @@ class DoorOneshot(unittest.TestCase):
         aib = (REPO / "src" / "cockpit" / "aib").read_text(encoding="utf-8")
         self.assertIn("AIB_RESUME_UUID=%q AIB_RESUME_SESSION_UUID=%q", aib)
 
+    def test_outer_and_hub_scrub_also_drop_oneshot(self):
+        # 審查第 2 位:外層伺服器若是帶著旗標的那次 aib 生出來的,右鍵 run-shell(綁在外層)照樣吃到 ⇒
+        # 兩個 scrub 迴圈都要把擋名單一起洗
+        src = (REPO / "src" / "cockpit" / "cockpit-full.sh").read_text(encoding="utf-8")
+        for fn in ("scrub_outer_session_environment", "scrub_hub_session_environment"):
+            body = src.split(fn + "() {", 1)[1].split("\n}\n", 1)[0]
+            self.assertIn("AIB_ENV_DOOR_DENY_VARS", body, fn)
+
 
 if __name__ == "__main__":
     unittest.main()
