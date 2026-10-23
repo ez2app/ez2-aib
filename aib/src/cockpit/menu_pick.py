@@ -220,7 +220,21 @@ def suspect(screen, provider=None):
     while k >= 0 and j - k <= 8 and _OPT_ROW.match(tail[k]) and not _CURSOR.match(tail[k]):
         rows += 1
         k -= 1
-    return rows >= 1 and any(_ASK.search(ln) for ln in tail[max(0, k - 4):k + 1])
+    if not (rows >= 1 and any(_ASK.search(ln) for ln in tail[max(0, k - 4):k + 1])):
+        return False
+    # 第 2 輪審查:AI 回覆裡貼出整張選單(三家顯示回覆本來就縮排)也長這樣 —— 差在底下還有閒著的輸入框。
+    #   真的游標選單,輸入框找到的是游標那一行(在操作說明上面);輸入框在操作說明下面 ⇒ 是引用,不是選單。
+    try:
+        import composer_state
+        _ln, at = composer_state.find_composer_line(screen, provider)
+    except Exception:  # noqa: BLE001
+        at = None
+    if at is not None:
+        raw = (screen or "").splitlines()
+        nav_raw = max((i for i, ln in enumerate(raw) if _NAV.search(_BOX.sub(" ", ln))), default=-1)
+        if at > nav_raw:
+            return False
+    return True
 
 
 def screen_hash(screen):
@@ -264,7 +278,15 @@ def menu_block(screen):
     rows = [(r, c) for r, c in rows if c.strip() or "╭" in r or "╰" in r]
     opts = [i for i, (_r, c) in enumerate(rows) if _OPT.match(c)]
     if not opts:
-        return "\n".join(c for _r, c in rows[-SCAN_LINES:] if c.strip())
+        # 游標選單(沒編號):同一條護欄 —— 只送操作說明那一行往上的選項,再往上最多 HEAD_LINES 行(第 2 輪審查)
+        nav = [i for i, (_r, c) in enumerate(rows) if _NAV.search(c)]
+        if not nav:
+            return "\n".join(c for _r, c in rows[-SCAN_LINES:] if c.strip())
+        first = nav[-1]
+        while first - 1 >= 0 and nav[-1] - (first - 1) <= 8 and (
+                _OPT_ROW.match(rows[first - 1][1]) or _CURSOR.match(rows[first - 1][1])):
+            first -= 1
+        return "\n".join(c for _r, c in rows[max(0, first - HEAD_LINES):nav[-1] + 1] if c.strip())
     first = opts[0]
     start = max(0, first - HEAD_LINES)
     for i in range(first, max(-1, first - SCAN_LINES), -1):     # 往上找最外層的框頂(Copilot:指令在框裡)

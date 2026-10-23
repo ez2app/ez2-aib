@@ -51,9 +51,21 @@ def _atomic_write(cfg, text):
         raise
 
 
+def _too_wide(path, environ=None):
+    """/、家目錄、家目錄的上層:信任下去等於整台 / 整個帳號都免問(第 2 輪審查)⇒ 不寫,讓 CLI 自己問。"""
+    p = Path(path).resolve()
+    home = Path(_env(environ).get("HOME") or os.path.expanduser("~")).resolve()
+    return p == Path(p.anchor) or p == home or p in home.parents
+
+
 def _folder(folder):
     target = Path(folder).resolve()
     return target if target.is_dir() else None
+
+
+def _symlinked(cfg):
+    # 設定檔是符號連結(連到 dotfiles)⇒ os.replace 會把連結換成一般檔、連結斷掉 ⇒ 不動
+    return cfg.is_symlink()
 
 
 def agy_settings_path(environ=None):
@@ -66,8 +78,12 @@ def ensure_agy(folder, path=None, environ=None):
     target = _folder(folder)
     if target is None:
         return "skip", "not_a_dir"
+    if _too_wide(target, environ):
+        return "skip", "too_wide"
     target = str(target)
     cfg = Path(path) if path else agy_settings_path(environ)
+    if _symlinked(cfg):
+        return "skip", "settings_is_symlink"
     if cfg.exists():
         try:
             data = json.loads(cfg.read_text(encoding="utf-8"))
@@ -99,11 +115,17 @@ def grok_trust_path(environ=None):
     return Path(base) / "trusted_folders.toml"
 
 
+_GIT_ENV_DROP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_INDEX_FILE",
+                 "GIT_DISCOVERY_ACROSS_FILESYSTEM")
+
+
 def grok_root(folder):
-    """grok 問的是 git 根目錄;不在 git 裡(或沒有 git)就是資料夾本身。"""
+    """grok 問的是 git 根目錄;不在 git 裡(或沒有 git)就是資料夾本身。
+    繼承來的 GIT_DIR / GIT_WORK_TREE 會讓 git 回別的地方(例如 /)⇒ 先清掉(第 2 輪審查)。"""
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
     try:
         r = subprocess.run(["git", "-C", str(folder), "rev-parse", "--show-toplevel"], capture_output=True,
-                           text=True, timeout=5, stdin=subprocess.DEVNULL)
+                           text=True, timeout=5, stdin=subprocess.DEVNULL, env=env)
         top = r.stdout.strip()
         if r.returncode == 0 and top:
             return str(Path(top).resolve())
@@ -121,7 +143,11 @@ def ensure_grok(folder, path=None, environ=None, now=None):
     if target is None:
         return "skip", "not_a_dir"
     root = grok_root(target)
+    if _too_wide(root, environ):
+        return "skip", "too_wide"         # 家目錄當 dotfiles 倉:git 根目錄 = 家目錄,不整個信任
     cfg = Path(path) if path else grok_trust_path(environ)
+    if _symlinked(cfg):
+        return "skip", "settings_is_symlink"
     if tomllib is None:
         return "skip", "no_tomllib"
     text = ""

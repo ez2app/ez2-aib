@@ -79,6 +79,29 @@ class AgyTrust(unittest.TestCase):
             self.assertEqual(folder_trust.ensure("agy", self.proj, environ=self.env)[0], "skip", bad)
             self.assertEqual(self.cfg.read_text(), bad)
 
+    def test_root_and_home_are_too_wide(self):
+        # 第 2 輪審查:/、家目錄、家目錄上層一律不信任
+        home = self.tmp / "home"
+        (home / "proj").mkdir(parents=True)
+        env = dict(self.env, HOME=str(home))
+        for wide in ("/", str(home), str(self.tmp)):
+            self.assertEqual(folder_trust.ensure("agy", wide, environ=env), ("skip", "too_wide"), wide)
+        self.assertEqual(folder_trust.ensure("agy", home / "proj", environ=env)[0], "added")
+
+    def test_symlinked_settings_untouched(self):
+        real = self.tmp / "dotfiles-settings.json"
+        real.write_text("{}")
+        self.cfg.symlink_to(real)
+        self.assertEqual(folder_trust.ensure("agy", self.proj, environ=self.env), ("skip", "settings_is_symlink"))
+        self.assertTrue(self.cfg.is_symlink())
+        self.assertEqual(real.read_text(), "{}")
+
+    def test_existing_permissions_kept(self):
+        self.cfg.write_text("{}")
+        os.chmod(self.cfg, 0o640)
+        self.assertEqual(folder_trust.ensure("agy", self.proj, environ=self.env)[0], "added")
+        self.assertEqual(self.cfg.stat().st_mode & 0o777, 0o640)
+
     def test_no_agy_home_and_off_switch(self):
         env = {"GEMINI_CLI_HOME": str(self.tmp / "nothing")}
         self.assertEqual(folder_trust.ensure("agy", self.proj, environ=env)[0], "skip")
@@ -127,6 +150,23 @@ class GrokTrust(unittest.TestCase):
         self.assertEqual(folder_trust.ensure("grok", self.repo, environ=env)[0], "skip")
         self.assertFalse((self.tmp / "nothing").exists())
 
+    def test_inherited_git_env_is_ignored(self):
+        old = {k: os.environ.get(k) for k in ("GIT_DIR", "GIT_WORK_TREE")}
+        os.environ["GIT_DIR"] = str(self.repo / ".git")
+        os.environ["GIT_WORK_TREE"] = "/"
+        try:
+            self.assertEqual(folder_trust.grok_root(self.repo / "sub"), str(self.repo.resolve()))
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_home_as_git_root_is_too_wide(self):
+        env = dict(self.env, HOME=str(self.repo))           # 家目錄就是 dotfiles 倉
+        self.assertEqual(folder_trust.ensure("grok", self.repo / "sub", environ=env), ("skip", "too_wide"))
+
     def test_non_git_folder_uses_itself(self):
         plain = self.tmp / "plain"
         plain.mkdir()
@@ -162,6 +202,39 @@ class CursorMenuSuspect(unittest.TestCase):
         }
         for provider, screen in screens.items():
             self.assertFalse(menu_pick.suspect(screen, provider), provider)
+        # 第 2 輪審查:AI 回覆裡貼出整張信任畫面(回覆本來就縮排),底下還有閒著的輸入框 ⇒ 是引用
+        quoted = ("  Do you trust the contents of this project?\n  > Yes, I trust this folder\n    No, exit\n"
+                  "    ↑/↓ Navigate · enter Confirm\n")
+        idle = {"claude": "⏺ 你看到的是這個畫面嗎?\n" + quoted + "─────\n❯ \n─────\n  ⏵⏵ bypass permissions on\n",
+                "codex": "• 你看到的是這個畫面嗎?\n" + quoted + "› Ask Codex to do anything\n  ? for shortcuts\n",
+                "agy": "• 你看到的是這個畫面嗎?\n" + quoted + "> \nGemini 3.8 Flash\n"}
+        for provider, screen in idle.items():
+            self.assertFalse(menu_pick.suspect(screen, provider), provider)
+
+    def test_each_cursor_condition_alone(self):
+        # 突變審查:每道條件各一張「只差這一條」的畫面
+        ok = "Pick one?\n> Alpha\n  Beta\n  ↑/↓ to move · enter to select\n"
+        self.assertTrue(menu_pick.suspect(ok, "agy"))
+        no_enter = ok.replace(" · enter to select", "")
+        self.assertFalse(menu_pick.suspect(no_enter, "agy"), "操作說明要有 enter")
+        text_between = "Pick one?\n> Alpha\n  Beta\nsome text\n  ↑/↓ to move · enter to select\n"
+        self.assertFalse(menu_pick.suspect(text_between, "agy"), "中間只能是選項行")
+        empty_cursor = "Pick one?\n> \n  Beta\n  ↑/↓ to move · enter to select\n"
+        self.assertFalse(menu_pick.suspect(empty_cursor, "agy"), "游標行要有字")
+        no_question = "Pick one\n> Alpha\n  Beta\n  ↑/↓ to move · enter to select\n"
+        self.assertFalse(menu_pick.suspect(no_question, "agy"), "要有問句")
+        single = "Pick one?\n> Alpha\n  ↑/↓ to move · enter to select\n"
+        self.assertFalse(menu_pick.suspect(single, "agy"), "至少兩個選項")
+        nav_high = ok + "".join("line %d\n" % i for i in range(menu_pick.OPT_BOTTOM_SLACK + 1))
+        self.assertFalse(menu_pick.suspect(nav_high, "agy"), "操作說明要在底部")
+
+    def test_cursor_menu_block_stays_small(self):
+        # 防提示注入護欄:游標選單只送選項往上 HEAD_LINES 行,不送整段畫面
+        screen = "\n".join("檔案內容第 %d 行" % i for i in range(15)) + "\n" + AGY_TRUST_SCREEN
+        block = menu_pick.menu_block(screen)
+        self.assertNotIn("檔案內容第 0 行", block)
+        self.assertIn("Yes, I trust this folder", block)
+        self.assertIn("Navigate", block)
 
     def test_cursor_in_middle_still_a_menu(self):
         screen = ("Pick a theme?\n  Light\n> Dark\n  System\n  ↑/↓ to move · enter to select\n")
