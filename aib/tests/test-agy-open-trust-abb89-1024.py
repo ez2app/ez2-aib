@@ -85,6 +85,7 @@ class LaunchWiring(unittest.TestCase):
     def test_agy_dgrs_skips_permissions_and_trusts_before_launch(self):
         src = (COCKPIT / "provider-launch.sh").read_text(encoding="utf-8")
         self.assertIn("agy:dgrs)    ARGS=(--dangerously-skip-permissions)", src)
+        self.assertIn("copilot:dgrs) ARGS=(--allow-all)", src)
         self.assertIn('agy_trust.py" ensure "$PROJECT_DIR"', src)
         self.assertLess(src.index('agy_trust.py" ensure'), src.index('cd "$PROJECT_DIR" || exit 2'))
 

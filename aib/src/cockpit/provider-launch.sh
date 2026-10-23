@@ -228,7 +228,10 @@ case "$PROVIDER:$MODE" in
   #   先前落在 *) plain 啟動 ⇒ 窗名寫 dgrs、實際每個工具都要人按(跟上面 grok 同一族)。
   agy:dgrs)    ARGS=(--dangerously-skip-permissions) ;;
   agy:safe)    ARGS=() ;;
-  *)           ARGS=() ;;   # copilot:mode 旗標未確立,plain 啟動
+  # copilot(CLI 1.0.103,同日實測):dgrs 的對應物是 --allow-all(= --allow-all-tools --allow-all-paths --allow-all-urls,
+  #   同 --yolo)。先前 plain 啟動 ⇒ 底部寫「Manual Approval」。
+  copilot:dgrs) ARGS=(--allow-all) ;;
+  *)           ARGS=() ;;   # copilot:safe 等:plain 啟動
 esac
 
 # The provider process always sees an explicit requested model.  This is only
