@@ -7,16 +7,19 @@
 沒有任何讀數會紅。這支把「哪一家帶什麼旗標」釘成契約,新加一家沒決定就紅。
 
 D1 原生 CLI 五家(claude/codex/agy/copilot/grok):真跑 provider-launch.sh(PATH 上放假 CLI 記 argv),dgrs 帶到表上的旗標
-D2 同五家 safe:不帶任何一家的 dgrs 旗標
+D2 同五家 safe:只准 SAFE_OK 裡的旗標(--yolo、--allow-all-tools… 一律算偷渡)
 D3 providers.json 裡可開席的每一家(alias-only 除外)都在本檔兩張表之一:EXPECTED_DGRS(原生)或 NO_DGRS(自家橋接,寫原因)
 D4 provider-launch.sh 的白名單 = 兩張表的聯集(多一家、少一家都紅)
+D4b 每一家 id 都過白名單(bogus mode 拿到 invalid mode,不是 unsupported;不靠 regex)
 D5 EXPECTED_DGRS 每一家在 `case "$PROVIDER:$MODE"` 有自己的 `<id>:dgrs)`,不靠 `*)`
 D6 NO_DGRS 每一家在找 CLI(BIN=)之前就 exec 自家橋接(不會被當成原生 CLI 起)
-D7 真實呼叫形狀:帶 session uuid、claude/grok 接回(AIB_RESUME_UUID)、codex 套組關、codex 接回,dgrs 旗標都還在
+D7 真實呼叫形狀:帶 session uuid、預設首回合提示(不設 AIB_NO_ONBOARD)、claude/grok 接回(AIB_RESUME_UUID)、
+   claude 分出新席 / 分出後重生、copilot 接回、codex 套組關、codex 接回,dgrs 旗標都還在
 D8 codex 換帳後重組參數(_fresh_login_args)照 dgrs 帶回旗標
 D9 openrouter / typesafe / openrouterjev 帶型號又 AIB_NO_EFFORT=1 也開得起來(以前 PY3 沒設值,set -u 當場退)
-刀(複本):K1 拿掉 grok:dgrs ⇒ D1、D5 紅;K2 providers.json 加一家原生沒進表 ⇒ D3 紅;K3 白名單多一家 ⇒ D4 紅;
-  K4 copilot 旗標清空 ⇒ D1 紅;K5 帶 session 時 ARGS= 洗掉旗標 ⇒ D7 紅;K6 拿掉橋接分支的 PY3= ⇒ D9 紅
+刀(PR 手跑在複本上,不在本檔):K1 拿掉 grok:dgrs ⇒ D1、D5 紅;K2 providers.json 加一家原生沒進表 ⇒ D3 紅;K3 白名單多一家 ⇒ D4 紅;
+  K4 copilot 旗標清空 ⇒ D1 紅;K5 帶 session 時 ARGS= 洗掉旗標 ⇒ D7 紅;K6 拿掉橋接分支的 PY3= ⇒ D9 紅;
+  K7 agy / codex 首回合、copilot 接回、claude 分出 / 重生用 ARGS= 洗掉旗標 ⇒ D7 紅
 """
 import json
 import os
@@ -63,7 +66,7 @@ UUID = "0f0e0d0c-0b0a-4908-8706-050403020100"
 
 FAKE_CLI = """#!/bin/sh
 [ "$1" = --help ] && { echo "  --no-daemon"; exit 0; }
-printf '%s\\n' "$*" > "$ARGV_DIR/$(basename "$0")"
+for a in "$@"; do printf '%s\\n' "$a"; done > "$ARGV_DIR/$(basename "$0")"
 """
 FAKE_PY = """#!/bin/sh
 printf '%s\\n' "$*" > "$ARGV_DIR/py"
@@ -107,13 +110,14 @@ class Launch(unittest.TestCase):
 
     def launch(self, *args, env=None):
         return subprocess.run(["bash", str(LAUNCH), *args], env={**self.env, **(env or {})}, cwd=self.proj,
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=60)
 
     def run_launch(self, provider, mode, *extra, env=None):
         p = self.launch(provider, mode, "dev", self.proj, *extra, env=env)
         f = Path(self.argv, provider)
         self.assertTrue(f.exists(), f"{provider} {mode} 沒起到假 CLI rc={p.returncode}\n{p.stdout}{p.stderr}")
-        argv = f.read_text(encoding="utf-8").split()
+        argv = f.read_text(encoding="utf-8").splitlines()
         f.unlink()
         return argv
 
@@ -141,6 +145,33 @@ class Launch(unittest.TestCase):
                 argv = self.run_launch(provider, "dgrs", UUID, env={"AIB_RESUME_UUID": "1"})
                 self.assertTrue(has_run(argv, EXPECTED_DGRS[provider]), argv)
                 self.assertTrue(has_run(argv, ["--resume", UUID]), argv)
+        for provider, flags in EXPECTED_DGRS.items():
+            with self.subTest(provider=provider, shape="onboard"):
+                argv = self.run_launch(provider, "dgrs", env={"AIB_NO_ONBOARD": "0"})
+                self.assertTrue(has_run(argv, flags), argv)
+                if provider == "agy":
+                    self.assertIn("--prompt-interactive", argv)
+        fork_from = "1f1e1d1c-1b1a-4918-8716-151413121110"
+        with self.subTest(provider="claude", shape="fork"):
+            argv = self.run_launch("claude", "dgrs", UUID, env={"AIB_FORK_FROM_SESSION_UUID": fork_from})
+            self.assertTrue(has_run(argv, EXPECTED_DGRS["claude"]), argv)
+            self.assertTrue(has_run(argv, ["--resume", fork_from, "--fork-session", "--session-id", UUID]), argv)
+        with self.subTest(provider="claude", shape="fork-respawn"):
+            proj = Path(self.home, ".claude", "projects", "x")
+            proj.mkdir(parents=True)
+            Path(proj, UUID + ".jsonl").write_text("", encoding="utf-8")
+            argv = self.run_launch("claude", "dgrs", UUID, env={"AIB_FORK_FROM_SESSION_UUID": fork_from})
+            self.assertTrue(has_run(argv, EXPECTED_DGRS["claude"]), argv)
+            self.assertTrue(has_run(argv, ["--resume", UUID]), argv)
+            self.assertNotIn("--fork-session", argv)
+        for mode in ("dgrs", "safe"):
+            with self.subTest(provider="copilot", shape="resume-" + mode):
+                argv = self.run_launch("copilot", mode, env={"AIB_RESUME_SESSION_UUID": UUID})
+                self.assertTrue(has_run(argv, ["--resume", UUID]), argv)
+                if mode == "dgrs":
+                    self.assertTrue(has_run(argv, EXPECTED_DGRS["copilot"]), argv)
+                else:
+                    self.assertFalse([a for a in argv if a.startswith("-") and a not in SAFE_OK], argv)
         with self.subTest(provider="codex", shape="pack-off"):
             argv = self.run_launch("codex", "dgrs", env={"AIB_CODEX_PACK": "0"})
             self.assertTrue(has_run(argv, EXPECTED_DGRS["codex"]), argv)
