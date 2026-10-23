@@ -245,6 +245,26 @@ def fetch_signed(env, name, version=None, work=None, api=None, paid_api=None, ma
     return folder, entry, None
 
 
+def would_drop(obj):
+    """這台現有的授權仍有效(簽對、沒過期)而新授權少了它的加購 ⇒ 回少掉的加購(排序);否則 []。
+    舊檔讀不到 / 簽不對 / 過期 ⇒ []:沒有值得保住的東西,照常換。"""
+    from entitlement import signing
+    from entitlement.store import read_license_obj
+    from entitlement.tier import _parse_expires_at, _utc_now
+    try:
+        old = read_license_obj()
+        if not isinstance(old, dict) or signing.verify_object(old) != signing.OK:
+            return []
+        exp = _parse_expires_at(old.get("expires_at"))
+        if exp is not None and exp <= _utc_now():
+            return []
+        have = old.get("addons") if isinstance(old.get("addons"), list) else []
+    except Exception:  # noqa: BLE001
+        return []
+    new = {a for a in obj.get("addons") or [] if isinstance(a, str)}
+    return sorted({a for a in have if isinstance(a, str) and ADDON_RE.fullmatch(a) and a not in new})
+
+
 def license_get(env, addon, api=None, machine_id=None):
     """aib plugins license <加購>:用這台綁的憑證領帳號買過的授權,走 aib license install 同一套驗簽 / 到期 / 0600 / 備份。"""
     from api import ApiError, TransportError
@@ -268,6 +288,9 @@ def license_get(env, addon, api=None, machine_id=None):
     addons = obj.get("addons") if isinstance(obj, dict) else None
     if not isinstance(addons, list) or addon not in [a for a in addons if isinstance(a, str)]:
         return fail("plugin_license_invalid", 3)   # 簽對但沒有要的加購 ⇒ 不落檔(不拿小授權蓋掉大的)
+    dropped = would_drop(obj)
+    if dropped:   # 這台現有的有效授權加購比較多 ⇒ 不蓋(@abb89 #276 親審 Low);要換請本人 aib license install
+        return fail("plugin_license_fewer", 3, addons=", ".join(dropped))
     try:
         res, rc = ECLI.install_obj(obj)
     except Exception:  # noqa: BLE001  伺服器給的授權怪到驗簽本身拋(例:代理字元)⇒ 驗不過、不落檔

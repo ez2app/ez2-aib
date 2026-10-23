@@ -12,13 +12,15 @@ D4 下載的包大小或 sha256 跟目錄不符 ⇒ plugin_download_mismatch,一
 D5 包沒簽 / 簽過又改 / 簽的是別的外掛(名稱版本跟目錄不符)⇒ plugin_rejected,沒裝
 D6 防降版:目錄比已裝舊 ⇒ plugin_downgrade(沒裝);一樣 ⇒ plugin_already_current;明寫 @舊版 ⇒ 裝
 D7 付費外掛:沒綁 ⇒ plugin_not_bound、包一個請求都沒送;有綁 ⇒ 帶 bearer + X-AIB-Machine;沒買 ⇒ plugin_license_none
+D8c 現有授權仍有效且加購較多 ⇒ plugin_license_fewer 不蓋;舊的過期 / 簽錯 / 讀不到 ⇒ 照換
 D8 領授權:簽對 ⇒ 0600 落檔;簽錯 / 過期 / 不是物件 ⇒ plugin_license_invalid 不落檔;帶 activation_url ⇒ activation needed;沒買 ⇒ plugin_license_none
 D9 名稱不合格式 ⇒ plugin_name_invalid、不連網;CLI install 給名稱走目錄、給資料夾照舊
 D10 契約:伺服器碼 = plugins.codes;每個回條 detail 都在契約、四語都有 hint
 D4b 解開大小 / 成員數 / pax 大標頭超過上限 ⇒ too-big-unpacked(驗簽前就擋);稀疏成員 / 壞 zip / 超長名 / bz2 ⇒ 拒收不當掉;包內成員名稱清過才進 problems
     伺服器的 aib-ext.json 不是物件 / 太深 / 怪數字 / 代理字元 ⇒ plugin_rejected;目錄 / 授權帶單獨代理字元 ⇒ 印得出來、授權不落檔
 刀(複本):K1 不比 sha256 ⇒ D4 紅;K2 不比包名稱版本 ⇒ D5 紅;K3 付費包不帶憑證 ⇒ D7 紅;K4 不擋降版 ⇒ D6 紅;
-    K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅;K7 gzip 不限量解開 ⇒ D4b 紅(pax 大標頭);K8 收稀疏成員 ⇒ D4b 紅;K9 讀回應沒總時限 ⇒ D1b 紅
+    K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅;K7 gzip 不限量解開 ⇒ D4b 紅(pax 大標頭);K8 收稀疏成員 ⇒ D4b 紅;K9 讀回應沒總時限 ⇒ D1b 紅;
+    K23 授權不比舊檔加購 ⇒ D8c 紅
 """
 import base64
 import hashlib
@@ -406,6 +408,29 @@ class License(Box):
             res, rc, _ = self.get(st, body)
             self.assertIn(rc, (2, 3, 4), (st, body, res))
             self.assertFalse(dest.exists())
+
+    def test_d8c_license_keeps_addons(self):
+        """現有授權仍有效、加購比較多 ⇒ 不蓋(plugin_license_fewer);舊的過期 / 簽錯 ⇒ 照換(@abb89 #276 親審 Low)。"""
+        dest = self.state / "license.json"
+        self.assertEqual(self.get(200, {"ok": True, "license": self.lic(addons=["probe", "room", "line"])})[1], 0)
+        big = dest.read_text()
+        res, rc, _ = self.get(200, {"ok": True, "license": self.lic(addons=["probe", "room"])})
+        self.assertEqual((rc, res["detail"]), (3, "plugin_license_fewer"))
+        self.assertIn("line", res["hint"])
+        self.assertNotIn("room", res["hint"].replace("aib", ""))
+        self.assertEqual(dest.read_text(), big, "不蓋掉加購較多的授權")
+        res, rc, _ = self.get(200, {"ok": True, "license": self.lic(addons=["line", "probe", "room", "x2"])})
+        self.assertEqual(rc, 0)                                           # 多的照換
+        old = json.loads(dest.read_text())                               # 舊的過期 ⇒ 照換
+        old["expires_at"] = "2020-01-01T00:00:00+00:00"
+        dest.write_text(json.dumps(resign(old)))
+        self.assertEqual(self.get(200, {"ok": True, "license": self.lic()})[1], 0)
+        old = json.loads(dest.read_text())                               # 舊的簽錯 ⇒ 照換
+        old["addons"] = ["probe", "a", "b"]
+        dest.write_text(json.dumps(old))
+        self.assertEqual(self.get(200, {"ok": True, "license": self.lic()})[1], 0)
+        dest.write_text("not json")                                      # 讀不到 ⇒ 照換
+        self.assertEqual(self.get(200, {"ok": True, "license": self.lic()})[1], 0)
 
     def test_d8_license(self):
         dest = self.state / "license.json"
@@ -802,6 +827,9 @@ class Knife(unittest.TestCase):
     def test_k22_server_code_5xx_rc(self):
         self._knife("return code, 4 if http >= 500 else 3, {}", "return code, 5 if http >= 500 else 3, {}",
                     "Hard.test_h11_server_code_5xx_is_4")
+
+    def test_k23_license_overwrites_bigger(self):
+        self._knife("    if dropped:   #", "    if False:   #", "License.test_d8c_license_keeps_addons")
 
     def test_k10_no_total_deadline(self):
         self._knife("        t.join(total_s + 2)", "        t.join()", "Slow.test_d1c_total_deadline",
