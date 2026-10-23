@@ -132,6 +132,7 @@ fi
 # 不依賴 PATH 上的同名 CLI；直接 exec 本倉 openrouter_cli.py。
 # 缺 OPENROUTER_API_KEY 由 CLI 具名退出，訊息不指向 ED.4。
 if [ "$PROVIDER" = "openrouter" ]; then
+  PY3="${EZ2_PY3:-python3}"
   OR_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE")
   [ -n "$SESSION_UUID" ] && OR_ARGS+=(--session-id "$SESSION_UUID")
   exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/openrouter_cli.py" "${OR_ARGS[@]}"
@@ -141,6 +142,7 @@ fi
 # 不依賴 PATH 上的同名 CLI；直接 exec 本倉 typesafe_cli.py。
 # 缺 TYPESAFE_API_KEY 由 CLI 具名退出，訊息不指向 ED.4。
 if [ "$PROVIDER" = "typesafe" ]; then
+  PY3="${EZ2_PY3:-python3}"
   TS_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE")
   [ -n "$SESSION_UUID" ] && TS_ARGS+=(--session-id "$SESSION_UUID")
   exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/typesafe_cli.py" "${TS_ARGS[@]}"
@@ -149,6 +151,7 @@ fi
 # --- openrouterjev (API-key 終端席;同一支 System One 問答介面,走 OpenRouter 決策端點;鑰=OPENROUTER_API_KEY) ---
 # TypeSafe 對外開放前 an internal service 只在 OpenRouter 上;選單分開標「OpenRouter an internal service」/「TypeSafe an internal service」(the maintainer 09-25)。
 if [ "$PROVIDER" = "openrouterjev" ]; then
+  PY3="${EZ2_PY3:-python3}"
   OJ_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE" --route openrouter)
   [ -n "$SESSION_UUID" ] && OJ_ARGS+=(--session-id "$SESSION_UUID")
   exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/typesafe_cli.py" "${OJ_ARGS[@]}"
