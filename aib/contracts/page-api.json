@@ -967,6 +967,7 @@
     "plugin_rejected": "包驗不過(簽章 / 檔案雜湊 / requires_aib / 不是外掛 / 包裡的名稱或版本跟目錄不符),問題清單放 problems",
     "plugin_downgrade": "目錄版本比這台已裝的舊 ⇒ 不裝;本人明確寫 <名稱>@<版本> 才裝指定的舊版",
     "plugin_license_invalid": "伺服器給的授權驗簽不過 / 已過期 / 不是物件 ⇒ 不落檔",
+    "plugin_license_fewer": "這台現有的授權仍有效、而且加購比伺服器這份多 ⇒ 不蓋掉(hint 列出會少掉的加購);要換請本人 aib license install",
     "plugin_not_bound": "這台沒綁 ez2.page(或綁了不只一頁 / 憑證沒帶 machine_id)⇒ 領授權不連網,hint 指 aib page bind",
     "plugin_unreachable": "連不到伺服器 / 伺服器 5xx",
     "plugin_unsupported": "伺服器沒有這組端點",
