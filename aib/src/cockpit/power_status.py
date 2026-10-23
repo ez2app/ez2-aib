@@ -242,6 +242,9 @@ def main(argv=None):
                    "url": None, "opened": False, "hint": None}, "--json" in argv)
             return 2
         return login.main(argv[1:])
+    if argv and argv[0] in ("launch", "fav"):           # 出艦台資料(@d07f9 power_launch.py)
+        import power_launch
+        return power_launch.main(argv)
     p = argparse.ArgumentParser(prog="aib power")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("status")

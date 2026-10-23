@@ -155,5 +155,41 @@
   },
   "flow": "已登入且沒到上限 ⇒ power_login_done、不起流程(--force 照起)。否則背景起該家 CLI 的登入(codex / grok / copilot 走裝置碼,claude 走 claude auth login;agy 沒有登入子指令 ⇒ unsupported),最多等 20 秒抓它印的第一個 https 鏈結;CLI 背景最多活 15 分鐘。claude 自己開瀏覽器 ⇒ opened false。failed 的 hint = 本人要跑的指令 + (cli_missing | spawn_failed | no_url)",
   "note": "AI 席也叫得動,但只是起登入流程;完成 OAuth 一定是真人在瀏覽器裡做,所以不加 Touch ID"
+ },
+ "launch_receipt": {
+  "command": "aib power launch --list [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "models",
+   "personas",
+   "recent",
+   "favorites"
+  ],
+  "detail": "power_launch_list",
+  "rc": {
+   "0": "有回條",
+   "2": "參數錯"
+  },
+  "models": "{brand: 預設模型或 null},brand = claude | codex | grok | copilot | agy;來源 providers.json default_requested_model。能不能選看 status 的 ais 燈號(只有 green 能出艦;黃 / 紅點了走 login)",
+  "personas": "[{uid, name, fav}],最愛在前再照名稱;冠位人格不列;只回 uid 與名稱",
+  "recent": "[{brand, model, persona, brain, at}] 最多 20 筆、新的在前;同一組只留最新一筆;persona = 人格 uid、brain = 第二大腦路由鍵",
+  "favorites": "[人格 uid],新加的在前",
+  "owner": "@d07f9 power_launch.py",
+  "note": "真正出艦(開席 + 綁人格 + 綁大腦 ⇒ 進艦長室)細節待 Andy 確認;出艦成功時呼叫 power_launch.record_launch 記一筆。最愛 / 最近是本機方便用的資料,不是防線"
+ },
+ "fav_receipt": {
+  "command": "aib power fav <人格 uid> [--off] [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "uid",
+   "favorites"
+  ],
+  "detail": "power_fav_set | power_fav_cleared | power_fav_unknown",
+  "rc": {
+   "0": "set / cleared",
+   "2": "參數錯 / unknown(uid 不在人格清單)"
+  }
  }
 }
