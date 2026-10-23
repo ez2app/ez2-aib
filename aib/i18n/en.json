@@ -2344,7 +2344,7 @@
   "aib.relogin.hold_quit": "q      really close this seat",
   "aib.climenu.no_terminal": "{provider}: no terminal can show the seat-opening menu, skipping it (blank seat, no onboarding sheet)",
   "aib.climenu.onboard_full": "full onboarding sheet (iron rules + seat memory + handoff + notes)",
-  "aib.climenu.onboard_rules": "onboarding sheet: iron rules only",
+  "aib.climenu.onboard_rules": "onboarding sheet: iron rules only (how to send dm, mark mail read, CTX hand-off limits, report your main item, human-only approvals)",
   "aib.climenu.onboard_none": "do not load (default)",
   "aib.climenu.title_open": "{provider} open seat",
   "aib.climenu.note_none": "no pick = do not load",
@@ -5085,5 +5085,11 @@
   "aib.plugins.hint.plugin_license_none": "This account has not bought this add-on",
   "aib.plugins.hint.plugin_license_device_limit": "This license is on its maximum number of machines: run aib license deactivate on the old one first",
   "aib.plugins.hint.plugin_refused": "The server refused",
-  "aib.plugins.hint.server_refused": "The server refused ({code})"
+  "aib.plugins.hint.server_refused": "The server refused ({code})",
+  "aib.context.menu.need_key": "(no API key — click to add)",
+  "aib.context.menu.bot_no_doorbell": "(no agent has a doorbell)",
+  "aib.context.menu.bot_no_codex_thread": "(not linked to Codex desktop)",
+  "aib.context.menu.bot_no_muse_conv": "(no Muse conversation bound)",
+  "aib.context.menu.key_saved": "{name} saved. Click \"New AI → {engine}\" again to open the seat",
+  "aib.context.menu.key_not_saved": "{name} was not saved (cancelled or Touch ID not passed); {engine} not opened"
 }

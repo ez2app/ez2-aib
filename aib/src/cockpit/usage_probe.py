@@ -672,6 +672,10 @@ def _run_agy_print_usage(binary, timeout_s=90):
         return None, "%s:%s" % (type(exc).__name__, exc)
     finally:
         shutil.rmtree(cwd, ignore_errors=True)
+        try:
+            forget_probe_trust(cwd)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _passive_agy_quota_files(root=None):
@@ -1101,7 +1105,107 @@ class IsolatedSession:
                     break
                 time.sleep(0.05)
                 shutil.rmtree(self.cwd, ignore_errors=True)
+        try:
+            forget_probe_trust(self.cwd)
+        except Exception:  # noqa: BLE001 —— 收尾的附帶清理,壞了不影響探針結果
+            pass
         return False
+
+
+# 10-24 @abb89(右鍵實測):探針在暫存資料夾起 agy / grok,信任畫面按了「信任」⇒ 兩家把那個暫存路徑記進信任清單,
+#   探針刪了資料夾、清單上那一筆還在(Pro 上累積 6 筆)。探針收尾時把**自己的**暫存路徑拿掉,順便清以前留下、
+#   資料夾已經不在的探針暫存路徑。只動前綴是探針的暫存路徑;設定檔讀不懂 / 是符號連結 ⇒ 不動。
+PROBE_DIR_PREFIXES = ("ez2-usage-probe.", "ez2-agy-quota-")
+
+
+def _is_probe_dir(path, own=()):
+    p = str(path or "")
+    if p in own:
+        return True
+    parent, base = os.path.split(p.rstrip("/"))
+    if not base.startswith(PROBE_DIR_PREFIXES):         # 只對探針名的那幾筆 realpath(斷掉的網路磁碟不會卡收尾)
+        return False
+    if own and os.path.realpath(p) in own:              # 清單裡是 /private/var、own 給的是 /var(或反過來)
+        return True
+    tmp_roots = {os.path.realpath(tempfile.gettempdir()), tempfile.gettempdir()}
+    if parent not in tmp_roots and os.path.realpath(parent) not in tmp_roots:
+        return False
+    return not os.path.exists(p)
+
+
+def forget_probe_trust(own_dir=None, environ=None):
+    """回拿掉幾筆。own_dir = 這次探針的暫存資料夾(兩種寫法 /var 與 /private/var 都認)。"""
+    env = os.environ if environ is None else environ
+    own = set()
+    if own_dir:
+        own = {str(own_dir), os.path.realpath(str(own_dir))}
+    removed = 0
+    agy = Path(env.get("GEMINI_CLI_HOME") or os.path.expanduser("~/.gemini")) / "antigravity-cli" / "settings.json"
+    try:
+        if agy.is_file() and not agy.is_symlink():
+            seen = agy.stat().st_mtime_ns
+            data = json.loads(agy.read_text(encoding="utf-8"))
+            lst = data.get("trustedWorkspaces") if isinstance(data, dict) else None
+            if isinstance(lst, list):
+                keep = [x for x in lst if not (isinstance(x, str) and _is_probe_dir(x, own))]
+                if len(keep) != len(lst):
+                    data["trustedWorkspaces"] = keep
+                    _rewrite(agy, json.dumps(data, ensure_ascii=False, indent=2) + "\n", seen_mtime=seen)
+                    removed += len(lst) - len(keep)
+    except (OSError, ValueError):
+        pass
+    grok = Path(env.get("GROK_HOME") or os.path.expanduser("~/.grok")) / "trusted_folders.toml"
+    try:
+        import tomllib
+    except ImportError:
+        tomllib = None
+    try:
+        if tomllib and grok.is_file() and not grok.is_symlink():
+            seen = grok.stat().st_mtime_ns
+            text = grok.read_text(encoding="utf-8")
+            folders = tomllib.loads(text).get("folders", {})
+            drop = {k for k in folders if _is_probe_dir(k, own)} if isinstance(folders, dict) else set()
+            if drop:
+                out, skipping = [], False
+                for line in text.splitlines(keepends=True):
+                    head = line.strip()
+                    if head.startswith("["):
+                        skipping = False
+                        m = re.fullmatch(r'\[folders\."((?:[^"\\]|\\.)*)"\]', head)
+                        if m and m.group(1).replace('\\"', '"').replace("\\\\", "\\") in drop:
+                            skipping = True
+                    if not skipping:
+                        out.append(line)
+                new = re.sub(r"\n{3,}", "\n\n", "".join(out))
+                left = tomllib.loads(new).get("folders", {})
+                # 拿得乾淨、別的一筆沒少、留下的值一個字沒變才寫(多行字串裡長得像標頭的那行不會被截)
+                if (not (drop & set(left)) and set(left) == set(folders) - drop
+                        and all(left[k] == folders[k] for k in left)):
+                    _rewrite(grok, new, seen_mtime=seen)
+                    removed += len(drop)
+    except (OSError, ValueError):
+        pass
+    return removed
+
+
+def _rewrite(path, text, seen_mtime=None):
+    """同目錄暫存檔 + os.replace。seen_mtime:讀的時候的 mtime;換檔前檔又被改過(agy / grok 剛好在寫信任清單)
+    ⇒ 不寫(拋 OSError,呼叫端吞掉),免得蓋掉人剛按的「信任」。剩下那一瞬間的競爭不鎖,下次探針再清。"""
+    fd, tmp = tempfile.mkstemp(prefix="." + path.stem + "-", suffix=path.suffix, dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        st = path.stat()
+        os.chmod(tmp, st.st_mode & 0o777)
+        if seen_mtime is not None and st.st_mtime_ns != seen_mtime:
+            raise OSError("changed since read: %s" % path)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def which_cli(names, path_env=None):

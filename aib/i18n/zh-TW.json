@@ -2344,7 +2344,7 @@
   "aib.relogin.hold_quit": "q      真的關閉這一席",
   "aib.climenu.no_terminal": "{provider} 沒有終端看得到開席選單,不跳(空白開席、不投開席單)",
   "aib.climenu.onboard_full": "開席單全部(鐵則+席位記憶+交接+注意事項)",
-  "aib.climenu.onboard_rules": "開席單只鐵則",
+  "aib.climenu.onboard_rules": "開席單只鐵則(dm 怎麼寄、讀過要標、CTX 交接門檻、回報主項目、真人才能核准的事)",
   "aib.climenu.onboard_none": "不載入(預設)",
   "aib.climenu.title_open": "{provider} 開席",
   "aib.climenu.note_none": "沒選=不載入",
@@ -5085,5 +5085,11 @@
   "aib.plugins.hint.plugin_license_none": "這個帳號沒有買這個加購",
   "aib.plugins.hint.plugin_license_device_limit": "這份授權的電腦數已滿:先在舊電腦跑 aib license deactivate",
   "aib.plugins.hint.plugin_refused": "伺服器拒絕了",
-  "aib.plugins.hint.server_refused": "伺服器拒絕了({code})"
+  "aib.plugins.hint.server_refused": "伺服器拒絕了({code})",
+  "aib.context.menu.need_key": "(缺金鑰,點了填)",
+  "aib.context.menu.bot_no_doorbell": "(沒有 agent 接門鈴)",
+  "aib.context.menu.bot_no_codex_thread": "(還沒連 Codex 桌面版)",
+  "aib.context.menu.bot_no_muse_conv": "(還沒綁 Muse 對話)",
+  "aib.context.menu.key_saved": "{name} 已存好,再點一次「另開 AI → {engine}」就能開席",
+  "aib.context.menu.key_not_saved": "{name} 沒有存進金鑰櫃(取消或沒過 Touch ID),{engine} 先不開席"
 }

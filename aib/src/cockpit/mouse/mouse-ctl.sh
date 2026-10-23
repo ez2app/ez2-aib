@@ -254,6 +254,13 @@ while [ $# -gt 0 ]; do
       CY="${6:-}"
       shift "$(( $# < 5 ? $# : 5 ))"
       ;;
+    --new-ai-key)
+      # 10-24 @abb89:計費組缺金鑰 ⇒ 引擎層那一項改叫這裡:叫出 aib secret ask,不開死窗
+      MODE="new-ai-key"
+      NEW_AI_ENGINE="${2:-}"
+      PANE="${3:-}"
+      shift "$(( $# < 2 ? $# : 2 ))"
+      ;;
     --new-ai-open)
       # CodexBot 專用可見 preflight。一般引擎仍走原本直接開席路徑。
       MODE="new-ai-open"
@@ -2770,6 +2777,24 @@ EOF
     bind_menu_layer
     exit 0
     ;;
+  new-ai-key)
+    # 缺金鑰那一項:白名單內、api_key 那一組才動;值只在 aib secret ask 的遮字框與 Touch ID 裡走,不經過這裡。
+    case " $(new_ai_providers) " in
+      *" $NEW_AI_ENGINE "*) ;;
+      *) exit 0 ;;
+    esac
+    if [ "$DRY" = "1" ]; then
+      run "$EZ2_PY3" "$HERE/open_readiness.py" ask-key "$NEW_AI_ENGINE"
+      exit 0
+    fi
+    _notice="$("$EZ2_PY3" "$HERE/open_readiness.py" ask-key "$NEW_AI_ENGINE" 2>>"$RUNSHELL_LOG" || true)"
+    [ -n "$_notice" ] || exit 0
+    _target=()
+    [ -n "$PANE" ] && _target=(-t "$PANE")
+    env -u TMUX tmux display-message -d 15000 \
+      ${_target[@]+"${_target[@]}"} "$_notice" >/dev/null 2>&1 || true
+    exit 0
+    ;;
   new-ai-open)
     # 右鍵開 CodexBot 原本把 preflight 錯誤全丟進 aib-open.log，使用者只會
     # 看到「沒反應」。這層保留完整日誌，同時把可行動原因顯示在艙底部。
@@ -2831,7 +2856,14 @@ EOF
       # 第一層:引擎(清單從 aib PROVIDERS 長出來,新品牌自動出現)
       _title="$("$EZ2_PY3" "$COCKPIT/i18n_lib.py" aib.context.menu.new_ai \
         2>/dev/null | sed -n '1p' || true)"
+      # 10-24 @abb89:開席前先看每家缺不缺東西(open_readiness.py,一次問完、一家一行;查壞了一律當 ok)。
+      _ready_lines=()
+      while IFS= read -r _rl; do _ready_lines+=("$_rl"); done \
+        < <("$EZ2_PY3" "$HERE/open_readiness.py" $_providers 2>/dev/null || true)
+      _ri=0
       for _p in $_providers; do
+        _ready="${_ready_lines[$_ri]:-ok}"
+        _ri=$((_ri + 1))
         # filter_new_ai_providers.py 在 native/bot/api_key 段之間插入 __SEP__
         if [ "$_p" = "__SEP__" ]; then
           _items+=("" "" "")
@@ -2839,8 +2871,16 @@ EOF
         fi
         printf -v _pq '%q' "$_p"
         _plabel="$(new_ai_engine_label "$_p")"
+        #   缺金鑰 ⇒ 寫「缺金鑰」、點了叫出 aib secret ask,不開死窗;bot 沒接好 ⇒ 寫缺哪步、照樣點得開。
+        _rstate=ok _rdetail="" _rsuffix=""
+        IFS=$'\t' read -r _rstate _rdetail _rsuffix <<< "$_ready"
+        [ -z "${_rsuffix:-}" ] || _plabel="$_plabel #[fg=colour244]${_rsuffix}#[default]"
         # the maintainer 09-20:引擎名右側不要數字快捷鍵(與 bind-menu 同形,key 留空)
-        _items+=("$_plabel" "" "run-shell 'bash $SCRIPT_Q --new-ai-menu $_pq $PANE_ARG_Q ${CX:-0} ${CY:-0}$RUNSHELL_REDIR'")
+        if [ "${_rstate:-ok}" = "need_key" ]; then
+          _items+=("$_plabel" "" "run-shell -b 'bash $SCRIPT_Q --new-ai-key $_pq $PANE_ARG_Q$RUNSHELL_REDIR'")
+        else
+          _items+=("$_plabel" "" "run-shell 'bash $SCRIPT_Q --new-ai-menu $_pq $PANE_ARG_Q ${CX:-0} ${CY:-0}$RUNSHELL_REDIR'")
+        fi
       done
     else
       # 第二層:角色 → 真正開席(--again=同 hub 次席,dgrs=完整模式)
