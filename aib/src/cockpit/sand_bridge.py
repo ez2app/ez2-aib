@@ -962,6 +962,19 @@ def start_pack_delivery(root: Path, session_uuid: str, provider_id: str, say, wa
     return t
 
 
+def _dm_card(text: str) -> tuple[str, str]:
+    """貼進席的私訊 ⇒ 卡片 (kind, label)。抬頭寄件人是 AIB 系統(開席通知等,`系統@aib`)⇒ 系統卡;
+    其餘照 _speaker_label。10-24 @abb89 右鍵實測:grokbot 的開席通知被框成「別席(未驗證)」。"""
+    try:
+        from dm_header import parse
+        got = parse((text or "").strip())
+    except Exception:  # noqa: BLE001
+        got = None
+    if got and got.get("sender_kind") == "system":
+        return "system", "AIB 系統"
+    return "dm", _speaker_label(text)
+
+
 def _speaker_label(text: str) -> str:
     """貼進席的別席私訊:看 dm 抬頭認寄件席(已驗證才給席碼),不看內文自稱。"""
     try:
@@ -1999,7 +2012,7 @@ def main(argv: list[str] | None = None) -> int:
         from_dm = is_dm_line(text)
         # 10-07:貼進來的別席私訊標成別席(看抬頭,不看內文自稱),不再標成你本人
         if from_dm:
-            ui.message("dm", _speaker_label(text), text)
+            ui.message(*_dm_card(text), text)
         else:
             ui.message("human", human_display_name(), text)
         _inbox_path = enqueue(root, "inbox", text, session_uuid, args.provider_id, "human")

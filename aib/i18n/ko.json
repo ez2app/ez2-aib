@@ -2344,7 +2344,7 @@
   "aib.relogin.hold_quit": "q      이 석을 정말 닫기",
   "aib.climenu.no_terminal": "{provider} 개석 메뉴를 볼 단말이 없어 띄우지 않음(빈 개석, 개석 안내 안 보냄)",
   "aib.climenu.onboard_full": "개석 안내 전체(철칙+석 기억+인계+주의 사항)",
-  "aib.climenu.onboard_rules": "개석 안내 철칙만",
+  "aib.climenu.onboard_rules": "개석 안내 철칙만(dm 보내는 법, 읽음 표시, CTX 인계 기준, 주 항목 보고, 사람만 승인할 수 있는 일)",
   "aib.climenu.onboard_none": "불러오지 않음(기본)",
   "aib.climenu.title_open": "{provider} 개석",
   "aib.climenu.note_none": "안 고르면 = 불러오지 않음",

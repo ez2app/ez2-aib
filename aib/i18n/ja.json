@@ -2344,7 +2344,7 @@
   "aib.relogin.hold_quit": "q      本当にこの席を閉じる",
   "aib.climenu.no_terminal": "{provider} 開席メニューを表示できる端末がない、出さない(空の開席、開席票は送らない)",
   "aib.climenu.onboard_full": "開席票すべて(鉄則+席の記憶+引き継ぎ+注意事項)",
-  "aib.climenu.onboard_rules": "開席票は鉄則のみ",
+  "aib.climenu.onboard_rules": "開席票は鉄則のみ(dm の送り方、既読をつける、CTX 引き継ぎの目安、主項目の報告、人だけが承認できること)",
   "aib.climenu.onboard_none": "読み込まない(既定)",
   "aib.climenu.title_open": "{provider} 開席",
   "aib.climenu.note_none": "選ばなければ読み込まない",
