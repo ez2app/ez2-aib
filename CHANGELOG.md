@@ -4,6 +4,16 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.44
+
+- **New `aib create submit / status / list` (submission service not open yet)**: send a finished creation package (a `.tar` made by an add-on or skill) for review, then check its status or list what you have sent. aib checks the package locally first (paths, file types, manifest hashes, size of each member), asks for one Touch ID before sending, and prints the server's review state. Until the submission service opens, `submit` answers `creator_unsupported` and nothing is stored. Results use the contract codes in `contracts/page-api.json` (`creator.*`); `--json` gives the same receipt.
+
+## 0.1.43
+
+- **`aib` no longer opens a browser when the Captain Room add-on is too old**: `aib` (room by default) always starts the room with `aib room open --no-browser`. If the installed add-on is too old to support that (0.1.33 and earlier), aib does not start the server or open any window; it answers `room-too-old`, tells you to update the add-on, and falls back to the terminal help.
+- **Clearer EZP- serial message after a lost-device revoke**: when ez2.page reports `serial_rotated` even though every token was already revoked or expired, aib now says the serial has been replaced instead of asking you to reissue it from the dashboard.
+- **`aib test` in the add-on repository keeps `AIB_CORE_DIR`**: when testing the add-on repository, `aib test` passes `AIB_CORE_DIR` through (or points it at the running core if unset), so add-on tests use the right core. The core repository and other `AIB_*` variables are unchanged.
+
 ## 0.1.42
 
 - **A revoked machine says when and by whom**: when ez2.page refuses a machine because it was revoked, aib now prints the time and the name of the device that revoked it, plus where to manage devices, instead of a bare credential error.
