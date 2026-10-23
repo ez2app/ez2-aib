@@ -132,6 +132,7 @@ CLOSE_CABIN=0
 SOFT_SINCE=""
 PANE_ROLE=""
 HIT_INTENT="click"
+EXPECT_WINDOW=""
 ROLE=""; CX=""; CY=""; SESSION=""; SURFACE=""; PANE=""; WINDOW=""
 NEW_AI_ENGINE=""
 NEW_AI_ROLE=""
@@ -237,6 +238,10 @@ while [ $# -gt 0 ]; do
     --soft-since)                      # 10-24:(x) 軟關入口,帶選單開出的時間(epoch 秒);見 release-confirmed 段
       SOFT_SINCE="${2:-}"
       case "$SOFT_SINCE" in --*|"") SOFT_SINCE="" ;; *) shift "$(( $# < 1 ? $# : 1 ))" ;; esac  # 沒接值不吃下一個旗標
+      ;;
+    --expect-window)                   # 10-24:只跟 --close-row 一起用;右鍵選單開出時那一列的窗 id
+      EXPECT_WINDOW="${2:-}"
+      case "$EXPECT_WINDOW" in --*|"") EXPECT_WINDOW="" ;; *) shift "$(( $# < 1 ? $# : 1 ))" ;; esac
       ;;
     --close-cabin) CLOSE_CABIN=1 ;;    # 09-14 the maintainer:關的是最後一席 ⇒ 關完席把整艙收掉(走 idle_reaper 收艙,不強制;見下方 close-cabin 段)
     --kill-focused-seat)
@@ -1549,7 +1554,7 @@ WHEEL_ACTION="{\"action\":\"fold-scroll\",\"dir\":\"$WHEEL_DIR\",\"rows\":3}"
     # 右鍵「關閉這一席」(審查 r1 M1):只在 ai-list 內容列(y>=2)才往下走,
     #   不讓 --close-row 經過下面的捲軸 / 分頁切換前置動作
     if [ "$HIT_INTENT" = "close" ]; then
-      case "${CY:-}" in ''|*[!0-9]*) exit 0 ;; esac
+      case "${CY:-}" in ''|*[!0-9]*|?????*) exit 0 ;; esac      # 只收 1–4 位數字
       [ "$ROLE" = "ai-list" ] && [ "$CY" -ge 2 ] || exit 0
     fi
     # ★點擊也要從被點 session 重導艙身份（wheel／殺席已做；click 先前漏做）
@@ -1560,7 +1565,9 @@ WHEEL_ACTION="{\"action\":\"fold-scroll\",\"dir\":\"$WHEEL_DIR\",\"rows\":3}"
     fi
     # 這一按下是從捲軸開始的:拖過的話位置已經跟著走,放開不要再翻一頁,
     # 也不要誤觸同一列上的刪帳／切帳。
-    if [ -n "${EZ2_COCKPIT_STATE_DIR:-}" ] && [ -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-grab" ]; then
+    #   右鍵「關閉這一席」不是從捲軸開始的按下 ⇒ 不碰這兩個狀態檔(審查 r2 M1)
+    if [ "$HIT_INTENT" != "close" ] && [ -n "${EZ2_COCKPIT_STATE_DIR:-}" ] \
+        && [ -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-grab" ]; then
       _scrolled=0
       [ -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-dragged" ] && _scrolled=1
       rm -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-grab" "$EZ2_COCKPIT_STATE_DIR/scrollbar-dragged"
@@ -1613,6 +1620,11 @@ for name, val in (("ai", "2"), ("usage", "1"), ("left", "3")):
     # 右鍵「關閉這一席」只准走 [X] 那一支(確認選單);命中器給別的一律當沒點到
     if [ "$HIT_INTENT" = "close" ] && [ "$KIND" != "kill-idle" ]; then
       exit 0
+    fi
+    # 審查 r2 S1:選單開著時右欄重畫 / 重排,同一行可能已換成別席 ⇒ 命中的窗不是選單開出時那一席就不動
+    if [ "$HIT_INTENT" = "close" ]; then
+      _HIT_WIN="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("window") or "")' "$ACTION" 2>/dev/null || true)"
+      [ -n "$EXPECT_WINDOW" ] && [ "$_HIT_WIN" = "$EXPECT_WINDOW" ] || exit 0
     fi
     case "$KIND" in
       usage-header-tap|usage-subtab|usage-add-codex-oauth|usage-add-codex-token|\
@@ -3330,7 +3342,8 @@ else:
           if [ -n "$CLOSE_TITLE" ]; then
             printf -v SCRIPT_Q '%q' "$HERE/mouse-ctl.sh"
             printf -v SESSION_ARG_Q '%q' "$SESSION"
-            CLOSE_ACTION="run-shell 'bash $SCRIPT_Q --role right --close-row ai-list $_CX_OK $_CY_OK $SESSION_ARG_Q$RUNSHELL_REDIR'"
+            printf -v WIN_ARG_Q '%q' "$WINDOW"
+            CLOSE_ACTION="run-shell 'bash $SCRIPT_Q --role right --close-row ai-list $_CX_OK $_CY_OK $SESSION_ARG_Q --expect-window $WIN_ARG_Q$RUNSHELL_REDIR'"
           fi
           ;;
       esac

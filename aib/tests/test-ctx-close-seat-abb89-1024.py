@@ -117,25 +117,26 @@ class Menu(unittest.TestCase):
         sys.path.insert(0, str(COCKPIT))
         out = self.run_ctl("--context", "pane", "ai-list", "5", "3", "%1", "s1")
         self.assertIn(self.label(), out)
-        self.assertIn("--close-row ai-list 5 3", out)
+        self.assertIn("--close-row ai-list 5 3 s1 --expect-window @35", out)   # 帶 session 與選單開出時那一席                          # 帶選單開出時那一席的窗 id
         self.assertIn("--role right", out)
         busy = self.run_ctl("--context", "pane", "ai-list", "5", "4", "%1", "s1")
         self.assertNotIn(self.label(), busy)
         self.assertNotIn("--close-row", busy)
 
     def test_close_row_opens_the_x_confirm_menu(self):
-        out = self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "3", "s1")
+        out = self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "3", "s1", "--expect-window", "@35")
         menu = next(l for l in out.splitlines() if "display-menu" in l)
         self.assertIn("dev1@4fc4f", menu)                                  # 標題帶身分
         self.assertLess(menu.index("release cancelled"), menu.index("--release-confirmed @35"))   # 取消排第一
         self.assertIn("--soft-since", menu)                                # 軟關語意照舊
-        hard = next(l for l in self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "5", "s1").splitlines()
+        hard = next(l for l in self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "5", "s1",
+                                               "--expect-window", "@37").splitlines()
                     if "display-menu" in l)
         self.assertIn("--release-confirmed @37", hard)
         self.assertNotIn("--soft-since", hard)
 
     def test_close_row_on_row_without_x_does_nothing(self):
-        out = self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "4", "s1")
+        out = self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "4", "s1", "--expect-window", "@36")
         self.assertNotIn("display-menu", out)
         self.assertNotIn("release-confirmed", out)
 
@@ -149,6 +150,43 @@ class Menu(unittest.TestCase):
         self.assertFalse((self.tmp / "right-tab").exists())
         self.assertTrue((self.st / "scrollbar-grab").exists())
         self.assertEqual(self.run_ctl("--role", "bottom", "--close-row", "ai-list", "5", "3", "s1"), "")   # 底部分頁列
+
+    def test_close_row_skips_scrollbar_state_on_content_rows(self):
+        # 審查 r2 M1:內容列也不碰捲軸狀態檔;殘留的 dragged 不能吃掉這次關席
+        (self.st / "scrollbar-grab").write_text("1")
+        (self.st / "scrollbar-dragged").write_text("1")
+        out = self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "3", "s1", "--expect-window", "@35")
+        self.assertIn("--release-confirmed @35", out)
+        self.assertTrue((self.st / "scrollbar-grab").exists())
+        self.assertTrue((self.st / "scrollbar-dragged").exists())
+
+    def test_close_row_refuses_when_row_changed_or_no_window_given(self):
+        # 審查 r2 S1:選單開著時右欄重排,同一行換成別席 ⇒ 不彈確認
+        for extra in ([], ["--expect-window", "@99"], ["--expect-window"]):
+            out = self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "3", "s1", *extra)
+            self.assertNotIn("display-menu", out, extra)
+        self.assertEqual(self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "99999", "s1",
+                                      "--expect-window", "@35"), "")
+
+    def test_three_args_without_session_keep_dry_run(self):
+        # 審查 r2 A1:給了三格、沒給 session 時,--dry-run 不能被當成 session 吃掉
+        log = self.fake_tmux()
+        self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "3", "--dry-run", dry_last=False)
+        self.assertFalse(log.exists() and log.read_text().strip())
+
+    def test_first_content_row_can_close(self):
+        # 審查 r2 B5:第一個內容列(y=2)也關得掉
+        (self.st / "ai-rowmap.json").write_text(json.dumps([dict(IDLE, line=2)], ensure_ascii=False), encoding="utf-8")
+        out = self.run_ctl("--role", "right", "--close-row", "ai-list", "5", "2", "s1", "--expect-window", "@35")
+        self.assertIn("--release-confirmed @35", out)
+        self.assertIn("--close-row ai-list 5 2 s1 --expect-window @35",
+                      self.run_ctl("--context", "pane", "ai-list", "5", "2", "%1", "s1"))
+
+    def test_real_menu_carries_session_and_window(self):
+        # 審查 r2 C9 / C11:真跑那份選單也有這一項,回呼帶 session(多艙不重導錯艙)與窗 id
+        log = self.fake_tmux()
+        self.run_ctl("--context", "pane", "ai-list", "5", "3", "%1", "s1", dry_last=False)
+        self.assertIn("--close-row ai-list 5 3 s1 --expect-window @35", log.read_text())
 
     def test_short_args_keep_dry_run(self):
         # 審查 r1 M2:參數短少時 --dry-run 不能被當成角色 / 座標吃掉(吃掉就會去碰真 tmux)
