@@ -14,10 +14,13 @@ D7 付費外掛:沒綁 ⇒ plugin_not_bound、包一個請求都沒送;有綁 �
 D8 領授權:簽對 ⇒ 0600 落檔;簽錯 / 過期 / 不是物件 ⇒ plugin_license_invalid 不落檔;帶 activation_url ⇒ activation needed;沒買 ⇒ plugin_license_none
 D9 名稱不合格式 ⇒ plugin_name_invalid、不連網;CLI install 給名稱走目錄、給資料夾照舊
 D10 契約:伺服器碼 = plugins.codes;每個回條 detail 都在契約、四語都有 hint
-刀(複本):K1 不比 sha256 ⇒ D4 紅;K2 不比包名稱版本 ⇒ D5 紅;K3 付費包不帶憑證 ⇒ D7 紅;K4 不擋降版 ⇒ D6 紅
+D4b 解開大小 / 成員數超過上限 ⇒ too-big-unpacked(驗簽前就擋);包內成員名稱清過才進 problems
+刀(複本):K1 不比 sha256 ⇒ D4 紅;K2 不比包名稱版本 ⇒ D5 紅;K3 付費包不帶憑證 ⇒ D7 紅;K4 不擋降版 ⇒ D6 紅;
+    K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅
 """
 import base64
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -72,13 +75,15 @@ class _Resp:
 class FakeServer:
     """路徑 ⇒ (http, bytes 或 dict)。沒列的路徑 ⇒ 404 {"error": "plugin_unknown"}。"""
 
-    def __init__(self, routes=None, boom=False):
-        self.routes, self.boom, self.seen = dict(routes or {}), boom, []
+    def __init__(self, routes=None, boom=False, raise_exc=None):
+        self.routes, self.boom, self.raise_exc, self.seen = dict(routes or {}), boom, raise_exc, []
 
     def open(self, req, timeout=None):
         self.seen.append(req)
         if self.boom:
             raise urllib.error.URLError("down")
+        if self.raise_exc is not None:
+            raise self.raise_exc
         path = req.full_url.split(C["prefix"], 1)[1]
         status, body = self.routes.get(path, (404, {"error": "plugin_unknown"}))
         raw = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -108,12 +113,15 @@ class Box(unittest.TestCase):
         k.start()
         self.addCleanup(k.stop)
 
-    def tgz(self, name="probe", version="0.0.1", sign=True, tamper=False, kind="plugin"):
+    def tgz(self, name="probe", version="0.0.1", sign=True, tamper=False, kind="plugin", addon=None, extra=None):
         d = self.tmp / ("src-%s-%s" % (name, version))
         if d.exists():
             shutil.rmtree(d)
         d.mkdir()
-        (d / "plugin.json").write_text(json.dumps({"name": name, "version": version, "module": "probe.py"}), encoding="utf-8")
+        pj = {"name": name, "version": version, "module": "probe.py"}
+        if addon:
+            pj["requires_addon"] = addon
+        (d / "plugin.json").write_text(json.dumps(pj), encoding="utf-8")
         (d / "probe.py").write_text("print('hi')\n", encoding="utf-8")
         m = {"name": name, "kind": kind, "version": version, "requires_aib": "0.1.0", "files": aib_ext._hashes(d)}
         if sign:
@@ -124,6 +132,8 @@ class Box(unittest.TestCase):
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tf:
             tf.add(d, arcname=name)
+            for ti, body in extra or ():
+                tf.addfile(ti, io.BytesIO(body) if body is not None else None)
         return buf.getvalue()
 
     def entry(self, data, name="probe", version="0.0.1", addon=None, **over):
@@ -165,6 +175,13 @@ class Catalog(Box):
         self.assertEqual((rc, res["detail"]), (3, "plugin_unsupported"))
         res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer(boom=True)))
         self.assertEqual((rc, res["detail"]), (4, "plugin_unreachable"))
+        big = {"/plugins/catalog": (200, b'{"ok": true, "v": 1, "plugins": [], "pad": "' + b"x" * (1024 * 1024) + b'"}')}
+        res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer(big)))
+        self.assertEqual((rc, res["detail"]), (3, "plugin_catalog_invalid"), "目錄回應有上限")
+        res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer(raise_exc=http.client.IncompleteRead(b"ab", 10))))
+        self.assertEqual((rc, res["detail"]), (4, "plugin_unreachable"), "讀到一半斷")
+        res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer({"/plugins/catalog": (200, b"[" * 60000)})))
+        self.assertIn(rc, (3, 4), res)
 
 
 class Install(Box):
@@ -180,13 +197,15 @@ class Install(Box):
         self.assertIsNone(pkg[0].get_header("Authorization"), "免費包不帶憑證")
 
     def test_d3_pick_version(self):
-        d1, d2 = self.tgz(version="0.0.1"), self.tgz(version="0.0.10")
-        srv = self.server([self.entry(d1), self.entry(d2, version="0.0.10")], {("probe", "0.0.1"): d1, ("probe", "0.0.10"): d2})
+        d1, d2 = self.tgz(version="0.0.9"), self.tgz(version="0.0.10")
+        srv = self.server([self.entry(d1, version="0.0.9"), self.entry(d2, version="0.0.10")],
+                          {("probe", "0.0.9"): d1, ("probe", "0.0.10"): d2})
         res, rc = self.install("probe", srv)
-        self.assertEqual((rc, res["version"]), (0, "0.0.10"), "照數字比,不照字串")
-        shutil.rmtree(self.installed())
-        res, rc = self.install("probe@0.0.1", srv)
-        self.assertEqual((rc, res["version"]), (0, "0.0.1"))
+        self.assertEqual((rc, res["version"]), (0, "0.0.10"), "照數字比,不照字串(字串比 0.0.9 > 0.0.10)")
+        res, rc = self.install("probe", self.server([self.entry(d1, version="0.0.9")], {("probe", "0.0.9"): d1}))
+        self.assertEqual((rc, res["detail"]), (2, "plugin_downgrade"), "已裝 0.0.10、目錄 0.0.9 ⇒ 降版")
+        res, rc = self.install("probe@0.0.9", srv)
+        self.assertEqual((rc, res["version"]), (0, "0.0.9"))
         res, rc = self.install("probe@9.9.9", srv)
         self.assertEqual((rc, res["detail"]), (2, "plugin_not_in_catalog"))
 
@@ -198,6 +217,24 @@ class Install(Box):
             res, rc = self.install("probe", self.server([ent], {("probe", "0.0.1"): body}))
             self.assertEqual((rc, res["detail"]), (3, "plugin_download_mismatch"), ent)
             self.assertFalse(self.installed().exists())
+
+    def test_d4b_unpack_limits(self):
+        zero = tarfile.TarInfo("probe/zero.bin")
+        zero.size = 5000
+        bomb = self.tgz(extra=[(zero, b"\0" * 5000)])
+        many = self.tgz(extra=[(tarfile.TarInfo("probe/f%d.txt" % i), b"") for i in range(30)])
+        for label, data, patch in (("bytes", bomb, {"MAX_UNPACK_BYTES": 4000}), ("members", many, {"MAX_UNPACK_MEMBERS": 20})):
+            with mock.patch.multiple(AP, **patch):
+                res, rc = self.install("probe", self.server([self.entry(data)], {("probe", "0.0.1"): data}))
+            self.assertEqual((rc, res["detail"], res["problems"]), (3, "plugin_rejected", ["too-big-unpacked"]), label)
+            self.assertFalse(self.installed().exists(), label)
+        link = tarfile.TarInfo("probe/\x1b[2J\u202eevil")
+        link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
+        data = self.tgz(extra=[(link, None)])
+        res, rc = self.install("probe", self.server([self.entry(data)], {("probe", "0.0.1"): data}))
+        self.assertEqual((rc, res["detail"]), (3, "plugin_rejected"))
+        self.assertNotIn("\x1b", json.dumps(res["problems"], ensure_ascii=False))
+        self.assertNotIn("\u202e", "".join(res["problems"]))
 
     def test_d5_rejected(self):
         for label, data in (("unsigned", self.tgz(sign=False)), ("tampered", self.tgz(tamper=True)),
@@ -223,11 +260,13 @@ class Install(Box):
         srv2 = self.server([self.entry(d2, version="0.0.2")], {("probe", "0.0.2"): d2})
         res, rc = self.install("probe", srv2)
         self.assertEqual((rc, res["detail"]), (0, "plugin_already_current"))
+        for f in C["plugins"]["cli_receipt"]["install_ok"]["fields"]:
+            self.assertIn(f, res, "已是最新也照 install_ok 欄位")
         res, rc = self.install("probe@0.0.1", srv)
         self.assertEqual((rc, res["detail"], PC.installed_version("probe")), (0, "plugin_installed", "0.0.1"))
 
     def test_d7_paid(self):
-        data = self.tgz()
+        data = self.tgz(addon="probe")
         ent = self.entry(data, addon="probe", price="NT$90")
         srv = self.server([ent], {("probe", "0.0.1"): data})
         res, rc = self.install("probe", srv)
@@ -239,6 +278,10 @@ class Install(Box):
         self.assertIn("aib plugins license probe", res["hint"])
         req = paid.seen[0]
         self.assertEqual((req.get_header("Authorization"), req.get_header("X-aib-machine")), ("Bearer ast_x", MID))
+        shutil.rmtree(self.installed())
+        liar = self.tgz(addon="probe")
+        res, rc = self.install("probe", self.server([self.entry(liar)], {("probe", "0.0.1"): liar}))
+        self.assertEqual((rc, res["addon"], res["licensed"]), (0, "probe", False), "addon 照簽過的包,不照目錄")
         shutil.rmtree(self.installed())
         none = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (404, {"error": "plugin_license_none"})})
         res, rc = self.install("probe", srv, paid_api=api(none, token="ast_x"), machine_id=MID)
@@ -268,7 +311,7 @@ class License(Box):
         bad = self.lic(note="evil")
         bad["signature"] = "ed25519:" + base64.b64encode(b"\0" * 64).decode()
         for body in ({"ok": True, "license": bad}, {"ok": True, "license": self.lic(expires_at="2020-01-01T00:00:00+00:00")},
-                     {"ok": True, "license": "x"}, {"ok": True}):
+                     {"ok": True, "license": "x"}, {"ok": True}, {"ok": True, "license": self.lic(addons=["other"], tier="free")}):
             res, rc, _ = self.get(200, body)
             self.assertEqual((rc, res["detail"]), (3, "plugin_license_invalid"), body)
             self.assertEqual(dest.read_text(), good, "驗不過不落檔")
@@ -303,6 +346,15 @@ class Cli(Box):
             rc = AP.main(["install", "probe", "--json"])
         self.assertEqual(rc, 0, buf.getvalue())
         self.assertEqual(json.loads(buf.getvalue().strip().splitlines()[-1])["detail"], "plugin_installed")
+        for src in ("nonexist.tgz", "./nonexist", str(self.tmp / "nope")):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = AP.main(["install", src, "--json"])
+            self.assertEqual((rc, json.loads(buf.getvalue().strip().splitlines()[-1]).get("error")), (2, "not-found"), src)
+        buf = io.StringIO()
+        with redirect_stdout(buf), mock.patch("urllib.request.urlopen", side_effect=OSError("x")):
+            rc = AP.main(["install", "https://example.invalid/p.tgz", "--json"])
+        self.assertEqual(json.loads(buf.getvalue().strip().splitlines()[-1]).get("error"), "download-failed:OSError", "網址照舊")
 
 
 class Contract(Box):
@@ -324,9 +376,9 @@ class Contract(Box):
 
 
 class Knife(unittest.TestCase):
-    def _knife(self, needle, repl, case):
+    def _knife(self, needle, repl, case, rel="tools/verify/plugin_catalog.py"):
         name = Path(__file__).name
-        with knife_copy(REPO, "tools/verify/plugin_catalog.py", needle, repl, tests=(name,)) as root:
+        with knife_copy(REPO, rel, needle, repl, tests=(name,)) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), case], cwd=str(root), max_procs=40, timeout=300)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
@@ -343,6 +395,14 @@ class Knife(unittest.TestCase):
 
     def test_k4_no_downgrade_guard(self):
         self._knife('if vkey(entry["version"]) < vkey(current):', "if False:", "Install.test_d6_downgrade")
+
+    def test_k5_no_unpack_limit(self):
+        self._knife("if len(members) > MAX_UNPACK_MEMBERS or total > MAX_UNPACK_BYTES:", "if False:",
+                    "Install.test_d4b_unpack_limits", rel="tools/verify/aib_plugins.py")
+
+    def test_k6_license_without_addon(self):
+        self._knife(' or addon not in [a for a in (obj.get("addons") or []) if isinstance(a, str)]', "",
+                    "License.test_d8_license")
 
 
 if __name__ == "__main__":

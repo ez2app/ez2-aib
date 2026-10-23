@@ -105,6 +105,32 @@ def installed_version(name):
     return v if isinstance(v, str) and VER_RE.fullmatch(v) else None
 
 
+def requires_addon(folder):
+    """包自己(已驗簽)說要哪個加購:aib-ext.json 的 requires_addon,沒有就看 plugin.json;同舊的 aib plugins install。"""
+    import json
+    import aib_ext
+    for f in (aib_ext.MANIFEST, "plugin.json"):
+        try:
+            m = json.loads((Path(folder) / f).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        a = m.get("requires_addon") if isinstance(m, dict) else None
+        if a:
+            return a if isinstance(a, str) else str(a)
+    return None
+
+
+def already_current(name, version):
+    """已裝的就是目錄最新版 ⇒ 不重裝;欄位照契約 install_ok(path / addon / licensed 讀已裝那份)。"""
+    import aib_ext
+    import aib_plugins
+    path = aib_ext.target("plugin", name)
+    addon = requires_addon(path)
+    ok = aib_plugins.licensed({"requires_addon": addon})[0] if addon else True
+    return {"ok": True, "detail": "plugin_already_current", "name": name, "version": version, "path": str(path),
+            "addon": addon, "licensed": bool(ok), "hint": T("hint.plugin_already_current") or "plugin_already_current"}
+
+
 def binding(env):
     """(PageApi 帶憑證, machine_id) 或 (None, None);同 aib create 的判法。"""
     import create_cli
@@ -166,8 +192,7 @@ def fetch_signed(env, name, version=None, work=None, api=None, paid_api=None, ma
         if vkey(entry["version"]) < vkey(current):
             return None, entry, fail("plugin_downgrade", 2, version=entry["version"], current=current)
         if entry["version"] == current:
-            return None, entry, ({"ok": True, "detail": "plugin_already_current", "name": name, "version": current,
-                                  "hint": T("hint.plugin_already_current") or "plugin_already_current"}, 0)
+            return None, entry, (already_current(name, current), 0)
     if entry["addon"] is not None and paid_api is None:
         paid_api, machine_id = binding(env)
         if paid_api is None:
@@ -187,7 +212,7 @@ def fetch_signed(env, name, version=None, work=None, api=None, paid_api=None, ma
     into.mkdir()
     ok, why = aib_plugins._extract(data, into)
     if not ok:
-        return None, entry, fail("plugin_rejected", 3, problems=[why])
+        return None, entry, fail("plugin_rejected", 3, problems=[_clean(why, 200)])   # why 帶包內成員名稱 = 伺服器的字
     if (into / aib_ext.MANIFEST).is_file():
         folder = into
     else:
@@ -223,8 +248,8 @@ def license_get(env, addon, api=None, machine_id=None):
     except TransportError:
         return fail("plugin_unreachable", 4)
     obj = payload.get("license")
-    if not isinstance(obj, dict):
-        return fail("plugin_license_invalid", 3)
+    if not isinstance(obj, dict) or addon not in [a for a in (obj.get("addons") or []) if isinstance(a, str)]:
+        return fail("plugin_license_invalid", 3)   # 簽對但沒有要的加購 ⇒ 不落檔(不拿小授權蓋掉大的)
     res, rc = ECLI.install_obj(obj)
     if rc:
         return fail("plugin_license_invalid", 3)

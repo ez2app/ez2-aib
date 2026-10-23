@@ -157,6 +157,8 @@ def get(repo, what, env=None):
 
 
 MAX_PKG_BYTES = 64 * 1024 * 1024
+MAX_UNPACK_BYTES = 4 * MAX_PKG_BYTES   # 解開後總大小上限(外掛是程式 + 圖,正常遠小於這個)
+MAX_UNPACK_MEMBERS = 20000
 UNSIGNED_OK = False   # 付費外掛一律要信任鑰匙簽過;沒有 --allow-unsigned 這種門(刀測翻這個)
 USAGE = ("usage: aib plugins licensed <addon> [--json]\n       aib plugins install <folder | .tgz | .zip | https://… | name[@version]> [--json]\n"
          "       aib plugins catalog [--json]\n       aib plugins license <addon> [--json]")
@@ -172,27 +174,48 @@ def _safe_members(names):
 
 
 def _extract(blob, into):
-    """.tgz / .tar / .zip ⇒ 解到 into(自己的空資料夾);只解一般檔與資料夾(連結、裝置一律不要)。回 (ok, why)。"""
+    """.tgz / .tar / .zip ⇒ 解到 into(自己的空資料夾);只解一般檔與資料夾(連結、裝置一律不要)。回 (ok, why)。
+    解之前先數:成員數 ≤ MAX_UNPACK_MEMBERS、宣告的解開大小總和 ≤ MAX_UNPACK_BYTES(壓縮炸彈在驗簽前就擋;10-24 審查員)。
+    tar 一個一個讀(tf.next),超過就停,不先整條解一遍;size 負數 / offset 沒往後 ⇒ 當壞檔(舊 tarfile CVE-2025-8194)。"""
     import io
     import tarfile
     import zipfile
     data = blob.read_bytes() if isinstance(blob, Path) else blob
     if data[:4] == b"PK\x03\x04":
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            bad = _safe_members(z.namelist())
-            if bad:
-                return False, "unsafe-path:%s" % bad
-            for info in z.infolist():
-                if (info.external_attr >> 16) & 0o170000 == 0o120000:
-                    return False, "symlink:%s" % info.filename
-            z.extractall(into)
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                infos = z.infolist()
+                if len(infos) > MAX_UNPACK_MEMBERS or sum(i.file_size for i in infos) > MAX_UNPACK_BYTES:
+                    return False, "too-big-unpacked"
+                bad = _safe_members(z.namelist())
+                if bad:
+                    return False, "unsafe-path:%s" % bad
+                for info in infos:
+                    if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                        return False, "symlink:%s" % info.filename
+                z.extractall(into)
+        except (zipfile.BadZipFile, OSError, EOFError, ValueError):
+            return False, "not-an-archive"
         return True, ""
     try:
         tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:*")
-    except tarfile.TarError:
+    except (tarfile.TarError, OSError, EOFError):
         return False, "not-an-archive"
     with tf:
-        members = tf.getmembers()
+        members, total, last = [], 0, -1
+        try:
+            while True:
+                m = tf.next()
+                if m is None:
+                    break
+                if m.size < 0 or m.offset <= last:
+                    return False, "not-an-archive"
+                last, total = m.offset, total + m.size
+                members.append(m)
+                if len(members) > MAX_UNPACK_MEMBERS or total > MAX_UNPACK_BYTES:
+                    return False, "too-big-unpacked"
+        except (tarfile.TarError, OSError, EOFError, ValueError):
+            return False, "not-an-archive"
         bad = _safe_members([m.name for m in members])
         if bad:
             return False, "unsafe-path:%s" % bad
@@ -200,9 +223,9 @@ def _extract(blob, into):
             if not (m.isfile() or m.isdir()):
                 return False, "not-a-file:%s" % m.name
         if hasattr(tarfile, "data_filter"):
-            tf.extractall(into, filter="data")
+            tf.extractall(into, members=members, filter="data")
         else:
-            tf.extractall(into)
+            tf.extractall(into, members=members)
     return True, ""
 
 
@@ -314,10 +337,11 @@ def install_named(spec, env=None, **kw):
         rc = aib_ext.install(folder, allow_unsigned=UNSIGNED_OK, out=io_null(), enable_engines=False)
         if rc:
             return PC.fail("plugin_rejected", 3, problems=["install-rc-%d" % rc])
-        ok, lwhy = licensed({"requires_addon": entry["addon"]}) if entry["addon"] else (True, "free")
+        addon = PC.requires_addon(folder)   # 照驗過簽的包說的,不照目錄(目錄沒簽)
+        ok, lwhy = licensed({"requires_addon": addon}) if addon else (True, "free")
         return {"ok": True, "detail": "plugin_installed", "name": name, "version": entry["version"],
-                "path": str(aib_ext.target("plugin", name)), "addon": entry["addon"], "licensed": bool(ok),
-                "hint": PC.T("hint.plugin_installed" if ok else "hint.plugin_installed_unlicensed", addon=entry["addon"] or "")
+                "path": str(aib_ext.target("plugin", name)), "addon": addon, "licensed": bool(ok),
+                "hint": PC.T("hint.plugin_installed" if ok else "hint.plugin_installed_unlicensed", addon=addon or "")
                 or "plugin_installed"}, 0
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -361,7 +385,9 @@ def main(argv=None):
     as_json = "--json" in a
     a = [x for x in a if x != "--json"]
     if len(a) == 2 and a[0] == "install":
-        if not Path(a[1]).expanduser().exists() and "/" not in a[1] and not a[1].startswith(("https:", "http:")):
+        sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+        import plugin_catalog as PC
+        if PC.parse_spec(a[1]) is not None and not Path(a[1]).expanduser().exists():   # 長得像名稱、本機又沒有 ⇒ 走目錄;其他照舊
             return _emit(*install_named(a[1]), as_json=as_json)
         return install(a[1], as_json=as_json)
     if a == ["catalog"]:

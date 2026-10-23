@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -105,6 +106,8 @@ class PageApi:
         text = (raw or b"").decode("utf-8", "replace")
         try:
             payload = json.loads(text) if text.strip() else {}
+        except RecursionError:                                # 舊直譯器遇到極深巢狀(例 6 萬層 [)
+            raise TransportError("回應巢狀太深(HTTP %s)" % status)
         except ValueError:
             # 413/415/405 規格說是純文字;這時 code 用 HTTP 狀態表示,不編一個假碼。
             if 200 <= status < 300:
@@ -273,8 +276,12 @@ class PageApi:
 
     # ---- 外掛下載(契約 page-api.json plugins_*)------------------------------
 
-    def plugins_catalog(self):
-        return self._request("GET", "/plugins/catalog", auth=False)
+    def plugins_catalog(self, max_bytes=1024 * 1024):
+        """公開目錄;回應(含錯誤體)最多讀 max_bytes,太大 ⇒ 回 {}(呼叫端判 plugin_catalog_invalid)。"""
+        status, raw = self._get_raw("/plugins/catalog", {"accept": "application/json", "user-agent": USER_AGENT}, max_bytes)
+        if 200 <= status < 300 and len(raw) > max_bytes:
+            return {}
+        return self._parse(status, raw)
 
     def _get_raw(self, path, headers, max_bytes):
         request = urllib.request.Request(self._url(path), headers=headers, method="GET")
@@ -282,9 +289,12 @@ class PageApi:
             with self._opener.open(request, timeout=max(self.timeout, 60)) as response:
                 return response.status, response.read(max_bytes + 1)
         except urllib.error.HTTPError as exc:
-            return exc.code, exc.read(64 * 1024)
-        except (urllib.error.URLError, OSError) as exc:
-            raise TransportError("連不上 %s:%s" % (self.base_url, exc))
+            try:
+                return exc.code, exc.read(64 * 1024)
+            except (http.client.HTTPException, OSError):
+                return exc.code, b""
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:   # 回應讀到一半斷(IncompleteRead)也算連不上
+            raise TransportError("連不上 %s:%s" % (self.base_url, type(exc).__name__))
 
     def plugins_package(self, name, version, max_bytes, machine_id=None):
         """GET 簽章包本體(tgz,不走 _request:那條只收 JSON)。免費包不帶憑證;付費包(呼叫端給 machine_id)帶 bearer + X-AIB-Machine。
