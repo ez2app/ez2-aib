@@ -637,6 +637,71 @@ class Hard(Box):
         self.assertTrue(calls)
         self.assertTrue(all(0 < c <= 1 << 20 for c in calls), calls[:5])
 
+    def test_h8_hardlink_rejected(self):
+        """tar 硬連結指到目標夾外的檔、再放同名一般檔:自己的檢查先擋(3.9 沒 data filter 時是唯一防線;第 7 輪)。"""
+        outside = self.tmp / "outside.txt"
+        outside.write_text("ORIGINAL")
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            ln = tarfile.TarInfo("probe/h")
+            ln.type = tarfile.LNKTYPE
+            ln.linkname = str(outside)
+            tf.addfile(ln)
+            f = tarfile.TarInfo("probe/h")
+            f.size = 3
+            tf.addfile(f, io.BytesIO(b"pwn"))
+        into = self.tmp / "hl"
+        into.mkdir()
+        self.assertEqual(AP._extract(buf.getvalue(), into), (False, "not-a-file:probe/h"))
+        self.assertEqual(outside.read_text(), "ORIGINAL")
+
+    def test_h9_truncated_gzip_returns(self):
+        """截斷的 gzip(sha256 對得上目錄就會走到這裡)要很快回,不能空轉(第 7 輪)。"""
+        import gzip
+        import threading
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            ti = tarfile.TarInfo("probe/a")
+            ti.size = 5
+            tf.addfile(ti, io.BytesIO(b"hello"))
+        blob = gzip.compress(buf.getvalue())[:-8]
+        into = self.tmp / "tg"
+        into.mkdir()
+        got = []
+        t = threading.Thread(target=lambda: got.append(AP._extract(blob, into)), daemon=True)
+        t.start()
+        t.join(5)
+        self.assertFalse(t.is_alive(), "截斷 gzip 空轉")
+        self.assertEqual(len(got), 1)
+
+    def test_h10_catalog_license_body_capped(self):
+        """目錄 / 授權的 200 本體也照上限讀(1 MiB / 256 KiB),不整包讀進記憶體(第 7 輪)。"""
+        big = b"{" + b" " * (3 << 20) + b"}"
+        got = {}
+        orig = A.PageApi._get_raw
+
+        def spy(api_, path, headers, max_bytes):
+            st, raw = orig(api_, path, headers, max_bytes)
+            got[path] = len(raw)
+            return st, raw
+        srv = FakeServer({"/plugins/catalog": (200, big), "/plugins/licenses/probe": (200, big)})
+        with mock.patch.object(A.PageApi, "_get_raw", spy):
+            res, rc = AP.catalog_cmd(dict(os.environ), api(srv))
+            self.assertIn(rc, (2, 3, 4))
+            res, rc = PC.license_get(dict(os.environ), "probe", api=api(srv, token="t"), machine_id=MID)
+            self.assertIn(rc, (2, 3, 4))
+        self.assertLessEqual(got["/plugins/catalog"], (1 << 20) + 1)
+        self.assertLessEqual(got["/plugins/licenses/probe"], (256 << 10) + 1)
+
+    def test_h11_server_code_5xx_is_4(self):
+        """伺服器碼 + 5xx ⇒ rc 4(可重試),rc 一定在契約內(第 7 輪)。"""
+        for code in ("plugin_unknown", "plugin_license_none", "plugin_license_device_limit"):
+            srv = FakeServer({"/plugins/catalog": (503, {"error": code}), "/plugins/licenses/probe": (503, {"error": code})})
+            res, rc = AP.catalog_cmd(dict(os.environ), api(srv))
+            self.assertEqual(rc, 4, (code, res))
+            res, rc = PC.license_get(dict(os.environ), "probe", api=api(srv, token="t"), machine_id=MID)
+            self.assertEqual(rc, 4, (code, res))
+
     def test_h4_package_odd_errors(self):
         data = self.tgz()
         for st, body in ((403, {"error": "x", "details": 5}), (500, {"error": "x", "details": True}),
@@ -715,6 +780,28 @@ class Knife(unittest.TestCase):
         self._knife('    except Exception:  # noqa: BLE001\n        return fail("plugin_unreachable", 4)\n    obj = payload.get("license")',
                     '    except ZeroDivisionError:\n        return fail("plugin_unreachable", 4)\n    obj = payload.get("license")',
                     "License.test_d8b_license_odd_errors")
+
+    def test_k18_hardlink_allowed(self):
+        self._knife("if not (m.isfile() or m.isdir()) or m.issparse():",
+                    "if not (m.isfile() or m.isdir() or m.islnk()) or m.issparse():",
+                    "Hard.test_h8_hardlink_rejected", rel="tools/verify/aib_plugins.py")
+
+    def test_k19_truncated_gzip_spins(self):
+        self._knife("        if not chunk and not buf:\n            break\n", "", "Hard.test_h9_truncated_gzip_returns",
+                    rel="tools/verify/aib_plugins.py")
+
+    def test_k20_catalog_body_uncapped(self):
+        self._knife('{"accept": "application/json", "user-agent": USER_AGENT}, max_bytes)',
+                    '{"accept": "application/json", "user-agent": USER_AGENT}, 1 << 40)',
+                    "Hard.test_h10_catalog_license_body_capped", rel="src/cockpit/page/api.py")
+
+    def test_k21_license_body_uncapped(self):
+        self._knife('headers, 256 * 1024)', 'headers, 1 << 40)', "Hard.test_h10_catalog_license_body_capped",
+                    rel="src/cockpit/page/api.py")
+
+    def test_k22_server_code_5xx_rc(self):
+        self._knife("return code, 4 if http >= 500 else 3, {}", "return code, 5 if http >= 500 else 3, {}",
+                    "Hard.test_h11_server_code_5xx_is_4")
 
     def test_k10_no_total_deadline(self):
         self._knife("        t.join(total_s + 2)", "        t.join()", "Slow.test_d1c_total_deadline",
