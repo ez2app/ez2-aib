@@ -73,7 +73,7 @@ class Tasks(unittest.TestCase):
             self.assertEqual(set(t), {"id", "tier", "where", "state", "since", "locked", "reward", "detect", "detectable",
                                       "requires"})
             self.assertIsNone(t["reward"])
-            self.assertIn(t["requires"], (None, "room", "server", "skins"))
+            self.assertIn(t["requires"], (None, "room", "server", "skins", "command"))
         self.assertEqual(st["all"], {"done": 0, "total": 30})
         self.assertEqual(st["room"], {"done": 0, "total": 17})
 
@@ -138,6 +138,7 @@ class Tasks(unittest.TestCase):
         self.assertTrue(t["R8"]["detectable"])
         self.assertFalse(t["SSR1"]["detectable"])
         self.assertEqual(t["SSR1"]["requires"], "server")
+        self.assertEqual((t["UR4"]["requires"], t["UR4"]["detectable"]), ("command", False))   # aib support 還沒做
         codes = {code for _i, _t, code, _r in PT.TASKS}
         self.assertTrue(PT.DETECTABLE <= codes)
 

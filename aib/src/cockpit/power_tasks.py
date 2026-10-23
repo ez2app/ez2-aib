@@ -25,7 +25,7 @@ import seats_dir_lib  # noqa: E402
 
 TIERS = ("R", "SR", "SSR", "UR")
 
-# (編號, 等級, 偵測代碼, 需要):需要 = None | "room"(艦長室外掛) | "server"(伺服器回條) | "skins"(皮膚開關)
+# (編號, 等級, 偵測代碼, 需要):需要 = None | "room"(艦長室外掛) | "server"(伺服器回條) | "skins"(皮膚開關)| "command"(指令還沒做:UR4 aib support 等 Andy 定隱私範圍,@abb89 10-24)
 TASKS = (
     ("R1", "R", "power_opened", None), ("R2", "R", "born", None), ("R3", "R", "seat_registered", None),
     ("R4", "R", "persona_bound", None), ("R5", "R", "brain_bound", None), ("R6", "R", "launch_recorded", None),
@@ -45,7 +45,7 @@ TASKS = (
     ("SSR10", "SSR", "adventure_explored", "room"), ("SSR11", "SSR", "launch_streak_7", None),
     ("SSR12", "SSR", "pet_stage_3", "server"),
     ("UR1", "UR", "redeem_full_power", "server"), ("UR2", "UR", "creation_submitted", "server"),
-    ("UR3", "UR", "boss_defeated", "server"), ("UR4", "UR", "support_bundle", None), ("UR5", "UR", "launch_streak_30", None),
+    ("UR3", "UR", "boss_defeated", "server"), ("UR4", "UR", "support_bundle", "command"), ("UR5", "UR", "launch_streak_30", None),
     ("UR6", "UR", "pet_stage_final", "server"), ("UR7", "UR", "ssr_all_done", None),
 )
 TASK_IDS = tuple(t[0] for t in TASKS)

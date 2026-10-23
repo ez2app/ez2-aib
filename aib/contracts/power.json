@@ -103,7 +103,7 @@
    "room_tiers"
   ],
   "birth_done": "出生設定做過沒(做過就不再自動出現)",
-  "tasks": "[{id, tier, where, state, since, locked, reward, detect, detectable, requires}];id = R1–R12 / SR1–SR16 / SSR1–SSR12 / UR1–UR7(課程正本 pending/PLAN-power-curriculum-abb89-1024.md);tier = R | SR | SSR | UR;where = power(動力室任務板：免費純 CLI 30 條)| room(艦長室任務板：SR8–11、SR14–16、SSR1、SSR6–10、SSR12、UR1–3,Andy 02:5x「付費的內容到艦長室之後再出現」SPEC §14;動力室頁不列、不顯示鎖頭或購買入口);state = todo | done | claimed;detect = 偵測代碼;detectable = 核心現在偵測得到(false ⇒ 頁面照實顯示「還沒接上」,不准按鈕自己勾);requires = null | room(要艦長室外掛)| server(伺服器回條)| skins;reward 這一期一律 null",
+  "tasks": "[{id, tier, where, state, since, locked, reward, detect, detectable, requires}];id = R1–R12 / SR1–SR16 / SSR1–SSR12 / UR1–UR7(課程正本 pending/PLAN-power-curriculum-abb89-1024.md);tier = R | SR | SSR | UR;where = power(動力室任務板：免費純 CLI 30 條)| room(艦長室任務板：SR8–11、SR14–16、SSR1、SSR6–10、SSR12、UR1–3,Andy 02:5x「付費的內容到艦長室之後再出現」SPEC §14;動力室頁不列、不顯示鎖頭或購買入口);state = todo | done | claimed;detect = 偵測代碼;detectable = 核心現在偵測得到(false ⇒ 頁面照實顯示「還沒接上」,不准按鈕自己勾);requires = null | room(要艦長室外掛)| server(伺服器回條)| skins | command(指令還沒做,頁面標「等指令」;目前只有 UR4 aib support);reward 這一期一律 null",
   "owner": "@d07f9 的 onboarding_state()",
   "note": "領資源(claimed)由伺服器簽發,這一期只做 todo / done 偵測;伺服器沒上線 reward 一律 null",
   "birth_note": "birth_done = state/power-birth.json 有 at;只決定要不要先跑引導,不是防線",
