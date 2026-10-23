@@ -24,6 +24,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -283,11 +284,26 @@ class PageApi:
             return {}
         return self._parse(status, raw)
 
+    @staticmethod
+    def _read_capped(response, limit, total_s):
+        """最多讀 limit 位元組、總共最多 total_s 秒(socket 逾時只管每次讀;伺服器一次滴一個位元組會拖不完)。"""
+        deadline = time.monotonic() + total_s
+        read = getattr(response, "read1", None) or response.read
+        buf = bytearray()
+        while len(buf) < limit:
+            if time.monotonic() > deadline:
+                raise TransportError("回應讀超過 %d 秒" % total_s)
+            chunk = read(min(65536, limit - len(buf)))
+            if not chunk:
+                break
+            buf += chunk
+        return bytes(buf)
+
     def _get_raw(self, path, headers, max_bytes):
         request = urllib.request.Request(self._url(path), headers=headers, method="GET")
         try:
             with self._opener.open(request, timeout=max(self.timeout, 60)) as response:
-                return response.status, response.read(max_bytes + 1)
+                return response.status, self._read_capped(response, max_bytes + 1, max(self.timeout, 60) * 3)
         except urllib.error.HTTPError as exc:
             try:
                 return exc.code, exc.read(64 * 1024)

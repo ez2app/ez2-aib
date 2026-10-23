@@ -5,6 +5,7 @@
 網路全換假的、暫存狀態根、測試自己的信任鑰匙。
 
 D1 目錄:形狀對 ⇒ 列出(price / summary 清過);任何一筆不合契約 ⇒ plugin_catalog_invalid 整份不信;沒碼 404 ⇒ unsupported;連不上 ⇒ unreachable
+D1b 讀回應有總時限(伺服器滴位元組拖不完);目錄錯誤回應怪(details 數字、極端撤銷日期)⇒ 仍是契約碼
 D2 免費外掛照名稱裝:不帶憑證、路徑照目錄的 name / version 自己組;裝好 discover 找得到
 D3 挑版本:沒寫挑最大;<名稱>@<版本> 照寫的
 D4 下載的包大小或 sha256 跟目錄不符 ⇒ plugin_download_mismatch,一個檔都沒裝
@@ -17,7 +18,7 @@ D10 契約:伺服器碼 = plugins.codes;每個回條 detail 都在契約、四�
 D4b 解開大小 / 成員數 / pax 大標頭超過上限 ⇒ too-big-unpacked(驗簽前就擋);稀疏成員 / 壞 zip / 超長名 / bz2 ⇒ 拒收不當掉;包內成員名稱清過才進 problems
     伺服器的 aib-ext.json 不是物件 / 太深 / 怪數字 / 代理字元 ⇒ plugin_rejected;目錄 / 授權帶單獨代理字元 ⇒ 印得出來、授權不落檔
 刀(複本):K1 不比 sha256 ⇒ D4 紅;K2 不比包名稱版本 ⇒ D5 紅;K3 付費包不帶憑證 ⇒ D7 紅;K4 不擋降版 ⇒ D6 紅;
-    K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅;K7 gzip 不限量解開 ⇒ D4b 紅(pax 大標頭);K8 收稀疏成員 ⇒ D4b 紅
+    K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅;K7 gzip 不限量解開 ⇒ D4b 紅(pax 大標頭);K8 收稀疏成員 ⇒ D4b 紅;K9 讀回應沒總時限 ⇒ D1b 紅
 """
 import base64
 import hashlib
@@ -62,10 +63,12 @@ def resign(m):
 
 class _Resp:
     def __init__(self, status, body):
-        self.status, self._body = status, body
+        self.status, self._body, self._pos = status, body, 0
 
-    def read(self, n=-1):
-        return self._body if n is None or n < 0 else self._body[:n]
+    def read(self, n=-1):                                     # 同真的回應:接著上次讀到的地方
+        end = len(self._body) if n is None or n < 0 else self._pos + n
+        out, self._pos = self._body[self._pos:end], min(end, len(self._body))
+        return out
 
     def __enter__(self):
         return self
@@ -184,6 +187,13 @@ class Catalog(Box):
         self.assertEqual((rc, res["detail"]), (4, "plugin_unreachable"), "讀到一半斷")
         res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer({"/plugins/catalog": (200, b"[" * 60000)})))
         self.assertIn(rc, (3, 4), res)
+        odd = [(403, {"error": "x", "details": 5}), (500, {"error": "x", "details": True}),
+               (401, {"error": "page_api_token_revoked", "revoked_at": "0001-01-01T00:00:00+14:00"}),
+               (401, {"error": "page_api_token_revoked", "revoked_at": "9999-12-31T23:59:59-14:00"}), (403, {"error": ["x"]})]
+        for http_status, body in odd:                         # 伺服器怪回應讓既有程式拋別的 ⇒ 仍是契約碼
+            res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer({"/plugins/catalog": (http_status, body)})))
+            self.assertIn(rc, (3, 4), body)
+            self.assertIn(res["detail"], set(C["plugins"]["cli_receipt"]["local_codes"]) | set(PC.CALLER_DEAD), body)
         sur = {"/plugins/catalog": (200, json.dumps({"ok": True, "v": 1, "plugins": [dict(good, summary="a\\ud800b", price="\\ud800")]})
                                     .replace("\\\\ud800", "\\ud800").encode())}
         res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer(sur)))
@@ -195,6 +205,18 @@ class Catalog(Box):
                 AP._emit(res, rc, as_json=as_json)
                 w.flush()
             self.assertIn(b"?", out.getvalue(), as_json)
+
+
+class Slow(unittest.TestCase):
+    def test_d1b_read_deadline(self):
+        class Drip:
+            def read1(self, n):
+                return b"x"
+        clock = iter(range(0, 10 ** 6))
+        with mock.patch.object(A.time, "monotonic", lambda: next(clock)):
+            with self.assertRaises(A.TransportError):
+                A.PageApi._read_capped(Drip(), 10 ** 6, 100)    # 伺服器一次滴一個位元組:總時限到就停
+        self.assertEqual(A.PageApi._read_capped(_Resp(200, b"abc"), 2, 100), b"ab")
 
 
 class Install(Box):
@@ -352,7 +374,8 @@ class License(Box):
         bad["signature"] = "ed25519:" + base64.b64encode(b"\0" * 64).decode()
         for body in ({"ok": True, "license": bad}, {"ok": True, "license": self.lic(expires_at="2020-01-01T00:00:00+00:00")},
                      {"ok": True, "license": "x"}, {"ok": True}, {"ok": True, "license": self.lic(addons=["other"], tier="free")},
-                     {"ok": True, "license": dict(self.lic(), note="\ud800")}):
+                     {"ok": True, "license": dict(self.lic(), note="\ud800")}, {"ok": True, "license": self.lic(addons=5)},
+                     {"ok": True, "license": self.lic(addons=True)}):
             res, rc, _ = self.get(200, body)
             self.assertEqual((rc, res["detail"]), (3, "plugin_license_invalid"), body)
             self.assertEqual(dest.read_text(), good, "驗不過不落檔")
@@ -442,7 +465,7 @@ class Knife(unittest.TestCase):
                     "Install.test_d4b_unpack_limits", rel="tools/verify/aib_plugins.py")
 
     def test_k6_license_without_addon(self):
-        self._knife(' or addon not in [a for a in (obj.get("addons") or []) if isinstance(a, str)]', "",
+        self._knife(' or addon not in [a for a in addons if isinstance(a, str)]', "",
                     "License.test_d8_license")
 
     def test_k7_gzip_unbounded(self):
@@ -452,6 +475,10 @@ class Knife(unittest.TestCase):
     def test_k8_sparse_accepted(self):
         self._knife("if not (m.isfile() or m.isdir()) or m.issparse():", "if not (m.isfile() or m.isdir()):",
                     "Install.test_d4b_unpack_limits", rel="tools/verify/aib_plugins.py")
+
+    def test_k9_no_read_deadline(self):
+        self._knife("            if time.monotonic() > deadline:\n", "            if False:\n", "Slow.test_d1b_read_deadline",
+                    rel="src/cockpit/page/api.py")
 
 
 if __name__ == "__main__":

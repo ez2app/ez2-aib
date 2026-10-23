@@ -140,7 +140,14 @@ def binding(env):
 
 def server_err(exc):
     """ApiError ⇒ (detail, rc, extra)。契約碼原樣;沒碼 / 不認得的碼收成本機碼,原碼只放 hint。"""
-    code, http = exc.code or "", exc.http_status
+    try:
+        return _server_err(exc)
+    except Exception:  # noqa: BLE001  例:revoked_note 遇到極端日期 OverflowError
+        return "plugin_refused", 3, {}
+
+
+def _server_err(exc):
+    code, http = exc.code if isinstance(exc.code, str) else "", exc.http_status
     if code in CALLER_DEAD:
         import revoked_note
         return code, 3, {"note": revoked_note.note(exc)}
@@ -167,6 +174,8 @@ def catalog(env, api=None):
         detail, rc, extra = server_err(exc)
         return None, fail(detail, rc, **extra)
     except TransportError:
+        return None, fail("plugin_unreachable", 4)
+    except Exception:  # noqa: BLE001  伺服器的怪回應讓既有程式拋別的(例:details 是數字、revoked_at 極端日期)⇒ 當連不上
         return None, fail("plugin_unreachable", 4)
     entries = parse_catalog(payload)
     if entries is None:
@@ -206,6 +215,8 @@ def fetch_signed(env, name, version=None, work=None, api=None, paid_api=None, ma
         detail, rc, extra = server_err(exc)
         return None, entry, fail(detail, rc, **extra)
     except TransportError:
+        return None, entry, fail("plugin_unreachable", 4)
+    except Exception:  # noqa: BLE001
         return None, entry, fail("plugin_unreachable", 4)
     if len(data) != entry["size"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
         return None, entry, fail("plugin_download_mismatch", 3)
@@ -251,8 +262,11 @@ def license_get(env, addon, api=None, machine_id=None):
         return fail(detail, rc, **extra)
     except TransportError:
         return fail("plugin_unreachable", 4)
+    except Exception:  # noqa: BLE001
+        return fail("plugin_unreachable", 4)
     obj = payload.get("license")
-    if not isinstance(obj, dict) or addon not in [a for a in (obj.get("addons") or []) if isinstance(a, str)]:
+    addons = obj.get("addons") if isinstance(obj, dict) else None
+    if not isinstance(addons, list) or addon not in [a for a in addons if isinstance(a, str)]:
         return fail("plugin_license_invalid", 3)   # 簽對但沒有要的加購 ⇒ 不落檔(不拿小授權蓋掉大的)
     try:
         res, rc = ECLI.install_obj(obj)
