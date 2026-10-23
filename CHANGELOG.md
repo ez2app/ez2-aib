@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.47
+
+- **Opening a folder in agy / Grok no longer stalls on the trust question**: the folder trust prompt is answered for the folder you opened (never for `/`, your home folder or its parent), and only the menu itself is sent to the small model that picks the answer.
+- **The right-click "New AI" menu says what is missing before you open**: providers billed by API key show "missing key — click to add" and open `aib secret ask` (masked box + Touch ID) instead of a window that dies at once; bots that are not connected yet say which step is missing.
+- **A new seat's onboarding message is marked read once the seat replies "ready"**, so the status bar no longer shows a stale unread DM.
+- **Usage probes clean up after themselves**: temporary probe folders are removed from the agy / Grok trusted-folder lists.
+
 ## 0.1.46
 
 - **Opening another AI from the right-click menu works again**: one-shot resume flags (`AIB_REVIVE_SESSION_UUID` and friends) no longer leak into the tmux server, so a new seat is not mistaken for a resume of an old conversation.
