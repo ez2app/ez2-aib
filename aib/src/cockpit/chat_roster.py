@@ -479,13 +479,93 @@ def public_relay_ok(url):
 
 def relays(env=None):
     """用哪些中繼站:AIB_CHAT_RELAYS(逗號分隔,測試用)優先;再來主人資料的 relays(aib chat relays add,
-    第 27.9 節);都沒有 ⇒ 預設兩站。不合格的站略過,全不合格退回預設。"""
+    第 27.9 節);都沒有 ⇒ 預設三站。不合格的站略過,全不合格退回預設。
+    10-24 Andy 選「中繼站自動換」:預設站(或測試清單)有被換掉的 ⇒ 換成備用站;主人自己設的清單不動。"""
     env = os.environ if env is None else env
     raw = [x.strip() for x in (env.get("AIB_CHAT_RELAYS") or "").split(",") if x.strip()]
+    custom = False
     if not raw:
         raw = list((read_profile(env) or {}).get("relays") or [])
-    good = [r for r in raw if _relay_ok(r)][:MAX_RELAYS]
-    return good or list(DEFAULT_RELAYS)
+        custom = bool(raw)
+    good = [r for r in raw if _relay_ok(r)][:MAX_RELAYS] or list(DEFAULT_RELAYS)
+    if custom:
+        return good
+    sw = read_swaps(env)
+    return list(dict.fromkeys(sw.get(r, {}).get("to") or r for r in good))
+
+
+# ── 中繼站自動換(10-24 Andy 選):一站連續 SWAP_AFTER_S 連不上、而別站連得上(不是自己斷網)⇒ 換備用站;
+#    SWAP_KEEP_S 後換回原站再試(那時還是不通就再換)。只記站址與時間,不記內容。
+BACKUP_RELAYS = ("wss://nostr.mom", "wss://relay.snort.social")
+SWAP_AFTER_S = 1800
+SWAP_KEEP_S = 86400
+
+
+def _backups(env):
+    raw = [x.strip() for x in (env.get("AIB_CHAT_BACKUP_RELAYS") or "").split(",") if x.strip()]
+    return [r for r in (raw or BACKUP_RELAYS) if _relay_ok(r)]
+
+
+def _read_chat_json(env, name):
+    try:
+        cur = json.loads((_chat_home(env) / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return cur if isinstance(cur, dict) else {}
+
+
+def read_swaps(env=None, now=None):
+    """{原站: {to: 備用站, at}};過期(SWAP_KEEP_S)或壞的略過。"""
+    env = os.environ if env is None else env
+    now = time.time() if now is None else now
+    keep = float(env.get("AIB_CHAT_SWAP_KEEP") or SWAP_KEEP_S)
+    out = {}
+    for orig, v in (_read_chat_json(env, "relay-swap.json").get("swaps") or {}).items():
+        if isinstance(v, dict) and _relay_ok(orig) and _relay_ok(v.get("to")) and isinstance(v.get("at"), int) \
+                and now - v["at"] < keep:
+            out[orig] = {"to": v["to"], "at": v["at"], "tried": [t for t in v.get("tried") or [] if _relay_ok(t)][:10]}
+    return out
+
+
+def check_relay_swap(seen, env=None, now=None):
+    """seen = 工人回報的各站狀態 {url: CONNECTED/…}。記每站從什麼時候開始連不上;
+    有一站連續 SWAP_AFTER_S 連不上、別站有連上 ⇒ 換成還沒在用的備用站。回 [(原站, 新站)](沒換 ⇒ [])。"""
+    env = os.environ if env is None else env
+    now = int(time.time() if now is None else now)
+    after = float(env.get("AIB_CHAT_SWAP_AFTER") or SWAP_AFTER_S)
+    if not isinstance(seen, dict) or (read_profile(env) or {}).get("relays") and not env.get("AIB_CHAT_RELAYS"):
+        return []                                   # 主人自己設的清單:不自動換
+    cur = relays(env)
+    health = _read_chat_json(env, "relay-health.json").get("down_since") or {}
+    health = {u: t for u, t in health.items() if u in cur and isinstance(t, int)}
+    for u in cur:
+        if seen.get(u) == "CONNECTED":
+            health.pop(u, None)
+        elif u in seen:
+            health.setdefault(u, now)
+    _chat_home(env).mkdir(parents=True, exist_ok=True)
+    write_json(str(_chat_home(env) / "relay-health.json"), {"v": VERSION, "down_since": health})
+    if not any(seen.get(u) == "CONNECTED" for u in cur):
+        return []                                   # 全部連不上 ⇒ 多半是自己斷網,不換
+    sw = read_swaps(env, now)
+    back = {v["to"]: o for o, v in sw.items()}
+    done = []
+    for u, since in sorted(health.items(), key=lambda kv: kv[1]):
+        if now - since < after:
+            continue
+        orig = back.get(u, u)                       # 換上的備用站也掛了 ⇒ 同一個原站改指下一個備用站
+        tried = (sw.get(orig) or {}).get("tried") or []
+        spare = next((b for b in _backups(env) if b not in cur and b not in sw and b not in tried), None)
+        if spare is None:
+            continue                                # 這一站的備用站都試過了 ⇒ 不再換(24 小時後換回原站再試)
+        sw[orig] = {"to": spare, "at": now, "tried": tried + [spare]}
+        cur = [spare if x == u else x for x in cur]
+        health.pop(u, None)
+        done.append((u, spare))
+    if done:
+        write_json(str(_chat_home(env) / "relay-swap.json"), {"v": VERSION, "swaps": sw})
+        write_json(str(_chat_home(env) / "relay-health.json"), {"v": VERSION, "down_since": health})
+    return done
 
 
 def set_relays(action, url=None, env=None):

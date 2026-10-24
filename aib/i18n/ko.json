@@ -4522,6 +4522,7 @@
   "aib.chat.self_friend_skip": "친구 {name} 확인 안 함(작업자 꺼짐 또는 상대 좌석을 아직 모름)",
   "aib.chat.self_all_ok": "모두 정상입니다.",
   "aib.chat.self_some_bad": "{n}개 항목 실패. 위 ✗ 줄의 명령으로 고치세요.",
+  "aib.chat.relays_swapped": "  ↪ {old}에 30분 동안 연결되지 않아 예비 {new}를 임시로 사용 중입니다(24시간 후 원래 릴레이로 다시 시도)",
   "aib.chat.relays_saved": "릴레이 목록을 저장했습니다. 다음 주기에 명부와 수신 릴레이 목록을 다시 발행하고 재연결합니다.",
   "aib.chat.relays_row_up": "  ✓ {url}",
   "aib.chat.relays_row_down": "  ✗ {url}(연결 안 됨)",
