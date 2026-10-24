@@ -495,7 +495,7 @@ def _kill_action(r, kill):
             "soft": kill.get("soft") is True}
 
 
-WINDOW_ID_RE = re.compile(r"@[0-9]{1,6}")
+WINDOW_ID_RE = re.compile(r"@[0-9]{1,10}")      # 跟產生端 pane-right-ai.sh 的 WID_RE 同寬
 
 
 def hit_ai_close(rowmap, y):
