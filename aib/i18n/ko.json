@@ -4706,6 +4706,7 @@
   "aib.chat.invite_bad": "초대 형식이 틀렸습니다: aib chat invite use <10자리 코드>, 또는 <주인 npub>/<함선>/<좌석> <코드>, 또는 aib:join?to=…&code=… 전체",
   "aib.chat.invite_joined": "{owner}님과 친구가 되었습니다. 바로 메시지를 보낼 수 있습니다.",
   "aib.chat.invite_held": "친구 신청을 보냈지만 상대 쪽에서 초대 코드가 맞지 않았습니다(만료 또는 사용됨). 승인을 기다립니다.",
+  "aib.chat.invite_pending": "친구 신청(초대 코드 포함)을 상대 기기에 전달했고 확인을 기다리는 중입니다. 코드가 맞으면 자동으로 친구가 됩니다.",
   "aib.chat.help.contacts": "글로벌 연락처(내 기기, 친구, 신청, 거부, 차단; 함장실은 --json을 읽음)",
   "aib.chat.request_no_notice": "(이 신청 기록이 불완전해 상대에게 알릴 수 없습니다. 내 친구 목록은 바뀌었습니다)",
   "aib.chat.share_need_level": "단계를 지정: off / online / status",

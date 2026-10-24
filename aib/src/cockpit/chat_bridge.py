@@ -1266,13 +1266,16 @@ def _resolve_invite(code, env, out):
     最新那筆撤了 / 過期 ⇒ 拒;簽章者要是那個位址的主人(或他名冊上的機器)。回 (位址, None) 或 (None, 原因)。"""
     root = bridge_root(env)
     now = int(time.time())
-    hits = []
+    hits, asked, failed = [], 0, 0
     for day in dict.fromkeys(GF.invite_day(t) for t in (now + 600, now, now - 86400, now - 86400 - 600)):
         # 碼 24 小時有效;兩台時鐘最多差 10 分 ⇒ 建立那天落在這幾個 UTC 日期(最多 3 天)
         h, key = GF.invite_keys(code, day)
         rc, rec = _run_nostr("invite-fetch", root, env, timeout=60, extra=[h])
         if rc is None:
             return None, "no_venv"
+        asked += 1
+        if rc != 0:
+            failed += 1
         for x in rec.get("hits") or []:              # 驗 HMAC(綁簽章者):沒有碼的人發的同一個 d 直接丟,不算撞號
             plain = GF.invite_open(key, x.get("author"), x.get("body")) if isinstance(x, dict) else None
             if plain is not None:
@@ -1280,7 +1283,7 @@ def _resolve_invite(code, env, out):
         if hits:
             break
     if not hits:
-        return None, "not_found"
+        return None, ("lookup_failed" if asked and failed == asked else "not_found")   # 每天都查不到中繼站 ≠ 碼不在(r3 L3)
     if len({x.get("author") for x in hits}) > 1:
         return None, "clash"
     last = max(hits, key=lambda x: x.get("at") if isinstance(x.get("at"), int) else 0)
@@ -1304,7 +1307,7 @@ def cmd_invite_use(a, env, out):
     """用別人的邀請加好友:先把對方加進我的好友,再送帶碼的好友申請(對方對得上就自動同意)。
     接受 aib chat invite use <碼>(只打碼)、<位址> <碼>,或一整串 aib:join?to=…&code=…(掃 QR 貼上)。
     --json:每個出口一個 JSON {"v":1,"ok","why","hint"}(#299 第 2 輪審 M3);why 是契約:
-    joined / held / not_found / used / clash / wrong_signer / lookup_failed / no_venv / bad / no_seat / bridge_off /
+    joined / held / request_pending / not_found / used / clash / wrong_signer / lookup_failed / no_venv / bad / no_seat / bridge_off /
     <加好友的錯誤代碼> / <寄送階段>。"""
     import io
     import chat_roster as CR
@@ -1347,13 +1350,13 @@ def cmd_invite_use(a, env, out):
     res = GF.send_and_wait(root, rec, wait=int(env.get("AIB_DM_GLOBAL_WAIT") or GF.WAIT_DEFAULT))
     if new and res["stage"] in GF.UNSENT_STAGES:
         try:                                        # 保證沒送出去 ⇒ 這次新加的好友撤掉(held / relayed / claimed 可能已到,不退)
-            CR.remove_friend(owner, env)
+            CR.remove_friend(owner, env, forget=False)   # 只撤好友,本人原本設的單人等級不動(#320)
         except (OSError, CR.RosterError):
             pass
     stage = res["stage"]
-    key = {"delivered": "invite_joined", "held": "invite_held"}.get(stage, "request_other")
-    why = {"delivered": "joined"}.get(stage, stage)
-    return emit(res["rc"] if stage != "held" else 0, why, key, ok=stage in ("delivered", "held"),
+    key = {"delivered": "invite_joined", "held": "invite_held", "queued": "invite_pending"}.get(stage, "request_other")
+    why = {"delivered": "joined", "queued": "request_pending"}.get(stage, stage)   # queued 跟 connect 的 rc 4 同語意(@abb89 #299 r3 L1)
+    return emit(res["rc"] if stage != "held" else 0, why, key, ok=stage in ("delivered", "held", "queued"),
                 owner=parsed["owner"], stage=stage, detail=res["detail"] or "-")
 
 

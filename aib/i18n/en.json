@@ -4706,6 +4706,7 @@
   "aib.chat.invite_bad": "Invite format is wrong: use aib chat invite use <10-character code>, or <owner npub>/<cabin>/<seat> <code>, or the whole aib:join?to=…&code=…",
   "aib.chat.invite_joined": "You and {owner} are now friends; you can message each other.",
   "aib.chat.invite_held": "Friend request sent, but they could not match the invite code (expired or already used); waiting for them to accept.",
+  "aib.chat.invite_pending": "Friend request (with the invite code) handed to their machine, waiting for it to confirm; if the code matches you become friends automatically.",
   "aib.chat.help.contacts": "global contacts (your machines, friends, requests, refused, blocked; the captain room reads --json)",
   "aib.chat.request_no_notice": "(This request's record is incomplete, so they cannot be notified; your friends list was still updated)",
   "aib.chat.share_need_level": "Give a level: off / online / status",

@@ -4706,6 +4706,7 @@
   "aib.chat.invite_bad": "邀請格式不對:要 aib chat invite use <10 碼邀請碼>,或 <主人 npub>/<艙>/<席> <10 碼>,或整串 aib:join?to=…&code=…",
   "aib.chat.invite_joined": "已和 {owner} 互為好友,可以直接寄信了。",
   "aib.chat.invite_held": "已送出好友申請,但邀請碼對方那邊對不上(可能過期或用過了);等對方同意。",
+  "aib.chat.invite_pending": "已把好友申請交給對方那台(帶邀請碼),等它確認;對得上就自動互為好友。",
   "aib.chat.help.contacts": "全球通訊錄(本人機器、好友、申請、拒收、封鎖;艦長室讀 --json)",
   "aib.chat.request_no_notice": "(這則申請的紀錄不完整,沒辦法通知對方;你這邊的好友名單照樣改好了)",
   "aib.chat.share_need_level": "要給等級:off / online / status",

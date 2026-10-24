@@ -101,6 +101,9 @@ else:
     s._resolve = resolve
     class Rumor:
         def content(self): return json.dumps({"v": 1, "seats": [{"seat": "754c1", "cabin": "754c", "state": "online"}]})
+        def created_at(self):                       # #318 起收件端比原始寄出時間(sent_at)
+            t = int(__import__("time").time())
+            return type("Ts", (), {"as_secs": lambda self: t})()
     who = FRIEND if case != "stranger" else NK.npub(NK.pubkey_hex("%064x" % 0x5104))
     tags = {"aib-from": who + "/754c/754c1"}
     if case != "noask":

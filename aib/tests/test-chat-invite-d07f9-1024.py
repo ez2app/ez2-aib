@@ -25,8 +25,9 @@ I11 昨天建的碼今天照查得到;遠端 exp 不是整數 ⇒ used 不炸(L1
    K4 不驗 HMAC ⇒ I9 紅;K5 產碼不過門 ⇒ I10 紅
 #299 第 2 輪審(M1–M3、L-a..L-g):
 I12 invite use:沒公開席 / 轉接程式沒開 ⇒ 門前擋、好友沒加;寄送保證沒送出(abort / bridge-off / 逾時撤回)⇒ 撤掉新加的好友;
-    held / claimed / relayed 可能已到 ⇒ 不撤;本來就是好友 ⇒ 不撤(M2)
-I13 invite use --json:每種出口 stdout 剛好一行 JSON(v / ok / why / hint)(M3)
+    held / claimed / relayed 可能已到 ⇒ 不撤;本來就是好友 ⇒ 不撤(M2);撤的時候本人設過的單人等級不清(#320 forget=False)
+I13 invite use --json:每種出口 stdout 剛好一行 JSON(v / ok / why / hint)(M3);queued ⇒ ok + request_pending(r3 L1);
+    每天的查詢都失敗 ⇒ lookup_failed,不是 not_found(r3 L3)
 I14 對方時鐘快 10 分、昨天快過午夜建的碼都查得到(建立日期落在 now+600 / now / now-1 天 / now-1 天-600)(L-a)
 I4 加好友失敗 ⇒ 次數補回、落回一般申請(held、進申請清單)(L-d);I8 MAC 非 ASCII / 長度錯 ⇒ None 不炸(M1)
 刀:K6 不撤好友 ⇒ I12 紅;刀測一律比對紅的是哪一格(L-g)
@@ -335,10 +336,14 @@ class Use(unittest.TestCase):
         self.assertEqual(self.use(self.addr, "ABCDEFGHIJ")[0], 2)
         self.assertEqual((CR.read_friends(self.env), self.sent), ([], []), "門前擋:好友沒加、沒寄")
         self.alive = True
+        CR.set_share("status", A1, self.env)                         # 本人先前設過的單人等級(比預設寬)
+        CR.set_space("room", A1, self.env)
         for stage in GF.UNSENT_STAGES:
             self.stage = {"rc": 2, "stage": stage, "pos": None, "detail": "x", "msgid": "m"}
             self.assertEqual(self.use(self.addr, "ABCDEFGHIJ")[0], 2, stage)
             self.assertEqual(CR.read_friends(self.env), [], "保證沒送出 ⇒ 新加的好友撤掉:" + stage)
+            self.assertEqual((CR.read_share(self.env)["per"].get(A1), CR.read_space(self.env)["per"].get(A1)),
+                             ("status", "room"), "撤好友不准清本人設的等級(forget=False)")
         for rc, stage in ((0, "held"), (4, "claimed"), (4, "relayed")):
             self.stage = {"rc": rc, "stage": stage, "pos": None, "detail": None, "msgid": "m"}
             self.use(self.addr, "ABCDEFGHIJ")
@@ -370,8 +375,12 @@ class Use(unittest.TestCase):
         self.assertEqual(one(self.addr, "ABCDEFGHIJ"), (0, True, "joined"))
         self.stage = {"rc": 0, "stage": "held", "pos": None, "detail": None, "msgid": "m"}
         self.assertEqual(one(self.addr, "ABCDEFGHIJ"), (0, True, "held"))
+        self.stage = {"rc": 0, "stage": "queued", "pos": None, "detail": None, "msgid": "m"}
+        self.assertEqual(one(self.addr, "ABCDEFGHIJ"), (0, True, "request_pending"), "queued 跟 connect rc 4 同語意(r3 L1)")
         self.stage = {"rc": 2, "stage": "timeout-withdrawn", "pos": None, "detail": "x", "msgid": "m"}
         self.assertEqual(one(self.addr, "ABCDEFGHIJ"), (2, False, "timeout-withdrawn"))
+        self.CB._run_nostr = lambda cmd, *a, **k: (1, {"ok": False, "why": "timeout"})
+        self.assertEqual(one("abcde-fghij"), (2, False, "lookup_failed"), "每天都查不到中繼站 ≠ 碼不在(r3 L3)")
         self.CB._run_nostr = lambda *a, **k: (None, {})
         self.assertEqual(one("abcde-fghij"), (2, False, "no_venv"))
 
