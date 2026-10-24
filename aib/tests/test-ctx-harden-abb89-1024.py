@@ -8,7 +8,9 @@ H3 open_readiness 整批最多等 TIMEOUT_S 秒,超時的幾家印 ok(選單照�
 H4 --close-row 的欄(CX)也只收 1–4 位數字(在 test-ctx-close-seat-abb89-1024.py)
 刀(PR 手跑在複本上):拿掉 _INVISIBLE 或少列任一碼點 ⇒ H1 紅;拿掉 start<end / WINDOW_ID_RE ⇒ H2 紅;
   拿掉計時器、_Late 改回 Exception(被 check() 吞掉)、不還原 SIGALRM 處理器、拿掉 _late 的 done 守衛、
-  計時器搬到 ask-key 分支之前(存金鑰的 Touch ID 會被 3 秒打斷)⇒ H3 紅
+  計時器搬到 ask-key 分支之前(存金鑰的 Touch ID 會被 3 秒打斷)⇒ H3 紅;
+  左鍵 [X] 改回直接 _kill_action / 被擋時不 return ⇒ H2 left_click 紅;finally 拿掉 try、還原移進 try、armed 改用 old 判斷、
+  SIG_DFL 後備改掉、清不掉時不裝 SIG_IGN ⇒ H3 restore_edges 紅
 """
 from __future__ import annotations
 
@@ -160,6 +162,8 @@ class Readiness(unittest.TestCase):
             prev = real_signal(n, h)
             return None if len(calls) == 1 else prev
         before = sig.getsignal(sig.SIGALRM)
+        self.addCleanup(real_setitimer, sig.ITIMER_REAL, 0)                    # 斷言中途紅也收乾淨(cleanup 後進先出:先清計時器)
+        self.addCleanup(real_signal, sig.SIGALRM, before)
         self.assertEqual(self._main_with(signal=signal_none_first), (0, ["ok", "ok"]))
         self.assertIs(calls[-1], sig.SIG_DFL)                                   # 舊處理器回 None ⇒ 還原成 SIG_DFL
         real_signal(sig.SIGALRM, before)
@@ -176,8 +180,9 @@ class Readiness(unittest.TestCase):
                 raise OSError("cannot clear")
             return real_setitimer(which, sec, *a)
         self.assertEqual(self._main_with(setitimer=setitimer_clear_fails), (0, ["ok", "ok"]))
+        self.assertIs(sig.getsignal(sig.SIGALRM), sig.SIG_IGN)                 # 清不掉 ⇒ 計時器還在,裝 SIG_IGN 不讓它殺掉行程
         real_setitimer(sig.ITIMER_REAL, 0)
-        self.assertIs(sig.getsignal(sig.SIGALRM), before)                      # 清不掉也還原
+        real_signal(sig.SIGALRM, before)
 
         def signal_not_main(n, h):
             raise ValueError("signal only works in main thread")
