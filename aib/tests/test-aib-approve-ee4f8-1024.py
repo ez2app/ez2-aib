@@ -13,11 +13,14 @@ A4 yes 每次重新向站上拉:站上已經沒有那筆 ⇒ not_pending、helpe
 A5 取消指紋 ⇒ touchid_cancel、什麼都沒送;AIB_TOUCHID=0 / 不是 Mac / 另一個指紋視窗開著 ⇒ touchid_unavailable、
    helper 沒被叫;helper 回別把鑰的簽章 ⇒ 不送;過期的那筆 ⇒ expired;CLI 有結果一律 rc 0、找不到 rc 2
 A6 30 秒內第 4 次 ⇒ rate_limited、helper 沒被叫、記進 history;時鐘倒退留下的未來時間不算
-A7 站上拒(403)⇒ site_rejected rc 3;站上 500 / 連不上 ⇒ not_delivered
+A7 站上拒(403)或 200 但 ok 不是 true ⇒ site_rejected;站上 500 / 連不上 ⇒ not_delivered(CLI 都 rc 0)
 A8 no:帶機房 token 送 deny、不叫 helper
 A9 site add:http 網址 / 主機跟站名不同 / 帶路徑拒;token 從 stdin、檔 600(舊 .tmp 是 644 也不沿用);
    壞 sites.json({"sites":5})列不出東西、不當掉;http_call 只走 https
-A11 http_call 不跟轉址(轉址會把機房 token 帶去別的主機)
+A11 http_call 不跟轉址(轉址會把機房 token 帶去別的主機);不是 https 根本不連
+A12 外人能寫的東西都不讓指令當掉:站上回很深的 JSON / 壞 UTF-8、本機 token / history / rate / .sekey 壞掉;
+    短碼固定向量("N"*43 ⇒ 7TUV,跟 WP 端同);過了 exp 一秒就 expired(不寬限);no 遇到過期 ⇒ expired;
+    nonce 以「-」開頭也收得下;yes / no 不帶 --json 也是一行 JSON
 A10 aib approve 接上、四語都有、視窗字帶四個欄位
 刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
    K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅
@@ -122,7 +125,7 @@ class FakeSite:
             raw = base64.urlsafe_b64decode(d["sig"] + "==")
             r, s = int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big")
             der = b"\x30" + bytes([len(_der_int(r) + _der_int(s))]) + _der_int(r) + _der_int(s)
-            item = [i for i in self.items if json.loads(i["payload"])["nonce"] == d["nonce"]]
+            item = [i for i in self.items if i["payload"].startswith("{") and json.loads(i["payload"])["nonce"] == d["nonce"]]
             ok = bool(item) and p256.verify(self.pub, item[0]["payload"].encode(), der)
             if self.approve_status != 200:
                 return self.approve_status, b"{}"
@@ -139,6 +142,11 @@ class Base(unittest.TestCase):
         self.root = Path(td.name)
         self.env = {"EZ2_AIB_STATE_ROOT": td.name, "HOME": td.name, "EZ2_AIB_LOCALE": "zh-TW", "PATH": "/usr/bin:/bin"}
         os.environ["EZ2_AIB_LOCALE"] = "zh-TW"
+        import unittest.mock as um
+        import urllib.request
+        guard = um.patch.object(urllib.request, "build_opener", side_effect=AssertionError("測試不准連外"))
+        guard.start()
+        self.addCleanup(guard.stop)
         self.se = FakeSE()
         r, why = AA.key_init(self.env, run=self.se, helper="/fake/aib-sehelper", platform="darwin")
         self.assertIsNone(why)
@@ -246,7 +254,9 @@ class Approve(Base):
         self.assertEqual(self.yes(old["nonce"]), ("expired", None))
         self.assertEqual(AA.history(self.env)[0]["result"], "expired")
         out = io.StringIO()
-        self.assertEqual(AA.main(["yes", "N" * 43, "--json"], out=out, env=self.env), 2)
+        import unittest.mock as um
+        with um.patch.object(AA, "http_call", self.site):  # 測試不連外
+            self.assertEqual(AA.main(["yes", "N" * 43, "--json"], out=out, env=self.env), 2)
         self.assertEqual(json.loads(out.getvalue())["why"], "not_pending")
 
     def test_a6_rate_limit(self):
@@ -333,6 +343,68 @@ class Approve(Base):
         self.assertEqual(len(used), 1)
         self.assertTrue(issubclass(used[0], urllib.request.HTTPRedirectHandler))
         self.assertIsNone(used[0]().redirect_request(req, None, 301, "Moved", {}, "https://other.example/"))
+
+    def test_a10_wired_and_i18n(self):
+        self.assertIn('"approve"', (REPO / "src" / "cockpit" / "aib").read_text())
+        for lang in ("zh-TW", "en", "ja", "ko"):
+            d = json.loads((REPO / "i18n" / (lang + ".json")).read_text(encoding="utf-8"))
+            r = d["aib.approve.touchid_reason"]
+            for ph in ("{code}", "{site}", "{user}", "{ip}"):
+                self.assertIn(ph, r, lang)
+            self.assertLess(r.index("{code}"), r.index("{user}"))
+            self.assertIn("{kid}", d["aib.approve.touchid_publish"])
+            self.assertIn("aib approve", d["aib.approve.help.usage"])
+
+    def test_a12_hostile_inputs(self):
+        import unittest.mock as um
+        self.assertEqual(AA.code_of("N" * 43), "7TUV")
+        f = self.site.add(kid=self.kid)
+        deep = b"[" * 60000
+        bad_site = lambda m, u, h, b: (200, deep) if u.endswith("/pending") else self.site(m, u, h, b)  # noqa: E731
+        r, why = AA.pending(self.env, http=bad_site, now=NOW)
+        self.assertEqual((r["items"], r["errors"]), ([], {"ez2.app": "bad_reply"}))
+        self.site.items.append({"payload": "[" * 2000, "code": "AAAA"})
+        r, _ = AA.pending(self.env, http=self.site, now=NOW)
+        self.assertEqual(([i["nonce"] for i in r["items"]], r["invalid"]), ([f["nonce"]], 1))
+        ok_false = lambda m, u, h, b: (200, b'{"ok":false}') if u.endswith("/approve") else self.site(m, u, h, b)  # noqa
+        self.assertEqual(AA.yes(f["nonce"], self.env, http=ok_false, run=self.se, helper="/x", platform="darwin",
+                                now=NOW), ("site_rejected", None))
+        deep_reply = lambda m, u, h, b: (200, deep) if u.endswith("/approve") else self.site(m, u, h, b)  # noqa
+        self.assertEqual(AA.yes(f["nonce"], self.env, http=deep_reply, run=self.se, helper="/x", platform="darwin",
+                                now=NOW + 1), ("site_rejected", None))
+        a = self.root / "approve"
+        (a / "rate.json").write_bytes(deep)
+        (a / "history.jsonl").write_bytes(b"\xff\n" + deep + b"\n")
+        self.assertEqual(AA.history(self.env), [])
+        self.assertEqual(self.yes(f["nonce"], now=NOW + 2)[0], "approved")
+        (a / "tokens" / "ez2.app.token").write_bytes(b"\xff\xfe")
+        r, _ = AA.pending(self.env, http=self.site, now=NOW)
+        self.assertEqual(r["errors"], {"ez2.app": "no_token"})
+        AA.site_add("ez2.app", None, "t" * 32, self.env)
+        # 過了 exp 一秒:不寬限
+        g = self.site.add(kid=self.kid, iat=NOW - 50, exp=NOW + 10)
+        self.assertEqual(self.yes(g["nonce"], now=NOW + 11), ("expired", None))
+        self.assertEqual(AA.no(g["nonce"], self.env, http=self.site, now=NOW + 11), ("expired", None))
+        self.assertFalse([p for p in self.site.posts if p[1].endswith("/deny")])
+        # 「-」開頭的 nonce;yes / no 不帶 --json 也是一行 JSON
+        dash = "-" + "A" * 42
+        self.site.add(kid=self.kid, nonce=dash)
+        out = io.StringIO()
+        with um.patch.object(AA, "http_call", self.site), um.patch.object(AA.time, "time", return_value=NOW):
+            self.assertEqual(AA.main(["no", dash], out=out, env=self.env), 0)
+        self.assertEqual(json.loads(out.getvalue()), {"nonce": dash, "result": "denied"})
+        for url in ("https://ez2.app?", "https://ez2.app/?", "https://ez2.app:99999", "https://ez2.app#x"):
+            self.assertEqual(AA.site_add("ez2.app", url, "t" * 32, self.env), (None, "bad_url"), url)
+        (self.root / "se").mkdir(exist_ok=True)
+        import se_vault
+        Path(se_vault.se_dir(self.env), AA.KEY_NAME + ".sekey").write_bytes(deep)
+        self.assertIsNone(AA.local_pub(self.env))
+
+    def test_a13_http_only_https(self):
+        import unittest.mock as um
+        import urllib.request
+        with um.patch.object(urllib.request, "build_opener", side_effect=AssertionError("不該連")):
+            self.assertEqual(AA.http_call("GET", "http://ez2.app/x", {}, None), (0, b""))
 
 class Knives(unittest.TestCase):
     def _red(self, needle, repl, test):

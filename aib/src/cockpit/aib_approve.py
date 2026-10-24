@@ -26,11 +26,19 @@
   - 視窗字 `短碼 ABCD · 核准 <站> 的 <帳號> 登入 · IP …`:短碼與站名在最前。短碼由簽下去的 nonce 算(不是站上 / 中繼給的字),
     換不了;帳號名只收 WordPress 嚴格字元 [A-Za-z0-9 _.@-](不清理後再簽)。
   - 只連 https、不跟轉址(轉址會把機房 token 帶去別的主機);登記的網址主機要等於站名。
-  - key pem:發布前先用這把鑰簽一次(一定跳指紋);沒跳就停 —— 那代表 .sekey 被換成沒有指紋限制的鑰。
+  - key pem:發布前先用這把鑰簽一次再驗。只擋得住「.sekey 被簡單換掉、而且沒人同時叫出指紋視窗」;
+    **有跳指紋不代表鑰受保護**(同帳號 AI 可以自己換鑰,再趁那一刻叫真的 helper 跳一個字一樣的視窗)。
   - 本機的限速(30 秒 3 次)、機房 token、sites.json 都是 AI 能改的 ⇒ 只防誤操作 / 外人掃描,不是防線。
-  - 殘餘風險(規格 §8 第 3 點):換掉 aib-sehelper 或家目錄裡的核心 = 能改視窗字,騙一次指紋換一張只對站上真的存在、
-    未用的 nonce 有效、120 秒、綁站 / 帳號 / IP 的核准單。
-rc:yes / no 有結果(RESULTS 任一種)⇒ 0 + {nonce, result};nonce 不在 pending / 參數錯 ⇒ 2(規格 §2b)。其他指令 0 / 2。
+  - 殘餘風險(規格 §8 第 3 點,照實):
+    · 平常:換掉 aib-sehelper 或家目錄裡的核心 = 能改視窗字,騙一次指紋換一張只對站上真的存在、未用的 nonce 有效、
+      120 秒、綁站 / 帳號 / IP 的核准單。
+    · **發布那一刻最重**:那時 Mac 若已被同帳號 AI 動過(換鑰 / 換 helper / 假視窗),發出去的就是它的鑰,之後每次
+      核准都不用指紋,直到換鑰。第一階段只能靠「在確定乾淨的時候發布、發完在站外記下 kid」;
+      規格 §8-4 的「發布綁目的地、走釘死的 SSH 寫入」**還沒做**:現在 key pem 只印 PEM,要本人自己帶到主機
+      (root 寫 /etc/ez2-aib/approve-keys/<站>.json)。第二階段:helper 放 root 擁有路徑 + Developer ID 簽、
+      在另一台裝置(LIFF)核對 kid。
+rc:yes / no 有結果(RESULTS 任一種)⇒ 0 + 一行 JSON {nonce, result};nonce 不在 pending / 參數錯 ⇒ 2(規格 §2b)。
+  nonce 是 base64url,可能以「-」開頭:yes / no 會自己把它當 nonce(不必寫 --)。其他指令 0 / 2。
 """
 import argparse
 import base64
@@ -69,6 +77,14 @@ KID_RE = re.compile(r"p256:[0-9a-f]{16}")
 SPKI_P256 = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")
 
 
+def _loads(raw, **kw):
+    """json.loads,壞 / 太深(3.9 是 RecursionError)/ 不是 UTF-8 ⇒ None(站上與本機檔都是外人能寫的)。"""
+    try:
+        return json.loads(raw, **kw)
+    except (ValueError, RecursionError, UnicodeError, TypeError):
+        return None
+
+
 def _env(env):
     return dict(os.environ if env is None else env)
 
@@ -98,8 +114,8 @@ def _sekey_path(env):
 
 def local_pub(env=None):
     try:
-        doc = json.loads(_sekey_path(env).read_text(encoding="utf-8"))
-        pub = base64.b64decode(doc.get("public_key") or "", validate=True)
+        doc = _loads(_sekey_path(env).read_bytes())
+        pub = base64.b64decode(doc.get("public_key") or "", validate=True) if isinstance(doc, dict) else b""
     except (OSError, ValueError, TypeError):
         return None
     return pub if len(pub) == 65 and pub[0] == 4 else None
@@ -174,8 +190,8 @@ def _sites_path(env):
 
 def load_sites(env=None):
     try:
-        doc = json.loads(_sites_path(env).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        doc = _loads(_sites_path(env).read_bytes())
+    except OSError:
         return []
     rows = doc.get("sites") if isinstance(doc, dict) else None
     return [r for r in rows if isinstance(r, dict) and _url_ok(r.get("site"), r.get("url"))] \
@@ -189,8 +205,10 @@ def _url_ok(site, url):
         return False
     try:
         u = urllib.parse.urlsplit(url)
+        port = u.port  # 不在 0–65535 ⇒ ValueError
         return u.scheme == "https" and u.hostname == site and not u.username and not u.password \
-            and not u.query and not u.fragment and u.path in ("", "/") and url == url.strip()
+            and "?" not in url and "#" not in url and u.path == "" and url == url.strip() \
+            and (port is None or 0 < port)
     except ValueError:
         return False
 
@@ -228,7 +246,7 @@ def site_add(site, url, token, env=None):
 def _token(site, env):
     try:
         return (approve_dir(env) / "tokens" / (site + ".token")).read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, ValueError):
         return ""
 
 
@@ -269,9 +287,9 @@ def parse_item(item, site, kid, now=None):
         return None, "bad_item"
     try:
         raw = item["payload"].encode("utf-8")
-        f = json.loads(raw, object_pairs_hook=_no_dup) if len(raw) <= PAYLOAD_MAX else None
-    except (ValueError, UnicodeError):
+    except UnicodeError:
         return None, "bad_item"
+    f = _loads(raw, object_pairs_hook=_no_dup) if len(raw) <= PAYLOAD_MAX else None
     if not isinstance(f, dict) or tuple(sorted(f)) != FIELDS or signing.canonical(f) != raw:
         return None, "bad_item"  # 顯示的跟簽的要是同一份位元組
     ints = all(isinstance(f[k], int) and not isinstance(f[k], bool) for k in ("v", "user_id", "iat", "exp"))
@@ -314,11 +332,8 @@ def fetch(row, env, http, kid, now=None):
                     {"Authorization": "Bearer " + tok, "Accept": "application/json"}, None)
     if st != 200:
         return [], 0, "http_%d" % st if st else "unreachable"
-    try:
-        doc = json.loads(body)
-        items = doc["items"] if isinstance(doc, dict) and doc.get("v") == 1 else None
-    except (ValueError, KeyError, TypeError):
-        items = None
+    doc = _loads(body)
+    items = doc.get("items") if isinstance(doc, dict) and doc.get("v") == 1 else None
     if not isinstance(items, list):
         return [], 0, "bad_reply"
     good, bad = [], 0
@@ -384,15 +399,12 @@ def _record(env, d, result):
 
 def history(env=None):
     try:
-        lines = _history_path(env).read_text(encoding="utf-8").splitlines()
+        lines = _history_path(env).read_bytes().splitlines()
     except OSError:
         return []
     out = []
     for ln in lines[-HISTORY_N:]:
-        try:
-            r = json.loads(ln)
-        except ValueError:
-            continue
+        r = _loads(ln)
         if isinstance(r, dict) and r.get("result") in RESULTS:
             out.append({k: r.get(k) for k in ("nonce", "site", "user_login", "ip", "code", "at", "result")})
     return out[::-1]
@@ -401,10 +413,11 @@ def history(env=None):
 def _rate_ok(env, now):
     p = approve_dir(env) / "rate.json"
     try:
-        ts = [t for t in json.loads(p.read_text(encoding="utf-8"))
-              if isinstance(t, (int, float)) and 0 <= now - t < RATE_S]  # 未來的(時鐘倒退)不算
-    except (OSError, ValueError, TypeError):
-        ts = []
+        doc = _loads(p.read_bytes())
+    except OSError:
+        doc = None
+    ts = [t for t in doc if isinstance(t, (int, float)) and not isinstance(t, bool) and 0 <= now - t < RATE_S] \
+        if isinstance(doc, list) else []  # 未來的(時鐘倒退)不算
     if len(ts) >= RATE_N:
         return False
     _write_private(p, json.dumps(ts + [now]))
@@ -468,10 +481,8 @@ def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=No
     body = json.dumps({"nonce": nonce, "kid": kid_of(pub),
                        "sig": base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")}).encode("utf-8")
     st, reply = http("POST", row["url"] + "/wp-json/ez2-aib/v1/approve", {"Content-Type": "application/json"}, body)
-    try:
-        good = st == 200 and json.loads(reply).get("ok") is True
-    except (ValueError, AttributeError):
-        good = False
+    doc = _loads(reply) if st == 200 else None
+    good = isinstance(doc, dict) and doc.get("ok") is True
     res = "approved" if good else ("not_delivered" if st == 0 or st >= 500 else "site_rejected")
     _record(env, d, res)
     return res, None
@@ -486,8 +497,11 @@ def no(nonce, env=None, http=None, now=None):
     if not pub:
         return None, "no_key"
     row, d = _find(nonce, env, http, kid_of(pub), time.time() if now is None else now)
-    if not d or d.get("expired"):
+    if not d:
         return None, "not_pending"
+    if d.get("expired"):
+        _record(env, d, "expired")
+        return "expired", None
     st, _ = http("POST", row["url"] + "/wp-json/ez2-aib/v1/deny",
                  {"Content-Type": "application/json", "Authorization": "Bearer " + _token(row["site"], env)},
                  json.dumps({"nonce": nonce}).encode("utf-8"))
@@ -521,6 +535,9 @@ def main(argv=None, out=None, env=None, stdin=None):
     h = sub.add_parser("history")
     for x in (k, s, p, y, n, h):
         x.add_argument("--json", action="store_true")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) >= 2 and argv[0] in ("yes", "no") and argv[1].startswith("-") and NONCE_RE.fullmatch(argv[1]):
+        argv.insert(1, "--")  # base64url 的 nonce 可能以「-」開頭,不是選項(@74e8b 10-24)
     try:
         o = ap.parse_args(argv)
     except SystemExit as exc:
@@ -553,14 +570,21 @@ def main(argv=None, out=None, env=None, stdin=None):
         return emit(dict(r, ok=True) if r else {"ok": False, "why": why}, 0 if r else 2)
     if o.cmd == "pending":
         r, why = pending(env)
-        return emit(r["items"] if r and o.json else (r or {"ok": False, "why": why}), 0 if r else 2)
+        if not r:
+            return emit({"ok": False, "why": why}, 2)
+        if o.json:
+            return emit(r["items"], 0)
+        for i in r["items"]:
+            out.write("%s  %s  %s  %s  %s\n" % (i["code"], i["site"], i["user_login"], i["ip"], i["nonce"]))
+        out.write("invalid: %d  errors: %s\n" % (r["invalid"], json.dumps(r["errors"], ensure_ascii=False)))
+        return 0
     if o.cmd == "history":
         return emit(history(env), 0)
     fn = yes if o.cmd == "yes" else no
     res, why = fn(o.nonce, env)
-    if why:
-        return emit({"nonce": o.nonce, "ok": False, "why": why}, 2)
-    return emit({"nonce": o.nonce, "result": res}, 0)
+    d, rc = ({"nonce": o.nonce, "ok": False, "why": why}, 2) if why else ({"nonce": o.nonce, "result": res}, 0)
+    out.write(json.dumps(d, ensure_ascii=False) + "\n")  # §2b:一律一行 JSON
+    return rc
 
 
 if __name__ == "__main__":
