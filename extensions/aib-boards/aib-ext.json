@@ -10,13 +10,14 @@
   "data_only": false,
   "files": {
     ".claude-plugin/marketplace.json": "a729d6a8985a32488f0879acbd1bccaf31dc58c62282b8292ec4f6bf80a90685",
-    ".claude-plugin/plugin.json": "c6e611edbb9854c6f6e440a2af80fb8571dc8d19120e844a28efef2b40ec7b71",
+    ".claude-plugin/plugin.json": "e76b0e62b8824703327eca7fd114920df17cd9cf00e220dc98d0b6711eece4af",
     "README.md": "08657bc08af9fdb5d2e03dc3ed30a9c530a6b63a1b5bf6f218e4f17b2f94a8e6",
     "bin/emoji-raster.js": "b3f4a01e0d86cabe3e157837ab9d8d6d8e6a6348771cabb48ae0bfd614f8ec70",
     "bin/relay_line.py": "db77bfd29c0aaf1d4236ee609324ab5d8439ccea16a216f1fb6ebf638eb8f06f",
     "bin/seat-info.py": "41be6d99591e036a63faceaf3944ba31589dcf0b3ed8fb5dd25aaa8cb9b3c712",
     "hooks/charts.ts": "0c7bca764d7acbd14ab8c821a56fe98f773899090fa847e989f3ffc37ec6fc83",
     "hooks/chartset.ts": "827ae4190afea90e8161d703b074a000ed5101d85bac705bdcd353114cc02daf",
+    "hooks/ctx.test.ts": "aba1ddb62adccb0fadc21283a69b26555f825f907aeee67b622279b575cdfd57",
     "hooks/engcharts.ts": "4d24ccff80eb7ce652873898221a21e126b29d570760404513281ddb6364ba75",
     "hooks/hooks.json": "d842d789476d67282d0f04b7e5fdc68a3d981ccec65dd79cfa2d11eed13fb828",
     "hooks/i18n-fixture.ts": "1b601fbe69d7ff31861e95ca746d60de5b965a9b11f6dd36928c881236592dbe",
@@ -41,7 +42,7 @@
     "hooks/seat/qa.ts": "fe8aee06d70d49b213d8cb2d20b7d99e9c01f75114219ba3deacac9cb220d6ea",
     "hooks/seat/seat-label.test.ts": "710e5002aabcf807a5d5cc06e54688c517ec53f6c1a000173d92224dc6a209ac",
     "hooks/seat/seat-label.ts": "8386f3dda1883ed082b48013b340519357dde97353f6986e4959f805dcab746e",
-    "hooks/seatcore.tsx": "10b60882d6e8535bd0c71fcb0f8716da20109527c4cd69b214ee7dd74ff8cc5c",
+    "hooks/seatcore.tsx": "15eb9c9f7f7de3f8d0b8bd15cb3aee5284cd4a11118931b14211b8acf840989c",
     "hooks/tiercharts.ts": "234ac7eb95e7d91bfaa5eb3114230e91aa2bf8e7e86ababb7a863f70c6a5ba1a",
     "hooks/tiers.test.tsx": "27aebc9c038bad168d90e21166204e23b2a4d9846bf8952a8653e6aac3fc0ad2",
     "hooks/toast.test.ts": "069c6bc73f43b4b59a40e894b434ae990b6f0b86dc9a935adad74427410140e8",
@@ -55,5 +56,5 @@
     "tui/ui.mjs": "09c9d80d305cab554129e076ec5941ffd3178040204c1df2cf9e23c0c5040163",
     "types/index.d.ts": "b1908713188af446f97b5ffa6581d8866fd578f7919871413665e39f5bdafa97"
   },
-  "signature": "ed25519:M52owskoise+9jeOCd7l0jp4PEaYo6W0gsEg+qtXNvJjfu45dd64/zfoxxJdDx+YdN41zoPlAmQlB9YUheYwAg=="
+  "signature": "ed25519:d7lLFdhVIzjvV1eiRchia/NWn7YswWtZPGNdbMb4ZknR8n5oq1xFL9c13ASaSGg60E5bBnZNg5BOWQIVq+lSAw=="
 }
