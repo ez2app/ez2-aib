@@ -579,14 +579,14 @@ def _dirfd_join(fd, name):
 # 10-08(express / Python 的本機測試伺服器):測試自己 bind 的本機 socket、自己連回去 —— 不是外部。只認同一個行程自己 bind、
 #   還開著的;連到本機上別人開的服務(資料庫之類)照樣算外部。存的是 (fd, family, type) —— 不留 socket 物件(會讓它晚回收、
 #   改了被觀測物),也不 import weakref(啟動時本來沒有它;觀測者不改 sys.modules)。比對時用 socket.fromfd 複製一份問埠號,問完就關。
-_OWN_SOCKETS = {}       # fd ⇒ (family, type)
+_OWN_SOCKETS = []       # 這個行程 bind 過的 socket(弱參照;不記 fd 號碼)
 _LOOPBACK = frozenset(("localhost", "127.0.0.1", "::1", "::ffff:127.0.0.1"))
 
 
 def _note_bind(sock):
     try:
-        _OWN_SOCKETS[sock.fileno()] = (sock.family, sock.type)
-    except Exception:  # noqa: BLE001
+        _OWN_SOCKETS.append(_weakref(sock))
+    except Exception:  # noqa: BLE001 - 不能弱參照 ⇒ 不記,connect 時算外部(安全側)
         pass
     _wrap_listen(type(sock))
 
@@ -643,26 +643,18 @@ def _to_own_listener(args):
         return False
     try:
         addr = args[1]
-        for fd, (fam, typ) in list(_OWN_SOCKETS.items()):
-            # 10-12(a seat 派,a seat 入口檢查撞到):不用 sk.fromfd —— 它先 dup 再建 socket,建失敗(這個 fd 號碼已被重用成
-            #   一般檔,例如鎖檔 ⇒ ENOTSOCK)時 dup 出來那份沒人關,鎖就放不掉、下一輪整輪跳過。自己 dup,建失敗一定關。
-            try:
-                nfd = os.dup(fd)
-            except OSError:
-                _OWN_SOCKETS.pop(fd, None)          # 已經關了
+        # 10-24:不再 os.dup(fd)。fd 號碼關掉後會被重用,macOS 系統框架會把它設成受保護的 fd(EXC_GUARD),
+        #   對受保護的 fd 做 dup ⇒ 核心直接 SIGKILL 整個行程(Python 3.15 測試連網時當機)。改記 socket 物件的弱參照、
+        #   直接問它自己的 getsockname;關掉 / 被回收的就丟掉。
+        for ref in list(_OWN_SOCKETS):
+            own = ref()
+            if own is None or own.fileno() < 0:
+                _OWN_SOCKETS.remove(ref)
                 continue
             try:
-                dup = sk.socket(fam, typ, 0, nfd)
-            except Exception:  # noqa: BLE001 —— 不是 socket 了(號碼被重用)或建不起來
-                os.close(nfd)
-                _OWN_SOCKETS.pop(fd, None)
-                continue
-            try:
-                mine = dup.getsockname()
+                mine = own.getsockname()
             except OSError:
                 continue
-            finally:
-                dup.close()
             if isinstance(addr, (str, bytes)):
                 if mine and os.fsdecode(mine) == os.fsdecode(addr):
                     return True
