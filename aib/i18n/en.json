@@ -4383,6 +4383,7 @@
   "aib.chat.status_clock_warn": "⚠ Clock: {offset} s off the relays; please sync the time (System Settings → Date & Time → set automatically) or receipts and expiry will be wrong",
   "aib.chat.status_recv_failing": "⚠ Receiving has failed {n} times in a row ({why}, for {mins} min): no mail is coming in; try aib chat off then aib chat on, and report it if it keeps failing",
   "aib.chat.status_self_bad": "⚠ @{seat} cannot be found on the public relays ({why}): friends cannot message this seat or see it online right now; run aib chat selftest for details",
+  "aib.chat.status_first": "First message: the first delivery receipt arrived {s} seconds after turning chat on (kept on this computer only)",
   "aib.chat.status_clock_unknown": "Clock: not measured yet (or cannot measure)",
   "aib.chat.prepare_venv_ok": "Online chat: nostr-sdk ready ({pin})",
   "aib.chat.prepare_venv_failed": "Online chat: could not install nostr-sdk ({pin}, usually the network); run aib chat prepare later",

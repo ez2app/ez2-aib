@@ -1156,6 +1156,32 @@ def note_beat_given(root, gen, owners):
     _locked_update(root, "beat-given.json", fn, lambda: {"v": VERSION})
 
 
+# first.json(10-24 Andy 第 8 條「做，只存本機」):開通到第一封對話各步第一次的時間,只記時間不記內容、不送出去。
+# on 開通 / sent 第一封送上中繼站 / delivered 第一張「對方收下」回條(queued 或 delivered)/ in 第一封收進來的信
+FIRST_KEYS = ("on", "sent", "delivered", "in")
+
+
+def read_first(root):
+    try:
+        cur = json.loads((Path(root) / "first.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(cur, dict):
+        return {}
+    return {k: int(cur[k]) for k in FIRST_KEYS if isinstance(cur.get(k), int) and not isinstance(cur.get(k), bool)}
+
+
+def note_first(root, key, now=None):
+    """只記第一次:已經有就不動(之後關掉再開也不重算)。"""
+    if key not in FIRST_KEYS or key in read_first(root):
+        return
+    at = int(time.time() if now is None else now)
+
+    def fn(cur):
+        cur.setdefault(key, at)
+    _locked_update(root, "first.json", fn, lambda: {"v": VERSION})
+
+
 def drop_world(root, keep_owner):
     """拿掉不再分享對象(好友移除、封鎖)的格;keep_owner(owner) ⇒ True 才留。"""
     def fn(cur):

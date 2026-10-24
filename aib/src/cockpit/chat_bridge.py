@@ -599,6 +599,7 @@ def cmd_on(a, env, out):
     _mkdir_private(chat_home(env))
     write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time())})
     os.chmod(switch_path(env), 0o600)
+    GF.note_first(bridge_root(env), "on")
     try:
         off_marker(env).unlink()
     except FileNotFoundError:
@@ -742,6 +743,7 @@ def cmd_auto(a, env, out):
     if ans.lower() in YES:
         write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time()), "asked": True})
         os.chmod(switch_path(env), 0o600)
+        GF.note_first(bridge_root(env), "on")
         out.write(T("auto_on") + "\n")
         zero_step(env, out)
     else:
@@ -831,7 +833,25 @@ def status_record(env):
     rec["healthy"], rec["why"] = health(rec)
     rec["backup"] = backup_state(env)
     rec["ready"] = ready_checks(rec, env)
+    rec["first"] = first_chat(GF.read_first(root), rec["ready"], rec.get("enabled"))
     return rec
+
+
+def first_chat(f, ready, enabled=True):
+    """10-24 第 8 條:開通到第一封對話的秒數 + 卡在哪一步(只算本機、不送出去)。
+    stuck:off(沒開)/ bridge / public / contact(ready 沒過的第一格)/ no_sent / no_delivered;收到送達回條 ⇒ None。"""
+    on = f.get("on")
+    out = {"on_at": on}
+    for k in ("sent", "delivered", "in"):
+        out[k + "_s"] = max(0, f[k] - on) if on and f.get(k) else None
+    if f.get("delivered"):
+        out["stuck"] = None
+    elif not enabled or not on:
+        out["stuck"] = "off"
+    else:
+        out["stuck"] = next((k for k in ("bridge", "public", "contact") if not ready.get(k)),
+                            "no_sent" if not f.get("sent") else "no_delivered")
+    return out
 
 
 def ready_checks(rec, env=None):
@@ -2229,6 +2249,8 @@ def cmd_status(a, env, out):
         out.write(T("status_unhealthy_" + rec["why"]) + "\n")
     if rec["backup"]["due"]:
         out.write(T("backup_hint") + "\n")
+    if (rec.get("first") or {}).get("delivered_s") is not None:
+        out.write(T("status_first", s=rec["first"]["delivered_s"]) + "\n")
     for line in power_lines(env):
         out.write(line + "\n")
     import chat_pair as CP

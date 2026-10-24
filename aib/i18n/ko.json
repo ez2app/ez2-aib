@@ -4383,6 +4383,7 @@
   "aib.chat.status_clock_warn": "⚠ 시계: 릴레이와 {offset}초 차이. 시간을 맞추세요(시스템 설정 → 날짜 및 시간 → 자동 설정). 수신 확인과 만료 판단이 틀어집니다",
   "aib.chat.status_recv_failing": "⚠ 수신이 {n}회 연속 실패({why}, {mins}분째): 편지가 들어오지 않습니다. aib chat off 후 aib chat on을 해 보고, 계속 실패하면 보고하세요",
   "aib.chat.status_self_bad": "⚠ @{seat}을(를) 공개 릴레이에서 찾을 수 없습니다({why}). 지금 친구가 이 좌석에 보내거나 접속 상태를 볼 수 없습니다. aib chat selftest로 자세히 확인하세요",
+  "aib.chat.status_first": "첫 메시지: 켠 뒤 {s}초 만에 첫 전달 확인을 받았습니다(이 컴퓨터에만 저장)",
   "aib.chat.status_clock_unknown": "시계: 아직 측정 안 됨(또는 측정 불가)",
   "aib.chat.prepare_venv_ok": "온라인 대화: nostr-sdk 준비됨({pin})",
   "aib.chat.prepare_venv_failed": "온라인 대화: nostr-sdk 설치 실패({pin}, 대개 네트워크). 나중에 aib chat prepare 실행",
