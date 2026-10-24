@@ -423,7 +423,7 @@ def hunk_identifiers(repo, base, head=""):
       排錯了只是慢,挑錯了會漏。
     ★ 下界:只認上面五種寫法。`obj.attr = x`、`setattr`、殼裡用變數組出來的名字看不到。
     """
-    args = ["diff", "-U0", base] + ([head] if head else [])
+    args = ["diff", "-U0", "--relative", base] + ([head] if head else [])   # 子專案外有改動時 changed_from_git 已判量不到
     res = _git(repo, args)
     if res.returncode != 0:
         raise Unmeasurable("git diff -U0 rc=%d: %s"
@@ -487,11 +487,24 @@ def identifier_hits(repo, tests, idents):
 def changed_from_git(repo, base, head):
     # --no-renames(10-11 a seat):改名預設只印新路徑 ⇒ 把 tools/x.py 搬成 docs/x.py,舊路徑的消費者(import 它的測試)
     #   一支都挑不到,而漏挑的樣子是綠的。拆成「刪舊 + 加新」,兩條路徑都進規則①~⑤。
-    res = _git(repo, ["diff", "--name-only", "--no-renames", base] + ([head] if head else []))
+    res = _git(repo, ["-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", base] + ([head] if head else []))
     if res.returncode != 0:
         raise Unmeasurable("git diff rc=%d: %s" % (res.returncode,
                                                    (res.stderr or "").strip()))
-    return [l.strip() for l in res.stdout.splitlines() if l.strip()]
+    return to_subproject(repo, [l.strip() for l in res.stdout.splitlines() if l.strip()])
+
+
+def to_subproject(repo, paths):
+    """10-24:--repo 指到倉裡的子專案(開源版的 aib/)⇒ 倉根相對路徑換成子專案相對(跟 ls-files 同一個座標)。
+    子專案外也有改動 ⇒ 量不到(呼叫端跑全套)—— 丟掉外面的路徑會變成挑到 0 支的假綠(#314 審查 A1)。在倉根 = 原樣。"""
+    pre = _git(repo, ["rev-parse", "--show-prefix"])
+    prefix = (pre.stdout or "").strip() if pre.returncode == 0 else ""
+    if not prefix:
+        return paths
+    outside = [p for p in paths if not p.startswith(prefix)]
+    if outside:
+        raise Unmeasurable("changed outside subproject %s: %d: %s" % (prefix, len(outside), ", ".join(outside[:5])))
+    return [p[len(prefix):] for p in paths]
 
 
 def tree_sha(repo):

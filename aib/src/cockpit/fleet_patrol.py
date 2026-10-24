@@ -1005,7 +1005,10 @@ def human_words_unavailable_line(code):
         rec = memory_tidy.last_receipt(code) or {}
     except Exception:  # noqa: BLE001
         return ""
-    if not str(rec.get("human_words") or "").startswith("unavailable"):
+    hw = str(rec.get("human_words") or "")
+    if hw.startswith("fallback"):           # 10-24:缺件時改用對話檔退路篩(照寫人格,只是判準較寬)
+        return "⚠ 人格精煉用對話檔退路篩真人原話(缺 human_filter,等私倉匯出)"
+    if not hw.startswith("unavailable"):
         return ""
     return "⚠ 人格精煉讀不到真人原話(缺 human_filter,等私倉匯出)"
 

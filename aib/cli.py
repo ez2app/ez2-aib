@@ -122,6 +122,9 @@ def _ui_mod():
     return aib_ui
 
 
+CORE_ROOM_SUBCOMMANDS = ("heat",)
+
+
 def _ui_open_room():
     """`aib` 不帶參數:ui.json 是 room(預設)⇒ 開艦長室;terminal ⇒ 回 2 讓呼叫端印說明。任何例外都退回印說明,不卡住。"""
     try:
@@ -160,6 +163,11 @@ def main():
         sys.argv = ["aib license"] + sys.argv[2:]
         runpy.run_module("entitlement.cli", run_name="__main__", alter_sys=True)
         return 0
+    if sys.argv[1] == "room" and len(sys.argv) > 2 and sys.argv[2] in CORE_ROOM_SUBCOMMANDS:
+        # 10-24:機房的核心資料(散熱監控)在核心;`aib room` 其他子指令照舊交給艦長室外掛(外掛蓋過內建 room)
+        sys.path.insert(0, os.path.join(HERE, "src", "cockpit"))
+        import room_heat
+        return room_heat.main(sys.argv[3:])
     if sys.argv[1] not in TARGETS:
         # 外掛新增的子指令(裝在 ~/.ez2-aib/plugins 的外掛,說明檔 commands 欄)優先;要加購的沒授權 ⇒ 說清楚、不跑
         sys.path.insert(0, os.path.join(HERE, "tools", "verify"))

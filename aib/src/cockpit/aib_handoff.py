@@ -296,8 +296,15 @@ def rounds(code: str, home=None) -> list:
 
 
 def current_round_start(code: str, home=None) -> float:
+    """這一輪的開始點:rounds.jsonl 最後一筆;還沒有(新席第一輪,開始點不另記)⇒ 席位檔 started_epoch(跟 _prev_round 同一條);
+    都沒有 ⇒ 0。#312 驗收:第一輪的席一律 0 ⇒ 交接重跑不取代、人格句數量不到。"""
     rs = rounds(code, home)
-    return float(rs[-1]["ts"]) if rs else 0.0
+    if rs:
+        return float(rs[-1]["ts"])
+    try:
+        return float((find_seat_record(code, home) or {}).get("started_epoch") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def receipts(code: str, home=None) -> list:
@@ -1507,11 +1514,34 @@ def _flag_superseded(code: str, flag: dict, home=None) -> bool:
     return False
 
 
-def _brain_write(seat: dict, step_label: str, body: str, seat_arg: str) -> dict:
+def _step_tag(step_label: str) -> str:
+    """步驟標籤 ⇒ aib/handoff/step-<數字>;認不出數字 ⇒ ""(不加標籤、不取代)。"""
+    m = re.search(r"\d+", str(step_label or ""))
+    return "aib/handoff/step-%s" % m.group(0) if m else ""
+
+
+def _prev_step_note(code: str, step_label: str, since: float, entries=None) -> str:
+    """同一輪本席上一則同一步的交接筆記 uid(重跑 write 要取代它,不然接手的人會讀到舊的;@ee4f8 10-24 實測 4 組 12 則)。
+    沒有這一輪的起點(since=0)⇒ 不取代(不跨輪動舊交接)。"""
+    step = _step_tag(step_label)
+    if not since or not step:
+        return ""
+    if entries is None:
+        import aib_memory
+        entries = aib_memory.entries()
+    mine = [e for e in entries if e.get("kind") == "handoff" and e.get("seat") == code
+            and step in (e.get("tags") or []) and float(e.get("created_ms") or 0) >= since * 1000]
+    mine.sort(key=lambda e: e.get("created_ms") or 0)
+    return mine[-1]["uid"] if mine else ""
+
+
+def _brain_write(seat: dict, step_label: str, body: str, seat_arg: str, home=None) -> dict:
     try:
         import aib_memory
+        prev = _prev_step_note(seat["code"], step_label, current_round_start(seat["code"], home))
         rec = aib_memory.write("handoff", T("aib.handoff.brain_title", code=seat["code"], label=step_label), body,
-                               tags=["aib/handoff"], seat=seat_arg)
+                               tags=["aib/handoff"] + ([_step_tag(step_label)] if _step_tag(step_label) else []),
+                               seat=seat_arg, supersedes=prev)
         return {"ok": True, "uid": rec.get("uid"), "path": rec.get("path")}
     except Exception as exc:  # noqa: BLE001 —— 第二大腦寫不進去照實記在收據,不假裝寫了
         return {"ok": False, "why": str(exc)[:300]}
@@ -1541,6 +1571,8 @@ def round_checks(code: str) -> dict:
         return {"tidy": why, "summary": why, "block": ""}
     t = (tidy.get("status") or "?") if tidy else "沒做"
     sm = "有(%s)" % (summ.get("file") or "?") if summ else "沒做"
+    if summ and not (summ.get("brain") or {}).get("ok"):          # 審查 B-S6:總結沒寫進第二大腦照實寫
+        sm += " " + T("aib.handoff.verify.summary_no_brain")
     lines = [T("aib.handoff.round.tidy", status=t), T("aib.handoff.round.summary", status=sm)]
     if not tidy:
         lines.append(T("aib.handoff.round.tidy_next"))
@@ -1668,7 +1700,7 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
     except Exception:  # noqa: BLE001
         keep = secs[k]
     body = "## %s\n\n%s" % (T("aib.handoff.section.%s" % k), keep)
-    out = {"step": label, "brain": _brain_write(seat, label, body, seat_arg),
+    out = {"step": label, "brain": _brain_write(seat, label, body, seat_arg, home),
            "seat_memory": _seat_memory_append(code, label, body, home)}
     steps = {k: v for k, v in _steps_doc(code, home).items() if k in done}
     steps[str(need)] = {"ts": now, "nonce": stamp["nonce"], "brain_ok": out["brain"]["ok"],

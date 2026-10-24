@@ -4,6 +4,15 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.53
+
+- **`aib approve` (new)**: approve a WordPress sign-in with Touch ID on your Mac. `aib approve key init` creates a Secure Enclave signing key on this computer; `site add` registers a site; `pending` / `yes <nonce>` / `no <nonce>` / `history` list and answer requests. Every approval asks for Touch ID and is signed by the Secure Enclave. The WordPress side is a separate plugin.
+- **`aib room heat` (new, read-only)**: a snapshot of load, memory, swap and temperature, processes grouped by who owns them (seats, `aib test`, headless browsers, sandboxes, system, other apps), one hour of history (`history`), and the system crash reports grouped by cause (`crashes`). Anything that cannot be measured is reported as `unmeasured`, never as 0. Output never includes command lines, working folders or full file paths. Releasing leftover processes comes in a later version.
+- **Wrap-up always writes back**: when the human's own words cannot be read the usual way, the handoff falls back to the conversation file (human-typed lines only) instead of skipping; `aib summary write` stores the summary as a second-brain note; `verify` no longer accepts a skipped summary or persona step.
+- **`aib test --changed` works in the open-source tree**: the consumer-scope rules are now included (no more `ModuleNotFoundError`); a subproject inside the repo is selected from the subproject and from the repo root, and anything changed outside it is reported as unmeasured instead of silently passing.
+- **`aib memory write` with several seats at once**: numbering, writing and indexing now happen under one lock, so two seats writing at the same moment can no longer get the same note number.
+- **Empty prompt hint is not a draft**: when the cursor sits on the first letter of the input box's placeholder hint, the box is still treated as empty, so queued messages are delivered instead of waiting for someone to type.
+
 ## 0.1.52
 
 - **`aib test` no longer crashes Python 3.15 on macOS**: the network audit hook no longer duplicates old socket file descriptors (a reused descriptor could be a protected one, and duplicating it made the system kill the test process). It now keeps weak references to the sockets it bound and asks them directly.
