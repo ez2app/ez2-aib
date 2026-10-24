@@ -641,6 +641,41 @@ class Sender(object):
             GF.write_space_status(self.root, {"at": int(now), "reason": None, "wire_bytes": len(wire), "dropped": dropped})
             audit(self.root, "space-out", "-", tgt, str(len(wire)))
 
+    async def _push_revoke(self, tgt, owner, frm, kind, now):
+        """撤回(10-24 跨客戶驗收 6.7 / 5.4):之前送過空間快照 / 在線,現在降到 none / off(或刪好友、封鎖)
+        ⇒ 送一則帶 aib-revoke 的同類私訊,對方刪掉手上的快照 / 在線格。回 True = 中繼站收下。
+        舊版收件端:space 解不開記一行 bad、presence 沒 seats 忽略 ⇒ 照舊,不會出錯。"""
+        tries = getattr(self, "rv_try", None)
+        if tries is None:
+            tries = self.rv_try = {}
+        n, at = tries.get((tgt, kind), (0, 0))
+        if n >= REVOKE_MAX_TRIES or (n and now - at < PRESENCE_GAP_S):
+            return False
+        tries[(tgt, kind)] = (n + 1, now)
+        addr = await self._first_seat_addr(tgt)
+        rc, res = await self._resolve(addr) if addr else (2, {})
+        if rc != 0:
+            return False
+        keys = _keys(frm["key"])
+        typ = "space" if kind == "space" else "presence"
+        tags = [N.Tag.parse(x) for x in (["aib-v", "1"], ["aib-type", typ], ["aib-revoke", "1"],
+                                         ["aib-from", "%s/%s/%s" % (owner, frm.get("cabin") or "main", frm["seat5"])])]
+        gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(res["seat"]["npub"]),
+                                      json.dumps({"v": 1, "revoke": True}), rumor_extra_tags=tags)
+        keys = None
+        c = await _client(res["dm_relays"])
+        try:
+            out = await c.send_event(gw)
+        except Exception:   # noqa: BLE001
+            out = None
+        finally:
+            await c.shutdown()
+        if out is None or not out.success:
+            return False
+        tries.pop((tgt, kind), None)
+        audit(self.root, "revoke-out", "-", tgt, kind)
+        return True
+
     async def _send_owner_msg(self, tgt, typ, body):
         """主人層級的私訊(掛單,第 36.2 節):用我第一個公開席的金鑰寄到對方第一個席。回 True = 中繼站收下。"""
         m = NK.read_map()
@@ -743,14 +778,29 @@ class Sender(object):
         last = getattr(self, "p_last", None)
         if last is None:
             last = self.p_last = {}
+        shared = GF.read_shared_sent(self.root)
+        for tgt, row in shared.items():                                 # 撤回:之前分享過、現在降級 / 不再是好友 / 封鎖
+            if row.get("space") and CR.space_level(tgt) not in ("island", "room"):
+                if await self._push_revoke(tgt, owner, mine_seats[0], "space", now):
+                    GF.note_shared_sent(self.root, tgt, "space", None)
+                    getattr(self, "r_last", {}).pop(tgt, None)          # 之後再開分享 ⇒ 立刻送
+            if row.get("share") and CR.share_level(tgt) == "off":
+                if await self._push_revoke(tgt, owner, mine_seats[0], "share", now):
+                    GF.note_shared_sent(self.root, tgt, "share", None)
+                    last.pop(tgt, None)
         sent = 0
         for tgt in targets[:PRESENCE_MAX_TARGETS]:
             await self._push_card(tgt, owner, mine_seats[0], now)       # 名片跟在線等級無關(好友 / 我的機器才在 targets)
-            if CR.space_level(tgt) in ("island", "room"):               # 空間分享是另一條(第 34 節 v2)
+            sp = CR.space_level(tgt)
+            if sp in ("island", "room"):                                # 空間分享是另一條(第 34 節 v2)
+                if (shared.get(tgt) or {}).get("space") != sp:          # 先記意圖:升級後第一次也算,降級才知道要撤回
+                    GF.note_shared_sent(self.root, tgt, "space", sp)
                 await self._push_room(tgt, owner, mine_seats[0], now)
             lvl = CR.share_level(tgt)
             if lvl == "off":
                 continue
+            if (shared.get(tgt) or {}).get("share") != lvl:
+                GF.note_shared_sent(self.root, tgt, "share", lvl)
             rows = SP.presence([e["seat5"] for e in mine_seats], with_status=(lvl == "status"))
             for r, e in zip(rows, mine_seats):
                 r["cabin"] = e.get("cabin") or "main"
@@ -873,6 +923,7 @@ UNCONFIRMED_AFTER_S = float(os.environ.get("AIB_CHAT_UNCONFIRMED_AFTER") or 8640
 UNCONFIRMED_TICK_S = 600
 
 ROOM_GAP_S = float(os.environ.get("AIB_CHAT_ROOM_GAP") or 600)          # 房間快照同一位最少間隔(第 34 節)
+REVOKE_MAX_TRIES = 20                                                       # 撤回送不到(對方名冊沒了)最多試幾次 / 每次工人行程
 ORPHAN_KEEP_S = float(os.environ.get("AIB_CHAT_ORPHAN_KEEP") or 60)   # 秒;查不到寄出帳的回條暫存多久(第 27.8 節)
 ORPHAN_MAX = 500
 REFUSED_MAX = 200                           # refused.json 最多記幾位(第 27.5 節)
@@ -1183,6 +1234,8 @@ class Receiver(object):
     async def on_room(self, rumor, tags, from_npub):
         """房間快照(第 34 節):只收驗得到名冊的好友 / 我的機器;解壓、再清一次、存 rooms/<主人>.json。不進佇列、不回條。"""
         import room_snapshot as RS
+        if tags.get("aib-revoke") == "1":
+            return await self._on_revoke(tags, from_npub, "space")
         parsed = GF.parse_address(tags.get("aib-from") or "") or {}
         owner = parsed.get("owner")
         allowed = bool(owner) and not CR.is_blocked(owner) and (CR.is_mine(owner) or CR.is_friend(owner))
@@ -1197,6 +1250,22 @@ class Receiver(object):
             return
         GF.write_room(self.root, owner, snap)
         audit(self.root, "space-in", "-", from_npub, "room" if snap.get("rooms") else "island")
+
+    async def _on_revoke(self, tags, from_npub, kind):
+        """對方撤回空間 / 在線分享:驗得到名冊席(不要求還是好友:刪好友、封鎖後送來的也要收)
+        ⇒ 刪掉他的快照 / 在線格。只動這位主人自己的資料。"""
+        parsed = GF.parse_address(tags.get("aib-from") or "") or {}
+        owner = parsed.get("owner")
+        if not owner:
+            return
+        rc, res = await self.sender._resolve(tags.get("aib-from"))
+        if rc != 0 or res["seat"]["npub"] != from_npub:
+            return
+        if kind == "space":
+            GF.drop_room(self.root, owner)
+        else:
+            GF.drop_world_owner(self.root, owner)
+        audit(self.root, "revoke-in", "-", from_npub, kind)
 
     async def on_offer(self, rumor, tags, from_npub):
         """掛單(第 36.2 節):只收驗得到名冊的好友 / 我的機器;買單 ⇒ 賣方核心決定並回覆;回覆 ⇒ 買方記帳。不進佇列。"""
@@ -1260,6 +1329,8 @@ class Receiver(object):
         """在線狀態(第 30.4 節):只收驗得到名冊、而且是好友 / 我的其他機器送來的;其他靜默丟。
         不進佇列、不回條、不記收件帳;只寫 world.json。"""
         import seat_presence as SP
+        if tags.get("aib-revoke") == "1":
+            return await self._on_revoke(tags, from_npub, "share")
         from_addr = tags.get("aib-from") or ""
         parsed = GF.parse_address(from_addr) or {}
         owner = parsed.get("owner")

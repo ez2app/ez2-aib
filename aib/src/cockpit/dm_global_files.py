@@ -851,6 +851,11 @@ def note_world(root, owner, cabin, seats, now=None, power=None):
     _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
 
 
+def drop_world_owner(root, owner):
+    """對方撤回在線分享:拿掉他所有艙的格。"""
+    drop_world(root, lambda o: o != owner)
+
+
 def drop_world(root, keep_owner):
     """拿掉不再分享對象(好友移除、封鎖)的格;keep_owner(owner) ⇒ True 才留。"""
     def fn(cur):
@@ -872,6 +877,45 @@ def write_room(root, owner, snap, now=None):
     write_json(str(d / (owner + ".json")), {"v": VERSION, "owner": owner, "at": int(time.time() if now is None else now),
                                             "snap": snap})
     os.chmod(str(d / (owner + ".json")), 0o600)
+
+
+def drop_room(root, owner):
+    """對方撤回空間分享(10-24 跨客戶驗收 6.7):刪掉他的快照。不在 / 壞名字 ⇒ 什麼都不做。"""
+    if not NPUB_FULL_RE.match(owner or ""):
+        return False
+    try:
+        (Path(root) / "spaces" / (owner + ".json")).unlink()
+        return True
+    except OSError:
+        return False
+
+
+# shared-sent.json:我這台最後一次真的送給每位對方的分享等級({owner: {"space": island|room, "share": online|status}})。
+#   等級降到 none / off(或對方不再是好友、被封鎖)⇒ 送一次撤回,對方刪掉手上的快照 / 在線格;送成功才拿掉那一格。
+def read_shared_sent(root):
+    try:
+        cur = json.loads((Path(root) / "shared-sent.json").read_text(encoding="utf-8"))
+        per = cur.get("per") if isinstance(cur, dict) else None
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in per.items() if NPUB_FULL_RE.match(k) and isinstance(v, dict)} if isinstance(per, dict) else {}
+
+
+def note_shared_sent(root, owner, kind, level):
+    """kind = space / share;level None ⇒ 拿掉(撤回送到了)。"""
+    if not NPUB_FULL_RE.match(owner or "") or kind not in ("space", "share"):
+        return
+
+    def fn(cur):
+        per = cur.setdefault("per", {})
+        row = per.setdefault(owner, {})
+        if level is None:
+            row.pop(kind, None)
+        else:
+            row[kind] = level
+        if not row:
+            per.pop(owner, None)
+    _locked_update(root, "shared-sent.json", fn, lambda: {"v": VERSION, "per": {}})
 
 
 def write_space_status(root, rec):
