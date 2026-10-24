@@ -176,7 +176,7 @@ def attestation_satisfied(native_attestation, human_typed_challenge=False):
     參數名寫死 human_typed_challenge:過渡條款只覆蓋「真人親手打 challenge」
     的綁定收據;批次/自動綁定的呼叫端沒有誠實的方式把它填 True。
     ★這是過渡語義:收斂條件=EH 軸真人同意通道落地供原生 attestation
-    (正本 §7-2「ACB 原生支援上線即收斂,過渡條款自動失效」)。拔過渡=
+    (正本 §7-2「原生支援上線即收斂,過渡條款自動失效」)。拔過渡=
     呼叫端停傳 human_typed_challenge 即可,判定核心不需改——測試裡有
     「過渡關閉時缺❸必拒」負例看守這一點。transitional 標記必真,事件
     可據此清點過渡期放行名單。

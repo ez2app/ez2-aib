@@ -2,17 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # provider-launch v2.0.0 — Launch one provider CLI for a cockpit seat.
 #
-# ED.11(2026-08-13,the maintainer 直令「不遵守 ACB 權限,我們要拆除」):
-# 預設改為**直接執行 provider CLI**,不再經過 ACB 載體。
-#
-# 為什麼:舊路徑 `exec acb <provider> <mode> --role ...` 會進 ACB 的 BIND 儀式,
-# 而該儀式死於入冊的 A 類死因(`bootstrap capture does not have the exact outer
-# shape` → receipt verification failed → pane 死),且裁決明定 ACB 廢止前提下
-# 不投入修繕——所以「開席位」在本機是必死路徑,aib 永遠進不了開發畫面。
+# ED.11(2026-08-13,the maintainer 直令):一律**直接執行 provider CLI**,不經任何載體。
 #
 # 誠實邊界:直起的席位**沒有任何密碼學身份**,trust=self_reported,由 aib 啟動器
-# 寫進席位紀錄;絕不冒充 registry_verified(那個狀態隨 ACB 一起死了,EH grant
-# 模型上線前不會有繼任者)。EZ2_AIB_CARRIER=acb 不再執行 acb,直接拒絕。
+# 寫進席位紀錄;絕不冒充 registry_verified(EH grant 模型上線前不會有這個狀態)。
 set -euo pipefail
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -91,7 +84,7 @@ for name in "${AIB_CARRIER_SCRUB_VARS[@]}"; do
   ENV_COMMAND+=( -u "$name" )
 done
 
-# Desktop bridge must never enter CLI/ACB launch or alter desktop permissions.
+# Desktop bridge must never enter CLI launch or alter desktop permissions.
 if [ "$PROVIDER" = "codexbot" ]; then
   # shellcheck source=identity-env.sh
   . "$HERE/identity-env.sh"
@@ -99,12 +92,6 @@ if [ "$PROVIDER" = "codexbot" ]; then
   exec "${ENV_COMMAND[@]}" "${EZ2_PY3:-python3}" "$HERE/codexbot_bridge.py" \
     --session-id "$SESSION_UUID" --thread-id "${AIB_CODEXBOT_THREAD_ID:-}" \
     --endpoint "${AIB_CODEXBOT_ENDPOINT:-}"
-fi
-
-if [ "${EZ2_AIB_CARRIER:-direct}" = "acb" ]; then
-  # ACB 已關。就算 acb 執行檔還在,也不再交給它開席。
-  echo "provider-launch: ACB 載體已關閉,不執行 acb" >&2
-  exit 127
 fi
 
 # --- 直起路徑(預設)---

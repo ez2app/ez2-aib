@@ -4,6 +4,20 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.54
+
+- **`aib room heat release`(新)**:釋放沒人用的殘留。目前兩種：暫存夾底下的孤兒測試腳本、帶暫存設定檔的自動化 Chrome 孤兒，都要活過 120 秒。候選列在快照的 `candidates` / `held`;釋放前每次送訊號都重比擁有者與開始時間、只殺列出的那一支，行程底下有 ssh / scp / rsync 或開著 `*.lock` 的一律列進 `held` 不收。`--dry-run` 只顯示會做什麼;`--auto` 每 10 分鐘有上限，記不了帳就停手。
+- **`aib memguard` 與每支測試的記憶體上限**:`aib test` 跑的每支測試整棵行程樹有記憶體上限(`AIB_TEST_MEM_CAP_MB`,預設 2048,0 = 關),超過就整棵收掉、結束碼 137、帶 `memory_cap`。機器層守門(`aib memguard scan|watch|log`)只看自己的直譯器行程，不碰席位、Codex、Claude、瀏覽器與 App。按 Ctrl-C、關終端機或停掉 `aib test` 時，正在跑的那支測試也會一起收掉，不再留成孤兒。
+- **測試時少寫很多次磁碟**:`aib test` 的追蹤鉤子每個行程只開一個附加寫入的檔，不再每筆開關一次(APFS 寫入放大約 76 倍 → 1 倍)。
+- **右欄更省**:艦長列只在席位有變或滿 30 秒才同步;切窗改由 tmux 鉤子通知，不再每拍問 tmux(20 秒內 tmux 呼叫約 230 → 33 次)。
+- **線上關掉分享立刻生效**:`aib chat share … off`(以及縮小空間)會送出撤回，好友那邊馬上看不到，不用等舊快照過期。先後用同一位寄件人自己的寄出時間比、過期看收到時間，寄件人時鐘快或慢都不會讓舊快照復活。
+- **工作樹與 clone 一律開在 Spotlight 不掃的地方**:Mac 上 `git worktree add` / `git worktree move` / `git clone` 目標在家目錄一般資料夾會被擋，建議改 `~/wt.noindex/<名>`;本席還有工作樹在會被掃的地方時，交接驗證不過(用 `git worktree move` 搬走)。
+- **線上對話回條不再倒退**:本機「已送上中繼站」那筆比對方的回條(例如 `queued`)晚寫時,`aib chat recent` 照樣顯示對方回的那張，不會退回「已送上中繼站」。
+- **`aib chat connect`(新)**:一次連上一個人：加好友或同意對方的申請，同時設好分享(`--share` / `--space` / `--open`),最多只按一次指紋。`aib chat share` 可用 `--space` 一起改在線與空間，只按一次指紋。申請送不出去時，剛加的好友會撤掉、你自己設的分享不動;移除好友只清掉比預設寬的等級。
+- **Claude 狀態列更省**:狀態列腳本拿掉整套舊 ACB(標題快取、艦隊段、每 10 秒背景刷新),每次刷新 CPU 約 525 → 209 ms,背景不再跑東西。看到的內容不變;只有艙外又沒有 node 時，CTX 那行改成空白，不再印舊的 ACB 占位字。`--auto` 仍認得所有發過的版本並換新;你自己改過的狀態列不會被動到。
+- **線上對話收尾**:`aib chat publish` 的「這一席還沒有金鑰」提示改用跟名冊同一份席位清單;找對方時只在快照沒有可用的席才改抓名冊(網路錯等下一輪);測試的子行程不再帶入真的家目錄與中繼站設定。
+- **清掉舊 ACB 殘留(一)**:沒人啟動的底部面板腳本、退役的開席分支與舊環境變數清單都移除了。門口不再把 `ACB_` 開頭的變數帶進新的 tmux 伺服器;如果你在自己的 shell export 這類變數來改狀態列預設，請改寫在 `~/.claude/settings.json` 的 env 段。
+
 ## 0.1.53
 
 - **`aib approve`(新)**:WordPress 登入改在 Mac 按 Touch ID 核准。`aib approve key init` 在這台建一把 Secure Enclave 簽章鑰;`site add` 登記網站;`pending` / `yes <nonce>` / `no <nonce>` / `history` 列出與回覆請求。每次核准都要 Touch ID,並由 Secure Enclave 簽章。WordPress 那一端是另外的外掛。

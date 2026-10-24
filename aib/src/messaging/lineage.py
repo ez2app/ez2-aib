@@ -3,7 +3,7 @@
 
 大綱原文:send/dm 驗 sender=registry_verified 主AI;子AI 無訊息動詞,只回報 spawner。
 
-這條規則本來只寫在交接單裡靠人記得。ACB 的歷史是「子 AI 冒用主 AI 身份發訊、
+這條規則本來只寫在交接單裡靠人記得。舊載體的歷史是「子 AI 冒用主 AI 身份發訊、
 或對著不是自己 spawner 的對象回報」,而收訊端無從分辨。本模組把它變成
 一個純函數 + 一個咽喉包裝:判定不看宣稱,只看身份紀錄裡的機器事實。
 
@@ -24,7 +24,7 @@
   6. 系統/收集器                                    -> deny system_no_messaging
 
 registry_verified 只認身份紀錄裡**明寫**的那一欄。欄位不存在=未驗證(deny
-registry_field_absent),不從「有心跳」「檔案存在」這類旁證推論 —— 那是 ACB
+registry_field_absent),不從「有心跳」「檔案存在」這類旁證推論 —— 那是舊載體
 四個後門的來源。心跳新鮮度證明它還活著,不證明它是誰。
 
 事件組裝復用 src/collectors/collector_common.py(E8.3 反重造閘:不造第二套
@@ -265,7 +265,7 @@ def decision_body(request, sender, result):
 
 
 def load_sender_from_registry(uuid, registry_dir):
-    """從 ACB session registry 讀身份。讀不到=None(呼叫端 fail-closed)。
+    """從身份登記簿(EZ2_AIB_REGISTRY_DIR)讀身份。讀不到=None(呼叫端 fail-closed)。
 
     刻意不從心跳/檔案存在推論 registry_verified:那些只證明它還活著,
     不證明它是誰。只有紀錄裡明寫的那一欄算數,欄位不存在就是沒驗證。
@@ -293,6 +293,9 @@ def load_sender_from_registry(uuid, registry_dir):
         # (不在這裡猜真假——bool("false") 就是上一版的病)。
         sender[bad] = rec[bad]
         return sender
+    # 只認明寫的 registry_verified。舊載體 v2 的 binding_uid / formal_eligible 推導
+    # 10-25 已拿掉(那份登記簿 08-11 起就停了);bound_unattested 只由呼叫端
+    # (dm-ctl 的席位推導)直接帶在 sender 裡,decide() 照判。
     status = rec.get("session_status")
     if "registry_verified" in rec:
         if status is not None and status != "active":
@@ -301,18 +304,6 @@ def load_sender_from_registry(uuid, registry_dir):
             sender["session_status"] = status
         else:
             sender["registry_verified"] = rec["registry_verified"]
-    elif rec.get("binding_uid") and status == "active":
-        # ACB v2 綁定的真實欄位(2026-08-08 實查 498 筆記錄:registry_verified
-        # 一筆都沒有;真正存在的是 binding_uid / session_status /
-        # formal_eligible / native_attestation / authority_level)。
-        # 只有 ACB 自己同時標 formal_eligible 與 native_attestation 為 true,
-        # 才算通過驗證;68 筆已綁記錄目前兩者皆為 false,ACB 自述
-        # authority_level=same_user_registry_unattested,也就是「綁了但未經證實」。
-        sender["binding_uid"] = rec["binding_uid"]
-        sender["authority_level"] = rec.get("authority_level")
-        sender["registry_verified"] = (rec.get("formal_eligible") is True) and \
-            (rec.get("native_attestation") is True)
-        sender["bound_unattested"] = not sender["registry_verified"]
     return sender
 
 

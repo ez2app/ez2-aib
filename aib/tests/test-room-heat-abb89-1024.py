@@ -193,7 +193,7 @@ class History(Base):
 
     def test_h3e_history_cmd_last_hour(self):
         """r4 B-L7:history 子指令只回最近 1 小時(關機一天後不回昨天的點)。"""
-        now = time.time()
+        now = float(int(time.time()))     # 整數秒:存檔是 round(t, 1),取整比對才不會在 .x5 邊界差 1(#329 CI)
         self.RH.record_history({"level": "ok", "cells": {}}, now=now - 86400)
         self.RH.record_history({"level": "ok", "cells": {}}, now=now - 30)
         out = io.StringIO()

@@ -740,8 +740,8 @@ def _main(argv):
     parser = argparse.ArgumentParser(description="AIB shared notification policy")
     sub = parser.add_subparsers(dest="command", required=True)
     count = sub.add_parser("count-inbox")
-    # ★ 2026-08-21 ACB 廢止(工單 DISPATCH-acb-sweep-0821 §二·A·4 裁定):
-    #   原本 default=~/.acb/inbox/pm。裁定是「拿掉 default 改必填」,
+    # ★ 2026-08-21 舊載體廢止(工單 §二·A·4 裁定):
+    #   原本 default=舊載體收件匣。裁定是「拿掉 default 改必填」,
     #   而不是換一個新的預設值——**預設值就是這顆病的形狀**:它讓
     #   「呼叫端忘了給路徑」看起來像成功(改動前實測:不給路徑
     #   rc=0 且回 {"red":0,"yellow":0,"green":0,"blue":0},與「真的沒有未讀」

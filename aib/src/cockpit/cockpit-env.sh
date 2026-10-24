@@ -3,7 +3,7 @@
 # 指揮艙共用設定 —— 所有外部路徑的唯一出口(E2.1)。
 #
 # demo 的病根是硬路徑散在各腳本(scratchpad 舊 session 路徑、舊大綱檔名、
-# ~/.acb 直書)。遷入正本後,外部依賴一律走環境變數,預設值集中在這裡;
+# 舊載體目錄直書)。遷入正本後,外部依賴一律走環境變數,預設值集中在這裡;
 # 部署差異(別台機器/別個 vault)只改環境,不改腳本。
 #
 # 用法:每支腳本開頭 . "$(dirname "$0")/cockpit-env.sh"
@@ -174,12 +174,6 @@ fi
 export EZ2_TASKS_DIR="${EZ2_TASKS_DIR:-$EZ2_COCKPIT_STATE_DIR/sandbox-tasks}"
 _aib_require_abs EZ2_TASKS_DIR "$EZ2_TASKS_DIR" || { return 2 2>/dev/null || exit 2; }
 
-# the maintainer 2026-10-13:EZ2_ACB_HOME 別名已撤。繼承到的值清掉。
-unset EZ2_ACB_HOME EZ2_ACB_HOME_REJECTED AIB_REQUIRE_ACB_HOME 2>/dev/null || true
-
-# 艦隊看板正本(share/claude-ui)
-export EZ2_FLEET_BOARD="${EZ2_FLEET_BOARD:-$HOME/.claude/ez2-fleet-board.py}"
-
 # Codex rollout 是目前唯一能雙向驗證、且提供可公開 child UUID 的子 AI 來源。
 # Claude 的 temporary tasks 目錄混有背景 shell 命令，禁止當作子 AI 身份來源。
 export EZ2_CODEX_SESSIONS_ROOT="${EZ2_CODEX_SESSIONS_ROOT:-$HOME/.codex/sessions}"
@@ -246,7 +240,6 @@ export EZ2_VAULT_DIR   # 已在上面照 default_vault 的規則定好(10-12)
 # 其餘外部路徑一起過同一道閘。★ 只擋 INSTANCE_HOME/STATE_DIR 是不夠的
 # (e5300 08-17 指出):同樣的錯從別的變數進來時,**下游不同、症狀會長得
 # 完全不一樣**,沒有人會聯想到是同一顆病。
-_aib_require_abs EZ2_FLEET_BOARD "$EZ2_FLEET_BOARD" || { return 2 2>/dev/null || exit 2; }
 _aib_require_abs EZ2_CODEX_SESSIONS_ROOT "$EZ2_CODEX_SESSIONS_ROOT" || \
   { return 2 2>/dev/null || exit 2; }
 _aib_require_abs EZ2_PERSONA_RUNTIME "$EZ2_PERSONA_RUNTIME" || \

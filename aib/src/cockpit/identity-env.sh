@@ -28,18 +28,6 @@ AIB_IDENTITY_VARS=(
   EZ2_SESSION_MODE
   EZ2_RDL_LANE
   EZ2_LANE
-  ACB_LANE
-  ACB_ACT_AS
-  ACB_SESSION_ID
-  ACB_SESSION_UUID
-  ACB_SESSION_PID
-  ACB_SESSION_STARTED_EPOCH
-  ACB_SESSION_STATUS
-  ACB_SESSION_ENGINE
-  ACB_SESSION_LAUNCH_MODE
-  ACB_SESSION_LAUNCH_PROVIDER
-  ACB_SESSION_LAUNCH_STARTED_EPOCH
-  ACB_SESSION_PROJECT_DIR
   AIB_CODEXBOT_THREAD_ID
   AIB_CODEXBOT_ENDPOINT
   AIB_CODEXAPP_THREAD_ID
@@ -60,9 +48,6 @@ AIB_IDENTITY_VARS=(
 #   unset 不是隔離)—— 這是第三條,形狀一樣:一個只該活一次的值活了下去。
 AIB_ONESHOT_FLAG_VARS=(
   AIB_IGNORE_USAGE
-  EZ2_ACB_HOME
-  EZ2_ACB_HOME_REJECTED
-  AIB_REQUIRE_ACB_HOME
 )
 
 AIB_CARRIER_SCRUB_VARS=(
@@ -116,7 +101,7 @@ AIB_CARRIER_SCRUB_VARS=(
 #    的(COLORTERM/LC_*/TZ/GPG_TTY)。拿健康的對照組當基準,不是憑印象。
 #    ★ SECURITYSESSIONID / XPC_* 不能拿掉:那是 macOS 的工作階段,
 #      拿掉之後席位裡的 security / gh 認不得鑰匙圈,而那個壞法很難追。
-# 2. 本專案命名空間 `EZ2_*` / `ACB_* `/ `AIB_*` —— **減掉**上面那份
+# 2. 本專案命名空間 `EZ2_*` / `AIB_*` —— **減掉**上面那份
 #    `AIB_CARRIER_SCRUB_VARS`(身份與一次性旗標,它們本來就不該過)。
 #    ⇒ 兩份名單**合作**,不是互相取代:黑名單繼續管「我們自己的東西裡
 #      哪些只能活一次」,白名單管「別人的東西一律不過」。
@@ -126,9 +111,9 @@ AIB_CARRIER_SCRUB_VARS=(
 #
 # ## 已知的限制(寫出來,不假裝沒有)
 #
-# 規則 2 認的是名字前綴,所以**分不出**「EZ2_/ACB_/AIB_ 是我們設的」還是
-# 「某個 AI 工具的設定檔剛好設了同前綴的變數」。實例:`ACB_UI_PREFIX`
-# 來自 ~/.claude/settings.json,而它會被當成我們自己的東西帶過去。
+# 規則 2 認的是名字前綴,所以**分不出**「EZ2_/AIB_ 是我們設的」還是
+# 「某個 AI 工具的設定檔剛好設了同前綴的變數」(例如 ~/.claude/settings.json 的 env 段),
+# 那種也會被當成我們自己的東西帶過去。
 # 這是前綴規則的性質,不是漏洞;要分得出來得讓艙自己宣告它匯出了什麼,
 # 那是另一件事。
 #
@@ -157,7 +142,7 @@ AIB_ENV_DOOR_BASICS=(
   FPATH INFOPATH ANDROID_HOME
 )
 
-AIB_ENV_DOOR_PREFIXES=( EZ2_ ACB_ AIB_ )
+AIB_ENV_DOOR_PREFIXES=( EZ2_ AIB_ )
 
 # ★ 10-24(@abb89,右鍵另開 AI 實測):只給「這一次開席」用的接回 / 分出旗標,不准過門進 tmux 伺服器。
 #   艙重開時 cabin_restart 帶 AIB_REVIVE_SESSION_UUID=<舊席> 跑 aib;若這一次剛好生出 tmux 伺服器,
@@ -229,7 +214,7 @@ aib_env_door_report_dropped() {
     dropped="$dropped $n"
   done
   [ -n "$dropped" ] || return 0
-  # 10-17 fishmac:「擋下 N 個外來變數」像出錯(多半是舊安裝或別的工具留下的環境變數)⇒ 照舊列出,但說清楚不影響使用
+  # 10-17 一台會員機:「擋下 N 個外來變數」像出錯(多半是舊安裝或別的工具留下的環境變數)⇒ 照舊列出,但說清楚不影響使用
   echo "aib: 開艙時沒帶進 $(printf '%s' "$dropped" | wc -w | tr -d ' ') 個外面的環境變數(舊安裝或別的工具留下的,不影響使用):$dropped" >&2
 }
 

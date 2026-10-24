@@ -386,7 +386,7 @@ def _age_mark(age_minutes):
 
 
 def render_persona(data, width=20):
-    """人格面板(對應 demo 的 acb-left-persona.sh 渲染段)。"""
+    """人格面板(對應舊 demo 的 left-persona 渲染段)。"""
     data = clean_data(data)            # E2.11:資料進入點清控制字元
     lines = [DIM + " 人格" + RESET, ""]
     lines.append(" " + trunc(data.get("persona") or "(未綁定)", width - 2))
@@ -412,7 +412,7 @@ def render_persona(data, width=20):
 
 
 def render_brain(data, width=22):
-    """專案(第二大腦)分類樹(對應 demo 的 acb-left-brain.sh 渲染段)。
+    """專案(第二大腦)分類樹(對應舊 demo 的 left-brain 渲染段)。
 
     R16(the maintainer 2026-09-26):畫面抬頭從「第二大腦」改「專案」——同一個畫面不能兩種叫法
     (左欄標籤已是「專案樹」)。函式名、資料鍵、route 模組碼全部不動。
@@ -423,7 +423,7 @@ def render_brain(data, width=22):
                 GREY + " (route registry 不可用)" + RESET,
                 GREY + " 設 EZ2_ROUTE_REGISTRY" + RESET]
     expanded = data.get("expanded", False)
-    MOD = {"C": "核心", "P": "專家", "F": "流程", "G": "智囊", "A": "ACB"}
+    MOD = {"C": "核心", "P": "專家", "F": "流程", "G": "智囊", "A": "Ez2"}
     lines = [DIM + " 專案 %s" % ("(開)" if expanded else "(合)") + RESET, ""]
     for m in ["C", "P", "F", "G", "A"]:
         routes = [r for r in data.get("routes", []) if r.get("module") == m]
@@ -4552,7 +4552,7 @@ def required_usage_pane_width(data):
 
 
 def render_ai_list(data, width=DEFAULT_PANE_W - 1):
-    """主AI+子AI 合併看板(對應 demo 的 acb-right-ai.sh 渲染段)。
+    """主AI+子AI 合併看板(對應舊 demo 的 right-ai 渲染段)。
 
     只是 render_ai_list_with_map 的畫面部分 —— 刻意不另寫一份迴圈,
     否則行對映與畫面遲早錯開。"""

@@ -1634,6 +1634,13 @@ def cmd_watch(args, policy):
         print("aib idle watch: %s" % _g_why, file=sys.stderr)
     except Exception as exc:  # noqa: BLE001
         print("aib idle watch: cabin-guard 沒起來(仍存活):%s" % exc, file=sys.stderr)
+    # 記憶體暴衝守門(10-24 20:34 卡死實案):1 秒一拍、零 fork;N 艙只一條在掃(鎖)。邏輯與開關見 memguard.py 檔頭。
+    try:
+        import memguard  # noqa: E402
+        _m_ok, _m_why = memguard.start_thread()
+        print("aib idle watch: %s" % _m_why, file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print("aib idle watch: memguard 沒起來(仍存活):%s" % exc, file=sys.stderr)
     while True:
         # BL:碼換了就重跑自己(每輪頂端問一次,受 EZ2_IDLE_REEXEC_INTERVAL 節流)。
         # 放在 watch_round 之前:重跑掉的那一輪不會留心跳,而重跑後第一輪馬上補一個 ——

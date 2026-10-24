@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""子代理契約前言注入(BE,2026-09-03):ACB `subagent-guard` 的 aib 正本。
+"""子代理契約前言注入(BE,2026-09-03):舊載體 `subagent-guard` 的 aib 正本。
 
-the maintainer 09-03 直令關閉 ACB。舊 hook `~/.acb/bin/subagent-guard.{sh,py}` 掛在 `PreToolUse(Agent)`,
+the maintainer 09-03 直令關閉舊載體。舊 hook `subagent-guard.{sh,py}` 掛在 `PreToolUse(Agent)`,
 第二方 08-22 已逐條證過它的**兩條 deny 都不可達**(型別白名單恆為空 list;子 AI 配額的讀端 glob
 `unbound_*.kids` 與寫端的真角色名目錄永不相交,且 running 全庫是 0)。所以搬過來的不是那兩條,
 是它**唯一活著的效果**:把角色庫的子 AI 模版接在每一個子代理提示詞前面。
 
-★ 為什麼這一支不能跟著 ACB 一起關掉:它每一次派子代理都在改寫送出去的提示詞
+★ 為什麼這一支不能跟著舊載體一起關掉:它每一次派子代理都在改寫送出去的提示詞
   (實測 `permissionDecision: allow` + `updatedInput.prompt`)。關掉它,子代理不再拿到
   「只讀不寫、查無即說無、宣稱=落檔」那份契約,而**畫面上一模一樣**——行為變了,沒有任何一格會紅。
 
-模版來源是 the maintainer 的 Obsidian 角色庫(不是 ACB 的資料):
+模版來源是 the maintainer 的 Obsidian 角色庫(不是舊載體的資料):
 `~/Desktop/Obsidian/Ez2/P-Ez2 AI專家/P10-專家模板/角色庫/_子AI模版/{探索型,審查型,執行型}.md`
 `AIB_SUBAGENT_TEMPLATE_DIR` 可覆寫(治具用)。vault 缺席=不注入(優雅降級),不是錯誤。
 

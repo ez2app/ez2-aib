@@ -4,7 +4,7 @@
 #
 # 10-11 從舊協作板 scripts/classify-env-blocked.py 搬回 AIB(A4,the maintainer 10-11 直令)。改了三處,其餘逐字:
 #   1. 結果行不限兩格縮排:`PASS 名稱` / `  FAIL 名稱` 都認(AIB 的 check() 式測試不縮排)
-#   2. 探針暫存目錄前綴 acb-envprobe- → aib-envprobe-
+#   2. 探針暫存目錄前綴改成 aib-envprobe-
 #   3. 用法路徑改成 tools/verify/classify_env_blocked.py;清單與參考檔由呼叫端給,本工具不預設任何路徑
 #   4. 印給人看的字走 i18n(aib.env_blocked.*,四語)
 #

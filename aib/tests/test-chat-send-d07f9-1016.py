@@ -134,7 +134,21 @@ class Box(object):
                 p.communicate(timeout=10)
             except subprocess.TimeoutExpired:
                 pass
+        self._kill_worker()
         shutil.rmtree(self.td, ignore_errors=True)
+
+    def _kill_worker(self):
+        """aib chat off 後 run 先結束、寄件工人可能還沒走(@abb89 #297 r1 看到收尾留行程)。
+        只殺指令裡帶這個沙盒路徑的那一個 pid(pid 可能被別的程式重用,不寬殺)。"""
+        pid = self.status().get("worker_pid")
+        if not isinstance(pid, int) or pid <= 1:
+            return
+        r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True)
+        if str(self.root) in r.stdout:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
 
 
 def outbox_rec(to, frm_seat, content="你好,全球", attested=True, op="send", **extra):

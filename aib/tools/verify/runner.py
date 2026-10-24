@@ -16,10 +16,12 @@ import jsonl_safe  # 10-04:jsonl 行界只認 "\n"(見該檔)
 import os
 import re
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -44,6 +46,10 @@ _COCKPIT_FALLBACK = Path.home() / "ez2-aib" / "src" / "cockpit"
 if str(_COCKPIT_FALLBACK) not in sys.path:
     sys.path.append(str(_COCKPIT_FALLBACK))
 import i18n_lib  # noqa: E402
+try:
+    import memguard  # noqa: E402  10-24:每支測試的記憶體上限(TreeCap)
+except ImportError:  # 只複製 tools/verify 的夾具(而 fallback 主樹還沒這支)⇒ 不掛上限,其餘照舊
+    memguard = None
 
 LOC = i18n_lib.resolve_locale()
 
@@ -391,16 +397,142 @@ def _test_command(repo: Path, name: str, env: dict | None = None) -> list[str]:
     return [py, str(Path(__file__).resolve().parent / "plain_test_runner.py"), str(path)]
 
 
+INTERRUPT_GRACE_S = 2.0
+
+
+def _kill_group(proc, cap) -> None:
+    """整棵(ppid)+ 整群組 SIGKILL。呼叫端保證 proc 還沒被 wait(群組號碼不會被別人拿到)。"""
+    if memguard:
+        memguard.kill_tree(proc.pid, cap.root_start)
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _root_exited(pid) -> bool:
+    """根結束了沒(WNOWAIT:只看不收,群組號碼留著);沒有 waitid 的平台回 False(就等滿寬限)。"""
+    if not hasattr(os, "waitid"):
+        return False
+    try:
+        return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    except ChildProcessError:
+        return True
+
+
+def _signals_blocked(fn, *a) -> None:
+    """做 fn 的期間擋住 SIGINT / SIGTERM / SIGHUP;還原後擱置的訊號照常丟出(往外 raise)。
+    非主執行緒 / 沒有 pthread_sigmask 的平台不擋。"""
+    if not hasattr(signal, "pthread_sigmask") or threading.current_thread() is not threading.main_thread():
+        fn(*a)
+        return
+    old = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM, signal.SIGHUP})
+    try:
+        fn(*a)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old)
+
+
+def _interrupt_group(proc, cap) -> None:
+    """#322 r5:寬限中再來一次訊號(連按兩次 Ctrl-C、Ctrl-C 後關終端機)也一定收 —— finally + 擋訊號。"""
+    try:
+        try:
+            os.killpg(proc.pid, signal.SIGINT)
+        except OSError:
+            pass
+        end = time.monotonic() + INTERRUPT_GRACE_S
+        while time.monotonic() < end and not _root_exited(proc.pid):
+            time.sleep(0.05)
+    finally:
+        _signals_blocked(_kill_group, proc, cap)
+
+
+def _drain(proc, e):
+    """收掉之後最多再等 2 秒讀尾巴;還不回就用最後一次逾時帶回的部分輸出(r3 L4 / r4 L-e)。"""
+    try:
+        return proc.communicate(timeout=2)
+    except subprocess.TimeoutExpired as e2:
+        return e2.stdout, e2.stderr
+    except ValueError:
+        return e.stdout, e.stderr
+
+
+def _communicate_capped(proc, cap, limit):
+    """分段 communicate:記憶體看門執行緒命中(只設旗標 + 收樹)後,由主執行緒收群組(這時 proc 一定還沒 wait ——
+    communicate 讀完管線才 wait;r4 L-a)。逾時照樣丟 TimeoutExpired(輸出是累積的)。"""
+    end = time.monotonic() + limit
+    while True:
+        left = end - time.monotonic()
+        try:
+            return proc.communicate(timeout=max(0.01, min(0.5, left)))
+        except subprocess.TimeoutExpired as e:
+            if cap.hit:
+                _kill_group(proc, cap)
+                return _drain(proc, e)
+            if left <= 0.5:
+                raise subprocess.TimeoutExpired(proc.args, limit, output=e.stdout, stderr=e.stderr)
+
+
+MEMCAP_CELL = "MEMCAP:memory_cap"     # 被記憶體上限砍掉的固定紅格(不會出現在舊紅清單,收據一定算新紅)
+TIMEOUT_CELL = "TIMEOUT:timeout"
+
+
+class _NoCap:
+    """memguard import 不到時的空殼(只有夾具會走到)。"""
+    hit = None
+    root_start = None
+
+    def start(self):
+        return self
+
+    def stop(self):
+        pass
+
+
 def _run_one(repo: Path, name: str, env: dict[str, str], timeout: float | None = None) -> dict:
     """timeout=None ⇒ DEFAULT_TIMEOUT_S(舊行為逐字不變)。"""
     limit = DEFAULT_TIMEOUT_S if timeout is None else timeout
     started = time.monotonic()
+    cut = None
+    cap_hit = None
     try:
-        p = subprocess.run(_test_command(repo, name, env), cwd=str(repo), env=env,
-                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                           errors="replace", timeout=limit)
-        output = (p.stdout or "") + (p.stderr or "")
-        rc = p.returncode
+        # 10-24(@044e0,20:34 整台卡死實案):每支測試含子孫,單一行程超過記憶體上限就整棵收、判紅並寫明 ——
+        #   開發當下就知道「不能超大」,不是等機器凍住。上限 AIB_TEST_MEM_CAP_MB(預設 2048,0 = 關),見 memguard.TreeCap。
+        #   #322 r3 M3:測試自成一個行程群組 —— 主行程先結束、背景行程掛到 pid 1 時靠 ppid 找不到,靠群組收得到。
+        group = {"process_group": 0} if sys.version_info >= (3, 11) else {"start_new_session": True}
+        #   ⚠ 自成群組 ⇒ 終端機的 Ctrl-C / Ctrl-Z 只送前景群組,碰不到測試:Ctrl-C / SIGTERM / SIGHUP 都由下面
+        #   except BaseException 轉送收掉(r4);Ctrl-Z 停住 aib test 時測試照跑、記憶體看門執行緒也停(已知限制)。
+        with subprocess.Popen(_test_command(repo, name, env), cwd=str(repo), env=env,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, errors="replace", **group) as proc:
+            cap = (memguard.TreeCap(proc.pid, memguard.test_cap_mb(), proc=proc) if memguard else _NoCap()).start()
+            try:
+                out, err = _communicate_capped(proc, cap, limit)
+            except subprocess.TimeoutExpired as e:
+                # #322 r2 H1:不能再無限 communicate() —— 背景孫行程(tmux / http server / cmd &)拿著管線就永遠不回。
+                #   整棵收(kill_tree 靠 ppid、killpg 收掛到 pid 1 的),proc 還沒 wait ⇒ 群組號碼不會被重用;
+                #   再最多等 2 秒把管線裡還沒讀的尾巴讀完(r3 L4),還不回(脫離群組的行程拿著管線)就用讀到的部分。
+                _kill_group(proc, cap)
+                out, err = _drain(proc, e)
+                proc.wait()
+                raise subprocess.TimeoutExpired(proc.args, limit, output=out, stderr=err)
+            except BaseException:
+                # #322 r4:Ctrl-C(KeyboardInterrupt)、SIGTERM / SIGHUP(test_entry 轉成 SystemExit)⇒ 先把 SIGINT
+                #   轉給測試群組、等一下讓它自己的 finally 收子行程,再整棵 + 整群組 SIGKILL;proc 都還沒 wait。
+                _interrupt_group(proc, cap)
+                raise
+            finally:
+                cap.stop()
+                cap_hit = cap.hit
+        output = (out or "") + (err or "")
+        rc = proc.returncode
+        if cap_hit:
+            output += "\n" + T("memory_cap", cap_hit) + "\n"
+            rc, cut = 137, MEMCAP_CELL
     except OSError as e:
         output, rc = "%s: %s\n" % (type(e).__name__, e), 127
     except subprocess.TimeoutExpired as e:
@@ -411,8 +543,14 @@ def _run_one(repo: Path, name: str, env: dict[str, str], timeout: float | None =
         if isinstance(err, bytes):
             err = err.decode("utf-8", "replace")
         msg = T("timeout_30m") if limit == DEFAULT_TIMEOUT_S else T("timeout_after", {"seconds": limit})
-        output, rc = str(out) + str(err) + "\n" + msg + "\n", 124
+        output, rc, cut = str(out) + str(err) + "\n" + msg + "\n", 124, TIMEOUT_CELL
+        if cap_hit:                                    # 上限與逾時同時發生:兩個都報(r3 L5)
+            output += T("memory_cap", cap_hit) + "\n"
     ran, cells = _parse_test_output(output)
+    # #322 r2 M3:被上限 / 逾時砍掉的,固定加一格 —— 不然被砍前印的紅格若都在舊紅清單,收據照印「新紅 0」。
+    for c in (cut, MEMCAP_CELL if cap_hit else None):
+        if c and c not in cells:
+            cells.append(c)
     return {"name": name, "rc": rc, "ran": ran, "fail_cells": cells,
             "elapsed_s": round(time.monotonic() - started, 3), "output": output}
 

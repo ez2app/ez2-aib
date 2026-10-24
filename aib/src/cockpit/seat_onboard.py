@@ -522,8 +522,8 @@ REPORTS_REL = "docs/reports"
 # 「這份文件是什麼」寫在檔名的**前導全大寫段**裡,後面的小寫段是主題。
 # 這不是我發明的規則,是 docs/reports/ 現行檔名的形狀:
 #   CABIN-SAFETY-DECOY-SWEEP-0828.md   kind=CABIN-SAFETY-DECOY-SWEEP  ← 它就是一份掃描
-#   DISPATCH-acb-sweep-0821.md         kind=DISPATCH                  ← 派工單,主題是掃描
-#   REVIEW-VERDICT-laneA-acb-sweep.md  kind=REVIEW-VERDICT            ← 覆審裁定,不是掃描
+#   DISPATCH-old-sweep-0821.md         kind=DISPATCH                  ← 派工單,主題是掃描
+#   REVIEW-VERDICT-laneA-old-sweep.md  kind=REVIEW-VERDICT            ← 覆審裁定,不是掃描
 _CAPS_SEG = re.compile(r"^[A-Z][A-Z0-9]*$")
 
 
@@ -545,8 +545,8 @@ def sweep_candidates(reports_dir):
       看不見。這裡把「名字裡有 sweep 但被我排除掉」的那幾筆一起交出來,
       讓臂(與人)直接看得到我圈在哪一邊。
 
-    2026-09-07 在本樹實量:命中 3 筆、排除 4 筆(`DISPATCH-acb-sweep-0821.md`、
-    `LANE-E-acb-live-code-sweep.md`、`REVIEW-VERDICT-laneA-acb-sweep.md`、
+    2026-09-07 在本樹實量:命中 3 筆、排除 4 筆(`DISPATCH-old-sweep-0821.md`、
+    `LANE-E-old-live-code-sweep.md`、`REVIEW-VERDICT-laneA-old-sweep.md`、
     以及目錄 `data-cabin-sweep-0828`)—— 四筆全部**不是**掃描報告本身。
     """
     hits, near = [], []

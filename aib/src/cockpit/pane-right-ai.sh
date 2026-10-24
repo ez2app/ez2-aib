@@ -1,13 +1,13 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 # 右欄:主AI 即時真實艦隊看板(E2.19 續,2026-08-13 the maintainer 直令)
-# 遷自 ~/ez2-cockpit-demo/acb-right-ai.sh(E2.1;路徑全改 env)
+# 遷自舊 demo 的 right-ai(E2.1;路徑全改 env)
 # E2.13:採集與畫面分離 —— 這裡只採集,畫面交 render_lib.render_ai_list_with_map,
 #        同時把「哪一行是哪個 AI」落盤供滑鼠點擊判定(畫面與落點同源)。
 #
-# E2.19 資料源規格更正(入冊):原規格要求 registry_verified,該狀態隨 ACB
-# 拆除永久消失——舊版此處讀 $EZ2_ACB_HOME/sessions registry(6h 心跳過濾把
-# 真席位全濾光)並呼叫已死的 acb verifier,右欄實質恆空。繼任=ED.11 直起的
+# E2.19 資料源規格更正(入冊):原規格要求 registry_verified,該狀態隨舊載體
+# 拆除永久消失——舊版此處讀舊載體的 sessions registry(6h 心跳過濾把
+# 真席位全濾光)並呼叫已死的舊 verifier,右欄實質恆空。繼任=ED.11 直起的
 # 席位檔 $seats/w<id>.json(對齊 captains-ctl 先例):
 #   - 活性=hub tmux 活窗判定,不靠心跳欄(status 欄不承重教訓);
 #   - trust 恆 self_reported,顯示層 ~ 前綴誠實標記,verified 字樣在 EH grant

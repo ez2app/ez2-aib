@@ -4,28 +4,10 @@ demo 正本備份=`~/ez2-cockpit-demo/`(活體仍在跑,遷的是副本)。
 外部路徑一律走 `cockpit-env.sh` 的環境變數;共用純函數(CJK 對齊/大綱解析/
 面板狀態機)在 `cockpit_lib.py`,由 `tests/test-cockpit-smoke.py` 看守。
 
-## 遷移對照(demo -> 正本)
+## 遷移
 
-| demo(~/ez2-cockpit-demo/) | 正本(src/cockpit/) | 遷移時修正 |
-|---|---|---|
-| acb-131-demo.sh | cockpit-layout.sh | 相容入口;委派眼驗版組裝器 |
-| acb-131-v2-upgrade.sh | cockpit-upgrade.sh | 相容入口;已移除破壞性重建 |
-| acb-left-fleet.sh | pane-left-fleet.sh | ~/.acb→$EZ2_ACB_HOME |
-| acb-left-persona.sh | pane-left-persona.sh | trunc→cockpit_lib;runtime 路徑 env |
-| acb-left-brain.sh | pane-left-brain.sh | registry/vault/深度檔 env |
-| acb-right-ai.sh | pane-right-ai.sh | title-override/ctx/tasks glob env |
-| acb-bottom-fleet.sh | pane-bottom-fleet.sh | board 路徑→$EZ2_FLEET_BOARD |
-| acb-bottom-tabs.sh | pane-bottom-tabs.sh | 舊大綱硬路徑→$EZ2_OUTLINE;解析→lib |
-| bottom-tab-toggle.sh | ctl-bottom-tab.sh | 狀態機→lib;狀態檔進 state dir |
-| brain-depth-toggle.sh | ctl-brain-depth.sh | 同上 |
-| outline-progress.sh | outline-progress.sh | 解析→lib;路徑 env |
-| acb-sandbox/outline-board.sh | warroom-board.sh | CJK/解析→lib;路徑 env |
-| acb-sandbox/depth-ctl.sh | ctl-view-depth.sh | 狀態機→lib;狀態檔進 state dir |
-| acb-sandbox/outline-to-tasks.py | outline-to-tasks.py | 解析→lib;路徑 env |
-
-盤點註記:demo 目錄可執行檔共 16 件;`ez2-conv-distill.py` 是 Stop hook
-正本(~/.claude/)的備份,不屬指揮艙,不遷。實遷 15 支 + 新增
-`cockpit-env.sh` / `cockpit_lib.py` 兩支基礎件。
+E2.1 從 demo 目錄遷入:舊檔名對照見 git 歷史。新增的基礎件是
+`cockpit-env.sh` / `cockpit_lib.py`。
 
 ## aib CLI(E2.9)
 
@@ -34,7 +16,7 @@ aib <provider> <dgrs|safe> <role> [new] [--dry-run]
 ```
 
 provider=claude|codex|agy|copilot；dgrs 僅關閉本次 provider 的 approval/sandbox，
-不增加 ACB、RDL、merge、deploy 或 production 權限；safe 保留 provider 一般保護。
+不增加 RDL、merge、deploy 或 production 權限；safe 保留 provider 一般保護。
 role 是本 session 職務名(小寫英數與連字號)。第四參數 `new` 每次原子建立
 獨立 outer session、inner hub socket 與 runtime state；`--new` 是相容別名。
 `--help` 雙語(字典正本 `i18n/`,
@@ -74,13 +56,12 @@ environment 拿回舊身份。舊 instance/session/socket/state/task 變數也�
 先移除，再在 session 寫入本艙的正確值，所以後開 shell 不會指回舊艙。
 `provider-launch.sh` 保留第四道 carrier scrub。
 
-Codex/Claude/AGY/Copilot 視窗委派本機正式 ACB native-session carrier。以 Codex
-為例，`aib codex dgrs pm new` 最終由 ACB 執行 `codex`、注入可信 onboarding，
-並在新對話內完成真人 BIND 與 registry authority；AIB 不自行偽造 session UUID、
-不複製權限旗標，也不把 placeholder 當已接 adapter。
+Codex/Claude/AGY/Copilot 視窗由 `provider-launch.sh` 直接執行 provider CLI。
+席位沒有密碼學身份(trust=self_reported,寫進席位紀錄);AIB 不自行偽造
+session UUID、不複製權限旗標，也不把 placeholder 當已接 adapter。
 
-`gemini` 不在 native selector 集合：目前正式 ACB 沒有 Gemini session driver，
-因此 launcher 會在建艙前 fail-closed，而不是開一個必定立即退出的假綠視窗。
+`gemini` 不在 native selector 集合:launcher 會在建艙前 fail-closed，
+而不是開一個必定立即退出的假綠視窗。
 
 `--dry-run`(或 `AIB_DRY_RUN=1`)只印指令序列,**全程不碰 tmux** ——
 本機有活著的指揮艙,演練不得打擾它。`AIB_FAKE_NEW_INSTANCE` 只供測試固定
@@ -200,7 +181,6 @@ repo 保持乾淨。
 
 ## 已知過渡依賴
 
-- `$EZ2_FLEET_BOARD`:share/claude-ui 的艦隊看板。
 - `$EZ2_CODEX_SESSIONS_ROOT` 預設為 `~/.codex/sessions`；子 AI 只接受父、子
   rollout 雙向驗證的 Codex child thread UUID。Claude temporary tasks 混有背景
   shell 命令，不是身份來源。
@@ -218,6 +198,7 @@ python3 src/cockpit/idle_reaper.py close <target> [--yes] [--force] [--dry-run]
 python3 src/cockpit/idle_reaper.py reap [--dry-run]       依安全名單自動收
 python3 src/cockpit/idle_reaper.py watch [--interval 300] [--dry-run] [--max-rounds N]
 python3 src/cockpit/idle_reaper.py policy [show|init [--force]]
+python3 src/cockpit/memguard.py [scan|watch|log]           記憶體暴衝守門(平常跟著 idle watch 當執行緒跑)
 rc:0 正常 / 2 用法或名單缺 / 3 目標拒收(有人接著)
 ```
 

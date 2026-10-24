@@ -163,7 +163,8 @@ def add_friend(text, name=None, env=None, kind="friends", source=None):
     return owner, old is None
 
 
-def remove_friend(text, env=None, kind="friends"):
+def remove_friend(text, env=None, kind="friends", forget=True):
+    """forget=False:只撤名單、不動分享等級(connect 申請沒送出、撤掉剛加的好友時用;本人原本設的不能被清)。"""
     owner = friend_owner(text)
     if not owner:
         raise RosterError("bad_friend")
@@ -171,7 +172,34 @@ def remove_friend(text, env=None, kind="friends"):
     left = [f for f in fr if f["owner"] != owner]
     if len(left) != len(fr):
         _save_friends(left, env, kind)
+        if kind in ("friends", "mine") and forget:
+            _forget_levels(owner, env)
     return owner, len(left) != len(fr)
+
+
+def _forget_levels(owner, env=None):
+    """移除好友 / 我的機器(含封鎖)⇒ 這位的單人分享等級**比預設寬的**清掉(#320 第 2 輪審 M1):
+    之後重新加回來就是預設,要分享得比預設多得再按一次指紋。比預設嚴的保留(本人設嚴是隱私選擇,
+    移除再加回不能變寬;#320 r3 @abb89 裁)。另一張名單還有他 ⇒ 不動。"""
+    if is_friend(owner, env) or is_mine(owner, env):
+        return
+    rec = read_share(env)
+    sp = rec.get("space") if isinstance(rec.get("space"), dict) else {}
+    hit = False
+    lv = rec["per"].get(owner)
+    if lv in SHARE_LEVELS and SHARE_LEVELS.index(lv) > SHARE_LEVELS.index(rec["default"]):
+        rec["per"].pop(owner)
+        hit = True
+    per, dflt = sp.get("per"), read_space(env)["default"]
+    if isinstance(per, dict) and per.get(owner) in SPACE_LEVELS \
+            and SPACE_LEVELS.index(per[owner]) > SPACE_LEVELS.index(dflt):
+        per.pop(owner)
+        hit = True
+    if not hit:
+        return
+    p = share_path(env)
+    write_json(str(p), rec)
+    os.chmod(str(p), 0o600)
 
 
 def is_friend(owner, env=None, kind="friends"):
