@@ -19,6 +19,7 @@
 - CSP 不准連任何網路;靜態標記的外來字一律 html.escape;給腳本的資料放 application/json 區塊(< > & 轉成跳脫碼),
   先在這裡照 power_launch 的格式再篩一次(模型 / 人格 uid / 路由代號),腳本只用 textContent 放字、不用 innerHTML。
 - 複製出來的指令只由篩過格式的代碼組成,不夾任何自由文字(問 AI 的問題、「其他」那一句都讓人自己打)。
+  唯一例外:問 AI 抽屜的建議題是「複製問題」(字典常數,給人貼到 aib power ask 的輸入,不是指令)。
 """
 import html
 import json
@@ -200,15 +201,17 @@ def hatch_bay(ob):
 
 
 def repair_bay(st):
-    health_li = "".join('<li class="%s">%s <b>%s</b>%s%s</li>' % (
+    rows = [h for h in st.get("health") or [] if isinstance(h, dict)]
+    health_li = "".join('<li class="%s">%s %s%s</li>' % (
         "ok" if h.get("ok") else ("na" if h.get("ok") is None else "bad"),
-        "✅" if h.get("ok") else ("·" if h.get("ok") is None else "⚠️"), _e(h.get("key")),
-        (" — " + _e(h.get("value")) + (" GB" if h.get("key") == "disk" else "")) if h.get("value") is not None else "",
-        ('<div class="hint">%s</div>' % _e(h.get("hint")) if h.get("hint") and not h.get("ok") else ""))
-        for h in st.get("health") or [] if isinstance(h, dict))
+        "✓" if h.get("ok") else ("·" if h.get("ok") is None else "⚠"), _e(h.get("key")),
+        (" " + _e(h.get("value")) + ("G" if h.get("key") == "disk" else "")) if h.get("value") is not None else "")
+        for h in rows)
+    hints = "".join('<div class="hint">⚠ %s:%s</div>' % (_e(h.get("key")), _e(h.get("hint")))
+                    for h in rows if h.get("hint") and h.get("ok") is False)       # 小膠囊放不下的修法另起一行
     b = st.get("binding") if isinstance(st.get("binding"), dict) else {}
-    return ('<div class="bind">%s · %s</div><ul class="health">%s</ul>'
-            % (_e(T("binding")), _e(T("binding_line", ok=b.get("ok", 0), seats=b.get("seats", 0))), health_li))
+    return ('<div class="bind">%s · %s</div><ul class="health">%s</ul><div class="hints">%s</div>'
+            % (_e(T("binding")), _e(T("binding_line", ok=b.get("ok", 0), seats=b.get("seats", 0))), health_li, hints))
 
 
 # ---------- 給腳本的資料(先篩格式) ----------
@@ -276,7 +279,7 @@ def render(st, now=None):
     why_grid = "".join('<button class="why" data-why="%s"><i class="rk"></i><span>%s</span></button>'
                        % (k, _e(T("why_" + k))) for k in WHY)
     q_li = "".join('<li><span>%s</span><button class="cp" data-cmd="%s">%s</button></li>'
-                   % (_e(T(q)), _e(T(q)), _e(T("copy"))) for q in suggest)
+                   % (_e(T(q)), _e(T(q)), _e(T("copy_q"))) for q in suggest)
     return PAGE % {
         "title": _e(T("title")), "snapshot": _e(T("snapshot", when=_when(now))), "ver": _e(ver),
         "ready": _e(T("hud_ready", n=ready, m=total)),
@@ -285,7 +288,8 @@ def render(st, now=None):
         "hud_sys": _e(T("hud_sys")), "power_save": _e(T("power_save_off")), "crew_btn": _e(T("crew_btn")),
         "core": _e(T("core")), "core_sub": _e(T("core_sub")), "ais": ais,
         "console": _e(T("console")), "pick_ai": _e(T("pick_ai")), "model": _e(T("model")), "persona": _e(T("persona")),
-        "brain": _e(T("brain")), "go": _e(T("go")), "ask_btn": _e(T("ask_btn")), "recent": _e(T("recent")),
+        "brain": _e(T("brain")), "go": _e(T("go")), "go_sub": _e(T("go_sub")), "adv": _e(T("adv")),
+        "prev": _e(T("prev")), "next": _e(T("next")), "ask_btn": _e(T("ask_btn")), "recent": _e(T("recent")),
         "tasks_h": _e(T("tasks_board")), "board": task_board(ob), "hatch_h": _e(T("hatch")), "hatch": hatch_bay(ob),
         "repair_h": _e(T("repair")), "repair": repair_bay(st), "refresh": _e(T("refresh")),
         "why_title": _e(T("why_title")), "why_sub": _e(T("why_sub")), "why_grid": why_grid,
@@ -364,12 +368,20 @@ code{font:15px var(--mono);color:var(--fg);background:#141c36;padding:2px 6px;bo
 .cp:hover{filter:brightness(1.15)}
 .sel-ai{display:flex;align-items:center;gap:14px;margin:12px 0;min-height:64px}
 .sel-ai .orb{margin:0}.sel-ai .nm{font-size:22px;font-weight:700}
-.field{display:grid;grid-template-columns:7em minmax(0,1fr);align-items:center;gap:10px;margin:8px 0}
-.field label{color:var(--dim)}
-select{font:inherit;color:var(--fg);background:#0a1124;border:1px solid var(--line2);border-radius:8px;padding:6px 8px;width:100%%;min-width:0}
+.field{display:grid;grid-template-columns:6em minmax(0,1fr);align-items:center;gap:10px;margin:8px 0}
+.field .lb{color:var(--dim)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;min-width:0}
+.chip{border:1px solid var(--line2);background:#0a1124;border-radius:999px;padding:3px 14px;cursor:pointer;font:500 16px var(--mono)}
+.chip.on{background:#18306a;border-color:var(--acc);color:var(--fg)}
+.step{display:flex;align-items:center;gap:6px;min-width:0;border:1px solid var(--line2);background:#0a1124;border-radius:10px;padding:2px}
+.step .sv{flex:1;text-align:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sb{background:none;border:0;color:var(--acc);cursor:pointer;padding:4px 10px;font-size:16px}.sb:disabled{color:#39425f;cursor:default}
+.adv{color:var(--dim);font:15px var(--mono);margin:4px 0 0 calc(6em + 10px)}
+.bay h2 .cnt{margin-left:auto;font:600 16px var(--mono);color:var(--ok);letter-spacing:0}
 .go{display:block;width:100%%;margin:16px 0 10px;padding:14px;border-radius:999px;border:0;cursor:pointer;font-size:22px;font-weight:800;
-letter-spacing:.4em;color:#04101c;background:linear-gradient(90deg,#5ee6e0,#5ec8ff,#8f7bff);box-shadow:0 0 24px rgba(94,200,255,.55);
+letter-spacing:.4em;color:#04101c;line-height:1.2;background:linear-gradient(90deg,#5ee6e0,#5ec8ff,#8f7bff);box-shadow:0 0 24px rgba(94,200,255,.55);
 animation:goglow 2.4s ease-in-out infinite}
+.go small{display:block;font-size:14px;font-weight:600;letter-spacing:.06em;opacity:.75;margin-top:2px}
 .go:disabled{filter:grayscale(1) brightness(.6);animation:none;cursor:not-allowed;box-shadow:none}
 @keyframes goglow{50%%{box-shadow:0 0 6px rgba(94,200,255,.3)}}
 .row2{display:flex;gap:10px;align-items:center}
@@ -394,8 +406,9 @@ animation:goglow 2.4s ease-in-out infinite}
 .grand b{font-family:var(--mono)}
 .hatch{display:flex;gap:16px;align-items:center;margin-top:8px}.egg{width:60px;height:70px;flex:none;animation:wobble 3s ease-in-out infinite}
 @keyframes wobble{0%%,80%%,100%%{transform:rotate(0)}85%%{transform:rotate(-6deg)}90%%{transform:rotate(6deg)}95%%{transform:rotate(-3deg)}}
-.bind{margin:8px 0 4px;font-size:16px}.health{list-style:none;margin:0;padding:0;font-size:16px}.health li{padding:2px 0}
-.health li.bad{color:#ffb3ba}.hint{color:var(--dim);font-size:15px;padding-left:24px}
+.bind{margin:8px 0 6px;font-size:16px}.health{list-style:none;margin:0;padding:0;font-size:15px;display:flex;flex-wrap:wrap;gap:6px}
+.health li{border:1px solid var(--line2);border-radius:999px;padding:1px 10px;background:#0a1124}
+.health li.bad{color:#ffb3ba;border-color:#7a3340}.health li.na{color:var(--dim)}.hints{margin-top:6px}.hint{color:var(--dim);font-size:15px}
 .foot{max-width:1500px;margin:8px auto 24px;padding:0 20px;color:var(--dim);font-size:16px;display:flex;gap:16px;flex-wrap:wrap}
 .veil{position:fixed;inset:0;background:rgba(3,6,16,.55);backdrop-filter:blur(9px) saturate(.6);-webkit-backdrop-filter:blur(9px) saturate(.6);
 display:none;z-index:10;align-items:center;justify-content:center;padding:16px}
@@ -430,7 +443,7 @@ body.paused *{animation-play-state:paused!important}
 .dome{height:200px;border-radius:24px 24px 0 0}.planet{width:300px;height:300px;bottom:-140px}
 .whyw{grid-template-columns:minmax(0,1fr)}.mods{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:640px){.whyg{grid-template-columns:repeat(2,minmax(0,1fr))}.mods{grid-template-columns:repeat(2,minmax(0,1fr))}
-.hud{gap:10px;padding:10px 16px}.deck{padding:0 16px 16px}.field{grid-template-columns:minmax(0,1fr)}}
+.hud{gap:10px;padding:10px 16px}.deck{padding:0 16px 16px}.field{grid-template-columns:minmax(0,1fr)}.adv{margin-left:0}}
 </style></head><body>
 <header class="hud" id="hud"><h1>%(title)s</h1>
 <span class="rd">%(hud_time)s <b id="clock">--:--:--</b></span><span class="rd">%(hud_ver)s <b>%(ver)s</b></span>
@@ -441,13 +454,14 @@ body.paused *{animation-play-state:paused!important}
 <i class="strut" style="left:18%%;transform:rotate(38deg)"></i><i class="strut" style="left:36%%;transform:rotate(16deg)"></i>
 <i class="strut" style="right:36%%;transform:rotate(-16deg)"></i><i class="strut" style="right:18%%;transform:rotate(-38deg)"></i></div>
 <main class="deck">
-<section class="bay" id="core"><h2><span class="no">01</span>%(core)s</h2><div class="sub">%(core_sub)s</div><div class="mods">%(ais)s</div></section>
+<section class="bay" id="core"><h2><span class="no">01</span>%(core)s<span class="cnt">%(ready)s</span></h2><div class="sub">%(core_sub)s</div><div class="mods">%(ais)s</div></section>
 <section class="bay" id="console"><h2><span class="no">02</span>%(console)s</h2>
 <div class="sel-ai" id="selai"><span class="dim">%(pick_ai)s</span></div>
-<div class="field"><label for="model">%(model)s</label><select id="model"></select></div>
-<div class="field"><label for="persona">%(persona)s</label><select id="persona"></select></div>
-<div class="field"><label for="brain">%(brain)s</label><select id="brain"></select></div>
-<button class="go" id="go" disabled>%(go)s</button>
+<div class="field"><span class="lb">%(model)s</span><div class="chips" id="model" role="group" aria-label="%(model)s"></div></div>
+<div class="field"><span class="lb">%(persona)s</span><div class="step" id="persona"><button class="sb" data-d="-1" aria-label="%(prev)s">◀</button><span class="sv"></span><button class="sb" data-d="1" aria-label="%(next)s">▶</button></div></div>
+<div class="field"><span class="lb">%(brain)s</span><div class="step" id="brain"><button class="sb" data-d="-1" aria-label="%(prev)s">◀</button><span class="sv"></span><button class="sb" data-d="1" aria-label="%(next)s">▶</button></div></div>
+<div class="adv">%(adv)s</div>
+<button class="go" id="go" disabled>%(go)s<small>%(go_sub)s</small></button>
 <div class="row2"><button class="chip" id="askbtn">%(ask_btn)s</button><span class="dim">%(recent)s</span></div>
 <ul class="recent" id="recent"></ul></section>
 <div class="right">
@@ -536,13 +550,21 @@ $('save').addEventListener('click',function(){still=!still;store('save',still?'1
 applySave();
 /* 01 ⇒ 02:點左邊 AI 才出現那家的模型 / 人格 / 第二大腦;黃 / 紅 / 灰燈走登入彈窗 */
 var AI={};D.ais.forEach(function(a){AI[a.key]=a});var cur=null;
-function opt(sel,val,text){var o=el('option',null,text);o.value=val;sel.appendChild(o)}
-function fillSelects(){var m=$('model'),p=$('persona'),b=$('brain');[m,p,b].forEach(function(s){s.textContent=''});
- if(!cur){[m,p,b].forEach(function(s){s.disabled=true});$('go').disabled=true;return}
- var ms=D.models[cur]||[];if(!ms.length)opt(m,'',L.model_default);ms.forEach(function(x){opt(m,x,x)});
- opt(p,'',L.persona_none);D.personas.forEach(function(x){opt(p,x.uid,(x.fav?'★ ':'')+x.name)});
- opt(b,'',L.brain_none);D.brains.forEach(function(x){opt(b,x.route_key,x.title)});
- [m,p,b].forEach(function(s){s.disabled=false});$('go').disabled=false}
+/* 模型 = 一排膠囊;人格 / 第二大腦 = ◀ 名稱 ▶(第一格是「不綁」) */
+var S={model:'',persona:'',brain:''},IX={persona:0,brain:0};
+var OPTS={persona:[{v:'',t:L.persona_none}].concat(D.personas.map(function(x){return{v:x.uid,t:(x.fav?'★ ':'')+x.name}})),
+ brain:[{v:'',t:L.brain_none}].concat(D.brains.map(function(x){return{v:x.route_key,t:x.title}}))};
+function drawStep(k){var o=OPTS[k][IX[k]];$(k).querySelector('.sv').textContent=cur?o.t:'—';S[k]=cur?o.v:'';
+ $(k).querySelectorAll('.sb').forEach(function(b){b.disabled=!cur||OPTS[k].length<2})}
+function setStep(k,v){for(var i=0;i<OPTS[k].length;i++)if(OPTS[k][i].v===v){IX[k]=i;break}drawStep(k)}
+['persona','brain'].forEach(function(k){$(k).querySelectorAll('.sb').forEach(function(b){b.addEventListener('click',function(){
+ var n=OPTS[k].length;IX[k]=(IX[k]+Number(b.getAttribute('data-d'))+n)%%n;drawStep(k)})})});
+function setModel(v){S.model=v;$('model').querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.getAttribute('data-m')===v)})}
+function fillSelects(){var m=$('model');m.textContent='';S.model='';
+ if(cur){var ms=D.models[cur]||[];if(!ms.length)m.appendChild(el('span','dim',L.model_default));
+  ms.forEach(function(x){var c=el('button','chip',x.indexOf(cur+'-')===0?x.slice(cur.length+1):x);c.setAttribute('data-m',x);c.title=x;
+   c.addEventListener('click',function(){setModel(x)});m.appendChild(c)});if(ms.length)setModel(ms[0])}
+ drawStep('persona');drawStep('brain');$('go').disabled=!cur}
 function showSel(){var box=$('selai');box.textContent='';document.querySelectorAll('.mod').forEach(function(x){x.classList.toggle('sel',x.getAttribute('data-key')===cur)});
  if(!cur){box.appendChild(el('span','dim',L.pick_ai));return}
  var src=document.querySelector('.mod[data-key="'+cur+'"]');if(src){var orb=src.querySelector('.orb').cloneNode(true);orb.style.setProperty('--ring',src.style.getPropertyValue('--ring'));box.appendChild(orb)}
@@ -558,7 +580,7 @@ function clickMod(k){var a=AI[k];if(!a)return;
 document.querySelectorAll('.mod').forEach(function(m){var k=m.getAttribute('data-key');
  m.addEventListener('click',function(){clickMod(k)});m.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();clickMod(k)}})});
 /* 出發:只組指令讓人自己貼(開席 ⇒ 綁人格 + 第二大腦) */
-$('go').addEventListener('click',function(){if(!cur)return;var m=$('model').value,p=$('persona').value,b=$('brain').value;
+$('go').addEventListener('click',function(){if(!cur)return;var m=S.model,p=S.persona,b=S.brain;
  var a=['aib',cur,'safe','dev','new'];if(m)a.push('--model',m);var c=$('lc');c.textContent='';c.appendChild(el('div','dim',L.step_open));c.appendChild(copyRow(a.join(' ')));
  if(p||b){var s=['aib','newproj','--seat','SEAT'];if(p)s.push('--persona-uid',p);if(b)s.push('--folder',b);
   c.appendChild(el('div','dim',L.step_bind));c.appendChild(copyRow(s.join(' ')));$('lf').textContent=L.seat_placeholder_note}else $('lf').textContent='';
@@ -570,16 +592,16 @@ $('go').addEventListener('click',function(){if(!cur)return;var m=$('model').valu
   dot.style.background=src?src.style.getPropertyValue('--ring'):'#7a86a8';li.appendChild(dot);
   li.appendChild(el('span',null,[(AI[r.brand]||{}).name||r.brand,r.model,PN[r.persona],BN[r.brain]].filter(Boolean).join(' · ')));
   li.appendChild(el('span','when',r.when));
-  li.addEventListener('click',function(){clickMod(r.brand);if(cur!==r.brand)return;if(r.model)$('model').value=r.model;
-   if(r.persona)$('persona').value=r.persona;if(r.brain)$('brain').value=r.brain});ul.appendChild(li)})})();
+  li.addEventListener('click',function(){clickMod(r.brand);if(cur!==r.brand)return;if(r.model)setModel(r.model);
+   setStep('persona',r.persona||'');setStep('brain',r.brain||'')});ul.appendChild(li)})})();
 var first=D.recent.length&&AI[D.recent[0].brand]&&AI[D.recent[0].brand].light==='green'?D.recent[0].brand:null;
 if(!first)for(var bi=0;bi<D.ais.length;bi++)if(D.ais[bi].key!=='aib'&&D.ais[bi].light==='green'){first=D.ais[bi].key;break}
-if(first){pick(first);var r0=D.recent[0];if(r0&&r0.brand===first){if(r0.model)$('model').value=r0.model;if(r0.persona)$('persona').value=r0.persona;if(r0.brain)$('brain').value=r0.brain}}
+if(first){pick(first);var r0=D.recent[0];if(r0&&r0.brand===first){if(r0.model)setModel(r0.model);setStep('persona',r0.persona||'');setStep('brain',r0.brain||'')}}
 else{showSel();fillSelects()}
 /* 問 AI 抽屜:只回答、不動手;問題讓人自己在終端機打 */
 $('askbtn').addEventListener('click',function(){var c=$('askcmd');c.textContent='';$('askai').textContent=cur?'· '+AI[cur].name:'';
  if(!cur){c.appendChild(el('div','dim',L.pick_ai))}else if(AI[cur].light!=='green'){c.appendChild(el('div','dim',L.ask_need_login));
-  c.appendChild(copyRow('aib power login '+cur))}else{var m=$('model').value,a=['aib','power','ask',cur];if(m)a.push('--model',m);
+  c.appendChild(copyRow('aib power login '+cur))}else{var m=S.model,a=['aib','power','ask',cur];if(m)a.push('--model',m);
   c.appendChild(copyRow(a.join(' ')));c.appendChild(el('div','dim',L.ask_cmd_note))}
  $('ask').classList.add('on')});
 /* 任務板分頁 */
