@@ -206,7 +206,10 @@ def main(argv=None):
         pass
     finally:
         if armed:                        # 舊處理器不是 Python 設的會回 None,不能拿它判斷要不要還原
-            signal.setitimer(signal.ITIMER_REAL, 0)
+            try:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            except (AttributeError, OSError):   # 清不掉也要還原處理器、照樣印結果
+                pass
             signal.signal(signal.SIGALRM, signal.SIG_DFL if old is None else old)
     lines += ["ok"] * (len(argv) - len(lines))
     for line in lines:

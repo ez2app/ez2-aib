@@ -65,6 +65,13 @@ class HitClose(unittest.TestCase):
             with self.subTest(window=w):
                 self.assertEqual(hit_test.hit_ai_close([dict(ROW, window=w)], 3), hit_test.PASSTHROUGH)
 
+    def test_h2_left_click_x_same_rules(self):
+        # 左鍵點 [X] 跟右鍵關席同一套前提(0.1.49 審查排下一版)
+        self.assertEqual(hit_test.hit_ai_rows([ROW], 3, 21)["action"], "kill-idle")
+        for w in ("35", "@3a", "@35;kill-server", "@12345678901"):
+            with self.subTest(window=w):
+                self.assertEqual(hit_test.hit_ai_rows([dict(ROW, window=w)], 3, 21), hit_test.PASSTHROUGH)
+
 
 class Readiness(unittest.TestCase):
     def test_h3_slow_check_times_out_to_ok(self):
@@ -134,6 +141,47 @@ class Readiness(unittest.TestCase):
             rc = open_readiness.main(["ask-key", "deepseek"])
         self.assertEqual(rc, 0)
         self.assertEqual(out.getvalue().splitlines(), ["saved deepseek"])
+
+    def _main_with(self, **patch):
+        out = io.StringIO()
+        with mock.patch.object(open_readiness, "check", lambda p, environ=None: ("ok", "")), \
+                mock.patch.multiple(open_readiness.signal, **patch), redirect_stdout(out):
+            rc = open_readiness.main(["claude", "codex"])
+        return rc, out.getvalue().splitlines()
+
+    def test_h3_restore_edges(self):
+        # armed 旗標 / SIG_DFL 後備 / 清計時器失敗都照樣還原、照樣印(0.1.49 審查排下一版)
+        sig = open_readiness.signal
+        real_signal, real_setitimer = sig.signal, sig.setitimer
+        calls = []
+
+        def signal_none_first(n, h):
+            calls.append(h)
+            prev = real_signal(n, h)
+            return None if len(calls) == 1 else prev
+        before = sig.getsignal(sig.SIGALRM)
+        self.assertEqual(self._main_with(signal=signal_none_first), (0, ["ok", "ok"]))
+        self.assertIs(calls[-1], sig.SIG_DFL)                                   # 舊處理器回 None ⇒ 還原成 SIG_DFL
+        real_signal(sig.SIGALRM, before)
+
+        def setitimer_fail_first(which, sec, *a):
+            if sec:
+                raise OSError("no timer")
+            return real_setitimer(which, sec, *a)
+        self.assertEqual(self._main_with(setitimer=setitimer_fail_first), (0, ["ok", "ok"]))
+        self.assertIs(sig.getsignal(sig.SIGALRM), before)                      # 開不起來也還原處理器
+
+        def setitimer_clear_fails(which, sec, *a):
+            if not sec:
+                raise OSError("cannot clear")
+            return real_setitimer(which, sec, *a)
+        self.assertEqual(self._main_with(setitimer=setitimer_clear_fails), (0, ["ok", "ok"]))
+        real_setitimer(sig.ITIMER_REAL, 0)
+        self.assertIs(sig.getsignal(sig.SIGALRM), before)                      # 清不掉也還原
+
+        def signal_not_main(n, h):
+            raise ValueError("signal only works in main thread")
+        self.assertEqual(self._main_with(signal=signal_not_main), (0, ["ok", "ok"]))
 
     def test_h3_timeout_env_only_shortens(self):
         for v, want in (("0.5", 0.5), ("99", 3.0), ("0", 3.0), ("-1", 3.0), ("x", 3.0)):
