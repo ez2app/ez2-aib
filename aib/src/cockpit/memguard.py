@@ -665,10 +665,11 @@ class TreeCap:
     建立時記下根的開始時間;之後每拍與每次送訊號前都比(根被回收、pid 被重用就不動手 —— #322 r2 L3)。"""
 
     def __init__(self, root_pid, cap_mb, *, tick_s=TEST_CAP_TICK_S, table=tree_table, kill=os.kill, info=proc_info,
-                 root_start=None):
+                 root_start=None, proc=None):
         self.root, self.cap, self.tick_s, self.table, self.kill, self.info = (
             root_pid, cap_mb, tick_s, table, kill, info)
         self.root_start = start_of(root_pid, info) if root_start is None else root_start
+        self.proc = proc            # subprocess.Popen(測試自成群組時給):命中當場收群組用,見 _killpg_locked
         self.hit = None
         self._stop = threading.Event()
         self._t = None
@@ -681,10 +682,29 @@ class TreeCap:
         big = max(tree, key=lambda p: t[p][3])
         if t[big][3] < self.cap:
             return None
-        self.hit = {"pid": big, "name": t[big][1], "mb": t[big][3], "cap_mb": self.cap}
-        # 只收樹、設旗標;群組(掛到 pid 1 的背景行程)由 aib test 主執行緒收 —— 它才知道根還沒被 wait(r4 L-a)
+        hit = {"pid": big, "name": t[big][1], "mb": t[big][3], "cap_mb": self.cap}
+        self._killpg_locked()
         kill_tree(self.root, self.root_start, table=lambda: t, info=self.info, kill=self.kill)
-        return self.hit
+        self.hit = hit
+        return hit
+
+    def _killpg_locked(self):
+        """#322 r5:命中當場收整個群組(已脫離成 pid 1 子行程、沒拿管線的背景行程也在群組裡)。
+        拿 Popen._waitpid_lock(wait / poll 回收根之前都要拿)⇒ 鎖內 returncode is None ⇒ 根還沒被 wait ⇒
+        群組號碼不會被重用。主執行緒不帶逾時的 wait 會一直抱著鎖(那時根一定還沒回收、且馬上會因為收樹而結束)
+        ⇒ 最多等 1 秒,拿不到就交給主執行緒那條「看到旗標就收群組」。沒有這把鎖(非 CPython)⇒ 同樣交給主執行緒。"""
+        p = self.proc
+        lock = getattr(p, "_waitpid_lock", None) if p is not None else None
+        if lock is None or not hasattr(os, "killpg") or not lock.acquire(timeout=1.0):
+            return
+        try:
+            if p.returncode is None:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        finally:
+            lock.release()
 
     def _run(self):
         while not self._stop.wait(self.tick_s):

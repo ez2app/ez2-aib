@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -423,15 +424,31 @@ def _root_exited(pid) -> bool:
         return True
 
 
-def _interrupt_group(proc, cap) -> None:
+def _signals_blocked(fn, *a) -> None:
+    """做 fn 的期間擋住 SIGINT / SIGTERM / SIGHUP;還原後擱置的訊號照常丟出(往外 raise)。
+    非主執行緒 / 沒有 pthread_sigmask 的平台不擋。"""
+    if not hasattr(signal, "pthread_sigmask") or threading.current_thread() is not threading.main_thread():
+        fn(*a)
+        return
+    old = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM, signal.SIGHUP})
     try:
-        os.killpg(proc.pid, signal.SIGINT)
-    except OSError:
-        pass
-    end = time.monotonic() + INTERRUPT_GRACE_S
-    while time.monotonic() < end and not _root_exited(proc.pid):
-        time.sleep(0.05)
-    _kill_group(proc, cap)
+        fn(*a)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old)
+
+
+def _interrupt_group(proc, cap) -> None:
+    """#322 r5:寬限中再來一次訊號(連按兩次 Ctrl-C、Ctrl-C 後關終端機)也一定收 —— finally + 擋訊號。"""
+    try:
+        try:
+            os.killpg(proc.pid, signal.SIGINT)
+        except OSError:
+            pass
+        end = time.monotonic() + INTERRUPT_GRACE_S
+        while time.monotonic() < end and not _root_exited(proc.pid):
+            time.sleep(0.05)
+    finally:
+        _signals_blocked(_kill_group, proc, cap)
 
 
 def _drain(proc, e):
@@ -492,7 +509,7 @@ def _run_one(repo: Path, name: str, env: dict[str, str], timeout: float | None =
         with subprocess.Popen(_test_command(repo, name, env), cwd=str(repo), env=env,
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               text=True, errors="replace", **group) as proc:
-            cap = (memguard.TreeCap(proc.pid, memguard.test_cap_mb()) if memguard else _NoCap()).start()
+            cap = (memguard.TreeCap(proc.pid, memguard.test_cap_mb(), proc=proc) if memguard else _NoCap()).start()
             try:
                 out, err = _communicate_capped(proc, cap, limit)
             except subprocess.TimeoutExpired as e:

@@ -27,13 +27,16 @@ G18 動手前重讀 argv:同名直譯器 exec 成別的腳本 ⇒ 重新分級,�
 G19 主行程先結束、背景行程掛到 pid 1 ⇒ 逾時收得到(測試自成行程群組,r3 M3)
 G20 aib test 被 Ctrl-C(對驅動群組送 SIGINT)⇒ 正在跑的測試行程也收掉(r4 High)
 G21 aib test 收到 SIGHUP(關終端機 / ssh 斷線)⇒ 同上;走 test_entry __main__ 真的那段裝訊號
+G23 記憶體上限命中 + 測試先 double-fork 一個 daemon(同群組、掛到 pid 1、不拿管線)⇒ daemon 也收掉(r5 M1)
+G24 測試忽略 SIGINT、對驅動群組連送兩次 SIGINT ⇒ 3 秒內測試不在(r5 M2)
+G25 SIGINT 後 0.5 秒再送 SIGHUP ⇒ 3 秒內測試不在、驅動結束(r5 M2)
 G22 python -Wignore / -Ximporttime 不當 -i;node -i / --interactive 不算內嵌;script_hint 標 (stdin)(r4 L-b–L-d)
 刀(複本 + run_guarded):K1 TreeCap 上限判斷拿掉 ⇒ G7 紅;K2 連兩拍確認拿掉 ⇒ G2 紅;
 K3 開發分級拿掉 ⇒ G3 紅;K4 開始時間不比 ⇒ G4 紅;K5 node 也套一般上限 ⇒ G9 紅;
 K6 腳本之後的 -c 也當內嵌 ⇒ G3 紅;K7 相對路徑改用守門自己的 cwd ⇒ G3b 紅;K8 multiprocessing 不沿用 ⇒ G11 紅;
 K9 TreeCap 不比根開始時間 ⇒ G14 紅;K10 stdin 不看 fd 0 ⇒ G3b 紅;K11 資料夾也當腳本 ⇒ G16 紅;
 K12 動手前不重讀 argv ⇒ G18 紅;R4 逾時不收群組 ⇒ G19 紅;R5 拿掉 except BaseException 轉送 ⇒ G20 / G21 紅;
-T1 test_entry 不接 SIGHUP ⇒ G21 紅;runner 刀:R1 逾時改回 communicate() ⇒ G15 紅;R2 拿掉固定紅格 ⇒ G8 紅;
+T1 test_entry 不接 SIGHUP ⇒ G21 紅;K13 看門執行緒不收群組 ⇒ G23 紅;R6 / R6h 寬限不包 finally ⇒ G24 / G25 紅;runner 刀:R1 逾時改回 communicate() ⇒ G15 紅;R2 拿掉固定紅格 ⇒ G8 紅;
 R3 拿掉 rc 137 覆寫 ⇒ G8 紅。刀一律斷言輸出出現「FAIL: <目標>」且沒有 ERROR(紅在對的斷言)
 """
 import selectors
@@ -493,6 +496,47 @@ class RunnerCap(unittest.TestCase):
         finally:
             kill_quiet((gpid, MG.start_of(gpid) if gpid else None))
 
+    def test_g23_memcap_collects_detached_daemon(self):
+        """上限命中:測試先 double-fork 一個 daemon(stdio 接 /dev/null、同群組、掛到 pid 1)再配 400 MB(r5 M1)。"""
+        import runner  # noqa: E402
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(repo), True)
+        (repo / "tests").mkdir()
+        pidf = repo / "daemon.pid"
+        (repo / "tests" / "test-daemon-big.py").write_text(textwrap.dedent("""
+            import os, time
+            if os.fork() == 0:
+                if os.fork() == 0:
+                    fd = os.open(os.devnull, os.O_RDWR)
+                    for k in (0, 1, 2):
+                        os.dup2(fd, k)
+                    open(%r, "w").write(str(os.getpid()))
+                    time.sleep(60)
+                os._exit(0)
+            os.wait()
+            for _ in range(100):
+                if os.path.exists(%r):
+                    break
+                time.sleep(0.05)
+            blob = b"x" * (400 * 1024 * 1024)
+            time.sleep(30)
+        """ % (str(pidf), str(pidf))))
+        dpid = dstart = None
+        try:
+            with mock.patch.dict(os.environ, {"AIB_TEST_MEM_CAP_MB": "256"}):
+                r = runner._run_one(repo, "tests/test-daemon-big.py", dict(os.environ), timeout=60)
+            dpid = int(pidf.read_text())
+            for _ in range(30):
+                if MG.proc_info(dpid) is None:
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(MG.proc_info(dpid), "上限命中後 daemon 還活著(孤兒)")
+            self.assertEqual(r["rc"], 137, r["output"])
+        finally:
+            if dpid:
+                dstart = MG.start_of(dpid)
+            kill_quiet((dpid, dstart))
+
     def test_g19_main_exits_background_orphan_collected(self):
         """主行程先結束、背景行程掛到 pid 1 還拿著管線 ⇒ 逾時回 124,背景行程靠群組收掉(r3 M3)。"""
         import runner  # noqa: E402
@@ -538,15 +582,17 @@ DRIVER = textwrap.dedent("""
 """)
 
 
-def interrupt_case(testcase, sig):
-    """起一支驅動(自己一個群組,像終端機前景群組)跑 _run_one;測試寫出 pid 後對驅動群組送 sig。
-    回 (驅動結束碼, 測試 pid 收掉了沒)。"""
+def interrupt_case(testcase, sig, then=None, ignore_int=False, gone_within=None):
+    """起一支驅動(自己一個群組,像終端機前景群組)跑 _run_one;測試寫出 pid 後對驅動群組送 sig
+    (then = 0.5 秒後再送的訊號)。回 (驅動結束碼或 None, 測試 pid 收掉了沒)。
+    gone_within:只等這麼多秒看測試在不在(先判「行程還活著」,再看驅動)。"""
     repo = Path(tempfile.mkdtemp())
     testcase.addCleanup(shutil.rmtree, str(repo), True)
     (repo / "tests").mkdir()
     pidf = repo / "pid.txt"
     (repo / "tests" / "test-hang.py").write_text(
-        "import os, time\nopen(%r, 'w').write(str(os.getpid()))\ntime.sleep(60)\n" % str(pidf))
+        "import os, signal, time\n" + ("signal.signal(signal.SIGINT, signal.SIG_IGN)\n" if ignore_int else "") +
+        "open(%r, 'w').write(str(os.getpid()))\ntime.sleep(60)\n" % str(pidf))
     drv = repo / "driver.py"
     drv.write_text(DRIVER)
     p = subprocess.Popen([sys.executable, str(drv), str(repo), "x", str(ROOT / "tools" / "verify"),
@@ -561,6 +607,22 @@ def interrupt_case(testcase, sig):
         tpid = int(pidf.read_text())
         tstart = MG.start_of(tpid)
         os.killpg(p.pid, sig)
+        if then is not None:
+            time.sleep(0.5)
+            try:
+                os.killpg(p.pid, then)
+            except OSError:
+                pass
+        if gone_within is not None:
+            end = time.monotonic() + gone_within
+            while time.monotonic() < end and MG.proc_info(tpid) is not None:
+                time.sleep(0.05)
+            gone = MG.proc_info(tpid) is None
+            try:
+                rc = p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                rc = None
+            return rc, gone
         try:
             rc = p.wait(timeout=20)
         except subprocess.TimeoutExpired:
@@ -582,6 +644,16 @@ class Interrupt(unittest.TestCase):
         rc, gone = interrupt_case(self, signal.SIGINT)
         self.assertNotIn(rc, (0, None), "驅動沒結束或沒報錯")
         self.assertTrue(gone, "aib test 被 Ctrl-C 後測試行程還活著(孤兒)")
+
+    def test_g24_double_ctrl_c_still_collects(self):
+        rc, gone = interrupt_case(self, signal.SIGINT, then=signal.SIGINT, ignore_int=True, gone_within=3)
+        self.assertTrue(gone, "連按兩次 Ctrl-C 後測試行程還活著(孤兒)")
+        self.assertIsNotNone(rc, "驅動沒結束")
+
+    def test_g25_ctrl_c_then_sighup_still_collects(self):
+        rc, gone = interrupt_case(self, signal.SIGINT, then=signal.SIGHUP, ignore_int=True, gone_within=3)
+        self.assertTrue(gone, "Ctrl-C 後接 SIGHUP,測試行程還活著(孤兒)")
+        self.assertIsNotNone(rc, "驅動卡住沒結束")
 
     def test_g21_sighup_collects_running_test(self):
         rc, gone = interrupt_case(self, signal.SIGHUP)
@@ -613,6 +685,7 @@ KNIVES = [
     ("K11", "        if path and ((os.path.isabs(what) and not os.path.isdir(path)) or os.path.isfile(path)):",
      "        if path and (os.path.isabs(what) or os.path.isfile(path)):", "GuardLogic.test_g16_unknown_value_options_not_dev"),
     ("K12", "            if fresh != self.args[key]:", "            if False:", "GuardLogic.test_g18_reread_argv_before_acting"),
+    ("K13", "        self._killpg_locked()\n", "", "RunnerCap.test_g23_memcap_collects_detached_daemon"),
 ]
 
 RUNNER_KNIVES = [
@@ -628,6 +701,10 @@ RUNNER_KNIVES = [
      "Interrupt.test_g20_ctrl_c_collects_running_test"),
     ("R5h", "            except BaseException:\n", "            except ZeroDivisionError:\n",
      "Interrupt.test_g21_sighup_collects_running_test"),
+    ("R6", "    finally:\n        _signals_blocked(_kill_group, proc, cap)", "    except ZeroDivisionError:\n        pass\n"
+     "    _kill_group(proc, cap)", "Interrupt.test_g24_double_ctrl_c_still_collects"),
+    ("R6h", "    finally:\n        _signals_blocked(_kill_group, proc, cap)", "    except ZeroDivisionError:\n        pass\n"
+     "    _kill_group(proc, cap)", "Interrupt.test_g25_ctrl_c_then_sighup_still_collects"),
 ]
 
 ENTRY_KNIVES = [
