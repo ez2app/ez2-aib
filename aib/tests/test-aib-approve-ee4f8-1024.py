@@ -21,9 +21,13 @@ A11 http_call 不跟轉址(轉址會把機房 token 帶去別的主機);不是 h
 A12 外人能寫的東西都不讓指令當掉:站上回很深的 JSON / 壞 UTF-8、本機 token / history / rate / .sekey 壞掉;
     短碼固定向量("N"*43 ⇒ 7TUV,跟 WP 端同);過了 exp 一秒就 expired(不寬限);no 遇到過期 ⇒ expired;
     nonce 以「-」開頭也收得下;yes / no 不帶 --json 也是一行 JSON
-A10 aib approve 接上、四語都有、視窗字帶四個欄位
+A10 aib approve 接上、四語都有、視窗字帶四個欄位、站名在帳號前
+A13 http 網址根本不連;A14 「-」開頭 nonce 配 --json(前後都行)
+A15 IP 帶控制字、exp ≤ iat、站回 {"ok":1}、key pem 時指紋視窗佔用、沒點的站名、port 0、本機檔被換成資料夾
+A16 參數錯也印一行 JSON、stdin 不是 UTF-8、網址帶帳號 / 前置空白、站回 v≠1
+A17 yes -h 不印 bad_args、--json 放前面、網址空帳號、一站最多 50 筆、deny 403 / 502 分開、history 最近 20 筆
 刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
-   K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅
+   K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅;K8 跟轉址 ⇒ A11 紅
 """
 import base64
 import hashlib
@@ -463,6 +467,31 @@ class Approve(Base):
         r, _ = AA.pending(self.env, http=v2, now=NOW)
         self.assertEqual((r["items"], r["errors"]), ([], {"ez2.app": "bad_reply"}))
         self.assertTrue(f)
+
+    def test_a17_help_caps_deny_status(self):
+        import unittest.mock as um
+        out = io.StringIO()
+        with um.patch("sys.stdout", io.StringIO()):
+            self.assertEqual(AA.main(["yes", "-h"], out=out, env=self.env), 0)
+        self.assertEqual(out.getvalue(), "")  # 說明不是錯:不印 bad_args
+        out = io.StringIO()
+        self.assertEqual(AA.main(["--json", "yes"], out=out, env=self.env), 2)
+        self.assertEqual(json.loads(out.getvalue())["why"], "bad_args")
+        for url in ("https://@ez2.app", "https://:@ez2.app"):
+            self.assertEqual(AA.site_add("ez2.app", url, "t" * 32, self.env), (None, "bad_url"), url)
+        for _ in range(55):
+            self.site.add(kid=self.kid)
+        r, _ = AA.pending(self.env, http=self.site, now=NOW)
+        self.assertEqual(len(r["items"]), 50)  # 一站最多看 50 筆
+        f = self.site.items and json.loads(self.site.items[0]["payload"])
+        deny403 = lambda m, u, h, b: (403, b"{}") if u.endswith("/deny") else self.site(m, u, h, b)  # noqa: E731
+        self.assertEqual(AA.no(f["nonce"], self.env, http=deny403, now=NOW), ("site_rejected", None))
+        deny502 = lambda m, u, h, b: (502, b"") if u.endswith("/deny") else self.site(m, u, h, b)  # noqa: E731
+        self.assertEqual(AA.no(f["nonce"], self.env, http=deny502, now=NOW), ("not_delivered", None))
+        p = self.root / "approve" / "history.jsonl"
+        p.write_text("".join(json.dumps({"result": "denied", "nonce": str(i)}) + "\n" for i in range(30)))
+        h = AA.history(self.env)
+        self.assertEqual((len(h), h[0]["nonce"]), (20, "29"))  # 最近 20 筆、新的在前
 
     def test_a13_http_only_https(self):
         import unittest.mock as um

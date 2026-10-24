@@ -208,7 +208,7 @@ def _url_ok(site, url):
         u = urllib.parse.urlsplit(url)
         port = u.port  # 不在 0–65535 ⇒ ValueError
         return u.scheme == "https" and u.hostname == site and not u.username and not u.password \
-            and "?" not in url and "#" not in url and u.path == "" and url == url.strip() \
+            and "?" not in url and "#" not in url and "@" not in url and u.path == "" and url == url.strip() \
             and (port is None or 0 < port)
     except ValueError:
         return False
@@ -515,7 +515,7 @@ def no(nonce, env=None, http=None, now=None):
     st, _ = http("POST", row["url"] + "/wp-json/ez2-aib/v1/deny",
                  {"Content-Type": "application/json", "Authorization": "Bearer " + _token(row["site"], env)},
                  json.dumps({"nonce": nonce}).encode("utf-8"))
-    res = "denied" if st == 200 else "not_delivered"
+    res = "denied" if st == 200 else ("not_delivered" if st == 0 or st >= 500 else "site_rejected")  # 跟 yes 一樣分
     _record(env, d, res)
     return res, None
 
@@ -553,7 +553,8 @@ def main(argv=None, out=None, env=None, stdin=None):
     try:
         o = ap.parse_args(argv)
     except SystemExit as exc:
-        if exc.code and argv and argv[0] in ("yes", "no"):  # §2b:yes / no 參數錯也印一行 JSON
+        cmd = next((a for a in argv if not a.startswith("-")), "")
+        if exc.code and cmd in ("yes", "no"):  # §2b:yes / no 參數錯也印一行 JSON(--json 放在前面也一樣)
             out.write(json.dumps({"ok": False, "why": "bad_args"}) + "\n")
         return 0 if exc.code == 0 else 2
     if not o.cmd:
