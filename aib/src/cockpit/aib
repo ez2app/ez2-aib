@@ -1927,6 +1927,12 @@ aib_cli_gate() {
 }
 trap 'aib_splash_stop; [ -z "$_AIB_CLIVER_FILE" ] || rm -f "$_AIB_CLIVER_FILE"' EXIT
 aib_splash_start
+# 10-23 Andy「更新版本要自動 aib update」:真人終端機開席時,背景查一次有沒有新正式版(auto_update.py 自己 fork 脫離、
+#   10 分鐘內查過就不查;安全才更新、不動開著的席)。不擋開席、不印字;aib update auto off 或 AIB_AUTO_UPDATE=0 關。
+if [ "$DRY" != "1" ] && [ "${AIB_NO_ATTACH:-0}" != "1" ] && [ "${AIB_AUTO_UPDATE:-1}" != "0" ] && [ -t 2 ] \
+   && [ -f "$HERE/auto_update.py" ]; then
+  "$T_PY3" "$HERE/auto_update.py" check --why seat-open --detach </dev/null >/dev/null 2>&1 &
+fi
 # ★ 09-12 第 59 項:ensure 鏈裡任何一支非零(例:theme-ctl 判版面不合)以前是 set -e 直接死,
 #   終端只剩右欄「等待逾時」;現在印出是哪一步、rc 多少,原因由那支自己印在上方 stderr。
 # ★★ 09-14(the maintainer 直令「aib 一開席第一要義要先開席並在右方完成,只有右方開席顯示完成、

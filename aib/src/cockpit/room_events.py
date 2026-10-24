@@ -9,6 +9,7 @@
 
 記什麼:只記「有一封、誰寄的(通訊錄鍵)、在哪一席的佇列、佇列 id、原因」。**不記內容、不記對方自取的名字**
 (名字是注入面;艦長室照 contact_key 查通訊錄自己顯示)。
+另一種(10-23):aib_updated —— aib 自動更新完成(auto_update.py),只記 from / to 兩個版號,給 BB Call 說「aib 已自動更新到 X」。
 檔:<狀態根>/state/room-events.jsonl,只追加,id 從 1 遞增;`aib chat events [--since <id>]` 讀。
 事件記不進去(磁碟滿、鎖拿不到)不擋收信:enqueue 那邊包著 try,信照樣進待審。
 
@@ -18,6 +19,7 @@
 import fcntl
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -28,7 +30,8 @@ if str(HERE) not in sys.path:
 
 V = 1
 KIND_HUMAN_MAIL = "human_mail"
-KINDS = (KIND_HUMAN_MAIL,)
+KIND_AIB_UPDATED = "aib_updated"         # 10-23 自動更新(auto_update.py):只帶版號 from / to,BB Call 顯示「aib 已自動更新到 X」
+KINDS = (KIND_HUMAN_MAIL, KIND_AIB_UPDATED)
 WHYS = ("human_reply", "im_room")        # 對應 dm_queue.HOLD_WHY 的鍵
 FILE = "room-events.jsonl"
 KEEP = 2000                               # 讀的時候最多看最後這麼多筆(檔只追加;舊的留著當稽核)
@@ -95,6 +98,11 @@ def note_human_mail(seat, item, env=None, now=None):
     now = int(time.time() if now is None else now)
     ev = {"v": V, "id": 0, "at": now, "kind": KIND_HUMAN_MAIL, "seat": seat, "queue_id": item.get("id"),
           "why": why, "net": net, "contact_key": key, "relation": rel}
+    return _append(ev, env)
+
+
+def _append(ev, env=None):
+    """配號並追加一筆(同一把鎖);回記下的事件。"""
     p = path(env)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "a+", encoding="utf-8") as fh:
@@ -111,6 +119,18 @@ def note_human_mail(seat, item, env=None, now=None):
     except OSError:
         pass
     return ev
+
+
+VERSION_OK = re.compile(r"[0-9][0-9A-Za-z.+-]{0,31}")
+
+
+def note_aib_updated(old, new, env=None, now=None):
+    """aib 自動更新完成(auto_update.check)⇒ 追加一筆 aib_updated;只記版號(不像版號的字不記)。回事件或 None。"""
+    old, new = str(old or ""), str(new or "")
+    if not VERSION_OK.fullmatch(new) or (old and not VERSION_OK.fullmatch(old)):
+        return None
+    now = int(time.time() if now is None else now)
+    return _append({"v": V, "id": 0, "at": now, "kind": KIND_AIB_UPDATED, "from": old or None, "to": new}, env)
 
 
 def _since(value):
