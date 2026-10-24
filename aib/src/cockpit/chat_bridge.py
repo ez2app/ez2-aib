@@ -404,6 +404,19 @@ def sync_keys(env=None):
     return acts, None
 
 
+def _relay_swap_tick(root, env, now):
+    """10-24 中繼站自動換:看工人剛寫的各站狀態(2 分鐘內的才算);換了 ⇒ 下面照「換了中繼站」重連工人、重發名冊。"""
+    import chat_roster as CR
+    try:
+        w = json.loads((Path(root) / "worker-status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(w, dict) or not isinstance(w.get("at"), int) or now - w["at"] > 120:
+        return
+    for old, new in CR.check_relay_swap(w.get("relays"), env, now):
+        sys.stderr.write("relay_swap %s -> %s\n" % (old, new))
+
+
 def _leader_tick(root, env=None):
     st = read_status(root) or {}
     now = int(time.time())
@@ -412,6 +425,8 @@ def _leader_tick(root, env=None):
         GF.sweep(root, now=now)
         swept = now
     _acts, key_err = sync_keys(env)
+    if not key_err:
+        _relay_swap_tick(root, env, now)
     state, pub = ("no_keys", {}) if key_err else publish_roster(root, env, st, now)
     if key_err or state == "no_profile":
         # 第 27.1 節:沒設名字與國別 ⇒ 名冊不發、誰都寄不到這台 ⇒ 不連中繼站(不起工人;在跑的停掉)
@@ -1072,12 +1087,17 @@ def cmd_relays(a, env, out):
     w = _worker_status(bridge_root(env), True) or {}
     seen = w.get("relays") or {}
     cur = CR.relays(env)
+    swaps = CR.read_swaps(env)
     if a.json:
-        out.write(json.dumps({"relays": [{"url": u, "status": seen.get(u)} for u in cur]}, ensure_ascii=False) + "\n")
+        out.write(json.dumps({"relays": [{"url": u, "status": seen.get(u)} for u in cur],
+                              "swaps": [{"from": o, "to": v["to"], "at": v["at"]} for o, v in swaps.items()]},
+                             ensure_ascii=False) + "\n")
         return 0
     for u in cur:
         st = seen.get(u)
         out.write(T("relays_row_" + ("up" if st == "CONNECTED" else ("down" if st else "unknown")), url=u) + "\n")
+    for o, v in swaps.items():
+        out.write(T("relays_swapped", old=o, new=v["to"]) + "\n")
     return 0
 
 

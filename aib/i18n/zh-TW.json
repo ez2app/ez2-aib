@@ -4519,6 +4519,7 @@
   "aib.chat.self_friend_skip": "好友 {name} 沒查(連線程式沒在跑,或還不知道對方的席)",
   "aib.chat.self_all_ok": "全部正常。",
   "aib.chat.self_some_bad": "{n} 項沒過,照上面 ✗ 那行的指令修。",
+  "aib.chat.relays_swapped": "  ↪ {old} 連續 30 分鐘連不上，暫時換成備用站 {new}(24 小時後換回再試)",
   "aib.chat.relays_saved": "中繼站清單已存;轉接程式下一輪重發名冊與收信站清單、重連。",
   "aib.chat.relays_row_up": "  ✓ {url}",
   "aib.chat.relays_row_down": "  ✗ {url}(沒連上)",

@@ -4519,6 +4519,7 @@
   "aib.chat.self_friend_skip": "Friend {name} not checked (relay worker not running, or their seat is not known yet)",
   "aib.chat.self_all_ok": "All checks passed.",
   "aib.chat.self_some_bad": "{n} check(s) failed; fix them with the commands on the ✗ lines above.",
+  "aib.chat.relays_swapped": "  ↪ {old} was unreachable for 30 minutes; using backup {new} for now (tries the original again after 24 hours)",
   "aib.chat.relays_saved": "Relay list saved; the bridge will republish the roster and inbox list and reconnect on its next round.",
   "aib.chat.relays_row_up": "  ✓ {url}",
   "aib.chat.relays_row_down": "  ✗ {url} (not connected)",
