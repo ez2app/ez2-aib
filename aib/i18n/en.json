@@ -5198,5 +5198,6 @@
   "aib.chat.list_sep": ", ",
   "aib.chat.connect_request_failed": "Not connected: the request was not sent ({why}); no friend added, sharing unchanged — fix it and run again",
   "aib.chat.connect_accept_failed": "Not connected: the acceptance was not sent ({why}); friend list unchanged",
+  "aib.chat.connect_undo_failed": "Not connected: the request was not sent ({why}) and undoing the friend failed to save ({err}); the friend is still on your list. Run aib chat friend remove {owner} first, then try again",
   "aib.chat.connect_pending": "Added friend {owner}: presence {share}, space {space}; request handed to the bridge, not confirmed yet"
 }

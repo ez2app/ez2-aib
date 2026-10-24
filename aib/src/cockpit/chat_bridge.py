@@ -1105,7 +1105,7 @@ def cmd_connect(a, env, out):
             try:                             # 申請沒送出去 ⇒ 這次新加的好友撤掉(本人原本設的等級不動),重跑才會再送
                 CR.remove_friend(owner, env, forget=False)
             except (OSError, CR.RosterError) as err:
-                return fail("request_failed", T("connect_request_failed", why=why) + " (" + str(err)[:80] + ")",
+                return fail("request_failed", T("connect_undo_failed", why=why, owner=owner, err=str(err)[:80]),
                             request=req, detail="undo_failed")
             return fail("request_failed", T("connect_request_failed", why=why), request=req)
         if not a.json and buf.getvalue():

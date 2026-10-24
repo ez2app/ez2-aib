@@ -5198,5 +5198,6 @@
   "aib.chat.list_sep": "、",
   "aib.chat.connect_request_failed": "接続できませんでした:申請が送れていません({why})。友だち追加・共有変更はしていません。直してからもう一度",
   "aib.chat.connect_accept_failed": "接続できませんでした:承認が送れていません({why})。友だちリストは変わっていません",
+  "aib.chat.connect_undo_failed": "接続できませんでした:申請が送れておらず({why})、友だちの取り消しも保存に失敗しました({err})。友だちはリストに残っています。先に aib chat friend remove {owner} を実行してから、もう一度",
   "aib.chat.connect_pending": "友だちに追加 {owner}:オンライン {share}、空間 {space}。申請は転送プログラムに渡しました(未確認)"
 }
