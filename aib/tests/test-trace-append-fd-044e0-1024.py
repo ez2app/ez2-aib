@@ -184,9 +184,10 @@ EFBIG = "import json, os, resource, signal, sys\n" + FD_COUNT + textwrap.dedent(
     d = sys.argv[1]
     soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
     resource.setrlimit(resource.RLIMIT_FSIZE, (4096, hard))
+    base = os.path.getsize(os.environ["EZ2_VERIFY_TRACE"])     # 設上限前已寫的(t0 的 /tmp 列表、import 事件,看機器)
     for i in range(300):
         open(os.path.join(d, "f%d" % (i % 50)), "rb").close()
-    print(json.dumps({"fds": trace_fds(), "size": os.path.getsize(os.environ["EZ2_VERIFY_TRACE"])}))
+    print(json.dumps({"fds": trace_fds(), "size": os.path.getsize(os.environ["EZ2_VERIFY_TRACE"]), "base": base}))
 """)
 
 STDIN_CLOSED = COUNTER + FD_COUNT + textwrap.dedent("""
@@ -294,8 +295,8 @@ class Trace(unittest.TestCase):
     @unittest.skipUnless(hasattr(signal, "SIGXFSZ"), "沒有 RLIMIT_FSIZE / SIGXFSZ")
     def test_f9_write_errors_do_not_leak_fds(self):
         out = self.run_py(EFBIG)
-        self.assertLessEqual(out["size"], 4096)
         self.assertLessEqual(len(out["fds"]), 1, "追蹤檔寫不進時漏 fd:%d 個" % len(out["fds"]))
+        self.assertLessEqual(out["size"], max(4096, out["base"]), "上限之後還寫得進去(這格沒驗到寫失敗)")
 
     def test_f10_stdin_closed_from_start(self):
         script = Path(self.d, "s.py")
@@ -458,8 +459,8 @@ class NodeTrace(Trace):
                            env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         out = json.loads(p.stdout.strip().splitlines()[-1])
-        self.assertLessEqual(out["size"], 4096)
         self.assertLessEqual(len(out["fds"]), 1, "node 追蹤檔寫不進時漏 fd:%s" % out["fds"])
+        self.assertLessEqual(out["size"], 4096, "上限之後還寫得進去(這格沒驗到寫失敗)")   # 追蹤檔從空的開始
 
     def test_f8_node_module_register_hooks_mjs(self):
         probe = subprocess.run([NODE, "-p", "typeof require('module').register"], capture_output=True, text=True,
@@ -533,6 +534,8 @@ class Knife(unittest.TestCase):
                 self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s" % (tag, out))
                 self.assertIn("FAIL: " + target.split(".")[-1], out, "%s 紅的不是目標斷言\n%s" % (tag, out))
                 self.assertNotIn("ERROR: ", out, "%s 是炸掉不是斷言紅\n%s" % (tag, out))
+                if tag in ("KE", "KEN"):
+                    self.assertIn("漏 fd", out, "%s 紅的不是漏 fd 那條\n%s" % (tag, out))
 
 
 if __name__ == "__main__":
