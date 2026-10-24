@@ -9,10 +9,11 @@ T2 給本人的信留 7 天:第 1、2 天各送一張 still_waiting(days=1 / 2),
    陌生信照舊 24 小時 expired(hold_24h)、不送 still_waiting;沒有 global 的(Telegram)不送
 T3 本人已讀:human 讀待審那封 ⇒ delivery read by=human;AI 席位用 --by human: ⇒ 拒(actor)、不寫回條;席自己讀全球待審照舊拒
 T4 寄件端 recent:寄出那列帶最後一張回條(stage / days / by / 白名單 detail)
+T4b 本機的 relayed 比對方 queued 晚寫(10-24 跨客戶驗收)⇒ 仍顯示對方那張;只有本機的 ⇒ 照顯示 relayed
 連 venv(nostr-sdk):
 T5 收:_apply_receipt 照白名單收 held 原因 / still_waiting days / 本人已讀 by;亂值不收;舊版不認得的階段略過
 T6 送:send_receipt 帶 aib-reason(held 白名單)/ aib-days / aib-read-by;不在白名單的不帶;pump 把本人已讀跟一般已讀分開送
-刀(複本):K1 still_waiting 不記天數 ⇒ T2 紅(每輪重送);K2 human 讀不擋席位 ⇒ T3 紅
+刀(複本):K1 still_waiting 不記天數 ⇒ T2 紅(每輪重送);K2 human 讀不擋席位 ⇒ T3 紅;K3 回條照寫入順序取最後一張 ⇒ T4b 紅
 """
 import importlib.util
 import json
@@ -172,6 +173,18 @@ class Core(Base):
         self.assertIsNone(CB.last_receipt(self.root, "../x"))
 
 
+    def test_t4b_local_relayed_written_late(self):
+        import chat_bridge as CB
+        mid = GF.new_msgid()
+        GF.append_receipt(self.root, mid, {"v": 1, "at": 198, "stage": "queued"})
+        GF.append_receipt(self.root, mid, {"v": 1, "at": 203, "stage": "relayed", "detail": "2"})
+        self.assertEqual(CB.last_receipt(self.root, mid), {"stage": "queued", "at": 198})
+        GF.append_receipt(self.root, mid, {"v": 1, "at": 230, "stage": "read"})
+        self.assertEqual(CB.last_receipt(self.root, mid)["stage"], "read")
+        only = GF.new_msgid()
+        GF.append_receipt(self.root, only, {"v": 1, "at": 5, "stage": "relayed", "detail": "1"})
+        self.assertEqual(CB.last_receipt(self.root, only)["stage"], "relayed")
+
 WIRE = r'''
 import asyncio, json, sys, tempfile, types
 from pathlib import Path
@@ -280,9 +293,9 @@ class Wire(unittest.TestCase):
 
 
 class Knife(unittest.TestCase):
-    def _knife(self, needle, repl, cell):
+    def _knife(self, needle, repl, cell, rel="src/cockpit/dm_queue.py"):
         name = Path(__file__).name
-        with knife_copy(REPO, "src/cockpit/dm_queue.py", needle, repl, tests=(name,)) as root:
+        with knife_copy(REPO, rel, needle, repl, tests=(name,)) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), cell], cwd=str(root), max_procs=60, timeout=300)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
@@ -294,6 +307,10 @@ class Knife(unittest.TestCase):
     def test_k2_human_read_not_gated(self):
         self._knife('    if to == "read" and cls == "human" and _human_from_seat("human:x", env):',
                     '    if False:', "Core.test_t3_human_read")
+
+    def test_k3_receipt_by_write_order(self):
+        self._knife("    r = (remote or recs)[-1]", "    r = recs[-1]", "Core.test_t4b_local_relayed_written_late",
+                    rel="src/cockpit/chat_bridge.py")
 
 
 if __name__ == "__main__":
