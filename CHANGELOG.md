@@ -4,6 +4,10 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.51
+
+- **Right-click menu, more hardening**: clicking [X] on a seat row now checks the same things as "Close this seat" in the right-click menu (the cell exists and the window id is a tmux id); otherwise the click does nothing. If the menu's 3-second time limit cannot be cleared, the timer is made harmless so the menu still prints; every other path puts the previous handler back.
+
 ## 0.1.50
 
 - **Captain's power room (`aib power`)**: a first stop for new captains. `aib power status` shows versions, health, bindings and a light for each AI (signed in / quota); `aib power login <ai>` opens that AI's own sign-in link; `aib power upgrade <ai>` updates its CLI. `aib ui power` opens a simple static page with the same data — its buttons only copy commands for you to paste, and no local server is started.
