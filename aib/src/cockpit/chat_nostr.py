@@ -625,6 +625,7 @@ class Sender(object):
             if not (self.root / "resend" / (msgid + ".json")).exists():
                 GF.keep_for_resend(self.root, rec, res.get("owner"))     # 10-24:對方還沒收到前留一份,上線就補寄
             self._remember_peer(rec["to"], res, "request" if rec.get("op") == "request" else "sent")
+            GF.note_first(self.root, "sent")
             self._done(msgid)
         else:
             self._retry_later(msgid, "relays")
@@ -1435,6 +1436,8 @@ class Receiver(object):
             r["by"] = "human"
         GF.append_receipt(self.root, ref, r)
         audit(self.root, "receipt-in", ref, from_npub, stage)
+        if stage in ("queued", "delivered"):              # 對方收下了(進佇列 / 申請送到)
+            GF.note_first(self.root, "delivered")
         req = {"held": "pending", "delivered": "accepted", "refused": "rejected"}.get(stage)
         if sent.get("op") == "request" and req and sent.get("owner"):
             GF.note_peer(self.root, sent["owner"], request=req)        # 第 29.4 節:通訊錄顯示申請推到哪
@@ -1777,6 +1780,7 @@ class Receiver(object):
         try:
             GF.write_inbox(self.root, rec)
             audit(self.root, "in", msgid, from_npub, "inbox")
+            GF.note_first(self.root, "in")
             if phone_cmd is not None:                          # 第 33.6 節:回手機一句純文字(手機 App 看得懂)
                 await self._reply_plain(entry, from_npub, "aib:收到指令,已交給 @%s:%s" % (entry["seat5"], phone_cmd[:40]))
             if peer:
