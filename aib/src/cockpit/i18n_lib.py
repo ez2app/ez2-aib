@@ -6,7 +6,8 @@
   1. 語系來源(高→低):呼叫端明給 > $EZ2_AIB_LOCALE > 預設 zh-TW
      支援 zh-TW/en/ja/ko 與常見 POSIX locale alias;未知值回預設語系。
   2. 查詢順序:當前語系 -> en fallback -> fail-loud 回 `!!key!!`(絕不回空字串)
-  3. 字典檔缺失/JSON 壞掉 = 啟動即 fail(地基破洞不掩蓋)
+  3. 字典檔缺失/JSON 壞掉 = fail(地基破洞不掩蓋):當前語系那份一建 Translator 就驗;
+     en 備援 10-25 起缺鍵才載,壞掉時在第一次缺鍵那一下 fail
   4. 插值 `{name}`;缺參數時保留 `{name}` 字面原樣(可見即可抓)
 
 放在 src/cockpit/ 是因為 E2.9 只准動本 lane;它是通用件,第一艦長整合時可

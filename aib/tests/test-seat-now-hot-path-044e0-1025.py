@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """seat_now 狀態列熱路徑(10-25 @044e0):Claude 狀態列每次刷新都跑一次 seat_now --statusline。
-N1  有 TMUX_PANE:整支只問 tmux 一次(窗 id / socket / 寬一起問),席位碼照席位檔、寬照 tmux 給的
+N1  有 TMUX_PANE:整支只問 tmux 一次(窗 id / socket / 寬一起問),席位碼照席位檔、寬照 tmux 給的(窄窗 40 ⇒ 主項目截成「…」)
 N2  seat_who.instance_of_socket 不再 import fleet_patrol(那一包要 20 毫秒,只為一個純函式)
 N3  instance_of_hub 實作只有一份:fleet_patrol 的是 seats_dir_lib 的同一個物件,結果照舊
 N4  i18n:主語系有這個鍵 ⇒ 不載 en(en 壞了也照常翻);缺鍵 ⇒ 才載 en 補上(en 壞 ⇒ 那時才 raise);主語系壞 ⇒ 一建就 raise
 刀(複本 + run_guarded):K1 狀態列不帶一次問到的值 ⇒ N1 紅(tmux 3 次);K2 seat_who 改回 import fleet_patrol ⇒ N2 紅;
-K3 en 改回一建就載 ⇒ N4 紅。
+K3 en 改回一建就載 ⇒ N4 紅;K4 第三欄拿成 socket(寬度沒照 tmux)⇒ N1 紅。
 刀一律斷言「FAIL: <目標>」且沒有 ERROR。全在暫存 HOME / 狀態根,tmux 是 PATH 上的假檔。
 """
 import json
@@ -42,7 +42,7 @@ class HotPath(unittest.TestCase):
         self.log = self.d / "tmux.calls"
         (b / "tmux").write_text(
             "#!/bin/sh\necho \"$*\" >> %s\n"
-            "case \"$*\" in *pane_width*) printf '@5\\t/tmp/x/aihub-cab1\\t104\\n' ;;"
+            "case \"$*\" in *pane_width*) printf '@5\\t/tmp/x/aihub-cab1\\t40\\n' ;;"
             " *socket_path*) printf '@5\\t/tmp/x/aihub-cab1\\n' ;; *) echo ;; esac\n" % self.log)
         (b / "tmux").chmod(0o755)
         self.env = {"HOME": str(self.d), "PATH": "%s:/usr/bin:/bin" % b, "TMUX_PANE": "%9",
@@ -56,8 +56,14 @@ class HotPath(unittest.TestCase):
         return p.stdout
 
     def test_n1_one_tmux_call(self):
+        sys.path.insert(0, str(COCKPIT))
+        import seat_now
+        long_item = "這是一個很長很長的主項目用來測試窄窗會不會被截斷顯示"
+        seat_now.write("044e0", long_item, 1, 4, state_root=str(self.state))
         out = self.run_sl()
         self.assertTrue(out.startswith("044e0\x1f"), out)
+        self.assertIn("…", out, "窄窗 40 卻沒截:寬度沒照 tmux 給的")
+        self.assertNotIn(long_item, out)
         calls = self.log.read_text().splitlines()
         self.assertEqual(len(calls), 1, calls)
         self.assertIn("-t %9", calls[0])
@@ -108,6 +114,8 @@ KNIVES = [
     ("K3", "src/cockpit/i18n_lib.py", "        self._f_data = self._p if self.locale == FALLBACK_LOCALE else None\n",
      "        self._f_data = self._p if self.locale == FALLBACK_LOCALE else load_dict(FALLBACK_LOCALE, i18n_dir, _keyed=True)\n",
      "HotPath.test_n4_i18n_fallback_lazy"),
+    ("K4", "src/cockpit/seat_now.py", "    return parts[0].strip(), parts[1].strip(), parts[2].strip()\n",
+     "    return parts[0].strip(), parts[1].strip(), parts[1].strip()\n", "HotPath.test_n1_one_tmux_call"),
 ]
 
 
