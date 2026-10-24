@@ -89,6 +89,14 @@ def run_tty(b, args, answer, timeout=20, **extra):
 
 
 class Auto(Base):
+    def setUp(self):
+        super().setUp()
+        # 10-24 答「要」會自動裝 nostr-sdk:放一個 import 得到的假 venv,免得測試真的去網路 pip install(會留背景程式)
+        py = self.b.chat / "venv" / "bin" / "python"
+        py.parent.mkdir(parents=True)
+        py.write_text("#!/bin/sh\nexit 0\n")
+        py.chmod(0o755)
+
     def test_a1_no_terminal_no_question(self):
         r = self.cli("auto")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
