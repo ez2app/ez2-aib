@@ -162,10 +162,15 @@ class Setting(Base):
         ctl, out = FakeCtl(), io.StringIO()
         AU.agent_plist_path(self.home).parent.mkdir(parents=True)
         AU.agent_plist_path(self.home).write_text("x")
-        self.assertEqual(AU.cmd_off(self.env, out=out, home=self.home, launchctl=ctl), 0)
+        self.assertEqual(AU.cmd_off(self.env, out=out, home=self.home, platform="darwin", launchctl=ctl), 0)
         self.assertEqual(AU.read_setting(self.env), (False, "set"))
         self.assertFalse(AU.agent_plist_path(self.home).exists())
         self.assertEqual(ctl.calls[0][0], "bootout")
+        lctl = FakeCtl()                                   # Linux 沒有 launchctl:不叫、排程檔照刪
+        AU.agent_plist_path(self.home).write_text("x")
+        self.assertEqual(AU.cmd_off(self.env, out=io.StringIO(), home=self.home, platform="linux", launchctl=lctl), 0)
+        self.assertEqual(lctl.calls, [])
+        self.assertFalse(AU.agent_plist_path(self.home).exists())
         self.assertIn("自動更新已關掉", out.getvalue())
         self.assertEqual(AU.check(env=self.env, now=NOW)["result"], "off")
         out = io.StringIO()
@@ -601,7 +606,7 @@ class Exclude(Base):
     def test_x1_default_and_commands(self):
         self.assertEqual(AU.read_excludes(self.env), ["hostguard"])
         ctl = FakeCtl()
-        AU.cmd_off(self.env, out=io.StringIO(), home=self.home, launchctl=ctl)
+        AU.cmd_off(self.env, out=io.StringIO(), home=self.home, platform="linux", launchctl=ctl)
         AU.cmd_on(self.env, out=io.StringIO(), home=self.home, platform="linux", launchctl=ctl)
         self.assertEqual(AU.read_excludes(self.env), ["hostguard"])
         asked = []
