@@ -40,6 +40,7 @@ BRAND_COLOR = {"claude": "#D97757", "codex": "#10A37F", "grok": "#E8E8E8", "copi
                "aib": "#7fd8ff"}
 LIGHT_COLOR = {"green": "#3ddc84", "yellow": "#ffd23f", "red": "#ff4d5e", "unknown": "#7a86a8", "off": "#2a3047"}
 LAUNCH_BRANDS = ("claude", "codex", "grok", "copilot", "agy")      # 控制台可選的家(power_launch.BRANDS)
+ASK_BRANDS = ("claude", "codex")                                      # 問 AI 能關工具的家(power_ask.BRANDS)
 TIERS = ("R", "SR", "SSR", "UR")
 WHY = ("memory", "multi_ai", "coding", "automation", "ecommerce", "geo_seo", "support", "video", "erp", "warroom",
        "phone", "sites", "art", "room", "save", "other")             # power_crew.WHY(順序 = 4×4 選項順序)
@@ -92,13 +93,22 @@ def _copy_btn(cmd, label=None):
     return '<button class="cp" data-cmd="%s">%s</button><code>%s</code>' % (_e(cmd), _e(label or T("copy")), _e(cmd))
 
 
+def _list(v):
+    return v if isinstance(v, list) else []
+
+
+def _str(v):
+    return v if isinstance(v, str) else None
+
+
 def _light(a):
-    return a.get("light") if a.get("light") in LIGHT_COLOR else "unknown"
+    light = _str(a.get("light"))
+    return light if light in LIGHT_COLOR else "unknown"
 
 
 def _note(a, light):
     note = T("light_" + light)
-    if a.get("reason") in REASONS:
+    if _str(a.get("reason")) in REASONS:
         note = T("reason_" + a["reason"])
     if a.get("reset_at"):
         note += " · " + T("reset_at", when=_when(a["reset_at"]))
@@ -109,7 +119,7 @@ def _note(a, light):
 
 def ai_card(a):
     light = _light(a)
-    key = a.get("key") if a.get("key") in NAMES else None
+    key = _str(a.get("key")) if _str(a.get("key")) in NAMES else None
     if key is None:
         return ""
     rows = ['<div class="ver"><span>%s</span><b>%s</b><span>%s</span><b>%s</b></div>'
@@ -117,7 +127,7 @@ def ai_card(a):
     short = T("light_" + light) + (" · " + T("reset_at", when=_when(a["reset_at"])) if a.get("reset_at") else "")
     rows.append('<div class="note">%s</div>' % _e(short))          # 模組上只放短燈號;完整原因在點開的彈窗
     acts = []
-    if light in ("yellow", "red") or (light == "unknown" and a.get("login_cmd")):
+    if light in ("yellow", "red") and a.get("login_cmd"):            # 沒有登入流程的家(agy 等)不給跑不動的指令
         acts.append(_copy_btn("aib power login %s" % key, T("login_btn")))
     if a.get("can_update"):
         acts.append(_copy_btn("aib power upgrade %s" % key, T("upgrade_btn")))
@@ -145,7 +155,7 @@ def _task_li(t):
 
 
 def task_board(ob):
-    tasks = [t for t in ob.get("tasks") or [] if isinstance(t, dict)]
+    tasks = [t for t in _list(ob.get("tasks")) if isinstance(t, dict)]
     tasks = [t for t in tasks if t.get("where", "power") == "power"]       # 艦長室那幾條只在艦長室出現(SPEC §14)
     tiers = ob.get("tiers") if isinstance(ob.get("tiers"), dict) else {}
     done = sum(1 for t in tasks if t.get("state") in ("done", "claimed"))
@@ -194,14 +204,14 @@ def _egg_svg(cracked):
 
 
 def hatch_bay(ob):
-    tasks = {t.get("id"): t for t in ob.get("tasks") or [] if isinstance(t, dict)}
+    tasks = {t["id"]: t for t in _list(ob.get("tasks")) if isinstance(t, dict) and isinstance(t.get("id"), str)}
     stage1 = (tasks.get("R12") or {}).get("state") in ("done", "claimed")
     return ('<div class="hatch">%s<div><div class="big">%s</div><div class="dim">%s</div></div></div>'
             % (_egg_svg(stage1), _e(T("egg_stage1" if stage1 else "egg_stage0")), _e(T("egg_note"))))
 
 
 def repair_bay(st):
-    rows = [h for h in st.get("health") or [] if isinstance(h, dict)]
+    rows = [h for h in _list(st.get("health")) if isinstance(h, dict)]
     health_li = "".join('<li class="%s">%s %s%s</li>' % (
         "ok" if h.get("ok") else ("na" if h.get("ok") is None else "bad"),
         "✓" if h.get("ok") else ("·" if h.get("ok") is None else "⚠"), _e(h.get("key")),
@@ -217,48 +227,52 @@ def repair_bay(st):
 # ---------- 給腳本的資料(先篩格式) ----------
 
 def _page_data(st, now):
-    ais = [a for a in st.get("ais") or [] if isinstance(a, dict) and a.get("key") in NAMES]
+    ais = [a for a in _list(st.get("ais")) if isinstance(a, dict) and _str(a.get("key")) in NAMES]
     lz = st.get("launch") if isinstance(st.get("launch"), dict) else {}
     choices = lz.get("model_choices") if isinstance(lz.get("model_choices"), dict) else {}
     models = {b: [m for m in (choices.get(b) if isinstance(choices.get(b), list) else [])
                   if isinstance(m, str) and MODEL_RE.fullmatch(m)][:12] for b in LAUNCH_BRANDS}
-    personas = []
+    personas = []          # 先截再比對:最近出發只認頁面上真的列得出來的
     for p in (lz.get("personas") if isinstance(lz.get("personas"), list) else []):
         if isinstance(p, dict) and isinstance(p.get("uid"), str) and UID_RE.fullmatch(p["uid"]):
             personas.append({"uid": p["uid"], "name": _txt(p.get("name")) or p["uid"], "fav": p.get("fav") is True})
+    personas = personas[:200]
     brains = []
     for b in (lz.get("brains") if isinstance(lz.get("brains"), list) else []):
         if isinstance(b, dict) and isinstance(b.get("route_key"), str) and ROUTE_RE.fullmatch(b["route_key"]):
             brains.append({"route_key": b["route_key"], "title": _txt(b.get("title")) or b["route_key"]})
+    brains = brains[:200]
     uids = {p["uid"] for p in personas}
     keys = {b["route_key"] for b in brains}
     recent = []
     for r in (lz.get("recent") if isinstance(lz.get("recent"), list) else []):
-        if not isinstance(r, dict) or r.get("brand") not in LAUNCH_BRANDS:
+        if not isinstance(r, dict) or _str(r.get("brand")) not in LAUNCH_BRANDS:
             continue
-        m = r.get("model") if isinstance(r.get("model"), str) and MODEL_RE.fullmatch(r["model"]) else None
-        recent.append({"brand": r["brand"], "model": m, "persona": r.get("persona") if r.get("persona") in uids else None,
-                       "brain": r.get("brain") if r.get("brain") in keys else None,
+        m = _str(r.get("model"))
+        m = m if m in models[r["brand"]] else None                    # 不在膠囊裡的模型不帶(亮不起來、看不出選了哪個)
+        recent.append({"brand": r["brand"], "model": m, "persona": _str(r.get("persona")) if _str(r.get("persona")) in uids else None,
+                       "brain": _str(r.get("brain")) if _str(r.get("brain")) in keys else None,
                        "when": _when(r["at"]) if isinstance(r.get("at"), int) and not isinstance(r.get("at"), bool) else ""})
         if len(recent) >= 20:
             break
     crew = st.get("crew") if isinstance(st.get("crew"), dict) else {}
-    rank = [k for k in (crew.get("why_rank") if isinstance(crew.get("why_rank"), list) else []) if k in WHY][:WHY_MAX]
+    rank = [k for k in _list(crew.get("why_rank")) if _str(k) in WHY][:WHY_MAX]
     return {
         "now": int(now), "ais": [{"key": a["key"], "light": _light(a), "name": NAMES[a["key"]],
-                                  "note": _note(a, _light(a)), "can_update": bool(a.get("can_update"))} for a in ais],
-        "models": models, "personas": personas[:200], "brains": brains[:200], "recent": recent,
+                                  "note": _note(a, _light(a)), "can_update": bool(a.get("can_update")),
+                                  "can_login": bool(a.get("login_cmd"))} for a in ais],
+        "models": models, "personas": personas, "brains": brains, "recent": recent, "ask_brands": list(ASK_BRANDS),
         "why_rank": rank, "why_names": {k: T("why_" + k) for k in WHY},
         "L": {k: T(k) for k in ("copy", "copied", "pick_ai", "model_default", "persona_none", "brain_none",
                                 "step_open", "step_bind", "seat_placeholder_note", "login_title",
                                 "login_note", "quota_note", "off_title", "off_note", "aib_note",
-                                "ask_need_login", "ask_cmd_note", "why_cmd_note", "why_other_note", "why_empty",
+                                "ask_need_login", "ask_cmd_note", "ask_unsupported", "light_unknown_ok", "login_none", "copy_failed", "why_cmd_note", "why_other_note", "why_empty",
                                 "recent_none", "up", "down", "remove", "light_off", "power_save_on", "power_save_off")},
     }
 
 
 def _ready(ais):
-    rows = [a for a in ais if isinstance(a, dict) and a.get("key") in NAMES]
+    rows = [a for a in ais if isinstance(a, dict) and _str(a.get("key")) in NAMES]
     return sum(1 for a in rows if a.get("light") == "green"), len(rows)
 
 
@@ -269,12 +283,12 @@ def render(st, now=None):
     ais = "".join(ai_card(a) for a in ais_rows if isinstance(a, dict))
     ob = st.get("onboarding") if isinstance(st.get("onboarding"), dict) else {}
     ready, total = _ready(ais_rows)
-    issues = sum(1 for h in st.get("health") or [] if isinstance(h, dict) and h.get("ok") is False)
+    issues = sum(1 for h in _list(st.get("health")) if isinstance(h, dict) and h.get("ok") is False)
     ver = st.get("version") if isinstance(st.get("version"), str) else None
     if ver is None:
-        ver = next((a.get("local") for a in ais_rows if isinstance(a, dict) and a.get("key") == "aib"), None)
+        ver = next((_str(a.get("local")) for a in ais_rows if isinstance(a, dict) and a.get("key") == "aib"), None)
     ver = _txt(ver, 24) or "—"
-    suggest = [q for q in st.get("suggest") or [] if isinstance(q, str) and QUESTION_RE.fullmatch(q)][:3]
+    suggest = [q for q in _list(st.get("suggest")) if isinstance(q, str) and QUESTION_RE.fullmatch(q)][:3]
     suggest = suggest or ["q_first_seat", "q_lights", "q_handoff"]
     why_grid = "".join('<button class="why" data-why="%s"><i class="rk"></i><span>%s</span></button>'
                        % (k, _e(T("why_" + k))) for k in WHY)
@@ -362,7 +376,7 @@ animation:breathe 3.2s ease-in-out infinite}
 .ver{display:grid;grid-template-columns:auto auto;justify-content:center;gap:0 6px;font-size:15px;color:var(--dim);text-align:left;margin-top:4px}
 .ver b{font:500 14px var(--mono);color:var(--fg);white-space:nowrap}.note{font-size:15px;color:var(--dim);margin-top:4px;line-height:1.35}.mod.green .note{display:none}
 .acts{margin-top:6px}.act{display:flex;gap:6px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:4px}
-.acts code,.tierbar code{display:none}
+.acts code,.tierbar code{display:none}.acts code.show,.tierbar code.show{display:inline;user-select:all}
 code{font:15px var(--mono);color:var(--fg);background:#141c36;padding:2px 6px;border-radius:5px;overflow-wrap:anywhere}
 .cp{font-size:16px;color:#04101c;background:var(--acc);border:0;border-radius:6px;padding:3px 12px;cursor:pointer;white-space:nowrap}
 .cp:hover{filter:brightness(1.15)}
@@ -371,11 +385,11 @@ code{font:15px var(--mono);color:var(--fg);background:#141c36;padding:2px 6px;bo
 .field{display:grid;grid-template-columns:6em minmax(0,1fr);align-items:center;gap:10px;margin:8px 0}
 .field .lb{color:var(--dim)}
 .chips{display:flex;gap:6px;flex-wrap:wrap;min-width:0}
-.chip{border:1px solid var(--line2);background:#0a1124;border-radius:999px;padding:3px 14px;cursor:pointer;font:500 16px var(--mono)}
-.chip.on{background:#18306a;border-color:var(--acc);color:var(--fg)}
+.mchip{border:1px solid var(--line2);background:#0a1124;border-radius:999px;padding:3px 14px;cursor:pointer;font:500 18px var(--mono)}
+.mchip.on{background:#18306a;border-color:var(--acc);color:var(--fg)}
 .step{display:flex;align-items:center;gap:6px;min-width:0;border:1px solid var(--line2);background:#0a1124;border-radius:10px;padding:2px}
 .step .sv{flex:1;text-align:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sb{background:none;border:0;color:var(--acc);cursor:pointer;padding:4px 10px;font-size:16px}.sb:disabled{color:#39425f;cursor:default}
+.sb{background:none;border:0;color:var(--acc);cursor:pointer;padding:4px 10px;font-size:18px}.sb:disabled{color:#39425f;cursor:default}
 .adv{color:var(--dim);font:15px var(--mono);margin:4px 0 0 calc(6em + 10px)}
 .bay h2 .cnt{margin-left:auto;font:600 16px var(--mono);color:var(--ok);letter-spacing:0}
 .go{display:block;width:100%%;margin:16px 0 10px;padding:14px;border-radius:999px;border:0;cursor:pointer;font-size:22px;font-weight:800;
@@ -390,7 +404,7 @@ animation:goglow 2.4s ease-in-out infinite}
 .recent li:hover{background:#13204a}.recent li.dim{cursor:default}.recent .dot{width:10px;height:10px;border-radius:50%%;flex:none}
 .recent .when{margin-left:auto;font-family:var(--mono);color:var(--dim)}
 .tabs{display:flex;gap:5px;margin:10px 0 8px;flex-wrap:wrap}
-.tab{border:1px solid var(--line2);background:#0a1124;border-radius:8px;padding:3px 8px;cursor:pointer;font:600 15px var(--mono)}
+.tab{border:1px solid var(--line2);background:#0a1124;border-radius:8px;padding:3px 8px;cursor:pointer;font:600 16px var(--mono)}
 .tab.on{background:#18306a;border-color:var(--acc)}.tab.locked{border-style:dashed;color:var(--dim);cursor:not-allowed;background:none}
 .pane{display:none}.pane.on{display:block}.tierbar{display:flex;justify-content:space-between;align-items:center;color:var(--dim);font-size:16px}
 .tasks{list-style:none;margin:8px 0 0;padding:0 4px 0 0;max-height:260px;overflow:auto;
@@ -406,7 +420,7 @@ animation:goglow 2.4s ease-in-out infinite}
 .grand b{font-family:var(--mono)}
 .hatch{display:flex;gap:16px;align-items:center;margin-top:8px}.egg{width:60px;height:70px;flex:none;animation:wobble 3s ease-in-out infinite}
 @keyframes wobble{0%%,80%%,100%%{transform:rotate(0)}85%%{transform:rotate(-6deg)}90%%{transform:rotate(6deg)}95%%{transform:rotate(-3deg)}}
-.bind{margin:8px 0 6px;font-size:16px}.health{list-style:none;margin:0;padding:0;font-size:15px;display:flex;flex-wrap:wrap;gap:6px}
+.bind{margin:8px 0 6px;font-size:16px}.health{list-style:none;margin:0;padding:0;font-size:16px;display:flex;flex-wrap:wrap;gap:6px}
 .health li{border:1px solid var(--line2);border-radius:999px;padding:1px 10px;background:#0a1124}
 .health li.bad{color:#ffb3ba;border-color:#7a3340}.health li.na{color:var(--dim)}.hints{margin-top:6px}.hint{color:var(--dim);font-size:15px}
 .foot{max-width:1500px;margin:8px auto 24px;padding:0 20px;color:var(--dim);font-size:16px;display:flex;gap:16px;flex-wrap:wrap}
@@ -465,7 +479,7 @@ body.paused *{animation-play-state:paused!important}
 <div class="row2"><button class="chip" id="askbtn">%(ask_btn)s</button><span class="dim">%(recent)s</span></div>
 <ul class="recent" id="recent"></ul></section>
 <div class="right">
-<section class="bay" id="tasks"><h2><span class="no">03</span>%(tasks_h)s</h2>%(board)s</section>
+<section class="bay" id="tasks"><h2><span class="no">03</span>%(tasks_h)s<span class="cnt" id="tiercnt"></span></h2>%(board)s</section>
 <section class="bay fold-me" id="hatch"><h2><span class="no">04</span>%(hatch_h)s<button class="fold">▾</button></h2>%(hatch)s</section>
 <section class="bay fold-me" id="repair"><h2><span class="no">05</span>%(repair_h)s<button class="fold">▾</button></h2>%(repair)s</section>
 </div></main>
@@ -491,13 +505,19 @@ function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=c
 function store(k,v){try{if(v===undefined)return localStorage.getItem('aib.power.'+k);localStorage.setItem('aib.power.'+k,v)}catch(_){return null}}
 function copyRow(cmd,label){var d=el('div','act'),b=el('button','cp',label||L.copy);b.setAttribute('data-cmd',cmd);d.appendChild(b);
  d.appendChild(el('code',null,cmd));return d}
+/* 複製:剪貼簿不能用 ⇒ 退回 execCommand;再不行就把指令顯示出來、選起來讓人自己複製 */
 document.addEventListener('click',function(ev){var b=ev.target.closest('[data-cmd]');if(!b)return;ev.stopPropagation();
  var c=b.getAttribute('data-cmd'),t=b.textContent,ok=function(){b.textContent=L.copied;setTimeout(function(){b.textContent=t},1200)};
- if(navigator.clipboard)navigator.clipboard.writeText(c).then(ok,function(){})},true);
+ var fall=function(){var x=document.createElement('textarea');x.value=c;x.setAttribute('readonly','');x.style.position='fixed';x.style.opacity='0';
+  document.body.appendChild(x);x.select();var done=false;try{done=document.execCommand('copy')}catch(_){}document.body.removeChild(x);
+  if(done){ok();return}var code=b.nextElementSibling;if(code&&code.tagName==='CODE'){code.classList.add('show');
+   var r=document.createRange();r.selectNodeContents(code);var sel=getSelection();sel.removeAllRanges();sel.addRange(r)}
+  b.textContent=L.copy_failed;setTimeout(function(){b.textContent=t},2400)};
+ if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(c).then(ok,fall);else fall()},true);
 function tick(){var d=new Date(),p=function(n){return(n<10?'0':'')+n};$('clock').textContent=p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())}
 tick();setInterval(function(){if(!document.hidden)tick()},1000);
 var rm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches,saved=store('save');
-var still=saved===null?!!rm:saved==='1';
+var still=!!rm||saved==='1';          /* 系統「減少動態效果」開著就一直省電,頁上開關只能再加 */
 document.addEventListener('visibilitychange',function(){document.body.classList.toggle('paused',document.hidden)});
 function stars(){var c=$('stars'),r=c.getBoundingClientRect(),x=c.getContext('2d');c.width=Math.max(1,r.width|0);c.height=Math.max(1,r.height|0);
  var s=7,n=function(){s=(s*16807)%%2147483647;return s/2147483647};
@@ -546,7 +566,8 @@ function drawEarth(){var d=img.data,ct=Math.cos(tilt),stt=Math.sin(tilt),c=N/2;
  EX.putImageData(img,0,0)}
 setInterval(function(){if(still||document.hidden)return;rot+=0.0058;cl+=0.08;drawEarth()},80);
 function applySave(){document.body.classList.toggle('still',still);$('save').textContent=still?L.power_save_on:L.power_save_off;drawEarth()}
-$('save').addEventListener('click',function(){still=!still;store('save',still?'1':'0');applySave()});
+if(rm){$('save').disabled=true}
+$('save').addEventListener('click',function(){if(rm)return;still=!still;store('save',still?'1':'0');applySave()});
 applySave();
 /* 01 ⇒ 02:點左邊 AI 才出現那家的模型 / 人格 / 第二大腦;黃 / 紅 / 灰燈走登入彈窗 */
 var AI={};D.ais.forEach(function(a){AI[a.key]=a});var cur=null;
@@ -559,26 +580,27 @@ function drawStep(k){var o=OPTS[k][IX[k]];$(k).querySelector('.sv').textContent=
 function setStep(k,v){for(var i=0;i<OPTS[k].length;i++)if(OPTS[k][i].v===v){IX[k]=i;break}drawStep(k)}
 ['persona','brain'].forEach(function(k){$(k).querySelectorAll('.sb').forEach(function(b){b.addEventListener('click',function(){
  var n=OPTS[k].length;IX[k]=(IX[k]+Number(b.getAttribute('data-d'))+n)%%n;drawStep(k)})})});
-function setModel(v){S.model=v;$('model').querySelectorAll('.chip').forEach(function(c){c.classList.toggle('on',c.getAttribute('data-m')===v)})}
+function setModel(v){if((D.models[cur]||[]).indexOf(v)<0)return;S.model=v;$('model').querySelectorAll('.mchip').forEach(function(c){c.classList.toggle('on',c.getAttribute('data-m')===v)})}
 function fillSelects(){var m=$('model');m.textContent='';S.model='';
  if(cur){var ms=D.models[cur]||[];if(!ms.length)m.appendChild(el('span','dim',L.model_default));
-  ms.forEach(function(x){var c=el('button','chip',x.indexOf(cur+'-')===0?x.slice(cur.length+1):x);c.setAttribute('data-m',x);c.title=x;
+  ms.forEach(function(x){var c=el('button','mchip',x.indexOf(cur+'-')===0?x.slice(cur.length+1):x);c.setAttribute('data-m',x);c.title=x;
    c.addEventListener('click',function(){setModel(x)});m.appendChild(c)});if(ms.length)setModel(ms[0])}
  drawStep('persona');drawStep('brain');$('go').disabled=!cur}
 function showSel(){var box=$('selai');box.textContent='';document.querySelectorAll('.mod').forEach(function(x){x.classList.toggle('sel',x.getAttribute('data-key')===cur)});
  if(!cur){box.appendChild(el('span','dim',L.pick_ai));return}
  var src=document.querySelector('.mod[data-key="'+cur+'"]');if(src){var orb=src.querySelector('.orb').cloneNode(true);orb.style.setProperty('--ring',src.style.getPropertyValue('--ring'));box.appendChild(orb)}
- var w=el('div');w.appendChild(el('div','nm',AI[cur].name));w.appendChild(el('div','dim',AI[cur].note));box.appendChild(w)}
+ var w=el('div');w.appendChild(el('div','nm',AI[cur].name));w.appendChild(el('div','dim',AI[cur].light==='unknown'?L.light_unknown_ok:AI[cur].note));box.appendChild(w)}
 function pick(k){cur=k;showSel();fillSelects()}
 function openModal(title,note,cmds,foot){$('mt').textContent=title;$('mn').textContent=note||'';var c=$('mc');c.textContent='';
  cmds.forEach(function(x){c.appendChild(copyRow(x))});$('mf').textContent=foot||'';$('modal').classList.add('on')}
 function clickMod(k){var a=AI[k];if(!a)return;
  if(k==='aib'){openModal(a.name,a.note,a.can_update?['aib power upgrade aib']:[],L.aib_note);return}
  if(a.light==='off'){openModal(a.name+' · '+L.light_off,L.off_title,[],L.off_note);return}
- if(a.light!=='green'){openModal(a.name+' · '+L.login_title,a.note,['aib power login '+k],L.login_note+(a.light==='red'?' '+L.quota_note:''));return}
- pick(k)}
+ if(a.light==='yellow'||a.light==='red'){openModal(a.name+' · '+L.login_title,a.note,a.can_login?['aib power login '+k]:[],
+  a.can_login?L.login_note+(a.light==='red'?' '+L.quota_note:''):L.login_none);return}
+ pick(k)}                                   /* 綠燈與灰燈(量不到登入狀態)都能選,跟 power_launch「灰燈不擋」一致 */
 document.querySelectorAll('.mod').forEach(function(m){var k=m.getAttribute('data-key');
- m.addEventListener('click',function(){clickMod(k)});m.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();clickMod(k)}})});
+ m.addEventListener('click',function(){clickMod(k)});m.addEventListener('keydown',function(e){if(e.target===m&&(e.key==='Enter'||e.key===' ')){e.preventDefault();clickMod(k)}})});
 /* 出發:只組指令讓人自己貼(開席 ⇒ 綁人格 + 第二大腦) */
 $('go').addEventListener('click',function(){if(!cur)return;var m=S.model,p=S.persona,b=S.brain;
  var a=['aib',cur,'safe','dev','new'];if(m)a.push('--model',m);var c=$('lc');c.textContent='';c.appendChild(el('div','dim',L.step_open));c.appendChild(copyRow(a.join(' ')));
@@ -594,21 +616,25 @@ $('go').addEventListener('click',function(){if(!cur)return;var m=S.model,p=S.per
   li.appendChild(el('span','when',r.when));
   li.addEventListener('click',function(){clickMod(r.brand);if(cur!==r.brand)return;if(r.model)setModel(r.model);
    setStep('persona',r.persona||'');setStep('brain',r.brain||'')});ul.appendChild(li)})})();
-var first=D.recent.length&&AI[D.recent[0].brand]&&AI[D.recent[0].brand].light==='green'?D.recent[0].brand:null;
-if(!first)for(var bi=0;bi<D.ais.length;bi++)if(D.ais[bi].key!=='aib'&&D.ais[bi].light==='green'){first=D.ais[bi].key;break}
+function pickable(k){return !!AI[k]&&(AI[k].light==='green'||AI[k].light==='unknown')}
+var first=D.recent.length&&pickable(D.recent[0].brand)?D.recent[0].brand:null;
+['green','unknown'].forEach(function(lt){if(!first)for(var bi=0;bi<D.ais.length;bi++)if(D.ais[bi].key!=='aib'&&D.ais[bi].light===lt){first=D.ais[bi].key;break}});
 if(first){pick(first);var r0=D.recent[0];if(r0&&r0.brand===first){if(r0.model)setModel(r0.model);setStep('persona',r0.persona||'');setStep('brain',r0.brain||'')}}
 else{showSel();fillSelects()}
 /* 問 AI 抽屜:只回答、不動手;問題讓人自己在終端機打 */
 $('askbtn').addEventListener('click',function(){var c=$('askcmd');c.textContent='';$('askai').textContent=cur?'· '+AI[cur].name:'';
- if(!cur){c.appendChild(el('div','dim',L.pick_ai))}else if(AI[cur].light!=='green'){c.appendChild(el('div','dim',L.ask_need_login));
+ if(!cur){c.appendChild(el('div','dim',L.pick_ai))}else if(D.ask_brands.indexOf(cur)<0){c.appendChild(el('div','dim',L.ask_unsupported))}
+ else if(AI[cur].light==='yellow'||AI[cur].light==='red'){c.appendChild(el('div','dim',L.ask_need_login));
   c.appendChild(copyRow('aib power login '+cur))}else{var m=S.model,a=['aib','power','ask',cur];if(m)a.push('--model',m);
   c.appendChild(copyRow(a.join(' ')));c.appendChild(el('div','dim',L.ask_cmd_note))}
  $('ask').classList.add('on')});
 /* 任務板分頁 */
 document.querySelectorAll('.tab[data-tier]').forEach(function(t){t.addEventListener('click',function(){var k=t.getAttribute('data-tier');
  document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('on',x===t)});
- document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('on',p.getAttribute('data-tier')===k)})})});
+ document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('on',p.getAttribute('data-tier')===k)});tierCnt()})});
 /* 04 / 05 收合(記住);收起後任務清單長高 */
+function tierCnt(){var t=document.querySelector('.tab.on[data-tier]');$('tiercnt').textContent=t?t.textContent:''}
+tierCnt();
 function grow(){$('tasks').classList.toggle('grow',document.querySelectorAll('.fold-me.folded').length>0)}
 document.querySelectorAll('.fold-me').forEach(function(s){var id=s.id,btn=s.querySelector('.fold');
  if(store('fold.'+id)==='1'){s.classList.add('folded');btn.textContent='▴'}

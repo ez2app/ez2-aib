@@ -134,9 +134,12 @@ class Page(unittest.TestCase):
         self.assertNotIn("R99", h)                                           # where = room 的不列(SPEC §14)
         self.assertIn(PG._when(2_000_000_000), h)
         h = PG.render({"ais": "junk", "onboarding": None, "health": [None, 3], "binding": [], "launch": 3, "crew": "x"})
-        self.assertIn("0/0", h)                                              # 怪資料不炸
+        self.assertIn(">0/0<", h)                                            # 怪資料不炸(大禮計數,不是 HUD 的 0/0 就緒)
         self.assertIn(PG.T("hud_ready", n=0, m=0), h)
         PG.render(None)
+        PG.render({"ais": [{"key": ["x"], "light": ["y"]}, {"key": "claude", "light": {}}], "health": 3, "suggest": 5,
+                   "onboarding": {"tasks": 7}, "launch": {"recent": [{"brand": "claude", "persona": ["x"], "model": ["m"]}],
+                                                          "personas": 3}, "crew": {"why_rank": [["x"]]}})
 
     def test_p4_open(self):
         seen = []
@@ -209,18 +212,17 @@ class Page(unittest.TestCase):
         self.assertNotIn("!!aib.", h)                                        # 壞題號(<b>)丟掉,不拿去查字典
 
     def test_p8_no_paid_content(self):
-        import i18n_lib
         words = {"zh-TW": ("價", "試用", "序號", "商店", "購買", "付費", "NT$"), "en": ("price", "trial", "serial", "shop", "buy", "purchase", "paid"),
                  "ja": ("価格", "試用", "シリアル", "ショップ", "購入", "有料"), "ko": ("가격", "체험", "시리얼", "상점", "구매", "유료")}
-        orig = PG.T
-        try:
-            for loc, bad in words.items():
-                PG.T = lambda key, _loc=loc, **params: i18n_lib.t("aib.power.page." + key, params, locale=_loc)
-                h = PG.render(full()).lower()
-                for w in bad:
-                    self.assertNotIn(w.lower(), h, (loc, w))
-        finally:
-            PG.T = orig
+        for loc, bad in words.items():                                   # 整份 aib.power.page.* 字典(30 條任務、全部建議題都在內)
+            d = json.loads((REPO / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
+            for k, v in d.items():
+                if k.startswith("aib.power.page."):
+                    for w in bad:
+                        self.assertNotIn(w.lower(), v.lower(), (loc, k, w))
+        h = PG.render(full()).lower()
+        for w in words["zh-TW"]:
+            self.assertNotIn(w.lower(), h, w)
 
     def test_p9_constants_aligned(self):
         import power_crew
@@ -249,6 +251,16 @@ class Page(unittest.TestCase):
         self.assertEqual(PG.open_power(out=io.StringIO(), status=status, opener=lambda url, env: ("app", "x"), extra=boom), 0)
         ex = PG.extras(light=lambda b: "green")                              # 真的那份:暫存狀態根下每塊都有、不炸
         self.assertEqual(set(ex), {"launch", "crew", "suggest", "version"})
+
+    def test_p12_grey_light_and_login(self):
+        h = PG.render(status())
+        cmds = re.findall(r'data-cmd="([^"]*)"', h)
+        self.assertNotIn("aib power login agy", cmds)                        # 灰燈不出登入鈕
+        d = data_of(h)
+        self.assertEqual({a["key"]: a["can_login"] for a in d["ais"]}["codex"], True)
+        self.assertEqual({a["key"]: a["can_login"] for a in d["ais"]}["agy"], False)
+        import power_ask
+        self.assertEqual(tuple(d["ask_brands"]), power_ask.BRANDS)
 
     def test_p11_no_missing_keys(self):
         import i18n_lib
