@@ -23,6 +23,13 @@ I10 產碼要本人:席位呼叫 ⇒ rc 2、Touch ID 拒 ⇒ rc 3,都不產碼(M
 I11 昨天建的碼今天照查得到;遠端 exp 不是整數 ⇒ used 不炸(L1);撞號換組時舊碼作廢(L3);加好友失敗次數補回(L2)
 刀(複本):K1 take_invite 不扣次數 ⇒ I1 紅;K2 on_request 不看碼對不對 ⇒ I4 紅;K3 不擋撞號 ⇒ I7 紅;
    K4 不驗 HMAC ⇒ I9 紅;K5 產碼不過門 ⇒ I10 紅
+#299 第 2 輪審(M1–M3、L-a..L-g):
+I12 invite use:沒公開席 / 轉接程式沒開 ⇒ 門前擋、好友沒加;寄送保證沒送出(abort / bridge-off / 逾時撤回)⇒ 撤掉新加的好友;
+    held / claimed / relayed 可能已到 ⇒ 不撤;本來就是好友 ⇒ 不撤(M2)
+I13 invite use --json:每種出口 stdout 剛好一行 JSON(v / ok / why / hint)(M3)
+I14 對方時鐘快 10 分、昨天快過午夜建的碼都查得到(建立日期落在 now+600 / now / now-1 天 / now-1 天-600)(L-a)
+I4 加好友失敗 ⇒ 次數補回、落回一般申請(held、進申請清單)(L-d);I8 MAC 非 ASCII / 長度錯 ⇒ None 不炸(M1)
+刀:K6 不撤好友 ⇒ I12 紅;刀測一律比對紅的是哪一格(L-g)
 """
 import importlib.util
 import io
@@ -190,13 +197,15 @@ class Short(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("chat_bridge_invite_s", str(COCKPIT / "chat_bridge.py"))
         self.CB = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.CB)
-        self.calls, self.fetches = [], []
+        self.calls, self.fetches, self.by_hash = [], [], None
         self.addr = A1 + "/6ddf/abcde"
         self.look = {"ok": True, "owner": A1, "device": A1, "display_name": "Bob\x1b[31m", "country": "TW"}
 
         def fake(cmd, root, env, timeout=60, extra=(), stdin=None):
             self.calls.append(cmd)
             if cmd == "invite-fetch":
+                if self.by_hash is not None:
+                    return 0, {"ok": True, "hits": self.by_hash.get(extra[0], [])}
                 return 0, {"ok": True, "hits": self.fetches.pop(0) if self.fetches else []}
             if cmd == "invite-publish":
                 self.published = stdin
@@ -232,7 +241,9 @@ class Short(unittest.TestCase):
         self.assertIsNone(GF.invite_open(GF.invite_keys("ABCDEFGHIK", "20261024")[1], A1, box), "錯的碼")
         bad = dict(box, c=box["c"][:-4] + ("AAAA" if box["c"][-4:] != "AAAA" else "BBBB"))
         self.assertIsNone(GF.invite_open(k, A1, bad), "改一個字")
-        for junk in (None, [], {"v": 1, "addr": self.addr}, dict(box, n="!!"), dict(box, v=3)):
+        for junk in (None, [], {"v": 1, "addr": self.addr}, dict(box, n="!!"), dict(box, v=3),
+                     dict(box, m="\u00e9" * 64), dict(box, m=box["m"][:-1]), dict(box, m=box["m"] + "0"),
+                     dict(box, m=box["m"].upper())):
             self.assertIsNone(GF.invite_open(k, A1, junk), junk)
 
     def test_i6_publish_precheck(self):
@@ -296,6 +307,86 @@ class Short(unittest.TestCase):
         self.assertEqual(CR.read_friends(self.env), [], "冒名 ⇒ 不加好友、不寄碼")
 
 
+class Use(unittest.TestCase):
+    """invite use 的出口(#299 第 2 輪審 M2 / M3 / L-a)。"""
+    body = Short.body
+
+    def setUp(self):
+        Short.setUp(self)
+        self.pub = [{"cabin": "6ddf", "seat": "cfd04", "addr": "x"}]
+        self.CB._my_published = lambda env: self.pub
+        self.alive, self.sent = True, []
+        self.stage = {"rc": 0, "stage": "delivered", "pos": None, "detail": None, "msgid": "m"}
+        for name, fn in (("bridge_alive", lambda root, now=None, **k: self.alive),
+                         ("send_and_wait", lambda root, rec, **k: (self.sent.append(rec), dict(self.stage))[1])):
+            self.addCleanup(setattr, GF, name, getattr(GF, name))
+            setattr(GF, name, fn)
+        NK.ensure_owner(self.env)
+
+    def use(self, *args):
+        buf = io.StringIO()
+        rc = self.CB.main(["invite", "use"] + list(args), env=self.env, out=buf)
+        return rc, buf.getvalue()
+
+    def test_i12_no_half_join(self):
+        self.pub = []
+        self.assertEqual(self.use(self.addr, "ABCDEFGHIJ")[0], 2)
+        self.pub, self.alive = [{"cabin": "6ddf", "seat": "cfd04", "addr": "x"}], False
+        self.assertEqual(self.use(self.addr, "ABCDEFGHIJ")[0], 2)
+        self.assertEqual((CR.read_friends(self.env), self.sent), ([], []), "門前擋:好友沒加、沒寄")
+        self.alive = True
+        for stage in GF.UNSENT_STAGES:
+            self.stage = {"rc": 2, "stage": stage, "pos": None, "detail": "x", "msgid": "m"}
+            self.assertEqual(self.use(self.addr, "ABCDEFGHIJ")[0], 2, stage)
+            self.assertEqual(CR.read_friends(self.env), [], "保證沒送出 ⇒ 新加的好友撤掉:" + stage)
+        for rc, stage in ((0, "held"), (4, "claimed"), (4, "relayed")):
+            self.stage = {"rc": rc, "stage": stage, "pos": None, "detail": None, "msgid": "m"}
+            self.use(self.addr, "ABCDEFGHIJ")
+            self.assertTrue(CR.is_friend(A1, self.env), "可能已到 ⇒ 不撤:" + stage)
+            CR.remove_friend(A1, self.env)
+        CR.add_friend(A1, None, self.env)
+        self.stage = {"rc": 2, "stage": "abort", "pos": None, "detail": "x", "msgid": "m"}
+        self.use(self.addr, "ABCDEFGHIJ")
+        self.assertTrue(CR.is_friend(A1, self.env), "本來就是好友 ⇒ 不撤")
+
+    def test_i13_json_every_exit(self):
+        def one(*args):
+            rc, out = self.use(*(args + ("--json",)))
+            lines = out.splitlines()
+            self.assertEqual(len(lines), 1, out)
+            d = json.loads(lines[0])
+            self.assertEqual(d["v"], 1)
+            self.assertTrue(d["hint"], d)
+            return rc, d["ok"], d["why"]
+        self.assertEqual(one("x", "AAAAAAAAAA"), (2, False, "bad"))
+        self.assertEqual(one("abcde-fghij"), (2, False, "not_found"))
+        self.fetches = [[self.body(), self.body(author=C1, at=2)]]
+        self.assertEqual(one("abcde-fghij"), (2, False, "clash"))
+        self.pub = []
+        self.assertEqual(one(self.addr, "ABCDEFGHIJ"), (2, False, "no_seat"))
+        self.pub, self.alive = [{"cabin": "6ddf", "seat": "cfd04", "addr": "x"}], False
+        self.assertEqual(one(self.addr, "ABCDEFGHIJ"), (2, False, "bridge_off"))
+        self.alive = True
+        self.assertEqual(one(self.addr, "ABCDEFGHIJ"), (0, True, "joined"))
+        self.stage = {"rc": 0, "stage": "held", "pos": None, "detail": None, "msgid": "m"}
+        self.assertEqual(one(self.addr, "ABCDEFGHIJ"), (0, True, "held"))
+        self.stage = {"rc": 2, "stage": "timeout-withdrawn", "pos": None, "detail": "x", "msgid": "m"}
+        self.assertEqual(one(self.addr, "ABCDEFGHIJ"), (2, False, "timeout-withdrawn"))
+        self.CB._run_nostr = lambda *a, **k: (None, {})
+        self.assertEqual(one("abcde-fghij"), (2, False, "no_venv"))
+
+    def test_i14_clock_skew_days(self):
+        import types
+        midnight = int(time.time()) // 86400 * 86400                 # UTC 午夜前後 5 分,建立日期才會跨天
+        for now, when, why in ((midnight - 300, midnight - 300 + 600, "對方時鐘快 10 分、建在明天"),
+                               (midnight + 300, midnight + 300 - 86400 - 600, "建在前天、我的時鐘快 10 分")):
+            self.CB.time = types.SimpleNamespace(time=lambda now=now: now)
+            day = GF.invite_day(when)
+            self.assertNotIn(day, (GF.invite_day(now), GF.invite_day(now - 86400)), "要測到今天 / 昨天以外的日期")
+            self.by_hash = {GF.invite_keys("ABCDEFGHIJ", day)[0]: [self.body(day=day, exp=now + 600)]}
+            self.assertEqual(self.CB._resolve_invite("ABCDEFGHIJ", self.env, io.StringIO()), (self.addr, None), why)
+
+
 _rspec = importlib.util.spec_from_file_location("chat_recv_invite", str(HERE / "test-chat-recv-d07f9-1016.py"))
 RT = importlib.util.module_from_spec(_rspec)
 _rspec.loader.exec_module(RT)
@@ -346,11 +437,13 @@ class Accept(unittest.TestCase):
             got = self.probe(case)
             self.assertEqual((got["sent"], got["friends"], got["requests"]), (["held"], [], 1), case)
         self.assertEqual(self.probe("blocked")["friends"], [])
-        self.assertTrue(self.probe("roster_err")["left"], "加好友失敗 ⇒ 碼的次數補回")
+        got = self.probe("roster_err")
+        self.assertTrue(got["left"], "加好友失敗 ⇒ 碼的次數補回")
+        self.assertEqual((got["sent"], got["requests"]), (["held"], 1), "加好友失敗 ⇒ 落回一般申請(L-d)")
 
 
 class Knife(unittest.TestCase):
-    def _run(self, rel, anchor, repl, which):
+    def _run(self, rel, anchor, repl, which, fails=None):
         name = Path(__file__).name
         with knife_copy(REPO, rel, anchor, repl,
                         tests=(name, "test-chat-recv-d07f9-1016.py", "test-chat-send-d07f9-1016.py")) as root:
@@ -358,14 +451,17 @@ class Knife(unittest.TestCase):
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("AssertionError", r.stdout + r.stderr)
+        for t in fails or [which.split(".")[-1]]:          # 紅的要是那一格(3.9 印 (__main__.類),新版印 (__main__.類.格))
+            self.assertIn("FAIL: %s (" % t, r.stdout + r.stderr)
 
     def test_k1_no_decrement(self):
         self._run("src/cockpit/dm_global_files.py", '                r["uses"] = int(r["uses"]) - 1\n', "                pass\n",
-                  "Store")
+                  "Store", fails=["test_i1_take_once"])
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k2_any_code(self):
-        self._run("src/cockpit/chat_nostr.py", "and GF.take_invite(self.root, m.group(1))\n", 'and {"created_at": 0}\n', "Accept")
+        self._run("src/cockpit/chat_nostr.py", "and GF.take_invite(self.root, m.group(1))\n", 'and {"created_at": 0}\n', "Accept",
+                  fails=["test_i4_auto_accept"])
 
     def test_k4_no_mac(self):
         self._run("src/cockpit/dm_global_files.py",
@@ -379,6 +475,11 @@ class Knife(unittest.TestCase):
     def test_k3_no_clash_check(self):
         self._run("src/cockpit/chat_bridge.py", '    if len({x.get("author") for x in hits}) > 1:\n', "    if False:\n",
                   "Short.test_i7_resolve")
+
+
+    def test_k6_no_undo(self):
+        self._run("src/cockpit/chat_bridge.py", '    if new and res["stage"] in GF.UNSENT_STAGES:\n', "    if False:\n",
+                  "Use.test_i12_no_half_join")
 
 
 if __name__ == "__main__":

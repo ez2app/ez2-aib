@@ -1501,11 +1501,14 @@ class Receiver(object):
             try:
                 CR.add_friend(parsed["owner"], GF.clean_display_name(rec.get("display_name") or "") or None, source="invite")
             except CR.RosterError:
-                GF.refund_invite(self.root, m.group(1))         # 沒加成 ⇒ 次數補回,碼不白白作廢
-                return
-            audit(self.root, "in", msgid, from_npub, "request:invite")
-            await self._spend_invite(*GF.invite_keys(m.group(1), GF.invite_day(inv["created_at"])))
-            return await self.send_receipt(msgid, "delivered")
+                GF.refund_invite(self.root, m.group(1))         # 沒加成 ⇒ 次數補回,落回一般申請(下面記帳 + 回 held)
+                inv = None
+            if inv:
+                audit(self.root, "in", msgid, from_npub, "request:invite")
+                keys = await asyncio.get_running_loop().run_in_executor(   # PBKDF2 100 萬次不卡事件迴圈
+                    None, GF.invite_keys, m.group(1), GF.invite_day(inv["created_at"]))
+                await self._spend_invite(*keys)
+                return await self.send_receipt(msgid, "delivered")
         row = {"owner": parsed["owner"], "display_name": rec.get("display_name"), "country": rec.get("country"),
                "from_addr": rec.get("from_addr"), "note": rec["content"], "msgid": msgid}
         GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"), _peer_seat(peer),

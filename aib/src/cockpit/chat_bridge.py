@@ -1234,7 +1234,7 @@ def cmd_invite(a, env, out):
                command="aib chat invite use %s %s" % (addr, inv["code"]),
                short=("aib chat invite use %s" % GF.invite_fmt(inv["code"])) if short else None)
     if a.json:
-        out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        out.write(json.dumps(dict(rec, v=1, ok=True), ensure_ascii=False) + "\n")
     elif short:
         out.write(T("invite_made_short", code=GF.invite_fmt(inv["code"]), command=rec["command"]) + "\n")
     else:
@@ -1251,7 +1251,7 @@ def _publish_invite(root, env, addr):
         rc, rec = _run_nostr("invite-fetch", root, env, timeout=60, extra=[h])
         if rc is None:
             return inv, False
-        if rc == 0 and not rec.get("hits"):
+        if not (rc == 0 and rec.get("hits")):       # 只有真的查到同一個雜湊才換;查詢失敗(逾時)照發,撞號由加入方的 HMAC 篩
             rc, _rec = _run_nostr("invite-publish", root, env, timeout=60,
                                   stdin={"hash": h, "key": key.hex(), "addr": addr, "exp": inv["expires_at"]})
             return inv, rc == 0
@@ -1267,7 +1267,8 @@ def _resolve_invite(code, env, out):
     root = bridge_root(env)
     now = int(time.time())
     hits = []
-    for day in dict.fromkeys((GF.invite_day(now), GF.invite_day(now - 86400))):   # 碼 24 小時有效:建立那天是今天或昨天
+    for day in dict.fromkeys(GF.invite_day(t) for t in (now + 600, now, now - 86400, now - 86400 - 600)):
+        # 碼 24 小時有效;兩台時鐘最多差 10 分 ⇒ 建立那天落在這幾個 UTC 日期(最多 3 天)
         h, key = GF.invite_keys(code, day)
         rc, rec = _run_nostr("invite-fetch", root, env, timeout=60, extra=[h])
         if rc is None:
@@ -1301,41 +1302,59 @@ def _resolve_invite(code, env, out):
 
 def cmd_invite_use(a, env, out):
     """用別人的邀請加好友:先把對方加進我的好友,再送帶碼的好友申請(對方對得上就自動同意)。
-    接受 aib chat invite use <位址> <碼>,或一整串 aib:join?to=…&code=…(掃 QR 貼上)。"""
+    接受 aib chat invite use <碼>(只打碼)、<位址> <碼>,或一整串 aib:join?to=…&code=…(掃 QR 貼上)。
+    --json:每個出口一個 JSON {"v":1,"ok","why","hint"}(#299 第 2 輪審 M3);why 是契約:
+    joined / held / not_found / used / clash / wrong_signer / lookup_failed / no_venv / bad / no_seat / bridge_off /
+    <加好友的錯誤代碼> / <寄送階段>。"""
+    import io
     import chat_roster as CR
+
+    def emit(rc, why, key, ok=False, **kw):
+        text = T(key, **{k: v for k, v in kw.items() if k in ("owner", "stage", "detail")})
+        out.write((json.dumps(dict({"v": 1, "ok": ok, "why": why, "hint": text}, **kw), ensure_ascii=False) if a.json
+                   else text) + "\n")
+        return rc
     addr, code = a.target, a.code
+    if addr and code and len(addr.strip()) == 5 and len(code.strip()) == 5 and not GF.parse_address(addr):
+        addr, code = addr + code, None              # 沒加引號打 ABCDE FGHJK ⇒ argparse 拆成兩段,併回來
     m = JOIN_URI_RE.match(addr or "")
     if m:
         addr, code = m.group(1), m.group(2)
     elif code is None and GF.invite_norm(addr) and not GF.parse_address(addr or ""):
         code = GF.invite_norm(addr)                 # 只打碼(10-24 晚):先去中繼站查位址
-        addr, why = _resolve_invite(code, env, out)
+        buf = io.StringIO() if a.json else out
+        addr, why = _resolve_invite(code, env, buf)
         if not addr:
-            out.write(T("invite_" + why) + "\n")
-            return 2
+            return emit(2, why, "invite_" + why)
     code = GF.invite_norm(code) if code else code
     parsed = GF.parse_address(addr or "") or {}
     if not parsed.get("owner") or not GF.INVITE_RE.match(code or ""):
-        out.write(T("invite_bad") + "\n")
-        return 2
-    try:
-        CR.add_friend(addr, None, env)
-    except CR.RosterError as err:
-        out.write(T("profile_" + str(err)) + "\n")
-        return 2
-    pub = _my_published(env)
+        return emit(2, "bad", "invite_bad")
+    pub = _my_published(env)                        # 先查寄得出去,再加好友(#299 第 2 輪審 M2:失敗不留半套)
     if not pub:
-        out.write(T("request_no_seat") + "\n")
-        return 2
+        return emit(2, "no_seat", "request_no_seat")
+    root = bridge_root(env)
+    if not GF.bridge_alive(root):
+        return emit(2, "bridge_off", "visit_bridge_off")
+    try:
+        owner, new = CR.add_friend(addr, None, env)
+    except CR.RosterError as err:
+        return emit(2, str(err), "profile_" + str(err))
     rec = {"v": GF.VERSION, "msgid": GF.new_msgid(), "created_at": int(time.time()), "op": "request",
            "from": {"cabin": pub[0]["cabin"], "seat": pub[0]["seat"], "attested": True}, "to": addr,
            "content": "invite:" + code}
-    root = bridge_root(env)
     GF.ensure_dirs(root)
     res = GF.send_and_wait(root, rec, wait=int(env.get("AIB_DM_GLOBAL_WAIT") or GF.WAIT_DEFAULT))
-    key = {"delivered": "invite_joined", "held": "invite_held"}.get(res["stage"], "request_other")
-    out.write(T(key, owner=parsed["owner"], stage=res["stage"], detail=res["detail"] or "-") + "\n")
-    return res["rc"] if res["stage"] != "held" else 0
+    if new and res["stage"] in GF.UNSENT_STAGES:
+        try:                                        # 保證沒送出去 ⇒ 這次新加的好友撤掉(held / relayed / claimed 可能已到,不退)
+            CR.remove_friend(owner, env)
+        except (OSError, CR.RosterError):
+            pass
+    stage = res["stage"]
+    key = {"delivered": "invite_joined", "held": "invite_held"}.get(stage, "request_other")
+    why = {"delivered": "joined"}.get(stage, stage)
+    return emit(res["rc"] if stage != "held" else 0, why, key, ok=stage in ("delivered", "held"),
+                owner=parsed["owner"], stage=stage, detail=res["detail"] or "-")
 
 
 def cmd_requests(a, env, out):

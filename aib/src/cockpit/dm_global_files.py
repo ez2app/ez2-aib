@@ -601,6 +601,9 @@ def outcome(receipts, op="send", verify=False):
     return None
 
 
+UNSENT_STAGES = ("abort", "bridge-off", "timeout-withdrawn")   # send_and_wait 保證一個字都沒送出的三種結果
+
+
 def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=time.time, sleep=time.sleep):
     """寫待寄檔並等回條。回 {rc, stage, pos, detail, msgid}。rc 2 的情況保證外掛沒有寄出這一則。"""
     msgid = rec.get("msgid") if isinstance(rec, dict) else None
@@ -746,7 +749,7 @@ def add_request(root, rec, every=86400, now=None):
 # invites.json(10-24 清單第 11 條):邀請碼。對方 aib chat join <我的位址> <碼> ⇒ 好友申請內文帶 invite:<碼>,
 # 我的轉接程式對得上(沒過期、還有次數)就自動同意,雙方不用再按。碼只存在本機;24 小時、一次。
 # 10-24 晚 Andy「位址太長、照 10 碼做」:碼另外用名冊金鑰簽一筆 d=aib-invite:<雜湊> 放中繼站 ⇒ 對方只打碼就查得到位址。
-#   中繼站只看得到雜湊(PBKDF2 20 萬次):每猜一次要先算一輪雜湊再問中繼站;3 億組同時有效時約 370 萬次猜中一組。
+#   中繼站只看得到查詢雜湊(見下面 invite_keys:PBKDF2 100 萬次、鹽帶建立日期)。
 INVITE_RE = re.compile(r"^[A-Z2-7]{10}$")
 INVITE_TTL_S = 86400
 INVITE_HASH_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -817,6 +820,8 @@ def invite_open(key, author, body):
     except (ValueError, binascii.Error):
         return None
     if len(nonce) != 16 or len(ct) > 2048 or not isinstance(author, str) or not author.isascii():
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", body["m"]):    # 先驗形狀:非 ASCII 會讓 compare_digest 丟 TypeError(#299 r2 M1)
         return None
     if not hmac.compare_digest(_invite_mac(key, author, nonce, ct), body["m"]):
         return None
