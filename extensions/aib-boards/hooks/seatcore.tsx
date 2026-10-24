@@ -4,7 +4,7 @@ import { fleetPromptLines, fleetAlerts } from './seat/captain'
 import { integPromptLines, integAlerts } from './seat/integrator'
 import { devPromptLines, devAlerts } from './seat/dev'
 import { qaPromptLines, qaAlerts } from './seat/qa'
-import { cardOf, upsert, syncRequests, relayPath, iconOf, clip, STATUS, REQ_PREFIX, type MailCard, type QItem } from './seat/mailcard'
+import { cardOf, toastOf, upsert, syncRequests, relayPath, iconOf, clip, STATUS, REQ_PREFIX, type MailCard, type QItem } from './seat/mailcard'
 import { statusLabel, promptSection, handoffState, newBlocks, label, type SeatInfo } from './seat/seat-label'
 import { tr } from './i18n'
 import { openRoom } from './room'   // /aib room(艦長室外掛)拆在 room.ts
@@ -28,6 +28,7 @@ let toldHandoffDone = false
 let tick: Timer | undefined
 // 新信卡片:開席時已經在的未讀不做卡(只做之後來的);人按過 ✕ 的記在 mailDismissed
 let mailBaseline: Set<string> | null = null
+const toasted = new Set<string>()   // AI 彼此的信:一封只 toast 一次(60 秒刷新會再讀未讀清單)
 let dmDir = ''
 
 // 席位檔 mod.enabled=false(依角色關)⇒ 不寫系統提示、狀態列只留一句
@@ -68,7 +69,12 @@ async function takeMail($: EngineInterface, q: QItem): Promise<void> {
   if (mailBaseline?.has(q.id ?? '') && !(await read($, mailCards)).some(c => c.id === q.id)) return
   const rp = relayPath(String(q.msg ?? ''), seat?.home ?? null)
   const full = rp ? await $.fs.read(rp).then(t => t.slice(0, 4000)).catch(() => null) : null
-  const c = cardOf(q, me, full); if (!c) return
+  const c = cardOf(q, me, full)
+  if (!c) {
+    const t = toastOf(q, me, full)
+    if (t && !toasted.has(t.id) && !mailBaseline?.has(t.id)) { toasted.add(t.id); $.ui.toast(tr('mail_toast', { icon: (q.sender_seat && seat?.marks?.[q.sender_seat]) || '\u{1F4E8}', who: t.who, text: t.text }), { timeoutMs: 8000 }) }
+    return
+  }
   const gone = new Set(await read($, mailDismissed))
   await update($, mailCards, list => upsert(list, c, gone))
   $.ui.invalidate('ui.render')
@@ -161,7 +167,7 @@ export const registerSeat: Register = on => {
     return { sections: [...r.sections, { id: 'aib-seat', text, scope: 'session' as const }] }
   }).catch(($, e, next) => (next.called ? next(e) : next(e)))
 
-  // 新信卡片(輸入框上方):只有真人來信與好友申請;狀態色外框、標題列角色圖示、收起兩行可展開、按 ✕ 才關
+  // 新信卡片(輸入框上方):只有真人來信與好友申請(AI 彼此的信在 takeMail 走 toast);狀態色外框、標題列角色圖示、收起兩行可展開、按 ✕ 才關
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const cards = await read($, mailCards)
     if (e.props.hasSurvey || !cards.length) return next(e)

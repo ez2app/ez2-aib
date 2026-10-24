@@ -1,6 +1,7 @@
 // 新信卡片(the maintainer 10-14「新信彈窗重做」:狀態色、完整換行、可點開、不自動關;「彈窗要放大皇冠、⚓、👔、🧞 這種角色 icon 當成圖像」
 //   「所有的角色都要有」)。toast 只能一行純文字、幾秒就關 ⇒ 改畫在輸入框上方那一條(AbovePrompt),關掉要人按 ✕。
 //   Andy 10-17:卡片只彈「真人來信」與「加好友」(席與席之間的信照舊進佇列與狀態列,不彈);像素大頭像拿掉,圖示放回標題列。
+//   Andy 10-25:大卡片只給真人來信;AI 彼此的信改用右上角 toast(跟 mods 其他提示同一種),像素大頭像小窗格也拿掉。
 //   這裡只放純函式(測試直接載);畫面在 register.tsx。
 
 export type MailStatus = 'unread' | 'read' | 'done' | 'held' | 'archived'
@@ -31,6 +32,14 @@ export function cardOf(q: QItem, me: string | null, full?: string | null): MailC
   if (!q.id || (me && q.sender_seat === me) || !HUMAN_KINDS.has(String(q.sender_kind ?? ''))) return null
   return { id: q.id, from: q.sender_seat ?? null, label: q.sender_label ?? q.sender ?? null, kind: q.sender_kind ?? null,
     at: Number(q.sent_at ?? q.ts ?? 0), text: String(full ?? q.msg ?? ''), status: statusOf(q), open: false }
+}
+
+// AI 彼此的信(不是真人、不是自己寄的、還沒讀)⇒ toast 一行:寄件人 + 內容第一行(長訊落檔的用全文),太長切掉補 …
+export function toastOf(q: QItem, me: string | null, full?: string | null, width = 60): { id: string; who: string; text: string } | null {
+  if (!q.id || (me && q.sender_seat === me) || HUMAN_KINDS.has(String(q.sender_kind ?? '')) || statusOf(q) !== 'unread') return null
+  const who = q.sender_seat ? `@${q.sender_seat}` : String(q.sender_label ?? q.sender ?? '?')
+  const line = String(full ?? q.msg ?? '').split('\n').map(x => x.trim()).find(Boolean) ?? ''
+  return { id: q.id, who, text: clip(line, width, 1).text }
 }
 
 // 收到新的一份信件檔:已有的卡只更新狀態與內容(開合照舊);沒有的卡只在「沒讀、沒結、沒被人關過」時才新增,新的在前,最多 max 張

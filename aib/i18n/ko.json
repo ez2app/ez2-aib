@@ -3904,6 +3904,7 @@
   "mod.aib_boards.later": "이 페이지는 다음 단계({what})에서 만듭니다; 우선 오늘 페이지를 보여 드립니다.",
   "mod.aib_boards.mail_band": "📬 새 편지 {n}통",
   "mod.aib_boards.mail_close_hint": "  · ✕ 를 눌러야 닫힘",
+  "mod.aib_boards.mail_toast": "{icon} {who}: {text}",
   "mod.aib_boards.mail_close_all": "모두 닫기",
   "mod.aib_boards.mail_req_title": "님이 친구 신청",
   "mod.aib_boards.mail_req_no_note": "(메시지 없음)",

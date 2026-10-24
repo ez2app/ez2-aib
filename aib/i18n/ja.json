@@ -3904,6 +3904,7 @@
   "mod.aib_boards.later": "このページは次の段階({what})で作ります;今は「今日」ページをどうぞ。",
   "mod.aib_boards.mail_band": "📬 新着 {n} 通",
   "mod.aib_boards.mail_close_hint": "  · ✕ を押すまで閉じません",
+  "mod.aib_boards.mail_toast": "{icon} {who}:{text}",
   "mod.aib_boards.mail_close_all": "すべて閉じる",
   "mod.aib_boards.mail_req_title": "から友達申請",
   "mod.aib_boards.mail_req_no_note": "(メッセージなし)",
