@@ -7,6 +7,8 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 ## 0.1.55
 
 - **Lighter status line**: each seat's status line refresh now makes one tmux call instead of three, skips loading the fleet patrol module, and loads the English dictionary only when a key is missing (about 120 → 80 ms per refresh).
+- **Chat works right after you go online**: opening a cabin first shows the name and country that will be made public, and answering yes fills in only what is missing and publishes your captain seat. `aib chat invite` makes a one-time friend code (10 characters, valid 24 hours, Touch ID to create); the other side types it with `aib chat invite use <code>` and you become friends both ways. The bridge checks your friends' rosters by itself, `aib chat world --json` lists friends that have gone quiet for over an hour, `world --refresh` asks once who is online, and `status --json` gains a `ready` summary.
+- **A revoke recorded long ago no longer hides a newer one**: once a remembered revoke has stopped blocking, the next revoke from that friend replaces it, so an old snapshot that arrives late is still dropped.
 
 ## 0.1.54
 
