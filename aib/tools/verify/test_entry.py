@@ -235,7 +235,7 @@ def changed_tests(repo, base=""):
         return None, info
     if not sub:
         have = set(all_tests(proj))
-        picked = sorted(dict.fromkeys(n for _b, n in names if n.startswith("tests/") and n in have))
+        picked = sorted(dict.fromkeys(n for _b, n in names if n in have))   # 一般專案的測試不一定在 tests/(#314 r4)
         info["picked"] = len(picked)
         return picked, info
     root_tests = [str((Path(repo) / n).resolve()) for n in all_tests(repo) if n.startswith("tests/")]

@@ -15,6 +15,7 @@ C7 子專案外也有改動(倉根的 install.sh 等)⇒ 量不到 rc 3(不能�
 C8 一般專案在 src/foo(有 tests/、沒有記號)底下跑 ⇒ 仍以倉根為準(#314 審查 A2)
 C9 子專案模式另從倉根挑一次再取聯集:⑧ 反查帳本是倉根座標、倉根 tests/ 也讀 aib/ 的產品檔(#314 r2 必修:只挑子專案 ⇒ 0 支假綠)
 C10 子專案外有沒追蹤的新檔 ⇒ 量不到(None),不拿窄集合跑
+C12 一般專案:帳本挑到 test/、*.test.js 這類不在 tests/ 的測試 ⇒ 照收(#314 r4:別收窄成只收 tests/)
 C11 倉根 tests/ 是 test_*.py、select_changed 靜態規則挑不到 ⇒ 子專案有改動就全併進來(真的 select_changed、沒有帳本;#314 r3 必修)
 刀(複本):K1 把規則 3 的比對拿掉 ⇒ C2 紅;K2 拿掉倉根那次挑選 ⇒ C9 紅;K3 拿掉倉根 tests/ 全併 ⇒ C11 紅
 """
@@ -166,6 +167,21 @@ class SubProject(unittest.TestCase):
         p = self.sel()
         self.assertEqual(p.returncode, 3, p.stdout + p.stderr[-300:])
         self.assertIn("install.sh", p.stdout)
+
+    def test_c12_plain_repo_keeps_non_tests_dir(self):
+        plain = _repo()
+        self.addCleanup(shutil.rmtree, plain, True)
+        (plain / "src" / "cockpit" / "widget.py").write_text("def f():\n    return 9\n", encoding="utf-8")
+        _git(plain, "commit", "-qam", "touch")
+        te = _load(SEL.parent / "test_entry.py", "test_entry_c12")
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(plain)
+        hits = ["test/test_a.py", "src/a.test.js"]
+        with mock.patch.object(te, "_select", lambda *a, **k: list(hits)), \
+                mock.patch.object(te, "all_tests", lambda r: list(hits)):
+            picked, info = te.changed_tests(plain, "HEAD~1")
+        self.assertEqual(picked, sorted(hits), info)
 
     def test_c8_subproject_lookup(self):
         te = _load(SEL.parent / "test_entry.py", "test_entry_under_test2")
