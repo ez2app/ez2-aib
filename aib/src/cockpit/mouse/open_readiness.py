@@ -189,13 +189,14 @@ def main(argv=None):
         if not done:                     # 迴圈已跑完才響 ⇒ 不拋(不然會從 finally 冒出去、整批沒輸出)
             raise _Late()
 
-    old = None
+    old, armed = None, False
     try:
-        old = signal.signal(signal.SIGALRM, _late)
-        signal.setitimer(signal.ITIMER_REAL, _timeout_s())
-    except (AttributeError, ValueError, OSError):   # 沒有 SIGALRM 的平台 / 不在主執行緒:照舊不設上限
-        old = None
-    try:
+        try:                             # 開計時器也在外層 try 裡:剛開就響也接得住、處理器照樣還原
+            old = signal.signal(signal.SIGALRM, _late)
+            armed = True
+            signal.setitimer(signal.ITIMER_REAL, _timeout_s())
+        except (AttributeError, ValueError, OSError):   # 沒有 SIGALRM 的平台 / 不在主執行緒:照舊不設上限
+            pass
         for provider in argv:            # 一家一行、順序照參數(選單一次問完,不是一家起一次 python)
             state, detail = check(provider)
             suffix = label_suffix(state, detail)
@@ -204,9 +205,9 @@ def main(argv=None):
     except _Late:
         pass
     finally:
-        if old is not None:
+        if armed:                        # 舊處理器不是 Python 設的會回 None,不能拿它判斷要不要還原
             signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, old)
+            signal.signal(signal.SIGALRM, signal.SIG_DFL if old is None else old)
     lines += ["ok"] * (len(argv) - len(lines))
     for line in lines:
         print(line)

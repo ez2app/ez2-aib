@@ -7,7 +7,8 @@ H2 hit_ai_close 跟點 [X] 同一套前提:kill 的 start < end、窗 id 是 @�
 H3 open_readiness 整批最多等 TIMEOUT_S 秒,超時的幾家印 ok(選單照開、行數不少)
 H4 --close-row 的欄(CX)也只收 1–4 位數字(在 test-ctx-close-seat-abb89-1024.py)
 刀(PR 手跑在複本上):拿掉 _INVISIBLE 或少列任一碼點 ⇒ H1 紅;拿掉 start<end / WINDOW_ID_RE ⇒ H2 紅;
-  拿掉計時器、_Late 改回 Exception(被 check() 吞掉)、不還原 SIGALRM 處理器 ⇒ H3 紅
+  拿掉計時器、_Late 改回 Exception(被 check() 吞掉)、不還原 SIGALRM 處理器、拿掉 _late 的 done 守衛、
+  計時器搬到 ask-key 分支之前(存金鑰的 Touch ID 會被 3 秒打斷)⇒ H3 紅
 """
 from __future__ import annotations
 
@@ -53,7 +54,8 @@ class HitClose(unittest.TestCase):
         self.assertEqual(hit_test.hit_ai_close([ROW], 3)["action"], "kill-idle")
 
     def test_h2_x_cell_must_exist(self):
-        for kill in ({"start": 23, "end": 20}, {"start": 20, "end": 20}, {"start": "a", "end": 23}, {"end": 23}, {}):
+        for kill in ({"start": 23, "end": 20}, {"start": 20, "end": 20}, {"start": "a", "end": 23}, {"start": None, "end": 23},
+                     {"end": 23}, {}):
             with self.subTest(kill=kill):
                 self.assertEqual(hit_test.hit_ai_close([dict(ROW, kill=kill)], 3), hit_test.PASSTHROUGH)
 
@@ -104,6 +106,34 @@ class Readiness(unittest.TestCase):
             open_readiness.main(["claude"])
         self.assertEqual(sig.getitimer(sig.ITIMER_REAL)[0], 0)
         self.assertIs(sig.getsignal(sig.SIGALRM), before)       # 舊處理器還原
+
+    def test_h3_late_alarm_after_loop_does_not_drop_output(self):
+        # 迴圈跑完、清計時器那一刻剛好響:_late 不能拋(審查 r2,done 守衛)
+        sig = open_readiness.signal
+        real = sig.setitimer
+
+        def setitimer(which, seconds, *a):
+            if seconds == 0:
+                sig.raise_signal(sig.SIGALRM)
+            return real(which, seconds, *a)
+        out = io.StringIO()
+        with mock.patch.object(open_readiness, "check", lambda p, environ=None: ("ok", "")), \
+                mock.patch.object(sig, "setitimer", setitimer), redirect_stdout(out):
+            rc = open_readiness.main(["claude", "codex"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue().splitlines(), ["ok", "ok"])
+
+    def test_h3_ask_key_not_cut_by_timeout(self):
+        # 存金鑰(遮字框 + Touch ID)不受整批上限(審查 r2:計時器不能搬到 ask-key 分支之前)
+        def ask_key(provider):
+            time.sleep(0.6)
+            return "saved " + provider
+        out = io.StringIO()
+        with mock.patch.object(open_readiness, "ask_key", ask_key), \
+                mock.patch.dict(os.environ, {"EZ2_OPEN_READINESS_TIMEOUT": "0.3"}), redirect_stdout(out):
+            rc = open_readiness.main(["ask-key", "deepseek"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue().splitlines(), ["saved deepseek"])
 
     def test_h3_timeout_env_only_shortens(self):
         for v, want in (("0.5", 0.5), ("99", 3.0), ("0", 3.0), ("-1", 3.0), ("x", 3.0)):
