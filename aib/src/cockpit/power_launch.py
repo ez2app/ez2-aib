@@ -57,8 +57,8 @@ def _s(v):
     """紀錄裡的字串:不是字串 / 太長 / 有控制字元 ⇒ None(檔是同帳號寫得到的,讀的時候照資料看)。"""
     if not isinstance(v, str) or not v or len(v) > _TEXT_MAX:
         return None
-    import unicodedata   # C1 與 Unicode 格式字元(方向控制、零寬)也算控制字元(#293 審查)
-    return None if any(ord(c) < 32 or 127 <= ord(c) < 0xa0 or unicodedata.category(c) in ("Cf", "Cs") for c in v) else v
+    from power_ask import invisible   # C1 與 Unicode 格式 / 隱形字元(方向控制、零寬、填充字)也算控制字元(#293 / #302 審查)
+    return None if any(ord(c) < 32 or 127 <= ord(c) < 0xa0 or invisible(c) for c in v) else v
 
 
 def models():

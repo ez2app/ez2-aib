@@ -46,6 +46,7 @@ LOGIN = {
 }
 
 _URL_RE = re.compile(r"https://[A-Za-z0-9\-._~:/?#\[\]@!$&()*+,;=%]+")   # 只收 ASCII 網址字元:全形 / 同形字不算進鏈結
+CODE_GRACE_S = 1.5
 _CODE_RE = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4,5})\b")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _URL_MAX = 2048
@@ -237,10 +238,12 @@ def spawn_login(key, *, popen=subprocess.Popen, wait_s=URL_WAIT_S, lifetime=LOGI
         popen(_guard_argv(spawn, lifetime), stdin=subprocess.DEVNULL, stdout=fd, stderr=fd, env=env,
               start_new_session=True)
     except (OSError, ValueError):
+        _drop(log)
         return None, None, "spawn_failed"
     finally:
         os.close(fd)
     deadline = clock() + wait_s
+    code_by = None                       # 先印鏈結、裝置碼晚一行才出:拿到鏈結後再等 CODE_GRACE_S 等裝置碼
     while True:
         try:
             with open(log, encoding="utf-8", errors="replace") as f:
@@ -250,8 +253,10 @@ def spawn_login(key, *, popen=subprocess.Popen, wait_s=URL_WAIT_S, lifetime=LOGI
         url = _clean_url(text)
         if url:
             m = _CODE_RE.search(_ANSI_RE.sub("", text))
-            _drop(log)                   # 鏈結 / 裝置碼拿到就刪:不留在狀態夾給人翻(CLI 照寫它手上的 fd)
-            return url, (m.group(1) if m else None), None
+            code_by = clock() + CODE_GRACE_S if code_by is None else code_by
+            if m or clock() >= code_by:
+                _drop(log)               # 鏈結 / 裝置碼拿到就刪:不留在狀態夾給人翻(CLI 照寫它手上的 fd)
+                return url, (m.group(1) if m else None), None
         if clock() >= deadline:
             _drop(log)
             return None, None, "no_url"

@@ -265,6 +265,8 @@ def main(argv=None):
     for name in ("login", "launch", "fav", "ask", "why", "tier", "redeem"):   # 上面先分派走;這裡只為 --help 列全(#293 審查)
         sub.add_parser(name, add_help=False)
     a = p.parse_args(argv)
+    if a.cmd not in ("status", "upgrade"):               # 只為 --help 列的空殼(例如 `aib power -- login`)
+        p.error("invalid choice: %r" % a.cmd)
     if a.cmd == "status":
         _emit(status(a.refresh), a.json)
         return 0

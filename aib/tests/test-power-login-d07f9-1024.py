@@ -226,6 +226,7 @@ class Login(unittest.TestCase):
         self._with_path(d2)
         url, code, err = L.spawn_login("grok", wait_s=1.5, lifetime=2, popen=self._popen())
         self.assertEqual((url, err), (None, "no_url"))
+        self.assertFalse((Path(TMP) / "state" / "power-login-grok.log").exists(), "逾時也要刪登入紀錄")
         os.environ["PATH"] = "/nonexistent"
         self.assertEqual(L.spawn_login("copilot", wait_s=1)[2], "cli_missing")
 
