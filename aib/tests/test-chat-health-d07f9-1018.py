@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""轉接程式健康與自己重起、開通後提醒備份(開發文件第 37.3、37.4 節;10-18 fishmac 單艙:轉接程式停了沒人重起)。
+"""轉接程式健康與自己重起、開通後提醒備份(開發文件第 37.3、37.4 節;10-18 一台單艙會員機:轉接程式停了沒人重起)。
 
 S1 health:沒開 ⇒ off;開著沒當班 ⇒ not_running;當班沒心跳 ⇒ no_relay(還沒發名冊)/ stale_heartbeat(已發);工人全部斷線 ⇒ no_relay
 S2 status --json 帶 healthy / why / backup;開著沒當班時文字版有一句警告

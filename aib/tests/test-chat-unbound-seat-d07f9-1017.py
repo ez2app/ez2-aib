@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""沒綁人格的席也能收全球信(10-17 fishmac 實機:新用戶第一席沒綁人格 ⇒ 沒席金鑰、名冊 0 席,publish 卻說已列進)。
+"""沒綁人格的席也能收全球信(10-17 一台會員機實機:新用戶第一席沒綁人格 ⇒ 沒席金鑰、名冊 0 席,publish 卻說已列進)。
 
 U1 live_seats:沒綁人格的席 persona_uid = s-<席碼>;綁了的照舊
 U2 sync_seats:替代人格發金鑰(s-<席碼>.key);那一席綁了人格 ⇒ 替代金鑰封存、改發人格的;席不活 ⇒ 替代金鑰封存
@@ -66,7 +66,7 @@ class Unbound(unittest.TestCase):
         b = self.b
         w4 = b.home / ".ez2-aib" / "instances" / INST / "seats" / "w4.json"
         keep = w4.read_text()
-        w4.unlink()                                          # 照 fishmac 的順序:先開通,之後才開這一席
+        w4.unlink()                                          # 照那台會員機的順序:先開通,之後才開這一席
         self.assertEqual(b.cli("on", "--no-venv", "--name", "Mac Pro 13", "--country", "TW").returncode, 0)
         w4.write_text(keep)
         r = b.cli("publish", self.code)

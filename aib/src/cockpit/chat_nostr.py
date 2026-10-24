@@ -607,8 +607,8 @@ class Sender(object):
         快照那席查不到 ⇒ 改抓名冊第一席,查到就用名冊更新快照(note_peer 拿到不比快照舊的名冊會整份換掉 seats)。"""
         addr = await self._first_seat_addr(owner)
         rc, res = await self._resolve(addr) if addr else (2, {})
-        if rc == 0:
-            return rc, res
+        if rc == 0 or (addr and res.get("why") not in ("no_seat", "no_dm_relays")):
+            return rc, res                      # 只有「那席不在 / 沒收件站」才改抓名冊;網路錯等下一輪(@abb89 #297 r1)
         fresh = await self._first_seat_addr(owner, roster=True)
         if not fresh or fresh == addr:
             return rc, res

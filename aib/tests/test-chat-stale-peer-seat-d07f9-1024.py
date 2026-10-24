@@ -7,6 +7,7 @@
 P1 快照第一席查不到 ⇒ 改抓名冊第一席、查到就用;快照 seats 整份換成名冊目前公開的席(舊席拿掉)
 P2 快照那席查得到 ⇒ 不抓名冊(不多連網)
 P3 名冊也沒有可用的席 ⇒ 照舊回失敗、快照不動
+P4 快照那席是網路錯(不是 no_seat / no_dm_relays)⇒ 不改抓名冊、快照不動(@abb89 #297 r1)
 (要 AIB_TEST_NOSTR_VENV;chat_nostr 只在 venv 裡 import 得到。不連網:resolve 與名冊都換成假的)
 S1 一席一把(10-24 一台開發機:@cfd04 換過人格,同一席三把 active ⇒ 名冊重複席、別台整份拒收):同一席先綁人格 A、再換 B ⇒
    sending_seats 只給 B 那把;名冊這一席只出現一次、npub = B;A 的金鑰仍 active(收件照認、人格換回來照用)
@@ -16,8 +17,9 @@ S5 同一人格綁兩個活席 ⇒ 兩席各一把、都在名冊
 S6 人格封存後那席還綁同一人格 ⇒ 封存的鑰不出現在寄件 / 名冊
 S7 真人寄件選席:現在的人格還沒有鑰 ⇒ None(不拿舊人格那把)
 N1 換人格後真的寄一封(兩台、本機假中繼站)⇒ 對方用名冊驗得過、收下(queued);寄件用舊人格那把就會被當陌生拒收
+N2 換人格後在線狀態也用新那把 ⇒ 好友看得到我在線(@abb89 #297 r1 m08)
 S4 手機配對給的 npub 跟名冊同一把:換過人格的席 ⇒ 配對 QR 給 B 那把,不給舊人格 A(@abb89 #297 r1)
-刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅
+刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅;K9 在線挑同席第一把 ⇒ N2 紅
 """
 import json
 import os
@@ -59,7 +61,7 @@ async def fake_resolve(addr):
         cab, seat = addr.split("/")[1:]
         return 0, {"cabin": cab, "seat": {"seat": seat, "npub": "npub1" + seat}, "roster_at": 200,
                    "roster_seats": [{"cabin": cab, "seat": seat, "npub": "npub1" + seat}], "dm_relays": []}
-    return 2, {"why": "no_seat"}
+    return 2, {"why": "timeout" if case == "p4" else "no_seat"}
 
 async def fake_roster(o, relays, r):
     calls["roster"] += 1
@@ -185,6 +187,9 @@ class Stale(unittest.TestCase):
         self.addCleanup(shutil.rmtree, td, True)
         (td / "root").mkdir()
         env = dict(os.environ, HOME=str(td / "home"), EZ2_AIB_STATE_ROOT=str(td / "home" / ".ez2-aib"))
+        for k in ("EZ2_AIB_HOME", "EZ2_AIB_SECRETS_DIR", "AIB_NOSTR_MAP",          # @abb89 #308:外面帶進來的不准漏進子行程
+                  "AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR", "AIB_CHAT_RELAYS"):
+            env.pop(k, None)
         r = subprocess.run([VPY, "-c", PROBE, str(Path(repo) / "src" / "cockpit"), str(td / "root"), case],
                            capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -195,6 +200,12 @@ class Stale(unittest.TestCase):
         self.assertEqual((d["rc"], d["seat"]), (0, "fdcf5"))
         self.assertEqual(d["calls"]["roster"], 1)
         self.assertEqual(d["snap"], ["fdcf5"])            # 舊席 4345c 從快照拿掉
+
+    def test_p4_network_error_no_roster(self):
+        d = self.probe("p4")
+        self.assertEqual(d["rc"], 2)
+        self.assertEqual(d["calls"]["roster"], 0, "網路錯不是席不在 ⇒ 不改抓名冊(等下一輪)")
+        self.assertEqual(d["snap"], ["4345c"])
 
     def test_p2_good_snapshot_no_roster(self):
         d = self.probe("p2")
@@ -219,8 +230,10 @@ class SendAfterSwitch(unittest.TestCase):
 
     _box = property(lambda self: self.RT.Network._box.__get__(self))
 
-    def test_n1_send_with_current_persona_key(self):
-        SB, GF = self.RT.SB, self.RT.GF
+    box_extra = {"AIB_CHAT_PRESENCE_TICK": "1", "AIB_CHAT_PRESENCE_GAP": "1", "AIB_CHAT_PRESENCE_EVERY": "3"}
+
+    def _switched(self):
+        """Andy 那一席換人格、名冊換成新那把之後 ⇒ (a, x, b, y);Bob 這時才開(沒有舊名冊快取),把 Andy 加好友。"""
         a, (x,) = self._box("Andy", [("00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")], [True])
         old = [e["npub"] for e in NK.sending_seats(a.env()) if e["seat5"] == x]
         disp = a.home / ".ez2-aib" / "identity" / "seat-display.json"
@@ -234,8 +247,20 @@ class SendAfterSwitch(unittest.TestCase):
         self.assertEqual(len(act), 2, "舊人格那把還 active(換回來照用)⇒ 才分得出「同席第一把」")
         b, (y,) = self._box("Bob", [("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [True])
         self.assertEqual(b.cli("friend", "add", a.owner).returncode, 0)
+        return a, x, b, y
+
+    def test_n1_send_with_current_persona_key(self):
+        SB, GF = self.RT.SB, self.RT.GF
+        a, x, b, y = self._switched()
         res = GF.send_and_wait(a.root, SB.outbox_rec("%s/6ddf/%s" % (b.owner, y), x), wait=20)
         self.assertEqual(res["stage"], "queued", res)
+
+    def test_n2_presence_with_current_persona_key(self):
+        # @abb89 #297 r1 m08:在線狀態也要用名冊那一把;用舊人格那把 ⇒ 好友驗不過、看不到我在線
+        a, x, b, y = self._switched()
+        self.assertEqual(a.cli("friend", "add", "%s/6ddf/%s" % (b.owner, y)).returncode, 0)
+        world = lambda: {c["owner"]: c for c in json.loads(b.cli("world", "--json").stdout)["cabins"]}  # noqa: E731
+        self.assertTrue(b.wait_for(lambda: (world().get(a.owner) or {}).get("presence_at"), 40), world())
 
 
 class Knife(unittest.TestCase):
@@ -283,6 +308,13 @@ class Knife(unittest.TestCase):
     def test_k10_display_type_check(self):        # r2:拿掉型別檢查 ⇒ AttributeError 冒出來
         self._cut("src/cockpit/nostr_keys.py", "        ent = ent if isinstance(ent, dict) else {}", "        ent = ent or {}",
                   "OneKeyPerSeat.test_s8_bad_display_shape")
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k9_presence_first_active(self):      # m08
+        self._cut("src/cockpit/chat_nostr.py",
+                  'mine_seats = [e for e in NK.sending_seats() if e["seat5"] in pub]',
+                  'mine_seats = [e for e in NK.read_map()["seats"] if e.get("status") == "active" and e["seat5"] in pub]',
+                  "SendAfterSwitch.test_n2_presence_with_current_persona_key", timeout=300)
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k8_sender_first_active(self):        # m07
