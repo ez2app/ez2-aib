@@ -464,6 +464,7 @@ def sample(seconds, pids_fn, cpu_fn, args_fn, clock=time.monotonic, sleep=time.s
 
 
 def attribute(base, known, born, cpu, prog, cls, seconds, top=CHURN_TOP):
+    """top=None ⇒ 全部列(已知熱點表要看全部,修好後掉出前 10 名的也要記到)。"""
     """每支新行程往上找第一個「取樣開始就在」的祖先 ⇒ 那個祖先的組別 / 席碼 + 最上層新行程的程式名。"""
     import room_heat
     acc = {}
@@ -485,7 +486,8 @@ def attribute(base, known, born, cpu, prog, cls, seconds, top=CHURN_TOP):
         a = acc.setdefault((g, owner, program), {"group": g, "owner": owner, "program": program, "count": 0, "cpu_s": 0.0})
         a["count"] += 1
         a["cpu_s"] += cpu.get(p, 0.0)
-    items = sorted(acc.values(), key=lambda a: (-a["cpu_s"], -a["count"]))[:top]
+    items = sorted(acc.values(), key=lambda a: (-a["cpu_s"], -a["count"]))
+    items = items if top is None else items[:top]
     out = []
     for a in items:
         out.append({"group": a["group"], "owner": a["owner"], "program": a["program"], "count": a["count"],
@@ -510,6 +512,15 @@ def _clean_cached(d):
     for k in ("t", "seconds", "births", "births_per_s", "cpu_cores_lower_bound"):
         out[k] = r[k] if _finite(r.get(k)) else None
     return out
+
+
+def _annotate(r, environ, record, full=None):
+    """已知熱點(room_heat_known);壞了不擋結果。"""
+    try:
+        import room_heat_known as RK
+        return RK.annotate(r, environ=environ, record=record, full=full)
+    except Exception:  # noqa: BLE001
+        return r
 
 
 def churn(seconds=CHURN_DEFAULT_S, now=None, environ=None, platform=None, fns=None, rows=None, cls=None,
@@ -546,7 +557,7 @@ def churn(seconds=CHURN_DEFAULT_S, now=None, environ=None, platform=None, fns=No
         if cached is not None:
             cached.update(throttled=True, detail="throttled", cached_at=round(started, 1),
                           retry_after_s=int(CHURN_THROTTLE_S - (now - started)) + 1)
-            return cached
+            return _annotate(cached, environ, record=False)
         try:
             if rows is None:
                 rows = room_heat.list_procs() or []
@@ -557,11 +568,13 @@ def churn(seconds=CHURN_DEFAULT_S, now=None, environ=None, platform=None, fns=No
             base = None
         if not base:                                 # 失敗不寫紀錄 ⇒ 不佔節流,下次按得動
             return fail
-        top = attribute(base, known, born, cpu, prog, cls, seconds)
+        full = attribute(base, known, born, cpu, prog, cls, seconds, top=None)
+        top = full[:CHURN_TOP]
         total_cpu = sum(cpu.get(p, 0.0) for p in born)
         r = {"schema": "aib-heat-churn/v1", "state": "ok", "t": round(now, 1), "seconds": seconds,
              "births": len(born), "births_per_s": round(len(born) / seconds, 2),
              "cpu_cores_lower_bound": round(total_cpu / seconds, 3), "top": top, "throttled": False}
+        r = _annotate(r, environ, record=True, full=full)
         try:
             _write_json(last_path, {"schema": "aib-heat-churn-last/v1", "started_at": round(now, 1), "result": r})
         except (OSError, ValueError):
