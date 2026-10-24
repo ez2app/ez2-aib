@@ -1223,15 +1223,64 @@ def cmd_invite(a, env, out):
     if not pub:
         out.write(T("request_no_seat") + "\n")
         return 2
-    inv = GF.create_invite(bridge_root(env))
+    root = bridge_root(env)
     addr = pub[0]["addr"]
+    inv, short = _publish_invite(root, env, addr)
     rec = dict(inv, addr=addr, uri="aib:join?to=%s&code=%s" % (addr, inv["code"]),
-               command="aib chat invite use %s %s" % (addr, inv["code"]))
+               command="aib chat invite use %s %s" % (addr, inv["code"]),
+               short=("aib chat invite use %s" % GF.invite_fmt(inv["code"])) if short else None)
     if a.json:
         out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    elif short:
+        out.write(T("invite_made_short", code=GF.invite_fmt(inv["code"]), command=rec["command"]) + "\n")
     else:
-        out.write(T("invite_made", command=rec["command"], days=GF.INVITE_TTL_S // 86400) + "\n")
+        out.write(T("invite_made", command=rec["command"]) + "\n")
     return 0
+
+
+def _publish_invite(root, env, addr):
+    """產碼 + 放中繼站(10-24 晚:對方只打碼就查得到)。中繼站上已經有同一個雜湊(撞號或有人抄)⇒ 換一組,最多 3 次。
+    放不上去(沒 venv / 中繼站都沒收)⇒ 碼照樣能用,只是要連位址一起給。回 (邀請, 放上去了沒)。"""
+    inv = GF.create_invite(root)
+    for _ in range(3):
+        h = GF.invite_hash(inv["code"])
+        rc, rec = _run_nostr("invite-fetch", root, env, timeout=60, extra=[h])
+        if rc is None:
+            return inv, False
+        if rc == 0 and not rec.get("hits"):
+            rc, _rec = _run_nostr("invite-publish", root, env, timeout=60,
+                                  stdin={"hash": h, "addr": addr, "exp": inv["expires_at"]})
+            return inv, rc == 0
+        inv = GF.create_invite(root)
+    return inv, False
+
+
+def _resolve_invite(code, env, out):
+    """只打碼 ⇒ 對方位址。中繼站上同一個碼有兩個簽章者 ⇒ 不猜、拒(有人抄了雜湊來搶);
+    最新那筆撤了 / 過期 ⇒ 拒;簽章者要是那個位址的主人(或他名冊上的機器)。回 (位址, None) 或 (None, 原因)。"""
+    root = bridge_root(env)
+    rc, rec = _run_nostr("invite-fetch", root, env, timeout=60, extra=[GF.invite_hash(code)])
+    if rc is None:
+        return None, "no_venv"
+    hits = [x for x in (rec.get("hits") or []) if isinstance(x, dict) and isinstance(x.get("body"), dict)]
+    if not hits:
+        return None, "not_found"
+    if len({x.get("author") for x in hits}) > 1:
+        return None, "clash"
+    last = max(hits, key=lambda x: int(x.get("at") or 0))
+    body = last["body"]
+    addr = str(body.get("addr") or "")
+    if body.get("revoked") or int(body.get("exp") or 0) < time.time() or not GF.parse_address(addr):
+        return None, "used"
+    rc, look = _run_nostr("fetch", root, env, timeout=60, extra=[addr])
+    if rc != 0 or not (look or {}).get("ok"):
+        return None, "lookup_failed"
+    if last.get("author") not in (look.get("owner"), look.get("device")):
+        return None, "wrong_signer"
+    import touchid_approve as TA
+    out.write(T("invite_found", name=TA.clean(str(look.get("display_name") or "-"), 32),
+                country=TA.clean(str(look.get("country") or "-"), 4)) + "\n")
+    return addr, None
 
 
 def cmd_invite_use(a, env, out):
@@ -1242,6 +1291,13 @@ def cmd_invite_use(a, env, out):
     m = JOIN_URI_RE.match(addr or "")
     if m:
         addr, code = m.group(1), m.group(2)
+    elif code is None and GF.invite_norm(addr) and not GF.parse_address(addr or ""):
+        code = GF.invite_norm(addr)                 # 只打碼(10-24 晚):先去中繼站查位址
+        addr, why = _resolve_invite(code, env, out)
+        if not addr:
+            out.write(T("invite_" + why) + "\n")
+            return 2
+    code = GF.invite_norm(code) if code else code
     parsed = GF.parse_address(addr or "") or {}
     if not parsed.get("owner") or not GF.INVITE_RE.match(code or ""):
         out.write(T("invite_bad") + "\n")
