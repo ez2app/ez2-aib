@@ -1745,7 +1745,8 @@ def world_payload(env=None, now=None):
                                  "room": bool(sp["snap"].get("rooms"))} if sp else None,
                        "display_name": info.get("display_name"), "country": info.get("country"),
                        "aib": CR.clean_version(info.get("aib")), "missing": CR.missing_features(info.get("aib")),
-                       "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
+                       "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats,
+                       "online": now - int(c.get("presence_at") or 0) < GF.BEAT_GREEN_S})   # 10-24 綠點
     # 10-19:同一位主人換了艙,舊艙還在 world 裡(分不出是關掉的艙還是睡著的另一台,所以不刪)⇒ 新的排前面,
     # 只看第一格的畫面才不會拿到過期那格、把在線的人顯示成不在線
     cabins.sort(key=lambda x: (not x["fresh"], -int(x["presence_at"] or 0)))
@@ -2162,7 +2163,14 @@ def cmd_room(a, env, out):
 
 
 def cmd_world(a, env, out):
-    asked = GF.request_refresh(bridge_root(env)) if getattr(a, "refresh", False) else None   # 10-24 在不在
+    ping = getattr(a, "ping", None)
+    if ping:
+        import chat_roster as CR
+        ping = CR.friend_owner(ping)
+        if not ping:
+            out.write(T("profile_bad_friend") + "\n")
+            return 2
+    asked = GF.request_refresh(bridge_root(env), ping=ping) if (getattr(a, "refresh", False) or ping) else None   # 10-24 在不在
     pl = world_payload(env)
     if asked is not None:
         pl["asked"] = asked
@@ -2635,6 +2643,7 @@ def main(argv=None, env=None, out=sys.stdout):
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
     wd.add_argument("--refresh", action="store_true", help=T("help.world_refresh"))
+    wd.add_argument("--ping", metavar="OWNER", help=T("help.world_ping"))
     pr = sub.add_parser("pair", help=T("help.pair"))
     pr.add_argument("action", nargs="?", choices=("start", "confirm", "list", "revoke"))
     pr.add_argument("target", nargs="?", help=T("help.pair_target"))

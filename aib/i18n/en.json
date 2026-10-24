@@ -4729,6 +4729,7 @@
   "aib.chat.help.share": "who sees your online status and how much (off / online / status; --default sets the default; --space changes space sharing too, one fingerprint)",
   "aib.chat.help.world": "online status shared by friends (the captain room's world tab reads --json)",
   "aib.chat.help.world_refresh": "ask friends whether they are online first (at most once per 30 seconds; updated friends answer within seconds)",
+  "aib.chat.help.world_ping": "ask only this owner whether they are online (used when you open their chat; owner npub or address)",
   "aib.chat.world_asked": "Asked the bridge to check which friends are online; look again in a few seconds.",
   "aib.chat.world_ask_recent": "Already asked within the last 30 seconds; showing what has arrived so far.",
   "aib.chat.share_set": "Set: {owner} ⇒ {level} (nothing is sent unless they are a friend or one of your machines)",

@@ -788,13 +788,19 @@ class Sender(object):
         """名片(第 32 節,Andy 23:5x「社群只給好友看」):我宣告的社群帳號私下送給這位好友 / 我的機器;
         內容有變就送,沒變一天一次。分享等級 off 也照送(名片跟在線狀態是兩回事);陌生人不會在 targets 裡。"""
         socials = CR.clean_socials((CR.read_profile() or {}).get("socials"))
-        body = json.dumps({"v": 1, "socials": socials}, ensure_ascii=False, sort_keys=True)
+        card = {"v": 1, "socials": socials}
+        gen = None
+        if CR.share_level(tgt) != "off":                # 10-24 綠點:看得到我在線的好友才拿心跳鑰
+            gen, stem = NK.beat_share()
+            card["beat"] = {"npub": NK.ensure_beat(), "key": NK.load_secret(stem), "gen": gen, "relays": CR.relays()[:GF.BEAT_RELAYS_MAX]}
+        body = json.dumps(card, ensure_ascii=False, sort_keys=True)
+        card = None
         cards = getattr(self, "c_last", None)
         if cards is None:
             cards = self.c_last = {}
         prev = cards.get(tgt)
         due = tgt in getattr(self, "card_due", set())
-        if not due and ((prev and prev[0] == body and now - prev[1] < 86400) or (not socials and not prev)):
+        if not due and ((prev and prev[0] == body and now - prev[1] < 86400) or (not socials and not prev and gen is None)):
             return
         rc, res = await self._first_seat(tgt)
         if rc != 0:
@@ -814,6 +820,8 @@ class Sender(object):
         if out is not None and out.success:
             cards[tgt] = (body, now)
             getattr(self, "card_due", set()).discard(tgt)
+            if gen:
+                GF.note_beat_given(self.root, gen, [tgt])
             audit(self.root, "card-out", "-", tgt, str(len(socials)))
 
     async def push_presence(self, now=None):
@@ -851,6 +859,13 @@ class Sender(object):
         ask = getattr(self, "ask_due", False)
         if ask:
             self.cache.clear()                          # 刷新 = 重抓好友名冊(對方換艙 / 換鑰馬上看得到)
+        self._rotate_beat_if_needed(targets)
+        gen, given = GF.read_beat_given(self.root)
+        beaters = {o for o, _n, _k, _r in GF.read_beat_keys(self.root)}
+        # 10-24 綠點:對方有心跳、也拿到我這一代的鑰 ⇒ 一般在線等級不再一位一封(看我的心跳就好);
+        #   問「在不在」只問還沒有心跳的舊版(最多 ASK_OLD_MAX 位)和本人點開對話框的那一位(ping)
+        ping = getattr(self, "ping_owner", None)
+        ask_to = set([t for t in targets if t not in beaters][:ASK_OLD_MAX] + ([ping] if ping else [])) if ask else set()
         sent = 0
         for tgt in targets[:PRESENCE_MAX_TARGETS]:
             await self._push_card(tgt, owner, mine_seats[0], now)       # 名片跟在線等級無關(好友 / 我的機器才在 targets)
@@ -866,13 +881,16 @@ class Sender(object):
             if (shared.get(tgt) or {}).get("share") != lvl:
                 GF.note_shared_sent(self.root, tgt, "share", lvl)
             getattr(self, "rv_try", {}).pop((tgt, "share"), None)
+            asking = tgt in ask_to
+            if lvl == "online" and tgt in beaters and tgt in given and not asking:
+                continue
             rows = SP.presence([e["seat5"] for e in mine_seats], with_status=(lvl == "status"))
             for r, e in zip(rows, mine_seats):
                 r["cabin"] = e.get("cabin") or "main"
             power = CP.presence_power(self.root, PRESENCE_EVERY_S)          # 10-18:讓好友判斷這台是不是在睡
             body = json.dumps({"v": 1, "seats": rows, "power": power}, ensure_ascii=False, sort_keys=True)
             prev = last.get(tgt)
-            if prev and not ask and ((prev[0] == body and now - prev[1] < PRESENCE_EVERY_S) or now - prev[1] < PRESENCE_GAP_S):
+            if prev and not asking and ((prev[0] == body and now - prev[1] < PRESENCE_EVERY_S) or now - prev[1] < PRESENCE_GAP_S):
                 continue
             rc, res = await self._first_seat(tgt)
             if rc != 0:
@@ -881,7 +899,7 @@ class Sender(object):
             keys = _keys(frm["key"])
             tags = [N.Tag.parse(x) for x in (["aib-v", "1"], ["aib-type", "presence"],
                                              ["aib-from", "%s/%s/%s" % (owner, frm.get("cabin") or "main", frm["seat5"])])
-                    + ((["aib-ask", "1"],) if ask else ())]
+                    + ((["aib-ask", "1"],) if asking else ())]
             gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(res["seat"]["npub"]),
                                           json.dumps({"v": 1, "at": int(now), "seats": rows, "power": power}, ensure_ascii=False),
                                           rumor_extra_tags=tags)
@@ -896,11 +914,111 @@ class Sender(object):
             if out is not None and out.success:
                 last[tgt] = (body, now)
                 sent += 1
-                audit(self.root, "presence-out", "-", tgt, lvl + (":ask" if ask else ""))
+                audit(self.root, "presence-out", "-", tgt, lvl + (":ask" if asking else ""))
         if ask:
             self.ask_due = False
+            self.ping_owner = None
             GF.note_asked(self.root, now)
         return sent
+
+    def _rotate_beat_if_needed(self, targets):
+        """這一代心跳鑰給過的人裡有誰不該再看(刪好友 / 封鎖 / 改 off)⇒ 換一代;名片內容跟著變,各位好友下一輪就收到新的。"""
+        gen, given = GF.read_beat_given(self.root)
+        if not gen:
+            return
+        ok = {t for t in targets if CR.share_level(t) != "off"}
+        if given - ok:
+            new_gen, _stem = NK.beat_share(rotate=True)
+            GF.note_beat_given(self.root, new_gen, [])     # 新一代從零算起(不然下一輪又換)
+            audit(self.root, "beat", "-", "-", "rotate:%d" % len(given - ok))
+
+    async def push_beat(self, now=None):
+        """10-24 綠點:這台一筆心跳(kind 30078、d=aib-beat、中繼站只留最新)。內文 = 在線等級的在線狀態,
+        用共用鑰 nip44 加密;好友不管幾位都只發這一筆。沒有公開席 / 還沒有共用鑰(沒給過任何好友)⇒ 不發。回成不成功。"""
+        import seat_presence as SP
+        now = time.time() if now is None else now
+        pub = set((CR.read_profile() or {}).get("public") or [])
+        mine_seats = [e for e in NK.sending_seats() if e["seat5"] in pub]
+        gen, _given = GF.read_beat_given(self.root)
+        if not mine_seats or not gen:
+            return False
+        rows = SP.presence([e["seat5"] for e in mine_seats], with_status=False)
+        for r, e in zip(rows, mine_seats):
+            r["cabin"] = e.get("cabin") or "main"
+        body = json.dumps({"v": 1, "at": int(now), "seats": rows, "power": CP.presence_power(self.root, BEAT_EVERY_S)},
+                          ensure_ascii=False)
+        share = _keys("beat-share-%d" % gen)
+        ct = N.nip44_encrypt(share.secret_key(), share.public_key(), body, N.Nip44Version.V2)
+        share = None
+        ev = N.EventBuilder(N.Kind(CR.KIND_ROSTER), ct).tags(
+            [N.Tag.identifier(BEAT_D), N.Tag.parse(["aib-gen", str(gen)])]).finalize(_keys("beat"))
+        c = await _client(CR.relays())
+        try:
+            out = await c.send_event(ev)
+        except Exception:   # noqa: BLE001
+            out = None
+        finally:
+            await c.shutdown()
+        ok = out is not None and bool(out.success)
+        audit(self.root, "beat-out", "-", "-", "ok" if ok else "fail")
+        return ok
+
+    async def poll_beats(self, now=None):
+        """10-24 綠點:一次查全部好友(和我的其他機器)的最新心跳,每批 BEAT_BATCH 位;解得開的寫進 world.json。
+        陌生 / 封鎖 / 不再是好友的不查。回寫了幾位。"""
+        now = time.time() if now is None else now
+        rows = [(o, n, k, r) for o, n, k, r in GF.read_beat_keys(self.root)
+                if not CR.is_blocked(o) and (CR.is_friend(o) or CR.is_mine(o))]
+        by_npub = {n: (o, k) for o, n, k, _r in rows}
+        relays = list(dict.fromkeys(CR.relays() + [x for *_a, rl in rows for x in rl]))[:8]
+        npubs = sorted(by_npub)
+        got = 0
+        for i in range(0, len(npubs), BEAT_BATCH):
+            flt = N.Filter().authors([N.PublicKey.parse(n) for n in npubs[i:i + BEAT_BATCH]]) \
+                .kind(N.Kind(CR.KIND_ROSTER)).identifier(BEAT_D)
+            try:
+                evs = await _fetch_all(relays, flt)
+            except Exception:   # noqa: BLE001
+                continue
+            latest = {}
+            for e in evs:
+                n = e.author().to_bech32()
+                if n in by_npub and (n not in latest or e.created_at().as_secs() > latest[n].created_at().as_secs()):
+                    latest[n] = e
+            for n, e in latest.items():
+                owner, key = by_npub[n]
+                at = e.created_at().as_secs()
+                if at > now + 300 or now - at > GF.PEERS_KEEP_S:
+                    continue
+                try:
+                    k = N.Keys.parse(key)
+                    body = json.loads(N.nip44_decrypt(k.secret_key(), k.public_key(), e.content()))
+                except Exception:   # noqa: BLE001  換代前的舊心跳 / 壞內容 ⇒ 當沒看到
+                    continue
+                if self._note_beat(owner, body, at):
+                    got += 1
+        audit(self.root, "beat-in", "-", "-", str(got))
+        return got
+
+    def _note_beat(self, owner, body, at):
+        import seat_presence as SP
+        rows = body.get("seats") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            return False
+        by_cab = {}
+        for r in rows[:50]:
+            if not isinstance(r, dict) or r.get("state") not in SP.STATES:
+                continue
+            seat, cab = str(r.get("seat") or ""), str(r.get("cabin") or "main")
+            if NK.SEAT5_RE.match(seat) and NK.CABIN_RE.match(cab):
+                by_cab.setdefault(cab, []).append({"seat": seat, "state": r["state"], "now": None, "step": None})
+        cur = GF.read_world(self.root)
+        for cab, seats in by_cab.items():
+            prev = cur.get("%s/%s" % (owner, cab)) or {}
+            if int(prev.get("presence_at") or 0) >= at and any(x.get("now") for x in prev.get("seats") or []):
+                continue                                   # 已有一樣新、帶狀態列的(分享等級 status 那封),不蓋
+            GF.note_world(self.root, owner, cab, seats, now=at, power=CP.clean_power(body.get("power")))
+        return bool(by_cab)
 
     def _remember_peer(self, to, res, source="sent"):
         """寄過信的人,回信照收(第 27.3 節):收件人的主人自動加進好友(source=sent)。
@@ -985,6 +1103,11 @@ PRESENCE_TICK_S = float(os.environ.get("AIB_CHAT_PRESENCE_TICK") or 60)     # �
 PRESENCE_EVERY_S = float(os.environ.get("AIB_CHAT_PRESENCE_EVERY") or 900)  # 沒變也每 15 分鐘送一次
 PRESENCE_GAP_S = float(os.environ.get("AIB_CHAT_PRESENCE_GAP") or 120)      # 同一位對方最少間隔
 ASK_ANSWER_GAP_S = float(os.environ.get("AIB_CHAT_ASK_GAP") or 60)          # 回「在不在」:同一位最少間隔
+ASK_OLD_MAX = 20                                                             # 刷新時最多問幾位還沒有心跳的舊版好友
+BEAT_D = "aib-beat"
+BEAT_EVERY_S = float(os.environ.get("AIB_CHAT_BEAT_EVERY") or 300)          # 10-24 綠點:心跳多久發一筆
+BEAT_POLL_S = float(os.environ.get("AIB_CHAT_BEAT_POLL") or 300)            # 沒人刷新時多久查一次好友心跳
+BEAT_BATCH = 500                                                             # 一次查幾位作者
 PRESENCE_MAX_TARGETS = 50
 UNCONFIRMED_AFTER_S = float(os.environ.get("AIB_CHAT_UNCONFIRMED_AFTER") or 86400)  # 交出多久沒回條就標「未確認」
 UNCONFIRMED_TICK_S = 600
@@ -1418,6 +1541,9 @@ class Receiver(object):
             return
         socials = CR.clean_socials(body.get("socials") if isinstance(body, dict) else None)
         GF.note_peer(self.root, owner, claims={"socials": socials})
+        b = body.get("beat") if isinstance(body, dict) else None
+        if isinstance(b, dict):                          # 10-24 綠點:對方給的心跳鑰
+            GF.note_beat_key(self.root, owner, b.get("npub"), b.get("key"), b.get("gen"), b.get("relays") or [])
         audit(self.root, "card-in", "-", from_npub, str(len(socials)))
 
     async def on_presence(self, rumor, tags, from_npub):
@@ -1904,6 +2030,7 @@ async def serve(root):
     last_clock = 0.0
     last_self = time.time() - SELF_CHECK_S + SELF_CHECK_FIRST_S   # 第一次在起來 SELF_CHECK_FIRST_S 秒後
     last_presence = 0.0
+    last_beat = last_poll = 0.0
     last_verify = 0.0
     last_unconfirmed = 0.0
     last_bbcall = 0.0
@@ -1920,11 +2047,12 @@ async def serve(root):
                 break
             if watch.tick():                                  # 剛睡醒:立刻補送在線狀態,好友很快就看到醒了
                 sender.p_last = {}
-                last_presence = 0.0
+                last_presence = last_beat = 0.0
             rf = GF.read_refresh(root)
             if rf.get("requested_at", 0) > rf.get("asked_at", 0) and not sender.ask_due:   # 本人刷新世界面板
                 sender.ask_due = True
-                last_presence = 0.0
+                sender.ping_owner = rf.get("ping")
+                last_presence = last_poll = 0.0
             if getattr(sender, "answer_now", False):         # 有人問我在不在
                 sender.answer_now = False
                 last_presence = 0.0
@@ -1969,6 +2097,18 @@ async def serve(root):
                     await sender.push_presence()
                 except Exception as err:   # noqa: BLE001
                     sys.stderr.write("presence:%s\n" % type(err).__name__)
+            if time.time() - last_beat >= BEAT_EVERY_S:
+                last_beat = time.time()
+                try:
+                    await sender.push_beat()
+                except Exception as err:   # noqa: BLE001
+                    sys.stderr.write("beat:%s\n" % type(err).__name__)
+            if time.time() - last_poll >= BEAT_POLL_S:
+                last_poll = time.time()
+                try:
+                    await sender.poll_beats()
+                except Exception as err:   # noqa: BLE001
+                    sys.stderr.write("beat-poll:%s\n" % type(err).__name__)
             if time.time() - last_bbcall >= PF.TICK_S:              # BB Call 轉手機(預設關;關著只讀一次設定檔)
                 last_bbcall = time.time()
                 try:
