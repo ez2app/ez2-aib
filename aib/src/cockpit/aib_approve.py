@@ -232,21 +232,26 @@ def _token(site, env):
         return ""
 
 
-def http_call(method, url, headers, body):
-    """回 (status, bytes);連不上 ⇒ (0, b"")。只走 https(登記時就擋了 http)。"""
-    import http.client
-    import urllib.error
+def _no_redirect():
     import urllib.request
 
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a, **k):
             return None  # 轉址一律不跟:會把機房 token 帶去別的主機
 
+    return NoRedirect
+
+
+def http_call(method, url, headers, body):
+    """回 (status, bytes);連不上 ⇒ (0, b"")。只走 https(登記時就擋了 http)。"""
+    import http.client
+    import urllib.error
+    import urllib.request
     if not url.startswith("https://"):
         return 0, b""
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.build_opener(NoRedirect).open(req, timeout=HTTP_TIMEOUT) as r:
+        with urllib.request.build_opener(_no_redirect()).open(req, timeout=HTTP_TIMEOUT) as r:
             return r.status, r.read(65536)
     except urllib.error.HTTPError as e:
         return e.code, b""

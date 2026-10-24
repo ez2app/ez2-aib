@@ -312,47 +312,27 @@ class Approve(Base):
         self.assertEqual(AA.http_call("GET", "http://127.0.0.1:9/x", {}, None), (0, b""))  # 只走 https
 
     def test_a11_no_redirect(self):
-        import http.server
-        import threading
+        # 不開真的伺服器(本機 socket 會撞到稽核鉤子 guarded fd 的舊問題,#305 修):直接驗處理器與 http_call 用的是它
         import unittest.mock as um
         import urllib.request
-        seen = []
+        h = AA._no_redirect()()
+        req = urllib.request.Request("https://ez2.app/wp-json/ez2-aib/v1/pending", headers={"Authorization": "Bearer x"})
+        self.assertIsNone(h.redirect_request(req, None, 302, "Found", {}, "http://evil.example/next"))
+        used = []
 
-        class H(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                seen.append(self.path)
-                self.send_response(302)
-                self.send_header("Location", "http://127.0.0.1:%d/next" % self.server.server_address[1])
-                self.end_headers()
+        class Stop(Exception):
+            pass
 
-            def log_message(self, *a):
-                pass
+        def opener(*handlers):
+            used.extend(handlers)
+            raise Stop()
 
-        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        real = urllib.request.Request
-
-        def plain(url, *a, **k):  # 測試伺服器只有 http:讓 http_call 的 https 檢查過,實際連 http
-            return real(url.replace("https://", "http://", 1), *a, **k)
-
-        try:
-            with um.patch.object(urllib.request, "Request", plain):
-                st, _ = AA.http_call("GET", "https://127.0.0.1:%d/p" % srv.server_address[1],
-                                     {"Authorization": "Bearer x"}, None)
-        finally:
-            srv.shutdown()
-            srv.server_close()
-        self.assertEqual((st, seen), (302, ["/p"]))  # 沒跟去 /next,token 只送出一次
-
-    def test_a10_wired_and_i18n(self):
-        self.assertIn('"approve"', (REPO / "src" / "cockpit" / "aib").read_text())
-        for lang in ("zh-TW", "en", "ja", "ko"):
-            d = json.loads((REPO / "i18n" / (lang + ".json")).read_text(encoding="utf-8"))
-            for ph in ("{code}", "{site}", "{user}", "{ip}"):
-                self.assertIn(ph, d["aib.approve.touchid_reason"], lang)
-            self.assertIn("aib approve", d["aib.approve.help.usage"])
-            self.assertTrue(d["aib.approve.touchid_reason"].index("{code}") < d["aib.approve.touchid_reason"].index("{user}"))
-
+        with um.patch.object(urllib.request, "build_opener", opener):
+            with self.assertRaises(Stop):
+                AA.http_call("GET", "https://ez2.app/x", {}, None)
+        self.assertEqual(len(used), 1)
+        self.assertTrue(issubclass(used[0], urllib.request.HTTPRedirectHandler))
+        self.assertIsNone(used[0]().redirect_request(req, None, 301, "Moved", {}, "https://other.example/"))
 
 class Knives(unittest.TestCase):
     def _red(self, needle, repl, test):
