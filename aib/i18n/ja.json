@@ -5219,7 +5219,7 @@
   "aib.auto_update.why.refused_push": "git push が実行中、次の確認で再試行",
   "aib.auto_update.why.too_soon": "1 時間以内に更新済み、次の確認で再試行",
   "aib.auto_update.why.offline": "入手元に接続できません、次の確認で再試行",
-  "aib.auto_update.why.paused": "メンテナが自動更新を一時停止しています(新しい版に問題が見つかりました)。今回は入れ替えません。再開後の次の確認で通常どおり更新します",
+  "aib.auto_update.why.paused": "公式側で自動更新を一時停止しています(新しい版に問題が見つかりました)。今回は入れ替えません。再開後の次の確認で通常どおり更新します",
   "aib.auto_update.why.refused_updating": "aib update を手動で実行中のため、今回は別に更新しません",
   "aib.auto_update.why.no_ref": "入手元に更新できる正式版がありません",
   "aib.auto_update.why.up_to_date": "最新です",

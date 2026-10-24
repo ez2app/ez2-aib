@@ -5219,7 +5219,7 @@
   "aib.auto_update.why.refused_push": "git push 실행 중, 다음 확인 때 다시 시도",
   "aib.auto_update.why.too_soon": "1시간 안에 업데이트함, 다음 확인 때 다시 시도",
   "aib.auto_update.why.offline": "출처에 연결할 수 없음, 다음 확인 때 다시 시도",
-  "aib.auto_update.why.paused": "관리자가 자동 업데이트를 일시 중지했습니다(새 버전에서 문제가 발견됨). 이번에는 바꾸지 않으며, 재개 후 다음 확인 때 평소처럼 업데이트합니다",
+  "aib.auto_update.why.paused": "공식 측에서 자동 업데이트를 일시 중지했습니다(새 버전에서 문제가 발견됨). 이번에는 바꾸지 않으며, 재개 후 다음 확인 때 평소처럼 업데이트합니다",
   "aib.auto_update.why.refused_updating": "aib update 를 직접 실행 중이라 이번에는 따로 업데이트하지 않습니다",
   "aib.auto_update.why.no_ref": "출처에 업데이트할 정식 버전이 없음",
   "aib.auto_update.why.up_to_date": "이미 최신",
