@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 # 底部描述區 tab 分頁:Alt+0 循環切換(只切下方,主畫面不動)
-# 遷自 ~/ez2-cockpit-demo/acb-bottom-tabs.sh(E2.1)
+# 遷自舊 demo 的 bottom-tabs(E2.1)
 # 修正:狀態檔進 state dir;舊大綱硬路徑改 $EZ2_OUTLINE;解析改用 cockpit_lib
 . "$(dirname "$0")/cockpit-env.sh"
 TABF="$EZ2_COCKPIT_STATE_DIR/bottom-tab"

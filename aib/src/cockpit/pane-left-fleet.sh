@@ -1,10 +1,10 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 # 左欄:AI 艦隊列表(真資料:AIB 席位檔 + activity_probe 真活動探針)
-# 遷自 ~/ez2-cockpit-demo/acb-left-fleet.sh(E2.1)
+# 遷自舊 demo 的 left-fleet(E2.1)
 #
-# ★ 2026-08-21(ACB 廢止,艦長 a seat 派工):本檔原本 glob
-#   $EZ2_ACB_HOME/sessions/by-id/*.json,而該目錄最新一筆停在 08-11。
+# ★ 2026-08-21(舊載體廢止,艦長 a seat 派工):本檔原本 glob
+#   舊載體的 sessions/by-id/*.json,而該目錄最新一筆停在 08-11。
 #   兩個缺陷一起修,第二個比第一個嚴重:
 #     (1) 資料是化石——列出來的席全是墓碑,而畫面看起來一直在正常運作。
 #     (2) **位址是錯的**——舊碼印 `role@uuid[-5:]`,而位址是 `seat_id`。

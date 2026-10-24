@@ -79,7 +79,7 @@ POINTER_KINDS = ("commit", "receipt", "event", "message", "file_line")
 _POINTER_RES = (
     ("commit", re.compile(r"^[0-9a-f]{7,40}$")),
     ("event", re.compile(r"^ev_[0-9a-f]{64}$")),
-    ("message", re.compile(r"^(msg|dm|acb|msg_id)[:_-][A-Za-z0-9._:@-]{4,120}$")),
+    ("message", re.compile(r"^(msg|dm|msg_id)[:_-][A-Za-z0-9._:@-]{4,120}$")),
     ("receipt", re.compile(r"^(?:[A-Za-z0-9._@-]+/)+[A-Za-z0-9._@-]+\.(json|jsonl|md|txt)$")),
     ("file_line", re.compile(r"^(?:[A-Za-z0-9._@-]+/)*[A-Za-z0-9._@-]+\.[A-Za-z0-9]{1,8}:\d{1,7}$")),
 )

@@ -8,7 +8,7 @@
 # E2.16/17 紅線),而 tmux 原生就把 status 上的視窗分頁做成可點擊(mouse on 時
 # MouseDown1Status=select-window)——不重造點擊命中,少一整層 spans/rowmap。
 #
-# 資料源(E2.19 規格更正):原規格要 registry_verified,該狀態隨 ACB 拆除
+# 資料源(E2.19 規格更正):原規格要 registry_verified,該狀態隨舊載體拆除
 # 永久消失;繼任=席位檔 $seats/w<id>.json,trust=self_reported(絕不冒充
 # verified;顯示層 ~ 前綴已依 the maintainer 08-14 拍板移除,誠實語意由資料層承載)。艦長級=EZ2_AIB_CAPTAIN_ROLES(預設 "pm root")。
 #

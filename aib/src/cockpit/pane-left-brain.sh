@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 # 左下:第二大腦分類樹(route registry 為骨架,不掃資料夾名;Alt+o 開合)
-# 遷自 ~/ez2-cockpit-demo/acb-left-brain.sh(E2.1;registry/vault/狀態檔全改 env)
+# 遷自舊 demo 的 left-brain(E2.1;registry/vault/狀態檔全改 env)
 . "$(dirname "$0")/cockpit-env.sh"
 while true; do
   [ "${EZ2_ONESHOT:-0}" = "1" ] || clear
@@ -35,7 +35,7 @@ except Exception:
     print(' obsidian-route-registry-contract.json')
     raise SystemExit
 
-MOD = {'C': '核心', 'P': '專家', 'F': '流程', 'G': '智囊', 'A': 'ACB'}
+MOD = {'C': '核心', 'P': '專家', 'F': '流程', 'G': '智囊', 'A': 'Ez2'}
 groups = {}
 for r in routes:
     groups.setdefault(r.get('module', '?'), []).append(r)

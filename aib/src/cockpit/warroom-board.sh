@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 # 戰情室看板:三層樹(大綱 -> 子項目 -> Task),CJK 對齊,無框線字元
-# 遷自 ~/ez2-cockpit-demo/acb-sandbox/outline-board.sh(E2.1)
+# 遷自舊 demo 的 outline-board(E2.1)
 # 修正:大綱/任務板/深度檔全改 env;CJK 函數與解析改 cockpit_lib 唯一實作
 . "$(dirname "$0")/cockpit-env.sh"
 
@@ -11,8 +11,8 @@ import glob, json, os
 from cockpit_lib import pad, trunc, parse_outline_file
 from render.render_lib import clean_data
 
-# ACB 活碼 P-2 已拔(REMOVAL-PLAN-acb-live-P2-0822.md §二,2026-08-23)。原本這裡每一幀
-# 都 json.load 全部 ~/.acb/sessions/by-id/*.json(實測 517 檔)來算 in_progress 的心跳,
+# 舊載體活碼 P-2 已拔(移除計畫 §二,2026-08-23)。原本這裡每一幀
+# 都 json.load 全部舊載體 sessions/by-id/*.json(實測 517 檔)來算 in_progress 的心跳,
 # 而那個來源最後一筆停在 08-11 18:41 —— 燈死了 11 天,畫面上恆顯示「⚠ 查無心跳」。
 # 留字面不留功能等於留一顆下次掃描會再長回來的 P,所以整段拔掉,不改預設值。
 OUTLINE = os.environ['EZ2_OUTLINE']
@@ -59,7 +59,7 @@ def task_live(t):
         return who, _t('aib.warroom.st_open'), ''
     if st == 'done':
         return who, _t('aib.warroom.st_done'), '✅'
-    # in_progress 不再標心跳:唯一的心跳來源(ACB P-2)已拔,見上方。
+    # in_progress 不再標心跳:唯一的心跳來源(舊載體 P-2)已拔,見上方。
     return who, _t('aib.warroom.st_working'), ''
 
 depth_path = os.path.join(os.environ['EZ2_COCKPIT_STATE_DIR'], 'view-depth')

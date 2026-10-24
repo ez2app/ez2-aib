@@ -74,9 +74,8 @@ TOOLS_ROOT = RootSpec(
     sample="~/Desktop/ez2-ai-converge-main",
     sample_provenance="root.tools_sample_provenance")
 
-# ★ 刀 A(EG.7 第一步,the maintainer 裁):ACB_BIN 這個 root 已移除——precheck 不再需要
-#   ~/.acb/bin,`--acb-bin` / $EZ2_ACB_BIN 一併消失。移除的是**依賴**不是目錄:
-#   ~/.acb 本身的去留是第二步,不可逆,不在本刀。
+# ★ 刀 A(EG.7 第一步,the maintainer 裁):舊載體 bin 這個 root 已移除——precheck 不再需要它,
+#   對應的命令列旗標與環境變數一併消失。舊載體本身 10-25 已整個退役。
 
 ROOTS = (TOOLS_ROOT,)
 BY_KEY = {r.key: r for r in ROOTS}

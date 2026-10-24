@@ -153,17 +153,17 @@ from title_beat import (trust_light, title_string, cabin_label,  # noqa: E402
 
 uuid = os.environ.get("EZ2_TB_UUID") or ""
 
-# ★★ 2026-08-21(車道 E,ACB 完全移除):**ACB registry 那條路已整條移除**。
+# ★★ 2026-08-21(車道 E,舊載體完全移除):**舊 registry 那條路已整條移除**。
 #   移除前的實測(a seat):偽造一筆 sessions/by-id/<uuid>.json 進去,
 #   標題的署名段整個被它接管(`NAILSIG@zzzzz/Nail` 蓋掉 `a seat/Claude`)
 #   —— 所以它是**活碼不是死碼**,拆掉是行為改變,不是 no-op。
 #   ★ 08-16 那句「指到空目錄顯示的字一模一樣」是對的量測、過度推廣的結論:
 #     兩端都空當然一樣,那一發沒有「必須紅」的那一端。
-#   拆掉仍然安全的理由是**母體**:現存 52 席有 uuid,ACB registry 517 筆,
+#   拆掉仍然安全的理由是**母體**:現存 52 席有 uuid,舊 registry 517 筆,
 #   **交集 0**;且該目錄最新一筆停在 08-11、不會再有新的。
 #   自此席位檔是唯一來源(上限黃燈,理由見 title_beat.seat_record 的 docstring)。
 seat_based = None
-# ★ 這四行原本在解釋「ACB 那條路走得通時 seat 會 NameError」——**那條路已不存在**,
+# ★ 這四行原本在解釋「舊 registry 那條路走得通時 seat 會 NameError」——**那條路已不存在**,
 #   註解跟著改而不是留著:留著會讓下一個人去找一條找不到的分支。
 #   保留的結論:seat / seat_based 要先有定義,下面版號段會引用。
 seat = None

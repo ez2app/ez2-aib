@@ -41,26 +41,14 @@ AIB ∴ ● a seat/Claude [dev1] registry_field_absent
 | 已驗證但心跳逾 15 分鐘 | 黃 | `verified_but_aging` |
 | 已驗證且心跳新鮮 | 綠 | `verified_fresh` |
 
-## 欄位名修正(2026-08-08)
+## 只認明寫的 `registry_verified`
 
-原本用 `registry_verified` 判斷,**那個名字是我猜的**。EA.1 綁定完成後實查 498 筆
-registry 記錄,`registry_verified` 一筆都沒有;真正存在的是 `binding_uid` /
-`session_status` / `formal_eligible` / `native_attestation` / `authority_level`。
-猜錯名字的代價很具體:綁定明明成功了,燈卻永遠紅在「沒有驗證欄位」,而且紅得毫無道理。
+欄位不存在就是沒驗證(`registry_field_absent`),不從其他欄位推導。
+**心跳證明它還活著,不證明它是誰**——把有心跳畫成綠燈是最貴的那種假綠燈。
 
-## 綠燈今天亮不起來,這是事實不是 bug
-
-77 筆記錄有 `binding_uid`,其中 68 筆 `session_status=active`;那 68 筆**自己標著**
-`formal_eligible=false`、`native_attestation=false`、
-`authority_level=same_user_registry_unattested` —— 綁了,但這份權威未經證實。
-
-所以現況最佳狀態是黃燈 `bound_unattested`。綠燈要 ACB 自己把兩個 attestation 都標成
-true;把「綁定成功」直接畫成綠燈,等於幫 ACB 宣告它自己都不敢宣告的事。
-同理,**心跳證明它還活著,不證明它是誰**——把有心跳畫成綠燈是最貴的那種假綠燈。
-
-測試用實查得到的記錄形狀當輸入,釘住三件事:已綁 session 不得被判成「沒有欄位」、
-已綁未證實是黃不是綠、兩個 attestation 缺一都不給綠。另有一條掃本機 registry
-斷言目前 attested 筆數為 0——哪天 ACB 開始標 true,那條會紅,提醒同步更新判準與文件。
+舊載體 v2 曾用 `binding_uid` / `formal_eligible` / `native_attestation` 推出
+`bound_unattested` / `bound_attested` 兩格;那份登記簿 08-11 起就停了,正式路徑
+(`title-beat.sh`)也只傳 `None` 進來,10-25 整段拿掉。席位檔另走 `seat_light`,上限黃燈。
 
 ## 純度與分工
 

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""三記憶閘(BE,2026-09-03):ACB 關閉後,這一支是它的正本。
+"""三記憶閘(BE,2026-09-03):舊載體關閉後,這一支是它的正本。
 
-the maintainer 09-03 直令「深度把 ACB 關閉、只開 aib」。舊閘 `~/.acb/bin/three-memory-gate.sh`(538 行)是
-**唯一會擋收工**的 ACB hook,而且它此刻正在自動 commit the maintainer 的 Obsidian vault。搬過來時逐條記下
+the maintainer 09-03 直令「深度把舊載體關閉、只開 aib」。舊閘 `three-memory-gate.sh`(538 行)是
+**唯一會擋收工**的舊 hook,而且它此刻正在自動 commit the maintainer 的 Obsidian vault。搬過來時逐條記下
 **故意改掉的四件**——每一件都是舊版量到過的缺陷,不是重寫時的偏好:
 
 1. **量測範圍與執行範圍不相交**:舊版 cwd 白名單是 `~/ez2-ai*` 前綴(所以 `~/ez2-aib` 整棵在內),
    但它監看的三個 repo 沒有一個是 `ez2-aib`。⇒ 本艦隊每天 commit,閘一次都沒為它開火過。
    本版把 `~/ez2-aib` 放進 watch_repos(設定檔第一項)。
-2. **記憶那一格量的是目錄**:舊版 `newest_mtime(~/.acb/memory)`,而那個目錄下每一席都在寫;
+2. **記憶那一格量的是目錄**:舊版 `newest_mtime(<舊載體>/memory)`,而那個目錄下每一席都在寫;
    任何一席的任何寫入都會讓「這一本記憶已回寫」為真。⇒ 恆綠。本版第一本改成**單檔**
-   `~/.ez2-aib/memory/root/context.md`(ACB 那本的新家,內容已搬)。
+   `~/.ez2-aib/memory/root/context.md`(舊載體那本的新家,內容已搬)。
 3. **AI 記憶那一格看錯目錄**:舊設定 `~/.claude/projects/-Users-user/memory`,而本艦隊寫的是
    `-Users-user-ez2-aib`。本版兩個都收,任一新於 commit 即算。
 4. **vault 自動 commit 失敗會擋住不相干的席**:舊版 `c80_autocommit || exit 2`,而它失敗最常見的

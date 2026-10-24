@@ -37,7 +37,7 @@ LOC = i18n_lib.resolve_locale()
 PREFIXES = ("aib-", "aib_", "aibt-", "ez2-aib-", "e320-knife-", "p2-knife", "dgrs-note-", "cabin-aq-", "taskzone-", "outline-arm",
             "host-lease-arm", "term-notes-arm", "presence-arm", "known-gaps-arm", "pending-arm", "knife-contract-arm",
             "yield-crown-arm", "hdr-arms", "ai-council-arm", "seat-label-arm", "mark-lint-arm", "fail-open-arm",
-            "acbscan-selftest", "ship-base-dry")
+            "ship-base-dry")
 
 
 def T(key, params=None):

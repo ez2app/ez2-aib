@@ -196,7 +196,7 @@ aib_attempt_mark() {   # $1=event $2=window(可空) $3=note(可空)
   return 0
 }
 
-# 10-11 一鍵急停(the maintainer「把 ACB 能用的搬回 AIB」A2;源自 ACB lib/core.sh kill-switch + test-killflag-failopen):
+# 10-11 一鍵急停(the maintainer「把舊載體能用的搬回 AIB」A2;源自舊載體的 kill-switch + fail-open 測試):
 #   <狀態根>/state/kill-switch 存在 ⇒ 擋「會動到別人或對外」的三類:開席、aib dm 送信、aib ship 推包。
 #   其他(status、memory、handoff、test、killswitch 本身…)照常,才能查狀況、收尾、解除。
 #   ★ 檔在但讀不到(權限壞、是資料夾)⇒ 一樣當成急停中,而且說出讀不到 —— 不准悄悄放行(fail-closed)。
@@ -1544,7 +1544,7 @@ find_provider_window() {
 }
 
 # E2.19 資料源:席位紀錄(2026-08-13)。原規格要求 registry_verified,但那個
-# 狀態隨 ACB 拆除永遠不會再出現;繼任資料源=AIB 自己的席位檔,**trust 一律
+# 狀態隨舊載體拆除永遠不會再出現;繼任資料源=AIB 自己的席位檔,**trust 一律
 # self_reported 且絕不混進 verified 欄位**(無身份層過渡期紅線)。
 # 一窗一檔,檔名綁 window_id 故重開同窗冪等;dry-run 零寫入。
 # ★ 席位登記簿的**唯一**解析:順位 HUB 導出 > EZ2_AIB_INSTANCE_HOME > 主艙。
@@ -1799,7 +1799,7 @@ def _mutate(rec):
 #     ② 沒有鎖:讀舊值到 rename 之間有競態窗,更新會被安靜地吃掉
 #     ③ 沒有 fsync:當機時 rename 過去的可能是空檔
 #   而席位檔正是**多寫者**的:開席寫一次、艦長列心跳每 5 秒寫一次。
-#   ★ 機制自 ACB session-beat.sh 重構(the maintainer 直令),只取寫入健壯性那一層;
+#   ★ 機制自舊載體的心跳寫入器重構(the maintainer 直令),只取寫入健壯性那一層;
 #     它的身份模型(binding schema / registry_verified)刻意不搬——那套已判
 #     廢除,且牴觸本檔上面那條 self_reported 紅線。理由全文見 atomic_json.py。
 try:
