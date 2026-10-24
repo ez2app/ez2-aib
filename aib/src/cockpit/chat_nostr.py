@@ -933,11 +933,11 @@ def revoke_wait(n):
     return 0 if n <= 0 else min(PRESENCE_GAP_S * 2 ** min(n - 1, 20), REVOKE_BACKOFF_MAX_S)
 
 
-def sent_at(rumor, now=None):
-    """rumor 的寄出時間(不亂數);比現在快超過 GF.FUTURE_SKEW_S ⇒ 當成現在(寄件端時鐘壞掉 / 故意填未來,不准卡住撤回)。"""
-    now = int(time.time() if now is None else now)
-    t = rumor.created_at().as_secs()
-    return now if t > now + GF.FUTURE_SKEW_S else t
+def sent_at(rumor):
+    """rumor 的寄出時間原值(不亂數)。同一位寄件人的快照 / 在線 / 撤回之間比先後只用這個:同一個時鐘,快慢一致。
+    不夾成收到時間 —— 夾了就變成比到達順序,亂序跨秒到時舊快照會復活(#318 r3,@abb89 定案)。
+    寄件端時鐘快很多時,未來時間的撤回靠收到時間過期(GF.REVOKE_BACKFILL_S),不會永遠卡。"""
+    return rumor.created_at().as_secs()
 ORPHAN_KEEP_S = float(os.environ.get("AIB_CHAT_ORPHAN_KEEP") or 60)   # 秒;查不到寄出帳的回條暫存多久(第 27.8 節)
 ORPHAN_MAX = 500
 REFUSED_MAX = 200                           # refused.json 最多記幾位(第 27.5 節)
@@ -1258,7 +1258,7 @@ class Receiver(object):
         rc, res = await self.sender._resolve(tags.get("aib-from"))
         if rc != 0 or res["seat"]["npub"] != from_npub:
             return
-        sent, now = sent_at(rumor), int(time.time())            # 寄出時間(NIP-59 外層會亂數往回,rumor 這個不會)
+        sent, now = sent_at(rumor), int(time.time())            # 寄出時間原值(NIP-59 外層會亂數往回,rumor 這個不會)
         cur = GF.read_room(self.root, owner) or {}
         cur_sent = GF.int_or0(cur.get("sent_at")) if now - GF.int_or0(cur.get("at")) < GF.ROOM_FRESH_S else 0
         if sent <= GF.read_revoked(self.root, owner).get("space", 0) or sent < cur_sent:

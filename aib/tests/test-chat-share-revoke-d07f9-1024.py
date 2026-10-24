@@ -16,14 +16,18 @@ O1–O4 亂序(第 1 輪審 M1;NIP-59 外層時間亂數往回,補收順序跟�
    O3 在線同理(兩個方向);O4 舊快照晚到不蓋新的
 F1 偽造(M2):第三方席用自己的金鑰、aib-from 填 Bob 的位址送撤回 ⇒ Andy 手上 Bob 的快照 / 在線格還在
 刀:K1 拿掉送出端撤回 ⇒ E1 紅;K2 收件端不刪 ⇒ E1 紅;K3 撤回不比 npub ⇒ F1 紅;K4 收快照不看撤回時間 ⇒ O2 紅;
-   K5 刪快照不比寄出時間 ⇒ O1 紅;K6 在線撤回不刪 ⇒ O3 紅;K7 不夾未來時間 ⇒ O5 紅;K8 陌生撤回不先擋 ⇒ S1 紅;
-   K9 退避指數不封頂 ⇒ S3 紅
-O5 未來時間(第 2 輪審 M1):未來快照 / 在線接正常撤回要刪;未來撤回接正常重開要收;10 分鐘內照收
+   K5 刪快照不比寄出時間 ⇒ O1 紅;K6 在線撤回不刪 ⇒ O3 紅;K8 陌生撤回不先擋 ⇒ S1 紅;K9 退避指數不封頂 ⇒ S3 紅;
+   K10 寄出時間夾成收到時間 ⇒ O5 紅;K11 撤回帳用寄出時間清 ⇒ O7 紅;K12 撤回不會過期 ⇒ O8 紅
+O5 寄件端時鐘快 1 小時 + 亂序跨秒(撤回先到、撤回前寄的舊快照 / 在線後到)⇒ 不復活(第 3 輪審,@abb89 定案:
+   同一位寄件人之間只比原始寄出時間,不夾值;收到時間只決定多久不再擋人)
+O7 寄件端時鐘慢 40 天:撤回帳不會一寫就被清,舊快照照丟
+O8 未來時間的撤回只擋 2 天 10 分(看收到時間);過了 ⇒ 重開的分享照收;同一個時鐘的未來快照接更晚的撤回照刪
 O6 手上那份過期(收到超過 7 天)不拿來擋新收的快照
 S1 陌生主人的撤回(手上沒他的資料、不是好友)⇒ 不查名冊、不寫 revoked.json(M2)
 S2 壞帳(值不是數字 / 列不是 dict / 整檔不是 dict)不炸;記帳失敗也先刪(L1、M2)
 S3 退避 n=2000 不溢位、封頂 1 小時(M3)
-E1 / O / F / K 要 AIB_TEST_NOSTR_VENV(aib test 會清 AIB_* ⇒ 全套裡跳過;要帶著另跑)。
+E1、K1、K2 要 AIB_TEST_NOSTR_VENV(真轉接程式 + 假中繼站;aib test 會清 AIB_* ⇒ 全套裡跳過,要帶著另跑)。
+O / F / S 與 K3–K12 只餵收件端真程式:有 venv 用 venv,沒有就用下面的假 nostr_sdk 模組照跑(第 3 輪審 L1)。
 """
 import importlib.util
 import json
@@ -85,7 +89,8 @@ class Pure(unittest.TestCase):
             self.assertTrue(GF.drop_room(root, A, upto=200))
             GF.note_revoked(root, A, "space", 300, now=400)
             GF.note_revoked(root, A, "space", 250, now=400)
-            self.assertEqual(GF.read_revoked(root, A), {"space": 300}, "只往大記")
+            self.assertEqual(GF.read_revoked(root, A, now=400), {"space": 300}, "只往大記")
+            self.assertEqual(GF.read_revoked(root, A, now=400 + GF.REVOKE_BACKFILL_S), {}, "收到超過 2 天 10 分不再擋")
             now = 10 ** 9
             for i in range(GF.REVOKED_MAX + 5):                   # 筆數上限:留最新的(第 2 輪審 M2)
                 GF.note_revoked(root, NK.npub(NK.pubkey_hex("%064x" % (1000 + i))), "share", now + i, now=now + i)
@@ -153,6 +158,10 @@ for op in ops:
         GF.write_room(root, B, {"v": 2, "people": []}, now=tm(op[1]), sent_at=tm(op[2]))
     elif kind == "seed-revoked":                                # 壞帳
         (root / "revoked.json").write_text(json.dumps(op[1]))
+    elif kind == "seed-rv":                                     # 手上已有一筆撤回:種類、寄出時間、收到時間
+        GF.note_revoked(root, B, op[1], tm(op[2]), now=tm(op[3]))
+    elif kind == "sleep":
+        time.sleep(op[1])
     elif kind == "break-ledger":
         def boom(*a, **k):
             raise OSError("ledger full")
@@ -174,16 +183,38 @@ print(json.dumps(out))
 '''
 NOSTR_VENV = os.environ.get("AIB_TEST_NOSTR_VENV") or ""
 VPY = str(Path(NOSTR_VENV) / "bin" / "python") if NOSTR_VENV else ""
+FAKE_NOSTR = '''
+class _Any:
+    def __init__(self, *a, **k):
+        pass
+
+    def __call__(self, *a, **k):
+        return _Any()
+
+    def __getattr__(self, name):
+        return _Any()
+
+    def __mro_entries__(self, bases):
+        return (object,)
 
 
-@unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
+def __getattr__(name):
+    return _Any()
+'''
+
+
 class Order(unittest.TestCase):
     def probe(self, *ops):
         td = Path(tempfile.mkdtemp(prefix="aib-revoke-p-"))
         self.addCleanup(shutil.rmtree, td, True)
         (td / "root").mkdir()
         env = dict(os.environ, HOME=str(td / "home"), EZ2_AIB_STATE_ROOT=str(td / "home" / ".ez2-aib"))
-        r = subprocess.run([VPY, "-B", "-c", PROBE, str(REPO / "src" / "cockpit"), str(td / "root"), json.dumps(ops)],
+        py = VPY
+        if not SB.HAVE_NOSTR:                    # 沒 venv:假 nostr_sdk(收件端這幾條路不碰它),照樣跑真程式
+            (td / "fake").mkdir()
+            (td / "fake" / "nostr_sdk.py").write_text(FAKE_NOSTR)
+            env["PYTHONPATH"], py = str(td / "fake"), sys.executable
+        r = subprocess.run([py, "-B", "-c", PROBE, str(REPO / "src" / "cockpit"), str(td / "root"), json.dumps(ops)],
                            capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout.strip().splitlines()[-1])
@@ -210,12 +241,23 @@ class Order(unittest.TestCase):
         got = self.probe(["room", "-300"], ["presence", "-300"], ["rv-space", "-200", "eve"], ["rv-share", "-200", "eve"])
         self.assertEqual((got["room"], got["world"]), (-300, [-300]), "第三方席冒 Bob 的位址就能刪 Andy 手上的資料")
 
-    def test_o5_future_time(self):
-        self.assertIsNone(self.probe(["room", "+1000000"], ["rv-space", "+0"])["room"], "未來快照擋掉了正常撤回")
-        self.assertEqual(self.probe(["rv-space", "+1000000"], ["room", "+5"])["room"], 5, "未來撤回擋掉了之後的重開")
-        self.assertEqual(self.probe(["presence", "+1000000"], ["rv-share", "+0"])["world"], [], "未來在線擋掉了撤回")
-        self.assertEqual(self.probe(["rv-share", "+1000000"], ["presence", "+5"])["world"], [5])
-        self.assertEqual(self.probe(["room", "+300"])["room"], 300, "時鐘差 10 分鐘內照收、照存")
+    def test_o5_fast_clock_out_of_order(self):
+        got = self.probe(["rv-space", "+3600"], ["sleep", 1.2], ["room", "+3500"])
+        self.assertIsNone(got["room"], "Bob 快 1 小時:撤回前寄的舊快照跨秒晚到又復活")
+        got = self.probe(["rv-share", "+3600"], ["sleep", 1.2], ["presence", "+3500"])
+        self.assertEqual(got["world"], [], "在線同理")
+        self.assertEqual(self.probe(["rv-space", "+3600"], ["room", "+3700"])["room"], 3700, "撤回後寄的照收")
+
+    def test_o7_slow_clock(self):
+        got = self.probe(["rv-space", "-3456000"], ["sleep", 1.2], ["room", "-3456100"])
+        self.assertEqual((got["room"], got["ledger"]), (None, True), "Bob 慢 40 天:撤回帳一寫就被清、舊快照被收下")
+
+    def test_o8_future_revoke_expires(self):
+        late = "-%d" % (2 * 86400 + 601)
+        self.assertEqual(self.probe(["seed-rv", "space", "+1000000", late], ["room", "+5"])["room"], 5,
+                         "未來時間的撤回收到超過 2 天 10 分還在擋重開")
+        self.assertIsNone(self.probe(["seed-rv", "space", "+1000000", "-100"], ["room", "+5"])["room"], "2 天內照擋")
+        self.assertIsNone(self.probe(["room", "+1000000"], ["rv-space", "+1000100"])["room"], "同一個時鐘:更晚的撤回照刪")
 
     def test_o6_stale_copy_does_not_block(self):
         got = self.probe(["seed-room", "-700000", "-100"], ["room", "-200"])
@@ -296,7 +338,6 @@ class Revoke(unittest.TestCase):
                         "封鎖後對方還看得到:%s %s" % (snap.exists(), cells()))
 
 
-@unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
 class Knife(unittest.TestCase):
     def _knife(self, rel, needle, replacement, cell):
         name = Path(__file__).name
@@ -307,11 +348,13 @@ class Knife(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅:" + cell + "\n" + r.stdout + r.stderr)
         self.assertIn("AssertionError", r.stdout + r.stderr, "紅要是斷言紅,不是炸掉:" + r.stdout + r.stderr)
 
+    @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(E1 要真轉接程式)")
     def test_k1_sender_no_revoke(self):
         self._knife("src/cockpit/chat_nostr.py",
                     'if await self._push_revoke(tgt, owner, mine_seats[0], "space", now):',
                     'if False:', "Revoke.test_e1_revoke")
 
+    @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(E1 要真轉接程式)")
     def test_k2_receiver_keeps(self):
         self._knife("src/cockpit/chat_nostr.py", "            GF.drop_room(self.root, owner, upto=at)\n",
                     "            pass\n", "Revoke.test_e1_revoke")
@@ -327,12 +370,23 @@ class Knife(unittest.TestCase):
                     "if ", "Order.test_o2_old_snapshot_late")
 
     def test_k5_drop_ignores_time(self):
-        self._knife("src/cockpit/dm_global_files.py", "        if rec and upto < int_or0(rec.get(\"sent_at\")) <= now + FUTURE_SKEW_S:\n",
+        self._knife("src/cockpit/dm_global_files.py",
+                    "        if rec and int_or0(rec.get(\"sent_at\")) > upto and now - int_or0(rec.get(\"at\")) < ROOM_FRESH_S:\n",
                     "        if False:\n", "Order.test_o1_old_revoke_late")
 
-    def test_k7_no_future_clamp(self):
-        self._knife("src/cockpit/chat_nostr.py", "    return now if t > now + GF.FUTURE_SKEW_S else t\n",
-                    "    return t\n", "Order.test_o5_future_time")
+    def test_k10_clamp_to_now(self):
+        self._knife("src/cockpit/chat_nostr.py", "    return rumor.created_at().as_secs()\n",
+                    "    t, now = rumor.created_at().as_secs(), int(time.time())\n    return now if t > now + 600 else t\n",
+                    "Order.test_o5_fast_clock_out_of_order")
+
+    def test_k11_purge_by_sent_time(self):
+        self._knife("src/cockpit/dm_global_files.py", 'int_or0(kv[1].get(k + "_at")) for k in ("space", "share")',
+                    'int_or0(kv[1].get(k)) for k in ("space", "share")', "Order.test_o7_slow_clock")
+
+    def test_k12_revoke_never_expires(self):
+        self._knife("src/cockpit/dm_global_files.py",
+                    '            if k in row and now - int_or0(row.get(k + "_at")) < REVOKE_BACKFILL_S}',
+                    "            if k in row}", "Order.test_o8_future_revoke_expires")
 
     def test_k8_no_cheap_check(self):
         self._knife("src/cockpit/chat_nostr.py", "        if not held and not (CR.is_friend(owner) or CR.is_mine(owner)):\n",

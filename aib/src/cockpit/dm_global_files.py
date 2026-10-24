@@ -838,13 +838,16 @@ def read_world(root):
 def note_world(root, owner, cabin, seats, now=None, power=None, sent_at=None):
     """收到一份 presence:{owner/cabin: {owner, cabin, presence_at, sent_at, seats:[{seat, state, now, step}], power}}。
     power = 對方那台的電源 / 睡眠設定(chat_power.clean_power 過的;舊版沒有 ⇒ None)。
-    sent_at = 對方寄出時間(rumor created_at,不亂數);比手上那格舊 ⇒ 不蓋(中繼站補收順序跟真實先後無關)。"""
+    sent_at = 對方寄出時間(rumor created_at 原值,同一位寄件人同一個時鐘);比手上那格舊 ⇒ 不蓋(中繼站補收順序跟真實先後無關)。
+    手上那格已過期(收到超過 WORLD_FRESH_S)就不拿來擋。"""
     now = int(time.time() if now is None else now)
     key = "%s/%s" % (owner, cabin)
 
     def fn(cur):
         cab = cur.setdefault("cabins", {})
-        if sent_at is not None and int_or0((cab.get(key) or {}).get("sent_at")) > sent_at:
+        old = cab.get(key) or {}
+        if sent_at is not None and now - int_or0(old.get("presence_at")) < WORLD_FRESH_S \
+                and int_or0(old.get("sent_at")) > sent_at:
             return
         cab[key] = {"owner": owner, "cabin": cabin, "presence_at": now, "seats": seats}
         if sent_at is not None:
@@ -857,14 +860,15 @@ def note_world(root, owner, cabin, seats, now=None, power=None, sent_at=None):
 
 
 def drop_world_owner(root, owner, upto=None, now=None):
-    """對方撤回在線分享:拿掉他所有艙的格。upto = 撤回的寄出時間 ⇒ 只拿掉寄出時間 <= upto 的格(沒記 sent_at 的舊格算 0;
-    寄出時間在未來 FUTURE_SKEW_S 以外的格照刪,不讓它擋掉撤回)。"""
+    """對方撤回在線分享:拿掉他所有艙的格。upto = 撤回的寄出時間(原值)⇒ 只留寄出時間比撤回新、而且還新鮮的格
+    (沒記 sent_at 的舊格算 0)。比先後只用同一位寄件人的原始時間,不夾值:夾成收到時間會變成比到達順序(#318 r3)。"""
     now = int(time.time() if now is None else now)
 
     def fn(cur):
         cab = cur.setdefault("cabins", {})
         for k in [k for k, v in cab.items() if v.get("owner") == owner
-                  and (upto is None or not upto < int_or0(v.get("sent_at")) <= now + FUTURE_SKEW_S)]:
+                  and not (upto is not None and int_or0(v.get("sent_at")) > upto
+                           and now - int_or0(v.get("presence_at")) < WORLD_FRESH_S)]:
             cab.pop(k, None)
     _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
 
@@ -897,12 +901,13 @@ def write_room(root, owner, snap, now=None, sent_at=None):
 
 def drop_room(root, owner, upto=None):
     """對方撤回空間分享(10-24 跨客戶驗收 6.7):刪掉他的快照。不在 / 壞名字 ⇒ 什麼都不做。
-    upto = 撤回的寄出時間 ⇒ 手上快照比撤回新(sent_at > upto)就留著(舊撤回晚到,不准刪掉重開的分享)。"""
+    upto = 撤回的寄出時間(原值)⇒ 手上快照比撤回新(sent_at > upto)而且還新鮮(收到不到 7 天)就留著
+    (舊撤回晚到,不准刪掉重開的分享)。"""
     if not NPUB_FULL_RE.match(owner or ""):
         return False
     if upto is not None:
         rec, now = read_room(root, owner), int(time.time())
-        if rec and upto < int_or0(rec.get("sent_at")) <= now + FUTURE_SKEW_S:
+        if rec and int_or0(rec.get("sent_at")) > upto and now - int_or0(rec.get("at")) < ROOM_FRESH_S:
             return False
     try:
         (Path(root) / "spaces" / (owner + ".json")).unlink()
@@ -939,10 +944,12 @@ def note_shared_sent(root, owner, kind, level):
     _locked_update(root, "shared-sent.json", fn, lambda: {"v": VERSION, "per": {}})
 
 
-# revoked.json:對方撤回的寄出時間({owner: {"space": ts, "share": ts}},只往大記)。
-#   之後收到寄出時間 <= 這個的快照 / 在線(中繼站補收、重送的舊信)⇒ 丟掉。
-#   最多 REVOKED_MAX 位、REVOKED_KEEP_S 前的清掉(NIP-59 補收最多往回 2 天,30 天綽綽有餘);壞值一律當 0。
-FUTURE_SKEW_S = 600                          # 寄件端時鐘最多快這麼多;再多 ⇒ 收件端當成「現在」
+# revoked.json:對方撤回({owner: {"space": 寄出時間原值, "space_at": 收到時間, "share": …, "share_at": …}})。
+#   寄出時間(只往大記)用來跟同一位寄件人的快照 / 在線比先後 —— 同一個時鐘,快慢一致,不夾值。
+#   收到時間只決定「多久不再擋人」:收到後 REVOKE_BACKFILL_S(NIP-59 補收最多往回 2 天 + 10 分)內,
+#   寄出時間 <= 撤回的快照 / 在線丟掉;過了就不擋(寄件端時鐘快很多時,未來時間的撤回最多擋 2 天,不會永遠卡)。
+#   最多 REVOKED_MAX 位、收到超過 REVOKED_KEEP_S 的清掉(都看收到時間:寄件端時鐘慢也不會一寫就被清);壞值一律當 0。
+REVOKE_BACKFILL_S = 2 * 86400 + 600
 REVOKED_MAX = 300
 REVOKED_KEEP_S = 30 * 86400
 
@@ -954,16 +961,22 @@ def int_or0(v):
         return 0
 
 
-def read_revoked(root, owner):
+def read_revoked(root, owner, now=None):
+    """⇒ {"space": 撤回寄出時間, "share": …},只列還在擋人的(收到不到 REVOKE_BACKFILL_S)。"""
+    now = int(time.time() if now is None else now)
     try:
         cur = json.loads((Path(root) / "revoked.json").read_text(encoding="utf-8"))
         row = (cur.get("per") or {}).get(owner) if isinstance(cur, dict) else None
     except (OSError, ValueError, AttributeError):
         return {}
-    return {k: int_or0(row.get(k)) for k in ("space", "share") if k in row} if isinstance(row, dict) else {}
+    if not isinstance(row, dict):
+        return {}
+    return {k: int_or0(row.get(k)) for k in ("space", "share")
+            if k in row and now - int_or0(row.get(k + "_at")) < REVOKE_BACKFILL_S}
 
 
 def note_revoked(root, owner, kind, ts, now=None):
+    """ts = 撤回的寄出時間(原值);now = 收到時間。比手上新才換(收到時間跟著換);舊撤回晚到不延長擋人。"""
     if not NPUB_FULL_RE.match(owner or "") or kind not in ("space", "share"):
         return
     now = int(time.time() if now is None else now)
@@ -972,8 +985,9 @@ def note_revoked(root, owner, kind, ts, now=None):
         per = cur.get("per") if isinstance(cur.get("per"), dict) else {}
         per = {k: v for k, v in per.items() if NPUB_FULL_RE.match(k) and isinstance(v, dict)}
         row = per.setdefault(owner, {})
-        row[kind] = max(int_or0(row.get(kind)), int_or0(ts))
-        top = lambda kv: max([int_or0(x) for x in kv[1].values()] or [0])  # noqa: E731
+        if int_or0(ts) > int_or0(row.get(kind)) or kind + "_at" not in row:
+            row[kind], row[kind + "_at"] = max(int_or0(ts), int_or0(row.get(kind))), now
+        top = lambda kv: max([int_or0(kv[1].get(k + "_at")) for k in ("space", "share")] or [0])  # noqa: E731
         keep = sorted((kv for kv in per.items() if now - top(kv) < REVOKED_KEEP_S), key=top, reverse=True)[:REVOKED_MAX]
         cur["per"] = dict(keep)
     _locked_update(root, "revoked.json", fn, lambda: {"v": VERSION, "per": {}})
