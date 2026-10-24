@@ -5184,9 +5184,9 @@
   "aib.chat.touchid_share_space_default": "aib: 공유 기본값을 접속 {level}, 공간 {space}(으)로 변경(모든 친구)",
   "aib.chat.share_space_need_target": "--space는 대상과 함께: aib chat share <친구> <단계> --space <단계>, 또는 --default <단계> --space <단계>",
   "aib.chat.share_space_one_target": "한 번에 한 대상만: 친구와 --default는 두 번에 나눠 주세요",
-  "aib.chat.help.connect": "상대와 한 번에 연결: 친구 추가 / 신청 수락 + 공유 설정(--share / --space / --open), 지문은 최대 한 번",
+  "aib.chat.help.connect": "상대와 한 번에 연결: 친구 추가 / 신청 수락 + 공유 설정(--share / --space / --open), 지문은 최대 한 번; 상대의 전체 <주인>/<선실>/<석>을 주세요",
   "aib.chat.touchid_connect": "aib: {who}와 연결: 친구 추가, 접속 {level}, 공간 {space}",
-  "aib.chat.connect_open_or_space": "--open에 공간(함장실)이 이미 포함됩니다. --space는 빼 주세요",
+  "aib.chat.connect_open_or_space": "--open에 접속(상태 줄)과 공간(함장실)이 이미 포함됩니다. --share / --space는 빼 주세요",
   "aib.chat.connect_share_failed": "친구는 추가했지만 공유는 바뀌지 않았습니다({why})",
   "aib.chat.connect_done": "{owner}와 연결됨: 접속 {share}, 공간 {space}",
   "aib.chat.share_write_failed": "공유를 저장하지 못했습니다({why})",
@@ -5194,5 +5194,8 @@
   "aib.chat.share_item_share": "접속",
   "aib.chat.share_item_space": "공간",
   "aib.chat.connect_now": "현재: 접속 {share}, 공간 {space}",
-  "aib.chat.connect_already": "이미 친구입니다 {owner}: 접속 {share}, 공간 {space}"
+  "aib.chat.connect_already": "이미 친구입니다 {owner}: 접속 {share}, 공간 {space}",
+  "aib.chat.list_sep": ", ",
+  "aib.chat.connect_request_failed": "연결 안 됨: 신청이 전송되지 않았습니다({why}). 친구 추가·공유 변경 없음 — 고친 뒤 다시 실행하세요",
+  "aib.chat.connect_pending": "친구 추가 {owner}: 접속 {share}, 공간 {space}; 신청을 전달 프로그램에 넘겼고 아직 확인 전입니다"
 }

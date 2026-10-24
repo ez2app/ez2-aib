@@ -20,8 +20,16 @@ C6 新好友 + --json、沒公開席 ⇒ stdout 只有一個 JSON:ok false、why
 C7 封鎖中 / 壞位址 ⇒ 門前就擋、不彈指紋;--json 回代碼(L2)
 C8 connect 寫一半失敗 ⇒ why share_failed、applied 照實(L3)
 C9 申請送出成功 ⇒ ok true、request {rc 0, why held}(L6)
+#320 第 2 輪審:
+C10 移除好友後單人分享等級一起清:share F status --space room → friend remove → connect F(不帶分享)⇒ 不彈指紋、等級回預設(M1)
+C11 申請沒送出 ⇒ 新加的好友撤掉;處理好(有公開席)重跑 ⇒ 真的送出(M2);非 JSON 不印「已連線」(M3)
+C12 rc 4(已交轉接程式、未確認)⇒ ok true、why request_pending、文字版不說失敗(M3)
+C13 --open 配 --share ⇒ 門前擋(M4);轉接程式沒開 + --open / 新好友 ⇒ bridge_off 門前擋(L1)
+C14 --open 寫一半失敗 ⇒ applied 由前後等級差算(L2);寫一半後連讀都失敗 ⇒ unknown、仍是一個 JSON(L3)
+C15 已是好友、對方又有申請 ⇒ 視窗不寫「加好友」(L4)
+B4 改 --json 斷言代碼(M5);B9 AIB_TOUCHID=0 真機路徑不提醒(L6)
 刀(複本):K1 --space 不寫進對象 ⇒ B1 紅;K2 不叫提醒 ⇒ B5 紅;K3 connect 不過門 ⇒ C3 紅;K4 真機不提醒 ⇒ B7 紅;
-   K5 視窗用預設等級 ⇒ C5 紅
+   K5 視窗用預設等級 ⇒ C5 紅;K6 移除好友不清等級 ⇒ C10 紅;K7 申請沒送出不撤好友 ⇒ C11 紅
 """
 import importlib.util
 import io
@@ -72,10 +80,14 @@ class Batch(OG.Base):
         self.assertEqual((CR.read_share(self.env)["default"], CR.read_space(self.env)["default"]), ("status", "none"))
 
     def test_b4_rejected_before_gate(self):
-        for argv in (("share", "--space", "island"), ("share", "--default", "online", "--space", "room"),
-                     ("share", FRIEND, "status", "--default", "online", "--space", "island")):
+        for argv, why in ((("share", "--space", "island"), "space_need_target"),
+                          (("share", "--default", "online", "--space", "room"), "bad_space"),
+                          (("share", FRIEND, "status", "--default", "online", "--space", "island"), "one_target"),
+                          (("share", FRIEND), "share_need_level")):
             rc, _out = self.run_cb(*argv)
             self.assertEqual(rc, 2, argv)
+            rc, out = self.run_cb(*(argv + ("--json",)))
+            self.assertEqual((rc, json.loads(out.strip())), (2, {"v": 1, "ok": False, "why": why}), argv)
         self.assertEqual(self.asked, [], "門之前就擋,不彈指紋")
 
     def test_b5_notify(self):
@@ -100,12 +112,24 @@ class Batch(OG.Base):
         seen = []
         self.CB.HUMAN_GATE["prove"] = None                       # 真機路徑:門自己挑 _gate_notify + seat_act.prove
         self.CB._gate_notify = lambda reason, env: seen.append(("notify", reason))
+        self.CB._gate_pops = lambda env: True                    # CI 是 Linux:平台一律注入
         sa = sys.modules.get("seat_act") or __import__("seat_act")
         with mock.patch.object(sa, "prove", lambda reason, env: (seen.append(("prove", reason)), ("touchid", None))[1]):
             rc, out = self.run_cb("share", FRIEND, "status")
         self.assertEqual(rc, 0, out)
         self.assertEqual([k for k, _r in seen], ["notify", "prove"], "真機要先提醒再跳指紋")
         self.assertEqual(seen[0][1], seen[1][1])
+
+    def test_b9_no_notify_when_touchid_off(self):
+        self.assertFalse(self.CB._gate_pops(dict(self.env, AIB_TOUCHID="0")))
+        seen = []
+        self.CB.HUMAN_GATE["prove"] = None
+        self.CB._gate_notify = lambda reason, env: seen.append(reason)
+        rc, _out = self.run_cb("share", FRIEND, "status")
+        self.env["AIB_TOUCHID"] = "0"
+        rc, out = self.run_cb("share", FRIEND, "status", "--json")
+        self.assertEqual((rc, json.loads(out.strip())["why"]), (3, "touchid_off"))
+        self.assertEqual(len(seen), 1 if sys.platform == "darwin" else 0, "touchid_off / 非 Mac 不准叫人去按指紋")
 
     def test_b8_partial_write(self):
         with mock.patch.object(CR, "set_space", side_effect=OSError("disk full")):
@@ -150,9 +174,11 @@ class Connect(OG.Base):
 
     def test_c2_defaults_no_prompt(self):
         new = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xc303))
-        rc, out = self.run_cb("connect", new)
+        with mock.patch.object(self.CB, "_my_published", lambda env: [{"cabin": "c1", "seat": "aaaa1"}]), \
+                mock.patch.object(OG.GF, "send_and_wait", lambda *x, **k: {"stage": "held", "rc": 0, "detail": None}):
+            rc, out = self.run_cb("connect", new)
         self.assertEqual(self.asked, [], "預設分享不彈指紋")
-        self.assertEqual(rc, 2, out)                            # 沒公開席 ⇒ 申請送不出,照實回
+        self.assertEqual(rc, 0, out)
         self.assertTrue(CR.is_friend(new, self.env))
         self.assertEqual((CR.share_level(new, self.env), CR.space_level(new, self.env)), ("online", "island"))
 
@@ -188,6 +214,93 @@ class Connect(OG.Base):
         self.assertEqual(rc, 2, out)
         got = json.loads(out.strip())                           # 整段就是一個 JSON
         self.assertEqual((got["ok"], got["why"], got["request"]), (False, "request_failed", {"rc": 2, "why": "no_seat"}))
+
+    def _published(self, stage="held", rc=0):
+        sent = []
+
+        def saw(*x, **k):
+            sent.append(1)
+            return {"stage": stage, "rc": rc, "detail": None}
+        return sent, (mock.patch.object(self.CB, "_my_published", lambda env: [{"cabin": "c1", "seat": "aaaa1"}]),
+                      mock.patch.object(OG.GF, "send_and_wait", saw))
+
+    def test_c10_remove_forgets_levels(self):
+        rc, out = self.run_cb("share", FRIEND, "status", "--space", "room")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.run_cb("friend", "remove", FRIEND)[0], 0)
+        self.gate(ok=True, seat=True)                            # 席位來打:不准不按指紋就恢復 status / room
+        self.asked.clear()
+        sent, (p1, p2) = self._published()
+        with p1, p2:
+            rc, out = self.run_cb("connect", FRIEND, "--json")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.asked, [])
+        got = json.loads(out.strip())
+        self.assertEqual((got["share"], got["space"]), ("online", "island"), "移除後的舊單人分享被席位悄悄恢復")
+        CR.add_friend(FRIEND, None, self.env, kind="blocks")      # 封鎖也清
+        CR.remove_friend(FRIEND, self.env, "blocks")
+        self.assertNotIn(FRIEND, CR.read_share(self.env)["per"])
+
+    def test_c11_failed_request_retried(self):
+        new = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xcb11))
+        rc, out = self.run_cb("connect", new)
+        self.assertEqual(rc, 2, out)
+        self.assertNotIn("已連線", out, "申請沒送到不准說已連線")
+        self.assertIn("沒連上", out)
+        self.assertFalse(CR.is_friend(new, self.env), "申請沒送出 ⇒ 新加的好友要撤掉")
+        sent, (p1, p2) = self._published()
+        with p1, p2:
+            rc, out = self.run_cb("connect", new, "--json")
+        self.assertEqual((rc, sent), (0, [1]), "重跑要真的補送申請:" + out)
+        self.assertTrue(json.loads(out.strip())["ok"])
+
+    def test_c12_pending_is_not_failure(self):
+        new = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xcb12))
+        sent, (p1, p2) = self._published(stage="claimed", rc=4)
+        with p1, p2:
+            rc, out = self.run_cb("connect", new, "--json")
+        got = json.loads(out.strip())
+        self.assertEqual((rc, got["ok"], got["request"]["why"]), (4, True, "request_pending"))
+        with p1, p2:
+            rc, out = self.run_cb("connect", OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xcb13)))
+        self.assertIn("還沒確認", out)
+        self.assertNotIn("沒連上", out)
+
+    def test_c13_open_conflicts_and_bridge_off(self):
+        rc, out = self.run_cb("connect", self.OTHER, "--open", "--share", "off", "--json")
+        self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "open_or_space"))
+        with mock.patch.object(OG.GF, "bridge_alive", lambda root: False):
+            for argv in (("connect", FRIEND, "--open", "--json"), ("connect", self.OTHER, "--json")):
+                rc, out = self.run_cb(*argv)
+                self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "bridge_off"), argv)
+        self.assertEqual(self.asked, [], "門前就擋")
+
+    def test_c14_open_partial(self):
+        import chat_visit as CVI
+        real = CR.set_space
+
+        def boom(*x, **k):
+            raise OSError("disk full")
+        with mock.patch.object(CR, "set_space", boom):
+            rc, out = self.run_cb("connect", FRIEND, "--open", "--json")
+        got = json.loads(out.strip())
+        self.assertEqual((rc, got["why"], got["applied"], got["share"]), (2, "share_failed", ["share"], "status"))
+        self.assertIs(CR.set_space, real)
+        with mock.patch.object(CR, "share_level", wraps=CR.share_level) as sl:
+            def boom2(*x, **k):
+                sl.side_effect = OSError("gone")                 # 寫一半之後連讀都壞
+                raise OSError("disk full")
+            with mock.patch.object(CVI, "open_to", boom2):
+                rc, out = self.run_cb("connect", FRIEND, "--open", "--json")
+        got = json.loads(out.strip())                            # 連讀都失敗:仍是一個 JSON
+        self.assertEqual((got["why"], got["share"]), ("share_failed", "unknown"))
+
+    def test_c15_known_with_request(self):
+        OG.GF.add_request(self.root, {"owner": FRIEND, "msgid": OG.GF.new_msgid(), "display_name": "Pro", "note": ""},
+                          every=0)
+        rc, out = self.run_cb("connect", FRIEND, "--share", "status", "--json")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("加好友", self.asked[0], "已是好友 ⇒ 視窗不寫加好友")
 
     def test_c7_rejected_before_gate(self):
         bad = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xc707))
@@ -238,8 +351,22 @@ class Knife(unittest.TestCase):
         self._knife("        notify(reason, env)\n", "        pass\n", "Batch.test_b5_notify")
 
     def test_k4_real_path_silent(self):
-        self._knife('    notify = HUMAN_GATE["notify"] or (_gate_notify if HUMAN_GATE["prove"] is None else None)\n',
+        self._knife('    notify = HUMAN_GATE["notify"] or (_gate_notify if HUMAN_GATE["prove"] is None and _gate_pops(env) else None)\n',
                     '    notify = HUMAN_GATE["notify"]\n', "Batch.test_b7_real_path_notifies_first")
+
+    def test_k6_remove_keeps_levels(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_roster.py", "            _forget_levels(owner, env)\n", "            pass\n",
+                        tests=(name, "test-chat-open-touchid-d07f9-1021.py")) as root:
+            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), "Connect.test_c10_remove_forgets_levels"],
+                            cwd=str(root), max_procs=60, timeout=180)
+        self.assertIsNone(r.tripped)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k7_failed_request_keeps_friend(self):
+        self._knife("                CR.remove_friend(owner, env)  # 申請沒送出去 ⇒ 這次新加的好友撤掉,重跑才會再送\n",
+                    "                pass\n", "Connect.test_c11_failed_request_retried")
 
     def test_k5_window_uses_default(self):
         self._knife('        cur_sp = CR.space_level(owner, env) if known else ',

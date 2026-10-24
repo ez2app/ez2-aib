@@ -5184,9 +5184,9 @@
   "aib.chat.touchid_share_space_default": "aib:分享的預設改成 在線 {level}、空間 {space}(全部好友)",
   "aib.chat.share_space_need_target": "--space 要跟對象一起給:aib chat share <好友> <等級> --space <等級>,或 --default <等級> --space <等級>",
   "aib.chat.share_space_one_target": "一次只改一個對象:好友和 --default 請分兩次",
-  "aib.chat.help.connect": "跟對方連線，一次完成:加好友 / 同意申請 + 分享設定(--share / --space / --open),最多按一次指紋",
+  "aib.chat.help.connect": "跟對方連線，一次完成:加好友 / 同意申請 + 分享設定(--share / --space / --open),最多按一次指紋;對方要給完整的 <主人>/<艙>/<席>",
   "aib.chat.touchid_connect": "aib:跟 {who} 連線：加好友、在線 {level}、空間 {space}",
-  "aib.chat.connect_open_or_space": "--open 已含空間(艦長室),不要再給 --space",
+  "aib.chat.connect_open_or_space": "--open 已含在線(狀態列)與空間(艦長室),不要再給 --share / --space",
   "aib.chat.connect_share_failed": "好友已加，但分享沒改成({why})",
   "aib.chat.connect_done": "已連線 {owner}:在線 {share}、空間 {space}",
   "aib.chat.share_write_failed": "分享沒存成({why})",
@@ -5194,5 +5194,8 @@
   "aib.chat.share_item_share": "在線",
   "aib.chat.share_item_space": "空間",
   "aib.chat.connect_now": "目前：在線 {share}、空間 {space}",
-  "aib.chat.connect_already": "已經是好友 {owner}:在線 {share}、空間 {space}"
+  "aib.chat.connect_already": "已經是好友 {owner}:在線 {share}、空間 {space}",
+  "aib.chat.list_sep": "、",
+  "aib.chat.connect_request_failed": "沒連上：申請沒送出去({why});好友沒加、分享沒改，處理好再打一次",
+  "aib.chat.connect_pending": "已加好友 {owner}:在線 {share}、空間 {space};申請已交給轉接程式，還沒確認送到"
 }

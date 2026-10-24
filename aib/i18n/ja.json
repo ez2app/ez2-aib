@@ -5184,9 +5184,9 @@
   "aib.chat.touchid_share_space_default": "aib:共有の既定を 在席 {level}、スペース {space} に変更(すべての友だち)",
   "aib.chat.share_space_need_target": "--space は対象と一緒に指定:aib chat share <友だち> <レベル> --space <レベル>、または --default <レベル> --space <レベル>",
   "aib.chat.share_space_one_target": "一度に一つの対象だけ:友だちと --default は二回に分けてください",
-  "aib.chat.help.connect": "相手と一度で接続:友だち追加 / 申請承認 + 共有設定(--share / --space / --open)、指紋は最大一回",
+  "aib.chat.help.connect": "相手と一度で接続:友だち追加 / 申請承認 + 共有設定(--share / --space / --open)、指紋は最大一回。相手の <主>/<艙>/<席> を全部指定",
   "aib.chat.touchid_connect": "aib:{who} と接続:友だち追加、在席 {level}、スペース {space}",
-  "aib.chat.connect_open_or_space": "--open にはスペース(艦長室)が含まれます。--space は不要です",
+  "aib.chat.connect_open_or_space": "--open にはオンライン(ステータス行)とスペース(艦長室)が含まれます。--share / --space は不要です",
   "aib.chat.connect_share_failed": "友だちは追加しましたが、共有は変更できませんでした({why})",
   "aib.chat.connect_done": "{owner} と接続しました:在席 {share}、スペース {space}",
   "aib.chat.share_write_failed": "共有を保存できませんでした({why})",
@@ -5194,5 +5194,8 @@
   "aib.chat.share_item_share": "オンライン",
   "aib.chat.share_item_space": "空間",
   "aib.chat.connect_now": "現在:オンライン {share}、空間 {space}",
-  "aib.chat.connect_already": "すでに友だちです {owner}:オンライン {share}、空間 {space}"
+  "aib.chat.connect_already": "すでに友だちです {owner}:オンライン {share}、空間 {space}",
+  "aib.chat.list_sep": "、",
+  "aib.chat.connect_request_failed": "接続できませんでした:申請が送れていません({why})。友だち追加・共有変更はしていません。直してからもう一度",
+  "aib.chat.connect_pending": "友だちに追加 {owner}:オンライン {share}、空間 {space}。申請は転送プログラムに渡しました(未確認)"
 }
