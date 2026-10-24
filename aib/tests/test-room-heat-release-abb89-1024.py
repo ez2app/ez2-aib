@@ -9,8 +9,14 @@ R4 子孫裡有一支不符判法(指令列不在暫存根)⇒ 不在 pids、釋
 R5 開著 *.lock ⇒ held(holds_lock)
 R6 pid 重用:開始時間對不上 ⇒ 不送訊號、算 failed
 R7 --auto 10 分鐘上限到了 ⇒ auto_limit、不殺
-R8 自動化 Chrome 的 --user-data-dir 不在暫存根(真人的除錯用 Chrome)⇒ 不是候選
-刀(複本):K1 開始時間不比 ⇒ R6 紅;K2 拿掉主機動作排除 ⇒ R3 紅;K3 子孫不檢查暫存根 ⇒ R4 紅
+R8 自動化 Chrome 的 --user-data-dir 不在暫存根(真人的除錯用 Chrome)、沒有真的自動化旗標、--app= 視窗 ⇒ 不是候選
+R9 路徑把戲(#319 r3 High):家目錄裡的 /tmp/、/tmp/../、暫存路徑跟測試路徑分在兩個引數、沙盒世界、
+   艦長室設定檔 ⇒ 都不是候選;正控制組:暫存根底下的 tests/test-x.py ⇒ 是
+R10 暫存根不讀環境變數;/ 與家目錄注入也會被丟掉
+R11 --auto 額度:壞行逐行跳過、負數夾 0、讀不了 ⇒ 算滿
+R12 行程在送訊號前自己結束 ⇒ 不算失敗;R13 剛起不到 MIN_AGE_S ⇒ 不是候選
+刀(複本):K1 開始時間不比 ⇒ R6 紅;K2 拿掉主機動作排除 ⇒ R3 紅;K3 子孫不檢查暫存根 ⇒ R4 紅;
+K4 暫存根改回子字串比對 ⇒ R9 紅;K5 拿掉 *.lock 排除 ⇒ R5 紅
 """
 import json
 import os
@@ -108,7 +114,12 @@ class Orphans(unittest.TestCase):
         return next((c for c in cands if pid in c["pids"] or c["pids"][:1] == [pid]), None)
 
     def scan(self):
-        return RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: False)
+        return RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0)
+
+    def kinds(self, pid, args, **kw):
+        rows = [(pid, 1, os.getuid(), 1.0, 1024, "x", args)]
+        cands, _ = RR.scan(rows=rows, owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0, **kw)
+        return [c["kind"] for c in cands]
 
     def test_r1_release_orphan(self):
         pid, _d = self.spawn("import time\ntime.sleep(300)\n")
@@ -176,7 +187,7 @@ class Orphans(unittest.TestCase):
             time.sleep(300)
         """)
         time.sleep(0.5)
-        cands, held = RR.scan(owner_of=lambda p: (None, None))
+        cands, held = RR.scan(owner_of=lambda p: (None, None), min_age_s=0)
         self.assertIsNone(self.find(pid, cands))
         self.assertIn("holds_lock", [h["why"] for h in held])
 
@@ -198,14 +209,71 @@ class Orphans(unittest.TestCase):
 
     def test_r8_human_debug_chrome_not_candidate(self):
         pid, _d = self.spawn("import time\ntime.sleep(300)\n")
-        args = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222 --user-data-dir=/Users/u/ChromeDev"
-        rows = [(pid, 1, os.getuid(), 1.0, 1024, "Google Chrome", args)]
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        prof = tempfile.gettempdir() + "/puppeteer_dev_profile-x"
+        self.assertEqual(self.kinds(pid, chrome + " --headless --remote-debugging-port=9222 --user-data-dir=/Users/u/ChromeDev"), [])
+        self.assertEqual(self.kinds(pid, chrome + " --remote-debugging-port=9222 --user-data-dir=" + prof), [])  # 沒自動化旗標
+        self.assertEqual(self.kinds(pid, chrome + " --headless --app=http://x --user-data-dir=" + prof), [])
+        self.assertEqual(self.kinds(pid, chrome + " --headless --remote-debugging-port=9222 --user-data-dir=" + prof),
+                         ["chrome_orphan"])
+
+    def test_r9_path_tricks(self):
+        pid, d = self.spawn("import time\ntime.sleep(300)\n")
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless --remote-debugging-port=1"
+        tmp = os.path.realpath(tempfile.gettempdir())
+        bad = [
+            "python3 /Users/u/proj/tmp/tests/test-live.py",                       # 家目錄裡剛好有一層 tmp/
+            "python3 /tmp/../Users/u/aib-x/tests/test-x.py",                      # .. 走出暫存根
+            "python3 --log /tmp/x.log /Users/u/aib-plugins/tests/test-x.py",      # 暫存路徑跟測試路徑分在兩個引數
+            "python3 %s/aib-e2e-w1/tests/test-x.py" % tmp,                        # 沙盒世界這一版不收
+            "python3 %s/aib-power-ask-x/serve.py" % tmp,                          # 暫存根底下但不是測試腳本
+            chrome + " --user-data-dir=/Users/u/work/tmp/prof",
+            chrome + " --user-data-dir=/tmp/../Users/u/Library/Application Support/Google/Chrome",
+            chrome + " --user-data-dir=%s/st/captain-room/browser-profile" % tmp,   # 暫存狀態根下的艦長室視窗
+        ]
+        link = d / "out-link"
+        link.symlink_to("/Users")
+        bad.append("python3 %s/u/tests/test-x.py" % link)                         # symlink 走出暫存根
+        for args in bad:
+            self.assertEqual(self.kinds(pid, args), [], args)
+        self.assertEqual(self.kinds(pid, "python3 %s/tests/test-x.py" % d), ["test_orphan"])     # 正控制組
+
+    def test_r10_roots_not_from_env(self):
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n")
+        home = os.path.realpath(os.path.expanduser("~"))
+        with mock.patch.dict(os.environ, {"AIB_HEAT_TEMP_ROOTS": "/:" + home}):
+            self.assertNotIn("/", RR.temp_roots())
+            self.assertEqual(self.kinds(pid, "python3 %s/r/tests/test-x.py" % home), [])
+        for r in ("/", home, os.path.dirname(home), "/Users"):
+            self.assertNotIn(os.path.realpath(r).rstrip("/") + "/", RR.temp_roots(extra=(r,)), r)
+
+    def test_r11_auto_quota_fails_closed(self):
+        log = Path(RR.released_path())
+        log.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        log.write_text(json.dumps({"t": now - 60, "mode": "auto", "n_pids": 5}) + "\n{broken\n"
+                       + json.dumps({"t": now - 30, "mode": "auto", "n_pids": -1000}) + "\n"
+                       + json.dumps({"t": now - 20, "mode": "auto", "n_pids": 3}) + "\n", encoding="utf-8")
+        self.assertEqual(RR._auto_used(now), 8)
+        log.unlink()
+        log.mkdir()                                              # 讀不了 ⇒ 當作額度用完
+        self.assertEqual(RR._auto_used(now), RR.AUTO_MAX_PER_WINDOW)
+
+    def test_r12_already_gone_not_failed(self):
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n")
+        start = RR.identity(pid)[2]
+        os.kill(pid, signal.SIGKILL)
+        for _ in range(40):
+            if RR.identity(pid) is None:
+                break
+            time.sleep(0.05)
+        self.assertEqual(RR._kill_one({"pids": [pid], "starts": {str(pid): start}}, os.getuid(), wait_s=0.5), (0, 0))
+
+    def test_r13_too_young(self):
+        pid, d = self.spawn("import time\ntime.sleep(300)\n")
+        rows = [(pid, 1, os.getuid(), 1.0, 1024, "x", "python3 %s/tests/test-fake.py" % d)]
         cands, _ = RR.scan(rows=rows, owner_of=lambda p: (None, None), lsof=lambda pids: False)
         self.assertEqual(cands, [])
-        tmp_args = args.replace("/Users/u/ChromeDev", tempfile.gettempdir() + "/puppeteer_dev_profile-x")
-        cands, _ = RR.scan(rows=[(pid, 1, os.getuid(), 1.0, 1024, "Google Chrome", tmp_args)],
-                           owner_of=lambda p: (None, None), lsof=lambda pids: False)
-        self.assertEqual([c["kind"] for c in cands], ["chrome_orphan"])
 
 
 class Knives(unittest.TestCase):
@@ -219,16 +287,24 @@ class Knives(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 
     def test_k1_no_start_check(self):
-        self._knife("    return bool(ident) and ident[0] == me and ident[2] == start\n",
-                    "    return bool(ident) and ident[0] == me\n", "Orphans.test_r6_pid_reuse_guard")
+        self._knife("        if ident[0] != me or ident[2] != c[\"starts\"][str(p)]:\n",
+                    "        if ident[0] != me:\n", "Orphans.test_r6_pid_reuse_guard")
 
     def test_k2_no_host_check(self):
         self._knife("        if any(HOST_RE.search(by[p][6]) for p in everyone if p in by):\n",
                     "        if False:\n", "Orphans.test_r3_ssh_child_held")
 
     def test_k3_children_not_checked(self):
-        self._knife("                            and _under_temp(by[p][6], roots)]\n",
+        self._knife("                            and _under(_script(by[p][6]), roots) and not room_heat.SANDBOX_RE.search(by[p][6])]\n",
                     "                            ]\n", "Orphans.test_r4_foreign_child_survives")
+
+    def test_k4_substring_roots(self):
+        self._knife("    return any(rp.startswith(r) for r in roots)\n",
+                    "    return any(r in path for r in roots)\n", "Orphans.test_r9_path_tricks")
+
+    @unittest.skipUnless(shutil.which("lsof"), "沒有 lsof")
+    def test_k5_no_lock_check(self):
+        self._knife("        if (lsof or _holds_lock)(everyone):\n", "        if False:\n", "Orphans.test_r5_lock_held")
 
 
 if __name__ == "__main__":

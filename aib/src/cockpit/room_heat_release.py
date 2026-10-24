@@ -6,8 +6,12 @@
   aib room heat release --all-safe [--auto] [--dry-run] [--json]
 
 白名單(這一版兩種):
-  chrome_orphan  自動化旗標的瀏覽器主行程 + 父行程 1 + --user-data-dir 在暫存根底下(真人用除錯埠開的 Chrome 不算)
-  test_orphan    父行程 1、指令列帶暫存根底下的測試 / 審查員暫存路徑;它的子孫也要各自符合判法才一起收
+  chrome_orphan  帶真的自動化旗標(--headless / --enable-automation / --remote-debugging-pipe)的瀏覽器主行程 + 父行程 1
+                 + --user-data-dir realpath 後在暫存根底下;--app= 視窗、艦長室的設定檔不算(真人開著的)
+  test_orphan    父行程 1、跑的腳本本身 realpath 後在暫存根底下、而且是 tests/test-*.py|js;
+                 它的子孫也要各自的腳本在暫存根底下才一起收
+  兩種都要活過 MIN_AGE_S(剛起的可能還有人在等);沙盒世界(SANDBOX_RE)這一版不收。
+  判斷一律把指令列拆成引數、realpath 後比前綴,不做整串子字串比對(#319 r3:/x/tmp/、/tmp/../、引數分開都繞得過)。
 一律不收(只顯示在 held):行程或子孫有 ssh / scp / rsync、正在對主機動手的 aib 指令、開著 *.lock 檔 —— 殺在中間主機會半套。
 
 安全:
@@ -16,12 +20,13 @@
   - 不殺自己與自己的祖先行程。
   - 每次釋放寫一筆 room/heat-released.jsonl(時間、種類、主人、省下多少、手動 / 自動),不寫指令列。
   - --auto(付費自動釋放用):10 分鐘最多收 AUTO_MAX_PER_WINDOW 個,超過 ⇒ auto_limit 停手。
-錯誤代碼:bad_candidate candidate_changed not_releasable release_failed partial auto_limit(detail 是契約)。
+錯誤代碼:bad_candidate candidate_changed not_releasable release_failed partial auto_limit log_failed(detail 是契約)。
 """
 from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import fcntl
 import hashlib
 import json
 import os
@@ -39,21 +44,68 @@ if HERE not in sys.path:
 TERM_WAIT_S = 5.0
 AUTO_WINDOW_S = 600
 AUTO_MAX_PER_WINDOW = 20
+MIN_AGE_S = 120
 ID_RE = re.compile(r"^[0-9a-f]{16}$")
 HOST_RE = re.compile(r"(^|[\s/])(ssh|scp|rsync|sftp)(\s|$|\.)|\bhostguard\b|\bsecret\s+ask\b|--push\b")
-TEST_MARK_RE = re.compile(r"/tests/test-[^\s/]*\.py|/scratchpad/|/aib-[a-z0-9-]+/")
+TEST_SCRIPT_RE = re.compile(r"/tests/test[-_][\w.-]*\.(py|js|mjs)$")
+SCRIPT_RE = re.compile(r"\.(py|js|mjs|cjs|sh)$")
+AUTOMATION_FLAGS = ("--headless", "--enable-automation", "--remote-debugging-pipe")
 
 
-def temp_roots():
-    """暫存根:系統暫存夾(含 realpath)、/tmp、/private/tmp。可用 AIB_HEAT_TEMP_ROOTS 加(冒號分隔,測試用)。"""
-    roots = {tempfile.gettempdir(), "/tmp", "/private/tmp"}
-    roots |= {os.path.realpath(r) for r in list(roots)}
-    roots |= {r for r in os.environ.get("AIB_HEAT_TEMP_ROOTS", "").split(":") if r}
-    return sorted(r.rstrip("/") + "/" for r in roots if r)
+def temp_roots(extra=()):
+    """暫存根(realpath、結尾帶 /):系統暫存夾、/tmp、/private/tmp。不讀環境變數(設錯一個就把白名單放大,#319 r3);
+    測試用 extra 注入;太淺的(/、家目錄、家目錄的上層、只有一層)一律丟掉。"""
+    home = os.path.realpath(os.path.expanduser("~"))
+    out = set()
+    for r in [tempfile.gettempdir(), "/tmp", "/private/tmp", *extra]:
+        rp = os.path.realpath(r)
+        if rp.count("/") < 2 or rp == home or home.startswith(rp.rstrip("/") + "/"):
+            continue
+        out.add(rp.rstrip("/") + "/")
+    return sorted(out)
 
 
-def _under_temp(s, roots=None):
-    return any(r in s for r in (roots or temp_roots()))
+def _under(path, roots):
+    """path realpath 後在某個暫存根底下(前綴比對,不是子字串)。"""
+    if not path or not path.startswith("/"):
+        return False
+    rp = os.path.realpath(path)
+    return any(rp.startswith(r) for r in roots)
+
+
+def _argv(args):
+    """指令列拆成引數;--x=值 取等號後面。帶空白的路徑會被拆開 ⇒ 判不過 ⇒ 不收(往不收那邊錯)。"""
+    out = []
+    for tok in (args or "").split():
+        if tok.startswith("-") and "=" in tok:
+            tok = tok.split("=", 1)[1]
+        out.append(tok)
+    return out
+
+
+def _script(args):
+    """跑的腳本:argv[0] 之後第一個像腳本的引數;沒有 ⇒ argv[0] 本身。"""
+    av = _argv(args)
+    for tok in av[1:]:
+        if tok.startswith("/") and SCRIPT_RE.search(tok):
+            return tok
+    return av[0] if av else ""
+
+
+def _is_test_orphan(args, roots):
+    sc = _script(args)
+    return bool(sc) and _under(sc, roots) and bool(TEST_SCRIPT_RE.search(os.path.realpath(sc)))
+
+
+def _is_chrome_orphan(args, roots):
+    import chrome_orphans
+    if not chrome_orphans.is_automation_main(args):
+        return False
+    toks = args.split()
+    if any(t.startswith("--app=") for t in toks) or not any(t.split("=", 1)[0] in AUTOMATION_FLAGS for t in toks):
+        return False
+    udd = chrome_orphans.user_data_dir(args) or ""
+    return _under(udd, roots) and "/captain-room/" not in os.path.realpath(udd) + "/"
 
 
 # ---------- 行程身分(uid + 開始時間到微秒)----------
@@ -149,8 +201,8 @@ def _holds_lock(pids, run=None):
     return any(ln.startswith("n") and ln.rstrip().endswith(".lock") for ln in (out or "").splitlines())
 
 
-def scan(rows=None, run=None, owner_of=None, lsof=None, now=None):
-    """→ (candidates, held)。rows 照 room_heat.list_procs 的格式;owner 只拿來顯示。"""
+def scan(rows=None, run=None, owner_of=None, lsof=None, now=None, roots=None, min_age_s=MIN_AGE_S):
+    """→ (candidates, held)。rows 照 room_heat.list_procs 的格式;owner 只拿來顯示;roots 只給測試注入。"""
     import room_heat
     import chrome_orphans
     rows = room_heat.list_procs(run) if rows is None else rows
@@ -158,7 +210,7 @@ def scan(rows=None, run=None, owner_of=None, lsof=None, now=None):
         return None, None
     now = time.time() if now is None else now
     me = os.getuid()
-    roots = temp_roots()
+    roots = temp_roots() if roots is None else roots
     by = {r[0]: r for r in rows}
     kids = _children(rows)
     protected = _protected()
@@ -166,13 +218,9 @@ def scan(rows=None, run=None, owner_of=None, lsof=None, now=None):
     for pid, ppid, uid, _cpu, _rss, _name, args in rows:
         if uid != me or ppid != 1 or pid in protected:
             continue
-        kind = None
-        if chrome_orphans.is_automation_main(args):
-            udd = chrome_orphans.user_data_dir(args) or ""
-            if udd and _under_temp(udd if udd.endswith("/") else udd + "/", roots):
-                kind = "chrome_orphan"
-        elif _under_temp(args, roots) and TEST_MARK_RE.search(args):
-            kind = "test_orphan"
+        if room_heat.SANDBOX_RE.search(args):          # 沙盒世界要另外判有沒有人在用,下一張
+            continue
+        kind = "chrome_orphan" if _is_chrome_orphan(args, roots) else ("test_orphan" if _is_test_orphan(args, roots) else None)
         if not kind:
             continue
         desc = _descendants(pid, kids)
@@ -193,9 +241,9 @@ def scan(rows=None, run=None, owner_of=None, lsof=None, now=None):
             pids = [pid]                       # 主行程收了,它的 helper 跟著結束
         else:                                   # 子孫要各自符合判法(同帳號、指令列在暫存根底下)才一起收
             pids = [pid] + [p for p in desc if p in by and by[p][2] == me and p not in protected
-                            and _under_temp(by[p][6], roots)]
+                            and _under(_script(by[p][6]), roots) and not room_heat.SANDBOX_RE.search(by[p][6])]
         ident = identity(pid)
-        if not ident or ident[0] != me or ident[1] != 1:
+        if not ident or ident[0] != me or ident[1] != 1 or now - ident[3] < min_age_s:
             continue
         idents = {p: identity(p) for p in pids}
         pids = [p for p in pids if idents.get(p) and idents[p][0] == me]
@@ -221,10 +269,14 @@ def _same(pid, start, me):
 
 
 def _kill_one(c, me, wait_s=TERM_WAIT_S):
-    """回 (killed, failed)。每個 pid 送訊號前都再比一次身分;對不上的不碰、算 failed。killed 只算我們送過訊號而且結束了的。"""
+    """回 (killed, failed)。每個 pid 送訊號前都再比一次身分:已經不在 ⇒ 不算失敗也不算收;
+    還在但 uid / 開始時間對不上(pid 重用)⇒ 不碰、算 failed。killed 只算我們送過訊號而且結束了的。"""
     signaled, failed = [], 0
     for p in c["pids"]:
-        if not _same(p, c["starts"][str(p)], me):
+        ident = identity(p)
+        if ident is None:
+            continue
+        if ident[0] != me or ident[2] != c["starts"][str(p)]:
             failed += 1
             continue
         try:
@@ -246,6 +298,7 @@ def _kill_one(c, me, wait_s=TERM_WAIT_S):
                 os.kill(p, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
+    still = []
     for _ in range(20):
         still = [p for p in signaled if _same(p, c["starts"][str(p)], me)]
         if not still:
@@ -263,22 +316,63 @@ def _log(rec, environ=None):
     path = released_path(environ)
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def _auto_used(now, environ=None):
+    """最近 10 分鐘自動收了幾個。壞行逐行跳過(不讓一行壞掉就把額度歸零);n_pids 夾在 0 以上;
+    檔案存在卻讀不了 ⇒ 回額度上限(往不收那邊錯)。"""
     try:
-        with open(released_path(environ), encoding="utf-8") as fh:
-            rows = [json.loads(x) for x in fh if x.strip()]
-    except (OSError, ValueError):
+        fh = open(released_path(environ), encoding="utf-8")
+    except FileNotFoundError:
         return 0
-    return sum(int(r.get("n_pids") or 0) for r in rows
-               if r.get("mode") == "auto" and now - float(r.get("t") or 0) <= AUTO_WINDOW_S)
+    except OSError:
+        return AUTO_MAX_PER_WINDOW
+    used = 0
+    with fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+                if r.get("mode") == "auto" and 0 <= now - float(r.get("t") or 0) <= AUTO_WINDOW_S:
+                    used += max(0, int(r.get("n_pids") or 0))
+            except (ValueError, TypeError, AttributeError, RecursionError):
+                continue
+    return used
+
+
+class _AutoLock:
+    """--auto 的「讀額度 → 殺 → 寫紀錄」用 flock 包起來,兩支同時跑不會各算一次額度。"""
+    def __init__(self, environ=None):
+        self.path = released_path(environ) + ".guard"
+        self.fd = None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.fd)
 
 
 def release(ids=(), all_safe=False, dry_run=False, auto=False, scan_fn=None, wait_s=TERM_WAIT_S, now=None):
     """→ {ok, results:[{id, detail, kind?, freed_cpu?, freed_mem_mb?}], detail?}。"""
+    if auto and not dry_run:
+        try:
+            with _AutoLock():
+                return _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now)
+        except OSError:
+            return {"ok": False, "detail": "log_failed", "results": []}
+    return _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now)
+
+
+def _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now):
     now = time.time() if now is None else now
     bad = [i for i in ids if not ID_RE.match(i or "")]
     if bad:
@@ -314,6 +408,8 @@ def release(ids=(), all_safe=False, dry_run=False, auto=False, scan_fn=None, wai
             _log({"t": round(time.time(), 1), "kind": c["kind"], "owner": c["owner"], "cpu": c["cpu"],
                   "mem_mb": c["mem_mb"], "n_pids": killed, "mode": "auto" if auto else "manual", "result": detail})
         except OSError:
-            pass
+            if auto:                                   # 自動模式記不了帳 ⇒ 額度算不準 ⇒ 停手
+                results.append({"id": c["id"], "detail": "log_failed"})
+                break
     ok = all(r["detail"] in ("ok", "dry_run") for r in results)
     return {"ok": ok, "results": results}
