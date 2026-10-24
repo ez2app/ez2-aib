@@ -29,6 +29,7 @@ import ctypes.util
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -47,6 +48,10 @@ AUTO_MAX_PER_WINDOW = 20
 MIN_AGE_S = 120
 ID_RE = re.compile(r"^[0-9a-f]{16}$")
 HOST_RE = re.compile(r"(^|[\s/])(ssh|scp|rsync|sftp)(\s|$|\.)|\bhostguard\b|\bsecret\s+ask\b|--push\b")
+INTERP_RE = re.compile(r"^(python(\d+(\.\d+)*)?|Python|node)$")     # argv[0] 只認直譯器(tmux / caffeinate / 常駐程式不算)
+PY_VALUE_OPTS = ("-W", "-X")                                        # python 帶值的選項(值在下一個引數)
+NODE_VALUE_OPTS = ("-r", "--require", "--import", "--loader", "--experimental-loader")
+INLINE_CODE_OPTS = ("-m", "-c", "-e", "-p", "--eval", "--print")  # 不是跑檔案 ⇒ 判不出是什麼 ⇒ 不收
 TEST_SCRIPT_RE = re.compile(r"/tests/test[-_][\w.-]*\.(py|js|mjs)$")
 SCRIPT_RE = re.compile(r"\.(py|js|mjs|cjs|sh)$")
 AUTOMATION_FLAGS = ("--headless", "--enable-automation", "--remote-debugging-pipe")
@@ -84,12 +89,26 @@ def _argv(args):
 
 
 def _script(args):
-    """跑的腳本:argv[0] 之後第一個像腳本的引數;沒有 ⇒ argv[0] 本身。"""
-    av = _argv(args)
-    for tok in av[1:]:
-        if tok.startswith("/") and SCRIPT_RE.search(tok):
-            return tok
-    return av[0] if av else ""
+    """跑的腳本 = 直譯器(python / node)後面第一個不是選項的位置引數;argv[0] 不是直譯器、
+    或用 -m / -c / -e 跑、或第一個位置引數不像腳本 ⇒ ""(不收)。node 的 --require 等的值不算腳本
+    (#319 r4:tmux server 的 argv 帶著它 exec 的腳本路徑、父行程也是 1;idle_reaper 踩過同一個坑)。"""
+    toks = (args or "").split()
+    if not toks or not INTERP_RE.match(os.path.basename(toks[0])):
+        return ""
+    skip = PY_VALUE_OPTS + NODE_VALUE_OPTS
+    i = 1
+    while i < len(toks):
+        t = toks[i]
+        if t.split("=", 1)[0] in INLINE_CODE_OPTS:
+            return ""
+        if t in skip:
+            i += 2
+            continue
+        if t.startswith("-"):
+            i += 1
+            continue
+        return t if t.startswith("/") and SCRIPT_RE.search(t) else ""
+    return ""
 
 
 def _is_test_orphan(args, roots):
@@ -102,9 +121,13 @@ def _is_chrome_orphan(args, roots):
     if not chrome_orphans.is_automation_main(args):
         return False
     toks = args.split()
-    if any(t.startswith("--app=") for t in toks) or not any(t.split("=", 1)[0] in AUTOMATION_FLAGS for t in toks):
-        return False
-    udd = chrome_orphans.user_data_dir(args) or ""
+    keys = [t.split("=", 1)[0].lstrip("-") for t in toks if t.startswith("-")]
+    if "app" in keys or not any(t.split("=", 1)[0] in AUTOMATION_FLAGS for t in toks):
+        return False                                   # --app / -app(Chromium 單破折號也收)= 真人的視窗
+    udds = [t.split("=", 1)[1] for t in toks if t.split("=", 1)[0] in ("--user-data-dir", "-user-data-dir") and "=" in t]
+    if len(udds) != 1 or "user-data-dir" in keys and keys.count("user-data-dir") != 1:
+        return False                                   # Chrome 用最後一個;不只一個 / 空白分隔取不到值 ⇒ 不收
+    udd = udds[0]
     return _under(udd, roots) and "/captain-room/" not in os.path.realpath(udd) + "/"
 
 
@@ -335,9 +358,12 @@ def _auto_used(now, environ=None):
         for line in fh:
             try:
                 r = json.loads(line)
-                if r.get("mode") == "auto" and 0 <= now - float(r.get("t") or 0) <= AUTO_WINDOW_S:
-                    used += max(0, int(r.get("n_pids") or 0))
-            except (ValueError, TypeError, AttributeError, RecursionError):
+                t, n = float(r.get("t") or 0), float(r.get("n_pids") or 0)
+                if r.get("mode") != "auto" or not math.isfinite(t):
+                    continue
+                if now - t <= AUTO_WINDOW_S:            # 未來的點也算(時鐘往回調不重置額度)
+                    used += AUTO_MAX_PER_WINDOW if not math.isfinite(n) else max(0, int(n))
+            except (ValueError, TypeError, AttributeError, RecursionError, OverflowError):
                 continue
     return used
 
@@ -398,6 +424,13 @@ def _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now):
         if dry_run:
             results.append({"id": c["id"], "detail": "dry_run", "kind": c["kind"], "pids": len(c["pids"])})
             continue
+        if auto:                                       # 殺之前先記一筆預留:記不進帳就不殺(不然額度永遠是滿的)
+            try:
+                _log({"t": round(time.time(), 1), "kind": c["kind"], "n_pids": len(c["pids"]), "mode": "auto",
+                      "result": "pending"})
+            except OSError:
+                results.append({"id": c["id"], "detail": "log_failed"})
+                break
         killed, failed = _kill_one(c, me, wait_s=wait_s)
         detail = "ok" if failed == 0 else ("partial" if killed else "release_failed")
         if budget is not None:
@@ -406,9 +439,9 @@ def _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now):
         results.append(r)
         try:
             _log({"t": round(time.time(), 1), "kind": c["kind"], "owner": c["owner"], "cpu": c["cpu"],
-                  "mem_mb": c["mem_mb"], "n_pids": killed, "mode": "auto" if auto else "manual", "result": detail})
-        except OSError:
-            if auto:                                   # 自動模式記不了帳 ⇒ 額度算不準 ⇒ 停手
+                  "mem_mb": c["mem_mb"], "n_pids": killed, "mode": "auto_done" if auto else "manual", "result": detail})
+        except OSError:                                # 自動模式的額度已經用預留那筆算過;結果記不了 ⇒ 停手
+            if auto:
                 results.append({"id": c["id"], "detail": "log_failed"})
                 break
     ok = all(r["detail"] in ("ok", "dry_run") for r in results)

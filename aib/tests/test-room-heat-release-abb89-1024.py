@@ -15,6 +15,9 @@ R9 路徑把戲(#319 r3 High):家目錄裡的 /tmp/、/tmp/../、暫存路徑跟
 R10 暫存根不讀環境變數;/ 與家目錄注入也會被丟掉
 R11 --auto 額度:壞行逐行跳過、負數夾 0、讀不了 ⇒ 算滿
 R12 行程在送訊號前自己結束 ⇒ 不算失敗;R13 剛起不到 MIN_AGE_S ⇒ 不是候選
+R14 argv[0] 不是直譯器(tmux server、caffeinate、常駐程式)、-m / -c、node --require 的值 ⇒ 不是候選;
+    Chrome 多個 / 空白分隔的 --user-data-dir、-app= ⇒ 不是
+R15 --auto:紀錄寫不進去 ⇒ 不殺(log_failed);無限大 / 未來時間的紀錄 ⇒ 額度不歸零
 刀(複本):K1 開始時間不比 ⇒ R6 紅;K2 拿掉主機動作排除 ⇒ R3 紅;K3 子孫不檢查暫存根 ⇒ R4 紅;
 K4 暫存根改回子字串比對 ⇒ R9 紅;K5 拿掉 *.lock 排除 ⇒ R5 紅
 """
@@ -269,6 +272,52 @@ class Orphans(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(RR._kill_one({"pids": [pid], "starts": {str(pid): start}}, os.getuid(), wait_s=0.5), (0, 0))
 
+    def test_r14_not_interpreter_or_inline(self):
+        pid, d = self.spawn("import time\ntime.sleep(300)\n")
+        T = "%s/tests/test-a.py" % d
+        bad = [
+            "tmux -L x -f /dev/null new-session -d -s p python3 " + T,
+            "caffeinate -i " + T,
+            "/usr/bin/python3 -m mydaemon " + T,
+            "python3 -c import_time " + T,
+            "/opt/homebrew/bin/python3 /Users/x/bin/aibd --watch " + T,
+            "node --require %s/tests/test-hook.js /Users/x/live-server.js" % d,
+            "node -r %s/tests/test-hook.js /Users/x/live-server.js" % d,
+        ]
+        for args in bad:
+            self.assertEqual(self.kinds(pid, args), [], args)
+        for ok in ("/usr/bin/python3 -B -W ignore " + T, sys.executable + " " + T, "node %s/tests/test-b.js" % d):
+            self.assertEqual(self.kinds(pid, ok), ["test_orphan"], ok)
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless --remote-debugging-port=1 "
+        prof = os.path.realpath(tempfile.gettempdir()) + "/p1"
+        for args in ("--user-data-dir=%s --user-data-dir=/Users/x/realprof" % prof,
+                     "--user-data-dir=%s --user-data-dir /Users/x/realprof" % prof,
+                     "-app=https://x --user-data-dir=" + prof, "--app https://x --user-data-dir=" + prof):
+            self.assertEqual(self.kinds(pid, chrome + args), [], args)
+        self.assertEqual(self.kinds(pid, chrome + "--user-data-dir=" + prof), ["chrome_orphan"])
+
+    def test_r15_auto_log_unwritable_no_kill(self):
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n")
+        log = Path(RR.released_path())
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("", encoding="utf-8")
+        os.chmod(log, 0o400)
+        self.addCleanup(os.chmod, log, 0o600)
+        r = RR.release(all_safe=True, auto=True, scan_fn=self.scan, wait_s=1)
+        self.assertEqual([x["detail"] for x in r["results"]], ["log_failed"], r)
+        self.assertIsNotNone(RR.identity(pid), "記不進帳還是殺了")
+        os.chmod(log, 0o600)
+        now = time.time()
+        log.write_text('{"mode":"auto","t":%s,"n_pids":1e999}\n' % now
+                       + json.dumps({"mode": "auto", "t": now + 3600, "n_pids": 3}) + "\n", encoding="utf-8")
+        self.assertEqual(RR._auto_used(now), RR.AUTO_MAX_PER_WINDOW + 3)
+        log.write_text("", encoding="utf-8")
+        r = RR.release(all_safe=True, auto=True, scan_fn=self.scan, wait_s=3)
+        self.assertEqual([x["detail"] for x in r["results"]], ["ok"], r)
+        recs = [json.loads(x) for x in log.read_text().splitlines()]
+        self.assertEqual([(x["mode"], x["result"]) for x in recs], [("auto", "pending"), ("auto_done", "ok")])
+        self.assertEqual(RR._auto_used(time.time()), 1)              # 額度用預留那筆算,結果那筆不重算
+
     def test_r13_too_young(self):
         pid, d = self.spawn("import time\ntime.sleep(300)\n")
         rows = [(pid, 1, os.getuid(), 1.0, 1024, "x", "python3 %s/tests/test-fake.py" % d)]
@@ -297,6 +346,15 @@ class Knives(unittest.TestCase):
     def test_k3_children_not_checked(self):
         self._knife("                            and _under(_script(by[p][6]), roots) and not room_heat.SANDBOX_RE.search(by[p][6])]\n",
                     "                            ]\n", "Orphans.test_r4_foreign_child_survives")
+
+    def test_k6_any_argv0(self):
+        self._knife("    if not toks or not INTERP_RE.match(os.path.basename(toks[0])):\n",
+                    "    if not toks:\n", "Orphans.test_r14_not_interpreter_or_inline")
+
+    def test_k7_kill_before_reserve(self):
+        self._knife("        if auto:                                       # 殺之前先記一筆預留",
+                    "        if False:                                      # 殺之前先記一筆預留",
+                    "Orphans.test_r15_auto_log_unwritable_no_kill")
 
     def test_k4_substring_roots(self):
         self._knife("    return any(rp.startswith(r) for r in roots)\n",
