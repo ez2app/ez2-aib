@@ -13,7 +13,15 @@ C1 connect(10-24 Andy「我要一次就完成，不要多次」):對方已申請
 C2 connect 沒給分享 ⇒ 不彈指紋,好友用預設(online / island);沒公開席 ⇒ 申請送不出、rc 照實回 2,好友照加
 C3 connect 指紋被拒 ⇒ 什麼都沒做(好友也不加、申請還在)
 C4 connect --open 配 --space ⇒ 門之前擋
-刀(複本):K1 --space 不寫進對象 ⇒ B1 紅;K2 不叫提醒 ⇒ B5 紅;K3 connect 不過門 ⇒ C3 紅
+B7 真機路徑(HUMAN_GATE 都沒換):先叫 _gate_notify 再叫 seat_act.prove,同一句(#320 第 1 輪審 中-3)
+B8 share 寫一半失敗(set_space 丟 OSError)⇒ 不 traceback、rc 2、照實列已改的
+C5 已是好友、空間已設 room,connect --share status ⇒ 視窗列 room(實際的,不是預設)、不寫「加好友」、不再送申請(中-1、L1)
+C6 新好友 + --json、沒公開席 ⇒ stdout 只有一個 JSON:ok false、why request_failed、request.why no_seat(中-2)
+C7 封鎖中 / 壞位址 ⇒ 門前就擋、不彈指紋;--json 回代碼(L2)
+C8 connect 寫一半失敗 ⇒ why share_failed、applied 照實(L3)
+C9 申請送出成功 ⇒ ok true、request {rc 0, why held}(L6)
+刀(複本):K1 --space 不寫進對象 ⇒ B1 紅;K2 不叫提醒 ⇒ B5 紅;K3 connect 不過門 ⇒ C3 紅;K4 真機不提醒 ⇒ B7 紅;
+   K5 視窗用預設等級 ⇒ C5 紅
 """
 import importlib.util
 import io
@@ -22,6 +30,7 @@ import sys
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -87,11 +96,33 @@ class Batch(OG.Base):
         self.assertIn("aib:測試那句", err.getvalue())
         self.assertIn("Touch ID", err.getvalue())
 
+    def test_b7_real_path_notifies_first(self):
+        seen = []
+        self.CB.HUMAN_GATE["prove"] = None                       # 真機路徑:門自己挑 _gate_notify + seat_act.prove
+        self.CB._gate_notify = lambda reason, env: seen.append(("notify", reason))
+        sa = sys.modules.get("seat_act") or __import__("seat_act")
+        with mock.patch.object(sa, "prove", lambda reason, env: (seen.append(("prove", reason)), ("touchid", None))[1]):
+            rc, out = self.run_cb("share", FRIEND, "status")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([k for k, _r in seen], ["notify", "prove"], "真機要先提醒再跳指紋")
+        self.assertEqual(seen[0][1], seen[1][1])
+
+    def test_b8_partial_write(self):
+        with mock.patch.object(CR, "set_space", side_effect=OSError("disk full")):
+            rc, out = self.run_cb("share", FRIEND, "status", "--space", "room")
+            self.assertEqual(rc, 2, out)
+            self.assertIn("沒存成", out)
+            self.assertIn("已改的：在線", out)
+            rc, out = self.run_cb("share", FRIEND, "online", "--space", "room", "--json")
+        self.assertEqual(json.loads(out.strip()), {"v": 1, "ok": False, "why": "write_failed", "applied": ["share"]})
+
     def test_b6_i18n(self):
         for lang in ("zh-TW", "en", "ja", "ko"):
             d = json.loads((REPO / "i18n" / (lang + ".json")).read_text(encoding="utf-8"))
             for k in ("gate_waiting", "touchid_share_space", "touchid_share_space_default", "share_space_need_target",
-                      "share_space_one_target"):
+                      "share_space_one_target", "touchid_connect", "connect_open_or_space", "connect_share_failed",
+                      "connect_done", "connect_already", "connect_now", "share_write_failed", "share_applied",
+                      "share_item_share", "share_item_space"):
                 self.assertTrue(d.get("aib.chat." + k), (lang, k))
             self.assertIn("{reason}", d["aib.chat.gate_waiting"], lang)
 
@@ -109,8 +140,11 @@ class Connect(OG.Base):
         self.assertEqual(rc, 0, out)
         self.assertEqual(len(self.asked), 1, "只問一次")
         self.assertIn("加好友", self.asked[0])
-        got = json.loads(out.strip().splitlines()[-1])
-        self.assertEqual((got["accepted"], got["share"], got["space"]), (True, "status", "room"))
+        self.assertIn(self.CB.T("share_status"), self.asked[0])
+        self.assertIn(self.CB.T("space_room"), self.asked[0])
+        got = json.loads(out.strip())                           # stdout 只有一個 JSON(cmd_request 的人話不准混進來)
+        self.assertEqual((got["ok"], got["accepted"], got["share"], got["space"]), (True, True, "status", "room"))
+        self.assertEqual(got["request"], {"rc": 0, "why": "accepted"})
         self.assertTrue(CR.is_friend(self.OTHER, self.env))
         self.assertEqual(OG.GF.read_requests(self.root), [], "申請已處理")
 
@@ -133,6 +167,54 @@ class Connect(OG.Base):
         rc, _out = self.run_cb("connect", self.OTHER, "--open", "--space", "island")
         self.assertEqual((rc, self.asked), (2, []))
 
+    def test_c5_existing_friend_shows_actual(self):
+        CR.set_space("room", FRIEND, self.env)
+        sent = []
+        with mock.patch.object(self.CB, "cmd_request", lambda *x, **k: sent.append(1) or 0):
+            rc, out = self.run_cb("connect", FRIEND, "--share", "status", "--json")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.asked), 1)
+        self.assertIn(self.CB.T("space_room"), self.asked[0], "視窗要列這位好友實際的空間等級")
+        self.assertNotIn(self.CB.T("space_island"), self.asked[0])
+        self.assertNotIn("加好友", self.asked[0], "已是好友 ⇒ 不寫加好友")
+        self.assertEqual(sent, [], "已是好友 ⇒ 不再送申請")
+        got = json.loads(out.strip())
+        self.assertEqual((got["ok"], got["already_friend"], got["share"], got["space"], got["request"]["why"]),
+                         (True, True, "status", "room", "already_friend"))
+
+    def test_c6_json_request_failed(self):
+        new = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xc606))
+        rc, out = self.run_cb("connect", new, "--json")
+        self.assertEqual(rc, 2, out)
+        got = json.loads(out.strip())                           # 整段就是一個 JSON
+        self.assertEqual((got["ok"], got["why"], got["request"]), (False, "request_failed", {"rc": 2, "why": "no_seat"}))
+
+    def test_c7_rejected_before_gate(self):
+        bad = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xc707))
+        CR.add_friend(bad, None, self.env, kind="blocks")
+        rc, out = self.run_cb("connect", bad, "--share", "status", "--json")
+        self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "blocked"))
+        rc, out = self.run_cb("connect", "npub1nope", "--open", "--json")
+        self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "bad_friend"))
+        self.assertEqual(self.asked, [], "門前就擋,不白按指紋")
+
+    def test_c8_partial_write(self):
+        with mock.patch.object(CR, "set_space", side_effect=OSError("disk full")):
+            rc, out = self.run_cb("connect", self.OTHER, "--share", "status", "--space", "room", "--json")
+        self.assertEqual(rc, 2, out)
+        got = json.loads(out.strip())
+        self.assertEqual((got["why"], got["applied"], got["share"]), ("share_failed", ["share"], "status"))
+
+    def test_c9_request_sent(self):
+        new = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xc909))
+        with mock.patch.object(self.CB, "_my_published", lambda env: [{"cabin": "c1", "seat": "aaaa1"}]), \
+                mock.patch.object(OG.GF, "send_and_wait", lambda *x, **k: {"stage": "held", "rc": 0, "detail": None}):
+            rc, out = self.run_cb("connect", new, "--json")
+        self.assertEqual(rc, 0, out)
+        got = json.loads(out.strip())
+        self.assertEqual((got["ok"], got["accepted"], got["already_friend"], got["request"]),
+                         (True, False, False, {"rc": 0, "why": "held"}))
+
 
 class Knife(unittest.TestCase):
     def _knife(self, needle, replacement, cell):
@@ -149,11 +231,19 @@ class Knife(unittest.TestCase):
                     "Batch.test_b1_one_prompt_two_levels")
 
     def test_k3_connect_ungated(self):
-        self._knife("    if share or space:                       # 改分享 = 本人的動作:全部擠進一個視窗\n",
+        self._knife("    if share or space:                       # 改分享 = 本人的動作:全部擠進一個視窗,列改完後的實際等級\n",
                     "    if False:\n", "Connect.test_c3_denied_does_nothing")
 
     def test_k2_no_notify(self):
         self._knife("        notify(reason, env)\n", "        pass\n", "Batch.test_b5_notify")
+
+    def test_k4_real_path_silent(self):
+        self._knife('    notify = HUMAN_GATE["notify"] or (_gate_notify if HUMAN_GATE["prove"] is None else None)\n',
+                    '    notify = HUMAN_GATE["notify"]\n', "Batch.test_b7_real_path_notifies_first")
+
+    def test_k5_window_uses_default(self):
+        self._knife('        cur_sp = CR.space_level(owner, env) if known else ',
+                    '        cur_sp = CR.read_space(env)["default"] if known else ', "Connect.test_c5_existing_friend_shows_actual")
 
 
 if __name__ == "__main__":

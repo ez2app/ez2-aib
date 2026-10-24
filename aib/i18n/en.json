@@ -5188,5 +5188,11 @@
   "aib.chat.touchid_connect": "aib: connect with {who}: add friend, presence {level}, space {space}",
   "aib.chat.connect_open_or_space": "--open already includes space (captain's room); drop --space",
   "aib.chat.connect_share_failed": "Friend added, but sharing was not changed ({why})",
-  "aib.chat.connect_done": "Connected {owner}: presence {share}, space {space}"
+  "aib.chat.connect_done": "Connected {owner}: presence {share}, space {space}",
+  "aib.chat.share_write_failed": "Sharing was not saved ({why})",
+  "aib.chat.share_applied": "Already changed: {items}",
+  "aib.chat.share_item_share": "presence",
+  "aib.chat.share_item_space": "space",
+  "aib.chat.connect_now": "Now: presence {share}, space {space}",
+  "aib.chat.connect_already": "Already friends with {owner}: presence {share}, space {space}"
 }

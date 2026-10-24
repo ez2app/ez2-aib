@@ -5188,5 +5188,11 @@
   "aib.chat.touchid_connect": "aib:{who} と接続:友だち追加、在席 {level}、スペース {space}",
   "aib.chat.connect_open_or_space": "--open にはスペース(艦長室)が含まれます。--space は不要です",
   "aib.chat.connect_share_failed": "友だちは追加しましたが、共有は変更できませんでした({why})",
-  "aib.chat.connect_done": "{owner} と接続しました:在席 {share}、スペース {space}"
+  "aib.chat.connect_done": "{owner} と接続しました:在席 {share}、スペース {space}",
+  "aib.chat.share_write_failed": "共有を保存できませんでした({why})",
+  "aib.chat.share_applied": "変更済み:{items}",
+  "aib.chat.share_item_share": "オンライン",
+  "aib.chat.share_item_space": "空間",
+  "aib.chat.connect_now": "現在:オンライン {share}、空間 {space}",
+  "aib.chat.connect_already": "すでに友だちです {owner}:オンライン {share}、空間 {space}"
 }

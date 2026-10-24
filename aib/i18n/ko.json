@@ -5188,5 +5188,11 @@
   "aib.chat.touchid_connect": "aib: {who}와 연결: 친구 추가, 접속 {level}, 공간 {space}",
   "aib.chat.connect_open_or_space": "--open에 공간(함장실)이 이미 포함됩니다. --space는 빼 주세요",
   "aib.chat.connect_share_failed": "친구는 추가했지만 공유는 바뀌지 않았습니다({why})",
-  "aib.chat.connect_done": "{owner}와 연결됨: 접속 {share}, 공간 {space}"
+  "aib.chat.connect_done": "{owner}와 연결됨: 접속 {share}, 공간 {space}",
+  "aib.chat.share_write_failed": "공유를 저장하지 못했습니다({why})",
+  "aib.chat.share_applied": "이미 바뀐 항목: {items}",
+  "aib.chat.share_item_share": "접속",
+  "aib.chat.share_item_space": "공간",
+  "aib.chat.connect_now": "현재: 접속 {share}, 공간 {space}",
+  "aib.chat.connect_already": "이미 친구입니다 {owner}: 접속 {share}, 공간 {space}"
 }

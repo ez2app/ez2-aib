@@ -5188,5 +5188,11 @@
   "aib.chat.touchid_connect": "aib:跟 {who} 連線：加好友、在線 {level}、空間 {space}",
   "aib.chat.connect_open_or_space": "--open 已含空間(艦長室),不要再給 --space",
   "aib.chat.connect_share_failed": "好友已加，但分享沒改成({why})",
-  "aib.chat.connect_done": "已連線 {owner}:在線 {share}、空間 {space}"
+  "aib.chat.connect_done": "已連線 {owner}:在線 {share}、空間 {space}",
+  "aib.chat.share_write_failed": "分享沒存成({why})",
+  "aib.chat.share_applied": "已改的：{items}",
+  "aib.chat.share_item_share": "在線",
+  "aib.chat.share_item_space": "空間",
+  "aib.chat.connect_now": "目前：在線 {share}、空間 {space}",
+  "aib.chat.connect_already": "已經是好友 {owner}:在線 {share}、空間 {space}"
 }
