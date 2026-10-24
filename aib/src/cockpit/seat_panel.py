@@ -193,12 +193,16 @@ def _notices(text):
     return [name for name, rx in NOTICE_PATTERNS if rx.search(text or "")]
 
 
-def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0):
-    """整份(或從 offset 起)⇒ (events, pending_ask_ids, queue_ops, end_offset, session_ids)。"""
+def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0, align=False):
+    """整份(或從 offset 起)⇒ (events, pending_ask_ids, queue_ops, end_offset, session_ids)。
+    align:offset 可能落在一行中間(讀尾端用)⇒ 先跳到下一行開頭,不解析半行。"""
     events, queue_ops, sessions = [], 0, []
     tool_calls, answered = {}, set()
     with open(path, "rb") as fh:
-        if offset:
+        if offset and align:
+            fh.seek(offset - 1)
+            fh.readline()                           # 前一個位元組是換行 ⇒ 只吃掉那個換行,剛好停在行首
+        elif offset:
             fh.seek(offset)
         while True:
             line = fh.readline()
@@ -360,6 +364,22 @@ def _wait_for_growth(rec, path, offset, wait, sleep=time.sleep, clock=time.time)
         sleep(FOLLOW_POLL_S)
 
 
+TAIL_START = 512 * 1024      # 讀尾端:先讀最後 512 KB,不夠再倍增(10-24 @74e8b:1.5GB 的檔從頭掃一次 26 秒,頁面每 2 秒輪詢)
+
+
+def tail_events(path, enough, with_thinking=False, with_sidechain=False, start=None):
+    """從檔尾往前讀,讀到 enough(events, at_head) 成立或讀到檔頭為止。回 events_from_jsonl 的五元組 + 起讀位置。
+    最壞情況(要的東西在很前面 / 根本不在)= 整份讀一次,跟以前一樣。"""
+    size = os.path.getsize(path)
+    win = start or TAIL_START
+    while True:
+        off = max(0, size - win)
+        got = events_from_jsonl(path, with_thinking, with_sidechain, off, align=True)
+        if off == 0 or enough(got[0]):
+            return got + (off,)
+        win *= 2
+
+
 def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMIT_DEFAULT, clip=0,
                with_thinking=False, with_sidechain=False, do_redact=False, state_root=None, follow=False, wait=FOLLOW_WAIT_DEFAULT,
                session=None, sleep=time.sleep, clock=time.time):
@@ -384,7 +404,22 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
         path2, _grew = _wait_for_growth(rec, path, offset, wait, sleep=sleep, clock=clock)
         if path2 != path:
             path, offset, rotated = path2, 0, True
-    events, pending, _q, end, sessions = events_from_jsonl(path, with_thinking, with_sidechain, offset if offset and not (since or before or only_id) else 0)
+    head_cut = False
+    if offset and not (since or before or only_id):
+        events, pending, _q, end, sessions = events_from_jsonl(path, with_thinking, with_sidechain, offset)
+    else:
+        # 沒帶 offset 的(第一次載入 / since / before / id):從檔尾往前讀到夠用就停,不從檔頭掃整份
+        def enough(evs):
+            ids = [e["id"] for e in evs]
+            if only_id:
+                return only_id in ids
+            if since:
+                return since in ids
+            if before:
+                return bool(limit) and before in ids and ids.index(before) > limit
+            return bool(limit) and len(evs) > limit             # limit 0 = 全要 ⇒ 讀到檔頭
+        events, pending, _q, end, sessions, start = tail_events(path, enough, with_thinking, with_sidechain)
+        head_cut = start > 0
     reset, since_lost = rotated, False
     if only_id:
         events = [e for e in events if e["id"] == only_id]
@@ -397,7 +432,7 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
     elif before:
         idx = next((i for i, e in enumerate(events) if e["id"] == before), None)
         events = events[:idx] if idx is not None else []
-    truncated = False
+    truncated = head_cut and not (since or only_id)        # 前面還有沒讀的 ⇒ 頁面可再往上翻(before)
     if limit and len(events) > limit:
         truncated = True
         events = events[:limit] if since else events[-limit:]
@@ -437,7 +472,9 @@ def pending(code, state_root=None, screen=None, env=None):
     path = transcript_path(rec)
     if path:
         try:
-            events, pend, queue_ops, _end, _s = events_from_jsonl(path)
+            # 只讀尾端:讀到至少有一筆 user / assistant(排隊數從最後一輪算起)就夠
+            events, pend, queue_ops, _end, _s, _start = tail_events(
+                path, lambda evs: any(e["kind"] in ("user", "assistant", "tool_call") for e in evs))
         except OSError:
             events, pend, queue_ops = [], [], 0
         out["queued"] = queue_ops_after_last_turn(events, queue_ops)

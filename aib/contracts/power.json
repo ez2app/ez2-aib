@@ -1,0 +1,326 @@
+{
+ "schema": "aib-contract/v1",
+ "name": "power",
+ "status": "planned",
+ "about": "艦長動力室(新艦長第一站,核心免費)的資料與指令。頁面只讀 `aib power status --json`,按鈕只呼叫 `aib power upgrade` / `aib power login`。分工:@abb89 總管 + 版本 / 健康 / 自動更新 / 綁定 / 清單;@d07f9 燈號(登入 / 額度)+ login + onboarding。",
+ "codes_note": "detail / reason 是契約代碼,不改成人話;人話只放 hint。伺服器 / CLI 給的字是資料,頁面顯示前去控制與隱形字元。",
+ "status_receipt": {
+  "command": "aib power status [--refresh] --json",
+  "rc": {
+   "0": "有回條(就算某些欄位量不到)",
+   "2": "參數錯"
+  },
+  "fields": [
+   "ok",
+   "v",
+   "detail",
+   "ais",
+   "health",
+   "auto_update",
+   "binding",
+   "onboarding",
+   "catalog",
+   "hint"
+  ],
+  "v": 1,
+  "detail": "power_status",
+  "ais": "[power.ai_row],順序 claude / codex / grok / copilot / agy / aib",
+  "health": "[power.health_row]",
+  "auto_update": "power.auto_update 或 null(核心還沒有自動更新 ⇒ null)",
+  "binding": "power.binding",
+  "onboarding": "power.onboarding",
+  "catalog": "power.catalog"
+ },
+ "ai_row": {
+  "fields": [
+   "key",
+   "installed",
+   "local",
+   "latest",
+   "update",
+   "can_update",
+   "light",
+   "reason",
+   "hint",
+   "reset_at",
+   "login_cmd"
+  ],
+  "key": "claude | codex | grok | copilot | agy | aib",
+  "installed": "true / false(local 量得到 = true)",
+  "local": "本機版本字串或 null",
+  "latest": "最新版本或 null(量不到照實 null;agy 一律 null)",
+  "update": "latest 比 local 新",
+  "can_update": "update 且這一家有自動更新指令(cli_versions TOOLS.update)",
+  "light": "off(沒裝)| green | yellow(裝了沒登入)| red(登入過期或額度到上限)| unknown(量不到登入狀態)",
+  "reason": "null | login_missing | login_expired | quota_reached | probe_failed",
+  "hint": "人話或 null",
+  "reset_at": "額度恢復時間(epoch 秒)或 null,量得到才給",
+  "login_cmd": "本人要跑的登入指令字串(給頁面一鍵複製)或 null;aib 一律 null",
+  "owner": "installed / local / latest / update / can_update = @abb89(cli_versions.check);light / reason / hint / reset_at / login_cmd = @d07f9 的 light_of(key)",
+  "light_rule": "@d07f9 light_of:登入狀態只問 CLI 自己的狀態指令(claude auth status --json 的 loggedIn、codex login status 的 rc),只取有沒有登入、不讀帳號;沒狀態指令的家(grok / copilot / agy)= 量不到。順序:沒登入 ⇒ yellow login_missing;usage_probe 新鮮紀錄任一窗 >= 上限 ⇒ red quota_reached(reset_at = 到上限各窗最晚恢復時間);登入著 ⇒ green;量不到 ⇒ unknown。登入狀態快取 10 分鐘,login 後清掉。login_expired 保留:CLI 狀態指令分不出「過期」與「沒登入」,現在一律回 login_missing"
+ },
+ "health_row": {
+  "fields": [
+   "key",
+   "ok",
+   "value",
+   "hint"
+  ],
+  "key": "tmux | python | node | git | disk | touchid | net_github | net_pypi | net_page",
+  "ok": "true / false / null(這個平台不適用,例如非 Mac 的 touchid)",
+  "value": "量到的值(版本 / 剩餘 GB)或 null",
+  "hint": "缺什麼、怎麼補(人話)或 null",
+  "net_note": "連線檢查只做 HEAD / 短逾時(3 秒),不帶任何憑證;status 的快取 10 分鐘,--refresh 才重量"
+ },
+ "auto_update": {
+  "fields": [
+   "enabled",
+   "exclude",
+   "paused",
+   "last_run",
+   "last_result"
+  ],
+  "note": "讀 #273 的設定與狀態檔;#273 合進 main 前回 null"
+ },
+ "binding": {
+  "fields": [
+   "seats",
+   "ok",
+   "not_ok"
+  ],
+  "seats": "這台在跑的席數(bot 席不算)",
+  "ok": "人格 + 專案 + 第二大腦都綁好的席數",
+  "not_ok": "[{code, problem, brain}];problem 同 aib bindme(ok / no_project / no_persona / none / route_unresolved / crown_persona)",
+  "note": "只回席碼與代碼,不回路徑、人格名稱"
+ },
+ "onboarding": {
+  "fields": [
+   "birth_done",
+   "tasks",
+   "tiers",
+   "all",
+   "room",
+   "room_tiers"
+  ],
+  "birth_done": "出生設定做過沒(做過就不再自動出現)",
+  "tasks": "[{id, tier, where, state, since, locked, reward, detect, detectable, requires}];id = R1–R12 / SR1–SR16 / SSR1–SSR12 / UR1–UR7;tier = R | SR | SSR | UR;where = power(動力室任務板：免費純 CLI 30 條)| room(艦長室任務板：SR8–11、SR14–16、SSR1、SSR6–10、SSR12、UR1–3;動力室頁不列、不顯示鎖頭或購買入口);state = todo | done | claimed;detect = 偵測代碼;detectable = 核心現在偵測得到(false ⇒ 頁面照實顯示「還沒接上」,不准按鈕自己勾);requires = null | room(要艦長室外掛)| server(伺服器回條)| skins | command(指令還沒做,頁面標「等指令」;目前沒有條用它);reward 這一期一律 null",
+  "owner": "@d07f9 的 onboarding_state()",
+  "note": "領資源(claimed)由伺服器簽發,這一期只做 todo / done 偵測;伺服器沒上線 reward 一律 null",
+  "birth_note": "birth_done = state/power-birth.json 有 at;只決定要不要先跑引導,不是防線",
+  "tiers": "{R|SR|SSR|UR: {on, done, total, locked, unlock}};只算 where = power;on = 等級開關(關 = 收起不提醒、偵測照記;鎖著一律 false);locked / unlock = 鎖定與解鎖條件的偵測代碼(現為 launch_recorded;解開 ⇒ unlock null)",
+  "all": "{done, total}:動力室任務板全部(where = power,30 條)",
+  "detect_note": "現在接上的偵測:power_opened(動力室頁寫過)、born、seat_registered、persona_bound、brain_bound、launch_recorded、handoff_receipt(自動存的不算)、two_providers_online、aib_upgraded(比第一次看到的版本新)、launch_streak_3/7/30(以今天或昨天結尾的連續出發日)、ssr_all_done;10-24 03:3x 加本機真事件:now_written(seat-now 有檔)、dm_sent(aib-dm-sent 有紀錄)、dm_done(dm 佇列稽核有轉 done)、memory_10(記憶索引 ≥ 10 筆)、test_green(aib test 影子紀錄有 rc 0)、second_seat_same_role(同角色 ≥ 2 席)、projects_3(專案卡 ≥ 3);10-24 04:0x 加 doctor_run(aib doctor 從指令列跑過,state/run-marks/doctor.json)、new_cabin(instances 底下有 seats 的艙 ≥ 2)、newrole(aib newrole 真的新建過角色卡,state/run-marks/newrole.json)、support_bundle(aib support --write 寫過回報包,state/run-marks/support.json)。做完一次就記住;舊 id first_seat / bind_seat / first_handoff 搬到 R3 / R5 / R9",
+  "room": "{done, total}:艦長室任務板那 17 條(資料照記，顯示歸艦長室)",
+  "since": "done 的時間(epoch 秒;todo ⇒ null),頁面拿來標「剛完成」",
+  "locked": "這條所屬的等級鎖著沒(SSR / UR 出發後才開);鎖著的頁面顯示虛線框 + 鎖頭、不可點，不顯示開關",
+  "room_tiers": "{SR|SSR|UR: {done, total, locked, unlock}}:艦長室任務板分頁用(沒有 room 任務的等級不列)",
+  "i18n_note": "任務字鍵：動力室 30 條在核心 aib.power.page.task_<小寫 id>(標題)/ task_<小寫 id>_how(一句做法);艦長室 17 條的字由艦長室外掛出，鍵名同樣 task_<小寫 id> / task_<小寫 id>_how",
+  "ground_note": "SR14 綁 LINE 聯盟 / SR15 分享 LINE / SR16 看分享點擊統計:where room、requires server、偵測等 LINE 端(@9f808),分享 / 點擊要記誰"
+ },
+ "catalog": {
+  "fields": [
+   "available",
+   "items"
+  ],
+  "available": "false = #20 外掛目錄還沒上線(items 空)",
+  "items": "[{name, kind: skill|plugin, version, free, installed, summary}],來源 = #20 公開目錄;只列簽章版"
+ },
+ "upgrade_receipt": {
+  "command": "aib power upgrade <key> [--json]",
+  "key": "claude | codex | grok | copilot | agy | aib",
+  "fields": [
+   "ok",
+   "detail",
+   "key",
+   "old",
+   "new",
+   "hint"
+  ],
+  "detail": "power_upgraded | power_upgrade_already | power_upgrade_rolled_back | power_upgrade_failed | power_upgrade_locked | power_upgrade_unsupported | power_upgrade_not_installed",
+  "rc": {
+   "0": "updated / already",
+   "1": "failed / rolled_back / locked",
+   "2": "參數錯 / unsupported / not_installed"
+  },
+  "note": "aib 走 aib update;其他家走 cli_versions.do_update(共用 update_lock、壞了自動裝回);agy 走 update_self_checking。升級只換官方版本,不加 Touch ID"
+ },
+ "login_receipt": {
+  "command": "aib power login <key> [--no-open] [--force] [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "key",
+   "url",
+   "code",
+   "opened",
+   "hint"
+  ],
+  "detail": "power_login_url | power_login_done | power_login_unsupported | power_login_failed",
+  "url": "該家 CLI 自己印出的 OAuth 鏈結(只收 https://);我們不經手帳密 / token",
+  "opened": "已自動用瀏覽器開(--no-open 時 false);false ⇒ 頁面顯示 url + 一鍵複製",
+  "owner": "@d07f9 power_login.py",
+  "code": "裝置碼流程(codex / grok / copilot)CLI 印的一次性代碼,頁面顯示給本人在網頁上輸入;沒有 ⇒ null",
+  "rc": {
+   "0": "power_login_url / power_login_done",
+   "1": "power_login_failed",
+   "2": "參數錯 / power_login_unsupported"
+  },
+  "flow": "已登入且沒到上限 ⇒ power_login_done、不起流程(--force 照起)。否則背景起該家 CLI 的登入(codex / grok / copilot 走裝置碼,claude 走 claude auth login;agy 沒有登入子指令 ⇒ unsupported),最多等 20 秒抓它印的第一個 https 鏈結;CLI 背景最多活 15 分鐘。claude 自己開瀏覽器 ⇒ opened false。failed 的 hint = 本人要跑的指令 + (cli_missing | spawn_failed | no_url)",
+  "note": "AI 席也叫得動,但只是起登入流程;完成 OAuth 一定是真人在瀏覽器裡做,所以不加 Touch ID"
+ },
+ "launch_receipt": {
+  "command": "aib power launch --list [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "models",
+   "model_choices",
+   "personas",
+   "brains",
+   "recent",
+   "favorites",
+   "auto"
+  ],
+  "detail": "power_launch_list",
+  "rc": {
+   "0": "有回條",
+   "2": "參數錯"
+  },
+  "models": "{brand: 預設模型或 null},brand = claude | codex | grok | copilot | agy;來源 providers.json default_requested_model。能不能選看 status 的 ais 燈號(只有 green 能出艦;黃 / 紅點了走 login)",
+  "personas": "[{uid, name, fav}],最愛在前再照名稱;冠位人格不列;只回 uid 與名稱",
+  "recent": "[{brand, model, persona, brain, at}] 最多 20 筆、新的在前;同一組只留最新一筆;persona = 人格 uid、brain = 第二大腦路由鍵",
+  "favorites": "[人格 uid],新加的在前",
+  "owner": "@d07f9 power_launch.py",
+  "note": "真正出艦(開席 + 綁人格 + 綁大腦 ⇒ 進艦長室)細節另定;出艦成功時呼叫 power_launch.record_launch 記一筆。最愛 / 最近是本機方便用的資料,不是防線",
+  "brains": "[{route_key, title}]:第二大腦清單 = Vault(EZ2_VAULT_DIR)資料夾身分索引 .ez2/index/folder-id-index.json 裡 active 且掛了 routeKey 的夾;不掃目錄猜;沒有 ⇒ [](頁面給「一鍵建一個」走 newproj)",
+  "model_choices": "{brand: [預設模型, providers.json models 陣列列的正式模型…, 之前出發用過的模型…]}(去重);models 陣列 id 只放官方說明或 --help / --model 試跑驗過的,沒列的家只有預設 + 用過的，不猜",
+  "auto": "{ok, why, combo, light}:上次組合 3 秒自動出發能不能跑;why = no_recent | light_red | light_yellow | persona_gone | brain_gone;灰燈(unknown)不擋;待領獎勵這一期沒有(伺服器簽)。只是建議，真出發仍是本人動作"
+ },
+ "fav_receipt": {
+  "command": "aib power fav <人格 uid> [--off] [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "uid",
+   "favorites"
+  ],
+  "detail": "power_fav_set | power_fav_cleared | power_fav_unknown",
+  "rc": {
+   "0": "set / cleared",
+   "2": "參數錯 / unknown(uid 不在人格清單)"
+  }
+ },
+ "launch_plan_receipt": {
+  "command": "aib power launch <brand> --dry-run [--model M] [--persona UID] [--brain 路由代號] [--role R] [--mode safe|dgrs] [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "steps",
+   "hint"
+  ],
+  "detail": "power_launch_plan | power_launch_bad | power_launch_not_yet",
+  "rc": {
+   "0": "plan",
+   "2": "參數錯(bad,hint = 哪一欄)/ not_yet(沒帶 --dry-run)"
+  },
+  "steps": "[{step: open | bind, argv}];open = aib <brand> <mode> <role> new [--model M](與 aib seat open 同一條主流程);bind = aib newproj --seat <new-seat> [--persona-uid] [--folder](人格 + 第二大腦一起綁,帶路由契約);<new-seat> 由 open 的回條填",
+  "note": "出艦組現成指令、依序跑、每步看回條、失敗就停;開席是本人動作,真執行時 AI 席要擋(同 seat_act 判法)。角色 / safe·dgrs 預設另定;現在只有乾跑,頁面先複製指令"
+ },
+ "tier_receipt": {
+  "command": "aib power tier <R|SR|SSR|UR> on|off [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "tier",
+   "on"
+  ],
+  "detail": "power_tier_set | power_tier_unknown | power_tier_locked(SSR / UR 還沒解鎖)",
+  "rc": {
+   "0": "set",
+   "2": "參數錯 / unknown"
+  }
+ },
+ "redeem_receipt": {
+  "command": "aib power redeem [--json](序號從 stdin 讀)",
+  "fields": [
+   "ok",
+   "detail",
+   "item",
+   "hint"
+  ],
+  "detail": "power_redeem_not_yet(兌換伺服器上線前一律這個)",
+  "rc": {
+   "2": "not_yet"
+  },
+  "note": "SSR1 艦隊擴編令 / UR1 全動力認證。序號只在伺服器驗、一次性、綁帳號、限頻、失敗不透露存在與否;本機不存、不回顯、不放指令列(ps 看得到)。序號的發放來源不在核心範圍",
+  "item": "成功時的固定代碼 ssr1_fleet | ur1_full_power(頁面查 i18n,不顯示原文);伺服器上線前一律 null"
+ },
+ "crew_receipt": {
+  "command": "aib power why [set <代碼,…> [--other 一句] | clear] [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "why_rank",
+   "other",
+   "at",
+   "sent"
+  ],
+  "detail": "power_why | power_why_set | power_why_cleared | power_why_bad",
+  "why_rank": "代碼陣列，順序 = 排名，最多 5 項;代碼 = memory | multi_ai | coding | automation | ecommerce | geo_seo | support | video | erp | warroom | phone | sites | art | room | save | other;空 = 還沒選(頁面先出第一畫面)",
+  "other": "選了 other 才有，自填一句、去控制字元、最多 60 字",
+  "rc": {
+   "0": "ok",
+   "2": "代碼不認得 / 空 / 超過 5 項(檔不動)"
+  },
+  "note": "伺服器上線前先存本機 state/power-crew.json;名次獎勵、擴充推薦由伺服器判、只在艦長室出現;本機只用來排任務板 / 問 AI 建議問題",
+  "sent": "送伺服器了沒(只送名次、每帳號一次、伺服器簽;回饋由伺服器判、不在核心);伺服器沒上線 ⇒ 一律 false"
+ },
+ "support_receipt": {
+  "command": "aib support [--write] [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "file",
+   "sections",
+   "counts",
+   "redacted",
+   "excluded",
+   "sent"
+  ],
+  "detail": "support_preview | support_written | support_write_failed | support_collect_failed",
+  "sections": "versions | plugins | doctor | logins | cabins | failures(只收這六段)。doctor 只收只讀、說明只有機器資料的幾項:python_version / git_present / state_root_perms / schemas_readable / provider_*(整套 doctor 會寫檔、連網、說明帶本機檔名與主機名,不借)",
+  "excluded": "messages | vault | project_names | persona | secrets | licenses | log_text | cabin_seat_ids(一律不收)",
+  "file": "--write 才有:<狀態根>/support/aib-support-<時間>[-n].json(0600,夾 0700、既有夾也收緊;同一秒再寫加 -2…不蓋),家目錄換 ~;沒 --write ⇒ null、一個檔都不寫",
+  "redacted": "像金鑰的字串換成 [redacted] 的處數(家目錄 / 使用者 / 暫存路徑 / 艙號 / 席號另外照換、不算處數)",
+  "sent": "一律 false:只在本機,寄不寄由本人決定",
+  "rc": {
+   "0": "ok",
+   "1": "寫不進去(support_write_failed)或收集時出錯(support_collect_failed,不印 traceback)",
+   "2": "用法錯"
+  },
+  "note": "動力室 UR4:--write 成功記 state/run-marks/support.json {at};收 log 原文不在範圍內(未提供)"
+ },
+ "ask_receipt": {
+  "command": "aib power ask <claude|codex> [--model M] [--json](問題從 stdin:純文字或 {question, history:[{q,a}]})| aib power ask --suggest [--json]",
+  "fields": [
+   "ok",
+   "detail",
+   "brand",
+   "answer",
+   "cmds",
+   "cards",
+   "hint"
+  ],
+  "detail": "power_ask_ok | power_ask_unsupported | power_ask_bad | power_ask_login | power_ask_failed | power_ask_suggest(--suggest 回 {ok, detail, suggest})",
+  "cmds": "回答裡的 aib 指令(最多 5 條)— 只給頁面複製到剪貼簿，核心與頁面都不執行",
+  "cards": "回答提到的任務卡編號(R1–UR7),頁面可給「開 Rx 教學卡」",
+  "suggest": "3 個建議問題代碼 q_<why 代碼>(other 除外),不夠補 q_first_seat / q_lights / q_handoff;照 why_rank 排",
+  "hint": "login ⇒ 「aib power login <家>」;unsupported ⇒ 支援的家 / mcp_not_disabled(codex MCP 關不乾淨);failed ⇒ timeout / not_installed / rc=N;bad ⇒ model / question / brand",
+  "rc": {
+   "0": "ok / suggest",
+   "1": "叫了但失敗",
+   "2": "不支援 / 參數錯 / 沒綠燈"
+  },
+  "note": "硬線：只回答、不動手。只叫驗得了關工具的家:claude(--tools \"\" + --strict-mcp-config + --disable-slash-commands)、codex(-s read-only + --ephemeral + 關 features plugins / apps / shell_tool / computer_use / browser_use + 列 MCP 逐個 mcp_servers.<名>.enabled=false 再重列確認全關，關不乾淨 ⇒ unsupported hint mcp_not_disabled;10-24 03:2x 實跑發現 mcp_servers={} 只合併不清空);其他家 unsupported。非綠燈 ⇒ login,不偷換別家。問題走 stdin、空暫存目錄、跑完刪;不寫席位、不存對話;history 最多 6 輪由頁面帶。用的是使用者自己的訂閱，頁面首次送字前提示"
+ }
+}

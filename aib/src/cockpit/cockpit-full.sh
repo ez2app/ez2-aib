@@ -200,7 +200,8 @@ hub_tmux() { env -i ${AIB_ENV_DOOR_ENV[@]+"${AIB_ENV_DOOR_ENV[@]}"} tmux -L "$HU
 
 scrub_outer_session_environment() {
   local name
-  for name in "${AIB_CARRIER_SCRUB_VARS[@]}"; do
+  # 10-24:一次性的接回 / 分出旗標也洗掉(艙門擋名單);右鍵選單綁在外層伺服器,run-shell 吃的是這裡的環境
+  for name in "${AIB_CARRIER_SCRUB_VARS[@]}" ${AIB_ENV_DOOR_DENY_VARS[@]+"${AIB_ENV_DOOR_DENY_VARS[@]}"}; do
     outer_tmux set-environment -r -t "$S" "$name"
   done
   outer_tmux set-environment -t "$S" EZ2_AIB_INSTANCE "$EZ2_AIB_INSTANCE"
@@ -215,7 +216,8 @@ scrub_outer_session_environment() {
 
 scrub_hub_session_environment() {
   local name
-  for name in "${AIB_CARRIER_SCRUB_VARS[@]}"; do
+  # 10-24:一次性的接回 / 分出旗標也洗掉(艙門擋名單);右鍵選單綁在外層伺服器,run-shell 吃的是這裡的環境
+  for name in "${AIB_CARRIER_SCRUB_VARS[@]}" ${AIB_ENV_DOOR_DENY_VARS[@]+"${AIB_ENV_DOOR_DENY_VARS[@]}"}; do
     hub_tmux set-environment -r -t aihub "$name"
   done
   hub_tmux set-environment -t aihub EZ2_AIB_INSTANCE "$EZ2_AIB_INSTANCE"

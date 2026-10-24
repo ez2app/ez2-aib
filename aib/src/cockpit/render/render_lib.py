@@ -52,7 +52,10 @@ def _kill_span_at_end(text, label=None):
     lab = IDLE_KILL_LABEL if label is None else label
     w = visible_width(text)
     kw = visible_width(lab)
-    return {"start": w - kw, "end": w}
+    span = {"start": w - kw, "end": w}
+    if lab == SOFT_KILL_LABEL:
+        span["soft"] = True             # 10-24:軟關入口,hit_test → mouse-ctl 帶 --soft-since
+    return span
 
 
 def seat_kill_tail(ai, activity_text=""):

@@ -251,11 +251,15 @@ def _set_encrypted_line(path, name, envelope):
 
 def put_secret(name, plaintext, env=None):
     """加密寫入對應檔。成功回 True。明文不得進 log。"""
+    if not S.valid_name(name):
+        raise S.SecretError("bad_name", repr(name)[:40], "bad name")
     rel = S.file_for_name(name)
     if rel is None:
         raise S.SecretError(S.MISSING_FILE, name, "unknown name")
     if name in S.SE_ONLY_NAMES:      # 母鑰只進 Secure Enclave;檔案(含 LINE 補填)一律拒(@abb89 審 #222)
         raise S.SecretError("se_only", name, "Secure Enclave only")
+    if S.is_remote_only(name):  # 只在伺服器上用:本機不存(aib secret ask … --remote-only)
+        raise S.SecretError("remote_only", name, "server only")
     if not isinstance(plaintext, str) or not plaintext.strip():
         raise S.SecretError(S.MISSING_LINE, name, "empty fill")
     d = S.secrets_dir(env)

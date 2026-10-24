@@ -281,18 +281,7 @@ def hit_ai_rows(rowmap, y, x=None):
                         # 意外動作);下一幀 rowmap 重發自然解除。
                         return PASSTHROUGH
                     if ks <= xi < ke:
-                        # 08-14 the maintainer 新令:[X] 改彈確認選單(推翻同日單擊
-                        # 直殺)。選單標題要讓人看清**殺的是哪一個**,故
-                        # 命中回傳帶身分欄(label=角色NN@席位五碼、
-                        # status=💤閒置);兩欄取自同一 rowmap 條目的
-                        # detail,與畫面同源(不另查、不另猜)。外部字串
-                        # 走既有 _safe_text 消毒後才進選單。
-                        detail = r.get("detail")
-                        detail = detail if isinstance(detail, dict) else {}
-                        return {"action": "kill-idle",
-                                "window": str(r["window"]),
-                                "label": _safe_text(detail.get("label"), 48),
-                                "status": _safe_text(detail.get("status"), 16)}
+                        return _kill_action(r, kill) if _kill_target_ok(r, kill) else PASSTHROUGH
             # L2-03:第二/三行的綁定入口(spans,與 kill 同機制:精準命中才算,
             # 行內其他處照舊跳窗)。action 白名單在這裡收口——rowmap 是渲染
             # 產物,但 mouse-ctl 只認這四個 verb,別的一律當沒點到。
@@ -480,10 +469,61 @@ def _feature_tab_of(layout):
         return 0
 
 
+# 雙向覆寫 / 零寬字元:選單標題會照字面畫出來,U+202E 能把「dev1」畫成反向、零寬字能讓兩個標題看起來一樣。
+#   ZWJ(U+200D)留著:組合表情符號要靠它,單獨出現也畫不出東西。
+_INVISIBLE = frozenset([0x200B, 0x200C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+                        0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0x2066, 0x2067, 0x2068, 0x2069, 0xFEFF])
+
+
 def _safe_text(value, limit=96):
     text = str(value or "")
-    text = "".join(ch if ch >= " " and ch != "\x7f" else " " for ch in text)
+    text = "".join("" if ord(ch) in _INVISIBLE else (ch if ch >= " " and ch != "\x7f" else " ") for ch in text)
     return " ".join(text.split())[:limit]
+
+
+def _kill_action(r, kill):
+    """08-14 the maintainer 新令:[X] 改彈確認選單(推翻同日單擊直殺)。選單標題要讓人看清**殺的是哪一個**,
+    故命中回傳帶身分欄(label=角色NN@席位五碼、status=💤閒置);兩欄取自同一 rowmap 條目的 detail,
+    與畫面同源(不另查、不另猜)。外部字串走既有 _safe_text 消毒後才進選單。"""
+    detail = r.get("detail")
+    detail = detail if isinstance(detail, dict) else {}
+    return {"action": "kill-idle",
+            "window": str(r["window"]),
+            "label": _safe_text(detail.get("label"), 48),
+            "status": _safe_text(detail.get("status"), 16),
+            # 10-24:(x) 軟關(未達 [X] 門檻)—— 執行端改問「選單開出後有沒有再動」
+            "soft": kill.get("soft") is True}
+
+
+WINDOW_ID_RE = re.compile(r"@[0-9]{1,10}")      # 跟產生端 pane-right-ai.sh 的 WID_RE 同寬
+
+
+def _kill_target_ok(r, kill):
+    """左鍵 [X] 與右鍵「關閉這一席」同一套前提:畫面上真的有那一格(start < end)、窗 id 是 tmux 的 @數字。"""
+    try:
+        if not int(kill["start"]) < int(kill["end"]):
+            return False
+    except (TypeError, ValueError, KeyError):
+        return False
+    return bool(WINDOW_ID_RE.fullmatch(str(r.get("window"))))
+
+
+def hit_ai_close(rowmap, y):
+    """10-24 @abb89:右鍵「關閉這一席」。只給畫面上那一列本來就有 [X] / (x) 的席(rowmap 有 kill),
+    回跟點 [X] 一模一樣的動作 ⇒ 走同一個確認選單與 release-confirmed 閘;不另開一條關法。
+    已按下待確認的列(kill_pending)一樣不可點。"""
+    try:
+        y = int(y)
+    except (TypeError, ValueError):
+        return PASSTHROUGH
+    for r in rowmap or []:
+        if r.get("line") != y or not r.get("window"):
+            continue
+        kill = r.get("kill")
+        if not isinstance(kill, dict) or r.get("kill_pending"):
+            return PASSTHROUGH
+        return _kill_action(r, kill) if _kill_target_ok(r, kill) else PASSTHROUGH
+    return PASSTHROUGH
 
 
 def hit_ai_detail(rowmap, y):
@@ -689,7 +729,7 @@ def _main(argv):
         return 0
     if not role or state_dir is None:
         print("usage: hit_test.py --role tabs|ai-list|pending-review|hub-frame --x N --y N "
-              "--state-dir DIR [--intent click|context]",
+              "--state-dir DIR [--intent click|context|close]",
               file=sys.stderr)
         return 2
     layout = {
@@ -705,6 +745,8 @@ def _main(argv):
     }
     if intent == "context" and role == "ai-list":
         action = hit_ai_detail(layout.get("ai_rowmap"), y)
+    elif intent == "close" and role == "ai-list":
+        action = hit_ai_close(layout.get("ai_rowmap"), y)
     elif intent == "click":
         action = hit_test(role, x, y, layout, cabin=cabin, now=now)
     else:

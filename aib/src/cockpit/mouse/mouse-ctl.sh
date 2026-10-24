@@ -5,6 +5,8 @@
 #   mouse-ctl.sh --install [--dry-run]        綁 tmux 滑鼠鍵
 #   mouse-ctl.sh --click <role> <x> <y> [session] [--dry-run]   處理一次點擊
 #   mouse-ctl.sh --context <surface> <role> <x> <y> <pane> <session> [--dry-run]
+#   mouse-ctl.sh --role right --close-row ai-list <x> <y> [session] [--dry-run]
+#                                                  右鍵「關閉這一席」:彈 [X] 同一個確認選單
 #   mouse-ctl.sh --release-confirmed <window> [session] [--dry-run]
 #                                                  [X] 確認選單按「確定」後的真殺
 #   ⚠ --dry-run 對釋放路徑的診斷力是**零**:DRY 全程不碰真 tmux(治具以
@@ -127,7 +129,10 @@ DRY="${AIB_DRY_RUN:-0}"
 MODE=""
 ABORT_OPEN=0
 CLOSE_CABIN=0
+SOFT_SINCE=""
 PANE_ROLE=""
+HIT_INTENT="click"
+EXPECT_WINDOW=""
 ROLE=""; CX=""; CY=""; SESSION=""; SURFACE=""; PANE=""; WINDOW=""
 NEW_AI_ENGINE=""
 NEW_AI_ROLE=""
@@ -145,6 +150,18 @@ while [ $# -gt 0 ]; do
     --leftover-confirmed) MODE="leftover-confirmed" ;;
     --role)
       PANE_ROLE="${2:-}"; shift "$(( $# < 1 ? $# : 1 ))" ;;
+    --close-row)
+      # 10-24 @abb89:右鍵「關閉這一席」的回呼。走 --click 同一條路,只是命中器用 close 意圖
+      #   (整列都算、只認有 [X]/(x) 的列)⇒ 彈的是跟點 [X] 同一個確認選單,真關照舊只在 --release-confirmed。
+      #   審查 r1 M2:參數逐格判 --* / 空,短少時不把 --dry-run 當成角色 / 座標吃掉
+      HIT_INTENT="close"
+      MODE="click"
+      for _slot in ROLE CX CY SESSION; do
+        case "${2:-}" in --*|"") break ;; esac
+        printf -v "$_slot" '%s' "$2"
+        shift
+      done
+      ;;
     --click)
       MODE="click"
       ROLE="${2:-}"
@@ -218,6 +235,14 @@ while [ $# -gt 0 ]; do
       #   閒置重驗一定說 active 而拒殺;人已按 X 又按確定=兩重明示,這條旗標跳過那一關。
       ;;
     --abort-open) ABORT_OPEN=1 ;;      # 只跟 --release-confirmed 一起用;單獨給沒有意義但也不炸
+    --soft-since)                      # 10-24:(x) 軟關入口,帶選單開出的時間(epoch 秒);見 release-confirmed 段
+      SOFT_SINCE="${2:-}"
+      case "$SOFT_SINCE" in --*|"") SOFT_SINCE="" ;; *) shift "$(( $# < 1 ? $# : 1 ))" ;; esac  # 沒接值不吃下一個旗標
+      ;;
+    --expect-window)                   # 10-24:只跟 --close-row 一起用;右鍵選單開出時那一列的窗 id
+      EXPECT_WINDOW="${2:-}"
+      case "$EXPECT_WINDOW" in --*|"") EXPECT_WINDOW="" ;; *) shift "$(( $# < 1 ? $# : 1 ))" ;; esac
+      ;;
     --close-cabin) CLOSE_CABIN=1 ;;    # 09-14 the maintainer:關的是最後一席 ⇒ 關完席把整艙收掉(走 idle_reaper 收艙,不強制;見下方 close-cabin 段)
     --kill-focused-seat)
       # the maintainer 18:2x:右鍵「刪除聚焦窗格」。只殺席位窗,不用確認對話框,
@@ -248,6 +273,13 @@ while [ $# -gt 0 ]; do
       CX="${5:-}"
       CY="${6:-}"
       shift "$(( $# < 5 ? $# : 5 ))"
+      ;;
+    --new-ai-key)
+      # 10-24 @abb89:計費組缺金鑰 ⇒ 引擎層那一項改叫這裡:叫出 aib secret ask,不開死窗
+      MODE="new-ai-key"
+      NEW_AI_ENGINE="${2:-}"
+      PANE="${3:-}"
+      shift "$(( $# < 2 ? $# : 2 ))"
       ;;
     --new-ai-open)
       # CodexBot 專用可見 preflight。一般引擎仍走原本直接開席路徑。
@@ -1526,6 +1558,13 @@ WHEEL_ACTION="{\"action\":\"fold-scroll\",\"dir\":\"$WHEEL_DIR\",\"rows\":3}"
       review) ROLE=pending-review ;;
       hub-frame) ROLE=hub-frame ;;
     esac
+    # 右鍵「關閉這一席」(審查 r1 M1):只在 ai-list 內容列(y>=2)才往下走,
+    #   不讓 --close-row 經過下面的捲軸 / 分頁切換前置動作
+    if [ "$HIT_INTENT" = "close" ]; then
+      case "${CY:-}" in ''|*[!0-9]*|?????*) exit 0 ;; esac      # 只收 1–4 位數字
+      case "${CX:-}" in ''|*[!0-9]*|?????*) exit 0 ;; esac      # 欄一樣(命中器不看欄,但不讓怪字串往下傳)
+      [ "$ROLE" = "ai-list" ] && [ "$CY" -ge 2 ] || exit 0
+    fi
     # ★點擊也要從被點 session 重導艙身份（wheel／殺席已做；click 先前漏做）
     # 否則 hit_test 讀錯艙 hub-frame-rowmap、toggle 寫錯艙 panel-layout ⇒ 畫面零反應。
     SESSION="${SESSION:-$EZ2_TMUX_SESSION}"
@@ -1534,7 +1573,9 @@ WHEEL_ACTION="{\"action\":\"fold-scroll\",\"dir\":\"$WHEEL_DIR\",\"rows\":3}"
     fi
     # 這一按下是從捲軸開始的:拖過的話位置已經跟著走,放開不要再翻一頁,
     # 也不要誤觸同一列上的刪帳／切帳。
-    if [ -n "${EZ2_COCKPIT_STATE_DIR:-}" ] && [ -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-grab" ]; then
+    #   右鍵「關閉這一席」不是從捲軸開始的按下 ⇒ 不碰這兩個狀態檔(審查 r2 M1)
+    if [ "$HIT_INTENT" != "close" ] && [ -n "${EZ2_COCKPIT_STATE_DIR:-}" ] \
+        && [ -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-grab" ]; then
       _scrolled=0
       [ -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-dragged" ] && _scrolled=1
       rm -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-grab" "$EZ2_COCKPIT_STATE_DIR/scrollbar-dragged"
@@ -1576,13 +1617,22 @@ for name, val in (("ai", "2"), ("usage", "1"), ("left", "3")):
     fi
     if ! ACTION="$("$EZ2_PY3" "$HERE/hit_test.py" --role "$ROLE" \
           --x "${CX:-0}" --y "${CY:-0}" --cabin "${EZ2_AIB_INSTANCE:-}" \
-          --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null)"; then
+          --intent "$HIT_INTENT" --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null)"; then
       exit 0
     fi
     if ! KIND="$("$EZ2_PY3" -c \
           'import json,sys; print(json.loads(sys.argv[1])["action"])' \
           "$ACTION" 2>/dev/null)"; then
       exit 0
+    fi
+    # 右鍵「關閉這一席」只准走 [X] 那一支(確認選單);命中器給別的一律當沒點到
+    if [ "$HIT_INTENT" = "close" ] && [ "$KIND" != "kill-idle" ]; then
+      exit 0
+    fi
+    # 審查 r2 S1:選單開著時右欄重畫 / 重排,同一行可能已換成別席 ⇒ 命中的窗不是選單開出時那一席就不動
+    if [ "$HIT_INTENT" = "close" ]; then
+      _HIT_WIN="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("window") or "")' "$ACTION" 2>/dev/null || true)"
+      [ -n "$EXPECT_WINDOW" ] && [ "$_HIT_WIN" = "$EXPECT_WINDOW" ] || exit 0
     fi
     case "$KIND" in
       usage-header-tap|usage-subtab|usage-add-codex-oauth|usage-add-codex-token|\
@@ -2548,6 +2598,7 @@ print(it.get("hold_rc") if it.get("status") == Q.HOLD_STATUS and it.get("hold_rc
         WIN="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1])["window"])' "$ACTION")"
         LABEL="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("label") or "")' "$ACTION")"
         STATUS="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("status") or "")' "$ACTION")"
+        SOFT="$("$EZ2_PY3" -c 'import json,sys; print(1 if json.loads(sys.argv[1]).get("soft") is True else 0)' "$ACTION")"
         SESSION="${SESSION:-$EZ2_TMUX_SESSION}"
         HUB="$EZ2_AIHUB_SOCKET"
         if [ "$DRY" != "1" ]; then
@@ -2584,6 +2635,10 @@ print(it.get("hold_rc") if it.get("status") == Q.HOLD_STATUS and it.get("hold_rc
         printf -v SCRIPT_Q '%q' "$HERE/mouse-ctl.sh"
         printf -v WIN_Q '%q' "$WIN"
         printf -v SESSION_Q '%q' "$SESSION"
+        # 10-24:(x) 軟關帶選單開出的時間,執行端只問「之後有沒有再動」(見 release-confirmed 段)
+        if [ "$SOFT" = "1" ]; then
+          ABORT_FLAG="$ABORT_FLAG --soft-since $(date +%s)"
+        fi
         CONFIRM_ACTION="run-shell 'bash $SCRIPT_Q --release-confirmed $WIN_Q $SESSION_Q$ABORT_FLAG$RUNSHELL_REDIR'"
         # 取消也留痕(第三艦長二退要的不變量):按下確定後**必定**在
         # mouse-errors.log 留一行(殺了/拒了/取消了)。先前形狀是「按下去
@@ -2760,6 +2815,24 @@ EOF
     bind_menu_layer
     exit 0
     ;;
+  new-ai-key)
+    # 缺金鑰那一項:白名單內、api_key 那一組才動;值只在 aib secret ask 的遮字框與 Touch ID 裡走,不經過這裡。
+    case " $(new_ai_providers) " in
+      *" $NEW_AI_ENGINE "*) ;;
+      *) exit 0 ;;
+    esac
+    if [ "$DRY" = "1" ]; then
+      run "$EZ2_PY3" "$HERE/open_readiness.py" ask-key "$NEW_AI_ENGINE"
+      exit 0
+    fi
+    _notice="$("$EZ2_PY3" "$HERE/open_readiness.py" ask-key "$NEW_AI_ENGINE" 2>>"$RUNSHELL_LOG" || true)"
+    [ -n "$_notice" ] || exit 0
+    _target=()
+    [ -n "$PANE" ] && _target=(-t "$PANE")
+    env -u TMUX tmux display-message -d 15000 \
+      ${_target[@]+"${_target[@]}"} "$_notice" >/dev/null 2>&1 || true
+    exit 0
+    ;;
   new-ai-open)
     # 右鍵開 CodexBot 原本把 preflight 錯誤全丟進 aib-open.log，使用者只會
     # 看到「沒反應」。這層保留完整日誌，同時把可行動原因顯示在艙底部。
@@ -2821,7 +2894,14 @@ EOF
       # 第一層:引擎(清單從 aib PROVIDERS 長出來,新品牌自動出現)
       _title="$("$EZ2_PY3" "$COCKPIT/i18n_lib.py" aib.context.menu.new_ai \
         2>/dev/null | sed -n '1p' || true)"
+      # 10-24 @abb89:開席前先看每家缺不缺東西(open_readiness.py,一次問完、一家一行;查壞了一律當 ok)。
+      _ready_lines=()
+      while IFS= read -r _rl; do _ready_lines+=("$_rl"); done \
+        < <("$EZ2_PY3" "$HERE/open_readiness.py" $_providers 2>/dev/null || true)
+      _ri=0
       for _p in $_providers; do
+        _ready="${_ready_lines[$_ri]:-ok}"
+        _ri=$((_ri + 1))
         # filter_new_ai_providers.py 在 native/bot/api_key 段之間插入 __SEP__
         if [ "$_p" = "__SEP__" ]; then
           _items+=("" "" "")
@@ -2829,8 +2909,16 @@ EOF
         fi
         printf -v _pq '%q' "$_p"
         _plabel="$(new_ai_engine_label "$_p")"
+        #   缺金鑰 ⇒ 寫「缺金鑰」、點了叫出 aib secret ask,不開死窗;bot 沒接好 ⇒ 寫缺哪步、照樣點得開。
+        _rstate=ok _rdetail="" _rsuffix=""
+        IFS=$'\t' read -r _rstate _rdetail _rsuffix <<< "$_ready"
+        [ -z "${_rsuffix:-}" ] || _plabel="$_plabel #[fg=colour244]${_rsuffix}#[default]"
         # the maintainer 09-20:引擎名右側不要數字快捷鍵(與 bind-menu 同形,key 留空)
-        _items+=("$_plabel" "" "run-shell 'bash $SCRIPT_Q --new-ai-menu $_pq $PANE_ARG_Q ${CX:-0} ${CY:-0}$RUNSHELL_REDIR'")
+        if [ "${_rstate:-ok}" = "need_key" ]; then
+          _items+=("$_plabel" "" "run-shell -b 'bash $SCRIPT_Q --new-ai-key $_pq $PANE_ARG_Q$RUNSHELL_REDIR'")
+        else
+          _items+=("$_plabel" "" "run-shell 'bash $SCRIPT_Q --new-ai-menu $_pq $PANE_ARG_Q ${CX:-0} ${CY:-0}$RUNSHELL_REDIR'")
+        fi
       done
     else
       # 第二層:角色 → 真正開席(--again=同 hub 次席,dgrs=完整模式)
@@ -3062,8 +3150,20 @@ EOF
     # ★命令替換必須包在 if 條件裡:本檔 set -euo pipefail,裸賦值一旦拿到
     # 非零就整支中止,rc 漏給 run-shell=錯誤畫面蓋艙(E2.13 鐵律破)。
     # 探針「拒殺」本來就是回非零的正常路徑,踩過一次(rc=3 漏出)。
+    # 10-24 @abb89(右鍵實測):(x) 是「有 💤、未達 [X] 門檻」的軟關入口(Andy 09-21),先前這裡照樣拿
+    #   300 秒門檻重驗 ⇒ 按 (x) 再按確定一定被拒,還誤報「已恢復活動」。軟關改問「選單開出之後有沒有再動」:
+    #   門檻 = 選單開著的秒數(至少 1)。這道重驗存在的原因(選單等人的期間席又活起來)照樣擋得住。
+    _PROBE_TH=()
+    #   時間在未來(手打 / 時鐘往回調)⇒ 不放寬，照 [X] 的 300 秒;不收前導零(bash 算術會當八進位、set -e 中止)。
+    if [[ "$SOFT_SINCE" =~ ^[1-9][0-9]{8,10}$ ]]; then
+      _SOFT_WAIT=$(( $(date +%s) - SOFT_SINCE ))
+      if [ "$_SOFT_WAIT" -ge 0 ]; then
+        [ "$_SOFT_WAIT" -ge 1 ] || _SOFT_WAIT=1
+        _PROBE_TH=(--threshold "$_SOFT_WAIT")
+      fi
+    fi
     if PROBE_OUT="$("$EZ2_PY3" "$COCKPIT/activity_probe.py" \
-         --window "$WIN" 2>/dev/null)"; then
+         --window "$WIN" ${_PROBE_TH[@]+"${_PROBE_TH[@]}"} 2>/dev/null)"; then
       PROBE_RC=0
     else
       PROBE_RC=$?
@@ -3083,6 +3183,26 @@ except Exception: print("")' "${PROBE_OUT:-}" 2>/dev/null || echo "")"
       echo "$(date '+%F %T') release no-signal human-confirmed ($WIN): 放行(兩重明示)"         >> "$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" 2>/dev/null || true
       PROBE_RC=0
     fi
+    # 10-24(審查第 1 位):(x) 的 💤 看的是席位檔自報時間,對話檔可能幾分鐘前才寫過;席若正在跑一個很長的
+    #   工具呼叫,對話檔不會動,只看「選單開出後有沒有寫」會把它關掉。軟關再取一次 CPU(探針同一支):
+    #   還在跑 ⇒ 拒;量不到 ⇒ 照 08-29「兩重明示,無訊號不擋」。DRY 給一個不存在的絕對路徑,碰不到真 tmux。
+    if [ "$PROBE_RC" = "0" ] && [ ${#_PROBE_TH[@]} -gt 0 ] && [ "${ABORT_OPEN:-0}" != "1" ]; then
+      if [ "$DRY" = "1" ]; then
+        _CPU_SOCK="/nonexistent/aib-dry-socket"
+      else
+        _CPU_SOCK="$(env -u TMUX tmux -L "$HUB" display-message -p '#{socket_path}' 2>/dev/null || true)"
+      fi
+      _CPU_OUT=""
+      if [ -n "$_CPU_SOCK" ]; then
+        _CPU_OUT="$("$EZ2_PY3" "$COCKPIT/activity_probe.py" --window "$WIN" --sample-socket "$_CPU_SOCK" 2>/dev/null || true)"
+      fi
+      if [ "$("$EZ2_PY3" -c 'import json,sys
+try: print(json.loads(sys.argv[1]).get("source") or "")
+except Exception: print("")' "$_CPU_OUT" 2>/dev/null || echo "")" = "active" ]; then
+        PROBE_RC=3
+        PROBE_OUT='{"source": "busy"}'
+      fi
+    fi
     if [ "$PROBE_RC" != "0" ]; then
       REASON="$("$EZ2_PY3" -c 'import json,sys
 try:
@@ -3091,7 +3211,9 @@ except Exception:
     d = {}
 src = d.get("source")
 idle = d.get("idle_s")
-if src == "active":
+if src == "busy":
+    print("該席還在跑(CPU 有在動),取消釋放")
+elif src == "active":
     print("該席已恢復活動(閒置 %ss<門檻),取消釋放" % idle)
 else:
     print("拿不到活動跡證,拒絕釋放(寧缺勿假)")' "${PROBE_OUT:-}" 2>/dev/null \
@@ -3210,6 +3332,10 @@ else:
     exec 2>/dev/null
     case "$SURFACE" in pane|border|status) ;; *) exit 0 ;; esac
     SESSION="${SESSION:-$EZ2_TMUX_SESSION}"
+    # 審查 #287 r3 M1:run-shell 的環境是伺服器第一個艙的;右鍵選單讀的 rowmap 要是**被點的那一艙**
+    #   (否則第二艙以後「詳情 / 開啟」對到別艙同一行、「關閉這一席」帶錯窗 id)。取不到艙身份 ⇒ 不給關閉項。
+    CTX_CABIN_OK=0
+    aib_cabin_env_from_session "$SESSION" && CTX_CABIN_OK=1
     [ -n "$PANE" ] || PANE="="
     LABEL_BLOCK="$("$EZ2_PY3" "$COCKPIT/i18n_lib.py" \
       "aib.context.surface.${SURFACE}" \
@@ -3241,6 +3367,31 @@ else:
           'import json,sys; print(json.loads(sys.argv[1]).get("window", ""))' \
           "$META" 2>/dev/null || true)"
       fi
+    fi
+
+    # 10-24 @abb89:右鍵「關閉這一席」—— 只有那一列本來就有 [X]/(x) 才出現;點了回呼 --close-row,
+    #   彈的是跟點 [X] 同一個確認選單(取消排第一、真關只在 --release-confirmed、軟關帶 --soft-since)。
+    CLOSE_ACTION=""
+    CLOSE_TITLE=""
+    _CX_OK="${CX:-0}"; _CY_OK="${CY:-0}"
+    case "$_CX_OK" in *[!0-9]*) _CX_OK=0 ;; esac          # 座標只收數字才嵌進 run-shell 字串
+    case "$_CY_OK" in *[!0-9]*) _CY_OK=0 ;; esac
+    if [ "$CTX_CABIN_OK" = "1" ] && [ -n "$WINDOW" ] && [ "$_CY_OK" -ge 2 ]; then
+      _CLOSE_HIT="$("$EZ2_PY3" "$HERE/hit_test.py" --role "$ROLE" \
+        --x "${CX:-0}" --y "${CY:-0}" --intent close \
+        --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null || true)"
+      case "$_CLOSE_HIT" in
+        *'"kill-idle"'*)
+          CLOSE_TITLE="$("$EZ2_PY3" "$COCKPIT/i18n_lib.py" \
+            aib.context.menu.close_seat 2>/dev/null | sed -n '1p' || true)"
+          if [ -n "$CLOSE_TITLE" ]; then
+            printf -v SCRIPT_Q '%q' "$HERE/mouse-ctl.sh"
+            printf -v SESSION_ARG_Q '%q' "$SESSION"
+            printf -v WIN_ARG_Q '%q' "$WINDOW"
+            CLOSE_ACTION="run-shell 'bash $SCRIPT_Q --role right --close-row ai-list $_CX_OK $_CY_OK $SESSION_ARG_Q --expect-window $WIN_ARG_Q$RUNSHELL_REDIR'"
+          fi
+          ;;
+      esac
     fi
 
     printf -v PANE_ARG_Q '%q' "$PANE"
@@ -3287,13 +3438,16 @@ else:
           "$DETAILS_LABEL" d "$DETAIL_ACTION" \
           "$OPEN_LABEL" o "$OPEN_ACTION" \
           ${NEW_AI_ACTION:+"$NEW_AI_TITLE" n "$NEW_AI_ACTION"} \
-          ${THEME_ACTION:+"$THEME_TITLE" t "$THEME_ACTION"}
+          ${THEME_ACTION:+"$THEME_TITLE" t "$THEME_ACTION"} \
+          ${CLOSE_ACTION:+"$CLOSE_TITLE" x "$CLOSE_ACTION"}
       else
+        # 「關閉這一席」排最後(離游標最遠);點了還有一道確認選單,不是直關
         env -u TMUX tmux display-menu -O -M -T "$TITLE" -t "$PANE" ${MENU_POS[@]+"${MENU_POS[@]}"} \
           "$DETAILS_LABEL" d "$DETAIL_ACTION" \
           "$OPEN_LABEL" o "$OPEN_ACTION" \
           ${NEW_AI_ACTION:+"$NEW_AI_TITLE" n "$NEW_AI_ACTION"} \
           ${THEME_ACTION:+"$THEME_TITLE" t "$THEME_ACTION"} \
+          ${CLOSE_ACTION:+"$CLOSE_TITLE" x "$CLOSE_ACTION"} \
           >/dev/null 2>&1 || true
       fi
     elif [ "$DRY" = "1" ]; then

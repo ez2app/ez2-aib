@@ -22,6 +22,12 @@
       "letter": "CLA",
       "status": "supported",
       "default_requested_model": "claude-opus-5-5",
+      "models": [
+        {"id": "claude-opus-5-5", "label": "Opus 5.5", "default": true},
+        {"id": "claude-sonnet-5-5", "label": "Sonnet 5.5", "default": false},
+        {"id": "claude-haiku-5-5", "label": "Haiku 5.5", "default": false}
+      ],
+      "models_note": "動力室出發的模型下拉(@abb89 10-24 裁示:id 只放官方說明或 --help / --model 試跑驗過的;查不到的家不放、只給預設 + 用過的)",
       "identity": "assigned-session-id",
       "identity_note": "能被指派新 session id 的 CLI 之一(與 grok 同一集合);aib 開席前產 uuid 用 --session-id 餵進去,席位檔那個值是權威值不是事後猜。",
       "menu_label": "Claude",
@@ -76,6 +82,7 @@
       "identity": "assigned-session-id",
       "identity_note": "API-key 終端席（非 OAuth CLI）。aib 開席前產 uuid，經 provider-launch --session-id 餵入 deepseek_cli；席位檔那個值是權威值。金鑰讀 DEEPSEEK_API_KEY（ai.env / env），缺 key 具名失敗，不走 ED.4。",
       "auth": "api_key",
+      "api_key_env": "DEEPSEEK_API_KEY",
       "menu_label": "DeepSeek",
       "menu_group": "api_key"
     },
@@ -87,6 +94,7 @@
       "identity": "assigned-session-id",
       "identity_note": "API-key 終端席（NVIDIA NIM OpenAI-compat；非 OAuth CLI）。aib 開席前產 uuid，經 provider-launch --session-id 餵入 nvidia_cli；席位檔那個值是權威值。金鑰讀 NVIDIA_API_KEY（api-key-nvidia.env / env）；可選 NVIDIA_BASE_URL（預設 https://integrate.api.nvidia.com）。缺 key 具名失敗，不走 ED.4。",
       "auth": "api_key",
+      "api_key_env": "NVIDIA_API_KEY",
       "menu_label": "NVIDIA",
       "menu_group": "api_key"
     },
@@ -98,6 +106,7 @@
       "identity": "assigned-session-id",
       "identity_note": "API-key 終端席 **OpenRouter**（OpenRouter OpenAI-compat；非 OAuth CLI）。顯示名 OpenRouter；引擎 id=openrouter。aib 開席前產 uuid，經 provider-launch --session-id 餵入 openrouter_cli；金鑰 OPENROUTER_API_KEY（api-key-openrouter.env）。OpenAI base 預設 https://openrouter.ai/api/v1。可選 OPENROUTER_HTTP_REFERER／OPENROUTER_APP_TITLE。缺 key 具名失敗，不走 ED.4。",
       "auth": "api_key",
+      "api_key_env": "OPENROUTER_API_KEY",
       "menu_label": "OpenRouter",
       "menu_group": "api_key"
     },
@@ -109,6 +118,7 @@
       "identity": "assigned-session-id",
       "identity_note": "API-key 終端席 **TypeSafe**（System One 原生；非 OpenAI-chat／非 Anthropic Messages）。顯示名 TypeSafe；引擎 id=typesafe。aib 開席前產 uuid，經 provider-launch --session-id 餵入 typesafe_cli；金鑰 TYPESAFE_API_KEY（api-key-typesafe.env）。Base 預設 https://api.typesafe.ai。缺 key 具名失敗，不走 ED.4。",
       "auth": "api_key",
+      "api_key_env": "TYPESAFE_API_KEY",
       "menu_label": "TypeSafe jev",
       "menu_group": "api_key"
     },
@@ -120,6 +130,7 @@
       "identity": "assigned-session-id",
       "identity_note": "API-key 終端席 **OpenRouter jev**(System One 問答介面;走 OpenRouter 原生決策端點 https://openrouter.ai/api/alpha/decisions,**不是** chat/completions,那裡拒收 jev)。顯示名 OpenRouter jev;引擎 id=openrouterjev。aib 開席前產 uuid,經 provider-launch --session-id 餵入 typesafe_cli --route openrouter;金鑰 OPENROUTER_API_KEY(api-key-openrouter.env,與 openrouter 席共用)。TypeSafe 對外開放前,jev 只在這裡;缺 key 具名失敗。",
       "auth": "api_key",
+      "api_key_env": "OPENROUTER_API_KEY",
       "menu_label": "OpenRouter jev",
       "menu_group": "api_key"
     },

@@ -224,8 +224,9 @@ BOOT_LABEL = "com.ez2.aib-chat-bridge"
 BOOT_POLL_S = 30                            # 開關關著時,boot-run 每這麼久看一次開關
 BOOT_THROTTLE_S = 10                        # launchd:退出後至少隔這麼久再拉
 _BOOT_PATH_EXTRA = ("/opt/homebrew/bin", "/usr/local/bin")   # launchd 的 PATH 沒有 Homebrew ⇒ 工人找不到 tmux / caffeinate
-_BOOT_ENV_KEEP = ("HOME", "LANG", "EZ2_AIB_STATE_ROOT", "EZ2_AIB_ROOT", "AIB_CORE_DIR", "EZ2_AIB_LOCALE",
-                  "AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR")    # 只帶路徑類;不帶 token / 金鑰 / 開關
+_BOOT_ENV_KEEP = ("HOME", "LANG", "EZ2_AIB_STATE_ROOT", "EZ2_AIB_HOME", "EZ2_AIB_SECRETS_DIR", "AIB_NOSTR_MAP",
+                  "EZ2_AIB_ROOT", "AIB_CORE_DIR", "EZ2_AIB_LOCALE",
+                  "AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR")    # 只帶路徑類;不帶 token / 金鑰 / 開關(金鑰夾跟指令列同一個根)
 _BOOT_TERM = {"got": False}
 
 
@@ -978,7 +979,7 @@ def _my_published(env):
     pub = set((CR.read_profile(env) or {}).get("public") or [])
     return [{"cabin": e.get("cabin") or "main", "seat": e["seat5"],
              "addr": "%s/%s/%s" % (owner, e.get("cabin") or "main", e["seat5"])}
-            for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub and owner]
+            for e in NK.sending_seats(env) if e["seat5"] in pub and owner]
 
 
 def _tell_requester(root, hit, rec):
@@ -1795,7 +1796,7 @@ def selftest(env, fetch=True):
     m = NK.read_map(env)
     owner = (m.get("owner") or {}).get("npub")
     pub = set(prof.get("public") or [])
-    seats = [e for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub]
+    seats = [e for e in NK.sending_seats(env) if e["seat5"] in pub]
     if not seats:
         rows.append(("published_none", False, {}))
     for e in seats:

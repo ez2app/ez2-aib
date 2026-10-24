@@ -4,6 +4,59 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.52
+
+- **`aib test` no longer crashes Python 3.15 on macOS**: the network audit hook no longer duplicates old socket file descriptors (a reused descriptor could be a protected one, and duplicating it made the system kill the test process). It now keeps weak references to the sockets it bound and asks them directly.
+- **Status line context reading**: the aib-boards status line now refreshes the context figure when a turn ends, not only on its 60-second timer, so a newly opened seat no longer shows "context not measured" for its first minute.
+- **`aib secret ask` names**: a secret name must match `[A-Z][A-Z0-9_]{0,127}` before anything else runs (otherwise `bad_name`). The mail-sending credentials can only be pushed straight to the server (`--remote-only`); no copy stays on this computer.
+- **Power room hardening**: sign-in links are still returned when the wait runs out; the sign-in log is removed before it is created again (exclusive create) and always cleaned up afterwards; more edge-case tests.
+- **Online chat after a persona switch**: each seat now sends and lists exactly one key (the one for the persona it is bound to now), so other computers no longer reject the roster as having duplicate seats. When a peer's seat snapshot is stale, the roster is used instead. A malformed seat display file is treated as "not bound" instead of stopping the chat service.
+
+## 0.1.51
+
+- **Right-click menu, more hardening**: clicking [X] on a seat row now checks the same things as "Close this seat" in the right-click menu (the cell exists and the window id is a tmux id); otherwise the click does nothing. If the menu's 3-second time limit cannot be cleared, the timer is made harmless so the menu still prints; every other path puts the previous handler back.
+- **Online chat keys follow your state folder**: chat keys and the key map now live under the same root as aib's other secrets (`EZ2_AIB_STATE_ROOT`, then `EZ2_AIB_HOME`, then `~/.ez2-aib`); with none of these set nothing moves. The background chat bridge started at login now gets the same path settings. If the new root has no identity but `~/.ez2-aib` still has one, aib stops with `LegacyKeysElsewhere` instead of quietly making a new identity: either set `EZ2_AIB_SECRETS_DIR` and `AIB_NOSTR_MAP` back to the old location to keep it, or put an empty key map in the new root to start a new identity on purpose.
+
+## 0.1.50
+
+- **Captain's power room (`aib power`)**: a first stop for new captains. `aib power status` shows versions, health, bindings and a light for each AI (signed in / quota); `aib power login <ai>` opens that AI's own sign-in link; `aib power upgrade <ai>` updates its CLI. `aib ui power` opens a simple static page with the same data — its buttons only copy commands for you to paste, and no local server is started.
+- **Launch deck data**: `aib power launch --list` and `aib power fav` list personas, favourites and the last 20 launches; `aib power launch <ai> --dry-run` prints the commands that would open a seat and bind a persona and second brain, without running them.
+- **Starter task board**: R / SR / SSR / UR tasks that tick themselves from what you actually do on this machine (open a seat, bind a persona, send a seat message, hand off…); `aib power tier` turns a level on or off. SSR and UR open after your first launch.
+- **Ask AI (`aib power ask`)**: asks an AI a question about aib with every tool and MCP server turned off, in a read-only sandbox — it only answers, it never acts.
+- **Why AIB (`aib power why`)**: pick and rank up to 5 reasons you use aib; kept on this machine for now.
+- **Support bundle (`aib support`)**: collects versions, `doctor` results and failure codes into one local file you can choose to send; it never includes log text, conversations or keys, and never sends anything by itself.
+
+## 0.1.49
+
+- **Seat titles in the right-click menu drop invisible characters**: right-to-left overrides and zero-width characters are removed before a title is drawn, so a name can no longer be shown reversed or made to look like another seat; emoji are kept.
+- **"Close this seat" checks more before it offers itself**: the row's close cell has to be a real range and the window id has to look like a tmux window, otherwise the item is not shown; the menu's column value only accepts 1–4 digits.
+- **The right-click menu waits at most 3 seconds for its readiness check**: if one provider's settings are slow to read, the menu still opens and that seat explains the problem itself when opened; saving a key is not affected by the limit.
+
+## 0.1.48
+
+- **Right-click "Close this seat"**: the seat list's right-click menu can now close the seat under the pointer; it checks that the window is still the one you clicked before closing, and does nothing if it has changed.
+- **Every provider's "skip approvals" mode is now pinned by a test**: Claude, Codex, agy, Copilot and Grok each start with their own flag in dgrs mode (and none in safe mode) across new, resumed, forked and relaunched seats; API-key and bot seats are listed as having no such flag.
+- **OpenRouter / TypeSafe seats start when a model is given and effort is turned off**: previously they stopped at once with an internal variable error.
+
+## 0.1.47
+
+- **Opening a folder in agy / Grok no longer stalls on the trust question**: the folder trust prompt is answered for the folder you opened (never for `/`, your home folder or its parent), and only the menu itself is sent to the small model that picks the answer.
+- **The right-click "New AI" menu says what is missing before you open**: providers billed by API key show "missing key — click to add" and open `aib secret ask` (masked box + Touch ID) instead of a window that dies at once; bots that are not connected yet say which step is missing.
+- **A new seat's onboarding message is marked read once the seat replies "ready"**, so the status bar no longer shows a stale unread DM.
+- **Usage probes clean up after themselves**: temporary probe folders are removed from the agy / Grok trusted-folder lists.
+
+## 0.1.46
+
+- **Opening another AI from the right-click menu works again**: one-shot resume flags (`AIB_REVIVE_SESSION_UUID` and friends) no longer leak into the tmux server, so a new seat is not mistaken for a resume of an old conversation.
+- **The (x) soft-close entry actually closes the seat**: confirming (x) now re-checks only whether the seat moved while the menu was open (and that its CPU is idle), instead of the 300-second rule meant for [X]. [X] is unchanged.
+- **`aib plugins license` keeps add-ons you already have**: if the licence installed on this machine covers more add-ons than the one fetched, it is no longer overwritten.
+- **Touch ID approval text filters more invisible characters**: C1 control characters, U+00AD and U+061C are removed before the text is shown.
+
+## 0.1.45
+
+- **New `aib plugins install <name>[@version]`, `aib plugins catalog`, `aib plugins license <addon>`**: members can get add-ons straight from the ez2.page catalog. aib checks the size and sha256 the catalog lists, unpacks with limits (archive bombs, links and odd paths are refused), and installs only if the package's own signature checks out; nothing unsigned is ever loaded. Paid add-ons need this machine to be bound to ez2.page and the account to own the add-on. A newer installed version is not downgraded unless you name the version. `plugins license` fetches the licence your account owns and installs it the same way as `aib license install`. Results use the contract codes in `contracts/page-api.json` (`plugins.*`); `--json` gives the same receipt.
+- **Seat panel opens large transcripts much faster**: the seat panel and its pending check now read only the end of the transcript, going further back only when needed (a 243 MB transcript went from about 2 s to 0.2 s).
+
 ## 0.1.44
 
 - **New `aib create submit / status / list` (submission service not open yet)**: send a finished creation package (a `.tar` made by an add-on or skill) for review, then check its status or list what you have sent. aib checks the package locally first (paths, file types, manifest hashes, size of each member), asks for one Touch ID before sending, and prints the server's review state. Until the submission service opens, `submit` answers `creator_unsupported` and nothing is stored. Results use the contract codes in `contracts/page-api.json` (`creator.*`); `--json` gives the same receipt.

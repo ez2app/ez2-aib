@@ -132,6 +132,7 @@ fi
 # 不依賴 PATH 上的同名 CLI；直接 exec 本倉 openrouter_cli.py。
 # 缺 OPENROUTER_API_KEY 由 CLI 具名退出，訊息不指向 ED.4。
 if [ "$PROVIDER" = "openrouter" ]; then
+  PY3="${EZ2_PY3:-python3}"
   OR_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE")
   [ -n "$SESSION_UUID" ] && OR_ARGS+=(--session-id "$SESSION_UUID")
   exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/openrouter_cli.py" "${OR_ARGS[@]}"
@@ -141,6 +142,7 @@ fi
 # 不依賴 PATH 上的同名 CLI；直接 exec 本倉 typesafe_cli.py。
 # 缺 TYPESAFE_API_KEY 由 CLI 具名退出，訊息不指向 ED.4。
 if [ "$PROVIDER" = "typesafe" ]; then
+  PY3="${EZ2_PY3:-python3}"
   TS_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE")
   [ -n "$SESSION_UUID" ] && TS_ARGS+=(--session-id "$SESSION_UUID")
   exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/typesafe_cli.py" "${TS_ARGS[@]}"
@@ -149,6 +151,7 @@ fi
 # --- openrouterjev (API-key 終端席;同一支 System One 問答介面,走 OpenRouter 決策端點;鑰=OPENROUTER_API_KEY) ---
 # TypeSafe 對外開放前 an internal service 只在 OpenRouter 上;選單分開標「OpenRouter an internal service」/「TypeSafe an internal service」(the maintainer 09-25)。
 if [ "$PROVIDER" = "openrouterjev" ]; then
+  PY3="${EZ2_PY3:-python3}"
   OJ_ARGS=(--model "$REQUESTED_MODEL" --cwd "$PROJECT_DIR" --role "$ROLE" --mode "$MODE" --route openrouter)
   [ -n "$SESSION_UUID" ] && OJ_ARGS+=(--session-id "$SESSION_UUID")
   exec "${ENV_COMMAND[@]}" "$PY3" "$HERE/typesafe_cli.py" "${OJ_ARGS[@]}"
@@ -224,7 +227,14 @@ case "$PROVIDER:$MODE" in
   # 讀數會紅:plain 啟動一樣起得來。這正是「名字宣稱在守、實際沒守」那一族。
   grok:dgrs)   ARGS=(--permission-mode bypassPermissions) ;;
   grok:safe)   ARGS=() ;;
-  *)           ARGS=() ;;   # agy/copilot:mode 旗標未確立,plain 啟動
+  # agy(CLI 1.4.6,10-24 @abb89 右鍵實測 --help):dgrs 的對應物是 --dangerously-skip-permissions。
+  #   先前落在 *) plain 啟動 ⇒ 窗名寫 dgrs、實際每個工具都要人按(跟上面 grok 同一族)。
+  agy:dgrs)    ARGS=(--dangerously-skip-permissions) ;;
+  agy:safe)    ARGS=() ;;
+  # copilot(CLI 1.0.103,同日實測):dgrs 的對應物是 --allow-all(= --allow-all-tools --allow-all-paths --allow-all-urls,
+  #   同 --yolo)。先前 plain 啟動 ⇒ 底部寫「Manual Approval」。
+  copilot:dgrs) ARGS=(--allow-all) ;;
+  *)           ARGS=() ;;   # copilot:safe 等:plain 啟動
 esac
 
 # The provider process always sees an explicit requested model.  This is only
@@ -316,6 +326,12 @@ if { [ "$PROVIDER" = "agy" ] || [ "$PROVIDER" = "copilot" ] || [ "$PROVIDER" = "
 fi
 # 10-14 a seat(the maintainer 02:3x「Codex /hooks 信任要自動」):上面兩段裝完,AIB 自己的掛點還沒信任 ⇒ Mac 彈窗
 #   [同意][不要],30 秒沒按 = 同意;同意才寫 config.toml 的 trusted_hash(先備份)。別人的掛點不碰;AIB_CODEX_HOOK_TRUST=0 關。
+# 10-24 @abb89(Andy「卡選項的新開席都要能自動選成功」):agy、grok(1.0.67 起)第一次進一個資料夾會先問信不信任,
+#   開席單打不進那個畫面 ⇒ 席卡住。人在這個資料夾開席 = 要它在這裡做事 ⇒ 先寫進該家的信任清單
+#   (同 Codex 的 ensure_project_trusted);讀不懂設定檔 / 人按過不信任就不動。AIB_FOLDER_TRUST=0 關。
+if { [ "$PROVIDER" = "agy" ] || [ "$PROVIDER" = "grok" ]; } && [ -f "$HERE/folder_trust.py" ]; then
+  "${EZ2_PY3:-python3}" "$HERE/folder_trust.py" ensure "$PROVIDER" "$PROJECT_DIR" </dev/null >/dev/null || true
+fi
 if [ "$PROVIDER" = "codex" ] && [ -t 0 ] && [ -f "$HERE/codex_hook_trust.py" ]; then
   "${EZ2_PY3:-python3}" "$HERE/codex_hook_trust.py" ensure </dev/null || true
 fi

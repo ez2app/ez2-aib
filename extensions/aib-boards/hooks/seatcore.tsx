@@ -134,6 +134,18 @@ export const registerSeat: Register = on => {
     return { text: tr('seat_cmd_usage') }
   })
 
+  // 10-24 @abb89(右鍵開席實測):狀態列只靠 60 秒計時器 ⇒ 開席頭 60 秒一直「CTX 量不到」。
+  //   每一輪結束就重讀 CTX 刷狀態列(不重跑整個探測;探測照舊 60 秒一次)。
+  on('turn.complete', async ($, e, next) => {
+    const r = await next(e)
+    const pct = await readCtx($)
+    if (pct !== null && pct !== ctxPercent) {
+      ctxPercent = pct
+      if (seat && modOn()) $.ui.status(statusLabel(seat, pct))
+    }
+    return r
+  })
+
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
     if (seat && !modOn()) return r

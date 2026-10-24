@@ -30,9 +30,10 @@ WAIT_S = 60                      # 人看到視窗到按下去最多等這麼久
 LA_CODES = {"-1": "failed", "-2": "cancel", "-3": "fallback", "-4": "system_cancel",
             "-5": "no_passcode", "-6": "no_biometry", "-8": "lockout", "-9": "timeout"}
 
-_CTRL = re.compile(r"[\x00-\x1f\x7f  ]")
-# 方向控制 / 零寬字(U+202E 之類):視窗裡看不到、卻能把標題排成別的樣子 ⇒ 直接拿掉(@abb89 審 10-17)
-_INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+# C0 / DEL / C1(\x80-\x9f,例 NEL \x85)/ 行段分隔 ⇒ 換成空白(10-24 補 C1:@d07f9 審查第 1 輪記的)
+_CTRL = re.compile("[\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029]")
+# 方向控制 / 零寬字(U+202E 之類;10-24 加軟連字號 U+00AD、U+061C):視窗裡看不到、卻能把標題排成別的樣子 ⇒ 直接拿掉(@abb89 審 10-17)
+_INVISIBLE = re.compile("[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
 
 JXA = r"""
 ObjC.import('LocalAuthentication');
