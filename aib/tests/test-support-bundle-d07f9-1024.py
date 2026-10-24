@@ -19,7 +19,7 @@ S6 借 doctor 結果不記 R10(run-marks/doctor.json 不出現);aib support 從 
 S13 會員入口(倉根 bin/aib → aib/cli.py)打 aib support 真的跑到 support_bundle(10-25 雙審:cli.py TARGETS 原本指舊
     tools/support/collect.py,會收艙號 / 席號 / log 原文、金鑰沒遮):帶艙號 / 席號 / 假 log(dm + ghp_ 金鑰)環境跑
     ⇒ rc 0、support_preview、這些原文一個都不在;--write ⇒ 檔 0600、不帶席號檔名;舊收集器不在
-S14 內建 skill ez2-aib-support 只叫 aib support / --write,不叫舊收集器、不准 AI 代寄(--sender ai)
+S14 內建 skill ez2-aib-support 只叫 aib support / --write,不叫舊收集器、不准 AI 代寄(--sender ai);issue 範本 bug.yml 也不叫 --confirm
 刀(複本):K6 cli.py 的 TARGETS 加回 support ⇒ S13 紅;K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
 """
 import io
@@ -456,6 +456,12 @@ class Entry(unittest.TestCase):
         self.assertIn("aib support --write", skill)
         for bad in ("collect.py", "--sender ai", "--confirm", "issues/new"):
             self.assertNotIn(bad, skill, "skill 還叫舊收集器 / 准 AI 代寄:" + bad)
+        bug = REPO.parent / ".github" / "ISSUE_TEMPLATE" / "bug.yml"
+        if bug.exists():                                   # 刀測複本只有 aib/,沒有 .github(倉裡一定有)
+            text = bug.read_text(encoding="utf-8")
+            self.assertIn("aib support --write", text)
+            for bad in ("--confirm", "collect.py"):
+                self.assertNotIn(bad, text, "issue 範本還叫舊收集器:" + bad)
 
 
 class Knife(unittest.TestCase):

@@ -15,9 +15,9 @@ body:
     attributes:
       label: Support pack / 回報資料包
       description: >-
-        Optional. Run `aib support`, check the output, then `aib support --confirm` and attach the file it prints.
-        It is de-identified, but read it before attaching. / 選填。先跑 `aib support` 看內容,再跑 `aib support --confirm`,
-        把它印出的檔案附上來。已去識別化,附之前請自己看過。
+        Optional. Run `aib support` first to see what it would hold; to save it, run `aib support --write`.
+        Read the file yourself before attaching it. / 選填。先跑 `aib support` 看內容,要存再跑 `aib support --write`,
+        自己看過再附。
   - type: input
     id: env
     attributes:
