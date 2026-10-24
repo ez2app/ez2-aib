@@ -117,10 +117,13 @@ class Orphans(unittest.TestCase):
         self.assertIsNotNone(c, cands)
         self.assertEqual(c["kind"], "test_orphan")
         self.assertNotIn("starts", RR.public(c))
-        with mock.patch.object(RR, "scan", lambda: self.scan()):
-            r = RR.release(ids=[c["id"]], wait_s=3)
+        r = RR.release(ids=[c["id"]], wait_s=3, scan_fn=self.scan)
         self.assertEqual([x["detail"] for x in r["results"]], ["ok"], r)
-        self.assertIsNone(RR.identity(pid) if RR.identity(pid) and RR.identity(pid)[1] == 1 else None)
+        for _ in range(40):
+            if RR.identity(pid) is None:
+                break
+            time.sleep(0.05)
+        self.assertIsNone(RR.identity(pid), "釋放回 ok 但行程還在")
         log = Path(RR.released_path())
         self.assertTrue(str(log).startswith(str(self.tmp / "state")))
         self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
@@ -133,8 +136,7 @@ class Orphans(unittest.TestCase):
         c = self.find(pid, self.scan()[0])
         os.kill(pid, signal.SIGKILL)
         time.sleep(0.3)
-        with mock.patch.object(RR, "scan", lambda: self.scan()):
-            r = RR.release(ids=[c["id"]])
+        r = RR.release(ids=[c["id"]], scan_fn=self.scan)
         self.assertEqual([x["detail"] for x in r["results"]], ["candidate_changed"])
         r = RR.release(ids=["../../x"])
         self.assertEqual(r["detail"], "bad_candidate")
@@ -162,8 +164,7 @@ class Orphans(unittest.TestCase):
         c = self.find(pid, self.scan()[0])
         self.assertIsNotNone(c)
         self.assertEqual(c["pids"], [pid])
-        with mock.patch.object(RR, "scan", lambda: self.scan()):
-            RR.release(ids=[c["id"]], wait_s=3)
+        RR.release(ids=[c["id"]], wait_s=3, scan_fn=self.scan)
         ident = RR.identity(kids[0])
         self.assertIsNotNone(ident, "不符判法的子行程被收掉了")
 
@@ -191,8 +192,7 @@ class Orphans(unittest.TestCase):
         log.parent.mkdir(parents=True, exist_ok=True)
         now = time.time()
         log.write_text(json.dumps({"t": now - 60, "mode": "auto", "n_pids": RR.AUTO_MAX_PER_WINDOW}) + "\n")
-        with mock.patch.object(RR, "scan", lambda: self.scan()):
-            r = RR.release(all_safe=True, auto=True, scan_fn=lambda: ([self.find(pid, self.scan()[0])], []), now=now)
+        r = RR.release(all_safe=True, auto=True, scan_fn=lambda: ([self.find(pid, self.scan()[0])], []), now=now)
         self.assertEqual([x["detail"] for x in r["results"]], ["auto_limit"])
         self.assertIsNotNone(RR.identity(pid))
 
