@@ -35,6 +35,7 @@ A21 本機 helper 夾 / 雜湊檔被換成檔案或資料夾 ⇒ yes 印一行 J
 A22 helper 雜湊檔 / 語系檔是亂碼(不是 UTF-8)⇒ yes 印一行 JSON、key pem 不當;approve 回 201 {ok:true} 不算核准;
     pending 回 201 算錯;token 129 字拒
 A23 語系包壞掉(t() 丟例外)⇒ 視窗字用固定英文、短碼仍在最前，yes / key pem 照常;本機檔超過 1 MiB 當壞檔(不解析);token 19 字拒
+A24 history 超過 1 MiB 仍列最後 20 筆;剛好 1 MiB 的狀態檔照讀;發布視窗的備援字帶 kid 與警告;deny 回 201 不算 denied
 刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
    K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅;K8 跟轉址 ⇒ A11 紅
 """
@@ -654,6 +655,27 @@ class Approve(Base):
         self.assertEqual(self.yes(g["nonce"], now=NOW + 60), ("approved", None))
         self.assertLessEqual(len(rate.read_bytes()), 64)
         self.assertEqual(AA.site_add("a.com", None, "t" * 19, self.env), (None, "bad_token"))
+
+    def test_a24_history_tail_publish_fallback_deny201(self):
+        import unittest.mock as um
+        import i18n_lib
+        h = self.root / "approve" / "history.jsonl"
+        row = json.dumps({"result": "denied", "nonce": "Q" * 43}) + "\n"
+        h.write_text("x" * (AA.LOCAL_MAX + 5000) + "\n" + row * 25)
+        self.assertEqual([r["nonce"] for r in AA.history(self.env)], ["Q" * 43] * 20)
+        rate = self.root / "approve" / "rate.json"
+        body = json.dumps([NOW] * 3).encode()
+        rate.write_bytes(body + b" " * (AA.LOCAL_MAX - len(body)))  # 剛好 1 MiB:照讀 ⇒ 限速
+        f = self.site.add(kid=self.kid)
+        self.assertEqual(self.yes(f["nonce"], now=NOW + 1)[0], "rate_limited")
+        with um.patch.object(i18n_lib, "t", side_effect=RuntimeError("bundle broken")):
+            self.assertIsNone(AA.key_publish(self.env, run=self.se, helper="/fake/aib-sehelper", platform="darwin")[1])
+        argv = self.se.signs()[-1]
+        reason = argv[argv.index("--reason") + 1]
+        self.assertIn(self.kid, reason)
+        self.assertIn("untouched", reason)
+        d201 = lambda m, u, hd, bd: (201, b'{"ok":true}') if u.endswith("/deny") else self.site(m, u, hd, bd)  # noqa: E731
+        self.assertEqual(AA.no(f["nonce"], self.env, http=d201, now=NOW), ("site_rejected", None))
 
 class Knives(unittest.TestCase):
     def _red(self, needle, repl, test):

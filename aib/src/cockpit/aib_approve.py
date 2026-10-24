@@ -182,7 +182,9 @@ def key_publish(env=None, run=subprocess.run, helper=None, platform=None):
         return None, "touchid_unavailable"
     kid = kid_of(pub)
     msg = ("ez2-aib-approve-publish|" + kid).encode("ascii")
-    reason = _t("aib.approve.touchid_publish", {"kid": kid}, env, "Publish AIB approve key " + kid)
+    reason = _t("aib.approve.touchid_publish", {"kid": kid}, env,
+                "Publish the AIB approval key · kid %s (only publish when you are sure this Mac is untouched; "
+                "write the kid down somewhere off this Mac)" % kid)
     args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", reason]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:
@@ -427,9 +429,14 @@ def _record(env, d, result):
 
 def history(env=None):
     try:
-        lines = _read_local(_history_path(env)).splitlines()
+        with open(_history_path(env), "rb") as f:  # 只讀最後 LOCAL_MAX(檔只會變長;整份讀會被上限清空)
+            size = f.seek(0, 2)
+            f.seek(max(0, size - LOCAL_MAX))
+            lines = f.read(LOCAL_MAX).splitlines()
     except OSError:
         return []
+    if size > LOCAL_MAX:
+        lines = lines[1:]  # 第一行可能被切一半
     out = []
     for ln in lines[-HISTORY_N:]:
         r = _loads(ln)
@@ -560,8 +567,7 @@ def no(nonce, env=None, http=None, now=None):
 # ---- CLI ----
 
 def _say(key, params=None):
-    import i18n_lib
-    return i18n_lib.t(key, params or {}, locale=_locale())
+    return _t(key, params or {}, None, key)
 
 
 def main(argv=None, out=None, env=None, stdin=None):
