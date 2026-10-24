@@ -12,6 +12,8 @@ R2 回歸:真家目錄已有主人 + 兩席替代金鑰;另設暫存狀態根(�
 R3 升版不准靜默換身分(@abb89 #295 r1 必修 2):家目錄有舊身分、設 EZ2_AIB_HOME / STATE_ROOT 而新根空 ⇒
    ensure_owner / sync_seats 都丟 LegacyKeysElsewhere、家目錄不變、新根沒產鑰;sync_keys 回錯誤種類;
    明設 EZ2_AIB_SECRETS_DIR ⇒ 照產(刻意要新身分)
+R3b(@abb89 #295 r2 突變):舊根沒有 owner.key 的三種也擋 ——(a) owner.sealed + 對照表(K2 加密主人)
+   (b) 只有對照表(set_remote_owner,join 進來的機器)(c) 只有 owner.sealed;只設 AIB_NOSTR_MAP ⇒ 放行
 R4 封存走暫存根(必修 3):暫存根先發兩席,再 sync_seats([]) ⇒ 家目錄不變、<暫存根>/secrets/nostr/retired/ 有檔
 R5 開機自起(必修 1):boot_plist 帶 EZ2_AIB_HOME / EZ2_AIB_SECRETS_DIR / AIB_NOSTR_MAP(都是路徑)
 刀(複本):K1 _root 改回只看 HOME ⇒ R2 紅;K2 拿掉舊身分保護 ⇒ R3 紅
@@ -119,6 +121,30 @@ class Box(unittest.TestCase):
         mine = {"HOME": str(self.home), "EZ2_AIB_HOME": str(self.td / "n2"), "EZ2_AIB_SECRETS_DIR": str(self.td / "n2" / "secrets")}
         self.assertTrue(K.ensure_owner(mine).startswith("npub1"))                               # 明設金鑰夾 = 刻意要新身分
         self.assertEqual(tree(self.home), before)
+
+    def test_r3b_legacy_without_owner_key(self):
+        def legacy(name, sealed, mapped):
+            home = self.td / name
+            kd = home / ".ez2-aib" / "secrets" / "nostr"
+            kd.mkdir(parents=True)
+            if sealed:
+                (kd / "owner.sealed").write_text("sealed\n")
+            if mapped:
+                K.set_remote_owner(K.npub(K.pubkey_hex("%064x" % 0x9101)), {"HOME": str(home)})
+            return home
+        for name, sealed, mapped in (("a", True, True), ("b", False, True), ("c", True, False)):
+            home = legacy(name, sealed, mapped)
+            before = tree(home)
+            env = {"HOME": str(home), "EZ2_AIB_HOME": str(self.td / ("new-" + name))}
+            with self.assertRaises(K.LegacyKeysElsewhere, msg=name):
+                K.ensure_owner(env)
+            with self.assertRaises(K.LegacyKeysElsewhere, msg=name):
+                K.sync_seats([{"seat5": "aaaa1", "cabin": "c1", "persona_uid": "s-aaaa1"}], env)
+            self.assertEqual(tree(home), before, name)
+            self.assertFalse((self.td / ("new-" + name) / "secrets").exists(), name)
+        home = self.td / "a"
+        ok = {"HOME": str(home), "EZ2_AIB_HOME": str(self.td / "n3"), "AIB_NOSTR_MAP": str(self.td / "n3" / "m.json")}
+        self.assertTrue(K.ensure_owner(ok).startswith("npub1"))                 # 只設對照表路徑 = 刻意要新身分
 
     def test_r4_retire_in_temp_root(self):
         before = tree(self.home)
