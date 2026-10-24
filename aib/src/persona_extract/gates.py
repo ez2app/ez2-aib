@@ -79,7 +79,8 @@ POINTER_KINDS = ("commit", "receipt", "event", "message", "file_line")
 _POINTER_RES = (
     ("commit", re.compile(r"^[0-9a-f]{7,40}$")),
     ("event", re.compile(r"^ev_[0-9a-f]{64}$")),
-    ("message", re.compile(r"^(msg|dm|msg_id)[:_-][A-Za-z0-9._:@-]{4,120}$")),
+    # acb: 留給讀端:帳上舊指標與 ez2-ai 的 ez2-persona-evidence.js 仍產 acb:<id>(10-25 #328 裁示)
+    ("message", re.compile(r"^(msg|dm|acb|msg_id)[:_-][A-Za-z0-9._:@-]{4,120}$")),
     ("receipt", re.compile(r"^(?:[A-Za-z0-9._@-]+/)+[A-Za-z0-9._@-]+\.(json|jsonl|md|txt)$")),
     ("file_line", re.compile(r"^(?:[A-Za-z0-9._@-]+/)*[A-Za-z0-9._@-]+\.[A-Za-z0-9]{1,8}:\d{1,7}$")),
 )
