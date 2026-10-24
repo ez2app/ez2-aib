@@ -351,8 +351,7 @@ def build(env=None, now=None, with_rooms=False, with_status=False, with_state=Tr
     env = os.environ if env is None else env
     prof = CR.read_profile(env) or {}
     pub = set(prof.get("public") or [])
-    m = NK.read_map(env)
-    active = {e["seat5"] for e in m["seats"] if e.get("status") == "active"}
+    active = {e["seat5"] for e in NK.sending_seats(env)}
     home = env.get("EZ2_AIB_STATE_ROOT") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".ez2-aib")
     live = [s for s in NK.live_seats(env=env) if s["seat5"] in pub and s["seat5"] in active]
     if not live:

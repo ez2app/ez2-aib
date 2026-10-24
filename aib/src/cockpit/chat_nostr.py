@@ -543,7 +543,7 @@ class Sender(object):
             self._done(msgid)
             return
         m = NK.read_map()
-        entry = next((e for e in m["seats"] if e.get("status") == "active" and e["seat5"] == frm["seat"]), None)
+        entry = next((e for e in NK.sending_seats() if e["seat5"] == frm["seat"]), None)   # 跟名冊同一把(現在的人格)
         if entry is None or not m.get("owner"):
             self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "refused", "no_sender_key")
             self._done(msgid)
@@ -585,9 +585,9 @@ class Sender(object):
         else:
             self._retry_later(msgid, "relays")
 
-    async def _first_seat_addr(self, owner):
-        """對方主人名冊上第一個公開席的位址(聯絡人快照有就用,沒有就抓名冊)。"""
-        p = GF.read_peers(self.root).get(owner) or {}
+    async def _first_seat_addr(self, owner, roster=False):
+        """對方主人名冊上第一個公開席的位址(聯絡人快照有就用,沒有就抓名冊;roster=True ⇒ 不看快照、直接抓名冊)。"""
+        p = {} if roster else (GF.read_peers(self.root).get(owner) or {})
         for x in p.get("seats") or []:
             if x.get("seat"):
                 return "%s/%s/%s" % (owner, x.get("cabin") or "main", x["seat"])
@@ -600,6 +600,23 @@ class Sender(object):
             for st in cab.get("seats") or []:
                 return "%s/%s/%s" % (owner, cab.get("cabin"), st.get("seat"))
         return None
+
+    async def _first_seat(self, owner):
+        """在線 / 名片 / 空間快照寄給誰:快照第一席 ⇒ (rc, resolve 結果)。
+        10-24 fishmac:快照記著對方 10-20 的舊席(對方換艙後名冊只剩新席)⇒ resolve 一直 no_seat、在線四天沒送到。
+        快照那席查不到 ⇒ 改抓名冊第一席,查到就用名冊更新快照(note_peer 拿到不比快照舊的名冊會整份換掉 seats)。"""
+        addr = await self._first_seat_addr(owner)
+        rc, res = await self._resolve(addr) if addr else (2, {})
+        if rc == 0:
+            return rc, res
+        fresh = await self._first_seat_addr(owner, roster=True)
+        if not fresh or fresh == addr:
+            return rc, res
+        rc, res = await self._resolve(fresh)
+        if rc == 0:
+            GF.note_peer(self.root, owner, res.get("display_name"), res.get("country"), _peer_seat(res),
+                         res.get("roster_at"), claims=_claims(res))
+        return rc, res
 
     async def _push_room(self, tgt, owner, frm, now):
         """空間快照(第 34 節 v2):island 等級送島的戶外 + 走動的人;room 等級再加建築內部。
@@ -620,8 +637,7 @@ class Sender(object):
         changed_level = prev is not None and (len(prev) < 3 or prev[2] != sp)
         if prev and not changed_level and ((prev[0] == wire and now - prev[1] < 86400) or now - prev[1] < ROOM_GAP_S):
             return                                               # 等級變了(例:island ⇒ room)不等間隔,立刻送
-        addr = await self._first_seat_addr(tgt)
-        rc, res = await self._resolve(addr) if addr else (2, {})
+        rc, res = await self._first_seat(tgt)
         if rc != 0:
             return
         keys = _keys(frm["key"])
@@ -646,11 +662,10 @@ class Sender(object):
         m = NK.read_map()
         owner = (m.get("owner") or {}).get("npub")
         pub = set((CR.read_profile() or {}).get("public") or [])
-        mine = [e for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub]
+        mine = [e for e in NK.sending_seats() if e["seat5"] in pub]
         if not owner or not mine:
             return False
-        addr = await self._first_seat_addr(tgt)
-        rc, res = await self._resolve(addr) if addr else (2, {})
+        rc, res = await self._first_seat(tgt)
         if rc != 0:
             return False
         frm = mine[0]
@@ -704,8 +719,7 @@ class Sender(object):
         due = tgt in getattr(self, "card_due", set())
         if not due and ((prev and prev[0] == body and now - prev[1] < 86400) or (not socials and not prev)):
             return
-        addr = await self._first_seat_addr(tgt)
-        rc, res = await self._resolve(addr) if addr else (2, {})
+        rc, res = await self._first_seat(tgt)
         if rc != 0:
             return
         keys = _keys(frm["key"])
@@ -733,7 +747,7 @@ class Sender(object):
         m = NK.read_map()
         owner = (m.get("owner") or {}).get("npub")
         pub = set((CR.read_profile() or {}).get("public") or [])
-        mine_seats = [e for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub]
+        mine_seats = [e for e in NK.sending_seats() if e["seat5"] in pub]
         if not owner or not mine_seats:
             return 0
         peers = GF.read_peers(self.root)
@@ -759,10 +773,7 @@ class Sender(object):
             prev = last.get(tgt)
             if prev and ((prev[0] == body and now - prev[1] < PRESENCE_EVERY_S) or now - prev[1] < PRESENCE_GAP_S):
                 continue
-            addr = await self._first_seat_addr(tgt)
-            if not addr:
-                continue
-            rc, res = await self._resolve(addr)
+            rc, res = await self._first_seat(tgt)
             if rc != 0:
                 continue
             frm = mine_seats[0]

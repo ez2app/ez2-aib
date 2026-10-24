@@ -418,6 +418,21 @@ def live_seats(home=None, env=None):
     return out
 
 
+def sending_seats(env=None, live=None):
+    """寄件 / 名冊用:每一席一把 = 那一席現在綁的人格的金鑰(依對照表順序取第一把對得上的)。
+    10-24 Pro:@cfd04 換過人格,舊人格的主金鑰仍 active、seat5 還是 cfd04 ⇒ 名冊同一席三把,別台整份當壞名冊
+    (duplicate_seat、四天收不到在線);寄件挑「同席第一把」= 舊人格那把,跟名冊對不上。
+    收件照舊認所有 active 的金鑰(舊人格的信照收);金鑰本身不封存,人格換回來照用。"""
+    live = live_seats(env=env) if live is None else live
+    want = {s["seat5"]: s.get("persona_uid") for s in live}
+    out = {}
+    for e in read_map(env)["seats"]:
+        s5 = e.get("seat5")
+        if e.get("status") == "active" and s5 not in out and s5 in want and want[s5] == e.get("persona_uid"):
+            out[s5] = e
+    return list(out.values())
+
+
 def public_view(env=None):
     """給 status / 名冊用:只有公開欄位。"""
     rec = read_map(env)

@@ -124,7 +124,7 @@ def pick_seat(cabin, env):
     import chat_roster as CR
     import nostr_keys as NK
     pub = set((CR.read_profile(env) or {}).get("public") or [])
-    keyed = {e["seat5"] for e in NK.read_map(env)["seats"] if e.get("status") == "active"}
+    keyed = {e["seat5"] for e in NK.sending_seats(env)}   # 現在的人格有金鑰的席(跟名冊同一把)
     live = [s for s in NK.live_seats(env=env) if s.get("cabin") == cabin and s["seat5"] in pub and s["seat5"] in keyed]
     roots = [s for s in live if str(s.get("role") or "").startswith("root")]
     pick = (roots or live or [None])[0]
