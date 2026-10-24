@@ -281,7 +281,7 @@ def hit_ai_rows(rowmap, y, x=None):
                         # 意外動作);下一幀 rowmap 重發自然解除。
                         return PASSTHROUGH
                     if ks <= xi < ke:
-                        return _kill_action(r, kill)
+                        return _kill_action(r, kill) if _kill_target_ok(r, kill) else PASSTHROUGH
             # L2-03:第二/三行的綁定入口(spans,與 kill 同機制:精準命中才算,
             # 行內其他處照舊跳窗)。action 白名單在這裡收口——rowmap 是渲染
             # 產物,但 mouse-ctl 只認這四個 verb,別的一律當沒點到。
@@ -498,6 +498,16 @@ def _kill_action(r, kill):
 WINDOW_ID_RE = re.compile(r"@[0-9]{1,10}")      # 跟產生端 pane-right-ai.sh 的 WID_RE 同寬
 
 
+def _kill_target_ok(r, kill):
+    """左鍵 [X] 與右鍵「關閉這一席」同一套前提:畫面上真的有那一格(start < end)、窗 id 是 tmux 的 @數字。"""
+    try:
+        if not int(kill["start"]) < int(kill["end"]):
+            return False
+    except (TypeError, ValueError, KeyError):
+        return False
+    return bool(WINDOW_ID_RE.fullmatch(str(r.get("window"))))
+
+
 def hit_ai_close(rowmap, y):
     """10-24 @abb89:右鍵「關閉這一席」。只給畫面上那一列本來就有 [X] / (x) 的席(rowmap 有 kill),
     回跟點 [X] 一模一樣的動作 ⇒ 走同一個確認選單與 release-confirmed 閘;不另開一條關法。
@@ -512,15 +522,7 @@ def hit_ai_close(rowmap, y):
         kill = r.get("kill")
         if not isinstance(kill, dict) or r.get("kill_pending"):
             return PASSTHROUGH
-        # 跟點 [X] 同一套前提:畫面上真的有那一格(start < end),窗 id 是 tmux 的 @數字
-        try:
-            if not int(kill["start"]) < int(kill["end"]):
-                return PASSTHROUGH
-        except (TypeError, ValueError, KeyError):
-            return PASSTHROUGH
-        if not WINDOW_ID_RE.fullmatch(str(r["window"])):
-            return PASSTHROUGH
-        return _kill_action(r, kill)
+        return _kill_action(r, kill) if _kill_target_ok(r, kill) else PASSTHROUGH
     return PASSTHROUGH
 
 
