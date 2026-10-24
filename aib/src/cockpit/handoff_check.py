@@ -25,6 +25,8 @@ for _p in (HERE, HERE.parent / "memory", HERE.parent / "identity"):
     if str(_p) not in sys.path:
         sys.path.append(str(_p))
 
+import spotlight_paths  # noqa: E402
+
 FIELDS = {"s1": ("goal", "missed", "correction", "advice"),
           "s2": ("inflight", "waiting", "background", "temporary", "pitfalls"),
           "s3": ("summary", "paste", "next3", "todo")}
@@ -165,6 +167,8 @@ def reconcile(facts, secs, repo="", sha_exists=None, warnings=None):
     for w in (facts.get("worktrees") or {}).get("shown") or []:
         if w.get("mine") and os.path.basename(str(w.get("path") or "")) not in s2:
             out.append(T("aib.handoff.check.worktree", path=str(w.get("path"))))
+        if w.get("mine") and spotlight_paths.indexed(w.get("path"), facts.get("home"), facts.get("platform")):
+            out.append(T("aib.handoff.check.wt_indexed", path=str(w.get("path"))))   # 10-24 the maintainer:程式規定，不是提醒
     for b in (facts.get("unmerged") or {}).get("shown") or []:
         if code and code in b.get("branch", "") and b["branch"] not in s2:
             out.append(T("aib.handoff.check.branch", branch=b["branch"]))

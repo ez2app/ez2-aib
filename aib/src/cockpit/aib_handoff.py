@@ -60,6 +60,8 @@ import sys
 import time
 from pathlib import Path
 
+import spotlight_paths
+
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parent
 REPO_ROOT = SRC.parent
@@ -1140,6 +1142,10 @@ def render_draft(facts: dict, auto: bool = False) -> str:
                 T("aib.handoff.fact.dirty_n", n="?" if dirty is None else str(dirty))))
         if wt.get("not_shown"):
             lines.append("- " + T("aib.handoff.fact.not_shown", n=str(wt["not_shown"])))
+        idx = [w for w in wt.get("shown") or []
+               if spotlight_paths.indexed(w.get("path"), facts.get("home"), facts.get("platform"))]
+        if idx:
+            lines.append("- " + T("aib.handoff.fact.wt_indexed", n=str(len(idx))))
     um = facts.get("unmerged") or {}
     if um:
         lines += ["", "### " + T("aib.handoff.fact.unmerged", count=str(len(um.get("shown") or [])),
