@@ -39,7 +39,9 @@ for _p in (CS.parent, SEL.parent, ROOT / "src" / "cockpit"):
 
 
 def _git(cwd, *args):
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+    # 關掉背景維護:新版 git 在 commit 後會在背景跑 maintenance、往 .git 寫 maintenance.lock,
+    # setUp 接著 rmtree(.git) 就撞到檔案中途消失(macOS 3.9 CI 四格 FileNotFoundError)
+    subprocess.run(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", *args], cwd=cwd, check=True, capture_output=True,
                    env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
 
