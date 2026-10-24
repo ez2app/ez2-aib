@@ -1695,6 +1695,7 @@
   "aib.handoff.fact.dirty_n": "未提交 {n}",
   "aib.handoff.fact.worktrees": "工作樹(列出 {count} / 共 {total};列的是這一席的、目前這棵、{hours} 小時內動過的)",
   "aib.handoff.fact.not_shown": "另有 {n} 棵沒列(太舊或超過上限);要看全部:git worktree list",
+  "aib.handoff.fact.wt_indexed": "⚠ 上面有 {n} 棵在 Mac 的 Spotlight 會掃的地方(家目錄底下、不是 .noindex 夾);測試一跑就重掃、拖慢機器 ⇒ 閒下來時 git worktree move <樹> ~/wt.noindex/<名>,新樹直接開在 ~/wt.noindex/",
   "aib.handoff.fact.unmerged": "沒合進 main 的分支(列出 {count} / 共 {total})",
   "aib.handoff.fact.lease": "機器租約",
   "aib.handoff.fact.pending_box": "待審框(這一席)",

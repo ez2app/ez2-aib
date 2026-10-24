@@ -1090,6 +1090,19 @@ def _ab(d):
     return "+%s/-%s" % (d.get("ahead", "?"), d.get("behind", "?")) if d else "?"
 
 
+def _spotlight_indexed(path, home=None, platform=None) -> bool:
+    """10-24 the maintainer「mac 會一直掃檔案建快取」:Mac 的 Spotlight 會掃家目錄底下的樹(測試一跑就重掃);
+    點開頭的夾與 *.noindex 夾不掃。只在 Mac 上提示。"""
+    if (platform or sys.platform) != "darwin" or not path:
+        return False
+    home = os.path.realpath(home or os.path.expanduser("~"))
+    p = os.path.realpath(path)
+    if p != home and not p.startswith(home + os.sep):
+        return False
+    parts = [x for x in p[len(home):].split(os.sep) if x]
+    return bool(parts) and not any(x.startswith(".") or x.endswith(".noindex") for x in parts)
+
+
 def render_draft(facts: dict, auto: bool = False) -> str:
     s = facts.get("seat") or {}
     head = "<!-- handoff:draft v2 seat=%s collected=%s" % (s.get("code") or "", facts.get("iso") or "")
@@ -1140,6 +1153,10 @@ def render_draft(facts: dict, auto: bool = False) -> str:
                 T("aib.handoff.fact.dirty_n", n="?" if dirty is None else str(dirty))))
         if wt.get("not_shown"):
             lines.append("- " + T("aib.handoff.fact.not_shown", n=str(wt["not_shown"])))
+        idx = [w for w in wt.get("shown") or []
+               if _spotlight_indexed(w.get("path"), facts.get("home"), facts.get("platform"))]
+        if idx:
+            lines.append("- " + T("aib.handoff.fact.wt_indexed", n=str(len(idx))))
     um = facts.get("unmerged") or {}
     if um:
         lines += ["", "### " + T("aib.handoff.fact.unmerged", count=str(len(um.get("shown") or [])),

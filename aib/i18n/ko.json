@@ -1695,6 +1695,7 @@
   "aib.handoff.fact.dirty_n": "미커밋 {n}",
   "aib.handoff.fact.worktrees": "워크트리({total}개 중 {count}개 표시: 이 좌석의 것, 현재 것, {hours}시간 내 변경된 것)",
   "aib.handoff.fact.not_shown": "{n}개 더 있음(오래됐거나 한도 초과). 전체는 git worktree list",
+  "aib.handoff.fact.wt_indexed": "⚠ 위 작업 트리 중 {n}개가 Mac Spotlight가 색인하는 곳(홈 폴더 아래, .noindex 폴더 아님)에 있습니다. 테스트할 때마다 다시 색인해 느려짐 ⇒ 한가할 때 git worktree move <트리> ~/wt.noindex/<이름>, 새 트리는 ~/wt.noindex/에 만드세요",
   "aib.handoff.fact.unmerged": "main에 병합 안 된 브랜치({total}개 중 {count}개)",
   "aib.handoff.fact.lease": "머신 임대",
   "aib.handoff.fact.pending_box": "대기함(이 좌석)",

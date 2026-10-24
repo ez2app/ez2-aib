@@ -1695,6 +1695,7 @@
   "aib.handoff.fact.dirty_n": "uncommitted {n}",
   "aib.handoff.fact.worktrees": "Worktrees (showing {count} of {total}: this seat's, the current one, and those touched in the last {hours} hours)",
   "aib.handoff.fact.not_shown": "{n} more not shown (older or over the limit); for all: git worktree list",
+  "aib.handoff.fact.wt_indexed": "⚠ {n} of the worktrees above are in a place macOS Spotlight indexes (under your home folder, not a .noindex folder); every test run makes it re-index and slows the machine ⇒ when idle, git worktree move <tree> ~/wt.noindex/<name>, and open new trees in ~/wt.noindex/",
   "aib.handoff.fact.unmerged": "Branches not merged into main (showing {count} of {total})",
   "aib.handoff.fact.lease": "Host lease",
   "aib.handoff.fact.pending_box": "Pending box (this seat)",
