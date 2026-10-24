@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.52
+
+- **Status line context reading**: the aib-boards status line now refreshes the context figure when a turn ends, not only on its 60-second timer, so a newly opened seat no longer shows "context not measured" for its first minute.
+- **`aib secret ask` names**: a secret name must match `[A-Z][A-Z0-9_]{0,127}` before anything else runs (otherwise `bad_name`). The mail-sending credentials can only be pushed straight to the server (`--remote-only`); no copy stays on this computer.
+- **Power room hardening**: sign-in links are still returned when the wait runs out; the sign-in log is removed before it is created again (exclusive create) and always cleaned up afterwards; more edge-case tests.
+- **Online chat after a persona switch**: each seat now sends and lists exactly one key (the one for the persona it is bound to now), so other computers no longer reject the roster as having duplicate seats. When a peer's seat snapshot is stale, the roster is used instead. A malformed seat display file is treated as "not bound" instead of stopping the chat service.
+
 ## 0.1.51
 
 - **Right-click menu, more hardening**: clicking [X] on a seat row now checks the same things as "Close this seat" in the right-click menu (the cell exists and the window id is a tmux id); otherwise the click does nothing. If the menu's 3-second time limit cannot be cleared, the timer is made harmless so the menu still prints; every other path puts the previous handler back.
