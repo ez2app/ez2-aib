@@ -5178,5 +5178,19 @@
   "aib.context.menu.bot_no_codex_thread": "(Codex 데스크톱 미연결)",
   "aib.context.menu.bot_no_muse_conv": "(Muse 대화 미연결)",
   "aib.context.menu.key_saved": "{name} 저장 완료. 「{engine}」을 다시 누르면 자리가 열립니다",
-  "aib.context.menu.key_not_saved": "{name} 저장 안 됨(취소 또는 Touch ID 미통과). {engine} 은 열지 않습니다"
+  "aib.context.menu.key_not_saved": "{name} 저장 안 됨(취소 또는 Touch ID 미통과). {engine} 은 열지 않습니다",
+  "aib.heat.snap.level": "호스트 발열: {level}",
+  "aib.heat.group.seat": "좌석",
+  "aib.heat.group.aib_test": "aib test",
+  "aib.heat.group.reviewer": "리뷰어 임시 공간",
+  "aib.heat.group.headless_browser": "헤드리스 브라우저",
+  "aib.heat.group.sandbox": "샌드박스 월드",
+  "aib.heat.group.aib_core": "aib 코어",
+  "aib.heat.group.system": "시스템",
+  "aib.heat.group.other_app": "기타 앱",
+  "aib.heat.history.count": "최근 1시간 동안 {n}개 기록(10초마다)",
+  "aib.heat.crash.summary": "크래시 레이더: 최근 {days}일 보고서 {files}개, {n}종류",
+  "aib.heat.crash.unmeasured": "크래시 보고서 폴더를 읽을 수 없습니다(측정 불가이며, 크래시 없음이 아닙니다)",
+  "aib.heat.crash.aib_test_guarded_fd_dup": "이전 aib test의 알려진 문제입니다. {fixed}(으)로 업데이트하면 더 이상 나타나지 않습니다",
+  "aib.heat.crash.unknown": "원인 불명(표시만 하고 추측하지 않음)"
 }
