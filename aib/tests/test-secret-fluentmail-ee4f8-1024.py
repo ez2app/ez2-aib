@@ -8,7 +8,9 @@ F2 --push … --remote-only:輸入框 → Touch ID → 值只走 ssh stdin 送�
 F3 沒給 --remote-only(只存本機、或本機 + 遠端)⇒ remote_only_name、rc 2,沒叫輸入框、沒叫 Touch ID、沒 ssh
 F4 put_secret 直接寫也拒(remote_only),檔案沒建
 F5 帶字尾的同類名字(FLUENTMAIL_…_SITE2、FLUENTMAIL_SES_KEY)也只准送伺服器:ask 回 remote_only_name、put_secret 拒
-刀:K1 拿掉 secret_ask 的擋 ⇒ F3 紅;K2 拿掉 put_secret 的擋 ⇒ F4 紅;K3 is_remote_only 只看名單 ⇒ F5 紅
+F6 名字白名單 [A-Z][A-Z0-9_]{0,127}:帶換行(CF_API_TOKEN\\nFLUENTMAIL_…)/ = / 空白 / 小寫 / 結尾換行 ⇒ bad_name,沒叫框、沒 Touch ID、沒 ssh,別的檔沒多一行
+刀:K1 拿掉 secret_ask 的擋 ⇒ F3 紅;K2 拿掉 put_secret 的擋 ⇒ F4 紅;K3 is_remote_only 只看名單 ⇒ F5 紅;
+   K4 白名單永遠過 ⇒ F6 紅
 """
 import io
 import json
@@ -122,6 +124,19 @@ class FluentMail(unittest.TestCase):
         self.assertFalse(self.local_file().exists())
         self.assertFalse(S.is_remote_only("ANTHROPIC_API_KEY"))
 
+    def test_f6_name_whitelist(self):
+        bad = ("CF_API_TOKEN\nFLUENTMAIL_AWS_ACCESS_KEY_ID", "CF_API_TOKEN=x", "CF API", "cf_api_token",
+               "FLUENTMAIL_AWS_ACCESS_KEY_ID\n", "A" * 129, "")
+        for n in bad:
+            calls, f = [], Fake([KEY_ID])
+            rc, res = self.run_cmd([n], f, calls)
+            self.assertEqual((rc, res["why"], f.asks, f.touches, calls), (2, "bad_name", 0, 0, []), repr(n))
+            with self.assertRaises(S.SecretError) as cm:
+                SC.put_secret(n, KEY_ID, env=self.env)
+            self.assertEqual(cm.exception.reason, "bad_name", repr(n))
+        self.assertFalse(self.sec.exists() and any(self.sec.iterdir()))
+        self.assertTrue(S.valid_name("CF_API_TOKEN") and S.valid_name("A" * 128))
+
 
 class Knives(unittest.TestCase):
     def _red(self, rel, needle, repl, test):
@@ -143,6 +158,12 @@ class Knives(unittest.TestCase):
         self._red("src/bootstrap/aib_secrets.py",
                   "    return name in REMOTE_ONLY_NAMES or file_for_name(name) in REMOTE_ONLY_FILES",
                   "    return name in REMOTE_ONLY_NAMES", "test_f5_suffixed_names_too")
+
+
+    def test_k4_whitelist_always_ok(self):
+        self._red("src/bootstrap/aib_secrets.py",
+                  "    return isinstance(name, str) and NAME_RE.fullmatch(name) is not None",
+                  "    return True", "test_f6_name_whitelist")
 
 
 if __name__ == "__main__":

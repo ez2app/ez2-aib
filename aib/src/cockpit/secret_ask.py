@@ -254,6 +254,9 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
     def done(rc):
         out.write(json.dumps(res, ensure_ascii=False) + "\n")
         return rc
+    if not S.valid_name(a.name):  # 先擋:不叫輸入框、不解析主機(換行會把這行寫進別的檔)
+        res["why"] = "bad_name"
+        return done(2)
     rel = S.file_for_name(a.name)
     if rel is None:
         res["why"] = "unknown_name"

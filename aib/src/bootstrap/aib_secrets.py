@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -299,6 +300,14 @@ def file_for_name(name):
         if name.startswith(prefix):
             return rel
     return None
+
+
+NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,127}")  # 10-24 @abb89 #301 第 2 輪:名字帶換行 / = 會把一行寫進別的檔
+
+
+def valid_name(name):
+    """金鑰名字白名單(一律 fullmatch;$ 會放過結尾換行)。不符 ⇒ 呼叫端回 bad_name。"""
+    return isinstance(name, str) and NAME_RE.fullmatch(name) is not None
 
 
 def is_remote_only(name):

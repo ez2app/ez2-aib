@@ -251,6 +251,8 @@ def _set_encrypted_line(path, name, envelope):
 
 def put_secret(name, plaintext, env=None):
     """加密寫入對應檔。成功回 True。明文不得進 log。"""
+    if not S.valid_name(name):
+        raise S.SecretError("bad_name", repr(name)[:40], "bad name")
     rel = S.file_for_name(name)
     if rel is None:
         raise S.SecretError(S.MISSING_FILE, name, "unknown name")
