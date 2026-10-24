@@ -150,7 +150,7 @@ def precheck(args):
     checks = {}
     # A-1 git 真值(當場取)
     checks["git_truth"] = wrappers.git_truth(repo)
-    # ★ 刀 A(EG.7 第一步):A-2 三記憶閘門已移除。precheck 不再呼叫 ~/.acb/bin,
+    # ★ 刀 A(EG.7 第一步):A-2 三記憶閘門已移除。precheck 不再呼叫舊載體的 bin,
     #   `a_three_memory_green` 這道閘也隨之消失——**這是放寬,承接者=無**(見交付書面)。
     # A-3 出生檢查:角色.md 不存在=n/a
     bc = wrappers.birth_check(args.node_bin, tools_root, args.persona, timeout_s=t)

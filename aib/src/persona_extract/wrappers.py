@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""外部工具包裝(只包裝呼叫 ez2-ai / ~/.acb 工具,不搬邏輯——艦長 Q2 裁)。
+"""外部工具包裝(只包裝呼叫 ez2-ai 工具,不搬邏輯——艦長 Q2 裁)。
 
 紀律(SOP §九-5 + PLAN §2):
   - subprocess.run(list, shell=False),**不接 pipe**;判定用 returncode,不用輸出猜成敗
@@ -78,8 +78,8 @@ SESSION_BRIEF_ENV = "EZ2_PERSONA_SESSION_BRIEF_CMD"
 
 def session_brief(cmd_argv, timeout_s=DEFAULT_TIMEOUT_S):
     """SOP §一-B-4 席位簡報:**指令由 operator 指定**(環境變數 $EZ2_PERSONA_SESSION_BRIEF_CMD,
-    空白分隔 argv),AIB 不寫死任何 ACB hook 名——本 repo EM3 已裁 ACB 身份 hook 移除,
-    tests/test-em3-acb-identity-hooks-removed.py 釘「可執行層不得指名」。未指定 → not_configured
+    空白分隔 argv),AIB 不寫死任何外部 hook 名——本 repo EM3 已裁舊身份 hook 移除,
+    「可執行層不得指名」。未指定 → not_configured
     (誠實記錄,不算通過也不算缺席致 rc=2;SOP 此項是否仍為前提列 open question Q7)。"""
     if not cmd_argv:
         return {"cmd": [], "rc": None, "stdout": "", "stderr": "not configured (%s)" % SESSION_BRIEF_ENV,

@@ -505,7 +505,7 @@ def _child(argv, cwd, env):
     if os.path.basename(str(exe or "")) == "node":   # 10-04 Node 接頭:NODE_OPTIONS 帶著 --require node-shim/audit.cjs 才算掛上
         hooked = trace_ok and os.path.join(here, "node-shim", "audit.cjs") in str(env_map.get("NODE_OPTIONS") or "")
     # 10-04:subprocess.Popen 的稽核事件把 cwd **原樣**交出來(Path 物件不先轉字串;open/listdir 則已轉好)⇒
-    #   以前 _as_path(Path) 回 None ⇒ 記成本行程的 cwd(真倉)⇒ 治具裡的 git 全被判成碰真倉(acb-retirement 142 秒只卡這個)
+    #   以前 _as_path(Path) 回 None ⇒ 記成本行程的 cwd(真倉)⇒ 治具裡的 git 全被判成碰真倉(舊載體退役那輪 142 秒只卡這個)
     try:
         cwd = os.fspath(cwd) if cwd is not None else None
     except TypeError:

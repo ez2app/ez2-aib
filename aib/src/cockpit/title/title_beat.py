@@ -10,24 +10,16 @@
   **信任紅燈**:這個 session 現在算不算被系統認得。判定只看機器觀測得到的欄位,
   缺欄位一律紅(fail-closed),與 E2.7 血緣律的 registry_field_absent 同一條紀律。
 
-## 紅黃綠的判準(與現況)
+## 紅黃綠的判準
 
-  red    沒有 registry 記錄 / 心跳過期 / 沒有任何綁定欄位 / 綁定申請未經人核可
-  yellow 已綁定但 ACB 標記未經證實(bound_unattested)/ 人已核可但真綁未成 /
-         已證實但心跳轉舊
-  green  已綁定**且** ACB 自己標 formal_eligible 與 native_attestation 皆為 true
+  red    沒有 registry 記錄 / 心跳過期 / 沒有驗證欄位 / 驗證未通過 / 綁定申請未經人核可
+  yellow 人已核可但真綁未成 / 已驗證但心跳轉舊
+  green  已驗證且心跳新鮮
 
-**欄位名的教訓(2026-08-08 修正)**:我原本用 `registry_verified` 判斷,那個名字
-是我猜的。EA.1 綁定完成後實查 498 筆 registry 記錄,`registry_verified` **一筆都沒有**;
-真正存在的是 `binding_uid` / `session_status` / `formal_eligible` /
-`native_attestation` / `authority_level`。猜錯名字的代價是:綁定明明成功了,
-這支程式卻會把每個已綁 session 都判成「沒有驗證欄位」——燈永遠紅,而且紅得毫無道理。
-
-**綠燈現在仍亮不起來,但理由變了。** 77 筆記錄有 `binding_uid`,其中 68 筆
-`session_status=active`;那 68 筆**自己標著** `formal_eligible=false`、
-`native_attestation=false`、`authority_level=same_user_registry_unattested`,
-意思是「綁了,但這份權威未經證實」。所以現況的最佳狀態是黃燈 bound_unattested。
-把「綁定成功」直接畫成綠燈,等於幫 ACB 宣告它自己都不敢宣告的事。
+**只認明寫的 `registry_verified`**,欄位不存在就是沒驗證,不從其他欄位推導。
+舊載體 v2 的 `binding_uid` / `formal_eligible` / `native_attestation` 推導
+(曾產生 bound_unattested / bound_attested 兩格)10-25 已拿掉:那份登記簿 08-11 起
+就停了,正式路徑(title-beat.sh)也只會傳 None 進來,席位檔另走 `seat_light`。
 
 純度:本模組不讀時鐘、不讀檔案。now_ms 與記錄都由呼叫端傳入,
 所以同一份輸入必得同一條標題(測試與黃金幀才可能成立)。
@@ -70,7 +62,7 @@ _RESET = "\x1b[0m"
 def trust_light(record, bind_item=None, now_ms=None):
     """回 {"level", "code", "detail"};判定只看機器事實,缺一律紅。
 
-    record   ACB registry 記錄(dict)或 None
+    record   身份登記簿記錄(dict)或 None
     bind_item E2.6 綁定佇列的卡(dict)或 None
     """
     if now_ms is None:
@@ -87,24 +79,8 @@ def trust_light(record, bind_item=None, now_ms=None):
         return {"level": RED, "code": "heartbeat_stale",
                 "detail": "心跳已 %d 分鐘沒動" % (age_ms // 60000)}
 
-    # ACB v2 綁定的真實欄位(2026-08-08 實查 498 筆:registry_verified 一筆都沒有,
-    # 真正存在的是 binding_uid / session_status / formal_eligible /
-    # native_attestation / authority_level)。先前用 registry_verified 是我猜的名字,
-    # 猜錯的後果是已綁 session 被永遠判成「沒有驗證欄位」。
     verified = record.get("registry_verified")
     if verified is None:
-        bound = bool(record.get("binding_uid")) and \
-            record.get("session_status") == "active"
-        if bound:
-            # ACB 自己標 formal_eligible=false / native_attestation=false,
-            # 意思是「綁了,但這份權威未經證實」。那不是綠燈,是黃燈。
-            if record.get("formal_eligible") is True and \
-                    record.get("native_attestation") is True:
-                return {"level": GREEN, "code": "bound_attested",
-                        "detail": "已綁定且經證實"}
-            return {"level": YELLOW, "code": "bound_unattested",
-                    "detail": "已綁定但 ACB 標記未經證實(%s)"
-                              % (record.get("authority_level") or "authority_level 缺")}
         if bind_item and bind_item.get("status") == "approved_pending_ea1":
             return {"level": YELLOW, "code": "approved_pending_ea1",
                     "detail": "人已核可,真綁候 EA.1"}
@@ -132,17 +108,15 @@ def seat_record(seat, pid_alive=False, transcript_age_s=None, now_s=None,
 
     ## 為什麼要有這支(2026-08-16,the maintainer:「unbound no_registry_record 要修好」)
 
-    那盞燈原本只讀 **ACB 的 `sessions/by-id/<uuid>.json`**,而 08-16 實測:
-    那個目錄最新一筆停在 **08-11**,而且不會再有新的 —— ACB 已判廢除。
+    那盞燈原本只讀舊載體的 `sessions/by-id/<uuid>.json`,而 08-16 實測:
+    那個目錄最新一筆停在 **08-11**,而且不會再有新的 —— 舊載體已退役(10-25 整個移除)。
     **所以那盞燈永遠不會綠,它問的是一個已經停止更新的資料源。**
-    ★ 同日另一項實測佐證:把 `EZ2_ACB_HOME` 指到空目錄,那盞燈顯示的字
-      **一模一樣** —— 它早就已經是「查不到」了,與 ACB 在不在無關。
 
     而 AIB 自己的席位檔有全部需要的東西,**而且證據品質更好**:
 
-        這是誰    ACB 的 `sig`            → 席位檔 seat_id + role
-        還活著嗎  ACB 的 `beat_epoch`     → **pid 實測 + transcript mtime**
-        被驗證嗎  ACB 的 registry_verified→ 席位檔 trust(誠實寫死 self_reported)
+        這是誰    舊的 `sig`               → 席位檔 seat_id + role
+        還活著嗎  舊的 `beat_epoch`        → **pid 實測 + transcript mtime**
+        被驗證嗎  舊的 registry_verified   → 席位檔 trust(誠實寫死 self_reported)
 
     ★★ `ps -p <pid>` 比讀心跳檔可靠:心跳檔會因為**寫它的人**死掉而停止更新,
       而那跟「這個行程活著」是兩件事;pid 是直接問作業系統。
@@ -259,10 +233,10 @@ def seat_light(rec, now_ms):
     """席位記錄的燈。**上限黃燈**,理由見 `seat_record`。
 
     ★ 這裡**不能**直接沿用 `trust_light` 的結果再加工:那支階梯的終點是
-      `registry_verified` 這個 ACB 欄位,而席位檔永遠沒有它,所以它一定會
+      `registry_verified` 這個登記簿欄位,而席位檔永遠沒有它,所以它一定會
       在「registry_field_absent」那一格回紅。**第一版我寫成「非紅才覆蓋」,
       於是永遠覆蓋不到** —— 實測仍印 `registry_field_absent`。
-      席位檔這條路的判準是獨立的:**有沒有活性訊號**,而不是「有沒有 ACB
+      席位檔這條路的判準是獨立的:**有沒有活性訊號**,而不是「有沒有登記簿
       的驗證欄位」。只借用 `trust_light` 的心跳新鮮度門檻,不借它的階梯。
     """
     if not isinstance(rec, dict) or not rec.get("sig"):
@@ -586,15 +560,6 @@ LIGHT_CASES = [
      {"sig": "x@00000/Claude", "beat_offset_s": -60, "registry_verified": False}, None),
     ("approved_pending_ea1", {"sig": "x@00000/Claude", "beat_offset_s": -60},
      {"status": "approved_pending_ea1"}),
-    ("bound_unattested",
-     {"sig": "x@00000/Claude", "beat_offset_s": -60,
-      "binding_uid": "bind_x", "session_status": "active",
-      "formal_eligible": False, "native_attestation": False,
-      "authority_level": "same_user_registry_unattested"}, None),
-    ("bound_attested",
-     {"sig": "x@00000/Claude", "beat_offset_s": -60,
-      "binding_uid": "bind_x", "session_status": "active",
-      "formal_eligible": True, "native_attestation": True}, None),
     ("verified_but_aging",
      {"sig": "x@00000/Claude", "beat_offset_s": -20 * 60, "registry_verified": True},
      None),

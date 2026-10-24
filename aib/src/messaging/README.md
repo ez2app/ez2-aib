@@ -21,7 +21,7 @@
 | 子AI 回報別人 | deny | `report_off_lineage` |
 | 子AI 用任何訊息動詞 | deny | `sub_agent_no_messaging` |
 | 主AI 身份紀錄沒有任何綁定欄位 | deny | `registry_field_absent` |
-| 主AI 已綁定但 ACB 標記未經證實 | **allow**(裁決後) | `bound_unattested` |
+| 主AI 已綁定但未經證實(呼叫端帶 `bound_unattested`) | **allow**(裁決後) | `bound_unattested` |
 | 主AI 未通過 registry 驗證 | deny | `not_registry_verified` |
 | 主AI 已驗證卻仍標 T0 候綁 | deny | `identity_inconsistent` |
 | 主AI 已驗證 + 訊息動詞 | allow | `verified_main` |
@@ -31,7 +31,7 @@
 ## 為什麼「欄位不存在」等於未驗證
 
 `registry_verified` 只認身份紀錄裡**明寫**的那一欄。不從「有心跳」「檔案存在」
-這類旁證推論——心跳新鮮度證明它還活著,不證明它是誰。ACB 那四個後門的共同形狀
+這類旁證推論——心跳新鮮度證明它還活著,不證明它是誰。舊載體那四個後門的共同形狀
 就是拿旁證當身份證明,這裡把那條路直接封死,並用 `registry_field_absent` 這個
 獨立的 code 讓維運看得出是「沒驗」而不是「驗失敗」。
 
@@ -62,9 +62,8 @@ CLI 的輸出會帶 `event_id: null`,讓呼叫端看得出「這筆沒記到」�
 全形英數讓 grep/比對/去重全部失準。**刻意不擋全形標點**(,。「」)——
 中文正文本來就用它們,擋了等於不准講中文。
 
-**字碼範圍是依派工令的三個名稱推導的,不是從 ACB 抄來的。** 我在 `~/.acb`
-只找得到「R-30 禁字元」這個名稱,找不到列舉的字元集。範圍攤在 `RANGES` 表裡
-供審查者修正;日後若取得 ACB 正本清單,應以那份取代本表,不要兩邊各留一份。
+**字碼範圍是依派工令的三個名稱推導的。** 舊載體只留下「R-30 禁字元」這個名稱,
+沒有列舉的字元集;範圍攤在 `RANGES` 表裡供審查者修正,這份就是正本。
 
 `--fix` 只換有安全替代的字(全形→半形、①→`1.`),**不自動刪除框線字元** ——
 自動刪字會改動作者原意,那不是 lint 該做的事,留給人決定。
@@ -83,13 +82,10 @@ lint 跑在身份判定**之前**:內容不合規就沒有「誰可以送」的�
 
 ## 現況邊界
 
-- **欄位名修正(2026-08-08)**:原本讀 `registry_verified`,那個名字是猜的。
-  EA.1 綁定完成後實查 498 筆 registry 記錄,`registry_verified` 一筆都沒有;
-  真正存在的是 `binding_uid` / `session_status` / `formal_eligible` /
-  `native_attestation` / `authority_level`。現在改讀這些真欄位。
-- **已綁但未證實(主管裁決 2026-08-08:放行)**:77 筆有 `binding_uid`,
-  其中 68 筆 `session_status=active`,而那 68 筆自己標著 `formal_eligible=false`、
-  `native_attestation=false`、`authority_level=same_user_registry_unattested`。
+- **只認明寫的 `registry_verified`**:舊載體 v2 的 `binding_uid` / `formal_eligible` /
+  `native_attestation` 推導 10-25 已拿掉(那份登記簿 08-11 起就停了)。
+- **已綁但未證實(主管裁決 2026-08-08:放行)**:現在由呼叫端(dm-ctl 的席位推導)
+  在 sender 裡直接帶 `bound_unattested: true` 與 `authority_level`。
   裁決理由:**T1 的語意是「我知道你是誰」,不是「我確信你是誰」**;後者是 T2。
   registry 認得即 T1,送訊息是 T1 能力。把 attested 塞進 T1 會讓全艦隊落回 T0 而停擺,
   那不是安全是癱瘓(原理 10)。三個附帶條件各有一條測試釘著:
@@ -100,7 +96,7 @@ lint 跑在身份判定**之前**:內容不合規就沒有「誰可以送」的�
      裡,對任何人都是 `unknown_verb` 擋掉,授權歸 E2.8 政策 lane。
      訊息可讀可查可事後討論,部署不是。
 - 只有訊息通道這一個咽喉;tmux `send-keys` 這種側路不在本 lane 範圍(候 E2.10 哨兵)。
-- **閘門目前是自願的**:任何人仍可直接跑 `acb send` 繞過本腳本。真正的強制需要
+- **閘門目前是自願的**:任何人仍可直接呼叫底層傳輸繞過本腳本。真正的強制需要
   在 PATH 層放 shim 或掛 hook,而那會影響活著的艦隊,不是我能單方面裝的。
   本 lane 交的是「可被強制執行的判定」;要不要把它變成唯一入口,是艦長的決定。
   在那之前,繞道走的訊息不會留下判定痕跡——這是已知缺口,不是已解問題。
@@ -133,9 +129,9 @@ python3 src/messaging/notify_policy.py audit-report /path/to/notify-audit.jsonl
 不接觸活體 tmux 或桌面通知。若同時提供 `--notify-session`，目標必須是具四個唯一
 role 與完整 theme pane contract 的 AIB cockpit，否則只回結構化失敗，不猜 pane。
 
-目前 ACB `send` 傳輸沒有可驗證的 notification envelope，且本工作包禁止改事件
+目前底層傳輸沒有可驗證的 notification envelope，且本工作包禁止改事件
 schema。因此 AIB 出站 AI 訊息仍以「不標即 blue」運作；red/yellow 的結構化理由
-可在 AIB 內部事件與哨兵路徑驗證，但尚不能宣稱能跨 ACB 帳本重放。正式補齊要由
+可在 AIB 內部事件與哨兵路徑驗證，但尚不能宣稱能跨帳本重放。正式補齊要由
 E1.4/E2.18 的 schema/DM 設計審查提供欄位與送達收據，不能把理由塞進摘要或
 `data_ref` 猜值。
 

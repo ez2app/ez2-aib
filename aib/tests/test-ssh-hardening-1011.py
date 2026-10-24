@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""跨主機 ssh 加固(10-11,ACB 搬回 A3;源自 ACB tests/test-l6-ssh-hardening.sh)。
+"""跨主機 ssh 加固(10-11,舊載體搬回 A3;源自舊載體的 ssh 加固測試)。
 
 AIB 程式裡每一個真的會連到別台主機的 ssh 呼叫,都要帶:
   -o ForwardAgent=no         不把本機金鑰代理借給對方(對方被入侵時拿不到你的金鑰)
   -o ClearAllForwardings=yes 不開任何轉發通道
-ACB 還要求 IdentitiesOnly=yes;AIB 這次**不要求** —— 它會讓 ssh 不用金鑰代理裡的金鑰,靠代理登入的機器會連不上,要另外確認。
+舊載體還要求 IdentitiesOnly=yes;AIB 這次**不要求** —— 它會讓 ssh 不用金鑰代理裡的金鑰,靠代理登入的機器會連不上,要另外確認。
 
 R1 src/ 與 tools/ 底下(git 追蹤的 .sh/.py,不含 tests/、文件)每一行 ssh 呼叫都帶兩個選項
 R2 判準自己會抓:餵一段沒帶選項的寫法,恰好抓到那幾行;註解、ssh-keygen、ssh_config、印給人看的字、叫 ssh 的變數不算

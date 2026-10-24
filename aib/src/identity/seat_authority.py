@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""席位身分查詢:這個 session 當次綁定成功的席位碼(取代 ACB 的 session registry)。
+"""席位身分查詢:這個 session 當次綁定成功的席位碼(取代舊載體的 session registry)。
 
 the maintainer 2026-09-26 R10:「身份驗證 只要綁定席位成功,就用當次席位碼為準」。
-計畫:docs/PLAN-acb-full-retirement-0926.md §0-1。消費端:ez2-ai 的 session authority(G2 另一半)。
+計畫:舊載體全面退役計畫(09-26)§0-1。消費端:ez2-ai 的 session authority(G2 另一半)。
 
     seat_authority.py query --session-uuid U [--aib-home H]
     ⇒ stdout 一行 JSON,rc 恆 0(用法錯才非 0):

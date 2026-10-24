@@ -4,11 +4,11 @@
 
 ## 由來(2026-08-16,the maintainer 直令「找出該程式中適合整個 aib 的地方,重構回來」)
 
-ACB 的 `session-beat.sh` 是一支 1596 行的 registry 寫入器,其中 1503 行是內嵌
+舊載體的心跳寫入器是一支 1596 行的 registry 寫入器,其中 1503 行是內嵌
 Python。逐段讀完之後,它的內容分成三類:
 
-  ACB 身份模型專屬  binding_schema_version / authority anchor /
-                    registry_verified / acb-session-binding/v2
+  舊身份模型專屬    binding_schema_version / authority anchor /
+                    registry_verified / session-binding/v2
                     ★ **不搬**:那套 BIND 已判廢除,搬回來是把死掉的身份層復活,
                       而且直接牴觸 AIB 的紅線「直起路徑不得自稱 verified」。
   AIB 已經有        session uuid / role / engine / started / 狀態機
@@ -34,13 +34,13 @@ Python。逐段讀完之後,它的內容分成三類:
 
 ## 這裡刻意**沒有**照抄的部分
 
-  - `O_NOFOLLOW` / uid 檢查 / 目錄穩定化輪詢:那是 ACB 的**多使用者威脅模型**
+  - `O_NOFOLLOW` / uid 檢查 / 目錄穩定化輪詢:那是舊載體的**多使用者威脅模型**
     (registry 可能被同機他人竄改)。AIB 的席位目錄在自己的 home 底下,
     加這一層會讓失敗模式變多而擋不到真實風險。**不是做不到,是不值得。**
   - `binding_schema_version` 那類欄位驗證:那是身份模型,見上。
 
 ★ 若哪天 AIB 的狀態檔要跨使用者共享,再把那一層加回來 —— **並且要在那時候
-  寫下「為什麼現在需要」,不要因為 ACB 有就抄。**
+  寫下「為什麼現在需要」,不要因為舊載體有就抄。**
 """
 
 import errno

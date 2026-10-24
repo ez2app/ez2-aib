@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 # 戰情室展開深度控制:more=多開一層 其他=收一層(範圍 1-3;正本在 cockpit_lib.next_view_depth)
-# 遷自 ~/ez2-cockpit-demo/acb-sandbox/depth-ctl.sh(E2.1)
+# 遷自舊 demo 的 depth-ctl.sh(E2.1)
 SESSION="${2:-}"
 if [ -n "$SESSION" ]; then
   STATE="$(tmux show-option -qv -t "$SESSION" @aib_state_dir 2>/dev/null || true)"
