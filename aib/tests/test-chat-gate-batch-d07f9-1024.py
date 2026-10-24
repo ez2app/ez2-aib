@@ -137,7 +137,9 @@ class Batch(OG.Base):
         rc, _out = self.run_cb("share", FRIEND, "status")
         self.env["AIB_TOUCHID"] = "0"
         rc, out = self.run_cb("share", FRIEND, "status", "--json")
-        self.assertEqual((rc, json.loads(out.strip())["why"]), (3, "touchid_off"))
+        # 非 Mac 先回 touchid_unavailable(seat_act.prove 平台判斷在 AIB_TOUCHID 之前;CI 有 Linux,#329)
+        self.assertEqual((rc, json.loads(out.strip())["why"]),
+                         (3, "touchid_off" if sys.platform == "darwin" else "touchid_unavailable"))
         self.assertEqual(len(seen), 1 if sys.platform == "darwin" else 0, "touchid_off / 非 Mac 不准叫人去按指紋")
 
     def test_b8_partial_write(self):

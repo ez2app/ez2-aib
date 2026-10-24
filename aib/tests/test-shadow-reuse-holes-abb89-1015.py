@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -81,7 +82,11 @@ class _Fixture(unittest.TestCase):
         self.trace_dir.mkdir()
 
     def tearDown(self):
-        self.td.cleanup()
+        try:
+            self.td.cleanup()
+        except OSError:            # git 背景程序剛好在寫 .git/objects ⇒ 等一下再收一次(#329 CI ubuntu 3.9 偶發 ENOTEMPTY)
+            time.sleep(0.5)
+            shutil.rmtree(self.td.name, ignore_errors=True)
 
     def _git(self, *a):
         return subprocess.run(["git", "-C", str(self.repo)] + list(a), check=True, capture_output=True, text=True,

@@ -265,15 +265,19 @@ def _linux_pipe_peer(pid, fd, exclude=()):
             try:
                 if os.stat("/proc/" + d).st_uid != me:
                     continue
-                for f in os.listdir("/proc/%s/fd" % d):
+                fdl = os.listdir("/proc/%s/fd" % d)
+            except OSError:
+                continue
+            for f in fdl:
+                try:   # 每個 fd 各自接:列表裡有 listdir 自己開的目錄 fd,readlink 時已關(掃到自己會整個跳過,#329 CI)
                     if os.readlink("/proc/%s/fd/%s" % (d, f)) != target:
                         continue
                     with open("/proc/%s/fdinfo/%s" % (d, f)) as fh:   # 只算讀端(寫端是兄弟行程,不是在看輸出的人,#319 r7 L2)
                         flags = next((ln.split()[1] for ln in fh if ln.startswith("flags:")), "")
-                    if flags and int(flags, 8) & os.O_ACCMODE == os.O_RDONLY:
-                        return True
-            except OSError:
-                continue
+                except OSError:
+                    continue
+                if flags and int(flags, 8) & os.O_ACCMODE == os.O_RDONLY:
+                    return True
         return False
     except OSError:
         return None
