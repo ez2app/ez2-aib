@@ -392,7 +392,8 @@ def scan(rows=None, run=None, owner_of=None, lsof=None, now=None, roots=None, mi
             pids = [pid] + [p for p in desc if p in by and by[p][2] == me and p not in protected
                             and _under(_script(by[p][6]), roots) and not room_heat.SANDBOX_RE.search(by[p][6])]
         ident = identity(pid)
-        if not ident or ident[0] != me or ident[1] != 1 or now - ident[3] < min_age_s:
+        # Linux 開始秒 = 牆鐘 − /proc/uptime + ticks,剛起的行程可能算出比 now 晚一點;年齡夾到 0(#329 CI ubuntu 3.9)
+        if not ident or ident[0] != me or ident[1] != 1 or max(0.0, now - ident[3]) < min_age_s:
             continue
         idents = {p: identity(p) for p in pids}
         pids = [p for p in pids if idents.get(p) and idents[p][0] == me and (p == pid or _start_s(idents[p]) < t0)]
