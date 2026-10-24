@@ -493,7 +493,8 @@ def publish_roster(root, env, st, now):
     if CR.published_hash(root) == h:
         return "published", {}
     tried = st.get("publish_tried_at")
-    if isinstance(tried, int) and now - tried < PUBLISH_EVERY:
+    every = GF.env_secs("AIB_CHAT_PUBLISH_EVERY", PUBLISH_EVERY, env)   # 測試縮短用;平常 60 秒(壞值退回預設、最少 1 秒)
+    if isinstance(tried, int) and now - tried < every:
         return "publishing", {"tried_at": tried, "error": st.get("publish_error")}
     rc, rec = _run_nostr("publish", root, env)
     if rc is None:

@@ -974,7 +974,7 @@ BACKFILL = 2 * 86400 + 600       # gift wrap 時間戳往回亂數最多 2 天 �
 KEEP = 7 * 86400                 # 去重紀錄保留 7 天
 SEEN_KEY_LEN = 18                # 去重鍵只存「e:/m: + 前 16 個十六進位」(64 位元,撞號可略);全長 64 碼的 event id 一週就撐爆 64 KB
 SEEN_MAX = 1500                  # 去重紀錄最多幾筆(短鍵每筆約 30 bytes ⇒ 約 45 KB,留在 atomic_json 64 KB 上限內);超過丟最舊的
-RESUB_EVERY = 30                 # 秒;席的金鑰有變(新席、封存)就重新訂閱
+RESUB_EVERY = GF.env_secs("AIB_CHAT_RESUB_EVERY", 30)   # 秒;席的金鑰有變(新席、封存)就重新訂閱(壞值退回預設、最少 1 秒)
 RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired", "still_waiting")   # read 另走一批一次(1.8)
 RECEIPT_STAGES_IN = RECEIPT_STAGES_OUT + ("read",)
 # 拒收原因碼(回條 aib-reason 標籤;寄件端 dm-ctl 照碼翻成一句話)。只放碼,不放內文

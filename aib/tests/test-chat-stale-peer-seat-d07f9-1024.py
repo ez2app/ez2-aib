@@ -21,11 +21,14 @@ N2 換人格後在線狀態也用新那把 ⇒ 好友看得到我在線(@abb89 #
 S4 手機配對給的 npub 跟名冊同一把:換過人格的席 ⇒ 配對 QR 給 B 那把,不給舊人格 A(@abb89 #297 r1)
 D1 合併名冊(多台機器)⇒ 各台丟掉的席取聯集,記在 dropped_seats
 D2 resolve 那一席被對方名冊丟掉 ⇒ why 照回 no_seat(艦長室認這個代碼)、另帶 hint 說原因;沒被丟的查不到 ⇒ 不帶 hint
-刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅;K9 在線挑同席第一把 ⇒ N2 紅;K3 重複席改回整份拒 ⇒ 名冊 R4 紅
+刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅;K9 在線挑同席第一把 ⇒ N2 紅;K10 網路錯也改抓名冊 ⇒ P4 紅;K3 重複席改回整份拒 ⇒ 名冊 R4 紅
+被 SIGTERM(外層 timeout)⇒ 先跑清理收掉轉接程式再走(#308 L1)
+E1 / E2 秒數環境變數壞值退回預設、0 / 負數夾到 1 秒;值寫壞 chat_nostr 照 import 得起來(#308 後續 r2)
 """
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -39,6 +42,17 @@ from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 
 NOSTR_VENV = os.environ.get("AIB_TEST_NOSTR_VENV") or ""
+_LIVE = []                                                          # 跑到一半的 SendAfterSwitch(有開轉接程式)
+
+
+def _on_term(signum, frame):
+    """外層 timeout 送 SIGTERM ⇒ 先跑各格的清理(Box.close 收 chat_bridge / chat_nostr)再走,不留孤兒(@abb89 #308 L1)。"""
+    for t in list(_LIVE):
+        try:
+            t.doCleanups()
+        except Exception:   # noqa: BLE001
+            pass
+    os._exit(128 + signum)
 VPY = str(Path(NOSTR_VENV) / "bin" / "python") if NOSTR_VENV else ""
 HAVE_NOSTR = bool(VPY) and Path(VPY).exists() and subprocess.run(
     [VPY, "-c", "import nostr_sdk"], capture_output=True).returncode == 0
@@ -265,10 +279,13 @@ class SendAfterSwitch(unittest.TestCase):
         self.RT = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.RT)
         self.RT.Network.setUp(self)
+        _LIVE.append(self)                                          # 被 SIGTERM 也要收掉兩台轉接程式(#308 L1)
+        self.addCleanup(_LIVE.remove, self)
 
     _box = property(lambda self: self.RT.Network._box.__get__(self))
 
-    box_extra = {"AIB_CHAT_PRESENCE_TICK": "1", "AIB_CHAT_PRESENCE_GAP": "1", "AIB_CHAT_PRESENCE_EVERY": "3"}
+    box_extra = {"AIB_CHAT_PRESENCE_TICK": "1", "AIB_CHAT_PRESENCE_GAP": "1", "AIB_CHAT_PRESENCE_EVERY": "3",
+                 "AIB_CHAT_PUBLISH_EVERY": "2", "AIB_CHAT_RESUB_EVERY": "2"}   # 名冊重發 60 秒、重新訂閱 30 秒 ⇒ 2 秒(#308 L1:整支縮短)
 
     def _switched(self):
         """Andy 那一席換人格、名冊換成新那把之後 ⇒ (a, x, b, y);Bob 這時才開(沒有舊名冊快取),把 Andy 加好友。"""
@@ -280,7 +297,7 @@ class SendAfterSwitch(unittest.TestCase):
         disp.write_text(json.dumps(cur))
         new = lambda: [e["npub"] for e in NK.sending_seats(a.env()) if e["seat5"] == x]  # noqa: E731
         self.assertTrue(a.wait_for(lambda: new() and new() != old, 30), (old, new()))
-        self.assertTrue(a.wait_for(lambda: any(new()[0] in json.dumps(e) for e in self.relay.events), 90), "名冊沒換成新那把(重發有 60 秒節流)")
+        self.assertTrue(a.wait_for(lambda: any(new()[0] in json.dumps(e) for e in self.relay.events), 30), "名冊沒換成新那把")
         act = [e for e in NK.read_map(a.env())["seats"] if e["seat5"] == x and e["status"] == "active"]
         self.assertEqual(len(act), 2, "舊人格那把還 active(換回來照用)⇒ 才分得出「同席第一把」")
         b, (y,) = self._box("Bob", [("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [True])
@@ -299,6 +316,30 @@ class SendAfterSwitch(unittest.TestCase):
         self.assertEqual(a.cli("friend", "add", "%s/6ddf/%s" % (b.owner, y)).returncode, 0)
         world = lambda: {c["owner"]: c for c in json.loads(b.cli("world", "--json").stdout)["cabins"]}  # noqa: E731
         self.assertTrue(b.wait_for(lambda: (world().get(a.owner) or {}).get("presence_at"), 40), world())
+
+
+class EnvSecs(unittest.TestCase):
+    """#308 後續 r2(@abb89):秒數環境變數壞值 / 0 不准讓轉接程式起不來或節流失效。"""
+
+    def test_e1_bad_or_zero(self):
+        sys.path.insert(0, str(REPO / "src" / "cockpit"))
+        import dm_global_files as GF
+        f = lambda v: GF.env_secs("X", 60, {"X": v} if v is not None else {})   # noqa: E731
+        self.assertEqual([f(v) for v in (None, "", "abc", "nan", "inf", "-5", "0", "0.2", "2", "90")],
+                         [60.0, 60.0, 60.0, 60.0, 60.0, 1.0, 1.0, 1.0, 2.0, 90.0])
+        r = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import chat_bridge as CB, "
+                            "dm_global_files as GF; print(GF.env_secs('AIB_CHAT_PUBLISH_EVERY', CB.PUBLISH_EVERY))",
+                            str(REPO / "src" / "cockpit")], capture_output=True, text=True, timeout=60,
+                           env=dict(os.environ, AIB_CHAT_PUBLISH_EVERY="abc", AIB_CHAT_RESUB_EVERY="abc"))
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "60.0"), r.stderr)
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(chat_nostr 只在 venv 裡 import 得到)")
+    def test_e2_chat_nostr_imports_with_bad_value(self):
+        for raw, want in (("abc", "30.0"), ("0", "1.0")):
+            r = subprocess.run([VPY, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import chat_nostr as CN; print(CN.RESUB_EVERY)",
+                                str(REPO / "src" / "cockpit")], capture_output=True, text=True, timeout=60,
+                               env=dict(os.environ, AIB_CHAT_RESUB_EVERY=raw))
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, want), raw + ":" + r.stderr)
 
 
 class Knife(unittest.TestCase):
@@ -380,5 +421,13 @@ class Knife(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k10_network_error_falls_back(self):  # #308 L2
+        self._cut("src/cockpit/chat_nostr.py",
+                  '        if rc == 0 or (addr and res.get("why") not in ("no_seat", "no_dm_relays")):\n',
+                  "        if rc == 0:\n", "Stale.test_p4_network_error_no_roster")
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _on_term)
     unittest.main()

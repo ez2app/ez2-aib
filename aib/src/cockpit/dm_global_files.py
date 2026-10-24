@@ -157,6 +157,19 @@ def _is_int(v):
     return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 
 
+def env_secs(name, default, env=None, floor=1.0):
+    """秒數型環境變數(測試縮短節流用):讀不懂 / 非有限數 ⇒ 預設值;太小 ⇒ 夾到 floor(0 會讓節流失效、每拍重發)。"""
+    import math
+    raw = (os.environ if env is None else env).get(name)
+    try:
+        v = float(raw) if raw not in (None, "") else float(default)
+    except (TypeError, ValueError):
+        v = float(default)
+    if not math.isfinite(v):
+        v = float(default)
+    return max(float(floor), v)
+
+
 def _is_str(v):
     return isinstance(v, str)
 
