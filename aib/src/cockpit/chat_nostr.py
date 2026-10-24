@@ -603,7 +603,7 @@ class Sender(object):
 
     async def _first_seat(self, owner):
         """在線 / 名片 / 空間快照寄給誰:快照第一席 ⇒ (rc, resolve 結果)。
-        10-24 fishmac:快照記著對方 10-20 的舊席(對方換艙後名冊只剩新席)⇒ resolve 一直 no_seat、在線四天沒送到。
+        10-24 一台會員機:快照記著對方 10-20 的舊席(對方換艙後名冊只剩新席)⇒ resolve 一直 no_seat、在線四天沒送到。
         快照那席查不到 ⇒ 改抓名冊第一席,查到就用名冊更新快照(note_peer 拿到不比快照舊的名冊會整份換掉 seats)。"""
         addr = await self._first_seat_addr(owner)
         rc, res = await self._resolve(addr) if addr else (2, {})

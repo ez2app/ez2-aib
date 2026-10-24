@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""在線 / 名片 / 空間快照寄給對方時,聯絡人快照記的是舊席(10-24 fishmac:對方 10-20 換艙,名冊只剩新席;
+"""在線 / 名片 / 空間快照寄給對方時,聯絡人快照記的是舊席(10-24 一台會員機:對方 10-20 換艙,名冊只剩新席;
 Pro 的快照還記著舊席 ⇒ resolve 一直 no_seat、在線四天沒送到,兩邊都看不出來)。
 
 P1 快照第一席查不到 ⇒ 改抓名冊第一席、查到就用;快照 seats 整份換成名冊目前公開的席(舊席拿掉)
@@ -12,7 +12,8 @@ S1 一席一把(10-24 Pro:@cfd04 換過人格,同一席三把 active ⇒ 名冊�
    sending_seats 只給 B 那把;名冊這一席只出現一次、npub = B;A 的金鑰仍 active(收件照認、人格換回來照用)
 S2 人格換回 A ⇒ sending_seats 換回 A 那把(不產新的)
 S3 名冊組完的席碼不重複(就算對照表有兩把同席、同人格的 active,也只取第一把)
-刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅
+S4 手機配對給的 npub 跟名冊同一把:換過人格的席 ⇒ 配對 QR 給 B 那把,不給舊人格 A(@abb89 #297 r1)
+刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅
 """
 import json
 import os
@@ -112,6 +113,18 @@ class OneKeyPerSeat(unittest.TestCase):
         content, _dm = CR.build(self.env, live=self.live("aaaa11"))
         self.assertEqual([x["seat"] for c in content["cabins"] for x in c["seats"]], ["cfd04"])
 
+    def test_s4_pair_uses_current_persona(self):
+        import chat_pair as CP
+        NK.sync_seats(self.live("aaaa11"), self.env)
+        NK.sync_seats(self.live("bbbb22"), self.env)
+        CR.set_profile("Andy", "TW", self.env)
+        CR.set_public("cfd04", True, self.env)
+        want = NK.sending_seats(self.env, self.live("bbbb22"))[0]["npub"]
+        old = next(e["npub"] for e in NK.read_map(self.env)["seats"] if e["persona_uid"] == "aaaa11")
+        self.assertNotEqual(want, old)
+        self.assertEqual(CP._seat_npub(self.env, live=self.live("bbbb22")), ("cfd04", want))
+        self.assertEqual(CP._seat_npub(self.env, "cfd04", live=self.live("bbbb22")), ("cfd04", want))
+
 
 @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
 class Stale(unittest.TestCase):
@@ -148,6 +161,17 @@ class Knife(unittest.TestCase):
             r = run_guarded([sys.executable, str(root / "tests" / name), "OneKeyPerSeat"], cwd=str(root), max_procs=60, timeout=120)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_k4_pair_first_active(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_pair.py", "    for e in NK.sending_seats(env, live):\n",
+                        "    for e in [x for x in NK.read_map(env)[\"seats\"] if x.get(\"status\") == \"active\"]:\n",
+                        tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "OneKeyPerSeat.test_s4_pair_uses_current_persona"],
+                            cwd=str(root), max_procs=60, timeout=120)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k1_no_fallback(self):
