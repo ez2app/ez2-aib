@@ -57,12 +57,25 @@ SCRIPT_RE = re.compile(r"\.(py|js|mjs|cjs|sh)$")
 AUTOMATION_FLAGS = ("--headless", "--enable-automation", "--remote-debugging-pipe")
 
 
+def _system_temp():
+    """系統給這個帳號的暫存夾:macOS 問 confstr(不經 TMPDIR);其他平台只用固定的 /tmp、/var/tmp。"""
+    if sys.platform == "darwin":
+        try:
+            return [os.confstr("CS_DARWIN_USER_TEMP_DIR")]
+        except (ValueError, OSError, AttributeError):
+            return []
+    return ["/var/tmp"]
+
+
 def temp_roots(extra=()):
-    """暫存根(realpath、結尾帶 /):系統暫存夾、/tmp、/private/tmp。不讀環境變數(設錯一個就把白名單放大,#319 r3);
-    測試用 extra 注入;太淺的(/、家目錄、家目錄的上層、只有一層)一律丟掉。"""
+    """暫存根(realpath、結尾帶 /):系統暫存夾、/tmp、/private/tmp。不讀任何環境變數 —— 連 TMPDIR 也不讀
+    (tempfile.gettempdir 會讀,設錯一個就把白名單放大,#319 r3 / r4 B-M2);測試用 extra 或 scan(roots=) 注入;
+    太淺的(/、家目錄、家目錄的上層、只有一層)一律丟掉。"""
     home = os.path.realpath(os.path.expanduser("~"))
     out = set()
-    for r in [tempfile.gettempdir(), "/tmp", "/private/tmp", *extra]:
+    for r in [*_system_temp(), "/tmp", "/private/tmp", *extra]:
+        if not r:
+            continue
         rp = os.path.realpath(r)
         if rp.count("/") < 2 or rp == home or home.startswith(rp.rstrip("/") + "/"):
             continue
@@ -255,10 +268,10 @@ def scan(rows=None, run=None, owner_of=None, lsof=None, now=None, roots=None, mi
         except Exception:  # noqa: BLE001
             pass
         if any(HOST_RE.search(by[p][6]) for p in everyone if p in by):
-            held.append({"kind": kind, "owner": owner, "why": "host_operation"})
+            held.append({"kind": kind, "owner": owner, "pid": pid, "why": "host_operation"})
             continue
         if (lsof or _holds_lock)(everyone):
-            held.append({"kind": kind, "owner": owner, "why": "holds_lock"})
+            held.append({"kind": kind, "owner": owner, "pid": pid, "why": "holds_lock"})
             continue
         if kind == "chrome_orphan":
             pids = [pid]                       # 主行程收了,它的 helper 跟著結束
@@ -390,16 +403,21 @@ class _AutoLock:
 def release(ids=(), all_safe=False, dry_run=False, auto=False, scan_fn=None, wait_s=TERM_WAIT_S, now=None):
     """→ {ok, results:[{id, detail, kind?, freed_cpu?, freed_mem_mb?}], detail?}。"""
     if auto and not dry_run:
+        lock = _AutoLock()
         try:
-            with _AutoLock():
-                return _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now)
+            lock.__enter__()                           # 只有取鎖這一步的 OSError 算 log_failed;殺完之後的不藏(B-L3)
         except OSError:
             return {"ok": False, "detail": "log_failed", "results": []}
+        try:
+            return _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now)
+        finally:
+            lock.__exit__()
     return _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now)
 
 
 def _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now):
     now = time.time() if now is None else now
+    ids = list(dict.fromkeys(ids))                     # 同一個編號只算一次(B-L1)
     bad = [i for i in ids if not ID_RE.match(i or "")]
     if bad:
         return {"ok": False, "detail": "bad_candidate", "results": [{"id": i[:32], "detail": "bad_candidate"} for i in bad]}
@@ -422,7 +440,7 @@ def _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now):
             results.append({"id": c["id"], "detail": "auto_limit"})
             break
         if dry_run:
-            results.append({"id": c["id"], "detail": "dry_run", "kind": c["kind"], "pids": len(c["pids"])})
+            results.append({"id": c["id"], "detail": "dry_run", "kind": c["kind"], "n_pids": len(c["pids"])})
             continue
         if auto:                                       # 殺之前先記一筆預留:記不進帳就不殺(不然額度永遠是滿的)
             try:
@@ -432,17 +450,26 @@ def _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now):
                 results.append({"id": c["id"], "detail": "log_failed"})
                 break
         killed, failed = _kill_one(c, me, wait_s=wait_s)
-        detail = "ok" if failed == 0 else ("partial" if killed else "release_failed")
+        if killed == 0 and failed == 0:                # 重掃之後、送訊號之前自己結束了:沒收到東西,不報省下多少
+            detail = "candidate_changed"
+        else:
+            detail = "ok" if failed == 0 else ("partial" if killed else "release_failed")
         if budget is not None:
             budget -= killed
-        r = {"id": c["id"], "detail": detail, "kind": c["kind"], "freed_cpu": c["cpu"], "freed_mem_mb": c["mem_mb"]}
+        r = {"id": c["id"], "detail": detail, "kind": c["kind"]}
+        if detail == "ok":
+            r.update(freed_cpu=c["cpu"], freed_mem_mb=c["mem_mb"])
         results.append(r)
         try:
             _log({"t": round(time.time(), 1), "kind": c["kind"], "owner": c["owner"], "cpu": c["cpu"],
                   "mem_mb": c["mem_mb"], "n_pids": killed, "mode": "auto_done" if auto else "manual", "result": detail})
         except OSError:                                # 自動模式的額度已經用預留那筆算過;結果記不了 ⇒ 停手
+            r["log"] = "log_failed"                    # 掛在同一筆上(頁面用 id 當鍵,不出兩筆)
             if auto:
-                results.append({"id": c["id"], "detail": "log_failed"})
                 break
-    ok = all(r["detail"] in ("ok", "dry_run") for r in results)
-    return {"ok": ok, "results": results}
+    out = {"ok": all(r["detail"] in ("ok", "dry_run") and "log" not in r for r in results), "results": results}
+    first = next((r.get("log") if r["detail"] in ("ok", "dry_run") else r["detail"]
+                  for r in results if r["detail"] not in ("ok", "dry_run") or "log" in r), None)
+    if first:
+        out["detail"] = first                          # 總層一律放第一個不是 ok 的代碼(B-L2)
+    return out

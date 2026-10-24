@@ -5202,5 +5202,6 @@
   "aib.heat.release.not_releasable": "この種類は解放できません",
   "aib.heat.release.bad_candidate": "候補番号の形式が正しくありません",
   "aib.heat.release.auto_limit": "自動解放が 10 分間の上限に達したため停止します",
-  "aib.heat.release.dry_run": "試行:これを解放します"
+  "aib.heat.release.dry_run": "試行:これを解放します",
+  "aib.heat.release.log_failed": "解放ログに書き込めません(上限を数えられない)ため、自動解放を止めました"
 }

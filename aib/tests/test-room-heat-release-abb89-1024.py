@@ -18,6 +18,8 @@ R12 行程在送訊號前自己結束 ⇒ 不算失敗;R13 剛起不到 MIN_AGE_
 R14 argv[0] 不是直譯器(tmux server、caffeinate、常駐程式)、-m / -c、node --require 的值 ⇒ 不是候選;
     Chrome 多個 / 空白分隔的 --user-data-dir、-app= ⇒ 不是
 R15 --auto:紀錄寫不進去 ⇒ 不殺(log_failed);無限大 / 未來時間的紀錄 ⇒ 額度不歸零
+R16 快照整合:候選不帶 starts、掃描壞了標 candidates_detail;CLI 只有總代碼時印那個代碼,不印「沒有殘留」
+暫存根一律用 scan(roots=) 注入這支測試的暫存夾(正式程式連 TMPDIR 都不讀)。
 刀(複本):K1 開始時間不比 ⇒ R6 紅;K2 拿掉主機動作排除 ⇒ R3 紅;K3 子孫不檢查暫存根 ⇒ R4 紅;
 K4 暫存根改回子字串比對 ⇒ R9 紅;K5 拿掉 *.lock 排除 ⇒ R5 紅
 """
@@ -66,6 +68,8 @@ class Orphans(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         self.mine = []                                  # (pid, start) 測試自己起的,收尾只殺這些
+        self.root = os.path.realpath(str(self.tmp))
+        self.roots = [self.root + "/"]
 
     def tearDown(self):
         me = os.getuid()
@@ -117,10 +121,11 @@ class Orphans(unittest.TestCase):
         return next((c for c in cands if pid in c["pids"] or c["pids"][:1] == [pid]), None)
 
     def scan(self):
-        return RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0)
+        return RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0, roots=self.roots)
 
     def kinds(self, pid, args, **kw):
         rows = [(pid, 1, os.getuid(), 1.0, 1024, "x", args)]
+        kw.setdefault("roots", self.roots)
         cands, _ = RR.scan(rows=rows, owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0, **kw)
         return [c["kind"] for c in cands]
 
@@ -165,7 +170,7 @@ class Orphans(unittest.TestCase):
         self.assertTrue(self.child_pids(pid, 1))
         cands, held = self.scan()
         self.assertIsNone(self.find(pid, cands))
-        self.assertIn("host_operation", [h["why"] for h in held])
+        self.assertIn(("host_operation", pid), [(h["why"], h["pid"]) for h in held])
 
     def test_r4_foreign_child_survives(self):
         pid, _d = self.spawn("""
@@ -190,9 +195,13 @@ class Orphans(unittest.TestCase):
             time.sleep(300)
         """)
         time.sleep(0.5)
-        cands, held = RR.scan(owner_of=lambda p: (None, None), min_age_s=0)
+        cands, held = RR.scan(owner_of=lambda p: (None, None), min_age_s=0, roots=self.roots)
         self.assertIsNone(self.find(pid, cands))
-        self.assertIn("holds_lock", [h["why"] for h in held])
+        self.assertIn(("holds_lock", pid), [(h["why"], h["pid"]) for h in held])
+        free, _d2 = self.spawn("import time\ntime.sleep(300)\n", name="free")   # 負控制組:真 lsof、沒開鎖 ⇒ 是候選
+        time.sleep(0.3)
+        cands, held = RR.scan(owner_of=lambda p: (None, None), min_age_s=0, roots=self.roots)
+        self.assertIsNotNone(self.find(free, cands), held)
 
     def test_r6_pid_reuse_guard(self):
         pid, _d = self.spawn("import time\ntime.sleep(300)\n")
@@ -213,7 +222,7 @@ class Orphans(unittest.TestCase):
     def test_r8_human_debug_chrome_not_candidate(self):
         pid, _d = self.spawn("import time\ntime.sleep(300)\n")
         chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        prof = tempfile.gettempdir() + "/puppeteer_dev_profile-x"
+        prof = self.root + "/puppeteer_dev_profile-x"
         self.assertEqual(self.kinds(pid, chrome + " --headless --remote-debugging-port=9222 --user-data-dir=/Users/u/ChromeDev"), [])
         self.assertEqual(self.kinds(pid, chrome + " --remote-debugging-port=9222 --user-data-dir=" + prof), [])  # 沒自動化旗標
         self.assertEqual(self.kinds(pid, chrome + " --headless --app=http://x --user-data-dir=" + prof), [])
@@ -223,8 +232,10 @@ class Orphans(unittest.TestCase):
     def test_r9_path_tricks(self):
         pid, d = self.spawn("import time\ntime.sleep(300)\n")
         chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless --remote-debugging-port=1"
-        tmp = os.path.realpath(tempfile.gettempdir())
+        tmp = self.root
         bad = [
+            "python3 /Users/u/x%stests/test-x.py" % self.roots[0],              # 暫存根出現在路徑中間(子字串會中)
+            "python3 %s../../Users/u/tests/test-x.py" % self.roots[0],          # 暫存根開頭但 .. 走出去
             "python3 /Users/u/proj/tmp/tests/test-live.py",                       # 家目錄裡剛好有一層 tmp/
             "python3 /tmp/../Users/u/aib-x/tests/test-x.py",                      # .. 走出暫存根
             "python3 --log /tmp/x.log /Users/u/aib-plugins/tests/test-x.py",      # 暫存路徑跟測試路徑分在兩個引數
@@ -244,9 +255,12 @@ class Orphans(unittest.TestCase):
     def test_r10_roots_not_from_env(self):
         pid, _d = self.spawn("import time\ntime.sleep(300)\n")
         home = os.path.realpath(os.path.expanduser("~"))
-        with mock.patch.dict(os.environ, {"AIB_HEAT_TEMP_ROOTS": "/:" + home}):
-            self.assertNotIn("/", RR.temp_roots())
-            self.assertEqual(self.kinds(pid, "python3 %s/r/tests/test-x.py" % home), [])
+        lib = os.path.join(home, "Library")
+        with mock.patch.dict(os.environ, {"AIB_HEAT_TEMP_ROOTS": "/:" + home, "TMPDIR": lib, "TEMP": lib, "TMP": lib}):
+            roots = RR.temp_roots()
+            self.assertNotIn(lib.rstrip("/") + "/", roots)                 # TMPDIR 指到家目錄底下也不收
+            self.assertFalse(any(r.startswith(home + "/") for r in roots), roots)
+            self.assertEqual(self.kinds(pid, "python3 %s/r/tests/test-x.py" % home, roots=None), [])
         for r in ("/", home, os.path.dirname(home), "/Users"):
             self.assertNotIn(os.path.realpath(r).rstrip("/") + "/", RR.temp_roots(extra=(r,)), r)
 
@@ -289,7 +303,7 @@ class Orphans(unittest.TestCase):
         for ok in ("/usr/bin/python3 -B -W ignore " + T, sys.executable + " " + T, "node %s/tests/test-b.js" % d):
             self.assertEqual(self.kinds(pid, ok), ["test_orphan"], ok)
         chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless --remote-debugging-port=1 "
-        prof = os.path.realpath(tempfile.gettempdir()) + "/p1"
+        prof = self.root + "/p1"
         for args in ("--user-data-dir=%s --user-data-dir=/Users/x/realprof" % prof,
                      "--user-data-dir=%s --user-data-dir /Users/x/realprof" % prof,
                      "-app=https://x --user-data-dir=" + prof, "--app https://x --user-data-dir=" + prof):
@@ -321,8 +335,37 @@ class Orphans(unittest.TestCase):
     def test_r13_too_young(self):
         pid, d = self.spawn("import time\ntime.sleep(300)\n")
         rows = [(pid, 1, os.getuid(), 1.0, 1024, "x", "python3 %s/tests/test-fake.py" % d)]
-        cands, _ = RR.scan(rows=rows, owner_of=lambda p: (None, None), lsof=lambda pids: False)
+        cands, _ = RR.scan(rows=rows, owner_of=lambda p: (None, None), lsof=lambda pids: False, roots=self.roots)
         self.assertEqual(cands, [])
+
+    def test_r16_snapshot_and_cli(self):
+        import io
+        import room_heat as RH
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n")
+        sampler = lambda: ([], 0.0)                                         # noqa: E731
+        s = RH.snapshot(sampler=sampler, record=False, scan_fn=lambda **k: self.scan())
+        c = self.find(pid, s["candidates"])
+        self.assertIsNotNone(c)
+        self.assertNotIn("starts", c)
+        self.assertNotIn("candidates_detail", s)
+
+        def boom(**k):
+            raise RuntimeError("scan")
+        s = RH.snapshot(sampler=sampler, record=False, scan_fn=boom)
+        self.assertEqual((s["candidates"], s["candidates_detail"]), ([], "scan_failed"))
+        out = io.StringIO()
+        with mock.patch.object(RR, "release", lambda **k: {"ok": False, "detail": "log_failed", "results": []}):
+            self.assertEqual(RH.main(["release", "--all-safe", "--auto"], out=out), 1)
+        self.assertIn(RH.T("release.log_failed"), out.getvalue())
+        self.assertNotIn("release.", out.getvalue())                        # 沒有原始鍵名
+        start = RR.identity(pid)[2]                                         # 先自己結束 ⇒ candidate_changed、不報省下多少
+        os.kill(pid, signal.SIGKILL)
+        time.sleep(0.3)
+        gone = {"id": "a" * 16, "kind": "test_orphan", "owner": "", "pids": [pid], "starts": {str(pid): start},
+                "cpu": 1.0, "mem_mb": 1.0}
+        r = RR.release(ids=["a" * 16, "a" * 16], scan_fn=lambda: ([gone], []))
+        self.assertEqual(r["results"], [{"id": "a" * 16, "detail": "candidate_changed", "kind": "test_orphan"}])
+        self.assertEqual(r["detail"], "candidate_changed")
 
 
 class Knives(unittest.TestCase):

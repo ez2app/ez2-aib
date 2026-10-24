@@ -5202,5 +5202,6 @@
   "aib.heat.release.not_releasable": "這種不給釋放",
   "aib.heat.release.bad_candidate": "候選編號格式不對",
   "aib.heat.release.auto_limit": "自動釋放已達 10 分鐘上限,先停手",
-  "aib.heat.release.dry_run": "試跑:會釋放這一項"
+  "aib.heat.release.dry_run": "試跑:會釋放這一項",
+  "aib.heat.release.log_failed": "記不進釋放紀錄(額度算不準),自動釋放先停手"
 }

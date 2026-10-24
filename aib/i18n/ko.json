@@ -5202,5 +5202,6 @@
   "aib.heat.release.not_releasable": "이 종류는 해제할 수 없습니다",
   "aib.heat.release.bad_candidate": "후보 번호 형식이 올바르지 않습니다",
   "aib.heat.release.auto_limit": "자동 해제가 10분 한도에 도달해 멈춥니다",
-  "aib.heat.release.dry_run": "시험 실행: 이 항목을 해제합니다"
+  "aib.heat.release.dry_run": "시험 실행: 이 항목을 해제합니다",
+  "aib.heat.release.log_failed": "해제 기록을 쓸 수 없어(한도 계산 불가) 자동 해제를 멈췄습니다"
 }

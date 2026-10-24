@@ -5202,5 +5202,6 @@
   "aib.heat.release.not_releasable": "This kind cannot be released",
   "aib.heat.release.bad_candidate": "Malformed candidate id",
   "aib.heat.release.auto_limit": "Auto-release hit its 10-minute limit; stopping",
-  "aib.heat.release.dry_run": "Dry run: would release this"
+  "aib.heat.release.dry_run": "Dry run: would release this",
+  "aib.heat.release.log_failed": "Could not write the release log (quota unknown); auto release stopped"
 }

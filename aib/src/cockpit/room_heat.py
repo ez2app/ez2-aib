@@ -431,7 +431,7 @@ def crashes(days=CRASH_DAYS, now=None, crash_dir=None):
 def snapshot(sampler=None, run=None, owner_of=None, now=None, environ=None, record=True, scan_fn=None):
     m = measure(sampler)
     rows = list_procs(run)
-    cands, held = [], []
+    cands, held, cand_detail = [], [], None
     if rows is None:
         grp = {"state": "unmeasured", "detail": "ps_failed", "items": []}
     else:
@@ -440,10 +440,12 @@ def snapshot(sampler=None, run=None, owner_of=None, now=None, environ=None, reco
             import room_heat_release as RR
             c, h = (scan_fn or RR.scan)(rows=rows, owner_of=owner_of)
             cands, held = [RR.public(x) for x in (c or [])], list(h or [])
-        except Exception:  # noqa: BLE001 —— 候選算不出來不擋快照
-            cands, held = [], []
+        except Exception:  # noqa: BLE001 —— 候選算不出來不擋快照,但要分得出「沒候選」和「掃描壞了」
+            cands, held, cand_detail = [], [], "scan_failed"
     snap = {"schema": "aib-heat/v1", "t": round(time.time() if now is None else now, 1), "level": m["level"],
             "took_s": m["took_s"], "cells": m["cells"], "groups": grp, "candidates": cands, "held": held}
+    if cand_detail:
+        snap["candidates_detail"] = cand_detail
     if record:
         try:
             snap["history_recorded"] = record_history(m, now=now, environ=environ)
@@ -492,8 +494,10 @@ def main(argv=None, out=None):
         else:
             for x in r["results"]:
                 out.write("  %s %s\n" % (x["id"], T("release." + x["detail"])))
-            if not r["results"]:
-                out.write(T("release.none") + "\n")
+                if x.get("log"):
+                    out.write("  %s %s\n" % (x["id"], T("release." + x["log"])))
+            if not r["results"]:                       # 掃描失敗 / 鎖開不了 ≠ 沒東西可收(B-M3)
+                out.write(T("release." + r["detail"] if r.get("detail") else "release.none") + "\n")
         return 0 if r["ok"] else 1
     if sub == "history":
         now = time.time()                               # 只回最近 1 小時(關機一天後不回昨天的點,B5)
