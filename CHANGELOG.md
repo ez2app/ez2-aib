@@ -4,6 +4,12 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.48
+
+- **Right-click "Close this seat"**: the seat list's right-click menu can now close the seat under the pointer; it checks that the window is still the one you clicked before closing, and does nothing if it has changed.
+- **Every provider's "skip approvals" mode is now pinned by a test**: Claude, Codex, agy, Copilot and Grok each start with their own flag in dgrs mode (and none in safe mode) across new, resumed, forked and relaunched seats; API-key and bot seats are listed as having no such flag.
+- **OpenRouter / TypeSafe seats start when a model is given and effort is turned off**: previously they stopped at once with an internal variable error.
+
 ## 0.1.47
 
 - **Opening a folder in agy / Grok no longer stalls on the trust question**: the folder trust prompt is answered for the folder you opened (never for `/`, your home folder or its parent), and only the menu itself is sent to the small model that picks the answer.

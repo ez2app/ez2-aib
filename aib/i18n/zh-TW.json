@@ -39,6 +39,7 @@
   "aib.context.menu.focus_pane": "聚焦窗格",
   "aib.context.menu.kill_focused_pane": "刪除聚焦窗格",
   "aib.context.menu.new_ai": "另開 AI",
+  "aib.context.menu.close_seat": "關閉這一席",
   "aib.context.menu.new_ai_hang": "掛在哪位艦長底下",
   "aib.context.menu.new_ai_hang_default": "（預設）",
   "aib.context.menu.new_ai_role": "選角色",
