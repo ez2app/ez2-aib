@@ -55,7 +55,16 @@ BROWSER_HOT = 80.0
 BROWSER_GAP_S = 2.0
 TRANSCRIPT_HUGE_MB = 500
 SEAT_RE = re.compile(r"(?<![0-9a-f])([0-9a-f]{5})(?![0-9a-f])")
-BROWSER_RE = re.compile(r"(plugin-container|Renderer|Web Content|WebContent|Isolated Web Co)", re.I)
+# 瀏覽器分頁行程:認瀏覽器本體的 bundle / 路徑(審查 L6:只認 Renderer 會把 VS Code / Slack / Claude 等 Electron 算進來)
+BROWSERS = (
+    ("Firefox", re.compile(r"(Firefox[^/]*\.app/.*plugin-container|/firefox[^ ]*/firefox[^ ]* -contentproc)")),
+    ("Google Chrome", re.compile(r"(Google Chrome Helper \(Renderer\)|/opt/google/chrome/chrome .*--type=renderer)")),
+    ("Microsoft Edge", re.compile(r"Microsoft Edge Helper \(Renderer\)|/msedge .*--type=renderer")),
+    ("Brave", re.compile(r"Brave Browser Helper \(Renderer\)")),
+    ("Arc", re.compile(r"/Arc\.app/.*Helper \(Renderer\)")),
+    ("Chromium", re.compile(r"Chromium Helper \(Renderer\)|/chromium[^ ]* .*--type=renderer")),
+    ("Safari", re.compile(r"com\.apple\.WebKit\.WebContent")),
+)
 SCRIPT_RE = re.compile(r"([\w.\-]+\.(?:py|sh|js|mjs|ts|rb|pl))\b")
 CODES = ("worktree_not_noindex", "hook_slow", "hook_timeout_kill", "launchd_failing", "test_parallel",
          "browser_tab_hot", "transcript_huge")
@@ -66,10 +75,18 @@ def _T(key, **p):
     return room_heat.T("advice." + key, **p)
 
 
+HINT_KEYS = {"worktree_not_noindex": ("count", "recent_24h"), "hook_slow": ("median_ms", "timeout_ms"),
+             "hook_timeout_kill": ("runs", "timeout_ms"), "launchd_failing": ("exit_code",), "test_parallel": ("runs",),
+             "browser_tab_hot": ("cpu",), "transcript_huge": ("mb",)}
+
+
 def hint_of(code, metric):
-    """E6:hint 是固定字串,只帶數字;名字(hook 標籤、Label、程式名、夾名)只放 metric,頁面用 textContent 畫。"""
-    key = code + ("_removed" if code == "hook_slow" and metric.get("removed") else "")
-    return _T(key, **{k: v for k, v in metric.items() if _finite(v)})
+    """E6:hint 是固定字串,只帶各 code 白名單裡的數字鍵(審查 L4:快取檔塞 key / locale 之類的鍵會撞參數);
+    名字(hook 標籤、Label、程式名、夾名)只放 metric,頁面用 textContent 畫。"""
+    key = code
+    if code == "hook_slow":
+        key += "_removed" if metric.get("removed") else ("" if _finite(metric.get("timeout_ms")) else "_nolimit")
+    return _T(key, **{k: metric[k] for k in HINT_KEYS.get(code, ()) if _finite(metric.get(k))})
 
 
 def _finite(v):
@@ -202,33 +219,95 @@ def hook_label(cmd, labels):
     return room_heat.safe_name(os.path.basename((cmd or "").split()[0]) if cmd else "?", 48)
 
 
-def hook_timeouts(settings_path):
-    """{指令或 statusMessage: timeout 秒};Stop hook 才算。讀不到 ⇒ {}。"""
-    out, labels = {}, set()
+MANAGED_SETTINGS = {"darwin": "/Library/Application Support/ClaudeCode/managed-settings.json",
+                    "linux": "/etc/claude-code/managed-settings.json"}
+
+
+def _json_file(path):
+    """(讀得出來嗎, 內容):檔不在 ⇒ (True, None);只讀自己的一般檔(或 root 的受管設定),壞了 ⇒ (False, None)。"""
     try:
-        with open(settings_path, encoding="utf-8") as fh:
-            d = json.load(fh)
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return True, None
+    except OSError:
+        return False, None
+    if not stat.S_ISREG(st.st_mode) or st.st_uid not in (os.getuid(), 0) or st.st_size > 4 * 1024 * 1024:
+        return False, None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return True, json.load(fh)
     except (OSError, ValueError, RecursionError):
-        return out, labels
-    for m in ((d.get("hooks") or {}).get("Stop") or []) if isinstance(d, dict) else []:
-        for h in (m.get("hooks") or []) if isinstance(m, dict) else []:
+        return False, None
+
+
+def _add_stop_hooks(d, timeouts, labels, root=None):
+    """settings / 外掛 hooks.json 的 Stop hook ⇒ timeouts{指令或 statusMessage: 秒}。格式不對 ⇒ 回 False。"""
+    hooks = d.get("hooks") if isinstance(d, dict) else None
+    if hooks is None:
+        return True
+    if not isinstance(hooks, dict):
+        return False
+    stop = hooks.get("Stop") or []
+    if not isinstance(stop, list):
+        return False
+    for m in stop:
+        for h in (m.get("hooks") or []) if isinstance(m, dict) and isinstance(m.get("hooks"), list) else []:
             if not isinstance(h, dict):
                 continue
-            t = h.get("timeout") if _finite(h.get("timeout")) else 60
+            t = h["timeout"] if _finite(h.get("timeout")) and h["timeout"] > 0 else 60    # ≤ 0 不算(審查 L3)
             for k in (h.get("command"), h.get("statusMessage")):
                 if isinstance(k, str) and k:
-                    out[k] = t
+                    timeouts[k.replace("${CLAUDE_PLUGIN_ROOT}", root) if root else k] = t
             if isinstance(h.get("statusMessage"), str):
                 labels.add(h["statusMessage"])
-    return out, labels
+    return True
+
+
+def hook_sources(claude_home, project_dirs=(), platform=None):
+    """所有 Stop hook 的來源(審查 M3):使用者 settings / settings.local、受管設定、各專案 .claude/settings(.local)、
+    已啟用外掛的 hooks/hooks.json。→ (timeouts, labels, complete);complete = 每個來源都讀得懂。
+    外掛用程式模組掛 hook(hooks.json 是 {"modules": …})⇒ 看不出掛了什麼 ⇒ complete False(不下「已拿掉」的結論)。"""
+    timeouts, labels, complete, enabled = {}, set(), True, set()
+    files = [os.path.join(claude_home, "settings.json"), os.path.join(claude_home, "settings.local.json"),
+             MANAGED_SETTINGS.get(platform or sys.platform, "")]
+    for d in project_dirs:
+        files += [os.path.join(d, ".claude", "settings.json"), os.path.join(d, ".claude", "settings.local.json")]
+    for f in files:
+        if not f:
+            continue
+        ok, d = _json_file(f)
+        if not ok or (d is not None and not _add_stop_hooks(d, timeouts, labels)):
+            complete = False
+            continue
+        ep = d.get("enabledPlugins") if isinstance(d, dict) else None
+        if isinstance(ep, dict):
+            enabled |= {k for k, v in ep.items() if v is True}
+    if enabled:
+        ok, inst = _json_file(os.path.join(claude_home, "plugins", "installed_plugins.json"))
+        plugins = inst.get("plugins") if ok and isinstance(inst, dict) else None
+        if not isinstance(plugins, dict):
+            return timeouts, labels, False
+        for key in sorted(enabled):
+            for ent in plugins.get(key) or []:
+                root = ent.get("installPath") if isinstance(ent, dict) else None
+                if not isinstance(root, str):
+                    complete = False
+                    continue
+                ok, hj = _json_file(os.path.join(root, "hooks", "hooks.json"))
+                if not ok or (hj is not None and ("modules" in hj or not _add_stop_hooks(hj, timeouts, labels, root))):
+                    complete = False
+    return timeouts, labels, complete
 
 
 def hook_durations(text):
-    """[(command, durationMs)…] 照時間順,只看 stop_hook_summary 那一型;其他行不 parse(不讀對話內容)。
-    只留最新一筆 summary 裡還有的 hook:已經拿掉的(例:10-25 footer-gate)不再因為舊紀錄被列出來。"""
-    out, latest = [], set()
+    """→ ([(command, durationMs)…] 照時間順, {cwd…});只看 stop_hook_summary 那一型,其他行不 parse(不讀對話內容)。
+    只留最新一筆 summary 裡還有的 hook:已經拿掉的(例:10-25 footer-gate)不再因為舊紀錄被列出來。
+    cwd 只拿來找專案層的 settings(那一席的 hook 可能掛在專案裡)。"""
+    out, latest, cwds = [], set(), set()
     for line in text.splitlines():
-        if len(line) > LINE_MAX or '"stop_hook_summary"' not in line:     # E1:單行 > 1 MB 整行丟
+        if '"stop_hook_summary"' not in line:
+            continue
+        if len(line) > LINE_MAX or len(line.encode("utf-8", "replace")) > LINE_MAX:   # E1:單行 > 1 MB(位元組)整行丟
             continue
         try:
             d = json.loads(line)
@@ -236,21 +315,27 @@ def hook_durations(text):
             continue
         if not isinstance(d, dict) or d.get("subtype") != "stop_hook_summary":
             continue
+        infos = d.get("hookInfos")
+        if not isinstance(infos, list):                                        # 審查 A-L1
+            continue
+        if isinstance(d.get("cwd"), str) and os.path.isabs(d["cwd"]):
+            cwds.add(d["cwd"])
         latest = set()
-        for h in d.get("hookInfos") or []:
+        for h in infos:
             if isinstance(h, dict) and isinstance(h.get("command"), str):
                 latest.add(h["command"])
                 if _finite(h.get("durationMs")):
                     out.append((h["command"], float(h["durationMs"])))
-    return [(c, ms) for c, ms in out if c in latest]
+    return [(c, ms) for c, ms in out if c in latest], cwds
 
 
-def check_transcripts(projects_dir, settings_path, now, tail_per_file=TAIL_PER_FILE, tail_total=TAIL_TOTAL):
+def check_transcripts(projects_dir, settings_path, now, tail_per_file=TAIL_PER_FILE, tail_total=TAIL_TOTAL,
+                      platform=None):
     ts = active_transcripts(projects_dir, now)
     if ts is None:
         return [], ["hook_slow", "hook_timeout_kill", "transcript_huge"]
-    timeouts, labels = hook_timeouts(settings_path)
-    items, budget = [], tail_total
+    claude_home = os.path.dirname(settings_path)
+    items, budget, src_cache = [], tail_total, {}
     for path, size, seat in sorted(ts, key=lambda x: -x[1]):
         mb = size / 1048576.0
         if mb > TRANSCRIPT_HUGE_MB:
@@ -259,18 +344,31 @@ def check_transcripts(projects_dir, settings_path, now, tail_per_file=TAIL_PER_F
             continue
         lim = min(tail_per_file, budget)
         budget -= lim
+        try:
+            pairs, cwds = hook_durations(read_tail(path, lim))
+        except Exception:  # noqa: BLE001 —— 一份壞掉不擋其他席(審查 A-L1);不印原文
+            continue
+        key = tuple(sorted(cwds))
+        if key not in src_cache:
+            src_cache[key] = hook_sources(claude_home, key, platform)
+        timeouts, labels, complete = src_cache[key]
         by = {}
-        for cmd, ms in hook_durations(read_tail(path, lim)):
+        for cmd, ms in pairs:
             by.setdefault(cmd, []).append(ms)
         for cmd, ms in by.items():
             med = statistics.median(ms)
             label = hook_label(cmd, labels)
-            if timeouts and cmd not in timeouts:       # 設定裡已經拿掉,這一席還照開對話時的設定在跑
-                if med > HOOK_SLOW_MS:
+            if cmd not in timeouts:
+                if med <= HOOK_SLOW_MS:
+                    continue
+                if complete and "/plugins/" not in cmd:     # 每個來源都讀得懂、都沒有 ⇒ 才說「已拿掉」
                     items.append(_item("hook_slow", "warn", seat, label=label, median_ms=int(med),
                                        max_ms=int(max(ms)), samples=len(ms), removed=1))
+                else:                                        # 找不到來源 ⇒ 不知道 timeout,只說慢、不判被砍
+                    items.append(_item("hook_slow", "warn", seat, label=label, median_ms=int(med),
+                                       max_ms=int(max(ms)), samples=len(ms)))
                 continue
-            tmo = timeouts.get(cmd, 60) * 1000.0
+            tmo = timeouts[cmd] * 1000.0
             last = ms[-HOOK_KILL_RUN:]
             if len(last) >= HOOK_KILL_RUN and all(x >= tmo * HOOK_KILL for x in last):
                 items.append(_item("hook_timeout_kill", "hot", seat, label=label, runs=len(last),
@@ -320,14 +418,30 @@ def check_launchd(platform, agents_dir, run=None):
 
 # ---------- 5/6 行程 ----------
 
+AIB_ENTRY = frozenset(("aib", "aib.py"))
+PY_RE = re.compile(r"^[Pp]ython[\d.]*$")
+
+
+def is_aib_test(args):
+    """指令列真的是「aib test」:argv[0](或 python 後面那一個)是 aib 入口、下一個是 test。
+    只比開頭,不掃整串(審查 M4:grep "aib test"、prompt 裡寫到 aib test 都曾被算成一輪)。"""
+    t = (args or "").split()
+    i = 0
+    if t and PY_RE.match(os.path.basename(t[0])):
+        i = 1
+        while i < len(t) and t[i].startswith("-"):
+            i += 1
+    return len(t) > i + 1 and os.path.basename(t[i]) in AIB_ENTRY and t[i + 1] == "test"
+
+
 def test_runs(rows, cls):
-    """aib test 主行程(指令列含 aib test、父行程不是 aib test)⇒ [席碼(不是席位起的 ⇒ "")]。"""
+    """aib test 主行程(父行程不是 aib test)⇒ [席碼(不是席位起的 ⇒ "")]。"""
     by = {r[0]: r for r in rows}
     out = []
     for pid, ppid, _uid, _cpu, _rss, _name, args in rows:
-        if not re.search(r"\baib(\.py)?\s+test\b", args):
+        if not is_aib_test(args):
             continue
-        if ppid in by and re.search(r"\baib(\.py)?\s+test\b", by[ppid][6]):
+        if ppid in by and is_aib_test(by[ppid][6]):
             continue
         g, owner = cls.get(pid, ("other_app", ""))
         out.append(owner if g in ("aib_test", "seat") else "")
@@ -347,10 +461,22 @@ def check_tests(rows, cls):
     return items
 
 
+def browser_of(args):
+    for name, rx in BROWSERS:
+        if rx.search(args or ""):
+            return name
+    return None
+
+
 def browser_hot(rows, uid):
-    import room_heat
-    return {(r[0], room_heat.safe_name(r[5], 32)): r[3] for r in rows
-            if r[2] == uid and r[3] > BROWSER_HOT and BROWSER_RE.search(r[5] + " " + r[6].split(" --", 1)[0])}
+    """{(pid, 瀏覽器名): CPU%};只看自己的、超過門檻的。program 給瀏覽器名(ucomm 會截成 16 字,不用)。"""
+    out = {}
+    for r in rows:
+        if r[2] == uid and r[3] > BROWSER_HOT:
+            b = browser_of(r[6])
+            if b:
+                out[(r[0], b)] = r[3]
+    return out
 
 
 def check_browser(rows1, rows2, uid):
@@ -375,7 +501,8 @@ def collect(now=None, home=None, platform=None, list_procs=None, classify=None, 
     i, u = check_worktrees(home, now)
     items += i
     unmeasured += u
-    i, u = check_transcripts(os.path.join(home, ".claude", "projects"), os.path.join(home, ".claude", "settings.json"), now)
+    i, u = check_transcripts(os.path.join(home, ".claude", "projects"), os.path.join(home, ".claude", "settings.json"), now,
+                             platform=platform)
     items += i
     unmeasured += u
     i, u, s = check_launchd(platform, os.path.join(home, "Library", "LaunchAgents"), run=run)

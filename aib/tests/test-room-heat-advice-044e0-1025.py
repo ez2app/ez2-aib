@@ -6,14 +6,18 @@ A1 工作樹:家目錄最上層、.git 是檔、不在 .noindex ⇒ 算;.git 是
    24 小時內有寫看 gitdir 的 index;席碼從資料夾名取
 A2 hook:最近 3 次都 ≥ timeout×0.98 ⇒ hook_timeout_kill;中位 > 1 秒 ⇒ hook_slow;設定裡已拿掉 ⇒ hook_slow + removed;
    最新一筆 summary 沒有的 hook 不列;標籤只給 statusMessage 或腳本檔名
+A2c hook 來源(審查 M3):settings.local / 專案 .claude / 已啟用外掛的 hooks.json 都算;外掛用程式模組掛 ⇒ 不判 removed、
+   改說「找不到掛在哪」(nolimit);timeout ≤ 0 / 不是數字 ⇒ 當預設 60 秒;hint 只帶白名單數字鍵(L4)
 A3 只讀尾巴(D3):尾巴外面的舊紀錄不算;合計上限照扣
 A4 transcript_huge:> 500 MB(稀疏檔,不佔磁碟)
 A5 launchd(D2):macOS 才看、只給 Label;其他平台 ⇒ skipped unsupported_platform 且不叫 launchctl
-A6 test_parallel(同席 > 1、全機 > 3;認不出席位不算同席)/ browser_tab_hot(兩次取樣都 > 80%)
+A6 test_parallel(同席 > 1、全機 > 3;認不出席位不算同席;只認 argv 開頭是 aib test,grep / prompt 裡的字不算,審查 M4)
+   / browser_tab_hot(兩次取樣都 > 80%;認瀏覽器本體,Electron 的 Renderer 不算,審查 L6)
 A7 快取 60 秒:第二次不重掃;快取檔被改 ⇒ code 不在表上的丟掉、名字再洗、hint 重翻;過 60 秒重掃
 A8 隱私(D4 / E1 / E6):輸出不含指令列 / 路徑 / token;hint 不夾名字;別人的檔、單行 > 1 MB 不讀
 A9 CLI:`advice --json` / 文字模式
-刀(複本 + run_guarded):K1 改成全讀 ⇒ A3 紅;K2 快取拿掉 ⇒ A7 紅;K3 標籤給整串指令 ⇒ A8 紅;K4 不濾最新 summary ⇒ A2 紅。
+刀(複本 + run_guarded):K1 改成全讀 ⇒ A3 紅;K2 快取拿掉 ⇒ A7 紅;K3 標籤給整串指令 ⇒ A8 紅;K4 不濾最新 summary ⇒ A2 紅;
+   K5 模組型外掛當讀得懂 ⇒ A2c 紅;K6 不排除 aib test 的子行程 ⇒ A6 紅。
 """
 import io
 import json
@@ -58,6 +62,9 @@ class Base(unittest.TestCase):
         self.addCleanup(shutil.rmtree, str(self.home), True)
         self.state = self.home / "state"
         p = mock.patch.dict(os.environ, {"EZ2_AIB_STATE_ROOT": str(self.state), "HOME": str(self.home)})
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.dict(RA.MANAGED_SETTINGS, {"darwin": "", "linux": ""})    # 不讀這台真的受管設定
         p.start()
         self.addCleanup(p.stop)
         (self.home / ".claude" / "projects" / "-x").mkdir(parents=True)
@@ -133,6 +140,46 @@ class Hooks(Base):
         self.assertFalse([k for k in got if k[1] == "fast-gate.py"])
         self.assertEqual(r["items"][0]["code"], "hook_timeout_kill", "hot 沒排第一")
 
+    def test_a2c_hook_sources(self):
+        proj = self.home / "proj"
+        (proj / ".claude").mkdir(parents=True)
+        LOCAL, PROJ, PLUG, MOD = ("python3 /u/local-gate.py", "python3 /u/proj-gate.py",
+                                  "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/plug-gate.py", "python3 /u/mystery.py")
+        plug = self.home / ".claude" / "plugins" / "cache" / "p1"
+        (plug / "hooks").mkdir(parents=True)
+        (plug / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": PLUG, "timeout": 5}]}]}}))
+        (self.home / ".claude" / "plugins" / "installed_plugins.json").write_text(json.dumps(
+            {"plugins": {"p1@m": [{"installPath": str(plug)}], "p2@m": [{"installPath": str(self.home / "nope")}]}}))
+        (self.home / ".claude" / "settings.local.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": LOCAL, "timeout": -3}]}]}, "enabledPlugins": {"p1@m": True, "p2@m": False}}))
+        (proj / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": PROJ, "timeout": 2}]}]}}))
+        real_plug = PLUG.replace("${CLAUDE_PLUGIN_ROOT}", str(plug))
+        line = json.dumps({"type": "system", "subtype": "stop_hook_summary", "cwd": str(proj), "hookInfos": [
+            {"command": LOCAL, "durationMs": 1800}, {"command": PROJ, "durationMs": 1990},
+            {"command": real_plug, "durationMs": 4950}, {"command": MOD, "durationMs": 2500}]})
+        self.transcript([line] * 4)
+        got = {(i["code"], i["metric"].get("label")): i["metric"] for i in self.collect()["items"]}
+        self.assertEqual(got[("hook_slow", "local-gate.py")].get("timeout_ms"), 60000, "timeout ≤ 0 沒當預設 60 秒")
+        self.assertIn(("hook_timeout_kill", "proj-gate.py"), got, "專案層 .claude/settings.json 沒讀")
+        self.assertIn(("hook_timeout_kill", "plug-gate.py"), got, "已啟用外掛的 hooks.json 沒讀")
+        self.assertEqual(got[("hook_slow", "mystery.py")].get("removed"), 1, "來源都讀得懂、都沒有 ⇒ 要判已拿掉")
+        # 外掛改用程式模組掛 hook ⇒ 看不出掛了什麼 ⇒ 不准說「已拿掉」,改說找不到來源
+        (plug / "hooks" / "hooks.json").write_text(json.dumps({"modules": ["./register.tsx"]}))
+        items = self.collect()["items"]
+        m = {(i["code"], i["metric"].get("label")): i for i in items}[("hook_slow", "mystery.py")]
+        self.assertNotIn("removed", m["metric"])
+        self.assertNotIn("timeout_ms", m["metric"])
+        self.assertIn("找不到", m["hint"])
+        self.assertIn("2500", m["hint"])
+
+    def test_a2d_hint_whitelist(self):
+        h = RA.hint_of("hook_slow", {"median_ms": 1500, "timeout_ms": 15000, "key": 1, "locale": 2, "label": "x"})
+        self.assertIn("1500", h)
+        self.assertEqual(RA.hint_of("launchd_failing", {"exit_code": 1, "key": 9}), RA.hint_of("launchd_failing", {"exit_code": 1}))
+        self.assertIn("上一次結束時失敗", RA.hint_of("launchd_failing", {"exit_code": 78}))
+
     def test_a2b_idle_transcript_ignored(self):
         self.transcript([summary([(SLOW, 9990)])] * 4, mtime=NOW - 3 * 3600)
         self.assertEqual(self.codes(self.collect()), [])
@@ -185,8 +232,13 @@ class Procs(Base):
         rows = [row(10, 1, 1, "claude", "claude"), row(11, 10, 50, "python3", "python3 /w/bin/aib test tests/a.py"),
                 row(12, 11, 50, "python3", "python3 /w/bin/aib test tests/a.py --child"),
                 row(13, 10, 50, "python3", "python3 /w/bin/aib test tests/b.py"),
-                row(20, 1, 50, "python3", "python3 /w/bin/aib test x"), row(21, 1, 50, "python3", "python3 /w/bin/aib test y"),
-                row(30, 1, 95, "plugin-container", "/Applications/Firefox.app/plugin-container -childID 3 secret"),
+                row(20, 1, 50, "python3", "python3 /w/bin/aib test x"), row(21, 1, 50, "aib", "/w/bin/aib test y"),
+                row(22, 1, 50, "grep", "grep aib test /w/log"), row(23, 10, 50, "claude", "claude -p run aib test now"),
+                row(24, 1, 50, "python3", "python3 /w/bin/aib testx"),
+                row(30, 1, 95, "plugin-container",
+                    "/Applications/Firefox.app/Contents/MacOS/plugin-container.app/Contents/MacOS/plugin-container -childID 3"),
+                row(33, 1, 95, "Code Helper (Ren", "/Applications/Visual Studio Code.app/x/Code Helper (Renderer) --type=renderer"),
+                row(34, 1, 95, "Claude Helper (R", "/Applications/Claude.app/x/Claude Helper (Renderer) --type=renderer"),
                 row(31, 1, 95, "Google Chrome He", "/A/Google Chrome Helper (Renderer).app/x --type=renderer"),
                 row(32, 1, 99, "plugin-container", "/x/plugin-container", uid=ME + 1)]
         rows2 = [r if r[0] != 31 else row(31, 1, 20, r[5], r[6]) for r in rows]
@@ -195,7 +247,7 @@ class Procs(Base):
         tp = [i for i in r["items"] if i["code"] == "test_parallel"]
         self.assertEqual([(i["owner"], i["metric"]["runs"]) for i in tp], [("d07f9", 2), ("", 4)])
         br = [i for i in r["items"] if i["code"] == "browser_tab_hot"]
-        self.assertEqual([(i["metric"]["program"], i["metric"]["cpu"]) for i in br], [("plugin-container", 95.0)])
+        self.assertEqual([(i["metric"]["program"], i["metric"]["cpu"]) for i in br], [("Firefox", 95.0)])
 
 
 class Cache(Base):
@@ -235,7 +287,7 @@ class Privacy(Base):
         la.mkdir(parents=True)
         with open(la / "a.plist", "wb") as fh:
             plistlib.dump({"Label": "app.x", "ProgramArguments": ["/Users/u/token.sh"]}, fh)
-        rows = [row(30, 1, 95, "plugin-container", "/Users/u/Firefox/plugin-container --token=abc")]
+        rows = [row(30, 1, 95, "plugin-container", "/Users/u/Firefox.app/Contents/MacOS/plugin-container --token=abc")]
         r = self.collect(rows=rows, platform="darwin", run=lambda c: "-\t2\tapp.x\n")
         self.assertEqual(sorted({i["code"] for i in r["items"]}),
                          ["browser_tab_hot", "hook_slow", "hook_timeout_kill", "launchd_failing", "worktree_not_noindex"])
@@ -249,7 +301,7 @@ class Privacy(Base):
 
     def test_a8b_line_cap_and_owner(self):
         big = summary([(SLOW, 9990)]).replace('"cwd": "/Users/u/secret"', '"pad": "%s"' % ("x" * (1024 * 1024 + 10)))
-        self.assertEqual(RA.hook_durations(big + "\n"), [], "E1:單行 > 1 MB 沒丟")
+        self.assertEqual(RA.hook_durations(big + "\n")[0], [], "E1:單行 > 1 MB 沒丟")
         p = self.transcript([summary([(SLOW, 9990)])] * 4)
         with mock.patch.object(os, "getuid", lambda: os.stat(p).st_uid + 1):
             self.assertEqual(RA.read_tail(str(p), 4096), "", "E1:別人的檔也讀了")
@@ -279,8 +331,12 @@ KNIVES = [
     ("K2", "src/cockpit/room_heat_advice.py", "CACHE_S = 60\n", "CACHE_S = 0\n", "Cache.test_a7_cache"),
     ("K3", "src/cockpit/room_heat_advice.py", "    scripts = SCRIPT_RE.findall(cmd or \"\")\n",
      "    return cmd\n    scripts = SCRIPT_RE.findall(cmd or \"\")\n", "Privacy.test_a8_privacy"),
-    ("K4", "src/cockpit/room_heat_advice.py", "    return [(c, ms) for c, ms in out if c in latest]\n", "    return out\n",
+    ("K4", "src/cockpit/room_heat_advice.py", "    return [(c, ms) for c, ms in out if c in latest], cwds\n", "    return out, cwds\n",
      "Hooks.test_a2_hooks"),
+    ("K5", "src/cockpit/room_heat_advice.py", '("modules" in hj or not _add_stop_hooks', '(not _add_stop_hooks',
+     "Hooks.test_a2c_hook_sources"),
+    ("K6", "src/cockpit/room_heat_advice.py", "        if ppid in by and is_aib_test(by[ppid][6]):\n",
+     "        if False:\n", "Procs.test_a6_tests_and_browser"),
 ]
 
 
