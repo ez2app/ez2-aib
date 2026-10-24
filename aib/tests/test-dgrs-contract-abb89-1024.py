@@ -20,7 +20,7 @@ D9 openrouter / typesafe / openrouterjev 帶型號又 AIB_NO_EFFORT=1 也開得�
 刀(PR 手跑在複本上,不在本檔):K1 拿掉 grok:dgrs ⇒ D1、D5 紅;K2 providers.json 加一家原生沒進表 ⇒ D3 紅;K3 白名單多一家 ⇒ D4 紅;
   K4 copilot 旗標清空 ⇒ D1 紅;K5 帶 session 時 ARGS= 洗掉旗標 ⇒ D7 紅;K6 拿掉橋接分支的 PY3= ⇒ D9 紅;
   K7 agy / codex 首回合、copilot 接回、claude 分出 / 分出帶第一句 / 重生用 ARGS= 洗掉旗標 ⇒ D7 紅
-  K8 外層 run_launch 把模式換成 safe、codex tmux 分支丟第一參 ⇒ D7 紅
+  K8 外層 run_launch 把模式換成 safe、codex tmux 分支丟第一參 ⇒ D7 紅;K9 拿掉外層沒登入重開迴圈 ⇒ D7 紅
   (接著終端機才跑的段落([ -t 0 ])測試照不到,@abb89 裁排下一版)
 """
 import json
@@ -70,6 +70,7 @@ UUID = "0f0e0d0c-0b0a-4908-8706-050403020100"
 FAKE_CLI = """#!/bin/sh
 [ "$1" = --help ] && { echo "  --no-daemon"; exit 0; }
 for a in "$@"; do printf '%s\\n' "$a"; done > "$ARGV_DIR/$(basename "$0")"
+echo x >> "$ARGV_DIR/$(basename "$0").calls"
 """
 FAKE_PY = """#!/bin/sh
 printf '%s\\n' "$*" > "$ARGV_DIR/py"
@@ -200,11 +201,15 @@ class Launch(unittest.TestCase):
             # 沒登入檔 ⇒ 外層再開一次(AIB_CODEX_RELOGIN_MAX=1);最後那次也要帶旗標
             auth = Path(self.home, ".codex", "auth.json")
             auth.unlink()
+            calls = Path(self.argv, "codex.calls")
+            calls.unlink(missing_ok=True)
             try:
                 argv = self.real("codex", "dgrs", env={"AIB_CODEX_RELOGIN_MAX": "1"})
             finally:
                 auth.write_text("{}", encoding="utf-8")
             self.assertTrue(has_run(argv, EXPECTED_DGRS["codex"]), argv)
+            # 先開一次 + 外層重開一次;只看最後的 argv 證不出有重開
+            self.assertEqual(len(calls.read_text(encoding="utf-8").splitlines()), 2)
         # codex 預設在 tmux 裡開(走背景啟動那支);tmux 換成什麼都不做的假的
         tmux = Path(self.bin, "faketmux")
         tmux.write_text('#!/bin/sh\necho "$*" >> "$ARGV_DIR/tmux.log"\n', encoding="utf-8")
