@@ -138,6 +138,7 @@ class Gate(unittest.TestCase):
         p = subprocess.run([BASH, "-c", prog], env=env, capture_output=True,
                            text=True, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)
+        self.last_stderr = p.stderr
         lines = log.read_text().splitlines() if log.exists() else []
         return lines, mark.exists()
 
@@ -159,6 +160,7 @@ class Gate(unittest.TestCase):
     def test_l4_mark_unwritable_runs_every_frame(self):
         lines, _ = self.frames(3, 0, state=str(self.d / "no" / "such"))
         self.assertEqual(lines, ["ran mark=no"] * 3)
+        self.assertEqual(self.last_stderr, "", "記號寫不了時每幀印錯誤(會出現在右欄)")
 
     def test_c6_loop_uses_gate_and_stamps_first(self):
         s = SCRIPT.read_text(encoding="utf-8")

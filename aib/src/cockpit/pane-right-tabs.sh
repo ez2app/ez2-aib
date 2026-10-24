@@ -405,11 +405,11 @@ EOF
   fi
   # 10-24(@044e0 本機效能):captains-ctl --sync 一次約 50 支行程,以前每幀(5 秒)跑 ⇒ 光這項每秒 10 支 exec。
   #   它是冪等回填(席位檔 → 窗選項,沒變不寫檔)⇒ 只在席位檔 / 席位夾比上次同步新,或滿 CAPTAINS_SYNC_MAX_S
-  #   秒(接住「窗被關掉」這種席位檔看不到的變化)才跑。判斷全用內建 -nt / SECONDS,零 fork;記號檔用 `: >` 建。
+  #   秒(接住「窗被關掉」這種席位檔看不到的變化)才跑。判斷全用內建 -ot / SECONDS,零 fork;記號檔用 `: >` 建。
   if [ -n "${CAPTAINS_PID:-}" ] && kill -0 "$CAPTAINS_PID" 2>/dev/null; then
     :
   elif captains_sync_due; then
-    : > "$CAPTAINS_MARK" 2>/dev/null || true      # 先蓋章再跑:跑的期間又改的席位檔,下一幀照樣比它新(寫不了 ⇒ 沒記號 ⇒ 每幀照跑)
+    { : > "$CAPTAINS_MARK"; } 2>/dev/null || true   # 先蓋章再跑(大括號:寫不了時的錯誤也吞掉,不印進右欄):跑的期間又改的席位檔,下一幀照樣比它新(寫不了 ⇒ 沒記號 ⇒ 每幀照跑)
     CAPTAINS_LAST_S=$SECONDS
     # 失敗 ⇒ 撕掉記號,下一幀重試(#324 r2 M2)。rc 3 是 captains-ctl 寫明的「降級同步」(呼叫端都容忍),
     #   重跑也不會變好 ⇒ 不算失敗,照保底秒數再跑。
