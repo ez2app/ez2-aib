@@ -242,8 +242,8 @@ def redact(obj, home=None, user=None):
         n[0] += k
         v = CABIN.sub("<cabin>", v)
         v = SEAT.sub("<seat>", v)
-        if len(user) >= 3:
-            v = re.sub(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(user), "<user>", v, flags=re.I)
+        if len(user) >= 3:                     # 底線不算字的一部分:andylin_fail 也要遮(10-25 稽核);太短的名字遮了會誤傷一般字
+            v = re.sub(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(user), "<user>", v, flags=re.I)
         return v
 
     def walk(o):
