@@ -642,6 +642,60 @@ def _ask(prompt, out, timeout):
     return (sys.stdin.readline() or "").strip()
 
 
+def _run_out(cmd, run=subprocess.run):
+    try:
+        r = run(cmd, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+
+def default_name(env=None, run=subprocess.run, platform=None):
+    """10-24 第 9 條:沒設顯示名稱 ⇒ 用電腦名(macOS 的「電腦名稱」;其他平台用主機名)。不合格 ⇒ None。"""
+    import socket
+    plat = platform or sys.platform
+    raw = _run_out(["/usr/sbin/scutil", "--get", "ComputerName"], run) if plat == "darwin" else ""
+    for cand in (raw, socket.gethostname().split(".")[0]):
+        clean = GF.clean_display_name((cand or "")[:GF.NAME_MAX].strip())
+        if clean:
+            return clean
+    return None
+
+
+def default_country(env=None, run=subprocess.run, platform=None):
+    """系統地區 ⇒ 兩碼國別:macOS 讀 AppleLocale(zh_TW、en_US@rg=gbzzzz…),其他看 LC_ALL / LANG。查不到 ⇒ None。"""
+    import chat_roster as CR
+    env = os.environ if env is None else env
+    plat = platform or sys.platform
+    loc = _run_out(["/usr/bin/defaults", "read", "-g", "AppleLocale"], run) if plat == "darwin" else ""
+    loc = loc or env.get("LC_ALL") or env.get("LANG") or ""
+    m = re.search(r"@rg=([a-zA-Z]{2})", loc) or re.match(r"^[a-zA-Z]{2,3}(?:[_-][A-Za-z]{4})?[_-]([A-Za-z]{2})\b", loc)
+    return CR.clean_country(m.group(1)) if m else None
+
+
+def zero_step(env, out):
+    """答「要」開通之後不用再做別的(10-24 Andy「全照做」第 9 條):
+    沒名字 / 國別 ⇒ 用電腦名 / 系統地區補;公開這台的艦長席(role root);沒有 nostr-sdk ⇒ 裝。
+    只補沒設的:主人自己設過的名字、國別、公開清單不動。"""
+    import chat_roster as CR
+    import nostr_keys as NK
+    prof = CR.read_profile(env) or {}
+    try:
+        CR.set_profile(None if prof.get("display_name") else default_name(env),
+                       None if prof.get("country") else default_country(env), env)
+    except CR.RosterError:
+        pass
+    if not CR.profile_ready(env):
+        out.write(T("profile_required") + "\n")
+    elif not (CR.read_profile(env) or {}).get("public"):
+        for s in NK.live_seats(env=env):
+            if s.get("role") == "root":
+                CR.set_public(s["seat5"], True, env)
+                out.write(T("auto_published", seat=s["seat5"]) + "\n")
+    if venv_state(env) != "ok" and not ensure_venv(env, out):
+        out.write(T("venv_failed", pin=NOSTR_SDK_PIN, path=str(chat_home(env) / "venv")) + "\n")
+
+
 def cmd_auto(a, env, out):
     """開艙時問一次要不要連上公開中繼站(維護者 10-16 14:3x 改裁:「問一次」取代 12:1x 的「預設開不問」)。
     - 答「要」⇒ 寫開關檔(記住);答「不要」或直接 Enter ⇒ 留 off-by-owner.json(跟 aib chat off 一樣記住,不再問)。
@@ -655,7 +709,11 @@ def cmd_auto(a, env, out):
         return 0
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return 0
-    ans = _ask(T("auto_ask"), out, float(env.get("AIB_CHAT_ASK_TIMEOUT") or 60))
+    import chat_roster as CR
+    prof = CR.read_profile(env) or {}
+    name = prof.get("display_name") or default_name(env) or "-"
+    country = prof.get("country") or default_country(env) or "-"
+    ans = _ask(T("auto_ask_as", name=name, country=country), out, float(env.get("AIB_CHAT_ASK_TIMEOUT") or 60))
     if ans is None:
         out.write(T("auto_ask_timeout") + "\n")
         return 0
@@ -664,6 +722,7 @@ def cmd_auto(a, env, out):
         write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time()), "asked": True})
         os.chmod(switch_path(env), 0o600)
         out.write(T("auto_on") + "\n")
+        zero_step(env, out)
     else:
         write_json(str(off_marker(env)), {"v": VERSION, "at": int(time.time()), "asked": True})
         os.chmod(off_marker(env), 0o600)
@@ -1288,6 +1347,9 @@ def cmd_share(a, env, out):
     return 0
 
 
+QUIET_S = 3600
+
+
 def world_payload(env=None, now=None):
     """第 30.4–30.5 節:好友 / 我的其他機器分享來的在線狀態 + 我自己這一份(me)。只讀本機檔。
     過期(WORLD_FRESH_S 沒收到)⇒ fresh=false、各席 unknown;不再是好友 / 我的機器的不列。"""
@@ -1333,7 +1395,19 @@ def world_payload(env=None, now=None):
     # 10-19:同一位主人換了艙,舊艙還在 world 裡(分不出是關掉的艙還是睡著的另一台,所以不刪)⇒ 新的排前面,
     # 只看第一格的畫面才不會拿到過期那格、把在線的人顯示成不在線
     cabins.sort(key=lambda x: (not x["fresh"], -int(x["presence_at"] or 0)))
-    return {"v": 1, "at": int(now), "me": me, "cabins": cabins}
+    # 10-24 第 6 條:好友超過 QUIET_S 沒送在線狀態來(或從沒送過)⇒ 列出來;分不出關機還是寄不通,畫面提示可以寄一封確認
+    last_seen = {}
+    for c in GF.read_world(root).values():
+        last_seen[c.get("owner")] = max(last_seen.get(c.get("owner"), 0), int(c.get("presence_at") or 0))
+    quiet = []
+    for f in CR.read_friends(env) + CR.read_friends(env, "mine"):
+        o = f.get("owner")
+        if not o or o == me["owner"] or CR.is_blocked(o, env) or now - last_seen.get(o, 0) < QUIET_S:
+            continue
+        info = peers.get(o) or {}
+        quiet.append({"owner": o, "display_name": info.get("display_name"), "presence_at": last_seen.get(o) or None})
+    # refresh:{requested_at, asked_at};requested_at > asked_at = 轉接程式還沒問;presence_at > asked_at 的格 = 問完才回的
+    return {"v": 1, "at": int(now), "me": me, "cabins": cabins, "refresh": GF.read_refresh(root), "quiet": quiet}
 
 
 RECENT_MINUTES = 10
@@ -1728,10 +1802,15 @@ def cmd_room(a, env, out):
 
 
 def cmd_world(a, env, out):
+    asked = GF.request_refresh(bridge_root(env)) if getattr(a, "refresh", False) else None   # 10-24 在不在
     pl = world_payload(env)
+    if asked is not None:
+        pl["asked"] = asked
     if a.json:
         out.write(json.dumps(pl, ensure_ascii=False) + "\n")
         return 0
+    if asked is not None:
+        out.write(T("world_asked" if asked else "world_ask_recent") + "\n")
     if not pl["cabins"]:
         out.write(T("world_none") + "\n")
     for c in pl["cabins"]:
@@ -1740,6 +1819,8 @@ def cmd_world(a, env, out):
         for x in c["seats"]:
             out.write(T("world_seat", seat=x["seat"], name=x.get("name") or "-", state=T("state_" + x["state"]),
                         now=x.get("now") or "") + "\n")
+    for q in pl["quiet"]:
+        out.write(T("world_quiet", name=q.get("display_name") or q["owner"][:16] + "…") + "\n")
     return 0
 
 
@@ -1805,8 +1886,29 @@ def selftest(env, fetch=True):
             continue
         rc, got = _run_nostr("fetch", bridge_root(env), env, timeout=60, extra=[addr])
         ok = rc == 0 and (got.get("seat") or {}).get("npub") == e["npub"] and bool(got.get("dm_relays"))
-        rows.append(("seat", ok, {"seat": e["seat5"], "why": got.get("why") or "-"}))
+        why = got.get("why") or "-"
+        rows.append(("seat", ok, {"seat": e["seat5"], "why": why + (" · " + got["hint"] if got.get("hint") else "")}))
+    rows.extend(_selftest_friend(env, owner, fetch and rec["venv"] == "ok" and rec["heartbeat"]))
     return rows
+
+
+def _selftest_friend(env, owner, can):
+    """10-24 第 7 條:抽一位最近有往來的好友,用快照記的第一席查一次(看得到 = 寄得出去)。沒有好友 ⇒ 不列。"""
+    import chat_roster as CR
+    peers = GF.read_peers(bridge_root(env))
+    friends = [f["owner"] for f in CR.read_friends(env) if f.get("owner") and f["owner"] != owner and not CR.is_blocked(f["owner"], env)]
+    if not friends:
+        return []
+    pick = max(friends, key=lambda o: max(int((peers.get(o) or {}).get(k) or 0) for k in ("last_in", "last_out", "seen_at")))
+    info = peers.get(pick) or {}
+    name = info.get("display_name") or pick[:12] + "…"
+    seat = next(iter(info.get("seats") or []), None)
+    if not can or not seat:
+        return [("friend", None, {"name": name})]
+    rc, got = _run_nostr("fetch", bridge_root(env), env, timeout=60,
+                         extra=["%s/%s/%s" % (pick, seat.get("cabin") or "main", seat.get("seat"))])
+    why = (got or {}).get("why") or "-"
+    return [("friend", rc == 0, {"name": name, "why": why + (" · " + got["hint"] if (got or {}).get("hint") else "")})]
 
 
 def cmd_selftest(a, env, out):
@@ -1902,6 +2004,22 @@ def recv_fail_line(w, now=None):
     return T("status_recv_failing", n=n, why=TA.clean(str(rf.get("why") or "?"), 40), mins=mins)
 
 
+def self_check_lines(w):
+    """工人定期查自己名冊的結果(10-24 第 5 條):查不到的席各一行 ⚠;沒查過 / 都查得到 ⇒ []。"""
+    sc = (w or {}).get("self_check")
+    if not isinstance(sc, dict) or not isinstance(sc.get("bad"), list):
+        return []
+    import nostr_keys as NK
+    import touchid_approve as TA
+    out = []
+    for b in sc["bad"][:10]:
+        if not isinstance(b, dict) or not NK.SEAT5_RE.match(str(b.get("seat") or "")):
+            continue
+        why = TA.clean(str(b.get("why") or "?"), 40)
+        out.append(T("status_self_bad", seat=b["seat"], why=why + (" · " + TA.clean(str(b["hint"]), 200) if b.get("hint") else "")))
+    return out
+
+
 def cmd_status(a, env, out):
     rec = status_record(env)
     if a.json:
@@ -1934,6 +2052,8 @@ def cmd_status(a, env, out):
             out.write(T("status_clock_warn" if c.get("warn") else "status_clock_ok", offset=c["offset"]) + "\n")
         line = recv_fail_line(w)
         if line:
+            out.write(line + "\n")
+        for line in self_check_lines(w):
             out.write(line + "\n")
     out.write(T("status_heartbeat_" + ("yes" if rec["heartbeat"] else "no")) + "\n")
     import chat_owner_cli as OC
@@ -2141,6 +2261,7 @@ def main(argv=None, env=None, out=sys.stdout):
     pf.add_argument("--json", action="store_true")
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
+    wd.add_argument("--refresh", action="store_true", help=T("help.world_refresh"))
     pr = sub.add_parser("pair", help=T("help.pair"))
     pr.add_argument("action", nargs="?", choices=("start", "confirm", "list", "revoke"))
     pr.add_argument("target", nargs="?", help=T("help.pair_target"))
