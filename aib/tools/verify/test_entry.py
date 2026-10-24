@@ -211,27 +211,73 @@ def changed_tests(repo, base=""):
         info["why"] = "no-selector"
         return None, info
 
-    def pick(*args, stdin=None):
-        p = subprocess.run([sys.executable, str(tool), "--repo", str(repo), "--print-tests", *args], input=stdin,
-                           capture_output=True, text=True, timeout=1800, **({} if stdin is not None else {"stdin": subprocess.DEVNULL}))
-        if p.returncode != 0:
-            raise RuntimeError((p.stderr or p.stdout).strip()[-300:])
-        return [ln.strip() for ln in p.stdout.splitlines() if ln.strip().startswith("tests/")]
+    proj = _subproject(repo)                         # 開源版測試在 aib/tests:從子專案挑,路徑才對得上(10-24)
+    sub = proj != repo
+    pre = (Path(proj).resolve().relative_to(Path(repo).resolve()).as_posix() + "/") if sub else ""
 
     try:
-        names = pick("--base", mb)                       # --head 不給 = 跟工作樹比(含沒提交的追蹤檔)
-        rc, out = _git_out(repo, "ls-files", "--others", "--exclude-standard")
+        names = [(proj, n) for n in _select(tool, proj, ["--base", mb])]     # --head 不給 = 跟工作樹比(含沒提交的追蹤檔)
+        if sub:                                    # 再從倉根挑一次:⑧ 反查帳本是倉根座標、倉根 tests/ 也會讀 aib/ 的產品檔
+            names += [(repo, n) for n in _select(tool, repo, ["--base", mb])]      # (#314 r2 必修:只從子專案挑 ⇒ 0 支假綠)
+        rc, out = _git_out(repo, "-c", "core.quotePath=false", "ls-files", "--others", "--exclude-standard")   # 倉根列
         new = [l.strip() for l in out.splitlines() if l.strip()] if rc == 0 else []
+        if sub:
+            outside = [n for n in new if not n.startswith(pre)]
+            if outside:                                   # 子專案外的新檔:挑不到它的消費者 ⇒ 量不到,不拿窄集合跑
+                raise RuntimeError("untracked outside subproject %s: %s" % (pre, ", ".join(outside[:5])))
         info["untracked"] = len(new)
         if new:
-            names += pick("--changed", "-", stdin="\n".join(new) + "\n")
+            names += [(proj, n) for n in _select(tool, proj, ["--changed", "-"], [n[len(pre):] for n in new])]
+            if sub:
+                names += [(repo, n) for n in _select(tool, repo, ["--changed", "-"], new)]
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         info["why"] = "select-failed: %s" % e
         return None, info
-    have = set(all_tests(repo))
-    picked = sorted(dict.fromkeys(n for n in names if n in have))
+    if not sub:
+        have = set(all_tests(proj))
+        picked = sorted(dict.fromkeys(n for _b, n in names if n in have))   # 刻意比 #314 前寬:以前只收 tests/ 開頭,⑥⑧ 吐的 test/、*.test.js 被丟;現在在母體裡就收(只會多跑,#314 r4/r5)
+        info["picked"] = len(picked)
+        return picked, info
+    root_tests = [str((Path(repo) / n).resolve()) for n in all_tests(repo) if n.startswith("tests/")]
+    have = {str((Path(proj) / n).resolve()) for n in all_tests(proj)} | set(root_tests)
+    picked = list(dict.fromkeys(a for a in (str((Path(b) / n).resolve()) for b, n in names) if a in have))
+    info["root_picked"] = len([a for a in picked if a in root_tests])
+    # 倉根 tests/ 是 test_*.py(底線),select_changed 只認 test-*.py ⇒ 倉根那次靜態規則一支都挑不到,只剩本機量測帳本(⑧);
+    #   CI / 新機器沒帳本 ⇒ 0 支假綠(#314 r3 必修)。子專案有改動就把倉根 tests/ 全併進來(目前 22 支,方向是多跑)
+    rc, out = _git_out(repo, "-c", "core.quotePath=false", "diff", "--name-only", mb)
+    if (rc != 0 or out.strip() or new) and root_tests:
+        picked += root_tests
+        info["root_all"] = len(root_tests)
+    picked = sorted(dict.fromkeys(picked))
     info["picked"] = len(picked)
-    return picked, info
+    return picked, info                               # 子專案模式回絕對路徑(下游照倉根 / 目前目錄換算)
+
+
+def _select(tool, base_dir, args, stdin_lines=None):
+    """跑一次 select_changed --print-tests(--repo base_dir);回 base_dir 相對的路徑。rc≠0 ⇒ RuntimeError(呼叫端回量不到)。"""
+    kw = {"input": "\n".join(stdin_lines) + "\n"} if stdin_lines is not None else {"stdin": subprocess.DEVNULL}
+    p = subprocess.run([sys.executable, str(tool), "--repo", str(base_dir), "--print-tests", *args],
+                       capture_output=True, text=True, timeout=1800, **kw)
+    if p.returncode != 0:
+        raise RuntimeError((p.stderr or p.stdout).strip()[-300:])
+    return [ln.strip() for ln in p.stdout.splitlines() if ln.strip()]
+
+
+def _subproject(repo):
+    """目前目錄往上走到倉根,第一個自帶 tools/verify/select_changed.py 的資料夾(= 倉裡的 aib 套件本身,例如開源版的 aib/);
+    一般專案沒有這個記號 ⇒ 倉根本身(只看 tests/ 會把 src/foo/tests 誤當子專案、漏挑倉根的測試;#314 審查 A2)。"""
+    try:
+        here = Path.cwd().resolve()
+        root = Path(repo).resolve()
+        here.relative_to(root)
+    except (OSError, ValueError):
+        return Path(repo)
+    for d in (here, *here.parents):
+        if d == root:
+            break
+        if (d / "tools" / "verify" / "select_changed.py").is_file() and (d / "tests").is_dir():
+            return d
+    return Path(repo)
 
 
 def guard_tests(repo):
