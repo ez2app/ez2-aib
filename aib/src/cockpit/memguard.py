@@ -76,10 +76,14 @@ VALUE_OPTS = {"python": {"-W", "-X", "--check-hash-based-pycs"},
               "node": {"-r", "--require", "--import", "--loader", "--experimental-loader", "--conditions", "-C",
                        "--env-file", "--inspect-port", "--debug-port", "--title", "--input-type", "--stack-size",
                        "--max-old-space-size", "--openssl-config", "--redirect-warnings", "--icu-data-dir",
-                       "--diagnostic-dir", "--report-dir", "--heapsnapshot-signal", "--secure-heap"},
-              "php": {"-d", "-c", "-z"}, "ruby": {"-I", "-r", "-C"}, "perl": {"-I", "-M", "-m"}}
+                       "--diagnostic-dir", "--report-dir", "--heapsnapshot-signal", "--secure-heap",
+                       "--cpu-prof-dir", "--heap-prof-dir", "--watch-path", "--test-reporter-destination",
+                       "--localstorage-file", "--env-file-if-exists", "--snapshot-blob", "--experimental-config-file"},
+              "php": {"-d", "-c", "-z", "-t", "-S"}, "ruby": {"-I", "-r", "-C"}, "perl": {"-I", "-M", "-m"}}
 PY_SHORT_VALUE = set("WX")          # python 短選項:這幾個吃值(黏在後面或下一個引數)
-NO_SCRIPT_INLINE = {"python", "node"}   # 沒腳本 = 讀 stdin(php-cgi / perl 沒腳本另有用途,不算)
+NO_SCRIPT_INLINE = {"python", "node"}   # 沒腳本 = 讀 stdin(php-cgi / perl 沒腳本另有用途,不算);
+#   #322 r3 M1:讀 stdin 還要看 fd 0 —— 管線 / 檔案(heredoc、AI 重現)才算內嵌;終端機(REPL)或讀不到 ⇒ 不算,
+#   python 帶 -i 一律不算內嵌。
 MP_CHILD_RE = re.compile(r"^\s*from multiprocessing[. ]")
 NEVER_SCRIPTS = {"codex", "claude", "RunnerService.js"}       # 活席 / 本機 runner:不管多大都不收
 TEST_SCRIPT_RE = re.compile(r"/tests?/test[-_][^/]*$")
@@ -289,6 +293,43 @@ def proc_cwd(pid):
         return None
 
 
+class _FdVnodePath(ctypes.Structure):
+    # struct vnode_fdinfowithpath:proc_fileinfo(24)+ vnode_info(152)+ 路徑(1024)
+    _fields_ = [("pfi", ctypes.c_uint8 * 24), ("vi", ctypes.c_uint8 * 152), ("path", ctypes.c_char * 1024)]
+
+
+def stdin_kind(pid):
+    """目標行程 fd 0 是什麼:'tty'(終端機,REPL)/ 'pipe' / 'file' / None(讀不到或別的,例如 socket)。"""
+    try:
+        if sys.platform != "darwin":
+            t = os.readlink("/proc/%d/fd/0" % pid)
+            if t.startswith(("/dev/pts", "/dev/tty", "/dev/console")):
+                return "tty"
+            if t.startswith("pipe:"):
+                return "pipe"
+            return "file" if t.startswith("/") and not t.startswith("/dev/") else None
+        lib = _libproc()
+        v = _FdVnodePath()
+        if lib.proc_pidfdinfo(int(pid), 0, 2, ctypes.byref(v), ctypes.sizeof(v)) == ctypes.sizeof(v):  # VNODEPATHINFO
+            path = v.path.decode("utf-8", "replace")
+            if path.startswith(("/dev/tty", "/dev/pts", "/dev/console")):
+                return "tty"
+            return "file" if path and not path.startswith("/dev/") else None
+        buf = ctypes.create_string_buffer(512)
+        if lib.proc_pidfdinfo(int(pid), 0, 6, buf, 512) > 0:                                     # PIPEINFO
+            return "pipe"
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def cwd_base(pid):
+    """解相對路徑用的目標 cwd:Linux 用 /proc/<pid>/cwd(容器行程的路徑在自己的掛載空間 —— r3 L3),macOS 讀路徑。"""
+    if sys.platform != "darwin" and os.path.isdir("/proc/%d/cwd" % pid):
+        return "/proc/%d/cwd" % pid
+    return proc_cwd(pid)
+
+
 def _kind(name):
     n = (name or "").lower()
     for k in ("python", "node", "php", "ruby", "perl"):
@@ -312,11 +353,13 @@ def _python_short(a, it):
 
 
 def script_of(name, args):
-    """('inline', 碼或 None) / ('module', 模組) / ('script', 路徑) / (None, None)。只認直譯器自己的選項。"""
+    """('inline', 碼或 None) / ('module', 模組) / ('script', 路徑) / ('stdin', None)(沒腳本或 `-`)/
+    ('interactive', None)(python -i 沒腳本)/ (None, None)。只認直譯器自己的選項。"""
     kind = _kind(name)
     if not kind:
         return None, None
     it = iter(args[1:])
+    interactive = False
     for a in it:
         if a in INLINE_OPTS.get(kind, ()):
             return "inline", next(it, "")
@@ -327,13 +370,16 @@ def script_of(name, args):
             a = next(it, None)
             if a is None:
                 break
-            return ("inline", None) if a == "-" else ("script", a)
+            if a != "-":
+                return "script", a
+            a = "-"
         if a == "-":
-            return "inline", None
+            return ("interactive", None) if interactive else ("stdin", None)
         if kind == "python" and a.startswith("-") and not a.startswith("--"):
             got = _python_short(a, it)
             if got:
                 return got
+            interactive = interactive or "i" in a[1:]
             continue
         if kind == "node" and a.startswith("-") and not a.startswith("--") and len(a) > 2 and a[-1] in "ep":
             return "inline", next(it, "")              # node 合寫(-pe)
@@ -341,7 +387,7 @@ def script_of(name, args):
             continue
         return "script", a
     if kind in NO_SCRIPT_INLINE and args:
-        return "inline", None
+        return ("interactive", None) if interactive else ("stdin", None)
     return None, None
 
 
@@ -355,9 +401,10 @@ def _temp_roots():
     return tuple(r.rstrip("/") + "/" for r in roots)
 
 
-def classify(name, args, cwd=None):
+def classify(name, args, cwd=None, stdin=None):
     """'dev'(上限 = dev)/ 'general'(上限 = 一般,只有 python)/ 'inherit'(multiprocessing 子行程,沿用父行程)/
-    None(不看)。相對路徑腳本用目標行程的 cwd 解;cwd 不知道 ⇒ 不判 dev。"""
+    None(不看)。相對路徑腳本用目標行程的 cwd 解;cwd 不知道 ⇒ 不判 dev。
+    stdin = 目標行程 fd 0 的種類('pipe' / 'file' / 'tty' / None);沒腳本時只有 pipe / file 才算內嵌。"""
     kind = _kind(name)
     how, what = script_of(name, args)
     if kind == "python" and ("--multiprocessing-fork" in args or (how == "inline" and MP_CHILD_RE.match(what or ""))):
@@ -366,12 +413,13 @@ def classify(name, args, cwd=None):
         if os.path.basename(what) in NEVER_SCRIPTS:
             return None
         # 絕對路徑照字面看(重現腳本跑完常被刪);相對路徑要用目標 cwd 解得出、而且真的是檔(帶值選項的值不算)
+        #   絕對路徑是資料夾 ⇒ 是認不得的帶值選項的值(--watch-path /tmp/x、php -t /tmp/site),不判 dev(r3 M2)
         path = what if os.path.isabs(what) else (os.path.join(cwd, what) if cwd else None)
-        if path and (os.path.isabs(what) or os.path.isfile(path)):
+        if path and ((os.path.isabs(what) and not os.path.isdir(path)) or os.path.isfile(path)):
             real = os.path.realpath(path)
             if real.startswith(_temp_roots()) or "/scratchpad/" in real or TEST_SCRIPT_RE.search(real):
                 return "dev"
-    elif how == "inline":
+    elif how == "inline" or (how == "stdin" and stdin in ("pipe", "file")):
         return "dev"
     return "general" if kind == "python" else None
 
@@ -448,12 +496,13 @@ def kill_one(pid, start, *, info=proc_info, sleep=time.sleep, kill=os.kill, uid=
 class Guard:
     def __init__(self, *, env=None, dry_run=None, limit=None, pids=None, info=proc_info, kill=os.kill,
                  sleep=time.sleep, notify_fn=notify, args_fn=cmd_args, root=None, uid=None, dev_limit=None,
-                 cwd_fn=proc_cwd):
+                 cwd_fn=cwd_base, stdin_fn=stdin_kind):
         env = os.environ if env is None else env
         self.dry_run = (env.get("EZ2_MEMGUARD_DRY_RUN") == "1") if dry_run is None else dry_run
         self.limit = limit_mb(env) if limit is None else limit
         self.pids, self.info, self.kill, self.sleep = pids, info, kill, sleep
         self.notify_fn, self.args_fn, self.root, self.uid, self.cwd_fn = notify_fn, args_fn, root, uid, cwd_fn
+        self.stdin_fn = stdin_fn
         self.dev_limit = min(self.limit, test_cap_mb(env) or self.limit) if dev_limit is None else dev_limit
         self.args = {}          # (pid, start) -> 指令列(超過 dev 上限才問一次,之後沿用)
         self.tiers = {}         # (pid, start) -> 分級(同上,問一次沿用)
@@ -467,7 +516,7 @@ class Guard:
         for pid, ppid, name, start, mb in rows:
             if pid in self.protect or mb < self.dev_limit:
                 continue
-            key = (pid, start)
+            key = (pid, start, name)            # exec 換了直譯器 ⇒ 名字變 ⇒ 重新分級(r3 L2)
             if key not in self.tiers:
                 self.args[key] = self.args_fn(pid)
                 self.tiers[key] = self.tier_of(pid, name, self.args[key])
@@ -480,6 +529,12 @@ class Guard:
             seen.add(key)
             self.over[key] = self.over.get(key, 0) + 1
             if self.over[key] < CONFIRM_TICKS:
+                continue
+            fresh = self.args_fn(pid)               # 動手前重讀一次 argv:同名直譯器 exec 成別的腳本 ⇒ 重新分級、重新數
+            if fresh != self.args[key]:
+                self.args[key] = fresh
+                self.tiers[key] = self.tier_of(pid, name, fresh)
+                self.over[key] = 0
                 continue
             row = {"ts": int(now), "pid": pid, "ppid": ppid, "name": name,
                    "script": script_hint(pid, self.args.get(key) or [name], name), "mb": mb, "limit_mb": lim,
@@ -498,7 +553,7 @@ class Guard:
         for k in list(self.over):
             if k not in seen:
                 del self.over[k]
-        alive = {(r[0], r[3]) for r in rows}
+        alive = {(r[0], r[3], r[2]) for r in rows}
         for k in list(self.args):
             if k not in alive:
                 del self.args[k]
@@ -508,7 +563,8 @@ class Guard:
     def tier_of(self, pid, name, args, depth=0):
         """classify + 目標行程 cwd;multiprocessing 子行程(spawn_main / resource_tracker)沿用父行程的分級 ——
         ProcessPoolExecutor / uvicorn workers / DataLoader 不能因為長得像 -c 就掉到 dev 上限(#322 r2 M2)。"""
-        tier = classify(name, args, self.cwd_fn(pid) if self.cwd_fn else None)
+        tier = classify(name, args, self.cwd_fn(pid) if self.cwd_fn else None,
+                        self.stdin_fn(pid) if self.stdin_fn else None)
         if tier != "inherit":
             return tier
         i = self.info(pid)
@@ -600,9 +656,10 @@ class TreeCap:
     建立時記下根的開始時間;之後每拍與每次送訊號前都比(根被回收、pid 被重用就不動手 —— #322 r2 L3)。"""
 
     def __init__(self, root_pid, cap_mb, *, tick_s=TEST_CAP_TICK_S, table=tree_table, kill=os.kill, info=proc_info,
-                 root_start=None):
+                 root_start=None, pgid=None, killpg=getattr(os, "killpg", None)):
         self.root, self.cap, self.tick_s, self.table, self.kill, self.info = (
             root_pid, cap_mb, tick_s, table, kill, info)
+        self.pgid, self.killpg = pgid, killpg       # 測試自成群組時:掛到 pid 1 的背景行程靠群組收(#322 r3 M3)
         self.root_start = start_of(root_pid, info) if root_start is None else root_start
         self.hit = None
         self._stop = threading.Event()
@@ -617,6 +674,12 @@ class TreeCap:
         if t[big][3] < self.cap:
             return None
         self.hit = {"pid": big, "name": t[big][1], "mb": t[big][3], "cap_mb": self.cap}
+        # 群組先收:根的開始時間還對得上(根還沒死 ⇒ 群組號碼不會被別人拿到)才送;再照樹收脫離群組的
+        if self.pgid and self.killpg and start_of(self.root, self.info) == self.root_start:
+            try:
+                self.killpg(self.pgid, signal.SIGKILL)
+            except OSError:
+                pass
         kill_tree(self.root, self.root_start, table=lambda: t, info=self.info, kill=self.kill)
         return self.hit
 

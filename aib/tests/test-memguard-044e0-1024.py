@@ -21,10 +21,15 @@ G14 TreeCap:根的開始時間對不上(pid 重用)⇒ 不收;子孫開始時間
 G8 runner._run_one 端到端:測試配置 400 MB、AIB_TEST_MEM_CAP_MB=256 ⇒ rc 137、輸出帶 memory_cap、
    紅格有 MEMCAP:memory_cap(舊紅清單吃不掉);上限關掉 ⇒ 同一支 400 MB 照常綠
 G15 runner 逾時:測試留著背景孫行程拿管線 ⇒ timeout+幾秒內回 rc 124、紅格 TIMEOUT:timeout、孫行程一起收
+G16 認不得的帶值選項 + 絕對路徑資料夾不判 dev;node / php 補的帶值選項(r3 M2)
+G17 真行程 fd 0:管線 / 檔案 / 終端機認得出來(r3 M1)
+G18 動手前重讀 argv:同名直譯器 exec 成別的腳本 ⇒ 重新分級,不照舊收(r3 L2)
+G19 主行程先結束、背景行程掛到 pid 1 ⇒ 逾時收得到(測試自成行程群組,r3 M3)
 刀(複本 + run_guarded):K1 TreeCap 上限判斷拿掉 ⇒ G7 紅;K2 連兩拍確認拿掉 ⇒ G2 紅;
 K3 開發分級拿掉 ⇒ G3 紅;K4 開始時間不比 ⇒ G4 紅;K5 node 也套一般上限 ⇒ G9 紅;
 K6 腳本之後的 -c 也當內嵌 ⇒ G3 紅;K7 相對路徑改用守門自己的 cwd ⇒ G3b 紅;K8 multiprocessing 不沿用 ⇒ G11 紅;
-K9 TreeCap 不比根開始時間 ⇒ G14 紅;runner 刀:R1 逾時改回 communicate() ⇒ G15 紅;R2 拿掉固定紅格 ⇒ G8 紅;
+K9 TreeCap 不比根開始時間 ⇒ G14 紅;K10 stdin 不看 fd 0 ⇒ G3b 紅;K11 資料夾也當腳本 ⇒ G16 紅;
+K12 動手前不重讀 argv ⇒ G18 紅;R4 逾時不收群組 ⇒ G19 紅;runner 刀:R1 逾時改回 communicate() ⇒ G15 紅;R2 拿掉固定紅格 ⇒ G8 紅;
 R3 拿掉 rc 137 覆寫 ⇒ G8 紅。刀一律斷言輸出出現「FAIL: <目標>」且沒有 ERROR(紅在對的斷言)
 """
 import selectors
@@ -68,12 +73,14 @@ def readline_timeout(fh, seconds=20):
         sel.close()
 
 
-def kill_quiet(*pids):
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (OSError, TypeError):
-            pass
+def kill_quiet(*pairs):
+    """pairs:(pid, 開始時間);開始時間還對得上才送(已回收、號碼被重用就不送 —— r3 L1)。"""
+    for pid, start in pairs:
+        if pid and start and MG.start_of(pid) == start:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
 def table(rows):
@@ -127,11 +134,12 @@ class GuardLogic(unittest.TestCase):
     def guard(self, rows, args=None, **kw):
         info = table(rows)
         cwds = kw.pop("cwds", None) or {}
+        stdins = kw.pop("stdins", None) or {}
         g = MG.Guard(env={}, dry_run=kw.pop("dry_run", False), limit=kw.pop("limit", 5000), pids=list(rows),
                      info=info, kill=lambda p, s: self.killed.append((p, s)), sleep=lambda s: None,
                      notify_fn=lambda t: None, args_fn=lambda p: (args or {}).get(p, ["python3", "app.py"]),
                      root=self.tmp, uid=UID, dev_limit=kw.pop("dev_limit", 2000),
-                     cwd_fn=lambda p: cwds.get(p))
+                     cwd_fn=lambda p: cwds.get(p), stdin_fn=lambda p: stdins.get(p))
         g.protect = kw.pop("protect", set())
         return g
 
@@ -191,9 +199,17 @@ class GuardLogic(unittest.TestCase):
         self.assertEqual(c("python3", ["python3", "--check-hash-based-pycs", "always", "/opt/app/s.py"], d), "general")
         self.assertEqual(c("python3", ["python3", "-Wignore", "/opt/app/s.py"], d), "general")
         self.assertEqual(c("python3", ["python3", "-Q", "/opt/app/s.py"], d), "general")
-        for inline in (["python3", "-Bc", "x"], ["python3", "-uc", "x"], ["python3", "-c", "x"], ["python3", "-"],
-                       ["python3"], ["python3", "-u"], ["node", "-pe", "1"], ["node"], ["node", "-"]):
+        for inline in (["python3", "-Bc", "x"], ["python3", "-uc", "x"], ["python3", "-c", "x"], ["node", "-pe", "1"]):
             self.assertEqual(c(inline[0], inline, d), "dev", inline)
+        # 沒腳本 / `-`:看 fd 0 —— 管線 / 檔案(heredoc)才算內嵌;終端機(REPL)或讀不到不算;-i 一律不算(r3 M1)
+        for argv in (["python3", "-"], ["python3"], ["python3", "-u"], ["python3", "-q"], ["node"], ["node", "-"]):
+            gen = "general" if argv[0] == "python3" else None
+            self.assertEqual(c(argv[0], argv, d, "pipe"), "dev", argv)
+            self.assertEqual(c(argv[0], argv, d, "file"), "dev", argv)
+            self.assertEqual(c(argv[0], argv, d, "tty"), gen, argv)
+            self.assertEqual(c(argv[0], argv, d, None), gen, argv)
+        self.assertEqual(c("python3", ["python3", "-i"], d, "pipe"), "general")
+        self.assertEqual(c("python3", ["python3", "-qi"], d, "pipe"), "general")
         self.assertEqual(c("php-cgi", ["php-cgi"], d), None)                                 # php 沒腳本不算內嵌
         # 端到端:Guard 用 cwd_fn 拿目標行程的 cwd
         rows = {210: (UID, 1, "Python", "1.0", 3000), 211: (UID, 1, "Python", "1.0", 3000)}
@@ -201,6 +217,51 @@ class GuardLogic(unittest.TestCase):
                        cwds={210: str(app), 211: None})
         g.tick()
         self.assertEqual([r["pid"] for r in g.tick()], [210])
+
+    def test_g16_unknown_value_options_not_dev(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        c = MG.classify
+        for opt in ("--test-reporter-destination", "--cpu-prof-dir", "--heap-prof-dir", "--watch-path",
+                    "--localstorage-file", "--env-file-if-exists", "--snapshot-blob", "--experimental-config-file"):
+            self.assertEqual(MG.script_of("node", ["node", opt, "/tmp/out.txt", "x.js"]), ("script", "x.js"), opt)
+        self.assertIsNone(c("node", ["node", "--test-reporter-destination", "/tmp/out.txt", "x.js"], d))
+        self.assertIsNone(c("node", ["node", "--some-future-dir", d, "/opt/app/s.js"], d))     # 認不得 + 資料夾
+        self.assertIsNone(c("php", ["php", "-t", d, "-S", "localhost:8000"], d))
+        self.assertEqual(c("python3", ["python3", "--some-future-dir", d], d, None), "general")
+
+    def test_g18_reread_argv_before_acting(self):
+        rows = {800: (UID, 1, "Python", "1.0", 3000)}
+        calls = []
+
+        def args_fn(p):
+            calls.append(p)
+            return ["python3", "/x/scratchpad/repro.py"] if len(calls) == 1 else ["python3", "/opt/app/server.py"]
+        g = self.guard(rows)
+        g.args_fn = args_fn
+        g.tick()
+        self.assertEqual(g.tick(), [], "exec 成別的腳本之後還照舊分級收掉")
+        self.assertEqual(self.killed, [])
+
+    def test_g17_real_stdin_kind(self):
+        import pty
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        f = Path(d, "in.txt")
+        f.write_text("")
+        m, sl = pty.openpty()
+        procs = []
+        try:
+            for stdin in (subprocess.PIPE, open(f), sl):
+                procs.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=stdin))
+            time.sleep(0.3)
+            self.assertEqual([MG.stdin_kind(p.pid) for p in procs], ["pipe", "file", "tty"])
+        finally:
+            for p in procs:
+                p.kill()
+                p.wait()
+            os.close(m)
+            os.close(sl)
 
     def test_g11_multiprocessing_inherits_parent(self):
         spawn = ["python3", "-c", "from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=5, pipe_handle=7)",
@@ -327,9 +388,10 @@ class RealTree(unittest.TestCase):
         f = os.path.join(d, "grow.py")
         Path(f).write_text(GROW)
         p = subprocess.Popen([sys.executable, f, "parent"], stdout=subprocess.PIPE, text=True)
-        child = None
+        child = cstart = None
         try:
             child = int(readline_timeout(p.stdout).split()[1])
+            cstart = MG.start_of(child)
             tc = MG.TreeCap(p.pid, 256, tick_s=0.1).start()
             t0 = time.time()
             while tc.hit is None and time.time() - t0 < 30:
@@ -345,7 +407,8 @@ class RealTree(unittest.TestCase):
                 time.sleep(0.1)
             self.assertIsNone(MG.proc_info(child))
         finally:
-            kill_quiet(child, p.pid)
+            kill_quiet((child, cstart))
+            p.kill()
             p.stdout.close()
             p.wait()
 
@@ -386,7 +449,7 @@ class RunnerCap(unittest.TestCase):
             "print('grandchild', g.pid, flush=True)\n"
             "time.sleep(40)\n")
         t0 = time.monotonic()
-        r = runner._run_one(repo, "tests/test-bg.py", dict(os.environ), timeout=2)
+        r = runner._run_one(repo, "tests/test-bg.py", dict(os.environ), timeout=4)
         took = time.monotonic() - t0
         gpid = None
         for ln in r["output"].splitlines():
@@ -394,7 +457,7 @@ class RunnerCap(unittest.TestCase):
                 gpid = int(ln.split()[1])
         try:
             self.assertEqual(r["rc"], 124, r["output"])
-            self.assertLess(took, 10, "有背景孫行程時逾時 %.1f 秒才回" % took)
+            self.assertLess(took, 12, "有背景孫行程時逾時 %.1f 秒才回" % took)
             self.assertIn(runner.TIMEOUT_CELL, r["fail_cells"])
             self.assertIsNotNone(gpid, r["output"])
             for _ in range(30):
@@ -402,9 +465,38 @@ class RunnerCap(unittest.TestCase):
                     break
                 time.sleep(0.1)
             self.assertIsNone(MG.proc_info(gpid), "逾時後孫行程沒一起收")
-            print("G15 有背景孫行程的逾時:timeout=2 ⇒ %.2f 秒回" % took, file=sys.stderr)
+            print("G15 有背景孫行程的逾時:timeout=4 ⇒ %.2f 秒回" % took, file=sys.stderr)
         finally:
-            kill_quiet(gpid)
+            kill_quiet((gpid, MG.start_of(gpid) if gpid else None))
+
+    def test_g19_main_exits_background_orphan_collected(self):
+        """主行程先結束、背景行程掛到 pid 1 還拿著管線 ⇒ 逾時回 124,背景行程靠群組收掉(r3 M3)。"""
+        import runner  # noqa: E402
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(repo), True)
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test-orphan.py").write_text(
+            "import subprocess, sys\n"
+            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(40)'])\n"
+            "print('orphan', g.pid, flush=True)\n")
+        t0 = time.monotonic()
+        r = runner._run_one(repo, "tests/test-orphan.py", dict(os.environ), timeout=4)
+        took = time.monotonic() - t0
+        opid = None
+        for ln in r["output"].splitlines():
+            if ln.startswith("orphan "):
+                opid = int(ln.split()[1])
+        try:
+            self.assertEqual(r["rc"], 124, r["output"])
+            self.assertLess(took, 12)
+            self.assertIsNotNone(opid, r["output"])
+            for _ in range(30):
+                if MG.proc_info(opid) is None:
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(MG.proc_info(opid), "主行程先結束的背景行程留成孤兒")
+        finally:
+            kill_quiet((opid, MG.start_of(opid) if opid else None))
 
 
 KNIVES = [
@@ -426,15 +518,25 @@ KNIVES = [
      '        return "dev"', "GuardLogic.test_g11_multiprocessing_inherits_parent"),
     ("K9", "        if self.root not in t or self.root_start is None or t[self.root][2] != self.root_start:",
      "        if self.root not in t:", "GuardLogic.test_g14_treecap_pid_reuse"),
+    ("K10", '    elif how == "inline" or (how == "stdin" and stdin in ("pipe", "file")):',
+     '    elif how in ("inline", "stdin"):', "GuardLogic.test_g3b_relative_cwd_and_python_flags"),
+    ("K11", "        if path and ((os.path.isabs(what) and not os.path.isdir(path)) or os.path.isfile(path)):",
+     "        if path and (os.path.isabs(what) or os.path.isfile(path)):", "GuardLogic.test_g16_unknown_value_options_not_dev"),
+    ("K12", "            if fresh != self.args[key]:", "            if False:", "GuardLogic.test_g18_reread_argv_before_acting"),
 ]
 
 RUNNER_KNIVES = [
     ("R1", "                if memguard:\n                    memguard.kill_tree(proc.pid, cap.root_start)\n"
-           "                proc.kill()\n                proc.wait()\n",
-     "                proc.kill()\n                e.stdout, e.stderr = proc.communicate()\n",
+           "                try:\n                    os.killpg(proc.pid, signal.SIGKILL)\n                except OSError:\n"
+           "                    pass\n                proc.kill()\n                try:\n"
+           "                    out, err = proc.communicate(timeout=2)\n                except subprocess.TimeoutExpired:\n"
+           "                    out, err = e.stdout, e.stderr\n                proc.wait()\n",
+     "                proc.kill()\n                out, err = proc.communicate()\n",
      "RunnerCap.test_g15_timeout_with_background_grandchild"),
-    ("R2", "    if cut and cut not in cells:", "    if False:", "RunnerCap.test_g8_run_one_memory_cap"),
+    ("R2", "        if c and c not in cells:", "        if False:", "RunnerCap.test_g8_run_one_memory_cap"),
     ("R3", "            rc, cut = 137, MEMCAP_CELL", "            cut = MEMCAP_CELL", "RunnerCap.test_g8_run_one_memory_cap"),
+    ("R4", "                    os.killpg(proc.pid, signal.SIGKILL)", "                    pass",
+     "RunnerCap.test_g19_main_exits_background_orphan_collected"),
 ]
 
 
