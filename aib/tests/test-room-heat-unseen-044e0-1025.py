@@ -18,13 +18,15 @@ U7 隱私:程式名只有檔名(腳本取檔名、sh -c 只給 sh);輸出不含�
 U8 上次結果檔被改 ⇒ 只放回白名單欄位、名字再洗一次、組別不在表上的丟掉
 U7c 審查 H1:shell 合寫旗標(-ec / -lc / -xc / -euc)、-s、-o 帶值、--、不認得的長旗標 ⇒ 只回 shell 名;
     腳本名有空白 / 不像腳本檔名 ⇒ 不收;-m 模組名要乾淨;churn 輸出與快取都不出現 inline 指令裡的字
+U7e @ee4f8 E3 裁定 a–f:bash -lc / zsh -ec / sh -xc / ruby -ne / perl -lne / php -B / bash -s ARG / bash -i ⇒ 只回直譯器名;
+    副檔名只收 .sh/.bash/.zsh/.py/.js、檔名 > 40 字不收;讀完 argv 那支 pid 被重用 ⇒ 不收(L3);主人欄現跑也洗(L2)
 U7d 上一次被砍留下半份紀錄 ⇒ 照常重跑(審查 L1);room 夾是 symlink ⇒ error、不寫(審查 L6)
 U7b E3:別的帳號(root)起的新行程歸成「system / ?」、不出名字、不讀它的 argv;throttled 帶 cached_at(E4)
 U9 真行程表:取樣期間自己起 12 支 sleep ⇒ 看得到 ≥ 8 支、過半程式名是 sleep、父行程是自己(只數自己起的,不看排名)
 U10 CLI:`churn --json` 走 room_heat_unseen.churn、秒數照傳;文字模式 throttled 有提示、非 ok 回 1
 刀(複本 + run_guarded):K1 時間窗對不上也回數字 ⇒ U2 紅;K2 節流拿掉 ⇒ U5 紅;K3 只認單獨的 -c / -s ⇒ U7c 紅;
 K5 上次漏列的長壽行程也算進 seen ⇒ U1c 紅;
-K4 上次結果不洗名字 ⇒ U8 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K4 上次結果不洗名字 ⇒ U8 紅;K6 perl / ruby / php 的 inline 旗標不擋、K7 pid 重用不核 ⇒ U7e 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import fcntl
 import io
@@ -330,6 +332,41 @@ class Churn(Base):
             for leak in ("Passw0rd", "postgres", "psql"):
                 self.assertNotIn(leak, blob)
 
+    def test_u7e_e3_ruling(self):
+        P = RU.program_of
+        tok = "tok_9f2a1c.sh"
+        for argv in (["bash", "-lc", tok], ["zsh", "-ec", tok], ["sh", "-xc", tok], ["ruby", "-ne", tok],
+                     ["perl", "-lne", tok], ["perl", "-E", tok], ["php", "-B", tok], ["php", "-R", tok],
+                     ["bash", "-s", tok], ["bash", "-i", tok], ["ruby", "-w", "-e", tok]):
+            self.assertEqual(P(argv[0], argv), argv[0], argv)
+        self.assertEqual(P("ruby", ["ruby", "/x/tool.rb"]), "ruby", "副檔名只收 .sh/.bash/.zsh/.py/.js")
+        self.assertEqual(P("bash", ["bash", "/x/" + "a" * 38 + ".sh"]), "bash", "檔名 > 40 字還收")
+        self.assertEqual(P("bash", ["bash", "/x/run.bash"]), "run.bash")
+        self.assertEqual(P("zsh", ["zsh", "-e", "/x/run.zsh"]), "run.zsh")
+        self.assertEqual(P("perl", ["perl", "-w", "/x/run.py"]), "run.py")
+        # L3:讀 argv 時是 sh,讀完 pid 已被別的程式重用 ⇒ 不收 argv
+        c = Clock()
+        table = {100: (1, "tmux", 1.0), 1: (0, "launchd", 1.0)}
+        n = {"c": 0, "a": 0}
+
+        def pids():
+            n["c"] += 1
+            if n["c"] == 2:
+                table[900] = (100, "sh", 0.3, os.getuid())
+            return list(table)
+
+        def args(p):
+            n["a"] += 1
+            table[900] = (100, "sh", 0.3, os.getuid() + 1)   # 讀 argv 的同時 pid 換成別的帳號的 sh(名字一樣)
+            return ["sh", "/x/" + tok]
+        base, known, born, cpu, prog = RU.sample(2, pids, lambda p: table.get(p), args, clock=c, sleep=c.sleep)
+        self.assertGreater(n["a"], 0)
+        self.assertNotIn(tok, json.dumps(prog), "pid 重用後還收了舊 argv")
+        # L2:現跑結果的主人欄也洗
+        out = RU.attribute({100}, {100: (1, "tmux"), 900: (100, "sh")}, [900], {900: 0.1}, {900: "sh"},
+                           {100: ("seat", "a/b\x1b[2Jxxxxxxxxxxxx")}, 1)
+        self.assertEqual(out[0]["owner"], "a?b?2Jxxxxxx")
+
     def test_u7d_crashed_run_and_bad_room(self):
         os.makedirs(RH.state_dir(), exist_ok=True)
         self.room(RU.CHURN_FILE).write_text(json.dumps({"started_at": 990.0, "result": None}))   # 上一次被砍
@@ -417,12 +454,16 @@ KNIVES = [
      "CpuTotal.test_u2_unseen"),
     ("K2", "src/cockpit/room_heat_unseen.py", "CHURN_THROTTLE_S = 60\n", "CHURN_THROTTLE_S = 0\n",
      "Churn.test_u5_throttle"),
-    ("K3", "src/cockpit/room_heat_unseen.py", "            if \"c\" in a[1:] or \"s\" in a[1:]:\n",
+    ("K3", "src/cockpit/room_heat_unseen.py", "            if any(ch in a[1:] for ch in \"csi\"):\n",
      "            if a in (\"-c\", \"-s\"):\n", "Churn.test_u7c_shell_flag_groups_h1"),
     ("K5", "src/cockpit/room_heat_unseen.py", "        elif c <= window * 2:\n", "        else:\n",
      "CpuTotal.test_u1c_same_window_seen_and_steal"),
     ("K4", "src/cockpit/room_heat_unseen.py", "                    \"program\": room_heat.safe_name(x.get(\"program\"), 40),\n",
      "                    \"program\": x.get(\"program\"),\n", "Churn.test_u8_cached_cleaned"),
+    ("K6", "src/cockpit/room_heat_unseen.py", "        if _inline_flag(base, args):\n", "        if False:\n",
+     "Churn.test_u7e_e3_ruling"),
+    ("K7", "src/cockpit/room_heat_unseen.py", "                            args = None\n", "                            pass\n",
+     "Churn.test_u7e_e3_ruling"),
 ]
 
 

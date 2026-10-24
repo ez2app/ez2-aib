@@ -292,15 +292,17 @@ def _linux_cpu(pid):
         return None
 
 
-SCRIPT_NAME_RE = re.compile(r"^[\w.\-]{1,64}\.(sh|py|js|mjs|rb|pl)$")
+SCRIPT_NAME_RE = re.compile(r"^(?=.{1,40}$)[\w.\-]+\.(sh|bash|zsh|py|js)$")    # @ee4f8 E3 裁定 a / e
+INLINE_SHORT_RE = {"perl": re.compile(r"^-[a-zA-Z]*[eE]"), "ruby": re.compile(r"^-[a-zA-Z]*e")}   # 裁定 d:-ne / -lne
+PHP_INLINE = frozenset(("-r", "-B", "-R", "-F", "-E"))
 MODULE_RE = re.compile(r"^[\w.]{1,64}$")
 SHELL_VALUE_OPTS = frozenset(("-o", "+o", "-O", "+O", "--rcfile", "--init-file"))
 SHELL_SAFE_LONG = frozenset(("--login", "--norc", "--noprofile", "--posix", "--noediting", "--restricted"))
 
 
 def _shell_script(args):
-    """shell 的腳本引數;遇到會讀指令字串 / stdin 的旗標(任何含 c 或 s 的短旗標群:-c、-ec、-lc、-s…)、
-    `--`、不認得的長旗標 ⇒ None(審查 H1:`sh -ec "psql postgres://user:pw@db"` 曾被當成腳本名)。"""
+    """shell 的腳本引數;遇到會讀指令字串 / stdin / 互動的旗標(短旗標群含 c、s 或 i:-c、-ec、-lc、-s、-i…)、
+    `--`、不認得的長旗標 ⇒ None(審查 H1:`sh -ec "psql postgres://user:pw@db"` 曾被當成腳本名;@ee4f8 裁定 b / c)。"""
     it = iter(args[1:])
     for a in it:
         if a == "--" or a == "-":
@@ -313,7 +315,7 @@ def _shell_script(args):
                 continue
             return None
         if a[:1] in "-+" and len(a) > 1:
-            if "c" in a[1:] or "s" in a[1:]:
+            if any(ch in a[1:] for ch in "csi"):
                 return None
             continue
         return a
@@ -328,14 +330,29 @@ def _script_name(path):
     return b if SCRIPT_NAME_RE.match(b) else None
 
 
+def _inline_flag(base, args):
+    """perl / ruby 合寫的 -e(-ne、-lne)、php 的 -r / -B / -R / -F / -E:碰到第一個非選項之前出現 ⇒ True(裁定 d)。"""
+    kind = next((k for k in ("perl", "ruby", "php") if base.lower().startswith(k)), None)
+    if not kind:
+        return False
+    for a in args[1:]:
+        if a == "--" or not a.startswith("-"):
+            return False
+        if (kind == "php" and a in PHP_INLINE) or (kind != "php" and INLINE_SHORT_RE[kind].match(a)):
+            return True
+    return False
+
+
 def program_of(name, args):
     """短命行程的「程式檔名」:shell / 直譯器跑的腳本 ⇒ 腳本檔名;-c / inline / 看不懂 ⇒ 直譯器名;其餘 ⇒ 執行檔名。
-    argv 只在這裡看一眼取腳本檔名,不存、不輸出(E3 例外,等 @ee4f8 裁)。"""
+    argv 只在這裡看一眼取腳本檔名,不存、不輸出(E3 例外,@ee4f8 10-25 06:19 有條件准:a–f)。"""
     import memguard as M
     base = os.path.basename(name or "")
     if args:
         if base in SHELLS:
             return _script_name(_shell_script(args)) or base
+        if _inline_flag(base, args):
+            return base
         kind, val = M.script_of(base, args)
         if kind == "script":
             return _script_name(val) or base
@@ -380,8 +397,13 @@ def sample(seconds, pids_fn, cpu_fn, args_fn, clock=time.monotonic, sleep=time.s
                     prog[p] = UNKNOWN
                 else:
                     base_name = os.path.basename(i[1])
-                    prog[p] = program_of(i[1], args_fn(p) if base_name in SHELLS or base_name.startswith(
-                        ("python", "Python", "node", "php", "ruby", "perl")) else None)
+                    wants = base_name in SHELLS or base_name.startswith(("python", "Python", "node", "php", "ruby", "perl"))
+                    args = args_fn(p) if wants else None
+                    if wants:                        # 讀完 argv 再核一次 uid / 名字:中間 pid 被重用就不算(@ee4f8 L3)
+                        j = cpu_fn(p)
+                        if not j or j[1] != i[1] or (len(j) > 3 and j[3] != uid):
+                            args = None
+                    prog[p] = program_of(i[1], args)
             cpu[p] = i[2]
         sleep(tick)
     return base, known, born, cpu, prog
@@ -404,6 +426,7 @@ def attribute(base, known, born, cpu, prog, cls, seconds, top=CHURN_TOP):
             g = "system"
         if g in ("other_app", "system"):
             owner = ""                               # 其他 App / 系統:主人欄只會是程式名,這裡已有 program
+        owner = room_heat.safe_name(owner, 12)       # 現跑結果也洗(@ee4f8 L2;讀快取那條本來就洗)
         program = room_heat.safe_name(prog.get(cur) or known.get(cur, (0, ""))[1], 40)
         a = acc.setdefault((g, owner, program), {"group": g, "owner": owner, "program": program, "count": 0, "cpu_s": 0.0})
         a["count"] += 1
