@@ -4702,6 +4702,7 @@
   "aib.chat.help.invite_use": "받은 초대로 친구 추가(10자리 코드만으로 가능. 주소 + 코드, aib:join?… 전체도 가능)",
   "aib.chat.help.invite_target": "10자리 초대 코드, 상대 주소, 또는 aib:join?to=…&code=… 전체",
   "aib.chat.invite_made": "초대를 만들었습니다(24시간 유효, 1회용). 상대의 aib에서 실행하도록 해 주세요:\n  {command}\n실행하면 바로 친구가 되며 수락할 필요가 없습니다.",
+  "aib.chat.touchid_invite": "aib: 친구 초대 코드 만들기(24시간·1회용; 코드를 가진 사람은 바로 친구가 됩니다)",
   "aib.chat.invite_bad": "초대 형식이 틀렸습니다: aib chat invite use <10자리 코드>, 또는 <주인 npub>/<함선>/<좌석> <코드>, 또는 aib:join?to=…&code=… 전체",
   "aib.chat.invite_joined": "{owner}님과 친구가 되었습니다. 바로 메시지를 보낼 수 있습니다.",
   "aib.chat.invite_held": "친구 신청을 보냈지만 상대 쪽에서 초대 코드가 맞지 않았습니다(만료 또는 사용됨). 승인을 기다립니다.",

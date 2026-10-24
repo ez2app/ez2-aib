@@ -1217,12 +1217,16 @@ JOIN_URI_RE = re.compile(r"^aib:join\?to=([^&\s]+)&code=([A-Z2-7]{10})$")
 
 
 def cmd_invite(a, env, out):
-    """10-24 第 11 條:產一組邀請(7 天、一次)。對方跑 aib chat invite use … ⇒ 我的轉接程式自動同意、雙方互為好友。
+    """10-24 第 11 條:產一組邀請(24 小時、一次)。對方跑 aib chat invite use … ⇒ 我的轉接程式自動同意、雙方互為好友。
+    產碼 = 預先同意加好友 ⇒ 本人的動作,跟 visit accept / share 同一道門(#299 第 1 輪審 M3,@abb89 裁)。
     --json 給艦長室畫 QR(uri)。"""
     pub = _my_published(env)
     if not pub:
-        out.write(T("request_no_seat") + "\n")
+        out.write((json.dumps({"v": 1, "ok": False, "why": "no_seat"}) if a.json else T("request_no_seat")) + "\n")
         return 2
+    rc = human_gate(T("touchid_invite"), env, out, a.json)
+    if rc is not None:
+        return rc
     root = bridge_root(env)
     addr = pub[0]["addr"]
     inv, short = _publish_invite(root, env, addr)
@@ -1242,16 +1246,18 @@ def _publish_invite(root, env, addr):
     """產碼 + 放中繼站(10-24 晚:對方只打碼就查得到)。中繼站上已經有同一個雜湊(撞號或有人抄)⇒ 換一組,最多 3 次。
     放不上去(沒 venv / 中繼站都沒收)⇒ 碼照樣能用,只是要連位址一起給。回 (邀請, 放上去了沒)。"""
     inv = GF.create_invite(root)
-    for _ in range(3):
-        h = GF.invite_hash(inv["code"])
+    for i in range(3):
+        h, key = GF.invite_keys(inv["code"], GF.invite_day(inv["created_at"]))
         rc, rec = _run_nostr("invite-fetch", root, env, timeout=60, extra=[h])
         if rc is None:
             return inv, False
         if rc == 0 and not rec.get("hits"):
             rc, _rec = _run_nostr("invite-publish", root, env, timeout=60,
-                                  stdin={"hash": h, "addr": addr, "exp": inv["expires_at"]})
+                                  stdin={"hash": h, "key": key.hex(), "addr": addr, "exp": inv["expires_at"]})
             return inv, rc == 0
-        inv = GF.create_invite(root)
+        if i < 2:
+            GF.drop_invite(root, inv["code"])        # 撞了 ⇒ 舊的作廢(沒交出去的碼不留 24 小時)再換一組
+            inv = GF.create_invite(root)
     return inv, False
 
 
@@ -1259,18 +1265,28 @@ def _resolve_invite(code, env, out):
     """只打碼 ⇒ 對方位址。中繼站上同一個碼有兩個簽章者 ⇒ 不猜、拒(有人抄了雜湊來搶);
     最新那筆撤了 / 過期 ⇒ 拒;簽章者要是那個位址的主人(或他名冊上的機器)。回 (位址, None) 或 (None, 原因)。"""
     root = bridge_root(env)
-    rc, rec = _run_nostr("invite-fetch", root, env, timeout=60, extra=[GF.invite_hash(code)])
-    if rc is None:
-        return None, "no_venv"
-    hits = [x for x in (rec.get("hits") or []) if isinstance(x, dict) and isinstance(x.get("body"), dict)]
+    now = int(time.time())
+    hits = []
+    for day in dict.fromkeys((GF.invite_day(now), GF.invite_day(now - 86400))):   # 碼 24 小時有效:建立那天是今天或昨天
+        h, key = GF.invite_keys(code, day)
+        rc, rec = _run_nostr("invite-fetch", root, env, timeout=60, extra=[h])
+        if rc is None:
+            return None, "no_venv"
+        for x in rec.get("hits") or []:              # 驗 HMAC(綁簽章者):沒有碼的人發的同一個 d 直接丟,不算撞號
+            plain = GF.invite_open(key, x.get("author"), x.get("body")) if isinstance(x, dict) else None
+            if plain is not None:
+                hits.append(dict(x, body=plain))
+        if hits:
+            break
     if not hits:
         return None, "not_found"
     if len({x.get("author") for x in hits}) > 1:
         return None, "clash"
-    last = max(hits, key=lambda x: int(x.get("at") or 0))
+    last = max(hits, key=lambda x: x.get("at") if isinstance(x.get("at"), int) else 0)
     body = last["body"]
-    addr = str(body.get("addr") or "")
-    if body.get("revoked") or int(body.get("exp") or 0) < time.time() or not GF.parse_address(addr):
+    addr, exp = str(body.get("addr") or ""), body.get("exp")
+    if body.get("revoked") or not (isinstance(exp, int) and not isinstance(exp, bool)) or exp < now \
+            or not GF.parse_address(addr):
         return None, "used"
     rc, look = _run_nostr("fetch", root, env, timeout=60, extra=[addr])
     if rc != 0 or not (look or {}).get("ok"):

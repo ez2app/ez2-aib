@@ -16,7 +16,13 @@ I7 _resolve_invite:兩個簽章者 ⇒ clash;最新那筆撤了 / 過期 ⇒ use
    正常 ⇒ 位址 + 印對方名字(控制字元清掉);invite use <只有碼> 查不到 ⇒ rc 2、不加好友
 E1 本機假中繼站 + 兩台真轉接程式:Andy invite ⇒ Bob invite use <碼(小寫)> ⇒ 兩邊互為好友;
    中繼站上那筆換成 revoked;同一組碼再用 ⇒ rc 2
-刀(複本):K1 take_invite 不扣次數 ⇒ I1 紅;K2 on_request 不看碼對不對 ⇒ I4 紅;K3 不擋撞號 ⇒ I7 紅
+#299 第 1 輪審(H1 / M1–M3 / L1–L4):
+I8 碼 ⇒ PBKDF2(鹽帶建立日期)前 16 查詢、後 16 金鑰;內容加密 + HMAC 綁簽章者:換簽章者 / 改一個字 / 錯的碼 ⇒ 打不開
+I9 冒名:中繼站上只有別人用自己金鑰發的同一個 d(內容亂填 / 抄正牌密文換簽章者)⇒ not_found 或只認正牌,不算 clash、不加好友
+I10 產碼要本人:席位呼叫 ⇒ rc 2、Touch ID 拒 ⇒ rc 3,都不產碼(M3)
+I11 昨天建的碼今天照查得到;遠端 exp 不是整數 ⇒ used 不炸(L1);撞號換組時舊碼作廢(L3);加好友失敗次數補回(L2)
+刀(複本):K1 take_invite 不扣次數 ⇒ I1 紅;K2 on_request 不看碼對不對 ⇒ I4 紅;K3 不擋撞號 ⇒ I7 紅;
+   K4 不驗 HMAC ⇒ I9 紅;K5 產碼不過門 ⇒ I10 紅
 """
 import importlib.util
 import io
@@ -65,6 +71,10 @@ if case == "used":
     GF.take_invite(root, code)
 if case == "blocked":
     CR.add_friend(B, kind="blocks")
+if case == "roster_err":
+    def boom(*a, **k):
+        raise CR.RosterError("bad_name")
+    CR.add_friend = boom
 note = "invite:" + ("A" * 10 if case == "junk" else code)
 r = object.__new__(CN.Receiver)
 r.root = root
@@ -78,7 +88,7 @@ peer = {"seat": {"npub": "npub1x", "seat": "bbbb2"}, "cabin": "754c", "display_n
 asyncio.run(r.on_request(rec, {"owner": B, "cabin": "754c", "seat": "bbbb2"}, peer, "m" * 32, "npub1x"))
 fr = CR.read_friends()
 print(json.dumps({"sent": sent, "friends": [(f["owner"] == B, f.get("source")) for f in fr],
-                  "requests": len(GF.read_requests(root))}))
+                  "requests": len(GF.read_requests(root)), "left": bool(GF.take_invite(root, code))}))
 '''
 
 
@@ -97,6 +107,13 @@ class Store(unittest.TestCase):
         self.assertFalse(GF.take_invite(self.td, inv["code"], now=1002))            # 用過了
         old = GF.create_invite(self.td, now=1000)
         self.assertFalse(GF.take_invite(self.td, old["code"], now=1000 + GF.INVITE_TTL_S))   # 過期
+        again = GF.create_invite(self.td, now=1000)
+        self.assertEqual(GF.take_invite(self.td, again["code"], now=1001)["created_at"], 1000, "回那一筆(推金鑰要建立時間)")
+        GF.refund_invite(self.td, again["code"])
+        self.assertTrue(GF.take_invite(self.td, again["code"], now=1002), "補回後能再用一次")
+        GF.drop_invite(self.td, again["code"])
+        GF.refund_invite(self.td, again["code"])
+        self.assertFalse(GF.take_invite(self.td, again["code"], now=1003), "作廢的補不回來")
         for i in range(25):
             GF.create_invite(self.td, now=2000 + i)
         rows = json.loads((self.td / "invites.json").read_text())["invites"]
@@ -108,6 +125,10 @@ class Cli(unittest.TestCase):
         self.td = Path(tempfile.mkdtemp(prefix="aib-invite-cli-"))
         self.addCleanup(shutil.rmtree, self.td, True)
         self.env = {"HOME": str(self.td), "EZ2_AIB_STATE_ROOT": str(self.td / ".ez2-aib")}
+        self.asked, self.seat, self.deny = [], False, None
+        CB.HUMAN_GATE["prove"] = lambda reason, env: (self.asked.append(reason), ("touchid", self.deny))[1]
+        CB.HUMAN_GATE["caller_is_seat"] = lambda env: self.seat
+        self.addCleanup(CB.HUMAN_GATE.update, {"prove": None, "caller_is_seat": None})
 
     def cli(self, *args):
         buf = io.StringIO()
@@ -130,6 +151,23 @@ class Cli(unittest.TestCase):
         self.assertEqual(d["command"], "aib chat invite use %s %s" % (d["addr"], d["code"]))
         self.assertTrue(GF.take_invite(CB.bridge_root(self.env), d["code"]))
         self.assertIsNone(d["short"], "沒 venv ⇒ 沒放中繼站,不給只打碼的指令")
+        self.assertEqual(len(self.asked), 1)
+        self.assertIn("邀請", self.asked[0])
+
+    def test_i10_invite_needs_human(self):
+        NK.ensure_owner(self.env)
+        CR.set_profile("A", "TW", self.env)
+        CR.set_public("cfd04", True, self.env)
+        orig = NK.sending_seats
+        self.addCleanup(setattr, NK, "sending_seats", orig)
+        NK.sending_seats = lambda env=None, live=None: [{"seat5": "cfd04", "cabin": "6ddf", "npub": "npub1a", "key": "k"}]
+        self.seat = True
+        rc, out = self.cli("invite", "--json")
+        self.assertEqual((rc, json.loads(out).get("why"), self.asked), (2, "seat_caller", []), "席位不准產碼")
+        self.seat, self.deny = False, "touchid_cancel"
+        rc, out = self.cli("invite", "--json")
+        self.assertEqual((rc, json.loads(out).get("why")), (3, "touchid_cancel"))
+        self.assertFalse((CB.bridge_root(self.env) / "invites.json").exists(), "沒過門就不准產碼")
 
     def test_i3_join_bad(self):
         other = NK.npub(NK.pubkey_hex("%064x" % 0x8101))
@@ -166,10 +204,12 @@ class Short(unittest.TestCase):
             return 0, self.look
         self.CB._run_nostr = fake
 
-    def body(self, author=None, at=1, **kw):
-        b = {"v": 1, "addr": self.addr, "exp": int(time.time()) + 600}
+    def body(self, author=None, at=1, day=None, code="ABCDEFGHIJ", seal_as=None, **kw):
+        """中繼站上的一筆:預設是知道碼的 A1 簽的。seal_as = 用誰的名字算 HMAC(抄密文換簽章者的情境)。"""
+        b = {"addr": self.addr, "exp": int(time.time()) + 600}
         b.update(kw)
-        return {"author": author or A1, "at": at, "body": b}
+        key = GF.invite_keys(code, day or GF.invite_day(time.time()))[1]
+        return {"author": author or A1, "at": at, "body": GF.invite_seal(key, seal_as or author or A1, b)}
 
     def test_i5_code_shapes(self):
         c = GF.create_invite(self.td)["code"]
@@ -177,8 +217,23 @@ class Short(unittest.TestCase):
         self.assertEqual(GF.invite_norm(" abcde 1o8z2 "), "ABCDEIOBZ2", "小寫、空白、1/0/8")
         for bad in ("", "ABCDE-FGHI", "ABCDE-FGHIJK", "ABCDE--FGHIJ", "ABCDE-FGHI9", None, A1):
             self.assertIsNone(GF.invite_norm(bad), bad)
-        self.assertRegex(GF.invite_hash("ABCDEFGHIJ"), r"^[0-9a-f]{32}$")
-        self.assertNotEqual(GF.invite_hash("ABCDEFGHIJ"), GF.invite_hash("ABCDEFGHIK"))
+
+    def test_i8_keys_and_seal(self):
+        h, k = GF.invite_keys("ABCDEFGHIJ", "20261024")
+        self.assertRegex(h, r"^[0-9a-f]{32}$")
+        self.assertEqual(len(k), 16)
+        self.assertNotEqual(h, k.hex(), "查詢雜湊跟金鑰是不同的兩段")
+        self.assertNotEqual(h, GF.invite_keys("ABCDEFGHIK", "20261024")[0])
+        self.assertNotEqual(h, GF.invite_keys("ABCDEFGHIJ", "20261025")[0], "鹽帶日期")
+        box = GF.invite_seal(k, A1, {"addr": self.addr, "exp": 5})
+        self.assertNotIn(self.addr, json.dumps(box), "中繼站上看不到位址")
+        self.assertEqual(GF.invite_open(k, A1, box), {"addr": self.addr, "exp": 5})
+        self.assertIsNone(GF.invite_open(k, C1, box), "換簽章者")
+        self.assertIsNone(GF.invite_open(GF.invite_keys("ABCDEFGHIK", "20261024")[1], A1, box), "錯的碼")
+        bad = dict(box, c=box["c"][:-4] + ("AAAA" if box["c"][-4:] != "AAAA" else "BBBB"))
+        self.assertIsNone(GF.invite_open(k, A1, bad), "改一個字")
+        for junk in (None, [], {"v": 1, "addr": self.addr}, dict(box, n="!!"), dict(box, v=3)):
+            self.assertIsNone(GF.invite_open(k, A1, junk), junk)
 
     def test_i6_publish_precheck(self):
         root = self.td / "bridge"
@@ -187,8 +242,11 @@ class Short(unittest.TestCase):
         inv, short = self.CB._publish_invite(root, self.env, self.addr)
         self.assertTrue(short)
         self.assertEqual(self.calls, ["invite-fetch", "invite-fetch", "invite-publish"], "撞了要換一組再查再發")
-        self.assertEqual(self.published["hash"], GF.invite_hash(inv["code"]))
+        h, key = GF.invite_keys(inv["code"], GF.invite_day(inv["created_at"]))
+        self.assertEqual((self.published["hash"], self.published["key"]), (h, key.hex()))
         self.assertEqual(self.published["addr"], self.addr)
+        rows = json.loads((root / "invites.json").read_text())["invites"]
+        self.assertEqual([r["code"] for r in rows], [inv["code"]], "撞號那組要作廢,不留 24 小時")
         self.CB._run_nostr = lambda *a, **k: (None, {})
         inv, short = self.CB._publish_invite(root, self.env, self.addr)
         self.assertFalse(short, "沒 venv ⇒ 不放")
@@ -199,8 +257,13 @@ class Short(unittest.TestCase):
         self.assertEqual(res(), (None, "not_found"))
         self.fetches = [[self.body(), self.body(author=C1, at=2)]]
         self.assertEqual(res(), (None, "clash"), "同一組碼兩個簽章者 ⇒ 不猜")
-        self.fetches = [[self.body(at=1), {"author": A1, "at": 2, "body": {"v": 1, "revoked": True}}]]
+        key = GF.invite_keys("ABCDEFGHIJ", GF.invite_day(time.time()))[1]
+        self.fetches = [[self.body(at=1), {"author": A1, "at": 2, "body": GF.invite_seal(key, A1, {"revoked": True})}]]
         self.assertEqual(res(), (None, "used"))
+        self.fetches = [[self.body(exp="x")]]
+        self.assertEqual(res(), (None, "used"), "遠端 exp 不是整數 ⇒ 不炸")
+        self.fetches = [[], [self.body(day=GF.invite_day(time.time() - 86400))]]
+        self.assertEqual(res(), (self.addr, None), "昨天建的碼今天照查得到")
         self.fetches = [[self.body(exp=int(time.time()) - 1)]]
         self.assertEqual(res(), (None, "used"), "過期")
         self.fetches = [[self.body()]]
@@ -213,9 +276,24 @@ class Short(unittest.TestCase):
         self.assertIn("Bob", buf.getvalue())
         self.assertNotIn("\x1b", buf.getvalue(), "對方名字要清控制字元")
         out = io.StringIO()
+        self.fetches = []
         self.assertEqual(self.CB.main(["invite", "use", "abcde-fghij"], env=self.env, out=out), 2)
         self.assertIn("找不到", out.getvalue())
         self.assertEqual(CR.read_friends(self.env), [])
+
+
+    def test_i9_impostor(self):
+        res = lambda: self.CB._resolve_invite("ABCDEFGHIJ", self.env, io.StringIO())  # noqa: E731
+        evil = {"author": C1, "at": 9, "body": {"v": 2, "n": "AAAAAAAAAAAAAAAAAAAAAA==", "c": "", "m": "0" * 64}}
+        self.fetches = [[evil], []]
+        self.assertEqual(res(), (None, "not_found"), "只有冒名那筆 ⇒ 查不到,不准回攻擊者位址")
+        copied = self.body(author=C1, at=9, seal_as=A1)              # 抄正牌密文、換成自己簽
+        self.fetches = [[self.body(), copied, evil]]
+        self.assertEqual(res(), (self.addr, None), "冒名的過濾掉後再判撞號:不准拿來擋人")
+        self.fetches = [[evil], []]
+        out = io.StringIO()
+        self.assertEqual(self.CB.main(["invite", "use", "abcde-fghij"], env=self.env, out=out), 2)
+        self.assertEqual(CR.read_friends(self.env), [], "冒名 ⇒ 不加好友、不寄碼")
 
 
 _rspec = importlib.util.spec_from_file_location("chat_recv_invite", str(HERE / "test-chat-recv-d07f9-1016.py"))
@@ -231,19 +309,19 @@ class Network(unittest.TestCase):
     def test_e1_code_only(self):
         a, _x = self._box("Andy", [("00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")], [True])
         b, _y = self._box("Bob", [("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [True])
-        r = a.cli("invite", "--json")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        d = json.loads(r.stdout.strip().splitlines()[-1])
-        self.assertTrue(d["short"], d)
+        ae = a.env()                                     # 產碼要本人 Touch ID(門在 CLI)⇒ 測試直接走產碼 + 放中繼站那段
+        d, short = CB._publish_invite(CB.bridge_root(ae), ae, CB._my_published(ae)[0]["addr"])
+        self.assertTrue(short, d)
         code = GF.invite_fmt(d["code"]).lower()
         r = b.cli("invite", "use", code)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("Andy", r.stdout)
         self.assertTrue(CR.is_friend(a.owner, b.env()))
         self.assertTrue(a.wait_for(lambda: CR.is_friend(b.owner, a.env()), 30), "Andy 那邊沒自動加 Bob")
-        h = GF.invite_hash(d["code"])
+        h, key = GF.invite_keys(d["code"], GF.invite_day(d["created_at"]))
         revoked = lambda: any(e["kind"] == 30078 and ["d", "aib-invite:" + h] in [t[:2] for t in e["tags"]]  # noqa: E731
-                              and json.loads(e["content"]).get("revoked") for e in self.relay.events)
+                              and (GF.invite_open(key, NK.npub(e["pubkey"]), json.loads(e["content"])) or {}).get("revoked")
+                              for e in self.relay.events)
         self.assertTrue(a.wait_for(revoked, 20), "用掉的碼要在中繼站撤掉")
         r = b.cli("invite", "use", code)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
@@ -262,10 +340,13 @@ class Accept(unittest.TestCase):
         return json.loads(r.stdout.strip().splitlines()[-1])
 
     def test_i4_auto_accept(self):
-        self.assertEqual(self.probe("ok"), {"sent": ["delivered"], "friends": [[True, "invite"]], "requests": 0})
+        self.assertEqual(self.probe("ok"), {"sent": ["delivered"], "friends": [[True, "invite"]], "requests": 0,
+                                            "left": False})
         for case in ("used", "junk"):
-            self.assertEqual(self.probe(case), {"sent": ["held"], "friends": [], "requests": 1}, case)
+            got = self.probe(case)
+            self.assertEqual((got["sent"], got["friends"], got["requests"]), (["held"], [], 1), case)
         self.assertEqual(self.probe("blocked")["friends"], [])
+        self.assertTrue(self.probe("roster_err")["left"], "加好友失敗 ⇒ 碼的次數補回")
 
 
 class Knife(unittest.TestCase):
@@ -284,7 +365,16 @@ class Knife(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k2_any_code(self):
-        self._run("src/cockpit/chat_nostr.py", "and GF.take_invite(self.root, m.group(1)):", "and True:", "Accept")
+        self._run("src/cockpit/chat_nostr.py", "and GF.take_invite(self.root, m.group(1))\n", 'and {"created_at": 0}\n', "Accept")
+
+    def test_k4_no_mac(self):
+        self._run("src/cockpit/dm_global_files.py",
+                  '    if not hmac.compare_digest(_invite_mac(key, author, nonce, ct), body["m"]):\n        return None\n',
+                  "", "Short.test_i9_impostor")
+
+    def test_k5_invite_ungated(self):
+        self._run("src/cockpit/chat_bridge.py", '    rc = human_gate(T("touchid_invite"), env, out, a.json)\n',
+                  "    rc = None\n", "Cli.test_i10_invite_needs_human")
 
     def test_k3_no_clash_check(self):
         self._run("src/cockpit/chat_bridge.py", '    if len({x.get("author") for x in hits}) > 1:\n', "    if False:\n",
