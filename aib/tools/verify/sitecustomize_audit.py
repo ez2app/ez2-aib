@@ -577,8 +577,8 @@ def _dirfd_join(fd, name):
 
 
 # 10-08(express / Python 的本機測試伺服器):測試自己 bind 的本機 socket、自己連回去 —— 不是外部。只認同一個行程自己 bind、
-#   還開著的;連到本機上別人開的服務(資料庫之類)照樣算外部。存的是 (fd, family, type) —— 不留 socket 物件(會讓它晚回收、
-#   改了被觀測物),也不 import weakref(啟動時本來沒有它;觀測者不改 sys.modules)。比對時用 socket.fromfd 複製一份問埠號,問完就關。
+#   還開著的;連到本機上別人開的服務(資料庫之類)照樣算外部。存的是 socket 的弱參照(不延後回收、不改被觀測物;用檔內既有的
+#   _weakref,不 import weakref)。10-24 起不再存 fd 號碼再 dup:號碼重用成 macOS 受保護 fd 時 dup ⇒ 核心 SIGKILL。
 _OWN_SOCKETS = []       # 這個行程 bind 過的 socket(弱參照;不記 fd 號碼)
 _LOOPBACK = frozenset(("localhost", "127.0.0.1", "::1", "::ffff:127.0.0.1"))
 
