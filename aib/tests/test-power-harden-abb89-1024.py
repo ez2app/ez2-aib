@@ -14,7 +14,7 @@ H7 #302 審查:`aib power -- login` 乾淨回 rc 2(不 Traceback);_write_page �
    鏈結先出裝置碼晚到也等得到
 H8 #302 第 2 輪:快到時限才印鏈結 ⇒ 照回鏈結(不 no_url);登入紀錄預先是硬連結 / 0644 檔 ⇒ 不沿用(被連的檔不被截斷、新檔 0600);
    等待中被中斷 ⇒ 登入紀錄照刪
-刀(PR 手跑在複本上):_write_page 失敗不清暫存 / 拿掉 O_EXCL+O_NOFOLLOW ⇒ H7 紅;登入紀錄拿掉「先刪再建」⇒ H8 紅;寬限時限到回 no_url ⇒ H8 紅;拿掉 finally 刪檔 ⇒ H8 紅;
+刀(PR 手跑在複本上):_write_page 失敗不清暫存 / 拿掉 O_EXCL+O_NOFOLLOW ⇒ H7 紅;登入紀錄拿掉「先刪再建」⇒ H8 紅;寬限不看時限 ⇒ H8 紅;拿掉 finally 刪檔 ⇒ H8 紅;
   _URL_RE 改回 [^\\s...] ⇒ H4 紅;_other 改回只去 C0 / C1 ⇒ H5 紅;power_launch._s 不看 Cf ⇒ H5 紅;
   _write_page 改回固定 .tmp + write_text ⇒ H3 紅(權限);_save 改回 open(tmp,"w") ⇒ H2 紅(權限)
 (拿到鏈結就刪登入紀錄在 test-power-login-d07f9-1024.py G2)
@@ -186,6 +186,7 @@ class Harden(unittest.TestCase):
                         f.write("open https://auth.example/late\n")
             got = power_login.spawn_login("codex", popen=late, sleep=sleep, clock=lambda: t[0], wait_s=20)
             self.assertEqual(got, ("https://auth.example/late", None, None))
+            self.assertLessEqual(t[0], 20.5, "寬限不能把總等待拉過時限")
 
             d = Path(tempfile.mkdtemp(dir=TMP))
             victim = d / "victim.txt"
