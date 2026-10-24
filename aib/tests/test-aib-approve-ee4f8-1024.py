@@ -540,7 +540,7 @@ class Knives(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "刀落了測試還綠:" + test)
 
     def test_k1_no_canonical(self):
-        self._red(" or signing.canonical(f) != raw:", ":", "test_a2_pending_only_clean_items")
+        self._red("        same = signing.canonical(f) == raw", "        same = True", "test_a2_pending_only_clean_items")
 
     def test_k2_no_site(self):
         self._red('    if f["site"] != site:', "    if False:", "test_a2_pending_only_clean_items")
