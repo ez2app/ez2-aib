@@ -6,7 +6,9 @@
   aib room heat history [--json]      最近 1 小時,每 10 秒一點(快照順手記;狀態根 room/heat-history.json,0600)
   aib room heat crashes [--json] [--days N]   當機雷達:系統當機報告按「程式 + 例外 + 訊息前 40 字」歸類
 
-這一版只讀,不收任何行程(「釋放」另一支,照白名單 + 資安審查意見)。
+  aib room heat release <候選編號>… | --all-safe [--auto] [--dry-run] [--json]   釋放殘留(room_heat_release.py,白名單)
+
+快照的 candidates / held 由 room_heat_release.scan 算;這支本身只讀。
 沿用 machine_status(量測、「量不到 ≠ 0」)與 cooldown(四級),不重寫門檻。
 隱私:輸出不放指令列、不放 cwd 或檔案全路徑;程式名只留檔名。當機報告只讀開頭的機器欄位,
 不讀堆疊、不輸出訊息原文(只拿來歸類),不上傳。detail 代碼是契約,人話放 hint。
@@ -426,15 +428,24 @@ def crashes(days=CRASH_DAYS, now=None, crash_dir=None):
 
 # ---------- 快照 ----------
 
-def snapshot(sampler=None, run=None, owner_of=None, now=None, environ=None, record=True):
+def snapshot(sampler=None, run=None, owner_of=None, now=None, environ=None, record=True, scan_fn=None):
     m = measure(sampler)
     rows = list_procs(run)
+    cands, held, cand_detail = [], [], None
     if rows is None:
         grp = {"state": "unmeasured", "detail": "ps_failed", "items": []}
     else:
         grp = {"state": "ok", "items": groups(rows, classify(rows, owner_of=owner_of))}
+        try:
+            import room_heat_release as RR
+            c, h = (scan_fn or RR.scan)(rows=rows, owner_of=owner_of)
+            cands, held = [RR.public(x) for x in (c or [])], list(h or [])
+        except Exception:  # noqa: BLE001 —— 候選算不出來不擋快照,但要分得出「沒候選」和「掃描壞了」
+            cands, held, cand_detail = [], [], "scan_failed"
     snap = {"schema": "aib-heat/v1", "t": round(time.time() if now is None else now, 1), "level": m["level"],
-            "took_s": m["took_s"], "cells": m["cells"], "groups": grp, "candidates": []}
+            "took_s": m["took_s"], "cells": m["cells"], "groups": grp, "candidates": cands, "held": held}
+    if cand_detail:
+        snap["candidates_detail"] = cand_detail
     if record:
         try:
             snap["history_recorded"] = record_history(m, now=now, environ=environ)
@@ -455,17 +466,46 @@ def _print_snapshot(s, out):
     for g in s["groups"].get("items", [])[:12]:
         out.write("  %-17s %-14s CPU %5.1f%%  %7.1f MB  ×%d\n" % (T("group." + g["group"]), g["owner"] or "-",
                                                                   g["cpu"], g["mem_mb"], g["count"]))
+    if s.get("candidates_detail"):                    # 文字模式也拿得到候選編號與不收的原因(#319 r6 B-L5)
+        out.write(T("snap." + s["candidates_detail"]) + "\n")
+    for c in s.get("candidates", []):
+        out.write(T("snap.candidate", id=c["id"], kind=T("kind." + c["kind"]), owner=c.get("owner") or "-",
+                    cpu=c["cpu"], mem=c["mem_mb"], age=c["age_s"]) + "\n")
+    for h in s.get("held", []):
+        out.write(T("snap.held", kind=T("kind." + h["kind"]), pid=h["pid"], why=T("held." + h["why"])) + "\n")
 
 
 def main(argv=None, out=None):
     out = out or sys.stdout
     argv = list(sys.argv[1:] if argv is None else argv)
-    sub = argv.pop(0) if argv and argv[0] in ("history", "crashes") else "snap"
+    sub = argv.pop(0) if argv and argv[0] in ("history", "crashes", "release") else "snap"
     ap = argparse.ArgumentParser(prog="aib room heat" + ("" if sub == "snap" else " " + sub))
     ap.add_argument("--json", action="store_true")
     if sub == "crashes":
         ap.add_argument("--days", type=int, default=CRASH_DAYS)
+    if sub == "release":
+        ap.add_argument("ids", nargs="*")
+        ap.add_argument("--all-safe", action="store_true")
+        ap.add_argument("--auto", action="store_true")
+        ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    if sub == "release":
+        import room_heat_release as RR
+        if bool(a.ids) == bool(a.all_safe):
+            out.write(T("release.usage") + "\n")
+            return 2
+        r = RR.release(ids=a.ids, all_safe=a.all_safe, dry_run=a.dry_run, auto=a.auto)
+        if a.json:
+            json.dump(r, out, ensure_ascii=False)
+            out.write("\n")
+        else:
+            for x in r["results"]:
+                out.write("  %s %s\n" % (x["id"], T("release." + x["detail"])))
+                if x.get("log"):
+                    out.write("  %s %s\n" % (x["id"], T("release." + x["log"])))
+            if not r["results"]:                       # 掃描失敗 / 鎖開不了 ≠ 沒東西可收(B-M3)
+                out.write(T("release." + r["detail"] if r.get("detail") else "release.none") + "\n")
+        return 0 if r["ok"] else 1
     if sub == "history":
         now = time.time()                               # 只回最近 1 小時(關機一天後不回昨天的點,B5)
         pts = [p for p in read_history(now=now) if p["t"] >= now - HISTORY_MAX * HISTORY_STEP_S]
