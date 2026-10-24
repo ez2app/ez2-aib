@@ -12,8 +12,12 @@ S1 一席一把(10-24 Pro:@cfd04 換過人格,同一席三把 active ⇒ 名冊�
    sending_seats 只給 B 那把;名冊這一席只出現一次、npub = B;A 的金鑰仍 active(收件照認、人格換回來照用)
 S2 人格換回 A ⇒ sending_seats 換回 A 那把(不產新的)
 S3 名冊組完的席碼不重複(就算對照表有兩把同席、同人格的 active,也只取第一把)
+S5 同一人格綁兩個活席 ⇒ 兩席各一把、都在名冊
+S6 人格封存後那席還綁同一人格 ⇒ 封存的鑰不出現在寄件 / 名冊
+S7 真人寄件選席:現在的人格還沒有鑰 ⇒ None(不拿舊人格那把)
+N1 換人格後真的寄一封(兩台、本機假中繼站)⇒ 對方用名冊驗得過、收下(queued);寄件用舊人格那把就會被當陌生拒收
 S4 手機配對給的 npub 跟名冊同一把:換過人格的席 ⇒ 配對 QR 給 B 那把,不給舊人格 A(@abb89 #297 r1)
-刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅
+刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅
 """
 import json
 import os
@@ -113,6 +117,35 @@ class OneKeyPerSeat(unittest.TestCase):
         content, _dm = CR.build(self.env, live=self.live("aaaa11"))
         self.assertEqual([x["seat"] for c in content["cabins"] for x in c["seats"]], ["cfd04"])
 
+    def test_s5_two_seats_same_persona(self):
+        # 同一人格綁兩個活席(@abb89 #297 r1 m02):兩席都要各有一把、都在名冊(去重是看席,不是看人格)
+        live = self.live("aaaa11") + [{"seat5": "dd0e5", "cabin": "6ddf", "persona_uid": "aaaa11", "name": None, "role": "dev"}]
+        CR.set_public("dd0e5", True, env=self.env)
+        NK.sync_seats(live, self.env)
+        got = sorted(e["seat5"] for e in NK.sending_seats(self.env, live))
+        self.assertEqual(got, ["cfd04", "dd0e5"])
+        content, _dm = CR.build(self.env, live=live)
+        self.assertEqual(sorted(x["seat"] for c in content["cabins"] for x in c["seats"]), ["cfd04", "dd0e5"])
+
+    def test_s6_retired_never_sends(self):
+        # 人格封存後那一席還綁著同一人格(@abb89 #297 r1 m04):封存的鑰不准出現在寄件 / 名冊
+        NK.sync_seats(self.live("aaaa11"), self.env)
+        self.assertEqual(NK.retire_persona("aaaa11", self.env), 1)
+        self.assertEqual(NK.sending_seats(self.env, self.live("aaaa11")), [])
+        content, _dm = CR.build(self.env, live=self.live("aaaa11"))
+        self.assertEqual([x for c in content["cabins"] for x in c["seats"]], [])
+
+    def test_s7_human_pick_needs_current_key(self):
+        # 真人寄件選席(chat_human.pick_seat,@abb89 #297 r1 m09):現在的人格(B)還沒有鑰 ⇒ None,不拿舊人格 A 那把代簽
+        import chat_human as CH
+        NK.sync_seats(self.live("aaaa11"), self.env)
+        orig = NK.live_seats
+        self.addCleanup(setattr, NK, "live_seats", orig)
+        NK.live_seats = lambda home=None, env=None: self.live("bbbb22")
+        self.assertIsNone(CH.pick_seat("6ddf", self.env))
+        NK.live_seats = lambda home=None, env=None: self.live("aaaa11")
+        self.assertEqual(CH.pick_seat("6ddf", self.env), "cfd04")
+
     def test_s4_pair_uses_current_persona(self):
         import chat_pair as CP
         NK.sync_seats(self.live("aaaa11"), self.env)
@@ -154,6 +187,38 @@ class Stale(unittest.TestCase):
         self.assertEqual(d["snap"], ["4345c"])
 
 
+@unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
+class SendAfterSwitch(unittest.TestCase):
+    """@abb89 #297 r1 m07:寄件(chat_nostr Sender)要用名冊那一把;改回「同席第一把 active」⇒ 對方驗不過、當陌生拒收。"""
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("chat_recv_switch", str(HERE / "test-chat-recv-d07f9-1016.py"))
+        self.RT = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.RT)
+        self.RT.Network.setUp(self)
+
+    _box = property(lambda self: self.RT.Network._box.__get__(self))
+
+    def test_n1_send_with_current_persona_key(self):
+        SB, GF = self.RT.SB, self.RT.GF
+        a, (x,) = self._box("Andy", [("00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")], [True])
+        old = [e["npub"] for e in NK.sending_seats(a.env()) if e["seat5"] == x]
+        disp = a.home / ".ez2-aib" / "identity" / "seat-display.json"
+        cur = json.loads(disp.read_text())
+        cur["display"][x]["persona_uid"] = "zzzz99"                     # 這一席換人格
+        disp.write_text(json.dumps(cur))
+        new = lambda: [e["npub"] for e in NK.sending_seats(a.env()) if e["seat5"] == x]  # noqa: E731
+        self.assertTrue(a.wait_for(lambda: new() and new() != old, 30), (old, new()))
+        self.assertTrue(a.wait_for(lambda: any(new()[0] in json.dumps(e) for e in self.relay.events), 90), "名冊沒換成新那把(重發有 60 秒節流)")
+        act = [e for e in NK.read_map(a.env())["seats"] if e["seat5"] == x and e["status"] == "active"]
+        self.assertEqual(len(act), 2, "舊人格那把還 active(換回來照用)⇒ 才分得出「同席第一把」")
+        b, (y,) = self._box("Bob", [("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [True])
+        self.assertEqual(b.cli("friend", "add", a.owner).returncode, 0)
+        res = GF.send_and_wait(a.root, SB.outbox_rec("%s/6ddf/%s" % (b.owner, y), x), wait=20)
+        self.assertEqual(res["stage"], "queued", res)
+
+
 class Knife(unittest.TestCase):
     def test_k2_any_persona(self):
         name = Path(__file__).name
@@ -172,6 +237,36 @@ class Knife(unittest.TestCase):
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def _cut(self, rel, needle, rep, cell, timeout=120):
+        name = Path(__file__).name
+        with knife_copy(REPO, rel, needle, rep, tests=(name, "test-chat-recv-d07f9-1016.py", "test-chat-send-d07f9-1016.py")) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), cell], cwd=str(root), max_procs=60, timeout=timeout)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅:" + cell + "\n" + r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k5_dedupe_by_persona(self):          # m02
+        self._cut("src/cockpit/nostr_keys.py",
+                  'and s5 not in out and s5 in want and want[s5] == e.get("persona_uid"):\n            out[s5] = e',
+                  'and e.get("persona_uid") not in out and s5 in want and want[s5] == e.get("persona_uid"):\n            out[e.get("persona_uid")] = e',
+                  "OneKeyPerSeat.test_s5_two_seats_same_persona")
+
+    def test_k6_retired_counts(self):             # m04
+        self._cut("src/cockpit/nostr_keys.py", '        if e.get("status") == "active" and s5 not in out', "        if s5 not in out",
+                  "OneKeyPerSeat.test_s6_retired_never_sends")
+
+    def test_k7_human_any_active(self):           # m09
+        self._cut("src/cockpit/chat_human.py", 'keyed = {e["seat5"] for e in NK.sending_seats(env)}',
+                  'keyed = {e["seat5"] for e in NK.read_map(env)["seats"] if e.get("status") == "active"}',
+                  "OneKeyPerSeat.test_s7_human_pick_needs_current_key")
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k8_sender_first_active(self):        # m07
+        self._cut("src/cockpit/chat_nostr.py",
+                  'entry = next((e for e in NK.sending_seats() if e["seat5"] == frm["seat"]), None)',
+                  'entry = next((e for e in NK.read_map()["seats"] if e.get("status") == "active" and e["seat5"] == frm["seat"]), None)',
+                  "SendAfterSwitch.test_n1_send_with_current_persona_key", timeout=300)
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k1_no_fallback(self):
