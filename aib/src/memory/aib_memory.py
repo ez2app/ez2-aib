@@ -64,12 +64,13 @@ def index_path() -> Path:
     return aib_home() / "memory-index" / "notes.jsonl"
 
 
-WRITE_LOCK_WAIT_S = 30
+WRITE_LOCK_WAIT_S = 150    # 要比持鎖最長還久:一次寫入 runner 逾時 60 秒 × 最多 2 個路由候選(#315 審查 B-1)
 
 
 class _WriteLock:
     """10-24:同一台多席同時寫第二大腦會撞號 —— uid 照索引已用的 + 建立時刻配,兩席在同一刻讀到同一份索引就配到同一個
-    (@ee4f8 查到 5 組，不同資料夾所以「目標已存在」也擋不到)。配號 → 寫檔 → 記索引 → 登記 uid-index 整段拿同一把檔鎖。"""
+    (@ee4f8 查到 5 組，不同資料夾所以「目標已存在」也擋不到)。配號 → 寫檔 → 記索引 → 登記 uid-index 整段拿同一把檔鎖。
+    flock 綁在每次 open 上,同一行程再拿也會被擋 ⇒ 鎖內不准再呼叫 write()(會自己等到逾時)。"""
 
     def __enter__(self):
         try:
