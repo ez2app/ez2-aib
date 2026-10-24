@@ -15,6 +15,5 @@ Copy this folder to the vendor skill dir (Claude `~/.claude/skills/`, Codex skil
 2. Show that list to the user.
 3. Only if the user says to save it, run `aib support --write`. The file is saved on this machine only
    (private permissions); the reply shows where.
-4. Never send it, upload it, or attach it anywhere yourself. The user decides whether to send it and does it
-   themselves (for example, attaching it to https://github.com/ez2app/ez2-aib/issues/new/choose).
+4. Never send it, upload it, or attach it anywhere yourself. Whether and how to send it is the user's own decision.
 5. Never LINE-push. Never paste API keys, vault notes, or full transcripts.
