@@ -297,9 +297,23 @@ class Translator:
         # locale whose canonical file is missing/corrupt must fail instead of
         # being misclassified as an unknown locale and silently hidden.
         self._p = load_dict(self.locale, i18n_dir, _keyed=True)
-        self._f = self._p if self.locale == FALLBACK_LOCALE else load_dict(FALLBACK_LOCALE, i18n_dir, _keyed=True)
+        self._f_data = self._p if self.locale == FALLBACK_LOCALE else None
         self._primary = _KeyedView(self._p)
-        self._fallback = _KeyedView(self._f)
+        self._fallback_view = None
+
+    # 10-25 @044e0:en 備援改成「主語系缺這個鍵」才載。原本每個 Translator 都先載兩份(各約 10 毫秒),
+    #   而 zh-TW 字典鍵是齊的,短命的 CLI / 狀態列(每秒數次)白載一份。主語系那份照舊一建就驗,壞了照樣當場 raise。
+    @property
+    def _f(self):
+        if self._f_data is None:
+            self._f_data = load_dict(FALLBACK_LOCALE, self._i18n_dir, _keyed=True)
+        return self._f_data
+
+    @property
+    def _fallback(self):
+        if self._fallback_view is None:
+            self._fallback_view = _KeyedView(self._f)
+        return self._fallback_view
 
     def parity_report(self, locales=None):
         """runtime 四語 parity 自檢(codex 審 2026-08-10 中級)。

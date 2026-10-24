@@ -63,6 +63,25 @@ def state_root(environ=None):
     return os.path.expanduser(STATE_ROOT_DEFAULT), "default:" + STATE_ROOT_DEFAULT
 
 
+def instance_of_hub(hub):
+    """從 --hub 導出艙號:aihub-13 → "13";aihub(主艙)→ None。
+
+    ★ 二修根因(dev4⚓ 08-18 阻擋級,艦長複驗屬實並收回自己的終審綠):
+      一修讓路徑跟 **env** 走,但掃描目標跟 **--hub** 走——**兩個真相源**。
+      後果:(a) 乾淨 env 照文件跑 `scan --hub aihub-13`,路徑回共用檔,P1
+      原封不動;(b) 反向 `EZ2_AIB_INSTANCE=9` 掃 aihub-13,會把 13 的樣本
+      寫進 9 的檔——比原本更糟(污染別艙)。
+      修法:**狀態路徑由掃描目標導出**,env 只當 fallback。同一個問題只能有
+      一個真相源,而那個源必須是「這次實際在掃誰」。"""
+    if not hub:
+        return None
+    name = str(hub).strip()
+    if name.startswith("aihub-"):
+        tail = name[len("aihub-"):]
+        return tail if tail and all(c.isalnum() or c == "-" for c in tail) else None
+    return None
+
+
 def seats_dir_with_source(home_env=("EZ2_AIB_INSTANCE_HOME",), hub=None,
                           environ=None):
     """(seats 目錄, 來源)。純函式,不碰檔案系統。

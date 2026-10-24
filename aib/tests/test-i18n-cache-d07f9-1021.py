@@ -6,7 +6,7 @@
 C1 同一份字典連叫 t() 50 次只解析一次(Translator 自己載的才快取)
 C2 字典改了(原地改同長度的值 / 換一份新檔)⇒ 下一次 t() 就是新值
 C3 快取暖過之後字典換成 symlink ⇒ 照樣拒絕(lstat 檢查每次做)
-C4 i18nload 追蹤每建一次 Translator 照樣記(測試沿用要靠它)
+C4 i18nload 追蹤每建一次 Translator 照樣記(測試沿用要靠它);10-25 起 en 備援缺鍵才載 ⇒ 有鍵只記主語系、缺鍵才多記 en
 C5 給呼叫端整份的 load_dict(非 _keyed)每次新的一份;改它不影響 t()
 刀(複本):K1 快取鍵拿掉 mtime / 大小 ⇒ C2 紅;K2 拿掉 lstat 一般檔檢查 ⇒ C3 紅
 """
@@ -99,7 +99,12 @@ class Cache(Base):
         for _ in range(3):
             self.t("x.hello", who="A")
         loads = [o for o in seen if o.get("ch") == "i18nload"]
-        self.assertEqual(len(loads), 6, "每建一次 Translator 兩份字典都記")
+        self.assertEqual(len(loads), 3, "每建一次 Translator 主語系都記;鍵在主語系 ⇒ 不開 en")
+        self.assertTrue(all(o["path"].endswith("zh-TW.json") for o in loads), loads)
+        seen.clear()
+        I.Translator(locale="zh-TW", i18n_dir=str(self.dir)).t("x.only_en_probe")
+        paths = [o["path"] for o in seen if o.get("ch") == "i18nload"]
+        self.assertEqual([os.path.basename(x) for x in paths], ["zh-TW.json", "en.json"], "缺鍵才開 en,而且照樣記")
 
     def test_c5_whole_dict_fresh(self):
         self.t("x.hello", who="A")
