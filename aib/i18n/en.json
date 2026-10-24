@@ -5287,5 +5287,9 @@
   "aib.chat.invite_clash": "Two people published this invite code; not safe, not added. Ask them to run aib chat invite again",
   "aib.chat.invite_wrong_signer": "The invite code's signature does not match the address owner; not added",
   "aib.chat.invite_lookup_failed": "Could not look up the address in the invite (their roster is not published or relays are unreachable); try again later",
-  "aib.chat.invite_no_venv": "Online chat components are not installed, cannot look up invite codes (aib chat on installs them)"
+  "aib.chat.invite_no_venv": "Online chat components are not installed, cannot look up invite codes (aib chat on installs them)",
+  "aib.plaunch.acb_off": "the ACB carrier is off; not running acb",
+  "aib.bottom_tabs.human_head": "Messages with people (recent):",
+  "aib.bottom_tabs.unread": "new",
+  "aib.chat.connect_undo_failed": "Not connected: the request was not sent ({why}) and undoing the friend failed to save ({err}); the friend is still on your list. Run aib chat friend remove {owner} first, then try again"
 }

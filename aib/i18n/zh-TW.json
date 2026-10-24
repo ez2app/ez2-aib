@@ -5287,5 +5287,9 @@
   "aib.chat.invite_clash": "這組邀請碼有兩個人發，不安全，沒加：請對方重新打 aib chat invite",
   "aib.chat.invite_wrong_signer": "邀請碼的簽章跟位址的主人對不上，沒加",
   "aib.chat.invite_lookup_failed": "查不到邀請碼裡的位址(對方名冊沒發或連不上中繼站),稍後再試",
-  "aib.chat.invite_no_venv": "線上對話的元件沒裝好，查不了邀請碼(aib chat on 會補裝)"
+  "aib.chat.invite_no_venv": "線上對話的元件沒裝好，查不了邀請碼(aib chat on 會補裝)",
+  "aib.plaunch.acb_off": "ACB 載體已關閉,不執行 acb",
+  "aib.bottom_tabs.human_head": "真人往來(最近):",
+  "aib.bottom_tabs.unread": "未讀",
+  "aib.chat.connect_undo_failed": "沒連上：申請沒送出去({why}),撤回好友時存檔失敗({err});好友還留在名冊上。請先 aib chat friend remove {owner},再打一次"
 }
