@@ -1528,10 +1528,10 @@ def _prev_step_note(code: str, step_label: str, since: float, entries=None) -> s
     return mine[-1]["uid"] if mine else ""
 
 
-def _brain_write(seat: dict, step_label: str, body: str, seat_arg: str) -> dict:
+def _brain_write(seat: dict, step_label: str, body: str, seat_arg: str, home=None) -> dict:
     try:
         import aib_memory
-        prev = _prev_step_note(seat["code"], step_label, current_round_start(seat["code"]))
+        prev = _prev_step_note(seat["code"], step_label, current_round_start(seat["code"], home))
         rec = aib_memory.write("handoff", T("aib.handoff.brain_title", code=seat["code"], label=step_label), body,
                                tags=["aib/handoff"] + ([_step_tag(step_label)] if _step_tag(step_label) else []),
                                seat=seat_arg, supersedes=prev)
@@ -1564,6 +1564,8 @@ def round_checks(code: str) -> dict:
         return {"tidy": why, "summary": why, "block": ""}
     t = (tidy.get("status") or "?") if tidy else "沒做"
     sm = "有(%s)" % (summ.get("file") or "?") if summ else "沒做"
+    if summ and not (summ.get("brain") or {}).get("ok"):          # 審查 B-S6:總結沒寫進第二大腦照實寫
+        sm += " " + T("aib.handoff.verify.summary_no_brain")
     lines = [T("aib.handoff.round.tidy", status=t), T("aib.handoff.round.summary", status=sm)]
     if not tidy:
         lines.append(T("aib.handoff.round.tidy_next"))
@@ -1691,7 +1693,7 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
     except Exception:  # noqa: BLE001
         keep = secs[k]
     body = "## %s\n\n%s" % (T("aib.handoff.section.%s" % k), keep)
-    out = {"step": label, "brain": _brain_write(seat, label, body, seat_arg),
+    out = {"step": label, "brain": _brain_write(seat, label, body, seat_arg, home),
            "seat_memory": _seat_memory_append(code, label, body, home)}
     steps = {k: v for k, v in _steps_doc(code, home).items() if k in done}
     steps[str(need)] = {"ts": now, "nonce": stamp["nonce"], "brain_ok": out["brain"]["ok"],

@@ -8,7 +8,7 @@
   aib summary template [--out <檔>]                            印一份過得了格式檢查的最小輸入(照著填,不用撞 lint 猜欄位)
 
 總結一定要先整理:本輪(交接一輪的起點之後)沒有整理收據 ⇒ rc 2,說先跑 aib memory tidy。
-(交接不一樣:整理失敗或沒整理不擋交接,只在交接檔與收據記下來。)
+(交接三步不被擋:整理 / 總結沒做只在交接檔與收據記下來;但 aib handoff verify 第 2 / 6 項會紅,一定要補。)
 渲染與落檔走 tools/report/aib-reply.sh(過 report-lint、存 pending/REPORT-FULL…、tmux 播流光);那支不過 ⇒ 不寫收據。
 總結也寫回第二大腦(10-24 維護者:「總結與交接都不能跳過」「一定要寫回對應的人格與第二大腦」):
   一則 note(標 aib/summary,綁本席人格與專案),取代本席上一則總結;寫不進 ⇒ 收據記 brain.ok=false、rc 2,verify 第 6 項紅。
@@ -122,10 +122,10 @@ def brain_body(report):
 
 
 def previous_summary(ctx):
-    """本席上一則總結(同一個專案、標 aib/summary)⇒ 這次取代它。"""
+    """本席上一則總結(同一個專案、標 aib/summary)⇒ 這次取代它。比席碼不比 seat_uid(/clear 之後換新 uuid;審查 B-S5)。"""
     import aib_memory
     mine = [e for e in aib_memory.entries() if "aib/summary" in (e.get("tags") or [])
-            and e.get("seat_uid") == ctx.get("seat_uid") and (e.get("project_uid") or "") == (ctx.get("project_uid") or "")]
+            and e.get("seat") == ctx.get("code") and (e.get("project_uid") or "") == (ctx.get("project_uid") or "")]
     mine.sort(key=lambda e: e.get("created_ms") or 0)
     return mine[-1]["uid"] if mine else ""
 

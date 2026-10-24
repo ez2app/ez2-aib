@@ -4,7 +4,7 @@
 @ee4f8 實測 5 個缺口,本檔測 ①–④;verify 的紅綠在 test-handoff-check-abb89-1015)。
 
 全部用暫存 EZ2_AIB_HOME / EZ2_AIB_STATE_ROOT,不碰真的 ~/.ez2-aib、不寫真的第二大腦(寫入一律換假的)。
-W1 退路篩:真人打字(含帶圖片的「[Image #3] …」)留下;系統提醒 / dm 標頭 / Stop hook / 工具結果 / isMeta /
+W1 退路篩(#312 審查 A1 補:名字帶空格的新式抬頭、舊式抬頭;A5 補:bot 席一律不收):真人打字(含帶圖片的「[Image #3] …」)留下;系統提醒 / dm 標頭 / Stop hook / 工具結果 / isMeta /
    自我提醒排程 / 接續摘要 / 中斷提示丟掉
 W2 缺 human_filter ⇒ human_words 從這一席的對話檔讀出真人原話(不再回空)
 W3 交接筆記:同一輪本席同一步的上一則 ⇒ 取代;別席 / 別步 / 上一輪 / 沒有這一輪起點 ⇒ 不取代;步驟標籤只取數字
@@ -30,9 +30,14 @@ import aib_handoff  # noqa: E402
 import aib_summary  # noqa: E402
 
 HUMAN = ["為什麼這個角色的 icon 不正確?", "[Image #3] 地球要很大，鳥看他"]
-MACHINE_TEXT = ["<system-reminder>x</system-reminder>", "IP:100.1.2.3/6ddf/某席@abcde >> IP:100.1.2.3/6ddf/我@bcdef 10-24 17:04",
+MACHINE_TEXT = ["<system-reminder>x</system-reminder>",
+                "IP:100.1.2.3/6ddf/某席@abcde >> IP:100.1.2.3/6ddf/我@bcdef 10-24 17:04(台北時間) 長訊已落檔",
                 "Stop hook feedback:\n[x]: 狀態沒更新", "【自我提醒 · 授權】照清單推進一步", "[Request interrupted by user]",
-                "This session is being continued from a previous conversation", "Another Claude session sent a message:"]
+                "This session is being continued from a previous conversation", "Another Claude session sent a message:",
+                # #312 審查 A1:寄件人名字帶空格的新式抬頭、舊式抬頭 —— 只認 dm_header.parse
+                "IP:100.64.0.1/3c73/Bot a seat@abc12 >> IP:100.64.0.1/3c73/未綁@d6a8f 09-26 18:41(台北時間) 你好",
+                "[@abc12(某人格) > @d6a8f / 台北 10-24 12:00] 舊式抬頭的話"]
+NO_TRANSCRIPT = memory_tidy.HUMAN_WORDS_NO_TRANSCRIPT
 
 
 def _row(text, **extra):
@@ -65,7 +70,8 @@ def entry(uid, step, seat="abcde", ms=2_000_000, kind="handoff"):
 
 def check_w3(t, fn):
     es = [entry("old1", 1, ms=500_000), entry("a1", 1), entry("a2", 2), entry("b1", 1, seat="zzzzz"),
-          entry("a1b", 1, ms=3_000_000), entry("nostep", None, ms=4_000_000)]
+          entry("a1b", 1, ms=3_000_000), entry("nostep", None, ms=4_000_000),
+          entry("other_latest", 1, seat="zzzzz", ms=3_500_000)]           # 別席同輪同步、比較新 ⇒ 不能取它(審查 A3)
     t.assertEqual(fn("abcde", "1", 1000.0, entries=es), "a1b")       # 這一輪同一步最新那則
     t.assertEqual(fn("abcde", "第 2 步", 1000.0, entries=es), "a2")   # 標籤只取數字
     t.assertEqual(fn("abcde", "3", 1000.0, entries=es), "")
@@ -78,11 +84,12 @@ CTX = {"code": "abcde", "seat_uid": "u-me", "project_uid": "proj:0123456789abcde
 
 
 def check_w4(t, mod):
-    es = [{"uid": "s1", "tags": ["aib/summary"], "seat_uid": "u-me", "project_uid": CTX["project_uid"], "created_ms": 1},
-          {"uid": "s2", "tags": ["aib/summary"], "seat_uid": "u-me", "project_uid": CTX["project_uid"], "created_ms": 5},
-          {"uid": "x1", "tags": ["aib/summary"], "seat_uid": "u-other", "project_uid": CTX["project_uid"], "created_ms": 9},
-          {"uid": "x2", "tags": ["aib/summary"], "seat_uid": "u-me", "project_uid": "proj:ffffffffffffffff", "created_ms": 9},
-          {"uid": "x3", "tags": ["aib/tidy"], "seat_uid": "u-me", "project_uid": CTX["project_uid"], "created_ms": 9}]
+    es = [{"uid": "s1", "tags": ["aib/summary"], "seat": "abcde", "project_uid": CTX["project_uid"], "created_ms": 1},
+          {"uid": "s2", "tags": ["aib/summary"], "seat": "abcde", "seat_uid": "u-old", "project_uid": CTX["project_uid"],
+           "created_ms": 5},                                      # /clear 前那輪(seat_uid 不同)也要取代(審查 B-S5)
+          {"uid": "x1", "tags": ["aib/summary"], "seat": "zzzzz", "project_uid": CTX["project_uid"], "created_ms": 9},
+          {"uid": "x2", "tags": ["aib/summary"], "seat": "abcde", "project_uid": "proj:ffffffffffffffff", "created_ms": 9},
+          {"uid": "x3", "tags": ["aib/tidy"], "seat": "abcde", "project_uid": CTX["project_uid"], "created_ms": 9}]
     calls = []
 
     def fake(kind, title, body, **kw):
@@ -119,6 +126,10 @@ class Behaviour(Base):
     def test_w1_fallback_filter(self):
         check_w1(self, memory_tidy._FallbackFilter)
 
+    def test_w1b_bot_seat_never_human(self):
+        ok, meta = memory_tidy._FallbackFilter.is_human({"human_bound": False}, {"text": HUMAN[0], "raw_refs": {}})
+        self.assertEqual((ok, meta.get("why")), (False, "bot_seat"))
+
     def test_w2_human_words_without_human_filter(self):
         path = Path(self.tmp) / "seat.jsonl"
         path.write_text("\n".join(transcript_lines()) + "\n", encoding="utf-8")
@@ -128,6 +139,16 @@ class Behaviour(Base):
             self.assertEqual(memory_tidy.human_words_status(), memory_tidy.HUMAN_WORDS_FALLBACK)
             got = [w for _ts, w in memory_tidy.human_words({"code": "abcde", "seat_uid": "u"}, "")]
         self.assertEqual(got, HUMAN)
+        self.assertEqual(memory_tidy.words_source("abcde"), memory_tidy.HUMAN_WORDS_FALLBACK)
+
+    def test_w2b_no_transcript_is_not_silence(self):
+        """找不到對話檔 ≠ 真人沒講話(#312 審查 B-M1):來源標 transcript_missing,human_words_usable 不放行。"""
+        with mock.patch.dict(sys.modules, {"human_filter": None}), \
+                mock.patch.object(aib_handoff, "rounds", return_value=[]), \
+                mock.patch("seat_fork.find_transcript", return_value=None):
+            self.assertEqual(memory_tidy.human_words({"code": "nnnnn", "seat_uid": "u"}, ""), [])
+        self.assertEqual(memory_tidy.words_source("nnnnn"), NO_TRANSCRIPT)
+        self.assertFalse(memory_tidy.human_words_usable(NO_TRANSCRIPT))
 
     def test_w3_handoff_supersedes_same_step_this_round(self):
         check_w3(self, aib_handoff._prev_step_note)

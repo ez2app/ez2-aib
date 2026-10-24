@@ -90,11 +90,22 @@ def apply(text, seat="", now=None, writer=None):
         note_uid = "failed: %s" % str(exc)[:120]
     out = {"seat": ctx["code"], "at": time.time(), "draft_at": int(m.group(2)), "lines": len(rows),
            "by_kind": {k: sum(1 for r in rows if r["kind"] == k) for k in ("做了", "待辦", "沒做")},
-           "note": note_uid, "words_source": memory_tidy.human_words_status()}
+           "note": note_uid, "words_source": _source_now(ctx, now)}
     p = receipt_path(ctx["code"])
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     return out
+
+
+def _source_now(ctx, now=None):
+    """回顧收據的原話來源:重讀一次(找不到對話檔 ⇒ transcript_missing,不當成 0 句;#312 審查 B-M1)。"""
+    import memory_tidy
+    try:
+        since = datetime.datetime.fromtimestamp((now or time.time()) - HOURS * 3600).astimezone().isoformat(timespec="seconds")
+        memory_tidy.human_words(ctx, since, span_rounds=True)
+        return memory_tidy.words_source(ctx["code"])
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def done_this_round(code, start):
@@ -125,6 +136,9 @@ def main(argv=None):
                 print(text)
             return 0
         rec = apply(Path(o.file).read_text(encoding="utf-8"), o.seat)
+        if not rec.get("note") or str(rec.get("note")).startswith("failed"):     # 審查 B-S4:跟總結一致
+            print("遺漏回顧的第二大腦筆記寫不進:%s;修好再跑一次" % (rec.get("note") or "沒有 uid"), file=sys.stderr)
+            return 2
         print("遺漏回顧已寫:%d 句(%s);筆記 %s。接著照「學到的」跑 aib memory tidy collect → 填 → aib memory tidy apply --add-only(只補不改)。"
               % (rec["lines"], rec["by_kind"], rec["note"]))
         return 0

@@ -101,9 +101,10 @@ def run_tidy(t, mod):
 def check_h3(t, mod):
     t.missing()
     rec = run_tidy(t, mod)
-    t.assertEqual(rec.get("human_words"), "fallback(缺 human_filter,改用對話檔退路篩)")
+    # 這裡沒有對話檔 ⇒ 照實標 transcript_missing(不是「真人沒講話」;#312 審查 B-M1)
+    t.assertEqual(rec.get("human_words"), "transcript_missing(找不到這一席的對話檔)")
     on_disk = json.loads((Path(t.tmp) / "state" / "tidy" / "abcde.json").read_text(encoding="utf-8"))
-    t.assertEqual(on_disk.get("human_words"), "fallback(缺 human_filter,改用對話檔退路篩)")
+    t.assertEqual(on_disk.get("human_words"), "transcript_missing(找不到這一席的對話檔)")
     t.assertEqual(on_disk.get("human_words_count"), 0)      # verify 第 2 項靠這個判「真人沒講話」
 
 

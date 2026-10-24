@@ -226,15 +226,18 @@ def verify(code, home=None, review=True):
     elif not items:
         add("tidy", False, T("aib.handoff.verify.none"))
     per = files.get("persona") or {}
+    try:
+        import memory_tidy
+        rows = [json.loads(x) for x in (memory_tidy.tidy_dir() / "writes.jsonl").read_text(
+            encoding="utf-8").splitlines() if x.strip()]
+    except (OSError, ValueError, ImportError):
+        rows = []
+    wrote = any(r.get("seat") == code and _ts(r.get("at")) >= start for r in rows)    # 本輪本席真的寫過人格卡
     if per.get("status") == "ok":
-        try:
-            import memory_tidy
-            rows = [json.loads(x) for x in (memory_tidy.tidy_dir() / "writes.jsonl").read_text(
-                encoding="utf-8").splitlines() if x.strip()]
-        except (OSError, ValueError, ImportError):
-            rows = []
-        hit = any(r.get("seat") == code and _ts(r.get("at")) >= start for r in rows)
-        add("persona", hit, "writes.jsonl" if hit else T("aib.handoff.verify.no_write"))
+        add("persona", wrote, "writes.jsonl" if wrote else T("aib.handoff.verify.no_write"))
+    elif wrote and per.get("status") == "skipped":
+        # 本輪稍早已寫進人格卡,之後回顧的 --add-only 沒東西可補(或那幾維已滿)蓋了收據 ⇒ 照算寫過(#312 審查 A2)
+        add("persona", True, "writes.jsonl(%s)" % (per.get("why") or "skipped"))
     else:
         # 10-24 維護者:「必要不能跳過，一定要寫回對應的人格」⇒ skipped 只在「讀得到原話、本輪真人一句都沒講」時算過;
         #   有原話卻 skipped、或讀不到原話(舊收據 unavailable)一律紅。waiting(第一艦長卡大變動等真人按)照舊算有理由。

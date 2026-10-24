@@ -207,18 +207,30 @@ class Verify(unittest.TestCase):
         self.assertFalse(items["2"], "收據說寫了但寫入紀錄沒有 ⇒ 不算")
 
     def test_skipped_needs_reason(self):
+        (self.td / "tidy" / "writes.jsonl").write_text("", encoding="utf-8")       # 本輪沒寫過人格卡
         self.tidy["files"]["persona"] = {"status": "skipped", "why": ""}
         items = dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))
         self.assertFalse(items["2"])
 
     def test_persona_skipped_only_when_human_silent(self):
         """10-24 維護者「必要不能跳過」:有原話卻 skipped / 讀不到原話 ⇒ 紅;讀得到且真人一句都沒講 ⇒ 過。"""
+        writes = self.td / "tidy" / "writes.jsonl"
+        keep = writes.read_text(encoding="utf-8")
+        writes.write_text("", encoding="utf-8")                                    # 本輪沒寫過人格卡
         self.tidy["files"]["persona"] = {"status": "skipped", "why": "這輪沒觀察到"}
         for hw, n, want in ((self.mt.HUMAN_WORDS_FALLBACK, 5, False), ("ok", 2, False),
                             (self.mt.HUMAN_WORDS_UNAVAILABLE, 0, False), ("", 0, False),
+                            (self.mt.HUMAN_WORDS_NO_TRANSCRIPT, 0, False),        # 找不到對話檔 ≠ 沒講話(B-M1)
                             (self.mt.HUMAN_WORDS_FALLBACK, 0, True), ("ok", 0, True)):
             self.tidy["human_words"], self.tidy["human_words_count"] = hw, n
             self.assertEqual(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"], want, (hw, n))
+        writes.write_text(keep, encoding="utf-8")
+        # #312 審查 A2:本輪稍早已寫進人格卡,回顧的 --add-only 沒東西補 ⇒ 收據 skipped、真人又講了話,仍算寫過
+        self.tidy["files"]["persona"] = {"status": "skipped", "why": "只補不改:這幾維都滿 3 條,沒有新增"}
+        self.tidy["human_words"], self.tidy["human_words_count"] = self.mt.HUMAN_WORDS_FALLBACK, 4
+        self.assertTrue(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        (self.td / "tidy" / "writes.jsonl").write_text("", encoding="utf-8")       # 本輪沒寫過 ⇒ 紅
+        self.assertFalse(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
         self.tidy["files"]["persona"] = {"status": "waiting", "why": "第一艦長卡大變動"}
         self.tidy["human_words_count"] = 9
         self.assertTrue(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
@@ -259,6 +271,8 @@ class Verify(unittest.TestCase):
         self.review.update(note="failed: no vault")
         self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["9"])
         self.review.update(note="3abc03", lines=0, words_source=None)
+        self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["9"])
+        self.review.update(words_source=self.mt.HUMAN_WORDS_NO_TRANSCRIPT)       # B-M1
         self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["9"])
         self.review.update(words_source=self.mt.HUMAN_WORDS_FALLBACK)
         self.assertTrue(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["9"])
