@@ -152,6 +152,41 @@ def cmd_sign_owner(stdin):
     return (0 if evs and all(out.values()) else 2), out
 
 
+INVITE_D = "aib-invite:"
+
+
+def _invite_event(keys, h, body, exp):
+    tags = [N.Tag.identifier(INVITE_D + h), N.Tag.parse(["expiration", str(int(exp))])]
+    return N.EventBuilder(N.Kind(CR.KIND_ROSTER), json.dumps(body, ensure_ascii=False, sort_keys=True)).tags(tags).finalize(keys)
+
+
+def cmd_invite_publish(stdin):
+    """邀請碼(10-24 晚):用名冊那把金鑰簽 d=aib-invite:<雜湊>,內容 = 我的位址 + 到期;中繼站照 expiration 標籤自己丟。"""
+    req = json.loads(stdin.readline() or "{}")
+    if not GF.INVITE_HASH_RE.match(str(req.get("hash") or "")) or not GF.parse_address(str(req.get("addr") or "")):
+        return 2, {"ok": False, "why": "bad_request"}
+    keys, _d = _roster_signer()
+    ev = _invite_event(keys, req["hash"], {"v": 1, "addr": req["addr"], "exp": int(req["exp"])}, req["exp"])
+    keys = None
+    ok = asyncio.run(_send_all(CR.relays(), [ev])).get(ev.id().to_hex()) or []
+    return (0 if ok else 2), {"ok": bool(ok), "relays_ok": ok}
+
+
+async def invite_fetch(h, relays):
+    """⇒ [{author, at, body}](簽章已驗);挑哪一筆、驗作者是不是位址的主人由 chat_bridge 做。"""
+    if not GF.INVITE_HASH_RE.match(h or ""):
+        return 2, {"ok": False, "why": "bad_hash"}
+    out = []
+    for e in await _fetch_all(relays, N.Filter().kind(N.Kind(CR.KIND_ROSTER)).identifier(INVITE_D + h)):
+        try:
+            body = json.loads(e.content())
+        except ValueError:
+            continue
+        if isinstance(body, dict):
+            out.append({"author": e.author().to_bech32(), "at": e.created_at().as_secs(), "body": body})
+    return 0, {"ok": True, "hits": out}
+
+
 def cmd_pair_send(stdin):
     """新機器(join):用機器金鑰簽配對請求(d=aib-pair:<指紋>,p = 主人)發到主人的收信站。nonce 只帶雜湊。"""
     import chat_owner as CO
@@ -1359,6 +1394,7 @@ class Receiver(object):
             except CR.RosterError:
                 return
             audit(self.root, "in", msgid, from_npub, "request:invite")
+            await self._spend_invite(GF.invite_hash(m.group(1)))
             return await self.send_receipt(msgid, "delivered")
         row = {"owner": parsed["owner"], "display_name": rec.get("display_name"), "country": rec.get("country"),
                "from_addr": rec.get("from_addr"), "note": rec["content"], "msgid": msgid}
@@ -1369,6 +1405,16 @@ class Receiver(object):
             return
         audit(self.root, "in", msgid, from_npub, "request")
         return await self.send_receipt(msgid, "held")
+
+    async def _spend_invite(self, h):
+        """用掉的碼:中繼站上同一個 d 換成 revoked(可取代事件,只留新的);送不出去也沒關係,本機帳已扣掉次數。"""
+        try:
+            keys, _d = _roster_signer()
+            ev = _invite_event(keys, h, {"v": 1, "revoked": True}, int(time.time()) + GF.INVITE_TTL_S)
+            keys = None
+            await _send_all(CR.relays(), [ev])
+        except Exception:   # noqa: BLE001
+            pass
 
     async def on_dm(self, rumor, tags, from_npub, entry):
         msgid = tags.get("aib-msgid") or ""
@@ -1835,7 +1881,7 @@ async def serve(root):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="chat_nostr")
     p.add_argument("cmd", choices=["publish", "publish-empty", "fetch", "serve", "probe", "roster", "sign-owner", "pair-send",
-                                   "pair-fetch", "devices-fetch"])
+                                   "pair-fetch", "devices-fetch", "invite-publish", "invite-fetch"])
     p.add_argument("addr", nargs="?")
     p.add_argument("--root")
     a = p.parse_args(argv)
@@ -1859,6 +1905,10 @@ def main(argv=None):
             rc, rec = asyncio.run(pair_fetch(a.addr, CR.relays()))
         elif a.cmd == "devices-fetch":
             rc, rec = asyncio.run(devices_fetch(a.addr, CR.relays()))
+        elif a.cmd == "invite-publish":
+            rc, rec = cmd_invite_publish(sys.stdin)
+        elif a.cmd == "invite-fetch":
+            rc, rec = asyncio.run(invite_fetch(a.addr, CR.relays()))
         else:
             rc, rec = cmd_fetch(a.addr, CR.relays(), root=root)
     except Exception as err:   # noqa: BLE001  例外只記種類:訊息裡可能帶路徑或金鑰相關字

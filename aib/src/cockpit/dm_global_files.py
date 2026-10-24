@@ -744,9 +744,30 @@ def add_request(root, rec, every=86400, now=None):
 
 
 # invites.json(10-24 清單第 11 條):邀請碼。對方 aib chat join <我的位址> <碼> ⇒ 好友申請內文帶 invite:<碼>,
-# 我的轉接程式對得上(沒過期、還有次數)就自動同意,雙方不用再按。碼只存在本機;預設 7 天、一次。
+# 我的轉接程式對得上(沒過期、還有次數)就自動同意,雙方不用再按。碼只存在本機;24 小時、一次。
+# 10-24 晚 Andy「位址太長、照 10 碼做」:碼另外用名冊金鑰簽一筆 d=aib-invite:<雜湊> 放中繼站 ⇒ 對方只打碼就查得到位址。
+#   中繼站只看得到雜湊(PBKDF2 20 萬次):每猜一次要先算一輪雜湊再問中繼站;3 億組同時有效時約 370 萬次猜中一組。
 INVITE_RE = re.compile(r"^[A-Z2-7]{10}$")
-INVITE_TTL_S = 7 * 86400
+INVITE_TTL_S = 86400
+INVITE_HASH_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def invite_norm(text):
+    """會員打的碼 ⇒ 10 碼大寫;容許小寫、中間一個 - 或空白、0 / 1 / 8 打成 O / I / B。不像碼 ⇒ None。"""
+    t = (text or "").strip().upper()
+    if t.count("-") + t.count(" ") > 1:
+        return None
+    t = t.replace("-", "").replace(" ", "").translate(str.maketrans({"0": "O", "1": "I", "8": "B"}))
+    return t if INVITE_RE.match(t) else None
+
+
+def invite_fmt(code):
+    return code[:5] + "-" + code[5:]
+
+
+def invite_hash(code):
+    import hashlib
+    return hashlib.pbkdf2_hmac("sha256", code.encode("ascii"), b"aib-invite-v1", 200000).hex()[:32]
 INVITE_NOTE_RE = re.compile(r"^invite:([A-Z2-7]{10})$")
 
 
