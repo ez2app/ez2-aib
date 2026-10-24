@@ -14,6 +14,7 @@ W6–W9(r2–r3):認不出抬頭 / 量不到 bot ⇒ 標讀不到;句數一律�
 刀:K1 退路篩永遠 True ⇒ W1 紅;K2 不看這一輪起點 ⇒ W3 紅;K3 總結不帶 supersedes ⇒ W4 紅
 """
 import json
+from datetime import datetime
 import os
 import shutil
 import sys
@@ -238,12 +239,14 @@ class Behaviour(Base):
     def test_w7_round_count_from_round_start(self):
         """收據的句數一律從這一輪起點算(#312 r2 B-H2、r3 A-1 / B-1 / B-2)。"""
         noon = 1_792_814_400.0                                   # 2026-10-24 12:00 +08
-        early = lambda s: 3 if s <= "2026-10-24T12:00:00+08:00" else 0     # 真人 12:00 後講了 3 句,13:00 後沒講
+        # 起點字串的時區看執行機(CI 是 UTC)⇒ 一律解析成時間再比,不比字面
+        upto = lambda s, t: not s or datetime.fromisoformat(s) <= datetime.fromisoformat(t)
+        early = lambda s: 3 if upto(s, "2026-10-24T12:00:00+08:00") else 0     # 真人 12:00 後講了 3 句,13:00 後沒講
         # 上一張收據在本輪中(13:00):證據與句數都從本輪起點算 = 3(#312 驗收:第一次漏寫人格,第二次還引得到這一輪的話)
         col = self._collect("2026-10-24T13:00:00+08:00", noon, early)
         self.assertEqual((len(col["human_words"]), col["human_words_round_count"]), (3, 3))
         # 上一張收據在上一輪(11:00、那時講 2 句):本輪其實 0 句 ⇒ 0,不把上一輪尾巴算進來
-        col = self._collect("2026-10-24T11:00:00+08:00", noon, lambda s: 2 if s <= "2026-10-24T11:30" else 0)
+        col = self._collect("2026-10-24T11:00:00+08:00", noon, lambda s: 2 if upto(s, "2026-10-24T11:30:00+08:00") else 0)
         self.assertEqual(col["human_words_round_count"], 0)
         # 量不到本輪起點 ⇒ None(verify 不當沉默)
         col = self._collect("2026-10-24T13:00:00+08:00", 0.0, early)

@@ -36,6 +36,19 @@ CHILD = textwrap.dedent("""
         time.sleep(0.005)
     time.time = lambda: 1792814400.123            # 兩支行程凍在同一毫秒 ⇒ 不鎖就配到同一個號
     import aib_memory as AM
+    # 讀完已用號碼後兩支行程互等(最多 3 秒)⇒ 不鎖必定讀到同一份索引;有鎖時對方卡在鎖外,等滿就走
+    bar, me = go.parent, sys.argv[3]
+    other = "b" if me == "a" else "a"
+    used0, seen = AM._used_uids, [0]
+    def used():
+        out, k = used0(), seen[0]
+        seen[0] += 1
+        (bar / ("bar-%s-%d" % (me, k))).write_text("1")
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end and not (bar / ("bar-%s-%d" % (other, k))).exists():
+            time.sleep(0.005)
+        return out
+    AM._used_uids = used
     for i in range(3):
         AM.write("note", "同時寫 %s-%d" % (sys.argv[3], i), "內文", route_key="core.handoff")
 """)
