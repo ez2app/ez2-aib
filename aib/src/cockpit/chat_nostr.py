@@ -1219,6 +1219,7 @@ PRESENCE_TICK_S = float(os.environ.get("AIB_CHAT_PRESENCE_TICK") or 60)     # �
 PRESENCE_EVERY_S = float(os.environ.get("AIB_CHAT_PRESENCE_EVERY") or 900)  # 沒變也每 15 分鐘送一次
 PRESENCE_GAP_S = float(os.environ.get("AIB_CHAT_PRESENCE_GAP") or 120)      # 同一位對方最少間隔
 ASK_ANSWER_GAP_S = float(os.environ.get("AIB_CHAT_ASK_GAP") or 60)          # 回「在不在」:同一位最少間隔
+REPLY_WINDOW_S = float(os.environ.get("AIB_CHAT_REPLY_WINDOW") or 600)     # 回我剛寄的信:寄出後這段時間內當好友收
 ECHO_GAP_S = float(os.environ.get("AIB_CHAT_ECHO_GAP") or 10)              # 回音小幫手:同一位主人最少間隔
 ECHO_PER_MIN = int(os.environ.get("AIB_CHAT_ECHO_PER_MIN") or 120)          # 回音小幫手:整台每分鐘最多回幾封
 ECHO_TEXT = {"zh-TW": "收到了,線路是通的。", "en": "Got it, the line works.",
@@ -1880,6 +1881,9 @@ class Receiver(object):
             return await self.on_echo(rec, peer, msgid, from_npub, entry, is_request, tags.get("aib-lang"))
         if is_request:
             return await self.on_request(rec, parsed, peer, msgid, from_npub)
+        if rec["class"] == "stranger" and rec["verified"] and self._replies_my_sent(tags.get("aib-reply-to"), from_npub):
+            # 10-24 真站實測:對方秒回時,回信可能比我這邊「寄出成功 ⇒ 記成好友」還早到 ⇒ 回我剛寄的那封就當好友收
+            rec["class"] = "friend"
         if rec["class"] == "stranger":
             # 維護者 10-16 12:1x:加入好友之後才收、才有已讀;不然拒收(不進佇列、不進待審、AI 看不到)
             why = "not_friend" if rec["verified"] else "unverified"
@@ -1917,6 +1921,17 @@ class Receiver(object):
             sys.stderr.write("inbox:%s\n" % err)
             audit(self.root, "in", msgid, from_npub, "refused")
             await self.send_receipt(msgid, "refused")
+
+    def _replies_my_sent(self, ref, from_npub):
+        """ref 是我 REPLY_WINDOW_S 內寄出的一封、而且當初寄給的就是簽這封的那一席 ⇒ True(寄出帳在寄之前就寫了)。"""
+        if not GF.MSGID_RE.match(ref or ""):
+            return False
+        try:
+            sent = json.loads((self.root / "sent" / (ref + ".json")).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(sent, dict) and sent.get("to") == from_npub and sent.get("op") in ("send", "request") \
+            and time.time() - int(sent.get("at") or 0) < REPLY_WINDOW_S
 
     async def on_echo(self, rec, peer, msgid, from_npub, entry, is_request, lang):
         """回音小幫手(10-24 Andy 選):名冊驗得到的寄件人 ⇒ 回條 + 回一句「收到了」;不存內容、不進 AI、不加好友。
