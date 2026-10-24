@@ -5197,5 +5197,6 @@
   "aib.chat.connect_already": "이미 친구입니다 {owner}: 접속 {share}, 공간 {space}",
   "aib.chat.list_sep": ", ",
   "aib.chat.connect_request_failed": "연결 안 됨: 신청이 전송되지 않았습니다({why}). 친구 추가·공유 변경 없음 — 고친 뒤 다시 실행하세요",
+  "aib.chat.connect_accept_failed": "연결 안 됨: 수락이 전송되지 않았습니다({why}). 친구 목록은 그대로입니다",
   "aib.chat.connect_pending": "친구 추가 {owner}: 접속 {share}, 공간 {space}; 신청을 전달 프로그램에 넘겼고 아직 확인 전입니다"
 }

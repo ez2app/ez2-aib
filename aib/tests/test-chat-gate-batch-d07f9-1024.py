@@ -28,8 +28,13 @@ C13 --open 配 --share ⇒ 門前擋(M4);轉接程式沒開 + --open / 新好友
 C14 --open 寫一半失敗 ⇒ applied 由前後等級差算(L2);寫一半後連讀都失敗 ⇒ unknown、仍是一個 JSON(L3)
 C15 已是好友、對方又有申請 ⇒ 視窗不寫「加好友」(L4)
 B4 改 --json 斷言代碼(M5);B9 AIB_TOUCHID=0 真機路徑不提醒(L6)
+#320 第 3 輪審(@abb89 定修法):
+C16 本人先設好的單人等級(比預設嚴的 off / none、或按過指紋的 status / room),connect 申請失敗撤好友後都還在
+C17 移除好友只清比預設寬的:設 off 的移除再加回仍 off;設 status 的清掉
+C18 撤好友時存檔丟 OSError ⇒ 仍是一個 JSON、request_failed、detail undo_failed
 刀(複本):K1 --space 不寫進對象 ⇒ B1 紅;K2 不叫提醒 ⇒ B5 紅;K3 connect 不過門 ⇒ C3 紅;K4 真機不提醒 ⇒ B7 紅;
-   K5 視窗用預設等級 ⇒ C5 紅;K6 移除好友不清等級 ⇒ C10 紅;K7 申請沒送出不撤好友 ⇒ C11 紅
+   K5 視窗用預設等級 ⇒ C5 紅;K6 移除好友不清等級 ⇒ C10 紅;K7 申請沒送出不撤好友 ⇒ C11 紅;
+   K8 撤好友也清等級 ⇒ C16 紅;K9 移除好友全清 ⇒ C17 紅
 """
 import importlib.util
 import io
@@ -87,7 +92,11 @@ class Batch(OG.Base):
             rc, _out = self.run_cb(*argv)
             self.assertEqual(rc, 2, argv)
             rc, out = self.run_cb(*(argv + ("--json",)))
-            self.assertEqual((rc, json.loads(out.strip())), (2, {"v": 1, "ok": False, "why": why}), argv)
+            try:
+                got = json.loads(out.strip())
+            except ValueError:
+                self.fail("--json 要回一個 JSON:%r" % out)
+            self.assertEqual((rc, got), (2, {"v": 1, "ok": False, "why": why}), argv)
         self.assertEqual(self.asked, [], "門之前就擋,不彈指紋")
 
     def test_b5_notify(self):
@@ -295,6 +304,36 @@ class Connect(OG.Base):
         got = json.loads(out.strip())                            # 連讀都失敗:仍是一個 JSON
         self.assertEqual((got["why"], got["share"]), ("share_failed", "unknown"))
 
+    def test_c16_failed_connect_keeps_own_levels(self):
+        for share, space in (("off", "none"), ("status", "room")):
+            x = OG.NK.npub(OG.NK.pubkey_hex("%064x" % (0xc160 + len(share))))
+            rc, out = self.run_cb("share", x, share, "--space", space)       # 本人按過指紋設的(對方還不是好友)
+            self.assertEqual(rc, 0, out)
+            rc, out = self.run_cb("connect", x, "--json")                    # 沒公開席 ⇒ 申請失敗、撤好友
+            self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "request_failed"))
+            self.assertEqual((CR.read_share(self.env)["per"].get(x), CR.read_space(self.env)["per"].get(x)), (share, space),
+                             "申請失敗撤好友時把本人設的等級清掉了")
+
+    def test_c17_remove_clears_only_wider(self):
+        CR.set_share("off", FRIEND, self.env)
+        CR.set_space("none", FRIEND, self.env)
+        CR.remove_friend(FRIEND, self.env)
+        CR.add_friend(FRIEND, None, self.env)
+        self.assertEqual((CR.share_level(FRIEND, self.env), CR.space_level(FRIEND, self.env)), ("off", "none"),
+                         "本人設嚴的,移除再加回不准變寬")
+        CR.set_share("status", FRIEND, self.env)
+        CR.set_space("room", FRIEND, self.env)
+        CR.remove_friend(FRIEND, self.env)
+        CR.add_friend(FRIEND, None, self.env)
+        self.assertEqual((CR.share_level(FRIEND, self.env), CR.space_level(FRIEND, self.env)), ("online", "island"))
+
+    def test_c18_undo_write_fails(self):
+        new = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xc180))
+        with mock.patch.object(CR, "remove_friend", side_effect=OSError("disk full")):
+            rc, out = self.run_cb("connect", new, "--json")
+        got = json.loads(out.strip())
+        self.assertEqual((rc, got["why"], got["detail"]), (2, "request_failed", "undo_failed"))
+
     def test_c15_known_with_request(self):
         OG.GF.add_request(self.root, {"owner": FRIEND, "msgid": OG.GF.new_msgid(), "display_name": "Pro", "note": ""},
                           every=0)
@@ -365,8 +404,23 @@ class Knife(unittest.TestCase):
         self.assertIn("AssertionError", r.stdout + r.stderr)
 
     def test_k7_failed_request_keeps_friend(self):
-        self._knife("                CR.remove_friend(owner, env)  # 申請沒送出去 ⇒ 這次新加的好友撤掉,重跑才會再送\n",
+        self._knife("                CR.remove_friend(owner, env, forget=False)\n",
                     "                pass\n", "Connect.test_c11_failed_request_retried")
+
+    def test_k8_undo_forgets(self):
+        self._knife("                CR.remove_friend(owner, env, forget=False)\n",
+                    "                CR.remove_friend(owner, env)\n", "Connect.test_c16_failed_connect_keeps_own_levels")
+
+    def test_k9_remove_clears_all(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_roster.py",
+                        '    if lv in SHARE_LEVELS and SHARE_LEVELS.index(lv) > SHARE_LEVELS.index(rec["default"]):\n',
+                        "    if lv is not None:\n", tests=(name, "test-chat-open-touchid-d07f9-1021.py")) as root:
+            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), "Connect.test_c17_remove_clears_only_wider"],
+                            cwd=str(root), max_procs=60, timeout=180)
+        self.assertIsNone(r.tripped)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
 
     def test_k5_window_uses_default(self):
         self._knife('        cur_sp = CR.space_level(owner, env) if known else ',

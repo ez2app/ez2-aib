@@ -1099,10 +1099,15 @@ def cmd_connect(a, env, out):
         if req["rc"] == 4:
             req["why"] = "request_pending"   # 已交轉接程式、還沒確認送到:不算失敗
         elif req["rc"]:
-            if not pending:
-                CR.remove_friend(owner, env)  # 申請沒送出去 ⇒ 這次新加的好友撤掉,重跑才會再送
-            return fail("request_failed", T("connect_request_failed", why=buf.getvalue().strip() or req["why"]),
-                        request=req)
+            why = buf.getvalue().strip() or req["why"]
+            if pending:                      # 同意沒送出:名單本來就沒動
+                return fail("request_failed", T("connect_accept_failed", why=why), request=req)
+            try:                             # 申請沒送出去 ⇒ 這次新加的好友撤掉(本人原本設的等級不動),重跑才會再送
+                CR.remove_friend(owner, env, forget=False)
+            except (OSError, CR.RosterError) as err:
+                return fail("request_failed", T("connect_request_failed", why=why) + " (" + str(err)[:80] + ")",
+                            request=req, detail="undo_failed")
+            return fail("request_failed", T("connect_request_failed", why=why), request=req)
         if not a.json and buf.getvalue():
             out.write(buf.getvalue())
     before = levels()

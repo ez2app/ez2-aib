@@ -5197,5 +5197,6 @@
   "aib.chat.connect_already": "已經是好友 {owner}:在線 {share}、空間 {space}",
   "aib.chat.list_sep": "、",
   "aib.chat.connect_request_failed": "沒連上：申請沒送出去({why});好友沒加、分享沒改，處理好再打一次",
+  "aib.chat.connect_accept_failed": "沒連上：同意沒送出去({why});好友名單沒動",
   "aib.chat.connect_pending": "已加好友 {owner}:在線 {share}、空間 {space};申請已交給轉接程式，還沒確認送到"
 }
