@@ -154,12 +154,49 @@ CABIN_RE = re.compile(r"^[0-9a-z]{1,4}$")
 MAP_VERSION = 1
 
 
+def _root(env):
+    """跟 aib_secrets.secrets_dir、live_seats 同一個根(10-24 第二台 Mac 踩到:只設 EZ2_AIB_STATE_ROOT 跑 chat prepare,
+    席位讀暫存根(空的)、金鑰卻寫真的家目錄 ⇒ 原本 4 席的替代金鑰全被封存)"""
+    root = env.get("EZ2_AIB_STATE_ROOT") or env.get("EZ2_AIB_HOME")
+    if root:
+        return Path(os.path.expanduser(root))
+    return Path(env.get("HOME") or os.path.expanduser("~")) / ".ez2-aib"
+
+
+class LegacyKeysElsewhere(RuntimeError):
+    """新根(EZ2_AIB_STATE_ROOT / EZ2_AIB_HOME)還沒有身分、HOME/.ez2-aib 卻有 ⇒ 不在新根產新主人 / 新席金鑰。
+    只防誤操作(升版後自設根的機器靜默換身分),不是防線。不讀舊根、不搬檔(wrap 鑰不同根,搬了解不開)。
+    刻意要新身分:明設 EZ2_AIB_SECRETS_DIR,或先在新根放一份空對照表。"""
+
+
+def _legacy_root(env):
+    return Path(env.get("HOME") or os.path.expanduser("~")) / ".ez2-aib"
+
+
+def _guard_legacy(env):
+    if env.get("EZ2_AIB_SECRETS_DIR") or env.get("AIB_NOSTR_MAP"):
+        return
+    kd = keys_dir(env)
+    if map_path(env).is_file() or (kd / "owner.key").is_file() or (kd / "owner.sealed").is_file():
+        return
+    old = _legacy_root(env)
+    try:
+        same = old.resolve() == _root(env).resolve()
+    except OSError:
+        same = False
+    if same:
+        return
+    if (old / "identity" / "nostr-map.json").is_file() or any(
+            (old / "secrets" / "nostr" / n).is_file() for n in ("owner.key", "owner.sealed")):
+        raise LegacyKeysElsewhere("legacy_keys_elsewhere")
+
+
 def secrets_dir(env=None):
     env = os.environ if env is None else env
     explicit = env.get("EZ2_AIB_SECRETS_DIR")
     if explicit:
-        return Path(explicit)
-    return Path(env.get("HOME") or os.path.expanduser("~")) / ".ez2-aib" / "secrets"
+        return Path(os.path.expanduser(explicit))
+    return _root(env) / "secrets"
 
 
 def keys_dir(env=None):
@@ -170,8 +207,8 @@ def map_path(env=None):
     env = os.environ if env is None else env
     explicit = env.get("AIB_NOSTR_MAP")
     if explicit:
-        return Path(explicit)
-    return Path(env.get("HOME") or os.path.expanduser("~")) / ".ez2-aib" / "identity" / "nostr-map.json"
+        return Path(os.path.expanduser(explicit))
+    return _root(env) / "identity" / "nostr-map.json"
 
 
 def _mkdir_private(d):
@@ -296,12 +333,14 @@ def ensure_owner(env=None, now=None):
     """主人金鑰:沒有才產。回 npub。
     第 37.7 節 K2:主人金鑰改成密語加密(owner.sealed)或這台是 join 進來的機器(owner.remote)⇒ 照用對照表上的主人,
     絕不重產(重產 = 整個身分換掉)。"""
+    env = os.environ if env is None else env
     rec = read_map(env)
     if rec.get("owner") and ((keys_dir(env) / "owner.key").is_file() or (keys_dir(env) / "owner.sealed").is_file()
                              or rec["owner"].get("remote")):
         return rec["owner"]["npub"]
     if (keys_dir(env) / "owner.key").is_file():
         raise RuntimeError("owner.key exists but is not in the map")   # 不猜:不重產、不覆蓋
+    _guard_legacy(env)
     rec["owner"] = {"npub": _write_key("owner", env), "created_at": int(time.time() if now is None else now)}
     _save_map(rec, env)
     return rec["owner"]["npub"]
@@ -316,6 +355,8 @@ def sync_seats(live, env=None, now=None):
       - 活席清單裡沒有、手上只有「第二把」的席 ⇒ 那把封存(搬 retired/、對照表標 retired),不刪。
         主金鑰不因為暫時沒有活席而封存(人格還在,下次綁上照用);人格封存另走 retire_persona()。
     """
+    env = os.environ if env is None else env
+    _guard_legacy(env)
     now = int(time.time() if now is None else now)
     rec = read_map(env)
     seats = rec["seats"]
@@ -394,10 +435,8 @@ def live_seats(home=None, env=None):
     import seat_who
     from seat_address import code_of
     if home is None and env is not None:
-        # 跟呼叫端同一個根(測試沙盒不准讀到真的 ~/.ez2-aib):state_root 沒設環境變數時用 expanduser,
-        #   那讀的是本行程的 HOME 不是 env 的 ⇒ 這裡照 env 的 HOME 自己推。
-        home = env.get("EZ2_AIB_STATE_ROOT") or env.get("EZ2_AIB_HOME") or (
-            os.path.join(env["HOME"], ".ez2-aib") if env.get("HOME") else None)
+        # 跟金鑰同一個根(_root;測試沙盒不准讀到真的 ~/.ez2-aib):照 env 推,不用本行程的 HOME
+        home = str(_root(env))
     home = home or seat_who._home()
     try:
         disp = json.loads((Path(home) / "identity" / "seat-display.json").read_text(encoding="utf-8")).get("display") or {}

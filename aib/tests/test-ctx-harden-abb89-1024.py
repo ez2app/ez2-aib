@@ -8,7 +8,9 @@ H3 open_readiness 整批最多等 TIMEOUT_S 秒,超時的幾家印 ok(選單照�
 H4 --close-row 的欄(CX)也只收 1–4 位數字(在 test-ctx-close-seat-abb89-1024.py)
 刀(PR 手跑在複本上):拿掉 _INVISIBLE 或少列任一碼點 ⇒ H1 紅;拿掉 start<end / WINDOW_ID_RE ⇒ H2 紅;
   拿掉計時器、_Late 改回 Exception(被 check() 吞掉)、不還原 SIGALRM 處理器、拿掉 _late 的 done 守衛、
-  計時器搬到 ask-key 分支之前(存金鑰的 Touch ID 會被 3 秒打斷)⇒ H3 紅
+  計時器搬到 ask-key 分支之前(存金鑰的 Touch ID 會被 3 秒打斷)⇒ H3 紅;
+  左鍵 [X] 改回直接 _kill_action / 被擋時不 return ⇒ H2 left_click 紅;finally 拿掉 try、還原移進 try、armed 改用 old 判斷、
+  SIG_DFL 後備改掉、清不掉時不裝 SIG_IGN ⇒ H3 restore_edges 紅
 """
 from __future__ import annotations
 
@@ -64,6 +66,13 @@ class HitClose(unittest.TestCase):
         for w in ("35", "@", "@3a", "@35;kill-server", "%35", "@12345678901"):
             with self.subTest(window=w):
                 self.assertEqual(hit_test.hit_ai_close([dict(ROW, window=w)], 3), hit_test.PASSTHROUGH)
+
+    def test_h2_left_click_x_same_rules(self):
+        # 左鍵點 [X] 跟右鍵關席同一套前提(0.1.49 審查排下一版)
+        self.assertEqual(hit_test.hit_ai_rows([ROW], 3, 21)["action"], "kill-idle")
+        for w in ("35", "@3a", "@35;kill-server", "@12345678901"):
+            with self.subTest(window=w):
+                self.assertEqual(hit_test.hit_ai_rows([dict(ROW, window=w)], 3, 21), hit_test.PASSTHROUGH)
 
 
 class Readiness(unittest.TestCase):
@@ -134,6 +143,57 @@ class Readiness(unittest.TestCase):
             rc = open_readiness.main(["ask-key", "deepseek"])
         self.assertEqual(rc, 0)
         self.assertEqual(out.getvalue().splitlines(), ["saved deepseek"])
+
+    def _main_with(self, **patch):
+        out = io.StringIO()
+        with mock.patch.object(open_readiness, "check", lambda p, environ=None: ("ok", "")), \
+                mock.patch.multiple(open_readiness.signal, **patch), redirect_stdout(out):
+            rc = open_readiness.main(["claude", "codex"])
+        return rc, out.getvalue().splitlines()
+
+    def test_h3_restore_edges(self):
+        # armed 旗標 / SIG_DFL 後備 / 清計時器失敗都照樣還原、照樣印(0.1.49 審查排下一版)
+        sig = open_readiness.signal
+        real_signal, real_setitimer = sig.signal, sig.setitimer
+        calls = []
+
+        def signal_none_first(n, h):
+            calls.append(h)
+            prev = real_signal(n, h)
+            return None if len(calls) == 1 else prev
+        before = sig.getsignal(sig.SIGALRM)
+        self.addCleanup(real_signal, sig.SIGALRM, before)                      # 斷言中途紅也收乾淨(cleanup 後進先出:
+        self.addCleanup(real_setitimer, sig.ITIMER_REAL, 0)                    #   後登記的先跑 ⇒ 先清計時器、再還原處理器)
+        self.assertEqual(self._main_with(signal=signal_none_first), (0, ["ok", "ok"]))
+        self.assertIs(calls[-1], sig.SIG_DFL)                                   # 舊處理器回 None ⇒ 還原成 SIG_DFL
+        real_signal(sig.SIGALRM, before)
+
+        def setitimer_fail_first(which, sec, *a):
+            if sec:
+                raise OSError("no timer")
+            return real_setitimer(which, sec, *a)
+        self.assertEqual(self._main_with(setitimer=setitimer_fail_first), (0, ["ok", "ok"]))
+        self.assertIs(sig.getsignal(sig.SIGALRM), before)                      # 開不起來也還原處理器
+
+        def setitimer_clear_fails(which, sec, *a):
+            if not sec:
+                raise OSError("cannot clear")
+            return real_setitimer(which, sec, *a)
+        self.assertEqual(self._main_with(setitimer=setitimer_clear_fails), (0, ["ok", "ok"]))
+        self.assertIs(sig.getsignal(sig.SIGALRM), sig.SIG_IGN)                 # 清不掉 ⇒ 計時器還在,裝 SIG_IGN 不讓它殺掉行程
+        real_setitimer(sig.ITIMER_REAL, 0)
+        real_signal(sig.SIGALRM, before)
+
+        def custom(_n, _f):
+            pass
+        real_signal(sig.SIGALRM, custom)                                        # 舊處理器是自訂的 ⇒ 還原回它,不是一律 SIG_DFL
+        self.assertEqual(self._main_with(signal=real_signal), (0, ["ok", "ok"]))
+        self.assertIs(sig.getsignal(sig.SIGALRM), custom)
+        real_signal(sig.SIGALRM, before)
+
+        def signal_not_main(n, h):
+            raise ValueError("signal only works in main thread")
+        self.assertEqual(self._main_with(signal=signal_not_main), (0, ["ok", "ok"]))
 
     def test_h3_timeout_env_only_shortens(self):
         for v, want in (("0.5", 0.5), ("99", 3.0), ("0", 3.0), ("-1", 3.0), ("x", 3.0)):

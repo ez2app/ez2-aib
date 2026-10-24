@@ -4,6 +4,11 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.51
+
+- **Right-click menu, more hardening**: clicking [X] on a seat row now checks the same things as "Close this seat" in the right-click menu (the cell exists and the window id is a tmux id); otherwise the click does nothing. If the menu's 3-second time limit cannot be cleared, the timer is made harmless so the menu still prints; every other path puts the previous handler back.
+- **Online chat keys follow your state folder**: chat keys and the key map now live under the same root as aib's other secrets (`EZ2_AIB_STATE_ROOT`, then `EZ2_AIB_HOME`, then `~/.ez2-aib`); with none of these set nothing moves. The background chat bridge started at login now gets the same path settings. If the new root has no identity but `~/.ez2-aib` still has one, aib stops with `LegacyKeysElsewhere` instead of quietly making a new identity: either set `EZ2_AIB_SECRETS_DIR` and `AIB_NOSTR_MAP` back to the old location to keep it, or put an empty key map in the new root to start a new identity on purpose.
+
 ## 0.1.50
 
 - **Captain's power room (`aib power`)**: a first stop for new captains. `aib power status` shows versions, health, bindings and a light for each AI (signed in / quota); `aib power login <ai>` opens that AI's own sign-in link; `aib power upgrade <ai>` updates its CLI. `aib ui power` opens a simple static page with the same data — its buttons only copy commands for you to paste, and no local server is started.
