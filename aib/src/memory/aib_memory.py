@@ -64,6 +64,39 @@ def index_path() -> Path:
     return aib_home() / "memory-index" / "notes.jsonl"
 
 
+WRITE_LOCK_WAIT_S = 30
+
+
+class _WriteLock:
+    """10-24:同一台多席同時寫第二大腦會撞號 —— uid 照索引已用的 + 建立時刻配,兩席在同一刻讀到同一份索引就配到同一個
+    (@ee4f8 查到 5 組，不同資料夾所以「目標已存在」也擋不到)。配號 → 寫檔 → 記索引 → 登記 uid-index 整段拿同一把檔鎖。"""
+
+    def __enter__(self):
+        try:
+            import fcntl
+        except ImportError:                       # 沒有 fcntl 的平台照舊不鎖(那裡也沒有多席同機)
+            self.f = None
+            return self
+        path = index_path().with_name(".write.lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.f = open(path, "a")
+        deadline = time.monotonic() + WRITE_LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    self.f.close()
+                    raise MemoryError_("第二大腦寫入鎖 %s 等超過 %d 秒(別席卡住?)" % (path, WRITE_LOCK_WAIT_S))
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        if self.f is not None:
+            self.f.close()                        # 關檔即放鎖
+        return False
+
+
 def translator():
     try:
         from i18n_lib import Translator
@@ -233,6 +266,12 @@ def write(kind, title, body, tags=(), about=(), seat="", project="", route_key="
         raise MemoryError_("這台量不到第二大腦(EZ2_VAULT_DIR)")
     import route_register as RR
     uid_layout = RR.vault_is_uid_layout(str(vault))
+    with _WriteLock():
+        return _write_locked(kind, title, body, tags, about, ctx, vault, uid_layout, route_key, dry_run, supersedes, model)
+
+
+def _write_locked(kind, title, body, tags, about, ctx, vault, uid_layout, route_key, dry_run, supersedes, model):
+    import route_register as RR
     # 路由:明講的 > 這一席的(專案卡 / 綁定)> core.handoff。這一席的路由寫不進去(不可寫、索引沒有)⇒ 退回
     #   core.handoff 並在回傳記 route_fallback —— 交接 / 整理不能因為席位路由壞掉就整個寫不進去;明講的照舊直接報錯
     candidates = [route_key] if route_key else [r for r in dict.fromkeys([seat_route(ctx), DEFAULT_ROUTE]) if r]
