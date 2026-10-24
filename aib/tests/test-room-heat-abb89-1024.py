@@ -7,7 +7,7 @@ H2 分組:席位(主人 = 席碼)、席位起的無頭瀏覽器、審查員暫�
 H3 歷史:10 秒內不重記、只留 360 點、檔案 0600、落在 EZ2_AIB_STATE_ROOT 底下
 H4 當機雷達:已知簽名 ⇒ 代碼 + 修在哪版;未知 ⇒ unknown;超過天數的不算;訊息原文與路徑不外流;資料夾不在 ⇒ unmeasured
 H5 入口:`aib room heat` 由核心接(外掛蓋過 room 也一樣),`aib room` 其他子指令照舊交給外掛
-刀(複本):K1 當機類別帶出訊息原文 ⇒ H4 紅;K2 拿掉入口攔截 ⇒ H5 紅
+刀(複本):K1 當機類別帶出訊息原文 ⇒ H4 紅;K2 拿掉入口攔截 ⇒ H5 紅;K3 拿掉名字清洗 ⇒ H4 紅;K4 開檔會阻塞(FIFO 卡住)⇒ H3b 紅
 """
 import io
 import json
@@ -28,21 +28,31 @@ sys.path.insert(0, str(ROOT / "src" / "cockpit"))
 os.environ.setdefault("EZ2_AIB_LOCALE", "zh-TW")
 
 ME = os.getuid()
+OTHER = 777 if ME != 777 else 778
 SEAT_UUID = "11111111-2222-3333-4444-5555555abcde"
-PS = "\n".join([
-    # pid ppid uid cpu rss comm args
-    "  100     1 %d  1.0  2048 /usr/bin/tmux tmux -L aihub-x new" % ME,
-    "  200   100 %d  5.0 40960 /opt/bin/claude claude --resume" % ME,
-    "  210   200 %d 20.0 81920 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless --user-data-dir=/var/folders/x/T/shot" % ME,
-    "  220   200 %d 30.0 10240 /usr/bin/python3 python3 /private/tmp/claude-501/s/scratchpad/r316/aib/tests/test-x.py" % ME,
-    "  230   200 %d 12.5 20480 /usr/bin/python3 python3 /Users/u/wt/aib/bin/aib test tests/test-y.py" % ME,
-    "  240   200 %d  2.0  4096 /bin/zsh zsh -c secret-token-abc" % ME,
-    "  300     1    0 40.0 30720 /usr/libexec/spindump spindump",
-    "  310     1  501 3.0 1024 /usr/sbin/otheruser otheruser",
-    "  400     1 %d  8.0 51200 /Applications/Slack.app/Contents/MacOS/Slack /Applications/Slack.app/Contents/MacOS/Slack --x=/Users/u/secret" % ME,
-]) + "\n"
-if ME == 501:                                    # 測試機帳號剛好是 501 ⇒ 改用別的「別人」uid
-    PS = PS.replace("  501 3.0", "  777 3.0")
+# 真機格式:args 那次 + ucomm 那次(程式名只有執行檔名、最多 16 字、可含空白)
+ROWS = [
+    # pid ppid uid cpu rss ucomm args
+    (100, 1, ME, 1.0, 2048, "tmux", "tmux -L aihub-x new"),
+    (200, 100, ME, 5.0, 40960, "claude", "claude --resume"),
+    (210, 200, ME, 20.0, 81920, "Google Chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless --user-data-dir=/var/folders/x/T/shot"),
+    (211, 210, ME, 15.0, 61440, "Google Chrome He", "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --headless"),
+    (220, 200, ME, 30.0, 10240, "python3", "python3 /private/tmp/claude-501/s/scratchpad/r316/aib/tests/test-x.py"),
+    (230, 200, ME, 12.5, 20480, "python3", "python3 /Users/u/wt/aib/bin/aib test tests/test-y.py"),
+    (240, 200, ME, 2.0, 4096, "zsh", "zsh -c secret-token-abc"),
+    (250, 1, ME, 3.0, 4096, "mdworker_shared", "/System/Library/Frameworks/CoreServices.framework/mdworker_shared -s mdworker"),
+    (260, 1, ME, 1.0, 2048, "x", "/opt/honewei-agent/bin/x --serve"),
+    (300, 1, 0, 40.0, 30720, "spindump", "/usr/sbin/spindump"),
+    (305, 1, 0, 9.0, 2048, "customtool", "/opt/clientname-tool/customtool --sudo"),
+    (310, 1, OTHER, 3.0, 1024, "otheruser", "/usr/sbin/otheruser"),
+    (400, 1, ME, 8.0, 51200, "Slack", "/Applications/Slack.app/Contents/MacOS/Slack --x=/Users/u/secret"),
+]
+PS_ARGS = "".join("%6d %5d %5d %5.1f %6d %s\n" % (r[0], r[1], r[2], r[3], r[4], r[6]) for r in ROWS)
+PS_UCOMM = "".join("%6d %-16s\n" % (r[0], r[5]) for r in ROWS)
+
+
+def fake_ps(cmd):
+    return PS_UCOMM if any("ucomm" in c for c in cmd) else PS_ARGS
 
 
 def fake_sampler():
@@ -70,7 +80,7 @@ class Base(unittest.TestCase):
         import room_heat
         self.RH = room_heat
 
-    def snap(self, run=lambda cmd: PS, now=None):
+    def snap(self, run=fake_ps, now=None):
         return self.RH.snapshot(sampler=fake_sampler, run=run, owner_of=owner_of, now=now)
 
 
@@ -95,13 +105,23 @@ class Snapshot(Base):
         self.assertIn(("headless_browser", "abcde"), got)
         self.assertIn(("reviewer", "abcde"), got)
         self.assertIn(("aib_test", "abcde"), got)
-        self.assertIn(("system", "spindump"), got)
-        self.assertIn(("system", ""), got)                       # 別的帳號:只算系統,名字也不留
+        self.assertIn(("system", "spindump"), got)               # root:系統白名單裡的名字才留
+        self.assertIn(("system", ""), got)                       # 別的帳號 / root 的其他程式:名字不留
+        self.assertIn(("system", "mdworker_shared"), got)        # 自己帳號的系統行程
         self.assertIn(("other_app", "Slack"), got)
-        self.assertEqual(got[("headless_browser", "abcde")]["cpu"], 20.0)
+        self.assertIn(("other_app", "x"), got)                   # 只有執行檔名,不帶資料夾
+        self.assertEqual(got[("headless_browser", "abcde")]["cpu"], 35.0)     # 主行程 + renderer helper
+        self.assertEqual(got[("headless_browser", "abcde")]["count"], 2)
         blob = json.dumps(s, ensure_ascii=False)
-        for leak in ("secret", "/Users/", "/var/folders", "scratchpad", "--headless", "/Applications/", "token"):
-            self.assertNotIn(leak, blob)
+        for leak in ("secret", "/Users/", "/var/folders", "scratchpad", "--headless", "/Applications/", "token",
+                     "honewei", "clientname", "customtool", "otheruser", "/"):
+            self.assertNotIn(leak, blob.replace("aib-heat/v1", ""))
+
+    def test_h2b_measure_failure_keeps_groups(self):
+        def boom():
+            raise RuntimeError("sensor")
+        s = self.RH.snapshot(sampler=boom, run=fake_ps, owner_of=owner_of, now=1_792_814_400.0)
+        self.assertEqual((s["level"], s["groups"]["state"]), ("unmeasured", "ok"))
 
 
 class History(Base):
@@ -120,6 +140,29 @@ class History(Base):
         self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o600)
         self.assertEqual(pts[0]["load1"], None)
         self.assertEqual(self.RH.read_history()[0]["level"], "ok")
+
+    def test_h3b_hostile_history_file(self):
+        p = Path(self.RH.history_path())
+        p.parent.mkdir(parents=True, exist_ok=True)
+        now = 1_792_814_400.0
+        p.write_text(json.dumps({"points": [{"t": now - 20, "cmd": "/Users/x/secret --token=abc", "load1": "9",
+                                             "level": "\x1b[2J"}, {"t": 1e18}]}), encoding="utf-8")
+        pts = self.RH.read_history(now=now)
+        self.assertEqual(pts, [{"t": now - 20, "level": None, "temp": None, "load1": None, "mem_free": None, "swap_mb": None}])
+        self.assertTrue(self.RH.record_history({"level": "ok", "cells": {}}, now=now))    # 未來的點不會卡住歷史
+        p.unlink()
+        os.mkfifo(str(p))                                        # 換成 FIFO:不卡住
+        t0 = time.monotonic()
+        self.assertEqual(self.RH.read_history(now=now), [])
+        self.assertLess(time.monotonic() - t0, 2)
+        self.assertIn("history_recorded", self.snap(now=now + 30))
+        self.assertEqual(stat.S_IMODE(p.parent.stat().st_mode), 0o700)
+
+    def test_h3c_clock_back(self):
+        t0 = 1_792_814_400.0
+        self.RH.record_history({"level": "ok", "cells": {}}, now=t0)
+        self.assertTrue(self.RH.record_history({"level": "ok", "cells": {}}, now=t0 - 3600))
+        self.assertEqual([p["t"] for p in self.RH.read_history(now=t0 - 3600)], [t0 - 3600])
 
 
 def write_ips(d, name, app, proc, typ, sig, msg, mtime, parent="zsh"):
@@ -144,17 +187,55 @@ class Crashes(Base):
         write_ips(d, "node-1.ips", "node", "node", "EXC_CRASH", "SIGABRT", "Abort trap at /Users/u/secret/x.js", now - 30)
         write_ips(d, "old-1.ips", "node", "node", "EXC_CRASH", "SIGABRT", "old", now - 10 * 86400)
         (d / "broken.ips").write_text("not json\n{", encoding="utf-8")
+        evil_p = d / "evil.ips"                                  # 原始控制字元直接寫進檔(不經 json 跳脫)
+        evil_p.write_text(json.dumps({"app_name": "A", "bug_type": "309", "timestamp": "2026-10-24 10:00:00.00 +0800"})
+                          + '\n{"procName" : "A\x1b]0;PWN\x07\x1b[2Jevil",\n "parentProc" : "p\x1b[31mq",\n'
+                          ' "exception" : {"type":"EXC\x1b[8m","signal":"SIGKILL (Code Signature Invalid)","message":"m"}}',
+                          encoding="utf-8")
+        os.utime(evil_p, (now - 40, now - 40))
+        jet = d / "JetsamEvent-1.ips"
+        jet.write_text(json.dumps({"bug_type": "298", "timestamp": "2026"}) + "\n{}", encoding="utf-8")
+        os.mkfifo(str(d / "fifo.ips"))                           # FIFO:不卡住
+        t0 = time.monotonic()
         r = self.RH.crashes(crash_dir=str(d), now=now)
+        self.assertLess(time.monotonic() - t0, 5)
         self.assertEqual(r["state"], "ok")
         by = {c["proc"]: c for c in r["classes"]}
         self.assertEqual((by["Python"]["code"], by["Python"]["count"], by["Python"]["fixed_in"]),
                          ("aib_test_guarded_fd_dup", 3, "0.1.52"))
         self.assertIn("0.1.52", by["Python"]["hint"])
         self.assertEqual((by["node"]["code"], by["node"]["count"]), ("unknown", 1))      # 10 天前那份不算
+        evil = next(c for c in r["classes"] if c["type"] == "EXC")          # procName 帶斜線 ⇒ 只剩檔名
+        self.assertEqual((evil["type"], evil["signal"]), ("EXC", "SIGKILL"))
+        self.assertNotIn("", [c["proc"] for c in r["classes"]])            # Jetsam 之類不算
+        for c in r["classes"]:                                             # 每個字串欄位都不准有控制字元
+            for k, v in c.items():
+                if isinstance(v, str):
+                    self.assertNotRegex(v, r"[\x00-\x1f\x7f-\x9f]", (k, v))
         blob = json.dumps(r, ensure_ascii=False)
-        for leak in ("secret", "/Users/", "DUP on file", "Abort trap", "msg40"):
+        for leak in ("secret", "/Users/", "DUP on file", "Abort trap", "msg40", "\x1b", "\x07", "PWN]"):
             self.assertNotIn(leak, blob)
+        out = io.StringIO()
+        with mock.patch.object(self.RH, "CRASH_DIR", str(d)):
+            self.RH.main(["crashes"], out=out)
+        self.assertNotRegex(out.getvalue(), r"[\x00-\x08\x0b-\x1f\x7f]")
         self.assertEqual(self.RH.crashes(crash_dir=str(self.tmp / "nope"))["state"], "unmeasured")
+
+    def test_h4b_file_vanishes(self):
+        d = self.tmp / "reports2"
+        d.mkdir()
+        now = time.time()
+        write_ips(d, "Python-a.ips", "Python", "Python", "EXC_GUARD", "SIGKILL", " DUP on file descriptor 3", now)
+        write_ips(d, "gone.ips", "node", "node", "EXC_CRASH", "SIGABRT", "x", now)
+        real = os.lstat
+
+        def flaky(p, *a, **k):
+            if str(p).endswith("gone.ips"):
+                raise FileNotFoundError(2, "gone", str(p))
+            return real(p, *a, **k)
+        with mock.patch.object(os, "lstat", flaky):
+            r = self.RH.crashes(crash_dir=str(d), now=now)
+        self.assertEqual((r["state"], [c["proc"] for c in r["classes"]]), ("ok", ["Python"]))
 
 
 def _exit():
@@ -191,12 +272,14 @@ class Entry(Base):
 
 
 class Knives(unittest.TestCase):
-    def _knife(self, rel, old, new, case):
+    def _knife(self, rel, old, new, case, timeout=300, hang_is_red=False):
         from aib_knife_copy import knife_copy
         from aib_proc_guard import run_guarded
         name = Path(__file__).name
         with knife_copy(ROOT, rel, old, new, tests=(name,)) as root:
-            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), case], cwd=str(root), max_procs=40, timeout=300)
+            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), case], cwd=str(root), max_procs=40, timeout=timeout)
+        if hang_is_red and r.tripped == "timeout":
+            return                                     # 這把刀的紅就是卡住
         self.assertIsNone(r.tripped, "刀測自己失控了:%s" % r.tripped)
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 
@@ -204,6 +287,15 @@ class Knives(unittest.TestCase):
         self._knife("src/cockpit/room_heat.py", '"type": c["type"], "signal": c["signal"], "count": 0, "last": ""})',
                     '"type": c["type"], "signal": c["signal"], "count": 0, "last": "", "msg40": c["msg40"]})',
                     "Crashes.test_h4_radar")
+
+    def test_k3_no_name_scrub(self):
+        self._knife("src/cockpit/room_heat.py", 'return NAME_BAD_RE.sub("?", CTRL_RE.sub("", str(s or "")))[:n]',
+                    'return str(s or "")[:n]', "Crashes.test_h4_radar")
+
+    def test_k4_blocking_open(self):
+        self._knife("src/cockpit/room_heat.py", 'fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))',
+                    'fd = os.open(path, os.O_RDONLY)', "History.test_h3b_hostile_history_file", timeout=30,
+                    hang_is_red=True)
 
     def test_k2_no_entry(self):
         self._knife("cli.py", 'CORE_ROOM_SUBCOMMANDS = ("heat",)', 'CORE_ROOM_SUBCOMMANDS = ()',
