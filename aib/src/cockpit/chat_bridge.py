@@ -1387,6 +1387,9 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
     return {"v": 1, "at": int(now), "minutes": int(minutes), "rows": rows}
 
 
+LOCAL_RECEIPT_STAGES = ("resolved", "relayed")    # 寄件端自己記的,不是對方回的
+
+
 def last_receipt(root, msgid):
     """10-21 回條語意:寄出那封對方最後回的那一張 ⇒ {"stage","at"[,"days"][,"by"][,"detail"]};沒有 ⇒ None。
     寄件人(艦長室收發室)據此分得出「還在等本人看(第 N 天)」「本人已讀」「被丟掉 / 過期」。detail 只放白名單碼。"""
@@ -1398,7 +1401,10 @@ def last_receipt(root, msgid):
         return None
     if not recs:
         return None
-    r = recs[-1]
+    # 本機自己記的 resolved / relayed 會比對方的回條晚寫(送上中繼站要等確認,對方已經收下回了 queued)
+    #   ⇒ 對方回過任何一張就以對方的為準,不讓本機那張把階段倒退回「已送上中繼站」(10-24 跨客戶驗收看到)
+    remote = [x for x in recs if x.get("stage") not in LOCAL_RECEIPT_STAGES]
+    r = (remote or recs)[-1]
     out = {"stage": r.get("stage"), "at": r.get("at")}
     if isinstance(r.get("days"), int):
         out["days"] = r["days"]
