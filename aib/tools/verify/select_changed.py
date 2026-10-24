@@ -423,7 +423,7 @@ def hunk_identifiers(repo, base, head=""):
       排錯了只是慢,挑錯了會漏。
     ★ 下界:只認上面五種寫法。`obj.attr = x`、`setattr`、殼裡用變數組出來的名字看不到。
     """
-    args = ["diff", "-U0", base] + ([head] if head else [])
+    args = ["diff", "-U0", "--relative", base] + ([head] if head else [])
     res = _git(repo, args)
     if res.returncode != 0:
         raise Unmeasurable("git diff -U0 rc=%d: %s"
@@ -487,7 +487,8 @@ def identifier_hits(repo, tests, idents):
 def changed_from_git(repo, base, head):
     # --no-renames(10-11 a seat):改名預設只印新路徑 ⇒ 把 tools/x.py 搬成 docs/x.py,舊路徑的消費者(import 它的測試)
     #   一支都挑不到,而漏挑的樣子是綠的。拆成「刪舊 + 加新」,兩條路徑都進規則①~⑤。
-    res = _git(repo, ["diff", "--name-only", "--no-renames", base] + ([head] if head else []))
+    # --relative(10-24):--repo 指到倉裡的子專案(例如開源版的 aib/)時,路徑照子專案算,跟 ls-files 同一個座標;在倉根等於沒加
+    res = _git(repo, ["diff", "--name-only", "--no-renames", "--relative", base] + ([head] if head else []))
     if res.returncode != 0:
         raise Unmeasurable("git diff rc=%d: %s" % (res.returncode,
                                                    (res.stderr or "").strip()))

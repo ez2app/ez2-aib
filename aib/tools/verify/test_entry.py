@@ -211,8 +211,10 @@ def changed_tests(repo, base=""):
         info["why"] = "no-selector"
         return None, info
 
+    proj = _subproject(repo)                         # 開源版測試在 aib/tests:從子專案挑,路徑才對得上(10-24)
+
     def pick(*args, stdin=None):
-        p = subprocess.run([sys.executable, str(tool), "--repo", str(repo), "--print-tests", *args], input=stdin,
+        p = subprocess.run([sys.executable, str(tool), "--repo", str(proj), "--print-tests", *args], input=stdin,
                            capture_output=True, text=True, timeout=1800, **({} if stdin is not None else {"stdin": subprocess.DEVNULL}))
         if p.returncode != 0:
             raise RuntimeError((p.stderr or p.stdout).strip()[-300:])
@@ -220,7 +222,7 @@ def changed_tests(repo, base=""):
 
     try:
         names = pick("--base", mb)                       # --head 不給 = 跟工作樹比(含沒提交的追蹤檔)
-        rc, out = _git_out(repo, "ls-files", "--others", "--exclude-standard")
+        rc, out = _git_out(proj, "ls-files", "--others", "--exclude-standard")
         new = [l.strip() for l in out.splitlines() if l.strip()] if rc == 0 else []
         info["untracked"] = len(new)
         if new:
@@ -228,10 +230,28 @@ def changed_tests(repo, base=""):
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         info["why"] = "select-failed: %s" % e
         return None, info
-    have = set(all_tests(repo))
+    have = set(all_tests(proj))
     picked = sorted(dict.fromkeys(n for n in names if n in have))
     info["picked"] = len(picked)
+    if proj != repo:
+        picked = [str(proj / n) for n in picked]      # 子專案相對 ⇒ 絕對(下游照倉根 / 目前目錄換算)
     return picked, info
+
+
+def _subproject(repo):
+    """目前目錄往上走到倉根,第一個有 tests/ 的資料夾;在倉根或倉外 ⇒ 倉根本身。"""
+    try:
+        here = Path.cwd().resolve()
+        root = Path(repo).resolve()
+        here.relative_to(root)
+    except (OSError, ValueError):
+        return Path(repo)
+    for d in (here, *here.parents):
+        if d == root:
+            break
+        if (d / "tests").is_dir():
+            return d
+    return Path(repo)
 
 
 def guard_tests(repo):

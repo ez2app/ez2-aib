@@ -9,6 +9,8 @@ C2 規則 3:尺 import 到被改的產品模組 ⇒ 是消費者
 C3 規則 4:改到被 source 的殼 ⇒ 往上展開到 source 它的殼
 C4 select_changed 不再丟「consumer_scope import」的量不到;改產品檔選得到 import 它的測試
 C5 四語字典都有 aib.cscope.* 的 19 個鍵
+C6 倉裡的子專案(開源版的 aib/):select_changed --repo 子專案 + 基準 ⇒ 路徑照子專案算、挑得到;
+   test_entry._subproject 從目前目錄往上找第一個有 tests/ 的資料夾,倉根 / 倉外 ⇒ 倉根
 刀(複本):K1 把規則 3 的比對拿掉 ⇒ C2 紅
 """
 import importlib.util
@@ -108,6 +110,39 @@ class InTree(unittest.TestCase):
         for loc in ("en", "ja", "ko"):
             d = json.loads((ROOT / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
             self.assertEqual([k for k in keys if not d.get(k)], [], loc)
+
+
+class SubProject(unittest.TestCase):
+    def setUp(self):
+        self.top = Path(tempfile.mkdtemp(prefix="cscope-top-"))
+        self.addCleanup(shutil.rmtree, self.top, True)
+        sub = _repo()                                # 做好的小倉搬進 top/aib,再在 top 建一個倉
+        shutil.rmtree(sub / ".git")
+        shutil.move(str(sub), str(self.top / "aib"))
+        (self.top / "README.md").write_text("x\n", encoding="utf-8")
+        _git(self.top, "init", "-q")
+        _git(self.top, "add", "-A")
+        _git(self.top, "commit", "-qm", "init")
+        (self.top / "aib" / "src" / "cockpit" / "widget.py").write_text("def f():\n    return 3\n", encoding="utf-8")
+        _git(self.top, "commit", "-qam", "touch")
+
+    def test_c6_select_from_subproject(self):
+        p = subprocess.run([sys.executable, str(SEL), "--repo", str(self.top / "aib"), "--print-tests", "--base", "HEAD~1"],
+                           capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                           env={**os.environ, "AIB_REVERSE_ROWS_DIR": str(self.top / "none")})
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("tests/test-widget.py", p.stdout.split())
+
+    def test_c6_subproject_lookup(self):
+        te = _load(SEL.parent / "test_entry.py", "test_entry_under_test")
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(self.top / "aib" / "src")
+        self.assertEqual(te._subproject(self.top).resolve(), (self.top / "aib").resolve())
+        os.chdir(self.top)
+        self.assertEqual(te._subproject(self.top), self.top)
+        os.chdir(tempfile.gettempdir())
+        self.assertEqual(te._subproject(self.top), self.top)
 
 
 class Knives(unittest.TestCase):
