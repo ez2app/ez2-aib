@@ -556,6 +556,8 @@ REQUEST_NOTE_MAX = 140      # 好友申請附的一句話(第 29.4 節)
 # 第二波 #6(10-21):回「對方本人寫的」那封 ⇒ 對方那邊建立時就待審(human_reply),回條只回 held、detail 空,
 #   寄件端只看到 stage=held 不知道對方要去哪看。補一句人話 hint;**detail 代碼不動**(艦長室 / dm-ctl 照 detail 判)。
 #   判法 = 我佇列裡那封原信的 global.author == human,跟對方那邊判 sent_author 用的是同一個 aib-author 標籤。
+# 10-24:對方名冊同一席列了兩次(對方換過人格、兩把都還在)⇒ 這一席整席不收;why 照回 no_seat,另給這句
+DUPLICATE_SEAT_HINT = "對方的名冊把這一席列了兩次(對方換過人格、舊鑰還沒停用),暫時寄不進去;請對方升級 aib 後重開轉接程式"
 HELD_HUMAN_HINT = "對方本人會在艦長室收件匣看到這封(不進對方 AI 的框);等本人看了才會有回音"
 
 
@@ -871,6 +873,37 @@ def drop_world_owner(root, owner, upto=None, now=None):
                            and now - int_or0(v.get("presence_at")) < WORLD_FRESH_S)]:
             cab.pop(k, None)
     _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
+# refresh.json(10-24 在不在):本人打開世界面板 ⇒ 核心寫 requested_at;工人看到就在下一份在線狀態加
+# aib-ask=1 向好友 / 我的其他機器問一次,寫 asked_at。對方回的是一份普通在線狀態(舊版收到 aib-ask 不認得、照常收)。
+REFRESH_GAP_S = 30
+
+
+def request_refresh(root, now=None):
+    """要工人問一次「在不在」。上次要求不到 REFRESH_GAP_S ⇒ 不重寫,回 False。"""
+    now = int(time.time() if now is None else now)
+
+    def fn(cur):
+        if now - int(cur.get("requested_at") or 0) < REFRESH_GAP_S:
+            return False
+        cur["requested_at"] = now
+        return True
+    return _locked_update(root, "refresh.json", fn, lambda: {"v": VERSION})
+
+
+def note_asked(root, now=None):
+    now = int(time.time() if now is None else now)
+    _locked_update(root, "refresh.json", lambda cur: cur.__setitem__("asked_at", now), lambda: {"v": VERSION})
+
+
+def read_refresh(root):
+    """⇒ {requested_at, asked_at}(沒有的鍵不列)。requested_at > asked_at = 工人還沒問。"""
+    try:
+        cur = json.loads((Path(root) / "refresh.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(cur, dict):
+        return {}
+    return {k: cur[k] for k in ("requested_at", "asked_at") if isinstance(cur.get(k), int) and not isinstance(cur[k], bool)}
 
 
 def drop_world(root, keep_owner):

@@ -19,7 +19,9 @@ S7 真人寄件選席:現在的人格還沒有鑰 ⇒ None(不拿舊人格那把
 N1 換人格後真的寄一封(兩台、本機假中繼站)⇒ 對方用名冊驗得過、收下(queued);寄件用舊人格那把就會被當陌生拒收
 N2 換人格後在線狀態也用新那把 ⇒ 好友看得到我在線(@abb89 #297 r1 m08)
 S4 手機配對給的 npub 跟名冊同一把:換過人格的席 ⇒ 配對 QR 給 B 那把,不給舊人格 A(@abb89 #297 r1)
-刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅;K9 在線挑同席第一把 ⇒ N2 紅
+D1 合併名冊(多台機器)⇒ 各台丟掉的席取聯集,記在 dropped_seats
+D2 resolve 那一席被對方名冊丟掉 ⇒ why 照回 no_seat(艦長室認這個代碼)、另帶 hint 說原因;沒被丟的查不到 ⇒ 不帶 hint
+刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅;K9 在線挑同席第一把 ⇒ N2 紅;K3 重複席改回整份拒 ⇒ 名冊 R4 紅
 """
 import json
 import os
@@ -79,6 +81,7 @@ print(json.dumps({"rc": rc, "seat": (res.get("seat") or {}).get("seat"), "calls"
 
 
 sys.path.insert(0, str(REPO / "src" / "cockpit"))
+import chat_devices as DV  # noqa: E402
 import chat_roster as CR  # noqa: E402
 import nostr_keys as NK  # noqa: E402
 
@@ -178,6 +181,41 @@ class OneKeyPerSeat(unittest.TestCase):
         self.assertNotEqual(want, old)
         self.assertEqual(CP._seat_npub(self.env, live=self.live("bbbb22")), ("cfd04", want))
         self.assertEqual(CP._seat_npub(self.env, "cfd04", live=self.live("bbbb22")), ("cfd04", want))
+
+
+RESOLVE = r'''
+import asyncio, json, sys
+sys.path.insert(0, sys.argv[1])
+import chat_nostr as CN
+import nostr_keys as NK
+owner = NK.npub(NK.pubkey_hex("%064x" % 0x4102))
+
+async def fake_roster(o, relays, r):
+    return 0, {"cabins": [{"cabin": "6ddf", "seats": []}], "dropped_seats": ["6ddf/cfd04"], "envelope": [1]}, 200
+
+CN._owner_roster = fake_roster
+print(json.dumps([asyncio.run(CN.resolve(owner + "/6ddf/" + s, [])) for s in ("cfd04", "d07f9")]))
+'''
+
+
+class Dropped(unittest.TestCase):
+    def test_d1_merge_union(self):
+        a = {"cabins": [], "dropped_seats": ["6ddf/cfd04"]}
+        b = {"cabins": [], "dropped_seats": ["2282/c4366", "6ddf/cfd04"]}
+        merged, _w = DV.merge("npub1o", None, [("npub1a", a), ("npub1b", b)])
+        self.assertEqual(merged["dropped_seats"], ["2282/c4366", "6ddf/cfd04"])
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_d2_resolve_hint(self):
+        td = Path(tempfile.mkdtemp(prefix="aib-dropped-"))
+        self.addCleanup(shutil.rmtree, td, True)
+        env = dict(os.environ, HOME=str(td), EZ2_AIB_STATE_ROOT=str(td / ".ez2-aib"))
+        r = subprocess.run([VPY, "-c", RESOLVE, str(REPO / "src" / "cockpit")], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (rc1, d1), (rc2, d2) = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual((rc1, d1["why"], rc2, d2["why"]), (2, "no_seat", 2, "no_seat"))
+        self.assertIn("兩次", d1["hint"])
+        self.assertNotIn("hint", d2)
 
 
 @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
@@ -322,6 +360,14 @@ class Knife(unittest.TestCase):
                   'entry = next((e for e in NK.sending_seats() if e["seat5"] == frm["seat"]), None)',
                   'entry = next((e for e in NK.read_map()["seats"] if e.get("status") == "active" and e["seat5"] == frm["seat"]), None)',
                   "SendAfterSwitch.test_n1_send_with_current_persona_key", timeout=300)
+    def test_k3_dup_rejects_whole(self):
+        rt = "test-chat-roster-d07f9-1015.py"
+        with knife_copy(REPO, "src/cockpit/chat_roster.py", "                dup.add(key)",
+                        "                raise RosterError(\"duplicate_seat\")", tests=(rt,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / rt), "-k", "test_r4_parse"], cwd=str(root), max_procs=60, timeout=120)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("RosterError", r.stdout + r.stderr)                 # 紅在刀上,不是複本缺檔
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k1_no_fallback(self):
