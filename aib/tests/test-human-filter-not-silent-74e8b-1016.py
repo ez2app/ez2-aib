@@ -105,7 +105,7 @@ def check_h3(t, mod):
     t.assertEqual(rec.get("human_words"), "transcript_missing(找不到這一席的對話檔)")
     on_disk = json.loads((Path(t.tmp) / "state" / "tidy" / "abcde.json").read_text(encoding="utf-8"))
     t.assertEqual(on_disk.get("human_words"), "transcript_missing(找不到這一席的對話檔)")
-    t.assertEqual(on_disk.get("human_words_count"), 0)      # verify 第 2 項靠這個判「真人沒講話」
+    t.assertIsNone(on_disk.get("human_words_count"))        # 沒有這一輪起點 ⇒ 量不到本輪句數,verify 不當「真人沒講話」(#312 r3 B-1)
 
 
 def write_receipt(t, value):

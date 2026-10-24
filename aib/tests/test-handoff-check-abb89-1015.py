@@ -221,6 +221,7 @@ class Verify(unittest.TestCase):
         for hw, n, want in ((self.mt.HUMAN_WORDS_FALLBACK, 5, False), ("ok", 2, False),
                             (self.mt.HUMAN_WORDS_UNAVAILABLE, 0, False), ("", 0, False),
                             (self.mt.HUMAN_WORDS_NO_TRANSCRIPT, 0, False),        # 找不到對話檔 ≠ 沒講話(B-M1)
+                            (self.mt.HUMAN_WORDS_FALLBACK, None, False), ("ok", None, False),   # 量不到本輪起點(r3 B-1)
                             (self.mt.HUMAN_WORDS_FALLBACK, 0, True), ("ok", 0, True)):
             self.tidy["human_words"], self.tidy["human_words_count"] = hw, n
             self.assertEqual(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"], want, (hw, n))

@@ -10,7 +10,7 @@ W2 缺 human_filter ⇒ human_words 從這一席的對話檔讀出真人原話(�
 W3 交接筆記:同一輪本席同一步的上一則 ⇒ 取代;別席 / 別步 / 上一輪 / 沒有這一輪起點 ⇒ 不取代;步驟標籤只取數字
 W4 總結第二大腦:取代本席同專案上一則總結(別席 / 別專案不取代);寫不進回 ok=false、不丟例外
 W5 總結內文帶標題、大項、摘要、下一步;不帶證據指令
-W6–W9(r2):認不出抬頭 / 量不到 bot ⇒ 標讀不到;句數從本輪起點算;回顧 CLI 筆記寫不進 rc 2
+W6–W9(r2–r3):認不出抬頭 / 量不到 bot ⇒ 標讀不到;句數一律從本輪起點算(量不到 ⇒ None、重算認不出 ⇒ 讀不到);回顧 CLI 筆記寫不進 rc 2
 刀:K1 退路篩永遠 True ⇒ W1 紅;K2 不看這一輪起點 ⇒ W3 紅;K3 總結不帶 supersedes ⇒ W4 紅
 """
 import json
@@ -194,28 +194,56 @@ class Behaviour(Base):
             self.assertEqual(memory_tidy.human_words({"code": "hhhhh", "seat_uid": "u"}, ""), [])
         self.assertEqual(memory_tidy.words_source("hhhhh"), NO_TRANSCRIPT)
 
-    def test_w7_round_count_from_round_start(self):
-        """收據的句數從這一輪起點算,不從上一張收據之後(輪中整理過、之後沒再講也不能 0 句放行;#312 r2 B-H2)。"""
-        seen = []
+    def _collect(self, since, rs0, words_by_since, src_after=None):
+        """跑 collect(外部全換假的)回 collect.json。words_by_since(since) ⇒ 句數;src_after = 第二次讀之後的來源。"""
+        calls = []
 
-        def fake_words(ctx, since="", span_rounds=False):
-            seen.append(since)
-            return [("t", "a"), ("t", "b"), ("t", "c")] if since <= "2026-10-24T12:00:00+08:00" else []
+        def fake_words(ctx, s="", span_rounds=False):
+            calls.append(s)
+            if len(calls) > 1 and src_after:
+                memory_tidy._LAST_SOURCE[ctx["code"]] = src_after
+            elif len(calls) == 1:
+                memory_tidy._LAST_SOURCE[ctx["code"]] = memory_tidy.HUMAN_WORDS_FALLBACK
+            return [("t", "w")] * words_by_since(s)
         tdir = Path(self.tmp) / "tidy"
-        tdir.mkdir()
+        tdir.mkdir(exist_ok=True)
         with mock.patch.object(memory_tidy, "seat_info", return_value={"code": "rrrrr"}), \
                 mock.patch.object(memory_tidy, "facts", return_value="f"), \
                 mock.patch.object(memory_tidy, "render_draft", return_value="d"), \
                 mock.patch.object(memory_tidy, "persona_card", return_value=None), \
                 mock.patch.object(memory_tidy, "main_persona_target", return_value=(None, "")), \
-                mock.patch.object(memory_tidy, "evidence_since", return_value="2026-10-24T13:00:00+08:00"), \
+                mock.patch.object(memory_tidy, "evidence_since", return_value=since), \
                 mock.patch.object(memory_tidy, "human_words", side_effect=fake_words), \
-                mock.patch.object(memory_tidy, "words_source", return_value=memory_tidy.HUMAN_WORDS_FALLBACK), \
                 mock.patch.object(memory_tidy, "tidy_dir", return_value=tdir), \
-                mock.patch.object(aib_handoff, "current_round_start", return_value=1_792_814_400.0):   # 10-24 12:00 +08
+                mock.patch.object(aib_handoff, "current_round_start", return_value=rs0):
             memory_tidy.collect("rrrrr")
-        col = json.loads((tdir / "rrrrr.collect.json").read_text(encoding="utf-8"))
-        self.assertEqual((col["human_words"], col["human_words_round_count"]), ([], 3), seen)
+        return json.loads((tdir / "rrrrr.collect.json").read_text(encoding="utf-8"))
+
+    def test_w7_round_count_from_round_start(self):
+        """收據的句數一律從這一輪起點算(#312 r2 B-H2、r3 A-1 / B-1 / B-2)。"""
+        noon = 1_792_814_400.0                                   # 2026-10-24 12:00 +08
+        early = lambda s: 3 if s <= "2026-10-24T12:00:00+08:00" else 0     # 真人 12:00 後講了 3 句,13:00 後沒講
+        # 上一張收據在本輪中(13:00):只算 13:00 後 = 0 句 ⇒ 重算本輪 = 3
+        col = self._collect("2026-10-24T13:00:00+08:00", noon, early)
+        self.assertEqual((col["human_words"], col["human_words_round_count"]), ([], 3))
+        # 上一張收據在上一輪(11:00、那時講 2 句):本輪其實 0 句 ⇒ 0,不把上一輪尾巴算進來
+        col = self._collect("2026-10-24T11:00:00+08:00", noon, lambda s: 2 if s <= "2026-10-24T11:30" else 0)
+        self.assertEqual(col["human_words_round_count"], 0)
+        # 量不到本輪起點 ⇒ None(verify 不當沉默)
+        col = self._collect("2026-10-24T13:00:00+08:00", 0.0, early)
+        self.assertIsNone(col["human_words_round_count"])
+        # 重算時認不出(標讀不到)⇒ 來源用較差的那個,不還原成第一次的 fallback
+        col = self._collect("2026-10-24T13:00:00+08:00", noon, lambda s: 0, src_after=NO_TRANSCRIPT)
+        self.assertEqual(col["human_words_status"], NO_TRANSCRIPT)
+        self.assertEqual(memory_tidy.words_source("rrrrr"), NO_TRANSCRIPT)
+
+    def test_w7b_apply_receipt_uses_round_count(self):
+        """apply 收據的 human_words_count = collect 的 human_words_round_count;舊 collect 沒這欄 ⇒ None(r3 A-2、B-3)。"""
+        src = Path(memory_tidy.__file__).read_text(encoding="utf-8")
+        line = [l for l in src.splitlines() if l.strip().startswith('rec["human_words_count"]')]
+        self.assertEqual(len(line), 1, line)
+        self.assertIn('col.get("human_words_round_count")', line[0])
+        self.assertNotIn("len(", line[0])
 
     def test_w8_bot_check_unmeasured_is_unreadable(self):
         """退路篩量不到是不是 bot 席 ⇒ 不收、標讀不到(r2 B-R5)。"""

@@ -279,7 +279,7 @@ class _FallbackFilter:
             import dm_header                                  #   名字帶空格的新式、舊式 [@x > @y …] 都在這裡擋(#312 審查 A1)
             if dm_header.parse(text):
                 return False, {"why": "dm_header"}
-        except ImportError:                                   # 認不出抬頭寧可不收,而且標成讀不到(不讓 0 句被當沉默放行;r2 A-S2)
+        except Exception:  # noqa: BLE001 —— 認不出抬頭寧可不收,而且標成讀不到(不讓 0 句被當沉默放行;r2 A-S2、r3 A-3)
             _LAST_SOURCE[str((_seat or {}).get("code") or "")] = HUMAN_WORDS_NO_TRANSCRIPT
             return False, {"why": "dm_header_unavailable"}
         return True, {"why": "fallback"}
@@ -532,17 +532,20 @@ def collect(seat="", out=None, repo=None):
     since = evidence_since(ctx["code"])
     words = [w for _t, w in human_words(ctx, since)]
     src = words_source(ctx["code"])
-    round_n = len(words)
-    try:                                       # verify 的「本輪 0 句」用這一輪起點算,不用上一張收據之後(輪中整理過就會少算;#312 r2 B-H2)
+    # verify 的「本輪 0 句」一律從這一輪起點算(#312 r2 B-H2、r3 B-1):量不到起點 / 重算出錯 ⇒ None(verify 不當沉默)
+    round_n = None
+    try:
         import aib_handoff
         rs0 = aib_handoff.current_round_start(ctx["code"])
         if rs0:
             r_since = datetime.datetime.fromtimestamp(rs0).astimezone().isoformat(timespec="seconds")
-            if not since or _when(r_since) < _when(since):
-                round_n = len(human_words(ctx, r_since))
-                _LAST_SOURCE[ctx["code"]] = src
+            round_n = len(human_words(ctx, r_since))
+            src2 = words_source(ctx["code"])
+            if human_words_usable(src) and not human_words_usable(src2):
+                src = src2                     # 兩次讀取取較差的:重算時認不出就標讀不到,不還原(r3 B-2)
     except Exception:  # noqa: BLE001
-        pass
+        round_n = None
+    _LAST_SOURCE[ctx["code"]] = src
     _write_json(tidy_dir() / ("%s.collect.json" % ctx["code"]),
                 {"nonce": nonce, "facts_sha": _sha(ftext.strip("\n")), "at": _now(), "project_uid": ctx.get("project_uid"),
                  "persona_sha": _sha(pc["text"]) if pc else "", "persona_since": since,
@@ -1025,7 +1028,7 @@ def apply(text, seat="", defer_big=False, skip_context=False, add_only=False):
            "model": ctx["model"], "project_uid": ctx.get("project_uid") or "", "nonce": parts["nonce"], "files": files}
     rec["human_words"] = hw
     rec["persona_uid"] = ctx.get("persona_uid") or ""     # verify 比 writes.jsonl 的卡號(主人格那筆不算本席;#312 r2 A-M1)
-    rec["human_words_count"] = col.get("human_words_round_count", len(col.get("human_words") or []))   # verify:本輪有原話卻 skipped 人格 ⇒ 紅
+    rec["human_words_count"] = col.get("human_words_round_count")   # 本輪起點算的句數;舊 collect / 量不到 = None ⇒ verify 不當沉默
     _write_json(tidy_dir() / ("%s.json" % ctx["code"]), rec)
     memory_archive.spawn_background()           # 一天一次的 90 天清理,背景、不等
     return rec
