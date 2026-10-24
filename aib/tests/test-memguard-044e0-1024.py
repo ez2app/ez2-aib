@@ -4,18 +4,30 @@
 狀態根在暫存夾;真行程只起測試自己的子孫,只殺自己起的 pid。
 G1 門檻:預設 max(4 GB, 35% 實體記憶體);環境變數可改但不低於 1 GB;aib test 上限預設 2048、0 = 關、不低於 256
 G2 直譯器連續 2 拍超過門檻才收(TERM);一拍尖峰不收;非直譯器(claude)、別的 uid、自己的祖先一律不看
-G3 開發分級:指令列有 scratchpad / tests / tmp 記號 ⇒ 用 dev 上限;沒有 ⇒ 一般上限
+G3 開發分級:直譯器跑的腳本在 scratchpad / tests / 暫存根 ⇒ dev 上限;沒有 ⇒ 一般上限
+G3b 相對路徑用目標行程的 cwd 解(不是守門自己的)、cwd 不知道 ⇒ 不判 dev、不是檔 ⇒ 不判 dev;
+    python 合寫短選項(-Bc / -uc / -mMOD / -Wx)、--check-hash-based-pycs 帶值、`-` 與沒腳本(stdin)⇒ 內嵌
+G11 multiprocessing 子行程(spawn_main / resource_tracker / --multiprocessing-fork)沿用父行程分級
 G4 pid 重用:送訊號前開始時間對不上 ⇒ changed,不送任何訊號
 G5 dry-run 不殺、留痕一行、紀錄檔 0600、不含整條指令列
 G6 鎖:同一個狀態根只有一條守門拿得到鎖
 G7 TreeCap 真行程:孫行程配置 400 MB、上限 256 ⇒ 命中的是孫行程、整棵都收掉
 G9 Codex 席(node codex resume / codex exec -c)、本機 runner、node 一般腳本不收;暫存根 node 腳本 dev、python -m general
-G10 argv 精確讀(含空白引數)
-G8 runner._run_one 端到端:測試配置 400 MB、AIB_TEST_MEM_CAP_MB=256 ⇒ rc 137、輸出帶 memory_cap;上限關掉 ⇒ 照常綠
+G9b node 帶值選項(--env-file / --inspect-port / --experimental-loader / --title / --input-type)的值不當腳本
+G10 argv 精確讀(含空白引數、空字串引數不位移);目標行程 cwd 讀得到
+G12 環境變數「²」這種 isdigit 但不是十進位 ⇒ 用預設;守門起不來 ⇒ 鎖放掉、留痕
+G13 ancestors() 走到 init 或環就停
+G14 TreeCap:根的開始時間對不上(pid 重用)⇒ 不收;子孫開始時間對不上 ⇒ 那支不收
+G8 runner._run_one 端到端:測試配置 400 MB、AIB_TEST_MEM_CAP_MB=256 ⇒ rc 137、輸出帶 memory_cap、
+   紅格有 MEMCAP:memory_cap(舊紅清單吃不掉);上限關掉 ⇒ 同一支 400 MB 照常綠
+G15 runner 逾時:測試留著背景孫行程拿管線 ⇒ timeout+幾秒內回 rc 124、紅格 TIMEOUT:timeout、孫行程一起收
 刀(複本 + run_guarded):K1 TreeCap 上限判斷拿掉 ⇒ G7 紅;K2 連兩拍確認拿掉 ⇒ G2 紅;
 K3 開發分級拿掉 ⇒ G3 紅;K4 開始時間不比 ⇒ G4 紅;K5 node 也套一般上限 ⇒ G9 紅;
-K6 腳本之後的 -c 也當內嵌 ⇒ G3 紅
+K6 腳本之後的 -c 也當內嵌 ⇒ G3 紅;K7 相對路徑改用守門自己的 cwd ⇒ G3b 紅;K8 multiprocessing 不沿用 ⇒ G11 紅;
+K9 TreeCap 不比根開始時間 ⇒ G14 紅;runner 刀:R1 逾時改回 communicate() ⇒ G15 紅;R2 拿掉固定紅格 ⇒ G8 紅;
+R3 拿掉 rc 137 覆寫 ⇒ G8 紅。刀一律斷言輸出出現「FAIL: <目標>」且沒有 ERROR(紅在對的斷言)
 """
+import selectors
 import json
 import os
 import shutil
@@ -45,6 +57,25 @@ UID = os.getuid()
 GB = 2 ** 30
 
 
+def readline_timeout(fh, seconds=20):
+    sel = selectors.DefaultSelector()
+    sel.register(fh, selectors.EVENT_READ)
+    try:
+        if not sel.select(seconds):
+            raise AssertionError("等子行程輸出逾時")
+        return fh.readline()
+    finally:
+        sel.close()
+
+
+def kill_quiet(*pids):
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (OSError, TypeError):
+            pass
+
+
 def table(rows):
     """rows: {pid: (uid, ppid, 名字, 開始, MB)} ⇒ 假的 info()。"""
     def info(pid):
@@ -64,6 +95,28 @@ class Limits(unittest.TestCase):
         self.assertEqual(MG.test_cap_mb({"AIB_TEST_MEM_CAP_MB": "100"}), 256)
         self.assertEqual(MG.test_cap_mb({"AIB_TEST_MEM_CAP_MB": "abc"}), 2048)
 
+    def test_g12_non_decimal_env_and_thread_failure(self):
+        self.assertEqual(MG.test_cap_mb({"AIB_TEST_MEM_CAP_MB": "\u00b2"}), 2048)
+        self.assertEqual(MG.limit_mb({"EZ2_MEMGUARD_LIMIT_MB": "\u00b2"}, total=8 * GB), 4096)
+        self.assertEqual(MG.limit_mb({"EZ2_MEMGUARD_LIMIT_MB": "\u0663\u0660\u0660\u0660"}, total=8 * GB), 4096)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with mock.patch.object(MG, "Guard", side_effect=ValueError("boom")):
+            MG._thread_main(False, root=tmp)
+        fd = MG.try_lock(tmp)
+        self.assertIsNotNone(fd, "守門起不來之後鎖沒放掉,別艙接不了手")
+        os.close(fd)
+        rows = (Path(tmp) / "logs" / "memguard.jsonl").read_text().splitlines()
+        self.assertEqual(json.loads(rows[-1])["action"], "mem_guard_failed")
+
+    def test_g13_ancestors(self):
+        info = table({10: (UID, 5, "a", "1", 1), 5: (UID, 1, "b", "1", 1), 1: (0, 0, "launchd", "1", 1)})
+        self.assertEqual(MG.ancestors(10, info=info), {10, 5, 1})
+        loop = table({20: (UID, 21, "a", "1", 1), 21: (UID, 20, "b", "1", 1)})
+        self.assertEqual(MG.ancestors(20, info=loop), {20, 21})
+        self.assertEqual(MG.ancestors(30, info=table({})), {30})
+        self.assertIn(os.getppid(), MG.ancestors())
+
 
 class GuardLogic(unittest.TestCase):
     def setUp(self):
@@ -73,10 +126,12 @@ class GuardLogic(unittest.TestCase):
 
     def guard(self, rows, args=None, **kw):
         info = table(rows)
+        cwds = kw.pop("cwds", None) or {}
         g = MG.Guard(env={}, dry_run=kw.pop("dry_run", False), limit=kw.pop("limit", 5000), pids=list(rows),
                      info=info, kill=lambda p, s: self.killed.append((p, s)), sleep=lambda s: None,
                      notify_fn=lambda t: None, args_fn=lambda p: (args or {}).get(p, ["python3", "app.py"]),
-                     root=self.tmp, uid=UID, dev_limit=kw.pop("dev_limit", 2000))
+                     root=self.tmp, uid=UID, dev_limit=kw.pop("dev_limit", 2000),
+                     cwd_fn=lambda p: cwds.get(p))
         g.protect = kw.pop("protect", set())
         return g
 
@@ -118,19 +173,66 @@ class GuardLogic(unittest.TestCase):
         self.assertFalse(MG.is_dev(["python3", "/opt/app/server.py"]))
         self.assertFalse(MG.is_dev(["python3", "/opt/app/tool.py", "-c", "x"]))     # 腳本之後的 -c 是腳本的旗標
 
+    def test_g3b_relative_cwd_and_python_flags(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        app = Path(d, "app")
+        (app / "tests").mkdir(parents=True)
+        Path(app, "tests", "test_x.py").write_text("")
+        Path(d, "server.py").write_text("")
+        home_app = Path.home()                     # 一個不在暫存根的 cwd
+        c = MG.classify
+        self.assertEqual(c("python3", ["python3", "tests/test_x.py"], str(app)), "dev")
+        self.assertEqual(c("python3", ["python3", "tests/test_x.py"], None), "general")     # cwd 不知道 ⇒ 不判 dev
+        self.assertEqual(c("python3", ["python3", "server.py"], str(home_app)), "general")   # 守門自己在哪不重要
+        self.assertEqual(c("node", ["node", "8000"], d), None)                               # 不是檔 ⇒ 不判 dev
+        self.assertEqual(c("python3", ["python3", "-mhttp.server", "8000"], d), "general")
+        self.assertEqual(c("python3", ["python3", "-m", "http.server", "8000"], d), "general")
+        self.assertEqual(c("python3", ["python3", "--check-hash-based-pycs", "always", "/opt/app/s.py"], d), "general")
+        self.assertEqual(c("python3", ["python3", "-Wignore", "/opt/app/s.py"], d), "general")
+        self.assertEqual(c("python3", ["python3", "-Q", "/opt/app/s.py"], d), "general")
+        for inline in (["python3", "-Bc", "x"], ["python3", "-uc", "x"], ["python3", "-c", "x"], ["python3", "-"],
+                       ["python3"], ["python3", "-u"], ["node", "-pe", "1"], ["node"], ["node", "-"]):
+            self.assertEqual(c(inline[0], inline, d), "dev", inline)
+        self.assertEqual(c("php-cgi", ["php-cgi"], d), None)                                 # php 沒腳本不算內嵌
+        # 端到端:Guard 用 cwd_fn 拿目標行程的 cwd
+        rows = {210: (UID, 1, "Python", "1.0", 3000), 211: (UID, 1, "Python", "1.0", 3000)}
+        g = self.guard(rows, args={210: ["python3", "tests/test_x.py"], 211: ["python3", "tests/test_x.py"]},
+                       cwds={210: str(app), 211: None})
+        g.tick()
+        self.assertEqual([r["pid"] for r in g.tick()], [210])
+
+    def test_g11_multiprocessing_inherits_parent(self):
+        spawn = ["python3", "-c", "from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=5, pipe_handle=7)",
+                 "--multiprocessing-fork"]
+        tracker = ["python3", "-c", "from multiprocessing.resource_tracker import main;main(6)"]
+        rows = {600: (UID, 1, "Python", "1.0", 10), 601: (UID, 600, "Python", "1.0", 3000),
+                602: (UID, 600, "Python", "1.0", 3000), 610: (UID, 1, "Python", "1.0", 10),
+                611: (UID, 610, "Python", "1.0", 3000)}
+        args = {600: ["python3", "/opt/app/server.py"], 601: spawn, 602: tracker,
+                610: ["python3", "/x/scratchpad/repro.py"], 611: spawn}
+        g = self.guard(rows, args=args)
+        g.tick()
+        acted = g.tick()
+        self.assertEqual([(r["pid"], r["tier"]) for r in acted], [(611, "dev")])
+        self.assertEqual(MG.classify("python3", spawn), "inherit")
+        self.assertEqual(MG.classify("python3", tracker), "inherit")
+
     def test_g9_live_seats_and_runner_never(self):
         """#322 r1(@abb89 High):Codex 席行程名是 node、`codex exec -c` 帶 -c;本機 runner 也是 node。都不收。"""
         rows = {500: (UID, 1, "node", "1.0", 9000), 501: (UID, 1, "node", "1.0", 9000),
                 502: (UID, 1, "node", "1.0", 9000), 503: (UID, 1, "node", "1.0", 9000),
                 504: (UID, 1, "node", "1.0", 3000), 505: (UID, 1, "Python", "1.0", 3000),
-                506: (UID, 1, "Python", "1.0", 6000)}
+                506: (UID, 1, "Python", "1.0", 6000), 507: (UID, 1, "node", "1.0", 9000)}
         args = {500: ["node", "/opt/homebrew/bin/codex", "resume", "--dangerously-bypass-approvals-and-sandbox"],
                 501: ["node", "/opt/homebrew/bin/codex", "exec", "-c", "web_search=live", "hi"],
                 502: ["./externals/node24/bin/node", "./bin/RunnerService.js"],
                 503: ["node", "/opt/app/server.js"],
                 504: ["node", "/private/tmp/x/repro.js"],
                 505: ["python3", "/opt/app/tool.py", "-c", "conf.json"],
-                506: ["python3", "-m", "http.server"]}
+                506: ["python3", "-m", "http.server"],
+                507: ["node", "--env-file", ".env", "--inspect-port", "9229", "--experimental-loader", "./l.mjs",
+                      "--title", "x", "--input-type", "module", "/opt/app/server.js"]}
         g = self.guard(rows, args=args)
         g.tick()
         acted = g.tick()
@@ -138,17 +240,43 @@ class GuardLogic(unittest.TestCase):
         self.assertEqual({r["pid"]: r["tier"] for r in acted}, {504: "dev", 506: "general"})
         self.assertEqual({r["pid"]: r["script"] for r in acted}, {504: "repro.js", 506: "-m http.server"})
 
+    def test_g9b_node_value_options(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for opt, val in (("--env-file", ".env"), ("--inspect-port", "9229"), ("--experimental-loader", "./l.mjs"),
+                         ("--title", "srv"), ("--input-type", "module")):
+            Path(d, val).write_text("")
+            self.assertEqual(MG.script_of("node", ["node", opt, val, "/opt/app/server.js"]),
+                             ("script", "/opt/app/server.js"), opt)
+            self.assertIsNone(MG.classify("node", ["node", opt, val, "/opt/app/server.js"], d), opt)
+
     def test_g10_real_argv(self):
         """argv 用 sysctl / /proc 精確讀(含空白的引數不被拆開)。"""
-        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "a b"])
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "a b", "", "z"], cwd=d)
         try:
             time.sleep(0.3)
+            self.assertEqual(MG.proc_cwd(p.pid), os.path.realpath(d))          # 目標行程的 cwd,不是自己的
             a = MG.cmd_args(p.pid)
-            self.assertEqual(a[1:], ["-c", "import time; time.sleep(30)", "a b"])
+            self.assertEqual(a[1:], ["-c", "import time; time.sleep(30)", "a b", "", "z"])
             self.assertEqual(MG.classify(MG.proc_info(p.pid)[2], a), "dev")
         finally:
             p.kill()
             p.wait()
+
+    def test_g14_treecap_pid_reuse(self):
+        sent = []
+        t = {700: (1, "python3", "2.0", 3000), 701: (700, "python3", "1.0", 3000)}
+        info = table({700: (UID, 1, "python3", "2.0", 3000), 701: (UID, 700, "python3", "1.0", 3000)})
+        tc = MG.TreeCap(700, 256, table=lambda: t, kill=lambda p, s: sent.append(p), info=info, root_start="1.0")
+        self.assertIsNone(tc.check_once())
+        self.assertEqual(sent, [])
+        # 根對得上、快照之後子孫被換掉(開始時間不同)⇒ 只收根
+        info2 = table({700: (UID, 1, "python3", "2.0", 3000), 701: (UID, 700, "python3", "9.0", 3000)})
+        tc = MG.TreeCap(700, 256, table=lambda: t, kill=lambda p, s: sent.append(p), info=info2, root_start="2.0")
+        self.assertIsNotNone(tc.check_once())
+        self.assertEqual(sent, [700])
 
     def test_g4_pid_reuse(self):
         sent = []
@@ -199,8 +327,9 @@ class RealTree(unittest.TestCase):
         f = os.path.join(d, "grow.py")
         Path(f).write_text(GROW)
         p = subprocess.Popen([sys.executable, f, "parent"], stdout=subprocess.PIPE, text=True)
+        child = None
         try:
-            child = int(p.stdout.readline().split()[1])
+            child = int(readline_timeout(p.stdout).split()[1])
             tc = MG.TreeCap(p.pid, 256, tick_s=0.1).start()
             t0 = time.time()
             while tc.hit is None and time.time() - t0 < 30:
@@ -216,12 +345,9 @@ class RealTree(unittest.TestCase):
                 time.sleep(0.1)
             self.assertIsNone(MG.proc_info(child))
         finally:
+            kill_quiet(child, p.pid)
             p.stdout.close()
-            for pid in (p.pid,):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+            p.wait()
 
 
 class RunnerCap(unittest.TestCase):
@@ -231,7 +357,8 @@ class RunnerCap(unittest.TestCase):
         self.addCleanup(shutil.rmtree, str(repo), True)
         (repo / "tests").mkdir()
         (repo / "tests" / "test-big.py").write_text(
-            "import time\nblob = b'x' * (400 * 1024 * 1024)\ntime.sleep(30)\nprint('done')\n")
+            "import os, time\nblob = b'x' * (400 * 1024 * 1024)\ntime.sleep(float(os.environ.get('BIG_SLEEP', '30')))\n"
+            "print('done')\n")
         (repo / "tests" / "test-small.py").write_text("print('ok')\n")
         env = dict(os.environ)
         with mock.patch.dict(os.environ, {"AIB_TEST_MEM_CAP_MB": "256"}):
@@ -239,11 +366,45 @@ class RunnerCap(unittest.TestCase):
             ok = runner._run_one(repo, "tests/test-small.py", env, timeout=60)
         self.assertEqual(r["rc"], 137)
         self.assertIn("memory_cap", r["output"])
+        self.assertIn(runner.MEMCAP_CELL, r["fail_cells"])
         self.assertLess(r["elapsed_s"], 25)
         self.assertEqual(ok["rc"], 0)
+        self.assertEqual(ok["fail_cells"], [])
         with mock.patch.dict(os.environ, {"AIB_TEST_MEM_CAP_MB": "0"}):
-            off = runner._run_one(repo, "tests/test-small.py", env, timeout=60)
-        self.assertEqual(off["rc"], 0)
+            off = runner._run_one(repo, "tests/test-big.py", dict(env, BIG_SLEEP="2"), timeout=60)
+        self.assertEqual(off["rc"], 0, off["output"])
+        self.assertIn("done", off["output"])
+
+    def test_g15_timeout_with_background_grandchild(self):
+        import runner  # noqa: E402
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(repo), True)
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test-bg.py").write_text(
+            "import subprocess, sys, time\n"
+            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(40)'])\n"
+            "print('grandchild', g.pid, flush=True)\n"
+            "time.sleep(40)\n")
+        t0 = time.monotonic()
+        r = runner._run_one(repo, "tests/test-bg.py", dict(os.environ), timeout=2)
+        took = time.monotonic() - t0
+        gpid = None
+        for ln in r["output"].splitlines():
+            if ln.startswith("grandchild "):
+                gpid = int(ln.split()[1])
+        try:
+            self.assertEqual(r["rc"], 124, r["output"])
+            self.assertLess(took, 10, "有背景孫行程時逾時 %.1f 秒才回" % took)
+            self.assertIn(runner.TIMEOUT_CELL, r["fail_cells"])
+            self.assertIsNotNone(gpid, r["output"])
+            for _ in range(30):
+                if MG.proc_info(gpid) is None:
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(MG.proc_info(gpid), "逾時後孫行程沒一起收")
+            print("G15 有背景孫行程的逾時:timeout=2 ⇒ %.2f 秒回" % took, file=sys.stderr)
+        finally:
+            kill_quiet(gpid)
 
 
 KNIVES = [
@@ -256,21 +417,48 @@ KNIVES = [
      "GuardLogic.test_g4_pid_reuse"),
     ("K5", '    return "general" if kind == "python" else None', '    return "general"',
      "GuardLogic.test_g9_live_seats_and_runner_never"),
-    ("K6", '        if a.startswith("-"):\n            continue\n        return "script", a', '        continue',
+    ("K6", '        return "script", a\n    if kind in NO_SCRIPT_INLINE',
+     '        return ("inline", None) if "-c" in args else ("script", a)\n    if kind in NO_SCRIPT_INLINE',
      "GuardLogic.test_g3_dev_tier"),
+    ("K7", "        path = what if os.path.isabs(what) else (os.path.join(cwd, what) if cwd else None)",
+     "        path = os.path.abspath(what)", "GuardLogic.test_g3b_relative_cwd_and_python_flags"),
+    ("K8", '        if tier != "inherit":\n            return tier', '        if tier != "inherit":\n            return tier\n'
+     '        return "dev"', "GuardLogic.test_g11_multiprocessing_inherits_parent"),
+    ("K9", "        if self.root not in t or self.root_start is None or t[self.root][2] != self.root_start:",
+     "        if self.root not in t:", "GuardLogic.test_g14_treecap_pid_reuse"),
+]
+
+RUNNER_KNIVES = [
+    ("R1", "                if memguard:\n                    memguard.kill_tree(proc.pid, cap.root_start)\n"
+           "                proc.kill()\n                proc.wait()\n",
+     "                proc.kill()\n                e.stdout, e.stderr = proc.communicate()\n",
+     "RunnerCap.test_g15_timeout_with_background_grandchild"),
+    ("R2", "    if cut and cut not in cells:", "    if False:", "RunnerCap.test_g8_run_one_memory_cap"),
+    ("R3", "            rc, cut = 137, MEMCAP_CELL", "            cut = MEMCAP_CELL", "RunnerCap.test_g8_run_one_memory_cap"),
 ]
 
 
 class Knife(unittest.TestCase):
-    def test_knives(self):
+    def knife(self, rel, tag, needle, repl, target):
         name = Path(__file__).name
+        with knife_copy(ROOT, rel, needle, repl, tests=(name,)) as root:
+            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), target], cwd=str(root),
+                            max_procs=40, timeout=180)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s" % (tag, out))
+        self.assertIn("FAIL: " + target.split(".")[-1], out, "%s 紅的不是目標斷言\n%s" % (tag, out))
+        self.assertNotIn("ERROR: ", out, "%s 是炸掉不是斷言紅\n%s" % (tag, out))
+
+    def test_knives(self):
         for tag, needle, repl, target in KNIVES:
             with self.subTest(tag):
-                with knife_copy(ROOT, "src/cockpit/memguard.py", needle, repl, tests=(name,)) as root:
-                    r = run_guarded([sys.executable, "-B", str(root / "tests" / name), target], cwd=str(root),
-                                    max_procs=40, timeout=120)
-                self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
-                self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s%s" % (tag, r.stdout, r.stderr))
+                self.knife("src/cockpit/memguard.py", tag, needle, repl, target)
+
+    def test_runner_knives(self):
+        for tag, needle, repl, target in RUNNER_KNIVES:
+            with self.subTest(tag):
+                self.knife("tools/verify/runner.py", tag, needle, repl, target)
 
 
 if __name__ == "__main__":

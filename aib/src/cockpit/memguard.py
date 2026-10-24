@@ -11,8 +11,9 @@
 判法(刻意窄,寧可漏收不可錯殺):
   - 只看**自己這個 uid** 的行程;只看直譯器(python* / node / php* / ruby / perl),而且看的是**直譯器真正跑的腳本**
     (精確 argv:macOS KERN_PROCARGS2 / Linux /proc,只認直譯器自己的選項):
-      dev     內嵌碼(python -c、node -e …)或腳本 realpath 在暫存根 / scratchpad / tests/test-* ⇒ dev 上限
-      general python 的其他腳本 / -m 模組 ⇒ 一般上限
+      dev     內嵌碼(python -c / -Bc、node -e、`-` 或沒腳本 = 讀 stdin)或腳本 realpath 在暫存根 / scratchpad /
+              tests/test-* ⇒ dev 上限(相對路徑用**目標行程**的 cwd 解,解不出或不是檔 ⇒ 不判 dev)
+      general python 的其他腳本 / -m 模組 ⇒ 一般上限;multiprocessing 子行程沿用父行程的分級
       不看    node / php / ruby / perl 的其他腳本(Codex 席 `node …/codex`、GitHub runner `RunnerService.js` 在這);
               腳本名 codex / claude / RunnerService.js 不管怎樣都不看。
     Claude CLI、瀏覽器、Terminal、tmux、系統行程本來就不是直譯器,一律不看:它們大是正常的,收了會掉人的上下文。
@@ -67,10 +68,19 @@ DEFAULT_FRACTION = 0.35
 # 分級看「直譯器真正跑的那支腳本」,不看整條指令列的子字串(#322 r1:Codex 席行程名是 node、`codex exec -c …` 的 -c
 #   是 codex 的旗標,不是直譯器的)。直譯器自己的選項才算:內嵌碼(-c / -e …)或腳本 realpath 在暫存根 / scratchpad /
 #   tests/test-* ⇒ dev;python 其他 ⇒ general;node / php / ruby / perl 其他 ⇒ 不看(Codex、GitHub runner 都在這)。
+#   #322 r2:python 短選項可合寫(-Bc / -uc / -mMOD / -Wignore)⇒ 逐字元掃;`-` 與沒有腳本(stdin / heredoc,AI 重現
+#   最常用,20:34 實案就這類)⇒ 內嵌;認不得的值寧可判不看 / general,不偏 dev(相對路徑要真的是檔才算)。
 INLINE_OPTS = {"python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "php": {"-r"},
                "ruby": {"-e"}, "perl": {"-e", "-E"}}
-VALUE_OPTS = {"python": {"-W", "-X", "-Q"}, "node": {"-r", "--require", "--import", "--loader", "--conditions", "-C"},
+VALUE_OPTS = {"python": {"-W", "-X", "--check-hash-based-pycs"},
+              "node": {"-r", "--require", "--import", "--loader", "--experimental-loader", "--conditions", "-C",
+                       "--env-file", "--inspect-port", "--debug-port", "--title", "--input-type", "--stack-size",
+                       "--max-old-space-size", "--openssl-config", "--redirect-warnings", "--icu-data-dir",
+                       "--diagnostic-dir", "--report-dir", "--heapsnapshot-signal", "--secure-heap"},
               "php": {"-d", "-c", "-z"}, "ruby": {"-I", "-r", "-C"}, "perl": {"-I", "-M", "-m"}}
+PY_SHORT_VALUE = set("WX")          # python 短選項:這幾個吃值(黏在後面或下一個引數)
+NO_SCRIPT_INLINE = {"python", "node"}   # 沒腳本 = 讀 stdin(php-cgi / perl 沒腳本另有用途,不算)
+MP_CHILD_RE = re.compile(r"^\s*from multiprocessing[. ]")
 NEVER_SCRIPTS = {"codex", "claude", "RunnerService.js"}       # 活席 / 本機 runner:不管多大都不收
 TEST_SCRIPT_RE = re.compile(r"/tests?/test[-_][^/]*$")
 INTERP_RE = re.compile(r"^(python[0-9.]*|node|php[0-9.]*|php-cgi|ruby[0-9.]*|perl[0-9.]*)$", re.I)
@@ -144,7 +154,7 @@ def _linux_info(pid):
         return None
     m = {k: v.strip() for k, v in (ln.split(":", 1) for ln in st.splitlines() if ":" in ln)}
     try:
-        uid = int(m["Uid"].split()[0])
+        uid = int(m["Uid"].split()[1])          # 有效 uid,跟 macOS pbi_uid 同一個意思
         ppid = int(m["PPid"])
         rss = int(m.get("VmRSS", "0 kB").split()[0]) * 1024
         start = sf.rsplit(")", 1)[1].split()[19]
@@ -189,12 +199,23 @@ def mem_total_bytes():
     return 16 * 2 ** 30
 
 
+def _env_int(raw):
+    """只收 ASCII 十進位(「²」過 isdigit 但 int() 會丟 —— #322 r2 L4);其他回 None。"""
+    raw = (raw or "").strip()
+    if not (raw.isascii() and raw.isdecimal()):
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def limit_mb(env=None, total=None):
     """門檻(MB):環境變數優先但不低於 FLOOR_MB;沒設 ⇒ max(DEFAULT_MIN_MB, 實體記憶體 × DEFAULT_FRACTION)。"""
     env = os.environ if env is None else env
-    raw = (env.get("EZ2_MEMGUARD_LIMIT_MB") or "").strip()
-    if raw.isdigit():
-        return max(FLOOR_MB, int(raw))
+    n = _env_int(env.get("EZ2_MEMGUARD_LIMIT_MB"))
+    if n is not None:
+        return max(FLOOR_MB, n)
     total = mem_total_bytes() if total is None else total
     return max(DEFAULT_MIN_MB, int(total * DEFAULT_FRACTION / 2 ** 20))
 
@@ -228,7 +249,9 @@ def cmd_args(pid):
         if sys.platform != "darwin":
             with open("/proc/%d/cmdline" % pid, "rb") as fh:
                 raw = fh.read(1 << 20)
-            return [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
+            if raw.endswith(b"\0"):
+                raw = raw[:-1]
+            return [a.decode("utf-8", "replace") for a in raw.split(b"\0")] if raw else []
         libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
         mib = (ctypes.c_int * 3)(1, 49, int(pid))           # CTL_KERN, KERN_PROCARGS2
         size = ctypes.c_size_t(0)
@@ -240,10 +263,30 @@ def cmd_args(pid):
         raw = buf.raw[:size.value]
         argc = int.from_bytes(raw[:4], sys.byteorder)
         rest = raw[4:]
-        rest = rest[rest.index(b"\0"):].lstrip(b"\0")         # 跳過 exec 路徑與補齊的 NUL
+        rest = rest[rest.index(b"\0"):].lstrip(b"\0")         # 跳過 exec 路徑與補齊的 NUL;之後的空引數保留
         return [a.decode("utf-8", "replace") for a in rest.split(b"\0")[:argc]]
     except Exception:  # noqa: BLE001 讀不到 = 不收
         return []
+
+
+class _VnodePathInfo(ctypes.Structure):
+    # struct proc_vnodepathinfo:pvi_cdir / pvi_rdir 各是 vnode_info(152 位元組)+ 路徑(MAXPATHLEN 1024)
+    _fields_ = [("cdir_vi", ctypes.c_uint8 * 152), ("cdir_path", ctypes.c_char * 1024),
+                ("rdir_vi", ctypes.c_uint8 * 152), ("rdir_path", ctypes.c_char * 1024)]
+
+
+def proc_cwd(pid):
+    """目標行程的工作目錄(相對路徑腳本要用它解,不能用守門自己的 cwd —— #322 r2 M1);讀不到回 None。"""
+    try:
+        if sys.platform != "darwin":
+            return os.readlink("/proc/%d/cwd" % pid)
+        vi = _VnodePathInfo()
+        n = _libproc().proc_pidinfo(int(pid), 9, ctypes.c_uint64(0), ctypes.byref(vi), ctypes.sizeof(vi))
+        if n != ctypes.sizeof(vi) or not vi.cdir_path:
+            return None
+        return vi.cdir_path.decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _kind(name):
@@ -254,25 +297,51 @@ def _kind(name):
     return None
 
 
+def _python_short(a, it):
+    """python 合寫短選項 a(如 -Bc、-mfoo、-Wignore):回 ('inline', None) / ('module', 模組) / None(只是旗標)。"""
+    for i, ch in enumerate(a[1:], 1):
+        if ch == "c":
+            return "inline", a[i + 1:] or next(it, "")
+        if ch == "m":
+            return "module", a[i + 1:] or next(it, "")
+        if ch in PY_SHORT_VALUE:
+            if not a[i + 1:]:
+                next(it, None)
+            return None
+    return None
+
+
 def script_of(name, args):
-    """('inline', None) / ('module', 模組) / ('script', 路徑) / (None, None)。只認直譯器自己的選項。"""
+    """('inline', 碼或 None) / ('module', 模組) / ('script', 路徑) / (None, None)。只認直譯器自己的選項。"""
     kind = _kind(name)
     if not kind:
         return None, None
     it = iter(args[1:])
     for a in it:
         if a in INLINE_OPTS.get(kind, ()):
-            return "inline", None
-        if kind == "python" and a == "-m":
-            return "module", next(it, "")
+            return "inline", next(it, "")
         if a in VALUE_OPTS.get(kind, ()):
             next(it, None)
             continue
         if a == "--":
-            return "script", next(it, None)
+            a = next(it, None)
+            if a is None:
+                break
+            return ("inline", None) if a == "-" else ("script", a)
+        if a == "-":
+            return "inline", None
+        if kind == "python" and a.startswith("-") and not a.startswith("--"):
+            got = _python_short(a, it)
+            if got:
+                return got
+            continue
+        if kind == "node" and a.startswith("-") and not a.startswith("--") and len(a) > 2 and a[-1] in "ep":
+            return "inline", next(it, "")              # node 合寫(-pe)
         if a.startswith("-"):
             continue
         return "script", a
+    if kind in NO_SCRIPT_INLINE and args:
+        return "inline", None
     return None, None
 
 
@@ -286,16 +355,22 @@ def _temp_roots():
     return tuple(r.rstrip("/") + "/" for r in roots)
 
 
-def classify(name, args):
-    """'dev'(上限 = dev)/ 'general'(上限 = 一般,只有 python)/ None(不看)。"""
+def classify(name, args, cwd=None):
+    """'dev'(上限 = dev)/ 'general'(上限 = 一般,只有 python)/ 'inherit'(multiprocessing 子行程,沿用父行程)/
+    None(不看)。相對路徑腳本用目標行程的 cwd 解;cwd 不知道 ⇒ 不判 dev。"""
     kind = _kind(name)
     how, what = script_of(name, args)
+    if kind == "python" and ("--multiprocessing-fork" in args or (how == "inline" and MP_CHILD_RE.match(what or ""))):
+        return "inherit"
     if how == "script" and what:
         if os.path.basename(what) in NEVER_SCRIPTS:
             return None
-        real = os.path.realpath(what)
-        if real.startswith(_temp_roots()) or "/scratchpad/" in real or TEST_SCRIPT_RE.search(real):
-            return "dev"
+        # 絕對路徑照字面看(重現腳本跑完常被刪);相對路徑要用目標 cwd 解得出、而且真的是檔(帶值選項的值不算)
+        path = what if os.path.isabs(what) else (os.path.join(cwd, what) if cwd else None)
+        if path and (os.path.isabs(what) or os.path.isfile(path)):
+            real = os.path.realpath(path)
+            if real.startswith(_temp_roots()) or "/scratchpad/" in real or TEST_SCRIPT_RE.search(real):
+                return "dev"
     elif how == "inline":
         return "dev"
     return "general" if kind == "python" else None
@@ -316,7 +391,8 @@ def script_hint(pid, args=None, name="python"):
 def notify(text):
     """盡力而為,失敗不吵(跟 cabin_guard 同一條通知路)。"""
     try:
-        sys.path.insert(0, HERE)
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
         import cabin_guard  # noqa: E402
         cabin_guard.do_notify(text)
     except Exception:  # noqa: BLE001
@@ -327,7 +403,8 @@ def _log(row, root=None):
     d = os.path.join(root or state_root(), "logs")
     try:
         os.makedirs(d, exist_ok=True)
-        fd = os.open(os.path.join(d, "memguard.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        fd = os.open(os.path.join(d, "memguard.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                     0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError:
@@ -370,14 +447,16 @@ def kill_one(pid, start, *, info=proc_info, sleep=time.sleep, kill=os.kill, uid=
 
 class Guard:
     def __init__(self, *, env=None, dry_run=None, limit=None, pids=None, info=proc_info, kill=os.kill,
-                 sleep=time.sleep, notify_fn=notify, args_fn=cmd_args, root=None, uid=None, dev_limit=None):
+                 sleep=time.sleep, notify_fn=notify, args_fn=cmd_args, root=None, uid=None, dev_limit=None,
+                 cwd_fn=proc_cwd):
         env = os.environ if env is None else env
         self.dry_run = (env.get("EZ2_MEMGUARD_DRY_RUN") == "1") if dry_run is None else dry_run
         self.limit = limit_mb(env) if limit is None else limit
         self.pids, self.info, self.kill, self.sleep = pids, info, kill, sleep
-        self.notify_fn, self.args_fn, self.root, self.uid = notify_fn, args_fn, root, uid
+        self.notify_fn, self.args_fn, self.root, self.uid, self.cwd_fn = notify_fn, args_fn, root, uid, cwd_fn
         self.dev_limit = min(self.limit, test_cap_mb(env) or self.limit) if dev_limit is None else dev_limit
         self.args = {}          # (pid, start) -> 指令列(超過 dev 上限才問一次,之後沿用)
+        self.tiers = {}         # (pid, start) -> 分級(同上,問一次沿用)
         self.over = {}          # (pid, start) -> 連續超過幾拍
         self.protect = ancestors(info=info)
 
@@ -389,9 +468,10 @@ class Guard:
             if pid in self.protect or mb < self.dev_limit:
                 continue
             key = (pid, start)
-            if key not in self.args:
+            if key not in self.tiers:
                 self.args[key] = self.args_fn(pid)
-            tier = classify(name, self.args[key])
+                self.tiers[key] = self.tier_of(pid, name, self.args[key])
+            tier = self.tiers[key]
             if tier is None:
                 continue
             lim = self.dev_limit if tier == "dev" else self.limit
@@ -422,7 +502,21 @@ class Guard:
         for k in list(self.args):
             if k not in alive:
                 del self.args[k]
+                self.tiers.pop(k, None)
         return acted
+
+    def tier_of(self, pid, name, args, depth=0):
+        """classify + 目標行程 cwd;multiprocessing 子行程(spawn_main / resource_tracker)沿用父行程的分級 ——
+        ProcessPoolExecutor / uvicorn workers / DataLoader 不能因為長得像 -c 就掉到 dev 上限(#322 r2 M2)。"""
+        tier = classify(name, args, self.cwd_fn(pid) if self.cwd_fn else None)
+        if tier != "inherit":
+            return tier
+        i = self.info(pid)
+        if depth < 8 and i and i[1] > 1:
+            pi = self.info(i[1])
+            if pi and pi[0] == (os.getuid() if self.uid is None else self.uid) and _kind(pi[2]):
+                return self.tier_of(i[1], pi[2], self.args_fn(i[1]), depth + 1)
+        return "general"
 
     def run(self, max_ticks=None, tick_s=TICK_S):
         n = 0
@@ -443,10 +537,10 @@ TEST_CAP_TICK_S = 0.25
 def test_cap_mb(env=None):
     """aib test 每支測試(含子孫)單一行程的上限;AIB_TEST_MEM_CAP_MB 可改,不低於 256 MB,0 = 關。"""
     env = os.environ if env is None else env
-    raw = (env.get("AIB_TEST_MEM_CAP_MB") or "").strip()
-    if raw == "0":
+    n = _env_int(env.get("AIB_TEST_MEM_CAP_MB"))
+    if n == 0:
         return 0
-    return max(256, int(raw)) if raw.isdigit() else TEST_CAP_DEFAULT_MB
+    return max(256, n) if n is not None else TEST_CAP_DEFAULT_MB
 
 
 def descendants(root, table):
@@ -475,30 +569,55 @@ def tree_table(uid=None, info=proc_info):
     return t
 
 
+def kill_tree(root, root_start, *, table=tree_table, info=proc_info, kill=os.kill):
+    """整棵由葉往根 SIGKILL(根先死的話子孫會變孤兒繼續長);每一支送訊號前再比一次開始時間(防 pid 重用)。
+    根的開始時間對不上 ⇒ 什麼都不收。回收掉的 pid 清單。給 TreeCap 與 aib test 逾時共用。"""
+    t = table()
+    if root not in t or (root_start is not None and t[root][2] != root_start):
+        return []
+    tree = [root] + descendants(root, t)
+    done = []
+    for p in reversed(tree):
+        i = info(p)
+        if not i or i[3] != t[p][2]:
+            continue
+        try:
+            kill(p, signal.SIGKILL)
+            done.append(p)
+        except OSError:
+            pass
+    return done
+
+
+def start_of(pid, info=proc_info):
+    i = info(pid)
+    return i[3] if i else None
+
+
 class TreeCap:
     """看一棵行程樹(根 = 測試行程):任何一支超過 cap_mb ⇒ 整棵由葉往根收,記下是誰、多大。
-    用法:tc = TreeCap(pid, cap); tc.start(); …等測試結束…; tc.stop(); tc.hit ⇒ None 或 {name, pid, mb, cap_mb}。"""
+    用法:tc = TreeCap(pid, cap); tc.start(); …等測試結束…; tc.stop(); tc.hit ⇒ None 或 {name, pid, mb, cap_mb}。
+    建立時記下根的開始時間;之後每拍與每次送訊號前都比(根被回收、pid 被重用就不動手 —— #322 r2 L3)。"""
 
-    def __init__(self, root_pid, cap_mb, *, tick_s=TEST_CAP_TICK_S, table=tree_table, kill=os.kill):
-        self.root, self.cap, self.tick_s, self.table, self.kill = root_pid, cap_mb, tick_s, table, kill
+    def __init__(self, root_pid, cap_mb, *, tick_s=TEST_CAP_TICK_S, table=tree_table, kill=os.kill, info=proc_info,
+                 root_start=None):
+        self.root, self.cap, self.tick_s, self.table, self.kill, self.info = (
+            root_pid, cap_mb, tick_s, table, kill, info)
+        self.root_start = start_of(root_pid, info) if root_start is None else root_start
         self.hit = None
         self._stop = threading.Event()
         self._t = None
 
     def check_once(self):
         t = self.table()
-        if self.root not in t:
+        if self.root not in t or self.root_start is None or t[self.root][2] != self.root_start:
             return None
         tree = [self.root] + descendants(self.root, t)
         big = max(tree, key=lambda p: t[p][3])
         if t[big][3] < self.cap:
             return None
         self.hit = {"pid": big, "name": t[big][1], "mb": t[big][3], "cap_mb": self.cap}
-        for p in reversed(tree):          # 先收葉子,再收根:根先死的話子孫會變孤兒繼續長
-            try:
-                self.kill(p, signal.SIGKILL)
-            except OSError:
-                pass
+        kill_tree(self.root, self.root_start, table=lambda: t, info=self.info, kill=self.kill)
         return self.hit
 
     def _run(self):
@@ -510,7 +629,7 @@ class TreeCap:
                 pass
 
     def start(self):
-        if self.cap > 0:
+        if self.cap > 0 and self.root_start is not None:
             self._t = threading.Thread(target=self._run, name="aib-test-memcap", daemon=True)
             self._t.start()
         return self
@@ -541,10 +660,20 @@ def try_lock(root=None):
     return fd
 
 
-def _thread_main(dry_run):
-    while try_lock() is None:
+def _thread_main(dry_run, root=None):
+    """拿鎖 → 掃。起不來(Guard() 拋出)⇒ 關掉鎖讓別艙接手、留痕,不無聲停(#322 r2 L4)。"""
+    while True:
+        fd = try_lock(root)
+        if fd is not None:
+            break
         time.sleep(LOCK_RETRY_S)
-    Guard(dry_run=dry_run).run()
+    try:
+        Guard(dry_run=dry_run, root=root).run()
+    except Exception as exc:  # noqa: BLE001
+        _log({"ts": int(time.time()), "action": "mem_guard_failed", "error": type(exc).__name__}, root)
+        print("memguard: 守門停了:%s" % exc, file=sys.stderr)
+    finally:
+        os.close(fd)
 
 
 def start_thread(env=None):

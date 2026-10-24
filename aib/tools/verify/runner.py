@@ -395,9 +395,14 @@ def _test_command(repo: Path, name: str, env: dict | None = None) -> list[str]:
     return [py, str(Path(__file__).resolve().parent / "plain_test_runner.py"), str(path)]
 
 
+MEMCAP_CELL = "MEMCAP:memory_cap"     # 被記憶體上限砍掉的固定紅格(不會出現在舊紅清單,收據一定算新紅)
+TIMEOUT_CELL = "TIMEOUT:timeout"
+
+
 class _NoCap:
     """memguard import 不到時的空殼(只有夾具會走到)。"""
     hit = None
+    root_start = None
 
     def start(self):
         return self
@@ -410,6 +415,7 @@ def _run_one(repo: Path, name: str, env: dict[str, str], timeout: float | None =
     """timeout=None ⇒ DEFAULT_TIMEOUT_S(舊行為逐字不變)。"""
     limit = DEFAULT_TIMEOUT_S if timeout is None else timeout
     started = time.monotonic()
+    cut = None
     try:
         # 10-24(@044e0,20:34 整台卡死實案):每支測試含子孫,單一行程超過記憶體上限就整棵收、判紅並寫明 ——
         #   開發當下就知道「不能超大」,不是等機器凍住。上限 AIB_TEST_MEM_CAP_MB(預設 2048,0 = 關),見 memguard.TreeCap。
@@ -419,17 +425,21 @@ def _run_one(repo: Path, name: str, env: dict[str, str], timeout: float | None =
             cap = (memguard.TreeCap(proc.pid, memguard.test_cap_mb()) if memguard else _NoCap()).start()
             try:
                 out, err = proc.communicate(timeout=limit)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as e:
+                # #322 r2 H1:不能再 communicate() —— 背景孫行程(tmux / http server / cmd &)拿著管線就永遠不回。
+                #   照 subprocess.run 的做法 kill + wait、用逾時當下已讀到的輸出;能量到樹就整棵收(先收,根死了子孫就找不到)。
+                if memguard:
+                    memguard.kill_tree(proc.pid, cap.root_start)
                 proc.kill()
-                out, err = proc.communicate()
-                raise subprocess.TimeoutExpired(proc.args, limit, output=out, stderr=err)
+                proc.wait()
+                raise subprocess.TimeoutExpired(proc.args, limit, output=e.stdout, stderr=e.stderr)
             finally:
                 cap.stop()
         output = (out or "") + (err or "")
         rc = proc.returncode
         if cap.hit:
             output += "\n" + T("memory_cap", cap.hit) + "\n"
-            rc = 137
+            rc, cut = 137, MEMCAP_CELL
     except OSError as e:
         output, rc = "%s: %s\n" % (type(e).__name__, e), 127
     except subprocess.TimeoutExpired as e:
@@ -440,8 +450,11 @@ def _run_one(repo: Path, name: str, env: dict[str, str], timeout: float | None =
         if isinstance(err, bytes):
             err = err.decode("utf-8", "replace")
         msg = T("timeout_30m") if limit == DEFAULT_TIMEOUT_S else T("timeout_after", {"seconds": limit})
-        output, rc = str(out) + str(err) + "\n" + msg + "\n", 124
+        output, rc, cut = str(out) + str(err) + "\n" + msg + "\n", 124, TIMEOUT_CELL
     ran, cells = _parse_test_output(output)
+    # #322 r2 M3:被上限 / 逾時砍掉的,固定加一格 —— 不然被砍前印的紅格若都在舊紅清單,收據照印「新紅 0」。
+    if cut and cut not in cells:
+        cells.append(cut)
     return {"name": name, "rc": rc, "ran": ran, "fail_cells": cells,
             "elapsed_s": round(time.monotonic() - started, 3), "output": output}
 
