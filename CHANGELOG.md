@@ -6,6 +6,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 
 ## 0.1.52
 
+- **`aib test` no longer crashes Python 3.15 on macOS**: the network audit hook no longer duplicates old socket file descriptors (a reused descriptor could be a protected one, and duplicating it made the system kill the test process). It now keeps weak references to the sockets it bound and asks them directly.
 - **Status line context reading**: the aib-boards status line now refreshes the context figure when a turn ends, not only on its 60-second timer, so a newly opened seat no longer shows "context not measured" for its first minute.
 - **`aib secret ask` names**: a secret name must match `[A-Z][A-Z0-9_]{0,127}` before anything else runs (otherwise `bad_name`). The mail-sending credentials can only be pushed straight to the server (`--remote-only`); no copy stays on this computer.
 - **Power room hardening**: sign-in links are still returned when the wait runs out; the sign-in log is removed before it is created again (exclusive create) and always cleaned up afterwards; more edge-case tests.
