@@ -4,6 +4,15 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.50
+
+- **Captain's power room (`aib power`)**: a first stop for new captains. `aib power status` shows versions, health, bindings and a light for each AI (signed in / quota); `aib power login <ai>` opens that AI's own sign-in link; `aib power upgrade <ai>` updates its CLI. `aib ui power` opens a simple static page with the same data — its buttons only copy commands for you to paste, and no local server is started.
+- **Launch deck data**: `aib power launch --list` and `aib power fav` list personas, favourites and the last 20 launches; `aib power launch <ai> --dry-run` prints the commands that would open a seat and bind a persona and second brain, without running them.
+- **Starter task board**: R / SR / SSR / UR tasks that tick themselves from what you actually do on this machine (open a seat, bind a persona, send a seat message, hand off…); `aib power tier` turns a level on or off. SSR and UR open after your first launch.
+- **Ask AI (`aib power ask`)**: asks an AI a question about aib with every tool and MCP server turned off, in a read-only sandbox — it only answers, it never acts.
+- **Why AIB (`aib power why`)**: pick and rank up to 5 reasons you use aib; kept on this machine for now.
+- **Support bundle (`aib support`)**: collects versions, `doctor` results and failure codes into one local file you can choose to send; it never includes log text, conversations or keys, and never sends anything by itself.
+
 ## 0.1.49
 
 - **Seat titles in the right-click menu drop invisible characters**: right-to-left overrides and zero-width characters are removed before a title is drawn, so a name can no longer be shown reversed or made to look like another seat; emoji are kept.
