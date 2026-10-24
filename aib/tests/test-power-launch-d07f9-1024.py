@@ -170,7 +170,11 @@ class Launch(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             rc = P.main(["launch", "claude", "--dry-run", "--json"])
-        self.assertEqual((rc, json.loads(buf.getvalue())["detail"]), (0, "power_launch_plan"))
+        r = json.loads(buf.getvalue())
+        self.assertEqual((rc, r["detail"]), (0, "power_launch_plan"))
+        self.assertEqual(r["steps"][0]["argv"][2], "safe")                # 頁面照抄給會員貼:預設不能是 dgrs(審查 r1)
+        self.assertFalse(os.path.exists(PL._path()))                       # 乾跑不記出發(R6 / 解鎖 / 天數都看它)
+        self.assertEqual((PL.recent(), PL.launch_days()), ([], []))
 
     def test_d9_choices_days(self):
         prov = json.loads((REPO / "src" / "cockpit" / "providers.json").read_text(encoding="utf-8"))["providers"]

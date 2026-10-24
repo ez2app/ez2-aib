@@ -147,6 +147,12 @@ class T(unittest.TestCase):
         for s in b["not_ok"]:
             self.assertEqual(set(s), {"code", "problem", "brain"})
 
+    def test_e1_entry_dispatches_power(self):
+        # aib 入口沒接到 power ⇒ 落到最後的開艙 + attach(頁面跑 status --json 會開出一座艙)(審查 r1)
+        src = (REPO / "src" / "cockpit" / "aib").read_text(encoding="utf-8")
+        i = src.index('if [ "${1:-}" = "power" ]; then')
+        self.assertIn('exec "$T_PY3" "$HERE/power_status.py" "$@"', src[i:i + 200])
+
 
 def tearDownModule():
     import shutil
