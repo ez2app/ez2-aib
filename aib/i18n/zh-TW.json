@@ -3648,6 +3648,8 @@
   "aib.uninstall.keep_other_link": "{path}:另一個 aib,不動(它照常能用)",
   "aib.uninstall.what_boot": "開機選單(aib restart install-boot)",
   "aib.uninstall.keep_boot": "{path}:開機選單可能屬於另一個 aib,不動",
+  "aib.uninstall.keep_auto_update": "{path}:自動更新排程可能屬於另一個 aib,不動",
+  "aib.uninstall.what_auto_update": "自動更新排程(aib update auto on)",
   "aib.uninstall.refuse_all_other": "--all:這台還有另一個 aib({link}),跟這份共用 {state}(席位、人格、記憶);所以沒刪。請先用當初安裝它的方式移除那個 aib。",
   "aib.uninstall.what_state": "aib 的紀錄:席位、人格、記憶、交接、設定(先備份)",
   "aib.uninstall.what_cache": "aib 的快取",
@@ -5273,6 +5275,8 @@
   "aib.auto_update.status.excluded": "不自動更新的外掛:{names}",
   "aib.auto_update.status.excluded_behind": "有新的簽章版但在不自動更新清單裡(要換請自己決定、手動裝):{names}",
   "aib.auto_update.status.unsigned": "來源有新版但簽章驗不過,沒有裝:{names}",
+  "aib.auto_update.doctor.paid_behind": "自動更新開著;付費外掛有新版沒換(只列名):{names}",
+  "aib.auto_update.status.paid_behind": "付費外掛有新版，自動更新只列名、不會換：{names}(要換請自己跑 aib ext install <名稱>)",
   "aib.auto_update.status.modified": "這幾個外掛的資料夾裡有你自己改過或多出來的檔，自動更新沒有換(免得蓋掉);要換請自己跑 aib ext install:{names}",
   "aib.auto_update.status.plugin_source_offline": "上次查時連不上外掛來源(aib-plugins),付費外掛這次沒查",
   "aib.auto_update.exclude.list": "不自動更新的外掛:{names}",
@@ -5285,6 +5289,6 @@
   "aib.auto_update.exclude.touchid_reason": "允許 aib 自動更新外掛 {name}",
   "aib.auto_update.exclude.needs_touchid": "{name} 預設不自動更新(它是正式站部署來源),拿掉要本人 Touch ID({why});什麼都沒改",
   "aib.auto_update.status.clock_skew": "時鐘跳過:存下來的時間比現在還晚(系統時鐘曾往前跳),已不算數、照常查",
-  "aib.auto_update.why.refused_source": "這份不是從公開版裝的(私有或自己的倉庫),不自動更新;要更新請自己跑 aib update",
+  "aib.auto_update.why.refused_source": "這份不是從公開版裝的(私有或自己的倉庫),或官方標籤不在公開版 main 的歷史上;不自動更新，要更新請自己跑 aib update",
   "aib.auto_update.why.no_change": "aib update 跑完了但版本沒變,看紀錄;之後再試"
 }

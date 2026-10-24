@@ -6,7 +6,7 @@
 S1 設定:沒檔 = 開(預設);off 寫 on:false 並拆排程;on 寫回開並裝排程;檔壞 ⇒ 當成關(unreadable);關著 check 不動
 S2 排程 plist:Label、ProgramArguments = check --why schedule、StartInterval 6 小時、RunAtLoad 關、權限 0600、
    環境只帶路徑 / 語系(AIB_INSTALL_URL、token 一律不帶)
-S3 非 macOS:不裝排程、不叫 launchctl;cmd_on 照樣 rc 0;開席那次 check 也不裝
+S3 非 macOS:不裝排程、不叫 launchctl(on / off 都不叫);cmd_on 照樣 rc 0;開席那次 check 也不裝
 S4 開發用 worktree:不裝排程、check 回 dev_tree、不更新
 G1 測試租約有人拿著(真的 host_lease acquire)⇒ refused_lease、不更新
 G2 安裝目錄有沒提交的改動 ⇒ refused_dirty、不更新
@@ -15,30 +15,31 @@ G4 正在跑 aib test / 推包 / git push ⇒ refused_tests / refused_shipping /
 G5 只快轉:本機有自己的提交(歷史分叉)⇒ refused_diverged;在別的分支 ⇒ refused_branch;本機比正式版新 ⇒ up_to_date
 G6 安全 ⇒ 跑一次 update(子環境只帶白名單:沒有 AIB_* / GIT_* / BASH_ENV…)、拿租約再放掉、記 last_update、艦長室事件只帶版號、叫 room reload;
    doctor 一行「已自動更新到」;接著再查 ⇒ too_soon,過兩小時 ⇒ up_to_date
-G7 落後太多(大 / 中版號不同,或差 5 個小版以上)⇒ refused_far_behind;連不上來源 ⇒ offline;AIB_AUTO_UPDATE=0 ⇒ 什麼都不做
+G7 落後太多(大 / 中版號不同,或差 5 個小版以上;環境的 AIB_CLEAN_GAP 不算)⇒ refused_far_behind;連不上來源 ⇒ offline;AIB_AUTO_UPDATE=0 ⇒ 什麼都不做
+G11 自動路徑跑已 fetch 標籤裡的 install.sh(不連網站);標籤裡不是公開版安裝程式 ⇒ rc 5 什麼都不跑;子行程 AIB_CLEAN_GAP = 不整份重裝
+G12 最新 v* 標籤不在 origin/main 歷史上 ⇒ refused_source
+G13 逾時整個行程群組砍掉(孫行程不留),回 124
 P1 外掛簽章驗不過 ⇒ 不列進落後清單、不裝;install_plugin 遇到沒簽的直接 rc 3、不叫 aib_ext.install
 P2 簽章驗過、版本較舊 ⇒ 列進落後清單;核心不用更新時由 check 裝;install_plugin 一律 allow_unsigned=False
 P3 核心有更新時,外掛交給一行安裝(新版程式)的 aib ext auto,舊碼不自己裝
 X1 不自動更新清單:預設有 hostguard(沒設定檔、on / off 之後都還在);add / list / remove 一般外掛不用證明;
    拿掉 hostguard 要本人證明,沒過 rc 2、清單不變;名稱不合法 rc 2
-X2 付費外掛來源 = aib-plugins main(測試用本機 bare 倉):簽章驗過、版本較舊 ⇒ git archive 出那個資料夾、走 aib ext install
-   真的換上新版;hostguard 在清單裡 ⇒ 有新簽章版也不換、status 列為排除;簽章驗不過 ⇒ 不裝、列為簽章沒過
-X3 核心這次有更新 ⇒ 付費外掛等下一次查(新碼在跑時才裝);外掛來源連不上 ⇒ 照樣做核心那部分,status 說來源連不上
-X4 git archive 出來的包有跑出資料夾的路徑 / 連結 ⇒ 不裝
+X2 付費外掛來源 = aib-plugins main(測試用本機 bare 倉):簽章驗過、版本較舊 ⇒ 只列名(plugins_paid_behind)、不換、不拿租約,
+   status / doctor 提示本人;hostguard 在清單裡 ⇒ status 列為排除;簽章驗不過 ⇒ 列為簽章沒過
+X3 核心這次有更新、下一次也一樣:付費外掛一直只列名;外掛來源連不上 ⇒ 照樣做核心那部分,status 說來源連不上
 R1 時鐘跳過:狀態檔時間戳在未來(含 9999999999)⇒ 不算數、照常查與更新,status 標 clock_skew;下一次正常就清掉
 R2 狀態檔 JSON 合法但型別不對(字串 / 清單 / 整數 last_result)⇒ check 不當掉、照常跑並重寫成乾淨的檔;
    status / doctor 一律不當掉;狀態檔根本不是 dict 也一樣
 R3 鎖檔位置是資料夾 ⇒ 回 busy,不丟例外
-R4 付費外掛暫存資料夾:裝的那步丟例外也會清掉;既有的 stage-<pid> 連結不會被沿用
-A1 stage_paid 的路徑過濾(舊 Python 沒有 tarfile data filter 時是唯一防線):假的 git archive 吐
-   demo/../../evil、/abs/evil、other/evil 三種包 ⇒ 都回 None,哪裡都沒寫出檔
 A2 核心與外掛來源的 git fetch:環境一定帶 GIT_SSH_COMMAND(BatchMode=yes、ForwardAgent=no、ClearAllForwardings=yes)
    與 GIT_TERMINAL_PROMPT=0
 A3 本機比正式版新(main 上多一個自己的提交)⇒ up_to_date,不往回退、不更新
 A4 紀錄檔是連結 ⇒ 不寫、連結指的檔一個位元組都不動;太大的一般紀錄檔只留後半、從整行開始、換掉的是檔本身
-A5 解開付費外掛時磁碟滿(extractall 丟 ENOSPC)⇒ 回 None、不留 stage-*、記一行原因;check 照跑回 plugins_failed
 A6 付費外掛 / 附帶外掛的說明檔是合法 JSON 但不是物件(清單)⇒ 跳過那一個並記原因,其他照常
 I1 四語字典同鍵、沒有 !!;aib update auto status / --json 走得通(子行程,暫存狀態根)
+J1 --json 每條路(on / off / exclude / status / check 含例外)只印一個 JSON;launchctl 換假的
+J2 開席那次 detach 後先等 60–90 秒(可注入)再查;排程那次不等
+U1 aib uninstall 一併拆自動更新排程
 """
 import importlib
 import io
@@ -108,7 +109,7 @@ class Base(unittest.TestCase):
         self.addCleanup(p2.stop)
 
     # 假的「一行安裝」:跟 install.sh 一樣只快轉到最新 v* 標籤
-    def fake_update(self, env, root):
+    def fake_update(self, env, root, ref=None):
         self.updates.append(dict(env))
         tag = git(root, "tag", "-l", "v[0-9]*", "--sort=-v:refname").splitlines()[0]
         git(root, "merge", "-q", "--ff-only", tag)
@@ -219,6 +220,8 @@ class Agent(Base):
         self.assertNotIn("agent", res)
         self.assertEqual(ctl.calls, [])
         self.assertEqual(AU.status_payload(self.env, home=self.home, platform="linux")["schedule"], "not_mac")
+        self.assertEqual(AU.cmd_off(self.env, out=io.StringIO(), home=self.home, launchctl=ctl, platform="linux"), 0)
+        self.assertEqual(ctl.calls, [])                                     # Linux 關掉也不叫 launchctl
 
     def test_s3b_seat_open_on_mac_installs_missing_agent(self):
         self.make_repos(latest=None)
@@ -390,30 +393,86 @@ class Gates(Base):
     def test_g10_update_rc0_but_head_unchanged_not_updated(self):
         """aib update 回 0 但 HEAD 沒動(例:main 比標籤新、或安裝程式沒快轉)⇒ no_change,不記成 updated、1 小時內不再跑。"""
         self.make_repos()
-        res = self.run_check(run_update=lambda e, r: self.updates.append(e) or 0)
+        res = self.run_check(run_update=lambda e, r, ref=None: self.updates.append(e) or 0)
         self.assertEqual(res["result"], "no_change", res)
         self.assertNotIn("last_update", AU.read_status(self.env))
         self.assertEqual(RE.read(self.env)[0], [])
-        self.assertEqual(self.run_check(now=NOW + 60, run_update=lambda e, r: self.updates.append(e) or 0)["result"], "too_soon")
+        self.assertEqual(self.run_check(now=NOW + 60, run_update=lambda e, r, ref=None: self.updates.append(e) or 0)["result"], "too_soon")
         self.assertEqual(len(self.updates), 1)
 
     def test_g6d_run_core_update_child_env(self):
-        # 第二道防線:run_core_update 自己也只帶白名單 + 加固 ssh(就算呼叫端傳進整份環境)
+        # 第二道防線:run_core_update 自己也只帶白名單 + 加固 ssh(就算呼叫端傳進整份環境);AIB_CLEAN_GAP 一律換成不整份重裝
+        self.make_repos()
         seen = []
-        def fake_run(argv, **kw):
-            seen.append(kw.get("env"))
-            return subprocess.CompletedProcess(argv, 0)
-        dirty = dict(self.env, AIB_INSTALL_URL="file:///tmp/evil.sh", GIT_SSH_COMMAND="ssh -o ForwardAgent=yes", BASH_ENV="/tmp/e")
-        with mock.patch.object(AU.subprocess, "run", side_effect=fake_run):
-            self.assertEqual(AU.run_core_update(dirty, self.td), 0)
-        self.assertEqual(len(seen), 1)
-        self.assertNotIn("AIB_INSTALL_URL", seen[0])
-        self.assertNotIn("BASH_ENV", seen[0])
-        self.assertEqual(seen[0]["GIT_SSH_COMMAND"], AU.SSH_HARDENED)
+        def fake_run(argv, fh, env, cwd, timeout):
+            seen.append((argv, env))
+            return 0
+        dirty = dict(self.env, AIB_INSTALL_URL="file:///tmp/evil.sh", GIT_SSH_COMMAND="ssh -o ForwardAgent=yes", BASH_ENV="/tmp/e",
+                     AIB_CLEAN_GAP="5")
+        with mock.patch.object(AU, "installer_at", return_value="echo " + AU.PUBLIC_MARK):
+            self.assertEqual(AU.run_core_update(dirty, self.inst, "v0.1.2", run=fake_run), 0)
+        argv, env = seen[0]
+        self.assertEqual(argv[:2] + argv[3:], ["/bin/bash", "-c", "aib-install", "--dir", str(self.inst)])
+        self.assertNotIn("AIB_INSTALL_URL", env)
+        self.assertNotIn("BASH_ENV", env)
+        self.assertEqual(env["GIT_SSH_COMMAND"], AU.SSH_HARDENED)
+        self.assertEqual(env["AIB_CLEAN_GAP"], str(AU.NO_CLEAN_GAP))
+
+    def test_g11_installer_from_fetched_tag_not_website(self):
+        """[A-H1] 自動路徑跑已 fetch 標籤裡的 install.sh(不連網站下載);標籤裡不是公開版安裝程式 ⇒ rc 5、什麼都不跑。"""
+        src, bare = self.make_repos()
+        marker = self.td / "ran.txt"
+        (src / "install.sh").write_text('# %s\nprintf "%%s|%%s\\n" "$*" "$AIB_CLEAN_GAP" > %s\n' % (AU.PUBLIC_MARK, marker),
+                                        encoding="utf-8")
+        git(src, "add", "install.sh")
+        git(src, "commit", "-q", "-m", "installer")
+        git(src, "tag", "v0.1.3")
+        git(src, "push", "-q", str(bare), "main", "--tags")
+        AU.fetch(self.inst, self.env)
+        self.assertIsNone(AU.installer_at(self.inst, "v0.1.2"))            # 那個標籤沒有 install.sh
+        self.assertEqual(AU.run_core_update(self.env, self.inst, "v0.1.2"), 5)
+        self.assertFalse(marker.exists())
+        self.assertEqual(AU.run_core_update(self.env, self.inst, "v0.1.3"), 0)
+        self.assertEqual(marker.read_text(encoding="utf-8").strip(), "--dir %s|%d" % (self.inst, AU.NO_CLEAN_GAP))
+        self.assertNotIn("curl", AU.installer_at(self.inst, "v0.1.3"))
+        (src / "install.sh").write_text("echo not-public\n", encoding="utf-8")   # 沒有公開版記號 ⇒ 不當安裝程式
+        git(src, "commit", "-q", "-am", "x")
+        git(src, "tag", "v0.1.4")
+        git(src, "push", "-q", str(bare), "main", "--tags")
+        AU.fetch(self.inst, self.env)
+        self.assertIsNone(AU.installer_at(self.inst, "v0.1.4"))
+
+    def test_g12_tag_must_be_on_official_main(self):
+        """[A-M2] 最新 v* 標籤不在 origin/main 的歷史上(另外推的標籤)⇒ refused_source、不跑。"""
+        src, bare = self.make_repos()
+        git(src, "checkout", "-q", "-b", "side", "v0.1.1")
+        (src / "aib" / "VERSION").write_text("0.1.3\n", encoding="utf-8")
+        git(src, "commit", "-q", "-am", "side")
+        git(src, "tag", "v0.1.3")
+        git(src, "push", "-q", str(bare), "--tags")
+        res = self.run_check()
+        self.assertEqual(res["result"], "refused_source", res)
+        self.assertEqual((self.updates, self.leases), ([], []))
+
+    def test_g13_run_group_timeout_kills_whole_group(self):
+        """[A-L1] 逾時 ⇒ 整個行程群組 TERM / KILL,孫行程也不留;回 124。"""
+        pidf = self.td / "child.pid"
+        with open(os.devnull, "w") as fh:
+            rc = AU._run_group(["/bin/sh", "-c", "sleep 30 & echo $! > %s; wait" % pidf], fh, dict(self.env), self.td, 1)
+        self.assertEqual(rc, 124)
+        pid = int(pidf.read_text().strip())
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("grandchild %d still alive" % pid)
 
     def test_g6b_update_fails(self):
         self.make_repos()
-        res = self.run_check(run_update=lambda e, r: self.updates.append(e) or 5)
+        res = self.run_check(run_update=lambda e, r, ref=None: self.updates.append(e) or 5)
         self.assertEqual((res["result"], res["update_rc"]), ("failed", 5))
         self.assertEqual(self.leases, ["acquire", "release"])
         self.assertNotIn("last_update", AU.read_status(self.env))
@@ -433,6 +492,7 @@ class Gates(Base):
         self.assertFalse(AU.far_behind("dev", "0.1.2"))
         self.make_repos(have="0.1.1", latest="0.2.0")
         self.assertEqual(self.run_check()["result"], "refused_far_behind")
+        self.assertEqual(self.run_check(env=dict(self.env, AIB_CLEAN_GAP="99999"))["result"], "refused_far_behind")   # [A-M1] 父行程不讀環境
         self.assertEqual(self.run_check(do_fetch=lambda r, e: False)["result"], "offline")
         self.assertEqual(self.run_check(env=dict(self.env, AIB_AUTO_UPDATE="0"))["result"], "disabled_env")
         self.assertEqual(self.updates, [])
@@ -598,23 +658,29 @@ class PaidSource(Base):
     def installed_version(self, name):
         return json.loads((Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / name / "aib-ext.json").read_text())["version"]
 
-    def test_x2_signed_paid_updated_excluded_kept(self):
+    def test_x2_signed_paid_listed_not_installed(self):
+        """[A-M3] 付費外掛有新簽章版 ⇒ 只列名(plugins_paid_behind)、不換、不拿租約;hostguard 在排除清單照列排除;status / doctor 提示本人。"""
         self.paid_repo({"demo-paid": "1.0.3", "hostguard": "2.0.0"})
         self.make_repos(latest=None)
         import aib_ext
-        with mock.patch.object(aib_ext, "signed_ok", return_value=True), \
-                mock.patch.object(aib_ext, "reload_room_after_install", return_value=None):
+        with mock.patch.object(aib_ext, "signed_ok", return_value=True), mock.patch.object(aib_ext, "install") as inst:
             res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=AU.install_plugin)
-        self.assertEqual(res["result"], "updated", res)
+            inst.assert_not_called()
+        self.assertEqual(res["result"], "up_to_date", res)
         self.assertEqual(res["plugin_source"], "ok")
-        self.assertEqual(res["plugins_behind"], ["demo-paid"])
+        self.assertEqual((res["plugins_behind"], res["plugins_paid_behind"]), ([], ["demo-paid"]))
         self.assertEqual(res["plugins_excluded"], ["hostguard"])
-        self.assertEqual(self.installed_version("demo-paid"), "1.0.3")
-        self.assertEqual(self.installed_version("hostguard"), "1.0.0")          # 有新簽章版也不換
+        self.assertEqual((self.installed_version("demo-paid"), self.installed_version("hostguard")), ("1.0.0", "1.0.0"))
+        self.assertEqual((self.leases, self.installs), ([], []))
         p = AU.status_payload(self.env, platform="linux")
-        self.assertEqual((p["excluded"], p["plugins_excluded"]), (["hostguard"], ["hostguard"]))
-        self.assertIn("hostguard", "\n".join(AU.status_lines(p)))
-        self.assertFalse(list((Path(self.env["EZ2_AIB_STATE_ROOT"]) / "cache" / "auto-update").glob("stage-*")))
+        self.assertEqual((p["excluded"], p["plugins_excluded"], p["plugins_paid_behind"]), (["hostguard"], ["hostguard"], ["demo-paid"]))
+        text = "\n".join(AU.status_lines(p))
+        self.assertIn("hostguard", text)
+        self.assertIn("demo-paid", text)
+        self.assertIn("aib ext install", text)
+        self.assertEqual(AU.doctor_line(self.env)[0], "note")
+        self.assertIn("demo-paid", AU.doctor_line(self.env)[1])
+        self.assertFalse(hasattr(AU, "stage_paid"))
 
     def _paid_check_signed(self):
         import aib_ext
@@ -678,7 +744,7 @@ class PaidSource(Base):
         self.assertEqual(self.leases, [])
 
     def test_x5_user_files_in_plugin_not_overwritten(self):
-        # 外掛資料夾裡有使用者自己加 / 改的檔 ⇒ 自動路徑不換(交本人 aib ext install),檔都還在
+        # 付費外掛只列名 ⇒ 使用者自己加 / 改的檔原樣在;附帶外掛改過的照舊列 plugins_modified(見 X5E)
         self.paid_repo({"demo-paid": "1.0.3", "other": "1.0.3"})
         root = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins"
         (root / "demo-paid" / "user-notes.txt").write_text("mine", encoding="utf-8")
@@ -686,34 +752,20 @@ class PaidSource(Base):
         self.make_repos(latest=None)
         res, _ = self._paid_check_signed()
         self.assertEqual(res["result"], "up_to_date", res)
-        self.assertEqual(sorted(res["plugins_modified"]), ["demo-paid", "other"])
+        self.assertEqual(sorted(res["plugins_paid_behind"]), ["demo-paid", "other"])
         self.assertEqual((root / "demo-paid" / "user-notes.txt").read_text(encoding="utf-8"), "mine")
         self.assertIn("edited by me", (root / "other" / "m.py").read_text(encoding="utf-8"))
         self.assertEqual((self.installed_version("demo-paid"), self.installed_version("other")), ("1.0.0", "1.0.0"))
-        p = AU.status_payload(self.env, platform="linux")
-        self.assertEqual(sorted(p["plugins_modified"]), ["demo-paid", "other"])
-        self.assertIn("aib ext install", "\n".join(AU.status_lines(p)))
 
-    def test_x5b_declared_keep_dir_carried_over(self):
-        # 外掛宣告 keep: [".venv"](外掛自己的 install.sh 建在資料夾裡的環境)⇒ 照換版，.venv 搬進新版
-        self.paid_repo({"demo-paid": "1.0.3"}, meta={"demo-paid": {"keep": [".venv", "../x", "a/b"]}})
-        venv = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / "demo-paid" / ".venv"
-        (venv / "bin").mkdir(parents=True)
-        (venv / "bin" / "python").write_text("#!venv\n", encoding="utf-8")
-        self.make_repos(latest=None)
-        res, _ = self._paid_check_signed()
-        self.assertEqual(res["result"], "updated", res)
-        self.assertEqual(res["plugins_modified"], [])
-        self.assertEqual(self.installed_version("demo-paid"), "1.0.3")
-        self.assertEqual((venv / "bin" / "python").read_text(encoding="utf-8"), "#!venv\n")
-        self.assertEqual([p.name for p in venv.parent.parent.iterdir() if p.name.startswith(".keep-")], [])
+    def test_x5b_keep_dirs_filter(self):
+        # 宣告的 keep 夾只收一層、安全的名字(附帶外掛換版時用;換版本身見 X5D)
         self.assertEqual(AU.keep_dirs({"keep": [".venv", "../x", "a/b", "..", "aib-ext.json", 3]}), [".venv"])
 
     def test_x5c_enabled_state_kept(self):
         # 停用的外掛換版後仍停用;啟用過哪幾家就只帶那幾家
         import aib_ext
         self.paid_repo({"demo-paid": "1.0.3"})
-        folder = AU.stage_paid(AU.fetch_plugin_source(self.env), "demo-paid", self.env)
+        folder = self.td / "plugsrc" / "demo-paid"
         calls = []
         fake = lambda f, **kw: calls.append(kw) or 0
         with mock.patch.object(aib_ext, "signed_ok", return_value=True), mock.patch.object(aib_ext, "install", side_effect=fake):
@@ -722,7 +774,6 @@ class PaidSource(Base):
             self.assertEqual(AU.install_plugin(str(folder), io.StringIO()), 0)
         self.assertEqual([(c["enable_engines"], c["engines"]) for c in calls], [(False, None), (True, ["codex"])])
         self.assertTrue(all(c["allow_unsigned"] is False for c in calls))
-        shutil.rmtree(Path(folder).parent, ignore_errors=True)
 
     def test_x5d_keep_dir_wins_over_same_name_in_new_version(self):
         # 新版包自己也帶同名的 keep 夾 ⇒ 以使用者那份為準、不丟;沒裝成 ⇒ 搬回原處;暫存夾不留
@@ -789,57 +840,26 @@ class PaidSource(Base):
         self.assertEqual(self.installed_version("demo-paid"), "1.0.0")
         self.assertEqual(self.leases, [])
         # 就算落後清單被動了手腳,裝的那一步自己也驗簽章:驗不過 rc 3、不叫 aib_ext.install
-        cache = AU.plugin_cache(self.env)
-        folder = AU.stage_paid(cache, "demo-paid", self.env)
+        folder = self.td / "plugsrc" / "demo-paid"
         import aib_ext
         with mock.patch.object(aib_ext, "install") as inst:
             self.assertEqual(AU.install_plugin(str(folder), io.StringIO()), 3)
             inst.assert_not_called()
 
-    def test_x3_core_first_then_paid_and_offline(self):
+    def test_x3_core_update_paid_still_listed_and_offline(self):
         self.paid_repo({"demo-paid": "1.0.3"})
         self.make_repos()
         import aib_ext
         with mock.patch.object(aib_ext, "signed_ok", return_value=True):
             res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=self.fake_install)
-            self.assertEqual(res["result"], "updated")
+            self.assertEqual((res["result"], res["plugins_paid_behind"]), ("updated", ["demo-paid"]))
             self.assertEqual((len(self.updates), self.installs), (1, []))
             res = self.run_check(now=NOW + 7200, plugin_fetch=AU.fetch_plugin_source, install=self.fake_install)
-            self.assertEqual(res["result"], "updated")
-            self.assertEqual((len(self.updates), len(self.installs)), (1, 1))
+            self.assertEqual((res["result"], res["plugins_paid_behind"]), ("up_to_date", ["demo-paid"]))
+            self.assertEqual((len(self.updates), self.installs), (1, []))     # 下一次查也不換付費外掛
         res = self.run_check(now=NOW + 99999, plugin_fetch=lambda e: None)
         self.assertEqual((res["result"], res["plugin_source"]), ("up_to_date", "offline"))
         self.assertIn("aib-plugins", "\n".join(AU.status_lines(AU.status_payload(self.env, platform="linux"))))
-
-    def test_x4_stage_refuses_escaping_paths(self):
-        bare = self.paid_repo({"demo-paid": "1.0.3"})
-        src = self.td / "plugsrc"
-        os.symlink("/etc/hosts", src / "demo-paid" / "link")
-        git(src, "add", "-A")
-        git(src, "commit", "-q", "-m", "link")
-        git(src, "push", "-q", str(bare), "main")
-        cache = AU.fetch_plugin_source(self.env)
-        self.assertIsNotNone(cache)
-        self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
-        # 要是自己那行檢查擋的(不是新版 Python 的 data filter 代擋):舊 Python(3.9)沒有 data filter,那行是唯一防線
-        self.assertIn("demo-paid skipped: archive has a path outside the folder or a link", AU.log_path(self.env).read_text(encoding="utf-8"))
-        self.assertEqual(list((AU.state_root(self.env) / "cache" / "auto-update").glob("stage-*")), [])
-
-    def test_x4b_stage_refuses_inner_relative_link(self):
-        """夾內相對連結(data filter 會放行)⇒ 一樣不解;另把 data filter 拿掉(模擬 3.9)再跑一次。"""
-        bare = self.paid_repo({"demo-paid": "1.0.3"})
-        src = self.td / "plugsrc"
-        os.symlink("aib-ext.json", src / "demo-paid" / "inner")
-        git(src, "add", "-A")
-        git(src, "commit", "-q", "-m", "inner link")
-        git(src, "push", "-q", str(bare), "main")
-        cache = AU.fetch_plugin_source(self.env)
-        self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
-        with mock.patch.object(AU.tarfile, "data_filter", None, create=True):
-            delattr(AU.tarfile, "data_filter")
-            self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
-        self.assertEqual(list((AU.state_root(self.env) / "cache" / "auto-update").glob("stage-*")), [])
-        self.assertEqual(AU.log_path(self.env).read_text(encoding="utf-8").count("archive has a path outside the folder or a link"), 2)
 
 
 class Robust(Base):
@@ -898,48 +918,8 @@ class Robust(Base):
         self.assertEqual(self.run_check()["result"], "busy")
         self.assertEqual(self.updates, [])
 
-    def test_r4_stage_cleanup(self):
-        PaidSource.paid_repo(self, {"demo-paid": "1.0.3"})
-        self.make_repos(latest=None)
-        base = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "cache" / "auto-update"
-        base.mkdir(parents=True, exist_ok=True)
-        decoy = self.td / "decoy"
-        decoy.mkdir()
-        os.symlink(str(decoy), str(base / ("stage-%d" % os.getpid())))
-
-        def boom(folder, out):
-            raise RuntimeError("install blew up")
-        import aib_ext
-        with mock.patch.object(aib_ext, "signed_ok", return_value=True):
-            with self.assertRaises(RuntimeError):
-                self.run_check(plugin_fetch=AU.fetch_plugin_source, install=boom)
-        self.assertEqual(self.leases, ["acquire", "release"])
-        self.assertEqual(sorted(p.name for p in base.glob("stage-*")), ["stage-%d" % os.getpid()])   # 只剩那個沒被碰的連結
-        self.assertEqual(list(decoy.iterdir()), [])
-
 
 class Audit(Base):
-    def test_a1_stage_path_filter(self):
-        base = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "cache" / "auto-update"
-        for bad in ("demo/../../evil", "/abs/evil", "other/evil"):
-            with self.subTest(member=bad):
-                buf = io.BytesIO()
-                with tarfile.open(fileobj=buf, mode="w") as tf:
-                    for name, data in (("demo/ok.txt", b"ok"), (bad, b"evil")):
-                        ti = tarfile.TarInfo(name)
-                        ti.size = len(data)
-                        tf.addfile(ti, io.BytesIO(data))
-                fake = mock.Mock(return_value=subprocess.CompletedProcess([], 0, stdout=buf.getvalue(), stderr=b""))
-                with mock.patch.object(AU.subprocess, "run", fake):
-                    self.assertIsNone(AU.stage_paid(self.td / "cache.git", "demo", self.env))
-                self.assertEqual(fake.call_args.args[0][3:], ["archive", "--format=tar", "main", "demo"])
-                self.assertEqual(list(base.glob("stage-*")), [])
-                self.assertEqual([p for p in self.td.rglob("evil")], [])
-                # 要是自己的路徑檢查擋下的(新版 Python 的 data filter 也會擋,但 3.9 沒有)
-                self.assertIn("path outside the folder", AU.log_path(self.env).read_text(encoding="utf-8"))
-                AU.log_path(self.env).unlink()
-                self.assertFalse(Path("/abs/evil").exists())
-
     def test_a2_fetch_is_hardened(self):
         calls = []
 
@@ -996,22 +976,6 @@ class Audit2(Base):
         self.assertTrue(data.rstrip().endswith(b"tail-marker"))
         self.assertFalse(lp.is_symlink())
 
-    def test_a5_extract_disk_full(self):
-        import errno
-        PaidSource.paid_repo(self, {"demo-paid": "1.0.3"})
-        cache = AU.fetch_plugin_source(self.env)
-        base = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "cache" / "auto-update"
-        with mock.patch.object(tarfile.TarFile, "extractall", side_effect=OSError(errno.ENOSPC, "No space left on device")):
-            self.assertIsNone(AU.stage_paid(cache, "demo-paid", self.env))
-            self.assertEqual(list(base.glob("stage-*")), [])
-            self.assertIn("extract failed", AU.log_path(self.env).read_text(encoding="utf-8"))
-            self.make_repos(latest=None)
-            import aib_ext
-            with mock.patch.object(aib_ext, "signed_ok", return_value=True):
-                res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=AU.install_plugin)
-        self.assertEqual(res["result"], "plugins_failed", res)
-        self.assertEqual(list(base.glob("stage-*")), [])
-
     def test_a6_non_object_manifest(self):
         PaidSource.paid_repo(self, {"demo-paid": "1.0.3", "zz-broken": "1.0.3"})
         (Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / "zz-broken" / "aib-ext.json").write_text("[1, 2]")
@@ -1055,6 +1019,66 @@ class Cli(Base):
         AU.write_setting(False, self.env)
         self.assertEqual(json.loads(self.aib("status", "--json").stdout)["on"], False)
         self.assertIn("自動更新:關", self.aib("status").stdout)
+
+    def main_json(self, *argv):
+        out = io.StringIO()
+        rc = AU.main(list(argv) + ["--json"], out=out)
+        lines = [ln for ln in out.getvalue().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 1, (argv, out.getvalue()))
+        return rc, json.loads(lines[0])
+
+    def test_j1_json_one_object_every_path(self):
+        """[B-M2] --json:on / off / exclude add / remove / list / status / check(含丟例外)每次只印一個 JSON;launchctl 換假的。"""
+        ctl = FakeCtl()
+        with mock.patch.object(AU, "_launchctl", ctl), mock.patch.object(AU.sys, "platform", "darwin"), \
+                mock.patch.object(AU, "dev_worktree", return_value=None):
+            rc, d = self.main_json("off")
+            self.assertEqual((rc, d["action"], d["rc"]), (0, "off", 0))
+            rc, d = self.main_json("on")
+            self.assertEqual((d["action"], d["rc"]), ("on", rc))
+            self.assertTrue(d["lines"])
+        self.assertTrue(ctl.calls and all(c[0] in ("bootout", "bootstrap") for c in ctl.calls))
+        rc, d = self.main_json("exclude", "add", "demo")
+        self.assertEqual((rc, d["action"]), (0, "exclude_add"))
+        rc, d = self.main_json("exclude", "remove", "demo")
+        self.assertEqual((rc, d["action"]), (0, "exclude_remove"))
+        rc, d = self.main_json("exclude", "list")
+        self.assertIn("exclude", d)
+        rc, d = self.main_json("status")
+        self.assertIn("on", d)
+        with mock.patch.object(AU, "check", side_effect=RuntimeError("boom")):
+            rc, d = self.main_json("check")
+        self.assertEqual((rc, d["result"], d["error"]), (1, "error", "RuntimeError"))
+        with mock.patch.object(AU, "check", return_value={"result": "up_to_date"}):
+            rc, d = self.main_json("check")
+        self.assertEqual((rc, d), (0, {"result": "up_to_date"}))
+
+    def test_j2_seat_open_waits_before_check(self):
+        """[B-L] 開席那次 detach 後先等(60–90 秒,可注入)再查;排程那次不等。"""
+        waits, order = [], []
+        with mock.patch.object(AU, "_detach", lambda: order.append("detach")), \
+                mock.patch.object(AU, "check", side_effect=lambda why: order.append("check:" + why) or {"result": "off"}):
+            AU.main(["check", "--why", "seat-open", "--detach"], out=io.StringIO(), sleep=lambda s: order.append("sleep") or waits.append(s))
+            AU.main(["check", "--why", "schedule", "--detach"], out=io.StringIO(), sleep=lambda s: waits.append(s))
+            AU.main(["check", "--why", "seat-open", "--detach"], out=io.StringIO(), sleep=waits.append, wait_s=0)
+        self.assertEqual(order[:3], ["detach", "sleep", "check:seat-open"])
+        self.assertEqual(len(waits), 2)
+        self.assertTrue(60 <= waits[0] <= 90, waits)
+        self.assertEqual(waits[1], 0)
+
+    def test_u1_uninstall_removes_auto_update_agent(self):
+        """[A-L2] aib uninstall 一併列出 / 拆自動更新排程(plist)。"""
+        sys.path.insert(0, str(REPO / "tools" / "support"))
+        import uninstall as UN
+        agents = self.home / "Library" / "LaunchAgents"
+        agents.mkdir(parents=True)
+        plist = agents / (AU.AGENT_LABEL + ".plist")
+        plist.write_bytes(b"<plist/>")
+        self.assertEqual(UN.AUTO_UPDATE_LABEL, AU.AGENT_LABEL)
+        pkg = self.td / "devcopy" / "aib"
+        pkg.mkdir(parents=True)
+        remove = UN.plan(self.home, pkg, False)[0]
+        self.assertIn(plist, [p for p, _ in remove])
 
 
 if __name__ == "__main__":

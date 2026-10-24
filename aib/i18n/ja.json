@@ -3648,6 +3648,8 @@
   "aib.uninstall.keep_other_link": "{path}:別の aib です。そのままにします(引き続き使えます)",
   "aib.uninstall.what_boot": "起動メニュー(aib restart install-boot)",
   "aib.uninstall.keep_boot": "{path}:起動メニューは別の aib のものかもしれません。そのままにします",
+  "aib.uninstall.keep_auto_update": "{path}:自動更新のスケジュールは別の aib のものかもしれないので触りません",
+  "aib.uninstall.what_auto_update": "自動更新のスケジュール(aib update auto on)",
   "aib.uninstall.refuse_all_other": "--all:このマシンには別の aib({link})があり、{state}(席・人格・記憶)を共有しています。削除しませんでした。先にその aib を、入れたときの方法で削除してください。",
   "aib.uninstall.what_state": "aib の記録:席・人格・記憶・引き継ぎ・設定(先にバックアップ)",
   "aib.uninstall.what_cache": "aib のキャッシュ",
@@ -5273,6 +5275,8 @@
   "aib.auto_update.status.excluded": "自動更新しないプラグイン:{names}",
   "aib.auto_update.status.excluded_behind": "署名済みの新しい版がありますが除外中(更新するかは自分で決めて手動で):{names}",
   "aib.auto_update.status.unsigned": "入手元に新しい版がありますが署名の検証に失敗したため入れていません:{names}",
+  "aib.auto_update.doctor.paid_behind": "自動更新オン、有料プラグインの新しい版は入れ替えていません(名前のみ):{names}",
+  "aib.auto_update.status.paid_behind": "有料プラグインに新しい版があります。自動更新は名前を出すだけで入れ替えません:{names}(入れ替えるには aib ext install <名前> を自分で実行してください)",
   "aib.auto_update.status.modified": "これらのプラグインのフォルダに変更・追加されたファイルがあるため、自動更新では入れ替えていません(上書き防止)。更新するには aib ext install を自分で実行してください:{names}",
   "aib.auto_update.status.plugin_source_offline": "前回の確認でプラグインの入手元(aib-plugins)に接続できず、有料プラグインは確認していません",
   "aib.auto_update.exclude.list": "自動更新しないプラグイン:{names}",
@@ -5285,6 +5289,6 @@
   "aib.auto_update.exclude.touchid_reason": "aib がプラグイン {name} を自動更新することを許可",
   "aib.auto_update.exclude.needs_touchid": "{name} は既定で自動更新しません(本番デプロイの元です)。外すには本人の Touch ID が必要です({why})。何も変更していません",
   "aib.auto_update.status.clock_skew": "時計のずれ:保存された時刻が現在より先でした(時計が進んだことがあります)。無視して通常どおり確認します",
-  "aib.auto_update.why.refused_source": "公開版からインストールされていません(非公開または自分のリポジトリ)。自動更新しません。更新は aib update を自分で実行してください",
+  "aib.auto_update.why.refused_source": "公開版からインストールされていないか(非公開または自分のリポジトリ)、公開タグが公開版 main の履歴にありません。自動更新しません。更新は aib update を自分で実行してください",
   "aib.auto_update.why.no_change": "aib update は終わりましたがバージョンが変わっていません。ログを確認してください。後でもう一度試します"
 }

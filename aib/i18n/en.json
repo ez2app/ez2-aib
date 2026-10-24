@@ -3648,6 +3648,8 @@
   "aib.uninstall.keep_other_link": "{path}: another aib, left as is (it keeps working)",
   "aib.uninstall.what_boot": "the boot menu (aib restart install-boot)",
   "aib.uninstall.keep_boot": "{path}: the boot menu may belong to the other aib, left as is",
+  "aib.uninstall.keep_auto_update": "{path}: the auto-update schedule may belong to the other aib, left as is",
+  "aib.uninstall.what_auto_update": "auto-update schedule (aib update auto on)",
   "aib.uninstall.refuse_all_other": "--all: another aib on this machine ({link}) shares {state} (seats, personas, memory); it was not removed. Remove that aib first, the way it was installed.",
   "aib.uninstall.what_state": "aib's records: seats, personas, memory, handoffs, settings (backed up first)",
   "aib.uninstall.what_cache": "aib's cache",
@@ -5273,6 +5275,8 @@
   "aib.auto_update.status.excluded": "Never auto-updated: {names}",
   "aib.auto_update.status.excluded_behind": "Newer signed version exists but excluded (update by hand when you decide): {names}",
   "aib.auto_update.status.unsigned": "Newer version in the source failed the signature check, not installed: {names}",
+  "aib.auto_update.doctor.paid_behind": "auto update on; paid plugins with a newer version were not swapped (listed only): {names}",
+  "aib.auto_update.status.paid_behind": "Paid plugins have newer versions; auto update only lists them and does not swap them: {names} (to update, run aib ext install <name> yourself)",
   "aib.auto_update.status.modified": "These plugins have files you changed or added in their folders, so auto-update left them alone (to avoid overwriting); run aib ext install yourself to update: {names}",
   "aib.auto_update.status.plugin_source_offline": "Plugin source (aib-plugins) could not be reached at the last check; paid plugins were not checked",
   "aib.auto_update.exclude.list": "Never auto-updated: {names}",
@@ -5285,6 +5289,6 @@
   "aib.auto_update.exclude.touchid_reason": "Allow aib to auto-update the plugin {name}",
   "aib.auto_update.exclude.needs_touchid": "{name} is excluded by default (it is the production deploy source); taking it off needs your Touch ID ({why}); nothing changed",
   "aib.auto_update.status.clock_skew": "Clock skew: saved times were in the future (the clock jumped); they were ignored and checking goes on as normal",
-  "aib.auto_update.why.refused_source": "This copy was not installed from the public release (private or your own repo); not auto-updating. Run aib update yourself",
+  "aib.auto_update.why.refused_source": "This copy was not installed from the public release (private or your own repo), or the release tag is not on the public main history; not auto-updating. Run aib update yourself",
   "aib.auto_update.why.no_change": "aib update finished but the version did not change; see the log. Will try again later"
 }

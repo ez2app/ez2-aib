@@ -37,6 +37,7 @@ from pathlib import Path
 
 PUBLIC_REPO = "github.com/ez2app/ez2-aib"
 BOOT_LABEL = "com.ez2.aib-boot-restore"
+AUTO_UPDATE_LABEL = "com.ez2.aib-auto-update"   # aib update auto on 裝的排程(auto_update.AGENT_LABEL)
 PATH_MARK = "# aib-bootstrap: PATH"
 
 
@@ -285,6 +286,11 @@ def plan(home, package_dir, want_all, discard_unsaved=False, rewrite=None):
         remove.append((plist, _t("aib.uninstall.what_boot")))
     elif plist.exists():
         keep.append(_t("aib.uninstall.keep_boot", path=plist))
+    auto = home / "Library" / "LaunchAgents" / (AUTO_UPDATE_LABEL + ".plist")
+    if auto.exists() and not other_aib:
+        remove.append((auto, _t("aib.uninstall.what_auto_update")))
+    elif auto.exists():
+        keep.append(_t("aib.uninstall.keep_auto_update", path=auto))
     if not other_aib:
         for name in (".zprofile", ".profile"):
             p = home / name
@@ -361,9 +367,10 @@ def main(argv=None, home=None, package_dir=None):
     state = home / ".ez2-aib"
     if any(p == state for p, _ in remove):
         print(_t("aib.uninstall.backed_up", path=_backup(state, home)))
-    if sys.platform == "darwin" and any(p.name == BOOT_LABEL + ".plist" for p, _ in remove):
-        subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), BOOT_LABEL)], capture_output=True,
-                       stdin=subprocess.DEVNULL, timeout=30)
+    for label in (BOOT_LABEL, AUTO_UPDATE_LABEL):     # 排程先 bootout 再刪 plist,不然 launchd 還留著舊的
+        if sys.platform == "darwin" and any(p.name == label + ".plist" for p, _ in remove):
+            subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), label)], capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=30)
     for p in profiles:
         p.write_text(_profile_without_path_line(p.read_text(encoding="utf-8")), encoding="utf-8")
     for p, cfg, _what in rewrite:
