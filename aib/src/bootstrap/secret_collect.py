@@ -256,7 +256,7 @@ def put_secret(name, plaintext, env=None):
         raise S.SecretError(S.MISSING_FILE, name, "unknown name")
     if name in S.SE_ONLY_NAMES:      # 母鑰只進 Secure Enclave;檔案(含 LINE 補填)一律拒(@abb89 審 #222)
         raise S.SecretError("se_only", name, "Secure Enclave only")
-    if name in S.REMOTE_ONLY_NAMES:  # 只在伺服器上用:本機不存(aib secret ask … --remote-only)
+    if S.is_remote_only(name):  # 只在伺服器上用:本機不存(aib secret ask … --remote-only)
         raise S.SecretError("remote_only", name, "server only")
     if not isinstance(plaintext, str) or not plaintext.strip():
         raise S.SecretError(S.MISSING_LINE, name, "empty fill")

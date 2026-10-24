@@ -261,6 +261,9 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
     res["file"] = rel
     if a.name in S.SE_ONLY_NAMES:
         return _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal)
+    if S.is_remote_only(a.name) and not a.remote_only:  # 先擋:不解析主機、不叫輸入框
+        res["why"] = "remote_only_name"
+        return done(2)
     target = pin = None
     if a.push:
         try:
@@ -272,9 +275,6 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
         where = "%s(%s@%s:%s):%s" % (target[0], pin["user"], pin["hostname"], pin["port"], target[1])
     if a.remote_only and not target:
         res["why"] = "remote_only_needs_push"
-        return done(2)
-    if a.name in S.REMOTE_ONLY_NAMES and not a.remote_only:  # 先擋，不叫輸入框
-        res["why"] = "remote_only_name"
         return done(2)
     dest = where if a.remote_only else _t("aib.secret.dest_local") + (" + " + where if target else "")
     value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty)

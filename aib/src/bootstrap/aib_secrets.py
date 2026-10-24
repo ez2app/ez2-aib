@@ -287,6 +287,7 @@ EXACT_FILES, PREFIX_TABLE = _name_maps()
 SE_ONLY_NAMES = ("CF_TOKEN_MINTER",)
 # 只准送到伺服器的名字(aib secret ask … --push … --remote-only):金鑰櫃檔案一律拒寫(10-24 @ee4f8)
 REMOTE_ONLY_NAMES = ("FLUENTMAIL_AWS_ACCESS_KEY_ID", "FLUENTMAIL_AWS_SECRET_ACCESS_KEY")
+REMOTE_ONLY_FILES = ("fluentmail.env",)  # 前綴對到這類的名字(FLUENTMAIL_…_SITE2)也一樣(@abb89 審 #301)
 
 
 def file_for_name(name):
@@ -298,6 +299,11 @@ def file_for_name(name):
         if name.startswith(prefix):
             return rel
     return None
+
+
+def is_remote_only(name):
+    """只准送伺服器:在名單,或名字落在只送伺服器的那類檔。"""
+    return name in REMOTE_ONLY_NAMES or file_for_name(name) in REMOTE_ONLY_FILES
 
 
 class SecretError(Exception):

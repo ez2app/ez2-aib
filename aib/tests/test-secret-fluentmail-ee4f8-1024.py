@@ -7,7 +7,8 @@ F1 兩個名字落 fluentmail.env 這一類(不再 unknown_name),列在 REMOTE_O
 F2 --push … --remote-only:輸入框 → Touch ID → 值只走 ssh stdin 送到遠端;本機金鑰櫃沒有這個檔
 F3 沒給 --remote-only(只存本機、或本機 + 遠端)⇒ remote_only_name、rc 2,沒叫輸入框、沒叫 Touch ID、沒 ssh
 F4 put_secret 直接寫也拒(remote_only),檔案沒建
-刀:K1 拿掉 secret_ask 的擋 ⇒ F3 紅;K2 拿掉 put_secret 的擋 ⇒ F4 紅
+F5 帶字尾的同類名字(FLUENTMAIL_…_SITE2、FLUENTMAIL_SES_KEY)也只准送伺服器:ask 回 remote_only_name、put_secret 拒
+刀:K1 拿掉 secret_ask 的擋 ⇒ F3 紅;K2 拿掉 put_secret 的擋 ⇒ F4 紅;K3 is_remote_only 只看名單 ⇒ F5 紅
 """
 import io
 import json
@@ -110,6 +111,17 @@ class FluentMail(unittest.TestCase):
             self.assertEqual(cm.exception.reason, "remote_only")
         self.assertFalse(self.local_file().exists())
 
+    def test_f5_suffixed_names_too(self):
+        for n in ("FLUENTMAIL_AWS_SECRET_ACCESS_KEY_SITE2", "FLUENTMAIL_SES_KEY"):
+            self.assertTrue(S.is_remote_only(n), n)
+            calls, f = [], Fake([KEY_ID])
+            rc, res = self.run_cmd([n], f, calls)
+            self.assertEqual((rc, res["why"], f.asks, calls), (2, "remote_only_name", 0, []))
+            with self.assertRaises(S.SecretError):
+                SC.put_secret(n, KEY_ID, env=self.env)
+        self.assertFalse(self.local_file().exists())
+        self.assertFalse(S.is_remote_only("ANTHROPIC_API_KEY"))
+
 
 class Knives(unittest.TestCase):
     def _red(self, rel, needle, repl, test):
@@ -120,12 +132,17 @@ class Knives(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "刀落了測試還綠:" + test)
 
     def test_k1_ask_gate_dropped(self):
-        self._red("src/cockpit/secret_ask.py", "    if a.name in S.REMOTE_ONLY_NAMES and not a.remote_only:",
+        self._red("src/cockpit/secret_ask.py", "    if S.is_remote_only(a.name) and not a.remote_only:",
                   "    if False:", "test_f3_local_refused_before_asking")
 
     def test_k2_put_gate_dropped(self):
-        self._red("src/bootstrap/secret_collect.py", "    if name in S.REMOTE_ONLY_NAMES:", "    if False:",
+        self._red("src/bootstrap/secret_collect.py", "    if S.is_remote_only(name):", "    if False:",
                   "test_f4_put_secret_refused")
+
+    def test_k3_names_only_reds_f5(self):
+        self._red("src/bootstrap/aib_secrets.py",
+                  "    return name in REMOTE_ONLY_NAMES or file_for_name(name) in REMOTE_ONLY_FILES",
+                  "    return name in REMOTE_ONLY_NAMES", "test_f5_suffixed_names_too")
 
 
 if __name__ == "__main__":
