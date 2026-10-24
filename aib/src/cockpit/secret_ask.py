@@ -254,6 +254,9 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
     def done(rc):
         out.write(json.dumps(res, ensure_ascii=False) + "\n")
         return rc
+    if not S.valid_name(a.name):  # 先擋:不叫輸入框、不解析主機(換行會把這行寫進別的檔)
+        res["why"] = "bad_name"
+        return done(2)
     rel = S.file_for_name(a.name)
     if rel is None:
         res["why"] = "unknown_name"
@@ -261,6 +264,9 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
     res["file"] = rel
     if a.name in S.SE_ONLY_NAMES:
         return _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpass_fn, isatty, err, seal)
+    if S.is_remote_only(a.name) and not a.remote_only:  # 先擋:不解析主機、不叫輸入框
+        res["why"] = "remote_only_name"
+        return done(2)
     target = pin = None
     if a.push:
         try:
