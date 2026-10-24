@@ -927,6 +927,8 @@ def installed():
                     break
                 except (OSError, ValueError):
                     continue
+            if not isinstance(m, dict):            # manifest 是陣列 / 字串 ⇒ 當沒讀到,不讓整張表炸掉(10-24 aib support 雙審)
+                m = {}
             rows.append({"kind": kind, "name": d.name, "version": m.get("version", "?"),
                          "requires_aib": m.get("requires_aib", "?"), "signed": bool(m.get("signature")), "path": str(d)})
     return rows

@@ -25,6 +25,7 @@ import os
 import platform
 import re
 import secrets
+import stat
 import sys
 import time
 
@@ -47,7 +48,14 @@ SECRET = re.compile(
 TMP = re.compile(r"/(?:private/)?var/folders/[^\s\"']+|/(?:private/)?tmp/[^\s\"']+", re.I)
 CABIN = re.compile(r"\d{8}-\d{6}-[0-9a-f]{4}", re.I)
 SEAT = re.compile(r"(?<![0-9a-z])(?:[@_]|w)?[0-9a-f]{5}(?![0-9a-z])", re.I)
+EXCLUDED = ("messages", "vault", "project_names", "persona", "secrets", "licenses", "log_text", "cabin_seat_ids")
 DOCTOR_PURE = ("python_version", "git_present", "state_root_perms", "schemas_readable")
+# detail 只留不帶路徑、不帶錯誤原文的幾項;其他(工具路徑、git 路徑、失敗的錯誤訊息)一律 None(10-24 雙審第 2 輪:
+# PATH 裡的專案夾會從執行檔路徑漏出專案名;schema 錯誤原文截半的家目錄躲過遮罩)
+DETAIL_KEEP = ("python_version", "state_root_perms", "provider_optional", "provider_any")
+VERSION_RE = re.compile(r"[0-9A-Za-z.+_-]{1,40}")
+NAME_RE = re.compile(r"[a-z0-9]{1,24}")
+READ_MAX = 1024 * 1024
 
 
 def _root():
@@ -56,6 +64,8 @@ def _root():
 
 def _tail_rows(path):
     try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return []
         with open(path, "rb") as f:
             f.seek(0, 2)
             size = f.tell()
@@ -67,7 +77,7 @@ def _tail_rows(path):
     for line in raw.splitlines()[1 if size > TAIL_BYTES else 0:]:
         try:
             d = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         if isinstance(d, dict):
             out.append(d)
@@ -85,13 +95,23 @@ def versions():
 
 
 def plugins():
+    """已裝外掛的種類 / 名稱 / 版本 / 有沒有簽章。角色卡包(persona)不收(人設不收);
+    名稱不合包名規則、版本不像版本號 ⇒ "?"(manifest 是外掛自己寫的,10-24 雙審第 2 輪)。"""
     try:
         import aib_ext
         rows = aib_ext.installed()
     except Exception:  # noqa: BLE001 - 外掛表讀不到不拖垮整份回報
         return []
-    return [{"kind": r.get("kind"), "name": r.get("name"), "version": r.get("version"), "signed": bool(r.get("signed"))}
-            for r in rows if isinstance(r, dict)]
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict) or r.get("kind") == "persona":
+            continue
+        name, ver = r.get("name"), r.get("version")
+        out.append({"kind": r.get("kind") if isinstance(r.get("kind"), str) else "?",
+                    "name": name if isinstance(name, str) and aib_ext.name_ok(name) else "?",
+                    "version": ver if isinstance(ver, str) and VERSION_RE.fullmatch(ver) else "?",
+                    "signed": r.get("signed") is True})
+    return out
 
 
 def _providers():
@@ -114,7 +134,7 @@ def doctor(root):
         got += D.provider_checks(_providers(), False)
     except Exception as exc:  # noqa: BLE001
         return {"error": type(exc).__name__, "checks": [], "counts": {}}
-    checks = [{"id": c.get("id"), "status": c.get("status"), "detail": c.get("detail")}
+    checks = [{"id": c.get("id"), "status": c.get("status"), "detail": _detail(c)}
               for c in got if isinstance(c, dict)
               and (c.get("id") in DOCTOR_PURE or str(c.get("id")).startswith("provider_"))]
     counts = {}
@@ -123,19 +143,34 @@ def doctor(root):
     return {"checks": checks, "counts": counts}
 
 
+def _detail(c):
+    cid = str(c.get("id"))
+    if cid in DETAIL_KEEP or cid.startswith("provider_login_") or (cid == "schemas_readable" and c.get("status") == "ok"):
+        return c.get("detail")
+    return None
+
+
+def _read_json(path):
+    """只讀一般檔(FIFO / 裝置 / 連結到怪東西不開)、最多 READ_MAX;壞掉 / 太深 ⇒ None。"""
+    try:
+        st = os.stat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > READ_MAX:
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
 def _at(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
 
 
 def logins(root):
     """各家 AI 上次量到有沒有登入(power_login 的快取;不叫 CLI)。"""
-    try:
-        with open(os.path.join(root, "state", "power-login.json"), encoding="utf-8") as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return {}
+    d = _read_json(os.path.join(root, "state", "power-login.json"))
     return {k: v.get("v") for k, v in (d.items() if isinstance(d, dict) else [])
-            if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("v"), bool)}
+            if isinstance(k, str) and NAME_RE.fullmatch(k) and isinstance(v, dict) and isinstance(v.get("v"), bool)}
 
 
 def cabins(root):
@@ -144,11 +179,10 @@ def cabins(root):
     for cab in sorted(glob.glob(os.path.join(root, "instances", "*", "seats"))):
         roles = []
         for p in glob.glob(os.path.join(cab, "*.json")):
-            try:
-                with open(p, encoding="utf-8") as f:
-                    role = json.load(f).get("role")
-            except (OSError, ValueError, AttributeError):
+            d = _read_json(p)
+            if not isinstance(d, dict):
                 continue
+            role = d.get("role")
             roles.append(role if isinstance(role, str) and re.fullmatch(r"[a-z0-9_-]{1,32}", role) else "?")
         out.append({"seats": len(roles), "roles": sorted(roles)})
     return out
@@ -241,6 +275,8 @@ def _write_private(path, text):
 
 
 def _private_dir(d):
+    if os.path.islink(d):                      # 指向別處的連結 ⇒ 不寫,也不去 chmod 別人的夾
+        raise OSError("support dir is a symlink")
     os.makedirs(d, mode=0o700, exist_ok=True)
     os.chmod(d, 0o700)                         # 夾本來就在(可能是 0755)也收緊
 
@@ -257,10 +293,13 @@ def _mark(root, now):
 def run(write=False, root=None):
     """回 (回條, rc)。沒 --write ⇒ 只列會收什麼,一個檔都不寫。"""
     root = root or _root()
-    body, redacted = collect(root)
+    try:
+        body, redacted = collect(root)
+    except Exception:  # noqa: BLE001 - 任何一段炸了都回回條,不印 traceback
+        return {"ok": False, "detail": "support_collect_failed", "file": None, "sections": list(SECTIONS), "counts": {},
+                "redacted": 0, "excluded": list(EXCLUDED), "sent": False}, 1
     r = {"ok": True, "detail": "support_preview", "file": None, "sections": list(SECTIONS), "counts": _counts(body),
-         "redacted": redacted, "excluded": ["messages", "vault", "project_names", "persona", "secrets", "licenses",
-                                           "log_text", "cabin_seat_ids"], "sent": False}
+         "redacted": redacted, "excluded": list(EXCLUDED), "sent": False}
     if not write:
         return r, 0
     d = os.path.join(root, "support")

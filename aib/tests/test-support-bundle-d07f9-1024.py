@@ -11,11 +11,15 @@ S3 不收的東西真的不在檔裡:席位檔的專案名 / 艙號 / 席號、d
 S4 redact:家目錄 → ~、使用者 → <user>、暫存路徑 → <tmp>、艙號 → <cabin>、席號 → <seat>、像金鑰的字串 → [redacted](算處數)
 S5 failures 只留不成功的代碼 + 時間、最多 20 筆;怪代碼 / 成功的不收
 S7 失敗代碼的邊角:成功的四種 / 怪代碼 / 時間不是數字 / 面板沒有 ok / 大檔只讀尾端、切半的第一行丟掉;角色超過 32 字 ⇒ ?;寫不進去 ⇒ rc 1、不記
+S9 寫檔保護:暫存路徑被佔 / 是連結 ⇒ 不寫;換名失敗不留暫存;NaN 不進檔;support 夾是連結 ⇒ 不寫、不 chmod 別的夾
+S10 第 2 輪稽核:外掛 manifest 版本是字典 / NaN / 控制字元、資料夾名帶換行、角色卡包 ⇒ ? 或不收;
+    power-login 太深 / 鍵帶專案名、席位檔是 FIFO ⇒ 不炸不卡;PATH 裡專案夾的執行檔路徑不進包
 S8 不叫整套 doctor(run_all / main / 探針 / 角色卡清單重產),只叫 DOCTOR_PURE + 各家 AI 工具
 S6 借 doctor 結果不記 R10(run-marks/doctor.json 不出現);aib support 從 aib 啟動器轉得到;power_tasks 讀 support.json ⇒ support_bundle
 刀(複本):K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
 """
 import io
+import glob
 import json
 import os
 import shutil
@@ -109,7 +113,10 @@ class Support(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((Path(TMP) / "support").stat().st_mode), 0o700)
         body = json.loads(files[0].read_text(encoding="utf-8"))
         self.assertEqual(sorted(body), sorted(("schema", "at") + S.SECTIONS))
-        self.assertTrue((Path(TMP) / "state" / "run-marks" / "support.json").is_file())
+        mark = Path(TMP) / "state" / "run-marks" / "support.json"
+        self.assertEqual(stat.S_IMODE(mark.stat().st_mode), 0o600)
+        self.assertEqual(json.loads(mark.read_text()), {"at": body["at"]})
+        self.assertEqual(S.show_path("/Users/x", home="/Users/x"), "~")
         self.assertEqual(body["cabins"], [{"seats": 2, "roles": ["?", "dev"]}])
         self.assertEqual(body["logins"], {"claude": True})
         self.assertEqual(r["file"], S.show_path(str(files[0])))
@@ -145,6 +152,9 @@ class Support(unittest.TestCase):
                                "<tmp>", "[redacted]", "[redacted]", "[redacted]", "[redacted]", "[redacted]",
                                "[redacted]"])
         self.assertEqual(S.redact({home + "/k": {SECRET_TOKEN: 1}}, home=home, user="zz")[0], {"~/k": {"[redacted]": 1}})
+        self.assertEqual(S.redact(["/h1/abc/x"], home="/h1/abc/", user="zz")[0], ["~/x"])
+        self.assertEqual(S.redact(["xsomeone"], home="/h", user="someone")[0], ["xsomeone"])
+        self.assertEqual(S.redact(["xoxb-11111-2222222222"], home="/h", user="zz")[0], ["[redacted]"])   # 金鑰先於席號
         self.assertEqual(n, 2)
         self.assertEqual(S.redact(["ab cd"], home="/h", user="ab")[0], ["ab cd"])          # 太短的名字不換
         self.assertEqual(S.redact(["someoneelse"], home="/h", user="someone")[0], ["someoneelse"])
@@ -191,17 +201,28 @@ class Support(unittest.TestCase):
         self.assertEqual([r["at"] for r in S.failures(str(root))], [None, None])
         (Path(TMP) / "support").mkdir(mode=0o755)
         os.chmod(Path(TMP) / "support", 0o755)
+        stamp = S.time.strftime("%Y%m%d-%H%M%S", S.time.localtime(1792780000))
         S.time.time = lambda: 1792780000.5
         try:
             a, _ = S.run(write=True)
             b, _ = S.run(write=True)
+            c, _ = S.run(write=True)
         finally:
             S.time.time = time.time
-        self.assertNotEqual(a["file"], b["file"])
+        self.assertEqual(len({a["file"], b["file"], c["file"]}), 3)
         self.assertEqual(stat.S_IMODE((Path(TMP) / "support").stat().st_mode), 0o700)
         self.assertEqual(sorted(p.name for p in (Path(TMP) / "support").iterdir()),
-                         ["aib-support-%s-2.json" % S.time.strftime("%Y%m%d-%H%M%S", S.time.localtime(1792780000)),
-                          "aib-support-%s.json" % S.time.strftime("%Y%m%d-%H%M%S", S.time.localtime(1792780000))])
+                         ["aib-support-%s-2.json" % stamp, "aib-support-%s-3.json" % stamp, "aib-support-%s.json" % stamp])
+        shutil.rmtree(Path(TMP) / "support")
+        (Path(TMP) / "support").mkdir()
+        os.symlink("/nonexistent-aib-x", str(Path(TMP) / "support" / ("aib-support-%s.json" % stamp)))
+        S.time.time = lambda: 1792780000.5
+        try:
+            d, _ = S.run(write=True)
+        finally:
+            S.time.time = time.time
+        self.assertTrue(os.path.islink(str(Path(TMP) / "support" / ("aib-support-%s.json" % stamp))))   # 斷掉的連結也不蓋
+        self.assertTrue(d["file"].endswith("-2.json"), d["file"])
         shutil.rmtree(Path(TMP) / "support")
         (Path(TMP) / "state" / "run-marks" / "support.json").unlink()
         (Path(TMP) / "support").write_text("x")
@@ -223,6 +244,101 @@ class Support(unittest.TestCase):
             D.run_all, D.main, D.check_writable, D.check_cards_projection = real
         self.assertNotIn("error", got)
         self.assertEqual([c["id"] for c in got["checks"]][:4], list(S.DOCTOR_PURE))
+        self.assertTrue(any(c["id"].startswith("provider_") for c in got["checks"]))
+        self.assertFalse({"sand", "gemini"} & set(S._providers()))                      # retired / alias-only 不收
+        here = S.HERE
+        fake = Path(TMP) / "fake-here"
+        fake.mkdir()
+        (fake / "providers.json").write_text(json.dumps({"providers": [
+            {"id": "Bad Id!", "status": "supported"}, {"id": "ok1", "status": "supported"}, {"id": "old", "status": "retired"}]}))
+        S.HERE = str(fake)
+        try:
+            self.assertEqual(S._providers(), ["ok1"])
+        finally:
+            S.HERE = here
+
+    def test_s9_write_guards(self):
+        d = Path(TMP) / "w"
+        d.mkdir()
+        p = str(d / "f.json")
+        victim = d / "victim"
+        tok = S.secrets.token_hex
+        S.secrets.token_hex = lambda n: "fixed"
+        try:
+            os.symlink(str(victim), "%s.%d.fixed.tmp" % (p, os.getpid()))
+            with self.assertRaises(OSError):
+                S._write_private(p, "x")                                     # 暫存路徑被預先佔住 / 是連結 ⇒ 不寫
+            self.assertFalse(victim.exists())
+        finally:
+            S.secrets.token_hex = tok
+        rep = S.os.replace
+
+        def bad(a, b):
+            raise OSError("boom")
+        S.os.replace = bad
+        try:
+            with self.assertRaises(OSError):
+                S._write_private(str(d / "g.json"), "x")
+        finally:
+            S.os.replace = rep
+        self.assertEqual(glob.glob(str(d / "g.json") + ".*.tmp"), [])          # 失敗不留暫存檔
+        real = S.collect
+        S.collect = lambda root=None: ({"schema": "x", "at": 1, "versions": {}, "plugins": [], "doctor": {}, "logins": {},
+                                        "cabins": [], "failures": [{"at": float("nan")}]}, 0)
+        try:
+            self.assertEqual(S.run(write=True)[0]["detail"], "support_write_failed")   # NaN 不准進檔
+        finally:
+            S.collect = real
+        other = Path(TMP) / "elsewhere"
+        other.mkdir(mode=0o755)
+        os.chmod(other, 0o755)
+        shutil.rmtree(Path(TMP) / "support", ignore_errors=True)
+        os.symlink(str(other), str(Path(TMP) / "support"))
+        r, rc = S.run(write=True)
+        self.assertEqual((rc, r["detail"]), (1, "support_write_failed"))          # support 是連結 ⇒ 不寫、不 chmod 別的夾
+        self.assertEqual(stat.S_IMODE(other.stat().st_mode), 0o755)
+        self.assertEqual(list(other.iterdir()), [])
+
+    def test_s10_round2(self):
+        r = Path(TMP)
+        for name, man in (("p1", '{"version": {"project": "%s"}}' % PROJECT), ("p2", '{"version": NaN}'),
+                          ("p3", '{"version": "1.0\u001b[31mRED"}'), ("p4\nline2", '{"version": "1.2.3"}'),
+                          ("p5", "[1]"), ("ok6", '{"version": "0.4.1", "signature": "x"}')):
+            (r / "plugins" / name).mkdir(parents=True)
+            (r / "plugins" / name / "aib-ext.json").write_text(man, encoding="utf-8")
+        (r / "personas" / "andy-clone-persona").mkdir(parents=True)
+        (r / "personas" / "andy-clone-persona" / "aib-ext.json").write_text('{"version": "1.0"}')
+        (r / "state" / "power-login.json").write_text("[" * 200000 + "]" * 200000)
+        os.mkfifo(str(r / "instances" / "20261014-133230-abcd" / "seats" / "f.json"))
+        work = r / "work" / PROJECT / "bin"
+        work.mkdir(parents=True)
+        (work / "codex").write_text("#!/bin/sh\n")
+        os.chmod(work / "codex", 0o755)
+        os.environ["PATH"] = str(work) + os.pathsep + os.environ.get("PATH", "")
+        rr, rc = S.run(write=True)
+        self.assertEqual((rc, rr["detail"]), (0, "support_written"))
+        text = next((r / "support").glob("aib-support-*.json")).read_text(encoding="utf-8")
+        body = json.loads(text)
+        got = {(x["kind"], x["name"]): x["version"] for x in body["plugins"]}
+        self.assertEqual(got.get(("plugin", "ok6")), "0.4.1")
+        for k in (("plugin", "p1"), ("plugin", "p2"), ("plugin", "p3")):
+            self.assertEqual(got.get(k), "?", k)
+        self.assertIn(("plugin", "?"), got)                                    # 帶換行的資料夾名 ⇒ ?
+        self.assertNotIn("persona", [x["kind"] for x in body["plugins"]])
+        self.assertEqual(body["logins"], {})
+        for bad in (PROJECT, "line2", "RED", "andy-clone"):
+            self.assertNotIn(bad, text, bad)
+        cli = [c for c in body["doctor"]["checks"] if c["id"] == "provider_cli_codex"]
+        self.assertEqual([c["detail"] for c in cli], [None])
+        (r / "state" / "power-login.json").write_text(json.dumps({PROJECT + "-客戶 acme": {"v": True}, "claude": {"v": True}}))
+        self.assertEqual(S.logins(TMP), {"claude": True})
+        real = S.cabins
+        S.cabins = lambda root: [][0]
+        try:
+            rr, rc = S.run()
+        finally:
+            S.cabins = real
+        self.assertEqual((rc, rr["ok"], rr["detail"]), (1, False, "support_collect_failed"))
 
     def test_s6_doctor_unmarked_dispatch_detect(self):
         S.run()
