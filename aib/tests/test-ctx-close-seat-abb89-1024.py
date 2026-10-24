@@ -190,6 +190,13 @@ class Menu(unittest.TestCase):
         self.assertIn("--release-confirmed @35", self.run_ctl("--role", "right", "--close-row", "ai-list", "5",
                                                              "1234", "s1", "--expect-window", "@35"))
 
+    def test_column_limited_to_four_digits(self):
+        # 加固(10-24):欄也只收 1–4 位數字,怪字串不往下傳
+        for cx in ("12345", "5a", "-1"):
+            with self.subTest(cx=cx):
+                self.assertEqual(self.run_ctl("--role", "right", "--close-row", "ai-list", cx, "3", "s1",
+                                              "--expect-window", "@35"), "")
+
     def test_context_reads_the_clicked_cabins_rowmap(self):
         # 審查 r3 M1:多艙時右鍵選單要讀被點那一艙的 rowmap(run-shell 環境是第一艙的)
         st_b = self.tmp / "stB"
