@@ -161,12 +161,16 @@ def _invite_event(keys, h, body, exp):
 
 
 def cmd_invite_publish(stdin):
-    """邀請碼(10-24 晚):用名冊那把金鑰簽 d=aib-invite:<雜湊>,內容 = 我的位址 + 到期;中繼站照 expiration 標籤自己丟。"""
+    """邀請碼(10-24 晚):用名冊那把金鑰簽 d=aib-invite:<雜湊>;內容 = 我的位址 + 到期,用碼推出的金鑰加密 + HMAC
+    (綁簽章者,#299 第 1 輪審 H1)。金鑰只走 stdin,不進 argv / 檔。中繼站照 expiration 標籤自己丟。"""
     req = json.loads(stdin.readline() or "{}")
-    if not GF.INVITE_HASH_RE.match(str(req.get("hash") or "")) or not GF.parse_address(str(req.get("addr") or "")):
+    if not GF.INVITE_HASH_RE.match(str(req.get("hash") or "")) or not GF.parse_address(str(req.get("addr") or "")) \
+            or not re.fullmatch(r"[0-9a-f]{32}", str(req.get("key") or "")):
         return 2, {"ok": False, "why": "bad_request"}
     keys, _d = _roster_signer()
-    ev = _invite_event(keys, req["hash"], {"v": 1, "addr": req["addr"], "exp": int(req["exp"])}, req["exp"])
+    body = GF.invite_seal(bytes.fromhex(req["key"]), keys.public_key().to_bech32(),
+                          {"addr": req["addr"], "exp": int(req["exp"])})
+    ev = _invite_event(keys, req["hash"], body, req["exp"])
     keys = None
     ok = asyncio.run(_send_all(CR.relays(), [ev])).get(ev.id().to_hex()) or []
     return (0 if ok else 2), {"ok": bool(ok), "relays_ok": ok}
@@ -1385,16 +1389,18 @@ class Receiver(object):
             audit(self.root, "in", msgid, from_npub, "request:unverified")
             return await self.send_receipt(msgid, "refused", reason="unverified")
         m = GF.INVITE_NOTE_RE.match(rec.get("content") or "")
-        if m and not CR.is_blocked(parsed["owner"]) and GF.take_invite(self.root, m.group(1)):
+        inv = m and not CR.is_blocked(parsed["owner"]) and GF.take_invite(self.root, m.group(1))
+        if inv:
             # 10-24 第 11 條:帶我發的邀請碼 ⇒ 直接加好友、回 delivered(對方那邊 join 時已把我加好)
             GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"), _peer_seat(peer),
                          peer.get("roster_at"), claims=_claims(peer))
             try:
                 CR.add_friend(parsed["owner"], GF.clean_display_name(rec.get("display_name") or "") or None, source="invite")
             except CR.RosterError:
+                GF.refund_invite(self.root, m.group(1))         # 沒加成 ⇒ 次數補回,碼不白白作廢
                 return
             audit(self.root, "in", msgid, from_npub, "request:invite")
-            await self._spend_invite(GF.invite_hash(m.group(1)))
+            await self._spend_invite(*GF.invite_keys(m.group(1), GF.invite_day(inv["created_at"])))
             return await self.send_receipt(msgid, "delivered")
         row = {"owner": parsed["owner"], "display_name": rec.get("display_name"), "country": rec.get("country"),
                "from_addr": rec.get("from_addr"), "note": rec["content"], "msgid": msgid}
@@ -1406,11 +1412,13 @@ class Receiver(object):
         audit(self.root, "in", msgid, from_npub, "request")
         return await self.send_receipt(msgid, "held")
 
-    async def _spend_invite(self, h):
-        """用掉的碼:中繼站上同一個 d 換成 revoked(可取代事件,只留新的);送不出去也沒關係,本機帳已扣掉次數。"""
+    async def _spend_invite(self, h, key):
+        """用掉的碼:中繼站上同一個 d 換成 revoked(可取代事件,只留新的;同樣加密 + HMAC,沒有碼的人冒不了);
+        送不出去也沒關係,本機帳已扣掉次數。"""
         try:
             keys, _d = _roster_signer()
-            ev = _invite_event(keys, h, {"v": 1, "revoked": True}, int(time.time()) + GF.INVITE_TTL_S)
+            ev = _invite_event(keys, h, GF.invite_seal(key, keys.public_key().to_bech32(), {"revoked": True}),
+                               int(time.time()) + GF.INVITE_TTL_S)
             keys = None
             await _send_all(CR.relays(), [ev])
         except Exception:   # noqa: BLE001

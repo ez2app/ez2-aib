@@ -765,9 +765,66 @@ def invite_fmt(code):
     return code[:5] + "-" + code[5:]
 
 
-def invite_hash(code):
-    import hashlib
-    return hashlib.pbkdf2_hmac("sha256", code.encode("ascii"), b"aib-invite-v1", 200000).hex()[:32]
+# 中繼站上的邀請(#299 第 1 輪審 H1 / M1 / M2 / L4):碼 ⇒ PBKDF2(鹽帶建立那天的 UTC 日期)32 bytes,
+#   前 16 = 查詢雜湊(d 標籤)、後 16 = 金鑰。內容用金鑰加密 + HMAC(綁簽章者),沒有碼的人發同一個 d 也過不了驗,
+#   中繼站上也看不到位址 / 到期。真實威脅:用 kind 撈回當天全部雜湊離線猜碼;10 碼 50 bit、每猜一次 100 萬次 PBKDF2,
+#   鹽帶日期 ⇒ 不能跨天預算。猜中只換到「跟碼的主人互加好友(預設分享)」,本人看得到、刪得掉。
+INVITE_KDF_ITER = 1000000
+
+
+def invite_day(ts):
+    return time.strftime("%Y%m%d", time.gmtime(int(ts)))
+
+
+def invite_keys(code, day):
+    """⇒ (查詢雜湊 32 位十六進位, 金鑰 16 bytes)。day = 建立那天(invite_day);加入方查今天與昨天兩組。"""
+    raw = hashlib.pbkdf2_hmac("sha256", code.encode("ascii"), ("aib-invite-v2:" + day).encode("ascii"), INVITE_KDF_ITER, 32)
+    return raw[:16].hex(), raw[16:]
+
+
+def _invite_xor(key, nonce, data):
+    import hmac
+    out = bytearray()
+    for i in range(0, len(data), 32):
+        block = hmac.new(key, b"aib-invite-ks\0" + nonce + i.to_bytes(4, "big"), hashlib.sha256).digest()
+        out += bytes(x ^ y for x, y in zip(data[i:i + 32], block))
+    return bytes(out)
+
+
+def _invite_mac(key, author, nonce, ct):
+    import hmac
+    return hmac.new(key, b"aib-invite-mac\0" + author.encode("ascii") + b"\0" + nonce + ct, hashlib.sha256).hexdigest()
+
+
+def invite_seal(key, author, plain):
+    """邀請內容 ⇒ {"v":2,"n","c","m"}:HMAC-SHA256 計數器模式加密 + HMAC(簽章者 npub、nonce、密文)。"""
+    import base64
+    nonce = os.urandom(16)
+    ct = _invite_xor(key, nonce, json.dumps(plain, sort_keys=True).encode("utf-8"))
+    return {"v": 2, "n": base64.b64encode(nonce).decode("ascii"), "c": base64.b64encode(ct).decode("ascii"),
+            "m": _invite_mac(key, author, nonce, ct)}
+
+
+def invite_open(key, author, body):
+    """驗 + 解 ⇒ dict;MAC 不對(沒有碼的人發的、或換了簽章者)/ 格式不對 ⇒ None。"""
+    import base64
+    import binascii
+    import hmac
+    if not isinstance(body, dict) or body.get("v") != 2 or not all(isinstance(body.get(k), str) for k in "ncm"):
+        return None
+    try:
+        nonce, ct = base64.b64decode(body["n"], validate=True), base64.b64decode(body["c"], validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if len(nonce) != 16 or len(ct) > 2048 or not isinstance(author, str) or not author.isascii():
+        return None
+    if not hmac.compare_digest(_invite_mac(key, author, nonce, ct), body["m"]):
+        return None
+    try:
+        plain = json.loads(_invite_xor(key, nonce, ct).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return plain if isinstance(plain, dict) else None
 INVITE_NOTE_RE = re.compile(r"^invite:([A-Z2-7]{10})$")
 
 
@@ -783,11 +840,27 @@ def create_invite(root, now=None, ttl=INVITE_TTL_S, uses=1):
                 and int(r.get("uses") or 0) > 0]
         cur["invites"] = rows[-19:] + [row]                 # 最多留 20 組
     _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
-    return {k: row[k] for k in ("code", "expires_at", "uses")}
+    return {k: row[k] for k in ("code", "created_at", "expires_at", "uses")}
+
+
+def drop_invite(root, code):
+    """作廢一組(放中繼站撞號、換一組時;沒交出去的碼不留著)。"""
+    def fn(cur):
+        cur["invites"] = [r for r in cur.setdefault("invites", []) if isinstance(r, dict) and r.get("code") != code]
+    _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
+
+
+def refund_invite(root, code):
+    """扣了次數、後面卻沒加成好友(例:加好友丟 RosterError)⇒ 補回一次。"""
+    def fn(cur):
+        for r in cur.setdefault("invites", []):
+            if isinstance(r, dict) and r.get("code") == code:
+                r["uses"] = int(r.get("uses") or 0) + 1
+    _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
 
 
 def take_invite(root, code, now=None):
-    """對得上(沒過期、還有次數)⇒ 次數減一、回 True;其他 False。"""
+    """對得上(沒過期、還有次數)⇒ 次數減一、回那一筆(dict,算 True;要 created_at 推金鑰);其他 False。"""
     if not INVITE_RE.match(code or ""):
         return False
     now = int(time.time() if now is None else now)
@@ -797,7 +870,7 @@ def take_invite(root, code, now=None):
             if isinstance(r, dict) and r.get("code") == code and int(r.get("expires_at") or 0) > now \
                     and int(r.get("uses") or 0) > 0:
                 r["uses"] = int(r["uses"]) - 1
-                return True
+                return dict(r, created_at=int(r.get("created_at") or int(r["expires_at"]) - INVITE_TTL_S))
         return False
     return _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
 
