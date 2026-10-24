@@ -443,6 +443,27 @@ class Approve(Base):
         (a / "sites.json.tmp").mkdir()
         self.assertEqual(AA.site_add("ez2.app", None, "t" * 32, self.env), (None, "local_state"))
 
+    def test_a16_bad_args_and_urls(self):
+        for argv in (["yes"], ["no", "--json"], ["yes", "-" + "A" * 42, "-" + "B" * 42]):
+            out = io.StringIO()
+            self.assertEqual(AA.main(argv, out=out, env=self.env), 2, argv)
+            self.assertEqual(json.loads(out.getvalue()), {"ok": False, "why": "bad_args"}, argv)
+
+        class BadIn:
+            def readline(self):
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
+        out = io.StringIO()
+        self.assertEqual(AA.main(["site", "add", "example.com", "--json"], out=out, env=self.env, stdin=BadIn()), 2)
+        self.assertEqual(json.loads(out.getvalue())["why"], "bad_token")
+        for url in ("https://user@ez2.app", " https://ez2.app"):
+            self.assertEqual(AA.site_add("ez2.app", url, "t" * 32, self.env), (None, "bad_url"), url)
+        f = self.site.add(kid=self.kid)
+        v2 = lambda m, u, h, b: (200, json.dumps({"v": 2, "items": self.site.items}).encode()) \
+            if u.endswith("/pending") else self.site(m, u, h, b)  # noqa: E731
+        r, _ = AA.pending(self.env, http=v2, now=NOW)
+        self.assertEqual((r["items"], r["errors"]), ([], {"ez2.app": "bad_reply"}))
+        self.assertTrue(f)
+
     def test_a13_http_only_https(self):
         import unittest.mock as um
         import urllib.request

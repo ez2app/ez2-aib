@@ -553,6 +553,8 @@ def main(argv=None, out=None, env=None, stdin=None):
     try:
         o = ap.parse_args(argv)
     except SystemExit as exc:
+        if exc.code and argv and argv[0] in ("yes", "no"):  # §2b:yes / no 參數錯也印一行 JSON
+            out.write(json.dumps({"ok": False, "why": "bad_args"}) + "\n")
         return 0 if exc.code == 0 else 2
     if not o.cmd:
         out.write(_say("aib.approve.help.usage") + "\n")
@@ -578,7 +580,11 @@ def main(argv=None, out=None, env=None, stdin=None):
     if o.cmd == "site":
         if o.action == "list":
             return emit(load_sites(env), 0)
-        r, why = site_add(o.site, o.url, (stdin or sys.stdin).readline(), env)
+        try:
+            token = (stdin or sys.stdin).readline()
+        except (UnicodeError, OSError):
+            token = ""  # 不是合法 UTF-8 ⇒ bad_token,不當
+        r, why = site_add(o.site, o.url, token, env)
         return emit(dict(r, ok=True) if r else {"ok": False, "why": why}, 0 if r else 2)
     if o.cmd == "pending":
         r, why = pending(env)
