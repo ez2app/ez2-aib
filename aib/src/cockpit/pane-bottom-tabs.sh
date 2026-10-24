@@ -68,24 +68,21 @@ PY
 
 notify_counts() {
   local _human_unread
-  # 舊測試注入仍可確定性控制；正式路徑一律走共享 classifier CLI。
-  if [ -n "${ACB_TEST_NOTIFY_COUNTS:-}" ]; then
-    printf '%s\n' "$ACB_TEST_NOTIFY_COUNTS"
+  # 測試注入點(確定性控制);正式路徑不設。
+  if [ -n "${AIB_TEST_NOTIFY_COUNTS:-}" ]; then
+    printf '%s\n' "$AIB_TEST_NOTIFY_COUNTS"
     return
   fi
-  if [ "${ACB_TEST_HUMAN_UNREAD+x}" = "x" ]; then
-    case "$ACB_TEST_HUMAN_UNREAD" in
+  if [ "${AIB_TEST_HUMAN_UNREAD+x}" = "x" ]; then
+    case "$AIB_TEST_HUMAN_UNREAD" in
       ''|*[!0-9]*) _human_unread=0 ;;
-      *) _human_unread="$ACB_TEST_HUMAN_UNREAD" ;;
+      *) _human_unread="$AIB_TEST_HUMAN_UNREAD" ;;
     esac
     printf '{"red":0,"yellow":%s,"green":0,"blue":0}\n' "$_human_unread"
     return
   fi
-  # ★★ 2026-08-21:原本呼叫 notify_policy.py count-inbox "$EZ2_ACB_HOME/inbox/pm"。
-  #   那個目錄的 *.md 現存 0 檔(ACB 已判廢止),所以這裡**恆回全 0**——
-  #   而全 0 在畫面上等於「沒有未讀」,是一個**宣稱**,不是量測結果。
-  #   AIB 側目前沒有持久收件匣(大綱 EH.10),所以沒有可換的源。
-  #   在 EH.10 落地前,這裡誠實地不查、直接回 0,並且**不再假裝它問過誰**。
+  # AIB 側目前沒有持久收件匣(大綱 EH.10),沒有可查的源。
+  #   在 EH.10 落地前,這裡誠實地不查、直接回 0,並且**不假裝它問過誰**。
   printf '{"red":0,"yellow":0,"green":0,"blue":0}\n'
 }
 
@@ -157,19 +154,14 @@ else:
     if not (_cd.get('did') or _cd.get('need') or _cd.get('fyi')):
         print('   ' + tr.t('aib.machine.action.none'))
 print()
-# ★★ 2026-08-21:原本讀 $EZ2_ACB_HOME/logs/fleet-sync.jsonl 的最後三筆。
-#   實測那三筆的 ts 是 1786119338 前後 = **08-07,十三天前**,而標題寫「最近事件」。
-#   ★ 時間其實**有印在畫面上**,但印的是原始 epoch 整數 —— 沒有人會把
-#     `1786119338` 讀成日期,它看起來像一個 id。**有標示不等於看得懂。**
-#   AIB 側沒有等價來源(E1.2 收集器尚未上線),所以移除讀取、誠實留空。
+# 最近事件:舊來源已退役,AIB 側等價來源(E1.2 收集器)尚未上線 ⇒ 誠實留空。
 # ★ 依 DESIGN-SPEC-source-state-vocabulary(a seat)的五態語彙:
 #   這一格是 **retired**(源已廢止)不是 empty(源在但沒東西)——
 #   兩者的處置相反:empty 要等,retired 永遠不會自己好。
-#   ★ retired 是**宣告不是偵測**:ACB 廢止是我們自己的決定,寫死在這裡,
+#   ★ retired 是**宣告不是偵測**:退役是我們自己的決定,寫死在這裡,
 #     不靠「找不到目錄」去推——那會把「使用者磁碟壞了」也講成「已廢止」。
 print(' ' + tr.t('aib.bottom_tabs.events_head'))
 print('  ' + tr.t('aib.source.retired'))
-print('  ' + tr.t('aib.source.which', {'name': 'ACB fleet-sync'}))
 print('  ' + tr.t('aib.source.pending', {'name': 'E1.2'}))
 PY
   elif [ "$t" = "2" ]; then
@@ -180,39 +172,9 @@ sys.path.insert(0, os.environ["EZ2_COCKPIT_DIR"])
 from i18n_lib import Translator  # noqa: E402
 
 tr = Translator()
-# ★★ 2026-08-21:來源 $EZ2_ACB_HOME/inbox/pm 的 *.md 現存 0 檔,ACB 已判廢止。
-#   舊碼的失效訊息是「(近 60 則無 [人類] 標籤訊息)」——**它宣稱掃過 60 則,
-#   實際上掃過 0 則**。那句話比空白更糟:它讓人以為查過了。
-#   五態語彙:這是 retired,不是 empty;而**接手的源還不存在**(EH.10),
-#   所以 pending 要照實寫「尚無」,不要編一個看起來快好了的名字。
-msgs = []
-for p in []:
-    fm = {}
-    try:
-        for ln in open(p, encoding='utf-8'):
-            ln = ln.rstrip()
-            if ln == '---' and fm:
-                break
-            m = re.match(r'^(\w+):\s*(.*)$', ln)
-            if m:
-                fm[m.group(1)] = m.group(2)
-    except Exception:
-        continue
-    msgs.append(fm)
-human = [m for m in msgs if '[人類]' in m.get('subject', '')]
-if human:
-    print(' ' + tr.t('aib.bottom_tabs.human_head'))
-    for m in human[:6]:
-        ts = m.get('timestamp', '')[5:16].replace('T', ' ')
-        st = tr.t('aib.bottom_tabs.unread') if m.get('status') == 'unread' else '  '
-        print(f"  {ts} {m.get('from','?'):<6.6}{st} {m.get('subject','')[:70]}")
-else:
-    print(' ' + tr.t('aib.source.retired'))
-    print(' ' + tr.t('aib.source.which', {'name': 'ACB inbox/pm'}))
-    print(' ' + tr.t('aib.source.pending', {'name': 'EH.10'}))
-    # ★ 原本這裡還有一個「其他最新訊息:」標題 + 迴圈。來源退場後迴圈恆空,
-    #   標題就變成一個宣稱有內容的空殼 —— 與上面那句「近 60 則」同一個病,
-    #   只是更小。標題跟著內容一起走,不留孤兒。
+# 人類訊息:舊收件匣已退役,接手的源(EH.10)還不存在 ⇒ 五態語彙的 retired,pending 照實寫「尚無」。
+print(' ' + tr.t('aib.source.retired'))
+print(' ' + tr.t('aib.source.pending', {'name': 'EH.10'}))
 print()
 print(' ' + tr.t('aib.bottom_tabs.outbound_note'))
 PY
@@ -360,7 +322,7 @@ while true; do
   #
   #   ★★ 為什麼掛在**這一格**:因為這一格是 `cockpit-full.sh` 真的會啟動的。
   #     我第一版把它掛在 `pane-bottom-fleet.sh`,**那個檔全庫沒有任何啟動點**
-  #     (只在 README 的搬遷對照表被提到一次)——修法本身犯了它正在修的那個
+  #     (只在 README 的搬遷對照表被提到一次;10-25 已刪)——修法本身犯了它正在修的那個
   #     病:東西寫好了、測試全綠、而它不在任何人會走的路徑上。
   #     `tests/test-cockpit-heartbeat.py` 現在**從 cockpit-full.sh 實際啟動的
   #     清單推導**要驗哪個檔,就是為了讓這個錯不能再犯一次。

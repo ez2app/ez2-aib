@@ -129,7 +129,7 @@ write_title() {
 }
 
 sample() {  # 取樣一次 -> 印出標題字串
-  local uuid="${EZ2_SESSION_UUID:-${ACB_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}}"
+  local uuid="${EZ2_SESSION_UUID:-${CLAUDE_CODE_SESSION_ID:-}}"
   local beat; beat="$(next_beat)"
   # EZ2_TB_WINDOW:席位檔的檔名綁窗號(w<N>.json)。取不到就留空,
   # 席位檔那條路自然走不通而退回原本的紅燈——**不編一個窗號出來**。
