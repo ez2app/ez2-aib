@@ -10,7 +10,8 @@ C2 游標在第一個字、後面是真字(不是 dim)⇒ DRAFT(真稿照擋)
 C3 游標字 + 只有 1 個 dim 字 ⇒ DRAFT(太短不放)
 C4 沒有游標、第一個字不是 dim ⇒ DRAFT;整句 dim ⇒ SUGGESTION(舊行為不變)
 C5 游標在中間的字(不是第一個)⇒ DRAFT
-刀:K1 拿掉「第一個字在反白裡先不算」⇒ C1 紅
+C6 反例(審查 A):ESC[38;5;7m 的 7 是色號不是反白;反白從提示符前開始後接一般字;ESC[27m 提早清反白 ⇒ 都 DRAFT
+刀:K1 拿掉「第一個字在反白裡先不算」⇒ C1 紅;K2 拿掉「至少 3 個字」⇒ C3 紅
 """
 import sys
 import unittest
@@ -50,17 +51,29 @@ class Cursor(unittest.TestCase):
         line = E + "[39m❯\xa0" + E + "[2mTr" + E + "[0;7my" + E + "[0;2m again" + E + "[0m"
         self.assertEqual(CS.classify_composer(line, provider="claude"), CS.DRAFT)
 
+    def test_c6_not_really_cursor(self):
+        rest = E + "[0;2mry" + E + "[0m " + E + "[2mthis again" + E + "[0m"
+        for why, line in (("38;5;7 是色號", E + "[39m❯\xa0" + E + "[38;5;7mT" + rest),
+                          ("反白從提示符前開始、後接一般字", E + "[7m❯\xa0Hello world" + E + "[0m"),
+                          ("27 提早清反白", E + "[39m❯\xa0" + E + "[7m" + E + "[27mT" + rest)):
+            self.assertEqual(CS.classify_composer(line, provider="claude"), CS.DRAFT, why)
+
 
 class Knife(unittest.TestCase):
-    def test_k1_cursor_char_counts(self):
+    def _knife(self, needle, cell):
         name = Path(__file__).name
-        with knife_copy(REPO, "src/cockpit/composer_state.py", "                if seen == 1 and rev:\n",
-                        "                if False:\n", tests=(name,)) as root:
-            r = run_guarded([sys.executable, str(root / "tests" / name), "Cursor.test_c1_real_capture_is_suggestion"],
-                            cwd=str(root), max_procs=60, timeout=120)
+        with knife_copy(REPO, "src/cockpit/composer_state.py", needle, needle[:len(needle) - len(needle.lstrip())] + "if False:\n",
+                        tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), cell], cwd=str(root), max_procs=60, timeout=120)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k1_cursor_char_counts(self):
+        self._knife("                if seen == 1 and rev:\n", "Cursor.test_c1_real_capture_is_suggestion")
+
+    def test_k2_no_min_length(self):
+        self._knife("    if cursor_first and seen < 3:\n", "Cursor.test_c3_too_short")
 
 
 if __name__ == "__main__":
