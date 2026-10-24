@@ -39,6 +39,7 @@
   "aib.context.menu.focus_pane": "Focus pane",
   "aib.context.menu.kill_focused_pane": "Delete focused seat",
   "aib.context.menu.new_ai": "New AI",
+  "aib.context.menu.close_seat": "Close this seat",
   "aib.context.menu.new_ai_hang": "Hang under which captain",
   "aib.context.menu.new_ai_hang_default": "(default)",
   "aib.context.menu.new_ai_role": "Pick role",

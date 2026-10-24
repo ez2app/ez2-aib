@@ -5,6 +5,8 @@
 #   mouse-ctl.sh --install [--dry-run]        綁 tmux 滑鼠鍵
 #   mouse-ctl.sh --click <role> <x> <y> [session] [--dry-run]   處理一次點擊
 #   mouse-ctl.sh --context <surface> <role> <x> <y> <pane> <session> [--dry-run]
+#   mouse-ctl.sh --role right --close-row ai-list <x> <y> [session] [--dry-run]
+#                                                  右鍵「關閉這一席」:彈 [X] 同一個確認選單
 #   mouse-ctl.sh --release-confirmed <window> [session] [--dry-run]
 #                                                  [X] 確認選單按「確定」後的真殺
 #   ⚠ --dry-run 對釋放路徑的診斷力是**零**:DRY 全程不碰真 tmux(治具以
@@ -129,6 +131,8 @@ ABORT_OPEN=0
 CLOSE_CABIN=0
 SOFT_SINCE=""
 PANE_ROLE=""
+HIT_INTENT="click"
+EXPECT_WINDOW=""
 ROLE=""; CX=""; CY=""; SESSION=""; SURFACE=""; PANE=""; WINDOW=""
 NEW_AI_ENGINE=""
 NEW_AI_ROLE=""
@@ -146,6 +150,18 @@ while [ $# -gt 0 ]; do
     --leftover-confirmed) MODE="leftover-confirmed" ;;
     --role)
       PANE_ROLE="${2:-}"; shift "$(( $# < 1 ? $# : 1 ))" ;;
+    --close-row)
+      # 10-24 @abb89:右鍵「關閉這一席」的回呼。走 --click 同一條路,只是命中器用 close 意圖
+      #   (整列都算、只認有 [X]/(x) 的列)⇒ 彈的是跟點 [X] 同一個確認選單,真關照舊只在 --release-confirmed。
+      #   審查 r1 M2:參數逐格判 --* / 空,短少時不把 --dry-run 當成角色 / 座標吃掉
+      HIT_INTENT="close"
+      MODE="click"
+      for _slot in ROLE CX CY SESSION; do
+        case "${2:-}" in --*|"") break ;; esac
+        printf -v "$_slot" '%s' "$2"
+        shift
+      done
+      ;;
     --click)
       MODE="click"
       ROLE="${2:-}"
@@ -222,6 +238,10 @@ while [ $# -gt 0 ]; do
     --soft-since)                      # 10-24:(x) 軟關入口,帶選單開出的時間(epoch 秒);見 release-confirmed 段
       SOFT_SINCE="${2:-}"
       case "$SOFT_SINCE" in --*|"") SOFT_SINCE="" ;; *) shift "$(( $# < 1 ? $# : 1 ))" ;; esac  # 沒接值不吃下一個旗標
+      ;;
+    --expect-window)                   # 10-24:只跟 --close-row 一起用;右鍵選單開出時那一列的窗 id
+      EXPECT_WINDOW="${2:-}"
+      case "$EXPECT_WINDOW" in --*|"") EXPECT_WINDOW="" ;; *) shift "$(( $# < 1 ? $# : 1 ))" ;; esac
       ;;
     --close-cabin) CLOSE_CABIN=1 ;;    # 09-14 the maintainer:關的是最後一席 ⇒ 關完席把整艙收掉(走 idle_reaper 收艙,不強制;見下方 close-cabin 段)
     --kill-focused-seat)
@@ -1538,6 +1558,12 @@ WHEEL_ACTION="{\"action\":\"fold-scroll\",\"dir\":\"$WHEEL_DIR\",\"rows\":3}"
       review) ROLE=pending-review ;;
       hub-frame) ROLE=hub-frame ;;
     esac
+    # 右鍵「關閉這一席」(審查 r1 M1):只在 ai-list 內容列(y>=2)才往下走,
+    #   不讓 --close-row 經過下面的捲軸 / 分頁切換前置動作
+    if [ "$HIT_INTENT" = "close" ]; then
+      case "${CY:-}" in ''|*[!0-9]*|?????*) exit 0 ;; esac      # 只收 1–4 位數字
+      [ "$ROLE" = "ai-list" ] && [ "$CY" -ge 2 ] || exit 0
+    fi
     # ★點擊也要從被點 session 重導艙身份（wheel／殺席已做；click 先前漏做）
     # 否則 hit_test 讀錯艙 hub-frame-rowmap、toggle 寫錯艙 panel-layout ⇒ 畫面零反應。
     SESSION="${SESSION:-$EZ2_TMUX_SESSION}"
@@ -1546,7 +1572,9 @@ WHEEL_ACTION="{\"action\":\"fold-scroll\",\"dir\":\"$WHEEL_DIR\",\"rows\":3}"
     fi
     # 這一按下是從捲軸開始的:拖過的話位置已經跟著走,放開不要再翻一頁,
     # 也不要誤觸同一列上的刪帳／切帳。
-    if [ -n "${EZ2_COCKPIT_STATE_DIR:-}" ] && [ -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-grab" ]; then
+    #   右鍵「關閉這一席」不是從捲軸開始的按下 ⇒ 不碰這兩個狀態檔(審查 r2 M1)
+    if [ "$HIT_INTENT" != "close" ] && [ -n "${EZ2_COCKPIT_STATE_DIR:-}" ] \
+        && [ -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-grab" ]; then
       _scrolled=0
       [ -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-dragged" ] && _scrolled=1
       rm -f "$EZ2_COCKPIT_STATE_DIR/scrollbar-grab" "$EZ2_COCKPIT_STATE_DIR/scrollbar-dragged"
@@ -1588,13 +1616,22 @@ for name, val in (("ai", "2"), ("usage", "1"), ("left", "3")):
     fi
     if ! ACTION="$("$EZ2_PY3" "$HERE/hit_test.py" --role "$ROLE" \
           --x "${CX:-0}" --y "${CY:-0}" --cabin "${EZ2_AIB_INSTANCE:-}" \
-          --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null)"; then
+          --intent "$HIT_INTENT" --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null)"; then
       exit 0
     fi
     if ! KIND="$("$EZ2_PY3" -c \
           'import json,sys; print(json.loads(sys.argv[1])["action"])' \
           "$ACTION" 2>/dev/null)"; then
       exit 0
+    fi
+    # 右鍵「關閉這一席」只准走 [X] 那一支(確認選單);命中器給別的一律當沒點到
+    if [ "$HIT_INTENT" = "close" ] && [ "$KIND" != "kill-idle" ]; then
+      exit 0
+    fi
+    # 審查 r2 S1:選單開著時右欄重畫 / 重排,同一行可能已換成別席 ⇒ 命中的窗不是選單開出時那一席就不動
+    if [ "$HIT_INTENT" = "close" ]; then
+      _HIT_WIN="$("$EZ2_PY3" -c 'import json,sys; print(json.loads(sys.argv[1]).get("window") or "")' "$ACTION" 2>/dev/null || true)"
+      [ -n "$EXPECT_WINDOW" ] && [ "$_HIT_WIN" = "$EXPECT_WINDOW" ] || exit 0
     fi
     case "$KIND" in
       usage-header-tap|usage-subtab|usage-add-codex-oauth|usage-add-codex-token|\
@@ -3294,6 +3331,10 @@ else:
     exec 2>/dev/null
     case "$SURFACE" in pane|border|status) ;; *) exit 0 ;; esac
     SESSION="${SESSION:-$EZ2_TMUX_SESSION}"
+    # 審查 #287 r3 M1:run-shell 的環境是伺服器第一個艙的;右鍵選單讀的 rowmap 要是**被點的那一艙**
+    #   (否則第二艙以後「詳情 / 開啟」對到別艙同一行、「關閉這一席」帶錯窗 id)。取不到艙身份 ⇒ 不給關閉項。
+    CTX_CABIN_OK=0
+    aib_cabin_env_from_session "$SESSION" && CTX_CABIN_OK=1
     [ -n "$PANE" ] || PANE="="
     LABEL_BLOCK="$("$EZ2_PY3" "$COCKPIT/i18n_lib.py" \
       "aib.context.surface.${SURFACE}" \
@@ -3325,6 +3366,31 @@ else:
           'import json,sys; print(json.loads(sys.argv[1]).get("window", ""))' \
           "$META" 2>/dev/null || true)"
       fi
+    fi
+
+    # 10-24 @abb89:右鍵「關閉這一席」—— 只有那一列本來就有 [X]/(x) 才出現;點了回呼 --close-row,
+    #   彈的是跟點 [X] 同一個確認選單(取消排第一、真關只在 --release-confirmed、軟關帶 --soft-since)。
+    CLOSE_ACTION=""
+    CLOSE_TITLE=""
+    _CX_OK="${CX:-0}"; _CY_OK="${CY:-0}"
+    case "$_CX_OK" in *[!0-9]*) _CX_OK=0 ;; esac          # 座標只收數字才嵌進 run-shell 字串
+    case "$_CY_OK" in *[!0-9]*) _CY_OK=0 ;; esac
+    if [ "$CTX_CABIN_OK" = "1" ] && [ -n "$WINDOW" ] && [ "$_CY_OK" -ge 2 ]; then
+      _CLOSE_HIT="$("$EZ2_PY3" "$HERE/hit_test.py" --role "$ROLE" \
+        --x "${CX:-0}" --y "${CY:-0}" --intent close \
+        --state-dir "$EZ2_COCKPIT_STATE_DIR" 2>/dev/null || true)"
+      case "$_CLOSE_HIT" in
+        *'"kill-idle"'*)
+          CLOSE_TITLE="$("$EZ2_PY3" "$COCKPIT/i18n_lib.py" \
+            aib.context.menu.close_seat 2>/dev/null | sed -n '1p' || true)"
+          if [ -n "$CLOSE_TITLE" ]; then
+            printf -v SCRIPT_Q '%q' "$HERE/mouse-ctl.sh"
+            printf -v SESSION_ARG_Q '%q' "$SESSION"
+            printf -v WIN_ARG_Q '%q' "$WINDOW"
+            CLOSE_ACTION="run-shell 'bash $SCRIPT_Q --role right --close-row ai-list $_CX_OK $_CY_OK $SESSION_ARG_Q --expect-window $WIN_ARG_Q$RUNSHELL_REDIR'"
+          fi
+          ;;
+      esac
     fi
 
     printf -v PANE_ARG_Q '%q' "$PANE"
@@ -3371,13 +3437,16 @@ else:
           "$DETAILS_LABEL" d "$DETAIL_ACTION" \
           "$OPEN_LABEL" o "$OPEN_ACTION" \
           ${NEW_AI_ACTION:+"$NEW_AI_TITLE" n "$NEW_AI_ACTION"} \
-          ${THEME_ACTION:+"$THEME_TITLE" t "$THEME_ACTION"}
+          ${THEME_ACTION:+"$THEME_TITLE" t "$THEME_ACTION"} \
+          ${CLOSE_ACTION:+"$CLOSE_TITLE" x "$CLOSE_ACTION"}
       else
+        # 「關閉這一席」排最後(離游標最遠);點了還有一道確認選單,不是直關
         env -u TMUX tmux display-menu -O -M -T "$TITLE" -t "$PANE" ${MENU_POS[@]+"${MENU_POS[@]}"} \
           "$DETAILS_LABEL" d "$DETAIL_ACTION" \
           "$OPEN_LABEL" o "$OPEN_ACTION" \
           ${NEW_AI_ACTION:+"$NEW_AI_TITLE" n "$NEW_AI_ACTION"} \
           ${THEME_ACTION:+"$THEME_TITLE" t "$THEME_ACTION"} \
+          ${CLOSE_ACTION:+"$CLOSE_TITLE" x "$CLOSE_ACTION"} \
           >/dev/null 2>&1 || true
       fi
     elif [ "$DRY" = "1" ]; then
