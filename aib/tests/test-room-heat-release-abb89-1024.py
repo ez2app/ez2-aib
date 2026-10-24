@@ -19,9 +19,12 @@ R14 argv[0] 不是直譯器(tmux server、caffeinate、常駐程式)、-m / -c�
     Chrome 多個 / 空白分隔的 --user-data-dir、-app= ⇒ 不是
 R15 --auto:紀錄寫不進去 ⇒ 不殺(log_failed);無限大 / 未來時間的紀錄 ⇒ 額度不歸零
 R16 快照整合:候選不帶 starts、掃描壞了標 candidates_detail;CLI 只有總代碼時印那個代碼,不印「沒有殘留」
+R17 stdout 導到檔案(nohup … > log &)⇒ held detached_output;R18 lsof 跑不了 ⇒ held lsof_unavailable
+R19 dry_run 不殺、不寫紀錄;R20 一個收掉一個身分不符 ⇒ partial;R21 結果記不進帳 ⇒ 同一筆掛 log、ok 假
+R22 兩個候選合計超過額度 ⇒ 第二個 auto_limit;R23(macOS)正式暫存根含系統給的使用者暫存夾
 暫存根一律用 scan(roots=) 注入這支測試的暫存夾(正式程式連 TMPDIR 都不讀)。
 刀(複本):K1 開始時間不比 ⇒ R6 紅;K2 拿掉主機動作排除 ⇒ R3 紅;K3 子孫不檢查暫存根 ⇒ R4 紅;
-K4 暫存根改回子字串比對 ⇒ R9 紅;K5 拿掉 *.lock 排除 ⇒ R5 紅
+K4 暫存根改回子字串比對 ⇒ R9 紅;K5 拿掉 *.lock 排除 ⇒ R5 紅;K8 拿掉背景輸出判斷 ⇒ R17 紅
 """
 import json
 import os
@@ -48,10 +51,12 @@ import room_heat_release as RR  # noqa: E402
 LAUNCH = textwrap.dedent("""
     import os, subprocess, sys
     script, out = sys.argv[1], sys.argv[2]
+    log = sys.argv[3] if len(sys.argv) > 3 else None
     if os.fork() == 0:
         os.setsid()
-        p = subprocess.Popen([sys.executable, script], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, close_fds=True)
+        dest = open(log, "w") if log else subprocess.DEVNULL
+        p = subprocess.Popen([sys.executable, script], stdin=subprocess.DEVNULL, stdout=dest,
+                             stderr=subprocess.STDOUT if log else subprocess.DEVNULL, close_fds=True)
         with open(out + ".tmp", "w") as fh:
             fh.write(str(p.pid))
         os.replace(out + ".tmp", out)
@@ -86,13 +91,14 @@ class Orphans(unittest.TestCase):
             self.mine.append((pid, ident[2]))
         return ident
 
-    def spawn(self, body, name="t"):
+    def spawn(self, body, name="t", log=None):
         d = self.tmp / name / "tests"
         d.mkdir(parents=True)
         script = d / "test-fake.py"
         script.write_text(textwrap.dedent(body).replace("@DIR@", str(d)), encoding="utf-8")
         out = self.tmp / (name + ".pid")
-        subprocess.run([sys.executable, "-c", LAUNCH, str(script), str(out)], check=True, timeout=30)
+        subprocess.run([sys.executable, "-c", LAUNCH, str(script), str(out)] + ([str(log)] if log else []),
+                       check=True, timeout=30)
         for _ in range(100):
             if out.exists():
                 break
@@ -121,11 +127,13 @@ class Orphans(unittest.TestCase):
         return next((c for c in cands if pid in c["pids"] or c["pids"][:1] == [pid]), None)
 
     def scan(self):
-        return RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0, roots=self.roots)
+        return RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0, roots=self.roots,
+                       detached=lambda p: False)
 
     def kinds(self, pid, args, **kw):
         rows = [(pid, 1, os.getuid(), 1.0, 1024, "x", args)]
         kw.setdefault("roots", self.roots)
+        kw.setdefault("detached", lambda p: False)
         cands, _ = RR.scan(rows=rows, owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0, **kw)
         return [c["kind"] for c in cands]
 
@@ -235,7 +243,7 @@ class Orphans(unittest.TestCase):
         tmp = self.root
         bad = [
             "python3 /Users/u/x%stests/test-x.py" % self.roots[0],              # 暫存根出現在路徑中間(子字串會中)
-            "python3 %s../../Users/u/tests/test-x.py" % self.roots[0],          # 暫存根開頭但 .. 走出去
+            "python3 %s%sUsers/u/tests/test-x.py" % (self.roots[0], "../" * self.roots[0].count("/")),  # 暫存根開頭但 .. 走到 / 再出去
             "python3 /Users/u/proj/tmp/tests/test-live.py",                       # 家目錄裡剛好有一層 tmp/
             "python3 /tmp/../Users/u/aib-x/tests/test-x.py",                      # .. 走出暫存根
             "python3 --log /tmp/x.log /Users/u/aib-plugins/tests/test-x.py",      # 暫存路徑跟測試路徑分在兩個引數
@@ -248,8 +256,9 @@ class Orphans(unittest.TestCase):
         link = d / "out-link"
         link.symlink_to("/Users")
         bad.append("python3 %s/u/tests/test-x.py" % link)                         # symlink 走出暫存根
-        for args in bad:
-            self.assertEqual(self.kinds(pid, args), [], args)
+        for roots in (self.roots, self.roots + ["/private/tmp/"]):           # 也用含 /private/tmp 的根跑(B-L6)
+            for args in bad:
+                self.assertEqual(self.kinds(pid, args, roots=roots), [], (roots, args))
         self.assertEqual(self.kinds(pid, "python3 %s/tests/test-x.py" % d), ["test_orphan"])     # 正控制組
 
     def test_r10_roots_not_from_env(self):
@@ -315,6 +324,8 @@ class Orphans(unittest.TestCase):
         log = Path(RR.released_path())
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text("", encoding="utf-8")
+        if os.getuid() == 0:
+            self.skipTest("root 身分 chmod 0400 擋不住寫入")
         os.chmod(log, 0o400)
         self.addCleanup(os.chmod, log, 0o600)
         r = RR.release(all_safe=True, auto=True, scan_fn=self.scan, wait_s=1)
@@ -332,6 +343,70 @@ class Orphans(unittest.TestCase):
         self.assertEqual([(x["mode"], x["result"]) for x in recs], [("auto", "pending"), ("auto_done", "ok")])
         self.assertEqual(RR._auto_used(time.time()), 1)              # 額度用預留那筆算,結果那筆不重算
 
+    @unittest.skipUnless(shutil.which("lsof"), "沒有 lsof")
+    def test_r17_detached_output_held(self):
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n", log=self.tmp / "bg.log")
+        time.sleep(0.3)
+        cands, held = RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0, roots=self.roots)
+        self.assertIsNone(self.find(pid, cands))
+        self.assertIn(("detached_output", pid), [(h["why"], h["pid"]) for h in held])
+
+    def test_r18_lsof_unavailable(self):
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n")
+        cands, held = RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: None, min_age_s=0, roots=self.roots,
+                              detached=lambda p: False)
+        self.assertIsNone(self.find(pid, cands))
+        self.assertIn(("lsof_unavailable", pid), [(h["why"], h["pid"]) for h in held])
+        cands, held = RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0, roots=self.roots,
+                              detached=lambda p: None)
+        self.assertIn(("lsof_unavailable", pid), [(h["why"], h["pid"]) for h in held])
+
+    def test_r19_dry_run(self):
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n")
+        c = self.find(pid, self.scan()[0])
+        r = RR.release(all_safe=True, dry_run=True, auto=True, scan_fn=lambda: ([c], []))
+        self.assertEqual((r["ok"], r["results"]), (True, [{"id": c["id"], "detail": "dry_run", "kind": "test_orphan", "n_pids": 1}]))
+        self.assertIsNotNone(RR.identity(pid))
+        self.assertFalse(Path(RR.released_path()).exists())
+
+    def test_r20_partial(self):
+        a, _d = self.spawn("import time\ntime.sleep(300)\n", name="a")
+        b, _d2 = self.spawn("import time\ntime.sleep(300)\n", name="b")
+        c = self.find(a, self.scan()[0])
+        c = dict(c, pids=[a, b], starts={str(a): c["starts"][str(a)], str(b): "1.000000"})
+        r = RR.release(ids=[c["id"]], scan_fn=lambda: ([c], []), wait_s=3)
+        self.assertEqual((r["ok"], r["detail"], r["results"][0]["detail"]), (False, "partial", "partial"))
+        self.assertNotIn("freed_cpu", r["results"][0])
+        self.assertIsNotNone(RR.identity(b), "身分不符的那支被殺了")
+
+    def test_r21_result_log_failed(self):
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n")
+        c = self.find(pid, self.scan()[0])
+
+        def nolog(rec, environ=None):
+            raise OSError("disk full")
+        with mock.patch.object(RR, "_log", nolog):
+            r = RR.release(ids=[c["id"]], scan_fn=lambda: ([c], []), wait_s=3)
+        self.assertEqual((r["ok"], r["detail"], len(r["results"])), (False, "log_failed", 1))
+        self.assertEqual((r["results"][0]["detail"], r["results"][0]["log"]), ("ok", "log_failed"))
+
+    def test_r22_budget_two_candidates(self):
+        a, _d = self.spawn("import time\ntime.sleep(300)\n", name="a")
+        b, _d2 = self.spawn("import time\ntime.sleep(300)\n", name="b")
+        cands = self.scan()[0]
+        ca, cb = self.find(a, cands), self.find(b, cands)
+        log = Path(RR.released_path())
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(json.dumps({"t": time.time() - 30, "mode": "auto", "n_pids": RR.AUTO_MAX_PER_WINDOW - 1}) + "\n")
+        r = RR.release(all_safe=True, auto=True, scan_fn=lambda: ([ca, cb], []), wait_s=3)
+        self.assertEqual([x["detail"] for x in r["results"]], ["ok", "auto_limit"])
+        self.assertIsNotNone(RR.identity(b))
+
+    @unittest.skipUnless(sys.platform == "darwin", "只有 macOS")
+    def test_r23_darwin_user_temp_in_roots(self):
+        roots = RR.temp_roots()
+        self.assertTrue(any(r.startswith("/private/var/folders/") for r in roots), roots)
+
     def test_r13_too_young(self):
         pid, d = self.spawn("import time\ntime.sleep(300)\n")
         rows = [(pid, 1, os.getuid(), 1.0, 1024, "x", "python3 %s/tests/test-fake.py" % d)]
@@ -343,7 +418,9 @@ class Orphans(unittest.TestCase):
         import room_heat as RH
         pid, _d = self.spawn("import time\ntime.sleep(300)\n")
         sampler = lambda: ([], 0.0)                                         # noqa: E731
-        s = RH.snapshot(sampler=sampler, record=False, scan_fn=lambda **k: self.scan())
+        fake_held = [{"kind": "test_orphan", "owner": "", "pid": 1234, "why": "holds_lock"}]
+        s = RH.snapshot(sampler=sampler, record=False, scan_fn=lambda **k: (self.scan()[0], fake_held))
+        self.assertEqual(s["held"], fake_held)
         c = self.find(pid, s["candidates"])
         self.assertIsNotNone(c)
         self.assertNotIn("starts", c)
@@ -405,7 +482,12 @@ class Knives(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("lsof"), "沒有 lsof")
     def test_k5_no_lock_check(self):
-        self._knife("        if (lsof or _holds_lock)(everyone):\n", "        if False:\n", "Orphans.test_r5_lock_held")
+        self._knife("        lk = (lsof or _holds_lock)(everyone)\n", "        lk = False\n", "Orphans.test_r5_lock_held")
+
+    @unittest.skipUnless(shutil.which("lsof"), "沒有 lsof")
+    def test_k8_no_detached_check(self):
+        self._knife("            dt = (detached or _detached_output)(pid)\n", "            dt = False\n",
+                    "Orphans.test_r17_detached_output_held")
 
 
 if __name__ == "__main__":

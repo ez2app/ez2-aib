@@ -58,13 +58,16 @@ AUTOMATION_FLAGS = ("--headless", "--enable-automation", "--remote-debugging-pip
 
 
 def _system_temp():
-    """系統給這個帳號的暫存夾:macOS 問 confstr(不經 TMPDIR);其他平台只用固定的 /tmp、/var/tmp。"""
-    if sys.platform == "darwin":
-        try:
-            return [os.confstr("CS_DARWIN_USER_TEMP_DIR")]
-        except (ValueError, OSError, AttributeError):
-            return []
-    return ["/var/tmp"]
+    """系統給這個帳號的暫存夾:macOS 直接問 libc confstr(_CS_DARWIN_USER_TEMP_DIR = 65537),不經 TMPDIR
+    (CPython 的 os.confstr_names 沒有這個名字,#319 r5);其他平台只用固定的 /var/tmp。"""
+    if sys.platform != "darwin":
+        return ["/var/tmp"]
+    try:
+        buf = ctypes.create_string_buffer(1024)
+        n = ctypes.CDLL(None).confstr(65537, buf, ctypes.sizeof(buf))
+        return [buf.value.decode()] if 0 < n <= ctypes.sizeof(buf) and buf.value else []
+    except (OSError, AttributeError, UnicodeDecodeError):
+        return []
 
 
 def temp_roots(extra=()):
@@ -226,18 +229,31 @@ def _descendants(pid, kids, limit=500):
     return out
 
 
-def _holds_lock(pids, run=None):
-    """開著 *.lock 檔?lsof 跑不了 ⇒ 當作有(往不收那邊錯)。"""
+def _lsof(args, run=None):
+    return (run or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=5,
+                                             stdin=subprocess.DEVNULL).stdout))(["lsof", "-n", "-P"] + args)
+
+
+def _detached_output(pid, run=None):
+    """stdout / stderr 導到一般檔案(nohup … > log &)⇒ 是有人刻意丟背景、還在等結果的,不是殘留(#319 r5 A1)。
+    回 True / False;lsof 跑不了 ⇒ None(量不到)。"""
     try:
-        out = (run or (lambda c: subprocess.run(c, capture_output=True, text=True, timeout=5,
-                                                stdin=subprocess.DEVNULL).stdout))(
-            ["lsof", "-n", "-P", "-Fn", "-p", ",".join(str(p) for p in pids)])
+        out = _lsof(["-a", "-p", str(pid), "-d", "1,2", "-Ft"], run)
     except Exception:  # noqa: BLE001
-        return True
+        return None
+    return "tREG" in (out or "").split()
+
+
+def _holds_lock(pids, run=None):
+    """開著 *.lock 檔?lsof 跑不了 ⇒ None(量不到,呼叫端一樣不收,但代碼分開)。"""
+    try:
+        out = _lsof(["-Fn", "-p", ",".join(str(p) for p in pids)], run)
+    except Exception:  # noqa: BLE001
+        return None
     return any(ln.startswith("n") and ln.rstrip().endswith(".lock") for ln in (out or "").splitlines())
 
 
-def scan(rows=None, run=None, owner_of=None, lsof=None, now=None, roots=None, min_age_s=MIN_AGE_S):
+def scan(rows=None, run=None, owner_of=None, lsof=None, now=None, roots=None, min_age_s=MIN_AGE_S, detached=None):
     """→ (candidates, held)。rows 照 room_heat.list_procs 的格式;owner 只拿來顯示;roots 只給測試注入。"""
     import room_heat
     import chrome_orphans
@@ -270,9 +286,16 @@ def scan(rows=None, run=None, owner_of=None, lsof=None, now=None, roots=None, mi
         if any(HOST_RE.search(by[p][6]) for p in everyone if p in by):
             held.append({"kind": kind, "owner": owner, "pid": pid, "why": "host_operation"})
             continue
-        if (lsof or _holds_lock)(everyone):
-            held.append({"kind": kind, "owner": owner, "pid": pid, "why": "holds_lock"})
+        lk = (lsof or _holds_lock)(everyone)
+        if lk is not False:                            # True = 開著鎖;None = lsof 跑不了,量不到也不收
+            held.append({"kind": kind, "owner": owner, "pid": pid, "why": "holds_lock" if lk else "lsof_unavailable"})
             continue
+        if kind == "test_orphan":
+            dt = (detached or _detached_output)(pid)
+            if dt is not False:
+                held.append({"kind": kind, "owner": owner, "pid": pid,
+                             "why": "detached_output" if dt else "lsof_unavailable"})
+                continue
         if kind == "chrome_orphan":
             pids = [pid]                       # 主行程收了,它的 helper 跟著結束
         else:                                   # 子孫要各自符合判法(同帳號、指令列在暫存根底下)才一起收
@@ -390,7 +413,11 @@ class _AutoLock:
     def __enter__(self):
         os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
         self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+        except OSError:
+            os.close(self.fd)
+            raise
         return self
 
     def __exit__(self, *exc):
@@ -455,7 +482,7 @@ def _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now):
         else:
             detail = "ok" if failed == 0 else ("partial" if killed else "release_failed")
         if budget is not None:
-            budget -= killed
+            budget -= len(c["pids"])                   # 跟帳本的預留一致(B-L4)
         r = {"id": c["id"], "detail": detail, "kind": c["kind"]}
         if detail == "ok":
             r.update(freed_cpu=c["cpu"], freed_mem_mb=c["mem_mb"])
