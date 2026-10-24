@@ -2150,7 +2150,6 @@
   "aib.dmctl.engine_obs_void": "[engine interim observation voided: a line contained a redelivery instruction and is not printed because this run delivered]",
   "aib.dmctl.engine_obs_superseded": "[engine interim observation, superseded by this run's outcome] {line}",
   "aib.plaunch.no_default_effort": "cannot read default_effort from providers.json (is the registry broken?)",
-  "aib.plaunch.acb_off": "the ACB carrier is off; not running acb",
   "aib.plaunch.uuid_fail": "{provider} needs a session uuid and generating one failed",
   "aib.plaunch.uuid_filled": "{provider} came without a session uuid; issued {session}",
   "aib.plaunch.cli_missing": "provider CLI not found: {provider} (no executable on PATH)",

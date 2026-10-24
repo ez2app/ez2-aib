@@ -2150,7 +2150,6 @@
   "aib.dmctl.engine_obs_void": "[엔진 중간 관측 무효: 재전달 지시가 든 줄이 있어 이번에 전달됐으므로 줄 전체를 출력하지 않음]",
   "aib.dmctl.engine_obs_superseded": "[엔진 중간 관측, 이번 실행 결과로 대체됨] {line}",
   "aib.plaunch.no_default_effort": "providers.json 의 default_effort 를 읽을 수 없음(등록부가 깨졌나?)",
-  "aib.plaunch.acb_off": "ACB 캐리어가 꺼져 있어 acb 를 실행하지 않음",
   "aib.plaunch.uuid_fail": "{provider} 는 session uuid 가 필요하지만 생성 실패",
   "aib.plaunch.uuid_filled": "{provider} 에 session uuid 가 없어 {session} 를 발급",
   "aib.plaunch.cli_missing": "provider CLI 를 찾을 수 없음: {provider}(PATH 에 실행 파일 없음)",

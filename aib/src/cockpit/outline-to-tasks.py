@@ -2,23 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """大綱 -> 任務 生成器(三層樹)。
 
-遷自 ~/ez2-cockpit-demo/acb-sandbox/outline-to-tasks.py(E2.1;解析改
-cockpit_lib,大綱與任務板路徑改 env)。
+E2.1 遷入(解析改 cockpit_lib,大綱與任務板路徑改 env)。
 
 只把「approved 且沒有子項的葉子條目」轉成任務;draft 一律不碰。冪等。
 
 後端(--board,env EZ2_TASK_BOARD):
   sandbox  沙盒 JSON 板(指揮艙現行讀的板;行為與 E2.1 版逐字相同)。預設,也是唯一的後端。
-  acb      **已退役(10-11,the maintainer 直令 ACB 殘留清理)**:舊協作板的 task-create 後端整段移除。
-           帶 --board acb 一律 rc 3、印退役說明,一個 subprocess 都不起(不會去找舊執行檔)。
 
 --only <軸>(可逗號多值)只處理指定軸/條目:E3=整軸(E3.1、E3.2…),E2.8=單條。
 
-rc:0=完成 / 2=用法錯 / 3=要了已退役的 acb 後端。
+rc:0=完成 / 2=用法錯或未知 board。
 
-歷史:E3.1~2026-08-21 這裡有一個打舊協作板的 acb 後端(dry-run 預設、--who/--phase/--execute、
-  寬鬆 token 冪等、fail-closed);08-21 起降為可選相依,10-11 整段移除。要看舊實作:git log -- 本檔。
-測試:tests/test-outline-to-tasks.py(退役行為+過濾)+ tests/test-cockpit-smoke.py(沙盒冪等)。
+測試:tests/test-outline-to-tasks.py(過濾)+ tests/test-cockpit-smoke.py(沙盒冪等)。
 """
 import json
 import os
@@ -74,13 +69,6 @@ def run_sandbox(items):
     return 0
 
 
-def acb_retired():
-    print("[acb-retired] --board acb 已退役(10-11 ACB 殘留清理):舊協作板的後端整段移除,"
-          "一筆都沒有讀、也沒有寫。", file=sys.stderr)
-    print("  改用沙盒板:--board sandbox(預設值,行為不變)。", file=sys.stderr)
-    return 3
-
-
 def main(argv):
     board = os.environ.get("EZ2_TASK_BOARD", "sandbox")
     only = None
@@ -97,8 +85,6 @@ def main(argv):
         else:
             print("usage: outline-to-tasks.py [--board sandbox] [--only 軸,...]", file=sys.stderr)
             return 2
-    if board == "acb":
-        return acb_retired()
     items = [x for x in parse_outline_file(OUTLINE) if match_only(x["id"], only)]
     if only:
         print(f"--only {','.join(only)}:過濾後 {len(items)} 筆候選")

@@ -34,9 +34,9 @@ done
 
 if [ "$ACTION" = "request" ] && [ "$HAS_UUID" = "0" ]; then
   # 就地取本 session 的 uuid;取不到就 fail-closed,不編一個出來
-  UUID="${EZ2_SESSION_UUID:-${ACB_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}}"
+  UUID="${EZ2_SESSION_UUID:-${CLAUDE_CODE_SESSION_ID:-}}"
   if [ -z "$UUID" ]; then
-    echo "拿不到本 session 的 uuid(EZ2_SESSION_UUID / ACB_SESSION_ID / CLAUDE_CODE_SESSION_ID 都沒有)。" >&2
+    echo "拿不到本 session 的 uuid(EZ2_SESSION_UUID / CLAUDE_CODE_SESSION_ID 都沒有)。" >&2
     echo "請用 --session-uuid 明給;不代填、不亂猜身份。" >&2
     exit 2
   fi

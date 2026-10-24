@@ -2150,7 +2150,6 @@
   "aib.dmctl.engine_obs_void": "[引擎中間觀測已作廢:有一行含重新投遞指示,因本次已送達而整行不印]",
   "aib.dmctl.engine_obs_superseded": "[引擎中間觀測,已被本次執行的結局取代] {line}",
   "aib.plaunch.no_default_effort": "讀不到 providers.json 的 default_effort(登記簿壞了?)",
-  "aib.plaunch.acb_off": "ACB 載體已關閉,不執行 acb",
   "aib.plaunch.uuid_fail": "{provider} 需要 session uuid,產生失敗",
   "aib.plaunch.uuid_filled": "{provider} 未帶 session uuid,已補發 {session}",
   "aib.plaunch.cli_missing": "找不到 provider CLI:{provider}(PATH 內無執行檔)",

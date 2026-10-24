@@ -2150,7 +2150,6 @@
   "aib.dmctl.engine_obs_void": "[エンジン途中観測は無効:再配達の指示を含む行があり、今回届いたので行ごと出さない]",
   "aib.dmctl.engine_obs_superseded": "[エンジン途中観測、今回の実行結果で置き換え済み] {line}",
   "aib.plaunch.no_default_effort": "providers.json の default_effort を読めない(登録簿が壊れた?)",
-  "aib.plaunch.acb_off": "ACB キャリアは停止中、acb を実行しない",
   "aib.plaunch.uuid_fail": "{provider} は session uuid が必要だが生成に失敗",
   "aib.plaunch.uuid_filled": "{provider} に session uuid がないので {session} を発行",
   "aib.plaunch.cli_missing": "provider CLI が見つからない:{provider}(PATH に実行ファイルなし)",

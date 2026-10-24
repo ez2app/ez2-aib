@@ -2279,7 +2279,7 @@ _LOCAL_LISTEN_HOSTS = ("127.0.0.1", "::1", "0.0.0.0", "::", "localhost", "")
 # 開發文件第 37.1 節(10-17 / 10-18 兩次實踩:測試讀到 Pro 真的收信站設定、ez2-ai 測試改寫真的 API key 檔)。
 #   aib test 給每支測試假 HOME,但寫死路徑、從 passwd 拿家目錄、或「直接跑測試」都還碰得到真的。這裡從追蹤事件挑出
 #   碰到真家目錄敏感位置的:寫一律算;讀也算(真設定會讓測試結果跟著這台機器變),只排除線上對話的 venv(測試合法要用它跑)。
-REAL_HOME_SENSITIVE = (".ez2-aib", ".claude", ".ez2-claude-secrets.json", ".acb", ".ez2-persona-runtime", ".ssh",
+REAL_HOME_SENSITIVE = (".ez2-aib", ".claude", ".ez2-claude-secrets.json", ".ez2-persona-runtime", ".ssh",
                        ".codex", ".grok", ".gemini", ".copilot")
 REAL_HOME_READ_OK = (".ez2-aib/chat/venv",)
 REAL_HOME_TOOL_OWN = (".ez2-aib/verify-shadow",)    # aib test 自己的沿用紀錄池(追蹤器 / 量測本身在讀寫,不是測試碰的)
