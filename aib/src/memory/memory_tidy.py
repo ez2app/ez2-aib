@@ -389,7 +389,8 @@ def _human_rows(fh, since, seat, human_filter):
             try:
                 # skip_ledger:每則都重讀全部 RELAY 檔太慢(本機四千多檔);dm 標頭、Stop hook 回饋等機器字樣照擋
                 ok, _meta = human_filter.is_human(seat, {"text": text, "raw_refs": row, "ts": ts}, skip_ledger=True)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 判準壞掉 ⇒ 不收,而且標讀不到(0 句不能當真人沉默;#312 r4 A-2)
+                _LAST_SOURCE[str(seat.get("code") or "")] = HUMAN_WORDS_NO_TRANSCRIPT
                 ok = False
             if ok:
                 out.append((ts[:16].replace("T", " "), text[:300]))

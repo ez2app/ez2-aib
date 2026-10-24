@@ -194,6 +194,22 @@ class Behaviour(Base):
             self.assertEqual(memory_tidy.human_words({"code": "hhhhh", "seat_uid": "u"}, ""), [])
         self.assertEqual(memory_tidy.words_source("hhhhh"), NO_TRANSCRIPT)
 
+    def test_w6b_filter_raising_is_unreadable(self):
+        """認抬頭時 dm_header.parse 丟例外、或正式判準 is_human 丟例外 ⇒ 一句不收、標讀不到(#312 r4 A-1 / A-2)。"""
+        path = Path(self.tmp) / "seat.jsonl"
+        path.write_text("\n".join(transcript_lines()) + "\n", encoding="utf-8")
+        boom = mock.Mock(side_effect=RuntimeError("x"))
+        broken_dm = type(sys)("dm_header")
+        broken_dm.parse = boom
+        broken_hf = type(sys)("human_filter")
+        broken_hf.is_human = boom
+        for code, mods in (("ppppp", {"human_filter": None, "dm_header": broken_dm}), ("qqqqq", {"human_filter": broken_hf})):
+            with mock.patch.dict(sys.modules, mods), \
+                    mock.patch.object(aib_handoff, "rounds", return_value=[]), \
+                    mock.patch("seat_fork.find_transcript", return_value=path):
+                self.assertEqual(memory_tidy.human_words({"code": code, "seat_uid": "u"}, ""), [], code)
+            self.assertEqual(memory_tidy.words_source(code), NO_TRANSCRIPT, code)
+
     def _collect(self, since, rs0, words_by_since, src_after=None):
         """跑 collect(外部全換假的)回 collect.json。words_by_since(since) ⇒ 句數;src_after = 第二次讀之後的來源。"""
         calls = []
