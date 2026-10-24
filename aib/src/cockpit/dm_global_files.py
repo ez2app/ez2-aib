@@ -55,7 +55,7 @@ NAME_MAX = 32               # 第 5.8 節
 
 MSGID_RE = re.compile(r"^[0-9a-f]{32}$")
 NPUB_RE = r"npub1[02-9ac-hj-np-z]{58}"
-NPUB_FULL_RE = re.compile(r"^%s$" % NPUB_RE)
+NPUB_FULL_RE = re.compile(r"^%s\Z" % NPUB_RE)     # \Z:$ 會放過結尾換行
 _ADDR_RE = re.compile(r"^(?:(?P<owner>%s)/(?P<cabin>[0-9a-z]{1,4})/(?P<seat>[0-9a-z]{4,8})|(?P<npub>%s))$"
                       % (NPUB_RE, NPUB_RE))
 _NPUB_ONLY = re.compile(r"^%s$" % NPUB_RE)
@@ -835,15 +835,20 @@ def read_world(root):
     return {k: v for k, v in cabins.items() if isinstance(v, dict)} if isinstance(cabins, dict) else {}
 
 
-def note_world(root, owner, cabin, seats, now=None, power=None):
-    """收到一份 presence:{owner/cabin: {owner, cabin, presence_at, seats:[{seat, state, now, step}], power}}。
-    power = 對方那台的電源 / 睡眠設定(chat_power.clean_power 過的;舊版沒有 ⇒ None)。"""
+def note_world(root, owner, cabin, seats, now=None, power=None, sent_at=None):
+    """收到一份 presence:{owner/cabin: {owner, cabin, presence_at, sent_at, seats:[{seat, state, now, step}], power}}。
+    power = 對方那台的電源 / 睡眠設定(chat_power.clean_power 過的;舊版沒有 ⇒ None)。
+    sent_at = 對方寄出時間(rumor created_at,不亂數);比手上那格舊 ⇒ 不蓋(中繼站補收順序跟真實先後無關)。"""
     now = int(time.time() if now is None else now)
     key = "%s/%s" % (owner, cabin)
 
     def fn(cur):
         cab = cur.setdefault("cabins", {})
+        if sent_at is not None and int((cab.get(key) or {}).get("sent_at") or 0) > sent_at:
+            return
         cab[key] = {"owner": owner, "cabin": cabin, "presence_at": now, "seats": seats}
+        if sent_at is not None:
+            cab[key]["sent_at"] = int(sent_at)
         if power:
             cab[key]["power"] = power
         for k in [k for k, v in cab.items() if now - int(v.get("presence_at") or 0) > PEERS_KEEP_S]:
@@ -851,9 +856,14 @@ def note_world(root, owner, cabin, seats, now=None, power=None):
     _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
 
 
-def drop_world_owner(root, owner):
-    """對方撤回在線分享:拿掉他所有艙的格。"""
-    drop_world(root, lambda o: o != owner)
+def drop_world_owner(root, owner, upto=None):
+    """對方撤回在線分享:拿掉他所有艙的格。upto = 撤回的寄出時間 ⇒ 只拿掉寄出時間 <= upto 的格(沒記 sent_at 的舊格算 0)。"""
+    def fn(cur):
+        cab = cur.setdefault("cabins", {})
+        for k in [k for k, v in cab.items() if v.get("owner") == owner
+                  and (upto is None or int(v.get("sent_at") or 0) <= upto)]:
+            cab.pop(k, None)
+    _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
 
 
 def drop_world(root, keep_owner):
@@ -869,20 +879,28 @@ def drop_world(root, keep_owner):
 ROOM_FRESH_S = 7 * 86400
 
 
-def write_room(root, owner, snap, now=None):
+def write_room(root, owner, snap, now=None, sent_at=None):
+    """at = 本機收到時間(新鮮度);sent_at = 對方寄出時間(rumor created_at,撤回比先後用)。"""
     if not NPUB_FULL_RE.match(owner or ""):
         return
     d = Path(root) / "spaces"
     d.mkdir(parents=True, exist_ok=True)
-    write_json(str(d / (owner + ".json")), {"v": VERSION, "owner": owner, "at": int(time.time() if now is None else now),
-                                            "snap": snap})
+    rec = {"v": VERSION, "owner": owner, "at": int(time.time() if now is None else now), "snap": snap}
+    if sent_at is not None:
+        rec["sent_at"] = int(sent_at)
+    write_json(str(d / (owner + ".json")), rec)
     os.chmod(str(d / (owner + ".json")), 0o600)
 
 
-def drop_room(root, owner):
-    """對方撤回空間分享(10-24 跨客戶驗收 6.7):刪掉他的快照。不在 / 壞名字 ⇒ 什麼都不做。"""
+def drop_room(root, owner, upto=None):
+    """對方撤回空間分享(10-24 跨客戶驗收 6.7):刪掉他的快照。不在 / 壞名字 ⇒ 什麼都不做。
+    upto = 撤回的寄出時間 ⇒ 手上快照比撤回新(sent_at > upto)就留著(舊撤回晚到,不准刪掉重開的分享)。"""
     if not NPUB_FULL_RE.match(owner or ""):
         return False
+    if upto is not None:
+        rec = read_room(root, owner)
+        if rec and int(rec.get("sent_at") or 0) > upto:
+            return False
     try:
         (Path(root) / "spaces" / (owner + ".json")).unlink()
         return True
@@ -916,6 +934,27 @@ def note_shared_sent(root, owner, kind, level):
         if not row:
             per.pop(owner, None)
     _locked_update(root, "shared-sent.json", fn, lambda: {"v": VERSION, "per": {}})
+
+
+# revoked.json:對方撤回的寄出時間({owner: {"space": ts, "share": ts}},只往大記)。
+#   之後收到寄出時間 <= 這個的快照 / 在線(中繼站補收、重送的舊信)⇒ 丟掉。
+def read_revoked(root, owner):
+    try:
+        cur = json.loads((Path(root) / "revoked.json").read_text(encoding="utf-8"))
+        row = (cur.get("per") or {}).get(owner) if isinstance(cur, dict) else None
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return row if isinstance(row, dict) else {}
+
+
+def note_revoked(root, owner, kind, ts):
+    if not NPUB_FULL_RE.match(owner or "") or kind not in ("space", "share"):
+        return
+
+    def fn(cur):
+        row = cur.setdefault("per", {}).setdefault(owner, {})
+        row[kind] = max(int(row.get(kind) or 0), int(ts))
+    _locked_update(root, "revoked.json", fn, lambda: {"v": VERSION, "per": {}})
 
 
 def write_space_status(root, rec):
