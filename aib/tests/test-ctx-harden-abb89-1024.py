@@ -162,8 +162,8 @@ class Readiness(unittest.TestCase):
             prev = real_signal(n, h)
             return None if len(calls) == 1 else prev
         before = sig.getsignal(sig.SIGALRM)
-        self.addCleanup(real_setitimer, sig.ITIMER_REAL, 0)                    # 斷言中途紅也收乾淨(cleanup 後進先出:先清計時器)
-        self.addCleanup(real_signal, sig.SIGALRM, before)
+        self.addCleanup(real_signal, sig.SIGALRM, before)                      # 斷言中途紅也收乾淨(cleanup 後進先出:
+        self.addCleanup(real_setitimer, sig.ITIMER_REAL, 0)                    #   後登記的先跑 ⇒ 先清計時器、再還原處理器)
         self.assertEqual(self._main_with(signal=signal_none_first), (0, ["ok", "ok"]))
         self.assertIs(calls[-1], sig.SIG_DFL)                                   # 舊處理器回 None ⇒ 還原成 SIG_DFL
         real_signal(sig.SIGALRM, before)
@@ -182,6 +182,13 @@ class Readiness(unittest.TestCase):
         self.assertEqual(self._main_with(setitimer=setitimer_clear_fails), (0, ["ok", "ok"]))
         self.assertIs(sig.getsignal(sig.SIGALRM), sig.SIG_IGN)                 # 清不掉 ⇒ 計時器還在,裝 SIG_IGN 不讓它殺掉行程
         real_setitimer(sig.ITIMER_REAL, 0)
+        real_signal(sig.SIGALRM, before)
+
+        def custom(_n, _f):
+            pass
+        real_signal(sig.SIGALRM, custom)                                        # 舊處理器是自訂的 ⇒ 還原回它,不是一律 SIG_DFL
+        self.assertEqual(self._main_with(signal=real_signal), (0, ["ok", "ok"]))
+        self.assertIs(sig.getsignal(sig.SIGALRM), custom)
         real_signal(sig.SIGALRM, before)
 
         def signal_not_main(n, h):
