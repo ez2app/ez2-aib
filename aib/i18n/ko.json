@@ -5192,5 +5192,15 @@
   "aib.heat.crash.summary": "크래시 레이더: 최근 {days}일 보고서 {files}개, {n}종류",
   "aib.heat.crash.unmeasured": "크래시 보고서 폴더를 읽을 수 없습니다(측정 불가이며, 크래시 없음이 아닙니다)",
   "aib.heat.crash.aib_test_guarded_fd_dup": "이전 aib test의 알려진 문제입니다. {fixed}(으)로 업데이트하면 더 이상 나타나지 않습니다",
-  "aib.heat.crash.unknown": "원인 불명(표시만 하고 추측하지 않음)"
+  "aib.heat.crash.unknown": "원인 불명(표시만 하고 추측하지 않음)",
+  "aib.heat.release.usage": "사용법: aib room heat release <후보 번호>… 또는 --all-safe(둘 중 하나)",
+  "aib.heat.release.none": "해제할 잔여 프로세스가 없습니다",
+  "aib.heat.release.ok": "해제했습니다",
+  "aib.heat.release.partial": "일부만 해제했습니다(바뀌었거나 멈출 수 없는 프로세스가 있음)",
+  "aib.heat.release.release_failed": "해제하지 못했습니다",
+  "aib.heat.release.candidate_changed": "후보가 바뀌었습니다(프로세스 종료 또는 번호 만료). 아무것도 하지 않았습니다. 새로 고친 뒤 다시 시도하세요",
+  "aib.heat.release.not_releasable": "이 종류는 해제할 수 없습니다",
+  "aib.heat.release.bad_candidate": "후보 번호 형식이 올바르지 않습니다",
+  "aib.heat.release.auto_limit": "자동 해제가 10분 한도에 도달해 멈춥니다",
+  "aib.heat.release.dry_run": "시험 실행: 이 항목을 해제합니다"
 }

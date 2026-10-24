@@ -5192,5 +5192,15 @@
   "aib.heat.crash.summary": "當機雷達：最近 {days} 天 {files} 份報告，歸成 {n} 類",
   "aib.heat.crash.unmeasured": "當機報告資料夾讀不到(量不到，不是沒有當機)",
   "aib.heat.crash.aib_test_guarded_fd_dup": "aib test 舊版的已知問題，更新到 {fixed} 就不會再出現",
-  "aib.heat.crash.unknown": "未知原因(只顯示，不猜)"
+  "aib.heat.crash.unknown": "未知原因(只顯示，不猜)",
+  "aib.heat.release.usage": "用法:aib room heat release <候選編號>… 或 --all-safe(兩者擇一)",
+  "aib.heat.release.none": "沒有可釋放的殘留",
+  "aib.heat.release.ok": "已釋放",
+  "aib.heat.release.partial": "只收掉一部分(有行程已變或收不掉)",
+  "aib.heat.release.release_failed": "收不掉",
+  "aib.heat.release.candidate_changed": "候選已變(行程結束或編號過期),沒動手;請重新整理再試",
+  "aib.heat.release.not_releasable": "這種不給釋放",
+  "aib.heat.release.bad_candidate": "候選編號格式不對",
+  "aib.heat.release.auto_limit": "自動釋放已達 10 分鐘上限,先停手",
+  "aib.heat.release.dry_run": "試跑:會釋放這一項"
 }
