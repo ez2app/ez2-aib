@@ -292,6 +292,42 @@ def ensure_device(env=None, now=None):
     return rec["device"]["npub"]
 
 
+def ensure_beat(env=None, now=None):
+    """心跳簽章鑰(10-24 Andy 綠點):這台一把,沒有才產。回 npub。只拿來簽 d=aib-beat 那一筆,不代表任何席。"""
+    rec = read_map(env)
+    b = rec.get("beat") or {}
+    kf = keys_dir(env) / "beat.key"
+    if b.get("npub") and kf.is_file():
+        return b["npub"]
+    if kf.is_file():
+        raise RuntimeError("beat.key exists but is not in the map")
+    rec["beat"] = dict(b, npub=_write_key("beat", env), created_at=int(time.time() if now is None else now))
+    _save_map(rec, env)
+    return rec["beat"]["npub"]
+
+
+def beat_share(env=None, now=None, rotate=False):
+    """好友共用的心跳解密鑰(一把 nostr 私鑰當對稱鑰:nip44 自己加給自己,拿到私鑰的好友都解得開)⇒ (代數, stem)。
+    只放進給好友的名片(分享等級 off 的不給)。rotate ⇒ 舊的封存、產下一代(刪好友 / 封鎖 / 改 off 時)。"""
+    now = int(time.time() if now is None else now)
+    rec = read_map(env)
+    b = rec.setdefault("beat", {})
+    gen = int(b.get("share_gen") or 0)
+    d = keys_dir(env)
+    if gen and not rotate and (d / ("beat-share-%d.key" % gen)).is_file():
+        return gen, "beat-share-%d" % gen
+    if gen and (d / ("beat-share-%d.key" % gen)).is_file():
+        _mkdir_private(d / "retired")
+        os.rename(str(d / ("beat-share-%d.key" % gen)), str(d / "retired" / ("beat-share-%d.%d.key" % (gen, now))))
+    gen += 1
+    while (d / ("beat-share-%d.key" % gen)).is_file():     # 對照表比檔舊(還原過備份)⇒ 往下找空的一代,不蓋檔
+        gen += 1
+    _write_key("beat-share-%d" % gen, env)
+    b.update(share_gen=gen, share_at=now)
+    _save_map(rec, env)
+    return gen, "beat-share-%d" % gen
+
+
 def set_remote_owner(owner_npub, env=None, now=None):
     """join 別人清單的機器:對照表記主人 npub(remote),這台沒有主人私鑰。已有自己的主人 ⇒ ValueError("has_owner")。"""
     rec = read_map(env)
