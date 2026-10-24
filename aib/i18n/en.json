@@ -5199,5 +5199,19 @@
   "aib.cscope.closure": "Rule 5: {n} more rulers pulled in along ruler-references-ruler (from {given})",
   "aib.cscope.not_test_path": "These are not test paths (expected tests/test-*.py): {names}",
   "aib.cscope.missing_tests": "{n} test paths are absent from the candidate tree; not expanded. The witness must retain them as unmeasured: {names}",
-  "aib.cscope.rule_closure": "rule 5: ruler-to-ruler upward closure"
+  "aib.cscope.rule_closure": "rule 5: ruler-to-ruler upward closure",
+  "aib.heat.snap.level": "Host heat: {level}",
+  "aib.heat.group.seat": "Seats",
+  "aib.heat.group.aib_test": "aib test",
+  "aib.heat.group.reviewer": "Reviewer scratch",
+  "aib.heat.group.headless_browser": "Headless browsers",
+  "aib.heat.group.sandbox": "Sandbox worlds",
+  "aib.heat.group.aib_core": "aib core",
+  "aib.heat.group.system": "System",
+  "aib.heat.group.other_app": "Other apps",
+  "aib.heat.history.count": "{n} points in the last hour (one every 10 seconds)",
+  "aib.heat.crash.summary": "Crash radar: {files} reports in the last {days} days, {n} kinds",
+  "aib.heat.crash.unmeasured": "Cannot read the crash report folder (unmeasured, not \"no crashes\")",
+  "aib.heat.crash.aib_test_guarded_fd_dup": "Known issue in older aib test; gone after updating to {fixed}",
+  "aib.heat.crash.unknown": "Unknown cause (shown only, not guessed)"
 }

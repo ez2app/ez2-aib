@@ -5199,5 +5199,19 @@
   "aib.cscope.closure": "규칙⑤: '검사가 검사를 참조'를 따라 {n}개 추가(기점 {given}개)",
   "aib.cscope.not_test_path": "테스트 경로가 아닙니다(tests/test-*.py 형식 필요): {names}",
   "aib.cscope.missing_tests": "후보 트리에 테스트 {n}개가 없습니다. 확장하지 않으며 증언에는 unmeasured 로 남겨야 합니다: {names}",
-  "aib.cscope.rule_closure": "규칙⑤: 검사→검사 상향 폐포"
+  "aib.cscope.rule_closure": "규칙⑤: 검사→검사 상향 폐포",
+  "aib.heat.snap.level": "호스트 발열: {level}",
+  "aib.heat.group.seat": "좌석",
+  "aib.heat.group.aib_test": "aib test",
+  "aib.heat.group.reviewer": "리뷰어 임시 공간",
+  "aib.heat.group.headless_browser": "헤드리스 브라우저",
+  "aib.heat.group.sandbox": "샌드박스 월드",
+  "aib.heat.group.aib_core": "aib 코어",
+  "aib.heat.group.system": "시스템",
+  "aib.heat.group.other_app": "기타 앱",
+  "aib.heat.history.count": "최근 1시간 동안 {n}개 기록(10초마다)",
+  "aib.heat.crash.summary": "크래시 레이더: 최근 {days}일 보고서 {files}개, {n}종류",
+  "aib.heat.crash.unmeasured": "크래시 보고서 폴더를 읽을 수 없습니다(측정 불가이며, 크래시 없음이 아닙니다)",
+  "aib.heat.crash.aib_test_guarded_fd_dup": "이전 aib test의 알려진 문제입니다. {fixed}(으)로 업데이트하면 더 이상 나타나지 않습니다",
+  "aib.heat.crash.unknown": "원인 불명(표시만 하고 추측하지 않음)"
 }

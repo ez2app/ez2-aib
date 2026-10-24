@@ -5199,5 +5199,19 @@
   "aib.cscope.closure": "規則⑤:「テストがテストを参照」を辿って {n} 本を追加(起点 {given} 本)",
   "aib.cscope.not_test_path": "これらはテストパスではありません(tests/test-*.py が必要):{names}",
   "aib.cscope.missing_tests": "候補ツリーにテスト {n} 本がありません。展開せず、証詞には unmeasured として残してください:{names}",
-  "aib.cscope.rule_closure": "規則⑤:テスト→テストの上方閉包"
+  "aib.cscope.rule_closure": "規則⑤:テスト→テストの上方閉包",
+  "aib.heat.snap.level": "ホストの発熱：{level}",
+  "aib.heat.group.seat": "席",
+  "aib.heat.group.aib_test": "aib test",
+  "aib.heat.group.reviewer": "レビュー用一時領域",
+  "aib.heat.group.headless_browser": "ヘッドレスブラウザ",
+  "aib.heat.group.sandbox": "サンドボックスワールド",
+  "aib.heat.group.aib_core": "aib コア",
+  "aib.heat.group.system": "システム",
+  "aib.heat.group.other_app": "その他のアプリ",
+  "aib.heat.history.count": "直近 1 時間で {n} 点(10 秒ごと)",
+  "aib.heat.crash.summary": "クラッシュレーダー：直近 {days} 日のレポート {files} 件、{n} 種類",
+  "aib.heat.crash.unmeasured": "クラッシュレポートのフォルダを読めません(未計測であり、クラッシュなしではありません)",
+  "aib.heat.crash.aib_test_guarded_fd_dup": "旧版 aib test の既知の問題です。{fixed} に更新すれば出なくなります",
+  "aib.heat.crash.unknown": "原因不明(表示のみ、推測しません)"
 }
