@@ -183,13 +183,16 @@ def cpu_total(ticks_fn=None, now=None, environ=None, sleep=time.sleep, ncpu=None
     times_fn = times_fn or proc_times
     now = time.time() if now is None else now
     ncpu = ncpu or os.cpu_count()
+    path = os.path.join(_room_dir(environ), TICKS_FILE)
+    prev = _read_json(path) or {}
+    pb, pt, pts = prev.get("busy"), prev.get("total"), prev.get("t")
+    last = _clean_total(prev.get("last"))
+    if last and _finite(pts) and 0 <= now - pts < 1:    # 三艙共用這份檔:別艙剛量過(< 1 秒)⇒ 直接用,不再當場睡 1 秒(@ee4f8 L4)
+        return last
     cur = ticks_fn()
     if not cur or not ncpu:
         return {"state": "unmeasured", "detail": "cpu_ticks_unavailable"}
     cur_t = times_fn()
-    path = os.path.join(_room_dir(environ), TICKS_FILE)
-    prev = _read_json(path) or {}
-    pb, pt, pts = prev.get("busy"), prev.get("total"), prev.get("t")
     pprocs = prev.get("procs") if isinstance(prev.get("procs"), dict) else None
     if (_finite(pb) and _finite(pt) and _finite(pts) and 1 <= now - pts <= TICKS_MAX_AGE_S
             and cur[1] > pt and cur[0] >= pb):
@@ -209,15 +212,6 @@ def cpu_total(ticks_fn=None, now=None, environ=None, sleep=time.sleep, ncpu=None
         cur_t = times_fn()
         if not cur or cur[1] <= base[1]:
             return {"state": "unmeasured", "detail": "cpu_ticks_unavailable"}
-    try:
-        rec = {"schema": "aib-heat-cputicks/v1", "t": round(now, 3), "busy": cur[0], "total": cur[1]}
-        if len(cur) > 2:
-            rec["steal"] = cur[2]
-        if cur_t:
-            rec["procs"] = {str(k): round(v, 2) for k, v in cur_t.items()}
-        _write_json(path, rec)
-    except (OSError, ValueError):
-        pass                                         # 存不了只是下次多量 1 秒
     span = float(cur[1] - base[1])
     frac = max(0.0, min(1.0, (cur[0] - base[0]) / span))
     out = {"state": "ok", "cores": ncpu, "pct": round(frac * 100, 1), "busy_cores": round(frac * ncpu, 2),
@@ -226,6 +220,31 @@ def cpu_total(ticks_fn=None, now=None, environ=None, sleep=time.sleep, ncpu=None
         out["steal_pct"] = round(max(0.0, (cur[2] - base[2]) / span) * 100, 1)
     if cur_t and base_t:
         out["seen_cores"] = round(seen_cores(base_t, cur_t, window), 2)
+    try:
+        rec = {"schema": "aib-heat-cputicks/v1", "t": round(now, 3), "busy": cur[0], "total": cur[1], "last": out}
+        if len(cur) > 2:
+            rec["steal"] = cur[2]
+        if cur_t:
+            rec["procs"] = {str(k): round(v, 2) for k, v in cur_t.items()}
+        _write_json(path, rec)
+    except (OSError, ValueError):
+        pass                                         # 存不了只是下次多量 1 秒
+    return out
+
+
+TOTAL_KEYS = ("pct", "busy_cores", "window_s", "seen_cores", "steal_pct")
+
+
+def _clean_total(d):
+    """tick 檔裡別艙存的上一份結果:只收 state ok + 數字欄位(檔可能被改)。"""
+    if not isinstance(d, dict) or d.get("state") != "ok" or not isinstance(d.get("cores"), int) or d["cores"] <= 0:
+        return None
+    out = {"state": "ok", "cores": d["cores"]}
+    for k in TOTAL_KEYS:
+        if _finite(d.get(k)) and d[k] >= 0:
+            out[k] = float(d[k])
+        elif k in ("pct", "busy_cores", "window_s"):
+            return None
     return out
 
 

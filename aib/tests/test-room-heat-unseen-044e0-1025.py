@@ -6,6 +6,7 @@ U1 cpu_total:沒上一次 ⇒ 當場量 0.5 秒;有上一次(1–120 秒內)⇒ 
    計數器倒退(重開機)⇒ 重量;tick 檔 0600、落在 EZ2_AIB_STATE_ROOT 底下
 U1c 同一時間窗:每個行程的累計 CPU 跟 tick 一起存、兩次相減(審查 M1);上次漏列的「新」行程累計 > 時間窗 2 倍 ⇒ 不算;
     pid 重用照新的算;Linux steal 另列;ps time 兩種格式都讀得懂
+U1f 三艙共用 tick 檔:別艙不到 1 秒前剛量過 ⇒ 直接回那一份、不睡(@ee4f8 L4);那一份被改過 ⇒ 不用
 U1d 真 tick 冒煙:讀兩次單調遞增、busy ≤ total
 U2 unseen = 在忙的核 − 同窗看得到的(不小於 0);看得到的多一截 ⇒ unmeasured window_mismatch(不回假的 0);量不到 ⇒ unmeasured
 U3 快照多 cpu_total / unseen_cpu,歷史多記 cpu_busy / unseen_cpu
@@ -144,6 +145,19 @@ class CpuTotal(Base):
         r = RU.cpu_total(ticks_fn=Ticks([(10, 100), (10, 100), (20, 200)]), now=0.0, sleep=slept.append, ncpu=2,
                          times_fn=Times([]))
         self.assertEqual((slept, r["state"], r["window_s"]), ([1.0, 0.5], "ok", 1.5))
+
+    def test_u1f_fresh_result_shared(self):
+        first = RU.cpu_total(ticks_fn=Ticks([(100, 1000), (150, 1100)]), now=1000.0, sleep=lambda s: None, ncpu=10,
+                             times_fn=Times([]))
+        slept = []
+        r = RU.cpu_total(ticks_fn=Ticks([]), now=1001.4, sleep=slept.append, ncpu=10, times_fn=Times([]))
+        self.assertEqual((slept, r), ([], first), "別艙 0.4 秒前剛量過,又當場睡 1 秒重量")
+        f = self.room(RU.TICKS_FILE)
+        d = json.loads(f.read_text())
+        d["last"] = {"state": "ok", "cores": 10, "pct": "x; rm", "busy_cores": 5, "window_s": 1}
+        f.write_text(json.dumps(d))
+        r = RU.cpu_total(ticks_fn=Ticks([]), now=1001.5, sleep=slept.append, ncpu=10, times_fn=Times([]))
+        self.assertEqual(r["state"], "unmeasured", "tick 檔裡被改過的上一份結果照用")
 
     def test_u2_unseen(self):
         ok = {"state": "ok", "busy_cores": 6.95, "cores": 10, "pct": 69.5, "seen_cores": 2.95}
