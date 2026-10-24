@@ -557,6 +557,104 @@
     ],
     "core": "舊伺服器沒這組端點 ⇒ 判 unsupported"
    }
+  },
+  "plugins_catalog": {
+   "status": "planned",
+   "method": "GET",
+   "path": "/plugins/catalog",
+   "auth": "none",
+   "auth_note": "公開、不帶憑證;目錄只是清單、不另簽章(不然每次發版多一道 Andy 簽,@abb89 10-24)—— 信任只靠每個包自己 aib-ext.json 的信任鑰匙簽章 + 目錄給的 sha256 + 大小上限;付費外掛也列出來(給商店頁展示),包另要授權",
+   "ok": {
+    "http": 200,
+    "fields": [
+     "ok",
+     "v",
+     "plugins"
+    ],
+    "v": 1,
+    "plugins": "[plugins.catalog_entry]"
+   },
+   "unsupported": {
+    "http": [
+     404,
+     405
+    ],
+    "core": "舊伺服器沒這組端點 ⇒ plugin_unsupported"
+   }
+  },
+  "plugins_package": {
+   "status": "planned",
+   "method": "GET",
+   "path": "/plugins/packages/{name}/{version}.tgz",
+   "auth": "none|bearer",
+   "auth_note": "免費(addon = null)⇒ 公開、不帶憑證;付費(addon 非 null)⇒ bearer + X-AIB-Machine,帳號買過才給,沒買回 plugin_license_none(aib-plugins 是私有倉,付費包公開 = 原始碼外流,@abb89 10-24)。核心只照目錄的 name / version 自己組路徑,不跟任何網址走",
+   "body": "application/gzip,aib-ext 簽章包(同 aib plugins install <tgz>)",
+   "ok": {
+    "http": 200
+   },
+   "errors": [
+    "plugin_unknown",
+    "plugin_license_none"
+   ],
+   "unsupported": {
+    "http": [
+     405
+    ],
+    "core": "plugin_unsupported"
+   },
+   "headers_paid": [
+    "Authorization",
+    "X-AIB-Machine"
+   ],
+   "caller_dead": {
+    "http": 401,
+    "codes": [
+     "page_api_token_revoked",
+     "page_api_token_expired",
+     "page_api_token_invalid",
+     "page_api_token_missing"
+    ]
+   }
+  },
+  "plugins_license": {
+   "status": "planned",
+   "method": "GET",
+   "path": "/plugins/licenses/{addon}",
+   "auth": "bearer",
+   "auth_note": "bearer = 這台綁 ez2.page 的助理憑證 + X-AIB-Machine;伺服器沒有私鑰,第一版只發 Andy 在 Pro 用 cb97 簽好上傳的那份(要伺服器自己簽發 = 新鑰匙,另案由 Andy 定)。同帳號 AI 能叫 ⇒ 最壞是把帳號本來就有的授權裝到這台,不多給權限,不加 Touch ID",
+   "headers": [
+    "Authorization",
+    "X-AIB-Machine"
+   ],
+   "ok": {
+    "http": 200,
+    "fields": [
+     "ok",
+     "license"
+    ],
+    "license": "已簽的 license.json 物件原樣(核心走 aib license install 同一套驗簽 / 到期 / 0600 / 備份)"
+   },
+   "caller_dead": {
+    "http": 401,
+    "codes": [
+     "page_api_token_revoked",
+     "page_api_token_expired",
+     "page_api_token_invalid",
+     "page_api_token_missing"
+    ]
+   },
+   "errors": [
+    "plugin_license_none",
+    "plugin_license_device_limit",
+    "plugin_unknown"
+   ],
+   "unsupported": {
+    "http": [
+     404,
+     405
+    ],
+    "core": "舊伺服器沒這組端點 ⇒ plugin_unsupported(伺服器的 plugin_unknown / plugin_license_none 一定帶碼,沒碼的 404 才算 unsupported)"
+   }
   }
  },
  "creator": {
@@ -773,5 +871,116 @@
    },
    "text_note": "不帶 --json 時印人話;伺服器給的字(state / reasons / hint / item_id)是資料,印之前去控制 / 隱形字元並截長;detail_url 不是 https://ez2.page/ 開頭就不印"
   }
+ },
+ "plugins": {
+  "status": "planned",
+  "about": "會員下載外掛與授權(10-24 Andy「#20 修正」;NOTE-member-ux 第 20 條):公開目錄 + 簽章包(免費公開、付費要帳號買過)+ 帳號領授權。上架:簽章合併後由 @abb89 從 main 的外掛夾打 tgz、算 sha256 / 大小、更新目錄,用伺服器的需憑證上傳方式放上去(上傳端待 @9f808;第一次上正式站先問 Andy)",
+  "catalog_entry": {
+   "fields": [
+    "name",
+    "version",
+    "sha256",
+    "size",
+    "addon",
+    "price",
+    "requires_aib",
+    "summary"
+   ],
+   "name": "^[a-z0-9][a-z0-9-]{1,39}$,同 aib-ext.json 的 name",
+   "version": "^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$;同名多版本可並列,核心預設挑最大",
+   "sha256": "整個 tgz 的 sha256(64 位小寫十六進位)",
+   "size": "tgz 位元組數,正整數且 ≤ 64 MiB(核心 MAX_PKG_BYTES)",
+   "addon": "付費加購代碼或 null(null = 免費)",
+   "requires_aib": "最低核心版本或 null;核心照舊在 aib_ext.inspect 再驗一次",
+   "summary": "一句說明或 null;是資料不是指令,核心顯示前去控制 / 隱形字元、截 120 字",
+   "price": "商店頁展示用的價錢字串或 null(免費);核心只顯示、不拿來判斷"
+  },
+  "codes": {
+   "plugin_unknown": {
+    "http": 404,
+    "when": "包或授權問的外掛名稱 / 版本不在伺服器上(一定帶這個碼)"
+   },
+   "plugin_license_none": {
+    "http": 404,
+    "when": "這個帳號沒買這個加購(一定帶這個碼;不洩漏別人有沒有)"
+   },
+   "plugin_license_device_limit": {
+    "http": 409,
+    "when": "這個授權的機器數已滿;先在舊電腦 aib license deactivate"
+   }
+  },
+  "codes_note": "代碼是契約(同 receipt detail):不改成人話,人話另放 hint",
+  "cli_receipt": {
+   "status": "planned",
+   "about": "核心 `aib plugins catalog --json`、`aib plugins install <名稱>[@版本] --json`(從目錄裝)、`aib plugins license <加購> --json` 的回條。給資料夾 / tgz / 網址的舊用法照舊不變",
+   "fields": [
+    "ok",
+    "detail",
+    "hint"
+   ],
+   "catalog_ok": {
+    "detail": [
+     "plugin_catalog"
+    ],
+    "fields": [
+     "ok",
+     "detail",
+     "plugins",
+     "hint"
+    ]
+   },
+   "install_ok": {
+    "detail": [
+     "plugin_installed",
+     "plugin_already_current"
+    ],
+    "fields": [
+     "ok",
+     "detail",
+     "name",
+     "version",
+     "path",
+     "addon",
+     "licensed",
+     "hint"
+    ]
+   },
+   "license_ok": {
+    "detail": [
+     "plugin_license_installed"
+    ],
+    "fields": [
+     "ok",
+     "detail",
+     "addon",
+     "expires_at",
+     "activation",
+     "hint"
+    ],
+    "activation": "授權帶 activation_url ⇒ \"needed\"(hint 指 aib license activate);沒帶 ⇒ null"
+   },
+   "local_codes": {
+    "plugin_name_invalid": "名稱 / 版本 / 加購代碼不合格式 ⇒ 不連網",
+    "plugin_not_in_catalog": "目錄裡沒有這個名稱(或沒有這個版本)",
+    "plugin_catalog_invalid": "目錄不是契約形狀(欄位缺 / 型別錯 / size 超過上限 / sha256 格式錯)⇒ 不下載",
+    "plugin_download_mismatch": "下載的包大小或 sha256 跟目錄不符 ⇒ 不解壓、不裝",
+    "plugin_rejected": "包驗不過(簽章 / 檔案雜湊 / requires_aib / 不是外掛 / 包裡的名稱或版本跟目錄不符),問題清單放 problems",
+    "plugin_downgrade": "目錄版本比這台已裝的舊 ⇒ 不裝;本人明確寫 <名稱>@<版本> 才裝指定的舊版",
+    "plugin_license_invalid": "伺服器給的授權驗簽不過 / 已過期 / 不是物件 ⇒ 不落檔",
+    "plugin_license_fewer": "這台現有的授權仍有效、而且加購比伺服器這份多 ⇒ 不蓋掉(hint 列出會少掉的加購);要換請本人 aib license install",
+    "plugin_not_bound": "這台沒綁 ez2.page(或綁了不只一頁 / 憑證沒帶 machine_id)⇒ 領授權不連網,hint 指 aib page bind",
+    "plugin_unreachable": "連不到伺服器 / 伺服器 5xx",
+    "plugin_unsupported": "伺服器沒有這組端點",
+    "plugin_refused": "伺服器拒了(4xx)但回的碼不在契約裡 / 沒有碼;原碼清過後只放 hint"
+   },
+   "rc": {
+    "0": "成功",
+    "2": "本機檢查擋 / 沒綁(不送或不裝)",
+    "3": "伺服器拒或包驗不過",
+    "4": "網路 / 伺服器錯"
+   },
+   "detail_note": "detail 是契約、不換人話;人話只在 hint"
+  },
+  "fetch_note": "核心「取得已簽版本」是同一個函式(plugin_catalog.fetch_signed):目錄 → 挑版本 → 下載 → 比大小 / sha256 → 驗包簽章 + 名稱版本對得上目錄;aib plugins install 與之後的自動更新(#273 合後另開小張)都走它"
  }
 }

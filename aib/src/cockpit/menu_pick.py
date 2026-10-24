@@ -62,6 +62,10 @@ AI_CMD = ["claude", "-p", "--output-format", "text", "--no-session-persistence",
 _BOX = re.compile(r"[│┃╭╮╰╯─━╻╹▄▀]")
 _CURSOR = re.compile(r"^\s*[❯›>▶●○◯◉]\s*")
 _OPT = re.compile(r"^\s*(?:[❯›>▶●○◯◉]\s*)?(?:\(?[0-9]{1,2}[.)]|\[[0-9a-zA-Z]\]|\([a-zA-Z]\))\s+\S")
+# 10-24:沒編號的游標選單(agy 信任畫面「> Yes, I trust this folder / No, exit」+「↑/↓ Navigate · enter Confirm」)
+#   操作說明那一行要同時有上下鍵和 enter(只提到其中一個 = AI 回覆裡在講選單,不是選單)
+_NAV = re.compile(r"(?:↑\s*/?\s*↓|up\s*/\s*down).*\benter\b", re.I)
+_OPT_ROW = re.compile(r"^\s{2,}\S")         # 游標以外的選項行:縮排、不帶游標符號
 _ASK = re.compile(r"\?|\uff1f|Do you want|[Aa]llow|[Pp]roceed|[Cc]onfirm|[Aa]pprove|確認|要不要|是否|允許|Esc to cancel|enter to select",
                   re.I)
 
@@ -197,7 +201,40 @@ def suspect(screen, provider=None):
     hits = [i for i, ln in enumerate(tail) if _OPT.match(ln)]
     # 等人選的選單,選項貼在畫面最底下(下面頂多操作說明、狀態列幾行);回報裡的「1. 2. 3.」清單在上面 ⇒ 不算
     near_bottom = bool(hits) and len(tail) - 1 - hits[-1] <= OPT_BOTTOM_SLACK
-    return len(hits) >= 2 and near_bottom and any(_ASK.search(ln) for ln in tail)
+    if len(hits) >= 2 and near_bottom and any(_ASK.search(ln) for ln in tail):
+        return True
+    # 游標選單:底部有「上下鍵 + enter」的操作說明;往上連著都是縮排選項行,再往上一行是游標選項
+    #   (中間夾一般文字就不算 —— 三家回顯使用者那句話的行首也是 ❯ › >);問句要在游標選項上面
+    nav = [i for i, ln in enumerate(tail) if _NAV.search(ln)]
+    if not nav or len(tail) - 1 - nav[-1] > OPT_BOTTOM_SLACK:
+        return False
+    j = nav[-1] - 1
+    rows = 0
+    while j >= 0 and nav[-1] - j <= 8 and _OPT_ROW.match(tail[j]) and not _CURSOR.match(tail[j]):
+        rows += 1
+        j -= 1
+    if j < 0 or not (_CURSOR.match(tail[j]) and _CURSOR.sub("", tail[j]).strip()):
+        return False
+    # 游標可能停在中間:游標行上面也可以還有選項行;都跳過再找問句
+    k = j - 1
+    while k >= 0 and j - k <= 8 and _OPT_ROW.match(tail[k]) and not _CURSOR.match(tail[k]):
+        rows += 1
+        k -= 1
+    if not (rows >= 1 and any(_ASK.search(ln) for ln in tail[max(0, k - 4):k + 1])):
+        return False
+    # 第 2 輪審查:AI 回覆裡貼出整張選單(三家顯示回覆本來就縮排)也長這樣 —— 差在底下還有閒著的輸入框。
+    #   真的游標選單,輸入框找到的是游標那一行(在操作說明上面);輸入框在操作說明下面 ⇒ 是引用,不是選單。
+    try:
+        import composer_state
+        _ln, at = composer_state.find_composer_line(screen, provider)
+    except Exception:  # noqa: BLE001
+        at = None
+    if at is not None:
+        raw = (screen or "").splitlines()
+        nav_raw = max((i for i, ln in enumerate(raw) if _NAV.search(_BOX.sub(" ", ln))), default=-1)
+        if at > nav_raw:
+            return False
+    return True
 
 
 def screen_hash(screen):
@@ -233,6 +270,28 @@ Rules:
 </screen>"""
 
 
+_OPT_NUM = re.compile(r"^\s*(?:[❯›>▶●○◯◉▌]\s*)*\(?([0-9]{1,2})[.)]\s")
+
+
+def _bottom_run(rows, opts):
+    """最靠近底部那一串編號選項:從最後一個編號往回數,依序找 n-1、n-2 … 到 1(第 4 輪審查)。
+    不看行距 —— 選項折行、底下有說明行都會拉開間隔。數不出來(字母選項、編號不連續)⇒ 照舊全部。"""
+    def num(i):
+        m = _OPT_NUM.match(rows[i][1])
+        return int(m.group(1)) if m else None
+    want = num(opts[-1])
+    if want is None:
+        return opts
+    run = [opts[-1]]
+    for i in reversed(opts[:-1]):
+        if want <= 1:
+            break
+        if num(i) == want - 1:
+            run.append(i)
+            want -= 1
+    return list(reversed(run)) if want == 1 else opts
+
+
 def menu_block(screen):
     """只送選單那一塊給小模型(a seat 10-13 14:1x 防提示注入:畫面上方的檔案內容、網頁、別席訊息不能影響選哪一個)。
     有框(╭)⇒ 從包住選項的那個框頂往下;沒框 ⇒ 第一個選項往上最多 HEAD_LINES 行(問題與指令)。"""
@@ -240,8 +299,26 @@ def menu_block(screen):
     rows = [(ln, _BOX.sub(" ", ln).rstrip()) for ln in raw]
     rows = [(r, c) for r, c in rows if c.strip() or "╭" in r or "╰" in r]
     opts = [i for i, (_r, c) in enumerate(rows) if _OPT.match(c)]
+    nav = [i for i, (_r, c) in enumerate(rows) if _NAV.search(c)]
+    # 第 3 輪審查:上面歷史裡有「1. 2.」清單時,游標選單不能因此走編號分支(會從最早的編號一路送到底)
+    #   ⇒ 操作說明在最後一個編號下面、而且離它超過 OPT_BOTTOM_SLACK 行 ⇒ 是游標選單
+    #   (第 4 輪:Copilot 有框編號選單的頁尾也寫「↑↓ keys and Enter」,緊貼在選項下面,那仍是編號選單)
+    #   (第 5 輪:游標選單很短、上面緊貼歷史編號清單時,距離不到 SLACK ⇒ 另看兩者之間有沒有「帶游標、不是編號」的行)
+    #   (第 6 輪:`nav[-1] > opts[-1]` 與 `not _OPT.match` 照定義不會改變結果,留著當保險、讓意圖看得出來)
+    if opts and nav and nav[-1] > opts[-1] and (nav[-1] - opts[-1] > OPT_BOTTOM_SLACK or any(
+            _CURSOR.match(rows[i][1]) and not _OPT.match(rows[i][1]) for i in range(opts[-1] + 1, nav[-1]))):
+        opts = []
+    if opts:
+        opts = _bottom_run(rows, opts)
     if not opts:
-        return "\n".join(c for _r, c in rows[-SCAN_LINES:] if c.strip())
+        # 游標選單(沒編號):同一條護欄 —— 只送操作說明那一行往上的選項,再往上最多 HEAD_LINES 行(第 2 輪審查)
+        if not nav:
+            return "\n".join(c for _r, c in rows[-SCAN_LINES:] if c.strip())
+        first = nav[-1]
+        while first - 1 >= 0 and nav[-1] - (first - 1) <= 8 and (
+                _OPT_ROW.match(rows[first - 1][1]) or _CURSOR.match(rows[first - 1][1])):
+            first -= 1
+        return "\n".join(c for _r, c in rows[max(0, first - HEAD_LINES):nav[-1] + 1] if c.strip())
     first = opts[0]
     start = max(0, first - HEAD_LINES)
     for i in range(first, max(-1, first - SCAN_LINES), -1):     # 往上找最外層的框頂(Copilot:指令在框裡)

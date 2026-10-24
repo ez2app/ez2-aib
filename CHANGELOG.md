@@ -4,6 +4,37 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.49
+
+- **Seat titles in the right-click menu drop invisible characters**: right-to-left overrides and zero-width characters are removed before a title is drawn, so a name can no longer be shown reversed or made to look like another seat; emoji are kept.
+- **"Close this seat" checks more before it offers itself**: the row's close cell has to be a real range and the window id has to look like a tmux window, otherwise the item is not shown; the menu's column value only accepts 1–4 digits.
+- **The right-click menu waits at most 3 seconds for its readiness check**: if one provider's settings are slow to read, the menu still opens and that seat explains the problem itself when opened; saving a key is not affected by the limit.
+
+## 0.1.48
+
+- **Right-click "Close this seat"**: the seat list's right-click menu can now close the seat under the pointer; it checks that the window is still the one you clicked before closing, and does nothing if it has changed.
+- **Every provider's "skip approvals" mode is now pinned by a test**: Claude, Codex, agy, Copilot and Grok each start with their own flag in dgrs mode (and none in safe mode) across new, resumed, forked and relaunched seats; API-key and bot seats are listed as having no such flag.
+- **OpenRouter / TypeSafe seats start when a model is given and effort is turned off**: previously they stopped at once with an internal variable error.
+
+## 0.1.47
+
+- **Opening a folder in agy / Grok no longer stalls on the trust question**: the folder trust prompt is answered for the folder you opened (never for `/`, your home folder or its parent), and only the menu itself is sent to the small model that picks the answer.
+- **The right-click "New AI" menu says what is missing before you open**: providers billed by API key show "missing key — click to add" and open `aib secret ask` (masked box + Touch ID) instead of a window that dies at once; bots that are not connected yet say which step is missing.
+- **A new seat's onboarding message is marked read once the seat replies "ready"**, so the status bar no longer shows a stale unread DM.
+- **Usage probes clean up after themselves**: temporary probe folders are removed from the agy / Grok trusted-folder lists.
+
+## 0.1.46
+
+- **Opening another AI from the right-click menu works again**: one-shot resume flags (`AIB_REVIVE_SESSION_UUID` and friends) no longer leak into the tmux server, so a new seat is not mistaken for a resume of an old conversation.
+- **The (x) soft-close entry actually closes the seat**: confirming (x) now re-checks only whether the seat moved while the menu was open (and that its CPU is idle), instead of the 300-second rule meant for [X]. [X] is unchanged.
+- **`aib plugins license` keeps add-ons you already have**: if the licence installed on this machine covers more add-ons than the one fetched, it is no longer overwritten.
+- **Touch ID approval text filters more invisible characters**: C1 control characters, U+00AD and U+061C are removed before the text is shown.
+
+## 0.1.45
+
+- **New `aib plugins install <name>[@version]`, `aib plugins catalog`, `aib plugins license <addon>`**: members can get add-ons straight from the ez2.page catalog. aib checks the size and sha256 the catalog lists, unpacks with limits (archive bombs, links and odd paths are refused), and installs only if the package's own signature checks out; nothing unsigned is ever loaded. Paid add-ons need this machine to be bound to ez2.page and the account to own the add-on. A newer installed version is not downgraded unless you name the version. `plugins license` fetches the licence your account owns and installs it the same way as `aib license install`. Results use the contract codes in `contracts/page-api.json` (`plugins.*`); `--json` gives the same receipt.
+- **Seat panel opens large transcripts much faster**: the seat panel and its pending check now read only the end of the transcript, going further back only when needed (a 243 MB transcript went from about 2 s to 0.2 s).
+
 ## 0.1.44
 
 - **New `aib create submit / status / list` (submission service not open yet)**: send a finished creation package (a `.tar` made by an add-on or skill) for review, then check its status or list what you have sent. aib checks the package locally first (paths, file types, manifest hashes, size of each member), asks for one Touch ID before sending, and prints the server's review state. Until the submission service opens, `submit` answers `creator_unsupported` and nothing is stored. Results use the contract codes in `contracts/page-api.json` (`creator.*`); `--json` gives the same receipt.

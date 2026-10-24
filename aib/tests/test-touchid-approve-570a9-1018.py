@@ -15,8 +15,9 @@ T8  Touch ID 沒過 ⇒ rc 2、卡不動;這台沒有 Touch ID 路 ⇒ rc 2、�
 T9  終端機三條件全到 ⇒ 照舊走打 uid,不叫 Touch ID
 T10 一次只核一件:別席正開著 Touch ID 視窗(鎖被拿著)⇒ 這次 rc 2、why=busy、不叫第二個視窗、卡不動;放掉後照常能核
 T11 標題裡的方向控制 / 零寬字(U+202E 之類)進視窗前就拿掉
+T12 C1 控制字元(\x80-\x9f)換空白;軟連字號 U+00AD、阿拉伯字母標記 U+061C 拿掉;\xa0 起照留
 刀(複本):K1 拿掉 nonce 比對 ⇒ T2 紅;K2 不看 Touch ID 結果 ⇒ T8 紅;K3 拿掉 AIB_TOUCHID=0 ⇒ T6 紅;
-         K4 拿掉 gate.held 判斷 ⇒ T10 紅
+         K4 拿掉 gate.held 判斷 ⇒ T10 紅;K5 _CTRL 不含 C1 ⇒ T12 紅
 """
 import importlib.util
 import inspect
@@ -111,6 +112,11 @@ class Script(unittest.TestCase):
 
     def test_T11_invisible_chars_removed(self):
         self.assertEqual(TA.clean("Demo\u202egnp.exe\u200b\u2066x\ufeff"), "Demognp.exex")
+
+    def test_T12_c1_and_soft_marks(self):
+        self.assertEqual(TA.clean("a\x85b\x9bc\x80d\x9fe\u2028f"), "a b c d e f")
+        self.assertEqual(TA.clean("De\u00admo\u061cx"), "Demox")
+        self.assertEqual(TA.clean("é中\xa0z"), "é中\xa0z")                 # \xa0 起不是控制字元,照留
 
     def _real(self, ctx_js, wait=5):
         nonce = "cd" * 16
@@ -300,6 +306,10 @@ class Knife(unittest.TestCase):
 
     def test_K4_no_one_at_a_time(self):
         self._cut("tools/project/new_project.py", "if gate.held else", "if True else", "Approve.test_T10_one_window_at_a_time")
+
+
+    def test_K5_no_c1(self):
+        self._cut("src/cockpit/touchid_approve.py", '\\\\x7f-\\\\x9f', '\\\\x7f', "Script.test_T12_c1_and_soft_marks")
 
 
 if __name__ == "__main__":

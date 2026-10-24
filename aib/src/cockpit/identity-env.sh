@@ -159,9 +159,22 @@ AIB_ENV_DOOR_BASICS=(
 
 AIB_ENV_DOOR_PREFIXES=( EZ2_ ACB_ AIB_ )
 
+# ★ 10-24(@abb89,右鍵另開 AI 實測):只給「這一次開席」用的接回 / 分出旗標,不准過門進 tmux 伺服器。
+#   艙重開時 cabin_restart 帶 AIB_REVIVE_SESSION_UUID=<舊席> 跑 aib;若這一次剛好生出 tmux 伺服器,
+#   它就留在伺服器全域環境 ⇒ 之後每個 run-shell(右鍵另開 AI)都想原地復活那一席,活著就被擋,
+#   右鍵開任何一家都失敗、畫面沒有一個字。新席要的接回值走 AIB_SEAT_ENV 明寫,不靠伺服器環境。
+#   不放進 AIB_CARRIER_SCRUB_VARS:那份也管窗格指令,這幾個在 aib 本行程裡還要讀。
+AIB_ENV_DOOR_DENY_VARS=(
+  AIB_REVIVE_SESSION_UUID
+  AIB_RESUME_SESSION_UUID
+  AIB_RESUME_UUID
+  AIB_RESUME_FORCE
+  AIB_FORK_FROM_SESSION_UUID
+)
+
 aib_env_door_is_scrubbed() {
   local n want="$1"
-  for n in "${AIB_CARRIER_SCRUB_VARS[@]}"; do
+  for n in "${AIB_CARRIER_SCRUB_VARS[@]}" "${AIB_ENV_DOOR_DENY_VARS[@]}"; do
     [ "$n" = "$want" ] && return 0
   done
   return 1
