@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // ESM 載入鉤子(舊版 Node 沒有 registerHooks 時,audit.cjs 才用 module.register 掛上):每個 file: 模組記一筆 open,跟 require() 一樣進鑰匙。
-import { appendFileSync, readFileSync, realpathSync, existsSync } from 'node:fs';
+import { openSync, writeSync, fstatSync, readFileSync, realpathSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, basename } from 'node:path';
@@ -11,7 +11,21 @@ const ESC_RE = new RegExp('[' + Object.keys(ESC).join('') + ']', 'g');
 function emit(o) {
   o.pid = process.pid;
   const s = JSON.stringify(o).replace(ESC_RE, c => ESC[c]);
-  try { appendFileSync(TRACE, s + '\n'); } catch (e) { /* 寫不進 ⇒ 核心判量不到 */ }
+  try { writeTrace(Buffer.from(s + '\n')); } catch (e) { /* 寫不進 ⇒ 核心判量不到 */ }
+}
+// 10-24(@044e0):同 audit.cjs —— 留一個 O_APPEND fd、每筆 writeSync,不再每筆開關檔(APFS 放大約 76 倍);dev+ino 對不上就重開
+let traceFd = null, traceId = null;
+function writeTrace(buf) {
+  if (traceFd !== null) {
+    try { const st = fstatSync(traceFd); if (st.dev + ':' + st.ino !== traceId) traceFd = null; } catch (e) { traceFd = null; }
+  }
+  if (traceFd === null) {
+    traceFd = openSync(TRACE, 'a');
+    const st = fstatSync(traceFd);
+    traceId = st.dev + ':' + st.ino;
+  }
+  let off = 0;
+  while (off < buf.length) off += writeSync(traceFd, buf, off, buf.length - off);
 }
 // 10-07:import 的檔所屬的最近一個 package.json("type" / "exports" 由它決定;Node 內部讀,公開 fs 看不到)
 const scopeSeen = new Set();
