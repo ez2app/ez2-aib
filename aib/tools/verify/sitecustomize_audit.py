@@ -585,6 +585,7 @@ _LOOPBACK = frozenset(("localhost", "127.0.0.1", "::1", "::ffff:127.0.0.1"))
 
 def _note_bind(sock):
     try:
+        _OWN_SOCKETS[:] = [r for r in _OWN_SOCKETS if r() is not None]   # 只 bind 不 connect 的測試也不讓清單一直長
         _OWN_SOCKETS.append(_weakref(sock))
     except Exception:  # noqa: BLE001 - 不能弱參照 ⇒ 不記,connect 時算外部(安全側)
         pass
