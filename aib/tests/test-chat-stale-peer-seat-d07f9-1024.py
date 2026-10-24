@@ -167,7 +167,8 @@ class Stale(unittest.TestCase):
         self.addCleanup(shutil.rmtree, td, True)
         (td / "root").mkdir()
         env = dict(os.environ, HOME=str(td / "home"), EZ2_AIB_STATE_ROOT=str(td / "home" / ".ez2-aib"))
-        for k in ("AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR", "AIB_CHAT_RELAYS"):    # 外面(aib test)帶進來的不准漏進子行程
+        for k in ("EZ2_AIB_HOME", "EZ2_AIB_SECRETS_DIR", "AIB_NOSTR_MAP",          # @abb89 #308:外面帶進來的不准漏進子行程
+                  "AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR", "AIB_CHAT_RELAYS"):
             env.pop(k, None)
         r = subprocess.run([VPY, "-c", PROBE, str(Path(repo) / "src" / "cockpit"), str(td / "root"), case],
                            capture_output=True, text=True, env=env, timeout=60)
