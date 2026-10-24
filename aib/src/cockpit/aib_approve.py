@@ -569,7 +569,7 @@ def main(argv=None, out=None, env=None, stdin=None):
         return 2
 
     def emit(d, rc):
-        out.write((json.dumps(d, ensure_ascii=False) if o.json or not isinstance(d, dict) else
+        out.write((json.dumps(d) if o.json or not isinstance(d, dict) else
                    "\n".join("%s: %s" % (kk, vv) for kk, vv in d.items())) + "\n")
         return rc
 
@@ -602,14 +602,14 @@ def main(argv=None, out=None, env=None, stdin=None):
             return emit(r["items"], 0)
         for i in r["items"]:
             out.write("%s  %s  %s  %s  %s\n" % (i["code"], i["site"], i["user_login"], i["ip"], i["nonce"]))
-        out.write("invalid: %d  errors: %s\n" % (r["invalid"], json.dumps(r["errors"], ensure_ascii=False)))
+        out.write("invalid: %d  errors: %s\n" % (r["invalid"], json.dumps(r["errors"])))
         return 0
     if o.cmd == "history":
         return emit(history(env), 0)
     fn = yes if o.cmd == "yes" else no
     res, why = fn(o.nonce, env)
     d, rc = ({"nonce": o.nonce, "ok": False, "why": why}, 2) if why else ({"nonce": o.nonce, "result": res}, 0)
-    out.write(json.dumps(d, ensure_ascii=False) + "\n")  # §2b:一律一行 JSON
+    out.write(json.dumps(d) + "\n")  # §2b:一律一行 JSON;只印 ASCII(壞 nonce / 本機檔的落單代理字元在 3.9 的 stdout 會當)
     return rc
 
 

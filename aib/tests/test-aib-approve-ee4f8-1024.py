@@ -27,6 +27,7 @@ A15 IP 帶控制字、exp ≤ iat、站回 {"ok":1}、key pem 時指紋視窗佔
 A16 參數錯也印一行 JSON、stdin 不是 UTF-8、網址帶帳號 / 前置空白、站回 v≠1
 A17 yes -h 不印 bad_args、--json 放前面、網址空帳號、一站最多 50 筆、deny 403 / 502 分開、history 最近 20 筆
 A18 落單代理字元不讓指令當(壞一筆不擋別站)、站回 v=true / 1.0、剛好 exp / 時鐘誤差邊界、明寫 -- 的 nonce
+A19 命令列 nonce / history 有落單代理字元:輸出只有 ASCII;deny 回 204 不算 denied
 刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
    K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅;K8 跟轉址 ⇒ A11 紅
 """
@@ -524,6 +525,19 @@ class Approve(Base):
         with um.patch.object(AA, "http_call", self.site), um.patch.object(AA.time, "time", return_value=NOW):
             self.assertEqual(AA.main(["no", "--json", "--", dash], out=out, env=self.env), 0)
         self.assertEqual(json.loads(out.getvalue())["result"], "denied")
+
+    def test_a19_ascii_output_and_deny_2xx(self):
+        out = io.StringIO()
+        self.assertEqual(AA.main(["yes", "\udcff\udcfe"], out=out, env=self.env), 2)
+        self.assertTrue(out.getvalue().isascii(), out.getvalue())
+        self.assertEqual(json.loads(out.getvalue())["why"], "bad_nonce")
+        (self.root / "approve" / "history.jsonl").write_text(json.dumps({"result": "denied", "nonce": "\ud800"}) + "\n")
+        out = io.StringIO()
+        self.assertEqual(AA.main(["history", "--json"], out=out, env=self.env), 0)
+        self.assertTrue(out.getvalue().isascii())
+        f = self.site.add(kid=self.kid)
+        d204 = lambda m, u, h, b: (204, b"") if u.endswith("/deny") else self.site(m, u, h, b)  # noqa: E731
+        self.assertEqual(AA.no(f["nonce"], self.env, http=d204, now=NOW), ("site_rejected", None))
 
     def test_a13_http_only_https(self):
         import unittest.mock as um
