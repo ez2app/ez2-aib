@@ -103,7 +103,10 @@ class Auto(Base):
         sw = self.switch()
         self.assertTrue(sw and sw.get("on") and sw.get("asked"), sw)
         self.assertEqual(oct((self.b.chat / "enabled.json").stat().st_mode & 0o777), "0o600")
-        self.assertFalse((self.b.chat / "profile.json").exists(), "不准替主人設名字(名字會公開)")
+        # 10-24 第 9 條:答「要」⇒ 用電腦名公開;名字會公開,所以問句裡要先讓主人看到是哪個名字
+        prof = json.loads((self.b.chat / "profile.json").read_text())
+        self.assertTrue(prof.get("display_name"), prof)
+        self.assertIn(prof["display_name"], out, "問句沒先顯示要公開的名字")
         rc, out = run_tty(self.b, ["auto"], "n")
         self.assertNotIn("[y/N]", out, "答過就不再問")
 
