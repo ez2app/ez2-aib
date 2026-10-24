@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
 """在線 / 名片 / 空間快照寄給對方時,聯絡人快照記的是舊席(10-24 一台會員機:對方 10-20 換艙,名冊只剩新席;
-Pro 的快照還記著舊席 ⇒ resolve 一直 no_seat、在線四天沒送到,兩邊都看不出來)。
+一台開發機的快照還記著舊席 ⇒ resolve 一直 no_seat、在線四天沒送到,兩邊都看不出來)。
 
 P1 快照第一席查不到 ⇒ 改抓名冊第一席、查到就用;快照 seats 整份換成名冊目前公開的席(舊席拿掉)
 P2 快照那席查得到 ⇒ 不抓名冊(不多連網)
 P3 名冊也沒有可用的席 ⇒ 照舊回失敗、快照不動
 (要 AIB_TEST_NOSTR_VENV;chat_nostr 只在 venv 裡 import 得到。不連網:resolve 與名冊都換成假的)
-S1 一席一把(10-24 Pro:@cfd04 換過人格,同一席三把 active ⇒ 名冊重複席、別台整份拒收):同一席先綁人格 A、再換 B ⇒
+S1 一席一把(10-24 一台開發機:@cfd04 換過人格,同一席三把 active ⇒ 名冊重複席、別台整份拒收):同一席先綁人格 A、再換 B ⇒
    sending_seats 只給 B 那把;名冊這一席只出現一次、npub = B;A 的金鑰仍 active(收件照認、人格換回來照用)
 S2 人格換回 A ⇒ sending_seats 換回 A 那把(不產新的)
 S3 名冊組完的席碼不重複(就算對照表有兩把同席、同人格的 active,也只取第一把)
@@ -146,6 +146,25 @@ class OneKeyPerSeat(unittest.TestCase):
         NK.live_seats = lambda home=None, env=None: self.live("aaaa11")
         self.assertEqual(CH.pick_seat("6ddf", self.env), "cfd04")
 
+    def test_s8_bad_display_shape(self):
+        # seat-display.json 合法 JSON 但型別錯(@abb89 #297 r2):不准丟例外(寄件走 sending_seats ⇒ 會讓收發常駐整個掛),當沒綁
+        home = self.td / "bad"
+        d = home / "instances" / "20261024-000000-6ddf" / "seats"
+        d.mkdir(parents=True)
+        (d / "w1.json").write_text(json.dumps({"schema": "aib-seat/v1", "session_uuid": "00000000-0000-0000-0000-0000000cfd04",
+                                               "role": "root"}))
+        (home / "identity").mkdir()
+        sd = home / "identity" / "seat-display.json"
+        for bad in ({"display": ["cfd04"]}, {"display": {"cfd04": "aaaa11"}}, {"display": {"cfd04": 7}}, ["x"]):
+            sd.write_text(json.dumps(bad))
+            try:
+                got = NK.live_seats(home=str(home))
+            except Exception as err:  # noqa: BLE001 — 刀要看到 AssertionError,不是原本的例外
+                self.fail("型別錯的 seat-display.json 讓 live_seats 丟 %s:%r" % (type(err).__name__, bad))
+            self.assertEqual([(s["seat5"], s["persona_uid"], s["name"]) for s in got], [("cfd04", "s-cfd04", None)], bad)
+        sd.write_text(json.dumps({"display": {"cfd04": {"persona_uid": "aaaa11", "display_name": "甲"}}}))
+        self.assertEqual([(s["persona_uid"], s["name"]) for s in NK.live_seats(home=str(home))], [("aaaa11", "甲")])
+
     def test_s4_pair_uses_current_persona(self):
         import chat_pair as CP
         NK.sync_seats(self.live("aaaa11"), self.env)
@@ -260,6 +279,10 @@ class Knife(unittest.TestCase):
         self._cut("src/cockpit/chat_human.py", 'keyed = {e["seat5"] for e in NK.sending_seats(env)}',
                   'keyed = {e["seat5"] for e in NK.read_map(env)["seats"] if e.get("status") == "active"}',
                   "OneKeyPerSeat.test_s7_human_pick_needs_current_key")
+
+    def test_k10_display_type_check(self):        # r2:拿掉型別檢查 ⇒ AttributeError 冒出來
+        self._cut("src/cockpit/nostr_keys.py", "        ent = ent if isinstance(ent, dict) else {}", "        ent = ent or {}",
+                  "OneKeyPerSeat.test_s8_bad_display_shape")
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k8_sender_first_active(self):        # m07
