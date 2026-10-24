@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""席金鑰跟著狀態根走(10-24 fishmac:只設 EZ2_AIB_STATE_ROOT 跑 aib chat prepare,席位讀暫存根、金鑰寫真的家目錄 ⇒
+"""席金鑰跟著狀態根走(10-24 第二台 Mac:只設 EZ2_AIB_STATE_ROOT 跑 aib chat prepare,席位讀暫存根、金鑰寫真的家目錄 ⇒
 原本 4 席的替代金鑰全被封存、轉接程式隨即重發新的,名冊換了公鑰)。
 
 R1 根:沒有明寫 EZ2_AIB_SECRETS_DIR / AIB_NOSTR_MAP 時,金鑰夾與對照表跟 aib_secrets.secrets_dir 同一個根

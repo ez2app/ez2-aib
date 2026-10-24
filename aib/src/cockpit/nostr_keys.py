@@ -155,7 +155,7 @@ MAP_VERSION = 1
 
 
 def _root(env):
-    """跟 aib_secrets.secrets_dir、live_seats 同一個根(10-24 fishmac 踩到:只設 EZ2_AIB_STATE_ROOT 跑 chat prepare,
+    """跟 aib_secrets.secrets_dir、live_seats 同一個根(10-24 第二台 Mac 踩到:只設 EZ2_AIB_STATE_ROOT 跑 chat prepare,
     席位讀暫存根(空的)、金鑰卻寫真的家目錄 ⇒ 原本 4 席的替代金鑰全被封存)"""
     root = env.get("EZ2_AIB_STATE_ROOT") or env.get("EZ2_AIB_HOME")
     if root:
