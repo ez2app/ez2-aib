@@ -61,15 +61,23 @@ def _emit(obj):
 #   一天 3500 支次測試 ⇒ Python 一天寫 1.1 TB(10-23→24 系統 disk writes 報告)。
 #   改成每個行程留一個 O_APPEND 的 fd、每筆 os.write 一次。整行一次 write,多行程同時追加不會交錯。
 #   ★ 寫之前比 fstat 的 (dev, ino):測試自己 closerange 後又開檔拿到同一個號碼 ⇒ 對不上就重開,絕不寫進別人的檔。
-#   ★ #323 r2:
-#     - 不用鎖(H1:fork 當下別的執行緒拿著鎖 ⇒ 子行程在 os._exit / atexit 寫結束紀錄時永久卡死;L1 信號重入同理)。
-#       快取是一個 tuple、整個換,讀寫都是單一參照;兩條執行緒同時重開最多多開一個 fd,不影響正確性。
-#     - 重開拿到 0–2 號 ⇒ 寫完就關、不快取(H2:daemonize 先 closerange 再 open(devnull) + dup2 到 0/1/2,
-#       快取住低號碼會讓程式的 devnull 位移、追蹤檔被接到 stdout / stderr)。
-#     - 寫失敗(號碼被測試拿去唯讀開同一個追蹤檔 ⇒ EBADF)⇒ 清快取、重開再寫一次(L2)。
-#     - EZ2_VERIFY_TRACE 中途換了 ⇒ 舊 fd 身分還對得上才關(L3)。
+#   ★ #323 r2 / r3:
+#     - 不用鎖(fork 當下別的執行緒拿著鎖 ⇒ 子行程在 os._exit / atexit 寫結束紀錄時永久卡死;信號重入同理)。
+#       快取是一個 tuple、整個換,讀寫都是單一參照。
+#     - 重開拿到 0–2 號 ⇒ 先佔著、繼續開到 > 2 的號碼、快取那個,再把佔位的低號碼關掉(不載 fcntl)。
+#       daemonize(closerange 後 open(devnull) + dup2 到 0/1/2)的 devnull 照樣拿到 0;一開始 0–2 就關著的行程
+#       也不會退回每筆開關檔。
+#     - 寫失敗只有 EBADF(號碼被測試拿去、例如唯讀開回同一個追蹤檔)才清快取重開;其他錯誤(磁碟滿、
+#       RLIMIT_FSIZE、EIO)fd 還是我們的 ⇒ 保留快取、這筆丟掉(由 _emit 吞),不重開 —— 不然每筆漏一個 fd,
+#       也不會重寫出半行重複的 JSON。
+#     - EZ2_VERIFY_TRACE 中途換了 ⇒ 舊 fd 身分還對得上才關。
+#   已知限制(刻意不處理,窗口小 / 代價大):
+#     - 程式自己 close 了 3 號以上的某個 fd,之後追蹤重開會拿到那個最低空號(程式若假設「下一個 open 拿到它」會位移)。
+#     - 多條執行緒同時重開:輸家的 fd 漏掉(上限 = 同時寫的執行緒數 − 1;輸家不能關,別條可能正在用)。
+#     - fstat 比對到 write 之間、或重開到快取之間被換號的那幾微秒。
 #   fd 帶 O_CLOEXEC(子行程 exec 後不帶走);fork 出來的子行程沿用同一個描述(同一個檔、O_APPEND),身分照樣比對。
 _TRACE_FD = [None]          # [(路徑, fd, (st_dev, st_ino))] 或 [None]
+_EBADF = 9                  # Linux / macOS 都是 9(不為一個常數多 import errno)
 
 
 def _trace_cached(path):
@@ -98,21 +106,31 @@ def _write_all(fd, data):
         data = data[os.write(fd, data):]
 
 
+def _open_high(path):
+    """開追蹤檔,拿到 0–2 號就先佔著再開,直到 > 2;佔位的低號碼最後關掉。"""
+    held = []
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o666)
+        while fd <= 2:
+            held.append(fd)
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o666)
+        return fd
+    finally:
+        for h in held:
+            os.close(h)
+
+
 def _trace_write(path, data):
     fd = _trace_cached(path)
     if fd is not None:
         try:
             _write_all(fd, data)
             return
-        except OSError:
-            _TRACE_FD[0] = None          # 號碼還在但不能寫(被重開成唯讀等)⇒ 不關它(不是我們的了),重開
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o666)
-    if fd <= 2:
-        try:
-            _write_all(fd, data)
-        finally:
-            os.close(fd)
-        return
+        except OSError as e:
+            if e.errno != _EBADF:
+                raise                    # fd 還是我們的:保留快取,這筆丟掉
+            _TRACE_FD[0] = None          # 號碼被拿走(不是我們的了)⇒ 不關它,重開
+    fd = _open_high(path)
     try:
         st = os.fstat(fd)
         _TRACE_FD[0] = (path, fd, (st.st_dev, st.st_ino))

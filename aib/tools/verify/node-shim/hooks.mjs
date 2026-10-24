@@ -20,13 +20,23 @@ function writeTrace(buf) {
     try { const st = fstatSync(traceFd); if (st.dev + ':' + st.ino !== traceId) traceFd = null; } catch (e) { traceFd = null; }
   }
   if (traceFd !== null) {
-    try { writeAll(traceFd, buf); return; } catch (e) { traceFd = null; }   // 號碼被重開成唯讀等 ⇒ 不關它,重開(#323 r2 L2)
+    try { writeAll(traceFd, buf); return; } catch (e) {
+      if (e.code !== 'EBADF') throw e;   // 磁碟滿 / 檔案太大:fd 還是我們的,保留快取、這筆丟掉(#323 r3 M1)
+      traceFd = null;                     // 號碼被拿走 ⇒ 不關它,重開
+    }
   }
-  const fd = openSync(TRACE, 'a');
-  if (fd <= 2) { try { writeAll(fd, buf); } finally { closeSync(fd); } return; }   // 低號碼不快取(#323 r2 H2)
+  const fd = openHigh();
   const st = fstatSync(fd);
   traceFd = fd; traceId = st.dev + ':' + st.ino;
   writeAll(fd, buf);
+}
+function openHigh() {                     // 拿到 0–2 號先佔著再開,直到 > 2;佔位的最後關掉(#323 r3,同 Python 接頭)
+  const held = [];
+  try {
+    let fd = openSync(TRACE, 'a');
+    while (fd <= 2) { held.push(fd); fd = openSync(TRACE, 'a'); }
+    return fd;
+  } finally { for (const h of held) closeSync(h); }
 }
 function writeAll(fd, buf) {
   let off = 0;

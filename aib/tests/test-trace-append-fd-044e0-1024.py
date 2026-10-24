@@ -9,12 +9,18 @@ F4 Python fork:3 條執行緒狂打事件且每次寫追蹤慢 50 ms、主執行
    30 筆 exit 都在(r2 H1)
 F5 Python daemonize:closerange 後 open(devnull)+ dup2 到 1/2 ⇒ devnull 拿到 0、程式輸出不進追蹤檔(r2 H2)
 F6 Python 追蹤內容跟舊寫法(每筆開關檔)去掉 pid 後逐行相同(r2 L5)
+F9 Python 追蹤檔寫不進(RLIMIT_FSIZE ⇒ EFBIG)⇒ 300 筆事件之後指向追蹤檔的 fd ≤ 1 個(不每筆漏一個,r3 M1)
+F10 Python 一開始 fd 0 就關著 ⇒ 2000 筆事件開追蹤檔 ≤ 2 次,而且追蹤檔不佔 0 號(r3 裁 1)
 F3 Node:事件都在、開追蹤檔 ≤ 2 次(預載計數器包 fs.openSync / appendFileSync,跨平台)
 F7 Node:關掉追蹤 fd、同號碼開自己的檔 ⇒ 自己的檔沒被寫進、之後事件照樣進追蹤檔(r2 M1)
-F8 Node 沒有 registerHooks ⇒ 退回 module.register(hooks.mjs),ESM import 的檔照樣記 open(r2 M1)
+F8 Node 沒有 registerHooks ⇒ 退回 module.register(hooks.mjs),ESM import 的檔照樣記 open(r2 M1;
+   Node 沒有 module.register 了就 skip);hooks.mjs 的寫入程式跟 audit.cjs 同一份,低號碼 / EBADF 靠 F11 / F12 代表
+F11 Node 關掉追蹤 fd 與 0 號後觸發重開 ⇒ 追蹤檔不佔 0 號、接著開的 /dev/null 拿到 0(r3 L1)
+F12 Node 追蹤檔寫不進(ulimit -f + 忽略 SIGXFSZ)⇒ 指向追蹤檔的 fd ≤ 1 個(r3 M1)
 刀(複本 + run_guarded,斷言「FAIL: <目標>」且沒有 ERROR):K1 改回每筆開關檔 ⇒ F1 紅;K2 拿掉身分比對 ⇒ F2 紅;
 KH1 加回鎖 ⇒ F4 紅;KH2 低號碼也快取 ⇒ F5 紅;KL2 寫失敗不重開 ⇒ F2b 紅;KN1 Node 改回 appendFileSync ⇒ F3 紅;
-KN2 Node 拿掉身分比對 ⇒ F7 紅;K0 對照刀(只改註解)⇒ 目標照樣綠
+KN2 Node 拿掉身分比對 ⇒ F7 紅;KE / KEN 寫失敗一律重開(Python / Node)⇒ F9 / F12 紅;
+KLO / KLON 低號碼不搬高 ⇒ F10 / F11 紅;K0 對照刀(只改註解)⇒ 目標照樣綠
 """
 import json
 import os
@@ -159,6 +165,37 @@ DAEMONIZE = textwrap.dedent("""
     os.close(w)
 """)
 
+FD_COUNT = textwrap.dedent("""
+    def trace_fds():
+        st = os.stat(os.environ["EZ2_VERIFY_TRACE"])
+        n = []
+        for fd in range(0, 1024):
+            try:
+                s = os.fstat(fd)
+            except OSError:
+                continue
+            if (s.st_dev, s.st_ino) == (st.st_dev, st.st_ino):
+                n.append(fd)
+        return n
+""")
+
+EFBIG = "import json, os, resource, signal, sys\n" + FD_COUNT + textwrap.dedent("""
+    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    d = sys.argv[1]
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (4096, hard))
+    for i in range(300):
+        open(os.path.join(d, "f%d" % (i % 50)), "rb").close()
+    print(json.dumps({"fds": trace_fds(), "size": os.path.getsize(os.environ["EZ2_VERIFY_TRACE"])}))
+""")
+
+STDIN_CLOSED = COUNTER + FD_COUNT + textwrap.dedent("""
+    d = sys.argv[1]
+    for i in range(2000):
+        open(os.path.join(d, "f%d" % (i % 50)), "rb").close()
+    print(json.dumps({"opens": _N[0], "fds": trace_fds()}))
+""")
+
 DETERMINISTIC = textwrap.dedent("""
     import os, sys
     d = sys.argv[1]
@@ -254,6 +291,23 @@ class Trace(unittest.TestCase):
         self.assertNotIn("HELLO-", text, "程式的 stdout / stderr 被接到追蹤檔")
         self.assertTrue(self.opened("f1"), "daemonize 之後的事件沒進追蹤檔")
 
+    @unittest.skipUnless(hasattr(signal, "SIGXFSZ"), "沒有 RLIMIT_FSIZE / SIGXFSZ")
+    def test_f9_write_errors_do_not_leak_fds(self):
+        out = self.run_py(EFBIG)
+        self.assertLessEqual(out["size"], 4096)
+        self.assertLessEqual(len(out["fds"]), 1, "追蹤檔寫不進時漏 fd:%d 個" % len(out["fds"]))
+
+    def test_f10_stdin_closed_from_start(self):
+        script = Path(self.d, "s.py")
+        script.write_text(STDIN_CLOSED)
+        env = trace_env(self.trace, self.d)
+        p = subprocess.run(["/bin/sh", "-c", 'exec 0<&- "$0" "$@"', sys.executable, str(script), self.d],
+                           env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        out = json.loads(p.stdout.strip().splitlines()[-1])
+        self.assertLessEqual(out["opens"], 2, "0 號關著時退回每筆開關檔:%d 次" % out["opens"])
+        self.assertNotIn(0, out["fds"], "追蹤檔佔住了 0 號")
+
     def test_f6_same_content_as_old_writer(self):
         old_dir = Path(self.d, "oldverify")
         shutil.copytree(VERIFY, old_dir, ignore=shutil.ignore_patterns("__pycache__", "node-shim", "bash-shim"))
@@ -270,7 +324,9 @@ class Trace(unittest.TestCase):
         def norm(trace):
             out = []
             for e in self.events(trace):
-                for k in ("pid", "ns", "mtime_ns"):           # 時間:兩次一定不同
+                if e.get("ch") == "t0":                       # 開頭那筆帶 /tmp 目錄列表,別席同時跑會一直變(r3 M2)
+                    continue
+                for k in ("pid", "ns", "mtime_ns", "tmp"):    # 時間:兩次一定不同
                     e.pop(k, None)
                 for k in list(e):
                     if isinstance(e[k], str):
@@ -321,6 +377,35 @@ NODE_FD_REUSE = textwrap.dedent("""
 """)
 
 
+NODE_LOW_FD = textwrap.dedent("""
+    const fs = require('fs'), path = require('path');
+    const d = process.argv[2], T = process.env.EZ2_VERIFY_TRACE;
+    fs.readFileSync(path.join(d, 'f0'));
+    const ts = fs.statSync(T);
+    for (let i = 3; i < 256; i++) {
+      try { const s = fs.fstatSync(i); if (s.dev === ts.dev && s.ino === ts.ino) { fs.closeSync(i); break; } } catch (e) {}
+    }
+    fs.closeSync(0);
+    fs.readFileSync(path.join(d, 'f1'));       // 觸發重開:這時最低空號是 0
+    const nfd = fs.openSync('/dev/null', 'r');
+    let zero = null;
+    try { const s = fs.fstatSync(0); zero = (s.dev === ts.dev && s.ino === ts.ino) ? 'trace' : 'other'; } catch (e) {}
+    console.log(JSON.stringify({ devnull: nfd, zero }));
+""")
+
+NODE_EFBIG = textwrap.dedent("""
+    const fs = require('fs'), path = require('path');
+    const d = process.argv[2], T = process.env.EZ2_VERIFY_TRACE;
+    for (let i = 0; i < 300; i++) fs.readFileSync(path.join(d, 'f' + (i % 50)));
+    const ts = fs.statSync(T);
+    const fds = [];
+    for (let i = 0; i < 1024; i++) {
+      try { const s = fs.fstatSync(i); if (s.dev === ts.dev && s.ino === ts.ino) fds.push(i); } catch (e) {}
+    }
+    console.log(JSON.stringify({ fds, size: ts.size }));
+""")
+
+
 @unittest.skipUnless(NODE, "沒有 node")
 class NodeTrace(Trace):
     def run_node(self, script, *pre, env_extra=None):
@@ -355,7 +440,32 @@ class NodeTrace(Trace):
         self.assertEqual(Path(self.d, "mine.txt").read_text(), "MINE\n", "node 追蹤行寫進了測試自己的檔")
         self.assertTrue(self.opened("f1"), "fd 被重用之後 node 的事件沒有進追蹤檔")
 
+    def test_f11_node_low_fd_moved_high(self):
+        p = self.run_node(NODE_LOW_FD)
+        out = json.loads(p.stdout.strip().splitlines()[-1])
+        self.assertEqual(out["devnull"], 0, "追蹤檔佔住了 0 號:%s" % out)
+        self.assertEqual(out["zero"], "other")
+        self.assertTrue(self.opened("f1"), "重開之後的事件沒進追蹤檔")
+
+    def test_f12_node_write_errors_do_not_leak_fds(self):
+        js = Path(self.d, "s.js")
+        js.write_text(NODE_EFBIG)
+        self.trace.write_bytes(b"")
+        env = trace_env(self.trace, self.d)
+        env.pop("PYTHONPATH")
+        p = subprocess.run(["/bin/bash", "-c", "trap '' XFSZ; ulimit -f 4; exec \"$0\" \"$@\"", NODE, "--require",
+                            str(VERIFY / "node-shim" / "audit.cjs"), str(js), self.d],
+                           env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        out = json.loads(p.stdout.strip().splitlines()[-1])
+        self.assertLessEqual(out["size"], 4096)
+        self.assertLessEqual(len(out["fds"]), 1, "node 追蹤檔寫不進時漏 fd:%s" % out["fds"])
+
     def test_f8_node_module_register_hooks_mjs(self):
+        probe = subprocess.run([NODE, "-p", "typeof require('module').register"], capture_output=True, text=True,
+                               timeout=30)
+        if probe.stdout.strip() != "function":
+            self.skipTest("這版 Node 沒有 module.register(退路本來就走不到)")
         Path(self.d, "nohooks.cjs").write_text("require('module').registerHooks = undefined;\n")
         Path(self.d, "m.mjs").write_text("export const x = 1;\n")
         Path(self.d, "s.mjs").write_text("import { x } from './m.mjs';\nif (x !== 1) process.exit(3);\n")
@@ -372,6 +482,7 @@ class NodeTrace(Trace):
     test_f1_python_no_amplification = test_f2_fd_reuse_never_writes_into_test_file = None
     test_f2b_readonly_same_trace_file_not_lost = test_f4_fork_with_threads_never_hangs = None
     test_f5_daemonize_devnull_keeps_fd0 = test_f6_same_content_as_old_writer = None
+    test_f9_write_errors_do_not_leak_fds = test_f10_stdin_closed_from_start = None
 
 
 PY = "tools/verify/sitecustomize_audit.py"
@@ -386,8 +497,14 @@ KNIVES = [
      "from _thread import allocate_lock as _AL\n_KL = _AL()\n\n\ndef _trace_write(path, data):\n    with _KL:\n"
      "        return _trace_write0(path, data)\n\n\ndef _trace_write0(path, data):\n",
      "Trace.test_f4_fork_with_threads_never_hangs", False),
-    ("KH2", PY, "    if fd <= 2:\n", "    if False:\n", "Trace.test_f5_daemonize_devnull_keeps_fd0", False),
-    ("KL2", PY, "            _TRACE_FD[0] = None          # 號碼還在但不能寫", "            raise\n            # 號碼還在但不能寫",
+    ("KLO", PY, "        while fd <= 2:\n", "        while False:\n", "Trace.test_f10_stdin_closed_from_start", False),
+    ("KLO5", PY, "        while fd <= 2:\n", "        while False:\n", "Trace.test_f5_daemonize_devnull_keeps_fd0", False),
+    ("KE", PY, "            if e.errno != _EBADF:\n                raise                    # fd 還是我們的:保留快取,這筆丟掉\n",
+     "", "Trace.test_f9_write_errors_do_not_leak_fds", False),
+    ("KEN", CJS, "        if (e.code !== 'EBADF') throw e;", "",
+     "NodeTrace.test_f12_node_write_errors_do_not_leak_fds", False),
+    ("KLON", CJS, "      while (fd <= 2) {", "      while (false) {", "NodeTrace.test_f11_node_low_fd_moved_high", False),
+    ("KL2", PY, "            _TRACE_FD[0] = None          # 號碼被拿走", "            raise\n            # 號碼被拿走",
      "Trace.test_f2b_readonly_same_trace_file_not_lost", False),
     ("KN1", CJS, "    try { writeTrace(Buffer.from(s + '\\n')); }", "    try { O.appendFileSync(TRACE, s + '\\n'); }",
      "NodeTrace.test_f3_node_no_amplification", False),
