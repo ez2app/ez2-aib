@@ -175,7 +175,8 @@ class History(Base):
         p.write_text(json.dumps({"points": [{"t": now - 20, "cmd": "/Users/x/secret --token=abc", "load1": "9",
                                              "level": "\x1b[2J"}, {"t": 1e18}]}), encoding="utf-8")
         pts = self.RH.read_history(now=now)
-        self.assertEqual(pts, [{"t": now - 20, "level": None, "temp": None, "load1": None, "mem_free": None, "swap_mb": None}])
+        self.assertEqual(pts, [{"t": now - 20, "level": None, "temp": None, "load1": None, "mem_free": None, "swap_mb": None,
+                                "cpu_busy": None, "unseen_cpu": None}])     # 後兩鍵 0.1.56 unseen 加的(@044e0)
         self.assertTrue(self.RH.record_history({"level": "ok", "cells": {}}, now=now))    # 未來的點不會卡住歷史
         p.unlink()
         os.mkfifo(str(p))                                        # 換成 FIFO:不卡住
