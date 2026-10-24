@@ -10,6 +10,8 @@ G5 dry-run 不殺、留痕一行、紀錄檔 0600、不含整條指令列
 G6 鎖:同一個狀態根只有一條守門拿得到鎖
 G7 TreeCap 真行程:孫行程配置 400 MB、上限 256 ⇒ 命中的是孫行程、整棵都收掉
 G8 runner._run_one 端到端:測試配置 400 MB、AIB_TEST_MEM_CAP_MB=256 ⇒ rc 137、輸出帶 memory_cap;上限關掉 ⇒ 照常綠
+刀(複本 + run_guarded):K1 TreeCap 上限判斷拿掉 ⇒ G7 紅;K2 連兩拍確認拿掉 ⇒ G2 紅;
+K3 開發分級拿掉 ⇒ G3 紅;K4 開始時間不比 ⇒ G4 紅
 """
 import json
 import os
@@ -24,6 +26,9 @@ import time
 import unittest
 from pathlib import Path
 from unittest import mock
+
+from aib_knife_copy import knife_copy  # noqa: E402
+from aib_proc_guard import run_guarded  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -113,7 +118,7 @@ class GuardLogic(unittest.TestCase):
         sent = []
         info = table({300: (UID, 1, "Python", "2.0", 6000)})
         r = MG.kill_one(300, "1.0", info=info, sleep=lambda s: None, kill=lambda p, s: sent.append(s), uid=UID)
-        self.assertEqual(r, "changed")
+        self.assertEqual(r, "mem_pid_reused")
         self.assertEqual(sent, [])
 
     def test_g5_dry_run_log(self):
@@ -121,7 +126,7 @@ class GuardLogic(unittest.TestCase):
         g = self.guard(rows, dry_run=True, args={400: ["python3", "/x/tests/test-a.py", "--token=SECRET"]})
         g.tick()
         acted = g.tick()
-        self.assertEqual(acted[0]["action"], "dry_run")
+        self.assertEqual(acted[0]["action"], "mem_dry_run")
         self.assertEqual(self.killed, [])
         p = Path(self.tmp) / "logs" / "memguard.jsonl"
         self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o600)
@@ -203,6 +208,29 @@ class RunnerCap(unittest.TestCase):
         with mock.patch.dict(os.environ, {"AIB_TEST_MEM_CAP_MB": "0"}):
             off = runner._run_one(repo, "tests/test-small.py", env, timeout=60)
         self.assertEqual(off["rc"], 0)
+
+
+KNIVES = [
+    ("K1", "        if t[big][3] < self.cap:", "        if True:", "RealTree.test_g7_treecap_real"),
+    ("K2", "            if self.over[key] < CONFIRM_TICKS:", "            if False:",
+     "GuardLogic.test_g2_spike_then_drop_not_killed"),
+    ("K3", "            lim = self.dev_limit if is_dev(self.args[key]) else self.limit", "            lim = self.limit",
+     "GuardLogic.test_g3_dev_tier"),
+    ("K4", "        return bool(i) and i[0] == uid and i[3] == start", "        return bool(i)",
+     "GuardLogic.test_g4_pid_reuse"),
+]
+
+
+class Knife(unittest.TestCase):
+    def test_knives(self):
+        name = Path(__file__).name
+        for tag, needle, repl, target in KNIVES:
+            with self.subTest(tag):
+                with knife_copy(ROOT, "src/cockpit/memguard.py", needle, repl, tests=(name,)) as root:
+                    r = run_guarded([sys.executable, "-B", str(root / "tests" / name), target], cwd=str(root),
+                                    max_procs=40, timeout=120)
+                self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+                self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s%s" % (tag, r.stdout, r.stderr))
 
 
 if __name__ == "__main__":

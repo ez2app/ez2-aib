@@ -256,7 +256,10 @@ def _log(row, root=None):
 
 
 def kill_one(pid, start, *, info=proc_info, sleep=time.sleep, kill=os.kill, uid=None):
-    """TERM → 等 → KILL;每次送訊號前比 uid + 開始時間。回 terminated / killed / gone / changed / failed。"""
+    """TERM → 等 → KILL;每次送訊號前比 uid + 開始時間。
+    動作碼(帶 mem_ 前綴,不跟 room heat release #319 的 detail 代碼撞名):
+    mem_terminated(TERM 後結束)/ mem_killed(補 KILL)/ mem_gone(送訊號前已結束)/
+    mem_pid_reused(開始時間對不上,不送訊號)/ mem_signal_failed / mem_dry_run。"""
     uid = os.getuid() if uid is None else uid
 
     def same():
@@ -264,26 +267,26 @@ def kill_one(pid, start, *, info=proc_info, sleep=time.sleep, kill=os.kill, uid=
         return bool(i) and i[0] == uid and i[3] == start
 
     if not same():
-        return "changed"
+        return "mem_pid_reused"
     try:
         kill(pid, signal.SIGTERM)
     except ProcessLookupError:
-        return "gone"
+        return "mem_gone"
     except OSError:
-        return "failed"
+        return "mem_signal_failed"
     waited = 0.0
     while waited < TERM_WAIT_S:
         sleep(0.2)
         waited += 0.2
         if not same():
-            return "terminated"
+            return "mem_terminated"
     try:
         kill(pid, signal.SIGKILL)
     except ProcessLookupError:
-        return "terminated"
+        return "mem_terminated"
     except OSError:
-        return "failed"
-    return "killed"
+        return "mem_signal_failed"
+    return "mem_killed"
 
 
 class Guard:
@@ -320,14 +323,14 @@ class Guard:
                    "script": script_hint(pid, self.args.get(key) or [name]), "mb": mb, "limit_mb": lim,
                    "tier": "dev" if lim == self.dev_limit and lim != self.limit else "general"}
             if self.dry_run:
-                row["action"] = "dry_run"
+                row["action"] = "mem_dry_run"
             else:
                 row["action"] = kill_one(pid, start, info=self.info, sleep=self.sleep, kill=self.kill, uid=self.uid)
             _log(row, self.root)
             acted.append(row)
             seen.discard(key)
             self.over.pop(key, None)
-            if row["action"] in ("terminated", "killed", "dry_run"):
+            if row["action"] in ("mem_terminated", "mem_killed", "mem_dry_run"):
                 self.notify_fn("記憶體守門:%s %s(pid %d)吃到 %.1f GB,已%s" % (
                     name, row["script"] or "", pid, mb / 1024.0, "標記(dry-run)" if self.dry_run else "停止"))
         for k in list(self.over):
