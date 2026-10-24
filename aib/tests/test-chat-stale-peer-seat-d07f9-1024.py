@@ -19,11 +19,13 @@ S7 真人寄件選席:現在的人格還沒有鑰 ⇒ None(不拿舊人格那把
 N1 換人格後真的寄一封(兩台、本機假中繼站)⇒ 對方用名冊驗得過、收下(queued);寄件用舊人格那把就會被當陌生拒收
 N2 換人格後在線狀態也用新那把 ⇒ 好友看得到我在線(@abb89 #297 r1 m08)
 S4 手機配對給的 npub 跟名冊同一把:換過人格的席 ⇒ 配對 QR 給 B 那把,不給舊人格 A(@abb89 #297 r1)
-刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅;K9 在線挑同席第一把 ⇒ N2 紅
+刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅;K9 在線挑同席第一把 ⇒ N2 紅;K10 網路錯也改抓名冊 ⇒ P4 紅
+被 SIGTERM(外層 timeout)⇒ 先跑清理收掉轉接程式再走(#308 L1)
 """
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -37,6 +39,17 @@ from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 
 NOSTR_VENV = os.environ.get("AIB_TEST_NOSTR_VENV") or ""
+_LIVE = []                                                          # 跑到一半的 SendAfterSwitch(有開轉接程式)
+
+
+def _on_term(signum, frame):
+    """外層 timeout 送 SIGTERM ⇒ 先跑各格的清理(Box.close 收 chat_bridge / chat_nostr)再走,不留孤兒(@abb89 #308 L1)。"""
+    for t in list(_LIVE):
+        try:
+            t.doCleanups()
+        except Exception:   # noqa: BLE001
+            pass
+    os._exit(128 + signum)
 VPY = str(Path(NOSTR_VENV) / "bin" / "python") if NOSTR_VENV else ""
 HAVE_NOSTR = bool(VPY) and Path(VPY).exists() and subprocess.run(
     [VPY, "-c", "import nostr_sdk"], capture_output=True).returncode == 0
@@ -208,10 +221,13 @@ class SendAfterSwitch(unittest.TestCase):
         self.RT = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.RT)
         self.RT.Network.setUp(self)
+        _LIVE.append(self)                                          # 被 SIGTERM 也要收掉兩台轉接程式(#308 L1)
+        self.addCleanup(_LIVE.remove, self)
 
     _box = property(lambda self: self.RT.Network._box.__get__(self))
 
-    box_extra = {"AIB_CHAT_PRESENCE_TICK": "1", "AIB_CHAT_PRESENCE_GAP": "1", "AIB_CHAT_PRESENCE_EVERY": "3"}
+    box_extra = {"AIB_CHAT_PRESENCE_TICK": "1", "AIB_CHAT_PRESENCE_GAP": "1", "AIB_CHAT_PRESENCE_EVERY": "3",
+                 "AIB_CHAT_PUBLISH_EVERY": "2", "AIB_CHAT_RESUB_EVERY": "2"}   # 名冊重發 60 秒、重新訂閱 30 秒 ⇒ 2 秒(#308 L1:整支縮短)
 
     def _switched(self):
         """Andy 那一席換人格、名冊換成新那把之後 ⇒ (a, x, b, y);Bob 這時才開(沒有舊名冊快取),把 Andy 加好友。"""
@@ -223,7 +239,7 @@ class SendAfterSwitch(unittest.TestCase):
         disp.write_text(json.dumps(cur))
         new = lambda: [e["npub"] for e in NK.sending_seats(a.env()) if e["seat5"] == x]  # noqa: E731
         self.assertTrue(a.wait_for(lambda: new() and new() != old, 30), (old, new()))
-        self.assertTrue(a.wait_for(lambda: any(new()[0] in json.dumps(e) for e in self.relay.events), 90), "名冊沒換成新那把(重發有 60 秒節流)")
+        self.assertTrue(a.wait_for(lambda: any(new()[0] in json.dumps(e) for e in self.relay.events), 30), "名冊沒換成新那把")
         act = [e for e in NK.read_map(a.env())["seats"] if e["seat5"] == x and e["status"] == "active"]
         self.assertEqual(len(act), 2, "舊人格那把還 active(換回來照用)⇒ 才分得出「同席第一把」")
         b, (y,) = self._box("Bob", [("00000000-0000-0000-0000-00000000bbb2", "yyyy22", "收件席")], [True])
@@ -311,5 +327,13 @@ class Knife(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k10_network_error_falls_back(self):  # #308 L2
+        self._cut("src/cockpit/chat_nostr.py",
+                  '        if rc == 0 or (addr and res.get("why") not in ("no_seat", "no_dm_relays")):\n',
+                  "        if rc == 0:\n", "Stale.test_p4_network_error_no_roster")
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _on_term)
     unittest.main()
