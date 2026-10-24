@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,12 +40,15 @@ CRASH_FILES_MAX = 300
 GROUPS = ("seat", "aib_test", "reviewer", "headless_browser", "sandbox", "aib_core", "system", "other_app")
 SYSTEM_NAMES = frozenset(("kernel_task", "WindowServer", "launchd", "mds", "mds_stores", "mdworker", "mdworker_shared",
                           "spotlightknowledged", "corespotlightd", "backupd", "logd", "syslogd", "coreaudiod",
-                          "bluetoothd", "airportd", "softwareupdated", "fseventsd", "distnoted", "cfprefsd"))
+                          "bluetoothd", "airportd", "softwareupdated", "fseventsd", "distnoted", "cfprefsd",
+                          "spindump", "ReportCrash", "syspolicyd", "trustd", "configd", "powerd", "opendirectoryd"))
 CLI_RE = re.compile(r"(^|/)(claude|codex|agy|antigravity|copilot|grok)(\s|$)")
 TEST_RE = re.compile(r"(\baib(\.py)?\s+test\b|tools/verify/(runner|test_entry)\.py|/aib-test-|EZ2_AIB_STATE_ROOT=)")
-REVIEWER_RE = re.compile(r"/scratchpad/|/claude-\d+/")
+REVIEWER_RE = re.compile(r"/scratchpad/")
 SANDBOX_RE = re.compile(r"(aib-e2e-|e2e[-_]sandbox|sandbox-world)")
-CORE_RE = re.compile(r"(src/cockpit/|/ez2-aib/|\baib\b)")
+CORE_RE = re.compile(r"(src/cockpit/|/bin/aib(\s|$)|aib/cli\.py)")
+NAME_BAD_RE = re.compile(r"[^\w.\-+ ()]")            # 程式名 / 當機欄位只留這些字;其餘(含控制字元、路徑斜線)換成 ?
+CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 # 已知當機原因:簽名 ⇒ 代碼。不在表上的一律 unknown,只顯示,不猜原因。
 KNOWN_CRASHES = (
@@ -74,14 +78,38 @@ def state_dir(environ=None):
     return os.path.join(root, "room")
 
 
+def safe_name(s, n=40):
+    """外流的程式名 / 欄位:去控制字元與路徑字元、限長(惡意當機報告或程式名不能把跳脫序列 / 路徑帶到終端或頁面)。"""
+    return NAME_BAD_RE.sub("?", CTRL_RE.sub("", str(s or "")))[:n]
+
+
+def safe_read(path, limit):
+    """只讀一般檔(不跟 symlink、FIFO / 裝置不讀 ⇒ 不會卡住);讀不了 ⇒ None。"""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, limit).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 # ---------- 量測 ----------
 
 def measure(sampler=None):
     """machine_status 一輪 + cooldown 四級。回 dict(每格帶 state;量不到照實 unmeasured,值是 None)。"""
     import machine_status as ms
     import cooldown
-    cells, took = (sampler or ms.sample)()
-    level, _reasons = cooldown.level_of(cells)
+    try:
+        cells, took = (sampler or ms.sample)()
+        level, _reasons = cooldown.level_of(cells)
+    except Exception:  # noqa: BLE001 —— 量測壞了照樣出分組,不讓頁面空白
+        return {"level": "unmeasured", "detail": "measure_failed", "took_s": 0.0, "cells": {}}
     out = {"level": level, "took_s": round(took, 3), "cells": {}}
     for c in cells:
         if not isinstance(c, dict):
@@ -94,24 +122,34 @@ def measure(sampler=None):
 # ---------- 行程分組 ----------
 
 def list_procs(run=None):
-    """[(pid, ppid, uid, cpu, rss_kb, 程式檔名, 指令列)];ps 跑不了 ⇒ None。指令列只拿來分組,不往外送。"""
+    """[(pid, ppid, uid, cpu, rss_kb, 程式名, 指令列)];ps 跑不了 ⇒ None。指令列只拿來分組,不往外送。
+    程式名另跑一次 `ps -o ucomm=`(只有執行檔名、不帶路徑);macOS 的 comm 不在最後一欄會被截成路徑前 16 字,
+    取 basename 會變成 Go / Ce / 空字串,還可能帶出資料夾名(#317 審查 A1 / B1)。"""
     try:
-        out = (run or _run)(["ps", "-axo", "pid=,ppid=,uid=,pcpu=,rss=,comm=,args="])
+        out = (run or _run)(["ps", "-axo", "pid=,ppid=,uid=,pcpu=,rss=,args="])
+        names_out = (run or _run)(["ps", "-axo", "pid=,ucomm="])
     except Exception:  # noqa: BLE001
         return None
+    names = {}
+    for line in (names_out or "").splitlines():
+        m = re.match(r"^\s*(\d+)\s+(.*?)\s*$", line)
+        if m:
+            names[int(m.group(1))] = safe_name(m.group(2), 32)
     rows = []
     for line in (out or "").splitlines():
-        m = re.match(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s?(.*)$", line)
+        m = re.match(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s?(.*)$", line)
         if m:
-            rows.append((int(m.group(1)), int(m.group(2)), int(m.group(3)), float(m.group(4)), int(m.group(5)),
-                         os.path.basename(m.group(6)), m.group(7)))
+            pid = int(m.group(1))
+            rows.append((pid, int(m.group(2)), int(m.group(3)), float(m.group(4)), int(m.group(5)),
+                         names.get(pid, ""), m.group(6)))
     return rows
 
 
 def _is_browser_automation(name, args):
     import chrome_orphans
+    low = args.lower()
     return chrome_orphans.is_automation_main(args) or (
-        "--type=" in args and any(h in name.lower() for h in ("chrome", "chromium", "headless_shell"))
+        "--type=" in args and any(h in low.split(" --", 1)[0] for h in ("chrome", "chromium", "headless_shell"))
         and any(m in args for m in ("--headless", "--enable-automation", "--remote-debugging")))
 
 
@@ -156,8 +194,8 @@ def classify(rows, uid=None, owner_of=None):
 
     out = {}
     for pid, _ppid, puid, _cpu, _rss, name, args in rows:
-        if puid != uid:
-            out[pid] = ("system", name if puid == 0 else "")
+        if puid != uid:                                # 別的帳號(含 root):只留系統白名單裡的名字
+            out[pid] = ("system", name if name in SYSTEM_NAMES else "")
             continue
         if name in SYSTEM_NAMES:
             out[pid] = ("system", name)
@@ -225,21 +263,38 @@ def _num(cells, key):
     return v if isinstance(v, (int, float)) and c.get("state") != "unmeasured" else None
 
 
-def read_history(environ=None):
+HISTORY_KEYS = ("temp", "load1", "mem_free", "swap_mb")
+LEVELS = ("ok", "warn", "hot", "critical", "unmeasured")
+
+
+def read_history(environ=None, now=None):
+    """只收白名單欄位、數字或 None、level 在四級內、t 不在未來(檔被換成別的東西 ⇒ 不外流、也不會卡住歷史)。"""
+    now = time.time() if now is None else now
+    raw = safe_read(history_path(environ), 4 * 1024 * 1024)
     try:
-        with open(history_path(environ), encoding="utf-8") as fh:
-            d = json.load(fh)
-        pts = d.get("points") if isinstance(d, dict) else None
-        return [p for p in pts if isinstance(p, dict) and isinstance(p.get("t"), (int, float))] if isinstance(pts, list) else []
-    except (OSError, ValueError):
+        d = json.loads(raw) if raw else {}
+    except ValueError:
         return []
+    pts = d.get("points") if isinstance(d, dict) else None
+    out = []
+    for p in pts if isinstance(pts, list) else []:
+        if not isinstance(p, dict) or not isinstance(p.get("t"), (int, float)) or isinstance(p.get("t"), bool):
+            continue
+        if p["t"] > now + 60:
+            continue
+        q = {"t": float(p["t"]), "level": p.get("level") if p.get("level") in LEVELS else None}
+        for k in HISTORY_KEYS:
+            v = p.get(k)
+            q[k] = v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+        out.append(q)
+    return out[-HISTORY_MAX:]
 
 
 def record_history(m, now=None, environ=None):
     """快照順手記一點;離上一點不到 10 秒就不記。環形:只留最近 360 點。原子寫入、0600。回是否有寫。"""
     now = time.time() if now is None else now
-    pts = read_history(environ)
-    if pts and now - pts[-1]["t"] < HISTORY_STEP_S:
+    pts = [p for p in read_history(environ, now=now) if p["t"] <= now]     # 時鐘倒退:比現在新的點丟掉,照常記
+    if pts and 0 <= now - pts[-1]["t"] < HISTORY_STEP_S:
         return False
     cells = m.get("cells", {})
     pts.append({"t": round(now, 1), "level": m.get("level"), "temp": _num(cells, "cpu_temp"),
@@ -247,6 +302,10 @@ def record_history(m, now=None, environ=None):
     pts = pts[-HISTORY_MAX:]
     path = history_path(environ)
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        os.chmod(os.path.dirname(path), 0o700)
+    except OSError:
+        pass
     fd, tmp = tempfile.mkstemp(prefix=".heat-history.", dir=os.path.dirname(path))
     try:
         os.fchmod(fd, 0o600)
@@ -276,23 +335,30 @@ def _obj(body, key):
 
 def read_crash(path):
     """一份 .ips → {proc, parent, type, signal, ts, msg40}(msg40 只拿來歸類,不往外送);讀不了 ⇒ None。"""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            head = fh.read(CRASH_READ_MAX)
-    except OSError:
+    head = safe_read(path, CRASH_READ_MAX)
+    if head is None:
         return None
     first, _, body = head.partition("\n")
+    body = body.split('"threads"', 1)[0]                # 堆疊從 threads 開始,之後不看
     try:
         meta = json.loads(first)
     except ValueError:
         return None
-    if not isinstance(meta, dict):
-        return None
+    if not isinstance(meta, dict) or str(meta.get("bug_type") or "309") != "309":
+        return None                                    # 只收當機(309);Jetsam 之類不算
     exc = _obj(body, "exception")
     proc = _field(body, "procName") or str(meta.get("app_name") or meta.get("name") or "")
-    return {"proc": os.path.basename(proc)[:60], "parent": os.path.basename(_field(body, "parentProc"))[:60],
-            "type": _field(exc, "type")[:40], "signal": _field(exc, "signal")[:20],
-            "ts": str(meta.get("timestamp") or "")[:32], "msg40": _field(exc, "message").strip()[:40]}
+    if not proc:
+        return None
+
+    def token(s):
+        m = re.match(r"[A-Z][A-Z0-9_]{0,31}", s or "")
+        return m.group(0) if m else "?"
+    ts = str(meta.get("timestamp") or "")
+    return {"proc": safe_name(os.path.basename(proc)), "parent": safe_name(os.path.basename(_field(body, "parentProc"))),
+            "type": token(_field(exc, "type")), "signal": token(_field(exc, "signal")),
+            "ts": ts[:32] if re.match(r"^[0-9 :.+\-]{10,32}$", ts[:32]) else "",
+            "msg40": _field(exc, "message").strip()[:40]}
 
 
 def known_code(c):
@@ -310,10 +376,18 @@ def crashes(days=CRASH_DAYS, now=None, crash_dir=None):
     if not os.path.isdir(d):
         return {"state": "unmeasured", "detail": "crash_dir_missing", "classes": [], "files": 0}
     try:
-        files = [p for p in glob.glob(os.path.join(d, "*.ips")) if now - os.path.getmtime(p) <= days * 86400]
+        names = glob.glob(os.path.join(d, "*.ips"))
     except OSError:
         return {"state": "unmeasured", "detail": "crash_dir_unreadable", "classes": [], "files": 0}
-    files = sorted(files, key=os.path.getmtime, reverse=True)[:CRASH_FILES_MAX]
+    stamped = []
+    for p in names:                                    # 逐檔 stat:中途被系統輪替刪掉的那份略過,不整區量不到
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) and now - st.st_mtime <= days * 86400:
+            stamped.append((st.st_mtime, p))
+    files = [p for _m, p in sorted(stamped, reverse=True)[:CRASH_FILES_MAX]]
     acc = {}
     for p in files:
         c = read_crash(p)
