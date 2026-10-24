@@ -52,10 +52,95 @@ def _emit(obj):
         #   以前在這裡丟例外 ⇒ hook-error ⇒ 整支量不到。改用 \u 跳脫寫出,讀回 json.loads 得到同一個字串。
         line = json.dumps(obj, ensure_ascii=True, sort_keys=True)
     try:
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        _trace_write(path, (line + "\n").encode("utf-8"))
     except OSError:
         pass   # 10-04:觀測者不得讓被觀測物出錯(例:子行程降成一般身分寫不進 root 的追蹤檔);少的紀錄由分析端判量不到
+
+
+# 10-24(@044e0 本機效能):以前每筆 open(path, "a") → 寫 → 關。APFS 上每次關檔都把那一塊重寫一次(每筆多寫約 10 KB),
+#   一天 3500 支次測試 ⇒ Python 一天寫 1.1 TB(10-23→24 系統 disk writes 報告)。
+#   改成每個行程留一個 O_APPEND 的 fd、每筆 os.write 一次。整行一次 write,多行程同時追加不會交錯。
+#   ★ 寫之前比 fstat 的 (dev, ino):測試自己 closerange 後又開檔拿到同一個號碼 ⇒ 對不上就重開,絕不寫進別人的檔。
+#   ★ #323 r2 / r3:
+#     - 不用鎖(fork 當下別的執行緒拿著鎖 ⇒ 子行程在 os._exit / atexit 寫結束紀錄時永久卡死;信號重入同理)。
+#       快取是一個 tuple、整個換,讀寫都是單一參照。
+#     - 重開拿到 0–2 號 ⇒ 先佔著、繼續開到 > 2 的號碼、快取那個,再把佔位的低號碼關掉(不載 fcntl)。
+#       daemonize(closerange 後 open(devnull) + dup2 到 0/1/2)的 devnull 照樣拿到 0;一開始 0–2 就關著的行程
+#       也不會退回每筆開關檔。
+#     - 寫失敗只有 EBADF(號碼被測試拿去、例如唯讀開回同一個追蹤檔)才清快取重開;其他錯誤(磁碟滿、
+#       RLIMIT_FSIZE、EIO)fd 還是我們的 ⇒ 保留快取、這筆丟掉(由 _emit 吞),不重開 —— 不然每筆漏一個 fd,
+#       也不會重寫出半行重複的 JSON。
+#     - EZ2_VERIFY_TRACE 中途換了 ⇒ 舊 fd 身分還對得上才關。
+#   已知限制(刻意不處理,窗口小 / 代價大):
+#     - 程式自己 close 了 3 號以上的某個 fd,之後追蹤重開會拿到那個最低空號(程式若假設「下一個 open 拿到它」會位移)。
+#     - 多條執行緒同時重開:輸家的 fd 漏掉(上限 = 同時寫的執行緒數 − 1;輸家不能關,別條可能正在用)。
+#     - fstat 比對到 write 之間、或重開到快取之間被換號的那幾微秒。
+#     - 0–2 本來就關著、重開佔位的那幾微秒:別條執行緒 dup2 到被佔的號碼會被佔位收尾關掉;別條執行緒 fork 的子行程
+#       0–2 帶著追蹤檔。
+#     - fd 快用完(只剩 0 號空)時:佔位拿到 0、下一個 open EMFILE ⇒ 這筆事件丟掉;不漏 fd,0 號照樣空著。
+#   fd 帶 O_CLOEXEC(子行程 exec 後不帶走);fork 出來的子行程沿用同一個描述(同一個檔、O_APPEND),身分照樣比對。
+_TRACE_FD = [None]          # [(路徑, fd, (st_dev, st_ino))] 或 [None]
+_EBADF = 9                  # Linux / macOS 都是 9(不為一個常數多 import errno)
+
+
+def _trace_cached(path):
+    """快取的 fd(路徑相同、身分對得上)或 None;路徑換了 ⇒ 關掉身分還對得上的舊 fd。"""
+    c = _TRACE_FD[0]
+    if c is None:
+        return None
+    try:
+        st = os.fstat(c[1])
+        same = (st.st_dev, st.st_ino) == c[2]
+    except OSError:
+        same = False
+    if same and c[0] == path:
+        return c[1]
+    _TRACE_FD[0] = None
+    if same:
+        try:
+            os.close(c[1])
+        except OSError:
+            pass
+    return None
+
+
+def _write_all(fd, data):
+    while data:
+        data = data[os.write(fd, data):]
+
+
+def _open_high(path):
+    """開追蹤檔,拿到 0–2 號就先佔著再開,直到 > 2;佔位的低號碼最後關掉。"""
+    held = []
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o666)
+        while fd <= 2:
+            held.append(fd)
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o666)
+        return fd
+    finally:
+        for h in held:
+            os.close(h)
+
+
+def _trace_write(path, data):
+    fd = _trace_cached(path)
+    if fd is not None:
+        try:
+            _write_all(fd, data)
+            return
+        except OSError as e:
+            if e.errno != _EBADF:
+                raise                    # fd 還是我們的:保留快取,這筆丟掉
+            _TRACE_FD[0] = None          # 號碼被拿走(不是我們的了)⇒ 不關它,重開
+    fd = _open_high(path)
+    try:
+        st = os.fstat(fd)
+        _TRACE_FD[0] = (path, fd, (st.st_dev, st.st_ino))
+    except OSError:
+        os.close(fd)
+        raise
+    _write_all(fd, data)
 
 
 def _as_path(value):
@@ -1737,7 +1822,7 @@ def start():
     atexit.register(_flush_selfwrites)
     # 10-07(外部倉 pytest-xdist 實踩):os._exit 不跑 atexit ⇒ 沒有結束紀錄 ⇒ 整支量不到、每次必重跑。
     #   os._exit 是程式自己決定的結束(multiprocessing 的 fork 子行程、xdist 測試故意弄掛工作行程都走這條),
-    #   每筆讀寫紀錄都是當下寫進追蹤檔的(_emit 每筆開檔附加)⇒ 到這裡為止記的就是全部,補記結束紀錄再真的結束。
+    #   每筆讀寫紀錄都是當下寫進追蹤檔的(_emit 每筆當下就 write)⇒ 到這裡為止記的就是全部,補記結束紀錄再真的結束。
     #   被信號殺掉、直譯器崩潰仍然沒有結束紀錄,照舊量不到。
     if not getattr(os._exit, "_aib_flushing", False):
         _real_os_exit = os._exit

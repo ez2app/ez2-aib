@@ -14,7 +14,7 @@ if (TRACE && !global.__ez2_node_audit && require('worker_threads').isMainThread)
   const O = {
     appendFileSync: fs.appendFileSync, readFileSync: fs.readFileSync, readdirSync: fs.readdirSync,
     statSync: fs.statSync, existsSync: fs.existsSync, realpathSync: fs.realpathSync, openSync: fs.openSync,
-    writeFileSync: fs.writeFileSync,
+    writeFileSync: fs.writeFileSync, writeSync: fs.writeSync, fstatSync: fs.fstatSync, closeSync: fs.closeSync,
   };
   const SELF_DIR = __dirname;
   const SKIP_NAMES = new Set(['__pycache__', '.git', '.DS_Store', '.hypothesis']);   // .hypothesis:同 shadow_tracer.TOOL_CACHE_DIRS
@@ -23,7 +23,37 @@ if (TRACE && !global.__ez2_node_audit && require('worker_threads').isMainThread)
   function emit(obj) {
     obj.pid = obj.pid || process.pid;
     let s = JSON.stringify(obj).replace(ESC_RE, c => ESC[c]);
-    try { O.appendFileSync(TRACE, s + '\n'); } catch (e) { /* 寫不進追蹤檔:核心會因缺 inherit/exit 判量不到 */ }
+    try { writeTrace(Buffer.from(s + '\n')); } catch (e) { /* 寫不進追蹤檔:核心會因缺 inherit/exit 判量不到 */ }
+  }
+  // 10-24(@044e0):以前每筆 appendFileSync = 開 → 寫 → 關;APFS 每次關檔重寫整塊,追蹤實際落盤放大約 76 倍。
+  //   改成留一個 'a'(O_APPEND)fd、每筆 writeSync 一次;寫前比 fstat 的 dev+ino,號碼被測試重用就重開(同 Python 接頭)。
+  let traceFd = null, traceId = null;
+  function writeTrace(buf) {
+    if (traceFd !== null) {
+      try { const st = O.fstatSync(traceFd); if (st.dev + ':' + st.ino !== traceId) traceFd = null; } catch (e) { traceFd = null; }
+    }
+    if (traceFd !== null) {
+      try { writeAll(traceFd, buf); return; } catch (e) {
+        if (e.code !== 'EBADF') throw e;   // 磁碟滿 / 檔案太大:fd 還是我們的,保留快取、這筆丟掉(#323 r3 M1)
+        traceFd = null;                     // 號碼被拿走 ⇒ 不關它,重開
+      }
+    }
+    const fd = openHigh();
+    const st = O.fstatSync(fd);
+    traceFd = fd; traceId = st.dev + ':' + st.ino;
+    writeAll(fd, buf);
+  }
+  function openHigh() {                     // 拿到 0–2 號先佔著再開,直到 > 2;佔位的最後關掉(#323 r3,同 Python 接頭)
+    const held = [];
+    try {
+      let fd = O.openSync(TRACE, 'a');
+      while (fd <= 2) { held.push(fd); fd = O.openSync(TRACE, 'a'); }
+      return fd;
+    } finally { for (const h of held) O.closeSync(h); }
+  }
+  function writeAll(fd, buf) {
+    let off = 0;
+    while (off < buf.length) off += O.writeSync(fd, buf, off, buf.length - off);
   }
   function abs(p) {
     try {
