@@ -5190,7 +5190,7 @@
   "aib.cscope.unparsable": "{path} 解析不了 —— 不能當成它沒有 import",
   "aib.cscope.unmeasurable": "consumer_scope 量不到:{why}",
   "aib.cscope.howto": "修法:在候選樹裡跑 python3 tools/governance/consumer_scope.py --report 看它停在哪一步。",
-  "aib.cscope.escape": "要先放行:AIB_CONSUMER_SCOPE_LEGACY=1 —— 只跑原規則①②,收據的 scope 欄會寫 legacy,而 legacy 是**比較窄的舊集合**。",
+  "aib.cscope.escape": "縮不出範圍:請跑全套(aib test --all),或直接點名要跑的測試。",
   "aib.cscope.deleted": "本批刪了 {n} 支產品檔,未納入展開:{names}",
   "aib.cscope.not_product_path": "這幾支不是產品檔路徑(不在 src|tools|bin 底下):{names}",
   "aib.cscope.population": "尺母體=tests/test-*.py(tools/probes 不在內);產品母體=候選樹 git ls-files 裡 src|tools|bin 底下的檔",

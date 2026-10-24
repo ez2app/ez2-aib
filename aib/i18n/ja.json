@@ -5190,7 +5190,7 @@
   "aib.cscope.unparsable": "{path} を解析できません —— 「import なし」とみなしてはいけません",
   "aib.cscope.unmeasurable": "consumer_scope が測定できません:{why}",
   "aib.cscope.howto": "対処:候補ツリーで python3 tools/governance/consumer_scope.py --report を実行し、どこで止まったか確認してください。",
-  "aib.cscope.escape": "先に通す場合:AIB_CONSUMER_SCOPE_LEGACY=1 —— 規則①②のみ。収書の scope は legacy になり、legacy は**より狭い旧集合**です。",
+  "aib.cscope.escape": "範囲を絞れません:全体を実行する(aib test --all)か、実行するテストを指定してください。",
   "aib.cscope.deleted": "本バッチで製品ファイル {n} 本が削除され、展開対象に含めていません:{names}",
   "aib.cscope.not_product_path": "これらは製品パスではありません(src|tools|bin 配下にない):{names}",
   "aib.cscope.population": "テスト母集団=tests/test-*.py(tools/probes は含まない);製品母集団=候補ツリーの git ls-files 内 src|tools|bin 配下",

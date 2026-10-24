@@ -222,8 +222,14 @@ def changed_tests(repo, base=""):
 
     try:
         names = pick("--base", mb)                       # --head 不給 = 跟工作樹比(含沒提交的追蹤檔)
-        rc, out = _git_out(proj, "ls-files", "--others", "--exclude-standard")
+        rc, out = _git_out(repo, "ls-files", "--others", "--exclude-standard")      # 倉根列,子專案外的新檔也看得到
         new = [l.strip() for l in out.splitlines() if l.strip()] if rc == 0 else []
+        if proj != repo:
+            pre = Path(proj).resolve().relative_to(Path(repo).resolve()).as_posix() + "/"
+            outside = [n for n in new if not n.startswith(pre)]
+            if outside:                                   # 子專案外的新檔:挑不到它的消費者 ⇒ 量不到,不拿窄集合跑
+                raise RuntimeError("untracked outside subproject %s: %s" % (pre, ", ".join(outside[:5])))
+            new = [n[len(pre):] for n in new]
         info["untracked"] = len(new)
         if new:
             names += pick("--changed", "-", stdin="\n".join(new) + "\n")
@@ -239,7 +245,8 @@ def changed_tests(repo, base=""):
 
 
 def _subproject(repo):
-    """目前目錄往上走到倉根,第一個有 tests/ 的資料夾;在倉根或倉外 ⇒ 倉根本身。"""
+    """目前目錄往上走到倉根,第一個自帶 tools/verify/select_changed.py 的資料夾(= 倉裡的 aib 套件本身,例如開源版的 aib/);
+    一般專案沒有這個記號 ⇒ 倉根本身(只看 tests/ 會把 src/foo/tests 誤當子專案、漏挑倉根的測試;#314 審查 A2)。"""
     try:
         here = Path.cwd().resolve()
         root = Path(repo).resolve()
@@ -249,7 +256,7 @@ def _subproject(repo):
     for d in (here, *here.parents):
         if d == root:
             break
-        if (d / "tests").is_dir():
+        if (d / "tools" / "verify" / "select_changed.py").is_file() and (d / "tests").is_dir():
             return d
     return Path(repo)
 

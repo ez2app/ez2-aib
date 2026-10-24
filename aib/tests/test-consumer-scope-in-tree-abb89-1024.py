@@ -9,8 +9,10 @@ C2 規則 3:尺 import 到被改的產品模組 ⇒ 是消費者
 C3 規則 4:改到被 source 的殼 ⇒ 往上展開到 source 它的殼
 C4 select_changed 不再丟「consumer_scope import」的量不到;改產品檔選得到 import 它的測試
 C5 四語字典都有 aib.cscope.* 的 19 個鍵
-C6 倉裡的子專案(開源版的 aib/):select_changed --repo 子專案 + 基準 ⇒ 路徑照子專案算、挑得到;
-   test_entry._subproject 從目前目錄往上找第一個有 tests/ 的資料夾,倉根 / 倉外 ⇒ 倉根
+C6 倉裡的子專案(開源版的 aib/):select_changed --repo 子專案 + 基準 ⇒ 路徑照子專案算(改到的測試本身被 r0 挑到);
+   test_entry.changed_tests 在子專案裡跑 ⇒ 回絕對路徑;_subproject 只認自帶 tools/verify/select_changed.py 的資料夾
+C7 子專案外也有改動(倉根的 install.sh 等)⇒ 量不到 rc 3(不能丟掉外面的路徑變成 0 支假綠;#314 審查 A1)
+C8 一般專案在 src/foo(有 tests/、沒有記號)底下跑 ⇒ 仍以倉根為準(#314 審查 A2)
 刀(複本):K1 把規則 3 的比對拿掉 ⇒ C2 紅
 """
 import importlib.util
@@ -21,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]          # = aib/
@@ -79,7 +82,9 @@ class InTree(unittest.TestCase):
 
     def test_c1_loads_from_this_tree(self):
         self.assertEqual(Path(self.cs.__file__).resolve(), CS.resolve())
-        self.assertFalse([p for p in sys.path if "ez2-ai-b" in p], sys.path)
+        root = str(ROOT.resolve())                         # 本樹以外的 src/cockpit 一律不准進 sys.path(含寫死家目錄的退路)
+        self.assertEqual([p for p in sys.path if p.rstrip("/").endswith("src/cockpit")
+                          and not str(Path(p).resolve()).startswith(root)], [])
 
     def test_c2_import_rule(self):
         check_c2(self, self.cs, self.repo)
@@ -116,25 +121,48 @@ class SubProject(unittest.TestCase):
     def setUp(self):
         self.top = Path(tempfile.mkdtemp(prefix="cscope-top-"))
         self.addCleanup(shutil.rmtree, self.top, True)
-        sub = _repo()                                # 做好的小倉搬進 top/aib,再在 top 建一個倉
+        sub = _repo()                                # 做好的小倉搬進 top/aib(帶記號 tools/verify/select_changed.py),再在 top 建一個倉
         shutil.rmtree(sub / ".git")
         shutil.move(str(sub), str(self.top / "aib"))
-        (self.top / "README.md").write_text("x\n", encoding="utf-8")
+        (self.top / "aib" / "tools" / "verify").mkdir(parents=True)
+        (self.top / "aib" / "tools" / "verify" / "select_changed.py").write_text("# 記號\n", encoding="utf-8")
+        (self.top / "install.sh").write_text("echo x\n", encoding="utf-8")
         _git(self.top, "init", "-q")
         _git(self.top, "add", "-A")
         _git(self.top, "commit", "-qm", "init")
-        (self.top / "aib" / "src" / "cockpit" / "widget.py").write_text("def f():\n    return 3\n", encoding="utf-8")
-        _git(self.top, "commit", "-qam", "touch")
+
+    def sel(self, *extra):
+        return subprocess.run([sys.executable, str(SEL), "--repo", str(self.top / "aib"), "--print-tests", "--base", "HEAD~1",
+                               "--no-reverse", *extra], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+
+    def touch(self, rel, body):
+        (self.top / rel).write_text(body, encoding="utf-8")
+        _git(self.top, "commit", "-qam", "touch " + rel)
 
     def test_c6_select_from_subproject(self):
-        p = subprocess.run([sys.executable, str(SEL), "--repo", str(self.top / "aib"), "--print-tests", "--base", "HEAD~1"],
-                           capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
-                           env={**os.environ, "AIB_REVERSE_ROWS_DIR": str(self.top / "none")})
+        self.touch("aib/tests/test-other.py", "print('changed')\n")
+        p = self.sel()
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
-        self.assertIn("tests/test-widget.py", p.stdout.split())
+        self.assertIn("tests/test-other.py", p.stdout.split())          # 路徑沒剝前綴 ⇒ r0 對不上、挑不到
 
-    def test_c6_subproject_lookup(self):
+    def test_c6_changed_tests_absolute(self):
+        self.touch("aib/src/cockpit/widget.py", "def f():\n    return 3\n")
         te = _load(SEL.parent / "test_entry.py", "test_entry_under_test")
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(self.top / "aib" / "src")
+        with mock.patch.object(te, "all_tests", lambda r: ["tests/test-widget.py", "tests/test-other.py"]):
+            picked, info = te.changed_tests(self.top, "HEAD~1")
+        self.assertEqual(picked, [str((self.top / "aib" / "tests" / "test-widget.py").resolve())], info)
+
+    def test_c7_change_outside_subproject_unmeasurable(self):
+        self.touch("install.sh", "echo y\n")
+        p = self.sel()
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr[-300:])
+        self.assertIn("install.sh", p.stdout)
+
+    def test_c8_subproject_lookup(self):
+        te = _load(SEL.parent / "test_entry.py", "test_entry_under_test2")
         here = os.getcwd()
         self.addCleanup(os.chdir, here)
         os.chdir(self.top / "aib" / "src")
@@ -143,6 +171,11 @@ class SubProject(unittest.TestCase):
         self.assertEqual(te._subproject(self.top), self.top)
         os.chdir(tempfile.gettempdir())
         self.assertEqual(te._subproject(self.top), self.top)
+        plain = _repo()                                  # 一般專案:src/foo 有 tests/、沒有記號 ⇒ 倉根
+        self.addCleanup(shutil.rmtree, plain, True)
+        (plain / "src" / "foo" / "tests").mkdir(parents=True)
+        os.chdir(plain / "src" / "foo")
+        self.assertEqual(te._subproject(plain), plain)
 
 
 class Knives(unittest.TestCase):

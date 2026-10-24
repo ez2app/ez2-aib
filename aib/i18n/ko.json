@@ -5190,7 +5190,7 @@
   "aib.cscope.unparsable": "{path} 를 해석할 수 없습니다 —— 'import 없음'으로 간주해서는 안 됩니다",
   "aib.cscope.unmeasurable": "consumer_scope 가 측정할 수 없습니다: {why}",
   "aib.cscope.howto": "조치: 후보 트리에서 python3 tools/governance/consumer_scope.py --report 를 실행해 어디서 멈췄는지 확인하세요.",
-  "aib.cscope.escape": "그래도 진행하려면: AIB_CONSUMER_SCOPE_LEGACY=1 —— 규칙①②만 실행하며 수령증의 scope 는 legacy 가 되고, legacy 는 **더 좁은 예전 집합**입니다.",
+  "aib.cscope.escape": "범위를 좁힐 수 없습니다: 전체를 실행하거나(aib test --all) 실행할 테스트를 지정하세요.",
   "aib.cscope.deleted": "이 배치에서 제품 파일 {n}개가 삭제되어 확장에 포함하지 않았습니다: {names}",
   "aib.cscope.not_product_path": "이것들은 제품 경로가 아닙니다(src|tools|bin 아래가 아님): {names}",
   "aib.cscope.population": "검사 모집단=tests/test-*.py(tools/probes 제외); 제품 모집단=후보 트리 git ls-files 의 src|tools|bin 아래 파일",

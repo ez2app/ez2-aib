@@ -5190,7 +5190,7 @@
   "aib.cscope.unparsable": "{path} does not parse -- it must not count as 'has no imports'",
   "aib.cscope.unmeasurable": "consumer_scope cannot measure: {why}",
   "aib.cscope.howto": "Fix: run python3 tools/governance/consumer_scope.py --report in the candidate tree to see where it stopped.",
-  "aib.cscope.escape": "To proceed anyway: AIB_CONSUMER_SCOPE_LEGACY=1 -- rules 1 and 2 only; the receipt is stamped scope=legacy, and legacy is the NARROWER old set.",
+  "aib.cscope.escape": "Cannot narrow the set: run the full suite (aib test --all) or name the tests to run.",
   "aib.cscope.deleted": "{n} product files were deleted in this batch and were not expanded: {names}",
   "aib.cscope.not_product_path": "These are not product paths (not under src|tools|bin): {names}",
   "aib.cscope.population": "Ruler population = tests/test-*.py (tools/probes excluded); product population = files under src|tools|bin in the candidate tree's git ls-files",
