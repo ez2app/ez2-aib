@@ -649,9 +649,9 @@ class Sender(object):
         if tries is None:
             tries = self.rv_try = {}
         n, at = tries.get((tgt, kind), (0, 0))
-        if n and now - at < min(PRESENCE_GAP_S * 2 ** (n - 1), REVOKE_BACKOFF_MAX_S):   # 送不到 ⇒ 退避重試,不設上限
+        if now - at < revoke_wait(n):                                   # 送不到 ⇒ 退避重試,不設上限
             return False
-        tries[(tgt, kind)] = (n + 1, now)
+        tries[(tgt, kind)] = (min(n + 1, 32), now)
         addr = await self._first_seat_addr(tgt)
         rc, res = await self._resolve(addr) if addr else (2, {})
         if rc != 0:
@@ -795,14 +795,14 @@ class Sender(object):
             if sp in ("island", "room"):                                # 空間分享是另一條(第 34 節 v2)
                 if (shared.get(tgt) or {}).get("space") != sp:          # 先記意圖:升級後第一次也算,降級才知道要撤回
                     GF.note_shared_sent(self.root, tgt, "space", sp)
-                    getattr(self, "rv_try", {}).pop((tgt, "space"), None)   # 等級變了 ⇒ 下次撤回從頭退避
+                getattr(self, "rv_try", {}).pop((tgt, "space"), None)   # 回到分享範圍 ⇒ 下次撤回從頭退避
                 await self._push_room(tgt, owner, mine_seats[0], now)
             lvl = CR.share_level(tgt)
             if lvl == "off":
                 continue
             if (shared.get(tgt) or {}).get("share") != lvl:
                 GF.note_shared_sent(self.root, tgt, "share", lvl)
-                getattr(self, "rv_try", {}).pop((tgt, "share"), None)
+            getattr(self, "rv_try", {}).pop((tgt, "share"), None)
             rows = SP.presence([e["seat5"] for e in mine_seats], with_status=(lvl == "status"))
             for r, e in zip(rows, mine_seats):
                 r["cabin"] = e.get("cabin") or "main"
@@ -926,6 +926,18 @@ UNCONFIRMED_TICK_S = 600
 
 ROOM_GAP_S = float(os.environ.get("AIB_CHAT_ROOM_GAP") or 600)          # 房間快照同一位最少間隔(第 34 節)
 REVOKE_BACKOFF_MAX_S = 3600                                                 # 撤回送不到(對方名冊沒了)退避上限;一直試到送到為止
+
+
+def revoke_wait(n):
+    """撤回第 n 次沒送到後要等幾秒:GAP·2^(n-1),封頂 1 小時;指數先封頂,n 再大也不溢位。"""
+    return 0 if n <= 0 else min(PRESENCE_GAP_S * 2 ** min(n - 1, 20), REVOKE_BACKOFF_MAX_S)
+
+
+def sent_at(rumor, now=None):
+    """rumor 的寄出時間(不亂數);比現在快超過 GF.FUTURE_SKEW_S ⇒ 當成現在(寄件端時鐘壞掉 / 故意填未來,不准卡住撤回)。"""
+    now = int(time.time() if now is None else now)
+    t = rumor.created_at().as_secs()
+    return now if t > now + GF.FUTURE_SKEW_S else t
 ORPHAN_KEEP_S = float(os.environ.get("AIB_CHAT_ORPHAN_KEEP") or 60)   # 秒;查不到寄出帳的回條暫存多久(第 27.8 節)
 ORPHAN_MAX = 500
 REFUSED_MAX = 200                           # refused.json 最多記幾位(第 27.5 節)
@@ -1246,9 +1258,10 @@ class Receiver(object):
         rc, res = await self.sender._resolve(tags.get("aib-from"))
         if rc != 0 or res["seat"]["npub"] != from_npub:
             return
-        sent = rumor.created_at().as_secs()                     # 寄出時間(NIP-59 外層會亂數往回,rumor 這個不會)
+        sent, now = sent_at(rumor), int(time.time())            # 寄出時間(NIP-59 外層會亂數往回,rumor 這個不會)
         cur = GF.read_room(self.root, owner) or {}
-        if sent <= int(GF.read_revoked(self.root, owner).get("space") or 0) or sent < int(cur.get("sent_at") or 0):
+        cur_sent = GF.int_or0(cur.get("sent_at")) if now - GF.int_or0(cur.get("at")) < GF.ROOM_FRESH_S else 0
+        if sent <= GF.read_revoked(self.root, owner).get("space", 0) or sent < cur_sent:
             audit(self.root, "space-in", "-", from_npub, "stale")   # 撤回前寄的 / 比手上舊 ⇒ 補收的舊信,丟掉
             return
         snap = RS.decode(rumor.content())
@@ -1266,15 +1279,22 @@ class Receiver(object):
         owner = parsed.get("owner")
         if not owner:
             return
+        held = (GF.read_room(self.root, owner) if kind == "space" else
+                any(v.get("owner") == owner for v in GF.read_world(self.root).values()))
+        if not held and not (CR.is_friend(owner) or CR.is_mine(owner)):
+            return                                              # 手上沒他的資料、也不是好友 ⇒ 不查名冊、不寫檔(陌生人灌不滿帳)
         rc, res = await self.sender._resolve(tags.get("aib-from"))
         if rc != 0 or res["seat"]["npub"] != from_npub:
             return
-        at = rumor.created_at().as_secs()
-        GF.note_revoked(self.root, owner, kind, at)
+        at = sent_at(rumor)
         if kind == "space":
             GF.drop_room(self.root, owner, upto=at)
         else:
             GF.drop_world_owner(self.root, owner, upto=at)
+        try:                                                    # 先刪再記帳;記帳失敗(壞檔、太大)不往上丟、不斷線
+            GF.note_revoked(self.root, owner, kind, at)
+        except Exception:   # noqa: BLE001
+            audit(self.root, "revoke-in", "-", from_npub, "ledger_failed")
         audit(self.root, "revoke-in", "-", from_npub, kind)
 
     async def on_offer(self, rumor, tags, from_npub):
@@ -1349,8 +1369,8 @@ class Receiver(object):
         rc, res = await self.sender._resolve(from_addr)
         if rc != 0 or res["seat"]["npub"] != from_npub:
             return
-        sent = rumor.created_at().as_secs()
-        if sent <= int(GF.read_revoked(self.root, owner).get("share") or 0):
+        sent = sent_at(rumor)
+        if sent <= GF.read_revoked(self.root, owner).get("share", 0):
             return                                              # 撤回前寄的舊在線,丟掉
         try:
             body = json.loads(rumor.content())

@@ -844,7 +844,7 @@ def note_world(root, owner, cabin, seats, now=None, power=None, sent_at=None):
 
     def fn(cur):
         cab = cur.setdefault("cabins", {})
-        if sent_at is not None and int((cab.get(key) or {}).get("sent_at") or 0) > sent_at:
+        if sent_at is not None and int_or0((cab.get(key) or {}).get("sent_at")) > sent_at:
             return
         cab[key] = {"owner": owner, "cabin": cabin, "presence_at": now, "seats": seats}
         if sent_at is not None:
@@ -856,12 +856,15 @@ def note_world(root, owner, cabin, seats, now=None, power=None, sent_at=None):
     _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
 
 
-def drop_world_owner(root, owner, upto=None):
-    """對方撤回在線分享:拿掉他所有艙的格。upto = 撤回的寄出時間 ⇒ 只拿掉寄出時間 <= upto 的格(沒記 sent_at 的舊格算 0)。"""
+def drop_world_owner(root, owner, upto=None, now=None):
+    """對方撤回在線分享:拿掉他所有艙的格。upto = 撤回的寄出時間 ⇒ 只拿掉寄出時間 <= upto 的格(沒記 sent_at 的舊格算 0;
+    寄出時間在未來 FUTURE_SKEW_S 以外的格照刪,不讓它擋掉撤回)。"""
+    now = int(time.time() if now is None else now)
+
     def fn(cur):
         cab = cur.setdefault("cabins", {})
         for k in [k for k, v in cab.items() if v.get("owner") == owner
-                  and (upto is None or int(v.get("sent_at") or 0) <= upto)]:
+                  and (upto is None or not upto < int_or0(v.get("sent_at")) <= now + FUTURE_SKEW_S)]:
             cab.pop(k, None)
     _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
 
@@ -898,8 +901,8 @@ def drop_room(root, owner, upto=None):
     if not NPUB_FULL_RE.match(owner or ""):
         return False
     if upto is not None:
-        rec = read_room(root, owner)
-        if rec and int(rec.get("sent_at") or 0) > upto:
+        rec, now = read_room(root, owner), int(time.time())
+        if rec and upto < int_or0(rec.get("sent_at")) <= now + FUTURE_SKEW_S:
             return False
     try:
         (Path(root) / "spaces" / (owner + ".json")).unlink()
@@ -938,22 +941,41 @@ def note_shared_sent(root, owner, kind, level):
 
 # revoked.json:對方撤回的寄出時間({owner: {"space": ts, "share": ts}},只往大記)。
 #   之後收到寄出時間 <= 這個的快照 / 在線(中繼站補收、重送的舊信)⇒ 丟掉。
+#   最多 REVOKED_MAX 位、REVOKED_KEEP_S 前的清掉(NIP-59 補收最多往回 2 天,30 天綽綽有餘);壞值一律當 0。
+FUTURE_SKEW_S = 600                          # 寄件端時鐘最多快這麼多;再多 ⇒ 收件端當成「現在」
+REVOKED_MAX = 300
+REVOKED_KEEP_S = 30 * 86400
+
+
+def int_or0(v):
+    try:
+        return max(int(v), 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def read_revoked(root, owner):
     try:
         cur = json.loads((Path(root) / "revoked.json").read_text(encoding="utf-8"))
         row = (cur.get("per") or {}).get(owner) if isinstance(cur, dict) else None
     except (OSError, ValueError, AttributeError):
         return {}
-    return row if isinstance(row, dict) else {}
+    return {k: int_or0(row.get(k)) for k in ("space", "share") if k in row} if isinstance(row, dict) else {}
 
 
-def note_revoked(root, owner, kind, ts):
+def note_revoked(root, owner, kind, ts, now=None):
     if not NPUB_FULL_RE.match(owner or "") or kind not in ("space", "share"):
         return
+    now = int(time.time() if now is None else now)
 
     def fn(cur):
-        row = cur.setdefault("per", {}).setdefault(owner, {})
-        row[kind] = max(int(row.get(kind) or 0), int(ts))
+        per = cur.get("per") if isinstance(cur.get("per"), dict) else {}
+        per = {k: v for k, v in per.items() if NPUB_FULL_RE.match(k) and isinstance(v, dict)}
+        row = per.setdefault(owner, {})
+        row[kind] = max(int_or0(row.get(kind)), int_or0(ts))
+        top = lambda kv: max([int_or0(x) for x in kv[1].values()] or [0])  # noqa: E731
+        keep = sorted((kv for kv in per.items() if now - top(kv) < REVOKED_KEEP_S), key=top, reverse=True)[:REVOKED_MAX]
+        cur["per"] = dict(keep)
     _locked_update(root, "revoked.json", fn, lambda: {"v": VERSION, "per": {}})
 
 

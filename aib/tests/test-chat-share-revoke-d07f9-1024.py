@@ -16,7 +16,13 @@ O1–O4 亂序(第 1 輪審 M1;NIP-59 外層時間亂數往回,補收順序跟�
    O3 在線同理(兩個方向);O4 舊快照晚到不蓋新的
 F1 偽造(M2):第三方席用自己的金鑰、aib-from 填 Bob 的位址送撤回 ⇒ Andy 手上 Bob 的快照 / 在線格還在
 刀:K1 拿掉送出端撤回 ⇒ E1 紅;K2 收件端不刪 ⇒ E1 紅;K3 撤回不比 npub ⇒ F1 紅;K4 收快照不看撤回時間 ⇒ O2 紅;
-   K5 刪快照不比寄出時間 ⇒ O1 紅;K6 在線撤回不刪 ⇒ O3 紅
+   K5 刪快照不比寄出時間 ⇒ O1 紅;K6 在線撤回不刪 ⇒ O3 紅;K7 不夾未來時間 ⇒ O5 紅;K8 陌生撤回不先擋 ⇒ S1 紅;
+   K9 退避指數不封頂 ⇒ S3 紅
+O5 未來時間(第 2 輪審 M1):未來快照 / 在線接正常撤回要刪;未來撤回接正常重開要收;10 分鐘內照收
+O6 手上那份過期(收到超過 7 天)不拿來擋新收的快照
+S1 陌生主人的撤回(手上沒他的資料、不是好友)⇒ 不查名冊、不寫 revoked.json(M2)
+S2 壞帳(值不是數字 / 列不是 dict / 整檔不是 dict)不炸;記帳失敗也先刪(L1、M2)
+S3 退避 n=2000 不溢位、封頂 1 小時(M3)
 E1 / O / F / K 要 AIB_TEST_NOSTR_VENV(aib test 會清 AIB_* ⇒ 全套裡跳過;要帶著另跑)。
 """
 import importlib.util
@@ -77,13 +83,22 @@ class Pure(unittest.TestCase):
             GF.write_room(root, A, {"v": 1}, sent_at=200)
             self.assertFalse(GF.drop_room(root, A, upto=100), "撤回比快照舊 ⇒ 不刪")
             self.assertTrue(GF.drop_room(root, A, upto=200))
-            GF.note_revoked(root, A, "space", 300)
-            GF.note_revoked(root, A, "space", 250)
+            GF.note_revoked(root, A, "space", 300, now=400)
+            GF.note_revoked(root, A, "space", 250, now=400)
             self.assertEqual(GF.read_revoked(root, A), {"space": 300}, "只往大記")
+            now = 10 ** 9
+            for i in range(GF.REVOKED_MAX + 5):                   # 筆數上限:留最新的(第 2 輪審 M2)
+                GF.note_revoked(root, NK.npub(NK.pubkey_hex("%064x" % (1000 + i))), "share", now + i, now=now + i)
+            per = __import__("json").loads((root / "revoked.json").read_text())["per"]
+            self.assertEqual(len(per), GF.REVOKED_MAX)
+            self.assertNotIn(NK.npub(NK.pubkey_hex("%064x" % 1000)), per, "最舊的要先清")
+            GF.note_revoked(root, B, "space", now + GF.REVOKED_KEEP_S + 10 ** 4, now=now + GF.REVOKED_KEEP_S + 10 ** 4)
+            per = __import__("json").loads((root / "revoked.json").read_text())["per"]
+            self.assertEqual(list(per), [B], "30 天前的清掉")
 
 
 PROBE = r'''
-import asyncio, json, sys
+import asyncio, json, sys, time
 sys.path.insert(0, sys.argv[1])
 import chat_nostr as CN
 import chat_roster as CR
@@ -92,9 +107,13 @@ import nostr_keys as NK
 import room_snapshot as RS
 from pathlib import Path
 root, ops = Path(sys.argv[2]), json.loads(sys.argv[3])
+NOW = int(time.time())
+tm = lambda x: NOW + int(x) if isinstance(x, str) else x          # "+5" / "-100" = 相對現在;數字 = 絕對(過去)
+rel = lambda v: v - NOW if isinstance(v, int) and v > 10 ** 9 else v
 B = NK.npub(NK.pubkey_hex("%064x" % 12))
 B_SEAT = NK.npub(NK.pubkey_hex("%064x" % 0x1201))
 EVE_SEAT = NK.npub(NK.pubkey_hex("%064x" % 0xe0e1))
+STRANGER = NK.npub(NK.pubkey_hex("%064x" % 0x5555))
 CR.add_friend(B)
 B_ADDR = B + "/c1/bbbb2"
 
@@ -113,27 +132,45 @@ class Rumor:
         return self.c
 
 class Sender:
+    calls = 0
     async def _resolve(self, addr):
+        Sender.calls += 1
         return (0, {"seat": {"npub": B_SEAT, "seat": "bbbb2"}}) if addr == B_ADDR else (2, {})
 
 r = object.__new__(CN.Receiver)
 r.root, r.sender, r.heard = root, Sender(), {B}
 snap = RS.encode({"v": 2, "people": []})
+out = {}
 for op in ops:
-    kind, t = op[0], op[1]
+    kind = op[0]
     frm = EVE_SEAT if op[-1] == "eve" else B_SEAT
     if kind == "room":
-        asyncio.run(r.on_room(Rumor(t, snap), {"aib-from": B_ADDR}, frm))
+        asyncio.run(r.on_room(Rumor(tm(op[1]), snap), {"aib-from": B_ADDR}, frm))
     elif kind == "presence":
         body = json.dumps({"v": 1, "seats": [{"seat": "bbbb2", "cabin": "c1", "state": "online"}]})
-        asyncio.run(r.on_presence(Rumor(t, body), {"aib-from": B_ADDR}, frm))
+        asyncio.run(r.on_presence(Rumor(tm(op[1]), body), {"aib-from": B_ADDR}, frm))
+    elif kind == "seed-room":                                   # 手上已有一份:收到時間 op[1]、寄出時間 op[2]
+        GF.write_room(root, B, {"v": 2, "people": []}, now=tm(op[1]), sent_at=tm(op[2]))
+    elif kind == "seed-revoked":                                # 壞帳
+        (root / "revoked.json").write_text(json.dumps(op[1]))
+    elif kind == "break-ledger":
+        def boom(*a, **k):
+            raise OSError("ledger full")
+        GF.note_revoked = boom
+    elif kind == "wait":
+        out["wait"] = [CN.revoke_wait(n) for n in op[1]]
+    elif kind == "rv-stranger":
+        tags = {"aib-from": STRANGER + "/c1/eeee5", "aib-revoke": "1"}
+        asyncio.run(r.on_room(Rumor(tm(op[1]), "{}"), tags, EVE_SEAT))
     else:
         tags = {"aib-from": B_ADDR, "aib-revoke": "1"}
-        rv = Rumor(t, json.dumps({"v": 1, "revoke": True}))
+        rv = Rumor(tm(op[1]), json.dumps({"v": 1, "revoke": True}))
         asyncio.run(r.on_room(rv, tags, frm) if kind == "rv-space" else r.on_presence(rv, tags, frm))
 room = GF.read_room(root, B)
-print(json.dumps({"room": room and room.get("sent_at"),
-                  "world": sorted(v.get("sent_at") for v in GF.read_world(root).values() if v.get("owner") == B)}))
+out.update({"room": room and rel(room.get("sent_at")),
+            "world": sorted(rel(v.get("sent_at")) for v in GF.read_world(root).values() if v.get("owner") == B),
+            "resolves": Sender.calls, "ledger": (root / "revoked.json").exists()})
+print(json.dumps(out))
 '''
 NOSTR_VENV = os.environ.get("AIB_TEST_NOSTR_VENV") or ""
 VPY = str(Path(NOSTR_VENV) / "bin" / "python") if NOSTR_VENV else ""
@@ -152,26 +189,57 @@ class Order(unittest.TestCase):
         return json.loads(r.stdout.strip().splitlines()[-1])
 
     def test_o1_old_revoke_late(self):
-        self.assertEqual(self.probe(["room", 200], ["rv-space", 100])["room"], 200, "舊撤回晚到把重開的分享刪了")
-        self.assertIsNone(self.probe(["room", 100], ["rv-space", 200])["room"], "照順序的撤回要刪")
+        self.assertEqual(self.probe(["room", "-200"], ["rv-space", "-300"])["room"], -200, "舊撤回晚到把重開的分享刪了")
+        self.assertIsNone(self.probe(["room", "-300"], ["rv-space", "-200"])["room"], "照順序的撤回要刪")
 
     def test_o2_old_snapshot_late(self):
-        self.assertIsNone(self.probe(["rv-space", 200], ["room", 100])["room"], "撤回前寄的舊快照又寫回來")
-        self.assertIsNone(self.probe(["rv-space", 200], ["room", 200])["room"], "同一秒算撤回贏")
-        self.assertEqual(self.probe(["rv-space", 200], ["room", 300])["room"], 300, "撤回後重開的分享要收")
+        self.assertIsNone(self.probe(["rv-space", "-200"], ["room", "-300"])["room"], "撤回前寄的舊快照又寫回來")
+        self.assertIsNone(self.probe(["rv-space", "-200"], ["room", "-200"])["room"], "同一秒算撤回贏")
+        self.assertEqual(self.probe(["rv-space", "-200"], ["room", "-100"])["room"], -100, "撤回後重開的分享要收")
 
     def test_o3_presence(self):
-        self.assertEqual(self.probe(["rv-share", 200], ["presence", 100])["world"], [], "撤回前寄的舊在線又寫回來")
-        self.assertEqual(self.probe(["presence", 300], ["rv-share", 200])["world"], [300], "舊撤回晚到刪了新在線")
-        self.assertEqual(self.probe(["presence", 100], ["rv-share", 200])["world"], [], "在線撤回要刪")
+        self.assertEqual(self.probe(["rv-share", "-200"], ["presence", "-300"])["world"], [], "撤回前寄的舊在線又寫回來")
+        self.assertEqual(self.probe(["presence", "-100"], ["rv-share", "-200"])["world"], [-100], "舊撤回晚到刪了新在線")
+        self.assertEqual(self.probe(["presence", "-300"], ["rv-share", "-200"])["world"], [], "在線撤回要刪")
 
     def test_o4_older_snapshot_does_not_overwrite(self):
-        self.assertEqual(self.probe(["room", 300], ["room", 100])["room"], 300)
-        self.assertEqual(self.probe(["presence", 300], ["presence", 100])["world"], [300])
+        self.assertEqual(self.probe(["room", "-100"], ["room", "-300"])["room"], -100)
+        self.assertEqual(self.probe(["presence", "-100"], ["presence", "-300"])["world"], [-100])
 
     def test_f1_forged_revoke(self):
-        got = self.probe(["room", 100], ["presence", 100], ["rv-space", 200, "eve"], ["rv-share", 200, "eve"])
-        self.assertEqual(got, {"room": 100, "world": [100]}, "第三方席冒 Bob 的位址就能刪 Andy 手上的資料")
+        got = self.probe(["room", "-300"], ["presence", "-300"], ["rv-space", "-200", "eve"], ["rv-share", "-200", "eve"])
+        self.assertEqual((got["room"], got["world"]), (-300, [-300]), "第三方席冒 Bob 的位址就能刪 Andy 手上的資料")
+
+    def test_o5_future_time(self):
+        self.assertIsNone(self.probe(["room", "+1000000"], ["rv-space", "+0"])["room"], "未來快照擋掉了正常撤回")
+        self.assertEqual(self.probe(["rv-space", "+1000000"], ["room", "+5"])["room"], 5, "未來撤回擋掉了之後的重開")
+        self.assertEqual(self.probe(["presence", "+1000000"], ["rv-share", "+0"])["world"], [], "未來在線擋掉了撤回")
+        self.assertEqual(self.probe(["rv-share", "+1000000"], ["presence", "+5"])["world"], [5])
+        self.assertEqual(self.probe(["room", "+300"])["room"], 300, "時鐘差 10 分鐘內照收、照存")
+
+    def test_o6_stale_copy_does_not_block(self):
+        got = self.probe(["seed-room", "-700000", "-100"], ["room", "-200"])
+        self.assertEqual(got["room"], -200, "手上那份已過期(超過 7 天),不准拿來擋新收的")
+        self.assertEqual(self.probe(["seed-room", "-10", "-100"], ["room", "-200"])["room"], -100, "新鮮的照擋舊的")
+
+    def test_s1_stranger_revoke_cheap(self):
+        got = self.probe(["rv-stranger", "+0"], ["rv-stranger", "+1"])
+        self.assertEqual((got["resolves"], got["ledger"]), (0, False), "陌生人的撤回要在查名冊前就丟、不寫帳")
+        got = self.probe(["rv-space", "+0"])
+        self.assertEqual((got["resolves"], got["ledger"]), (1, True), "好友的撤回照記(之後補收的舊快照要丟)")
+
+    def test_s2_bad_ledger(self):
+        for bad in ({"per": {"B": "str"}}, {"per": "x"}, [1], {"per": {"B": {"space": "abc", "share": None}}}):
+            bad = json.loads(json.dumps(bad).replace('"B"', json.dumps(B)))
+            got = self.probe(["seed-revoked", bad], ["room", "+0"], ["presence", "+0"], ["rv-space", "+1"])
+            self.assertEqual((got["room"], got["world"]), (None, [0]), bad)
+        got = self.probe(["room", "+0"], ["break-ledger"], ["rv-space", "+1"])
+        self.assertIsNone(got["room"], "記帳失敗也要先刪")
+
+    def test_s3_backoff_no_overflow(self):
+        got = self.probe(["wait", [0, 1, 2, 1025, 2000]])["wait"]
+        self.assertEqual(got[:2], [0, 120])
+        self.assertEqual(got[3:], [3600, 3600], "n 很大不准丟例外、要封頂 1 小時")
 
 
 def audit_dirs(b, kind):
@@ -250,17 +318,28 @@ class Knife(unittest.TestCase):
 
     def test_k3_no_npub_check(self):
         self._knife("src/cockpit/chat_nostr.py",
-                    '        if rc != 0 or res["seat"]["npub"] != from_npub:\n            return\n        at = rumor',
-                    '        if rc != 0:\n            return\n        at = rumor', "Order.test_f1_forged_revoke")
+                    '        if rc != 0 or res["seat"]["npub"] != from_npub:\n            return\n        at = sent_at(rumor)',
+                    '        if rc != 0:\n            return\n        at = sent_at(rumor)', "Order.test_f1_forged_revoke")
 
     def test_k4_room_ignores_revoked(self):
         self._knife("src/cockpit/chat_nostr.py",
-                    'if sent <= int(GF.read_revoked(self.root, owner).get("space") or 0) or ',
+                    'if sent <= GF.read_revoked(self.root, owner).get("space", 0) or ',
                     "if ", "Order.test_o2_old_snapshot_late")
 
     def test_k5_drop_ignores_time(self):
-        self._knife("src/cockpit/dm_global_files.py", "        if rec and int(rec.get(\"sent_at\") or 0) > upto:\n",
+        self._knife("src/cockpit/dm_global_files.py", "        if rec and upto < int_or0(rec.get(\"sent_at\")) <= now + FUTURE_SKEW_S:\n",
                     "        if False:\n", "Order.test_o1_old_revoke_late")
+
+    def test_k7_no_future_clamp(self):
+        self._knife("src/cockpit/chat_nostr.py", "    return now if t > now + GF.FUTURE_SKEW_S else t\n",
+                    "    return t\n", "Order.test_o5_future_time")
+
+    def test_k8_no_cheap_check(self):
+        self._knife("src/cockpit/chat_nostr.py", "        if not held and not (CR.is_friend(owner) or CR.is_mine(owner)):\n",
+                    "        if False:\n", "Order.test_s1_stranger_revoke_cheap")
+
+    def test_k9_no_exponent_cap(self):
+        self._knife("src/cockpit/chat_nostr.py", "2 ** min(n - 1, 20)", "2 ** (n - 1)", "Order.test_s3_backoff_no_overflow")
 
     def test_k6_presence_revoke_keeps(self):
         self._knife("src/cockpit/chat_nostr.py", "            GF.drop_world_owner(self.root, owner, upto=at)\n",
