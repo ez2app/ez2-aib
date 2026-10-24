@@ -54,7 +54,7 @@ class Why(unittest.TestCase):
         self.assertIsNone(json.loads(FILE.read_text(encoding="utf-8"))["other"])
         r, rc = W.set_why(["other", "art"], other="  想\x1b[31m 養\u0085貓" + "長" * 100)
         self.assertEqual(r["why_rank"], ["other", "art"])
-        self.assertTrue(r["other"].startswith("想[31m 養貓"))
+        self.assertTrue(r["other"].startswith("想 養貓"))                       # ANSI 整段去掉(同 power_ask._clean)
         self.assertEqual(len(r["other"]), W.OTHER_MAX)
         self.assertEqual(W.why()["why_rank"], ["other", "art"])
 

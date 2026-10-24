@@ -216,7 +216,7 @@ class Login(unittest.TestCase):
         url, code, err = L.spawn_login("codex", wait_s=10, lifetime=3, popen=self._popen())
         self.assertEqual((url, code, err), ("https://auth.openai.com/codex/device", "WXYZ-1234", None))
         log = Path(TMP) / "state" / "power-login-codex.log"
-        self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+        self.assertFalse(log.exists(), "拿到鏈結 / 裝置碼後登入紀錄要刪掉")   # #293 審查:不留在狀態夾
         deadline = time.monotonic() + 15                     # 守門行程 3 秒後砍掉假 CLI
         while time.monotonic() < deadline and self._alive(d):
             time.sleep(0.3)
@@ -226,6 +226,7 @@ class Login(unittest.TestCase):
         self._with_path(d2)
         url, code, err = L.spawn_login("grok", wait_s=1.5, lifetime=2, popen=self._popen())
         self.assertEqual((url, err), (None, "no_url"))
+        self.assertFalse((Path(TMP) / "state" / "power-login-grok.log").exists(), "逾時也要刪登入紀錄")
         os.environ["PATH"] = "/nonexistent"
         self.assertEqual(L.spawn_login("copilot", wait_s=1)[2], "cli_missing")
 
