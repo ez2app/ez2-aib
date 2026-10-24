@@ -1404,6 +1404,20 @@ def cmd_invite_use(a, env, out):
                 owner=parsed["owner"], stage=stage, detail=res["detail"] or "-")
 
 
+def cmd_echo(a, env, out):
+    """回音小幫手開關(10-24 Andy 選):on ⇒ 這台收到名冊驗得到的人寄的信只回一句「收到了」,不存內容、不接 AI、不加好友。
+    給官方常開的那台用;一般會員不用開。"""
+    root = bridge_root(env)
+    if a.action in ("on", "off"):
+        GF.set_echo(root, a.action == "on")
+    on = GF.echo_on(root)
+    if a.json:
+        out.write(json.dumps({"echo": on}) + "\n")
+    else:
+        out.write(T("echo_on" if on else "echo_off") + "\n")
+    return 0
+
+
 def cmd_requests(a, env, out):
     rows = GF.read_requests(bridge_root(env))
     if a.json:
@@ -2600,6 +2614,9 @@ def main(argv=None, env=None, out=sys.stdout):
     iv.add_argument("target", nargs="?", help=T("help.invite_target"))
     iv.add_argument("code", nargs="?")
     iv.add_argument("--json", action="store_true")
+    ec = sub.add_parser("echo", help=T("help.echo"))
+    ec.add_argument("action", nargs="?", choices=("on", "off"))
+    ec.add_argument("--json", action="store_true")
     rqs = sub.add_parser("requests", help=T("help.requests"))
     rqs.add_argument("--json", action="store_true")
     so = sub.add_parser("social", help=T("help.social"))
@@ -2783,6 +2800,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_request(a, env, out)
     if a.cmd == "invite":
         return cmd_invite_use(a, env, out) if a.action == "use" else cmd_invite(a, env, out)
+    if a.cmd == "echo":
+        return cmd_echo(a, env, out)
     if a.cmd == "requests":
         return cmd_requests(a, env, out)
     if a.cmd == "connect":
