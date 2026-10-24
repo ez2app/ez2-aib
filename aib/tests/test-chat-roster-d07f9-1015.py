@@ -8,7 +8,7 @@ R1 aib chat on 沒給顯示名稱 / 國別 ⇒ rc 2、不開;名稱含 >> ⇒ rc
 R2 aib chat name / country:合格就改、不合格不動;國碼小寫轉大寫、三碼不收
 R3 組名冊:預設一席都不列(Andy 23:5x 裁);publish 才列(npub、人格名、角色);不在活席的不列;hide 拿掉;
    雜湊不含 updated_at、改名就變
-R4 驗名冊:自己組的那份驗得過;owner 不是簽章者 ⇒ 拒;http 中繼站 ⇒ 拒;同艙同席兩筆 ⇒ 拒;壞 npub ⇒ 拒;
+R4 驗名冊:自己組的那份驗得過;owner 不是簽章者 ⇒ 拒;http 中繼站 ⇒ 拒;同艙同席兩筆 ⇒ 只丟那一席(記 dropped_seats,10-24 起不整份拒);壞 npub ⇒ 拒;
    不合的名字退回 None(不整份拒);find_seat;沒有共同信封版本 ⇒ None
 R5 中繼站:預設 primal、nos.lol、offchain.pub;AIB_CHAT_RELAYS 只收 wss:// 與本機 ws://127.0.0.1
 R6 沒有 nostr-sdk:轉接程式組好名冊、狀態 no_relays、不寫心跳;主人資料被刪 ⇒ no_profile
@@ -211,8 +211,12 @@ class Build(Base):
             CR.parse(bad, owner)
         dup = json.loads(json.dumps(content))
         dup["cabins"][0]["seats"].append(dict(dup["cabins"][0]["seats"][0]))
-        with self.assertRaises(CR.RosterError):
-            CR.parse(dup, owner)
+        dup["cabins"].append({"cabin": "7aaa", "seats": [dict(dup["cabins"][0]["seats"][0])]})
+        rec = CR.parse(dup, owner)                                         # 10-24:只丟重複那一席,別艙同碼照收
+        self.assertIsNone(CR.find_seat(rec, "6ddf", a))
+        self.assertEqual(CR.find_seat(rec, "7aaa", a)["seat"], a)
+        self.assertEqual(rec["dropped_seats"], ["6ddf/" + a])
+        self.assertEqual(CR.parse(json.dumps(content), owner)["dropped_seats"], [])
         badnpub = json.loads(json.dumps(content))
         badnpub["cabins"][0]["seats"][0]["npub"] = "npub1xyz"
         with self.assertRaises(CR.RosterError):
