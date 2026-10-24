@@ -4,6 +4,10 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.55
+
+- **Lighter status line**: each seat's status line refresh now makes one tmux call instead of three, skips loading the fleet patrol module, and loads the English dictionary only when a key is missing (about 120 → 80 ms per refresh).
+
 ## 0.1.54
 
 - **`aib room heat release` (new)**: release leftovers nobody uses. Two kinds for now: orphaned test scripts under a temp folder, and orphaned automation Chrome with a temp profile, both older than 120 seconds. Candidates are listed by the snapshot (`candidates` / `held`); release re-checks the owner and start time before every signal, kills only the listed process, and keeps anything holding an ssh / scp / rsync child or a `*.lock` file under `held`. `--dry-run` shows what would happen; `--auto` is capped per 10 minutes and stops if it cannot keep its log.
