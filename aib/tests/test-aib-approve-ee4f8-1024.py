@@ -32,6 +32,8 @@ A20 rate.json 有超大整數不當;網址有非 ASCII(K 號、阿拉伯數字�
     payload 剛好 2048 位元組收、多 1 位元組不收
 A21 本機 helper 夾 / 雜湊檔被換成檔案或資料夾 ⇒ yes 印一行 JSON(touchid_unavailable)、key init / pem 不當;
     網址中間有換行 / tab / 空白拒;history 不認得的結果不列;公鑰不是 04 開頭 ⇒ no_key;指紋視窗佔用時不吃限速
+A22 helper 雜湊檔 / 語系檔是亂碼(不是 UTF-8)⇒ yes 印一行 JSON、key pem 不當;approve 回 201 {ok:true} 不算核准;
+    pending 回 201 算錯;token 129 字拒
 刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
    K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅;K8 跟轉址 ⇒ A11 紅
 """
@@ -603,6 +605,37 @@ class Approve(Base):
         sk.write_text(json.dumps(doc))
         self.assertIsNone(AA.local_pub(self.env))
         self.assertEqual(self.yes(f["nonce"]), (None, "no_key"))
+
+    def test_a22_garbage_files_and_status_edges(self):
+        import unittest.mock as um
+        f = self.site.add(kid=self.kid)
+        b = self.root / "bin"
+        b.mkdir()
+        (b / "aib-sehelper").write_bytes(b"#!/bin/sh\nexit 9\n")
+        (b / "aib-sehelper.sha256").write_bytes(b"\xff\xfe garbage")
+        never = um.Mock(side_effect=AssertionError("不該跑任何程式"))
+        with um.patch.object(AA, "http_call", self.site), um.patch.object(AA.time, "time", return_value=NOW), \
+                um.patch.object(AA.subprocess, "run", never):
+            out = io.StringIO()
+            self.assertEqual(AA.main(["yes", f["nonce"]], out=out, env=self.env), 0)
+        self.assertEqual(json.loads(out.getvalue())["result"], "touchid_unavailable")
+        self.assertEqual(AA.key_publish(self.env, run=never, platform="darwin"), (None, "touchid_unavailable"))
+        never.assert_not_called()
+        env = {k: v for k, v in self.env.items() if k != "EZ2_AIB_LOCALE"}
+        (self.root / "locale").write_bytes(b"\xff\xfe")
+        with um.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("EZ2_AIB_LOCALE", None)
+            g = self.site.add(kid=self.kid)
+            self.assertEqual(self.yes(g["nonce"], env=env), ("approved", None))
+        h = self.site.add(kid=self.kid)
+        ok201 = lambda m, u, hd, bd: (201, b'{"ok":true}') if u.endswith("/approve") else self.site(m, u, hd, bd)  # noqa: E731
+        self.assertEqual(AA.yes(h["nonce"], self.env, http=ok201, run=self.se, helper="/fake/aib-sehelper",
+                                platform="darwin", now=NOW + 40)[0], "site_rejected")
+        p201 = lambda m, u, hd, bd: (201, self.site(m, u, hd, bd)[1])  # noqa: E731
+        r, _ = AA.pending(self.env, http=p201, now=NOW)
+        self.assertEqual(r["errors"], {"ez2.app": "http_201"})
+        self.assertEqual(AA.site_add("a.com", None, "t" * 129, self.env), (None, "bad_token"))
+        self.assertEqual(AA.site_add("a.com", None, "t" * 128, self.env)[1], None)
 
 class Knives(unittest.TestCase):
     def _red(self, needle, repl, test):

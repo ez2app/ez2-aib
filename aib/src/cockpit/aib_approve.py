@@ -70,7 +70,6 @@ RESULTS = ("approved", "site_rejected", "not_delivered", "denied", "expired", "r
 B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 FIELDS = ("exp", "iat", "ip", "kid", "nonce", "site", "typ", "user_id", "user_login", "v")
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{43}")          # 32 位元組 base64url;一律 fullmatch
-CODE_RE = re.compile(r"[A-Z2-7]{4}")                 # base32 前 4 字
 LOGIN_RE = re.compile(r"[A-Za-z0-9 _.@-]{1,60}")     # WordPress sanitize_user(strict)收的字
 SITE_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?")
 IP_RE = re.compile(r"[0-9A-Fa-f:.]{2,45}")
@@ -135,8 +134,8 @@ def _se_call(args, env, data, run, helper, platform):
     import se_vault
     try:
         return se_vault._call(args, env, data, run, helper, platform)
-    except OSError:
-        return None, "helper_failed"  # 本機 helper 夾 / 雜湊檔被換成檔案或資料夾:不讓指令當
+    except (OSError, ValueError):
+        return None, "helper_failed"  # 本機 helper 夾 / 雜湊檔被換成檔案、資料夾或亂碼:不讓指令當
 
 
 def key_init(env=None, run=subprocess.run, helper=None, platform=None):
@@ -176,7 +175,7 @@ def key_publish(env=None, run=subprocess.run, helper=None, platform=None):
         return None, "touchid_unavailable"
     kid = kid_of(pub)
     msg = ("ez2-aib-approve-publish|" + kid).encode("ascii")
-    reason = i18n_lib.t("aib.approve.touchid_publish", {"kid": kid}, locale=i18n_lib.resolve_locale())
+    reason = i18n_lib.t("aib.approve.touchid_publish", {"kid": kid}, locale=_locale(env))
     args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", reason]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:
@@ -451,11 +450,19 @@ def _rate_ok(env, now):
 
 # ---- yes / no ----
 
-def touchid_reason(d):
+def _locale(env=None):
+    import i18n_lib
+    try:
+        return i18n_lib.resolve_locale(env=env)
+    except (OSError, ValueError):
+        return i18n_lib.DEFAULT_LOCALE  # 本機語系檔壞掉(例如不是 UTF-8):不讓指令當
+
+
+def touchid_reason(d, env=None):
     import i18n_lib
     f = d["fields"]
     return i18n_lib.t("aib.approve.touchid_reason", {"code": d["code"], "site": f["site"], "user": f["user_login"],
-                                                      "ip": f["ip"]}, locale=i18n_lib.resolve_locale())
+                                                      "ip": f["ip"]}, locale=_locale(env))
 
 
 def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=None, now=None):
@@ -481,7 +488,7 @@ def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=No
     if platform != "darwin" or str(env.get("AIB_TOUCHID", "")).strip() == "0":
         _record(env, d, "touchid_unavailable")
         return "touchid_unavailable", None
-    args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", touchid_reason(d)]
+    args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", touchid_reason(d, env)]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:  # 另一個指紋視窗開著:這次不算、不佔限速
             _record(env, d, "touchid_unavailable")
@@ -539,7 +546,7 @@ def no(nonce, env=None, http=None, now=None):
 
 def _say(key, params=None):
     import i18n_lib
-    return i18n_lib.t(key, params or {}, locale=i18n_lib.resolve_locale())
+    return i18n_lib.t(key, params or {}, locale=_locale())
 
 
 def main(argv=None, out=None, env=None, stdin=None):
