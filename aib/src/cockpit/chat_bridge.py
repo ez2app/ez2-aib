@@ -650,13 +650,34 @@ def _run_out(cmd, run=subprocess.run):
     return (r.stdout or "").strip() if r.returncode == 0 else ""
 
 
+# 電腦名常帶主人真名(「Andy 的 MacBook Pro」「Andy's MacBook Pro」「andys-macbook-pro」);名字會公開 ⇒ 只留機型那一段
+_OWNER_NAME_RES = (
+    (re.compile(r"^.+?\s*(?:'s|\u2019s|s')\s+(.+)$", re.I), 1),          # Andy's MacBook Pro
+    (re.compile(r"^.+?\s*的\s*(.+)$"), 1),                             # Andy 的 MacBook Pro
+    (re.compile(r"^.+?の\s*(.+)$"), 1),                                 # 太郎のMacBook Air
+    (re.compile(r"^.+?의\s*(.+)$"), 1),                                 # 철수의 MacBook
+    (re.compile(r"^(.+?)\s+(?:de|von|di|van|da|do)\s+.+$", re.I), 1),  # MacBook Pro de Andy / von Andy
+    (re.compile(r"^.+?-((?:i?mac|macbook|mac-?mini|mac-?studio|mac-?pro)\b.*)$", re.I), 1),   # andys-macbook-pro
+)
+
+
+def strip_owner_name(name):
+    """10-24 建議第 1 條(等 Andy 看):電腦名去掉主人名字那一段;認不出格式 ⇒ 原樣。"""
+    s = (name or "").strip()
+    for rx, g in _OWNER_NAME_RES:
+        m = rx.match(s)
+        if m and m.group(g).strip():
+            return m.group(g).strip()
+    return s
+
+
 def default_name(env=None, run=subprocess.run, platform=None):
-    """10-24 第 9 條:沒設顯示名稱 ⇒ 用電腦名(macOS 的「電腦名稱」;其他平台用主機名)。不合格 ⇒ None。"""
+    """10-24 第 9 條:沒設顯示名稱 ⇒ 用電腦名(macOS 的「電腦名稱」;其他平台用主機名),去掉主人名字那一段。不合格 ⇒ None。"""
     import socket
     plat = platform or sys.platform
     raw = _run_out(["/usr/sbin/scutil", "--get", "ComputerName"], run) if plat == "darwin" else ""
     for cand in (raw, socket.gethostname().split(".")[0]):
-        clean = GF.clean_display_name((cand or "")[:GF.NAME_MAX].strip())
+        clean = GF.clean_display_name(strip_owner_name(cand)[:GF.NAME_MAX].strip())
         if clean:
             return clean
     return None
