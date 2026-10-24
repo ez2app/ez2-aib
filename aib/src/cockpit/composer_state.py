@@ -382,7 +382,7 @@ def classify_composer(raw_line, provider=None):
     dim, seen, all_dim, past = False, 0, True, False
     # 10-24 新帳號第一次開的 claude 席:空框提示字 `Try "…"` 整句 dim,但游標反白(SGR 7)蓋在第一個字上 ⇒
     #   那一個字不是 dim ⇒ 舊判準判 DRAFT,全球來信 / 開席單一直排隊(會員打一個字才解開)。
-    #   只放過「提示符後第一個可見字在反白裡、其餘每個可見字都 dim、而且至少還有 2 個」。
+    #   只放過「提示符後第一個可見字在反白裡、其餘每個可見字都 dim、而且至少還有 2 個」(數的是 code point,不是字形)。
     #   本判準假設真稿不畫 dim(與既有整句 dim 判斷同一前提)。
     #   已知邊界:單字真稿 + 游標移到開頭 + CLI 仍在後面畫 dim 續字 ⇒ 判 SUGGESTION(極少見;代價是信接在那一個字後面)。
     rev, cursor_first = False, False

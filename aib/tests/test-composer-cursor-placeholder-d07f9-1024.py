@@ -10,6 +10,7 @@ C2 游標在第一個字、後面是真字(不是 dim)⇒ DRAFT(真稿照擋)
 C3 游標字 + 只有 1 個 dim 字 ⇒ DRAFT(太短不放)
 C4 沒有游標、第一個字不是 dim ⇒ DRAFT;整句 dim ⇒ SUGGESTION(舊行為不變)
 C5 游標在中間的字(不是第一個)⇒ DRAFT
+C7 安全方向(審查 B):游標蓋 emoji+FE0F、底線游標、同列非 dim 字 ⇒ DRAFT;1;7 ⇒ SUGGESTION
 C6 反例(審查 A):ESC[38;5;7m 的 7 是色號不是反白;反白從提示符前開始後接一般字;ESC[27m 提早清反白 ⇒ 都 DRAFT
 刀:K1 拿掉「第一個字在反白裡先不算」⇒ C1 紅;K2 拿掉「至少 3 個字」⇒ C3 紅
 """
@@ -58,6 +59,14 @@ class Cursor(unittest.TestCase):
                           ("27 提早清反白", E + "[39m❯\xa0" + E + "[7m" + E + "[27mT" + rest)):
             self.assertEqual(CS.classify_composer(line, provider="claude"), CS.DRAFT, why)
 
+
+    def test_c7_safe_direction(self):
+        rest = E + "[0;2mry" + E + "[0m " + E + "[2mthis again" + E + "[0m"
+        for why, line in (("游標蓋 emoji+FE0F", E + "[39m❯\xa0" + E + "[7m\U0001F600\ufe0f" + rest),
+                          ("底線游標", E + "[39m❯\xa0" + E + "[4mT" + rest),
+                          ("同列非 dim 字", E + "[39m❯\xa0" + E + "[7mT" + rest + "  auto mode on")):
+            self.assertEqual(CS.classify_composer(line, provider="claude"), CS.DRAFT, why)
+        self.assertEqual(CS.classify_composer(E + "[39m❯\xa0" + E + "[1;7mT" + rest, provider="claude"), CS.SUGGESTION, "1;7")
 
 class Knife(unittest.TestCase):
     def _knife(self, needle, cell):
