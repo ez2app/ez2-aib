@@ -238,13 +238,14 @@ def _prove(reason, env, root):
     return (PROVE or CO.prove)(reason, env, root=root)
 
 
-def _seat_npub(env, seat=None):
-    """配對要掃的席:指定的、或這台第一個公開而且有金鑰的席。回 (席碼, npub) 或 (None, None)。"""
+def _seat_npub(env, seat=None, live=None):
+    """配對要掃的席:指定的、或這台第一個公開而且有金鑰的席。回 (席碼, npub) 或 (None, None)。
+    跟名冊 / 寄件同一把(sending_seats:那一席現在綁的人格);換過人格的席不給舊人格那把(@abb89 #297 r1)。"""
     import chat_roster as CR
     import nostr_keys as NK
     pub = set((CR.read_profile(env) or {}).get("public") or [])
-    for e in NK.read_map(env)["seats"]:
-        if e.get("status") == "active" and e["seat5"] in pub and (seat is None or e["seat5"] == seat):
+    for e in NK.sending_seats(env, live):
+        if e["seat5"] in pub and (seat is None or e["seat5"] == seat):
             return e["seat5"], e["npub"]
     return None, None
 

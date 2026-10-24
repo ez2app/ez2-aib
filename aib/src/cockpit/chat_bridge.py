@@ -979,7 +979,7 @@ def _my_published(env):
     pub = set((CR.read_profile(env) or {}).get("public") or [])
     return [{"cabin": e.get("cabin") or "main", "seat": e["seat5"],
              "addr": "%s/%s/%s" % (owner, e.get("cabin") or "main", e["seat5"])}
-            for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub and owner]
+            for e in NK.sending_seats(env) if e["seat5"] in pub and owner]
 
 
 def _tell_requester(root, hit, rec):
@@ -1796,7 +1796,7 @@ def selftest(env, fetch=True):
     m = NK.read_map(env)
     owner = (m.get("owner") or {}).get("npub")
     pub = set(prof.get("public") or [])
-    seats = [e for e in m["seats"] if e.get("status") == "active" and e["seat5"] in pub]
+    seats = [e for e in NK.sending_seats(env) if e["seat5"] in pub]
     if not seats:
         rows.append(("published_none", False, {}))
     for e in seats:

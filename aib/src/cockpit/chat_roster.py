@@ -526,8 +526,8 @@ def build(env=None, live=None, now=None):
     meta = {s["seat5"]: s for s in live}
     pub = set(prof.get("public") or [])
     cabins, dm_seats = {}, []
-    for e in sorted(m["seats"], key=lambda x: (x.get("cabin") or "", x["seat5"])):
-        if e.get("status") != "active" or e["seat5"] not in pub or e["seat5"] not in meta:
+    for e in sorted(NK.sending_seats(env, live), key=lambda x: (x.get("cabin") or "", x["seat5"])):   # 一席一把(現在的人格)
+        if e["seat5"] not in pub:
             continue
         s = meta[e["seat5"]]
         entry = {"seat": e["seat5"], "npub": e["npub"], "accepts": ["dm"], "langs": _langs(), "public": True}
