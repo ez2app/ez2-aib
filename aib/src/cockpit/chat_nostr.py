@@ -622,6 +622,9 @@ class Sender(object):
             return
         if ok:
             self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "relayed", "%d" % len(ok))      # 第 7.1 節第 6 步:1 站成功就算
+            if rec.get("echo"):
+                self._done(msgid)                  # 回音小幫手回的那一句:不補寄、不把對方記成好友(上萬人也不長檔)
+                return
             if not (self.root / "resend" / (msgid + ".json")).exists():
                 GF.keep_for_resend(self.root, rec, res.get("owner"))     # 10-24:對方還沒收到前留一份,上線就補寄
             self._remember_peer(rec["to"], res, "request" if rec.get("op") == "request" else "sent")
@@ -1059,6 +1062,10 @@ PRESENCE_TICK_S = float(os.environ.get("AIB_CHAT_PRESENCE_TICK") or 60)     # �
 PRESENCE_EVERY_S = float(os.environ.get("AIB_CHAT_PRESENCE_EVERY") or 900)  # 沒變也每 15 分鐘送一次
 PRESENCE_GAP_S = float(os.environ.get("AIB_CHAT_PRESENCE_GAP") or 120)      # 同一位對方最少間隔
 ASK_ANSWER_GAP_S = float(os.environ.get("AIB_CHAT_ASK_GAP") or 60)          # 回「在不在」:同一位最少間隔
+ECHO_GAP_S = float(os.environ.get("AIB_CHAT_ECHO_GAP") or 10)              # 回音小幫手:同一位主人最少間隔
+ECHO_PER_MIN = int(os.environ.get("AIB_CHAT_ECHO_PER_MIN") or 120)          # 回音小幫手:整台每分鐘最多回幾封
+ECHO_TEXT = {"zh-TW": "收到了,線路是通的。", "en": "Got it, the line works.",
+             "ja": "届きました。回線はつながっています。", "ko": "받았습니다. 연결이 잘 됩니다."}
 ASK_OLD_MAX = 20                                                             # 刷新時最多問幾位還沒有心跳的舊版好友
 BEAT_D = "aib-beat"
 BEAT_EVERY_S = float(os.environ.get("AIB_CHAT_BEAT_EVERY") or 300)          # 10-24 綠點:心跳多久發一筆
@@ -1221,6 +1228,7 @@ class Receiver(object):
         self.root = Path(root)
         self.sender = sender
         self.led = Ledger(root)
+        self.echo_last, self.echo_win = {}, []
         self.client = None
         self.orphans = []      # 查不到寄出帳的回條:[(到期, ref, stage, tags, from_npub)](第 27.8 節)
         # 10-20 @abb89(會員清單 E 段):收信連續失敗 ⇒ 警報。Pro 13 從 10-19 11:20 起每 5 秒重來、20 小時沒人發現。
@@ -1644,6 +1652,8 @@ class Receiver(object):
                         rec[k_out] = res[k_in]
                 if res["seat"].get("name"):
                     rec["persona_name"] = res["seat"]["name"]
+        if GF.echo_on(self.root) and rec["class"] not in ("own", "paired"):
+            return await self.on_echo(rec, peer, msgid, from_npub, entry, is_request, tags.get("aib-lang"))
         if is_request:
             return await self.on_request(rec, parsed, peer, msgid, from_npub)
         if rec["class"] == "stranger":
@@ -1683,6 +1693,37 @@ class Receiver(object):
             sys.stderr.write("inbox:%s\n" % err)
             audit(self.root, "in", msgid, from_npub, "refused")
             await self.send_receipt(msgid, "refused")
+
+    async def on_echo(self, rec, peer, msgid, from_npub, entry, is_request, lang):
+        """回音小幫手(10-24 Andy 選):名冊驗得到的寄件人 ⇒ 回條 + 回一句「收到了」;不存內容、不進 AI、不加好友。
+        驗不到(沒地址 / 簽的不是名冊那一席)⇒ 不回(不知道該回誰)。同一位 ECHO_GAP_S 內、整台每分鐘超過 ECHO_PER_MIN ⇒ 靜默。"""
+        if not peer or not rec.get("from_addr"):
+            audit(self.root, "in", msgid, from_npub, "echo:unverified")
+            return
+        now = time.time()
+        owner = GF.parse_address(rec["from_addr"])["owner"]
+        last = self.echo_last.get(owner)
+        win = [t for t in self.echo_win if now - t < 60]
+        if (last and now - last < ECHO_GAP_S) or len(win) >= ECHO_PER_MIN:
+            self.echo_win = win
+            audit(self.root, "in", msgid, from_npub, "echo:quiet")
+            return
+        if len(self.echo_last) > 10000:
+            self.echo_last = {o: t for o, t in self.echo_last.items() if now - t < ECHO_GAP_S}
+        self.echo_last[owner] = now
+        self.echo_win = win + [now]
+        await self.send_receipt(msgid, "delivered" if is_request else "queued")
+        cabin = entry.get("cabin") if GF._CABIN.match(str(entry.get("cabin") or "")) else "main"
+        lang = lang if lang in ECHO_TEXT else GF.default_lang(rec.get("country"))    # 沒帶語言 ⇒ 照對方國別
+        reply = {"v": GF.VERSION, "msgid": GF.new_msgid(), "created_at": int(now), "op": "send", "echo": True,
+                 "from": {"cabin": cabin, "seat": entry["seat5"], "attested": True}, "to": rec["from_addr"],
+                 "content": ECHO_TEXT.get(lang, ECHO_TEXT["en"]), "reply_to": msgid, "lang": lang}
+        try:
+            GF.write_outbox(self.root, reply)
+        except GF.ContractError as err:
+            sys.stderr.write("echo:%s\n" % err)
+            return
+        audit(self.root, "in", msgid, from_npub, "echo")
 
     async def _signed_phones(self):
         """主人簽的機器清單裡 role=phone 的手機(中繼站抓、nostr-sdk 驗簽 + 作者 = 主人 + chat_devices 驗內容 + seq 不倒退、

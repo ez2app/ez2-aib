@@ -208,6 +208,7 @@ def check_outbox(rec):
     _opt(rec, "reply_to", lambda v: isinstance(v, str) and bool(MSGID_RE.match(v)), "要是 msgid")
     for k in ("thread", "kind", "lang"):
         _opt(rec, k, _is_str, "要是字串")
+    _opt(rec, "echo", lambda v: isinstance(v, bool), "要是 true/false")   # 10-24 回音小幫手回的那一句:不加好友、不補寄
     return rec
 
 
@@ -1180,6 +1181,27 @@ def note_first(root, key, now=None):
     def fn(cur):
         cur.setdefault(key, at)
     _locked_update(root, "first.json", fn, lambda: {"v": VERSION})
+
+
+# echo.json(10-24 Andy 選「官方回音小幫手」):這台當回音小幫手 ⇒ 收到信只回一句,不存內容、不接 AI。
+def echo_on(root):
+    try:
+        cur = json.loads((Path(root) / "echo.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(cur, dict) and cur.get("on") is True
+
+
+def set_echo(root, on):
+    p = Path(root) / "echo.json"
+    if on:
+        Path(root).mkdir(parents=True, exist_ok=True)
+        write_json(str(p), {"v": VERSION, "on": True, "at": int(time.time())})
+    else:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def drop_world(root, keep_owner):
