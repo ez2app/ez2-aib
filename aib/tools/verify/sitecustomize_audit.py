@@ -579,13 +579,14 @@ def _dirfd_join(fd, name):
 # 10-08(express / Python 的本機測試伺服器):測試自己 bind 的本機 socket、自己連回去 —— 不是外部。只認同一個行程自己 bind、
 #   還開著的;連到本機上別人開的服務(資料庫之類)照樣算外部。存的是 (fd, family, type) —— 不留 socket 物件(會讓它晚回收、
 #   改了被觀測物),也不 import weakref(啟動時本來沒有它;觀測者不改 sys.modules)。比對時用 socket.fromfd 複製一份問埠號,問完就關。
-_OWN_SOCKETS = {}       # fd ⇒ (family, type)
+_OWN_SOCKETS = {}       # fd ⇒ (family, type, inode)
 _LOOPBACK = frozenset(("localhost", "127.0.0.1", "::1", "::ffff:127.0.0.1"))
 
 
 def _note_bind(sock):
     try:
-        _OWN_SOCKETS[sock.fileno()] = (sock.family, sock.type)
+        fd = sock.fileno()
+        _OWN_SOCKETS[fd] = (sock.family, sock.type, os.fstat(fd).st_ino)
     except Exception:  # noqa: BLE001
         pass
     _wrap_listen(type(sock))
@@ -643,26 +644,30 @@ def _to_own_listener(args):
         return False
     try:
         addr = args[1]
-        for fd, (fam, typ) in list(_OWN_SOCKETS.items()):
-            # 10-12(a seat 派,a seat 入口檢查撞到):不用 sk.fromfd —— 它先 dup 再建 socket,建失敗(這個 fd 號碼已被重用成
-            #   一般檔,例如鎖檔 ⇒ ENOTSOCK)時 dup 出來那份沒人關,鎖就放不掉、下一輪整輪跳過。自己 dup,建失敗一定關。
+        for fd, (fam, typ, ino) in list(_OWN_SOCKETS.items()):
+            # 10-24 @ee4f8:不 dup、不 close 這個號碼 —— 自己的 socket 關了以後,號碼可能被 macOS 系統函式庫重用成 guarded fd
+            #   (_scproxy 等),對它 dup / close 核心直接 SIGKILL(EXC_GUARD,接不住;10-24 一天 10 次 rc -9)。
+            #   先 fstat 認是不是還是同一個 socket(inode),再借號碼建 socket 問埠號,問完 detach(不關)。
+            #   (10-12 不用 sk.fromfd 的理由照舊:它先 dup。)
             try:
-                nfd = os.dup(fd)
+                st = os.fstat(fd)
             except OSError:
                 _OWN_SOCKETS.pop(fd, None)          # 已經關了
                 continue
+            if st.st_mode & 0o170000 != 0o140000 or st.st_ino != ino:
+                _OWN_SOCKETS.pop(fd, None)          # 號碼被重用(一般檔、別的 socket)
+                continue
             try:
-                dup = sk.socket(fam, typ, 0, nfd)
-            except Exception:  # noqa: BLE001 —— 不是 socket 了(號碼被重用)或建不起來
-                os.close(nfd)
+                probe = sk.socket(fam, typ, 0, fd)
+            except Exception:  # noqa: BLE001 —— 建不起來
                 _OWN_SOCKETS.pop(fd, None)
                 continue
             try:
-                mine = dup.getsockname()
+                mine = probe.getsockname()
             except OSError:
                 continue
             finally:
-                dup.close()
+                probe.detach()
             if isinstance(addr, (str, bytes)):
                 if mine and os.fsdecode(mine) == os.fsdecode(addr):
                     return True
