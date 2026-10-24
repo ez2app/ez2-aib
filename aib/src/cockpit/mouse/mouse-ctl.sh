@@ -1562,6 +1562,7 @@ WHEEL_ACTION="{\"action\":\"fold-scroll\",\"dir\":\"$WHEEL_DIR\",\"rows\":3}"
     #   不讓 --close-row 經過下面的捲軸 / 分頁切換前置動作
     if [ "$HIT_INTENT" = "close" ]; then
       case "${CY:-}" in ''|*[!0-9]*|?????*) exit 0 ;; esac      # 只收 1–4 位數字
+      case "${CX:-}" in ''|*[!0-9]*|?????*) exit 0 ;; esac      # 欄一樣(命中器不看欄,但不讓怪字串往下傳)
       [ "$ROLE" = "ai-list" ] && [ "$CY" -ge 2 ] || exit 0
     fi
     # ★點擊也要從被點 session 重導艙身份（wheel／殺席已做；click 先前漏做）

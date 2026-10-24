@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -154,6 +155,23 @@ def ask_key(provider, environ=None, runner=None, locale=None):
     return stub + i18n_lib.t(key, {"name": name, "engine": provider}, locale=locale)
 
 
+TIMEOUT_S = 3.0
+
+
+class _Late(BaseException):
+    """BaseException:check() 裡有 except Exception(查壞了當 ok),繼承 Exception 會被它吞掉、上限形同沒有。"""
+
+
+def _timeout_s():
+    """EZ2_OPEN_READINESS_TIMEOUT 只給測試縮短;壞值或 <=0 一律回預設。
+    不是防線:只影響右鍵選單上「缺金鑰」那幾個字;超時照舊開席,由那一席自己報缺金鑰,存金鑰仍要過 secret ask 的 Touch ID。"""
+    try:
+        v = float(os.environ.get("EZ2_OPEN_READINESS_TIMEOUT") or TIMEOUT_S)
+    except ValueError:
+        return TIMEOUT_S
+    return v if 0 < v <= TIMEOUT_S else TIMEOUT_S
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) == 2 and argv[0] == "ask-key":
@@ -162,13 +180,37 @@ def main(argv=None):
     if not argv:
         print("用法:open_readiness.py <provider>... | ask-key <provider>", file=sys.stderr)
         return 2
-    for provider in argv:                # 一家一行、順序照參數(選單一次問完,不是一家起一次 python)
-        state, detail = check(provider)
-        suffix = label_suffix(state, detail)
-        if state == "ok" or not suffix:
-            print("ok")
-        else:
-            print("%s\t%s\t%s" % (state, detail, suffix))
+    # 右鍵選單在等這支才畫得出來:整批最多等 TIMEOUT_S 秒(某家設定檔卡在網路磁碟之類),
+    #   超時的那幾家照「查壞了一律當 ok」印 ok —— 選單照常開,點下去由那一席自己講原因。
+    lines = []
+    done = []
+
+    def _late(_signum, _frame):
+        if not done:                     # 迴圈已跑完才響 ⇒ 不拋(不然會從 finally 冒出去、整批沒輸出)
+            raise _Late()
+
+    old, armed = None, False
+    try:
+        try:                             # 開計時器也在外層 try 裡:剛開就響也接得住、處理器照樣還原
+            old = signal.signal(signal.SIGALRM, _late)
+            armed = True
+            signal.setitimer(signal.ITIMER_REAL, _timeout_s())
+        except (AttributeError, ValueError, OSError):   # 沒有 SIGALRM 的平台 / 不在主執行緒:照舊不設上限
+            pass
+        for provider in argv:            # 一家一行、順序照參數(選單一次問完,不是一家起一次 python)
+            state, detail = check(provider)
+            suffix = label_suffix(state, detail)
+            lines.append("ok" if state == "ok" or not suffix else "%s\t%s\t%s" % (state, detail, suffix))
+        done.append(True)
+    except _Late:
+        pass
+    finally:
+        if armed:                        # 舊處理器不是 Python 設的會回 None,不能拿它判斷要不要還原
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, signal.SIG_DFL if old is None else old)
+    lines += ["ok"] * (len(argv) - len(lines))
+    for line in lines:
+        print(line)
     return 0
 
 
