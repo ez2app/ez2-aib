@@ -13,6 +13,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 - **Turning sharing off takes effect right away online**: `aib chat share … off` (and narrowing a space) now sends a revoke, so your friend stops seeing what you shared without waiting for the old snapshot to expire. Order is judged by each sender's own send time and expiry by the time it was received, so a sender's clock running fast or slow cannot bring an old snapshot back.
 - **Worktrees and clones must live where Spotlight does not index**: on a Mac, `git worktree add` / `git worktree move` / `git clone` into an ordinary folder under your home is blocked with a suggestion to use `~/wt.noindex/<name>`; the handoff check also fails while one of this seat's worktrees is still in an indexed folder (move it with `git worktree move`).
 - **Chat receipts no longer step backwards**: when your own "sent to relay" note is written after the other side has already answered (for example `queued`), `aib chat recent` keeps showing the other side's answer instead of falling back to "sent to relay".
+- **`aib chat connect` (new)**: connect with someone in one go: add the friend or accept their request, and set sharing (`--share` / `--space` / `--open`) with at most one fingerprint. `aib chat share` can change presence and space together (`--space`) with one fingerprint. If the request cannot be sent, the friend just added is removed again and your own sharing settings are left as they were; removing a friend only clears levels wider than your default.
 
 ## 0.1.53
 
