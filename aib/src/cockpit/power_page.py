@@ -266,7 +266,7 @@ def _page_data(st, now):
         "L": {k: T(k) for k in ("copy", "copied", "pick_ai", "model_default", "persona_none", "brain_none",
                                 "step_open", "step_bind", "seat_placeholder_note", "login_title",
                                 "login_note", "quota_note", "off_title", "off_note", "aib_note",
-                                "ask_need_login", "ask_cmd_note", "ask_unsupported", "light_unknown_ok", "login_none", "copy_failed", "why_cmd_note", "why_other_note", "why_empty",
+                                "ask_need_login", "ask_cmd_note", "login_opt", "ask_may_login", "ask_unsupported", "light_unknown_ok", "login_none", "copy_failed", "why_cmd_note", "why_other_note", "why_empty",
                                 "recent_none", "up", "down", "remove", "light_off", "power_save_on", "power_save_off")},
     }
 
@@ -292,8 +292,8 @@ def render(st, now=None):
     suggest = suggest or ["q_first_seat", "q_lights", "q_handoff"]
     why_grid = "".join('<button class="why" data-why="%s"><i class="rk"></i><span>%s</span></button>'
                        % (k, _e(T("why_" + k))) for k in WHY)
-    q_li = "".join('<li><span>%s</span><button class="cp" data-cmd="%s">%s</button></li>'
-                   % (_e(T(q)), _e(T(q)), _e(T("copy_q"))) for q in suggest)
+    q_li = "".join('<li><span>%s</span><button class="cp" data-cmd="%s">%s</button><code class="q">%s</code></li>'
+                   % (_e(T(q)), _e(T(q)), _e(T("copy_q")), _e(T(q))) for q in suggest)   # 複製失敗時才顯示、選起來
     return PAGE % {
         "title": _e(T("title")), "snapshot": _e(T("snapshot", when=_when(now))), "ver": _e(ver),
         "ready": _e(T("hud_ready", n=ready, m=total)),
@@ -376,7 +376,7 @@ animation:breathe 3.2s ease-in-out infinite}
 .ver{display:grid;grid-template-columns:auto auto;justify-content:center;gap:0 6px;font-size:15px;color:var(--dim);text-align:left;margin-top:4px}
 .ver b{font:500 14px var(--mono);color:var(--fg);white-space:nowrap}.note{font-size:15px;color:var(--dim);margin-top:4px;line-height:1.35}.mod.green .note{display:none}
 .acts{margin-top:6px}.act{display:flex;gap:6px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:4px}
-.acts code,.tierbar code{display:none}.acts code.show,.tierbar code.show{display:inline;user-select:all}
+.acts code,.tierbar code,code.q{display:none}.acts code.show,.tierbar code.show,code.q.show{display:inline;user-select:all}
 code{font:15px var(--mono);color:var(--fg);background:#141c36;padding:2px 6px;border-radius:5px;overflow-wrap:anywhere}
 .cp{font-size:16px;color:#04101c;background:var(--acc);border:0;border-radius:6px;padding:3px 12px;cursor:pointer;white-space:nowrap}
 .cp:hover{filter:brightness(1.15)}
@@ -589,7 +589,8 @@ function fillSelects(){var m=$('model');m.textContent='';S.model='';
 function showSel(){var box=$('selai');box.textContent='';document.querySelectorAll('.mod').forEach(function(x){x.classList.toggle('sel',x.getAttribute('data-key')===cur)});
  if(!cur){box.appendChild(el('span','dim',L.pick_ai));return}
  var src=document.querySelector('.mod[data-key="'+cur+'"]');if(src){var orb=src.querySelector('.orb').cloneNode(true);orb.style.setProperty('--ring',src.style.getPropertyValue('--ring'));box.appendChild(orb)}
- var w=el('div');w.appendChild(el('div','nm',AI[cur].name));w.appendChild(el('div','dim',AI[cur].light==='unknown'?L.light_unknown_ok:AI[cur].note));box.appendChild(w)}
+ var w=el('div');w.appendChild(el('div','nm',AI[cur].name));w.appendChild(el('div','dim',AI[cur].light==='unknown'?L.light_unknown_ok:AI[cur].note));
+ if(AI[cur].light==='unknown'&&AI[cur].can_login)w.appendChild(copyRow('aib power login '+cur,L.login_opt));box.appendChild(w)}
 function pick(k){cur=k;showSel();fillSelects()}
 function openModal(title,note,cmds,foot){$('mt').textContent=title;$('mn').textContent=note||'';var c=$('mc');c.textContent='';
  cmds.forEach(function(x){c.appendChild(copyRow(x))});$('mf').textContent=foot||'';$('modal').classList.add('on')}
@@ -626,7 +627,8 @@ $('askbtn').addEventListener('click',function(){var c=$('askcmd');c.textContent=
  if(!cur){c.appendChild(el('div','dim',L.pick_ai))}else if(D.ask_brands.indexOf(cur)<0){c.appendChild(el('div','dim',L.ask_unsupported))}
  else if(AI[cur].light==='yellow'||AI[cur].light==='red'){c.appendChild(el('div','dim',L.ask_need_login));
   c.appendChild(copyRow('aib power login '+cur))}else{var m=S.model,a=['aib','power','ask',cur];if(m)a.push('--model',m);
-  c.appendChild(copyRow(a.join(' ')));c.appendChild(el('div','dim',L.ask_cmd_note))}
+  c.appendChild(copyRow(a.join(' ')));c.appendChild(el('div','dim',L.ask_cmd_note));
+  if(AI[cur].light==='unknown'){c.appendChild(el('div','dim',L.ask_may_login));if(AI[cur].can_login)c.appendChild(copyRow('aib power login '+cur))}}
  $('ask').classList.add('on')});
 /* 任務板分頁 */
 document.querySelectorAll('.tab[data-tier]').forEach(function(t){t.addEventListener('click',function(){var k=t.getAttribute('data-tier');

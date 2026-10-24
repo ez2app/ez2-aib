@@ -5220,6 +5220,8 @@
   "aib.power.page.ask_title": "💬 Ask AI",
   "aib.power.page.ask_rules": "The AI picked in your console answers aib questions live. It only answers, with all tools off, uses your own subscription, and saves nothing.",
   "aib.power.page.ask_suggest": "Suggested questions",
+  "aib.power.page.ask_may_login": "Login status unknown; if it says to log in first, run the login command below",
+  "aib.power.page.login_opt": "Optional: log in",
   "aib.power.page.copy_failed": "Could not copy; the text is selected for you",
   "aib.power.page.login_none": "This AI has no login flow aib can start; log in the way its own docs describe",
   "aib.power.page.light_unknown_ok": "Login status unknown (you can still depart)",

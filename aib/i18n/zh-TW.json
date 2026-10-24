@@ -5220,6 +5220,8 @@
   "aib.power.page.ask_title": "💬 問 AI",
   "aib.power.page.ask_rules": "用你控制台選的 AI 即時回答 aib 操作問題。只回答、不動手(工具全關),用的是你自己的訂閱，不存檔。",
   "aib.power.page.ask_suggest": "建議問題",
+  "aib.power.page.ask_may_login": "量不到登入狀態;回「先登入」就先跑下面的登入指令",
+  "aib.power.page.login_opt": "選用：登入",
   "aib.power.page.copy_failed": "複製不了，已選起來請自己複製",
   "aib.power.page.login_none": "這家 AI 沒有可代跑的登入流程，請照它自己的說明登入",
   "aib.power.page.light_unknown_ok": "量不到登入狀態(可以照樣出發)",

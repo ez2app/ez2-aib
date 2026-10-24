@@ -5220,6 +5220,8 @@
   "aib.power.page.ask_title": "💬 AI に聞く",
   "aib.power.page.ask_rules": "コントロール台で選んだ AI が aib の操作の質問にその場で答えます。回答のみ(ツールはすべてオフ)、あなた自身のサブスクリプションを使い、保存しません。",
   "aib.power.page.ask_suggest": "おすすめの質問",
+  "aib.power.page.ask_may_login": "ログイン状態が確認できません。「先にログイン」と出たら下のログインコマンドを実行してください",
+  "aib.power.page.login_opt": "任意:ログイン",
   "aib.power.page.copy_failed": "コピーできませんでした。選択済みなので手動でコピーしてください",
   "aib.power.page.login_none": "この AI は aib から起動できるログイン手順がありません。公式の案内どおりにログインしてください",
   "aib.power.page.light_unknown_ok": "ログイン状態は確認できません(そのまま出発できます)",
