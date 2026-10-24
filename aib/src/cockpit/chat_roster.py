@@ -648,7 +648,7 @@ def parse(content, signer_npub, owner=None):
     env_ok = rec.get("envelope")
     if not isinstance(env_ok, list) or not all(isinstance(x, int) for x in env_ok):
         raise RosterError("bad_envelope")
-    n, seen = 0, set()
+    n, seen, dup = 0, set(), set()
     for cab in rec["cabins"]:
         if not isinstance(cab, dict) or not (_CABIN_RE.match(str(cab.get("cabin"))) or cab.get("cabin") == "main"):
             raise RosterError("bad_cabin")
@@ -662,12 +662,15 @@ def parse(content, signer_npub, owner=None):
                 raise RosterError("bad_seat")
             key = (cab["cabin"], s["seat"])
             if key in seen:
-                raise RosterError("duplicate_seat")
+                dup.add(key)       # 10-24:同一席列兩次(寄件那台換過人格)⇒ 只丟這一席,其他席照收(以前整份拒,全台四天寄不進去)
             seen.add(key)
             if s.get("name") is not None and GF.clean_display_name(s["name"]) != s["name"]:
                 s["name"] = None
             if not isinstance(s.get("langs", []), list) or not all(isinstance(x, str) and _LANG_RE.match(x) for x in s.get("langs", [])):
                 s["langs"] = []
+    for cab in rec["cabins"]:
+        cab["seats"] = [s for s in cab["seats"] if (cab["cabin"], s["seat"]) not in dup]   # 不知道哪一把才對 ⇒ 那一席全丟
+    rec["dropped_seats"] = sorted("%s/%s" % k for k in dup)
     # 第 32 節:社群與 NIP-05 是選填;不合格的整欄當沒有(不讓名冊因此不能用)
     rec["socials"] = clean_socials(rec.get("socials"))
     rec["nip05"] = clean_nip05(rec.get("nip05"))

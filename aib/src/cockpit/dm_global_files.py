@@ -157,6 +157,19 @@ def _is_int(v):
     return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 
 
+def env_secs(name, default, env=None, floor=1.0):
+    """秒數型環境變數(測試縮短節流用):讀不懂 / 非有限數 ⇒ 預設值;太小 ⇒ 夾到 floor(0 會讓節流失效、每拍重發)。"""
+    import math
+    raw = (os.environ if env is None else env).get(name)
+    try:
+        v = float(raw) if raw not in (None, "") else float(default)
+    except (TypeError, ValueError):
+        v = float(default)
+    if not math.isfinite(v):
+        v = float(default)
+    return max(float(floor), v)
+
+
 def _is_str(v):
     return isinstance(v, str)
 
@@ -556,6 +569,8 @@ REQUEST_NOTE_MAX = 140      # 好友申請附的一句話(第 29.4 節)
 # 第二波 #6(10-21):回「對方本人寫的」那封 ⇒ 對方那邊建立時就待審(human_reply),回條只回 held、detail 空,
 #   寄件端只看到 stage=held 不知道對方要去哪看。補一句人話 hint;**detail 代碼不動**(艦長室 / dm-ctl 照 detail 判)。
 #   判法 = 我佇列裡那封原信的 global.author == human,跟對方那邊判 sent_author 用的是同一個 aib-author 標籤。
+# 10-24:對方名冊同一席列了兩次(對方換過人格、兩把都還在)⇒ 這一席整席不收;why 照回 no_seat,另給這句
+DUPLICATE_SEAT_HINT = "對方的名冊把這一席列了兩次(對方換過人格、舊鑰還沒停用),暫時寄不進去;請對方升級 aib 後重開轉接程式"
 HELD_HUMAN_HINT = "對方本人會在艦長室收件匣看到這封(不進對方 AI 的框);等本人看了才會有回音"
 
 
@@ -597,6 +612,9 @@ def outcome(receipts, op="send", verify=False):
             d = r.get("detail", "")
             return 2, st, None, REFUSE_TEXT.get(d, d) if st == "refused" else d
     return None
+
+
+UNSENT_STAGES = ("abort", "bridge-off", "timeout-withdrawn")   # send_and_wait 保證一個字都沒送出的三種結果
 
 
 def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=time.time, sleep=time.sleep):
@@ -741,6 +759,140 @@ def add_request(root, rec, every=86400, now=None):
     return _locked_update(root, "requests.json", fn, lambda: {"v": VERSION, "requests": []})
 
 
+# invites.json(10-24 清單第 11 條):邀請碼。對方 aib chat join <我的位址> <碼> ⇒ 好友申請內文帶 invite:<碼>,
+# 我的轉接程式對得上(沒過期、還有次數)就自動同意,雙方不用再按。碼只存在本機;24 小時、一次。
+# 10-24 晚 Andy「位址太長、照 10 碼做」:碼另外用名冊金鑰簽一筆 d=aib-invite:<雜湊> 放中繼站 ⇒ 對方只打碼就查得到位址。
+#   中繼站只看得到查詢雜湊(見下面 invite_keys:PBKDF2 100 萬次、鹽帶建立日期)。
+INVITE_RE = re.compile(r"^[A-Z2-7]{10}$")
+INVITE_TTL_S = 86400
+INVITE_HASH_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def invite_norm(text):
+    """會員打的碼 ⇒ 10 碼大寫;容許小寫、中間一個 - 或空白、0 / 1 / 8 打成 O / I / B。不像碼 ⇒ None。"""
+    t = (text or "").strip().upper()
+    if t.count("-") + t.count(" ") > 1:
+        return None
+    t = t.replace("-", "").replace(" ", "").translate(str.maketrans({"0": "O", "1": "I", "8": "B"}))
+    return t if INVITE_RE.match(t) else None
+
+
+def invite_fmt(code):
+    return code[:5] + "-" + code[5:]
+
+
+# 中繼站上的邀請(#299 第 1 輪審 H1 / M1 / M2 / L4):碼 ⇒ PBKDF2(鹽帶建立那天的 UTC 日期)32 bytes,
+#   前 16 = 查詢雜湊(d 標籤)、後 16 = 金鑰。內容用金鑰加密 + HMAC(綁簽章者),沒有碼的人發同一個 d 也過不了驗,
+#   中繼站上也看不到位址 / 到期。真實威脅:用 kind 撈回當天全部雜湊離線猜碼;10 碼 50 bit、每猜一次 100 萬次 PBKDF2,
+#   鹽帶日期 ⇒ 不能跨天預算。猜中只換到「跟碼的主人互加好友(預設分享)」,本人看得到、刪得掉。
+INVITE_KDF_ITER = 1000000
+
+
+def invite_day(ts):
+    return time.strftime("%Y%m%d", time.gmtime(int(ts)))
+
+
+def invite_keys(code, day):
+    """⇒ (查詢雜湊 32 位十六進位, 金鑰 16 bytes)。day = 建立那天(invite_day);加入方查今天與昨天兩組。"""
+    raw = hashlib.pbkdf2_hmac("sha256", code.encode("ascii"), ("aib-invite-v2:" + day).encode("ascii"), INVITE_KDF_ITER, 32)
+    return raw[:16].hex(), raw[16:]
+
+
+def _invite_xor(key, nonce, data):
+    import hmac
+    out = bytearray()
+    for i in range(0, len(data), 32):
+        block = hmac.new(key, b"aib-invite-ks\0" + nonce + i.to_bytes(4, "big"), hashlib.sha256).digest()
+        out += bytes(x ^ y for x, y in zip(data[i:i + 32], block))
+    return bytes(out)
+
+
+def _invite_mac(key, author, nonce, ct):
+    import hmac
+    return hmac.new(key, b"aib-invite-mac\0" + author.encode("ascii") + b"\0" + nonce + ct, hashlib.sha256).hexdigest()
+
+
+def invite_seal(key, author, plain):
+    """邀請內容 ⇒ {"v":2,"n","c","m"}:HMAC-SHA256 計數器模式加密 + HMAC(簽章者 npub、nonce、密文)。"""
+    import base64
+    nonce = os.urandom(16)
+    ct = _invite_xor(key, nonce, json.dumps(plain, sort_keys=True).encode("utf-8"))
+    return {"v": 2, "n": base64.b64encode(nonce).decode("ascii"), "c": base64.b64encode(ct).decode("ascii"),
+            "m": _invite_mac(key, author, nonce, ct)}
+
+
+def invite_open(key, author, body):
+    """驗 + 解 ⇒ dict;MAC 不對(沒有碼的人發的、或換了簽章者)/ 格式不對 ⇒ None。"""
+    import base64
+    import binascii
+    import hmac
+    if not isinstance(body, dict) or body.get("v") != 2 or not all(isinstance(body.get(k), str) for k in "ncm"):
+        return None
+    try:
+        nonce, ct = base64.b64decode(body["n"], validate=True), base64.b64decode(body["c"], validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if len(nonce) != 16 or len(ct) > 2048 or not isinstance(author, str) or not author.isascii():
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", body["m"]):    # 先驗形狀:非 ASCII 會讓 compare_digest 丟 TypeError(#299 r2 M1)
+        return None
+    if not hmac.compare_digest(_invite_mac(key, author, nonce, ct), body["m"]):
+        return None
+    try:
+        plain = json.loads(_invite_xor(key, nonce, ct).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return plain if isinstance(plain, dict) else None
+INVITE_NOTE_RE = re.compile(r"^invite:([A-Z2-7]{10})$")
+
+
+def create_invite(root, now=None, ttl=INVITE_TTL_S, uses=1):
+    """產一組邀請碼 ⇒ {code, expires_at, uses}。順手清掉過期的。"""
+    import base64
+    now = int(time.time() if now is None else now)
+    code = base64.b32encode(os.urandom(10)).decode("ascii")[:10]
+    row = {"code": code, "created_at": now, "expires_at": now + int(ttl), "uses": int(uses)}
+
+    def fn(cur):
+        rows = [r for r in cur.setdefault("invites", []) if isinstance(r, dict) and int(r.get("expires_at") or 0) > now
+                and int(r.get("uses") or 0) > 0]
+        cur["invites"] = rows[-19:] + [row]                 # 最多留 20 組
+    _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
+    return {k: row[k] for k in ("code", "created_at", "expires_at", "uses")}
+
+
+def drop_invite(root, code):
+    """作廢一組(放中繼站撞號、換一組時;沒交出去的碼不留著)。"""
+    def fn(cur):
+        cur["invites"] = [r for r in cur.setdefault("invites", []) if isinstance(r, dict) and r.get("code") != code]
+    _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
+
+
+def refund_invite(root, code):
+    """扣了次數、後面卻沒加成好友(例:加好友丟 RosterError)⇒ 補回一次。"""
+    def fn(cur):
+        for r in cur.setdefault("invites", []):
+            if isinstance(r, dict) and r.get("code") == code:
+                r["uses"] = int(r.get("uses") or 0) + 1
+    _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
+
+
+def take_invite(root, code, now=None):
+    """對得上(沒過期、還有次數)⇒ 次數減一、回那一筆(dict,算 True;要 created_at 推金鑰);其他 False。"""
+    if not INVITE_RE.match(code or ""):
+        return False
+    now = int(time.time() if now is None else now)
+
+    def fn(cur):
+        for r in cur.setdefault("invites", []):
+            if isinstance(r, dict) and r.get("code") == code and int(r.get("expires_at") or 0) > now \
+                    and int(r.get("uses") or 0) > 0:
+                r["uses"] = int(r["uses"]) - 1
+                return dict(r, created_at=int(r.get("created_at") or int(r["expires_at"]) - INVITE_TTL_S))
+        return False
+    return _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
+
+
 def pop_request(root, owner):
     """拿掉一則申請(同意 / 拒絕後),回那一筆;沒有回 None。"""
     def fn(cur):
@@ -871,6 +1023,37 @@ def drop_world_owner(root, owner, upto=None, now=None):
                            and now - int_or0(v.get("presence_at")) < WORLD_FRESH_S)]:
             cab.pop(k, None)
     _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
+# refresh.json(10-24 在不在):本人打開世界面板 ⇒ 核心寫 requested_at;工人看到就在下一份在線狀態加
+# aib-ask=1 向好友 / 我的其他機器問一次,寫 asked_at。對方回的是一份普通在線狀態(舊版收到 aib-ask 不認得、照常收)。
+REFRESH_GAP_S = 30
+
+
+def request_refresh(root, now=None):
+    """要工人問一次「在不在」。上次要求不到 REFRESH_GAP_S ⇒ 不重寫,回 False。"""
+    now = int(time.time() if now is None else now)
+
+    def fn(cur):
+        if now - int(cur.get("requested_at") or 0) < REFRESH_GAP_S:
+            return False
+        cur["requested_at"] = now
+        return True
+    return _locked_update(root, "refresh.json", fn, lambda: {"v": VERSION})
+
+
+def note_asked(root, now=None):
+    now = int(time.time() if now is None else now)
+    _locked_update(root, "refresh.json", lambda cur: cur.__setitem__("asked_at", now), lambda: {"v": VERSION})
+
+
+def read_refresh(root):
+    """⇒ {requested_at, asked_at}(沒有的鍵不列)。requested_at > asked_at = 工人還沒問。"""
+    try:
+        cur = json.loads((Path(root) / "refresh.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(cur, dict):
+        return {}
+    return {k: cur[k] for k in ("requested_at", "asked_at") if isinstance(cur.get(k), int) and not isinstance(cur[k], bool)}
 
 
 def drop_world(root, keep_owner):
@@ -976,7 +1159,9 @@ def read_revoked(root, owner, now=None):
 
 
 def note_revoked(root, owner, kind, ts, now=None):
-    """ts = 撤回的寄出時間(原值);now = 收到時間。比手上新才換(收到時間跟著換);舊撤回晚到不延長擋人。"""
+    """ts = 撤回的寄出時間(原值);now = 收到時間。比手上新才換(收到時間跟著換);舊撤回晚到不延長擋人。
+    手上那格已不擋人(收到超過 REVOKE_BACKFILL_S)⇒ 新收到的直接蓋過:不然先前一筆未來時間的撤回過期後,
+    之後真的撤回(寄出時間比它小)會記不進來、不擋舊快照。"""
     if not NPUB_FULL_RE.match(owner or "") or kind not in ("space", "share"):
         return
     now = int(time.time() if now is None else now)
@@ -985,8 +1170,10 @@ def note_revoked(root, owner, kind, ts, now=None):
         per = cur.get("per") if isinstance(cur.get("per"), dict) else {}
         per = {k: v for k, v in per.items() if NPUB_FULL_RE.match(k) and isinstance(v, dict)}
         row = per.setdefault(owner, {})
-        if int_or0(ts) > int_or0(row.get(kind)) or kind + "_at" not in row:
-            row[kind], row[kind + "_at"] = max(int_or0(ts), int_or0(row.get(kind))), now
+        if kind + "_at" not in row or now - int_or0(row.get(kind + "_at")) >= REVOKE_BACKFILL_S:
+            row[kind], row[kind + "_at"] = int_or0(ts), now
+        elif int_or0(ts) > int_or0(row.get(kind)):
+            row[kind], row[kind + "_at"] = int_or0(ts), now
         top = lambda kv: max([int_or0(kv[1].get(k + "_at")) for k in ("space", "share")] or [0])  # noqa: E731
         keep = sorted((kv for kv in per.items() if now - top(kv) < REVOKED_KEEP_S), key=top, reverse=True)[:REVOKED_MAX]
         cur["per"] = dict(keep)

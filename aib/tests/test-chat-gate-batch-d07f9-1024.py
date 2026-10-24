@@ -31,7 +31,7 @@ B4 改 --json 斷言代碼(M5);B9 AIB_TOUCHID=0 真機路徑不提醒(L6)
 #320 第 3 輪審(@abb89 定修法):
 C16 本人先設好的單人等級(比預設嚴的 off / none、或按過指紋的 status / room),connect 申請失敗撤好友後都還在
 C17 移除好友只清比預設寬的:設 off 的移除再加回仍 off;設 status 的清掉
-C18 撤好友時存檔丟 OSError ⇒ 仍是一個 JSON、request_failed、detail undo_failed
+C18 撤好友時存檔丟 OSError ⇒ 仍是一個 JSON、request_failed、detail undo_failed;文字版說好友還在、先 friend remove
 刀(複本):K1 --space 不寫進對象 ⇒ B1 紅;K2 不叫提醒 ⇒ B5 紅;K3 connect 不過門 ⇒ C3 紅;K4 真機不提醒 ⇒ B7 紅;
    K5 視窗用預設等級 ⇒ C5 紅;K6 移除好友不清等級 ⇒ C10 紅;K7 申請沒送出不撤好友 ⇒ C11 紅;
    K8 撤好友也清等級 ⇒ C16 紅;K9 移除好友全清 ⇒ C17 紅
@@ -335,6 +335,12 @@ class Connect(OG.Base):
             rc, out = self.run_cb("connect", new, "--json")
         got = json.loads(out.strip())
         self.assertEqual((rc, got["why"], got["detail"]), (2, "request_failed", "undo_failed"))
+        new = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xc181))       # 上一位已經留在名冊上,換一位
+        with mock.patch.object(CR, "remove_friend", side_effect=OSError("disk full")):
+            rc, out = self.run_cb("connect", new)
+        self.assertEqual(rc, 2)
+        self.assertIn("friend remove " + new, out, "好友其實留著 ⇒ 要叫人先移除,不能說「好友沒加、再打一次」")
+        self.assertNotIn("好友沒加", out)
 
     def test_c15_known_with_request(self):
         OG.GF.add_request(self.root, {"owner": FRIEND, "msgid": OG.GF.new_msgid(), "display_name": "Pro", "note": ""},

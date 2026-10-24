@@ -691,8 +691,8 @@ class TreeCap:
     def _killpg_locked(self):
         """#322 r5:命中當場收整個群組(已脫離成 pid 1 子行程、沒拿管線的背景行程也在群組裡)。
         拿 Popen._waitpid_lock(wait / poll 回收根之前都要拿)⇒ 鎖內 returncode is None ⇒ 根還沒被 wait ⇒
-        群組號碼不會被重用。主執行緒不帶逾時的 wait 會一直抱著鎖(那時根一定還沒回收、且馬上會因為收樹而結束)
-        ⇒ 最多等 1 秒,拿不到就交給主執行緒那條「看到旗標就收群組」。沒有這把鎖(非 CPython)⇒ 同樣交給主執行緒。"""
+        群組號碼不會被重用。主執行緒在 runner._communicate_capped 裡分段等(每段最多 0.5 秒),只在 wait 那一下抱鎖
+        ⇒ 這裡最多等 1 秒;拿不到就交給主執行緒看到 cap.hit 時的保底收群組。沒有這把鎖(非 CPython)⇒ 同樣交給主執行緒。"""
         p = self.proc
         lock = getattr(p, "_waitpid_lock", None) if p is not None else None
         if lock is None or not hasattr(os, "killpg") or not lock.acquire(timeout=1.0):

@@ -6,7 +6,7 @@
 核心(一定跑):
 M0 aib chat mine add/remove/列表:跟好友分開存(mine.json 0600);加自己 / 看不懂 ⇒ rc 2;keys 印出「在另一台跑」那一行
 連 Nostr(要 AIB_TEST_NOSTR_VENV;本機假中繼站):
-P1 27.1 開艙答「要」、沒設名字 ⇒ 不起寄件工人、沒有心跳(不連中繼站);設了名字與國別 ⇒ 工人起來、有心跳
+P1 27.1 開關開著、沒設名字(舊版開通;10-24 起答「要」會自動補,見 test-chat-zero-step)⇒ 不起寄件工人、沒有心跳(不連中繼站);設了名字與國別 ⇒ 工人起來、有心跳
 M1 27.2 B 把 A 綁成「我的其他機器」(沒加好友)⇒ A 寄的收下(queued),不會被當陌生拒收;B 的好友名單沒多
 S1 27.3 A 寄給 B(B 先加 A 好友)⇒ A 的好友名單自動多 B(標寄過信);B 回信 ⇒ A 收下
 刀(複本):K1 沒名字也起工人 ⇒ P1 紅;K2 mine 不當本人 ⇒ M1 紅;K3 寄出不記對方 ⇒ S1 紅
@@ -32,9 +32,6 @@ _spec = importlib.util.spec_from_file_location("chat_recv_pa", str(HERE / "test-
 RT = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(RT)
 SB = RT.SB
-_fspec = importlib.util.spec_from_file_location("chat_friends_pa", str(HERE / "test-chat-friends-d07f9-1016.py"))
-FT = importlib.util.module_from_spec(_fspec)
-_fspec.loader.exec_module(FT)
 OTHER = NK.npub(NK.pubkey_hex("%064x" % 43))
 
 
@@ -80,8 +77,8 @@ class Network(unittest.TestCase):
         b.chat.mkdir(parents=True, exist_ok=True)
         os.symlink(SB.NOSTR_VENV, str(b.chat / "venv"))
         b.seat("20261016-000000-6ddf", "w2", "00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")
-        rc, out = FT.run_tty(b, ["auto"], "y")                        # 開艙時人在終端機答「要」(問一次,14:3x)
-        self.assertEqual(rc, 0, out)
+        # 開關開著、但沒有名字 / 國別(舊版開通的機器;10-24 起答「要」會自動補電腦名與地區,所以直接寫開關檔)
+        (b.chat / "enabled.json").write_text(json.dumps({"v": 1, "on": True, "at": 1}))
         b.start_run()
         self.assertTrue(b.wait_for(lambda: b.status().get("state") == "no_profile", 30), b.status())
         b.wait_for(lambda: False, 3)                                   # 多跑幾輪

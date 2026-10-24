@@ -7,8 +7,8 @@
 
 10-24 Andy:「要有一個點擊他選的 AI 在這個視窗中，即時對話用來 Q&A」+ @abb89 硬線「只回答、不動手」。
 - 只叫得動能驗證關工具的家:claude(--tools "" + --strict-mcp-config 不載 MCP + 關 skill / 指令)、
-  codex(唯讀沙盒 + 關外掛 / apps / shell / 電腦與瀏覽器操作 + 逐個停用 MCP 並重列確認 + 不留對話)。其他家 ⇒ power_ask_unsupported(驗不了就不叫,同帳號 AI 威脅守則)。
-- 那家不是綠燈 ⇒ power_ask_login,頁面導去登入;不偷換別家。
+  codex(唯讀沙盒 + 關外掛 / apps / shell / 電腦與瀏覽器操作 / 看圖生圖 / 多代理 / hook / 網路搜尋 + 逐個停用 MCP、重列 MCP 與 features 確認 + 不留對話)。其他家 ⇒ power_ask_unsupported(驗不了就不叫,同帳號 AI 威脅守則)。
+- 那家不是綠燈 ⇒ power_ask_login,頁面導去登入;不偷換別家。判燈與實際問用同一份環境(不帶 API key,只走訂閱登入)。
 - 問題走 stdin(ps 看不到),跑在空的暫存目錄、跑完刪;不寫進任何席位、不存對話。
 - 回答裡的指令只抽出來給頁面「複製」,核心不執行;回答去控制字元、有長度上限。
 """
@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -36,13 +37,19 @@ _CMD_RE = re.compile(r"\s*(?:\$\s*)?(aib(?: [A-Za-z0-9_./:=,@-]+){1,12})\s*")
 _TASK_RE = re.compile(r"\b(UR[1-7]|SSR(?:1[0-2]|[1-9])|SR(?:1[0-3]|[1-9])|R(?:1[0-2]|[1-9]))\b")
 
 # 關工具的呼叫法;改這裡要先過同帳號 AI 威脅守則的檢查表
+# --settings disableAllHooks:使用者 / aib 裝的 hook 不跑、也收不到問題全文(10-25 第 3 輪稽核 F5)
 CLAUDE_CMD = ["claude", "-p", "--output-format", "text", "--no-session-persistence", "--tools", "",
-              "--strict-mcp-config", "--disable-slash-commands", "--max-turns", "1"]
+              "--strict-mcp-config", "--disable-slash-commands", "--max-turns", "1",
+              "--settings", '{"disableAllHooks":true}']
 CODEX_CMD = ["codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--ephemeral", "--color", "never"]
 # 10-24 03:2x 實跑發現 -c mcp_servers={} 是合併不是取代(設定檔的 node_repl 等照開)⇒ 改成:關外掛 / apps / shell /
 # 電腦與瀏覽器操作,再列 MCP、逐個停用、重列確認全關;驗不過就不叫(power_ask_unsupported hint mcp_not_disabled)
-CODEX_LOCK = ["-c", "features.plugins=false", "-c", "features.apps=false", "-c", "features.shell_tool=false",
-              "-c", "features.computer_use=false", "-c", "features.browser_use=false"]
+# 10-25 第 3 輪稽核 F2:codex 0.164 預設還開著看圖 / 生圖 / 多代理 / hook / 外部瀏覽器 / skill 搜尋…、網路搜尋也沒關
+# ⇒ 一併關;叫之前再用 features list 重列確認(使用者 profile 蓋回來 ⇒ 不叫)。不認得的 features 鍵 codex 照收,舊版不會壞
+LOCK_FEATURES = ("plugins", "apps", "shell_tool", "computer_use", "browser_use", "browser_use_external", "in_app_browser",
+                 "in_app_local_automation", "view_image", "image_generation", "multi_agent", "hooks", "code_mode_host",
+                 "skill_search", "skill_mcp_dependency_install", "tool_suggest", "sleep_tool", "goals")
+CODEX_LOCK = [x for k in LOCK_FEATURES for x in ("-c", "features.%s=false" % k)] + ["-c", "web_search=disabled"]
 _MCP_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 MCP_LIST_TIMEOUT_S = 30
 BRANDS = ("claude", "codex")
@@ -71,7 +78,9 @@ Common commands (from the beginner curriculum; do not invent others, say "see ai
 
 
 # 不是 Cf 但看不見的字:韓文填充字、組合字素連接符;行 / 段分隔(Zl / Zp)也一律去掉(#302 審查)
-INVISIBLE_EXTRA = frozenset((0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0))
+# 變體選擇符(U+FE00–FE0F、U+E0100–E01EF、蒙古文 U+180B–180F)與點字空白 U+2800 也算(第 3 輪稽核 F4:可藏資料)
+INVISIBLE_EXTRA = frozenset((0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800) + tuple(range(0xFE00, 0xFE10))
+                            + tuple(range(0x180B, 0x1810)) + tuple(range(0xE0100, 0xE01F0)))
 
 
 def invisible(c):
@@ -90,17 +99,65 @@ def _clean(s, limit, keep_newlines=True):
 
 
 _ENV_DROP_PREFIX = ("TMUX", "CLAUDECODE", "CLAUDE_CODE_", "AIB_SEAT")
+# 問 AI 只准走本人的訂閱登入，不准悄悄改走 API 計費(花錢一律本人決定;10-25 @abb89 裁 #342 F1)
+_ENV_DROP_NAMES = frozenset(("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY",
+                             "OPENAI_BASE_URL", "CODEX_API_KEY"))
 
 
 def _clean_env():
     """子 CLI 不帶席位 / tmux / 父 Claude 工作階段的環境(訊息 token、socket、埠):不給它回連父席的路。"""
-    return {k: v for k, v in os.environ.items() if not k.startswith(_ENV_DROP_PREFIX)}
+    return {k: v for k, v in os.environ.items() if not k.startswith(_ENV_DROP_PREFIX) and k not in _ENV_DROP_NAMES}
+
+
+def _kill_group(p):
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        p.wait(5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def run_group(cmd, *, input=None, timeout=None, capture_output=False, **kw):
+    """subprocess.run 的替身：子 CLI 自成一組，結束 / 逾時 / 被中斷都把整組砍掉(npm 版 codex 是 node 包原生檔，
+    只砍直接子行程會留孤兒;第 3 輪稽核 F3)。"""
+    if capture_output:
+        kw.setdefault("stdout", subprocess.PIPE)
+        kw.setdefault("stderr", subprocess.PIPE)
+    if input is not None:
+        kw["stdin"] = subprocess.PIPE
+    p = subprocess.Popen(cmd, start_new_session=True, **kw)
+    try:
+        out, err = p.communicate(input, timeout=timeout)
+    finally:
+        _kill_group(p)
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
+
+def _probe_run(cmd):
+    """power_login 的登入狀態指令，但用跟實際問一樣的 _clean_env(#342 F1:判燈帶完整環境 ⇒ 綠燈卻叫失敗)。"""
+    try:
+        import power_login
+        r = run_group(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                      timeout=power_login.STATUS_TIMEOUT_S, env=_clean_env())
+        return r.returncode, r.stdout or ""
+    except (OSError, subprocess.SubprocessError, ImportError):
+        return None, ""
 
 
 def _light(brand):
+    """跟 power_login.light_of 同順序(沒登入 yellow、額度到上限 red、登入著 green、量不到 unknown),但每次用
+    _clean_env 現量、不讀也不寫共用的燈號快取(頁面燈號照舊用完整環境的快取)。"""
     try:
         import power_login
-        return power_login.light_of(brand).get("light")
+        li = power_login.PROBES[brand](_probe_run)
+        if li is False:
+            return "yellow"
+        if power_login.quota(brand)[0]:
+            return "red"
+        return "green" if li is True else "unknown"
     except Exception:  # noqa: BLE001
         return "unknown"
 
@@ -118,6 +175,23 @@ def _mcp_enabled(flags, run):
     return [x.get("name") for x in rows if x.get("enabled") is not False]
 
 
+def _features_off(flags, run):
+    """codex <flags> features list ⇒ LOCK_FEATURES 全是 false 才 True;讀不懂 / 少一個 ⇒ False。"""
+    try:
+        r = run(["codex"] + flags + ["features", "list"], capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=MCP_LIST_TIMEOUT_S, stdin=subprocess.DEVNULL, env=_clean_env())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    if r.returncode != 0 or not isinstance(r.stdout, str):
+        return False
+    seen = {}
+    for line in r.stdout.splitlines():
+        f = line.split()
+        if len(f) >= 2:
+            seen[f[0]] = f[-1]
+    return all(seen.get(k) == "false" for k in LOCK_FEATURES)
+
+
 def codex_lockdown(run):
     """回 codex 要加的關工具旗標;關不乾淨(還有 MCP 開著 / 名稱怪 / 讀不懂)⇒ None。"""
     on = _mcp_enabled(CODEX_LOCK, run)
@@ -125,7 +199,7 @@ def codex_lockdown(run):
         return None
     # codex 的 -c 照「.」直接切、不認 TOML 引號(加引號會變成另一台叫 "x" 的伺服器)⇒ 名稱只收 [A-Za-z0-9_-]、不加引號
     flags = CODEX_LOCK + [x for n in on for x in ("-c", "mcp_servers.%s.enabled=false" % n)]
-    return flags if _mcp_enabled(flags, run) == [] else None
+    return flags if _mcp_enabled(flags, run) == [] and _features_off(flags, run) else None
 
 
 def suggest(rank=None):
@@ -208,14 +282,14 @@ def ask(brand, raw, model=None, *, run=None, light=None, which=shutil.which, tim
             cmd = CLAUDE_CMD + (["--model", model] if model else [])
             out_file = None
         else:
-            lock = codex_lockdown(run or subprocess.run)
+            lock = codex_lockdown(run or run_group)
             if lock is None:
                 return _receipt(False, "power_ask_unsupported", brand, hint="mcp_not_disabled"), 2
             out_file = os.path.join(cwd, "last.txt")
             cmd = CODEX_CMD + lock + (["-m", model] if model else []) + ["-o", out_file, "-"]
         try:
-            r = (run or subprocess.run)(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
-                                        errors="replace", timeout=timeout, cwd=cwd, env=_clean_env())
+            r = (run or run_group)(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
+                                          errors="replace", timeout=timeout, cwd=cwd, env=_clean_env())
         except subprocess.TimeoutExpired:
             return _receipt(False, "power_ask_failed", brand, hint="timeout"), 1
         except OSError:
@@ -237,8 +311,18 @@ def ask(brand, raw, model=None, *, run=None, light=None, which=shutil.which, tim
         shutil.rmtree(cwd, ignore_errors=True)
 
 
+def install_term_handler():
+    """頁面關抽屜用 SIGTERM / SIGHUP 收 ⇒ 轉成 SystemExit,finally 才會砍子 CLI 整組、刪暫存目錄(codex 的答案檔)。"""
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, lambda n, f: sys.exit(128 + n))
+        except (ValueError, OSError):   # 不在主執行緒(被當模組叫)⇒ 不裝
+            pass
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    install_term_handler()
     p = argparse.ArgumentParser(prog="aib power ask")
     p.add_argument("brand", nargs="?")
     p.add_argument("--model")
