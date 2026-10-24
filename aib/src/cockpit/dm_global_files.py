@@ -743,6 +743,44 @@ def add_request(root, rec, every=86400, now=None):
     return _locked_update(root, "requests.json", fn, lambda: {"v": VERSION, "requests": []})
 
 
+# invites.json(10-24 清單第 11 條):邀請碼。對方 aib chat join <我的位址> <碼> ⇒ 好友申請內文帶 invite:<碼>,
+# 我的轉接程式對得上(沒過期、還有次數)就自動同意,雙方不用再按。碼只存在本機;預設 7 天、一次。
+INVITE_RE = re.compile(r"^[A-Z2-7]{10}$")
+INVITE_TTL_S = 7 * 86400
+INVITE_NOTE_RE = re.compile(r"^invite:([A-Z2-7]{10})$")
+
+
+def create_invite(root, now=None, ttl=INVITE_TTL_S, uses=1):
+    """產一組邀請碼 ⇒ {code, expires_at, uses}。順手清掉過期的。"""
+    import base64
+    now = int(time.time() if now is None else now)
+    code = base64.b32encode(os.urandom(10)).decode("ascii")[:10]
+    row = {"code": code, "created_at": now, "expires_at": now + int(ttl), "uses": int(uses)}
+
+    def fn(cur):
+        rows = [r for r in cur.setdefault("invites", []) if isinstance(r, dict) and int(r.get("expires_at") or 0) > now
+                and int(r.get("uses") or 0) > 0]
+        cur["invites"] = rows[-19:] + [row]                 # 最多留 20 組
+    _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
+    return {k: row[k] for k in ("code", "expires_at", "uses")}
+
+
+def take_invite(root, code, now=None):
+    """對得上(沒過期、還有次數)⇒ 次數減一、回 True;其他 False。"""
+    if not INVITE_RE.match(code or ""):
+        return False
+    now = int(time.time() if now is None else now)
+
+    def fn(cur):
+        for r in cur.setdefault("invites", []):
+            if isinstance(r, dict) and r.get("code") == code and int(r.get("expires_at") or 0) > now \
+                    and int(r.get("uses") or 0) > 0:
+                r["uses"] = int(r["uses"]) - 1
+                return True
+        return False
+    return _locked_update(root, "invites.json", fn, lambda: {"v": VERSION, "invites": []})
+
+
 def pop_request(root, owner):
     """拿掉一則申請(同意 / 拒絕後),回那一筆;沒有回 None。"""
     def fn(cur):

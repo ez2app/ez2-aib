@@ -1201,6 +1201,57 @@ def _gate_who(target, env):
     import chat_human as CH
     import touchid_approve as TA
     return TA.clean(CH._who(target, env), 32)
+JOIN_URI_RE = re.compile(r"^aib:join\?to=([^&\s]+)&code=([A-Z2-7]{10})$")
+
+
+def cmd_invite(a, env, out):
+    """10-24 第 11 條:產一組邀請(7 天、一次)。對方跑 aib chat invite use … ⇒ 我的轉接程式自動同意、雙方互為好友。
+    --json 給艦長室畫 QR(uri)。"""
+    pub = _my_published(env)
+    if not pub:
+        out.write(T("request_no_seat") + "\n")
+        return 2
+    inv = GF.create_invite(bridge_root(env))
+    addr = pub[0]["addr"]
+    rec = dict(inv, addr=addr, uri="aib:join?to=%s&code=%s" % (addr, inv["code"]),
+               command="aib chat invite use %s %s" % (addr, inv["code"]))
+    if a.json:
+        out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    else:
+        out.write(T("invite_made", command=rec["command"], days=GF.INVITE_TTL_S // 86400) + "\n")
+    return 0
+
+
+def cmd_invite_use(a, env, out):
+    """用別人的邀請加好友:先把對方加進我的好友,再送帶碼的好友申請(對方對得上就自動同意)。
+    接受 aib chat invite use <位址> <碼>,或一整串 aib:join?to=…&code=…(掃 QR 貼上)。"""
+    import chat_roster as CR
+    addr, code = a.target, a.code
+    m = JOIN_URI_RE.match(addr or "")
+    if m:
+        addr, code = m.group(1), m.group(2)
+    parsed = GF.parse_address(addr or "") or {}
+    if not parsed.get("owner") or not GF.INVITE_RE.match(code or ""):
+        out.write(T("invite_bad") + "\n")
+        return 2
+    try:
+        CR.add_friend(addr, None, env)
+    except CR.RosterError as err:
+        out.write(T("profile_" + str(err)) + "\n")
+        return 2
+    pub = _my_published(env)
+    if not pub:
+        out.write(T("request_no_seat") + "\n")
+        return 2
+    rec = {"v": GF.VERSION, "msgid": GF.new_msgid(), "created_at": int(time.time()), "op": "request",
+           "from": {"cabin": pub[0]["cabin"], "seat": pub[0]["seat"], "attested": True}, "to": addr,
+           "content": "invite:" + code}
+    root = bridge_root(env)
+    GF.ensure_dirs(root)
+    res = GF.send_and_wait(root, rec, wait=int(env.get("AIB_DM_GLOBAL_WAIT") or GF.WAIT_DEFAULT))
+    key = {"delivered": "invite_joined", "held": "invite_held"}.get(res["stage"], "request_other")
+    out.write(T(key, owner=parsed["owner"], stage=res["stage"], detail=res["detail"] or "-") + "\n")
+    return res["rc"] if res["stage"] != "held" else 0
 
 
 def cmd_requests(a, env, out):
@@ -2384,6 +2435,11 @@ def main(argv=None, env=None, out=sys.stdout):
     cn.add_argument("--open", action="store_true")
     cn.add_argument("--note", default="")
     cn.add_argument("--json", action="store_true")
+    iv = sub.add_parser("invite", help=T("help.invite"))
+    iv.add_argument("action", nargs="?", choices=("use",), help=T("help.invite_use"))
+    iv.add_argument("target", nargs="?", help=T("help.invite_target"))
+    iv.add_argument("code", nargs="?")
+    iv.add_argument("--json", action="store_true")
     rqs = sub.add_parser("requests", help=T("help.requests"))
     rqs.add_argument("--json", action="store_true")
     so = sub.add_parser("social", help=T("help.social"))
@@ -2564,6 +2620,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_friend(a, env, out)
     if a.cmd == "request":
         return cmd_request(a, env, out)
+    if a.cmd == "invite":
+        return cmd_invite_use(a, env, out) if a.action == "use" else cmd_invite(a, env, out)
     if a.cmd == "requests":
         return cmd_requests(a, env, out)
     if a.cmd == "connect":
