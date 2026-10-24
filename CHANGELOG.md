@@ -10,6 +10,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 - **`aib memguard` and a per-test memory cap**: every test run by `aib test` gets a memory cap for its whole process tree (`AIB_TEST_MEM_CAP_MB`, default 2048, 0 turns it off); over the cap the tree is stopped with exit code 137 and `memory_cap`. A machine-level guard (`aib memguard scan|watch|log`) watches only your own interpreter processes and never touches seats, Codex, Claude, browsers or apps. Pressing Ctrl-C, closing the terminal or stopping `aib test` now also stops the test that was running instead of leaving it behind.
 - **Fewer disk writes while testing**: the `aib test` trace hook keeps one append-only file open per process instead of opening and closing the trace file for every record (on APFS this cut write amplification from about 76× to 1×).
 - **Lighter right panel**: the captain list syncs only when seats change or every 30 seconds, and window switches are picked up through a tmux hook instead of asking tmux every tick (about 230 → 33 tmux calls in 20 seconds).
+- **Turning sharing off takes effect right away online**: `aib chat share … off` (and narrowing a space) now sends a revoke, so your friend stops seeing what you shared without waiting for the old snapshot to expire. Order is judged by each sender's own send time and expiry by the time it was received, so a sender's clock running fast or slow cannot bring an old snapshot back.
 
 ## 0.1.53
 
