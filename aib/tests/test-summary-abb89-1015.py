@@ -44,6 +44,10 @@ class Base(unittest.TestCase):
         p1.start(), p2.start()
         self.addCleanup(p1.stop)
         self.addCleanup(p2.stop)
+        self.brain = {"ok": True, "uid": "3sum01"}         # 第二大腦另測(test-handoff-writeback-abb89-1024)
+        p3 = mock.patch.object(aib_summary, "brain_write", lambda ctx, report, seat="", writer=None: dict(self.brain))
+        p3.start()
+        self.addCleanup(p3.stop)
         self.report = self.td / "r.json"
         self.report.write_text("{}", encoding="utf-8")
 
@@ -80,6 +84,15 @@ class Summary(Base):
         with self.assertRaises(memory_tidy.TidyError):
             aib_summary.write(self.report, runner=bad)
         self.assertEqual(aib_summary.summary_this_round("abcde"), {})
+
+    def test_brain_write_failure_is_rc2_and_recorded(self):
+        """10-24 維護者「總結…不能跳過、一定要寫回第二大腦」:寫不進 ⇒ 報錯,收據照記 brain.ok=false(verify 第 6 項紅)。"""
+        self.tidy_receipt()
+        self.brain = {"ok": False, "why": "這台量不到第二大腦"}
+        with self.assertRaises(memory_tidy.TidyError) as cm:
+            aib_summary.write(self.report, runner=self.ok_runner)
+        self.assertIn("第二大腦寫不進", str(cm.exception))
+        self.assertFalse(aib_summary.summary_this_round("abcde")["brain"]["ok"])
 
     def test_uses_aib_reply(self):
         self.tidy_receipt()
