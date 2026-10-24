@@ -2,7 +2,7 @@
 """最小 JSON Schema 2020-12 子集直譯器 —— 為事件帳本的 fail-closed 驗證而生。
 
 存在理由:本機沒有 jsonschema 套件,而帳本驗證不能因環境缺件而靜默跳過
-(那正是 ACB 半年圍牆史的病根)。schema 檔案(schemas/event.schema.json)
+(那正是舊載體半年圍牆史的病根)。schema 檔案(schemas/event.schema.json)
 仍是唯一正本;本模組只是直譯器,不是第二份真相。
 
 fail-closed 紀律:

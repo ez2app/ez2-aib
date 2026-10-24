@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 # 左上:人格面板(綁定卡+runtime store 訊號+候審佇列)
-# 遷自 ~/ez2-cockpit-demo/acb-left-persona.sh(E2.1;trunc 改用 cockpit_lib 唯一實作)
+# 遷自舊 demo 的 left-persona(E2.1;trunc 改用 cockpit_lib 唯一實作)
 . "$(dirname "$0")/cockpit-env.sh"
 while true; do
   [ "${EZ2_ONESHOT:-0}" = "1" ] || clear
@@ -21,9 +21,9 @@ tr = Translator()
 
 runtime = os.environ.get('EZ2_PERSONA_RUNTIME', os.path.expanduser('~/.ez2-persona-runtime'))
 
-# ★★ 2026-08-21:人格來源從 ACB registry 換成 AIB 身份層(艦長 20:32 裁為
+# ★★ 2026-08-21:人格來源從舊載體 registry 換成 AIB 身份層(艦長 20:32 裁為
 #   「現在畫面上的正確性缺陷」,不是清理項)。舊碼有兩個獨立的問題:
-#   ① 來源已死:~/.acb/sessions/by-id 最後一筆 08-11,而畫面沒有任何過期標示。
+#   ① 來源已死:舊載體 sessions/by-id 最後一筆 08-11,而畫面沒有任何過期標示。
 #   ② **取的不是本艙的席**:它挑的是全部 517 筆裡 beat_epoch 最大且有人格的那一筆
 #      —— 一個全域 argmax,與這一艙、這一席都無關。畫面上只印人格名字,
 #      所以「這是誰的人格」從來沒有被顯示過,也就沒有人能發現它是別人的。

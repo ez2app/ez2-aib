@@ -43,8 +43,8 @@ for p in glob.glob(os.path.join(os.environ.get('EZ2_TASKS_DIR', ''), '*.json')):
     except Exception:
         pass
 run = sum(1 for s in tasks.values() if s == 'in_progress')
-# ★ 2026-08-21 ACB 廢止(工單 DISPATCH-acb-sweep-0821 §二·A·3):
-# 原本這裡數 ~/.acb/inbox/pm/*.md 的未讀人類訊息,加一個 ' 📩人N' 尾綴。
+# ★ 2026-08-21 舊載體廢止(工單 §二·A·3):
+# 原本這裡數舊載體收件匣的未讀人類訊息,加一個 ' 📩人N' 尾綴。
 # 該目錄現存 *.md = 0 檔(最後寫入 07-18),所以 hn 恆 0、尾綴恆空——
 # 刪掉它畫面逐位元組不變(交付時已用改動前後輸出比對證明)。
 # 選「刪」不選「改源」的理由:AIB 這邊**沒有**人類收件匣可以改指

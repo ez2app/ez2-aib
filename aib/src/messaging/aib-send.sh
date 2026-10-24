@@ -8,7 +8,7 @@
 # 閘門設在咽喉不設在善意(原理 5):要送訊息就得經過這裡,判定由
 # lineage.py 出,本腳本只負責「不過就不送」與「過了才轉交真通道」。
 #
-# 預設 dry-run:ACB 是生產通道,送出去就收不回來,--execute 才真送。
+# 預設 dry-run:真通道送出去就收不回來,--execute 才真送。
 # 判定為 deny 時,即使帶 --execute 也不送 —— 閘門在前,旗標在後。
 #
 # rc(本咽喉層;對外那一份在 src/cockpit/dm-ctl.sh 檔頭):
@@ -37,12 +37,12 @@ if [ -z "$PY3" ]; then
 fi
 PY3="${PY3:-python3}"
 
-# ★ 08-21 車道 C(a seat 交付):ACB session registry 這條身份來源**已廢**。
+# ★ 08-21 車道 C(a seat 交付):舊載體 session registry 這條身份來源**已廢**(10-25 舊載體整個移除)。
 #   廢的理由不是「舊」,是它從來沒有被走過(閘門三段卡在第一段:存在→被經過→
 #   響了有人聽):唯一的生產呼叫點 ctl-send-message.sh:63 條件是
 #   `[ -n "${EZ2_SESSION_UUID:-}" ]`,而活艙的啟動命令逐字含 `env -u
 #   EZ2_SESSION_UUID`,`tmux show-environment` 回 `-EZ2_SESSION_UUID`(明確 unset)。
-#   來源本身也早就停了:~/.acb/sessions/by-id 最新一筆 08-11,十天未更新。
+#   來源本身也早就停了:舊登記簿最新一筆 08-11,十天未更新。
 #   ★ 廢掉的是**來源路徑**,不是 --sender-uuid 這個能力:登記簿目錄改成
 #     EZ2_AIB_REGISTRY_DIR 且**沒有預設**——不猜路徑,沒設就是查不到身份,
 #     fail-closed 不送(deny identity_not_found)。
@@ -53,7 +53,7 @@ PY3="${PY3:-python3}"
 #     **先定義欄位映射並讓它有真的依據**,不是把路徑指過去就好——
 #     把 trust=self_reported 映成 registry_verified 等於自己發給自己一張證書。
 REGISTRY_DIR="${EZ2_AIB_REGISTRY_DIR:-}"
-# 通道更換(2026-08-14,aib dm 刀):ACB 送信段廢(acb 已死,EM 軸拆除),
+# 通道更換(2026-08-14,aib dm 刀):舊載體送信段廢(EM 軸拆除),
 # 真通道=v2/v3 DM 引擎(tools/cockpit-ops/aib-dm.sh,fail-closed 五守衛+
 # 卡稿偵測)。--to 仍是血緣判定的對象;實體投遞落點由 --tmux-window 指定。
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -106,8 +106,8 @@ if [ -n "$SENDER_JSON" ]; then
 elif [ -n "$SENDER_UUID" ]; then
   if [ -z "$REGISTRY_DIR" ]; then
     # 沒有登記簿=查不到這個 uuid 的身份。看不見來源就不准送(原理 10 的閘門側)。
-    # 語意與 lineage.py 查無此人時一致,額外帶 retired_channel 說明**為什麼**沒有來源。
-    RESULT='{"decision":"deny","code":"identity_not_found","retired_channel":"acb_session_registry","reason":"沒有身份登記簿:ACB registry 通道已廢,EZ2_AIB_REGISTRY_DIR 未設(不猜路徑)。改用 --sender-json,或先完成 registry_verified 欄位映射再接新來源。"}'
+    # 語意與 lineage.py 查無此人時一致;reason 說明**為什麼**沒有來源。
+    RESULT='{"decision":"deny","code":"identity_not_found","reason":"沒有身份登記簿:EZ2_AIB_REGISTRY_DIR 未設(不猜路徑)。改用 --sender-json,或先完成 registry_verified 欄位映射再接新來源。"}'
     RC=1
   else
     set +e
@@ -133,7 +133,7 @@ fi
 # **本咽喉層預設 dry-run+deny 不送的原語意一行不動**——未來誰想「統一」
 # 這兩個預設,先讀這行:統一即拆掉閘門的保險。
 if [ "$EXECUTE" = "1" ]; then
-  [ -n "$TMUX_WINDOW" ] || { echo "需要 --tmux-window(真通道=DM 引擎,ACB 段已廢)" >&2; exit 2; }
+  [ -n "$TMUX_WINDOW" ] || { echo "需要 --tmux-window(真通道=DM 引擎)" >&2; exit 2; }
   AIB_DM_SOCKET="$TMUX_SOCKET" bash "$DM_ENGINE" "$TMUX_WINDOW" "$BODY"
 else
   # 刻意不用 printf '%q' 包內容:macOS 內建 bash 3.2 對非 ASCII 會吐出

@@ -51,23 +51,23 @@ uid: 3cpog0
 aliases:
   - 3cpog0
   - "📋 Dashboard"
-  - ACB總覽
+  - DEMO總覽
 tags:
-- project/acb
+- project/demo
 - "#dashboard"
 - 'auto-generated'
 legacy_paths:
   - 舊/位置.md
 created: 2026-06-05T00:00:00
 ---
-# ACB 專案總覽
+# DEMO 專案總覽
 """
 LINKS_BODY = """看 [[3cpog0-📋 Dashboard]] 與 [[3cpog0-📋 Dashboard|總覽]]。
 嵌入 ![[3cpog0-📋 Dashboard]],標題 [[3cpog0-📋 Dashboard#快速狀態]]。
-路徑 [[06-工作區 Work/ACB/3cpog0-📋 Dashboard]]、副檔名 [[範本一.md]]。
+路徑 [[06-工作區 Work/DEMO/3cpog0-📋 Dashboard]]、副檔名 [[範本一.md]]。
 | 表 | [[範本一\\|範本]] |
-同名 [[_說明]] 不改。圖 ![[06-工作區 Work/ACB/圖.png]]。
-部分路徑 [[測試卡/角色]] 與 ![[ACB/圖.png]]。
+同名 [[_說明]] 不改。圖 ![[06-工作區 Work/DEMO/圖.png]]。
+部分路徑 [[測試卡/角色]] 與 ![[DEMO/圖.png]]。
 行內 `[[範本一]]` 不改。
 ```
 [[範本一]]
@@ -85,13 +85,13 @@ def _run(*args):
 
 def make_vault(root: Path):
     (root / C80).mkdir(parents=True)
-    (root / "06-工作區 Work" / "ACB").mkdir(parents=True)
+    (root / "06-工作區 Work" / "DEMO").mkdir(parents=True)
     (root / INBOX).mkdir()
     (root / LIB / "測試卡").mkdir(parents=True)
     (root / LIB / "測試卡" / "角色.md").write_text(CARD_MD, encoding="utf-8")
     (root / STUDIO).mkdir()
-    (root / "06-工作區 Work" / "ACB" / "3cpog0-📋 Dashboard.md").write_text(BLOCK_NOTE, encoding="utf-8")
-    (root / "06-工作區 Work" / "ACB" / "圖.png").write_bytes(b"\x89PNG fake")
+    (root / "06-工作區 Work" / "DEMO" / "3cpog0-📋 Dashboard.md").write_text(BLOCK_NOTE, encoding="utf-8")
+    (root / "06-工作區 Work" / "DEMO" / "圖.png").write_bytes(b"\x89PNG fake")
     (root / STUDIO / "範本一.md").write_text("範本內容\n", encoding="utf-8")
     (root / STUDIO / "範本").mkdir()
     (root / STUDIO / "範本" / "日記範本.md").write_text(TPL_MD, encoding="utf-8")
@@ -104,7 +104,7 @@ def make_vault(root: Path):
     (cfg / "templates.json").write_text(json.dumps({"folder": STUDIO + "/範本"}, ensure_ascii=False), encoding="utf-8")
     (cfg / "app.json").write_text(json.dumps({"attachmentFolderPath": "./附件", "alwaysUpdateLinks": True}), encoding="utf-8")
     (cfg / "bookmarks.json").write_text(json.dumps({"items": [
-        {"type": "file", "ctime": 1, "path": "06-工作區 Work/ACB/3cpog0-📋 Dashboard.md"},
+        {"type": "file", "ctime": 1, "path": "06-工作區 Work/DEMO/3cpog0-📋 Dashboard.md"},
         {"type": "group", "ctime": 2, "title": "組", "items": [{"type": "folder", "ctime": 3, "path": STUDIO}]},
         {"type": "search", "ctime": 4, "query": "x"}]}, ensure_ascii=False), encoding="utf-8")
     (root / ".ez2").mkdir()
@@ -166,12 +166,12 @@ class ListsAndLinks(Fixture):
     def test_B1_block_lists_kept(self):
         _, plan = self.plan()
         self.apply(self.t / "plan.json")
-        text = (self.vault / self.new_rel(plan, "06-工作區 Work/ACB/3cpog0-📋 Dashboard.md")).read_text(encoding="utf-8")
+        text = (self.vault / self.new_rel(plan, "06-工作區 Work/DEMO/3cpog0-📋 Dashboard.md")).read_text(encoding="utf-8")
         fm, _ = U.split_frontmatter(text)
         tags, aliases = U.fm_list(fm, "tags"), U.fm_list(fm, "aliases")
-        for t in ("project/acb", "#dashboard", "auto-generated"):
+        for t in ("project/demo", "#dashboard", "auto-generated"):
             self.assertIn(t, tags)
-        for a in ("📋 Dashboard", "ACB總覽", "3cpog0"):
+        for a in ("📋 Dashboard", "DEMO總覽", "3cpog0"):
             self.assertIn(a, aliases)
         self.assertIn("舊/位置.md", U.fm_list(fm, "legacy_paths"))
         self.assertNotRegex(fm, r"(?m)^\s*-\s", "舊的區塊清單行不得殘留在新 frontmatter 裡")
@@ -187,7 +187,7 @@ class ListsAndLinks(Fixture):
         before = (self.vault / C80 / "連結大全.md").read_text(encoding="utf-8")
         self.assertEqual(unresolved(self.vault, before), [], "治具:轉換前每個連結都解得開")
         self.apply(p)
-        dash = self.new_rel(plan, "06-工作區 Work/ACB/3cpog0-📋 Dashboard.md")
+        dash = self.new_rel(plan, "06-工作區 Work/DEMO/3cpog0-📋 Dashboard.md")
         tpl = Path(self.new_rel(plan, STUDIO + "/範本一.md")).stem
         text = (self.vault / self.new_rel(plan, C80 + "/連結大全.md")).read_text(encoding="utf-8")
         self.assertEqual(unresolved(self.vault, text), ["_說明"], "轉完每個連結都要照檔名解得開(同名多篇那個本來就不改)")
@@ -195,7 +195,7 @@ class ListsAndLinks(Fixture):
         self.assertIn("[[3cpog0|總覽]]", text)
         self.assertIn("![[3cpog0]]", text)
         self.assertIn("[[3cpog0#快速狀態|3cpog0-📋 Dashboard#快速狀態]]", text)
-        self.assertIn("[[3cpog0|06-工作區 Work/ACB/3cpog0-📋 Dashboard]]", text)
+        self.assertIn("[[3cpog0|06-工作區 Work/DEMO/3cpog0-📋 Dashboard]]", text)
         self.assertIn("[[%s|範本一.md]]" % tpl, text)
         self.assertIn("| 表 | [[%s\\|範本]] |" % tpl, text)
         self.assertIn("[[_說明]]", text)
@@ -227,7 +227,7 @@ class ListsAndLinks(Fixture):
         self.assertEqual(_run("verify", "--vault", str(self.vault)).returncode, 0, "verify 認得範本")
         self.assertEqual(json.loads((cfg / "app.json").read_text(encoding="utf-8"))["attachmentFolderPath"], "./附件")
         bm = json.loads((cfg / "bookmarks.json").read_text(encoding="utf-8"))["items"]
-        self.assertEqual(bm[0]["path"], self.new_rel(plan, "06-工作區 Work/ACB/3cpog0-📋 Dashboard.md"))
+        self.assertEqual(bm[0]["path"], self.new_rel(plan, "06-工作區 Work/DEMO/3cpog0-📋 Dashboard.md"))
         self.assertEqual(bm[1]["items"][0]["path"], studio)
         self.assertEqual(bm[2]["query"], "x")
         for p_ in (bm[0]["path"], bm[1]["items"][0]["path"], dn["folder"], dn["template"] + ".md"):
@@ -321,7 +321,7 @@ class ReviewFixes(Fixture):
     def test_F6_partial_path_to_unmoved_file_untouched(self):
         p, plan = self.plan()
         self.apply(p)
-        dash_dir = str(Path(self.new_rel(plan, "06-工作區 Work/ACB/3cpog0-📋 Dashboard.md")).parent)
+        dash_dir = str(Path(self.new_rel(plan, "06-工作區 Work/DEMO/3cpog0-📋 Dashboard.md")).parent)
         part = dash_dir.split("/", 1)[1] if "/" in dash_dir else dash_dir
         (self.vault / dash_dir / "部分.md").write_text("![[%s/圖.png]] ![[%s/圖.png]]\n" % (part, part.upper()), encoding="utf-8")
         _, plan2 = self.plan("plan2.json")
@@ -424,8 +424,8 @@ class Knives(Fixture):
         with mock.patch.object(U, "fm_list", old_fm_list):
             plan = U.build_plan(self.vault, str(self.contract), None, None)
         n = next(n for n in plan["notes"] if n["old_rel"].endswith("3cpog0-📋 Dashboard.md"))
-        self.assertNotIn("project/acb", n["fm_set"]["tags"], "刀下標籤會掉 —— B1 的 assertIn 會紅")
-        self.assertNotIn("ACB總覽", n["fm_set"]["aliases"])
+        self.assertNotIn("project/demo", n["fm_set"]["tags"], "刀下標籤會掉 —— B1 的 assertIn 會紅")
+        self.assertNotIn("DEMO總覽", n["fm_set"]["aliases"])
 
     def test_K2_no_rewrite_leaves_links_broken(self):
         p, plan = self.plan()

@@ -200,8 +200,8 @@
       "properties": {
         "approver": { "type": "string", "minLength": 1, "maxLength": 128 },
         "channel": {
-          "description": "收據載體:決策收件匣/ACB 訊息/當面口頭(需補入帳)等。",
-          "enum": ["decision_inbox", "acb_message", "receipt_file", "verbal_logged"]
+          "description": "收據載體:決策收件匣/aib dm 訊息/當面口頭(需補入帳)等。",
+          "enum": ["decision_inbox", "aib_dm", "receipt_file", "verbal_logged"]
         },
         "decision_event_id": { "type": "string", "pattern": "^ev_[0-9a-f]{64}$" },
         "receipt_ref": { "$ref": "#/$defs/file_ref" },
@@ -249,7 +249,7 @@
       }
     },
     "content_message": {
-      "description": "tier 5:經身份驗證的訊息(如 ACB authenticated event)。",
+      "description": "tier 5:經身份驗證的訊息(如已驗證身份的事件)。",
       "type": "object",
       "additionalProperties": false,
       "required": ["message_id", "sender_sig", "body_sha256"],
