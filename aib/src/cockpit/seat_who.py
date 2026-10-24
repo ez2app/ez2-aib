@@ -331,7 +331,7 @@ def self_pane_facts():
 def instance_of_socket(socket_path):
     """`/private/tmp/tmux-501/aihub-16` → `"16"`;認不出回 None(不猜)。
 
-    ★ `aihub-<N>` 的解析**委派給 `fleet_patrol.instance_of_hub()`**,本函式只負責
+    ★ `aihub-<N>` 的解析**委派給 `instance_of_hub()`**(10-25 起住 seats_dir_lib;fleet_patrol 留同名綁定),本函式只負責
       把 socket **路徑**縮成 hub **名**(`os.path.basename`)。
       理由是 `a seat` 09:43 數出來的:`aihub-<N>` 這個字面在 `src/` 底下已經有
       **九個獨立的導出點**,而 `instance_of_hub()` 是唯一寫成函式的那一份 ——
@@ -343,10 +343,10 @@ def instance_of_socket(socket_path):
     if not socket_path:
         return None
     try:
-        import fleet_patrol
+        import seats_dir_lib
     except ImportError:
         return None
-    return fleet_patrol.instance_of_hub(os.path.basename(str(socket_path)))
+    return seats_dir_lib.instance_of_hub(os.path.basename(str(socket_path)))
 
 
 def self_seat_uuid(home=None):

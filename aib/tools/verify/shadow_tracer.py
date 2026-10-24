@@ -1727,7 +1727,7 @@ def git_tool_fp(environ=None):
 #        bash/cat/jq/別的 python 碼直接讀它 ⇒ 多出沒對上的開檔 ⇒ 整檔;
 #     ③ 這一列沒有別種輸入項指到它(handoff 之類);讀的當下內容 = 現在的內容。
 #   摘要 = 用到的鍵的值(沒有的鍵記 null)+ 字典整份過不過得了 i18n_lib 自己的檢查(過不了 ⇒ 改用整檔 sha:
-#   壞字典讓 Translator 一建就失敗,結果取決於整份)。驗字典用的是**候選樹**裡的 i18n_lib(那支檔本身也是這些測試的輸入)。
+#   壞的主語系字典讓 Translator 一建就失敗、壞的 en 在第一次缺鍵時失敗,結果取決於整份)。驗字典用的是**候選樹**裡的 i18n_lib(那支檔本身也是這些測試的輸入)。
 _I18N_ITEM_RE = re.compile(r"^\./(.+\.json|.+\.mo)$")   # aib 的翻譯字典、宣告過的 JSON 字典、任何專案的 gettext .mo(§15.3c)
 _AIB_DICT_RE = re.compile(r"^\./i18n/[A-Za-z][A-Za-z_-]*\.json$")
 _I18N_LIB_CACHE = {}

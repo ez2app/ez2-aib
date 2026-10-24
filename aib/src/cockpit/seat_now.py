@@ -123,11 +123,30 @@ def code_for_session(*uuids):
     return None
 
 
-def self_code(environ=None):
+def _pane_facts():
+    """(窗 id, socket 路徑, 窗寬):一次問 tmux。狀態列每次刷新原本為這三個值問 3 次(10-25 合成 1 次)。
+    跟 seat_who.self_pane_facts 同一條規矩:必須帶 -t "$TMUX_PANE"。不在 tmux / 問不到 ⇒ None(呼叫端走原路)。"""
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return None
+    try:
+        import subprocess
+        out = subprocess.run(["tmux", "display-message", "-p", "-t", pane,
+                              "#{window_id}\t#{socket_path}\t#{pane_width}"],
+                             capture_output=True, text=True, timeout=2, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    parts = (out.stdout or "").strip().split("\t") if out.returncode == 0 else []
+    if len(parts) != 3 or not parts[0].strip() or not parts[1].strip():
+        return None
+    return parts[0].strip(), parts[1].strip(), parts[2].strip()
+
+
+def self_code(environ=None, facts=None):
     environ = os.environ if environ is None else environ
     try:
         import seat_who
-        uuid = seat_who.self_seat_uuid()
+        uuid = seat_who.seat_uuid_for_window(facts[0], facts[1]) if facts else seat_who.self_seat_uuid()
     except Exception:          # noqa: BLE001 —— 量不到就回 None,不讓整支掛掉
         uuid = None
     if uuid:
@@ -135,10 +154,10 @@ def self_code(environ=None):
     return code_for_session(*(environ.get(k) for k in SESSION_ENVS))
 
 
-def self_provider(code=None):
+def self_provider(code=None, facts=None):
     try:
         import seat_who
-        wid, sock = seat_who.self_pane_facts()
+        wid, sock = facts[:2] if facts else seat_who.self_pane_facts()
         rec = seat_who.seat_record_for_window(wid, sock)
     except Exception:          # noqa: BLE001
         rec = None
@@ -652,8 +671,10 @@ def shown_line(code, *, state_root=None, now=None, color=True, width=None):
     return "%s%s%s%s" % (head, paint(item), short, stale)
 
 
-def _self_width():
+def _self_width(facts=None):
     """這一席視窗的寬,扣掉狀態列左邊的縮排與右邊留白;量不到 ⇒ None(照完整那行畫)。"""
+    if facts:
+        return max(20, int(facts[2]) - 4) if facts[2].isdigit() else None
     pane = os.environ.get("TMUX_PANE")
     if not pane:
         return None
@@ -875,11 +896,12 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
                               width=args.width or None, now_only=args.now_only))
         return 0
     if args.statusline:
-        c = code or self_code() or (code_for_session(args.session) if args.session else None) or ""
+        facts = None if code else _pane_facts()
+        c = code or self_code(facts=facts) or (code_for_session(args.session) if args.session else None) or ""
         if c:
             beat(c, "statusline", state_root=state_root)
-        prov = args.provider or (self_provider(c) if c else "")
-        w = args.width or (_self_width() if c else None)
+        prov = args.provider or (self_provider(c, facts=facts) if c else "")
+        w = args.width or (_self_width(facts) if c else None)
         line, r_text = "", ""
         if c:
             # gate_check 預設:正式跑(state_root=None)才查真的 settings.json;測試注入 state_root 時不查,
