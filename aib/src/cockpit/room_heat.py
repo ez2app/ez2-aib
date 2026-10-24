@@ -466,6 +466,13 @@ def _print_snapshot(s, out):
     for g in s["groups"].get("items", [])[:12]:
         out.write("  %-17s %-14s CPU %5.1f%%  %7.1f MB  ×%d\n" % (T("group." + g["group"]), g["owner"] or "-",
                                                                   g["cpu"], g["mem_mb"], g["count"]))
+    if s.get("candidates_detail"):                    # 文字模式也拿得到候選編號與不收的原因(#319 r6 B-L5)
+        out.write(T("snap." + s["candidates_detail"]) + "\n")
+    for c in s.get("candidates", []):
+        out.write(T("snap.candidate", id=c["id"], kind=T("kind." + c["kind"]), owner=c.get("owner") or "-",
+                    cpu=c["cpu"], mem=c["mem_mb"], age=c["age_s"]) + "\n")
+    for h in s.get("held", []):
+        out.write(T("snap.held", kind=T("kind." + h["kind"]), pid=h["pid"], why=T("held." + h["why"])) + "\n")
 
 
 def main(argv=None, out=None):

@@ -5203,5 +5203,17 @@
   "aib.heat.release.bad_candidate": "Malformed candidate id",
   "aib.heat.release.auto_limit": "Auto-release hit its 10-minute limit; stopping",
   "aib.heat.release.dry_run": "Dry run: would release this",
-  "aib.heat.release.log_failed": "Could not write the release log (quota unknown); auto release stopped"
+  "aib.heat.release.log_failed": "Could not write the release log (quota unknown); auto release stopped",
+  "aib.heat.release.scan_failed": "Could not scan for leftovers (unmeasured, not empty); nothing was touched",
+  "aib.heat.release.auto_busy": "Another automatic release is running; skipped this time",
+  "aib.heat.snap.scan_failed": "Could not work out leftover candidates (scan failed, not empty)",
+  "aib.heat.snap.candidate": "  releasable {id}  {kind}  {owner}  CPU {cpu}%  {mem} MB  running {age}s",
+  "aib.heat.snap.held": "  kept  {kind}  pid {pid}: {why}",
+  "aib.heat.kind.chrome_orphan": "leftover automation browser",
+  "aib.heat.kind.test_orphan": "leftover test",
+  "aib.heat.held.host_operation": "working on a server",
+  "aib.heat.held.holds_lock": "holds a lock file",
+  "aib.heat.held.lsof_unavailable": "open files could not be checked",
+  "aib.heat.held.detached_output": "writes output to a file (someone is waiting)",
+  "aib.heat.held.attached_output": "output still goes to a window or another process"
 }

@@ -12,7 +12,8 @@
                  它的子孫也要各自的腳本在暫存根底下才一起收
   兩種都要活過 MIN_AGE_S(剛起的可能還有人在等);沙盒世界(SANDBOX_RE)這一版不收。
   判斷一律把指令列拆成引數、realpath 後比前綴,不做整串子字串比對(#319 r3:/x/tmp/、/tmp/../、引數分開都繞得過)。
-一律不收(只顯示在 held):行程或子孫有 ssh / scp / rsync、正在對主機動手的 aib 指令、開著 *.lock 檔 —— 殺在中間主機會半套。
+一律不收(只顯示在 held):行程或子孫有 ssh / scp / rsync、正在對主機動手的 aib 指令、開著 *.lock 檔 —— 殺在中間主機會半套;
+  輸出還接著一般檔 / 終端機 / 有人在讀的 pipe(有人在等結果);lsof 量不到。
 
 安全:
   - 候選編號 = 種類 + pid + 開始時間(微秒)+ uid 的雜湊;釋放前重掃一次,編號對不上 ⇒ candidate_changed,不殺。
@@ -20,7 +21,8 @@
   - 不殺自己與自己的祖先行程。
   - 每次釋放寫一筆 room/heat-released.jsonl(時間、種類、主人、省下多少、手動 / 自動),不寫指令列。
   - --auto(付費自動釋放用):10 分鐘最多收 AUTO_MAX_PER_WINDOW 個,超過 ⇒ auto_limit 停手。
-錯誤代碼:bad_candidate candidate_changed not_releasable release_failed partial auto_limit log_failed(detail 是契約)。
+錯誤代碼:bad_candidate candidate_changed not_releasable release_failed partial auto_limit auto_busy log_failed
+  scan_failed(detail 是契約)。
 """
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ import math
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -144,6 +147,10 @@ def _is_chrome_orphan(args, roots):
     if len(udds) != 1 or "user-data-dir" in keys and keys.count("user-data-dir") != 1:
         return False                                   # Chrome 用最後一個;不只一個 / 空白分隔取不到值 ⇒ 不收
     udd = udds[0]
+    i = next(k for k, t in enumerate(toks) if t.split("=", 1)[0] in ("--user-data-dir", "-user-data-dir"))
+    nxt = toks[i + 1] if i + 1 < len(toks) else ""
+    if nxt and not nxt.startswith("-") and "/" in nxt and "://" not in nxt:
+        return False                                   # 路徑帶空白(/tmp/x /../../家目錄):切出來的那段不準 ⇒ 不收(#319 r6 A-L2)
     return _under(udd, roots) and "/captain-room/" not in os.path.realpath(udd) + "/"
 
 
@@ -197,6 +204,14 @@ def identity(pid):
         return None
 
 
+def _start_s(ident):
+    """開始時間(秒,帶小數):macOS 用微秒那一欄,Linux 用 ticks 換算的。"""
+    try:
+        return float(ident[2])
+    except ValueError:
+        return float(ident[3])
+
+
 def _protected():
     """自己與祖先(不准殺)。"""
     out, p = set(), os.getpid()
@@ -234,14 +249,68 @@ def _lsof(args, run=None):
                                              stdin=subprocess.DEVNULL).stdout))(["lsof", "-n", "-P"] + args)
 
 
-def _detached_output(pid, run=None):
-    """stdout / stderr 導到一般檔案(nohup … > log &)⇒ 是有人刻意丟背景、還在等結果的,不是殘留(#319 r5 A1)。
-    回 True / False;lsof 跑不了 ⇒ None(量不到)。"""
+def _linux_pipe_peer(pid, fd, exclude=()):
+    """Linux 的 lsof 看不出 pipe 對端:找同帳號有沒有別的行程(不算這棵樹自己)開著同一個 pipe。讀不到 ⇒ None。"""
     try:
-        out = _lsof(["-a", "-p", str(pid), "-d", "1,2", "-Ft"], run)
+        target = os.readlink("/proc/%d/fd/%d" % (pid, fd))
+        skip = {int(pid), *[int(x) for x in exclude]}
+        me = os.getuid()
+        for d in os.listdir("/proc"):
+            if not d.isdigit() or int(d) in skip:
+                continue
+            try:
+                if os.stat("/proc/" + d).st_uid != me:
+                    continue
+                for f in os.listdir("/proc/%s/fd" % d):
+                    if os.readlink("/proc/%s/fd/%s" % (d, f)) == target:
+                        return True
+            except OSError:
+                continue
+        return False
+    except OSError:
+        return None
+
+
+def _detached_output(pid, run=None, exclude=(), pipe_peer=None):
+    """fd 1 / 2 還接著東西 ⇒ 有人在等結果,不是殘留:一般檔(nohup … > log &)⇒ "detached_output"(#319 r5 A1);
+    終端機、FIFO、socket、讀端還有人的 pipe ⇒ "attached_output"(背景跑、輸出還印在開著的視窗上,#319 r6 A-M2)。
+    都接 /dev/null、關了、或 pipe 讀端已經沒人 ⇒ False(可以收)。
+    lsof 跑不了、或輸出裡沒有這個 pid(看不到 ≠ 沒接東西)⇒ None(#319 r6 A-M1)。"""
+    try:
+        out = _lsof(["-a", "-p", str(pid), "-Ffdtn"], run)
     except Exception:  # noqa: BLE001
         return None
-    return "tREG" in (out or "").split()
+    seen, cur, fds = False, None, {}
+    for ln in (out or "").splitlines():
+        tag, val = ln[:1], ln[1:].strip()
+        if tag == "p":
+            seen = seen or val == str(pid)
+            cur = None
+        elif tag == "f":
+            cur = val if val in ("1", "2") else None
+            if cur:
+                fds[cur] = {}
+        elif cur and tag in ("t", "n"):
+            fds[cur][tag] = val
+    if not seen:
+        return None
+    why = False
+    for fd, info in sorted(fds.items()):
+        t, n = info.get("t", ""), info.get("n", "")
+        if t == "REG":
+            return "detached_output"
+        if t == "CHR" and n == "/dev/null":
+            continue
+        if t == "PIPE" and not n:                      # macOS:讀端都關了 ⇒ 名稱欄是空的(有人讀是 ->0x對端)
+            continue
+        if t == "FIFO" and n == "pipe" and sys.platform.startswith("linux"):
+            alive = (pipe_peer or _linux_pipe_peer)(pid, int(fd), exclude)
+            if alive is None:
+                return None
+            if not alive:
+                continue
+        why = "attached_output"
+    return why
 
 
 def _holds_lock(pids, run=None):
@@ -250,13 +319,22 @@ def _holds_lock(pids, run=None):
         out = _lsof(["-Fn", "-p", ",".join(str(p) for p in pids)], run)
     except Exception:  # noqa: BLE001
         return None
-    return any(ln.startswith("n") and ln.rstrip().endswith(".lock") for ln in (out or "").splitlines())
+    lines = (out or "").splitlines()
+    got = {ln[1:].strip() for ln in lines if ln.startswith("p")}
+    # lsof 跑得起來卻看不到(沙盒 / 權限 / 被換掉)會回空 + rc 0:主行程一定有 cwd / txt,沒列出來 = 量不到;
+    # 子孫沒列出來只在它已經結束時才算數(#319 r6 A-M1)
+    if pids and str(pids[0]) not in got:
+        return None
+    if any(str(p) not in got and identity(p) is not None for p in pids[1:]):
+        return None
+    return any(ln.startswith("n") and ln.rstrip().endswith(".lock") for ln in lines)
 
 
 def scan(rows=None, run=None, owner_of=None, lsof=None, now=None, roots=None, min_age_s=MIN_AGE_S, detached=None):
     """→ (candidates, held)。rows 照 room_heat.list_procs 的格式;owner 只拿來顯示;roots 只給測試注入。"""
     import room_heat
     import chrome_orphans
+    t0 = time.time()                                   # 子孫在這之後才起的 = pid 被新行程拿走了(#319 r6 A-L1)
     rows = room_heat.list_procs(run) if rows is None else rows
     if rows is None:
         return None, None
@@ -291,10 +369,10 @@ def scan(rows=None, run=None, owner_of=None, lsof=None, now=None, roots=None, mi
             held.append({"kind": kind, "owner": owner, "pid": pid, "why": "holds_lock" if lk else "lsof_unavailable"})
             continue
         if kind == "test_orphan":
-            dt = (detached or _detached_output)(pid)
+            dt = detached(pid) if detached else _detached_output(pid, exclude=everyone)
             if dt is not False:
                 held.append({"kind": kind, "owner": owner, "pid": pid,
-                             "why": "detached_output" if dt else "lsof_unavailable"})
+                             "why": dt if isinstance(dt, str) else ("detached_output" if dt else "lsof_unavailable")})
                 continue
         if kind == "chrome_orphan":
             pids = [pid]                       # 主行程收了,它的 helper 跟著結束
@@ -305,7 +383,7 @@ def scan(rows=None, run=None, owner_of=None, lsof=None, now=None, roots=None, mi
         if not ident or ident[0] != me or ident[1] != 1 or now - ident[3] < min_age_s:
             continue
         idents = {p: identity(p) for p in pids}
-        pids = [p for p in pids if idents.get(p) and idents[p][0] == me]
+        pids = [p for p in pids if idents.get(p) and idents[p][0] == me and (p == pid or _start_s(idents[p]) < t0)]
         cid = hashlib.sha256(("%s|%d|%s|%d" % (kind, pid, ident[2], me)).encode()).hexdigest()[:16]
         cands.append({"id": cid, "kind": kind, "owner": owner, "pids": pids,
                       "starts": {str(p): idents[p][2] for p in pids},
@@ -383,11 +461,19 @@ def _log(rec, environ=None):
 def _auto_used(now, environ=None):
     """最近 10 分鐘自動收了幾個。壞行逐行跳過(不讓一行壞掉就把額度歸零);n_pids 夾在 0 以上;
     檔案存在卻讀不了 ⇒ 回額度上限(往不收那邊錯)。"""
-    try:
-        fh = open(released_path(environ), encoding="utf-8")
+    try:                                               # 不跟 symlink、不卡在 FIFO 上;不是一般檔 ⇒ 當滿額(#319 r6 A-L3)
+        fd = os.open(released_path(environ), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
         return 0
     except OSError:
+        return AUTO_MAX_PER_WINDOW
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return AUTO_MAX_PER_WINDOW
+        fh = os.fdopen(fd, encoding="utf-8")
+    except OSError:
+        os.close(fd)
         return AUTO_MAX_PER_WINDOW
     used = 0
     with fh:
@@ -414,7 +500,7 @@ class _AutoLock:
         os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
         self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
-            fcntl.flock(self.fd, fcntl.LOCK_EX)
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)     # 另一支 --auto 正在跑 ⇒ 不排隊(#319 r6 A-L3)
         except OSError:
             os.close(self.fd)
             raise
@@ -432,7 +518,9 @@ def release(ids=(), all_safe=False, dry_run=False, auto=False, scan_fn=None, wai
     if auto and not dry_run:
         lock = _AutoLock()
         try:
-            lock.__enter__()                           # 只有取鎖這一步的 OSError 算 log_failed;殺完之後的不藏(B-L3)
+            lock.__enter__()                           # 只有取鎖這一步的 OSError 算;殺完之後的不藏(B-L3)
+        except BlockingIOError:
+            return {"ok": False, "detail": "auto_busy", "results": []}
         except OSError:
             return {"ok": False, "detail": "log_failed", "results": []}
         try:
@@ -448,9 +536,12 @@ def _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now):
     bad = [i for i in ids if not ID_RE.match(i or "")]
     if bad:
         return {"ok": False, "detail": "bad_candidate", "results": [{"id": i[:32], "detail": "bad_candidate"} for i in bad]}
-    cands, _held = (scan_fn or scan)()
+    try:
+        cands, _held = (scan_fn or scan)()
+    except Exception:  # noqa: BLE001 —— 跟快照的 candidates_detail 同一個代碼,CLI 不印 traceback(#319 r6 B-L5)
+        cands = None
     if cands is None:
-        return {"ok": False, "detail": "release_failed", "results": []}
+        return {"ok": False, "detail": "scan_failed", "results": []}
     by = {c["id"]: c for c in cands}
     picked = list(cands) if all_safe else [by.get(i) or {"id": i, "missing": True} for i in ids]
     me = os.getuid()
@@ -468,6 +559,8 @@ def _release(ids, all_safe, dry_run, auto, scan_fn, wait_s, now):
             break
         if dry_run:
             results.append({"id": c["id"], "detail": "dry_run", "kind": c["kind"], "n_pids": len(c["pids"])})
+            if budget is not None:
+                budget -= len(c["pids"])               # 試跑的預估要跟真的跑一樣停在 auto_limit(#319 r6 B-L1)
             continue
         if auto:                                       # 殺之前先記一筆預留:記不進帳就不殺(不然額度永遠是滿的)
             try:

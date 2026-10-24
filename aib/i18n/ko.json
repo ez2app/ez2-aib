@@ -5203,5 +5203,17 @@
   "aib.heat.release.bad_candidate": "후보 번호 형식이 올바르지 않습니다",
   "aib.heat.release.auto_limit": "자동 해제가 10분 한도에 도달해 멈춥니다",
   "aib.heat.release.dry_run": "시험 실행: 이 항목을 해제합니다",
-  "aib.heat.release.log_failed": "해제 기록을 쓸 수 없어(한도 계산 불가) 자동 해제를 멈췄습니다"
+  "aib.heat.release.log_failed": "해제 기록을 쓸 수 없어(한도 계산 불가) 자동 해제를 멈췄습니다",
+  "aib.heat.release.scan_failed": "잔여 프로세스 검사 실패(측정 불가, 없는 것이 아님). 아무것도 하지 않음",
+  "aib.heat.release.auto_busy": "다른 자동 해제가 실행 중이라 이번에는 건너뜀",
+  "aib.heat.snap.scan_failed": "잔여 후보를 계산하지 못함(검사 실패, 없는 것이 아님)",
+  "aib.heat.snap.candidate": "  해제 가능 {id}  {kind}  {owner}  CPU {cpu}%  {mem} MB  {age}초 실행",
+  "aib.heat.snap.held": "  제외  {kind}  pid {pid}: {why}",
+  "aib.heat.kind.chrome_orphan": "남은 자동화 브라우저",
+  "aib.heat.kind.test_orphan": "남은 테스트",
+  "aib.heat.held.host_operation": "서버 작업 중",
+  "aib.heat.held.holds_lock": "잠금 파일을 열고 있음",
+  "aib.heat.held.lsof_unavailable": "열린 파일을 확인할 수 없음",
+  "aib.heat.held.detached_output": "출력을 파일에 기록 중(결과 대기)",
+  "aib.heat.held.attached_output": "출력이 아직 창이나 다른 프로세스에 연결됨"
 }

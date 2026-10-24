@@ -5203,5 +5203,17 @@
   "aib.heat.release.bad_candidate": "候補番号の形式が正しくありません",
   "aib.heat.release.auto_limit": "自動解放が 10 分間の上限に達したため停止します",
   "aib.heat.release.dry_run": "試行:これを解放します",
-  "aib.heat.release.log_failed": "解放ログに書き込めません(上限を数えられない)ため、自動解放を止めました"
+  "aib.heat.release.log_failed": "解放ログに書き込めません(上限を数えられない)ため、自動解放を止めました",
+  "aib.heat.release.scan_failed": "残留のスキャンに失敗(測定不能・空ではない)。何もしていません",
+  "aib.heat.release.auto_busy": "別の自動解放が実行中のため、今回は見送りました",
+  "aib.heat.snap.scan_failed": "残留候補を算出できません(スキャン失敗・空ではない)",
+  "aib.heat.snap.candidate": "  解放可 {id}  {kind}  {owner}  CPU {cpu}%  {mem} MB  {age} 秒稼働",
+  "aib.heat.snap.held": "  対象外  {kind}  pid {pid}:{why}",
+  "aib.heat.kind.chrome_orphan": "残った自動化ブラウザ",
+  "aib.heat.kind.test_orphan": "残ったテスト",
+  "aib.heat.held.host_operation": "サーバーを操作中",
+  "aib.heat.held.holds_lock": "ロックファイルを開いている",
+  "aib.heat.held.lsof_unavailable": "開いているファイルを確認できない",
+  "aib.heat.held.detached_output": "出力をファイルに書いている(結果待ち)",
+  "aib.heat.held.attached_output": "出力がまだウィンドウか別プロセスにつながっている"
 }

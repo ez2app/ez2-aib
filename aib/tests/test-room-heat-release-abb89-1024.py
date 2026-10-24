@@ -22,9 +22,18 @@ R16 快照整合:候選不帶 starts、掃描壞了標 candidates_detail;CLI 只
 R17 stdout 導到檔案(nohup … > log &)⇒ held detached_output;R18 lsof 跑不了 ⇒ held lsof_unavailable
 R19 dry_run 不殺、不寫紀錄;R20 一個收掉一個身分不符 ⇒ partial;R21 結果記不進帳 ⇒ 同一筆掛 log、ok 假
 R22 兩個候選合計超過額度 ⇒ 第二個 auto_limit;R23(macOS)正式暫存根含系統給的使用者暫存夾
+R24 lsof 跑得起來卻回空 / 沒列出這個 pid ⇒ 量不到(held lsof_unavailable),不當「沒鎖、沒導檔」
+R25 輸出接終端機 / 有人讀的 pipe / FIFO ⇒ attached_output;/dev/null、關掉、讀端沒人 ⇒ 可收;Linux 用 /proc 找 pipe 對端
+R26 真的 pipe:讀端開著 ⇒ attached_output,讀端關掉 ⇒ 可收
+R27 Chrome --user-data-dir 帶空白(切出來那段不準)⇒ 不是候選;後面接網址照樣是
+R28 另一支 --auto 拿著鎖 ⇒ auto_busy、不排隊;R29 掃描丟例外 / 回 None ⇒ scan_failed;文字快照印候選編號與不收原因
+R30 自己(測試行程)不會變候選;R31 額度帳是 FIFO / symlink ⇒ 當滿額、不卡住
+R32 子孫的開始時間晚於這次掃描(pid 被新行程拿走)⇒ 不在 pids
 暫存根一律用 scan(roots=) 注入這支測試的暫存夾(正式程式連 TMPDIR 都不讀)。
-刀(複本):K1 開始時間不比 ⇒ R6 紅;K2 拿掉主機動作排除 ⇒ R3 紅;K3 子孫不檢查暫存根 ⇒ R4 紅;
-K4 暫存根改回子字串比對 ⇒ R9 紅;K5 拿掉 *.lock 排除 ⇒ R5 紅;K8 拿掉背景輸出判斷 ⇒ R17 紅
+刀(複本,要紅在指定那一格;目標格被跳過 ⇒ 刀也跳過):K1 開始時間不比 ⇒ R6 紅;K2 拿掉主機動作排除 ⇒ R3 紅;
+K3 子孫不檢查暫存根 ⇒ R4 紅;K4 暫存根改回子字串比對 ⇒ R9 紅;K5 拿掉 *.lock 排除 ⇒ R5 紅;K6 argv[0] 不看直譯器 ⇒ R14 紅;
+K7 不先記帳就殺 ⇒ R15 紅;K8 拿掉背景輸出判斷 ⇒ R17 紅;K9 拿掉年齡判斷 ⇒ R13 紅;K10 接著東西也當可收 ⇒ R25 紅;
+K11 lsof 沒列出主行程不當量不到 ⇒ R24 紅;K12 子孫不比開始時間 ⇒ R32 紅
 """
 import json
 import os
@@ -368,6 +377,13 @@ class Orphans(unittest.TestCase):
         self.assertEqual((r["ok"], r["results"]), (True, [{"id": c["id"], "detail": "dry_run", "kind": "test_orphan", "n_pids": 1}]))
         self.assertIsNotNone(RR.identity(pid))
         self.assertFalse(Path(RR.released_path()).exists())
+        b, _d2 = self.spawn("import time\ntime.sleep(300)\n", name="b")      # 試跑也要停在額度上(r6 B-L1)
+        cb = self.find(b, self.scan()[0])
+        log = Path(RR.released_path())
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(json.dumps({"t": time.time() - 30, "mode": "auto", "n_pids": RR.AUTO_MAX_PER_WINDOW - 1}) + "\n")
+        r = RR.release(all_safe=True, dry_run=True, auto=True, scan_fn=lambda: ([c, cb], []))
+        self.assertEqual([x["detail"] for x in r["results"]], ["dry_run", "auto_limit"], r)
 
     def test_r20_partial(self):
         a, _d = self.spawn("import time\ntime.sleep(300)\n", name="a")
@@ -404,13 +420,142 @@ class Orphans(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "darwin", "只有 macOS")
     def test_r23_darwin_user_temp_in_roots(self):
-        roots = RR.temp_roots()
-        self.assertTrue(any(r.startswith("/private/var/folders/") for r in roots), roots)
+        sys_tmp = [os.path.realpath(x).rstrip("/") + "/" for x in RR._system_temp()]
+        self.assertTrue(sys_tmp and sys_tmp[0].startswith("/private/var/folders/"), sys_tmp)
+        home = os.path.realpath(os.path.expanduser("~")) + "/"
+        if home.startswith(sys_tmp[0]):                 # 家目錄在系統暫存夾底下(測試把 HOME 指到暫存)⇒ 照設計丟掉(r6 B-L3)
+            self.assertNotIn(sys_tmp[0], RR.temp_roots())
+        else:
+            self.assertIn(sys_tmp[0], RR.temp_roots())
+
+    def test_r24_lsof_blank_is_unmeasured(self):
+        me = os.getpid()
+        self.assertIsNone(RR._holds_lock([me], run=lambda c: ""))
+        self.assertIsNone(RR._holds_lock([me], run=lambda c: "p1\nn/x.lock\n"))      # 列的是別人
+        self.assertIsNone(RR._detached_output(me, run=lambda c: ""))
+        self.assertIsNone(RR._detached_output(me, run=lambda c: "p1\nf1\ntREG\nn/x\n"))
+        self.assertIs(RR._holds_lock([me], run=lambda c: "p%d\nn/x/cwd\n" % me), False)
+        self.assertIs(RR._holds_lock([me, 2 ** 22 + 7], run=lambda c: "p%d\nn/x/cwd\n" % me), False)  # 子孫已經不在
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n")
+        cands, held = RR.scan(owner_of=lambda p: (None, None), lsof=lambda pids: RR._holds_lock(pids, run=lambda c: ""),
+                              min_age_s=0, roots=self.roots, detached=lambda p: False)
+        self.assertIsNone(self.find(pid, cands))
+        self.assertIn(("lsof_unavailable", pid), [(h["why"], h["pid"]) for h in held])
+
+    def test_r25_output_attached(self):
+        me = os.getpid()
+        det = lambda body, **k: RR._detached_output(me, run=lambda c: "p%d\n%s" % (me, body), **k)   # noqa: E731
+        self.assertEqual(det("f1\ntCHR\nn/dev/ttys001\n"), "attached_output")
+        self.assertEqual(det("f2\ntPIPE\nn->0xabc\n"), "attached_output")
+        self.assertEqual(det("f1\ntunix\nn->0xabc\n"), "attached_output")
+        self.assertEqual(det("f1\ntREG\nn/x/bg.log\n"), "detached_output")
+        self.assertIs(det("f1\ntCHR\nn/dev/null\nf2\ntCHR\nn/dev/null\n"), False)
+        self.assertIs(det("f1\ntPIPE\nn\nf2\ntCHR\nn/dev/null\n"), False)             # 讀端都關了
+        self.assertIs(det("f0\ntCHR\nn/dev/ttys001\nf3\ntREG\nn/x\n"), False)           # 只看 1 / 2
+        self.assertIs(det("fcwd\ntDIR\nn/x\n"), False)                                     # 1 / 2 都關了
+        with mock.patch.object(RR.sys, "platform", "linux"):
+            fifo = "f1\ntFIFO\nnpipe\n"
+            self.assertEqual(det(fifo, pipe_peer=lambda p, fd, ex: True), "attached_output")
+            self.assertIs(det(fifo, pipe_peer=lambda p, fd, ex: False), False)
+            self.assertIsNone(det(fifo, pipe_peer=lambda p, fd, ex: None))
+
+    @unittest.skipUnless(shutil.which("lsof"), "沒有 lsof")
+    def test_r26_real_pipe(self):
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        self.track(p.pid)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        self.assertEqual(RR._detached_output(p.pid), "attached_output")
+        p.stdout.close()
+        time.sleep(0.2)
+        self.assertIs(RR._detached_output(p.pid), False)
+
+    def test_r27_chrome_user_data_dir_with_space(self):
+        pid, _d = self.spawn("import time\ntime.sleep(300)\n")
+        chrome = "/opt/chrome/chrome --headless --remote-debugging-port=1 --user-data-dir="
+        self.assertEqual(self.kinds(pid, chrome + self.root + "/x /../../../Users/me/Library/Chrome"), [])
+        self.assertEqual(self.kinds(pid, chrome + self.root + "/x about:blank"), ["chrome_orphan"])
+        self.assertEqual(self.kinds(pid, chrome + self.root + "/x https://example.com/a"), ["chrome_orphan"])
+
+    def test_r28_auto_busy(self):
+        import fcntl
+        guard = RR.released_path() + ".guard"
+        os.makedirs(os.path.dirname(guard), exist_ok=True)
+        fd = os.open(guard, os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        called = []
+        t = time.monotonic()
+        r = RR.release(all_safe=True, auto=True, scan_fn=lambda: called.append(1) or ([], []))
+        self.assertEqual((r["ok"], r["detail"], called), (False, "auto_busy", []))
+        self.assertLess(time.monotonic() - t, 5)
+
+    def test_r29_scan_failed(self):
+        import io
+        import room_heat as RH
+
+        def boom():
+            raise RuntimeError("scan")
+        self.assertEqual(RR.release(all_safe=True, scan_fn=boom)["detail"], "scan_failed")
+        self.assertEqual(RR.release(all_safe=True, scan_fn=lambda: (None, None))["detail"], "scan_failed")
+        out = io.StringIO()
+        with mock.patch.object(RR, "release", lambda **k: {"ok": False, "detail": "scan_failed", "results": []}):
+            RH.main(["release", "--all-safe"], out=out)
+        self.assertIn(RH.T("release.scan_failed"), out.getvalue())
+        out = io.StringIO()
+        s = {"level": "ok", "cells": {}, "groups": {"items": []}, "candidates_detail": "scan_failed",
+             "candidates": [{"id": "b" * 16, "kind": "test_orphan", "owner": "", "cpu": 1.0, "mem_mb": 2.0, "age_s": 300}],
+             "held": [{"kind": "chrome_orphan", "owner": "", "pid": 42, "why": "attached_output"}]}
+        RH._print_snapshot(s, out)
+        text = out.getvalue()
+        for want in ("b" * 16, RH.T("held.attached_output"), RH.T("snap.scan_failed"), RH.T("kind.test_orphan")):
+            self.assertIn(want, text)
+        self.assertNotIn("aib.heat.", text)
+
+    def test_r30_self_not_candidate(self):
+        d = self.tmp / "self" / "tests"
+        d.mkdir(parents=True)
+        self.assertEqual(self.kinds(os.getpid(), "python3 %s/test-x.py" % d), [])
+
+    def test_r31_auto_ledger_not_regular(self):
+        log = Path(RR.released_path())
+        log.parent.mkdir(parents=True, exist_ok=True)
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(str(log))
+            t = time.monotonic()
+            self.assertEqual(RR._auto_used(time.time()), RR.AUTO_MAX_PER_WINDOW)
+            self.assertLess(time.monotonic() - t, 5)
+            log.unlink()
+        real = self.tmp / "real.jsonl"
+        real.write_text("", encoding="utf-8")
+        log.symlink_to(real)
+        self.assertEqual(RR._auto_used(time.time()), RR.AUTO_MAX_PER_WINDOW)
+
+    def test_r32_new_child_after_scan_start(self):
+        pid, d = self.spawn("import time\ntime.sleep(300)\n")
+        fake = 2 ** 22 + 11
+        script = "python3 %s/test-fake.py" % d
+        rows = [(pid, 1, os.getuid(), 1.0, 1024, "x", script), (fake, pid, os.getuid(), 1.0, 1024, "x", script)]
+        real = RR.identity
+
+        def ident(p):
+            if p == fake:
+                t = time.time() + 5
+                return (os.getuid(), pid, "%d.%06d" % (int(t), 0), float(int(t)))
+            return real(p)
+        with mock.patch.object(RR, "identity", ident):
+            cands, _ = RR.scan(rows=rows, owner_of=lambda p: (None, None), lsof=lambda pids: False, min_age_s=0,
+                               roots=self.roots, detached=lambda p: False)
+        c = self.find(pid, cands)
+        self.assertIsNotNone(c)
+        self.assertEqual(c["pids"], [pid])
 
     def test_r13_too_young(self):
         pid, d = self.spawn("import time\ntime.sleep(300)\n")
         rows = [(pid, 1, os.getuid(), 1.0, 1024, "x", "python3 %s/tests/test-fake.py" % d)]
-        cands, _ = RR.scan(rows=rows, owner_of=lambda p: (None, None), lsof=lambda pids: False, roots=self.roots)
+        cands, _ = RR.scan(rows=rows, owner_of=lambda p: (None, None), lsof=lambda pids: False, roots=self.roots,
+                           detached=lambda p: False)       # 沒有 lsof 的機器也要走到年齡那一關(r6 B-L2)
         self.assertEqual(cands, [])
 
     def test_r16_snapshot_and_cli(self):
@@ -453,7 +598,12 @@ class Knives(unittest.TestCase):
         with knife_copy(ROOT, "src/cockpit/room_heat_release.py", old, new, tests=(name,)) as root:
             r = run_guarded([sys.executable, "-B", str(root / "tests" / name), case], cwd=str(root), max_procs=60, timeout=300)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s" % r.tripped)
-        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+        text = r.stdout + r.stderr
+        if r.returncode == 0 and "skipped" in text:     # 目標格在這台被跳過(沒 lsof / subreaper / root)⇒ 刀也沒驗(r6 B-L4)
+            self.skipTest("目標格跳過:" + case)
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + text)
+        self.assertIn("FAIL: " + case.rsplit(".", 1)[1], text, "紅在別的地方(不是目標斷言)\n" + text)
+        self.assertNotIn("ERROR: ", text, "刀版壞掉(匯入 / 語法),不算砍出紅\n" + text)
 
     def test_k1_no_start_check(self):
         self._knife("        if ident[0] != me or ident[2] != c[\"starts\"][str(p)]:\n",
@@ -486,8 +636,21 @@ class Knives(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("lsof"), "沒有 lsof")
     def test_k8_no_detached_check(self):
-        self._knife("            dt = (detached or _detached_output)(pid)\n", "            dt = False\n",
-                    "Orphans.test_r17_detached_output_held")
+        self._knife("            dt = detached(pid) if detached else _detached_output(pid, exclude=everyone)\n",
+                    "            dt = False\n", "Orphans.test_r17_detached_output_held")
+
+    def test_k9_no_min_age(self):
+        self._knife("        if not ident or ident[0] != me or ident[1] != 1 or now - ident[3] < min_age_s:\n",
+                    "        if not ident or ident[0] != me or ident[1] != 1:\n", "Orphans.test_r13_too_young")
+
+    def test_k10_attached_counts_as_free(self):
+        self._knife("        why = \"attached_output\"\n", "        pass\n", "Orphans.test_r25_output_attached")
+
+    def test_k11_blank_lsof_trusted(self):
+        self._knife("    if pids and str(pids[0]) not in got:\n", "    if False:\n", "Orphans.test_r24_lsof_blank_is_unmeasured")
+
+    def test_k12_child_start_not_checked(self):
+        self._knife(" and (p == pid or _start_s(idents[p]) < t0)]\n", "]\n", "Orphans.test_r32_new_child_after_scan_start")
 
 
 if __name__ == "__main__":

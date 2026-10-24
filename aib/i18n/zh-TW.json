@@ -5203,5 +5203,17 @@
   "aib.heat.release.bad_candidate": "候選編號格式不對",
   "aib.heat.release.auto_limit": "自動釋放已達 10 分鐘上限,先停手",
   "aib.heat.release.dry_run": "試跑:會釋放這一項",
-  "aib.heat.release.log_failed": "記不進釋放紀錄(額度算不準),自動釋放先停手"
+  "aib.heat.release.log_failed": "記不進釋放紀錄(額度算不準),自動釋放先停手",
+  "aib.heat.release.scan_failed": "殘留掃描失敗(量不到,不是沒有),沒動手",
+  "aib.heat.release.auto_busy": "另一個自動釋放正在跑,這次先不做",
+  "aib.heat.snap.scan_failed": "殘留候選算不出來(掃描失敗,不是沒有)",
+  "aib.heat.snap.candidate": "  可釋放 {id}  {kind}  {owner}  CPU {cpu}%  {mem} MB  已跑 {age} 秒",
+  "aib.heat.snap.held": "  不收  {kind}  pid {pid}:{why}",
+  "aib.heat.kind.chrome_orphan": "殘留自動化瀏覽器",
+  "aib.heat.kind.test_orphan": "殘留測試",
+  "aib.heat.held.host_operation": "正在對主機動手",
+  "aib.heat.held.holds_lock": "開著鎖檔",
+  "aib.heat.held.lsof_unavailable": "量不到開著的檔案",
+  "aib.heat.held.detached_output": "輸出寫進檔案(有人在等結果)",
+  "aib.heat.held.attached_output": "輸出還接著視窗或其他行程"
 }
