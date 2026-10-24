@@ -65,12 +65,15 @@ def _root():
 def _open_regular(path):
     """開檔後才 fstat(不先 stat 再 open):不跟連結、FIFO / 裝置不等、不讀 ⇒ 回 None。"""
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-    f = os.fdopen(fd, "rb")
-    st = os.fstat(f.fileno())
-    if not stat.S_ISREG(st.st_mode):
-        f.close()
+    try:
+        st = os.fstat(fd)
+    except OSError:
+        os.close(fd)
+        raise
+    if not stat.S_ISREG(st.st_mode):           # 先判再 fdopen:資料夾 fdopen 會炸、fd 沒人關
+        os.close(fd)
         return None, st
-    return f, st
+    return os.fdopen(fd, "rb"), st
 
 
 def _tail_rows(path):

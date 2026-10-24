@@ -374,6 +374,26 @@ class Support(unittest.TestCase):
         self.assertEqual(S.redact(["eyJ" + "a" * 10 + "." + "b" * 10 + ".sig_part"], home="/h", user="zz")[0],
                          ["[redacted]"])                                       # JWT 三段整條遮
 
+    def test_s12_round4(self):
+        # r3 審查:Linux 容器取不到使用者名(OSError / KeyError)不整份失敗;路徑是資料夾不漏 fd
+        def nouser():
+            raise err
+        real = S.getpass.getuser
+        for err in (OSError("no passwd entry"), KeyError("uid")):
+            S.getpass.getuser = nouser
+            try:
+                rr, rc = S.run(write=True)
+            finally:
+                S.getpass.getuser = real
+            self.assertEqual((rc, rr["detail"]), (0, "support_written"), err)
+        d = Path(TMP) / "adir"
+        d.mkdir()
+        fds = len(os.listdir("/dev/fd"))
+        for _ in range(5):
+            self.assertIsNone(S._read_json(str(d)))
+            self.assertEqual(S._tail_rows(str(d)), [])
+        self.assertEqual(len(os.listdir("/dev/fd")), fds)
+
     def test_s6_doctor_unmarked_dispatch_detect(self):
         S.run()
         self.assertFalse((Path(TMP) / "state" / "run-marks" / "doctor.json").exists())
