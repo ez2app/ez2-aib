@@ -326,6 +326,33 @@ HUBWIN_TICKS="${EZ2_RIGHT_HUBWIN_TICKS:-3}"
 case "$HUBWIN_TICKS" in
   ''|*[!0-9]*|0) HUBWIN_TICKS=3 ;;
 esac
+# 切窗訊號(10-24 @044e0 本機效能):以前拍間每 3 拍(0.3 秒)問一次 hub 在哪一窗 = 每秒 3.3 支 tmux。
+#   現在每幀問窗號時順便在 hub 掛 session-window-changed 鉤子,切窗時 hub 自己把新窗號寫進訊號檔;
+#   拍間只讀檔(零 fork),保底每 HUBWIN_SAFETY_TICKS 拍再問一次(hub 重開、鉤子被清時靠它)。
+#   鉤子掛不上(tmux 太舊 / 路徑有 tmux 會解析的字元)⇒ 照舊每 HUBWIN_TICKS 拍問。
+HUBWIN_SAFETY_TICKS="${EZ2_RIGHT_HUBWIN_SAFETY_TICKS:-30}"
+case "$HUBWIN_SAFETY_TICKS" in
+  ''|*[!0-9]*|0) HUBWIN_SAFETY_TICKS=30 ;;
+esac
+HUBWIN_SIG="$EZ2_COCKPIT_STATE_DIR/.hubwin.sig"
+HUBWIN_HOOKED=0
+# 每幀一次:HUB_WIN = hub 現在的窗號;同一支 tmux 順便(重)掛鉤子,兩件都成 ⇒ HUBWIN_HOOKED=1。
+hub_window_probe() {
+  local sock="${EZ2_AIHUB_SOCKET:-}"
+  HUB_WIN=""
+  HUBWIN_HOOKED=0
+  [ -n "$sock" ] || return 0
+  case "$HUBWIN_SIG" in
+    ''|[!/]*|*[!A-Za-z0-9._/+-]*) HUB_WIN="$(hub_active_window)"; return 0 ;;
+  esac
+  # 寫檔失敗一定要吞:run-shell 有輸出或 rc≠0 時 tmux 會把 hub 那格切進 view-mode 顯示錯誤。
+  if HUB_WIN="$(env -u TMUX tmux -L "$sock" display-message -p '#{window_id}' \; \
+       set-hook -g 'session-window-changed[47]' \
+       "run-shell -b \"echo '#{window_id}' 2>/dev/null >'$HUBWIN_SIG' || :\"" 2>/dev/null)"; then
+    HUBWIN_HOOKED=1
+  fi
+  return 0
+}
 FAST_REASON=""
 TITLE_BEAT_PID=""
 CAPTAINS_PID=""
@@ -420,8 +447,8 @@ EOF
   [ "${EZ2_ONESHOT:-0}" = "1" ] && break
   # 09-15:hub_active_window 只給下面的 tick 迴圈判「切窗提前中斷」用;單幀模式(治具/截幀)不會進迴圈,
   #   不必問 tmux(v0.62.0 證詞 test-codex-ctx-probe:tabs 治具 tmux 是禁用樁)。放在 break 之後,活迴圈行為不變。
-  HUB_WIN="$(hub_active_window)"
-  HUB_PANE="$(tmux list-panes -F '#{pane_id} #{@aib_role}' 2>/dev/null | awk '$2=="hub"{print $1; exit}')"
+  pane_read_file HUBWIN_SIG0 "$HUBWIN_SIG"         # 先讀再問:兩步之間切窗 ⇒ 拍間看到不同,多重畫一幀而已
+  hub_window_probe
   # 這一幀自己寫過的子頁與捲動位置，當成下一輪的基準，避免剛換頁又被當成又捲了一次。
   pane_read_file SUBTAB "$EZ2_COCKPIT_STATE_DIR/usage-subtab"
   pane_read_file SCROLL "$EZ2_COCKPIT_STATE_DIR/right-scroll.json"
@@ -492,14 +519,8 @@ EOF
         continue
       fi
     fi
-    # 打字會讓對話欄重畫，寬字偶爾仍溢進來。發現對話欄有動，立刻把右欄上一版貼回去，不等幾秒。
-    if [ -n "${HUB_PANE:-}" ] && [ -n "$LAST_FRAME" ]; then
-      _hub_act="$(tmux display-message -p -t "$HUB_PANE" '#{pane_activity}' 2>/dev/null || true)"
-      if [ -n "$_hub_act" ] && [ "$_hub_act" != "${LAST_HUB_ACT:-}" ]; then
-        [ -n "${LAST_HUB_ACT:-}" ] && pane_paint_frame "$LAST_FRAME"
-        LAST_HUB_ACT="$_hub_act"
-      fi
-    fi
+    # (10-24 拿掉:這裡原本每拍問一次 hub 的 #{pane_activity} 想在對話欄重畫時貼回右欄;
+    #  tmux 沒有這個格式,永遠回空,從沒生效,卻每秒白開 10 支 tmux。)
     _apply_scroll_drag
     _drain_scroll_nudge
     if [ "$TAB" = "3" ]; then
@@ -534,9 +555,17 @@ EOF
     fi
     # 切窗提前中斷(承 pane-bottom-tabs.sh 同一招):標題要在「切到別席」這個事件上
     # 更新,不能只靠五秒心跳 —— 切過去到標題跟上之間那幾秒正是最容易誤導人的視窗。
-    if [ -n "$HUB_WIN" ] && [ $(( (tick + 1) % HUBWIN_TICKS )) -eq 0 ]; then
-      CURRENT_HUB_WIN="$(hub_active_window)"
-      [ "$CURRENT_HUB_WIN" = "$HUB_WIN" ] || break
+    if [ -n "$HUB_WIN" ]; then
+      _hw_every="$HUBWIN_TICKS"
+      if [ "$HUBWIN_HOOKED" = 1 ]; then
+        pane_read_file HUBWIN_NOW "$HUBWIN_SIG"
+        [ "$HUBWIN_NOW" = "$HUBWIN_SIG0" ] || break
+        _hw_every="$HUBWIN_SAFETY_TICKS"
+      fi
+      if [ $(( (tick + 1) % _hw_every )) -eq 0 ]; then
+        CURRENT_HUB_WIN="$(hub_active_window)"
+        [ "$CURRENT_HUB_WIN" = "$HUB_WIN" ] || break
+      fi
     fi
   done
 done
