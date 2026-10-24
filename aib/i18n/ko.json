@@ -5239,6 +5239,8 @@
   "aib.heat.known.improved": "알려진 핫스폿, 업데이트 후 개선됨",
   "aib.heat.known.not_improved": "알려진 핫스폿, {fixed}(으)로 업데이트 후에도 개선 없음",
   "aib.heat.known.fixed": "알려진 핫스폿, {fixed}에서 수정됨",
+  "aib.heat.known.unmeasured": "알려진 핫스팟, {fixed}(으)로 업데이트한 뒤 아직 측정하지 않음",
+  "aib.heat.known.unknown": "알려진 핫스팟, 설치된 버전을 읽지 못해 고쳐졌는지 알 수 없음",
   "aib.heat.known.unscheduled": "알려진 핫스폿, 아직 릴리스 일정 없음",
   "aib.heat.crash.summary": "크래시 레이더: 최근 {days}일 보고서 {files}개, {n}종류",
   "aib.heat.crash.unmeasured": "크래시 보고서 폴더를 읽을 수 없습니다(측정 불가이며, 크래시 없음이 아닙니다)",

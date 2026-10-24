@@ -5239,6 +5239,8 @@
   "aib.heat.known.improved": "已知熱點,換版後已改善",
   "aib.heat.known.not_improved": "已知熱點,換到 {fixed} 後沒有改善",
   "aib.heat.known.fixed": "已知熱點,{fixed} 已修",
+  "aib.heat.known.unmeasured": "已知熱點,換到 {fixed} 後還沒量過",
+  "aib.heat.known.unknown": "已知熱點,讀不到裝的版號,不知道修了沒",
   "aib.heat.known.unscheduled": "已知熱點,還沒排進新版",
   "aib.heat.crash.summary": "當機雷達：最近 {days} 天 {files} 份報告，歸成 {n} 類",
   "aib.heat.crash.unmeasured": "當機報告資料夾讀不到(量不到，不是沒有當機)",

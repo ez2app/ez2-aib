@@ -464,8 +464,8 @@ def sample(seconds, pids_fn, cpu_fn, args_fn, clock=time.monotonic, sleep=time.s
 
 
 def attribute(base, known, born, cpu, prog, cls, seconds, top=CHURN_TOP):
-    """top=None ⇒ 全部列(已知熱點表要看全部,修好後掉出前 10 名的也要記到)。"""
-    """每支新行程往上找第一個「取樣開始就在」的祖先 ⇒ 那個祖先的組別 / 席碼 + 最上層新行程的程式名。"""
+    """每支新行程往上找第一個「取樣開始就在」的祖先 ⇒ 那個祖先的組別 / 席碼 + 最上層新行程的程式名。
+    top=None ⇒ 全部列(已知熱點表要看全部,修好後掉出前 10 名的也要記到)。"""
     import room_heat
     acc = {}
     for p in born:
@@ -514,11 +514,11 @@ def _clean_cached(d):
     return out
 
 
-def _annotate(r, environ, record, full=None):
+def _annotate(r, environ, record, full=None, alive=None):
     """已知熱點(room_heat_known);壞了不擋結果。"""
     try:
         import room_heat_known as RK
-        return RK.annotate(r, environ=environ, record=record, full=full)
+        return RK.annotate(r, environ=environ, record=record, full=full, alive=alive)
     except Exception:  # noqa: BLE001
         return r
 
@@ -574,7 +574,8 @@ def churn(seconds=CHURN_DEFAULT_S, now=None, environ=None, platform=None, fns=No
         r = {"schema": "aib-heat-churn/v1", "state": "ok", "t": round(now, 1), "seconds": seconds,
              "births": len(born), "births_per_s": round(len(born) / seconds, 2),
              "cpu_cores_lower_bound": round(total_cpu / seconds, 3), "top": top, "throttled": False}
-        r = _annotate(r, environ, record=True, full=full)
+        r = _annotate(r, environ, record=True, full=full,
+                      alive={os.path.basename(x[5] or "") for x in rows if len(x) > 5})
         try:
             _write_json(last_path, {"schema": "aib-heat-churn-last/v1", "started_at": round(now, 1), "result": r})
         except (OSError, ValueError):

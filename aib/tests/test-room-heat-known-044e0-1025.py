@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """aib room heat 已知熱點表(10-25 @044e0,RULING-room-heat-local-opt 第 3 張)。全在暫存狀態根 + 假行程表跑。
-N1 簽名:程式檔名 + 每秒支數門檻;低於門檻 / 不在表上 ⇒ 不標
-N2 status:沒排版 ⇒ unscheduled;裝的 < fixed_in(或讀不到版號)⇒ update_available;
-   ≥ fixed_in:有前後 ⇒ ≤ 7 成 improved、否則 not_improved;沒有換版前紀錄 ⇒ fixed
-N3 換版流程:0.1.53 記 before ⇒ 0.1.54 記 after(掉到門檻下也記;整次沒出現記 0)⇒ 已改善;數字沒降 ⇒ 沒改善;紀錄檔 0600
+N1 簽名:程式檔名(log 另限 aib_core 組)+ 同代碼全部列加總比門檻(審查 L10);低於門檻 / 不在表上 ⇒ 不標
+N2 status:沒排版 ⇒ unscheduled;讀不到版號 ⇒ unknown(審查 M6);裝的 < fixed_in ⇒ update_available;
+   ≥ fixed_in:還沒量 ⇒ unmeasured;還在門檻以上 ⇒ not_improved(審查 H1);有前後 ⇒ ≤ 7 成 improved;沒有換版前紀錄 ⇒ fixed
+N3 換版流程:0.1.53 記 before(最近 9 次取中位數,閒時低值蓋不掉,審查 M5)⇒ 0.1.54 記 after(掉到門檻下也記;
+   整次沒出現、且上層 tmux 確定開著才記 0)⇒ 已改善;數字沒降 ⇒ 沒改善;紀錄檔 0600
+N3b 新紀錄檔 + 已是 fixed_in + 這次 35 支 / 秒 ⇒ 不准顯示「已修」(審查 H1 實測情境)
 N4 紀錄檔被改:代碼不在表上的丟掉、數字 / 版號不合格式的變 None
 N5 churn 接上:新結果的列帶 known、整份帶 known_hot;60 秒內回快取時重新標、但不再記一筆
 N6 CLI 文字模式在列尾貼「已知熱點」貼紙
-刀(複本 + run_guarded):K1 改善門檻放寬到 10 倍 ⇒ N3 紅;K2 不看裝的版號 ⇒ N2 紅;K3 紀錄檔不濾代碼 ⇒ N4 紅。
+刀(複本 + run_guarded):K1 改善門檻放寬到 10 倍 ⇒ N2 紅;K2 不看裝的版號 ⇒ N2 紅;K3 紀錄檔不濾代碼 ⇒ N4 紅;
+   K4 不看門檻就判已修 ⇒ N3b 紅;K5 不看上層程式就記 0 ⇒ N3 紅;K6 換版前只留最後一筆 ⇒ N3c 紅。
 """
 import io
 import json
@@ -53,23 +56,31 @@ class Base(unittest.TestCase):
 
 class Rules(Base):
     def test_n1_match(self):
-        self.assertEqual(RK.match(item("pane-right-tabs.sh", 35)), ("right_tabs_poll", "0.1.54"))
-        self.assertEqual(RK.match(item("pane-right-tabs.sh", 3)), (None, None))
-        self.assertEqual(RK.match(item("statusline-ez2-v215.sh", 6.5, "other_app")), ("statusline_cost", "0.1.55"))
-        self.assertEqual(RK.match(item("seat_now.py", 5, "seat")), ("statusline_cost", "0.1.55"))
-        self.assertEqual(RK.match(item("log", 2)), ("cabin_guard_logshow_dup", None))
-        self.assertEqual(RK.match(item("xpane-right-tabs.sh", 99)), (None, None))
-        self.assertEqual(RK.match(item("git", 50)), (None, None))
+        M = RK.match
+        self.assertEqual(M([item("pane-right-tabs.sh", 35)]), {"right_tabs_poll": 35.0})
+        self.assertEqual(M([item("pane-right-tabs.sh", 3)]), {})
+        self.assertEqual(M([item("pane-right-tabs.sh", 3, "seat")] * 4), {"right_tabs_poll": 12.0}, "沒按代碼加總再比門檻")
+        self.assertEqual(M([item("pane-right-tabs.sh", 3)], tracked={"right_tabs_poll"}), {"right_tabs_poll": 3.0})
+        self.assertEqual(M([item("statusline-ez2-v215.sh", 6.5, "other_app")]), {"statusline_cost": 6.5})
+        self.assertEqual(M([item("seat_now.py", 5, "seat")]), {"statusline_cost": 5.0})
+        self.assertEqual(M([item("log", 2)]), {"cabin_guard_logshow_dup": 2.0})
+        self.assertEqual(M([item("log", 2, "other_app"), item("log", 2, "seat")]), {}, "log 不是 aib 起的也標")
+        self.assertEqual(M([item("xpane-right-tabs.sh", 99), item("git", 50)]), {})
 
     def test_n2_status(self):
         S = RK.status_of
+        A = {"after_ver": "0.1.54"}
         self.assertEqual(S(None, "0.1.60", {}), "unscheduled")
         self.assertEqual(S("0.1.54", "0.1.53", {"before": 35, "after": 4}), "update_available")
-        self.assertEqual(S("0.1.54", None, {}), "update_available")
+        self.assertEqual(S("0.1.54", None, {}), "unknown", "讀不到版號就說有新版")
         self.assertEqual(S("0.1.54", "0.1.9", {}), "update_available", "版號要照數字比,不是照字串")
-        self.assertEqual(S("0.1.54", "0.1.54", {"before": 35.0, "after": 4.0}), "improved")
-        self.assertEqual(S("0.1.54", "0.1.60", {"before": 35.0, "after": 30.0}), "not_improved")
-        self.assertEqual(S("0.1.54", "0.1.54", {"before": None, "after": 4.0}), "fixed")
+        self.assertEqual(S("0.1.54", "0.1.54", {}, 10), "unmeasured")
+        self.assertEqual(S("0.1.54", "0.1.54", dict(A, before=35.0, after=4.0), 10), "improved")
+        self.assertEqual(S("0.1.54", "0.1.60", dict(A, before=35.0, after=30.0), 10), "not_improved")
+        self.assertEqual(S("0.1.54", "0.1.54", dict(A, before=None, after=4.0), 10), "fixed")
+        self.assertEqual(S("0.1.54", "0.1.54", dict(A, before=None, after=18.6), 10), "not_improved", "還在門檻上卻判已修")
+        self.assertEqual(S("0.1.54", "0.1.54", dict(A, before=80.0, after=12.0), 10), "not_improved", "降了但還在門檻上")
+        self.assertEqual(S("0.1.54", "0.1.54", dict(A, before=12.0, after=9.0), 10), "not_improved", "只降一點點就判改善")
 
 
 class Flow(Base):
@@ -83,12 +94,30 @@ class Flow(Base):
         self.assertEqual(r["known_hot"], [{"code": "right_tabs_poll", "fixed_in": "0.1.54", "status": "improved",
                                            "before": 35.0, "after": 4.0}])
         self.assertEqual(r["aib"], "0.1.54")
-        r = RK.annotate({"top": [item("git", 40)]}, installed="0.1.54", now=2.5, full=[item("git", 40)])
-        self.assertEqual(r["known_hot"][0]["after"], 0.0, "換版後整次沒出現沒記 0")
+        r = RK.annotate({"top": [item("git", 40)]}, installed="0.1.54", now=2.4, full=[item("git", 40)],
+                        alive={"zsh", "claude"})
+        self.assertEqual(r["known_hot"][0]["after"], 4.0, "沒開 tmux(上層不在)也記了 0")
+        r = RK.annotate({"top": [item("git", 40)]}, installed="0.1.54", now=2.5, full=[item("git", 40)],
+                        alive={"tmux", "claude"})
+        self.assertEqual(r["known_hot"][0]["after"], 0.0, "換版後整次沒出現、tmux 開著卻沒記 0")
         r = RK.annotate({"top": [item("pane-right-tabs.sh", 30.0)]}, installed="0.1.55", now=3.0)
         self.assertEqual(r["top"][0]["known"]["status"], "not_improved")
         r = RK.annotate({"top": []}, installed="0.1.55", now=4.0)
         self.assertEqual([k["status"] for k in r["known_hot"]], ["not_improved"], "這次沒出現也要列出已知的")
+
+    def test_n3b_fresh_store_still_hot(self):
+        r = RK.annotate({"top": [item("pane-right-tabs.sh", 35.0)]}, installed="0.1.54", now=1.0)
+        self.assertEqual(r["top"][0]["known"]["status"], "not_improved", "換了版還 35 支 / 秒卻顯示已修")
+        self.assertNotEqual(r["known_hot"][0]["status"], "fixed")
+
+    def test_n3c_before_median(self):
+        for t, rate in enumerate((40.0, 35.0, 38.0, 11.0)):     # 最後一次剛好閒(11 支,仍過門檻)
+            RK.annotate({"top": [item("pane-right-tabs.sh", rate)]}, installed="0.1.53", now=float(t))
+        self.assertEqual(RK.load()["right_tabs_poll"]["before"], 36.5, "換版前只留最後一筆,被閒時低值蓋掉")
+        r = RK.annotate({"top": [item("pane-right-tabs.sh", 8.0)]}, installed="0.1.54", now=9.0)
+        self.assertEqual(r["top"][0]["known"]["status"], "improved")
+        RK.annotate({"top": [item("pane-right-tabs.sh", 30.0)]}, installed=None, now=10.0)
+        self.assertEqual(RK.load()["right_tabs_poll"]["befores"], [40.0, 35.0, 38.0, 11.0], "讀不到版號也記成換版前")
 
     def test_n4_store_cleaned(self):
         os.makedirs(RH.state_dir(), exist_ok=True)
@@ -98,8 +127,8 @@ class Flow(Base):
             "statusline_cost": "x"}}))
         st = RK.load()
         self.assertEqual(list(st), ["right_tabs_poll"])
-        self.assertEqual(st["right_tabs_poll"], {"before": None, "after": None, "t": 1.0, "before_ver": None,
-                                                 "after_ver": "0.1.54"})
+        self.assertEqual(st["right_tabs_poll"], {"before": None, "befores": [], "after": None, "t": 1.0,
+                                                 "before_ver": None, "after_ver": "0.1.54"})
 
 
 class Clock:
@@ -156,11 +185,14 @@ class Cli(Base):
 
 
 KNIVES = [
-    ("K1", "src/cockpit/room_heat_known.py", "IMPROVED_RATIO = 0.7\n", "IMPROVED_RATIO = 10\n", "Flow.test_n3_upgrade_flow"),
-    ("K2", "src/cockpit/room_heat_known.py", "    if iv is None or fv is None or iv < fv:\n", "    if fv is None:\n",
-     "Rules.test_n2_status"),
+    ("K1", "src/cockpit/room_heat_known.py", "IMPROVED_RATIO = 0.7\n", "IMPROVED_RATIO = 10\n", "Rules.test_n2_status"),
+    ("K2", "src/cockpit/room_heat_known.py", "    if iv < fv:\n", "    if False:\n", "Rules.test_n2_status"),
     ("K3", "src/cockpit/room_heat_known.py", "        if code not in CODES or not isinstance(rec, dict):\n",
      "        if not isinstance(rec, dict):\n", "Flow.test_n4_store_cleaned"),
+    ("K4", "src/cockpit/room_heat_known.py", "    if after >= floor:", "    if False:", "Flow.test_n3b_fresh_store_still_hot"),
+    ("K5", "src/cockpit/room_heat_known.py", "                    and any(par.search(n or \"\") for n in alive)):",
+     "                    ):", "Flow.test_n3_upgrade_flow"),
+    ("K6", "src/cockpit/room_heat_known.py", "{\"before\": _median(bs),", "{\"before\": (bs[-1:] or [None])[0],", "Flow.test_n3c_before_median"),
 ]
 
 
