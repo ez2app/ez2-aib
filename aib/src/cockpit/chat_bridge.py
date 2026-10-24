@@ -519,7 +519,7 @@ def window_command(env=None):
             "EZ2_AIB_LOCALE", "AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR", "AIB_CHAT_TICK"]
     pairs = ["%s=%s" % (k, shlex.quote(env[k])) for k in keep if env.get(k)]
     me = "env %s %s %s" % (" ".join(pairs), shlex.quote(sys.executable), shlex.quote(str(HERE / "chat_bridge.py")))
-    # 開發文件第 37.3 節(10-18 fishmac 單艙:轉接程式停了、窗格卻還活著 ⇒ 沒人重起):run 結束後開關還開著 ⇒ 等 RESTART_GAP 秒再起;
+    # 開發文件第 37.3 節(10-18 一台單艙會員機:轉接程式停了、窗格卻還活著 ⇒ 沒人重起):run 結束後開關還開著 ⇒ 等 RESTART_GAP 秒再起;
     #   aib chat off(開關關了)⇒ 迴圈結束、窗格死。版本更新後停掉舊的,下一輪自然載入新程式。
     return "exec sh -c %s" % shlex.quote("while :; do %s run; %s enabled >/dev/null 2>&1 || exit 0; sleep %d; done"
                                          % (me, me, RESTART_GAP))
@@ -842,9 +842,9 @@ def cmd_profile(a, env, out):
         out.write(T("profile_" + str(err)) + "\n")
         return 2
     out.write(T("profile_saved_" + a.cmd, value=a.value) + "\n")
-    if a.cmd == "publish":                  # 還沒有席金鑰 ⇒ 名冊不會列它,要說清楚(10-17 fishmac:說「已列進」卻 0 席)
+    if a.cmd == "publish":                  # 還沒有席金鑰 ⇒ 名冊不會列它,要說清楚(10-17 一台會員機:說「已列進」卻 0 席)
         import nostr_keys as NK
-        if not any(e.get("status") == "active" and e.get("seat5") == a.value for e in NK.read_map(env)["seats"]):
+        if not any(e.get("seat5") == a.value for e in NK.sending_seats(env)):      # 跟名冊同一把(@abb89 #297 r1)
             out.write(T("publish_no_key", value=a.value) + "\n")
     return 0
 

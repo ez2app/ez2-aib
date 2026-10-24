@@ -7,6 +7,7 @@ Pro 的快照還記著舊席 ⇒ resolve 一直 no_seat、在線四天沒送到,
 P1 快照第一席查不到 ⇒ 改抓名冊第一席、查到就用;快照 seats 整份換成名冊目前公開的席(舊席拿掉)
 P2 快照那席查得到 ⇒ 不抓名冊(不多連網)
 P3 名冊也沒有可用的席 ⇒ 照舊回失敗、快照不動
+P4 快照那席是網路錯(不是 no_seat / no_dm_relays)⇒ 不改抓名冊、快照不動(@abb89 #297 r1)
 (要 AIB_TEST_NOSTR_VENV;chat_nostr 只在 venv 裡 import 得到。不連網:resolve 與名冊都換成假的)
 S1 一席一把(10-24 Pro:@cfd04 換過人格,同一席三把 active ⇒ 名冊重複席、別台整份拒收):同一席先綁人格 A、再換 B ⇒
    sending_seats 只給 B 那把;名冊這一席只出現一次、npub = B;A 的金鑰仍 active(收件照認、人格換回來照用)
@@ -59,7 +60,7 @@ async def fake_resolve(addr):
         cab, seat = addr.split("/")[1:]
         return 0, {"cabin": cab, "seat": {"seat": seat, "npub": "npub1" + seat}, "roster_at": 200,
                    "roster_seats": [{"cabin": cab, "seat": seat, "npub": "npub1" + seat}], "dm_relays": []}
-    return 2, {"why": "no_seat"}
+    return 2, {"why": "timeout" if case == "p4" else "no_seat"}
 
 async def fake_roster(o, relays, r):
     calls["roster"] += 1
@@ -166,6 +167,8 @@ class Stale(unittest.TestCase):
         self.addCleanup(shutil.rmtree, td, True)
         (td / "root").mkdir()
         env = dict(os.environ, HOME=str(td / "home"), EZ2_AIB_STATE_ROOT=str(td / "home" / ".ez2-aib"))
+        for k in ("AIB_CHAT_HOME", "AIB_CHAT_BRIDGE_DIR", "AIB_CHAT_RELAYS"):    # 外面(aib test)帶進來的不准漏進子行程
+            env.pop(k, None)
         r = subprocess.run([VPY, "-c", PROBE, str(Path(repo) / "src" / "cockpit"), str(td / "root"), case],
                            capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -176,6 +179,12 @@ class Stale(unittest.TestCase):
         self.assertEqual((d["rc"], d["seat"]), (0, "fdcf5"))
         self.assertEqual(d["calls"]["roster"], 1)
         self.assertEqual(d["snap"], ["fdcf5"])            # 舊席 4345c 從快照拿掉
+
+    def test_p4_network_error_no_roster(self):
+        d = self.probe("p4")
+        self.assertEqual(d["rc"], 2)
+        self.assertEqual(d["calls"]["roster"], 0, "網路錯不是席不在 ⇒ 不改抓名冊(等下一輪)")
+        self.assertEqual(d["snap"], ["4345c"])
 
     def test_p2_good_snapshot_no_roster(self):
         d = self.probe("p2")
