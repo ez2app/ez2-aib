@@ -33,7 +33,7 @@ R32 子孫的開始時間晚於這次掃描(pid 被新行程拿走)⇒ 不在 pi
 刀(複本,要紅在指定那一格;目標格被跳過 ⇒ 刀也跳過):K1 開始時間不比 ⇒ R6 紅;K2 拿掉主機動作排除 ⇒ R3 紅;
 K3 子孫不檢查暫存根 ⇒ R4 紅;K4 暫存根改回子字串比對 ⇒ R9 紅;K5 拿掉 *.lock 排除 ⇒ R5 紅;K6 argv[0] 不看直譯器 ⇒ R14 紅;
 K7 不先記帳就殺 ⇒ R15 紅;K8 拿掉背景輸出判斷 ⇒ R17 紅;K9 拿掉年齡判斷 ⇒ R13 紅;K10 接著東西也當可收 ⇒ R25 紅;
-K11 lsof 沒列出主行程不當量不到 ⇒ R24 紅;K12 子孫不比開始時間 ⇒ R32 紅
+K11 lsof 沒列出主行程不當量不到 ⇒ R24 紅;K12 子孫不比開始時間 ⇒ R32 紅;K13 拿掉「不收自己」⇒ R30 紅
 """
 import json
 import os
@@ -475,6 +475,9 @@ class Orphans(unittest.TestCase):
         pid, _d = self.spawn("import time\ntime.sleep(300)\n")
         chrome = "/opt/chrome/chrome --headless --remote-debugging-port=1 --user-data-dir="
         self.assertEqual(self.kinds(pid, chrome + self.root + "/x /../../../Users/me/Library/Chrome"), [])
+        self.assertEqual(self.kinds(pid, chrome + self.root + "/x y z/../../../../Users/me/Lib"), [])     # 多段空白(r7 L1)
+        self.assertEqual(self.kinds(pid, chrome + self.root + "/x y /../../../../Users/me/Lib"), [])
+        self.assertEqual(self.kinds(pid, chrome + self.root + "/x about:blank --no-first-run"), ["chrome_orphan"])
         self.assertEqual(self.kinds(pid, chrome + self.root + "/x about:blank"), ["chrome_orphan"])
         self.assertEqual(self.kinds(pid, chrome + self.root + "/x https://example.com/a"), ["chrome_orphan"])
 
@@ -516,7 +519,14 @@ class Orphans(unittest.TestCase):
     def test_r30_self_not_candidate(self):
         d = self.tmp / "self" / "tests"
         d.mkdir(parents=True)
-        self.assertEqual(self.kinds(os.getpid(), "python3 %s/test-x.py" % d), [])
+        me, real = os.getpid(), RR.identity
+        self.assertIn(me, RR._protected())
+
+        def ident(p):                                   # 讓自己看起來像孤兒(ppid 1、夠老),只剩「不收自己」那一關擋(r7 L4)
+            r = real(p)
+            return (r[0], 1, r[2], r[3] - 3600) if p == me and r else r
+        with mock.patch.object(RR, "identity", ident), mock.patch.object(RR, "_protected", lambda: {me}):
+            self.assertEqual(self.kinds(me, "python3 %s/test-x.py" % d), [])
 
     def test_r31_auto_ledger_not_regular(self):
         log = Path(RR.released_path())
@@ -530,6 +540,9 @@ class Orphans(unittest.TestCase):
         real = self.tmp / "real.jsonl"
         real.write_text("", encoding="utf-8")
         log.symlink_to(real)
+        self.assertEqual(RR._auto_used(time.time()), RR.AUTO_MAX_PER_WINDOW)
+        log.unlink()
+        log.write_bytes(b'{"mode":"auto","t":1,"n_pids":0}\n\xff\xfe\n')        # 不是 UTF-8 ⇒ 當滿額,不丟例外
         self.assertEqual(RR._auto_used(time.time()), RR.AUTO_MAX_PER_WINDOW)
 
     def test_r32_new_child_after_scan_start(self):
@@ -648,6 +661,10 @@ class Knives(unittest.TestCase):
 
     def test_k11_blank_lsof_trusted(self):
         self._knife("    if pids and str(pids[0]) not in got:\n", "    if False:\n", "Orphans.test_r24_lsof_blank_is_unmeasured")
+
+    def test_k13_self_not_protected(self):
+        self._knife("        if uid != me or ppid != 1 or pid in protected:\n", "        if uid != me or ppid != 1:\n",
+                    "Orphans.test_r30_self_not_candidate")
 
     def test_k12_child_start_not_checked(self):
         self._knife(" and (p == pid or _start_s(idents[p]) < t0)]\n", "]\n", "Orphans.test_r32_new_child_after_scan_start")

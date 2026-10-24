@@ -148,9 +148,11 @@ def _is_chrome_orphan(args, roots):
         return False                                   # Chrome 用最後一個;不只一個 / 空白分隔取不到值 ⇒ 不收
     udd = udds[0]
     i = next(k for k, t in enumerate(toks) if t.split("=", 1)[0] in ("--user-data-dir", "-user-data-dir"))
-    nxt = toks[i + 1] if i + 1 < len(toks) else ""
-    if nxt and not nxt.startswith("-") and "/" in nxt and "://" not in nxt:
-        return False                                   # 路徑帶空白(/tmp/x /../../家目錄):切出來的那段不準 ⇒ 不收(#319 r6 A-L2)
+    for nxt in toks[i + 1:]:                           # 到下一個選項前,只准網址(路徑帶空白時切出來那段不準 ⇒ 不收,#319 r6 A-L2 / r7 L1)
+        if nxt.startswith("-"):
+            break
+        if "://" not in nxt and not nxt.startswith(("about:", "data:")):
+            return False
     return _under(udd, roots) and "/captain-room/" not in os.path.realpath(udd) + "/"
 
 
@@ -194,6 +196,8 @@ def identity(pid):
         with open("/proc/%d/stat" % pid) as fh:
             stat = fh.read()
         fields = stat.rsplit(")", 1)[1].split()
+        if fields[0] in ("Z", "X"):                    # 殭屍 / 已死:跟 macOS 一樣當不在(#319 r7 L3)
+            return None
         ppid, ticks = int(fields[1]), int(fields[19])
         uid = os.stat("/proc/%d" % pid).st_uid
         hz = os.sysconf("SC_CLK_TCK")
@@ -262,7 +266,11 @@ def _linux_pipe_peer(pid, fd, exclude=()):
                 if os.stat("/proc/" + d).st_uid != me:
                     continue
                 for f in os.listdir("/proc/%s/fd" % d):
-                    if os.readlink("/proc/%s/fd/%s" % (d, f)) == target:
+                    if os.readlink("/proc/%s/fd/%s" % (d, f)) != target:
+                        continue
+                    with open("/proc/%s/fdinfo/%s" % (d, f)) as fh:   # 只算讀端(寫端是兄弟行程,不是在看輸出的人,#319 r7 L2)
+                        flags = next((ln.split()[1] for ln in fh if ln.startswith("flags:")), "")
+                    if flags and int(flags, 8) & os.O_ACCMODE == os.O_RDONLY:
                         return True
             except OSError:
                 continue
@@ -476,17 +484,22 @@ def _auto_used(now, environ=None):
         os.close(fd)
         return AUTO_MAX_PER_WINDOW
     used = 0
-    with fh:
-        for line in fh:
-            try:
-                r = json.loads(line)
-                t, n = float(r.get("t") or 0), float(r.get("n_pids") or 0)
-                if r.get("mode") != "auto" or not math.isfinite(t):
-                    continue
-                if now - t <= AUTO_WINDOW_S:            # 未來的點也算(時鐘往回調不重置額度)
-                    used += AUTO_MAX_PER_WINDOW if not math.isfinite(n) else max(0, int(n))
-            except (ValueError, TypeError, AttributeError, RecursionError, OverflowError):
+    try:
+        lines = fh.read().splitlines()
+    except (OSError, UnicodeDecodeError):              # 讀不了 / 不是 UTF-8 ⇒ 往不收那邊錯(#319 r7 附註)
+        return AUTO_MAX_PER_WINDOW
+    finally:
+        fh.close()
+    for line in lines:
+        try:
+            r = json.loads(line)
+            t, n = float(r.get("t") or 0), float(r.get("n_pids") or 0)
+            if r.get("mode") != "auto" or not math.isfinite(t):
                 continue
+            if now - t <= AUTO_WINDOW_S:            # 未來的點也算(時鐘往回調不重置額度)
+                used += AUTO_MAX_PER_WINDOW if not math.isfinite(n) else max(0, int(n))
+        except (ValueError, TypeError, AttributeError, RecursionError, OverflowError):
+            continue
     return used
 
 
