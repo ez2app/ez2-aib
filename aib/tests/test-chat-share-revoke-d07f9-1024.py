@@ -22,6 +22,7 @@ O5 寄件端時鐘快 1 小時 + 亂序跨秒(撤回先到、撤回前寄的舊�
    同一位寄件人之間只比原始寄出時間,不夾值;收到時間只決定多久不再擋人)
 O7 寄件端時鐘慢 40 天:撤回帳不會一寫就被清,舊快照照丟
 O8 未來時間的撤回只擋 2 天 10 分(看收到時間);過了 ⇒ 重開的分享照收;同一個時鐘的未來快照接更晚的撤回照刪
+O9 那筆未來撤回過期後又收到真的撤回(寄出時間比它小)⇒ 照記、照擋舊快照(手上那格過期 ⇒ 直接蓋過);刀 K13 ⇒ O9 紅
 O6 手上那份過期(收到超過 7 天)不拿來擋新收的快照
 S1 陌生主人的撤回(手上沒他的資料、不是好友)⇒ 不查名冊、不寫 revoked.json(M2)
 S2 壞帳(值不是數字 / 列不是 dict / 整檔不是 dict)不炸;記帳失敗也先刪(L1、M2)
@@ -91,6 +92,9 @@ class Pure(unittest.TestCase):
             GF.note_revoked(root, A, "space", 250, now=400)
             self.assertEqual(GF.read_revoked(root, A, now=400), {"space": 300}, "只往大記")
             self.assertEqual(GF.read_revoked(root, A, now=400 + GF.REVOKE_BACKFILL_S), {}, "收到超過 2 天 10 分不再擋")
+            later = 400 + GF.REVOKE_BACKFILL_S
+            GF.note_revoked(root, A, "space", 280, now=later)
+            self.assertEqual(GF.read_revoked(root, A, now=later), {"space": 280}, "手上那格過期 ⇒ 新收到的直接蓋過")
             now = 10 ** 9
             for i in range(GF.REVOKED_MAX + 5):                   # 筆數上限:留最新的(第 2 輪審 M2)
                 GF.note_revoked(root, NK.npub(NK.pubkey_hex("%064x" % (1000 + i))), "share", now + i, now=now + i)
@@ -259,6 +263,11 @@ class Order(unittest.TestCase):
         self.assertIsNone(self.probe(["seed-rv", "space", "+1000000", "-100"], ["room", "+5"])["room"], "2 天內照擋")
         self.assertIsNone(self.probe(["room", "+1000000"], ["rv-space", "+1000100"])["room"], "同一個時鐘:更晚的撤回照刪")
 
+    def test_o9_expired_future_revoke_then_real(self):
+        late = "-%d" % (2 * 86400 + 601)
+        got = self.probe(["seed-rv", "space", "+1000000", late], ["rv-space", "+0"], ["room", "-100"])
+        self.assertIsNone(got["room"], "過期的未來撤回佔著格子 ⇒ 之後真的撤回記不進來、舊快照被收下")
+
     def test_o6_stale_copy_does_not_block(self):
         got = self.probe(["seed-room", "-700000", "-100"], ["room", "-200"])
         self.assertEqual(got["room"], -200, "手上那份已過期(超過 7 天),不准拿來擋新收的")
@@ -387,6 +396,11 @@ class Knife(unittest.TestCase):
         self._knife("src/cockpit/dm_global_files.py",
                     '            if k in row and now - int_or0(row.get(k + "_at")) < REVOKE_BACKFILL_S}',
                     "            if k in row}", "Order.test_o8_future_revoke_expires")
+
+    def test_k13_expired_cell_blocks_update(self):
+        self._knife("src/cockpit/dm_global_files.py",
+                    '        if kind + "_at" not in row or now - int_or0(row.get(kind + "_at")) >= REVOKE_BACKFILL_S:\n',
+                    '        if kind + "_at" not in row:\n', "Order.test_o9_expired_future_revoke_then_real")
 
     def test_k8_no_cheap_check(self):
         self._knife("src/cockpit/chat_nostr.py", "        if not held and not (CR.is_friend(owner) or CR.is_mine(owner)):\n",

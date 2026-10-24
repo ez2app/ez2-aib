@@ -1146,7 +1146,9 @@ def read_revoked(root, owner, now=None):
 
 
 def note_revoked(root, owner, kind, ts, now=None):
-    """ts = 撤回的寄出時間(原值);now = 收到時間。比手上新才換(收到時間跟著換);舊撤回晚到不延長擋人。"""
+    """ts = 撤回的寄出時間(原值);now = 收到時間。比手上新才換(收到時間跟著換);舊撤回晚到不延長擋人。
+    手上那格已不擋人(收到超過 REVOKE_BACKFILL_S)⇒ 新收到的直接蓋過:不然先前一筆未來時間的撤回過期後,
+    之後真的撤回(寄出時間比它小)會記不進來、不擋舊快照。"""
     if not NPUB_FULL_RE.match(owner or "") or kind not in ("space", "share"):
         return
     now = int(time.time() if now is None else now)
@@ -1155,8 +1157,10 @@ def note_revoked(root, owner, kind, ts, now=None):
         per = cur.get("per") if isinstance(cur.get("per"), dict) else {}
         per = {k: v for k, v in per.items() if NPUB_FULL_RE.match(k) and isinstance(v, dict)}
         row = per.setdefault(owner, {})
-        if int_or0(ts) > int_or0(row.get(kind)) or kind + "_at" not in row:
-            row[kind], row[kind + "_at"] = max(int_or0(ts), int_or0(row.get(kind))), now
+        if kind + "_at" not in row or now - int_or0(row.get(kind + "_at")) >= REVOKE_BACKFILL_S:
+            row[kind], row[kind + "_at"] = int_or0(ts), now
+        elif int_or0(ts) > int_or0(row.get(kind)):
+            row[kind], row[kind + "_at"] = int_or0(ts), now
         top = lambda kv: max([int_or0(kv[1].get(k + "_at")) for k in ("space", "share")] or [0])  # noqa: E731
         keep = sorted((kv for kv in per.items() if now - top(kv) < REVOKED_KEEP_S), key=top, reverse=True)[:REVOKED_MAX]
         cur["per"] = dict(keep)
