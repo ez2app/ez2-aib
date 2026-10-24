@@ -10,7 +10,9 @@
 10-25 實測全機 6.95 核裡 ≥2.6 核是它們,主機房卻顯示「沒什麼在跑」。
 churn 取樣本身約 0.1–0.2 核 ⇒ 核心節流 60 秒一次,第二次回上次結果 + throttled(D1)。
 非 macOS / Linux ⇒ unsupported_platform;不叫任何平台專用指令(D2)。
-隱私(D4):只出組別、席碼、程式檔名;不出指令列、cwd、路徑。detail 代碼是契約,人話放 hint。
+隱私(D4 / E3):只出組別、席碼、程式檔名;不出指令列、cwd、路徑。只對自己帳號的直譯器 / shell 讀 argv,
+而且只留腳本檔名(不然 pane-right-tabs.sh 這類只會顯示 bash,已知熱點表也認不出來);別的帳號一律「?」。
+detail 代碼是契約,人話放 hint。
 """
 from __future__ import annotations
 
@@ -40,6 +42,7 @@ CHURN_THROTTLE_S = 60
 CHURN_TICK_S = 0.02
 CHURN_TOP = 10
 SHELLS = frozenset(("sh", "bash", "zsh", "dash", "ksh", "fish"))
+UNKNOWN = "?"
 
 
 def _finite(v):
@@ -173,7 +176,7 @@ _TIMEBASE = None
 
 
 def _mac_cpu(pid):
-    """(ppid, 名字, CPU 秒) 或 None。rusage 的時間單位是 mach 絕對時間(Apple Silicon ≠ 奈秒)。"""
+    """(ppid, 名字, CPU 秒, uid) 或 None。rusage 的時間單位是 mach 絕對時間(Apple Silicon ≠ 奈秒)。"""
     global _TIMEBASE
     import memguard as M
     if _TIMEBASE is None:
@@ -192,7 +195,7 @@ def _mac_cpu(pid):
     if lib.proc_pid_rusage(int(pid), 0, ctypes.byref(ru)) != 0:
         return None
     return bi.pbi_ppid, (bi.pbi_name or bi.pbi_comm).decode("utf-8", "replace"), \
-        (ru.ri_user_time + ru.ri_system_time) * _TIMEBASE
+        (ru.ri_user_time + ru.ri_system_time) * _TIMEBASE, bi.pbi_uid
 
 
 _CLK = None
@@ -203,6 +206,7 @@ def _linux_cpu(pid):
     if _CLK is None:
         _CLK = float(os.sysconf("SC_CLK_TCK") or 100)
     try:
+        uid = os.stat("/proc/%d" % pid).st_uid
         with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as fh:
             raw = fh.read()
     except OSError:
@@ -210,7 +214,7 @@ def _linux_cpu(pid):
     try:
         name = raw[raw.index("(") + 1:raw.rindex(")")]
         f = raw[raw.rindex(")") + 2:].split()
-        return int(f[1]), name, (int(f[11]) + int(f[12])) / _CLK
+        return int(f[1]), name, (int(f[11]) + int(f[12])) / _CLK, uid
     except (ValueError, IndexError):
         return None
 
@@ -244,8 +248,10 @@ def _platform_fns(platform):
     return None
 
 
-def sample(seconds, pids_fn, cpu_fn, args_fn, clock=time.monotonic, sleep=time.sleep, tick=CHURN_TICK_S):
-    """取樣 seconds 秒 → (base 集合, known {pid: (ppid, 名字)}, born [pid], cpu {pid: 最後看到的 CPU 秒}, prog {pid: 程式})。"""
+def sample(seconds, pids_fn, cpu_fn, args_fn, clock=time.monotonic, sleep=time.sleep, tick=CHURN_TICK_S, uid=None):
+    """取樣 seconds 秒 → (base 集合, known {pid: (ppid, 名字)}, born [pid], cpu {pid: 最後看到的 CPU 秒}, prog {pid: 程式})。
+    E3:別的帳號(含 root)的新行程只記父子關係與 CPU,程式名記成 UNKNOWN、不讀 argv。"""
+    uid = os.getuid() if uid is None else uid
     known, base = {}, set()
     for p in pids_fn():
         i = cpu_fn(p)
@@ -261,12 +267,16 @@ def sample(seconds, pids_fn, cpu_fn, args_fn, clock=time.monotonic, sleep=time.s
             i = cpu_fn(p)
             if not i:
                 continue
-            if p not in known:
+            if p not in known or (p in prog and known[p][1] != i[1]):
+                if p not in known:                   # fork 完、exec 前看到的是父行程的名字 ⇒ 名字變了就重記程式名
+                    born.append(p)
                 known[p] = i[:2]
-                born.append(p)
-                prog[p] = program_of(i[1], args_fn(p) if os.path.basename(i[1]) in SHELLS
-                                     or os.path.basename(i[1]).startswith(("python", "Python", "node", "php", "ruby", "perl"))
-                                     else None)
+                if len(i) > 3 and i[3] != uid:
+                    prog[p] = UNKNOWN
+                else:
+                    base_name = os.path.basename(i[1])
+                    prog[p] = program_of(i[1], args_fn(p) if base_name in SHELLS or base_name.startswith(
+                        ("python", "Python", "node", "php", "ruby", "perl")) else None)
             cpu[p] = i[2]
         sleep(tick)
     return base, known, born, cpu, prog
@@ -285,6 +295,8 @@ def attribute(base, known, born, cpu, prog, cls, seconds, top=CHURN_TOP):
                 break
             cur = pp
         g, owner = cls.get(root, ("other_app", "")) if root not in (None, 0, 1) else ("other_app", "")
+        if prog.get(cur) == UNKNOWN:                 # E3:別的帳號 ⇒ 未知,不出名字
+            g = "system"
         if g in ("other_app", "system"):
             owner = ""                               # 其他 App / 系統:主人欄只會是程式名,這裡已有 program
         program = room_heat.safe_name(prog.get(cur) or known.get(cur, (0, ""))[1], 40)
@@ -348,7 +360,8 @@ def churn(seconds=CHURN_DEFAULT_S, now=None, environ=None, platform=None, fns=No
             if cached is None:
                 return {"schema": "aib-heat-churn/v1", "state": "busy", "detail": "churn_running", "throttled": True,
                         "retry_after_s": int(CHURN_THROTTLE_S - (now - started)) + 1}
-            cached.update(throttled=True, detail="throttled", retry_after_s=int(CHURN_THROTTLE_S - (now - started)) + 1)
+            cached.update(throttled=True, detail="throttled", cached_at=round(started, 1),
+                          retry_after_s=int(CHURN_THROTTLE_S - (now - started)) + 1)
             return cached
         _write_json(last_path, {"schema": "aib-heat-churn-last/v1", "started_at": round(now, 1), "result": None})
         try:

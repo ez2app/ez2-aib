@@ -7,12 +7,14 @@ U1 cpu_total:沒上一次 ⇒ 當場量 0.5 秒;有上一次(1–120 秒內)⇒ 
 U2 unseen = 在忙的核 − ps 看得到的合計(不小於 0);ps 量不到 / CPU 量不到 ⇒ unmeasured
 U3 快照多 cpu_total / unseen_cpu,歷史多記 cpu_busy / unseen_cpu
 U4 歸屬:新行程往上找「取樣開始就在」的祖先 ⇒ 組別 / 席碼;程式名取最上層新行程;沒有祖先 ⇒ other_app
+U4b fork 完、exec 前先被看到(名字是父行程的)⇒ exec 後重記程式名、不重複算出生
 U5 節流:60 秒內第二次 ⇒ 上次結果 + throttled(不再取樣);過 60 秒再取樣;取樣壞了 ⇒ error 且不佔節流;
    秒數夾在 1–30;不支援的平台 ⇒ unsupported_platform(不叫任何指令)
 U6 另一支正在跑(鎖被拿著)⇒ busy
 U7 隱私:程式名只有檔名(腳本取檔名、sh -c 只給 sh);輸出不含指令列 / 路徑 / token
 U8 上次結果檔被改 ⇒ 只放回白名單欄位、名字再洗一次、組別不在表上的丟掉
-U9 真行程表:取樣期間自己起 12 支 sleep ⇒ 看得到 ≥ 8 支、程式名是 sleep
+U7b E3:別的帳號(root)起的新行程歸成「system / ?」、不出名字、不讀它的 argv;throttled 帶 cached_at(E4)
+U9 真行程表:取樣期間自己起 12 支 sleep ⇒ 看得到 ≥ 8 支、程式名是 sleep、父行程是自己(只數自己起的,不看排名)
 U10 CLI:`churn --json` 走 room_heat_unseen.churn、秒數照傳;文字模式 throttled 有提示、非 ok 回 1
 刀(複本 + run_guarded):K1 unseen 不扣 ps ⇒ U2 紅;K2 節流拿掉 ⇒ U5 紅;K3 程式名帶整串引數 ⇒ U7 紅;
 K4 上次結果不洗名字 ⇒ U8 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
@@ -148,14 +150,15 @@ def fake_fns(births):
     def pids():
         state["n"] += 1
         if state["n"] == 2:
-            for pid, ppid, name, cpu in births:
-                table[pid] = (ppid, name, cpu)
+            for b in births:
+                table[b[0]] = (b[1], b[2], b[3]) + ((b[4],) if len(b) > 4 else ())
         return list(table)
     return pids, (lambda p: table.get(p)), (lambda p: ["bash", "/Users/u/secret/pane-right-tabs.sh", "token=abc"]
                                               if table.get(p, (0, ""))[1] == "bash" else [])
 
 
 BIRTHS = [(500, 100, "bash", 0.4), (501, 500, "tmux", 0.2), (502, 500, "tmux", 0.2), (600, 1, "mdworker", 0.1)]
+ROOT_BIRTH = [(700, 100, "secretd", 0.3, 0)]       # 別的帳號(root)起的
 
 
 class Churn(Base):
@@ -179,7 +182,7 @@ class Churn(Base):
         r2 = self.run_churn(1030.0, births=[])
         self.assertTrue(r2["throttled"], "60 秒內第二次沒節流")
         self.assertEqual((r2["detail"], r2["births"], r2["top"]), ("throttled", 4, r1["top"]))
-        self.assertEqual(r2["retry_after_s"], 31)
+        self.assertEqual((r2["retry_after_s"], r2["cached_at"]), (31, 1000.0))
         r3 = self.run_churn(1061.0, births=[])
         self.assertEqual((r3["throttled"], r3["births"]), (False, 0), "過 60 秒沒重新取樣")
         self.assertEqual(self.run_churn(2000.0, seconds=999)["seconds"], 30)
@@ -203,6 +206,33 @@ class Churn(Base):
         fcntl.flock(fd, fcntl.LOCK_EX)
         r = self.run_churn(1000.0)
         self.assertEqual((r["state"], r["detail"]), ("busy", "churn_running"))
+
+    def test_u4b_exec_renames(self):
+        table = {100: (1, "claude", 1.0)}
+        n = {"c": 0}
+
+        def pids():
+            n["c"] += 1
+            if n["c"] == 2:
+                table[800] = (100, "python3", 0.0)           # fork 完還沒 exec
+            if n["c"] == 4:
+                table[800] = (100, "bash", 0.2)              # exec 成腳本
+            return list(table)
+        c = Clock()
+        base, known, born, cpu, prog = RU.sample(1, pids, lambda p: table.get(p),
+                                                 lambda p: ["bash", "/x/pane-right-tabs.sh"], clock=c, sleep=c.sleep)
+        self.assertEqual((born, prog[800], cpu[800]), ([800], "pane-right-tabs.sh", 0.2), "exec 後沒重記程式名")
+
+    def test_u7b_other_uid_unknown(self):
+        asked = []
+        c = Clock()
+        pids, cpu, args = fake_fns(BIRTHS + ROOT_BIRTH)
+        r = RU.churn(seconds=2, now=1000.0, platform="linux", fns=(pids, cpu, lambda p: asked.append(p) or args(p)),
+                     rows=[], cls={100: ("seat", "abcde")}, clock=c, sleep=c.sleep)
+        top = {(x["group"], x["owner"], x["program"]): x for x in r["top"]}
+        self.assertIn(("system", "", "?"), top, "E3:別的帳號的新行程沒歸成未知")
+        self.assertNotIn("secretd", json.dumps(r))
+        self.assertNotIn(700, asked, "E3:別的帳號的 argv 也讀了")
 
     def test_u7_privacy(self):
         self.assertEqual(RU.program_of("bash", ["bash", "/Users/u/x/pane-right-tabs.sh", "a"]), "pane-right-tabs.sh")
@@ -248,14 +278,16 @@ class Real(Base):
         th = threading.Thread(target=spawn)
         th.start()
         try:
-            r = RU.churn(seconds=2, now=time.time(), rows=[], cls={})
+            base, known, born, cpu, prog = RU.sample(2, *RU._platform_fns(sys.platform))
         finally:
             th.join()
             for k in kids:
                 k.wait(timeout=10)
-        self.assertEqual(r["state"], "ok", r)
-        n = sum(x["count"] for x in r["top"] if x["program"] == "sleep")
-        self.assertGreaterEqual(n, 8, r["top"])
+        self.assertTrue(base)
+        mine = [p for p in born if p in {k.pid for k in kids}]   # 只數自己起的,不看排名(機器忙時 sleep 會被擠出前 10)
+        self.assertGreaterEqual(len(mine), 8, (len(born), len(mine)))
+        self.assertEqual({prog[p] for p in mine}, {"sleep"})
+        self.assertTrue(all(known[p][0] == os.getpid() for p in mine))
 
 
 class Cli(Base):
