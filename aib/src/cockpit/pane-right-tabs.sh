@@ -334,6 +334,26 @@ _wait_bg() {
   [ -n "${CAPTAINS_PID:-}" ] && wait "$CAPTAINS_PID" 2>/dev/null || true
 }
 trap '_wait_bg' EXIT
+CAPTAINS_MARK="${EZ2_COCKPIT_STATE_DIR:-${TMPDIR:-/tmp}}/.captains-sync.mark"
+CAPTAINS_LAST_S=-100000
+CAPTAINS_SYNC_MAX_S="${EZ2_CAPTAINS_SYNC_MAX_S:-30}"
+case "$CAPTAINS_SYNC_MAX_S" in ''|*[!0-9]*) CAPTAINS_SYNC_MAX_S=30 ;; esac
+# captains_sync_due:rc0 = 該跑(沒記號 / 滿保底秒數 / 席位夾或任一席位檔比記號新)。量不到席位夾 ⇒ 照舊每幀跑。
+# #324 r2:SECONDS 跟牆鐘走,時鐘回撥 ⇒ 差值變負也算到期(不然最多過時「回撥秒數 + 保底」);
+#   「不比記號舊」就算有變(bash 3.2 的 -nt / -ot 只到秒,同一秒內改的席位檔用 -nt 會漏;同秒最多多跑一次)。
+captains_sync_due() {
+  local d="${EZ2_AIB_INSTANCE_HOME:-}/seats" f _d
+  [ -n "${EZ2_AIB_INSTANCE_HOME:-}" ] && [ -d "$d" ] || return 0
+  [ -e "$CAPTAINS_MARK" ] || return 0
+  _d=$((SECONDS - CAPTAINS_LAST_S))
+  [ "$_d" -ge "$CAPTAINS_SYNC_MAX_S" ] || [ "$_d" -lt 0 ] && return 0
+  [ "$d" -ot "$CAPTAINS_MARK" ] || return 0
+  for f in "$d"/w*.json; do
+    [ -e "$f" ] || continue
+    [ "$f" -ot "$CAPTAINS_MARK" ] || return 0
+  done
+  return 1
+}
 while true; do
   pane_reexec_if_changed                # BF:腳本換了就 exec 自己(每 ~30 秒問一次)
   pane_cooldown_ticks                   # 降溫:熱了就放慢自己的輪詢
@@ -383,11 +403,18 @@ EOF
       --once >/dev/null 2>&1 || true &
     TITLE_BEAT_PID=$!
   fi
+  # 10-24(@044e0 本機效能):captains-ctl --sync 一次約 50 支行程,以前每幀(5 秒)跑 ⇒ 光這項每秒 10 支 exec。
+  #   它是冪等回填(席位檔 → 窗選項,沒變不寫檔)⇒ 只在席位檔 / 席位夾比上次同步新,或滿 CAPTAINS_SYNC_MAX_S
+  #   秒(接住「窗被關掉」這種席位檔看不到的變化)才跑。判斷全用內建 -ot / SECONDS,零 fork;記號檔用 `: >` 建。
   if [ -n "${CAPTAINS_PID:-}" ] && kill -0 "$CAPTAINS_PID" 2>/dev/null; then
     :
-  else
-    env -u TMUX bash "${AIB_CAPTAINS_CTL:-$EZ2_COCKPIT_DIR/nav/captains-ctl.sh}" \
-      --sync >/dev/null 2>&1 || true &
+  elif captains_sync_due; then
+    { : > "$CAPTAINS_MARK"; } 2>/dev/null || true   # 先蓋章再跑(大括號:寫不了時的錯誤也吞掉,不印進右欄):跑的期間又改的席位檔,下一幀照樣比它新(寫不了 ⇒ 沒記號 ⇒ 每幀照跑)
+    CAPTAINS_LAST_S=$SECONDS
+    # 失敗 ⇒ 撕掉記號,下一幀重試(#324 r2 M2)。rc 3 是 captains-ctl 寫明的「降級同步」(呼叫端都容忍),
+    #   重跑也不會變好 ⇒ 不算失敗,照保底秒數再跑。
+    { env -u TMUX bash "${AIB_CAPTAINS_CTL:-$EZ2_COCKPIT_DIR/nav/captains-ctl.sh}" --sync >/dev/null 2>&1
+      _rc=$?; [ "$_rc" -eq 0 ] || [ "$_rc" -eq 3 ] || rm -f "$CAPTAINS_MARK"; } &
     CAPTAINS_PID=$!
   fi
   [ "${EZ2_ONESHOT:-0}" = "1" ] && break
