@@ -4932,6 +4932,7 @@
   "aib.quote.hint.too_long": "発言は最大 {max} 文字です(指紋の画面に全文を表示するため)。いくつかに分けて保存してください。",
   "aib.quote.hint.no_key": "この Mac にはまだ発言用の署名鍵がありません。先に aib quote key init を実行してください。",
   "aib.approve.touchid_reason": "コード {code} · {site} への {user} のログインを承認 · IP {ip}",
+  "aib.approve.touchid_publish": "AIB 承認の公開鍵を公開 · kid {kid}(必ず指紋を求めます。求められなかったら中止:鍵がすり替えられた可能性)",
   "aib.approve.help.usage": "使い方:aib approve key init|status|pem [--json]\n        aib approve site add <サイト> [--url https://…](機械室トークンは stdin)| site list\n        aib approve pending [--json]\n        aib approve yes|no <nonce> [--json]\n        aib approve history [--json]",
   "aib.temp.help.usage": "使い方:aib temp add <ホスト> \"<説明>\" --until <YYYY-MM-DD|ISO 時刻> --undo \"<戻し方>\" [--seat <席>]\n        aib temp list [--all] | check | done <id> [--why \"<一言>\"]   (すべて --json 可)",
   "aib.temp.added": "{id} を登録しました。期限 {until}。戻したら aib temp done {id}",

@@ -4932,6 +4932,7 @@
   "aib.quote.hint.too_long": "原話最多 {max} 字(指紋視窗要能完整顯示);請拆成幾則分別存。",
   "aib.quote.hint.no_key": "這台還沒有原話簽章鑰:先跑 aib quote key init。",
   "aib.approve.touchid_reason": "短碼 {code} · 核准 {site} 的 {user} 登入 · IP {ip}",
+  "aib.approve.touchid_publish": "發布 AIB 核准公鑰 · kid {kid}(這一步一定會跳指紋;沒跳就停，鑰可能被換)",
   "aib.approve.help.usage": "用法:aib approve key init|status|pem [--json]\n      aib approve site add <站> [--url https://…](機房 token 從 stdin)| site list\n      aib approve pending [--json]\n      aib approve yes|no <nonce> [--json]\n      aib approve history [--json]",
   "aib.temp.help.usage": "用法:aib temp add <主機> \"<描述>\" --until <YYYY-MM-DD|ISO 時間> --undo \"<怎麼拆>\" [--seat <席碼>]\n      aib temp list [--all] | check | done <id> [--why \"<一句>\"]   (都可加 --json)",
   "aib.temp.added": "已登記 {id},到期 {until};拆了記得 aib temp done {id}",

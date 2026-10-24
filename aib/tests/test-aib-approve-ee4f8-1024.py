@@ -3,18 +3,24 @@
 """aib approve(WordPress 登入第二步,規格 pending/SPEC-aib-approve-wp-2fa-ee4f8-1024.md v1)。helper 與站都換假的,
 不跳真 Touch ID、不碰真 SE、不連網。
 
-A1 key init ⇒ kid = p256:<16 hex>;pem 是 P-256 SPKI(站上 openssl 讀得懂的那種)
-A2 pending 只收站上給得乾淨的:多 / 少欄、不是 canonical(多空白、鍵亂序、重複鍵)、別站、別把鑰、過期、
-   效期 > 120 秒、帳號含控制 / 隱形字、短碼格式不對 ⇒ 不列(只算 invalid)
-A3 yes:視窗字短碼與站名在最前;簽的就是站上給的原始位元組;送回 raw r||s base64url、站上用公鑰驗得過 ⇒ approved、記一筆
+A1 key init ⇒ kid = p256:<16 hex>;pem 是 P-256 SPKI,而且要先過一次指紋(簽「發布 kid」,驗得過才給);
+   沒指紋 / 取消 / helper 回的簽章不是這把鑰 ⇒ 不給 PEM
+A2 pending 只收站上給得乾淨的:多 / 少欄、不是 canonical、別站、別把鑰、過期、效期 > 120(= 120 收)、iat 在未來、
+   帳號不是 WordPress 嚴格字元或 > 60 字、短碼跟 nonce 算的不同、v / typ / user_id 不對、nonce / ip 不是字串、
+   payload 不是合法 UTF-8 ⇒ 不列(只算 invalid),也不會讓整個指令當掉
+A3 yes:視窗字短碼(由 nonce 算)與站名在最前;簽的就是站上給的原始位元組;送回 raw r||s base64url、站上用公鑰驗得過 ⇒ approved、記一筆
 A4 yes 每次重新向站上拉:站上已經沒有那筆 ⇒ not_pending、helper 沒被叫(本機快取 / 紀錄不算數)
-A5 取消指紋 ⇒ touchid_cancel、什麼都沒送;AIB_TOUCHID=0 / 不是 Mac ⇒ touchid_unavailable、helper 沒被叫
-A6 30 秒內第 4 次 ⇒ rate_limited、helper 沒被叫
+A5 取消指紋 ⇒ touchid_cancel、什麼都沒送;AIB_TOUCHID=0 / 不是 Mac / 另一個指紋視窗開著 ⇒ touchid_unavailable、
+   helper 沒被叫;helper 回別把鑰的簽章 ⇒ 不送;過期的那筆 ⇒ expired;CLI 有結果一律 rc 0、找不到 rc 2
+A6 30 秒內第 4 次 ⇒ rate_limited、helper 沒被叫、記進 history;時鐘倒退留下的未來時間不算
 A7 站上拒(403)⇒ site_rejected rc 3;站上 500 / 連不上 ⇒ not_delivered
 A8 no:帶機房 token 送 deny、不叫 helper
-A9 site add:http 網址拒;token 從 stdin、檔 600;壞 sites.json 列不出東西
+A9 site add:http 網址 / 主機跟站名不同 / 帶路徑拒;token 從 stdin、檔 600(舊 .tmp 是 644 也不沿用);
+   壞 sites.json({"sites":5})列不出東西、不當掉;http_call 只走 https
+A11 http_call 不跟轉址(轉址會把機房 token 帶去別的主機)
 A10 aib approve 接上、四語都有、視窗字帶四個欄位
-刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅
+刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
+   K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅
 """
 import base64
 import hashlib
@@ -99,8 +105,9 @@ class FakeSite:
              "nonce": base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("="),
              "iat": NOW - 5, "exp": NOW + 100, "kid": over.pop("kid")}
         raw = over.pop("raw", None)
-        code = over.pop("code", "ABCD")
+        code = over.pop("code", None)
         f.update(over)
+        code = AA.code_of(f["nonce"]) if code is None and isinstance(f["nonce"], str) else code
         self.items.append({"payload": raw if raw is not None else signing.canonical(f).decode(), "code": code})
         return f
 
@@ -152,33 +159,56 @@ class Approve(Base):
         self.assertEqual(der[:26], AA.SPKI_P256)
         self.assertEqual(der[26:], p256_pub(self.se.d))
         self.assertEqual(AA.key_init(self.env, run=self.se, helper="/x", platform="darwin"), (None, "exists"))
+        got, why = AA.key_publish(self.env, run=self.se, helper="/fake/aib-sehelper", platform="darwin")
+        self.assertEqual((got, why), (pem, None))
+        sign = self.se.signs()[-1]
+        self.assertIn(self.kid, sign[sign.index("--reason") + 1])
+        self.assertEqual(self.se.inputs[-1], ("ez2-aib-approve-publish|" + self.kid).encode())
+        for se, want in ((FakeSE(fail="cancel"), "touchid_cancel"), (FakeSE(), "bad_sig")):
+            self.assertEqual(AA.key_publish(self.env, run=se, helper="/x", platform="darwin"), (None, want))
+        self.assertEqual(AA.key_publish(dict(self.env, AIB_TOUCHID="0"), run=self.se, helper="/x", platform="darwin"),
+                         (None, "touchid_unavailable"))
 
     def test_a2_pending_only_clean_items(self):
         good = self.site.add(kid=self.kid)
         f = dict(good, nonce="N" * 43)
-        self.site.add(kid=self.kid, raw=json.dumps(f))  # 有空白:不是 canonical
-        self.site.add(kid=self.kid, raw=signing.canonical(f).decode().replace('{"exp"', '{"v":1,"exp"', 1))  # 重複鍵
-        self.site.add(kid=self.kid, raw=signing.canonical(dict(f, extra=1)).decode())
+        nc = AA.code_of(f["nonce"])  # 短碼對得上:只靠 canonical 那關擋
+        self.site.add(kid=self.kid, raw=json.dumps(f), code=nc)  # 有空白:不是 canonical
+        self.site.add(kid=self.kid, raw=signing.canonical(f).decode().replace('{"exp"', '{"v":1,"exp"', 1), code=nc)  # 重複鍵
+        self.site.add(kid=self.kid, raw=signing.canonical(dict(f, extra=1)).decode(), code=nc)
         self.site.add(kid=self.kid, site="evil.example")
         self.site.add(kid="p256:" + "0" * 16)
         self.site.add(kid=self.kid, exp=NOW - 60, iat=NOW - 100)
         self.site.add(kid=self.kid, exp=NOW + 200)  # 效期 205 秒
-        self.site.add(kid=self.kid, user_login="andy‮")
+        self.site.add(kid=self.kid, user_login="andy\u202e")
         self.site.add(kid=self.kid, user_login="an\ndy")
+        self.site.add(kid=self.kid, user_login="\u0430ndy")  # 西里爾 а
+        self.site.add(kid=self.kid, user_login="a" * 61)
         self.site.add(kid=self.kid, code="abcd")
+        self.site.add(kid=self.kid, code="AAAA" if AA.code_of(good["nonce"]) != "AAAA" else "BBBB")
         self.site.add(kid=self.kid, user_id=True)
+        self.site.add(kid=self.kid, user_id=0)
+        self.site.add(kid=self.kid, v=2)
+        self.site.add(kid=self.kid, typ="wp-reset")
+        self.site.add(kid=self.kid, nonce="N" * 43 + "\n")
+        self.site.add(kid=self.kid, nonce=int("9" * 43), code="AAAA")
+        self.site.add(kid=self.kid, ip=12)
+        self.site.add(kid=self.kid, iat=NOW + 60, exp=NOW + 120)  # 站上時鐘快太多
+        self.site.add(kid=self.kid, iat=NOW - 1, exp=NOW + 120)   # 121 秒
+        edge = self.site.add(kid=self.kid, iat=NOW - 20, exp=NOW + 100)  # 剛好 120:要收
+        self.site.items.append({"payload": "\ud800", "code": "ABCD"})  # 不是合法 UTF-8:不能讓整個指令當
         r, why = AA.pending(self.env, http=self.site, now=NOW)
         self.assertIsNone(why)
-        self.assertEqual([i["nonce"] for i in r["items"]], [good["nonce"]])
-        self.assertEqual((r["invalid"], r["errors"]), (11, {}))
-        self.assertEqual(r["items"][0]["code"], "ABCD")
+        self.assertEqual([i["nonce"] for i in r["items"]], [good["nonce"], edge["nonce"]])
+        self.assertEqual((r["invalid"], r["errors"]), (22, {}))  # 過期那筆不算壞:yes 要記得到 expired
+        self.assertEqual(r["items"][0]["code"], AA.code_of(good["nonce"]))
 
     def test_a3_yes_signs_site_bytes(self):
         f = self.site.add(kid=self.kid)
         res, why = self.yes(f["nonce"])
         self.assertEqual((res, why), ("approved", None))
         reason = self.se.signs()[0][self.se.signs()[0].index("--reason") + 1]
-        self.assertTrue(reason.startswith("短碼 ABCD · 核准 ez2.app 的 andy 登入"), reason)
+        self.assertTrue(reason.startswith("短碼 %s · 核准 ez2.app 的 andy 登入" % AA.code_of(f["nonce"])), reason)
         self.assertIn("203.0.113.7", reason)
         self.assertEqual(self.se.inputs, [self.site.items[0]["payload"].encode()])
         post = json.loads(self.site.posts[-1][3])
@@ -204,15 +234,32 @@ class Approve(Base):
         for kw in ({"env": dict(self.env, AIB_TOUCHID="0")}, {"platform": "linux"}):
             res, _ = self.yes(f["nonce"], **kw)
             self.assertEqual(res, "touchid_unavailable")
+        import touchid_approve as TA
+        with TA.one_at_a_time(self.root / "locks" / "touchid-approve.lock") as g:
+            self.assertTrue(g.held)
+            self.assertEqual(self.yes(f["nonce"]), ("touchid_unavailable", None))
         self.assertEqual(self.se.signs(), [])
+        other = FakeSE()  # helper 回的不是這把鑰的簽章
+        self.assertEqual(self.yes(f["nonce"], se=other), ("touchid_unavailable", None))
+        self.assertFalse([p for p in self.site.posts if p[1].endswith("/approve")])
+        old = self.site.add(kid=self.kid, iat=NOW - 200, exp=NOW - 90)
+        self.assertEqual(self.yes(old["nonce"]), ("expired", None))
+        self.assertEqual(AA.history(self.env)[0]["result"], "expired")
+        out = io.StringIO()
+        self.assertEqual(AA.main(["yes", "N" * 43, "--json"], out=out, env=self.env), 2)
+        self.assertEqual(json.loads(out.getvalue())["why"], "not_pending")
 
     def test_a6_rate_limit(self):
         f = self.site.add(kid=self.kid)
         for i in range(3):
             self.assertEqual(self.yes(f["nonce"], now=NOW + i)[0], "approved")
         self.assertEqual(self.yes(f["nonce"], now=NOW + 3)[0], "rate_limited")
+        self.assertEqual(self.yes(f["nonce"], now=NOW + 29)[0], "rate_limited")  # 視窗 30 秒(NOW 那筆還在)
         self.assertEqual(len(self.se.signs()), 3)
+        self.assertEqual(AA.history(self.env)[0]["result"], "rate_limited")
         self.assertEqual(self.yes(f["nonce"], now=NOW + 40)[0], "approved")
+        (self.root / "approve" / "rate.json").write_text(json.dumps([NOW + 9999] * 5))  # 時鐘倒退
+        self.assertEqual(self.yes(f["nonce"], now=NOW + 80)[0], "approved")
 
     def test_a7_site_rejects_or_unreachable(self):
         f = self.site.add(kid=self.kid)
@@ -232,18 +279,70 @@ class Approve(Base):
         deny = [p for p in self.site.posts if p[1].endswith("/deny")]
         self.assertEqual(deny[0][2]["Authorization"], "Bearer " + "t" * 32)
         self.assertEqual(self.se.signs(), [])
+        g = self.site.add(kid=self.kid)
+        site = self.site
+        res = AA.no(g["nonce"], self.env, http=lambda m, u, h, b: (500, b"") if u.endswith("/deny") else site(m, u, h, b),
+                    now=NOW)
+        self.assertEqual(res, ("not_delivered", None))
+        out = io.StringIO()
+        h = self.site.add(kid=self.kid)
+        import unittest.mock as um
+        with um.patch.object(AA, "http_call", self.site), um.patch.object(AA.time, "time", return_value=NOW):
+            self.assertEqual(AA.main(["no", h["nonce"], "--json"], out=out, env=self.env), 0)
+        self.assertEqual(json.loads(out.getvalue())["result"], "denied")
 
     def test_a9_site_add(self):
         self.assertEqual(AA.site_add("a.com", "http://a.com", "t" * 32, self.env), (None, "bad_url"))
         self.assertEqual(AA.site_add("a.com", None, "short", self.env), (None, "bad_token"))
+        for url in ("https://evil.example", "https://a.com/x", "https://u:p@a.com", "https://a.com.evil.example"):
+            self.assertEqual(AA.site_add("a.com", url, "t" * 32, self.env), (None, "bad_url"), url)
+        tmp = self.root / "approve" / "tokens" / "b.com.token.tmp"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text("old")
+        os.chmod(str(tmp), 0o644)
         out = io.StringIO()
         rc = AA.main(["site", "add", "b.com", "--json"], out=out, env=self.env, stdin=io.StringIO("u" * 30 + "\n"))
         self.assertEqual(rc, 0)
         tok = self.root / "approve" / "tokens" / "b.com.token"
         self.assertEqual((tok.read_text().strip(), stat.S_IMODE(tok.stat().st_mode)), ("u" * 30, 0o600))
         self.assertEqual([r["site"] for r in AA.load_sites(self.env)], ["ez2.app", "b.com"])
-        (self.root / "approve" / "sites.json").write_text('{"sites":[{"site":"x.com","url":"http://x.com"}]}')
-        self.assertEqual(AA.load_sites(self.env), [])
+        for bad in ('{"sites":[{"site":"x.com","url":"http://x.com"}]}', '{"sites":5}', '{"sites":true}', "[]"):
+            (self.root / "approve" / "sites.json").write_text(bad)
+            self.assertEqual(AA.load_sites(self.env), [], bad)
+        self.assertEqual(AA.http_call("GET", "http://127.0.0.1:9/x", {}, None), (0, b""))  # 只走 https
+
+    def test_a11_no_redirect(self):
+        import http.server
+        import threading
+        import unittest.mock as um
+        import urllib.request
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:%d/next" % self.server.server_address[1])
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        real = urllib.request.Request
+
+        def plain(url, *a, **k):  # 測試伺服器只有 http:讓 http_call 的 https 檢查過,實際連 http
+            return real(url.replace("https://", "http://", 1), *a, **k)
+
+        try:
+            with um.patch.object(urllib.request, "Request", plain):
+                st, _ = AA.http_call("GET", "https://127.0.0.1:%d/p" % srv.server_address[1],
+                                     {"Authorization": "Bearer x"}, None)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        self.assertEqual((st, seen), (302, ["/p"]))  # 沒跟去 /next,token 只送出一次
 
     def test_a10_wired_and_i18n(self):
         self.assertIn('"approve"', (REPO / "src" / "cockpit" / "aib").read_text())
@@ -274,6 +373,20 @@ class Knives(unittest.TestCase):
 
     def test_k4_no_rate(self):
         self._red("    if len(ts) >= RATE_N:", "    if False:", "test_a6_rate_limit")
+
+    def test_k5_site_code(self):
+        self._red('    if item.get("code") != code:', "    if False:", "test_a2_pending_only_clean_items")
+
+    def test_k6_no_verify(self):
+        self._red('        ok = p256.verify(pub, d["payload"], der)', "        ok = True", "test_a5_cancel_and_unavailable")
+
+    def test_k7_pem_without_touch(self):
+        self._red('    return (pem_of(pub), None) if ok else (None, "bad_sig")', "    return pem_of(pub), None",
+                  "test_a1_key_and_pem")
+
+    def test_k8_follows_redirect(self):
+        self._red("            return None  # 轉址一律不跟", "            return super().redirect_request(*a, **k)",
+                  "test_a11_no_redirect")
 
 
 if __name__ == "__main__":

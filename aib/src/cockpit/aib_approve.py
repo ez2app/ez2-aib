@@ -3,7 +3,7 @@
 """aib approve:WordPress 登入第二步 = 本人在這台 Mac 按 Touch ID 核准(Andy 10-24「機房連動我們 aib 的生物辨識」;
 規格 pending/SPEC-aib-approve-wp-2fa-ee4f8-1024.md v1,@abb89 審 ①–⑥)。
 
-  aib approve key init|status|pem      這台建一把 SE 簽章鑰(不跳指紋)/ kid / 給站用的公鑰 PEM
+  aib approve key init|status|pem      這台建一把 SE 簽章鑰(不跳指紋)/ kid / 給站用的公鑰 PEM(pem 要先過一次指紋)
   aib approve site add <站> [--url U]  登記要輪詢的站;機房讀取 token 從 stdin 讀(不進 argv)
   aib approve site list
   aib approve pending [--json]         從各站拉待核准的登入(Mac 不開埠,只往外拉)
@@ -14,6 +14,7 @@
 站上的介面(WP 端 ez2-aib-approve mu):
   GET  <url>/wp-json/ez2-aib/v1/pending   Authorization: Bearer <機房 token>
        ⇒ {"v":1,"items":[{"payload":"<站上組好的 canonical JSON 字串>","code":"ABCD"}]}
+       code = base32(SHA256("ez2-aib-approve-code|" + nonce)) 前 4 字:兩邊各自算,核心只認自己算的(站上給的對不上 ⇒ 整筆不收)
   POST <url>/wp-json/ez2-aib/v1/approve   {"nonce","kid","sig"}   sig = ES256 raw r||s,base64url 不帶 padding
   POST <url>/wp-json/ez2-aib/v1/deny      {"nonce"}(帶機房 token)
 
@@ -22,11 +23,14 @@
     解析後的 canonical 跟原字串不同(多空白、重複鍵、鍵亂序)⇒ 拒,免得顯示一份、簽另一份。
   - yes 一律**重新向站上拉**那筆,不信本機快取(AI 改得到);payload 的 site 要等於登記的站、kid 要等於這台的鑰。
   - SE 私鑰 accessControl = biometryCurrentSet,每次簽都要指紋;取消 / 逾時 / 沒 SE ⇒ 拒,不退回別的方式。
-  - 視窗字 `短碼 ABCD · 核准 <站> 的 <帳號> 登入 · IP …`:短碼與站名在最前;欄位含控制 / 隱形字元 ⇒ 整筆不收(不清理後再簽)。
+  - 視窗字 `短碼 ABCD · 核准 <站> 的 <帳號> 登入 · IP …`:短碼與站名在最前。短碼由簽下去的 nonce 算(不是站上 / 中繼給的字),
+    換不了;帳號名只收 WordPress 嚴格字元 [A-Za-z0-9 _.@-](不清理後再簽)。
+  - 只連 https、不跟轉址(轉址會把機房 token 帶去別的主機);登記的網址主機要等於站名。
+  - key pem:發布前先用這把鑰簽一次(一定跳指紋);沒跳就停 —— 那代表 .sekey 被換成沒有指紋限制的鑰。
   - 本機的限速(30 秒 3 次)、機房 token、sites.json 都是 AI 能改的 ⇒ 只防誤操作 / 外人掃描,不是防線。
   - 殘餘風險(規格 §8 第 3 點):換掉 aib-sehelper 或家目錄裡的核心 = 能改視窗字,騙一次指紋換一張只對站上真的存在、
     未用的 nonce 有效、120 秒、綁站 / 帳號 / IP 的核准單。
-rc:0 = 成功;2 = 拒 / 參數錯 / 找不到;3 = 送了但站上沒放行。
+rc:yes / no 有結果(RESULTS 任一種)⇒ 0 + {nonce, result};nonce 不在 pending / 參數錯 ⇒ 2(規格 §2b)。其他指令 0 / 2。
 """
 import argparse
 import base64
@@ -54,9 +58,11 @@ PAYLOAD_MAX = 2048
 HTTP_TIMEOUT = 10
 RESULTS = ("approved", "site_rejected", "not_delivered", "denied", "expired", "rate_limited",
            "touchid_cancel", "touchid_unavailable")
+B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 FIELDS = ("exp", "iat", "ip", "kid", "nonce", "site", "typ", "user_id", "user_login", "v")
 NONCE_RE = re.compile(r"[A-Za-z0-9_-]{43}")          # 32 位元組 base64url;一律 fullmatch
 CODE_RE = re.compile(r"[A-Z2-7]{4}")                 # base32 前 4 字
+LOGIN_RE = re.compile(r"[A-Za-z0-9 _.@-]{1,60}")     # WordPress sanitize_user(strict)收的字
 SITE_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?")
 IP_RE = re.compile(r"[0-9A-Fa-f:.]{2,45}")
 KID_RE = re.compile(r"p256:[0-9a-f]{16}")
@@ -77,12 +83,10 @@ def approve_dir(env=None):
     return state_root(env) / "approve"
 
 
-def _plain(s, limit):
-    """欄位要原本就乾淨:含控制 / 隱形字元、超長 ⇒ None(不清理後再用:清理過的就不是站上存、要簽的那份)。"""
-    import touchid_approve as TA
-    if not isinstance(s, str) or not s or len(s) > limit:
-        return None
-    return s if not TA._CTRL.search(s) and not TA._INVISIBLE.search(s) else None
+def code_of(nonce):
+    """短碼 = base32(SHA256("ez2-aib-approve-code|" + nonce)) 前 4 字(站上同算法)。由 nonce 算 ⇒ 中繼 / 假站換不了。"""
+    h = hashlib.sha256(("ez2-aib-approve-code|" + nonce).encode("ascii")).digest()
+    return "".join(B32[b & 31] for b in h[:4])
 
 
 # ---- 這台的 SE 鑰 ----
@@ -125,7 +129,41 @@ def key_init(env=None, run=subprocess.run, helper=None, platform=None):
 def der_to_raw(der):
     from entitlement import p256
     r, s = p256.parse_der(der)
+    if not (0 < r < p256.N and 0 < s < p256.N):
+        raise ValueError("range")
     return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+
+
+def key_publish(env=None, run=subprocess.run, helper=None, platform=None):
+    """回 (pem, why)。先用這把鑰簽一次「發布 kid …」(SE 的鑰一定跳指紋),驗過才給 PEM。
+    同帳號 AI 把 .sekey 換成沒有指紋限制的鑰 ⇒ 這一步不會跳指紋:說明裡要本人「沒跳就停」。
+    換掉 aib-sehelper 本身仍擋不住(殘餘風險,第二階段:root 擁有路徑 + Developer ID 簽)。"""
+    import se_vault
+    import touchid_approve as TA
+    from entitlement import p256
+    import i18n_lib
+    env = _env(env)
+    platform = sys.platform if platform is None else platform
+    pub = local_pub(env)
+    if not pub:
+        return None, "no_key"
+    if platform != "darwin" or str(env.get("AIB_TOUCHID", "")).strip() == "0":
+        return None, "touchid_unavailable"
+    kid = kid_of(pub)
+    msg = ("ez2-aib-approve-publish|" + kid).encode("ascii")
+    reason = i18n_lib.t("aib.approve.touchid_publish", {"kid": kid}, locale=i18n_lib.resolve_locale())
+    args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", reason]
+    with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
+        if not gate.held:
+            return None, "busy"
+        out, why = se_vault._call(args, env, msg, run, helper, platform)
+    if why:
+        return None, {"cancel": "touchid_cancel"}.get(why, "touchid_unavailable")
+    try:
+        ok = p256.verify(pub, msg, base64.b64decode(out.decode("ascii").strip(), validate=True))
+    except (ValueError, UnicodeDecodeError):
+        ok = False
+    return (pem_of(pub), None) if ok else (None, "bad_sig")
 
 
 # ---- 站 ----
@@ -140,15 +178,32 @@ def load_sites(env=None):
     except (OSError, ValueError):
         return []
     rows = doc.get("sites") if isinstance(doc, dict) else None
-    return [r for r in rows or [] if isinstance(r, dict) and SITE_RE.fullmatch(str(r.get("site") or ""))
-            and str(r.get("url") or "").startswith("https://")]
+    return [r for r in rows if isinstance(r, dict) and _url_ok(r.get("site"), r.get("url"))] \
+        if isinstance(rows, list) else []
+
+
+def _url_ok(site, url):
+    """https、主機 = 站名、沒有帳密 / 埠以外的花樣。"""
+    import urllib.parse
+    if not isinstance(site, str) or not isinstance(url, str) or not SITE_RE.fullmatch(site):
+        return False
+    try:
+        u = urllib.parse.urlsplit(url)
+        return u.scheme == "https" and u.hostname == site and not u.username and not u.password \
+            and not u.query and not u.fragment and u.path in ("", "/") and url == url.strip()
+    except ValueError:
+        return False
 
 
 def _write_private(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(str(path.parent), 0o700)
     tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.unlink(str(tmp))  # 舊的 .tmp 可能是別的權限 / 連結:不沿用
+    except FileNotFoundError:
+        pass
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
     os.replace(str(tmp), str(path))
@@ -159,7 +214,7 @@ def site_add(site, url, token, env=None):
     if not SITE_RE.fullmatch(site) or "." not in site:
         return None, "bad_site"
     url = (url or "https://" + site).rstrip("/")
-    if not url.startswith("https://"):
+    if not _url_ok(site, url):
         return None, "bad_url"
     token = (token or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", token):
@@ -179,48 +234,61 @@ def _token(site, env):
 
 def http_call(method, url, headers, body):
     """回 (status, bytes);連不上 ⇒ (0, b"")。只走 https(登記時就擋了 http)。"""
+    import http.client
     import urllib.error
     import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None  # 轉址一律不跟:會把機房 token 帶去別的主機
+
+    if not url.startswith("https://"):
+        return 0, b""
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=HTTP_TIMEOUT) as r:
             return r.status, r.read(65536)
     except urllib.error.HTTPError as e:
-        return e.code, e.read(65536) if e.fp else b""
-    except (OSError, ValueError):
+        return e.code, b""
+    except (OSError, ValueError, http.client.HTTPException):
         return 0, b""
 
 
 # ---- 驗站上給的一筆 ----
 
 def parse_item(item, site, kid, now=None):
-    """回 (資料, why)。資料 = {payload(位元組), fields, code};why ∈ bad_item / wrong_site / wrong_kid / expired。"""
+    """回 (資料, why)。資料 = {payload(位元組), fields, code};why ∈ bad_item / wrong_site / wrong_kid / expired。
+    過期的也回資料(why = expired),讓 yes 記得到 expired。"""
     from entitlement import signing
     if not isinstance(item, dict) or not isinstance(item.get("payload"), str):
         return None, "bad_item"
-    raw = item["payload"].encode("utf-8")
-    if len(raw) > PAYLOAD_MAX:
-        return None, "bad_item"
     try:
-        f = json.loads(raw, object_pairs_hook=_no_dup)
-    except ValueError:
+        raw = item["payload"].encode("utf-8")
+        f = json.loads(raw, object_pairs_hook=_no_dup) if len(raw) <= PAYLOAD_MAX else None
+    except (ValueError, UnicodeError):
         return None, "bad_item"
     if not isinstance(f, dict) or tuple(sorted(f)) != FIELDS or signing.canonical(f) != raw:
         return None, "bad_item"  # 顯示的跟簽的要是同一份位元組
     ints = all(isinstance(f[k], int) and not isinstance(f[k], bool) for k in ("v", "user_id", "iat", "exp"))
-    if not ints or f["v"] != 1 or f["typ"] != "wp-login" or f["user_id"] <= 0:
+    strs = all(isinstance(f[k], str) for k in ("typ", "site", "user_login", "ip", "nonce", "kid"))
+    if not ints or not strs or f["v"] != 1 or f["typ"] != "wp-login" or f["user_id"] <= 0:
         return None, "bad_item"
-    if not NONCE_RE.fullmatch(str(f["nonce"])) or not IP_RE.fullmatch(str(f["ip"])) \
-            or _plain(f["user_login"], 60) is None or not CODE_RE.fullmatch(str(item.get("code") or "")):
+    if not NONCE_RE.fullmatch(f["nonce"]) or not IP_RE.fullmatch(f["ip"]) or not LOGIN_RE.fullmatch(f["user_login"]):
+        return None, "bad_item"
+    code = code_of(f["nonce"])
+    if item.get("code") != code:  # 站上算錯 / 被中繼改過:整筆不收(核心只用自己算的)
         return None, "bad_item"
     if f["site"] != site:
         return None, "wrong_site"
     if f["kid"] != kid:
         return None, "wrong_kid"
+    if not 0 < f["exp"] - f["iat"] <= TTL_MAX:
+        return None, "bad_item"
     now = time.time() if now is None else now
-    if not 0 < f["exp"] - f["iat"] <= TTL_MAX or now > f["exp"] + SKEW or now < f["iat"] - SKEW:
-        return None, "expired"
-    return {"payload": raw, "fields": f, "code": item["code"]}, None
+    if now < f["iat"] - SKEW:
+        return None, "bad_item"  # 站上時鐘比這台快太多
+    d = {"payload": raw, "fields": f, "code": code}
+    return (d, "expired") if now > f["exp"] else (d, None)  # 站上 now > exp 就拒:這邊不給寬限,免得白按指紋
 
 
 def _no_dup(pairs):
@@ -251,8 +319,10 @@ def fetch(row, env, http, kid, now=None):
     good, bad = [], 0
     for it in items[:50]:
         d, why = parse_item(it, row["site"], kid, now)
-        if d:
+        if d and not why:
             good.append(d)
+        elif d:
+            good.append(dict(d, expired=True))
         else:
             bad += 1
     return good, bad, None
@@ -264,15 +334,16 @@ def _public(d):
             "iat": f["iat"], "exp": f["exp"], "kid": f["kid"]}
 
 
-def pending(env=None, http=http_call, now=None):
+def pending(env=None, http=None, now=None):
     env = _env(env)
+    http = http or http_call
     pub = local_pub(env)
     if not pub:
         return None, "no_key"
     items, errors, bad = [], {}, 0
     for row in load_sites(env):
         good, b, err = fetch(row, env, http, kid_of(pub), now)
-        items += [_public(d) for d in good]
+        items += [_public(d) for d in good if not d.get("expired")]
         bad += b
         if err:
             errors[row["site"]] = err
@@ -325,7 +396,8 @@ def history(env=None):
 def _rate_ok(env, now):
     p = approve_dir(env) / "rate.json"
     try:
-        ts = [t for t in json.loads(p.read_text(encoding="utf-8")) if isinstance(t, (int, float)) and now - t < RATE_S]
+        ts = [t for t in json.loads(p.read_text(encoding="utf-8"))
+              if isinstance(t, (int, float)) and 0 <= now - t < RATE_S]  # 未來的(時鐘倒退)不算
     except (OSError, ValueError, TypeError):
         ts = []
     if len(ts) >= RATE_N:
@@ -343,14 +415,15 @@ def touchid_reason(d):
                                                       "ip": f["ip"]}, locale=i18n_lib.resolve_locale())
 
 
-def yes(nonce, env=None, http=http_call, run=subprocess.run, helper=None, platform=None, now=None):
-    """回 (result, why)。result ∈ RESULTS;why 只在參數 / 找不到時(rc 2)。"""
+def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=None, now=None):
+    """回 (result, why)。result ∈ RESULTS(rc 0);why 只在參數 / 找不到時(rc 2)。"""
     import se_vault
     import touchid_approve as TA
     from entitlement import p256
     env = _env(env)
+    http = http or http_call
     platform = sys.platform if platform is None else platform
-    if not NONCE_RE.fullmatch(str(nonce or "")):
+    if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
         return None, "bad_nonce"
     pub = local_pub(env)
     if not pub:
@@ -359,16 +432,20 @@ def yes(nonce, env=None, http=http_call, run=subprocess.run, helper=None, platfo
     row, d = _find(nonce, env, http, kid_of(pub), now)  # 每次重新向站上拉:不信本機快取
     if not d:
         return None, "not_pending"
+    if d.get("expired"):
+        _record(env, d, "expired")
+        return "expired", None
     if platform != "darwin" or str(env.get("AIB_TOUCHID", "")).strip() == "0":
         _record(env, d, "touchid_unavailable")
         return "touchid_unavailable", None
-    if not _rate_ok(env, now):
-        _record(env, d, "rate_limited")
-        return "rate_limited", None
     args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", touchid_reason(d)]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
-        if not gate.held:
-            return None, "busy"
+        if not gate.held:  # 另一個指紋視窗開著:這次不算、不佔限速
+            _record(env, d, "touchid_unavailable")
+            return "touchid_unavailable", None
+        if not _rate_ok(env, now):
+            _record(env, d, "rate_limited")
+            return "rate_limited", None
         out, why = se_vault._call(args, env, d["payload"], run, helper, platform)
     if why:
         res = {"cancel": "touchid_cancel"}.get(why, "touchid_unavailable")
@@ -377,10 +454,10 @@ def yes(nonce, env=None, http=http_call, run=subprocess.run, helper=None, platfo
     try:
         der = base64.b64decode(out.decode("ascii").strip(), validate=True)
         ok = p256.verify(pub, d["payload"], der)
-        raw = der_to_raw(der)
-    except (ValueError, UnicodeDecodeError):
+        raw = der_to_raw(der) if ok else b""
+    except (ValueError, UnicodeDecodeError, OverflowError):
         ok = False
-    if not ok:
+    if not ok:  # helper 回的不是這把鑰對這份位元組的簽章:不送
         _record(env, d, "touchid_unavailable")
         return "touchid_unavailable", None
     body = json.dumps({"nonce": nonce, "kid": kid_of(pub),
@@ -395,15 +472,16 @@ def yes(nonce, env=None, http=http_call, run=subprocess.run, helper=None, platfo
     return res, None
 
 
-def no(nonce, env=None, http=http_call, now=None):
+def no(nonce, env=None, http=None, now=None):
     env = _env(env)
-    if not NONCE_RE.fullmatch(str(nonce or "")):
+    http = http or http_call
+    if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
         return None, "bad_nonce"
     pub = local_pub(env)
     if not pub:
         return None, "no_key"
     row, d = _find(nonce, env, http, kid_of(pub), time.time() if now is None else now)
-    if not d:
+    if not d or d.get("expired"):
         return None, "not_pending"
     st, _ = http("POST", row["url"] + "/wp-json/ez2-aib/v1/deny",
                  {"Content-Type": "application/json", "Authorization": "Bearer " + _token(row["site"], env)},
@@ -457,9 +535,10 @@ def main(argv=None, out=None, env=None, stdin=None):
             return emit(dict(r, ok=True) if r else {"ok": False, "why": why}, 0 if r else 2)
         pub = local_pub(env)
         if o.action == "pem":
-            if not pub:
-                return emit({"ok": False, "why": "no_key"}, 2)
-            out.write(pem_of(pub))
+            pem, why = key_publish(env)
+            if why:
+                return emit({"ok": False, "why": why}, 2)
+            out.write(pem)
             return 0
         return emit({"kid": kid_of(pub) if pub else None}, 0)
     if o.cmd == "site":
@@ -476,7 +555,7 @@ def main(argv=None, out=None, env=None, stdin=None):
     res, why = fn(o.nonce, env)
     if why:
         return emit({"nonce": o.nonce, "ok": False, "why": why}, 2)
-    return emit({"nonce": o.nonce, "result": res}, 0 if res in ("approved", "denied") else 3)
+    return emit({"nonce": o.nonce, "result": res}, 0)
 
 
 if __name__ == "__main__":

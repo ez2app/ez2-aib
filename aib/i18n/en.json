@@ -4932,6 +4932,7 @@
   "aib.quote.hint.too_long": "Quotes are limited to {max} characters so the fingerprint window can show all of it; split it into several quotes.",
   "aib.quote.hint.no_key": "This Mac has no quote signing key yet: run aib quote key init first.",
   "aib.approve.touchid_reason": "Code {code} · approve {user} signing in to {site} · IP {ip}",
+  "aib.approve.touchid_publish": "Publish the AIB approval key · kid {kid} (this always asks for your fingerprint; if it did not, stop — the key may have been swapped)",
   "aib.approve.help.usage": "Usage: aib approve key init|status|pem [--json]\n       aib approve site add <site> [--url https://…] (room token on stdin) | site list\n       aib approve pending [--json]\n       aib approve yes|no <nonce> [--json]\n       aib approve history [--json]",
   "aib.temp.help.usage": "usage: aib temp add <host> \"<description>\" --until <YYYY-MM-DD|ISO time> --undo \"<how to undo>\" [--seat <seat>]\n       aib temp list [--all] | check | done <id> [--why \"<reason>\"]   (all accept --json)",
   "aib.temp.added": "Registered {id}, due {until}; run aib temp done {id} once it is removed",
