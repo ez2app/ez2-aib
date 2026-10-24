@@ -1932,6 +1932,8 @@
   "aib.handoff.verify.no_write": "收據說寫了,但寫入紀錄沒有這一筆",
   "aib.handoff.verify.no_row": "本席列沒找到",
   "aib.handoff.verify.summary_noted": "交接檔寫明沒做",
+  "aib.handoff.verify.persona_must": "本輪一定要寫回人格卡(只有真人一句都沒講才可跳過)",
+  "aib.handoff.verify.summary_no_brain": "總結有渲染，但沒寫進第二大腦",
   "aib.handoff.verify.all_done": "全部完成",
   "aib.handoff.verify.missing": "還缺 {n} 項(照上面 ✗ 那幾項補,再跑 aib handoff verify)",
   "aib.handoff.incomplete.title": "交接不完整(機器對帳)",

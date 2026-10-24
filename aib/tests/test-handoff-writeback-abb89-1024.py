@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""收尾一定寫回人格與第二大腦(維護者 10-24:「必要不能跳過，一定要寫回對應的人格與第二大腦」「總結與交接都不能跳過」;
+@ee4f8 實測 5 個缺口,本檔測 ①–④;verify 的紅綠在 test-handoff-check-abb89-1015)。
+
+全部用暫存 EZ2_AIB_HOME / EZ2_AIB_STATE_ROOT,不碰真的 ~/.ez2-aib、不寫真的第二大腦(寫入一律換假的)。
+W1 退路篩:真人打字(含帶圖片的「[Image #3] …」)留下;系統提醒 / dm 標頭 / Stop hook / 工具結果 / isMeta /
+   自我提醒排程 / 接續摘要 / 中斷提示丟掉
+W2 缺 human_filter ⇒ human_words 從這一席的對話檔讀出真人原話(不再回空)
+W3 交接筆記:同一輪本席同一步的上一則 ⇒ 取代;別席 / 別步 / 上一輪 / 沒有這一輪起點 ⇒ 不取代;步驟標籤只取數字
+W4 總結第二大腦:取代本席同專案上一則總結(別席 / 別專案不取代);寫不進回 ok=false、不丟例外
+W5 總結內文帶標題、大項、摘要、下一步;不帶證據指令
+刀:K1 退路篩永遠 True ⇒ W1 紅;K2 不看這一輪起點 ⇒ W3 紅;K3 總結不帶 supersedes ⇒ W4 紅
+"""
+import json
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]          # = aib/
+for _p in (ROOT / "src" / "cockpit", ROOT / "src" / "memory", ROOT / "src" / "identity", ROOT / "tests"):
+    sys.path.insert(0, str(_p))
+import aib_testlib  # noqa: E402,F401
+import memory_tidy  # noqa: E402
+import aib_handoff  # noqa: E402
+import aib_summary  # noqa: E402
+
+HUMAN = ["為什麼這個角色的 icon 不正確?", "[Image #3] 地球要很大，鳥看他"]
+MACHINE_TEXT = ["<system-reminder>x</system-reminder>", "IP:100.1.2.3/6ddf/某席@abcde >> IP:100.1.2.3/6ddf/我@bcdef 10-24 17:04",
+                "Stop hook feedback:\n[x]: 狀態沒更新", "【自我提醒 · 授權】照清單推進一步", "[Request interrupted by user]",
+                "This session is being continued from a previous conversation", "Another Claude session sent a message:"]
+
+
+def _row(text, **extra):
+    r = {"type": "user", "timestamp": "2026-10-24T09:00:00Z", "message": {"role": "user", "content": text}}
+    r.update(extra)
+    return json.dumps(r, ensure_ascii=False)
+
+
+def transcript_lines():
+    rows = [_row(t) for t in HUMAN] + [_row(t) for t in MACHINE_TEXT]
+    rows.append(_row([{"type": "tool_result", "content": "ok"}]))
+    rows.append(_row("看起來像真人但是 meta", isMeta=True))
+    rows.append(_row("工具回來的", toolUseResult={"x": 1}))
+    rows.append(json.dumps({"type": "assistant", "message": {"content": "助手的話不算"}}))
+    return rows
+
+
+def check_w1(t, flt):
+    path = Path(t.tmp) / "t.jsonl"
+    path.write_text("\n".join(transcript_lines()) + "\n", encoding="utf-8")
+    with open(path, encoding="utf-8") as fh:
+        got = [w for _ts, w in memory_tidy._human_rows(fh, "", {"human_bound": True}, flt)]
+    t.assertEqual(got, HUMAN)
+
+
+def entry(uid, step, seat="abcde", ms=2_000_000, kind="handoff"):
+    return {"uid": uid, "kind": kind, "seat": seat, "created_ms": ms,
+            "tags": ["aib/handoff"] + (["aib/handoff/step-%s" % step] if step else [])}
+
+
+def check_w3(t, fn):
+    es = [entry("old1", 1, ms=500_000), entry("a1", 1), entry("a2", 2), entry("b1", 1, seat="zzzzz"),
+          entry("a1b", 1, ms=3_000_000), entry("nostep", None, ms=4_000_000)]
+    t.assertEqual(fn("abcde", "1", 1000.0, entries=es), "a1b")       # 這一輪同一步最新那則
+    t.assertEqual(fn("abcde", "第 2 步", 1000.0, entries=es), "a2")   # 標籤只取數字
+    t.assertEqual(fn("abcde", "3", 1000.0, entries=es), "")
+    t.assertEqual(fn("abcde", "1", 0.0, entries=es), "")              # 沒有這一輪起點 ⇒ 不跨輪取代
+    t.assertEqual(fn("abcde", "1", 3500.0, entries=es), "")           # 這一輪還沒寫過第 1 步(上一輪的不算)
+    t.assertEqual(fn("abcde", "步", 1000.0, entries=es), "")
+
+
+CTX = {"code": "abcde", "seat_uid": "u-me", "project_uid": "proj:0123456789abcdef", "model": "claude-opus-5-5"}
+
+
+def check_w4(t, mod):
+    es = [{"uid": "s1", "tags": ["aib/summary"], "seat_uid": "u-me", "project_uid": CTX["project_uid"], "created_ms": 1},
+          {"uid": "s2", "tags": ["aib/summary"], "seat_uid": "u-me", "project_uid": CTX["project_uid"], "created_ms": 5},
+          {"uid": "x1", "tags": ["aib/summary"], "seat_uid": "u-other", "project_uid": CTX["project_uid"], "created_ms": 9},
+          {"uid": "x2", "tags": ["aib/summary"], "seat_uid": "u-me", "project_uid": "proj:ffffffffffffffff", "created_ms": 9},
+          {"uid": "x3", "tags": ["aib/tidy"], "seat_uid": "u-me", "project_uid": CTX["project_uid"], "created_ms": 9}]
+    calls = []
+
+    def fake(kind, title, body, **kw):
+        calls.append((kind, title, kw))
+        return {"uid": "new1"}
+    with mock.patch("aib_memory.entries", return_value=es):
+        res = mod.brain_write(dict(CTX), {"title": "T"}, seat="6ddf/abcde", writer=fake)
+    t.assertEqual(res, {"ok": True, "uid": "new1"})
+    kind, _title, kw = calls[0]
+    t.assertEqual(kind, "note")
+    t.assertEqual(kw.get("supersedes"), "s2")
+    t.assertEqual(kw.get("project"), CTX["project_uid"])
+    t.assertIn("aib/summary", kw.get("tags"))
+
+    def boom(*a, **k):
+        raise RuntimeError("這台量不到第二大腦")
+    with mock.patch("aib_memory.entries", return_value=[]):
+        bad = mod.brain_write(dict(CTX), {}, writer=boom)
+    t.assertFalse(bad["ok"])
+    t.assertIn("量不到", bad["why"])
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aib-writeback-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for k in ("EZ2_AIB_HOME", "EZ2_AIB_STATE_ROOT"):
+            p = mock.patch.dict(os.environ, {k: self.tmp})
+            p.start()
+            self.addCleanup(p.stop)
+
+
+class Behaviour(Base):
+    def test_w1_fallback_filter(self):
+        check_w1(self, memory_tidy._FallbackFilter)
+
+    def test_w2_human_words_without_human_filter(self):
+        path = Path(self.tmp) / "seat.jsonl"
+        path.write_text("\n".join(transcript_lines()) + "\n", encoding="utf-8")
+        with mock.patch.dict(sys.modules, {"human_filter": None}), \
+                mock.patch.object(aib_handoff, "rounds", return_value=[]), \
+                mock.patch("seat_fork.find_transcript", return_value=path):
+            self.assertEqual(memory_tidy.human_words_status(), memory_tidy.HUMAN_WORDS_FALLBACK)
+            got = [w for _ts, w in memory_tidy.human_words({"code": "abcde", "seat_uid": "u"}, "")]
+        self.assertEqual(got, HUMAN)
+
+    def test_w3_handoff_supersedes_same_step_this_round(self):
+        check_w3(self, aib_handoff._prev_step_note)
+        self.assertEqual(aib_handoff._step_tag("2"), "aib/handoff/step-2")
+        self.assertEqual(aib_handoff._step_tag("第 3 步"), "aib/handoff/step-3")
+        self.assertEqual(aib_handoff._step_tag(""), "")
+
+    def test_w3b_brain_write_passes_supersedes_and_step_tag(self):
+        seen = {}
+
+        def fake(kind, title, body, **kw):
+            seen.update(kw)
+            return {"uid": "h9", "path": "/v/h9.md"}
+        with mock.patch.object(aib_handoff, "current_round_start", return_value=1000.0), \
+                mock.patch("aib_memory.entries", return_value=[entry("a1", 1)]), \
+                mock.patch("aib_memory.write", side_effect=fake):
+            res = aib_handoff._brain_write({"code": "abcde"}, "1", "內文", "6ddf/abcde")
+        self.assertTrue(res["ok"])
+        self.assertEqual(seen.get("supersedes"), "a1")
+        self.assertIn("aib/handoff/step-1", seen.get("tags"))
+
+    def test_w4_summary_brain(self):
+        check_w4(self, aib_summary)
+
+    def test_w5_summary_body(self):
+        body = aib_summary.brain_body({"title": "0.1.52 整合", "summary": "五張收進", "tree": [
+            {"title": "發版", "children": [{"id": "A.1", "title": "#311", "status": "in_progress", "evidence": "CI 中",
+                                           "evidence_command": "gh pr checks 311"}]}],
+            "footer": {"next": "合 main"}})
+        for s in ("0.1.52 整合", "五張收進", "發版", "#311", "合 main"):
+            self.assertIn(s, body)
+        self.assertNotIn("gh pr checks", body)
+
+
+class Knives(Base):
+    def test_k1_filter_always_true(self):
+        class AlwaysTrue:
+            @staticmethod
+            def is_human(*_a, **_k):
+                return True, {}
+        with self.assertRaises(AssertionError):
+            check_w1(self, AlwaysTrue)
+
+    def test_k2_ignores_round_start(self):
+        def no_since(code, step_label, since, entries=None):
+            return aib_handoff._prev_step_note(code, step_label, 1.0, entries=entries)
+        with self.assertRaises(AssertionError):
+            check_w3(self, no_since)
+
+    def test_k3_summary_without_supersedes(self):
+        class NoSup:
+            brain_write = staticmethod(lambda ctx, report, seat="", writer=None: aib_summary.brain_write(
+                ctx, report, seat, writer=lambda k, t, b, **kw: writer(k, t, b, **dict(kw, supersedes=""))))
+        with self.assertRaises(AssertionError):
+            check_w4(self, NoSup)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

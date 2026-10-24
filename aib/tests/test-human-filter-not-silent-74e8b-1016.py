@@ -13,6 +13,8 @@ H3 collect + apply ⇒ 收據 human_words = unavailable(缺 human_filter);人格
 H4 機器事實那行寫「讀不到(缺 human_filter)」,不是「沒有」(不讓模型以為真人沒說話)
 H5 巡檢:收據寫 unavailable ⇒ fleet_patrol.human_words_unavailable_line 回一行提醒;收據 ok / 沒收據 ⇒ ""
 H6 (expectedFailure,等匯出)開源包內 import human_filter 成功 —— 匯出補進來後這支會變「意外通過」,提醒拿掉標記
+10-24 改(維護者:「必要不能跳過，一定要寫回對應的人格與第二大腦」):缺 human_filter 不再是「讀不到」,改用對話檔退路篩
+   ⇒ 狀態 fallback(缺 human_filter,改用對話檔退路篩);H1/H3/H4/H5 照新規矩改,退路篩本身在 test-handoff-writeback-abb89-1024。
 刀(同檔變體,不碰真樹):K1 human_words_status 退回永遠 ok ⇒ H1 紅;K2 收據不寫 human_words ⇒ H3 紅;
    K3 巡檢那行退回永遠空 ⇒ H5 紅
 """
@@ -82,8 +84,8 @@ class Base(unittest.TestCase):
 
 def check_h1(t, mod):
     t.missing()
-    t.assertEqual(mod.human_words_status(), "unavailable(缺 human_filter)")
-    t.assertEqual(mod.human_words(dict(CTX), ""), [])
+    t.assertEqual(mod.human_words_status(), "fallback(缺 human_filter,改用對話檔退路篩)")
+    t.assertEqual(mod.human_words(dict(CTX), ""), [])       # 沒有對話檔 ⇒ 空(不是例外)
 
 
 def run_tidy(t, mod):
@@ -99,10 +101,10 @@ def run_tidy(t, mod):
 def check_h3(t, mod):
     t.missing()
     rec = run_tidy(t, mod)
-    t.assertEqual(rec.get("human_words"), "unavailable(缺 human_filter)")
+    t.assertEqual(rec.get("human_words"), "fallback(缺 human_filter,改用對話檔退路篩)")
     on_disk = json.loads((Path(t.tmp) / "state" / "tidy" / "abcde.json").read_text(encoding="utf-8"))
-    t.assertEqual(on_disk.get("human_words"), "unavailable(缺 human_filter)")
-    t.assertIn("human_filter", rec["files"]["persona"]["why"])
+    t.assertEqual(on_disk.get("human_words"), "fallback(缺 human_filter,改用對話檔退路篩)")
+    t.assertEqual(on_disk.get("human_words_count"), 0)      # verify 第 2 項靠這個判「真人沒講話」
 
 
 def write_receipt(t, value):
@@ -132,8 +134,10 @@ class Behaviour(Base):
         check_h3(self, memory_tidy)
 
     def test_h4_facts_line_says_unavailable(self):
-        self.missing()
-        line = memory_tidy.human_words_line([])
+        self.missing()                                      # 缺件 ⇒ 退路篩是真的來源,空就是「沒有」
+        self.assertTrue(memory_tidy.human_words_line([]).endswith("沒有"))
+        with mock.patch.object(memory_tidy, "human_words_status", return_value=memory_tidy.HUMAN_WORDS_UNAVAILABLE):
+            line = memory_tidy.human_words_line([])
         self.assertIn("讀不到", line)
         self.assertIn("human_filter", line)
         self.present()
@@ -141,6 +145,8 @@ class Behaviour(Base):
 
     def test_h5_patrol_lists_it(self):
         check_h5(self, fleet_patrol)
+        write_receipt(self, "fallback(缺 human_filter,改用對話檔退路篩)")
+        self.assertIn("退路篩", fleet_patrol.human_words_unavailable_line("abcde"))
         write_receipt(self, "ok")
         self.assertEqual(fleet_patrol.human_words_unavailable_line("abcde"), "")
         write_receipt(self, None)
@@ -164,7 +170,7 @@ class Export(unittest.TestCase):
 
 class Knives(Base):
     def test_k1_status_always_ok(self):
-        mod = variant(TIDY, '    return "ok" if _human_filter() is not None else HUMAN_WORDS_UNAVAILABLE\n',
+        mod = variant(TIDY, '    return "ok" if _human_filter() is not None else HUMAN_WORDS_FALLBACK\n',
                       '    return "ok"\n')
         with self.assertRaises(AssertionError):
             check_h1(self, mod)
@@ -175,7 +181,7 @@ class Knives(Base):
             check_h3(self, mod)
 
     def test_k3_patrol_line_always_empty(self):
-        mod = variant(PATROL, '    if not str(rec.get("human_words") or "").startswith("unavailable"):\n',
+        mod = variant(PATROL, '    if not hw.startswith("unavailable"):\n',
                       '    if True:\n')
         with self.assertRaises(AssertionError):
             check_h5(self, mod)

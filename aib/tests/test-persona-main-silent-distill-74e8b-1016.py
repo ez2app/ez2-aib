@@ -225,8 +225,10 @@ class Behaviour(Base):
         self.assertNotIn("<!-- tidy:main -->", self.draft())    # 沒登記
         self.register()
         self.assertIn("<!-- tidy:main -->", self.draft())
-        self.hf_missing()
-        self.assertNotIn("<!-- tidy:main -->", self.draft())    # 缺 human_filter
+        self.hf_missing()                                      # 10-24:缺 human_filter 改用退路篩 ⇒ 照樣出現
+        self.assertIn("<!-- tidy:main -->", self.draft())
+        with mock.patch.object(memory_tidy, "human_words_status", return_value=memory_tidy.HUMAN_WORDS_UNAVAILABLE):
+            self.assertNotIn("<!-- tidy:main -->", self.draft())    # 真的讀不到(舊狀態)⇒ 不出現
         self.hf_present()
         self.ctx["persona_uid"] = MAIN
         self.assertNotIn("<!-- tidy:main -->", self.draft())    # 本席就綁主人格
@@ -249,8 +251,8 @@ class Behaviour(Base):
         self.assertEqual(rec["files"]["main_persona"]["status"], "skipped")
         self.assertIn("沒登記", rec["files"]["main_persona"]["why"])
         self.register()
-        self.hf_missing()
-        _d, rec = self.tidy(memory_tidy)
+        with mock.patch.object(memory_tidy, "human_words_status", return_value=memory_tidy.HUMAN_WORDS_UNAVAILABLE):
+            _d, rec = self.tidy(memory_tidy)
         self.assertEqual(rec["files"]["main_persona"]["status"], "skipped")
         self.assertIn("human_filter", rec["files"]["main_persona"]["why"])
 

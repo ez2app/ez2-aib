@@ -1932,6 +1932,8 @@
   "aib.handoff.verify.no_write": "受領書では書いたが書き込み記録にない",
   "aib.handoff.verify.no_row": "この席の行が見つからない",
   "aib.handoff.verify.summary_noted": "引き継ぎに未実施と明記",
+  "aib.handoff.verify.persona_must": "このラウンドでペルソナカードへの書き戻しが必須です(人間が何も話していない場合のみ省略可)",
+  "aib.handoff.verify.summary_no_brain": "サマリーは出力されましたが、セカンドブレインに書き込まれていません",
   "aib.handoff.verify.all_done": "すべて完了",
   "aib.handoff.verify.missing": "あと {n} 項目(上の ✗ を直してから aib handoff verify をもう一度)",
   "aib.handoff.incomplete.title": "引き継ぎ不完全(機械照合)",

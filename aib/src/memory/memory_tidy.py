@@ -48,6 +48,13 @@ EVIDENCE_MIN = 8
 HUMAN_MAX = 40
 # 10-16 維護者裁:human_filter(src/persona-collect/)開源倉還沒有,等私倉匯出、不手搬;缺件時照實寫,不靜默回空
 HUMAN_WORDS_UNAVAILABLE = "unavailable(缺 human_filter)"
+# 10-24 維護者:「必要不能跳過，一定要寫回對應的人格與第二大腦」⇒ 缺 human_filter 時改用對話檔退路篩(_FallbackFilter),
+#   不再讓人格段 / 遺漏回顧整段空過。收據照實標 fallback,看得出不是正式判準。
+HUMAN_WORDS_FALLBACK = "fallback(缺 human_filter,改用對話檔退路篩)"
+# 退路篩丟掉的機器字樣:系統提醒 / 指令標籤、dm 標頭、Stop hook 回饋、子代理回報、自我提醒排程、接續摘要、中斷提示
+_MACHINE_PREFIX = ("<", "[Request interrupted", "[SYSTEM", "【自我提醒", "Stop hook feedback", "Another Claude session", "This session is being continued",
+                   "Caveat:", "Base directory for this skill")
+_DM_HEAD_RE = re.compile(r"^\S*IP:\S+\s*>>\s")
 CROWN_PERSONA = "71c97a"
 PERSONA_LINE_RE = re.compile(r"^\s*-\s*(\S+?)\s*[::]\s*(.+?)\s*〔證據[::]「(.+?)」〕\s*$")
 IDENT_LINE_RE = re.compile(r"^\s*身分\s*[::]\s*(性別|生日|嗜好)\s*=\s*(.+?)\s*〔證據[::]「(.+?)」〕\s*$")
@@ -249,9 +256,32 @@ def _human_filter():
     return human_filter
 
 
+class _FallbackFilter:
+    """缺 human_filter 時的退路:只收對話檔裡真人打字那種 user 列(不是 isMeta、不是工具結果、不是機器字樣開頭)。
+    比正式判準寬;只拿來當人格證據與遺漏回顧的原文來源,收據標 fallback。"""
+
+    @staticmethod
+    def is_human(_seat, item, skip_ledger=True):
+        row = item.get("raw_refs") or {}
+        if row.get("isMeta") or row.get("toolUseResult") is not None or row.get("isCompactSummary"):
+            return False, {"why": "meta"}
+        content = (row.get("message") or {}).get("content")
+        if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            return False, {"why": "tool_result"}
+        text = str(item.get("text") or "").lstrip()
+        if not text or text.startswith(_MACHINE_PREFIX) or _DM_HEAD_RE.match(text):
+            return False, {"why": "machine"}
+        return True, {"why": "fallback"}
+
+
 def human_words_status():
-    """收據 / collect 記的真人原話來源狀態:ok,或 HUMAN_WORDS_UNAVAILABLE(缺 human_filter)。"""
-    return "ok" if _human_filter() is not None else HUMAN_WORDS_UNAVAILABLE
+    """收據 / collect 記的真人原話來源狀態:ok(正式判準)或 HUMAN_WORDS_FALLBACK(缺 human_filter,改用退路篩)。"""
+    return "ok" if _human_filter() is not None else HUMAN_WORDS_FALLBACK
+
+
+def human_words_usable(status):
+    """這個來源狀態讀得到真人原話嗎(ok / fallback 都算;舊收據的 unavailable 不算)。"""
+    return status in ("ok", HUMAN_WORDS_FALLBACK)
 
 
 def human_words_line(words):
@@ -259,7 +289,7 @@ def human_words_line(words):
     head = "- 真人本輪原話(人格證據只認這裡的原文):"
     if words:
         return head
-    if human_words_status() != "ok":
+    if not human_words_usable(human_words_status()):
         return head + "讀不到(缺 human_filter,等私倉匯出;人格那段留空)"
     return head + "沒有"
 
@@ -299,9 +329,7 @@ def human_words(ctx, since="", span_rounds=False):
             paths = []
     if not paths:
         return []
-    human_filter = _human_filter()
-    if human_filter is None:                       # 缺件:collect / 收據 / 巡檢另外照實寫(human_words_status)
-        return []
+    human_filter = _human_filter() or _FallbackFilter      # 缺件 ⇒ 退路篩(收據標 fallback;10-24 維護者:不能跳過)
     seat = {"human_bound": True, "code": ctx["code"]}
     out = []
     for path in paths:
@@ -665,7 +693,7 @@ def main_persona_target(ctx):
         return None, "主人格沒登記(aib persona main set <卡號>)"
     if uid == (ctx.get("persona_uid") or ""):
         return None, "本席就綁主人格(寫在人格那段)"
-    if human_words_status() != "ok":
+    if not human_words_usable(human_words_status()):
         return None, "讀不到真人原話(缺 human_filter,等私倉匯出)"
     pc = persona_card({"persona_uid": uid})
     if not pc:
@@ -951,13 +979,14 @@ def apply(text, seat="", defer_big=False, skip_context=False, add_only=False):
             files["note"] = {"status": "failed", "why": str(exc)[:200]}
     col = _read_json(tidy_dir() / ("%s.collect.json" % ctx["code"]), {})
     hw = col.get("human_words_status") or human_words_status()
-    if hw != "ok" and files["persona"]["status"] == "skipped":
+    if not human_words_usable(hw) and files["persona"]["status"] == "skipped":
         files["persona"]["why"] = "讀不到真人原話(缺 human_filter,等私倉匯出)"
     status = "ok" if all(f["status"] in ("ok", "skipped") for f in files.values()) else "partial"   # waiting(等 the maintainer 按)也算 partial
     rec = {"status": status, "at": _now(), "seat": ctx["code"], "seat_id": ctx.get("seat_id") or "",
            "persona_since": col.get("persona_since") or "",
            "model": ctx["model"], "project_uid": ctx.get("project_uid") or "", "nonce": parts["nonce"], "files": files}
     rec["human_words"] = hw
+    rec["human_words_count"] = len(col.get("human_words") or [])    # verify:有原話卻 skipped 人格 ⇒ 紅
     _write_json(tidy_dir() / ("%s.json" % ctx["code"]), rec)
     memory_archive.spawn_background()           # 一天一次的 90 天清理,背景、不等
     return rec

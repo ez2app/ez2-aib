@@ -90,7 +90,7 @@ def apply(text, seat="", now=None, writer=None):
         note_uid = "failed: %s" % str(exc)[:120]
     out = {"seat": ctx["code"], "at": time.time(), "draft_at": int(m.group(2)), "lines": len(rows),
            "by_kind": {k: sum(1 for r in rows if r["kind"] == k) for k in ("做了", "待辦", "沒做")},
-           "note": note_uid}
+           "note": note_uid, "words_source": memory_tidy.human_words_status()}
     p = receipt_path(ctx["code"])
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
