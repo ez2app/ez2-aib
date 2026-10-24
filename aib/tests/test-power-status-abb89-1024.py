@@ -151,7 +151,8 @@ class T(unittest.TestCase):
         # aib 入口沒接到 power ⇒ 落到最後的開艙 + attach(頁面跑 status --json 會開出一座艙)(審查 r1)
         src = (REPO / "src" / "cockpit" / "aib").read_text(encoding="utf-8")
         i = src.index('if [ "${1:-}" = "power" ]; then')
-        self.assertIn('exec "$T_PY3" "$HERE/power_status.py" "$@"', src[i:i + 200])
+        self.assertIn('  shift\n  exec "$T_PY3" "$HERE/power_status.py" "$@"', src[i:i + 200])   # 少 shift ⇒ argv[0]=power、全壞
+        self.assertLess(i, src.rindex("aib_splash_stop"))                       # 擺到檔尾的開艙 + attach 之後 ⇒ 永遠到不了
 
 
 def tearDownModule():

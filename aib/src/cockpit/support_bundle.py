@@ -43,7 +43,7 @@ DM_OK = frozenset(("queued", "delivered", "delivered_direct", "read", "done"))
 SECRET = re.compile(
     r"(sk-[A-Za-z0-9_-]{8,}|sk_(?:live|test)_[A-Za-z0-9]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
     r"|nsec1[0-9a-z]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|glpat-[0-9A-Za-z_-]{16,}"
-    r"|hf_[A-Za-z0-9]{20,}|bearer\s+\S{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    r"|hf_[A-Za-z0-9]{20,}|bearer\s+\S{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?"
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----|[A-Fa-f0-9]{32,}|[A-Za-z0-9+/]{48,}={0,2})", re.I)
 TMP = re.compile(r"/(?:private/)?var/folders/[^\s\"']+|/(?:private/)?tmp/[^\s\"']+", re.I)
 CABIN = re.compile(r"\d{8}-\d{6}-[0-9a-f]{4}", re.I)
@@ -62,11 +62,23 @@ def _root():
     return seats_dir_lib.state_root()[0]
 
 
+def _open_regular(path):
+    """開檔後才 fstat(不先 stat 再 open):不跟連結、FIFO / 裝置不等、不讀 ⇒ 回 None。"""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    f = os.fdopen(fd, "rb")
+    st = os.fstat(f.fileno())
+    if not stat.S_ISREG(st.st_mode):
+        f.close()
+        return None, st
+    return f, st
+
+
 def _tail_rows(path):
     try:
-        if not stat.S_ISREG(os.stat(path).st_mode):
+        f, _st = _open_regular(path)
+        if f is None:
             return []
-        with open(path, "rb") as f:
+        with f:
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - TAIL_BYTES))
@@ -153,11 +165,13 @@ def _detail(c):
 def _read_json(path):
     """只讀一般檔(FIFO / 裝置 / 連結到怪東西不開)、最多 READ_MAX;壞掉 / 太深 ⇒ None。"""
     try:
-        st = os.stat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > READ_MAX:
+        f, st = _open_regular(path)
+        if f is None:
             return None
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+        with f:
+            if st.st_size > READ_MAX:
+                return None
+            return json.loads(f.read(READ_MAX + 1).decode("utf-8"))
     except (OSError, ValueError, RecursionError):
         return None
 
@@ -207,7 +221,12 @@ def redact(obj, home=None, user=None):
     """回 (遮過的物件, 遮了幾處)。家目錄 → ~、使用者名稱 → <user>、暫存路徑 → <tmp>、艙號 → <cabin>、席號 → <seat>、
     像金鑰的字串 → [redacted](只算 [redacted] 的處數)。"""
     home = os.path.expanduser("~") if home is None else home
-    user = (getpass.getuser() if user is None else user) or ""
+    if user is None:
+        try:
+            user = getpass.getuser()
+        except Exception:  # noqa: BLE001 - Linux 容器 uid 不在 passwd、又沒 USER ⇒ 不遮使用者名,不讓整份失敗
+            user = ""
+    user = user or ""
     n = [0]
 
     home = home.rstrip("/")

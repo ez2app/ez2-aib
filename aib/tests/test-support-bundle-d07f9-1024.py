@@ -306,8 +306,8 @@ class Support(unittest.TestCase):
                           ("p5", "[1]"), ("ok6", '{"version": "0.4.1", "signature": "x"}')):
             (r / "plugins" / name).mkdir(parents=True)
             (r / "plugins" / name / "aib-ext.json").write_text(man, encoding="utf-8")
-        (r / "personas" / "andy-clone-persona").mkdir(parents=True)
-        (r / "personas" / "andy-clone-persona" / "aib-ext.json").write_text('{"version": "1.0"}')
+        (r / "personas" / "owner-clone-persona").mkdir(parents=True)
+        (r / "personas" / "owner-clone-persona" / "aib-ext.json").write_text('{"version": "1.0"}')
         (r / "state" / "power-login.json").write_text("[" * 200000 + "]" * 200000)
         os.mkfifo(str(r / "instances" / "20261014-133230-abcd" / "seats" / "f.json"))
         work = r / "work" / PROJECT / "bin"
@@ -326,7 +326,7 @@ class Support(unittest.TestCase):
         self.assertIn(("plugin", "?"), got)                                    # 帶換行的資料夾名 ⇒ ?
         self.assertNotIn("persona", [x["kind"] for x in body["plugins"]])
         self.assertEqual(body["logins"], {})
-        for bad in (PROJECT, "line2", "RED", "andy-clone"):
+        for bad in (PROJECT, "line2", "RED", "owner-clone"):
             self.assertNotIn(bad, text, bad)
         cli = [c for c in body["doctor"]["checks"] if c["id"] == "provider_cli_codex"]
         self.assertEqual([c["detail"] for c in cli], [None])
@@ -339,6 +339,40 @@ class Support(unittest.TestCase):
         finally:
             S.cabins = real
         self.assertEqual((rc, rr["ok"], rr["detail"]), (1, False, "support_collect_failed"))
+
+    def test_s11_round3(self):
+        # r2 審查:寫進包之前真的有遮;manifest / 紀錄檔是 FIFO 不卡;超過上限的 JSON 不讀
+        import signal
+
+        def _stuck(_s, _f):
+            raise AssertionError("aib support 卡住")
+        old = signal.signal(signal.SIGALRM, _stuck)
+        signal.alarm(10)
+        try:
+            r = Path(TMP)
+            (r / "plugins" / "fifo1").mkdir(parents=True)
+            os.mkfifo(str(r / "plugins" / "fifo1" / "aib-ext.json"))
+            os.mkfifo(str(r / "logs" / "seat-panel-actions.jsonl.fifo"))
+            os.replace(str(r / "logs" / "seat-panel-actions.jsonl.fifo"), str(r / "logs" / "seat-panel-actions.jsonl"))
+            (r / "state" / "power-login.json").write_text(json.dumps({"claude": {"v": True}, "pad": "y" * (S.READ_MAX + 10)}))
+            real = S.versions
+            S.versions = lambda: {"x": "k " + SECRET_TOKEN}
+            try:
+                rr, rc = S.run(write=True)
+            finally:
+                S.versions = real
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+        self.assertEqual((rc, rr["detail"]), (0, "support_written"))
+        self.assertGreaterEqual(rr["redacted"], 1)
+        text = Path(os.path.expanduser(rr["file"])).read_text(encoding="utf-8")
+        self.assertNotIn(SECRET_TOKEN, text)
+        body = json.loads(text)
+        self.assertEqual(body["logins"], {})                                   # 超過 READ_MAX ⇒ 不讀
+        self.assertIn(("plugin", "fifo1"), {(x["kind"], x["name"]) for x in body["plugins"]})
+        self.assertEqual(S.redact(["eyJ" + "a" * 10 + "." + "b" * 10 + ".sig_part"], home="/h", user="zz")[0],
+                         ["[redacted]"])                                       # JWT 三段整條遮
 
     def test_s6_doctor_unmarked_dispatch_detect(self):
         S.run()

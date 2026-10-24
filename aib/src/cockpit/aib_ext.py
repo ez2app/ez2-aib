@@ -45,6 +45,7 @@ import json
 import re
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -913,6 +914,19 @@ def auto_install(out=sys.stdout, src=None, env=None):
     return rc
 
 
+MANIFEST_MAX = 1024 * 1024
+
+
+def _read_manifest(path):
+    """manifest 只讀一般檔、最多 MANIFEST_MAX;FIFO / 裝置不開、不等(O_NONBLOCK),免得列外掛卡住(10-24 aib support 雙審 r2)。"""
+    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MANIFEST_MAX:
+            raise ValueError("not a regular manifest")
+        return json.loads(f.read(MANIFEST_MAX + 1).decode("utf-8"))
+
+
 def installed():
     rows = []
     for kind in K.INSTALLABLE:
@@ -923,9 +937,9 @@ def installed():
             m = {}
             for f in (MANIFEST, "plugin.json"):
                 try:
-                    m = json.loads((d / f).read_text(encoding="utf-8"))
+                    m = _read_manifest(d / f)
                     break
-                except (OSError, ValueError):
+                except (OSError, ValueError, RecursionError):
                     continue
             if not isinstance(m, dict):            # manifest 是陣列 / 字串 ⇒ 當沒讀到,不讓整張表炸掉(10-24 aib support 雙審)
                 m = {}
