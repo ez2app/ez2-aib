@@ -116,7 +116,7 @@ class Harden(unittest.TestCase):
     def test_h6_contract_interface_only(self):
         text = (REPO / "contracts" / "power.json").read_text(encoding="utf-8")
         json.loads(text)
-        for bad in ("pending/", "SPEC", "PLAN-"):
+        for bad in ("pending/", "SPEC", "PLAN-", "Andy", "裁示", "雙審"):          # 也不帶內部決策過程(#302 審查)
             self.assertNotIn(bad, text)
 
     def test_h7_review_302(self):

@@ -2,7 +2,7 @@
  "schema": "aib-contract/v1",
  "name": "power",
  "status": "planned",
- "about": "艦長動力室(新艦長第一站,核心免費)的資料與指令。頁面只讀 `aib power status --json`,按鈕只呼叫 `aib power upgrade` / `aib power login`。10-24 Andy「動力室準備開發」「你們二個一起開發」:@abb89 總管 + 版本 / 健康 / 自動更新 / 綁定 / 清單;@d07f9 燈號(登入 / 額度)+ login + onboarding。",
+ "about": "艦長動力室(新艦長第一站,核心免費)的資料與指令。頁面只讀 `aib power status --json`,按鈕只呼叫 `aib power upgrade` / `aib power login`。分工:@abb89 總管 + 版本 / 健康 / 自動更新 / 綁定 / 清單;@d07f9 燈號(登入 / 額度)+ login + onboarding。",
  "codes_note": "detail / reason 是契約代碼,不改成人話;人話只放 hint。伺服器 / CLI 給的字是資料,頁面顯示前去控制與隱形字元。",
  "status_receipt": {
   "command": "aib power status [--refresh] --json",
@@ -115,7 +115,7 @@
   "locked": "這條所屬的等級鎖著沒(SSR / UR 出發後才開);鎖著的頁面顯示虛線框 + 鎖頭、不可點，不顯示開關",
   "room_tiers": "{SR|SSR|UR: {done, total, locked, unlock}}:艦長室任務板分頁用(沒有 room 任務的等級不列)",
   "i18n_note": "任務字鍵：動力室 30 條在核心 aib.power.page.task_<小寫 id>(標題)/ task_<小寫 id>_how(一句做法);艦長室 17 條的字由艦長室外掛出，鍵名同樣 task_<小寫 id> / task_<小寫 id>_how",
-  "ground_note": "SR14 綁 LINE 聯盟 / SR15 分享 LINE / SR16 看分享點擊統計(10-24 三條一起先開):where room、requires server、偵測等 LINE 端(@9f808),分享 / 點擊要記誰"
+  "ground_note": "SR14 綁 LINE 聯盟 / SR15 分享 LINE / SR16 看分享點擊統計:where room、requires server、偵測等 LINE 端(@9f808),分享 / 點擊要記誰"
  },
  "catalog": {
   "fields": [
@@ -191,9 +191,9 @@
   "recent": "[{brand, model, persona, brain, at}] 最多 20 筆、新的在前;同一組只留最新一筆;persona = 人格 uid、brain = 第二大腦路由鍵",
   "favorites": "[人格 uid],新加的在前",
   "owner": "@d07f9 power_launch.py",
-  "note": "真正出艦(開席 + 綁人格 + 綁大腦 ⇒ 進艦長室)細節待 Andy 確認;出艦成功時呼叫 power_launch.record_launch 記一筆。最愛 / 最近是本機方便用的資料,不是防線",
+  "note": "真正出艦(開席 + 綁人格 + 綁大腦 ⇒ 進艦長室)細節另定;出艦成功時呼叫 power_launch.record_launch 記一筆。最愛 / 最近是本機方便用的資料,不是防線",
   "brains": "[{route_key, title}]:第二大腦清單 = Vault(EZ2_VAULT_DIR)資料夾身分索引 .ez2/index/folder-id-index.json 裡 active 且掛了 routeKey 的夾;不掃目錄猜;沒有 ⇒ [](頁面給「一鍵建一個」走 newproj)",
-  "model_choices": "{brand: [預設模型, providers.json models 陣列列的正式模型…, 之前出發用過的模型…]}(去重);models 陣列 id 只放官方說明或 --help / --model 試跑驗過的(@abb89 10-24 裁示),沒列的家只有預設 + 用過的，不猜",
+  "model_choices": "{brand: [預設模型, providers.json models 陣列列的正式模型…, 之前出發用過的模型…]}(去重);models 陣列 id 只放官方說明或 --help / --model 試跑驗過的,沒列的家只有預設 + 用過的，不猜",
   "auto": "{ok, why, combo, light}:上次組合 3 秒自動出發能不能跑;why = no_recent | light_red | light_yellow | persona_gone | brain_gone;灰燈(unknown)不擋;待領獎勵這一期沒有(伺服器簽)。只是建議，真出發仍是本人動作"
  },
  "fav_receipt": {
@@ -224,7 +224,7 @@
    "2": "參數錯(bad,hint = 哪一欄)/ not_yet(沒帶 --dry-run)"
   },
   "steps": "[{step: open | bind, argv}];open = aib <brand> <mode> <role> new [--model M](與 aib seat open 同一條主流程);bind = aib newproj --seat <new-seat> [--persona-uid] [--folder](人格 + 第二大腦一起綁,帶路由契約);<new-seat> 由 open 的回條填",
-  "note": "10-24 @abb89:出艦組現成指令、依序跑、每步看回條、失敗就停;開席是本人動作,真執行時 AI 席要擋(同 seat_act 判法)。角色 / safe·dgrs 預設等 Andy 挑版時問;現在只有乾跑,頁面先複製指令"
+  "note": "出艦組現成指令、依序跑、每步看回條、失敗就停;開席是本人動作,真執行時 AI 席要擋(同 seat_act 判法)。角色 / safe·dgrs 預設另定;現在只有乾跑,頁面先複製指令"
  },
  "tier_receipt": {
   "command": "aib power tier <R|SR|SSR|UR> on|off [--json]",
@@ -288,7 +288,7 @@
    "sent"
   ],
   "detail": "support_preview | support_written | support_write_failed | support_collect_failed",
-  "sections": "versions | plugins | doctor | logins | cabins | failures(只收這六段;10-24 Andy 准精簡版)。doctor 只收只讀、說明只有機器資料的幾項:python_version / git_present / state_root_perms / schemas_readable / provider_*(雙審第 1 輪:整套 doctor 會寫檔、連網、說明帶交接檔名 / 席位檔欄位 / 客戶主機名 / 艙短號,不借)",
+  "sections": "versions | plugins | doctor | logins | cabins | failures(只收這六段)。doctor 只收只讀、說明只有機器資料的幾項:python_version / git_present / state_root_perms / schemas_readable / provider_*(整套 doctor 會寫檔、連網、說明帶本機檔名與主機名,不借)",
   "excluded": "messages | vault | project_names | persona | secrets | licenses | log_text | cabin_seat_ids(一律不收)",
   "file": "--write 才有:<狀態根>/support/aib-support-<時間>[-n].json(0600,夾 0700、既有夾也收緊;同一秒再寫加 -2…不蓋),家目錄換 ~;沒 --write ⇒ null、一個檔都不寫",
   "redacted": "像金鑰的字串換成 [redacted] 的處數(家目錄 / 使用者 / 暫存路徑 / 艙號 / 席號另外照換、不算處數)",
@@ -298,7 +298,7 @@
    "1": "寫不進去(support_write_failed)或收集時出錯(support_collect_failed,不印 traceback)",
    "2": "用法錯"
   },
-  "note": "動力室 UR4:--write 成功記 state/run-marks/support.json {at};要收 log 原文另開 --with-logs,先問 Andy(還沒做)"
+  "note": "動力室 UR4:--write 成功記 state/run-marks/support.json {at};收 log 原文不在範圍內(未提供)"
  },
  "ask_receipt": {
   "command": "aib power ask <claude|codex> [--model M] [--json](問題從 stdin:純文字或 {question, history:[{q,a}]})| aib power ask --suggest [--json]",
