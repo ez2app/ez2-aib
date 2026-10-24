@@ -462,8 +462,10 @@ def _drain(proc, e):
 
 
 def _communicate_capped(proc, cap, limit):
-    """分段 communicate:記憶體看門執行緒命中(只設旗標 + 收樹)後,由主執行緒收群組(這時 proc 一定還沒 wait ——
-    communicate 讀完管線才 wait;r4 L-a)。逾時照樣丟 TimeoutExpired(輸出是累積的)。"""
+    """分段 communicate(每段最多 0.5 秒)。記憶體看門執行緒命中時自己收樹,拿得到 _waitpid_lock 就當場收群組(r5,
+    見 memguard.TreeCap._killpg_locked);主執行緒看到 cap.hit 再收一次群組當保底(看門執行緒拿不到鎖 / 非 CPython
+    時就靠這條)。這時 proc 一定還沒 wait(communicate 讀完管線才 wait;r4 L-a)⇒ 群組號碼不會被重用。
+    逾時照樣丟 TimeoutExpired(輸出是累積的)。"""
     end = time.monotonic() + limit
     while True:
         left = end - time.monotonic()
