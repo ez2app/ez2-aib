@@ -5178,5 +5178,19 @@
   "aib.context.menu.bot_no_codex_thread": "(還沒連 Codex 桌面版)",
   "aib.context.menu.bot_no_muse_conv": "(還沒綁 Muse 對話)",
   "aib.context.menu.key_saved": "{name} 已存好,再點一次「另開 AI → {engine}」就能開席",
-  "aib.context.menu.key_not_saved": "{name} 沒有存進金鑰櫃(取消或沒過 Touch ID),{engine} 先不開席"
+  "aib.context.menu.key_not_saved": "{name} 沒有存進金鑰櫃(取消或沒過 Touch ID),{engine} 先不開席",
+  "aib.heat.snap.level": "主機散熱：{level}",
+  "aib.heat.group.seat": "席位",
+  "aib.heat.group.aib_test": "aib test",
+  "aib.heat.group.reviewer": "審查員暫存",
+  "aib.heat.group.headless_browser": "無頭瀏覽器",
+  "aib.heat.group.sandbox": "沙盒世界",
+  "aib.heat.group.aib_core": "aib 核心",
+  "aib.heat.group.system": "系統",
+  "aib.heat.group.other_app": "其他 App",
+  "aib.heat.history.count": "最近 1 小時記了 {n} 點(每 10 秒一點)",
+  "aib.heat.crash.summary": "當機雷達：最近 {days} 天 {files} 份報告，歸成 {n} 類",
+  "aib.heat.crash.unmeasured": "當機報告資料夾讀不到(量不到，不是沒有當機)",
+  "aib.heat.crash.aib_test_guarded_fd_dup": "aib test 舊版的已知問題，更新到 {fixed} 就不會再出現",
+  "aib.heat.crash.unknown": "未知原因(只顯示，不猜)"
 }

@@ -5178,5 +5178,19 @@
   "aib.context.menu.bot_no_codex_thread": "(not linked to Codex desktop)",
   "aib.context.menu.bot_no_muse_conv": "(no Muse conversation bound)",
   "aib.context.menu.key_saved": "{name} saved. Click \"New AI → {engine}\" again to open the seat",
-  "aib.context.menu.key_not_saved": "{name} was not saved (cancelled or Touch ID not passed); {engine} not opened"
+  "aib.context.menu.key_not_saved": "{name} was not saved (cancelled or Touch ID not passed); {engine} not opened",
+  "aib.heat.snap.level": "Host heat: {level}",
+  "aib.heat.group.seat": "Seats",
+  "aib.heat.group.aib_test": "aib test",
+  "aib.heat.group.reviewer": "Reviewer scratch",
+  "aib.heat.group.headless_browser": "Headless browsers",
+  "aib.heat.group.sandbox": "Sandbox worlds",
+  "aib.heat.group.aib_core": "aib core",
+  "aib.heat.group.system": "System",
+  "aib.heat.group.other_app": "Other apps",
+  "aib.heat.history.count": "{n} points in the last hour (one every 10 seconds)",
+  "aib.heat.crash.summary": "Crash radar: {files} reports in the last {days} days, {n} kinds",
+  "aib.heat.crash.unmeasured": "Cannot read the crash report folder (unmeasured, not \"no crashes\")",
+  "aib.heat.crash.aib_test_guarded_fd_dup": "Known issue in older aib test; gone after updating to {fixed}",
+  "aib.heat.crash.unknown": "Unknown cause (shown only, not guessed)"
 }
