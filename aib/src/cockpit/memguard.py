@@ -9,12 +9,16 @@
   沒有辦法事前替別席的指令設上限 ⇒ 只能在機器層每秒看一次、超過就收。
 
 判法(刻意窄,寧可漏收不可錯殺):
-  - 只看**自己這個 uid** 的行程;只看直譯器(python* / node / php* / ruby / perl —— 跑腳本、跑測試、跑重現的那些)。
-    Claude / Codex CLI、瀏覽器、Terminal、tmux、系統行程一律不看:它們大是正常的,收了會掉人的上下文。
+  - 只看**自己這個 uid** 的行程;只看直譯器(python* / node / php* / ruby / perl),而且看的是**直譯器真正跑的腳本**
+    (精確 argv:macOS KERN_PROCARGS2 / Linux /proc,只認直譯器自己的選項):
+      dev     內嵌碼(python -c、node -e …)或腳本 realpath 在暫存根 / scratchpad / tests/test-* ⇒ dev 上限
+      general python 的其他腳本 / -m 模組 ⇒ 一般上限
+      不看    node / php / ruby / perl 的其他腳本(Codex 席 `node …/codex`、GitHub runner `RunnerService.js` 在這);
+              腳本名 codex / claude / RunnerService.js 不管怎樣都不看。
+    Claude CLI、瀏覽器、Terminal、tmux、系統行程本來就不是直譯器,一律不看:它們大是正常的,收了會掉人的上下文。
   - 單支 phys_footprint(macOS;Linux 用 VmRSS)≥ 門檻才收。門檻預設 = max(4 GB, 實體記憶體 35%)(16 GB 機 ≈ 5.6 GB),
     EZ2_MEMGUARD_LIMIT_MB 可改,但壓不到 1 GB 以下(1 GB 以下是正常工作量)。
-  - 開發分級:指令列有 scratchpad / tests / tmp / 工作樹 / `-c` 記號的直譯器(跑測試、重現、暫存腳本)上限降到
-    dev 上限(= aib test 的 AIB_TEST_MEM_CAP_MB,預設 2 GB)。超過 dev 上限才 exec 一次 ps 看指令列,之後沿用。
+  - dev 上限 = aib test 的 AIB_TEST_MEM_CAP_MB(預設 2 GB)。超過 dev 上限才讀一次 argv(不 fork),之後沿用。
   - 連續 CONFIRM_TICKS 拍都超過才收(一拍的尖峰不算)。
 
 源頭那一層(10-24 Andy「從源頭禁止，開發時就要知道不能超大」):TreeCap 給 aib test 用 —— tools/verify/runner.py
@@ -60,8 +64,15 @@ LOCK_RETRY_S = 30.0
 FLOOR_MB = 1024
 DEFAULT_MIN_MB = 4096
 DEFAULT_FRACTION = 0.35
-# 開發用的直譯器(跑測試 / 重現 / 暫存腳本)上限低一級:指令列有這些記號 ⇒ 用 dev 上限(預設 2 GB,同 aib test)。
-DEV_MARK_RE = re.compile(r"(/scratchpad/|/tests?/|/tmp/|/private/tmp/|/var/folders/|\.noindex/|/wt[-.]|^-c$)")
+# 分級看「直譯器真正跑的那支腳本」,不看整條指令列的子字串(#322 r1:Codex 席行程名是 node、`codex exec -c …` 的 -c
+#   是 codex 的旗標,不是直譯器的)。直譯器自己的選項才算:內嵌碼(-c / -e …)或腳本 realpath 在暫存根 / scratchpad /
+#   tests/test-* ⇒ dev;python 其他 ⇒ general;node / php / ruby / perl 其他 ⇒ 不看(Codex、GitHub runner 都在這)。
+INLINE_OPTS = {"python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "php": {"-r"},
+               "ruby": {"-e"}, "perl": {"-e", "-E"}}
+VALUE_OPTS = {"python": {"-W", "-X", "-Q"}, "node": {"-r", "--require", "--import", "--loader", "--conditions", "-C"},
+              "php": {"-d", "-c", "-z"}, "ruby": {"-I", "-r", "-C"}, "perl": {"-I", "-M", "-m"}}
+NEVER_SCRIPTS = {"codex", "claude", "RunnerService.js"}       # 活席 / 本機 runner:不管多大都不收
+TEST_SCRIPT_RE = re.compile(r"/tests?/test[-_][^/]*$")
 INTERP_RE = re.compile(r"^(python[0-9.]*|node|php[0-9.]*|php-cgi|ruby[0-9.]*|perl[0-9.]*)$", re.I)
 
 
@@ -212,26 +223,94 @@ def snapshot(*, uid=None, pids=None, info=proc_info):
 
 
 def cmd_args(pid):
-    """指令列引數(要判 dev 記號或留線索時才 exec 一次 ps);讀不到回 []。"""
+    """精確的 argv(macOS sysctl KERN_PROCARGS2 / Linux /proc/<pid>/cmdline,不 fork、不拆空白);讀不到回 []。"""
     try:
-        p = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True,
-                           timeout=5, stdin=subprocess.DEVNULL)
-    except Exception:  # noqa: BLE001
+        if sys.platform != "darwin":
+            with open("/proc/%d/cmdline" % pid, "rb") as fh:
+                raw = fh.read(1 << 20)
+            return [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        mib = (ctypes.c_int * 3)(1, 49, int(pid))           # CTL_KERN, KERN_PROCARGS2
+        size = ctypes.c_size_t(0)
+        if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or not size.value:
+            return []
+        buf = ctypes.create_string_buffer(size.value)
+        if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+            return []
+        raw = buf.raw[:size.value]
+        argc = int.from_bytes(raw[:4], sys.byteorder)
+        rest = raw[4:]
+        rest = rest[rest.index(b"\0"):].lstrip(b"\0")         # 跳過 exec 路徑與補齊的 NUL
+        return [a.decode("utf-8", "replace") for a in rest.split(b"\0")[:argc]]
+    except Exception:  # noqa: BLE001 讀不到 = 不收
         return []
-    return p.stdout.split()
 
 
-def is_dev(args):
-    return any(DEV_MARK_RE.search(a) for a in args[1:])
+def _kind(name):
+    n = (name or "").lower()
+    for k in ("python", "node", "php", "ruby", "perl"):
+        if n.startswith(k):
+            return k
+    return None
 
 
-def script_hint(pid, args=None):
-    """收之前留個線索:指令列裡第一個像檔案的引數的檔名(不留整條,引數可能有金鑰)。只在要收時才 exec 一次。"""
-    for a in (cmd_args(pid) if args is None else args)[1:]:
+def script_of(name, args):
+    """('inline', None) / ('module', 模組) / ('script', 路徑) / (None, None)。只認直譯器自己的選項。"""
+    kind = _kind(name)
+    if not kind:
+        return None, None
+    it = iter(args[1:])
+    for a in it:
+        if a in INLINE_OPTS.get(kind, ()):
+            return "inline", None
+        if kind == "python" and a == "-m":
+            return "module", next(it, "")
+        if a in VALUE_OPTS.get(kind, ()):
+            next(it, None)
+            continue
+        if a == "--":
+            return "script", next(it, None)
         if a.startswith("-"):
             continue
-        return os.path.basename(a)[:80]
-    return ""
+        return "script", a
+    return None, None
+
+
+def _temp_roots():
+    roots = {"/tmp", "/private/tmp", "/var/folders", "/private/var/folders"}
+    try:
+        import tempfile
+        roots.add(os.path.realpath(tempfile.gettempdir()))
+    except Exception:  # noqa: BLE001
+        pass
+    return tuple(r.rstrip("/") + "/" for r in roots)
+
+
+def classify(name, args):
+    """'dev'(上限 = dev)/ 'general'(上限 = 一般,只有 python)/ None(不看)。"""
+    kind = _kind(name)
+    how, what = script_of(name, args)
+    if how == "script" and what:
+        if os.path.basename(what) in NEVER_SCRIPTS:
+            return None
+        real = os.path.realpath(what)
+        if real.startswith(_temp_roots()) or "/scratchpad/" in real or TEST_SCRIPT_RE.search(real):
+            return "dev"
+    elif how == "inline":
+        return "dev"
+    return "general" if kind == "python" else None
+
+
+def is_dev(args, name="python"):
+    return classify(name, args) == "dev"
+
+
+def script_hint(pid, args=None, name="python"):
+    """收之前留個線索:直譯器跑的腳本檔名 / -c / -m 模組(不留整條,引數可能有金鑰)。"""
+    how, what = script_of(name, cmd_args(pid) if args is None else args)
+    if how == "script" and what:
+        return os.path.basename(what)[:80]
+    return {"inline": "(inline)", "module": "-m %s" % (what or "")[:60]}.get(how, "")
 
 
 def notify(text):
@@ -312,7 +391,10 @@ class Guard:
             key = (pid, start)
             if key not in self.args:
                 self.args[key] = self.args_fn(pid)
-            lim = self.dev_limit if is_dev(self.args[key]) else self.limit
+            tier = classify(name, self.args[key])
+            if tier is None:
+                continue
+            lim = self.dev_limit if tier == "dev" else self.limit
             if mb < lim:
                 continue
             seen.add(key)
@@ -320,8 +402,8 @@ class Guard:
             if self.over[key] < CONFIRM_TICKS:
                 continue
             row = {"ts": int(now), "pid": pid, "ppid": ppid, "name": name,
-                   "script": script_hint(pid, self.args.get(key) or [name]), "mb": mb, "limit_mb": lim,
-                   "tier": "dev" if lim == self.dev_limit and lim != self.limit else "general"}
+                   "script": script_hint(pid, self.args.get(key) or [name], name), "mb": mb, "limit_mb": lim,
+                   "tier": tier}
             if self.dry_run:
                 row["action"] = "mem_dry_run"
             else:

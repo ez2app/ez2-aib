@@ -9,9 +9,12 @@ G4 pid 重用:送訊號前開始時間對不上 ⇒ changed,不送任何訊號
 G5 dry-run 不殺、留痕一行、紀錄檔 0600、不含整條指令列
 G6 鎖:同一個狀態根只有一條守門拿得到鎖
 G7 TreeCap 真行程:孫行程配置 400 MB、上限 256 ⇒ 命中的是孫行程、整棵都收掉
+G9 Codex 席(node codex resume / codex exec -c)、本機 runner、node 一般腳本不收;暫存根 node 腳本 dev、python -m general
+G10 argv 精確讀(含空白引數)
 G8 runner._run_one 端到端:測試配置 400 MB、AIB_TEST_MEM_CAP_MB=256 ⇒ rc 137、輸出帶 memory_cap;上限關掉 ⇒ 照常綠
 刀(複本 + run_guarded):K1 TreeCap 上限判斷拿掉 ⇒ G7 紅;K2 連兩拍確認拿掉 ⇒ G2 紅;
-K3 開發分級拿掉 ⇒ G3 紅;K4 開始時間不比 ⇒ G4 紅
+K3 開發分級拿掉 ⇒ G3 紅;K4 開始時間不比 ⇒ G4 紅;K5 node 也套一般上限 ⇒ G9 紅;
+K6 腳本之後的 -c 也當內嵌 ⇒ G3 紅
 """
 import json
 import os
@@ -82,7 +85,7 @@ class GuardLogic(unittest.TestCase):
                 102: (UID + 1, 1, "python3", "1.0", 9000), 103: (UID, 1, "node", "1.0", 6000),
                 104: (UID, 1, "Python", "1.0", 6000)}
         # kill 之後行程「還在」(假表不變)⇒ kill_one 一路走到 KILL;我們只看收了誰
-        g = self.guard(rows, protect={104})
+        g = self.guard(rows, protect={104}, args={103: ["node", "/private/tmp/x/repro.js"]})
         self.assertEqual(g.tick(), [])                      # 第一拍只記一次
         self.assertEqual(self.killed, [])
         acted = g.tick()
@@ -104,7 +107,7 @@ class GuardLogic(unittest.TestCase):
 
     def test_g3_dev_tier(self):
         rows = {200: (UID, 1, "Python", "1.0", 3000), 201: (UID, 1, "Python", "1.0", 3000)}
-        args = {200: ["python3", "/x/scratchpad/revA/sparse_repro.py"], 201: ["python3", "/opt/app/server.py"]}
+        args = {200: ["python3", "-W", "ignore", "/x/scratchpad/revA/sparse_repro.py"], 201: ["python3", "/opt/app/server.py"]}
         g = self.guard(rows, args=args)
         g.tick()
         acted = g.tick()
@@ -113,6 +116,39 @@ class GuardLogic(unittest.TestCase):
         self.assertEqual(acted[0]["limit_mb"], 2000)
         self.assertTrue(MG.is_dev(["python3", "-c", "x"]))
         self.assertFalse(MG.is_dev(["python3", "/opt/app/server.py"]))
+        self.assertFalse(MG.is_dev(["python3", "/opt/app/tool.py", "-c", "x"]))     # 腳本之後的 -c 是腳本的旗標
+
+    def test_g9_live_seats_and_runner_never(self):
+        """#322 r1(@abb89 High):Codex 席行程名是 node、`codex exec -c` 帶 -c;本機 runner 也是 node。都不收。"""
+        rows = {500: (UID, 1, "node", "1.0", 9000), 501: (UID, 1, "node", "1.0", 9000),
+                502: (UID, 1, "node", "1.0", 9000), 503: (UID, 1, "node", "1.0", 9000),
+                504: (UID, 1, "node", "1.0", 3000), 505: (UID, 1, "Python", "1.0", 3000),
+                506: (UID, 1, "Python", "1.0", 6000)}
+        args = {500: ["node", "/opt/homebrew/bin/codex", "resume", "--dangerously-bypass-approvals-and-sandbox"],
+                501: ["node", "/opt/homebrew/bin/codex", "exec", "-c", "web_search=live", "hi"],
+                502: ["./externals/node24/bin/node", "./bin/RunnerService.js"],
+                503: ["node", "/opt/app/server.js"],
+                504: ["node", "/private/tmp/x/repro.js"],
+                505: ["python3", "/opt/app/tool.py", "-c", "conf.json"],
+                506: ["python3", "-m", "http.server"]}
+        g = self.guard(rows, args=args)
+        g.tick()
+        acted = g.tick()
+        self.assertEqual(sorted(r["pid"] for r in acted), [504, 506])
+        self.assertEqual({r["pid"]: r["tier"] for r in acted}, {504: "dev", 506: "general"})
+        self.assertEqual({r["pid"]: r["script"] for r in acted}, {504: "repro.js", 506: "-m http.server"})
+
+    def test_g10_real_argv(self):
+        """argv 用 sysctl / /proc 精確讀(含空白的引數不被拆開)。"""
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "a b"])
+        try:
+            time.sleep(0.3)
+            a = MG.cmd_args(p.pid)
+            self.assertEqual(a[1:], ["-c", "import time; time.sleep(30)", "a b"])
+            self.assertEqual(MG.classify(MG.proc_info(p.pid)[2], a), "dev")
+        finally:
+            p.kill()
+            p.wait()
 
     def test_g4_pid_reuse(self):
         sent = []
@@ -214,10 +250,14 @@ KNIVES = [
     ("K1", "        if t[big][3] < self.cap:", "        if True:", "RealTree.test_g7_treecap_real"),
     ("K2", "            if self.over[key] < CONFIRM_TICKS:", "            if False:",
      "GuardLogic.test_g2_spike_then_drop_not_killed"),
-    ("K3", "            lim = self.dev_limit if is_dev(self.args[key]) else self.limit", "            lim = self.limit",
+    ("K3", "            lim = self.dev_limit if tier == \"dev\" else self.limit", "            lim = self.limit",
      "GuardLogic.test_g3_dev_tier"),
     ("K4", "        return bool(i) and i[0] == uid and i[3] == start", "        return bool(i)",
      "GuardLogic.test_g4_pid_reuse"),
+    ("K5", '    return "general" if kind == "python" else None', '    return "general"',
+     "GuardLogic.test_g9_live_seats_and_runner_never"),
+    ("K6", '        if a.startswith("-"):\n            continue\n        return "script", a', '        continue',
+     "GuardLogic.test_g3_dev_tier"),
 ]
 
 
