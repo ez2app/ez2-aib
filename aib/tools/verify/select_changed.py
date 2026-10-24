@@ -487,7 +487,7 @@ def identifier_hits(repo, tests, idents):
 def changed_from_git(repo, base, head):
     # --no-renames(10-11 a seat):改名預設只印新路徑 ⇒ 把 tools/x.py 搬成 docs/x.py,舊路徑的消費者(import 它的測試)
     #   一支都挑不到,而漏挑的樣子是綠的。拆成「刪舊 + 加新」,兩條路徑都進規則①~⑤。
-    res = _git(repo, ["diff", "--name-only", "--no-renames", base] + ([head] if head else []))
+    res = _git(repo, ["-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", base] + ([head] if head else []))
     if res.returncode != 0:
         raise Unmeasurable("git diff rc=%d: %s" % (res.returncode,
                                                    (res.stderr or "").strip()))
