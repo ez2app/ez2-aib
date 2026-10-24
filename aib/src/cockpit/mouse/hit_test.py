@@ -469,9 +469,15 @@ def _feature_tab_of(layout):
         return 0
 
 
+# 雙向覆寫 / 零寬字元:選單標題會照字面畫出來,U+202E 能把「dev1」畫成反向、零寬字能讓兩個標題看起來一樣。
+#   ZWJ(U+200D)留著:組合表情符號要靠它,單獨出現也畫不出東西。
+_INVISIBLE = frozenset([0x200B, 0x200C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+                        0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0x2066, 0x2067, 0x2068, 0x2069, 0xFEFF])
+
+
 def _safe_text(value, limit=96):
     text = str(value or "")
-    text = "".join(ch if ch >= " " and ch != "\x7f" else " " for ch in text)
+    text = "".join("" if ord(ch) in _INVISIBLE else (ch if ch >= " " and ch != "\x7f" else " ") for ch in text)
     return " ".join(text.split())[:limit]
 
 
@@ -489,6 +495,9 @@ def _kill_action(r, kill):
             "soft": kill.get("soft") is True}
 
 
+WINDOW_ID_RE = re.compile(r"@[0-9]{1,6}")
+
+
 def hit_ai_close(rowmap, y):
     """10-24 @abb89:右鍵「關閉這一席」。只給畫面上那一列本來就有 [X] / (x) 的席(rowmap 有 kill),
     回跟點 [X] 一模一樣的動作 ⇒ 走同一個確認選單與 release-confirmed 閘;不另開一條關法。
@@ -502,6 +511,14 @@ def hit_ai_close(rowmap, y):
             continue
         kill = r.get("kill")
         if not isinstance(kill, dict) or r.get("kill_pending"):
+            return PASSTHROUGH
+        # 跟點 [X] 同一套前提:畫面上真的有那一格(start < end),窗 id 是 tmux 的 @數字
+        try:
+            if not int(kill["start"]) < int(kill["end"]):
+                return PASSTHROUGH
+        except (TypeError, ValueError, KeyError):
+            return PASSTHROUGH
+        if not WINDOW_ID_RE.fullmatch(str(r["window"])):
             return PASSTHROUGH
         return _kill_action(r, kill)
     return PASSTHROUGH
