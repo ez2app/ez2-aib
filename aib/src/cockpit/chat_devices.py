@@ -215,7 +215,8 @@ def merge(owner, base, devices, host=None):
         cabins.append(out)
     head = head_base or (max((r for _n, r in devices if r), key=lambda r: r.get("updated_at") or 0, default=None) or {})
     merged = {k: v for k, v in head.items() if k != "cabins"}
-    merged.update(owner=owner, cabins=cabins, devices=[n for n, _r in sources if n != owner])
+    merged.update(owner=owner, cabins=cabins, devices=[n for n, _r in sources if n != owner],
+                  dropped_seats=sorted({d for _n, rec in sources for d in rec.get("dropped_seats") or []}))
     if not head_base:
         merged["dm_relays"] = sorted({r for _n, rec in sources for r in rec.get("dm_relays") or []})
         merged["envelope"] = sorted({e for _n, rec in sources for e in rec.get("envelope") or []})

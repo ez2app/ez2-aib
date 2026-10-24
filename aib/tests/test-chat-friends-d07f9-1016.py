@@ -89,6 +89,14 @@ def run_tty(b, args, answer, timeout=20, **extra):
 
 
 class Auto(Base):
+    def setUp(self):
+        super().setUp()
+        # 10-24 答「要」會自動裝 nostr-sdk:放一個 import 得到的假 venv,免得測試真的去網路 pip install(會留背景程式)
+        py = self.b.chat / "venv" / "bin" / "python"
+        py.parent.mkdir(parents=True)
+        py.write_text("#!/bin/sh\nexit 0\n")
+        py.chmod(0o755)
+
     def test_a1_no_terminal_no_question(self):
         r = self.cli("auto")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -103,7 +111,10 @@ class Auto(Base):
         sw = self.switch()
         self.assertTrue(sw and sw.get("on") and sw.get("asked"), sw)
         self.assertEqual(oct((self.b.chat / "enabled.json").stat().st_mode & 0o777), "0o600")
-        self.assertFalse((self.b.chat / "profile.json").exists(), "不准替主人設名字(名字會公開)")
+        # 10-24 第 9 條:答「要」⇒ 用電腦名公開;名字會公開,所以問句裡要先讓主人看到是哪個名字
+        prof = json.loads((self.b.chat / "profile.json").read_text())
+        self.assertTrue(prof.get("display_name"), prof)
+        self.assertIn(prof["display_name"], out, "問句沒先顯示要公開的名字")
         rc, out = run_tty(self.b, ["auto"], "n")
         self.assertNotIn("[y/N]", out, "答過就不再問")
 
