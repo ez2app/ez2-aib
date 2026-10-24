@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""一行安裝對新用戶 / 舊版的處理(10-17 fishmac 實機:舊版 0.1.1 → 0.1.16;Andy「有舊版先全備份,再用乾淨的環境裝」)。
+"""一行安裝對新用戶 / 舊版的處理(10-17 一台會員機實機:舊版 0.1.1 → 0.1.16;Andy「有舊版先全備份,再用乾淨的環境裝」)。
 
 I1 clean_if_far:落後 ≥ 5 個小版 ⇒ 整份打包 + 搬進 ~/aib-backup-<時間>/(含 .zprofile、claude 設定、README 還原方法),原位置空出來
 I2 只差幾版 ⇒ 不動(照舊快轉);本機比正式版新(開發機從 main 裝的)⇒ 不動

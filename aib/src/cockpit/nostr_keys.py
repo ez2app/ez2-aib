@@ -148,7 +148,7 @@ def npub_to_hex(text):
 
 # ── 存放 ──
 PERSONA_UID_RE = re.compile(r"^[0-9a-z]{6}$")      # card_registry.UID_RE;不合形(舊式、directed)的席不發金鑰
-UNBOUND_RE = re.compile(r"^s-[0-9a-z]{4,8}$")      # 沒綁人格的席:用 s-<席碼> 當替代(新用戶第一席,10-17 fishmac 實機抓到)
+UNBOUND_RE = re.compile(r"^s-[0-9a-z]{4,8}$")      # 沒綁人格的席:用 s-<席碼> 當替代(新用戶第一席,10-17 一台會員機實機抓到)
 SEAT5_RE = re.compile(r"^[0-9a-z]{4,8}$")          # seat_address._CODE_RE
 CABIN_RE = re.compile(r"^[0-9a-z]{1,4}$")
 MAP_VERSION = 1
