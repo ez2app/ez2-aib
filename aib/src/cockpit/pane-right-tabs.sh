@@ -339,15 +339,18 @@ CAPTAINS_LAST_S=-100000
 CAPTAINS_SYNC_MAX_S="${EZ2_CAPTAINS_SYNC_MAX_S:-30}"
 case "$CAPTAINS_SYNC_MAX_S" in ''|*[!0-9]*) CAPTAINS_SYNC_MAX_S=30 ;; esac
 # captains_sync_due:rc0 = 該跑(沒記號 / 滿保底秒數 / 席位夾或任一席位檔比記號新)。量不到席位夾 ⇒ 照舊每幀跑。
+# #324 r2:SECONDS 跟牆鐘走,時鐘回撥 ⇒ 差值變負也算到期(不然最多過時「回撥秒數 + 保底」);
+#   「不比記號舊」就算有變(bash 3.2 的 -nt / -ot 只到秒,同一秒內改的席位檔用 -nt 會漏;同秒最多多跑一次)。
 captains_sync_due() {
-  local d="${EZ2_AIB_INSTANCE_HOME:-}/seats" f
+  local d="${EZ2_AIB_INSTANCE_HOME:-}/seats" f _d
   [ -n "${EZ2_AIB_INSTANCE_HOME:-}" ] && [ -d "$d" ] || return 0
   [ -e "$CAPTAINS_MARK" ] || return 0
-  [ $((SECONDS - CAPTAINS_LAST_S)) -ge "$CAPTAINS_SYNC_MAX_S" ] && return 0
-  [ "$d" -nt "$CAPTAINS_MARK" ] && return 0
+  _d=$((SECONDS - CAPTAINS_LAST_S))
+  [ "$_d" -ge "$CAPTAINS_SYNC_MAX_S" ] || [ "$_d" -lt 0 ] && return 0
+  [ "$d" -ot "$CAPTAINS_MARK" ] || return 0
   for f in "$d"/w*.json; do
     [ -e "$f" ] || continue
-    [ "$f" -nt "$CAPTAINS_MARK" ] && return 0
+    [ "$f" -ot "$CAPTAINS_MARK" ] || return 0
   done
   return 1
 }
@@ -406,10 +409,12 @@ EOF
   if [ -n "${CAPTAINS_PID:-}" ] && kill -0 "$CAPTAINS_PID" 2>/dev/null; then
     :
   elif captains_sync_due; then
-    : > "$CAPTAINS_MARK" 2>/dev/null || true      # 先蓋章再跑:跑的期間又改的席位檔,下一幀照樣比它新
+    : > "$CAPTAINS_MARK" 2>/dev/null || true      # 先蓋章再跑:跑的期間又改的席位檔,下一幀照樣比它新(寫不了 ⇒ 沒記號 ⇒ 每幀照跑)
     CAPTAINS_LAST_S=$SECONDS
-    env -u TMUX bash "${AIB_CAPTAINS_CTL:-$EZ2_COCKPIT_DIR/nav/captains-ctl.sh}" \
-      --sync >/dev/null 2>&1 || true &
+    # 失敗 ⇒ 撕掉記號,下一幀重試(#324 r2 M2)。rc 3 是 captains-ctl 寫明的「降級同步」(呼叫端都容忍),
+    #   重跑也不會變好 ⇒ 不算失敗,照保底秒數再跑。
+    { env -u TMUX bash "${AIB_CAPTAINS_CTL:-$EZ2_COCKPIT_DIR/nav/captains-ctl.sh}" --sync >/dev/null 2>&1
+      _rc=$?; [ "$_rc" -eq 0 ] || [ "$_rc" -eq 3 ] || rm -f "$CAPTAINS_MARK"; } &
     CAPTAINS_PID=$!
   fi
   [ "${EZ2_ONESHOT:-0}" = "1" ] && break

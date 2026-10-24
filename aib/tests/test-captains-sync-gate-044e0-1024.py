@@ -8,7 +8,12 @@ C3 新開一席(席位夾多一個檔,夾的 mtime 變新)⇒ 該跑;席位被�
 C4 滿保底秒數 ⇒ 該跑(窗被關掉這種席位檔看不到的變化靠它)
 C5 量不到席位夾(EZ2_AIB_INSTANCE_HOME 空 / 不存在)⇒ 照舊每幀跑
 C6 主迴圈真的先問閘才起 captains-ctl,且起之前先蓋章
-刀(複本 + run_guarded):K1 拿掉逐檔比對 ⇒ C2 紅;K2 拿掉保底秒數 ⇒ C4 紅
+C7 時鐘回撥(SECONDS 比上次同步還小)⇒ 該跑(#324 r2 M1)
+C8 席位檔跟記號同一秒(bash 3.2 的 -nt 只到秒)⇒ 該跑(r2 L1)
+L1–L4 真的跑主迴圈那一段(假 captains-ctl):起之前記號已在;rc 0 / rc 3 留記號;
+      其他失敗撕記號 ⇒ 下一幀重試(r2 M2);記號寫不了 ⇒ 每幀照跑
+刀(複本 + run_guarded):K1 拿掉逐檔比對 ⇒ C2 紅;K2 拿掉保底秒數 ⇒ C4 紅;K3 拿掉回撥判斷 ⇒ C7 紅;
+K4 失敗不撕記號 ⇒ L2 紅;K5 逐檔比對改回 -nt ⇒ C8 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR
 """
 import os
 import shutil
@@ -27,6 +32,13 @@ from aib_proc_guard import run_guarded  # noqa: E402
 
 SCRIPT = ROOT / "src" / "cockpit" / "pane-right-tabs.sh"
 BASH = os.environ.get("AIB_TEST_BASH") or shutil.which("bash") or "/bin/bash"
+
+
+def loop_block():
+    s = SCRIPT.read_text(encoding="utf-8")
+    i = s.index('  if [ -n "${CAPTAINS_PID:-}" ] && kill -0 "$CAPTAINS_PID"')
+    j = s.index("    CAPTAINS_PID=$!\n  fi\n", i) + len("    CAPTAINS_PID=$!\n  fi\n")
+    return s[i:j]
 
 
 def gate_block():
@@ -102,6 +114,52 @@ class Gate(unittest.TestCase):
         self.assertEqual(self.due(home=""), "DUE")
         self.assertEqual(self.due(home=str(self.d / "nope")), "DUE")
 
+    def test_c7_clock_rollback(self):
+        self.stamp()
+        self.assertEqual(self.due(last_s="$((SECONDS + 100))"), "DUE")
+
+    def test_c8_same_second(self):
+        self.stamp()
+        t = int(time.time()) - 50
+        os.utime(self.home / "seats" / "w4.json", (t, t))
+        os.utime(self.mark, (t, t))
+        self.assertEqual(self.due(), "DUE")
+
+    def frames(self, n, rc, state=None):
+        """跑主迴圈那一段 n 幀(每幀等背景 sync 結束),回 (假 ctl 的紀錄行, 記號在不在)。"""
+        log = self.d / "ctl.log"
+        ctl = self.d / "ctl.sh"
+        mark = (Path(state) if state else self.state) / ".captains-sync.mark"
+        ctl.write_text('[ -e "%s" ] && m=yes || m=no\necho "ran mark=$m" >> "%s"\nexit %d\n' % (mark, log, rc))
+        prog = gate_block() + "\nCAPTAINS_PID=\n" + ("\n".join(
+            [loop_block() + '  wait "$CAPTAINS_PID" 2>/dev/null\n'] * n)) + "\n"
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "EZ2_AIB_INSTANCE_HOME": str(self.home),
+               "EZ2_COCKPIT_STATE_DIR": state or str(self.state), "AIB_CAPTAINS_CTL": str(ctl)}
+        p = subprocess.run([BASH, "-c", prog], env=env, capture_output=True,
+                           text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        lines = log.read_text().splitlines() if log.exists() else []
+        return lines, mark.exists()
+
+    def test_l1_stamps_before_run_and_keeps_on_ok(self):
+        lines, mark = self.frames(2, 0)
+        self.assertEqual(lines, ["ran mark=yes"])          # 第二幀:沒變、沒到保底 ⇒ 不跑
+        self.assertTrue(mark)
+
+    def test_l2_failure_retries_next_frame(self):
+        lines, mark = self.frames(2, 1)
+        self.assertEqual(len(lines), 2, "sync 失敗後下一幀沒重試")
+        self.assertFalse(mark)
+
+    def test_l3_degraded_rc3_not_retried(self):
+        lines, mark = self.frames(2, 3)
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(mark)
+
+    def test_l4_mark_unwritable_runs_every_frame(self):
+        lines, _ = self.frames(3, 0, state=str(self.d / "no" / "such"))
+        self.assertEqual(lines, ["ran mark=no"] * 3)
+
     def test_c6_loop_uses_gate_and_stamps_first(self):
         s = SCRIPT.read_text(encoding="utf-8")
         i = s.index("elif captains_sync_due; then")
@@ -113,11 +171,18 @@ class Gate(unittest.TestCase):
 KNIVES = [
     ("K1", '''  for f in "$d"/w*.json; do
     [ -e "$f" ] || continue
-    [ "$f" -nt "$CAPTAINS_MARK" ] && return 0
+    [ "$f" -ot "$CAPTAINS_MARK" ] || return 0
   done
 ''', "", "Gate.test_c2_seat_file_changed"),
-    ("K2", '''  [ $((SECONDS - CAPTAINS_LAST_S)) -ge "$CAPTAINS_SYNC_MAX_S" ] && return 0
-''', "", "Gate.test_c4_max_interval"),
+    ("K2", '''  [ "$_d" -ge "$CAPTAINS_SYNC_MAX_S" ] || [ "$_d" -lt 0 ] && return 0
+''', '''  [ "$_d" -lt 0 ] && return 0
+''', "Gate.test_c4_max_interval"),
+    ("K3", '''  [ "$_d" -ge "$CAPTAINS_SYNC_MAX_S" ] || [ "$_d" -lt 0 ] && return 0
+''', '''  [ "$_d" -ge "$CAPTAINS_SYNC_MAX_S" ] && return 0
+''', "Gate.test_c7_clock_rollback"),
+    ("K4", ''' || rm -f "$CAPTAINS_MARK"; } &''', ''' || :; } &''', "Gate.test_l2_failure_retries_next_frame"),
+    ("K5", '''    [ "$f" -ot "$CAPTAINS_MARK" ] || return 0''', '''    [ "$f" -nt "$CAPTAINS_MARK" ] && return 0''',
+     "Gate.test_c8_same_second"),
 ]
 
 
@@ -130,7 +195,10 @@ class Knife(unittest.TestCase):
                     r = run_guarded([sys.executable, "-B", str(root / "tests" / name), target], cwd=str(root),
                                     max_procs=40, timeout=120)
                 self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
-                self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s%s" % (tag, r.stdout, r.stderr))
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s" % (tag, out))
+                self.assertIn("FAIL: " + target.split(".")[-1], out, "%s 紅的不是目標斷言\n%s" % (tag, out))
+                self.assertNotIn("ERROR: ", out, "%s 是炸掉不是斷言紅\n%s" % (tag, out))
 
 
 if __name__ == "__main__":
