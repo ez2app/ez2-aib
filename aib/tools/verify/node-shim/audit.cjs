@@ -14,7 +14,7 @@ if (TRACE && !global.__ez2_node_audit && require('worker_threads').isMainThread)
   const O = {
     appendFileSync: fs.appendFileSync, readFileSync: fs.readFileSync, readdirSync: fs.readdirSync,
     statSync: fs.statSync, existsSync: fs.existsSync, realpathSync: fs.realpathSync, openSync: fs.openSync,
-    writeFileSync: fs.writeFileSync, writeSync: fs.writeSync, fstatSync: fs.fstatSync,
+    writeFileSync: fs.writeFileSync, writeSync: fs.writeSync, fstatSync: fs.fstatSync, closeSync: fs.closeSync,
   };
   const SELF_DIR = __dirname;
   const SKIP_NAMES = new Set(['__pycache__', '.git', '.DS_Store', '.hypothesis']);   // .hypothesis:同 shadow_tracer.TOOL_CACHE_DIRS
@@ -32,13 +32,18 @@ if (TRACE && !global.__ez2_node_audit && require('worker_threads').isMainThread)
     if (traceFd !== null) {
       try { const st = O.fstatSync(traceFd); if (st.dev + ':' + st.ino !== traceId) traceFd = null; } catch (e) { traceFd = null; }
     }
-    if (traceFd === null) {
-      traceFd = O.openSync(TRACE, 'a');
-      const st = O.fstatSync(traceFd);
-      traceId = st.dev + ':' + st.ino;
+    if (traceFd !== null) {
+      try { writeAll(traceFd, buf); return; } catch (e) { traceFd = null; }   // 號碼被重開成唯讀等 ⇒ 不關它,重開(#323 r2 L2)
     }
+    const fd = O.openSync(TRACE, 'a');
+    if (fd <= 2) { try { writeAll(fd, buf); } finally { O.closeSync(fd); } return; }   // 低號碼不快取(#323 r2 H2)
+    const st = O.fstatSync(fd);
+    traceFd = fd; traceId = st.dev + ':' + st.ino;
+    writeAll(fd, buf);
+  }
+  function writeAll(fd, buf) {
     let off = 0;
-    while (off < buf.length) off += O.writeSync(traceFd, buf, off, buf.length - off);
+    while (off < buf.length) off += O.writeSync(fd, buf, off, buf.length - off);
   }
   function abs(p) {
     try {

@@ -52,38 +52,74 @@ def _emit(obj):
         #   以前在這裡丟例外 ⇒ hook-error ⇒ 整支量不到。改用 \u 跳脫寫出,讀回 json.loads 得到同一個字串。
         line = json.dumps(obj, ensure_ascii=True, sort_keys=True)
     try:
-        data = (line + "\n").encode("utf-8")
-        with _TRACE_LOCK:
-            fd = _trace_fd(path)
-            while data:
-                data = data[os.write(fd, data):]
+        _trace_write(path, (line + "\n").encode("utf-8"))
     except OSError:
         pass   # 10-04:觀測者不得讓被觀測物出錯(例:子行程降成一般身分寫不進 root 的追蹤檔);少的紀錄由分析端判量不到
 
 
-# 10-24(@044e0 本機效能):以前每筆 open(path, "a") → 寫 → 關。APFS 上每次關檔都把整塊重寫一次,實測 1000 筆
-#   131 KB 的追蹤實際寫進磁碟 9.9 MB(76 倍);一天 3500 支次測試 ⇒ Python 一天寫 1.1 TB(10-23→24 系統 disk writes 報告)。
-#   改成每個行程留一個 O_APPEND 的 fd、每筆 os.write 一次(實測 1 倍)。整行一次 write,多行程同時追加不會交錯。
+# 10-24(@044e0 本機效能):以前每筆 open(path, "a") → 寫 → 關。APFS 上每次關檔都把那一塊重寫一次(每筆多寫約 10 KB),
+#   一天 3500 支次測試 ⇒ Python 一天寫 1.1 TB(10-23→24 系統 disk writes 報告)。
+#   改成每個行程留一個 O_APPEND 的 fd、每筆 os.write 一次。整行一次 write,多行程同時追加不會交錯。
 #   ★ 寫之前比 fstat 的 (dev, ino):測試自己 closerange 後又開檔拿到同一個號碼 ⇒ 對不上就重開,絕不寫進別人的檔。
+#   ★ #323 r2:
+#     - 不用鎖(H1:fork 當下別的執行緒拿著鎖 ⇒ 子行程在 os._exit / atexit 寫結束紀錄時永久卡死;L1 信號重入同理)。
+#       快取是一個 tuple、整個換,讀寫都是單一參照;兩條執行緒同時重開最多多開一個 fd,不影響正確性。
+#     - 重開拿到 0–2 號 ⇒ 寫完就關、不快取(H2:daemonize 先 closerange 再 open(devnull) + dup2 到 0/1/2,
+#       快取住低號碼會讓程式的 devnull 位移、追蹤檔被接到 stdout / stderr)。
+#     - 寫失敗(號碼被測試拿去唯讀開同一個追蹤檔 ⇒ EBADF)⇒ 清快取、重開再寫一次(L2)。
+#     - EZ2_VERIFY_TRACE 中途換了 ⇒ 舊 fd 身分還對得上才關(L3)。
 #   fd 帶 O_CLOEXEC(子行程 exec 後不帶走);fork 出來的子行程沿用同一個描述(同一個檔、O_APPEND),身分照樣比對。
-_TRACE_FD = [None, None, None]          # [路徑, fd, (st_dev, st_ino)]
-from _thread import allocate_lock as _allocate_lock   # 內建模組,不多 import threading
-_TRACE_LOCK = _allocate_lock()
+_TRACE_FD = [None]          # [(路徑, fd, (st_dev, st_ino))] 或 [None]
 
 
-def _trace_fd(path):
-    c = _TRACE_FD
-    if c[0] == path and c[1] is not None:
+def _trace_cached(path):
+    """快取的 fd(路徑相同、身分對得上)或 None;路徑換了 ⇒ 關掉身分還對得上的舊 fd。"""
+    c = _TRACE_FD[0]
+    if c is None:
+        return None
+    try:
+        st = os.fstat(c[1])
+        same = (st.st_dev, st.st_ino) == c[2]
+    except OSError:
+        same = False
+    if same and c[0] == path:
+        return c[1]
+    _TRACE_FD[0] = None
+    if same:
         try:
-            st = os.fstat(c[1])
-            if (st.st_dev, st.st_ino) == c[2]:
-                return c[1]
+            os.close(c[1])
         except OSError:
             pass
+    return None
+
+
+def _write_all(fd, data):
+    while data:
+        data = data[os.write(fd, data):]
+
+
+def _trace_write(path, data):
+    fd = _trace_cached(path)
+    if fd is not None:
+        try:
+            _write_all(fd, data)
+            return
+        except OSError:
+            _TRACE_FD[0] = None          # 號碼還在但不能寫(被重開成唯讀等)⇒ 不關它(不是我們的了),重開
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o666)
-    st = os.fstat(fd)
-    c[:] = [path, fd, (st.st_dev, st.st_ino)]
-    return fd
+    if fd <= 2:
+        try:
+            _write_all(fd, data)
+        finally:
+            os.close(fd)
+        return
+    try:
+        st = os.fstat(fd)
+        _TRACE_FD[0] = (path, fd, (st.st_dev, st.st_ino))
+    except OSError:
+        os.close(fd)
+        raise
+    _write_all(fd, data)
 
 
 def _as_path(value):
@@ -1765,7 +1801,7 @@ def start():
     atexit.register(_flush_selfwrites)
     # 10-07(外部倉 pytest-xdist 實踩):os._exit 不跑 atexit ⇒ 沒有結束紀錄 ⇒ 整支量不到、每次必重跑。
     #   os._exit 是程式自己決定的結束(multiprocessing 的 fork 子行程、xdist 測試故意弄掛工作行程都走這條),
-    #   每筆讀寫紀錄都是當下寫進追蹤檔的(_emit 每筆開檔附加)⇒ 到這裡為止記的就是全部,補記結束紀錄再真的結束。
+    #   每筆讀寫紀錄都是當下寫進追蹤檔的(_emit 每筆當下就 write)⇒ 到這裡為止記的就是全部,補記結束紀錄再真的結束。
     #   被信號殺掉、直譯器崩潰仍然沒有結束紀錄,照舊量不到。
     if not getattr(os._exit, "_aib_flushing", False):
         _real_os_exit = os._exit

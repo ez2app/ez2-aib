@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // ESM 載入鉤子(舊版 Node 沒有 registerHooks 時,audit.cjs 才用 module.register 掛上):每個 file: 模組記一筆 open,跟 require() 一樣進鑰匙。
-import { openSync, writeSync, fstatSync, readFileSync, realpathSync, existsSync } from 'node:fs';
+import { openSync, writeSync, fstatSync, closeSync, readFileSync, realpathSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, basename } from 'node:path';
@@ -19,13 +19,18 @@ function writeTrace(buf) {
   if (traceFd !== null) {
     try { const st = fstatSync(traceFd); if (st.dev + ':' + st.ino !== traceId) traceFd = null; } catch (e) { traceFd = null; }
   }
-  if (traceFd === null) {
-    traceFd = openSync(TRACE, 'a');
-    const st = fstatSync(traceFd);
-    traceId = st.dev + ':' + st.ino;
+  if (traceFd !== null) {
+    try { writeAll(traceFd, buf); return; } catch (e) { traceFd = null; }   // 號碼被重開成唯讀等 ⇒ 不關它,重開(#323 r2 L2)
   }
+  const fd = openSync(TRACE, 'a');
+  if (fd <= 2) { try { writeAll(fd, buf); } finally { closeSync(fd); } return; }   // 低號碼不快取(#323 r2 H2)
+  const st = fstatSync(fd);
+  traceFd = fd; traceId = st.dev + ':' + st.ino;
+  writeAll(fd, buf);
+}
+function writeAll(fd, buf) {
   let off = 0;
-  while (off < buf.length) off += writeSync(traceFd, buf, off, buf.length - off);
+  while (off < buf.length) off += writeSync(fd, buf, off, buf.length - off);
 }
 // 10-07:import 的檔所屬的最近一個 package.json("type" / "exports" 由它決定;Node 內部讀,公開 fs 看不到)
 const scopeSeen = new Set();
