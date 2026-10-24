@@ -10,9 +10,11 @@ H4 登入鏈結只收 ASCII 網址字元:全形字開頭不算、中文路徑截
 H5 自填字串:power_crew 的「其他」去掉方向控制 / 零寬;power_launch 紀錄字串有這些就當壞資料
 H6 契約 power.json 只講介面:不引用內部規格 / 待辦路徑
 H7 #302 審查:`aib power -- login` 乾淨回 rc 2(不 Traceback);_write_page 寫壞清暫存、暫存名上先放連結 ⇒ 拒寫;
-   登入紀錄 O_NOFOLLOW(目標是連結 ⇒ spawn_failed、連結指的檔不被截斷)、起不了 CLI 刪掉空紀錄、
+   登入紀錄不跟連結(目標是連結 ⇒ 先刪連結再新建、連結指的檔不被截斷)、起不了 CLI 刪掉空紀錄、
    鏈結先出裝置碼晚到也等得到
-刀(PR 手跑在複本上):_write_page 失敗不清暫存 / 拿掉 O_EXCL+O_NOFOLLOW ⇒ H7 紅;登入紀錄拿掉 O_NOFOLLOW ⇒ H7 紅;
+H8 #302 第 2 輪:快到時限才印鏈結 ⇒ 照回鏈結(不 no_url);登入紀錄預先是硬連結 / 0644 檔 ⇒ 不沿用(被連的檔不被截斷、新檔 0600);
+   等待中被中斷 ⇒ 登入紀錄照刪
+刀(PR 手跑在複本上):_write_page 失敗不清暫存 / 拿掉 O_EXCL+O_NOFOLLOW ⇒ H7 紅;登入紀錄拿掉「先刪再建」⇒ H8 紅;寬限時限到回 no_url ⇒ H8 紅;拿掉 finally 刪檔 ⇒ H8 紅;
   _URL_RE 改回 [^\\s...] ⇒ H4 紅;_other 改回只去 C0 / C1 ⇒ H5 紅;power_launch._s 不看 Cf ⇒ H5 紅;
   _write_page 改回固定 .tmp + write_text ⇒ H3 紅(權限);_save 改回 open(tmp,"w") ⇒ H2 紅(權限)
 (拿到鏈結就刪登入紀錄在 test-power-login-d07f9-1024.py G2)
@@ -145,9 +147,9 @@ class Harden(unittest.TestCase):
         log.parent.mkdir(parents=True, exist_ok=True)
         os.symlink(victim, log)
         with mock.patch.object(power_login.shutil, "which", return_value="/bin/true"):
-            self.assertEqual(power_login.spawn_login("codex", popen=mock.Mock())[2], "spawn_failed")
-            self.assertEqual(victim.read_text(), "keep")                               # 沒被 O_TRUNC 截斷
-            log.unlink()
+            power_login.spawn_login("codex", popen=mock.Mock(), sleep=lambda s: None, wait_s=0)
+            self.assertEqual(victim.read_text(), "keep")                               # 連結先刪掉、不跟著寫
+            self.assertFalse(log.exists() or log.is_symlink())
 
             def boom(*a, **kw):
                 raise OSError("no")
@@ -167,6 +169,47 @@ class Harden(unittest.TestCase):
             got = power_login.spawn_login("codex", popen=popen, sleep=sleep, clock=lambda: t[0], wait_s=10)
             self.assertEqual(got, ("https://auth.example/device", "ABCD-1234", None))
             self.assertFalse(log.exists())
+
+    def test_h8_review_302_r2(self):
+        log = Path(power_login.state_dir()) / "power-login-codex.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(power_login.shutil, "which", return_value="/bin/true"):
+            t = [0.0]
+
+            def late(argv, stdout, **kw):
+                pass
+
+            def sleep(_s):
+                t[0] += 0.5
+                if t[0] == 19.5:                                                        # 時限 20 秒前半秒才印鏈結
+                    with open(log, "a") as f:
+                        f.write("open https://auth.example/late\n")
+            got = power_login.spawn_login("codex", popen=late, sleep=sleep, clock=lambda: t[0], wait_s=20)
+            self.assertEqual(got, ("https://auth.example/late", None, None))
+
+            d = Path(tempfile.mkdtemp(dir=TMP))
+            victim = d / "victim.txt"
+            victim.write_text("keep")
+            os.link(victim, log)                                                         # 硬連結
+            seen = {}
+
+            def peek(argv, stdout, **kw):
+                seen["mode"] = stat.S_IMODE(os.fstat(stdout).st_mode)
+                seen["nlink"] = os.fstat(stdout).st_nlink
+                os.write(stdout, b"open https://auth.example/x code: ABCD-1234\n")
+            power_login.spawn_login("codex", popen=peek, sleep=lambda s: None, wait_s=1)
+            self.assertEqual(victim.read_text(), "keep")
+            self.assertEqual((seen["mode"], seen["nlink"]), (0o600, 1))
+            log.write_text("")
+            os.chmod(log, 0o644)                                                         # 預先放 0644 檔
+            power_login.spawn_login("codex", popen=peek, sleep=lambda s: None, wait_s=1)
+            self.assertEqual(seen["mode"], 0o600)
+
+            def interrupt(_s):
+                raise KeyboardInterrupt
+            with self.assertRaises(KeyboardInterrupt):
+                power_login.spawn_login("codex", popen=late, sleep=interrupt, wait_s=10)
+            self.assertFalse(log.exists(), "中斷也要刪登入紀錄")
 
 
 if __name__ == "__main__":

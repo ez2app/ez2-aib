@@ -230,7 +230,8 @@ def spawn_login(key, *, popen=subprocess.Popen, wait_s=URL_WAIT_S, lifetime=LOGI
     log = os.path.join(state_dir(), "power-login-%s.log" % key)
     try:
         os.makedirs(os.path.dirname(log), exist_ok=True)
-        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        _drop(log)                       # 先刪再 O_EXCL 建:預先放的硬連結 / 0644 檔都不沿用(#302 第 2 輪)
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError:
         return None, None, "spawn_failed"
     try:
@@ -244,23 +245,24 @@ def spawn_login(key, *, popen=subprocess.Popen, wait_s=URL_WAIT_S, lifetime=LOGI
         os.close(fd)
     deadline = clock() + wait_s
     code_by = None                       # 先印鏈結、裝置碼晚一行才出:拿到鏈結後再等 CODE_GRACE_S 等裝置碼
-    while True:
-        try:
-            with open(log, encoding="utf-8", errors="replace") as f:
-                text = f.read(65536)
-        except OSError:
-            text = ""
-        url = _clean_url(text)
-        if url:
-            m = _CODE_RE.search(_ANSI_RE.sub("", text))
-            code_by = clock() + CODE_GRACE_S if code_by is None else code_by
-            if m or clock() >= code_by:
-                _drop(log)               # 鏈結 / 裝置碼拿到就刪:不留在狀態夾給人翻(CLI 照寫它手上的 fd)
-                return url, (m.group(1) if m else None), None
-        if clock() >= deadline:
-            _drop(log)
-            return None, None, "no_url"
-        sleep(0.5)
+    try:
+        while True:
+            try:
+                with open(log, encoding="utf-8", errors="replace") as f:
+                    text = f.read(65536)
+            except OSError:
+                text = ""
+            url = _clean_url(text)
+            if url:
+                m = _CODE_RE.search(_ANSI_RE.sub("", text))
+                code_by = clock() + CODE_GRACE_S if code_by is None else code_by
+                if m or clock() >= code_by or clock() >= deadline:   # 時限到了也照回鏈結,不丟掉
+                    return url, (m.group(1) if m else None), None
+            elif clock() >= deadline:
+                return None, None, "no_url"
+            sleep(0.5)
+    finally:
+        _drop(log)                       # 鏈結拿到 / 逾時 / 中斷都刪:不留在狀態夾給人翻(CLI 照寫它手上的 fd)
 
 
 def _drop(path):
