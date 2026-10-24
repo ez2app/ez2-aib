@@ -5,7 +5,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib test <test files…>      run tests; reuse earlier green results whose inputs did not change
     aib test --all              run the whole suite that way
     aib ship <subcommand> …     pre-push check, package, release (see `aib ship --help`)
-    aib support [--confirm]     collect a de-identified bug report pack (nothing is sent; you attach it to an issue)
+    aib support [--write]       list what a de-identified bug report pack would hold; --write saves it locally (nothing is sent)
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
     aib cf grant <zone> <perm> --push host:/path   Touch ID, then a minutes-long, IP-locked Cloudflare token (`aib cf --help`)
     aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
@@ -21,7 +21,6 @@ import sys
 HERE = os.path.dirname(os.path.realpath(__file__))     # 套件資料夾本身 = 原本倉根的版面(tools/、src/、i18n/)
 TARGETS = {"test": os.path.join(HERE, "tools", "verify", "test_entry.py"),
            "ship": os.path.join(HERE, "tools", "release", "ship.py"),
-           "support": os.path.join(HERE, "tools", "support", "collect.py"),
            "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py"),
            "uninstall": os.path.join(HERE, "tools", "support", "uninstall.py")}
 
@@ -151,6 +150,10 @@ def main():
         sys.argv = ["aib license"] + sys.argv[2:]
         runpy.run_module("entitlement.cli", run_name="__main__", alter_sys=True)
         return 0
+    if sys.argv[1] == "support":
+        # 10-25:問題回報包一律走核心 support_bundle(只六段、預設只列)—— 在外掛查找之前，外掛宣告 support 搶不走、
+        # 沒授權的外掛也擋不住(#340 審查 M1)
+        os.execv(sys.executable, [sys.executable, os.path.join(HERE, "src", "cockpit", "support_bundle.py")] + sys.argv[2:])
     if sys.argv[1] == "room" and len(sys.argv) > 2 and sys.argv[2] in CORE_ROOM_SUBCOMMANDS:
         # 10-24:機房的核心資料(散熱監控)在核心;`aib room` 其他子指令照舊交給艦長室外掛(外掛蓋過內建 room)
         sys.path.insert(0, os.path.join(HERE, "src", "cockpit"))
