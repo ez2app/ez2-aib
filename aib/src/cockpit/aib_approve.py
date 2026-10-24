@@ -294,8 +294,14 @@ def parse_item(item, site, kid, now=None):
     except UnicodeError:
         return None, "bad_item"
     f = _loads(raw, object_pairs_hook=_no_dup) if len(raw) <= PAYLOAD_MAX else None
-    if not isinstance(f, dict) or tuple(sorted(f)) != FIELDS or signing.canonical(f) != raw:
-        return None, "bad_item"  # 顯示的跟簽的要是同一份位元組
+    if not isinstance(f, dict) or tuple(sorted(f)) != FIELDS:
+        return None, "bad_item"
+    try:
+        same = signing.canonical(f) == raw  # 顯示的跟簽的要是同一份位元組
+    except (UnicodeError, ValueError, TypeError, RecursionError):
+        same = False  # 例如 "\ud800" 這種落單代理字元:解析得了、編不回 UTF-8 ⇒ 壞的一筆,不讓整個指令當
+    if not same:
+        return None, "bad_item"
     ints = all(isinstance(f[k], int) and not isinstance(f[k], bool) for k in ("v", "user_id", "iat", "exp"))
     strs = all(isinstance(f[k], str) for k in ("typ", "site", "user_login", "ip", "nonce", "kid"))
     if not ints or not strs or f["v"] != 1 or f["typ"] != "wp-login" or f["user_id"] <= 0:
@@ -337,7 +343,8 @@ def fetch(row, env, http, kid, now=None):
     if st != 200:
         return [], 0, "http_%d" % st if st else "unreachable"
     doc = _loads(body)
-    items = doc.get("items") if isinstance(doc, dict) and doc.get("v") == 1 else None
+    v = doc.get("v") if isinstance(doc, dict) else None
+    items = doc.get("items") if type(v) is int and v == 1 else None  # true / 1.0 不算
     if not isinstance(items, list):
         return [], 0, "bad_reply"
     good, bad = [], 0

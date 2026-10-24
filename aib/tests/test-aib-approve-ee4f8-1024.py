@@ -26,6 +26,7 @@ A13 http 網址根本不連;A14 「-」開頭 nonce 配 --json(前後都行)
 A15 IP 帶控制字、exp ≤ iat、站回 {"ok":1}、key pem 時指紋視窗佔用、沒點的站名、port 0、本機檔被換成資料夾
 A16 參數錯也印一行 JSON、stdin 不是 UTF-8、網址帶帳號 / 前置空白、站回 v≠1
 A17 yes -h 不印 bad_args、--json 放前面、網址空帳號、一站最多 50 筆、deny 403 / 502 分開、history 最近 20 筆
+A18 落單代理字元不讓指令當(壞一筆不擋別站)、站回 v=true / 1.0、剛好 exp / 時鐘誤差邊界、明寫 -- 的 nonce
 刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
    K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅;K8 跟轉址 ⇒ A11 紅
 """
@@ -492,6 +493,37 @@ class Approve(Base):
         p.write_text("".join(json.dumps({"result": "denied", "nonce": str(i)}) + "\n" for i in range(30)))
         h = AA.history(self.env)
         self.assertEqual((len(h), h[0]["nonce"]), (20, "29"))  # 最近 20 筆、新的在前
+
+    def test_a18_surrogate_and_edges(self):
+        import unittest.mock as um
+        good = self.site.add(kid=self.kid)
+        f = dict(good, nonce="S" * 43)
+        bad = signing.canonical(dict(f, ip="IPX")).decode().replace("IPX", "\\ud800")
+        self.site.items.append({"payload": bad, "code": AA.code_of(f["nonce"])})
+        r, why = AA.pending(self.env, http=self.site, now=NOW)
+        self.assertEqual(([i["nonce"] for i in r["items"]], r["invalid"]), ([good["nonce"]], 1))
+        self.assertEqual(AA.no("S" * 43, self.env, http=self.site, now=NOW), (None, "not_pending"))
+        self.assertEqual(self.yes(good["nonce"]), ("approved", None))
+        for v in ("true", "1.0"):
+            hv = lambda m, u, h, b, v=v: (200, ('{"v":%s,"items":%s}' % (v, json.dumps(self.site.items))).encode()) \
+                if u.endswith("/pending") else self.site(m, u, h, b)  # noqa: E731
+            r, _ = AA.pending(self.env, http=hv, now=NOW)
+            self.assertEqual(r["errors"], {"ez2.app": "bad_reply"}, v)
+        self.site.items = []
+        e = self.site.add(kid=self.kid, iat=NOW - 50, exp=NOW + 10)
+        r, _ = AA.pending(self.env, http=self.site, now=NOW + 10)  # 剛好 exp:還算有效
+        self.assertEqual([i["nonce"] for i in r["items"]], [e["nonce"]])
+        self.site.items = []
+        sk = self.site.add(kid=self.kid, iat=NOW + AA.SKEW, exp=NOW + AA.SKEW + 100)
+        r, _ = AA.pending(self.env, http=self.site, now=NOW)  # iat 剛好快 SKEW 秒:收
+        self.assertEqual([i["nonce"] for i in r["items"]], [sk["nonce"]])
+        self.site.items = []
+        dash = "-" + "C" * 42
+        self.site.add(kid=self.kid, nonce=dash)
+        out = io.StringIO()
+        with um.patch.object(AA, "http_call", self.site), um.patch.object(AA.time, "time", return_value=NOW):
+            self.assertEqual(AA.main(["no", "--json", "--", dash], out=out, env=self.env), 0)
+        self.assertEqual(json.loads(out.getvalue())["result"], "denied")
 
     def test_a13_http_only_https(self):
         import unittest.mock as um
