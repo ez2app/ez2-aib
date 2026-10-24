@@ -1032,6 +1032,65 @@ def cmd_request(a, env, out):
     return res["rc"]
 
 
+def cmd_connect(a, env, out):
+    """aib chat connect <對方位址> [--share off|online|status] [--space none|island|room | --open] [--note …] [--json]
+    10-24 Andy「我要一次就完成，不要多次」:兩台各打一次就連上。
+    對方已經申請過 ⇒ 同意;還沒 ⇒ 加好友 + 送申請(對方那邊打同一個指令就是同意)。
+    要分享得比預設多(--share / --space / --open)⇒ 加好友和全部分享設定列在**同一個**指紋視窗,按一次;
+    沒給 ⇒ 用預設(在線 online、空間 island),不用指紋。指紋被拒 ⇒ 什麼都不做(好友也不加)。"""
+    import argparse as _ap
+    import chat_roster as CR
+    owner = CR.friend_owner(a.target or "")
+    if not owner:
+        out.write(T("profile_bad_friend") + "\n")
+        return 2
+    if a.open and a.space:
+        out.write(T("connect_open_or_space") + "\n")
+        return 2
+    share = "status" if a.open else a.share
+    space = "room" if a.open else a.space
+    if share or space:                       # 改分享 = 本人的動作:全部擠進一個視窗
+        rc = human_gate(T("touchid_connect", who=_gate_who(a.target, env),
+                          level=T("share_" + (share or CR.read_share(env)["default"])),
+                          space=T("space_" + (space or CR.read_space(env)["default"]))), env, out, a.json)
+        if rc is not None:
+            return rc
+    root = bridge_root(env)
+    pending = any(r.get("owner") == owner for r in GF.read_requests(root))
+    sub = _ap.Namespace(target="accept" if pending else a.target, who=owner, note=a.note or "", from_seat=None, silent=False)
+    if not pending:
+        try:
+            CR.add_friend(owner, None, env)  # 先加:對方同意後回的信 / 名片才收得進來
+        except CR.RosterError as err:
+            out.write(T("profile_" + str(err)) + "\n")
+            return 2
+    req_rc = cmd_request(sub, env, out) or 0
+    if req_rc and pending:
+        return req_rc
+    try:
+        if a.open:
+            import chat_visit as CVI
+            CVI.open_to(env, root, owner)
+        else:
+            if share:
+                CR.set_share(share, owner, env)
+            if space:
+                CR.set_space(space, owner, env)
+    except Exception as err:   # noqa: BLE001  好友已成;分享沒改成就照實講
+        out.write(T("connect_share_failed", why=str(err)[:80]) + "\n")
+        return 2
+    lv = {"owner": owner, "accepted": pending, "share": CR.share_level(owner, env), "space": CR.space_level(owner, env)}
+    out.write((json.dumps(dict(lv, v=1), ensure_ascii=False) if a.json else
+               T("connect_done", owner=owner, share=T("share_" + lv["share"]), space=T("space_" + lv["space"]))) + "\n")
+    return req_rc                            # 申請沒送到(例:對方沒公開席)⇒ 好友 / 分享照設,rc 照實回
+
+
+def _gate_who(target, env):
+    import chat_human as CH
+    import touchid_approve as TA
+    return TA.clean(CH._who(target, env), 32)
+
+
 def cmd_requests(a, env, out):
     rows = GF.read_requests(bridge_root(env))
     if a.json:
@@ -1215,7 +1274,23 @@ def cmd_address(a, env, out):
 # 只擋「寫」(改分享等級、開放、同意參觀);讀(--json、space check、visits)不擋。
 # 誠實講:share.json 是本機檔,同帳號 AI 直接改檔一樣過 —— 這道門擋的是「AI 用 CLI 自己開」與「頁面被 AI 代按」,
 # 不是終極防線;要真防線得簽章分享設定、轉接程式送快照前驗簽(GUIDE 第 3 條),列另一題。
-HUMAN_GATE = {"prove": None, "caller_is_seat": None}      # 只給行程內測試換掉(假 Touch ID);子行程沒有縫,真機就是真 Touch ID
+HUMAN_GATE = {"prove": None, "caller_is_seat": None, "notify": None}   # 只給行程內測試換掉(假 Touch ID);子行程沒有縫,真機就是真 Touch ID
+
+
+def _gate_notify(reason, env):
+    """10-24 跨客戶驗收:用 ssh 叫的時候指紋視窗跳在那台的螢幕上,沒人看見就逾時。
+    跳之前印一行到 stderr(--json 的 stdout 不變)、Mac 再響一聲提示音;只是提醒,失敗就算了。"""
+    sys.stderr.write(T("gate_waiting", reason=reason) + "\n")
+    sys.stderr.flush()
+    if sys.platform == "darwin" and os.path.exists(GATE_SOUND):
+        try:
+            subprocess.Popen(["/usr/bin/afplay", GATE_SOUND], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            pass
+
+
+GATE_SOUND = "/System/Library/Sounds/Glass.aiff"
 GATE_RC = {"seat": 2, "touchid": 3}
 
 
@@ -1227,6 +1302,9 @@ def human_gate(reason, env, out, as_json=False):
         why = "seat_caller"
         out.write((json.dumps({"v": 1, "ok": False, "why": why}) if as_json else T("gate_seat")) + "\n")
         return GATE_RC["seat"]
+    notify = HUMAN_GATE["notify"] or (_gate_notify if HUMAN_GATE["prove"] is None else None)
+    if notify:
+        notify(reason, env)
     _via, why = (HUMAN_GATE["prove"] or SA.prove)(reason, env)
     if why:
         key = "gate_" + why if why in ("touchid_off", "touchid_unavailable") else "gate_touchid"
@@ -1235,13 +1313,19 @@ def human_gate(reason, env, out, as_json=False):
     return None
 
 
-def gate_reason(kind, who, env, level=None):
-    """Touch ID 視窗那一句:只由核心組,名字先過 TA.clean。who=None ⇒ 改預設(全部好友)。"""
+def gate_reason(kind, who, env, level=None, space=None):
+    """Touch ID 視窗那一句:只由核心組,名字先過 TA.clean。who=None ⇒ 改預設(全部好友)。
+    space(只配 kind=share):在線 + 空間一起改 ⇒ 同一個視窗列出兩項,按一次(10-24 Andy「一次改多項」)。"""
     import chat_human as CH
     import touchid_approve as TA
+    if space:
+        kind, extra = "share_space", {"space": T("space_" + space)}
+        level = T("share_" + level) if level else "-"
+    else:
+        extra = {}
     if who is None:
-        return T("touchid_" + kind + "_default", level=level or "-")
-    return T("touchid_" + kind, who=TA.clean(CH._who(who, env), 32), level=level or "-")
+        return T("touchid_" + kind + "_default", level=level or "-", **extra)
+    return T("touchid_" + kind, who=TA.clean(CH._who(who, env), 32), level=level or "-", **extra)
 
 
 def share_payload(env=None):
@@ -1254,20 +1338,35 @@ def share_payload(env=None):
 
 
 def cmd_share(a, env, out):
-    """aib chat share [<主人 npub> off|online|status] [--default off|online|status] [--json]。"""
+    """aib chat share [<主人 npub> off|online|status] [--default off|online|status] [--space none|island|room] [--json]。
+    --space:空間分享一起改(跟在線同一個對象:給 who 就是那一位、給 --default 就是預設),只按一次指紋。"""
     import chat_roster as CR
     if a.who and a.level is None:
         out.write(T("share_need_level") + "\n")
         return 2
+    if a.space and not (a.who or a.default):
+        out.write(T("share_space_need_target") + "\n")
+        return 2
+    if a.space == "room" and not a.who:
+        out.write(T("profile_bad_space") + "\n")            # room 不准當預設(跟 space --default 同一條)
+        return 2
+    if a.who and a.default:
+        out.write(T("share_space_one_target") + "\n")       # 一個視窗只講一個對象,免得本人看漏
+        return 2
     if a.default or a.who:                   # 改分享等級 = 本人的動作(同一道門)
-        rc = human_gate(gate_reason("share", a.who if a.who else None, env, a.level or a.default), env, out, a.json)
+        rc = human_gate(gate_reason("share", a.who if a.who else None, env, a.level or a.default, space=a.space),
+                        env, out, a.json)
         if rc is not None:
             return rc
     try:
         if a.default:
             CR.set_share(a.default, None, env)
+            if a.space:
+                CR.set_space(a.space, None, env)
         if a.who:
             CR.set_share(a.level, a.who, env)
+            if a.space:
+                CR.set_space(a.space, a.who, env)
     except CR.RosterError as err:
         out.write(T("profile_" + str(err)) + "\n")
         return 2
@@ -1282,6 +1381,12 @@ def cmd_share(a, env, out):
             import chat_roster as CR
             o = CR.friend_owner(a.who)
             out.write(T("share_set", owner=o, level=T("share_" + CR.share_level(o, env))) + "\n")
+        if a.space:
+            if a.who:
+                o = CR.friend_owner(a.who)
+                out.write(T("space_set", owner=o, level=T("space_" + CR.space_level(o, env))) + "\n")
+            else:
+                out.write(T("space_default", level=T("space_" + CR.read_space(env)["default"])) + "\n")
         return 0
     out.write(T("share_default", level=T("share_" + pl["default"])) + "\n")
     for o, lvl in pl["peers"].items():
@@ -2077,6 +2182,13 @@ def main(argv=None, env=None, out=sys.stdout):
     rq.add_argument("--note", default="", help=T("help.request_note"))
     rq.add_argument("--from", dest="from_seat", help=T("help.request_from"))
     rq.add_argument("--silent", action="store_true", help=T("help.request_silent"))
+    cn = sub.add_parser("connect", help=T("help.connect"))
+    cn.add_argument("target", help=T("help.request_target"))
+    cn.add_argument("--share", choices=("off", "online", "status"))
+    cn.add_argument("--space", choices=("none", "island", "room"))
+    cn.add_argument("--open", action="store_true")
+    cn.add_argument("--note", default="")
+    cn.add_argument("--json", action="store_true")
     rqs = sub.add_parser("requests", help=T("help.requests"))
     rqs.add_argument("--json", action="store_true")
     so = sub.add_parser("social", help=T("help.social"))
@@ -2092,6 +2204,7 @@ def main(argv=None, env=None, out=sys.stdout):
     sh.add_argument("who", nargs="?")
     sh.add_argument("level", nargs="?", choices=("off", "online", "status"))
     sh.add_argument("--default", choices=("off", "online", "status"))
+    sh.add_argument("--space", choices=("none", "island", "room"))
     sh.add_argument("--json", action="store_true")
     il = sub.add_parser("island", help=T("help.island"))
     il.add_argument("who")
@@ -2257,6 +2370,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_request(a, env, out)
     if a.cmd == "requests":
         return cmd_requests(a, env, out)
+    if a.cmd == "connect":
+        return cmd_connect(a, env, out)
     if a.cmd == "contacts":
         return cmd_contacts(a, env, out)
     if a.cmd == "address":
