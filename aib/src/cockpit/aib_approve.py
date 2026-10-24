@@ -19,7 +19,8 @@
   POST <url>/wp-json/ez2-aib/v1/deny      {"nonce"}(帶機房 token)
 
 防線(同帳號 AI 威脅守則):
-  - 簽的是**站上給的 payload 原始位元組**;核心只解析來顯示、檢查,不重組 ⇒ 視窗上看到的 = 簽下去的 = 站上存的。
+  - 簽的是**站上給的 payload 原始位元組**;核心只解析來顯示、檢查,不重組 ⇒ 簽下去的 = 站上存的;視窗顯示的是其中
+    幾個欄位(短碼、站、帳號、IP),user_id / iat / exp / typ / kid 不顯示,但都在簽的位元組裡、核心檢查過。
     解析後的 canonical 跟原字串不同(多空白、重複鍵、鍵亂序)⇒ 拒,免得顯示一份、簽另一份。
   - yes 一律**重新向站上拉**那筆,不信本機快取(AI 改得到);payload 的 site 要等於登記的站、kid 要等於這台的鑰。
   - SE 私鑰 accessControl = biometryCurrentSet,每次簽都要指紋;取消 / 逾時 / 沒 SE ⇒ 拒,不退回別的方式。
@@ -238,8 +239,11 @@ def site_add(site, url, token, env=None):
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", token):
         return None, "bad_token"
     rows = [r for r in load_sites(env) if r["site"] != site] + [{"site": site, "url": url}]
-    _write_private(_sites_path(env), json.dumps({"v": 1, "sites": rows}, sort_keys=True) + "\n")
-    _write_private(approve_dir(env) / "tokens" / (site + ".token"), token + "\n")
+    try:
+        _write_private(_sites_path(env), json.dumps({"v": 1, "sites": rows}, sort_keys=True) + "\n")
+        _write_private(approve_dir(env) / "tokens" / (site + ".token"), token + "\n")
+    except OSError:
+        return None, "local_state"
     return {"site": site, "url": url}, None
 
 
@@ -392,9 +396,12 @@ def _record(env, d, result):
            "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
     p = _history_path(env)
     p.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(fd, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
+    try:
+        fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError:
+        pass  # history 只是紀錄(AI 改得到、不是防線):寫不進去不影響這次的結果
 
 
 def history(env=None):
@@ -420,7 +427,10 @@ def _rate_ok(env, now):
         if isinstance(doc, list) else []  # 未來的(時鐘倒退)不算
     if len(ts) >= RATE_N:
         return False
-    _write_private(p, json.dumps(ts + [now]))
+    try:
+        _write_private(p, json.dumps(ts + [now]))
+    except OSError:
+        return False  # 限速檔寫不進去(例如被換成資料夾):寧可擋這次
     return True
 
 
@@ -536,8 +546,10 @@ def main(argv=None, out=None, env=None, stdin=None):
     for x in (k, s, p, y, n, h):
         x.add_argument("--json", action="store_true")
     argv = list(sys.argv[1:] if argv is None else argv)
-    if len(argv) >= 2 and argv[0] in ("yes", "no") and argv[1].startswith("-") and NONCE_RE.fullmatch(argv[1]):
-        argv.insert(1, "--")  # base64url 的 nonce 可能以「-」開頭,不是選項(@74e8b 10-24)
+    if argv and argv[0] in ("yes", "no"):  # base64url 的 nonce 可能以「-」開頭,不是選項(@74e8b 10-24)
+        dash = [a for a in argv[1:] if a.startswith("-") and NONCE_RE.fullmatch(a)]
+        if len(dash) == 1 and "--" not in argv:  # 旗標留在前面,nonce 放 -- 後面:--json 前後都認
+            argv = [argv[0]] + [a for a in argv[1:] if a != dash[0]] + ["--", dash[0]]
     try:
         o = ap.parse_args(argv)
     except SystemExit as exc:

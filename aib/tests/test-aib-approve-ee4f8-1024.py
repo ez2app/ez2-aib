@@ -352,6 +352,7 @@ class Approve(Base):
             for ph in ("{code}", "{site}", "{user}", "{ip}"):
                 self.assertIn(ph, r, lang)
             self.assertLess(r.index("{code}"), r.index("{user}"))
+            self.assertLess(r.index("{site}"), r.index("{user}"), lang)  # 站名在帳號前:帳號名可以有空白、冒充站名
             self.assertIn("{kid}", d["aib.approve.touchid_publish"])
             self.assertIn("aib approve", d["aib.approve.help.usage"])
 
@@ -399,6 +400,48 @@ class Approve(Base):
         import se_vault
         Path(se_vault.se_dir(self.env), AA.KEY_NAME + ".sekey").write_bytes(deep)
         self.assertIsNone(AA.local_pub(self.env))
+
+    def test_a14_dash_nonce_with_json(self):
+        import unittest.mock as um
+        dash = "-" + "B" * 42
+        self.site.add(kid=self.kid, nonce=dash)
+        for argv in (["no", dash, "--json"], ["no", "--json", dash]):
+            out = io.StringIO()
+            with um.patch.object(AA, "http_call", self.site), um.patch.object(AA.time, "time", return_value=NOW):
+                self.assertEqual(AA.main(argv, out=out, env=self.env), 0, argv)
+            self.assertEqual(json.loads(out.getvalue())["nonce"], dash, argv)
+
+    def test_a15_more_edges(self):
+        import touchid_approve as TA
+        for over in ({"ip": "203.0.113.7\u202e"}, {"ip": "1.2.3.4\n"}, {"iat": NOW - 5, "exp": NOW - 5},
+                     {"iat": NOW, "exp": NOW - 1}):
+            self.site.items = []
+            self.site.add(kid=self.kid, **over)
+            r, _ = AA.pending(self.env, http=self.site, now=NOW)
+            self.assertEqual((r["items"], r["invalid"]), ([], 1), over)
+        self.site.items = []
+        f = self.site.add(kid=self.kid)
+        for reply in (b'{"ok":1}', b'{"ok":"yes"}'):
+            h = lambda m, u, hd, b, reply=reply: (200, reply) if u.endswith("/approve") else self.site(m, u, hd, b)  # noqa
+            self.assertEqual(AA.yes(f["nonce"], self.env, http=h, run=self.se, helper="/x", platform="darwin",
+                                    now=NOW), ("site_rejected", None), reply)
+            (self.root / "approve" / "rate.json").unlink()
+        with TA.one_at_a_time(self.root / "locks" / "touchid-approve.lock") as g:
+            self.assertTrue(g.held)
+            self.assertEqual(AA.key_publish(self.env, run=self.se, helper="/x", platform="darwin"), (None, "busy"))
+        self.assertEqual(AA.site_add("localhost", None, "t" * 32, self.env), (None, "bad_site"))
+        self.assertEqual(AA.site_add("ez2.app", "https://ez2.app:0", "t" * 32, self.env), (None, "bad_url"))
+        # 本機檔被換成資料夾:不當
+        a = self.root / "approve"
+        (a / "rate.json.tmp").mkdir()
+        self.assertEqual(self.yes(f["nonce"]), ("rate_limited", None))
+        (a / "rate.json.tmp").rmdir()
+        (a / "history.jsonl").unlink()
+        (a / "history.jsonl").mkdir()
+        self.assertEqual(self.yes(f["nonce"]), ("approved", None))
+        self.assertEqual(AA.history(self.env), [])
+        (a / "sites.json.tmp").mkdir()
+        self.assertEqual(AA.site_add("ez2.app", None, "t" * 32, self.env), (None, "local_state"))
 
     def test_a13_http_only_https(self):
         import unittest.mock as um
