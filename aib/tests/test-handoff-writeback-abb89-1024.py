@@ -239,9 +239,9 @@ class Behaviour(Base):
         """收據的句數一律從這一輪起點算(#312 r2 B-H2、r3 A-1 / B-1 / B-2)。"""
         noon = 1_792_814_400.0                                   # 2026-10-24 12:00 +08
         early = lambda s: 3 if s <= "2026-10-24T12:00:00+08:00" else 0     # 真人 12:00 後講了 3 句,13:00 後沒講
-        # 上一張收據在本輪中(13:00):只算 13:00 後 = 0 句 ⇒ 重算本輪 = 3
+        # 上一張收據在本輪中(13:00):證據與句數都從本輪起點算 = 3(#312 驗收:第一次漏寫人格,第二次還引得到這一輪的話)
         col = self._collect("2026-10-24T13:00:00+08:00", noon, early)
-        self.assertEqual((col["human_words"], col["human_words_round_count"]), ([], 3))
+        self.assertEqual((len(col["human_words"]), col["human_words_round_count"]), (3, 3))
         # 上一張收據在上一輪(11:00、那時講 2 句):本輪其實 0 句 ⇒ 0,不把上一輪尾巴算進來
         col = self._collect("2026-10-24T11:00:00+08:00", noon, lambda s: 2 if s <= "2026-10-24T11:30" else 0)
         self.assertEqual(col["human_words_round_count"], 0)
@@ -252,6 +252,18 @@ class Behaviour(Base):
         col = self._collect("2026-10-24T13:00:00+08:00", noon, lambda s: 0, src_after=NO_TRANSCRIPT)
         self.assertEqual(col["human_words_status"], NO_TRANSCRIPT)
         self.assertEqual(memory_tidy.words_source("rrrrr"), NO_TRANSCRIPT)
+
+    def test_w10_first_round_starts_at_seat_record(self):
+        """新席第一輪 rounds.jsonl 沒紀錄 ⇒ 本輪起點 = 席位檔 started_epoch(#312 驗收:以前一律 0,交接不取代、句數量不到)。"""
+        with mock.patch.object(aib_handoff, "rounds", return_value=[]), \
+                mock.patch.object(aib_handoff, "find_seat_record", return_value={"started_epoch": 1_792_814_400}):
+            self.assertEqual(aib_handoff.current_round_start("fffff"), 1_792_814_400.0)
+        with mock.patch.object(aib_handoff, "rounds", return_value=[{"ts": 1_792_900_000.0}]), \
+                mock.patch.object(aib_handoff, "find_seat_record", return_value={"started_epoch": 1_792_814_400}):
+            self.assertEqual(aib_handoff.current_round_start("fffff"), 1_792_900_000.0)     # 有紀錄 ⇒ 照紀錄
+        with mock.patch.object(aib_handoff, "rounds", return_value=[]), \
+                mock.patch.object(aib_handoff, "find_seat_record", return_value={}):
+            self.assertEqual(aib_handoff.current_round_start("fffff"), 0.0)
 
     def test_w7b_apply_receipt_uses_round_count(self):
         """apply 收據的 human_words_count = collect 的 human_words_round_count;舊 collect 沒這欄 ⇒ None(r3 A-2、B-3)。"""

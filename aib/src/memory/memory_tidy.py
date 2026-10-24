@@ -531,6 +531,14 @@ def collect(seat="", out=None, repo=None):
     pc = persona_card(ctx)
     mpc, _why = main_persona_target(ctx)
     since = evidence_since(ctx["code"])
+    if persona_since(ctx["code"]) is None:         # 沒有待批那批 ⇒ 證據 = 這一輪的原話(跟 verify 第 2 項同一個範圍;#312 驗收:
+        try:                                       #   第一次整理漏寫人格,之後只認上一張收據之後的話 ⇒ 永遠補不回來)
+            import aib_handoff
+            rs_e = aib_handoff.current_round_start(ctx["code"])
+            if rs_e:
+                since = datetime.datetime.fromtimestamp(rs_e).astimezone().isoformat(timespec="seconds")
+        except Exception:  # noqa: BLE001
+            pass
     words = [w for _t, w in human_words(ctx, since)]
     src = words_source(ctx["code"])
     # verify 的「本輪 0 句」一律從這一輪起點算(#312 r2 B-H2、r3 B-1):量不到起點 / 重算出錯 ⇒ None(verify 不當沉默)

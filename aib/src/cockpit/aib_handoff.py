@@ -296,8 +296,15 @@ def rounds(code: str, home=None) -> list:
 
 
 def current_round_start(code: str, home=None) -> float:
+    """這一輪的開始點:rounds.jsonl 最後一筆;還沒有(新席第一輪,開始點不另記)⇒ 席位檔 started_epoch(跟 _prev_round 同一條);
+    都沒有 ⇒ 0。#312 驗收:第一輪的席一律 0 ⇒ 交接重跑不取代、人格句數量不到。"""
     rs = rounds(code, home)
-    return float(rs[-1]["ts"]) if rs else 0.0
+    if rs:
+        return float(rs[-1]["ts"])
+    try:
+        return float((find_seat_record(code, home) or {}).get("started_epoch") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def receipts(code: str, home=None) -> list:
