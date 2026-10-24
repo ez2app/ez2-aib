@@ -314,7 +314,7 @@ aib가 그 이유를 알려 줍니다. **이 경우 위에서 설명한 빈틈�
 | pip 로 설치한 aib 0.1.6 이하가 스스로 업데이트되지 않음 | 이 버전들은 pip 설치를 업데이트하는 방법을 몰랐습니다. 같은 환경에서 `pip install --upgrade ez2-aib` 를 한 번 실행하세요. 0.1.7 부터는 자리를 열 때 스스로 업데이트합니다. |
 | `aib newrole`이나 두 번째 뇌가 `EZ2_ROUTE_REGISTRY`를 요구함 | 자신의 지식 베이스(`EZ2_VAULT_DIR`, 또는 `~/Desktop/Obsidian/Ez2`)가 있어서 aib가 폴더를 추측하지 않습니다. `EZ2_ROUTE_REGISTRY`를 자신의 경로 계약으로 지정하거나, `EZ2_VAULT_DIR`을 지워 aib의 `~/.ez2-aib/vault`를 쓰세요. |
 | 설치 프로그램이 `~/.local/bin`에 다른 `aib`가 있다고 함 | 기존 aib는 그대로 쓸 수 있고, 오픈소스 판은 옆의 `~/ez2-aib`에 설치됩니다. 콕핏을 써 보려면 다른 macOS 사용자 계정을 쓰세요. |
-| 그 밖의 문제 | `aib support`가 개인정보를 뺀 보고서를 만듭니다(아무것도 보내지 않음). GitHub issue에 첨부해 주세요. |
+| 그 밖의 문제 | 먼저 `aib support`로 보고 묶음에 무엇이 담기는지 확인하고, `aib support --write`로 이 컴퓨터에 저장합니다(아무것도 보내지 않음). 관리자에게 줄지는 직접 정하세요. |
 
 ## 제거
 

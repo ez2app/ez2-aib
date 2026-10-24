@@ -150,6 +150,10 @@ def main():
         sys.argv = ["aib license"] + sys.argv[2:]
         runpy.run_module("entitlement.cli", run_name="__main__", alter_sys=True)
         return 0
+    if sys.argv[1] == "support":
+        # 10-25:問題回報包一律走核心 support_bundle(只六段、預設只列)—— 在外掛查找之前，外掛宣告 support 搶不走、
+        # 沒授權的外掛也擋不住(#340 審查 M1)
+        os.execv(sys.executable, [sys.executable, os.path.join(HERE, "src", "cockpit", "support_bundle.py")] + sys.argv[2:])
     if sys.argv[1] == "room" and len(sys.argv) > 2 and sys.argv[2] in CORE_ROOM_SUBCOMMANDS:
         # 10-24:機房的核心資料(散熱監控)在核心;`aib room` 其他子指令照舊交給艦長室外掛(外掛蓋過內建 room)
         sys.path.insert(0, os.path.join(HERE, "src", "cockpit"))

@@ -325,7 +325,7 @@ runs only what changed too. Pull requests<sup>[52]</sup> from forks<sup>[53]</su
 | aib 0.1.6 or older installed with pip never updates itself | Those versions did not know how to update a pip install. Run `pip install --upgrade ez2-aib` once (in the same environment); from 0.1.7 on, aib updates itself when you open a seat. |
 | `aib newrole` / the second brain asks for `EZ2_ROUTE_REGISTRY` | You set your own vault (`EZ2_VAULT_DIR`, or you have `~/Desktop/Obsidian/Ez2`), so aib will not guess its folders. Either point `EZ2_ROUTE_REGISTRY` to your route contract, or unset `EZ2_VAULT_DIR` to use aib's own vault in `~/.ez2-aib/vault`. |
 | The installer says another `aib` is already in `~/.local/bin` | Your existing aib keeps working; the open-source copy sits next to it in `~/ez2-aib`. To try the cockpit with it, use a separate macOS user account. |
-| Anything else | `aib support` collects a de-identified report (nothing is sent); attach it to a GitHub issue. |
+| Anything else | Run `aib support` to see what a bug report pack would hold; `aib support --write` saves it on this computer (nothing is sent). Whether to give it to the maintainers is your call. |
 
 ## Uninstall
 

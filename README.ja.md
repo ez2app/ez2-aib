@@ -312,7 +312,7 @@ Linux では、PATH 上に C コンパイラ（`cc`、`gcc`、`clang` のいず�
 | pip で入れた aib 0.1.6 以前が自動で更新されない | これらの版は pip で入れた場合の更新方法を知りませんでした。同じ環境で `pip install --upgrade ez2-aib` を一度実行してください。0.1.7 からは席を開くときに自動で更新します。 |
 | `aib newrole` や第二の脳が `EZ2_ROUTE_REGISTRY` を求める | 自分のナレッジベース(`EZ2_VAULT_DIR`、または `~/Desktop/Obsidian/Ez2`)があるので、aib はフォルダーを推測しません。`EZ2_ROUTE_REGISTRY` を自分のルート契約に向けるか、`EZ2_VAULT_DIR` を外して aib 自身の `~/.ez2-aib/vault` を使ってください。 |
 | インストーラーが `~/.local/bin` に別の `aib` があると言う | 既存の aib はそのまま使えます。オープンソース版は `~/ez2-aib` に並べて置かれます。コックピットを試すには別の macOS ユーザーアカウントを使ってください。 |
-| その他 | `aib support` が個人情報を除いたレポートをまとめます(何も送信しません)。GitHub の issue に添付してください。 |
+| その他 | まず `aib support` で報告パックの中身を確認し、`aib support --write` でこのパソコンに保存します(何も送信しません)。メンテナーに渡すかどうかはあなたが決めてください。 |
 
 ## アンインストール
 

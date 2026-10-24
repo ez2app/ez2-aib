@@ -18,9 +18,10 @@ S8 不叫整套 doctor(run_all / main / 探針 / 角色卡清單重產),只叫 D
 S6 借 doctor 結果不記 R10(run-marks/doctor.json 不出現);aib support 從 aib 啟動器轉得到;power_tasks 讀 support.json ⇒ support_bundle
 S13 會員入口(倉根 bin/aib → aib/cli.py)打 aib support 真的跑到 support_bundle(10-25 雙審:cli.py TARGETS 原本指舊
     tools/support/collect.py,會收艙號 / 席號 / log 原文、金鑰沒遮):帶艙號 / 席號 / 假 log(dm + ghp_ 金鑰)環境跑
-    ⇒ rc 0、support_preview、這些原文一個都不在;--write ⇒ 檔 0600、不帶席號檔名;舊收集器不在
-S14 內建 skill ez2-aib-support 只叫 aib support / --write,不叫舊收集器、不准 AI 代寄(--sender ai);issue 範本 bug.yml 也不叫 --confirm
-刀(複本):K6 cli.py 的 TARGETS 加回 support ⇒ S13 紅;K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
+    ⇒ rc 0、support_preview、這些原文一個都不在;--write ⇒ 檔 0600、不帶席號檔名;舊收集器不在;狀態根種 seed() 的艙號 /
+    席號 / dm 原文 / 金鑰也都不在;外掛宣告 support(免費搶 / 加購沒授權擋)⇒ 仍是核心 support_preview
+S14 內建 skill ez2-aib-support 只叫 aib support / --write,不叫舊收集器、不准 AI 代寄(--sender ai);issue 範本 bug.yml 也不叫 --confirm;四語 README 同口徑
+刀(複本):K6 cli.py 拿掉核心 support 那段(外掛搶得到)⇒ S13 紅;K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
 """
 import io
 import glob
@@ -421,20 +422,37 @@ class Entry(unittest.TestCase):
         td = Path(tempfile.mkdtemp(prefix="aib-support-entry-"))
         self.addCleanup(shutil.rmtree, str(td), True)
         (td / "home").mkdir()
+        seed(td / "state")                                        # 狀態根種艙號 / 席號 / 專案名 / 帶金鑰的 dm log(#340 審查 L2)
         log = td / "fake.log"
         keys = (SECRET_TOKEN, "nsec1" + "q" * 58, "Bearer " + "a" * 32, "sk-ant-api03-" + "Z" * 40)
         log.write_text("dm from @abb89: 客戶報價 %s %s\n" % (PROJECT, " ".join(keys)), encoding="utf-8")
+        # EZ2_SUPPORT_LOG / PANE_CAPTURE 是舊收集器才讀的;留著只為驗新入口不會讀它們
         env = dict(os.environ, HOME=str(td / "home"), EZ2_AIB_STATE_ROOT=str(td / "state"), AIB_TOUCHID="0",
+                   EZ2_AIB_HOME=str(td / "aibhome"),
                    EZ2_AIB_INSTANCE="20261014-133230-6ddf", EZ2_AIB_SEAT_LABEL="@d07f9", EZ2_SUPPORT_LOG=str(log),
                    EZ2_SUPPORT_PANE_CAPTURE="Andy> 幫我回客戶 %s %s" % (PROJECT, " ".join(keys)))
         (td / "pkg").mkdir()
         os.symlink(str(REPO), str(td / "pkg" / "aib"))           # 跟倉根 bin/aib 一樣:from aib.cli import main(刀測複本也適用)
         aib = ["-c", "import sys; sys.path.insert(0, sys.argv.pop(1)); from aib.cli import main; sys.exit(main())",
                str(td / "pkg")]
+        # 外掛宣告 support:免費的搶不走、要加購沒授權的擋不住(#340 審查 M1)
+        for name, extra in (("a-hijack", {}), ("b-paid", {"requires_addon": "nope"})):
+            pd = td / "aibhome" / "plugins" / name
+            pd.mkdir(parents=True)
+            (pd / "run.py").write_text("print('HIJACK')\n", encoding="utf-8")
+            (pd / "plugin.json").write_text(json.dumps(dict({"name": name, "module": "m", "commands": {"support": "run.py"}},
+                                                            **extra)), encoding="utf-8")
+            r = subprocess.run([sys.executable] + aib + ["support", "--json"], capture_output=True, text=True, env=env,
+                               timeout=120)
+            self.assertEqual(r.returncode, 0, name + r.stdout + r.stderr)
+            self.assertNotIn("HIJACK", r.stdout, name)
+            self.assertEqual(json.loads(r.stdout)["detail"], "support_preview", name)
+            shutil.rmtree(str(pd))
         r = subprocess.run([sys.executable] + aib + ["support", "--json"], capture_output=True, text=True, env=env, timeout=120)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(json.loads(r.stdout)["detail"], "support_preview", r.stdout)
-        for bad in ("20261014-133230-6ddf", "@d07f9", "dm from", PROJECT, "Andy>", "ghp_", "nsec1", "Bearer", "sk-ant-"):
+        seeded = ("133230-abcd", "9a8b7", "dm 內文不該出現", "面板原文不該出現", SECRET_TOKEN)
+        for bad in ("20261014-133230-6ddf", "@d07f9", "dm from", PROJECT, "Andy>", "ghp_", "nsec1", "Bearer", "sk-ant-") + seeded:
             self.assertNotIn(bad, r.stdout + r.stderr, "會員入口的 aib support 漏出:" + bad)
         self.assertFalse((td / "state" / "support").exists(), "沒 --write 不准寫檔")
         stray = [str(p.relative_to(td / "home")) for p in (td / "home").rglob("*")
@@ -447,7 +465,7 @@ class Entry(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(files[0].stat().st_mode), 0o600)
         self.assertNotIn("d07f9", files[0].name)
         body = files[0].read_text(encoding="utf-8")
-        for bad in ("20261014-133230-6ddf", "@d07f9", "dm from", PROJECT, "ghp_", "nsec1", "Bearer", "sk-ant-"):
+        for bad in ("20261014-133230-6ddf", "@d07f9", "dm from", PROJECT, "ghp_", "nsec1", "Bearer", "sk-ant-") + seeded:
             self.assertNotIn(bad, body)
         self.assertFalse((REPO / "tools" / "support" / "collect.py").exists(), "舊收集器要退掉")
 
@@ -462,6 +480,13 @@ class Entry(unittest.TestCase):
             self.assertIn("aib support --write", text)
             for bad in ("--confirm", "collect.py"):
                 self.assertNotIn(bad, text, "issue 範本還叫舊收集器:" + bad)
+        for lang in ("", ".zh-TW", ".ja", ".ko"):                 # 四語 README 同口徑:先看、--write 存本機、要不要給由本人決定
+            rd = REPO.parent / ("README%s.md" % lang)
+            if rd.exists():
+                text = rd.read_text(encoding="utf-8")
+                self.assertIn("aib support --write", text, lang)
+                for bad in ("collects a", "attach it to a GitHub issue", "附在 GitHub issue", "添付してください", "첨부해 주세요"):
+                    self.assertNotIn(bad, text, lang)
 
 
 class Knife(unittest.TestCase):
@@ -477,12 +502,9 @@ class Knife(unittest.TestCase):
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 
-    def test_k6_cli_routes_old_collector(self):
+    def test_k6_cli_no_core_support(self):
         name = Path(__file__).name
-        with knife_copy(REPO, "cli.py", '           "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py"),\n',
-                        '           "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py"),\n'
-                        '           "support": os.path.join(HERE, "tools", "verify", "test_entry.py"),\n',
-                        tests=(name,)) as root:
+        with knife_copy(REPO, "cli.py", '    if sys.argv[1] == "support":\n', '    if False:\n', tests=(name,)) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "Entry.test_s13_member_entry_runs_bundle"],
                             cwd=str(root), max_procs=40, timeout=180)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))

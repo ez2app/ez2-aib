@@ -290,7 +290,7 @@ aib 會改到自己資料夾以外的東西:開席時,它會在那家 AI 工具�
 | 用 pip 裝的 aib 0.1.6 或更舊版一直不會自己更新 | 這些版本不知道怎麼更新用 pip 裝的 aib。在同一個環境跑一次 `pip install --upgrade ez2-aib`;0.1.7 起開席時會自己更新。 |
 | `aib newrole`/第二大腦要你設 `EZ2_ROUTE_REGISTRY` | 你設了自己的知識庫(`EZ2_VAULT_DIR`,或電腦上有 `~/Desktop/Obsidian/Ez2`),aib 不會替你猜資料夾。把 `EZ2_ROUTE_REGISTRY` 指到你的路由契約;或拿掉 `EZ2_VAULT_DIR`,改用 aib 自己的 `~/.ez2-aib/vault`。 |
 | 安裝時說 `~/.local/bin` 已經有別的 `aib` | 你原本的 aib 照常可用,開源版放在旁邊的 `~/ez2-aib`。要用它試駕駛艙,請另開一個 macOS 使用者帳號。 |
-| 其他 | `aib support` 會打包一份去掉個資的回報(什麼都不會送出),附在 GitHub issue 上即可。 |
+| 其他 | 先跑 `aib support` 看回報包會有什麼,`aib support --write` 存在本機(什麼都不會送出);要不要附給維護者由你決定。 |
 
 ## 移除
 

@@ -15,9 +15,10 @@ body:
     attributes:
       label: Support pack / 回報資料包
       description: >-
-        Optional. Run `aib support` first to see what it would hold; to save it, run `aib support --write`.
-        Read the file yourself before attaching it. / 選填。先跑 `aib support` 看內容,要存再跑 `aib support --write`,
-        自己看過再附。
+        Optional. Run `aib support` first to see what it would hold; `aib support --write` saves it on this computer.
+        Whether to attach it for the maintainers is your call. It only holds versions and check results; read it before
+        attaching. / 選填。先跑 `aib support` 看內容,`aib support --write` 存在本機;要不要附給維護者由你決定。
+        裡面只有版本與檢查結果,附之前自己看過。
   - type: input
     id: env
     attributes:
