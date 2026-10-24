@@ -764,6 +764,13 @@ if [ "${1:-}" = "quote" ]; then
   exec "$T_PY3" "$HERE/aib_quote.py" "$@"
 fi
 
+# aib approve key / site / pending / yes / no / history(Andy 10-24「機房連動我們 aib 的生物辨識」):WordPress 登入第二步,
+#   本人 Touch ID 用 Secure Enclave 簽站上給的那筆;Mac 只往外拉、不開埠。委派 aib_approve.py。
+if [ "${1:-}" = "approve" ]; then
+  shift
+  exec "$T_PY3" "$HERE/aib_approve.py" "$@"
+fi
+
 # aib device list / lost(Andy 10-22「全照建議」遺失裝置):一次本人證明 ⇒ 聊天清單撤那台 + ez2.page 撤那台全部 token;
 #   只從電腦發起(不進遙控白名單)。委派 device_lost.py。
 if [ "${1:-}" = "device" ]; then
