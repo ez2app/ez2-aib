@@ -115,7 +115,7 @@
   "locked": "這條所屬的等級鎖著沒(SPEC §15:SSR / UR 出發後才開);鎖著的頁面顯示虛線框 + 鎖頭、不可點，不顯示開關",
   "room_tiers": "{SR|SSR|UR: {done, total, locked, unlock}}:艦長室任務板分頁用(沒有 room 任務的等級不列)",
   "i18n_note": "任務字鍵：動力室 30 條在核心 aib.power.page.task_<小寫 id>(標題)/ task_<小寫 id>_how(一句做法);艦長室 17 條的字由艦長室外掛出，鍵名同樣 task_<小寫 id> / task_<小寫 id>_how",
-  "ground_note": "SR14 綁 LINE 聯盟 / SR15 分享 LINE / SR16 看分享點擊 Ez2 Token(Andy 10-24 03:0x 三條一起先開):where room、requires server、偵測等 LINE 端(@9f808),分享 / 點擊要記誰"
+  "ground_note": "SR14 綁 LINE 聯盟 / SR15 分享 LINE / SR16 看分享點擊統計(10-24 三條一起先開):where room、requires server、偵測等 LINE 端(@9f808),分享 / 點擊要記誰"
  },
  "catalog": {
   "fields": [
@@ -252,7 +252,7 @@
   "rc": {
    "2": "not_yet"
   },
-  "note": "SSR1 艦隊擴編令 / UR1 全動力認證。序號只在伺服器驗、一次性、綁帳號、限頻、失敗不透露存在與否;本機不存、不回顯、不放指令列(ps 看得到)。序號來源 = 商店頁販售(Andy 02:2x),物品待定;收款 / 上架先問 Andy",
+  "note": "SSR1 艦隊擴編令 / UR1 全動力認證。序號只在伺服器驗、一次性、綁帳號、限頻、失敗不透露存在與否;本機不存、不回顯、不放指令列(ps 看得到)。序號的發放來源不在核心範圍",
   "item": "成功時的固定代碼 ssr1_fleet | ur1_full_power(頁面查 i18n,不顯示原文);伺服器上線前一律 null"
  },
  "crew_receipt": {
@@ -273,7 +273,7 @@
    "2": "代碼不認得 / 空 / 超過 5 項(檔不動)"
   },
   "note": "SPEC-power-room §13 / §14;伺服器上線前先存本機 state/power-crew.json;名次獎勵、擴充推薦由伺服器判、只在艦長室出現;本機只用來排任務板 / 問 AI 建議問題",
-  "sent": "送伺服器了沒(Andy 02:5x 改送伺服器：推薦擴充 + 依名次發銅、每帳號一次、伺服器簽);伺服器沒上線 ⇒ 一律 false"
+  "sent": "送伺服器了沒(只送名次、每帳號一次、伺服器簽;回饋由伺服器判、不在核心);伺服器沒上線 ⇒ 一律 false"
  },
  "support_receipt": {
   "command": "aib support [--write] [--json]",
