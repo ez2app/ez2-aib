@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import hashlib
 import json
 import math
@@ -120,7 +119,11 @@ def measure(sampler=None):
         if not isinstance(c, dict):
             continue
         key = c.get("key") or c.get("label")
-        out["cells"][key] = {"value": c.get("value"), "state": c.get("state"), "text": c.get("text")}
+        v = c.get("value")
+        if isinstance(v, float) and not math.isfinite(v):   # NaN / Inf ⇒ 量不到(--json 不准吐 NaN,r4 B-L6)
+            out["cells"][key] = {"value": None, "state": "unmeasured", "text": c.get("text")}
+            continue
+        out["cells"][key] = {"value": v, "state": c.get("state"), "text": c.get("text")}
     return out
 
 
@@ -147,7 +150,7 @@ def list_procs(run=None):
             pid = int(m.group(1))
             rows.append((pid, int(m.group(2)), int(m.group(3)), float(m.group(4)), int(m.group(5)),
                          names.get(pid, ""), m.group(6)))
-    if (out or "").strip() and not rows:               # 有輸出卻一列都解析不出來 ⇒ 量不到,不是「沒有行程」
+    if not rows:                                       # 空輸出 / 一列都解析不出來 ⇒ 量不到,不是「沒有行程」(ps 自己就是一支)
         return None
     return rows
 
@@ -267,7 +270,7 @@ def history_path(environ=None):
 def _num(cells, key):
     c = cells.get(key) or {}
     v = c.get("value")
-    return v if isinstance(v, (int, float)) and c.get("state") != "unmeasured" else None
+    return v if _finite(v) and c.get("state") != "unmeasured" else None
 
 
 HISTORY_KEYS = ("temp", "load1", "mem_free", "swap_mb")
@@ -391,10 +394,11 @@ def crashes(days=CRASH_DAYS, now=None, crash_dir=None):
     d = crash_dir or CRASH_DIR
     if not os.path.isdir(d):
         return {"state": "unmeasured", "detail": "crash_dir_missing", "classes": [], "files": 0, "days": days}
-    try:
-        names = glob.glob(os.path.join(d, "*.ips"))
+    try:                                               # glob 讀不了資料夾會默默回 [] ⇒ 改用 scandir 才分得出來(r4 B-L5)
+        with os.scandir(d) as it:
+            names = [e.path for e in it if e.name.endswith(".ips")]
     except OSError:
-        return {"state": "unmeasured", "detail": "crash_dir_unreadable", "classes": [], "files": 0}
+        return {"state": "unmeasured", "detail": "crash_dir_unreadable", "classes": [], "files": 0, "days": days}
     stamped = []
     for p in names:                                    # 逐檔 stat:中途被系統輪替刪掉的那份略過,不整區量不到
         try:
