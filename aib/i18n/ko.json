@@ -1925,7 +1925,7 @@
   "aib.handoff.verify.item.card": "3 프로젝트 카드 이 석의 행(이번 갱신)",
   "aib.handoff.verify.item.context": "4 석 기억(이번 갱신)",
   "aib.handoff.verify.item.brain": "5 세컨드 브레인(진행 노트 + 인계 노트)",
-  "aib.handoff.verify.item.summary": "6 주인에게 요약(영수증, 또는 인계 파일에 안 했다고 명시)",
+  "aib.handoff.verify.item.summary": "6 주인에게 요약(영수증 + 제2의 뇌 노트)",
   "aib.handoff.verify.item.handoff": "7 인계 영수증(세 단계, 파일 해시 일치, 미완성 없음)",
   "aib.handoff.verify.item.binding": "8 바인딩(인격·프로젝트 모두 바인딩, 또는 자동 바인딩 결과 있음)",
   "aib.handoff.verify.none": "이번에는 없음",

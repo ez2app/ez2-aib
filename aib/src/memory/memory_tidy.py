@@ -279,8 +279,9 @@ class _FallbackFilter:
             import dm_header                                  #   名字帶空格的新式、舊式 [@x > @y …] 都在這裡擋(#312 審查 A1)
             if dm_header.parse(text):
                 return False, {"why": "dm_header"}
-        except ImportError:
-            return False, {"why": "dm_header_unavailable"}    # 認不出抬頭寧可不收(不把別席的話當真人原話)
+        except ImportError:                                   # 認不出抬頭寧可不收,而且標成讀不到(不讓 0 句被當沉默放行;r2 A-S2)
+            _LAST_SOURCE[str((_seat or {}).get("code") or "")] = HUMAN_WORDS_NO_TRANSCRIPT
+            return False, {"why": "dm_header_unavailable"}
         return True, {"why": "fallback"}
 
 
@@ -345,15 +346,16 @@ def human_words(ctx, since="", span_rounds=False):
     if not paths:
         _LAST_SOURCE[ctx["code"]] = HUMAN_WORDS_NO_TRANSCRIPT
         return []
-    _LAST_SOURCE[ctx["code"]] = human_words_status()
     human_filter = _human_filter() or _FallbackFilter      # 缺件 ⇒ 退路篩(收據標 fallback;10-24 維護者:不能跳過)
     seat = {"human_bound": True, "code": ctx["code"]}
     if human_filter is _FallbackFilter:                   # 退路篩不認 bot 席(#312 審查 A5);正式判準照舊
         try:
             import aib_handoff as _ah
             seat["human_bound"] = (_ah.binding_state(ctx["code"]) or {}).get("problem") != "bot"
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001 —— 認不出是不是 bot 席 ⇒ 不收,而且標成讀不到(不當真人沉默;r2 B-R5)
+            _LAST_SOURCE[ctx["code"]] = HUMAN_WORDS_NO_TRANSCRIPT
+            return []
+    _LAST_SOURCE[ctx["code"]] = human_words_status()          # 退路篩匯入失敗會在讀的過程改成讀不到
     out = []
     for path in paths:
         try:
@@ -529,11 +531,23 @@ def collect(seat="", out=None, repo=None):
     mpc, _why = main_persona_target(ctx)
     since = evidence_since(ctx["code"])
     words = [w for _t, w in human_words(ctx, since)]
+    src = words_source(ctx["code"])
+    round_n = len(words)
+    try:                                       # verify 的「本輪 0 句」用這一輪起點算,不用上一張收據之後(輪中整理過就會少算;#312 r2 B-H2)
+        import aib_handoff
+        rs0 = aib_handoff.current_round_start(ctx["code"])
+        if rs0:
+            r_since = datetime.datetime.fromtimestamp(rs0).astimezone().isoformat(timespec="seconds")
+            if not since or _when(r_since) < _when(since):
+                round_n = len(human_words(ctx, r_since))
+                _LAST_SOURCE[ctx["code"]] = src
+    except Exception:  # noqa: BLE001
+        pass
     _write_json(tidy_dir() / ("%s.collect.json" % ctx["code"]),
                 {"nonce": nonce, "facts_sha": _sha(ftext.strip("\n")), "at": _now(), "project_uid": ctx.get("project_uid"),
                  "persona_sha": _sha(pc["text"]) if pc else "", "persona_since": since,
                  # 證據只認這一份(collect 當下抽的 the maintainer 原話),不從機器事實文字切 —— 文字裡的提交標題、各席列都可能被寫成假原話
-                 "human_words": words, "human_words_status": words_source(ctx["code"]),
+                 "human_words": words, "human_words_status": src, "human_words_round_count": round_n,
                  "main_sha": _sha(mpc["text"]) if mpc else ""})
     if out:
         Path(out).write_text(draft, encoding="utf-8")
@@ -1003,13 +1017,15 @@ def apply(text, seat="", defer_big=False, skip_context=False, add_only=False):
     col = _read_json(tidy_dir() / ("%s.collect.json" % ctx["code"]), {})
     hw = col.get("human_words_status") or human_words_status()
     if not human_words_usable(hw) and files["persona"]["status"] == "skipped":
-        files["persona"]["why"] = "讀不到真人原話(缺 human_filter,等私倉匯出)"
+        files["persona"]["why"] = ("找不到這一席的對話檔(讀不到真人原話)" if hw == HUMAN_WORDS_NO_TRANSCRIPT
+                                   else "讀不到真人原話(缺 human_filter,等私倉匯出)")
     status = "ok" if all(f["status"] in ("ok", "skipped") for f in files.values()) else "partial"   # waiting(等 the maintainer 按)也算 partial
     rec = {"status": status, "at": _now(), "seat": ctx["code"], "seat_id": ctx.get("seat_id") or "",
            "persona_since": col.get("persona_since") or "",
            "model": ctx["model"], "project_uid": ctx.get("project_uid") or "", "nonce": parts["nonce"], "files": files}
     rec["human_words"] = hw
-    rec["human_words_count"] = len(col.get("human_words") or [])    # verify:有原話卻 skipped 人格 ⇒ 紅
+    rec["persona_uid"] = ctx.get("persona_uid") or ""     # verify 比 writes.jsonl 的卡號(主人格那筆不算本席;#312 r2 A-M1)
+    rec["human_words_count"] = col.get("human_words_round_count", len(col.get("human_words") or []))   # verify:本輪有原話卻 skipped 人格 ⇒ 紅
     _write_json(tidy_dir() / ("%s.json" % ctx["code"]), rec)
     memory_archive.spawn_background()           # 一天一次的 90 天清理,背景、不等
     return rec

@@ -224,11 +224,25 @@ class Verify(unittest.TestCase):
                             (self.mt.HUMAN_WORDS_FALLBACK, 0, True), ("ok", 0, True)):
             self.tidy["human_words"], self.tidy["human_words_count"] = hw, n
             self.assertEqual(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"], want, (hw, n))
-        writes.write_text(keep, encoding="utf-8")
         # #312 審查 A2:本輪稍早已寫進人格卡,回顧的 --add-only 沒東西補 ⇒ 收據 skipped、真人又講了話,仍算寫過
+        own = json.dumps({"seat": "abcde", "uid": "pu1", "at": "2026-10-13T18:00:00+08:00"}) + "\n"
+        writes.write_text(own, encoding="utf-8")
+        self.tidy["persona_uid"] = "pu1"
         self.tidy["files"]["persona"] = {"status": "skipped", "why": "只補不改:這幾維都滿 3 條,沒有新增"}
         self.tidy["human_words"], self.tidy["human_words_count"] = self.mt.HUMAN_WORDS_FALLBACK, 4
         self.assertTrue(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        # r2 A-M1 / B-H1:本席這輪只寫了主人格卡(同席碼、別的卡號)⇒ 本席卡 skipped 有原話仍紅
+        writes.write_text(json.dumps({"seat": "abcde", "uid": "main9", "at": "2026-10-13T18:00:00+08:00"}) + "\n",
+                          encoding="utf-8")
+        self.assertFalse(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        # r2 A-S1:量不到這一輪起點 ⇒ 不放行「稍早寫過」
+        writes.write_text(own, encoding="utf-8")
+        with mock.patch.object(aib_handoff, "current_round_start", lambda c, h=None: 0.0):
+            self.assertFalse(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        # 舊收據沒有卡號 ⇒ 也不放行
+        del self.tidy["persona_uid"]
+        self.assertFalse(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        writes.write_text(keep, encoding="utf-8")
         (self.td / "tidy" / "writes.jsonl").write_text("", encoding="utf-8")       # 本輪沒寫過 ⇒ 紅
         self.assertFalse(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
         self.tidy["files"]["persona"] = {"status": "waiting", "why": "第一艦長卡大變動"}

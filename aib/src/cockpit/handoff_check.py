@@ -232,10 +232,14 @@ def verify(code, home=None, review=True):
             encoding="utf-8").splitlines() if x.strip()]
     except (OSError, ValueError, ImportError):
         rows = []
-    wrote = any(r.get("seat") == code and _ts(r.get("at")) >= start for r in rows)    # 本輪本席真的寫過人格卡
+    puid = (tidy or {}).get("persona_uid") or ""
+    wrote = any(r.get("seat") == code and _ts(r.get("at")) >= start and (not puid or r.get("uid") == puid)
+                for r in rows)                                                       # 本輪本席真的寫過人格卡
+    wrote_own = bool(start) and bool(puid) and any(                                  # 本席那張(主人格卡那筆不算;r2 A-M1)
+        r.get("seat") == code and _ts(r.get("at")) >= start and r.get("uid") == puid for r in rows)
     if per.get("status") == "ok":
         add("persona", wrote, "writes.jsonl" if wrote else T("aib.handoff.verify.no_write"))
-    elif wrote and per.get("status") == "skipped":
+    elif wrote_own and per.get("status") == "skipped":                               # 起點 0 / 舊收據沒卡號 ⇒ 不放行(r2 A-S1)
         # 本輪稍早已寫進人格卡,之後回顧的 --add-only 沒東西可補(或那幾維已滿)蓋了收據 ⇒ 照算寫過(#312 審查 A2)
         add("persona", True, "writes.jsonl(%s)" % (per.get("why") or "skipped"))
     else:

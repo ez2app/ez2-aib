@@ -1925,7 +1925,7 @@
   "aib.handoff.verify.item.card": "3 project card seat row (updated this round)",
   "aib.handoff.verify.item.context": "4 seat memory (updated this round)",
   "aib.handoff.verify.item.brain": "5 second brain (progress note + handoff notes)",
-  "aib.handoff.verify.item.summary": "6 summary for the owner (receipt, or the handoff file says not done)",
+  "aib.handoff.verify.item.summary": "6 summary for the owner (receipt with the second-brain note)",
   "aib.handoff.verify.item.handoff": "7 handoff receipt (three steps, file hash matches, nothing incomplete)",
   "aib.handoff.verify.item.binding": "8 binding (persona and project bound, or an auto-bind result)",
   "aib.handoff.verify.none": "none this round",

@@ -1925,7 +1925,7 @@
   "aib.handoff.verify.item.card": "3 專案卡本席列(本輪更新)",
   "aib.handoff.verify.item.context": "4 席位記憶(本輪更新)",
   "aib.handoff.verify.item.brain": "5 第二大腦(進度筆記 + 交接筆記)",
-  "aib.handoff.verify.item.summary": "6 給主人的總結(有收據、或交接檔寫明沒做)",
+  "aib.handoff.verify.item.summary": "6 給主人的總結(收據 + 第二大腦筆記)",
   "aib.handoff.verify.item.handoff": "7 交接收據(三步、檔案雜湊對、沒有不完整)",
   "aib.handoff.verify.item.binding": "8 綁定(人格、專案都綁著,或有自動綁結果)",
   "aib.handoff.verify.none": "本輪沒有",

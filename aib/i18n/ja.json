@@ -1925,7 +1925,7 @@
   "aib.handoff.verify.item.card": "3 プロジェクトカードのこの席の行(今回更新)",
   "aib.handoff.verify.item.context": "4 席の記憶(今回更新)",
   "aib.handoff.verify.item.brain": "5 セカンドブレイン(進捗ノート + 引き継ぎノート)",
-  "aib.handoff.verify.item.summary": "6 持ち主へのまとめ(受領書、または引き継ぎに未実施と明記)",
+  "aib.handoff.verify.item.summary": "6 持ち主へのまとめ(受領書 + 第二の脳のノート)",
   "aib.handoff.verify.item.handoff": "7 引き継ぎ受領書(3 段階、ファイルのハッシュ一致、不完全なし)",
   "aib.handoff.verify.item.binding": "8 バインド(人格・プロジェクトとも済み、または自動バインド結果あり)",
   "aib.handoff.verify.none": "今回はなし",

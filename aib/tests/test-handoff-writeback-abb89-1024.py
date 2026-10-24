@@ -10,6 +10,7 @@ W2 缺 human_filter ⇒ human_words 從這一席的對話檔讀出真人原話(�
 W3 交接筆記:同一輪本席同一步的上一則 ⇒ 取代;別席 / 別步 / 上一輪 / 沒有這一輪起點 ⇒ 不取代;步驟標籤只取數字
 W4 總結第二大腦:取代本席同專案上一則總結(別席 / 別專案不取代);寫不進回 ok=false、不丟例外
 W5 總結內文帶標題、大項、摘要、下一步;不帶證據指令
+W6–W9(r2):認不出抬頭 / 量不到 bot ⇒ 標讀不到;句數從本輪起點算;回顧 CLI 筆記寫不進 rc 2
 刀:K1 退路篩永遠 True ⇒ W1 紅;K2 不看這一輪起點 ⇒ W3 紅;K3 總結不帶 supersedes ⇒ W4 紅
 """
 import json
@@ -181,6 +182,62 @@ class Behaviour(Base):
         for s in ("0.1.52 整合", "五張收進", "發版", "#311", "合 main"):
             self.assertIn(s, body)
         self.assertNotIn("gh pr checks", body)
+
+
+    def test_w6_dm_header_missing_is_unreadable(self):
+        """退路篩認不出抬頭(dm_header 匯入不了)⇒ 一句都不收,來源標讀不到(不被當真人沉默;#312 r2 A-S2)。"""
+        path = Path(self.tmp) / "seat.jsonl"
+        path.write_text("\n".join(transcript_lines()) + "\n", encoding="utf-8")
+        with mock.patch.dict(sys.modules, {"human_filter": None, "dm_header": None}), \
+                mock.patch.object(aib_handoff, "rounds", return_value=[]), \
+                mock.patch("seat_fork.find_transcript", return_value=path):
+            self.assertEqual(memory_tidy.human_words({"code": "hhhhh", "seat_uid": "u"}, ""), [])
+        self.assertEqual(memory_tidy.words_source("hhhhh"), NO_TRANSCRIPT)
+
+    def test_w7_round_count_from_round_start(self):
+        """收據的句數從這一輪起點算,不從上一張收據之後(輪中整理過、之後沒再講也不能 0 句放行;#312 r2 B-H2)。"""
+        seen = []
+
+        def fake_words(ctx, since="", span_rounds=False):
+            seen.append(since)
+            return [("t", "a"), ("t", "b"), ("t", "c")] if since <= "2026-10-24T12:00:00+08:00" else []
+        tdir = Path(self.tmp) / "tidy"
+        tdir.mkdir()
+        with mock.patch.object(memory_tidy, "seat_info", return_value={"code": "rrrrr"}), \
+                mock.patch.object(memory_tidy, "facts", return_value="f"), \
+                mock.patch.object(memory_tidy, "render_draft", return_value="d"), \
+                mock.patch.object(memory_tidy, "persona_card", return_value=None), \
+                mock.patch.object(memory_tidy, "main_persona_target", return_value=(None, "")), \
+                mock.patch.object(memory_tidy, "evidence_since", return_value="2026-10-24T13:00:00+08:00"), \
+                mock.patch.object(memory_tidy, "human_words", side_effect=fake_words), \
+                mock.patch.object(memory_tidy, "words_source", return_value=memory_tidy.HUMAN_WORDS_FALLBACK), \
+                mock.patch.object(memory_tidy, "tidy_dir", return_value=tdir), \
+                mock.patch.object(aib_handoff, "current_round_start", return_value=1_792_814_400.0):   # 10-24 12:00 +08
+            memory_tidy.collect("rrrrr")
+        col = json.loads((tdir / "rrrrr.collect.json").read_text(encoding="utf-8"))
+        self.assertEqual((col["human_words"], col["human_words_round_count"]), ([], 3), seen)
+
+    def test_w8_bot_check_unmeasured_is_unreadable(self):
+        """退路篩量不到是不是 bot 席 ⇒ 不收、標讀不到(r2 B-R5)。"""
+        path = Path(self.tmp) / "seat.jsonl"
+        path.write_text("\n".join(transcript_lines()) + "\n", encoding="utf-8")
+        with mock.patch.dict(sys.modules, {"human_filter": None}), \
+                mock.patch.object(aib_handoff, "rounds", return_value=[]), \
+                mock.patch.object(aib_handoff, "binding_state", side_effect=OSError("x")), \
+                mock.patch("seat_fork.find_transcript", return_value=path):
+            self.assertEqual(memory_tidy.human_words({"code": "bbbbb", "seat_uid": "u"}, ""), [])
+        self.assertEqual(memory_tidy.words_source("bbbbb"), NO_TRANSCRIPT)
+
+    def test_w9_review_cli_rc2_when_note_fails(self):
+        """遺漏回顧筆記寫不進 ⇒ CLI rc 2(r2 A-S4)。"""
+        import handoff_review
+        f = Path(self.tmp) / "r.md"
+        f.write_text("x", encoding="utf-8")
+        for note in ("", "failed: no vault"):
+            with mock.patch.object(handoff_review, "apply", return_value={"note": note, "lines": 0, "by_kind": {}}):
+                self.assertEqual(handoff_review.main(["apply", "--file", str(f)]), 2, note)
+        with mock.patch.object(handoff_review, "apply", return_value={"note": "3abc", "lines": 1, "by_kind": {}}):
+            self.assertEqual(handoff_review.main(["apply", "--file", str(f)]), 0)
 
 
 class Knives(Base):
