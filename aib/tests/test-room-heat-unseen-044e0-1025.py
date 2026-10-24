@@ -4,7 +4,10 @@
 全在暫存狀態根 + 假 tick / 假行程表 / 假時鐘跑;U9 是唯一碰真行程表的(只看自己起的 sleep,不收任何行程)。
 U1 cpu_total:沒上一次 ⇒ 當場量 0.5 秒;有上一次(1–120 秒內)⇒ 用 tick 差;tick 量不到 ⇒ unmeasured(不是 0);
    計數器倒退(重開機)⇒ 重量;tick 檔 0600、落在 EZ2_AIB_STATE_ROOT 底下
-U2 unseen = 在忙的核 − ps 看得到的合計(不小於 0);ps 量不到 / CPU 量不到 ⇒ unmeasured
+U1c 同一時間窗:每個行程的累計 CPU 跟 tick 一起存、兩次相減(審查 M1);上次漏列的「新」行程累計 > 時間窗 2 倍 ⇒ 不算;
+    pid 重用照新的算;Linux steal 另列;ps time 兩種格式都讀得懂
+U1d 真 tick 冒煙:讀兩次單調遞增、busy ≤ total
+U2 unseen = 在忙的核 − 同窗看得到的(不小於 0);看得到的多一截 ⇒ unmeasured window_mismatch(不回假的 0);量不到 ⇒ unmeasured
 U3 快照多 cpu_total / unseen_cpu,歷史多記 cpu_busy / unseen_cpu
 U4 歸屬:新行程往上找「取樣開始就在」的祖先 ⇒ 組別 / 席碼;程式名取最上層新行程;沒有祖先 ⇒ other_app
 U4b fork 完、exec 前先被看到(名字是父行程的)⇒ exec 後重記程式名、不重複算出生
@@ -13,10 +16,14 @@ U5 節流:60 秒內第二次 ⇒ 上次結果 + throttled(不再取樣);過 60 �
 U6 另一支正在跑(鎖被拿著)⇒ busy
 U7 隱私:程式名只有檔名(腳本取檔名、sh -c 只給 sh);輸出不含指令列 / 路徑 / token
 U8 上次結果檔被改 ⇒ 只放回白名單欄位、名字再洗一次、組別不在表上的丟掉
+U7c 審查 H1:shell 合寫旗標(-ec / -lc / -xc / -euc)、-s、-o 帶值、--、不認得的長旗標 ⇒ 只回 shell 名;
+    腳本名有空白 / 不像腳本檔名 ⇒ 不收;-m 模組名要乾淨;churn 輸出與快取都不出現 inline 指令裡的字
+U7d 上一次被砍留下半份紀錄 ⇒ 照常重跑(審查 L1);room 夾是 symlink ⇒ error、不寫(審查 L6)
 U7b E3:別的帳號(root)起的新行程歸成「system / ?」、不出名字、不讀它的 argv;throttled 帶 cached_at(E4)
 U9 真行程表:取樣期間自己起 12 支 sleep ⇒ 看得到 ≥ 8 支、過半程式名是 sleep、父行程是自己(只數自己起的,不看排名)
 U10 CLI:`churn --json` 走 room_heat_unseen.churn、秒數照傳;文字模式 throttled 有提示、非 ok 回 1
-刀(複本 + run_guarded):K1 unseen 不扣 ps ⇒ U2 紅;K2 節流拿掉 ⇒ U5 紅;K3 程式名帶整串引數 ⇒ U7 紅;
+刀(複本 + run_guarded):K1 時間窗對不上也回數字 ⇒ U2 紅;K2 節流拿掉 ⇒ U5 紅;K3 只認單獨的 -c / -s ⇒ U7c 紅;
+K5 上次漏列的長壽行程也算進 seen ⇒ U1c 紅;
 K4 上次結果不洗名字 ⇒ U8 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import fcntl
@@ -69,38 +76,84 @@ class Ticks:
         return self.seq.pop(0) if self.seq else None
 
 
+class Times:
+    def __init__(self, seq):
+        self.seq = list(seq)
+
+    def __call__(self):
+        return self.seq.pop(0) if self.seq else None
+
+
 class CpuTotal(Base):
     def test_u1_cpu_total(self):
         slept = []
-        r = RU.cpu_total(ticks_fn=Ticks([(100, 1000), (150, 1100)]), now=1000.0, sleep=slept.append, ncpu=10)
-        self.assertEqual(slept, [0.5])
-        self.assertEqual((r["state"], r["pct"], r["busy_cores"], r["window_s"], r["cores"]), ("ok", 50.0, 5.0, 0.5, 10))
+        nothing = Times([])
+        r = RU.cpu_total(ticks_fn=Ticks([(100, 1000), (150, 1100)]), now=1000.0, sleep=slept.append, ncpu=10,
+                         times_fn=nothing)
+        self.assertEqual(slept, [1.0])
+        self.assertEqual((r["state"], r["pct"], r["busy_cores"], r["window_s"], r["cores"]), ("ok", 50.0, 5.0, 1.0, 10))
         f = self.room(RU.TICKS_FILE)
         self.assertTrue(str(f).startswith(self.d))
         self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600)
         slept.clear()
-        r = RU.cpu_total(ticks_fn=Ticks([(170, 1200)]), now=1005.5, sleep=slept.append, ncpu=10)
+        r = RU.cpu_total(ticks_fn=Ticks([(170, 1200)]), now=1006.0, sleep=slept.append, ncpu=10, times_fn=nothing)
         self.assertEqual(slept, [], "有 5 秒前的 tick 卻又當場量")
         self.assertEqual((r["pct"], r["busy_cores"], r["window_s"]), (20.0, 2.0, 5.0))
-        r = RU.cpu_total(ticks_fn=Ticks([(5, 50), (6, 60)]), now=1010.0, sleep=slept.append, ncpu=10)
-        self.assertEqual(slept, [0.5], "計數器倒退(重開機)卻拿舊 tick 算")
+        self.assertNotIn("seen_cores", r, "沒有行程時間卻給了 seen_cores")
+        r = RU.cpu_total(ticks_fn=Ticks([(5, 50), (6, 60)]), now=1010.0, sleep=slept.append, ncpu=10, times_fn=nothing)
+        self.assertEqual(slept, [1.0], "計數器倒退(重開機)卻拿舊 tick 算")
         self.assertEqual(r["pct"], 10.0)
-        r = RU.cpu_total(ticks_fn=Ticks([]), now=1020.0, sleep=slept.append, ncpu=10)
+        r = RU.cpu_total(ticks_fn=Ticks([]), now=1020.0, sleep=slept.append, ncpu=10, times_fn=nothing)
         self.assertEqual(r, {"state": "unmeasured", "detail": "cpu_ticks_unavailable"})
 
     def test_u1b_stale_ticks_resampled(self):
-        RU.cpu_total(ticks_fn=Ticks([(0, 0), (10, 100)]), now=0.0, sleep=lambda s: None, ncpu=4)
+        RU.cpu_total(ticks_fn=Ticks([(0, 0), (10, 100)]), now=0.0, sleep=lambda s: None, ncpu=4, times_fn=Times([]))
         slept = []
-        RU.cpu_total(ticks_fn=Ticks([(20, 200), (30, 300)]), now=500.0, sleep=slept.append, ncpu=4)
-        self.assertEqual(slept, [0.5], "上一次 tick 已經 8 分鐘前卻照用")
+        RU.cpu_total(ticks_fn=Ticks([(20, 200), (30, 300)]), now=500.0, sleep=slept.append, ncpu=4, times_fn=Times([]))
+        self.assertEqual(slept, [1.0], "上一次 tick 已經 8 分鐘前卻照用")
+
+    def test_u1c_same_window_seen_and_steal(self):
+        # 第一次(當場量 1 秒):1 號行程用 0.5 秒 ⇒ 0.5 核;第二次(5 秒後):1 號再用 5 秒、3 號新開用 1 秒、
+        # 9 號「新的」卻已累計 400 秒(上次 ps 漏列)⇒ 不算
+        r = RU.cpu_total(ticks_fn=Ticks([(0, 0, 0), (40, 100, 5)]), now=0.0, sleep=lambda s: None, ncpu=10,
+                         times_fn=Times([{1: 100.0, 2: 50.0}, {1: 100.5, 2: 50.0}]))
+        self.assertEqual((r["seen_cores"], r["steal_pct"]), (0.5, 5.0))
+        r = RU.cpu_total(ticks_fn=Ticks([(140, 200, 5)]), now=6.0, sleep=lambda s: None, ncpu=10,
+                         times_fn=Times([{1: 105.5, 2: 50.0, 3: 1.0, 9: 400.0}]))
+        self.assertEqual((r["busy_cores"], r["window_s"], r["seen_cores"], r["steal_pct"]), (10.0, 5.0, 1.2, 0.0))
+        self.assertEqual(RU.seen_cores({1: 10.0}, {1: 2.0}, 5.0), 0.4, "pid 重用(數字變小)沒照新的算")
+        self.assertEqual(RU._ps_seconds("83:01.80"), 4981.8)
+        self.assertEqual(RU._ps_seconds("2-01:00:05"), 2 * 86400 + 3605)
+        self.assertIsNone(RU._ps_seconds("x:y"))
+        self.assertEqual(RU.proc_times(run=lambda c: "  1 83:01.80\n 22 0:00.10\n bad line here\n"), {1: 4981.8, 22: 0.1})
+
+    def test_u1d_real_ticks_smoke(self):
+        if not (sys.platform == "darwin" or sys.platform.startswith("linux")):
+            self.skipTest("只在 macOS / Linux")
+        a = RU.read_ticks()
+        time.sleep(1.2)                                   # macOS tick 約每秒更新
+        b = RU.read_ticks()
+        self.assertTrue(a and b, "量不到 tick")
+        self.assertTrue(b[0] >= a[0] and b[1] > a[1], (a, b))
+        self.assertTrue(a[0] <= a[1] and b[0] <= b[1], (a, b))
+
+    def test_u1e_tick_boundary_waits_once_more(self):
+        slept = []
+        r = RU.cpu_total(ticks_fn=Ticks([(10, 100), (10, 100), (20, 200)]), now=0.0, sleep=slept.append, ncpu=2,
+                         times_fn=Times([]))
+        self.assertEqual((slept, r["state"], r["window_s"]), ([1.0, 0.5], "ok", 1.5))
 
     def test_u2_unseen(self):
-        ok = {"state": "ok", "busy_cores": 6.95, "cores": 10, "pct": 69.5}
-        rows = [(1, 0, ME, 150.0, 1, "a", "a"), (2, 1, ME, 145.0, 1, "b", "b")]
-        self.assertEqual(RU.unseen(ok, rows), {"state": "ok", "cores": 4.0, "seen_cores": 2.95})
-        self.assertEqual(RU.unseen(dict(ok, busy_cores=1.0), rows)["cores"], 0.0)
-        self.assertEqual(RU.unseen(ok, None), {"state": "unmeasured", "detail": "ps_failed"})
-        self.assertEqual(RU.unseen({"state": "unmeasured"}, rows)["state"], "unmeasured")
+        ok = {"state": "ok", "busy_cores": 6.95, "cores": 10, "pct": 69.5, "seen_cores": 2.95}
+        self.assertEqual(RU.unseen(ok), {"state": "ok", "cores": 4.0, "seen_cores": 2.95})
+        self.assertEqual(RU.unseen(dict(ok, busy_cores=2.9))["cores"], 0.0, "差一點點(四捨五入)該夾 0")
+        self.assertEqual(RU.unseen(dict(ok, busy_cores=1.0)),
+                         {"state": "unmeasured", "detail": "window_mismatch", "seen_cores": 2.95},
+                         "看得到的比在忙的多一截卻回 0(假數字)")
+        no_seen = dict(ok)
+        no_seen.pop("seen_cores")
+        self.assertEqual(RU.unseen(no_seen), {"state": "unmeasured", "detail": "ps_failed"})
+        self.assertEqual(RU.unseen({"state": "unmeasured"})["state"], "unmeasured")
 
 
 ROWS = [(100, 1, ME, 50.0, 2048, "claude", "claude --resume"),
@@ -113,7 +166,8 @@ class Snapshot(Base):
     def test_u3_snapshot_and_history(self):
         def sampler():
             return [{"key": "load1", "value": 3.0, "text": "3.0", "state": "ok"}], 0.01
-        cpu = lambda now=None, environ=None: {"state": "ok", "cores": 10, "pct": 30.0, "busy_cores": 3.0, "window_s": 5.0}
+        cpu = lambda now=None, environ=None: {"state": "ok", "cores": 10, "pct": 30.0, "busy_cores": 3.0, "window_s": 5.0,
+                                              "seen_cores": 0.7}
         s = RH.snapshot(sampler=sampler, run=lambda c: UC if any("ucomm" in x for x in c) else PS,
                         owner_of=lambda pid: ("abcde", "%1"), now=time.time(), scan_fn=lambda **k: ([], []), cpu_fn=cpu)
         self.assertEqual(s["cpu_total"]["busy_cores"], 3.0)
@@ -245,6 +299,49 @@ class Churn(Base):
         for leak in ("/Users", "token", "secret", "abc\""):
             self.assertNotIn(leak, blob)
 
+    def test_u7c_shell_flag_groups_h1(self):
+        P = RU.program_of
+        secret = "psql postgres://user:Passw0rd@db mydb"
+        for argv in (["sh", "-ec", secret], ["bash", "-lc", secret], ["bash", "-xc", secret], ["sh", "-euc", secret],
+                     ["sh", "-s", secret], ["zsh", "-o", "pipefail", "-c", secret], ["bash", "--", secret],
+                     ["bash", "--command", secret], ["bash", "/x/my secret.sh"], ["bash", "/x/Passw0rd"]):
+            self.assertEqual(P(argv[0], argv), argv[0], argv)
+        for argv in (["sh", "-ec", "token_abc.sh"], ["bash", "-lc", "Passw0rd.py"]):   # 指令字串就算長得像腳本也不收
+            self.assertEqual(P(argv[0], argv), argv[0], argv)
+        self.assertEqual(P("bash", ["bash", "--rcfile", "/x/Passw0rd.sh", "-e", "/x/run.sh"]), "run.sh")
+        self.assertEqual(P("bash", ["bash", "-O", "extglob", "/x/run.sh"]), "run.sh")
+        self.assertEqual(P("python3", ["python3", "-m", "http.server"]), "http.server")
+        self.assertEqual(P("python3", ["python3", "-m", "a;rm -rf"]), "python3")
+        self.assertEqual(P("python3", ["python3", "/x/secret token.py"]), "python3")
+        # churn 輸出與快取檔都不准出現
+        c = Clock()
+        table = {100: (1, "tmux", 1.0), 1: (0, "launchd", 1.0)}
+        n = {"c": 0}
+
+        def pids():
+            n["c"] += 1
+            if n["c"] == 2:
+                table[900] = (100, "sh", 0.3)
+            return list(table)
+        r = RU.churn(seconds=2, now=1000.0, platform="linux", fns=(pids, lambda p: table.get(p),
+                     lambda p: ["sh", "-ec", secret]), rows=[], cls={100: ("aib_core", "")}, clock=c, sleep=c.sleep)
+        self.assertEqual([x["program"] for x in r["top"]], ["sh"])
+        for blob in (json.dumps(r), self.room(RU.CHURN_FILE).read_text()):
+            for leak in ("Passw0rd", "postgres", "psql"):
+                self.assertNotIn(leak, blob)
+
+    def test_u7d_crashed_run_and_bad_room(self):
+        os.makedirs(RH.state_dir(), exist_ok=True)
+        self.room(RU.CHURN_FILE).write_text(json.dumps({"started_at": 990.0, "result": None}))   # 上一次被砍
+        self.assertEqual(self.run_churn(1000.0)["state"], "ok", "上一次被砍留下的半份紀錄卡住 60 秒")
+        shutil.rmtree(RH.state_dir())
+        other = Path(self.d) / "elsewhere"
+        other.mkdir()
+        os.symlink(str(other), RH.state_dir())
+        r = self.run_churn(5000.0)
+        self.assertEqual((r["state"], r["detail"]), ("error", "churn_sample_failed"), "room 是 symlink 還照寫")
+        self.assertEqual(list(other.iterdir()), [], "寫進 symlink 指的地方了")
+
     def test_u8_cached_cleaned(self):
         os.makedirs(RH.state_dir(), exist_ok=True)
         evil = {"started_at": 990.0, "result": {"state": "ok", "t": 990.0, "seconds": 10, "births": 3,
@@ -316,12 +413,14 @@ class Cli(Base):
 
 
 KNIVES = [
-    ("K1", "src/cockpit/room_heat_unseen.py", "    seen = sum(r[3] for r in rows) / 100.0\n", "    seen = 0.0\n",
+    ("K1", "src/cockpit/room_heat_unseen.py", "    if seen > busy + max(0.3, busy * 0.15):\n", "    if False:\n",
      "CpuTotal.test_u2_unseen"),
     ("K2", "src/cockpit/room_heat_unseen.py", "CHURN_THROTTLE_S = 60\n", "CHURN_THROTTLE_S = 0\n",
      "Churn.test_u5_throttle"),
-    ("K3", "src/cockpit/room_heat_unseen.py", "                    return os.path.basename(a)\n",
-     "                    return \" \".join(args)\n", "Churn.test_u7_privacy"),
+    ("K3", "src/cockpit/room_heat_unseen.py", "            if \"c\" in a[1:] or \"s\" in a[1:]:\n",
+     "            if a in (\"-c\", \"-s\"):\n", "Churn.test_u7c_shell_flag_groups_h1"),
+    ("K5", "src/cockpit/room_heat_unseen.py", "        elif c <= window * 2:\n", "        else:\n",
+     "CpuTotal.test_u1c_same_window_seen_and_steal"),
     ("K4", "src/cockpit/room_heat_unseen.py", "                    \"program\": room_heat.safe_name(x.get(\"program\"), 40),\n",
      "                    \"program\": x.get(\"program\"),\n", "Churn.test_u8_cached_cleaned"),
 ]

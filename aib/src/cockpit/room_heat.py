@@ -438,7 +438,7 @@ def snapshot(sampler=None, run=None, owner_of=None, now=None, environ=None, reco
     except Exception:  # noqa: BLE001 —— 全機 CPU 量不到照實 unmeasured,不擋快照
         total = {"state": "unmeasured", "detail": "cpu_ticks_unavailable"}
     rows = list_procs(run)
-    hidden = RU.unseen(total, rows)
+    hidden = RU.unseen(total)
     cands, held, cand_detail = [], [], None
     if rows is None:
         grp = {"state": "unmeasured", "detail": "ps_failed", "items": []}
