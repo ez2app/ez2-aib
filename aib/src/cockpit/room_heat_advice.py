@@ -42,7 +42,8 @@ CACHE_FILE = "advice-last.json"
 CACHE_S = 60
 ACTIVE_S = 30 * 60                   # 對話紀錄 30 分鐘內有寫 = 活席
 TAIL_PER_FILE = 8 * 1024 * 1024
-TAIL_TOTAL = 60 * 1024 * 1024
+TAIL_TOTAL = 60 * 1024 * 1024       # E1 上限是每檔 60 MB、合計 200 MB;這裡更緊
+LINE_MAX = 1024 * 1024
 HOOK_SLOW_MS = 1000
 HOOK_NEAR = 0.8                      # 中位數到 timeout 的 8 成也算慢
 HOOK_KILL = 0.98
@@ -66,8 +67,9 @@ def _T(key, **p):
 
 
 def hint_of(code, metric):
+    """E6:hint 是固定字串,只帶數字;名字(hook 標籤、Label、程式名、夾名)只放 metric,頁面用 textContent 畫。"""
     key = code + ("_removed" if code == "hook_slow" and metric.get("removed") else "")
-    return _T(key, **{k: v for k, v in metric.items() if not isinstance(v, (dict, list))})
+    return _T(key, **{k: v for k, v in metric.items() if _finite(v)})
 
 
 def _finite(v):
@@ -170,7 +172,7 @@ def read_tail(path, limit):
         return ""
     try:
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():     # E1:只讀自己的一般檔
             return ""
         start = max(0, st.st_size - limit)
         os.lseek(fd, start, os.SEEK_SET)
@@ -226,7 +228,7 @@ def hook_durations(text):
     只留最新一筆 summary 裡還有的 hook:已經拿掉的(例:10-25 footer-gate)不再因為舊紀錄被列出來。"""
     out, latest = [], set()
     for line in text.splitlines():
-        if '"stop_hook_summary"' not in line:
+        if len(line) > LINE_MAX or '"stop_hook_summary"' not in line:     # E1:單行 > 1 MB 整行丟
             continue
         try:
             d = json.loads(line)

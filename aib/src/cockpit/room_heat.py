@@ -535,7 +535,9 @@ def main(argv=None, out=None):
             return 0
         out.write(T("advice.summary", n=len(r["items"])) + "\n" if r["items"] else T("advice.none") + "\n")
         for x in r["items"]:
-            out.write("  [%s] %s%s\n" % (x["severity"], "@%s " % x["owner"] if x["owner"] else "", x["hint"]))
+            name = x["metric"].get("label") or x["metric"].get("program") or ""
+            out.write("  [%s] %s%s%s\n" % (x["severity"], "@%s " % x["owner"] if x["owner"] else "", x["hint"],
+                                            "(%s)" % name if name else ""))
         for k in ("unmeasured", "skipped"):
             if r.get(k):
                 out.write(T("advice." + k, codes=", ".join(u["code"] for u in r[k])) + "\n")

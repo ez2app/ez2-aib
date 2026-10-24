@@ -11,7 +11,7 @@ A4 transcript_huge:> 500 MB(稀疏檔,不佔磁碟)
 A5 launchd(D2):macOS 才看、只給 Label;其他平台 ⇒ skipped unsupported_platform 且不叫 launchctl
 A6 test_parallel(同席 > 1、全機 > 3;認不出席位不算同席)/ browser_tab_hot(兩次取樣都 > 80%)
 A7 快取 60 秒:第二次不重掃;快取檔被改 ⇒ code 不在表上的丟掉、名字再洗、hint 重翻;過 60 秒重掃
-A8 隱私(D4):輸出不含指令列 / 路徑 / token
+A8 隱私(D4 / E1 / E6):輸出不含指令列 / 路徑 / token;hint 不夾名字;別人的檔、單行 > 1 MB 不讀
 A9 CLI:`advice --json` / 文字模式
 刀(複本 + run_guarded):K1 改成全讀 ⇒ A3 紅;K2 快取拿掉 ⇒ A7 紅;K3 標籤給整串指令 ⇒ A8 紅;K4 不濾最新 summary ⇒ A2 紅。
 """
@@ -242,6 +242,17 @@ class Privacy(Base):
         blob = json.dumps(r, ensure_ascii=False)
         for leak in ("/Users", "token", "abc123", "secret", str(self.home)):
             self.assertNotIn(leak, blob)
+        for i in r["items"]:
+            for name in (i["metric"].get("label"), i["metric"].get("program")):
+                if name:
+                    self.assertNotIn(name, i["hint"], "E6:hint 夾了名字")
+
+    def test_a8b_line_cap_and_owner(self):
+        big = summary([(SLOW, 9990)]).replace('"cwd": "/Users/u/secret"', '"pad": "%s"' % ("x" * (1024 * 1024 + 10)))
+        self.assertEqual(RA.hook_durations(big + "\n"), [], "E1:單行 > 1 MB 沒丟")
+        p = self.transcript([summary([(SLOW, 9990)])] * 4)
+        with mock.patch.object(os, "getuid", lambda: os.stat(p).st_uid + 1):
+            self.assertEqual(RA.read_tail(str(p), 4096), "", "E1:別人的檔也讀了")
 
 
 class Cli(Base):
