@@ -9,6 +9,7 @@ Z3 zero_step:沒名字 / 國別 ⇒ 補上;公開艦長席(role root),不公開�
 Z4 國別查不到 ⇒ 不公開任何席、印「要給顯示名稱與國別」(不上線半套)
 Z5 aib chat auto 答「要」(假終端機)⇒ 問句帶要公開的名字;開關檔、名字、國別、艦長席都好了
 (Z5 不裝 nostr-sdk:venv 先連到測試 venv 或放假的 ok;不連網)
+R1 status 的 ready:轉接程式在跑 + 心跳、有公開席、至少一位好友 / 我的機器;三格都過 all=true;public_seats 列公開的席
 刀(複本):K1 zero_step 公開所有席(不看 role)⇒ Z3 紅
 """
 import importlib.util
@@ -145,6 +146,20 @@ class Zero(unittest.TestCase):
         self.assertTrue(CB.is_enabled(self.env))
         prof = CR.read_profile(self.env)
         self.assertEqual((prof["display_name"], prof["country"], prof["public"]), ("Mac Pro 13", "TW", ["cfd04"]))
+
+
+class Ready(unittest.TestCase):
+    def test_r1_ready(self):
+        orig = CB._my_published
+        self.addCleanup(setattr, CB, "_my_published", orig)
+        CB._my_published = lambda env=None: []
+        base = {"enabled": True, "running": True, "heartbeat": True, "friends": 0, "mine": 0}
+        self.assertEqual(CB.ready_checks(base), {"bridge": True, "public": False, "contact": False, "public_seats": [], "all": False})
+        CB._my_published = lambda env=None: [{"seat": "cfd04", "cabin": "6ddf", "addr": "x"}]
+        got = CB.ready_checks(dict(base, mine=1))
+        self.assertEqual((got["all"], got["public_seats"]), (True, ["cfd04"]))
+        self.assertFalse(CB.ready_checks(dict(base, friends=2, heartbeat=False))["all"])
+        self.assertFalse(CB.ready_checks(dict(base, friends=2, enabled=False))["bridge"])
 
 
 class Knife(unittest.TestCase):
