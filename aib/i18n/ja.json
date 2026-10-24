@@ -1088,6 +1088,7 @@
   "aib.verify.runner.dirty_tree": "コミット済みのクリーンな版だけを検証します。作業ツリーに未コミットの変更があります",
   "aib.verify.runner.timeout_30m": "テストが 30 分の上限を超えました",
   "aib.verify.runner.timeout_after": "テストが {seconds} 秒の上限を超えました",
+  "aib.verify.runner.memory_cap": "memory_cap: {name}(pid {pid})が {mb} MB に達し、テストのプロセスごとの上限 {cap_mb} MB を超えたため、テスト全体を停止しました。テストや再現で巨大なメモリ確保や巨大ファイルの読み込みはしないでください。小さな上限で確認してください(上限は AIB_TEST_MEM_CAP_MB で変更)",
   "aib.verify.runner.reverse_unavailable": "逆引きインデックスが使えません:{reason}",
   "aib.verify.runner.reuse_index_unavailable": "再利用インデックスが使えません:{reason}",
   "aib.verify.runner.mode_invalid": "verify モードの設定が読めないか不正です",

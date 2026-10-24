@@ -2067,7 +2067,7 @@ def _main_run(repo, names, a, live, started, lease, mem):
 
 
 def _on_term(signum, _frame):
-    """10-09:被 kill(SIGTERM)時照樣走收尾(刪這批的 HOME、追蹤資料夾、每支自己的暫存資料夾,收它的背景程式)。
+    """10-09:被 kill(SIGTERM / 10-24 起含 SIGHUP)時照樣走收尾(刪這批的 HOME、追蹤資料夾、每支自己的暫存資料夾,收它的背景程式)。
     以前直接死 ⇒ /tmp 留下 aib-test-trace-* 與還在跑的測試(推前檢查的 fail-fast 送 SIGINT,本來就會收尾)。"""
     raise SystemExit(128 + signum)
 
@@ -2075,4 +2075,9 @@ def _on_term(signum, _frame):
 if __name__ == "__main__":
     import signal
     signal.signal(signal.SIGTERM, _on_term)
+    # 10-24 #322 r4:關終端機 / ssh 斷線(SIGHUP)也走同一條收尾 —— 測試自成行程群組,不轉送就收不到;
+    #   SIGTERM / SIGHUP / Ctrl-C 都在 runner._run_one 的 except BaseException 轉送給測試群組(pushgate _stop
+    #   先送 SIGINT、再 killpg aib test 那組,測試群組就靠這條收)。nohup 跑的(本來就忽略)照舊不接。
+    if signal.getsignal(signal.SIGHUP) != signal.SIG_IGN:
+        signal.signal(signal.SIGHUP, _on_term)
     sys.exit(main())
