@@ -3520,8 +3520,6 @@
   "aib.bottom_tabs.cooldown": "쿨다운: {status}",
   "aib.bottom_tabs.no_notice": "측정 불가 (알림 파일 없음)",
   "aib.bottom_tabs.events_head": "최근 이벤트 (fleet-sync):",
-  "aib.bottom_tabs.human_head": "사람과 주고받은 메시지 (최근):",
-  "aib.bottom_tabs.unread": "안읽음",
   "aib.bottom_tabs.outbound_note": "참고: 보낸 메시지는 로컬 받은편지함에 남지 않습니다. 양방향 전체 기록은 이벤트 장부를 기다림 (E1.4 에서 해결)",
   "aib.bottom_tabs.draft_mark": "[초안]",
   "aib.bottom_tabs.perf_no_cache": "(점검 캐시가 아직 없음)",

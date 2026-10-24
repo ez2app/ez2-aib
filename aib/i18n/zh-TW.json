@@ -3520,8 +3520,6 @@
   "aib.bottom_tabs.cooldown": "降溫: {status}",
   "aib.bottom_tabs.no_notice": "量不到(通知檔不在)",
   "aib.bottom_tabs.events_head": "最近事件(fleet-sync):",
-  "aib.bottom_tabs.human_head": "真人往來(最近):",
-  "aib.bottom_tabs.unread": "未讀",
   "aib.bottom_tabs.outbound_note": "註:出站訊息不落本機收件匣,雙向完整紀錄候事件帳本(E1.4 解此限制)",
   "aib.bottom_tabs.draft_mark": "[草]",
   "aib.bottom_tabs.perf_no_cache": "(盤點快取尚未生成)",

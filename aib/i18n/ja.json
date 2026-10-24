@@ -3520,8 +3520,6 @@
   "aib.bottom_tabs.cooldown": "クールダウン: {status}",
   "aib.bottom_tabs.no_notice": "測定できず(通知ファイルなし)",
   "aib.bottom_tabs.events_head": "最近の出来事(fleet-sync):",
-  "aib.bottom_tabs.human_head": "人とのやり取り(最近):",
-  "aib.bottom_tabs.unread": "未読",
   "aib.bottom_tabs.outbound_note": "注:送信メッセージはローカル受信箱に残りません。双方向の完全な記録はイベント台帳待ち(E1.4 で解消)",
   "aib.bottom_tabs.draft_mark": "[案]",
   "aib.bottom_tabs.perf_no_cache": "(一覧のキャッシュはまだありません)",

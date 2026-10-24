@@ -13,7 +13,7 @@ E2.1 遷入(解析改 cockpit_lib,大綱與任務板路徑改 env)。
 
 rc:0=完成 / 2=用法錯或未知 board。
 
-測試:tests/test-outline-to-tasks.py(過濾)+ tests/test-cockpit-smoke.py(沙盒冪等)。
+測試:目前沒有專屬測試(docstring 原本指的兩支在倉裡不存在)。
 """
 import json
 import os

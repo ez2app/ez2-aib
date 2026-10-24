@@ -3,7 +3,7 @@
 """aib test 判紅「碰到真的家目錄」的測試(開發文件第 37.1 節;10-17 test-chat-roster 讀到 Pro 真的收信站設定、
 10-18 ez2-ai 測試改寫真的 API key 檔)。AIB_TEST_NOSTR_VENV 也放行,連 Nostr 的測試不必再「直接跑」(那條路沒假 HOME)。
 
-G1 real_home_touches:寫 / 讀敏感位置(.ez2-aib、.claude、.ez2-claude-secrets.json、.codex、.ez2-persona-runtime…)都算;
+G1 real_home_touches:寫 / 讀敏感位置(.ez2-aib、.claude、.ez2-claude-secrets.json、.acb、.codex、.ez2-persona-runtime…)都算;
    線上對話 venv 的讀不算(寫照算);aib test 自己的沿用紀錄池(verify-shadow)不算;家目錄底下別的(例如倉庫本身)不算;
    real/path 兩個欄位都看
 G2 入口(治具倉,AIB_TEST_REAL_HOME = 假的「真家目錄」):寫進去的那支 ⇒ 紅、輸出說哪個檔;只讀 venv 的 ⇒ 綠;
@@ -60,13 +60,14 @@ class Pure(unittest.TestCase):
                {"ch": "write", "path": h + "/.ez2-aib/chat/venv/x"},
                {"ch": "open", "path": h + "/ez2-aib/aib/VERSION"},
                {"ch": "open", "path": h + "/.ez2-claude-secrets.json"},
+               {"ch": "write", "path": h + "/.acb/tok"},
                {"ch": "write", "path": h + "/.codex/tok"},
                {"ch": "write", "path": h + "/.ez2-aib/verify-shadow/pool.rows.jsonl"},
                {"ch": "open", "path": h + "/.ez2-aib/verify-shadow/pool.rows.jsonl"},
                {"ch": "argv", "argv": ["ls", h + "/.ssh"]}]
         self.assertEqual(st.real_home_touches(evs, h), [
             ("read", h + "/.ez2-aib/chat/profile.json"), ("read", h + "/.ez2-claude-secrets.json"),
-            ("write", h + "/.codex/tok"), ("write", h + "/.ez2-aib/chat/friends.json"), ("write", h + "/.ez2-aib/chat/venv/x")])
+            ("write", h + "/.acb/tok"), ("write", h + "/.codex/tok"), ("write", h + "/.ez2-aib/chat/friends.json"), ("write", h + "/.ez2-aib/chat/venv/x")])
         self.assertEqual(st.real_home_touches(evs, ""), [])
 
     def test_g3_env(self):

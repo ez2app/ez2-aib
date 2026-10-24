@@ -3520,8 +3520,6 @@
   "aib.bottom_tabs.cooldown": "Cooldown: {status}",
   "aib.bottom_tabs.no_notice": "unavailable (no notice file)",
   "aib.bottom_tabs.events_head": "Recent events (fleet-sync):",
-  "aib.bottom_tabs.human_head": "Messages with people (recent):",
-  "aib.bottom_tabs.unread": "new",
   "aib.bottom_tabs.outbound_note": "Note: sent messages aren't kept in the local inbox; a full two-way record waits for the event ledger (E1.4)",
   "aib.bottom_tabs.draft_mark": "[draft]",
   "aib.bottom_tabs.perf_no_cache": "(scan not ready yet)",
