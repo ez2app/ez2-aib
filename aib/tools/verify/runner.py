@@ -44,6 +44,10 @@ _COCKPIT_FALLBACK = Path.home() / "ez2-aib" / "src" / "cockpit"
 if str(_COCKPIT_FALLBACK) not in sys.path:
     sys.path.append(str(_COCKPIT_FALLBACK))
 import i18n_lib  # noqa: E402
+try:
+    import memguard  # noqa: E402  10-24:每支測試的記憶體上限(TreeCap)
+except ImportError:  # 只複製 tools/verify 的夾具(而 fallback 主樹還沒這支)⇒ 不掛上限,其餘照舊
+    memguard = None
 
 LOC = i18n_lib.resolve_locale()
 
@@ -391,16 +395,41 @@ def _test_command(repo: Path, name: str, env: dict | None = None) -> list[str]:
     return [py, str(Path(__file__).resolve().parent / "plain_test_runner.py"), str(path)]
 
 
+class _NoCap:
+    """memguard import 不到時的空殼(只有夾具會走到)。"""
+    hit = None
+
+    def start(self):
+        return self
+
+    def stop(self):
+        pass
+
+
 def _run_one(repo: Path, name: str, env: dict[str, str], timeout: float | None = None) -> dict:
     """timeout=None ⇒ DEFAULT_TIMEOUT_S(舊行為逐字不變)。"""
     limit = DEFAULT_TIMEOUT_S if timeout is None else timeout
     started = time.monotonic()
     try:
-        p = subprocess.run(_test_command(repo, name, env), cwd=str(repo), env=env,
-                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                           errors="replace", timeout=limit)
-        output = (p.stdout or "") + (p.stderr or "")
-        rc = p.returncode
+        # 10-24(@044e0,20:34 整台卡死實案):每支測試含子孫,單一行程超過記憶體上限就整棵收、判紅並寫明 ——
+        #   開發當下就知道「不能超大」,不是等機器凍住。上限 AIB_TEST_MEM_CAP_MB(預設 2048,0 = 關),見 memguard.TreeCap。
+        with subprocess.Popen(_test_command(repo, name, env), cwd=str(repo), env=env,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, errors="replace") as proc:
+            cap = (memguard.TreeCap(proc.pid, memguard.test_cap_mb()) if memguard else _NoCap()).start()
+            try:
+                out, err = proc.communicate(timeout=limit)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+                raise subprocess.TimeoutExpired(proc.args, limit, output=out, stderr=err)
+            finally:
+                cap.stop()
+        output = (out or "") + (err or "")
+        rc = proc.returncode
+        if cap.hit:
+            output += "\n" + T("memory_cap", cap.hit) + "\n"
+            rc = 137
     except OSError as e:
         output, rc = "%s: %s\n" % (type(e).__name__, e), 127
     except subprocess.TimeoutExpired as e:

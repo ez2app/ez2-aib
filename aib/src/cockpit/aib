@@ -736,6 +736,13 @@ if [ "${1:-}" = "idle" ]; then
   exec "$T_PY3" "$HERE/idle_reaper.py" "$@"
 fi
 
+# aib memguard 子命令(10-24 @044e0,20:34 卡死實案):單支直譯器行程記憶體暴衝守門,整段委派 memguard.py。
+# 平常跟著 idle watch 當執行緒跑;這裡只給 scan / watch / log 看狀況與除錯。
+if [ "${1:-}" = "memguard" ]; then
+  shift
+  exec "$T_PY3" "$HERE/memguard.py" "$@"
+fi
+
 # aib restart 子命令(the maintainer 2026-10-09 直令):列出 AIB 艙(在線的 + 上次開機時還在、現在斷掉的),每艙的 AI 席、
 # AI 種類與最後活動時間;--restore <艙碼> / --restore-all 恢復(在線 ⇒ 接回來;斷掉 ⇒ 原艙號開回、每席同碼復活)。
 # 停電/重開機靠 watch 每輪寫的快照(按開機分檔)。整段委派 cabin_restart.py。

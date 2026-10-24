@@ -1088,6 +1088,7 @@
   "aib.verify.runner.dirty_tree": "커밋된 깨끗한 버전만 검증합니다. 작업 트리에 커밋되지 않은 변경이 있습니다",
   "aib.verify.runner.timeout_30m": "테스트가 30분 제한을 넘었습니다",
   "aib.verify.runner.timeout_after": "테스트가 {seconds}초 제한을 넘었습니다",
+  "aib.verify.runner.memory_cap": "memory_cap: {name}(pid {pid})이(가) {mb} MB에 도달해 테스트 프로세스당 한도 {cap_mb} MB를 넘었으므로 테스트 전체를 중지했습니다. 테스트와 재현에서 거대한 메모리 할당이나 거대한 파일 읽기를 하지 마세요. 작은 한도로 확인하세요(AIB_TEST_MEM_CAP_MB로 한도 변경)",
   "aib.verify.runner.reverse_unavailable": "역방향 색인을 쓸 수 없습니다:{reason}",
   "aib.verify.runner.reuse_index_unavailable": "재사용 색인을 쓸 수 없습니다:{reason}",
   "aib.verify.runner.mode_invalid": "verify 모드 설정을 읽을 수 없거나 올바르지 않습니다",

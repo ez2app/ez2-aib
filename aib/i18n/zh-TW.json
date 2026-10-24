@@ -1088,6 +1088,7 @@
   "aib.verify.runner.dirty_tree": "只執行已提交的乾淨版本;工作目錄還有未提交改動",
   "aib.verify.runner.timeout_30m": "測試超過 30 分鐘上限",
   "aib.verify.runner.timeout_after": "測試超過 {seconds} 秒上限",
+  "aib.verify.runner.memory_cap": "memory_cap:{name}(pid {pid})吃到 {mb} MB,超過測試單一行程上限 {cap_mb} MB,整棵測試已停止。測試與重現不准配置超大記憶體、不准真的去讀超大檔 —— 改用小上限驗截斷(AIB_TEST_MEM_CAP_MB 可調上限)",
   "aib.verify.runner.reverse_unavailable": "反查索引不可用:{reason}",
   "aib.verify.runner.reuse_index_unavailable": "沿用索引不可用:{reason}",
   "aib.verify.runner.mode_invalid": "verify 模式設定讀不到或不合法",
