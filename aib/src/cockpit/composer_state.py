@@ -378,6 +378,10 @@ def classify_composer(raw_line, provider=None):
         if _last >= 0 and raw_line[_last] in _BORDER_CHARS:
             raw_line = raw_line[:_last]
     dim, seen, all_dim, past = False, 0, True, False
+    # 10-24 新帳號第一次開的 claude 席:空框提示字 `Try "…"` 整句 dim,但游標反白(SGR 7)蓋在第一個字上 ⇒
+    #   那一個字不是 dim ⇒ 舊判準判 DRAFT,全球來信 / 開席單一直排隊(會員打一個字才解開)。
+    #   只放過「提示符後第一個可見字在反白裡、其餘每個可見字都 dim、而且至少還有 2 個」:真稿不會是 dim。
+    rev, cursor_first = False, False
     i = 0
     while i < len(raw_line):
         m = _SGR.match(raw_line, i)
@@ -405,6 +409,10 @@ def classify_composer(raw_line, provider=None):
                     dim = True
                 elif code in ("0", "22"):     # 0=全部重設 22=取消 dim/bold
                     dim = False
+                if code == "7":
+                    rev = True
+                elif code in ("0", "27"):
+                    rev = False
                 _k += 1
             i = m.end()
             continue
@@ -423,12 +431,17 @@ def classify_composer(raw_line, provider=None):
         if not ch.isspace() and ch != _NBSP:
             seen += 1
             if not dim:
-                all_dim = False
+                if seen == 1 and rev:
+                    cursor_first = True      # 游標蓋住的第一個字:先不算,看後面是不是整句 dim
+                else:
+                    all_dim = False
         i += 1
     if not past:
         return EMPTY          # 這行沒有提示符:定位端已擋,這裡不猜
     if seen == 0:
         return EMPTY
+    if cursor_first and seen < 3:
+        all_dim = False       # 只有游標字 + 1 個 dim:太短,當真稿
     return SUGGESTION if all_dim else DRAFT
 
 
