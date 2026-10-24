@@ -48,6 +48,15 @@ EVIDENCE_MIN = 8
 HUMAN_MAX = 40
 # 10-16 維護者裁:human_filter(src/persona-collect/)開源倉還沒有,等私倉匯出、不手搬;缺件時照實寫,不靜默回空
 HUMAN_WORDS_UNAVAILABLE = "unavailable(缺 human_filter)"
+# 10-24 維護者:「必要不能跳過，一定要寫回對應的人格與第二大腦」⇒ 缺 human_filter 時改用對話檔退路篩(_FallbackFilter),
+#   不再讓人格段 / 遺漏回顧整段空過。收據照實標 fallback,看得出不是正式判準。
+HUMAN_WORDS_FALLBACK = "fallback(缺 human_filter,改用對話檔退路篩)"
+# 找不到這一席的對話檔(非 Claude 席、輪的路徑失效…)≠ 真人沒講話(#312 審查 B-M1):收據照實標,verify 不放行
+HUMAN_WORDS_NO_TRANSCRIPT = "transcript_missing(找不到這一席的對話檔)"
+_LAST_SOURCE = {}                      # 席碼 ⇒ 最後一次 human_words 的來源狀態(collect / 回顧寫進收據)
+# 退路篩丟掉的機器字樣:系統提醒 / 指令標籤、dm 標頭、Stop hook 回饋、子代理回報、自我提醒排程、接續摘要、中斷提示
+_MACHINE_PREFIX = ("<", "[Request interrupted", "[SYSTEM", "【自我提醒", "Stop hook feedback", "Another Claude session", "This session is being continued",
+                   "Caveat:", "Base directory for this skill")
 CROWN_PERSONA = "71c97a"
 PERSONA_LINE_RE = re.compile(r"^\s*-\s*(\S+?)\s*[::]\s*(.+?)\s*〔證據[::]「(.+?)」〕\s*$")
 IDENT_LINE_RE = re.compile(r"^\s*身分\s*[::]\s*(性別|生日|嗜好)\s*=\s*(.+?)\s*〔證據[::]「(.+?)」〕\s*$")
@@ -249,9 +258,46 @@ def _human_filter():
     return human_filter
 
 
+class _FallbackFilter:
+    """缺 human_filter 時的退路:只收對話檔裡真人打字那種 user 列(不是 isMeta、不是工具結果、不是機器字樣開頭)。
+    比正式判準寬;只拿來當人格證據與遺漏回顧的原文來源,收據標 fallback。"""
+
+    @staticmethod
+    def is_human(_seat, item, skip_ledger=True):
+        row = item.get("raw_refs") or {}
+        if not (_seat or {}).get("human_bound", True):       # bot 席:輸入框是橋接程式打的,不是真人
+            return False, {"why": "bot_seat"}
+        if row.get("isMeta") or row.get("toolUseResult") is not None or row.get("isCompactSummary"):
+            return False, {"why": "meta"}
+        content = (row.get("message") or {}).get("content")
+        if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            return False, {"why": "tool_result"}
+        text = str(item.get("text") or "").lstrip()
+        if not text or text.startswith(_MACHINE_PREFIX):
+            return False, {"why": "machine"}
+        try:                                                  # dm 抬頭只認 dm_header.parse(檔頭規定不另寫第二份 regex);
+            import dm_header                                  #   名字帶空格的新式、舊式 [@x > @y …] 都在這裡擋(#312 審查 A1)
+            if dm_header.parse(text):
+                return False, {"why": "dm_header"}
+        except Exception:  # noqa: BLE001 —— 認不出抬頭寧可不收,而且標成讀不到(不讓 0 句被當沉默放行;r2 A-S2、r3 A-3)
+            _LAST_SOURCE[str((_seat or {}).get("code") or "")] = HUMAN_WORDS_NO_TRANSCRIPT
+            return False, {"why": "dm_header_unavailable"}
+        return True, {"why": "fallback"}
+
+
 def human_words_status():
-    """收據 / collect 記的真人原話來源狀態:ok,或 HUMAN_WORDS_UNAVAILABLE(缺 human_filter)。"""
-    return "ok" if _human_filter() is not None else HUMAN_WORDS_UNAVAILABLE
+    """收據 / collect 記的真人原話來源狀態:ok(正式判準)或 HUMAN_WORDS_FALLBACK(缺 human_filter,改用退路篩)。"""
+    return "ok" if _human_filter() is not None else HUMAN_WORDS_FALLBACK
+
+
+def words_source(code):
+    """最後一次 human_words 這一席的來源:ok / fallback / transcript_missing(沒讀過 ⇒ 依有沒有判準)。"""
+    return _LAST_SOURCE.get(code) or human_words_status()
+
+
+def human_words_usable(status):
+    """這個來源狀態讀得到真人原話嗎(ok / fallback 都算;舊收據的 unavailable 不算)。"""
+    return status in ("ok", HUMAN_WORDS_FALLBACK)
 
 
 def human_words_line(words):
@@ -259,7 +305,7 @@ def human_words_line(words):
     head = "- 真人本輪原話(人格證據只認這裡的原文):"
     if words:
         return head
-    if human_words_status() != "ok":
+    if not human_words_usable(human_words_status()):
         return head + "讀不到(缺 human_filter,等私倉匯出;人格那段留空)"
     return head + "沒有"
 
@@ -298,11 +344,18 @@ def human_words(ctx, since="", span_rounds=False):
         except Exception:  # noqa: BLE001
             paths = []
     if not paths:
+        _LAST_SOURCE[ctx["code"]] = HUMAN_WORDS_NO_TRANSCRIPT
         return []
-    human_filter = _human_filter()
-    if human_filter is None:                       # 缺件:collect / 收據 / 巡檢另外照實寫(human_words_status)
-        return []
+    human_filter = _human_filter() or _FallbackFilter      # 缺件 ⇒ 退路篩(收據標 fallback;10-24 維護者:不能跳過)
     seat = {"human_bound": True, "code": ctx["code"]}
+    if human_filter is _FallbackFilter:                   # 退路篩不認 bot 席(#312 審查 A5);正式判準照舊
+        try:
+            import aib_handoff as _ah
+            seat["human_bound"] = (_ah.binding_state(ctx["code"]) or {}).get("problem") != "bot"
+        except Exception:  # noqa: BLE001 —— 認不出是不是 bot 席 ⇒ 不收,而且標成讀不到(不當真人沉默;r2 B-R5)
+            _LAST_SOURCE[ctx["code"]] = HUMAN_WORDS_NO_TRANSCRIPT
+            return []
+    _LAST_SOURCE[ctx["code"]] = human_words_status()          # 退路篩匯入失敗會在讀的過程改成讀不到
     out = []
     for path in paths:
         try:
@@ -336,7 +389,8 @@ def _human_rows(fh, since, seat, human_filter):
             try:
                 # skip_ledger:每則都重讀全部 RELAY 檔太慢(本機四千多檔);dm 標頭、Stop hook 回饋等機器字樣照擋
                 ok, _meta = human_filter.is_human(seat, {"text": text, "raw_refs": row, "ts": ts}, skip_ledger=True)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 判準壞掉 ⇒ 不收,而且標讀不到(0 句不能當真人沉默;#312 r4 A-2)
+                _LAST_SOURCE[str(seat.get("code") or "")] = HUMAN_WORDS_NO_TRANSCRIPT
                 ok = False
             if ok:
                 out.append((ts[:16].replace("T", " "), text[:300]))
@@ -477,12 +531,35 @@ def collect(seat="", out=None, repo=None):
     pc = persona_card(ctx)
     mpc, _why = main_persona_target(ctx)
     since = evidence_since(ctx["code"])
+    if persona_since(ctx["code"]) is None:         # 沒有待批那批 ⇒ 證據 = 這一輪的原話(跟 verify 第 2 項同一個範圍;#312 驗收:
+        try:                                       #   第一次整理漏寫人格,之後只認上一張收據之後的話 ⇒ 永遠補不回來)
+            import aib_handoff
+            rs_e = aib_handoff.current_round_start(ctx["code"])
+            if rs_e:
+                since = datetime.datetime.fromtimestamp(rs_e).astimezone().isoformat(timespec="seconds")
+        except Exception:  # noqa: BLE001
+            pass
     words = [w for _t, w in human_words(ctx, since)]
+    src = words_source(ctx["code"])
+    # verify 的「本輪 0 句」一律從這一輪起點算(#312 r2 B-H2、r3 B-1):量不到起點 / 重算出錯 ⇒ None(verify 不當沉默)
+    round_n = None
+    try:
+        import aib_handoff
+        rs0 = aib_handoff.current_round_start(ctx["code"])
+        if rs0:
+            r_since = datetime.datetime.fromtimestamp(rs0).astimezone().isoformat(timespec="seconds")
+            round_n = len(human_words(ctx, r_since))
+            src2 = words_source(ctx["code"])
+            if human_words_usable(src) and not human_words_usable(src2):
+                src = src2                     # 兩次讀取取較差的:重算時認不出就標讀不到,不還原(r3 B-2)
+    except Exception:  # noqa: BLE001
+        round_n = None
+    _LAST_SOURCE[ctx["code"]] = src
     _write_json(tidy_dir() / ("%s.collect.json" % ctx["code"]),
                 {"nonce": nonce, "facts_sha": _sha(ftext.strip("\n")), "at": _now(), "project_uid": ctx.get("project_uid"),
                  "persona_sha": _sha(pc["text"]) if pc else "", "persona_since": since,
                  # 證據只認這一份(collect 當下抽的 the maintainer 原話),不從機器事實文字切 —— 文字裡的提交標題、各席列都可能被寫成假原話
-                 "human_words": words, "human_words_status": human_words_status(),
+                 "human_words": words, "human_words_status": src, "human_words_round_count": round_n,
                  "main_sha": _sha(mpc["text"]) if mpc else ""})
     if out:
         Path(out).write_text(draft, encoding="utf-8")
@@ -665,7 +742,7 @@ def main_persona_target(ctx):
         return None, "主人格沒登記(aib persona main set <卡號>)"
     if uid == (ctx.get("persona_uid") or ""):
         return None, "本席就綁主人格(寫在人格那段)"
-    if human_words_status() != "ok":
+    if human_words_status() != "ok":                 # 退路篩不精煉主人格(#312 審查 B-S1:判準寬、主卡影響最大)
         return None, "讀不到真人原話(缺 human_filter,等私倉匯出)"
     pc = persona_card({"persona_uid": uid})
     if not pc:
@@ -951,13 +1028,16 @@ def apply(text, seat="", defer_big=False, skip_context=False, add_only=False):
             files["note"] = {"status": "failed", "why": str(exc)[:200]}
     col = _read_json(tidy_dir() / ("%s.collect.json" % ctx["code"]), {})
     hw = col.get("human_words_status") or human_words_status()
-    if hw != "ok" and files["persona"]["status"] == "skipped":
-        files["persona"]["why"] = "讀不到真人原話(缺 human_filter,等私倉匯出)"
+    if not human_words_usable(hw) and files["persona"]["status"] == "skipped":
+        files["persona"]["why"] = ("找不到這一席的對話檔(讀不到真人原話)" if hw == HUMAN_WORDS_NO_TRANSCRIPT
+                                   else "讀不到真人原話(缺 human_filter,等私倉匯出)")
     status = "ok" if all(f["status"] in ("ok", "skipped") for f in files.values()) else "partial"   # waiting(等 the maintainer 按)也算 partial
     rec = {"status": status, "at": _now(), "seat": ctx["code"], "seat_id": ctx.get("seat_id") or "",
            "persona_since": col.get("persona_since") or "",
            "model": ctx["model"], "project_uid": ctx.get("project_uid") or "", "nonce": parts["nonce"], "files": files}
     rec["human_words"] = hw
+    rec["persona_uid"] = ctx.get("persona_uid") or ""     # verify 比 writes.jsonl 的卡號(主人格那筆不算本席;#312 r2 A-M1)
+    rec["human_words_count"] = col.get("human_words_round_count")   # 本輪起點算的句數;舊 collect / 量不到 = None ⇒ verify 不當沉默
     _write_json(tidy_dir() / ("%s.json" % ctx["code"]), rec)
     memory_archive.spawn_background()           # 一天一次的 90 天清理,背景、不等
     return rec

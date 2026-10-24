@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: Apache-2.0
+"""consumer_scope 帶進開源版(維護者 10-24:「帶進來並修正」;10-15 匯出清單列為缺件)。
+
+全部在暫存 git 倉跑:不碰網路、不開 socket、不寫真的 ~/.ez2-aib。
+C1 模組從本樹載得到,i18n 不退到別的倉(sys.path 不含 ez2-ai-b)
+C2 規則 3:尺 import 到被改的產品模組 ⇒ 是消費者
+C3 規則 4:改到被 source 的殼 ⇒ 往上展開到 source 它的殼
+C4 select_changed 不再丟「consumer_scope import」的量不到;改產品檔選得到 import 它的測試
+C5 四語字典都有 aib.cscope.* 的 19 個鍵
+C6 倉裡的子專案(開源版的 aib/):select_changed --repo 子專案 + 基準 ⇒ 路徑照子專案算(改到的測試本身被 r0 挑到);
+   test_entry.changed_tests 在子專案裡跑 ⇒ 回絕對路徑;_subproject 只認自帶 tools/verify/select_changed.py 的資料夾
+C7 子專案外也有改動(倉根的 install.sh 等)⇒ 量不到 rc 3(不能丟掉外面的路徑變成 0 支假綠;#314 審查 A1)
+C8 一般專案在 src/foo(有 tests/、沒有記號)底下跑 ⇒ 仍以倉根為準(#314 審查 A2)
+C9 子專案模式另從倉根挑一次再取聯集:⑧ 反查帳本是倉根座標、倉根 tests/ 也讀 aib/ 的產品檔(#314 r2 必修:只挑子專案 ⇒ 0 支假綠)
+C10 子專案外有沒追蹤的新檔 ⇒ 量不到(None),不拿窄集合跑
+C12 一般專案:帳本挑到 test/、*.test.js 這類不在 tests/ 的測試 ⇒ 照收(#314 r4:別收窄成只收 tests/)
+C11 倉根 tests/ 是 test_*.py、select_changed 靜態規則挑不到 ⇒ 子專案有改動就全併進來(真的 select_changed、沒有帳本;#314 r3 必修)
+刀(複本):K1 把規則 3 的比對拿掉 ⇒ C2 紅;K2 拿掉倉根那次挑選 ⇒ C9 紅;K3 拿掉倉根 tests/ 全併 ⇒ C11 紅
+"""
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]          # = aib/
+CS = ROOT / "tools" / "governance" / "consumer_scope.py"
+SEL = ROOT / "tools" / "verify" / "select_changed.py"
+os.environ["EZ2_AIB_LOCALE"] = "zh-TW"
+for _p in (CS.parent, SEL.parent, ROOT / "src" / "cockpit"):
+    sys.path.insert(0, str(_p))
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+                   env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+
+
+def _load(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _repo():
+    d = Path(tempfile.mkdtemp(prefix="cscope-"))
+    files = {
+        "src/cockpit/widget.py": "def f():\n    return 1\n",
+        "src/cockpit/base-env.sh": "X=1\n",
+        "src/cockpit/full.sh": ". ./base-env.sh\necho ok\n",
+        "tests/test-widget.py": "import widget\nprint(widget.f())\n",
+        "tests/test-other.py": "print('nothing')\n",
+    }
+    for rel, body in files.items():
+        (d / rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / rel).write_text(body, encoding="utf-8")
+    _git(d, "init", "-q")
+    _git(d, "add", "-A")
+    _git(d, "commit", "-qm", "init")
+    return d
+
+
+def check_c2(t, cs, repo):
+    got = set(cs.import_consumers(str(repo), ["src/cockpit/widget.py"],
+                                  [r for r in cs.repo_files(str(repo)) if r.startswith("tests/")]))
+    t.assertIn("tests/test-widget.py", got)
+    t.assertNotIn("tests/test-other.py", got)
+
+
+class InTree(unittest.TestCase):
+    def setUp(self):
+        self.repo = _repo()
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        self.cs = _load(CS, "consumer_scope")
+        sys.modules["consumer_scope"] = self.cs
+        self.addCleanup(sys.modules.pop, "consumer_scope", None)
+
+    def test_c1_loads_from_this_tree(self):
+        self.assertEqual(Path(self.cs.__file__).resolve(), CS.resolve())
+        top = ROOT.parent if (ROOT.parent / "bin" / "aib").exists() else ROOT    # 倉根的 bin/aib 會加 <倉根>/src/cockpit,仍是本樹
+        root = str(top.resolve())                          # 本樹以外的 src/cockpit 一律不准進 sys.path(含寫死家目錄的退路)
+        self.assertEqual([p for p in sys.path if p.rstrip("/").endswith("src/cockpit")
+                          and not str(Path(p).resolve()).startswith(root)], [])
+
+    def test_c2_import_rule(self):
+        check_c2(self, self.cs, self.repo)
+
+    def test_c3_shell_closure_upwards(self):
+        ls = self.cs.repo_files(str(self.repo))
+        prods = [r for r in ls if self.cs.PRODUCT_DIR.match(r)]
+        edges = self.cs.call_graph(str(self.repo), prods)
+        up = set(self.cs.expand_upwards(["src/cockpit/base-env.sh"], edges))
+        self.assertIn("src/cockpit/full.sh", up)
+        down = set(self.cs.expand_upwards(["src/cockpit/full.sh"], edges))
+        self.assertNotIn("src/cockpit/base-env.sh", down)
+
+    def test_c4_select_changed_measures(self):
+        sel = _load(SEL, "select_changed_under_test")
+        try:                                       # 不讀反查帳本(那在真的狀態根)
+            out = sel.select(str(self.repo), ["src/cockpit/widget.py"], rows=[], use_reverse=False)
+        except sel.Unmeasurable as exc:
+            self.fail("仍量不到:%s" % exc)
+        picked = {r["test"]: [w["rule"] for w in r["why"]] for r in out["selected"]}
+        self.assertIn("r3-import", picked.get("tests/test-widget.py", []), picked)
+        self.assertNotIn("tests/test-other.py", picked)
+
+    def test_c5_four_locales(self):
+        keys = [k for k in json.loads((ROOT / "i18n" / "zh-TW.json").read_text(encoding="utf-8"))
+                if k.startswith("aib.cscope.")]
+        self.assertEqual(len(keys), 19)
+        for loc in ("en", "ja", "ko"):
+            d = json.loads((ROOT / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
+            self.assertEqual([k for k in keys if not d.get(k)], [], loc)
+
+
+class SubProject(unittest.TestCase):
+    def setUp(self):
+        self.top = Path(tempfile.mkdtemp(prefix="cscope-top-"))
+        self.addCleanup(shutil.rmtree, self.top, True)
+        sub = _repo()                                # 做好的小倉搬進 top/aib(帶記號 tools/verify/select_changed.py),再在 top 建一個倉
+        shutil.rmtree(sub / ".git")
+        shutil.move(str(sub), str(self.top / "aib"))
+        (self.top / "aib" / "tools" / "verify").mkdir(parents=True)
+        (self.top / "aib" / "tools" / "verify" / "select_changed.py").write_text("# 記號\n", encoding="utf-8")
+        (self.top / "install.sh").write_text("echo x\n", encoding="utf-8")
+        _git(self.top, "init", "-q")
+        _git(self.top, "add", "-A")
+        _git(self.top, "commit", "-qm", "init")
+
+    def sel(self, *extra):
+        return subprocess.run([sys.executable, str(SEL), "--repo", str(self.top / "aib"), "--print-tests", "--base", "HEAD~1",
+                               "--no-reverse", *extra], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+
+    def touch(self, rel, body):
+        (self.top / rel).write_text(body, encoding="utf-8")
+        _git(self.top, "commit", "-qam", "touch " + rel)
+
+    def test_c6_select_from_subproject(self):
+        self.touch("aib/tests/test-other.py", "print('changed')\n")
+        p = self.sel()
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("tests/test-other.py", p.stdout.split())          # 路徑沒剝前綴 ⇒ r0 對不上、挑不到
+
+    def test_c6_changed_tests_absolute(self):
+        self.touch("aib/src/cockpit/widget.py", "def f():\n    return 3\n")
+        te = _load(SEL.parent / "test_entry.py", "test_entry_under_test")
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(self.top / "aib" / "src")
+        sub = (self.top / "aib").resolve()                 # 倉根沒有 tests/ ⇒ 只挑子專案
+        with mock.patch.object(te, "all_tests",
+                               lambda r: ["tests/test-widget.py", "tests/test-other.py"] if Path(r).resolve() == sub else []):
+            picked, info = te.changed_tests(self.top, "HEAD~1")
+        self.assertEqual(picked, [str((self.top / "aib" / "tests" / "test-widget.py").resolve())], info)
+
+    def test_c7_change_outside_subproject_unmeasurable(self):
+        self.touch("install.sh", "echo y\n")
+        p = self.sel()
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr[-300:])
+        self.assertIn("install.sh", p.stdout)
+
+    def test_c12_plain_repo_keeps_non_tests_dir(self):
+        plain = _repo()
+        self.addCleanup(shutil.rmtree, plain, True)
+        (plain / "src" / "cockpit" / "widget.py").write_text("def f():\n    return 9\n", encoding="utf-8")
+        _git(plain, "commit", "-qam", "touch")
+        te = _load(SEL.parent / "test_entry.py", "test_entry_c12")
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(plain)
+        hits = ["test/test_a.py", "src/a.test.js"]
+        with mock.patch.object(te, "_select", lambda *a, **k: list(hits)), \
+                mock.patch.object(te, "all_tests", lambda r: list(hits)):
+            picked, info = te.changed_tests(plain, "HEAD~1")
+        self.assertEqual(picked, sorted(hits), info)
+
+    def test_c8_subproject_lookup(self):
+        te = _load(SEL.parent / "test_entry.py", "test_entry_under_test2")
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(self.top / "aib" / "src")
+        self.assertEqual(te._subproject(self.top).resolve(), (self.top / "aib").resolve())
+        os.chdir(self.top)
+        self.assertEqual(te._subproject(self.top), self.top)
+        os.chdir(tempfile.gettempdir())
+        self.assertEqual(te._subproject(self.top), self.top)
+        plain = _repo()                                  # 一般專案:src/foo 有 tests/、沒有記號 ⇒ 倉根
+        self.addCleanup(shutil.rmtree, plain, True)
+        (plain / "src" / "foo" / "tests").mkdir(parents=True)
+        os.chdir(plain / "src" / "foo")
+        self.assertEqual(te._subproject(plain), plain)
+
+    def _te_in_sub(self, name):
+        te = _load(SEL.parent / "test_entry.py", name)
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(self.top / "aib")
+        return te
+
+    def check_c9(self, te):
+        self.touch("aib/src/cockpit/widget.py", "def f():\n    return 4\n")
+        top = self.top.resolve()
+        calls = []
+
+        def fake_select(tool, base_dir, args, stdin_lines=None):
+            calls.append(Path(base_dir).resolve())
+            return [] if Path(base_dir).resolve() == top / "aib" else ["aib/tests/test-other.py"]   # 倉根座標的 ⑧ 命中
+
+        tests = {top / "aib": ["tests/test-widget.py", "tests/test-other.py"], top: ["tests/test_root.py"]}
+        with mock.patch.object(te, "_select", fake_select), \
+                mock.patch.object(te, "all_tests", lambda r: tests.get(Path(r).resolve(), [])):
+            picked, info = te.changed_tests(self.top, "HEAD~1")
+        self.assertEqual(sorted(picked), sorted([str(top / "aib" / "tests" / "test-other.py"), str(top / "tests" / "test_root.py")]),
+                         (info, calls))
+
+    def check_c11(self, te):
+        (self.top / "tests").mkdir()
+        (self.top / "tests" / "test_root.py").write_text(
+            "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n"
+            "        self.assertTrue(open('aib/src/cockpit/widget.py').read())\n", encoding="utf-8")
+        _git(self.top, "add", "-A")
+        _git(self.top, "commit", "-qm", "root test")
+        self.touch("aib/src/cockpit/widget.py", "def f():\n    return 5\n")
+        top = self.top.resolve()
+        tests = {top / "aib": ["tests/test-widget.py", "tests/test-other.py"], top: ["tests/test_root.py"]}
+        with mock.patch.object(te, "all_tests", lambda r: tests.get(Path(r).resolve(), [])):   # 暫存倉沒有量測帳本
+            picked, info = te.changed_tests(self.top, "HEAD~1")
+        self.assertIn(str(top / "tests" / "test_root.py"), picked or [], info)
+
+    def test_c11_root_tests_without_ledger(self):
+        self.check_c11(self._te_in_sub("test_entry_c11"))
+
+    def test_c9_union_with_repo_root(self):
+        self.check_c9(self._te_in_sub("test_entry_c9"))
+
+    def test_c10_untracked_outside_unmeasurable(self):
+        te = self._te_in_sub("test_entry_c10")
+        (self.top / "new-outside.sh").write_text("echo n\n", encoding="utf-8")
+        with mock.patch.object(te, "_select", lambda *a, **k: []):
+            picked, info = te.changed_tests(self.top, "HEAD")
+        self.assertIsNone(picked)
+        self.assertIn("new-outside.sh", info.get("why", ""))
+
+
+class Knives(unittest.TestCase):
+    def test_k1_no_import_rule(self):
+        tmp = Path(tempfile.mkdtemp(prefix="cscope-k1-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        src = CS.read_text(encoding="utf-8")
+        knife = tmp / "consumer_scope.py"
+        knife.write_text(src.replace("def import_consumers(", "def _orig_import_consumers(", 1)
+                         + "\n\ndef import_consumers(repo, products, rulers):\n    return []\n", encoding="utf-8")
+        repo = _repo()
+        self.addCleanup(shutil.rmtree, repo, True)
+        cs = _load(knife, "consumer_scope_knife")
+        with self.assertRaises(AssertionError):
+            check_c2(self, cs, repo)
+
+    def test_k2_no_root_pass(self):
+        src = (SEL.parent / "test_entry.py").read_text(encoding="utf-8")
+        cut = "            names += [(repo, n) for n in _select(tool, repo, [\"--base\", mb])]"
+        self.assertIn(cut, src)
+        tmp = Path(tempfile.mkdtemp(prefix="cscope-k2-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        knife = tmp / "test_entry.py"
+        knife.write_text(src.replace(cut, "            pass", 1), encoding="utf-8")
+        case = SubProject("test_c9_union_with_repo_root")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(case.top / "aib")
+        with self.assertRaises(AssertionError):
+            kte = _load(knife, "test_entry_knife")
+            kte.ENTRY_ROOT = ROOT                    # 複本在暫存夾,挑選工具照本樹的
+            case.check_c9(kte)
+
+    def test_k3_no_root_all(self):
+        src = (SEL.parent / "test_entry.py").read_text(encoding="utf-8")
+        cut = "        picked += root_tests\n"
+        self.assertIn(cut, src)
+        tmp = Path(tempfile.mkdtemp(prefix="cscope-k3-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        knife = tmp / "test_entry.py"
+        knife.write_text(src.replace(cut, "        pass\n", 1), encoding="utf-8")
+        case = SubProject("test_c11_root_tests_without_ledger")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(case.top / "aib")
+        kte = _load(knife, "test_entry_knife3")
+        kte.ENTRY_ROOT = ROOT
+        with self.assertRaises(AssertionError):
+            case.check_c11(kte)
+
+
+if __name__ == "__main__":
+    unittest.main()

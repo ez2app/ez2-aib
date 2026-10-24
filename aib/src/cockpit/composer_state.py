@@ -344,6 +344,8 @@ def classify_composer(raw_line, provider=None):
     判準:提示符之後的**每一個可見字元**是不是都在 dim(SGR 2)作用中。
     任何一個可見字元不是 dim → DRAFT。**混合態一律當真稿**,因為誤判方向要偏保守:
     把真稿當建議會去按別人沒打完的字,比把建議當真稿多等一輪嚴重得多。
+    唯一例外(10-24):提示符後第一個可見字在反白(SGR 7,游標)裡、其餘每個可見字都 dim、總共至少 3 個
+    ⇒ 游標蓋住空框提示字 ⇒ SUGGESTION。
     """
     # ★★ 08-19 修(a seat 三行可重放證據):**不能只掃提示符之後的片段**。
     #   舊寫法 `body = _after_prompt(raw)` 把提示符**之前**的 SGR 狀態整段丟掉,
@@ -378,6 +380,12 @@ def classify_composer(raw_line, provider=None):
         if _last >= 0 and raw_line[_last] in _BORDER_CHARS:
             raw_line = raw_line[:_last]
     dim, seen, all_dim, past = False, 0, True, False
+    # 10-24 新帳號第一次開的 claude 席:空框提示字 `Try "…"` 整句 dim,但游標反白(SGR 7)蓋在第一個字上 ⇒
+    #   那一個字不是 dim ⇒ 舊判準判 DRAFT,全球來信 / 開席單一直排隊(會員打一個字才解開)。
+    #   只放過「提示符後第一個可見字在反白裡、其餘每個可見字都 dim、而且至少還有 2 個」(數的是 code point,不是字形)。
+    #   本判準假設真稿不畫 dim(與既有整句 dim 判斷同一前提)。
+    #   已知邊界:單字真稿 + 游標移到開頭 + CLI 仍在後面畫 dim 續字 ⇒ 判 SUGGESTION(極少見;代價是信接在那一個字後面)。
+    rev, cursor_first = False, False
     i = 0
     while i < len(raw_line):
         m = _SGR.match(raw_line, i)
@@ -405,6 +413,10 @@ def classify_composer(raw_line, provider=None):
                     dim = True
                 elif code in ("0", "22"):     # 0=全部重設 22=取消 dim/bold
                     dim = False
+                if code == "7":
+                    rev = True
+                elif code in ("0", "27"):
+                    rev = False
                 _k += 1
             i = m.end()
             continue
@@ -423,12 +435,17 @@ def classify_composer(raw_line, provider=None):
         if not ch.isspace() and ch != _NBSP:
             seen += 1
             if not dim:
-                all_dim = False
+                if seen == 1 and rev:
+                    cursor_first = True      # 游標蓋住的第一個字:先不算,看後面是不是整句 dim
+                else:
+                    all_dim = False
         i += 1
     if not past:
         return EMPTY          # 這行沒有提示符:定位端已擋,這裡不猜
     if seen == 0:
         return EMPTY
+    if cursor_first and seen < 3:
+        all_dim = False       # 只有游標字 + 1 個 dim:太短,當真稿
     return SUGGESTION if all_dim else DRAFT
 
 

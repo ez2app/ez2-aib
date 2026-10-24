@@ -8,9 +8,11 @@
   aib summary template [--out <檔>]                            印一份過得了格式檢查的最小輸入(照著填,不用撞 lint 猜欄位)
 
 總結一定要先整理:本輪(交接一輪的起點之後)沒有整理收據 ⇒ rc 2,說先跑 aib memory tidy。
-(交接不一樣:整理失敗或沒整理不擋交接,只在交接檔與收據記下來。)
+(交接三步不被擋:整理 / 總結沒做只在交接檔與收據記下來;但 aib handoff verify 第 2 / 6 項會紅,一定要補。)
 渲染與落檔走 tools/report/aib-reply.sh(過 report-lint、存 pending/REPORT-FULL…、tmux 播流光);那支不過 ⇒ 不寫收據。
-rc:0 寫了;2 本輪沒整理 / 渲染沒過;3 認不出席。
+總結也寫回第二大腦(10-24 維護者:「總結與交接都不能跳過」「一定要寫回對應的人格與第二大腦」):
+  一則 note(標 aib/summary,綁本席人格與專案),取代本席上一則總結;寫不進 ⇒ 收據記 brain.ok=false、rc 2,verify 第 6 項紅。
+rc:0 寫了;2 本輪沒整理 / 渲染沒過 / 第二大腦寫不進;3 認不出席。
 """
 from __future__ import annotations
 
@@ -100,7 +102,47 @@ def template(out=""):
     return text
 
 
-def write(report_json, seat="", runner=None):
+def brain_body(report):
+    """總回報輸入 ⇒ 第二大腦那則的內文(標題、摘要、進度、反思、等誰 / 下一步;不放證據指令)。"""
+    r = report if isinstance(report, dict) else {}
+    f = r.get("footer") if isinstance(r.get("footer"), dict) else {}
+    rows = [("摘要", r.get("summary")), ("進度", r.get("progress_text")), ("反思", r.get("reflection")),
+            ("要真人決定", f.get("human_decision")), ("等別人", f.get("waiting_update")), ("下一步", f.get("next"))]
+    out = ["# %s" % str(r.get("title") or "總結")[:200]]
+    for g in r.get("tree") or []:
+        if not isinstance(g, dict):
+            continue
+        out.append("- %s" % str(g.get("title") or "")[:200])
+        for c in g.get("children") or []:
+            if isinstance(c, dict):
+                out.append("  - [%s] %s — %s" % (c.get("status") or "-", str(c.get("title") or "")[:200],
+                                                 str(c.get("evidence") or "")[:200]))
+    out += ["%s:%s" % (k, str(v)[:600]) for k, v in rows if v]
+    return "\n".join(out)
+
+
+def previous_summary(ctx):
+    """本席上一則總結(同一個專案、標 aib/summary)⇒ 這次取代它。比席碼不比 seat_uid(/clear 之後換新 uuid;審查 B-S5)。"""
+    import aib_memory
+    mine = [e for e in aib_memory.entries() if "aib/summary" in (e.get("tags") or [])
+            and e.get("seat") == ctx.get("code") and (e.get("project_uid") or "") == (ctx.get("project_uid") or "")]
+    mine.sort(key=lambda e: e.get("created_ms") or 0)
+    return mine[-1]["uid"] if mine else ""
+
+
+def brain_write(ctx, report, seat="", writer=None):
+    try:
+        import aib_memory
+        rec = (writer or aib_memory.write)("note", "@%s 總結 %s" % (ctx["code"], _now()[:16].replace("T", " ")),
+                                           brain_body(report), tags=["aib/summary"], seat=seat,
+                                           project=ctx.get("project_uid") or "", supersedes=previous_summary(ctx),
+                                           model=ctx.get("model") or "")
+        return {"ok": bool(rec.get("uid")), "uid": rec.get("uid", "")}
+    except Exception as exc:  # noqa: BLE001 —— 寫不進照實記,不假裝寫了
+        return {"ok": False, "why": str(exc)[:300]}
+
+
+def write(report_json, seat="", runner=None, writer=None):
     import memory_tidy
     ctx = memory_tidy.seat_info(seat)
     tidy = tidy_this_round(ctx["code"])
@@ -114,11 +156,14 @@ def write(report_json, seat="", runner=None):
     if p.returncode != 0:
         raise memory_tidy.TidyError("總回報渲染或格式檢查沒過(rc=%d),沒寫收據:%s" % (p.returncode, (p.stderr or "")[-300:]))
     m = re.search(r"回報檔[::]\s*(\S+)", (p.stdout or "") + (p.stderr or ""))
+    brain = brain_write(ctx, _read(report_json), seat, writer)
     rec = {"at": _now(), "seat": ctx["code"], "model": ctx["model"], "file": m.group(1) if m else "",
-           "tidy_status": tidy.get("status"), "tidy_at": tidy.get("at")}
+           "tidy_status": tidy.get("status"), "tidy_at": tidy.get("at"), "brain": brain}
     d = summary_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / ("%s.json" % ctx["code"])).write_text(json.dumps(rec, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    if not brain.get("ok"):
+        raise memory_tidy.TidyError("總結渲染好了,但第二大腦寫不進(%s);修好再跑一次 aib summary write" % (brain.get("why") or "沒有 uid"))
     return rec
 
 

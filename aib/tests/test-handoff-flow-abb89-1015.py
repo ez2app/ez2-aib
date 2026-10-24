@@ -309,7 +309,8 @@ class Write(Sandbox):
         full = fill(self.draft(), s1="建議 A1", s2="不知道 B2", s3="重來 C3")
         calls = []
 
-        def fake_write(kind, title, body, tags=(), about=(), seat="", project="", route_key="", dry_run=False):
+        def fake_write(kind, title, body, tags=(), about=(), seat="", project="", route_key="", dry_run=False,
+                       supersedes="", model=""):
             calls.append((kind, title, body, list(tags), seat))
             return {"uid": "u%d" % len(calls), "path": "/vault/u%d.md" % len(calls)}
         with mock.patch("aib_memory.write", side_effect=fake_write):

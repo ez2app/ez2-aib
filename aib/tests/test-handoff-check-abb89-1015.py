@@ -158,7 +158,8 @@ class Verify(unittest.TestCase):
         card.write_text(json.dumps({"layers": {"work_state": {"seats": {"86611": {"at": "2026-10-13T18:00:00+08:00"}}}}}),
                         encoding="utf-8")
         (self.td / "summary").mkdir()
-        (self.td / "summary" / "abcde.json").write_text(json.dumps({"at": "2026-10-13T18:00:00+08:00", "file": "R.md"}),
+        (self.td / "summary" / "abcde.json").write_text(json.dumps({"at": "2026-10-13T18:00:00+08:00", "file": "R.md",
+                                                                   "brain": {"ok": True, "uid": "3abc02"}}),
                                                        encoding="utf-8")
         mem = self.td / "context.md"
         mem.write_text("x", encoding="utf-8")
@@ -171,6 +172,7 @@ class Verify(unittest.TestCase):
         self.tidy = {"at": "2026-10-13T18:00:00+08:00", "project_uid": "proj:x", "seat_id": "86611",
                      "files": {"persona": {"status": "ok"}, "card": {"status": "ok"}, "context": {"status": "ok"},
                                "note": {"status": "ok", "uid": "3abc01"}}}
+        self.review = {"lines": 3, "by_kind": {"做了": 3}, "note": "3abc03", "words_source": memory_tidy.HUMAN_WORDS_FALLBACK}
         for target, attr, val in ((aib_handoff, "current_round_start", lambda c, h=None: 1000.0),
                                   (aib_handoff, "receipt_path", lambda c, h=None: self.receipt),
                                   (aib_handoff, "seat_memory_path", lambda c, h=None: mem),
@@ -180,7 +182,7 @@ class Verify(unittest.TestCase):
                                   (memory_tidy, "last_receipt", lambda c: self.tidy),
                                   (aib_summary, "summary_dir", lambda: self.td / "summary"),
                                   (__import__("handoff_review"), "done_this_round",
-                                   lambda c, st: {"lines": 3, "by_kind": {"做了": 3}})):
+                                   lambda c, st: self.review)):
             q = mock.patch.object(target, attr, val)
             q.start()
             self.addCleanup(q.stop)
@@ -205,12 +207,48 @@ class Verify(unittest.TestCase):
         self.assertFalse(items["2"], "收據說寫了但寫入紀錄沒有 ⇒ 不算")
 
     def test_skipped_needs_reason(self):
+        (self.td / "tidy" / "writes.jsonl").write_text("", encoding="utf-8")       # 本輪沒寫過人格卡
         self.tidy["files"]["persona"] = {"status": "skipped", "why": ""}
         items = dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))
         self.assertFalse(items["2"])
+
+    def test_persona_skipped_only_when_human_silent(self):
+        """10-24 維護者「必要不能跳過」:有原話卻 skipped / 讀不到原話 ⇒ 紅;讀得到且真人一句都沒講 ⇒ 過。"""
+        writes = self.td / "tidy" / "writes.jsonl"
+        keep = writes.read_text(encoding="utf-8")
+        writes.write_text("", encoding="utf-8")                                    # 本輪沒寫過人格卡
         self.tidy["files"]["persona"] = {"status": "skipped", "why": "這輪沒觀察到"}
-        items = dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))
-        self.assertTrue(items["2"])
+        for hw, n, want in ((self.mt.HUMAN_WORDS_FALLBACK, 5, False), ("ok", 2, False),
+                            (self.mt.HUMAN_WORDS_UNAVAILABLE, 0, False), ("", 0, False),
+                            (self.mt.HUMAN_WORDS_NO_TRANSCRIPT, 0, False),        # 找不到對話檔 ≠ 沒講話(B-M1)
+                            (self.mt.HUMAN_WORDS_FALLBACK, None, False), ("ok", None, False),   # 量不到本輪起點(r3 B-1)
+                            (self.mt.HUMAN_WORDS_FALLBACK, 0, True), ("ok", 0, True)):
+            self.tidy["human_words"], self.tidy["human_words_count"] = hw, n
+            self.assertEqual(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"], want, (hw, n))
+        # #312 審查 A2:本輪稍早已寫進人格卡,回顧的 --add-only 沒東西補 ⇒ 收據 skipped、真人又講了話,仍算寫過
+        own = json.dumps({"seat": "abcde", "uid": "pu1", "at": "2026-10-13T18:00:00+08:00"}) + "\n"
+        writes.write_text(own, encoding="utf-8")
+        self.tidy["persona_uid"] = "pu1"
+        self.tidy["files"]["persona"] = {"status": "skipped", "why": "只補不改:這幾維都滿 3 條,沒有新增"}
+        self.tidy["human_words"], self.tidy["human_words_count"] = self.mt.HUMAN_WORDS_FALLBACK, 4
+        self.assertTrue(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        # r2 A-M1 / B-H1:本席這輪只寫了主人格卡(同席碼、別的卡號)⇒ 本席卡 skipped 有原話仍紅
+        writes.write_text(json.dumps({"seat": "abcde", "uid": "main9", "at": "2026-10-13T18:00:00+08:00"}) + "\n",
+                          encoding="utf-8")
+        self.assertFalse(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        # r2 A-S1:量不到這一輪起點 ⇒ 不放行「稍早寫過」
+        writes.write_text(own, encoding="utf-8")
+        with mock.patch.object(aib_handoff, "current_round_start", lambda c, h=None: 0.0):
+            self.assertFalse(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        # 舊收據沒有卡號 ⇒ 也不放行
+        del self.tidy["persona_uid"]
+        self.assertFalse(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        writes.write_text(keep, encoding="utf-8")
+        (self.td / "tidy" / "writes.jsonl").write_text("", encoding="utf-8")       # 本輪沒寫過 ⇒ 紅
+        self.assertFalse(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
+        self.tidy["files"]["persona"] = {"status": "waiting", "why": "第一艦長卡大變動"}
+        self.tidy["human_words_count"] = 9
+        self.assertTrue(dict((x[:1], ok) for x, ok, _d in hc.verify("abcde"))["2"])
 
     def test_handoff_file_tampered(self):
         (self.td / "HANDOFF.md").write_text("改過", encoding="utf-8")
@@ -229,13 +267,30 @@ class Verify(unittest.TestCase):
         self.assertFalse(done)
         self.assertIn("1 項", txt)
 
-    def test_no_summary_but_noted_in_receipt(self):
-        (self.td / "summary" / "abcde.json").unlink()
-        self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["6"])
+    def test_summary_cannot_be_skipped(self):
+        """10-24 維護者「總結與交接都不能跳過」:交接寫「沒做」不再算;總結沒寫進第二大腦也不算。"""
         rec = json.loads(self.receipt.read_text(encoding="utf-8"))
         rec["summary"] = "沒做"
         self.receipt.write_text(json.dumps(rec), encoding="utf-8")
-        self.assertTrue(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["6"], "收據寫明沒做(審查 4)")
+        s = self.td / "summary" / "abcde.json"
+        s.write_text(json.dumps({"at": "2026-10-13T18:00:00+08:00", "file": "R.md", "brain": {"ok": False, "why": "x"}}),
+                     encoding="utf-8")
+        self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["6"])
+        s.write_text(json.dumps({"at": "2026-10-13T18:00:00+08:00", "file": "R.md"}), encoding="utf-8")   # 舊收據沒 brain
+        self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["6"])
+        s.unlink()
+        self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["6"], "收據寫明沒做也不算")
+
+    def test_review_needs_note_and_real_source(self):
+        """遺漏回顧:筆記沒寫進第二大腦 ⇒ 紅;0 句但讀不到原話(舊收據沒來源)⇒ 紅;0 句、讀得到 ⇒ 過。"""
+        self.review.update(note="failed: no vault")
+        self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["9"])
+        self.review.update(note="3abc03", lines=0, words_source=None)
+        self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["9"])
+        self.review.update(words_source=self.mt.HUMAN_WORDS_NO_TRANSCRIPT)       # B-M1
+        self.assertFalse(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["9"])
+        self.review.update(words_source=self.mt.HUMAN_WORDS_FALLBACK)
+        self.assertTrue(dict((n[:1], ok) for n, ok, _d in hc.verify("abcde"))["9"])
 
     def test_context_needs_tidy_write(self):
         self.tidy["files"]["context"] = {"status": "failed", "why": "x"}

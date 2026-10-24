@@ -4,6 +4,15 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.53
+
+- **`aib approve`(新)**:WordPress 登入改在 Mac 按 Touch ID 核准。`aib approve key init` 在這台建一把 Secure Enclave 簽章鑰;`site add` 登記網站;`pending` / `yes <nonce>` / `no <nonce>` / `history` 列出與回覆請求。每次核准都要 Touch ID,並由 Secure Enclave 簽章。WordPress 那一端是另外的外掛。
+- **`aib room heat`(新，只讀)**:負載、記憶體、swap、溫度的快照，行程按「誰的」分組(席位、`aib test`、無頭瀏覽器、沙盒、系統、其他 App),最近一小時的歷史(`history`),系統當機報告按原因歸類(`crashes`)。量不到的照實寫 `unmeasured`,不會變成 0。輸出不帶指令列、工作資料夾與檔案全路徑。釋放殘留行程排在之後的版本。
+- **收尾一定寫回**:讀不到真人原話時，交接改從對話檔(只收真人打的字)取，不再空過;`aib summary write` 把總結寫成第二大腦筆記;`verify` 不再接受跳過的總結或人格步驟。
+- **`aib test --changed` 在開源版能用了**:帶進 consumer_scope 規則(不再 `ModuleNotFoundError`);倉裡的子專案會從子專案與倉根各挑一次，子專案外有改動就回「量不到」,不會默默變綠。
+- **`aib memory write` 多席同時寫**:配號、寫檔、記索引整段在同一把鎖裡，兩席同一刻寫不會再拿到同一個筆記號碼。
+- **空框提示字不算草稿**:游標停在輸入框提示字的第一個字上時，仍當作空框，排隊的訊息會照常送進，不用等人打字。
+
 ## 0.1.52
 
 - **`aib test` 在 macOS 的 Python 3.15 不再當機**:網路稽核鉤子不再複製舊的 socket fd(號碼被重用成系統保護的 fd 時，複製會讓系統直接終止測試行程);改記自己 bind 過的 socket 的弱參照，直接問它本身。
