@@ -8,7 +8,7 @@
 10-24 Andy:「要有一個點擊他選的 AI 在這個視窗中，即時對話用來 Q&A」+ @abb89 硬線「只回答、不動手」。
 - 只叫得動能驗證關工具的家:claude(--tools "" + --strict-mcp-config 不載 MCP + 關 skill / 指令)、
   codex(唯讀沙盒 + 關外掛 / apps / shell / 電腦與瀏覽器操作 / 看圖生圖 / 多代理 / hook / 網路搜尋 + 逐個停用 MCP、重列 MCP 與 features 確認 + 不留對話)。其他家 ⇒ power_ask_unsupported(驗不了就不叫,同帳號 AI 威脅守則)。
-- 那家不是綠燈 ⇒ power_ask_login,頁面導去登入;不偷換別家。
+- 那家不是綠燈 ⇒ power_ask_login,頁面導去登入;不偷換別家。判燈與實際問用同一份環境(不帶 API key,只走訂閱登入)。
 - 問題走 stdin(ps 看不到),跑在空的暫存目錄、跑完刪;不寫進任何席位、不存對話。
 - 回答裡的指令只抽出來給頁面「複製」,核心不執行;回答去控制字元、有長度上限。
 """
@@ -99,11 +99,14 @@ def _clean(s, limit, keep_newlines=True):
 
 
 _ENV_DROP_PREFIX = ("TMUX", "CLAUDECODE", "CLAUDE_CODE_", "AIB_SEAT")
+# 問 AI 只准走本人的訂閱登入，不准悄悄改走 API 計費(花錢一律本人決定;10-25 @abb89 裁 #342 F1)
+_ENV_DROP_NAMES = frozenset(("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY",
+                             "OPENAI_BASE_URL", "CODEX_API_KEY"))
 
 
 def _clean_env():
     """子 CLI 不帶席位 / tmux / 父 Claude 工作階段的環境(訊息 token、socket、埠):不給它回連父席的路。"""
-    return {k: v for k, v in os.environ.items() if not k.startswith(_ENV_DROP_PREFIX)}
+    return {k: v for k, v in os.environ.items() if not k.startswith(_ENV_DROP_PREFIX) and k not in _ENV_DROP_NAMES}
 
 
 def _kill_group(p):
@@ -133,10 +136,28 @@ def run_group(cmd, *, input=None, timeout=None, capture_output=False, **kw):
     return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
 
-def _light(brand):
+def _probe_run(cmd):
+    """power_login 的登入狀態指令，但用跟實際問一樣的 _clean_env(#342 F1:判燈帶完整環境 ⇒ 綠燈卻叫失敗)。"""
     try:
         import power_login
-        return power_login.light_of(brand).get("light")
+        r = run_group(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                      timeout=power_login.STATUS_TIMEOUT_S, env=_clean_env())
+        return r.returncode, r.stdout or ""
+    except (OSError, subprocess.SubprocessError, ImportError):
+        return None, ""
+
+
+def _light(brand):
+    """跟 power_login.light_of 同順序(沒登入 yellow、額度到上限 red、登入著 green、量不到 unknown),但每次用
+    _clean_env 現量、不讀也不寫共用的燈號快取(頁面燈號照舊用完整環境的快取)。"""
+    try:
+        import power_login
+        li = power_login.PROBES[brand](_probe_run)
+        if li is False:
+            return "yellow"
+        if power_login.quota(brand)[0]:
+            return "red"
+        return "green" if li is True else "unknown"
     except Exception:  # noqa: BLE001
         return "unknown"
 

@@ -22,10 +22,13 @@ A14 第 3 輪(10-25 突變 + 稽核):codex 關看圖 / 生圖 / 多代理 / hook
     也去席位環境、stdin 空、有逾時;主呼叫逾時有傳;-o 檔讀上限;claude 帶 --settings disableAllHooks、--output-format text;
     codex --color never;暫存目錄在系統暫存區;前言禁令三句都在;變體選擇符 / 點字空白去掉;run_group 逾時 / 結束砍整組
     (孫行程不留)、SIGTERM ⇒ finally 照跑(暫存目錄刪、孫行程收)
+A16 #342 F1(@abb89 裁 b 加強):ANTHROPIC_* / OPENAI_* / CODEX_API_KEY 子行程拿不到;判燈用同一份環境現量
+    (不讀共用快取)⇒ 拿掉後沒登入就是 login、不是綠燈卻失敗;燈號順序 yellow / red / green / unknown
 A11 稽核第 1 輪(10-24 03:0x):環境用前綴去掉 TMUX* / CLAUDECODE / CLAUDE_CODE_* / AIB_SEAT*;模型尾巴換行不收;
     回答去方向 / 零寬格式字元;單獨「aib」不算指令;代理字元問題 / 非 UTF-8 輸出 / 讀檔亂碼 / 燈號函式拋例外 / 寫 stdin 拋錯 ⇒ 回條、不拋
 刀(複本):K1 拿掉 --tools "" ⇒ A4 紅;K2 不看燈號 ⇒ A3 紅;K3 codex 改可寫沙盒 ⇒ A5 紅;K4 環境只濾固定名 ⇒ A11 紅;K5 模型用 match ⇒ A11 紅;K6 停用後不重列確認 ⇒ A13 紅;K7 不關外掛 ⇒ A5 紅;K8 不重列 features ⇒ A14 紅;
-K9 run_group 不砍整組 ⇒ A14 紅;K10 不關網路搜尋 ⇒ A5 紅;K11 enabled 改成 is True 才算開 ⇒ A14 紅
+K9 run_group 不砍整組 ⇒ A14 紅;K10 不關網路搜尋 ⇒ A5 紅;K11 enabled 改成 is True 才算開 ⇒ A14 紅;
+K12 不拿掉 API key ⇒ A16 紅;K13 判燈帶完整環境 ⇒ A16 紅
 """
 import io
 import json
@@ -458,6 +461,55 @@ class Ask(unittest.TestCase):
         r, rc = A.ask("claude", "問", run=FakeRun(out="a\ufe0fb\U000e0100c\u2800d\u180be"), light=GREEN)
         self.assertEqual(r["answer"], "abcde")
 
+    def test_a16_same_env_no_api_key(self):
+        keys = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+                "CODEX_API_KEY")
+        seen = []
+        state = {"logged": True}
+
+        def probe(cmd, **kw):
+            seen.append((list(cmd), kw))
+            if cmd[:3] == ["claude", "auth", "status"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"loggedIn": state["logged"]}), "")
+            return subprocess.CompletedProcess(cmd, 0 if state["logged"] else 1, "", "")
+        saved = A.run_group
+        A.run_group = probe
+        for k in keys:
+            os.environ[k] = "sk-test"
+        try:
+            for brand in ("claude", "codex"):
+                seen.clear()
+                run = FakeRun()
+                r, rc = A.ask(brand, "問", run=run)                           # light 用預設 ⇒ 現量
+                self.assertEqual(rc, 0, brand)
+                probe_env = seen[0][1]["env"]
+                self.assertIs(seen[0][1]["stdin"], subprocess.DEVNULL)
+                for k in keys:
+                    self.assertNotIn(k, probe_env, brand)                     # 判燈拿不到
+                    self.assertNotIn(k, run.calls[0][1]["env"], brand)        # 實際問也拿不到
+                    for _c, kw in run.mcp_calls + run.feat_calls:
+                        self.assertNotIn(k, kw["env"])
+                self.assertEqual(probe_env, run.calls[0][1]["env"])           # 同一份環境
+            state["logged"] = False
+            for brand in ("claude", "codex"):
+                run = FakeRun()
+                r, rc = A.ask(brand, "問", run=run)
+                self.assertEqual((rc, r["detail"], run.calls), (2, "power_ask_login", []), brand)
+            self.assertEqual(A._light("claude"), "yellow")
+        finally:
+            A.run_group = saved
+            for k in keys:
+                os.environ.pop(k)
+        A.run_group = lambda *a, **k: (_ for _ in ()).throw(OSError("x"))   # 量不到 ⇒ unknown ⇒ login
+        try:
+            self.assertEqual(A._light("claude"), "unknown")
+            self.assertEqual(A.ask("claude", "問", run=FakeRun())[0]["detail"], "power_ask_login")
+        finally:
+            A.run_group = saved
+        import power_login
+        st = Path(power_login.state_dir()) / "power-login.json"
+        self.assertFalse(st.exists(), "判燈不准寫共用快取")
+
     def test_a15_group_kill(self):
         d = Path(tempfile.mkdtemp(prefix="aib-power-ask-grp-"))
         try:
@@ -521,6 +573,13 @@ class Knife(unittest.TestCase):
     def test_k6_no_recheck(self):
         self._knife("    return flags if _mcp_enabled(flags, run) == [] and _features_off(flags, run) else None",
                     "    return flags if _features_off(flags, run) else None", "Ask.test_a13_codex_lockdown")
+
+    def test_k12_api_key_kept(self):
+        self._knife(" and k not in _ENV_DROP_NAMES}", "}", "Ask.test_a16_same_env_no_api_key")
+
+    def test_k13_light_full_env(self):
+        self._knife("                      timeout=power_login.STATUS_TIMEOUT_S, env=_clean_env())",
+                    "                      timeout=power_login.STATUS_TIMEOUT_S)", "Ask.test_a16_same_env_no_api_key")
 
     def test_k8_no_feature_recheck(self):
         self._knife(" and _features_off(flags, run) else None", " else None", "Ask.test_a14_round3")
