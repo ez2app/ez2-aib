@@ -21,6 +21,7 @@ N2 換人格後在線狀態也用新那把 ⇒ 好友看得到我在線(@abb89 #
 S4 手機配對給的 npub 跟名冊同一把:換過人格的席 ⇒ 配對 QR 給 B 那把,不給舊人格 A(@abb89 #297 r1)
 刀(複本):K1 拿掉改抓名冊 ⇒ P1 紅;K2 sending_seats 不比人格 ⇒ S1 紅;K4 配對改回挑同席第一把 ⇒ S4 紅;K5 去重看人格 ⇒ S5 紅;K6 封存的也算 ⇒ S6 紅;K7 真人寄件挑任一把 active ⇒ S7 紅;K8 寄件挑同席第一把 ⇒ N1 紅;K9 在線挑同席第一把 ⇒ N2 紅;K10 網路錯也改抓名冊 ⇒ P4 紅
 被 SIGTERM(外層 timeout)⇒ 先跑清理收掉轉接程式再走(#308 L1)
+E1 / E2 秒數環境變數壞值退回預設、0 / 負數夾到 1 秒;值寫壞 chat_nostr 照 import 得起來(#308 後續 r2)
 """
 import json
 import os
@@ -258,6 +259,30 @@ class SendAfterSwitch(unittest.TestCase):
         self.assertEqual(a.cli("friend", "add", "%s/6ddf/%s" % (b.owner, y)).returncode, 0)
         world = lambda: {c["owner"]: c for c in json.loads(b.cli("world", "--json").stdout)["cabins"]}  # noqa: E731
         self.assertTrue(b.wait_for(lambda: (world().get(a.owner) or {}).get("presence_at"), 40), world())
+
+
+class EnvSecs(unittest.TestCase):
+    """#308 後續 r2(@abb89):秒數環境變數壞值 / 0 不准讓轉接程式起不來或節流失效。"""
+
+    def test_e1_bad_or_zero(self):
+        sys.path.insert(0, str(REPO / "src" / "cockpit"))
+        import dm_global_files as GF
+        f = lambda v: GF.env_secs("X", 60, {"X": v} if v is not None else {})   # noqa: E731
+        self.assertEqual([f(v) for v in (None, "", "abc", "nan", "inf", "-5", "0", "0.2", "2", "90")],
+                         [60.0, 60.0, 60.0, 60.0, 60.0, 1.0, 1.0, 1.0, 2.0, 90.0])
+        r = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import chat_bridge as CB, "
+                            "dm_global_files as GF; print(GF.env_secs('AIB_CHAT_PUBLISH_EVERY', CB.PUBLISH_EVERY))",
+                            str(REPO / "src" / "cockpit")], capture_output=True, text=True, timeout=60,
+                           env=dict(os.environ, AIB_CHAT_PUBLISH_EVERY="abc", AIB_CHAT_RESUB_EVERY="abc"))
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "60.0"), r.stderr)
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(chat_nostr 只在 venv 裡 import 得到)")
+    def test_e2_chat_nostr_imports_with_bad_value(self):
+        for raw, want in (("abc", "30.0"), ("0", "1.0")):
+            r = subprocess.run([VPY, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import chat_nostr as CN; print(CN.RESUB_EVERY)",
+                                str(REPO / "src" / "cockpit")], capture_output=True, text=True, timeout=60,
+                               env=dict(os.environ, AIB_CHAT_RESUB_EVERY=raw))
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, want), raw + ":" + r.stderr)
 
 
 class Knife(unittest.TestCase):
