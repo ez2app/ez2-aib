@@ -28,6 +28,8 @@ A16 參數錯也印一行 JSON、stdin 不是 UTF-8、網址帶帳號 / 前置�
 A17 yes -h 不印 bad_args、--json 放前面、網址空帳號、一站最多 50 筆、deny 403 / 502 分開、history 最近 20 筆
 A18 落單代理字元不讓指令當(壞一筆不擋別站)、站回 v=true / 1.0、剛好 exp / 時鐘誤差邊界、明寫 -- 的 nonce
 A19 命令列 nonce / history 有落單代理字元:輸出只有 ASCII;deny 回 204 不算 denied
+A20 rate.json 有超大整數不當;網址有非 ASCII(K 號、阿拉伯數字埠)拒;iat 快 SKEW+1 秒不收;剛好 30 秒前那次不算;
+    payload 剛好 2048 位元組收、多 1 位元組不收
 刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
    K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅;K8 跟轉址 ⇒ A11 紅
 """
@@ -544,6 +546,29 @@ class Approve(Base):
         import urllib.request
         with um.patch.object(urllib.request, "build_opener", side_effect=AssertionError("不該連")):
             self.assertEqual(AA.http_call("GET", "http://ez2.app/x", {}, None), (0, b""))
+
+    def test_a20_rate_bigint_ascii_url_edges(self):
+        f = self.site.add(kid=self.kid)
+        (self.root / "approve" / "rate.json").write_text("[1" + "0" * 400 + "]")
+        self.assertEqual(self.yes(f["nonce"], now=NOW + 0.5), ("approved", None))  # time.time() 是 float
+        for url in ("https://\u212a.com", "https://k.com:\u0668\u0660"):
+            self.assertEqual(AA.site_add("k.com", url, "t" * 32, self.env), (None, "bad_url"), url)
+        self.site.items = []
+        self.site.add(kid=self.kid, iat=NOW + AA.SKEW + 1, exp=NOW + AA.SKEW + 101)
+        r, _ = AA.pending(self.env, http=self.site, now=NOW)  # iat 快 SKEW+1 秒:不收
+        self.assertEqual((r["items"], r["invalid"]), ([], 1))
+        self.site.items = []
+        g = self.site.add(kid=self.kid, exp=NOW + 110)
+        (self.root / "approve" / "rate.json").write_text(json.dumps([NOW] * 3))
+        self.assertEqual(self.yes(g["nonce"], now=NOW + AA.RATE_S - 1)[0], "rate_limited")
+        self.assertEqual(self.yes(g["nonce"], now=NOW + AA.RATE_S)[0], "approved")  # 剛好 30 秒前:不算
+        for extra, want in ((0, 1), (1, 0)):  # user_id 位數補到剛好 2048 / 2049 位元組
+            self.site.items = []
+            base = len(signing.canonical(dict(g, user_id=1)))
+            self.site.add(kid=self.kid, user_id=int("1" * (AA.PAYLOAD_MAX - base + 1 + extra)))
+            self.assertEqual(len(self.site.items[0]["payload"]), AA.PAYLOAD_MAX + extra)
+            r, _ = AA.pending(self.env, http=self.site, now=NOW)
+            self.assertEqual(len(r["items"]), want, extra)
 
 class Knives(unittest.TestCase):
     def _red(self, needle, repl, test):

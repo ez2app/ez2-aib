@@ -200,9 +200,9 @@ def load_sites(env=None):
 
 
 def _url_ok(site, url):
-    """https、主機 = 站名、沒有帳密 / 埠以外的花樣。"""
+    """https、只有 ASCII、主機 = 站名、沒有帳密 / 埠以外的花樣。"""
     import urllib.parse
-    if not isinstance(site, str) or not isinstance(url, str) or not SITE_RE.fullmatch(site):
+    if not isinstance(site, str) or not isinstance(url, str) or not url.isascii() or not SITE_RE.fullmatch(site):
         return False
     try:
         u = urllib.parse.urlsplit(url)
@@ -430,8 +430,8 @@ def _rate_ok(env, now):
         doc = _loads(p.read_bytes())
     except OSError:
         doc = None
-    ts = [t for t in doc if isinstance(t, (int, float)) and not isinstance(t, bool) and 0 <= now - t < RATE_S] \
-        if isinstance(doc, list) else []  # 未來的(時鐘倒退)不算
+    ts = [t for t in doc if isinstance(t, (int, float)) and not isinstance(t, bool) and abs(t) < 1e12
+          and 0 <= now - t < RATE_S] if isinstance(doc, list) else []  # 未來的(時鐘倒退)、大到不像時間的不算
     if len(ts) >= RATE_N:
         return False
     try:
