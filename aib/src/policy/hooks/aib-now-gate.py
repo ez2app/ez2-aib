@@ -68,11 +68,12 @@ sys.path.insert(0, COCKPIT)
 sys.path.insert(0, HERE)   # 同資料夾的 ship_report_gate(10-13)
 
 MARKER = "aib-now-gate.py"
-HOOK_TIMEOUT_S = {"SessionStart": 10, "Stop": 10, "PostToolUse": 10}
+HOOK_TIMEOUT_S = {"SessionStart": 10, "Stop": 10, "PostToolUse": 10, "PreToolUse": 10}
 # PostToolUse(10-13 the maintainer 20:0x「如何程式化直接印出來」):Bash 剛跑完 aib test / 推包 ⇒ 用 systemMessage 把影子續跑說明
 #   直接顯示在畫面上(不經 AI;10-13 a seat 在隔離的 claude 2.1.296 實測:畫面出現「⎿ PostToolUse:Bash says: …」)
-EVENT_MODE = {"SessionStart": "session-start", "Stop": "stop", "PostToolUse": "post-tool"}
-EVENT_MATCHER = {"PostToolUse": "Bash"}
+# PreToolUse(10-24 the maintainer「不是提醒，是用程式必要規定」):工作樹 / clone 開在 Spotlight 會掃的地方 ⇒ 擋(worktree_path_gate)
+EVENT_MODE = {"SessionStart": "session-start", "Stop": "stop", "PostToolUse": "post-tool", "PreToolUse": "pre-tool"}
+EVENT_MATCHER = {"PostToolUse": "Bash", "PreToolUse": "Bash"}
 DEFAULT_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 
 
@@ -442,12 +443,22 @@ def add_ours(cfg, script=None):
     hooks = cfg.setdefault("hooks", {})
     for ev, mode in EVENT_MODE.items():
         if mode == "post-tool" and not _supports_post_tool(script):
-            continue                           # 審查:裝的是正本那支,正本還沒有 post-tool ⇒ 每次 Bash 都會跳用法錯誤
+            continue
+        if mode == "pre-tool" and not _supports_mode(script, "pre-tool"):
+            continue                           # 同上：正本還沒有 pre-tool ⇒ 不裝那條                           # 審查:裝的是正本那支,正本還沒有 post-tool ⇒ 每次 Bash 都會跳用法錯誤
         group = {"hooks": [{"type": "command", "command": hook_command(mode, script), "timeout": HOOK_TIMEOUT_S[ev]}]}
         if ev in EVENT_MATCHER:
             group = dict({"matcher": EVENT_MATCHER[ev]}, **group)
         hooks.setdefault(ev, []).append(group)
     return cfg
+
+
+def _supports_mode(script, mode):
+    try:
+        with open(script or os.path.abspath(__file__), encoding="utf-8") as fh:
+            return '"%s"' % mode in fh.read()
+    except OSError:
+        return False
 
 
 def _supports_post_tool(script):
@@ -594,6 +605,17 @@ def main(argv=None):
             return 0
         if out:
             sys.stdout.write(json.dumps({"systemMessage": out}, ensure_ascii=False) + "\n")
+        return 0
+    if mode == "pre-tool":
+        try:
+            import worktree_path_gate
+            hit = worktree_path_gate.pre_tool(_read_payload())
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            _note("FAILOPEN pre-tool:%s" % e)
+            return 0
+        if hit:
+            print(T("aib.nowgate.wt_indexed", paths=", ".join(hit["paths"]), suggest=hit["suggest"]), file=sys.stderr)
+            return 2
         return 0
     if mode == "session-start":
         try:
