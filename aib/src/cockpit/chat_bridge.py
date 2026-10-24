@@ -809,7 +809,19 @@ def status_record(env):
     rec["power"] = CP.power_info(root)       # 10-20 @abb89 #16:ac / charging / pct / watts / sleeps / sleep_min / kept_awake(艦長室頁面讀這個)
     rec["healthy"], rec["why"] = health(rec)
     rec["backup"] = backup_state(env)
+    rec["ready"] = ready_checks(rec, env)
     return rec
+
+
+def ready_checks(rec, env=None):
+    """10-24 @74e8b 轉 Andy 建議第 2 / 6 條:能不能對話的三格(轉接程式在跑、有公開的席、至少一位聯絡人)+ 公開了哪幾席。
+    艦長室全綠就收起、沒過的附修法;public 給狀態列「公開中」小標。"""
+    pub = _my_published(env)
+    out = {"bridge": bool(rec.get("enabled") and rec.get("running") and rec.get("heartbeat")),
+           "public": bool(pub), "contact": bool(rec.get("friends") or rec.get("mine")),
+           "public_seats": [p["seat"] for p in pub]}
+    out["all"] = out["bridge"] and out["public"] and out["contact"]
+    return out
 
 
 def health(rec):
