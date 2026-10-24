@@ -134,6 +134,21 @@ class Snapshot(Base):
                                lambda *a, **k: seen.update(k) or mock.Mock(stdout="")):
             self.RH._run(["ps"])
         self.assertEqual(seen["env"]["LC_ALL"], "C")
+        s = self.RH.snapshot(sampler=fake_sampler, owner_of=owner_of, now=1_792_814_400.0, record=False,
+                             run=lambda cmd: "")                           # ps 有跑但沒輸出(r4 B-L4)
+        self.assertEqual(s["groups"]["state"], "unmeasured")
+
+    def test_h2d_nan_cell_and_short_names(self):
+        """r4 B-L6:量測給 NaN ⇒ 該格 unmeasured、--json 不吐 NaN;系統名單照 ps ucomm 截 16 字。"""
+        def nan_sampler():
+            cells, took = fake_sampler()
+            cells[0] = dict(cells[0], value=float("nan"))
+            return cells, took
+        s = self.RH.snapshot(sampler=nan_sampler, run=fake_ps, owner_of=owner_of, now=1_792_814_400.0, record=False)
+        self.assertEqual((s["cells"]["load1"]["value"], s["cells"]["load1"]["state"]), (None, "unmeasured"))
+        json.dumps(s, allow_nan=False)
+        self.assertIn("spotlightknowled", self.RH.SYSTEM_NAMES)
+        self.assertTrue(all(len(n) <= 16 for n in self.RH.SYSTEM_NAMES))
 
 
 class History(Base):
@@ -175,6 +190,15 @@ class History(Base):
         self.RH.record_history({"level": "ok", "cells": {}}, now=t0)
         self.assertTrue(self.RH.record_history({"level": "ok", "cells": {}}, now=t0 - 3600))
         self.assertEqual([p["t"] for p in self.RH.read_history(now=t0 - 3600)], [t0 - 3600])
+
+    def test_h3e_history_cmd_last_hour(self):
+        """r4 B-L7:history 子指令只回最近 1 小時(關機一天後不回昨天的點)。"""
+        now = time.time()
+        self.RH.record_history({"level": "ok", "cells": {}}, now=now - 86400)
+        self.RH.record_history({"level": "ok", "cells": {}}, now=now - 30)
+        out = io.StringIO()
+        self.RH.main(["history", "--json"], out=out)
+        self.assertEqual([round(p["t"]) for p in json.loads(out.getvalue())["points"]], [round(now - 30)])
 
     def test_h3d_deep_nan_symlink(self):
         """#317 r2 A:很深的巢狀不讓快照一直掛;NaN / Infinity 不進歷史;room 是 symlink 就不寫、不 chmod 連到的夾。"""
@@ -260,6 +284,15 @@ class Crashes(Base):
             self.RH.main(["crashes"], out=out)
         self.assertNotRegex(out.getvalue(), r"[\x00-\x08\x0b-\x1f\x7f]")
         self.assertEqual(self.RH.crashes(crash_dir=str(self.tmp / "nope"))["state"], "unmeasured")
+        self.assertIn("days", self.RH.crashes(crash_dir=str(self.tmp / "nope")))
+        if os.getuid() != 0:                                               # 資料夾讀不了 ⇒ 量不到,不是「沒有當機」(B-L5)
+            locked = self.tmp / "locked"
+            locked.mkdir()
+            write_ips(locked, "x.ips", "node", "node", "EXC_CRASH", "SIGABRT", "x", now)
+            os.chmod(locked, 0)
+            self.addCleanup(os.chmod, locked, 0o700)
+            r2 = self.RH.crashes(crash_dir=str(locked), now=now)
+            self.assertEqual((r2["state"], r2["detail"], r2["days"]), ("unmeasured", "crash_dir_unreadable", 7))
 
     def test_h4b_file_vanishes(self):
         d = self.tmp / "reports2"
