@@ -30,6 +30,8 @@ A18 落單代理字元不讓指令當(壞一筆不擋別站)、站回 v=true / 1
 A19 命令列 nonce / history 有落單代理字元:輸出只有 ASCII;deny 回 204 不算 denied
 A20 rate.json 有超大整數不當;網址有非 ASCII(K 號、阿拉伯數字埠)拒;iat 快 SKEW+1 秒不收;剛好 30 秒前那次不算;
     payload 剛好 2048 位元組收、多 1 位元組不收
+A21 本機 helper 夾 / 雜湊檔被換成檔案或資料夾 ⇒ yes 印一行 JSON(touchid_unavailable)、key init / pem 不當;
+    網址中間有換行 / tab / 空白拒;history 不認得的結果不列;公鑰不是 04 開頭 ⇒ no_key;指紋視窗佔用時不吃限速
 刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
    K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅;K8 跟轉址 ⇒ A11 紅
 """
@@ -569,6 +571,38 @@ class Approve(Base):
             self.assertEqual(len(self.site.items[0]["payload"]), AA.PAYLOAD_MAX + extra)
             r, _ = AA.pending(self.env, http=self.site, now=NOW)
             self.assertEqual(len(r["items"]), want, extra)
+
+    def test_a21_helper_oserror_and_more_edges(self):
+        import unittest.mock as um
+        import se_vault
+        import touchid_approve as TA
+        f = self.site.add(kid=self.kid)
+        for exc in (IsADirectoryError, FileExistsError):
+            with um.patch.object(se_vault, "build_helper", side_effect=exc("x")), \
+                    um.patch.object(AA, "http_call", self.site), um.patch.object(AA.time, "time", return_value=NOW):
+                out = io.StringIO()
+                self.assertEqual(AA.main(["yes", f["nonce"]], out=out, env=self.env), 0)
+                self.assertEqual(json.loads(out.getvalue())["result"], "touchid_unavailable")
+                self.assertEqual(AA.key_publish(self.env, platform="darwin"), (None, "touchid_unavailable"))
+                env2 = dict(self.env, EZ2_AIB_STATE_ROOT=str(self.root / "s2"), HOME=str(self.root / "s2"))
+                self.assertEqual(AA.key_init(env2, platform="darwin"), (None, "helper_failed"))
+        for url in ("https://e\nz2.app", "https://ez2\t.app", "https://ez2 .app"):
+            self.assertEqual(AA.site_add("ez2.app", url, "t" * 32, self.env), (None, "bad_url"), repr(url))
+        (self.root / "approve" / "history.jsonl").write_text(
+            json.dumps({"result": "weird", "nonce": "A" * 43}) + "\n" + json.dumps({"result": "denied", "nonce": "B" * 43}) + "\n")
+        self.assertEqual([r["nonce"] for r in AA.history(self.env)], ["B" * 43])
+        rate = self.root / "approve" / "rate.json"
+        rate.write_text(json.dumps([NOW] * 2))
+        with TA.one_at_a_time(self.root / "locks" / "touchid-approve.lock") as g:
+            self.assertTrue(g.held)
+            self.assertEqual(self.yes(f["nonce"]), ("touchid_unavailable", None))
+        self.assertEqual(json.loads(rate.read_text()), [NOW] * 2)  # 佔用那次不吃限速
+        sk = AA._sekey_path(self.env)
+        doc = json.loads(sk.read_text())
+        doc["public_key"] = base64.b64encode(b"\x05" + base64.b64decode(doc["public_key"])[1:]).decode()
+        sk.write_text(json.dumps(doc))
+        self.assertIsNone(AA.local_pub(self.env))
+        self.assertEqual(self.yes(f["nonce"]), (None, "no_key"))
 
 class Knives(unittest.TestCase):
     def _red(self, needle, repl, test):

@@ -131,12 +131,20 @@ def pem_of(pub):
     return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(b[i:i + 64] for i in range(0, len(b), 64)) + "\n-----END PUBLIC KEY-----\n"
 
 
+def _se_call(args, env, data, run, helper, platform):
+    import se_vault
+    try:
+        return se_vault._call(args, env, data, run, helper, platform)
+    except OSError:
+        return None, "helper_failed"  # 本機 helper 夾 / 雜湊檔被換成檔案或資料夾:不讓指令當
+
+
 def key_init(env=None, run=subprocess.run, helper=None, platform=None):
     import se_vault
     env = _env(env)
     if local_pub(env):
         return None, "exists"
-    _, why = se_vault._call(["se-create", "--name", KEY_NAME, "--dir", se_vault.se_dir(env)], env, b"", run, helper, platform)
+    _, why = _se_call(["se-create", "--name", KEY_NAME, "--dir", se_vault.se_dir(env)], env, b"", run, helper, platform)
     if why:
         return None, why
     pub = local_pub(env)
@@ -173,7 +181,7 @@ def key_publish(env=None, run=subprocess.run, helper=None, platform=None):
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:
             return None, "busy"
-        out, why = se_vault._call(args, env, msg, run, helper, platform)
+        out, why = _se_call(args, env, msg, run, helper, platform)
     if why:
         return None, {"cancel": "touchid_cancel"}.get(why, "touchid_unavailable")
     try:
@@ -200,7 +208,7 @@ def load_sites(env=None):
 
 
 def _url_ok(site, url):
-    """https、只有 ASCII、主機 = 站名、沒有帳密 / 埠以外的花樣。"""
+    """https、只有 ASCII 且沒有空白 / 控制字、主機 = 站名、沒有帳密 / 埠以外的花樣。"""
     import urllib.parse
     if not isinstance(site, str) or not isinstance(url, str) or not url.isascii() or not SITE_RE.fullmatch(site):
         return False
@@ -208,7 +216,7 @@ def _url_ok(site, url):
         u = urllib.parse.urlsplit(url)
         port = u.port  # 不在 0–65535 ⇒ ValueError
         return u.scheme == "https" and u.hostname == site and not u.username and not u.password \
-            and "?" not in url and "#" not in url and "@" not in url and u.path == "" and url == url.strip() \
+            and "?" not in url and "#" not in url and "@" not in url and u.path == "" and min(map(ord, url)) > 0x20 \
             and (port is None or 0 < port)
     except ValueError:
         return False
@@ -481,7 +489,7 @@ def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=No
         if not _rate_ok(env, now):
             _record(env, d, "rate_limited")
             return "rate_limited", None
-        out, why = se_vault._call(args, env, d["payload"], run, helper, platform)
+        out, why = _se_call(args, env, d["payload"], run, helper, platform)
     if why:
         res = {"cancel": "touchid_cancel"}.get(why, "touchid_unavailable")
         _record(env, d, res)
