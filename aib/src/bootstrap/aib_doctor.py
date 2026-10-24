@@ -19,6 +19,8 @@
 唯讀:本工具**不建立、不修改任何檔案**。要建目錄是 ED.2 `aib init` 的事。
   唯一例外(10-17 @abb89 裁):角色卡清單 cards.json 是角色庫的投影,升級後是舊程式產的(卡檔沒變、只是算法變了)⇒
   直接重產並在 cards_projection 那一項回報,不叫用戶手動 scan。角色庫改過或有人手改 ⇒ 照舊只列。
+  例外二(10-24 @abb89 准,動力室 R10):從指令列跑完記最後一次 state/run-marks/doctor.json = {at, rc}(覆寫、不累積、
+  不帶任何檢查內容);寫不進去照樣回原本的 rc。只在 main(),run_all 給別支呼叫時不記。
 
 狀態根以可注入方式取得(參數 > 環境變數 > 預設)。**刻意不改既有 9 處硬編路徑**
 ——那是 ED.1 的獨佔範圍,現在動會與未來的 ED.1 互撞(pm 裁決)。
@@ -831,9 +833,9 @@ def main(argv=None):
                          ensure_ascii=False, indent=2))
     else:
         for c in checks:
-            mark = {OK: "OK  ", FAIL: "FAIL", MANUAL: _T("aib.doctor.mark_manual"),
-                    NOTE: _T("aib.doctor.mark_note")}[c["status"]]
-            line = "%s %-24s %s" % (mark, c["id"], c["detail"])
+            tag = {OK: "OK  ", FAIL: "FAIL", MANUAL: _T("aib.doctor.mark_manual"),
+                   NOTE: _T("aib.doctor.mark_note")}[c["status"]]      # 別叫 mark:會蓋掉 main 的 mark 參數
+            line = "%s %-24s %s" % (tag, c["id"], c["detail"])
             if c["status"] != OK and c["remedy"]:
                 line += "\n         -> %s" % c["remedy"]
             print(line)
@@ -842,7 +844,23 @@ def main(argv=None):
         if counts[MANUAL]:
             print(_T("aib.doctor.manual_note"))
 
-    return 0 if (counts[FAIL] == 0 and counts[MANUAL] == 0) else 1
+    rc = 0 if (counts[FAIL] == 0 and counts[MANUAL] == 0) else 1
+    _mark_run(args.state_root, rc)
+    return rc
+
+
+def _mark_run(state_root, rc):
+    """最後一次從指令列跑的時間與 rc(動力室 R10 讀);任何錯都吞掉,不改 doctor 的結果。"""
+    try:
+        d = os.path.join(os.path.expanduser(state_root), "state", "run-marks")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, "doctor.json")
+        tmp = "%s.%d.tmp" % (p, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"at": int(time.time()), "rc": rc}, f)
+        os.replace(tmp, p)
+    except (OSError, ValueError):
+        pass
 
 
 if __name__ == "__main__":
