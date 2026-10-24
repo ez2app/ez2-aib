@@ -64,6 +64,7 @@ SKEW = 30                    # 這台時鐘可以比站上快 / 慢多少
 RATE_N, RATE_S = 3, 30       # 30 秒內最多 3 次 yes(本機計數:只防誤操作)
 HISTORY_N = 20
 PAYLOAD_MAX = 2048
+LOCAL_MAX = 1 << 20           # 本機狀態檔上限:超過當壞檔(3.9 解析超長整數是平方時間,會卡住)
 HTTP_TIMEOUT = 10
 RESULTS = ("approved", "site_rejected", "not_delivered", "denied", "expired", "rate_limited",
            "touchid_cancel", "touchid_unavailable")
@@ -83,6 +84,13 @@ def _loads(raw, **kw):
         return json.loads(raw, **kw)
     except (ValueError, RecursionError, UnicodeError, TypeError):
         return None
+
+
+def _read_local(path):
+    """讀本機狀態檔;超過 LOCAL_MAX 當成空的(壞檔)。OSError 照丟給呼叫端接。"""
+    with open(path, "rb") as f:
+        raw = f.read(LOCAL_MAX + 1)
+    return raw if len(raw) <= LOCAL_MAX else b""
 
 
 def _env(env):
@@ -114,7 +122,7 @@ def _sekey_path(env):
 
 def local_pub(env=None):
     try:
-        doc = _loads(_sekey_path(env).read_bytes())
+        doc = _loads(_read_local(_sekey_path(env)))
         pub = base64.b64decode(doc.get("public_key") or "", validate=True) if isinstance(doc, dict) else b""
     except (OSError, ValueError, TypeError):
         return None
@@ -165,7 +173,6 @@ def key_publish(env=None, run=subprocess.run, helper=None, platform=None):
     import se_vault
     import touchid_approve as TA
     from entitlement import p256
-    import i18n_lib
     env = _env(env)
     platform = sys.platform if platform is None else platform
     pub = local_pub(env)
@@ -175,7 +182,7 @@ def key_publish(env=None, run=subprocess.run, helper=None, platform=None):
         return None, "touchid_unavailable"
     kid = kid_of(pub)
     msg = ("ez2-aib-approve-publish|" + kid).encode("ascii")
-    reason = i18n_lib.t("aib.approve.touchid_publish", {"kid": kid}, locale=_locale(env))
+    reason = _t("aib.approve.touchid_publish", {"kid": kid}, env, "Publish AIB approve key " + kid)
     args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", reason]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:
@@ -198,7 +205,7 @@ def _sites_path(env):
 
 def load_sites(env=None):
     try:
-        doc = _loads(_sites_path(env).read_bytes())
+        doc = _loads(_read_local(_sites_path(env)))
     except OSError:
         return []
     rows = doc.get("sites") if isinstance(doc, dict) else None
@@ -420,7 +427,7 @@ def _record(env, d, result):
 
 def history(env=None):
     try:
-        lines = _history_path(env).read_bytes().splitlines()
+        lines = _read_local(_history_path(env)).splitlines()
     except OSError:
         return []
     out = []
@@ -434,7 +441,7 @@ def history(env=None):
 def _rate_ok(env, now):
     p = approve_dir(env) / "rate.json"
     try:
-        doc = _loads(p.read_bytes())
+        doc = _loads(_read_local(p))
     except OSError:
         doc = None
     ts = [t for t in doc if isinstance(t, (int, float)) and not isinstance(t, bool) and abs(t) < 1e12
@@ -458,11 +465,19 @@ def _locale(env=None):
         return i18n_lib.DEFAULT_LOCALE  # 本機語系檔壞掉(例如不是 UTF-8):不讓指令當
 
 
-def touchid_reason(d, env=None):
+def _t(key, params, env, fallback):
+    """指紋視窗字;語系包壞掉(I18nError / 太深)就用固定英文，不讓 yes / key pem 當。"""
     import i18n_lib
+    try:
+        return i18n_lib.t(key, params, locale=_locale(env))
+    except Exception:  # noqa: BLE001 — i18n_lib 故意大聲失敗;這裡只要視窗字
+        return fallback
+
+
+def touchid_reason(d, env=None):
     f = d["fields"]
-    return i18n_lib.t("aib.approve.touchid_reason", {"code": d["code"], "site": f["site"], "user": f["user_login"],
-                                                      "ip": f["ip"]}, locale=_locale(env))
+    return _t("aib.approve.touchid_reason", {"code": d["code"], "site": f["site"], "user": f["user_login"], "ip": f["ip"]},
+              env, "Code %s · %s: approve %s signing in · IP %s" % (d["code"], f["site"], f["user_login"], f["ip"]))
 
 
 def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=None, now=None):

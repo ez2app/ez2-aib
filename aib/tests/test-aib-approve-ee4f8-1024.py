@@ -34,6 +34,7 @@ A21 本機 helper 夾 / 雜湊檔被換成檔案或資料夾 ⇒ yes 印一行 J
     網址中間有換行 / tab / 空白拒;history 不認得的結果不列;公鑰不是 04 開頭 ⇒ no_key;指紋視窗佔用時不吃限速
 A22 helper 雜湊檔 / 語系檔是亂碼(不是 UTF-8)⇒ yes 印一行 JSON、key pem 不當;approve 回 201 {ok:true} 不算核准;
     pending 回 201 算錯;token 129 字拒
+A23 語系包壞掉(t() 丟例外)⇒ 視窗字用固定英文、短碼仍在最前，yes / key pem 照常;本機檔超過 1 MiB 當壞檔(不解析);token 19 字拒
 刀(複本):K1 不比 canonical ⇒ A2 紅;K2 不比站 ⇒ A2 紅;K3 不比 kid ⇒ A2 紅;K4 限速永遠過 ⇒ A6 紅;
    K5 短碼用站上給的 ⇒ A2 紅;K6 簽完不驗 ⇒ A5 紅;K7 pem 不先過指紋 ⇒ A1 紅;K8 跟轉址 ⇒ A11 紅
 """
@@ -636,6 +637,23 @@ class Approve(Base):
         self.assertEqual(r["errors"], {"ez2.app": "http_201"})
         self.assertEqual(AA.site_add("a.com", None, "t" * 129, self.env), (None, "bad_token"))
         self.assertEqual(AA.site_add("a.com", None, "t" * 128, self.env)[1], None)
+
+    def test_a23_broken_i18n_and_big_local_files(self):
+        import unittest.mock as um
+        import i18n_lib
+        f = self.site.add(kid=self.kid)
+        with um.patch.object(i18n_lib, "t", side_effect=RuntimeError("bundle broken")):
+            self.assertEqual(self.yes(f["nonce"]), ("approved", None))
+            reason = self.se.signs()[-1][self.se.signs()[-1].index("--reason") + 1]
+            self.assertTrue(reason.startswith("Code " + AA.code_of(f["nonce"]) + " · ez2.app: approve andy"), reason)
+            pem, why = AA.key_publish(self.env, run=self.se, helper="/fake/aib-sehelper", platform="darwin")
+            self.assertIsNone(why)
+        rate = self.root / "approve" / "rate.json"
+        g = self.site.add(kid=self.kid, exp=NOW + 115)
+        rate.write_bytes(json.dumps([NOW + 60] * 3).encode() + b" " * AA.LOCAL_MAX)  # 合法但超過上限:當空的
+        self.assertEqual(self.yes(g["nonce"], now=NOW + 60), ("approved", None))
+        self.assertLessEqual(len(rate.read_bytes()), 64)
+        self.assertEqual(AA.site_add("a.com", None, "t" * 19, self.env), (None, "bad_token"))
 
 class Knives(unittest.TestCase):
     def _red(self, needle, repl, test):
