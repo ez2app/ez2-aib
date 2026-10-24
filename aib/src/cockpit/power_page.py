@@ -143,6 +143,22 @@ def page_path(env=None):
     return aib_ui.state_root(env) / "power-room" / "index.html"
 
 
+def _write_page(p, text):
+    """暫存檔名帶隨機碼、O_EXCL + O_NOFOLLOW、0600 再換名:別人先放在旁邊的連結不會被跟著寫(#293 審查)。"""
+    tmp = p.with_name(".%s.%d.%s.tmp" % (p.name, os.getpid(), os.urandom(6).hex()))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, p)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def open_power(out=None, env=None, status=None, opener=None):
     """`aib ui power`:量一次、寫頁、開視窗。回 rc:0 開了;2 開不了(印檔案位置讓人自己開)。"""
     import aib_ui
@@ -152,9 +168,7 @@ def open_power(out=None, env=None, status=None, opener=None):
         status = power_status.status
     p = page_path(env)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(render(status()), encoding="utf-8")
-    os.replace(tmp, p)
+    _write_page(p, render(status()))
     how, _detail = (opener or aib_ui.open_app_window)(p.as_uri(), env)
     if how in ("app", "browser"):
         out.write(T("opened") + "\n")

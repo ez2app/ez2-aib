@@ -70,6 +70,14 @@ Common commands (from the beginner curriculum; do not invent others, say "see ai
 """
 
 
+# 不是 Cf 但看不見的字:韓文填充字、組合字素連接符;行 / 段分隔(Zl / Zp)也一律去掉(#302 審查)
+INVISIBLE_EXTRA = frozenset((0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0))
+
+
+def invisible(c):
+    return unicodedata.category(c) in ("Cf", "Cs", "Zl", "Zp") or ord(c) in INVISIBLE_EXTRA
+
+
 def _clean(s, limit, keep_newlines=True):
     """去 ANSI、C0 / C1 控制字元、Unicode 格式字元(方向控制 U+202E / U+2066、零寬)與單獨代理字元。"""
     if not isinstance(s, str):
@@ -77,7 +85,7 @@ def _clean(s, limit, keep_newlines=True):
     s = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", s)
     out = "".join(c for c in s if (c in "\n\t" and keep_newlines) or (ord(c) >= 32 and ord(c) != 127
                                                                         and not 0x80 <= ord(c) < 0xa0
-                                                                        and unicodedata.category(c) not in ("Cf", "Cs")))
+                                                                        and not invisible(c)))
     return out.strip()[:limit]
 
 

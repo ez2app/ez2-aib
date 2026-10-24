@@ -77,13 +77,10 @@ def _load(path):
 
 
 def _save(path, obj):
+    import atomic_json   # 暫存檔名帶隨機碼 + O_EXCL + 0600:不跟著別人先放的連結寫(#293 審查)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = "%s.%d.tmp" % (path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except OSError:
+        atomic_json.write_json(path, obj)
+    except (OSError, atomic_json.AtomicWriteError):
         pass
 
 

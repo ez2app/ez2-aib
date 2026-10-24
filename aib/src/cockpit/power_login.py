@@ -45,7 +45,8 @@ LOGIN = {
     "agy": {"cmd": None, "spawn": None},          # agy 沒有登入子指令:開 agy 時自己走
 }
 
-_URL_RE = re.compile(r"https://[^\s\"'<>\x00-\x1f\x7f]+")
+_URL_RE = re.compile(r"https://[A-Za-z0-9\-._~:/?#\[\]@!$&()*+,;=%]+")   # 只收 ASCII 網址字元:全形 / 同形字不算進鏈結
+CODE_GRACE_S = 1.5
 _CODE_RE = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4,5})\b")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _URL_MAX = 2048
@@ -65,13 +66,10 @@ def _load(path):
 
 
 def _save(path, obj):
+    import atomic_json   # 暫存檔名帶隨機碼 + O_EXCL + 0600:不跟著別人先放的連結寫(#293 審查)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = "%s.%d.tmp" % (path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except OSError:
+        atomic_json.write_json(path, obj)
+    except (OSError, atomic_json.AtomicWriteError):
         pass
 
 
@@ -232,7 +230,8 @@ def spawn_login(key, *, popen=subprocess.Popen, wait_s=URL_WAIT_S, lifetime=LOGI
     log = os.path.join(state_dir(), "power-login-%s.log" % key)
     try:
         os.makedirs(os.path.dirname(log), exist_ok=True)
-        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        _drop(log)                       # 先刪再 O_EXCL 建:預先放的硬連結 / 0644 檔都不沿用(#302 第 2 輪)
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError:
         return None, None, "spawn_failed"
     try:
@@ -240,23 +239,37 @@ def spawn_login(key, *, popen=subprocess.Popen, wait_s=URL_WAIT_S, lifetime=LOGI
         popen(_guard_argv(spawn, lifetime), stdin=subprocess.DEVNULL, stdout=fd, stderr=fd, env=env,
               start_new_session=True)
     except (OSError, ValueError):
+        _drop(log)
         return None, None, "spawn_failed"
     finally:
         os.close(fd)
     deadline = clock() + wait_s
-    while True:
-        try:
-            with open(log, encoding="utf-8", errors="replace") as f:
-                text = f.read(65536)
-        except OSError:
-            text = ""
-        url = _clean_url(text)
-        if url:
-            m = _CODE_RE.search(_ANSI_RE.sub("", text))
-            return url, (m.group(1) if m else None), None
-        if clock() >= deadline:
-            return None, None, "no_url"
-        sleep(0.5)
+    code_by = None                       # 先印鏈結、裝置碼晚一行才出:拿到鏈結後再等 CODE_GRACE_S 等裝置碼
+    try:
+        while True:
+            try:
+                with open(log, encoding="utf-8", errors="replace") as f:
+                    text = f.read(65536)
+            except OSError:
+                text = ""
+            url = _clean_url(text)
+            if url:
+                m = _CODE_RE.search(_ANSI_RE.sub("", text))
+                code_by = clock() + CODE_GRACE_S if code_by is None else code_by
+                if m or clock() >= code_by or clock() >= deadline:   # 時限到了也照回鏈結,不丟掉
+                    return url, (m.group(1) if m else None), None
+            elif clock() >= deadline:
+                return None, None, "no_url"
+            sleep(0.5)
+    finally:
+        _drop(log)                       # 鏈結拿到 / 逾時 / 中斷都刪:不留在狀態夾給人翻(CLI 照寫它手上的 fd)
+
+
+def _drop(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def open_url(url, *, run=subprocess.run, system=None):

@@ -442,19 +442,38 @@ def live_seats(home=None, env=None):
         disp = json.loads((Path(home) / "identity" / "seat-display.json").read_text(encoding="utf-8")).get("display") or {}
     except (OSError, ValueError, AttributeError):
         disp = {}
+    if not isinstance(disp, dict):      # 合法 JSON 但型別錯(display 是 list)⇒ 當沒綁,不准讓收發常駐掛掉
+        disp = {}
     out, seen = [], set()
     for inst, _path, rec in seat_who._iter_seats(home):
         code = code_of(rec)
-        pu = (disp.get(code) or {}).get("persona_uid") if code else None
         if not code or code in seen:
             continue
+        ent = disp.get(code)
+        ent = ent if isinstance(ent, dict) else {}      # 值是字串 / 數字 ⇒ 同上,退 s-<席碼>
+        pu = ent.get("persona_uid")
         if not isinstance(pu, str):
             pu = "s-" + code
         seen.add(code)
         out.append({"seat5": code, "cabin": inst.rsplit("-", 1)[-1] if inst else None, "persona_uid": pu,
-                    "name": (disp.get(code) or {}).get("display_name"), "role": rec.get("role"),
+                    "name": ent.get("display_name"), "role": rec.get("role"),
                     "provider": rec.get("provider")})   # 名冊用(1.3);provider 給房間快照(第 34 節)
     return out
+
+
+def sending_seats(env=None, live=None):
+    """寄件 / 名冊用:每一席一把 = 那一席現在綁的人格的金鑰(依對照表順序取第一把對得上的)。
+    10-24 一台開發機:@cfd04 換過人格,舊人格的主金鑰仍 active、seat5 還是 cfd04 ⇒ 名冊同一席三把,別台整份當壞名冊
+    (duplicate_seat、四天收不到在線);寄件挑「同席第一把」= 舊人格那把,跟名冊對不上。
+    收件照舊認所有 active 的金鑰(舊人格的信照收);金鑰本身不封存,人格換回來照用。"""
+    live = live_seats(env=env) if live is None else live
+    want = {s["seat5"]: s.get("persona_uid") for s in live}
+    out = {}
+    for e in read_map(env)["seats"]:
+        s5 = e.get("seat5")
+        if e.get("status") == "active" and s5 not in out and s5 in want and want[s5] == e.get("persona_uid"):
+            out[s5] = e
+    return list(out.values())
 
 
 def public_view(env=None):

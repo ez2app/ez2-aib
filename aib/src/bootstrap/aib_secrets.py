@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -112,6 +113,12 @@ LAYOUT = (
     ("cloudflare.env", "cloudflare", "type",
      "Cloudflare。只放給本機工具用的一般 token;不放 global key,也不放 CF_TOKEN_MINTER(那把只進 Secure Enclave)。",
      (("CF_API_TOKEN", "Cloudflare API token(限權限的一般 token)", "cf-tools", "cf-tools", False),)),
+    # 10-24 @ee4f8(Andy「彈出一個視窗讓我設定key」):WordPress 站(FluentSMTP)寄信用的 Amazon SES 金鑰。
+    # 只送伺服器(--remote-only),本機不存:這把只在站上用,放本機檔 = 同帳號 AI 讀得到又多一份。
+    ("fluentmail.env", "fluentmail", "type",
+     "FluentSMTP(WordPress 寄信)的 Amazon SES 金鑰。只准 --remote-only 送到伺服器,本機不存。",
+     (("FLUENTMAIL_AWS_ACCESS_KEY_ID", "SES access key ID(IAM 只給 ses:SendRawEmail)", "wp-mail", "wp-mail", False),
+      ("FLUENTMAIL_AWS_SECRET_ACCESS_KEY", "SES secret access key", "wp-mail", "wp-mail", False))),
     ("social/line.env", "line", "social",
      "LINE 官方帳號。在 LINE Developers 的 Channel 頁複製。多帳號:LINE_SHOP2_CHANNEL_SECRET。",
      (("LINE_CHANNEL_SECRET", "Messaging API 頻道密鑰", "support-intake", "support-intake", True),
@@ -279,6 +286,9 @@ EXACT_FILES, PREFIX_TABLE = _name_maps()
 
 # 只准放 Secure Enclave 的名字(se_vault.SE_ONLY 同一份):金鑰櫃檔案一律拒寫(@abb89 審 #222)
 SE_ONLY_NAMES = ("CF_TOKEN_MINTER",)
+# 只准送到伺服器的名字(aib secret ask … --push … --remote-only):金鑰櫃檔案一律拒寫(10-24 @ee4f8)
+REMOTE_ONLY_NAMES = ("FLUENTMAIL_AWS_ACCESS_KEY_ID", "FLUENTMAIL_AWS_SECRET_ACCESS_KEY")
+REMOTE_ONLY_FILES = ("fluentmail.env",)  # 前綴對到這類的名字(FLUENTMAIL_…_SITE2)也一樣(@abb89 審 #301)
 
 
 def file_for_name(name):
@@ -290,6 +300,19 @@ def file_for_name(name):
         if name.startswith(prefix):
             return rel
     return None
+
+
+NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,127}")  # 10-24 @abb89 #301 第 2 輪:名字帶換行 / = 會把一行寫進別的檔
+
+
+def valid_name(name):
+    """金鑰名字白名單(一律 fullmatch;$ 會放過結尾換行)。不符 ⇒ 呼叫端回 bad_name。"""
+    return isinstance(name, str) and NAME_RE.fullmatch(name) is not None
+
+
+def is_remote_only(name):
+    """只准送伺服器:在名單,或名字落在只送伺服器的那類檔。"""
+    return name in REMOTE_ONLY_NAMES or file_for_name(name) in REMOTE_ONLY_FILES
 
 
 class SecretError(Exception):

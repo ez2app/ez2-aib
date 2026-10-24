@@ -8,7 +8,11 @@ L1 Python:執行緒裡開 http.server、自己連 ⇒ 不是外部、量得到;�
 L2 Python:連一個不是自己開的埠 ⇒ 外部
 L3 Node(有 node 才跑):listen(0) 後同一輪就連(supertest 的形狀)⇒ 沒有外部事件
 L4 Node:連不是自己開的埠 ⇒ 有外部事件
-L5 Python 鉤子沒有為這件事多 import 模組(weakref 不在啟動時的 sys.modules 裡)
+L5 Python 鉤子沒有為這件事多 import 模組(weakref 不在啟動時的 sys.modules 裡;_weakref 是啟動就有的 C 模組)
+L6 10-24:bind 過的 socket 關掉、fd 號碼被重用後再連外部 ⇒ 鉤子不得對那個號碼 os.dup
+   (macOS 系統框架會把重用的號碼設成受保護 fd,dup 它 ⇒ 核心 SIGKILL;Python 3.15 實際當機 EXC_GUARD)
+L7 #305 審查補的判斷邊界:連非本機位址但埠號跟自己的一樣 ⇒ 外部;先 bind 一個沒用的 socket 再開伺服器 ⇒ 不算外部;
+   Unix socket 連別的路徑 ⇒ 外部;Unix socket 用 str bind、bytes connect ⇒ 不算外部;鉤子不延後 socket 回收(ResourceWarning 照出)
 刀(複本):K1 Python 一律當外部 ⇒ L1 紅;K2 Node listen 回來不記 ⇒ L3 紅
 """
 import os
@@ -38,6 +42,51 @@ try:
 except OSError:
     pass
 '''
+REUSE = '''import os, socket
+a = socket.socket(); a.bind(("127.0.0.1", 0)); n = a.fileno(); a.close()
+f = os.open(os.devnull, os.O_RDONLY)          # 拿到剛空出來的號碼(真實情況是系統框架拿去設成受保護 fd)
+assert f == n, (f, n)
+os.dup = lambda fd: os._exit(97)               # 鉤子要是去 dup 它 ⇒ 結束碼 97
+s = socket.socket(); s.settimeout(0.5)
+try:
+    s.connect(("127.0.0.1", 9))
+except OSError:
+    pass
+'''
+NONLOOP = '''import socket
+a = socket.socket(); a.bind(("127.0.0.1", 0)); a.listen(); port = a.getsockname()[1]
+c = socket.socket(); c.settimeout(0.3)
+try:
+    c.connect(("192.0.2.1", port))            # TEST-NET:不是本機,埠號碰巧一樣也不算自己
+except OSError:
+    pass
+'''
+TWO = '''import socket
+junk = socket.socket(); junk.bind(("127.0.0.1", 0))
+a = socket.socket(); a.bind(("127.0.0.1", 0)); a.listen(); port = a.getsockname()[1]
+c = socket.socket(); c.connect(("127.0.0.1", port)); c.close()
+'''
+UNIX_OTHER = '''import os, socket, tempfile
+os.chdir(tempfile.mkdtemp(dir="/tmp"))
+a = socket.socket(socket.AF_UNIX); a.bind("own.sock"); a.listen()
+c = socket.socket(socket.AF_UNIX)
+try:
+    c.connect("other.sock")
+except OSError:
+    pass
+'''
+UNIX_BYTES = '''import os, socket, tempfile
+os.chdir(tempfile.mkdtemp(dir="/tmp"))
+a = socket.socket(socket.AF_UNIX); a.bind("own.sock"); a.listen()
+c = socket.socket(socket.AF_UNIX); c.connect(b"own.sock"); c.close()
+'''
+GC_WARN = '''import gc, socket, sys, warnings
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); del s; gc.collect()
+n = sum(1 for x in w if issubclass(x.category, ResourceWarning))
+sys.exit(0 if n == 1 else 3)                   # 鉤子若強參照 socket ⇒ 不回收、警告 0 次
+'''
 NODE_OWN = """const http = require('http');
 const srv = http.createServer((q, r) => r.end('ok'));
 srv.listen(0);
@@ -57,6 +106,10 @@ class Python(unittest.TestCase):
         (self.repo / "data.txt").write_text("D\n", encoding="utf-8")
         (self.repo / "tests" / "t_srv.py").write_text(SRV, encoding="utf-8")
         (self.repo / "tests" / "t_ext.py").write_text(EXT, encoding="utf-8")
+        (self.repo / "tests" / "t_reuse.py").write_text(REUSE, encoding="utf-8")
+        for name, body in (("t_nonloop.py", NONLOOP), ("t_two.py", TWO), ("t_unix_other.py", UNIX_OTHER),
+                           ("t_unix_bytes.py", UNIX_BYTES), ("t_gc.py", GC_WARN)):
+            (self.repo / "tests" / name).write_text(body, encoding="utf-8")
         env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
         for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
             subprocess.run(["git", "-C", str(self.repo)] + a, check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
@@ -96,6 +149,16 @@ class Python(unittest.TestCase):
             self.skipTest("這支 python 啟動時本來就有 weakref,量不出差別")
         hook = (ROOT / "tools" / "verify" / "sitecustomize_audit.py").read_text(encoding="utf-8")
         self.assertNotRegex(hook, r"(?m)^import weakref|^from weakref|^import weakref as")
+
+    def test_l6_reused_fd_not_duped(self):
+        self.assertTrue(self._run("t_reuse.py").get("external"))      # rc 0(_run 驗)且照樣算外部
+
+    def test_l7_edges(self):
+        self.assertTrue(self._run("t_nonloop.py").get("external"), "非本機位址、同埠號要算外部")
+        self.assertFalse(self._run("t_two.py").get("external"), "先 bind 一個沒用的,再開伺服器連自己")
+        self.assertTrue(self._run("t_unix_other.py").get("external"), "Unix socket 連別的路徑要算外部")
+        self.assertFalse(self._run("t_unix_bytes.py").get("external"), "str bind、bytes connect 同一路徑")
+        self._run("t_gc.py")                                               # rc 0 = ResourceWarning 照出
 
 
 @unittest.skipUnless(shutil.which("node"), "沒有 node")
