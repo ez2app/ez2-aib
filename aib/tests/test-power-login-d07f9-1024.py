@@ -216,7 +216,7 @@ class Login(unittest.TestCase):
         url, code, err = L.spawn_login("codex", wait_s=10, lifetime=3, popen=self._popen())
         self.assertEqual((url, code, err), ("https://auth.openai.com/codex/device", "WXYZ-1234", None))
         log = Path(TMP) / "state" / "power-login-codex.log"
-        self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+        self.assertFalse(log.exists(), "拿到鏈結 / 裝置碼後登入紀錄要刪掉")   # #293 審查:不留在狀態夾
         deadline = time.monotonic() + 15                     # 守門行程 3 秒後砍掉假 CLI
         while time.monotonic() < deadline and self._alive(d):
             time.sleep(0.3)

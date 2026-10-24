@@ -46,19 +46,15 @@ def _load():
 
 
 def _save(obj):
-    p = _path()
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    tmp = "%s.%d.tmp" % (p, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False)
-    os.replace(tmp, p)
+    import atomic_json   # 暫存檔名帶隨機碼 + O_EXCL + 0600:不跟著別人先放的連結寫(#293 審查)
+    atomic_json.write_json(_path(), obj)
 
 
 def _other(v):
     if not isinstance(v, str):
         return None
-    v = "".join(c for c in v if ord(c) >= 32 and ord(c) != 127 and not 0x80 <= ord(c) < 0xa0).strip()
-    return v[:OTHER_MAX] or None
+    import power_ask   # 同一套清字:連方向控制 / 零寬(Unicode Cf)一起去掉(#293 審查)
+    return power_ask._clean(v, OTHER_MAX, keep_newlines=False) or None
 
 
 def _rank(items):

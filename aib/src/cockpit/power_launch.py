@@ -49,19 +49,16 @@ def _load():
 
 
 def _save(obj):
-    p = _path()
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    tmp = "%s.%d.tmp" % (p, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False)
-    os.replace(tmp, p)
+    import atomic_json   # 暫存檔名帶隨機碼 + O_EXCL + 0600:不跟著別人先放的連結寫(#293 審查)
+    atomic_json.write_json(_path(), obj)
 
 
 def _s(v):
     """紀錄裡的字串:不是字串 / 太長 / 有控制字元 ⇒ None(檔是同帳號寫得到的,讀的時候照資料看)。"""
     if not isinstance(v, str) or not v or len(v) > _TEXT_MAX:
         return None
-    return None if any(ord(c) < 32 or ord(c) == 127 for c in v) else v
+    import unicodedata   # C1 與 Unicode 格式字元(方向控制、零寬)也算控制字元(#293 審查)
+    return None if any(ord(c) < 32 or 127 <= ord(c) < 0xa0 or unicodedata.category(c) in ("Cf", "Cs") for c in v) else v
 
 
 def models():
