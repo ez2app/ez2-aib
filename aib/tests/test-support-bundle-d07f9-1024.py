@@ -21,7 +21,11 @@ S13 會員入口(倉根 bin/aib → aib/cli.py)打 aib support 真的跑到 supp
     ⇒ rc 0、support_preview、這些原文一個都不在;--write ⇒ 檔 0600、不帶席號檔名;舊收集器不在;狀態根種 seed() 的艙號 /
     席號 / dm 原文 / 金鑰也都不在;外掛宣告 support(免費搶 / 加購沒授權擋)⇒ 仍是核心 support_preview
 S14 內建 skill ez2-aib-support 只叫 aib support / --write,不叫舊收集器、不准 AI 代寄(--sender ai);issue 範本 bug.yml 也不叫 --confirm;四語 README 同口徑
-刀(複本):K6 cli.py 拿掉核心 support 那段(外掛搶得到)⇒ S13 紅;K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
+S15 10-25 突變測試存活補格:各段鍵集合寫死(versions 五鍵、外掛列四鍵:manifest 的 requires_aib / path 不收)、
+    git_present / schemas_readable 失敗的 detail、doctor 例外只留型別名、power-login.json 是連結 ⇒ 不讀、
+    暫存路徑先被一般檔佔 ⇒ 不寫且原檔不變、EXCLUDED 八項、每種金鑰前綴各一筆;使用者名後面接底線也遮
+    使用者叫 root / git / python / claude ⇒ 結構鍵與 doctor id / 狀態 / 代碼不被換(#341 審查 L1),自由文字照遮
+刀(複本):K7 versions 多收主機名 ⇒ S15 紅;K8 使用者名邊界改回把底線當字 ⇒ S15 紅;K9 鍵也換使用者名 ⇒ S15b 紅;K10 代碼欄位也換 ⇒ S15b 紅;K6 cli.py 拿掉核心 support 那段(外掛搶得到)⇒ S13 紅;K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
 """
 import io
 import glob
@@ -153,7 +157,8 @@ class Support(unittest.TestCase):
                            "/Users/someone_old", "SomeOne", "/TMP/q", "Bearer " + "a1" * 10, "c" * 32,
                            "AIza" + "B" * 32, "sk_live_" + "C" * 12, "glpat-" + "d" * 20, "hf_" + "E" * 22],
                           home=home, user="someone")
-        self.assertEqual(got, ["<seat>", "seat_<seat>", "<seat>.json", "<cabin>", "~/x", "/Users/someone_old", "<user>",
+        # /Users/someone_old:家目錄前綴不准誤換成 ~_old;使用者名接底線 10-25 起也遮(稽核 Low)⇒ /Users/<user>_old
+        self.assertEqual(got, ["<seat>", "seat_<seat>", "<seat>.json", "<cabin>", "~/x", "/Users/<user>_old", "<user>",
                                "<tmp>", "[redacted]", "[redacted]", "[redacted]", "[redacted]", "[redacted]",
                                "[redacted]"])
         self.assertEqual(S.redact({home + "/k": {SECRET_TOKEN: 1}}, home=home, user="zz")[0], {"~/k": {"[redacted]": 1}})
@@ -415,6 +420,91 @@ class Support(unittest.TestCase):
         self.assertEqual(S.main(["support", "--zap"]), 2)
 
 
+class Harden(unittest.TestCase):
+    """10-25 突變測試存活的 9 條 + 稽核 Low(使用者名底線邊界)。"""
+
+    def setUp(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+        os.makedirs(TMP)
+        seed(TMP)
+
+    def test_s15b_struct_not_replaced(self):
+        body = {"schema": "aib-support/1", "versions": {"aib": "0.1.55", "python": "3.15.0"},
+                "doctor": {"checks": [{"id": "state_root_perms", "status": "ok", "detail": "/home/root/x root ok"},
+                                      {"id": "git_present", "status": "warn", "detail": None},
+                                      {"id": "python_version", "status": "ok", "detail": "python 3.15"}],
+                           "counts": {"ok": 2, "warn": 1}},
+                "logins": {"claude": True, "codex": False},
+                "failures": [{"source": "dm_send", "code": "relay_down", "at": 1}]}
+        for user in ("root", "git", "python", "claude", "relay", "send"):
+            got, _n = S.redact(json.loads(json.dumps(body)), home="/home/" + user, user=user)
+            self.assertEqual(list(got), list(body), user)
+            self.assertEqual(list(got["versions"]), ["aib", "python"], user)
+            self.assertEqual([c["id"] for c in got["doctor"]["checks"]], ["state_root_perms", "git_present", "python_version"])
+            self.assertEqual([c["status"] for c in got["doctor"]["checks"]], ["ok", "warn", "ok"])
+            self.assertEqual(list(got["logins"]), ["claude", "codex"], user)
+            self.assertEqual(got["failures"][0], {"source": "dm_send", "code": "relay_down", "at": 1}, user)
+            self.assertEqual(got["schema"], "aib-support/1")
+        got, _n = S.redact(json.loads(json.dumps(body)), home="/home/root", user="root")
+        self.assertEqual(got["doctor"]["checks"][0]["detail"], "~/x <user> ok")      # 自由文字照遮
+        got, _n = S.redact(json.loads(json.dumps(body)), home="/home/x", user="python")
+        self.assertEqual(got["doctor"]["checks"][2]["detail"], "<user> 3.15")
+
+    def test_s15_keys_and_guards(self):
+        from unittest import mock
+        sys.path.insert(0, str(REPO / "src" / "bootstrap"))
+        import aib_ext
+        import aib_doctor as D
+        body = S.collect(TMP)[0]
+        self.assertEqual(set(body), {"schema", "at"} | set(S.SECTIONS))
+        self.assertEqual(set(body["versions"]), {"aib", "os", "macos", "machine", "python"}, "versions 多收了欄位(主機名常帶真名)")
+        self.assertEqual(set(body["doctor"]) - {"error"}, {"checks", "counts"})
+        for c in body["doctor"]["checks"]:
+            self.assertEqual(set(c), {"id", "status", "detail"})
+        for row in body["cabins"]:
+            self.assertEqual(set(row), {"seats", "roles"})
+        for row in body["failures"]:
+            self.assertEqual(set(row), {"source", "code", "at"})
+        fake = [{"kind": "plugin", "name": "ok1", "version": "1.0", "signed": True, "requires_aib": PROJECT,
+                 "path": "/Users/x/" + PROJECT}]
+        with mock.patch.object(aib_ext, "installed", return_value=fake):
+            rows = S.plugins()
+        self.assertEqual(rows, [{"kind": "plugin", "name": "ok1", "version": "1.0", "signed": True}], "外掛列只准四鍵")
+        bad_git = {"id": "git_present", "status": "ok", "detail": "/Users/x/%s/bin/git" % PROJECT}
+        bad_schema = {"id": "schemas_readable", "status": "fail", "detail": "broken: /Users/x/%s/a.json" % PROJECT}
+        with mock.patch.object(D, "check_git", return_value=bad_git), \
+                mock.patch.object(D, "check_schemas", return_value=bad_schema):
+            got = {c["id"]: c["detail"] for c in S.doctor(TMP)["checks"]}
+        self.assertEqual((got["git_present"], got["schemas_readable"]), (None, None), "git 路徑 / schema 失敗原文不准進包")
+        with mock.patch.object(D, "check_python", side_effect=OSError("/Users/x/%s/boom" % PROJECT)):
+            d = S.doctor(TMP)
+        self.assertEqual(d.get("error"), "OSError")
+        self.assertNotIn(PROJECT, json.dumps(d, ensure_ascii=False))
+        st = Path(TMP) / "state"
+        st.mkdir(exist_ok=True)
+        real = Path(TMP) / "elsewhere.json"
+        real.write_text(json.dumps({"claude": {"v": True}}), encoding="utf-8")
+        if (st / "power-login.json").exists() or (st / "power-login.json").is_symlink():
+            (st / "power-login.json").unlink()
+        os.symlink(str(real), str(st / "power-login.json"))
+        self.assertEqual(S.logins(TMP), {}, "power-login.json 是連結 ⇒ 不跟、不讀")
+        target = Path(TMP) / "out.json"
+        with mock.patch.object(S.secrets, "token_hex", return_value="feed"):
+            squat = Path("%s.%d.feed.tmp" % (target, os.getpid()))
+            squat.write_text("ORIGINAL", encoding="utf-8")
+            with self.assertRaises(OSError):
+                S._write_private(str(target), "NEW")
+        self.assertEqual(squat.read_text(encoding="utf-8"), "ORIGINAL", "暫存路徑被一般檔佔 ⇒ 不准寫進去")
+        self.assertFalse(target.exists())
+        self.assertEqual(S.EXCLUDED, ("messages", "vault", "project_names", "persona", "secrets", "licenses",
+                                      "log_text", "cabin_seat_ids"))
+        keys = ["gh%s_%s" % (p, "A" * 36) for p in "pousr"] + ["sk_test_" + "a" * 24, "sk_live_" + "a" * 24]
+        out, n = S.redact(keys, home="/h", user="zz")
+        self.assertEqual((out, n), (["[redacted]"] * len(keys), len(keys)), "每種金鑰前綴都要遮")
+        out, _n = S.redact(["andylin_fail", "x-andylin", "0.1.44-andylin", "andylinx"], home="/h", user="andylin")
+        self.assertEqual(out, ["<user>_fail", "x-<user>", "0.1.44-<user>", "andylinx"], "使用者名後面接底線也要遮")
+
+
 class Entry(unittest.TestCase):
     """會員實際打的 aib support(倉根 bin/aib)。"""
 
@@ -510,6 +600,25 @@ class Knife(unittest.TestCase):
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
         self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k7_host_in_versions(self):
+        self._knife('"machine": platform.machine(), "python": platform.python_version()}',
+                    '"machine": platform.machine(), "python": platform.python_version(), "host": platform.node()}',
+                    "Harden.test_s15_keys_and_guards")
+
+    def test_k9_keys_replaced(self):
+        self._knife("            return {(s(k, names=False) if isinstance(k, str) else k): walk(v, k) for k, v in o.items()}",
+                    "            return {(s(k) if isinstance(k, str) else k): walk(v, k) for k, v in o.items()}",
+                    "Harden.test_s15b_struct_not_replaced")
+
+    def test_k10_struct_values_replaced(self):
+        self._knife("            return s(o, names=key not in STRUCT_VALUE_KEYS)", "            return s(o)",
+                    "Harden.test_s15b_struct_not_replaced")
+
+    def test_k8_user_boundary_underscore(self):
+        self._knife('v = re.sub(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(user)',
+                    'v = re.sub(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(user)',
+                    "Harden.test_s15_keys_and_guards")
 
     def test_k1_no_secret_mask(self):
         self._knife('        v, k = SECRET.subn("[redacted]", v)', "        k = 0", "Support.test_s4_redact")
