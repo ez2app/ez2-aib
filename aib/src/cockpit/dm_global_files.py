@@ -677,6 +677,62 @@ def mark_unconfirmed(root, now=None, after=86400):
         done += 1
     return done
 
+# resend/<msgid>.json(10-24 Andy「像市面上的通訊 App 一樣」):信交給中繼站(relayed)之後,對方那台還沒收到
+# (沒有 queued / delivered / read / 拒收…)⇒ 留一份;對方的在線狀態一回來就補寄同一個 msgid(收件端照 msgid 去重,
+# 收過的不會再進佇列)。只補一般信;最多 RESEND_MAX 次、同一則間隔 RESEND_GAP_S;留 RESEND_KEEP_S 就刪。
+# 內文只存在本機這個資料夾(0600),跟 inbox / outbox 同一級。
+RESEND_GAP_S = 600
+RESEND_MAX = 3
+RESEND_KEEP_S = 7 * 86400
+RESEND_DONE = {"queued", "delivered", "read", "refused", "held", "expired", "failed"}
+
+
+def keep_for_resend(root, rec, owner, now=None):
+    if rec.get("op", "send") != "send" or not NPUB_FULL_RE.match(owner or "") or not MSGID_RE.match(rec.get("msgid") or ""):
+        return None
+    now = int(time.time() if now is None else now)
+    d = Path(root) / "resend"
+    d.mkdir(mode=0o700, exist_ok=True)
+    p = d / (rec["msgid"] + ".json")
+    write_json(str(p), {"v": 1, "rec": rec, "owner": owner, "at": now, "n": 0, "last": now})
+    os.chmod(str(p), 0o600)
+    return p
+
+
+def resend_due(root, owner, now=None):
+    """對方(owner)剛送在線狀態來 ⇒ 把還沒到的信放回 outbox。順手清掉已到 / 太舊的。回放回去的 msgid。"""
+    now = int(time.time() if now is None else now)
+    out = []
+    for p in sorted((Path(root) / "resend").glob("*.json")):
+        try:
+            cur = json.loads(p.read_text(encoding="utf-8"))
+            msgid = cur["rec"]["msgid"]
+        except (OSError, ValueError, KeyError, TypeError):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+            continue
+        stages = {r.get("stage") for r in read_receipts(root, msgid)}
+        if stages & RESEND_DONE or now - int(cur.get("at") or 0) > RESEND_KEEP_S or int(cur.get("n") or 0) >= RESEND_MAX:
+            p.unlink()
+            continue
+        if cur.get("owner") != owner or now - int(cur.get("last") or 0) < RESEND_GAP_S:
+            continue
+        if any((Path(root) / box / (msgid + ".json")).exists() for box in ("outbox", "sending")):
+            continue
+        try:
+            write_outbox(root, cur["rec"])
+        except ContractError:
+            p.unlink()
+            continue
+        cur["n"], cur["last"] = int(cur.get("n") or 0) + 1, now
+        write_json(str(p), cur)
+        os.chmod(str(p), 0o600)
+        out.append(msgid)
+    return out
+
+
 def _with_peer(root, rec, res, now):
     """10-18 Andy「要能判斷該電腦休眠」:寄件結果帶對方那台的狀態;還沒送到而對方在睡 / 離線 ⇒ detail 補一句。"""
     owner = (parse_address((rec or {}).get("to") or "") or {}).get("owner")

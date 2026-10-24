@@ -622,6 +622,8 @@ class Sender(object):
             return
         if ok:
             self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "relayed", "%d" % len(ok))      # 第 7.1 節第 6 步:1 站成功就算
+            if not (self.root / "resend" / (msgid + ".json")).exists():
+                GF.keep_for_resend(self.root, rec, res.get("owner"))     # 10-24:對方還沒收到前留一份,上線就補寄
             self._remember_peer(rec["to"], res, "request" if rec.get("op") == "request" else "sent")
             self._done(msgid)
         else:
@@ -997,6 +999,11 @@ class Sender(object):
                     continue
                 if self._note_beat(owner, body, at):
                     got += 1
+                    if now - at < GF.BEAT_GREEN_S:          # 在線 ⇒ 補寄還沒到的信(跟收到在線狀態同一條)
+                        due = getattr(self, "resend_owners", None)
+                        if due is None:
+                            due = self.resend_owners = set()
+                        due.add(owner)
         audit(self.root, "beat-in", "-", "-", str(got))
         return got
 
@@ -1583,6 +1590,10 @@ class Receiver(object):
         power = CP.clean_power(body.get("power"))
         for cab, seats in by_cab.items():
             GF.note_world(self.root, owner, cab, seats, power=power, sent_at=sent)
+        due = getattr(self.sender, "resend_owners", None)              # 10-24:他在線 ⇒ 補寄還沒到的信
+        if due is None:
+            due = self.sender.resend_owners = set()
+        due.add(owner)
         # 對方送在線狀態來 = 他把我當好友了 ⇒ 這個工人第一次聽到他時,補送一次名片(先前送的可能在他加我好友前被丟掉)
         heard = getattr(self, "heard", None)
         if heard is None:
@@ -2053,6 +2064,10 @@ async def serve(root):
                 sender.ask_due = True
                 sender.ping_owner = rf.get("ping")
                 last_presence = last_poll = 0.0
+            for o in list(getattr(sender, "resend_owners", None) or ()):
+                sender.resend_owners.discard(o)
+                for msgid in GF.resend_due(root, o):
+                    audit(root, "out", msgid, o, "resend")
             if getattr(sender, "answer_now", False):         # 有人問我在不在
                 sender.answer_now = False
                 last_presence = 0.0

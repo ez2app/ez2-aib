@@ -9,7 +9,7 @@ H3 beat-given:同一代累加;換代整份重來
 H4 request_refresh 帶 ping:不看 30 秒間隔、記 ping;ping 不是 npub ⇒ 不收;不帶 ping 的刷新會清掉 ping
 (以下要 AIB_TEST_NOSTR_VENV;chat_nostr 只在 venv 裡 import 得到。不連網:中繼站換成假的)
 H5 push_beat 只發一筆(kind 30078、d=aib-beat、作者 = 心跳鑰、內文 nip44 加密看不到席碼)⇒ poll_beats 用名片給的鑰解開 ⇒
-   world.json 有那位好友、world_payload online=true;鑰不對 / 不是好友 ⇒ 不寫
+   world.json 有那位好友、記下要補寄給他;鑰不對 / 不是好友 ⇒ 不寫
 H6 push_presence:好友有心跳、也拿到我這一代的鑰、等級 online ⇒ 不再一位一封;等級 status ⇒ 照寄;ping 那一位 ⇒ 照寄帶 aib-ask
 H7 給過鑰的人不再是好友 ⇒ 換一代、給過名單歸零;沒人離開 ⇒ 不換
 刀(複本):K1 不換代 ⇒ H7 紅;K2 不跳過有心跳的好友 ⇒ H6 紅
@@ -107,6 +107,7 @@ if case == "beat":
         friends["friends"] = []
     out["got"] = asyncio.run(s.poll_beats(now=time.time()))
     out["world"] = sorted(GF.read_world(root))
+    out["resend"] = sorted(getattr(s, "resend_owners", set())) == [F]
 elif case == "skip":
     GF.note_beat_key(root, F, G, "%064x" % 0x99, 1)
     out["online"] = asyncio.run(s.push_presence(now=1000))
@@ -197,6 +198,7 @@ class Worker(unittest.TestCase):
         self.assertEqual((d["ok"], d["kind"], d["author_is_beat"], d["leak"], d["got"]), (True, 30078, True, False, 1))
         self.assertEqual(len(d["world"]), 1)
         self.assertTrue(d["world"][0].endswith("/6ddf"))
+        self.assertTrue(d["resend"])                           # 心跳在線 ⇒ 補寄還沒到的信
         for sub in ("wrong", "stranger"):
             d = self.probe("beat", sub)
             self.assertEqual((d["got"], d["world"]), (0, []), sub)
