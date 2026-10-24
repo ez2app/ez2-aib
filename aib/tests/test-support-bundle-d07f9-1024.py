@@ -16,7 +16,11 @@ S10 第 2 輪稽核:外掛 manifest 版本是字典 / NaN / 控制字元、資�
     power-login 太深 / 鍵帶專案名、席位檔是 FIFO ⇒ 不炸不卡;PATH 裡專案夾的執行檔路徑不進包
 S8 不叫整套 doctor(run_all / main / 探針 / 角色卡清單重產),只叫 DOCTOR_PURE + 各家 AI 工具
 S6 借 doctor 結果不記 R10(run-marks/doctor.json 不出現);aib support 從 aib 啟動器轉得到;power_tasks 讀 support.json ⇒ support_bundle
-刀(複本):K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
+S13 會員入口(倉根 bin/aib → aib/cli.py)打 aib support 真的跑到 support_bundle(10-25 雙審:cli.py TARGETS 原本指舊
+    tools/support/collect.py,會收艙號 / 席號 / log 原文、金鑰沒遮):帶艙號 / 席號 / 假 log(dm + ghp_ 金鑰)環境跑
+    ⇒ rc 0、support_preview、這些原文一個都不在;--write ⇒ 檔 0600、不帶席號檔名;舊收集器不在
+S14 內建 skill ez2-aib-support 只叫 aib support / --write,不叫舊收集器、不准 AI 代寄(--sender ai)
+刀(複本):K6 cli.py 的 TARGETS 加回 support ⇒ S13 紅;K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
 """
 import io
 import glob
@@ -410,6 +414,45 @@ class Support(unittest.TestCase):
         self.assertEqual(S.main(["support", "--zap"]), 2)
 
 
+class Entry(unittest.TestCase):
+    """會員實際打的 aib support(倉根 bin/aib)。"""
+
+    def test_s13_member_entry_runs_bundle(self):
+        td = Path(tempfile.mkdtemp(prefix="aib-support-entry-"))
+        self.addCleanup(shutil.rmtree, str(td), True)
+        (td / "home").mkdir()
+        log = td / "fake.log"
+        log.write_text("dm from @abb89: 客戶報價 %s %s\n" % (PROJECT, SECRET_TOKEN), encoding="utf-8")
+        env = dict(os.environ, HOME=str(td / "home"), EZ2_AIB_STATE_ROOT=str(td / "state"), AIB_TOUCHID="0",
+                   EZ2_AIB_INSTANCE="20261014-133230-6ddf", EZ2_AIB_SEAT_LABEL="@d07f9", EZ2_SUPPORT_LOG=str(log),
+                   EZ2_SUPPORT_PANE_CAPTURE="Andy> 幫我回客戶 " + PROJECT)
+        (td / "pkg").mkdir()
+        os.symlink(str(REPO), str(td / "pkg" / "aib"))           # 跟倉根 bin/aib 一樣:from aib.cli import main(刀測複本也適用)
+        aib = ["-c", "import sys; sys.path.insert(0, sys.argv.pop(1)); from aib.cli import main; sys.exit(main())",
+               str(td / "pkg")]
+        r = subprocess.run([sys.executable] + aib + ["support", "--json"], capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)["detail"], "support_preview", r.stdout)
+        for bad in ("20261014-133230-6ddf", "@d07f9", "dm from", PROJECT, SECRET_TOKEN, "Andy>"):
+            self.assertNotIn(bad, r.stdout + r.stderr, "會員入口的 aib support 漏出:" + bad)
+        r = subprocess.run([sys.executable] + aib + ["support", "--write"], capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        files = list((td / "state" / "support").glob("aib-support-*.json"))
+        self.assertEqual(len(files), 1, r.stdout)
+        self.assertEqual(stat.S_IMODE(files[0].stat().st_mode), 0o600)
+        self.assertNotIn("d07f9", files[0].name)
+        body = files[0].read_text(encoding="utf-8")
+        for bad in ("20261014-133230-6ddf", "@d07f9", "dm from", PROJECT, SECRET_TOKEN):
+            self.assertNotIn(bad, body)
+        self.assertFalse((REPO / "tools" / "support" / "collect.py").exists(), "舊收集器要退掉")
+
+    def test_s14_skill_uses_bundle(self):
+        skill = (REPO / "skills" / "ez2-aib-support" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("aib support --write", skill)
+        for bad in ("collect.py", "--sender ai", "--confirm"):
+            self.assertNotIn(bad, skill, "skill 還叫舊收集器 / 准 AI 代寄:" + bad)
+
+
 class Knife(unittest.TestCase):
     def _knife(self, needle, repl, case, extra=None):
         name = Path(__file__).name
@@ -422,6 +465,18 @@ class Knife(unittest.TestCase):
             r = run_guarded([sys.executable, str(root / "tests" / name), case], cwd=str(root), max_procs=40, timeout=120)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+
+    def test_k6_cli_routes_old_collector(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "cli.py", '           "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py"),\n',
+                        '           "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py"),\n'
+                        '           "support": os.path.join(HERE, "tools", "verify", "test_entry.py"),\n',
+                        tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Entry.test_s13_member_entry_runs_bundle"],
+                            cwd=str(root), max_procs=40, timeout=180)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
 
     def test_k1_no_secret_mask(self):
         self._knife('        v, k = SECRET.subn("[redacted]", v)', "        k = 0", "Support.test_s4_redact")

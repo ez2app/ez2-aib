@@ -9,16 +9,12 @@ Copy this folder to the vendor skill dir (Claude `~/.claude/skills/`, Codex skil
 
 ## Do
 
-1. Run `aib support` (installed aib) or `python3 tools/support/collect.py` from an aib checkout.
-2. Show the JSON to the user. Redaction already ran; if collect exits non-zero, stop.
-3. Ask: send this local pending file? Only if they say yes, run:
-   `python3 tools/support/collect.py --confirm --sender human` when the user is sending,
-   or `--sender ai` when the seat is sending for them.
-4. Never LINE-push. Never paste API keys, vault notes, or full transcripts.
-5. Nothing leaves the machine by itself. To reach the aib maintainers, the user opens an issue at
-   https://github.com/ez2app/ez2-aib/issues/new/choose and attaches the pending file (path printed by `--confirm`).
-   Do not open the issue for them unless they ask.
-
-## Must-miss
-
-If the JSON still contains `sk-`, `AKIA`, `api_key=`, or a private key block, collect refuses. Do not hand-edit secrets back in.
+1. Run `aib support`. It only lists what the pack would hold (six sections: versions, plugins, doctor, logins,
+   cabins, failures) and writes nothing. It never collects messages, Vault notes, project names, personas, keys,
+   log text, or cabin / seat ids.
+2. Show that list to the user.
+3. Only if the user says to save it, run `aib support --write`. The file is saved on this machine only
+   (private permissions); the reply shows where.
+4. Never send it, upload it, or attach it anywhere yourself. The user decides whether to send it and does it
+   themselves (for example, attaching it to https://github.com/ez2app/ez2-aib/issues/new/choose).
+5. Never LINE-push. Never paste API keys, vault notes, or full transcripts.

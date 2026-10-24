@@ -5,7 +5,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib test <test files…>      run tests; reuse earlier green results whose inputs did not change
     aib test --all              run the whole suite that way
     aib ship <subcommand> …     pre-push check, package, release (see `aib ship --help`)
-    aib support [--confirm]     collect a de-identified bug report pack (nothing is sent; you attach it to an issue)
+    aib support [--write]       list what a de-identified bug report pack would hold; --write saves it locally (nothing is sent)
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
     aib cf grant <zone> <perm> --push host:/path   Touch ID, then a minutes-long, IP-locked Cloudflare token (`aib cf --help`)
     aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
@@ -21,7 +21,6 @@ import sys
 HERE = os.path.dirname(os.path.realpath(__file__))     # 套件資料夾本身 = 原本倉根的版面(tools/、src/、i18n/)
 TARGETS = {"test": os.path.join(HERE, "tools", "verify", "test_entry.py"),
            "ship": os.path.join(HERE, "tools", "release", "ship.py"),
-           "support": os.path.join(HERE, "tools", "support", "collect.py"),
            "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py"),
            "uninstall": os.path.join(HERE, "tools", "support", "uninstall.py")}
 
