@@ -653,7 +653,7 @@ class Knives(unittest.TestCase):
                     "            dt = False\n", "Orphans.test_r17_detached_output_held")
 
     def test_k9_no_min_age(self):
-        self._knife("        if not ident or ident[0] != me or ident[1] != 1 or now - ident[3] < min_age_s:\n",
+        self._knife("        if not ident or ident[0] != me or ident[1] != 1 or max(0.0, now - ident[3]) < min_age_s:\n",
                     "        if not ident or ident[0] != me or ident[1] != 1:\n", "Orphans.test_r13_too_young")
 
     def test_k10_attached_counts_as_free(self):
