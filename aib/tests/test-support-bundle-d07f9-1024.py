@@ -24,7 +24,8 @@ S14 內建 skill ez2-aib-support 只叫 aib support / --write,不叫舊收集器
 S15 10-25 突變測試存活補格:各段鍵集合寫死(versions 五鍵、外掛列四鍵:manifest 的 requires_aib / path 不收)、
     git_present / schemas_readable 失敗的 detail、doctor 例外只留型別名、power-login.json 是連結 ⇒ 不讀、
     暫存路徑先被一般檔佔 ⇒ 不寫且原檔不變、EXCLUDED 八項、每種金鑰前綴各一筆;使用者名後面接底線也遮
-刀(複本):K7 versions 多收主機名 ⇒ S15 紅;K8 使用者名邊界改回把底線當字 ⇒ S15 紅;K6 cli.py 拿掉核心 support 那段(外掛搶得到)⇒ S13 紅;K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
+    使用者叫 root / git / python / claude ⇒ 結構鍵與 doctor id / 狀態 / 代碼不被換(#341 審查 L1),自由文字照遮
+刀(複本):K7 versions 多收主機名 ⇒ S15 紅;K8 使用者名邊界改回把底線當字 ⇒ S15 紅;K9 鍵也換使用者名 ⇒ S15b 紅;K10 代碼欄位也換 ⇒ S15b 紅;K6 cli.py 拿掉核心 support 那段(外掛搶得到)⇒ S13 紅;K1 不遮金鑰 ⇒ S4 紅;K2 預覽也寫檔 ⇒ S1 紅;K3 席位檔帶專案名 ⇒ S3 紅;K4 整套 doctor + 拿掉允許清單 ⇒ S3 紅;K5 改回借整套 doctor ⇒ S8 紅
 """
 import io
 import glob
@@ -427,6 +428,28 @@ class Harden(unittest.TestCase):
         os.makedirs(TMP)
         seed(TMP)
 
+    def test_s15b_struct_not_replaced(self):
+        body = {"schema": "aib-support/1", "versions": {"aib": "0.1.55", "python": "3.15.0"},
+                "doctor": {"checks": [{"id": "state_root_perms", "status": "ok", "detail": "/home/root/x root ok"},
+                                      {"id": "git_present", "status": "warn", "detail": None},
+                                      {"id": "python_version", "status": "ok", "detail": "python 3.15"}],
+                           "counts": {"ok": 2, "warn": 1}},
+                "logins": {"claude": True, "codex": False},
+                "failures": [{"source": "dm_send", "code": "relay_down", "at": 1}]}
+        for user in ("root", "git", "python", "claude", "relay", "send"):
+            got, _n = S.redact(json.loads(json.dumps(body)), home="/home/" + user, user=user)
+            self.assertEqual(list(got), list(body), user)
+            self.assertEqual(list(got["versions"]), ["aib", "python"], user)
+            self.assertEqual([c["id"] for c in got["doctor"]["checks"]], ["state_root_perms", "git_present", "python_version"])
+            self.assertEqual([c["status"] for c in got["doctor"]["checks"]], ["ok", "warn", "ok"])
+            self.assertEqual(list(got["logins"]), ["claude", "codex"], user)
+            self.assertEqual(got["failures"][0], {"source": "dm_send", "code": "relay_down", "at": 1}, user)
+            self.assertEqual(got["schema"], "aib-support/1")
+        got, _n = S.redact(json.loads(json.dumps(body)), home="/home/root", user="root")
+        self.assertEqual(got["doctor"]["checks"][0]["detail"], "~/x <user> ok")      # 自由文字照遮
+        got, _n = S.redact(json.loads(json.dumps(body)), home="/home/x", user="python")
+        self.assertEqual(got["doctor"]["checks"][2]["detail"], "<user> 3.15")
+
     def test_s15_keys_and_guards(self):
         from unittest import mock
         sys.path.insert(0, str(REPO / "src" / "bootstrap"))
@@ -582,6 +605,15 @@ class Knife(unittest.TestCase):
         self._knife('"machine": platform.machine(), "python": platform.python_version()}',
                     '"machine": platform.machine(), "python": platform.python_version(), "host": platform.node()}',
                     "Harden.test_s15_keys_and_guards")
+
+    def test_k9_keys_replaced(self):
+        self._knife("            return {(s(k, names=False) if isinstance(k, str) else k): walk(v, k) for k, v in o.items()}",
+                    "            return {(s(k) if isinstance(k, str) else k): walk(v, k) for k, v in o.items()}",
+                    "Harden.test_s15b_struct_not_replaced")
+
+    def test_k10_struct_values_replaced(self):
+        self._knife("            return s(o, names=key not in STRUCT_VALUE_KEYS)", "            return s(o)",
+                    "Harden.test_s15b_struct_not_replaced")
 
     def test_k8_user_boundary_underscore(self):
         self._knife('v = re.sub(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(user)',

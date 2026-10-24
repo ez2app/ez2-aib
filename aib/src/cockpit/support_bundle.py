@@ -220,6 +220,11 @@ def failures(root):
     return rows[-FAIL_MAX:]
 
 
+# 這些欄位的值與所有鍵是固定代碼(doctor id、狀態、失敗來源 / 代碼、外掛種類、格式名),不做使用者名替換(家目錄 / 金鑰 / 艙席照遮):
+# 使用者叫 root / git / python 時才不會把 state_root_perms、git_present、python_version 換壞(#341 審查 L1)
+STRUCT_VALUE_KEYS = frozenset(("id", "status", "source", "code", "kind", "schema"))
+
+
 def redact(obj, home=None, user=None):
     """回 (遮過的物件, 遮了幾處)。家目錄 → ~、使用者名稱 → <user>、暫存路徑 → <tmp>、艙號 → <cabin>、席號 → <seat>、
     像金鑰的字串 → [redacted](只算 [redacted] 的處數)。"""
@@ -234,7 +239,7 @@ def redact(obj, home=None, user=None):
 
     home = home.rstrip("/")
 
-    def s(v):
+    def s(v, names=True):
         if len(home) > 1:
             v = re.sub(re.escape(home) + r"(?=/|$|[\s\"'])", "~", v, flags=re.I)
         v = TMP.sub("<tmp>", v)
@@ -242,17 +247,17 @@ def redact(obj, home=None, user=None):
         n[0] += k
         v = CABIN.sub("<cabin>", v)
         v = SEAT.sub("<seat>", v)
-        if len(user) >= 3:                     # 底線不算字的一部分:andylin_fail 也要遮(10-25 稽核);太短的名字遮了會誤傷一般字
+        if names and len(user) >= 3:           # 底線不算字的一部分:andylin_fail 也要遮(10-25 稽核);太短的名字遮了會誤傷一般字
             v = re.sub(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(user), "<user>", v, flags=re.I)
         return v
 
-    def walk(o):
+    def walk(o, key=None):
         if isinstance(o, str):
-            return s(o)
+            return s(o, names=key not in STRUCT_VALUE_KEYS)
         if isinstance(o, list):
             return [walk(x) for x in o]
-        if isinstance(o, dict):
-            return {(s(k) if isinstance(k, str) else k): walk(v) for k, v in o.items()}
+        if isinstance(o, dict):                # 鍵是固定結構(段名 / versions 鍵 / 供應商代碼)⇒ 不換使用者名，其他照遮
+            return {(s(k, names=False) if isinstance(k, str) else k): walk(v, k) for k, v in o.items()}
         return o
 
     return walk(obj), n[0]
