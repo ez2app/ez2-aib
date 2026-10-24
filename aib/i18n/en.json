@@ -1088,6 +1088,7 @@
   "aib.verify.runner.dirty_tree": "only a committed, clean tree is verified; the working tree has uncommitted changes",
   "aib.verify.runner.timeout_30m": "the test exceeded the 30-minute limit",
   "aib.verify.runner.timeout_after": "the test exceeded the {seconds}-second limit",
+  "aib.verify.runner.memory_cap": "memory_cap: {name} (pid {pid}) reached {mb} MB, over the {cap_mb} MB per-process limit for tests; the whole test tree was stopped. Tests and repros must not allocate huge memory or read huge files — check with a small size limit instead (AIB_TEST_MEM_CAP_MB changes the limit)",
   "aib.verify.runner.reverse_unavailable": "reverse index unavailable: {reason}",
   "aib.verify.runner.reuse_index_unavailable": "reuse index unavailable: {reason}",
   "aib.verify.runner.mode_invalid": "the verify mode setting is unreadable or invalid",

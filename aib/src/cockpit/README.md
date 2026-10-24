@@ -218,6 +218,7 @@ python3 src/cockpit/idle_reaper.py close <target> [--yes] [--force] [--dry-run]
 python3 src/cockpit/idle_reaper.py reap [--dry-run]       依安全名單自動收
 python3 src/cockpit/idle_reaper.py watch [--interval 300] [--dry-run] [--max-rounds N]
 python3 src/cockpit/idle_reaper.py policy [show|init [--force]]
+python3 src/cockpit/memguard.py [scan|watch|log]           記憶體暴衝守門(平常跟著 idle watch 當執行緒跑)
 rc:0 正常 / 2 用法或名單缺 / 3 目標拒收(有人接著)
 ```
 

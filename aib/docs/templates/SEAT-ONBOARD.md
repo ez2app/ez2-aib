@@ -29,6 +29,11 @@ they carry no persona and no window, and they vanish when their work ends.
    `--state decide` while waiting on a human decision, and `aib now --clear` when idle.
 5. Things only a human may approve (project goals and red lines, releases) stay with the human.
    Never approve them yourself.
+6. Never let a test, repro or script you or your sub-agents run grow huge: no files over 100 MB
+   (sparse ones included), no reading a file or stream without a size limit, no unbounded loops or
+   allocations. To check "a huge input is refused", use a small limit (limit + 1 byte), not a real
+   huge input. `aib test` stops any test process over 2 GB (`memory_cap`); the machine guard stops
+   scratch / test interpreters over 2 GB. One runaway can freeze the whole machine.
 
 <!-- aib:section handoff -->
 [Seat order] You are the {role_label} seat of Ez2 AIB {cabin_label}, hub window {window},
