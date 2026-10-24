@@ -226,18 +226,34 @@ def verify(code, home=None, review=True):
     elif not items:
         add("tidy", False, T("aib.handoff.verify.none"))
     per = files.get("persona") or {}
+    try:
+        import memory_tidy
+        rows = [json.loads(x) for x in (memory_tidy.tidy_dir() / "writes.jsonl").read_text(
+            encoding="utf-8").splitlines() if x.strip()]
+    except (OSError, ValueError, ImportError):
+        rows = []
+    puid = (tidy or {}).get("persona_uid") or ""
+    wrote = any(r.get("seat") == code and _ts(r.get("at")) >= start and (not puid or r.get("uid") == puid)
+                for r in rows)                                                       # 本輪本席真的寫過人格卡
+    wrote_own = bool(start) and bool(puid) and any(                                  # 本席那張(主人格卡那筆不算;r2 A-M1)
+        r.get("seat") == code and _ts(r.get("at")) >= start and r.get("uid") == puid for r in rows)
     if per.get("status") == "ok":
+        add("persona", wrote, "writes.jsonl" if wrote else T("aib.handoff.verify.no_write"))
+    elif wrote_own and per.get("status") == "skipped":                               # 起點 0 / 舊收據沒卡號 ⇒ 不放行(r2 A-S1)
+        # 本輪稍早已寫進人格卡,之後回顧的 --add-only 沒東西可補(或那幾維已滿)蓋了收據 ⇒ 照算寫過(#312 審查 A2)
+        add("persona", True, "writes.jsonl(%s)" % (per.get("why") or "skipped"))
+    else:
+        # 10-24 維護者:「必要不能跳過，一定要寫回對應的人格」⇒ skipped 只在「讀得到原話、本輪真人一句都沒講」時算過;
+        #   有原話卻 skipped、或讀不到原話(舊收據 unavailable)一律紅。waiting(第一艦長卡大變動等真人按)照舊算有理由。
         try:
             import memory_tidy
-            rows = [json.loads(x) for x in (memory_tidy.tidy_dir() / "writes.jsonl").read_text(
-                encoding="utf-8").splitlines() if x.strip()]
-        except (OSError, ValueError, ImportError):
-            rows = []
-        hit = any(r.get("seat") == code and _ts(r.get("at")) >= start for r in rows)
-        add("persona", hit, "writes.jsonl" if hit else T("aib.handoff.verify.no_write"))
-    else:
-        add("persona", per.get("status") in ("skipped", "waiting") and bool(per.get("why")),
-            "%s %s" % (per.get("status") or "-", per.get("why") or ""))
+            usable = memory_tidy.human_words_usable((tidy or {}).get("human_words") or "")
+        except ImportError:
+            usable = False
+        quiet = usable and (tidy or {}).get("human_words_count") == 0
+        ok = (per.get("status") == "waiting" and bool(per.get("why"))) or (per.get("status") == "skipped" and quiet)
+        add("persona", ok, "%s %s" % (per.get("status") or "-", per.get("why") or "") if ok else
+            "%s %s(%s)" % (per.get("status") or "-", per.get("why") or "", T("aib.handoff.verify.persona_must")))
     card = files.get("card") or {}
     if card.get("status") == "ok":
         uid = (tidy or {}).get("project_uid") or ""
@@ -265,8 +281,10 @@ def verify(code, home=None, review=True):
     this_round = bool(rec) and float(rec.get("ts") or 0) >= start
     brain_ok = this_round and (rec.get("brain") or {}).get("ok") and (files.get("note") or {}).get("status") in ("ok", "skipped")
     add("brain", brain_ok, (files.get("note") or {}).get("uid") or "")
-    noted = this_round and str(rec.get("summary") or "").startswith("沒做")    # 審查 4:看收據欄位,不搜字
-    add("summary", bool(summ) or noted, (summ or {}).get("file") or (T("aib.handoff.verify.summary_noted") if noted else "-"))
+    # 10-24 維護者:「總結與交接都不能跳過」⇒ 交接檔寫「沒做」不再算過;總結要本輪寫過、且第二大腦那則真的寫進去
+    sbrain = (summ or {}).get("brain") or {}
+    add("summary", bool(summ) and bool(sbrain.get("ok")),
+        sbrain.get("uid") or ((summ or {}).get("file") and T("aib.handoff.verify.summary_no_brain")) or "-")
     steps_ok = this_round and all(str(n) in (rec.get("steps") or {}) for n in (1, 2, 3))
     sha_ok = False
     if this_round and rec.get("file"):
@@ -287,8 +305,20 @@ def verify(code, home=None, review=True):
             rv = handoff_review.done_this_round(code, start)
         except Exception:  # noqa: BLE001
             rv = {}
-        add("review", bool(rv), "%s 句 %s" % (rv.get("lines"), rv.get("by_kind")) if rv else T("aib.handoff.verify.review_todo"))
+        # 10-24:回顧筆記沒寫進第二大腦、或 0 句但其實讀不到原話(不是真人沒講話)⇒ 紅
+        note_ok = bool(rv) and bool(rv.get("note")) and not str(rv.get("note")).startswith("failed")
+        quiet_ok = bool(rv) and (rv.get("lines") or memory_tidy_usable(rv.get("words_source")))
+        add("review", note_ok and quiet_ok, "%s 句 %s %s" % (rv.get("lines"), rv.get("by_kind"), rv.get("note") or "")
+            if rv else T("aib.handoff.verify.review_todo"))
     return items
+
+
+def memory_tidy_usable(source):
+    try:
+        import memory_tidy
+        return memory_tidy.human_words_usable(source or "")
+    except ImportError:
+        return False
 
 
 def render(items):
