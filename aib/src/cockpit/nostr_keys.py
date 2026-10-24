@@ -154,12 +154,21 @@ CABIN_RE = re.compile(r"^[0-9a-z]{1,4}$")
 MAP_VERSION = 1
 
 
+def _root(env):
+    """跟 aib_secrets.secrets_dir、live_seats 同一個根(10-24 fishmac 踩到:只設 EZ2_AIB_STATE_ROOT 跑 chat prepare,
+    席位讀暫存根(空的)、金鑰卻寫真的家目錄 ⇒ 原本 4 席的替代金鑰全被封存)"""
+    root = env.get("EZ2_AIB_STATE_ROOT") or env.get("EZ2_AIB_HOME")
+    if root:
+        return Path(os.path.expanduser(root))
+    return Path(env.get("HOME") or os.path.expanduser("~")) / ".ez2-aib"
+
+
 def secrets_dir(env=None):
     env = os.environ if env is None else env
     explicit = env.get("EZ2_AIB_SECRETS_DIR")
     if explicit:
-        return Path(explicit)
-    return Path(env.get("HOME") or os.path.expanduser("~")) / ".ez2-aib" / "secrets"
+        return Path(os.path.expanduser(explicit))
+    return _root(env) / "secrets"
 
 
 def keys_dir(env=None):
@@ -170,8 +179,8 @@ def map_path(env=None):
     env = os.environ if env is None else env
     explicit = env.get("AIB_NOSTR_MAP")
     if explicit:
-        return Path(explicit)
-    return Path(env.get("HOME") or os.path.expanduser("~")) / ".ez2-aib" / "identity" / "nostr-map.json"
+        return Path(os.path.expanduser(explicit))
+    return _root(env) / "identity" / "nostr-map.json"
 
 
 def _mkdir_private(d):
