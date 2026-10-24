@@ -4725,6 +4725,7 @@
   "aib.chat.help.share": "在席状況を誰にどこまで共有するか(off / online / status。--default で既定)",
   "aib.chat.help.world": "友だちが共有した在席状況(艦長室のワールドタブは --json を読む)",
   "aib.chat.help.world_refresh": "先に友だちへオンラインか問い合わせる(30 秒に 1 回まで。更新済みの友だちは数秒で応答)",
+  "aib.chat.help.world_ping": "この相手だけにオンラインか問い合わせる(会話を開いたとき用。オーナー npub またはアドレス)",
   "aib.chat.world_asked": "ブリッジに友だちのオンライン確認を頼みました。数秒後にもう一度見てください。",
   "aib.chat.world_ask_recent": "30 秒以内に問い合わせ済みです。今届いている分を表示します。",
   "aib.chat.share_set": "設定しました:{owner} ⇒ {level}(友だち / 自分の機器でなければ送りません)",

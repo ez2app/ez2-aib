@@ -957,6 +957,7 @@ def note_peer(root, owner, display_name=None, country=None, seat=None, roster_at
 
 # world.json(第 30.4 節):好友 / 我的其他機器分享來的在線狀態。只有工人寫;核心讀時判過期。
 WORLD_FRESH_S = 40 * 60
+BEAT_GREEN_S = 10 * 60      # 10-24 Andy 綠點:最後一筆在線狀態 / 心跳在這麼久以內 ⇒ 🟢
 WORLD_STATES = ("online", "idle", "away", "asleep", "unknown")
 
 
@@ -990,14 +991,21 @@ def note_world(root, owner, cabin, seats, now=None, power=None):
 REFRESH_GAP_S = 30
 
 
-def request_refresh(root, now=None):
-    """要工人問一次「在不在」。上次要求不到 REFRESH_GAP_S ⇒ 不重寫,回 False。"""
+def request_refresh(root, now=None, ping=None):
+    """要工人刷新一次:查好友心跳 + 問還沒有心跳的舊版好友「在不在」。上次要求不到 REFRESH_GAP_S ⇒ 不重寫,回 False。
+    ping = 本人點開對話框的那一位主人(10-24 Andy:「在不在」只問那一位);帶 ping 不看間隔(對方那邊同一位 60 秒只回一次)。"""
     now = int(time.time() if now is None else now)
+    if ping is not None and not NPUB_FULL_RE.match(ping):
+        return False
 
     def fn(cur):
-        if now - int(cur.get("requested_at") or 0) < REFRESH_GAP_S:
+        if not ping and now - int(cur.get("requested_at") or 0) < REFRESH_GAP_S:
             return False
         cur["requested_at"] = now
+        if ping:
+            cur["ping"] = ping
+        else:
+            cur.pop("ping", None)
         return True
     return _locked_update(root, "refresh.json", fn, lambda: {"v": VERSION})
 
@@ -1015,7 +1023,81 @@ def read_refresh(root):
         return {}
     if not isinstance(cur, dict):
         return {}
-    return {k: cur[k] for k in ("requested_at", "asked_at") if isinstance(cur.get(k), int) and not isinstance(cur[k], bool)}
+    out = {k: cur[k] for k in ("requested_at", "asked_at") if isinstance(cur.get(k), int) and not isinstance(cur[k], bool)}
+    if NPUB_FULL_RE.match(str(cur.get("ping") or "")):
+        out["ping"] = cur["ping"]
+    return out
+
+
+# beats.json(10-24 Andy 綠點):好友名片給的心跳鑰 {keys: {主人: {心跳 npub: {key, gen, relays, at}}}};
+# beat-given.json:我這一代共用鑰給過誰(有人不再是好友 / 封鎖 / 改 off ⇒ 換一代)。兩個都 0600,只有工人寫。
+BEAT_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+BEAT_PER_OWNER = 10
+BEAT_RELAYS_MAX = 5
+
+
+def note_beat_key(root, owner, beat_npub, key_hex, gen, relays=(), now=None):
+    """記一位好友(某一台)的心跳鑰。不合格 ⇒ False。同一台新一代蓋掉舊的;一位主人最多留 BEAT_PER_OWNER 台。"""
+    if not (NPUB_FULL_RE.match(owner or "") and NPUB_FULL_RE.match(beat_npub or "") and BEAT_KEY_RE.match(key_hex or "")):
+        return False
+    if not isinstance(gen, int) or isinstance(gen, bool) or gen < 1:
+        return False
+    rel = [r for r in relays if isinstance(r, str) and r.startswith("wss://") and len(r) <= 200][:BEAT_RELAYS_MAX] \
+        if isinstance(relays, (list, tuple)) else []
+    now = int(time.time() if now is None else now)
+
+    def fn(cur):
+        mine = cur.setdefault("keys", {}).setdefault(owner, {})
+        old = mine.get(beat_npub) or {}
+        if int(old.get("gen") or 0) > gen:
+            return False                                   # 舊名片晚到,不蓋新的
+        mine[beat_npub] = {"key": key_hex, "gen": gen, "relays": rel, "at": now}
+        for k in sorted(mine, key=lambda k: mine[k]["at"])[:-BEAT_PER_OWNER]:
+            mine.pop(k, None)
+        return True
+    return _locked_update(root, "beats.json", fn, lambda: {"v": VERSION, "keys": {}})
+
+
+def read_beat_keys(root):
+    """⇒ [(主人, 心跳 npub, key, relays)]。"""
+    try:
+        cur = json.loads((Path(root) / "beats.json").read_text(encoding="utf-8"))
+        keys = cur.get("keys") if isinstance(cur, dict) else None
+    except (OSError, ValueError):
+        return []
+    out = []
+    for owner, machines in (keys or {}).items() if isinstance(keys, dict) else ():
+        for npub, k in (machines or {}).items() if isinstance(machines, dict) else ():
+            if isinstance(k, dict) and BEAT_KEY_RE.match(str(k.get("key") or "")):
+                out.append((owner, npub, k["key"], list(k.get("relays") or [])))
+    return out
+
+
+def drop_beat_keys(root, keep_owner):
+    def fn(cur):
+        ks = cur.setdefault("keys", {})
+        for o in [o for o in ks if not keep_owner(o)]:
+            ks.pop(o, None)
+    _locked_update(root, "beats.json", fn, lambda: {"v": VERSION, "keys": {}})
+
+
+def read_beat_given(root):
+    try:
+        cur = json.loads((Path(root) / "beat-given.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0, set()
+    if not isinstance(cur, dict):
+        return 0, set()
+    return int(cur.get("gen") or 0), {o for o in cur.get("owners") or [] if isinstance(o, str)}
+
+
+def note_beat_given(root, gen, owners):
+    """這一代給過的人(gen 換了 ⇒ 整份重來)。"""
+    def fn(cur):
+        if cur.get("gen") != gen:
+            cur["gen"], cur["owners"] = gen, []
+        cur["owners"] = sorted(set(cur.get("owners") or []) | set(owners))
+    _locked_update(root, "beat-given.json", fn, lambda: {"v": VERSION})
 
 
 def drop_world(root, keep_owner):

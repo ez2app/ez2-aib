@@ -4725,6 +4725,7 @@
   "aib.chat.help.share": "分享在線狀態給誰、分享多少(off / online / status;--default 改預設)",
   "aib.chat.help.world": "好友分享來的在線狀態(艦長室世界分頁讀 --json)",
   "aib.chat.help.world_refresh": "先向好友問一次在不在(30 秒內只問一次;好友升級後約幾秒就回)",
+  "aib.chat.help.world_ping": "只問這一位在不在(本人點開對話框時用;主人 npub 或位址)",
   "aib.chat.world_asked": "已請轉接程式向好友問在不在;過幾秒再看一次。",
   "aib.chat.world_ask_recent": "30 秒內剛問過,先看目前收到的。",
   "aib.chat.share_set": "已設定:{owner} ⇒ {level}(對方不是好友 / 我的機器時一律不送)",
