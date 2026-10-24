@@ -1349,6 +1349,17 @@ class Receiver(object):
             self.led.st["refused_sent"][from_npub] = int(time.time())
             audit(self.root, "in", msgid, from_npub, "request:unverified")
             return await self.send_receipt(msgid, "refused", reason="unverified")
+        m = GF.INVITE_NOTE_RE.match(rec.get("content") or "")
+        if m and not CR.is_blocked(parsed["owner"]) and GF.take_invite(self.root, m.group(1)):
+            # 10-24 第 11 條:帶我發的邀請碼 ⇒ 直接加好友、回 delivered(對方那邊 join 時已把我加好)
+            GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"), _peer_seat(peer),
+                         peer.get("roster_at"), claims=_claims(peer))
+            try:
+                CR.add_friend(parsed["owner"], GF.clean_display_name(rec.get("display_name") or "") or None, source="invite")
+            except CR.RosterError:
+                return
+            audit(self.root, "in", msgid, from_npub, "request:invite")
+            return await self.send_receipt(msgid, "delivered")
         row = {"owner": parsed["owner"], "display_name": rec.get("display_name"), "country": rec.get("country"),
                "from_addr": rec.get("from_addr"), "note": rec["content"], "msgid": msgid}
         GF.note_peer(self.root, parsed["owner"], peer.get("display_name"), peer.get("country"), _peer_seat(peer),
