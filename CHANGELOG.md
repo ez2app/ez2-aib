@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.54
+
+- **`aib room heat release` (new)**: release leftovers nobody uses. Two kinds for now: orphaned test scripts under a temp folder, and orphaned automation Chrome with a temp profile, both older than 120 seconds. Candidates are listed by the snapshot (`candidates` / `held`); release re-checks the owner and start time before every signal, kills only the listed process, and keeps anything holding an ssh / scp / rsync child or a `*.lock` file under `held`. `--dry-run` shows what would happen; `--auto` is capped per 10 minutes and stops if it cannot keep its log.
+- **`aib memguard` and a per-test memory cap**: every test run by `aib test` gets a memory cap for its whole process tree (`AIB_TEST_MEM_CAP_MB`, default 2048, 0 turns it off); over the cap the tree is stopped with exit code 137 and `memory_cap`. A machine-level guard (`aib memguard scan|watch|log`) watches only your own interpreter processes and never touches seats, Codex, Claude, browsers or apps. Pressing Ctrl-C, closing the terminal or stopping `aib test` now also stops the test that was running instead of leaving it behind.
+- **Fewer disk writes while testing**: the `aib test` trace hook keeps one append-only file open per process instead of opening and closing the trace file for every record (on APFS this cut write amplification from about 76× to 1×).
+- **Lighter right panel**: the captain list syncs only when seats change or every 30 seconds, and window switches are picked up through a tmux hook instead of asking tmux every tick (about 230 → 33 tmux calls in 20 seconds).
+
 ## 0.1.53
 
 - **`aib approve` (new)**: approve a WordPress sign-in with Touch ID on your Mac. `aib approve key init` creates a Secure Enclave signing key on this computer; `site add` registers a site; `pending` / `yes <nonce>` / `no <nonce>` / `history` list and answer requests. Every approval asks for Touch ID and is signed by the Secure Enclave. The WordPress side is a separate plugin.

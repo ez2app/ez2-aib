@@ -4,6 +4,13 @@
 
 버전은 `pyproject.toml`의 `version`을 따릅니다. 릴리스는 `v<version>` 태그이며, 관리자가 만듭니다.
 
+## 0.1.54
+
+- **`aib room heat release`(신규)**: 아무도 쓰지 않는 잔여 프로세스를 해제합니다. 현재 두 종류: 임시 폴더 아래의 고아 테스트 스크립트와, 임시 프로필을 쓰는 자동화 Chrome 고아이며, 둘 다 120초 이상 지난 것만 대상입니다. 후보는 스냅샷의 `candidates` / `held` 에 표시됩니다. 해제할 때 시그널을 보낼 때마다 소유자와 시작 시각을 다시 확인하고 표시된 프로세스만 종료하며, ssh / scp / rsync 자식 프로세스나 `*.lock` 파일을 가진 것은 `held` 에 두고 해제하지 않습니다. `--dry-run` 은 무엇을 할지만 보여 주고, `--auto` 는 10분마다 상한이 있으며 기록을 남길 수 없으면 멈춥니다.
+- **`aib memguard` 와 테스트별 메모리 상한**: `aib test` 가 실행하는 각 테스트의 프로세스 트리 전체에 메모리 상한을 둡니다(`AIB_TEST_MEM_CAP_MB`, 기본 2048, 0이면 끔). 넘으면 트리를 종료하고 종료 코드 137과 `memory_cap` 을 반환합니다. 기기 단위 감시(`aib memguard scan|watch|log`)는 자신의 인터프리터 프로세스만 보며 좌석, Codex, Claude, 브라우저, 앱은 건드리지 않습니다. Ctrl-C를 누르거나 터미널을 닫거나 `aib test` 를 멈추면 실행 중이던 테스트도 함께 종료되어 더 이상 남지 않습니다.
+- **테스트 중 디스크 쓰기 감소**: `aib test` 의 추적 훅이 기록할 때마다 파일을 열고 닫지 않고, 프로세스마다 추가 전용 파일 하나만 열어 둡니다(APFS 쓰기 증폭 약 76배 → 1배).
+- **오른쪽 패널을 가볍게**: 캡틴 목록은 좌석이 바뀌었거나 30초가 지났을 때만 동기화하고, 창 전환은 매번 tmux에 묻지 않고 tmux 훅으로 받습니다(20초 동안 tmux 호출 약 230 → 33회).
+
 ## 0.1.53
 
 - **`aib approve`(신규)**: WordPress 로그인을 Mac의 Touch ID로 승인합니다. `aib approve key init` 으로 이 컴퓨터에 Secure Enclave 서명 키를 만들고, `site add` 로 사이트를 등록하며, `pending` / `yes <nonce>` / `no <nonce>` / `history` 로 요청을 조회하고 응답합니다. 승인할 때마다 Touch ID를 요구하고 Secure Enclave가 서명합니다. WordPress 쪽은 별도 플러그인입니다.

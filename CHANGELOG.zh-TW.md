@@ -4,6 +4,13 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.54
+
+- **`aib room heat release`(新)**:釋放沒人用的殘留。目前兩種：暫存夾底下的孤兒測試腳本、帶暫存設定檔的自動化 Chrome 孤兒，都要活過 120 秒。候選列在快照的 `candidates` / `held`;釋放前每次送訊號都重比擁有者與開始時間、只殺列出的那一支，行程底下有 ssh / scp / rsync 或開著 `*.lock` 的一律列進 `held` 不收。`--dry-run` 只顯示會做什麼;`--auto` 每 10 分鐘有上限，記不了帳就停手。
+- **`aib memguard` 與每支測試的記憶體上限**:`aib test` 跑的每支測試整棵行程樹有記憶體上限(`AIB_TEST_MEM_CAP_MB`,預設 2048,0 = 關),超過就整棵收掉、結束碼 137、帶 `memory_cap`。機器層守門(`aib memguard scan|watch|log`)只看自己的直譯器行程，不碰席位、Codex、Claude、瀏覽器與 App。按 Ctrl-C、關終端機或停掉 `aib test` 時，正在跑的那支測試也會一起收掉，不再留成孤兒。
+- **測試時少寫很多次磁碟**:`aib test` 的追蹤鉤子每個行程只開一個附加寫入的檔，不再每筆開關一次(APFS 寫入放大約 76 倍 → 1 倍)。
+- **右欄更省**:艦長列只在席位有變或滿 30 秒才同步;切窗改由 tmux 鉤子通知，不再每拍問 tmux(20 秒內 tmux 呼叫約 230 → 33 次)。
+
 ## 0.1.53
 
 - **`aib approve`(新)**:WordPress 登入改在 Mac 按 Touch ID 核准。`aib approve key init` 在這台建一把 Secure Enclave 簽章鑰;`site add` 登記網站;`pending` / `yes <nonce>` / `no <nonce>` / `history` 列出與回覆請求。每次核准都要 Touch ID,並由 Secure Enclave 簽章。WordPress 那一端是另外的外掛。
