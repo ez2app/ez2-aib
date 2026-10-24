@@ -379,7 +379,15 @@ def script_of(name, args):
             got = _python_short(a, it)
             if got:
                 return got
-            interactive = interactive or "i" in a[1:]
+            flags = a[1:]
+            for k, ch in enumerate(flags):     # -Wignore / -Ximporttime 的 i 是值,不是 -i(r4 L-b)
+                if ch in PY_SHORT_VALUE:
+                    flags = flags[:k]
+                    break
+            interactive = interactive or "i" in flags
+            continue
+        if kind == "node" and a in ("-i", "--interactive"):
+            interactive = True                 # r4 L-c
             continue
         if kind == "node" and a.startswith("-") and not a.startswith("--") and len(a) > 2 and a[-1] in "ep":
             return "inline", next(it, "")              # node 合寫(-pe)
@@ -433,7 +441,8 @@ def script_hint(pid, args=None, name="python"):
     how, what = script_of(name, cmd_args(pid) if args is None else args)
     if how == "script" and what:
         return os.path.basename(what)[:80]
-    return {"inline": "(inline)", "module": "-m %s" % (what or "")[:60]}.get(how, "")
+    return {"inline": "(inline)", "stdin": "(stdin)", "interactive": "(interactive)",
+            "module": "-m %s" % (what or "")[:60]}.get(how, "")
 
 
 def notify(text):
@@ -656,10 +665,9 @@ class TreeCap:
     建立時記下根的開始時間;之後每拍與每次送訊號前都比(根被回收、pid 被重用就不動手 —— #322 r2 L3)。"""
 
     def __init__(self, root_pid, cap_mb, *, tick_s=TEST_CAP_TICK_S, table=tree_table, kill=os.kill, info=proc_info,
-                 root_start=None, pgid=None, killpg=getattr(os, "killpg", None)):
+                 root_start=None):
         self.root, self.cap, self.tick_s, self.table, self.kill, self.info = (
             root_pid, cap_mb, tick_s, table, kill, info)
-        self.pgid, self.killpg = pgid, killpg       # 測試自成群組時:掛到 pid 1 的背景行程靠群組收(#322 r3 M3)
         self.root_start = start_of(root_pid, info) if root_start is None else root_start
         self.hit = None
         self._stop = threading.Event()
@@ -674,12 +682,7 @@ class TreeCap:
         if t[big][3] < self.cap:
             return None
         self.hit = {"pid": big, "name": t[big][1], "mb": t[big][3], "cap_mb": self.cap}
-        # 群組先收:根的開始時間還對得上(根還沒死 ⇒ 群組號碼不會被別人拿到)才送;再照樹收脫離群組的
-        if self.pgid and self.killpg and start_of(self.root, self.info) == self.root_start:
-            try:
-                self.killpg(self.pgid, signal.SIGKILL)
-            except OSError:
-                pass
+        # 只收樹、設旗標;群組(掛到 pid 1 的背景行程)由 aib test 主執行緒收 —— 它才知道根還沒被 wait(r4 L-a)
         kill_tree(self.root, self.root_start, table=lambda: t, info=self.info, kill=self.kill)
         return self.hit
 

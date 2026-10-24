@@ -396,6 +396,70 @@ def _test_command(repo: Path, name: str, env: dict | None = None) -> list[str]:
     return [py, str(Path(__file__).resolve().parent / "plain_test_runner.py"), str(path)]
 
 
+INTERRUPT_GRACE_S = 2.0
+
+
+def _kill_group(proc, cap) -> None:
+    """整棵(ppid)+ 整群組 SIGKILL。呼叫端保證 proc 還沒被 wait(群組號碼不會被別人拿到)。"""
+    if memguard:
+        memguard.kill_tree(proc.pid, cap.root_start)
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _root_exited(pid) -> bool:
+    """根結束了沒(WNOWAIT:只看不收,群組號碼留著);沒有 waitid 的平台回 False(就等滿寬限)。"""
+    if not hasattr(os, "waitid"):
+        return False
+    try:
+        return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    except ChildProcessError:
+        return True
+
+
+def _interrupt_group(proc, cap) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGINT)
+    except OSError:
+        pass
+    end = time.monotonic() + INTERRUPT_GRACE_S
+    while time.monotonic() < end and not _root_exited(proc.pid):
+        time.sleep(0.05)
+    _kill_group(proc, cap)
+
+
+def _drain(proc, e):
+    """收掉之後最多再等 2 秒讀尾巴;還不回就用最後一次逾時帶回的部分輸出(r3 L4 / r4 L-e)。"""
+    try:
+        return proc.communicate(timeout=2)
+    except subprocess.TimeoutExpired as e2:
+        return e2.stdout, e2.stderr
+    except ValueError:
+        return e.stdout, e.stderr
+
+
+def _communicate_capped(proc, cap, limit):
+    """分段 communicate:記憶體看門執行緒命中(只設旗標 + 收樹)後,由主執行緒收群組(這時 proc 一定還沒 wait ——
+    communicate 讀完管線才 wait;r4 L-a)。逾時照樣丟 TimeoutExpired(輸出是累積的)。"""
+    end = time.monotonic() + limit
+    while True:
+        left = end - time.monotonic()
+        try:
+            return proc.communicate(timeout=max(0.01, min(0.5, left)))
+        except subprocess.TimeoutExpired as e:
+            if cap.hit:
+                _kill_group(proc, cap)
+                return _drain(proc, e)
+            if left <= 0.5:
+                raise subprocess.TimeoutExpired(proc.args, limit, output=e.stdout, stderr=e.stderr)
+
+
 MEMCAP_CELL = "MEMCAP:memory_cap"     # 被記憶體上限砍掉的固定紅格(不會出現在舊紅清單,收據一定算新紅)
 TIMEOUT_CELL = "TIMEOUT:timeout"
 
@@ -423,29 +487,27 @@ def _run_one(repo: Path, name: str, env: dict[str, str], timeout: float | None =
         #   開發當下就知道「不能超大」,不是等機器凍住。上限 AIB_TEST_MEM_CAP_MB(預設 2048,0 = 關),見 memguard.TreeCap。
         #   #322 r3 M3:測試自成一個行程群組 —— 主行程先結束、背景行程掛到 pid 1 時靠 ppid 找不到,靠群組收得到。
         group = {"process_group": 0} if sys.version_info >= (3, 11) else {"start_new_session": True}
+        #   ⚠ 自成群組 ⇒ 終端機的 Ctrl-C / Ctrl-Z 只送前景群組,碰不到測試:Ctrl-C / SIGTERM / SIGHUP 都由下面
+        #   except BaseException 轉送收掉(r4);Ctrl-Z 停住 aib test 時測試照跑、記憶體看門執行緒也停(已知限制)。
         with subprocess.Popen(_test_command(repo, name, env), cwd=str(repo), env=env,
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               text=True, errors="replace", **group) as proc:
-            cap = (memguard.TreeCap(proc.pid, memguard.test_cap_mb(), pgid=proc.pid) if memguard else _NoCap()).start()
+            cap = (memguard.TreeCap(proc.pid, memguard.test_cap_mb()) if memguard else _NoCap()).start()
             try:
-                out, err = proc.communicate(timeout=limit)
+                out, err = _communicate_capped(proc, cap, limit)
             except subprocess.TimeoutExpired as e:
                 # #322 r2 H1:不能再無限 communicate() —— 背景孫行程(tmux / http server / cmd &)拿著管線就永遠不回。
-                #   先整棵收(kill_tree 靠 ppid、killpg 收掛到 pid 1 的),proc 還沒 wait ⇒ 群組號碼不會被重用;
-                #   再最多等 2 秒把管線裡還沒讀的尾巴讀完(r3 L4),還不回(脫離群組的行程拿著管線)就用逾時當下的輸出。
-                if memguard:
-                    memguard.kill_tree(proc.pid, cap.root_start)
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except OSError:
-                    pass
-                proc.kill()
-                try:
-                    out, err = proc.communicate(timeout=2)
-                except subprocess.TimeoutExpired:
-                    out, err = e.stdout, e.stderr
+                #   整棵收(kill_tree 靠 ppid、killpg 收掛到 pid 1 的),proc 還沒 wait ⇒ 群組號碼不會被重用;
+                #   再最多等 2 秒把管線裡還沒讀的尾巴讀完(r3 L4),還不回(脫離群組的行程拿著管線)就用讀到的部分。
+                _kill_group(proc, cap)
+                out, err = _drain(proc, e)
                 proc.wait()
                 raise subprocess.TimeoutExpired(proc.args, limit, output=out, stderr=err)
+            except BaseException:
+                # #322 r4:Ctrl-C(KeyboardInterrupt)、SIGTERM / SIGHUP(test_entry 轉成 SystemExit)⇒ 先把 SIGINT
+                #   轉給測試群組、等一下讓它自己的 finally 收子行程,再整棵 + 整群組 SIGKILL;proc 都還沒 wait。
+                _interrupt_group(proc, cap)
+                raise
             finally:
                 cap.stop()
                 cap_hit = cap.hit

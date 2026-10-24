@@ -25,11 +25,15 @@ G16 認不得的帶值選項 + 絕對路徑資料夾不判 dev;node / php 補的
 G17 真行程 fd 0:管線 / 檔案 / 終端機認得出來(r3 M1)
 G18 動手前重讀 argv:同名直譯器 exec 成別的腳本 ⇒ 重新分級,不照舊收(r3 L2)
 G19 主行程先結束、背景行程掛到 pid 1 ⇒ 逾時收得到(測試自成行程群組,r3 M3)
+G20 aib test 被 Ctrl-C(對驅動群組送 SIGINT)⇒ 正在跑的測試行程也收掉(r4 High)
+G21 aib test 收到 SIGHUP(關終端機 / ssh 斷線)⇒ 同上;走 test_entry __main__ 真的那段裝訊號
+G22 python -Wignore / -Ximporttime 不當 -i;node -i / --interactive 不算內嵌;script_hint 標 (stdin)(r4 L-b–L-d)
 刀(複本 + run_guarded):K1 TreeCap 上限判斷拿掉 ⇒ G7 紅;K2 連兩拍確認拿掉 ⇒ G2 紅;
 K3 開發分級拿掉 ⇒ G3 紅;K4 開始時間不比 ⇒ G4 紅;K5 node 也套一般上限 ⇒ G9 紅;
 K6 腳本之後的 -c 也當內嵌 ⇒ G3 紅;K7 相對路徑改用守門自己的 cwd ⇒ G3b 紅;K8 multiprocessing 不沿用 ⇒ G11 紅;
 K9 TreeCap 不比根開始時間 ⇒ G14 紅;K10 stdin 不看 fd 0 ⇒ G3b 紅;K11 資料夾也當腳本 ⇒ G16 紅;
-K12 動手前不重讀 argv ⇒ G18 紅;R4 逾時不收群組 ⇒ G19 紅;runner 刀:R1 逾時改回 communicate() ⇒ G15 紅;R2 拿掉固定紅格 ⇒ G8 紅;
+K12 動手前不重讀 argv ⇒ G18 紅;R4 逾時不收群組 ⇒ G19 紅;R5 拿掉 except BaseException 轉送 ⇒ G20 / G21 紅;
+T1 test_entry 不接 SIGHUP ⇒ G21 紅;runner 刀:R1 逾時改回 communicate() ⇒ G15 紅;R2 拿掉固定紅格 ⇒ G8 紅;
 R3 拿掉 rc 137 覆寫 ⇒ G8 紅。刀一律斷言輸出出現「FAIL: <目標>」且沒有 ERROR(紅在對的斷言)
 """
 import selectors
@@ -247,21 +251,41 @@ class GuardLogic(unittest.TestCase):
         import pty
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
+        import socket
         f = Path(d, "in.txt")
         f.write_text("")
         m, sl = pty.openpty()
+        a, b = socket.socketpair()
+        fh = open(f)
         procs = []
         try:
-            for stdin in (subprocess.PIPE, open(f), sl):
+            for stdin in (subprocess.PIPE, fh, sl, subprocess.DEVNULL, a.fileno()):
                 procs.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=stdin))
             time.sleep(0.3)
-            self.assertEqual([MG.stdin_kind(p.pid) for p in procs], ["pipe", "file", "tty"])
+            self.assertEqual([MG.stdin_kind(p.pid) for p in procs], ["pipe", "file", "tty", None, None])
         finally:
             for p in procs:
                 p.kill()
                 p.wait()
+                if p.stdin:
+                    p.stdin.close()
+            fh.close()
+            a.close()
+            b.close()
             os.close(m)
             os.close(sl)
+
+    def test_g22_flag_values_and_node_interactive(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        c = MG.classify
+        self.assertEqual(c("python3", ["python3", "-Wignore"], d, "pipe"), "dev")      # i 是 -W 的值
+        self.assertEqual(c("python3", ["python3", "-Ximporttime"], d, "pipe"), "dev")
+        self.assertEqual(c("python3", ["python3", "-qi"], d, "pipe"), "general")
+        for argv in (["node", "-i"], ["node", "--interactive"]):
+            self.assertIsNone(c("node", argv, d, "pipe"), argv)
+        self.assertEqual(MG.script_hint(1, ["python3"], "python3"), "(stdin)")
+        self.assertEqual(MG.script_hint(1, ["python3", "-i"], "python3"), "(interactive)")
 
     def test_g11_multiprocessing_inherits_parent(self):
         spawn = ["python3", "-c", "from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=5, pipe_handle=7)",
@@ -499,6 +523,72 @@ class RunnerCap(unittest.TestCase):
             kill_quiet((opid, MG.start_of(opid) if opid else None))
 
 
+DRIVER = textwrap.dedent("""
+    import os, sys, textwrap
+    from pathlib import Path
+    sys.path[:0] = [sys.argv[3], sys.argv[4]]
+    import runner, test_entry
+    repo = Path(sys.argv[1])
+    def main():
+        runner._run_one(repo, "tests/test-hang.py", dict(os.environ), timeout=60)
+        return 0
+    # 執行 test_entry 真的 __main__ 那段(裝 SIGTERM / SIGHUP),只把 main 換成跑一支測試
+    src = open(test_entry.__file__, encoding="utf-8").read().split('if __name__ == "__main__":', 1)[1]
+    exec(textwrap.dedent(src), {"_on_term": test_entry._on_term, "main": main, "sys": sys})
+""")
+
+
+def interrupt_case(testcase, sig):
+    """起一支驅動(自己一個群組,像終端機前景群組)跑 _run_one;測試寫出 pid 後對驅動群組送 sig。
+    回 (驅動結束碼, 測試 pid 收掉了沒)。"""
+    repo = Path(tempfile.mkdtemp())
+    testcase.addCleanup(shutil.rmtree, str(repo), True)
+    (repo / "tests").mkdir()
+    pidf = repo / "pid.txt"
+    (repo / "tests" / "test-hang.py").write_text(
+        "import os, time\nopen(%r, 'w').write(str(os.getpid()))\ntime.sleep(60)\n" % str(pidf))
+    drv = repo / "driver.py"
+    drv.write_text(DRIVER)
+    p = subprocess.Popen([sys.executable, str(drv), str(repo), "x", str(ROOT / "tools" / "verify"),
+                          str(ROOT / "src" / "cockpit")], start_new_session=True, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    tpid = tstart = None
+    try:
+        for _ in range(200):
+            if pidf.exists() and pidf.read_text().strip():
+                break
+            time.sleep(0.05)
+        tpid = int(pidf.read_text())
+        tstart = MG.start_of(tpid)
+        os.killpg(p.pid, sig)
+        try:
+            rc = p.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            rc = None                       # 驅動卡住(r3:SystemExit 時 Popen.__exit__ 一直等測試結束)
+        for _ in range(40):
+            if MG.proc_info(tpid) is None:
+                break
+            time.sleep(0.1)
+        return rc, MG.proc_info(tpid) is None
+    finally:
+        kill_quiet((tpid, tstart))
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+
+
+class Interrupt(unittest.TestCase):
+    def test_g20_ctrl_c_collects_running_test(self):
+        rc, gone = interrupt_case(self, signal.SIGINT)
+        self.assertNotIn(rc, (0, None), "驅動沒結束或沒報錯")
+        self.assertTrue(gone, "aib test 被 Ctrl-C 後測試行程還活著(孤兒)")
+
+    def test_g21_sighup_collects_running_test(self):
+        rc, gone = interrupt_case(self, signal.SIGHUP)
+        self.assertEqual(rc, 128 + signal.SIGHUP, "SIGHUP 沒走 _on_term 收尾")
+        self.assertTrue(gone, "aib test 收到 SIGHUP 後測試行程還活著(孤兒)")
+
+
 KNIVES = [
     ("K1", "        if t[big][3] < self.cap:", "        if True:", "RealTree.test_g7_treecap_real"),
     ("K2", "            if self.over[key] < CONFIRM_TICKS:", "            if False:",
@@ -526,17 +616,23 @@ KNIVES = [
 ]
 
 RUNNER_KNIVES = [
-    ("R1", "                if memguard:\n                    memguard.kill_tree(proc.pid, cap.root_start)\n"
-           "                try:\n                    os.killpg(proc.pid, signal.SIGKILL)\n                except OSError:\n"
-           "                    pass\n                proc.kill()\n                try:\n"
-           "                    out, err = proc.communicate(timeout=2)\n                except subprocess.TimeoutExpired:\n"
-           "                    out, err = e.stdout, e.stderr\n                proc.wait()\n",
+    ("R1", "                _kill_group(proc, cap)\n                out, err = _drain(proc, e)\n                proc.wait()\n",
      "                proc.kill()\n                out, err = proc.communicate()\n",
      "RunnerCap.test_g15_timeout_with_background_grandchild"),
     ("R2", "        if c and c not in cells:", "        if False:", "RunnerCap.test_g8_run_one_memory_cap"),
     ("R3", "            rc, cut = 137, MEMCAP_CELL", "            cut = MEMCAP_CELL", "RunnerCap.test_g8_run_one_memory_cap"),
-    ("R4", "                    os.killpg(proc.pid, signal.SIGKILL)", "                    pass",
+    ("R4", "                _kill_group(proc, cap)\n                out, err = _drain(proc, e)\n",
+     "                proc.kill()\n                out, err = _drain(proc, e)\n",
      "RunnerCap.test_g19_main_exits_background_orphan_collected"),
+    ("R5", "            except BaseException:\n", "            except ZeroDivisionError:\n",
+     "Interrupt.test_g20_ctrl_c_collects_running_test"),
+    ("R5h", "            except BaseException:\n", "            except ZeroDivisionError:\n",
+     "Interrupt.test_g21_sighup_collects_running_test"),
+]
+
+ENTRY_KNIVES = [
+    ("T1", "    if signal.getsignal(signal.SIGHUP) != signal.SIG_IGN:\n        signal.signal(signal.SIGHUP, _on_term)\n",
+     "", "Interrupt.test_g21_sighup_collects_running_test"),
 ]
 
 
@@ -561,6 +657,11 @@ class Knife(unittest.TestCase):
         for tag, needle, repl, target in RUNNER_KNIVES:
             with self.subTest(tag):
                 self.knife("tools/verify/runner.py", tag, needle, repl, target)
+
+    def test_entry_knives(self):
+        for tag, needle, repl, target in ENTRY_KNIVES:
+            with self.subTest(tag):
+                self.knife("tools/verify/test_entry.py", tag, needle, repl, target)
 
 
 if __name__ == "__main__":
