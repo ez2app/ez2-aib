@@ -11,6 +11,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 - **Fewer disk writes while testing**: the `aib test` trace hook keeps one append-only file open per process instead of opening and closing the trace file for every record (on APFS this cut write amplification from about 76× to 1×).
 - **Lighter right panel**: the captain list syncs only when seats change or every 30 seconds, and window switches are picked up through a tmux hook instead of asking tmux every tick (about 230 → 33 tmux calls in 20 seconds).
 - **Turning sharing off takes effect right away online**: `aib chat share … off` (and narrowing a space) now sends a revoke, so your friend stops seeing what you shared without waiting for the old snapshot to expire. Order is judged by each sender's own send time and expiry by the time it was received, so a sender's clock running fast or slow cannot bring an old snapshot back.
+- **Worktrees and clones must live where Spotlight does not index**: on a Mac, `git worktree add` / `git worktree move` / `git clone` into an ordinary folder under your home is blocked with a suggestion to use `~/wt.noindex/<name>`; the handoff check also fails while one of this seat's worktrees is still in an indexed folder (move it with `git worktree move`).
 
 ## 0.1.53
 
