@@ -17,6 +17,7 @@ import argparse
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -40,6 +41,8 @@ SYSTEM_NAMES = frozenset(("kernel_task", "WindowServer", "launchd", "mds", "mds_
                           "spotlightknowledged", "corespotlightd", "backupd", "logd", "syslogd", "coreaudiod",
                           "bluetoothd", "airportd", "softwareupdated", "fseventsd", "distnoted", "cfprefsd",
                           "spindump", "ReportCrash", "syspolicyd", "trustd", "configd", "powerd", "opendirectoryd"))
+SYSTEM_NAMES = frozenset(n[:16] for n in SYSTEM_NAMES)   # ps ucomm 只到 16 字(spotlightknowledged ⇒ spotlightknowled)
+# 組別(含 system)跟 owner 一樣是同帳號能偽造的(改程式名就進 system),只拿來顯示,不拿來判能不能收
 CLI_RE = re.compile(r"(^|/)(claude|codex|agy|antigravity|copilot|grok)(\s|$)")
 TEST_RE = re.compile(r"(\baib(\.py)?\s+test\b|tools/verify/(runner|test_entry)\.py|/aib-test-|EZ2_AIB_STATE_ROOT=)")
 REVIEWER_RE = re.compile(r"/scratchpad/")
@@ -67,7 +70,9 @@ def T(key, **params):
 
 
 def _run(cmd, timeout=10):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL).stdout
+    # LC_ALL=C:德文等語系 ps 的 pcpu 印成「0,6」,整列會對不上正則被默默丟掉(#317 r2 B1)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                          env={**os.environ, "LC_ALL": "C"}).stdout
 
 
 def state_dir(environ=None):
@@ -140,6 +145,8 @@ def list_procs(run=None):
             pid = int(m.group(1))
             rows.append((pid, int(m.group(2)), int(m.group(3)), float(m.group(4)), int(m.group(5)),
                          names.get(pid, ""), m.group(6)))
+    if (out or "").strip() and not rows:               # 有輸出卻一列都解析不出來 ⇒ 量不到,不是「沒有行程」
+        return None
     return rows
 
 
@@ -265,25 +272,30 @@ HISTORY_KEYS = ("temp", "load1", "mem_free", "swap_mb")
 LEVELS = ("ok", "warn", "hot", "critical", "unmeasured")
 
 
+def _finite(v):
+    """數字、不是 bool、不是 NaN / ±Infinity(不然 --json 會吐出 JSON.parse 讀不了的 NaN)。"""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 def read_history(environ=None, now=None):
     """只收白名單欄位、數字或 None、level 在四級內、t 不在未來(檔被換成別的東西 ⇒ 不外流、也不會卡住歷史)。"""
     now = time.time() if now is None else now
     raw = safe_read(history_path(environ), 4 * 1024 * 1024)
     try:
         d = json.loads(raw) if raw else {}
-    except ValueError:
+    except (ValueError, RecursionError):                # 很深的巢狀會丟 RecursionError(#317 r2 A-M1)
         return []
     pts = d.get("points") if isinstance(d, dict) else None
     out = []
     for p in pts if isinstance(pts, list) else []:
-        if not isinstance(p, dict) or not isinstance(p.get("t"), (int, float)) or isinstance(p.get("t"), bool):
+        if not isinstance(p, dict) or not _finite(p.get("t")):
             continue
         if p["t"] > now + 60:
             continue
         q = {"t": float(p["t"]), "level": p.get("level") if p.get("level") in LEVELS else None}
         for k in HISTORY_KEYS:
             v = p.get(k)
-            q[k] = v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+            q[k] = v if _finite(v) else None
         out.append(q)
     return out[-HISTORY_MAX:]
 
@@ -299,16 +311,20 @@ def record_history(m, now=None, environ=None):
                 "load1": _num(cells, "load1"), "mem_free": _num(cells, "mem"), "swap_mb": _num(cells, "swap")})
     pts = pts[-HISTORY_MAX:]
     path = history_path(environ)
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    st = os.lstat(d)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():    # room 被換成 symlink / 別人的夾 ⇒ 不寫(A-L2)
+        return False
     try:
-        os.chmod(os.path.dirname(path), 0o700)
+        os.chmod(d, 0o700)
     except OSError:
         pass
     fd, tmp = tempfile.mkstemp(prefix=".heat-history.", dir=os.path.dirname(path))
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"schema": "aib-heat-history/v1", "step_s": HISTORY_STEP_S, "points": pts}, fh)
+            json.dump({"schema": "aib-heat-history/v1", "step_s": HISTORY_STEP_S, "points": pts}, fh, allow_nan=False)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -340,10 +356,10 @@ def read_crash(path):
     body = body.split('"threads"', 1)[0]                # 堆疊從 threads 開始,之後不看
     try:
         meta = json.loads(first)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
-    if not isinstance(meta, dict) or str(meta.get("bug_type") or "309") != "309":
-        return None                                    # 只收當機(309);Jetsam 之類不算
+    if not isinstance(meta, dict) or str(meta.get("bug_type")) != "309":
+        return None                                    # 只收當機(309);Jetsam、沒寫 bug_type 的都不算(A-L4)
     exc = _obj(body, "exception")
     proc = _field(body, "procName") or str(meta.get("app_name") or meta.get("name") or "")
     if not proc:
@@ -372,7 +388,7 @@ def crashes(days=CRASH_DAYS, now=None, crash_dir=None):
     now = time.time() if now is None else now
     d = crash_dir or CRASH_DIR
     if not os.path.isdir(d):
-        return {"state": "unmeasured", "detail": "crash_dir_missing", "classes": [], "files": 0}
+        return {"state": "unmeasured", "detail": "crash_dir_missing", "classes": [], "files": 0, "days": days}
     try:
         names = glob.glob(os.path.join(d, "*.ips"))
     except OSError:
@@ -418,7 +434,7 @@ def snapshot(sampler=None, run=None, owner_of=None, now=None, environ=None, reco
     if record:
         try:
             snap["history_recorded"] = record_history(m, now=now, environ=environ)
-        except OSError:
+        except (OSError, ValueError):                  # ValueError:allow_nan 擋下的壞點,不讓快照跟著掛
             snap["history_recorded"] = False
     return snap
 
@@ -447,7 +463,8 @@ def main(argv=None, out=None):
         ap.add_argument("--days", type=int, default=CRASH_DAYS)
     a = ap.parse_args(argv)
     if sub == "history":
-        pts = read_history()
+        now = time.time()                               # 只回最近 1 小時(關機一天後不回昨天的點,B5)
+        pts = [p for p in read_history(now=now) if p["t"] >= now - HISTORY_MAX * HISTORY_STEP_S]
         if a.json:
             json.dump({"schema": "aib-heat-history/v1", "step_s": HISTORY_STEP_S, "points": pts}, out, ensure_ascii=False)
             out.write("\n")

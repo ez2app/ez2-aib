@@ -123,6 +123,18 @@ class Snapshot(Base):
         s = self.RH.snapshot(sampler=boom, run=fake_ps, owner_of=owner_of, now=1_792_814_400.0)
         self.assertEqual((s["level"], s["groups"]["state"]), ("unmeasured", "ok"))
 
+    def test_h2c_unparsable_ps_is_unmeasured(self):
+        """#317 r2 B1:逗號小數(德文語系)整列解析不出來 ⇒ unmeasured,不是 ok + 0 個行程;_run 固定 LC_ALL=C。"""
+        comma = PS_ARGS.replace(".", ",")
+        s = self.RH.snapshot(sampler=fake_sampler, owner_of=owner_of, now=1_792_814_400.0, record=False,
+                             run=lambda cmd: PS_UCOMM if any("ucomm" in c for c in cmd) else comma)
+        self.assertEqual((s["groups"]["state"], s["groups"]["items"]), ("unmeasured", []))
+        seen = {}
+        with mock.patch.object(self.RH.subprocess, "run",
+                               lambda *a, **k: seen.update(k) or mock.Mock(stdout="")):
+            self.RH._run(["ps"])
+        self.assertEqual(seen["env"]["LC_ALL"], "C")
+
 
 class History(Base):
     def test_h3_ring_buffer(self):
@@ -164,6 +176,27 @@ class History(Base):
         self.assertTrue(self.RH.record_history({"level": "ok", "cells": {}}, now=t0 - 3600))
         self.assertEqual([p["t"] for p in self.RH.read_history(now=t0 - 3600)], [t0 - 3600])
 
+    def test_h3d_deep_nan_symlink(self):
+        """#317 r2 A:很深的巢狀不讓快照一直掛;NaN / Infinity 不進歷史;room 是 symlink 就不寫、不 chmod 連到的夾。"""
+        p = Path(self.RH.history_path())
+        p.parent.mkdir(parents=True, exist_ok=True)
+        now = 1_792_814_400.0
+        p.write_text("[" * 200000, encoding="utf-8")
+        self.assertEqual(self.RH.read_history(now=now), [])
+        self.assertTrue(self.snap(now=now)["history_recorded"])            # 壞檔被蓋掉,下一輪就好了
+        p.write_text('{"points":[{"t":-Infinity,"load1":1},{"t":%s,"temp":NaN,"load1":Infinity}]}' % (now - 20),
+                     encoding="utf-8")
+        self.assertEqual([(q["t"], q["temp"], q["load1"]) for q in self.RH.read_history(now=now)], [(now - 20, None, None)])
+        self.assertTrue(self.RH.record_history({"level": "ok", "cells": {}}, now=now))
+        json.loads(p.read_text(encoding="utf-8"), parse_constant=lambda c: self.fail("寫回了 " + c))
+        shutil.rmtree(p.parent)
+        victim = self.tmp / "victim"
+        victim.mkdir(mode=0o755)
+        os.chmod(victim, 0o755)
+        p.parent.symlink_to(victim)
+        self.assertFalse(self.RH.record_history({"level": "ok", "cells": {}}, now=now))
+        self.assertEqual((stat.S_IMODE(victim.stat().st_mode), list(victim.iterdir())), (0o755, []))
+
 
 def write_ips(d, name, app, proc, typ, sig, msg, mtime, parent="zsh"):
     meta = {"app_name": app, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S.00 +0800", time.localtime(mtime)),
@@ -185,7 +218,8 @@ class Crashes(Base):
             write_ips(d, "Python-%d.ips" % i, "Python", "Python", "EXC_GUARD", "SIGKILL",
                       " DUP on file descriptor 3 (guarded with 0x85)", now - 60 * i, parent="Python")
         write_ips(d, "node-1.ips", "node", "node", "EXC_CRASH", "SIGABRT", "Abort trap at /Users/u/secret/x.js", now - 30)
-        write_ips(d, "old-1.ips", "node", "node", "EXC_CRASH", "SIGABRT", "old", now - 10 * 86400)
+        write_ips(d, "old-1.ips", "node", "node", "EXC_CRASH", "SIGABRT", "Abort trap at /Users/u/secret/x.js",
+                  now - 10 * 86400)                              # 跟上一份同類:超過天數就不算進次數(B2)
         (d / "broken.ips").write_text("not json\n{", encoding="utf-8")
         evil_p = d / "evil.ips"                                  # 原始控制字元直接寫進檔(不經 json 跳脫)
         evil_p.write_text(json.dumps({"app_name": "A", "bug_type": "309", "timestamp": "2026-10-24 10:00:00.00 +0800"})
@@ -194,7 +228,10 @@ class Crashes(Base):
                           encoding="utf-8")
         os.utime(evil_p, (now - 40, now - 40))
         jet = d / "JetsamEvent-1.ips"
-        jet.write_text(json.dumps({"bug_type": "298", "timestamp": "2026"}) + "\n{}", encoding="utf-8")
+        jet.write_text(json.dumps({"bug_type": "298", "app_name": "Jet", "timestamp": "2026"}) + '\n{"procName":"Jet"}',
+                       encoding="utf-8")                         # 有名字,只靠 bug_type 擋(B3)
+        nobt = d / "nobt.ips"                                    # 沒寫 bug_type ⇒ 不收(A-L4)
+        nobt.write_text(json.dumps({"app_name": "nobt"}) + '\n{"procName":"nobt"}', encoding="utf-8")
         os.mkfifo(str(d / "fifo.ips"))                           # FIFO:不卡住
         t0 = time.monotonic()
         r = self.RH.crashes(crash_dir=str(d), now=now)
@@ -205,9 +242,12 @@ class Crashes(Base):
                          ("aib_test_guarded_fd_dup", 3, "0.1.52"))
         self.assertIn("0.1.52", by["Python"]["hint"])
         self.assertEqual((by["node"]["code"], by["node"]["count"]), ("unknown", 1))      # 10 天前那份不算
+        self.assertEqual(sum(c["count"] for c in r["classes"] if c["proc"] == "node"), 1)
         evil = next(c for c in r["classes"] if c["type"] == "EXC")          # procName 帶斜線 ⇒ 只剩檔名
         self.assertEqual((evil["type"], evil["signal"]), ("EXC", "SIGKILL"))
         self.assertNotIn("", [c["proc"] for c in r["classes"]])            # Jetsam 之類不算
+        self.assertNotIn("nobt", by)
+        self.assertNotIn("Jet", by)
         for c in r["classes"]:                                             # 每個字串欄位都不准有控制字元
             for k, v in c.items():
                 if isinstance(v, str):
