@@ -82,7 +82,8 @@ class InTree(unittest.TestCase):
 
     def test_c1_loads_from_this_tree(self):
         self.assertEqual(Path(self.cs.__file__).resolve(), CS.resolve())
-        root = str(ROOT.resolve())                         # 本樹以外的 src/cockpit 一律不准進 sys.path(含寫死家目錄的退路)
+        top = ROOT.parent if (ROOT.parent / "bin" / "aib").exists() else ROOT    # 倉根的 bin/aib 會加 <倉根>/src/cockpit,仍是本樹
+        root = str(top.resolve())                          # 本樹以外的 src/cockpit 一律不准進 sys.path(含寫死家目錄的退路)
         self.assertEqual([p for p in sys.path if p.rstrip("/").endswith("src/cockpit")
                           and not str(Path(p).resolve()).startswith(root)], [])
 
