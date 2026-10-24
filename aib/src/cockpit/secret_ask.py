@@ -273,6 +273,9 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
     if a.remote_only and not target:
         res["why"] = "remote_only_needs_push"
         return done(2)
+    if a.name in S.REMOTE_ONLY_NAMES and not a.remote_only:  # 先擋，不叫輸入框
+        res["why"] = "remote_only_name"
+        return done(2)
     dest = where if a.remote_only else _t("aib.secret.dest_local") + (" + " + where if target else "")
     value, why = collect(a.name, dest, platform, ask=ask, getpass_fn=getpass_fn, isatty=isatty)
     if value is None:
