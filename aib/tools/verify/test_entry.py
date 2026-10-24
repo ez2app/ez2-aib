@@ -235,12 +235,20 @@ def changed_tests(repo, base=""):
         return None, info
     if not sub:
         have = set(all_tests(proj))
-        picked = sorted(dict.fromkeys(n for _b, n in names if n in have))
+        picked = sorted(dict.fromkeys(n for _b, n in names if n.startswith("tests/") and n in have))
         info["picked"] = len(picked)
         return picked, info
-    have = {str((Path(proj) / n).resolve()) for n in all_tests(proj)}
-    have |= {str((Path(repo) / n).resolve()) for n in all_tests(repo) if n.startswith("tests/")}
-    picked = sorted(dict.fromkeys(a for a in (str((Path(b) / n).resolve()) for b, n in names) if a in have))
+    root_tests = [str((Path(repo) / n).resolve()) for n in all_tests(repo) if n.startswith("tests/")]
+    have = {str((Path(proj) / n).resolve()) for n in all_tests(proj)} | set(root_tests)
+    picked = list(dict.fromkeys(a for a in (str((Path(b) / n).resolve()) for b, n in names) if a in have))
+    info["root_picked"] = len([a for a in picked if a in root_tests])
+    # 倉根 tests/ 是 test_*.py(底線),select_changed 只認 test-*.py ⇒ 倉根那次靜態規則一支都挑不到,只剩本機量測帳本(⑧);
+    #   CI / 新機器沒帳本 ⇒ 0 支假綠(#314 r3 必修)。子專案有改動就把倉根 tests/ 全併進來(目前 22 支,方向是多跑)
+    rc, out = _git_out(repo, "-c", "core.quotePath=false", "diff", "--name-only", mb)
+    if (rc != 0 or out.strip() or new) and root_tests:
+        picked += root_tests
+        info["root_all"] = len(root_tests)
+    picked = sorted(dict.fromkeys(picked))
     info["picked"] = len(picked)
     return picked, info                               # 子專案模式回絕對路徑(下游照倉根 / 目前目錄換算)
 

@@ -15,7 +15,8 @@ C7 子專案外也有改動(倉根的 install.sh 等)⇒ 量不到 rc 3(不能�
 C8 一般專案在 src/foo(有 tests/、沒有記號)底下跑 ⇒ 仍以倉根為準(#314 審查 A2)
 C9 子專案模式另從倉根挑一次再取聯集:⑧ 反查帳本是倉根座標、倉根 tests/ 也讀 aib/ 的產品檔(#314 r2 必修:只挑子專案 ⇒ 0 支假綠)
 C10 子專案外有沒追蹤的新檔 ⇒ 量不到(None),不拿窄集合跑
-刀(複本):K1 把規則 3 的比對拿掉 ⇒ C2 紅;K2 拿掉倉根那次挑選 ⇒ C9 紅
+C11 倉根 tests/ 是 test_*.py、select_changed 靜態規則挑不到 ⇒ 子專案有改動就全併進來(真的 select_changed、沒有帳本;#314 r3 必修)
+刀(複本):K1 把規則 3 的比對拿掉 ⇒ C2 紅;K2 拿掉倉根那次挑選 ⇒ C9 紅;K3 拿掉倉根 tests/ 全併 ⇒ C11 紅
 """
 import importlib.util
 import json
@@ -154,7 +155,9 @@ class SubProject(unittest.TestCase):
         here = os.getcwd()
         self.addCleanup(os.chdir, here)
         os.chdir(self.top / "aib" / "src")
-        with mock.patch.object(te, "all_tests", lambda r: ["tests/test-widget.py", "tests/test-other.py"]):
+        sub = (self.top / "aib").resolve()                 # 倉根沒有 tests/ ⇒ 只挑子專案
+        with mock.patch.object(te, "all_tests",
+                               lambda r: ["tests/test-widget.py", "tests/test-other.py"] if Path(r).resolve() == sub else []):
             picked, info = te.changed_tests(self.top, "HEAD~1")
         self.assertEqual(picked, [str((self.top / "aib" / "tests" / "test-widget.py").resolve())], info)
 
@@ -194,7 +197,7 @@ class SubProject(unittest.TestCase):
 
         def fake_select(tool, base_dir, args, stdin_lines=None):
             calls.append(Path(base_dir).resolve())
-            return [] if Path(base_dir).resolve() == top / "aib" else ["aib/tests/test-other.py", "tests/test_root.py"]
+            return [] if Path(base_dir).resolve() == top / "aib" else ["aib/tests/test-other.py"]   # 倉根座標的 ⑧ 命中
 
         tests = {top / "aib": ["tests/test-widget.py", "tests/test-other.py"], top: ["tests/test_root.py"]}
         with mock.patch.object(te, "_select", fake_select), \
@@ -202,6 +205,23 @@ class SubProject(unittest.TestCase):
             picked, info = te.changed_tests(self.top, "HEAD~1")
         self.assertEqual(sorted(picked), sorted([str(top / "aib" / "tests" / "test-other.py"), str(top / "tests" / "test_root.py")]),
                          (info, calls))
+
+    def check_c11(self, te):
+        (self.top / "tests").mkdir()
+        (self.top / "tests" / "test_root.py").write_text(
+            "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_x(self):\n"
+            "        self.assertTrue(open('aib/src/cockpit/widget.py').read())\n", encoding="utf-8")
+        _git(self.top, "add", "-A")
+        _git(self.top, "commit", "-qm", "root test")
+        self.touch("aib/src/cockpit/widget.py", "def f():\n    return 5\n")
+        top = self.top.resolve()
+        tests = {top / "aib": ["tests/test-widget.py", "tests/test-other.py"], top: ["tests/test_root.py"]}
+        with mock.patch.object(te, "all_tests", lambda r: tests.get(Path(r).resolve(), [])):   # 暫存倉沒有量測帳本
+            picked, info = te.changed_tests(self.top, "HEAD~1")
+        self.assertIn(str(top / "tests" / "test_root.py"), picked or [], info)
+
+    def test_c11_root_tests_without_ledger(self):
+        self.check_c11(self._te_in_sub("test_entry_c11"))
 
     def test_c9_union_with_repo_root(self):
         self.check_c9(self._te_in_sub("test_entry_c9"))
@@ -247,6 +267,25 @@ class Knives(unittest.TestCase):
             kte = _load(knife, "test_entry_knife")
             kte.ENTRY_ROOT = ROOT                    # 複本在暫存夾,挑選工具照本樹的
             case.check_c9(kte)
+
+    def test_k3_no_root_all(self):
+        src = (SEL.parent / "test_entry.py").read_text(encoding="utf-8")
+        cut = "        picked += root_tests\n"
+        self.assertIn(cut, src)
+        tmp = Path(tempfile.mkdtemp(prefix="cscope-k3-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        knife = tmp / "test_entry.py"
+        knife.write_text(src.replace(cut, "        pass\n", 1), encoding="utf-8")
+        case = SubProject("test_c11_root_tests_without_ledger")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(case.top / "aib")
+        kte = _load(knife, "test_entry_knife3")
+        kte.ENTRY_ROOT = ROOT
+        with self.assertRaises(AssertionError):
+            case.check_c11(kte)
 
 
 if __name__ == "__main__":
