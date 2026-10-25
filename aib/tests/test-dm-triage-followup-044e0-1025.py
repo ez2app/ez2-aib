@@ -92,11 +92,20 @@ class F2AgentThenNextBatch(unittest.TestCase):
             "put('第三件', t + 30); tick(t + 40); a = len(sent)\n"
             "r = TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 50, release=True)\n"
             "tick(t + 60); b = len(sent)\n"
-            "put('第四件', t + 70); tick(t + 80); c = len(sent)\n"
-            "print(json.dumps({'a': a, 'b': b, 'c': c, 'left': r.get('left')}))\n") % (SEAT, SEAT, SEAT, SEAT))
-        self.assertEqual(out["a"], 1, "子代理登記中 ⇒ 新信也不另叫(它做完會接著看):%r" % out)
-        self.assertEqual(len(out["left"]), 3, out)
-        self.assertEqual(out["b"], 1, "放鎖後只剩它看過、留給本席的 ⇒ 不叫:%r" % out)
+            "print(json.dumps({'a': a, 'b': b, 'left': r.get('left'), 'handled': r.get('handled')}))\n") % (SEAT, SEAT, SEAT, SEAT))
+        self.assertEqual(out["a"], 1, "子代理登記中 ⇒ 新信也不另叫:%r" % out)
+        self.assertEqual((len(out["left"]), len(out["handled"])), (3, 2), "登記後才到的第三件不算看過(審查 M1):%r" % out)
+        self.assertEqual(out["b"], 2, "放鎖後有它沒看過的 ⇒ 立刻叫下一批:%r" % out)
+
+    def test_only_seen_left_no_wake(self):
+        out = HN.QBox(self).py(SETUP + (
+            "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
+            "tick(t + 10); TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 20)\n"
+            "TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 50, release=True)\n"
+            "tick(t + 60); b = len(sent)\n"
+            "put('第三件', t + 70); tick(t + 80); c = len(sent)\n"
+            "print(json.dumps({'b': b, 'c': c}))\n") % (SEAT, SEAT, SEAT, SEAT))
+        self.assertEqual(out["b"], 1, "只剩它看過、留給本席的 ⇒ 不叫:%r" % out)
         self.assertEqual(out["c"], 2, "再來新信 ⇒ 立刻叫(70 秒前才叫過也叫):%r" % out)
 
     def test_inprog_only_next_batch(self):
@@ -187,11 +196,14 @@ class G1MachineClean(unittest.TestCase):
             "real = put('真的要你看的一件事', t)\n"
             "tick(t + 10)\n"
             "q = Q.enqueue(%r, '到', '@77777', sender_kind='ai', env=env, now=t + 11)['id']\n"
+            "gl = put('收到', t + 11); gi = Q._load_item(%r, gl, env); gi['global'] = {'net': 'nostr'}; Q._write_item(%r, gi, env)\n"
             "Q._triage_machine_clean(%r, env, t + 12)\n"
             "st = {i: Q._load_item(%r, i, env).get('status') for i in (a, b, q, real)}\n"
-            "print(json.dumps({'sent': len(sent), 'st': [st[a], st[b], st[q], st[real]]}))\n") % (SEAT, SEAT, SEAT, SEAT, SEAT))
+            "gst = Q._load_item(%r, gl, env).get('status')\n"
+            "print(json.dumps({'sent': len(sent), 'st': [st[a], st[b], st[q], st[real]], 'gl': gst}))\n") % ((SEAT,) * 8))
         self.assertEqual(out["st"], ["archived", "archived", "queued", "delivered"], "貼過 / 讀過的純通知系統先收;排隊中不碰:%r" % out)
         self.assertEqual(out["sent"], 0, "收掉兩句「收到」後只剩 1 封要動腦 ⇒ 不叫:%r" % out)
+        self.assertEqual(out["gl"], "delivered", "全球來信不代標(會回條給外人;審查 L2):%r" % out)
 
 
 class G2HandledExpires(unittest.TestCase):
@@ -261,7 +273,9 @@ KNIVES = [
     ("K2", "src/cockpit/dm_triage.py", '    if live:\n        return False, "agent-working", False\n',
      '    if False:\n        return False, "agent-working", False\n', "F2AgentThenNextBatch.test_lock_holds_then_next_batch_immediately"),
     ("K2b", "src/cockpit/dm_triage.py", "    if not cur - handled:\n", "    if not cur:\n",
-     "F2AgentThenNextBatch.test_lock_holds_then_next_batch_immediately"),
+     "F2AgentThenNextBatch.test_only_seen_left_no_wake"),
+    ("K11", "src/cockpit/dm_triage_agent.py", "            handled = [i for i in left if ts.get(i, now + 1) <= seen]\n",
+     "            handled = list(left)\n", "F2AgentThenNextBatch.test_lock_holds_then_next_batch_immediately"),
     ("K3", "src/cockpit/dm_queue.py", "        return \"digest\"\n    return \"agent\"\n",
      "        return \"agent\"\n    return \"agent\"\n", "F4Fleet.test_three_kinds_all_woken"),
     ("K6", "src/cockpit/dm_queue.py", "else len(_triage_machine_clean(seat, env, now))", "else 0",

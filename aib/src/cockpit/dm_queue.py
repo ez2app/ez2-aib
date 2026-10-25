@@ -1963,15 +1963,21 @@ TRIAGE_AGENT_LOCK_FILE = "triage-agent.json"     # 整理子代理自願登記(d
 def _triage_machine_clean(seat, env, now):
     """Andy 10-25 22:5x 同意(0.1.61):固定規則就判得出來的,系統先收,子代理只看要動腦的。
     收的只有「純通知」:kind=notice 或整封符合 dm_triage 通知表(TR.is_notice,寫死的回執形狀),而且已經貼到那一席眼前
-    (delivered)或它已讀過(read)。排隊中(沒看過)/ 人審 / 寫了等什麼 / 別的通訊軟體來信一律不碰。
+    (delivered)或它已讀過(read)。排隊中(沒看過)/ 人審 / 寫了等什麼 / 別的通訊軟體 / 全球來信 / 艙沒開排隊一律不碰。
     delivered → 系統代標已讀(AUTO_READ_WHY)→ 備存(notice_read);read → 備存。以前代標已讀的通知會留在「進行中」
     把門檻撐到 2,叫一個子代理來收兩句「收到」。被新一輪取代的舊信已在新信送達時結掉(_close_superseded),這裡不重做。
     每封帶當下修訂號,中途被改過就不動。回備存的 id。"""
     out = []
+    # ★ 審查 L2:那一席所在的艙沒開信件排隊 ⇒ 不替它收(同 auto_tidy 那條,不動別艙的信)
+    hubs = [r[2] for r in _seat_records_all_cabins(seat, env) if r[2]]
+    if hubs and all(_cabin_queue_enabled(h, env) is False for h in hubs):
+        return out
     for it in _all_items(seat, env=env):
         st = it.get("status")
         if st not in ("delivered", "read") or it.get("im") or it.get("sender_kind") == "external_im":
             continue
+        if _is_global_item(it):
+            continue                       # 審查 L2:全球來信系統標已讀會回條給外人,不收
         w = it.get("wait")
         if isinstance(w, dict) and str(w.get("text") or "").strip():
             continue
