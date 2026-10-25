@@ -1633,7 +1633,7 @@
   "aib.newproj.boot_confirm": "aib:{cabin} 에 {role} 좌석을 열고 페르소나 {persona}·프로젝트 {project} 를 바인딩합니다",
   "aib.newproj.boot_no_biometry": "이 컴퓨터에는 쓸 수 있는 생체 인식이 없어 페이지에서 좌석을 열 수 없습니다;아무것도 열지 않았습니다. 터미널에서 실행하세요:\n  {cmd}",
   "aib.newproj.boot_denied": "본인 확인이 없습니다({why});아무것도 열지 않았습니다",
-  "aib.newproj.boot_heat_high": "부하 {load} 가 한도 {limit} 를 넘었습니다;지금은 좌석을 열지 않습니다(모든 책상은 진짜 AI). 부하가 내려가면 다시",
+  "aib.newproj.boot_heat_high": "기기 발열 {level}({detail});지금은 좌석을 열지 않습니다(모든 책상은 진짜 AI). 녹색 / 노랑으로 돌아오면 다시",
   "aib.newproj.boot_busy": "캐빈 {cabin} 이 다른 좌석을 여는 중입니다(프로젝트 {uid});오른쪽 열에 나타날 때까지 기다리세요 — 두 번 눌러도 두 좌석은 열리지 않습니다",
   "aib.newproj.boot_open_timeout": "{msg}. 새 좌석은 열렸지만(실행 중) 페르소나와 프로젝트는 아직 바인딩되지 않았습니다 — 다시 누르지 말고, 오른쪽 열에 나타나면 아래 줄로 이어가세요",
   "aib.newproj.boot_dry_persona": "(시험 실행)좌석 {seat} 을 페르소나 카드 {card} 에 바인딩합니다",

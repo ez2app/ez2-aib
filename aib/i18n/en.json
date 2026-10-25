@@ -1633,7 +1633,7 @@
   "aib.newproj.boot_confirm": "aib: open a {role} seat in {cabin}, bind persona {persona} and project {project}",
   "aib.newproj.boot_no_biometry": "No usable biometrics on this machine, so a page cannot open a seat for you; nothing was opened. Run it in a terminal instead:\n  {cmd}",
   "aib.newproj.boot_denied": "The owner did not confirm ({why}); nothing was opened",
-  "aib.newproj.boot_heat_high": "Machine load {load} is above the limit {limit}; not opening a seat now (every desk is a real AI). Try again once the load drops",
+  "aib.newproj.boot_heat_high": "Machine heat is {level} ({detail}); not opening a seat now (every desk is a real AI). Try again once it is back to green / yellow",
   "aib.newproj.boot_busy": "Cabin {cabin} is already opening another seat (project {uid}); wait for it to appear in the right column — two clicks will not open two seats",
   "aib.newproj.boot_open_timeout": "{msg}. The new seat is open (running) but persona and project are not bound yet — do not click again; once it appears in the right column, resume with the line below",
   "aib.newproj.boot_dry_persona": "(dry run) would bind seat {seat} to persona card {card}",

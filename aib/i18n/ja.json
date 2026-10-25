@@ -1633,7 +1633,7 @@
   "aib.newproj.boot_confirm": "aib:{cabin} に {role} 席を開き、ペルソナ {persona}・プロジェクト {project} を結びます",
   "aib.newproj.boot_no_biometry": "この端末には使える生体認証が無く、ページから席は開けません;何も開いていません。端末で実行してください:\n  {cmd}",
   "aib.newproj.boot_denied": "本人の確認がありません({why});何も開いていません",
-  "aib.newproj.boot_heat_high": "負荷 {load} が上限 {limit} を超えています;いまは席を開きません(各机は本物の AI)。負荷が下がってから再度",
+  "aib.newproj.boot_heat_high": "機房の熱が {level}({detail});いまは席を開きません(各机は本物の AI)。緑 / 黄に戻ってから再度",
   "aib.newproj.boot_busy": "艙 {cabin} は別の席を開いている最中です(プロジェクト {uid});右欄に現れるまで待ってください — 二度押しでも二席は開きません",
   "aib.newproj.boot_open_timeout": "{msg}。新しい席は開いています(実行中)がペルソナとプロジェクトは未結合 — 再度押さず、右欄に現れたら下の行で続行",
   "aib.newproj.boot_dry_persona": "(試走)席 {seat} をペルソナカード {card} に結びます",

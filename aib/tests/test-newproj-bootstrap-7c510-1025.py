@@ -10,7 +10,7 @@ B3 人格卡不在登記表 / 專案 uid 不存在 ⇒ stage=resolve,開席前�
 B4 開席逾時(窗已開)⇒ stage=open、why=open-timeout、seat_opened、next 帶 --seat
 B5 續做:帶 --seat 且人格已綁同一張 ⇒ 不開席、跳過人格、只綁專案;已綁別張 ⇒ why=persona-differs 不代換
 B6 頁面路徑 --confirm touchid:沒生物辨識(AIB_TOUCHID=0)⇒ why=no_biometry、0 個席被開;confirm 寫錯 ⇒ bad-confirm
-B7 散熱偏高 ⇒ why=heat-high、0 個席被開;艙鎖在握 ⇒ why=busy,過期的鎖會被換掉
+B7 散熱(核心 room_heat 四級)hot ⇒ why=heat-high、0 個席被開、hint 帶同一個讀數;艙鎖在握 ⇒ why=busy,過期的鎖會被換掉
 B8 回條契約:why 是代碼、hint 是人話、next 是可直接跑的那一行;四語字典都有 boot_* 鍵
 刀(複本):K1 拿掉 no_biometry 那道 ⇒ B6 紅;K2 拿掉散熱擋 ⇒ B7 紅
 """
@@ -69,16 +69,18 @@ class Sandbox(unittest.TestCase):
             "schema_version": BP.PYRAMID_VERSION,
             "cards": {CARD: {"persona_uid": CARD, "route_key": "core.handoff", "display_name": "設計助理"}}}), encoding="utf-8")
         self._saved = dict(os.environ)
-        for k in ("EZ2_VAULT_ROOT", "EZ2_ROUTE_CONTRACT", "EZ2_AIB_INSTANCE", "EZ2_AIHUB_SOCKET", "AIB_SEAT_HEAT_LOAD"):
+        for k in ("EZ2_VAULT_ROOT", "EZ2_ROUTE_CONTRACT", "EZ2_AIB_INSTANCE", "EZ2_AIHUB_SOCKET"):
             os.environ.pop(k, None)
         os.environ.update({"HOME": str(self.home), "EZ2_VAULT_DIR": str(self.vault), "EZ2_AIB_STATE_ROOT": str(self.root),
                            "EZ2_AIB_HOME": str(self.root), "EZ2_AIB_LOCALE": "zh-TW", "AIB_GENES": "0", "AIB_AUTO_BIND": "0",
-                           "AIB_TOUCHID": "0", "AIB_NEWSEAT_TIMEOUT_S": "3", "AIB_SEAT_HEAT_MAX_LOAD": "1000"})
+                           "AIB_TOUCHID": "0", "AIB_NEWSEAT_TIMEOUT_S": "3"})
         self.np = _load("new_project_boot", "tools/project/new_project.py")
         self.uid = self._make_project()
         import bind_one as BO  # noqa: E402
         import create_and_bind_persona as CBP  # noqa: E402
-        self.BO, self.CBP = BO, CBP
+        sys.path.insert(0, str(REPO / "src" / "cockpit"))
+        import room_heat as RH  # noqa: E402
+        self.BO, self.CBP, self.RH = BO, CBP, RH
         self.binds, self.opened = [], []
         self.state = {}
         self._patches = [
@@ -86,6 +88,7 @@ class Sandbox(unittest.TestCase):
             mock.patch.object(BO, "seat_status", side_effect=self._fake_status),
             mock.patch.object(CBP, "open_new_seat", side_effect=self._fake_open),
             mock.patch.object(CBP, "current_cabin", return_value=CABIN),
+            mock.patch.object(RH, "measure", return_value={"level": "ok", "cells": {}}),   # 散熱共用核心 room_heat;沙盒不真量
         ]
         for p in self._patches:
             p.start()
@@ -211,9 +214,10 @@ class Boot(Sandbox):
         self.assertEqual(out["why"], "bad-confirm")
 
     def test_b7_heat_and_lock(self):
-        with mock.patch.dict(os.environ, {"AIB_SEAT_HEAT_LOAD": "2000"}):
+        with mock.patch.object(self.RH, "measure", return_value={"level": "hot", "cells": {"load1": {"state": "hot", "text": "load 30"}}}):
             rc, out, _ = self.boot()
         self.assertEqual((out["stage"], out.get("why")), ("open", "heat-high"), out)
+        self.assertIn("load 30", out.get("hint", ""), "擋的數字要跟 aib room heat 顯示的同一個")
         self.assertEqual(self.opened, [])
         SB = _load("seat_bootstrap_t", "tools/project/seat_bootstrap.py")
         lock = SB.lock_path(self.root, CABIN)
@@ -253,7 +257,7 @@ class Knife(unittest.TestCase):
         self._knife("        if not touchid_approve.available():\n", "        if False:\n", "Boot.test_b6_page_path_needs_biometry", "no_biometry")
 
     def test_k2_heat_gate_removed(self):
-        self._knife('        if heat["state"] == "high":\n', "        if False:\n", "Boot.test_b7_heat_and_lock", "heat-high")
+        self._knife('        if heat["block"]:\n', "        if False:\n", "Boot.test_b7_heat_and_lock", "heat-high")
 
 
 if __name__ == "__main__":

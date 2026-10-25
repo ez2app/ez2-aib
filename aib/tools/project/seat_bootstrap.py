@@ -14,7 +14,7 @@ why 是代碼(契約),人話只走 hint(四語)。
 - 頁面路徑(`--confirm touchid`,外掛 captain_offices 走這條)要本人:Touch ID 視窗那句由這裡組;沒生物辨識的 Mac ⇒ why=no_biometry 拒、不開、
   hint 列替代路(照 #371);取消 / 逾時 ⇒ 拒。外掛的 offices.json 只管位置,不能當「可以開席」的依據。
 - 艙:只收完整艙名;短碼走 #373 那一道(cabin_resolve.sh aib_cabin_pick_named,不另寫一份):對不到 / 多個 ⇒ 開席前就拒,不留空艙。
-- 散熱:開席前看負載,偏高 ⇒ why=heat-high(門檻 AIB_SEAT_HEAT_MAX_LOAD,預設 = CPU 數)。
+- 散熱:開席前跑核心 `aib room heat` 同一支 room_heat.measure()(cooldown 四級),hot / critical ⇒ why=heat-high;不另放門檻。
 - 兩個頁面同時點兩下別開兩席:開席期間握一把艙鎖(state/seat-bootstrap.lock,O_EXCL),第二個進來 ⇒ why=busy。
 """
 from __future__ import annotations
@@ -54,22 +54,26 @@ def pick_cabin(want: str, instances_root: Path, repo_root: Path, run=subprocess.
     return (name[-1].strip() if name else ""), ""
 
 
-def heat_state(load: Optional[float] = None, limit: Optional[float] = None, environ=None) -> dict:
-    """開席前的散熱判斷:1 分鐘負載 > 門檻 ⇒ high。門檻 AIB_SEAT_HEAT_MAX_LOAD(預設 CPU 數);量不到負載 ⇒ 不擋(回 unknown)。"""
-    env = os.environ if environ is None else environ
-    if limit is None:
-        raw = str(env.get("AIB_SEAT_HEAT_MAX_LOAD", "")).strip()
-        try:
-            limit = float(raw) if raw else float(os.cpu_count() or 4)
-        except ValueError:
-            limit = float(os.cpu_count() or 4)
-    if load is None:
-        raw = str(env.get("AIB_SEAT_HEAT_LOAD", "")).strip()   # 測試 seam:平台注入,不在產品路徑上設
-        try:
-            load = float(raw) if raw else os.getloadavg()[0]
-        except (ValueError, OSError, AttributeError):
-            return {"state": "unknown", "load": None, "limit": limit}
-    return {"state": "high" if load > limit else "ok", "load": round(load, 2), "limit": limit}
+HEAT_BLOCK_LEVELS = ("hot", "critical")   # cooldown 四級裡「偏紅」的兩級
+
+
+def heat_state(repo_root: Optional[Path] = None, measure=None) -> dict:
+    """開席前的散熱判斷:直接用核心 `aib room heat` 同一支 room_heat.measure()(machine_status 量測 + cooldown 四級門檻:
+    負載 / 溫度 / 記憶體),外掛顯示的和這裡擋的是同一個數字(@abb89 10-25)。hot / critical ⇒ block;量不到 ⇒ 不擋、照實回。"""
+    if measure is None:
+        cockpit = str(_cockpit_dir(repo_root or Path(__import__("create_and_bind_persona").REPO_ROOT)))
+        if cockpit not in sys.path:
+            sys.path.insert(0, cockpit)
+        import room_heat  # noqa: E402
+        measure = room_heat.measure
+    try:
+        m = measure() or {}
+    except Exception as exc:  # noqa: BLE001  量測壞了不等於機器涼:照實回 unmeasured,但不擋
+        m = {"level": "unmeasured", "detail": exc.__class__.__name__}
+    level = str(m.get("level") or "unmeasured")
+    cells = m.get("cells") or {}
+    text = "、".join(str(c.get("text")) for k, c in cells.items() if isinstance(c, dict) and c.get("state") in HEAT_BLOCK_LEVELS and c.get("text"))
+    return {"level": level, "block": level in HEAT_BLOCK_LEVELS, "detail": text or str(m.get("detail") or "")}
 
 
 def lock_path(root: Path, cabin: str) -> Path:
@@ -217,8 +221,8 @@ class Bootstrap:
         import create_and_bind_persona as CBP  # noqa: E402
         T = self.T
         heat = heat_state()
-        if heat["state"] == "high":
-            return self.refuse("open", "heat-high", T("aib.newproj.boot_heat_high", {"load": heat["load"], "limit": heat["limit"]}), heat=heat)
+        if heat["block"]:
+            return self.refuse("open", "heat-high", T("aib.newproj.boot_heat_high", {"level": heat["level"], "detail": heat["detail"] or "-"}), heat=heat)
         timeout = CBP.new_seat_timeout()
         lock = lock_path(self.root, self.cabin)
         got, holder = acquire_lock(lock, self.uid, stale_s=timeout + 60)
