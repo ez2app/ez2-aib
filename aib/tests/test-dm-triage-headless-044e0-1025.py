@@ -14,7 +14,10 @@ H5 整輪:問 AI(假的,回夾雜字句的 JSON)→ 套用 → 整理檔 → 放
 H6 關工具:claude 照 power_ask 的關工具指令叫(--tools "" 等);codex 關不乾淨(MCP 還開著)⇒ 不叫
 H7 gh:只有 MERGED 算已合;OPEN / CLOSED / 查不到都不算
 刀(複本 + run_guarded):K1 不看 excluded ⇒ H4 紅;K2 不驗證據 ⇒ H4 紅;K3 claude 不帶關工具旗標 ⇒ H6 紅;
-K4 gh 不看 MERGED ⇒ H7 紅;K5 忙不滿 30 分也起 ⇒ H1 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K4 gh 不看 MERGED ⇒ H7 紅;K5 忙不滿 30 分也起 ⇒ H1 紅;K6 沒餵的也算看過 ⇒ H8 紅;K7 沒讀過也代標寫等什麼 ⇒ H4 紅;
+K8 死窗算忙 ⇒ H1 紅;K9 忙的起算不重來 ⇒ H1 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+H8 / H9(審查 H1 / M2 / M3 / M4 / M5 / L3 / L4):AI 失敗或讀不懂 ⇒ 沒有一封算看過;只餵 20 封 ⇒ 只算 20 封;
+信被改過不套用;背景行程環境剝掉 tmux / 席位 / API 金鑰;死窗不算忙;兩次判忙隔太久重算。
 """
 import importlib.util
 import json
@@ -66,6 +69,7 @@ class H1Trigger(unittest.TestCase):
         out = HN.QBox(self).py(SETUP + (
             "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
             "tick(t + 10); since = tri().get('busy_since')\n"
+            "for k in range(120, B, 120): tick(t + 10 + k)\n"
             "tick(t + 10 + B - 1); a = len(spawned)\n"
             "tick(t + 10 + B); b = len(spawned)\n"
             "tick(t + 10 + B + 60); c = len(spawned)\n"
@@ -80,7 +84,23 @@ class H1Trigger(unittest.TestCase):
         out = HN.QBox(self).py(SETUP + (
             "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
             "tick(t + 10); TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + B - 60)\n"
+            "for k in range(120, B + 1, 120): tick(t + 10 + k)\n"
             "tick(t + 10 + B); print(json.dumps({'n': len(spawned)}))\n") % (SEAT, SEAT))
+
+    def test_stale_busy_since_restarts(self):
+        out = HN.QBox(self).py(SETUP + (
+            "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
+            "tick(t + 10); tick(t + 10 + B); s2 = tri().get('busy_since')\n"
+            "print(json.dumps({'n': len(spawned), 's2': s2, 't': t}))\n"))
+        self.assertEqual(out["n"], 0, "兩次判到忙隔 30 分(中間沒量)⇒ 從頭算、不起(審查 M2):%r" % out)
+        self.assertEqual(out["s2"], out["t"] + 10 + 30 * 60, out)
+
+    def test_dead_pane_not_busy(self):
+        out = HN.QBox(self).py(SETUP.replace("(BUSY[0], 'busy' if BUSY[0] else 'idle')", "(True, 'pane_dead')") + (
+            "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
+            "for k in range(10, B + 400, 120): tick(t + k)\n"
+            "print(json.dumps({'n': len(spawned), 'since': tri().get('busy_since')}))\n"))
+        self.assertEqual((out["n"], out["since"]), (0, None), "死窗不算忙、不替關掉的席起(審查 M5):%r" % out)
         self.assertEqual(out["n"], 0, out)
 
 
@@ -107,7 +127,9 @@ APPLY = SETUP + (
     "import os\n"
     "a = put('一:PR 已合的那件', t); b = put('二:PR 還開著', t); c = put('三:檔案在外面', t)\n"
     "d = put('四:檔案在 pending', t); e = put('五:要等 @abb89', t); f = put('六:要回信', t)\n"
-    "g = put('七:回過信了', t); w = put('八:已寫等什麼', t)\n"
+    "g = put('七:回過信了', t); w = put('八:已寫等什麼', t); e2 = put('十:還沒讀就寫等什麼', t)\n"
+    "Q.mark_read(%(s)r, e, 'seat:%(s)s', env=env, now=t, no_rev_check=True)\n"
+    "a2 = put('十一:證據寫在信裡 https://github.com/ez2app/ez2-aib/pull/101', t)\n"
     "Q.mark_read(%(s)r, w, 'seat:%(s)s', env=env, now=t, no_rev_check=True)\n"
     "import dm_take as DT; DT.set_wait(%(s)r, w, 'seat:%(s)s', '等 Andy', env=env, now=t)\n"
     "h = Q.record(%(s)r, '九:等真人', '@77777', status=Q.HOLD_STATUS, rc=None, env=env, now=t, sender_kind='ai')['id']\n"
@@ -118,13 +140,15 @@ APPLY = SETUP + (
     "dec = [{'id': a, 'action': 'close', 'evidence': M}, {'id': b, 'action': 'close', 'evidence': O},\n"
     "       {'id': c, 'action': 'close', 'evidence': '/etc/hosts'}, {'id': d, 'action': 'close', 'evidence': str(pf)},\n"
     "       {'id': e, 'action': 'wait', 'wait': '等 @abb89 回'}, {'id': f, 'action': 'draft', 'draft': '好,我明天補'},\n"
+    "       {'id': e2, 'action': 'wait', 'wait': '等'}, {'id': a2, 'action': 'close', 'evidence': M},\n"
     "       {'id': g, 'action': 'close', 'evidence': reply}, {'id': w, 'action': 'close', 'evidence': M},\n"
     "       {'id': h, 'action': 'close', 'evidence': M}, {'id': 'q_0000000000000000', 'action': 'close', 'evidence': M}]\n"
     "dec = [dict(x, evidence=x.get('evidence', ''), wait=x.get('wait', ''), draft=x.get('draft', ''), why='') for x in dec]\n"
     "res = H.apply(%(s)r, dec, 'agent:%(s)s/headless-1', env=env, now=t + 100, gh=lambda u: u == M)\n"
-    "st = {k: Q._load_item(%(s)r, v, env) for k, v in dict(a=a, b=b, c=c, d=d, e=e, f=f, g=g, w=w, h=h).items()}\n"
-    "print(json.dumps({'res': {r['id']: [r['action'], r['applied'], r.get('reason')] for r in res},\n"
-    "                  'ids': dict(a=a, b=b, c=c, d=d, e=e, f=f, g=g, w=w, h=h),\n"
+    "flags = {r['id']: r.get('evidence_in_letter') for r in res}\n"
+    "st = {k: Q._load_item(%(s)r, v, env) for k, v in dict(a=a, b=b, c=c, d=d, e=e, f=f, g=g, w=w, h=h, e2=e2).items()}\n"
+    "print(json.dumps({'res': {r['id']: [r['action'], r['applied'], r.get('reason')] for r in res}, 'flags': flags,\n"
+    "                  'ids': dict(a=a, b=b, c=c, d=d, e=e, f=f, g=g, w=w, h=h, e2=e2, a2=a2),\n"
     "                  'st': {k: v.get('status') for k, v in st.items()}, 'ewait': (st['e'].get('wait') or {}).get('text')}))\n"
 ) % {"s": SEAT}
 
@@ -144,6 +168,11 @@ class H4Apply(unittest.TestCase):
         for k in ("w", "h"):
             self.assertEqual(r[ids[k]][2], "not-allowed", "%s 不准動:%r" % (k, out))
         self.assertEqual(r["q_0000000000000000"][2], "not-allowed")
+        self.assertEqual(r[ids["e2"]], ["leave", False, "wait-needs-read"], "沒讀過的信不代標已讀來寫等什麼(審查 M3):%r" % out)
+        self.assertEqual(st["e2"], "delivered", out)
+        self.assertEqual(r[ids["a2"]][:2], ["close", True], out)
+        self.assertTrue(out["flags"][ids["a2"]], "證據就寫在信裡 ⇒ 標記給抽查(審查 M4):%r" % out)
+        self.assertFalse(out["flags"][ids["a"]], out)
         self.assertEqual((st["a"], st["d"], st["g"], st["b"], st["c"], st["w"], st["h"]),
                          ("done", "done", "done", "delivered", "delivered", "read", "hold_human"), out)
 
@@ -169,6 +198,46 @@ class H5EndToEnd(unittest.TestCase):
         self.assertEqual((out["lk"]["until"], out["lk"]["handled_ids"]), (0, [out["b"]]), out)
         self.assertEqual([c["id"] for c in out["closed"]], [out["a"]], out)
         self.assertTrue(out["closed"][0]["by"].startswith("agent:%s/headless-" % SEAT), out)
+
+
+class H8Handled(unittest.TestCase):
+    def test_failed_ai_marks_nothing_seen(self):
+        out = HN.QBox(self).py(SETUP + (
+            "put('第一件', t); put('第二件', t)\n"
+            "r = H.run(%r, 'claude', env=env, now=t + 100, ask=lambda b, p: (None, 'login'), gh=lambda u: False)\n"
+            "r2 = H.run(%r, 'claude', env=env, now=t + 200, ask=lambda b, p: ('看不懂', 'ok'), gh=lambda u: False)\n"
+            "print(json.dumps({'r': r, 'r2': r2, 'lk': Q._triage_lock(%r, env)}))\n") % (SEAT, SEAT, SEAT))
+        self.assertEqual((out["r"]["reason"], out["r2"]["reason"]), ("login", "unparsable"), out)
+        self.assertEqual(out["lk"]["handled_ids"], [], "AI 失敗 / 讀不懂 ⇒ 沒有一封算看過(審查 H1):%r" % out)
+
+    def test_only_fed_items_seen(self):
+        out = HN.QBox(self).py(SETUP + (
+            "ids = [put('第 %%d 件' %% i, t + i) for i in range(H.MAX_ITEMS + 2)]\n"
+            "def ask(b, p):\n"
+            "    return json.dumps([{'id': i, 'action': 'leave'} for i in ids if i in p]), 'ok'\n"
+            "r = H.run(%r, 'claude', env=env, now=t + 100, ask=ask, gh=lambda u: False)\n"
+            "lk = Q._triage_lock(%r, env)\n"
+            "print(json.dumps({'n': len(lk['handled_ids']), 'late': [i for i in ids[-2:] if i in lk['handled_ids']]}))\n")
+            % (SEAT, SEAT))
+        self.assertEqual((out["n"], out["late"]), (20, []), "只餵 20 封 ⇒ 只算 20 封看過:%r" % out)
+
+
+class H9RevAndEnv(unittest.TestCase):
+    def test_rev_changed_not_applied(self):
+        out = HN.QBox(self).py(SETUP + (
+            "a = put('一件', t)\n"
+            "dec = [{'id': a, 'action': 'close', 'evidence': 'https://github.com/ez2app/ez2-aib/pull/9', 'wait': '', 'draft': '', 'why': ''}]\n"
+            "res = H.apply(%r, dec, 'agent:%s/headless-1', env=env, now=t + 10, gh=lambda u: True, revs={a: -1})\n"
+            "print(json.dumps({'r': res[0]['reason'], 'st': Q._load_item(%r, a, env)['status']}))\n") % (SEAT, SEAT, SEAT))
+        self.assertEqual((out["r"], out["st"]), ("rev-changed", "delivered"), out)
+
+    def test_spawn_env_stripped(self):
+        out = HN.QBox(self).py(SETUP + (
+            "e = dict(env, TMUX='x', TMUX_PANE='%1', AIB_SEAT_CODE='abcde', CLAUDECODE='1', ANTHROPIC_API_KEY='k')\n"
+            "print(json.dumps(sorted(Q._spawn_env(e))))\n"))
+        for k in ("TMUX", "TMUX_PANE", "AIB_SEAT_CODE", "CLAUDECODE", "ANTHROPIC_API_KEY"):
+            self.assertNotIn(k, out)
+        self.assertIn("EZ2_AIB_HOME", out)
 
 
 class H6ToolsOff(unittest.TestCase):
@@ -223,6 +292,14 @@ KNIVES = [
      "        return r.returncode == 0\n", "H7Gh.test_only_merged_counts"),
     ("K5", "src/cockpit/dm_triage_headless.py", "    if busy_for < HEADLESS_AFTER_S:\n", "    if False:\n",
      "H1Trigger.test_busy_30min_starts_once"),
+    ("K6", "src/cockpit/dm_triage_headless.py", "        handled = [r[\"id\"] for r in fed if r[\"id\"] in {d[\"id\"] for d in decisions}]\n",
+     "        handled = [r[\"id\"] for r in rows]\n", "H8Handled.test_only_fed_items_seen"),
+    ("K7", "src/cockpit/dm_triage_headless.py", "                res[\"action\"], res[\"reason\"] = \"leave\", \"wait-needs-read\"\n                out.append(res)\n                continue\n",
+     "                pass\n", "H4Apply.test_each_decision_verified"),
+    ("K8", "src/cockpit/dm_queue.py", "        if not tidy_on and why not in (PANE_DEAD_WHY, \"no-screen\", SEAT_UNRESOLVED_WHY):\n",
+     "        if not tidy_on:\n", "H1Trigger.test_dead_pane_not_busy"),
+    ("K9", "src/cockpit/dm_queue.py", "    if rec.get(\"busy_since\") is None or gap is None or gap > BUSY_GAP_S:\n",
+     "    if rec.get(\"busy_since\") is None:\n", "H1Trigger.test_stale_busy_since_restarts"),
 ]
 
 

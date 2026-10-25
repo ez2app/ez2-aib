@@ -267,7 +267,7 @@ def build_record(seat, rows, prev=None, now=None):
     # screen_sha / screen_since(10-13 auto_tidy):畫面多久沒變要跨批次量,換一批信不重算
     for k in ("woke_batch", "woke_ids", "woke_inprog_ids", "woke_at", "woke_rc", "wake_log", "woke_attempts",
               "screen_sha", "screen_since", "inprog_ids", "woke_live_n", "followups", "triage_stalled", "stalled_at",
-              "busy_since", "headless_at"):
+              "busy_since", "busy_seen_at", "headless_at"):
         if k in prev:
             rec[k] = prev[k]
     return rec

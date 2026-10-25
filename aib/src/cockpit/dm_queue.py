@@ -2007,6 +2007,18 @@ def _load1():
         return None
 
 
+BUSY_GAP_S = 300                   # 兩次判到忙相隔超過這麼久 ⇒ 忙的起算重來
+_SPAWN_ENV_DROP_PREFIX = ("TMUX", "CLAUDECODE", "CLAUDE_CODE_", "AIB_SEAT")
+_SPAWN_ENV_DROP = frozenset(("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY",
+                             "OPENAI_BASE_URL", "CODEX_API_KEY"))
+
+
+def _spawn_env(env):
+    """背景整理行程的環境:留狀態根,剝掉席位 / tmux / 父 Claude 工作階段 / API 金鑰(審查 L4,同 power_ask._clean_env)。"""
+    return {k: v for k, v in dict(_env(env)).items()
+            if not k.startswith(_SPAWN_ENV_DROP_PREFIX) and k not in _SPAWN_ENV_DROP}
+
+
 def _spawn_headless(seat, brand, env):
     """背景起一輪 dm_queue.py triage-headless(自成一組、不等它;輸出進那一席的 headless.log)。"""
     d = seat_dir(seat, env)
@@ -2014,7 +2026,7 @@ def _spawn_headless(seat, brand, env):
     with open(str(d / "headless.log"), "ab") as log:
         subprocess.Popen([sys.executable, str(_HERE / "dm_queue.py"), "triage-headless", "--seat", seat, "--brand", brand],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
-                         env=dict(_env(env)), cwd=str(d))
+                         env=_spawn_env(env), cwd=str(d))
 
 
 SPAWN_HEADLESS = _spawn_headless   # 測試換掉
@@ -2025,8 +2037,13 @@ def _triage_headless_maybe(seat, rec, path, env, now, probe):
     dm_triage_headless.HEADLESS_AFTER_S 且引擎是 claude / codex ⇒ 背景起整理 AI 代做一輪(算進每日上限)。回起了沒。"""
     import dm_triage_headless as H
     rec = dict(rec)
-    if rec.get("busy_since") is None:
-        rec["busy_since"] = now
+    try:
+        gap = now - int(rec.get("busy_seen_at"))
+    except (TypeError, ValueError):
+        gap = None
+    if rec.get("busy_since") is None or gap is None or gap > BUSY_GAP_S:
+        rec["busy_since"] = now            # 審查 M2:兩次判到忙隔太久(中間沒量 / 可能閒過)⇒ 從頭算 30 分
+    rec["busy_seen_at"] = now
     reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
     brand = str(reg_prov or probe.get("provider") or "")
     ok, _why = H.should_start(rec, now, _triage_lock(seat, env), _load1(), rec["busy_since"], brand, _triage_mode(brand))
@@ -2163,7 +2180,8 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     res = hold_fn(seat, probe) if hold_fn is not None else drain_hold(seat, probe, env=env)
     busy, why = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
     if busy:
-        if not tidy_on:
+        if not tidy_on and why not in (PANE_DEAD_WHY, "no-screen", SEAT_UNRESOLVED_WHY):
+            # 審查 M5:死窗 / 問不到窗 / 登記表對不上 ≠ 在忙,不替關掉的席起背景整理
             started = _triage_headless_maybe(seat, rec, path, env, now, probe)
             if started:
                 return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "headless-started"}
