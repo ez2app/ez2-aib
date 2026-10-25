@@ -10,7 +10,8 @@ B4 字型檔本身就缺 ⇒ missing_reason=font_missing(先講字型檔);非 TT
 B5 渲染器:missing_reason=terminal_font ⇒ fallback_reason 照名字記;不認得的名字退回 font_missing
 B6 aib doctor:畫得出 ⇒ ok;終端機字型畫不出 ⇒ note + 設定檔名 + 怎麼改;字型檔缺 ⇒ note + 怎麼裝;設 letters ⇒ ok;四語字典
 B7 偏好檔 / 字型夾沒改 ⇒ 不重查:行程內(採集端 5 秒一輪)+ 狀態根檔案(狀態列每次刷新是新行程)
-刀(複本):K1 不查終端機字型 ⇒ B2 紅;K2 查詢失敗當畫不出 ⇒ B3 紅
+B8(#359 r1)查不到也記(只叫一次 osascript)、偏好檔變了才重查、壞快取不採用、命中快取連 tmux 都不叫
+刀(複本):K1 不查終端機字型 ⇒ B2 紅;K2 查詢失敗當畫不出 ⇒ B3 紅;K3 失敗不記快取 ⇒ B8 紅
 """
 import json
 import os
@@ -73,7 +74,9 @@ class Detect(Base):
         self.assertEqual(M.outer_terminal({"EZ2_AIB_OUTER_TERM": "iTerm.app", "TMUX": "x"}), "iTerm.app")
         seen = []
         self.assertEqual(M.outer_terminal({"TMUX": "/tmp/x", "TERM_PROGRAM": "tmux"}, term(True, calls=seen)), "Apple_Terminal")
-        self.assertEqual(seen[0], ["tmux", "show-environment", "-g", "TERM_PROGRAM"])
+        self.assertEqual(seen[0], ["tmux", "show-environment", "TERM_PROGRAM"], "先看這個 session(之後從別的終端機接上)")
+        g = lambda a: (0, "TERM_PROGRAM=iTerm.app\n") if "-g" in a else (1, "")   # noqa: E731
+        self.assertEqual(M.outer_terminal({"TMUX": "/tmp/x"}, g), "iTerm.app", "session 沒有 ⇒ 退全域")
         self.assertEqual(M.outer_terminal({"TMUX": "/tmp/x"}, lambda a: (1, "")), None)
         self.assertEqual(M.outer_terminal({"TMUX": "/tmp/x"}, lambda a: (0, "-TERM_PROGRAM\n")), None)
         self.assertEqual(M.outer_terminal({"TERM_PROGRAM": "WezTerm"}), "WezTerm")
@@ -132,6 +135,45 @@ class Detect(Base):
         self.assertEqual(r["fallback_reason"], "font_missing")
         r = R.resolve_engine_badge(cl, mode="both", icon_available=True, missing_reason="terminal_font")
         self.assertIsNone(r["fallback_reason"])
+
+    def test_b8_failure_cached_and_bad_cache_ignored(self):
+        """#359 r1 M:查不到(rows 空)也記,不然狀態列每次刷新都叫 osascript;L2 壞快取不採用"""
+        calls = []
+
+        def empty(argv):
+            calls.append(argv)
+            return (0, "TERM_PROGRAM=Apple_Terminal\n") if argv[0] == "tmux" else (0, "[]")
+        old_run, M._run = M._run, empty
+        M._term_cache.clear()
+        st = os.path.join(self.td.name, "st8")
+        env = dict(self.env, EZ2_AIB_STATE_ROOT=st)
+        try:
+            for _ in range(5):
+                M._term_cache.clear()                      # 每次都像新行程(狀態列)
+                self.assertIsNone(M.terminal_font_check({0xEC82}, env, platform="darwin")["ok"])
+            self.assertEqual(len([c for c in calls if c[0] == "osascript"]), 1, "失敗也記 ⇒ 只查一次")
+            prefs = os.path.join(self.td.name, "Library", "Preferences")
+            os.makedirs(prefs, exist_ok=True)
+            with open(os.path.join(prefs, "com.apple.Terminal.plist"), "w") as fh:
+                fh.write("x")                              # 偏好檔變了 ⇒ 重查
+            M._term_cache.clear()
+            M.terminal_font_check({0xEC82}, env, platform="darwin")
+            self.assertEqual(len([c for c in calls if c[0] == "osascript"]), 2)
+            cache = os.path.join(st, "state", M.TERM_CACHE_FILE)
+            rec = json.load(open(cache))
+            rec["res"] = {"ok": False}                     # 少欄位的壞快取
+            json.dump(rec, open(cache, "w"))
+            M._term_cache.clear()
+            res = M.terminal_font_check({0xEC82}, env, platform="darwin")
+            self.assertEqual(len([c for c in calls if c[0] == "osascript"]), 3, "壞快取不採用、重查")
+            self.assertIsNone(res["ok"])
+            n = len(calls)
+            M._term_cache.clear()
+            M.terminal_font_check({0xEC82}, env, platform="darwin")
+            self.assertEqual(len(calls), n, "命中快取連 tmux 都不叫")
+        finally:
+            M._run = old_run
+            M._term_cache.clear()
 
     def test_b7_cached_in_process(self):
         calls = []
@@ -211,6 +253,16 @@ class Knife(unittest.TestCase):
         self._knife('    if not isinstance(rows, list) or not rows:\n        return {"ok": None}\n',
                     '    if not isinstance(rows, list) or not rows:\n        return {"ok": False, "missing": sorted(cps), '
                     '"profile": "", "font": ""}\n', "Detect.test_b3_no_false_alarm")
+
+
+class Knife2(Knife):
+    def test_k3_failure_not_cached(self):
+        self._knife("    res = _probe(cps, e, runner)\n    if runner is None:\n",
+                    "    res = _probe(cps, e, runner)\n    if runner is None and res[\"ok\"] is not None:\n",
+                    "Detect.test_b8_failure_cached_and_bad_cache_ignored")
+
+    test_k1_terminal_not_checked = None
+    test_k2_failure_counts_as_cannot_draw = None
 
 
 if __name__ == "__main__":

@@ -47,6 +47,7 @@ for _p in (HERE, REPO / "src" / "cockpit"):
     sys.path.insert(0, str(_p))
 TMP = tempfile.mkdtemp(prefix="aib-support-test-")
 os.environ["EZ2_AIB_STATE_ROOT"] = TMP
+os.environ["EZ2_AIB_TERM_FONT_CHECK"] = "0"      # 刀 K4/K5 跑真 run_all:別叫真 tmux / osascript(#359 r1 L4)
 from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 import power_tasks as PT  # noqa: E402

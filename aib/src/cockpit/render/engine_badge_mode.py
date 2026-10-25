@@ -95,14 +95,18 @@ OUTER_TERM_ENV = "EZ2_AIB_OUTER_TERM"          # 測試 / 包裝層可直接指�
 TERM_CHECK_ENV = "EZ2_AIB_TERM_FONT_CHECK"     # =0 ⇒ 不查終端機字型(維持只看字型檔)
 TERM_PLIST = "~/Library/Preferences/com.apple.Terminal.plist"
 USER_FONTS = "~/Library/Fonts"
+FONT_DIRS = (USER_FONTS, "/Library/Fonts")            # 快取鍵:使用者 / 全機字型夾有變就重查(#359 r1 L3)
 TERM_FONT_JXA = r"""
 ObjC.import('AppKit');
 function run(argv) {
   var d = $.NSUserDefaults.alloc.initWithSuiteName('com.apple.Terminal');
   var ws = d.dictionaryForKey('Window Settings');
   var out = [];
-  ['Default Window Settings', 'Startup Window Settings'].forEach(function (k) {
-    var name = ObjC.unwrap(d.stringForKey(k));
+  var keys = ['Default Window Settings', 'Startup Window Settings'];
+  var names = keys.map(function (k) { return ObjC.unwrap(d.stringForKey(k)); });
+  if (!names[0] && !names[1]) names = ['Basic', null];   // 從沒改過 Terminal 設定 ⇒ 用的是 Basic(#359 r1 M)
+  keys.forEach(function (k, i) {
+    var name = names[i];
     if (!name) return;
     var prof = (ws && !ws.isNil()) ? ws.objectForKey(name) : null;
     var fd = (prof && !prof.isNil()) ? prof.objectForKey('Font') : null;
@@ -124,11 +128,21 @@ def _cache_path(environ):
     return os.path.join(base, "state", TERM_CACHE_FILE)
 
 
+def _valid(res):
+    """快取 / 結果的形狀(#359 r1 L2:壞快取不能讓右欄每輪 KeyError)。"""
+    if not isinstance(res, dict) or res.get("ok") not in (True, False, None):
+        return False
+    if res["ok"] is None:
+        return True
+    return (isinstance(res.get("missing"), list) and all(isinstance(x, int) for x in res["missing"])
+            and isinstance(res.get("profile"), str) and isinstance(res.get("font"), str))
+
+
 def _cache_read(environ, key):
     try:
         with open(_cache_path(environ), encoding="utf-8") as fh:
             rec = json.load(fh)
-        if rec.get("key") == list(key) and isinstance(rec.get("res"), dict) and rec["res"].get("ok") in (True, False):
+        if rec.get("key") == list(key) and _valid(rec.get("res")):
             return rec["res"]
     except (OSError, ValueError, AttributeError):
         pass
@@ -153,44 +167,61 @@ def _run(argv, timeout=5):
 
 
 def outer_terminal(environ=None, runner=None):
-    """外層終端機(TERM_PROGRAM)。駕駛艙在 tmux 裡,自己的 TERM_PROGRAM 是 tmux ⇒ 讀 tmux 全域環境。讀不到 ⇒ None。"""
+    """外層終端機(TERM_PROGRAM)。駕駛艙在 tmux 裡,自己的 TERM_PROGRAM 是 tmux ⇒ 先讀這個 session 的環境、
+    再讀 tmux 全域(全域是 tmux server 起來時那個終端機;之後從別的終端機接上,只有 session 環境有更新才看得到)。讀不到 ⇒ None。"""
     e = os.environ if environ is None else environ
     if e.get(OUTER_TERM_ENV):
         return e[OUTER_TERM_ENV]
     if e.get("TMUX"):
-        try:
-            rc, out = (runner or _run)(["tmux", "show-environment", "-g", "TERM_PROGRAM"])
-        except (OSError, subprocess.SubprocessError):
-            return None
-        line = out.strip() if rc == 0 else ""
-        return line.split("=", 1)[1] if line.startswith("TERM_PROGRAM=") else None
+        for argv in (["tmux", "show-environment", "TERM_PROGRAM"], ["tmux", "show-environment", "-g", "TERM_PROGRAM"]):
+            try:
+                rc, out = (runner or _run)(argv)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            line = out.strip() if rc == 0 else ""
+            if line.startswith("TERM_PROGRAM="):
+                return line.split("=", 1)[1]
+        return None
     tp = e.get("TERM_PROGRAM")
     return tp if tp and tp != "tmux" else None
 
 
-def _mtime(path):
+def _mtime(path, environ):
+    home = environ.get("HOME") or os.path.expanduser("~")
     try:
-        return os.stat(os.path.expanduser(path)).st_mtime_ns
+        return os.stat(path.replace("~", home, 1) if path.startswith("~") else path).st_mtime_ns
     except OSError:
         return None
 
 
 def terminal_font_check(codepoints, environ=None, runner=None, platform=None):
     """外層是 Apple Terminal ⇒ {"ok": bool, "missing": [字碼], "profile", "font"};不是 / 查不到 / 關掉 ⇒ {"ok": None}。
-    ok=False = 「預設」或「開啟時」設定檔的字型畫不出某個字碼。同一行程內偏好檔與字型夾沒變就用上次結果。"""
+    ok=False = 「預設」或「開啟時」設定檔的字型畫不出某個字碼。
+    快取(行程內 + 狀態根檔):鍵 = 字碼 + tmux / 終端機環境 + 偏好檔與字型夾 mtime;查不到(ok=None)也記,
+    不然狀態列每次刷新都重叫 tmux / osascript(#359 r1 M / L1)。"""
     e = os.environ if environ is None else environ
     platform = sys.platform if platform is None else platform
     if e.get(TERM_CHECK_ENV) == "0" or platform != "darwin":
         return {"ok": None}
-    if outer_terminal(e, runner) != "Apple_Terminal":
-        return {"ok": None}
     cps = sorted(codepoints)
-    key = (",".join("%x" % cp for cp in cps), _mtime(TERM_PLIST), _mtime(USER_FONTS))
+    key = (",".join("%x" % cp for cp in cps), e.get("TMUX") or "", e.get(OUTER_TERM_ENV) or "", e.get("TERM_PROGRAM") or "",
+           _mtime(TERM_PLIST, e)) + tuple(_mtime(d, e) for d in FONT_DIRS)
     if runner is None:
         hit = _term_cache.get(key) or _cache_read(e, key)
         if hit is not None:
             _term_cache[key] = hit
             return hit
+    res = _probe(cps, e, runner)
+    if runner is None:
+        _term_cache.clear()
+        _term_cache[key] = res
+        _cache_write(e, key, res)
+    return res
+
+
+def _probe(cps, e, runner):
+    if outer_terminal(e, runner) != "Apple_Terminal":
+        return {"ok": None}
     try:
         rc, out = (runner or _run)(["osascript", "-l", "JavaScript", "-e", TERM_FONT_JXA] + ["%x" % cp for cp in cps])
         rows = json.loads(out) if rc == 0 else None
@@ -207,13 +238,8 @@ def terminal_font_check(codepoints, environ=None, runner=None, platform=None):
         if lost and bad is None:
             bad = r
         missing |= lost
-    res = {"ok": not missing, "missing": sorted(missing),
-           "profile": str((bad or rows[0]).get("profile") or "")[:60], "font": str((bad or rows[0]).get("font") or "")[:80]}
-    if runner is None:
-        _term_cache.clear()
-        _term_cache[key] = res
-        _cache_write(e, key, res)
-    return res
+    return {"ok": not missing, "missing": sorted(missing),
+            "profile": str((bad or rows[0]).get("profile") or "")[:60], "font": str((bad or rows[0]).get("font") or "")[:80]}
 
 
 def resolve_badge_mode(environ=None, *, icon_codepoints, tty=None, paths=None):

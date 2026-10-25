@@ -625,11 +625,13 @@ def check_auto_update(state_root, repo_root, env=None):
                    "" if status == "ok" else _C("auto_update.remedy"))
 
 
-def check_badge_font(repo_root, env=None, runner=None, platform=None):
+def check_badge_font(repo_root, env=None, runner=None, platform=None, state_root=None):
     """AI 符號(右欄 / 狀態列的引擎 logo,Nerd Font 私用區字)畫不畫得出(10-25 Mac Pro 13:字型檔裝了、
     Apple Terminal 設定檔卻還是 SF Mono ⇒ 空白)。畫得出 ⇒ OK;字型檔缺 / 終端機字型畫不出 ⇒ NOTE + 怎麼補;
     使用者自己設了 letters ⇒ OK。只讀(字型檔 cmap + Terminal 偏好),不改任何設定、不連網。"""
     env = dict(os.environ if env is None else env)
+    if state_root:
+        env["EZ2_AIB_STATE_ROOT"] = str(state_root)       # 快取寫在 --state-root 底下(#359 r1 L3)
     rend = str(Path(repo_root) / "src" / "cockpit" / "render")
     try:
         if rend not in sys.path:
@@ -840,7 +842,7 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
     checks.append(check_dm_latency(state_root, repo_root))
     checks.append(check_temp(state_root, repo_root))
     checks.append(check_auto_update(state_root, repo_root))
-    checks.append(check_badge_font(repo_root))
+    checks.append(check_badge_font(repo_root, state_root=state_root))
     checks.append(check_page_features(state_root, repo_root))
     return checks
 
