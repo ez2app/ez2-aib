@@ -5,7 +5,7 @@
 設計 pending/PLAN-approve-popup-abb89-1025.md)。名字避開 aib approve(那是 WordPress 登入第二步)。
 
   aib consent ask [--strong] --summary <一句話> [--seat 席碼] [--wait 秒] [--json] -- <指令…>
-      把申請放進 <狀態根>/consent/inbox/<id>.json,印 id;--wait 等結果(預設不等;等到不是 ok ⇒ rc 1)。
+      把申請放進 <狀態根>/consent/inbox/<id>.json,印 id;--wait 等結果(預設不等;等完不是 ok,含逾時仍 pending ⇒ rc 1)。
   aib consent status <id> [--json]       pending / ok / rc_nonzero / denied / not_allowed / unavailable / failed /
                                          timeout / expired / invalid
   aib consent run-once                   處理 inbox 到空(一次一件);launchd 監看 inbox 時叫這一支
@@ -35,7 +35,7 @@ launchd 看到就會叫 run-once ⇒ 照樣跳窗。不用再叫 Andy 在輸入�
     搬不動 = 別支已接手 ⇒ 跳過;同意 / 拒絕一決定就放鎖，再跑指令(跑的時候別的 Touch ID 視窗照開)。
     鎖與搬檔只防兩個視窗疊在一起、同一件被處理兩次(誤操作);AI 刪得掉。
   - 申請超過 30 分鐘沒處理 ⇒ expired(不讓很久以前的指令在開機時跳出來)。
-rc:ask 0(已排 / 等到 ok)/ 1(等到不是 ok)/ 2(參數錯、不在白名單);status 0 / 2(沒這件);run-once 0。
+rc:ask 0(已排 / 等到 ok)/ 1(等完不是 ok、含逾時仍 pending)/ 2(參數錯、不在白名單);status 0 / 2(沒這件);run-once 0。
 """
 import argparse
 import hashlib
@@ -96,7 +96,7 @@ a.suppressionButton.title = CHECK;
 a.addButtonWithTitle(GO);
 a.addButtonWithTitle(NO);
 a.layout;
-a.window.level = $.NSFloatingWindowLevel;   // launchd 叫起來時不一定搶得到前景 ⇒ 浮在最上層
+a.window.level = 3;   // NSFloatingWindowLevel(JXA 拿不到這個常數 ⇒ 寫數值);launchd 叫起來時不一定搶得到前景
 var r = a.runModal;
 var checked = Number(a.suppressionButton.state) === 1;   // JXA 回的是字串 "1"
 JSON.stringify((Number(r) === 1000 && checked) ? {ok: true, nonce: NONCE} : {ok: false, go: Number(r) === 1000, checked: checked});
@@ -205,10 +205,10 @@ def classify(argv, strong, env=None):
     if head == "bash":
         if len(argv) != 2:
             return None, "sign_shape"
-        p = Path(argv[1]).expanduser()
         try:
-            real, base = p.resolve(strict=True), (_home(env) / ".ez2-aib" / "pending").resolve(strict=True)
-        except OSError:
+            real = Path(argv[1]).expanduser().resolve(strict=True)
+            base = (_home(env) / ".ez2-aib" / "pending").resolve(strict=True)
+        except (OSError, RuntimeError):      # ~不存在的使用者 ⇒ expanduser 丟 RuntimeError
             return None, "sign_missing"
         if real.parent != base or not _SIGN_RE.match(real.name) or not real.is_file():
             return None, "sign_path"
@@ -402,8 +402,9 @@ def execute(rid, req, real, env=None, run=subprocess.run, extra=None):
     log = done_dir(env) / (rid + ".log")
     log.parent.mkdir(parents=True, exist_ok=True)
     started = int(time.time())
-    child_env = {"HOME": str(_home(env)), "PATH": os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")])}
-    for k in ("EZ2_AIB_STATE_ROOT", "LANG", "EZ2_AIB_LOCALE"):
+    child_env = {"HOME": str(_home(env)), "PATH": os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")]),
+                 "EZ2_AIB_STATE_ROOT": str(state_root(env))}
+    for k in ("LANG", "EZ2_AIB_LOCALE"):
         if _env(env).get(k):
             child_env[k] = _env(env)[k]
     extra = dict(extra or {})
@@ -433,30 +434,60 @@ def _notify(req, rc, env=None):
         pass
 
 
-def _next_inbox(env=None):
-    """inbox 裡最舊的一件:(id, 路徑) 或 (None, 路徑)=壞檔名;剛寫的(2 秒內)先跳過。沒有 ⇒ None。"""
+def _next_inbox(env=None, skip=()):
+    """inbox 裡最舊的一件:(id, 路徑) 或 (None, 路徑)=壞檔名;沒有 ⇒ None;只剩剛寫的(2 秒內)⇒ ("", None)。
+    skip:這次已經搬不動的路徑(不再挑，免得空轉)。"""
     try:
         names = sorted(os.listdir(inbox_dir(env)))
     except OSError:
         return None
-    best = None
+    best, fresh = None, False
     now = time.time()
     for name in names:
         if name.startswith("."):
             continue
         p = inbox_dir(env) / name
+        if p in skip:
+            continue
         try:
             st = os.lstat(p)
         except OSError:
             continue
         if now - st.st_mtime < FRESH_S:
+            fresh = True
             continue
         rid = name[:-5] if name.endswith(".json") else None
         ok = rid is not None and _ID_RE.match(rid) and stat.S_ISREG(st.st_mode)
         key = (st.st_mtime, name)
         if best is None or key < best[0]:
             best = (key, rid if ok else None, p)
-    return None if best is None else (best[1], best[2])
+    if best is None:
+        return ("", None) if fresh else None
+    return best[1], best[2]
+
+
+def _sweep_running(env=None, now=None):
+    """running/ 裡的孤兒(處理到一半當機 / 重開機):超過過期 + 執行上限還在 ⇒ 記 failed、搬 bad/。"""
+    now = now if now is not None else time.time()
+    try:
+        names = os.listdir(running_dir(env))
+    except OSError:
+        return
+    for name in names:
+        p = running_dir(env) / name
+        rid = name[:-5] if name.endswith(".json") else ""
+        req = _read_json(p) or {}
+        t = req.get("t") if type(req.get("t")) is int else None
+        if t is None:
+            try:
+                t = int(os.lstat(p).st_mtime)
+            except OSError:
+                continue
+        if now - t <= EXPIRE_S + RUN_TIMEOUT_S + 60:
+            continue
+        if _ID_RE.match(rid or "-!") and not (done_dir(env) / (rid + ".json")).exists():
+            _record(rid, "failed", env, req, why="orphan_running")
+        _quarantine(p, env, "orphan")
 
 
 def _lock(env=None):
@@ -466,14 +497,23 @@ def _lock(env=None):
 def run_once(env=None, run=subprocess.run, sleep=time.sleep, retry_s=LOCK_RETRY_S, **kw):
     """處理 inbox 到空。每件：拿鎖 → 搬到 running/(搬不動 = 別支接手了)→ 跳窗決定 → 放鎖 → 跑。
     鎖被別的指紋視窗拿著 ⇒ 每 5 秒再試，最多 retry_s 秒(WatchPaths 不會因為檔還在就再叫)。回處理了幾件。"""
-    n, waited = 0, 0
+    n, waited, fresh_waits, skip = 0, 0, 0, set()
+    _sweep_running(env)
     while True:
-        nxt = _next_inbox(env)
+        nxt = _next_inbox(env, skip)
         if nxt is None:
             return n
         rid, path = nxt
+        if path is None:                 # 只剩剛寫的:等它過 2 秒再掃(WatchPaths 不會再叫一次)
+            if fresh_waits >= 3:
+                return n
+            fresh_waits += 1
+            sleep(FRESH_S)
+            continue
         if rid is None:
             _quarantine(path, env, "badname")
+            if path.exists() or path.is_symlink():
+                skip.add(path)
             n += 1
             continue
         with _lock(env) as gate:
@@ -489,6 +529,7 @@ def run_once(env=None, run=subprocess.run, sleep=time.sleep, retry_s=LOCK_RETRY_
                 mine.parent.mkdir(parents=True, exist_ok=True)
                 os.rename(path, mine)
             except OSError:
+                skip.add(path)                  # 別支接手了或搬不動:這輪不再挑
                 continue
             if (done_dir(env) / (rid + ".json")).exists():
                 _quarantine(mine, env, "dup")            # 撞號:不覆寫原本的紀錄
@@ -503,7 +544,10 @@ def run_once(env=None, run=subprocess.run, sleep=time.sleep, retry_s=LOCK_RETRY_
             if type(req.get("t")) is not int:
                 req["t"] = int(os.stat(mine).st_mtime)   # 席位手寫的檔沒寫 t ⇒ 用檔案時間
             req["id"] = rid
-            result, detail, real, td = decide(req, env=env, **kw)
+            try:
+                result, detail, real, td = decide(req, env=env, **kw)
+            except Exception as exc:  # noqa: BLE001 — 不讓一件壞申請卡在 running/、status 永遠 pending
+                result, detail, real, td = "failed", {"why": "decide_error:%s" % exc.__class__.__name__}, None, None
         try:
             if result is not None:
                 _record(rid, result, env, req, **detail)
@@ -528,8 +572,9 @@ def agent_plist_path(home=None):
 def agent_plist(env=None):
     e = _env(env)
     log = consent_dir(env) / "agent.log"
-    ev = {"HOME": str(_home(env)), "PATH": os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")])}
-    for k in ("EZ2_AIB_STATE_ROOT", "LANG", "EZ2_AIB_LOCALE"):
+    ev = {"HOME": str(_home(env)), "PATH": os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")]),
+          "EZ2_AIB_STATE_ROOT": str(state_root(env))}   # 解析後的根(EZ2_AIB_HOME 等也算)⇒ 監看與處理同一個 inbox
+    for k in ("LANG", "EZ2_AIB_LOCALE"):
         if e.get(k):
             ev[k] = e[k]
     return {"Label": AGENT_LABEL, "ProgramArguments": ["/bin/bash", str(HERE / "aib"), "consent", "run-once"],
@@ -603,7 +648,7 @@ def main(argv=None, env=None):
                 break
             time.sleep(1)
         print(json.dumps(out, ensure_ascii=False) if args.json else "%s %s" % (out["id"], out["result"]))
-        return 0 if out["result"] in ("pending", "ok") else 1
+        return 0 if out["result"] == "ok" or (out["result"] == "pending" and not args.wait) else 1
     if args.cmd == "status":
         st = status(args.id, env)
         if not st:

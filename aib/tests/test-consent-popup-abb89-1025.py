@@ -18,6 +18,11 @@ C13 跳窗前申請已搬到 running/(別支 run-once 拿不到同一件)
 C14 跑指令時鎖已放(別的 Touch ID 視窗照開)
 C15 超過 30 分鐘的申請 ⇒ expired、不跳窗
 C16 壞檔名搬到 bad/;撞號(done 已有)不覆寫原紀錄;剛寫的(2 秒內)先跳過
+C17 只剩剛寫的 ⇒ 等 2 秒再掃、同一次 run-once 就處理(不等 launchd 保底 5 分鐘)
+C18 搬不動(running 是一般檔 / 壞檔刪不掉)⇒ 不空轉、照常結束
+C19 decide 丟例外 ⇒ 記 failed、不卡在 running/;~不存在使用者的 SIGN 路徑 ⇒ not_allowed
+C20 running/ 裡的孤兒(當機 / 重開機留下)⇒ 超時記 failed、搬 bad/
+C21 ask --wait 等到逾時仍 pending ⇒ rc 1;plist / 子行程帶解析後的狀態根(只設 EZ2_AIB_HOME 也對)
 刀(複本 + run_guarded):K1 不問 Touch ID ⇒ C2 紅;K2 白名單全放 ⇒ C1 紅;K3 strong 不看勾選 ⇒ C3 紅;
   K4 不查怪字 ⇒ C11 紅;K5 跑原檔不跑複本 ⇒ C12 紅;K6 跑的時候還拿著鎖 ⇒ C14 紅
 """
@@ -93,6 +98,8 @@ class Base(unittest.TestCase):
 
     def age_inbox(self):
         t = time.time() - 10
+        if not C.inbox_dir(self.env).is_dir():
+            return
         for p in C.inbox_dir(self.env).iterdir():
             os.utime(p, (t, t))
 
@@ -332,6 +339,58 @@ class Cli(Base):
         args = C.agent_plist(self.env)["ProgramArguments"]
         self.assertEqual((args[0], args[2:]), ("/bin/bash", ["consent", "run-once"]))
         self.assertEqual(C.agent_plist(self.env)["StartInterval"], 300)
+
+
+class R2(Base):
+    def test_c17_fresh_then_processed(self):
+        r = self.req(["aib", "now", "x", "1/2"])
+        n = C.run_once(self.env, run=self.run_, sleep=lambda s: self.age_inbox(), ask=self.touch(True), available=True)
+        self.assertEqual(n, 1)
+        self.assertEqual(C.status(r["id"], self.env)["result"], "ok")
+
+    def test_c18_unmovable_no_spin(self):
+        self.req(["aib", "now", "x", "1/2"])
+        C.consent_dir(self.env).mkdir(parents=True, exist_ok=True)
+        C.running_dir(self.env).write_text("not a dir", encoding="utf-8")
+        calls = []
+        with mock.patch.object(C, "_next_inbox", wraps=C._next_inbox) as nx:
+            n = self.drain()
+            calls.append(nx.call_count)
+        self.assertEqual(n, 0)
+        self.assertLess(calls[0], 5)
+        self.assertEqual(self.run_.calls, [])
+        # 壞檔名是目錄(搬 bad 失敗、unlink 也失敗)
+        C.running_dir(self.env).unlink()
+        (C.inbox_dir(self.env) / "weird dir").mkdir()
+        C.consent_dir(self.env).joinpath("bad").write_text("x", encoding="utf-8")
+        with mock.patch.object(C, "_next_inbox", wraps=C._next_inbox) as nx:
+            self.drain()
+            self.assertLess(nx.call_count, 6)
+
+    def test_c19_decide_error(self):
+        r = self.req(["aib", "now", "x", "1/2"])
+        with mock.patch.object(C, "decide", side_effect=RuntimeError("boom")):
+            self.drain()
+        self.assertEqual(C.status(r["id"], self.env)["result"], "failed")
+        self.assertEqual(os.listdir(C.running_dir(self.env)), [])
+        self.assertEqual(C.classify(["bash", "~nosuchuser_zz9/SIGN-a.sh"], True, self.env), (None, "sign_missing"))
+
+    def test_c20_orphan_running(self):
+        C.running_dir(self.env).mkdir(parents=True)
+        (C.running_dir(self.env) / "o1.json").write_text(json.dumps(
+            {"argv": ["aib", "now"], "summary": "x", "t": int(time.time()) - 86400}), encoding="utf-8")
+        (C.running_dir(self.env) / "o2.json").write_text(json.dumps(
+            {"argv": ["aib", "now"], "summary": "x", "t": int(time.time())}), encoding="utf-8")
+        self.drain()
+        self.assertEqual(C.status("o1", self.env)["result"], "failed")
+        self.assertEqual(C.status("o2", self.env)["result"], "pending", "還在跑的不能當孤兒")
+
+    def test_c21_wait_rc_and_state_root(self):
+        self.assertEqual(C.main(["ask", "--wait", "1", "--summary", "x", "--", "aib", "now", "x"], env=self.env), 1)
+        alt = {"HOME": str(self.home), "EZ2_AIB_HOME": str(self.td / "alt")}
+        ev = C.agent_plist(alt)
+        self.assertEqual(ev["WatchPaths"], [str(self.td / "alt" / "consent" / "inbox")])
+        self.assertEqual(ev["EnvironmentVariables"]["EZ2_AIB_STATE_ROOT"], str(self.td / "alt"))
 
 
 class Knife(unittest.TestCase):
