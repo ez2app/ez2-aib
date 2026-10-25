@@ -5510,5 +5510,13 @@
   "aib.auto_update.exclude.needs_touchid": "{name} 預設不自動更新(它是正式站部署來源),拿掉要本人 Touch ID({why});什麼都沒改",
   "aib.auto_update.status.clock_skew": "時鐘跳過:存下來的時間比現在還晚(系統時鐘曾往前跳),已不算數、照常查",
   "aib.auto_update.why.refused_source": "這份不是從公開版裝的(私有或自己的倉庫),或官方標籤不在公開版 main 的歷史上;不自動更新，要更新請自己跑 aib update",
-  "aib.auto_update.why.no_change": "aib update 跑完了但版本沒變,看紀錄;之後再試"
+  "aib.auto_update.why.no_change": "aib update 跑完了但版本沒變,看紀錄;之後再試",
+  "aib.consent.strong_title": "AIB 同意(加強)",
+  "aib.consent.strong_body": "{who} 寫的一句話(可能不準):\n{summary}\n\n實際要跑的指令:\n{cmd}",
+  "aib.consent.strong_check": "我看過了",
+  "aib.consent.go": "繼續",
+  "aib.consent.no": "取消",
+  "aib.consent.touchid_reason": "AIB 同意 · {who} 要跑:{cmd}",
+  "aib.consent.notify": "AIB 通知 · 跑完 {cmd}(rc {rc})",
+  "aib.consent.help.usage": "用法:aib consent ask [--strong] --summary <一句話> [--wait 秒] -- <指令…>\n      aib consent status <id> [--json]\n      aib consent run-once | install | uninstall"
 }

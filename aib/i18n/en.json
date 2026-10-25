@@ -5510,5 +5510,13 @@
   "aib.auto_update.exclude.needs_touchid": "{name} is excluded by default (it is the production deploy source); taking it off needs your Touch ID ({why}); nothing changed",
   "aib.auto_update.status.clock_skew": "Clock skew: saved times were in the future (the clock jumped); they were ignored and checking goes on as normal",
   "aib.auto_update.why.refused_source": "This copy was not installed from the public release (private or your own repo), or the release tag is not on the public main history; not auto-updating. Run aib update yourself",
-  "aib.auto_update.why.no_change": "aib update finished but the version did not change; see the log. Will try again later"
+  "aib.auto_update.why.no_change": "aib update finished but the version did not change; see the log. Will try again later",
+  "aib.consent.strong_title": "AIB consent (strong)",
+  "aib.consent.strong_body": "Summary written by {who} (may be wrong):\n{summary}\n\nCommand that will run:\n{cmd}",
+  "aib.consent.strong_check": "I have read this",
+  "aib.consent.go": "Continue",
+  "aib.consent.no": "Cancel",
+  "aib.consent.touchid_reason": "AIB consent · {who} wants to run: {cmd}",
+  "aib.consent.notify": "AIB notice · ran {cmd} (rc {rc})",
+  "aib.consent.help.usage": "usage: aib consent ask [--strong] --summary <one line> [--wait SEC] -- <command…>\n       aib consent status <id> [--json]\n       aib consent run-once | install | uninstall"
 }

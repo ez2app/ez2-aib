@@ -5510,5 +5510,13 @@
   "aib.auto_update.exclude.needs_touchid": "{name} 은(는) 기본으로 자동 업데이트하지 않습니다(운영 배포 원본). 빼려면 본인 Touch ID 가 필요합니다({why}). 아무것도 바꾸지 않았습니다",
   "aib.auto_update.status.clock_skew": "시계 어긋남: 저장된 시각이 현재보다 늦었습니다(시계가 앞으로 뛴 적이 있음). 무시하고 평소처럼 확인합니다",
   "aib.auto_update.why.refused_source": "공개판에서 설치한 사본이 아니거나(비공개 또는 본인 저장소) 릴리스 태그가 공개판 main 기록에 없습니다. 자동 업데이트하지 않습니다. 업데이트하려면 aib update 를 직접 실행하세요",
-  "aib.auto_update.why.no_change": "aib update 는 끝났지만 버전이 바뀌지 않았습니다. 로그를 확인하세요. 나중에 다시 시도합니다"
+  "aib.auto_update.why.no_change": "aib update 는 끝났지만 버전이 바뀌지 않았습니다. 로그를 확인하세요. 나중에 다시 시도합니다",
+  "aib.consent.strong_title": "AIB 동의(강화)",
+  "aib.consent.strong_body": "{who}가 쓴 요약(부정확할 수 있음):\n{summary}\n\n실제로 실행할 명령:\n{cmd}",
+  "aib.consent.strong_check": "내용을 확인했습니다",
+  "aib.consent.go": "계속",
+  "aib.consent.no": "취소",
+  "aib.consent.touchid_reason": "AIB 동의 · {who} 실행 요청: {cmd}",
+  "aib.consent.notify": "AIB 알림 · {cmd} 실행 완료(rc {rc})",
+  "aib.consent.help.usage": "사용법: aib consent ask [--strong] --summary <한 줄> [--wait 초] -- <명령…>\n        aib consent status <id> [--json]\n        aib consent run-once | install | uninstall"
 }
