@@ -390,9 +390,12 @@ class Knife(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k9_presence_first_active(self):      # m08
+        # 錨帶前一行 owner:心跳(push_beat)也有一行一樣的 mine_seats,這刀只砍在線狀態那支
         self._cut("src/cockpit/chat_nostr.py",
-                  'mine_seats = [e for e in NK.sending_seats() if e["seat5"] in pub]',
-                  'mine_seats = [e for e in NK.read_map()["seats"] if e.get("status") == "active" and e["seat5"] in pub]',
+                  '.get("npub")\n        pub = set((CR.read_profile() or {}).get("public") or [])\n'
+                  '        mine_seats = [e for e in NK.sending_seats() if e["seat5"] in pub]',
+                  '.get("npub")\n        pub = set((CR.read_profile() or {}).get("public") or [])\n'
+                  '        mine_seats = [e for e in NK.read_map()["seats"] if e.get("status") == "active" and e["seat5"] in pub]',
                   "SendAfterSwitch.test_n2_presence_with_current_persona_key", timeout=300)
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")

@@ -166,6 +166,7 @@ def eligible_rows(rows):
     return [r for r in (rows or []) if isinstance(r, dict) and r.get("id")
             and str(r.get("status") or "queued") in TRIAGE_STATUSES
             and not (isinstance(r.get("global"), dict) and r["global"].get("human_reply") is True)
+            and not (isinstance(r.get("global"), dict) and r["global"].get("echo_reply") is True)   # #306:回音小幫手的自動回覆
             and not r.get("im")]                       # 第 39 節:Telegram 來信只給艦長室
 
 

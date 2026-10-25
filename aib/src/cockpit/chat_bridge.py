@@ -405,6 +405,19 @@ def sync_keys(env=None):
     return acts, None
 
 
+def _relay_swap_tick(root, env, now):
+    """10-24 中繼站自動換:看工人剛寫的各站狀態(2 分鐘內的才算);換了 ⇒ 下面照「換了中繼站」重連工人、重發名冊。"""
+    import chat_roster as CR
+    try:
+        w = json.loads((Path(root) / "worker-status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(w, dict) or not isinstance(w.get("at"), int) or now - w["at"] > 120:
+        return
+    for old, new in CR.check_relay_swap(w.get("relays"), env, now):
+        sys.stderr.write("relay_swap %s -> %s\n" % (old, new))
+
+
 def _leader_tick(root, env=None):
     st = read_status(root) or {}
     now = int(time.time())
@@ -413,6 +426,8 @@ def _leader_tick(root, env=None):
         GF.sweep(root, now=now)
         swept = now
     _acts, key_err = sync_keys(env)
+    if not key_err:
+        _relay_swap_tick(root, env, now)
     state, pub = ("no_keys", {}) if key_err else publish_roster(root, env, st, now)
     if key_err or state == "no_profile":
         # 第 27.1 節:沒設名字與國別 ⇒ 名冊不發、誰都寄不到這台 ⇒ 不連中繼站(不起工人;在跑的停掉)
@@ -601,6 +616,7 @@ def cmd_on(a, env, out):
     _mkdir_private(chat_home(env))
     write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time())})
     os.chmod(switch_path(env), 0o600)
+    GF.note_first_on(bridge_root(env))
     try:
         off_marker(env).unlink()
     except FileNotFoundError:
@@ -744,6 +760,7 @@ def cmd_auto(a, env, out):
     if ans.lower() in YES:
         write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time()), "asked": True})
         os.chmod(switch_path(env), 0o600)
+        GF.note_first_on(bridge_root(env))
         out.write(T("auto_on") + "\n")
         zero_step(env, out)
     else:
@@ -825,6 +842,7 @@ def status_record(env):
         "mine": len(_friends(env, "mine")),
         "refused_7d": sum(1 for r in read_refused(env) if time.time() - int(r.get("last_at") or 0) < 7 * 86400),
         "off_by_owner": off_marker(env).exists(),
+        "echo": GF.echo_on(root),             # #306 審 A-M10:回音小幫手開著要看得到
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
@@ -833,7 +851,27 @@ def status_record(env):
     rec["healthy"], rec["why"] = health(rec)
     rec["backup"] = backup_state(env)
     rec["ready"] = ready_checks(rec, env)
+    rec["first"] = first_chat(GF.read_first(root), rec["ready"], rec.get("enabled"))
     return rec
+
+
+def first_chat(f, ready, enabled=True):
+    """10-24 第 8 條:開通到第一封對話的秒數 + 卡在哪一步(只算本機、不送出去)。
+    stuck:off(沒開)/ bridge / public / contact(ready 沒過的第一格)/ no_sent / no_delivered;收到送達回條 ⇒ None。"""
+    on = f.get("on")
+    out = {"on_at": on}
+    for k in ("sent", "delivered", "in"):
+        out[k + "_s"] = max(0, f[k] - on) if on and f.get(k) else None
+    if f.get("delivered"):
+        out["stuck"] = None
+    elif not enabled:
+        out["stuck"] = "off"
+    elif not on:                                       # 升級前就在用的舊用戶沒有開通時間 ⇒ 不判卡在哪
+        out["stuck"] = None
+    else:
+        out["stuck"] = next((k for k in ("bridge", "public", "contact") if not ready.get(k)),
+                            "no_sent" if not f.get("sent") else "no_delivered")
+    return out
 
 
 def ready_checks(rec, env=None):
@@ -1054,12 +1092,17 @@ def cmd_relays(a, env, out):
     w = _worker_status(bridge_root(env), True) or {}
     seen = w.get("relays") or {}
     cur = CR.relays(env)
+    swaps = CR.read_swaps(env)
     if a.json:
-        out.write(json.dumps({"relays": [{"url": u, "status": seen.get(u)} for u in cur]}, ensure_ascii=False) + "\n")
+        out.write(json.dumps({"relays": [{"url": u, "status": seen.get(u)} for u in cur],
+                              "swaps": [{"from": o, "to": v["to"], "at": v["at"]} for o, v in swaps.items()]},
+                             ensure_ascii=False) + "\n")
         return 0
     for u in cur:
         st = seen.get(u)
         out.write(T("relays_row_" + ("up" if st == "CONNECTED" else ("down" if st else "unknown")), url=u) + "\n")
+    for o, v in swaps.items():
+        out.write(T("relays_swapped", old=o, new=v["to"]) + "\n")
     return 0
 
 
@@ -1380,6 +1423,21 @@ def cmd_invite_use(a, env, out):
     why = {"delivered": "joined", "queued": "request_pending"}.get(stage, stage)   # queued 跟 connect 的 rc 4 同語意(@abb89 #299 r3 L1)
     return emit(res["rc"] if stage != "held" else 0, why, key, ok=stage in ("delivered", "held", "queued"),
                 owner=parsed["owner"], stage=stage, detail=res["detail"] or "-")
+
+
+def cmd_echo(a, env, out):
+    """回音小幫手開關(10-24 Andy 選):on ⇒ 名冊驗得到的陌生人寄來只回一句「收到了」,不存內容、不接 AI、不加好友;
+    好友的信、好友申請照一般流程(#306 審 A-M10,所以開關不需 Touch ID;status / selftest 會醒目顯示開著)。
+    給官方常開的那台用;一般會員不用開。"""
+    root = bridge_root(env)
+    if a.action in ("on", "off"):
+        GF.set_echo(root, a.action == "on")
+    on = GF.echo_on(root)
+    if a.json:
+        out.write(json.dumps({"echo": on}) + "\n")
+    else:
+        out.write(T("echo_on" if on else "echo_off") + "\n")
+    return 0
 
 
 def cmd_requests(a, env, out):
@@ -1745,7 +1803,8 @@ def world_payload(env=None, now=None):
                                  "room": bool(sp["snap"].get("rooms"))} if sp else None,
                        "display_name": info.get("display_name"), "country": info.get("country"),
                        "aib": CR.clean_version(info.get("aib")), "missing": CR.missing_features(info.get("aib")),
-                       "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
+                       "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats,
+                       "online": now - int(c.get("presence_at") or 0) < GF.BEAT_GREEN_S})   # 10-24 綠點
     # 10-19:同一位主人換了艙,舊艙還在 world 裡(分不出是關掉的艙還是睡著的另一台,所以不刪)⇒ 新的排前面,
     # 只看第一格的畫面才不會拿到過期那格、把在線的人顯示成不在線
     cabins.sort(key=lambda x: (not x["fresh"], -int(x["presence_at"] or 0)))
@@ -2162,7 +2221,14 @@ def cmd_room(a, env, out):
 
 
 def cmd_world(a, env, out):
-    asked = GF.request_refresh(bridge_root(env)) if getattr(a, "refresh", False) else None   # 10-24 在不在
+    ping = getattr(a, "ping", None)
+    if ping:
+        import chat_roster as CR
+        ping = CR.friend_owner(ping)
+        if not ping:
+            out.write(T("profile_bad_friend") + "\n")
+            return 2
+    asked = GF.request_refresh(bridge_root(env), ping=ping) if (getattr(a, "refresh", False) or ping) else None   # 10-24 在不在
     pl = world_payload(env)
     if asked is not None:
         pl["asked"] = asked
@@ -2227,6 +2293,8 @@ def selftest(env, fetch=True):
             ("venv", rec["venv"] == "ok", {"pin": NOSTR_SDK_PIN}),
             ("bridge", rec["running"], {}),
             ("heartbeat", rec["heartbeat"], {})]
+    if rec["echo"]:
+        rows.append(("echo", None, {}))            # 官方那台常開,不算錯;但一定要看得到(#306 審 A-M10)
     seen = w.get("relays") or {}
     for u in CR.relays(env):
         rows.append(("relay", (seen.get(u) == "CONNECTED") if seen else None, {"url": u}))
@@ -2386,6 +2454,8 @@ def cmd_status(a, env, out):
         out.write(json.dumps(rec, ensure_ascii=False) + "\n")
         return 0
     out.write(T("status_switch_" + ("on" if rec["enabled"] else "off")) + "\n")
+    if rec["echo"]:
+        out.write(T("status_echo_on") + "\n")
     if rec["running"]:
         out.write(T("status_running", pid=rec["pid"], instance=rec["instance"] or "-") + "\n")
         if rec["state"] in ("no_keys", "no_profile", "no_relays", "publishing", "published"):
@@ -2423,6 +2493,8 @@ def cmd_status(a, env, out):
         out.write(T("status_unhealthy_" + rec["why"]) + "\n")
     if rec["backup"]["due"]:
         out.write(T("backup_hint") + "\n")
+    if (rec.get("first") or {}).get("delivered_s") is not None:
+        out.write(T("status_first", s=rec["first"]["delivered_s"]) + "\n")
     for line in power_lines(env):
         out.write(line + "\n")
     import chat_pair as CP
@@ -2568,6 +2640,9 @@ def main(argv=None, env=None, out=sys.stdout):
     iv.add_argument("target", nargs="?", help=T("help.invite_target"))
     iv.add_argument("code", nargs="?")
     iv.add_argument("--json", action="store_true")
+    ec = sub.add_parser("echo", help=T("help.echo"))
+    ec.add_argument("action", nargs="?", choices=("on", "off"))
+    ec.add_argument("--json", action="store_true")
     rqs = sub.add_parser("requests", help=T("help.requests"))
     rqs.add_argument("--json", action="store_true")
     so = sub.add_parser("social", help=T("help.social"))
@@ -2635,6 +2710,7 @@ def main(argv=None, env=None, out=sys.stdout):
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
     wd.add_argument("--refresh", action="store_true", help=T("help.world_refresh"))
+    wd.add_argument("--ping", metavar="OWNER", help=T("help.world_ping"))
     pr = sub.add_parser("pair", help=T("help.pair"))
     pr.add_argument("action", nargs="?", choices=("start", "confirm", "list", "revoke"))
     pr.add_argument("target", nargs="?", help=T("help.pair_target"))
@@ -2750,6 +2826,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_request(a, env, out)
     if a.cmd == "invite":
         return cmd_invite_use(a, env, out) if a.action == "use" else cmd_invite(a, env, out)
+    if a.cmd == "echo":
+        return cmd_echo(a, env, out)
     if a.cmd == "requests":
         return cmd_requests(a, env, out)
     if a.cmd == "connect":

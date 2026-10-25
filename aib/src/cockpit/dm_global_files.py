@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import time
 import unicodedata
@@ -69,7 +70,7 @@ RECEIPT_STAGES = ("resolved", "relayed", "queued", "delivered", "held", "refused
 RECEIPT_FINAL = ("delivered", "held", "refused", "expired", "failed")
 DELIVERY_STATES = ("queued", "delivered", "held", "refused", "expired", "read", "still_waiting")
 # 10-21 回條語意:held 的原因碼(aib-reason)。寄件端只拿來顯示(@ee4f8:不准拿來判放行 / 權限 / 過期、未知值當沒帶、不原樣印進頁面)
-HELD_REASONS = ("human_reply", "stranger")
+HELD_REASONS = ("human_reply", "stranger", "echo_reply")      # echo_reply:#306 r2 B-L4(新碼另加,舊碼不動)
 WAIT_DAYS_MAX = 30          # still_waiting 的 days 上限(收件端留 7 天;多給一點餘裕,超過的當壞值)
 INBOX_CLASSES = ("own", "paired", "friend", "stranger")
 # 國別(Andy 10-15 18:1x:「全球要能判斷國別」;裁:抬頭加國別、申報 + 時區佐證、用於顯示 / 預設回信語言 / 法規)
@@ -221,6 +222,7 @@ def check_outbox(rec):
     _opt(rec, "reply_to", lambda v: isinstance(v, str) and bool(MSGID_RE.match(v)), "要是 msgid")
     for k in ("thread", "kind", "lang"):
         _opt(rec, k, _is_str, "要是字串")
+    _opt(rec, "echo", lambda v: isinstance(v, bool), "要是 true/false")   # 10-24 回音小幫手回的那一句:不加好友、不補寄
     return rec
 
 
@@ -254,6 +256,7 @@ def check_inbox(rec):
     if "sender_kind" in rec:   # ★ 身分只由核心決定(檔頭);外掛自帶 ⇒ 整筆拒
         raise ContractError("sender_kind:外掛不能自帶寄件人種類")
     _need(rec, "received_at", _is_int, "要是非負整數(UTC 秒)")
+    _opt(rec, "sent_at", _is_int, "要是非負整數(UTC 秒)")       # 寄件端寄出時間(補寄帶 aib-sent-at 原值;#303 r2 B-L1)
     _need(rec, "to_cabin", lambda v: isinstance(v, str) and bool(_CABIN.match(v)), "艙位碼不合")
     _need(rec, "to_seat", lambda v: isinstance(v, str) and bool(_SEAT.match(v)), "席碼不合")
     _need(rec, "from_npub", lambda v: isinstance(v, str) and bool(_NPUB_ONLY.match(v)), "要是 npub1…")
@@ -271,6 +274,7 @@ def check_inbox(rec):
     _opt(rec, "country", lambda v: isinstance(v, str) and bool(COUNTRY_RE.match(v)), "要是兩碼大寫國碼")
     _opt(rec, "tz", lambda v: isinstance(v, str) and len(v) <= 64 and bool(TZ_RE.match(v)), "要是 IANA 時區名")
     _opt(rec, "author", lambda v: v in AUTHORS, "只能 %s" % "/".join(AUTHORS))   # 寄件方自報誰寫的(aib-author)
+    _opt(rec, "echo", lambda v: v is True, "只能是 true")      # 對方回音小幫手回的那一句(aib-echo):只進艦長室
     return rec
 
 
@@ -677,6 +681,94 @@ def mark_unconfirmed(root, now=None, after=86400):
         done += 1
     return done
 
+# resend/<主人>/<msgid>.json(10-24 Andy「像市面上的通訊 App 一樣」):信交給中繼站(relayed)之後,對方那台還沒收到
+# (沒有 queued / delivered / read / 拒收…)⇒ 留一份;對方的在線狀態 / 心跳一回來就補寄同一個 msgid(收件端照 msgid
+# 去重,收過的不會再進佇列)。只補一般信;最多 RESEND_MAX 次、同一則間隔 RESEND_GAP_S;留 RESEND_KEEP_S 就刪。
+# 一位一個夾(#303 審 B-L11:每位上線都掃整個夾)。內文只存在本機這個資料夾(0600),跟 inbox / outbox 同一級。
+# 補寄不重走寄件流程(#303 審 B-H2):不寫終局回條、不改 sent/,失敗只寫稽核行(見 chat_nostr.Sender.resend)。
+RESEND_GAP_S = 600
+RESEND_MAX = 3
+RESEND_KEEP_S = 2 * 86400     # 短於收件端去重實際留得住的量(#303 審 A-M6;在線狀態 / 名片 / 空間不再佔去重名額)
+RESEND_PER_ROUND = 20         # 一位一輪最多補幾封(#303 審 B-M7:離線很久回來不一次全倒)
+RESEND_DONE = {"queued", "delivered", "read", "refused", "held", "expired", "failed"}
+
+
+def _resend_dir(root, owner):
+    return Path(root) / "resend" / owner
+
+
+def keep_for_resend(root, rec, owner, to_npub, from_npub, now=None):
+    """to_npub = 寄給的那一席(收回條只收它簽的;換席就不補);from_npub = 用哪一把簽的(換人格就不補,#303 審 A-L8)。"""
+    if rec.get("op", "send") != "send" or not NPUB_FULL_RE.match(owner or "") or not MSGID_RE.match(rec.get("msgid") or ""):
+        return None
+    if not (NPUB_FULL_RE.match(to_npub or "") and NPUB_FULL_RE.match(from_npub or "")):
+        return None
+    now = int(time.time() if now is None else now)
+    d = _resend_dir(root, owner)
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    p = d / (rec["msgid"] + ".json")
+    if p.exists():
+        return p
+    write_json(str(p), {"v": 1, "rec": rec, "owner": owner, "to": to_npub, "from": from_npub, "at": now, "n": 0,
+                        "last": now})
+    os.chmod(str(p), 0o600)
+    return p
+
+
+def resend_due(root, owner, now=None, limit=RESEND_PER_ROUND):
+    """對方(owner)在線 ⇒ 這輪要補寄的(照原寄出順序、最多 limit 封);順手清掉已到 / 太舊 / 補過頭的。
+    回 [補寄紀錄 dict],呼叫端送完要 note_resent。"""
+    now = int(time.time() if now is None else now)
+    rows = []
+    for p in _resend_dir(root, owner).glob("*.json") if NPUB_FULL_RE.match(owner or "") else ():
+        try:
+            cur = json.loads(p.read_text(encoding="utf-8"))
+            msgid = cur["rec"]["msgid"]
+        except (OSError, ValueError, KeyError, TypeError):
+            _unlink(p)
+            continue
+        stages = {r.get("stage") for r in read_receipts(root, msgid)}
+        exp = cur["rec"].get("expires") if isinstance(cur.get("rec"), dict) else None
+        if stages & RESEND_DONE or now - int_or0(cur.get("at")) > RESEND_KEEP_S or int_or0(cur.get("n")) >= RESEND_MAX \
+                or (isinstance(exp, int) and exp < now) or cur.get("owner") != owner:
+            _unlink(p)
+            continue
+        if now - int_or0(cur.get("last")) < RESEND_GAP_S:
+            continue
+        if any((Path(root) / box / (msgid + ".json")).exists() for box in ("outbox", "sending")):
+            continue
+        rows.append(cur)
+    rows.sort(key=lambda c: (int_or0(c.get("at")), c["rec"]["msgid"]))
+    return rows[:limit]
+
+
+def note_resent(root, owner, msgid, now=None):
+    p = _resend_dir(root, owner) / (msgid + ".json")
+    try:
+        cur = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    cur["n"], cur["last"] = int_or0(cur.get("n")) + 1, int(time.time() if now is None else now)
+    write_json(str(p), cur)
+    os.chmod(str(p), 0o600)
+
+
+def drop_resend(root, keep_owner):
+    """刪好友 / 封鎖的人:補寄夾整個刪掉(#303 審 A-L7:加回來才不會補寄舊信)。"""
+    for d in (Path(root) / "resend").iterdir() if (Path(root) / "resend").is_dir() else ():
+        if d.is_dir() and not keep_owner(d.name):
+            shutil.rmtree(str(d), ignore_errors=True)
+        elif d.is_file():                                  # 10-24 版的平放檔(沒分主人)⇒ 收掉
+            _unlink(d)
+
+
+def _unlink(p):
+    try:
+        p.unlink()
+    except OSError:
+        pass
+
+
 def _with_peer(root, rec, res, now):
     """10-18 Andy「要能判斷該電腦休眠」:寄件結果帶對方那台的狀態;還沒送到而對方在睡 / 離線 ⇒ detail 補一句。"""
     owner = (parse_address((rec or {}).get("to") or "") or {}).get("owner")
@@ -975,6 +1067,7 @@ def note_peer(root, owner, display_name=None, country=None, seat=None, roster_at
 
 # world.json(第 30.4 節):好友 / 我的其他機器分享來的在線狀態。只有工人寫;核心讀時判過期。
 WORLD_FRESH_S = 40 * 60
+BEAT_GREEN_S = 10 * 60      # 10-24 Andy 綠點:最後一筆在線狀態 / 心跳在這麼久以內 ⇒ 🟢
 WORLD_STATES = ("online", "idle", "away", "asleep", "unknown")
 
 
@@ -987,28 +1080,49 @@ def read_world(root):
     return {k: v for k, v in cabins.items() if isinstance(v, dict)} if isinstance(cabins, dict) else {}
 
 
+WORLD_BUDGET = MAX_RECORD_BYTES - 4096   # world.json 寫不下 ⇒ 丟最久沒更新的格(好友多時寧可少幾格舊的,也不要整份寫不進去)
+
+
+def _world_trim(cab):
+    while len(cab) > 1 and len(json.dumps({"v": VERSION, "cabins": cab}, ensure_ascii=False)) > WORLD_BUDGET:
+        cab.pop(min(cab, key=lambda k: int_or0(cab[k].get("presence_at"))), None)
+
+
+def note_world_many(root, rows):
+    """一次寫多格(心跳一輪查完寫一次;#303 審 B-H1:一位一寫、一筆超限整輪中斷)。rows = [(owner, cabin, seats, now,
+    power, sent_at)];規則同 note_world。"""
+    if not rows:
+        return
+
+    def fn(cur):
+        cab = cur.setdefault("cabins", {})
+        for owner, cabin, seats, now, power, sent_at in rows:
+            _world_put(cab, owner, cabin, seats, int(now), power, sent_at)
+        _world_trim(cab)
+    _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
+
+
+def _world_put(cab, owner, cabin, seats, now, power, sent_at):
+    key = "%s/%s" % (owner, cabin)
+    old = cab.get(key) or {}
+    if sent_at is not None and now - int_or0(old.get("presence_at")) < WORLD_FRESH_S \
+            and int_or0(old.get("sent_at")) > sent_at:
+        return
+    cab[key] = {"owner": owner, "cabin": cabin, "presence_at": now, "seats": seats}
+    if sent_at is not None:
+        cab[key]["sent_at"] = int(sent_at)
+    if power:
+        cab[key]["power"] = power
+    for k in [k for k, v in cab.items() if now - int(v.get("presence_at") or 0) > PEERS_KEEP_S]:
+        cab.pop(k, None)
+
+
 def note_world(root, owner, cabin, seats, now=None, power=None, sent_at=None):
     """收到一份 presence:{owner/cabin: {owner, cabin, presence_at, sent_at, seats:[{seat, state, now, step}], power}}。
     power = 對方那台的電源 / 睡眠設定(chat_power.clean_power 過的;舊版沒有 ⇒ None)。
     sent_at = 對方寄出時間(rumor created_at 原值,同一位寄件人同一個時鐘);比手上那格舊 ⇒ 不蓋(中繼站補收順序跟真實先後無關)。
     手上那格已過期(收到超過 WORLD_FRESH_S)就不拿來擋。"""
-    now = int(time.time() if now is None else now)
-    key = "%s/%s" % (owner, cabin)
-
-    def fn(cur):
-        cab = cur.setdefault("cabins", {})
-        old = cab.get(key) or {}
-        if sent_at is not None and now - int_or0(old.get("presence_at")) < WORLD_FRESH_S \
-                and int_or0(old.get("sent_at")) > sent_at:
-            return
-        cab[key] = {"owner": owner, "cabin": cabin, "presence_at": now, "seats": seats}
-        if sent_at is not None:
-            cab[key]["sent_at"] = int(sent_at)
-        if power:
-            cab[key]["power"] = power
-        for k in [k for k, v in cab.items() if now - int(v.get("presence_at") or 0) > PEERS_KEEP_S]:
-            cab.pop(k, None)
-    _locked_update(root, "world.json", fn, lambda: {"v": VERSION, "cabins": {}})
+    note_world_many(root, [(owner, cabin, seats, int(time.time() if now is None else now), power, sent_at)])
 
 
 def drop_world_owner(root, owner, upto=None, now=None):
@@ -1026,16 +1140,25 @@ def drop_world_owner(root, owner, upto=None, now=None):
 # refresh.json(10-24 在不在):本人打開世界面板 ⇒ 核心寫 requested_at;工人看到就在下一份在線狀態加
 # aib-ask=1 向好友 / 我的其他機器問一次,寫 asked_at。對方回的是一份普通在線狀態(舊版收到 aib-ask 不認得、照常收)。
 REFRESH_GAP_S = 30
+PING_GAP_S = 10
 
 
-def request_refresh(root, now=None):
-    """要工人問一次「在不在」。上次要求不到 REFRESH_GAP_S ⇒ 不重寫,回 False。"""
+def request_refresh(root, now=None, ping=None):
+    """要工人刷新一次:查好友心跳 + 問還沒有心跳的舊版好友「在不在」。上次要求不到 REFRESH_GAP_S ⇒ 不重寫,回 False。
+    ping = 本人點開對話框的那一位主人(10-24 Andy:「在不在」只問那一位);換一位不看間隔,同一位 PING_GAP_S 一次。"""
     now = int(time.time() if now is None else now)
+    if ping is not None and not NPUB_FULL_RE.match(ping):
+        return False
 
     def fn(cur):
-        if now - int(cur.get("requested_at") or 0) < REFRESH_GAP_S:
+        gap = PING_GAP_S if ping and cur.get("ping") == ping else (0 if ping else REFRESH_GAP_S)
+        if now - int(cur.get("requested_at") or 0) < gap:     # 同一位 PING_GAP_S 一次(#303 審 A-M5)
             return False
         cur["requested_at"] = now
+        if ping:
+            cur["ping"] = ping
+        else:
+            cur.pop("ping", None)
         return True
     return _locked_update(root, "refresh.json", fn, lambda: {"v": VERSION})
 
@@ -1053,7 +1176,146 @@ def read_refresh(root):
         return {}
     if not isinstance(cur, dict):
         return {}
-    return {k: cur[k] for k in ("requested_at", "asked_at") if isinstance(cur.get(k), int) and not isinstance(cur[k], bool)}
+    out = {k: cur[k] for k in ("requested_at", "asked_at") if isinstance(cur.get(k), int) and not isinstance(cur[k], bool)}
+    if NPUB_FULL_RE.match(str(cur.get("ping") or "")):
+        out["ping"] = cur["ping"]
+    return out
+
+
+# beats/<主人>.json(10-24 Andy 綠點):好友名片給的心跳鑰 {keys: {心跳 npub: {key, gen, relays, at}}};一位一檔
+#   (#303 審 B-H1:整份放 beats.json 約 208 位好友就超過 64 KB,之後新好友永遠灰點)。
+# beat-given.json:我這一代共用鑰給過誰(有人不再是好友 / 封鎖 / 改 off ⇒ 換一代)。都 0600,只有工人寫。
+BEAT_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+BEAT_PER_OWNER = 10
+BEAT_RELAYS_MAX = 5
+
+
+def note_beat_key(root, owner, beat_npub, key_hex, gen, relays=(), now=None):
+    """記一位好友(某一台)的心跳鑰。不合格 ⇒ False。同一台新一代蓋掉舊的;一位主人最多留 BEAT_PER_OWNER 台。"""
+    if not (NPUB_FULL_RE.match(owner or "") and NPUB_FULL_RE.match(beat_npub or "") and BEAT_KEY_RE.match(key_hex or "")):
+        return False
+    if not isinstance(gen, int) or isinstance(gen, bool) or gen < 1:
+        return False
+    rel = [r for r in relays if isinstance(r, str) and r.startswith("wss://") and len(r) <= 200][:BEAT_RELAYS_MAX] \
+        if isinstance(relays, (list, tuple)) else []
+    now = int(time.time() if now is None else now)
+    (Path(root) / "beats").mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    def fn(cur):
+        mine = cur.setdefault("keys", {})
+        old = mine.get(beat_npub) or {}
+        if int(old.get("gen") or 0) > gen:
+            return False                                   # 舊名片晚到,不蓋新的
+        mine[beat_npub] = {"key": key_hex, "gen": gen, "relays": rel, "at": now}
+        for k in sorted(mine, key=lambda k: mine[k]["at"])[:-BEAT_PER_OWNER]:
+            mine.pop(k, None)
+        return True
+    return _locked_update(root, "beats/%s.json" % owner, fn, lambda: {"v": VERSION, "keys": {}})
+
+
+def read_beat_keys(root):
+    """⇒ [(主人, 心跳 npub, key, relays)]。同一個心跳 npub 有好幾位宣告也全列(#303 r2 A-M4:全丟會讓惡意好友
+    宣告別人的 npub 就把那人弄成灰點);誰才算數由工人解開心跳後比加密內文裡的 owner 決定。"""
+    out = []
+    for p in sorted((Path(root) / "beats").glob("*.json")):
+        owner = p.stem
+        if not NPUB_FULL_RE.match(owner):
+            continue
+        try:
+            keys = json.loads(p.read_text(encoding="utf-8")).get("keys")
+        except (OSError, ValueError, AttributeError):
+            continue
+        for npub, k in keys.items() if isinstance(keys, dict) else ():
+            if isinstance(k, dict) and NPUB_FULL_RE.match(npub) and BEAT_KEY_RE.match(str(k.get("key") or "")):
+                out.append((owner, npub, k["key"], [r for r in k.get("relays") or [] if isinstance(r, str)]))
+    return out
+
+
+def drop_beat_keys(root, keep_owner):
+    """不再是好友 / 封鎖的人的心跳鑰整檔刪掉(工人每輪查心跳前叫)。"""
+    for p in (Path(root) / "beats").glob("*.json"):
+        if not keep_owner(p.stem):
+            for f in (p, p.with_name(p.name + ".lock")):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def read_beat_given(root):
+    try:
+        cur = json.loads((Path(root) / "beat-given.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0, set()
+    if not isinstance(cur, dict):
+        return 0, set()
+    return int(cur.get("gen") or 0), {o for o in cur.get("owners") or [] if isinstance(o, str)}
+
+
+def note_beat_given(root, gen, owners):
+    """這一代給過的人(gen 換了 ⇒ 整份重來)。"""
+    def fn(cur):
+        if cur.get("gen") != gen:
+            cur["gen"], cur["owners"] = gen, []
+        cur["owners"] = sorted(set(cur.get("owners") or []) | set(owners))
+    _locked_update(root, "beat-given.json", fn, lambda: {"v": VERSION})
+
+
+# first.json(10-24 Andy 第 8 條「做，只存本機」):開通到第一封對話各步第一次的時間,只記時間不記內容、不送出去。
+# on 開通 / sent 第一封送上中繼站 / delivered 第一張「對方收下」回條(queued 或 delivered)/ in 第一封收進來的信
+FIRST_KEYS = ("on", "sent", "delivered", "in")
+
+
+def read_first(root):
+    try:
+        cur = json.loads((Path(root) / "first.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(cur, dict):
+        return {}
+    return {k: int(cur[k]) for k in FIRST_KEYS if isinstance(cur.get(k), int) and not isinstance(cur.get(k), bool)}
+
+
+def note_first_on(root, now=None):
+    """開通時記 on;已經寄過 / 收過信的舊用戶(升級前就在用)不補記,不然會算成「開通後 0 秒」(#303 審 B-L10)。"""
+    r = Path(root)
+    if any(r.joinpath(d).is_dir() and any(p.suffix in (".json", ".jsonl") for p in r.joinpath(d).iterdir())
+           for d in ("sent", "inbox", "receipts")):          # 回條是 .jsonl(#303 r2 B-L3)
+        return
+    note_first(root, "on", now)
+
+
+def note_first(root, key, now=None):
+    """只記第一次:已經有就不動(之後關掉再開也不重算)。"""
+    if key not in FIRST_KEYS or key in read_first(root):
+        return
+    at = int(time.time() if now is None else now)
+
+    def fn(cur):
+        cur.setdefault(key, at)
+    _locked_update(root, "first.json", fn, lambda: {"v": VERSION})
+
+
+# echo.json(10-24 Andy 選「官方回音小幫手」):這台當回音小幫手 ⇒ 收到信只回一句,不存內容、不接 AI。
+def echo_on(root):
+    try:
+        cur = json.loads((Path(root) / "echo.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(cur, dict) and cur.get("on") is True
+
+
+def set_echo(root, on):
+    p = Path(root) / "echo.json"
+    if on:
+        Path(root).mkdir(parents=True, exist_ok=True)
+        write_json(str(p), {"v": VERSION, "on": True, "at": int(time.time())})
+        os.chmod(str(p), 0o600)                                   # #306 審 A-L12
+    else:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def drop_world(root, keep_owner):

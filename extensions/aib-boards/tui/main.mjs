@@ -220,29 +220,12 @@ function dmPage(cols) {
   return h(Box, { flexDirection: 'row', gap: 1, paddingX: 2, marginTop: 1 }, left, right)
 }
 
-// ---- 新信卡片(同 Claude 面板 seatcore.tsx 的卡片規則 mailcard.ts):監看這一席的信件資料夾,信一到就出;讀了 / 結了自己變色;按 ✕ 才關
+// ---- 新信卡片(同 Claude 面板 seatcore.tsx 的卡片規則 mailcard.ts;只彈真人來信,Andy 10-25 像素大頭像拿掉、圖示放標題列):監看這一席的信件資料夾,信一到就出;讀了 / 結了自己變色;按 ✕ 才關
 //   放在這一格最上面(那一席 AI 的輸入框是 Codex / grok 自己的畫面,動不到 —— 設計稿 §23.4)
 let mail = [], mailSeen = null
 const dismissed = new Set()
 const rowmapOf = d => `${stateRoot()}/instances/${d.cabin}/cockpit/ai-rowmap.json`   // 路徑另起一行(test-cabin-resolution R8:同一行不要又有艙路徑又比對主列)
 const marksOf = d => { try { const out = {}; for (const r of JSON.parse(readFileSync(rowmapOf(d), 'utf8'))) { const m = /^@([0-9a-f]{5})$/.exec(r?.detail?.label ?? ''); if (m && r.detail.mark && r.detail.kind === 'main' && !out[m[1]]) out[m[1]] = r.detail.mark } return out } catch { return {} } }
-const iconPx = new Map()   // emoji → {w,h,px} 或 null(畫不出來就用文字 emoji)
-function ensureIcon(emoji) {
-  if (iconPx.has(emoji)) return
-  iconPx.set(emoji, null)
-  execFile('osascript', ['-l', 'JavaScript', `${new URL('../bin/emoji-raster.js', import.meta.url).pathname}`, emoji, '14', '14'], { timeout: 8000 }, (e, out) => { if (!e) { try { iconPx.set(emoji, JSON.parse(out)); draw() } catch { /* 退回文字 */ } } })
-}
-// 像素圖 → 半格方塊列(▀ 前景 = 上、背景 = 下;透明用終端機預設)
-function avatarRows(icon) {
-  const hex = p => (p && p[3] >= 64 ? '#' + p.slice(0, 3).map(v => v.toString(16).padStart(2, '0')).join('') : null), out = []
-  for (let r = 0; r < Math.ceil(icon.h / 2); r++) {
-    const segs = []
-    for (let x = 0; x < icon.w; x++) { const t = hex(icon.px[r * 2 * icon.w + x]), b = r * 2 + 1 < icon.h ? hex(icon.px[(r * 2 + 1) * icon.w + x]) : null
-      segs.push(!t && !b ? h(Text, null, ' ') : !t ? h(Text, { color: b }, '▄') : h(Text, { color: t, backgroundColor: b ?? undefined }, '▀')) }
-    out.push(h(Text, null, ...segs))
-  }
-  return out
-}
 function readMail(path) {
   let q; try { q = JSON.parse(readFileSync(path, 'utf8')) } catch { return }
   const me = S.data?.code ?? SEAT
@@ -282,19 +265,16 @@ function mailBand(cols) {
     h(Box, { flexDirection: 'row', justifyContent: 'space-between' }, h(Text, { bold: true }, tr('mail_band', { n: mail.length }), h(Text, { dimColor: true }, tr('mail_close_hint'))),
       mail.length > 1 ? h(Button, { key: 'mail-x-all', variant: 'secondary', onPress: () => { mail.forEach(c => dismissed.add(c.id)); mail = []; draw() } }, tr('mail_close_all')) : null),
     ...mail.map(c => {
-      const st = { color: STATUS[c.status].color, label: tr(MAIL_ST[c.status] ?? 'st_unread') }, emoji = iconOf(c, marks), pic = iconPx.get(emoji)
-      ensureIcon(emoji)
-      const body = c.open ? { text: c.text, cut: false } : clip(c.text.replace(/\s+\n/g, '\n'), Math.max(10, W - 14 - 8), 3)
+      const st = { color: STATUS[c.status].color, label: tr(MAIL_ST[c.status] ?? 'st_unread') }, emoji = iconOf(c, marks)
+      const body = c.open ? { text: c.text, cut: false } : clip(c.text.replace(/\s+\n/g, '\n'), Math.max(10, W - 6), 3)
       const name = d?.logos && c.from ? c.from : null
-      return h(Box, { flexDirection: 'row', borderStyle: 'round', borderColor: st.color, paddingX: 1, width: W },
-        h(Box, { flexDirection: 'column', width: 15 }, ...(pic ? avatarRows(pic) : [h(Text, null, emoji)])),
-        h(Box, { flexDirection: 'column', flexGrow: 1 },
-          h(Box, { flexDirection: 'row', justifyContent: 'space-between' },
-            h(Text, { wrap: 'truncate-end' }, h(Text, { color: st.color, bold: true }, `● ${st.label}`), '  ', lg(name), h(Text, { bold: true }, c.label ?? c.from ?? '?'), h(Text, { dimColor: true }, ' → '), lg(me), h(Text, { dimColor: true }, `@${me} · ${hhmm(c.at)}`)),
-            h(Box, { flexDirection: 'row', gap: 1 },
-              body.cut || c.open ? h(Button, { key: `mail-open-${c.id}`, variant: 'secondary', onPress: flipM(c.id) }, c.open ? tr('collapse') : tr('expand')) : null,
-              h(Button, { key: `mail-x-${c.id}`, variant: 'secondary', onPress: close(c.id) }, '✕'))),
-          h(Text, { wrap: 'wrap' }, body.text)))
+      return h(Box, { flexDirection: 'column', borderStyle: 'round', borderColor: st.color, paddingX: 1, width: W },
+        h(Box, { flexDirection: 'row', justifyContent: 'space-between' },
+          h(Text, { wrap: 'truncate-end' }, h(Text, null, `${emoji} `), h(Text, { color: st.color, bold: true }, `● ${st.label}`), '  ', lg(name), h(Text, { bold: true }, c.label ?? c.from ?? '?'), h(Text, { dimColor: true }, ' → '), lg(me), h(Text, { dimColor: true }, `@${me} · ${hhmm(c.at)}`)),
+          h(Box, { flexDirection: 'row', gap: 1 },
+            body.cut || c.open ? h(Button, { key: `mail-open-${c.id}`, variant: 'secondary', onPress: flipM(c.id) }, c.open ? tr('collapse') : tr('expand')) : null,
+            h(Button, { key: `mail-x-${c.id}`, variant: 'secondary', onPress: close(c.id) }, '✕'))),
+        h(Text, { wrap: 'wrap' }, body.text))
     }))
 }
 // 卡片狀態字照語系(STATUS 只拿顏色,字走 st_* 鍵;Claude 面板的新信卡片 seatcore.tsx 同一套)

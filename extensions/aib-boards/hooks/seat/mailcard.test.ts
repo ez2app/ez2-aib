@@ -3,7 +3,7 @@ import { FIXTURE } from '../i18n-fixture'
 import { useT, makeT } from '../i18n'
 // 字走 tr();斷言是中文原字 ⇒ 先換成 zh-TW 字典(register.tsx 平常做這件事)
 useT('zh-TW', makeT('mod.aib_boards', FIXTURE['zh-TW']!))
-import { statusOf, cardOf, upsert, syncRequests, requestCard, relayPath, iconOf, clip, UNLISTED_ICON, REQUEST_ICON } from './mailcard'
+import { statusOf, cardOf, toastOf, upsert, syncRequests, requestCard, relayPath, iconOf, clip, UNLISTED_ICON, REQUEST_ICON } from './mailcard'
 
 const q = { id: 'q_1', seat: '86ff0', sender_seat: '8f366', sender_label: 'Andy', sender_kind: 'human', msg: '機器空了', sent_at: 100 }
 
@@ -19,6 +19,20 @@ test('卡片:只做真人來信(human / owner_paired),席、系統、bot、全�
   expect(cardOf(q, '86ff0')).not.toBeNull()
   expect(cardOf({ ...q, sender_kind: 'owner_paired' }, '86ff0')).not.toBeNull()
   for (const k of ['seat', 'system', 'other', 'external', 'external_seat', undefined]) expect(cardOf({ ...q, sender_kind: k }, '86ff0')).toBeNull()
+})
+
+test('toast(Andy 10-25):AI 彼此的信走右上角一行;真人來信、自己寄的、讀過的不 toast;長訊用全文第一行、太長切掉', () => {
+  const ai = { ...q, sender_kind: 'seat', sender_label: '@8f366', msg: '\n  #273 已推,請開審\n第二行' }
+  expect(toastOf(ai, '86ff0')).toEqual({ id: 'q_1', who: '@8f366', text: '#273 已推,請開審' })
+  for (const k of ['seat', 'system', 'other', 'external', 'external_seat', 'unknown', undefined]) expect(toastOf({ ...ai, sender_kind: k }, '86ff0')).not.toBeNull()
+  for (const k of ['human', 'owner_paired']) expect(toastOf({ ...ai, sender_kind: k }, '86ff0')).toBeNull()
+  expect(toastOf({ ...ai, sender_seat: '86ff0' }, '86ff0')).toBeNull()
+  expect(toastOf({ ...ai, read_at: 1 }, '86ff0')).toBeNull()
+  expect(toastOf({ ...ai, sender_seat: null, sender: 'agent:offhub' }, '86ff0')!.who).toBe('@8f366')
+  expect(toastOf({ ...ai, sender_seat: null, sender_label: null, sender: 'agent:offhub' }, '86ff0')!.who).toBe('agent:offhub')
+  expect(toastOf({ ...ai, msg: '長訊已落檔 請讀:/h/x.txt' }, '86ff0', '全文第一行\n第二行')!.text).toBe('全文第一行')
+  const t = toastOf({ ...ai, msg: '字'.repeat(80) }, '86ff0', null, 20)!.text
+  expect(t.endsWith('…') && t.length <= 10).toBe(true)
 })
 
 test('卡片:自己寄的不做;只新增未讀;已有的只換狀態、開合照舊;關過的不再出現;新的在前', () => {
