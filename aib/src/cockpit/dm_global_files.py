@@ -769,22 +769,52 @@ def _unlink(p):
         pass
 
 
+PEER_OK_STAGES = ("queued", "held", "delivered", "read")
+
+
+def peer_ever_accepted(root, owner, scan=500):
+    """寄給這位主人的信有沒有收過「對方收下了」的回條(queued / held / delivered / read)。只看最近 scan 封寄出帳。
+    沒有 ⇒ 還不能說對方收得到我的信:他可能還沒把我加成好友(不是好友就拒收,而拒收不一定回條)。"""
+    for p in sorted((Path(root) / "sent").glob("*.json"))[-scan:]:
+        try:
+            if json.loads(p.read_text(encoding="utf-8")).get("owner") != owner:
+                continue
+        except (OSError, ValueError, AttributeError):
+            continue
+        if any(r.get("stage") in PEER_OK_STAGES for r in read_receipts(root, p.stem)):
+            return True
+    return False
+
+
 def _with_peer(root, rec, res, now):
-    """10-18 Andy「要能判斷該電腦休眠」:寄件結果帶對方那台的狀態;還沒送到而對方在睡 / 離線 ⇒ detail 補一句。"""
+    """10-18 Andy「要能判斷該電腦休眠」:寄件結果帶對方那台的狀態;還沒送到而對方在睡 / 離線 ⇒ detail 補一句。
+    10-25 Mac Pro 13:對方其實是「還不是好友、拒收」,這邊卻補成「對方離線」,人就跑去查轉接程式。
+    ⇒ 從沒收過對方收下的回條時,不推斷睡 / 離線,改說「可能還不是好友」(peer.why = not_confirmed)。"""
     owner = (parse_address((rec or {}).get("to") or "") or {}).get("owner")
     if not owner or rec.get("op") == "resolve":
         return res
     try:
         import chat_power as CP
         st = CP.owner_state([c for c in read_world(root).values() if c.get("owner") == owner], now)
+        st["accepted"] = peer_ever_accepted(root, owner)
     except Exception:   # noqa: BLE001  看不到狀態就不補,不擋寄件
         return res
     res["peer"] = st
-    if res["stage"] in ("relayed", "claimed", "queued") and st["state"] in ("asleep", "offline") and st.get("since"):
-        when = time.strftime("%m-%d %H:%M", time.localtime(st["since"]))
-        res["detail"] = (res["detail"] + ";" if res["detail"] else "") + (
-            "對方那台電腦在睡(%s 起沒動靜),信在中繼站等,醒來才收" % when if st["state"] == "asleep"
-            else "對方那台電腦離線(%s 起沒動靜,它設定成不睡:可能斷網、關機或轉接程式停了)" % when)
+    if res["stage"] not in ("relayed", "claimed", "queued") or st["state"] == "awake":
+        return res
+    when = time.strftime("%m-%d %H:%M", time.localtime(st["since"])) if st.get("since") else None
+    if not st["accepted"] and res["stage"] != "queued":
+        st["why"] = "not_confirmed"
+        line = ("還沒收過對方收下的回條:可能對方還沒把你加成好友(對方只收好友的信,拒收不一定回條),"
+                "請對方跑 aib chat connect 加你或用邀請碼;")
+        line += ("也可能那台不在線(%s 起沒動靜)" % when) if when else "目前也沒收到對方任何狀態"
+    elif st["state"] in ("asleep", "offline") and when:
+        st["why"] = st["state"]
+        line = ("對方那台電腦在睡(%s 起沒動靜),信在中繼站等,醒來才收" % when if st["state"] == "asleep"
+                else "對方那台電腦離線(%s 起沒動靜,它設定成不睡:可能斷網、關機或轉接程式停了)" % when)
+    else:
+        return res
+    res["detail"] = (res["detail"] + ";" if res["detail"] else "") + line
     return res
 
 
