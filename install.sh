@@ -891,8 +891,10 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
         #   aib update 也是重跑這支。非 Mac 什麼都不做;AIB_FONT_AUTO=0 略過;失敗不擋安裝。
         #   #361 r1 M2:下載那段包 5 分鐘時限(程式內另有 120 秒總時限);問人那段要讀終端機,不能丟背景,分開叫且不再下載。
         if [ "$LINUX" != 1 ] && [ "${AIB_FONT_AUTO:-1}" != 0 ]; then
-          (cd "$DIR" && run_limited 300 "$abin" fonts auto </dev/null) || true
-          if [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then (cd "$DIR" && "$abin" fonts auto --ask --no-install </dev/tty) || true; fi
+          if [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then
+            (cd "$DIR" && run_limited 300 "$abin" fonts auto --no-terminal </dev/null) || true
+            (cd "$DIR" && "$abin" fonts auto --ask --no-install </dev/tty) || true
+          else (cd "$DIR" && run_limited 300 "$abin" fonts auto </dev/null) || true; fi
         fi
       fi
     elif [ "$vrc" = 127 ]; then miss+=("$shown 不見了或不能執行")

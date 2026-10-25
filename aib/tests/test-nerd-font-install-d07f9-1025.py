@@ -287,6 +287,14 @@ class Auto(Terminal):
             self.assertEqual(self.calls, [], "回 %r 也改了" % ans)
             self.assertTrue(N.read_state(self.env).get("terminal_declined"), ans)
 
+    def test_n5d_no_terminal_prints_nothing(self):
+        """#361 r2 Nit:install.sh 接著要問 ⇒ 第一次 --no-terminal 不印提示、不改"""
+        out = io.StringIO()
+        N.auto(self.env, ask=False, inp=io.StringIO(""), out=out, fetch=self.fetch(), runner=term(False),
+               setter=self.setter(), platform="darwin", isatty=True, do_terminal=False)
+        self.assertEqual(out.getvalue(), "")
+        self.assertEqual(self.calls, [])
+
     def test_n5b_enter_changes_and_off_switch(self):
         o = self.auto("", eof=True)              # 沒人回答(EOF)⇒ 不改、不記,下次再問
         self.assertEqual(self.calls, [])
@@ -332,8 +340,10 @@ class Wiring(unittest.TestCase):
             self.assertIn("aib.fonts.code." + c, keys, c)
         inst = (REPO.parent / "install.sh").read_text(encoding="utf-8")
         self.assertRegex(inst, r'if \[ "\$LINUX" != 1 \] && \[ "\$\{AIB_FONT_AUTO:-1\}" != 0 \]; then\n'
-                               r'.*run_limited 300 "\$abin" fonts auto </dev/null\) \|\| true\n'
-                               r'.*fonts auto --ask --no-install </dev/tty\) \|\| true')
+                               r'.*if \[ -t 1 \].*\n'
+                               r'.*run_limited 300 "\$abin" fonts auto --no-terminal </dev/null\) \|\| true\n'
+                               r'.*fonts auto --ask --no-install </dev/tty\) \|\| true\n'
+                               r'.*else \(cd "\$DIR" && run_limited 300 "\$abin" fonts auto </dev/null\) \|\| true; fi')
         aib = (REPO / "src" / "cockpit" / "aib").read_text(encoding="utf-8")
         self.assertIn('exec "$T_PY3" "$AIB_SOURCE_ROOT/src/bootstrap/nerd_font.py" "$@"', aib)
 

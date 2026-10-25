@@ -297,7 +297,7 @@ def _ask(prompt, inp, out):
 
 
 def auto(env=None, ask=False, inp=None, out=None, fetch=None, runner=None, setter=None, platform=None, isatty=None,
-         do_install=True):
+         do_install=True, do_terminal=True):
     """安裝程式用。回 0(不擋安裝)。install.sh 分兩次叫:先 auto(有總時限、不碰終端機),再 auto --ask --no-install(問人)。"""
     env = dict(os.environ if env is None else env)
     out = out or sys.stdout
@@ -310,6 +310,8 @@ def auto(env=None, ask=False, inp=None, out=None, fetch=None, runner=None, sette
         out.write(_T("installed", version=NF_VERSION) + "\n")
     elif code not in ("already",):
         out.write(_T("install_failed", code=code) + "\n")
+        return 0
+    if not do_terminal:                              # install.sh 接著要用 --ask 問 ⇒ 這次不印提示,免得同一件事出現兩次(#361 r2 Nit)
         return 0
     st = status(env, runner, platform)
     term = st["terminal"]
@@ -348,6 +350,7 @@ def main(argv=None):
     a_ = sub.add_parser("auto")
     a_.add_argument("--ask", action="store_true")
     a_.add_argument("--no-install", action="store_true")
+    a_.add_argument("--no-terminal", action="store_true")
     r_ = sub.choices["restore"]
     r_.add_argument("--force", action="store_true", help="現在的字型被你自己改過也照樣改回")
     for p in sub.choices.values():
@@ -355,7 +358,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     cmd = a.cmd or "status"
     if cmd == "auto":
-        return auto(ask=a.ask, do_install=not a.no_install)
+        return auto(ask=a.ask, do_install=not a.no_install, do_terminal=not a.no_terminal)
     if cmd == "status":
         res = status()
         if getattr(a, "json", False):
