@@ -49,9 +49,10 @@ class Core(unittest.TestCase):
         (b.root / "refused.json").write_text(json.dumps({"v": 1, "refused": rows}), encoding="utf-8")
         out = b.cli("refused").stdout
         self.assertIn("Bob(JP)", out)
-        self.assertIn("aib chat friend add " + OWNER, out)
+        self.assertIn("aib chat connect " + OWNER, out)        # 10-25 改指向互加(friend add 只改本機、對方不知道)
         self.assertIn("名字驗不到", out)
-        self.assertNotIn("aib chat friend add " + SEATK, out, "只有席 npub 的不給加好友指令(好友以主人為單位)")
+        self.assertNotIn("aib chat connect " + SEATK, out, "只有席 npub 的不給加好友指令(好友以主人為單位)")
+        self.assertNotIn("friend add", out)
         self.assertEqual(len(json.loads(b.cli("refused", "--json").stdout)["refused"]), 2)
         self.assertEqual(json.loads(b.cli("status", "--json").stdout)["refused_7d"], 1)
         self.assertIn("最近 7 天被拒收:1 位", b.cli("status").stdout)
