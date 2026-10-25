@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""dm 整理叫醒的收口 / 全艦隊 / 常駐 / 看板(Andy 10-25 22:1x「如何確保所有 AI 都會觸發」,@abb89 派工 A / B / D / E,@044e0)。
+"""dm 整理叫醒:立刻叫 / 不跳過 / 子代理接手與下一批 / 全艦隊 / 常駐 / 看板
+(Andy 10-25 22:1x「如何確保所有 AI 都會觸發」→ 22:3x「更即時、不要跳過的,只要待審與進行中的數量一到,就應該立刻叫
+子 ai 立刻消化,消化完就可以讓他關閉、或處理下一個」;@abb89 派工 A / B / D / E,@044e0)。
 治具沿用 test-dm-hold-notify-abb89-1015.py(整棵 src 抄進暫存根、假 tmux、假咽喉),投遞由注入的 deliver 收下,
 不碰工作樹、不碰 ~/.ez2-aib、不送真 dm。
 
-F1 收口:叫醒 15 分鐘內不再叫;滿 15 分鐘沒變少、沒整理檔 ⇒ 再叫一次(開頭「第二次提醒」);再 15 分鐘還沒動 ⇒
-   triage_stalled、不再叫;只有進行中到門檻 ⇒ 不貼第二次、15 分鐘後直接 stalled(守 #374 S2)
-F2 有開工就不追:叫醒後出現 pending/DMTRIAGE-<席>-*.md 或子代理登記 ⇒ 不再叫
-F3 有進展就清旗子:封數變少 ⇒ 不再叫;已 stalled 之後封數變少 ⇒ triage_stalled 清掉
+F1 沒人接就再叫:叫醒後 ACK_S 內等接手;沒接 ⇒ 再叫(開頭「再叫一次」),最多 REWAKE_MAX 次後 triage_stalled、不再叫;
+   有新信 ⇒ 立刻當新的一次叫、清 stalled
+F2 子代理在做就不叫、做完立刻接下一批:登記有效中來新信不叫;放鎖後只剩它看過的 ⇒ 不叫;
+   再來一封新的 ⇒ 立刻叫(不等 10 分鐘冷卻);只有進行中的也一樣
+F3 子代理當掉沒放鎖:登記過期 ⇒ 下一拍照叫
 F4 全艦隊(D):claude / codex / API(digest)三種席各 2 封待審 ⇒ 2 拍內三席都收到叫醒句;API 席是 digest 模式
 F5 常駐(B):待審框那行在進行中 ≥2 時帶整理規則,1 封時不帶;stalled 時前面加「⚠ 未整理」(brief_payload.triage_stalled)
-F6 看板(E):triage-status 列出叫醒時 / 現在封數、叫了幾次、stalled 排最前
-刀(複本 + run_guarded):K1 收口永不再叫 ⇒ F1 紅;K2 不看開工訊號 ⇒ F2 紅;K3 API 席也當 agent ⇒ F4 紅;
-K4 常駐那句不出 ⇒ F5 紅;K2b 只有進行中也貼第二次 ⇒ F1 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+F6 看板(E):triage-status 列出叫醒時 / 現在封數、再叫幾次、stalled 排最前、誰登記著
+刀(複本 + run_guarded):K1 不再叫 ⇒ F1 紅;K5 永不標 stalled ⇒ F1 紅;K2 不看登記 ⇒ F2 紅;
+K2b 不看子代理看過的 ⇒ F2 紅;K3 API 席也當 agent ⇒ F4 紅;K4 常駐那句不出 ⇒ F5 紅。
+刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import importlib.util
 import json
@@ -54,77 +58,68 @@ SETUP = (
     "def tri(seat=%r):\n"
     "    return Q.TR.load(Q.triage_path(seat, env)) or {}\n"
     "t = int(__import__('time').time())\n"
-    "F = Q.TR.FOLLOWUP_S\n"
+    "A = Q.TR.ACK_S\n"
+    "import dm_triage_agent as TA\n"
 ) % (SEAT, SEAT)
 
 
-class F1Followup(unittest.TestCase):
-    def test_rewake_then_stall(self):
+class F1NoPickupRewake(unittest.TestCase):
+    def test_rewake_then_stall_then_new_mail(self):
         out = HN.QBox(self).py(SETUP + (
             "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
             "tick(t + 10); n1 = len(sent)\n"
-            "tick(t + 10 + F - 1); n2 = len(sent)\n"
-            "tick(t + 10 + F); n3 = len(sent)\n"
-            "tick(t + 10 + 2 * F); st = tri()\n"
-            "tick(t + 10 + 3 * F); n4 = len(sent)\n"
-            "print(json.dumps({'n': [n1, n2, n3, n4], 'second': sent[-1]['msg'] if sent else '',"
-            " 'stalled': st.get('triage_stalled'), 'followups': st.get('followups')}))\n"))
-        self.assertEqual(out["n"], [1, 1, 2, 2], out)
-        self.assertTrue(out["second"].startswith("【第二次提醒"), out["second"][:80])
-        self.assertEqual((out["stalled"], out["followups"]), (True, 1), out)
+            "tick(t + 70); n2 = len(sent)\n"
+            "tick(t + 10 + A); n3 = len(sent); m3 = sent[-1]['msg']\n"
+            "tick(t + 10 + 2 * A); n4 = len(sent)\n"
+            "tick(t + 10 + 3 * A); n5 = len(sent); st = tri()\n"
+            "tick(t + 10 + 4 * A); n6 = len(sent)\n"
+            "put('第三件:新的', t + 10 + 4 * A + 5); tick(t + 10 + 4 * A + 10); n7 = len(sent); st2 = tri()\n"
+            "print(json.dumps({'n': [n1, n2, n3, n4, n5, n6, n7], 'second': m3,"
+            " 'stalled': [st.get('triage_stalled'), st2.get('triage_stalled')], 'followups': [st.get('followups'), st2.get('followups')]}))\n"))
+        self.assertEqual(out["n"], [1, 1, 2, 3, 3, 3, 4], out)
+        self.assertTrue(out["second"].startswith("【再叫一次"), out["second"][:80])
+        self.assertEqual(out["stalled"], [True, False], out)
+        self.assertEqual(out["followups"], [2, 0], out)
 
 
-    def test_inprog_only_stalls_without_second_paste(self):
+class F2AgentThenNextBatch(unittest.TestCase):
+    def test_lock_holds_then_next_batch_immediately(self):
         out = HN.QBox(self).py(SETUP + (
-            "for m in ('進行中一:審查還沒回來', '進行中二:等 CI'):\n"
-            "    i = put(m, t); Q.mark_read(%r, i, 'seat:%s', env=env, now=t, no_rev_check=True)\n"
-            "tick(t + 10); tick(t + 10 + F); st = tri()\n"
-            "print(json.dumps({'n': len(sent), 'stalled': st.get('triage_stalled')}))\n") % (SEAT, SEAT))
-        self.assertEqual((out["n"], out["stalled"]), (1, True), "只有進行中 ⇒ 不貼第二次、直接標未整理:%r" % out)
-
-
-class F2StartedSignal(unittest.TestCase):
-    def test_dmtriage_file_or_lock_stops_followup(self):
-        out = HN.QBox(self).py(SETUP + (
-            "import os, dm_triage_agent as TA\n"
             "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
             "tick(t + 10)\n"
-            "d = Q._aib_pending_dir(env); d.mkdir(parents=True, exist_ok=True)\n"
-            "f = d / ('DMTRIAGE-%s-x.md'); f.write_text('整理'); os.utime(f, (t + 20, t + 20))\n"
-            "tick(t + 10 + F); a = len(sent)\n"
-            "put('第三件', t + 30); put('第四件', t + 30, seat='fghij')\n"
-            "f.unlink(); TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 2 * F + 30)\n"
-            "tick(t + 2 * F + 20); b = len(sent)\n"
-            "tick(t + 3 * F + 30); c = len(sent)\n"
-            "print(json.dumps({'a': a, 'b': b, 'c': c}))\n") % (SEAT, SEAT, SEAT))
-        self.assertEqual(out["a"], 1, "有整理檔 ⇒ 不再叫:%r" % out)
-        self.assertEqual(out["b"], 2, "第三件是新信 ⇒ 照常叫:%r" % out)
-        self.assertEqual(out["c"], 2, "叫醒後有子代理登記 ⇒ 不再叫:%r" % out)
+            "TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 20)\n"
+            "put('第三件', t + 30); tick(t + 40); a = len(sent)\n"
+            "r = TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 50, release=True)\n"
+            "tick(t + 60); b = len(sent)\n"
+            "put('第四件', t + 70); tick(t + 80); c = len(sent)\n"
+            "print(json.dumps({'a': a, 'b': b, 'c': c, 'left': r.get('left')}))\n") % (SEAT, SEAT, SEAT, SEAT))
+        self.assertEqual(out["a"], 1, "子代理登記中 ⇒ 新信也不另叫(它做完會接著看):%r" % out)
+        self.assertEqual(len(out["left"]), 3, out)
+        self.assertEqual(out["b"], 1, "放鎖後只剩它看過、留給本席的 ⇒ 不叫:%r" % out)
+        self.assertEqual(out["c"], 2, "再來新信 ⇒ 立刻叫(70 秒前才叫過也叫):%r" % out)
 
-
-class F3Progress(unittest.TestCase):
-    def test_drop_clears(self):
+    def test_inprog_only_next_batch(self):
         out = HN.QBox(self).py(SETUP + (
-            "ids = [put('第一件:請看 PR 頁面上的說明', t), put('第二件:另一個題目要你決定', t),"
-            " put('第三件:還有一件', t)]\n"
-            "tick(t + 10)\n"
-            "Q.mark_read(%r, ids[0], 'seat:%s', env=env, now=t + 20, no_rev_check=True)\n"
-            "Q.mark_done(%r, ids[0], 'seat:%s', None, env=env, now=t + 21, no_rev_check=True, why='做完')\n"
-            "tick(t + 10 + F); a = len(sent)\n"
-            "tick(t + 10 + 2 * F); tick(t + 10 + 3 * F); s1 = tri().get('triage_stalled')\n"
-            "print(json.dumps({'a': a, 's1': s1}))\n") % (SEAT, SEAT, SEAT, SEAT))
-        self.assertEqual(out["a"], 1, "封數變少 ⇒ 不再叫:%r" % out)
-        self.assertFalse(out["s1"], out)
+            "def rd(m, w):\n"
+            "    i = put(m, w); Q.mark_read(%r, i, 'seat:%s', env=env, now=w, no_rev_check=True)\n"
+            "rd('進行中一:審查還沒回來', t); rd('進行中二:等 CI', t)\n"
+            "tick(t + 10); TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 20)\n"
+            "TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 30, release=True)\n"
+            "tick(t + 3600); a = len(sent)\n"
+            "rd('進行中三:新的一件', t + 3700); tick(t + 3710); b = len(sent)\n"
+            "print(json.dumps({'a': a, 'b': b}))\n") % ((SEAT, SEAT) * 3))
+        self.assertEqual((out["a"], out["b"]), (1, 2), "看過的進行中不重叫;多一件立刻叫:%r" % out)
 
-    def test_stalled_then_drop_clears_flag(self):
+
+class F3LockExpires(unittest.TestCase):
+    def test_expired_lock_wakes(self):
         out = HN.QBox(self).py(SETUP + (
-            "ids = [put('第一件:請看 PR 頁面上的說明', t), put('第二件:另一個題目要你決定', t)]\n"
-            "tick(t + 10); tick(t + 10 + F); tick(t + 10 + 2 * F); s0 = tri().get('triage_stalled')\n"
-            "Q.mark_read(%r, ids[0], 'seat:%s', env=env, now=t + 3 * F, no_rev_check=True)\n"
-            "Q.mark_done(%r, ids[0], 'seat:%s', None, env=env, now=t + 3 * F, no_rev_check=True, why='做完')\n"
-            "tick(t + 3 * F + 60); s1 = tri().get('triage_stalled')\n"
-            "print(json.dumps({'s0': s0, 's1': s1}))\n") % (SEAT, SEAT, SEAT, SEAT))
-        self.assertEqual((out["s0"], out["s1"]), (True, False), out)
+            "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
+            "tick(t + 10); TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 20)\n"
+            "tick(t + 20 + TA.AGENT_LOCK_TTL_S - 1); a = len(sent)\n"
+            "tick(t + 20 + TA.AGENT_LOCK_TTL_S); b = len(sent)\n"
+            "print(json.dumps({'a': a, 'b': b}))\n") % (SEAT, SEAT))
+        self.assertEqual((out["a"], out["b"]), (1, 2), out)
 
 
 class F4Fleet(unittest.TestCase):
@@ -161,9 +156,9 @@ class F5Resident(unittest.TestCase):
         out = HN.QBox(self).py(SETUP + (
             "import inbox_brief_hook as IB\n"
             "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
-            "tick(t + 10); tick(t + 10 + F); tick(t + 10 + 2 * F)\n"
-            "print(json.dumps({'line': IB.brief_line(%r, env=env, now=t + 10 + 2 * F),"
-            " 'b': Q.brief_payload(%r, env=env, now=t + 10 + 2 * F).get('triage_stalled')}))\n") % (SEAT, SEAT))
+            "for k in range(4): tick(t + 10 + k * A)\n"
+            "print(json.dumps({'line': IB.brief_line(%r, env=env, now=t + 10 + 3 * A),"
+            " 'b': Q.brief_payload(%r, env=env, now=t + 10 + 3 * A).get('triage_stalled')}))\n") % (SEAT, SEAT))
         self.assertTrue(out["b"], out)
         self.assertIn("⚠ 未整理(叫醒過還沒動)🧹 待審 2", out["line"])
 
@@ -171,27 +166,27 @@ class F5Resident(unittest.TestCase):
 class F6Board(unittest.TestCase):
     def test_status_lists_stalled_first(self):
         out = HN.QBox(self).py(SETUP + (
-            "import dm_triage_agent as TA\n"
             "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
             "put('別席一', t, seat='fghij'); put('別席二', t, seat='fghij')\n"
-            "tick(t + 10); tick(t + 10 + F)\n"
-            "x = put('別席三', t + F + 20, seat='fghij')\n"
-            "tick(t + 10 + 2 * F)\n"
-            "print(json.dumps(TA.status(env=env, now=t + 10 + 2 * F)))\n"))
+            "tick(t + 10); TA.agent_lock('fghij', 'agent:fghij/tri-1', env=env, now=t + 20)\n"
+            "for k in range(1, 4): tick(t + 10 + k * A)\n"
+            "print(json.dumps(TA.status(env=env, now=t + 10 + 3 * A)))\n"))
         rows = {r["seat"]: r for r in out["seats"]}
         self.assertEqual(out["seats"][0]["seat"], SEAT, out)
-        self.assertEqual((rows[SEAT]["stalled"], rows[SEAT]["followups"], rows[SEAT]["live_at_wake"]), (True, 1, 2))
-        self.assertFalse(rows["fghij"]["stalled"])
+        self.assertEqual((rows[SEAT]["stalled"], rows[SEAT]["followups"], rows[SEAT]["live_at_wake"]), (True, 2, 2))
+        self.assertEqual((rows["fghij"]["stalled"], rows["fghij"]["agent"]), (False, "agent:fghij/tri-1"))
         self.assertEqual(out["stalled"], 1)
 
 
 KNIVES = [
-    ("K1", "src/cockpit/dm_triage.py", "        return \"stall\"\n    return \"rewake\"\n",
-     "        return \"stall\"\n    return None\n", "F1Followup.test_rewake_then_stall"),
-    ("K2b", "src/cockpit/dm_triage.py", " or (unread_n is not None and int(unread_n) <= TRIAGE_MIN_UNREAD):",
-     ":", "F1Followup.test_inprog_only_stalls_without_second_paste"),
-    ("K2", "src/cockpit/dm_queue.py", "    act = TR.followup_action(rec, now, live_n, _triage_progressed(seat, rec, env), unread_n=len(unread))\n",
-     "    act = TR.followup_action(rec, now, live_n, False, unread_n=len(unread))\n", "F2StartedSignal.test_dmtriage_file_or_lock_stops_followup"),
+    ("K1", "src/cockpit/dm_triage.py", '    return True, "rewake", True\n', '    return False, "rewake", False\n',
+     "F1NoPickupRewake.test_rewake_then_stall_then_new_mail"),
+    ("K5", "src/cockpit/dm_triage.py", '    if int(rec.get("followups") or 0) >= REWAKE_MAX:\n', "    if False:\n",
+     "F1NoPickupRewake.test_rewake_then_stall_then_new_mail"),
+    ("K2", "src/cockpit/dm_triage.py", '    if live:\n        return False, "agent-working", False\n',
+     '    if False:\n        return False, "agent-working", False\n', "F2AgentThenNextBatch.test_lock_holds_then_next_batch_immediately"),
+    ("K2b", "src/cockpit/dm_triage.py", "    if not cur - handled:\n", "    if not cur:\n",
+     "F2AgentThenNextBatch.test_lock_holds_then_next_batch_immediately"),
     ("K3", "src/cockpit/dm_queue.py", "        return \"digest\"\n    return \"agent\"\n",
      "        return \"agent\"\n    return \"agent\"\n", "F4Fleet.test_three_kinds_all_woken"),
     ("K4", "src/cockpit/dm_triage.py", "    if int(unread_n or 0) <= TRIAGE_MIN_UNREAD and int(inprog_n or 0) < INPROG_MIN:\n        return \"\"\n",

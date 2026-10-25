@@ -88,12 +88,16 @@ class S1WaitingThreshold(unittest.TestCase):
 class S2InProgressThreshold(unittest.TestCase):
 
     def test_two_in_progress_wakes_once_then_only_on_new(self):
+        # Andy 10-25 22:3x(@044e0 改):不再靠 10 分鐘冷卻;整理子代理看過、放鎖後留下的同一批不重叫,多一封新的立刻叫
         b = HN.QBox(self)
         out = b.py(SETUP + (
+            "import dm_triage_agent as TA\n"
             "t = int(__import__('time').time())\n"
             "inprog('進行中一:審查還沒回來', t); inprog('進行中二:等 CI', t)\n"
             "tick(t + 10)\n"
             "n1 = len(sent)\n"
+            "TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 20)\n" % (SEAT, SEAT) +
+            "TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 30, release=True)\n" % (SEAT, SEAT) +
             "tick(t + 10 + 3600)\n"
             "n2 = len(sent)\n"
             "inprog('進行中三:新的一件', t + 7300)\n"
@@ -101,7 +105,7 @@ class S2InProgressThreshold(unittest.TestCase):
             "print(json.dumps({'n1': n1, 'n2': n2, 'sent': sent}))\n"))
         self.assertEqual(out["n1"], 1, "進行中 2 封、待審 0 ⇒ 也要叫:%r" % out)
         self.assertIn("進行中 2 封", out["sent"][0])
-        self.assertEqual(out["n2"], 1, "同一批進行中過了冷卻也不再叫(卡著等別人的不能每 10 分鐘叫):%r" % out)
+        self.assertEqual(out["n2"], 1, "子代理看過、留給本席的同一批不重叫(卡著等別人的不能一直叫):%r" % out)
         self.assertEqual(len(out["sent"]), 2, "多一封新的進行中 ⇒ 再叫:%r" % out)
 
     def test_one_in_progress_does_not_wake(self):

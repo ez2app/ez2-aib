@@ -1959,29 +1959,13 @@ def triage_path(seat, env=None):
 TRIAGE_AGENT_LOCK_FILE = "triage-agent.json"     # 整理子代理自願登記(dm_triage_agent.agent_lock 寫、收口讀)
 
 
-def _aib_pending_dir(env=None):
-    e = _env(env)
-    home = e.get("EZ2_AIB_HOME") or os.path.join(e.get("HOME") or os.path.expanduser("~"), ".ez2-aib")
-    return Path(home) / "pending"
-
-
-def _triage_progressed(seat, rec, env=None):
-    """叫醒(woke_at)之後那一席有沒有開工的訊號:pending/DMTRIAGE-<席>-*.md 有新的,或整理子代理登記(triage-lock)。"""
-    try:
-        woke = int((rec or {}).get("woke_at"))
-    except (TypeError, ValueError):
-        return False
-    try:
-        for f in _aib_pending_dir(env).glob("DMTRIAGE-%s-*" % seat):
-            if f.is_file() and f.stat().st_mtime >= woke:
-                return True
-    except OSError:
-        pass
+def _triage_lock(seat, env=None):
+    """那一席 triage-agent.json 的原樣內容(子代理自願登記;只是協調,不是防線);沒有 / 壞檔回 None。"""
     try:
         lk = json.loads((seat_dir(seat, env) / TRIAGE_AGENT_LOCK_FILE).read_text(encoding="utf-8"))
-        return isinstance(lk, dict) and int(lk.get("at") or 0) >= woke
-    except (OSError, ValueError, TypeError):
-        return False
+        return lk if isinstance(lk, dict) else None
+    except (OSError, ValueError):
+        return None
 
 
 class TriageLockBusy(RuntimeError):
@@ -2054,26 +2038,27 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             rec["unread_ids"] = unread
             rec["inprog_ids"] = inprog
             TR.write(path, rec)
-    # Andy 10-25 22:1x(@abb89 派工 A):叫醒之後 15 分鐘收口 —— 沒動再叫一次,第二次還沒動標 triage_stalled
-    #   有新一批信 ⇒ 照常叫(收口重新起算);沒有新信才看收口(再叫 / 標 stalled)。
-    live_n = len(unread) + len(inprog)
-    act = TR.followup_action(rec, now, live_n, _triage_progressed(seat, rec, env), unread_n=len(unread))
-    normal = TR.should_wake_tidy(rec, now=now, cooldown_s=TIDY_WAKE_COOLDOWN_S) if tidy_on else TR.should_wake(rec, now=now)
-    if act == "progress" or (act == "stall" and not normal):
-        rec = dict(rec)
-        if act == "progress":
-            rec.update({"followups": 0, "triage_stalled": False})
-            rec.pop("stalled_at", None)
-        else:
-            rec.update({"triage_stalled": True, "stalled_at": now})
-        TR.write(path, rec)
-        if act == "stall":
-            return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "triage-stalled", "cleaned": cleaned}
-    rewake = act == "rewake" and not normal
-    if not normal and not rewake:
-        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "no-new-batch-or-cooldown",
-                "cleaned": cleaned}
-    gate_ok, gate_why = _wake_gate(seat, rec, env, now, idle_cap=not tidy_on)
+    # Andy 10-25 22:3x「更即時、不要跳過」:到門檻 + 沒有子代理在做 ⇒ 每一拍都可以叫(TR.wake_decision);
+    #   叫了沒人接 ⇒ ACK_S 後再叫,最多 REWAKE_MAX 次後標 triage_stalled;子代理做完放鎖 ⇒ 下一拍接著叫下一批。
+    rewake = False
+    if tidy_on:
+        normal, why = TR.should_wake_tidy(rec, now=now, cooldown_s=TIDY_WAKE_COOLDOWN_S), "no-new-batch-or-cooldown"
+    else:
+        normal, why, rewake = TR.wake_decision(rec, now, _triage_lock(seat, env))
+        stalled = why == "triage-stalled"
+        if stalled != bool(rec.get("triage_stalled")) and why != "waiting-pickup":
+            rec = dict(rec)
+            rec["triage_stalled"] = stalled
+            if stalled:
+                rec["stalled_at"] = now
+            else:
+                rec.pop("stalled_at", None)
+            TR.write(path, rec)
+    if not normal:
+        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": why, "cleaned": cleaned}
+    # 子代理那條(非 auto_tidy):閒很久也叫(Andy 要立刻消化),每日上限放寬到 TRIAGE_DAILY_MAX
+    gate_ok, gate_why = _wake_gate(seat, rec, env, now, idle_cap=False,
+                                   daily_max=WAKE_DAILY_MAX if tidy_on else TRIAGE_DAILY_MAX)
     if not gate_ok:
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": gate_why, "cleaned": cleaned}
     if tidy_on:
@@ -2115,7 +2100,7 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
                             mode=mode, digest=TR.human_lines(rec, rows) if mode == "digest" else None,
                             notes=[(by_id.get(i) or {}).get("msg") or "" for i in notes], inprog=len(inprog))
     if rewake:
-        text = TR.FOLLOWUP_PREFIX % (TR.FOLLOWUP_S // 60) + text
+        text = TR.FOLLOWUP_PREFIX % max(1, (now - int(rec.get("woke_at") or now)) // 60) + text
     text = _one_line_for_line_reader(text, reg_prov or probe.get("provider"))
     # id 故意不合 ITEM_RE:投遞器看到不是佇列 id 就不帶 AIB_DM_QUEUED_ITEM_ID,dm-ctl 也就不回佇列找它
     # no_relay:叫醒那句整段貼進去,不讓 dm-ctl 換成「去讀某檔」的指標(見 _dmctl_env)
@@ -2130,9 +2115,9 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
                 "woke_inprog_ids": sorted(set(rec.get("inprog_ids") or []) | set(rec.get("unread_ids") or [])),
                 "woke_at": now, "woke_rc": None, "woke_mode": mode, "auto_read": [],
                 "wake_log": day_log + [now],
-                # 收口用:第一次叫醒記當時的封數(再叫一次時照舊比第一次),followups 記叫了幾次
-                "woke_live_n": rec.get("woke_live_n") if rewake else live_n,
-                "followups": 1 if rewake else 0, "triage_stalled": False})
+                # 看板用:叫醒當時的封數(再叫一次沿用第一次的);followups = 沒人接、再叫了幾次
+                "woke_live_n": rec.get("woke_live_n") if rewake else len(unread) + len(inprog),
+                "followups": int(rec.get("followups") or 0) + 1 if rewake else 0, "triage_stalled": False})
     if not TR.write(path, rec):
         # review r1 m3:記不下來就不叫 —— 否則下一拍看不到叫過,每分鐘都叫一次
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "triage-write-failed"}
@@ -2445,6 +2430,8 @@ def _holdnote_deliver(seat, plan, env, deliver_fn=None, hold_fn=None):
 
 
 WAKE_DAILY_MAX = 12              # the maintainer 09-30 18:4x(預設照建議):每席一天最多叫醒 12 次,超過只在待審區顯示
+# Andy 10-25 22:3x 整理子代理要「數量一到就立刻叫」⇒ 那條每席一天的上限放寬(仍有上限:防一直來信一直叫)
+TRIAGE_DAILY_MAX = 48
 WAKE_IDLE_MAX_S = 3600          # 閒置超過 1 小時的席不叫(等它下次自己開口時由 hook 提醒)
 
 
@@ -2522,7 +2509,7 @@ def _cabin_queue_enabled(hub, env=None):
     return bool(pol.get("enabled")) if how == "ok" else False
 
 
-def _wake_gate(seat, rec, env, now, idle_cap=True):
+def _wake_gate(seat, rec, env, now, idle_cap=True, daily_max=None):
     """叫醒前的三道閘(the maintainer 09-30 18:4x,預設照 a seat 建議):
     1. 那一席所在的艙要**有開信件排隊** —— 佇列是整台機器共用的,別艙沒開就別替它叫(以前開一艙就全機都叫);
     2. 那一席真活動(activity_probe,不是 tmux 重繪時戳)閒置超過 1 小時不叫(閒很久的席每叫一次就花一次額度;
@@ -2530,7 +2517,7 @@ def _wake_gate(seat, rec, env, now, idle_cap=True):
     3. 每席一天最多 WAKE_DAILY_MAX 次。
     登記表查不到這一席 ⇒ 1、2 不判(舊行為;治具也走這條),3 照判。回 (ok, why)。"""
     log = [t for t in (rec.get("wake_log") or []) if isinstance(t, (int, float)) and now - int(t) < 86400]
-    if len(log) >= WAKE_DAILY_MAX:
+    if len(log) >= (WAKE_DAILY_MAX if daily_max is None else daily_max):
         return False, "daily-max"
     recs = _seat_records_all_cabins(seat, env)
     if not recs:

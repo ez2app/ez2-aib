@@ -156,13 +156,17 @@ def reopen(seat, item_id, actor, why, env=None, now=None):
 
 
 AGENT_LOCK_FILE = Q.TRIAGE_AGENT_LOCK_FILE
-AGENT_LOCK_TTL_S = 3600                   # @abb89 22:02:自願登記 60 分鐘過期
+# @abb89 22:02 自願登記會過期;Andy 22:3x 要立刻接下一批 ⇒ 縮到 20 分鐘(子代理每做一批重登記一次就會續)。
+#   子代理當掉沒放 ⇒ 最多 20 分鐘後下一拍照叫。
+AGENT_LOCK_TTL_S = 1200
 
 
 def agent_lock(seat, actor, env=None, now=None, release=False, status=False):
     """整理子代理開工前自願登記(每席同時 1 個;Andy 10-25 21:4x)。**只是協調,不是防線**:
     子代理與席位同帳號,誰都能刪這個檔;它只讓守規矩的第二個子代理知道「已經有人在整理」。
-    status ⇒ 只看;release ⇒ 本人放掉;否則登記(別人登記且沒過期 ⇒ held)。"""
+    status ⇒ 只看;release ⇒ 本人放掉;否則登記 / 續期(別人登記且沒過期 ⇒ held)。
+    release 不刪檔,改記 released_at + handled_ids(放掉當下還算數的待審 / 進行中 = 子代理看過、留給本席的):
+    叫醒那一拍(TR.wake_decision)只在出現它沒看過的信時再叫,留下的不會一直把子代理叫起來。"""
     now = int(time.time() if now is None else now)
     path = Q.seat_dir(seat, env) / AGENT_LOCK_FILE
     try:
@@ -182,13 +186,14 @@ def agent_lock(seat, actor, env=None, now=None, release=False, status=False):
         return {"ok": False, "reason": "held", "held": view,
                 "message": "已經有整理子代理在做(%s,到 %s);等它做完或過期" % (cur.get("by"), Q.taipei_stamp(cur.get("until")))}
     if release:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        return {"ok": True, "reason": "released", "held": None}
+        p = plan(seat, env=env, now=now)
+        left = sorted(r["id"] for r in p["rows"] if "excluded" not in r)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Q.AJ.write_json(str(path), {"by": actor, "at": cur.get("at") if cur.get("by") == actor else now, "until": 0,
+                                    "released_at": now, "handled_ids": left})
+        return {"ok": True, "reason": "released", "held": None, "left": left, "over_threshold": p["over_threshold"]}
     path.parent.mkdir(parents=True, exist_ok=True)
-    rec = {"by": actor, "at": now, "until": now + AGENT_LOCK_TTL_S}
+    rec = {"by": actor, "at": cur.get("at") if live else now, "until": now + AGENT_LOCK_TTL_S}
     Q.AJ.write_json(str(path), rec)
     return {"ok": True, "reason": "ok", "held": rec}
 
