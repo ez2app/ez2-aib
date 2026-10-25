@@ -394,9 +394,12 @@ def _emit(res, rc, as_json=False):
     if as_json:
         print(_safe(json.dumps(res, ensure_ascii=False)))
     elif res.get("detail") == "plugin_catalog":
+        sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+        import plugin_catalog as PC
+        selling = PC.sales_visible()   # 銷售總開關 off(Andy 10-25:新用戶只看 Free、不要有商業感)⇒ 畫面不印價錢、不印方案;--json 資料照給
         for e in res["plugins"]:
-            label = e["price"] or {"paid": "-", "member": "member"}.get(e.get("access"), "free")
-            if e.get("plan"):   # 10-25 方案五級:這一級以上含在方案內(paid + plan = 方案含 或 單買)
+            label = (e["price"] if selling else None) or {"paid": "-", "member": "member"}.get(e.get("access"), "free")
+            if e.get("plan") and selling:   # 10-25 方案五級:這一級以上含在方案內(paid + plan = 方案含 或 單買)
                 label += " %s+" % e["plan"]
             print(_safe("%-24s %-10s %s%s" % (e["name"], e["version"], label, ("  " + e["summary"]) if e["summary"] else "")))
     else:
