@@ -5011,6 +5011,8 @@
   "aib.seat.panel.remote_why_link_stopped": "スマホのリモート接続が動いていません(aib seat remote on で一緒に起動)",
   "aib.seat.panel.remote_why_server_not_ready": "ez2.page のリモート操作はまだ公開されていません",
   "aib.seat.panel.remote_why_server_unreachable": "ez2.page に接続できません",
+  "aib.seat.panel.queued_locked": "@{seat} の解除ウィンドウが閉じたため、待機中の入力は送っていません。艦長室で再試行を押してください(Touch ID を求めます)",
+  "aib.seat.panel.help_queued": "待機中のバックグラウンド送信：解除ウィンドウ内でのみ送信し、Touch ID を出さず、ウィンドウも延長しない。閉じていれば locked を返す。--queued のときは --unlock-min を無視(ウィンドウを開かない)",
   "aib.chat.phone_forward.touchid_reason": "BB Call のスマホ転送をオン:本人宛ての手紙が {minutes} 分たまったら「新しい手紙 N 通」をペアリング済みのスマホへ、1 時間に最大 {per_hour} 件",
   "aib.chat.phone_forward.hint_touchid": "BB Call のスマホ転送をオン / 緩めるには本人の Touch ID が必要です。何も変更していません(オフにするのは不要)",
   "aib.doctor.check.page_features.skipped": "ez2.page の機能一覧は確認していません(AIB_DOCTOR_NO_NET=1)",

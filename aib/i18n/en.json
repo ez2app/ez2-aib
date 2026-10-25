@@ -5011,6 +5011,8 @@
   "aib.seat.panel.remote_why_link_stopped": "The phone remote link is not running (aib seat remote on starts it)",
   "aib.seat.panel.remote_why_server_not_ready": "ez2.page remote control is not available yet",
   "aib.seat.panel.remote_why_server_unreachable": "Cannot reach ez2.page",
+  "aib.seat.panel.queued_locked": "@{seat}'s unlock window is closed, so the queued text was not sent; press retry in the captain room (Touch ID will ask)",
+  "aib.seat.panel.help_queued": "Queued background send: only sends inside the unlock window, never shows Touch ID, never extends the window; returns locked when it is closed; --unlock-min is ignored with --queued (it never opens a window)",
   "aib.chat.phone_forward.touchid_reason": "Turn on BB Call phone forwarding: after {minutes} minutes, send \"N new letters\" to your paired phones, at most {per_hour} per hour",
   "aib.chat.phone_forward.hint_touchid": "Turning on or loosening BB Call phone forwarding needs your Touch ID; nothing was changed (turning it off needs none)",
   "aib.doctor.check.page_features.skipped": "Skipped the ez2.page feature list (AIB_DOCTOR_NO_NET=1)",
