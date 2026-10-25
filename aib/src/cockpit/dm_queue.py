@@ -32,6 +32,7 @@ import atomic_json as AJ  # noqa: E402
 import license_plan as LP  # noqa: E402
 import seats_dir_lib  # noqa: E402
 import seat_address as SA  # noqa: E402
+import dm_text as DT  # noqa: E402
 # ★ 依賴方向(第 47b 項):本檔 → feature_policy,**單向**。
 #   「開關檔住哪」與「准不准」的判斷只住 feature_policy —— 它只做這件事、檔小、
 #   不依賴佇列;本檔拿它的結果來用。反過來 feature_policy **不得** import 本檔:
@@ -174,7 +175,7 @@ TRANSITION_REASON = {
     "transition": "這個狀態不能這樣改",
     "actor": "這個動作不是你能做的",
     "actor_missing": "要帶 --by(收件席讀完請用 read,不要 delete)",
-    "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit / github.com/ez2app 的 PR 網址),或用 --why 寫結案理由",
+    "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit / 完整 PR 網址 https://github.com/ez2app/…/pull/N;夾在說明文字裡也可以,只寫 #N 不算),或用 --why 寫結案理由",
     "not_found": "這封信已經不在了",
     "im_room_only": "Telegram 來信只在艦長室看,還不能放進 AI 框(第 39 節第二步做好前)",
 }
@@ -1335,7 +1336,7 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
     if to == "done":
         # 10-13 S7-1(the maintainer 准;kimi / grok / gpt 三家都說「只收存在的檔」是進行中只進不出的主因):
         #   證據收 檔案 / 本席寄出的回信 id / 查得到的 commit;都不是但有 why ⇒ 憑理由結案(另記 done_kind=reason)。
-        done_kind = evidence_kind(seat, evidence, env)
+        done_kind, done_ref = evidence_ref(seat, evidence, env)
         if done_kind is None:
             if isinstance(why, str) and why.strip():
                 done_kind = "reason"
@@ -1360,6 +1361,8 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         item["done_at"] = now
         item["done_evidence"] = str(evidence) if done_kind != "reason" else None
         item["done_kind"] = done_kind
+        if done_kind != "reason" and done_ref and done_ref != str(evidence).strip():
+            item["done_ref"] = done_ref          # 說明文字裡查證過的那一段(D)
         if done_kind == "reason":
             item["done_why"] = why.strip()[:500]
         if item.get("read_at") is None:
@@ -1405,8 +1408,39 @@ MEASURED_SOURCES = ("pane_pid_chain", "bg_fork_chain")
 _PR_URL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|commit)/[0-9a-f]{1,40}/?")
 
 
+_EV_PR_IN = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|commit)/[0-9a-f]{1,40}")
+_EV_ITEM_IN = re.compile(r"\bq_[0-9a-f]{16}\b")
+_EV_SHA_IN = re.compile(r"\b[0-9a-f]{7,40}\b")
+_EV_PATH_IN = re.compile(r"(?:~|/)[^\s,;()「」『』,。、]+")
+_EV_SCAN_MAX = 4          # 說明文字裡最多試幾個候選(commit 要叫 git、檔要 stat;#370 r1 L4 收小)
+
+
+def evidence_ref(seat, evidence, env=None):
+    """(種類, 查證的那一段)。整串就是證據 ⇒ 照舊判;不是 ⇒ 從說明文字裡抽完整 PR 網址 / 回信 id / commit / 檔去驗證,
+    抽到第一個驗得過的就收(10-25 Andy 裁 D:說明 + 網址不再整批被退)。抽不到 ⇒ (None, None)。仍不收純文字。
+    #370 r1 M3:不收「#數字」—— 不查證就結案(「見第 #1 點」也會過),倉別也猜不準;要 PR 就貼完整網址。"""
+    ev = evidence.strip() if isinstance(evidence, str) else ""
+    kind = evidence_kind(seat, ev, env)
+    if kind or not ev:
+        return kind, (ev or None) if kind else None
+    for m in _EV_PR_IN.finditer(ev):
+        return "pr", m.group(0)
+    tried = 0
+    for rx in (_EV_ITEM_IN, _EV_SHA_IN, _EV_PATH_IN):
+        for m in rx.finditer(ev):
+            tried += 1
+            if tried > _EV_SCAN_MAX:
+                return None, None
+            tok = m.group(0).rstrip(".:")
+            k = evidence_kind(seat, tok, env)
+            if k:
+                return k, tok
+    return None, None
+
+
 def evidence_kind(seat, evidence, env=None):
-    """完成證據的種類:file(存在的檔)/ dm(這一席寄出、某一席佇列裡查得到的信)/ commit(本倉查得到)/ None。"""
+    """完成證據的種類:file(存在的檔)/ dm(這一席寄出、某一席佇列裡查得到的信)/ commit(本倉查得到)/ None。
+    整串要剛好是一個證據;說明文字裡夾證據走 evidence_ref。"""
     ev = evidence.strip() if isinstance(evidence, str) else ""
     if not ev:
         return None
@@ -1461,6 +1495,44 @@ def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_chec
     if out.get("ok"):
         _after_read(seat, item_id, env=env, now=now)
     return out
+
+
+PREVIEW_CHARS = 200
+PREVIEW_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered", "read")   # 還沒結的才讀檔(備存上千封不讀)
+_PREVIEW_BAD = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+def _relay_head(path, limit=2048, env=None):
+    """長訊檔開頭(只讀前 limit 位元組、一般檔、不阻塞;每幀畫面都會叫到,不讀整檔)。不是長訊檔 / 讀不到 ⇒ None。"""
+    if not DR.relay_file_ok(path, env):
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        raw = os.read(fd, limit)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return raw.decode("utf-8", "ignore")
+
+
+def _preview_fields(item, env=None):
+    """E(10-25 Andy 裁):清單 / 待審框帶長訊前 200 字。
+    preview:長訊讀 RELAY 檔(限 relay 目錄、限量、不阻塞)、短訊就是本文;控制字元 / 方向字元拿掉、換行壓成空白。
+    全球 / IM 來信不讀(外人寫的,另有顯示規則)。#370 r1 M1:不再從正文抽「自報寄件席」(誰都能寫,量不到就不顯示)。"""
+    if item.get("status") not in PREVIEW_STATUSES or _is_global_item(item) or item.get("im") \
+            or item.get("sender_kind") == "external_im":
+        return {"preview": None}
+    msg = str(item.get("msg") or "")
+    path = DR.relay_path_of(msg)
+    head = _relay_head(path, env=env) if path else msg[:PREVIEW_CHARS * 4]
+    if not isinstance(head, str):
+        return {"preview": None}
+    flat = " ".join(_PREVIEW_BAD.sub("", head).split())
+    return {"preview": flat[:PREVIEW_CHARS] or None}
 
 
 def _onboard_relay_text(path):
@@ -2739,7 +2811,7 @@ TAB_OF_STATUS = {
 TABS = ("waiting", "read", "done", "archived", "deleted")
 
 
-def _row(item, seat, now, index=None):
+def _row(item, seat, now, index=None, env=None):
     pri = normalize_priority(item.get("priority"))
     sent = item.get("sent_at")
     try:
@@ -2791,7 +2863,9 @@ def _row(item, seat, now, index=None):
         "expired_now": (item.get("expired") or _expired(item, now)) and item.get("status") in ("queued", "claimed", HOLD_STATUS, "delivered"),
         "age_min": age,
         "legacy": bool(item.get("_legacy")),
+        "done_ref": item.get("done_ref"),
     }
+    row.update(_preview_fields(item, env))
     g = item.get("global")
     if isinstance(g, dict):
         # 全球來信:畫面標 [外部]、AI 用短碼回信(aib dm --reply);**不帶位址與 npub**(盤點 10-16 第 8、9 項)
@@ -2845,7 +2919,7 @@ def tabs_payload(seat, env=None, now=None):
     tabs = {t: {"n": 0, "oldest_when": None, "oldest_ts": None, "rows": []} for t in TABS}
     for item in items:
         tab = TAB_OF_STATUS.get(item.get("status"), "waiting")
-        row = _row(item, seat, now)
+        row = _row(item, seat, now, env=env)
         if tab == "deleted":
             row = {k: row[k] for k in ("id", "when", "sender", "ts", "rev", "status")}
             row.update({"deleted_at": item.get("deleted_at"), "deleted_by": item.get("deleted_by"),
@@ -2888,6 +2962,19 @@ def tabs_payload(seat, env=None, now=None):
     }
     return {"schema": TABS_SCHEMA, "seat": seat, "now": now, "source_rev": source_rev(seat, env),
             "tabs": tabs, "badges": badges, "errors": errors}
+
+
+def tabs_counts(t):
+    """E:`tabs --counts` ⇒ 只有數量:每頁則數、依狀態分開(hold / queued / delivered / read / done …)、進行中有沒有寫「等什麼」。"""
+    by_status = {}
+    for rec in t["tabs"].values():
+        for r in rec.get("rows") or []:
+            by_status[r.get("status") or "?"] = by_status.get(r.get("status") or "?", 0) + 1
+    read_rows = t["tabs"].get("read", {}).get("rows") or []
+    return {"schema": TABS_SCHEMA + "#counts", "seat": t["seat"], "now": t["now"],
+            "tabs": {k: rec.get("n", 0) for k, rec in t["tabs"].items()},
+            "by_status": by_status, "read_without_wait": sum(1 for r in read_rows if not DT.wait_text(r)),
+            "badges": t["badges"], "errors": len(t["errors"])}
 
 
 def brief_payload(seat, env=None, now=None):
@@ -3299,7 +3386,7 @@ def patrol_payload(seat, env=None):
     srev = source_rev(seat, env)
     rows = []
     for item in list_items(seat, env=env, newest_first=True):
-        row = _row(item, seat, now)
+        row = _row(item, seat, now, env=env)
         row["source_rev"] = srev
         rows.append(row)
     return rows
@@ -3343,7 +3430,7 @@ def box_payload(seat, env=None):
     srev = source_rev(seat, env)
     rows = []
     for i, item in enumerate(list_for_box(seat, env=env), start=1):
-        rows.append(_row(item, seat, now, index=i))
+        rows.append(_row(item, seat, now, index=i, env=env))
         rows[-1]["source_rev"] = srev
         if rows[-1]["status"] == HOLD_STATUS:
             # 畫面只讀 sender/msg;不動渲染器,把「人審」(HOLD_LABEL)掛在寄件人前面讓人看得到。
@@ -4772,6 +4859,7 @@ def main(argv=None, env=None):
 
     tb = sub.add_parser("tabs")
     tb.add_argument("--seat", required=True)
+    tb.add_argument("--counts", action="store_true", help="只印數量(每頁則數 + 依狀態分開 + badges),不印每封")
 
     mg = sub.add_parser("migrate")
     mg.add_argument("--seat", default=None)
@@ -5025,7 +5113,8 @@ def main(argv=None, env=None):
         return 0
 
     if args.cmd == "tabs":
-        _print_json(tabs_payload(args.seat, env=env))
+        t = tabs_payload(args.seat, env=env)
+        _print_json(tabs_counts(t) if args.counts else t)
         return 0
 
     if args.cmd == "migrate":
