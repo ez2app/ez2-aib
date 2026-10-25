@@ -185,7 +185,7 @@ class S6SystemAutoReadNotInProgress(unittest.TestCase):
         self.assertEqual(TR.inprog_ids(rows), ["b", "c"])
 
     def test_auto_read_notice_does_not_rewake(self):
-        """非 tidy 席:第一拍叫醒 + 代標「到」為已讀 ⇒ 10 分後進行中多了那封「到」,不得再叫。"""
+        """非 tidy 席:「到」這種純通知不算數(0.1.61 起系統先收掉,不留在進行中撐門檻)⇒ 卡著 1 + 真事 1 不到門檻,前後都不叫。"""
         b = HN.QBox(self)
         out = b.py(SETUP + (
             "t = int(__import__('time').time())\n"
@@ -194,11 +194,12 @@ class S6SystemAutoReadNotInProgress(unittest.TestCase):
             "tick(t + 10)\n"
             "n1 = len(sent)\n"
             "tick(t + 710)\n"
-            "rows = Q.tabs_payload(%r, env=env)['tabs']['read']['rows']\n"
-            "print(json.dumps({'n1': n1, 'n2': len(sent), 'read_by': sorted(str(r.get('read_by')) for r in rows)}))\n" % SEAT))
-        self.assertEqual(out["n1"], 1, out)
-        self.assertIn("system", out["read_by"], "治具前提:「到」要被系統代標已讀:%r" % out)
-        self.assertEqual(out["n2"], 1, "代標已讀的通知不算進行中,不得再叫:%r" % out)
+            "tabs = Q.tabs_payload(%r, env=env)['tabs']\n"
+            "open_msgs = [str(r.get('msg')) for k in tabs for r in (tabs[k].get('rows') or []) if k in ('waiting', 'read')]\n"
+            "print(json.dumps({'n1': n1, 'n2': len(sent), 'open': open_msgs}))\n" % SEAT))
+        self.assertNotIn("到", out["open"], "治具前提:「到」要被系統收掉:%r" % out)
+        self.assertEqual(out["n1"], 0, "通知不算待審,卡著 1 + 真事 1 不到門檻:%r" % out)
+        self.assertEqual(out["n2"], 0, "通知不算進行中,之後也不得叫:%r" % out)
 
 
 class S7Rc2Rollback(unittest.TestCase):

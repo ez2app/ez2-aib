@@ -628,8 +628,8 @@ def wake_decision(rec, now=None, lock=None, load1=None):
 
 
 def _wake_decision(rec, now=None, lock=None):
-    """純函式 → (叫?, 原因, 是不是「再叫一次」)。原因:under-threshold / agent-working / all-handled /
-    waiting-pickup / triage-stalled / over-threshold / rewake。
+    """純函式 → (叫?, 原因, 是不是「再叫一次」)。原因:under-threshold / agent-working / all-handled / seat-took /
+    inprog-cooldown / waiting-pickup / triage-stalled / over-threshold / rewake。
     「接手了」只認 triage-lock 的登記時間 ≥ 叫醒時間(DMTRIAGE 整理檔不算:沒登記就分不出還在做還是做完了,
     算的話每一拍都會叫)。"""
     if not isinstance(rec, dict):
@@ -641,16 +641,24 @@ def _wake_decision(rec, now=None, lock=None):
     live, lock_at, handled = _lock_view(lock, now)
     if live:
         return False, "agent-working", False
-    cur = unread | inprog
+    woke = set(str(i) for i in (rec.get("woke_ids") or []))
+    # #374 r3 / S10:叫醒時還沒讀、之後被本席自己讀掉的 ⇒ 本席接手了,不是新工作,也不算「沒人接」
+    took = woke & inprog
+    cur = (unread | inprog) - took
     if not cur - handled:
-        return False, "all-handled", False
+        return False, ("seat-took" if took else "all-handled"), False
     try:
         woke_at = int(rec["woke_at"]) if rec.get("woke_at") is not None else None
     except (TypeError, ValueError):
         woke_at = None
+    # #374 r4 / S17:只靠進行中到門檻的叫醒,每席每小時最多一次(待審到門檻不受此限)。
+    #   不然每 15 分讀一封的席 3 小時就把一天 12 次用光,之後真的待審反而叫不到(= 跳過)。
+    if (len(unread) <= TRIAGE_MIN_UNREAD and woke_at is not None and now is not None
+            and int(now) - woke_at < INPROG_WAKE_COOLDOWN_S):
+        return False, "inprog-cooldown", False
     if woke_at is None or (lock_at is not None and lock_at >= woke_at):
         return True, "over-threshold", False           # 第一次 / 上一輪子代理接過了(做完或過期)⇒ 立刻叫下一批
-    fresh = cur - set(str(i) for i in (rec.get("woke_ids") or [])) - set(str(i) for i in (rec.get("woke_inprog_ids") or []))
+    fresh = cur - woke - set(str(i) for i in (rec.get("woke_inprog_ids") or []))
     if now is not None and int(now) - woke_at < ACK_S:
         return False, "waiting-pickup", False
     if fresh:

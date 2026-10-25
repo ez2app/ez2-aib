@@ -112,11 +112,11 @@ class F2AgentThenNextBatch(unittest.TestCase):
         out = HN.QBox(self).py(SETUP + (
             "def rd(m, w):\n"
             "    i = put(m, w); Q.mark_read(%r, i, 'seat:%s', env=env, now=w, no_rev_check=True)\n"
-            "rd('進行中一:審查還沒回來', t); rd('進行中二:等 CI', t)\n"
+            "rd('進行中一:審查還沒回來', t - 700); rd('進行中二:等 CI', t - 700)\n"   # #374 r4:讀了 10 分鐘才算進行中
             "tick(t + 10); TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 20)\n"
             "TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 30, release=True)\n"
             "tick(t + 3600); a = len(sent)\n"
-            "rd('進行中三:新的一件', t + 3700); tick(t + 3710); b = len(sent)\n"
+            "rd('進行中三:新的一件', t + 3700); tick(t + 4310); b = len(sent)\n"
             "print(json.dumps({'a': a, 'b': b}))\n") % ((SEAT, SEAT) * 3))
         self.assertEqual((out["a"], out["b"]), (1, 2), "看過的進行中不重叫;多一件立刻叫:%r" % out)
 
