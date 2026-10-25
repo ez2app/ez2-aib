@@ -7,9 +7,11 @@
 R1 retired_next:房間快照的艦長席還在名冊 ⇒ 用它;艦長席也搬了 ⇒ 名冊第一席;跟原位址一樣 / 什麼都不知道 ⇒ None
 R2 _with_retired:refused + no_seat ⇒ next / hint_code=seat_retired / hint(含 aib dm <next>);detail 照舊 no_seat(艦長室認這個字)
 R3 其他結果(delivered / 別的拒收碼 / resolve)不加鍵;找不到改寄位址 ⇒ 不加鍵
+R5 名冊的艙 / 席帶空白、;、控制字元、大寫、太長 ⇒ 不當改寄位址(#364 r1 L1:會被拼進給人複製的 aib dm 指令);有合格的就跳過壞的
+R6 hint 走 i18n(aib.chat.seat_retired,四語都有、{next} 佔位;#364 r1 M1)
 R4 頁面本人寄件(chat_human)把 next / hint_code / hint 帶出去
 (轉接程式那一半:名冊沒這席 ⇒ 先更新快照再寫回條,在 test-chat-send S4 連假中繼站測)
-刀(複本):K1 艦長席不比對名冊 ⇒ R1 紅
+刀(複本):K1 艦長席不比對名冊 ⇒ R1 紅;K2 不驗位址格式 ⇒ R5 紅
 """
 import json
 import sys
@@ -76,6 +78,26 @@ class Core(Box):
         self.assertIn("aib dm " + LIVE, res["hint"])
         self.assertIn("沒有寄出", res["hint"])
 
+    def test_r5_bad_roster_strings(self):
+        try:
+            for bad in ("ae 61", "ae6a1;rm", "ae6a1\x1b[2J", "AE6A1", "ae6a1x9z9", "ae6a1\n", "../x1"):
+                self.roster(("0c1b", bad), at=300 + len(bad))
+                self.assertIsNone(GF.retired_next(self.root, OWNER, DEAD), repr(bad))
+                res = GF._with_retired(self.root, {"op": "send", "to": DEAD}, {"stage": "refused", "detail": "no_seat"})
+                self.assertNotIn("next", res, repr(bad))
+            self.roster(("0c;b", "ae6a1"), ("0c1b", "bbbb2"), at=900)
+            self.assertEqual(GF.retired_next(self.root, OWNER, DEAD), OWNER + "/0c1b/bbbb2", "跳過壞的、用合格的")
+            self.room("0c1b", "ae 61")
+            self.assertEqual(GF.retired_next(self.root, OWNER, DEAD), OWNER + "/0c1b/bbbb2", "房間快照的艦長席不合格式也不用")
+        except Exception as exc:  # noqa: BLE001  刀砍出來的要是 AssertionError
+            self.fail("%s: %s" % (type(exc).__name__, exc))
+
+    def test_r6_i18n(self):
+        for lang in ("zh-TW", "en", "ja", "ko"):
+            d = json.loads((REPO / "i18n" / ("%s.json" % lang)).read_text(encoding="utf-8"))
+            self.assertIn("{next}", d.get("aib.chat.seat_retired", ""), lang)
+        self.assertNotIn("RETIRED_HINT", (REPO / "src" / "cockpit" / "dm_global_files.py").read_text(encoding="utf-8"), "人話不寫死在程式")
+
     def test_r3_untouched(self):
         self.roster(("0c1b", "ae6a1"))
         for rec, res in (({"op": "send", "to": DEAD}, {"stage": "delivered", "detail": ""}),
@@ -109,16 +131,22 @@ class Core(Box):
 
 
 class Knife(unittest.TestCase):
-    def test_k1_captain_not_checked(self):
+    def _knife(self, needle, repl, case):
         name = Path(__file__).name
-        with knife_copy(REPO, "src/cockpit/dm_global_files.py",
-                        '    if addr and why == "captain" and addr.split("/", 1)[1] not in live:\n',
-                        "    if False:\n", tests=(name,)) as root:
-            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), "Core.test_r1_next"], cwd=str(root),
+        with knife_copy(REPO, "src/cockpit/dm_global_files.py", needle, repl, tests=(name,)) as root:
+            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), case], cwd=str(root),
                             max_procs=40, timeout=120)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
         self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k1_captain_not_checked(self):
+        self._knife('    if addr and (not valid(addr) or (why == "captain" and addr.split("/", 1)[1] not in live)):\n',
+                    "    if addr and not valid(addr):\n", "Core.test_r1_next")
+
+    def test_k2_address_not_validated(self):
+        self._knife('        return bool(isinstance(a, str) and (parse_address(a) or {}).get("owner") == owner)\n',
+                    "        return True\n", "Core.test_r5_bad_roster_strings")
 
 
 if __name__ == "__main__":

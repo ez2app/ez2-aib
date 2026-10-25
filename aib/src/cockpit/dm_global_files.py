@@ -770,19 +770,19 @@ def _unlink(p):
         pass
 
 
-RETIRED_HINT = "這一席已下架(對方最新的名冊沒有它),沒有寄出;對方現在可以寄 %s,要改寄就 aib dm %s"
-
-
 def retired_next(root, owner, dead):
     """寄到的席已不在對方最新名冊(no_seat)⇒ 建議改寄的位址:房間快照標的艦長席(還在名冊上才算)> 名冊第一席;
-    跟原位址一樣 / 什麼都不知道 ⇒ None。只讀本機快照(轉接程式回 no_seat 前已用最新名冊更新過)。"""
-    seats = [x for x in (read_peers(root).get(owner) or {}).get("seats") or [] if isinstance(x, dict) and x.get("seat")]
+    跟原位址一樣 / 什麼都不知道 ⇒ None。只讀本機快照(轉接程式回 no_seat 前已用最新名冊更新過)。
+    #364 r1 L1:艙 / 席字串來自對方名冊,會被拼進「要改寄就 aib dm <位址>」給人複製 ⇒ 不過 parse_address 的一律不用。"""
+    def valid(a):
+        return bool(isinstance(a, str) and (parse_address(a) or {}).get("owner") == owner)
+    seats = [x for x in (read_peers(root).get(owner) or {}).get("seats") or [] if isinstance(x, dict) and isinstance(x.get("seat"), str)]
     live = {"%s/%s" % (x.get("cabin") or "main", x["seat"]) for x in seats}
     addr, why = default_address(root, owner)
-    if addr and why == "captain" and addr.split("/", 1)[1] not in live:
-        addr = None                                  # 房間快照比名冊舊:艦長席本身也搬了
-    if not addr and seats:
-        addr = "%s/%s/%s" % (owner, seats[0].get("cabin") or "main", seats[0]["seat"])
+    if addr and (not valid(addr) or (why == "captain" and addr.split("/", 1)[1] not in live)):
+        addr = None                                  # 房間快照比名冊舊:艦長席本身也搬了;或位址不合格式
+    if not addr:
+        addr = next((a for a in ("%s/%s/%s" % (owner, x.get("cabin") or "main", x["seat"]) for x in seats) if valid(a)), None)
     return addr if addr and addr != dead else None
 
 
@@ -794,7 +794,7 @@ def _with_retired(root, rec, res):
     owner = (parse_address(rec.get("to") or "") or {}).get("owner")
     nxt = retired_next(root, owner, rec.get("to")) if owner else None
     if nxt:
-        res.update(next=nxt, hint_code="seat_retired", hint=RETIRED_HINT % (nxt, nxt))
+        res.update(next=nxt, hint_code="seat_retired", hint=_T("seat_retired", next=nxt))   # #364 r1 M1:人話走 i18n
     return res
 
 
