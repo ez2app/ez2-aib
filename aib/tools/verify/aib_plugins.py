@@ -327,11 +327,7 @@ def install(src, as_json=False, out=sys.stdout):
         ok, lwhy = licensed({"requires_addon": addon}) if addon else (True, "free")
         res.update({"ok": True, "name": m["name"], "version": m.get("version"), "path": str(aib_ext.target("plugin", m["name"])),
                     "addon": addon, "licensed": bool(ok), "why": lwhy})
-        try:   # 10-25:開著的艙不用重開就長出待審框(只管 pending-review;失敗不擋安裝)
-            import pending_pane_sync
-            res["live_cabins"] = pending_pane_sync.after_install(m["name"])
-        except Exception:  # noqa: BLE001
-            res["live_cabins"] = []
+        res["live_cabins"] = _sync_live(m["name"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False))
         elif addon:
@@ -339,6 +335,15 @@ def install(src, as_json=False, out=sys.stdout):
         return 0
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _sync_live(name):
+    """10-25:開著的艙不用重開就長出待審框(只管 pending-review;失敗不擋安裝)。回條另加欄位,detail / hint 不動。"""
+    try:
+        import pending_pane_sync
+        return pending_pane_sync.after_install(name)
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def install_named(spec, env=None, **kw):
@@ -367,7 +372,7 @@ def install_named(spec, env=None, **kw):
         return {"ok": True, "detail": "plugin_installed", "name": name, "version": entry["version"],
                 "path": str(aib_ext.target("plugin", name)), "addon": addon, "licensed": bool(ok),
                 "hint": PC.T("hint.plugin_installed" if ok else "hint.plugin_installed_unlicensed", addon=addon or "")
-                or "plugin_installed"}, 0
+                or "plugin_installed", "live_cabins": _sync_live(name)}, 0
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
