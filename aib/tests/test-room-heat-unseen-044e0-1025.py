@@ -130,7 +130,8 @@ class CpuTotal(Base):
         self.assertEqual(RU._ps_seconds("83:01.80"), 4981.8)
         self.assertEqual(RU._ps_seconds("2-01:00:05"), 2 * 86400 + 3605)
         self.assertIsNone(RU._ps_seconds("x:y"))
-        self.assertEqual(RU.proc_times(run=lambda c: "  1 83:01.80\n 22 0:00.10\n bad line here\n"), {1: 4981.8, 22: 0.1})
+        self.assertEqual(RU.proc_times(run=lambda c: "  1 83:01.80\n 22 0:00.10\n bad line here\n", platform="darwin"),
+                         {1: 4981.8, 22: 0.1}, "macOS ps time 格式(Linux 改讀 /proc,見 U1g)")
 
     def test_u1d_real_ticks_smoke(self):
         if not (sys.platform == "darwin" or sys.platform.startswith("linux")):
