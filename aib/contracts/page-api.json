@@ -928,6 +928,7 @@
     "http": 409,
     "when": "這個授權的機器數已滿;先在舊電腦 aib license deactivate"
    },
+   "plugin_license_none_plan_note": "方案含在內、但沒單買(licenses/ 沒檔)時,GET /plugins/licenses/{addon} 照舊 404 plugin_license_none:伺服器沒私鑰、不替方案合成授權。這不卡安裝:核心 aib plugins install 不領授權(下載由伺服器照方案放行),licensed 由核心本機判 —— 加購授權 或 方案等級(entitlement/plan.py #375,外掛自己 at_least);aib plugins license <加購> 只給單買的那份。核心 hint:目錄條目帶 plan 時 plugin_license_none 的 hint 多一句「方案含在內的不用領授權」(可晚一版)",
    "plugin_plan_required": {
     "http": 403,
     "when": "目錄條目帶 plan、這個帳號的方案不到那一級、也沒單買加購(一定帶這個碼;details = [需要的級]);核心 hint 指去升級方案或單買,回條多帶 plan = 需要的級"
