@@ -3905,6 +3905,7 @@
   "mod.aib_boards.later": "This page comes in the next step ({what}); here is the Today page for now.",
   "mod.aib_boards.mail_band": "📬 {n} new mail",
   "mod.aib_boards.mail_close_hint": "  · closes only on ✕",
+  "mod.aib_boards.mail_toast": "{icon} {who}: {text}",
   "mod.aib_boards.mail_close_all": "Close all",
   "mod.aib_boards.mail_req_title": "wants to be your friend",
   "mod.aib_boards.mail_req_no_note": "(no note)",

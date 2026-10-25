@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 import { FIXTURE } from '../i18n-fixture'
 
-// 新信卡片(the maintainer 10-14):信一到就在輸入框上方出卡 —— 狀態色、右欄同一個角色圖示、可展開、按 ✕ 才關,不再跳 toast
+// 新信卡片(the maintainer 10-14):信一到就在輸入框上方出卡 —— 狀態色、右欄同一個角色圖示、可展開、按 ✕ 才關,真人信不跳 toast(AI 彼此的信 10-25 起走 toast)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any
 const SEAT = { cabin: '20261010-125119-931e', cabin_code: '931e', role: 'pm', code: '86ff0', window: '@10', seat_id: 'ee841',
@@ -12,7 +12,7 @@ const SEAT = { cabin: '20261010-125119-931e', cabin_code: '931e', role: 'pm', co
 const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) as never
 const LONG = '機器空了,請跑三包。'.repeat(30)
 
-test('真人來信 → 卡片:狀態色、標題列角色圖示(不畫像素大頭像)、展開、讀了變色、✕ 才關;席的信不彈;不跳 toast', async ($: Any, on: Any) => {
+test('真人來信 → 卡片:狀態色、標題列角色圖示(不畫像素大頭像)、展開、讀了變色、✕ 才關;席的信不出卡、改 toast 一次', async ($: Any, on: Any) => {
   mock.clock(on)
   const toasts: string[] = [], files: Record<string, string> = {}
   on('process.run', async (_$: Any, e: Any) => { const a = e.argv as string[]
@@ -64,5 +64,10 @@ test('真人來信 → 卡片:狀態色、標題列角色圖示(不畫像素大�
   await $.classic.FileChanged({ file_path: path, event: 'change' })
   expect(await ui.find({ type: 'Text', text: /新信/ })).toBeUndefined()
   expect(toasts.filter(t => t.includes('📬')).length).toBe(0)
+  // Andy 10-25:席的信不出卡,改右上角 toast 一次(右欄圖示 + 寄件人 + 內容),再讀到同一封不重複
+  expect(toasts.filter(t => t.includes('席的信'))).toEqual(['👑 @8f366:席的信'])
+  await $.classic.FileChanged({ file_path: seatPath, event: 'change' })
+  expect(toasts.filter(t => t.includes('席的信')).length).toBe(1)
+  expect(toasts.some(t => t.includes('機器空了'))).toBe(false)
   await ui.unmount()
 })
