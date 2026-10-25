@@ -5639,5 +5639,6 @@
   "aib.seat.panel.prompt_why_permission": "它在等權限確認,先回上面的確認框",
   "aib.seat.panel.prompt_why_no_prompt": "畫面上找不到它的輸入框,先按看終端機確認",
   "aib.seat.panel.prompt_why_no_screen": "讀不到它的畫面(tmux 沒回應),稍後再試或按看終端機",
-  "aib.seat.panel.prompt_why_unknown": "它好像在忙,等它停下來再打(或先按停止)"
+  "aib.seat.panel.prompt_why_unknown": "它好像在忙,等它停下來再打(或先按停止)",
+  "aib.now.dm_stale_wait": "⏳ 待審區有 {n} 封進行中超過 4 小時沒寫等什麼:做完用 dm_queue.py close --seat {code} --id <id> --evidence …;還在等用 wait --seat {code} --id <id> \"等誰 / 等什麼\""
 }

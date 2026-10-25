@@ -4,7 +4,7 @@
 #
 #   aib dm <目標> [訊息...] [--file F] [--dry-run] [--verify]
 #              [--thread <項號>/<字串>] [--kind order|rule|pipeline|deliver|decide|report|other|notice]
-#              [--close <原信 q_ id>](10-13 S7-3:這封回信送達後,把自己佇列裡的原信標完成,證據 = 這封的 id)
+#              [--close|--closes <原信 q_ id>](10-13 S7-3:這封回信送達後,把自己佇列裡的原信標完成,證據 = 這封的 id)
 #              [--expires <epoch> | --ttl-min <分鐘>]          ← 第 70 項 P3(接口 IFACE-dm-queue-v2 §1/§3)
 #              [--retry-until <秒>] [--retry-every <秒>]       ← 被擋(rc=2)時重試;沒給 --retry-until 則行為與從前逐位元組相同
 #              [--probe-box]                                  ← 只讀對方輸入框,印 box=empty|draft|placeholder|unknown,不貼不送
@@ -761,8 +761,9 @@ while [ $# -gt 0 ]; do
     --thread=*) DM_THREAD="${1#--thread=}"; shift ;;
     --kind) DM_KIND="${2:-}"; shift 2 ;;
     --kind=*) DM_KIND="${1#--kind=}"; shift ;;
-    --close) DM_CLOSE="${2:-}"; shift 2 ;;
+    --close|--closes) DM_CLOSE="${2:-}"; shift 2 ;;   # --closes:Andy 10-25 20:1x 派工 C 的寫法,同一件事
     --close=*) DM_CLOSE="${1#--close=}"; shift ;;
+    --closes=*) DM_CLOSE="${1#--closes=}"; shift ;;
     --expires) DM_EXPIRES="${2:-}"; shift 2 ;;
     --expires=*) DM_EXPIRES="${1#--expires=}"; shift ;;
     --ttl-min) DM_TTL_MIN="${2:-}"; shift 2 ;;
