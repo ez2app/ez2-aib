@@ -5,6 +5,7 @@
 
   aib seat input  <席碼> --text … | --file … [--unlock-min N]   把字打進那一席的提示列(Touch ID;過了之後同席免重驗,
                                                   真人 N 分鐘沒再下指令才上鎖;N 預設 window.json / 10)
+  aib seat input  <席碼> --text … --queued          艦長室排隊背景送：只在解鎖窗內送、不彈 Touch ID、不延長窗;窗關 ⇒ locked
   aib seat unlock <席碼> [--min N]                 先解鎖不送字(Touch ID;一樣是閒置 N 分鐘才上鎖)
   aib seat lock   <席碼>                           馬上上鎖(不用 Touch ID;上鎖只會更安全)
   aib seat unlocked <席碼>                         只讀：視窗還剩幾秒、閒置幾分鐘上鎖(頁面重整後顯示用)
@@ -262,8 +263,10 @@ def log_action(code, action, env=None, **fields):
 # ── C1 ──
 
 def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run, minutes=None,
-             window_only=False):
-    """window_only = 手機遠端過來的(remote_link):視窗沒開 ⇒ 拒 locked,不在 Mac 上彈 Touch ID(手機那頭沒人按得到)"""
+             window_only=False, queued=False):
+    """window_only = 手機遠端過來的(remote_link):視窗沒開 ⇒ 拒 locked,不在 Mac 上彈 Touch ID(手機那頭沒人按得到)
+    queued = 艦長室排隊背景送的(@abb89 10-25):只看本機解鎖窗 unlock_left;窗關 ⇒ 拒 locked、不彈 Touch ID;
+             窗內送成功也不延長(只有真人親下的指令才重新閒置倒數)"""
     env = dict(os.environ if env is None else env)
     out = _out(False, code, "input")
     if caller_is_seat(env):
@@ -292,6 +295,10 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
     if left > 0:
         out["via"] = "unlock-window"
+    elif queued:
+        out["why"], out["hint"] = "locked", T("queued_locked", seat=code)
+        log_action(code, "input", env, ok=False, why="locked", chars=len(text), queued=True)
+        return out, 3
     elif window_only:
         out["why"] = "locked"
         return out, 3
@@ -303,10 +310,11 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
             return out, 3
         left = grant_unlock(code, env, m, via="touchid")
     ok, why = send_text(rec, text, tmux=tmux, run=run)
-    if ok and out["via"] == "unlock-window":
-        left = refresh_unlock(code, env) or left        # 真人剛下指令 ⇒ 閒置倒數重來
+    if ok and out["via"] == "unlock-window" and not queued:
+        left = refresh_unlock(code, env) or left        # 真人剛下指令 ⇒ 閒置倒數重來(排隊背景送的不算)
     out.update(ok=ok, why=(None if ok else why), unlock_left_s=left, chars=len(text))
-    log_action(code, "input", env, ok=ok, why=why or None, via=out["via"], chars=len(text))
+    extra = {"queued": True} if queued else {}
+    log_action(code, "input", env, ok=ok, why=why or None, via=out["via"], chars=len(text), **extra)
     return out, (0 if ok else 4)
 
 
@@ -564,6 +572,7 @@ def main(argv=None, out=sys.stdout):
     i.add_argument("--text")
     i.add_argument("--file")
     i.add_argument("--unlock-min", type=int)
+    i.add_argument("--queued", action="store_true", help=T("help_queued"))
     u = sub.add_parser("unlock")
     u.add_argument("code")
     u.add_argument("--min", type=int)
@@ -596,7 +605,7 @@ def main(argv=None, out=sys.stdout):
             except OSError:
                 out.write(json.dumps(_out(False, ns.code, "input", why="bad-file"), ensure_ascii=False) + "\n")
                 return 2
-        res, rc = do_input(ns.code, text, minutes=ns.unlock_min)
+        res, rc = do_input(ns.code, text, minutes=ns.unlock_min, queued=ns.queued)
     elif ns.cmd == "unlock":
         grant = None
         if ns.grant:

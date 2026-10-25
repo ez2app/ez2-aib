@@ -5009,6 +5009,8 @@
   "aib.seat.panel.remote_why_link_stopped": "휴대폰 원격 연결이 실행 중이 아닙니다(aib seat remote on 이 함께 시작)",
   "aib.seat.panel.remote_why_server_not_ready": "ez2.page 원격 제어가 아직 열리지 않았습니다",
   "aib.seat.panel.remote_why_server_unreachable": "ez2.page 에 연결할 수 없습니다",
+  "aib.seat.panel.queued_locked": "@{seat}의 잠금 해제 창이 닫혀 대기 중인 입력을 보내지 않았습니다. 선장실에서 다시 시도를 누르세요(Touch ID 확인)",
+  "aib.seat.panel.help_queued": "대기열 백그라운드 전송: 잠금 해제 창 안에서만 보내고 Touch ID를 띄우지 않으며 창을 연장하지 않음. 닫혀 있으면 locked 반환",
   "aib.chat.phone_forward.touchid_reason": "BB Call 휴대폰 전달 켜기: 본인 앞 편지가 {minutes}분 넘게 쌓이면 페어링된 휴대폰으로 「새 편지 N 통」, 시간당 최대 {per_hour}건",
   "aib.chat.phone_forward.hint_touchid": "BB Call 휴대폰 전달을 켜거나 완화하려면 본인 Touch ID 가 필요합니다. 아무것도 바꾸지 않았습니다(끄기는 필요 없음)",
   "aib.doctor.check.page_features.skipped": "ez2.page 기능 목록은 확인하지 않았습니다(AIB_DOCTOR_NO_NET=1)",
