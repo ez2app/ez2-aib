@@ -50,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -80,8 +81,15 @@ _SIGN_RE = re.compile(r"^SIGN-[A-Za-z0-9._-]+\.sh$")
 _SEAT_RE = re.compile(r"^[a-z0-9]{3,12}$")
 _PLUGIN_REF_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$")
 # 控制字(C0 / DEL / C1)、行段分隔、零寬 / 方向控制 / 軟連字號 / 填充字 / 變體選擇 / 標籤字:視窗裡看不出原樣 ⇒ 不收
-_BAD_CHAR = re.compile("[\\x00-\\x1f\\x7f-\\x9f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
-                       "\u2028-\u202e\u2060-\u2069\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\U000e0000-\U000e007f]")
+# 視窗裡看不出原樣的字一律不收：控制 / 格式 / 行段分隔 / 私用 / 未指派(依 Unicode 類別，不逐字列),
+# 再加上類別是 Mn / Lo 卻看不見的:變體選擇(兩段)、組字用連接字、韓文填充字、點字空白
+_INVISIBLE_EXTRA = re.compile("[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2800\u3164\ufe00-\ufe0f\uffa0"
+                              "\U000e0100-\U000e01ef]")
+_BAD_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cn", "Cs"})
+
+
+def _has_bad_char(text):
+    return bool(_INVISIBLE_EXTRA.search(text)) or any(unicodedata.category(ch) in _BAD_CATEGORIES for ch in text)
 
 STRONG_JXA = r"""
 ObjC.import('AppKit');
@@ -184,7 +192,7 @@ def classify(argv, strong, env=None):
     """回 (kind, 原因)。kind ∈ aib / claude_plugin / sign_script;不准 ⇒ (None, 原因碼)。"""
     if not isinstance(argv, list) or not argv or len(argv) > MAX_ARGV:
         return None, "argv_shape"
-    if not all(isinstance(a, str) and a and not _BAD_CHAR.search(a) for a in argv):
+    if not all(isinstance(a, str) and a and not _has_bad_char(a) for a in argv):
         return None, "argv_chars"
     if len(display_cmd(argv)) > MAX_CMD_LEN:
         return None, "argv_too_long"
@@ -219,6 +227,12 @@ def classify(argv, strong, env=None):
     return None, "not_allowed"
 
 
+def _clean_summary(text):
+    """席位寫的一句話：看不見的字直接拿掉(比 TA.clean 擋得寬),再壓一行截長度。"""
+    text = "".join(" " if ch in "\t\r\n" else ch for ch in str(text or ""))
+    return TA.clean("".join(ch for ch in text if not _has_bad_char(ch)), SUMMARY_MAX)
+
+
 def display_cmd(argv):
     return " ".join(shlex.quote(a) for a in argv)
 
@@ -233,7 +247,7 @@ def new_request(argv, summary, strong=False, seat=None, env=None, now=None):
     kind, why = classify(argv, strong, env)
     if not kind:
         return None, why
-    summary = TA.clean(summary, SUMMARY_MAX)
+    summary = _clean_summary(summary)
     if not summary:
         return None, "summary_missing"
     t = int(now if now is not None else time.time())
@@ -369,7 +383,7 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
     kind, why = classify(argv, strong, env)
     if not kind:
         return "not_allowed", {"why": why}, None, None
-    summary = TA.clean(req.get("summary"), SUMMARY_MAX)
+    summary = _clean_summary(req.get("summary"))
     if not summary:
         return "invalid", {"why": "summary_missing"}, None, None
     view = dict(req, summary=summary, strong=strong, seat=_seat(req.get("seat")))
@@ -397,11 +411,15 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
         return (None, {}, [exe] + argv[1:], None) if exe else ("failed", {"why": "exe_missing"}, None, None)
     # SIGN:同意的那一份複製到 0700 暫存夾，再驗一次雜湊才跑(同意後原檔被改也跑不到改過的)
     td = tempfile.mkdtemp(prefix="aib-consent-sign-")
-    os.chmod(td, 0o700)
-    copy = Path(td) / Path(argv[1]).name
-    copy.write_bytes(sign["raw"])
-    os.chmod(copy, 0o600)
-    if hashlib.sha256(copy.read_bytes()).hexdigest() != sign["sha256"]:
+    try:
+        os.chmod(td, 0o700)
+        copy = Path(td) / Path(argv[1]).name
+        copy.write_bytes(sign["raw"])
+        os.chmod(copy, 0o600)
+        same = hashlib.sha256(copy.read_bytes()).hexdigest() == sign["sha256"]
+    except OSError:
+        same = False
+    if not same:
         shutil.rmtree(td, ignore_errors=True)
         return "failed", {"why": "sign_hash_changed"}, None, None
     return None, {"sha256": sign["sha256"]}, ["/bin/bash", str(copy)], td
@@ -462,7 +480,7 @@ def _next_inbox(env=None, skip=()):
             st = os.lstat(p)
         except OSError:
             continue
-        if now - st.st_mtime < FRESH_S:
+        if 0 <= now - st.st_mtime < FRESH_S:      # 時間在未來的檔不當剛寫的(免得永遠卡著)
             fresh = True
             continue
         rid = name[:-5] if name.endswith(".json") else None
@@ -492,7 +510,7 @@ def _sweep_running(env=None, now=None):
                 t = int(os.lstat(p).st_mtime)
             except OSError:
                 continue
-        if now - t <= EXPIRE_S + RUN_TIMEOUT_S + 60:
+        if 0 <= now - t <= EXPIRE_S + RUN_TIMEOUT_S + TA.WAIT_S * 5:   # 決定最晚 t+30 分 + 兩個視窗 + 執行上限
             continue
         if _ID_RE.match(rid or "-!") and not (done_dir(env) / (rid + ".json")).exists():
             _record(rid, "failed", env, req, why="orphan_running")
@@ -655,7 +673,7 @@ def main(argv=None, env=None):
                 break
             time.sleep(1)
         print(json.dumps(out, ensure_ascii=False) if args.json else "%s %s" % (out["id"], out["result"]))
-        return 0 if out["result"] == "ok" or (out["result"] == "pending" and not args.wait) else 1
+        return 0 if out["result"] == "ok" or (out["result"] == "pending" and args.wait <= 0) else 1
     if args.cmd == "status":
         st = status(args.id, env)
         if not st:

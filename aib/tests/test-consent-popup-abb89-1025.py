@@ -151,7 +151,8 @@ class Whitelist(Base):
 
     def test_c11_bad_chars(self):
         for s in ("a\nb", "a\rb", "a\x1bb", "a\u200bb", "a\u202eb", "a\u2066b", "a\ufeffb", "a\x85b", "a\u2028b",
-                  "a\U000e0041b", "a\u180eb", "a\u034fb", "a\u3164b", "a\u115fb", "a\uffa0b", "a\u2800b", "a\ufe0fb"):
+                  "a\U000e0041b", "a\u180eb", "a\u034fb", "a\u3164b", "a\u115fb", "a\uffa0b", "a\u2800b", "a\ufe0fb",
+                  "a\U000e0100b", "a\u206ab", "a\ufff9b", "a\u0600b", "a\U0001bca0b", "a\U0001d173b", "a\ue000b", "a\u0378b"):
             kind, why = C.classify(["aib", "now", s], True, self.env)
             self.assertIsNone(kind, repr(s))
             self.assertEqual(why, "argv_chars", repr(s))
@@ -417,6 +418,17 @@ class R2(Base):
         d2["t"] = int(time.time()) + 10 ** 8
         p.write_text(json.dumps(d2), encoding="utf-8")
         self.assertEqual(self.one(r2)["result"], "expired")
+        # inbox 檔 mtime 在未來 ⇒ 不當剛寫的、照樣處理(過期)
+        r3 = self.req(["aib", "now", "z", "1/2"])
+        p3 = C.inbox_dir(self.env) / (r3["id"] + ".json")
+        d3 = json.loads(p3.read_text(encoding="utf-8"))
+        d3["t"] = int(time.time()) + 86400
+        p3.write_text(json.dumps(d3), encoding="utf-8")
+        os.utime(p3, (time.time() + 86400, time.time() + 86400))
+        n = C.run_once(self.env, run=self.run_, sleep=lambda s: None, ask=self.touch(True), available=True)
+        self.assertEqual((n, C.status(r3["id"], self.env)["result"]), (1, "expired"))
+        # summary 裡看不見的字拿掉
+        self.assertEqual(C._clean_summary("進\u202e度\U000e0100\n下一步"), "進度 下一步")
 
 
 class Knife(unittest.TestCase):
@@ -443,7 +455,7 @@ class Knife(unittest.TestCase):
                     "", "Process.test_c3_strong_unchecked")
 
     def test_k4_no_char_check(self):
-        self._knife("and not _BAD_CHAR.search(a) ", "", "Whitelist.test_c11_bad_chars")
+        self._knife("and not _has_bad_char(a) ", "", "Whitelist.test_c11_bad_chars")
 
     def test_k5_run_original(self):
         self._knife('["/bin/bash", str(copy)]', '["/bin/bash", argv[1]]', "Process.test_c12_sign_pinned_copy")
