@@ -95,24 +95,13 @@ def load(f):
     except Exception: return None
 
 # (1) match by session_uuid across all cabins
-# 10-25 F:背景對話 / 接回後的對話有自己的新 uuid,席位檔還是開席(或接回前)那個 ⇒ 頂端「待審框量不到」。
-#   依序試:這個對話的 uuid → 繼承來的 AIB_RESUME_SESSION_UUID(開席 / 接回時寫的)→ CLAUDE_CODE_SESSION_ID;
-#   第一個對得上席位檔的算數,out["uuid_via"] 說是哪一個(只是顯示用的身分,不是防線)。
 best = None
-_cands = []
-for _src, _u in (("arg", uuid), ("resume_env", os.environ.get("AIB_RESUME_SESSION_UUID") or ""),
-                 ("session_env", os.environ.get("CLAUDE_CODE_SESSION_ID") or "")):
-    if _u and _u not in [c[1] for c in _cands]:
-        _cands.append((_src, _u))
-for _src, _u in _cands:
+if uuid:
     for f in glob.glob(os.path.join(home, "instances", "*", "seats", "w*.json")):
         d = load(f)
-        if d and d.get("session_uuid") == _u:
+        if d and d.get("session_uuid") == uuid:
             k = d.get("started_epoch") or 0
             if best is None or k > best[0]: best = (k, f, d)
-    if best:
-        out["uuid_via"] = _src
-        break
 # (1b) after /clear the session uuid changes but the seat file keeps the old one; aib handoff logs every
 # new session id of a seat in state/handoff/<code>.rounds.jsonl — use that to get back to the seat's code.
 if uuid and not best and code_of:

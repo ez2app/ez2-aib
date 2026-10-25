@@ -43,6 +43,9 @@ def original_line(msg):
     raw = msg if isinstance(msg, str) else ""
     path = _relay_path_of(raw)
     if path:
+        import dm_relay  # noqa: WPS433
+        if not dm_relay.relay_file_ok(path):      # #370 r1 M2:只讀長訊目錄裡的 RELAY-dm-*.txt
+            return RELAY_UNREADABLE, ""
         try:
             raw = Path(path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):

@@ -113,7 +113,7 @@ class Cli(Base):
 
 
     def test_d7_try_quoted(self):
-        ev = "已修 見 v2 版 'v2' \"x\""   # 10-25 D 起「#233」會補成本倉 PR 網址而通過;這裡要的是純文字被退
+        ev = "已修 見 #233 'v2' \"x\""
         it = self.item()
         rc, out = self.cli("read", "--done", "--id", it["id"], "--evidence", ev)
         self.assertEqual((rc, out["reason"]), (6, "no_rev"))

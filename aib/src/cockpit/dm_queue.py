@@ -1405,39 +1405,23 @@ _PR_URL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|com
 
 
 _EV_PR_IN = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|commit)/[0-9a-f]{1,40}")
-_EV_HASH_PR = re.compile(r"(?<![\w/#])#([0-9]{1,6})\b")
 _EV_ITEM_IN = re.compile(r"\bq_[0-9a-f]{16}\b")
 _EV_SHA_IN = re.compile(r"\b[0-9a-f]{7,40}\b")
 _EV_PATH_IN = re.compile(r"(?:~|/)[^\s,;()「」『』,。、]+")
-_EV_SCAN_MAX = 8          # 說明文字裡最多試幾個候選(commit / 檔要真的去查)
-EV_REPO_DEFAULT = "ez2app/ez2-aib"
-
-
-def _ev_repo():
-    """「#348」補成哪個倉的 PR:本倉 origin(github.com/ez2app/<倉>);量不到 ⇒ 開源正本倉。"""
-    try:
-        r = subprocess.run(["git", "-C", str(_HERE.parents[1]), "remote", "get-url", "origin"],
-                           capture_output=True, text=True, timeout=5)
-        m = re.search(r"github\.com[:/](ez2app/[A-Za-z0-9_.-]+?)(?:\.git)?$", (r.stdout or "").strip())
-        if r.returncode == 0 and m:
-            return m.group(1)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return EV_REPO_DEFAULT
+_EV_SCAN_MAX = 4          # 說明文字裡最多試幾個候選(commit 要叫 git、檔要 stat;#370 r1 L4 收小)
 
 
 def evidence_ref(seat, evidence, env=None):
-    """(種類, 查證的那一段)。整串就是證據 ⇒ 照舊判;不是 ⇒ 從說明文字裡抽 PR 網址 / #號 / 回信 id / commit / 檔去驗證,
-    抽到第一個驗得過的就收(10-25 Andy 裁 D:說明 + 網址不再整批被退)。抽不到 ⇒ (None, None)。仍不收純文字。"""
+    """(種類, 查證的那一段)。整串就是證據 ⇒ 照舊判;不是 ⇒ 從說明文字裡抽完整 PR 網址 / 回信 id / commit / 檔去驗證,
+    抽到第一個驗得過的就收(10-25 Andy 裁 D:說明 + 網址不再整批被退)。抽不到 ⇒ (None, None)。仍不收純文字。
+    #370 r1 M3:不收「#數字」—— 不查證就結案(「見第 #1 點」也會過),倉別也猜不準;要 PR 就貼完整網址。"""
     ev = evidence.strip() if isinstance(evidence, str) else ""
     kind = evidence_kind(seat, ev, env)
     if kind or not ev:
         return kind, (ev or None) if kind else None
-    tried = 0
     for m in _EV_PR_IN.finditer(ev):
         return "pr", m.group(0)
-    for m in _EV_HASH_PR.finditer(ev):
-        return "pr", "https://github.com/%s/pull/%s" % (_ev_repo(), m.group(1))
+    tried = 0
     for rx in (_EV_ITEM_IN, _EV_SHA_IN, _EV_PATH_IN):
         for m in rx.finditer(ev):
             tried += 1
@@ -1511,12 +1495,11 @@ def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_chec
 
 PREVIEW_CHARS = 200
 PREVIEW_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered", "read")   # 還沒結的才讀檔(備存上千封不讀)
-_PREVIEW_BAD = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
-_CLAIMED_SENDER_RE = re.compile(r"^\s*@([0-9a-f]{5})\b")
-
-
-def _relay_head(path, limit=2048):
-    """長訊檔開頭(只讀前 limit 位元組、一般檔、不阻塞;每幀畫面都會叫到,不讀整檔)。讀不到 ⇒ None。"""
+_PREVIEW_BAD = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+def _relay_head(path, limit=2048, env=None):
+    """長訊檔開頭(只讀前 limit 位元組、一般檔、不阻塞;每幀畫面都會叫到,不讀整檔)。不是長訊檔 / 讀不到 ⇒ None。"""
+    if not DR.relay_file_ok(path, env):
+        return None
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except OSError:
@@ -1532,22 +1515,20 @@ def _relay_head(path, limit=2048):
     return raw.decode("utf-8", "ignore")
 
 
-def _preview_fields(item):
-    """E(10-25 Andy 裁):清單 / 待審框帶長訊前 200 字 + 信裡自報的寄件席。
-    preview:長訊讀 RELAY 檔(限量、不阻塞)、短訊就是本文;控制字元 / 方向字元拿掉、換行壓成空白。
-    claimed_sender:正文開頭「@xxxxx」—— 是信裡**自報**的,不是量到的寄件身分(sender_seat / sender_source 才是);
-    背景對話(agent:offhub)代寄時用它看出是誰寫的。全球 / IM 來信不讀(外人寫的,另有顯示規則)。"""
+def _preview_fields(item, env=None):
+    """E(10-25 Andy 裁):清單 / 待審框帶長訊前 200 字。
+    preview:長訊讀 RELAY 檔(限 relay 目錄、限量、不阻塞)、短訊就是本文;控制字元 / 方向字元拿掉、換行壓成空白。
+    全球 / IM 來信不讀(外人寫的,另有顯示規則)。#370 r1 M1:不再從正文抽「自報寄件席」(誰都能寫,量不到就不顯示)。"""
     if item.get("status") not in PREVIEW_STATUSES or _is_global_item(item) or item.get("im") \
             or item.get("sender_kind") == "external_im":
-        return {"preview": None, "claimed_sender": None}
+        return {"preview": None}
     msg = str(item.get("msg") or "")
     path = DR.relay_path_of(msg)
-    head = _relay_head(path) if path else msg[:PREVIEW_CHARS * 4]
+    head = _relay_head(path, env=env) if path else msg[:PREVIEW_CHARS * 4]
     if not isinstance(head, str):
-        return {"preview": None, "claimed_sender": None}
-    m = _CLAIMED_SENDER_RE.match(head)
+        return {"preview": None}
     flat = " ".join(_PREVIEW_BAD.sub("", head).split())
-    return {"preview": flat[:PREVIEW_CHARS] or None, "claimed_sender": ("@" + m.group(1)) if m else None}
+    return {"preview": flat[:PREVIEW_CHARS] or None}
 
 
 def _onboard_relay_text(path):
@@ -2826,7 +2807,7 @@ TAB_OF_STATUS = {
 TABS = ("waiting", "read", "done", "archived", "deleted")
 
 
-def _row(item, seat, now, index=None):
+def _row(item, seat, now, index=None, env=None):
     pri = normalize_priority(item.get("priority"))
     sent = item.get("sent_at")
     try:
@@ -2880,7 +2861,7 @@ def _row(item, seat, now, index=None):
         "legacy": bool(item.get("_legacy")),
         "done_ref": item.get("done_ref"),
     }
-    row.update(_preview_fields(item))
+    row.update(_preview_fields(item, env))
     g = item.get("global")
     if isinstance(g, dict):
         # 全球來信:畫面標 [外部]、AI 用短碼回信(aib dm --reply);**不帶位址與 npub**(盤點 10-16 第 8、9 項)
@@ -2934,7 +2915,7 @@ def tabs_payload(seat, env=None, now=None):
     tabs = {t: {"n": 0, "oldest_when": None, "oldest_ts": None, "rows": []} for t in TABS}
     for item in items:
         tab = TAB_OF_STATUS.get(item.get("status"), "waiting")
-        row = _row(item, seat, now)
+        row = _row(item, seat, now, env=env)
         if tab == "deleted":
             row = {k: row[k] for k in ("id", "when", "sender", "ts", "rev", "status")}
             row.update({"deleted_at": item.get("deleted_at"), "deleted_by": item.get("deleted_by"),
@@ -3401,7 +3382,7 @@ def patrol_payload(seat, env=None):
     srev = source_rev(seat, env)
     rows = []
     for item in list_items(seat, env=env, newest_first=True):
-        row = _row(item, seat, now)
+        row = _row(item, seat, now, env=env)
         row["source_rev"] = srev
         rows.append(row)
     return rows
@@ -3445,7 +3426,7 @@ def box_payload(seat, env=None):
     srev = source_rev(seat, env)
     rows = []
     for i, item in enumerate(list_for_box(seat, env=env), start=1):
-        rows.append(_row(item, seat, now, index=i))
+        rows.append(_row(item, seat, now, index=i, env=env))
         rows[-1]["source_rev"] = srev
         if rows[-1]["status"] == HOLD_STATUS:
             # 畫面只讀 sender/msg;不動渲染器,把「人審」(HOLD_LABEL)掛在寄件人前面讓人看得到。
