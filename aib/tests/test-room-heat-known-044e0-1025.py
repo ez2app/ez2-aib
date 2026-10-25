@@ -9,6 +9,7 @@ N3 換版流程:0.1.53 記 before(最近 9 次取中位數,閒時低值蓋不掉
 N3b 新紀錄檔 + 已是 fixed_in + 這次 35 支 / 秒 ⇒ 不准顯示「已修」(審查 H1 實測情境)
 N4 紀錄檔被改:代碼不在表上的丟掉、數字 / 版號不合格式的變 None
 N5 churn 接上:新結果的列帶 known、整份帶 known_hot;60 秒內回快取時重新標、但不再記一筆
+N7 上層程式在不在:ucomm 和 argv[0] 檔名都看(claude 的 ucomm 是版號)
 N6 CLI 文字模式在列尾貼「已知熱點」貼紙
 刀(複本 + run_guarded):K1 改善門檻放寬到 10 倍 ⇒ N2 紅;K2 不看裝的版號 ⇒ N2 紅;K3 紀錄檔不濾代碼 ⇒ N4 紅;
    K4 不看門檻就判已修 ⇒ N3b 紅;K5 不看上層程式就記 0 ⇒ N3 紅;K6 換版前只留最後一筆 ⇒ N3c 紅。
@@ -170,6 +171,12 @@ class Churn(Base):
             self.assertTrue(r2["throttled"])
             self.assertEqual(r2["top"][0]["known"]["status"], "update_available")
             self.assertEqual(self.store().read_text(), before, "回快取時又記了一筆")
+
+
+class Alive(Base):
+    def test_n7_alive_names(self):
+        rows = [(1, 0, 0, 0, 0, "2.1.310", "/Users/u/.local/bin/claude --resume x"), (2, 1, 0, 0, 0, "tmux", "tmux new")]
+        self.assertTrue({"claude", "tmux"} <= RU._alive_names(rows), "claude 的 ucomm 是版號,沒看 argv[0]")
 
 
 class Cli(Base):

@@ -514,6 +514,18 @@ def _clean_cached(d):
     return out
 
 
+def _alive_names(rows):
+    """這次開著的程式名:ucomm 和 argv[0] 的檔名都收(claude 的 ucomm 是版號 2.1.x,只看 ucomm 永遠對不到,第 2 輪 B Low)。
+    只拿來判斷「上層程式在不在」,不輸出。"""
+    out = set()
+    for x in rows or []:
+        if len(x) > 6:
+            out.add(os.path.basename(x[5] or ""))
+            out.add(os.path.basename((x[6] or "").split(" ", 1)[0]))
+    out.discard("")
+    return out
+
+
 def _annotate(r, environ, record, full=None, alive=None):
     """已知熱點(room_heat_known);壞了不擋結果。"""
     try:
@@ -575,7 +587,7 @@ def churn(seconds=CHURN_DEFAULT_S, now=None, environ=None, platform=None, fns=No
              "births": len(born), "births_per_s": round(len(born) / seconds, 2),
              "cpu_cores_lower_bound": round(total_cpu / seconds, 3), "top": top, "throttled": False}
         r = _annotate(r, environ, record=True, full=full,
-                      alive={os.path.basename(x[5] or "") for x in rows if len(x) > 5})
+                      alive=_alive_names(rows))
         try:
             _write_json(last_path, {"schema": "aib-heat-churn-last/v1", "started_at": round(now, 1), "result": r})
         except (OSError, ValueError):
