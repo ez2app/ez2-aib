@@ -5600,5 +5600,6 @@
   "aib.room.heat.stack.heat_known.title": "既知のホットスポット",
   "aib.room.heat.stack.heat_known.hint": "修正済みホットスポットが更新後に改善したか。数値は改善した件数",
   "aib.room.heat.stack.ez2_local_perf.title": "ローカル性能 skill",
-  "aib.room.heat.stack.ez2_local_perf.hint": "どの席でも手順どおりに熱源を一通り点検できます"
+  "aib.room.heat.stack.ez2_local_perf.hint": "どの席でも手順どおりに熱源を一通り点検できます",
+  "aib.chat.hop_peer_timeout": "中継サーバーには届きましたが、相手のマシンから 10 分以上返事がありません:オフラインか、まだ友だちに追加されていない可能性があります(相手は友だちからの便りだけ受け取ります)"
 }

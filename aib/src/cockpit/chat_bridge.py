@@ -1893,8 +1893,11 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
                 if owner:
                     out_last[r.get("msgid")] = {"at": at, "dir": "out", "net": "nostr", "contact_key": "global:" + owner,
                                                 "result": res}
+                    mid = r.get("msgid")                # 10-25 @74e8b:寄出列帶 msgid,艦長室才對得上剛寄的那封(只出寄出列)
+                    if isinstance(mid, str) and MSGID_RE.match(mid):
+                        out_last[mid]["msgid"] = mid
     for msgid, row in out_last.items():
-        rc = last_receipt(root, msgid)
+        rc = last_receipt(root, msgid, now)
         if rc:
             row["receipt"] = rc
     rows += list(out_last.values())
@@ -1902,12 +1905,30 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
     return {"v": 1, "at": int(now), "minutes": int(minutes), "rows": rows}
 
 
+MSGID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LOCAL_RECEIPT_STAGES = ("resolved", "relayed")    # 寄件端自己記的,不是對方回的
+PEER_HOP_STAGES = ("queued", "held", "delivered", "read", "still_waiting")   # 對方那台收下了
+STOP_HOP_STAGES = ("refused", "expired", "failed")
 
 
-def last_receipt(root, msgid):
-    """10-21 回條語意:寄出那封對方最後回的那一張 ⇒ {"stage","at"[,"days"][,"by"][,"detail"]};沒有 ⇒ None。
-    寄件人(艦長室收發室)據此分得出「還在等本人看(第 N 天)」「本人已讀」「被丟掉 / 過期」。detail 只放白名單碼。"""
+def receipt_hop(stage):
+    """10-25 一鍵對話第 3 條(七席共識:relayed 不能看起來像送到):回條走到哪一段。
+    none = 還沒上中繼站;relay = 中繼站收到、對方還沒回;peer = 對方那台收下了;stopped = 被拒 / 過期 / 失敗。
+    stage 代碼本身不改(回條 detail 是契約),這是另加的欄位。"""
+    if stage in PEER_HOP_STAGES:
+        return "peer"
+    if stage in STOP_HOP_STAGES:
+        return "stopped"
+    if stage in ("relayed", "unconfirmed"):
+        return "relay"
+    return "none"
+
+
+def last_receipt(root, msgid, now=None):
+    """10-21 回條語意:寄出那封對方最後回的那一張 ⇒ {"stage","at","hop"[,"days"][,"by"][,"detail"][,"hint","hint_text"]};沒有 ⇒ None。
+    寄件人(艦長室收發室)據此分得出「還在等本人看(第 N 天)」「本人已讀」「被丟掉 / 過期」。detail 只放白名單碼。
+    10-25:hop = 走到哪一段(receipt_hop);停在中繼站超過綠點的 10 分鐘(或已補 unconfirmed)⇒ hint = peer_timeout
+    + hint_text(人話,頁面只讀這個;@eef87:跟綠點同一套時間,不另設)。"""
     if not isinstance(msgid, str) or not GF.MSGID_RE.match(msgid):
         return None
     try:
@@ -1920,7 +1941,15 @@ def last_receipt(root, msgid):
     #   ⇒ 對方回過任何一張就以對方的為準,不讓本機那張把階段倒退回「已送上中繼站」(10-24 跨客戶驗收看到)
     remote = [x for x in recs if x.get("stage") not in LOCAL_RECEIPT_STAGES]
     r = (remote or recs)[-1]
-    out = {"stage": r.get("stage"), "at": r.get("at")}
+    out = {"stage": r.get("stage"), "at": r.get("at"), "hop": receipt_hop(r.get("stage"))}
+    if out["hop"] == "relay" and any(x.get("stage") in PEER_HOP_STAGES for x in recs):
+        out["hop"] = "peer"                            # 對方 queued 過、之後才補 unconfirmed ⇒ 對方那台是收下了
+    if out["hop"] == "relay":
+        now = time.time() if now is None else now
+        first = min((GF.int_or0(x.get("at")) for x in recs if x.get("stage") == "relayed"), default=0)
+        if r.get("stage") == "unconfirmed" or (first and now - first >= GF.BEAT_GREEN_S):
+            out["hint"] = "peer_timeout"
+            out["hint_text"] = T("hop_peer_timeout")
     if isinstance(r.get("days"), int):
         out["days"] = r["days"]
     if r.get("by") == "human":

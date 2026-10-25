@@ -5,6 +5,7 @@
 
 R1 最近 N 分鐘的線上收(寄件席 npub ⇒ 主人)、線上寄(位址 ⇒ 主人,同一封只留最後階段)、Telegram 收寄
 R2 太舊的、認不出主人的、presence / space 這類不是私訊的都不列;輸出沒有內容欄
+R3(10-25 @74e8b)寄出列帶 msgid(只出寄出列、格式不對不出)
 刀(複本):K1 寄出不去重 ⇒ R1 紅
 """
 import importlib.util
@@ -69,7 +70,19 @@ class Recent(unittest.TestCase):
 
     def test_r2_no_content_keys(self):
         for r in CB.recent_payload(self.env, now=self.now, minutes=10)["rows"]:
-            self.assertEqual(set(r), {"at", "dir", "net", "contact_key", "result"})
+            extra = {"msgid"} if (r["dir"], r["net"]) == ("out", "nostr") else set()
+            self.assertEqual(set(r) - {"receipt"}, {"at", "dir", "net", "contact_key", "result"} | extra)
+
+    def test_r3_out_row_msgid(self):
+        """10-25 @74e8b:寄出列帶 msgid(對得上 aib chat send 回的那封);收件 / Telegram 不帶;亂碼 msgid 不出"""
+        rows = CB.recent_payload(self.env, now=self.now, minutes=10)["rows"]
+        self.assertEqual([r.get("msgid") for r in rows if r["dir"] == "out" and r["net"] == "nostr"], ["m2"])
+        self.assertTrue(all("msgid" not in r for r in rows if not (r["dir"] == "out" and r["net"] == "nostr")))
+        with open(self.root / "audit" / (time.strftime("%Y%m%d") + ".jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"v": 1, "at": int(self.now - 2), "dir": "out", "msgid": "../x y", "peer": OWNER + "/5a97/4345c",
+                                "result": "relayed"}) + "\n")
+        bad = [r for r in CB.recent_payload(self.env, now=self.now, minutes=10)["rows"] if r["result"] == "relayed"]
+        self.assertTrue(bad and "msgid" not in bad[0])
 
 
 class Knife(unittest.TestCase):

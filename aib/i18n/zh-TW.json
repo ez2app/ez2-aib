@@ -5600,5 +5600,6 @@
   "aib.room.heat.stack.heat_known.title": "已知熱點",
   "aib.room.heat.stack.heat_known.hint": "修過的熱點換版後是否真的改善;數字是已改善的項數",
   "aib.room.heat.stack.ez2_local_perf.title": "本機效能普查 skill",
-  "aib.room.heat.stack.ez2_local_perf.hint": "任何席都能照著跑一次完整的熱源盤點"
+  "aib.room.heat.stack.ez2_local_perf.hint": "任何席都能照著跑一次完整的熱源盤點",
+  "aib.chat.hop_peer_timeout": "中繼站收到了，但對方那台超過 10 分鐘還沒回：可能不在線，或還沒把你加成好友(對方只收好友的信)"
 }

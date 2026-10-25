@@ -5600,5 +5600,6 @@
   "aib.room.heat.stack.heat_known.title": "알려진 핫스폿",
   "aib.room.heat.stack.heat_known.hint": "수정된 핫스폿이 업데이트 후 실제로 개선됐는지. 숫자는 개선된 항목 수",
   "aib.room.heat.stack.ez2_local_perf.title": "로컬 성능 skill",
-  "aib.room.heat.stack.ez2_local_perf.hint": "어느 좌석이든 따라 하면 열원 점검을 한 번에 할 수 있습니다"
+  "aib.room.heat.stack.ez2_local_perf.hint": "어느 좌석이든 따라 하면 열원 점검을 한 번에 할 수 있습니다",
+  "aib.chat.hop_peer_timeout": "중계 서버에는 도착했지만 상대 컴퓨터가 10분 넘게 응답이 없습니다: 오프라인이거나 아직 친구로 추가하지 않았을 수 있습니다(상대는 친구의 메시지만 받습니다)"
 }

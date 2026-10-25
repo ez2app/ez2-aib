@@ -5600,5 +5600,6 @@
   "aib.room.heat.stack.heat_known.title": "Known hot spots",
   "aib.room.heat.stack.heat_known.hint": "Whether fixed hot spots really improved after updating; number = improved items",
   "aib.room.heat.stack.ez2_local_perf.title": "Local performance skill",
-  "aib.room.heat.stack.ez2_local_perf.hint": "Any seat can follow it to run a full heat-source check"
+  "aib.room.heat.stack.ez2_local_perf.hint": "Any seat can follow it to run a full heat-source check",
+  "aib.chat.hop_peer_timeout": "The relay has it, but the other computer hasn't answered for over 10 minutes: it may be offline, or they haven't added you as a friend yet (they only accept mail from friends)"
 }
