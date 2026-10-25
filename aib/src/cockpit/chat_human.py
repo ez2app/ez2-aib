@@ -221,4 +221,7 @@ def send(to, text, pin, cabin, env=None, wait=None, touchid=None, touchid_availa
     w = wait if wait is not None else int(env.get("AIB_DM_GLOBAL_WAIT") or GF.WAIT_DEFAULT)
     res = GF.send_and_wait(root, rec, wait=w)
     out.update(rc=res["rc"], stage=res["stage"], msgid=res["msgid"], seat=seat, detail=res.get("detail") or "")
+    for k in ("next", "hint_code", "hint"):        # 10-25 5b:寄到已下架的席 ⇒ 頁面給一鍵改寄(不自動改寄)
+        if res.get(k):
+            out[k] = res[k]
     return out

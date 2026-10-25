@@ -5438,6 +5438,7 @@
   "aib.chat.invite_no_venv": "Online chat components are not installed, cannot look up invite codes (aib chat on installs them)",
   "aib.chat.peer_not_confirmed_since": "Handed to the relay, but the other side has never confirmed receiving your mail: they may not have added you as a friend yet (they only accept mail from friends, and a refusal is not always answered) — ask them to run aib chat connect for you or use an invite code; or that computer may be offline (no activity since {when})",
   "aib.chat.peer_not_confirmed_nostate": "Handed to the relay, but the other side has never confirmed receiving your mail and has sent no status: they may not have added you as a friend yet (they only accept mail from friends) — ask them to run aib chat connect for you or use an invite code",
+  "aib.chat.seat_retired": "This seat has been retired (it is not in the other side's latest roster), so nothing was sent; you can now send to {next} — to resend, run aib dm {next}",
   "aib.plaunch.acb_off": "the ACB carrier is off; not running acb",
   "aib.bottom_tabs.human_head": "Messages with people (recent):",
   "aib.bottom_tabs.unread": "new",

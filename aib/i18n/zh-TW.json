@@ -5438,6 +5438,7 @@
   "aib.chat.invite_no_venv": "線上對話的元件沒裝好，查不了邀請碼(aib chat on 會補裝)",
   "aib.chat.peer_not_confirmed_since": "交上中繼站了,但還沒收過對方收下的回條:可能對方還沒把你加成好友(對方只收好友的信,拒收不一定回條),請對方跑 aib chat connect 加你或用邀請碼;也可能那台不在線({when} 起沒動靜)",
   "aib.chat.peer_not_confirmed_nostate": "交上中繼站了,但還沒收過對方收下的回條,也沒收到對方任何狀態:可能對方還沒把你加成好友(對方只收好友的信),請對方跑 aib chat connect 加你或用邀請碼",
+  "aib.chat.seat_retired": "這一席已下架(對方最新的名冊沒有它),沒有寄出;對方現在可以寄 {next},要改寄就 aib dm {next}",
   "aib.plaunch.acb_off": "ACB 載體已關閉,不執行 acb",
   "aib.bottom_tabs.human_head": "真人往來(最近):",
   "aib.bottom_tabs.unread": "未讀",
