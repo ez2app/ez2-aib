@@ -279,6 +279,12 @@ class Install(Box):
         pkg = [r for r in srv.seen if r.full_url.endswith(".tgz")]
         self.assertEqual(pkg[0].full_url, "https://page.test" + C["prefix"] + "/plugins/packages/probe/0.0.1.tgz")
         self.assertIsNone(pkg[0].get_header("Authorization"), "免費包不帶憑證")
+        shutil.rmtree(self.installed())
+        explicit = self.server([self.entry(data, access="public")], {("probe", "0.0.1"): data})
+        res, rc = self.install("probe", explicit, paid_api=api(FakeServer(), token="ast_x"), machine_id=MID)
+        self.assertEqual((rc, res["detail"]), (0, "plugin_installed"), res)
+        pkg = [r for r in explicit.seen if r.full_url.endswith(".tgz")]
+        self.assertIsNone(pkg[0].get_header("Authorization"), "目錄明寫 access=public ⇒ 有綁也不帶憑證(#365 r1 L)")
 
     def test_d3_pick_version(self):
         d1, d2 = self.tgz(version="0.0.9"), self.tgz(version="0.0.10")
@@ -400,6 +406,13 @@ class Install(Box):
         res, rc = self.install("probe", srv)
         self.assertEqual((rc, res["detail"]), (2, "plugin_not_bound"), "沙盒沒綁")
         self.assertFalse([r for r in srv.seen if r.full_url.endswith(".tgz")], "沒綁不下載付費包")
+        shown = self.server([dict(ent, access="paid")], {})   # 目錄明寫 access=paid(不是缺鍵補值那條,#365 r1 L)
+        paid = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (200, data)})
+        res, rc = self.install("probe", shown, paid_api=api(paid, token="ast_x"), machine_id=MID)
+        self.assertEqual((rc, res["detail"]), (0, "plugin_installed"), res)
+        self.assertEqual(paid.seen[0].get_header("Authorization"), "Bearer ast_x", "明寫 paid ⇒ 帶憑證")
+        self.assertFalse([r for r in shown.seen if r.full_url.endswith(".tgz")], "付費包不走公開那支")
+        shutil.rmtree(self.installed())
         paid = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (200, data)})
         res, rc = self.install("probe", srv, paid_api=api(paid, token="ast_x"), machine_id=MID)
         self.assertEqual((rc, res["detail"], res["addon"], res["licensed"]), (0, "plugin_installed", "probe", False), res)
