@@ -34,7 +34,8 @@ C17 移除好友只清比預設寬的:設 off 的移除再加回仍 off;設 stat
 C18 撤好友時存檔丟 OSError ⇒ 仍是一個 JSON、request_failed、detail undo_failed;文字版說好友還在、先 friend remove
 刀(複本):K1 --space 不寫進對象 ⇒ B1 紅;K2 不叫提醒 ⇒ B5 紅;K3 connect 不過門 ⇒ C3 紅;K4 真機不提醒 ⇒ B7 紅;
    K5 視窗用預設等級 ⇒ C5 紅;K6 移除好友不清等級 ⇒ C10 紅;K7 申請沒送出不撤好友 ⇒ C11 紅;
-   K8 撤好友也清等級 ⇒ C16 紅;K9 移除好友全清 ⇒ C17 紅
+   K8 撤好友也清等級 ⇒ C16 紅;K9 移除好友全清 ⇒ C17 紅;K10 光給 npub 照原樣寄 ⇒ C19 紅
+10-25 艦長室一鍵對話:C19 光給 npub ⇒ 寄到本機已知的完整位址;C20 不知道席 ⇒ no_address 門前擋;C21 提示都指向 connect
 """
 import importlib.util
 import io
@@ -169,6 +170,10 @@ class Connect(OG.Base):
         super().setUp()
         OG.GF.add_request(self.root, {"owner": self.OTHER, "msgid": OG.GF.new_msgid(), "display_name": "新朋友", "note": "嗨"},
                           every=0)
+        # 這組測分享 / 指紋 / 撤好友;位址怎麼找另在 ConnectAddress(光給 npub 的新朋友當作本機已知他的席)
+        p = mock.patch.object(self.CB, "connect_address", lambda t, o, r, e: t if "/" in t else o + "/c9c9/bbbb9")
+        p.start()
+        self.addCleanup(p.stop)
 
     def test_c1_accept_and_open_one_prompt(self):
         rc, out = self.run_cb("connect", self.OTHER, "--open", "--json")
@@ -376,6 +381,72 @@ class Connect(OG.Base):
                          (True, False, False, {"rc": 0, "why": "held"}))
 
 
+class ConnectAddress(OG.Base):
+    """10-25 Andy「艦長室一鍵對話」(fishmac 驗收B2:對方只在本機加好友,這邊不知道;光給 npub 的申請寄不到)。
+    C19 光給 npub ⇒ 申請寄到本機已知的完整位址:房間 / 名冊快照 > 他寄來的申請 > 被拒收紀錄;完整位址照用
+    C20 本機不知道他的席 ⇒ no_address 門前擋:不加好友、不送、不彈指紋
+    C21 被拒收提示 / friend add 之後的提示都指向 connect(互加)"""
+    NEW = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xd419))
+
+    def sent_to(self, *argv):
+        sent = []
+
+        def saw(root, rec, *x, **k):
+            sent.append(rec.get("to"))
+            return {"stage": "held", "rc": 0, "detail": None}
+        with mock.patch.object(self.CB, "_my_published", lambda env: [{"cabin": "c1", "seat": "aaaa1"}]), \
+                mock.patch.object(OG.GF, "send_and_wait", saw):
+            rc, out = self.run_cb(*argv)
+        return rc, out, sent
+
+    def refused(self, who, addr):
+        (self.root / "refused.json").write_text(json.dumps({"refused": [
+            {"who": who, "from_addr": addr, "owner": True, "count": 1, "last_at": 1, "display_name": "驗收B2"}]}))
+
+    def test_c19_bare_npub_uses_known_address(self):
+        addr = self.NEW + "/0c1b/ae6a1"
+        self.refused(self.NEW, addr)
+        rc, out, sent = self.sent_to("connect", self.NEW, "--json")
+        self.assertEqual((rc, sent), (0, [addr]), out)
+        self.assertTrue(CR.is_friend(self.NEW, self.env))
+        other = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xd420))
+        self.refused(other, self.NEW + "/0c1b/ae6a1")                  # 位址的主人對不上 ⇒ 不拿
+        rc, out, sent = self.sent_to("connect", other, "--json")
+        self.assertEqual((rc, json.loads(out.strip())["why"], sent), (2, "no_address", []))
+        full = other + "/c3c3/ccccc"
+        rc, out, sent = self.sent_to("connect", full, "--json")
+        self.assertEqual((rc, sent), (0, [full]), "完整位址照用")
+        third = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xd421))
+        with mock.patch.object(OG.GF, "default_address", lambda root, o, env=None: (o + "/main/ddddd", "captain")):
+            rc, out, sent = self.sent_to("connect", third, "--json")
+        self.assertEqual(sent, [third + "/main/ddddd"])
+
+    def test_c20_unknown_seat_stops_before_anything(self):
+        rc, out, sent = self.sent_to("connect", self.NEW, "--share", "status", "--json")
+        got = json.loads(out.strip())
+        self.assertEqual((rc, got["ok"], got["why"], sent, self.asked), (2, False, "no_address", [], []))
+        self.assertFalse(CR.is_friend(self.NEW, self.env), "寄不到 ⇒ 好友也不加")
+        rc, out, sent = self.sent_to("connect", self.NEW)
+        self.assertIn("邀請碼", out)
+
+    def test_c21_hints_point_to_connect(self):
+        self.refused(self.NEW, self.NEW + "/0c1b/ae6a1")
+        rc, out = self.run_cb("refused")
+        self.assertIn("aib chat connect %s/0c1b/ae6a1" % self.NEW, out)
+        self.assertNotIn("friend add", out)
+        rc, out = self.run_cb("friend", "add", self.NEW)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("aib chat connect " + self.NEW, out)
+        self.assertIn("對方不會知道", out)
+        rc, out = self.run_cb("friend", "add", self.NEW)              # 已經是好友(改名)⇒ 不再提示
+        self.assertNotIn("aib chat connect", out)
+        import json as _j
+        for lang in ("zh-TW", "en", "ja", "ko"):
+            d = _j.loads((REPO / "i18n" / ("%s.json" % lang)).read_text(encoding="utf-8"))
+            for k in ("refused_add_hint", "friend_added_connect_hint", "connect_no_address"):
+                self.assertIn("aib chat connect" if k != "connect_no_address" else "aib chat invite use", d["aib.chat." + k], (lang, k))
+
+
 class Knife(unittest.TestCase):
     def _knife(self, needle, replacement, cell):
         name = Path(__file__).name
@@ -385,6 +456,10 @@ class Knife(unittest.TestCase):
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅:" + cell + "\n" + r.stdout + r.stderr)
         self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k10_bare_npub_sent_as_is(self):
+        self._knife('    if "owner" in (GF.parse_address(target or "") or {}):\n        return target\n',
+                    "    return target\n", "ConnectAddress.test_c19_bare_npub_uses_known_address")
 
     def test_k1_space_not_written(self):
         self._knife("                CR.set_space(a.space, a.who, env)\n", "                pass\n",

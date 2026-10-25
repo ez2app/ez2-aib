@@ -996,6 +996,8 @@ def cmd_friend(a, env, out):
         if a.action == "add":
             owner, new = CR.add_friend(a.who, a.name, env, kind)
             out.write(T(pre + ("added" if new else "renamed"), owner=owner) + "\n")
+            if kind == "friends" and new:   # 10-25 fishmac:只加本機,對方不會知道 ⇒ 提示一次互加的指令
+                out.write(T("friend_added_connect_hint", owner=owner) + "\n")
         else:
             owner, gone = CR.remove_friend(a.who, env, kind)
             out.write(T(pre + ("removed" if gone else "not_found"), owner=owner) + "\n")
@@ -1048,8 +1050,8 @@ def cmd_refused(a, env, out):
         out.write(T("refused_row_" + ("verified" if r.get("display_name") else "unknown"), name=r.get("display_name") or "-",
                     country=r.get("country") or "-", who=r["who"], n=r.get("count", 1), when=when,
                     reason=T("refused_reason_" + ("not_friend" if r.get("reason") == "not_friend" else "unverified"))) + "\n")
-        if r.get("owner"):
-            out.write(T("refused_add_hint", who=r["who"]) + "\n")
+        if r.get("owner"):          # 10-25:提示改成互加(connect 送申請,對方按一下同意);只加本機好友對方不知道
+            out.write(T("refused_add_hint", who=r.get("from_addr") or r["who"]) + "\n")
     return 0
 
 
@@ -1173,6 +1175,24 @@ def cmd_request(a, env, out):
     return res["rc"]
 
 
+def connect_address(target, owner, root, env):
+    """connect 的申請要寄到 <主人>/<艙>/<席>(10-25 Andy「艦長室一鍵對話」)。給的就是完整位址 ⇒ 照用;
+    只給主人 npub / 好友名 ⇒ 從本機已知的找:他的房間 / 名冊快照(艦長席優先)> 他寄來的申請 > 被拒收紀錄裡他寄件的位址。
+    只讀本機檔、不連網;找不到 ⇒ None(請對方給邀請碼或完整位址)。"""
+    if "owner" in (GF.parse_address(target or "") or {}):
+        return target
+    addr, _why = GF.default_address(root, owner, env)
+    if addr:
+        return addr
+    rows = [r.get("from_addr") for r in GF.read_requests(root) if r.get("owner") == owner]
+    rows += [r.get("from_addr") for r in read_refused(env) if r.get("who") == owner]
+    for x in rows:
+        p = GF.parse_address(x or "")
+        if p and p.get("owner") == owner:
+            return x
+    return None
+
+
 def cmd_connect(a, env, out):
     """aib chat connect <對方 主人/艙/席> [--share off|online|status] [--space none|island|room | --open] [--note …] [--json]
     10-24 Andy「我要一次就完成，不要多次」:兩台各打一次就連上。
@@ -1181,7 +1201,8 @@ def cmd_connect(a, env, out):
     要分享得比預設多(--share / --space / --open)⇒ 加好友和全部分享設定列在**同一個**指紋視窗,按一次;
     視窗列的是這位好友改完後的實際等級(沒給的項目照他現在的)。沒給 ⇒ 不用指紋。指紋被拒 ⇒ 什麼都不做。
     --json:stdout 只有一個 JSON —— {"v":1,"ok",...};錯誤 {"v":1,"ok":false,"why":bad_friend|friend_self|blocked|
-    open_or_space|bridge_off|share_failed|request_failed|seat_caller|<指紋原因>}。"""
+    open_or_space|no_address|bridge_off|share_failed|request_failed|seat_caller|<指紋原因>}。
+    給主人 npub / 好友名也行:位址從本機已知的找(connect_address);找不到 ⇒ no_address(門前擋,不加好友)。"""
     import io
     import argparse as _ap
     import chat_roster as CR
@@ -1211,6 +1232,9 @@ def cmd_connect(a, env, out):
     root = bridge_root(env)
     pending = any(r.get("owner") == owner for r in GF.read_requests(root))
     known = CR.is_friend(owner, env) or CR.is_mine(owner, env)
+    to = connect_address(a.target, owner, root, env) if not (pending or known) else None
+    if not (pending or known) and not to:      # 光給 npub、本機又沒有他的席 ⇒ 申請寄不到(npub 會被當成席的號碼),門前就講
+        return fail("no_address", T("connect_no_address", owner=owner))
     if (a.open or pending or not known) and not GF.bridge_alive(root):
         return fail("bridge_off", T("visit_bridge_off"))   # 申請 / 同意 / 開放都要轉接程式送,沒開就先講,不白按指紋
     if share or space:                       # 改分享 = 本人的動作:全部擠進一個視窗,列改完後的實際等級
@@ -1222,7 +1246,7 @@ def cmd_connect(a, env, out):
             return rc
     req = {"rc": 0, "why": "already_friend"}
     if pending or not known:
-        sub = _ap.Namespace(target="accept" if pending else a.target, who=owner, note=a.note or "", from_seat=None,
+        sub = _ap.Namespace(target="accept" if pending else to, who=owner, note=a.note or "", from_seat=None,
                             silent=False)
         if not pending:
             try:
