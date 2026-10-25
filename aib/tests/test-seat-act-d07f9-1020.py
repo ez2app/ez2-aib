@@ -12,6 +12,8 @@ I4 Touch ID 取消 / 逾時 / 不能用 / AIB_TOUCHID=0 / 非 Mac ⇒ 一律拒,
 I5 免重驗視窗:過一次後 10 分鐘內第二次不彈;視窗 0 分鐘 ⇒ 每次彈;answer / stop 不吃視窗
 I6 呼叫者是席位(帶 CLAUDE_CODE_SESSION_ID / TMUX_PANE)⇒ 拒 caller-is-seat
 I7 控制字元 / 空字串 / 太長 ⇒ 拒,沒送鍵
+I8 被擋時帶原因(10-25 Andy:停著卻被說在忙,查不出原因):prompt_why + hint(四種畫面各一個代碼);detail 契約不變;
+   被擋那次寫進 log(why / prompt_why / 擋下的那一行);草稿只記字數不記內容
 A1 answer 權限框:yes ⇒ 送第一個 key;no ⇒ 最後一個;3 ⇒ 3;--ask-id 對不上 ⇒ stale 不送;沒在問 ⇒ no-ask
 A2 answer 選擇題:2 ⇒ 送 2 + Enter;--text 自填 ⇒ 打字 + Enter
 S1 stop:Esc;--hard ⇒ C-c;回「現在在跑什麼」
@@ -129,6 +131,26 @@ class Input(Box):
             self.assertEqual((rc, res["why"]), (2, "not-at-prompt"), res)
         self.assertEqual(self.asked, [])
         self.assertEqual(self.keys(), [])
+
+    def test_i8_block_reason_logged(self):
+        cases = ((THINKING, "thinking"), ("(END)\n", "pager"), ("⏺ 好了。\n╭────╮\n│ ❯ 秘密草稿內容 │\n╰────╯\n", "draft"),
+                 ("⏺ 好了。\n只有字沒有提示列\n", "no-prompt"))
+        for scr, want in cases:
+            res, rc = self.act(self.SA.do_input, CODE, "hi", screen=scr)
+            self.assertEqual((rc, res["why"], res["prompt_why"]), (2, "not-at-prompt", want), res)
+            self.assertTrue(res["detail"].startswith("busy="), res)
+            self.assertEqual(res["hint"], self.SA.PROMPT_HINT[want])
+        self.assertEqual(self.keys(), [])
+        self.assertEqual(self.asked, [])
+        rows = [json.loads(l) for l in (self.state / "logs" / "seat-panel-actions.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(r["action"], r["ok"], r["why"], r["prompt_why"]) for r in rows],
+                         [("input", False, "not-at-prompt", w) for _s, w in cases])
+        self.assertIn("Thinking…", rows[0]["line"])
+        self.assertNotIn("秘密", json.dumps(rows, ensure_ascii=False))
+        self.assertIn("6 字", rows[2]["line"])
+        res, rc = self.act(self.SA.do_input, CODE, "hi", screen=PROMPT)   # 提示列空的照送,不帶原因
+        self.assertEqual(rc, 0, res)
+        self.assertNotIn("prompt_why", res)
 
     def test_i3_asking(self):
         res, rc = self.act(self.SA.do_input, CODE, "hi", screen=PERMISSION)
