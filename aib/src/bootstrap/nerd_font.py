@@ -10,11 +10,12 @@
   install   沒有就裝 JetBrainsMono Nerd Font v3.5.1(官方 release 的 tar.xz,約 7 MB,sha256 釘死);
             NF / NFM 各四個字重放進 ~/Library/Fonts/(不用 sudo、不用 Homebrew)。下載 / 驗證 / 解開任何一步不對 ⇒ 一個檔都不放
   terminal  Apple Terminal 設定檔字型畫不出 ⇒ 改成 JetBrainsMono NF(--mono ⇒ NFM)。改之前備份偏好檔、記下原字型,字級不動
-  restore   把 terminal 改過的設定檔字型改回原值
+  restore   把 terminal 改過的設定檔字型改回原值;之後你自己又改過 ⇒ 不動、提示(--force 才改)
   auto      安裝程式(install.sh,aib update 也是重跑它)呼叫:字型沒有就裝(不問);終端機畫不出 ⇒ --ask 且有終端機才問一次,
-            回「不要」就記住、之後不再問;沒得問 ⇒ 印一行怎麼改
+            只有回 y / m(或「是 / 好」)才改,其他(Enter、打錯字)一律不改;回答過就記住、之後不再問;沒得問 ⇒ 印一行怎麼改
 
-規矩:非 Mac 什麼都不做;改終端機設定一定要本人回答(auto 沒 --ask / 不是終端機 ⇒ 只印步驟);AIB_FONT_AUTO=0 整個關掉。
+規矩(#361 r1 M1 @abb89 裁示):改終端機字型是可還原的外觀設定,不上 Touch ID。auto 會先問;`aib fonts terminal` 是明確指令,
+視同同意;終端機上的回答不證明是本人(同帳號 AI 也送得出按鍵)。非 Mac 什麼都不做;AIB_FONT_AUTO=0 整個關掉。
 """
 import hashlib
 import io
@@ -35,6 +36,9 @@ NF_VERSION = "v3.5.1"                  # v3.4.0 沒有 U+EC82(@ae6a1 撲空過)
 NF_URL = "https://github.com/ryanoasis/nerd-fonts/releases/download/%s/JetBrainsMono.tar.xz" % NF_VERSION
 NF_SHA256 = "04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf"   # 官方 SHA-256.txt(10-25 核對過)
 NF_MAX_BYTES = 20 * 1024 * 1024
+NF_TOTAL_S = 120                       # 下載總時限(#361 r1 M2:urlopen 的 timeout 只管單次 socket,慢送能拖很久)
+BACKUP_KEEP = 3                        # 偏好檔備份只留最近幾份(#361 r1 L5)
+YES = ("y", "yes", "是", "好", "要", "はい", "예", "m")
 STYLES = ("Regular", "Bold", "Italic", "BoldItalic")
 FAMILIES = {"nf": "JetBrainsMonoNerdFont", "nfm": "JetBrainsMonoNerdFontMono"}
 PS_NAMES = {"nf": "JetBrainsMonoNF-Regular", "nfm": "JetBrainsMonoNFM-Regular"}   # Apple Terminal 設定檔用的字型名
@@ -119,17 +123,27 @@ def status(env=None, runner=None, platform=None, terminal=True):
             "terminal": term}
 
 
-def _fetch(url=NF_URL, timeout=60):
+def _fetch(url=NF_URL, timeout=30, total=None, opener=None, clock=time.monotonic):
+    """分塊讀;超過總時限丟 TimeoutError(呼叫端回 timeout 碼,資料整份不要)。"""
     import urllib.request
-    with urllib.request.urlopen(url, timeout=timeout) as r:      # noqa: S310  固定的官方 https 網址
-        data = r.read(NF_MAX_BYTES + 1)
-    if len(data) > NF_MAX_BYTES:
-        raise ValueError("too_big")
-    return data
+    total = NF_TOTAL_S if total is None else total
+    deadline = clock() + total
+    buf = bytearray()
+    with (opener or urllib.request.urlopen)(url, timeout=timeout) as r:      # noqa: S310  固定的官方 https 網址
+        while True:
+            if clock() > deadline:
+                raise TimeoutError("total")
+            chunk = r.read(64 * 1024)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > NF_MAX_BYTES:
+                raise ValueError("too_big")
+    return bytes(buf)
 
 
 def install(env=None, fetch=None, sha256=NF_SHA256, platform=None, force=False):
-    """回 (code, detail)。code:already / installed / skipped_platform / download_failed / sha_mismatch / bad_archive / write_failed。
+    """回 (code, detail)。code:already / installed / skipped_platform / timeout / download_failed / sha_mismatch / bad_archive / write_failed。
     任何一步不對 ⇒ 不放任何檔(先全部解到暫存夾,齊了才搬)。"""
     env = dict(os.environ if env is None else env)
     platform = sys.platform if platform is None else platform
@@ -139,7 +153,9 @@ def install(env=None, fetch=None, sha256=NF_SHA256, platform=None, force=False):
         return "already", None
     try:
         data = (fetch or _fetch)()
-    except Exception as exc:  # noqa: BLE001  離線 / 逾時 / 太大
+    except TimeoutError:
+        return "timeout", str(NF_TOTAL_S)
+    except Exception as exc:  # noqa: BLE001  離線 / 太大
         return "download_failed", type(exc).__name__
     if hashlib.sha256(data).hexdigest() != sha256:
         return "sha_mismatch", None
@@ -158,13 +174,20 @@ def install(env=None, fetch=None, sha256=NF_SHA256, platform=None, force=False):
                         shutil.copyfileobj(src, fh)
         except (tarfile.TarError, OSError, EOFError, ValueError) as exc:
             return "bad_archive", type(exc).__name__
-        try:
+        tmps, moved = [dest / (".%s.aib-tmp" % n) for n in want], []
+        try:                                         # 先全部複製成同夾暫名,齊了才逐一改名;中途失敗把這輪的都清掉(#361 r1 L4)
             dest.mkdir(parents=True, exist_ok=True)
-            for name in want:
-                tmp = dest / (".%s.aib-tmp" % name)
+            for name, tmp in zip(want, tmps):
                 shutil.copyfile(os.path.join(td, name), str(tmp))
+            for name, tmp in zip(want, tmps):
                 os.replace(str(tmp), str(dest / name))
+                moved.append(dest / name)
         except OSError as exc:
+            for x in tmps + moved:
+                try:
+                    x.unlink()
+                except OSError:
+                    pass
             return "write_failed", type(exc).__name__
     cur = read_state(env)
     cur["installed"] = {"version": NF_VERSION, "at": int(time.time()), "files": want}
@@ -198,19 +221,25 @@ def set_terminal_font(env=None, mono=False, runner=None, setter=None, platform=N
             shutil.copy2(str(plist), str(backup))
         except OSError as exc:
             return "failed", "backup:" + type(exc).__name__      # 備份不成就不改
-    cur = read_state(env)
-    orig = cur.setdefault("terminal_original", {})
-    orig.setdefault(profile, old)                    # 第一次改之前的原字型才算原值
-    cur["terminal_changed"] = {"profile": profile, "to": PS_NAMES["nfm" if mono else "nf"], "at": int(time.time()),
-                               "backup": str(backup) if backup else None}
-    cur.pop("terminal_declined", None)
-    write_state(env, cur)
+        for old_bak in sorted(plist.parent.glob(plist.name + ".bak-font-*"))[:-BACKUP_KEEP]:
+            try:
+                old_bak.unlink()
+            except OSError:
+                pass
+    to = PS_NAMES["nfm" if mono else "nf"]
     try:
-        rc = (setter or _osascript)([profile, PS_NAMES["nfm" if mono else "nf"]])
+        rc = (setter or _osascript)([profile, to])
     except (OSError, subprocess.SubprocessError) as exc:
         return "failed", type(exc).__name__
     if rc != 0:
         return "failed", "osascript:%s" % rc
+    cur = read_state(env)                            # osascript 成功才記(#361 r1 L6)
+    orig = cur.setdefault("terminal_original", {})
+    orig.setdefault(profile, old)                    # 第一次改之前的原字型才算原值
+    cur["terminal_changed"] = {"profile": profile, "to": to, "at": int(time.time()),
+                               "backup": str(backup) if backup else None}
+    cur["terminal_answered"] = int(time.time())
+    write_state(env, cur)
     try:                                             # 徽章的終端機字型快取作廢,下一輪就照新字型判
         M, _R = _badge()
         M._term_cache.clear()
@@ -220,12 +249,31 @@ def set_terminal_font(env=None, mono=False, runner=None, setter=None, platform=N
     return "changed", profile
 
 
-def restore_terminal_font(env=None, setter=None):
+GET_FONT_APPLESCRIPT = 'on run argv\n  tell application "Terminal" to get font name of settings set (item 1 of argv)\nend run'
+
+
+def _get_font(profile, timeout=10):
+    r = subprocess.run(["osascript", "-e", GET_FONT_APPLESCRIPT, profile], capture_output=True, text=True,
+                       timeout=timeout, stdin=subprocess.DEVNULL)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def restore_terminal_font(env=None, setter=None, getter=None, force=False):
+    """改回原字型。現在的字型不是我們設的那個(使用者之後自己改過)⇒ 回 user_changed、不動;force 才改(#361 r1 L5)。"""
     env = dict(os.environ if env is None else env)
     cur = read_state(env)
     orig = cur.get("terminal_original") or {}
     if not orig:
         return "nothing", None
+    ours = (cur.get("terminal_changed") or {}).get("to")
+    if not force:
+        try:
+            now = {p: (getter or _get_font)(p) for p in orig}
+        except (OSError, subprocess.SubprocessError):
+            now = {}
+        changed = sorted(p for p in orig if now.get(p) not in (ours, None))   # 讀不到現值 ⇒ 不擋
+        if changed:
+            return "user_changed", ",".join(changed)
     bad = []
     for profile, font in orig.items():
         try:
@@ -248,15 +296,16 @@ def _ask(prompt, inp, out):
     return ans
 
 
-def auto(env=None, ask=False, inp=None, out=None, fetch=None, runner=None, setter=None, platform=None, isatty=None):
-    """安裝程式用。回 0(不擋安裝)。"""
+def auto(env=None, ask=False, inp=None, out=None, fetch=None, runner=None, setter=None, platform=None, isatty=None,
+         do_install=True):
+    """安裝程式用。回 0(不擋安裝)。install.sh 分兩次叫:先 auto(有總時限、不碰終端機),再 auto --ask --no-install(問人)。"""
     env = dict(os.environ if env is None else env)
     out = out or sys.stdout
     inp = inp or sys.stdin
     platform = sys.platform if platform is None else platform
     if env.get("AIB_FONT_AUTO") == "0" or platform != "darwin":
         return 0
-    code, detail = install(env, fetch=fetch, platform=platform)
+    code, detail = install(env, fetch=fetch, platform=platform) if do_install else ("already", None)
     if code == "installed":
         out.write(_T("installed", version=NF_VERSION) + "\n")
     elif code not in ("already",):
@@ -268,13 +317,17 @@ def auto(env=None, ask=False, inp=None, out=None, fetch=None, runner=None, sette
         return 0
     cur = read_state(env)
     tty = (inp.isatty() if isatty is None else isatty)
-    if cur.get("terminal_declined") or not (ask and tty):
+    if cur.get("terminal_declined") or cur.get("terminal_answered") or not (ask and tty):
         out.write(_T("terminal_hint", profile=term["profile"], font=term["font"]) + "\n")
         return 0
-    ans = _ask(_T("terminal_ask", profile=term["profile"], font=term["font"]) + " ", inp, out)
-    if ans in ("n", "no", "否", "不要", "いいえ", "아니요"):
-        cur["terminal_declined"] = int(time.time())
-        write_state(env, cur)
+    out.write(_T("terminal_ask", profile=term["profile"], font=term["font"]) + " ")
+    out.flush()
+    raw = inp.readline()
+    ans = (raw or "").strip().lower()
+    if ans not in YES:                               # 只認肯定字;Enter / 打錯字 / 其他 ⇒ 不改(#361 r1 L3)
+        if raw:                                      # 有回答(含 Enter)才記住;EOF(沒人回答)下次再問
+            cur["terminal_declined"] = int(time.time())
+            write_state(env, cur)
         out.write(_T("terminal_declined") + "\n")
         return 0
     mono = (ans == "m")
@@ -294,12 +347,15 @@ def main(argv=None):
     sub.add_parser("restore")
     a_ = sub.add_parser("auto")
     a_.add_argument("--ask", action="store_true")
+    a_.add_argument("--no-install", action="store_true")
+    r_ = sub.choices["restore"]
+    r_.add_argument("--force", action="store_true", help="現在的字型被你自己改過也照樣改回")
     for p in sub.choices.values():
         p.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     cmd = a.cmd or "status"
     if cmd == "auto":
-        return auto(ask=a.ask)
+        return auto(ask=a.ask, do_install=not a.no_install)
     if cmd == "status":
         res = status()
         if getattr(a, "json", False):
@@ -317,7 +373,7 @@ def main(argv=None):
     elif cmd == "terminal":
         code, detail = set_terminal_font(mono=a.mono)
     else:
-        code, detail = restore_terminal_font()
+        code, detail = restore_terminal_font(force=a.force)
     if getattr(a, "json", False):
         print(json.dumps({"code": code, "detail": detail}, ensure_ascii=False))
     else:

@@ -5521,7 +5521,7 @@
   "aib.fonts.installed": "✓ AI 符號字型已裝好(JetBrainsMono Nerd Font {version},放在 ~/Library/Fonts)",
   "aib.fonts.install_failed": "AI 符號字型沒裝成({code}),徽章先用字母;之後可以跑 aib fonts install",
   "aib.fonts.terminal_hint": "終端機「{profile}」設定檔的字型({font})畫不出 AI 符號:跑 aib fonts terminal 改成 JetBrainsMono NF(會先備份,aib fonts restore 改回)",
-  "aib.fonts.terminal_ask": "終端機「{profile}」設定檔用的是 {font},畫不出 AI 符號。改成 JetBrainsMono NF 嗎?字級不變、會先備份。[Y=改 / m=改成小一格的 NFM / n=不要]",
+  "aib.fonts.terminal_ask": "終端機「{profile}」設定檔用的是 {font},畫不出 AI 符號。改成 JetBrainsMono NF 嗎?字級不變、會先備份。[y=改 / m=改成小一格的 NFM / 其他=不要]",
   "aib.fonts.terminal_declined": "好,不改。之後想改:aib fonts terminal",
   "aib.fonts.terminal_changed": "✓ 終端機「{profile}」設定檔已改成 {font}(改回:aib fonts restore)",
   "aib.fonts.terminal_failed": "終端機字型沒改成({code}):可以自己到 終端機 → 設定 → 描述檔 → 文字 → 字體 改成 JetBrainsMono NF",
@@ -5541,5 +5541,7 @@
   "aib.fonts.code.changed": "✓ 已改終端機「{detail}」設定檔的字型(改回:aib fonts restore)",
   "aib.fonts.code.failed": "沒改成({detail})",
   "aib.fonts.code.restored": "✓ 已改回原本的字型({detail})",
-  "aib.fonts.code.nothing": "沒有改過的設定可以改回"
+  "aib.fonts.code.nothing": "沒有改過的設定可以改回",
+  "aib.fonts.code.user_changed": "設定檔「{detail}」的字型後來被改過(不是 aib 設的那個),不動;真的要改回原字型:aib fonts restore --force",
+  "aib.fonts.code.timeout": "下載超過 {detail} 秒還沒好,先停掉、沒有裝任何檔;網路順時再跑 aib fonts install"
 }

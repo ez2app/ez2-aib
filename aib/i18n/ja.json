@@ -5521,7 +5521,7 @@
   "aib.fonts.installed": "✓ AI アイコン用フォントを入れました(JetBrainsMono Nerd Font {version}、~/Library/Fonts)",
   "aib.fonts.install_failed": "AI アイコン用フォントを入れられませんでした({code})。バッジは当面文字表示です。あとで aib fonts install を実行してください",
   "aib.fonts.terminal_hint": "ターミナルのプロファイル「{profile}」のフォント({font})では AI アイコンを描けません:aib fonts terminal で JetBrainsMono NF に変更できます(先にバックアップ、aib fonts restore で元に戻せます)",
-  "aib.fonts.terminal_ask": "ターミナルのプロファイル「{profile}」は {font} で、AI アイコンを描けません。JetBrainsMono NF に変更しますか?サイズはそのまま、先にバックアップします。[Y=変更 / m=小さめの NFM / n=しない]",
+  "aib.fonts.terminal_ask": "ターミナルのプロファイル「{profile}」は {font} で、AI アイコンを描けません。JetBrainsMono NF に変更しますか?サイズはそのまま、先にバックアップします。[y=変更 / m=小さめの NFM / それ以外=しない]",
   "aib.fonts.terminal_declined": "変更しません。あとで変える場合:aib fonts terminal",
   "aib.fonts.terminal_changed": "✓ プロファイル「{profile}」を {font} にしました(元に戻す:aib fonts restore)",
   "aib.fonts.terminal_failed": "ターミナルのフォントを変更できませんでした({code}):ターミナル → 設定 → プロファイル → テキスト → フォント で JetBrainsMono NF を選んでください",
@@ -5541,5 +5541,7 @@
   "aib.fonts.code.changed": "✓ プロファイル「{detail}」のフォントを変更しました(元に戻す:aib fonts restore)",
   "aib.fonts.code.failed": "変更できませんでした({detail})",
   "aib.fonts.code.restored": "✓ 元のフォントに戻しました({detail})",
-  "aib.fonts.code.nothing": "戻す設定はありません"
+  "aib.fonts.code.nothing": "戻す設定はありません",
+  "aib.fonts.code.user_changed": "プロファイル「{detail}」のフォントはその後変更されています(aib が設定したものではありません)。そのままにします。それでも元に戻す場合:aib fonts restore --force",
+  "aib.fonts.code.timeout": "ダウンロードが {detail} 秒を超えたため止めました。何も入れていません。回線が安定したら aib fonts install を実行してください"
 }

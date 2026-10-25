@@ -5521,7 +5521,7 @@
   "aib.fonts.installed": "✓ AI icon font installed (JetBrainsMono Nerd Font {version}, in ~/Library/Fonts)",
   "aib.fonts.install_failed": "AI icon font was not installed ({code}); the badge uses letters for now. Run aib fonts install later",
   "aib.fonts.terminal_hint": "The font of Terminal profile \"{profile}\" ({font}) cannot draw AI icons: run aib fonts terminal to switch to JetBrainsMono NF (backed up first; aib fonts restore switches back)",
-  "aib.fonts.terminal_ask": "Terminal profile \"{profile}\" uses {font}, which cannot draw AI icons. Switch to JetBrainsMono NF? Size unchanged, backed up first. [Y=switch / m=smaller NFM / n=no]",
+  "aib.fonts.terminal_ask": "Terminal profile \"{profile}\" uses {font}, which cannot draw AI icons. Switch to JetBrainsMono NF? Size unchanged, backed up first. [y=switch / m=smaller NFM / anything else=no]",
   "aib.fonts.terminal_declined": "OK, not changed. To change later: aib fonts terminal",
   "aib.fonts.terminal_changed": "✓ Terminal profile \"{profile}\" now uses {font} (undo: aib fonts restore)",
   "aib.fonts.terminal_failed": "Terminal font was not changed ({code}): set it yourself in Terminal → Settings → Profiles → Text → Font → JetBrainsMono NF",
@@ -5541,5 +5541,7 @@
   "aib.fonts.code.changed": "✓ Changed the font of Terminal profile \"{detail}\" (undo: aib fonts restore)",
   "aib.fonts.code.failed": "Not changed ({detail})",
   "aib.fonts.code.restored": "✓ Restored the original font ({detail})",
-  "aib.fonts.code.nothing": "Nothing to restore"
+  "aib.fonts.code.nothing": "Nothing to restore",
+  "aib.fonts.code.user_changed": "The font of profile \"{detail}\" was changed afterwards (not the one aib set); left alone. To restore the original anyway: aib fonts restore --force",
+  "aib.fonts.code.timeout": "Download took longer than {detail} seconds; stopped and nothing installed. Run aib fonts install when the network is better"
 }

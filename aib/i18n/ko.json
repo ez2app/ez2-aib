@@ -5521,7 +5521,7 @@
   "aib.fonts.installed": "✓ AI 아이콘 글꼴을 설치했습니다(JetBrainsMono Nerd Font {version}, ~/Library/Fonts)",
   "aib.fonts.install_failed": "AI 아이콘 글꼴을 설치하지 못했습니다({code}). 배지는 당분간 글자로 표시됩니다. 나중에 aib fonts install 을 실행하세요",
   "aib.fonts.terminal_hint": "터미널 프로필 \"{profile}\"의 글꼴({font})로는 AI 아이콘을 그릴 수 없습니다: aib fonts terminal 로 JetBrainsMono NF 로 바꿀 수 있습니다(먼저 백업, aib fonts restore 로 되돌림)",
-  "aib.fonts.terminal_ask": "터미널 프로필 \"{profile}\"은 {font} 을 써서 AI 아이콘을 그릴 수 없습니다. JetBrainsMono NF 로 바꿀까요? 크기는 그대로, 먼저 백업합니다. [Y=변경 / m=작은 NFM / n=아니요]",
+  "aib.fonts.terminal_ask": "터미널 프로필 \"{profile}\"은 {font} 을 써서 AI 아이콘을 그릴 수 없습니다. JetBrainsMono NF 로 바꿀까요? 크기는 그대로, 먼저 백업합니다. [y=변경 / m=작은 NFM / 그 외=아니요]",
   "aib.fonts.terminal_declined": "바꾸지 않았습니다. 나중에 바꾸려면: aib fonts terminal",
   "aib.fonts.terminal_changed": "✓ 터미널 프로필 \"{profile}\"을 {font} 로 바꿨습니다(되돌리기: aib fonts restore)",
   "aib.fonts.terminal_failed": "터미널 글꼴을 바꾸지 못했습니다({code}): 터미널 → 설정 → 프로필 → 텍스트 → 서체 에서 JetBrainsMono NF 를 고르세요",
@@ -5541,5 +5541,7 @@
   "aib.fonts.code.changed": "✓ 터미널 프로필 \"{detail}\"의 글꼴을 바꿨습니다(되돌리기: aib fonts restore)",
   "aib.fonts.code.failed": "바꾸지 못했습니다({detail})",
   "aib.fonts.code.restored": "✓ 원래 글꼴로 되돌렸습니다({detail})",
-  "aib.fonts.code.nothing": "되돌릴 설정이 없습니다"
+  "aib.fonts.code.nothing": "되돌릴 설정이 없습니다",
+  "aib.fonts.code.user_changed": "프로필 \"{detail}\"의 글꼴이 이후에 바뀌었습니다(aib 가 설정한 것이 아님). 그대로 둡니다. 그래도 원래 글꼴로 되돌리려면: aib fonts restore --force",
+  "aib.fonts.code.timeout": "다운로드가 {detail}초를 넘어 중단했습니다. 아무것도 설치하지 않았습니다. 네트워크가 좋아지면 aib fonts install 을 실행하세요"
 }

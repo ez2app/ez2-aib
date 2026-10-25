@@ -887,11 +887,12 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
           else note+=("線上對話的 nostr-sdk 沒裝成(多半是網路):之後跑 aib chat prepare 再補"); fi
         fi
         # 10-25(@ae6a1 fishmac 實跑建議;Andy「安裝或更新 aib 時一併優化」):AI 符號字型 —— 沒有就裝 JetBrainsMono Nerd Font
-        #   (只放使用者字型檔,不問);Apple 終端機設定檔字型畫不出 ⇒ 有終端機才問一次要不要改(回不要會記住),沒得問只印一行。
+        #   (只放使用者字型檔,不問);Apple 終端機設定檔字型畫不出 ⇒ 有終端機才問一次要不要改(回答過會記住),沒得問只印一行。
         #   aib update 也是重跑這支。非 Mac 什麼都不做;AIB_FONT_AUTO=0 略過;失敗不擋安裝。
+        #   #361 r1 M2:下載那段包 5 分鐘時限(程式內另有 120 秒總時限);問人那段要讀終端機,不能丟背景,分開叫且不再下載。
         if [ "$LINUX" != 1 ] && [ "${AIB_FONT_AUTO:-1}" != 0 ]; then
-          if [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then (cd "$DIR" && "$abin" fonts auto --ask </dev/tty) || true
-          else (cd "$DIR" && "$abin" fonts auto </dev/null) || true; fi
+          (cd "$DIR" && run_limited 300 "$abin" fonts auto </dev/null) || true
+          if [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then (cd "$DIR" && "$abin" fonts auto --ask --no-install </dev/tty) || true; fi
         fi
       fi
     elif [ "$vrc" = 127 ]; then miss+=("$shown 不見了或不能執行")
