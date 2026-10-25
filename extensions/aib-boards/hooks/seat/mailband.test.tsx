@@ -65,7 +65,7 @@ test('真人來信 → 卡片:狀態色、標題列角色圖示(不畫像素大�
   expect(await ui.find({ type: 'Text', text: /新信/ })).toBeUndefined()
   expect(toasts.filter(t => t.includes('📬')).length).toBe(0)
   // Andy 10-25:席的信不出卡,改右上角 toast 一次(右欄圖示 + 寄件人 + 內容),再讀到同一封不重複
-  expect(toasts.filter(t => t.includes('席的信'))).toEqual(['👑 @8f366:席的信'])
+  expect(toasts.filter(t => t.includes('席的信'))).toEqual(['AIB 通知 · 👑 @8f366:席的信'])
   await $.classic.FileChanged({ file_path: seatPath, event: 'change' })
   expect(toasts.filter(t => t.includes('席的信')).length).toBe(1)
   expect(toasts.some(t => t.includes('機器空了'))).toBe(false)
