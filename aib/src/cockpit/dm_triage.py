@@ -266,7 +266,8 @@ def build_record(seat, rows, prev=None, now=None):
     # wake_log:每日上限要跨批次數;woke_attempts(review r3 m3):rc=2 上限每席累計,換批不歸零
     # screen_sha / screen_since(10-13 auto_tidy):畫面多久沒變要跨批次量,換一批信不重算
     for k in ("woke_batch", "woke_ids", "woke_inprog_ids", "woke_at", "woke_rc", "wake_log", "woke_attempts",
-              "screen_sha", "screen_since", "inprog_ids", "woke_live_n", "followups", "triage_stalled", "stalled_at"):
+              "screen_sha", "screen_since", "inprog_ids", "woke_live_n", "followups", "triage_stalled", "stalled_at",
+              "busy_since", "headless_at"):
         if k in prev:
             rec[k] = prev[k]
     return rec

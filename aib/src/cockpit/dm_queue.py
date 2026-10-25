@@ -2007,6 +2007,42 @@ def _load1():
         return None
 
 
+def _spawn_headless(seat, brand, env):
+    """背景起一輪 dm_queue.py triage-headless(自成一組、不等它;輸出進那一席的 headless.log)。"""
+    d = seat_dir(seat, env)
+    d.mkdir(parents=True, exist_ok=True)
+    with open(str(d / "headless.log"), "ab") as log:
+        subprocess.Popen([sys.executable, str(_HERE / "dm_queue.py"), "triage-headless", "--seat", seat, "--brand", brand],
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                         env=dict(_env(env)), cwd=str(d))
+
+
+SPAWN_HEADLESS = _spawn_headless   # 測試換掉
+
+
+def _triage_headless_maybe(seat, rec, path, env, now, probe):
+    """0.1.62(Andy 22:3x「不要跳過」、@abb89 23:22 定案):到門檻但那一席一直忙 ⇒ 記 busy_since;忙滿
+    dm_triage_headless.HEADLESS_AFTER_S 且引擎是 claude / codex ⇒ 背景起整理 AI 代做一輪(算進每日上限)。回起了沒。"""
+    import dm_triage_headless as H
+    rec = dict(rec)
+    if rec.get("busy_since") is None:
+        rec["busy_since"] = now
+    reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
+    brand = str(reg_prov or probe.get("provider") or "")
+    ok, _why = H.should_start(rec, now, _triage_lock(seat, env), _load1(), rec["busy_since"], brand, _triage_mode(brand))
+    if ok:
+        day_log = [int(t) for t in (rec.get("wake_log") or []) if isinstance(t, (int, float)) and now - int(t) < 86400]
+        rec.update({"headless_at": now, "wake_log": day_log + [now]})
+    if not TR.write(path, rec):
+        return False                       # 記不下來就不起(否則下一拍看不到起過,會一直起)
+    if ok:
+        try:
+            SPAWN_HEADLESS(seat, brand, env)
+        except OSError:
+            return False
+    return ok
+
+
 def _triage_lock(seat, env=None):
     """那一席 triage-agent.json 的原樣內容(子代理自願登記;只是協調,不是防線);沒有 / 壞檔回 None。"""
     try:
@@ -2103,6 +2139,10 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
                 rec.pop("stalled_at", None)
             TR.write(path, rec)
     if not normal:
+        if why in ("under-threshold", "all-handled") and rec.get("busy_since") is not None:
+            rec = dict(rec)
+            rec.pop("busy_since", None)            # 沒事要整理了:忙的起算歸零(下次到門檻重新算 30 分)
+            TR.write(path, rec)
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": why, "cleaned": cleaned}
     # 子代理那條(非 auto_tidy):閒很久也叫(Andy 要立刻消化);每日上限維持 WAKE_DAILY_MAX(Andy 22:5x「是,但每日上限維持 12」)
     gate_ok, gate_why = _wake_gate(seat, rec, env, now, idle_cap=False)
@@ -2123,7 +2163,15 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     res = hold_fn(seat, probe) if hold_fn is not None else drain_hold(seat, probe, env=env)
     busy, why = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
     if busy:
+        if not tidy_on:
+            started = _triage_headless_maybe(seat, rec, path, env, now, probe)
+            if started:
+                return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "headless-started"}
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": why or "busy"}
+    if rec.get("busy_since") is not None:
+        rec = dict(rec)
+        rec.pop("busy_since", None)                # 閒下來了:忙的起算歸零
+        TR.write(path, rec)
     # 通知組裡**已送達**(delivered)的 ⇒ 叫醒成功後由系統代標已讀,提醒裡照樣列出來。
     #   ★ review r1 M4:排隊中(queued)的從沒貼到那一席眼前,代標已讀 = 那一席永遠不知道有這封;人審不代標。
     by_id = {str(r.get("id")): r for r in rows}
@@ -5187,6 +5235,9 @@ def main(argv=None, env=None):
     ro.add_argument("--id", required=True)
     ro.add_argument("--why", required=True)
     ro.add_argument("--by", default=None)
+    th = sub.add_parser("triage-headless")          # 0.1.62:背景整理 AI 代做一輪(通常由叫醒那一拍自動起)
+    th.add_argument("--seat", required=True)
+    th.add_argument("--brand", required=True)
     ts_ = sub.add_parser("triage-status")           # 看板:每席叫醒 / 封數變化 / stalled / 子代理登記(唯讀)
     ts_.add_argument("--seat", default=None)
     ts_.add_argument("--json", action="store_true")
@@ -5433,6 +5484,12 @@ def main(argv=None, env=None):
                 return 2
         _print_json(TA.plan(args.seat, env=env))
         return 0
+
+    if args.cmd == "triage-headless":
+        import dm_triage_headless as H
+        out = H.run(args.seat, args.brand, env=env)
+        _print_json(out)
+        return 0 if out.get("ok") else 1
 
     if args.cmd == "triage-status":
         import dm_triage_agent as TA
