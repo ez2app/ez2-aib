@@ -7,9 +7,11 @@
   aib room heat crashes [--json] [--days N]   當機雷達:系統當機報告按「程式 + 例外 + 訊息前 40 字」歸類
   aib room heat churn [--seconds N] [--json]  找熱源:N 秒內新開的短命行程歸給誰(room_heat_unseen.py,60 秒節流)
   aib room heat advice [--json]               散熱建議七條(room_heat_advice.py,只顯示、快取 60 秒)
+  aib room heat stack [--json]                散熱元件插槽:裝了沒 / 哪一版 / 燈 / 最近數字(room_heat_stack.py,只讀)
   (churn 每列再比已知熱點表 room_heat_known.py:代碼 + 修在哪版 + 換版後是否改善)
 
   aib room heat release <候選編號>… | --all-safe [--auto] [--dry-run] [--json]   釋放殘留(room_heat_release.py,白名單)
+  aib room heat tidy [archive|notify] …   孤兒常駐 / 已合併舊工作樹(room_heat_tidy.py)
 
 快照的 candidates / held 由 room_heat_release.scan 算;cpu_total / unseen_cpu 由 room_heat_unseen 算;這支本身只讀。
 沿用 machine_status(量測、「量不到 ≠ 0」)與 cooldown(四級),不重寫門檻。
@@ -497,6 +499,12 @@ def _print_snapshot(s, out):
 def main(argv=None, out=None):
     out = out or sys.stdout
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "tidy":
+        import room_heat_tidy
+        return room_heat_tidy.main(argv[1:], out=out)
+    if argv and argv[0] == "stack":
+        import room_heat_stack
+        return room_heat_stack.main(argv[1:], out=out)
     sub = argv.pop(0) if argv and argv[0] in ("history", "crashes", "release", "churn", "advice") else "snap"
     ap = argparse.ArgumentParser(prog="aib room heat" + ("" if sub == "snap" else " " + sub))
     ap.add_argument("--json", action="store_true")

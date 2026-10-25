@@ -11,6 +11,9 @@ permissions:
   contents: read
 jobs:
   smoke:
+    # 10-25:沒設上限時一支測試卡住會把格子掛到預設 6 小時、佔滿 macOS 名額,後面所有 PR 排隊。
+    #   macOS 整套 260 支約 40 分(最慢一支約 4 分)⇒ 上限 75 分,留將近一倍
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -55,12 +58,24 @@ jobs:
           git config --global user.name ci && git config --global user.email ci@example.com
           rc=0
           for f in aib/tests/test-*.py; do
-            echo "::group::$f"; python "$f" || { echo "::error::$f failed"; rc=1; }; echo "::endgroup::"
+            # 每支最多 10 分鐘(macOS 沒有 timeout 指令 ⇒ 用 python 包);逾時印出是哪一支，整格照樣跑完其他支
+            echo "::group::$f"
+            python - "$f" <<'PY' || { echo "::error::$f failed or hung"; rc=1; }
+          import os, signal, subprocess, sys
+          p = subprocess.Popen([sys.executable, sys.argv[1]], start_new_session=True)   # 自成一組 ⇒ 逾時連它開的子行程一起收
+          try:
+              sys.exit(p.wait(timeout=600))
+          except subprocess.TimeoutExpired:
+              os.killpg(p.pid, signal.SIGKILL); p.wait()
+              print("::error::%s still running after 600 s (killed with its children)" % sys.argv[1]); sys.exit(124)
+          PY
+            echo "::endgroup::"
           done
           exit $rc
   # 10-12:「全新電腦」—— 空的家目錄、沒有任何設定,照 README 的一行安裝裝起來,再跑新用戶最先會打的指令。
   #   任何一步卡住(要你設環境變數、噴 Python 錯誤)這關就紅。
   fresh-machine:
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

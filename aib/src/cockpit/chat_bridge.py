@@ -996,6 +996,8 @@ def cmd_friend(a, env, out):
         if a.action == "add":
             owner, new = CR.add_friend(a.who, a.name, env, kind)
             out.write(T(pre + ("added" if new else "renamed"), owner=owner) + "\n")
+            if kind == "friends" and new:   # 10-25 fishmac:只加本機,對方不會知道 ⇒ 提示一次互加的指令
+                out.write(T("friend_added_connect_hint", owner=owner) + "\n")
         else:
             owner, gone = CR.remove_friend(a.who, env, kind)
             out.write(T(pre + ("removed" if gone else "not_found"), owner=owner) + "\n")
@@ -1048,8 +1050,8 @@ def cmd_refused(a, env, out):
         out.write(T("refused_row_" + ("verified" if r.get("display_name") else "unknown"), name=r.get("display_name") or "-",
                     country=r.get("country") or "-", who=r["who"], n=r.get("count", 1), when=when,
                     reason=T("refused_reason_" + ("not_friend" if r.get("reason") == "not_friend" else "unverified"))) + "\n")
-        if r.get("owner"):
-            out.write(T("refused_add_hint", who=r["who"]) + "\n")
+        if r.get("owner"):          # 10-25:提示改成互加(connect 送申請,對方按一下同意);只加本機好友對方不知道
+            out.write(T("refused_add_hint", who=refused_addr(r) or r["who"]) + "\n")
     return 0
 
 
@@ -1173,6 +1175,29 @@ def cmd_request(a, env, out):
     return res["rc"]
 
 
+def refused_addr(row):
+    """被拒收紀錄裡他寄件的位址,只信 reason=not_friend 那種(簽章驗過、只是不是好友);
+    unverified 的 from_addr 是寄件人自己填的(#355 r1 Low),不拿。"""
+    return row.get("from_addr") if row.get("reason") == "not_friend" else None
+
+
+def connect_address(target, owner, root, env):
+    """connect 的申請要寄到 <主人>/<艙>/<席>(10-25 Andy「艦長室一鍵對話」)。給的就是完整位址 ⇒ 照用;
+    只給主人 npub / 好友名 ⇒ 從本機已知的找:他的房間 / 名冊快照(艦長席優先)> 被拒收紀錄裡他寄件的位址(只信驗過簽章的)。
+    (他寄來的申請不用查:有申請 cmd_connect 就走接受,不會叫到這裡。)只讀本機檔、不連網;找不到 ⇒ None。"""
+    if "owner" in (GF.parse_address(target or "") or {}):
+        return target
+    addr, _why = GF.default_address(root, owner, env)
+    if addr:
+        return addr
+    for r in read_refused(env):
+        x = refused_addr(r) if r.get("who") == owner else None
+        p = GF.parse_address(x or "")
+        if p and p.get("owner") == owner:
+            return x
+    return None
+
+
 def cmd_connect(a, env, out):
     """aib chat connect <對方 主人/艙/席> [--share off|online|status] [--space none|island|room | --open] [--note …] [--json]
     10-24 Andy「我要一次就完成，不要多次」:兩台各打一次就連上。
@@ -1181,7 +1206,8 @@ def cmd_connect(a, env, out):
     要分享得比預設多(--share / --space / --open)⇒ 加好友和全部分享設定列在**同一個**指紋視窗,按一次;
     視窗列的是這位好友改完後的實際等級(沒給的項目照他現在的)。沒給 ⇒ 不用指紋。指紋被拒 ⇒ 什麼都不做。
     --json:stdout 只有一個 JSON —— {"v":1,"ok",...};錯誤 {"v":1,"ok":false,"why":bad_friend|friend_self|blocked|
-    open_or_space|bridge_off|share_failed|request_failed|seat_caller|<指紋原因>}。"""
+    open_or_space|no_address|bridge_off|share_failed|request_failed|seat_caller|<指紋原因>}。
+    給主人 npub / 好友名也行:位址從本機已知的找(connect_address);找不到 ⇒ no_address(門前擋,不加好友)。"""
     import io
     import argparse as _ap
     import chat_roster as CR
@@ -1211,6 +1237,9 @@ def cmd_connect(a, env, out):
     root = bridge_root(env)
     pending = any(r.get("owner") == owner for r in GF.read_requests(root))
     known = CR.is_friend(owner, env) or CR.is_mine(owner, env)
+    to = connect_address(a.target, owner, root, env) if not (pending or known) else None
+    if not (pending or known) and not to:      # 光給 npub、本機又沒有他的席 ⇒ 申請寄不到(npub 會被當成席的號碼),門前就講
+        return fail("no_address", T("connect_no_address", owner=owner))
     if (a.open or pending or not known) and not GF.bridge_alive(root):
         return fail("bridge_off", T("visit_bridge_off"))   # 申請 / 同意 / 開放都要轉接程式送,沒開就先講,不白按指紋
     if share or space:                       # 改分享 = 本人的動作:全部擠進一個視窗,列改完後的實際等級
@@ -1222,7 +1251,7 @@ def cmd_connect(a, env, out):
             return rc
     req = {"rc": 0, "why": "already_friend"}
     if pending or not known:
-        sub = _ap.Namespace(target="accept" if pending else a.target, who=owner, note=a.note or "", from_seat=None,
+        sub = _ap.Namespace(target="accept" if pending else to, who=owner, note=a.note or "", from_seat=None,
                             silent=False)
         if not pending:
             try:
@@ -1864,8 +1893,11 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
                 if owner:
                     out_last[r.get("msgid")] = {"at": at, "dir": "out", "net": "nostr", "contact_key": "global:" + owner,
                                                 "result": res}
+                    mid = r.get("msgid")                # 10-25 @74e8b:寄出列帶 msgid,艦長室才對得上剛寄的那封(只出寄出列)
+                    if isinstance(mid, str) and MSGID_RE.match(mid):
+                        out_last[mid]["msgid"] = mid
     for msgid, row in out_last.items():
-        rc = last_receipt(root, msgid)
+        rc = last_receipt(root, msgid, now)
         if rc:
             row["receipt"] = rc
     rows += list(out_last.values())
@@ -1873,12 +1905,30 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
     return {"v": 1, "at": int(now), "minutes": int(minutes), "rows": rows}
 
 
+MSGID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LOCAL_RECEIPT_STAGES = ("resolved", "relayed")    # 寄件端自己記的,不是對方回的
+PEER_HOP_STAGES = ("queued", "held", "delivered", "read", "still_waiting")   # 對方那台收下了
+STOP_HOP_STAGES = ("refused", "expired", "failed")
 
 
-def last_receipt(root, msgid):
-    """10-21 回條語意:寄出那封對方最後回的那一張 ⇒ {"stage","at"[,"days"][,"by"][,"detail"]};沒有 ⇒ None。
-    寄件人(艦長室收發室)據此分得出「還在等本人看(第 N 天)」「本人已讀」「被丟掉 / 過期」。detail 只放白名單碼。"""
+def receipt_hop(stage):
+    """10-25 一鍵對話第 3 條(七席共識:relayed 不能看起來像送到):回條走到哪一段。
+    none = 還沒上中繼站;relay = 中繼站收到、對方還沒回;peer = 對方那台收下了;stopped = 被拒 / 過期 / 失敗。
+    stage 代碼本身不改(回條 detail 是契約),這是另加的欄位。"""
+    if stage in PEER_HOP_STAGES:
+        return "peer"
+    if stage in STOP_HOP_STAGES:
+        return "stopped"
+    if stage in ("relayed", "unconfirmed"):
+        return "relay"
+    return "none"
+
+
+def last_receipt(root, msgid, now=None):
+    """10-21 回條語意:寄出那封對方最後回的那一張 ⇒ {"stage","at","hop"[,"days"][,"by"][,"detail"][,"hint","hint_text"]};沒有 ⇒ None。
+    寄件人(艦長室收發室)據此分得出「還在等本人看(第 N 天)」「本人已讀」「被丟掉 / 過期」。detail 只放白名單碼。
+    10-25:hop = 走到哪一段(receipt_hop);停在中繼站超過綠點的 10 分鐘(或已補 unconfirmed)⇒ hint = peer_timeout
+    + hint_text(人話,頁面只讀這個;@eef87:跟綠點同一套時間,不另設)。"""
     if not isinstance(msgid, str) or not GF.MSGID_RE.match(msgid):
         return None
     try:
@@ -1891,7 +1941,15 @@ def last_receipt(root, msgid):
     #   ⇒ 對方回過任何一張就以對方的為準,不讓本機那張把階段倒退回「已送上中繼站」(10-24 跨客戶驗收看到)
     remote = [x for x in recs if x.get("stage") not in LOCAL_RECEIPT_STAGES]
     r = (remote or recs)[-1]
-    out = {"stage": r.get("stage"), "at": r.get("at")}
+    out = {"stage": r.get("stage"), "at": r.get("at"), "hop": receipt_hop(r.get("stage"))}
+    if out["hop"] == "relay" and any(x.get("stage") in PEER_HOP_STAGES for x in recs):
+        out["hop"] = "peer"                            # 對方 queued 過、之後才補 unconfirmed ⇒ 對方那台是收下了
+    if out["hop"] == "relay":
+        now = time.time() if now is None else now
+        first = min((GF.int_or0(x.get("at")) for x in recs if x.get("stage") == "relayed"), default=0)
+        if r.get("stage") == "unconfirmed" or (first and now - first >= GF.BEAT_GREEN_S):
+            out["hint"] = "peer_timeout"
+            out["hint_text"] = T("hop_peer_timeout")
     if isinstance(r.get("days"), int):
         out["days"] = r["days"]
     if r.get("by") == "human":

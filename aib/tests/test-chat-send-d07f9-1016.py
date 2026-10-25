@@ -18,7 +18,13 @@ S4 沒公開的席 ⇒ rc 2 refused no_seat;過期的信 ⇒ rc 2 expired;都沒
 S5 對方收信站全連不上 ⇒ 重試 3 次後 failed(rc 2,或逾時 rc 4 後回條補 failed);不會無限重試
 S6 有工人就有心跳;off ⇒ 工人結束、心跳刪掉、寄件端回 bridge-off
 L1 洩漏:沙盒(金鑰檔以外)、回條、工人 log、中繼站所有事件都沒有 nsec1 與私鑰 hex
-刀(複本):K1 拿掉「沒量到不代簽」⇒ S3 紅;K2 不寄自己那一份 ⇒ S1 紅
+沙盒收尾(10-25 @abb89:int0155 樹跑完留 chat_bridge run + chat_nostr serve 孤兒 10 小時):
+O1 Box.close 收掉轉接程式與工人,收完 ps 查不到任何指令帶這個沙盒路徑的行程;有就殺掉並判紅
+O2 測試行程自己被 SIGKILL(清理沒機會跑)⇒ 看門狗幾秒內收掉那個沙盒的轉接程式 + 工人
+O3 pid 被重用(#346 r1):pgid 對得上但指令不是這支 chat_bridge.py 的行程 ⇒ 不算殘留、close 不殺
+O4 看門狗盯的組長換成別的行程(pid 重用)⇒ 看門狗收手、不 killpg 別人那組
+刀(複本):K1 拿掉「沒量到不代簽」⇒ S3 紅;K2 不寄自己那一份 ⇒ S1 紅;K3 不起看門狗 ⇒ O2 紅;
+K4 只看 pgid ⇒ O3 紅;K5 看門狗不驗組長指令 ⇒ O4 紅
 """
 import json
 import os
@@ -64,6 +70,73 @@ print(json.dumps(out, ensure_ascii=False))
 '''
 
 
+# 看門狗(獨立 session、不帶沙盒路徑在 argv):測試行程不在了 ⇒ 殺轉接程式那一組 + 工人;轉接程式自己結束 ⇒ 也走
+REAPER = r'''
+import json, os, signal, subprocess, sys, time
+parent, pgid = int(sys.argv[1]), int(sys.argv[2])
+root, bridge = os.environ["AIB_REAPER_ROOT"], os.environ["AIB_REAPER_BRIDGE"]
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+def ours():
+    # pid 可能被別的行程重用(#346 r1):組長還是那支轉接程式才算,不是就收手
+    cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pgid)], capture_output=True, text=True).stdout
+    return bridge in cmd
+while alive(pgid) and ours():
+    if not alive(parent):
+        try:
+            wp = json.load(open(os.path.join(root, "status.json"))).get("worker_pid")
+        except Exception:
+            wp = None
+        if ours():
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if isinstance(wp, int) and wp > 1:
+            cmd = os.popen("ps -o command= -p %d" % wp).read()
+            if root in cmd:
+                try:
+                    os.kill(wp, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        break
+    time.sleep(0.5)
+'''
+
+
+def _ours(cmd, pgid, root, pgids):
+    """指令帶沙盒路徑(工人 serve --root …),或在轉接程式那一組裡而且指令就是這支 chat_bridge.py。
+    只看 pgid 不夠:轉接程式走了、pid 被別的行程組長重用 ⇒ 會殺到別人(#346 r1)。"""
+    return str(root) in cmd or (pgid in pgids and str(BRIDGE) in cmd)
+
+
+def leftovers(root, pgids=()):
+    """還活著的沙盒行程(條件見 _ours)。看門狗另開 session、argv 不帶路徑,不算。"""
+    r = subprocess.run(["ps", "-axo", "pid=,pgid=,stat=,command="], capture_output=True, text=True)
+    out = []
+    for line in r.stdout.splitlines():
+        f = line.split(None, 3)
+        if len(f) < 4 or not (f[0].isdigit() and f[1].isdigit()) or f[2].startswith("Z"):
+            continue
+        pid, pgid, cmd = int(f[0]), int(f[1]), f[3]
+        if pid != os.getpid() and _ours(cmd, pgid, root, pgids):
+            out.append(pid)
+    return out
+
+
+def _still_ours(pid, root, pgids):
+    """殺之前再量一次(中間可能剛好結束、pid 被重用)。"""
+    r = subprocess.run(["ps", "-o", "pgid=,command=", "-p", str(pid)], capture_output=True, text=True)
+    f = r.stdout.strip().split(None, 1)
+    return len(f) == 2 and f[0].isdigit() and _ours(f[1], int(f[0]), root, pgids)
+
+
 class Box(object):
     def __init__(self, relays=None):
         self.td = Path(tempfile.mkdtemp(prefix="aib-send-"))
@@ -73,6 +146,7 @@ class Box(object):
         self.root = self.td / "bridge"
         self.relays = relays or []
         self.procs = []
+        self.reapers = []
         self.extra = {}                      # 測試要改的環境變數(例 AIB_CHAT_READ_BATCH);env() 與 start_run 都帶
 
     def env(self, **extra):
@@ -106,6 +180,11 @@ class Box(object):
         p = subprocess.Popen([sys.executable, str(BRIDGE), "run"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, env=self.env(), start_new_session=True)
         self.procs.append(p)
+        self.reapers.append(subprocess.Popen([sys.executable, "-c", REAPER, str(os.getpid()), str(p.pid)],
+                                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.DEVNULL, start_new_session=True,
+                                             env=dict(os.environ, AIB_REAPER_ROOT=str(self.root),
+                                                      AIB_REAPER_BRIDGE=str(BRIDGE))))
         return p
 
     def status(self):
@@ -135,7 +214,27 @@ class Box(object):
             except subprocess.TimeoutExpired:
                 pass
         self._kill_worker()
+        for r in self.reapers:
+            if r.poll() is None:
+                r.kill()
+            r.wait(timeout=10)
+        left = []
+        end = time.time() + 5
+        while time.time() < end:
+            left = leftovers(self.root, [p.pid for p in self.procs])
+            if not left:
+                break
+            time.sleep(0.2)
+        for pid in left:                                  # 收不掉的:殺掉再判紅(不讓孤兒活下去)
+            if not _still_ours(pid, self.root, [p.pid for p in self.procs]):
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         shutil.rmtree(self.td, ignore_errors=True)
+        if left:
+            raise AssertionError("沙盒收尾後還有行程:%s" % left)
 
     def _kill_worker(self):
         """aib chat off 後 run 先結束、寄件工人可能還沒走(@abb89 #297 r1 看到收尾留行程)。
@@ -175,6 +274,96 @@ class Core(unittest.TestCase):
         res = GF.send_and_wait(b.root, outbox_rec("npub1" + "q" * 58, x), wait=1)
         self.assertEqual((res["rc"], res["stage"]), (2, "bridge-off"))
         self.assertEqual(list((b.root / "outbox").glob("*.json")), [])
+
+
+CRASH = r'''
+import os, signal, sys, time
+sys.path.insert(0, sys.argv[1])
+import importlib.util
+spec = importlib.util.spec_from_file_location("sendbox", sys.argv[2])
+SB = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(SB)
+b = SB.Box()
+if sys.argv[3]:
+    b.chat.mkdir(parents=True, exist_ok=True)
+    os.symlink(sys.argv[3], str(b.chat / "venv"))
+b.seat("20261016-000000-6ddf", "w2", "00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")
+b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW")
+b.start_run()
+b.wait_for(lambda: b.status().get("state") in ("no_relays", "published") and
+           (not sys.argv[3] or b.status().get("worker_pid")), 30)
+print(b.root, b.status().get("worker_pid") or "-", b.procs[0].pid, flush=True)
+os.kill(os.getpid(), signal.SIGKILL)                 # 清理沒機會跑
+'''
+
+
+class Teardown(unittest.TestCase):
+    def test_o1_close_leaves_nothing(self):
+        b = Box()
+        b.seat("20261016-000000-6ddf", "w2", "00000000-0000-0000-0000-00000000aaa1", "xxxx11", "寄件席")
+        b.cli("on", "--no-venv", "--name", "Andy", "--country", "TW")
+        p = b.start_run()
+        self.assertTrue(b.wait_for(lambda: bool(leftovers(b.root, [p.pid])), 10))
+        b.close()
+        self.assertEqual(leftovers(b.root, [p.pid]), [])
+
+    def _stranger(self):
+        """自己一組(start_new_session ⇒ pgid = pid)、指令不是 chat_bridge.py 的行程:模擬 pid 被重用。"""
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        return p
+
+    def test_o3_pid_reuse_not_ours(self):
+        p = self._stranger()
+        root = Path(tempfile.mkdtemp(prefix="aib-send-")) / "bridge"
+        self.addCleanup(shutil.rmtree, str(root.parent), True)
+        self.assertEqual(leftovers(root, [p.pid]), [])
+        self.assertFalse(_still_ours(p.pid, root, [p.pid]))
+        class Gone(object):                             # 轉接程式已經結束(收過了),它的 pid 被 p 重用
+            pid = p.pid
+
+            def poll(self):
+                return 0
+
+            def communicate(self, timeout=None):
+                return None, None
+        b = Box()
+        b.procs.append(Gone())
+        b.close()
+        self.assertIsNone(p.poll(), "別人的行程被殺了")
+
+    def test_o4_reaper_leaves_stranger(self):
+        p = self._stranger()
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()                                     # 測試行程「已經不在」
+        root = Path(tempfile.mkdtemp(prefix="aib-send-")) / "bridge"
+        self.addCleanup(shutil.rmtree, str(root.parent), True)
+        r = subprocess.run([sys.executable, "-c", REAPER, str(dead.pid), str(p.pid)], timeout=30,
+                           env=dict(os.environ, AIB_REAPER_ROOT=str(root), AIB_REAPER_BRIDGE=str(BRIDGE)))
+        self.assertEqual(r.returncode, 0)
+        time.sleep(0.3)
+        self.assertIsNone(p.poll(), "看門狗 killpg 了別人那組")
+
+    def test_o2_reaper_after_sigkill(self):
+        venv = NOSTR_VENV if HAVE_NOSTR else ""
+        r = subprocess.run([sys.executable, "-c", CRASH, str(HERE), str(Path(__file__).resolve()), venv],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, -signal.SIGKILL, r.stderr)
+        root, wp, pg = r.stdout.split()[:3]
+        pg = [int(pg)]
+        self.addCleanup(shutil.rmtree, str(Path(root).parent), True)
+        if venv:
+            self.assertTrue(wp.isdigit(), "有 venv 時要等到工人起來才砍:%r" % r.stdout)
+        self.assertTrue(leftovers(root, pg), "砍測試行程時轉接程式要還活著(不然驗不到)")
+        end, left = time.time() + 15, None
+        while time.time() < end:
+            left = leftovers(root, pg)
+            if not left:
+                break
+            time.sleep(0.2)
+        for pid in left or []:
+            os.kill(pid, signal.SIGKILL)
+        self.assertEqual(left, [], "看門狗沒收掉")
 
 
 @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV(裝了 nostr-sdk==0.45.1 的 venv)")
@@ -327,6 +516,27 @@ class Knife(unittest.TestCase):
     def test_k2_no_self_copy(self):
         self._knife('            await c.send_event(mine, N.SendEventTarget.to([N.RelayUrl.parse(r) for r in own]))',
                     '            pass', "Network.test_s1_send")
+
+
+    def test_k3_no_reaper(self):
+        name = Path(__file__).name
+        self._self_knife('"-c", REAP' + 'ER, str(os.getpid())', '"-c", "pass", str(os.getpid())',
+                         "Teardown.test_o2_reaper_after_sigkill")
+
+    def _self_knife(self, needle, repl, cell):
+        name = Path(__file__).name
+        with knife_copy(REPO, "tests/" + name, needle, repl, tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), cell], cwd=str(root), max_procs=80, timeout=300)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k4_pgid_only(self):
+        self._self_knife("    return str(root) in cmd or (pgid in pgids and str(BRI" + "DGE) in cmd)",
+                         "    return str(root) in cmd or pgid in pgids", "Teardown.test_o3_pid_reuse_not_ours")
+
+    def test_k5_reaper_no_check(self):
+        self._self_knife("    return bridge in " + "cmd", "    return True", "Teardown.test_o4_reaper_leaves_stranger")
 
 
 if __name__ == "__main__":

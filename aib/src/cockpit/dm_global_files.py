@@ -769,19 +769,83 @@ def _unlink(p):
         pass
 
 
+PEER_OK_STAGES = ("queued", "held", "delivered", "read")
+ACCEPTED_FILE = "peer-accepted.json"     # 每位主人最後一次「收下了我的信」的時間;回條 7 天會被 sweep 清掉,這個不清(#357 r1 High)
+
+
+def _T(key, **params):
+    """給人看的字走 i18n(aib.chat.*,跟 chat_bridge.T 同一套);字典壞了退回鍵名。"""
+    try:
+        import i18n_lib
+        return i18n_lib.t("aib.chat." + key, params or None, locale=i18n_lib.resolve_locale())
+    except Exception:   # noqa: BLE001
+        return "aib.chat." + key
+
+
+def note_accepted(root, owner, now=None):
+    """對方回 queued / held / delivered / read(轉接程式驗過是我寄給的那席簽的)⇒ 記這位主人最後一次收下的時間。"""
+    if not NPUB_FULL_RE.match(owner or ""):
+        return
+    at = int(time.time() if now is None else now)
+
+    def fn(cur):
+        rows = cur.setdefault("owners", {})
+        if not isinstance(rows, dict):
+            rows = cur["owners"] = {}
+        if int_or0(rows.get(owner)) < at:
+            rows[owner] = at
+    _locked_update(root, ACCEPTED_FILE, fn, lambda: {"v": VERSION, "owners": {}})
+
+
+def peer_accepted_at(root, owner):
+    """這位主人最後一次收下我的信的時間;沒記過 ⇒ 0。升級前的舊帳:看還沒被清的回條(找到就補記)。"""
+    try:
+        rows = json.loads((Path(root) / ACCEPTED_FILE).read_text(encoding="utf-8")).get("owners") or {}
+        at = int_or0(rows.get(owner)) if isinstance(rows, dict) else 0
+    except (OSError, ValueError, AttributeError):
+        at = 0
+    if at:
+        return at
+    for p in (Path(root) / "receipts").glob("*.jsonl"):
+        try:
+            sent = json.loads((Path(root) / "sent" / (p.stem + ".json")).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(sent, dict) or sent.get("owner") != owner:
+            continue
+        ok = [int_or0(r.get("at")) for r in read_receipts(root, p.stem) if r.get("stage") in PEER_OK_STAGES]
+        if ok:
+            at = max(at, max(ok))
+    if at:
+        note_accepted(root, owner, at)
+    return at
+
+
 def _with_peer(root, rec, res, now):
-    """10-18 Andy「要能判斷該電腦休眠」:寄件結果帶對方那台的狀態;還沒送到而對方在睡 / 離線 ⇒ detail 補一句。"""
+    """10-18 Andy「要能判斷該電腦休眠」:寄件結果帶對方那台的狀態;還沒送到而對方在睡 / 離線 ⇒ detail 補一句。
+    10-25 Mac Pro 13:對方其實是「還不是好友、拒收」,這邊卻補成「對方離線」,人就跑去查轉接程式。
+    ⇒ 交上中繼站(relayed)了、但從沒收過對方收下的回條 ⇒ 不推斷睡 / 離線,改放 hint「可能還不是好友」
+    (#357 r1:detail 是契約、原值不動;人話放 hint、走 i18n;peer.why = not_confirmed 只在程式內用)。"""
     owner = (parse_address((rec or {}).get("to") or "") or {}).get("owner")
     if not owner or rec.get("op") == "resolve":
         return res
     try:
         import chat_power as CP
         st = CP.owner_state([c for c in read_world(root).values() if c.get("owner") == owner], now)
+        st["accepted"] = peer_accepted_at(root, owner) > 0
     except Exception:   # noqa: BLE001  看不到狀態就不補,不擋寄件
         return res
     res["peer"] = st
-    if res["stage"] in ("relayed", "claimed", "queued") and st["state"] in ("asleep", "offline") and st.get("since"):
-        when = time.strftime("%m-%d %H:%M", time.localtime(st["since"]))
+    if res["stage"] not in ("relayed", "claimed", "queued") or st["state"] == "awake":
+        return res
+    when = time.strftime("%m-%d %H:%M", time.localtime(st["since"])) if st.get("since") else None
+    if not st["accepted"] and res["stage"] == "relayed":
+        st["why"] = "not_confirmed"
+        if not res.get("hint"):
+            res["hint"] = _T("peer_not_confirmed_since", when=when) if when else _T("peer_not_confirmed_nostate")
+        return res
+    if st["state"] in ("asleep", "offline") and when:
+        st["why"] = st["state"]
         res["detail"] = (res["detail"] + ";" if res["detail"] else "") + (
             "對方那台電腦在睡(%s 起沒動靜),信在中繼站等,醒來才收" % when if st["state"] == "asleep"
             else "對方那台電腦離線(%s 起沒動靜,它設定成不睡:可能斷網、關機或轉接程式停了)" % when)

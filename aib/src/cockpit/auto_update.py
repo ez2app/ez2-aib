@@ -184,8 +184,8 @@ def write_excludes(names, env=None, now=None):
 
 CLOCK_SKEW_S = 5 * 60               # 時間戳比現在晚超過這麼多 ⇒ 當成時鐘跳過,不算數
 _TS_KEYS = ("last_check", "last_attempt", "last_result_at")
-_STR_KEYS = ("have", "latest", "last_why", "plugin_source")
-_LIST_KEYS = ("plugins_behind", "plugins_paid_behind", "plugins_excluded", "plugins_unsigned", "plugins_modified")
+_STR_KEYS = ("have", "latest", "last_why", "plugin_source", "plugin_via", "plugin_problem")
+_LIST_KEYS = ("plugins_behind", "plugins_paid_behind", "plugins_excluded", "plugins_unsigned", "plugins_modified", "plugins_missing")
 _RESULT_RX = re.compile(r"[a-z_]{1,40}")
 
 
@@ -212,6 +212,8 @@ def clean_status(d, now=None):
             out[k] = d[k]
     if isinstance(d.get("last_result"), str) and _RESULT_RX.fullmatch(d["last_result"]):
         out["last_result"] = d["last_result"]
+    if isinstance(d.get("plugin_via_url"), str) and len(d["plugin_via_url"]) <= 200:
+        out["plugin_via_url"] = safe_url(d["plugin_via_url"])      # 狀態檔誰都改得到 ⇒ 讀回再清一次
     for k in _LIST_KEYS:
         v = d.get(k)
         if isinstance(v, list):
@@ -701,6 +703,105 @@ def paid_behind(cache, excluded=(), env=None):
     return behind, skipped, unsigned
 
 
+# 付費外掛落後:先看 ez2.page 目錄(10-25 @abb89 定案;#273 A-M3 不變 = 只列名、不自動裝)
+#   只有 plugin_unsupported / plugin_unreachable(伺服器沒這組端點 / 連不到)才退回 aib-plugins git;
+#   目錄形狀不對 / 其他碼 ⇒ 停在這裡(不列、不退回、不裝);包的 sha256 / 簽章由本人跑 aib plugins install 時驗
+CATALOG_FALLBACK = ("plugin_unsupported", "plugin_unreachable")
+CATALOG_REJECTED = ("plugin_catalog_invalid",)   # 目錄驗證沒過 ⇒ 狀態寫 rejected;其他非退回碼 ⇒ incomplete(這次沒查完)
+
+
+def _catalog_mod():
+    p = str(ROOT / "aib" / "tools" / "verify") if (ROOT / "aib" / "tools" / "verify").is_dir() else str(CORE / "tools" / "verify")
+    if p not in sys.path:
+        sys.path.insert(0, p)
+    import plugin_catalog
+    return plugin_catalog
+
+
+def safe_url(u):
+    """寫進狀態 / 紀錄的來源網址:去掉帳密、查詢參數、;參數、片段,只留可印 ASCII、最多 200 字(紀錄不放 token / 網址參數)。
+    scp 寫法(user@host:path)也去掉 @ 前面。"""
+    from urllib.parse import urlsplit
+    u = "".join(c for c in str(u or "") if " " < c < "\x7f")
+    if "://" in u:
+        try:
+            p = urlsplit(u)
+            u = "%s://%s%s" % (p.scheme, p.netloc.rpartition("@")[2], p.path.split(";", 1)[0])
+        except ValueError:
+            u = "?"
+    else:
+        u = re.split(r"[?#;]", u.rpartition("@")[2], maxsplit=1)[0]
+    return u[:200] or "?"
+
+
+def catalog_url(env=None):
+    """實際用的目錄網址(EZ2_PAGE_API_BASE 可換 —— 防線是包簽章,不是網址;狀態 / doctor 照實寫出來)。"""
+    env = os.environ if env is None else env
+    return safe_url(_catalog_mod()._public_api(env).base_url)
+
+
+CATALOG_DEADLINE_S = 60      # 自動路徑整輪付費檢查上限(@abb89 #349 r1 裁 2);超過 = plugin_unreachable(照兩碼規則退回 git)
+
+
+def catalog_behind(env, excluded=(), deadline_s=None, api=None):
+    """這台已裝的付費外掛(<狀態根>/plugins)在 ez2.page 目錄有比較新的版本 ⇒ 列名(#273 A-M3 只列名、不自動裝)。
+    @abb89 #349 r1 裁 1:自動路徑只比目錄版本號,不下載、不驗包 —— 驗證留給本人跑 aib plugins install(那邊驗不過就停)。
+    目錄只抓一次、整輪最多 deadline_s 秒。回 {"via": "catalog" | "fallback", "behind", "skipped", "missing", "unsigned", "problem"}:
+    missing = 已裝、目錄沒列的付費外掛;沒裝付費外掛 ⇒ 不連網、via catalog。"""
+    X = _ext()
+    import ext_kinds as K
+    PC = _catalog_mod()
+    out = {"via": "catalog", "behind": [], "skipped": [], "missing": [], "unsigned": [], "problem": None}
+    home = state_root(env) / K.KINDS["plugin"]["home"]
+    try:
+        dirs = sorted(p for p in home.iterdir() if p.is_dir() and not p.name.endswith(".installing"))
+    except OSError:
+        return out
+    mine = []
+    for d in dirs:
+        v = (_read_obj(d / X.MANIFEST) or {}).get("version")
+        if isinstance(v, str) and PC.VER_RE.fullmatch(v):
+            mine.append((d.name, v))
+        else:                                          # 1.0.0-rc1 這類 ⇒ 跳過,不讓整輪(連核心更新)掛掉(#349 r1 H1)
+            log("plugin %s skipped: installed version is not x.y.z" % d.name, env)
+    if not mine:
+        return out
+    limit = CATALOG_DEADLINE_S if deadline_s is None else deadline_s
+    api = api or PC._public_api(env)
+    api.timeout = min(api.timeout, limit)
+    api.total_s = limit
+    t0 = time.monotonic()
+    entries, err = PC.catalog(env, api)
+    if not err and time.monotonic() - t0 > limit:
+        err = PC.fail("plugin_unreachable", 4)
+    if err:
+        code = err[0].get("detail")
+        return dict(out, via="fallback" if code in CATALOG_FALLBACK else "catalog", problem=code)
+    for name, have in mine:
+        e = PC.pick(entries, name)
+        if e is None:
+            out["missing"].append(name)
+        elif PC.vkey(e["version"]) <= PC.vkey(have):
+            continue                                   # 不比這台新 ⇒ 不動(不降版)
+        elif name in excluded:
+            out["skipped"].append(name)
+        else:
+            out["behind"].append({"name": name, "kind": "plugin", "have": have, "want": e["version"], "source": "catalog"})
+    return out
+
+
+def _catalog_safe(catalog, env, excluded):
+    """check() 用:目錄這步拋什麼都收成 plugin_catalog_error —— 這輪付費沒查、不退回 git、不擋核心更新(#349 r1 H1)。"""
+    try:
+        cat = catalog(env, excluded)
+        url = catalog_url(env) if cat.get("via") == "catalog" else None
+        return cat, url
+    except Exception as exc:  # noqa: BLE001
+        log("plugin catalog error: %s" % type(exc).__name__, env)
+        return {"via": "catalog", "behind": [], "skipped": [], "missing": [], "unsigned": [],
+                "problem": "plugin_catalog_error"}, "?"
+
+
 # ───────────────────────────── 查 / 更新 ─────────────────────────────
 
 def _child_env(env):
@@ -779,7 +880,8 @@ def _note_event(old, new, env, now):
 
 def check(env=None, why="schedule", now=None, root=None, platform=None, home=None, launchctl=_launchctl,
           rows=None, do_fetch=fetch, run_update=run_core_update, lease=_lease_cmd, install=install_plugin,
-          ext_base=None, room=_room_reload, dev_tree=None, lease_state=lease_busy, plugin_fetch=fetch_plugin_source):
+          ext_base=None, room=_room_reload, dev_tree=None, lease_state=lease_busy, plugin_fetch=fetch_plugin_source,
+          catalog=catalog_behind):
     """查一次,安全就更新。回 {"result": …, …};result 見 RESULTS。可注入的全部是外部動作(測試用)。"""
     env = dict(os.environ if env is None else env)
     root = Path(root or ROOT)
@@ -811,7 +913,8 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
             res.update(kw, result=result)
             if result not in ("checked_recently",) or skew:
                 st.update(last_result=result, last_result_at=int(now), last_why=why)
-                for k in ("have", "latest", "plugins_behind", "plugins_paid_behind", "plugins_excluded", "plugins_unsigned", "plugins_modified", "plugin_source"):
+                for k in ("have", "latest", "plugins_behind", "plugins_paid_behind", "plugins_excluded", "plugins_unsigned",
+                          "plugins_modified", "plugins_missing", "plugin_source", "plugin_via", "plugin_via_url", "plugin_problem"):
                     if k in res:
                         st[k] = res[k]
                 write_status(st, env)
@@ -840,9 +943,21 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
         excluded = read_excludes(env)
         behind = [b for b in plugins_behind(ext_base) if b["name"] not in excluded] \
             if env.get("AIB_EXT_AUTO", "") != "0" else []
-        cache = plugin_fetch(env)
-        res["plugin_source"] = "ok" if cache else "offline"
-        paid, skipped, unsigned = paid_behind(cache, excluded, env) if cache else ([], [], [])
+        cat, cat_url = _catalog_safe(catalog, env, excluded)
+        res["plugin_problem"] = cat["problem"] or ""
+        res["plugins_missing"] = list(cat.get("missing") or [])
+        if cat["via"] == "catalog":
+            res.update(plugin_via="catalog", plugin_via_url=cat_url,
+                       plugin_source="rejected" if cat["problem"] in CATALOG_REJECTED
+                       else "incomplete" if cat["problem"] else "ok")
+            paid, skipped, unsigned = cat["behind"], cat["skipped"], cat["unsigned"]
+        else:                                          # 只有伺服器沒這組端點 / 連不到才走到這裡
+            cache = plugin_fetch(env)
+            res.update(plugin_via="git", plugin_via_url=safe_url(env.get("AIB_AUTO_UPDATE_PLUGIN_SOURCE") or PLUGIN_SOURCE),
+                       plugin_source="ok" if cache else "offline")
+            paid, skipped, unsigned = paid_behind(cache, excluded, env) if cache else ([], [], [])
+        log("plugin source via=%s url=%s problem=%s" % (res["plugin_via"], res["plugin_via_url"], cat["problem"] or "-"),
+            env, now)
         # 付費外掛只列名、不自動換(本機外掛只由維護席裝;簽過 ≠ 准上正式機)⇒ 狀態 / doctor 提示本人
         res["plugins_paid_behind"] = [b["name"] for b in paid]
         # 外掛資料夾裡有使用者 / 執行期自己的檔(改過、多出來;外掛宣告的 keep 夾除外)⇒ 自動路徑不換，交本人 aib ext install
@@ -916,7 +1031,9 @@ def status_payload(env=None, home=None, platform=None, now=None):
             "last_plugins": st.get("last_plugins") or [],
             "excluded": read_excludes(env), "plugins_excluded": st.get("plugins_excluded") or [],
             "plugins_unsigned": st.get("plugins_unsigned") or [], "plugins_modified": st.get("plugins_modified") or [],
-            "plugin_source": st.get("plugin_source"),
+            "plugins_missing": st.get("plugins_missing") or [],
+            "plugin_source": st.get("plugin_source"), "plugin_via": st.get("plugin_via"),
+            "plugin_via_url": st.get("plugin_via_url"), "plugin_problem": st.get("plugin_problem") or None,
             "clock_skew": bool(st.get("clock_skew")), "log": str(log_path(env))}
 
 
@@ -940,8 +1057,17 @@ def status_lines(p):
         out.append(T("status.unsigned", names=", ".join(p["plugins_unsigned"])))
     if p.get("plugins_modified"):
         out.append(T("status.modified", names=", ".join(p["plugins_modified"])))
+    if p.get("plugin_via"):
+        out.append(T("status.plugin_via_" + ("catalog" if p["plugin_via"] == "catalog" else "git"),
+                     url=p.get("plugin_via_url") or "?"))
     if p.get("plugin_source") == "offline":
         out.append(T("status.plugin_source_offline"))
+    if p.get("plugin_source") == "rejected":
+        out.append(T("status.plugin_rejected", code=p.get("plugin_problem") or "?"))
+    if p.get("plugin_source") == "incomplete":
+        out.append(T("status.plugin_incomplete", code=p.get("plugin_problem") or "?"))
+    if p.get("plugins_missing"):
+        out.append(T("status.plugins_missing", names=", ".join(p["plugins_missing"])))
     if p.get("clock_skew"):
         out.append(T("status.clock_skew"))
     out.append(T("status.log", path=p["log"]))
@@ -953,8 +1079,13 @@ def doctor_line(env=None, now=None):
     p = status_payload(env, now=now)
     if not p["on"]:
         return "note", T("doctor.unreadable" if p["source"] == "unreadable" else "doctor.off")
+    if p.get("plugin_source") == "rejected":
+        return "note", T("doctor.plugin_rejected", code=p.get("plugin_problem") or "?", url=p.get("plugin_via_url") or "?")
+    if p.get("plugin_source") == "incomplete":
+        return "note", T("doctor.plugin_incomplete", code=p.get("plugin_problem") or "?", url=p.get("plugin_via_url") or "?")
     if p.get("plugins_paid_behind"):
-        return "note", T("doctor.paid_behind", names=", ".join(p["plugins_paid_behind"]))
+        return "note", T("doctor.paid_behind", names=", ".join(p["plugins_paid_behind"])) + \
+            (" · " + T("doctor.via", url=p["plugin_via_url"]) if p.get("plugin_via_url") else "")
     lu = p.get("last_update")
     if isinstance(lu, dict) and lu.get("to"):
         return "ok", T("doctor.updated", new=lu["to"], when=_when(lu.get("at")))

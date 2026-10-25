@@ -372,6 +372,9 @@ def _global_or_none(value):
         out["human_reply"] = True
     if value.get("echo_reply") is True:        # 10-25 #306:回音小幫手的自動回覆;只給艦長室
         out["echo_reply"] = True
+    sa = value.get("sent_at")                  # #303 r3 B-L5:寄件端寄出時間(對方時鐘,只顯示、不拿來判過期 / 先後)
+    if type(sa) is int and 0 <= sa <= time.time() + 300:
+        out["sent_at"] = sa
     return out
 
 

@@ -778,6 +778,13 @@ if [ "${1:-}" = "approve" ]; then
   exec "$T_PY3" "$HERE/aib_approve.py" "$@"
 fi
 
+# aib consent ask / status / run-once / install(Andy 10-25「之後有 ! 要同意的，一率在aib 跳出同意」):席位提出申請,
+#   aib 跳 Touch ID(strong 先勾「我看過了」)才跑;白名單、不經 shell。委派 consent.py。
+if [ "${1:-}" = "consent" ]; then
+  shift
+  exec "$T_PY3" "$HERE/consent.py" "$@"
+fi
+
 # aib device list / lost(Andy 10-22「全照建議」遺失裝置):一次本人證明 ⇒ 聊天清單撤那台 + ez2.page 撤那台全部 token;
 #   只從電腦發起(不進遙控白名單)。委派 device_lost.py。
 if [ "${1:-}" = "device" ]; then
