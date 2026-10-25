@@ -100,11 +100,11 @@ def signals_path(uuid, cwd=None):
     return None
 
 
-def activity_mtime(uuid, cwd=None):
-    """該 grok session 目錄裡活動跡證的最新 mtime;缺檔回 None。"""
-    folder = session_dir(uuid, cwd=cwd)
-    if folder is None:
-        return None
+_UPDATES_TAIL = 4 * 1024 * 1024     # updates.jsonl 只讀最後這麼多(子代理事件在原席這支裡)
+_MAX_CHILDREN = 8
+
+
+def _folder_mtime(folder):
     newest = None
     for name in _ACTIVITY_FILES:
         try:
@@ -112,6 +112,55 @@ def activity_mtime(uuid, cwd=None):
         except OSError:
             continue
         if newest is None or mtime > newest:
+            newest = mtime
+    return newest
+
+
+def running_children(folder):
+    """原席 updates.jsonl 裡 subagent_spawned 了、還沒 subagent_finished 的子代理 session uuid(10-25 Andy
+    「其他品牌的 ai 也要能辨識」:grok 子代理寫在另一個 session 目錄,原席不動 ⇒ 右欄誤判 💤)。
+    子代理目錄的 summary.json 沒有回指原席,關聯只在原席這邊的事件。讀不到 / 形狀不對 ⇒ 不算(只會少併)。"""
+    path = os.path.join(folder, "updates.jsonl")
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - _UPDATES_TAIL))
+            raw = fh.read()
+    except OSError:
+        return []
+    live = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        if "subagent_" not in line:
+            continue
+        try:
+            up = json.loads(line)["params"]["update"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if not isinstance(up, dict):
+            continue
+        kid = up.get("child_session_id")
+        if not isinstance(kid, str) or not _UUID_RE.fullmatch(kid):
+            continue
+        if up.get("sessionUpdate") == "subagent_spawned":
+            live[kid] = True
+        elif up.get("sessionUpdate") == "subagent_finished":
+            live.pop(kid, None)
+    return list(live)[-_MAX_CHILDREN:]
+
+
+def activity_mtime(uuid, cwd=None):
+    """該 grok session 目錄裡活動跡證的最新 mtime;還在跑的子代理(另一個目錄)一併取最新。缺檔回 None。"""
+    folder = session_dir(uuid, cwd=cwd)
+    if folder is None:
+        return None
+    newest = _folder_mtime(folder)
+    for kid in running_children(folder):
+        if kid == uuid:
+            continue
+        sub = session_dir(kid)
+        mtime = _folder_mtime(sub) if sub else None
+        if mtime is not None and (newest is None or mtime > newest):
             newest = mtime
     return newest
 
