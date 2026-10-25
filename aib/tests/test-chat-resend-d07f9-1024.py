@@ -57,6 +57,10 @@ s._resolve = resolve
 r = object.__new__(CN.Receiver)
 r.root, r.sender = root, s
 class Rumor:
+    def created_at(self):                                       # #318 起在線狀態記 rumor 的寄出時間
+        class T:
+            def as_secs(self): return 1000
+        return T()
     def content(self): return json.dumps({"v": 1, "seats": [{"seat": "f0001", "cabin": "c1", "state": "online"}]})
 asyncio.run(r.on_presence(Rumor(), {"aib-from": F + "/c1/f0001"}, "npub1f"))
 print(json.dumps({"due": sorted(getattr(s, "resend_owners", set())) == [F]}))
