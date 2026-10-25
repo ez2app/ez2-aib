@@ -14,7 +14,8 @@ S1 X 寄 A/6ddf/Y ⇒ rc 2 refused(X 沒列名冊,Y 驗不到 ⇒ 拒收,10-16 �
    Y 的金鑰拆得開:寄件人 = X 的 npub、內文對、aib-msgid / aib-from / aib-to / aib-priority 標籤對;另有一份給 X 自己
 S2 --dry-run(op=resolve)⇒ rc 0 resolved,detail 有 Y 的 npub 與收信站;沒有寄出任何 gift wrap
 S3 寄件人沒量到(attested=false)⇒ rc 2 refused unattested,中繼站上沒有任何 gift wrap
-S4 沒公開的席 ⇒ rc 2 refused no_seat;過期的信 ⇒ rc 2 expired;都沒寄
+S4 沒公開的席 ⇒ rc 2 refused no_seat(10-25 5b:另帶 hint_code=seat_retired + next = 名冊上的席、快照照名冊更新);
+   過期的信 ⇒ rc 2 expired;都沒寄
 S5 對方收信站全連不上 ⇒ 重試 3 次後 failed(rc 2,或逾時 rc 4 後回條補 failed);不會無限重試
 S6 有工人就有心跳;off ⇒ 工人結束、心跳刪掉、寄件端回 bridge-off
 L1 洩漏:沙盒(金鑰檔以外)、回條、工人 log、中繼站所有事件都沒有 nsec1 與私鑰 hex
@@ -443,6 +444,12 @@ class Network(unittest.TestCase):
     def test_s4_no_seat_and_expired(self):
         res = GF.send_and_wait(self.b.root, outbox_rec("%s/6ddf/%s" % (self.owner, self.hidden), self.x), wait=8)
         self.assertEqual((res["rc"], res["stage"], res["detail"]), (2, "refused", "no_seat"), res)
+        # 10-25 5b:最新名冊沒這席 ⇒ 快照照名冊更新、回改寄位址(名冊上的席),不自動改寄
+        self.assertEqual((res.get("hint_code"), res.get("next")), ("seat_retired", "%s/6ddf/%s" % (self.owner, self.y)), res)
+        self.assertIn("aib dm %s/6ddf/%s" % (self.owner, self.y), res["hint"])
+        seats = [x["seat"] for x in GF.read_peers(self.b.root)[self.owner]["seats"]]
+        self.assertIn(self.y, seats)
+        self.assertNotIn(self.hidden, seats)
         res = GF.send_and_wait(self.b.root, outbox_rec("%s/6ddf/%s" % (self.owner, self.y), self.x,
                                                        expires=int(time.time()) - 5), wait=8)
         self.assertEqual((res["rc"], res["stage"]), (2, "expired"), res)

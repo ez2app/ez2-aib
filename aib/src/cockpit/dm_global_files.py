@@ -638,7 +638,8 @@ def send_and_wait(root, rec, wait=WAIT_DEFAULT, verify=False, poll=0.1, clock=ti
         res = outcome(got, op=op, verify=verify)
         if res is not None:
             rc, stage, pos, detail = res
-            return _with_peer(root, rec, {"rc": rc, "stage": stage, "pos": pos, "detail": detail, "msgid": msgid}, clock())
+            return _with_peer(root, rec, _with_retired(root, rec, {"rc": rc, "stage": stage, "pos": pos, "detail": detail,
+                                                                   "msgid": msgid}), clock())
         if clock() >= deadline:
             break
         sleep(poll)
@@ -767,6 +768,35 @@ def _unlink(p):
         p.unlink()
     except OSError:
         pass
+
+
+def retired_next(root, owner, dead):
+    """寄到的席已不在對方最新名冊(no_seat)⇒ 建議改寄的位址:房間快照標的艦長席(還在名冊上才算)> 名冊第一席;
+    跟原位址一樣 / 什麼都不知道 ⇒ None。只讀本機快照(轉接程式回 no_seat 前已用最新名冊更新過)。
+    #364 r1 L1:艙 / 席字串來自對方名冊,會被拼進「要改寄就 aib dm <位址>」給人複製 ⇒ 不過 parse_address 的一律不用。"""
+    def valid(a):   # _ADDR_RE 的 $ 會放過結尾的 \n(同 NPUB_FULL_RE 那個坑)⇒ 這裡另擋控制字元(#364 r2 M-1)
+        return bool(isinstance(a, str) and not any(ord(c) < 32 or ord(c) == 127 for c in a)
+                    and (parse_address(a) or {}).get("owner") == owner)
+    seats = [x for x in (read_peers(root).get(owner) or {}).get("seats") or [] if isinstance(x, dict) and isinstance(x.get("seat"), str)]
+    live = {"%s/%s" % (x.get("cabin") or "main", x["seat"]) for x in seats}
+    addr, why = default_address(root, owner)
+    if addr and (not valid(addr) or (why == "captain" and addr.split("/", 1)[1] not in live)):
+        addr = None                                  # 房間快照比名冊舊:艦長席本身也搬了;或位址不合格式
+    if not addr:
+        addr = next((a for a in ("%s/%s/%s" % (owner, x.get("cabin") or "main", x["seat"]) for x in seats) if valid(a)), None)
+    return addr if addr and addr != dead else None
+
+
+def _with_retired(root, rec, res):
+    """10-25 一鍵對話 5b(@abb89 裁:不自動改寄):refused + no_seat ⇒ 補 next(改寄位址)、hint_code=seat_retired、hint(人話)。
+    detail 照舊是 no_seat(艦長室認這個字)。"""
+    if res.get("stage") != "refused" or res.get("detail") != "no_seat" or rec.get("op") == "resolve":
+        return res
+    owner = (parse_address(rec.get("to") or "") or {}).get("owner")
+    nxt = retired_next(root, owner, rec.get("to")) if owner else None
+    if nxt:
+        res.update(next=nxt, hint_code="seat_retired", hint=_T("seat_retired", next=nxt))   # #364 r1 M1:人話走 i18n
+    return res
 
 
 PEER_OK_STAGES = ("queued", "held", "delivered", "read")

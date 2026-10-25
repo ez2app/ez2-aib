@@ -54,6 +54,9 @@ PERMS = {
     "zone-read": ("Zone Read", "zone"),
     "waf-write": ("Zone WAF Write", "zone"),
     "ssl-write": ("SSL and Certificates Write", "zone"),
+    # zone 設定(10-25 @abb89 交辦):全域 Authenticated Origin Pulls(tls_client_auth)、SSL 模式等;只給那個 zone
+    "zone-settings-read": ("Zone Settings Read", "zone"),
+    "zone-settings-write": ("Zone Settings Write", "zone"),
     "routes-write": ("Workers Routes Write", "zone"),
     "workers-write": ("Workers Scripts Write", "account"),
     # 邊緣轉址(10-21 suntan apex→www):Single Redirect 寫在 zone;Bulk Redirect 與其清單在帳號層,只給讀(看會不會撞)
@@ -62,6 +65,10 @@ PERMS = {
     "bulk-redirect-read": ("Mass URL Redirects Read", "account"),
     "rule-lists-read": ("Account Rule Lists Read", "account"),
 }
+# 範圍 ⇒ Cloudflare 權限群組的 scope(同名群組可能有不同範圍，只收對的那個)
+SCOPES = {"zone": "com.cloudflare.api.account.zone", "account": "com.cloudflare.api.account"}
+# 會改到整個網域的權限:Touch ID 視窗另附一句風險說明
+RISKY = ("zone-settings-write", "dns-write")
 TTL_MIN, TTL_MAX, TTL_DEFAULT = 1, 10, 10      # 分鐘(@abb89 審:≤ 10)
 _ZONE = re.compile(r"^(?=.{3,253}$)[a-z0-9-]+(\.[a-z0-9-]+)+$")
 _VAR = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
@@ -315,8 +322,10 @@ def grant_cmd(argv, env=None, platform=None, unseal=None, opener=None, ssh_run=N
         err.write(_t("aib.cf.minter_in_file_hint") + "\n")
         return done(2, log=False)
     # 3. 視窗那句話只由 aib 組 ⇒ SE 解封母鑰(系統 Touch ID = 唯一一次核准)
-    reason = _t("aib.cf.touchid_reason", {"zone": TA.clean(zone, 64), "perms": TA.clean(",".join(perms), 80),
+    # 權限不截斷(白名單全選也放得下):截掉的那段可能正是 write 或帳號層權限,本人會看不到(@abb89 #368 r1)
+    reason = _t("aib.cf.touchid_reason", {"zone": TA.clean(zone, 64), "perms": TA.clean(",".join(perms), len(",".join(PERMS))),
                                          "ttl": "%dm" % ttl, "host": TA.clean(where, 160)})
+    reason += "".join(" " + _t("aib.cf.touchid_risk." + p.replace("-", "_")) for p in RISKY if p in perms)
     key, why = get_minter(env, reason, platform, unseal=unseal)
     if not key:
         res["why"] = why
@@ -335,7 +344,9 @@ def grant_cmd(argv, env=None, platform=None, unseal=None, opener=None, ssh_run=N
             return done(2)
         zone_id, account_id = zones[0]["id"], zones[0]["account"]["id"]
         try:
-            groups = {g["name"]: g["id"] for g in api(opener, key, "GET", "/user/tokens/permission_groups") or ()}
+            want = {PERMS[p][0]: SCOPES[PERMS[p][1]] for p in perms}
+            groups = {g["name"]: g["id"] for g in api(opener, key, "GET", "/user/tokens/permission_groups") or ()
+                      if g.get("name") in want and want[g["name"]] in (g.get("scopes") or ())}
         except CfError as e:
             res["why"] = "perm_groups_" + str(e)
             return done(2)

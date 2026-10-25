@@ -233,6 +233,11 @@ if [ "${1:-}" = "support" ]; then
   shift
   exec "$T_PY3" "$AIB_SOURCE_ROOT/src/cockpit/support_bundle.py" "$@"
 fi
+# aib fonts status/install/terminal/restore(10-25 @ae6a1 fishmac 實跑建議):AI 符號字型(JetBrainsMono Nerd Font)。委派 nerd_font.py。
+if [ "${1:-}" = "fonts" ]; then
+  shift
+  exec "$T_PY3" "$AIB_SOURCE_ROOT/src/bootstrap/nerd_font.py" "$@"
+fi
 # aib doctor(10-12 新用戶全面檢查:體檢工具早就寫好,但 aib 指令叫不到它)—— 唯讀,逐項列出這台還缺什麼、怎麼補。
 if [ "${1:-}" = "doctor" ]; then
   shift

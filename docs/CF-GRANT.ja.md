@@ -29,7 +29,7 @@ aib cf revoke <token_id>
 
 ## その他のルール
 
-- **権限**(許可リスト):`dns-read` `dns-write` `cache-purge` `zone-read` `waf-write` `ssl-write` `routes-write` `workers-write` `redirect-read` `redirect-write` `bulk-redirect-read` `rule-lists-read`。
+- **権限**(許可リスト):`dns-read` `dns-write` `cache-purge` `zone-read` `waf-write` `ssl-write` `zone-settings-read` `zone-settings-write` `routes-write` `workers-write` `redirect-read` `redirect-write` `bulk-redirect-read` `rule-lists-read`。
 - **IP ロック**:ssh の接続先アドレス + サーバー自身の Cloudflare への出口 IPv4/IPv6 + 追加の `--ip CIDR`。1 つも見つからなければ発行しません。
 - Touch ID を飛ばすフラグや環境変数はありません。Mac でなければ発行しません。`AIB_TOUCHID=0` はオフにするだけです。
 - `--dry-run` は引数と IP ロックを確認して計画を表示します。ゾーンの照会にはマスターキー(= 指紋)が要るため、dry-run では Cloudflare を呼びません。

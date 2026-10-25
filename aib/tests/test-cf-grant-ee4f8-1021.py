@@ -43,7 +43,10 @@ import secret_ask as SA  # noqa: E402
 TOKEN = "cfTok_" + "Qw7" * 14            # 假的新 token 值
 MINTER = "cfMint_" + "Zp4" * 12          # 假的母鑰
 ZID, AID, NEW_ID = "z" * 32, "a" * 32, "1" * 32
-GROUPS = [{"id": "g-" + n.replace(" ", "-").lower(), "name": n} for n, _s in CG.PERMS.values()]
+GROUPS = [{"id": "g-" + n.replace(" ", "-").lower(), "name": n, "scopes": [CG.SCOPES[sc]]} for n, sc in CG.PERMS.values()]
+# 同名、範圍不對的群組排在後面:按名稱建 dict 會被它蓋掉(@abb89 #368 r1 L3)
+GROUPS += [{"id": "decoy-" + n.replace(" ", "-").lower(), "name": n, "scopes": ["com.cloudflare.edge.r2.bucket"]}
+           for n, _sc in CG.PERMS.values()]
 GOUT = "user root\nhostname 203.0.113.7\nport 22\nproxycommand none\nproxyjump none\n"
 TRACE = "fl=1\nip=203.0.113.7\nts=1\n---\nfl=1\nip=2001:db8::7\nts=1\n"
 NOW = 1792540800                          # 2026-10-21T00:00:00Z
@@ -235,6 +238,36 @@ class CfGrant(Base):
         self.assertEqual(pol[1], {"effect": "allow",
                                   "permission_groups": [{"id": "g-mass-url-redirects-read"}, {"id": "g-account-rule-lists-read"}],
                                   "resources": {"com.cloudflare.api.account." + AID: "*"}})
+
+    def test_g3c_zone_settings_perms(self):
+        # zone 設定(全域 AOP tls_client_auth、SSL 模式):讀寫都只給那個 zone,不給帳號層
+        self.assertEqual(CG.PERMS["zone-settings-read"], ("Zone Settings Read", "zone"))
+        self.assertEqual(CG.PERMS["zone-settings-write"], ("Zone Settings Write", "zone"))
+        self.assertEqual(CG.parse_perms("zone-settings-write,zone-read"), ("zone-read", "zone-settings-write"))
+        rc, res = self.grant(["ez2.app", "zone-settings-read,zone-settings-write", "--push", "eu01:/etc/x.env"])
+        self.assertEqual(rc, 0, res)
+        pol = self.posts()[0][2]["policies"]
+        self.assertEqual(pol, [{"effect": "allow",
+                                "permission_groups": [{"id": "g-zone-settings-read"}, {"id": "g-zone-settings-write"}],
+                                "resources": {"com.cloudflare.api.account.zone." + ZID: "*"}}])
+        self.assertIn("zone-settings-write", self.touch.reason)             # 本人在 Touch ID 視窗看得到
+        for bad in ("zone-settings", "zone-settings-admin", "Zone Settings Write"):
+            with self.assertRaises(ValueError):
+                CG.parse_perms(bad)
+
+    def test_g3d_touchid_shows_every_perm(self):
+        """白名單全選:視窗字不能截斷(截掉的可能是 write / 帳號層);會改整個網域的權限附風險說明。"""
+        allp = ",".join(CG.PERMS)
+        rc, res = self.grant(["ez2.app", allp, "--push", "eu01:/etc/x.env"])
+        self.assertEqual(rc, 0, res)
+        for p in CG.PERMS:
+            self.assertIn(p, self.touch.reason, p)
+        self.assertIn(allp, self.touch.reason)
+        self.assertIn(CG._t("aib.cf.touchid_risk.zone_settings_write"), self.touch.reason)
+        self.assertIn(CG._t("aib.cf.touchid_risk.dns_write"), self.touch.reason)
+        self.assertNotIn("decoy-", json.dumps(self.posts()[0][2]))             # 範圍不對的同名群組不收
+        rc, res = self.grant(["ez2.app", "zone-read", "--push", "eu01:/etc/x.env"])
+        self.assertNotIn("⚠", self.touch.reason)                               # 唯讀不附
 
     def test_g4_touchid_gate(self):
         for kw, why in (({"touch": Unseal(ok=False, why="cancel")}, "touchid_cancel"),

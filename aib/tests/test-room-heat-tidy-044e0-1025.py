@@ -17,12 +17,13 @@ T7 CLI:`aib room heat tidy --json` 走 room_heat_tidy;archive 沒帶 --seat / �
 T1b stash 清單有這條分支存的 ⇒ stashed;node_modules 是真資料夾(不是捷徑)⇒ dirty
 T2b 搬前寫 <名>.RESTORE.txt(0600,放樹旁邊);照它的 git 指令做一次 ⇒ 樹回來、分支對
 T1c r1:有子模組 ⇒ submodule;detached 存的 stash(第一父 = 頭碼)⇒ stashed;樹名有控制字元 ⇒ bad_name
-T2c r1:封存只刪自己那棵的登記,別棵失聯樹的登記還在;分支被刪了照還原檔(-B)還原得回來
+T2c r1:封存只刪自己那棵的登記,別棵失聯樹的登記還在;分支被刪了照還原檔(-b 重建)還原得回來;分支往前走了 ⇒ detached 不拉回;prunable 舊登記只清這條路徑
 T9 判合併前 fetch 一次:別台合進 main、本機 origin/main 還舊 ⇒ fetch=False 是 not_merged、預設 fetch 後 archivable
 T8 隱私:--json 不出現全路徑、內部欄位(_path / _common)
 刀(複本 + run_guarded):K1 不看合併 ⇒ T1 紅;K2 不核主人 ⇒ T2 紅;K3 identity 不核父行程 1(ps 之後被重用)⇒ T4 紅;K4 不去重 ⇒ T5 紅;
 K5 不看正在跑的檔案 ⇒ T6 紅;K6 不看 stash ⇒ T1 紅;K7 不寫還原檔 ⇒ T2 紅;K8 不 fetch ⇒ T9 紅;K9 dm 地址只寫席碼 ⇒ T5b 紅;K10 不看子模組 / K13 stash 不比第一父 / K14 不擋怪樹名 ⇒ T1 紅;
-K11 改回全倉 prune / K12 還原不帶 -B ⇒ T2 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K11 改回全倉 prune / K12 分支被刪不重建 / K15 分支往前走仍掛回分支 / K16 不清 prunable 舊登記 ⇒ T2 紅;
+K17 使用者的 GIT_SSH_COMMAND 被蓋掉 / K18 防護改回補在後面 / K19 不看 -A ⇒ T9 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import io
 import json
@@ -200,13 +201,32 @@ class Trees(Base):
         self.assertNotIn(str(self.wt / "nm-044e0"), paths)
         listed = subprocess.run(["git", "-C", str(self.main), "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
         self.assertIn("lost-044e0", listed)                     # 別棵失聯樹的登記不准被清(不跑全倉 prune)
-        git(self.main, "branch", "-D", "merged-a")              # 分支被刪了也要還原得回來(-B)
-        cmd = [l for l in restore.read_text().splitlines() if l.startswith("git ")][0]
-        rr = subprocess.run(cmd, shell=True, capture_output=True, text=True, env={**os.environ, **GIT_ENV})   # 照還原檔做一次
+        git(self.main, "branch", "-D", "merged-a")              # 分支被刪了也要還原得回來(-b 重建)
+        rr = self.run_restore(restore)                          # 照還原檔做一次
         self.assertEqual(rr.returncode, 0, rr.stderr)
         self.assertTrue((self.wt / "a-044e0" / ".git").is_file())
-        head = subprocess.run(["git", "-C", str(self.wt / "a-044e0"), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout
-        self.assertEqual(head.strip(), "merged-a")
+        self.assertEqual(self.rev(self.wt / "a-044e0", "--abbrev-ref", "HEAD"), "merged-a")
+        old_c = self.rev(self.main, "refs/heads/merged-c")      # 封存時的頭碼;分支之後往前走了 ⇒ detached 在舊頭碼,分支不准被拉回
+        git(self.main, "commit", "-q", "--allow-empty", "-m", "後來的")
+        new_c = self.rev(self.main, "HEAD")
+        git(self.main, "branch", "-f", "merged-c", new_c)
+        rr = self.run_restore(dest / "nm-044e0.RESTORE.txt")
+        self.assertEqual(rr.returncode, 0, rr.stderr)
+        self.assertIn("branch moved", rr.stderr)
+        self.assertEqual(self.rev(self.wt / "nm-044e0", "--abbrev-ref", "HEAD"), "HEAD")
+        self.assertEqual(self.rev(self.wt / "nm-044e0", "HEAD"), old_c)
+        self.assertEqual(self.rev(self.main, "refs/heads/merged-c"), new_c)
+        moved = self.d / "moved-away"                            # 登記沒刪成(prunable)⇒ 還原檔只清這一條路徑的舊登記
+        os.rename(str(self.wt / "a-044e0"), str(moved))
+        rr = self.run_restore(restore)
+        self.assertEqual(rr.returncode, 0, rr.stderr)
+        self.assertEqual(self.rev(self.wt / "a-044e0", "--abbrev-ref", "HEAD"), "merged-a")
+        listed = subprocess.run(["git", "-C", str(self.main), "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+        self.assertIn("lost-044e0", listed)                     # 別棵失聯樹的登記還在
+        (self.wt / "a-044e0" / "keep.txt").write_text("k")      # 原路徑上有東西 ⇒ 不清、不蓋,還原失敗但原樹不動
+        rr = self.run_restore(restore)
+        self.assertNotEqual(rr.returncode, 0)
+        self.assertEqual((self.wt / "a-044e0" / "keep.txt").read_text(), "k")
         log = Path(RH.state_dir()) / "heat-tidy.jsonl"
         self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
         recs = [json.loads(l) for l in log.read_text().splitlines()]
@@ -214,6 +234,14 @@ class Trees(Base):
         self.assertNotIn(str(self.d), log.read_text())
         self.assertEqual(TD.archive(all_mine=True, seat="044E0", **kw)["detail"], "bad_candidate")
         self.assertEqual(TD.archive(ids=["../x"], seat="044e0", **kw)["detail"], "bad_candidate")
+
+    def run_restore(self, restore):
+        cmd = [l for l in restore.read_text().splitlines() if l and not l.startswith(("#", "rsync "))]
+        self.assertEqual(len(cmd), 1, cmd)
+        return subprocess.run(["sh", "-c", cmd[0]], capture_output=True, text=True, env={**os.environ, **GIT_ENV})
+
+    def rev(self, path, *args):
+        return subprocess.run(["git", "-C", str(path), "rev-parse", *args], capture_output=True, text=True).stdout.strip()
 
     def test_t3_rescan_before_move(self):
         trees = self.by_name(self.scan())
@@ -249,6 +277,19 @@ class Fetch(Base):
         self.assertEqual(TD.worktrees(**kw)[0]["state"], "archivable")
         self.assertEqual(TD.GIT_ENV["GIT_TERMINAL_PROMPT"], "0")
         self.assertIn("BatchMode=yes", TD.GIT_ENV["GIT_SSH_COMMAND"])
+        self.assertEqual(TD.git_env({})["GIT_SSH_COMMAND"], TD.GIT_ENV["GIT_SSH_COMMAND"])
+        own = TD.git_env({"GIT_SSH_COMMAND": "ssh -o ForwardAgent=yes -i /k/id_x"})["GIT_SSH_COMMAND"]   # 使用者的沿用,防護插在前面
+        self.assertTrue(own.startswith("ssh " + TD.SSH_HARDEN + " "), own)
+        self.assertTrue(own.endswith(" -o ForwardAgent=yes -i /k/id_x"), own)
+        self.assertLess(own.index("ForwardAgent=no"), own.index("ForwardAgent=yes"))
+        for bad in ("ssh -A -i /k", "ssh -Ati /k", "ssh -i /k -A", '"/opt/my ssh/ssh" -i /k', 'ssh "-i'):
+            self.assertEqual(TD.git_env({"GIT_SSH_COMMAND": bad})["GIT_SSH_COMMAND"], TD.GIT_ENV["GIT_SSH_COMMAND"], bad)
+        for ok in ("ssh -i /kA", "ssh -i/A -p 22", "ssh -l Alice"):     # A 是參數值、不是 -A
+            self.assertNotEqual(TD.git_env({"GIT_SSH_COMMAND": ok})["GIT_SSH_COMMAND"], TD.GIT_ENV["GIT_SSH_COMMAND"], ok)
+        if shutil.which("ssh"):                                  # 用 ssh -G 看真正生效的值
+            g = subprocess.run(["sh", "-c", own + " -G example.invalid"], capture_output=True, text=True, timeout=20).stdout
+            conf = dict(l.split(" ", 1) for l in g.splitlines() if " " in l)
+            self.assertEqual((conf.get("forwardagent"), conf.get("batchmode"), conf.get("clearallforwardings")), ("no", "yes", "yes"), g[:300])
 
 
 class Orphans(Base):
@@ -401,8 +442,18 @@ KNIVES = [
      "Orphans.test_t5b_popup_and_address"),
     ("K10", "src/cockpit/room_heat_tidy.py", "\"submodule\" if submodule else ", "", "Trees.test_t1_states"),
     ("K11", "src/cockpit/room_heat_tidy.py", "        _drop_admin(w)\n", "        git(w[\"_common\"], \"worktree\", \"prune\")\n", "Trees.test_t2_archive"),
-    ("K12", "src/cockpit/room_heat_tidy.py", "\"-B %s %s %s\" % (_q(w[\"_branch\"]), _q(w[\"_path\"]), _q(w[\"_head\"]))",
-     "\"%s %s\" % (_q(w[\"_path\"]), _q(w[\"_branch\"]))", "Trees.test_t2_archive"),
+    ('K12', "src/cockpit/room_heat_tidy.py", '"else git -C {r} worktree add -b {b} {p} {h}; fi"',
+     '"else git -C {r} worktree add {p} {b}; fi"', 'Trees.test_t2_archive'),
+    ('K15', "src/cockpit/room_heat_tidy.py", '"if [ \\"$(git -C {r} rev-parse refs/heads/{b})\\" = {h} ]; then',
+     '"if true; then', 'Trees.test_t2_archive'),
+    ('K16', "src/cockpit/room_heat_tidy.py", '    clear = "[ -e %s ] || git -C %s worktree remove --force %s 2>/dev/null; " % (p, r, p)\n',
+     '    clear = ""\n', 'Trees.test_t2_archive'),
+    ('K17', "src/cockpit/room_heat_tidy.py", '    if parts and own.startswith(parts[0]) and not _forces_agent(parts[1:]):\n',
+     '    if False:\n', 'Fetch.test_t9_fetch_before_judging'),
+    ('K18', "src/cockpit/room_heat_tidy.py", '        env["GIT_SSH_COMMAND"] = parts[0] + " " + SSH_HARDEN + own[len(parts[0]):]',
+     '        env["GIT_SSH_COMMAND"] = own + " " + SSH_HARDEN', 'Fetch.test_t9_fetch_before_judging'),
+    ('K19', "src/cockpit/room_heat_tidy.py", '            if ch == "A":\n',
+     '            if False:\n', 'Fetch.test_t9_fetch_before_judging'),
     ("K13", "src/cockpit/room_heat_tidy.py", "    return first == head or (", "    return (", "Trees.test_t1_states"),
     ("K14", "src/cockpit/room_heat_tidy.py", "        if name != RH.safe_name(name, 255):\n", "        if False:\n", "Trees.test_t1_states"),
 ]

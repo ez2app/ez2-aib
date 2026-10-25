@@ -4,23 +4,28 @@
 """會員從 ez2.page 拿外掛與授權(10-24 Andy「#20 修正」;契約 contracts/page-api.json plugins / plugins_*)。
 網路全換假的、暫存狀態根、測試自己的信任鑰匙。
 
-D1 目錄:形狀對 ⇒ 列出(price / summary 清過);任何一筆不合契約 ⇒ plugin_catalog_invalid 整份不信;沒碼 404 ⇒ unsupported;連不上 ⇒ unreachable
+D1 目錄:形狀對 ⇒ 列出(price / summary 清過);任何一筆不合契約 ⇒ plugin_catalog_invalid 整份不信;沒碼 404 ⇒ unsupported;連不上 ⇒ unreachable;
+    access(10-25):不在 public/member/paid、或 paid 跟 addon 對不上 ⇒ invalid;舊伺服器沒 access ⇒ 照 addon 補(paid / public)
 D1b 讀回應有總時限(伺服器滴位元組拖不完);目錄錯誤回應怪(details 數字、極端撤銷日期)⇒ 仍是契約碼
 D2 免費外掛照名稱裝:不帶憑證、路徑照目錄的 name / version 自己組;裝好 discover 找得到
 D3 挑版本:沒寫挑最大;<名稱>@<版本> 照寫的
 D4 下載的包大小或 sha256 跟目錄不符 ⇒ plugin_download_mismatch,一個檔都沒裝
 D5 包沒簽 / 簽過又改 / 簽的是別的外掛(名稱版本跟目錄不符)⇒ plugin_rejected,沒裝
 D6 防降版:目錄比已裝舊 ⇒ plugin_downgrade(沒裝);一樣 ⇒ plugin_already_current;明寫 @舊版 ⇒ 裝
-D7 付費外掛:沒綁 ⇒ plugin_not_bound、包一個請求都沒送;有綁 ⇒ 帶 bearer + X-AIB-Machine;沒買 ⇒ plugin_license_none
+D7b 會員外掛(access=member、addon null,10-25 Andy「綁定會員就能下載」):沒綁 ⇒ plugin_not_bound、不下載;有綁 ⇒ 帶 bearer + X-AIB-Machine,
+    裝好 licensed True;scope 不足 ⇒ plugin_scope_missing
+D7 付費外掛:沒綁 ⇒ plugin_not_bound、包一個請求都沒送;有綁 ⇒ 帶 bearer + X-AIB-Machine;沒買 ⇒ plugin_license_none;
+    憑證沒有 plugins:read(序號綁的,10-25 @abb89)⇒ 403 page_api_scope_mismatch ⇒ plugin_scope_missing、沒裝、hint 指配對碼重綁
 D8c 現有授權仍有效且加購較多 ⇒ plugin_license_fewer 不蓋;舊的過期 / 簽錯 / 讀不到 ⇒ 照換
-D8 領授權:簽對 ⇒ 0600 落檔;簽錯 / 過期 / 不是物件 ⇒ plugin_license_invalid 不落檔;帶 activation_url ⇒ activation needed;沒買 ⇒ plugin_license_none
+D8 領授權:簽對 ⇒ 0600 落檔;簽錯 / 過期 / 不是物件 ⇒ plugin_license_invalid 不落檔;帶 activation_url ⇒ activation needed;沒買 ⇒ plugin_license_none;
+    403 page_api_scope_mismatch ⇒ plugin_scope_missing 不落檔(別的 403 碼照舊 plugin_refused)
 D9 名稱不合格式 ⇒ plugin_name_invalid、不連網;CLI install 給名稱走目錄、給資料夾照舊
-D10 契約:伺服器碼 = plugins.codes;每個回條 detail 都在契約、四語都有 hint
+D10 契約:伺服器碼 = plugins.codes;每個回條 detail 都在契約、四語都有 hint;付費包 / 授權的 scope_missing 指到 plugin_scope_missing
 D4b 解開大小 / 成員數 / pax 大標頭超過上限 ⇒ too-big-unpacked(驗簽前就擋);稀疏成員 / 壞 zip / 超長名 / bz2 ⇒ 拒收不當掉;包內成員名稱清過才進 problems
     伺服器的 aib-ext.json 不是物件 / 太深 / 怪數字 / 代理字元 ⇒ plugin_rejected;目錄 / 授權帶單獨代理字元 ⇒ 印得出來、授權不落檔
-刀(複本):K1 不比 sha256 ⇒ D4 紅;K2 不比包名稱版本 ⇒ D5 紅;K3 付費包不帶憑證 ⇒ D7 紅;K4 不擋降版 ⇒ D6 紅;
+刀(複本):K1 不比 sha256 ⇒ D4 紅;K2 不比包名稱版本 ⇒ D5 紅;K3 付費 / 會員包不帶憑證 ⇒ D7 / D7b 紅;K4 不擋降版 ⇒ D6 紅;
     K5 不限解開大小 ⇒ D4b 紅;K6 授權不比加購 ⇒ D8 紅;K7 gzip 不限量解開 ⇒ D4b 紅(pax 大標頭);K8 收稀疏成員 ⇒ D4b 紅;K9 讀回應沒總時限 ⇒ D1b 紅;
-    K23 授權不比舊檔加購 ⇒ D8c 紅
+    K23 授權不比舊檔加購 ⇒ D8c 紅;K24 不認 scope 不足(收成 plugin_refused)⇒ D7 / D8 紅
 """
 import base64
 import hashlib
@@ -174,10 +179,17 @@ class Catalog(Box):
         self.assertNotIn("\u202e", e["summary"])
         self.assertLessEqual(len(e["summary"]), 120)
         bads = [dict(good, sha256="0" * 63), dict(good, size=PC.max_pkg_bytes() + 1), dict(good, size=True),
-                dict(good, name="../x"), dict(good, version="1.2"), dict(good, addon="A B"), "x"]
+                dict(good, name="../x"), dict(good, version="1.2"), dict(good, addon="A B"), "x",
+                dict(good, access="vip"), dict(good, access="paid"), dict(good, access="member", addon="probe"),
+                dict(good, access="public", addon="probe"), dict(good, access=None)]
         for bad in bads:
             res, rc = AP.catalog_cmd(dict(os.environ), api(self.server([good, bad], {})))
             self.assertEqual((rc, res["detail"]), (3, "plugin_catalog_invalid"), bad)
+        legacy = [good, dict(good, name="paidone", addon="probe")]
+        res, rc = AP.catalog_cmd(dict(os.environ), api(self.server(legacy, {})))
+        self.assertEqual([e["access"] for e in res["plugins"]], ["public", "paid"], "舊伺服器沒 access ⇒ 照 addon 補")
+        res, rc = AP.catalog_cmd(dict(os.environ), api(self.server([dict(good, access="member")], {})))
+        self.assertEqual((rc, res["plugins"][0]["access"]), (0, "member"))
         res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer({"/plugins/catalog": (404, b"")})))
         self.assertEqual((rc, res["detail"]), (3, "plugin_unsupported"))
         res, rc = AP.catalog_cmd(dict(os.environ), api(FakeServer(boom=True)))
@@ -267,6 +279,12 @@ class Install(Box):
         pkg = [r for r in srv.seen if r.full_url.endswith(".tgz")]
         self.assertEqual(pkg[0].full_url, "https://page.test" + C["prefix"] + "/plugins/packages/probe/0.0.1.tgz")
         self.assertIsNone(pkg[0].get_header("Authorization"), "免費包不帶憑證")
+        shutil.rmtree(self.installed())
+        explicit = self.server([self.entry(data, access="public")], {("probe", "0.0.1"): data})
+        res, rc = self.install("probe", explicit, paid_api=api(FakeServer(), token="ast_x"), machine_id=MID)
+        self.assertEqual((rc, res["detail"]), (0, "plugin_installed"), res)
+        pkg = [r for r in explicit.seen if r.full_url.endswith(".tgz")]
+        self.assertIsNone(pkg[0].get_header("Authorization"), "目錄明寫 access=public ⇒ 有綁也不帶憑證(#365 r1 L)")
 
     def test_d3_pick_version(self):
         d1, d2 = self.tgz(version="0.0.9"), self.tgz(version="0.0.10")
@@ -364,6 +382,23 @@ class Install(Box):
         res, rc = self.install("probe@0.0.1", srv)
         self.assertEqual((rc, res["detail"], PC.installed_version("probe")), (0, "plugin_installed", "0.0.1"))
 
+    def test_d7b_member(self):
+        data = self.tgz()
+        ent = self.entry(data, access="member")
+        srv = self.server([ent], {("probe", "0.0.1"): data})
+        res, rc = self.install("probe", srv)
+        self.assertEqual((rc, res["detail"]), (2, "plugin_not_bound"), "沙盒沒綁")
+        self.assertFalse([r for r in srv.seen if r.full_url.endswith(".tgz")], "沒綁不下載會員包")
+        scope = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (403, {"error": "page_api_scope_mismatch"})})
+        res, rc = self.install("probe", srv, paid_api=api(scope, token="ast_x"), machine_id=MID)
+        self.assertEqual((rc, res["detail"]), (3, "plugin_scope_missing"), res)
+        self.assertFalse(self.installed().exists())
+        member = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (200, data)})
+        res, rc = self.install("probe", srv, paid_api=api(member, token="ast_x"), machine_id=MID)
+        self.assertEqual((rc, res["detail"], res["addon"], res["licensed"]), (0, "plugin_installed", None, True), res)
+        req = member.seen[0]
+        self.assertEqual((req.get_header("Authorization"), req.get_header("X-aib-machine")), ("Bearer ast_x", MID))
+
     def test_d7_paid(self):
         data = self.tgz(addon="probe")
         ent = self.entry(data, addon="probe", price="NT$90")
@@ -371,6 +406,13 @@ class Install(Box):
         res, rc = self.install("probe", srv)
         self.assertEqual((rc, res["detail"]), (2, "plugin_not_bound"), "沙盒沒綁")
         self.assertFalse([r for r in srv.seen if r.full_url.endswith(".tgz")], "沒綁不下載付費包")
+        shown = self.server([dict(ent, access="paid")], {})   # 目錄明寫 access=paid(不是缺鍵補值那條,#365 r1 L)
+        paid = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (200, data)})
+        res, rc = self.install("probe", shown, paid_api=api(paid, token="ast_x"), machine_id=MID)
+        self.assertEqual((rc, res["detail"]), (0, "plugin_installed"), res)
+        self.assertEqual(paid.seen[0].get_header("Authorization"), "Bearer ast_x", "明寫 paid ⇒ 帶憑證")
+        self.assertFalse([r for r in shown.seen if r.full_url.endswith(".tgz")], "付費包不走公開那支")
+        shutil.rmtree(self.installed())
         paid = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (200, data)})
         res, rc = self.install("probe", srv, paid_api=api(paid, token="ast_x"), machine_id=MID)
         self.assertEqual((rc, res["detail"], res["addon"], res["licensed"]), (0, "plugin_installed", "probe", False), res)
@@ -385,6 +427,11 @@ class Install(Box):
         none = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (404, {"error": "plugin_license_none"})})
         res, rc = self.install("probe", srv, paid_api=api(none, token="ast_x"), machine_id=MID)
         self.assertEqual((rc, res["detail"]), (3, "plugin_license_none"))
+        self.assertFalse(self.installed().exists())
+        scope = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (403, {"error": "page_api_scope_mismatch"})})
+        res, rc = self.install("probe", srv, paid_api=api(scope, token="ast_x"), machine_id=MID)
+        self.assertEqual((rc, res["detail"]), (3, "plugin_scope_missing"), res)
+        self.assertIn("aib page bind", res["hint"])
         self.assertFalse(self.installed().exists())
 
 
@@ -455,6 +502,13 @@ class License(Box):
         for code, http in (("plugin_license_none", 404), ("plugin_license_device_limit", 409)):
             res, rc, _ = self.get(http, {"error": code})
             self.assertEqual((rc, res["detail"]), (3, code))
+        before = dest.read_text()
+        res, rc, _ = self.get(403, {"error": "page_api_scope_mismatch"})
+        self.assertEqual((rc, res["detail"]), (3, "plugin_scope_missing"))
+        self.assertIn("--serial", res["hint"])
+        self.assertEqual(dest.read_text(), before, "scope 不足不落檔")
+        res, rc, _ = self.get(403, {"error": "page_api_owner_disabled"})
+        self.assertEqual(res["detail"], "plugin_refused", "別的 403 碼不當 scope 不足")
         res, rc, _ = self.get(400, {"error": "weird\x1b[2J"})
         self.assertEqual(res["detail"], "plugin_refused")
         self.assertNotIn("\x1b", res["hint"])
@@ -503,6 +557,11 @@ class Contract(Box):
         for name in ("plugins_catalog", "plugins_package", "plugins_license"):
             self.assertEqual(C["endpoints"][name]["status"], "planned")
         self.assertEqual(C["endpoints"]["plugins_license"]["headers"], ["Authorization", "X-AIB-Machine"])
+        for name in ("plugins_package", "plugins_license"):
+            sm = C["endpoints"][name]["scope_missing"]
+            self.assertEqual((sm["http"], sm["code"], sm["core"]), (403, PC.SCOPE_MISSING, "plugin_scope_missing"))
+            self.assertTrue(C["endpoints"][name]["scope"].startswith("plugins:read"))
+        self.assertIn("plugin_scope_missing", rec["local_codes"])
         for lang in ("zh-TW", "en", "ja", "ko"):
             d = json.loads((REPO / "i18n" / ("%s.json" % lang)).read_text(encoding="utf-8"))
             for code in details - set(PC.CALLER_DEAD) - {"plugin_catalog"}:   # 目錄回條不帶 hint
@@ -754,7 +813,14 @@ class Knife(unittest.TestCase):
                     "if False:", "Install.test_d5_rejected")
 
     def test_k3_paid_without_auth(self):
-        self._knife('machine_id=machine_id if entry["addon"] is not None else None)', "machine_id=None)", "Install.test_d7_paid")
+        for case in ("Install.test_d7_paid", "Install.test_d7b_member"):
+            self._knife("machine_id=machine_id if member else None)", "machine_id=None)", case)
+
+    def test_k25_member_as_public(self):
+        self._knife('member = entry["access"] != "public"', 'member = entry["addon"] is not None', "Install.test_d7b_member")
+
+    def test_k26_access_unchecked(self):
+        self._knife('if access not in ACCESS or (access == "paid") != (addon is not None):', "if False:", "Catalog.test_d1_catalog")
 
     def test_k4_no_downgrade_guard(self):
         self._knife('if vkey(entry["version"]) < vkey(current):', "if False:", "Install.test_d6_downgrade")
@@ -830,6 +896,10 @@ class Knife(unittest.TestCase):
 
     def test_k23_license_overwrites_bigger(self):
         self._knife("    if dropped:   #", "    if False:   #", "License.test_d8c_license_keeps_addons")
+
+    def test_k24_scope_missing_unmapped(self):
+        for case in ("Install.test_d7_paid", "License.test_d8_license"):
+            self._knife("    if http == 403 and code == SCOPE_MISSING:", "    if False:", case)
 
     def test_k10_no_total_deadline(self):
         self._knife("        t.join(total_s + 2)", "        t.join()", "Slow.test_d1c_total_deadline",
