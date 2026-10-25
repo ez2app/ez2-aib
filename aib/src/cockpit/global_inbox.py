@@ -54,6 +54,8 @@ def import_once(root=None, env=None):
              "country_status": qf["country_status"], "tz_country": qf["tz_country"], "relation": qf["class"]}
         if qf["author"]:
             g["author"] = qf["author"]
+        if isinstance(rec.get("sent_at"), int) and not isinstance(rec["sent_at"], bool):
+            g["sent_at"] = rec["sent_at"]             # #303 r3 B-L5:寄件端寄出時間(補寄 = 原寄出時間);佇列 sent_at 仍是收到時間
         # 10-19 Andy 選 1:回「主人本人從艦長室寄的」那封 ⇒ 只進艦長室,不進 AI 框(建立時就待審、不叫 AI)。
         #   只防「自動塞給 AI」;同帳號 AI 讀得到佇列檔、刪得掉寄出帳,這不是防線
         human_reply = GF.sent_author(root, rec.get("reply_to")) == "human"

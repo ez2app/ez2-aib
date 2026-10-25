@@ -587,6 +587,12 @@ class Sender(object):
             return
         frm = rec["from"]
         if rec.get("echo") and not (GF.echo_on(self.root) and rec.get("reply_to") in self.echo_in):
+            if rec.get("content") in ECHO_TEXT.values():
+                # #306 r3 B-L6:回音那句寫進 outbox 後轉接程式重啟(echo_in 只在記憶體)⇒ 丟掉,不當一般信寄給陌生人;
+                #   那句是固定字、沒人等它的回條,丟了只是少回一句
+                audit(self.root, "out", msgid, None, "echo:stale")
+                self._done(msgid)
+                return
             rec.pop("echo")                          # #306 r2:只有回音小幫手剛收的陌生來信才認 echo,其他照一般寄件
         if rec.get("echo") and frm.get("attested"):
             return await self._handle_echo(msgid, rec)
@@ -1071,6 +1077,8 @@ class Sender(object):
         plan = [(mine, sorted(by_npub))]                   # 我的站:查全部
         extra = {}
         for _o, n, _k, rl in rows:
+            if len(by_npub[n]) > 1:
+                continue        # #303 r3 A-Low:同一個 npub 不只一位宣告 ⇒ 誰的名片站都不拿來查它(M 不能藉此看到誰在查 V 的心跳);我的站照查
             for r in rl:
                 if r not in mine and CR.public_relay_ok(r):
                     extra.setdefault(r, set()).add(n)

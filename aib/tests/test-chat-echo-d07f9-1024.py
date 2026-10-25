@@ -14,8 +14,9 @@ E3 小幫手關掉 ⇒ 照舊拒收陌生人(refused not_friend)
 E4 小幫手開著、寄件人是好友 ⇒ 照一般流程進佇列,不回音(A-M10)
 E5 小幫手開著、陌生人送好友申請 ⇒ 照一般申請流程(不回 delivered、不回音;A-M10 / B-L4)
 E6 自己在 outbox 寫 echo:true(不是回剛收的陌生來信)⇒ 照一般寄件:寫寄出帳、有回條、不帶 aib-echo(#306 r2)
+E7 回音那句(固定字)在 outbox、但不是這次轉接程式剛收的陌生來信(例:重啟過)⇒ 丟掉、稽核 echo:stale,不當一般信寄(#306 r3 B-L6)
 刀(複本):K1 拿掉 echo 分支 ⇒ E1 紅;K2 回信不帶 echo 旗標 ⇒ E1 紅;K3 好友也回音 ⇒ E4 紅;
-K4 回音走一般寄件 ⇒ E1 紅(寫了 sent/);K5 收件端不把回音那句擋在艦長室 ⇒ E1 紅
+K4 回音走一般寄件 ⇒ E1 紅(寫了 sent/);K5 收件端不把回音那句擋在艦長室 ⇒ E1 紅;K6 不丟過期的回音句 ⇒ E7 紅
 """
 import importlib.util
 import json
@@ -36,6 +37,18 @@ _spec = importlib.util.spec_from_file_location("chat_recv_echo", str(HERE / "tes
 RT = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(RT)
 SB = RT.SB
+CN_ECHO_TEXT = {"zh-TW": "收到了,線路是通的。"}      # = chat_nostr.ECHO_TEXT(chat_nostr 只在 venv 裡 import 得到)
+
+
+def audit_all(b):
+    out = []
+    for p in sorted((b.root / "audit").glob("*.jsonl")):
+        for line in p.read_text().splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+    return out
 
 
 def audit_in(b):
@@ -147,6 +160,20 @@ class Network(unittest.TestCase):
         it = next(i for i in self.items(h, y) if "p3" in json.dumps(i, ensure_ascii=False))
         self.assertNotEqual(self.DQ.hold_why_key(it), "echo_reply", "不帶 aib-echo")
 
+    def test_e7_stale_echo_dropped(self):
+        """回音那句寫進 outbox、轉接程式重啟後 echo_in 是空的 ⇒ 丟掉:不寫寄出帳、對方收不到、稽核 echo:stale(#306 r3 B-L6)。"""
+        a, x, h, y = self.pair()
+        self.assertEqual(a.cli("echo", "on").returncode, 0)
+        rec = SB.outbox_rec("%s/6ddf/%s" % (h.owner, y), x, content=CN_ECHO_TEXT["zh-TW"])
+        rec["echo"], rec["reply_to"] = True, GF.new_msgid()
+        GF.write_outbox(a.root, rec)
+        self.assertTrue(a.wait_for(lambda: any(r.get("result") == "echo:stale" and r.get("msgid") == rec["msgid"]
+                                               for r in audit_all(a)), 20), audit_all(a))
+        self.assertFalse((a.root / "sent" / (rec["msgid"] + ".json")).exists())
+        self.assertFalse((a.root / "outbox" / (rec["msgid"] + ".json")).exists())
+        h.wait_for(lambda: False, 3)
+        self.assertFalse(any(rec["msgid"] in json.dumps(i) for i in self.items(h, y)))
+
     def test_e3_off_refuses(self):
         a, x, h, y = self.pair()
         rec = SB.outbox_rec("%s/6ddf/%s" % (h.owner, y), x)
@@ -193,6 +220,10 @@ class Knife(unittest.TestCase):
     @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k4_echo_normal_send(self):
         self._knife_t('        if rec.get("echo") and frm.get("attested"):', "        if False:", "Network.test_e1_e2_echo")
+
+    @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k6_stale_echo_sent(self):
+        self._knife_t("            if rec.get(\"content\") in ECHO_TEXT.values():", "            if False:", "Network.test_e7_stale_echo_dropped")
 
     @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k5_echo_to_ai(self):

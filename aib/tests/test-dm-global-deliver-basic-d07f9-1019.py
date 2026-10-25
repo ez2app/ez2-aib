@@ -10,6 +10,7 @@ G1 沒開佇列 + 有記號:排空器只投全球來信(照樣先問忙不忙);�
 G2 沒有記號 ⇒ 排空器不跑(右欄每拍不白跑);note_global_pending ⇒ drain_wanted 為真;投完記號自己拿掉
 G3 收件席忙 ⇒ 不投、記號留著(下一拍再試)
 G4 收件程式(global_inbox.import_once)排進一封 queued 全球信 ⇒ 留記號;待審(陌生)的不留
+G5 寄件端寄出時間帶進 global.sent_at(只顯示;太未來 / 不是整數不收)(#303 r3 B-L5)
 刀(複本):K1 next_to_drain 不濾全球 ⇒ G1 紅;K2 收件不留記號 ⇒ G4 紅
 全程只寫暫存狀態根,不碰真佇列。
 """
@@ -111,6 +112,25 @@ class Inbox(Base):
         out = GI.import_once(root, self.env)
         self.assertEqual(out[0]["result"], "queued", out)
         self.assertTrue(Q.global_pending_path(self.env).exists())
+
+    def test_g5_sent_at_carried(self):
+        """寄件端寄出時間(補寄 = 原寄出時間)帶進佇列的 global.sent_at;沒帶 / 不是整數 / 太未來 ⇒ 不加這欄(#303 r3 B-L5)。"""
+        root = self.td / "bridge"
+        GF.ensure_dirs(root)
+        now = int(time.time())
+        for sent, want in ((now - 3600, now - 3600), (None, None), (now + 3600, None), (True, None)):
+            r = self.rec(True, "friend")
+            if sent is not None:
+                r["sent_at"] = sent
+            try:
+                GF.write_inbox(root, r)
+            except GF.ContractError:
+                self.assertIsNone(want, sent)               # 契約那一關就擋掉(bool)
+                continue
+            out = GI.import_once(root, self.env)
+            g = Q._load_item(SEAT, out[0]["id"], self.env)["global"]
+            self.assertEqual(g.get("sent_at"), want, (sent, g))
+            self.assertIsNotNone(g.get("addr"), "抬頭照樣在")
 
 
 class Knife(unittest.TestCase):
