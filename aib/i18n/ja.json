@@ -4919,6 +4919,8 @@
   "aib.secret.btn_cancel": "キャンセル",
   "aib.secret.no_gui_hint": "入力ウィンドウを開けませんでした(この端末はグラフィカルセッション外です。AI 席のシェルではよくあります)。Claude Code の入力欄で ! から始めて同じ行をご自身で実行してください(1 行で、! の前に空白なし)。",
   "aib.cf.touchid_reason": "aib:Cloudflare 一時キーを承認:{zone} {perms} {ttl} → {host}",
+  "aib.cf.touchid_risk.zone_settings_write": "⚠ zone-settings-write はドメイン全体のセキュリティ設定(SSL モード / AOP / セキュリティレベル)を変更できます。",
+  "aib.cf.touchid_risk.dns_write": "⚠ dns-write はドメインのすべての DNS レコードを変更できます。",
   "aib.cf.revoke_reason": "aib:Cloudflare キー {token} を取り消す",
   "aib.cf.no_minter_hint": "Secure Enclave に Cloudflare のマスターキーがありません。Cloudflare の管理画面で「API Tokens Write」(と発行するゾーンの Zone Read)だけのトークンを作り、本人が実行してください:aib secret ask CF_TOKEN_MINTER(この Mac の Secure Enclave に封入され、ファイルには書きません)",
   "aib.cf.zone_unreadable_hint": "発行用キーでゾーン {zone} を読めません:API Tokens Write に加えて、このゾーンの Zone Read も必要です(またはゾーンがこのアカウントにあるか確認)",

@@ -4919,6 +4919,8 @@
   "aib.secret.btn_cancel": "취소",
   "aib.secret.no_gui_hint": "입력 창을 열 수 없습니다(이 터미널은 그래픽 세션 밖에 있습니다. AI 석의 셸에서 흔합니다). Claude Code 입력창에서 ! 로 시작해 같은 줄을 직접 실행하세요(한 줄로, ! 앞에 공백 없이).",
   "aib.cf.touchid_reason": "aib: Cloudflare 임시 키 승인: {zone} {perms} {ttl} → {host}",
+  "aib.cf.touchid_risk.zone_settings_write": "⚠ zone-settings-write는 도메인 전체의 보안 설정(SSL 모드 / AOP / 보안 수준)을 변경할 수 있습니다.",
+  "aib.cf.touchid_risk.dns_write": "⚠ dns-write는 도메인의 모든 DNS 레코드를 변경할 수 있습니다.",
   "aib.cf.revoke_reason": "aib: Cloudflare 키 {token} 폐기",
   "aib.cf.no_minter_hint": "Secure Enclave에 Cloudflare 마스터 키가 없습니다. Cloudflare 대시보드에서 \"API Tokens Write\"(와 발급할 존의 Zone Read)만 있는 토큰을 만든 뒤 본인이 실행하세요: aib secret ask CF_TOKEN_MINTER (이 Mac의 Secure Enclave에 봉인되며 파일에 쓰지 않습니다)",
   "aib.cf.zone_unreadable_hint": "발급용 키로 존 {zone}을(를) 읽을 수 없습니다: API Tokens Write 외에 이 존의 Zone Read도 필요합니다(또는 존이 이 계정에 있는지 확인)",
