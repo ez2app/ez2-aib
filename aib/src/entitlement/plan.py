@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""方案級別查詢軸：plan ∈ {free, plus, pro, ultra}(10-25 the maintainer 定四級;@abb89 裁另開一軸)。
+"""方案級別查詢軸：plan ∈ {free, go, plus, pro, ultra}(10-25 the maintainer 定四級、23:1x 加 Go 成五級;@abb89 裁另開一軸)。
 
 跟 tier.py(free / single / all,給加購外掛查)並列，不擴充、不合併 enum;外掛只問這裡(或 aib license plan --json),不自己讀檔。
 級別只認簽章授權(同帳號 AI 威脅模型):本機檔只是存放處，不是依據。
@@ -22,7 +22,7 @@ from . import binding, keys, signing
 from .store import read_license_obj, resolve_home, resolve_license_path
 from .tier import DRAFT_OFFLINE_GRACE, _parse_expires_at
 
-PLANS = ("free", "plus", "pro", "ultra")
+PLANS = ("free", "go", "plus", "pro", "ultra")   # 10-25 23:1x Andy 加 Go(Free 與 Plus 之間);空間大小也照這五級
 RANK = {p: i for i, p in enumerate(PLANS)}
 TRIAL_FILENAME = "plan-trial.json"
 TRIAL_MAX_DAYS = 7   # 10-25 the maintainer:試用 7 天(試用鑰簽得出的上限也是這個)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: Apache-2.0
-"""方案級別軸 entitlement/plan.py + aib license plan --json(10-25 the maintainer 定 Free / Plus / Pro / Ultra;@abb89 裁另開 plan 軸)。
+"""方案級別軸 entitlement/plan.py + aib license plan --json(10-25 the maintainer 定 Free / Plus / Pro / Ultra、23:1x 加 Go;@abb89 裁另開 plan 軸)。
 
 P1 沒檔 ⇒ free / missing;沒寫 plan 的舊授權 ⇒ free / ok;壞 JSON ⇒ free / invalid
 P2 信任公鑰簽、綁本機的 pro ⇒ pro;改一欄 / 別把鑰匙簽 ⇒ free / invalid;寫錯級別名 ⇒ free / invalid
@@ -10,7 +10,7 @@ P4 過期:72h 內 grace 照級別,超過 ⇒ free / expired
 P5 試用檔:主鑰或試用鑰簽、trial=true、≤7 天 ⇒ 該級別;沒 trial / 缺日期 ⇒ invalid;到期不給寬限
 P6 試用鑰:超過 7 天 ⇒ invalid;簽 license.json(正式檔)⇒ invalid(試用鑰簽不出正式級別)
 P7 兩份取高:正式 plus + 試用 pro ⇒ pro;正式 ultra + 試用 pro ⇒ ultra
-P8 at_least:照級別比;寫錯名 ⇒ False
+P8 at_least:照級別比(五級含 go);寫錯名 ⇒ False
 P9 CLI plan --json:只輸出六欄、不含 signature
 刀(複本):K1 拿掉「沒綁不給付費級」⇒ P3 紅;K2 拿掉試用鑰天數上限 ⇒ P6 紅;K3 正式檔也認試用鑰 ⇒ P6 紅
 """
@@ -158,7 +158,7 @@ class Plan(Base):
     def test_p8_at_least(self):
         self.put(_signed(_lic("pro")))
         al = lambda n: plan.at_least(n, self.env, now=NOW, raw_machine=RAW)  # noqa: E731
-        self.assertEqual([al(n) for n in ("free", "plus", "pro", "ultra")], [True, True, True, False])
+        self.assertEqual([al(n) for n in ("free", "go", "plus", "pro", "ultra")], [True, True, True, True, False])
         self.assertFalse(al("platinum"))
         self.assertFalse(al(None))
 
