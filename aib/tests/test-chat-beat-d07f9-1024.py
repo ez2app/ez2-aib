@@ -19,11 +19,12 @@ H15 (venv)心跳加密內文帶 owner:別的好友宣告 V 的心跳 npub(連鑰
     只有冒名那位宣告 ⇒ 誰都不算(#303 r2 A-M4)
 H10 world 一次寫多格、500 位好友寫得進去(超過上限丟最舊的)
 H11 同一位 ping 10 秒一次、換一位不等(A-M5);public_relay_ok 擋本機 / 內網 / link-local / 單字主機名
-H12 (venv)好友名片給的站只查那位好友、內網站不連、我的站查全部(A-M2);壞網址不進心跳鑰(A-M3)
+H12 (venv)好友名片給的站只查那位好友、內網站不連、我的站查全部(A-M2);壞網址不進心跳鑰(A-M3);
+    同一個 npub 被兩位宣告 ⇒ 誰的名片站都不查它、只在我的站查(#303 r3 A-Low)
 H13 (venv)點開對話框只問那一位、整面刷新才問舊版;有人問我 ⇒ 有心跳也回(B-M3)
 H14 (venv)心跳的 presence_at 用本機收到時間、sent_at 記原值(B-M5);換代後 push_beat 用新簽章鑰
 刀(複本):K1 不換代 ⇒ H7 紅;K2 不跳過有心跳的好友 ⇒ H6 紅;K3 好友站查全部人 ⇒ H12 紅;K4 ping 也問舊版 ⇒ H13 紅;
-K5 不回問我的人 ⇒ H13 紅;K6 簽章鑰不換代 ⇒ H8 紅;K7 不比內文 owner ⇒ H15 紅
+K5 不回問我的人 ⇒ H13 紅;K6 簽章鑰不換代 ⇒ H8 紅;K7 不比內文 owner ⇒ H15 紅;K8 撞號 npub 照查名片站 ⇒ H12 紅
 """
 import json
 import os
@@ -160,6 +161,21 @@ elif case == "plan":
     names = {NS.PublicKey.parse(n).to_hex(): v for n, v in hexes.items()}
     out["calls"] = sorted([c[0], sorted(names[a] for a in c[1])] for c in calls)
     out["good"] = CN._good_relays(["wss://a b", "wss://ok.example", 5, "http://x"])
+elif case == "plan_contested":
+    friends["friends"] = [{"owner": F}, {"owner": G}]
+    V = NK.npub(NK.pubkey_hex("%064x" % 0xB301))
+    GF.note_beat_key(root, F, V, "%064x" % 1, 1, ["wss://friend.example"])
+    GF.note_beat_key(root, G, V, "%064x" % 1, 1, ["wss://g.example"])        # G 抄 F 的心跳 npub 宣告成自己的
+    GF.note_beat_key(root, G, NK.npub(NK.pubkey_hex("%064x" % 0xB302)), "%064x" % 2, 1, ["wss://g.example"])
+    calls = []
+    async def fetch_all(relays, flt):
+        calls.append([relays, sorted(json.loads(flt.as_json()).get("authors") or [])])
+        return []
+    CN._fetch_all = fetch_all
+    asyncio.run(s.poll_beats(now=5000))
+    import nostr_sdk as NS
+    names = {NS.PublicKey.parse(n).to_hex(): v for n, v in {V: "f", NK.npub(NK.pubkey_hex("%064x" % 0xB302)): "g"}.items()}
+    out["calls"] = sorted([c[0], sorted(names[a] for a in c[1])] for c in calls)
 elif case == "ask":
     friends["friends"] = [{"owner": F}, {"owner": G}]
     levels[G] = "online"
@@ -357,6 +373,8 @@ class Worker(unittest.TestCase):
         self.assertEqual(d["calls"], [[["wss://friend.example"], ["f"]], [["wss://g.example"], ["g"]],
                                       [["wss://r.example"], ["f", "g"]]])
         self.assertEqual(d["good"], ["wss://ok.example"])
+        d = self.probe("plan_contested")                   # #303 r3 A-Low:被兩位宣告的 npub 只在我的站查
+        self.assertEqual(d["calls"], [[["wss://g.example"], ["g"]], [["wss://r.example"], ["f", "g"]]])
 
     def test_h13_ask_scope(self):
         d = self.probe("ask")
@@ -398,6 +416,10 @@ class Knife(unittest.TestCase):
         self._run("        plan += [([r], sorted(ns)) for r, ns in sorted(extra.items())[:BEAT_EXTRA_RELAYS]]",
                   "        plan += [([r], sorted(by_npub)) for r, ns in sorted(extra.items())[:BEAT_EXTRA_RELAYS]]",
                   "Worker.test_h12_friend_relays")
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k8_contested_card_relays(self):
+        self._run("            if len(by_npub[n]) > 1:\n", "            if False:\n", "Worker.test_h12_friend_relays")
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k4_ping_asks_old(self):
