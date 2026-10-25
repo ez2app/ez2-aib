@@ -30,6 +30,7 @@ D4b 解開大小 / 成員數 / pax 大標頭超過上限 ⇒ too-big-unpacked(�
 import base64
 import hashlib
 import http.client
+import contextlib
 import io
 import json
 import os
@@ -405,6 +406,14 @@ class Install(Box):
         ent = dict(self.entry(data, access="member"), plan="pro")
         srv = self.server([ent], {("probe", "0.0.1"): data})
         self.assertEqual(PC.parse_catalog({"ok": True, "v": 1, "plugins": [ent]})[0]["plan"], "pro")
+        res, rc = AP.catalog_cmd(dict(os.environ), api(self.server([ent, dict(self.entry(data, access="public"), version="0.0.2")], {})))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            AP._emit(res, rc)
+        lines = buf.getvalue().splitlines()
+        self.assertEqual((rc, len(lines)), (0, 2), buf.getvalue())
+        self.assertIn("member pro+", lines[0])   # 畫面:這一級以上含在方案內
+        self.assertNotIn("+", lines[1])
         for bad in (dict(ent, plan="vip"), dict(ent, plan=3), dict(self.entry(data, access="public"), plan="free")):
             self.assertIsNone(PC.parse_catalog({"ok": True, "v": 1, "plugins": [bad]}), bad.get("plan"))
         low = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (403, {"error": "plugin_plan_required", "details": ["pro"]})})
