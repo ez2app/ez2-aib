@@ -152,7 +152,7 @@ class Whitelist(Base):
     def test_c11_bad_chars(self):
         for s in ("a\nb", "a\rb", "a\x1bb", "a\u200bb", "a\u202eb", "a\u2066b", "a\ufeffb", "a\x85b", "a\u2028b",
                   "a\U000e0041b", "a\u180eb", "a\u034fb", "a\u3164b", "a\u115fb", "a\uffa0b", "a\u2800b", "a\ufe0fb",
-                  "a\U000e0100b", "a\u206ab", "a\ufff9b", "a\u0600b", "a\U0001bca0b", "a\U0001d173b", "a\ue000b", "a\u0378b"):
+                  "a\U000e0100b", "a\u206ab", "a\ufff9b", "a\u0600b", "a\U0001bca0b", "a\U0001d173b", "a\ue000b", "a\u0378b", "a\u00a0b", "a\u3000b", "a\u2009b"):
             kind, why = C.classify(["aib", "now", s], True, self.env)
             self.assertIsNone(kind, repr(s))
             self.assertEqual(why, "argv_chars", repr(s))
@@ -392,6 +392,10 @@ class R2(Base):
         self.drain()
         self.assertEqual(C.status("o1", self.env)["result"], "failed")
         self.assertEqual(C.status("o2", self.env)["result"], "pending", "還在跑的不能當孤兒")
+        (C.running_dir(self.env) / "o3.json").write_text(json.dumps(
+            {"argv": ["aib", "now"], "summary": "x", "t": int(time.time()) + 30}), encoding="utf-8")
+        C._sweep_running(self.env)
+        self.assertTrue((C.running_dir(self.env) / "o3.json").exists(), "t 晚 30 秒(decide 容許)還在跑的不能當孤兒")
 
     def test_c21_wait_rc_and_state_root(self):
         self.assertEqual(C.main(["ask", "--wait", "1", "--summary", "x", "--", "aib", "now", "x"], env=self.env), 1)

@@ -89,7 +89,8 @@ _BAD_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cn", "Cs"})
 
 
 def _has_bad_char(text):
-    return bool(_INVISIBLE_EXTRA.search(text)) or any(unicodedata.category(ch) in _BAD_CATEGORIES for ch in text)
+    return bool(_INVISIBLE_EXTRA.search(text)) or any(
+        unicodedata.category(ch) in _BAD_CATEGORIES or (ch != " " and unicodedata.category(ch) == "Zs") for ch in text)
 
 STRONG_JXA = r"""
 ObjC.import('AppKit');
@@ -510,7 +511,7 @@ def _sweep_running(env=None, now=None):
                 t = int(os.lstat(p).st_mtime)
             except OSError:
                 continue
-        if 0 <= now - t <= EXPIRE_S + RUN_TIMEOUT_S + TA.WAIT_S * 5:   # 決定最晚 t+30 分 + 兩個視窗 + 執行上限
+        if -60 <= now - t <= EXPIRE_S + RUN_TIMEOUT_S + TA.WAIT_S * 5:   # 跟 decide 一樣容許 t 晚 60 秒   # 決定最晚 t+30 分 + 兩個視窗 + 執行上限
             continue
         if _ID_RE.match(rid or "-!") and not (done_dir(env) / (rid + ".json")).exists():
             _record(rid, "failed", env, req, why="orphan_running")
