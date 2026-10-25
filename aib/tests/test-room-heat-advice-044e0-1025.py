@@ -8,6 +8,7 @@ A2 hook:最近 3 次都 ≥ timeout×0.98 ⇒ hook_timeout_kill;中位 > 1 秒 �
    最新一筆 summary 沒有的 hook 不列;標籤只給 statusMessage 或腳本檔名
 A2c hook 來源(審查 M3):settings.local / 專案 .claude / 已啟用外掛的 hooks.json 都算;外掛用程式模組掛 ⇒ 不判 removed、
    改說「找不到掛在哪」(nolimit);timeout ≤ 0 / 不是數字 ⇒ 當預設 60 秒;hint 只帶白名單數字鍵(L4)
+A2e cwd 往上找到 git 根 / 家目錄、每層 .claude 都讀(第 2 輪 B-M3);都碰不到 ⇒ 不判已拿掉;設定檔是數字 / 值型別怪 ⇒ 不整條掛
 A3 只讀尾巴(D3):尾巴外面的舊紀錄不算;合計上限照扣
 A4 transcript_huge:> 500 MB(稀疏檔,不佔磁碟)
 A5 launchd(D2):macOS 才看、只給 Label;其他平台 ⇒ skipped unsupported_platform 且不叫 launchctl
@@ -17,7 +18,8 @@ A7 快取 60 秒:第二次不重掃;快取檔被改 ⇒ code 不在表上的丟�
 A8 隱私(D4 / E1 / E6):輸出不含指令列 / 路徑 / token;hint 不夾名字;別人的檔、單行 > 1 MB 不讀
 A9 CLI:`advice --json` / 文字模式
 刀(複本 + run_guarded):K1 改成全讀 ⇒ A3 紅;K2 快取拿掉 ⇒ A7 紅;K3 標籤給整串指令 ⇒ A8 紅;K4 不濾最新 summary ⇒ A2 紅;
-   K5 模組型外掛當讀得懂 ⇒ A2c 紅;K6 不排除 aib test 的子行程 ⇒ A6 紅。
+   K5 模組型外掛當讀得懂 ⇒ A2c 紅;K6 不排除 aib test 的子行程 ⇒ A6 紅;
+   K7 找不到專案根也當讀全了 ⇒ A2e 紅。
 """
 import io
 import json
@@ -51,8 +53,11 @@ FAST = "test -f /Users/u/aib/src/x.py || exit 0; exec python3 /Users/u/aib/src/p
 GONE = "python3 /Users/u/.claude/removed-gate.py"
 
 
+CWD = ["/"]          # 每支測試 setUp 換成暫存 HOME 底下的專案子目錄
+
+
 def summary(hooks):
-    return json.dumps({"type": "system", "subtype": "stop_hook_summary", "cwd": "/Users/u/secret",
+    return json.dumps({"type": "system", "subtype": "stop_hook_summary", "cwd": CWD[0],
                        "hookInfos": [{"command": c, "durationMs": ms} for c, ms in hooks]}, ensure_ascii=False)
 
 
@@ -68,6 +73,8 @@ class Base(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         (self.home / ".claude" / "projects" / "-x").mkdir(parents=True)
+        CWD[0] = str(self.home / "proj" / "sub")
+        (self.home / "proj" / "sub").mkdir(parents=True)
         (self.home / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
             {"type": "command", "command": SLOW, "timeout": 10},
             {"type": "command", "command": "python3 sync.py", "timeout": 15, "statusMessage": GATE},
@@ -173,6 +180,36 @@ class Hooks(Base):
         self.assertNotIn("timeout_ms", m["metric"])
         self.assertIn("找不到", m["hint"])
         self.assertIn("2500", m["hint"])
+
+    def test_a2e_project_settings_walk_up(self):
+        proj = self.home / "repo"
+        (proj / ".git").mkdir(parents=True)
+        (proj / ".claude").mkdir()
+        (proj / "a" / "b").mkdir(parents=True)
+        PROJ = "python3 /u/proj-gate.py"
+        (proj / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": PROJ, "timeout": 2}]}]}}))
+        line = lambda cwd: json.dumps({"type": "system", "subtype": "stop_hook_summary", "cwd": cwd,   # noqa: E731
+                                       "hookInfos": [{"command": PROJ, "durationMs": 1990}]})
+        self.transcript([line(str(proj / "a" / "b"))] * 4)
+        got = {(i["code"], i["metric"].get("label")): i["metric"] for i in self.collect()["items"]}
+        self.assertIn(("hook_timeout_kill", "proj-gate.py"), got, "席位 cd 進子目錄後,上層專案設定沒讀到")
+        # 家目錄外、也沒有 git 根 ⇒ 不知道專案根在哪 ⇒ 不准說「已拿掉」
+        outside = Path(tempfile.mkdtemp(prefix="aib-heat-outside-"))
+        self.addCleanup(shutil.rmtree, str(outside), True)
+        self.transcript([line(str(outside))] * 4)
+        m = {(i["code"], i["metric"].get("label")): i["metric"] for i in self.collect()["items"]}[("hook_slow", "proj-gate.py")]
+        self.assertNotIn("removed", m)
+        # 設定檔長得怪(數字 / installed_plugins 值不是 list)⇒ 整條 advice 照跑、不判已拿掉
+        (self.home / ".claude" / "settings.local.json").write_text("42")
+        (self.home / ".claude" / "plugins").mkdir(parents=True)
+        (self.home / ".claude" / "plugins" / "installed_plugins.json").write_text(json.dumps({"plugins": {"p@m": 7}}))
+        (self.home / ".claude" / "settings.json").write_text(json.dumps({"enabledPlugins": {"p@m": True}}))
+        self.transcript([line(str(proj / "a"))] * 4)
+        r = self.collect()
+        m = {(i["code"], i["metric"].get("label")): i["metric"] for i in r["items"]}
+        self.assertIn(("hook_timeout_kill", "proj-gate.py"), m)
+        self.assertEqual(RA.hook_sources(str(self.home / ".claude"), (str(proj),))[2], False)
 
     def test_a2d_hint_whitelist(self):
         h = RA.hint_of("hook_slow", {"median_ms": 1500, "timeout_ms": 15000, "key": 1, "locale": 2, "label": "x"})
@@ -300,7 +337,7 @@ class Privacy(Base):
                     self.assertNotIn(name, i["hint"], "E6:hint 夾了名字")
 
     def test_a8b_line_cap_and_owner(self):
-        big = summary([(SLOW, 9990)]).replace('"cwd": "/Users/u/secret"', '"pad": "%s"' % ("x" * (1024 * 1024 + 10)))
+        big = summary([(SLOW, 9990)]).replace('"hookInfos"', '"pad": "%s", "hookInfos"' % ("x" * (1024 * 1024 + 10)))
         self.assertEqual(RA.hook_durations(big + "\n")[0], [], "E1:單行 > 1 MB 沒丟")
         p = self.transcript([summary([(SLOW, 9990)])] * 4)
         with mock.patch.object(os, "getuid", lambda: os.stat(p).st_uid + 1):
@@ -333,8 +370,9 @@ KNIVES = [
      "    return cmd\n    scripts = SCRIPT_RE.findall(cmd or \"\")\n", "Privacy.test_a8_privacy"),
     ("K4", "src/cockpit/room_heat_advice.py", "    return [(c, ms) for c, ms in out if c in latest], cwds\n", "    return out, cwds\n",
      "Hooks.test_a2_hooks"),
-    ("K5", "src/cockpit/room_heat_advice.py", '("modules" in hj or not _add_stop_hooks', '(not _add_stop_hooks',
+    ("K5", "src/cockpit/room_heat_advice.py", 'not isinstance(hj, dict) or "modules" in hj\n', 'not isinstance(hj, dict)\n',
      "Hooks.test_a2c_hook_sources"),
+    ("K7", "src/cockpit/room_heat_advice.py", "        complete = complete and topped\n", "", "Hooks.test_a2e_project_settings_walk_up"),
     ("K6", "src/cockpit/room_heat_advice.py", "        if ppid in by and is_aib_test(by[ppid][6]):\n",
      "        if False:\n", "Procs.test_a6_tests_and_browser"),
 ]

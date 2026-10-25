@@ -224,25 +224,47 @@ MANAGED_SETTINGS = {"darwin": "/Library/Application Support/ClaudeCode/managed-s
 
 
 def _json_file(path):
-    """(讀得出來嗎, 內容):檔不在 ⇒ (True, None);只讀自己的一般檔(或 root 的受管設定),壞了 ⇒ (False, None)。"""
+    """(讀得出來嗎, 內容):檔不在 ⇒ (True, None);只讀自己的一般檔(或 root 的受管設定),壞了 ⇒ (False, None)。
+    先開(不跟 symlink、不卡 FIFO)再 fstat,沒有 lstat→open 之間被換掉的空檔(第 2 輪 A 附帶)。"""
     try:
-        st = os.lstat(path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
         return True, None
     except OSError:
         return False, None
-    if not stat.S_ISREG(st.st_mode) or st.st_uid not in (os.getuid(), 0) or st.st_size > 4 * 1024 * 1024:
-        return False, None
     try:
-        with open(path, encoding="utf-8") as fh:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid not in (os.getuid(), 0) or st.st_size > 4 * 1024 * 1024:
+            return False, None
+        with os.fdopen(os.dup(fd), encoding="utf-8") as fh:
             return True, json.load(fh)
     except (OSError, ValueError, RecursionError):
         return False, None
+    finally:
+        os.close(fd)
+
+
+def project_dirs(cwd, home):
+    """cwd 往上到 git 根(有 .git 的那層)或家目錄,每一層都算(席位 cd 進子目錄後,專案層設定在上面幾層,第 2 輪 B-M3)。
+    → (各層, 找到頂了嗎);走到 / 都沒碰到 git 根也沒碰到家目錄 ⇒ 找到頂 = False(不知道專案根在哪)。"""
+    out, d = [], os.path.abspath(cwd)
+    home = os.path.abspath(home) if home else None
+    for _ in range(64):
+        out.append(d)
+        if d == home or os.path.lexists(os.path.join(d, ".git")):
+            return out, True
+        up = os.path.dirname(d)
+        if up == d:
+            break
+        d = up
+    return out, False
 
 
 def _add_stop_hooks(d, timeouts, labels, root=None):
     """settings / 外掛 hooks.json 的 Stop hook ⇒ timeouts{指令或 statusMessage: 秒}。格式不對 ⇒ 回 False。"""
-    hooks = d.get("hooks") if isinstance(d, dict) else None
+    if not isinstance(d, dict):
+        return False
+    hooks = d.get("hooks")
     if hooks is None:
         return True
     if not isinstance(hooks, dict):
@@ -263,15 +285,20 @@ def _add_stop_hooks(d, timeouts, labels, root=None):
     return True
 
 
-def hook_sources(claude_home, project_dirs=(), platform=None):
+def hook_sources(claude_home, cwds=(), platform=None):
     """所有 Stop hook 的來源(審查 M3):使用者 settings / settings.local、受管設定、各專案 .claude/settings(.local)、
-    已啟用外掛的 hooks/hooks.json。→ (timeouts, labels, complete);complete = 每個來源都讀得懂。
+    已啟用外掛的 hooks/hooks.json。cwds = 對話紀錄裡的工作目錄,每個往上找到 git 根 / 家目錄。
+    → (timeouts, labels, complete);complete = 每個來源都讀得懂。
     外掛用程式模組掛 hook(hooks.json 是 {"modules": …})⇒ 看不出掛了什麼 ⇒ complete False(不下「已拿掉」的結論)。"""
     timeouts, labels, complete, enabled = {}, set(), True, set()
     files = [os.path.join(claude_home, "settings.json"), os.path.join(claude_home, "settings.local.json"),
              MANAGED_SETTINGS.get(platform or sys.platform, "")]
-    for d in project_dirs:
-        files += [os.path.join(d, ".claude", "settings.json"), os.path.join(d, ".claude", "settings.local.json")]
+    home = os.path.dirname(os.path.abspath(claude_home))
+    for cwd in cwds:
+        levels, topped = project_dirs(cwd, home)
+        complete = complete and topped
+        for d in levels:
+            files += [os.path.join(d, ".claude", "settings.json"), os.path.join(d, ".claude", "settings.local.json")]
     for f in files:
         if not f:
             continue
@@ -288,13 +315,18 @@ def hook_sources(claude_home, project_dirs=(), platform=None):
         if not isinstance(plugins, dict):
             return timeouts, labels, False
         for key in sorted(enabled):
-            for ent in plugins.get(key) or []:
+            ents = plugins.get(key) or []
+            if not isinstance(ents, list):                # 第 2 輪 A Low-2:值不是 list ⇒ 看不懂,不是整條掛
+                complete = False
+                continue
+            for ent in ents:
                 root = ent.get("installPath") if isinstance(ent, dict) else None
                 if not isinstance(root, str):
                     complete = False
                     continue
                 ok, hj = _json_file(os.path.join(root, "hooks", "hooks.json"))
-                if not ok or (hj is not None and ("modules" in hj or not _add_stop_hooks(hj, timeouts, labels, root))):
+                if not ok or (hj is not None and (not isinstance(hj, dict) or "modules" in hj
+                                                  or not _add_stop_hooks(hj, timeouts, labels, root))):
                     complete = False
     return timeouts, labels, complete
 
@@ -350,7 +382,10 @@ def check_transcripts(projects_dir, settings_path, now, tail_per_file=TAIL_PER_F
             continue
         key = tuple(sorted(cwds))
         if key not in src_cache:
-            src_cache[key] = hook_sources(claude_home, key, platform)
+            try:
+                src_cache[key] = hook_sources(claude_home, key, platform)
+            except Exception:  # noqa: BLE001 —— 設定檔長得怪不擋整條 advice;不知道來源 ⇒ 不下「已拿掉」
+                src_cache[key] = ({}, set(), False)
         timeouts, labels, complete = src_cache[key]
         by = {}
         for cmd, ms in pairs:
