@@ -3,14 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """開通後不用再做別的(10-24 Andy「全照做」清單第 9 條)。開艙仍問一次(10-16 裁示),答「要」之後自動補齊。
 
-Z1 default_name:macOS 用「電腦名稱」(scutil);不合格(含 >> / 太長截 32 字)⇒ 退主機名;其他平台用主機名
+Z1 default_name:macOS 用「電腦名稱」(scutil),去掉主人名字(Z1b 各語言格式);不合格(含 >> / 太長截 32 字)⇒ 退主機名;其他平台用主機名
 Z2 default_country:AppleLocale zh_TW / en_US@rg=gbzzzz / zh_Hant_TW;非 Mac 看 LANG;查不到 ⇒ None
 Z3 zero_step:沒名字 / 國別 ⇒ 補上;公開艦長席(role root),不公開其他席;已經設過的名字、國別、公開清單不動
 Z4 國別查不到 ⇒ 不公開任何席、印「要給顯示名稱與國別」(不上線半套)
 Z5 aib chat auto 答「要」(假終端機)⇒ 問句帶要公開的名字;開關檔、名字、國別、艦長席都好了
 (Z5 不裝 nostr-sdk:venv 先連到測試 venv 或放假的 ok;不連網)
 R1 status 的 ready:轉接程式在跑 + 心跳、有公開席、至少一位好友 / 我的機器;三格都過 all=true;public_seats 列公開的席
-刀(複本):K1 zero_step 公開所有席(不看 role)⇒ Z3 紅
+刀(複本):K1 zero_step 公開所有席(不看 role)⇒ Z3 紅;K2 不去主人名字 ⇒ Z1 紅
 """
 import importlib.util
 import json
@@ -47,12 +47,21 @@ def fake_run(answers):
 class Defaults(unittest.TestCase):
     def test_z1_name(self):
         self.assertEqual(CB.default_name(run=fake_run({"ComputerName": "Andy 的 MacBook Pro"}), platform="darwin"),
-                         "Andy 的 MacBook Pro")
+                         "MacBook Pro", "名字會公開 ⇒ 去掉主人名字")
         self.assertEqual(len(CB.default_name(run=fake_run({"ComputerName": "x" * 50}), platform="darwin")), 32)
         host = socket.gethostname().split(".")[0]
         self.assertEqual(CB.default_name(run=fake_run({"ComputerName": "a>>b"}), platform="darwin"),
                          CR.GF.clean_display_name(host[:32]))
         self.assertEqual(CB.default_name(run=fake_run({}), platform="linux"), CR.GF.clean_display_name(host[:32]))
+
+    def test_z1b_strip_owner(self):
+        cases = {"Andy's MacBook Pro": "MacBook Pro", "Andy\u2019s MacBook Air": "MacBook Air", "Andy 的 MacBook Pro": "MacBook Pro",
+                 "王小明的iMac": "iMac", "太郎のMacBook Air": "MacBook Air", "철수의 MacBook": "MacBook",
+                 "MacBook Pro de Andy": "MacBook Pro", "MacBook Pro von Anna": "MacBook Pro",
+                 "andys-macbook-pro": "macbook-pro", "Andys-Mac-mini": "Mac-mini",
+                 "Mac Pro 13": "Mac Pro 13", "Studio": "Studio", "": ""}
+        for raw, want in cases.items():
+            self.assertEqual(CB.strip_owner_name(raw), want, raw)
 
     def test_z2_country(self):
         mac = lambda loc: CB.default_country({}, run=fake_run({"AppleLocale": loc}), platform="darwin")  # noqa: E731
@@ -168,6 +177,16 @@ class Knife(unittest.TestCase):
         with knife_copy(REPO, "src/cockpit/chat_bridge.py", '            if s.get("role") == "root":\n',
                         "            if True:\n", tests=(name,)) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "Zero.test_z3_fill_and_publish_captain"],
+                            cwd=str(root), max_procs=60, timeout=120)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k2_keep_owner_name(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_bridge.py", "GF.clean_display_name(strip_owner_name(cand)[:GF.NAME_MAX]",
+                        "GF.clean_display_name((cand or \"\")[:GF.NAME_MAX]", tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Defaults.test_z1_name"],
                             cwd=str(root), max_procs=60, timeout=120)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
