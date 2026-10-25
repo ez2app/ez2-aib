@@ -1103,6 +1103,11 @@ _xhost_send() {
   fi
   # AIB_DM_XHOST_REMOTE_AIB:收件機上 aib 的叫法(預設 aib;可寫成「bash /路徑/aib」,照空白拆成多個字)
   read -r -a rargs <<<"${AIB_DM_XHOST_REMOTE_AIB:-aib}"
+  # 10-25 Mac Pro 13:安裝程式把 ~/.local/bin 寫進 ~/.zprofile,SSH 非互動指令不讀它 ⇒ 收件機 aib 找不到(rc 127)。
+  #   沒指定叫法時,遠端 PATH 最後補上 ~/.local/bin(安裝程式放 aib 的位置;排最後 = 原本找得到的照舊優先)
+  local rpre=""
+  [ -z "${AIB_DM_XHOST_REMOTE_AIB:-}" ] && rpre='PATH="$PATH:$HOME/.local/bin" '
+
   rargs+=(dm --xhost-ident "$ident" "$_XH_OUT_ADDR")
   [ -n "$DM_THREAD" ] && rargs+=(--thread "$DM_THREAD")
   [ -n "$DM_KIND" ] && rargs+=(--kind "$DM_KIND")
@@ -1110,7 +1115,7 @@ _xhost_send() {
   [ -n "$DM_EXPIRES" ] && rargs+=(--expires "$DM_EXPIRES")
   [ "$DRYRUN" = "1" ] && rargs+=(--dry-run)
   [ "$VERIFY" = "1" ] && rargs+=(--verify)
-  cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
+  cmd="$rpre$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
   local errf; errf="$(_dm_ctl_tmp aib-dm-xhost-err)" || errf=/dev/null   # 暫存檔走 _dm_ctl_tmp(不自己推 TMPDIR)
   out="$(printf '%s' "$MSG" | "$ssh_bin" "${sshopt[@]}" ${muxopt[@]+"${muxopt[@]}"} "$host" "$cmd" 2>"$errf")"; rc=$?
   # 相容退路:收件機的 aib 是還沒有跨主機身分的舊版 ⇒ 它在解析參數就停(rc 2、RESULT stage=abort、
@@ -1123,7 +1128,7 @@ _xhost_send() {
     local i; for ((i = 0; i < ${#rargs[@]}; i++)); do
       if [ "${rargs[i]}" = "--xhost-ident" ]; then rargs=("${rargs[@]:0:i}" "${rargs[@]:i+2}"); break; fi
     done
-    cmd="$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
+    cmd="$rpre$("$PY3" "$HERE/dm_xhost.py" remote-cmd "${rargs[@]}")" || die "跨主機指令組不出來,未送出" 2
     # 舊版抬頭會把位址寫成收件機自己 ⇒ 正文第一行標出 sshd 在那台量到的來源 IP 與自稱寄件人。
     local src_ip note
     src_ip="$("$ssh_bin" "${sshopt[@]}" ${muxopt[@]+"${muxopt[@]}"} "$host" 'printf "%s" "${SSH_CONNECTION%% *}"' </dev/null 2>/dev/null)" || src_ip=""
