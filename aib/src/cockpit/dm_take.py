@@ -93,8 +93,9 @@ def take(seat, item_id, actor, wait=None, env=None, now=None):
     out = _summary(cur, text, relay_path)
     out.update(ok=True, reason="ok", text=text)
     if cur.get("status") == "read":
-        out["next"] = {"close": "close --id %s --evidence <PR 網址 / commit / 檔 / 回信 q_ id> 或 --why <理由>" % item_id,
-                       "reply_and_close": "aib dm <位址> --close %s \"…\"(回信送達才結這封)" % item_id}
+        out["next"] = {"close": "close --id %s --evidence <PR 網址 / commit / 檔 / 回信 q_ id> 或 --why <理由>" % item_id}
+        if Q.normalize_kind(cur.get("kind")) not in Q.CLOSE_BY_REPLY_REFUSED_KINDS:   # 派工信:回信不算做完
+            out["next"]["reply_and_close"] = "aib dm <位址> --close %s \"…\"(回信送達才結這封)" % item_id
         if not out.get("wait"):
             out["next"]["wait"] = "還沒做完 ⇒ wait --id %s \"等誰 / 等什麼\"(超過 4 小時沒寫會被提醒)" % item_id
     return out

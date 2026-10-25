@@ -12,8 +12,11 @@ T4 新一輪自動結:同寄件席(艙外轉信 = 標籤 + 開頭 @席碼)+ 同 
    別張 PR / 舊信還講別張 PR / 別的寄件席 / 舊信 hold_human / 新信 hold_human / 新信 supersedes 明寫 各自對;
    系統結案只認 superseded_by: 開頭的理由
 T5 CLI:take / close / wait 子指令;第一行 JSON、全文另段;aib dm --closes 是 --close 的別名
+T6 派工信不准用回信結(@ee4f8 / @abb89 補):原信 order / pipeline ⇒ close-check 拒(rc 1、closes_order)、
+   送達後 _close_original 也不結;問意見 / 通知類照結
 刀(複本 + run_guarded):K1 拿掉系統結案理由檢查 ⇒ T4 紅;K2 close 不比 taken_rev ⇒ T2 紅;
-K3 落檔讀不到照樣標已讀 ⇒ T1 紅;K4 舊信講別張 PR 也結 ⇒ T4 紅;K5 寫了等什麼仍算逾時 ⇒ T3 紅。
+K3 落檔讀不到照樣標已讀 ⇒ T1 紅;K4 舊信講別張 PR 也結 ⇒ T4 紅;K5 寫了等什麼仍算逾時 ⇒ T3 紅;
+K6 拿掉送達後那道派工檢查 ⇒ T6 紅。
 刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import io
@@ -215,6 +218,37 @@ class Cli(Base):
             self.assertIn("--close 要原信的佇列 id", r.stdout + r.stderr, flag)
 
 
+class ClosesOrder(Base):
+    def test_t6_closes_refuses_order(self):
+        other = "bbbbb"
+        orders = {}
+        for kind in ("order", "pipeline", "other", "notice"):
+            orig = Q.record(SEAT, "@bbbbb:%s" % kind, "@bbbbb", kind=kind, sender_seat=other,
+                            sender_source="pane_pid_chain", status="delivered", env=self.env, now=NOW)
+            if kind != "notice":
+                TK.take(SEAT, orig["id"], ME, env=self.env, now=NOW)
+            orders[kind] = orig["id"]
+        for kind, iid in orders.items():
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                rc = Q.main(["close-check", "--seat", SEAT, "--id", iid], env=self.env)
+            head = json.loads(out.getvalue())
+            refused = kind in ("order", "pipeline")
+            self.assertEqual((rc, head["reason"]), (1, "closes_order") if refused else (0, "ok"), kind)
+            if refused:
+                self.assertIn("close --id %s --evidence" % iid, head["message"])
+            reply = Q.record(other, "回 %s" % kind, "@aaaaa", sender_seat=SEAT, sender_source="pane_pid_chain",
+                             closes=iid, status="delivered", env=self.env, now=NOW + 5)
+            Q._close_original(reply, env=self.env, now=NOW + 5)
+            st = self.item(iid)["status"]
+            if refused:
+                self.assertEqual(st, "read", kind)
+            elif kind != "notice":
+                self.assertEqual((st, self.item(iid)["done_evidence"]), ("done", reply["id"]), kind)
+        with mock.patch("sys.stdout", io.StringIO()):          # 找不到原信 ⇒ 照舊放行
+            self.assertEqual(Q.main(["close-check", "--seat", SEAT, "--id", "q_0000000000000000"], env=self.env), 0)
+
+
 KNIVES = [
     ("K1", "src/cockpit/dm_queue.py",
      "    if to == \"done\" and cls == \"system\" and not (isinstance(why, str) and why.startswith(SUPERSEDE_DONE_PREFIX)):\n",
@@ -227,6 +261,8 @@ KNIVES = [
      "                hit = bool(old_rounds) and \\\n", "Supersede.test_t4_new_round_closes_old"),
     ("K5", "src/cockpit/dm_queue.py", "    if isinstance(w, dict) and str(w.get(\"text\") or \"\").strip():\n        return False\n", "",
      "Wait.test_t3_wait_and_stale"),
+    ("K6", "src/cockpit/dm_queue.py", "        if normalize_kind(it.get(\"kind\")) in CLOSE_BY_REPLY_REFUSED_KINDS:\n            return None       # 派工信",
+     "        if False:\n            return None       # 派工信", "ClosesOrder.test_t6_closes_refuses_order"),
 ]
 
 

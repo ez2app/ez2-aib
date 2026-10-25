@@ -2201,6 +2201,14 @@ print(s.get("code") or "unknown")' "$RESOLVED" 2>/dev/null || echo unknown)"
 # L8b R3(派工單原本那條,保留為第三順位):被擋席自己送訊息時也提醒一次。
 # ★ 它單獨不夠 —— 09-05 那件裡被擋席 4.5 小時沒有 dm 任何人,這條剛好不會開火。
 #   主路徑是右欄每輪都跑的那一條。
+# 10-25 @ee4f8 / @abb89(派工 C 補):--closes 只結問意見 / 通知類;原信是派工(order / pipeline)⇒ 回信不算做完,拒。
+#   只看明確的 closes_order(查不到 / 查詢本身壞掉 ⇒ 照舊送,結原信那段 dm_queue 還有第二道)。
+if [ -n "$DM_CLOSE" ] && [ "$AIB_DM_SELF_CODE" != "unknown" ] && [ -f "$HERE/dm_queue.py" ]; then
+  _CC_OUT="$("$PY3" "$HERE/dm_queue.py" close-check --seat "$AIB_DM_SELF_CODE" --id "$DM_CLOSE" 2>/dev/null || true)"
+  case "$_CC_OUT" in
+    *'"closes_order"'*) die "--closes $DM_CLOSE 是派工信,回信不算做完;做完後改用 dm_queue.py close --id $DM_CLOSE --evidence <PR 網址 / commit>(這封沒送)" 2 ;;
+  esac
+fi
 if [ "$AIB_DM_SELF_CODE" != "unknown" ] && [ -f "$_COMPOSER_NOTICE" ]; then
   _SELF_NOTICE="$("$PY3" "$_COMPOSER_NOTICE" render --seat "$AIB_DM_SELF_CODE" 2>/dev/null || true)"
   if [ -n "$_SELF_NOTICE" ]; then
