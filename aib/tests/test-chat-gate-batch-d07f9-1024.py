@@ -34,8 +34,9 @@ C17 移除好友只清比預設寬的:設 off 的移除再加回仍 off;設 stat
 C18 撤好友時存檔丟 OSError ⇒ 仍是一個 JSON、request_failed、detail undo_failed;文字版說好友還在、先 friend remove
 刀(複本):K1 --space 不寫進對象 ⇒ B1 紅;K2 不叫提醒 ⇒ B5 紅;K3 connect 不過門 ⇒ C3 紅;K4 真機不提醒 ⇒ B7 紅;
    K5 視窗用預設等級 ⇒ C5 紅;K6 移除好友不清等級 ⇒ C10 紅;K7 申請沒送出不撤好友 ⇒ C11 紅;
-   K8 撤好友也清等級 ⇒ C16 紅;K9 移除好友全清 ⇒ C17 紅;K10 光給 npub 照原樣寄 ⇒ C19 紅
-10-25 艦長室一鍵對話:C19 光給 npub ⇒ 寄到本機已知的完整位址;C20 不知道席 ⇒ no_address 門前擋;C21 提示都指向 connect
+   K8 撤好友也清等級 ⇒ C16 紅;K9 移除好友全清 ⇒ C17 紅;K10 光給 npub 照原樣寄 ⇒ C19 紅;K11 不比位址主人 ⇒ C19 紅;K12 信 unverified 的 from_addr ⇒ C22 紅
+10-25 艦長室一鍵對話:C19 光給 npub ⇒ 寄到本機已知的完整位址;C20 不知道席 ⇒ no_address 門前擋;C21 提示都指向 connect;
+C22 拒收紀錄 unverified 的 from_addr 不拿(#355 r1)
 """
 import importlib.util
 import io
@@ -139,7 +140,7 @@ class Batch(OG.Base):
         self.env["AIB_TOUCHID"] = "0"
         rc, out = self.run_cb("share", FRIEND, "status", "--json")
         # 非 Mac 先回 touchid_unavailable(seat_act.prove 平台判斷在 AIB_TOUCHID 之前;CI 有 Linux,#329)
-        self.assertEqual((rc, json.loads(out.strip())["why"]),
+        self.assertEqual((rc, json.loads(out.strip()).get("why")),
                          (3, "touchid_off" if sys.platform == "darwin" else "touchid_unavailable"))
         self.assertEqual(len(seen), 1 if sys.platform == "darwin" else 0, "touchid_off / 非 Mac 不准叫人去按指紋")
 
@@ -284,11 +285,11 @@ class Connect(OG.Base):
 
     def test_c13_open_conflicts_and_bridge_off(self):
         rc, out = self.run_cb("connect", self.OTHER, "--open", "--share", "off", "--json")
-        self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "open_or_space"))
+        self.assertEqual((rc, json.loads(out.strip()).get("why")), (2, "open_or_space"))
         with mock.patch.object(OG.GF, "bridge_alive", lambda root: False):
             for argv in (("connect", FRIEND, "--open", "--json"), ("connect", self.OTHER, "--json")):
                 rc, out = self.run_cb(*argv)
-                self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "bridge_off"), argv)
+                self.assertEqual((rc, json.loads(out.strip()).get("why")), (2, "bridge_off"), argv)
         self.assertEqual(self.asked, [], "門前就擋")
 
     def test_c14_open_partial(self):
@@ -317,7 +318,7 @@ class Connect(OG.Base):
             rc, out = self.run_cb("share", x, share, "--space", space)       # 本人按過指紋設的(對方還不是好友)
             self.assertEqual(rc, 0, out)
             rc, out = self.run_cb("connect", x, "--json")                    # 沒公開席 ⇒ 申請失敗、撤好友
-            self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "request_failed"))
+            self.assertEqual((rc, json.loads(out.strip()).get("why")), (2, "request_failed"))
             self.assertEqual((CR.read_share(self.env)["per"].get(x), CR.read_space(self.env)["per"].get(x)), (share, space),
                              "申請失敗撤好友時把本人設的等級清掉了")
 
@@ -358,9 +359,9 @@ class Connect(OG.Base):
         bad = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xc707))
         CR.add_friend(bad, None, self.env, kind="blocks")
         rc, out = self.run_cb("connect", bad, "--share", "status", "--json")
-        self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "blocked"))
+        self.assertEqual((rc, json.loads(out.strip()).get("why")), (2, "blocked"))
         rc, out = self.run_cb("connect", "npub1nope", "--open", "--json")
-        self.assertEqual((rc, json.loads(out.strip())["why"]), (2, "bad_friend"))
+        self.assertEqual((rc, json.loads(out.strip()).get("why")), (2, "bad_friend"))
         self.assertEqual(self.asked, [], "門前就擋,不白按指紋")
 
     def test_c8_partial_write(self):
@@ -399,9 +400,10 @@ class ConnectAddress(OG.Base):
             rc, out = self.run_cb(*argv)
         return rc, out, sent
 
-    def refused(self, who, addr):
+    def refused(self, who, addr, reason="not_friend"):
         (self.root / "refused.json").write_text(json.dumps({"refused": [
-            {"who": who, "from_addr": addr, "owner": True, "count": 1, "last_at": 1, "display_name": "驗收B2"}]}))
+            {"who": who, "from_addr": addr, "owner": True, "count": 1, "last_at": 1, "display_name": "驗收B2",
+             "reason": reason}]}))
 
     def test_c19_bare_npub_uses_known_address(self):
         addr = self.NEW + "/0c1b/ae6a1"
@@ -412,7 +414,7 @@ class ConnectAddress(OG.Base):
         other = OG.NK.npub(OG.NK.pubkey_hex("%064x" % 0xd420))
         self.refused(other, self.NEW + "/0c1b/ae6a1")                  # 位址的主人對不上 ⇒ 不拿
         rc, out, sent = self.sent_to("connect", other, "--json")
-        self.assertEqual((rc, json.loads(out.strip())["why"], sent), (2, "no_address", []))
+        self.assertEqual((rc, json.loads(out.strip()).get("why"), sent), (2, "no_address", []))
         full = other + "/c3c3/ccccc"
         rc, out, sent = self.sent_to("connect", full, "--json")
         self.assertEqual((rc, sent), (0, [full]), "完整位址照用")
@@ -420,6 +422,15 @@ class ConnectAddress(OG.Base):
         with mock.patch.object(OG.GF, "default_address", lambda root, o, env=None: (o + "/main/ddddd", "captain")):
             rc, out, sent = self.sent_to("connect", third, "--json")
         self.assertEqual(sent, [third + "/main/ddddd"])
+
+    def test_c22_unverified_from_addr_not_trusted(self):
+        """#355 r1 Low:reason=unverified 的 from_addr 是寄件人自己填的(每封蓋掉)⇒ connect 與提示都不拿"""
+        self.refused(self.NEW, self.NEW + "/0c1b/ae6a1", reason="unverified")
+        rc, out, sent = self.sent_to("connect", self.NEW, "--json")
+        self.assertEqual((rc, json.loads(out.strip()).get("why"), sent), (2, "no_address", []))
+        rc, out = self.run_cb("refused")
+        self.assertIn("aib chat connect %s\n" % self.NEW, out)
+        self.assertNotIn("/0c1b/ae6a1", out.split("aib chat connect", 1)[1].splitlines()[0])
 
     def test_c20_unknown_seat_stops_before_anything(self):
         rc, out, sent = self.sent_to("connect", self.NEW, "--share", "status", "--json")
@@ -460,6 +471,14 @@ class Knife(unittest.TestCase):
     def test_k10_bare_npub_sent_as_is(self):
         self._knife('    if "owner" in (GF.parse_address(target or "") or {}):\n        return target\n',
                     "    return target\n", "ConnectAddress.test_c19_bare_npub_uses_known_address")
+
+    def test_k11_owner_check_dropped(self):
+        self._knife('        if p and p.get("owner") == owner:\n            return x\n',
+                    "        if p:\n            return x\n", "ConnectAddress.test_c19_bare_npub_uses_known_address")
+
+    def test_k12_unverified_trusted(self):
+        self._knife('    return row.get("from_addr") if row.get("reason") == "not_friend" else None\n',
+                    '    return row.get("from_addr")\n', "ConnectAddress.test_c22_unverified_from_addr_not_trusted")
 
     def test_k1_space_not_written(self):
         self._knife("                CR.set_space(a.space, a.who, env)\n", "                pass\n",

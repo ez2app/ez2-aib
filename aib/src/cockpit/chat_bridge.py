@@ -1051,7 +1051,7 @@ def cmd_refused(a, env, out):
                     country=r.get("country") or "-", who=r["who"], n=r.get("count", 1), when=when,
                     reason=T("refused_reason_" + ("not_friend" if r.get("reason") == "not_friend" else "unverified"))) + "\n")
         if r.get("owner"):          # 10-25:提示改成互加(connect 送申請,對方按一下同意);只加本機好友對方不知道
-            out.write(T("refused_add_hint", who=r.get("from_addr") or r["who"]) + "\n")
+            out.write(T("refused_add_hint", who=refused_addr(r) or r["who"]) + "\n")
     return 0
 
 
@@ -1175,18 +1175,23 @@ def cmd_request(a, env, out):
     return res["rc"]
 
 
+def refused_addr(row):
+    """被拒收紀錄裡他寄件的位址,只信 reason=not_friend 那種(簽章驗過、只是不是好友);
+    unverified 的 from_addr 是寄件人自己填的(#355 r1 Low),不拿。"""
+    return row.get("from_addr") if row.get("reason") == "not_friend" else None
+
+
 def connect_address(target, owner, root, env):
     """connect 的申請要寄到 <主人>/<艙>/<席>(10-25 Andy「艦長室一鍵對話」)。給的就是完整位址 ⇒ 照用;
-    只給主人 npub / 好友名 ⇒ 從本機已知的找:他的房間 / 名冊快照(艦長席優先)> 他寄來的申請 > 被拒收紀錄裡他寄件的位址。
-    只讀本機檔、不連網;找不到 ⇒ None(請對方給邀請碼或完整位址)。"""
+    只給主人 npub / 好友名 ⇒ 從本機已知的找:他的房間 / 名冊快照(艦長席優先)> 被拒收紀錄裡他寄件的位址(只信驗過簽章的)。
+    (他寄來的申請不用查:有申請 cmd_connect 就走接受,不會叫到這裡。)只讀本機檔、不連網;找不到 ⇒ None。"""
     if "owner" in (GF.parse_address(target or "") or {}):
         return target
     addr, _why = GF.default_address(root, owner, env)
     if addr:
         return addr
-    rows = [r.get("from_addr") for r in GF.read_requests(root) if r.get("owner") == owner]
-    rows += [r.get("from_addr") for r in read_refused(env) if r.get("who") == owner]
-    for x in rows:
+    for r in read_refused(env):
+        x = refused_addr(r) if r.get("who") == owner else None
         p = GF.parse_address(x or "")
         if p and p.get("owner") == owner:
             return x
