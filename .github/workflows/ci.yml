@@ -61,11 +61,13 @@ jobs:
             # 每支最多 10 分鐘(macOS 沒有 timeout 指令 ⇒ 用 python 包);逾時印出是哪一支，整格照樣跑完其他支
             echo "::group::$f"
             python - "$f" <<'PY' || { echo "::error::$f failed or hung"; rc=1; }
-          import subprocess, sys
+          import os, signal, subprocess, sys
+          p = subprocess.Popen([sys.executable, sys.argv[1]], start_new_session=True)   # 自成一組 ⇒ 逾時連它開的子行程一起收
           try:
-              sys.exit(subprocess.run([sys.executable, sys.argv[1]], timeout=600).returncode)
+              sys.exit(p.wait(timeout=600))
           except subprocess.TimeoutExpired:
-              print("::error::%s still running after 600 s (killed)" % sys.argv[1]); sys.exit(124)
+              os.killpg(p.pid, signal.SIGKILL); p.wait()
+              print("::error::%s still running after 600 s (killed with its children)" % sys.argv[1]); sys.exit(124)
           PY
             echo "::endgroup::"
           done
