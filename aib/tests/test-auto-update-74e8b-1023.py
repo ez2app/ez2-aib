@@ -78,6 +78,11 @@ def git(cwd, *args):
     return p.stdout.strip()
 
 
+def NO_CATALOG(env, excluded):
+    """預設:ez2.page 沒這組目錄端點 ⇒ 走 aib-plugins git(既有測試);目錄那條另在 test-auto-update-catalog-d07f9-1025.py。"""
+    return {"via": "fallback", "behind": [], "skipped": [], "unsigned": [], "problem": "plugin_unsupported"}
+
+
 class FakeCtl:
     def __init__(self, fail=False):
         self.calls, self.fail = [], fail
@@ -131,7 +136,7 @@ class Base(unittest.TestCase):
         args = dict(env=self.env, root=self.inst, now=NOW, platform="linux", home=self.home, rows=[],
                     do_fetch=AU.fetch, run_update=self.fake_update, lease=self.fake_lease, install=self.fake_install,
                     ext_base=self.td / "noext", room=self.fake_room, dev_tree=False, lease_state=lambda e, n: None,
-                    plugin_fetch=lambda e: None)
+                    plugin_fetch=lambda e: None, catalog=NO_CATALOG)
         args.update(kw)
         return AU.check(**args)
 
@@ -682,7 +687,7 @@ class PaidSource(Base):
         text = "\n".join(AU.status_lines(p))
         self.assertIn("hostguard", text)
         self.assertIn("demo-paid", text)
-        self.assertIn("aib ext install", text)
+        self.assertIn("aib plugins install", text)
         self.assertEqual(AU.doctor_line(self.env)[0], "note")
         self.assertIn("demo-paid", AU.doctor_line(self.env)[1])
         self.assertFalse(hasattr(AU, "stage_paid"))
