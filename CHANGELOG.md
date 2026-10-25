@@ -4,6 +4,14 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.56
+
+- **Automatic updates (`aib update auto`)**: when a new version is out, aib updates itself. It checks once in the background when you open a seat (not again within 10 minutes) and, on macOS, every 6 hours. It only updates when it is safe: no test lease or test run, no package push or `git push`, a clean install folder, a pure fast-forward on main, and at least an hour since the last update. Bundled plugins are always signature-checked. AI seats are not restarted. `aib update auto on|off|status [--json]` (default on; `AIB_AUTO_UPDATE=0` skips one run); results show in `aib doctor` and `~/.ez2-aib/logs/auto-update.log`.
+- **Your name is left out of the computer name used for chat**: when chat is first set up from the computer name, the owner part is dropped and only the model is kept (for example "Andy's MacBook Pro" → "MacBook Pro"), in several languages and in host names. A name you set yourself with `aib chat name` is not touched.
+- **Room heat: heat you could not see**: the snapshot adds `cpu_total` (whole-machine CPU, read without forking) and `unseen_cpu` (busy cores minus what `ps` can see, e.g. short-lived processes). `aib room heat churn [--seconds N] [--json]` samples new processes for up to 30 seconds and groups them by seat and program file name (top 10); it is throttled to once a minute and shows only group, seat and program name, never arguments. Other accounts' processes show as `system / ?`.
+- **Room heat: seven cooling tips**: `aib room heat advice [--json]` lists `{code, severity, owner, metric, hint}` for worktrees in indexed folders, slow hooks (including hooks already removed but still running in an open seat), hooks hitting their timeout, failing launchd jobs (macOS), too many parallel test runs, hot browser tabs and very large transcripts.
+- **Room heat: known hot spots**: churn results mark known hot spots with the version that fixed them and whether things improved after you updated (`update_available` / `improved` / `not_improved` / `fixed` / `unscheduled`).
+
 ## 0.1.55
 
 - **Lighter status line**: each seat's status line refresh now makes one tmux call instead of three, skips loading the fleet patrol module, and loads the English dictionary only when a key is missing (about 120 → 80 ms per refresh).

@@ -4,6 +4,14 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.56
+
+- **自動更新(`aib update auto`)**:有新版時 aib 會自己更新。開席時在背景查一次(10 分鐘內不重查),macOS 另外每 6 小時查一次。只在安全時更新：沒有測試租約或測試在跑、沒有推包或 `git push`、安裝目錄乾淨、在 main 上純快轉、距上次更新超過 1 小時。附帶外掛一律驗簽章，不重開 AI 席。`aib update auto on|off|status [--json]`(預設開;`AIB_AUTO_UPDATE=0` 單次略過);結果看 `aib doctor` 與 `~/.ez2-aib/logs/auto-update.log`。
+- **對話用的電腦名稱不再帶主人名字**:第一次用電腦名稱開通對話時，去掉主人那一段，只留機型(例如「Andy 的 MacBook Pro」→「MacBook Pro」),支援多種語言與主機名。用 `aib chat name` 自己設過的名字不動。
+- **機房散熱：看不到的熱**:快照多了 `cpu_total`(全機 CPU,不 fork 就讀到)與 `unseen_cpu`(在忙的核減掉 `ps` 看得到的，例如一閃即逝的短命行程)。`aib room heat churn [--seconds N] [--json]` 最多取樣 30 秒新開的行程，依席位與程式檔名分組(前 10 名);每分鐘最多一次，只出組別、席碼與程式名，不出參數。別的帳號的行程顯示為 `system / ?`。
+- **機房散熱：七條散熱建議**:`aib room heat advice [--json]` 列出 `{code, severity, owner, metric, hint}`:放在會被索引的資料夾的工作樹、慢的 hook(含設定已拿掉但開著的席還在跑的)、跑到逾時的 hook、失敗的 launchd 排程(macOS)、同時跑太多輪測試、很熱的瀏覽器分頁、很大的對話紀錄。
+- **機房散熱：已知熱點**:churn 結果會標出已知熱點、修在哪一版，以及更新後有沒有改善(`update_available` / `improved` / `not_improved` / `fixed` / `unscheduled`)。
+
 ## 0.1.55
 
 - **狀態列更省**:每席狀態列每次更新 tmux 呼叫 3 → 1 次、不載入艦隊巡邏模組、英文字典只在缺鍵時才載(每次約 120 → 80 毫秒)。
