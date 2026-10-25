@@ -5316,7 +5316,7 @@
   "aib.plugins.hint.plugin_unknown": "The server has no such plugin or version",
   "aib.plugins.hint.plugin_license_none": "This account has not bought this add-on",
   "aib.plugins.hint.plugin_license_device_limit": "This license is on its maximum number of machines: run aib license deactivate on the old one first",
-  "aib.plugins.hint.plugin_plan_required": "This account's plan is below what this plugin needs (the receipt's plan is the level required) and it has not been bought on its own: upgrade the plan on ez2.page, or buy this add-on, then install again",
+  "aib.plugins.hint.plugin_plan_required": "This account's plan is below what this plugin needs (if the receipt carries plan, that is the level required) and it has not been bought on its own: upgrade the plan on ez2.page, or buy this add-on, then install again",
   "aib.plugins.hint.plugin_refused": "The server refused",
   "aib.plugins.hint.server_refused": "The server refused ({code})",
   "aib.context.menu.need_key": "(no API key — click to add)",

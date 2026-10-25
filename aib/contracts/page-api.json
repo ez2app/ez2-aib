@@ -660,8 +660,7 @@
    "errors": [
     "plugin_license_none",
     "plugin_license_device_limit",
-    "plugin_unknown",
-    "plugin_plan_required"
+    "plugin_unknown"
    ],
    "unsupported": {
     "http": [
@@ -931,7 +930,7 @@
    },
    "plugin_plan_required": {
     "http": 403,
-    "when": "目錄條目帶 plan、這個帳號的方案不到那一級、也沒單買加購(一定帶這個碼;details = [需要的級]);核心 hint 指去升級方案或單買,回條多帶 plan = 需要的級"
+    "when": "只有 GET /plugins/packages/{name}/{version}.tgz 回:目錄條目帶 plan、這個帳號的方案不到那一級、也沒單買加購(一定帶這個碼;details = [需要的級])。GET /plugins/licenses/{addon} 永遠不回這個碼:沒單買 = 沒檔 = 404 plugin_license_none(見 plugins_license.plan_included_note)。核心 hint 指去升級方案或單買;回條若帶 plan 就是需要的級(details 不是五級值時被白名單濾掉、沒 plan 鍵)"
    }
   },
   "codes_note": "代碼是契約(同 receipt detail):不改成人話,人話另放 hint",
