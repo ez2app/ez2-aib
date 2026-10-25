@@ -30,6 +30,8 @@ import re
 import time
 from urllib.parse import quote
 
+import bg_fork  # noqa: E402  read_regular:不阻塞地只讀一般檔
+
 SCHEMA = "ez2-context-gauge-v1"
 GAUGE_VERSION = "1.0.0"
 SOURCE = "grok_signals"
@@ -100,11 +102,11 @@ def signals_path(uuid, cwd=None):
     return None
 
 
-def activity_mtime(uuid, cwd=None):
-    """該 grok session 目錄裡活動跡證的最新 mtime;缺檔回 None。"""
-    folder = session_dir(uuid, cwd=cwd)
-    if folder is None:
-        return None
+_UPDATES_TAIL = 512 * 1024         # updates.jsonl 只讀最後這麼多(子代理在跑時原席在等、幾乎不寫 ⇒ spawned 在很近的尾巴)
+_MAX_CHILDREN = 8
+
+
+def _folder_mtime(folder):
     newest = None
     for name in _ACTIVITY_FILES:
         try:
@@ -112,6 +114,49 @@ def activity_mtime(uuid, cwd=None):
         except OSError:
             continue
         if newest is None or mtime > newest:
+            newest = mtime
+    return newest
+
+
+def running_children(folder):
+    """原席 updates.jsonl 裡 subagent_spawned 了、還沒 subagent_finished 的子代理 session uuid(10-25 Andy
+    「其他品牌的 ai 也要能辨識」:grok 子代理寫在另一個 session 目錄,原席不動 ⇒ 右欄誤判 💤)。
+    子代理目錄的 summary.json 沒有回指原席,關聯只在原席這邊的事件。讀不到 / 形狀不對 ⇒ 不算(只會少併)。"""
+    raw = bg_fork.read_regular(os.path.join(folder, "updates.jsonl"), _UPDATES_TAIL, tail=True)
+    if not raw or b"subagent_" not in raw:      # 多數席沒有子代理事件:不解碼(右欄每 5 秒一輪,10-25 普查省 CPU)
+        return []
+    live = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        if "subagent_" not in line:
+            continue
+        try:
+            up = json.loads(line)["params"]["update"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if not isinstance(up, dict):
+            continue
+        kid = up.get("child_session_id")
+        if not isinstance(kid, str) or not _UUID_RE.fullmatch(kid):
+            continue
+        if up.get("sessionUpdate") == "subagent_spawned":
+            live[kid] = True
+        elif up.get("sessionUpdate") == "subagent_finished":
+            live.pop(kid, None)
+    return list(live)[-_MAX_CHILDREN:]
+
+
+def activity_mtime(uuid, cwd=None):
+    """該 grok session 目錄裡活動跡證的最新 mtime;還在跑的子代理(另一個目錄)一併取最新。缺檔回 None。"""
+    folder = session_dir(uuid, cwd=cwd)
+    if folder is None:
+        return None
+    newest = _folder_mtime(folder)
+    for kid in running_children(folder):
+        if kid == uuid:
+            continue
+        sub = session_dir(kid)
+        mtime = _folder_mtime(sub) if sub else None
+        if mtime is not None and (newest is None or mtime > newest):
             newest = mtime
     return newest
 
