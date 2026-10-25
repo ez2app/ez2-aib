@@ -51,6 +51,11 @@ PS_ARGS = "".join("%6d %5d %5d %5.1f %6d %s\n" % (r[0], r[1], r[2], r[3], r[4], 
 PS_UCOMM = "".join("%6d %-16s\n" % (r[0], r[5]) for r in ROWS)
 
 
+def FAKE_CPU(now=None, environ=None):
+    """全機 CPU 不讀真機(0.1.56 起快照會量;不注入會讀真 tick + 當場等 1 秒,審查 L2)。"""
+    return {"state": "ok", "cores": 10, "pct": 50.0, "busy_cores": 5.0, "window_s": 5.0, "seen_cores": 4.0}
+
+
 def fake_ps(cmd):
     return PS_UCOMM if any("ucomm" in c for c in cmd) else PS_ARGS
 
@@ -81,7 +86,7 @@ class Base(unittest.TestCase):
         self.RH = room_heat
 
     def snap(self, run=fake_ps, now=None):
-        return self.RH.snapshot(sampler=fake_sampler, run=run, owner_of=owner_of, now=now)
+        return self.RH.snapshot(cpu_fn=FAKE_CPU, sampler=fake_sampler, run=run, owner_of=owner_of, now=now)
 
 
 class Snapshot(Base):
@@ -120,13 +125,13 @@ class Snapshot(Base):
     def test_h2b_measure_failure_keeps_groups(self):
         def boom():
             raise RuntimeError("sensor")
-        s = self.RH.snapshot(sampler=boom, run=fake_ps, owner_of=owner_of, now=1_792_814_400.0)
+        s = self.RH.snapshot(cpu_fn=FAKE_CPU, sampler=boom, run=fake_ps, owner_of=owner_of, now=1_792_814_400.0)
         self.assertEqual((s["level"], s["groups"]["state"]), ("unmeasured", "ok"))
 
     def test_h2c_unparsable_ps_is_unmeasured(self):
         """#317 r2 B1:逗號小數(德文語系)整列解析不出來 ⇒ unmeasured,不是 ok + 0 個行程;_run 固定 LC_ALL=C。"""
         comma = PS_ARGS.replace(".", ",")
-        s = self.RH.snapshot(sampler=fake_sampler, owner_of=owner_of, now=1_792_814_400.0, record=False,
+        s = self.RH.snapshot(cpu_fn=FAKE_CPU, sampler=fake_sampler, owner_of=owner_of, now=1_792_814_400.0, record=False,
                              run=lambda cmd: PS_UCOMM if any("ucomm" in c for c in cmd) else comma)
         self.assertEqual((s["groups"]["state"], s["groups"]["items"]), ("unmeasured", []))
         seen = {}
@@ -134,7 +139,7 @@ class Snapshot(Base):
                                lambda *a, **k: seen.update(k) or mock.Mock(stdout="")):
             self.RH._run(["ps"])
         self.assertEqual(seen["env"]["LC_ALL"], "C")
-        s = self.RH.snapshot(sampler=fake_sampler, owner_of=owner_of, now=1_792_814_400.0, record=False,
+        s = self.RH.snapshot(cpu_fn=FAKE_CPU, sampler=fake_sampler, owner_of=owner_of, now=1_792_814_400.0, record=False,
                              run=lambda cmd: "")                           # ps 有跑但沒輸出(r4 B-L4)
         self.assertEqual(s["groups"]["state"], "unmeasured")
 
@@ -144,7 +149,7 @@ class Snapshot(Base):
             cells, took = fake_sampler()
             cells[0] = dict(cells[0], value=float("nan"))
             return cells, took
-        s = self.RH.snapshot(sampler=nan_sampler, run=fake_ps, owner_of=owner_of, now=1_792_814_400.0, record=False)
+        s = self.RH.snapshot(cpu_fn=FAKE_CPU, sampler=nan_sampler, run=fake_ps, owner_of=owner_of, now=1_792_814_400.0, record=False)
         self.assertEqual((s["cells"]["load1"]["value"], s["cells"]["load1"]["state"]), (None, "unmeasured"))
         json.dumps(s, allow_nan=False)
         self.assertIn("spotlightknowled", self.RH.SYSTEM_NAMES)
@@ -175,7 +180,8 @@ class History(Base):
         p.write_text(json.dumps({"points": [{"t": now - 20, "cmd": "/Users/x/secret --token=abc", "load1": "9",
                                              "level": "\x1b[2J"}, {"t": 1e18}]}), encoding="utf-8")
         pts = self.RH.read_history(now=now)
-        self.assertEqual(pts, [{"t": now - 20, "level": None, "temp": None, "load1": None, "mem_free": None, "swap_mb": None}])
+        self.assertEqual(pts, [{"t": now - 20, "level": None, "temp": None, "load1": None, "mem_free": None, "swap_mb": None,
+                                "cpu_busy": None, "unseen_cpu": None}])     # 後兩鍵 0.1.56 unseen 加的(@044e0)
         self.assertTrue(self.RH.record_history({"level": "ok", "cells": {}}, now=now))    # 未來的點不會卡住歷史
         p.unlink()
         os.mkfifo(str(p))                                        # 換成 FIFO:不卡住
