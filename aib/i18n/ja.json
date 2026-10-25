@@ -4978,6 +4978,7 @@
   "aib.approve.enroll.check": "読みました(残るリスクを含む)",
   "aib.approve.enroll.no_key": "まだありません(次に作成。kid は Touch ID ウィンドウに表示)",
   "aib.approve.enroll.none": "なし",
+  "aib.approve.enroll.cur_truncated": "全部は読めません(4096 バイト超);user_ids は引き継がれません",
   "aib.approve.enroll.seen_title": "指紋ウィンドウは出ましたか?",
   "aib.approve.enroll.seen_body": "いま Touch ID の指紋ウィンドウが出て、kid {kid} と表示されましたか?出なかった場合、この Mac の鍵が指紋不要の鍵に替えられている可能性があります。キャンセルしてください。",
   "aib.approve.enroll.seen_check": "出て、kid {kid} と表示された",

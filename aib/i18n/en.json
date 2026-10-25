@@ -4978,6 +4978,7 @@
   "aib.approve.enroll.check": "I have read this, including the residual risk",
   "aib.approve.enroll.no_key": "none yet (created next; the kid shows in the Touch ID window)",
   "aib.approve.enroll.none": "none",
+  "aib.approve.enroll.cur_truncated": "could not be read in full (over 4096 bytes); its user_ids will not be kept",
   "aib.approve.enroll.seen_title": "Did the fingerprint window appear?",
   "aib.approve.enroll.seen_body": "Did a Touch ID fingerprint window just appear, showing kid {kid}? If it did not appear, this Mac's key may have been swapped for one that needs no fingerprint: press Cancel.",
   "aib.approve.enroll.seen_check": "It appeared and showed kid {kid}",

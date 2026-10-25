@@ -12,11 +12,13 @@
   4. 勾選框對話框(核心組的字):站、目的主機、主機指紋、寫入路徑、這台 kid、站上現在的 kid、殘餘風險 ⇒ 勾了才繼續
   5. 這台沒鑰才 key init(不跳指紋)
   6. key pem:用這把鑰簽「發布 kid|站|主機|路徑」⇒ SE 一定跳指紋;視窗字 kid 在最前 + 真實 host:port + 路徑
+     之後 kid / conf / 第二框只用「簽過、驗過」的那把算,不再讀 .sekey;跟第一框的 kid 不同 ⇒ key_changed 停
   7. 第二個勾選框：剛才有跳指紋、而且寫著這個 kid 嗎?(沒跳 = 鑰可能被換成不用指紋的 ⇒ 停)
-  8. 新的機房讀取 token ⇒ 經同一條釘死的 SSH 寫 JSON(原檔先備份、root:root 644、先寫暫存再 mv;
-     備份只留最近 3 份;設定夾不是 root 的就拒)
+  8. 新的機房讀取 token ⇒ 經同一條釘死的 SSH 寫 JSON(超過 4096 位元組 ⇒ conf_too_big 不寫;原檔先備份、
+     root:root 644、先寫暫存、sha256 對上才 mv;備份只留最近 3 份;設定夾不是 root 的就拒)
   9. 回讀:要是一般檔、uid 0、group/others 不可寫、內容跟寫的一模一樣(kid 對得上)⇒ 不對就放回原檔
  10. 本機登記站(token 檔 600);登記失敗也放回原檔。第 5 步新建的鑰在後面失敗時刪掉。
+     8–10 中途 Ctrl-C / SIGTERM 也放回;放不回就在 stderr 印「要人看」再丟出。
 
 防線(同帳號 AI 威脅守則;照實寫):
   - 真正的防線只有兩個 Touch ID 以外的「本人看得到」:勾選框(核心組的字、TA.clean、主機指紋與 kid 不截斷)與
@@ -161,15 +163,20 @@ def _cmd_read(path):
             % (q, REMOTE_MAX + 1, q))
 
 
-def _cmd_write(path, bak):
-    """設定夾已存在但不是 root 的 ⇒ 78(固定檔名的暫存檔可能被搶先放 symlink);失敗時清掉暫存檔;備份留最近 3 份。"""
+def _cmd_write(path, bak, sha):
+    """設定夾已存在但不是 root 的 ⇒ 78(固定檔名的暫存檔可能被搶先放 symlink);stdin 沒收完整(sha256 不符)⇒ 79,不 mv;
+    失敗時清掉暫存檔;備份留最近 3 份。"""
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise ValueError("sha")
     q, t, b, d = shlex.quote(path), shlex.quote(path + ".tmp-aib"), shlex.quote(bak), shlex.quote(os.path.dirname(path))
     return ('set -e; [ "$(id -u)" = 0 ] || exit 77; umask 022; '
             'if [ -e %s ]; then [ -d %s ] && [ ! -L %s ] && [ "$(stat -c %%u %s)" = 0 ] || exit 78; fi; '
             'mkdir -p %s; chmod 755 %s; trap "rm -f %s" EXIT; '
-            'if [ -e %s ]; then cp -p %s %s; fi; cat > %s; chown root:root %s; chmod 644 %s; mv -f %s %s; '
+            'if [ -e %s ]; then cp -p %s %s; fi; cat > %s; '
+            '[ "$(sha256sum < %s | cut -c1-64)" = %s ] || exit 79; '
+            'chown root:root %s; chmod 644 %s; mv -f %s %s; '
             'ls -1t %s.bak-aib-* 2>/dev/null | tail -n +4 | while read -r f; do rm -f "$f"; done'
-            % (d, d, d, d, d, d, t, q, q, b, t, t, t, t, q, q))
+            % (d, d, d, d, d, d, t, q, q, b, t, t, sha, t, t, t, q, q))
 
 
 def _cmd_check(path):
@@ -325,8 +332,12 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
         old = _parse_conf(cur)
         pub = AA.local_pub(env)
         mine = AA.kid_of(pub) if pub else _say("aib.approve.enroll.no_key", {}, env, "none yet (created next; the kid shows in the Touch ID window)")
-        theirs = old.get("kid") if isinstance(old.get("kid"), str) and AA.KID_RE.fullmatch(old.get("kid")) else \
-            _say("aib.approve.enroll.none", {}, env, "none")
+        if len(cur.encode("utf-8")) > REMOTE_MAX:   # 舊檔超過上限:沒讀完整(user_ids 也不沿用)⇒ 框裡照實說
+            theirs = _say("aib.approve.enroll.cur_truncated", {}, env,
+                          "could not be read in full (over 4096 bytes); its user_ids will not be kept")
+        else:
+            theirs = old.get("kid") if isinstance(old.get("kid"), str) and AA.KID_RE.fullmatch(old.get("kid")) else \
+                _say("aib.approve.enroll.none", {}, env, "none")
         trust_txt = _say("aib.approve.enroll.trust_" + trust, {}, env,
                          "matches ~/.ssh/known_hosts" if trust == "known" else "first time trusted: not in ~/.ssh/known_hosts")
         p = {"site": site, "host": where, "alias": host, "fp": fp, "path": path, "kid": mine, "cur": theirs,
@@ -343,26 +354,32 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
                 _say("aib.approve.enroll.check", {}, env, "I have read this, including the residual risk"))
         if not r.get("ok"):
             return None, r.get("why") or "cancel"
-        created = False
+        created, want_kid = False, AA.kid_of(pub) if pub else None
         if not pub:
             got, why = AA.key_init(env, run=run, helper=helper, platform=platform)
             if why:
                 return None, why
-            created = True
+            created, want_kid = True, got["kid"]
 
-        def fail(why):
+        def drop_new_key():
             if created:
                 try:
                     os.unlink(str(AA._sekey_path(env)))  # 這次新建的鑰沒發出去 ⇒ 不留
                 except OSError:
                     pass
+
+        def fail(why):
+            drop_new_key()
             return None, why
 
         dest = {"site": site, "host": where, "path": path}
-        pem, why = AA.key_publish(env, run=run, helper=helper, platform=platform, dest=dest)
+        pem, signed, why = AA._publish(env, run=run, helper=helper, platform=platform, dest=dest)
         if why:
             return fail(why)
-        kid = AA.kid_of(AA.local_pub(env))
+        # 之後只用「剛才簽過、驗過」的那把:kid、conf、第二框都由它算,不再讀 .sekey(@abb89 #371 r3B M1)
+        kid = AA.kid_of(signed)
+        if kid != want_kid:   # 第一框之後鑰被換了 ⇒ 本人在第一框看的不是這把
+            return fail("key_changed")
         r = ask(_say("aib.approve.enroll.seen_title", {}, env, "Did the fingerprint window appear?"),
                 _say("aib.approve.enroll.seen_body", {"kid": kid}, env,
                      "Did a Touch ID fingerprint window just appear, showing kid %s? If it did not appear, this Mac's key may "
@@ -372,28 +389,46 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
             return fail("touchid_not_seen")
         token = secrets.token_urlsafe(32)
         want = build_conf(kid, pem, token, old)
+        if len(want.encode("utf-8")) > REMOTE_MAX:   # 回讀只讀得到 REMOTE_MAX:寫了也驗不了 ⇒ 先停
+            return fail("conf_too_big")
+        sha = hashlib.sha256(want.encode("utf-8")).hexdigest()
         t = time.time() if now is None else now
         bak = "%s.bak-aib-%s" % (path, time.strftime("%Y%m%d-%H%M%S", time.gmtime(t)))
-        rc, _ = _remote(pin, host, kh, _cmd_write(path, bak), data=want, run=run)
-        if rc != 0:
-            why = {77: "not_root", 78: "conf_dir_not_root"}.get(rc, "write_failed")
-            rrc, _ = _remote(pin, host, kh, _cmd_restore(path, bak, existed), run=run)
-            if rrc != 0:   # 寫入可能已經完成(斷線 / 逾時)、放回也失敗:站上可能是新鑰 ⇒ 鑰留著、要人看(rc 5)
-                return None, why + "_restore_failed"
-            return fail(why)
-        rc, out = _remote(pin, host, kh, _cmd_check(path), run=run)
-        bad = "readback_mismatch" if rc != 0 or not readback_ok(out, want) else None
-        if not bad:
-            _, why = AA.site_add(site, url, token, env)
-            bad = why and "local_state"
-        if bad:
-            rrc, _ = _remote(pin, host, kh, _cmd_restore(path, bak, existed), run=run)
-            if rrc != 0:
-                return None, bad + "_restore_failed"   # 站上留著新檔、本機沒登記:要人看(rc 5);新鑰也留著才對得上
-            return fail(bad)
+
+        def restore():
+            try:
+                return _remote(pin, host, kh, _cmd_restore(path, bak, existed), run=run)[0]
+            except BaseException:
+                return 255
+
+        wrote = False
+        try:   # 寫入 → 回讀 → 本機登記:中途 Ctrl-C / SIGTERM 也放回(@abb89 #371 r3B M2)
+            wrote = True
+            rc, _ = _remote(pin, host, kh, _cmd_write(path, bak, sha), data=want, run=run)
+            if rc != 0:
+                why = {77: "not_root", 78: "conf_dir_not_root"}.get(rc, "write_failed")
+                if restore() != 0:   # 寫入可能已經完成(斷線 / 逾時)、放回也失敗:站上可能是新鑰 ⇒ 鑰留著、要人看(rc 5)
+                    return None, why + "_restore_failed"
+                return fail(why)
+            rc, out = _remote(pin, host, kh, _cmd_check(path), run=run)
+            bad = "readback_mismatch" if rc != 0 or not readback_ok(out, want) else None
+            if not bad:
+                _, why = AA.site_add(site, url, token, env)
+                bad = why and "local_state"
+            if bad:
+                if restore() != 0:
+                    return None, bad + "_restore_failed"   # 站上留著新檔、本機沒登記:要人看(rc 5);新鑰也留著才對得上
+                return fail(bad)
+        except BaseException:
+            if wrote:
+                if restore() != 0:
+                    sys.stderr.write(explain("interrupted_restore_failed", env) + "\n")
+                else:
+                    drop_new_key()
+            raise
         try:
             _record(env, site, kid, where, t)
         except OSError:
             pass  # 只是顯示用的紀錄
         return {"site": site, "kid": kid, "host": where, "host_key": fp, "host_key_trust": trust, "path": path,
-                "backup": bak, "at": int(t)}, None
+                "backup": bak if existed else None, "at": int(t)}, None

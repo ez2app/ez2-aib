@@ -587,7 +587,7 @@ class Approve(Base):
                 out = io.StringIO()
                 self.assertEqual(AA.main(["yes", f["nonce"]], out=out, env=self.env), 0)
                 self.assertEqual(json.loads(out.getvalue())["result"], "touchid_unavailable")
-                self.assertEqual(AA.key_publish(self.env, platform="darwin"), (None, "touchid_unavailable"))
+                self.assertEqual(AA.key_publish(self.env, platform="darwin"), (None, "helper_failed"))  # #371 r3B L5
                 env2 = dict(self.env, EZ2_AIB_STATE_ROOT=str(self.root / "s2"), HOME=str(self.root / "s2"))
                 self.assertEqual(AA.key_init(env2, platform="darwin"), (None, "helper_failed"))
         for url in ("https://e\nz2.app", "https://ez2\t.app", "https://ez2 .app"):
@@ -621,7 +621,7 @@ class Approve(Base):
             out = io.StringIO()
             self.assertEqual(AA.main(["yes", f["nonce"]], out=out, env=self.env), 0)
         self.assertEqual(json.loads(out.getvalue())["result"], "touchid_unavailable")
-        self.assertEqual(AA.key_publish(self.env, run=never, platform="darwin"), (None, "touchid_unavailable"))
+        self.assertEqual(AA.key_publish(self.env, run=never, platform="darwin"), (None, "helper_failed"))
         never.assert_not_called()
         env = {k: v for k, v in self.env.items() if k != "EZ2_AIB_LOCALE"}
         (self.root / "locale").write_bytes(b"\xff\xfe")
@@ -704,7 +704,7 @@ class Knives(unittest.TestCase):
         self._red('        ok = p256.verify(pub, d["payload"], der)', "        ok = True", "test_a5_cancel_and_unavailable")
 
     def test_k7_pem_without_touch(self):
-        self._red('    return (pem_of(pub), None) if ok else (None, "bad_sig")', "    return pem_of(pub), None",
+        self._red('    return (pem_of(pub), pub, None) if ok else (None, None, "bad_sig")', "    return pem_of(pub), pub, None",
                   "test_a1_key_and_pem")
 
     def test_k8_follows_redirect(self):

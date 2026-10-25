@@ -167,8 +167,17 @@ def der_to_raw(der):
     return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
 
+HELPER_FAIL = ("helper_failed", "build_failed", "sign_failed", "no_swiftc")
+
+
 def key_publish(env=None, run=subprocess.run, helper=None, platform=None, dest=None):
-    """回 (pem, why)。先用這把鑰簽一次「發布 kid …」(SE 的鑰一定跳指紋),驗過才給 PEM。
+    """回 (pem, why);內容見 _publish。"""
+    pem, _, why = _publish(env, run, helper, platform, dest)
+    return pem, why
+
+
+def _publish(env=None, run=subprocess.run, helper=None, platform=None, dest=None):
+    """回 (pem, pub, why);pub = 真正簽過、驗過的那把(enroll 只能用它算 kid / 組 conf,不再讀檔:@abb89 #371 r3B M1)。先用這把鑰簽一次「發布 kid …」(SE 的鑰一定跳指紋),驗過才給 PEM。
     dest = {"site","host","path"}(aib approve enroll):視窗字與簽的位元組都帶目的地(kid 在最前、真實 host:port、路徑)。
     同帳號 AI 把 .sekey 換成沒有指紋限制的鑰 ⇒ 這一步不會跳指紋:說明裡要本人「沒跳就停」。
     換掉 aib-sehelper 本身仍擋不住(殘餘風險,第二階段:root 擁有路徑 + Developer ID 簽)。"""
@@ -179,9 +188,9 @@ def key_publish(env=None, run=subprocess.run, helper=None, platform=None, dest=N
     platform = sys.platform if platform is None else platform
     pub = local_pub(env)
     if not pub:
-        return None, "no_key"
+        return None, None, "no_key"
     if platform != "darwin" or str(env.get("AIB_TOUCHID", "")).strip() == "0":
-        return None, "touchid_unavailable"
+        return None, None, "touchid_unavailable"
     kid = kid_of(pub)
     if dest:
         msg = "|".join(("ez2-aib-approve-publish", kid, dest["site"], dest["host"], dest["path"])).encode("utf-8")
@@ -195,15 +204,16 @@ def key_publish(env=None, run=subprocess.run, helper=None, platform=None, dest=N
     args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", reason]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:
-            return None, "busy"
+            return None, None, "busy"
         out, why = _se_call(args, env, msg, run, helper, platform)
-    if why:  # 沒生物辨識 / 沒 SE 分開回(enroll 要印替代路);其他一律 touchid_unavailable
-        return None, {"cancel": "touchid_cancel", "no_biometry": "no_biometry", "no_se": "no_se"}.get(why, "touchid_unavailable")
+    if why:  # 沒生物辨識 / 沒 SE 分開回(enroll 要印替代路);helper 壞也分開(不是「沒指紋」);其他 touchid_unavailable
+        return None, None, ("helper_failed" if why in HELPER_FAIL else
+                            {"cancel": "touchid_cancel", "no_biometry": "no_biometry", "no_se": "no_se"}.get(why, "touchid_unavailable"))
     try:
         ok = p256.verify(pub, msg, base64.b64decode(out.decode("ascii").strip(), validate=True))
     except (ValueError, UnicodeDecodeError):
         ok = False
-    return (pem_of(pub), None) if ok else (None, "bad_sig")
+    return (pem_of(pub), pub, None) if ok else (None, None, "bad_sig")
 
 
 # ---- 站 ----
@@ -262,10 +272,22 @@ def site_add(site, url, token, env=None):
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", token):
         return None, "bad_token"
     rows = [r for r in load_sites(env) if r["site"] != site] + [{"site": site, "url": url}]
+    tok = approve_dir(env) / "tokens" / (site + ".token")
+    try:
+        prev = tok.read_text(encoding="utf-8") if tok.is_file() else None
+    except (OSError, ValueError):
+        prev = None
+    try:  # 先 token 再 sites.json(@abb89 #371 r3B L1):sites.json 寫不進去就把 token 放回
+        _write_private(tok, token + "\n")
+    except OSError:
+        return None, "local_state"
     try:
         _write_private(_sites_path(env), json.dumps({"v": 1, "sites": rows}, sort_keys=True) + "\n")
-        _write_private(approve_dir(env) / "tokens" / (site + ".token"), token + "\n")
     except OSError:
+        try:
+            _write_private(tok, prev) if prev is not None else os.unlink(str(tok))
+        except OSError:
+            pass
         return None, "local_state"
     return {"site": site, "url": url}, None
 
@@ -494,8 +516,10 @@ def touchid_reason(d, env=None):
               env, "Code %s · %s: approve %s signing in · IP %s" % (d["code"], f["site"], f["user_login"], f["ip"]))
 
 
-def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=None, now=None):
-    """回 (result, why)。result ∈ RESULTS(rc 0);why 只在參數 / 找不到時(rc 2)。"""
+def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=None, now=None, detail=None):
+    """回 (result, why)。result ∈ RESULTS(rc 0);why 只在參數 / 找不到時(rc 2)。
+    detail(list)收 touchid_unavailable 的細因("off" / "no_biometry" / "no_se"):CLI 非 JSON 時拿來印替代路。"""
+    detail = [] if detail is None else detail
     import se_vault
     import touchid_approve as TA
     from entitlement import p256
@@ -515,6 +539,7 @@ def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=No
         _record(env, d, "expired")
         return "expired", None
     if platform != "darwin" or str(env.get("AIB_TOUCHID", "")).strip() == "0":
+        detail.append("off")
         _record(env, d, "touchid_unavailable")
         return "touchid_unavailable", None
     args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", touchid_reason(d, env)]
@@ -528,6 +553,8 @@ def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=No
         out, why = _se_call(args, env, d["payload"], run, helper, platform)
     if why:
         res = {"cancel": "touchid_cancel"}.get(why, "touchid_unavailable")
+        if why in ("no_biometry", "no_se"):
+            detail.append(why)
         _record(env, d, res)
         return res, None
     try:
@@ -671,8 +698,11 @@ def main(argv=None, out=None, env=None, stdin=None, run=None):
         if not o.json:
             out.write(_say("aib.approve.enroll.done", {"kid": r["kid"], "site": r["site"]}) + "\n")
         return emit(dict(r, ok=True), 0)
-    fn = yes if o.cmd == "yes" else no
-    res, why = fn(o.nonce, env)
+    detail = []
+    res, why = yes(o.nonce, env, detail=detail) if o.cmd == "yes" else no(o.nonce, env)
+    if detail and not o.json:  # stdout 照舊一行 JSON(§2b 契約);給人看的替代路只走 stderr(@abb89 #371 r3B L5)
+        import approve_enroll
+        sys.stderr.write(approve_enroll.explain("no_biometry", env) + "\n")
     d, rc = ({"nonce": o.nonce, "ok": False, "why": why}, 2) if why else ({"nonce": o.nonce, "result": res}, 0)
     out.write(json.dumps(d) + "\n")  # §2b:一律一行 JSON;只印 ASCII(壞 nonce / 本機檔的落單代理字元在 3.9 的 stdout 會當)
     return rc

@@ -30,6 +30,13 @@ E14 ssh -G 解出的 hostname 像選項 ⇒ 拒、不叫 keyscan;keyscan 主機�
 r2(@abb89):E12 補 行尾註解的不同鑰 ⇒ mismatch、@revoked 同一把 ⇒ revoked、只有 RSA ⇒ no_ed25519、@cert-authority 略過;
    ssh 選項清單加 VerifyHostKeyDNS=no 與六個(定案);key status 經 main 注入 run(不叫真 osascript)。
    K12 拿掉 VerifyHostKeyDNS=no ⇒ E1 紅;K13 不看 @revoked ⇒ E12 紅;K14 型別 / 鑰取行尾(註解會錯位)⇒ E12 紅
+r4(@abb89 #371 r3B):E15 第一框之後鑰被換(連 helper 一起)⇒ key_changed、站上沒寫;E16 簽完才換 .sekey ⇒ kid / conf /
+   第二框都是簽過那把;E17 寫入後 Ctrl-C ⇒ 放回、新鑰刪、照樣丟出;放回失敗 ⇒ stderr 印要人看、鑰留著;
+   E18 site_add 先 token 再 sites.json,sites.json 寫不進去 ⇒ token 放回(原本沒有就刪);E19 stdin 沒收完整(sha256 不符)
+   ⇒ 79 = write_failed、原檔不動;E20 conf 超過 4096 ⇒ conf_too_big 沒寫;舊檔超長 ⇒ 框裡標讀不完整;沒原檔 ⇒ backup None;
+   E21 helper 壞 ⇒ helper_failed(不折成 touchid_unavailable);yes 非 JSON 時沒指紋 ⇒ stderr 印替代路、stdout 仍一行 JSON;
+   E22 路徑有空白 ⇒ 四個遠端指令都加引號;biometry_ready rc≠0 / 逾時 ⇒ False
+   K15 改回重讀 .sekey ⇒ E16 紅;K16 拿掉 BaseException 放回 ⇒ E17 紅;K17 不加引號 ⇒ E22 紅
 """
 import base64
 import hashlib
@@ -100,6 +107,7 @@ class World:
         self.proxy, self.keys, self.root, self.hostname = "none", [HOSTKEY], True, "203.0.113.9"
         self.known, self.known_lines, self.biometry = None, None, True
         self.write_rc, self.restore_rc, self.tamper, self.restores = 0, 0, None, []
+        self.after_sign, self.short_stdin, self.boom_on_check = None, False, False
 
     def ssh_calls(self):
         return [c for c in self.calls if c[0] == AE.SSH and "-G" not in c]
@@ -138,7 +146,10 @@ class World:
         if self.sign_fail:
             return SimpleNamespace(returncode=3, stdout=b"", stderr=(self.sign_fail + "\n").encode())
         self.signed.append((opts["--reason"], data))
-        return SimpleNamespace(returncode=0, stdout=base64.b64encode(p256_sign(self.d, data)), stderr=b"")
+        out = base64.b64encode(p256_sign(self.d, data))
+        if self.after_sign:
+            self.after_sign()
+        return SimpleNamespace(returncode=0, stdout=out, stderr=b"")
 
     def remote(self, argv, data):
         opts = [argv[i + 1] for i, a in enumerate(argv) if a == "-o"]
@@ -160,9 +171,14 @@ class World:
             bak = re.search(r"cp -p \S+ (\S+);", cmd).group(1)
             if PATH in self.files:
                 self.files[bak] = self.files[PATH]
-            self.files[PATH] = (data, 0, 0o644)
+            got = data[:-3] if self.short_stdin else data                  # 斷線:stdin 沒收完整
+            if hashlib.sha256(got.encode()).hexdigest() != re.search(r"\| cut -c1-64\)\" = ([0-9a-f]{64}) \] \|\| exit 79", cmd).group(1):
+                return SimpleNamespace(returncode=79, stdout="", stderr="")
+            self.files[PATH] = (got, 0, 0o644)
             return ok
         if cmd.startswith("[ -f ") and "stat -c" in cmd:
+            if self.boom_on_check:
+                raise KeyboardInterrupt()
             body, uid, mode = self.files.get(PATH, ("", 0, 0o644))
             if self.tamper:
                 body, uid, mode = self.tamper(body, uid, mode)
@@ -348,7 +364,8 @@ class Enroll(Base):
         self.assertEqual(AA.main(["enroll", "ez2.app", "--json"], out=out, env=self.env), 2)  # --host 必填
         keys = ("aib.approve.touchid_enroll", "aib.approve.enroll.title", "aib.approve.enroll.body",
                 "aib.approve.enroll.check", "aib.approve.enroll.seen_body", "aib.approve.enroll.seen_check",
-                "aib.approve.enroll.done", "aib.approve.enroll.no_key", "aib.approve.enroll.none")
+                "aib.approve.enroll.done", "aib.approve.enroll.no_key", "aib.approve.enroll.none",
+                "aib.approve.enroll.cur_truncated", "aib.approve.enroll.need_human")
         for loc in ("zh-TW", "en", "ja", "ko"):
             doc = json.loads((REPO / "i18n" / (loc + ".json")).read_text(encoding="utf-8"))
             for k in keys:
@@ -421,7 +438,7 @@ class NoBiometryAndHostKey(Base):
         self.assertIn("approve-keys", AE.explain("write_failed_restore_failed", self.env))
         self.w.write_rc, self.w.restore_rc = 78, 0                               # 同一把鑰(上一輪留著的)
         self.assertEqual(self.enroll(), (None, "conf_dir_not_root"))
-        cmd = AE._cmd_write(PATH, PATH + ".bak-aib-x")
+        cmd = AE._cmd_write(PATH, PATH + ".bak-aib-x", "0" * 64)
         self.assertIn('stat -c %u /etc/ez2-aib/approve-keys)" = 0 ] || exit 78', cmd)
         self.assertIn("trap", cmd)
         self.assertIn("tail -n +4", cmd)                                         # 備份只留最近 3 份
@@ -433,6 +450,130 @@ class NoBiometryAndHostKey(Base):
         out = io.StringIO()
         self.assertEqual(AA.main(["key", "status"], out=out, env=self.env, run=self.w), 0)
         self.assertIn("biometry:", out.getvalue())
+
+
+class R4(Base):
+    def swap_key(self, w):
+        """同帳號 AI 換掉 .sekey(連 helper 一起換成它的鑰)。"""
+        d = secrets.randbelow(p256.N - 1) + 1
+        doc = json.loads(self.sekey().read_text())
+        doc["public_key"] = base64.b64encode(p256_pub(d)).decode()
+        self.sekey().write_text(json.dumps(doc))
+        return d
+
+    def test_e15_key_swapped_before_signing(self):
+        AA.key_init(self.env, run=self.w, helper="/fake/aib-sehelper", platform="darwin")
+        mine = AA.kid_of(AA.local_pub(self.env))
+
+        def ask(title, body, check):
+            self.assertIn(mine, body)
+            self.w.d = self.swap_key(self.w)
+            return {"ok": True}
+        r, why = AE.enroll("ez2.app", "eu01", None, self.env, platform="darwin", run=self.w, helper="/fake/aib-sehelper",
+                           ask=ask, now=NOW)
+        self.assertEqual((r, why), (None, "key_changed"))
+        self.assert_untouched()
+        self.assertEqual(len(self.w.ssh_calls()), 1)                          # 只讀過
+
+    def test_e16_key_swapped_after_signing(self):
+        AA.key_init(self.env, run=self.w, helper="/fake/aib-sehelper", platform="darwin")
+        a = p256_pub(self.w.d)
+        self.w.after_sign = lambda: self.swap_key(self.w)
+        r, why = self.enroll()
+        self.assertIsNone(why, r)
+        kid = AA.kid_of(a)
+        self.assertNotEqual(AA.kid_of(AA.local_pub(self.env)), kid)          # 檔已經換了
+        self.assertEqual(r["kid"], kid)
+        c = json.loads(self.w.files[PATH][0])
+        self.assertEqual((c["kid"], c["pem"]), (kid, AA.pem_of(a)))          # kid 與 pem 是同一把(簽過那把)
+        self.assertIn(kid, self.ask.seen[1][1])
+
+    def test_e17_interrupt_restores(self):
+        import unittest.mock as um
+        self.w.boom_on_check = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.enroll()
+        self.assert_untouched()
+        self.assertFalse(self.sekey().exists())                               # 新鑰沒發出去 ⇒ 刪
+        self.w = World()
+        self.w.boom_on_check, self.w.restore_rc = True, 1
+        err = io.StringIO()
+        with um.patch.object(AE.sys, "stderr", err), self.assertRaises(KeyboardInterrupt):
+            self.enroll()
+        self.assertIn("approve-keys", err.getvalue())                         # 要人看
+        self.assertTrue(self.sekey().exists())                                # 站上可能是新鑰 ⇒ 鑰留著
+
+    def test_e18_site_add_token_first(self):
+        tokdir = AA.approve_dir(self.env) / "tokens"
+        tokdir.mkdir(parents=True)
+        (AA.approve_dir(self.env) / "sites.json").mkdir()                     # sites.json 寫不進去
+        tok = tokdir / "ez2.app.token"
+        self.assertEqual(AA.site_add("ez2.app", None, "n" * 32, self.env), (None, "local_state"))
+        self.assertFalse(tok.exists())                                         # 原本沒有 ⇒ 刪
+        tok.write_text("o" * 32 + "\n")
+        self.assertEqual(AA.site_add("ez2.app", None, "n" * 32, self.env), (None, "local_state"))
+        self.assertEqual(tok.read_text(), "o" * 32 + "\n")                    # 原本有 ⇒ 放回
+
+    def test_e19_short_stdin_not_moved(self):
+        self.w.short_stdin = True
+        self.assertEqual(self.enroll(), (None, "write_failed"))
+        self.assert_untouched()
+        with self.assertRaises(ValueError):
+            AE._cmd_write(PATH, PATH + ".b", "x; rm -rf /")
+
+    def test_e20_sizes_and_backup(self):
+        ids = list(range(10 ** 9, 10 ** 9 + 325))
+        self.w.files[PATH] = (json.dumps({"kid": "p256:0123456789abcdef", "user_ids": ids}) + "\n", 0, 0o644)
+        self.assertLessEqual(len(self.w.files[PATH][0]), AE.REMOTE_MAX)
+        self.assertEqual(self.enroll(), (None, "conf_too_big"))
+        self.assertEqual(len(self.w.ssh_calls()), 1)
+        self.assertFalse(self.sekey().exists())
+        self.w = World()
+        self.w.files[PATH] = ("{" + " " * 5000 + "}\n", 0, 0o644)            # 舊檔超長
+        r, why = self.enroll()
+        self.assertIsNone(why, r)
+        self.assertIn("讀不完整", self.ask.seen[0][1])
+        self.assertNotIn("user_ids", json.loads(self.w.files[PATH][0]))
+        self.w = World()
+        del self.w.files[PATH]
+        os.unlink(str(self.sekey()))
+        r, why = self.enroll()
+        self.assertIsNone(why, r)
+        self.assertIsNone(r["backup"])                                        # 原本沒檔 ⇒ 沒備份
+
+    def test_e21_helper_failed_and_yes_hint(self):
+        import unittest.mock as um
+        for fail in ("helper_failed", "build_failed"):
+            self.w = World(sign_fail=fail)
+            self.assertEqual(self.enroll(), (None, "helper_failed"))
+            self.assert_untouched()
+
+        def fake_yes(nonce, env=None, detail=None):
+            detail.append("no_biometry")
+            return "touchid_unavailable", None
+        n = "A" * 43
+        for argv, hint in ((["yes", n], True), (["yes", n, "--json"], False)):
+            out, err = io.StringIO(), io.StringIO()
+            with um.patch.object(AA, "yes", fake_yes), um.patch.object(AA.sys, "stderr", err):
+                self.assertEqual(AA.main(argv, out=out, env=self.env), 0)
+            self.assertEqual(json.loads(out.getvalue()), {"nonce": n, "result": "touchid_unavailable"})
+            self.assertEqual(out.getvalue().count("\n"), 1)
+            self.assertEqual("WebAuthn" in err.getvalue(), hint, argv)
+
+    def test_e22_quoting_and_biometry_edges(self):
+        import subprocess
+        p = "/etc/a b/x.json"
+        for cmd in (AE._cmd_read(p), AE._cmd_write(p, p + ".bak", "0" * 64), AE._cmd_check(p),
+                    AE._cmd_restore(p, p + ".bak", True), AE._cmd_restore(p, p + ".bak", False)):
+            self.assertIn("'/etc/a b/x.json", cmd)
+            self.assertNotIn(" /etc/a b/", cmd)
+        ok = json.dumps({"ok": True}) + "\n"
+        self.assertFalse(AE.biometry_ready(lambda *a, **k: SimpleNamespace(returncode=1, stdout=ok, stderr="")))
+
+        def slow(*a, **k):
+            raise subprocess.TimeoutExpired("osascript", 20)
+        self.assertFalse(AE.biometry_ready(slow))
+        self.assertTrue(AE.biometry_ready(lambda *a, **k: SimpleNamespace(returncode=0, stdout=ok, stderr="")))
 
 
 class Knives(unittest.TestCase):
@@ -459,8 +600,8 @@ class Knives(unittest.TestCase):
                   "test_e4_readback_mismatch_restores")
 
     def test_k5_no_restore(self):
-        self._red("        if bad:\n            rrc, _ = _remote(pin, host, kh, _cmd_restore(path, bak, existed), run=run)",
-                  "        if bad:\n            rrc = 0",
+        self._red("            if bad:\n                if restore() != 0:",
+                  "            if bad:\n                if False:",
                   "test_e4_readback_mismatch_restores")
 
     def test_k7_restore_deletes_original(self):
@@ -486,12 +627,24 @@ class Knives(unittest.TestCase):
                   cls="NoBiometryAndHostKey")
 
     def test_k10_write_restore_failure_hidden(self):
-        self._red('            if rrc != 0:   # 寫入可能已經完成', "            if False:   # 寫入可能已經完成",
+        self._red('                if restore() != 0:   # 寫入可能已經完成', "                if False:   # 寫入可能已經完成",
                   "test_e13_write_and_restore_both_fail", cls="NoBiometryAndHostKey")
 
     def test_k11_no_biometry_check(self):
         self._red("    if not biometry_ready(run):", "    if False:", "test_e11_no_biometry_no_fallback",
                   cls="NoBiometryAndHostKey")
+
+    def test_k15_reread_sekey(self):
+        self._red("        kid = AA.kid_of(signed)", "        kid = AA.kid_of(AA.local_pub(env))", "test_e16_key_swapped_after_signing",
+                  cls="R4")
+
+    def test_k16_no_interrupt_restore(self):
+        self._red("        except BaseException:\n            if wrote:", "        except ZeroDivisionError:\n            if wrote:",
+                  "test_e17_interrupt_restores", cls="R4")
+
+    def test_k17_unquoted_path(self):
+        self._red("    q = shlex.quote(path)\n    return '[ -f %s ]", "    q = path\n    return '[ -f %s ]",
+                  "test_e22_quoting_and_biometry_edges", cls="R4")
 
     def test_k6_reason_without_dest(self):
         self._red("dest=dest)", "dest=None)", "test_e1_happy_path")

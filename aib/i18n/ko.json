@@ -4978,6 +4978,7 @@
   "aib.approve.enroll.check": "읽었습니다(남은 위험 포함)",
   "aib.approve.enroll.no_key": "아직 없음(다음에 생성, kid는 Touch ID 창에 표시)",
   "aib.approve.enroll.none": "없음",
+  "aib.approve.enroll.cur_truncated": "전부 읽지 못함(4096바이트 초과); user_ids는 이어받지 않음",
   "aib.approve.enroll.seen_title": "지문 창이 떴나요?",
   "aib.approve.enroll.seen_body": "방금 Touch ID 지문 창이 뜨고 kid {kid}가 표시되었나요? 뜨지 않았다면 이 Mac의 키가 지문이 필요 없는 키로 바뀌었을 수 있습니다. 취소를 누르세요.",
   "aib.approve.enroll.seen_check": "떴고 kid {kid}가 표시됨",

@@ -4978,6 +4978,7 @@
   "aib.approve.enroll.check": "我看過了(含殘餘風險)",
   "aib.approve.enroll.no_key": "還沒有(接著新建,kid 會在 Touch ID 視窗顯示)",
   "aib.approve.enroll.none": "沒有",
+  "aib.approve.enroll.cur_truncated": "讀不完整(超過 4096 位元組);它的 user_ids 不會沿用",
   "aib.approve.enroll.seen_title": "剛才有跳指紋視窗嗎?",
   "aib.approve.enroll.seen_body": "剛才有跳出 Touch ID 指紋視窗、而且寫著 kid {kid} 嗎?沒跳 = 這台的鑰可能被換成不用指紋的，請按取消。",
   "aib.approve.enroll.seen_check": "有跳，而且寫著 kid {kid}",
