@@ -14,14 +14,16 @@ H6 push_presence:好友有心跳、也拿到我這一代的鑰、等級 online �
 H7 給過鑰的人不再是好友 ⇒ 換一代、給過名單歸零;沒人離開 ⇒ 不換
 #303 第 1 輪審查補(10-25):
 H8 心跳簽章鑰跟共用鑰同一代(A-H1):換代 npub 跟著換、舊鑰進 retired/;10-24 版 beat.key 也收;retired 超過 30 天刪
-H9 心跳鑰一位一檔(B-H1:500 位好友照收);同一個心跳 npub 兩位主人宣告 ⇒ 都不收(A-M4);drop_beat_keys 刪整檔
+H9 心跳鑰一位一檔(B-H1:500 位好友照收);同一個心跳 npub 兩位宣告都列出(r2 A-M4,誰算數看 H15);drop_beat_keys 刪整檔
+H15 (venv)心跳加密內文帶 owner:別的好友宣告 V 的心跳 npub(連鑰都抄了)⇒ 只算 V 的、V 照樣綠點;
+    只有冒名那位宣告 ⇒ 誰都不算(#303 r2 A-M4)
 H10 world 一次寫多格、500 位好友寫得進去(超過上限丟最舊的)
 H11 同一位 ping 10 秒一次、換一位不等(A-M5);public_relay_ok 擋本機 / 內網 / link-local / 單字主機名
 H12 (venv)好友名片給的站只查那位好友、內網站不連、我的站查全部(A-M2);壞網址不進心跳鑰(A-M3)
 H13 (venv)點開對話框只問那一位、整面刷新才問舊版;有人問我 ⇒ 有心跳也回(B-M3)
 H14 (venv)心跳的 presence_at 用本機收到時間、sent_at 記原值(B-M5);換代後 push_beat 用新簽章鑰
 刀(複本):K1 不換代 ⇒ H7 紅;K2 不跳過有心跳的好友 ⇒ H6 紅;K3 好友站查全部人 ⇒ H12 紅;K4 ping 也問舊版 ⇒ H13 紅;
-K5 不回問我的人 ⇒ H13 紅;K6 簽章鑰不換代 ⇒ H8 紅;K7 不擋同 npub 兩位 ⇒ H9 紅
+K5 不回問我的人 ⇒ H13 紅;K6 簽章鑰不換代 ⇒ H8 紅;K7 不比內文 owner ⇒ H15 紅
 """
 import json
 import os
@@ -65,7 +67,8 @@ seats = [{"seat5": "cfd04", "cabin": "6ddf", "key": "k1", "npub": "npub1me", "st
 friends = {"friends": [{"owner": F}], "mine": []}
 levels = {F: "online"}
 _real_map = NK.read_map
-CN.NK.read_map = lambda *a, **k: dict(_real_map(*a, **k), owner={"npub": OWNER})
+who = [OWNER]
+CN.NK.read_map = lambda *a, **k: dict(_real_map(*a, **k), owner={"npub": who[0]})
 CN.NK.sending_seats = lambda *a, **k: seats
 CN.CR.read_profile = lambda *a, **k: {"public": ["cfd04"]}
 CN.CR.read_friends = lambda env=None, kind="friends": friends.get(kind, [])
@@ -106,7 +109,9 @@ NK.ensure_beat()
 gen, stem = NK.beat_share()
 GF.note_beat_given(root, gen, [F])
 if case == "beat":
+    who[0] = F                                     # 這筆心跳當成好友 F 那台發的
     out["ok"] = asyncio.run(s.push_beat(now=1000))
+    who[0] = OWNER
     ev = published[-1]
     out["kind"] = ev.kind().as_u16()
     out["author_is_beat"] = ev.author().to_bech32() == NK.read_map()["beat"]["npub"]
@@ -118,6 +123,11 @@ if case == "beat":
     GF.note_beat_key(root, F, ev.author().to_bech32(), "%064x" % 0x1234 if sys.argv[4] == "wrong" else good, 1)
     if sys.argv[4] == "stranger":
         friends["friends"] = []
+    if sys.argv[4] in ("claim", "claim_only"):     # 好友 G 宣告 F 的心跳 npub、連鑰都抄
+        friends["friends"] = [{"owner": F}, {"owner": G}]
+        if sys.argv[4] == "claim_only":
+            GF.drop_beat_keys(root, lambda o: o != F)
+        GF.note_beat_key(root, G, ev.author().to_bech32(), good, 1)
     out["got"] = asyncio.run(s.poll_beats(now=time.time()))
     out["world"] = sorted(GF.read_world(root))
     out["resend"] = sorted(getattr(s, "resend_owners", set())) == [F]
@@ -267,7 +277,7 @@ class Keys(unittest.TestCase):
         self.assertTrue((root / "beats" / (A + ".json")).parent.is_dir())
         GF.note_beat_key(root, A, M, k, 1)
         GF.note_beat_key(root, NK.npub(NK.pubkey_hex("%064x" % 0xD000)), M, k, 1)   # 別人宣告同一個心跳 npub
-        self.assertFalse(any(n == M for _o, n, _k, _r in GF.read_beat_keys(root)))
+        self.assertEqual(sum(1 for _o, n, _k, _r in GF.read_beat_keys(root) if n == M), 2, "都列出,工人解開再比 owner")
         GF.drop_beat_keys(root, lambda o: o == A)
         self.assertEqual([o for o, *_r in GF.read_beat_keys(root)], [A])
         self.assertEqual(sorted(p.name for p in (root / "beats").iterdir()), [A + ".json", A + ".json.lock"])
@@ -329,6 +339,14 @@ class Worker(unittest.TestCase):
         for sub in ("wrong", "stranger"):
             d = self.probe("beat", sub)
             self.assertEqual((d["got"], d["world"]), (0, []), sub)
+
+    def test_h15_owner_bound(self):
+        d = self.probe("beat", "claim")
+        self.assertEqual((d["got"], len(d["world"])), (1, 1))
+        self.assertTrue(d["world"][0].startswith(NK.npub(NK.pubkey_hex("%064x" % 0xB202)) + "/"), d["world"])
+        self.assertTrue(d["resend"])
+        d = self.probe("beat", "claim_only")
+        self.assertEqual((d["got"], d["world"]), (0, []))
 
     def test_h6_skip_dm_for_beaters(self):
         d = self.probe("skip")
@@ -400,14 +418,10 @@ class Knife(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("AssertionError", r.stdout + r.stderr)
 
-    def test_k7_claims_kept(self):
-        name = Path(__file__).name
-        with knife_copy(REPO, "src/cockpit/dm_global_files.py", "    return [x for x in out if len(claims[x[1]]) == 1]",
-                        "    return out", tests=(name,)) as root:
-            r = run_guarded([sys.executable, str(root / "tests" / name), "Keys.test_h9_per_owner_and_claims"],
-                            cwd=str(root), max_procs=60, timeout=120)
-        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("AssertionError", r.stdout + r.stderr)
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k7_owner_unchecked(self):
+        self._run('                if isinstance(b, dict) and b.get("owner") == o:\n',
+                  "                if isinstance(b, dict):\n", "Worker.test_h15_owner_bound")
 
 
 if __name__ == "__main__":

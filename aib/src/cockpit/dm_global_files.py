@@ -1211,8 +1211,8 @@ def note_beat_key(root, owner, beat_npub, key_hex, gen, relays=(), now=None):
 
 
 def read_beat_keys(root):
-    """⇒ [(主人, 心跳 npub, key, relays)]。同一個心跳 npub 有兩位以上主人宣告 ⇒ 全部不收(#303 審 A-M4:
-    別人宣告我好友的心跳 npub,可以讓他顯示離線、或把在線掛到自己名下)。"""
+    """⇒ [(主人, 心跳 npub, key, relays)]。同一個心跳 npub 有好幾位宣告也全列(#303 r2 A-M4:全丟會讓惡意好友
+    宣告別人的 npub 就把那人弄成灰點);誰才算數由工人解開心跳後比加密內文裡的 owner 決定。"""
     out = []
     for p in sorted((Path(root) / "beats").glob("*.json")):
         owner = p.stem
@@ -1225,10 +1225,7 @@ def read_beat_keys(root):
         for npub, k in keys.items() if isinstance(keys, dict) else ():
             if isinstance(k, dict) and NPUB_FULL_RE.match(npub) and BEAT_KEY_RE.match(str(k.get("key") or "")):
                 out.append((owner, npub, k["key"], [r for r in k.get("relays") or [] if isinstance(r, str)]))
-    claims = {}
-    for owner, npub, _k, _r in out:
-        claims.setdefault(npub, set()).add(owner)
-    return [x for x in out if len(claims[x[1]]) == 1]
+    return out
 
 
 def drop_beat_keys(root, keep_owner):

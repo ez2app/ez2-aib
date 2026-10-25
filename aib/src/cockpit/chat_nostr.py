@@ -997,8 +997,12 @@ class Sender(object):
         rows = SP.presence([e["seat5"] for e in mine_seats], with_status=False)
         for r, e in zip(rows, mine_seats):
             r["cabin"] = e.get("cabin") or "main"
-        body = json.dumps({"v": 1, "at": int(now), "seats": rows, "power": CP.presence_power(self.root, BEAT_EVERY_S)},
-                          ensure_ascii=False)
+        owner = (NK.read_map().get("owner") or {}).get("npub")
+        if not owner:
+            return False
+        # owner 放在加密內文裡:收的人解開後比對「宣告這把心跳鑰的主人」(#303 r2 A-M4:別人宣告我的心跳 npub 也冒不了)
+        body = json.dumps({"v": 1, "at": int(now), "owner": owner, "seats": rows,
+                           "power": CP.presence_power(self.root, BEAT_EVERY_S)}, ensure_ascii=False)
         share = _keys("beat-share-%d" % gen)
         ct = N.nip44_encrypt(share.secret_key(), share.public_key(), body, N.Nip44Version.V2)
         share = None
@@ -1026,7 +1030,9 @@ class Sender(object):
             GF.drop_beat_keys(self.root, keep)
             GF.drop_resend(self.root, keep)
         rows = [(o, n, k, r) for o, n, k, r in GF.read_beat_keys(self.root) if keep(o)]
-        by_npub = {n: (o, k) for o, n, k, _r in rows}
+        by_npub = {}
+        for o, n, k, _r in rows:
+            by_npub.setdefault(n, []).append((o, k))      # 同一個心跳 npub 可能被好幾位宣告:解開後比內文 owner 才算數
         mine = CR.relays()
         plan = [(mine, sorted(by_npub))]                   # 我的站:查全部
         extra = {}
@@ -1050,14 +1056,20 @@ class Sender(object):
                         latest[n] = e
         got, world = 0, []
         for n, e in latest.items():
-            owner, key = by_npub[n]
             at = e.created_at().as_secs()
             if at > now + 300 or now - at > GF.PEERS_KEEP_S:
                 continue
-            try:
-                k = N.Keys.parse(key)
-                body = json.loads(N.nip44_decrypt(k.secret_key(), k.public_key(), e.content()))
-            except Exception:   # noqa: BLE001  換代前的舊心跳 / 壞內容 ⇒ 當沒看到
+            owner, body = None, None
+            for o, key in by_npub[n]:
+                try:
+                    k = N.Keys.parse(key)
+                    b = json.loads(N.nip44_decrypt(k.secret_key(), k.public_key(), e.content()))
+                except Exception:   # noqa: BLE001  換代前的舊心跳 / 壞內容 ⇒ 當沒看到
+                    continue
+                if isinstance(b, dict) and b.get("owner") == o:
+                    owner, body = o, b
+                    break
+            if owner is None:
                 continue
             cells = self._beat_cells(owner, body, at, now)
             if cells:
