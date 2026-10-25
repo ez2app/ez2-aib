@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -31,12 +32,16 @@ UNREAD = ("queued", "delivered", Q.HOLD_STATUS)
 CLOSED = ("done", "archived", "deleted")
 
 
-def _text_of(item):
-    """(全文, 落檔路徑或 None);落檔讀不到 ⇒ (None, path)。"""
+def _text_of(item, env=None):
+    """(全文, 落檔路徑或 None);落檔讀不到 ⇒ (None, path)。
+    #380 r1 M4:路徑只認長訊目錄裡的 RELAY-dm-*.txt(dm_relay.relay_file_ok,#370 那道);
+    不然全球 / 別的通訊軟體寄件人寫「長訊已落檔(…),請讀:<任意檔>」就能讓收件席把本機檔讀進對話。"""
     msg = item.get("msg") or ""
     path = DR.relay_path_of(msg)
     if not path:
         return msg, None
+    if not DR.relay_file_ok(path, env):
+        return None, path
     return Q._onboard_relay_text(path), path
 
 
@@ -58,17 +63,25 @@ def _note(seat, item_id, env, now, **fields):
     return it
 
 
+_INVISIBLE = {0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x2060, 0xfeff} | set(range(0x202a, 0x202f)) | set(range(0x2066, 0x206a))
+
+
 def _clean_wait(text):
-    t = " ".join(str(text or "").split())
-    return t[:Q.WAIT_MAX_CHARS]
+    """等什麼:剝控制字元 / 零寬 / 方向控制字元(#380 r1 L4:會被貼進提醒行與交接事實),空白壓成一格、限長。"""
+    s = "".join(" " if unicodedata.category(c) in ("Cc", "Zl", "Zp") else c
+                for c in str(text or "") if ord(c) not in _INVISIBLE and unicodedata.category(c) != "Cf")
+    return " ".join(s.split())[:Q.WAIT_MAX_CHARS]
 
 
 def take(seat, item_id, actor, wait=None, env=None, now=None):
     now = int(time.time() if now is None else now)
+    cls, ident = Q.parse_actor(actor)
+    if cls != "seat" or ident != seat:       # #380 r1 M3:已讀信不經 mark_read,這裡要自己查是收件席本人
+        return {"ok": False, "reason": "actor", "message": Q.TRANSITION_REASON["actor"]}
     item = Q._load_item(seat, item_id, env)
     if not item:
         return {"ok": False, "reason": "not_found", "message": Q.TRANSITION_REASON["not_found"]}
-    text, relay_path = _text_of(item)
+    text, relay_path = _text_of(item, env)
     if text is None:
         return {"ok": False, "reason": "relay_unreadable", "relay_path": relay_path,
                 "message": "長訊落檔讀不到(不存在 / 不是一般檔 / 太大),沒有標已讀"}
@@ -94,7 +107,7 @@ def take(seat, item_id, actor, wait=None, env=None, now=None):
     out.update(ok=True, reason="ok", text=text)
     if cur.get("status") == "read":
         out["next"] = {"close": "close --id %s --evidence <PR 網址 / commit / 檔 / 回信 q_ id> 或 --why <理由>" % item_id}
-        if Q.normalize_kind(cur.get("kind")) not in Q.CLOSE_BY_REPLY_REFUSED_KINDS:   # 派工信:回信不算做完
+        if not Q.is_dispatch(cur):   # 派工信:回信不算做完
             out["next"]["reply_and_close"] = "aib dm <位址> --close %s \"…\"(回信送達才結這封)" % item_id
         if not out.get("wait"):
             out["next"]["wait"] = "還沒做完 ⇒ wait --id %s \"等誰 / 等什麼\"(超過 4 小時沒寫會被提醒)" % item_id
@@ -110,7 +123,7 @@ def close(seat, item_id, actor, evidence=None, why=None, env=None, now=None):
         return {"ok": False, "reason": "not_found", "message": Q.TRANSITION_REASON["not_found"]}
     cur = Q.item_rev(item)
     status = item.get("status")
-    text, relay_path = _text_of(item)
+    text, relay_path = _text_of(item, env)
     if status in UNREAD:
         if text is None:          # 沒讀到全文不能算讀過,更不能結
             return {"ok": False, "reason": "relay_unreadable", "relay_path": relay_path,

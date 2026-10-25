@@ -101,6 +101,11 @@ KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "n
 BROADCAST_KINDS = frozenset(("order", "rule", "pipeline"))
 # 10-25 @ee4f8 / @abb89(派工 C 補):派工類(要動手)的來信,回信不算做完 ⇒ --closes 不結,要 close --evidence
 CLOSE_BY_REPLY_REFUSED_KINDS = frozenset(("order", "pipeline"))
+
+
+def is_dispatch(item):
+    """派工信(回信不算做完)?看現在的 kind 也看 reclass 前的 kind_orig(#380 r1 M2:改分類不能繞過派工判定)。"""
+    return any(normalize_kind(item.get(k)) in CLOSE_BY_REPLY_REFUSED_KINDS for k in ("kind", "kind_orig") if item.get(k))
 # 寄件端量到的來源;v1 的 "ai" 讀進來當 seat。human 只在送信端三條件全量到時才會出現(dm-ctl 那一刀)。
 SENDER_KINDS = ("seat", "seat_claimed", "human", "system", "unknown", "external_seat", "owner_paired", "external_im")
 # external_im(開發文件第 39 節):別的通訊軟體(Telegram)經轉接程式收進來的;永遠不是 human,來源 telegram:<user_id>
@@ -1656,6 +1661,8 @@ def reclass(seat, item_id, kind, actor, env=None, now=None, if_rev=None):
     if it.get("status") not in ("delivered", "read"):
         return {"ok": False, "reason": "transition"}
     old = it.get("kind")
+    if "kind_orig" not in it:
+        it["kind_orig"] = old           # #380 r1 M2:第一次改分類記下寄件人原本的分類,派工判定兩個都看
     it["kind"] = kind
     it["rev"] = item_rev(it) + 1
     _write_item(seat, it, env)
@@ -1678,7 +1685,7 @@ def _close_original(item, env=None, now=None):
             return None
         if it.get("sender_seat") and it.get("sender_seat") != item.get("seat"):
             return None       # 審查:回信要回給原信的寄件人,才算結了那一封
-        if normalize_kind(it.get("kind")) in CLOSE_BY_REPLY_REFUSED_KINDS:
+        if is_dispatch(it):
             return None       # 派工信:回信不算完成(送出前 dm-ctl 已用 close-check 擋;這裡是第二道)
         return mark_done(who, orig, "seat:%s" % who, item["id"], env=env, now=now, no_rev_check=True)
     except Exception:  # noqa: BLE001 —— 審查:結原信失敗不得讓投遞 / record 變失敗(信已送到)
@@ -1688,35 +1695,36 @@ def _close_original(item, env=None, now=None):
 def closes_refusal(seat, item_id, env=None):
     """`aib dm --closes <原信>` 送出前查:原信是派工類 ⇒ 回拒絕(含改用的指令);其他(含找不到)⇒ None,照舊。"""
     it = _load_item(seat, item_id, env) if seat and item_id else None
-    if not it or normalize_kind(it.get("kind")) not in CLOSE_BY_REPLY_REFUSED_KINDS:
+    if not it or not is_dispatch(it):
         return None
-    return {"ok": False, "reason": "closes_order", "id": item_id, "kind": normalize_kind(it.get("kind")),
+    kind = next(normalize_kind(it.get(k)) for k in ("kind", "kind_orig")
+                if normalize_kind(it.get(k)) in CLOSE_BY_REPLY_REFUSED_KINDS)
+    return {"ok": False, "reason": "closes_order", "id": item_id, "kind": kind,
             "message": "原信是派工(%s),回信不算做完;做完後改用 dm_queue.py close --id %s --evidence <PR 網址 / commit>"
-                       % (normalize_kind(it.get("kind")), item_id)}
+                       % (kind, item_id)}
 
 
 _ROUND_RE = re.compile(r"#(\d{1,6})\s*r(\d{1,3})\b")
 _PR_NUM_RE = re.compile(r"#(\d{1,6})\b")
-_LEAD_SEAT_RE = re.compile(r"^\s*@([0-9a-f]{5})\b")
 
 
-def _full_text(item):
-    """正文;長訊指標 ⇒ 落檔全文(讀不到 / 太大 ⇒ None)。"""
+def _full_text(item, env=None):
+    """正文;長訊指標 ⇒ 落檔全文(讀不到 / 太大 / 不是長訊目錄裡的 RELAY-dm-*.txt ⇒ None,#380 r1 M4 同 #370 那道)。"""
     msg = item.get("msg") or ""
     path = DR.relay_path_of(msg)
     if not path:
         return msg
+    if not DR.relay_file_ok(path, env):
+        return None
     return _onboard_relay_text(path)
 
 
 def _sender_key(item):
-    """「同寄件席」的鍵:量到的寄件席優先;沒量到(艙外轉信)⇒ 寄件標籤 + 正文開頭的 @席碼,兩者都要有。"""
+    """「同寄件席」的鍵:只認量到的寄件席(pane_pid_chain / bg_fork_chain)。
+    #380 r1 L3:艙外轉信的「寄件標籤 + 正文開頭 @席碼」是自報、誰都寫得出來 ⇒ 沒量到就不自動結(回 None)。"""
     if item.get("sender_seat") and item.get("sender_source") in MEASURED_SOURCES:
         return ("seat", item["sender_seat"])
-    text = _full_text(item) or ""
-    m = _LEAD_SEAT_RE.match(text)
-    label = item.get("sender_label")
-    return ("label", label, m.group(1)) if (m and label) else None
+    return None
 
 
 def _rounds(text):
@@ -1728,29 +1736,29 @@ def _rounds(text):
 
 def _close_superseded(item, env=None, now=None):
     """Andy 10-25 20:1x:新一輪來信**送達**⇒ 同寄件席、同一張 PR 較舊一輪的來信自動結(why=superseded_by:<新 id>)。
-    舊信條件:delivered / read(hold_human 不碰)、沒被結過、它提到的 PR 全都在新信裡、每張 PR 的輪數都比新信小;
-    或新信 supersedes 明寫它。回結掉的 id 清單。失敗不影響投遞。"""
+    舊信條件:delivered / read(hold_human 不碰)、沒被結過、它提到的 PR 全都在新信裡、每張 PR 的輪數都比新信小。
+    寄件席只認量到的(_sender_key)。回結掉的 id 清單。失敗不影響投遞。
+    #380 r1 M1:不看 item["supersedes"] —— 那是 upsert 的廣播取代鏈(同 thread 新版,舊版標 superseded_by),
+    排隊那條在投遞前就寫好、直送那條在這之後才寫,看它會讓同一條鏈兩條路結果不同,而且不比 PR / 輪數。"""
     try:
         seat = item.get("seat")
         if not seat or item.get("status") != "delivered":
             return []
         key = _sender_key(item)
-        new_rounds = _rounds(_full_text(item) or "")
-        explicit = item.get("supersedes")
-        if not key and not explicit:
+        new_rounds = _rounds(_full_text(item, env) or "") if key else {}
+        if not new_rounds:
             return []
         closed = []
         for old in _all_items(seat, env=env):
             if old["id"] == item["id"] or old.get("status") not in ("delivered", "read"):
                 continue
-            hit = old["id"] == explicit
-            if not hit and key and new_rounds and _sender_key(old) == key:
-                text = _full_text(old)
-                old_rounds = _rounds(text or "")
-                prs = set(_PR_NUM_RE.findall(text or ""))
-                hit = bool(old_rounds) and prs <= set(new_rounds) and \
-                    all(pr in new_rounds and r < new_rounds[pr] for pr, r in old_rounds.items())
-            if not hit:
+            if _sender_key(old) != key:
+                continue
+            text = _full_text(old, env)
+            old_rounds = _rounds(text or "")
+            prs = set(_PR_NUM_RE.findall(text or ""))
+            if not (old_rounds and prs <= set(new_rounds)
+                    and all(pr in new_rounds and r < new_rounds[pr] for pr, r in old_rounds.items())):
                 continue
             r = _transition(seat, old["id"], "done", "system", env=env, now=now,
                             why=SUPERSEDE_DONE_PREFIX + item["id"], if_rev=item_rev(old), no_rev_check=False)
