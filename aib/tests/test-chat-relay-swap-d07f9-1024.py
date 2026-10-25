@@ -9,9 +9,10 @@ S3 主人自己設的清單(aib chat relays add)⇒ 不換
 S4 換過滿 24 小時 ⇒ relays() 回原站
 S5 換上的備用站也掛了 ⇒ 同一個原站改指下一個備用站;備用站用完 ⇒ 不再換
 S6 中間連上過一次 ⇒ 從頭算
+S7 兩次採樣差超過 5 分鐘(睡眠 / 關機)⇒ 從頭算,醒來第一輪不換(#307 審 B-M1);沒變不重寫狀態檔(B-L3);chat 夾 0700(A-L15)
 連 Nostr(要 AIB_TEST_NOSTR_VENV;兩個本機假中繼站 + 一個關著的埠):
 N1 開著的站 + 關著的站 ⇒ 幾秒後(測試把門檻調短)換成備用站,名冊發到備用站;aib chat relays --json 列出 swaps
-刀(複本):K1 全斷也換 ⇒ S2 紅;K2 不看主人自訂 ⇒ S3 紅;K3 轉接程式不檢查 ⇒ N1 紅
+刀(複本):K1 全斷也換 ⇒ S2 紅;K2 不看主人自訂 ⇒ S3 紅;K3 轉接程式不檢查 ⇒ N1 紅;K4 不看採樣間隔 ⇒ S7 紅
 """
 import json
 import socket
@@ -49,17 +50,25 @@ class Unit(unittest.TestCase):
     def tick(self, seen, t):
         return CR.check_relay_swap(seen, self.env, now=T0 + t)   # t = 測試裡的相對秒數(換過的站 24 小時內才算數)
 
+    def walk(self, seen, a, b, step=60):
+        """a 到 b 每 step 秒採樣一次(工人一直開著);回這段期間全部換過的站。"""
+        t, got = a, []
+        while True:
+            got += self.tick(seen, min(t, b))
+            if t >= b:
+                return got
+            t += step
+
     def test_s1_swap_after_30min(self):
         seen = {A: UP, B: UP, C: DOWN}
         self.assertEqual(self.tick(seen, 1000), [])
-        self.assertEqual(self.tick(seen, 1000 + 1799), [])
+        self.assertEqual(self.walk(seen, 1060, 1000 + 1799), [])
         self.assertEqual(self.tick(seen, 1000 + 1800), [(C, X)])
         self.assertEqual(CR.relays(self.env), [A, B, X])
 
     def test_s2_all_down_no_swap(self):
         seen = {A: DOWN, B: DOWN, C: DOWN}
-        self.tick(seen, 1000)
-        self.assertEqual(self.tick(seen, 1000 + 99999), [])
+        self.assertEqual(self.walk(seen, 1000, 1000 + 3600), [])
         self.assertEqual(CR.relays(self.env), [A, B, C])
 
     def test_s3_custom_list_untouched(self):
@@ -68,14 +77,12 @@ class Unit(unittest.TestCase):
         cur = CR.relays(self.env)
         seen = dict.fromkeys(cur, UP)
         seen[cur[0]] = DOWN
-        self.tick(seen, 1000)
-        self.assertEqual(self.tick(seen, 1000 + 99999), [])
+        self.assertEqual(self.walk(seen, 1000, 1000 + 3600), [])
         self.assertEqual(CR.relays(self.env), cur)
 
     def test_s4_expires(self):
         seen = {A: UP, B: UP, C: DOWN}
-        self.tick(seen, 1000)
-        self.tick(seen, 3000)
+        self.walk(seen, 1000, 3000)
         import time
         self.assertEqual(CR.relays(self.env), [A, B, X])
         p = Path(self.td.name) / ".ez2-aib" / "chat" / "relay-swap.json"
@@ -85,20 +92,34 @@ class Unit(unittest.TestCase):
         self.assertEqual(CR.relays(self.env), [A, B, C])
 
     def test_s5_backup_dies_too(self):
-        self.tick({A: UP, B: UP, C: DOWN}, 1000)
-        self.assertEqual(self.tick({A: UP, B: UP, C: DOWN}, 3000), [(C, X)])
-        self.tick({A: UP, B: UP, X: DOWN}, 4000)
-        self.assertEqual(self.tick({A: UP, B: UP, X: DOWN}, 6000), [(X, Y)])
+        self.walk({A: UP, B: UP, C: DOWN}, 1000, 2740)
+        self.assertEqual(self.tick({A: UP, B: UP, C: DOWN}, 2800), [(C, X)])
+        self.walk({A: UP, B: UP, X: DOWN}, 2860, 4600)
+        self.assertEqual(self.tick({A: UP, B: UP, X: DOWN}, 4660), [(X, Y)])
         self.assertEqual(CR.relays(self.env), [A, B, Y])
         self.assertEqual(list(CR.read_swaps(self.env)), [C], "還是記在原站底下(24 小時後換回原站)")
-        self.tick({A: UP, B: UP, Y: DOWN}, 7000)
-        self.assertEqual(self.tick({A: UP, B: UP, Y: DOWN}, 9000), [], "備用站用完 ⇒ 不再換")
+        self.assertEqual(self.walk({A: UP, B: UP, Y: DOWN}, 4720, 9000), [], "備用站用完 ⇒ 不再換")
 
     def test_s6_reconnect_resets(self):
-        self.tick({A: UP, B: UP, C: DOWN}, 1000)
+        self.walk({A: UP, B: UP, C: DOWN}, 1000, 1940)
         self.tick({A: UP, B: UP, C: UP}, 2000)
-        self.tick({A: UP, B: UP, C: DOWN}, 2500)
-        self.assertEqual(self.tick({A: UP, B: UP, C: DOWN}, 1000 + 1800), [], "中間連上過 ⇒ 從 2500 重算")
+        self.assertEqual(self.walk({A: UP, B: UP, C: DOWN}, 2060, 1000 + 1800 + 1000), [], "中間連上過 ⇒ 從 2060 重算")
+
+    def test_s7_sleep_resets(self):
+        seen = {A: UP, B: UP, C: DOWN}
+        self.walk(seen, 1000, 1000 + 1700)
+        self.assertEqual(self.tick(seen, 1000 + 1700 + 301), [], "睡了 5 分多 ⇒ 醒來第一輪不換、從頭算")
+        self.assertEqual(self.walk(seen, 3061, 3001 + 1799), [])
+        self.assertEqual(self.tick(seen, 3001 + 1800), [(C, X)])
+        home = Path(self.td.name) / ".ez2-aib" / "chat"
+        self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+        p = home / "relay-health.json"
+        m0 = p.read_text()
+        self.tick({A: UP, B: UP, X: UP}, 3001 + 1930)                   # 離上次寫超過 2 分鐘 ⇒ 寫採樣時間
+        self.assertNotEqual(p.read_text(), m0)
+        m1 = p.read_text()
+        self.tick({A: UP, B: UP, X: UP}, 3001 + 1990)                   # 沒變、離上次寫不到 2 分鐘 ⇒ 不重寫
+        self.assertEqual(p.read_text(), m1)
 
 
 def _closed_port():
@@ -159,6 +180,11 @@ class Knife(unittest.TestCase):
         self._knife("src/cockpit/chat_roster.py",
                     '    if not isinstance(seen, dict) or (read_profile(env) or {}).get("relays") and not env.get("AIB_CHAT_RELAYS"):',
                     "    if not isinstance(seen, dict):", "Unit.test_s3_custom_list_untouched")
+
+    def test_k4_ignore_gap(self):
+        self._knife("src/cockpit/chat_roster.py",
+                    '    fresh = isinstance(last, int) and 0 <= now - last <= float(env.get("AIB_CHAT_SWAP_GAP") or SWAP_GAP_S)',
+                    "    fresh = True", "Unit.test_s7_sleep_resets")
 
     @unittest.skipUnless(SB.HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k3_bridge_no_check(self):

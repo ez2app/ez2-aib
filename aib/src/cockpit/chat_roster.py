@@ -499,6 +499,8 @@ def relays(env=None):
 BACKUP_RELAYS = ("wss://nostr.mom", "wss://relay.snort.social")
 SWAP_AFTER_S = 1800
 SWAP_KEEP_S = 86400
+SWAP_GAP_S = 300            # 兩次採樣差超過這個(睡眠 / 關機 / 時鐘跳)⇒ 連不上從頭算(#307 審 B-M1)
+SWAP_SAMPLE_WRITE_S = 120   # 沒變也最多這麼久寫一次採樣時間(#307 審 B-L3:有變才寫)
 
 
 def _backups(env):
@@ -536,15 +538,19 @@ def check_relay_swap(seen, env=None, now=None):
     if not isinstance(seen, dict) or (read_profile(env) or {}).get("relays") and not env.get("AIB_CHAT_RELAYS"):
         return []                                   # 主人自己設的清單:不自動換
     cur = relays(env)
-    health = _read_chat_json(env, "relay-health.json").get("down_since") or {}
-    health = {u: t for u, t in health.items() if u in cur and isinstance(t, int)}
+    hf = _read_chat_json(env, "relay-health.json")
+    stored = hf.get("down_since") if isinstance(hf.get("down_since"), dict) else {}
+    last = hf.get("sampled_at")
+    fresh = isinstance(last, int) and 0 <= now - last <= float(env.get("AIB_CHAT_SWAP_GAP") or SWAP_GAP_S)
+    health = {u: t for u, t in stored.items() if u in cur and isinstance(t, int)} if fresh else {}
     for u in cur:
         if seen.get(u) == "CONNECTED":
             health.pop(u, None)
         elif u in seen:
             health.setdefault(u, now)
-    _chat_home(env).mkdir(parents=True, exist_ok=True)
-    write_json(str(_chat_home(env) / "relay-health.json"), {"v": VERSION, "down_since": health})
+    if health != stored or not isinstance(last, int) or now - last >= SWAP_SAMPLE_WRITE_S:
+        NK._mkdir_private(_chat_home(env))                                   # #307 審 A-L15
+        write_json(str(_chat_home(env) / "relay-health.json"), {"v": VERSION, "down_since": health, "sampled_at": now})
     if not any(seen.get(u) == "CONNECTED" for u in cur):
         return []                                   # 全部連不上 ⇒ 多半是自己斷網,不換
     sw = read_swaps(env, now)
@@ -564,7 +570,7 @@ def check_relay_swap(seen, env=None, now=None):
         done.append((u, spare))
     if done:
         write_json(str(_chat_home(env) / "relay-swap.json"), {"v": VERSION, "swaps": sw})
-        write_json(str(_chat_home(env) / "relay-health.json"), {"v": VERSION, "down_since": health})
+        write_json(str(_chat_home(env) / "relay-health.json"), {"v": VERSION, "down_since": health, "sampled_at": now})
     return done
 
 
