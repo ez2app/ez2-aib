@@ -1864,6 +1864,9 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
                 if owner:
                     out_last[r.get("msgid")] = {"at": at, "dir": "out", "net": "nostr", "contact_key": "global:" + owner,
                                                 "result": res}
+                    mid = r.get("msgid")                # 10-25 @74e8b:寄出列帶 msgid,艦長室才對得上剛寄的那封(只出寄出列)
+                    if isinstance(mid, str) and MSGID_RE.match(mid):
+                        out_last[mid]["msgid"] = mid
     for msgid, row in out_last.items():
         rc = last_receipt(root, msgid, now)
         if rc:
@@ -1873,6 +1876,7 @@ def recent_payload(env=None, now=None, minutes=RECENT_MINUTES):
     return {"v": 1, "at": int(now), "minutes": int(minutes), "rows": rows}
 
 
+MSGID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LOCAL_RECEIPT_STAGES = ("resolved", "relayed")    # 寄件端自己記的,不是對方回的
 PEER_HOP_STAGES = ("queued", "held", "delivered", "read", "still_waiting")   # 對方那台收下了
 STOP_HOP_STAGES = ("refused", "expired", "failed")
