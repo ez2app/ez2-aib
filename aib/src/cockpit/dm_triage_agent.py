@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -152,3 +153,41 @@ def reopen(seat, item_id, actor, why, env=None, now=None):
     r = Q._transition(seat, item_id, "read", actor, env=env, now=now, why=Q.REOPEN_WHY_PREFIX + text,
                       if_rev=Q.item_rev(it), no_rev_check=False, expect_status="done")
     return {k: v for k, v in r.items() if k != "item"}
+
+
+AGENT_LOCK_FILE = "triage-agent.json"
+AGENT_LOCK_TTL_S = 3600                   # @abb89 22:02:自願登記 60 分鐘過期
+
+
+def agent_lock(seat, actor, env=None, now=None, release=False, status=False):
+    """整理子代理開工前自願登記(每席同時 1 個;Andy 10-25 21:4x)。**只是協調,不是防線**:
+    子代理與席位同帳號,誰都能刪這個檔;它只讓守規矩的第二個子代理知道「已經有人在整理」。
+    status ⇒ 只看;release ⇒ 本人放掉;否則登記(別人登記且沒過期 ⇒ held)。"""
+    now = int(time.time() if now is None else now)
+    path = Q.seat_dir(seat, env) / AGENT_LOCK_FILE
+    try:
+        cur = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(cur, dict):
+            cur = {}
+    except (OSError, ValueError):
+        cur = {}
+    try:
+        live = bool(cur) and now < int(cur.get("until") or 0)
+    except (TypeError, ValueError):
+        live = False
+    view = {"by": cur.get("by"), "at": cur.get("at"), "until": cur.get("until")} if live else None
+    if status:
+        return {"ok": True, "reason": "ok", "held": view}
+    if live and cur.get("by") != actor:
+        return {"ok": False, "reason": "held", "held": view,
+                "message": "已經有整理子代理在做(%s,到 %s);等它做完或過期" % (cur.get("by"), Q.taipei_stamp(cur.get("until")))}
+    if release:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return {"ok": True, "reason": "released", "held": None}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"by": actor, "at": now, "until": now + AGENT_LOCK_TTL_S}
+    Q.AJ.write_json(str(path), rec)
+    return {"ok": True, "reason": "ok", "held": rec}

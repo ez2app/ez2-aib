@@ -10,9 +10,10 @@ T3 唯讀:plan 前後每封信的狀態與 rev 都沒變;CLI triage-plan 印同�
 T4 整理子代理身分 agent:<席>/<id>:能讀、能結自己那一席;別席的信、hold_human 放行、刪、回復都不准;格式不對 = actor_missing
 T5 consolidate:每封 done、evidence 指整理檔、記 consolidated_into、hold 跳過;整理檔不存在 ⇒ 全拒;
    reopen:done → read、清掉 done_*;沒理由 / 子代理 / 別席 ⇒ 拒;CLI consolidate / reopen
+T6 triage-lock:登記後別的子代理 held、本人可續 / 放掉、60 分鐘過期就讓;壞檔當沒登記;CLI rc 0 / 3
 刀(複本 + run_guarded):K1 hold_human 也算進門檻 ⇒ T1 紅;K2 寫了等什麼仍算 ⇒ T1 紅;
 K3 hold_human 也給 close_superseded ⇒ T2 紅;
-K4 拿掉子代理的收件席前綴檢查 ⇒ T4 紅;K5 回復不查理由 ⇒ T5 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K4 拿掉子代理的收件席前綴檢查 ⇒ T4 紅;K5 回復不查理由 ⇒ T5 紅;K6 過期不讓 ⇒ T6 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import io
 import json
@@ -192,6 +193,27 @@ class Consolidate(Base):
         self.assertEqual((rc, json.loads(out.getvalue())["ok"]), (0, True))
 
 
+class Lock(Base):
+    def test_t6_triage_lock(self):
+        b = "agent:%s/tri-2" % SEAT
+        self.assertTrue(TA.agent_lock(SEAT, AGENT, env=self.env, now=NOW)["ok"])
+        r = TA.agent_lock(SEAT, b, env=self.env, now=NOW + 60)
+        self.assertEqual((r["ok"], r["reason"], r["held"]["by"]), (False, "held", AGENT))
+        self.assertEqual(TA.agent_lock(SEAT, b, env=self.env, now=NOW + 60, release=True)["reason"], "held")
+        self.assertTrue(TA.agent_lock(SEAT, AGENT, env=self.env, now=NOW + 120)["ok"])        # 本人續
+        self.assertEqual(TA.agent_lock(SEAT, AGENT, env=self.env, now=NOW + 130, release=True)["reason"], "released")
+        self.assertIsNone(TA.agent_lock(SEAT, b, env=self.env, now=NOW + 131, status=True)["held"])
+        self.assertTrue(TA.agent_lock(SEAT, AGENT, env=self.env, now=NOW + 200)["ok"])
+        self.assertTrue(TA.agent_lock(SEAT, b, env=self.env, now=NOW + 200 + TA.AGENT_LOCK_TTL_S)["ok"])  # 過期就讓
+        (Q.seat_dir(SEAT, self.env) / TA.AGENT_LOCK_FILE).write_text("{壞", encoding="utf-8")
+        self.assertTrue(TA.agent_lock(SEAT, AGENT, env=self.env, now=NOW + 9000)["ok"])
+        (Q.seat_dir(SEAT, self.env) / TA.AGENT_LOCK_FILE).unlink()          # CLI 用真時間,從空的開始驗
+        with mock.patch("sys.stdout", io.StringIO()):
+            self.assertEqual(Q.main(["triage-lock", "--seat", SEAT, "--by", AGENT], env=self.env), 0)
+            self.assertEqual(Q.main(["triage-lock", "--seat", SEAT, "--by", b], env=self.env), 3)
+            self.assertEqual(Q.main(["triage-lock", "--seat", SEAT, "--status"], env=self.env), 0)
+
+
 KNIVES = [
     ("K1", "src/cockpit/dm_triage_agent.py", "        if st == Q.HOLD_STATUS:\n            counts[\"hold_human\"] += 1\n",
      "        if False:\n            counts[\"hold_human\"] += 1\n", "Counts.test_t1_threshold_counts"),
@@ -203,6 +225,8 @@ KNIVES = [
      "    if False:\n", "Agent.test_t4_agent_actor_bounds"),
     ("K5", "src/cockpit/dm_queue.py", "    if frm == \"done\" and to == \"read\" and not (isinstance(why, str) and why.startswith(REOPEN_WHY_PREFIX)\n",
      "    if False and not (isinstance(why, str) and why.startswith(REOPEN_WHY_PREFIX)\n", "Consolidate.test_t5_consolidate_and_reopen"),
+    ("K6", "src/cockpit/dm_triage_agent.py", "        live = bool(cur) and now < int(cur.get(\"until\") or 0)\n",
+     "        live = bool(cur)\n", "Lock.test_t6_triage_lock"),
 ]
 
 

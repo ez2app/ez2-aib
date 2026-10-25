@@ -5083,6 +5083,11 @@ def main(argv=None, env=None):
     ro.add_argument("--id", required=True)
     ro.add_argument("--why", required=True)
     ro.add_argument("--by", default=None)
+    tl = sub.add_parser("triage-lock")              # 整理子代理開工前自願登記(每席同時 1 個;只是協調,不是防線)
+    tl.add_argument("--seat", default=None)
+    tl.add_argument("--by", default=None)
+    tl.add_argument("--release", action="store_true")
+    tl.add_argument("--status", action="store_true")
     cc = sub.add_parser("close-check")             # dm-ctl --closes 送出前查(派工信不准用回信結)
     cc.add_argument("--seat", required=True)
     cc.add_argument("--id", required=True)
@@ -5321,6 +5326,17 @@ def main(argv=None, env=None):
                 return 2
         _print_json(TA.plan(args.seat, env=env))
         return 0
+
+    if args.cmd == "triage-lock":
+        import dm_triage_agent as TA
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage", "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": "-"}})
+                return 2
+        out = TA.agent_lock(args.seat, args.by or "seat:" + args.seat, env=env, release=args.release, status=args.status)
+        _print_json(out)
+        return 0 if out.get("ok") else 3
 
     if args.cmd in ("consolidate", "reopen"):
         import dm_triage_agent as TA
