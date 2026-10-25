@@ -628,6 +628,9 @@ aib_take_instance_flag() {
   else
     INSTANCE="$v"
     ! aib_cabin_is_primary "$v" || MAIN_EXPLICIT=1
+    if [ "$MAIN_EXPLICIT" != "1" ]; then   # 10-25:跟第四參數同一道(短碼解析 / 對不到就拒、不建夾)
+      INSTANCE="$(aib_cabin_pick_named "$v" "${AIB_INSTANCE_ROOT:-$(aib_cabin_state_root)/instances}" "$( [ "$DRY" = "1" ] && echo 1 || echo 0 )")" || exit 2
+    fi
   fi
 }
 
@@ -1180,6 +1183,10 @@ if [ "${#POS[@]}" -eq 4 ]; then
     # fail-closed:直接吃 cabin_resolve 已有的驗證器(rc=2 且點名該值),
     # 不在這裡再寫一份近似的判斷。
     aib_cabin_check_name "instance" "$INSTANCE" || exit 2
+    # 10-25:指名的艙要真的在(短碼 6ddf 解析成完整艙名;對不到 / 多個 / 沒權杖 ⇒ 拒,不建任何夾)。主艙照舊走下面的 main 規則
+    if [ "$MAIN_EXPLICIT" != "1" ]; then
+      INSTANCE="$(aib_cabin_pick_named "$INSTANCE" "${AIB_INSTANCE_ROOT:-$(aib_cabin_state_root)/instances}" "$( [ "$DRY" = "1" ] && echo 1 || echo 0 )")" || exit 2
+    fi
   fi
   unset 'POS[3]'
 fi
