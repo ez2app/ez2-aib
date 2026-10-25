@@ -629,7 +629,7 @@ def wake_decision(rec, now=None, lock=None, load1=None):
 
 def _wake_decision(rec, now=None, lock=None):
     """純函式 → (叫?, 原因, 是不是「再叫一次」)。原因:under-threshold / agent-working / all-handled / seat-took /
-    inprog-cooldown / waiting-pickup / triage-stalled / over-threshold / rewake。
+    inprog-cooldown / waiting-pickup / seat-acted / triage-stalled / over-threshold / rewake。
     「接手了」只認 triage-lock 的登記時間 ≥ 叫醒時間(DMTRIAGE 整理檔不算:沒登記就分不出還在做還是做完了,
     算的話每一拍都會叫)。"""
     if not isinstance(rec, dict):
@@ -663,6 +663,9 @@ def _wake_decision(rec, now=None, lock=None):
         return False, "waiting-pickup", False
     if fresh:
         return True, "over-threshold", False           # 等接手的期間又來新信 ⇒ 當新的一次叫(重新算次數)
+    # #374 r7 / S22:叫過的那批有幾封已經離開(本席結掉 / 收掉)⇒ 本席有在處理,不是「沒人接」,不再叫
+    if (woke | set(str(i) for i in (rec.get("woke_inprog_ids") or []))) - (unread | inprog):
+        return False, "seat-acted", False
     if int(rec.get("followups") or 0) >= REWAKE_MAX:
         return False, "triage-stalled", False
     return True, "rewake", True
