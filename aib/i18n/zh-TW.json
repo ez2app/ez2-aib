@@ -5010,7 +5010,7 @@
   "aib.seat.panel.remote_why_server_not_ready": "ez2.page 遙控還沒開放",
   "aib.seat.panel.remote_why_server_unreachable": "連不上 ez2.page",
   "aib.seat.panel.queued_locked": "@{seat} 的解鎖視窗已關，排隊的字沒送;請在艦長室按重試(會要 Touch ID)",
-  "aib.seat.panel.help_queued": "排隊背景送：只在解鎖視窗內送，不彈 Touch ID、不延長視窗;視窗關了回 locked",
+  "aib.seat.panel.help_queued": "排隊背景送：只在解鎖視窗內送，不彈 Touch ID、不延長視窗;視窗關了回 locked;--queued 時 --unlock-min 不作用(不開窗)",
   "aib.chat.phone_forward.touchid_reason": "打開 BB Call 轉手機:給本人的信躺 {minutes} 分鐘就送「有 N 封新信」到已配對手機,每小時最多 {per_hour} 則",
   "aib.chat.phone_forward.hint_touchid": "要本人按 Touch ID 才能打開或放寬 BB Call 轉手機;沒按所以什麼都沒改(關掉不用按)",
   "aib.doctor.check.page_features.skipped": "沒查 ez2.page 功能清單(AIB_DOCTOR_NO_NET=1)",
