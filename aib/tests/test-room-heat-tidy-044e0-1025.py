@@ -194,9 +194,10 @@ class Trees(Base):
         self.assertTrue((dest / "nm-044e0").exists())
         self.assertFalse((self.wt / "a-044e0").exists())
         self.assertTrue((self.wt / "x-044e0").exists() and (self.wt / "dirty-044e0").exists())
-        listed = subprocess.run(["git", "-C", str(self.main), "worktree", "list"], capture_output=True, text=True).stdout
-        self.assertNotIn("a-044e0", listed)
-        self.assertNotIn("nm-044e0", listed)
+        listed = subprocess.run(["git", "-C", str(self.main), "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+        paths = [l[len("worktree "):] for l in listed.splitlines() if l.startswith("worktree ")]
+        self.assertNotIn(str(self.wt / "a-044e0"), paths)        # 比整條路徑:「bad\a-044e0」裡也有 a-044e0 這串字(ubuntu CI 踩過)
+        self.assertNotIn(str(self.wt / "nm-044e0"), paths)
         listed = subprocess.run(["git", "-C", str(self.main), "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
         self.assertIn("lost-044e0", listed)                     # 別棵失聯樹的登記不准被清(不跑全倉 prune)
         git(self.main, "branch", "-D", "merged-a")              # 分支被刪了也要還原得回來(-B)
