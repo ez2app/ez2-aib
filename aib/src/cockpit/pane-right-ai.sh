@@ -2245,6 +2245,7 @@ render_data['usage'] = _usage
 _badge = badge_inputs(icons=ENGINE_ICONS)
 render_data['engine_badge_mode'] = _badge['mode']
 render_data['engine_icon_available'] = _badge['icon_available']
+render_data['engine_badge_missing_reason'] = _badge.get('missing_reason')
 if _badge['reason']:
     sys.stderr.write('engine-badge: %s\n' % _badge['reason'])
 # 右欄兩行的顯示開關(the maintainer 2026-09-05)。★ 每一幀讀一次,不快取:

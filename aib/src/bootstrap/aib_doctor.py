@@ -625,6 +625,31 @@ def check_auto_update(state_root, repo_root, env=None):
                    "" if status == "ok" else _C("auto_update.remedy"))
 
 
+def check_badge_font(repo_root, env=None, runner=None, platform=None):
+    """AI 符號(右欄 / 狀態列的引擎 logo,Nerd Font 私用區字)畫不畫得出(10-25 Mac Pro 13:字型檔裝了、
+    Apple Terminal 設定檔卻還是 SF Mono ⇒ 空白)。畫得出 ⇒ OK;字型檔缺 / 終端機字型畫不出 ⇒ NOTE + 怎麼補;
+    使用者自己設了 letters ⇒ OK。只讀(字型檔 cmap + Terminal 偏好),不改任何設定、不連網。"""
+    env = dict(os.environ if env is None else env)
+    rend = str(Path(repo_root) / "src" / "cockpit" / "render")
+    try:
+        if rend not in sys.path:
+            sys.path.insert(0, rend)
+        import engine_badge_mode as M
+        import render_lib as R
+        if (env.get(M.MODE_ENV) or "").strip().lower() == "letters":
+            return _result("badge_font", OK, _C("badge_font.letters"))
+        b = M.badge_inputs(env, icons=R.ENGINE_ICONS, tty=True, runner=runner, platform=platform)
+    except Exception as exc:  # noqa: BLE001
+        return _result("badge_font", NOTE, _C("badge_font.error", error=type(exc).__name__))
+    if b["missing_reason"] is None:
+        return _result("badge_font", OK, _C("badge_font.ok"))
+    if b["missing_reason"] == "terminal_font":
+        tf = M.terminal_font_check({ord(c) for c in R.ENGINE_ICONS.values()}, env, runner, platform)
+        return _result("badge_font", NOTE, _C("badge_font.terminal", profile=tf.get("profile") or "?", font=tf.get("font") or "?"),
+                       _C("badge_font.terminal_remedy", profile=tf.get("profile") or "?"))
+    return _result("badge_font", NOTE, _C("badge_font.missing"), _C("badge_font.missing_remedy"))
+
+
 # ez2.page 開了哪些功能(Andy 10-21 夜「建議全部做」第 4 件;@abb89 裁 L1:伺服器只有 GET /api/v1/page/features)。
 # 核心常比伺服器先上(例:unbind 回 page_unbind_unsupported),會員要分得出「自己的問題」還是「伺服器還沒開」。
 # 抓取跟 60 秒快取一律走 remote_link.fetch_features(跟 aib seat remote status 同一份,@abb89 裁)。
@@ -815,6 +840,7 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
     checks.append(check_dm_latency(state_root, repo_root))
     checks.append(check_temp(state_root, repo_root))
     checks.append(check_auto_update(state_root, repo_root))
+    checks.append(check_badge_font(repo_root))
     checks.append(check_page_features(state_root, repo_root))
     return checks
 

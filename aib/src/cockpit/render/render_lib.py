@@ -486,16 +486,17 @@ def render_tab_bar(labels, active, hint="", cabin_id=None, width=None):
 
 
 def resolve_engine_badge(provider, fallback="--", truecolor=False, mode="letters",
-                         icon_available=True, label_override=None):
+                         icon_available=True, label_override=None, missing_reason=None):
     """R6:回 {"text","mode","fallback_reason"}——徽章文字、**實際**用的態、退回理由(None=沒退)。
 
     icon_available 是採集端注入的能力(與 truecolor 同形:函式不自己查字型、不讀環境);
     要 icon 而字型不可用 ⇒ 退 letters,fallback_reason="font_missing"(具名,落進 rowmap detail 可數)。
-    mode 不認得 ⇒ letters,fallback_reason="unknown_mode"。未知 provider ⇒ text=fallback、mode 照算。"""
+    mode 不認得 ⇒ letters,fallback_reason="unknown_mode"。未知 provider ⇒ text=fallback、mode 照算。
+    missing_reason:採集端給的退回名(10-25 terminal_font = 字型檔在、Apple Terminal 設定檔字型畫不出);只收這兩個名字。"""
     if mode not in BADGE_MODES:
         effective, reason = "letters", "unknown_mode"
     elif mode != "letters" and not icon_available:
-        effective, reason = "letters", "font_missing"
+        effective, reason = "letters", (missing_reason if missing_reason in ("font_missing", "terminal_font") else "font_missing")
     else:
         effective, reason = mode, None
     text = render_engine_badge(provider, fallback, truecolor=truecolor, mode=effective,
@@ -3970,6 +3971,7 @@ def render_ai_list_with_map(data, width=DEFAULT_PANE_W - 1):
                 mode=data.get("engine_badge_mode", "letters"),
                 icon_available=(data.get("engine_icon_available") or {}).get(
                     str(provider or "").strip().lower(), True),
+                missing_reason=data.get("engine_badge_missing_reason"),
                 # 10-05 the maintainer 21:5x「綁定完應該叫完整名稱 musebot 而不只有 MSB」:橋接席沒有 .pct 觀測模型,
                 # 要求名就是顯示名(與下面正常列同一條規則),開席中/未確認那一列也不得退回三字碼。
                 label_override=(ai.get("model")
@@ -4008,7 +4010,7 @@ def render_ai_list_with_map(data, width=DEFAULT_PANE_W - 1):
             provider, engine, truecolor=data.get("truecolor"),
             mode=data.get("engine_badge_mode", "letters"),
             icon_available=_avail.get(str(provider or "").strip().lower(), True),
-            label_override=_shown_model)
+            label_override=_shown_model, missing_reason=data.get("engine_badge_missing_reason"))
         engine_label = _badge["text"]
         # ── L9:觀測 ≠ 要求 的小記號 ────────────────────────────────────────
         # 判定在採集端(model_label.model_drift_state,唯一正本),這裡只收布林。
