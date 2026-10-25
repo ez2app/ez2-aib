@@ -164,7 +164,7 @@ def _server_err(exc):
         return code, 3, {"note": revoked_note.note(exc)}
     if code == "plugin_plan_required":   # 方案不到目錄要的級、也沒單買(10-25);回條多帶 plan = 需要的級
         need = exc.details[0] if exc.details and isinstance(exc.details[0], str) and exc.details[0] in PLANS else ""
-        return code, 3, ({"plan": need} if need else {})
+        return code, 4 if http >= 500 else 3, ({"plan": need} if need else {})   # rc 同其他 SERVER_CODES(#378 r1 L1)
     if code in SERVER_CODES:
         return code, 4 if http >= 500 else 3, {}
     if http == 403 and code == SCOPE_MISSING:   # 序號綁的憑證沒有 plugins:read(10-25 @abb89)⇒ 指去用配對碼重綁
