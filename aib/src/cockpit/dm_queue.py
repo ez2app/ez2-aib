@@ -370,6 +370,8 @@ def _global_or_none(value):
         out["author"] = value["author"]
     if value.get("human_reply") is True:       # 10-19:回主人本人那封的;只給艦長室
         out["human_reply"] = True
+    if value.get("echo_reply") is True:        # 10-25 #306:回音小幫手的自動回覆;只給艦長室
+        out["echo_reply"] = True
     return out
 
 
@@ -2800,6 +2802,8 @@ def _row(item, seat, now, index=None):
         row["global"]["relation"] = g.get("relation")
         if g.get("human_reply") is True:
             row["global"]["human_reply"] = True
+        if g.get("echo_reply") is True:
+            row["global"]["echo_reply"] = True
     m = item.get("im")
     if isinstance(m, dict):
         # 第 39 節:別的通訊軟體來信;contact_key 連艦長室通訊錄那一筆(telegram:<user_id>)

@@ -7,7 +7,7 @@ C1 aib chat echo on / off / --json:echo.json 開關(0600);不帶 = 看現在
 C2 開著 ⇒ status --json echo:true、文字版醒目一行;selftest --json 有 echo 一列(ok null,不算錯)(#306 審 A-M10)
 連 Nostr(要 AIB_TEST_NOSTR_VENV;本機假中繼站):
 E1 小幫手開著;Andy(不是好友)寄一封 ⇒ Andy 收到 queued 回條 + 一封「收到了」(沒帶語言 ⇒ 照國別回中文)
-   Andy 那邊那封待審、原因 echo_reply(只進艦長室,不交給 AI;#306 審 B-M1)
+   Andy 那邊那封待審、原因 echo_reply(只進艦長室,不交給 AI、AI 分組也排除;#306 審 B-M1 / r2)
    小幫手那台:沒有 inbox、沒把 Andy 記成好友 / 通訊錄、沒留補寄檔、回音沒寫 sent/ 與回條(B-M3);稽核 echo,不含內容
 E2 10 秒內再寄一封 ⇒ 小幫手靜默(稽核 echo:quiet),Andy 只收到一封
 E3 小幫手關掉 ⇒ 照舊拒收陌生人(refused not_friend)
@@ -93,6 +93,9 @@ class Network(unittest.TestCase):
         self.assertIn("收到了,線路是通的", got()[0]["msg"], "沒帶語言 ⇒ 照對方國別(TW)回中文")
         self.assertEqual((got()[0]["status"], self.DQ.hold_why_key(got()[0])), (self.DQ.HOLD_STATUS, "echo_reply"),
                          "回音那句只進艦長室、不交給 AI")
+        import dm_triage as TR
+        self.assertIs(got()[0]["global"].get("echo_reply"), True)
+        self.assertEqual(TR.eligible_rows(got()), [], "AI 分組也看不到回音那句(#306 r2)")
         self.assertEqual([p.name for p in (h.root / "sent").glob("*.json")] if (h.root / "sent").exists() else [], [],
                          "回音不寫寄出帳")
         self.assertEqual([p.name for p in (h.root / "receipts").glob("*.json")] if (h.root / "receipts").exists() else [],

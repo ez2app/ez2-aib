@@ -70,7 +70,7 @@ RECEIPT_STAGES = ("resolved", "relayed", "queued", "delivered", "held", "refused
 RECEIPT_FINAL = ("delivered", "held", "refused", "expired", "failed")
 DELIVERY_STATES = ("queued", "delivered", "held", "refused", "expired", "read", "still_waiting")
 # 10-21 回條語意:held 的原因碼(aib-reason)。寄件端只拿來顯示(@ee4f8:不准拿來判放行 / 權限 / 過期、未知值當沒帶、不原樣印進頁面)
-HELD_REASONS = ("human_reply", "stranger")
+HELD_REASONS = ("human_reply", "stranger", "echo_reply")      # echo_reply:#306 r2 B-L4(新碼另加,舊碼不動)
 WAIT_DAYS_MAX = 30          # still_waiting 的 days 上限(收件端留 7 天;多給一點餘裕,超過的當壞值)
 INBOX_CLASSES = ("own", "paired", "friend", "stranger")
 # 國別(Andy 10-15 18:1x:「全球要能判斷國別」;裁:抬頭加國別、申報 + 時區佐證、用於顯示 / 預設回信語言 / 法規)
