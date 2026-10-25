@@ -236,6 +236,22 @@ class CfGrant(Base):
                                   "permission_groups": [{"id": "g-mass-url-redirects-read"}, {"id": "g-account-rule-lists-read"}],
                                   "resources": {"com.cloudflare.api.account." + AID: "*"}})
 
+    def test_g3c_zone_settings_perms(self):
+        # zone 設定(全域 AOP tls_client_auth、SSL 模式):讀寫都只給那個 zone,不給帳號層
+        self.assertEqual(CG.PERMS["zone-settings-read"], ("Zone Settings Read", "zone"))
+        self.assertEqual(CG.PERMS["zone-settings-write"], ("Zone Settings Write", "zone"))
+        self.assertEqual(CG.parse_perms("zone-settings-write,zone-read"), ("zone-read", "zone-settings-write"))
+        rc, res = self.grant(["ez2.app", "zone-settings-read,zone-settings-write", "--push", "eu01:/etc/x.env"])
+        self.assertEqual(rc, 0, res)
+        pol = self.posts()[0][2]["policies"]
+        self.assertEqual(pol, [{"effect": "allow",
+                                "permission_groups": [{"id": "g-zone-settings-read"}, {"id": "g-zone-settings-write"}],
+                                "resources": {"com.cloudflare.api.account.zone." + ZID: "*"}}])
+        self.assertIn("zone-settings-write", self.touch.reason)             # 本人在 Touch ID 視窗看得到
+        for bad in ("zone-settings", "zone-settings-admin", "Zone Settings Write"):
+            with self.assertRaises(ValueError):
+                CG.parse_perms(bad)
+
     def test_g4_touchid_gate(self):
         for kw, why in (({"touch": Unseal(ok=False, why="cancel")}, "touchid_cancel"),
                         ({"touch": Unseal(ok=False, why="no_biometry")}, "touchid_unavailable"),

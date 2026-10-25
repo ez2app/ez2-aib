@@ -54,6 +54,9 @@ PERMS = {
     "zone-read": ("Zone Read", "zone"),
     "waf-write": ("Zone WAF Write", "zone"),
     "ssl-write": ("SSL and Certificates Write", "zone"),
+    # zone 設定(10-25 @abb89 交辦):全域 Authenticated Origin Pulls(tls_client_auth)、SSL 模式等;只給那個 zone
+    "zone-settings-read": ("Zone Settings Read", "zone"),
+    "zone-settings-write": ("Zone Settings Write", "zone"),
     "routes-write": ("Workers Routes Write", "zone"),
     "workers-write": ("Workers Scripts Write", "account"),
     # 邊緣轉址(10-21 suntan apex→www):Single Redirect 寫在 zone;Bulk Redirect 與其清單在帳號層,只給讀(看會不會撞)
