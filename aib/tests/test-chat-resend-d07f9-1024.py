@@ -283,8 +283,8 @@ class Knife(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k5_resend_self_copy(self):
-        self._cn('            ok = await _send_to(res["dm_relays"], [], gw, None)',
-                 '            ok = await _send_to(res["dm_relays"], CR.relays(), gw, gw)', "Wire.test_b5_resend_path")
+        self._cn('            ok = await _send_to(res["dm_relays"], [], gw, None)\n',
+                 '            ok = await _send_to(res["dm_relays"], CR.relays(), gw, gw)\n', "Wire.test_b5_resend_path")
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k6_no_sender_check(self):

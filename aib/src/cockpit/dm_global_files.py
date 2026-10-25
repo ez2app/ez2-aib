@@ -70,7 +70,7 @@ RECEIPT_STAGES = ("resolved", "relayed", "queued", "delivered", "held", "refused
 RECEIPT_FINAL = ("delivered", "held", "refused", "expired", "failed")
 DELIVERY_STATES = ("queued", "delivered", "held", "refused", "expired", "read", "still_waiting")
 # 10-21 回條語意:held 的原因碼(aib-reason)。寄件端只拿來顯示(@ee4f8:不准拿來判放行 / 權限 / 過期、未知值當沒帶、不原樣印進頁面)
-HELD_REASONS = ("human_reply", "stranger")
+HELD_REASONS = ("human_reply", "stranger", "echo_reply")      # echo_reply:#306 r2 B-L4(新碼另加,舊碼不動)
 WAIT_DAYS_MAX = 30          # still_waiting 的 days 上限(收件端留 7 天;多給一點餘裕,超過的當壞值)
 INBOX_CLASSES = ("own", "paired", "friend", "stranger")
 # 國別(Andy 10-15 18:1x:「全球要能判斷國別」;裁:抬頭加國別、申報 + 時區佐證、用於顯示 / 預設回信語言 / 法規)
@@ -222,6 +222,7 @@ def check_outbox(rec):
     _opt(rec, "reply_to", lambda v: isinstance(v, str) and bool(MSGID_RE.match(v)), "要是 msgid")
     for k in ("thread", "kind", "lang"):
         _opt(rec, k, _is_str, "要是字串")
+    _opt(rec, "echo", lambda v: isinstance(v, bool), "要是 true/false")   # 10-24 回音小幫手回的那一句:不加好友、不補寄
     return rec
 
 
@@ -273,6 +274,7 @@ def check_inbox(rec):
     _opt(rec, "country", lambda v: isinstance(v, str) and bool(COUNTRY_RE.match(v)), "要是兩碼大寫國碼")
     _opt(rec, "tz", lambda v: isinstance(v, str) and len(v) <= 64 and bool(TZ_RE.match(v)), "要是 IANA 時區名")
     _opt(rec, "author", lambda v: v in AUTHORS, "只能 %s" % "/".join(AUTHORS))   # 寄件方自報誰寫的(aib-author)
+    _opt(rec, "echo", lambda v: v is True, "只能是 true")      # 對方回音小幫手回的那一句(aib-echo):只進艦長室
     return rec
 
 
@@ -1292,6 +1294,28 @@ def note_first(root, key, now=None):
     def fn(cur):
         cur.setdefault(key, at)
     _locked_update(root, "first.json", fn, lambda: {"v": VERSION})
+
+
+# echo.json(10-24 Andy 選「官方回音小幫手」):這台當回音小幫手 ⇒ 收到信只回一句,不存內容、不接 AI。
+def echo_on(root):
+    try:
+        cur = json.loads((Path(root) / "echo.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(cur, dict) and cur.get("on") is True
+
+
+def set_echo(root, on):
+    p = Path(root) / "echo.json"
+    if on:
+        Path(root).mkdir(parents=True, exist_ok=True)
+        write_json(str(p), {"v": VERSION, "on": True, "at": int(time.time())})
+        os.chmod(str(p), 0o600)                                   # #306 審 A-L12
+    else:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def drop_world(root, keep_owner):

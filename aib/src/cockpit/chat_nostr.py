@@ -14,6 +14,7 @@ chat_bridge 用子行程叫它:
 """
 import argparse
 import asyncio
+import collections
 import datetime
 import json
 import re
@@ -432,6 +433,8 @@ def _rumor_tags(rec, from_addr):
         t.append(["aib-expires", str(rec["expires"])])
     if rec.get("author") in GF.AUTHORS:                                   # 第 35 節第 2 點:誰寫的(本人 = 艦長室驗過 PIN)
         t.append(["aib-author", rec["author"]])
+    if rec.get("echo"):
+        t.append(["aib-echo", "1"])                  # 回音小幫手回的那一句:收件端只進艦長室、不交給 AI(#306 審 B-M1)
     tz = _local_tz()
     if tz:
         t.append(["aib-tz", tz])
@@ -528,6 +531,7 @@ class Sender(object):
     def __init__(self, root):
         self.root = Path(root)
         self.cache = {}
+        self.echo_in = collections.deque(maxlen=2000)   # 回音小幫手剛收的陌生來信 msgid:outbox echo:true 只認回這些的
 
     async def _resolve(self, addr):
         hit = self.cache.get(addr)
@@ -582,6 +586,10 @@ class Sender(object):
             self._done(msgid)
             return
         frm = rec["from"]
+        if rec.get("echo") and not (GF.echo_on(self.root) and rec.get("reply_to") in self.echo_in):
+            rec.pop("echo")                          # #306 r2:只有回音小幫手剛收的陌生來信才認 echo,其他照一般寄件
+        if rec.get("echo") and frm.get("attested"):
+            return await self._handle_echo(msgid, rec)
         if not frm.get("attested"):
             # 寄件人身分沒量到 ⇒ 不拿那一席的金鑰代簽(簽了就等於證明是那一席寄的)
             self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "refused", "unattested")
@@ -615,7 +623,8 @@ class Sender(object):
         # 寄出帳:對方回條回來時,只收「我寄給的那個 npub」簽的(防有人冒充對方亂回條)。
         # 要在寄之前寫:公開站回 OK 可能比對方的回條還慢(10-16 實機驗收 5 則掉 3 張 held 回條)
         (self.root / "sent").mkdir(exist_ok=True)
-        sent = {"v": 1, "to": res["seat"]["npub"], "at": int(time.time()), "op": rec.get("op") or "send", "owner": res.get("owner")}
+        sent = {"v": 1, "to": res["seat"]["npub"], "at": int(time.time()), "op": rec.get("op") or "send", "owner": res.get("owner"),
+                "seat": frm["seat"]}                 # 寄件席:回信要回到同一席才放寬(#306 審 A-L11)
         if rec.get("author") in GF.AUTHORS:   # 10-19 Andy:回「主人本人寄的」那封的信只進艦長室,收件時要查得到
             sent["author"] = rec["author"]
         write_json(str(self.root / "sent" / (msgid + ".json")), sent)
@@ -632,6 +641,31 @@ class Sender(object):
             self._done(msgid)
         else:
             self._retry_later(msgid, "relays")
+
+    async def _handle_echo(self, msgid, rec):
+        """回音小幫手回的那一句(#306 審 B-M3):只包一份送到對方收信站。不寫 sent/、不寫回條、不補寄、不記好友、
+        不發給自己那份(上萬人也不長檔);送不出去 ⇒ 放掉,只寫稽核行。"""
+        self._done(msgid)
+        entry = next((e for e in NK.sending_seats() if e["seat5"] == rec["from"]["seat"]), None)
+        m = NK.read_map()
+        if entry is None or not m.get("owner"):
+            audit(self.root, "out", msgid, "-", "echo:no_sender_key")
+            return
+        rc, res = await self._resolve(rec["to"])
+        if rc != 0:
+            audit(self.root, "out", msgid, "-", "echo:unresolved")
+            return
+        await self._ensure_dm_relays(entry)
+        tags = _rumor_tags(rec, "%s/%s/%s" % (m["owner"]["npub"], rec["from"]["cabin"], rec["from"]["seat"]))
+        keys = _keys(entry["key"])
+        gw = N.nip17_make_private_msg(keys, N.PublicKey.parse(res["seat"]["npub"]), rec.get("content") or "",
+                                      rumor_extra_tags=tags)
+        keys = None
+        try:
+            ok = await _send_to(res["dm_relays"], [], gw, None)     # 回音:只送對方
+        except Exception:   # noqa: BLE001
+            ok = []
+        audit(self.root, "out", msgid, res["seat"]["npub"], "echo" if ok else "echo:relays")
 
     async def resend(self, cur):
         """補寄一封(10-24;#303 審 B-H2):只重包、送到對方收信站。不寫回條、不改 sent/、不另發給自己那份(B-M6:
@@ -1216,6 +1250,11 @@ PRESENCE_TICK_S = float(os.environ.get("AIB_CHAT_PRESENCE_TICK") or 60)     # �
 PRESENCE_EVERY_S = float(os.environ.get("AIB_CHAT_PRESENCE_EVERY") or 900)  # 沒變也每 15 分鐘送一次
 PRESENCE_GAP_S = float(os.environ.get("AIB_CHAT_PRESENCE_GAP") or 120)      # 同一位對方最少間隔
 ASK_ANSWER_GAP_S = float(os.environ.get("AIB_CHAT_ASK_GAP") or 60)          # 回「在不在」:同一位最少間隔
+REPLY_WINDOW_S = float(os.environ.get("AIB_CHAT_REPLY_WINDOW") or 600)     # 回我剛寄的信:寄出後這段時間內當好友收
+ECHO_GAP_S = float(os.environ.get("AIB_CHAT_ECHO_GAP") or 10)              # 回音小幫手:同一位主人最少間隔
+ECHO_PER_MIN = int(os.environ.get("AIB_CHAT_ECHO_PER_MIN") or 120)          # 回音小幫手:整台每分鐘最多回幾封
+ECHO_TEXT = {"zh-TW": "收到了,線路是通的。", "en": "Got it, the line works.",
+             "ja": "届きました。回線はつながっています。", "ko": "받았습니다. 연결이 잘 됩니다."}
 ASK_OLD_MAX = 20                                                             # 刷新時最多問幾位還沒有心跳的舊版好友
 BEAT_D = "aib-beat"
 BEAT_EVERY_S = float(os.environ.get("AIB_CHAT_BEAT_EVERY") or 300)          # 10-24 綠點:心跳多久發一筆
@@ -1393,6 +1432,8 @@ class Receiver(object):
         self.root = Path(root)
         self.sender = sender
         self.led = Ledger(root)
+        self.echo_last, self.echo_win = {}, []
+        self.echo_ids = collections.deque(maxlen=2000)     # 我回過的回音 msgid:回這些的不再回(#306 審 B-M1)
         self.client = None
         self.orphans = []      # 查不到寄出帳的回條:[(到期, ref, stage, tags, from_npub)](第 27.8 節)
         # 10-20 @abb89(會員清單 E 段):收信連續失敗 ⇒ 警報。Pro 13 從 10-19 11:20 起每 5 秒重來、20 小時沒人發現。
@@ -1869,7 +1910,19 @@ class Receiver(object):
                 if res["seat"].get("name"):
                     rec["persona_name"] = res["seat"]["name"]
         if is_request:
-            return await self.on_request(rec, parsed, peer, msgid, from_npub)
+            return await self.on_request(rec, parsed, peer, msgid, from_npub)    # 好友申請不受回音影響(#306 審 A-M10)
+        if rec["class"] == "stranger" and rec["verified"] \
+                and self._replies_my_sent(tags.get("aib-reply-to"), from_npub, rec["to_seat"]):
+            # 10-24 真站實測:對方秒回時,回信可能比我這邊「寄出成功 ⇒ 記成好友」還早到 ⇒ 回我剛寄的那封就當好友收
+            rec["class"] = "friend"
+        if rec["class"] == "stranger" and GF.echo_on(self.root):
+            # 回音只對陌生人(好友照一般流程,#306 審 A-M10);對方也是回音 / 回我回音的那封 ⇒ 不回(B-M1:不無限來回)
+            if tags.get("aib-echo") or tags.get("aib-reply-to") in self.echo_ids:
+                audit(self.root, "in", msgid, from_npub, "echo:loop")
+                return
+            return await self.on_echo(rec, peer, msgid, from_npub, entry, tags.get("aib-lang"))
+        if tags.get("aib-echo") == "1":
+            rec["echo"] = True                       # 對方回音小幫手回的:只進艦長室、不交給 AI(#306 審 B-M1)
         if rec["class"] == "stranger":
             # 維護者 10-16 12:1x:加入好友之後才收、才有已讀;不然拒收(不進佇列、不進待審、AI 看不到)
             why = "not_friend" if rec["verified"] else "unverified"
@@ -1907,6 +1960,51 @@ class Receiver(object):
             sys.stderr.write("inbox:%s\n" % err)
             audit(self.root, "in", msgid, from_npub, "refused")
             await self.send_receipt(msgid, "refused")
+
+    def _replies_my_sent(self, ref, from_npub, to_seat):
+        """ref 是我 REPLY_WINDOW_S 內寄出的一封、還在寄(寄出帳在寄之前就寫了,寄完才記好友)、當初寄給的就是簽這封的那一席、
+        而且回到原寄件席 ⇒ True。已經寄完還是陌生人 = 寄完之後被刪 / 封鎖了 ⇒ 不放寬(#306 審 A-L11)。"""
+        if not GF.MSGID_RE.match(ref or "") or not (self.root / "sending" / (ref + ".json")).exists():
+            return False
+        try:
+            sent = json.loads((self.root / "sent" / (ref + ".json")).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(sent, dict) and sent.get("to") == from_npub and sent.get("op") in ("send", "request") \
+            and sent.get("seat") == to_seat and time.time() - int(sent.get("at") or 0) < REPLY_WINDOW_S
+
+    async def on_echo(self, rec, peer, msgid, from_npub, entry, lang):
+        """回音小幫手(10-24 Andy 選):名冊驗得到的陌生寄件人 ⇒ 回條 + 回一句「收到了」;不存內容、不進 AI、不加好友。
+        驗不到(沒地址 / 簽的不是名冊那一席)⇒ 不回(不知道該回誰)。同一位 ECHO_GAP_S 內、整台每分鐘超過 ECHO_PER_MIN ⇒ 靜默。"""
+        if not peer or not rec.get("from_addr"):
+            audit(self.root, "in", msgid, from_npub, "echo:unverified")
+            return
+        now = time.time()
+        owner = GF.parse_address(rec["from_addr"])["owner"]
+        last = self.echo_last.get(owner)
+        win = [t for t in self.echo_win if now - t < 60]
+        if (last and now - last < ECHO_GAP_S) or len(win) >= ECHO_PER_MIN:
+            self.echo_win = win
+            audit(self.root, "in", msgid, from_npub, "echo:quiet")
+            return
+        if len(self.echo_last) > 10000:
+            self.echo_last = {o: t for o, t in self.echo_last.items() if now - t < ECHO_GAP_S}
+        self.echo_last[owner] = now
+        self.echo_win = win + [now]
+        await self.send_receipt(msgid, "queued")
+        cabin = entry.get("cabin") if GF._CABIN.match(str(entry.get("cabin") or "")) else "main"
+        lang = lang if lang in ECHO_TEXT else GF.default_lang(rec.get("country"))    # 沒帶語言 ⇒ 照對方國別
+        reply = {"v": GF.VERSION, "msgid": GF.new_msgid(), "created_at": int(now), "op": "send", "echo": True,
+                 "from": {"cabin": cabin, "seat": entry["seat5"], "attested": True}, "to": rec["from_addr"],
+                 "content": ECHO_TEXT.get(lang, ECHO_TEXT["en"]), "reply_to": msgid, "lang": lang}
+        self.sender.echo_in.append(msgid)
+        try:
+            GF.write_outbox(self.root, reply)
+        except GF.ContractError as err:
+            sys.stderr.write("echo:%s\n" % err)
+            return
+        self.echo_ids.append(reply["msgid"])
+        audit(self.root, "in", msgid, from_npub, "echo")
 
     async def _signed_phones(self):
         """主人簽的機器清單裡 role=phone 的手機(中繼站抓、nostr-sdk 驗簽 + 作者 = 主人 + chat_devices 驗內容 + seq 不倒退、

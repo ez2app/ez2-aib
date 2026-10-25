@@ -827,6 +827,7 @@ def status_record(env):
         "mine": len(_friends(env, "mine")),
         "refused_7d": sum(1 for r in read_refused(env) if time.time() - int(r.get("last_at") or 0) < 7 * 86400),
         "off_by_owner": off_marker(env).exists(),
+        "echo": GF.echo_on(root),             # #306 審 A-M10:回音小幫手開著要看得到
         "worker": _worker_status(root, running),
         "bridge_root": str(root),
     }
@@ -1402,6 +1403,21 @@ def cmd_invite_use(a, env, out):
     why = {"delivered": "joined", "queued": "request_pending"}.get(stage, stage)   # queued 跟 connect 的 rc 4 同語意(@abb89 #299 r3 L1)
     return emit(res["rc"] if stage != "held" else 0, why, key, ok=stage in ("delivered", "held", "queued"),
                 owner=parsed["owner"], stage=stage, detail=res["detail"] or "-")
+
+
+def cmd_echo(a, env, out):
+    """回音小幫手開關(10-24 Andy 選):on ⇒ 名冊驗得到的陌生人寄來只回一句「收到了」,不存內容、不接 AI、不加好友;
+    好友的信、好友申請照一般流程(#306 審 A-M10,所以開關不需 Touch ID;status / selftest 會醒目顯示開著)。
+    給官方常開的那台用;一般會員不用開。"""
+    root = bridge_root(env)
+    if a.action in ("on", "off"):
+        GF.set_echo(root, a.action == "on")
+    on = GF.echo_on(root)
+    if a.json:
+        out.write(json.dumps({"echo": on}) + "\n")
+    else:
+        out.write(T("echo_on" if on else "echo_off") + "\n")
+    return 0
 
 
 def cmd_requests(a, env, out):
@@ -2257,6 +2273,8 @@ def selftest(env, fetch=True):
             ("venv", rec["venv"] == "ok", {"pin": NOSTR_SDK_PIN}),
             ("bridge", rec["running"], {}),
             ("heartbeat", rec["heartbeat"], {})]
+    if rec["echo"]:
+        rows.append(("echo", None, {}))            # 官方那台常開,不算錯;但一定要看得到(#306 審 A-M10)
     seen = w.get("relays") or {}
     for u in CR.relays(env):
         rows.append(("relay", (seen.get(u) == "CONNECTED") if seen else None, {"url": u}))
@@ -2416,6 +2434,8 @@ def cmd_status(a, env, out):
         out.write(json.dumps(rec, ensure_ascii=False) + "\n")
         return 0
     out.write(T("status_switch_" + ("on" if rec["enabled"] else "off")) + "\n")
+    if rec["echo"]:
+        out.write(T("status_echo_on") + "\n")
     if rec["running"]:
         out.write(T("status_running", pid=rec["pid"], instance=rec["instance"] or "-") + "\n")
         if rec["state"] in ("no_keys", "no_profile", "no_relays", "publishing", "published"):
@@ -2600,6 +2620,9 @@ def main(argv=None, env=None, out=sys.stdout):
     iv.add_argument("target", nargs="?", help=T("help.invite_target"))
     iv.add_argument("code", nargs="?")
     iv.add_argument("--json", action="store_true")
+    ec = sub.add_parser("echo", help=T("help.echo"))
+    ec.add_argument("action", nargs="?", choices=("on", "off"))
+    ec.add_argument("--json", action="store_true")
     rqs = sub.add_parser("requests", help=T("help.requests"))
     rqs.add_argument("--json", action="store_true")
     so = sub.add_parser("social", help=T("help.social"))
@@ -2783,6 +2806,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_request(a, env, out)
     if a.cmd == "invite":
         return cmd_invite_use(a, env, out) if a.action == "use" else cmd_invite(a, env, out)
+    if a.cmd == "echo":
+        return cmd_echo(a, env, out)
     if a.cmd == "requests":
         return cmd_requests(a, env, out)
     if a.cmd == "connect":

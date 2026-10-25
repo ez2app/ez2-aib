@@ -84,6 +84,8 @@ HOLD_WHY = {
     "human_reply": "回主人本人的線上信:只在艦長室看,不進 AI 框",
     # 第 39 節第一步:Telegram 來信一律只在艦長室看(進 AI 框要第二步的 Telegram 外框,做好前不准放行)
     "im_room": "Telegram 來信:只在艦長室看,不進 AI 框",
+    # 10-25 #306 審 B-M1:對方回音小幫手回的那一句 ⇒ 只在艦長室看(交給 AI 會回信、跟小幫手無限來回)
+    "echo_reply": "回音小幫手的自動回覆:只在艦長室看,不進 AI 框",
 }
 # ── 第 70 項 P2:狀態、種類、轉移表(只住這裡一份;畫面與任務區讀 payload,不自己算)──
 # status 的完整集合。`updated` 不是 status:是衍生旗標 is_update(supersedes 非空且還沒讀),畫面掛角標。
@@ -368,6 +370,8 @@ def _global_or_none(value):
         out["author"] = value["author"]
     if value.get("human_reply") is True:       # 10-19:回主人本人那封的;只給艦長室
         out["human_reply"] = True
+    if value.get("echo_reply") is True:        # 10-25 #306:回音小幫手的自動回覆;只給艦長室
+        out["echo_reply"] = True
     return out
 
 
@@ -1170,6 +1174,7 @@ def enqueue(seat, msg, sender_label, sender_kind="unknown",
 # ── 全球來信的投遞狀態(開發文件第 22.2 節 delivery/;轉接程式照它寄回條)──
 GLOBAL_STRANGER_WHY = HOLD_WHY["global_stranger"]
 HUMAN_REPLY_WHY = HOLD_WHY["human_reply"]
+ECHO_REPLY_WHY = HOLD_WHY["echo_reply"]
 IM_ROOM_WHY = HOLD_WHY["im_room"]
 
 
@@ -2797,6 +2802,8 @@ def _row(item, seat, now, index=None):
         row["global"]["relation"] = g.get("relation")
         if g.get("human_reply") is True:
             row["global"]["human_reply"] = True
+        if g.get("echo_reply") is True:
+            row["global"]["echo_reply"] = True
     m = item.get("im")
     if isinstance(m, dict):
         # 第 39 節:別的通訊軟體來信;contact_key 連艦長室通訊錄那一筆(telegram:<user_id>)
