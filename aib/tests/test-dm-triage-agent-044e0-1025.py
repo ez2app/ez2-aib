@@ -7,8 +7,12 @@ T1 門檻計數:待審 / 進行中各自算;hold_human 與已寫「等什麼」�
 T2 建議:通知 ⇒ close_notice;同寄件鍵同 PR 有較新一輪(新一輪還在排隊、沒送達 ⇒ 還沒被自動結)⇒ close_superseded;
    hold_human 一律 human(就算是舊一輪);正文帶 PR 網址 ⇒ human + evidence_hint;分組照 PR 號 / thread / 寄件人
 T3 唯讀:plan 前後每封信的狀態與 rev 都沒變;CLI triage-plan 印同一份 JSON
+T4 整理子代理身分 agent:<席>/<id>:能讀、能結自己那一席;別席的信、hold_human 放行、刪、回復都不准;格式不對 = actor_missing
+T5 consolidate:每封 done、evidence 指整理檔、記 consolidated_into、hold 跳過;整理檔不存在 ⇒ 全拒;
+   reopen:done → read、清掉 done_*;沒理由 / 子代理 / 別席 ⇒ 拒;CLI consolidate / reopen
 刀(複本 + run_guarded):K1 hold_human 也算進門檻 ⇒ T1 紅;K2 寫了等什麼仍算 ⇒ T1 紅;
-K3 hold_human 也給 close_superseded ⇒ T2 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K3 hold_human 也給 close_superseded ⇒ T2 紅;
+K4 拿掉子代理的收件席前綴檢查 ⇒ T4 紅;K5 回復不查理由 ⇒ T5 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import io
 import json
@@ -128,6 +132,66 @@ class ReadOnly(Base):
         self.assertEqual(before, after)
 
 
+AGENT = "agent:%s/tri-1" % SEAT
+
+
+class Agent(Base):
+    def test_t4_agent_actor_bounds(self):
+        a = self.rec("@bbbbb:事情 A")
+        self.assertTrue(Q.mark_read(SEAT, a["id"], AGENT, env=self.env, now=NOW + 1)["ok"])
+        f = self.d / "proof.md"
+        f.write_text("x", encoding="utf-8")
+        self.assertTrue(Q.mark_done(SEAT, a["id"], AGENT, str(f), env=self.env, now=NOW + 2)["ok"])
+        b = self.rec("@bbbbb:事情 B", now=NOW + 3)
+        self.assertEqual(Q.mark_read(SEAT, b["id"], "agent:ccccc/tri-1", env=self.env, now=NOW + 4)["reason"], "actor")
+        h = self.hold("@bbbbb:等真人", now=NOW + 5)
+        self.assertEqual(Q.mark_read(SEAT, h["id"], AGENT, env=self.env, now=NOW + 6)["reason"], "actor")
+        self.assertEqual(Q._transition(SEAT, b["id"], "deleted", AGENT, env=self.env, now=NOW + 7)["reason"], "actor")
+        self.assertEqual(Q._transition(SEAT, a["id"], "read", AGENT, env=self.env, now=NOW + 8,
+                                       why="reopen:結錯")["reason"], "actor")
+        self.assertEqual(Q.mark_read(SEAT, b["id"], "agent:" + SEAT, env=self.env, now=NOW + 9)["reason"], "actor_missing")
+        rows = [r for r in Q.audit_rows(SEAT, self.env) if r.get("id") == a["id"] and r.get("ok")]
+        self.assertEqual([r.get("actor") for r in rows][-2:], [AGENT, AGENT])
+
+
+class Consolidate(Base):
+    def test_t5_consolidate_and_reopen(self):
+        ids = [self.rec("@bbbbb:同類 %d" % n, now=NOW + n)["id"] for n in (1, 2)]
+        TK.take(SEAT, ids[1], ME, env=self.env, now=NOW + 3)
+        h = self.hold("@bbbbb:等真人", now=NOW + 4)
+        f = self.d / "DMTRIAGE-aaaaa-x.md"
+        bad = TA.consolidate(SEAT, ids, str(self.d / "nope.md"), AGENT, env=self.env, now=NOW + 5)
+        self.assertEqual(bad["reason"], "evidence")
+        self.assertEqual(Q._load_item(SEAT, ids[0], self.env)["status"], "delivered")
+        f.write_text("整理", encoding="utf-8")
+        r = TA.consolidate(SEAT, ids + [h["id"]], str(f), AGENT, env=self.env, now=NOW + 6)
+        self.assertFalse(r["ok"])                                  # hold 那封跳過 ⇒ 整體不算全成
+        self.assertEqual([(x["id"], x["ok"]) for x in r["results"]], [(ids[0], True), (ids[1], True), (h["id"], False)])
+        for i in ids:
+            it = Q._load_item(SEAT, i, self.env)
+            self.assertEqual((it["status"], it["done_evidence"], it["consolidated_into"]), ("done", str(f), str(f)))
+        self.assertEqual(Q._load_item(SEAT, h["id"], self.env)["status"], Q.HOLD_STATUS)
+        self.assertEqual(TA.reopen(SEAT, ids[0], ME, "", env=self.env, now=NOW + 7)["reason"], "transition")
+        self.assertEqual(TA.reopen(SEAT, ids[0], AGENT, "結錯", env=self.env, now=NOW + 7)["reason"], "actor")
+        self.assertEqual(TA.reopen(SEAT, ids[0], "seat:ccccc", "結錯", env=self.env, now=NOW + 7)["reason"], "actor")
+        self.assertEqual(Q._transition(SEAT, ids[0], "read", ME, env=self.env, now=NOW + 7, why="reopen:")["reason"],
+                         "transition")
+        r = TA.reopen(SEAT, ids[0], ME, "其實還沒做完", env=self.env, now=NOW + 8)
+        self.assertTrue(r["ok"], r)
+        it = Q._load_item(SEAT, ids[0], self.env)
+        self.assertEqual((it["status"], it.get("done_at"), it.get("consolidated_into"), it["reopen_why"]),
+                         ("read", None, None, "reopen:其實還沒做完"))
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = Q.main(["reopen", "--seat", SEAT, "--id", ids[1], "--why", "再看一次"], env=self.env)
+        self.assertEqual((rc, Q._load_item(SEAT, ids[1], self.env)["status"]), (0, "read"))
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = Q.main(["consolidate", "--seat", SEAT, "--ids", ",".join(ids), "--file", str(f), "--by", AGENT],
+                        env=self.env)
+        self.assertEqual((rc, json.loads(out.getvalue())["ok"]), (0, True))
+
+
 KNIVES = [
     ("K1", "src/cockpit/dm_triage_agent.py", "        if st == Q.HOLD_STATUS:\n            counts[\"hold_human\"] += 1\n",
      "        if False:\n            counts[\"hold_human\"] += 1\n", "Counts.test_t1_threshold_counts"),
@@ -135,6 +199,10 @@ KNIVES = [
      "        elif False:\n            counts[\"with_wait\"] += 1\n", "Counts.test_t1_threshold_counts"),
     ("K3", "src/cockpit/dm_triage_agent.py", "        if st == Q.HOLD_STATUS:                 # 等真人審的信",
      "        if False:                 # 等真人審的信", "Suggest.test_t2_suggestions_and_groups"),
+    ("K4", "src/cockpit/dm_queue.py", "    if cls == \"agent\" and ident.split(\"/\", 1)[0] != seat:\n",
+     "    if False:\n", "Agent.test_t4_agent_actor_bounds"),
+    ("K5", "src/cockpit/dm_queue.py", "    if frm == \"done\" and to == \"read\" and not (isinstance(why, str) and why.startswith(REOPEN_WHY_PREFIX)\n",
+     "    if False and not (isinstance(why, str) and why.startswith(REOPEN_WHY_PREFIX)\n", "Consolidate.test_t5_consolidate_and_reopen"),
 ]
 
 

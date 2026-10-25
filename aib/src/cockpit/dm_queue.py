@@ -182,6 +182,16 @@ TRANSITIONS[("delivered", "read")] = ("seat", "system")
 SUPERSEDE_DONE_PREFIX = "superseded_by:"
 TRANSITIONS[("delivered", "done")] = ("seat", "system")
 TRANSITIONS[("read", "done")] = ("seat", "system")
+# ★ Andy 10-25 21:4x(@abb89 派工,0.1.61):整理子代理 actor = agent:<收件席>/<子代理 id>,等同收件席本人,
+#   但只開「讀」與「結」;hold 放行、刪、改分類都不開(_transition 另查前綴要是收件席)。這是標記不是防線
+#   (子代理與席位同帳號,見同帳號 AI 威脅守則),用途是稽核追得到是誰結的。
+AGENT_TRANSITIONS = (("queued", "read"), ("delivered", "read"), ("delivered", "done"), ("read", "done"))
+for _k in AGENT_TRANSITIONS:
+    TRANSITIONS[_k] = TRANSITIONS[_k] + ("agent",)
+del _k
+# 結錯了可回復(@abb89 22:02):done → read,只限收件席本人 / human,why 要以 REOPEN_WHY_PREFIX 開頭;回復後清掉 done_*。
+REOPEN_WHY_PREFIX = "reopen:"
+TRANSITIONS[("done", "read")] = ("seat", "human")
 # 進行中(read)超過這麼久沒動、也沒寫「等什麼」⇒ 提醒(只提醒,不自動結;Andy 10-25 20:1x 選 4 小時)
 STALE_WAIT_S = 4 * 3600
 WAIT_MAX_CHARS = 300
@@ -962,6 +972,8 @@ def parse_actor(actor):
     cls, ident = cls.strip(), ident.strip()
     if cls in ("seat", "sender", "human") and ident:
         return cls, ident
+    if cls == "agent" and re.fullmatch(r"[0-9a-f]{5}/[0-9A-Za-z._-]{1,64}", ident):
+        return cls, ident          # 0.1.61 整理子代理:agent:<收件席>/<子代理 id>
     return None, None
 
 
@@ -1334,6 +1346,11 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         return refuse("actor")
     if cls == "seat" and ident != seat:
         return refuse("actor")
+    if cls == "agent" and ident.split("/", 1)[0] != seat:
+        return refuse("actor")        # 整理子代理只能動自己那一席的信
+    if frm == "done" and to == "read" and not (isinstance(why, str) and why.startswith(REOPEN_WHY_PREFIX)
+                                               and why[len(REOPEN_WHY_PREFIX):].strip()):
+        return refuse("transition")   # 回復要寫理由(reopen:<為什麼>)
     if to == "read" and frm == HOLD_STATUS and cls == "seat" and item.get("global"):
         return refuse("actor")        # 陌生全球來信待審中:收件席自己不准讀(主人放行才給 AI;盤點 10-16 第 2 項)
     if to == "read" and cls == "human" and _human_from_seat("human:x", env):
@@ -1372,6 +1389,11 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         item["claim_id"] = None
     elif to == "read":
         item["read_at"] = now
+        if frm == "done":
+            for k in ("done_at", "done_evidence", "done_kind", "done_why", "consolidated_into"):
+                item.pop(k, None)
+            item["reopened_at"] = now
+            item["reopen_why"] = why.strip()[:500]
         if cls == "system":
             item["read_by"] = "system"
             item["read_why"] = why
@@ -5051,6 +5073,16 @@ def main(argv=None, env=None):
     tp = sub.add_parser("triage-plan")              # 0.1.61:待審整理子代理的分組 + 建議(唯讀,dm_triage_agent.py)
     tp.add_argument("--seat", default=None)
     tp.add_argument("--json", action="store_true")
+    cs = sub.add_parser("consolidate")              # 同類幾封合成一份整理檔,每封 done、evidence 指那份檔(原信保留)
+    cs.add_argument("--seat", default=None)
+    cs.add_argument("--ids", required=True)        # 逗號分隔
+    cs.add_argument("--file", required=True)
+    cs.add_argument("--by", default=None)           # seat:<席> 或整理子代理 agent:<席>/<id>
+    ro = sub.add_parser("reopen")                   # 結錯了回復:done → read(只限收件席本人 / human)
+    ro.add_argument("--seat", default=None)
+    ro.add_argument("--id", required=True)
+    ro.add_argument("--why", required=True)
+    ro.add_argument("--by", default=None)
     cc = sub.add_parser("close-check")             # dm-ctl --closes 送出前查(派工信不准用回信結)
     cc.add_argument("--seat", required=True)
     cc.add_argument("--id", required=True)
@@ -5289,6 +5321,24 @@ def main(argv=None, env=None):
                 return 2
         _print_json(TA.plan(args.seat, env=env))
         return 0
+
+    if args.cmd in ("consolidate", "reopen"):
+        import dm_triage_agent as TA
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage",
+                             "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": getattr(args, "id", "-")}})
+                return 2
+        args.by = args.by or "seat:" + args.seat
+        if args.cmd == "consolidate":
+            ids = [i.strip() for i in args.ids.split(",") if i.strip()]
+            out = TA.consolidate(args.seat, ids, args.file, args.by, env=env)
+            _print_json(out)
+            return 0 if out.get("ok") else _TRANSITION_RC.get(out.get("reason"), 4)
+        out = TA.reopen(args.seat, args.id, args.by, args.why, env=env)
+        _print_json(out)
+        return 0 if out.get("ok") else _TRANSITION_RC.get(out.get("reason"), 4)
 
     if args.cmd == "close-check":
         out = closes_refusal(args.seat, args.id, env=env)

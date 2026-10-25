@@ -96,3 +96,52 @@ def plan(seat, env=None, now=None):
     over = counts["countable_waiting"] >= TRIAGE_AGENT_MIN or counts["countable_in_progress"] >= TRIAGE_AGENT_MIN
     return {"ok": True, "seat": seat, "at": now, "threshold": TRIAGE_AGENT_MIN, "over_threshold": over,
             "counts": counts, "groups": [{"key": k, "ids": v} for k, v in groups.items()], "rows": rows}
+
+
+def consolidate(seat, ids, file_path, actor, env=None, now=None):
+    """同類幾封合成一份「重新整理」(pending/DMTRIAGE-<席碼>-<時間>.md 之類的檔):每封 → done,evidence 指那份檔。
+    原信不刪(可用 reopen 回復);hold_human / 已結的跳過並回原因;每封各自比 rev(自查現值)。"""
+    now = int(time.time() if now is None else now)
+    if Q.evidence_kind(seat, file_path, env) != "file":
+        return {"ok": False, "reason": "evidence", "message": "整理檔要是存在的一般檔:%s" % file_path}
+    out = []
+    for item_id in ids:
+        it = Q._load_item(seat, item_id, env)
+        if not it:
+            out.append({"id": item_id, "ok": False, "reason": "not_found"})
+            continue
+        st = it.get("status")
+        if st not in ("queued", "delivered", "read"):
+            out.append({"id": item_id, "ok": False, "reason": "skipped", "status": st})
+            continue
+        if st != "read":
+            r = Q.mark_read(seat, item_id, actor, env=env, now=now, if_rev=Q.item_rev(it), no_rev_check=False)
+            if not r.get("ok"):
+                out.append({"id": item_id, "ok": False, "reason": r.get("reason")})
+                continue
+        cur = Q._load_item(seat, item_id, env) or it
+        if cur.get("status") != "read":            # 知會信讀過就被系統備存了
+            out.append({"id": item_id, "ok": True, "reason": "already_closed"})
+            continue
+        r = Q.mark_done(seat, item_id, actor, file_path, env=env, now=now, if_rev=Q.item_rev(cur), no_rev_check=False)
+        if r.get("ok"):
+            done = Q._load_item(seat, item_id, env)
+            done["consolidated_into"] = str(file_path)
+            Q._write_item(seat, done, env)
+        out.append({"id": item_id, "ok": bool(r.get("ok")), "reason": r.get("reason")})
+    Q._audit(seat, env, ts=now, id="-", to="consolidate", actor=actor, ok=all(o["ok"] for o in out) if out else False,
+             reason="ok", file=str(file_path), ids=[o["id"] for o in out if o["ok"]])
+    return {"ok": bool(out) and all(o["ok"] for o in out), "file": str(file_path), "results": out}
+
+
+def reopen(seat, item_id, actor, why, env=None, now=None):
+    """結錯了回復:done → read(只限收件席本人 / human;理由寫在 why,前面自動補 reopen:)。"""
+    text = str(why or "").strip()
+    if not text:
+        return {"ok": False, "reason": "transition", "message": "回復要寫理由"}
+    it = Q._load_item(seat, item_id, env)
+    if not it:
+        return {"ok": False, "reason": "not_found", "message": Q.TRANSITION_REASON["not_found"]}
+    r = Q._transition(seat, item_id, "read", actor, env=env, now=now, why=Q.REOPEN_WHY_PREFIX + text,
+                      if_rev=Q.item_rev(it), no_rev_check=False, expect_status="done")
+    return {k: v for k, v in r.items() if k != "item"}
