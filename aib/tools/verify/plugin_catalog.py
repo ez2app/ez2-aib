@@ -6,6 +6,8 @@
 信任:目錄只是清單、不另簽章(@abb89 10-24);信任只靠每個包自己 aib-ext.json 的信任鑰匙簽章 + 目錄給的 sha256 + 大小上限。
 fetch_signed() 是「取得已簽版本」的唯一入口:aib plugins install <名稱> 走它,之後自動更新(#273)也接它。
 付費包(目錄 addon 非 null)要這台綁 ez2.page 的憑證 + machine_id,帳號買過伺服器才給。
+目錄 access(10-25 Andy「綁定會員就能下載」):public 不帶憑證;member 帶憑證、不查購買;paid 帶憑證 + 買過。
+舊伺服器沒有 access 欄 ⇒ 照 addon 舊規則(addon 非 null = paid,否則 public)。
 """
 from __future__ import annotations
 
@@ -24,8 +26,10 @@ NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
 VER_RE = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
 ADDON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
+ACCESS = ("public", "member", "paid")   # 契約 plugins.catalog_entry.access
 CALLER_DEAD = ("page_api_token_revoked", "page_api_token_expired", "page_api_token_invalid", "page_api_token_missing")
 SERVER_CODES = ("plugin_unknown", "plugin_license_none", "plugin_license_device_limit")   # 契約 plugins.codes
+SCOPE_MISSING = "page_api_scope_mismatch"   # 契約 plugins_package / plugins_license 的 scope_missing
 
 
 def max_pkg_bytes():
@@ -82,8 +86,11 @@ def parse_catalog(payload):
                 and (addon is None or (isinstance(addon, str) and ADDON_RE.fullmatch(addon)))
                 and (req is None or (isinstance(req, str) and VER_RE.fullmatch(req)))):
             return None
+        access = e["access"] if "access" in e else ("paid" if addon is not None else "public")   # 舊伺服器沒這欄
+        if access not in ACCESS or (access == "paid") != (addon is not None):
+            return None
         price, summary = e.get("price"), e.get("summary")
-        out.append({"name": name, "version": ver, "sha256": sha, "size": size, "addon": addon, "requires_aib": req,
+        out.append({"name": name, "version": ver, "sha256": sha, "size": size, "access": access, "addon": addon, "requires_aib": req,
                     "price": _clean(price, 40) if isinstance(price, str) else None,
                     "summary": _clean(summary, 120) if isinstance(summary, str) else None})
     return out
@@ -153,6 +160,8 @@ def _server_err(exc):
         return code, 3, {"note": revoked_note.note(exc)}
     if code in SERVER_CODES:
         return code, 4 if http >= 500 else 3, {}
+    if http == 403 and code == SCOPE_MISSING:   # 序號綁的憑證沒有 plugins:read(10-25 @abb89)⇒ 指去用配對碼重綁
+        return "plugin_scope_missing", 3, {}
     if http in (404, 405):
         return "plugin_unsupported", 3, {}
     if http >= 500:
@@ -203,14 +212,15 @@ def fetch_signed(env, name, version=None, work=None, api=None, paid_api=None, ma
             return None, entry, fail("plugin_downgrade", 2, version=entry["version"], current=current)
         if entry["version"] == current:
             return None, entry, (already_current(name, current), 0)
-    if entry["addon"] is not None and paid_api is None:
+    member = entry["access"] != "public"   # member / paid 都要綁定憑證(伺服器另查 plugins:read;paid 再查購買)
+    if member and paid_api is None:
         paid_api, machine_id = binding(env)
         if paid_api is None:
             return None, entry, fail("plugin_not_bound", 2)
-    src_api = paid_api if entry["addon"] is not None else (api or _public_api(env))
+    src_api = paid_api if member else (api or _public_api(env))
     try:
         data = src_api.plugins_package(entry["name"], entry["version"], entry["size"],
-                                       machine_id=machine_id if entry["addon"] is not None else None)
+                                       machine_id=machine_id if member else None)
     except ApiError as exc:
         detail, rc, extra = server_err(exc)
         return None, entry, fail(detail, rc, **extra)

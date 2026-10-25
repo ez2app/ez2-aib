@@ -5308,6 +5308,7 @@
   "aib.plugins.hint.plugin_license_invalid": "伺服器給的授權驗不過或已過期,沒有寫入",
   "aib.plugins.hint.plugin_license_fewer": "這台現有的授權還有效，而且多了 {addons};新授權會少掉它們，所以沒有換。要換請自己跑 aib license install <檔>",
   "aib.plugins.hint.plugin_not_bound": "這台還沒綁 ez2.page(付費外掛與授權要用帳號領):先跑 aib page bind",
+  "aib.plugins.hint.plugin_scope_missing": "這台的 ez2.page 憑證不能下載會員 / 付費外掛(序號綁的沒有這個權限):跑 aib page bind(不帶 --serial),到 ez2.page 後台輸入配對碼重綁",
   "aib.plugins.hint.plugin_unreachable": "連不到 ez2.page,稍後再試",
   "aib.plugins.hint.plugin_unsupported": "伺服器還沒有外掛下載功能",
   "aib.plugins.hint.plugin_unknown": "伺服器上沒有這個外掛或版本",

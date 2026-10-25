@@ -5308,6 +5308,7 @@
   "aib.plugins.hint.plugin_license_invalid": "サーバーからのライセンスが検証できないか期限切れです。書き込んでいません",
   "aib.plugins.hint.plugin_license_fewer": "このマシンのライセンスはまだ有効で {addons} も含んでいます。新しいライセンスではそれが失われるため置き換えていません。置き換えるには自分で aib license install <ファイル> を実行してください",
   "aib.plugins.hint.plugin_not_bound": "このマシンは ez2.page に未連携です(有料プラグインとライセンスはアカウントから取得します)。先に aib page bind を実行してください",
+  "aib.plugins.hint.plugin_scope_missing": "このマシンの ez2.page 資格情報では会員向け・有料アドオンを取得できません(シリアルで紐付けた資格情報にはこの権限がありません):aib page bind(--serial なし)を実行し、ez2.page 管理画面でペアリングコードを入力して紐付け直してください",
   "aib.plugins.hint.plugin_unreachable": "ez2.page に接続できません。しばらくしてから再試行してください",
   "aib.plugins.hint.plugin_unsupported": "サーバーはまだプラグインのダウンロードに対応していません",
   "aib.plugins.hint.plugin_unknown": "サーバーにそのプラグインまたはバージョンがありません",
