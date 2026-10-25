@@ -222,8 +222,10 @@ class S8DigestCarriesRules(unittest.TestCase):
         spec = iu.spec_from_file_location("dm_triage_u2", HN.REL.TREE / "src" / "cockpit" / "dm_triage.py")
         TR = iu.module_from_spec(spec); spec.loader.exec_module(TR)
         text = TR.wake_text(SEAT, {"pending": 2}, 2, "/x/dm_queue.py", mode="digest", digest=["  q1 x", "  q2 y"], inprog=3)
-        for must in ("進行中 3 封", "不算數", "只擬稿", "重新整理"):
+        for must in ("進行中 3 封", "不算數", "重新整理", "要裁", "你自己"):
             self.assertIn(must, text, text)
+        for no in ("不寄信", "只擬稿", "整理子代理"):      # r5 M1:digest 席開不了子代理,主詞是本席
+            self.assertNotIn(no, text, text)
         self.assertLessEqual(len(text.encode("utf-8")), TR.WAKE_DIGEST_MAX_BYTES)
 
 
@@ -254,9 +256,12 @@ class S10ReadOwnWakeNotNewInProgress(unittest.TestCase):
             "for i in (a, c):\n"
             "    assert Q.mark_read(%r, i, 'seat:%s', env=env, if_rev=None, no_rev_check=True, now=t + 60).get('ok')\n"
             "tick(t + 700)\n"
-            "print(json.dumps({'n1': n1, 'n2': len(sent)}))\n" % (SEAT, SEAT)))
+            "n2 = len(sent)\n"
+            "tick(t + 3700)\n"                     # r5 L1:過了每小時冷卻也不得重叫同一批
+            "print(json.dumps({'n1': n1, 'n2': n2, 'n3': len(sent)}))\n" % (SEAT, SEAT)))
         self.assertEqual(out["n1"], 1, out)
         self.assertEqual(out["n2"], 1, "剛叫過的兩封被讀掉變進行中,不是新工作,不得再叫:%r" % out)
+        self.assertEqual(out["n3"], 1, "一小時後同一批仍不得重叫:%r" % out)
 
 
 class S11TidySeatMixedCarriesRules(unittest.TestCase):
@@ -359,6 +364,9 @@ class S16DigestBudget(unittest.TestCase):
         kept = [ln for ln in text.split("\n") if ln.startswith("  ")]
         self.assertGreaterEqual(len(kept), 5, text)
         self.assertIn("不算數", text)
+        self.assertIn("要裁", text)
+        self.assertNotIn("不寄信", text)
+        self.assertNotIn("整理子代理", text)
         text2 = TR.wake_text(SEAT, {"pending": 10}, 10, "/x/dm_queue.py", mode="digest",
                              digest=["  q%d x" % i for i in range(10)], inprog=3)
         self.assertLessEqual(len(text2.encode("utf-8")), TR.WAKE_DIGEST_MAX_BYTES)
