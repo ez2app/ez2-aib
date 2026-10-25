@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """待審整理子代理的核心支援(Andy 10-25 21:2x / 21:4x 裁示,@abb89 派工,排 0.1.61)。
 
-規則:席位待審 ≥2 或進行中 ≥2(不算 hold_human、不算已寫「等什麼」的)⇒ 開 1 個整理子代理;
+規則:席位待審 ≥2 或進行中 ≥2(不算 hold_human、不算已寫「等什麼」的;門檻與算法照 dm_triage / #374)⇒ 開 1 個整理子代理;
 子代理只結案 + 擬稿,寄信 / 刪信 / 合併 / 發版 / 簽章一律不准。
 
   plan(seat)  唯讀:把待審 + 進行中的信分組(PR 號 / thread / 寄件人),每封標建議
@@ -27,7 +27,8 @@ if HERE not in sys.path:
 import dm_queue as Q  # noqa: E402
 import dm_triage as TR  # noqa: E402
 
-TRIAGE_AGENT_MIN = 2                      # Andy 10-25 21:4x:≥2 就開
+# 門檻與「哪些算」只有一份:dm_triage(#374)的 TRIAGE_MIN_UNREAD(未讀 > 它)/ INPROG_MIN(進行中 ≥ 它)、
+# unread_ids / inprog_ids(排除 hold_human、已寫等什麼、線上回音、別的通訊軟體來信);本檔只拿來用。
 WAITING_STATUSES = ("queued", "claimed", "delivered", Q.HOLD_STATUS)
 LIVE_STATUSES = WAITING_STATUSES + ("read",)
 _PR_URL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/pull/\d+")
@@ -53,6 +54,9 @@ def plan(seat, env=None, now=None):
     keys = {it["id"]: Q._sender_key(it) for it in live}
     rounds = {it["id"]: Q._rounds(texts[it["id"]] or "") for it in live}
     rows, groups = [], {}
+    proj = [Q._row(it, seat, now) for it in live]
+    unread = set(TR.unread_ids(proj))
+    inprog = set(TR.inprog_ids(proj))
     counts = {"waiting": 0, "in_progress": 0, "countable_waiting": 0, "countable_in_progress": 0,
               "hold_human": 0, "with_wait": 0}
     for it in sorted(live, key=lambda x: (int(x.get("ts") or 0), x["id"])):
@@ -76,8 +80,10 @@ def plan(seat, env=None, now=None):
         elif _has_wait(it):
             counts["with_wait"] += 1
             row["excluded"] = "waiting_on"
-        else:
+        elif it["id"] in (inprog if st == "read" else unread):
             counts["countable_in_progress" if st == "read" else "countable_waiting"] += 1
+        else:
+            row["excluded"] = "not_for_ai"          # 線上回音 / 別的通訊軟體來信 / 過期:只給艦長室
         newer = next((o["id"] for o in live if o["id"] != it["id"] and o.get("status") != Q.HOLD_STATUS
                       and Q.is_older_round(it, keys[o["id"]], rounds[o["id"]], env)), None)
         if st == Q.HOLD_STATUS:                 # 等真人審的信:不建議任何自動動作
@@ -93,8 +99,9 @@ def plan(seat, env=None, now=None):
                 row["evidence_hint"] = urls
         rows.append(row)
         groups.setdefault(_group_key(it, prs), []).append(it["id"])
-    over = counts["countable_waiting"] >= TRIAGE_AGENT_MIN or counts["countable_in_progress"] >= TRIAGE_AGENT_MIN
-    return {"ok": True, "seat": seat, "at": now, "threshold": TRIAGE_AGENT_MIN, "over_threshold": over,
+    over = counts["countable_waiting"] > TR.TRIAGE_MIN_UNREAD or counts["countable_in_progress"] >= TR.INPROG_MIN
+    return {"ok": True, "seat": seat, "at": now,
+            "threshold": {"waiting_gt": TR.TRIAGE_MIN_UNREAD, "in_progress_ge": TR.INPROG_MIN}, "over_threshold": over,
             "counts": counts, "groups": [{"key": k, "ids": v} for k, v in groups.items()], "rows": rows}
 
 
