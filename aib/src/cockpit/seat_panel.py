@@ -494,10 +494,16 @@ def pending(code, state_root=None, screen=None, env=None):
                 out["ask"] = {"id": SP.ask_id(pa), "source": "screen", "type": "permission", "prompt": pa["prompt"],
                               "options": pa["options"], "multi": False, "since": None}
         out["busy"] = SP.busy_state(scr, provider)
-        out["at_prompt"] = SP.at_prompt(scr, provider)
+        why, line = SP.prompt_block(scr, provider)
+        out["at_prompt"] = why is None
+        if why:
+            out["prompt_why"], out["prompt_line"] = why, line[:200]
+    else:
+        out["prompt_why"] = "no-screen"
     if out["ask"]:
         out["busy"] = "waiting"
         out["at_prompt"] = False
+        out.pop("prompt_why", None), out.pop("prompt_line", None)
     try:
         import dm_queue as DQ
         held = [it for it in DQ.list_items(code, env) if it.get("status") == DQ.HOLD_STATUS]

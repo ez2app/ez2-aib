@@ -12,6 +12,9 @@ I4 Touch ID 取消 / 逾時 / 不能用 / AIB_TOUCHID=0 / 非 Mac ⇒ 一律拒,
 I5 免重驗視窗:過一次後 10 分鐘內第二次不彈;視窗 0 分鐘 ⇒ 每次彈;answer / stop 不吃視窗
 I6 呼叫者是席位(帶 CLAUDE_CODE_SESSION_ID / TMUX_PANE)⇒ 拒 caller-is-seat
 I7 控制字元 / 空字串 / 太長 ⇒ 拒,沒送鍵
+I8 被擋時帶原因(10-25 Andy:停著卻被說在忙,查不出原因):prompt_why + hint(四種畫面各一個代碼);detail 契約不變;
+   被擋那次寫進 log(why / prompt_why / 擋下的那一行);草稿只記字數不記內容;
+   舊訊息「> …」不算草稿(只看輸入框那一行);記下的那一行限長;人話四語 key 齊
 A1 answer 權限框:yes ⇒ 送第一個 key;no ⇒ 最後一個;3 ⇒ 3;--ask-id 對不上 ⇒ stale 不送;沒在問 ⇒ no-ask
 A2 answer 選擇題:2 ⇒ 送 2 + Enter;--text 自填 ⇒ 打字 + Enter
 S1 stop:Esc;--hard ⇒ C-c;回「現在在跑什麼」
@@ -129,6 +132,40 @@ class Input(Box):
             self.assertEqual((rc, res["why"]), (2, "not-at-prompt"), res)
         self.assertEqual(self.asked, [])
         self.assertEqual(self.keys(), [])
+
+    def test_i8_block_reason_logged(self):
+        cases = ((THINKING, "thinking"), ("(END)\n", "pager"), ("⏺ 好了。\n╭────╮\n│ ❯ 秘密草稿內容 │\n╰────╯\n", "draft"),
+                 ("⏺ 好了。\n只有字沒有提示列\n", "no-prompt"))
+        for scr, want in cases:
+            res, rc = self.act(self.SA.do_input, CODE, "hi", screen=scr)
+            self.assertEqual((rc, res["why"], res["prompt_why"]), (2, "not-at-prompt", want), res)
+            self.assertTrue(res["detail"].startswith("busy="), res)
+            self.assertEqual(res["hint"], self.SA.prompt_hint(want))
+            self.assertFalse(res["hint"].startswith(("aib.", "!!")), res["hint"])
+        self.assertEqual(self.keys(), [])
+        self.assertEqual(self.asked, [])
+        rows = [json.loads(l) for l in (self.state / "logs" / "seat-panel-actions.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(r["action"], r["ok"], r["why"], r["prompt_why"]) for r in rows],
+                         [("input", False, "not-at-prompt", w) for _s, w in cases])
+        self.assertIn("Thinking…", rows[0]["line"])
+        self.assertNotIn("秘密", json.dumps(rows, ensure_ascii=False))
+        self.assertIn("6 字", rows[2]["line"])
+        import seat_ask_patterns as SP
+        self.assertEqual(SP.prompt_block("⏺ 好了。\n> 以前的訊息 xyz\n印出來的一行\n")[0], "no-prompt")       # L1 舊訊息不算草稿
+        self.assertEqual(SP.prompt_block("> 以前的訊息\n" + "─" * 20 + "\n❯ 正在打\n" + "─" * 20 + "\n  狀態列\n")[0], "draft")
+        why, line = SP.prompt_block("⏺ 好了。\n" + "TOKEN-" * 40 + "\n")                                     # L2 限長
+        self.assertEqual(why, "no-prompt")
+        self.assertLess(len(line), 60, line)
+        why, line = SP.prompt_block("⏺ " + "客戶資料" * 30 + " esc to interrupt " + "秘" * 50 + "\n")
+        self.assertEqual(why, "thinking")
+        self.assertLess(len(line), 60, line)
+        import json as _j
+        keys = [{k for k in _j.loads((REPO / "i18n" / (l + ".json")).read_text(encoding="utf-8")) if ".prompt_why_" in k}
+                for l in ("zh-TW", "en", "ja", "ko")]
+        self.assertTrue(all(k == keys[0] for k in keys) and len(keys[0]) == len(self.SA.PROMPT_WHYS), keys)
+        res, rc = self.act(self.SA.do_input, CODE, "hi", screen=PROMPT)   # 提示列空的照送,不帶原因
+        self.assertEqual(rc, 0, res)
+        self.assertNotIn("prompt_why", res)
 
     def test_i3_asking(self):
         res, rc = self.act(self.SA.do_input, CODE, "hi", screen=PERMISSION)

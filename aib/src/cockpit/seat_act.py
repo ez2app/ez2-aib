@@ -259,6 +259,14 @@ def log_action(code, action, env=None, **fields):
         pass
 
 
+PROMPT_WHYS = ("thinking", "esc-cancel", "draft", "pager", "permission", "no-prompt", "no-screen", "unknown")
+
+
+def prompt_hint(why):
+    """被擋原因的人話(四語 aib.seat.panel.prompt_why_<代碼>);代碼本身照留在 prompt_why。"""
+    return T("prompt_why_" + (why if why in PROMPT_WHYS else "unknown").replace("-", "_"))
+
+
 # ── C1 ──
 
 def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run, minutes=None,
@@ -284,7 +292,12 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
         out["why"], out["ask_id"] = "asking", pend["ask"]["id"]
         return out, 2
     if pend.get("at_prompt") is not True:
+        # detail 是契約不動;原因另放 prompt_why + hint(10-25 Andy:停著卻被說在忙,被擋那次要留紀錄)
+        pw = pend.get("prompt_why") or "unknown"
         out["why"], out["detail"] = "not-at-prompt", "busy=%s" % pend.get("busy")
+        out["prompt_why"], out["hint"] = pw, prompt_hint(pw)
+        log_action(code, "input", env, ok=False, why="not-at-prompt", prompt_why=pw, busy=pend.get("busy"),
+                   line=pend.get("prompt_line"), chars=len(text))
         return out, 2
     left = remote_left(code, env) if window_only else unlock_left(code, env)
     m = unlock_minutes(env) if clamp_minutes(minutes) is None else clamp_minutes(minutes)

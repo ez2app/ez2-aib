@@ -5628,5 +5628,13 @@
   "aib.fonts.code.restored": "✓ 원래 글꼴로 되돌렸습니다({detail})",
   "aib.fonts.code.nothing": "되돌릴 설정이 없습니다",
   "aib.fonts.code.user_changed": "프로필 \"{detail}\"의 글꼴이 이후에 바뀌었습니다(aib 가 설정한 것이 아님). 그대로 둡니다. 그래도 원래 글꼴로 되돌리려면: aib fonts restore --force",
-  "aib.fonts.code.timeout": "다운로드가 {detail}초를 넘어 중단했습니다. 아무것도 설치하지 않았습니다. 네트워크가 좋아지면 aib fonts install 을 실행하세요"
+  "aib.fonts.code.timeout": "다운로드가 {detail}초를 넘어 중단했습니다. 아무것도 설치하지 않았습니다. 네트워크가 좋아지면 aib fonts install 을 실행하세요",
+  "aib.seat.panel.prompt_why_thinking": "아직 생각 중이거나 도구를 실행 중이에요. 멈춘 뒤 입력하세요(또는 먼저 중지)",
+  "aib.seat.panel.prompt_why_esc_cancel": "Esc로 닫을 수 있는 화면(메뉴 / 대화상자)에 멈춰 있어요. 먼저 터미널에서 처리하세요",
+  "aib.seat.panel.prompt_why_draft": "입력창에 이미 글자가 있어요(누군가 입력 중이거나 메시지가 들어가 있음). 먼저 터미널에서 보내거나 지우세요",
+  "aib.seat.panel.prompt_why_pager": "페이저 / 편집기(less, vim)에 멈춰 있어요. 먼저 터미널에서 q를 눌러 나오세요",
+  "aib.seat.panel.prompt_why_permission": "권한 확인을 기다리고 있어요. 먼저 위 확인창에 답하세요",
+  "aib.seat.panel.prompt_why_no_prompt": "화면에서 입력창을 찾을 수 없어요. 터미널을 열어 확인하세요",
+  "aib.seat.panel.prompt_why_no_screen": "화면을 읽지 못했어요(tmux 응답 없음). 잠시 후 다시 시도하거나 터미널을 여세요",
+  "aib.seat.panel.prompt_why_unknown": "바쁜 것 같아요. 멈춘 뒤 입력하세요(또는 먼저 중지)"
 }

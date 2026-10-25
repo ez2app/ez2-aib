@@ -8,6 +8,7 @@ Claude Code 的對話紀錄檔**沒有**權限詢問的紀錄,所以「要不要
 
 permission_ask(screen, provider) ⇒ {prompt, options[{key,label}], multi: False} 或 None
 at_prompt(screen, provider) ⇒ 提示列是不是在等人打字(不在 less / vim / 權限框 / 思考中)
+prompt_block(screen, provider) ⇒ 同上的原因版:(None, "") 或 (代碼, 擋下的那一行)
 busy_state(screen, provider) ⇒ thinking | idle | unknown(只看畫面;有沒有 ask 由呼叫端合)
 """
 import hashlib
@@ -85,14 +86,55 @@ def busy_state(screen, provider="claude"):
 
 def at_prompt(screen, provider="claude"):
     """C1 送鍵前的門:提示列在等人打字才算(10-20 @abb89 第六節:在 less / vim / 權限框 / 思考中一律拒)。"""
+    return prompt_block(screen, provider)[0] is None
+
+
+def prompt_block(screen, provider="claude"):
+    """at_prompt 的原因版 ⇒ (None, "") 可以打;否則 (代碼, 擋下的那一行)。
+    代碼:permission | pager | thinking | esc-cancel | draft(提示列有字)| no-prompt(找不到提示列)。
+    10-25 Andy:席位明明停著、艦長室卻說「它正在忙」,被擋那次沒留紀錄查不出原因 ⇒ 呼叫端把代碼與這一行記下來。"""
     if permission_ask(screen, provider):
-        return False
+        return "permission", ""
     lines = [_strip_ansi(x) for x in tail(screen, 20)]
     text = "\n".join(lines)
-    if _PAGER.search(text):
-        return False
+    m = _PAGER.search(text)
+    if m:
+        return "pager", m.group(0)
     if provider == "grok":
-        return bool(_GROK_PROMPT.search(text)) and not _GROK_THINKING.search(text.replace("Esc:cancel", ""))
-    if _CLAUDE_THINKING.search(text) or _CLAUDE_ESC_CANCEL.search(text):
-        return False
-    return any(_CLAUDE_PROMPT_EMPTY.match(l) for l in lines)
+        m = _GROK_THINKING.search(text.replace("Esc:cancel", ""))
+        if m:
+            return "thinking", _line_of(lines, m.group(0))
+        return (None, "") if _GROK_PROMPT.search(text) else ("no-prompt", _clip(lines[-1] if lines else ""))
+    for code, rx in (("thinking", _CLAUDE_THINKING), ("esc-cancel", _CLAUDE_ESC_CANCEL)):
+        m = rx.search(text)
+        if m:
+            return code, _line_of(lines, m.group(0))
+    if any(_CLAUDE_PROMPT_EMPTY.match(l) for l in lines):
+        return None, ""
+    draft = _input_box_line(lines)
+    if draft is not None:   # 草稿是人正在打的字,不記內容只記字數
+        body = re.sub(r"^\s*(?:│\s*)?[❯>]", "", draft).strip().rstrip("│").strip()
+        return "draft", "❯ …(%d 字)" % len(body)
+    return "no-prompt", _clip(lines[-1] if lines else "")
+
+
+def _line_of(lines, hit):
+    """擋下的那一行:只留命中的字與前後一點,限長(那一行可能是印出來的 token / 客戶資料,10-25 @abb89 L2)。"""
+    l = next((x for x in lines if hit in x), hit)
+    i = l.find(hit)
+    return _clip(l[max(0, i - 10):i + len(hit) + 20].strip())
+
+
+def _clip(line, n=40):
+    line = (line or "").strip()
+    return line if len(line) <= n else line[:n] + "…(%d 字)" % len(line)
+
+
+def _input_box_line(lines):
+    """畫面最下方輸入框裡的那一行(Claude 把舊的使用者訊息 / markdown 引言也印成「> …」,不能拿來判草稿,10-25 @abb89 L1)。
+    輸入框 = 最後一條框線(╭/╰/─── 開頭)上下緊鄰的提示列;找不到框 ⇒ 不算草稿(Claude 的輸入框一定有框線)。"""
+    rule = [i for i, l in enumerate(lines) if re.match(r"^\s*[╭╰─]", l)]
+    if rule:
+        near = [i for i in range(max(0, rule[-1] - 3), min(len(lines), rule[-1] + 2)) if _CLAUDE_PROMPT.match(lines[i])]
+        return lines[near[-1]] if near else None
+    return None

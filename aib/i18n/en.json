@@ -5628,5 +5628,13 @@
   "aib.fonts.code.restored": "✓ Restored the original font ({detail})",
   "aib.fonts.code.nothing": "Nothing to restore",
   "aib.fonts.code.user_changed": "The font of profile \"{detail}\" was changed afterwards (not the one aib set); left alone. To restore the original anyway: aib fonts restore --force",
-  "aib.fonts.code.timeout": "Download took longer than {detail} seconds; stopped and nothing installed. Run aib fonts install when the network is better"
+  "aib.fonts.code.timeout": "Download took longer than {detail} seconds; stopped and nothing installed. Run aib fonts install when the network is better",
+  "aib.seat.panel.prompt_why_thinking": "It is still thinking or running a tool; type again once it stops (or press Stop first)",
+  "aib.seat.panel.prompt_why_esc_cancel": "It is on a screen that Esc can cancel (a menu or dialog); handle it in the terminal first",
+  "aib.seat.panel.prompt_why_draft": "Its input box already has text (someone is typing or a message was put there); send or clear it in the terminal first",
+  "aib.seat.panel.prompt_why_pager": "It is in a pager or editor (less, vim); press q in the terminal to leave first",
+  "aib.seat.panel.prompt_why_permission": "It is waiting for a permission answer; answer the prompt above first",
+  "aib.seat.panel.prompt_why_no_prompt": "Its input box is not on screen; open the terminal to check",
+  "aib.seat.panel.prompt_why_no_screen": "Could not read its screen (tmux did not answer); try again later or open the terminal",
+  "aib.seat.panel.prompt_why_unknown": "It seems busy; type again once it stops (or press Stop first)"
 }
