@@ -11,7 +11,7 @@ R5 名冊的艙 / 席帶空白、;、控制字元、大寫、太長 ⇒ 不當�
 R6 hint 走 i18n(aib.chat.seat_retired,四語都有、{next} 佔位;#364 r1 M1)
 R4 頁面本人寄件(chat_human)把 next / hint_code / hint 帶出去
 (轉接程式那一半:名冊沒這席 ⇒ 先更新快照再寫回條,在 test-chat-send S4 連假中繼站測)
-刀(複本):K1 艦長席不比對名冊 ⇒ R1 紅;K2 不驗位址格式 ⇒ R5 紅
+刀(複本):K1 艦長席不比對名冊 ⇒ R1 紅;K2 不驗位址格式 ⇒ R5 紅;K3 不擋控制字元(結尾 \\n 繞過 $)⇒ R5 紅
 """
 import json
 import sys
@@ -76,17 +76,19 @@ class Core(Box):
         self.assertEqual((res["detail"], res["rc"], res["stage"]), ("no_seat", 2, "refused"))
         self.assertEqual((res["next"], res["hint_code"]), (LIVE, "seat_retired"))
         self.assertIn("aib dm " + LIVE, res["hint"])
-        self.assertIn("沒有寄出", res["hint"])
+        self.assertEqual(res["hint"].count(LIVE), 2, "hint 帶改寄位址(不綁語系,#364 r2 L-a)")
 
     def test_r5_bad_roster_strings(self):
         try:
-            for bad in ("ae 61", "ae6a1;rm", "ae6a1\x1b[2J", "AE6A1", "ae6a1x9z9", "ae6a1\n", "../x1"):
-                self.roster(("0c1b", bad), at=300 + len(bad))
+            for i, bad in enumerate(("ae 61", "ae6a1;rm", "ae6a1\x1b[2J", "AE6A1", "ae6a1x9z9", "ae6a1\n", "../x1")):
+                self.roster(("0c1b", bad), at=300 + i)          # 名冊時間要遞增,不然 note_peer 不收較舊的那份(#364 r2)
+                self.assertEqual([x["seat"] for x in GF.read_peers(self.root)[OWNER]["seats"]], [bad], "測的是這一份名冊")
                 self.assertIsNone(GF.retired_next(self.root, OWNER, DEAD), repr(bad))
                 res = GF._with_retired(self.root, {"op": "send", "to": DEAD}, {"stage": "refused", "detail": "no_seat"})
                 self.assertNotIn("next", res, repr(bad))
             self.roster(("0c;b", "ae6a1"), ("0c1b", "bbbb2"), at=900)
             self.assertEqual(GF.retired_next(self.root, OWNER, DEAD), OWNER + "/0c1b/bbbb2", "跳過壞的、用合格的")
+            self.roster(("0c1b", "ae 61"), ("0c1b", "bbbb2"), at=901)   # 艦長席在名冊上(過得了「在名冊」那關)、但格式壞
             self.room("0c1b", "ae 61")
             self.assertEqual(GF.retired_next(self.root, OWNER, DEAD), OWNER + "/0c1b/bbbb2", "房間快照的艦長席不合格式也不用")
         except Exception as exc:  # noqa: BLE001  刀砍出來的要是 AssertionError
@@ -145,8 +147,11 @@ class Knife(unittest.TestCase):
                     "    if addr and not valid(addr):\n", "Core.test_r1_next")
 
     def test_k2_address_not_validated(self):
-        self._knife('        return bool(isinstance(a, str) and (parse_address(a) or {}).get("owner") == owner)\n',
-                    "        return True\n", "Core.test_r5_bad_roster_strings")
+        self._knife('                    and (parse_address(a) or {}).get("owner") == owner)\n',
+                    "                    )\n", "Core.test_r5_bad_roster_strings")
+
+    def test_k3_trailing_newline(self):
+        self._knife("not any(ord(c) < 32 or ord(c) == 127 for c in a)", "True", "Core.test_r5_bad_roster_strings")
 
 
 if __name__ == "__main__":

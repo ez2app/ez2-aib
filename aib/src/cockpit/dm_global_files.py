@@ -774,8 +774,9 @@ def retired_next(root, owner, dead):
     """寄到的席已不在對方最新名冊(no_seat)⇒ 建議改寄的位址:房間快照標的艦長席(還在名冊上才算)> 名冊第一席;
     跟原位址一樣 / 什麼都不知道 ⇒ None。只讀本機快照(轉接程式回 no_seat 前已用最新名冊更新過)。
     #364 r1 L1:艙 / 席字串來自對方名冊,會被拼進「要改寄就 aib dm <位址>」給人複製 ⇒ 不過 parse_address 的一律不用。"""
-    def valid(a):
-        return bool(isinstance(a, str) and (parse_address(a) or {}).get("owner") == owner)
+    def valid(a):   # _ADDR_RE 的 $ 會放過結尾的 \n(同 NPUB_FULL_RE 那個坑)⇒ 這裡另擋控制字元(#364 r2 M-1)
+        return bool(isinstance(a, str) and not any(ord(c) < 32 or ord(c) == 127 for c in a)
+                    and (parse_address(a) or {}).get("owner") == owner)
     seats = [x for x in (read_peers(root).get(owner) or {}).get("seats") or [] if isinstance(x, dict) and isinstance(x.get("seat"), str)]
     live = {"%s/%s" % (x.get("cabin") or "main", x["seat"]) for x in seats}
     addr, why = default_address(root, owner)
