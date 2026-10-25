@@ -195,7 +195,11 @@ aib_cabin_pick_named() {
     printf 'aib: 艙號 %s ⇒ %s\n' "$want" "${hits[0]}" >&2
     printf '%s\n' "${hits[0]}"; return 0
   fi
-  if [ "$soft" = "1" ]; then printf '%s\n' "$want"; return 0; fi
+  if [ "$soft" = "1" ]; then   # 試跑不拒,但要說(r1 L1)
+    if [ "$n" -gt 1 ]; then printf 'aib: 演練:艙號 %s 對到 %s 個艙(%s),真跑會拒\n' "$want" "$n" "${hits[*]}" >&2
+    else printf 'aib: 演練:找不到艙 %s(%s 底下沒有這一艙或它的權杖),真跑會拒\n' "$want" "$root" >&2; fi
+    printf '%s\n' "$want"; return 0
+  fi
   if [ "$n" -gt 1 ]; then
     printf 'aib: 艙號 %s 對到 %s 個艙(%s),不猜;請寫完整艙名\n' "$want" "$n" "${hits[*]}" >&2
   else

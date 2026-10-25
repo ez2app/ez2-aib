@@ -628,9 +628,7 @@ aib_take_instance_flag() {
   else
     INSTANCE="$v"
     ! aib_cabin_is_primary "$v" || MAIN_EXPLICIT=1
-    if [ "$MAIN_EXPLICIT" != "1" ]; then   # 10-25:跟第四參數同一道(短碼解析 / 對不到就拒、不建夾)
-      INSTANCE="$(aib_cabin_pick_named "$v" "${AIB_INSTANCE_ROOT:-$(aib_cabin_state_root)/instances}" "$( [ "$DRY" = "1" ] && echo 1 || echo 0 )")" || exit 2
-    fi
+    # 10-25:短碼解析不在這裡做(--dry-run 可能寫在 --instance= 後面;#373 r1 M1)⇒ 旗標全讀完後統一跑一次 aib_cabin_pick_named
   fi
 }
 
@@ -1183,13 +1181,21 @@ if [ "${#POS[@]}" -eq 4 ]; then
     # fail-closed:直接吃 cabin_resolve 已有的驗證器(rc=2 且點名該值),
     # 不在這裡再寫一份近似的判斷。
     aib_cabin_check_name "instance" "$INSTANCE" || exit 2
-    # 10-25:指名的艙要真的在(短碼 6ddf 解析成完整艙名;對不到 / 多個 / 沒權杖 ⇒ 拒,不建任何夾)。主艙照舊走下面的 main 規則
-    if [ "$MAIN_EXPLICIT" != "1" ]; then
-      INSTANCE="$(aib_cabin_pick_named "$INSTANCE" "${AIB_INSTANCE_ROOT:-$(aib_cabin_state_root)/instances}" "$( [ "$DRY" = "1" ] && echo 1 || echo 0 )")" || exit 2
-    fi
   fi
   unset 'POS[3]'
 fi
+# 10-25(#373):指名的艙要真的在 —— 旗標全讀完(含 --dry-run 寫在後面)才做一次短碼解析:4 碼 hex 唯一對到就換成完整艙名,
+#   對不到 / 多個 / 沒權杖 ⇒ 拒,不建任何夾(事故:aib claude safe dev 6ddf --again 留下 instances/6ddf,全艙 dm ambiguous-cabin)。
+#   環境變數 EZ2_AIB_INSTANCE 指艙(右鍵開席 / seats_batch / create_and_bind_persona 走這條)同一道(r1 M2a)。主艙照舊走 main 規則。
+_pick_root="${AIB_INSTANCE_ROOT:-$(aib_cabin_state_root)/instances}"
+_pick_soft="$( [ "$DRY" = "1" ] && echo 1 || echo 0 )"
+if [ -n "$INSTANCE" ] && [ "$MAIN_EXPLICIT" != "1" ]; then
+  INSTANCE="$(aib_cabin_pick_named "$INSTANCE" "$_pick_root" "$_pick_soft")" || exit 2
+elif [ -z "$INSTANCE" ] && [ "$NEW" = "0" ] && [ -n "${EZ2_AIB_INSTANCE:-}" ] && [ "$EZ2_AIB_INSTANCE" != "new" ] && ! aib_cabin_is_primary "$EZ2_AIB_INSTANCE"; then
+  EZ2_AIB_INSTANCE="$(aib_cabin_pick_named "$EZ2_AIB_INSTANCE" "$_pick_root" "$_pick_soft")" || exit 2
+  export EZ2_AIB_INSTANCE
+fi
+unset _pick_root _pick_soft
 # ★ 工單 AQ 刀錨,必須全檔恰好一次。
 aib_apply_socket_instance || exit $?
 if false; then
