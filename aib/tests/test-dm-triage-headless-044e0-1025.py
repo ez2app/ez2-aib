@@ -145,9 +145,8 @@ APPLY = SETUP + (
     "       {'id': h, 'action': 'close', 'evidence': M}, {'id': 'q_0000000000000000', 'action': 'close', 'evidence': M}]\n"
     "dec = [dict(x, evidence=x.get('evidence', ''), wait=x.get('wait', ''), draft=x.get('draft', ''), why='') for x in dec]\n"
     "res = H.apply(%(s)r, dec, 'agent:%(s)s/headless-1', env=env, now=t + 100, gh=lambda u: u == M)\n"
-    "flags = {r['id']: r.get('evidence_in_letter') for r in res}\n"
     "st = {k: Q._load_item(%(s)r, v, env) for k, v in dict(a=a, b=b, c=c, d=d, e=e, f=f, g=g, w=w, h=h, e2=e2).items()}\n"
-    "print(json.dumps({'res': {r['id']: [r['action'], r['applied'], r.get('reason')] for r in res}, 'flags': flags,\n"
+    "print(json.dumps({'res': {r['id']: [r['action'], r['applied'], r.get('reason')] for r in res},\n"
     "                  'ids': dict(a=a, b=b, c=c, d=d, e=e, f=f, g=g, w=w, h=h, e2=e2, a2=a2),\n"
     "                  'st': {k: v.get('status') for k, v in st.items()}, 'ewait': (st['e'].get('wait') or {}).get('text')}))\n"
 ) % {"s": SEAT}
@@ -159,9 +158,10 @@ class H4Apply(unittest.TestCase):
         r, ids, st = out["res"], out["ids"], out["st"]
         self.assertEqual(r[ids["a"]][:2], ["close", True], out)
         self.assertEqual(r[ids["b"]], ["leave", False, "pr-not-merged"], "PR 沒合 ⇒ leave、不降級:%r" % out)
-        self.assertEqual(r[ids["c"]], ["leave", False, "file-outside-pending"], out)
-        self.assertEqual(r[ids["d"]][:2], ["close", True], out)
-        self.assertEqual(r[ids["g"]][:2], ["close", True], "本席寄出的回信 id 可結:%r" % out)
+        # @abb89 10-26 01:20 M4 定 C:只認 gh 回 MERGED 的 PR;檔案(在不在 pending 都一樣)/ 回信 id 一律 leave
+        self.assertEqual(r[ids["c"]], ["leave", False, "only-merged-pr"], out)
+        self.assertEqual(r[ids["d"]], ["leave", False, "only-merged-pr"], out)
+        self.assertEqual(r[ids["g"]], ["leave", False, "only-merged-pr"], "本席寄出的回信 id 也留給本席:%r" % out)
         self.assertEqual(r[ids["e"]][:2], ["wait", True], out)
         self.assertEqual(out["ewait"], "等 @abb89 回")
         self.assertEqual(r[ids["f"]], ["draft", False, "no-change"], out)
@@ -170,11 +170,9 @@ class H4Apply(unittest.TestCase):
         self.assertEqual(r["q_0000000000000000"][2], "not-allowed")
         self.assertEqual(r[ids["e2"]], ["leave", False, "wait-needs-read"], "沒讀過的信不代標已讀來寫等什麼(審查 M3):%r" % out)
         self.assertEqual(st["e2"], "delivered", out)
-        self.assertEqual(r[ids["a2"]][:2], ["close", True], out)
-        self.assertTrue(out["flags"][ids["a2"]], "證據就寫在信裡 ⇒ 標記給抽查(審查 M4):%r" % out)
-        self.assertFalse(out["flags"][ids["a"]], out)
+        self.assertEqual(r[ids["a2"]][:2], ["close", True], "PR 網址寫在信裡也照 gh 查,已合就結:%r" % out)
         self.assertEqual((st["a"], st["d"], st["g"], st["b"], st["c"], st["w"], st["h"]),
-                         ("done", "done", "done", "delivered", "delivered", "read", "hold_human"), out)
+                         ("done", "delivered", "delivered", "delivered", "delivered", "read", "hold_human"), out)
 
 
 class H5EndToEnd(unittest.TestCase):

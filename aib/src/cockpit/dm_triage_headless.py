@@ -6,8 +6,8 @@
   · AI 不拿任何工具(沿用 power_ask 的關工具呼叫法:claude --tools "" + 關 MCP / hook / 指令;codex 唯讀沙盒 +
     逐項關功能、重列確認;關不乾淨就不起)。系統把要整理的信(全文)餵給它,它只回一份 JSON。
   · 核心逐條驗才套用:只認這一席「算數」的信(hold_human / 寫了等什麼 / 別的通訊軟體 / 別席的一律不動);
-    close 的證據要是:本席寄出的回信 id、查得到的 commit、pending 底下存在的檔,或 ez2app 的 PR 網址且 gh 回 MERGED。
-    其他(open / closed 未合 / 查不到 / 不認得)一律 leave,不降級成別的結法。wait 清過字才寫;draft 只進整理檔、不寄。
+    close 的證據只認 ez2app 的 PR 網址且 gh 回 MERGED(@abb89 10-26 01:20 M4 定 C);commit / 檔案 / dm id、
+    open / closed 未合 / 查不到 / 不認得一律 leave 給本席,不降級成別的結法。wait 清過字才寫;draft 只進整理檔、不寄。
   · actor = agent:<席>/headless-<時間>,跟子代理同一套(抽查看板照列);開工登記 triage-lock、做完放鎖記 handled_ids。
 底線:同帳號 AI 擋不住同帳號 AI —— 這裡防的是「信件內容騙背景 AI 亂結 / 越權」,靠的是 AI 沒工具 + 核心逐條驗,
 不是靠鎖檔(鎖只是協調)。
@@ -45,9 +45,8 @@ _PULL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/pull/[0-9]{1,
 PREAMBLE = """You are a mail-triage helper for one AI seat. You have no tools: you cannot run commands, read files, \
 send messages or change anything. You only read the messages below and return a JSON array, nothing else.
 For each message decide one action:
-- "close": it is already done or no longer needs anything. Give "evidence": a merged GitHub PR URL \
-(https://github.com/ez2app/<repo>/pull/<n>), a commit sha, or a message id (q_...) the seat already sent as the reply. \
-No verifiable evidence => do not close.
+- "close": it is already done because a GitHub PR was merged. Give "evidence": that merged PR URL \
+(https://github.com/ez2app/<repo>/pull/<n>). Nothing else counts as evidence; without a merged PR URL => do not close.
 - "wait": the seat must wait for someone or something. Give "wait": who / what (short).
 - "draft": a reply is needed. Give "draft": the reply text. You never send it; the seat reviews and sends.
 - "leave": anything else, or when unsure.
@@ -57,7 +56,7 @@ Output exactly: [{"id": "...", "action": "close|wait|draft|leave", "evidence": "
 
 
 def pending_dir(env=None):
-    """~/.ez2-aib/pending(EZ2_AIB_HOME 優先);整理檔寫這裡、file 證據也只認這裡。"""
+    """~/.ez2-aib/pending(EZ2_AIB_HOME 優先);整理檔寫這裡。"""
     e = Q._env(env)
     home = e.get("EZ2_AIB_HOME") or os.path.join(e.get("HOME") or os.path.expanduser("~"), ".ez2-aib")
     return Path(home) / "pending"
@@ -134,32 +133,13 @@ def gh_merged(url, run=subprocess.run):
 
 
 def _evidence_ok(seat, ev, env, gh):
-    """close 的證據驗證 → (可結?, 原因)。PR 網址要 MERGED;檔案只認 pending 底下的(AI 沒工具,自己生不出檔,
-    能指的只有已經在那裡的;不讓它拿 /etc/hosts 之類隨便一個存在的檔充數)。"""
+    """close 的證據驗證 → (可結?, 原因)。只認 ez2app PR 網址 + gh 回 MERGED(@abb89 10-26 01:20 M4 定 C);
+    commit / 檔案 / dm id 背景 AI 沒工具查不了來由,信裡寫什麼它就抄什麼 ⇒ 一律留給本席。"""
     if not ev:
         return False, "no-evidence"
     if _PULL_RE.fullmatch(ev):
         return (True, "pr-merged") if gh(ev) else (False, "pr-not-merged")
-    kind = Q.evidence_kind(seat, ev, env)
-    if kind in ("dm", "commit"):
-        return True, kind
-    if kind == "file":
-        try:
-            p = Path(ev).expanduser().resolve()
-            root = pending_dir(env).resolve()
-        except (OSError, ValueError):
-            return False, "file-outside-pending"
-        if root in p.parents:
-            return True, "file"
-        return False, "file-outside-pending"
-    return False, "evidence-unknown"
-
-
-def _in_letter(seat, item_id, ev, env):
-    """證據字串原樣出現在被結那封信裡 ⇒ True(審查 M4:信件內容自己附的證據,只標記給抽查看,結不結待 @abb89 裁)。"""
-    it = Q._load_item(seat, item_id, env) or {}
-    text = Q._full_text(it) if it else None
-    return bool(ev) and ev in str(text or it.get("msg") or "")
+    return False, "only-merged-pr"
 
 
 def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None):
@@ -193,11 +173,8 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None):
                         continue
                 cur = Q._load_item(seat, d["id"], env) or {}
                 if cur.get("status") == "read":
-                    flag = _in_letter(seat, d["id"], d["evidence"], env)
-                    if flag:
-                        res["evidence_in_letter"] = True
                     r = Q.mark_done(seat, d["id"], actor, d["evidence"], env=env, now=now, if_rev=Q.item_rev(cur),
-                                    no_rev_check=False, why="headless:evidence_in_letter" if flag else None)
+                                    no_rev_check=False)
                     res["applied"] = bool(r.get("ok"))
                     if not r.get("ok"):
                         res["reason"] = "done:%s" % r.get("reason")
@@ -227,9 +204,8 @@ def _write_report(seat, actor, decisions, results, env, now, brand):
              "執行者:%s(%s,不拿工具、只回 JSON;核心逐條驗才套用)。草稿沒有寄出,要回的請本席看過再寄。" % (actor, brand), ""]
     for r in results:
         d0 = by.get(r["id"], {})
-        lines.append("- %s | %s | %s | %s%s%s" % (r["id"], r["action"], "已套用" if r["applied"] else "未套用",
-                                                  r.get("reason") or "", " | ⚠ 證據就寫在信裡,請抽查" if r.get("evidence_in_letter") else "",
-                                                  ("|" + d0["why"]) if d0.get("why") else ""))
+        lines.append("- %s | %s | %s | %s%s" % (r["id"], r["action"], "已套用" if r["applied"] else "未套用",
+                                                r.get("reason") or "", ("|" + d0["why"]) if d0.get("why") else ""))
         if d0.get("draft") and d0.get("action") == "draft":
             lines.append("  草稿:" + d0["draft"].replace("\n", "\n  "))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
