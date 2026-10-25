@@ -217,7 +217,8 @@ def check_a11(t, mod):
     t.assertEqual(rc, 0, out)
     gen = t.home / ".ez2-aib" / "ext-engines" / "aib-languages" / "claude-mod"
     t.assertEqual(t.claude_state()["mkts"].get("ez2-aib-languages"), str(gen), out)
-    t.assertEqual(t.claude_state()["plugins"].get("aib-languages@ez2-aib-languages"), "0.1.0")
+    want = json.loads((LANGS / "aib-ext.json").read_text(encoding="utf-8"))["version"]   # 跟著本倉 mod 的版號,不寫死(#350 升 0.1.1)
+    t.assertEqual(t.claude_state()["plugins"].get("aib-languages@ez2-aib-languages"), want)
     t.assertTrue((gen / "plugin" / ".claude-plugin" / "plugin.json").is_file())
     n = len(t.calls())
     t.run_mod(mod, "enable", "aib-languages")                     # 再一次:已登記同一份 ⇒ 不再 add / install
