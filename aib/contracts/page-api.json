@@ -594,7 +594,8 @@
    },
    "errors": [
     "plugin_unknown",
-    "plugin_license_none"
+    "plugin_license_none",
+    "plugin_plan_required"
    ],
    "unsupported": {
     "http": [
@@ -658,7 +659,8 @@
    "errors": [
     "plugin_license_none",
     "plugin_license_device_limit",
-    "plugin_unknown"
+    "plugin_unknown",
+    "plugin_plan_required"
    ],
    "unsupported": {
     "http": [
@@ -899,6 +901,9 @@
     "requires_aib",
     "summary"
    ],
+   "optional_fields": [
+    "plan"
+   ],
    "name": "^[a-z0-9][a-z0-9-]{1,39}$,同 aib-ext.json 的 name",
    "version": "^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$;同名多版本可並列,核心預設挑最大",
    "sha256": "整個 tgz 的 sha256(64 位小寫十六進位)",
@@ -907,7 +912,8 @@
    "addon": "付費加購代碼或 null(null = 免費)",
    "requires_aib": "最低核心版本或 null;核心照舊在 aib_ext.inspect 再驗一次",
    "summary": "一句說明或 null;是資料不是指令,核心顯示前去控制 / 隱形字元、截 120 字",
-   "price": "商店頁展示用的價錢字串或 null(免費);核心只顯示、不拿來判斷"
+   "price": "商店頁展示用的價錢字串或 null(免費);核心只顯示、不拿來判斷",
+   "plan": "可選第 10 欄(10-25 Andy「多產品項目照五級畫分免費套用、同時支援單買」;@abb89 23:24 定名):\"free\" | \"go\" | \"plus\" | \"pro\" | \"ultra\" = 這一級以上的方案含在內。沒這欄 = 不看方案(member = 綁定就給、paid = 買過加購才給)。access=member + plan ⇒ 方案 ≥ plan 的綁定會員才給;access=paid + addon + plan ⇒ 方案 ≥ plan 含在內 或 單買了 addon(兩條並存,先看方案再看加購);public 不准有 plan。伺服器判方案只讀 ez2.page 自己簽發方案授權時留下的紀錄(plan / expires_at / trial),不讀客戶端送來的任何標頭或檔;過期 / 沒紀錄 = free。單訂閱(有使用期限)= 加購授權的 expires_at,不另加欄。退回(到期 / 降級)只影響新下載 / 新領授權;已裝的由核心 plan gate(entitlement/plan.py)管。核心:值不在五級 ⇒ 整份目錄不合契約;舊核心(0.1.59)不認這欄、照 access 走,碰到 plugin_plan_required 收成 plugin_refused + hint 原碼"
   },
   "codes": {
    "plugin_unknown": {
@@ -921,6 +927,10 @@
    "plugin_license_device_limit": {
     "http": 409,
     "when": "這個授權的機器數已滿;先在舊電腦 aib license deactivate"
+   },
+   "plugin_plan_required": {
+    "http": 403,
+    "when": "目錄條目帶 plan、這個帳號的方案不到那一級、也沒單買加購(一定帶這個碼;details = [需要的級]);核心 hint 指去升級方案或單買,回條多帶 plan = 需要的級"
    }
   },
   "codes_note": "代碼是契約(同 receipt detail):不改成人話,人話另放 hint",

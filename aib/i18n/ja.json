@@ -5316,6 +5316,7 @@
   "aib.plugins.hint.plugin_unknown": "サーバーにそのプラグインまたはバージョンがありません",
   "aib.plugins.hint.plugin_license_none": "このアカウントはこのアドオンを購入していません",
   "aib.plugins.hint.plugin_license_device_limit": "このライセンスの台数上限に達しています。古いマシンで先に aib license deactivate を実行してください",
+  "aib.plugins.hint.plugin_plan_required": "このアカウントのプランは、このプラグインに必要な等級(受領票の plan が必要な等級)に達しておらず、単品購入もされていません。ez2.page でプランを上げるか、このアドオンを単品購入してから再度インストールしてください",
   "aib.plugins.hint.plugin_refused": "サーバーが拒否しました",
   "aib.plugins.hint.server_refused": "サーバーが拒否しました({code})",
   "aib.context.menu.need_key": "(API キー未設定・クリックで入力)",
