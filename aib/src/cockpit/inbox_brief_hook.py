@@ -50,8 +50,13 @@ def brief_line(seat, env=None, now=None):
     for key, label in (("decide", "要裁"), ("update", "有新版"), ("hold", "待人處理"), ("human", "真人"), ("expired", "已到期")):
         if b.get(key):
             parts.append("%s %d" % (label, b[key]))
+    stale = ""
+    if b.get("stale_wait"):
+        # Andy 10-25 20:1x:進行中逾 4 小時沒動、沒寫等什麼 ⇒ 提醒(只提醒,不自動結)
+        stale = ("⏳ 進行中逾 4 小時沒寫等什麼 %d 封 —— `python3 %s/dm_queue.py tabs --seat %s` 看 stale_wait 那幾列,"
+                 "做完 `close --id <id> --evidence …`,還在等 `wait --id <id> \"等誰 / 等什麼\"`") % (b["stale_wait"], _HERE, seat)
     if not parts:
-        return ""
+        return stale
     # 10-05 a seat:預設 list 只列還在投遞佇列裡的信,已送達未讀的看不到(照舊提示跑會得到 []);
     #   標讀過要 --by seat:<碼> 與 --if-rev,舊提示都沒教 ⇒ 兩條指令照抄就能用。
     line = ("📬 待審區 @%s:%s —— 先 `python3 %s/dm_queue.py list --seat %s --tab waiting`,"
@@ -67,6 +72,8 @@ def brief_line(seat, env=None, now=None):
     tri = triage_line(seat, env=env, now=now)
     if tri:
         line += "\n" + tri
+    if stale:
+        line += "\n" + stale
     return line
 
 

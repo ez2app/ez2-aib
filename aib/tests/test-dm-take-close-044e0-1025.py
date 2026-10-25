@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""待審區一個指令收 / 結 + 等什麼 + 新一輪自動結(Andy 10-25 20:1x 裁示 A / B / C,@abb89 派工,@044e0)。
+全在暫存狀態根 + 暫存 HOME 跑(行程內直接叫 dm_queue / dm_take);不送真 dm、不碰 ~/.ez2-aib。
+
+T1 take:已送達 ⇒ 已讀、印全文、記 taken_rev;--wait 記下;長訊印落檔原文;落檔讀不到 ⇒ 不標已讀(relay_unreadable)
+T2 close:沒 evidence / why ⇒ 拒;沒讀過的一步讀 + 結(稽核兩筆:read、done)且照樣印全文;
+   take 之後信被改過(rev 變)⇒ rev_mismatch;已結的 ⇒ transition
+T3 wait / 提醒:只有進行中能寫;別席不准;進行中逾 4 小時沒動、沒寫等什麼 ⇒ stale_wait(列 + badge);
+   寫了等什麼或剛動過 ⇒ 不算;待審框那行、aib now、交接事實都帶得到
+T4 新一輪自動結:同寄件席(艙外轉信 = 標籤 + 開頭 @席碼)+ 同 PR 較舊一輪 ⇒ 舊信 done(why=superseded_by:<新 id>);
+   別張 PR / 舊信還講別張 PR / 別的寄件席 / 舊信 hold_human / 新信 hold_human / 新信 supersedes 明寫 各自對;
+   系統結案只認 superseded_by: 開頭的理由
+T5 CLI:take / close / wait 子指令;第一行 JSON、全文另段;aib dm --closes 是 --close 的別名
+刀(複本 + run_guarded):K1 拿掉系統結案理由檢查 ⇒ T4 紅;K2 close 不比 taken_rev ⇒ T2 紅;
+K3 落檔讀不到照樣標已讀 ⇒ T1 紅;K4 舊信講別張 PR 也結 ⇒ T4 紅;K5 寫了等什麼仍算逾時 ⇒ T3 紅。
+刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+"""
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+from aib_knife_copy import knife_copy  # noqa: E402
+from aib_proc_guard import run_guarded  # noqa: E402
+
+import dm_queue as Q  # noqa: E402
+import dm_take as TK  # noqa: E402
+
+SEAT = "aaaaa"
+ME = "seat:" + SEAT
+NOW = 1792930000
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="aib-dm-take-")).resolve()
+        self.addCleanup(shutil.rmtree, str(self.d), True)
+        self.env = {"EZ2_AIB_STATE_ROOT": str(self.d / "state"), "HOME": str(self.d / "home"),
+                    "EZ2_AIB_LOCALE": "zh-TW"}
+        (self.d / "home").mkdir()
+        p = mock.patch.dict(os.environ, self.env)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def rec(self, msg, label="agent:offhub", status="delivered", now=NOW, **kw):
+        return Q.record(SEAT, msg, label, status=status, env=self.env, now=now, rc=(3 if status != "delivered" else None), **kw)
+
+    def item(self, iid):
+        return Q._load_item(SEAT, iid, self.env)
+
+    def audit_to(self, iid):
+        return [r.get("to") for r in Q.audit_rows(SEAT, self.env) if r.get("id") == iid and r.get("ok")]
+
+    def relay(self, text, name="RELAY-x.txt"):
+        f = self.d / name
+        f.write_text(text, encoding="utf-8")
+        return "長訊已落檔(%d 位元組),請讀:%s" % (len(text.encode()), f)
+
+
+class Take(Base):
+    def test_t1_take(self):
+        it = self.rec("@abb89:收到,照辦")
+        out = TK.take(SEAT, it["id"], ME, wait="等 @74e8b 交頁面", env=self.env, now=NOW + 10)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["text"], "@abb89:收到,照辦")
+        cur = self.item(it["id"])
+        self.assertEqual(cur["status"], "read")
+        self.assertEqual(cur["taken_rev"], Q.item_rev(it))
+        self.assertEqual(cur["wait"]["text"], "等 @74e8b 交頁面")
+        self.assertIn("close", out["next"])
+        self.assertNotIn("wait", out["next"])
+        body = "第一行\n第二行 #348 r1 全文"                               # 長訊 ⇒ 印落檔原文
+        it2 = self.rec(self.relay(body))
+        out = TK.take(SEAT, it2["id"], ME, env=self.env, now=NOW + 20)
+        self.assertEqual((out["ok"], out["text"]), (True, body))
+        self.assertTrue(out["relay_path"].endswith("RELAY-x.txt"))
+        self.assertIn("wait", out["next"])
+        it3 = self.rec("長訊已落檔(10 位元組),請讀:%s" % (self.d / "missing.txt"))   # 讀不到 ⇒ 不標已讀
+        out = TK.take(SEAT, it3["id"], ME, env=self.env, now=NOW + 30)
+        self.assertEqual(out["reason"], "relay_unreadable")
+        self.assertEqual(self.item(it3["id"])["status"], "delivered")
+        self.assertEqual(TK.take(SEAT, "q_" + "0" * 16, ME, env=self.env)["reason"], "not_found")
+        again = TK.take(SEAT, it["id"], ME, env=self.env, now=NOW + 40)        # 已讀再 take:不改狀態、照印
+        self.assertEqual((again["ok"], again["status"]), (True, "read"))
+
+
+class Close(Base):
+    def test_t2_close(self):
+        it = self.rec("@abb89:#300 收了")
+        self.assertEqual(TK.close(SEAT, it["id"], ME, env=self.env)["reason"], "evidence")
+        self.assertEqual(self.item(it["id"])["status"], "delivered")
+        out = TK.close(SEAT, it["id"], ME, why="通知,照辦", env=self.env, now=NOW + 5)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["text"], "@abb89:#300 收了")                 # 一步讀 + 結也要印全文
+        self.assertEqual(self.item(it["id"])["status"], "done")
+        self.assertEqual(self.audit_to(it["id"])[-2:], ["read", "done"])   # 內部仍分兩筆
+        self.assertEqual(TK.close(SEAT, it["id"], ME, why="再一次", env=self.env)["reason"], "transition")
+        it2 = self.rec("@abb89:請改 A")
+        TK.take(SEAT, it2["id"], ME, env=self.env, now=NOW + 10)
+        raw = self.item(it2["id"])                                          # 寄件端改了內容(rev+1)
+        raw["msg"], raw["rev"] = "@abb89:請改 B", Q.item_rev(raw) + 1
+        Q._write_item(SEAT, raw, self.env)
+        out = TK.close(SEAT, it2["id"], ME, why="做完", env=self.env, now=NOW + 20)
+        self.assertEqual(out["reason"], "rev_mismatch", out)
+        self.assertEqual(self.item(it2["id"])["status"], "read")
+        TK.take(SEAT, it2["id"], ME, env=self.env, now=NOW + 30)            # 重新 take 看過新內容 ⇒ 可以結
+        self.assertTrue(TK.close(SEAT, it2["id"], ME, why="做完", env=self.env, now=NOW + 40)["ok"])
+        it3 = self.rec("@abb89:另一件")
+        bad = TK.close(SEAT, it3["id"], "seat:bbbbb", why="代結", env=self.env)
+        self.assertEqual(bad["reason"], "actor")
+        self.assertEqual(self.item(it3["id"])["status"], "delivered")
+
+
+class Wait(Base):
+    def test_t3_wait_and_stale(self):
+        it = self.rec("@abb89:#400 要你做 X")
+        self.assertEqual(TK.set_wait(SEAT, it["id"], ME, "等 #363", env=self.env)["reason"], "transition")
+        TK.take(SEAT, it["id"], ME, env=self.env, now=NOW)
+        self.assertEqual(TK.set_wait(SEAT, it["id"], "seat:bbbbb", "x", env=self.env)["reason"], "actor")
+        later = NOW + Q.STALE_WAIT_S + 60
+        t = Q.tabs_payload(SEAT, env=self.env, now=later)
+        row = [r for r in t["tabs"]["read"]["rows"] if r["id"] == it["id"]][0]
+        self.assertTrue(row.get("stale_wait"))
+        self.assertEqual(t["badges"]["stale_wait"], 1)
+        import inbox_brief_hook as H
+        self.assertIn("⏳", H.brief_line(SEAT, env=self.env, now=later))
+        import seat_now
+        self.assertIn("close", seat_now.dm_stale_nudge(SEAT, env=self.env, now=later))
+        self.assertTrue(TK.set_wait(SEAT, it["id"], ME, "等 @abb89 合 #363", env=self.env, now=later)["ok"])
+        t = Q.tabs_payload(SEAT, env=self.env, now=later + Q.STALE_WAIT_S * 3)   # 寫了等什麼 ⇒ 不再提醒
+        row = [r for r in t["tabs"]["read"]["rows"] if r["id"] == it["id"]][0]
+        self.assertEqual((row.get("stale_wait"), row["wait"]["text"], t["badges"]["stale_wait"]), (None, "等 @abb89 合 #363", 0))
+        self.assertEqual(seat_now.dm_stale_nudge(SEAT, env=self.env, now=later + Q.STALE_WAIT_S * 3), "")
+        it2 = self.rec("@abb89:#401")
+        TK.take(SEAT, it2["id"], ME, env=self.env, now=NOW)
+        self.assertEqual(Q.tabs_payload(SEAT, env=self.env, now=NOW + 60)["badges"]["stale_wait"], 0)   # 剛動過
+        TK.set_wait(SEAT, it["id"], ME, "", env=self.env, now=later)       # 清掉 ⇒ 4 小時後又會提醒
+        self.assertIsNone(self.item(it["id"])["wait"])
+
+
+class Supersede(Base):
+    def test_t4_new_round_closes_old(self):
+        r1 = self.rec("@abb89:#348 r1 雙審:要修 M1 M2")
+        other = self.rec("@abb89:#345 r1 要修")
+        mixed = self.rec("@abb89:#349 r1 要修;另外 #351 也請看")
+        stranger = self.rec("@cfd04:#348 r1 我的意見")                     # 開頭別席 ⇒ 不同寄件席
+        held = self.rec("@abb89:#348 r1 補充", status=Q.HOLD_STATUS)
+        TK.take(SEAT, r1["id"], ME, env=self.env, now=NOW + 1)
+        r2 = self.rec("@abb89:#348 r2 乾淨", now=NOW + 100)
+        old = self.item(r1["id"])
+        self.assertEqual(old["status"], "done")
+        self.assertEqual(old["done_why"], Q.SUPERSEDE_DONE_PREFIX + r2["id"])
+        for keep in (other, stranger):
+            self.assertEqual(self.item(keep["id"])["status"], "delivered", keep["msg"])
+        self.assertEqual(self.item(held["id"])["status"], Q.HOLD_STATUS)    # hold_human 不在自動範圍
+        self.rec("@abb89:#349 r2 乾淨", now=NOW + 110)                      # 舊信還講 #351 ⇒ 不結
+        self.assertEqual(self.item(mixed["id"])["status"], "delivered")
+        self.rec("@abb89:#345 r2 乾淨", status=Q.HOLD_STATUS, now=NOW + 120)   # 新信 hold ⇒ 不觸發
+        self.assertEqual(self.item(other["id"])["status"], "delivered")
+        a = self.rec("@abb89:沒有輪數的通知")
+        new = self.rec("@abb89:這封取代上一封", now=NOW + 140)
+        raw = self.item(new["id"])
+        raw["supersedes"], raw["status"] = a["id"], "delivered"
+        self.assertEqual(Q._close_superseded(raw, env=self.env, now=NOW + 141), [a["id"]])   # supersedes 明寫
+        self.assertEqual(self.item(a["id"])["status"], "done")
+        z = self.rec("@abb89:隨便一封")
+        bad = Q._transition(SEAT, z["id"], "done", "system", env=self.env, why="我想結", if_rev=Q.item_rev(z),
+                            no_rev_check=False)
+        self.assertEqual(bad["reason"], "actor")                            # 系統結案只認 superseded_by:
+        self.assertEqual(self.item(z["id"])["status"], "delivered")
+
+
+class Cli(Base):
+    def test_t5_cli_and_closes_alias(self):
+        body = "全文 A\n全文 B"
+        it = self.rec(self.relay(body))
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = Q.main(["take", "--seat", SEAT, "--id", it["id"], "--wait", "等 @abb89"], env=self.env)
+        self.assertEqual(rc, 0)
+        lines = out.getvalue().splitlines()
+        head = json.loads(lines[0])
+        self.assertEqual((head["ok"], head["status"], head["wait"]), (True, "read", "等 @abb89"))
+        self.assertNotIn("text", head)
+        self.assertIn("全文 A", out.getvalue())
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = Q.main(["close", "--seat", SEAT, "--id", it["id"]], env=self.env)
+        self.assertEqual((rc, json.loads(out.getvalue().splitlines()[0])["reason"]), (9, "evidence"))
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = Q.main(["close", "--seat", SEAT, "--id", it["id"], "--why", "照辦"], env=self.env)
+        self.assertEqual(rc, 0, out.getvalue())
+        it2 = self.rec("@abb89:x")
+        TK.take(SEAT, it2["id"], ME, env=self.env)
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = Q.main(["wait", "--seat", SEAT, "--id", it2["id"], "等 #363 合 main"], env=self.env)
+        self.assertEqual((rc, self.item(it2["id"])["wait"]["text"]), (0, "等 #363 合 main"))
+        ctl = ROOT / "src" / "cockpit" / "dm-ctl.sh"
+        for flag in (["--closes", "bad"], ["--closes=bad"]):               # 別名吃進同一個變數(格式檢查擋下來)
+            r = subprocess.run(["bash", str(ctl), "zzzzz", "hi", *flag, "--dry-run"], capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, timeout=60, env=dict(os.environ, **self.env))
+            self.assertIn("--close 要原信的佇列 id", r.stdout + r.stderr, flag)
+
+
+KNIVES = [
+    ("K1", "src/cockpit/dm_queue.py",
+     "    if to == \"done\" and cls == \"system\" and not (isinstance(why, str) and why.startswith(SUPERSEDE_DONE_PREFIX)):\n",
+     "    if False:\n", "Supersede.test_t4_new_round_closes_old"),
+    ("K2", "src/cockpit/dm_take.py", "        if taken is not None and int(taken) != cur:\n", "        if False:\n",
+     "Close.test_t2_close"),
+    ("K3", "src/cockpit/dm_take.py", "    if text is None:\n        return {\"ok\": False, \"reason\": \"relay_unreadable\", \"relay_path\": relay_path,\n"
+     "                \"message\": \"長訊落檔讀不到(不存在 / 不是一般檔 / 太大),沒有標已讀\"}\n", "", "Take.test_t1_take"),
+    ("K4", "src/cockpit/dm_queue.py", "                hit = bool(old_rounds) and prs <= set(new_rounds) and \\\n",
+     "                hit = bool(old_rounds) and \\\n", "Supersede.test_t4_new_round_closes_old"),
+    ("K5", "src/cockpit/dm_queue.py", "    if isinstance(w, dict) and str(w.get(\"text\") or \"\").strip():\n        return False\n", "",
+     "Wait.test_t3_wait_and_stale"),
+]
+
+
+class Knife(unittest.TestCase):
+    def test_knives(self):
+        name = Path(__file__).name
+        for tag, rel, needle, repl, target in KNIVES:
+            with self.subTest(tag):
+                with knife_copy(ROOT, rel, needle, repl, tests=(name,)) as root:
+                    r = run_guarded([sys.executable, "-B", str(root / "tests" / name), target], cwd=str(root),
+                                    max_procs=40, timeout=180)
+                self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s" % (tag, out))
+                self.assertIn("FAIL: " + target.split(".")[-1], out, "%s 紅的不是目標斷言\n%s" % (tag, out))
+                self.assertNotIn("ERROR: ", out, "%s 是炸掉不是斷言紅\n%s" % (tag, out))
+
+
+if __name__ == "__main__":
+    unittest.main()
