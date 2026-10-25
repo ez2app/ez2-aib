@@ -2877,6 +2877,28 @@ def _pending_header_footer(width, seat, identity, size_mark, span, new_count=0,
     return top, bottom, header_links, pad_l, pad_r, box_inner
 
 
+PENDING_RELAY_PREFIX = "長訊已落檔"
+PENDING_PREVIEW_MARK = "📄 "
+PENDING_CLAIMED_FMT = "%s(自報 %s)"
+PENDING_WAIT_FMT = " ⏳等:%s"
+
+
+def _pending_row_text(item, one_line, sender):
+    """E(10-25 Andy 裁):長訊列改印前 200 字(資料層 dm_queue 讀好放 row["preview"],這裡不做 I/O);
+    背景對話代寄(寄件人是 agent:…)而正文開頭自報 @席碼 ⇒ 寄件欄補「自報 @席碼」(是信裡寫的,不是量到的);
+    進行中寫了「等什麼」(row["wait"])⇒ 尾巴接一段。列上沒有這些鍵(舊資料 / 治具)⇒ 照舊。"""
+    pv = item.get("preview")
+    if isinstance(pv, str) and pv and one_line.startswith(PENDING_RELAY_PREFIX):
+        one_line = PENDING_PREVIEW_MARK + pv
+    cs = item.get("claimed_sender")
+    if isinstance(cs, str) and cs and sender.startswith("agent:"):
+        sender = PENDING_CLAIMED_FMT % (sender, cs)
+    w = item.get("wait")
+    if isinstance(w, dict) and str(w.get("text") or "").strip():
+        one_line += PENDING_WAIT_FMT % " ".join(str(w["text"]).split())[:80]
+    return one_line, sender
+
+
 def render_pending_box(rows, width, seat, offset=0, focus=-1,
                        visible=PENDING_VISIBLE, identity="", size_mark=None,
                        max_height=None, new_count=0, feature_tab=0,
@@ -3094,6 +3116,8 @@ def render_pending_box(rows, width, seat, offset=0, focus=-1,
             raw_msg = (INBOX_TOMB_FMT % (item.get("deleted_by") or "-", _hhmm_of(item.get("deleted_at")) or "-",
                                         item.get("deleted_why") or "-")) + " " + raw_msg
         one_line = " ".join(raw_msg.split())
+        if not is_error_row:
+            one_line, sender = _pending_row_text(item, one_line, sender)
         if is_error_row:
             bits = []
         else:
