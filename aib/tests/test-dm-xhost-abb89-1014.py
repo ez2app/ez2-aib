@@ -8,6 +8,8 @@
 收件機驗(root sshd 底下、對方不是本機、寄件方過白名單)才換抬頭,位址用 sshd 量到的對方 IP。
 
 U1–U6 單元;X1–X6 走 dm-ctl.sh(假 ssh 記下參數與 stdin、假 tmux 不可達,不碰真艙也不連網)。
+X4c 收件機 aib 只在 ~/.zprofile 的 PATH ⇒ 遠端指令 PATH 最後補 ~/.local/bin,照樣叫得到;原本找得到的優先(10-25 Mac Pro 13)
+刀 K1 不補 ⇒ X4c 紅。
 收件端「驗過、真的換抬頭」那條要真的 root sshd,單元用假行程表(U4),整條在兩台真機上實測(交件附抬頭原文)。
 """
 import base64
@@ -268,7 +270,7 @@ class DmCtl(unittest.TestCase):
             self.assertIn("ForwardAgent=no", c)
             self.assertIn("ClearAllForwardings=yes", c)
         cmd = self.read(self.ssh_cmd)
-        self.assertTrue(cmd.startswith("aib dm --xhost-ident "), cmd)
+        self.assertTrue(cmd.startswith('PATH="$PATH:$HOME/.local/bin" aib dm --xhost-ident '), cmd)
         self.assertIn(" ab12/1857a", cmd)
         self.assertNotIn("100.1.2.3", cmd, "收件機收到的是它自己的 艙/席,不再帶 IP(免得又判成別台)")
         self.assertIn("--thread '24/租約'", cmd)
@@ -307,6 +309,29 @@ class DmCtl(unittest.TestCase):
         self.assertTrue(self.read(self.ssh_cmd).startswith("bash /opt/aib/src/cockpit/aib dm --xhost-ident "),
                         self.read(self.ssh_cmd))
         self.assertEqual(sum(l.startswith("RESULT ") for l in p.stdout.splitlines()), 1)
+
+    def test_X4c_remote_path_falls_back_to_local_bin(self):
+        """收件機 aib 只在登入 shell 的 PATH(~/.zprofile)⇒ 遠端指令照樣叫得到:真的用 sh 跑一次組出來的那行,
+        假家目錄只在 ~/.local/bin 放 aib、PATH 裡沒有它;原本 PATH 找得到的 aib 照舊優先(10-25 Mac Pro 13)。"""
+        p = self.run_dm("100.1.2.3/ab12/1857a", "hi")
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        cmd = self.read(self.ssh_cmd)
+        home = self.home.parent / "far-home"
+        (home / ".local" / "bin").mkdir(parents=True)
+        (home / ".local" / "bin" / "aib").write_text("#!/bin/sh\necho local-bin \"$1\"\n")
+        (home / ".local" / "bin" / "aib").chmod(0o755)
+        env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
+        r = subprocess.run(["/bin/sh", "-c", cmd], env=env, capture_output=True, text=True, timeout=20)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "local-bin dm"), r.stderr)
+        first = self.home.parent / "first-bin"
+        first.mkdir()
+        (first / "aib").write_text("#!/bin/sh\necho path-first\n")
+        (first / "aib").chmod(0o755)
+        r = subprocess.run(["/bin/sh", "-c", cmd], env=dict(env, PATH="%s:/usr/bin:/bin" % first),
+                           capture_output=True, text=True, timeout=20)
+        self.assertEqual(r.stdout.strip(), "path-first", "原本 PATH 找得到的照舊優先")
+        p = self.run_dm("100.1.2.3/ab12/1857a", "hi", AIB_DM_XHOST_REMOTE_AIB="/opt/x/aib")
+        self.assertTrue(self.read(self.ssh_cmd).startswith("/opt/x/aib dm "), "有指定叫法就照寫、不加 PATH")
 
     def test_X7_old_receiver_without_xhost_falls_back_once_without_ident(self):
         """收件機是舊版(不認 --xhost-ident)⇒ 不帶身分重送一次,最後一行是重送那一輪的 RESULT。"""
@@ -387,6 +412,21 @@ class DmCtl(unittest.TestCase):
         p = self.run_dm("100.1.2.3/@1857a", "hi")
         self.assertEqual(p.returncode, 2, p.stderr[-400:])
         self.assertEqual(self.read(self.ssh_calls), "")
+
+
+class Knife(unittest.TestCase):
+    def test_K1_no_local_bin_fallback(self):
+        """刀:遠端指令不補 ~/.local/bin ⇒ X4c 紅。"""
+        from aib_knife_copy import knife_copy
+        from aib_proc_guard import run_guarded
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/dm-ctl.sh", """rpre='PATH="$PATH:$HOME/.local/bin" '""", "rpre=''",
+                        tests=(name,)) as root:
+            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), "DmCtl.test_X4c_remote_path_falls_back_to_local_bin"],
+                            cwd=str(root), max_procs=40, timeout=120)
+        self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
 
 
 if __name__ == "__main__":
