@@ -294,7 +294,6 @@ def build_strong_script(title, body, check, go, no, nonce):
 
 def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
     """加強版第一步：勾選框對話框。回 {"ok": bool, "why": str}。"""
-    nonce = secrets.token_hex(16)
     cmd = display_cmd(req["argv"])
     body = _t("aib.consent.strong_body", {"who": _who(req), "summary": req["summary"], "cmd": cmd},
               "Summary written by the seat calling itself %s (may be wrong):\n%s\n\nCommand that will run:\n%s"
@@ -302,10 +301,16 @@ def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
     if req.get("sign"):
         body += "\n\n" + _t("aib.consent.sign_extra", {"sha": req["sign"]["sha256"], "head": req["sign"]["head"]},
                             "Script sha256 %s; first lines:\n%s" % (req["sign"]["sha256"], req["sign"]["head"]), env)
-    script = build_strong_script(
-        _t("aib.consent.strong_title", {}, "AIB consent (strong)", env), body,
-        _t("aib.consent.strong_check", {}, "I have read this", env),
-        _t("aib.consent.go", {}, "Continue", env), _t("aib.consent.no", {}, "Cancel", env), nonce)
+    return ask_checkbox(_t("aib.consent.strong_title", {}, "AIB consent (strong)", env), body,
+                        _t("aib.consent.strong_check", {}, "I have read this", env), env=env, run=run, wait=wait)
+
+
+def ask_checkbox(title, body, check, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
+    """勾選框對話框(核心組的字;aib approve enroll 也用)。回 {"ok": bool, "why": str}:
+    勾了按繼續 = ok;取消 = cancel;沒勾就按繼續 = not_checked;逾時 / 讀不懂 / 回的 nonce 不對 ⇒ 不 ok。"""
+    nonce = secrets.token_hex(16)
+    script = build_strong_script(title, body, check, _t("aib.consent.go", {}, "Continue", env),
+                                 _t("aib.consent.no", {}, "Cancel", env), nonce)
     try:
         r = run([TA.OSASCRIPT, "-l", "JavaScript", "-"], input=script, capture_output=True, text=True, timeout=wait)
     except subprocess.TimeoutExpired:

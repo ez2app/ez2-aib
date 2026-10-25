@@ -10,6 +10,7 @@
   aib approve yes <nonce> [--json]     重新向站上拉那筆 ⇒ Touch ID(視窗字由核心組)⇒ SE 簽 ⇒ 送回站上
   aib approve no <nonce> [--json]      拒絕(不用指紋)
   aib approve history [--json]         最近 20 筆
+  aib approve enroll <站> --host <ssh 別名> [--url U]   一鍵啟用:發公鑰到站的主機 + 本機登記(見 approve_enroll.py)
 
 站上的介面(WP 端 ez2-aib-approve mu):
   GET  <url>/wp-json/ez2-aib/v1/pending   Authorization: Bearer <機房 token>
@@ -35,8 +36,8 @@
       120 秒、綁站 / 帳號 / IP 的核准單。
     · **發布那一刻最重**:那時 Mac 若已被同帳號 AI 動過(換鑰 / 換 helper / 假視窗),發出去的就是它的鑰,之後每次
       核准都不用指紋,直到換鑰。第一階段只能靠「在確定乾淨的時候發布、發完在站外記下 kid」;
-      規格 §8-4 的「發布綁目的地、走釘死的 SSH 寫入」**還沒做**:現在 key pem 只印 PEM,要本人自己帶到主機
-      (root 寫 /etc/ez2-aib/approve-keys/<站>.json)。第二階段:helper 放 root 擁有路徑 + Developer ID 簽、
+      規格 §8-4 的「發布綁目的地、走釘死的 SSH 寫入」= aib approve enroll(approve_enroll.py,10-25):勾選框 +
+      指紋視窗都列目的地,ssh 釘死主機與主機公鑰,寫完回讀。第二階段:helper 放 root 擁有路徑 + Developer ID 簽、
       在另一台裝置(LIFF)核對 kid。
 rc:yes / no 有結果(RESULTS 任一種)⇒ 0 + 一行 JSON {nonce, result};nonce 不在 pending / 參數錯 ⇒ 2(規格 §2b)。
   nonce 是 base64url,可能以「-」開頭:yes / no 會自己把它當 nonce(不必寫 --)。其他指令 0 / 2。
@@ -166,8 +167,9 @@ def der_to_raw(der):
     return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
 
-def key_publish(env=None, run=subprocess.run, helper=None, platform=None):
+def key_publish(env=None, run=subprocess.run, helper=None, platform=None, dest=None):
     """回 (pem, why)。先用這把鑰簽一次「發布 kid …」(SE 的鑰一定跳指紋),驗過才給 PEM。
+    dest = {"site","host","path"}(aib approve enroll):視窗字與簽的位元組都帶目的地(kid 在最前、真實 host:port、路徑)。
     同帳號 AI 把 .sekey 換成沒有指紋限制的鑰 ⇒ 這一步不會跳指紋:說明裡要本人「沒跳就停」。
     換掉 aib-sehelper 本身仍擋不住(殘餘風險,第二階段:root 擁有路徑 + Developer ID 簽)。"""
     import se_vault
@@ -181,10 +183,15 @@ def key_publish(env=None, run=subprocess.run, helper=None, platform=None):
     if platform != "darwin" or str(env.get("AIB_TOUCHID", "")).strip() == "0":
         return None, "touchid_unavailable"
     kid = kid_of(pub)
-    msg = ("ez2-aib-approve-publish|" + kid).encode("ascii")
-    reason = _t("aib.approve.touchid_publish", {"kid": kid}, env,
-                "Publish the AIB approval key · kid %s (only publish when you are sure this Mac is untouched; "
-                "write the kid down somewhere off this Mac)" % kid)
+    if dest:
+        msg = "|".join(("ez2-aib-approve-publish", kid, dest["site"], dest["host"], dest["path"])).encode("utf-8")
+        reason = _t("aib.approve.touchid_enroll", dict(dest, kid=kid), env,
+                    "kid %s · publish the AIB approval key to %s (%s) · %s" % (kid, dest["site"], dest["host"], dest["path"]))
+    else:
+        msg = ("ez2-aib-approve-publish|" + kid).encode("ascii")
+        reason = _t("aib.approve.touchid_publish", {"kid": kid}, env,
+                    "Publish the AIB approval key · kid %s (only publish when you are sure this Mac is untouched; "
+                    "write the kid down somewhere off this Mac)" % kid)
     args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", reason]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:
@@ -586,7 +593,11 @@ def main(argv=None, out=None, env=None, stdin=None):
     n = sub.add_parser("no")
     n.add_argument("nonce")
     h = sub.add_parser("history")
-    for x in (k, s, p, y, n, h):
+    e = sub.add_parser("enroll")
+    e.add_argument("site")
+    e.add_argument("--host", required=True)
+    e.add_argument("--url")
+    for x in (k, s, p, y, n, h, e):
         x.add_argument("--json", action="store_true")
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("yes", "no"):  # base64url 的 nonce 可能以「-」開頭,不是選項(@74e8b 10-24)
@@ -620,7 +631,8 @@ def main(argv=None, out=None, env=None, stdin=None):
                 return emit({"ok": False, "why": why}, 2)
             out.write(pem)
             return 0
-        return emit({"kid": kid_of(pub) if pub else None}, 0)
+        import approve_enroll
+        return emit({"kid": kid_of(pub) if pub else None, "enrolled": approve_enroll.load_enrolled(env)}, 0)
     if o.cmd == "site":
         if o.action == "list":
             return emit(load_sites(env), 0)
@@ -642,6 +654,14 @@ def main(argv=None, out=None, env=None, stdin=None):
         return 0
     if o.cmd == "history":
         return emit(history(env), 0)
+    if o.cmd == "enroll":
+        import approve_enroll
+        r, why = approve_enroll.enroll(o.site, o.host, o.url, env)
+        if why:
+            return emit({"ok": False, "why": why}, 5 if why.endswith("_restore_failed") else 2)
+        if not o.json:
+            out.write(_say("aib.approve.enroll.done", {"kid": r["kid"], "site": r["site"]}) + "\n")
+        return emit(dict(r, ok=True), 0)
     fn = yes if o.cmd == "yes" else no
     res, why = fn(o.nonce, env)
     d, rc = ({"nonce": o.nonce, "ok": False, "why": why}, 2) if why else ({"nonce": o.nonce, "result": res}, 0)
