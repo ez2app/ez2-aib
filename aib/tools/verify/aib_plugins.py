@@ -385,7 +385,7 @@ def _emit(res, rc, as_json=False):
         print(_safe(json.dumps(res, ensure_ascii=False)))
     elif res.get("detail") == "plugin_catalog":
         for e in res["plugins"]:
-            print(_safe("%-24s %-10s %s%s" % (e["name"], e["version"], e["price"] or ("-" if e["addon"] else "free"),
+            print(_safe("%-24s %-10s %s%s" % (e["name"], e["version"], e["price"] or {"paid": "-", "member": "member"}.get(e.get("access"), "free"),
                                               ("  " + e["summary"]) if e["summary"] else "")))
     else:
         print(_safe(str(res.get("hint") or res.get("detail"))), file=sys.stdout if res.get("ok") else sys.stderr)

@@ -5308,6 +5308,7 @@
   "aib.plugins.hint.plugin_license_invalid": "The license from the server failed verification or has expired; not written",
   "aib.plugins.hint.plugin_license_fewer": "The license on this machine is still valid and also covers {addons}; the new one would drop them, so it was not replaced. To replace it, run aib license install <file> yourself",
   "aib.plugins.hint.plugin_not_bound": "This machine is not bound to ez2.page (paid plugins and licenses come from your account): run aib page bind first",
+  "aib.plugins.hint.plugin_scope_missing": "This machine's ez2.page credential cannot fetch member or paid add-ons (serial-bound credentials lack this permission): run aib page bind (without --serial) and enter the pairing code in the ez2.page dashboard to rebind",
   "aib.plugins.hint.plugin_unreachable": "Could not reach ez2.page; try again later",
   "aib.plugins.hint.plugin_unsupported": "The server does not offer plugin downloads yet",
   "aib.plugins.hint.plugin_unknown": "The server has no such plugin or version",
