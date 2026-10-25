@@ -5529,5 +5529,7 @@
   "aib.heat.tidy.notify_hint": "These are scripts from your worktree whose parent is gone but keep running; if unused, stop them (only these pids).",
   "aib.heat.tidy.stashed": "has a stash saved on this branch",
   "aib.heat.tidy.popup_title": "aib room: {n} orphan daemons",
-  "aib.heat.tidy.popup_hint": "Parent is gone but they keep running; see the captain room to find the owner"
+  "aib.heat.tidy.popup_hint": "Parent is gone but they keep running; see the captain room to find the owner",
+  "aib.heat.tidy.submodule": "has submodules (their local commits would be lost)",
+  "aib.heat.tidy.bad_name": "tree name has control characters, left alone"
 }

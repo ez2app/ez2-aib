@@ -5529,5 +5529,7 @@
   "aib.heat.tidy.notify_hint": "這些是你工作樹裡的程式，父行程已不在、還一直跑著;確認沒在用就收掉(只殺這幾個 pid)。",
   "aib.heat.tidy.stashed": "stash 清單裡有這條分支存的",
   "aib.heat.tidy.popup_title": "aib 機房：孤兒常駐 {n} 支",
-  "aib.heat.tidy.popup_hint": "父行程已不在、還一直跑著;到艦長室機房看是誰的，請主人收掉"
+  "aib.heat.tidy.popup_hint": "父行程已不在、還一直跑著;到艦長室機房看是誰的，請主人收掉",
+  "aib.heat.tidy.submodule": "有子模組(封存後子模組的本機提交會不見)",
+  "aib.heat.tidy.bad_name": "樹名有控制字元，不碰"
 }

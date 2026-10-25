@@ -20,8 +20,8 @@ on Linux the commands answer `unmeasured` / `unsupported` where they cannot meas
 4. **Archive by moving, never delete.** Old worktrees go to `~/Ez2-backup.noindex/`. New worktrees go
    under `~/wt.noindex/` (Spotlight skips `.noindex`).
 5. **Do not edit a tree while a wide test runs in it.** The tree guard will flag and restore it.
-6. **Paid automation lives only in the captain room.** Manual commands here are free; scheduled auto-release,
-   auto-archive and auto-notify are switches in the captain room plugin. Do not show prices or purchase links.
+6. **Automation lives in the captain room plugin.** This skill only runs the commands by hand; scheduled
+   auto-release, auto-archive and auto-notify are switches there. Do not show prices or purchase links.
 
 ## Do
 

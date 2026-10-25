@@ -5529,5 +5529,7 @@
   "aib.heat.tidy.notify_hint": "당신의 작업 트리에 있는 스크립트로, 부모 프로세스가 사라졌는데 계속 실행 중입니다. 쓰지 않으면 종료하세요(이 pid만).",
   "aib.heat.tidy.stashed": "이 브랜치에서 저장한 stash가 있음",
   "aib.heat.tidy.popup_title": "aib 기계실: 고아 상주 {n}개",
-  "aib.heat.tidy.popup_hint": "부모 프로세스 없이 계속 실행 중입니다. 함장실 기계실에서 주인을 확인하세요"
+  "aib.heat.tidy.popup_hint": "부모 프로세스 없이 계속 실행 중입니다. 함장실 기계실에서 주인을 확인하세요",
+  "aib.heat.tidy.submodule": "서브모듈 있음(로컬 커밋이 사라짐)",
+  "aib.heat.tidy.bad_name": "트리 이름에 제어 문자가 있어 건드리지 않음"
 }

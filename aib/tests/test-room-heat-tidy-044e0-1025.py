@@ -16,10 +16,13 @@ T6 busy 也看正在跑的檔案(常駐腳本 cwd 在家目錄、樹裡的檔案
 T7 CLI:`aib room heat tidy --json` 走 room_heat_tidy;archive 沒帶 --seat / 兩種都帶 ⇒ 用法 rc 2
 T1b stash 清單有這條分支存的 ⇒ stashed;node_modules 是真資料夾(不是捷徑)⇒ dirty
 T2b 搬前寫 <名>.RESTORE.txt(0600,放樹旁邊);照它的 git 指令做一次 ⇒ 樹回來、分支對
+T1c r1:有子模組 ⇒ submodule;detached 存的 stash(第一父 = 頭碼)⇒ stashed;樹名有控制字元 ⇒ bad_name
+T2c r1:封存只刪自己那棵的登記,別棵失聯樹的登記還在;分支被刪了照還原檔(-B)還原得回來
 T9 判合併前 fetch 一次:別台合進 main、本機 origin/main 還舊 ⇒ fetch=False 是 not_merged、預設 fetch 後 archivable
 T8 隱私:--json 不出現全路徑、內部欄位(_path / _common)
 刀(複本 + run_guarded):K1 不看合併 ⇒ T1 紅;K2 不核主人 ⇒ T2 紅;K3 identity 不核父行程 1(ps 之後被重用)⇒ T4 紅;K4 不去重 ⇒ T5 紅;
-K5 不看正在跑的檔案 ⇒ T6 紅;K6 不看 stash ⇒ T1 紅;K7 不寫還原檔 ⇒ T2 紅;K8 不 fetch ⇒ T9 紅;K9 dm 地址只寫席碼 ⇒ T5b 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K5 不看正在跑的檔案 ⇒ T6 紅;K6 不看 stash ⇒ T1 紅;K7 不寫還原檔 ⇒ T2 紅;K8 不 fetch ⇒ T9 紅;K9 dm 地址只寫席碼 ⇒ T5b 紅;K10 不看子模組 / K13 stash 不比第一父 / K14 不擋怪樹名 ⇒ T1 紅;
+K11 改回全倉 prune / K12 還原不帶 -B ⇒ T2 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import io
 import json
@@ -75,14 +78,18 @@ class Base(unittest.TestCase):
         git(self.d, "clone", "-q", str(bare), str(main))
         git(main, "commit", "-q", "--allow-empty", "-m", "base")
         git(main, "push", "-q", "origin", "HEAD:main")
-        for b in ("merged-a", "merged-b", "merged-c", "merged-d", "merged-e", "merged-f", "merged-g", "merged-h"):
+        git(main, "checkout", "-q", "-b", "open-x", "main")        # 在子模組那條合進來之前分出去
+        git(main, "commit", "-q", "--allow-empty", "-m", "open")
+        git(main, "checkout", "-q", "main")
+        for b in ("merged-a", "merged-b", "merged-c", "merged-d", "merged-e", "merged-f", "merged-g", "merged-h",
+                  "merged-j", "merged-k", "merged-l", "merged-i"):     # 帶子模組的那條最後合(別條不會繼承到)
             git(main, "checkout", "-q", "-b", b, "main")
+            if b == "merged-i":                                  # 這條分支帶子模組設定檔
+                (main / ".gitmodules").write_text('[submodule "x"]\n\tpath = x\n\turl = ../x.git\n')
+                git(main, "add", ".gitmodules")
             git(main, "commit", "-q", "--allow-empty", "-m", b)
             git(main, "checkout", "-q", "main")
             git(main, "merge", "-q", "--no-ff", "-m", "收 " + b, b)
-        git(main, "checkout", "-q", "-b", "open-x", "main")
-        git(main, "commit", "-q", "--allow-empty", "-m", "open")
-        git(main, "checkout", "-q", "main")
         git(main, "push", "-q", "origin", "main")
         git(main, "fetch", "-q", "origin")
         return main
@@ -117,6 +124,17 @@ class Trees(Base):
         t = self.add_tree(main, "nmdir-044e0", "merged-h")
         (t / "node_modules").mkdir()
         (t / "node_modules" / "x").write_text("x")
+        self.add_tree(main, "sub-044e0", "merged-i")
+        git(main, "worktree", "add", "-q", "--detach", str(self.wt / "det-044e0"), "merged-j")
+        t = self.wt / "det-044e0"
+        (t / "d.txt").write_text("d")
+        git(t, "add", "d.txt")
+        git(t, "stash", "-q")                                    # detached 存的:訊息是「WIP on (no branch)」
+        lost = self.add_tree(main, "lost-044e0", "merged-k")
+        self.lost_to = self.d / "elsewhere" / "lost-044e0"
+        self.lost_to.parent.mkdir()
+        os.rename(str(lost), str(self.lost_to))                  # 別席暫時搬開的樹:登記還在、資料夾不在原處
+        self.add_tree(main, "bad\x07-044e0", "merged-l")
         (self.wt / "plain").mkdir()
         os.symlink(str(self.wt / "a-044e0"), str(self.wt / "link-044e0"))
 
@@ -125,8 +143,11 @@ class Trees(Base):
 
     def test_t1_states(self):
         got = self.by_name(self.scan(cwds={str(self.busy / "sub")}))
-        self.assertEqual(sorted(got), ["a-044e0", "busy-044e0", "dirty-044e0", "lock-044e0", "nm-044e0", "nmdir-044e0",
-                                       "other-abb89", "stash-044e0", "x-044e0"])
+        self.assertEqual(sorted(got), ["a-044e0", "bad-044e0", "busy-044e0", "det-044e0", "dirty-044e0", "lock-044e0", "nm-044e0",
+                                       "nmdir-044e0", "other-abb89", "stash-044e0", "sub-044e0", "x-044e0"])
+        self.assertEqual(got["sub-044e0"]["reason"], "submodule")
+        self.assertEqual(got["det-044e0"]["reason"], "stashed")
+        self.assertEqual(got["bad-044e0"]["reason"], "bad_name")
         self.assertEqual(got["stash-044e0"]["reason"], "stashed")
         self.assertEqual(got["nmdir-044e0"]["reason"], "dirty")         # node_modules 是真資料夾 ⇒ 不是捷徑 ⇒ 算改動
         self.assertEqual(got["a-044e0"]["state"], "archivable")
@@ -176,8 +197,12 @@ class Trees(Base):
         listed = subprocess.run(["git", "-C", str(self.main), "worktree", "list"], capture_output=True, text=True).stdout
         self.assertNotIn("a-044e0", listed)
         self.assertNotIn("nm-044e0", listed)
+        listed = subprocess.run(["git", "-C", str(self.main), "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+        self.assertIn("lost-044e0", listed)                     # 別棵失聯樹的登記不准被清(不跑全倉 prune)
+        git(self.main, "branch", "-D", "merged-a")              # 分支被刪了也要還原得回來(-B)
         cmd = [l for l in restore.read_text().splitlines() if l.startswith("git ")][0]
-        subprocess.run(cmd, shell=True, check=True, capture_output=True, env={**os.environ, **GIT_ENV})   # 照還原檔做一次
+        rr = subprocess.run(cmd, shell=True, capture_output=True, text=True, env={**os.environ, **GIT_ENV})   # 照還原檔做一次
+        self.assertEqual(rr.returncode, 0, rr.stderr)
         self.assertTrue((self.wt / "a-044e0" / ".git").is_file())
         head = subprocess.run(["git", "-C", str(self.wt / "a-044e0"), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout
         self.assertEqual(head.strip(), "merged-a")
@@ -221,6 +246,8 @@ class Fetch(Base):
         kw = dict(root=str(self.wt), cwds=set(), now=time.time() + LATER)
         self.assertEqual(TD.worktrees(fetch=False, **kw)[0]["reason"], "not_merged")
         self.assertEqual(TD.worktrees(**kw)[0]["state"], "archivable")
+        self.assertEqual(TD.GIT_ENV["GIT_TERMINAL_PROMPT"], "0")
+        self.assertIn("BatchMode=yes", TD.GIT_ENV["GIT_SSH_COMMAND"])
 
 
 class Orphans(Base):
@@ -371,6 +398,12 @@ KNIVES = [
      "Fetch.test_t9_fetch_before_judging"),
     ("K9", "src/cockpit/room_heat_tidy.py", "    return \"%s/%s\" % (m.group(1), owner) if m else None\n", "    return owner\n",
      "Orphans.test_t5b_popup_and_address"),
+    ("K10", "src/cockpit/room_heat_tidy.py", "\"submodule\" if submodule else ", "", "Trees.test_t1_states"),
+    ("K11", "src/cockpit/room_heat_tidy.py", "        _drop_admin(w)\n", "        git(w[\"_common\"], \"worktree\", \"prune\")\n", "Trees.test_t2_archive"),
+    ("K12", "src/cockpit/room_heat_tidy.py", "\"-B %s %s %s\" % (_q(w[\"_branch\"]), _q(w[\"_path\"]), _q(w[\"_head\"]))",
+     "\"%s %s\" % (_q(w[\"_path\"]), _q(w[\"_branch\"]))", "Trees.test_t2_archive"),
+    ("K13", "src/cockpit/room_heat_tidy.py", "    return first == head or (", "    return (", "Trees.test_t1_states"),
+    ("K14", "src/cockpit/room_heat_tidy.py", "        if name != RH.safe_name(name, 255):\n", "        if False:\n", "Trees.test_t1_states"),
 ]
 
 

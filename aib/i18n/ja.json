@@ -5529,5 +5529,7 @@
   "aib.heat.tidy.notify_hint": "あなたの作業ツリーのスクリプトで、親プロセスが消えたまま動き続けています。使っていなければ停止してください(この pid だけ)。",
   "aib.heat.tidy.stashed": "このブランチで保存した stash があります",
   "aib.heat.tidy.popup_title": "aib 機房：孤児常駐 {n} 件",
-  "aib.heat.tidy.popup_hint": "親プロセスが消えたまま動いています。艦長室の機房で持ち主を確認してください"
+  "aib.heat.tidy.popup_hint": "親プロセスが消えたまま動いています。艦長室の機房で持ち主を確認してください",
+  "aib.heat.tidy.submodule": "サブモジュールあり(ローカルのコミットが失われます)",
+  "aib.heat.tidy.bad_name": "ツリー名に制御文字があるため触りません"
 }

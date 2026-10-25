@@ -14,16 +14,18 @@
 已合併的舊樹 worktree:工作樹根底下每一棵 git 工作樹。可封存(archivable)要五條全過,否則 state=kept + 原因代碼:
   not_merged  頭碼不在 origin/main 裡(squash 合併也算這種,往不收那邊錯)
   dirty       有改動或未追蹤檔(ignored 不算;只准有 node_modules 捷徑,而且真的是捷徑)
-  stashed     stash 清單裡有在這條分支上存的
+  submodule   有子模組(.gitmodules 或 <gitdir>/modules):子模組的本機提交封存後會不見、還原後樹也壞(#345 r1 H1)
+  stashed     stash 清單裡有在這條分支上、或在這個頭碼上(detached)存的
+  bad_name    樹名有控制字元 / 路徑字元
   busy        有行程的 cwd / 開著的檔在樹裡,或正在跑樹裡的檔案
   recent      2 小時內動過(index / HEAD / 資料夾)
   locked      git worktree lock 過
 判「已合併」前每個倉 git fetch origin main 一次(只在 tidy 時,不進 5 秒快照;fetch 失敗照本機的 origin/main 判,舊的只會少判)。
 封存 = 搬前先寫還原指令 <名>.RESTORE.txt,再整棵搬到 ~/Ez2-backup.noindex/wt-<席>-merged-<日期>/(不刪;跨磁碟搬不了 ⇒
-  move_failed,不複製)再 git worktree prune。還原檔放在樹旁邊不放樹裡(放樹裡,搬回去那棵就多一個未追蹤檔)。
+  move_failed,不複製),最後只刪這一棵自己的登記(不跑全倉 prune)。還原檔放在樹旁邊不放樹裡(放樹裡,搬回去那棵就多一個未追蹤檔)。
 --seat 只是歸屬提示(樹名尾碼誰都能取),不是防線;真正擋的是上面五條 + 先 --dry-run 列給人看。
   只搬 --seat 那席的樹(not_mine);執行前重掃一次,編號對不上 ⇒ candidate_changed。
-手動 = 免費;自動(排程)在艦長室外掛的付費開關,核心只提供這三個指令。
+自動化(排程)在艦長室外掛,核心只提供這三個指令。
 隱私:輸出不放指令列、不放全路徑;樹名 / 分支名 / 程式名都過 safe_name。detail 代碼是契約,人話放 hint。
 錯誤代碼:bad_candidate candidate_changed not_mine move_failed scan_failed notify_failed log_failed(+ 上面五個 kept 原因)
 """
@@ -36,6 +38,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,7 +57,7 @@ SEAT_RE = re.compile(r"(?:^|-)([0-9a-f]{5})(?=-|$)")
 ID_RE = re.compile(r"^[0-9a-f]{16}$")
 ALLOWED_UNTRACKED = ("?? node_modules",)
 STASH_RE = re.compile(r"^(?:WIP on|On) (.+?):")
-KEPT = ("not_merged", "dirty", "stashed", "busy", "recent", "locked")
+KEPT = ("not_merged", "submodule", "dirty", "stashed", "busy", "recent", "locked", "bad_name")
 
 
 def owner_of_tree(name):
@@ -115,10 +118,14 @@ def orphans(rows=None, root=WT_ROOT, uid=None, ident=None, now=None, min_age_s=O
 
 # ---------- 工作樹 ----------
 
+GIT_ENV = {"LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",   # fetch 不准停下來問密碼(#345 r1 A-L3)
+           "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes"}
+
+
 def _git(path, *args, timeout=20):
     try:
         p = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=timeout,
-                           stdin=subprocess.DEVNULL, env={**os.environ, "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"})
+                           stdin=subprocess.DEVNULL, env={**os.environ, **GIT_ENV})
     except (OSError, subprocess.SubprocessError):
         return None, ""
     return p.returncode, p.stdout
@@ -156,8 +163,9 @@ def _check(path, git, cwds, now):
     rc3, st = git(path, "status", "--porcelain", "--untracked-files=normal")
     dirty = rc3 != 0 or any(l and (l not in ALLOWED_UNTRACKED or not os.path.islink(os.path.join(path, l[3:])))
                             for l in st.splitlines())
-    rc4, stashes = git(path, "stash", "list", "--format=%gs")
-    stashed = rc4 != 0 or any((STASH_RE.match(l) or [None, None])[1] == branch for l in stashes.splitlines())
+    rc4, stashes = git(path, "stash", "list", "--format=%P%x09%gs")
+    stashed = rc4 != 0 or any(_stash_hits(l, branch, head) for l in stashes.splitlines())
+    submodule = os.path.lexists(os.path.join(path, ".gitmodules")) or os.path.lexists(os.path.join(gitdir, "modules"))
     mt = 0.0
     for p in (os.path.join(gitdir, "index"), os.path.join(gitdir, "HEAD"), path):
         try:
@@ -167,9 +175,18 @@ def _check(path, git, cwds, now):
     idle = now - mt
     rp = os.path.realpath(path).rstrip("/")
     busy = cwds is None or any(c == rp or c.startswith(rp + "/") for c in cwds)
-    reason = ("not_merged" if not merged else "dirty" if dirty else "stashed" if stashed else "busy" if busy
+    reason = ("not_merged" if not merged else "submodule" if submodule else "dirty" if dirty else "stashed" if stashed else "busy" if busy
               else "locked" if os.path.exists(os.path.join(gitdir, "locked")) else "recent" if idle < IDLE_MIN_S else None)
-    return merged, reason, branch, head, common, idle
+    return merged, reason, branch, head, common, idle, gitdir
+
+
+def _stash_hits(line, branch, head):
+    """stash 的第一父 = 存的時候的頭碼 ⇒ 是在這棵(或同一個頭碼)存的;detached 存的訊息是「WIP on (no branch)」,
+    只比分支名會漏(#345 r1 A-M2)。訊息比分支名照留(分支往前走過再存的)。"""
+    parents, _, msg = line.partition("\t")
+    first = parents.split(" ", 1)[0]
+    m = STASH_RE.match(msg)
+    return first == head or (branch != "HEAD" and m is not None and m.group(1) == branch)
 
 
 def worktrees(root=WT_ROOT, git=None, cwds=None, now=None, lsof=None, rows=None, fetch=True):
@@ -195,11 +212,13 @@ def worktrees(root=WT_ROOT, git=None, cwds=None, now=None, lsof=None, rows=None,
         c = _check(path, git, cwds, now)
         if not c:
             continue
-        merged, reason, branch, head, common, idle = c
+        merged, reason, branch, head, common, idle, gitdir = c
+        if name != RH.safe_name(name, 255):
+            reason = "bad_name"                        # 控制字元 / 路徑字元:還原檔會被換行切成指令(#345 r1 L1),整棵不碰
         out.append({"id": _hid("worktree", os.path.realpath(path), head), "name": RH.safe_name(name, 40),
                     "owner": owner_of_tree(name), "branch": RH.safe_name(branch, 60), "merged": merged,
                     "state": "kept" if reason else "archivable", "reason": reason, "idle_s": int(idle),
-                    "_path": path, "_common": common, "_head": head, "_branch": branch})
+                    "_path": path, "_common": common, "_head": head, "_branch": branch, "_gitdir": gitdir})
     return out
 
 
@@ -224,17 +243,35 @@ def _q(s):
 
 
 def _write_restore(path, w, dest):
-    """搬之前先寫還原指令(搬到一半斷電也有得還原)。prune 後管理資料已清,所以用 worktree add 重建再補回 ignored 檔。"""
+    """搬之前先寫還原指令(搬到一半斷電也有得還原)。登記已刪,所以用 worktree add 重建再補回 ignored 檔。
+    -B <分支> <路徑> <頭碼>:分支之後被刪了也還原得回來(#345 r1 B-M2);detached ⇒ --detach <路徑> <頭碼>。
+    註解行只放 repr 過的路徑(樹名有控制字元的根本不會走到這裡,bad_name)。"""
     repo = os.path.dirname(w["_common"].rstrip("/")) if os.path.basename(w["_common"].rstrip("/")) == ".git" else w["_common"]
-    ref = w["_branch"] if w["_branch"] != "HEAD" else w["_head"]
+    how = "--detach %s %s" % (_q(w["_path"]), _q(w["_head"])) if w["_branch"] == "HEAD" else \
+        "-B %s %s %s" % (_q(w["_branch"]), _q(w["_path"]), _q(w["_head"]))
     lines = ["# aib room heat tidy archive  %s" % time.strftime("%Y-%m-%d %H:%M"),
-             "# 原位置 %s  分支 %s  頭碼 %s" % (w["_path"], w["_branch"], w["_head"]),
-             "git -C %s worktree add %s%s %s" % (_q(repo), "" if w["_branch"] != "HEAD" else "--detach ", _q(w["_path"]), _q(ref)),
+             "# 原位置 %r  分支 %r  頭碼 %s" % (w["_path"], w["_branch"], w["_head"]),
+             "git -C %s worktree add %s" % (_q(repo), how),
              "rsync -a --ignore-existing %s/ %s/   # 補回 ignored 檔(建置產物 / 捷徑)" % (_q(dest), _q(w["_path"])),
-             "# 確認沒問題再刪這份備份:%s" % dest, ""]
+             "# 確認沒問題再刪這份備份:%r" % dest, ""]
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write("\n".join(lines))
+
+
+def _drop_admin(w):
+    """只刪這一棵自己的登記 <common>/worktrees/<id>,而且它的 gitdir 檔要指向剛搬走的舊路徑;
+    不跑全倉 git worktree prune(會連別席暫時搬開的樹的登記 / index / reflog 一起清掉,#345 r1 M1)。
+    對不上 ⇒ 不刪(樹已經搬走,登記留著顯示 prunable,還原檔照樣能用)。"""
+    admin = os.path.realpath(w["_gitdir"])
+    base = os.path.realpath(os.path.join(w["_common"], "worktrees"))
+    if os.path.dirname(admin) != base:
+        return False
+    body = RH.safe_read(os.path.join(admin, "gitdir"), 4096)
+    if body is None or os.path.realpath(body.strip()) != os.path.realpath(os.path.join(w["_path"], ".git")):
+        return False
+    shutil.rmtree(admin, ignore_errors=True)
+    return not os.path.lexists(admin)
 
 
 def archive(ids=(), all_mine=False, seat="", dry_run=False, scan_fn=None, now=None, backup_root=BACKUP_ROOT,
@@ -260,7 +297,6 @@ def archive(ids=(), all_mine=False, seat="", dry_run=False, scan_fn=None, now=No
         else:
             pick.append(w)
     day = time.strftime("%Y%m%d", time.localtime(now))
-    pruned = set()
     for w in pick:
         if dry_run:
             results.append({"id": w["id"], "name": w["name"], "detail": "would_archive"})
@@ -283,13 +319,11 @@ def archive(ids=(), all_mine=False, seat="", dry_run=False, scan_fn=None, now=No
                     pass
             results.append({"id": w["id"], "name": w["name"], "detail": "move_failed"})
             continue
-        pruned.add(w["_common"])
+        _drop_admin(w)
         r = {"id": w["id"], "name": w["name"], "detail": "archived"}
         if not _log({"t": round(now, 3), "act": "archive", "owner": seat, "name": w["name"], "branch": w["branch"]}, environ):
             r["log"] = "log_failed"
         results.append(r)
-    for common in sorted(pruned):                      # 全部搬完才 prune(搬一棵 prune 一次,後搬的那幾棵會留著 prunable)
-        git(common, "worktree", "prune")
     return {"ok": all(r["detail"] in ("archived", "would_archive") for r in results), "results": results}
 
 
@@ -312,8 +346,7 @@ def _write_notified(d, environ=None, via="dm"):
     p = _notified_path(environ, via)
     try:
         os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
-        tmp = p + ".tmp%d" % os.getpid()
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".heat-tidy-")   # 固定檔名 + O_TRUNC 會被別支同時寫壞(r1 A-L2)
         with os.fdopen(fd, "w") as fh:
             json.dump(d, fh)
         os.replace(tmp, p)
