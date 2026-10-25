@@ -5,10 +5,11 @@
   aib room heat [--json]              一次快照(頁面每 5 秒讀):等級 / 溫度 / 負載 / 記憶體 + 行程按「誰的」分組
   aib room heat history [--json]      最近 1 小時,每 10 秒一點(快照順手記;狀態根 room/heat-history.json,0600)
   aib room heat crashes [--json] [--days N]   當機雷達:系統當機報告按「程式 + 例外 + 訊息前 40 字」歸類
+  aib room heat churn [--seconds N] [--json]  找熱源:N 秒內新開的短命行程歸給誰(room_heat_unseen.py,60 秒節流)
 
   aib room heat release <候選編號>… | --all-safe [--auto] [--dry-run] [--json]   釋放殘留(room_heat_release.py,白名單)
 
-快照的 candidates / held 由 room_heat_release.scan 算;這支本身只讀。
+快照的 candidates / held 由 room_heat_release.scan 算;cpu_total / unseen_cpu 由 room_heat_unseen 算;這支本身只讀。
 沿用 machine_status(量測、「量不到 ≠ 0」)與 cooldown(四級),不重寫門檻。
 隱私:輸出不放指令列、不放 cwd 或檔案全路徑;程式名只留檔名。當機報告只讀開頭的機器欄位,
 不讀堆疊、不輸出訊息原文(只拿來歸類),不上傳。detail 代碼是契約,人話放 hint。
@@ -273,7 +274,7 @@ def _num(cells, key):
     return v if _finite(v) and c.get("state") != "unmeasured" else None
 
 
-HISTORY_KEYS = ("temp", "load1", "mem_free", "swap_mb")
+HISTORY_KEYS = ("temp", "load1", "mem_free", "swap_mb", "cpu_busy", "unseen_cpu")
 LEVELS = ("ok", "warn", "hot", "critical", "unmeasured")
 
 
@@ -305,7 +306,7 @@ def read_history(environ=None, now=None):
     return out[-HISTORY_MAX:]
 
 
-def record_history(m, now=None, environ=None):
+def record_history(m, now=None, environ=None, extra=None):
     """快照順手記一點;離上一點不到 10 秒就不記。環形:只留最近 360 點。原子寫入、0600。回是否有寫。"""
     now = time.time() if now is None else now
     pts = [p for p in read_history(environ, now=now) if p["t"] <= now]     # 時鐘倒退:比現在新的點丟掉,照常記
@@ -313,7 +314,8 @@ def record_history(m, now=None, environ=None):
         return False
     cells = m.get("cells", {})
     pts.append({"t": round(now, 1), "level": m.get("level"), "temp": _num(cells, "cpu_temp"),
-                "load1": _num(cells, "load1"), "mem_free": _num(cells, "mem"), "swap_mb": _num(cells, "swap")})
+                "load1": _num(cells, "load1"), "mem_free": _num(cells, "mem"), "swap_mb": _num(cells, "swap"),
+                **{k: v if _finite(v) else None for k, v in (extra or {}).items() if k in HISTORY_KEYS}})
     pts = pts[-HISTORY_MAX:]
     path = history_path(environ)
     d = os.path.dirname(path)
@@ -428,9 +430,15 @@ def crashes(days=CRASH_DAYS, now=None, crash_dir=None):
 
 # ---------- 快照 ----------
 
-def snapshot(sampler=None, run=None, owner_of=None, now=None, environ=None, record=True, scan_fn=None):
+def snapshot(sampler=None, run=None, owner_of=None, now=None, environ=None, record=True, scan_fn=None, cpu_fn=None):
+    import room_heat_unseen as RU
     m = measure(sampler)
+    try:
+        total = (cpu_fn or RU.cpu_total)(now=now, environ=environ)
+    except Exception:  # noqa: BLE001 —— 全機 CPU 量不到照實 unmeasured,不擋快照
+        total = {"state": "unmeasured", "detail": "cpu_ticks_unavailable"}
     rows = list_procs(run)
+    hidden = RU.unseen(total)
     cands, held, cand_detail = [], [], None
     if rows is None:
         grp = {"state": "unmeasured", "detail": "ps_failed", "items": []}
@@ -443,12 +451,14 @@ def snapshot(sampler=None, run=None, owner_of=None, now=None, environ=None, reco
         except Exception:  # noqa: BLE001 —— 候選算不出來不擋快照,但要分得出「沒候選」和「掃描壞了」
             cands, held, cand_detail = [], [], "scan_failed"
     snap = {"schema": "aib-heat/v1", "t": round(time.time() if now is None else now, 1), "level": m["level"],
-            "took_s": m["took_s"], "cells": m["cells"], "groups": grp, "candidates": cands, "held": held}
+            "took_s": m["took_s"], "cells": m["cells"], "cpu_total": total, "unseen_cpu": hidden,
+            "groups": grp, "candidates": cands, "held": held}
     if cand_detail:
         snap["candidates_detail"] = cand_detail
     if record:
         try:
-            snap["history_recorded"] = record_history(m, now=now, environ=environ)
+            snap["history_recorded"] = record_history(m, now=now, environ=environ, extra={
+                "cpu_busy": total.get("busy_cores"), "unseen_cpu": hidden.get("cores")})
         except (OSError, ValueError):                  # ValueError:allow_nan 擋下的壞點,不讓快照跟著掛
             snap["history_recorded"] = False
     return snap
@@ -463,6 +473,13 @@ def _print_snapshot(s, out):
     out.write(T("snap.level", level=lv) + "\n")
     for k, c in s["cells"].items():
         out.write("  %-14s %s\n" % (k, c.get("text")))
+    tc, uc = s.get("cpu_total") or {}, s.get("unseen_cpu") or {}
+    if tc.get("state") == "ok":
+        out.write(T("snap.cpu_total", busy=tc["busy_cores"], cores=tc["cores"], pct=tc["pct"]) + "\n")
+    else:
+        out.write(T("snap.cpu_unmeasured") + "\n")
+    if uc.get("state") == "ok":
+        out.write(T("snap.unseen", cores=uc["cores"], seen=uc["seen_cores"]) + "\n")
     for g in s["groups"].get("items", [])[:12]:
         out.write("  %-17s %-14s CPU %5.1f%%  %7.1f MB  ×%d\n" % (T("group." + g["group"]), g["owner"] or "-",
                                                                   g["cpu"], g["mem_mb"], g["count"]))
@@ -478,11 +495,13 @@ def _print_snapshot(s, out):
 def main(argv=None, out=None):
     out = out or sys.stdout
     argv = list(sys.argv[1:] if argv is None else argv)
-    sub = argv.pop(0) if argv and argv[0] in ("history", "crashes", "release") else "snap"
+    sub = argv.pop(0) if argv and argv[0] in ("history", "crashes", "release", "churn") else "snap"
     ap = argparse.ArgumentParser(prog="aib room heat" + ("" if sub == "snap" else " " + sub))
     ap.add_argument("--json", action="store_true")
     if sub == "crashes":
         ap.add_argument("--days", type=int, default=CRASH_DAYS)
+    if sub == "churn":
+        ap.add_argument("--seconds", type=int, default=10)
     if sub == "release":
         ap.add_argument("ids", nargs="*")
         ap.add_argument("--all-safe", action="store_true")
@@ -506,6 +525,24 @@ def main(argv=None, out=None):
             if not r["results"]:                       # 掃描失敗 / 鎖開不了 ≠ 沒東西可收(B-M3)
                 out.write(T("release." + r["detail"] if r.get("detail") else "release.none") + "\n")
         return 0 if r["ok"] else 1
+    if sub == "churn":
+        import room_heat_unseen as RU
+        r = RU.churn(seconds=a.seconds)
+        if a.json:
+            json.dump(r, out, ensure_ascii=False)
+            out.write("\n")
+        elif r["state"] != "ok":
+            out.write(T("churn." + r["detail"]) + "\n")
+        else:
+            if r.get("throttled"):
+                out.write(T("churn.throttled", s=r.get("retry_after_s")) + "\n")
+            out.write(T("churn.summary", s=r["seconds"], n=r["births"], rate=r["births_per_s"],
+                        cores=r["cpu_cores_lower_bound"]) + "\n")
+            for x in r["top"]:
+                out.write("  %-17s %-8s %-28s %6.1f/s  >=%.2f\n" % (T("group." + x["group"]), x["owner"] or "-",
+                                                                      x["program"], x["births_per_s"],
+                                                                      x["cpu_cores_lower_bound"]))
+        return 0 if r["state"] == "ok" else 1
     if sub == "history":
         now = time.time()                               # 只回最近 1 小時(關機一天後不回昨天的點,B5)
         pts = [p for p in read_history(now=now) if p["t"] >= now - HISTORY_MAX * HISTORY_STEP_S]
