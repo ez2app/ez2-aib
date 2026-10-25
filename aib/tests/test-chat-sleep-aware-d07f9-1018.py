@@ -15,9 +15,11 @@ S7 world / contacts 每位帶 machine;status:這台會睡 ⇒ 提醒;自己的�
 S8 撐著不睡:Mac + 設定 on ⇒ 起 caffeinate -s -w <自己>、記 pid、kept_awake;停掉 ⇒ 不再 kept_awake;設定 off ⇒ 不起
 N1(要 AIB_TEST_NOSTR_VENV;借 pack-g 的兩台好友沙盒)A 的在線狀態經假中繼站送到 B:world.json 那一格帶 power(beat、sleeps…),
    B 的 world --json 那位 machine = awake
-S9(10-25 Mac Pro 13)從沒收過對方收下的回條(queued / held / delivered / read)⇒ 不推斷離線,改說「可能還沒把你加成好友」
-   + aib chat connect;睡 / 離線仍當可能之一;別人的回條不算;對方回 queued 不補;收下過 ⇒ 照舊推斷
-刀(複本):K1 太久沒收到也當醒著 ⇒ S4 紅;K2 寄件結果不補對方狀態 ⇒ S5 紅;K3 一律當收下過 ⇒ S9 紅
+S9(10-25 Mac Pro 13)交上中繼站、但從沒收過對方收下的回條(queued / held / delivered / read)⇒ 不推斷離線,
+   hint(四語)說「可能還沒把你加成好友」+ aib chat connect;detail 原值不動;claimed 不說;別人的回條不算;
+   對方回 queued 不補;收過的記錄另存 peer-accepted.json,回條被清 8 天後仍照舊推斷(#357 r1)
+S9b 升級前的舊帳從還在的回條補記、舊時間不蓋新的;_cli 輸出 hint 在 detail 前
+刀(複本):K1 太久沒收到也當醒著 ⇒ S4 紅;K2 寄件結果不補對方狀態 ⇒ S5 紅;K3 一律當收下過 ⇒ S9 紅;K4 只靠回條推(不讀 peer-accepted.json)⇒ S9 紅
 """
 import importlib.util
 import json
@@ -27,6 +29,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -140,40 +143,72 @@ class Others(Box):
             GF.append_receipt(self.root, mid, {"v": 1, "at": at, "stage": st})
 
     def test_s9_not_friend_is_not_offline(self):
-        """10-25 Mac Pro 13:對方其實沒加我(拒收、不回條),這邊卻寫「對方離線」⇒ 人跑去查轉接程式"""
-        GF.note_world(self.root, OWNER, "5a97", [], now=NOW - 3600,
-                      power={"sleeps": False, "sleep_min": 1, "ac": True, "kept_awake": True, "last_wake": None, "beat": 900})
-        rec = {"op": "send", "to": "%s/5a97/4345c" % OWNER}
-        self.sent_to(OWNER, "%032x" % 11, ["relayed"])
-        self.sent_to(OWNER, "%032x" % 12, ["relayed", "unconfirmed"])
-        other = NK.npub(NK.pubkey_hex("%064x" % 0x7002))
-        self.sent_to(other, "%032x" % 13, ["relayed", "delivered"])     # 別人收下的不算
-        res = GF._with_peer(self.root, rec, {"rc": 4, "stage": "relayed", "pos": None, "detail": "已交給轉接程式", "msgid": "m"}, NOW)
-        self.assertNotIn("對方那台電腦離線", res["detail"])
-        self.assertIn("還沒把你加成好友", res["detail"])
-        self.assertIn("aib chat connect", res["detail"])
-        self.assertIn("不在線", res["detail"], "睡 / 離線仍當可能之一講")
-        self.assertEqual((res["peer"]["why"], res["peer"]["accepted"]), ("not_confirmed", False))
-        self.assertTrue(res["detail"].startswith("已交給轉接程式;"), "原本的 detail 不改")
-        res = GF._with_peer(self.root, {"op": "send", "to": "%s/9999/aaaaa" % other},
-                            {"rc": 4, "stage": "relayed", "pos": None, "detail": "", "msgid": "m"}, NOW)
-        self.assertNotIn("加成好友", res["detail"])
-        stranger = NK.npub(NK.pubkey_hex("%064x" % 0x7003))             # 沒任何狀態也沒回條
-        res = GF._with_peer(self.root, {"op": "send", "to": "%s/9999/bbbbb" % stranger},
-                            {"rc": 4, "stage": "relayed", "pos": None, "detail": "", "msgid": "m"}, NOW)
-        self.assertIn("還沒把你加成好友", res["detail"])
-        self.assertIn("沒收到對方任何狀態", res["detail"])
-        res = GF._with_peer(self.root, {"op": "send", "to": "%s/9999/bbbbb" % stranger},
-                            {"rc": 4, "stage": "queued", "pos": None, "detail": "", "msgid": "m"}, NOW)
-        self.assertNotIn("加成好友", res["detail"], "對方回 queued = 收下了")
-        for st in ("queued", "held", "read"):
-            o = NK.npub(NK.pubkey_hex("%064x" % (0x7100 + len(st))))
-            self.sent_to(o, "%032x" % (0x100 + len(st)), ["relayed", st])
-            self.assertTrue(GF.peer_ever_accepted(self.root, o), st)
-        self.sent_to(OWNER, "%032x" % 14, ["relayed", "delivered"])
-        res = GF._with_peer(self.root, rec, {"rc": 4, "stage": "relayed", "pos": None, "detail": "", "msgid": "m"}, NOW)
-        self.assertIn("對方那台電腦離線", res["detail"], "收下過 ⇒ 照舊推斷離線")
-        self.assertNotIn("加成好友", res["detail"])
+        """10-25 Mac Pro 13:對方其實沒加我(拒收、不回條),這邊卻寫「對方離線」⇒ 人跑去查轉接程式
+        #357 r1:人話放 hint(i18n)、detail 原值不動;claimed(還沒交中繼站)不說;收過的記錄不靠會被清的回條"""
+        try:
+            GF.note_world(self.root, OWNER, "5a97", [], now=NOW - 3600,
+                          power={"sleeps": False, "sleep_min": 1, "ac": True, "kept_awake": True, "last_wake": None, "beat": 900})
+            rec = {"op": "send", "to": "%s/5a97/4345c" % OWNER}
+            self.sent_to(OWNER, "%032x" % 11, ["relayed"])
+            self.sent_to(OWNER, "%032x" % 12, ["relayed", "unconfirmed"])
+            other = NK.npub(NK.pubkey_hex("%064x" % 0x7002))
+            self.sent_to(other, "%032x" % 13, ["relayed", "delivered"])     # 別人收下的不算
+            res = GF._with_peer(self.root, rec, {"rc": 4, "stage": "relayed", "pos": None, "detail": "已交給轉接程式", "msgid": "m"}, NOW)
+            self.assertEqual(res["detail"], "已交給轉接程式", "detail 原值不動(契約)")
+            self.assertIn("還沒把你加成好友", res["hint"])
+            self.assertIn("aib chat connect", res["hint"])
+            self.assertIn("不在線", res["hint"], "睡 / 離線仍當可能之一講")
+            self.assertEqual((res["peer"]["why"], res["peer"]["accepted"]), ("not_confirmed", False))
+            res = GF._with_peer(self.root, rec, {"rc": 4, "stage": "claimed", "pos": None, "detail": "x", "msgid": "m"}, NOW)
+            self.assertNotIn("hint", res, "還沒交中繼站不說可能不是好友")
+            res = GF._with_peer(self.root, {"op": "send", "to": "%s/9999/aaaaa" % other},
+                                {"rc": 4, "stage": "relayed", "pos": None, "detail": "", "msgid": "m"}, NOW)
+            self.assertNotIn("hint", res)
+            stranger = NK.npub(NK.pubkey_hex("%064x" % 0x7003))             # 沒任何狀態也沒回條
+            res = GF._with_peer(self.root, {"op": "send", "to": "%s/9999/bbbbb" % stranger},
+                                {"rc": 4, "stage": "relayed", "pos": None, "detail": "", "msgid": "m"}, NOW)
+            self.assertIn("沒收到對方任何狀態", res["hint"])
+            self.assertEqual(res["detail"], "")
+            res = GF._with_peer(self.root, {"op": "send", "to": "%s/9999/bbbbb" % stranger},
+                                {"rc": 4, "stage": "queued", "pos": None, "detail": "", "msgid": "m"}, NOW)
+            self.assertNotIn("hint", res, "對方回 queued = 收下了")
+            for st in ("queued", "held", "read"):
+                o = NK.npub(NK.pubkey_hex("%064x" % (0x7100 + len(st))))
+                self.sent_to(o, "%032x" % (0x100 + len(st)), ["relayed", st])
+                self.assertGreater(GF.peer_accepted_at(self.root, o), 0, st)
+            # 收過一次 ⇒ 回條被 sweep 清掉 8 天後仍算收過(#357 r1 High)
+            GF.note_accepted(self.root, OWNER, now=NOW - 30 * 86400)
+            self.assertEqual(GF.sweep(self.root, now=time.time() + 8 * 86400) > 0, True)
+            res = GF._with_peer(self.root, rec, {"rc": 4, "stage": "relayed", "pos": None, "detail": "", "msgid": "m"}, NOW)
+            self.assertIn("對方那台電腦離線", res["detail"], "收下過 ⇒ 照舊推斷離線")
+            self.assertNotIn("hint", res)
+            for lang in ("zh-TW", "en", "ja", "ko"):
+                d = json.loads((REPO / "i18n" / ("%s.json" % lang)).read_text(encoding="utf-8"))
+                self.assertIn("{when}", d["aib.chat.peer_not_confirmed_since"], lang)
+                self.assertTrue(d["aib.chat.peer_not_confirmed_nostate"], lang)
+        except Exception as exc:  # noqa: BLE001  刀砍出來的要是 AssertionError
+            self.fail("%s: %s" % (type(exc).__name__, exc))
+
+    def test_s9b_accepted_backfill_and_cli(self):
+        """升級前的舊帳:回條還在 ⇒ 補記;_cli 輸出行 hint 在 detail 前、detail 原值不動"""
+        o = NK.npub(NK.pubkey_hex("%064x" % 0x7200))
+        self.sent_to(o, "%032x" % 0x200, ["relayed", "delivered"], at=NOW - 100)
+        self.assertEqual(GF.peer_accepted_at(self.root, o), NOW - 100)
+        rows = json.loads((self.root / GF.ACCEPTED_FILE).read_text(encoding="utf-8"))["owners"]
+        self.assertEqual(rows[o], NOW - 100, "找到就補記")
+        GF.note_accepted(self.root, o, now=NOW - 500)
+        self.assertEqual(GF.peer_accepted_at(self.root, o), NOW - 100, "舊時間不蓋新的")
+        import io
+        from contextlib import redirect_stdout
+        fake = {"rc": 4, "stage": "relayed", "pos": None, "detail": "已交給轉接程式;勿重送", "msgid": "%032x" % 1,
+                "hint": "可能還沒把你加成好友 aib chat connect"}
+        buf = io.StringIO()
+        with mock.patch.object(GF, "send_and_wait", lambda *a, **k: dict(fake)), mock.patch.object(GF, "ensure_dirs", lambda r: None), \
+                redirect_stdout(buf):
+            GF._cli(["send-and-wait", "--root", str(self.root), "--to", "%s/5a97/4345c" % OWNER, "--from-cabin", "c1",
+                     "--from-seat", "aaaa1", "--attested", "1"])
+        line = buf.getvalue().strip()
+        self.assertRegex(line, r" hint=可能還沒把你加成好友 aib chat connect detail=已交給轉接程式;勿重送$")
 
     def test_s6_unconfirmed(self):
         def sent(mid, at, stages):
@@ -257,8 +292,12 @@ class Knife(unittest.TestCase):
                     "Others.test_s4_machine_state")
 
     def test_k3_always_accepted(self):
-        self._knife("src/cockpit/dm_global_files.py", "        st[\"accepted\"] = peer_ever_accepted(root, owner)\n",
+        self._knife("src/cockpit/dm_global_files.py", "        st[\"accepted\"] = peer_accepted_at(root, owner) > 0\n",
                     "        st[\"accepted\"] = True\n", "Others.test_s9_not_friend_is_not_offline")
+
+    def test_k4_accepted_from_receipts_only(self):
+        self._knife("src/cockpit/dm_global_files.py", "    if at:\n        return at\n    for p in", "    at = 0\n    for p in",
+                    "Others.test_s9_not_friend_is_not_offline")
 
     def test_k2_no_hint(self):
         self._knife("src/cockpit/dm_global_files.py", "    res[\"peer\"] = st\n", "    return res\n",

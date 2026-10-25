@@ -1584,6 +1584,8 @@ class Receiver(object):
             r["by"] = "human"
         GF.append_receipt(self.root, ref, r)
         audit(self.root, "receipt-in", ref, from_npub, stage)
+        if stage in GF.PEER_OK_STAGES and sent.get("owner"):
+            GF.note_accepted(self.root, sent["owner"])     # 回條 7 天會清,「收過」另記(#357 r1 High)
         if stage in ("queued", "delivered"):              # 對方收下了(進佇列 / 申請送到)
             GF.note_first(self.root, "delivered")
         req = {"held": "pending", "delivered": "accepted", "refused": "rejected"}.get(stage)
