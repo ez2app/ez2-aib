@@ -23,7 +23,7 @@ T8 隱私:--json 不出現全路徑、內部欄位(_path / _common)
 刀(複本 + run_guarded):K1 不看合併 ⇒ T1 紅;K2 不核主人 ⇒ T2 紅;K3 identity 不核父行程 1(ps 之後被重用)⇒ T4 紅;K4 不去重 ⇒ T5 紅;
 K5 不看正在跑的檔案 ⇒ T6 紅;K6 不看 stash ⇒ T1 紅;K7 不寫還原檔 ⇒ T2 紅;K8 不 fetch ⇒ T9 紅;K9 dm 地址只寫席碼 ⇒ T5b 紅;K10 不看子模組 / K13 stash 不比第一父 / K14 不擋怪樹名 ⇒ T1 紅;
 K11 改回全倉 prune / K12 分支被刪不重建 / K15 分支往前走仍掛回分支 / K16 不清 prunable 舊登記 ⇒ T2 紅;
-K17 使用者的 GIT_SSH_COMMAND 被蓋掉 ⇒ T9 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K17 使用者的 GIT_SSH_COMMAND 被蓋掉 / K18 防護改回補在後面 / K19 不看 -A ⇒ T9 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import io
 import json
@@ -278,10 +278,18 @@ class Fetch(Base):
         self.assertEqual(TD.GIT_ENV["GIT_TERMINAL_PROMPT"], "0")
         self.assertIn("BatchMode=yes", TD.GIT_ENV["GIT_SSH_COMMAND"])
         self.assertEqual(TD.git_env({})["GIT_SSH_COMMAND"], TD.GIT_ENV["GIT_SSH_COMMAND"])
-        own = TD.git_env({"GIT_SSH_COMMAND": "ssh -i /k/id_x"})["GIT_SSH_COMMAND"]   # 使用者自己設的不蓋掉,只補防護
-        self.assertTrue(own.startswith("ssh -i /k/id_x "), own)
-        for opt in ("BatchMode=yes", "ForwardAgent=no", "ClearAllForwardings=yes"):
-            self.assertIn(opt, own)
+        own = TD.git_env({"GIT_SSH_COMMAND": "ssh -o ForwardAgent=yes -i /k/id_x"})["GIT_SSH_COMMAND"]   # 使用者的沿用,防護插在前面
+        self.assertTrue(own.startswith("ssh " + TD.SSH_HARDEN + " "), own)
+        self.assertTrue(own.endswith(" -o ForwardAgent=yes -i /k/id_x"), own)
+        self.assertLess(own.index("ForwardAgent=no"), own.index("ForwardAgent=yes"))
+        for bad in ("ssh -A -i /k", "ssh -Ati /k", "ssh -i /k -A", '"/opt/my ssh/ssh" -i /k', 'ssh "-i'):
+            self.assertEqual(TD.git_env({"GIT_SSH_COMMAND": bad})["GIT_SSH_COMMAND"], TD.GIT_ENV["GIT_SSH_COMMAND"], bad)
+        for ok in ("ssh -i /kA", "ssh -i/A -p 22", "ssh -l Alice"):     # A 是參數值、不是 -A
+            self.assertNotEqual(TD.git_env({"GIT_SSH_COMMAND": ok})["GIT_SSH_COMMAND"], TD.GIT_ENV["GIT_SSH_COMMAND"], ok)
+        if shutil.which("ssh"):                                  # 用 ssh -G 看真正生效的值
+            g = subprocess.run(["sh", "-c", own + " -G example.invalid"], capture_output=True, text=True, timeout=20).stdout
+            conf = dict(l.split(" ", 1) for l in g.splitlines() if " " in l)
+            self.assertEqual((conf.get("forwardagent"), conf.get("batchmode"), conf.get("clearallforwardings")), ("no", "yes", "yes"), g[:300])
 
 
 class Orphans(Base):
@@ -440,8 +448,12 @@ KNIVES = [
      '"if true; then', 'Trees.test_t2_archive'),
     ('K16', "src/cockpit/room_heat_tidy.py", '    clear = "[ -e %s ] || git -C %s worktree remove --force %s 2>/dev/null; " % (p, r, p)\n',
      '    clear = ""\n', 'Trees.test_t2_archive'),
-    ('K17', "src/cockpit/room_heat_tidy.py", '    if own:\n',
+    ('K17', "src/cockpit/room_heat_tidy.py", '    if parts and own.startswith(parts[0]) and not _forces_agent(parts[1:]):\n',
      '    if False:\n', 'Fetch.test_t9_fetch_before_judging'),
+    ('K18', "src/cockpit/room_heat_tidy.py", '        env["GIT_SSH_COMMAND"] = parts[0] + " " + SSH_HARDEN + own[len(parts[0]):]',
+     '        env["GIT_SSH_COMMAND"] = own + " " + SSH_HARDEN', 'Fetch.test_t9_fetch_before_judging'),
+    ('K19', "src/cockpit/room_heat_tidy.py", '            if ch == "A":\n',
+     '            if False:\n', 'Fetch.test_t9_fetch_before_judging'),
     ("K13", "src/cockpit/room_heat_tidy.py", "    return first == head or (", "    return (", "Trees.test_t1_states"),
     ("K14", "src/cockpit/room_heat_tidy.py", "        if name != RH.safe_name(name, 255):\n", "        if False:\n", "Trees.test_t1_states"),
 ]

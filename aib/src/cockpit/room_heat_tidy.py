@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -123,13 +124,37 @@ GIT_ENV = {"LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
 SSH_HARDEN = GIT_ENV["GIT_SSH_COMMAND"].split(" ", 1)[1]   # 去掉程式名只留選項;整串寫在上一行(加固檢查逐行看)
 
 
+SSH_ARG_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")       # 後面要接參數的短選項
+
+
+def _forces_agent(args):
+    """參數裡有 -A(含 -At 這種併寫)⇒ True。-A 不管前後都會打開轉送,-o ForwardAgent=no 蓋不掉(ssh -G 實測)。"""
+    it = iter(args)
+    for t in it:
+        if len(t) < 2 or not t.startswith("-") or t.startswith("--"):
+            continue
+        for i, ch in enumerate(t[1:]):
+            if ch == "A":
+                return True
+            if ch in SSH_ARG_FLAGS:
+                if i == len(t) - 2:
+                    next(it, None)                     # 參數在下一個字
+                break
+    return False
+
+
 def git_env(environ=None):
-    """使用者自己設了 GIT_SSH_COMMAND(指定金鑰 / 跳板)就不蓋掉,只在後面補防護選項(#345 r2 Low)。"""
+    """使用者自己設了 GIT_SSH_COMMAND(指定金鑰 / 跳板)就沿用,防護選項插在程式名後面、使用者參數前面
+    (ssh 的 -o 先出現的贏,#360 r1 M)。拆不開、程式名帶引號、或參數有 -A ⇒ 不跑使用者的,改用 GIT_ENV 原值。"""
     environ = os.environ if environ is None else environ
     env = {**environ, **GIT_ENV}
     own = (environ.get("GIT_SSH_COMMAND") or "").strip()
-    if own:
-        env["GIT_SSH_COMMAND"] = own + " " + SSH_HARDEN
+    try:
+        parts = shlex.split(own) if own else []
+    except ValueError:
+        parts = []
+    if parts and own.startswith(parts[0]) and not _forces_agent(parts[1:]):
+        env["GIT_SSH_COMMAND"] = parts[0] + " " + SSH_HARDEN + own[len(parts[0]):]   # 其餘照原字串,不改使用者的引號 / 展開
     return env
 
 
