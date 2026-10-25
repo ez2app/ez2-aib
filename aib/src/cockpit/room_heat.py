@@ -6,6 +6,7 @@
   aib room heat history [--json]      最近 1 小時,每 10 秒一點(快照順手記;狀態根 room/heat-history.json,0600)
   aib room heat crashes [--json] [--days N]   當機雷達:系統當機報告按「程式 + 例外 + 訊息前 40 字」歸類
   aib room heat churn [--seconds N] [--json]  找熱源:N 秒內新開的短命行程歸給誰(room_heat_unseen.py,60 秒節流)
+  aib room heat advice [--json]               散熱建議七條(room_heat_advice.py,只顯示、快取 60 秒)
 
   aib room heat release <候選編號>… | --all-safe [--auto] [--dry-run] [--json]   釋放殘留(room_heat_release.py,白名單)
 
@@ -495,7 +496,7 @@ def _print_snapshot(s, out):
 def main(argv=None, out=None):
     out = out or sys.stdout
     argv = list(sys.argv[1:] if argv is None else argv)
-    sub = argv.pop(0) if argv and argv[0] in ("history", "crashes", "release", "churn") else "snap"
+    sub = argv.pop(0) if argv and argv[0] in ("history", "crashes", "release", "churn", "advice") else "snap"
     ap = argparse.ArgumentParser(prog="aib room heat" + ("" if sub == "snap" else " " + sub))
     ap.add_argument("--json", action="store_true")
     if sub == "crashes":
@@ -525,6 +526,22 @@ def main(argv=None, out=None):
             if not r["results"]:                       # 掃描失敗 / 鎖開不了 ≠ 沒東西可收(B-M3)
                 out.write(T("release." + r["detail"] if r.get("detail") else "release.none") + "\n")
         return 0 if r["ok"] else 1
+    if sub == "advice":
+        import room_heat_advice as RA
+        r = RA.advice()
+        if a.json:
+            json.dump(r, out, ensure_ascii=False)
+            out.write("\n")
+            return 0
+        out.write(T("advice.summary", n=len(r["items"])) + "\n" if r["items"] else T("advice.none") + "\n")
+        for x in r["items"]:
+            name = x["metric"].get("label") or x["metric"].get("program") or ""
+            out.write("  [%s] %s%s%s\n" % (x["severity"], "@%s " % x["owner"] if x["owner"] else "", x["hint"],
+                                            "(%s)" % name if name else ""))
+        for k in ("unmeasured", "skipped"):
+            if r.get(k):
+                out.write(T("advice." + k, codes=", ".join(u["code"] for u in r[k])) + "\n")
+        return 0
     if sub == "churn":
         import room_heat_unseen as RU
         r = RU.churn(seconds=a.seconds)
