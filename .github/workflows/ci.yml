@@ -11,8 +11,9 @@ permissions:
   contents: read
 jobs:
   smoke:
-    # 10-25:沒設上限時一支測試卡住會把格子掛到預設 6 小時、佔滿 macOS 名額,後面所有 PR 排隊;平常 macOS 約 13 分
-    timeout-minutes: 45
+    # 10-25:沒設上限時一支測試卡住會把格子掛到預設 6 小時、佔滿 macOS 名額,後面所有 PR 排隊。
+    #   macOS 整套 260 支約 40 分(最慢一支約 4 分)⇒ 上限 75 分,留將近一倍
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
