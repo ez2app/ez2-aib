@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import time
 
@@ -174,6 +175,33 @@ def _merge(a, b):
     return a
 
 
+def read_regular(path, limit, tail=False):
+    """只讀一般檔(具名管道 / 裝置檔 open 會卡住右欄 ⇒ 不阻塞地開、fstat 不是一般檔就跳過)。
+    tail=True 讀最後 limit 位元組。讀不到回 None。"""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        if tail and st.st_size > limit:
+            os.lseek(fd, st.st_size - limit, os.SEEK_SET)
+        chunks, left = [], limit
+        while left > 0:
+            b = os.read(fd, min(left, 1 << 20))
+            if not b:
+                break
+            chunks.append(b)
+            left -= len(b)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def parked_forks(sessions_dir=None):
     """新版 Claude Code(2.1.31x 起)的背景工作:守護程式先開好備用行程(`claude bg-spare --bg-spare <sock>`),
     交工作時才認領 ⇒ 命令列沒有 --fork-session / --resume,fork_of 認不到(10-25 @abb89 真機:右欄 💤49m)。
@@ -190,10 +218,12 @@ def parked_forks(sessions_dir=None):
     for name in names:
         if not name.endswith(".json"):
             continue
+        raw = read_regular(os.path.join(base, name), _SESSION_MAX_BYTES)
+        if raw is None:
+            continue
         try:
-            with open(os.path.join(base, name), encoding="utf-8") as fh:
-                d = json.loads(fh.read(_SESSION_MAX_BYTES))
-        except (OSError, ValueError):
+            d = json.loads(raw.decode("utf-8"))
+        except ValueError:
             continue
         if not isinstance(d, dict):
             continue

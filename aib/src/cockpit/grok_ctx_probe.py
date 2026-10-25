@@ -30,6 +30,8 @@ import re
 import time
 from urllib.parse import quote
 
+import bg_fork  # noqa: E402  read_regular:不阻塞地只讀一般檔
+
 SCHEMA = "ez2-context-gauge-v1"
 GAUGE_VERSION = "1.0.0"
 SOURCE = "grok_signals"
@@ -100,7 +102,7 @@ def signals_path(uuid, cwd=None):
     return None
 
 
-_UPDATES_TAIL = 4 * 1024 * 1024     # updates.jsonl 只讀最後這麼多(子代理事件在原席這支裡)
+_UPDATES_TAIL = 512 * 1024         # updates.jsonl 只讀最後這麼多(子代理在跑時原席在等、幾乎不寫 ⇒ spawned 在很近的尾巴)
 _MAX_CHILDREN = 8
 
 
@@ -120,14 +122,8 @@ def running_children(folder):
     """原席 updates.jsonl 裡 subagent_spawned 了、還沒 subagent_finished 的子代理 session uuid(10-25 Andy
     「其他品牌的 ai 也要能辨識」:grok 子代理寫在另一個 session 目錄,原席不動 ⇒ 右欄誤判 💤)。
     子代理目錄的 summary.json 沒有回指原席,關聯只在原席這邊的事件。讀不到 / 形狀不對 ⇒ 不算(只會少併)。"""
-    path = os.path.join(folder, "updates.jsonl")
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            size = fh.tell()
-            fh.seek(max(0, size - _UPDATES_TAIL))
-            raw = fh.read()
-    except OSError:
+    raw = bg_fork.read_regular(os.path.join(folder, "updates.jsonl"), _UPDATES_TAIL, tail=True)
+    if not raw or b"subagent_" not in raw:      # 多數席沒有子代理事件:不解碼(右欄每 5 秒一輪,10-25 普查省 CPU)
         return []
     live = {}
     for line in raw.decode("utf-8", "replace").splitlines():

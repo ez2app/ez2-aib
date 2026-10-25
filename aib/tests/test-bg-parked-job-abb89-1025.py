@@ -11,10 +11,14 @@ P4 舊的命令列分身照舊認得(兩種來源合併、不重複)
 Antigravity / Copilot 這台沒有任何子代理資料 ⇒ 不做):
 G1 grok 原席 updates.jsonl 有 subagent_spawned 沒 finished ⇒ 子代理目錄(另一個 cwd)的活動併進原席
 G2 finished 了 / child id 不是 uuid ⇒ 不併
-刀(複本 + run_guarded):K1 forks_by_origin 不併 parked ⇒ P1/P2 紅;K2 不驗 uuid ⇒ P3 紅;K3 grok 不看子代理 ⇒ G1 紅
+G3 尾巴(512 KiB)外的舊 spawned 不算(尾巴大小鎖住;少併是可接受方向)
+F1 sessions/*.json 或 grok updates.jsonl 是具名管道 ⇒ 不卡住、跳過(r1 審查 B-M1)
+刀(複本 + run_guarded):K1 rows 路徑不併 parked ⇒ P1 紅;K2 不驗 uuid ⇒ P3 紅;K3 grok 不看子代理 ⇒ G1 紅;
+K4 finished 不扣掉 ⇒ G2 紅;K5 快取路徑不併 parked ⇒ P2 紅;K6 開檔會阻塞 ⇒ F1 紅
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -152,6 +156,38 @@ class Grok(Base):
         self.assertGreater(self.age(), 40 * 60)
         self.assertEqual(grok_ctx_probe.running_children(str(self.seat)), [])
 
+    def test_g3_old_spawn_outside_tail(self):
+        self.updates({"sessionUpdate": "subagent_spawned", "child_session_id": GROK_KID})
+        f = self.seat / "updates.jsonl"
+        with open(f, "a", encoding="utf-8") as fh:
+            fh.write(("{\"x\": \"%s\"}\n" % ("y" * 1000)) * 600)
+        os.utime(f, (self.now - 49 * 60, self.now - 49 * 60))
+        self.assertEqual(grok_ctx_probe.running_children(str(self.seat)), [])
+
+
+FIFO_PROBE = r"""
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import bg_fork, grok_ctx_probe
+print(bg_fork.parked_forks(sys.argv[2]), grok_ctx_probe.running_children(sys.argv[3]))
+"""
+
+
+class Fifo(Base):
+    def test_f1_fifo_skipped(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("no mkfifo")
+        self.pair()
+        os.mkfifo(str(self.sessions / "999.json"))
+        g = self.td / "gseat"
+        g.mkdir()
+        os.mkfifo(str(g / "updates.jsonl"))
+        r = subprocess.run([sys.executable, "-B", "-c", FIFO_PROBE, str(ROOT / "src" / "cockpit"),
+                            str(self.sessions), str(g)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(FORK, r.stdout)
+        self.assertTrue(r.stdout.strip().endswith("[]"), r.stdout)
+
 
 class Knife(unittest.TestCase):
     def _knife(self, needle, repl, cell):
@@ -180,6 +216,28 @@ class Knife(unittest.TestCase):
         self.assertIsNone(r.tripped)
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
         self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k4_finished_not_popped(self):
+        self._knife_file("src/cockpit/grok_ctx_probe.py", "            live.pop(kid, None)\n", "            pass\n",
+                         "Grok.test_g2_finished_or_bad_not_merged")
+
+    def test_k5_cached_path_no_merge(self):
+        self._knife_file("src/cockpit/bg_fork.py", "        result = _merge(_build(rows), parked_forks())\n",
+                         "        result = _build(rows)\n", "Parked.test_p2_activity_follows_fork")
+
+    def test_k6_no_regular_check(self):
+        # 不阻塞地開才是不卡的關鍵(S_ISREG 再把管道 / 裝置擋掉);拿掉 O_NONBLOCK ⇒ open 卡住 ⇒ F1 逾時紅
+        self._knife_file("src/cockpit/bg_fork.py", "os.open(path, os.O_RDONLY | os.O_NONBLOCK)",
+                         "os.open(path, os.O_RDONLY)", "Fifo.test_f1_fifo_skipped", red="TimeoutExpired")
+
+    def _knife_file(self, rel, needle, repl, cell, red="AssertionError"):
+        name = Path(__file__).name
+        with knife_copy(ROOT, rel, needle, repl, tests=(name,)) as root:
+            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), cell], cwd=str(root),
+                            max_procs=40, timeout=120)
+        self.assertIsNone(r.tripped)
+        self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
+        self.assertIn(red, r.stdout + r.stderr)
 
 
 if __name__ == "__main__":
