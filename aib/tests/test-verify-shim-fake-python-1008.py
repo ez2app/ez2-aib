@@ -11,9 +11,11 @@ F2 防重入:EZ2_VERIFY_IN_SHIM=1 底下執行墊片 ⇒ 一筆都不記,照樣�
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -59,13 +61,19 @@ class FakePython(unittest.TestCase):
         (self.repo / "run.sh").write_text('#!/bin/bash\n"$PY3" -c x\n', encoding="utf-8")
         (self.repo / "tests" / "t_fake.py").write_text(TEST, encoding="utf-8")
         env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+        # 關掉 git 背景自動維護(gc / maintenance 會在 commit 後脫離背景寫 .git,10-25 CI tearDown 撞上 Directory not empty)
         for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
-            subprocess.run(["git", "-C", str(self.repo)] + a, check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
+            subprocess.run(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-C", str(self.repo)] + a,
+                           check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
         self.trace_dir = Path(self.td.name) / "traces"
         self.trace_dir.mkdir()
 
     def tearDown(self):
-        self.td.cleanup()
+        try:
+            self.td.cleanup()
+        except OSError:          # 清理撞上還在寫的背景程式:等一下再收，收不乾淨也不判紅(測的不是清理)
+            time.sleep(0.5)
+            shutil.rmtree(self.td.name, ignore_errors=True)
 
     def _env(self):
         return {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "BASH_ENV", "EZ2_VERIFY_TRACE", "EZ2_VERIFY_PY")}
