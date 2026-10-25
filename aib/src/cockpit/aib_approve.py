@@ -690,7 +690,15 @@ def main(argv=None, out=None, env=None, stdin=None, run=None):
         return emit(history(env), 0)
     if o.cmd == "enroll":
         import approve_enroll
-        r, why = approve_enroll.enroll(o.site, o.host, o.url, env, run=run or subprocess.run)
+        import signal
+
+        def term(signum, frame):   # 頁面背景跑、逾時會送 SIGTERM:轉成例外,enroll 才放得回(@abb89 #371 r4)
+            raise SystemExit(128 + signum)
+        old = signal.signal(signal.SIGTERM, term)
+        try:
+            r, why = approve_enroll.enroll(o.site, o.host, o.url, env, run=run or subprocess.run)
+        finally:
+            signal.signal(signal.SIGTERM, old)
         if why:
             if not o.json:  # 給人看的一句(四語);--json 只給代碼(契約)
                 out.write(approve_enroll.explain(why, env) + "\n")

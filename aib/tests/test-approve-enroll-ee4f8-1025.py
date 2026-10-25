@@ -37,6 +37,8 @@ r4(@abb89 #371 r3B):E15 第一框之後鑰被換(連 helper 一起)⇒ key_chang
    E21 helper 壞 ⇒ helper_failed(不折成 touchid_unavailable);yes 非 JSON 時沒指紋 ⇒ stderr 印替代路、stdout 仍一行 JSON;
    E22 路徑有空白 ⇒ 四個遠端指令都加引號;biometry_ready rc≠0 / 逾時 ⇒ False
    K15 改回重讀 .sekey ⇒ E16 紅;K16 拿掉 BaseException 放回 ⇒ E17 紅;K17 不加引號 ⇒ E22 紅
+r5(@abb89 #371 r4):E23 site_add 成功後才中斷 ⇒ 站上放回、本機登記也撤回(原本有登記 ⇒ 放回舊 token);
+   CLI enroll 期間 SIGTERM 轉成 SystemExit、結束後還原舊 handler。K18 不撤本機登記 ⇒ E23 紅
 """
 import base64
 import hashlib
@@ -575,6 +577,39 @@ class R4(Base):
         self.assertFalse(AE.biometry_ready(slow))
         self.assertTrue(AE.biometry_ready(lambda *a, **k: SimpleNamespace(returncode=0, stdout=ok, stderr="")))
 
+    def test_e23_interrupt_after_site_add(self):
+        import signal
+        import unittest.mock as um
+        real = AA.site_add
+
+        def add_then_boom(*a, **k):
+            got = real(*a, **k)
+            raise KeyboardInterrupt()
+        with um.patch.object(AA, "site_add", add_then_boom), self.assertRaises(KeyboardInterrupt):
+            self.enroll()
+        self.assert_untouched()
+        self.assertFalse((AA.approve_dir(self.env) / "tokens" / "ez2.app.token").exists())
+        self.assertFalse(self.sekey().exists())
+        AA.key_init(self.env, run=self.w, helper="/fake/aib-sehelper", platform="darwin")   # 原本已登記過
+        self.assertEqual(AA.site_add("ez2.app", None, "o" * 32, self.env)[1], None)
+        with um.patch.object(AA, "site_add", add_then_boom), self.assertRaises(KeyboardInterrupt):
+            self.enroll()
+        self.assertEqual(AA.load_sites(self.env), [{"site": "ez2.app", "url": "https://ez2.app"}])
+        self.assertEqual(AA._token("ez2.app", self.env), "o" * 32)
+        seen = []
+
+        def fake_enroll(*a, **k):
+            h = signal.getsignal(signal.SIGTERM)
+            with self.assertRaises(SystemExit) as cm:
+                h(signal.SIGTERM, None)
+            seen.append(cm.exception.code)
+            return None, "cancel"
+        before = signal.getsignal(signal.SIGTERM)
+        with um.patch.object(AE, "enroll", fake_enroll):
+            self.assertEqual(AA.main(["enroll", "ez2.app", "--host", "eu01", "--json"], out=io.StringIO(), env=self.env), 2)
+        self.assertEqual(seen, [128 + signal.SIGTERM])
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
 
 class Knives(unittest.TestCase):
     def _red(self, needle, repl, test, cls="Enroll"):
@@ -645,6 +680,10 @@ class Knives(unittest.TestCase):
     def test_k17_unquoted_path(self):
         self._red("    q = shlex.quote(path)\n    return '[ -f %s ]", "    q = path\n    return '[ -f %s ]",
                   "test_e22_quoting_and_biometry_edges", cls="R4")
+
+    def test_k18_keep_local_registration(self):
+        self._red("                    if registered:", "                    if False:", "test_e23_interrupt_after_site_add",
+                  cls="R4")
 
     def test_k6_reason_without_dest(self):
         self._red("dest=dest)", "dest=None)", "test_e1_happy_path")

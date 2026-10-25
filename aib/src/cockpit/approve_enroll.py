@@ -18,7 +18,8 @@
      root:root 644、先寫暫存、sha256 對上才 mv;備份只留最近 3 份;設定夾不是 root 的就拒)
   9. 回讀:要是一般檔、uid 0、group/others 不可寫、內容跟寫的一模一樣(kid 對得上)⇒ 不對就放回原檔
  10. 本機登記站(token 檔 600);登記失敗也放回原檔。第 5 步新建的鑰在後面失敗時刪掉。
-     8–10 中途 Ctrl-C / SIGTERM 也放回;放不回就在 stderr 印「要人看」再丟出。
+     8–10 中途 Ctrl-C / SIGTERM(aib approve enroll 會把 SIGTERM 轉成例外)也放回,已登記的本機紀錄一起撤回;
+     放不回就在 stderr 印「要人看」再丟出。
 
 防線(同帳號 AI 威脅守則;照實寫):
   - 真正的防線只有兩個 Touch ID 以外的「本人看得到」:勾選框(核心組的字、TA.clean、主機指紋與 kid 不截斷)與
@@ -401,7 +402,22 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
             except BaseException:
                 return 255
 
-        wrote = False
+        tok = AA.approve_dir(env) / "tokens" / (site + ".token")
+        try:
+            prev_tok = tok.read_text(encoding="utf-8") if tok.is_file() else None
+        except (OSError, ValueError):
+            prev_tok = None
+        prev_sites = AA.load_sites(env)
+
+        def unregister():
+            """site_add 成功後才被打斷:站上已放回 ⇒ 本機登記也回到之前(原本有就放回舊 token,不留反向半套)。"""
+            try:
+                AA._write_private(AA._sites_path(env), json.dumps({"v": 1, "sites": prev_sites}, sort_keys=True) + "\n")
+                AA._write_private(tok, prev_tok) if prev_tok is not None else os.unlink(str(tok))
+            except OSError:
+                pass
+
+        wrote = registered = False
         try:   # 寫入 → 回讀 → 本機登記:中途 Ctrl-C / SIGTERM 也放回(@abb89 #371 r3B M2)
             wrote = True
             rc, _ = _remote(pin, host, kh, _cmd_write(path, bak, sha), data=want, run=run)
@@ -413,6 +429,7 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
             rc, out = _remote(pin, host, kh, _cmd_check(path), run=run)
             bad = "readback_mismatch" if rc != 0 or not readback_ok(out, want) else None
             if not bad:
+                registered = True   # 呼叫前就設:site_add 寫到一半被打斷也撤(unregister 回到呼叫前,重做無害)
                 _, why = AA.site_add(site, url, token, env)
                 bad = why and "local_state"
             if bad:
@@ -424,6 +441,8 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
                 if restore() != 0:
                     sys.stderr.write(explain("interrupted_restore_failed", env) + "\n")
                 else:
+                    if registered:   # @abb89 #371 r4:site_add 成功、離開 try 前被打斷
+                        unregister()
                     drop_new_key()
             raise
         try:
