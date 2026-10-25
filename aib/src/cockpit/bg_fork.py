@@ -25,7 +25,7 @@ fork 成一個新 session,掛在全機共用的守護程式底下,行程長這�
 2. 全機現在有哪些分身、各從哪一席分出來(`forks_by_origin`:原席 uuid → [分身 uuid…])
    —— 活動偵測把分身的對話檔 mtime 併入原席(閒置收艙/活動燈/CTX 同一條)。
 
-## 判準(只認命令列,不讀 sessions/<pid>.json:那個檔沒有「從誰分出來」)
+## 判準(命令列;10-25 起另認 sessions/<pid>.json 的 parkedJobId ↔ jobId,見 parked_forks)
 
 - 分身:同一條命令列同時有 `--fork-session`、`--session-id <uuid>`、`--resume <X>`,
   且 argv[0] 的路徑含 `claude`(`~/.local/bin/claude` 與 `…/share/claude/versions/N` 都是);
@@ -42,6 +42,7 @@ fork 成一個新 session,掛在全機共用的守護程式底下,行程長這�
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -50,6 +51,8 @@ import time
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _JSONL_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
 SNAPSHOT_ENV = "EZ2_AIB_PS_SNAPSHOT"
+SESSIONS_ENV = "EZ2_AIB_CLAUDE_SESSIONS_DIR"
+_SESSION_MAX_BYTES = 64 * 1024
 CACHE_S = 5.0
 _RESUME_FLAGS = ("--resume", "-r")
 
@@ -156,10 +159,58 @@ def forks_by_origin(rows=None, now=None):
         if _cache["map"] is not None and (t - _cache["at"]) < CACHE_S:
             return _cache["map"]
         rows = proc_rows()
-        result = _build(rows)
+        result = _merge(_build(rows), parked_forks())
         _cache["at"], _cache["map"] = t, result
         return result
-    return _build(rows)
+    return _merge(_build(rows), parked_forks())
+
+
+def _merge(a, b):
+    for origin, sids in b.items():
+        lst = a.setdefault(origin, [])
+        for sid in sids:
+            if sid not in lst:
+                lst.append(sid)
+    return a
+
+
+def parked_forks(sessions_dir=None):
+    """新版 Claude Code(2.1.31x 起)的背景工作:守護程式先開好備用行程(`claude bg-spare --bg-spare <sock>`),
+    交工作時才認領 ⇒ 命令列沒有 --fork-session / --resume,fork_of 認不到(10-25 @abb89 真機:右欄 💤49m)。
+    改看 ~/.claude/sessions/<pid>.json:原席那份 kind=interactive 帶 parkedJobId,分身那份 kind=bg 帶同一個 jobId。
+    兩邊 sessionId 都是 uuid 才算;讀不到 / 形狀不對 ⇒ 不算(只會少併,不會多併)。
+    這份檔 AI 改得到,只用來把分身的活動「併進」原席(只會讓席看起來更忙、更不會被收),不拿來放行任何事。
+    `EZ2_AIB_CLAUDE_SESSIONS_DIR` 給測試指到假資料夾。"""
+    base = sessions_dir or os.environ.get(SESSIONS_ENV) or os.path.expanduser("~/.claude/sessions")
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return {}
+    parked, jobs = {}, {}
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(base, name), encoding="utf-8") as fh:
+                d = json.loads(fh.read(_SESSION_MAX_BYTES))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        sid = d.get("sessionId")
+        if not isinstance(sid, str) or not UUID_RE.match(sid):
+            continue
+        if d.get("kind") == "interactive" and isinstance(d.get("parkedJobId"), str) and d["parkedJobId"]:
+            parked.setdefault(d["parkedJobId"], set()).add(sid)
+        elif d.get("kind") == "bg" and isinstance(d.get("jobId"), str) and d["jobId"]:
+            jobs.setdefault(d["jobId"], []).append(sid)
+    out: dict = {}
+    for job, origins in parked.items():
+        for origin in sorted(origins):
+            for sid in jobs.get(job, ()):
+                if sid != origin:
+                    out.setdefault(origin, []).append(sid)
+    return out
 
 
 def _build(rows):
