@@ -12,6 +12,9 @@
   S8 digest 席(API / 橋接)那句也帶規則;S9 inprog_ids 排除線上 human_reply / echo_reply / IM / 帶 wait 的列。
   r2 審查補:S10 叫過的待審被席位讀掉變進行中 ⇒ 10 分後不再叫(不是新工作);S11 auto_tidy 席待審 1 + 進行中 3 的句子
   也要帶「整理子代理」與不准清單;S12 wait 欄從信檔經 tabs_payload 一路到 inprog_ids 都生效。
+  r3 審查補:S13 沒登記的 API 席只剩進行中時也判得出 digest 模式;S14 auto_tidy 席待審 2、進行中 0 也帶規則;
+  S15 四種叫醒句都過 R-30 出站檢查(圈號 ①②③ 會被咽喉整句擋下、治具看不到);S16 digest 句撐不爆 1500 位元組、
+  分組表至少留 5 列;S17 每 15 分來 1 封、席位立刻讀的節奏,3 小時內進行中觸發最多叫 3 次(剛讀的不算卡著 + 每小時一次)。
 
 治具沿用 test-dm-hold-notify-abb89-1015.py(整棵 src 抄進暫存根、假 tmux、假咽喉),投遞由注入的 deliver 收下,
 不碰工作樹、不碰 ~/.ez2-aib、不送真 dm。
@@ -46,7 +49,7 @@ SETUP = (
     "                    sender_kind='ai', wid='@2', provider='claude', hub='aihub-t1')['id']\n"
     "def inprog(msg, now):\n"
     "    i = put(msg, now)\n"
-    "    r = Q.mark_read(%r, i, 'seat:%s', env=env, if_rev=None, no_rev_check=True, now=now)\n"
+    "    r = Q.mark_read(%r, i, 'seat:%s', env=env, if_rev=None, no_rev_check=True, now=now - 900)\n"   # 讀了 15 分 = 卡著
     "    assert r.get('ok'), r\n"
     "    return i\n"
     "sent = []\n"
@@ -286,6 +289,112 @@ class S12WaitFromItemFile(unittest.TestCase):
             "rows = Q.tabs_payload(%r, env=env)['tabs']['read']['rows']\n"
             "print(json.dumps({'ids': TR.inprog_ids(rows), 'k': k, 'w': w}))\n" % (SEAT, SEAT, SEAT)))
         self.assertEqual(out["ids"], [out["k"]], out)
+
+
+def _tr():
+    import importlib.util as iu
+    spec = iu.spec_from_file_location("dm_triage_u9", HN.REL.TREE / "src" / "cockpit" / "dm_triage.py")
+    m = iu.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+
+
+class S13DigestSeatInProgressOnly(unittest.TestCase):
+
+    def test_unregistered_api_seat_mode_digest(self):
+        b = HN.QBox(self, seats=())
+        out = b.py(SETUP.replace("provider='claude'", "provider='deepseek'") + (
+            "t = int(__import__('time').time())\n"
+            "inprog('進行中一', t); inprog('進行中二', t)\n"
+            "res = tick(t + 10)\n"
+            "print(json.dumps({'res': res, 'sent': sent}))\n"))
+        rows = [r for r in (out["res"] or []) if isinstance(r, dict) and r.get("seat") == SEAT]
+        self.assertTrue(rows, out)
+        self.assertEqual(rows[0].get("mode"), "digest", "只剩進行中時 probe 要退而取 read 列,不然判不出 digest:%r" % out)
+        self.assertEqual(len(out["sent"]), 1, out)
+
+
+class S14TidySeatTodoTwo(unittest.TestCase):
+
+    def test_tidy_todo2_inprog0_carries_rules(self):
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "Q.tidy_switch('on', seat=%r, env=env)\n"
+            "put('第一件:請看 PR 說明', t); put('第二件:另一題要你決定', t)\n"
+            "tick(t + 10)\n"
+            "tick(t + 10 + Q.TIDY_QUIET_S + 5)\n"
+            "print(json.dumps({'sent': sent}))\n" % SEAT))
+        self.assertEqual(len(out["sent"]), 1, out)
+        for must in ("整理子代理", "不算數", "stage-tidy"):
+            self.assertIn(must, out["sent"][0], out["sent"][0])
+
+
+class S15WakeTextPassesOutboundLint(unittest.TestCase):
+
+    def test_all_wake_texts_lint_clean(self):
+        import importlib.util as iu
+        TR = _tr()
+        spec = iu.spec_from_file_location("r30u", HN.REL.TREE / "src" / "messaging" / "r30_lint.py")
+        L = iu.module_from_spec(spec); spec.loader.exec_module(L)
+        need = [{"id": "q_%d" % i, "rev": 1, "from": "@x", "sender_kind": "ai", "summary": "s%d" % i} for i in range(10)]
+        texts = [TR.wake_text(SEAT, {"pending": 2}, 2, "/x/dm_queue.py", mode="agent", inprog=3),
+                 TR.wake_text(SEAT, {"pending": 2}, 2, "/x/dm_queue.py", mode="digest", digest=["  q1 x"], inprog=3),
+                 TR.tidy_wake_text(SEAT, need, 12, "/x/dm_queue.py", mode="agent", inprog=3),
+                 TR.tidy_wake_text(SEAT, need, 12, "/x/dm_queue.py", mode="digest", inprog=0),
+                 TR.tidy_wake_text(SEAT, need[:1], 1, "/x/dm_queue.py", mode="agent", inprog=0)]
+        for t in texts:
+            bad = L.lint(t)
+            self.assertEqual(bad, [], "叫醒句過不了 R-30 出站檢查(咽喉會整句擋下):%r\n%s" % (bad[:3], t[:200]))
+
+
+class S16DigestBudget(unittest.TestCase):
+
+    def test_tidy_digest_keeps_rows(self):
+        TR = _tr()
+        need = [{"id": "q_%d" % i, "rev": 1, "from": "@x", "sender_kind": "ai", "summary": "摘要 %d" % i} for i in range(10)]
+        text = TR.tidy_wake_text(SEAT, need, 12, "/x/dm_queue.py", mode="digest", inprog=3)
+        self.assertLessEqual(len(text.encode("utf-8")), TR.WAKE_DIGEST_MAX_BYTES, len(text.encode("utf-8")))
+        kept = [ln for ln in text.split("\n") if ln.startswith("  ")]
+        self.assertGreaterEqual(len(kept), 5, text)
+        self.assertIn("不算數", text)
+        text2 = TR.wake_text(SEAT, {"pending": 10}, 10, "/x/dm_queue.py", mode="digest",
+                             digest=["  q%d x" % i for i in range(10)], inprog=3)
+        self.assertLessEqual(len(text2.encode("utf-8")), TR.WAKE_DIGEST_MAX_BYTES)
+        self.assertGreaterEqual(len([ln for ln in text2.split("\n") if ln.startswith("  ")]), 5, text2)
+
+
+class S17SteadyRhythmBudget(unittest.TestCase):
+
+    def test_one_mail_per_15min_read_at_once(self):
+        """每 15 分來 1 封、席位立刻讀、做 2 小時才結:3 小時內進行中觸發最多叫 3 次,不得把一天 12 次用光。"""
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "for k in range(12):\n"
+            "    i = put('工作 %%d' %% k, t + k * 900)\n"
+            "    assert Q.mark_read(%r, i, 'seat:%s', env=env, if_rev=None, no_rev_check=True, now=t + k * 900 + 5).get('ok')\n"
+            "    for m in range(3):\n"
+            "        tick(t + k * 900 + 60 + m * 300)\n"
+            "print(json.dumps({'n': len(sent)}))\n" % (SEAT, SEAT)))
+        self.assertGreaterEqual(out["n"], 1, out)
+        self.assertLessEqual(out["n"], 3, "3 小時叫了 %d 次,會把一天 12 次用光:%r" % (out["n"], out))
+
+
+class S18JustReadIsNotStuck(unittest.TestCase):
+
+    def test_fresh_read_not_counted_until_settled(self):
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "for k in range(2):\n"
+            "    i = put('剛讀 %%d' %% k, t)\n"
+            "    assert Q.mark_read(%r, i, 'seat:%s', env=env, if_rev=None, no_rev_check=True, now=t).get('ok')\n"
+            "tick(t + 10)\n"
+            "n1 = len(sent)\n"
+            "tick(t + 700)\n"
+            "print(json.dumps({'n1': n1, 'n2': len(sent)}))\n" % (SEAT, SEAT)))
+        self.assertEqual(out["n1"], 0, "席位剛讀的兩封還在動手,不算卡著、不叫:%r" % out)
+        self.assertEqual(out["n2"], 1, "過了 INPROG_SETTLE_S 還沒結 ⇒ 叫一次:%r" % out)
 
 
 if __name__ == "__main__":

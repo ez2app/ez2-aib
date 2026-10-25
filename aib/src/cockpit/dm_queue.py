@@ -1752,7 +1752,7 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     rows = tabs["waiting"]["rows"]
     unread = TR.unread_ids(rows)
     # the maintainer 10-25 21:2x:進行中 ≥2 也叫(read 分頁)
-    inprog = TR.inprog_ids(tabs.get("read", {}).get("rows") or [])
+    inprog = TR.inprog_ids(tabs.get("read", {}).get("rows") or [], now=now)
     if prev is None and len(unread) <= (0 if tidy_on else TR.TRIAGE_MIN_UNREAD) and len(inprog) < TR.INPROG_MIN:
         return None                        # 待審 / 進行中都沒到門檻(auto_tidy:待審一封都沒有):不建檔、不叫
     cur = TR.batch_key(r["id"] for r in TR.eligible_rows(rows))
