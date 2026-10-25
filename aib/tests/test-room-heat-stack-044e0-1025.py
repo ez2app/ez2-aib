@@ -14,8 +14,10 @@ S6 不支援的平台 ⇒ 全部 unsupported unsupported_platform
 S7 memguard 7 天內有 mem_guard_failed ⇒ error memguard_failed
 S8 隱私 / 契約:JSON 不含暫存路徑;state / unit / code 都在清單內;每個 title_key / hint_key 四語字典都有;CLI --json / 文字模式
 S9 自動釋放：裝了外掛但沒有自動收過的紀錄 ⇒ unmeasured no_record(不宣稱在跑);有紀錄 ⇒ on + 7 天次數
+S10 壞時間(1e300)不炸、未來的時間(超過 60 秒)當壞資料丟:不算次數、不給 last_run_at、歷史點不算新鮮
+S11 版號 v 開頭可比、非字串 / 比不了 ⇒ version_unreadable;外掛清單混雜非 dict 列不炸;文字模式 after 是 null 印「—」
 刀(複本 + run_guarded):K1 時間不帶時區 ⇒ S1 紅;K2 版號讀不到當沒裝 ⇒ S4 紅;K3 換版後沒量也給 after ⇒ S3 紅;
-K4 有看不懂的設定也判 on ⇒ S5 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K4 有看不懂的設定也判 on ⇒ S5 紅;K5 釋放次數條件改回「!= auto」⇒ S3 紅;K6 不丟未來時間 ⇒ S10 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import io
 import json
@@ -113,9 +115,14 @@ class Records(Base):
         (logs / "memguard.jsonl").write_text("\n".join(json.dumps(r) for r in (
             {"ts": NOW - 3600, "action": "mem_terminated"}, {"ts": NOW - 7200, "action": "mem_killed"},
             {"ts": NOW - 8 * 86400, "action": "mem_killed"}, {"ts": NOW - 60, "action": "mem_dry_run"})) + "\nnot json\n")
-        (room / "heat-released.jsonl").write_text("\n".join(json.dumps(r) for r in (
-            {"t": NOW - 100, "mode": "manual"}, {"t": NOW - 200, "mode": "auto"}, {"t": NOW - 300, "mode": "auto"},
-            {"t": NOW - 9 * 86400, "mode": "manual"})) + "\n")
+        import room_heat_release as RR                  # 跟釋放程式寫的同一種格式(預留 + 完成兩筆)
+        for t, auto, result in ((NOW - 100, False, "ok"), (NOW - 110, False, "release_failed"), (NOW - 120, False, "candidate_changed"),
+                                (NOW - 200, True, "ok"), (NOW - 300, True, "partial"), (NOW - 400, True, "release_failed"),
+                                (NOW - 9 * 86400, False, "ok")):
+            if auto:
+                RR._log({"t": t - 1, "kind": "headless_browser", "n_pids": 2, "mode": "auto", "result": "pending"})
+            RR._log({"t": t, "kind": "headless_browser", "owner": "seat", "cpu": 1.0, "mem_mb": 10.0, "n_pids": 2,
+                     "mode": "auto_done" if auto else "manual", "result": result})
         (room / "heat-history.json").write_text(json.dumps({"points": [{"t": NOW - 30, "level": "ok", "unseen_cpu": 1.25}]}))
         (room / "advice-last.json").write_text(json.dumps({"schema": "aib-heat-advice/v1", "t": NOW - 50, "items": [{}, {}, {}]}))
         (room / "known-hot.json").write_text(json.dumps({"schema": "aib-heat-known/v1", "codes": {
@@ -125,8 +132,10 @@ class Records(Base):
         it = self.by_id(s)
         self.assertFalse(s["stale"])
         self.assertEqual(it["memguard"]["result"], {"metric": "kills_7d", "unit": "count", "before": None, "after": None, "value": 2.0})
-        self.assertEqual(it["heat_release"]["result"]["value"], 1.0)
-        self.assertEqual(it["heat_auto_release"]["result"]["value"], 2.0)
+        self.assertEqual(it["heat_release"]["result"]["value"], 1.0)      # 手動:只算成功的、不算 9 天前、不算自動完成
+        self.assertEqual(it["heat_release"]["last_run_at"], ST.iso(NOW - 100))
+        self.assertEqual(it["heat_auto_release"]["result"]["value"], 2.0)  # 自動:ok + partial,預留和失敗不算
+        self.assertEqual(it["heat_auto_release"]["last_run_at"], ST.iso(NOW - 200))
         self.assertEqual(it["heat_auto_release"]["state"], "on")
         self.assertEqual(it["heat_unseen"]["result"]["value"], 1.25)
         self.assertEqual(it["heat_advice"]["result"]["value"], 3.0)
@@ -181,6 +190,54 @@ class Platform(Base):
         (logs / "memguard.jsonl").write_text(json.dumps({"ts": NOW - 600, "action": "mem_guard_failed", "error": "OSError"}) + "\n")
         it = self.by_id(self.run_stack())["memguard"]
         self.assertEqual((it["state"], it["code"]), ("error", "memguard_failed"))
+        with open(logs / "memguard.jsonl", "a") as fh:                  # 失敗之後又正常收過 ⇒ 不再判 error
+            fh.write(json.dumps({"ts": NOW - 60, "action": "mem_terminated"}) + "\n")
+        it = self.by_id(self.run_stack())["memguard"]
+        self.assertEqual((it["state"], it["code"]), ("on", None))
+
+
+class BadTime(Base):
+    def test_s10_bad_and_future_timestamps(self):
+        self.assertIsNone(ST.iso(1e300))
+        self.assertIsNone(ST.iso(-1e300))
+        room = self.room()
+        logs = self.state / "logs"
+        logs.mkdir(parents=True)
+        (logs / "memguard.jsonl").write_text("\n".join(json.dumps(r) for r in (
+            {"ts": 1e300, "action": "mem_killed"}, {"ts": NOW + 3600, "action": "mem_guard_failed"})) + "\n")
+        import room_heat_release as RR
+        RR._log({"t": 1e300, "mode": "manual", "result": "ok"})
+        RR._log({"t": NOW + 3600, "mode": "manual", "result": "ok"})
+        RR._log({"t": NOW + 3600, "mode": "auto_done", "result": "ok"})
+        (room / "heat-history.json").write_text(json.dumps({"points": [{"t": NOW + 3600, "level": "ok", "unseen_cpu": 1.0}]}))
+        (room / "advice-last.json").write_text(json.dumps({"schema": "aib-heat-advice/v1", "t": 1e300, "items": [{}]}))
+        (room / "known-hot.json").write_text(json.dumps({"schema": "aib-heat-known/v1", "codes": {
+            "right_tabs_poll": {"befores": [30.0], "before_ver": "0.1.53", "after": 2.0, "after_ver": "0.1.56", "t": 1e300}}}))
+        s = self.run_stack(plugins_fn=lambda: [{"name": "captain-room", "version": "0.1.46"}])
+        it = self.by_id(s)
+        self.assertTrue(s["stale"])                                    # 未來的歷史點不算新鮮
+        self.assertEqual((it["memguard"]["state"], it["memguard"]["result"]["value"], it["memguard"]["last_run_at"]), ("on", 0.0, None))
+        self.assertEqual((it["heat_release"]["result"]["value"], it["heat_release"]["last_run_at"]), (0.0, None))
+        self.assertEqual((it["heat_auto_release"]["state"], it["heat_auto_release"]["code"]), ("unmeasured", "no_record"))
+        for iid in ("room_heat", "heat_unseen", "heat_advice", "right_tabs", "heat_known"):
+            self.assertIsNone(it[iid]["last_run_at"], iid)
+        json.dumps(s)
+
+    def test_s11_versions_and_rows(self):
+        self.assertEqual(ST._ver("v0.1.56"), (0, 1, 56))
+        self.assertIsNone(ST._ver(0.156))
+        it = self.by_id(self.run_stack(aib="0.1.x", plugins_fn=lambda: ["junk", None, {"name": "captain-room", "version": "v0.1.46"}]))
+        self.assertEqual((it["memguard"]["state"], it["memguard"]["code"]), ("unmeasured", "version_unreadable"))
+        self.assertEqual((it["heat_auto_release"]["installed"], it["heat_auto_release"]["code"]), ("v0.1.46", "no_record"))
+        it = self.by_id(self.run_stack(aib=156))
+        self.assertEqual((it["memguard"]["state"], it["memguard"]["code"]), ("unmeasured", "version_unreadable"))
+        s = self.run_stack()
+        self.by_id(s)["statusline"]["result"] = {"metric": "cpu", "unit": "cores", "before": 5.0, "after": None, "value": None}
+        out = io.StringIO()
+        with mock.patch.object(ST, "stack", return_value=s):
+            self.assertEqual(RH.main(["stack"], out=out), 0)
+        self.assertIn("5.0→—", out.getvalue())
+        self.assertNotIn("None", out.getvalue())
 
 
 class Contract(Base):
@@ -221,12 +278,18 @@ class Contract(Base):
 KNIVES = [
     ("K1", "src/cockpit/room_heat_stack.py", "    return datetime.datetime.fromtimestamp(ts).astimezone().isoformat(timespec=\"seconds\")\n",
      "    return datetime.datetime.fromtimestamp(ts).isoformat(timespec=\"seconds\")\n", "Empty.test_s1_empty_state"),
-    ("K2", "src/cockpit/room_heat_stack.py", "    if installed == \"unreadable\":\n", "    if False:\n",
+    ("K2", "src/cockpit/room_heat_stack.py",
+     "    if installed is not None and (not isinstance(installed, str) or _ver(installed) is None):\n", "    if False:\n",
      "Unreadable.test_s4_unreadable_versions"),
     ("K3", "src/cockpit/room_heat_stack.py", "        after = rec.get(\"after\") if st in (\"improved\", \"not_improved\", \"fixed\") else None\n",
      "        after = rec.get(\"after\")\n", "Records.test_s3_records"),
     ("K4", "src/cockpit/room_heat_stack.py", "    return (\"on\", None) if complete else (\"unmeasured\", \"hooks_incomplete\")\n",
      "    return (\"on\", None)\n", "Footer.test_s5_footer_gate"),
+    ("K5", "src/cockpit/room_heat_stack.py",
+     "    mine = [r for r in rows if r.get(\"mode\") == want and r.get(\"result\") in RELEASED_OK and _ok_t(r.get(\"t\"), now)]\n",
+     "    mine = [r for r in rows if (r.get(\"mode\") != \"auto\") != auto and _ok_t(r.get(\"t\"), now)]\n", "Records.test_s3_records"),
+    ("K6", "src/cockpit/room_heat_stack.py", "    return _finite(t) and t <= now + FUTURE_SLACK_S\n", "    return _finite(t)\n",
+     "BadTime.test_s10_bad_and_future_timestamps"),
 ]
 
 

@@ -5534,7 +5534,7 @@
   "aib.heat.tidy.bad_name": "트리 이름에 제어 문자가 있어 건드리지 않음",
   "aib.heat.stack.header": "냉각 구성 요소(aib {aib})",
   "aib.heat.stack.stale": "오래된 데이터(기계실 스냅샷이 10분 넘게 갱신되지 않음)",
-  "aib.heat.stack.state.on": "실행 중",
+  "aib.heat.stack.state.on": "설치됨",
   "aib.heat.stack.state.update_available": "업데이트로 개선 가능",
   "aib.heat.stack.state.missing": "설치 안 됨",
   "aib.heat.stack.state.error": "최근 실행 실패",

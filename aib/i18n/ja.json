@@ -5534,7 +5534,7 @@
   "aib.heat.tidy.bad_name": "ツリー名に制御文字があるため触りません",
   "aib.heat.stack.header": "冷却コンポーネント(aib {aib})",
   "aib.heat.stack.stale": "データが古い(機房スナップショットが 10 分以上未更新)",
-  "aib.heat.stack.state.on": "稼働中",
+  "aib.heat.stack.state.on": "インストール済み",
   "aib.heat.stack.state.update_available": "更新で改善可能",
   "aib.heat.stack.state.missing": "未インストール",
   "aib.heat.stack.state.error": "前回失敗",

@@ -33,6 +33,8 @@ if HERE not in sys.path:
 AIB_ROOT = os.path.dirname(os.path.dirname(HERE))
 WEEK_S = 7 * 86400
 STALE_S = 600
+FUTURE_SLACK_S = 60                                    # 紀錄時間比現在晚超過這麼多 ⇒ 壞資料(M1)
+RELEASED_OK = ("ok", "partial")                        # 釋放紀錄只有這兩種結果算真的收了(M2)
 LOG_READ_MAX = 2 * 1024 * 1024
 FOOTER_GATE_RE = re.compile(r"footer[-_]gate")
 SKILL_DIRS = ("~/.claude/skills", "~/.ez2-aib/skills", "~/.codex/skills")
@@ -62,8 +64,10 @@ MODULE_OF = {"memguard": "memguard.py", "room_heat": "room_heat.py", "heat_relea
 
 
 def _ver(v):
+    if not isinstance(v, str):
+        return None
     try:
-        return tuple(int(x) for x in str(v).strip().split("."))
+        return tuple(int(x) for x in v.strip().lstrip("vV").split("."))
     except ValueError:
         return None
 
@@ -72,11 +76,19 @@ def _finite(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
+def _ok_t(t, now):
+    """紀錄時間可信:有限數字、而且不在未來(容 FUTURE_SLACK_S 秒時鐘差)。未來的當壞資料丟(M1)。"""
+    return _finite(t) and t <= now + FUTURE_SLACK_S
+
+
 def iso(ts):
-    """本機時區 offset 的 ISO 8601(S1:不寫死 +08:00)。"""
+    """本機時區 offset 的 ISO 8601(S1:不寫死 +08:00)。超出範圍的時間(1e300 之類)⇒ None,不炸(M1)。"""
     if not _finite(ts):
         return None
-    return datetime.datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+    try:
+        return datetime.datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _jsonl(path, limit=LOG_READ_MAX):
@@ -123,11 +135,12 @@ def _memguard(environ, now=None):
     rows = _jsonl(os.path.join(root, "logs", "memguard.jsonl"))
     if rows is None:
         return None, None, None                        # 沒有紀錄檔 = 沒收過也沒失敗過,但量不到「跑了沒」⇒ value null
-    ts = [r.get("ts") for r in rows if _finite(r.get("ts"))]
     now = time.time() if now is None else now
-    kills = sum(1 for r in rows if r.get("action") in ("mem_terminated", "mem_killed") and _finite(r.get("ts")) and now - r["ts"] <= WEEK_S)
-    failed = any(r.get("action") == "mem_guard_failed" and _finite(r.get("ts")) and now - r["ts"] <= WEEK_S for r in rows[-20:])
-    return _result("kills_7d", "count", value=kills), max(ts) if ts else None, "memguard_failed" if failed else None
+    rows = [r for r in rows if _ok_t(r.get("ts"), now)]
+    kills = sum(1 for r in rows if r.get("action") in ("mem_terminated", "mem_killed") and now - r["ts"] <= WEEK_S)
+    last = max(rows, key=lambda r: r["ts"]) if rows else None
+    failed = last is not None and last.get("action") == "mem_guard_failed" and now - last["ts"] <= WEEK_S   # 之後又成功過 ⇒ 不算壞
+    return _result("kills_7d", "count", value=kills), last["ts"] if last else None, "memguard_failed" if failed else None
 
 
 def _history(environ, now=None):
@@ -145,12 +158,13 @@ def _released(environ, auto, now=None):
     if rows is None:
         return None, None
     now = time.time() if now is None else now
-    mine = [r for r in rows if (r.get("mode") == "auto") == auto and _finite(r.get("t"))]
+    want = "auto_done" if auto else "manual"           # 自動先寫一筆 mode=auto 的預留,不算次數(M2)
+    mine = [r for r in rows if r.get("mode") == want and r.get("result") in RELEASED_OK and _ok_t(r.get("t"), now)]
     n = sum(1 for r in mine if now - r["t"] <= WEEK_S)
     return _result("auto_released_7d" if auto else "released_7d", "count", value=n), max((r["t"] for r in mine), default=None)
 
 
-def _known(environ, installed):
+def _known(environ, installed, now):
     import room_heat_known as KN
     try:
         store = KN.load(environ)
@@ -163,11 +177,12 @@ def _known(environ, installed):
         st = KN.status_of(fixed.get(code), installed, rec, floor.get(code, 0.0))
         improved += st == "improved"
         after = rec.get("after") if st in ("improved", "not_improved", "fixed") else None
-        out[code] = (_result("cpu", "cores", before=rec.get("before"), after=after), rec.get("t"))
+        t = rec.get("t")
+        out[code] = (_result("cpu", "cores", before=rec.get("before"), after=after), t if _ok_t(t, now) else None)
     return out, (_result("improved", "count", value=improved) if store else None)
 
 
-def _advice(environ):
+def _advice(environ, now):
     import room_heat
     import room_heat_advice as AD
     raw = room_heat.safe_read(os.path.join(room_heat.state_dir(environ), AD.CACHE_FILE), 1024 * 1024)
@@ -177,7 +192,7 @@ def _advice(environ):
         c = None
     if not isinstance(c, dict) or c.get("schema") != "aib-heat-advice/v1" or not isinstance(c.get("items"), list):
         return None, None
-    return _result("open_advice", "count", value=len(c["items"])), c.get("t") if _finite(c.get("t")) else None
+    return _result("open_advice", "count", value=len(c["items"])), c.get("t") if _ok_t(c.get("t"), now) else None
 
 
 def _footer_gate(claude_home):
@@ -199,7 +214,7 @@ def _plugin_version(name, rows_fn=None):
     except Exception:  # noqa: BLE001
         return "unreadable"
     for r in rows:
-        if r.get("name") == name:
+        if isinstance(r, dict) and r.get("name") == name:
             return r.get("version") if _ver(r.get("version")) else "unreadable"
     return None
 
@@ -235,8 +250,8 @@ def _item(iid, kind, fixed, paid):
 
 def _versioned(it, installed):
     """有版號 ⇒ 跟 fixed_in 比;讀不到 ⇒ unmeasured version_unreadable(S4)。"""
-    if installed == "unreadable":
-        it.update(state="unmeasured", code="version_unreadable")
+    if installed is not None and (not isinstance(installed, str) or _ver(installed) is None):
+        it.update(state="unmeasured", code="version_unreadable")   # "unreadable"、非字串、比不了的版號都算
         return
     it["installed"] = installed
     if installed is None:
@@ -252,8 +267,8 @@ def stack(environ=None, now=None, platform=None, claude_home=None, aib=None, coc
     aib = aib if aib is not None else (KN.installed_version() or "unreadable")
     claude_home = claude_home or os.path.expanduser("~/.claude")
     hist = _history(environ, now)
-    last_pt = hist[-1] if hist else {}
-    known, improved = _known(environ, None if aib == "unreadable" else aib)
+    last_pt = hist[-1] if hist and isinstance(hist[-1], dict) and _ok_t(hist[-1].get("t"), now) else {}
+    known, improved = _known(environ, None if aib == "unreadable" else aib, now)
     items = []
     for iid, kind, fixed, paid in ITEMS:
         it = _item(iid, kind, fixed, paid)
@@ -295,7 +310,7 @@ def stack(environ=None, now=None, platform=None, claude_home=None, aib=None, coc
             it.update(result=_result("unseen_cores", "cores", value=v) if _finite(v) else None,
                       last_run_at=iso(last_pt.get("t")) if _finite(v) else None)
         elif iid == "heat_advice" and it["installed"]:
-            res, last = _advice(environ)
+            res, last = _advice(environ, now)
             it.update(result=res, last_run_at=iso(last))
         elif iid == "heat_known" and it["installed"]:
             ts = [t for _r, t in known.values() if _finite(t)]
@@ -327,7 +342,8 @@ def main(argv, out=None):
     out.write(RH.T("stack.header", aib=s["aib"] or "?") + ("  " + RH.T("stack.stale") if s["stale"] else "") + "\n")
     for it in s["items"]:
         r = it["result"] or {}
-        num = next((("%s→%s" % (r["before"], r["after"])) if k == "ba" else str(r["value"])
+        dash = lambda v: "—" if v is None else str(v)   # noqa: E731
+        num = next((("%s→%s" % (dash(r["before"]), dash(r["after"]))) if k == "ba" else str(r["value"])
                     for k, ok in (("ba", r.get("before") is not None), ("v", r.get("value") is not None)) if ok), "—")
         out.write("  %-18s %-16s %-8s %-8s %s%s\n" % (it["id"], RH.T("stack.state." + it["state"]), it["installed"] or "—",
                                                      it["fixed_in"] or "—", num, ("  " + it["code"]) if it["code"] else ""))

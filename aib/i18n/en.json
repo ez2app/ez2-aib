@@ -5534,7 +5534,7 @@
   "aib.heat.tidy.bad_name": "tree name has control characters, left alone",
   "aib.heat.stack.header": "Cooling components (aib {aib})",
   "aib.heat.stack.stale": "stale (room snapshot not updated for over 10 minutes)",
-  "aib.heat.stack.state.on": "running",
+  "aib.heat.stack.state.on": "installed",
   "aib.heat.stack.state.update_available": "update available",
   "aib.heat.stack.state.missing": "not installed",
   "aib.heat.stack.state.error": "last run failed",

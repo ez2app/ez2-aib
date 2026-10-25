@@ -5534,7 +5534,7 @@
   "aib.heat.tidy.bad_name": "樹名有控制字元，不碰",
   "aib.heat.stack.header": "散熱元件(aib {aib})",
   "aib.heat.stack.stale": "資料過時(機房快照超過 10 分鐘沒更新)",
-  "aib.heat.stack.state.on": "在跑",
+  "aib.heat.stack.state.on": "已裝",
   "aib.heat.stack.state.update_available": "有新版可改善",
   "aib.heat.stack.state.missing": "沒裝",
   "aib.heat.stack.state.error": "最近一次失敗",
