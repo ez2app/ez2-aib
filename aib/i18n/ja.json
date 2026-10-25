@@ -5433,6 +5433,7 @@
   "aib.chat.invite_wrong_signer": "招待コードの署名がアドレスの持ち主と一致しません。追加しません",
   "aib.chat.invite_lookup_failed": "招待コードのアドレスを確認できません(相手の名簿が未公開か中継局に届きません)。後でもう一度",
   "aib.chat.invite_no_venv": "オンライン会話の部品が未導入のため招待コードを確認できません(aib chat on で導入)",
+  "aib.chat.hop_peer_timeout": "中継サーバーには届きましたが、相手のマシンから 10 分以上返事がありません:オフラインか、まだ友だちに追加されていない可能性があります(相手は友だちからの便りだけ受け取ります)",
   "aib.plaunch.acb_off": "ACB キャリアは停止中、acb を実行しない",
   "aib.bottom_tabs.human_head": "人とのやり取り(最近):",
   "aib.bottom_tabs.unread": "未読",

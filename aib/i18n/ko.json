@@ -5433,6 +5433,7 @@
   "aib.chat.invite_wrong_signer": "초대 코드의 서명이 주소 주인과 맞지 않아 추가하지 않았습니다",
   "aib.chat.invite_lookup_failed": "초대 코드의 주소를 조회할 수 없습니다(상대 명부 미게시 또는 중계 연결 불가). 잠시 후 다시",
   "aib.chat.invite_no_venv": "온라인 대화 구성 요소가 없어 초대 코드를 조회할 수 없습니다(aib chat on으로 설치)",
+  "aib.chat.hop_peer_timeout": "중계 서버에는 도착했지만 상대 컴퓨터가 10분 넘게 응답이 없습니다: 오프라인이거나 아직 친구로 추가하지 않았을 수 있습니다(상대는 친구의 메시지만 받습니다)",
   "aib.plaunch.acb_off": "ACB 캐리어가 꺼져 있어 acb 를 실행하지 않음",
   "aib.bottom_tabs.human_head": "사람과 주고받은 메시지 (최근):",
   "aib.bottom_tabs.unread": "안읽음",
