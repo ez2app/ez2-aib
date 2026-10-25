@@ -21,6 +21,12 @@ E10 已有鑰 ⇒ 不重建、勾選框顯示這台 kid;CLI 接上、key status 
 刀(複本):K1 不釘主機公鑰(StrictHostKeyChecking=no)⇒ E1 紅;K2 第一個勾選框不看結果 ⇒ E2 紅;
    K3 第二個勾選框不看結果 ⇒ E3 紅;K4 不回讀 ⇒ E4 紅;K5 回讀不對不放回 ⇒ E4 紅;K6 視窗字不帶目的地 ⇒ E1 紅;
    K7 放回不管原本有沒有檔(沒備份就刪)⇒ E5 紅(在備份前失敗會刪掉站上原檔)
+E11 沒生物辨識 ⇒ no_biometry、沒連主機、沒跳框;SE 沒有 / 簽時沒生物辨識 ⇒ no_se / no_biometry、站上沒寫;四語說明有替代路
+E12 known_hosts 有紀錄但不同 ⇒ host_key_mismatch、什麼都沒連;相同 ⇒ 框裡標「相符」;沒紀錄 ⇒ 標「首次信任」(E1)
+E13 寫入失敗 + 放回失敗 ⇒ write_failed_restore_failed、鑰留著;設定夾不是 root ⇒ conf_dir_not_root;暫存檔 trap、備份留 3 份
+E14 ssh -G 解出的 hostname 像選項 ⇒ 拒、不叫 keyscan;keyscan 主機名前有 --;key status 非 JSON 印 biometry
+   K8 拿掉 ControlMaster/ControlPath/KnownHostsCommand=none ⇒ E1 紅;K9 不比 known_hosts ⇒ E12 紅;
+   K10 寫入失敗後放回失敗不報 ⇒ E13 紅;K11 不先查生物辨識 ⇒ E11 紅
 """
 import base64
 import hashlib
@@ -52,6 +58,8 @@ FP = "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(HOSTKEY)).dige
 PATH = "/etc/ez2-aib/approve-keys/ez2.app.json"
 NEED = ("ForwardAgent=no", "ClearAllForwardings=yes", "HostName=203.0.113.9", "Port=2222", "User=root",
         "ProxyCommand=none", "ProxyJump=none", "StrictHostKeyChecking=yes", "GlobalKnownHostsFile=/dev/null")
+# 使用者 config 能繞過釘死的(@abb89 #371 r1 M2):假主機沒看到這些就當成借了舊連線 / 多吐了鑰 ⇒ 不給連
+UNBYPASS = ("ControlMaster=no", "ControlPath=none", "KnownHostsCommand=none", "PermitLocalCommand=no", "UpdateHostKeys=no")
 
 
 def _der_int(v):
@@ -84,7 +92,8 @@ class World:
         self.calls, self.signed, self.sign_fail = [], [], sign_fail
         self.files = {PATH: ('{"kid":"p256:0123456789abcdef","pem":"x","room_token_sha256":"' + "0" * 64
                              + '","user_ids":[12,true,-1,34]}\n', 0, 0o644)}
-        self.proxy, self.keys, self.root = "none", [HOSTKEY], True
+        self.proxy, self.keys, self.root, self.hostname = "none", [HOSTKEY], True, "203.0.113.9"
+        self.known, self.biometry = None, True
         self.write_rc, self.restore_rc, self.tamper, self.restores = 0, 0, None, []
 
     def ssh_calls(self):
@@ -94,12 +103,21 @@ class World:
         self.calls.append(list(argv))
         if argv[0] == "/fake/aib-sehelper":
             return self.helper(argv, input)
+        if argv[0] == AE.KEYGEN:
+            assert argv[1:3] == ["-F", "[203.0.113.9]:2222"], argv
+            out = "# Host [203.0.113.9]:2222 found: line 3\n[203.0.113.9]:2222 ssh-ed25519 %s\n" % self.known \
+                if self.known else ""
+            return SimpleNamespace(returncode=0 if self.known else 1, stdout=out, stderr="")
+        if argv[0] == "/usr/bin/osascript":
+            assert "canEvaluatePolicy" in input
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": self.biometry}) + "\n", stderr="")
         if argv[0] == AE.KEYSCAN:
+            assert argv[-2] == "--", argv
             out = "".join("[203.0.113.9]:2222 ssh-ed25519 %s\n" % k for k in self.keys)
             return SimpleNamespace(returncode=0, stdout=out, stderr="")
         if argv[0] == AE.SSH and "-G" in argv:
-            return SimpleNamespace(returncode=0, stdout="user root\nhostname 203.0.113.9\nport 2222\nproxycommand %s\n"
-                                   % self.proxy, stderr="")
+            return SimpleNamespace(returncode=0, stdout="user root\nhostname %s\nport 2222\nproxycommand %s\n"
+                                   % (self.hostname, self.proxy), stderr="")
         if argv[0] == AE.SSH:
             return self.remote(argv, input or "")
         raise AssertionError("unexpected %r" % argv)
@@ -122,7 +140,7 @@ class World:
         kh = [o.split("=", 1)[1] for o in opts if o.startswith("UserKnownHostsFile=")]
         pinned = kh and Path(kh[0]).read_text().split() == [AE.ALIAS, "ssh-ed25519", HOSTKEY] \
             and "HostKeyAlias=" + AE.ALIAS in opts
-        if not pinned or "StrictHostKeyChecking=yes" not in opts:
+        if not pinned or "StrictHostKeyChecking=yes" not in opts or not all(u in opts for u in UNBYPASS):
             return SimpleNamespace(returncode=255, stdout="", stderr="host key not pinned")  # 假主機:沒釘就不給連
         cmd = argv[-1]
         ok = SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -198,7 +216,8 @@ class Enroll(Base):
         self.assertEqual((r["kid"], r["host"], r["host_key"], r["path"]), (kid, "root@203.0.113.9:2222", FP, PATH))
         # 第一個勾選框:核心組的字,關鍵資訊都在
         body = self.ask.seen[0][1]
-        for s in ("ez2.app", "root@203.0.113.9:2222", "eu01", FP, PATH, "p256:0123456789abcdef", "殘餘風險", "可能不準"):
+        for s in ("ez2.app", "root@203.0.113.9:2222", "eu01", FP, PATH, "p256:0123456789abcdef", "殘餘風險", "可能不準",
+                  "首次信任"):
             self.assertIn(s, body)
         self.assertIn(kid, self.ask.seen[1][1])                                # 第二個:有沒有跳、kid 對不對
         # 指紋視窗字:kid 最前、真實主機、路徑;簽的位元組綁目的地
@@ -222,7 +241,7 @@ class Enroll(Base):
         # 每次 ssh 都釘死
         self.assertEqual(len(self.w.ssh_calls()), 3)                          # 讀、寫、回讀
         for c in self.w.ssh_calls():
-            for need in NEED:
+            for need in NEED + UNBYPASS:
                 self.assertIn(need, c, need)
             self.assertEqual(c[c.index("--") + 1], "eu01")
 
@@ -335,11 +354,71 @@ class Enroll(Base):
             self.assertIn("enroll", doc["aib.approve.help.usage"], loc)
 
 
+class NoBiometryAndHostKey(Base):
+    def test_e11_no_biometry_no_fallback(self):
+        self.w.biometry = False
+        self.assertEqual(self.enroll(), (None, "no_biometry"))
+        self.assertEqual(self.w.ssh_calls(), [])
+        self.assertEqual(self.ask.seen, [])
+        self.assertFalse(self.sekey().exists())
+        self.w = World(sign_fail="no_se")                                       # 指紋檢查過了、SE 卻沒有 ⇒ 停,不寫
+        self.assertEqual(self.enroll(), (None, "no_se"))
+        self.assert_untouched()
+        self.assertFalse(self.sekey().exists())
+        self.w = World(sign_fail="no_biometry")
+        self.assertEqual(self.enroll(), (None, "no_biometry"))
+        self.assert_untouched()
+        for loc, word in (("zh-TW", "WebAuthn"), ("en", "WebAuthn"), ("ja", "WebAuthn"), ("ko", "WebAuthn")):
+            env = dict(self.env, EZ2_AIB_LOCALE=loc)
+            for why in ("no_biometry", "no_se", "touchid_unavailable"):
+                self.assertIn(word, AE.explain(why, env), (loc, why))
+        import unittest.mock as um
+        out = io.StringIO()
+        with um.patch.object(AE, "enroll", return_value=(None, "no_biometry")):
+            self.assertEqual(AA.main(["enroll", "ez2.app", "--host", "eu01"], out=out, env=self.env), 2)
+        self.assertIn("巧控鍵盤", out.getvalue())
+        self.assertIn("why: no_biometry", out.getvalue())
+
+    def test_e12_known_hosts(self):
+        self.w.known = OTHERKEY                                                  # 有紀錄但不同 ⇒ 拒、什麼都沒連
+        self.assertEqual(self.enroll(), (None, "host_key_mismatch"))
+        self.assertEqual(self.w.ssh_calls(), [])
+        self.assertEqual(self.ask.seen, [])
+        self.assertIn("中間", AE.explain("host_key_mismatch", self.env))
+        self.w = World()
+        self.w.known = HOSTKEY
+        r, why = self.enroll()
+        self.assertIsNone(why)
+        self.assertEqual(r["host_key_trust"], "known")
+        self.assertIn("相符", self.ask.seen[0][1])
+        self.assertNotIn("首次信任", self.ask.seen[0][1])
+
+    def test_e13_write_and_restore_both_fail(self):
+        self.w.write_rc, self.w.restore_rc = 255, 1                             # 寫可能已完成 + 放回失敗 ⇒ 鑰留著、要人看
+        self.assertEqual(self.enroll(), (None, "write_failed_restore_failed"))
+        self.assertTrue(self.sekey().exists())
+        self.assertIn("approve-keys", AE.explain("write_failed_restore_failed", self.env))
+        self.w.write_rc, self.w.restore_rc = 78, 0                               # 同一把鑰(上一輪留著的)
+        self.assertEqual(self.enroll(), (None, "conf_dir_not_root"))
+        cmd = AE._cmd_write(PATH, PATH + ".bak-aib-x")
+        self.assertIn('stat -c %u /etc/ez2-aib/approve-keys)" = 0 ] || exit 78', cmd)
+        self.assertIn("trap", cmd)
+        self.assertIn("tail -n +4", cmd)                                         # 備份只留最近 3 份
+
+    def test_e14_hostname_like_option(self):
+        self.w.hostname = "-oProxyCommand=x"
+        self.assertEqual(self.enroll(), (None, "ssh_resolve_failed"))
+        self.assertEqual([c for c in self.w.calls if c[0] == AE.KEYSCAN], [])
+        out = io.StringIO()
+        self.assertEqual(AA.main(["key", "status"], out=out, env=self.env), 0)
+        self.assertIn("biometry:", out.getvalue())
+
+
 class Knives(unittest.TestCase):
-    def _red(self, needle, repl, test):
+    def _red(self, needle, repl, test, cls="Enroll"):
         name = Path(__file__).name
         with knife_copy(REPO, "src/cockpit/approve_enroll.py", needle, repl, tests=(name,)) as root:
-            r = run_guarded([sys.executable, str(root / "tests" / name), "Enroll." + test], cwd=str(root),
+            r = run_guarded([sys.executable, str(root / "tests" / name), cls + "." + test], cwd=str(root),
                             max_procs=60, timeout=300)
         self.assertNotEqual(r.returncode, 0, "刀落了測試還綠:" + test)
 
@@ -359,11 +438,27 @@ class Knives(unittest.TestCase):
                   "test_e4_readback_mismatch_restores")
 
     def test_k5_no_restore(self):
-        self._red("            rrc, _ = _remote(pin, host, kh, _cmd_restore(path, bak, existed), run=run)", "            rrc = 0",
+        self._red("        if bad:\n            rrc, _ = _remote(pin, host, kh, _cmd_restore(path, bak, existed), run=run)",
+                  "        if bad:\n            rrc = 0",
                   "test_e4_readback_mismatch_restores")
 
     def test_k7_restore_deletes_original(self):
         self._red("    if existed:\n", "    if False:\n", "test_e5_write_failure_and_not_root")
+
+    def test_k8_config_can_bypass_pin(self):
+        self._red('            "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "KnownHostsCommand=none",\n', "",
+                  "test_e1_happy_path")
+
+    def test_k9_no_known_hosts_compare(self):
+        self._red('    if trust == "mismatch":', "    if False:", "test_e12_known_hosts", cls="NoBiometryAndHostKey")
+
+    def test_k10_write_restore_failure_hidden(self):
+        self._red('            if rrc != 0:   # 寫入可能已經完成', "            if False:   # 寫入可能已經完成",
+                  "test_e13_write_and_restore_both_fail", cls="NoBiometryAndHostKey")
+
+    def test_k11_no_biometry_check(self):
+        self._red("    if not biometry_ready(run):", "    if False:", "test_e11_no_biometry_no_fallback",
+                  cls="NoBiometryAndHostKey")
 
     def test_k6_reason_without_dest(self):
         self._red("dest=dest)", "dest=None)", "test_e1_happy_path")

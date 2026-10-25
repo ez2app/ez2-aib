@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""aib approve enroll <站> --host <ssh 別名> [--url U]:一鍵啟用 AIB 核准(Andy 10-25「明明就在這台上，為什麼不能一鍵安裝啟用」;
+"""aib approve enroll <站> --host <SSH 別名> [--url U]:一鍵啟用 AIB 核准(Andy 10-25「明明就在這台上，為什麼不能一鍵安裝啟用」;
 規格 pending/SPEC-aib-approve-wp-2fa-ee4f8-1024.md §8-4「發布綁目的地、走釘死的 SSH 寫入」,@abb89 10-25 交辦)。
 
 流程(任何一步失敗都停，不留半套):
-  1. ssh -G 解出別名真正會連的 user@hostname:port(有 ProxyCommand / ProxyJump 就拒)
-  2. ssh-keyscan 拿主機的 ed25519 公鑰 ⇒ 指紋;之後每次 ssh 只認這把(暫存 known_hosts + StrictHostKeyChecking=yes)
+  0. 這台要有可用的 Touch ID(LocalAuthentication 生物辨識)與 Secure Enclave;沒有就停(不退回沒保護的鑰,四語說明替代路)
+  1. 用 SSH 的 -G 解出別名真正會連的 user@hostname:port(有 ProxyCommand / ProxyJump 就拒)
+  2. ssh-keyscan 拿主機的 ed25519 公鑰 ⇒ 指紋;跟 ~/.ssh/known_hosts 比:有紀錄但不同 ⇒ 拒(中間人);沒紀錄 ⇒ 首次信任,
+     對話框照實標明。之後每次 SSH 只認這把(暫存 known_hosts + StrictHostKeyChecking=yes)
   3. 讀站上現在的 /etc/ez2-aib/approve-keys/<站>.json(要 root;看現在的 kid、沿用 user_ids)
   4. 勾選框對話框(核心組的字):站、目的主機、主機指紋、寫入路徑、這台 kid、站上現在的 kid、殘餘風險 ⇒ 勾了才繼續
   5. 這台沒鑰才 key init(不跳指紋)
   6. key pem:用這把鑰簽「發布 kid|站|主機|路徑」⇒ SE 一定跳指紋;視窗字 kid 在最前 + 真實 host:port + 路徑
   7. 第二個勾選框：剛才有跳指紋、而且寫著這個 kid 嗎?(沒跳 = 鑰可能被換成不用指紋的 ⇒ 停)
-  8. 新的機房讀取 token ⇒ 經同一條釘死的 ssh 寫 JSON(原檔先備份、root:root 644、先寫暫存再 mv)
+  8. 新的機房讀取 token ⇒ 經同一條釘死的 SSH 寫 JSON(原檔先備份、root:root 644、先寫暫存再 mv;
+     備份只留最近 3 份;設定夾不是 root 的就拒)
   9. 回讀:要是一般檔、uid 0、group/others 不可寫、內容跟寫的一模一樣(kid 對得上)⇒ 不對就放回原檔
  10. 本機登記站(token 檔 600);登記失敗也放回原檔。第 5 步新建的鑰在後面失敗時刪掉。
 
 防線(同帳號 AI 威脅守則;照實寫):
   - 真正的防線只有兩個 Touch ID 以外的「本人看得到」:勾選框(核心組的字、TA.clean、主機指紋與 kid 不截斷)與
-    SE 簽章的指紋視窗。ssh 一律釘死 HostName / Port / User、ProxyCommand=none、ForwardAgent=no、ClearAllForwardings=yes,
-    主機公鑰只認對話框裡顯示指紋的那把(~/.ssh/known_hosts 是 AI 改得到的,不用它)。
+    SE 簽章的指紋視窗。SSH 每次都釘死 HostName / Port / User、ProxyCommand=none、ForwardAgent=no、ClearAllForwardings=yes,
+    並關掉使用者 config 能繞過釘死的設定(ControlMaster / ControlPath 借舊連線、KnownHostsCommand 多吐一把鑰、
+    PermitLocalCommand、UpdateHostKeys);主機公鑰只認對話框裡顯示指紋的那把。~/.ssh/known_hosts 只拿來比
+    (AI 改得到 ⇒ 它頂多刪掉紀錄、退回首次信任;擋的是網路上的中間人)。
+  - 「發布|kid|站|主機|路徑」的簽章只在本機驗(確認 SE 那把鑰真的簽了),不送站上;綁目的地靠的是視窗字。
+  - 沒有生物辨識 / 沒有 SE 的 Mac:不能當核准機(照威脅守則只有指紋 / 登入密碼的系統視窗、密語、簽章算防線,
+    勾選框不算)⇒ 一開始就停、印四語說明與替代路(有 Touch ID 的 Mac 或巧控鍵盤;WordPress 第二步改用 WebAuthn / TOTP)。
   - 殘餘風險(照實，也印在對話框):發布那一刻這台 Mac 若已被同帳號 AI 動過(換鑰 / 換 helper / 換這支程式 / 假視窗),
     發出去的就是假鑰，之後每次核准都不用指紋，直到換鑰。只在確定乾淨時按;發完把 kid 抄到這台 Mac 以外。
     第 7 步只擋「.sekey 被簡單換掉、而且沒人同時叫出指紋視窗」。
@@ -46,6 +54,7 @@ import aib_approve as AA  # noqa: E402
 
 SSH = "/usr/bin/ssh"                 # 絕對路徑:PATH 是 AI 改得到的
 KEYSCAN = "/usr/bin/ssh-keyscan"
+KEYGEN = "/usr/bin/ssh-keygen"
 CONF_DIR = "/etc/ez2-aib/approve-keys"
 ALIAS = "aib-enroll-pinned"          # HostKeyAlias:暫存 known_hosts 只有這一行
 REMOTE_MAX = 4096                    # 站上設定檔上限(WP 端也是 < 4096)
@@ -63,7 +72,7 @@ def _abs_ssh(run):
 def host_key(pin, run=subprocess.run):
     """ssh-keyscan 拿 ed25519 公鑰 ⇒ (blob_b64, "SHA256:…");拿不到 ⇒ (None, None)。"""
     try:
-        r = run([KEYSCAN, "-T", "10", "-t", "ed25519", "-p", pin["port"], pin["hostname"]],
+        r = run([KEYSCAN, "-T", "10", "-t", "ed25519", "-p", pin["port"], "--", pin["hostname"]],
                 capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, OSError):
         return None, None
@@ -82,12 +91,31 @@ def host_key(pin, run=subprocess.run):
     return blob, "SHA256:" + base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii").rstrip("=")
 
 
+def known_hosts_trust(pin, blob, env, run=subprocess.run):
+    """跟 ~/.ssh/known_hosts 比 ⇒ "known"(有 ed25519 紀錄且相同)/ "first"(沒有 ed25519 紀錄 = 首次信任)/
+    "mismatch"(有 ed25519 紀錄但不同 ⇒ 呼叫端拒)。檔是 AI 改得到的:它只能刪紀錄退回 first,擋不了的是網路中間人以外的事。"""
+    kh = os.path.join(env.get("HOME") or os.path.expanduser("~"), ".ssh", "known_hosts")
+    name = pin["hostname"] if pin["port"] == "22" else "[%s]:%s" % (pin["hostname"], pin["port"])
+    try:
+        r = run([KEYGEN, "-F", name, "-f", kh], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (subprocess.TimeoutExpired, OSError):
+        return "first"
+    seen = [ln.split()[-1] for ln in (r.stdout or "").splitlines()
+            if not ln.startswith("#") and len(ln.split()) >= 3 and ln.split()[-2] == "ssh-ed25519"]
+    if not seen:
+        return "first"
+    return "known" if blob in seen else "mismatch"
+
+
 def ssh_argv(pin, host, known_hosts):
     return [SSH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes",
             "-o", "HostName=" + pin["hostname"], "-o", "Port=" + pin["port"], "-o", "User=" + pin["user"],
             "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "HostKeyAlias=" + ALIAS,
             "-o", "UserKnownHostsFile=" + known_hosts, "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "StrictHostKeyChecking=yes", "-o", "HostKeyAlgorithms=ssh-ed25519", "-o", "CheckHostIP=no",
+            # 使用者 config 能繞過上面那些的:借舊連線(不驗主機鑰)、多吐一把鑰、連上後在本機跑指令、自動加鑰
+            "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "KnownHostsCommand=none",
+            "-o", "PermitLocalCommand=no", "-o", "UpdateHostKeys=no",
             "--", host]
 
 
@@ -108,10 +136,14 @@ def _cmd_read(path):
 
 
 def _cmd_write(path, bak):
+    """設定夾已存在但不是 root 的 ⇒ 78(固定檔名的暫存檔可能被搶先放 symlink);失敗時清掉暫存檔;備份留最近 3 份。"""
     q, t, b, d = shlex.quote(path), shlex.quote(path + ".tmp-aib"), shlex.quote(bak), shlex.quote(os.path.dirname(path))
-    return ('set -e; [ "$(id -u)" = 0 ] || exit 77; umask 022; mkdir -p %s; chmod 755 %s; '
-            'if [ -e %s ]; then cp -p %s %s; fi; cat > %s; chown root:root %s; chmod 644 %s; mv -f %s %s'
-            % (d, d, q, q, b, t, t, t, t, q))
+    return ('set -e; [ "$(id -u)" = 0 ] || exit 77; umask 022; '
+            'if [ -e %s ]; then [ -d %s ] && [ ! -L %s ] && [ "$(stat -c %%u %s)" = 0 ] || exit 78; fi; '
+            'mkdir -p %s; chmod 755 %s; trap "rm -f %s" EXIT; '
+            'if [ -e %s ]; then cp -p %s %s; fi; cat > %s; chown root:root %s; chmod 644 %s; mv -f %s %s; '
+            'ls -1t %s.bak-aib-* 2>/dev/null | tail -n +4 | while read -r f; do rm -f "$f"; done'
+            % (d, d, d, d, d, d, t, q, q, b, t, t, t, t, q, q))
 
 
 def _cmd_check(path):
@@ -171,9 +203,49 @@ def _record(env, site, kid, where, t):
     AA._write_private(_enrolled_path(env), json.dumps({"v": 1, "sites": rows}, sort_keys=True) + "\n")
 
 
+BIOMETRY_JXA = r"""
+ObjC.import('LocalAuthentication');
+var c = $.LAContext.alloc.init;
+JSON.stringify({ok: c.canEvaluatePolicyError(1, null) === true});
+"""   # 1 = LAPolicyDeviceOwnerAuthenticationWithBiometrics
+
+
+def biometry_ready(run=subprocess.run):
+    """這台現在能不能用生物辨識(Touch ID 有裝、有指紋、沒被鎖)。讀不懂 ⇒ False(往拒絕那邊)。
+    AI 改得到結果:騙成 True 也只是後面 SE 簽不過;騙成 False 只是不啟用。"""
+    import touchid_approve as TA
+    try:
+        r = run([TA.OSASCRIPT, "-l", "JavaScript", "-"], input=BIOMETRY_JXA, capture_output=True, text=True, timeout=20)
+        lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
+        return r.returncode == 0 and bool(lines) and json.loads(lines[-1]).get("ok") is True
+    except (subprocess.TimeoutExpired, OSError, ValueError, AttributeError):
+        return False
+
+
 def _say(key, params, env, fallback):
     import touchid_approve as TA
     return AA._t(key, {k: TA.clean(v, 200) for k, v in params.items()}, env, fallback)
+
+
+def explain(why, env=None):
+    """失敗原因 ⇒ 給人看的一句(四語)。"""
+    if why in ("no_biometry", "no_se", "touchid_unavailable"):
+        return _say("aib.approve.enroll.no_biometry", {}, env,
+                    "This Mac has no usable Touch ID (or no Secure Enclave), so it cannot be an AIB approval machine: without a "
+                    "fingerprint there is no protection, so aib will not fall back to an unprotected key. Instead: enable it on "
+                    "a Mac with Touch ID (or a Magic Keyboard with Touch ID), or use a WebAuthn security key or an "
+                    "authenticator app (TOTP) for the WordPress second step.")
+    if why in ("cancel", "not_checked", "touchid_cancel", "touchid_not_seen"):
+        return _say("aib.approve.enroll.cancelled", {}, env, "Cancelled; nothing was changed.")
+    if why == "host_key_mismatch":
+        return _say("aib.approve.enroll.host_key_mismatch", {}, env,
+                    "The server's host key differs from ~/.ssh/known_hosts: possibly someone in between. Nothing was sent; "
+                    "check the server's real fingerprint first.")
+    if why.endswith("_restore_failed"):
+        return _say("aib.approve.enroll.need_human", {"why": why}, env,
+                    "Stopped half-way and could not put the server file back (%s): a person must check "
+                    "/etc/ez2-aib/approve-keys on the server." % why)
+    return _say("aib.approve.enroll.failed", {"why": why}, env, "Not enabled (%s); nothing was left half-done." % why)
 
 
 def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, helper=None, ask=None, now=None):
@@ -193,13 +265,20 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
         return None, "bad_host"
     if platform != "darwin" or str(env.get("AIB_TOUCHID", "")).strip() == "0":
         return None, "touchid_unavailable"   # 一開始就擋:沒有指紋就不跳任何視窗、不連主機
+    if not biometry_ready(run):
+        return None, "no_biometry"
     try:
         pin = SA.resolve(host, run=_abs_ssh(run))
     except ValueError as e:
         return None, str(e)
+    if pin["hostname"].startswith("-"):
+        return None, "ssh_resolve_failed"
     blob, fp = host_key(pin, run=run)
     if not blob:
         return None, "no_host_key"
+    trust = known_hosts_trust(pin, blob, env, run=run)
+    if trust == "mismatch":
+        return None, "host_key_mismatch"
     path = "%s/%s.json" % (CONF_DIR, site)
     where = "%s@%s:%s" % (pin["user"], pin["hostname"], pin["port"])
     with tempfile.TemporaryDirectory(prefix="aib-enroll-") as td:
@@ -218,11 +297,14 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
         mine = AA.kid_of(pub) if pub else _say("aib.approve.enroll.no_key", {}, env, "none yet (created next; the kid shows in the Touch ID window)")
         theirs = old.get("kid") if isinstance(old.get("kid"), str) and AA.KID_RE.fullmatch(old.get("kid")) else \
             _say("aib.approve.enroll.none", {}, env, "none")
-        p = {"site": site, "host": where, "alias": host, "fp": fp, "path": path, "kid": mine, "cur": theirs}
+        trust_txt = _say("aib.approve.enroll.trust_" + trust, {}, env,
+                         "matches ~/.ssh/known_hosts" if trust == "known" else "first time trusted: not in ~/.ssh/known_hosts")
+        p = {"site": site, "host": where, "alias": host, "fp": fp, "path": path, "kid": mine, "cur": theirs,
+             "trust": trust_txt}
         body = _say("aib.approve.enroll.body", p, env,
                     "Summary (put together by aib from the arguments; may be wrong): publish this Mac's AIB approval key "
                     "to {site}, so its login second step is approved with Touch ID here.\n\nSite: {site}\nHost: {host} "
-                    "(ssh alias {alias})\nHost key: {fp}\nWrites: {path} (root 644, old file backed up)\nThis Mac's kid: {kid}\n"
+                    "(SSH alias {alias})\nHost key: {fp} ({trust})\nWrites: {path} (root 644, old file backed up)\nThis Mac's kid: {kid}\n"
                     "kid on the site now: {cur}\n\nResidual risk: if this Mac was already tampered with (key / helper / fake "
                     "window), the key you publish is the attacker's and every later approval needs no fingerprint until the "
                     "key is replaced. Only continue when you are sure this Mac is clean; write the kid down off this Mac."
@@ -264,8 +346,11 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
         bak = "%s.bak-aib-%s" % (path, time.strftime("%Y%m%d-%H%M%S", time.gmtime(t)))
         rc, _ = _remote(pin, host, kh, _cmd_write(path, bak), data=want, run=run)
         if rc != 0:
-            _remote(pin, host, kh, _cmd_restore(path, bak, existed), run=run)
-            return fail("not_root" if rc == 77 else "write_failed")
+            why = {77: "not_root", 78: "conf_dir_not_root"}.get(rc, "write_failed")
+            rrc, _ = _remote(pin, host, kh, _cmd_restore(path, bak, existed), run=run)
+            if rrc != 0:   # 寫入可能已經完成(斷線 / 逾時)、放回也失敗:站上可能是新鑰 ⇒ 鑰留著、要人看(rc 5)
+                return None, why + "_restore_failed"
+            return fail(why)
         rc, out = _remote(pin, host, kh, _cmd_check(path), run=run)
         bad = "readback_mismatch" if rc != 0 or not readback_ok(out, want) else None
         if not bad:
@@ -280,4 +365,5 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
             _record(env, site, kid, where, t)
         except OSError:
             pass  # 只是顯示用的紀錄
-        return {"site": site, "kid": kid, "host": where, "host_key": fp, "path": path, "backup": bak, "at": int(t)}, None
+        return {"site": site, "kid": kid, "host": where, "host_key": fp, "host_key_trust": trust, "path": path,
+                "backup": bak, "at": int(t)}, None

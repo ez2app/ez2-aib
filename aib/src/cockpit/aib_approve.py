@@ -197,8 +197,8 @@ def key_publish(env=None, run=subprocess.run, helper=None, platform=None, dest=N
         if not gate.held:
             return None, "busy"
         out, why = _se_call(args, env, msg, run, helper, platform)
-    if why:
-        return None, {"cancel": "touchid_cancel"}.get(why, "touchid_unavailable")
+    if why:  # 沒生物辨識 / 沒 SE 分開回(enroll 要印替代路);其他一律 touchid_unavailable
+        return None, {"cancel": "touchid_cancel", "no_biometry": "no_biometry", "no_se": "no_se"}.get(why, "touchid_unavailable")
     try:
         ok = p256.verify(pub, msg, base64.b64decode(out.decode("ascii").strip(), validate=True))
     except (ValueError, UnicodeDecodeError):
@@ -632,7 +632,14 @@ def main(argv=None, out=None, env=None, stdin=None):
             out.write(pem)
             return 0
         import approve_enroll
-        return emit({"kid": kid_of(pub) if pub else None, "enrolled": approve_enroll.load_enrolled(env)}, 0)
+        d = {"kid": kid_of(pub) if pub else None, "enrolled": approve_enroll.load_enrolled(env),
+             "biometry": approve_enroll.biometry_ready() if sys.platform == "darwin" else False}
+        if o.json:
+            return emit(d, 0)
+        out.write("kid: %s\nbiometry: %s\n" % (d["kid"], d["biometry"]))
+        for st, row in sorted(d["enrolled"].items()):
+            out.write("enrolled: %s  %s  %s  %s\n" % (st, row.get("kid"), row.get("host"), row.get("at")))
+        return 0
     if o.cmd == "site":
         if o.action == "list":
             return emit(load_sites(env), 0)
@@ -658,6 +665,8 @@ def main(argv=None, out=None, env=None, stdin=None):
         import approve_enroll
         r, why = approve_enroll.enroll(o.site, o.host, o.url, env)
         if why:
+            if not o.json:  # 給人看的一句(四語);--json 只給代碼(契約)
+                out.write(approve_enroll.explain(why, env) + "\n")
             return emit({"ok": False, "why": why}, 5 if why.endswith("_restore_failed") else 2)
         if not o.json:
             out.write(_say("aib.approve.enroll.done", {"kid": r["kid"], "site": r["site"]}) + "\n")
