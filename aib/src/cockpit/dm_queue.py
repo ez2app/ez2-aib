@@ -1782,7 +1782,10 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "screen-moving", "cleaned": cleaned}
     # 判忙與排空器同一個判準(drain_hold:登記表現查那一席在哪一艙哪個窗);忙就下一拍再試,不記 woke
     #   探針用**信檔本身**(帶 provider / hub;待審列沒有這兩欄),登記表查得到那一席時 drain_hold 會以登記表為準
-    probe = next((r for r in rows if r.get("wid")), None) or (rows[0] if rows else {})
+    #   只剩進行中(待審空)時 rows 是空的 ⇒ 退而拿 read 分頁第一列(#374 r2 L2:不然 digest 席判不出模式)
+    read_rows = tabs.get("read", {}).get("rows") or []
+    probe = (next((r for r in rows if r.get("wid")), None) or (rows[0] if rows else None)
+             or next((r for r in read_rows if r.get("wid")), None) or (read_rows[0] if read_rows else {}))
     probe = _load_item(seat, probe["id"], env) or probe if probe.get("id") else probe
     res = hold_fn(seat, probe) if hold_fn is not None else drain_hold(seat, probe, env=env)
     busy, why = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
@@ -1820,7 +1823,8 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     day_log = [int(t) for t in (rec.get("wake_log") or []) if isinstance(t, (int, float)) and now - int(t) < 86400]
     rec = dict(rec)
     rec.update({"woke_batch": rec.get("batch"), "woke_ids": list(rec.get("unread_ids") or []),
-                "woke_inprog_ids": list(rec.get("inprog_ids") or []),
+                # #374 r2 M-B1:這次叫醒宣告過的待審 id 之後被席位讀掉變進行中,不算「新的進行中」
+                "woke_inprog_ids": sorted(set(rec.get("inprog_ids") or []) | set(rec.get("unread_ids") or [])),
                 "woke_at": now, "woke_rc": None, "woke_mode": mode, "auto_read": [],
                 "wake_log": day_log + [now]})
     if not TR.write(path, rec):

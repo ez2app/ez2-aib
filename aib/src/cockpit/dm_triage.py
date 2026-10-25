@@ -527,6 +527,9 @@ def tidy_wake_text(seat, need_ai, todo, cli, mode="agent", inprog=0):
     more = ("(另有 %d 封,處理完再跑一次 stage-tidy)" % (todo - len(need_ai or []))) if todo > len(need_ai or []) else ""
     rules = TIDY_RULES % {"seat": seat}
     ip = ("、進行中 %d 封(讀完的也要結案或回報,見 `tabs --seat %s`)" % (int(inprog), seat)) if int(inprog or 0) else ""
+    # #374 r2 M-B2:auto_tidy 席也是「待審 ≥2 或 進行中 ≥2 ⇒ 開整理子代理」;門檻到了句子要帶子代理規則
+    if int(todo or 0) >= 2 or int(inprog or 0) >= INPROG_MIN:
+        rules = "請開 1 個整理子代理處理(子代理不跑測試,負載高也照開)。" + SUBAGENT_RULES % {"seat": seat} + rules
     if mode == "digest":
         return _cap_digest("待審區有 %d 封要你處理%s(機器已清掉重複/舊版/回執/驗證信)。%s" % (todo, ip, rules), lines, more)
     return ("待審區有 %d 封要你處理%s(機器已清掉重複/舊版/回執/驗證信)。先跑 `python3 %s stage-tidy --seat %s --json` 拿最新清單"

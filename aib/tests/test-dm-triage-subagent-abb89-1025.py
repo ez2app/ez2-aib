@@ -10,6 +10,8 @@
   r1 審查補(#374):S5 auto_tidy 席待審清空、只剩進行中 ≥2 ⇒ 叫的是帶「進行中 N 封」+ 子代理規則那句,不是「0 封要你處理」;
   S6 系統代標已讀(read_by=system)的純通知不算進行中;S7 投遞 rc=2 回滾後 woke_inprog_ids 不留在檔裡;
   S8 digest 席(API / 橋接)那句也帶規則;S9 inprog_ids 排除線上 human_reply / echo_reply / IM / 帶 wait 的列。
+  r2 審查補:S10 叫過的待審被席位讀掉變進行中 ⇒ 10 分後不再叫(不是新工作);S11 auto_tidy 席待審 1 + 進行中 3 的句子
+  也要帶「整理子代理」與不准清單;S12 wait 欄從信檔經 tabs_payload 一路到 inprog_ids 都生效。
 
 治具沿用 test-dm-hold-notify-abb89-1015.py(整棵 src 抄進暫存根、假 tmux、假咽喉),投遞由注入的 deliver 收下,
 不碰工作樹、不碰 ~/.ez2-aib、不送真 dm。
@@ -233,6 +235,57 @@ class S9InProgressExclusions(unittest.TestCase):
                 {"id": "d", "status": "delivered"},
                 {"id": "ok", "status": "read"}]
         self.assertEqual(TR.inprog_ids(rows), ["ok"])
+
+
+class S10ReadOwnWakeNotNewInProgress(unittest.TestCase):
+
+    def test_reading_the_woken_mail_does_not_rewake(self):
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "a = put('第一件:請看 PR', t); c = put('第二件:要你決定', t)\n"
+            "tick(t + 10)\n"
+            "n1 = len(sent)\n"
+            "for i in (a, c):\n"
+            "    assert Q.mark_read(%r, i, 'seat:%s', env=env, if_rev=None, no_rev_check=True, now=t + 60).get('ok')\n"
+            "tick(t + 700)\n"
+            "print(json.dumps({'n1': n1, 'n2': len(sent)}))\n" % (SEAT, SEAT)))
+        self.assertEqual(out["n1"], 1, out)
+        self.assertEqual(out["n2"], 1, "剛叫過的兩封被讀掉變進行中,不是新工作,不得再叫:%r" % out)
+
+
+class S11TidySeatMixedCarriesRules(unittest.TestCase):
+
+    def test_tidy_seat_todo1_inprog3(self):
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "Q.tidy_switch('on', seat=%r, env=env)\n"
+            "inprog('進行中一', t); inprog('進行中二', t); inprog('進行中三', t)\n"
+            "put('真的一件事要你看 PR 說明', t)\n"
+            "tick(t + 10)\n"
+            "tick(t + 10 + Q.TIDY_QUIET_S + 5)\n"
+            "print(json.dumps({'sent': sent}))\n" % SEAT))
+        self.assertEqual(len(out["sent"]), 1, out)
+        text = out["sent"][0]
+        for must in ("進行中 3 封", "整理子代理", "不算數", "stage-tidy"):
+            self.assertIn(must, text, text)
+
+
+class S12WaitFromItemFile(unittest.TestCase):
+
+    def test_wait_excludes_through_tabs_payload(self):
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "w = inprog('在等 Andy 簽章', t); k = inprog('正常進行中', t)\n"
+            "it = Q._load_item(%r, w, env); it['wait'] = {'text': '等 Andy 簽章', 'at': t}; Q._write_item(%r, it, env)\n"
+            "import importlib.util as iu\n"
+            "sp = iu.spec_from_file_location('tr', str(__import__('pathlib').Path(Q.__file__).with_name('dm_triage.py')))\n"
+            "TR = iu.module_from_spec(sp); sp.loader.exec_module(TR)\n"
+            "rows = Q.tabs_payload(%r, env=env)['tabs']['read']['rows']\n"
+            "print(json.dumps({'ids': TR.inprog_ids(rows), 'k': k, 'w': w}))\n" % (SEAT, SEAT, SEAT)))
+        self.assertEqual(out["ids"], [out["k"]], out)
 
 
 if __name__ == "__main__":
