@@ -12,6 +12,8 @@ fetch_signed() 是「取得已簽版本」的唯一入口:aib plugins install <�
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -30,6 +32,40 @@ ACCESS = ("public", "member", "paid")   # 契約 plugins.catalog_entry.access
 CALLER_DEAD = ("page_api_token_revoked", "page_api_token_expired", "page_api_token_invalid", "page_api_token_missing")
 SERVER_CODES = ("plugin_unknown", "plugin_license_none", "plugin_license_device_limit", "plugin_plan_required")   # 契約 plugins.codes
 PLANS = ("free", "go", "plus", "pro", "ultra")   # 契約 plugins.catalog_entry.plan(可選;10-25 方案五級)
+SALES_PLUGIN = "captain-room"   # 銷售總開關住在艦長室外掛的 aib-ext.json settings.sales(簽章範圍內;@abb89 10-26 定)
+SALES_SEE_ALL_PLAN = "plus"     # off 時持簽章授權 plan ≥ 這一級的席看全貌(Andy 10-25 23:5x ④)
+
+
+def sales_on(env=None):
+    """銷售總開關(Andy 10-25 23:4x「只用 Free 給新用戶、不要讓他們覺得有商業行為」):回 (on, source)。
+    只認裝在這台、簽章驗得過的 captain-room aib-ext.json 的 settings.sales == "on";沒裝 / 沒簽 / 驗不過 / 欄位不是 on|off
+    ⇒ off(本機檔、環境變數一律不認;切開關 = 升版 + 簽章時段)。source: signed / missing / unsigned / unset。"""
+    try:
+        import aib_ext
+        folder = aib_ext.target("plugin", SALES_PLUGIN)
+        m = json.loads((Path(folder) / aib_ext.MANIFEST).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001  沒裝、路徑壞、不是 JSON ⇒ off
+        return False, "missing"
+    if not isinstance(m, dict) or not aib_ext.signed_ok(m):
+        return False, "unsigned"
+    st = m.get("settings")
+    v = st.get("sales") if isinstance(st, dict) else None
+    if v not in ("on", "off"):
+        return False, "unset"
+    return v == "on", "signed"
+
+
+def sales_visible(env=None):
+    """帶 plan 的目錄條目這台看不看得到:開關 on,或這台的簽章方案授權 ≥ SALES_SEE_ALL_PLAN(entitlement/plan.py,#375;沒有那個模組 = 不例外)。"""
+    on, _ = sales_on(env)
+    if on:
+        return True
+    try:
+        from entitlement import plan as plan_mod
+        cur = plan_mod.current(dict(os.environ) if env is None else env).get("plan")
+        return cur in PLANS and PLANS.index(cur) >= PLANS.index(SALES_SEE_ALL_PLAN)
+    except Exception:  # noqa: BLE001
+        return False
 SCOPE_MISSING = "page_api_scope_mismatch"   # 契約 plugins_package / plugins_license 的 scope_missing
 
 
@@ -196,6 +232,8 @@ def catalog(env, api=None):
     entries = parse_catalog(payload)
     if entries is None:
         return None, fail("plugin_catalog_invalid", 3)
+    if not sales_visible(env):   # 銷售總開關 off ⇒ 帶 plan 的條目對這台不存在(目錄 / 安裝 / 自動更新同一條路)
+        entries = [e for e in entries if e.get("plan") is None]
     return entries, None
 
 
