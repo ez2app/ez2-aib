@@ -1827,6 +1827,9 @@ class Receiver(object):
         rec = {"v": 1, "msgid": msgid, "received_at": int(time.time()), "to_cabin": entry.get("cabin") or "main",
                "to_seat": entry["seat5"], "from_npub": from_npub, "verified": False, "class": "stranger",
                "content": content}
+        sa = tags.get("aib-sent-at", "")
+        # 補寄的 rumor 時間是補寄當下;原寄出時間在 aib-sent-at(#303 r2 B-L1)。只收不比 rumor 晚的,不然當沒帶
+        rec["sent_at"] = int(sa) if sa.isdigit() and int(sa) <= sent_at(rumor) else sent_at(rumor)
         phone_cmd = None
         if not is_aib and not is_request:
             import chat_pair as CP                              # 第 33 節:主人手機(一般 Nostr App,沒有 aib 標籤)

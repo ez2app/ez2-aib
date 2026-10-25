@@ -54,10 +54,10 @@ class Unit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             GF.note_first_on(d, now=100)
             self.assertEqual(GF.read_first(d), {"on": 100})
-        for sub in ("sent", "inbox", "receipts"):
+        for sub, ext in (("sent", "json"), ("inbox", "json"), ("receipts", "jsonl")):    # 回條是 .jsonl(#303 r2 B-L3)
             with tempfile.TemporaryDirectory() as d:
                 (Path(d) / sub).mkdir()
-                (Path(d) / sub / "m1.json").write_text("{}")
+                (Path(d) / sub / ("m1." + ext)).write_text("{}")
                 GF.note_first_on(d, now=100)
                 self.assertEqual(GF.read_first(d), {}, sub)
 

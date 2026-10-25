@@ -255,6 +255,7 @@ def check_inbox(rec):
     if "sender_kind" in rec:   # ★ 身分只由核心決定(檔頭);外掛自帶 ⇒ 整筆拒
         raise ContractError("sender_kind:外掛不能自帶寄件人種類")
     _need(rec, "received_at", _is_int, "要是非負整數(UTC 秒)")
+    _opt(rec, "sent_at", _is_int, "要是非負整數(UTC 秒)")       # 寄件端寄出時間(補寄帶 aib-sent-at 原值;#303 r2 B-L1)
     _need(rec, "to_cabin", lambda v: isinstance(v, str) and bool(_CABIN.match(v)), "艙位碼不合")
     _need(rec, "to_seat", lambda v: isinstance(v, str) and bool(_SEAT.match(v)), "席碼不合")
     _need(rec, "from_npub", lambda v: isinstance(v, str) and bool(_NPUB_ONLY.match(v)), "要是 npub1…")
@@ -1276,7 +1277,8 @@ def read_first(root):
 def note_first_on(root, now=None):
     """開通時記 on;已經寄過 / 收過信的舊用戶(升級前就在用)不補記,不然會算成「開通後 0 秒」(#303 審 B-L10)。"""
     r = Path(root)
-    if any(r.joinpath(d).is_dir() and any(r.joinpath(d).glob("*.json")) for d in ("sent", "inbox", "receipts")):
+    if any(r.joinpath(d).is_dir() and any(p.suffix in (".json", ".jsonl") for p in r.joinpath(d).iterdir())
+           for d in ("sent", "inbox", "receipts")):          # 回條是 .jsonl(#303 r2 B-L3)
         return
     note_first(root, "on", now)
 
