@@ -13,6 +13,7 @@ E2 10 秒內再寄一封 ⇒ 小幫手靜默(稽核 echo:quiet),Andy 只收到�
 E3 小幫手關掉 ⇒ 照舊拒收陌生人(refused not_friend)
 E4 小幫手開著、寄件人是好友 ⇒ 照一般流程進佇列,不回音(A-M10)
 E5 小幫手開著、陌生人送好友申請 ⇒ 照一般申請流程(不回 delivered、不回音;A-M10 / B-L4)
+E6 自己在 outbox 寫 echo:true(不是回剛收的陌生來信)⇒ 照一般寄件:寫寄出帳、有回條、不帶 aib-echo(#306 r2)
 刀(複本):K1 拿掉 echo 分支 ⇒ E1 紅;K2 回信不帶 echo 旗標 ⇒ E1 紅;K3 好友也回音 ⇒ E4 紅;
 K4 回音走一般寄件 ⇒ E1 紅(寫了 sent/);K5 收件端不把回音那句擋在艦長室 ⇒ E1 紅
 """
@@ -129,11 +130,27 @@ class Network(unittest.TestCase):
         self.assertFalse(any(r["result"].startswith("echo") for r in audit_in(h)), audit_in(h))
         self.assertEqual(json.loads(h.cli("friends", "--json").stdout)["friends"], [])
 
+    def test_e6_forged_echo_flag(self):
+        a, x, h, y = self.pair()
+        self.assertEqual(a.cli("friend", "add", h.owner).returncode, 0)
+        self.assertEqual(h.cli("friend", "add", a.owner).returncode, 0)
+        self.assertEqual(a.cli("echo", "on").returncode, 0)
+        rec = SB.outbox_rec("%s/6ddf/%s" % (h.owner, y), x, content="假回音 p3")
+        rec["echo"] = True
+        res = GF.send_and_wait(a.root, rec, wait=20)
+        self.assertEqual((res["rc"], res["stage"]), (0, "queued"), res)
+        self.assertTrue((a.root / "sent" / (rec["msgid"] + ".json")).exists(), "照一般寄件寫寄出帳")
+        self.assertTrue(h.wait_for(lambda: any("p3" in json.dumps(i, ensure_ascii=False) for i in self.items(h, y)), 15))
+        it = next(i for i in self.items(h, y) if "p3" in json.dumps(i, ensure_ascii=False))
+        self.assertNotEqual(self.DQ.hold_why_key(it), "echo_reply", "不帶 aib-echo")
+
     def test_e3_off_refuses(self):
         a, x, h, y = self.pair()
-        res = GF.send_and_wait(a.root, SB.outbox_rec("%s/6ddf/%s" % (h.owner, y), x), wait=20)
-        self.assertEqual(res["stage"], "refused", res)
-        self.assertIn("好友", res["detail"])
+        rec = SB.outbox_rec("%s/6ddf/%s" % (h.owner, y), x)
+        GF.send_and_wait(a.root, rec, wait=20)
+        rows = lambda: [r for r in GF.read_receipts(a.root, rec["msgid"]) if r["stage"] == "refused"]  # noqa: E731
+        self.assertTrue(a.wait_for(lambda: rows(), 30), GF.read_receipts(a.root, rec["msgid"]))   # 機器忙時回條會晚到
+        self.assertIn("not_friend", json.dumps(rows()[0]))
         self.assertFalse(any(r["result"].startswith("echo") for r in audit_in(h)), audit_in(h))
 
 

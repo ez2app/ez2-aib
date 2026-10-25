@@ -531,6 +531,7 @@ class Sender(object):
     def __init__(self, root):
         self.root = Path(root)
         self.cache = {}
+        self.echo_in = collections.deque(maxlen=2000)   # 回音小幫手剛收的陌生來信 msgid:outbox echo:true 只認回這些的
 
     async def _resolve(self, addr):
         hit = self.cache.get(addr)
@@ -585,6 +586,8 @@ class Sender(object):
             self._done(msgid)
             return
         frm = rec["from"]
+        if rec.get("echo") and not (GF.echo_on(self.root) and rec.get("reply_to") in self.echo_in):
+            rec.pop("echo")                          # #306 r2:只有回音小幫手剛收的陌生來信才認 echo,其他照一般寄件
         if rec.get("echo") and frm.get("attested"):
             return await self._handle_echo(msgid, rec)
         if not frm.get("attested"):
@@ -1994,6 +1997,7 @@ class Receiver(object):
         reply = {"v": GF.VERSION, "msgid": GF.new_msgid(), "created_at": int(now), "op": "send", "echo": True,
                  "from": {"cabin": cabin, "seat": entry["seat5"], "attested": True}, "to": rec["from_addr"],
                  "content": ECHO_TEXT.get(lang, ECHO_TEXT["en"]), "reply_to": msgid, "lang": lang}
+        self.sender.echo_in.append(msgid)
         try:
             GF.write_outbox(self.root, reply)
         except GF.ContractError as err:
