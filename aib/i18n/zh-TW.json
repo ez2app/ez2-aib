@@ -4969,6 +4969,7 @@
   "aib.approve.enroll.trust_first": "首次信任:~/.ssh/known_hosts 沒有這台的紀錄",
   "aib.approve.enroll.no_biometry": "這台 Mac 沒有可用的 Touch ID(或沒有 Secure Enclave),不能當 AIB 核准機：沒有指紋就沒有防線，所以不會改用沒保護的鑰。替代：在有 Touch ID 的 Mac(或接上有 Touch ID 的巧控鍵盤)上啟用;或 WordPress 第二步改用 WebAuthn 安全金鑰 / 驗證器 App(TOTP)。",
   "aib.approve.enroll.cancelled": "已取消，什麼都沒改。",
+  "aib.approve.enroll.host_key_no_ed25519": "~/.ssh/known_hosts 裡這台只有別種型別(RSA / ECDSA)的紀錄，比不了它的 ed25519 鑰。什麼都沒送;請先核對後把這台的 ed25519 鑰加進 known_hosts。",
   "aib.approve.enroll.host_key_mismatch": "主機公鑰跟 ~/.ssh/known_hosts 的紀錄不同，可能有人在中間。什麼都沒送;請先核對主機真正的指紋。",
   "aib.approve.enroll.need_human": "做到一半停下、站上的檔也放不回去({why}):要人到主機看 /etc/ez2-aib/approve-keys。",
   "aib.approve.enroll.failed": "沒有啟用({why});沒有留下做一半的東西。",

@@ -4969,6 +4969,7 @@
   "aib.approve.enroll.trust_first": "first time trusted: not in ~/.ssh/known_hosts",
   "aib.approve.enroll.no_biometry": "This Mac has no usable Touch ID (or no Secure Enclave), so it cannot be an AIB approval machine: without a fingerprint there is no protection, so aib will not fall back to an unprotected key. Instead: enable it on a Mac with Touch ID (or a Magic Keyboard with Touch ID), or use a WebAuthn security key or an authenticator app (TOTP) for the WordPress second step.",
   "aib.approve.enroll.cancelled": "Cancelled; nothing was changed.",
+  "aib.approve.enroll.host_key_no_ed25519": "~/.ssh/known_hosts has this server only with another key type (RSA / ECDSA), so its ed25519 key cannot be checked. Nothing was sent; add the server's ed25519 key to known_hosts after checking it.",
   "aib.approve.enroll.host_key_mismatch": "The server's host key differs from ~/.ssh/known_hosts: possibly someone in between. Nothing was sent; check the server's real fingerprint first.",
   "aib.approve.enroll.need_human": "Stopped half-way and could not put the server file back ({why}): a person must check /etc/ez2-aib/approve-keys on the server.",
   "aib.approve.enroll.failed": "Not enabled ({why}); nothing was left half-done.",

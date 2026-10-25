@@ -92,19 +92,41 @@ def host_key(pin, run=subprocess.run):
 
 
 def known_hosts_trust(pin, blob, env, run=subprocess.run):
-    """跟 ~/.ssh/known_hosts 比 ⇒ "known"(有 ed25519 紀錄且相同)/ "first"(沒有 ed25519 紀錄 = 首次信任)/
-    "mismatch"(有 ed25519 紀錄但不同 ⇒ 呼叫端拒)。檔是 AI 改得到的:它只能刪紀錄退回 first,擋不了的是網路中間人以外的事。"""
+    """跟 ~/.ssh/known_hosts(只查這一個預設檔)比,逐行解析「[@標記] 主機 型別 鑰 [註解…]」:
+      "revoked"   有 @revoked 標記的正是這把 ⇒ 拒
+      "mismatch"  有 ed25519 紀錄但都不是這把 ⇒ 拒(可能有中間人)
+      "known"     有 ed25519 紀錄且相同
+      "no_ed25519" 這台只有別種型別(RSA / ECDSA)的紀錄,比不了 ⇒ 拒(不當首次信任)
+      "first"     完全沒有紀錄 ⇒ 首次信任(對話框標明)
+    @cert-authority 行略過(不支援憑證主機鑰)。檔是 AI 改得到的:它只能刪紀錄退回 first,擋的是網路中間人。"""
     kh = os.path.join(env.get("HOME") or os.path.expanduser("~"), ".ssh", "known_hosts")
     name = pin["hostname"] if pin["port"] == "22" else "[%s]:%s" % (pin["hostname"], pin["port"])
     try:
         r = run([KEYGEN, "-F", name, "-f", kh], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, OSError):
         return "first"
-    seen = [ln.split()[-1] for ln in (r.stdout or "").splitlines()
-            if not ln.startswith("#") and len(ln.split()) >= 3 and ln.split()[-2] == "ssh-ed25519"]
-    if not seen:
-        return "first"
-    return "known" if blob in seen else "mismatch"
+    ed, other = [], False
+    for ln in (r.stdout or "").splitlines():
+        parts = ln.split()
+        if not parts or parts[0].startswith("#"):
+            continue
+        mark = parts.pop(0) if parts[0].startswith("@") else ""
+        if len(parts) < 3:
+            continue
+        kind, key = parts[1], parts[2]
+        if mark == "@revoked":
+            if key == blob:
+                return "revoked"
+            continue
+        if mark:          # @cert-authority 等:不支援,略過
+            continue
+        if kind == "ssh-ed25519":
+            ed.append(key)
+        else:
+            other = True
+    if ed:
+        return "known" if blob in ed else "mismatch"
+    return "no_ed25519" if other else "first"
 
 
 def ssh_argv(pin, host, known_hosts):
@@ -116,6 +138,10 @@ def ssh_argv(pin, host, known_hosts):
             # 使用者 config 能繞過上面那些的:借舊連線(不驗主機鑰)、多吐一把鑰、連上後在本機跑指令、自動加鑰
             "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "KnownHostsCommand=none",
             "-o", "PermitLocalCommand=no", "-o", "UpdateHostKeys=no",
+            "-o", "VerifyHostKeyDNS=no",   # DNS 的 SSHFP 紀錄也能讓別把鑰過關
+            # 這條連線只跑一個指令、只吃 stdin:不開 X11 / TTY / 背景、不換 session、不讓 config 換掉指令
+            "-o", "ForwardX11=no", "-o", "RequestTTY=no", "-o", "ForkAfterAuthentication=no", "-o", "SessionType=default",
+            "-o", "StdinNull=no", "-o", "RemoteCommand=none",
             "--", host]
 
 
@@ -237,7 +263,11 @@ def explain(why, env=None):
                     "authenticator app (TOTP) for the WordPress second step.")
     if why in ("cancel", "not_checked", "touchid_cancel", "touchid_not_seen"):
         return _say("aib.approve.enroll.cancelled", {}, env, "Cancelled; nothing was changed.")
-    if why == "host_key_mismatch":
+    if why == "host_key_no_ed25519":
+        return _say("aib.approve.enroll.host_key_no_ed25519", {}, env,
+                    "~/.ssh/known_hosts has this server only with another key type (RSA / ECDSA), so its ed25519 key cannot "
+                    "be checked. Nothing was sent; add the server's ed25519 key to known_hosts after checking it.")
+    if why in ("host_key_mismatch", "host_key_revoked"):
         return _say("aib.approve.enroll.host_key_mismatch", {}, env,
                     "The server's host key differs from ~/.ssh/known_hosts: possibly someone in between. Nothing was sent; "
                     "check the server's real fingerprint first.")
@@ -277,8 +307,8 @@ def enroll(site, host, url=None, env=None, platform=None, run=subprocess.run, he
     if not blob:
         return None, "no_host_key"
     trust = known_hosts_trust(pin, blob, env, run=run)
-    if trust == "mismatch":
-        return None, "host_key_mismatch"
+    if trust in ("mismatch", "revoked", "no_ed25519"):
+        return None, "host_key_" + trust
     path = "%s/%s.json" % (CONF_DIR, site)
     where = "%s@%s:%s" % (pin["user"], pin["hostname"], pin["port"])
     with tempfile.TemporaryDirectory(prefix="aib-enroll-") as td:

@@ -27,6 +27,9 @@ E13 寫入失敗 + 放回失敗 ⇒ write_failed_restore_failed、鑰留著;設�
 E14 ssh -G 解出的 hostname 像選項 ⇒ 拒、不叫 keyscan;keyscan 主機名前有 --;key status 非 JSON 印 biometry
    K8 拿掉 ControlMaster/ControlPath/KnownHostsCommand=none ⇒ E1 紅;K9 不比 known_hosts ⇒ E12 紅;
    K10 寫入失敗後放回失敗不報 ⇒ E13 紅;K11 不先查生物辨識 ⇒ E11 紅
+r2(@abb89):E12 補 行尾註解的不同鑰 ⇒ mismatch、@revoked 同一把 ⇒ revoked、只有 RSA ⇒ no_ed25519、@cert-authority 略過;
+   ssh 選項清單加 VerifyHostKeyDNS=no 與六個(定案);key status 經 main 注入 run(不叫真 osascript)。
+   K12 拿掉 VerifyHostKeyDNS=no ⇒ E1 紅;K13 不看 @revoked ⇒ E12 紅;K14 型別 / 鑰取行尾(註解會錯位)⇒ E12 紅
 """
 import base64
 import hashlib
@@ -59,7 +62,9 @@ PATH = "/etc/ez2-aib/approve-keys/ez2.app.json"
 NEED = ("ForwardAgent=no", "ClearAllForwardings=yes", "HostName=203.0.113.9", "Port=2222", "User=root",
         "ProxyCommand=none", "ProxyJump=none", "StrictHostKeyChecking=yes", "GlobalKnownHostsFile=/dev/null")
 # 使用者 config 能繞過釘死的(@abb89 #371 r1 M2):假主機沒看到這些就當成借了舊連線 / 多吐了鑰 ⇒ 不給連
-UNBYPASS = ("ControlMaster=no", "ControlPath=none", "KnownHostsCommand=none", "PermitLocalCommand=no", "UpdateHostKeys=no")
+UNBYPASS = ("ControlMaster=no", "ControlPath=none", "KnownHostsCommand=none", "PermitLocalCommand=no", "UpdateHostKeys=no",
+            "VerifyHostKeyDNS=no", "ForwardX11=no", "RequestTTY=no", "ForkAfterAuthentication=no", "SessionType=default",
+            "StdinNull=no", "RemoteCommand=none")   # r2 定案清單(@abb89:不再擴充)
 
 
 def _der_int(v):
@@ -93,7 +98,7 @@ class World:
         self.files = {PATH: ('{"kid":"p256:0123456789abcdef","pem":"x","room_token_sha256":"' + "0" * 64
                              + '","user_ids":[12,true,-1,34]}\n', 0, 0o644)}
         self.proxy, self.keys, self.root, self.hostname = "none", [HOSTKEY], True, "203.0.113.9"
-        self.known, self.biometry = None, True
+        self.known, self.known_lines, self.biometry = None, None, True
         self.write_rc, self.restore_rc, self.tamper, self.restores = 0, 0, None, []
 
     def ssh_calls(self):
@@ -105,9 +110,9 @@ class World:
             return self.helper(argv, input)
         if argv[0] == AE.KEYGEN:
             assert argv[1:3] == ["-F", "[203.0.113.9]:2222"], argv
-            out = "# Host [203.0.113.9]:2222 found: line 3\n[203.0.113.9]:2222 ssh-ed25519 %s\n" % self.known \
-                if self.known else ""
-            return SimpleNamespace(returncode=0 if self.known else 1, stdout=out, stderr="")
+            lines = self.known_lines or (["[203.0.113.9]:2222 ssh-ed25519 %s" % self.known] if self.known else [])
+            out = "".join("# Host [203.0.113.9]:2222 found: line %d\n%s\n" % (i + 3, ln) for i, ln in enumerate(lines))
+            return SimpleNamespace(returncode=0 if lines else 1, stdout=out, stderr="")
         if argv[0] == "/usr/bin/osascript":
             assert "canEvaluatePolicy" in input
             return SimpleNamespace(returncode=0, stdout=json.dumps({"ok": self.biometry}) + "\n", stderr="")
@@ -337,7 +342,7 @@ class Enroll(Base):
         self.assertIn(kid, self.ask.seen[0][1])
         self.assertEqual([c for c in self.w.calls if c[:2] == ["/fake/aib-sehelper", "se-create"]], [self.w.calls[0]])
         out = io.StringIO()
-        self.assertEqual(AA.main(["key", "status", "--json"], out=out, env=self.env), 0)
+        self.assertEqual(AA.main(["key", "status", "--json"], out=out, env=self.env, run=self.w), 0)
         self.assertEqual(json.loads(out.getvalue())["enrolled"]["ez2.app"]["kid"], kid)
         out = io.StringIO()
         self.assertEqual(AA.main(["enroll", "ez2.app", "--json"], out=out, env=self.env), 2)  # --host 必填
@@ -392,6 +397,22 @@ class NoBiometryAndHostKey(Base):
         self.assertEqual(r["host_key_trust"], "known")
         self.assertIn("相符", self.ask.seen[0][1])
         self.assertNotIn("首次信任", self.ask.seen[0][1])
+        H = "[203.0.113.9]:2222"
+        for lines, want in (
+                (["%s ssh-ed25519 %s my laptop key" % (H, OTHERKEY)], "host_key_mismatch"),   # 行尾註解不能讓不同鑰變首次信任
+                (["@revoked %s ssh-ed25519 %s" % (H, HOSTKEY), "%s ssh-ed25519 %s" % (H, HOSTKEY)], "host_key_revoked"),
+                (["%s ssh-rsa AAAAB3NzaC1yc2E" % H], "host_key_no_ed25519"),                    # 只有別種型別:比不了 ⇒ 拒
+                (["@revoked %s ssh-ed25519 %s" % (H, OTHERKEY), "%s ssh-ed25519 %s c" % (H, HOSTKEY)], None),
+                (["@cert-authority *.example ssh-ed25519 %s" % OTHERKEY], None)):           # 憑證 CA 行略過 ⇒ 首次信任
+            self.w = World()
+            self.w.known_lines = lines
+            if self.sekey().exists():
+                self.sekey().unlink()                                            # 新 World = 新 SE;舊鑰不留
+            r, why = self.enroll()
+            self.assertEqual(why, want, lines)
+            if want:
+                self.assertEqual(self.w.ssh_calls(), [], lines)
+                self.assertTrue(AE.explain(want, self.env), want)
 
     def test_e13_write_and_restore_both_fail(self):
         self.w.write_rc, self.w.restore_rc = 255, 1                             # 寫可能已完成 + 放回失敗 ⇒ 鑰留著、要人看
@@ -410,7 +431,7 @@ class NoBiometryAndHostKey(Base):
         self.assertEqual(self.enroll(), (None, "ssh_resolve_failed"))
         self.assertEqual([c for c in self.w.calls if c[0] == AE.KEYSCAN], [])
         out = io.StringIO()
-        self.assertEqual(AA.main(["key", "status"], out=out, env=self.env), 0)
+        self.assertEqual(AA.main(["key", "status"], out=out, env=self.env, run=self.w), 0)
         self.assertIn("biometry:", out.getvalue())
 
 
@@ -450,7 +471,19 @@ class Knives(unittest.TestCase):
                   "test_e1_happy_path")
 
     def test_k9_no_known_hosts_compare(self):
-        self._red('    if trust == "mismatch":', "    if False:", "test_e12_known_hosts", cls="NoBiometryAndHostKey")
+        self._red('    if trust in ("mismatch", "revoked", "no_ed25519"):', "    if False:", "test_e12_known_hosts",
+                  cls="NoBiometryAndHostKey")
+
+    def test_k12_dns_can_bypass_pin(self):
+        self._red('            "-o", "VerifyHostKeyDNS=no",', "", "test_e1_happy_path")
+
+    def test_k13_revoked_ignored(self):
+        self._red('            if key == blob:\n                return "revoked"', '            if False:\n                return "revoked"',
+                  "test_e12_known_hosts", cls="NoBiometryAndHostKey")
+
+    def test_k14_trailing_comment_misparsed(self):
+        self._red("        kind, key = parts[1], parts[2]", "        kind, key = parts[-2], parts[-1]", "test_e12_known_hosts",
+                  cls="NoBiometryAndHostKey")
 
     def test_k10_write_restore_failure_hidden(self):
         self._red('            if rrc != 0:   # 寫入可能已經完成', "            if False:   # 寫入可能已經完成",

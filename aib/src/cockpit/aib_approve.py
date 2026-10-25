@@ -577,7 +577,7 @@ def _say(key, params=None):
     return _t(key, params or {}, None, key)
 
 
-def main(argv=None, out=None, env=None, stdin=None):
+def main(argv=None, out=None, env=None, stdin=None, run=None):
     out = out or sys.stdout
     ap = argparse.ArgumentParser(prog="aib approve")
     sub = ap.add_subparsers(dest="cmd")
@@ -633,7 +633,7 @@ def main(argv=None, out=None, env=None, stdin=None):
             return 0
         import approve_enroll
         d = {"kid": kid_of(pub) if pub else None, "enrolled": approve_enroll.load_enrolled(env),
-             "biometry": approve_enroll.biometry_ready() if sys.platform == "darwin" else False}
+             "biometry": approve_enroll.biometry_ready(run or subprocess.run) if sys.platform == "darwin" else False}
         if o.json:
             return emit(d, 0)
         out.write("kid: %s\nbiometry: %s\n" % (d["kid"], d["biometry"]))
@@ -663,7 +663,7 @@ def main(argv=None, out=None, env=None, stdin=None):
         return emit(history(env), 0)
     if o.cmd == "enroll":
         import approve_enroll
-        r, why = approve_enroll.enroll(o.site, o.host, o.url, env)
+        r, why = approve_enroll.enroll(o.site, o.host, o.url, env, run=run or subprocess.run)
         if why:
             if not o.json:  # 給人看的一句(四語);--json 只給代碼(契約)
                 out.write(approve_enroll.explain(why, env) + "\n")

@@ -4969,6 +4969,7 @@
   "aib.approve.enroll.trust_first": "첫 신뢰: ~/.ssh/known_hosts에 기록 없음",
   "aib.approve.enroll.no_biometry": "이 Mac에는 사용할 수 있는 Touch ID(또는 Secure Enclave)가 없어 AIB 승인기로 쓸 수 없습니다. 지문이 없으면 방어가 없으므로 보호되지 않은 키로 바꾸지 않습니다. 대신: Touch ID가 있는 Mac(또는 Touch ID 매직 키보드)에서 활성화하거나, WordPress 2단계를 WebAuthn 보안 키나 인증 앱(TOTP)으로 쓰세요.",
   "aib.approve.enroll.cancelled": "취소했습니다. 아무것도 바꾸지 않았습니다.",
+  "aib.approve.enroll.host_key_no_ed25519": "~/.ssh/known_hosts에는 이 서버의 다른 키 유형(RSA / ECDSA) 기록만 있어 ed25519 키를 대조할 수 없습니다. 아무것도 보내지 않았습니다. 확인한 뒤 ed25519 키를 known_hosts에 추가하세요.",
   "aib.approve.enroll.host_key_mismatch": "서버 호스트 키가 ~/.ssh/known_hosts 기록과 다릅니다. 중간자가 있을 수 있습니다. 아무것도 보내지 않았습니다. 먼저 서버의 진짜 지문을 확인하세요.",
   "aib.approve.enroll.need_human": "중간에 멈췄고 서버 파일도 되돌리지 못했습니다({why}). 서버의 /etc/ez2-aib/approve-keys를 사람이 확인해야 합니다.",
   "aib.approve.enroll.failed": "활성화하지 않았습니다({why}). 중간 상태는 남기지 않았습니다.",

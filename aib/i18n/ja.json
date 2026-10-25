@@ -4969,6 +4969,7 @@
   "aib.approve.enroll.trust_first": "初回信頼:~/.ssh/known_hosts に記録なし",
   "aib.approve.enroll.no_biometry": "この Mac には使える Touch ID(または Secure Enclave)がないため、AIB 承認機にはできません。指紋がなければ防御にならないので、保護のない鍵には切り替えません。代わりに:Touch ID 付きの Mac(または Touch ID 付き Magic Keyboard)で有効化するか、WordPress の第 2 段階を WebAuthn セキュリティキーか認証アプリ(TOTP)にしてください。",
   "aib.approve.enroll.cancelled": "キャンセルしました。何も変更していません。",
+  "aib.approve.enroll.host_key_no_ed25519": "~/.ssh/known_hosts にはこのサーバーの別の鍵種(RSA / ECDSA)の記録しかなく、ed25519 鍵を照合できません。何も送っていません。確認したうえで ed25519 鍵を known_hosts に追加してください。",
   "aib.approve.enroll.host_key_mismatch": "サーバーのホスト鍵が ~/.ssh/known_hosts の記録と違います。中間者の可能性があります。何も送っていません。先にサーバーの本当の指紋を確認してください。",
   "aib.approve.enroll.need_human": "途中で止まり、サーバーのファイルも戻せませんでした({why})。サーバーの /etc/ez2-aib/approve-keys を人が確認してください。",
   "aib.approve.enroll.failed": "有効化していません({why})。途中の状態は残していません。",
