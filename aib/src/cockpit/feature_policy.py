@@ -390,6 +390,11 @@ def _cli(argv=None):
         print("%s" % err, file=sys.stderr)
         return 2
     print(switch_row())
+    try:   # 10-25:開著的艙不用重開就長出 / 收起待審框;失敗不擋開關
+        import pending_pane_sync
+        pending_pane_sync.after_switch(args.feature, args.state == "on")
+    except Exception:  # noqa: BLE001
+        pass
     return 0
 
 
