@@ -11,6 +11,7 @@ Y4 轉交殼失敗 / 逾時 / 找不到 bash ⇒ 不丟例外,回 ok False
 Y5 接線:feature_policy set 實跑會叫(失敗不擋);aib plugins install <來源> 與 install <名稱> 兩條都實跑(打樁下載 / 驗簽)會叫,回條帶 live_cabins
 Y6 has-session 用「=aib-<名>」完全比對;instances/ 底下短名舊夾(2 / main / 流水號)不收;主艙(main,艙家 = 狀態根)開著要收
 Y7 洗艙變數用 cabin_resolve.sh --env-names-scoped 正本(權杖 / 任務夾 / 席位夾 / dm socket 都洗);每次子行程都帶 timeout
+Y8 has-session 一定收起輸出(capture_output),沒開的艙不把 can't find session 印到使用者終端;艙號要 8 位-6 位-尾碼
 刀:after_install 不看外掛名 ⇒ Y1 紅;sync 不拿掉 TMUX ⇒ Y2 紅;install / install_named 不接 ⇒ Y5 紅;拿掉「=」⇒ Y6 紅;拿掉 timeout ⇒ Y7 紅
 """
 import os
@@ -158,6 +159,15 @@ class Sync(unittest.TestCase):
         self.assertNotIn("EZ2_AIB_INSTANCE_TOKEN", e)
         self.assertNotIn("EZ2_TASKS_DIR", e)
         self.assertTrue(f.kws and all(0 < (k.get("timeout") or 0) <= 20 for k in f.kws), f.kws)
+
+    def test_y8_quiet_and_strict_id(self):
+        f = Fake(live=set())
+        self.S.after_install("pending-review", self.env, f)
+        hs = [k for (a, _e), k in zip(f.calls, f.kws) if a[:2] == ["tmux", "has-session"]]
+        self.assertTrue(hs and all(k.get("capture_output") is True for k in hs), hs)
+        self.assertTrue(self.S.is_cabin_id("20261014-133230-6ddf"))
+        for bad in ("a-b-c", "2", "main", "2026-1014-6ddf", "20261014-133230-6ddf-x"):
+            self.assertFalse(self.S.is_cabin_id(bad), bad)
 
     def test_y5_feature_policy_wiring(self):
         home = self.root / "instances" / "20261014-133230-6ddf"

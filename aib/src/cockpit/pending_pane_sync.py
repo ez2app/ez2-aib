@@ -14,6 +14,7 @@
 一艙一艙同步跑:每艙最多 has-session 5 秒 + 轉交殼 20 秒。
 """
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -44,8 +45,8 @@ def wash_names(run=subprocess.run):
 
 
 def is_cabin_id(name):
-    """新艙號格式 YYYYMMDD-HHMMSS-xxxx(cabin_resolve.sh aib_cabin_is_new_id:恰好兩個「-」)。"""
-    return name.count("-") == 2 and all(name.split("-"))
+    """新艙號格式 YYYYMMDD-HHMMSS-xxxx(cabin_resolve.sh aib_cabin_check_name 的 8 位-6 位-尾碼)。"""
+    return re.fullmatch(r"\d{8}-\d{6}-[0-9a-z]+", name or "") is not None
 
 
 def _state_root(env):
@@ -56,7 +57,8 @@ def _state_root(env):
 def _session_live(inst, env, run):
     e = {k: v for k, v in env.items() if k not in ("TMUX", "TMUX_PANE")}
     try:
-        r = run(["tmux", "has-session", "-t", "=aib-" + inst], env=e,   # 「=」完全比對(-t 預設前綴比對,aib-2 會解到 aib-2026…) capture_output=True, text=True,
+        # 「=」完全比對(-t 預設前綴比對,aib-2 會解到 aib-2026…);stderr 收起來,沒開的艙不印到使用者終端
+        r = run(["tmux", "has-session", "-t", "=aib-" + inst], env=e, capture_output=True, text=True,
                 stdin=subprocess.DEVNULL, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return False
