@@ -4522,6 +4522,7 @@
   "aib.chat.self_friend_skip": "友だち {name} は未確認(ワーカー停止中、または相手の席がまだ不明)",
   "aib.chat.self_all_ok": "すべて正常です。",
   "aib.chat.self_some_bad": "{n} 項目が不合格。上の ✗ 行のコマンドで直してください。",
+  "aib.chat.relays_swapped": "  ↪ {old} に 30 分間つながらないため、予備の {new} を一時的に使っています(24 時間後に元に戻して再試行)",
   "aib.chat.relays_saved": "リレー一覧を保存しました。次の周期で名簿と受信リレー一覧を再発行し再接続します。",
   "aib.chat.relays_row_up": "  ✓ {url}",
   "aib.chat.relays_row_down": "  ✗ {url}(未接続)",
