@@ -98,6 +98,8 @@ WAITING_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered")
 # deliver/decide/report(交件/要裁/自報)永遠追加。沒帶 = other(也永遠追加)。
 KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "notice")   # notice:10-13 S7-2 知會,讀過即備存
 BROADCAST_KINDS = frozenset(("order", "rule", "pipeline"))
+# 10-25 @ee4f8 / @abb89(派工 C 補):派工類(要動手)的來信,回信不算做完 ⇒ --closes 不結,要 close --evidence
+CLOSE_BY_REPLY_REFUSED_KINDS = frozenset(("order", "pipeline"))
 # 寄件端量到的來源;v1 的 "ai" 讀進來當 seat。human 只在送信端三條件全量到時才會出現(dm-ctl 那一刀)。
 SENDER_KINDS = ("seat", "seat_claimed", "human", "system", "unknown", "external_seat", "owner_paired", "external_im")
 # external_im(開發文件第 39 節):別的通訊軟體(Telegram)經轉接程式收進來的;永遠不是 human,來源 telegram:<user_id>
@@ -1604,9 +1606,21 @@ def _close_original(item, env=None, now=None):
             return None
         if it.get("sender_seat") and it.get("sender_seat") != item.get("seat"):
             return None       # 審查:回信要回給原信的寄件人,才算結了那一封
+        if normalize_kind(it.get("kind")) in CLOSE_BY_REPLY_REFUSED_KINDS:
+            return None       # 派工信:回信不算完成(送出前 dm-ctl 已用 close-check 擋;這裡是第二道)
         return mark_done(who, orig, "seat:%s" % who, item["id"], env=env, now=now, no_rev_check=True)
     except Exception:  # noqa: BLE001 —— 審查:結原信失敗不得讓投遞 / record 變失敗(信已送到)
         return None
+
+
+def closes_refusal(seat, item_id, env=None):
+    """`aib dm --closes <原信>` 送出前查:原信是派工類 ⇒ 回拒絕(含改用的指令);其他(含找不到)⇒ None,照舊。"""
+    it = _load_item(seat, item_id, env) if seat and item_id else None
+    if not it or normalize_kind(it.get("kind")) not in CLOSE_BY_REPLY_REFUSED_KINDS:
+        return None
+    return {"ok": False, "reason": "closes_order", "id": item_id, "kind": normalize_kind(it.get("kind")),
+            "message": "原信是派工(%s),回信不算做完;做完後改用 dm_queue.py close --id %s --evidence <PR 網址 / commit>"
+                       % (normalize_kind(it.get("kind")), item_id)}
 
 
 _ROUND_RE = re.compile(r"#(\d{1,6})\s*r(\d{1,3})\b")
@@ -4858,6 +4872,9 @@ def main(argv=None, env=None):
             tk.add_argument("--why", default=None)
         else:
             tk.add_argument("text", nargs="?", default="")
+    cc = sub.add_parser("close-check")             # dm-ctl --closes 送出前查(派工信不准用回信結)
+    cc.add_argument("--seat", required=True)
+    cc.add_argument("--id", required=True)
     for name in ("read", "done"):
         sp = sub.add_parser(name)
         sp.add_argument("--seat", default=None)      # 10-21 CLI 好用:不帶 ⇒ 呼叫的那一席(席位 pane 量到的)
@@ -5082,6 +5099,11 @@ def main(argv=None, env=None):
             origin=args.origin, env=env, **_v2_kw(args))
         _print_json(_strip_private(item))
         return 0
+
+    if args.cmd == "close-check":
+        out = closes_refusal(args.seat, args.id, env=env)
+        _print_json(out or {"ok": True, "reason": "ok", "id": args.id})
+        return 1 if out else 0
 
     if args.cmd in ("take", "close", "wait"):
         import dm_take as TK
