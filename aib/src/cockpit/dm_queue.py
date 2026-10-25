@@ -32,6 +32,7 @@ import atomic_json as AJ  # noqa: E402
 import license_plan as LP  # noqa: E402
 import seats_dir_lib  # noqa: E402
 import seat_address as SA  # noqa: E402
+import dm_text as DT  # noqa: E402
 # ★ 依賴方向(第 47b 項):本檔 → feature_policy,**單向**。
 #   「開關檔住哪」與「准不准」的判斷只住 feature_policy —— 它只做這件事、檔小、
 #   不依賴佇列;本檔拿它的結果來用。反過來 feature_policy **不得** import 本檔:
@@ -174,7 +175,7 @@ TRANSITION_REASON = {
     "transition": "這個狀態不能這樣改",
     "actor": "這個動作不是你能做的",
     "actor_missing": "要帶 --by(收件席讀完請用 read,不要 delete)",
-    "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit / github.com/ez2app 的 PR 網址 / #PR 號;夾在說明文字裡也可以),或用 --why 寫結案理由",
+    "evidence": "完成要帶證據(存在的檔 / 你寄出的回信 id / 查得到的 commit / 完整 PR 網址 https://github.com/ez2app/…/pull/N;夾在說明文字裡也可以,只寫 #N 不算),或用 --why 寫結案理由",
     "not_found": "這封信已經不在了",
     "im_room_only": "Telegram 來信只在艦長室看,還不能放進 AI 框(第 39 節第二步做好前)",
 }
@@ -2969,7 +2970,7 @@ def tabs_counts(t):
     read_rows = t["tabs"].get("read", {}).get("rows") or []
     return {"schema": TABS_SCHEMA + "#counts", "seat": t["seat"], "now": t["now"],
             "tabs": {k: rec.get("n", 0) for k, rec in t["tabs"].items()},
-            "by_status": by_status, "read_without_wait": sum(1 for r in read_rows if not r.get("wait")),
+            "by_status": by_status, "read_without_wait": sum(1 for r in read_rows if not DT.wait_text(r)),
             "badges": t["badges"], "errors": len(t["errors"])}
 
 

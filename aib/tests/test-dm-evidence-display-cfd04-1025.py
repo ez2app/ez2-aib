@@ -13,6 +13,7 @@ E2 長訊檔限定(#370 r1 M2):指標指到長訊目錄外 / 捷徑指出去 / �
    只讀前 2048 位元組
 E3 tabs --counts 只印數量:每頁則數、依狀態分開、進行中沒寫「等什麼」的則數
 E4 待審框:長訊列印「📄 前 200 字」;row["wait"] 有字 ⇒ 尾巴接「⏳…」;沒這些鍵照舊
+E5 「等什麼」計數與畫面同一支 dm_text.wait_text(r2 L-new3);D3 證據提示寫完整 PR 網址(r2 L-new1)
 刀:evidence_ref 不抽說明文字 ⇒ D1 紅;收回「#數字」⇒ D2 紅;preview 不洗控制字元 ⇒ E1 紅;拿掉 relay_file_ok ⇒ E2 紅
 """
 import io
@@ -175,6 +176,22 @@ class Display(Base):
         line, _s = R._pending_row_text({"wait": {"text": "等 @abb89 \n收 #366"}}, "本文", "@x")
         self.assertEqual(line, "本文 ⏳等 @abb89 收 #366")
         self.assertEqual(R._pending_row_text({}, "本文", "@x"), ("本文", "@x"))
+
+    def test_e5_wait_same_rule(self):   # #370 r2 L-new3:計數跟畫面同一支判斷
+        import dm_text as DT
+        import render_lib as R
+        waits = [{"text": "等 @abb89"}, {"text": "   "}, {"text": ""}, "字串不是 dict", {"x": 1}, None, {"text": " 收 \n#366 "}]
+        rows = [{"status": "read", "wait": w} for w in waits]
+        out = Q.tabs_counts({"seat": SEAT, "now": 0, "badges": {}, "errors": [], "tabs": {"read": {"n": len(rows), "rows": rows}}})
+        shown = [bool(R._pending_row_text(r, "本文", "@x")[0] != "本文") for r in rows]
+        self.assertEqual(shown, [bool(DT.wait_text(r)) for r in rows])
+        self.assertEqual(out["read_without_wait"], shown.count(False))
+        self.assertEqual(out["read_without_wait"], 5)
+
+    def test_d3_evidence_hint(self):   # #370 r2 L-new1:提示不再叫人貼 #N
+        h = Q.TRANSITION_REASON["evidence"]
+        self.assertIn("完整 PR 網址", h)
+        self.assertNotIn("#PR 號", h)
 
 
 def DR_path(msg):

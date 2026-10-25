@@ -2888,10 +2888,25 @@ def _pending_row_text(item, one_line, sender):
     pv = item.get("preview")
     if isinstance(pv, str) and pv and one_line.startswith(PENDING_RELAY_PREFIX):
         one_line = PENDING_PREVIEW_MARK + pv
-    w = item.get("wait")
-    if isinstance(w, dict) and str(w.get("text") or "").strip():
-        one_line += PENDING_WAIT_MARK + " ".join(str(w["text"]).split())[:80]
+    w = _wait_text(item)
+    if w:
+        one_line += PENDING_WAIT_MARK + w[:80]
     return one_line, sender
+
+
+def _wait_text(item):
+    """跟 dm_queue 計數同一支判斷(dm_text.wait_text,#370 r2 L-new3);載不到核心(治具)⇒ 照同規則自己判。"""
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _d = str(_P(__file__).resolve().parents[1])
+        if _d not in _sys.path:
+            _sys.path.insert(0, _d)
+        from dm_text import wait_text
+    except Exception:
+        w = item.get("wait") if isinstance(item, dict) else None
+        return " ".join(str(w.get("text") or "").split()) if isinstance(w, dict) else ""
+    return wait_text(item)
 
 
 def render_pending_box(rows, width, seat, offset=0, focus=-1,
