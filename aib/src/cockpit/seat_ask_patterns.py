@@ -104,19 +104,37 @@ def prompt_block(screen, provider="claude"):
         m = _GROK_THINKING.search(text.replace("Esc:cancel", ""))
         if m:
             return "thinking", _line_of(lines, m.group(0))
-        return (None, "") if _GROK_PROMPT.search(text) else ("no-prompt", lines[-1] if lines else "")
+        return (None, "") if _GROK_PROMPT.search(text) else ("no-prompt", _clip(lines[-1] if lines else ""))
     for code, rx in (("thinking", _CLAUDE_THINKING), ("esc-cancel", _CLAUDE_ESC_CANCEL)):
         m = rx.search(text)
         if m:
             return code, _line_of(lines, m.group(0))
     if any(_CLAUDE_PROMPT_EMPTY.match(l) for l in lines):
         return None, ""
-    draft = next((l for l in reversed(lines) if _CLAUDE_PROMPT.match(l)), None)
+    draft = _input_box_line(lines)
     if draft is not None:   # 草稿是人正在打的字,不記內容只記字數
         body = re.sub(r"^\s*(?:│\s*)?[❯>]", "", draft).strip().rstrip("│").strip()
         return "draft", "❯ …(%d 字)" % len(body)
-    return "no-prompt", lines[-1] if lines else ""
+    return "no-prompt", _clip(lines[-1] if lines else "")
 
 
 def _line_of(lines, hit):
-    return next((l for l in lines if hit in l), hit)
+    """擋下的那一行:只留命中的字與前後一點,限長(那一行可能是印出來的 token / 客戶資料,10-25 @abb89 L2)。"""
+    l = next((x for x in lines if hit in x), hit)
+    i = l.find(hit)
+    return _clip(l[max(0, i - 10):i + len(hit) + 20].strip())
+
+
+def _clip(line, n=40):
+    line = (line or "").strip()
+    return line if len(line) <= n else line[:n] + "…(%d 字)" % len(line)
+
+
+def _input_box_line(lines):
+    """畫面最下方輸入框裡的那一行(Claude 把舊的使用者訊息 / markdown 引言也印成「> …」,不能拿來判草稿,10-25 @abb89 L1)。
+    輸入框 = 最後一條框線(╭/╰/─── 開頭)上下緊鄰的提示列;找不到框 ⇒ 不算草稿(Claude 的輸入框一定有框線)。"""
+    rule = [i for i, l in enumerate(lines) if re.match(r"^\s*[╭╰─]", l)]
+    if rule:
+        near = [i for i in range(max(0, rule[-1] - 3), min(len(lines), rule[-1] + 2)) if _CLAUDE_PROMPT.match(lines[i])]
+        return lines[near[-1]] if near else None
+    return None

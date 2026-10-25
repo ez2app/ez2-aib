@@ -5510,5 +5510,13 @@
   "aib.auto_update.exclude.needs_touchid": "{name} 은(는) 기본으로 자동 업데이트하지 않습니다(운영 배포 원본). 빼려면 본인 Touch ID 가 필요합니다({why}). 아무것도 바꾸지 않았습니다",
   "aib.auto_update.status.clock_skew": "시계 어긋남: 저장된 시각이 현재보다 늦었습니다(시계가 앞으로 뛴 적이 있음). 무시하고 평소처럼 확인합니다",
   "aib.auto_update.why.refused_source": "공개판에서 설치한 사본이 아니거나(비공개 또는 본인 저장소) 릴리스 태그가 공개판 main 기록에 없습니다. 자동 업데이트하지 않습니다. 업데이트하려면 aib update 를 직접 실행하세요",
-  "aib.auto_update.why.no_change": "aib update 는 끝났지만 버전이 바뀌지 않았습니다. 로그를 확인하세요. 나중에 다시 시도합니다"
+  "aib.auto_update.why.no_change": "aib update 는 끝났지만 버전이 바뀌지 않았습니다. 로그를 확인하세요. 나중에 다시 시도합니다",
+  "aib.seat.panel.prompt_why_thinking": "아직 생각 중이거나 도구를 실행 중이에요. 멈춘 뒤 입력하세요(또는 먼저 중지)",
+  "aib.seat.panel.prompt_why_esc_cancel": "Esc로 닫을 수 있는 화면(메뉴 / 대화상자)에 멈춰 있어요. 먼저 터미널에서 처리하세요",
+  "aib.seat.panel.prompt_why_draft": "입력창에 이미 글자가 있어요(누군가 입력 중이거나 메시지가 들어가 있음). 먼저 터미널에서 보내거나 지우세요",
+  "aib.seat.panel.prompt_why_pager": "페이저 / 편집기(less, vim)에 멈춰 있어요. 먼저 터미널에서 q를 눌러 나오세요",
+  "aib.seat.panel.prompt_why_permission": "권한 확인을 기다리고 있어요. 먼저 위 확인창에 답하세요",
+  "aib.seat.panel.prompt_why_no_prompt": "화면에서 입력창을 찾을 수 없어요. 터미널을 열어 확인하세요",
+  "aib.seat.panel.prompt_why_no_screen": "화면을 읽지 못했어요(tmux 응답 없음). 잠시 후 다시 시도하거나 터미널을 여세요",
+  "aib.seat.panel.prompt_why_unknown": "바쁜 것 같아요. 멈춘 뒤 입력하세요(또는 먼저 중지)"
 }

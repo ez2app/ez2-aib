@@ -5510,5 +5510,13 @@
   "aib.auto_update.exclude.needs_touchid": "{name} は既定で自動更新しません(本番デプロイの元です)。外すには本人の Touch ID が必要です({why})。何も変更していません",
   "aib.auto_update.status.clock_skew": "時計のずれ:保存された時刻が現在より先でした(時計が進んだことがあります)。無視して通常どおり確認します",
   "aib.auto_update.why.refused_source": "公開版からインストールされていないか(非公開または自分のリポジトリ)、公開タグが公開版 main の履歴にありません。自動更新しません。更新は aib update を自分で実行してください",
-  "aib.auto_update.why.no_change": "aib update は終わりましたがバージョンが変わっていません。ログを確認してください。後でもう一度試します"
+  "aib.auto_update.why.no_change": "aib update は終わりましたがバージョンが変わっていません。ログを確認してください。後でもう一度試します",
+  "aib.seat.panel.prompt_why_thinking": "まだ考え中またはツール実行中です。止まってから入力してください(または先に停止)",
+  "aib.seat.panel.prompt_why_esc_cancel": "Esc で閉じられる画面(メニュー / ダイアログ)で止まっています。先にターミナルで対応してください",
+  "aib.seat.panel.prompt_why_draft": "入力欄にすでに文字があります(誰かが入力中か、メッセージが入っています)。先にターミナルで送信か消去を",
+  "aib.seat.panel.prompt_why_pager": "ページャ / エディタ(less、vim)で止まっています。先にターミナルで q を押して抜けてください",
+  "aib.seat.panel.prompt_why_permission": "権限の確認待ちです。先に上の確認に答えてください",
+  "aib.seat.panel.prompt_why_no_prompt": "画面に入力欄が見つかりません。ターミナルを開いて確認してください",
+  "aib.seat.panel.prompt_why_no_screen": "画面を読めませんでした(tmux が応答なし)。少し後で再試行するかターミナルを開いてください",
+  "aib.seat.panel.prompt_why_unknown": "作業中のようです。止まってから入力してください(または先に停止)"
 }

@@ -5510,5 +5510,13 @@
   "aib.auto_update.exclude.needs_touchid": "{name} 預設不自動更新(它是正式站部署來源),拿掉要本人 Touch ID({why});什麼都沒改",
   "aib.auto_update.status.clock_skew": "時鐘跳過:存下來的時間比現在還晚(系統時鐘曾往前跳),已不算數、照常查",
   "aib.auto_update.why.refused_source": "這份不是從公開版裝的(私有或自己的倉庫),或官方標籤不在公開版 main 的歷史上;不自動更新，要更新請自己跑 aib update",
-  "aib.auto_update.why.no_change": "aib update 跑完了但版本沒變,看紀錄;之後再試"
+  "aib.auto_update.why.no_change": "aib update 跑完了但版本沒變,看紀錄;之後再試",
+  "aib.seat.panel.prompt_why_thinking": "它還在想 / 跑工具,等它停下來再打(或先按停止)",
+  "aib.seat.panel.prompt_why_esc_cancel": "它停在一個可以按 Esc 取消的畫面(選單 / 對話框),先到終端處理",
+  "aib.seat.panel.prompt_why_draft": "它的輸入框裡已經有字(有人正在打或有信塞進去),先到終端送出或清掉",
+  "aib.seat.panel.prompt_why_pager": "它停在翻頁 / 編輯畫面(less、vim),先到終端按 q 離開",
+  "aib.seat.panel.prompt_why_permission": "它在等權限確認,先回上面的確認框",
+  "aib.seat.panel.prompt_why_no_prompt": "畫面上找不到它的輸入框,先按看終端機確認",
+  "aib.seat.panel.prompt_why_no_screen": "讀不到它的畫面(tmux 沒回應),稍後再試或按看終端機",
+  "aib.seat.panel.prompt_why_unknown": "它好像在忙,等它停下來再打(或先按停止)"
 }

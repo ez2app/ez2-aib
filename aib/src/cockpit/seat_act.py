@@ -259,16 +259,12 @@ def log_action(code, action, env=None, **fields):
         pass
 
 
-PROMPT_HINT = {
-    "thinking": "它還在想 / 跑工具,等它停下來再打(或先按停止)",
-    "esc-cancel": "它停在一個可以按 Esc 取消的畫面(選單 / 對話框),先到終端處理",
-    "draft": "它的輸入框裡已經有字(有人正在打或有信塞進去),先到終端送出或清掉",
-    "pager": "它停在翻頁 / 編輯畫面(less、vim),先到終端按 q 離開",
-    "permission": "它在等權限確認,先回上面的確認框",
-    "no-prompt": "畫面上找不到它的輸入框,先按看終端機確認",
-    "no-screen": "讀不到它的畫面(tmux 沒回應),稍後再試或按看終端機",
-    "unknown": "它好像在忙,等它停下來再打(或先按停止)",
-}
+PROMPT_WHYS = ("thinking", "esc-cancel", "draft", "pager", "permission", "no-prompt", "no-screen", "unknown")
+
+
+def prompt_hint(why):
+    """被擋原因的人話(四語 aib.seat.panel.prompt_why_<代碼>);代碼本身照留在 prompt_why。"""
+    return T("prompt_why_" + (why if why in PROMPT_WHYS else "unknown").replace("-", "_"))
 
 
 # ── C1 ──
@@ -299,7 +295,7 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
         # detail 是契約不動;原因另放 prompt_why + hint(10-25 Andy:停著卻被說在忙,被擋那次要留紀錄)
         pw = pend.get("prompt_why") or "unknown"
         out["why"], out["detail"] = "not-at-prompt", "busy=%s" % pend.get("busy")
-        out["prompt_why"], out["hint"] = pw, PROMPT_HINT.get(pw, PROMPT_HINT["unknown"])
+        out["prompt_why"], out["hint"] = pw, prompt_hint(pw)
         log_action(code, "input", env, ok=False, why="not-at-prompt", prompt_why=pw, busy=pend.get("busy"),
                    line=pend.get("prompt_line"), chars=len(text))
         return out, 2
