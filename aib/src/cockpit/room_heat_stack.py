@@ -261,7 +261,7 @@ def _versioned(it, installed):
     it["state"] = "update_available" if fv and iv and iv < fv else "on"
 
 
-def stack(environ=None, now=None, platform=None, claude_home=None, aib=None, cockpit=HERE, plugins_fn=None, home=None):
+def stack(environ=None, now=None, platform=None, claude_home=None, aib=None, cockpit=HERE, plugins_fn=None, home=None, aib_root=AIB_ROOT):
     import room_heat_known as KN
     now = time.time() if now is None else now
     plat = platform or sys.platform
@@ -317,7 +317,7 @@ def stack(environ=None, now=None, platform=None, claude_home=None, aib=None, coc
             ts = [t for _r, t in known.values() if _finite(t)]
             it.update(result=improved, last_run_at=iso(max(ts)) if ts else None)
         elif kind == "skill":
-            _versioned(it, _skill_version(iid, None if aib == "unreadable" else aib, home))
+            _versioned(it, _skill_version(iid, None if aib == "unreadable" else aib, home, aib_root))
     stale = not _finite(last_pt.get("t")) or now - last_pt["t"] > STALE_S
     return {"v": 1, "schema": "aib-heat-stack/v1", "generated_at": iso(now), "generated_ts": int(now), "stale": stale,
             "aib": None if aib == "unreadable" else aib, "items": items}

@@ -75,6 +75,7 @@ class Base(unittest.TestCase):
         kw.setdefault("aib", "0.1.56")
         kw.setdefault("plugins_fn", lambda: [])
         kw.setdefault("home", str(self.home))
+        kw.setdefault("aib_root", str(self.d / "aibroot-empty"))   # 不讀倉庫自帶的 skill(#345 起倉裡有 ez2-local-perf)
         return ST.stack(**kw)
 
     def by_id(self, s):
