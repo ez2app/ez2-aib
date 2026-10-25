@@ -372,7 +372,10 @@ async def resolve(addr, relays, root=None):
             return rc, rec
         s, cab = DV.find(rec, cabin, seat)          # 艙綁宣告它的機器(第 37.7 節第 4 點):撞名的艙已不在合併結果裡
         if s is None:
-            out = {"ok": False, "why": "no_seat"}
+            out = {"ok": False, "why": "no_seat",
+                   # 10-25 一鍵對話 5b:驗過簽的最新名冊已沒這席 ⇒ 帶回名冊目前的席,寄件端拿來更新快照、提示改寄(不自動改寄)
+                   "owner": owner_npub, "roster_at": at, "roster_seats": _roster_seats(rec),
+                   "display_name": rec.get("display_name"), "country": rec.get("country")}
             if "%s/%s" % (cabin, seat) in (rec.get("dropped_seats") or []):   # 對方名冊同一席列了兩次(chat_roster.parse 整席丟掉)
                 out["hint"] = GF.DUPLICATE_SEAT_HINT                          # why 照回 no_seat(契約),人話另放 hint
             return 2, out
@@ -606,6 +609,10 @@ class Sender(object):
             if res.get("why") in TRANSIENT:
                 self._retry_later(msgid, res.get("why"))
             else:
+                if res.get("why") == "no_seat" and isinstance(res.get("roster_seats"), list) and res.get("roster_at"):
+                    # 先更新快照再寫回條:寄件端等到回條時,快照已經拿掉死席、找得到改寄位址
+                    GF.note_peer(self.root, res["owner"], res.get("display_name"), res.get("country"), None,
+                                 roster_at=res["roster_at"], claims={"roster_seats": res["roster_seats"]})
                 self._rcpt(msgid, rec.get("to") if isinstance(rec, dict) else None, "refused", res.get("why"))
                 self._done(msgid)
             return
