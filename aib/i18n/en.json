@@ -5548,5 +5548,14 @@
   "aib.heat.tidy.popup_title": "aib room: {n} orphan daemons",
   "aib.heat.tidy.popup_hint": "Parent is gone but they keep running; see the captain room to find the owner",
   "aib.heat.tidy.submodule": "has submodules (their local commits would be lost)",
-  "aib.heat.tidy.bad_name": "tree name has control characters, left alone"
+  "aib.heat.tidy.bad_name": "tree name has control characters, left alone",
+  "aib.consent.strong_title": "AIB consent (strong)",
+  "aib.consent.strong_body": "Summary written by the seat calling itself {who} (may be wrong):\n{summary}\n\nCommand that will run (in your home folder):\n{cmd}",
+  "aib.consent.strong_check": "I have read this",
+  "aib.consent.go": "Continue",
+  "aib.consent.no": "Cancel",
+  "aib.consent.touchid_reason": "AIB consent · self-described {who} wants to run: {cmd}",
+  "aib.consent.sign_extra": "Script sha256 {sha} (if the file changes after you approve, it will not run); first lines:\n{head}",
+  "aib.consent.notify": "AIB notice · ran {cmd} (rc {rc})",
+  "aib.consent.help.usage": "usage: aib consent ask [--strong] --summary <one line> [--seat SEAT] [--wait SEC] [--json] -- <command…>\n       aib consent status <id> [--json]\n       aib consent run-once | install | uninstall"
 }

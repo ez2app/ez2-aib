@@ -5548,5 +5548,14 @@
   "aib.heat.tidy.popup_title": "aib 기계실: 고아 상주 {n}개",
   "aib.heat.tidy.popup_hint": "부모 프로세스 없이 계속 실행 중입니다. 함장실 기계실에서 주인을 확인하세요",
   "aib.heat.tidy.submodule": "서브모듈 있음(로컬 커밋이 사라짐)",
-  "aib.heat.tidy.bad_name": "트리 이름에 제어 문자가 있어 건드리지 않음"
+  "aib.heat.tidy.bad_name": "트리 이름에 제어 문자가 있어 건드리지 않음",
+  "aib.consent.strong_title": "AIB 동의(강화)",
+  "aib.consent.strong_body": "{who}(이)라고 밝힌 좌석이 쓴 요약(부정확할 수 있음):\n{summary}\n\n실제로 실행할 명령(홈 폴더에서 실행):\n{cmd}",
+  "aib.consent.strong_check": "내용을 확인했습니다",
+  "aib.consent.go": "계속",
+  "aib.consent.no": "취소",
+  "aib.consent.touchid_reason": "AIB 동의 · {who}(이)라고 밝힌 좌석의 실행 요청: {cmd}",
+  "aib.consent.sign_extra": "스크립트 sha256 {sha}(승인 후 파일이 바뀌면 실행하지 않음); 첫 몇 줄:\n{head}",
+  "aib.consent.notify": "AIB 알림 · {cmd} 실행 완료(rc {rc})",
+  "aib.consent.help.usage": "사용법: aib consent ask [--strong] --summary <한 줄> [--seat 좌석] [--wait 초] [--json] -- <명령…>\n        aib consent status <id> [--json]\n        aib consent run-once | install | uninstall"
 }

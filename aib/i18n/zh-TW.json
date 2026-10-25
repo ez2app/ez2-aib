@@ -5548,5 +5548,14 @@
   "aib.heat.tidy.popup_title": "aib 機房：孤兒常駐 {n} 支",
   "aib.heat.tidy.popup_hint": "父行程已不在、還一直跑著;到艦長室機房看是誰的，請主人收掉",
   "aib.heat.tidy.submodule": "有子模組(封存後子模組的本機提交會不見)",
-  "aib.heat.tidy.bad_name": "樹名有控制字元，不碰"
+  "aib.heat.tidy.bad_name": "樹名有控制字元，不碰",
+  "aib.consent.strong_title": "AIB 同意(加強)",
+  "aib.consent.strong_body": "自稱 {who} 的席位寫的一句話(可能不準):\n{summary}\n\n實際要跑的指令(在家目錄跑):\n{cmd}",
+  "aib.consent.strong_check": "我看過了",
+  "aib.consent.go": "繼續",
+  "aib.consent.no": "取消",
+  "aib.consent.touchid_reason": "AIB 同意 · 自稱 {who} 要跑:{cmd}",
+  "aib.consent.sign_extra": "腳本 sha256 {sha}(同意後原檔被改就不跑);前幾行:\n{head}",
+  "aib.consent.notify": "AIB 通知 · 跑完 {cmd}(rc {rc})",
+  "aib.consent.help.usage": "用法:aib consent ask [--strong] --summary <一句話> [--seat 席碼] [--wait 秒] [--json] -- <指令…>\n      aib consent status <id> [--json]\n      aib consent run-once | install | uninstall"
 }
