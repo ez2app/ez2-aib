@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """單買 / 單項訂閱 items(@abb89 10-25 23:2x 定欄位;Andy 23:2x「同時支援單買、或單訂閱使用期限」)+ aib license allowed。
 
-I1 buy 合法、綁這台 ⇒ allowed source=buy;rent 未過期 ⇒ source=rent 帶 expires_at;rent 過期 ⇒ 不給 reason=rent-expired
+I1 buy 合法、綁這台 ⇒ allowed source=buy;rent 未過期 ⇒ source=rent 帶 expires_at;rent 過期 ⇒ 不給 reason=rent-expired;單件 trial 同 rent(source=trial / trial-expired)
 I2 方案夠(free_at)⇒ source=plan,不看 items;方案不夠又沒買 ⇒ plan-too-low;沒給 free_at 又沒買 ⇒ not-owned
-I3 fail-closed 逐筆:machine_id 是別台 / license_id 對不上 / kind 寫錯 / rent 缺 expires_at / buy 帶 expires_at / tenant 空 / sku 形狀不合 ⇒ 該筆當不存在
+I3 fail-closed 逐筆:machine_id 是別台 / license_id 對不上 / kind 寫錯 / rent、trial 缺 expires_at / buy 帶 expires_at / tenant 空 / sku 形狀不合 ⇒ 該筆當不存在
 I4 整張:改 items 一個字 ⇒ 簽章驗不過 ⇒ items 空 reason=invalid;沒檔 ⇒ missing;items 不是陣列 ⇒ invalid
 I5 CLI allowed --json:九欄(含 trial / left_days / was)、不含 signature;沒給 sku ⇒ rc 2
 刀(複本):K1 拿掉 machine_id 比對 ⇒ I3 紅;K2 拿掉 rent 到期判斷 ⇒ I1 紅
@@ -87,7 +87,7 @@ class Base(unittest.TestCase):
 
 class Items(Base):
     def test_i1_buy_rent(self):
-        self.put(_signed(_lic("free", [_item("elevator.lv2", "buy"), _item("desk.dual", "rent", days=10)])))
+        self.put(_signed(_lic("free", [_item("elevator.lv2", "buy"), _item("desk.dual", "rent", days=10), _item("sofa", "trial", days=7)])))
         r = self.ok("elevator.lv2")
         self.assertEqual((r["allowed"], r["source"], r["expires_at"]), (True, "buy", None), r)
         r = self.ok("desk.dual")
@@ -96,6 +96,10 @@ class Items(Base):
         self.assertEqual((r["left_days"], r["trial"], r["was"]), (10, False, None), r)
         r = self.ok("desk.dual", now=NOW + timedelta(days=11))
         self.assertEqual((r["allowed"], r["source"], r["reason"], r["was"]), (False, "none", "rent-expired", "rent-expired"), r)
+        r = self.ok("sofa")
+        self.assertEqual((r["allowed"], r["source"], r["left_days"]), (True, "trial", 7), r)
+        r = self.ok("sofa", now=NOW + timedelta(days=8))
+        self.assertEqual((r["allowed"], r["reason"], r["was"]), (False, "trial-expired", "trial-expired"), r)
 
     def test_i2_plan_path(self):
         self.put(_signed(_lic("pro", [])))
@@ -114,6 +118,7 @@ class Items(Base):
             _item("b.other-license", "buy", license_id="lic-other"),
             _item("c.bad-kind", "lease"),
             _item("d.rent-no-expiry", "rent"),
+            _item("d2.trial-no-expiry", "trial"),
             _item("e.buy-with-expiry", "buy", days=5),
             _item("f.no-tenant", "buy", tenant=""),
             {"sku": "G.UPPER", "kind": "buy", "expires_at": None, "machine_id": device.device_id(LID, RAW), "tenant": "t", "license_id": LID},
@@ -122,7 +127,7 @@ class Items(Base):
         ]
         self.put(_signed(_lic("free", bad)))
         self.assertEqual(self.skus(), ["h.good"])
-        for sku in ("a.other-machine", "b.other-license", "c.bad-kind", "d.rent-no-expiry", "e.buy-with-expiry", "f.no-tenant"):
+        for sku in ("a.other-machine", "b.other-license", "c.bad-kind", "d.rent-no-expiry", "d2.trial-no-expiry", "e.buy-with-expiry", "f.no-tenant"):
             self.assertFalse(self.ok(sku)["allowed"], sku)
 
     def test_i4_whole_license(self):

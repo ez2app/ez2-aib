@@ -3,14 +3,15 @@
 """單買 / 單項訂閱(@abb89 10-25 23:2x 定欄位;Andy 23:2x「同時支援單買、或單訂閱使用期限」)。
 
 同一張簽章授權(license.json)多一個 `items` 陣列,每筆:
-  {sku, kind: buy|rent, expires_at(buy 為 null、rent 必填 UTC), machine_id, tenant, license_id}
+  {sku, kind: buy|rent|trial, expires_at(buy 為 null、rent / trial 必填 UTC), machine_id, tenant, license_id}
 簽章範圍含 items 整段(signing.canonical 蓋整個物件,改一個字整張驗不過)。
 
 判斷只有一支:
   allowed(sku, free_at) = 方案等級 ≥ free_at(該 sku 標的「免費套用」等級,由外掛 offers.json 帶,核心只認 sku 字串)
-                          OR items 裡有該 sku 且(buy 或 rent 未過期)且綁這台機器。
+                          OR items 裡有該 sku 且(buy、或 rent / trial 未過期)且綁這台機器。
 任一不成立 ⇒ 不給;rent 過期 / 方案到期 ⇒ 外掛照退回規則(保留可看可結案可匯出、不能新增 / 套用),核心只回 reason。
-fail-closed:沒簽章 / 驗不過 / 寫錯 kind / rent 缺 expires_at / machine_id 不是這台 / license_id 對不上 ⇒ 整筆 item 當不存在。
+fail-closed:沒簽章 / 驗不過 / 寫錯 kind / rent、trial 缺 expires_at / machine_id 不是這台 / license_id 對不上 ⇒ 整筆 item 當不存在。
+方案級試用(plan-trial.json)另在 plan.py;這裡的 trial 是單件。
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from .plan import RANK, current
 from .store import read_license_obj, resolve_license_path
 from .tier import _parse_expires_at
 
-KINDS = ("buy", "rent")
+KINDS = ("buy", "rent", "trial")   # trial = 單件試用 n 日(Andy 10-25「每項可設試用 n 日」;伺服器發、同 rent 要 expires_at)
 SKU_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
@@ -80,8 +81,8 @@ def allowed(sku: str, free_at: Optional[str] = None, env: Optional[Mapping[str, 
             now: Optional[datetime] = None, raw_machine: Optional[str] = None) -> dict:
     """這個 sku 現在能不能用 ⇒ {allowed, source: plan|buy|rent|none, plan, reason, expires_at, trial, left_days, was}。
     free_at = 外掛 offers.json 標的「這級以上免費套用」;沒給 / 寫錯 ⇒ 不走方案這條(只看單買 / 單訂閱)。
-    trial = 走方案那條而且方案是試用;left_days = 到期前還有幾天(無期限 None);was = 以前有、現在沒了:plan-expired / rent-expired。
-    試用只有方案級(plan-trial.json),沒有單件試用。"""
+    trial = 走方案那條而且方案是試用;left_days = 到期前還有幾天(無期限 None);was = 以前有、現在沒了:plan-expired / rent-expired / trial-expired。
+    source=trial 是單件試用(items kind trial);方案級試用走 source=plan + trial=True。"""
     now = now or datetime.now(timezone.utc)
 
     def out(allowed_, source, p_, reason, expires_at, trial=False, was=None):
@@ -101,8 +102,9 @@ def allowed(sku: str, free_at: Optional[str] = None, env: Optional[Mapping[str, 
     for it in mine:
         if it["active"]:
             return out(True, it["kind"], p["plan"], "ok", it["expires_at"])
-    if mine:   # 有這件但過期(只會是 rent)
-        return out(False, "none", p["plan"], "rent-expired", mine[0]["expires_at"], was="rent-expired")
+    if mine:   # 有這件但過期(rent 或 trial)
+        kind = mine[0]["kind"]
+        return out(False, "none", p["plan"], "%s-expired" % kind, mine[0]["expires_at"], was="%s-expired" % kind)
     if need is not None:
         was = "plan-expired" if p["reason"] == "expired" else None
         return out(False, "none", p["plan"], "plan-too-low", None, was=was)
