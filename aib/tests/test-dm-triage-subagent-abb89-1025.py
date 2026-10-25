@@ -15,6 +15,8 @@
   r3 審查補:S13 沒登記的 API 席只剩進行中時也判得出 digest 模式;S14 auto_tidy 席待審 2、進行中 0 也帶規則;
   S15 四種叫醒句都過 R-30 出站檢查(圈號 ①②③ 會被咽喉整句擋下、治具看不到);S16 digest 句撐不爆 1500 位元組、
   分組表至少留 5 列;S17 每 15 分來 1 封、席位立刻讀的節奏,3 小時內進行中觸發最多叫 3 次(剛讀的不算卡著 + 每小時一次)。
+  r3 B 補:S19 進行中觸發的叫醒也計每日上限(一天最多 12);S20 auto_tidy 席待審 1 + 進行中剛好 2 的句子有子代理規則、
+  且兩套規則之間有「本席自己」的主詞切換;S21 攤成一行(copilot 等 inline 席)後規則與橋句都還在、沒換行。
 
 治具沿用 test-dm-hold-notify-abb89-1015.py(整棵 src 抄進暫存根、假 tmux、假咽喉),投遞由注入的 deliver 收下,
 不碰工作樹、不碰 ~/.ez2-aib、不送真 dm。
@@ -395,6 +397,55 @@ class S18JustReadIsNotStuck(unittest.TestCase):
             "print(json.dumps({'n1': n1, 'n2': len(sent)}))\n" % (SEAT, SEAT)))
         self.assertEqual(out["n1"], 0, "席位剛讀的兩封還在動手,不算卡著、不叫:%r" % out)
         self.assertEqual(out["n2"], 1, "過了 INPROG_SETTLE_S 還沒結 ⇒ 叫一次:%r" % out)
+
+
+class S19DailyCapCountsInProgressWakes(unittest.TestCase):
+
+    def test_inprog_wakes_hit_daily_max(self):
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "for k in range(14):\n"
+            "    inprog('卡著 %d-a' % k, t + k * 3700); inprog('卡著 %d-b' % k, t + k * 3700)\n"
+            "    tick(t + k * 3700 + 10)\n"
+            "print(json.dumps({'n': len(sent), 'max': Q.WAKE_DAILY_MAX}))\n"))
+        self.assertEqual(out["n"], out["max"], "進行中觸發的叫醒也要計每日上限:%r" % out)
+
+
+class S20TidySeatExactThreshold(unittest.TestCase):
+
+    def test_todo1_inprog2_has_rules_and_bridge(self):
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "Q.tidy_switch('on', seat=%r, env=env)\n"
+            "inprog('進行中一', t); inprog('進行中二', t)\n"
+            "put('真的一件事要你看 PR 說明', t)\n"
+            "tick(t + 10)\n"
+            "tick(t + 10 + Q.TIDY_QUIET_S + 5)\n"
+            "print(json.dumps({'sent': sent}))\n" % SEAT))
+        self.assertEqual(len(out["sent"]), 1, out)
+        text = out["sent"][0]
+        for must in ("進行中 2 封", "整理子代理", "不算數", "由本席自己照下列規則", "stage-tidy"):
+            self.assertIn(must, text, text)
+        self.assertLess(text.index("不算數"), text.index("由本席自己照下列規則"), "子代理規則在前、本席規則在後")
+
+
+class S21InlineFlattenKeepsRules(unittest.TestCase):
+
+    def test_copilot_one_line(self):
+        TR = _tr()
+        import importlib.util as iu
+        spec = iu.spec_from_file_location("dmq_u", HN.REL.TREE / "src" / "cockpit" / "dm_queue.py")
+        Q = iu.module_from_spec(spec); spec.loader.exec_module(Q)
+        need = [{"id": "q_%d" % i, "rev": 1, "from": "@x", "sender_kind": "ai", "summary": "s%d" % i} for i in range(3)]
+        for text in (TR.wake_text(SEAT, {"pending": 2}, 2, "/x/dm_queue.py", mode="agent", inprog=3),
+                     TR.tidy_wake_text(SEAT, need, 3, "/x/dm_queue.py", mode="agent", inprog=2)):
+            flat = Q._one_line_for_line_reader(text, "copilot")
+            self.assertNotIn("\n", flat)
+            for must in ("1. 結案", "不算數", "只擬稿"):
+                self.assertIn(must, flat, flat[:300])
+            self.assertGreaterEqual(len(flat), len(text) - 50, "攤平不得截斷規則")
 
 
 if __name__ == "__main__":
