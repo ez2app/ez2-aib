@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -120,12 +121,47 @@ def orphans(rows=None, root=WT_ROOT, uid=None, ident=None, now=None, min_age_s=O
 
 GIT_ENV = {"LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",   # fetch 不准停下來問密碼(#345 r1 A-L3)
            "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes"}
+SSH_HARDEN = GIT_ENV["GIT_SSH_COMMAND"].split(" ", 1)[1]   # 去掉程式名只留選項;整串寫在上一行(加固檢查逐行看)
+
+
+SSH_ARG_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")       # 後面要接參數的短選項
+
+
+def _forces_agent(args):
+    """參數裡有 -A(含 -At 這種併寫)⇒ True。-A 不管前後都會打開轉送,-o ForwardAgent=no 蓋不掉(ssh -G 實測)。"""
+    it = iter(args)
+    for t in it:
+        if len(t) < 2 or not t.startswith("-") or t.startswith("--"):
+            continue
+        for i, ch in enumerate(t[1:]):
+            if ch == "A":
+                return True
+            if ch in SSH_ARG_FLAGS:
+                if i == len(t) - 2:
+                    next(it, None)                     # 參數在下一個字
+                break
+    return False
+
+
+def git_env(environ=None):
+    """使用者自己設了 GIT_SSH_COMMAND(指定金鑰 / 跳板)就沿用,防護選項插在程式名後面、使用者參數前面
+    (ssh 的 -o 先出現的贏,#360 r1 M)。拆不開、程式名帶引號、或參數有 -A ⇒ 不跑使用者的,改用 GIT_ENV 原值。"""
+    environ = os.environ if environ is None else environ
+    env = {**environ, **GIT_ENV}
+    own = (environ.get("GIT_SSH_COMMAND") or "").strip()
+    try:
+        parts = shlex.split(own) if own else []
+    except ValueError:
+        parts = []
+    if parts and own.startswith(parts[0]) and not _forces_agent(parts[1:]):
+        env["GIT_SSH_COMMAND"] = parts[0] + " " + SSH_HARDEN + own[len(parts[0]):]   # 其餘照原字串,不改使用者的引號 / 展開
+    return env
 
 
 def _git(path, *args, timeout=20):
     try:
         p = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=timeout,
-                           stdin=subprocess.DEVNULL, env={**os.environ, **GIT_ENV})
+                           stdin=subprocess.DEVNULL, env=git_env())
     except (OSError, subprocess.SubprocessError):
         return None, ""
     return p.returncode, p.stdout
@@ -243,15 +279,26 @@ def _q(s):
 
 
 def _write_restore(path, w, dest):
-    """搬之前先寫還原指令(搬到一半斷電也有得還原)。登記已刪,所以用 worktree add 重建再補回 ignored 檔。
-    -B <分支> <路徑> <頭碼>:分支之後被刪了也還原得回來(#345 r1 B-M2);detached ⇒ --detach <路徑> <頭碼>。
+    """搬之前先寫還原指令(搬到一半斷電也有得還原)。用 worktree add 重建再補回 ignored 檔(#345 r2 Low):
+    - 分支還在、頭碼沒動 ⇒ 掛回分支;分支被刪 ⇒ -b 重建(#345 r1 B-M2);分支往前走了 ⇒ detached 在舊頭碼,不拉回分支
+    - 原路徑不存在才清掉「這一條路徑」的舊登記(prunable,登記沒刪成時);不跑全倉 prune,路徑上有東西就不碰
     註解行只放 repr 過的路徑(樹名有控制字元的根本不會走到這裡,bad_name)。"""
     repo = os.path.dirname(w["_common"].rstrip("/")) if os.path.basename(w["_common"].rstrip("/")) == ".git" else w["_common"]
-    how = "--detach %s %s" % (_q(w["_path"]), _q(w["_head"])) if w["_branch"] == "HEAD" else \
-        "-B %s %s %s" % (_q(w["_branch"]), _q(w["_path"]), _q(w["_head"]))
+    r, p, h = _q(repo), _q(w["_path"]), _q(w["_head"])
+    clear = "[ -e %s ] || git -C %s worktree remove --force %s 2>/dev/null; " % (p, r, p)
+    if w["_branch"] == "HEAD":
+        add = "git -C %s worktree add --detach %s %s" % (r, p, h)
+    else:
+        b = _q(w["_branch"])
+        add = ("if git -C {r} show-ref -q --verify refs/heads/{b}; then "
+               "if [ \"$(git -C {r} rev-parse refs/heads/{b})\" = {h} ]; then git -C {r} worktree add {p} {b}; "
+               "else echo 'branch moved since archive: restoring detached at the old head' >&2; "
+               "git -C {r} worktree add --detach {p} {h}; fi; "
+               "else git -C {r} worktree add -b {b} {p} {h}; fi").format(r=r, b=b, h=h, p=p)
     lines = ["# aib room heat tidy archive  %s" % time.strftime("%Y-%m-%d %H:%M"),
              "# 原位置 %r  分支 %r  頭碼 %s" % (w["_path"], w["_branch"], w["_head"]),
-             "git -C %s worktree add %s" % (_q(repo), how),
+             "# 出現 missing but already registered worktree ⇒ 下一行開頭已只清這條路徑的舊登記;不要跑全倉 git worktree prune",
+             clear + add,
              "rsync -a --ignore-existing %s/ %s/   # 補回 ignored 檔(建置產物 / 捷徑)" % (_q(dest), _q(w["_path"])),
              "# 確認沒問題再刪這份備份:%r" % dest, ""]
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
