@@ -17,14 +17,15 @@ C12 SIGN:同意時鎖 sha256、跑暫存複本;同意後原檔被改 ⇒ 跑的�
 C13 跳窗前申請已搬到 running/(別支 run-once 拿不到同一件)
 C14 跑指令時鎖已放(別的 Touch ID 視窗照開)
 C15 超過 30 分鐘的申請 ⇒ expired、不跳窗
-C16 壞檔名搬到 bad/;撞號(done 已有)不覆寫原紀錄;剛寫的(2 秒內)先跳過
+C16 壞檔名搬到 bad/;同檔名重送換新編號照常處理、不覆寫原紀錄;剛寫的(2 秒內)先跳過
 C17 只剩剛寫的 ⇒ 等 2 秒再掃、同一次 run-once 就處理(不等 launchd 保底 5 分鐘)
 C18 搬不動(running 是一般檔 / 壞檔刪不掉)⇒ 不空轉、照常結束
 C19 decide 丟例外 ⇒ 記 failed、不卡在 running/;~不存在使用者的 SIGN 路徑 ⇒ not_allowed
 C20 running/ 裡的孤兒(當機 / 重開機留下)⇒ 超時記 failed、搬 bad/
 C21 ask --wait 等到逾時仍 pending ⇒ rc 1;plist / 子行程帶解析後的狀態根(只設 EZ2_AIB_HOME 也對)
+C22 Touch ID 整句(含語系前綴)超過視窗上限 ⇒ 改 strong;t 寫成未來時間 ⇒ expired
 刀(複本 + run_guarded):K1 不問 Touch ID ⇒ C2 紅;K2 白名單全放 ⇒ C1 紅;K3 strong 不看勾選 ⇒ C3 紅;
-  K4 不查怪字 ⇒ C11 紅;K5 跑原檔不跑複本 ⇒ C12 紅;K6 跑的時候還拿著鎖 ⇒ C14 紅
+  K4 不查怪字 ⇒ C11 紅;K5 跑原檔不跑複本 ⇒ C12 紅;K6 跑的時候還拿著鎖 ⇒ C14 紅;K7 只看指令長度 ⇒ C22 紅
 """
 import json
 import os
@@ -132,7 +133,10 @@ class Whitelist(Base):
                (["aib", "test", "x"], True), (["aib", "knife"], True), (["aib", "ship"], True),
                (["aib", "ext", "install", "x"], True), (["aib", "seat", "open"], True), (["aib", "dm", "x"], True),
                (["aib", "6ddf"], True), (["aib", "plugins", "install", "--allow-unsigned", "x"], True),
-               (["aib", "update", "--allow-unsigned=1"], True),
+               (["aib", "update", "--allow-unsigned=1"], True), (["aib", "update"], True),
+               (["claude", "plugin", "install", "x@m", "-y"], True),
+               (["claude", "plugin", "install", "x@m", "--marketplace", "/tmp/evil"], True),
+               (["claude", "plugin", "update", "x", "--accept-command", "sh"], True),
                (["claude", "--dangerously-skip-permissions"], True), (["claude", "-p", "x"], True),
                (["claude", "plugin", "list", "--dangerously-skip-permissions"], True),
                (["claude", "plugin", "install", "./local-dir"], True), (["claude", "plugin", "install"], True),
@@ -146,7 +150,8 @@ class Whitelist(Base):
             self.assertIsNone(C.classify(argv, strong, self.env)[0], argv)
 
     def test_c11_bad_chars(self):
-        for s in ("a\nb", "a\rb", "a\x1bb", "a\u200bb", "a\u202eb", "a\u2066b", "a\ufeffb", "a\x85b", "a\u2028b"):
+        for s in ("a\nb", "a\rb", "a\x1bb", "a\u200bb", "a\u202eb", "a\u2066b", "a\ufeffb", "a\x85b", "a\u2028b",
+                  "a\U000e0041b", "a\u180eb", "a\u034fb", "a\u3164b", "a\u115fb", "a\uffa0b", "a\u2800b", "a\ufe0fb"):
             kind, why = C.classify(["aib", "now", s], True, self.env)
             self.assertIsNone(kind, repr(s))
             self.assertEqual(why, "argv_chars", repr(s))
@@ -307,13 +312,15 @@ class Inbox(Base):
         self.assertEqual(C.status(r["id"], self.env)["result"], "ok")
         self.assertEqual(sorted(os.listdir(inbox)), [])
         self.assertEqual(len(os.listdir(C.bad_dir(self.env))), 2)
-        # 撞號:同一個 id 再寫一次 ⇒ 不覆寫 done、搬 bad
-        (inbox / (r["id"] + ".json")).write_text(json.dumps({"argv": ["aib", "now", "evil", "9/9"], "summary": "x",
+        # 同檔名重送 ⇒ 換新編號照常處理，不覆寫舊紀錄
+        (inbox / (r["id"] + ".json")).write_text(json.dumps({"argv": ["aib", "now", "again", "2/2"], "summary": "x",
                                                             "t": int(time.time())}), encoding="utf-8")
         self.drain()
         self.assertEqual(C.status(r["id"], self.env)["argv"], ["aib", "now", "x", "1/2"])
-        self.assertEqual(len(os.listdir(C.bad_dir(self.env))), 3)
-        self.assertEqual(len(self.run_.calls), 1)
+        self.assertEqual(len(self.run_.calls), 2)
+        self.assertEqual(self.run_.calls[1][1:], ["now", "again", "2/2"])
+        again = [f for f in os.listdir(C.done_dir(self.env)) if f.startswith(r["id"] + "-") and f.endswith(".json")]
+        self.assertEqual(len(again), 1)
         # 剛寫的先跳過
         r2 = self.req(["aib", "now", "y", "2/2"])
         self.assertEqual(C.run_once(self.env, run=self.run_, sleep=lambda s: None, ask=self.touch(True),
@@ -392,6 +399,25 @@ class R2(Base):
         self.assertEqual(ev["WatchPaths"], [str(self.td / "alt" / "consent" / "inbox")])
         self.assertEqual(ev["EnvironmentVariables"]["EZ2_AIB_STATE_ROOT"], str(self.td / "alt"))
 
+    def test_c22_reason_overflow_and_future_t(self):
+        argv = ["aib", "now", "x" * 103, "--all"]
+        self.assertLessEqual(len(C.display_cmd(argv)), C.REASON_CMD_MAX)
+        r = self.req(argv)
+        def en(key, params, fallback, env=None):      # 英文版前綴較長(self-described …)
+            if key == "aib.consent.touchid_reason":
+                return "AIB consent · self-described %s wants to run: %s" % (params["who"], params["cmd"])
+            return fallback
+        with mock.patch.object(C, "_t", en):
+            d = self.one(r, ask_strong_fn=self.strong(False))
+        self.assertEqual(d["result"], "denied")
+        self.assertTrue(any(a.startswith("STRONG:") for a in self.asked), "整句被截掉尾巴卻沒先出對話框")
+        r2 = self.req(["aib", "now", "y", "1/2"])
+        p = C.inbox_dir(self.env) / (r2["id"] + ".json")
+        d2 = json.loads(p.read_text(encoding="utf-8"))
+        d2["t"] = int(time.time()) + 10 ** 8
+        p.write_text(json.dumps(d2), encoding="utf-8")
+        self.assertEqual(self.one(r2)["result"], "expired")
+
 
 class Knife(unittest.TestCase):
     def _knife(self, needle, repl, cell):
@@ -428,6 +454,9 @@ class Knife(unittest.TestCase):
                     "                _kf = open(str(state_root(env) / \"locks\" / \"touchid-approve.lock\"), \"a\"); "
                     "__import__(\"fcntl\").flock(_kf, 2); execute(rid, req, real, env=env, run=run, extra=detail); "
                     "_kf.close()\n", "Inbox.test_c14_lock_released_while_running")
+
+    def test_k7_reason_len_only_cmd(self):
+        self._knife(" or len(_reason_full(view, env)) > REASON_MAX", "", "R2.test_c22_reason_overflow_and_future_t")
 
 
 if __name__ == "__main__":

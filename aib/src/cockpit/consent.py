@@ -27,8 +27,8 @@ launchd 看到就會叫 run-once ⇒ 照樣跳窗。不用再叫 Andy 在輸入�
     只給席位看結果，不拿來做任何決定。
   - 顯示不出原樣就不跑:argv 有控制字 / 隱形字 / 方向字 ⇒ not_allowed(不清了再跑)。一句話總結是席位寫的、
     席碼是自稱的 ⇒ 對話框照實標明;Touch ID 視窗字只放實際指令。
-  - 白名單(第一版，逐支):aib now / dm-queue / lang / update / plugins / theme(拒 --allow-unsigned);
-    claude plugin list / update / enable / disable / uninstall / install <名@marketplace>(拒 --dangerously* / -p);
+  - 白名單(第一版，逐支):aib now / dm-queue / lang / plugins / theme(拒 --allow-unsigned);
+    claude plugin list / update / enable / disable / uninstall / install <名@marketplace>(子指令後不收任何旗標);
     bash ~/.ez2-aib/pending/SIGN-*.sh(只准 strong;同意時鎖 sha256,跑 0700 暫存夾裡的複本並再驗)。其他 not_allowed。
     argv 是陣列、不經 shell;一律在 HOME 跑(工作目錄不由申請決定)。
   - 一次一件:拿到 touchid-approve 鎖(跟 newproj --approve / aib approve 共用)後先把申請改名搬到 running/,
@@ -72,15 +72,16 @@ SIGN_HEAD_LINES = 12
 SUMMARY_MAX = 200
 REASON_CMD_MAX = 120
 RESULTS = ("ok", "rc_nonzero", "denied", "not_allowed", "unavailable", "failed", "timeout", "expired", "invalid")
-AIB_SUBCOMMANDS = frozenset({"now", "dm-queue", "lang", "update", "plugins", "theme"})
+AIB_SUBCOMMANDS = frozenset({"now", "dm-queue", "lang", "plugins", "theme"})   # update:開發樹的 aib 一律拒 ⇒ 不列
 CLAUDE_PLUGIN_SUB = frozenset({"list", "update", "enable", "disable", "uninstall", "install"})
 SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _SIGN_RE = re.compile(r"^SIGN-[A-Za-z0-9._-]+\.sh$")
 _SEAT_RE = re.compile(r"^[a-z0-9]{3,12}$")
 _PLUGIN_REF_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$")
-# 控制字(C0 / DEL / C1)、行段分隔、零寬 / 方向控制 / 軟連字號:視窗裡看不出原樣 ⇒ 不收
-_BAD_CHAR = re.compile("[\\x00-\\x1f\\x7f-\\x9f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
+# 控制字(C0 / DEL / C1)、行段分隔、零寬 / 方向控制 / 軟連字號 / 填充字 / 變體選擇 / 標籤字:視窗裡看不出原樣 ⇒ 不收
+_BAD_CHAR = re.compile("[\\x00-\\x1f\\x7f-\\x9f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
+                       "\u2028-\u202e\u2060-\u2069\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\U000e0000-\U000e007f]")
 
 STRONG_JXA = r"""
 ObjC.import('AppKit');
@@ -197,8 +198,8 @@ def classify(argv, strong, env=None):
     if head == "claude":
         if len(argv) < 3 or argv[1] != "plugin" or argv[2] not in CLAUDE_PLUGIN_SUB:
             return None, "claude_subcommand"
-        if any(a.startswith("--dangerously") or a in ("-p", "--print") for a in argv):
-            return None, "claude_flag"
+        if any(a.startswith("-") for a in argv[3:]):
+            return None, "claude_flag"     # -y / --accept-command / --marketplace 等都能帶進別的指令 ⇒ 一律不收旗標
         if argv[2] == "install" and (len(argv) < 4 or not _PLUGIN_REF_RE.match(argv[3])):
             return None, "claude_install_ref"
         return "claude_plugin", ""
@@ -310,10 +311,17 @@ def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
     return {"ok": False, "why": "not_checked" if out.get("go") else "cancel"}
 
 
+REASON_MAX = 160
+
+
+def _reason_full(req, env=None):
+    cmd = display_cmd(req["argv"])
+    return _t("aib.consent.touchid_reason", {"who": _who(req), "cmd": cmd},
+              "AIB consent · %s wants to run: %s" % (_who(req), cmd), env)
+
+
 def touchid_reason(req, env=None):
-    cmd = TA.clean(display_cmd(req["argv"]), REASON_CMD_MAX)
-    return TA.clean(_t("aib.consent.touchid_reason", {"who": _who(req), "cmd": cmd},
-                       "AIB consent · %s wants to run: %s" % (_who(req), cmd), env), 160)
+    return TA.clean(_reason_full(req, env), REASON_MAX)
 
 
 def _sign_info(path):
@@ -354,7 +362,8 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
     ask_strong_fn = ask_strong_fn or ask_strong
     avail = TA.available() if available is None else available
     t = req.get("t") if type(req.get("t")) is int else None
-    if t is None or (now if now is not None else time.time()) - t > EXPIRE_S:
+    now = now if now is not None else time.time()
+    if t is None or now - t > EXPIRE_S or t - now > 60:      # 寫成未來時間也不收
         return "expired", {}, None, None
     argv, strong = req.get("argv"), req.get("strong") is True
     kind, why = classify(argv, strong, env)
@@ -363,9 +372,9 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
     summary = TA.clean(req.get("summary"), SUMMARY_MAX)
     if not summary:
         return "invalid", {"why": "summary_missing"}, None, None
-    if len(display_cmd(argv)) > REASON_CMD_MAX:
-        strong = True        # Touch ID 視窗放不下整條指令 ⇒ 先出對話框列全文
     view = dict(req, summary=summary, strong=strong, seat=_seat(req.get("seat")))
+    if len(display_cmd(argv)) > REASON_CMD_MAX or len(_reason_full(view, env)) > REASON_MAX:
+        view["strong"] = strong = True   # Touch ID 視窗放不下整句(含語系前綴)⇒ 先出對話框列全文
     sign = None
     if kind == "sign_script":
         sign = _sign_info(Path(argv[1]).expanduser().resolve())
@@ -524,16 +533,14 @@ def run_once(env=None, run=subprocess.run, sleep=time.sleep, retry_s=LOCK_RETRY_
                 waited += LOCK_RETRY_STEP
                 continue
             waited = 0
+            if (done_dir(env) / (rid + ".json")).exists() or (running_dir(env) / (rid + ".json")).exists():
+                rid = "%s-%s" % (rid[:50], secrets.token_hex(3))   # 同檔名重送:換新編號照常處理，不覆寫舊紀錄
             mine = running_dir(env) / (rid + ".json")
             try:
                 mine.parent.mkdir(parents=True, exist_ok=True)
                 os.rename(path, mine)
             except OSError:
                 skip.add(path)                  # 別支接手了或搬不動:這輪不再挑
-                continue
-            if (done_dir(env) / (rid + ".json")).exists():
-                _quarantine(mine, env, "dup")            # 撞號:不覆寫原本的紀錄
-                n += 1
                 continue
             req = _read_json(mine)
             if req is None:
