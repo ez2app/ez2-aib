@@ -4,32 +4,41 @@
 有生物辨識的 就用生物辨識，若需要加強的，多一個打勾 打勾後，將該事件最重要的 一句話總結 顯示給他看」;
 設計 pending/PLAN-approve-popup-abb89-1025.md)。名字避開 aib approve(那是 WordPress 登入第二步)。
 
-  aib consent ask [--strong] --summary <一句話> [--cwd 夾] [--wait 秒] [--json] -- <指令…>
-      把申請放進 <狀態根>/consent/inbox/<id>.json,印 id;--wait 等結果(預設不等)。
-  aib consent status <id> [--json]       看結果(pending / ok / denied / not_allowed / unavailable / failed / timeout)
-  aib consent run-once                   處理 inbox 裡的申請(一次一件、依時間先後);launchd 監看 inbox 時叫這一支
-  aib consent install | uninstall        裝 / 拿掉 launchd(WatchPaths = inbox,不常駐、不輪詢)
+  aib consent ask [--strong] --summary <一句話> [--seat 席碼] [--wait 秒] [--json] -- <指令…>
+      把申請放進 <狀態根>/consent/inbox/<id>.json,印 id;--wait 等結果(預設不等;等到不是 ok ⇒ rc 1)。
+  aib consent status <id> [--json]       pending / ok / rc_nonzero / denied / not_allowed / unavailable / failed /
+                                         timeout / expired / invalid
+  aib consent run-once                   處理 inbox 到空(一次一件);launchd 監看 inbox 時叫這一支
+  aib consent install | uninstall        裝 / 拿掉 launchd(WatchPaths = inbox + 每 5 分鐘保底一次;不常駐)
 
-席位被 Claude Code 的安全檢查擋住、連 Bash 都不能跑時：用檔案工具直接寫一份 JSON 到 inbox(欄位同下),
-launchd 看到檔案就會叫 run-once ⇒ 照樣跳窗。不用再叫 Andy 在輸入框打 `!`。
-  {"argv": ["aib", "now", "--seat", "abb89", "…", "2/5"], "summary": "…", "strong": false, "seat": "abb89", "cwd": "/…"}
+席位被 Claude Code 的安全檢查擋住、連 Bash 都不能跑時：用檔案工具寫一份 JSON 到 inbox(先寫 .tmp 再改名最好),
+launchd 看到就會叫 run-once ⇒ 照樣跳窗。不用再叫 Andy 在輸入框打 `!`。
+  {"argv": ["aib", "now", "--seat", "abb89", "…", "2/5"], "summary": "…", "strong": false, "seat": "abb89"}
 
 彈窗:
   一般 ⇒ 系統原生 Touch ID 視窗(touchid_approve.ask,沒 Touch ID 時系統給登入密碼欄;沒有純同意鈕)。
-  strong ⇒ 先一個對話框：「席位寫的一句話」+「實際指令」全文 +「我看過了」勾選框;勾了按繼續才跳 Touch ID。
+  strong ⇒ 先一個對話框：「自稱 @x 的席位寫的一句話(可能不準)」+「實際指令」全文 +「我看過了」勾選框;
+           勾了按繼續才跳 Touch ID。SIGN 腳本另列 sha256 與前幾行。指令長到 Touch ID 視窗放不下 ⇒ 自動當 strong。
 
 防線(同帳號 AI 威脅守則;照實寫):
-  - 這是**同意的介面**,不是擋 AI 的防線:同帳號 AI 改得到這支程式、inbox、launchd 設定。真正擋 AI 的仍是各指令自己的
-    human_attest / Touch ID / 簽章。這裡跑出來的行程是 launchd 底下的 python,human_attest 三條件本來就不過;
-    這支**不**新增任何放行旗標或環境變數,也不留「已驗過」狀態(每件各自跳窗)。
-  - 一句話總結是席位寫的、可能是假的 ⇒ 視窗一律同時列實際指令，並標明「席位寫的」;Touch ID 視窗字只放實際指令。
-  - 白名單(第一版):aib <子指令>(consent 除外)、claude plugin …、bash ~/.ez2-aib/pending/SIGN-*.sh(只准 strong)。
-    其他一律 not_allowed,要加再問 Andy。argv 是陣列，不經 shell。
-  - 一次一件(touchid-approve 鎖，跟 newproj --approve / aib approve 共用;別的視窗開著 ⇒ 這件下次再處理);
-    處理過的 id 搬到 done/,不重跑。
-rc:ask 0(已排)/ 2(參數錯、不在白名單);status 0 / 2(沒這件);run-once 0。
+  - 這是**同意的介面**,不是擋 AI 的防線:同帳號 AI 改得到這支程式、inbox、done、launchd 設定。真正擋 AI 的仍是各指令
+    自己的 human_attest / Touch ID / 簽章。這裡跑出來的行程是 launchd 底下的 python,human_attest 三條件本來就不過;
+    這支**不**新增任何放行旗標或環境變數,也不留「已驗過」狀態(每件各自跳窗)。done / status 也是 AI 寫得到的紀錄,
+    只給席位看結果，不拿來做任何決定。
+  - 顯示不出原樣就不跑:argv 有控制字 / 隱形字 / 方向字 ⇒ not_allowed(不清了再跑)。一句話總結是席位寫的、
+    席碼是自稱的 ⇒ 對話框照實標明;Touch ID 視窗字只放實際指令。
+  - 白名單(第一版，逐支):aib now / dm-queue / lang / update / plugins / theme(拒 --allow-unsigned);
+    claude plugin list / update / enable / disable / uninstall / install <名@marketplace>(拒 --dangerously* / -p);
+    bash ~/.ez2-aib/pending/SIGN-*.sh(只准 strong;同意時鎖 sha256,跑 0700 暫存夾裡的複本並再驗)。其他 not_allowed。
+    argv 是陣列、不經 shell;一律在 HOME 跑(工作目錄不由申請決定)。
+  - 一次一件:拿到 touchid-approve 鎖(跟 newproj --approve / aib approve 共用)後先把申請改名搬到 running/,
+    搬不動 = 別支已接手 ⇒ 跳過;同意 / 拒絕一決定就放鎖，再跑指令(跑的時候別的 Touch ID 視窗照開)。
+    鎖與搬檔只防兩個視窗疊在一起、同一件被處理兩次(誤操作);AI 刪得掉。
+  - 申請超過 30 分鐘沒處理 ⇒ expired(不讓很久以前的指令在開機時跳出來)。
+rc:ask 0(已排 / 等到 ok)/ 1(等到不是 ok)/ 2(參數錯、不在白名單);status 0 / 2(沒這件);run-once 0。
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -39,6 +48,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -50,15 +60,27 @@ import touchid_approve as TA  # noqa: E402
 
 AGENT_LABEL = "page.ez2.aib-consent"
 RUN_TIMEOUT_S = 20 * 60
+EXPIRE_S = 30 * 60
+LOCK_RETRY_S = 300
+LOCK_RETRY_STEP = 5
+FRESH_S = 2
 MAX_REQ_BYTES = 16 * 1024
 MAX_ARGV = 40
-MAX_ARG_LEN = 2000
+MAX_CMD_LEN = 1500
+MAX_SIGN_BYTES = 256 * 1024
+SIGN_HEAD_LINES = 12
 SUMMARY_MAX = 200
 REASON_CMD_MAX = 120
-RESULTS = ("ok", "denied", "not_allowed", "unavailable", "failed", "timeout", "invalid")
+RESULTS = ("ok", "rc_nonzero", "denied", "not_allowed", "unavailable", "failed", "timeout", "expired", "invalid")
+AIB_SUBCOMMANDS = frozenset({"now", "dm-queue", "lang", "update", "plugins", "theme"})
+CLAUDE_PLUGIN_SUB = frozenset({"list", "update", "enable", "disable", "uninstall", "install"})
+SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _SIGN_RE = re.compile(r"^SIGN-[A-Za-z0-9._-]+\.sh$")
 _SEAT_RE = re.compile(r"^[a-z0-9]{3,12}$")
+_PLUGIN_REF_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$")
+# 控制字(C0 / DEL / C1)、行段分隔、零寬 / 方向控制 / 軟連字號:視窗裡看不出原樣 ⇒ 不收
+_BAD_CHAR = re.compile("[\\x00-\\x1f\\x7f-\\x9f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
 
 STRONG_JXA = r"""
 ObjC.import('AppKit');
@@ -73,9 +95,11 @@ a.showsSuppressionButton = true;
 a.suppressionButton.title = CHECK;
 a.addButtonWithTitle(GO);
 a.addButtonWithTitle(NO);
+a.layout;
+a.window.level = $.NSFloatingWindowLevel;   // launchd 叫起來時不一定搶得到前景 ⇒ 浮在最上層
 var r = a.runModal;
-var checked = a.suppressionButton.state == 1;
-JSON.stringify((r == 1000 && checked) ? {ok: true, nonce: NONCE} : {ok: false, go: r == 1000, checked: checked});
+var checked = Number(a.suppressionButton.state) === 1;   // JXA 回的是字串 "1"
+JSON.stringify((Number(r) === 1000 && checked) ? {ok: true, nonce: NONCE} : {ok: false, go: Number(r) === 1000, checked: checked});
 """
 
 
@@ -99,8 +123,21 @@ def inbox_dir(env=None):
     return consent_dir(env) / "inbox"
 
 
+def running_dir(env=None):
+    return consent_dir(env) / "running"
+
+
 def done_dir(env=None):
     return consent_dir(env) / "done"
+
+
+def bad_dir(env=None):
+    return consent_dir(env) / "bad"
+
+
+def _home(env=None):
+    e = _env(env)
+    return Path(e.get("HOME") or os.path.expanduser("~"))
 
 
 def _write_atomic(path, data):
@@ -112,8 +149,8 @@ def _write_atomic(path, data):
     os.replace(tmp, path)
 
 
-def _read_json(path, limit=MAX_REQ_BYTES):
-    """只讀一般檔(具名管道不卡、不跟符號連結),超過 limit 當壞。"""
+def _read_regular(path, limit):
+    """只讀一般檔(具名管道不卡、不跟符號連結),超過 limit 回 None。"""
     try:
         fd = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
     except OSError:
@@ -126,7 +163,12 @@ def _read_json(path, limit=MAX_REQ_BYTES):
         return None
     finally:
         os.close(fd)
-    if len(raw) > limit:
+    return None if len(raw) > limit else raw
+
+
+def _read_json(path, limit=MAX_REQ_BYTES):
+    raw = _read_regular(path, limit)
+    if raw is None:
         return None
     try:
         d = json.loads(raw.decode("utf-8"))
@@ -137,32 +179,35 @@ def _read_json(path, limit=MAX_REQ_BYTES):
 
 # ---- 白名單 ----
 
-def _pending_dir(env=None):
-    e = _env(env)
-    return Path(e.get("HOME") or os.path.expanduser("~")) / ".ez2-aib" / "pending"
-
-
 def classify(argv, strong, env=None):
     """回 (kind, 原因)。kind ∈ aib / claude_plugin / sign_script;不准 ⇒ (None, 原因碼)。"""
     if not isinstance(argv, list) or not argv or len(argv) > MAX_ARGV:
         return None, "argv_shape"
-    if not all(isinstance(a, str) and a and len(a) <= MAX_ARG_LEN and "\x00" not in a for a in argv):
-        return None, "argv_shape"
+    if not all(isinstance(a, str) and a and not _BAD_CHAR.search(a) for a in argv):
+        return None, "argv_chars"
+    if len(display_cmd(argv)) > MAX_CMD_LEN:
+        return None, "argv_too_long"
     head = argv[0]
     if head == "aib":
-        if len(argv) < 2 or argv[1].startswith("-") or argv[1] == "consent":
+        if len(argv) < 2 or argv[1] not in AIB_SUBCOMMANDS:
             return None, "aib_subcommand"
+        if any(a == "--allow-unsigned" or a.startswith("--allow-unsigned=") for a in argv):
+            return None, "aib_allow_unsigned"
         return "aib", ""
     if head == "claude":
-        if len(argv) < 3 or argv[1] != "plugin":
-            return None, "claude_not_plugin"
+        if len(argv) < 3 or argv[1] != "plugin" or argv[2] not in CLAUDE_PLUGIN_SUB:
+            return None, "claude_subcommand"
+        if any(a.startswith("--dangerously") or a in ("-p", "--print") for a in argv):
+            return None, "claude_flag"
+        if argv[2] == "install" and (len(argv) < 4 or not _PLUGIN_REF_RE.match(argv[3])):
+            return None, "claude_install_ref"
         return "claude_plugin", ""
     if head == "bash":
         if len(argv) != 2:
             return None, "sign_shape"
         p = Path(argv[1]).expanduser()
         try:
-            real, base = p.resolve(strict=True), _pending_dir(env).resolve(strict=True)
+            real, base = p.resolve(strict=True), (_home(env) / ".ez2-aib" / "pending").resolve(strict=True)
         except OSError:
             return None, "sign_missing"
         if real.parent != base or not _SIGN_RE.match(real.name) or not real.is_file():
@@ -173,38 +218,26 @@ def classify(argv, strong, env=None):
     return None, "not_allowed"
 
 
-def resolve_argv(argv, kind, env=None):
-    """launchd 的 PATH 很短 ⇒ 換成絕對路徑。aib = 這份 aib 自己的入口;claude 從 PATH + ~/.local/bin 找。"""
-    e = _env(env)
-    if kind == "aib":
-        return [str(HERE / "aib")] + argv[1:]
-    if kind == "claude_plugin":
-        path = os.pathsep.join([e.get("PATH") or "", str(Path(e.get("HOME") or "~").expanduser() / ".local" / "bin")])
-        exe = shutil.which("claude", path=path)
-        return [exe] + argv[1:] if exe else None
-    if kind == "sign_script":
-        return ["/bin/bash", str(Path(argv[1]).expanduser().resolve())]
-    return None
-
-
 def display_cmd(argv):
     return " ".join(shlex.quote(a) for a in argv)
 
 
+def _seat(v):
+    return v if isinstance(v, str) and _SEAT_RE.match(v) else None
+
+
 # ---- 申請 ----
 
-def new_request(argv, summary, strong=False, seat=None, cwd=None, env=None, now=None):
+def new_request(argv, summary, strong=False, seat=None, env=None, now=None):
     kind, why = classify(argv, strong, env)
     if not kind:
         return None, why
     summary = TA.clean(summary, SUMMARY_MAX)
     if not summary:
         return None, "summary_missing"
-    rid = "%d-%s" % (int(now if now is not None else time.time()), secrets.token_hex(4))
-    req = {"v": 1, "id": rid, "argv": list(argv), "summary": summary, "strong": bool(strong),
-           "seat": seat if isinstance(seat, str) and _SEAT_RE.match(seat) else None,
-           "cwd": cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None,
-           "t": int(now if now is not None else time.time())}
+    t = int(now if now is not None else time.time())
+    rid = "%d-%s" % (t, secrets.token_hex(4))
+    req = {"v": 1, "id": rid, "argv": list(argv), "summary": summary, "strong": bool(strong), "seat": _seat(seat), "t": t}
     _write_atomic(inbox_dir(env) / (rid + ".json"), req)
     return req, ""
 
@@ -215,8 +248,9 @@ def status(rid, env=None):
     d = _read_json(done_dir(env) / (rid + ".json"), 64 * 1024)
     if d:
         return d
-    if (inbox_dir(env) / (rid + ".json")).is_file():
-        return {"id": rid, "result": "pending"}
+    for where in (inbox_dir(env), running_dir(env)):
+        if (where / (rid + ".json")).is_file():
+            return {"id": rid, "result": "pending"}
     return None
 
 
@@ -230,6 +264,10 @@ def _t(key, params, fallback, env=None):
         return fallback
 
 
+def _who(req):
+    return "@" + req["seat"] if req.get("seat") else "?"
+
+
 def build_strong_script(title, body, check, go, no, nonce):
     rep = {"__TITLE__": title, "__BODY__": body, "__CHECK__": check, "__GO__": go, "__NO__": no, "__NONCE__": nonce}
     s = STRONG_JXA
@@ -241,10 +279,13 @@ def build_strong_script(title, body, check, go, no, nonce):
 def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
     """加強版第一步：勾選框對話框。回 {"ok": bool, "why": str}。"""
     nonce = secrets.token_hex(16)
-    who = "@" + req["seat"] if req.get("seat") else "?"
     cmd = display_cmd(req["argv"])
-    body = _t("aib.consent.strong_body", {"who": who, "summary": req["summary"], "cmd": cmd},
-              "Summary written by %s (may be wrong):\n%s\n\nCommand that will run:\n%s" % (who, req["summary"], cmd), env)
+    body = _t("aib.consent.strong_body", {"who": _who(req), "summary": req["summary"], "cmd": cmd},
+              "Summary written by the seat calling itself %s (may be wrong):\n%s\n\nCommand that will run:\n%s"
+              % (_who(req), req["summary"], cmd), env)
+    if req.get("sign"):
+        body += "\n\n" + _t("aib.consent.sign_extra", {"sha": req["sign"]["sha256"], "head": req["sign"]["head"]},
+                            "Script sha256 %s; first lines:\n%s" % (req["sign"]["sha256"], req["sign"]["head"]), env)
     script = build_strong_script(
         _t("aib.consent.strong_title", {}, "AIB consent (strong)", env), body,
         _t("aib.consent.strong_check", {}, "I have read this", env),
@@ -270,89 +311,114 @@ def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
 
 
 def touchid_reason(req, env=None):
-    who = "@" + req["seat"] if req.get("seat") else "?"
     cmd = TA.clean(display_cmd(req["argv"]), REASON_CMD_MAX)
-    return TA.clean(_t("aib.consent.touchid_reason", {"who": who, "cmd": cmd}, "AIB consent · %s wants to run: %s" % (who, cmd),
-                       env), 160)
+    return TA.clean(_t("aib.consent.touchid_reason", {"who": _who(req), "cmd": cmd},
+                       "AIB consent · %s wants to run: %s" % (_who(req), cmd), env), 160)
+
+
+def _sign_info(path):
+    raw = _read_regular(path, MAX_SIGN_BYTES)
+    if raw is None:
+        return None
+    head = "\n".join(TA.clean(ln, 160) for ln in raw.decode("utf-8", "replace").splitlines()[:SIGN_HEAD_LINES])
+    return {"sha256": hashlib.sha256(raw).hexdigest(), "head": head, "raw": raw}
 
 
 # ---- 處理 ----
 
-def _finish(req, result, env, **extra):
-    d = {"v": 1, "id": req["id"], "result": result, "argv": req.get("argv"), "summary": req.get("summary"),
+def _record(rid, result, env, req=None, **extra):
+    req = req or {}
+    d = {"v": 1, "id": rid, "result": result, "argv": req.get("argv"), "summary": req.get("summary"),
          "seat": req.get("seat"), "strong": req.get("strong"), "decided_at": int(time.time())}
     d.update(extra)
-    _write_atomic(done_dir(env) / (req["id"] + ".json"), d)
-    try:
-        os.unlink(inbox_dir(env) / (req["id"] + ".json"))
-    except OSError:
-        pass
+    _write_atomic(done_dir(env) / (rid + ".json"), d)
     return d
 
 
-def _load_inbox(env=None):
-    out = []
+def _quarantine(path, env, why):
+    """壞檔 / 撞號:搬到 bad/(不留在 inbox 每輪再判一次);搬不動就試著刪。"""
+    dst = bad_dir(env) / ("%d-%s-%s" % (int(time.time()), secrets.token_hex(3), why))
     try:
-        names = sorted(os.listdir(inbox_dir(env)))
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(path, dst)
     except OSError:
-        return out
-    for name in names:
-        if not name.endswith(".json") or name.startswith("."):
-            continue
-        rid = name[:-5]
-        p = inbox_dir(env) / name
-        d = _read_json(p)
-        if not _ID_RE.match(rid) or d is None:
-            out.append(({"id": rid if _ID_RE.match(rid) else "bad-%s" % secrets.token_hex(4)}, "invalid", p))
-            continue
-        d["id"] = rid                                    # 檔名才是 id(席位手寫的檔可能沒寫 / 寫錯)
-        out.append((d, None, p))
-    out.sort(key=lambda x: (x[0].get("t") if isinstance(x[0].get("t"), int) else 0, x[0]["id"]))
-    return out
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
-def process(req, env=None, run=subprocess.run, ask=None, ask_strong_fn=None, available=None, notify=None):
-    """處理一件(呼叫端已拿到 touchid 鎖)。回 done 紀錄。"""
+def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None):
+    """在鎖內：驗 + 跳窗。回 (result 或 None=可以跑, 細節 dict, 要跑的 argv, 暫存夾)。"""
     ask = ask or TA.ask
     ask_strong_fn = ask_strong_fn or ask_strong
     avail = TA.available() if available is None else available
+    t = req.get("t") if type(req.get("t")) is int else None
+    if t is None or (now if now is not None else time.time()) - t > EXPIRE_S:
+        return "expired", {}, None, None
     argv, strong = req.get("argv"), req.get("strong") is True
     kind, why = classify(argv, strong, env)
     if not kind:
-        return _finish(req, "not_allowed", env, why=why)
-    if len(display_cmd(argv)) > REASON_CMD_MAX:
-        strong = True        # Touch ID 視窗放不下整條指令 ⇒ 一律先出對話框列全文(本人按指紋前要看得到完整指令)
+        return "not_allowed", {"why": why}, None, None
     summary = TA.clean(req.get("summary"), SUMMARY_MAX)
     if not summary:
-        return _finish(req, "invalid", env, why="summary_missing")
-    req = dict(req, summary=summary, strong=strong,
-               seat=req.get("seat") if isinstance(req.get("seat"), str) and _SEAT_RE.match(req["seat"]) else None)
+        return "invalid", {"why": "summary_missing"}, None, None
+    if len(display_cmd(argv)) > REASON_CMD_MAX:
+        strong = True        # Touch ID 視窗放不下整條指令 ⇒ 先出對話框列全文
+    view = dict(req, summary=summary, strong=strong, seat=_seat(req.get("seat")))
+    sign = None
+    if kind == "sign_script":
+        sign = _sign_info(Path(argv[1]).expanduser().resolve())
+        if not sign:
+            return "failed", {"why": "sign_unreadable"}, None, None
+        view["sign"] = {"sha256": sign["sha256"], "head": sign["head"]}
     if not avail:
-        return _finish(req, "unavailable", env, why="touchid_unavailable")
+        return "unavailable", {"why": "touchid_unavailable"}, None, None
     if strong:
-        s = ask_strong_fn(req, env=env)
+        s = ask_strong_fn(view, env=env)
         if not s.get("ok"):
-            return _finish(req, "denied", env, why=s.get("why"))
-    t = ask(touchid_reason(req, env))
-    if not t.get("ok"):
-        return _finish(req, "denied", env, why=t.get("why"))
-    real = resolve_argv(argv, kind, env)
-    if not real or not real[0]:
-        return _finish(req, "failed", env, why="exe_missing")
-    cwd = req.get("cwd") if isinstance(req.get("cwd"), str) and os.path.isdir(req["cwd"]) else str(Path.home())
-    log = done_dir(env) / (req["id"] + ".log")
+            return "denied", {"why": s.get("why")}, None, None
+    a = ask(touchid_reason(view, env))
+    if not a.get("ok"):
+        return "denied", {"why": a.get("why")}, None, None
+    if kind == "aib":
+        return None, {}, [str(HERE / "aib")] + argv[1:], None
+    if kind == "claude_plugin":
+        exe = shutil.which("claude", path=os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")]))
+        return (None, {}, [exe] + argv[1:], None) if exe else ("failed", {"why": "exe_missing"}, None, None)
+    # SIGN:同意的那一份複製到 0700 暫存夾，再驗一次雜湊才跑(同意後原檔被改也跑不到改過的)
+    td = tempfile.mkdtemp(prefix="aib-consent-sign-")
+    os.chmod(td, 0o700)
+    copy = Path(td) / Path(argv[1]).name
+    copy.write_bytes(sign["raw"])
+    os.chmod(copy, 0o600)
+    if hashlib.sha256(copy.read_bytes()).hexdigest() != sign["sha256"]:
+        shutil.rmtree(td, ignore_errors=True)
+        return "failed", {"why": "sign_hash_changed"}, None, None
+    return None, {"sha256": sign["sha256"]}, ["/bin/bash", str(copy)], td
+
+
+def execute(rid, req, real, env=None, run=subprocess.run, extra=None):
+    log = done_dir(env) / (rid + ".log")
     log.parent.mkdir(parents=True, exist_ok=True)
     started = int(time.time())
+    child_env = {"HOME": str(_home(env)), "PATH": os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")])}
+    for k in ("EZ2_AIB_STATE_ROOT", "LANG", "EZ2_AIB_LOCALE"):
+        if _env(env).get(k):
+            child_env[k] = _env(env)[k]
+    extra = dict(extra or {})
     try:
         with open(log, "w", encoding="utf-8") as fh:
-            p = run(real, cwd=cwd, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT, timeout=RUN_TIMEOUT_S)
-        rc = p.returncode
+            p = run(real, cwd=str(_home(env)), stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
+                    timeout=RUN_TIMEOUT_S, env=child_env)
     except subprocess.TimeoutExpired:
-        return _finish(req, "timeout", env, started=started, log=str(log))
+        return _record(rid, "timeout", env, req, started=started, log=str(log), **extra)
     except OSError as exc:
-        return _finish(req, "failed", env, why="run_oserror:%s" % exc.__class__.__name__, log=str(log))
-    (notify or _notify)(req, rc, env)
-    return _finish(req, "ok", env, rc=rc, started=started, ended=int(time.time()), log=str(log))
+        return _record(rid, "failed", env, req, why="run_oserror:%s" % exc.__class__.__name__, log=str(log), **extra)
+    rc = p.returncode
+    _notify(req, rc, env)
+    return _record(rid, "ok" if rc == 0 else "rc_nonzero", env, req, rc=rc, started=started,
+                   ended=int(time.time()), log=str(log), **extra)
 
 
 def _notify(req, rc, env=None):
@@ -367,20 +433,90 @@ def _notify(req, rc, env=None):
         pass
 
 
-def run_once(env=None, **kw):
-    """把 inbox 處理完(一次一件)。別的指紋視窗開著 ⇒ 停手,留給下一次。回處理了幾件。"""
-    n = 0
-    for req, bad, _p in _load_inbox(env):
-        if bad:
-            _finish(req, bad, env, why="unreadable")
+def _next_inbox(env=None):
+    """inbox 裡最舊的一件:(id, 路徑) 或 (None, 路徑)=壞檔名;剛寫的(2 秒內)先跳過。沒有 ⇒ None。"""
+    try:
+        names = sorted(os.listdir(inbox_dir(env)))
+    except OSError:
+        return None
+    best = None
+    now = time.time()
+    for name in names:
+        if name.startswith("."):
+            continue
+        p = inbox_dir(env) / name
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        if now - st.st_mtime < FRESH_S:
+            continue
+        rid = name[:-5] if name.endswith(".json") else None
+        ok = rid is not None and _ID_RE.match(rid) and stat.S_ISREG(st.st_mode)
+        key = (st.st_mtime, name)
+        if best is None or key < best[0]:
+            best = (key, rid if ok else None, p)
+    return None if best is None else (best[1], best[2])
+
+
+def _lock(env=None):
+    return TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock")
+
+
+def run_once(env=None, run=subprocess.run, sleep=time.sleep, retry_s=LOCK_RETRY_S, **kw):
+    """處理 inbox 到空。每件：拿鎖 → 搬到 running/(搬不動 = 別支接手了)→ 跳窗決定 → 放鎖 → 跑。
+    鎖被別的指紋視窗拿著 ⇒ 每 5 秒再試，最多 retry_s 秒(WatchPaths 不會因為檔還在就再叫)。回處理了幾件。"""
+    n, waited = 0, 0
+    while True:
+        nxt = _next_inbox(env)
+        if nxt is None:
+            return n
+        rid, path = nxt
+        if rid is None:
+            _quarantine(path, env, "badname")
             n += 1
             continue
-        with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
+        with _lock(env) as gate:
             if not gate.held:
-                break
-            process(req, env=env, **kw)
-            n += 1
-    return n
+                if waited >= retry_s:
+                    return n
+                sleep(LOCK_RETRY_STEP)
+                waited += LOCK_RETRY_STEP
+                continue
+            waited = 0
+            mine = running_dir(env) / (rid + ".json")
+            try:
+                mine.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(path, mine)
+            except OSError:
+                continue
+            if (done_dir(env) / (rid + ".json")).exists():
+                _quarantine(mine, env, "dup")            # 撞號:不覆寫原本的紀錄
+                n += 1
+                continue
+            req = _read_json(mine)
+            if req is None:
+                _record(rid, "invalid", env, why="unreadable")
+                _quarantine(mine, env, "unreadable")
+                n += 1
+                continue
+            if type(req.get("t")) is not int:
+                req["t"] = int(os.stat(mine).st_mtime)   # 席位手寫的檔沒寫 t ⇒ 用檔案時間
+            req["id"] = rid
+            result, detail, real, td = decide(req, env=env, **kw)
+        try:
+            if result is not None:
+                _record(rid, result, env, req, **detail)
+            else:
+                execute(rid, req, real, env=env, run=run, extra=detail)
+        finally:
+            if td:
+                shutil.rmtree(td, ignore_errors=True)
+            try:
+                os.unlink(mine)
+            except OSError:
+                pass
+        n += 1
 
 
 # ---- launchd ----
@@ -389,24 +525,27 @@ def agent_plist_path(home=None):
     return Path(home or os.path.expanduser("~")) / "Library" / "LaunchAgents" / (AGENT_LABEL + ".plist")
 
 
-def agent_plist(env=None, python=None):
+def agent_plist(env=None):
     e = _env(env)
-    inbox = inbox_dir(env)
     log = consent_dir(env) / "agent.log"
-    ev = {"HOME": e.get("HOME") or os.path.expanduser("~"),
-          "PATH": os.pathsep.join([e.get("PATH") or "/usr/bin:/bin", str(Path(e.get("HOME") or "~").expanduser() / ".local" / "bin")])}
+    ev = {"HOME": str(_home(env)), "PATH": os.pathsep.join([SAFE_PATH, str(_home(env) / ".local" / "bin")])}
     for k in ("EZ2_AIB_STATE_ROOT", "LANG", "EZ2_AIB_LOCALE"):
         if e.get(k):
             ev[k] = e[k]
-    return {"Label": AGENT_LABEL, "ProgramArguments": [python or sys.executable, str(HERE / "consent.py"), "run-once"],
-            "WatchPaths": [str(inbox)], "RunAtLoad": True, "ProcessType": "Interactive",
+    return {"Label": AGENT_LABEL, "ProgramArguments": ["/bin/bash", str(HERE / "aib"), "consent", "run-once"],
+            "WatchPaths": [str(inbox_dir(env))], "StartInterval": 300, "RunAtLoad": True, "ProcessType": "Interactive",
             "EnvironmentVariables": ev, "StandardOutPath": str(log), "StandardErrorPath": str(log)}
 
 
-def install(env=None, home=None, platform=None, launchctl=None):
+def install(env=None, home=None, platform=None, launchctl=None, dev_tree=None):
     import plistlib
     if (platform or sys.platform) != "darwin":
         return "mac_only"
+    if dev_tree is None:
+        import auto_update
+        dev_tree = auto_update.dev_worktree()
+    if dev_tree:
+        return "dev_tree"            # 開發用工作樹刪了 launchd 就壞 ⇒ 只從正本樹裝
     data = agent_plist(env)
     inbox_dir(env).mkdir(parents=True, exist_ok=True)
     path = agent_plist_path(home)
@@ -437,7 +576,6 @@ def main(argv=None, env=None):
     a = sub.add_parser("ask")
     a.add_argument("--summary", required=True)
     a.add_argument("--strong", action="store_true")
-    a.add_argument("--cwd")
     a.add_argument("--seat")
     a.add_argument("--wait", type=int, default=0)
     a.add_argument("--json", action="store_true")
@@ -451,7 +589,8 @@ def main(argv=None, env=None):
     args = ap.parse_args(argv)
     if args.cmd == "ask":
         rest = args.rest[1:] if args.rest[:1] == ["--"] else args.rest
-        req, why = new_request(rest, args.summary, strong=args.strong, seat=args.seat, cwd=args.cwd or os.getcwd(), env=env)
+        req, why = new_request(rest, args.summary, strong=args.strong,
+                               seat=args.seat or _env(env).get("EZ2_AIB_SEAT"), env=env)
         if not req:
             print(json.dumps({"result": "not_allowed", "why": why}))
             return 2
@@ -464,7 +603,7 @@ def main(argv=None, env=None):
                 break
             time.sleep(1)
         print(json.dumps(out, ensure_ascii=False) if args.json else "%s %s" % (out["id"], out["result"]))
-        return 0
+        return 0 if out["result"] in ("pending", "ok") else 1
     if args.cmd == "status":
         st = status(args.id, env)
         if not st:
@@ -476,8 +615,9 @@ def main(argv=None, env=None):
         print(run_once(env))
         return 0
     if args.cmd == "install":
-        print(install(env))
-        return 0
+        r = install(env)
+        print(r)
+        return 0 if r == "installed" else 1
     if args.cmd == "uninstall":
         print(uninstall())
         return 0

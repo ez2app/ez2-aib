@@ -5512,11 +5512,12 @@
   "aib.auto_update.why.refused_source": "公開版からインストールされていないか(非公開または自分のリポジトリ)、公開タグが公開版 main の履歴にありません。自動更新しません。更新は aib update を自分で実行してください",
   "aib.auto_update.why.no_change": "aib update は終わりましたがバージョンが変わっていません。ログを確認してください。後でもう一度試します",
   "aib.consent.strong_title": "AIB 同意(強化)",
-  "aib.consent.strong_body": "{who} が書いた要約(不正確な場合あり):\n{summary}\n\n実際に実行するコマンド:\n{cmd}",
+  "aib.consent.strong_body": "{who} を名乗る席が書いた要約(不正確な場合あり):\n{summary}\n\n実際に実行するコマンド(ホームフォルダで実行):\n{cmd}",
   "aib.consent.strong_check": "内容を確認しました",
   "aib.consent.go": "続ける",
   "aib.consent.no": "キャンセル",
-  "aib.consent.touchid_reason": "AIB 同意 · {who} が実行:{cmd}",
+  "aib.consent.touchid_reason": "AIB 同意 · {who} を名乗る席が実行:{cmd}",
+  "aib.consent.sign_extra": "スクリプト sha256 {sha}(承認後にファイルが変わると実行しません);先頭数行:\n{head}",
   "aib.consent.notify": "AIB 通知 · {cmd} を実行しました(rc {rc})",
-  "aib.consent.help.usage": "使い方:aib consent ask [--strong] --summary <一文> [--wait 秒] -- <コマンド…>\n        aib consent status <id> [--json]\n        aib consent run-once | install | uninstall"
+  "aib.consent.help.usage": "使い方:aib consent ask [--strong] --summary <一文> [--seat 席] [--wait 秒] [--json] -- <コマンド…>\n        aib consent status <id> [--json]\n        aib consent run-once | install | uninstall"
 }
