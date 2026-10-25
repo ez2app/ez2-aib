@@ -23,6 +23,7 @@ import os
 import struct
 import subprocess
 import sys
+import time
 
 BADGE_MODES = ("both", "icon", "letters")
 MODE_ENV = "EZ2_AIB_ENGINE_BADGE"
@@ -121,6 +122,7 @@ function run(argv) {
 """
 _term_cache = {}
 TERM_CACHE_FILE = "badge-term-font.json"       # <狀態根>/state/:狀態列每次刷新是新行程,行程內快取用不到
+NONE_TTL_S = 600                              # 查不到(ok=None)只記 10 分鐘:之後換到 Apple Terminal / 查詢恢復時會重查(#359 r2 Low)
 
 
 def _cache_path(environ):
@@ -138,24 +140,30 @@ def _valid(res):
             and isinstance(res.get("profile"), str) and isinstance(res.get("font"), str))
 
 
+def _fresh(res, at, now=None):
+    return res["ok"] is not None or ((time.time() if now is None else now) - at) < NONE_TTL_S
+
+
 def _cache_read(environ, key):
+    """回 (res, 記下的時間) 或 None。"""
     try:
         with open(_cache_path(environ), encoding="utf-8") as fh:
             rec = json.load(fh)
-        if rec.get("key") == list(key) and _valid(rec.get("res")):
-            return rec["res"]
+        at = rec.get("at", 0)
+        if rec.get("key") == list(key) and _valid(rec.get("res")) and isinstance(at, (int, float)):
+            return rec["res"], at
     except (OSError, ValueError, AttributeError):
         pass
     return None
 
 
-def _cache_write(environ, key, res):
+def _cache_write(environ, key, res, at):
     p = _cache_path(environ)
     try:
         os.makedirs(os.path.dirname(p), exist_ok=True)
         tmp = "%s.%d.tmp" % (p, os.getpid())
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"key": list(key), "res": res}, fh)
+            json.dump({"key": list(key), "res": res, "at": at}, fh)
         os.replace(tmp, p)
     except OSError:
         pass
@@ -197,8 +205,10 @@ def _mtime(path, environ):
 def terminal_font_check(codepoints, environ=None, runner=None, platform=None):
     """外層是 Apple Terminal ⇒ {"ok": bool, "missing": [字碼], "profile", "font"};不是 / 查不到 / 關掉 ⇒ {"ok": None}。
     ok=False = 「預設」或「開啟時」設定檔的字型畫不出某個字碼。
-    快取(行程內 + 狀態根檔):鍵 = 字碼 + tmux / 終端機環境 + 偏好檔與字型夾 mtime;查不到(ok=None)也記,
-    不然狀態列每次刷新都重叫 tmux / osascript(#359 r1 M / L1)。"""
+    快取(行程內 + 狀態根檔):鍵 = 字碼 + tmux / 終端機環境 + 偏好檔與字型夾 mtime;查不到(ok=None)也記(只記 NONE_TTL_S),
+    不然狀態列每次刷新都重叫 tmux / osascript(#359 r1 M / L1)。
+    已知限制(#359 r2 Low,接受):鍵不含「這次從哪個終端機接上」—— 同一個 tmux session 改從 iTerm2 接上,
+    要等偏好檔 / 字型夾變了(或 ok=None 過期)才重判;換終端機後想馬上重判:刪 <狀態根>/state/badge-term-font.json。"""
     e = os.environ if environ is None else environ
     platform = sys.platform if platform is None else platform
     if e.get(TERM_CHECK_ENV) == "0" or platform != "darwin":
@@ -208,14 +218,15 @@ def terminal_font_check(codepoints, environ=None, runner=None, platform=None):
            _mtime(TERM_PLIST, e)) + tuple(_mtime(d, e) for d in FONT_DIRS)
     if runner is None:
         hit = _term_cache.get(key) or _cache_read(e, key)
-        if hit is not None:
+        if hit is not None and _fresh(*hit):
             _term_cache[key] = hit
-            return hit
+            return hit[0]
     res = _probe(cps, e, runner)
     if runner is None:
+        at = time.time()
         _term_cache.clear()
-        _term_cache[key] = res
-        _cache_write(e, key, res)
+        _term_cache[key] = (res, at)
+        _cache_write(e, key, res, at)
     return res
 
 

@@ -11,7 +11,8 @@ B5 渲染器:missing_reason=terminal_font ⇒ fallback_reason 照名字記;不�
 B6 aib doctor:畫得出 ⇒ ok;終端機字型畫不出 ⇒ note + 設定檔名 + 怎麼改;字型檔缺 ⇒ note + 怎麼裝;設 letters ⇒ ok;四語字典
 B7 偏好檔 / 字型夾沒改 ⇒ 不重查:行程內(採集端 5 秒一輪)+ 狀態根檔案(狀態列每次刷新是新行程)
 B8(#359 r1)查不到也記(只叫一次 osascript)、偏好檔變了才重查、壞快取不採用、命中快取連 tmux 都不叫
-刀(複本):K1 不查終端機字型 ⇒ B2 紅;K2 查詢失敗當畫不出 ⇒ B3 紅;K3 失敗不記快取 ⇒ B8 紅
+B9(#359 r2 Low)查不到只記 10 分鐘;查到的答案不過期
+刀(複本):K1 不查終端機字型 ⇒ B2 紅;K2 查詢失敗當畫不出 ⇒ B3 紅;K3 失敗不記快取 ⇒ B8 紅;K4 查不到不過期 ⇒ B9 紅
 """
 import json
 import os
@@ -175,6 +176,46 @@ class Detect(Base):
             M._run = old_run
             M._term_cache.clear()
 
+    def test_b9_none_expires_answer_does_not(self):
+        """#359 r2 Low:查不到只記 10 分鐘(之後換到 Apple Terminal 會重查);查到的答案不過期(偏好檔 / 字型夾變了才重查)"""
+        calls = []
+        rows = {"out": "[]"}
+
+        def run(argv):
+            calls.append(argv)
+            if argv[0] == "tmux":
+                return 0, "TERM_PROGRAM=Apple_Terminal\n"
+            return 0, rows["out"]
+        old_run, M._run = M._run, run
+        M._term_cache.clear()
+        env = dict(self.env, EZ2_AIB_STATE_ROOT=os.path.join(self.td.name, "st9"))
+        cache = os.path.join(self.td.name, "st9", "state", M.TERM_CACHE_FILE)
+
+        def age(sec):
+            rec = json.load(open(cache))
+            rec["at"] -= sec
+            json.dump(rec, open(cache, "w"))
+            M._term_cache.clear()
+        osa = lambda: len([c for c in calls if c[0] == "osascript"])  # noqa: E731
+        try:
+            self.assertIsNone(M.terminal_font_check({0xEC82}, env, platform="darwin")["ok"])
+            age(M.NONE_TTL_S - 60)
+            M.terminal_font_check({0xEC82}, env, platform="darwin")
+            self.assertEqual(osa(), 1, "10 分鐘內不重查")
+            rows["out"] = term(False)(["osascript", "-l", "JavaScript", "-e", "x", "ec82"])[1]
+            age(120)
+            self.assertFalse(M.terminal_font_check({0xEC82}, env, platform="darwin")["ok"], "過期要重查")
+            self.assertEqual(osa(), 2)
+            age(10 * M.NONE_TTL_S)
+            self.assertFalse(M.terminal_font_check({0xEC82}, env, platform="darwin")["ok"])
+            self.assertEqual(osa(), 2, "查到的答案不該過期")
+            self.assertIsNone(M._cache_read(env, ("x",)), "鍵不同不採用")
+        except (KeyError, TypeError) as exc:
+            self.fail("B9 例外:%r" % exc)
+        finally:
+            M._run = old_run
+            M._term_cache.clear()
+
     def test_b7_cached_in_process(self):
         calls = []
 
@@ -260,6 +301,10 @@ class Knife2(Knife):
         self._knife("    res = _probe(cps, e, runner)\n    if runner is None:\n",
                     "    res = _probe(cps, e, runner)\n    if runner is None and res[\"ok\"] is not None:\n",
                     "Detect.test_b8_failure_cached_and_bad_cache_ignored")
+
+    def test_k4_none_never_expires(self):
+        self._knife('    return res["ok"] is not None or ((time.time() if now is None else now) - at) < NONE_TTL_S\n',
+                    '    return True\n', "Detect.test_b9_none_expires_answer_does_not")
 
     test_k1_terminal_not_checked = None
     test_k2_failure_counts_as_cannot_draw = None
