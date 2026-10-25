@@ -143,9 +143,34 @@ def _ps_seconds(t):
     return sec + (int(days) * 86400 if days else 0)
 
 
-def proc_times(run=None):
-    """{pid: 累計 CPU 秒}(所有帳號;ps 是 setuid,libproc 讀不到 root 的行程)。跑不了 ⇒ None。"""
+def _linux_proc_times(proc_root="/proc"):
+    """Linux:讀 /proc/<pid>/stat 的 utime + stime(1/100 秒)。procps 的 ps -o time 只到整秒,
+    1 秒窗每支差 0 或 1 秒 ⇒ 40 支 × 0.3 核會算成 4~20 核(第 2 輪審查 B-M)。"""
+    clk = float(os.sysconf("SC_CLK_TCK") or 100)
+    got = {}
+    try:
+        names = os.listdir(proc_root)
+    except OSError:
+        return None
+    for n in names:
+        if not n.isdigit():
+            continue
+        try:
+            with open(os.path.join(proc_root, n, "stat"), encoding="utf-8", errors="replace") as fh:
+                raw = fh.read(4096)
+            f = raw[raw.rindex(")") + 2:].split()
+            got[int(n)] = (int(f[11]) + int(f[12])) / clk
+        except (OSError, ValueError, IndexError):
+            continue
+    return got or None
+
+
+def proc_times(run=None, platform=None, proc_root="/proc"):
+    """{pid: 累計 CPU 秒}(所有帳號)。macOS 用 ps(setuid,libproc 讀不到 root 的行程;time 到 1/100 秒);
+    Linux 讀 /proc(ps 只到整秒)。跑不了 ⇒ None。"""
     import room_heat
+    if (platform or sys.platform).startswith("linux"):
+        return _linux_proc_times(proc_root)
     try:
         out = (run or room_heat._run)(["ps", "-axo", "pid=,time="])
     except Exception:  # noqa: BLE001
@@ -314,7 +339,10 @@ def _linux_cpu(pid):
 SCRIPT_NAME_RE = re.compile(r"^(?=.{1,40}$)[\w.\-]+\.(sh|bash|zsh|py|js)$")    # @ee4f8 E3 裁定 a / e
 INLINE_SHORT_RE = {"perl": re.compile(r"^-[a-zA-Z]*[eE]"), "ruby": re.compile(r"^-[a-zA-Z]*e")}   # 裁定 d:-ne / -lne
 PHP_INLINE = frozenset(("-r", "-B", "-R", "-F", "-E"))
-MODULE_RE = re.compile(r"^[\w.]{1,64}$")
+MODULE_RE = re.compile(r"^[\w.]{1,40}$")
+# -m 模組名是 argv 原文裡唯一不走副檔名白名單的路:只收有點的(http.server)或常見工具名,其他回 python(@ee4f8 複審 Low 1)
+KNOWN_MODULES = frozenset(("pytest", "pip", "unittest", "venv", "black", "flake8", "pyflakes", "mypy", "coverage",
+                           "pydoc", "timeit", "cProfile", "pdb", "json", "doctest", "compileall", "ensurepip"))
 SHELL_VALUE_OPTS = frozenset(("-o", "+o", "-O", "+O", "--rcfile", "--init-file"))
 SHELL_SAFE_LONG = frozenset(("--login", "--norc", "--noprofile", "--posix", "--noediting", "--restricted"))
 
@@ -334,8 +362,10 @@ def _shell_script(args):
                 continue
             return None
         if a[:1] in "-+" and len(a) > 1:
-            if any(ch in a[1:] for ch in "csi"):
+            if any(ch in a[1:] for ch in "csiC"):     # C:fish -C(--init-command)也是指令字串(第 2 輪 Low-1)
                 return None
+            if a[-1] in "oO":                         # 合寫吃值旗標(-euxo pipefail)⇒ 連值跳過
+                next(it, None)
             continue
         return a
     return None
@@ -350,21 +380,26 @@ def _script_name(path):
 
 
 def _inline_flag(base, args):
-    """perl / ruby 合寫的 -e(-ne、-lne)、php 的 -r / -B / -R / -F / -E:碰到第一個非選項之前出現 ⇒ True(裁定 d)。"""
-    kind = next((k for k in ("perl", "ruby", "php") if base.lower().startswith(k)), None)
+    """perl / ruby 合寫的 -e(-ne、-lne)、php 的 -r / -B / -R / -F / -E、node 的 --eval= / --print=:
+    碰到第一個非選項之前出現 ⇒ True(裁定 d;node 那條是 @ee4f8 複審 Low 3)。"""
+    kind = next((k for k in ("perl", "ruby", "php", "node") if base.lower().startswith(k)), None)
     if not kind:
         return False
     for a in args[1:]:
         if a == "--" or not a.startswith("-"):
             return False
-        if (kind == "php" and a in PHP_INLINE) or (kind != "php" and INLINE_SHORT_RE[kind].match(a)):
+        if kind == "node":
+            if a.startswith(("--eval=", "--print=")):
+                return True
+        elif (kind == "php" and a in PHP_INLINE) or (kind != "php" and INLINE_SHORT_RE[kind].match(a)):
             return True
     return False
 
 
 def program_of(name, args):
     """短命行程的「程式檔名」:shell / 直譯器跑的腳本 ⇒ 腳本檔名;-c / inline / 看不懂 ⇒ 直譯器名;其餘 ⇒ 執行檔名。
-    argv 只在這裡看一眼取腳本檔名,不存、不輸出(E3 例外,@ee4f8 10-25 06:19 有條件准:a–f)。"""
+    argv 只在這裡看一眼取腳本檔名,不存、不輸出(E3 例外,@ee4f8 10-25 06:19 有條件准:a–f)。
+    腳本檔名本身會顯示(副檔名合規時);檔名裡放 token 的話也會出現 —— 同帳號 ps 本來就看得到,第 2 輪資安評估可接受。"""
     import memguard as M
     base = os.path.basename(name or "")
     if args:
@@ -375,7 +410,7 @@ def program_of(name, args):
         kind, val = M.script_of(base, args)
         if kind == "script":
             return _script_name(val) or base
-        if kind == "module" and val and MODULE_RE.match(val):
+        if kind == "module" and val and MODULE_RE.match(val) and ("." in val or val in KNOWN_MODULES):
             return val
     return base
 

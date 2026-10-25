@@ -7,6 +7,7 @@ U1 cpu_total:沒上一次 ⇒ 當場量 0.5 秒;有上一次(1–120 秒內)⇒ 
 U1c 同一時間窗:每個行程的累計 CPU 跟 tick 一起存、兩次相減(審查 M1);上次漏列的「新」行程累計 > 時間窗 2 倍 ⇒ 不算;
     pid 重用照新的算;Linux steal 另列;ps time 兩種格式都讀得懂
 U1f 三艙共用 tick 檔:別艙不到 1 秒前剛量過 ⇒ 直接回那一份、不睡(@ee4f8 L4);那一份被改過 ⇒ 不用
+U1g Linux 行程時間讀 /proc/<pid>/stat(1/100 秒),不用只到整秒的 ps(第 2 輪 B-M);40 支 × 0.3 核 1 秒窗 ⇒ 12 核
 U1d 真 tick 冒煙:讀兩次單調遞增、busy ≤ total
 U2 unseen = 在忙的核 − 同窗看得到的(不小於 0);看得到的多一截 ⇒ unmeasured window_mismatch(不回假的 0);量不到 ⇒ unmeasured
 U3 快照多 cpu_total / unseen_cpu,歷史多記 cpu_busy / unseen_cpu
@@ -27,7 +28,8 @@ U9 真行程表:取樣期間自己起 12 支 sleep ⇒ 看得到 ≥ 8 支、過
 U10 CLI:`churn --json` 走 room_heat_unseen.churn、秒數照傳;文字模式 throttled 有提示、非 ok 回 1
 刀(複本 + run_guarded):K1 時間窗對不上也回數字 ⇒ U2 紅;K2 節流拿掉 ⇒ U5 紅;K3 只認單獨的 -c / -s ⇒ U7c 紅;
 K5 上次漏列的長壽行程也算進 seen ⇒ U1c 紅;
-K4 上次結果不洗名字 ⇒ U8 紅;K6 perl / ruby / php 的 inline 旗標不擋、K7 pid 重用不核 ⇒ U7e 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K4 上次結果不洗名字 ⇒ U8 紅;K6 perl / ruby / php 的 inline 旗標不擋、K7 pid 重用不核 ⇒ U7e 紅;
+K8 Linux 改回 ps(整秒)⇒ U1g 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import fcntl
 import io
@@ -158,6 +160,26 @@ class CpuTotal(Base):
         f.write_text(json.dumps(d))
         r = RU.cpu_total(ticks_fn=Ticks([]), now=1001.5, sleep=slept.append, ncpu=10, times_fn=Times([]))
         self.assertEqual(r["state"], "unmeasured", "tick 檔裡被改過的上一份結果照用")
+
+    def test_u1g_linux_proc_times_subsecond(self):
+        root = Path(self.d) / "proc"
+        clk = float(os.sysconf("SC_CLK_TCK") or 100)
+
+        def write(cpu_by_pid):
+            for pid, sec in cpu_by_pid.items():
+                (root / str(pid)).mkdir(parents=True, exist_ok=True)
+                ticks = int(round(sec * clk))
+                rest = ["S", "1"] + ["0"] * 9 + [str(ticks), "0"] + ["0"] * 30
+                (root / str(pid) / "stat").write_text("%d (worker (x)) %s\n" % (pid, " ".join(rest)))
+        (root / "self").mkdir(parents=True)
+        write({1000 + k: 10.0 for k in range(40)})
+        called = []
+        a = RU.proc_times(run=lambda cmd: called.append(cmd) or "", platform="linux", proc_root=str(root))
+        write({1000 + k: 10.3 for k in range(40)})
+        b = RU.proc_times(run=lambda cmd: called.append(cmd) or "", platform="linux", proc_root=str(root))
+        self.assertEqual(called, [], "Linux 還在叫 ps(只到整秒)")
+        self.assertAlmostEqual(RU.seen_cores(a, b, 1.0), 12.0, places=1)
+        self.assertIsNone(RU.proc_times(platform="linux", proc_root=str(root / "nope")))
 
     def test_u2_unseen(self):
         ok = {"state": "ok", "busy_cores": 6.95, "cores": 10, "pct": 69.5, "seen_cores": 2.95}
@@ -381,6 +403,16 @@ class Churn(Base):
                            {100: ("seat", "a/b\x1b[2Jxxxxxxxxxxxx")}, 1)
         self.assertEqual(out[0]["owner"], "a?b?2Jxxxxxx")
 
+    def test_u7f_round2_lows(self):
+        P = RU.program_of
+        tok = "tok_9f2a1c.sh"
+        for argv in (["fish", "-C", "TOKEN=abc; " + tok], ["fish", "--init-command", tok], ["node", "--eval=x()", "/x/" + tok[:-3] + ".js"],
+                     ["python3", "-m", "tok_9f2a1c"]):
+            self.assertEqual(P(argv[0], argv), argv[0], argv)
+        self.assertEqual(P("bash", ["bash", "-euxo", "pipefail", "/x/run.sh"]), "run.sh", "合寫吃值旗標沒連值跳過")
+        self.assertEqual(P("python3", ["python3", "-m", "pytest"]), "pytest")
+        self.assertEqual(P("python3", ["python3", "-m", "http.server"]), "http.server")
+
     def test_u7d_crashed_run_and_bad_room(self):
         os.makedirs(RH.state_dir(), exist_ok=True)
         self.room(RU.CHURN_FILE).write_text(json.dumps({"started_at": 990.0, "result": None}))   # 上一次被砍
@@ -468,7 +500,7 @@ KNIVES = [
      "CpuTotal.test_u2_unseen"),
     ("K2", "src/cockpit/room_heat_unseen.py", "CHURN_THROTTLE_S = 60\n", "CHURN_THROTTLE_S = 0\n",
      "Churn.test_u5_throttle"),
-    ("K3", "src/cockpit/room_heat_unseen.py", "            if any(ch in a[1:] for ch in \"csi\"):\n",
+    ("K3", "src/cockpit/room_heat_unseen.py", "            if any(ch in a[1:] for ch in \"csiC\"):     # C:fish -C(--init-command)也是指令字串(第 2 輪 Low-1)\n",
      "            if a in (\"-c\", \"-s\"):\n", "Churn.test_u7c_shell_flag_groups_h1"),
     ("K5", "src/cockpit/room_heat_unseen.py", "        elif c <= window * 2:\n", "        else:\n",
      "CpuTotal.test_u1c_same_window_seen_and_steal"),
@@ -478,6 +510,8 @@ KNIVES = [
      "Churn.test_u7e_e3_ruling"),
     ("K7", "src/cockpit/room_heat_unseen.py", "                            args = None\n", "                            pass\n",
      "Churn.test_u7e_e3_ruling"),
+    ("K8", "src/cockpit/room_heat_unseen.py", "    if (platform or sys.platform).startswith(\"linux\"):\n        return _linux_proc_times(proc_root)\n",
+     "", "CpuTotal.test_u1g_linux_proc_times_subsecond"),
 ]
 
 
