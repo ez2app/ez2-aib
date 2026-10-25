@@ -228,12 +228,14 @@ class G3AgentWaitOverdue(unittest.TestCase):
             "b0 = Q.brief_payload(%r, env=env, now=t + 10 + Q.STALE_WAIT_S)\n"
             "b1 = Q.brief_payload(%r, env=env, now=t + 11 + Q.STALE_WAIT_S)\n"
             "line = IB.brief_line(%r, env=env, now=t + 11 + Q.STALE_WAIT_S)\n"
+            "import i18n_lib; want = i18n_lib.Translator(i18n_lib.resolve_locale()).t('aib.now.dm_wait_overdue', {'n': 1, 'code': %r})\n"
             "print(json.dumps({'ok': ok.get('ok'), 'bad': bad.get('reason'), 'o0': b0.get('wait_overdue'),"
-            " 'o1': b1.get('wait_overdue'), 's1': b1.get('stale_wait'), 'line': line}))\n") % ((SEAT,) * 8))
+            " 'o1': b1.get('wait_overdue'), 's1': b1.get('stale_wait'), 'line': line, 'want': want}))\n") % ((SEAT,) * 9))
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["bad"], "actor", "別席的子代理不能替本席寫:%r" % out)
         self.assertEqual((out["o0"], out["o1"], out["s1"]), (0, 1, 0), out)
-        self.assertIn("寫了等什麼、逾 4 小時沒動 1 封", out["line"])
+        self.assertNotEqual(out["want"], "aib.now.dm_wait_overdue", "四語字串要查得到")
+        self.assertIn(out["want"], out["line"], "待審框那行用四語 aib.now.dm_wait_overdue(#380 r1 L6 同一套):%r" % out)
 
 
 class G4AgentClosedAudit(unittest.TestCase):
