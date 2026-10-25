@@ -274,6 +274,7 @@ def check_inbox(rec):
     _opt(rec, "country", lambda v: isinstance(v, str) and bool(COUNTRY_RE.match(v)), "要是兩碼大寫國碼")
     _opt(rec, "tz", lambda v: isinstance(v, str) and len(v) <= 64 and bool(TZ_RE.match(v)), "要是 IANA 時區名")
     _opt(rec, "author", lambda v: v in AUTHORS, "只能 %s" % "/".join(AUTHORS))   # 寄件方自報誰寫的(aib-author)
+    _opt(rec, "echo", lambda v: v is True, "只能是 true")      # 對方回音小幫手回的那一句(aib-echo):只進艦長室
     return rec
 
 
@@ -1309,6 +1310,7 @@ def set_echo(root, on):
     if on:
         Path(root).mkdir(parents=True, exist_ok=True)
         write_json(str(p), {"v": VERSION, "on": True, "at": int(time.time())})
+        os.chmod(str(p), 0o600)                                   # #306 審 A-L12
     else:
         try:
             p.unlink()
