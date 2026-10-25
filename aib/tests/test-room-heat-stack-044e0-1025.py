@@ -15,9 +15,10 @@ S7 memguard 7 天內有 mem_guard_failed ⇒ error memguard_failed
 S8 隱私 / 契約:JSON 不含暫存路徑;state / unit / code 都在清單內;每個 title_key / hint_key 四語字典都有;CLI --json / 文字模式
 S9 自動釋放：裝了外掛但沒有自動收過的紀錄 ⇒ unmeasured no_record(不宣稱在跑);有紀錄 ⇒ on + 7 天次數
 S10 壞時間(1e300)不炸、未來的時間(超過 60 秒)當壞資料丟:不算次數、不給 last_run_at、歷史點不算新鮮
+S12 時間是負數 / 0(早於 2001)⇒ 也當壞資料:唯一一筆壞的自動完成不能判 on
 S11 版號 v 開頭可比、非字串 / 比不了 ⇒ version_unreadable;外掛清單混雜非 dict 列不炸;文字模式 after 是 null 印「—」
 刀(複本 + run_guarded):K1 時間不帶時區 ⇒ S1 紅;K2 版號讀不到當沒裝 ⇒ S4 紅;K3 換版後沒量也給 after ⇒ S3 紅;
-K4 有看不懂的設定也判 on ⇒ S5 紅;K5 釋放次數條件改回「!= auto」⇒ S3 紅;K6 不丟未來時間 ⇒ S10 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
+K4 有看不懂的設定也判 on ⇒ S5 紅;K5 釋放次數條件改回「!= auto」⇒ S3 紅;K6 不丟未來時間 ⇒ S10 紅;K7 不丟太舊時間 ⇒ S12 紅。刀一律斷言「FAIL: <目標>」且沒有 ERROR。
 """
 import io
 import json
@@ -223,6 +224,13 @@ class BadTime(Base):
             self.assertIsNone(it[iid]["last_run_at"], iid)
         json.dumps(s)
 
+    def test_s12_too_old_timestamps(self):
+        import room_heat_release as RR                 # 唯一一筆自動完成的時間是負數 / 0 ⇒ 不算有紀錄
+        RR._log({"t": -5, "mode": "auto_done", "result": "ok"})
+        RR._log({"t": 0, "mode": "auto_done", "result": "ok"})
+        it = self.by_id(self.run_stack(plugins_fn=lambda: [{"name": "captain-room", "version": "0.1.46"}]))["heat_auto_release"]
+        self.assertEqual((it["state"], it["code"], it["last_run_at"]), ("unmeasured", "no_record", None))
+
     def test_s11_versions_and_rows(self):
         self.assertEqual(ST._ver("v0.1.56"), (0, 1, 56))
         self.assertIsNone(ST._ver(0.156))
@@ -288,8 +296,10 @@ KNIVES = [
     ("K5", "src/cockpit/room_heat_stack.py",
      "    mine = [r for r in rows if r.get(\"mode\") == want and r.get(\"result\") in RELEASED_OK and _ok_t(r.get(\"t\"), now)]\n",
      "    mine = [r for r in rows if (r.get(\"mode\") != \"auto\") != auto and _ok_t(r.get(\"t\"), now)]\n", "Records.test_s3_records"),
-    ("K6", "src/cockpit/room_heat_stack.py", "    return _finite(t) and t <= now + FUTURE_SLACK_S\n", "    return _finite(t)\n",
+    ("K6", "src/cockpit/room_heat_stack.py", "    return _finite(t) and MIN_T <= t <= now + FUTURE_SLACK_S\n", "    return _finite(t) and MIN_T <= t\n",
      "BadTime.test_s10_bad_and_future_timestamps"),
+    ("K7", "src/cockpit/room_heat_stack.py", "    return _finite(t) and MIN_T <= t <= now + FUTURE_SLACK_S\n", "    return _finite(t) and t <= now + FUTURE_SLACK_S\n",
+     "BadTime.test_s12_too_old_timestamps"),
 ]
 
 

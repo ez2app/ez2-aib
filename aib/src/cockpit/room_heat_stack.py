@@ -7,7 +7,7 @@
 只讀,不叫任何外部指令、不取樣:數字全從既有紀錄來(狀態根的 room/ 與 logs/、aib 自己的 VERSION、
 已裝外掛清單、skill 檔、Claude 設定的 Stop hook)。沒量過的欄位一律 null,不畫假數字(8.1)。
 契約(S3):id / kind / state / code / unit 是代碼,人話走字典 aib.room.heat.stack.<id>.title / .hint(四語)。
-  state:on 有裝在跑 / update_available 裝的版號 < fixed_in(或設定可改善)/ missing 沒裝 /
+  state:on 已裝 / update_available 裝的版號 < fixed_in(或設定可改善)/ missing 沒裝 /
          error 最近一次失敗(看 code)/ unmeasured 量不到(≠ 0)/ unsupported 平台不支援
   code:version_unreadable hooks_incomplete memguard_failed no_record unsupported_platform(只在 error / unmeasured / unsupported 才有)
   unit:cores ms mb count per_s
@@ -33,6 +33,7 @@ if HERE not in sys.path:
 AIB_ROOT = os.path.dirname(os.path.dirname(HERE))
 WEEK_S = 7 * 86400
 STALE_S = 600
+MIN_T = 1_000_000_000                                  # 2001-09 以前的時間不可能是真紀錄(r2 Low)
 FUTURE_SLACK_S = 60                                    # 紀錄時間比現在晚超過這麼多 ⇒ 壞資料(M1)
 RELEASED_OK = ("ok", "partial")                        # 釋放紀錄只有這兩種結果算真的收了(M2)
 LOG_READ_MAX = 2 * 1024 * 1024
@@ -77,8 +78,8 @@ def _finite(v):
 
 
 def _ok_t(t, now):
-    """紀錄時間可信:有限數字、而且不在未來(容 FUTURE_SLACK_S 秒時鐘差)。未來的當壞資料丟(M1)。"""
-    return _finite(t) and t <= now + FUTURE_SLACK_S
+    """紀錄時間可信:有限數字、不早於 MIN_T(負數 / 0 / 太舊)、不在未來(容 FUTURE_SLACK_S 秒時鐘差)。其餘當壞資料丟(M1)。"""
+    return _finite(t) and MIN_T <= t <= now + FUTURE_SLACK_S
 
 
 def iso(ts):
