@@ -461,6 +461,22 @@ def _relay_ok(url):
     return bool(_RELAY_RE.match(url or "") or _LOCAL_RELAY_RE.match(url or ""))
 
 
+def public_relay_ok(url):
+    """好友名片給的站:只收 wss://、而且不是本機 / 內網 / link-local(#303 審 A-M2:不讓好友叫我連進內網)。
+    主機名只擋 localhost / .local / .internal 這類;解析後才落到內網的名字擋不到(不在這裡查 DNS)。"""
+    import ipaddress
+    m = _RELAY_RE.match(url or "")
+    if not m:
+        return False
+    host = url[len("wss://"):].split("/", 1)[0].rsplit(":", 1)[0].lower().rstrip(".")
+    if host == "localhost" or host.endswith((".localhost", ".local", ".internal", ".lan", ".home.arpa")):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return "." in host                              # 一般網域名;單字主機名(內網)不收
+
+
 def relays(env=None):
     """用哪些中繼站:AIB_CHAT_RELAYS(逗號分隔,測試用)優先;再來主人資料的 relays(aib chat relays add,
     第 27.9 節);都沒有 ⇒ 預設兩站。不合格的站略過,全不合格退回預設。"""

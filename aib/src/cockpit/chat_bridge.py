@@ -601,7 +601,7 @@ def cmd_on(a, env, out):
     _mkdir_private(chat_home(env))
     write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time())})
     os.chmod(switch_path(env), 0o600)
-    GF.note_first(bridge_root(env), "on")
+    GF.note_first_on(bridge_root(env))
     try:
         off_marker(env).unlink()
     except FileNotFoundError:
@@ -745,7 +745,7 @@ def cmd_auto(a, env, out):
     if ans.lower() in YES:
         write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time()), "asked": True})
         os.chmod(switch_path(env), 0o600)
-        GF.note_first(bridge_root(env), "on")
+        GF.note_first_on(bridge_root(env))
         out.write(T("auto_on") + "\n")
         zero_step(env, out)
     else:
@@ -848,8 +848,10 @@ def first_chat(f, ready, enabled=True):
         out[k + "_s"] = max(0, f[k] - on) if on and f.get(k) else None
     if f.get("delivered"):
         out["stuck"] = None
-    elif not enabled or not on:
+    elif not enabled:
         out["stuck"] = "off"
+    elif not on:                                       # 升級前就在用的舊用戶沒有開通時間 ⇒ 不判卡在哪
+        out["stuck"] = None
     else:
         out["stuck"] = next((k for k in ("bridge", "public", "contact") if not ready.get(k)),
                             "no_sent" if not f.get("sent") else "no_delivered")

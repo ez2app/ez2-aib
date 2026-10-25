@@ -5,7 +5,8 @@
 
 F1 note_first 只記第一次(再記不動);壞值(字串、布林、不認得的鍵)讀出來當沒有
 F2 first_chat:沒開 ⇒ off;ready 沒過 ⇒ 第一格(bridge / public / contact);都過沒寄 ⇒ no_sent;
-   寄了沒回條 ⇒ no_delivered;有回條 ⇒ stuck None、秒數 = 跟開通的差
+   寄了沒回條 ⇒ no_delivered;有回條 ⇒ stuck None、秒數 = 跟開通的差;開著但沒記開通時間 ⇒ stuck None
+F3 note_first_on:已經有 sent / inbox / receipts 紀錄的舊用戶不補記開通時間(#303 審 B-L10)
 連 Nostr(要 AIB_TEST_NOSTR_VENV;本機假中繼站):
 N1 Andy 寄給 Bob(互為好友)⇒ Andy 的 first.json 有 sent、delivered;Bob 的有 in;內容沒進 first.json
    status --json 的 first.delivered_s 有值、文字版印首封那一行
@@ -49,9 +50,20 @@ class Unit(unittest.TestCase):
             (Path(d) / "first.json").write_text("[1]")
             self.assertEqual(GF.read_first(d), {})
 
+    def test_f3_old_user_no_on(self):
+        with tempfile.TemporaryDirectory() as d:
+            GF.note_first_on(d, now=100)
+            self.assertEqual(GF.read_first(d), {"on": 100})
+        for sub in ("sent", "inbox", "receipts"):
+            with tempfile.TemporaryDirectory() as d:
+                (Path(d) / sub).mkdir()
+                (Path(d) / sub / "m1.json").write_text("{}")
+                GF.note_first_on(d, now=100)
+                self.assertEqual(GF.read_first(d), {}, sub)
+
     def test_f2_stuck(self):
         self.assertEqual(CB.first_chat({}, OK, False)["stuck"], "off")
-        self.assertEqual(CB.first_chat({}, OK, True)["stuck"], "off", "沒記開通時間 ⇒ 當沒開")
+        self.assertIsNone(CB.first_chat({}, OK, True)["stuck"], "開著但沒記開通時間(升級前的舊用戶)⇒ 不判卡住(#303 審 B-L10)")
         for miss in ("bridge", "public", "contact"):
             self.assertEqual(CB.first_chat({"on": 10}, dict(OK, **{miss: False}))["stuck"], miss)
         self.assertEqual(CB.first_chat({"on": 10}, OK)["stuck"], "no_sent")

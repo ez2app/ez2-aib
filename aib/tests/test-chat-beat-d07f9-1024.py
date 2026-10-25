@@ -12,7 +12,16 @@ H5 push_beat 只發一筆(kind 30078、d=aib-beat、作者 = 心跳鑰、內文 
    world.json 有那位好友、記下要補寄給他;鑰不對 / 不是好友 ⇒ 不寫
 H6 push_presence:好友有心跳、也拿到我這一代的鑰、等級 online ⇒ 不再一位一封;等級 status ⇒ 照寄;ping 那一位 ⇒ 照寄帶 aib-ask
 H7 給過鑰的人不再是好友 ⇒ 換一代、給過名單歸零;沒人離開 ⇒ 不換
-刀(複本):K1 不換代 ⇒ H7 紅;K2 不跳過有心跳的好友 ⇒ H6 紅
+#303 第 1 輪審查補(10-25):
+H8 心跳簽章鑰跟共用鑰同一代(A-H1):換代 npub 跟著換、舊鑰進 retired/;10-24 版 beat.key 也收;retired 超過 30 天刪
+H9 心跳鑰一位一檔(B-H1:500 位好友照收);同一個心跳 npub 兩位主人宣告 ⇒ 都不收(A-M4);drop_beat_keys 刪整檔
+H10 world 一次寫多格、500 位好友寫得進去(超過上限丟最舊的)
+H11 同一位 ping 10 秒一次、換一位不等(A-M5);public_relay_ok 擋本機 / 內網 / link-local / 單字主機名
+H12 (venv)好友名片給的站只查那位好友、內網站不連、我的站查全部(A-M2);壞網址不進心跳鑰(A-M3)
+H13 (venv)點開對話框只問那一位、整面刷新才問舊版;有人問我 ⇒ 有心跳也回(B-M3)
+H14 (venv)心跳的 presence_at 用本機收到時間、sent_at 記原值(B-M5);換代後 push_beat 用新簽章鑰
+刀(複本):K1 不換代 ⇒ H7 紅;K2 不跳過有心跳的好友 ⇒ H6 紅;K3 好友站查全部人 ⇒ H12 紅;K4 ping 也問舊版 ⇒ H13 紅;
+K5 不回問我的人 ⇒ H13 紅;K6 簽章鑰不換代 ⇒ H8 紅;K7 不擋同 npub 兩位 ⇒ H9 紅
 """
 import json
 import os
@@ -80,13 +89,17 @@ async def fake_client(relays): return Cli()
 CN._client = fake_client
 real_keys = CN._keys
 CN._keys = lambda stem: real_keys(stem) if stem.startswith("beat") else None
-CN.N.nip17_make_private_msg = lambda keys, pk, body, rumor_extra_tags=(): made.append([t.to_vec() for t in rumor_extra_tags]) or "gw"
+CN.N.nip17_make_private_msg = lambda keys, pk, body, rumor_extra_tags=(): made.append([t.to_vec() for t in rumor_extra_tags] + [["to", cur[-1]]]) or "gw"
 s = object.__new__(CN.Sender)
 s.root, s.cache = root, {}
 async def noop(*a, **k): return None
 s._push_card = noop
+s.cache["x"] = 1
 s._push_room = noop
-async def first_seat(o): return 0, {"seat": {"npub": NK.npub(NK.pubkey_hex("%064x" % 0xB204))}, "dm_relays": []}
+cur = [None]
+async def first_seat(o):
+    cur.append(o)
+    return 0, {"seat": {"npub": NK.npub(NK.pubkey_hex("%064x" % 0xB204))}, "dm_relays": []}
 s._first_seat = first_seat
 out = {}
 NK.ensure_beat()
@@ -119,6 +132,61 @@ elif case == "skip":
     s.ask_due, s.ping_owner = True, F
     out["ping"] = asyncio.run(s.push_presence(now=3000))
     out["ask_tag"] = ["aib-ask", "1"] in made[-1]
+elif case == "plan":
+    R = NK.npub(NK.pubkey_hex("%064x" % 0xB204))
+    friends["friends"] = [{"owner": F}, {"owner": G}]
+    GF.note_beat_key(root, F, NK.npub(NK.pubkey_hex("%064x" % 0xB301)), "%064x" % 1, 1,
+                     ["wss://friend.example", "wss://10.0.0.1", "wss://r.example", "wss://intranet"])
+    GF.note_beat_key(root, G, NK.npub(NK.pubkey_hex("%064x" % 0xB302)), "%064x" % 2, 1, ["wss://g.example"])
+    calls = []
+    async def fetch_all(relays, flt):
+        calls.append([relays, sorted(json.loads(flt.as_json()).get("authors") or [])])
+        return []
+    CN._fetch_all = fetch_all
+    asyncio.run(s.poll_beats(now=5000))
+    hexes = {NK.npub(NK.pubkey_hex("%064x" % 0xB301)): "f", NK.npub(NK.pubkey_hex("%064x" % 0xB302)): "g"}
+    tohex = {N.PublicKey.parse(n).to_hex(): v for n, v in hexes.items()} if False else None
+    import nostr_sdk as NS
+    names = {NS.PublicKey.parse(n).to_hex(): v for n, v in hexes.items()}
+    out["calls"] = sorted([c[0], sorted(names[a] for a in c[1])] for c in calls)
+    out["good"] = CN._good_relays(["wss://a b", "wss://ok.example", 5, "http://x"])
+elif case == "ask":
+    friends["friends"] = [{"owner": F}, {"owner": G}]
+    levels[G] = "online"
+    GF.note_beat_key(root, F, NK.npub(NK.pubkey_hex("%064x" % 0xB301)), "%064x" % 1, 1)
+    def asked():
+        return sorted(("f" if ["to", F] in m else "g") for m in made if ["aib-ask", "1"] in m)
+    s.ask_due, s.ping_owner = True, F
+    s.p_last = {}
+    made.clear()
+    asyncio.run(s.push_presence(now=1000))
+    out["ping_asks"] = asked()
+    out["ping_cache_kept"] = "x" in s.cache
+    s.ask_due, s.ping_owner = True, None
+    s.p_last = {}
+    made.clear()
+    s.cache["x"] = 1
+    asyncio.run(s.push_presence(now=2000))
+    out["refresh_asks"] = asked()
+    out["refresh_cache_cleared"] = "x" not in s.cache
+    levels[G] = "off"
+    s.p_last = {F: (None, 2999)}
+    s.answer_to = {F}
+    made.clear()
+    out["answer_sent"] = asyncio.run(s.push_presence(now=3000))
+    out["answer_left"] = sorted(s.answer_to)
+elif case == "cells":
+    cells = s._beat_cells(F, {"seats": [{"seat": "f0001", "cabin": "c1", "state": "online"}]}, 5200, 5000)
+    out["cells"] = [[c[3], c[5]] for c in cells]
+elif case == "signrot":
+    a1 = NK.ensure_beat()
+    s._rotate_beat_if_needed([F])
+    friends["friends"] = []
+    s._rotate_beat_if_needed([])
+    a2 = NK.ensure_beat()
+    out["changed"] = a1 != a2
+    asyncio.run(s.push_beat(now=1000))
+    out["author_new"] = published[-1].author().to_bech32() == a2
 elif case == "rotate":
     s._rotate_beat_if_needed([F])
     out["same"] = GF.read_beat_given(root)[0]
@@ -170,6 +238,65 @@ class Keys(unittest.TestCase):
         GF.note_beat_given(root, 2, [])
         self.assertEqual(GF.read_beat_given(root), (2, set()))
 
+    def test_h8_sign_rotates(self):
+        kd = NK.keys_dir(self.env)
+        NK._mkdir_private(kd)
+        NK._write_key("beat", self.env)                                  # 10-24 版的 beat.key
+        n1, stem1 = NK.beat_sign(self.env, now=1000)
+        self.assertEqual(stem1, "beat-sign-1")
+        self.assertEqual(len(list((kd / "retired").glob("beat.1000.key"))), 1)
+        self.assertEqual(NK.beat_sign(self.env, now=1001), (n1, stem1))
+        NK.beat_share(self.env, now=2000, rotate=True)
+        n2, stem2 = NK.beat_sign(self.env, now=2000)
+        self.assertEqual(stem2, "beat-sign-2")
+        self.assertNotEqual(n2, n1)
+        self.assertFalse((kd / "beat-sign-1.key").exists())
+        self.assertEqual(len(list((kd / "retired").glob("beat-sign-1.2000.key"))), 1)
+        self.assertEqual(NK.ensure_beat(self.env), n2)
+        NK.beat_share(self.env, now=2000 + NK.BEAT_RETIRED_KEEP_S + 1, rotate=True)   # 30 天前退下的清掉
+        self.assertEqual(sorted(p.name for p in (kd / "retired").glob("beat*")),
+                         ["beat-share-2.%d.key" % (2000 + NK.BEAT_RETIRED_KEEP_S + 1)])
+
+    def test_h9_per_owner_and_claims(self):
+        root = self.td / "r"
+        k = "%064x" % 7
+        for i in range(500):
+            o = NK.npub(NK.pubkey_hex("%064x" % (0xD000 + i)))
+            self.assertTrue(GF.note_beat_key(root, o, NK.npub(NK.pubkey_hex("%064x" % (0xE000 + i))), k, 1))
+        self.assertEqual(len(GF.read_beat_keys(root)), 500)
+        self.assertTrue((root / "beats" / (A + ".json")).parent.is_dir())
+        GF.note_beat_key(root, A, M, k, 1)
+        GF.note_beat_key(root, NK.npub(NK.pubkey_hex("%064x" % 0xD000)), M, k, 1)   # 別人宣告同一個心跳 npub
+        self.assertFalse(any(n == M for _o, n, _k, _r in GF.read_beat_keys(root)))
+        GF.drop_beat_keys(root, lambda o: o == A)
+        self.assertEqual([o for o, *_r in GF.read_beat_keys(root)], [A])
+        self.assertEqual(sorted(p.name for p in (root / "beats").iterdir()), [A + ".json", A + ".json.lock"])
+
+    def test_h10_world_many(self):
+        root = self.td / "r"
+        rows = [(NK.npub(NK.pubkey_hex("%064x" % (0xD000 + i))), "c1",
+                 [{"seat": "f0001", "state": "online", "now": None, "step": None}], 1000 + i, None, 1000 + i)
+                for i in range(500)]
+        GF.note_world_many(root, rows)
+        w = GF.read_world(root)
+        self.assertGreater(len(w), 50)
+        self.assertLess(len(w), 500)                                     # 超過上限丟最舊的,寫得進去
+        self.assertIn("%s/c1" % rows[-1][0], w)
+        self.assertNotIn("%s/c1" % rows[0][0], w)
+
+    def test_h11_ping_gap_and_relays(self):
+        root = self.td / "r"
+        self.assertTrue(GF.request_refresh(root, now=1000, ping=A))
+        self.assertFalse(GF.request_refresh(root, now=1000 + GF.PING_GAP_S - 1, ping=A))
+        self.assertTrue(GF.request_refresh(root, now=1000 + GF.PING_GAP_S - 1, ping=M))
+        self.assertTrue(GF.request_refresh(root, now=1000 + 2 * GF.PING_GAP_S, ping=M))
+        import chat_roster as CR
+        for u in ("wss://relay.example", "wss://relay.example:443/x", "wss://8.8.8.8"):
+            self.assertTrue(CR.public_relay_ok(u), u)
+        for u in ("wss://localhost", "wss://127.0.0.1", "wss://10.1.2.3", "wss://192.168.1.120", "wss://169.254.1.1",
+                  "wss://[::1]", "wss://intranet", "wss://nas.local", "ws://relay.example", "wss://a b", "wss://x.internal"):
+            self.assertFalse(CR.public_relay_ok(u), u)
+
     def test_h4_ping(self):
         root = self.td / "r"
         self.assertTrue(GF.request_refresh(root, now=1000))
@@ -207,6 +334,23 @@ class Worker(unittest.TestCase):
         d = self.probe("skip")
         self.assertEqual((d["online"], d["status"], d["ping"], d["ask_tag"]), (0, 1, 1, True))
 
+    def test_h12_friend_relays(self):
+        d = self.probe("plan")
+        self.assertEqual(d["calls"], [[["wss://friend.example"], ["f"]], [["wss://g.example"], ["g"]],
+                                      [["wss://r.example"], ["f", "g"]]])
+        self.assertEqual(d["good"], ["wss://ok.example"])
+
+    def test_h13_ask_scope(self):
+        d = self.probe("ask")
+        self.assertEqual((d["ping_asks"], d["ping_cache_kept"]), (["f"], True))
+        self.assertEqual((d["refresh_asks"], d["refresh_cache_cleared"]), (["g"], True))   # 只問沒有心跳的 G
+        self.assertEqual((d["answer_sent"], d["answer_left"]), (1, []))
+
+    def test_h14_cells_and_sign(self):
+        self.assertEqual(self.probe("cells")["cells"], [[5000, 5200]])
+        d = self.probe("signrot")
+        self.assertEqual((d["changed"], d["author_new"]), (True, True))
+
     def test_h7_rotate(self):
         d = self.probe("rotate")
         self.assertEqual(d["same"], 1)
@@ -228,8 +372,42 @@ class Knife(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
     def test_k2_no_skip(self):
-        self._run('            if lvl == "online" and tgt in beaters and tgt in given and not asking:\n',
+        self._run('            if lvl == "online" and tgt in beaters and tgt in given and not asking and tgt not in answer:\n',
                   "            if False:\n", "Worker.test_h6_skip_dm_for_beaters")
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k3_friend_relay_all(self):
+        self._run("        plan += [([r], sorted(ns)) for r, ns in sorted(extra.items())[:BEAT_EXTRA_RELAYS]]",
+                  "        plan += [([r], sorted(by_npub)) for r, ns in sorted(extra.items())[:BEAT_EXTRA_RELAYS]]",
+                  "Worker.test_h12_friend_relays")
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k4_ping_asks_old(self):
+        self._run("        elif ping:\n            ask_to = {ping}\n", "        elif False:\n            ask_to = {ping}\n",
+                  "Worker.test_h13_ask_scope")
+
+    @unittest.skipUnless(HAVE_NOSTR, "沒有 AIB_TEST_NOSTR_VENV")
+    def test_k5_no_answer(self):
+        self._run("            if prev and not asking and tgt not in answer \\\n",
+                  "            if prev and not asking \\\n", "Worker.test_h13_ask_scope")
+
+    def test_k6_sign_not_rotated(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/nostr_keys.py", '    stem = "beat-sign-%d" % gen\n', '    stem = "beat-sign-1"\n',
+                        tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Keys.test_h8_sign_rotates"], cwd=str(root),
+                            max_procs=60, timeout=120)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
+
+    def test_k7_claims_kept(self):
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/dm_global_files.py", "    return [x for x in out if len(claims[x[1]]) == 1]",
+                        "    return out", tests=(name,)) as root:
+            r = run_guarded([sys.executable, str(root / "tests" / name), "Keys.test_h9_per_owner_and_claims"],
+                            cwd=str(root), max_procs=60, timeout=120)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("AssertionError", r.stdout + r.stderr)
 
 
 if __name__ == "__main__":

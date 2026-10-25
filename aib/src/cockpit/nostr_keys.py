@@ -292,18 +292,38 @@ def ensure_device(env=None, now=None):
     return rec["device"]["npub"]
 
 
-def ensure_beat(env=None, now=None):
-    """心跳簽章鑰(10-24 Andy 綠點):這台一把,沒有才產。回 npub。只拿來簽 d=aib-beat 那一筆,不代表任何席。"""
+BEAT_RETIRED_KEEP_S = 30 * 86400
+
+
+def _retire(d, stem, now):
+    _mkdir_private(d / "retired")
+    os.rename(str(d / (stem + ".key")), str(d / "retired" / ("%s.%d.key" % (stem, now))))
+
+
+def beat_sign(env=None, now=None):
+    """心跳簽章鑰(10-24 Andy 綠點):跟好友共用鑰同一代,換代一起換(#303 審 A-H1:簽章鑰不換 ⇒ 刪 / 封鎖後
+    前好友訂閱舊 npub 仍看得出在線時段、中繼站也能長期追同一台)。只拿來簽 d=aib-beat 那一筆,不代表任何席。
+    ⇒ (npub, stem)。舊一代(含 10-24 版的 beat.key)搬進 retired/,不再發。"""
+    now = int(time.time() if now is None else now)
+    gen, _stem = beat_share(env, now)
     rec = read_map(env)
-    b = rec.get("beat") or {}
-    kf = keys_dir(env) / "beat.key"
-    if b.get("npub") and kf.is_file():
-        return b["npub"]
-    if kf.is_file():
-        raise RuntimeError("beat.key exists but is not in the map")
-    rec["beat"] = dict(b, npub=_write_key("beat", env), created_at=int(time.time() if now is None else now))
+    b = rec.setdefault("beat", {})
+    d = keys_dir(env)
+    stem = "beat-sign-%d" % gen
+    if b.get("sign_gen") == gen and b.get("npub") and (d / (stem + ".key")).is_file():
+        return b["npub"], stem
+    old = ["beat"] + (["beat-sign-%d" % b["sign_gen"]] if isinstance(b.get("sign_gen"), int) else []) + [stem]
+    for o in dict.fromkeys(old):                           # stem 自己也在:對照表比檔舊(還原過備份)⇒ 不沿用來路不明的檔
+        if (d / (o + ".key")).is_file():
+            _retire(d, o, now)
+    b.update(npub=_write_key(stem, env), sign_gen=gen, created_at=now)
     _save_map(rec, env)
-    return rec["beat"]["npub"]
+    return b["npub"], stem
+
+
+def ensure_beat(env=None, now=None):
+    """這一代的心跳 npub(沒有就產)。"""
+    return beat_sign(env, now)[0]
 
 
 def beat_share(env=None, now=None, rotate=False):
@@ -317,8 +337,13 @@ def beat_share(env=None, now=None, rotate=False):
     if gen and not rotate and (d / ("beat-share-%d.key" % gen)).is_file():
         return gen, "beat-share-%d" % gen
     if gen and (d / ("beat-share-%d.key" % gen)).is_file():
-        _mkdir_private(d / "retired")
-        os.rename(str(d / ("beat-share-%d.key" % gen)), str(d / "retired" / ("beat-share-%d.%d.key" % (gen, now))))
+        _retire(d, "beat-share-%d" % gen, now)
+    for f in (d / "retired").glob("beat*.key") if (d / "retired").is_dir() else ():   # 退下來的心跳鑰留 30 天(#303 審 B-L9)
+        try:
+            if now - int(f.name.rsplit(".", 2)[-2]) > BEAT_RETIRED_KEEP_S:
+                f.unlink()
+        except (ValueError, OSError):
+            pass
     gen += 1
     while (d / ("beat-share-%d.key" % gen)).is_file():     # 對照表比檔舊(還原過備份)⇒ 往下找空的一代,不蓋檔
         gen += 1
