@@ -169,7 +169,7 @@ def cmd_invite_publish(stdin):
     (綁簽章者,#299 第 1 輪審 H1)。金鑰只走 stdin,不進 argv / 檔。中繼站照 expiration 標籤自己丟。"""
     req = json.loads(stdin.readline() or "{}")
     if not GF.INVITE_HASH_RE.match(str(req.get("hash") or "")) or not GF.parse_address(str(req.get("addr") or "")) \
-            or not re.fullmatch(r"[0-9a-f]{32}", str(req.get("key") or "")):
+            or not GF.MSGID_RE.match(str(req.get("key") or "")):   # 同 dm_global_files 的 msgid 形狀(#362 nit)
         return 2, {"ok": False, "why": "bad_request"}
     keys, _d = _roster_signer()
     body = GF.invite_seal(bytes.fromhex(req["key"]), keys.public_key().to_bech32(),

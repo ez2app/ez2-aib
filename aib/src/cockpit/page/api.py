@@ -64,6 +64,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class PageApi:
     """一把 token 對一個頁面。沒有 token 也能用,但只能走 `public_html()`。"""
 
+    JOIN_GRACE_S = 2                             # _get_raw 總期限之外再等的秒數(auto_update 算整輪上限時扣掉)
+
     def __init__(self, base_url=None, token=None, timeout=DEFAULT_TIMEOUT_S,
                  opener=None):
         self.base_url = (base_url or DEFAULT_BASE).rstrip("/")
@@ -324,7 +326,7 @@ class PageApi:
                 box["e"] = exc
         t = threading.Thread(target=work, name="aib-page-get", daemon=True)
         t.start()
-        t.join(total_s + 2)                      # 多 2 秒寬限:讓執行緒裡的讀取期限先到、照常收尾
+        t.join(total_s + self.JOIN_GRACE_S)      # 多 2 秒寬限:讓執行緒裡的讀取期限先到、照常收尾(呼叫端算總上限要把它算進去)
         if t.is_alive():
             raise TransportError("回應超過 %d 秒" % total_s)
         if "e" in box:

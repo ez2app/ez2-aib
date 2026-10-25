@@ -217,10 +217,30 @@ class Route(Box):
         self.assertEqual(len(self.srv.catalogs()), 1, "目錄只抓一次")
         self.assertIn("plugin ddd skipped: installed version is not x.y.z", AU.log_path(self.env).read_text(encoding="utf-8"))
 
+    def test_c1b_deadline_is_hard_bound(self):
+        """整輪上限 = deadline_s:api 的總期限要扣掉它自己的寬限;socket 逾時欄位 api 內部固定取 max(timeout, 60),不動它(#349 r2 L1)。"""
+        self.installed("demo-paid")
+
+        class FakeApi:
+            timeout = 30
+
+            def plugins_catalog(self):
+                return {"ok": True, "v": 1, "plugins": [entry("demo-paid", "1.0.3")]}
+        fake = FakeApi()
+        out = self.behind(deadline_s=10, api=fake)
+        self.assertEqual([b["name"] for b in out["behind"]], ["demo-paid"], out)
+        self.assertEqual(fake.total_s, 10 - A.PageApi.JOIN_GRACE_S)
+        self.assertEqual(fake.timeout, 30, "socket 逾時欄位不該被改(改了也沒用)")
+        self.assertEqual(A.PageApi.JOIN_GRACE_S, 2)
+        self.assertEqual(self.behind(deadline_s=1, api=fake)["behind"][0]["name"], "demo-paid")
+        self.assertGreaterEqual(fake.total_s, 1)
+
     def test_c7b_recorded_url_scrubbed(self):
         self.assertEqual(AU.safe_url("https://user:secret@page.test:8443/x/;tok=1?k=tok#frag"), "https://page.test:8443/x/")
         self.assertEqual(AU.safe_url("git@github.com:ez2app/aib-plugins.git"), "github.com:ez2app/aib-plugins.git")
         self.assertEqual(AU.safe_url("tok:secret@host:x/y.git;a?b#c"), "host:x/y.git")
+        self.assertEqual(AU.safe_url("/Users/me/wt.noindex/a@b/aib-plugins"), "/Users/me/wt.noindex/a@b/aib-plugins")   # 本機路徑裡的 @ 不是 scp(#349 r2 L4)
+        self.assertEqual(AU.safe_url("/srv/x@y:z"), "/srv/x@y:z")
         self.assertEqual(AU.safe_url("https://a.test/\x1b[31m\u202ex"), "https://a.test/[31mx")
         self.assertEqual(AU.safe_url("https://a\x1b[31m.test"), "?")          # 主機名稱清完不成形 ⇒ ?
         self.assertEqual(AU.safe_url(""), "?")
@@ -272,7 +292,7 @@ class Wired(Helpers, M.Base):
         self.make_repos(latest=None)
         res = self.check(0)
         self.assertEqual(self.git_calls, [], "目錄拿得到就不碰 git")
-        self.assertEqual((res["plugin_via"], res["plugin_via_url"], res["plugin_source"], res["plugins_paid_behind"],
+        self.assertEqual((res["plugin_via"], res["plugin_via_url"], res["plugin_source"], res["plugins_manual_behind"],
                           res["plugins_missing"]), ("catalog", self.base, "ok", ["demo-paid"], ["gone-paid"]), res)
         self.assertEqual(self.version_of("demo-paid"), "1.0.0")
         p = AU.status_payload(self.env, platform="linux")
@@ -288,7 +308,7 @@ class Wired(Helpers, M.Base):
         self.srv.routes["/plugins/catalog"] = (200, b'{"ok": true, "v": 1, "plugins": [{"name": "../x"}]}')
         res = self.check(1)
         self.assertEqual(self.git_calls, [], "目錄驗證沒過不退回 git")
-        self.assertEqual((res["plugin_source"], res["plugin_problem"], res["plugins_paid_behind"]),
+        self.assertEqual((res["plugin_source"], res["plugin_problem"], res["plugins_manual_behind"]),
                          ("rejected", "plugin_catalog_invalid", []), res)
         note, line = AU.doctor_line(self.env)
         self.assertEqual(note, "note")
@@ -316,7 +336,7 @@ class Wired(Helpers, M.Base):
         self.publish([entry("odd-paid", "1.0.3")])
         self.make_repos(latest="0.1.2")
         res = self.check(0)
-        self.assertEqual((res["result"], res["plugin_source"], res["plugins_paid_behind"]), ("updated", "ok", []), res)
+        self.assertEqual((res["result"], res["plugin_source"], res["plugins_manual_behind"]), ("updated", "ok", []), res)
 
     def test_c7d_catalog_raises(self):
         self.installed("demo-paid")
@@ -332,6 +352,29 @@ class Wired(Helpers, M.Base):
                          ("updated", "plugin_catalog_error", "incomplete"), res)
         self.assertEqual(self.git_calls, [], "出錯不退回 git")
         self.assertIn("plugin_catalog_error", self.text())
+        self.assertNotIn(AU.T("status.plugin_via_catalog", url="?"), self.text(), "沒網址就不印「查的是目錄:?」(#349 r2 L2)")
+        self.assertIsNone(res["plugin_via_url"])
+
+    def test_c7e_only_missing_is_a_note(self):
+        """只有「已裝、目錄沒列」⇒ doctor 也要提醒(note),不是 ok(#349 r2 L3)。"""
+        self.installed("gone-paid")
+        self.publish([])
+        self.make_repos(latest=None)
+        res = self.check(0)
+        self.assertEqual((res["plugins_manual_behind"], res["plugins_missing"]), ([], ["gone-paid"]), res)
+        note, line = AU.doctor_line(self.env)
+        self.assertEqual(note, "note", line)
+        self.assertIn("gone-paid", line)
+        self.assertIn("gone-paid", self.text())
+
+    def test_c7f_old_state_key_still_read(self):
+        """0.1.59 前的狀態檔寫的是 plugins_paid_behind ⇒ 升級後 status / doctor 照讀(鍵名 0.1.60 起 plugins_manual_behind)。"""
+        AU.write_status({"plugins_paid_behind": ["old-paid"]}, self.env)
+        p = AU.status_payload(self.env, platform="linux")
+        self.assertEqual(p["plugins_manual_behind"], ["old-paid"], p)
+        self.assertIn("old-paid", self.text())
+        note, line = AU.doctor_line(self.env)
+        self.assertEqual((note, "old-paid" in line), ("note", True), line)
 
 
 class Knife(unittest.TestCase):
