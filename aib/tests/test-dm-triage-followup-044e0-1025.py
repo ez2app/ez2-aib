@@ -45,6 +45,7 @@ def tearDownModule():
 
 
 SETUP = (
+    "Q.LOAD_FN = lambda: (0.0, 0.0, 0.0)\n"      # 叫醒有 load1 ≤ 12 這道閘;測試機忙不該讓斷言變
     "def put(msg, now, seat=%r, provider='claude'):\n"
     "    return Q.record(seat, msg, '@77777', status='delivered', rc=0, env=env, now=now,\n"
     "                    sender_kind='ai', wid='@2', provider=provider, hub='aihub-t1')['id']\n"
@@ -178,6 +179,80 @@ class F6Board(unittest.TestCase):
         self.assertEqual(out["stalled"], 1)
 
 
+class G1MachineClean(unittest.TestCase):
+    def test_notices_closed_before_counting(self):
+        out = HN.QBox(self).py(SETUP + (
+            "a = put('收到', t); b = put('已讀', t)\n"
+            "Q.mark_read(%r, b, 'seat:%s', env=env, now=t + 1, no_rev_check=True)\n"
+            "real = put('真的要你看的一件事', t)\n"
+            "tick(t + 10)\n"
+            "q = Q.enqueue(%r, '到', '@77777', sender_kind='ai', env=env, now=t + 11)['id']\n"
+            "Q._triage_machine_clean(%r, env, t + 12)\n"
+            "st = {i: Q._load_item(%r, i, env).get('status') for i in (a, b, q, real)}\n"
+            "print(json.dumps({'sent': len(sent), 'st': [st[a], st[b], st[q], st[real]]}))\n") % (SEAT, SEAT, SEAT, SEAT, SEAT))
+        self.assertEqual(out["st"], ["archived", "archived", "queued", "delivered"], "貼過 / 讀過的純通知系統先收;排隊中不碰:%r" % out)
+        self.assertEqual(out["sent"], 0, "收掉兩句「收到」後只剩 1 封要動腦 ⇒ 不叫:%r" % out)
+
+
+class G2HandledExpires(unittest.TestCase):
+    def test_handled_rechecked_after_ttl(self):
+        out = HN.QBox(self).py(SETUP + (
+            "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
+            "tick(t + 10); TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 20)\n"
+            "TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 30, release=True)\n"
+            "tick(t + 30 + Q.TR.HANDLED_TTL_S - 1); a = len(sent)\n"
+            "tick(t + 30 + Q.TR.HANDLED_TTL_S); b = len(sent)\n"
+            "print(json.dumps({'a': a, 'b': b}))\n") % (SEAT, SEAT, SEAT, SEAT))
+        self.assertEqual((out["a"], out["b"]), (1, 2), "看過的 24 小時內不叫、滿 24 小時重看:%r" % out)
+
+
+class G3AgentWaitOverdue(unittest.TestCase):
+    def test_agent_wait_then_overdue_nudge(self):
+        out = HN.QBox(self).py(SETUP + (
+            "import dm_take as DT, inbox_brief_hook as IB\n"
+            "i = put('要本席決定的一件事', t); Q.mark_read(%r, i, 'seat:%s', env=env, now=t, no_rev_check=True)\n"
+            "ok = DT.set_wait(%r, i, 'agent:%s/tri-1', '等本席決定要不要改', env=env, now=t + 10)\n"
+            "bad = DT.set_wait(%r, i, 'agent:fghij/tri-1', '冒名', env=env, now=t + 11)\n"
+            "b0 = Q.brief_payload(%r, env=env, now=t + 10 + Q.STALE_WAIT_S)\n"
+            "b1 = Q.brief_payload(%r, env=env, now=t + 11 + Q.STALE_WAIT_S)\n"
+            "line = IB.brief_line(%r, env=env, now=t + 11 + Q.STALE_WAIT_S)\n"
+            "print(json.dumps({'ok': ok.get('ok'), 'bad': bad.get('reason'), 'o0': b0.get('wait_overdue'),"
+            " 'o1': b1.get('wait_overdue'), 's1': b1.get('stale_wait'), 'line': line}))\n") % ((SEAT,) * 8))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["bad"], "actor", "別席的子代理不能替本席寫:%r" % out)
+        self.assertEqual((out["o0"], out["o1"], out["s1"]), (0, 1, 0), out)
+        self.assertIn("寫了等什麼、逾 4 小時沒動 1 封", out["line"])
+
+
+class G4AgentClosedAudit(unittest.TestCase):
+    def test_board_lists_agent_closes(self):
+        out = HN.QBox(self).py(SETUP + (
+            "ev = env['HOME'] + '/DMTRIAGE-%s-t.md'; open(ev, 'w').write('x')\n"
+            "a = put('第一件', t); b = put('第二件', t)\n"
+            "for i, who in ((a, 'agent:%s/tri-1'), (b, 'seat:%s')):\n"
+            "    Q.mark_read(%r, i, who, env=env, now=t + 1, no_rev_check=True)\n"
+            "    Q.mark_done(%r, i, who, ev, env=env, now=t + 2, no_rev_check=True)\n"
+            "tick(t + 10)\n"
+            "rows = TA.agent_closed(%r, env=env, now=t + 20)\n"
+            "old = TA.agent_closed(%r, env=env, now=t + 3 + TA.AGENT_CLOSED_WINDOW_S)\n"
+            "print(json.dumps({'ids': [r['id'] for r in rows], 'ev': [r['evidence'] for r in rows], 'a': a, 'old': old}))\n")
+            % ((SEAT,) * 7))
+        self.assertEqual(out["ids"], [out["a"]], "只列子代理結的:%r" % out)
+        self.assertTrue(out["ev"][0].endswith("DMTRIAGE-%s-t.md" % SEAT), out)
+        self.assertEqual(out["old"], [], "超過 24 小時不列:%r" % out)
+
+
+class G5LoadGate(unittest.TestCase):
+    def test_high_load_waits_then_wakes(self):
+        out = HN.QBox(self).py(SETUP + (
+            "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
+            "Q.LOAD_FN = lambda: (12.5, 0.0, 0.0); r = tick(t + 10); a = len(sent)\n"
+            "Q.LOAD_FN = lambda: (12.0, 0.0, 0.0); tick(t + 70); b = len(sent)\n"
+            "print(json.dumps({'a': a, 'b': b, 'r': r}))\n"))
+        self.assertEqual((out["a"], out["b"]), (0, 1), "load1 > 12 這一拍不叫、降到 12 照叫:%r" % out)
+        self.assertIn("load-high", json.dumps(out["r"], ensure_ascii=False))
+
+
 KNIVES = [
     ("K1", "src/cockpit/dm_triage.py", '    return True, "rewake", True\n', '    return False, "rewake", False\n',
      "F1NoPickupRewake.test_rewake_then_stall_then_new_mail"),
@@ -189,6 +264,16 @@ KNIVES = [
      "F2AgentThenNextBatch.test_lock_holds_then_next_batch_immediately"),
     ("K3", "src/cockpit/dm_queue.py", "        return \"digest\"\n    return \"agent\"\n",
      "        return \"agent\"\n    return \"agent\"\n", "F4Fleet.test_three_kinds_all_woken"),
+    ("K6", "src/cockpit/dm_queue.py", "else len(_triage_machine_clean(seat, env, now))", "else 0",
+     "G1MachineClean.test_notices_closed_before_counting"),
+    ("K7", "src/cockpit/dm_triage.py", "int(now) - int(lock.get(\"released_at\")) < HANDLED_TTL_S", "True",
+     "G2HandledExpires.test_handled_rechecked_after_ttl"),
+    ("K8", "src/cockpit/dm_queue.py", "    elif wait_overdue(item, now):\n        row[\"wait_overdue\"] = True\n", "",
+     "G3AgentWaitOverdue.test_agent_wait_then_overdue_nudge"),
+    ("K9", "src/cockpit/dm_triage_agent.py", " and str(r.get(\"actor\") or \"\").startswith(\"agent:\")", "",
+     "G4AgentClosedAudit.test_board_lists_agent_closes"),
+    ("K10", "src/cockpit/dm_triage.py", "    if ok and load1 is not None and float(load1) > TRIAGE_LOAD_MAX:\n",
+     "    if False:\n", "G5LoadGate.test_high_load_waits_then_wakes"),
     ("K4", "src/cockpit/dm_triage.py", "    if int(unread_n or 0) <= TRIAGE_MIN_UNREAD and int(inprog_n or 0) < INPROG_MIN:\n        return \"\"\n",
      "    return \"\"\n", "F5Resident.test_brief_line_carries_rule"),
 ]

@@ -46,6 +46,7 @@ def tearDownModule():
 
 
 SETUP = (
+    "Q.LOAD_FN = lambda: (0.0, 0.0, 0.0)\n"      # 叫醒有 load1 ≤ 12 這道閘;測試機忙不該讓斷言變
     "def put(msg, now):\n"
     "    return Q.record(%r, msg, '@77777', status='delivered', rc=0, env=env, now=now,\n"
     "                    sender_kind='ai', wid='@2', provider='claude', hub='aihub-t1')['id']\n"
@@ -130,7 +131,7 @@ class S3WakeRules(unittest.TestCase):
         text = out["sent"][0]
         for must in ("整理子代理", "只做三件事", "--done --evidence", "重新整理", "DMTRIAGE-%s-" % SEAT,
                      "原信不刪", "只擬稿", "不准", "寄信", "刪信", "合併 PR", "發版", "簽章", "正式站",
-                     "不算數", "--by seat:%s" % SEAT, "triage --seat %s" % SEAT, "tabs --seat %s" % SEAT):
+                     "不算數", "--by agent:%s/" % SEAT, "triage --seat %s" % SEAT, "tabs --seat %s" % SEAT):
             self.assertIn(must, text, "叫醒那句少了「%s」:%s" % (must, text))
         self.assertNotIn("%(seat)s", text)
 
@@ -138,7 +139,7 @@ class S3WakeRules(unittest.TestCase):
 class S4AgentCloseWorks(unittest.TestCase):
 
     def test_rules_close_command_accepted(self):
-        """規則裡給子代理的那一行(read --done --by seat:<席> --if-rev --evidence)要真的被收。"""
+        """規則裡給子代理的那一行(read --done --by agent:<席>/<代號> --if-rev --evidence)要真的被收。"""
         b = HN.QBox(self)
         ids = b.py(SETUP + (
             "t = int(__import__('time').time())\n"
@@ -147,7 +148,7 @@ class S4AgentCloseWorks(unittest.TestCase):
             "ev = env['HOME'] + '/DMTRIAGE-%s-test.md'\n"
             "open(ev, 'w').write('重新整理:' + i)\n"
             "print(json.dumps({'id': i, 'rev': it.get('rev'), 'ev': ev}))\n" % (SEAT, SEAT)))
-        p = b.dq("read", "--seat", SEAT, "--id", ids["id"], "--by", "seat:%s" % SEAT,
+        p = b.dq("read", "--seat", SEAT, "--id", ids["id"], "--by", "agent:%s/tri-1" % SEAT,
                  "--if-rev", str(ids["rev"]), "--done", "--evidence", ids["ev"])
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertTrue(json.loads(p.stdout.strip().splitlines()[-1]).get("ok"), p.stdout)

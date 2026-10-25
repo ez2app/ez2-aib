@@ -153,7 +153,8 @@ def close(seat, item_id, actor, evidence=None, why=None, env=None, now=None):
 def set_wait(seat, item_id, actor, text, env=None, now=None):
     now = int(time.time() if now is None else now)
     cls, ident = Q.parse_actor(actor)
-    if cls != "seat" or ident != seat:
+    # 0.1.61:整理子代理(agent:<收件席>/<id>)也能替留下的信寫等什麼(標記不是防線,同 _transition)
+    if not ((cls == "seat" and ident == seat) or (cls == "agent" and ident.split("/", 1)[0] == seat)):
         return {"ok": False, "reason": "actor", "message": Q.TRANSITION_REASON["actor"]}
     item = Q._load_item(seat, item_id, env)
     if not item:

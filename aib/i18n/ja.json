@@ -5687,5 +5687,6 @@
   "aib.seat.panel.prompt_why_no_prompt": "画面に入力欄が見つかりません。ターミナルを開いて確認してください",
   "aib.seat.panel.prompt_why_no_screen": "画面を読めませんでした(tmux が応答なし)。少し後で再試行するかターミナルを開いてください",
   "aib.seat.panel.prompt_why_unknown": "作業中のようです。止まってから入力してください(または先に停止)",
-  "aib.now.dm_stale_wait": "⏳ 4 時間以上動きがなく待ち内容も未記入の進行中メッセージが {n} 件:完了なら dm_queue.py close --seat {code} --id <id> --evidence …、待ちなら wait --seat {code} --id <id> \"誰を / 何を待つか\""
+  "aib.now.dm_stale_wait": "⏳ 4 時間以上動きがなく待ち内容も未記入の進行中メッセージが {n} 件:完了なら dm_queue.py close --seat {code} --id <id> --evidence …、待ちなら wait --seat {code} --id <id> \"誰を / 何を待つか\"",
+  "aib.now.dm_wait_overdue": "⏳ 待機メモ付きで 4 時間以上動いていないメッセージが {n} 件:届いたら dm_queue.py close --seat {code} --id <id> --evidence … で完了、まだ待つなら wait --seat {code} --id <id> \"誰 / 何を\" を書き直してください"
 }

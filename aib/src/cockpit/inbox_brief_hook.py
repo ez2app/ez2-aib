@@ -62,6 +62,17 @@ def brief_line(seat, env=None, now=None):
             stale = ""
         if not stale or stale == "aib.now.dm_stale_wait":
             stale = "⏳ 進行中逾 4 小時沒寫等什麼 %d 封 —— dm_queue.py tabs --seat %s 看 stale_wait 那幾列" % (b["stale_wait"], seat)
+    if b.get("wait_overdue"):
+        # Andy 10-25 22:5x(0.1.61):寫了等什麼、超過 4 小時沒動 ⇒ 提醒本席看一下還在等嗎(四語,同 aib now)
+        try:
+            import i18n_lib
+            over = i18n_lib.Translator(i18n_lib.resolve_locale()).t(
+                "aib.now.dm_wait_overdue", {"n": int(b["wait_overdue"]), "code": seat})
+        except Exception:  # noqa: BLE001 — hook 不准炸
+            over = ""
+        if not over or over == "aib.now.dm_wait_overdue":
+            over = "⏳ 寫了等什麼、逾 4 小時沒動 %d 封 —— dm_queue.py tabs --seat %s 看 wait_overdue 那幾列" % (b["wait_overdue"], seat)
+        stale = "\n".join(x for x in (stale, over) if x)
     # Andy 10-25 22:1x(@abb89 派工 B):錯過叫醒那句的席,下一回合也從這行看到規則
     try:
         import dm_triage as TR

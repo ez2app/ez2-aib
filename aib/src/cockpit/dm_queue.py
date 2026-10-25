@@ -1434,8 +1434,9 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
     _write_item(seat, item, env)
     if to not in ACTIVE_STATUSES:
         _order_remove(seat, item_id, env)
+    extra = {"evidence": item.get("done_evidence")} if to == "done" else {}   # 看板抽查子代理結案用(0.1.61)
     _audit(seat, env, ts=now, id=item_id, **{"from": frm}, to=to, actor=actor, ok=True,
-           reason="ok", rev=item_rev(item), why=why)
+           reason="ok", rev=item_rev(item), why=why, **extra)
     if item.get("global"):
         _global_delivery_for_transition(item, frm, to, cls, why, seat, env, now)
     return {"ok": True, "reason": "ok", "rev": item_rev(item), "item": item, "message": ""}
@@ -1959,6 +1960,47 @@ def triage_path(seat, env=None):
 TRIAGE_AGENT_LOCK_FILE = "triage-agent.json"     # 整理子代理自願登記(dm_triage_agent.agent_lock 寫、收口讀)
 
 
+def _triage_machine_clean(seat, env, now):
+    """Andy 10-25 22:5x 同意(0.1.61):固定規則就判得出來的,系統先收,子代理只看要動腦的。
+    收的只有「純通知」:kind=notice 或整封符合 dm_triage 通知表(TR.is_notice,寫死的回執形狀),而且已經貼到那一席眼前
+    (delivered)或它已讀過(read)。排隊中(沒看過)/ 人審 / 寫了等什麼 / 別的通訊軟體來信一律不碰。
+    delivered → 系統代標已讀(AUTO_READ_WHY)→ 備存(notice_read);read → 備存。以前代標已讀的通知會留在「進行中」
+    把門檻撐到 2,叫一個子代理來收兩句「收到」。被新一輪取代的舊信已在新信送達時結掉(_close_superseded),這裡不重做。
+    每封帶當下修訂號,中途被改過就不動。回備存的 id。"""
+    out = []
+    for it in _all_items(seat, env=env):
+        st = it.get("status")
+        if st not in ("delivered", "read") or it.get("im") or it.get("sender_kind") == "external_im":
+            continue
+        w = it.get("wait")
+        if isinstance(w, dict) and str(w.get("text") or "").strip():
+            continue
+        if not (normalize_kind(it.get("kind")) == "notice" or TR.is_notice(it.get("msg"))):
+            continue
+        rev = item_rev(it)
+        if st == "delivered":
+            r = _transition(seat, it["id"], "read", "system", env=env, now=now, why=AUTO_READ_WHY,
+                            if_rev=rev, no_rev_check=False, expect_status="delivered")
+            if not r.get("ok"):
+                continue
+            rev = r.get("rev")
+        r = _transition(seat, it["id"], "archived", "system", env=env, now=now, why="notice_read",
+                        if_rev=rev, no_rev_check=False, expect_status="read")
+        if r.get("ok"):
+            out.append(it["id"])
+    return out
+
+
+LOAD_FN = os.getloadavg            # 測試換掉;量不到 ⇒ None(不擋叫醒)
+
+
+def _load1():
+    try:
+        return float(LOAD_FN()[0])
+    except (OSError, AttributeError, TypeError, ValueError, IndexError):
+        return None
+
+
 def _triage_lock(seat, env=None):
     """那一席 triage-agent.json 的原樣內容(子代理自願登記;只是協調,不是防線);沒有 / 壞檔回 None。"""
     try:
@@ -2016,7 +2058,7 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
         if hubs and all(_cabin_queue_enabled(h, env) is False for h in hubs):
             tidy_on = False
     tidy_res = stage_tidy(seat, env=env, now=now) if tidy_on else None
-    cleaned = tidy_res["cleaned"] if tidy_res else 0
+    cleaned = tidy_res["cleaned"] if tidy_res else len(_triage_machine_clean(seat, env, now))
     tabs = tabs_payload(seat, env=env, now=now)["tabs"]
     rows = tabs["waiting"]["rows"]
     unread = TR.unread_ids(rows)
@@ -2044,7 +2086,7 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     if tidy_on:
         normal, why = TR.should_wake_tidy(rec, now=now, cooldown_s=TIDY_WAKE_COOLDOWN_S), "no-new-batch-or-cooldown"
     else:
-        normal, why, rewake = TR.wake_decision(rec, now, _triage_lock(seat, env))
+        normal, why, rewake = TR.wake_decision(rec, now, _triage_lock(seat, env), _load1())
         stalled = why == "triage-stalled"
         if stalled != bool(rec.get("triage_stalled")) and why != "waiting-pickup":
             rec = dict(rec)
@@ -2056,9 +2098,8 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             TR.write(path, rec)
     if not normal:
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": why, "cleaned": cleaned}
-    # 子代理那條(非 auto_tidy):閒很久也叫(Andy 要立刻消化),每日上限放寬到 TRIAGE_DAILY_MAX
-    gate_ok, gate_why = _wake_gate(seat, rec, env, now, idle_cap=False,
-                                   daily_max=WAKE_DAILY_MAX if tidy_on else TRIAGE_DAILY_MAX)
+    # 子代理那條(非 auto_tidy):閒很久也叫(Andy 要立刻消化);每日上限維持 WAKE_DAILY_MAX(Andy 22:5x「是,但每日上限維持 12」)
+    gate_ok, gate_why = _wake_gate(seat, rec, env, now, idle_cap=False)
     if not gate_ok:
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": gate_why, "cleaned": cleaned}
     if tidy_on:
@@ -2430,8 +2471,6 @@ def _holdnote_deliver(seat, plan, env, deliver_fn=None, hold_fn=None):
 
 
 WAKE_DAILY_MAX = 12              # the maintainer 09-30 18:4x(預設照建議):每席一天最多叫醒 12 次,超過只在待審區顯示
-# Andy 10-25 22:3x 整理子代理要「數量一到就立刻叫」⇒ 那條每席一天的上限放寬(仍有上限:防一直來信一直叫)
-TRIAGE_DAILY_MAX = 48
 WAKE_IDLE_MAX_S = 3600          # 閒置超過 1 小時的席不叫(等它下次自己開口時由 hook 提醒)
 
 
@@ -2509,7 +2548,7 @@ def _cabin_queue_enabled(hub, env=None):
     return bool(pol.get("enabled")) if how == "ok" else False
 
 
-def _wake_gate(seat, rec, env, now, idle_cap=True, daily_max=None):
+def _wake_gate(seat, rec, env, now, idle_cap=True):
     """叫醒前的三道閘(the maintainer 09-30 18:4x,預設照 a seat 建議):
     1. 那一席所在的艙要**有開信件排隊** —— 佇列是整台機器共用的,別艙沒開就別替它叫(以前開一艙就全機都叫);
     2. 那一席真活動(activity_probe,不是 tmux 重繪時戳)閒置超過 1 小時不叫(閒很久的席每叫一次就花一次額度;
@@ -2517,7 +2556,7 @@ def _wake_gate(seat, rec, env, now, idle_cap=True, daily_max=None):
     3. 每席一天最多 WAKE_DAILY_MAX 次。
     登記表查不到這一席 ⇒ 1、2 不判(舊行為;治具也走這條),3 照判。回 (ok, why)。"""
     log = [t for t in (rec.get("wake_log") or []) if isinstance(t, (int, float)) and now - int(t) < 86400]
-    if len(log) >= (WAKE_DAILY_MAX if daily_max is None else daily_max):
+    if len(log) >= WAKE_DAILY_MAX:
         return False, "daily-max"
     recs = _seat_records_all_cabins(seat, env)
     if not recs:
@@ -3131,6 +3170,8 @@ def _row(item, seat, now, index=None, env=None):
         row["wait"] = {"text": str(w["text"]), "at": w.get("at")}     # 只在寫過時才有這欄,舊列形狀不變
     if wait_stale(item, now):
         row["stale_wait"] = True
+    elif wait_overdue(item, now):
+        row["wait_overdue"] = True
     if index is not None:
         row["index"] = index
     return row
@@ -3148,6 +3189,18 @@ def _touched_at(item):
         except (TypeError, ValueError):
             pass
     return max(got) if got else None
+
+
+def wait_overdue(item, now):
+    """Andy 10-25 22:5x 同意(0.1.61):寫了等什麼、之後超過 STALE_WAIT_S 沒人動它 ⇒ True(提醒本席看一下還在等嗎;
+    重寫一次等什麼就重新算)。不自動結、不叫子代理。"""
+    if item.get("status") != "read":
+        return False
+    w = item.get("wait")
+    if not (isinstance(w, dict) and str(w.get("text") or "").strip()):
+        return False
+    t = _touched_at(item)
+    return t is not None and int(now) - t > STALE_WAIT_S
 
 
 def wait_stale(item, now):
@@ -3231,6 +3284,7 @@ def tabs_payload(seat, env=None, now=None):
         "human": sum(1 for r in waiting if r["sender_kind"] == "human"),
         # 進行中逾 4 小時沒動、沒寫等什麼(Andy 10-25 20:1x);只提醒
         "stale_wait": sum(1 for r in tabs["read"]["rows"] if r.get("stale_wait")),
+        "wait_overdue": sum(1 for r in tabs["read"]["rows"] if r.get("wait_overdue")),
     }
     return {"schema": TABS_SCHEMA, "seat": seat, "now": now, "source_rev": source_rev(seat, env),
             "tabs": tabs, "badges": badges, "errors": errors}

@@ -5687,5 +5687,6 @@
   "aib.seat.panel.prompt_why_no_prompt": "화면에서 입력창을 찾을 수 없어요. 터미널을 열어 확인하세요",
   "aib.seat.panel.prompt_why_no_screen": "화면을 읽지 못했어요(tmux 응답 없음). 잠시 후 다시 시도하거나 터미널을 여세요",
   "aib.seat.panel.prompt_why_unknown": "바쁜 것 같아요. 멈춘 뒤 입력하세요(또는 먼저 중지)",
-  "aib.now.dm_stale_wait": "⏳ 4시간 넘게 그대로이고 대기 내용도 없는 진행 중 메시지 {n}건: 끝났으면 dm_queue.py close --seat {code} --id <id> --evidence …, 기다리는 중이면 wait --seat {code} --id <id> \"누구 / 무엇을 기다리는지\""
+  "aib.now.dm_stale_wait": "⏳ 4시간 넘게 그대로이고 대기 내용도 없는 진행 중 메시지 {n}건: 끝났으면 dm_queue.py close --seat {code} --id <id> --evidence …, 기다리는 중이면 wait --seat {code} --id <id> \"누구 / 무엇을 기다리는지\"",
+  "aib.now.dm_wait_overdue": "⏳ 대기 메모가 있는데 4시간 넘게 움직임이 없는 메시지 {n}건: 도착했으면 dm_queue.py close --seat {code} --id <id> --evidence … 로 종료, 아직 기다리면 wait --seat {code} --id <id> \"누구 / 무엇\" 을 다시 적으세요"
 }

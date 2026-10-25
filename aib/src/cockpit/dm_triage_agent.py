@@ -198,8 +198,31 @@ def agent_lock(seat, actor, env=None, now=None, release=False, status=False):
     return {"ok": True, "reason": "ok", "held": rec}
 
 
+AGENT_CLOSED_WINDOW_S = 24 * 3600
+
+
+def agent_closed(seat, env=None, now=None, window_s=AGENT_CLOSED_WINDOW_S):
+    """抽查用(Andy 10-25 22:5x 同意):最近 window_s 內整理子代理(actor=agent:…)結掉的信 ——
+    id / 時間 / 證據 / 理由 / 誰。本席或真人掃一眼,結錯了用 reopen 叫回來。讀稽核紀錄,唯讀。"""
+    now = int(time.time() if now is None else now)
+    out = []
+    for r in Q.audit_rows(seat, env=env):
+        if not (r.get("ok") and r.get("to") == "done" and str(r.get("actor") or "").startswith("agent:")):
+            continue
+        try:
+            ts = int(r.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if now - ts > window_s:
+            continue
+        out.append({"id": r.get("id"), "at": ts, "when": Q.taipei_stamp(ts), "by": r.get("actor"),
+                    "evidence": r.get("evidence"), "why": r.get("why")})
+    return out
+
+
 def status(env=None, now=None, seat=None):
-    """看板(@abb89 派工 E):每席 woke_at / 叫醒時封數 → 現在封數 / 叫了幾次 / stalled / 子代理登記。唯讀。
+    """看板(@abb89 派工 E):每席 woke_at / 叫醒時封數 → 現在封數 / 叫了幾次 / stalled / 子代理登記 /
+    最近 24 小時子代理結了哪些(agent_closed,抽查用)。唯讀。
     「現在封數」取 triage.json 每拍更新的 unread_ids + inprog_ids(跟叫醒同一個算法)。"""
     now = int(time.time() if now is None else now)
     rows = []
@@ -213,6 +236,7 @@ def status(env=None, now=None, seat=None):
                      "woke_when": Q.taipei_stamp(rec.get("woke_at")) if rec.get("woke_at") else None,
                      "live_at_wake": rec.get("woke_live_n"), "live_now": live,
                      "followups": int(rec.get("followups") or 0), "stalled": bool(rec.get("triage_stalled")),
-                     "stalled_at": rec.get("stalled_at"), "agent": (lk or {}).get("by")})
+                     "stalled_at": rec.get("stalled_at"), "agent": (lk or {}).get("by"),
+                     "agent_closed": agent_closed(s, env=env, now=now)})
     rows.sort(key=lambda r: (not r["stalled"], -(r["live_now"] or 0), r["seat"]))
     return {"ok": True, "at": now, "stalled": sum(1 for r in rows if r["stalled"]), "seats": rows}

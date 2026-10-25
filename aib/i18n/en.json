@@ -5687,5 +5687,6 @@
   "aib.seat.panel.prompt_why_no_prompt": "Its input box is not on screen; open the terminal to check",
   "aib.seat.panel.prompt_why_no_screen": "Could not read its screen (tmux did not answer); try again later or open the terminal",
   "aib.seat.panel.prompt_why_unknown": "It seems busy; type again once it stops (or press Stop first)",
-  "aib.now.dm_stale_wait": "⏳ {n} in-progress message(s) untouched for 4+ hours with no wait note: close them with dm_queue.py close --seat {code} --id <id> --evidence …, or note what you are waiting for with wait --seat {code} --id <id> \"who / what\""
+  "aib.now.dm_stale_wait": "⏳ {n} in-progress message(s) untouched for 4+ hours with no wait note: close them with dm_queue.py close --seat {code} --id <id> --evidence …, or note what you are waiting for with wait --seat {code} --id <id> \"who / what\"",
+  "aib.now.dm_wait_overdue": "⏳ {n} message(s) have a wait note but nothing has moved for 4+ hours: if it arrived, close with dm_queue.py close --seat {code} --id <id> --evidence …; if still waiting, rewrite wait --seat {code} --id <id> \"who / what\""
 }
