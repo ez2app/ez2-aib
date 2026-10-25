@@ -1645,6 +1645,7 @@
   "aib.newproj.boot_done": "席 {seat} 已開、已綁人格 {card} 與專案 {uid}",
   "aib.newproj.boot_pack_sent": "人格包已寄給席 {seat}(它回「人格已載入」就接上了)",
   "aib.newproj.boot_pack_failed": "席 {seat} 已綁人格,但人格包沒寄到({reason});綁定不受影響,等右欄那一席出現後可用 aib newrole --deliver 補寄",
+  "aib.newproj.boot_cli_not_ready": "AI 工具 {engine} 還沒就緒({detail}):裝了沒 / 登入有效 / 指定模型可用,三項都要過才開席;什麼都沒開。先在終端機跑 aib doctor,或登入:{cmd};好了再按一次",
   "aib.newproj.no_folder": "這個專案沒有記資料夾(沒給 --folder,這一席也沒綁資料夾)",
   "aib.newproj.folder_bound": "席位 {seat} 的資料夾已綁成 {path}({key})",
   "aib.newproj.reuse_card": "沿用既有專案卡 {uid}({title})",

@@ -1645,6 +1645,7 @@
   "aib.newproj.boot_done": "Seat {seat} opened and bound to persona {card} and project {uid}",
   "aib.newproj.boot_pack_sent": "Persona pack sent to seat {seat} (it is live once the seat replies that the persona is loaded)",
   "aib.newproj.boot_pack_failed": "Seat {seat} is bound, but the persona pack was not delivered ({reason}); the binding stands — once the seat shows in the right column, resend with aib newrole --deliver",
+  "aib.newproj.boot_cli_not_ready": "AI tool {engine} is not ready ({detail}): it must be installed, logged in and the requested model available before a seat is opened; nothing was opened. Run aib doctor in a terminal, or log in with: {cmd}; then try again",
   "aib.newproj.no_folder": "This project records no folder (no --folder given, and the seat has none bound)",
   "aib.newproj.folder_bound": "The folder of seat {seat} is now {path} ({key})",
   "aib.newproj.reuse_card": "Using the existing project card {uid} ({title})",

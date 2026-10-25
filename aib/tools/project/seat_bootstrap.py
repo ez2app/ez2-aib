@@ -76,6 +76,50 @@ def heat_state(repo_root: Optional[Path] = None, measure=None) -> dict:
     return {"level": level, "block": level in HEAT_BLOCK_LEVELS, "detail": text or str(m.get("detail") or "")}
 
 
+CLI_PROBE_TIMEOUT_S = 10   # @abb89 10-26:探測要有逾時、不觸發 Touch ID、不花錢(只查本機登入狀態與模型表)
+
+
+def cli_ready(engine: str, model: str = "", repo_root: Optional[Path] = None, which=None, logged_in=None, models=None) -> dict:
+    """開席前 AI CLI 就緒三項(@abb89 10-26;共用核心現成的探測,不另寫):
+    installed = aib doctor 同一招(shutil.which);login = 動力室 power_login.logged_in(10 分鐘快取,探測逾時 10 秒);
+    model = providers.json 那一家列的模型(沒給 --model 就不查)。回 {ok, failed: [installed|login|model…], engine, model}。
+    登入「量不到」(None,例如那一家沒有狀態指令)不算不過:只有明確 False 才擋,不然 grok / agy 永遠開不了。"""
+    import shutil
+    cockpit = _cockpit_dir(repo_root or Path(__import__("create_and_bind_persona").REPO_ROOT))
+    if str(cockpit) not in sys.path:
+        sys.path.insert(0, str(cockpit))
+    which = which or shutil.which
+    failed = []
+    if not which(engine):
+        failed.append("installed")
+    else:
+        if logged_in is None:
+            import power_login
+            logged_in = lambda key: power_login.logged_in(key, run=lambda cmd: power_login._run(cmd, timeout=CLI_PROBE_TIMEOUT_S))  # noqa: E731
+        try:
+            if logged_in(engine) is False:
+                failed.append("login")
+        except Exception:  # noqa: BLE001  探測壞了 = 量不到,不當不過
+            pass
+    if model:
+        if models is None:
+            def models(eng):
+                import json as _json
+                try:
+                    with open(cockpit / "providers.json", encoding="utf-8") as f:
+                        provs = _json.load(f).get("providers") or []
+                except (OSError, ValueError, AttributeError):
+                    return None
+                for p in provs:
+                    if isinstance(p, dict) and p.get("id") == eng:
+                        return [m.get("id") for m in (p.get("models") or []) if isinstance(m, dict)]
+                return None
+        known = models(engine)
+        if known is not None and model not in known:
+            failed.append("model")
+    return {"ok": not failed, "failed": failed, "engine": engine, "model": model or ""}
+
+
 def lock_path(root: Path, cabin: str) -> Path:
     return root / "instances" / cabin / "state" / LOCK_NAME
 
@@ -182,6 +226,15 @@ class Bootstrap:
         if role_err:
             return self.refuse("resolve", "bad-role", role_err)
         self.role = role
+        if not a.seat:
+            # 開席前 AI CLI 要就緒(@abb89 10-26):任一項不過 ⇒ 不開席、不建夾;登入過期開出來的席起不來,會變成「看起來有人的空桌」
+            ready = cli_ready(a.engine or "claude", getattr(a, "model", "") or "", CBP.REPO_ROOT)
+            if not ready["ok"]:
+                import power_login  # noqa: E402  (cli_ready 已把 cockpit 放進 sys.path)
+                login_cmd = (power_login.LOGIN.get(ready["engine"]) or {}).get("cmd") or "aib doctor"
+                return self.refuse("resolve", "cli_not_ready",
+                                   T("aib.newproj.boot_cli_not_ready", {"engine": ready["engine"], "detail": "/".join(ready["failed"]), "cmd": login_cmd}),
+                                   detail=ready["failed"])
         if a.seat:                                           # 續做:席已在,不解析艙、不開席
             seat_id, rec, instance, err = self.np._resolve_seat(root, a.seat.strip())
             if err:

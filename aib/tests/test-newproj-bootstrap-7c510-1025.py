@@ -13,6 +13,8 @@ B6 頁面路徑 --confirm touchid:沒生物辨識(AIB_TOUCHID=0)⇒ why=no_biome
 B7 散熱(核心 room_heat 四級)hot ⇒ why=heat-high、0 個席被開、hint 帶同一個讀數;艙鎖在握 ⇒ why=busy,過期的鎖會被換掉
 B8 回條契約:why 是代碼、hint 是人話、next 是可直接跑的那一行;四語字典都有 boot_* 鍵
 B9 --deliver:綁完人格把人格包寄給新席(CBP.deliver_persona,假的記呼叫),回條帶 persona_pack;沒帶就不寄
+B10 CLI 就緒(@abb89 10-26):installed / login / model 任一不過 ⇒ resolve why=cli_not_ready、0 席、hint 帶登入指令;量不到登入不算不過;續做不重探
+刀 K3 拿掉就緒擋 ⇒ B10 紅
 刀(複本):K1 拿掉 no_biometry 那道 ⇒ B6 紅;K2 拿掉散熱擋 ⇒ B7 紅
 """
 import contextlib
@@ -81,7 +83,9 @@ class Sandbox(unittest.TestCase):
         import create_and_bind_persona as CBP  # noqa: E402
         sys.path.insert(0, str(REPO / "src" / "cockpit"))
         import room_heat as RH  # noqa: E402
-        self.BO, self.CBP, self.RH = BO, CBP, RH
+        import seat_bootstrap as SB  # noqa: E402
+        self.BO, self.CBP, self.RH, self.SB = BO, CBP, RH, SB
+        self.cli_ready_real = SB.cli_ready   # setUp 會把 cli_ready 換成假的;B10 驗真的那支
         self.binds, self.opened = [], []
         self.state = {}
         self._patches = [
@@ -91,6 +95,7 @@ class Sandbox(unittest.TestCase):
             mock.patch.object(CBP, "current_cabin", return_value=CABIN),
             mock.patch.object(RH, "measure", return_value={"level": "ok", "cells": {}}),   # 散熱共用核心 room_heat;沙盒不真量
             mock.patch.object(CBP, "deliver_persona", side_effect=self._fake_pack),
+            mock.patch.object(SB, "cli_ready", return_value={"ok": True, "failed": [], "engine": "claude", "model": ""}),   # 沙盒沒真 CLI;B10 另驗
             mock.patch.object(self.np, "deliver_handoff", return_value={"ok": True, "address": "abcd/x"}),
         ]
         self.packs = []
@@ -262,6 +267,34 @@ class Boot(Sandbox):
         self.assertEqual(out["persona_pack"]["ok"], True, out)
 
 
+    def test_b10_cli_ready(self):
+        SB = self.SB
+        # 探測本身(注入 which / logged_in / models,不碰真 CLI)
+        r = self.cli_ready_real("claude", "", REPO, which=lambda n: None)
+        self.assertEqual((r["ok"], r["failed"]), (False, ["installed"]), r)
+        r = self.cli_ready_real("claude", "", REPO, which=lambda n: "/usr/bin/claude", logged_in=lambda k: False)
+        self.assertEqual(r["failed"], ["login"], r)
+        r = self.cli_ready_real("claude", "", REPO, which=lambda n: "/x", logged_in=lambda k: None)
+        self.assertTrue(r["ok"], "量不到登入狀態不算不過")
+        r = self.cli_ready_real("claude", "claude-nope-1", REPO, which=lambda n: "/x", logged_in=lambda k: True, models=lambda e: ["claude-opus-5-5"])
+        self.assertEqual(r["failed"], ["model"], r)
+        r = self.cli_ready_real("claude", "claude-opus-5-5", REPO, which=lambda n: "/x", logged_in=lambda k: True)
+        self.assertTrue(r["ok"], "真 providers.json 列的模型要過:%r" % r)
+        # 接進開席:不過 ⇒ resolve 擋、0 席、hint 帶登入指令
+        with mock.patch.object(SB, "cli_ready", return_value={"ok": False, "failed": ["login"], "engine": "claude", "model": ""}):
+            rc, out, _ = self.boot()
+        self.assertEqual((out["stage"], out.get("why"), out.get("detail")), ("resolve", "cli_not_ready", ["login"]), out)
+        self.assertEqual(self.opened, [])
+        self.assertEqual(self.seat_files(), [], "0 個席被開")
+        self.assertIn("claude auth login", out["hint"])
+        # 續做(帶 --seat)不重探
+        seat_id, rec = self._seat_file(n=6, seat_id="d5e6f")
+        self.state["bound"] = {"persona_card": CARD, "brain_route_key": "core.handoff"}
+        with mock.patch.object(SB, "cli_ready", side_effect=AssertionError("續做不該探 CLI")), mock.patch.object(self.CBP, "seat_is_alive", return_value=True):
+            rc, out, _ = self.boot("--seat", "abcd/%s" % rec["session_uuid"][-5:])
+        self.assertEqual(out["stage"], "done", out)
+
+
 class Knife(unittest.TestCase):
     def _knife(self, needle, repl, cell, expect):
         name = Path(__file__).name
@@ -275,6 +308,9 @@ class Knife(unittest.TestCase):
 
     def test_k1_no_biometry_gate_removed(self):
         self._knife("        if not touchid_approve.available():\n", "        if False:\n", "Boot.test_b6_page_path_needs_biometry", "no_biometry")
+
+    def test_k3_cli_ready_gate_removed(self):
+        self._knife('            if not ready["ok"]:\n', "            if False:\n", "Boot.test_b10_cli_ready", "cli_not_ready")
 
     def test_k2_heat_gate_removed(self):
         self._knife('        if heat["block"]:\n', "        if False:\n", "Boot.test_b7_heat_and_lock", "heat-high")

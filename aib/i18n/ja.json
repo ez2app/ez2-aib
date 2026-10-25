@@ -1645,6 +1645,7 @@
   "aib.newproj.boot_done": "席 {seat} を開き、ペルソナ {card} とプロジェクト {uid} を結びました",
   "aib.newproj.boot_pack_sent": "ペルソナパックを席 {seat} に送りました(席が「ペルソナ読込済」と返せば有効)",
   "aib.newproj.boot_pack_failed": "席 {seat} は結合済みですが、ペルソナパックが届きませんでした({reason});結合はそのまま、右欄に席が出たら aib newrole --deliver で再送",
+  "aib.newproj.boot_cli_not_ready": "AI ツール {engine} が未準備({detail}):インストール / ログイン有効 / 指定モデル利用可の三つが揃ってから席を開きます;何も開いていません。端末で aib doctor を実行するか、ログイン:{cmd};その後もう一度",
   "aib.newproj.no_folder": "このプロジェクトにはフォルダが記録されていません(--folder の指定なし、席にもフォルダなし)",
   "aib.newproj.folder_bound": "席 {seat} のフォルダを {path}({key})に紐付けました",
   "aib.newproj.reuse_card": "既存のプロジェクトカード {uid}({title})を使います",
