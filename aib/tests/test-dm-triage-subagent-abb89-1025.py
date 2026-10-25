@@ -222,7 +222,7 @@ class S8DigestCarriesRules(unittest.TestCase):
         spec = iu.spec_from_file_location("dm_triage_u2", HN.REL.TREE / "src" / "cockpit" / "dm_triage.py")
         TR = iu.module_from_spec(spec); spec.loader.exec_module(TR)
         text = TR.wake_text(SEAT, {"pending": 2}, 2, "/x/dm_queue.py", mode="digest", digest=["  q1 x", "  q2 y"], inprog=3)
-        for must in ("進行中 3 封", "不算數", "重新整理", "要裁", "你自己"):
+        for must in ("進行中 3 封", "不算數", "重新整理", "要裁", "你自己", "--by seat:%s --if-rev" % SEAT):   # r6 L3:指令要完整
             self.assertIn(must, text, text)
         for no in ("不寄信", "只擬稿", "整理子代理"):      # r5 M1:digest 席開不了子代理,主詞是本席
             self.assertNotIn(no, text, text)
@@ -454,6 +454,23 @@ class S21InlineFlattenKeepsRules(unittest.TestCase):
             for must in ("1. 結案", "不算數", "只擬稿"):
                 self.assertIn(must, flat, flat[:300])
             self.assertGreaterEqual(len(flat), len(text) - 50, "攤平不得截斷規則")
+
+
+class S22DoneSomeNotNew(unittest.TestCase):
+
+    def test_closing_one_of_three_does_not_rewake(self):
+        """進行中 3 封叫過一次 → 結掉 1 封 → 一小時後集合變小不算「新的」,不得再叫(r6 L2)。"""
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "ids = [inprog('卡著 %%d' %% k, t) for k in range(3)]\n"
+            "tick(t + 10)\n"
+            "n1 = len(sent)\n"
+            "assert Q.mark_done(%r, ids[0], 'seat:%s', None, env=env, if_rev=None, no_rev_check=True, why='test').get('ok')\n"
+            "tick(t + 3700)\n"
+            "print(json.dumps({'n1': n1, 'n2': len(sent)}))\n" % (SEAT, SEAT)))
+        self.assertEqual(out["n1"], 1, out)
+        self.assertEqual(out["n2"], 1, "結掉幾封不是新工作,不得再叫:%r" % out)
 
 
 if __name__ == "__main__":
