@@ -1792,6 +1792,18 @@ def _rounds(text):
     return out
 
 
+def is_older_round(old, key, new_rounds, env=None):
+    """old 是不是「同寄件鍵、同一批 PR 的較舊一輪」:它提到的 PR 全都在新的那輪裡、每張 PR 的輪數都比較小。
+    新一輪自動結(_close_superseded)與待審整理計畫(dm_triage_agent.plan)共用這一個判準。"""
+    if not key or not new_rounds or _sender_key(old) != key:
+        return False
+    text = _full_text(old, env)
+    old_rounds = _rounds(text or "")
+    prs = set(_PR_NUM_RE.findall(text or ""))
+    return bool(old_rounds) and prs <= set(new_rounds) and \
+        all(pr in new_rounds and r < new_rounds[pr] for pr, r in old_rounds.items())
+
+
 def _close_superseded(item, env=None, now=None):
     """Andy 10-25 20:1x:新一輪來信**送達**⇒ 同寄件席、同一張 PR 較舊一輪的來信自動結(why=superseded_by:<新 id>)。
     舊信條件:delivered / read(hold_human 不碰)、沒被結過、它提到的 PR 全都在新信裡、每張 PR 的輪數都比新信小。
@@ -1810,13 +1822,7 @@ def _close_superseded(item, env=None, now=None):
         for old in _all_items(seat, env=env):
             if old["id"] == item["id"] or old.get("status") not in ("delivered", "read"):
                 continue
-            if _sender_key(old) != key:
-                continue
-            text = _full_text(old, env)
-            old_rounds = _rounds(text or "")
-            prs = set(_PR_NUM_RE.findall(text or ""))
-            if not (old_rounds and prs <= set(new_rounds)
-                    and all(pr in new_rounds and r < new_rounds[pr] for pr, r in old_rounds.items())):
+            if not is_older_round(old, key, new_rounds, env):
                 continue
             r = _transition(seat, old["id"], "done", "system", env=env, now=now,
                             why=SUPERSEDE_DONE_PREFIX + item["id"], if_rev=item_rev(old), no_rev_check=False)
@@ -5042,6 +5048,9 @@ def main(argv=None, env=None):
             tk.add_argument("--why", default=None)
         else:
             tk.add_argument("text", nargs="?", default="")
+    tp = sub.add_parser("triage-plan")              # 0.1.61:待審整理子代理的分組 + 建議(唯讀,dm_triage_agent.py)
+    tp.add_argument("--seat", default=None)
+    tp.add_argument("--json", action="store_true")
     cc = sub.add_parser("close-check")             # dm-ctl --closes 送出前查(派工信不准用回信結)
     cc.add_argument("--seat", required=True)
     cc.add_argument("--id", required=True)
@@ -5269,6 +5278,16 @@ def main(argv=None, env=None):
             wid=args.wid, provider=args.provider, priority=args.priority,
             origin=args.origin, env=env, **_v2_kw(args))
         _print_json(_strip_private(item))
+        return 0
+
+    if args.cmd == "triage-plan":
+        import dm_triage_agent as TA
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage", "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": "-"}})
+                return 2
+        _print_json(TA.plan(args.seat, env=env))
         return 0
 
     if args.cmd == "close-check":

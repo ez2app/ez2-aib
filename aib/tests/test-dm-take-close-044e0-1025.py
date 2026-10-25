@@ -317,8 +317,8 @@ KNIVES = [
      "Close.test_t2_close"),
     ("K3", "src/cockpit/dm_take.py", "    if text is None:\n        return {\"ok\": False, \"reason\": \"relay_unreadable\", \"relay_path\": relay_path,\n"
      "                \"message\": \"長訊落檔讀不到(不存在 / 不是一般檔 / 太大),沒有標已讀\"}\n", "", "Take.test_t1_take"),
-    ("K4", "src/cockpit/dm_queue.py", "            if not (old_rounds and prs <= set(new_rounds)\n",
-     "            if not (old_rounds\n", "Supersede.test_t4_new_round_closes_old"),
+    ("K4", "src/cockpit/dm_queue.py", "    return bool(old_rounds) and prs <= set(new_rounds) and \\\n",
+     "    return bool(old_rounds) and \\\n", "Supersede.test_t4_new_round_closes_old"),
     ("K5", "src/cockpit/dm_queue.py", "    if isinstance(w, dict) and str(w.get(\"text\") or \"\").strip():\n        return False\n", "",
      "Wait.test_t3_wait_and_stale"),
     ("K6", "src/cockpit/dm_queue.py", "        if is_dispatch(it):\n            return None       # 派工信",
