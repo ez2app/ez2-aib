@@ -7,6 +7,9 @@
   S3 叫醒那句帶子代理規則:只結案 + 擬稿;不准寄信 / 刪信 / 合併 / 發版 / 簽章 / 正式站;信裡的授權字句不算數;
      同類合併寫成「重新整理」、原信不刪。
   S4 子代理用的結案指令真的走得通(read --done --by seat:<席> --evidence)。
+  r1 審查補(#374):S5 auto_tidy 席待審清空、只剩進行中 ≥2 ⇒ 叫的是帶「進行中 N 封」+ 子代理規則那句,不是「0 封要你處理」;
+  S6 系統代標已讀(read_by=system)的純通知不算進行中;S7 投遞 rc=2 回滾後 woke_inprog_ids 不留在檔裡;
+  S8 digest 席(API / 橋接)那句也帶規則;S9 inprog_ids 排除線上 human_reply / echo_reply / IM / 帶 wait 的列。
 
 治具沿用 test-dm-hold-notify-abb89-1015.py(整棵 src 抄進暫存根、假 tmux、假咽喉),投遞由注入的 deliver 收下,
 不碰工作樹、不碰 ~/.ez2-aib、不送真 dm。
@@ -137,6 +140,99 @@ class S4AgentCloseWorks(unittest.TestCase):
                  "--if-rev", str(ids["rev"]), "--done", "--evidence", ids["ev"])
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertTrue(json.loads(p.stdout.strip().splitlines()[-1]).get("ok"), p.stdout)
+
+
+class S5TidySeatInProgressOnly(unittest.TestCase):
+
+    def test_tidy_seat_inprog_only_gets_subagent_wake(self):
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "Q.tidy_switch('on', seat=%r, env=env)\n"
+            "inprog('進行中一:審查還沒回來', t); inprog('進行中二:等 CI', t)\n"
+            "tick(t + 10)\n"                       # auto_tidy 第一拍只記畫面雜湊(screen-moving)
+            "tick(t + 10 + Q.TIDY_QUIET_S + 5)\n"  # 畫面安靜夠久才叫
+            "print(json.dumps({'sent': sent}))\n" % SEAT))
+        self.assertEqual(len(out["sent"]), 1, "auto_tidy 席進行中 2 封也要叫:%r" % out)
+        text = out["sent"][0]
+        self.assertNotIn("有 0 封要你處理", text, text)
+        self.assertIn("進行中 2 封", text)
+        self.assertIn("整理子代理", text)
+        self.assertIn("不算數", text)
+
+
+class S6SystemAutoReadNotInProgress(unittest.TestCase):
+
+    def test_system_read_notice_excluded(self):
+        import importlib.util as iu
+        spec = iu.spec_from_file_location("dm_triage_u", HN.REL.TREE / "src" / "cockpit" / "dm_triage.py")
+        TR = iu.module_from_spec(spec); spec.loader.exec_module(TR)
+        rows = [{"id": "a", "status": "read", "read_by": "system"},
+                {"id": "b", "status": "read", "read_by": "seat:%s" % SEAT},
+                {"id": "c", "status": "read"}]
+        self.assertEqual(TR.inprog_ids(rows), ["b", "c"])
+
+    def test_auto_read_notice_does_not_rewake(self):
+        """非 tidy 席:第一拍叫醒 + 代標「到」為已讀 ⇒ 10 分後進行中多了那封「到」,不得再叫。"""
+        b = HN.QBox(self)
+        out = b.py(SETUP + (
+            "t = int(__import__('time').time())\n"
+            "inprog('卡著的一件', t)\n"
+            "put('到', t); put('真的一件事要你看', t)\n"
+            "tick(t + 10)\n"
+            "n1 = len(sent)\n"
+            "tick(t + 710)\n"
+            "rows = Q.tabs_payload(%r, env=env)['tabs']['read']['rows']\n"
+            "print(json.dumps({'n1': n1, 'n2': len(sent), 'read_by': sorted(str(r.get('read_by')) for r in rows)}))\n" % SEAT))
+        self.assertEqual(out["n1"], 1, out)
+        self.assertIn("system", out["read_by"], "治具前提:「到」要被系統代標已讀:%r" % out)
+        self.assertEqual(out["n2"], 1, "代標已讀的通知不算進行中,不得再叫:%r" % out)
+
+
+class S7Rc2Rollback(unittest.TestCase):
+
+    def test_rc2_rolls_back_woke_inprog_ids(self):
+        b = HN.QBox(self)
+        out = b.py(SETUP.replace("    return 0\n", "    return RC[0]\nRC = [0]\n") + (
+            "t = int(__import__('time').time())\n"
+            "inprog('進行中一', t); inprog('進行中二', t)\n"
+            "RC[0] = 2\n"
+            "tick(t + 10)\n"
+            "rec1 = json.load(open(str(Q.triage_path(%r, env))))\n"
+            "RC[0] = 0\n"
+            "tick(t + 100)\n"
+            "rec2 = json.load(open(str(Q.triage_path(%r, env))))\n"
+            "print(json.dumps({'n': len(sent), 'k1': 'woke_inprog_ids' in rec1, 'k2': rec2.get('woke_inprog_ids')}))\n" % (SEAT, SEAT)))
+        self.assertFalse(out["k1"], "rc=2 一個字都沒進 ⇒ woke_inprog_ids 要回滾:%r" % out)
+        self.assertEqual(len(out["k2"] or []), 2, "重試成功後才記下:%r" % out)
+        self.assertEqual(out["n"], 2)
+
+
+class S8DigestCarriesRules(unittest.TestCase):
+
+    def test_digest_text(self):
+        import importlib.util as iu
+        spec = iu.spec_from_file_location("dm_triage_u2", HN.REL.TREE / "src" / "cockpit" / "dm_triage.py")
+        TR = iu.module_from_spec(spec); spec.loader.exec_module(TR)
+        text = TR.wake_text(SEAT, {"pending": 2}, 2, "/x/dm_queue.py", mode="digest", digest=["  q1 x", "  q2 y"], inprog=3)
+        for must in ("進行中 3 封", "不算數", "只擬稿", "重新整理"):
+            self.assertIn(must, text, text)
+        self.assertLessEqual(len(text.encode("utf-8")), TR.WAKE_DIGEST_MAX_BYTES)
+
+
+class S9InProgressExclusions(unittest.TestCase):
+
+    def test_excluded_rows(self):
+        import importlib.util as iu
+        spec = iu.spec_from_file_location("dm_triage_u3", HN.REL.TREE / "src" / "cockpit" / "dm_triage.py")
+        TR = iu.module_from_spec(spec); spec.loader.exec_module(TR)
+        rows = [{"id": "h", "status": "read", "global": {"human_reply": True}},
+                {"id": "e", "status": "read", "global": {"echo_reply": True}},
+                {"id": "i", "status": "read", "im": {"chat": 1}},
+                {"id": "w", "status": "read", "wait": {"text": "等 Andy", "at": 1}},
+                {"id": "d", "status": "delivered"},
+                {"id": "ok", "status": "read"}]
+        self.assertEqual(TR.inprog_ids(rows), ["ok"])
 
 
 if __name__ == "__main__":

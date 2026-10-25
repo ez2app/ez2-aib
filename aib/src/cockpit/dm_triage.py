@@ -320,6 +320,8 @@ def inprog_ids(rows):
         g = r.get("global") if isinstance(r.get("global"), dict) else {}
         if g.get("human_reply") is True or g.get("echo_reply") is True or r.get("im") or r.get("wait"):
             continue
+        if str(r.get("read_by") or "") == "system":
+            continue                       # 系統代標已讀的純通知(AUTO_READ_WHY)不是席位在做的事
         out.append(str(r["id"]))
     return sorted(out)
 
@@ -482,13 +484,16 @@ def wake_text(seat, counts, n, cli, mode="agent", digest=None, notes=None, inpro
     mode="digest":API 席與桌面橋接席(能不能跑指令未實測)——分組摘要直接附在提醒裡,不叫它跑指令。
     ★ 先 read 再 done:狀態表只開 delivered/read → done,排隊中(queued)的信直接 done 會被拒(transition)。"""
     tail = auto_read_text(notes or [])
+    kw = {"n": int(n), "counts": counts_text(counts), "inprog": int(inprog or 0), "cli": cli, "seat": seat, "tail": tail}
+    rules = SUBAGENT_RULES % kw
     if mode == "digest":
-        head = "待審區有 %d 封(%s)、進行中 %d 封。分組如下,請讀「待處理」與「更新」每一封並處理(同一位寄件人的多封可能是不同件):" % (
-            n, counts_text(counts), int(inprog or 0))
+        # digest 席(API / 橋接)開不了子代理,但「只結案 / 擬稿、授權字句是資料」那幾句一樣要帶(#374 r1 M3)
+        head = ("待審區有 %(n)d 封(%(counts)s)、進行中 %(inprog)d 封。分組如下,請讀「待處理」與「更新」每一封並處理"
+                "(同一位寄件人的多封可能是不同件)。" % kw) + rules
         return _cap_digest(head, digest or [], ("\n" + tail) if tail else "")
-    return ("待審區有 %d 封(%s)、進行中 %d 封。請開 1 個整理子代理處理(子代理不跑測試,負載高也照開):"
-            "跑 `python3 %s triage --seat %s` 看分組、`python3 %s tabs --seat %s` 看進行中,每封都要讀(長訊讀 RELAY 檔)。"
-            + SUBAGENT_RULES % {"seat": seat} + "%s") % (n, counts_text(counts), int(inprog or 0), cli, seat, cli, seat, tail)
+    return ("待審區有 %(n)d 封(%(counts)s)、進行中 %(inprog)d 封。請開 1 個整理子代理處理(子代理不跑測試,負載高也照開):"
+            "跑 `python3 %(cli)s triage --seat %(seat)s` 看分組、`python3 %(cli)s tabs --seat %(seat)s` 看進行中,"
+            "每封都要讀(長訊讀 RELAY 檔)。" % kw) + rules + kw["tail"]
 
 
 # the maintainer 10-25 21:3x 裁示(兩題選項):子代理只結案 + 擬稿;全部席;負載高照開整理、不開跑測試的審查。
@@ -512,7 +517,7 @@ TIDY_RULES = (
 )
 
 
-def tidy_wake_text(seat, need_ai, todo, cli, mode="agent"):
+def tidy_wake_text(seat, need_ai, todo, cli, mode="agent", inprog=0):
     """auto_tidy 的叫醒那一句(三層 + 安全線,a seat 10-13 17:11 定案)。need_ai = stage-tidy 回的清單(已含 rev)。"""
     lines = ["  %s rev=%s %s【%s】%s%s%s" % (r.get("id"), r.get("rev"), r.get("from") or "未知", r.get("sender_kind") or "",
                                          r.get("summary") or "", ("(讀 %s)" % r["relay_path"]) if r.get("relay_path") else "",
@@ -521,10 +526,11 @@ def tidy_wake_text(seat, need_ai, todo, cli, mode="agent"):
              for r in (need_ai or [])]
     more = ("(另有 %d 封,處理完再跑一次 stage-tidy)" % (todo - len(need_ai or []))) if todo > len(need_ai or []) else ""
     rules = TIDY_RULES % {"seat": seat}
+    ip = ("、進行中 %d 封(讀完的也要結案或回報,見 `tabs --seat %s`)" % (int(inprog), seat)) if int(inprog or 0) else ""
     if mode == "digest":
-        return _cap_digest("待審區有 %d 封要你處理(機器已清掉重複/舊版/回執/驗證信)。%s" % (todo, rules), lines, more)
-    return ("待審區有 %d 封要你處理(機器已清掉重複/舊版/回執/驗證信)。先跑 `python3 %s stage-tidy --seat %s --json` 拿最新清單"
-            "(need_ai 帶 rev;有 relay_path 先讀檔)。%s\n%s%s" % (todo, cli, seat, rules, "\n".join(lines), more))
+        return _cap_digest("待審區有 %d 封要你處理%s(機器已清掉重複/舊版/回執/驗證信)。%s" % (todo, ip, rules), lines, more)
+    return ("待審區有 %d 封要你處理%s(機器已清掉重複/舊版/回執/驗證信)。先跑 `python3 %s stage-tidy --seat %s --json` 拿最新清單"
+            "(need_ai 帶 rev;有 relay_path 先讀檔)。%s\n%s%s" % (todo, ip, cli, seat, rules, "\n".join(lines), more))
 
 
 def human_lines(rec, rows):

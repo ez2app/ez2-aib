@@ -1797,11 +1797,16 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     # review r2 m5:引擎以登記表(那一席現在的席位檔)為準;信上蓋的 provider 是寄信當下抄的,查不到登記才退回它
     reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
     mode = _triage_mode(reg_prov or probe.get("provider"))
-    if tidy_on:
+    if tidy_on and not (tidy_res["todo"] == 0 and len(inprog) >= TR.INPROG_MIN):
         notes = []                         # 通知已在機器層代標過,不再列
         st = tidy_res                      # 審查:不再跑第二次(相似度合併很花時間,而且在排空鎖裡)
-        text = TR.tidy_wake_text(seat, st["need_ai"], st["todo"], str(_HERE / "dm_queue.py"), mode=mode)
+        text = TR.tidy_wake_text(seat, st["need_ai"], st["todo"], str(_HERE / "dm_queue.py"), mode=mode,
+                                 inprog=len(inprog))
     else:
+        # auto_tidy 席待審已清空、只剩進行中 ≥2(#374 r1 M1):照一般席那句叫(帶進行中封數 + 子代理規則),
+        #   不然會貼「待審區有 0 封要你處理」白叫一次
+        if tidy_on:
+            notes = []
         text = TR.wake_text(seat, rec.get("counts") or {}, len(rec.get("ids") or []), str(_HERE / "dm_queue.py"),
                             mode=mode, digest=TR.human_lines(rec, rows) if mode == "digest" else None,
                             notes=[(by_id.get(i) or {}).get("msg") or "" for i in notes], inprog=len(inprog))
@@ -2768,6 +2773,8 @@ def _row(item, seat, now, index=None):
         "msg": item.get("msg") or "",
         "rev": item_rev(item),
         "status": item.get("status") or "queued",
+        "read_by": item.get("read_by"),          # #374 r1 M2:系統代標已讀(system)的不算「進行中」
+        "wait": item.get("wait"),                # #374 r1 L1:在等誰(@044e0 B 寫入 {"text","at"});算進行中時排除
         "attempts": int(item.get("attempts") or 0),
         # hold_why 是**給人看的中文句**(只有 zh-TW);要四語的消費端請用 hold_rc 當鍵去查自己的字典,
         # 不要翻譯這一句(開發 B a seat 09-12 15:20 問任務區那行,答:印四語就用 hold_rc)。
