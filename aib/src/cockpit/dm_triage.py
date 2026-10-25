@@ -268,7 +268,7 @@ def build_record(seat, rows, prev=None, now=None):
     # wake_log:每日上限要跨批次數;woke_attempts(review r3 m3):rc=2 上限每席累計,換批不歸零
     # screen_sha / screen_since(10-13 auto_tidy):畫面多久沒變要跨批次量,換一批信不重算
     for k in ("woke_batch", "woke_ids", "woke_inprog_ids", "woke_at", "woke_rc", "wake_log", "woke_attempts",
-              "screen_sha", "screen_since", "inprog_ids"):
+              "screen_sha", "screen_since", "inprog_ids", "woke_live_n", "followups", "triage_stalled", "stalled_at"):
         if k in prev:
             rec[k] = prev[k]
     return rec
@@ -592,3 +592,40 @@ def human_lines(rec, rows):
     for i in g.get("pending") or []:
         out.append(one(i))
     return out
+
+
+# ★ Andy 10-25 22:1x「如何確保所有 AI 都會觸發」(@abb89 派工 A / B / E):叫醒只是貼一句,貼了之後要收口。
+#   叫醒後 FOLLOWUP_S 再看那一席:待審 + 進行中沒變少、也沒出現整理檔 / 子代理登記 ⇒ 再叫一次(字更硬);
+#   第二次還沒動 ⇒ triage_stalled(給艦長室 / 待審區畫「未整理」)。有進展就清掉。
+FOLLOWUP_S = 15 * 60
+FOLLOWUP_PREFIX = ("【第二次提醒:%d 分鐘前叫過你整理 dm,待審 / 進行中沒有變少、也沒有整理檔】"
+                   "現在先開 1 個整理子代理處理 dm,做完再回原本的工作。")
+
+
+def followup_action(rec, now, live_n, progressed, unread_n=None):
+    """叫醒之後的收口判斷(純函式)→ "progress"(有進展、要清旗子)/ "rewake" / "stall" / None(沒事)。
+    live_n = 現在待審未讀 + 進行中(同叫醒用的算法);progressed = 叫醒後出現整理檔或子代理登記。
+    ★ 只有進行中到門檻(待審未讀沒到)⇒ 不再貼第二次,直接 stall:#374 S2「同一批進行中只叫一次」照守。"""
+    if not isinstance(rec, dict) or rec.get("woke_at") is None:
+        return None
+    try:
+        woke_at = int(rec["woke_at"])
+        base = rec.get("woke_live_n")
+        dropped = base is not None and int(live_n) < int(base)
+    except (TypeError, ValueError):
+        return None
+    if progressed or dropped:
+        return "progress" if (rec.get("followups") or rec.get("triage_stalled")) else None
+    if rec.get("triage_stalled") or base is None or now - woke_at < FOLLOWUP_S:
+        return None
+    if int(rec.get("followups") or 0) or (unread_n is not None and int(unread_n) <= TRIAGE_MIN_UNREAD):
+        return "stall"
+    return "rewake"
+
+
+def rule_hint(unread_n, inprog_n):
+    """常駐那一句(B):待審 ≥2 或進行中 ≥2 ⇒ 回一句規則;沒到門檻回空字串。待審框 hook 與外掛的角色摘要共用。"""
+    if int(unread_n or 0) <= TRIAGE_MIN_UNREAD and int(inprog_n or 0) < INPROG_MIN:
+        return ""
+    return ("🧹 待審 %d / 進行中 %d ⇒ 開 1 個整理子代理(只結案 + 擬稿;不寄信、不刪信、不合併、不發版、不簽章;"
+            "同類合併寫 pending/DMTRIAGE-<席碼>-<時間>.md)") % (int(unread_n or 0), int(inprog_n or 0))

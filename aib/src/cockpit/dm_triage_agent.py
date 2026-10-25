@@ -155,7 +155,7 @@ def reopen(seat, item_id, actor, why, env=None, now=None):
     return {k: v for k, v in r.items() if k != "item"}
 
 
-AGENT_LOCK_FILE = "triage-agent.json"
+AGENT_LOCK_FILE = Q.TRIAGE_AGENT_LOCK_FILE
 AGENT_LOCK_TTL_S = 3600                   # @abb89 22:02:自願登記 60 分鐘過期
 
 
@@ -191,3 +191,23 @@ def agent_lock(seat, actor, env=None, now=None, release=False, status=False):
     rec = {"by": actor, "at": now, "until": now + AGENT_LOCK_TTL_S}
     Q.AJ.write_json(str(path), rec)
     return {"ok": True, "reason": "ok", "held": rec}
+
+
+def status(env=None, now=None, seat=None):
+    """看板(@abb89 派工 E):每席 woke_at / 叫醒時封數 → 現在封數 / 叫了幾次 / stalled / 子代理登記。唯讀。
+    「現在封數」取 triage.json 每拍更新的 unread_ids + inprog_ids(跟叫醒同一個算法)。"""
+    now = int(time.time() if now is None else now)
+    rows = []
+    for s in ([seat] if seat else Q.all_seats(env)):
+        rec = TR.load(Q.triage_path(s, env)) or {}
+        if not rec:
+            continue
+        live = len(rec.get("unread_ids") or []) + len(rec.get("inprog_ids") or [])
+        lk = agent_lock(s, "-", env=env, now=now, status=True).get("held")
+        rows.append({"seat": s, "woke_at": rec.get("woke_at"),
+                     "woke_when": Q.taipei_stamp(rec.get("woke_at")) if rec.get("woke_at") else None,
+                     "live_at_wake": rec.get("woke_live_n"), "live_now": live,
+                     "followups": int(rec.get("followups") or 0), "stalled": bool(rec.get("triage_stalled")),
+                     "stalled_at": rec.get("stalled_at"), "agent": (lk or {}).get("by")})
+    rows.sort(key=lambda r: (not r["stalled"], -(r["live_now"] or 0), r["seat"]))
+    return {"ok": True, "at": now, "stalled": sum(1 for r in rows if r["stalled"]), "seats": rows}

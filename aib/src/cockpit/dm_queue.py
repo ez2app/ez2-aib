@@ -1956,6 +1956,34 @@ def triage_path(seat, env=None):
     return seat_dir(seat, env) / TR.TRIAGE_FILE
 
 
+TRIAGE_AGENT_LOCK_FILE = "triage-agent.json"     # 整理子代理自願登記(dm_triage_agent.agent_lock 寫、收口讀)
+
+
+def _aib_pending_dir(env=None):
+    e = _env(env)
+    home = e.get("EZ2_AIB_HOME") or os.path.join(e.get("HOME") or os.path.expanduser("~"), ".ez2-aib")
+    return Path(home) / "pending"
+
+
+def _triage_progressed(seat, rec, env=None):
+    """叫醒(woke_at)之後那一席有沒有開工的訊號:pending/DMTRIAGE-<席>-*.md 有新的,或整理子代理登記(triage-lock)。"""
+    try:
+        woke = int((rec or {}).get("woke_at"))
+    except (TypeError, ValueError):
+        return False
+    try:
+        for f in _aib_pending_dir(env).glob("DMTRIAGE-%s-*" % seat):
+            if f.is_file() and f.stat().st_mtime >= woke:
+                return True
+    except OSError:
+        pass
+    try:
+        lk = json.loads((seat_dir(seat, env) / TRIAGE_AGENT_LOCK_FILE).read_text(encoding="utf-8"))
+        return isinstance(lk, dict) and int(lk.get("at") or 0) >= woke
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 class TriageLockBusy(RuntimeError):
     """triage --apply 等不到每席 triage 小鎖(review r4 m7):不寫檔,呼叫端回錯誤。"""
 
@@ -2026,7 +2054,23 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             rec["unread_ids"] = unread
             rec["inprog_ids"] = inprog
             TR.write(path, rec)
-    if not (TR.should_wake_tidy(rec, now=now, cooldown_s=TIDY_WAKE_COOLDOWN_S) if tidy_on else TR.should_wake(rec, now=now)):
+    # Andy 10-25 22:1x(@abb89 派工 A):叫醒之後 15 分鐘收口 —— 沒動再叫一次,第二次還沒動標 triage_stalled
+    #   有新一批信 ⇒ 照常叫(收口重新起算);沒有新信才看收口(再叫 / 標 stalled)。
+    live_n = len(unread) + len(inprog)
+    act = TR.followup_action(rec, now, live_n, _triage_progressed(seat, rec, env), unread_n=len(unread))
+    normal = TR.should_wake_tidy(rec, now=now, cooldown_s=TIDY_WAKE_COOLDOWN_S) if tidy_on else TR.should_wake(rec, now=now)
+    if act == "progress" or (act == "stall" and not normal):
+        rec = dict(rec)
+        if act == "progress":
+            rec.update({"followups": 0, "triage_stalled": False})
+            rec.pop("stalled_at", None)
+        else:
+            rec.update({"triage_stalled": True, "stalled_at": now})
+        TR.write(path, rec)
+        if act == "stall":
+            return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "triage-stalled", "cleaned": cleaned}
+    rewake = act == "rewake" and not normal
+    if not normal and not rewake:
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "no-new-batch-or-cooldown",
                 "cleaned": cleaned}
     gate_ok, gate_why = _wake_gate(seat, rec, env, now, idle_cap=not tidy_on)
@@ -2070,6 +2114,8 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
         text = TR.wake_text(seat, rec.get("counts") or {}, len(rec.get("ids") or []), str(_HERE / "dm_queue.py"),
                             mode=mode, digest=TR.human_lines(rec, rows) if mode == "digest" else None,
                             notes=[(by_id.get(i) or {}).get("msg") or "" for i in notes], inprog=len(inprog))
+    if rewake:
+        text = TR.FOLLOWUP_PREFIX % (TR.FOLLOWUP_S // 60) + text
     text = _one_line_for_line_reader(text, reg_prov or probe.get("provider"))
     # id 故意不合 ITEM_RE:投遞器看到不是佇列 id 就不帶 AIB_DM_QUEUED_ITEM_ID,dm-ctl 也就不回佇列找它
     # no_relay:叫醒那句整段貼進去,不讓 dm-ctl 換成「去讀某檔」的指標(見 _dmctl_env)
@@ -2083,7 +2129,10 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
                 # #374 r2 M-B1:這次叫醒宣告過的待審 id 之後被席位讀掉變進行中,不算「新的進行中」
                 "woke_inprog_ids": sorted(set(rec.get("inprog_ids") or []) | set(rec.get("unread_ids") or [])),
                 "woke_at": now, "woke_rc": None, "woke_mode": mode, "auto_read": [],
-                "wake_log": day_log + [now]})
+                "wake_log": day_log + [now],
+                # 收口用:第一次叫醒記當時的封數(再叫一次時照舊比第一次),followups 記叫了幾次
+                "woke_live_n": rec.get("woke_live_n") if rewake else live_n,
+                "followups": 1 if rewake else 0, "triage_stalled": False})
     if not TR.write(path, rec):
         # review r1 m3:記不下來就不叫 —— 否則下一拍看不到叫過,每分鐘都叫一次
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "triage-write-failed"}
@@ -2096,7 +2145,8 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
 
 
 # 叫醒紀錄欄;rc=2 回滾時照上一份原樣放回(上一份沒有的欄就拿掉)
-_WOKE_KEYS = ("woke_batch", "woke_ids", "woke_inprog_ids", "woke_at", "woke_rc", "woke_mode", "auto_read", "wake_log")
+_WOKE_KEYS = ("woke_batch", "woke_ids", "woke_inprog_ids", "woke_at", "woke_rc", "woke_mode", "auto_read", "wake_log",
+              "woke_live_n", "followups", "triage_stalled")
 # ★ review r2 m1:wake_log(每日上限的帳)**永不回滾** —— 每一次投遞嘗試都花過一次 dm-ctl,照算
 _WOKE_ROLLBACK_KEYS = tuple(k for k in _WOKE_KEYS if k != "wake_log")
 # ★ review r2 m1:rc=2 最多回滾這麼多次,之後記成叫過。dm-ctl 的 2 以前也用在
@@ -3222,6 +3272,13 @@ def brief_payload(seat, env=None, now=None):
     unread_rows = [r for r in (w.get("rows") or [])
                    if r.get("status") in ("queued", "delivered", "claimed") and not r.get("expired_now")]
     first = min(unread_rows, key=lambda r: int(r.get("ts") or 0)) if unread_rows else None
+    # 常駐規則那一句(@abb89 派工 B)要的兩個數:跟叫醒同一個算法(dm_triage.unread_ids / inprog_ids)
+    out["triage_unread"] = len(TR.unread_ids(w.get("rows") or []))
+    out["triage_inprog"] = len(TR.inprog_ids(t["tabs"].get("read", {}).get("rows") or []))
+    try:                                   # 收口標的「未整理」(叫了兩次沒動;@abb89 派工 A),給待審框 / 艦長室畫
+        out["triage_stalled"] = bool((TR.load(triage_path(seat, env)) or {}).get("triage_stalled"))
+    except Exception:  # noqa: BLE001 —— 分組檔是輔助資訊
+        out["triage_stalled"] = False
     out.update({"seat": seat,
                 "oldest_when": ((first.get("when") or "")[6:11] or None) if first else None,
                 "oldest_ts": (int(first.get("ts") or 0) if first else None),
@@ -5083,6 +5140,9 @@ def main(argv=None, env=None):
     ro.add_argument("--id", required=True)
     ro.add_argument("--why", required=True)
     ro.add_argument("--by", default=None)
+    ts_ = sub.add_parser("triage-status")           # 看板:每席叫醒 / 封數變化 / stalled / 子代理登記(唯讀)
+    ts_.add_argument("--seat", default=None)
+    ts_.add_argument("--json", action="store_true")
     tl = sub.add_parser("triage-lock")              # 整理子代理開工前自願登記(每席同時 1 個;只是協調,不是防線)
     tl.add_argument("--seat", default=None)
     tl.add_argument("--by", default=None)
@@ -5325,6 +5385,11 @@ def main(argv=None, env=None):
                 _print_json({"ok": False, "reason": "usage", "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": "-"}})
                 return 2
         _print_json(TA.plan(args.seat, env=env))
+        return 0
+
+    if args.cmd == "triage-status":
+        import dm_triage_agent as TA
+        _print_json(TA.status(env=env, seat=args.seat))
         return 0
 
     if args.cmd == "triage-lock":

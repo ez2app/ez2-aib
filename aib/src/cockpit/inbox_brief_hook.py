@@ -62,6 +62,15 @@ def brief_line(seat, env=None, now=None):
             stale = ""
         if not stale or stale == "aib.now.dm_stale_wait":
             stale = "⏳ 進行中逾 4 小時沒寫等什麼 %d 封 —— dm_queue.py tabs --seat %s 看 stale_wait 那幾列" % (b["stale_wait"], seat)
+    # Andy 10-25 22:1x(@abb89 派工 B):錯過叫醒那句的席,下一回合也從這行看到規則
+    try:
+        import dm_triage as TR
+        rule = TR.rule_hint(b.get("triage_unread"), b.get("triage_inprog"))
+        if rule and b.get("triage_stalled"):
+            rule = "⚠ 未整理(叫醒過還沒動)" + rule
+    except Exception:  # noqa: BLE001 — hook 不准炸
+        rule = ""
+    stale = "\n".join(x for x in (stale, rule) if x)
     if not parts:
         return stale
     # 10-05 a seat:預設 list 只列還在投遞佇列裡的信,已送達未讀的看不到(照舊提示跑會得到 []);
