@@ -33,6 +33,15 @@ def cmd_status(argv: List[str]) -> int:
     return _print_json(safe, 0)
 
 
+def cmd_plan(argv: List[str]) -> int:
+    """方案級別 free / plus / pro / ultra(外掛只問這裡);--json 跟不帶一樣輸出 JSON。"""
+    from .plan import current
+
+    r = current()
+    safe = {k: r.get(k) for k in ("plan", "reason", "expires_at", "trial", "machine_bound", "source")}
+    return _print_json(safe, 0)
+
+
 def cmd_issue(argv: List[str]) -> int:
     # TODO(the maintainer §108.320): 發證接真金鑰／後台；草稿殼不寫檔、不產簽章。
     return _print_json(
@@ -180,12 +189,13 @@ def main(argv: List[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in ("-h", "--help", "help"):
         sys.stderr.write(
-            "usage: aib-entitlement status|device-id|activate|deactivate|install|issue|revoke\n"
+            "usage: aib-entitlement status|plan|device-id|activate|deactivate|install|issue|revoke\n"
             "  install <file>  verify a signed license.json and put it in place (0600; old one backed up)\n"
             "  device-id   this machine's id under the license (for offline binding)\n"
             "  activate    activate this machine online (license with activation_url)\n"
             "  deactivate  free this machine's slot (do it before switching computers)\n"
             "  status  print entitlement JSON (machine-readable)\n"
+            "  plan [--json]  print plan JSON: free / plus / pro / ultra (signed license or trial)\n"
             "  issue   draft shell only (no real key)\n"
             "  revoke  draft shell only (no real key)\n"
         )
@@ -194,6 +204,8 @@ def main(argv: List[str] | None = None) -> int:
     rest = args[1:]
     if cmd == "status":
         return cmd_status(rest)
+    if cmd == "plan":
+        return cmd_plan(rest)
     if cmd == "issue":
         return cmd_issue(rest)
     if cmd == "revoke":
