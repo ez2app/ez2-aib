@@ -7,6 +7,7 @@
   aib room heat crashes [--json] [--days N]   當機雷達:系統當機報告按「程式 + 例外 + 訊息前 40 字」歸類
   aib room heat churn [--seconds N] [--json]  找熱源:N 秒內新開的短命行程歸給誰(room_heat_unseen.py,60 秒節流)
   aib room heat advice [--json]               散熱建議七條(room_heat_advice.py,只顯示、快取 60 秒)
+  (churn 每列再比已知熱點表 room_heat_known.py:代碼 + 修在哪版 + 換版後是否改善)
 
   aib room heat release <候選編號>… | --all-safe [--auto] [--dry-run] [--json]   釋放殘留(room_heat_release.py,白名單)
 
@@ -556,9 +557,11 @@ def main(argv=None, out=None):
             out.write(T("churn.summary", s=r["seconds"], n=r["births"], rate=r["births_per_s"],
                         cores=r["cpu_cores_lower_bound"]) + "\n")
             for x in r["top"]:
-                out.write("  %-17s %-8s %-28s %6.1f/s  >=%.2f\n" % (T("group." + x["group"]), x["owner"] or "-",
-                                                                      x["program"], x["births_per_s"],
-                                                                      x["cpu_cores_lower_bound"]))
+                k = x.get("known")
+                tag = "  [%s]" % T("known." + k["status"], fixed=k["fixed_in"] or "") if k else ""
+                out.write("  %-17s %-8s %-28s %6.1f/s  >=%.2f%s\n" % (T("group." + x["group"]), x["owner"] or "-",
+                                                                        x["program"], x["births_per_s"],
+                                                                        x["cpu_cores_lower_bound"], tag))
         return 0 if r["state"] == "ok" else 1
     if sub == "history":
         now = time.time()                               # 只回最近 1 小時(關機一天後不回昨天的點,B5)
