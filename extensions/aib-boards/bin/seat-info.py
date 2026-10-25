@@ -2,7 +2,8 @@
 """Read-only probe of the AIB seat this Claude session sits in. Prints one JSON line.
 argv[1] (optional) = this session's uuid; else $AIB_RESUME_SESSION_UUID.
 Resolution order: (1) any instances/*/seats/w*.json whose session_uuid matches (newest started_epoch wins) —
-survives cabin moves without restart; (2) fallback: cabin from $TMUX socket name. Unmeasurable fields are null."""
+survives cabin moves without restart; (1b) handoff rounds log after /clear; (2) fallback: cabin from $TMUX socket name +
+seat file by window; (3) seat_now.self_code (window first, then session-id env vars, exactly one live seat). Unmeasurable fields are null."""
 import json, os, glob, re, subprocess, sys
 out = {"cabin": None, "cabin_code": None, "role": None, "code": None, "window": None, "seat_id": None,
        "seat_file": None, "seat_file_has_uuid": None, "captain": None, "captain_addr": None,
@@ -141,6 +142,28 @@ elif sock.startswith("aihub-"):
             break
     if not out["code"] and uuid and uuid_tail5:
         out["code"] = uuid_tail5(uuid); out["err"].append("seat file matched by window only; session_uuid missing in seat file")
+# (3) 前面都認不到(背景對話 / 殼裡沒有 TMUX_PANE):用 seat_now.self_code —— 先窗號、再對話編號環境變數,
+#   而且要恰好一席、沒退席才算(#370 r1 H2:不能讓繼承了 root 對話編號的席被認成 root,窗號那條排前面)。
+#   已量到艙的話,只收同一艙的席位檔。
+if not out["code"] and code_of:
+    try:
+        from seat_now import self_code
+        _sc = self_code()
+    except Exception as e:
+        _sc = None; out["err"].append(f"self_code: {e}")
+    if _sc:
+        _hit = None
+        for f in glob.glob(os.path.join(home, "instances", out["cabin"] or "*", "seats", "w*.json")):
+            d = load(f)
+            if d and not d.get("retired") and d.get("session_uuid") and code_of(d) == _sc:
+                k = d.get("started_epoch") or 0
+                if _hit is None or k > _hit[0]: _hit = (k, f, d)
+        if _hit:
+            _, f, d = _hit
+            out.update({"cabin": d.get("cabin_id"), "role": d.get("role"), "window": d.get("window_id"),
+                        "seat_id": d.get("seat_id"), "seat_file": f, "seat_file_has_uuid": True,
+                        "code": _sc, "uuid_via": "self_code"})
+            best = best or (d.get("started_epoch") or 0, f, d)
 if out["cabin"]:
     out["cabin_code"] = out["cabin"].rsplit("-", 1)[-1]
     # captain = a root-family seat in the same cabin (prefer the one whose seat_id == my reports_to)
