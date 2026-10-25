@@ -6,6 +6,8 @@
 S1 背景對話:自己的對話編號對不到席位檔、沒有 TMUX ⇒ 用對話編號環境變數認出那一席(uuid_via=self_code)
 S2 r1 H2:在 tmux 裡、窗號對得到子席,但環境變數繼承了 root 的對話編號 ⇒ 認成子席(窗號那條排在前面),不是 root
 S3 環境變數對到的席已退席 ⇒ 不認(code None)
+S4 #376 r1 Low-1:在 tmux 裡、窗號對到的席位檔沒有 session_uuid、argv 沒給對話編號,環境殘留同艙 root 的對話編號
+   ⇒ 留在窗號那一席(seat_file = w7、不是 root),不走 (3)。刀:拿掉 `not out["seat_file"]` ⇒ S4 紅。
 刀:拿掉 (3) ⇒ S1 紅(已驗)。S3 有兩道:self_code 本身只收沒退席的、(3) 再擋一次 retired;只拿掉 (3) 那道仍綠。
 """
 import json
@@ -39,12 +41,12 @@ class SeatInfo(unittest.TestCase):
         rec.update(kw)
         (self.seats / ("w%s.json" % win.lstrip("@"))).write_text(json.dumps(rec))
 
-    def run_probe(self, extra):
+    def run_probe(self, extra, argv=(BG_U,)):
         base = {k: v for k, v in os.environ.items() if not k.startswith(("TMUX", "AIB_", "CLAUDE_CODE_", "EZ2_", "CODEX_"))}
         base.update({"EZ2_AIB_STATE_ROOT": str(self.tmp), "HOME": str(self.tmp),
                      "EZ2_COCKPIT_DIR": str(REPO / "src" / "cockpit"), "PYTHONDONTWRITEBYTECODE": "1"})
         base.update(extra)
-        r = subprocess.run([sys.executable, "-B", str(SCRIPT), BG_U], env=base, capture_output=True, text=True, timeout=60)
+        r = subprocess.run([sys.executable, "-B", str(SCRIPT), *argv], env=base, capture_output=True, text=True, timeout=60)
         return json.loads(r.stdout.strip().splitlines()[-1])
 
     def fake_tmux(self, win):
@@ -70,6 +72,15 @@ class SeatInfo(unittest.TestCase):
         self.seat("@4", ROOT_U, "root", retired=True)
         got = self.run_probe({"CLAUDE_CODE_SESSION_ID": ROOT_U})
         self.assertIsNone(got["code"])
+
+    def test_s4_window_seat_without_uuid_not_overridden(self):
+        self.seat("@4", ROOT_U, "root")
+        self.seat("@7", None, "dev")
+        got = self.run_probe({"CLAUDE_CODE_SESSION_ID": ROOT_U, "TMUX": "/tmp/tmux-501/aihub-%s,1,0" % CABIN,
+                              "TMUX_PANE": "%99", "AIB_TMUX_BIN": self.fake_tmux("@7")}, argv=())
+        self.assertEqual((Path(got["seat_file"]).name, got["role"]), ("w7.json", "dev"), got.get("err"))
+        self.assertNotEqual(got.get("uuid_via"), "self_code")
+        self.assertNotEqual(got["code"], "aaaaa")
 
 
 if __name__ == "__main__":

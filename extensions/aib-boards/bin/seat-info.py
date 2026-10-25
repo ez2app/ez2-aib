@@ -144,8 +144,9 @@ elif sock.startswith("aihub-"):
         out["code"] = uuid_tail5(uuid); out["err"].append("seat file matched by window only; session_uuid missing in seat file")
 # (3) 前面都認不到(背景對話 / 殼裡沒有 TMUX_PANE):用 seat_now.self_code —— 先窗號、再對話編號環境變數,
 #   而且要恰好一席、沒退席才算(#370 r1 H2:不能讓繼承了 root 對話編號的席被認成 root,窗號那條排前面)。
-#   已量到艙的話,只收同一艙的席位檔。
-if not out["code"] and code_of:
+#   已量到艙的話,只收同一艙的席位檔。(2) 已由窗號對到席位檔(只是檔裡沒 session_uuid)就不走這裡 ——
+#   不然環境殘留的同艙別席對話編號會把窗號認到的席蓋掉(#376 r1 Low-1)。
+if not out["code"] and code_of and not out["seat_file"]:
     try:
         from seat_now import self_code
         _sc = self_code()
