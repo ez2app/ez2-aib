@@ -1643,6 +1643,8 @@
   "aib.newproj.boot_persona_bound": "좌석 {seat} 을 페르소나 {card} 에 바인딩했습니다(폴더 {route})",
   "aib.newproj.boot_project_failed": "프로젝트 바인딩 실패;좌석과 페르소나는 유지, 고친 뒤 아래 줄로 이어가세요",
   "aib.newproj.boot_done": "좌석 {seat} 을 열고 페르소나 {card} 와 프로젝트 {uid} 를 바인딩했습니다",
+  "aib.newproj.boot_pack_sent": "페르소나 팩을 좌석 {seat} 에 보냈습니다(좌석이 「페르소나 로드됨」이라 답하면 적용)",
+  "aib.newproj.boot_pack_failed": "좌석 {seat} 은 바인딩됐지만 페르소나 팩이 전달되지 않았습니다({reason});바인딩은 유지, 오른쪽 열에 좌석이 보이면 aib newrole --deliver 로 재전송",
   "aib.newproj.no_folder": "이 프로젝트에는 폴더가 기록되어 있지 않습니다(--folder 없음, 좌석에도 폴더 없음)",
   "aib.newproj.folder_bound": "좌석 {seat}의 폴더를 {path}({key})로 연결했습니다",
   "aib.newproj.reuse_card": "기존 프로젝트 카드 {uid}({title})를 사용합니다",

@@ -1643,6 +1643,8 @@
   "aib.newproj.boot_persona_bound": "席 {seat} 已綁人格 {card}(資料夾 {route})",
   "aib.newproj.boot_project_failed": "綁專案失敗;席與人格都還在,修好後用下面那行續做",
   "aib.newproj.boot_done": "席 {seat} 已開、已綁人格 {card} 與專案 {uid}",
+  "aib.newproj.boot_pack_sent": "人格包已寄給席 {seat}(它回「人格已載入」就接上了)",
+  "aib.newproj.boot_pack_failed": "席 {seat} 已綁人格,但人格包沒寄到({reason});綁定不受影響,等右欄那一席出現後可用 aib newrole --deliver 補寄",
   "aib.newproj.no_folder": "這個專案沒有記資料夾(沒給 --folder,這一席也沒綁資料夾)",
   "aib.newproj.folder_bound": "席位 {seat} 的資料夾已綁成 {path}({key})",
   "aib.newproj.reuse_card": "沿用既有專案卡 {uid}({title})",

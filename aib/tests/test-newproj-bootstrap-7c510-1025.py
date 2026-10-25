@@ -12,6 +12,7 @@ B5 續做:帶 --seat 且人格已綁同一張 ⇒ 不開席、跳過人格、只
 B6 頁面路徑 --confirm touchid:沒生物辨識(AIB_TOUCHID=0)⇒ why=no_biometry、0 個席被開;confirm 寫錯 ⇒ bad-confirm
 B7 散熱(核心 room_heat 四級)hot ⇒ why=heat-high、0 個席被開、hint 帶同一個讀數;艙鎖在握 ⇒ why=busy,過期的鎖會被換掉
 B8 回條契約:why 是代碼、hint 是人話、next 是可直接跑的那一行;四語字典都有 boot_* 鍵
+B9 --deliver:綁完人格把人格包寄給新席(CBP.deliver_persona,假的記呼叫),回條帶 persona_pack;沒帶就不寄
 刀(複本):K1 拿掉 no_biometry 那道 ⇒ B6 紅;K2 拿掉散熱擋 ⇒ B7 紅
 """
 import contextlib
@@ -89,7 +90,10 @@ class Sandbox(unittest.TestCase):
             mock.patch.object(CBP, "open_new_seat", side_effect=self._fake_open),
             mock.patch.object(CBP, "current_cabin", return_value=CABIN),
             mock.patch.object(RH, "measure", return_value={"level": "ok", "cells": {}}),   # 散熱共用核心 room_heat;沙盒不真量
+            mock.patch.object(CBP, "deliver_persona", side_effect=self._fake_pack),
+            mock.patch.object(self.np, "deliver_handoff", return_value={"ok": True, "address": "abcd/x"}),
         ]
+        self.packs = []
         for p in self._patches:
             p.start()
 
@@ -126,6 +130,10 @@ class Sandbox(unittest.TestCase):
         if not kw.get("dry_run"):
             self.state["bound"] = {"persona_card": card, "brain_route_key": brain}
         return {"reproject": {}}
+
+    def _fake_pack(self, seat_id, seat_rec, instance, name, vault_dir, dry_run=False):
+        self.packs.append({"seat": seat_id, "name": name, "cabin": instance})
+        return {"ok": True, "address": "abcd/x", "stage": "delivered", "expect_reply": "人格已載入 deadbeef"}
 
     def _fake_status(self, root, seat_id):
         return {"agent": dict(self.state["bound"]) if self.state.get("bound") else None}
@@ -240,6 +248,18 @@ class Boot(Sandbox):
             d = json.loads((REPO / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
             for k in ("boot_no_biometry", "boot_heat_high", "boot_busy", "boot_done", "help_persona_card", "help_confirm"):
                 self.assertIn("aib.newproj." + k, d, "%s 缺 %s" % (loc, k))
+
+
+    def test_b9_deliver(self):
+        rc, out, _ = self.boot()
+        self.assertEqual(self.packs, [], "沒帶 --deliver 不寄人格包")
+        self.assertIsNone(out.get("persona_pack"))
+        shutil.rmtree(self.seats); self.seats.mkdir(); self.state.clear()
+        rc, out, text = self.boot("--deliver")
+        self.assertEqual(out["stage"], "done", text)
+        self.assertEqual(len(self.packs), 1, "--deliver ⇒ 綁完寄一次人格包")
+        self.assertEqual((self.packs[0]["seat"], self.packs[0]["name"], self.packs[0]["cabin"]), ("a1b2c", "設計助理", CABIN))
+        self.assertEqual(out["persona_pack"]["ok"], True, out)
 
 
 class Knife(unittest.TestCase):

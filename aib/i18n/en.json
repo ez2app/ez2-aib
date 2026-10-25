@@ -1643,6 +1643,8 @@
   "aib.newproj.boot_persona_bound": "Seat {seat} bound to persona {card} (folder {route})",
   "aib.newproj.boot_project_failed": "Binding the project failed; seat and persona are kept, fix it and resume with the line below",
   "aib.newproj.boot_done": "Seat {seat} opened and bound to persona {card} and project {uid}",
+  "aib.newproj.boot_pack_sent": "Persona pack sent to seat {seat} (it is live once the seat replies that the persona is loaded)",
+  "aib.newproj.boot_pack_failed": "Seat {seat} is bound, but the persona pack was not delivered ({reason}); the binding stands — once the seat shows in the right column, resend with aib newrole --deliver",
   "aib.newproj.no_folder": "This project records no folder (no --folder given, and the seat has none bound)",
   "aib.newproj.folder_bound": "The folder of seat {seat} is now {path} ({key})",
   "aib.newproj.reuse_card": "Using the existing project card {uid} ({title})",

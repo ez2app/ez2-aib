@@ -174,7 +174,8 @@ class Bootstrap:
             return self.refuse("resolve", "project-not-found", self.np._uid_refusal(root, self.uid))
         try:
             cards = BO.load_card_registry(str(BO.default_cards_path(root)))
-            self.card, _sha, _entry = BO.resolve_card_ref(cards, self.card)
+            self.card, _sha, entry = BO.resolve_card_ref(cards, self.card)
+            self.card_name = str((entry or {}).get("display_name") or self.card)
         except Exception as exc:  # noqa: BLE001  登記表讀不到 / 卡不在表裡:都是「開席前就該擋」
             return self.refuse("resolve", "persona-not-found", T("aib.newproj.boot_persona_missing", {"card": self.card, "err": exc}))
         role, role_err = CBP.new_seat_role_or_die(getattr(a, "role", ""))
@@ -273,6 +274,14 @@ class Bootstrap:
             self.say(T("aib.newproj.seat_dropped", {"seat": self.seat_id, "reason": d.get("reason"), "detail": d.get("detail"),
                                                     "contract": BO.default_contract_spec() or "-"}))
         self.say(T("aib.newproj.boot_persona_bound", {"seat": self.seat_addr(), "card": self.card, "route": route or "-"}))
+        if getattr(self.args, "deliver", False):
+            # 正在跑的新席不會自己知道被綁了:人格包用 aib dm 寄過去(newrole --deliver 同一支);寄不到不改變「已綁」,只照實回
+            import create_and_bind_persona as CBP  # noqa: E402
+            CBP.AIB_HOME = root
+            r = CBP.deliver_persona(self.seat_id, self.seat_rec, self.cabin, getattr(self, "card_name", self.card), CBP._default_vault())
+            self.persona_pack = {k: r.get(k) for k in ("ok", "address", "stage", "reason", "expect_reply") if k in r}
+            key = "aib.newproj.boot_pack_sent" if r.get("ok") else "aib.newproj.boot_pack_failed"
+            self.say(T(key, {"seat": self.seat_addr(), "reason": r.get("reason") or r.get("stage") or "-"}), "[*]" if r.get("ok") else "[!]")
         return None
 
     def project(self) -> tuple[Optional[int], dict]:
@@ -317,7 +326,8 @@ class Bootstrap:
             return rc
         out = {"ok": True, "stage": "done", "seat": self.seat_addr(), "seat_id": self.seat_id, "code": self.code,
                "persona_card": self.card, "project_uid": self.uid, "route_key": inner.get("route_key") or "",
-               "cabin": self.cabin, "approved": False, "dry_run": bool(self.args.dry_run)}
+               "cabin": self.cabin, "approved": False, "dry_run": bool(self.args.dry_run),
+               "persona_pack": getattr(self, "persona_pack", None)}
         self.say(self.T("aib.newproj.boot_done", {"seat": self.seat_addr(), "card": self.card, "uid": self.uid}))
         print(json.dumps(out, ensure_ascii=False, sort_keys=True))
         return 0

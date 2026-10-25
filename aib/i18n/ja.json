@@ -1643,6 +1643,8 @@
   "aib.newproj.boot_persona_bound": "席 {seat} をペルソナ {card} に結びました(フォルダ {route})",
   "aib.newproj.boot_project_failed": "プロジェクトの結合に失敗;席とペルソナは保持、直してから下の行で続行",
   "aib.newproj.boot_done": "席 {seat} を開き、ペルソナ {card} とプロジェクト {uid} を結びました",
+  "aib.newproj.boot_pack_sent": "ペルソナパックを席 {seat} に送りました(席が「ペルソナ読込済」と返せば有効)",
+  "aib.newproj.boot_pack_failed": "席 {seat} は結合済みですが、ペルソナパックが届きませんでした({reason});結合はそのまま、右欄に席が出たら aib newrole --deliver で再送",
   "aib.newproj.no_folder": "このプロジェクトにはフォルダが記録されていません(--folder の指定なし、席にもフォルダなし)",
   "aib.newproj.folder_bound": "席 {seat} のフォルダを {path}({key})に紐付けました",
   "aib.newproj.reuse_card": "既存のプロジェクトカード {uid}({title})を使います",
