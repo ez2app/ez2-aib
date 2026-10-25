@@ -4,6 +4,16 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.57
+
+- **Green dot from encrypted heartbeats**: each computer sends one encrypted heartbeat every 5 minutes, and friends' heartbeats are checked in one batch (one query per 500 friends), so the cost does not grow with your friend count; a friend heard from within 10 minutes shows 🟢. The heartbeat key rotates with your shared key, so a removed or blocked friend can no longer tell whether you are online, and each heartbeat carries its owner inside the encryption, so one friend cannot hide or impersonate another. The time used is when this computer received it, so a friend's clock running fast or slow does not keep the dot on.
+- **Messages sent while a friend was offline are resent when they come back**: up to 20 per friend per round, oldest first, within 2 days, only to that friend (no extra copy to your other devices), and without rewriting your sent record or receipts.
+- **First-chat timer**: the time from setting up chat to your first message is kept on this computer only.
+- **Echo helper mode**: a computer can answer strangers with one line (for testing that chat works). Friends' messages and friend requests still go through the normal flow; `status` and `selftest` clearly show when echo is on. Echo replies are tagged so they are never handed to an AI, are never answered again (no endless back-and-forth), and write no sent records or receipts.
+- **A quick reply to a message you just sent is no longer refused as a stranger** while that message is still being delivered and the reply comes back to the seat that sent it.
+- **Automatic relay switch**: if a default relay has been unreachable for 30 minutes in a row while others still work, chat switches to an unused backup relay (`nostr.mom`, `relay.snort.social`), and tries the original again after 24 hours. Sleep or a long gap between checks restarts the count; relays you set yourself are never switched. `aib chat relays` shows the switches.
+- **aib-boards 0.2.3**: only messages from people pop up as the big mail card; messages between AI seats appear as a one-line toast in the top right (8 seconds, once per message). The small-pane card no longer draws the pixel avatar.
+
 ## 0.1.56
 
 - **Automatic updates (`aib update auto`)**: when a new version is out, aib updates itself. It checks once in the background when you open a seat (not again within 10 minutes) and, on macOS, every 6 hours. It only updates when it is safe: no test lease or test run, no package push or `git push`, a clean install folder, a pure fast-forward on main, and at least an hour since the last update. Bundled plugins are always signature-checked. AI seats are not restarted. `aib update auto on|off|status [--json]` (default on; `AIB_AUTO_UPDATE=0` skips one run); results show in `aib doctor` and `~/.ez2-aib/logs/auto-update.log`.
