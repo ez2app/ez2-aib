@@ -4919,6 +4919,8 @@
   "aib.secret.btn_cancel": "Cancel",
   "aib.secret.no_gui_hint": "Could not open the input window (this terminal is not in a graphical session, which is common for an AI seat's shell). Please run the same line yourself in the Claude Code input box, starting with ! (one line, no space before the !).",
   "aib.cf.touchid_reason": "aib: approve a temporary Cloudflare key: {zone} {perms} {ttl} → {host}",
+  "aib.cf.touchid_risk.zone_settings_write": "⚠ zone-settings-write can change the whole domain's security settings (SSL mode / AOP / security level).",
+  "aib.cf.touchid_risk.dns_write": "⚠ dns-write can change every DNS record of the domain.",
   "aib.cf.revoke_reason": "aib: revoke Cloudflare key {token}",
   "aib.cf.no_minter_hint": "No Cloudflare minter key in the Secure Enclave. Create a token in the Cloudflare dashboard with only \"API Tokens Write\" (plus Zone Read on the zones you will grant for), then run yourself: aib secret ask CF_TOKEN_MINTER (it is sealed into this Mac's Secure Enclave, never written to a file)",
   "aib.cf.zone_unreadable_hint": "The minter key cannot read the zone {zone}: besides API Tokens Write it also needs Zone Read on this zone (or check the zone is in this account)",
