@@ -292,6 +292,67 @@ def ensure_device(env=None, now=None):
     return rec["device"]["npub"]
 
 
+BEAT_RETIRED_KEEP_S = 30 * 86400
+
+
+def _retire(d, stem, now):
+    _mkdir_private(d / "retired")
+    os.rename(str(d / (stem + ".key")), str(d / "retired" / ("%s.%d.key" % (stem, now))))
+
+
+def beat_sign(env=None, now=None):
+    """心跳簽章鑰(10-24 Andy 綠點):跟好友共用鑰同一代,換代一起換(#303 審 A-H1:簽章鑰不換 ⇒ 刪 / 封鎖後
+    前好友訂閱舊 npub 仍看得出在線時段、中繼站也能長期追同一台)。只拿來簽 d=aib-beat 那一筆,不代表任何席。
+    ⇒ (npub, stem)。舊一代(含 10-24 版的 beat.key)搬進 retired/,不再發。"""
+    now = int(time.time() if now is None else now)
+    gen, _stem = beat_share(env, now)
+    rec = read_map(env)
+    b = rec.setdefault("beat", {})
+    d = keys_dir(env)
+    stem = "beat-sign-%d" % gen
+    if b.get("sign_gen") == gen and b.get("npub") and (d / (stem + ".key")).is_file():
+        return b["npub"], stem
+    old = ["beat"] + (["beat-sign-%d" % b["sign_gen"]] if isinstance(b.get("sign_gen"), int) else []) + [stem]
+    for o in dict.fromkeys(old):                           # stem 自己也在:對照表比檔舊(還原過備份)⇒ 不沿用來路不明的檔
+        if (d / (o + ".key")).is_file():
+            _retire(d, o, now)
+    b.update(npub=_write_key(stem, env), sign_gen=gen, created_at=now)
+    _save_map(rec, env)
+    return b["npub"], stem
+
+
+def ensure_beat(env=None, now=None):
+    """這一代的心跳 npub(沒有就產)。"""
+    return beat_sign(env, now)[0]
+
+
+def beat_share(env=None, now=None, rotate=False):
+    """好友共用的心跳解密鑰(一把 nostr 私鑰當對稱鑰:nip44 自己加給自己,拿到私鑰的好友都解得開)⇒ (代數, stem)。
+    只放進給好友的名片(分享等級 off 的不給)。rotate ⇒ 舊的封存、產下一代(刪好友 / 封鎖 / 改 off 時)。"""
+    now = int(time.time() if now is None else now)
+    rec = read_map(env)
+    b = rec.setdefault("beat", {})
+    gen = int(b.get("share_gen") or 0)
+    d = keys_dir(env)
+    if gen and not rotate and (d / ("beat-share-%d.key" % gen)).is_file():
+        return gen, "beat-share-%d" % gen
+    if gen and (d / ("beat-share-%d.key" % gen)).is_file():
+        _retire(d, "beat-share-%d" % gen, now)
+    for f in (d / "retired").glob("beat*.key") if (d / "retired").is_dir() else ():   # 退下來的心跳鑰留 30 天(#303 審 B-L9)
+        try:
+            if now - int(f.name.rsplit(".", 2)[-2]) > BEAT_RETIRED_KEEP_S:
+                f.unlink()
+        except (ValueError, OSError):
+            pass
+    gen += 1
+    while (d / ("beat-share-%d.key" % gen)).is_file():     # 對照表比檔舊(還原過備份)⇒ 往下找空的一代,不蓋檔
+        gen += 1
+    _write_key("beat-share-%d" % gen, env)
+    b.update(share_gen=gen, share_at=now)
+    _save_map(rec, env)
+    return gen, "beat-share-%d" % gen
+
+
 def set_remote_owner(owner_npub, env=None, now=None):
     """join 別人清單的機器:對照表記主人 npub(remote),這台沒有主人私鑰。已有自己的主人 ⇒ ValueError("has_owner")。"""
     rec = read_map(env)

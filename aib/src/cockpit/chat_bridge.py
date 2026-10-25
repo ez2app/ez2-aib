@@ -601,6 +601,7 @@ def cmd_on(a, env, out):
     _mkdir_private(chat_home(env))
     write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time())})
     os.chmod(switch_path(env), 0o600)
+    GF.note_first_on(bridge_root(env))
     try:
         off_marker(env).unlink()
     except FileNotFoundError:
@@ -744,6 +745,7 @@ def cmd_auto(a, env, out):
     if ans.lower() in YES:
         write_json(str(switch_path(env)), {"v": VERSION, "on": True, "at": int(time.time()), "asked": True})
         os.chmod(switch_path(env), 0o600)
+        GF.note_first_on(bridge_root(env))
         out.write(T("auto_on") + "\n")
         zero_step(env, out)
     else:
@@ -833,7 +835,27 @@ def status_record(env):
     rec["healthy"], rec["why"] = health(rec)
     rec["backup"] = backup_state(env)
     rec["ready"] = ready_checks(rec, env)
+    rec["first"] = first_chat(GF.read_first(root), rec["ready"], rec.get("enabled"))
     return rec
+
+
+def first_chat(f, ready, enabled=True):
+    """10-24 第 8 條:開通到第一封對話的秒數 + 卡在哪一步(只算本機、不送出去)。
+    stuck:off(沒開)/ bridge / public / contact(ready 沒過的第一格)/ no_sent / no_delivered;收到送達回條 ⇒ None。"""
+    on = f.get("on")
+    out = {"on_at": on}
+    for k in ("sent", "delivered", "in"):
+        out[k + "_s"] = max(0, f[k] - on) if on and f.get(k) else None
+    if f.get("delivered"):
+        out["stuck"] = None
+    elif not enabled:
+        out["stuck"] = "off"
+    elif not on:                                       # 升級前就在用的舊用戶沒有開通時間 ⇒ 不判卡在哪
+        out["stuck"] = None
+    else:
+        out["stuck"] = next((k for k in ("bridge", "public", "contact") if not ready.get(k)),
+                            "no_sent" if not f.get("sent") else "no_delivered")
+    return out
 
 
 def ready_checks(rec, env=None):
@@ -1745,7 +1767,8 @@ def world_payload(env=None, now=None):
                                  "room": bool(sp["snap"].get("rooms"))} if sp else None,
                        "display_name": info.get("display_name"), "country": info.get("country"),
                        "aib": CR.clean_version(info.get("aib")), "missing": CR.missing_features(info.get("aib")),
-                       "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats})
+                       "presence_at": c.get("presence_at"), "fresh": fresh, "seats": seats,
+                       "online": now - int(c.get("presence_at") or 0) < GF.BEAT_GREEN_S})   # 10-24 綠點
     # 10-19:同一位主人換了艙,舊艙還在 world 裡(分不出是關掉的艙還是睡著的另一台,所以不刪)⇒ 新的排前面,
     # 只看第一格的畫面才不會拿到過期那格、把在線的人顯示成不在線
     cabins.sort(key=lambda x: (not x["fresh"], -int(x["presence_at"] or 0)))
@@ -2162,7 +2185,14 @@ def cmd_room(a, env, out):
 
 
 def cmd_world(a, env, out):
-    asked = GF.request_refresh(bridge_root(env)) if getattr(a, "refresh", False) else None   # 10-24 在不在
+    ping = getattr(a, "ping", None)
+    if ping:
+        import chat_roster as CR
+        ping = CR.friend_owner(ping)
+        if not ping:
+            out.write(T("profile_bad_friend") + "\n")
+            return 2
+    asked = GF.request_refresh(bridge_root(env), ping=ping) if (getattr(a, "refresh", False) or ping) else None   # 10-24 在不在
     pl = world_payload(env)
     if asked is not None:
         pl["asked"] = asked
@@ -2423,6 +2453,8 @@ def cmd_status(a, env, out):
         out.write(T("status_unhealthy_" + rec["why"]) + "\n")
     if rec["backup"]["due"]:
         out.write(T("backup_hint") + "\n")
+    if (rec.get("first") or {}).get("delivered_s") is not None:
+        out.write(T("status_first", s=rec["first"]["delivered_s"]) + "\n")
     for line in power_lines(env):
         out.write(line + "\n")
     import chat_pair as CP
@@ -2635,6 +2667,7 @@ def main(argv=None, env=None, out=sys.stdout):
     wd = sub.add_parser("world", help=T("help.world"))
     wd.add_argument("--json", action="store_true")
     wd.add_argument("--refresh", action="store_true", help=T("help.world_refresh"))
+    wd.add_argument("--ping", metavar="OWNER", help=T("help.world_ping"))
     pr = sub.add_parser("pair", help=T("help.pair"))
     pr.add_argument("action", nargs="?", choices=("start", "confirm", "list", "revoke"))
     pr.add_argument("target", nargs="?", help=T("help.pair_target"))
