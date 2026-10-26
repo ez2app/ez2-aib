@@ -13,7 +13,8 @@ C3(r1 M1)--dry-run 寫在 --instance= 前後都一樣:短碼照樣解析、對�
 C4(r1 M2a)EZ2_AIB_INSTANCE=<短碼 / 不存在> 環境變數指艙也走同一道:對不到 / 多個 ⇒ rc 2 不留空艙;唯一對到 ⇒ 換成完整艙名
 C5(r1 M2b)cockpit-env.sh 源頭:具名艙沒有權杖 ⇒ mkdir 前就 rc 2、不建夾;試跑(AIB_NO_STATE_WRITE=1)放行;有權杖照常
 刀:K1 拿掉 aib 第四參數那段呼叫 ⇒ C2 紅;K2 拿掉「多個就拒」⇒ C1 紅;K3 拿掉統一 pick 那段 ⇒ C2 / C3 / C4 紅;
-   K4 拿掉 cockpit-env 的權杖檢查 ⇒ C5 紅;K5 拿掉 EZ2_AIB_INSTANCE 那條 elif ⇒ C4 紅
+   K4 拿掉 cockpit-env 的權杖檢查 ⇒ C5 紅;K5 拿掉 EZ2_AIB_INSTANCE 那條 elif ⇒ C4 紅;
+C6(r2B M1)dm-ctl.sh 走鬼艙 ⇒ rc 2 不留夾;C7(r2B L2)短碼換完整艙名後繼承的 INSTANCE_HOME / SOCKET 不再出現;刀 K6 dm-ctl 不接 rc ⇒ C6 紅;K7 不 unset ⇒ C7 紅
 """
 import os
 import stat
@@ -152,6 +153,27 @@ class Launcher(unittest.TestCase):
         r = self.run_aib("claude", "safe", "dev", "--again", env_extra={"EZ2_AIB_INSTANCE": "6ddf"})
         self.assertIn("6ddf ⇒ 20261014-133230-6ddf", r.stderr, r.stderr[-600:])
         self.assertEqual(sorted(p.name for p in self.inst.iterdir()), ["20261014-133230-6ddf", "20261018-213001-2613", "20261020-101010-2613"], "解析不建任何夾")
+
+    def test_c6_dm_path_no_ghost_cabin(self):   # r2B M1:aib dm 走 dm-ctl.sh(沒 set -e),source cockpit-env 要接 rc;鬼艙 ⇒ rc 2、instances/ 不變、沒有 relay 檔
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("EZ2_", "AIB_", "TMUX"))}
+        env.update(HOME=str(self.home), EZ2_AIB_STATE_ROOT=str(self.state), EZ2_AIB_INSTANCE="20261099-000000-dead", LANG="zh_TW.UTF-8", PATH=f"{self.bin}:{os.environ['PATH']}")
+        before = sorted(p.name for p in self.inst.iterdir())
+        for args in (("--probe-box", "6ddf/abcde"), ("6ddf/abcde", "hi", "--dry-run")):
+            r = subprocess.run(["bash", str(ROOT / "src" / "cockpit" / "dm-ctl.sh"), *args], capture_output=True, text=True, timeout=60, env=env, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 2, (args, r.stderr[-500:]))
+            self.assertIn("沒有權杖檔", r.stderr)
+            self.assertEqual(r.stdout, "", (args, "守門後 dm-ctl 不准再往下跑(沒 set -e,source 要接 rc)", r.stdout[-300:]))
+            self.assertNotIn("aib-dm-ctl", r.stderr, (args, r.stderr[-500:]))
+            self.assertNotIn("RESULT stage=", r.stdout + r.stderr, args)
+        self.assertEqual(sorted(p.name for p in self.inst.iterdir()), before, "aib dm 不建鬼艙")
+        self.assertFalse((self.inst / "20261099-000000-dead").exists())
+
+    def test_c7_env_short_code_rewrites_inherited_home(self):   # r2B L2:短碼換成完整艙名後,繼承的 INSTANCE_HOME / SOCKET 不能留著指錯路徑
+        r = self.run_aib("claude", "safe", "dev", "--again", "--dry-run", env_extra={"EZ2_AIB_INSTANCE": "6ddf", "EZ2_AIB_INSTANCE_HOME": "/nonexistent/bogus-home", "EZ2_AIHUB_SOCKET": "aihub-beef"})
+        out = r.stdout + r.stderr
+        self.assertIn("6ddf ⇒ 20261014-133230-6ddf", out)
+        self.assertNotIn("bogus-home", out, "繼承的狀態家不能再出現")
+        self.assertNotIn("艙解析衝突", out, "舊 socket 要一起放掉,不然跟新艙名打架")
 
     def test_c5_cockpit_env_refuses_without_token(self):   # r1 M2b:源頭擋在 mkdir 之前
         def src(inst, extra=None):

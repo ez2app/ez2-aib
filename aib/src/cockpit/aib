@@ -1192,8 +1192,13 @@ _pick_soft="$( [ "$DRY" = "1" ] && echo 1 || echo 0 )"
 if [ -n "$INSTANCE" ] && [ "$MAIN_EXPLICIT" != "1" ]; then
   INSTANCE="$(aib_cabin_pick_named "$INSTANCE" "$_pick_root" "$_pick_soft")" || exit 2
 elif [ -z "$INSTANCE" ] && [ "$NEW" = "0" ] && [ -n "${EZ2_AIB_INSTANCE:-}" ] && [ "$EZ2_AIB_INSTANCE" != "new" ] && ! aib_cabin_is_primary "$EZ2_AIB_INSTANCE"; then
+  _pick_was="$EZ2_AIB_INSTANCE"
   EZ2_AIB_INSTANCE="$(aib_cabin_pick_named "$EZ2_AIB_INSTANCE" "$_pick_root" "$_pick_soft")" || exit 2
   export EZ2_AIB_INSTANCE
+  if [ "$EZ2_AIB_INSTANCE" != "$_pick_was" ]; then   # 短碼換成了完整艙名 ⇒ 繼承來的狀態家 / socket 是舊值,讓 cabin_resolve 重推(r2B L2:不然訊息指錯路徑、或跟 socket 打架)
+    unset EZ2_AIB_INSTANCE_HOME EZ2_AIHUB_SOCKET
+  fi
+  unset _pick_was
 fi
 unset _pick_root _pick_soft
 # ★ 工單 AQ 刀錨,必須全檔恰好一次。

@@ -85,7 +85,7 @@ if [ -n "${EZ2_AIHUB_SOCKET+x}" ]; then
   _DM_SOCKET_WAS_SET=1
 fi
 _DM_ORIG_ARGS=("$@")
-. "$HERE/cockpit-env.sh"
+. "$HERE/cockpit-env.sh" || exit $?   # 10-26(#373 r2B M1):守門 return 2 要真的停(這支沒 set -e);不然 aib dm 自己把 instances/<鬼艙> 建出來
 
 PY3="${EZ2_PY3:-python3}"
 # 畫面字走四語字典(語系盤查第 14 條,10-14):_dmt <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取。
