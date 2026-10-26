@@ -33,6 +33,14 @@ class Codex(unittest.TestCase):
         for suffix in ('  multiline draft','```','new output','  › indented quote'):
             self.reject('›\n'+suffix+'\n'+FOOT)
             self.reject(IDLE+'\n'+suffix)
+    def test_footer_shaped_draft_and_duplicate_footer_are_rejected(self):
+        for draft in ('  Main [default] delete the backup', '93% context left is the title I am drafting', FOOT):
+            self.reject('›\n'+draft+'\n\n'+FOOT)
+        for footer in ('Main [default]', 'Main [default] delete the backup',
+                       '93% context left is the title I am drafting',
+                       '? for shortcuts delete the backup',
+                       'Main [default] 18% context left extra words'):
+            self.reject('›\n'+footer)
     def test_history_and_markdown_are_not_composer(self):
         for screen in ('›\nassistant text','› Ask Codex to do anything\n'+FOOT+'\nnew output',
                        '    ›\n'+FOOT,'> ›\n'+FOOT,'›','› Ask Codex to do anything'):

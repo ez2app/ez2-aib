@@ -32,7 +32,10 @@ _GROK_THINKING = re.compile(r"Thinking…|Worked for|⠧|⠇|Esc:cancel")
 
 # Codex has a borderless composer. A bare history quote is not an input field.
 _CODEX_PROMPT = re.compile(r"^›(?:\s+(.*)|$)")
-_CODEX_FOOTER = re.compile(r"^\s*(?:Main \[[^\]\r\n]+\]|\? for shortcuts|\d+% context left|context left:).*\Z")
+_CODEX_CONTEXT = r"(?:100|[0-9]{1,2})% context left"
+_CODEX_WARNINGS = r"(?:[ ]+⚠?[ ]*[0-9]+ warnings?(?:[ ]*·[ ]*f2 to view)?)?"
+_CODEX_FOOTER = re.compile(r"^[ ]*(?:Main \[[A-Za-z0-9_-]+\][ ]+" + _CODEX_CONTEXT
+                           + r"|\? for shortcuts(?:[ ]+" + _CODEX_CONTEXT + r")?)" + _CODEX_WARNINGS + r"[ ]*\Z")
 _CODEX_THINKING = re.compile(r"^\s*[•●]\s+(?:Working|Thinking|Reconnecting|Waiting)\b[^\n]*(?:esc to interrupt|\([^\n]*\d[^\n]*\))", re.I)
 _CODEX_QUEUE = re.compile(r"^\s*tab to queue message\b", re.I)
 _CODEX_MENU = re.compile(r"^\s*(?:(?:›\s*)?/(?:model|fast|presets|permissions|skills|review|ide|status)\s{2,}\S|(?:Select|Choose) (?:a model|reasoning effort|permissions|approval policy)\b)", re.I)
@@ -77,7 +80,7 @@ def _codex_block(lines):
     after = [line for line in lines[index + 1:] if line.strip()]
     # The active composer must end at the status footer; intervening content may be
     # a multiline draft, output, or a menu, none of which is safe to overwrite.
-    if not after or not all(_CODEX_FOOTER.fullmatch(line) for line in after):
+    if len(after) != 1 or not _CODEX_FOOTER.fullmatch(after[0]):
         return "no-prompt", ""
     body = (prompt.group(1) or "").strip()
     if body and body not in _CODEX_PLACEHOLDERS:
