@@ -38,6 +38,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           allow-prereleases: true   # 最新版剛出時 setup-python 可能只有預覽版
+      - name: fast release metadata preflight
+        if: env.RUN_CELL == 'true'
+        run: python aib/tools/release/release_preflight.py --repo . --json
       - name: newer bash on macOS (aib traces bash 4.1+; the system /bin/bash 3.2 is reported as not measured)
         if: env.RUN_CELL == 'true' && runner.os == 'macOS'
         run: brew install bash && echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
