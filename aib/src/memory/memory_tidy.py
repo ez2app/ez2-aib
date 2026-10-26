@@ -83,7 +83,7 @@ def _now():
 def _when(text):
     """ISO 時刻字串 → 有時區的 datetime(比較用,不靠字串比);讀不懂 ⇒ 最舊。"""
     try:
-        d = datetime.datetime.fromisoformat(str(text or ""))
+        d = datetime.datetime.fromisoformat(str(text or "").replace("Z", "+00:00"))
         return d if d.tzinfo else d.astimezone()
     except ValueError:
         return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
@@ -311,7 +311,7 @@ def human_words_line(words):
 
 
 def human_words(ctx, since="", span_rounds=False):
-    """本輪(since 之後)the maintainer 親口說的話:這一席的 Claude 對話檔 → human_filter.is_human 篩
+    """本輪(since 之後)the maintainer 親口說的話:這一席的原生 CLI / API 對話檔 → human_filter.is_human 篩
     (比對 dm 送件紀錄、dm 標頭、Stop hook 回饋等機器字樣;seat 一律當已綁真人,不然沒綁人格的席全被丟)。
     → [(時刻, 原文)](最多 HUMAN_MAX 則,每則截 300 字);讀不到回 []。"""
     paths = []
@@ -366,6 +366,16 @@ def human_words(ctx, since="", span_rounds=False):
     _LAST_SOURCE[ctx["code"]] = human_words_status()          # 退路篩匯入失敗會在讀的過程改成讀不到
     out = []
     for path in paths:
+        if ctx.get("provider") == "codex":
+            try:
+                with open(path, encoding="utf-8") as meta_file:
+                    meta = json.loads(meta_file.readline())
+                payload = meta.get("payload") if isinstance(meta, dict) else None
+                if not isinstance(payload, dict) or meta.get("type") != "session_meta" or (payload.get("session_id") or payload.get("id")) != ctx["seat_uid"]:
+                    raise ValueError("Codex session metadata mismatch")
+            except (OSError, ValueError, TypeError):
+                _LAST_SOURCE[ctx["code"]] = HUMAN_WORDS_NO_TRANSCRIPT
+                continue
         if str(path).endswith(".db"):
             try:
                 import seat_native

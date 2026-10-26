@@ -50,10 +50,28 @@ class MultiAI(unittest.TestCase):
     def read(self, provider, bot=False):
         with mock.patch.object(aib_handoff,'rounds',return_value=[]), mock.patch.object(aib_handoff,'binding_state',return_value={'problem':'bot' if bot else 'ok'}), mock.patch.object(M,'_human_filter',return_value=None):
             return M.human_words(dict(self.ctx, provider=provider), SINCE, span_rounds=True)
+    def test_utc_z_window_matches_explicit_offset(self):
+        self.assertEqual(M._when(TS), M._when("2026-10-26T13:00:00+08:00"))
+        self.assertEqual(M._when(TS).year, 2026)
+        self.assertEqual(M._when("not-a-timestamp").year, 1)
+
     def test_context_retains_runtime_provider_not_model_name(self):
         p=self.root/'state/instances/20261026-000000-ab12/seats/w1.json'
         self.write(p,[{'session_uuid':SID,'provider':'copilot','model_requested':'model-alias'}])
         self.assertEqual(aib_memory.seat_context('ab12/0ab12')['provider'],'copilot')
+    def test_codex_session_metadata_wins_over_filename(self):
+        import seat_fork
+        path=self.root/('rollout-'+SID+'.jsonl')
+        user={'type':'response_item','timestamp':TS,'payload':{'type':'message','role':'user','content':[{'type':'input_text','text':'hello'}]}}
+        meta={'type':'session_meta','payload':{'id':SID,'session_id':'other'}}
+        self.write(path,[meta,user])
+        with mock.patch.object(seat_fork,'find_record',return_value=path):
+            self.assertEqual(self.read('codex'),[])
+            self.assertEqual(M.words_source('0ab12'),M.HUMAN_WORDS_NO_TRANSCRIPT)
+            meta['payload']={'id':'thread-id','session_id':SID}
+            self.write(path,[meta,user])
+            self.assertEqual(self.read('codex'),[('2026-10-26 05:00','hello')])
+
     def test_copilot_kimi_public_user_only(self):
         rows=[{'type':'session.start','data':{'sessionId':SID}},
               {'type':'user.message','timestamp':TS,'data':{'content':'hello'}},
