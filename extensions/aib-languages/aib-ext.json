@@ -1,7 +1,7 @@
 {
   "name": "aib-languages",
   "kind": "mod",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "requires_aib": "0.1.7",
   "built_from": "0.70.11",
   "title": "切換 AIB 語言(Claude Code mod)",
@@ -9,14 +9,14 @@
   "schema": "aib-ext/v1",
   "data_only": false,
   "files": {
-    ".claude-plugin/plugin.json": "435843c2e98b5860004a3b26d662a819eddac4f1f1af18201cf9e2ded28cbc8f",
+    ".claude-plugin/plugin.json": "ea51647eeeea9e06678eb061ce4be4b445f144437281a3faa561b911768959f1",
     "README.md": "f703a22bc269d48987194adc6db5565cf92962fcf3d02525997cac8c5a25bd2d",
     "hooks/hooks.json": "d842d789476d67282d0f04b7e5fdc68a3d981ccec65dd79cfa2d11eed13fb828",
     "hooks/i18n.ts": "01899c14740520f2258a4a6d0253cd2c8726dfddad621b3a0cc6e68a155a5ffa",
     "hooks/lang.test.tsx": "5cb6ffe5fd0bd5809abe6fb3c0601ca353c35412644d381cc14653fa3a97ef64",
-    "hooks/register.tsx": "a1bea73c7d353aadca796ee91cd83ab3f3c1bcf968585400db3c1409dbb3d5ca",
+    "hooks/register.tsx": "588294ccdeecf077a165e3af660729cb886ceb6a27d40d9f228ee110860f1bf4",
     "tsconfig.json": "88437ec880f7008b5df208a95a7d47330f0e3a8204d78d6c5cc272e5941c3511",
     "types/index.d.ts": "ace1ae32cc1f95911e5c8ab049f36d2fcbd8e5e56a99f91f942d5d79f266e279"
   },
-  "signature": "ed25519:kwPhYO52Kpk8wf3HntZslCQTILAWb+woZlx47vg8aYdTLhYwgQJN86WDSg3gz54XQsX0NJkjEbB0fWGG2NBCAQ=="
+  "signature": "ed25519:S8c0rk/n3SSyIwYHQ3bVca51fLCfrXL3I73HNgP7yKMfw+zGCl9ELHrP0tFuXchNqvxEH2QdE/7G8nIZ09VkCQ=="
 }

@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -47,6 +48,10 @@ for _p in (HERE, REPO / "src" / "cockpit"):
     sys.path.insert(0, str(_p))
 TMP = tempfile.mkdtemp(prefix="aib-power-ask-test-")
 os.environ["EZ2_AIB_STATE_ROOT"] = TMP
+# quota() reads a separate usage directory, not EZ2_AIB_STATE_ROOT. Never read
+# the developer's live quota cache while exercising the fake login probes.
+_OLD_USAGE_DIR = os.environ.get("EZ2_USAGE_DIR")
+os.environ["EZ2_USAGE_DIR"] = os.path.join(TMP, "usage")
 from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 import power_ask as A  # noqa: E402
@@ -109,6 +114,7 @@ class FakeRun:
 class Ask(unittest.TestCase):
     def setUp(self):
         shutil.rmtree(Path(TMP) / "state", ignore_errors=True)
+        shutil.rmtree(Path(TMP) / "usage", ignore_errors=True)
 
     def test_a1_unsupported(self):
         for b in ("grok", "copilot", "agy", "", "claude;x", None):
@@ -510,6 +516,24 @@ class Ask(unittest.TestCase):
         st = Path(power_login.state_dir()) / "power-login.json"
         self.assertFalse(st.exists(), "判燈不准寫共用快取")
 
+    def test_a16b_exhausted_fixture_still_blocks(self):
+        import usage_probe as UP
+        usage = Path(os.environ["EZ2_USAGE_DIR"])
+        usage.mkdir(parents=True)
+        Path(UP.record_path(usage, "claude", "7d", "shared")).write_text(json.dumps({
+            "schema": UP.SCHEMA, "engine": "claude", "window": "7d", "tier": "shared",
+            "status": "ok", "used_pct": 100, "observed_at": time.time(),
+        }), encoding="utf-8")
+        saved = A.run_group
+        A.run_group = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, '{"loggedIn": true}', "")
+        try:
+            run = FakeRun()
+            result, rc = A.ask("claude", "問", run=run)
+            self.assertEqual((rc, result["detail"], run.calls), (2, "power_ask_login", []))
+            self.assertEqual(A._light("claude"), "red")
+        finally:
+            A.run_group = saved
+
     def test_a15_group_kill(self):
         d = Path(tempfile.mkdtemp(prefix="aib-power-ask-grp-"))
         try:
@@ -611,6 +635,10 @@ class Knife(unittest.TestCase):
 
 def tearDownModule():
     shutil.rmtree(TMP, ignore_errors=True)
+    if _OLD_USAGE_DIR is None:
+        os.environ.pop("EZ2_USAGE_DIR", None)
+    else:
+        os.environ["EZ2_USAGE_DIR"] = _OLD_USAGE_DIR
 
 
 if __name__ == "__main__":

@@ -33,6 +33,13 @@ FIELD_SEP_RE = re.compile(r"\s*·\s*")
 HUMAN_ORDER = "the maintainer 令"
 
 
+def wait_text(row):
+    """進行中的「等什麼」:row["wait"] 是 dict 且 text 有字 ⇒ 回壓成一行的字，否則 ""。
+    計數(dm_queue tabs --counts 的 read_without_wait)跟畫面(render_lib 的 ⏳ 尾巴)共用這一支，同一判斷(#370 r2 L-new3)。"""
+    w = row.get("wait") if isinstance(row, dict) else None
+    return " ".join(str(w.get("text") or "").split()) if isinstance(w, dict) else ""
+
+
 def _relay_path_of(msg):
     import dm_relay  # noqa: WPS433  10-08:指標信格式搬到核心(訊息待審做成收費外掛,沒裝時這裡仍要認得)
     return dm_relay.relay_path_of(msg)
@@ -43,6 +50,9 @@ def original_line(msg):
     raw = msg if isinstance(msg, str) else ""
     path = _relay_path_of(raw)
     if path:
+        import dm_relay  # noqa: WPS433
+        if not dm_relay.relay_file_ok(path):      # #370 r1 M2:只讀長訊目錄裡的 RELAY-dm-*.txt
+            return RELAY_UNREADABLE, ""
         try:
             raw = Path(path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):

@@ -11,7 +11,7 @@ import { LOCALES, SELF_NAMES, normalize, cached, remember, forget, makeT } from 
 import type { Loc } from './i18n'
 
 const PANE = 'aib-languages'
-const NO_AIB_FALLBACK = 'Cannot find the aib command (EZ2_AIB_ROOT unset and no ~/ez2-ai-b)'
+const NO_AIB_FALLBACK = 'AIB notice · Cannot find the aib command (EZ2_AIB_ROOT unset and no ~/ez2-ai-b)'
 const PREFIX = 'mod.aib_languages'
 const POLL_MS = 5000
 // 初始值要是物件:引擎用 WeakMap 記版本,null 當鍵會炸(kit 二分 10-14 實測);locale 空 = 還沒讀到

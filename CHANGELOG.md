@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.60
+
+- **Queued seat input never pops Touch ID and never extends the unlock window (`aib seat input --queued`)**: only the local unlock window counts; when it is closed the receipt is `locked` (rc 3) with a hint in four languages, no biometrics, no window opened; a send inside the window does not extend it. Meant for the captain's room "queued" quick buttons.
+- **aib-boards 0.2.4 / aib-languages 0.1.1**: toasts carry the source header "AIB notice ·".
+- **The pending-review box shows closing evidence and "waiting for what"**: closing accepts only a full PR URL (a bare #N is refused); long mail shows a 200-character preview in the box (read only from RELAY files inside the relay folder, control characters stripped); in-progress mail is counted separately, `tabs --counts` splits them.
+- **Second step of the website admin login: enrol this computer in one go (`aib approve enroll <site> --host <ssh alias>`)**: the host identity is pinned (a differing `~/.ssh/known_hosts` record refuses, revoked keys refuse, first-time trust is labelled), every ssh option that could bypass the pinned host key is switched off; the Touch ID window names the site / host / key id and the whole run uses only the key that was signed with; the config is backed up before writing and read back after, any failure restores it, Ctrl-C / SIGTERM restore too and undo the local registration; a Mac without biometrics or without a Secure Enclave refuses (`no_biometry` / `no_se`) and lists alternatives, never falling back to an unprotected key.
+
 ## 0.1.59
 
 - **Plugins download in three tiers (public / member / paid)**: each entry in the ez2.page plugin catalog gains `access`. Member plugins (such as the captain's room) download once this computer is bound, no purchase needed; paid plugins need a binding and a purchase. An unknown tier makes the whole catalog untrusted, and the credential is sent only to ez2.page. The binding credential needs `plugins:read` (only pairing-code binds get it); old credentials get `plugin_scope_missing` with a hint to bind again. **Member plugins need 0.1.59 or later**: older versions treat them as public, send no credential, and the server answers "credential missing".
