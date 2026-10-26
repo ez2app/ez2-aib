@@ -42,6 +42,30 @@ def cmd_plan(argv: List[str]) -> int:
     return _print_json(safe, 0)
 
 
+def cmd_allowed(argv: List[str]) -> int:
+    """aib license allowed <sku> [--free-at <plan>] [--json]:這件現在能不能用(方案內含 / 單買 / 單訂閱同一支判斷)。"""
+    from .items import allowed
+
+    args = [a for a in argv if a != "--json"]
+    sku, free_at = "", None
+    i = 0
+    while i < len(args):
+        if args[i] == "--free-at" and i + 1 < len(args):
+            free_at = args[i + 1]
+            i += 2
+            continue
+        if not sku:
+            sku = args[i]
+        i += 1
+    if not sku:
+        sys.stderr.write("usage: aib license allowed <sku> [--free-at <plan>] [--json]\n")
+        return 2
+    r = allowed(sku, free_at)
+    safe = {k: r.get(k) for k in ("allowed", "source", "plan", "reason", "expires_at", "trial", "left_days", "was")}
+    safe["sku"] = sku
+    return _print_json(safe, 0)
+
+
 def cmd_issue(argv: List[str]) -> int:
     # TODO(the maintainer §108.320): 發證接真金鑰／後台；草稿殼不寫檔、不產簽章。
     return _print_json(
@@ -195,7 +219,8 @@ def main(argv: List[str] | None = None) -> int:
             "  activate    activate this machine online (license with activation_url)\n"
             "  deactivate  free this machine's slot (do it before switching computers)\n"
             "  status  print entitlement JSON (machine-readable)\n"
-            "  plan [--json]  print plan JSON: free / plus / pro / ultra (signed license or trial)\n"
+            "  plan [--json]  print plan JSON: free / go / plus / pro / ultra (signed license or trial)\n"
+            "  allowed <sku> [--free-at <plan>] [--json]  is this sku usable now (plan tier, single purchase or rental)\n"
             "  issue   draft shell only (no real key)\n"
             "  revoke  draft shell only (no real key)\n"
         )
@@ -206,6 +231,8 @@ def main(argv: List[str] | None = None) -> int:
         return cmd_status(rest)
     if cmd == "plan":
         return cmd_plan(rest)
+    if cmd == "allowed":
+        return cmd_allowed(rest)
     if cmd == "issue":
         return cmd_issue(rest)
     if cmd == "revoke":
