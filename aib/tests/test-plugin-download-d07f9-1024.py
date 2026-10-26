@@ -30,6 +30,7 @@ D4b 解開大小 / 成員數 / pax 大標頭超過上限 ⇒ too-big-unpacked(�
 import base64
 import hashlib
 import http.client
+import contextlib
 import io
 import json
 import os
@@ -398,6 +399,31 @@ class Install(Box):
         self.assertEqual((rc, res["detail"], res["addon"], res["licensed"]), (0, "plugin_installed", None, True), res)
         req = member.seen[0]
         self.assertEqual((req.get_header("Authorization"), req.get_header("X-aib-machine")), ("Bearer ast_x", MID))
+
+    def test_d7c_plan_required(self):
+        # 目錄條目帶 plan、伺服器 403 plugin_plan_required details [需要的級] ⇒ 回條 detail 原碼 + plan、沒裝;值不在五級 / public 帶 plan ⇒ 整份目錄不合契約
+        data = self.tgz()
+        ent = dict(self.entry(data, access="member"), plan="pro")
+        srv = self.server([ent], {("probe", "0.0.1"): data})
+        self.assertEqual(PC.parse_catalog({"ok": True, "v": 1, "plugins": [ent]})[0]["plan"], "pro")
+        res, rc = AP.catalog_cmd(dict(os.environ), api(self.server([ent, dict(self.entry(data, access="public"), version="0.0.2")], {})))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            AP._emit(res, rc)
+        lines = buf.getvalue().splitlines()
+        self.assertEqual((rc, len(lines)), (0, 2), buf.getvalue())
+        self.assertIn("member pro+", lines[0])   # 畫面:這一級以上含在方案內
+        self.assertNotIn("+", lines[1])
+        for bad in (dict(ent, plan="vip"), dict(ent, plan=3), dict(self.entry(data, access="public"), plan="free")):
+            self.assertIsNone(PC.parse_catalog({"ok": True, "v": 1, "plugins": [bad]}), bad.get("plan"))
+        low = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (403, {"error": "plugin_plan_required", "details": ["pro"]})})
+        res, rc = self.install("probe", srv, paid_api=api(low, token="ast_x"), machine_id=MID)
+        self.assertEqual((rc, res["detail"], res.get("plan")), (3, "plugin_plan_required", "pro"), res)
+        self.assertTrue(res.get("hint"), res)
+        self.assertFalse(self.installed().exists())
+        odd = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (403, {"error": "plugin_plan_required", "details": ["<b>x</b>"]})})
+        res, rc = self.install("probe", srv, paid_api=api(odd, token="ast_x"), machine_id=MID)
+        self.assertEqual((rc, res["detail"], "plan" in res), (3, "plugin_plan_required", False), res)
 
     def test_d7_paid(self):
         data = self.tgz(addon="probe")

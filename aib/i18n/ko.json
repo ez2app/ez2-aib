@@ -5337,6 +5337,7 @@
   "aib.plugins.hint.plugin_unknown": "서버에 해당 플러그인이나 버전이 없습니다",
   "aib.plugins.hint.plugin_license_none": "이 계정은 이 애드온을 구매하지 않았습니다",
   "aib.plugins.hint.plugin_license_device_limit": "이 라이선스의 기기 수가 가득 찼습니다. 먼저 이전 기기에서 aib license deactivate 를 실행하세요",
+  "aib.plugins.hint.plugin_plan_required": "이 계정의 플랜이 이 플러그인에 필요한 등급(영수증에 plan 이 있으면 그것이 필요한 등급)에 미치지 못하고 단품 구매도 되어 있지 않습니다. ez2.page 에서 플랜을 올리거나 이 애드온을 단품 구매한 뒤 다시 설치하세요",
   "aib.plugins.hint.plugin_refused": "서버가 거부했습니다",
   "aib.plugins.hint.server_refused": "서버가 거부했습니다({code})",
   "aib.context.menu.need_key": "(API 키 없음 · 클릭해서 입력)",

@@ -395,8 +395,10 @@ def _emit(res, rc, as_json=False):
         print(_safe(json.dumps(res, ensure_ascii=False)))
     elif res.get("detail") == "plugin_catalog":
         for e in res["plugins"]:
-            print(_safe("%-24s %-10s %s%s" % (e["name"], e["version"], e["price"] or {"paid": "-", "member": "member"}.get(e.get("access"), "free"),
-                                              ("  " + e["summary"]) if e["summary"] else "")))
+            label = e["price"] or {"paid": "-", "member": "member"}.get(e.get("access"), "free")
+            if e.get("plan"):   # 10-25 方案五級:這一級以上含在方案內(paid + plan = 方案含 或 單買)
+                label += " %s+" % e["plan"]
+            print(_safe("%-24s %-10s %s%s" % (e["name"], e["version"], label, ("  " + e["summary"]) if e["summary"] else "")))
     else:
         print(_safe(str(res.get("hint") or res.get("detail"))), file=sys.stdout if res.get("ok") else sys.stderr)
         for p in res.get("problems") or ():
