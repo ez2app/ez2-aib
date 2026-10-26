@@ -338,11 +338,13 @@ class B2BatchRetryOnlyFailedSeats(unittest.TestCase):
 
     # ★ 結果由 rc_seq 決定,不由時鐘決定:--retry-until 給得遠大於實際所需(成功就提早結束),
     #   aib test 的執行器(隔離環境+追蹤器)每一輪慢好幾倍,原本 5~9 秒的上限在那裡會先到 ⇒ 少一輪而紅。
+    # The subprocess deadline must cover the requested 300-second retry window;
+    # Box.run's 90-second default can interrupt valid rounds under tracing load.
     def test_delivered_seat_not_resent(self):
         b = Box(self, seats=((2, SEAT_UUID), (4, SEAT2_UUID)), extra_windows=())
         b.rc_seq("0 4 4 0")  # 第一輪:@2 送達、@4 被擋(兩幀相同 ⇒ rc 2);@4 再擋一次後送達
         p = b.run(["--to", "@abcde,@c0ffe", "status update for both", "--retry-until", "300",
-                   "--retry-every", "0"], FAKE_CAP_MODE="static")
+                   "--retry-every", "0"], timeout=360, FAKE_CAP_MODE="static")
         wins = [throat_window(c) for c in b.exec_calls()]
         self.assertEqual(wins, ["@2", "@4", "@4", "@4"])
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
@@ -361,7 +363,7 @@ class B2BatchRetryOnlyFailedSeats(unittest.TestCase):
         b = Box(self, seats=((2, SEAT_UUID), (4, SEAT2_UUID)), extra_windows=())
         b.rc_seq("0 4 0")
         p = b.run(["--to", "@abcde,@c0ffe", "status update again", "--retry-until", "300",
-                   "--retry-every", "0"], FAKE_CAP_MODE="static")
+                   "--retry-every", "0"], timeout=360, FAKE_CAP_MODE="static")
         wins = [throat_window(c) for c in b.exec_calls()]
         self.assertEqual(wins, ["@2", "@4", "@4"])
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
