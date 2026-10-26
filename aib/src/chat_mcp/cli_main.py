@@ -112,8 +112,27 @@ def main(argv=None):
         return 0
     st = core.Store()
     if a.cmd == "key" and a.kcmd == "new":
-        if st.active_binding(a.principal) is None:
-            st.bind(a.principal, a.seat, a.allow, tuple(a.scope or core.SCOPES), a.session, "cli key new (local test)")
+        cur = st.active_binding(a.principal)
+        if cur is None:
+            try:
+                st.bind(a.principal, a.seat, a.allow, tuple(a.scope or core.SCOPES), a.session, "cli key new (local test)")
+            except ValueError as e:
+                print("錯誤:%s" % e, file=sys.stderr)
+                return 2
+        else:
+            diff = []
+            if cur["seat"] != a.seat:
+                diff.append("seat %s≠%s" % (cur["seat"], a.seat))
+            if a.allow and sorted(set(a.allow)) != sorted(cur["allowlist"]):
+                diff.append("allow")
+            if a.scope and sorted(a.scope) != sorted(cur["scopes"]):
+                diff.append("scope")
+            if a.session and a.session != cur.get("session_uuid"):
+                diff.append("session")
+            if diff:
+                print("錯誤:principal %s 已有 binding,參數不同(%s);請先 binding revoke 再重建" % (a.principal, ", ".join(diff)),
+                      file=sys.stderr)
+                return 2
         raw = st.new_key(a.principal)
         print("本機測試金鑰(只顯示這一次,勿貼進聊天):\n" + raw)
         return 0

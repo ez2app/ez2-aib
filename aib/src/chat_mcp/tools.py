@@ -283,7 +283,7 @@ class Tools:
                 msgs, nxt, more = self._query_box(p, b, "inbox", a.get("cursor"), core.LIMIT_DEFAULT)
                 if msgs or time.time() >= end:
                     return {"messages": msgs, "next_cursor": nxt, "has_more": more}
-                time.sleep(0.25)
+                time.sleep(core.WAIT_POLL_SECS)
                 b = self.store.active_binding(p)
                 if not b:
                     raise ToolError("FORBIDDEN", "no active binding")

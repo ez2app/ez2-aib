@@ -26,6 +26,8 @@ def _origin_ok(origin):
 
 
 def make_handler(tools, auth):
+    sessions, slock = set(), threading.Lock()  # 本程序發出的 Mcp-Session-Id;帶了未知 id → 404
+
     class H(BaseHTTPRequestHandler):
         server_version = "aib-chat-mcp"
         sys_version = ""
@@ -59,7 +61,10 @@ def make_handler(tools, auth):
             except core.ToolError:
                 return self._send(401, {"error": "unauthenticated"},
                                   {"WWW-Authenticate": 'Bearer realm="aib-chat-mcp"'})
-            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self._send(400, {"error": "bad length"})
             if n <= 0 or n > MAX_REQ:
                 return self._send(413 if n > MAX_REQ else 400, {"error": "bad length"})
             try:
@@ -70,6 +75,14 @@ def make_handler(tools, auth):
             if isinstance(req, list) or not isinstance(req, dict):
                 return self._send(400, {"jsonrpc": "2.0", "id": None,
                                         "error": {"code": -32600, "message": "invalid request"}})
+            pvh = self.headers.get("MCP-Protocol-Version")
+            if pvh and pvh not in PROTOCOL_VERSIONS:
+                return self._send(400, {"jsonrpc": "2.0", "id": req.get("id"),
+                                        "error": {"code": -32600, "message": "unsupported MCP-Protocol-Version"}})
+            sid = self.headers.get("Mcp-Session-Id")
+            if sid and req.get("method") != "initialize" and sid not in sessions:
+                return self._send(404, {"jsonrpc": "2.0", "id": req.get("id"),
+                                        "error": {"code": -32001, "message": "session not found"}})
             if "id" not in req:  # notification
                 return self._send(202)
             rid, method, params = req.get("id"), req.get("method"), req.get("params") or {}
@@ -77,6 +90,10 @@ def make_handler(tools, auth):
             if method == "initialize":
                 pv = params.get("protocolVersion")
                 headers["Mcp-Session-Id"] = secrets.token_urlsafe(16)
+                with slock:
+                    if len(sessions) > 1000:
+                        sessions.clear()
+                    sessions.add(headers["Mcp-Session-Id"])
                 result = {"protocolVersion": pv if pv in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
                           "capabilities": {"tools": {"listChanged": False}},
                           "serverInfo": {"name": "aib-chat-mcp", "version": core.API_VERSION}}
@@ -86,6 +103,9 @@ def make_handler(tools, auth):
                 result = {"tools": [{"name": n, "description": d, "inputSchema": s}
                                     for n, (s, _sc, d) in TOOLS.items()]}
             elif method == "tools/call":
+                if not isinstance(params.get("name"), str) or params.get("name") not in TOOLS:
+                    return self._send(200, {"jsonrpc": "2.0", "id": rid,
+                                            "error": {"code": -32602, "message": "unknown tool"}})
                 try:
                     out = tools.call(principal, params.get("name"), params.get("arguments") or {})
                     result = {"content": [{"type": "text", "text": json.dumps(out, ensure_ascii=False)}],

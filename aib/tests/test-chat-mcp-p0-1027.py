@@ -233,6 +233,99 @@ class P0(unittest.TestCase):
         with self.assertRaises(SystemExit):
             server.build("0.0.0.0", 0, self.store)
 
+    # ---- R1 MINOR 修補 ----
+    def _raw(self, body, headers):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=10)
+        try:
+            c.putrequest("POST", "/mcp")
+            for k, v in headers.items():
+                c.putheader(k, v)
+            c.endheaders()
+            if body:
+                c.send(body)
+            r = c.getresponse()
+            return r.status, r.read()
+        finally:
+            c.close()
+
+    def test_r1_m1_bad_content_length(self):
+        st, _ = self._raw(b"", {"Authorization": "Bearer " + self.k["grok"], "Content-Length": "abc"})
+        self.assertEqual(st, 400)
+
+    def test_r1_m2_one_seat_one_principal(self):
+        with self.assertRaises(ValueError):
+            self.store.bind("evil", B)
+        self.store.revoke_binding(self.store.active_binding("muse")["binding_id"])
+        self.assertTrue(self.store.bind("muse2", B))
+
+    def test_r1_m3_key_new_conflict(self):
+        import contextlib
+        import io
+        from chat_mcp import cli_main
+        os.environ["AIB_CHAT_MCP_HOME"] = str(Path(self.tmp) / "cli-home")
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cli_main.main(["key", "new", "--principal", "p1", "--seat", A]), 0)
+                self.assertEqual(cli_main.main(["key", "new", "--principal", "p1", "--seat", A]), 0)
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                self.assertEqual(cli_main.main(["key", "new", "--principal", "p1", "--seat", B]), 2)
+            self.assertIn("參數不同", err.getvalue())
+        finally:
+            os.environ.pop("AIB_CHAT_MCP_HOME", None)
+
+    def test_r1_m4_protocol_errors(self):
+        st, body, _ = self.rpc("grok", "tools/call", {"name": "aib_nope", "arguments": {}})
+        self.assertEqual((st, body["error"]["code"]), (200, -32602))
+        st, body, _ = self.rpc("grok", "tools/call", {"arguments": {}})
+        self.assertEqual(body["error"]["code"], -32602)
+        st, _, _ = self.rpc("grok", "ping", headers={"MCP-Protocol-Version": "1999-01-01"})
+        self.assertEqual(st, 400)
+        st, _, _ = self.rpc("grok", "ping", headers={"MCP-Protocol-Version": "2025-06-18"})
+        self.assertEqual(st, 200)
+        st, _, h = self.rpc("grok", "initialize", {"protocolVersion": "2025-06-18"})
+        sid = {k.lower(): v for k, v in h.items()}["mcp-session-id"]
+        self.assertEqual(self.rpc("grok", "ping", headers={"Mcp-Session-Id": sid})[0], 200)
+        self.assertEqual(self.rpc("grok", "ping", headers={"Mcp-Session-Id": "bogus"})[0], 404)
+
+    def test_r1_m5_wait_poll_and_mtime(self):
+        self.assertGreaterEqual(core.WAIT_POLL_SECS, 1.0)
+        inbox = self.bridge / SESS_B / "inbox"
+        inbox.mkdir(parents=True)
+        (inbox / "1-a.json").write_text(json.dumps({"text": "a", "created_epoch": 1}))
+        b = self.store.active_binding("muse")
+        ad = core.BridgeAdapter(self.store, self.bridge)
+        self.assertEqual(ad.sync_inbox(b), 1)
+        calls = []
+        orig = Path.glob
+        Path.glob = lambda self_, pat: calls.append(1) or orig(self_, pat)
+        try:
+            self.assertEqual(ad.sync_inbox(b), 0)
+        finally:
+            Path.glob = orig
+        self.assertEqual(calls, [])  # 目錄沒變:不重掃
+
+    def test_r1_m6_secret_location(self):
+        sd = Path(self.tmp) / "secrets" / "chat-mcp"
+        self.assertTrue((sd / "cursor.secret").exists())
+        self.assertFalse((Path(self.tmp) / "home" / "cursor.secret").exists())
+        self.assertEqual((sd / "cursor.secret").stat().st_mode & 0o777, 0o600)
+        os.environ["AIB_CHAT_MCP_SECRETS_DIR"] = str(Path(self.tmp) / "alt")
+        try:
+            core.Store(Path(self.tmp) / "home2")
+            self.assertTrue((Path(self.tmp) / "alt" / "cursor.secret").exists())
+        finally:
+            os.environ.pop("AIB_CHAT_MCP_SECRETS_DIR", None)
+
+    def test_r1_m7_bridge_sender_untrusted(self):
+        inbox = self.bridge / SESS_B / "inbox"
+        inbox.mkdir(parents=True)
+        (inbox / "1-a.json").write_text(json.dumps({"from": "b962/b81c8", "text": "spoof", "created_epoch": 1}))
+        r = self.ok("muse", "aib_list_messages", {"mailbox": "inbox"})
+        self.assertEqual([(m["from_seat"], m["to_seat"]) for m in r["messages"]], [("bridge:unknown", B)])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

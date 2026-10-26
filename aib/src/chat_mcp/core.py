@@ -33,7 +33,8 @@ SEND_PER_MIN = 20
 READ_PER_MIN = 120
 WAIT_CONCURRENT = 2
 WAIT_MAX_SECS = 25
-HOP_MAX = 4
+WAIT_POLL_SECS = 1.0  # wait 每輪間隔;檔案橋另以目錄 mtime 判斷是否重掃
+HOP_MAX = 4  # hop 算法:新信(無 causation_id)hop=0;回覆=被回覆信 hop+1;hop>4 拒收 → 一條鏈最多 0..4 共 5 封、4 次轉手
 BODY_MAX = 8 * 1024
 LIMIT_DEFAULT, LIMIT_MAX = 20, 100
 SCOPES = ("aib:identity:read", "aib:seats:read", "aib:messages:read",
@@ -78,6 +79,15 @@ def home_dir():
     return Path(os.environ.get("AIB_CHAT_MCP_HOME") or (Path.home() / ".ez2-aib" / "chat-mcp"))
 
 
+def secrets_dir(home=None):
+    """cursor.secret 位置:AIB_CHAT_MCP_SECRETS_DIR 優先;否則 <home 的上層>/secrets/chat-mcp
+    (預設 home=~/.ez2-aib/chat-mcp → ~/.ez2-aib/secrets/chat-mcp,符合設計稿 §100)。"""
+    env = os.environ.get("AIB_CHAT_MCP_SECRETS_DIR")
+    if env:
+        return Path(env)
+    return Path(home or home_dir()).parent / "secrets" / "chat-mcp"
+
+
 def bridge_root():
     return Path(os.environ.get("AIB_CHAT_MCP_BRIDGE_ROOT") or (Path.home() / ".ez2-aib" / "bridge"))
 
@@ -115,7 +125,14 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
         self.lock = threading.RLock()
-        sp = self.home / "cursor.secret"
+        sd = secrets_dir(self.home)
+        sd.mkdir(parents=True, exist_ok=True)
+        os.chmod(sd, 0o700)
+        sp = sd / "cursor.secret"
+        old = self.home / "cursor.secret"
+        if not sp.exists() and old.exists():  # 舊位置遷移(保留既有 cursor 有效)
+            os.replace(old, sp)
+            os.chmod(sp, 0o600)
         if not sp.exists():
             fd = os.open(str(sp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             os.write(fd, secrets.token_bytes(32))
@@ -162,6 +179,9 @@ class Store:
         with self.lock:
             if self.q("SELECT 1 FROM bindings WHERE principal_id=? AND state='active'", (principal_id,)):
                 raise ValueError("此 principal 已有有效 binding;先 revoke")
+            other = self.q("SELECT principal_id FROM bindings WHERE seat=? AND state='active'", (seat,))
+            if other:
+                raise ValueError("席 %s 已綁給 principal %s;一席只准一身分,先 revoke" % (seat, other[0][0]))
             bid = "bnd_" + new_ulid()
             self.db.execute("INSERT INTO bindings VALUES(?,?,?,?,?,?,1,'active',?,?,?)",
                             (bid, principal_id, seat, session_uuid, json.dumps(sorted(set(allowlist))),
@@ -253,9 +273,15 @@ class RateLimiter:
 
 
 # ---------------- 檔案橋 adapter(只讀 + 選用寄出) ----------------
+BRIDGE_UNKNOWN_SENDER = "bridge:unknown"
+
+
 class BridgeAdapter:
+    """寄件人:檔內自填的 `from` 不可信(同 musebot_outbox_drainer 原則),一律不採用。
+    收件席由 binding(session 資料夾)推得;寄件席在檔案橋上無法由資料夾驗證,故一律標 bridge:unknown。"""
     def __init__(self, store, root=None):
         self.store, self.root = store, Path(root) if root else bridge_root()
+        self._seen = {}  # session_uuid -> (inbox mtime_ns, claimed mtime_ns);目錄沒變就不重掃
 
     def _session_dir(self, session_uuid):
         if not session_uuid or not __import__("re").fullmatch(r"[0-9a-f-]{36}", session_uuid):
@@ -268,6 +294,16 @@ class BridgeAdapter:
         d = self._session_dir(binding.get("session_uuid"))
         if not d:
             return 0
+        sig = []
+        for sub in (d / "inbox", d / "inbox" / "claimed"):
+            try:
+                sig.append(sub.stat().st_mtime_ns)
+            except OSError:
+                sig.append(None)
+        sig = tuple(sig)
+        if self._seen.get(binding["session_uuid"]) == sig:
+            return 0
+        self._seen[binding["session_uuid"]] = sig
         n = 0
         for sub in (d / "inbox", d / "inbox" / "claimed"):
             if not sub.is_dir():
@@ -289,7 +325,7 @@ class BridgeAdapter:
                             "INSERT INTO messages(message_id,from_seat,to_seat,body_hash,body,origin,hop_count,state,"
                             "revision,source,src_ref,duplicate_possible,created,updated) "
                             "VALUES(?,?,?,?,?,?,0,'received',1,'bridge',?,1,?,?)",
-                            (new_ulid(), "bridge:" + str(msg.get("from") or "unknown")[:40], binding["seat"],
+                            (new_ulid(), BRIDGE_UNKNOWN_SENDER, binding["seat"],
                              _sha(text), text[:64 * 1024], "file-bridge", ref, t, time.time()))
                         n += 1
                     except sqlite3.IntegrityError:
