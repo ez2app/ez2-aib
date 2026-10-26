@@ -7,7 +7,7 @@
                              [--with-thinking] [--with-sidechain] [--redact] [--json]
   aib seat pending <席碼> [--json]
 
-只讀:那一席的 Claude Code 對話紀錄 jsonl(席位檔 session_uuid → activity_probe.claude_transcript_paths)+ tmux 畫面最後幾行。
+只讀:那一席的 Claude Code / Codex 原生對話紀錄 jsonl + tmux 畫面最後幾行。
 不寫任何檔、不送任何鍵(C1 / C4 / C5 另一支,要 Touch ID)。
 事件:{id, ts, kind, text, meta};kind = user | dm | hook | human_shell | assistant | tool_call | tool_result | ask | system | thinking。
 """
@@ -28,6 +28,7 @@ if HERE not in sys.path:
 import activity_probe  # noqa: E402
 import seat_address  # noqa: E402
 import seats_dir_lib  # noqa: E402
+import seat_native  # noqa: E402
 
 V = 1
 LIMIT_DEFAULT = 500
@@ -80,7 +81,24 @@ def transcript_path(rec):
     sess = str(rec.get("session_uuid") or "").strip().lower()
     if not sess:
         return None
+    if rec.get("provider") in ("agy", "copilot", "grok"):
+        return seat_native.native_path(rec)
     cands = []
+    if rec.get("provider") == "codex":
+        if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", sess):
+            return None
+        base = os.environ.get("EZ2_CODEX_SESSIONS_DIR") or os.path.join(
+            os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "sessions")
+        for path in glob.glob(os.path.join(base, "*", "*", "*", "rollout-*" + sess + ".jsonl")):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    meta = json.loads(fh.readline())
+                payload = meta.get("payload") or {}
+                if meta.get("type") == "session_meta" and (payload.get("session_id") or payload.get("id")) == sess:
+                    cands.append(path)
+            except (OSError, ValueError, AttributeError):
+                continue
+        return max(cands, key=os.path.getmtime) if cands else None
     pd = activity_probe.project_dir_from_cwd(rec.get("cwd"))
     if pd:
         cands.append(os.path.join(pd, sess + ".jsonl"))
@@ -193,6 +211,28 @@ def _notices(text):
     return [name for name, rx in NOTICE_PATTERNS if rx.search(text or "")]
 
 
+def _codex_message(rec, line):
+    """Normalize only public message items; never expose developer instructions or reasoning.
+
+    event_msg mirrors are intentionally ignored so each message appears once.
+    IDs derive from the original line when the native item has no ID, preserving cursors.
+    """
+    payload = rec.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "message":
+        return None
+    role = payload.get("role")
+    if role not in ("user", "assistant") or payload.get("channel") not in (None, "commentary", "final"):
+        return None
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return None
+    blocks = [{"type": "text", "text": x["text"]} for x in content
+              if isinstance(x, dict) and x.get("type") in ("input_text", "output_text") and isinstance(x.get("text"), str)]
+    return {"type": role, "uuid": payload.get("id") or hashlib.sha1(line).hexdigest()[:12],
+            "timestamp": rec.get("timestamp"), "message": {"role": role, "content": blocks},
+            "_codex_channel": payload.get("channel"), "_codex": True}
+
+
 def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0, align=False):
     """整份(或從 offset 起)⇒ (events, pending_ask_ids, queue_ops, end_offset, session_ids)。
     align:offset 可能落在一行中間(讀尾端用)⇒ 先跳到下一行開頭,不解析半行。"""
@@ -215,6 +255,14 @@ def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0,
                 continue
             if not isinstance(rec, dict):
                 continue
+            if rec.get("type") == "response_item":
+                rec = _codex_message(rec, line)
+                if rec is None:
+                    continue
+            elif os.path.basename(path) in ("events.jsonl", "chat_history.jsonl"):
+                rec = seat_native.json_message(rec, path, line)
+                if rec is None:
+                    continue
             t = rec.get("type")
             sid = rec.get("sessionId")
             if sid and sid not in sessions:
@@ -231,6 +279,10 @@ def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0,
             ts = _ts(rec)
             uid = str(rec.get("uuid") or hashlib.sha1(line).hexdigest()[:12])
             side = {"sidechain": True} if rec.get("isSidechain") else {}
+            if rec.get("_codex"):
+                side.update(provider="codex", channel=rec.get("_codex_channel"))
+            elif rec.get("_native_provider"):
+                side.update(provider=rec["_native_provider"])
             if t == "system":
                 sub = rec.get("subtype")
                 if sub == "compact_boundary":
@@ -370,14 +422,36 @@ TAIL_START = 512 * 1024      # 讀尾端:先讀最後 512 KB,不夠再倍增(10-
 def tail_events(path, enough, with_thinking=False, with_sidechain=False, start=None):
     """從檔尾往前讀,讀到 enough(events, at_head) 成立或讀到檔頭為止。回 events_from_jsonl 的五元組 + 起讀位置。
     最壞情況(要的東西在很前面 / 根本不在)= 整份讀一次,跟以前一樣。"""
+    if path.endswith('.db'):
+        got = seat_native.agy_tail(path, enough)
+        return _native_user_events(got)
     size = os.path.getsize(path)
     win = start or TAIL_START
     while True:
         off = max(0, size - win)
         got = events_from_jsonl(path, with_thinking, with_sidechain, off, align=True)
+        if os.path.basename(path) == 'chat_history.jsonl':
+            notice = seat_native.grok_notice(path)
+            extra = [{'id': notice['uuid'], 'ts': _ts(notice), 'kind': 'system', 'text': notice['content'],
+                      'meta': {'provider': 'grok', 'subtype': 'notice'}}] if notice else []
+            got = (got[0] + extra, got[1], got[2], 0, got[4])
         if off == 0 or enough(got[0]):
             return got + (off,)
         win *= 2
+
+
+def _native_user_events(got):
+    events = []
+    for event in got[0]:
+        if event['kind'] != 'user':
+            events.append(event)
+            continue
+        dms, rest = _dm_events(event['text'], event['id'], event['ts'])
+        events.extend(dms)
+        if rest:
+            kind, meta = _classify_user(rest)
+            events.append(dict(event, kind=kind, text=rest, meta=dict(event['meta'], **meta)))
+    return (events,) + got[1:]
 
 
 def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMIT_DEFAULT, clip=0,
@@ -391,6 +465,9 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
         return {"v": V, "ok": False, "why": "no-transcript", "seat": code, "session": rec.get("session_uuid")}, 4
     rotated = False
     cur_sess = str(rec.get("session_uuid") or "").lower()
+    snapshot = rec.get('provider') in ('agy', 'grok')
+    if snapshot and offset:
+        offset, rotated = 0, True  # native snapshots have no byte cursor; never apply a JSONL offset to SQLite
     if offset and not (since or before or only_id):
         # 頁面帶上一輪的 session + last_offset 來:席換了對話(壓縮 / 接回 / /clear)或檔比 offset 還短 ⇒ 從頭讀 + reset
         try:
@@ -414,11 +491,22 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
             if only_id:
                 return only_id in ids
             if since:
+                if path.endswith('.db') and re.fullmatch(r'agy:\d+:[0-9a-f]+', since):
+                    prefix = since.rsplit(':', 1)[0] + ':'
+                    if any(i.startswith(prefix) for i in ids):
+                        return True
                 return since in ids
             if before:
                 return bool(limit) and before in ids and ids.index(before) > limit
             return bool(limit) and len(evs) > limit             # limit 0 = 全要 ⇒ 讀到檔頭
-        events, pending, _q, end, sessions, start = tail_events(path, enough, with_thinking, with_sidechain)
+        if path.endswith('.db'):
+            try:
+                got = seat_native.agy_tail(path, enough, marker=before or only_id)
+                events, pending, _q, end, sessions, start = _native_user_events(got)
+            except (OSError, seat_native.sqlite3.Error):
+                return {"v": V, "ok": False, "why": "transcript-unavailable", "seat": code}, 4
+        else:
+            events, pending, _q, end, sessions, start = tail_events(path, enough, with_thinking, with_sidechain)
         head_cut = start > 0
     reset, since_lost = rotated, False
     if only_id:
@@ -435,7 +523,7 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
     truncated = head_cut and not (since or only_id)        # 前面還有沒讀的 ⇒ 頁面可再往上翻(before)
     if limit and len(events) > limit:
         truncated = True
-        events = events[:limit] if since else events[-limit:]
+        events = events[:limit] if since and not (snapshot and since_lost) else events[-limit:]
     if do_redact:
         events = [dict(e, text=redact(e["text"])) for e in events]
     events = clip_events(events, clip)

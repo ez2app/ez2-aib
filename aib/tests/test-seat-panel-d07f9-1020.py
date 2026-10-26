@@ -128,6 +128,66 @@ class Box(unittest.TestCase):
         return [e["kind"] for e in res["events"]]
 
 
+class Codex(Box):
+    def setUp(self):
+        super().setUp()
+        seat = next(self.state.glob("instances/*/seats/w*.json"))
+        data = json.loads(seat.read_text())
+        data["provider"] = "codex"
+        self.session = "11111111-2222-4333-8444-55555550ab12"
+        data["session_uuid"] = self.session
+        seat.write_text(json.dumps(data))
+        self.codex = self.home / ".codex" / "sessions"
+        self.envp_codex = mock.patch.dict(os.environ, {"EZ2_CODEX_SESSIONS_DIR": str(self.codex)})
+        self.envp_codex.start()
+        self.addCleanup(self.envp_codex.stop)
+        folder = self.codex / "2026" / "10" / "26"
+        folder.mkdir(parents=True)
+        self.rollout = folder / ("rollout-2026-10-26T12-00-00-" + self.session + ".jsonl")
+
+    def native(self, role, text, channel=None):
+        return json.dumps({"type": "response_item", "timestamp": TS, "payload": {
+            "type": "message", "role": role, "channel": channel,
+            "content": [{"type": "input_text" if role == "user" else "output_text", "text": text}]}})
+
+    def rollout_write(self, lines, session=None):
+        meta = json.dumps({"type": "session_meta", "payload": {"id": session or self.session}})
+        self.rollout.write_text("\n".join([meta] + lines) + "\n")
+
+    def test_native_messages_only_once_without_internal_content(self):
+        self.rollout_write([
+            self.native("developer", "private instructions"),
+            self.native("user", "網頁問題"),
+            self.native("assistant", "正在處理", "commentary"),
+            json.dumps({"type": "event_msg", "payload": {"type": "agent_message", "message": "正在處理"}}),
+            self.native("assistant", "private reasoning", "analysis"),
+            self.native("assistant", "回覆內容", "final"),
+        ])
+        data = self.transcript()
+        self.assertEqual([(e["kind"], e["text"]) for e in data["events"]],
+                         [("user", "網頁問題"), ("assistant", "正在處理"), ("assistant", "回覆內容")])
+        self.assertTrue(all(e["meta"].get("provider") == "codex" for e in data["events"]))
+
+    def test_cursors_and_new_messages(self):
+        self.rollout_write([self.native("user", "問題"), self.native("assistant", "回覆", "final")])
+        first = self.transcript()
+        last = first["events"][-1]["id"]
+        self.assertEqual(self.transcript(since=last)["events"], [])
+        with self.rollout.open("a") as f:
+            f.write(self.native("assistant", "後續回覆", "final") + "\n")
+        self.assertEqual([e["text"] for e in self.transcript(offset=first["last_offset"])["events"]], ["後續回覆"])
+        self.assertEqual(self.transcript(only_id=last)["events"][0]["text"], "回覆")
+
+    def test_session_mismatch_does_not_fall_back_to_claude(self):
+        self.rollout_write([self.native("assistant", "wrong session", "final")], session="other")
+        self.write([rec("assistant", "unrelated Claude transcript", "wrong")])
+        data, rc = self.SP.transcript(CODE)
+        self.assertEqual((rc, data["why"]), (4, "no-transcript"))
+
+    def test_invalid_session_is_not_a_glob(self):
+        self.assertIsNone(self.SP.transcript_path({"provider": "codex", "session_uuid": "*"}))
+
+
 class Events(Box):
     def test_t1_kinds(self):
         lines = self.fixtures_lines() + [
