@@ -170,6 +170,44 @@ aib_cabin_reserve() {
   done
 }
 
+# 10-25(@74e8b,@abb89 裁):開席第四參數指名一艙時,先對到「真的有這一艙」再往下走。
+#   事故:`aib claude safe dev 6ddf --again`(只給艙號末 4 碼)⇒ 當成艙名「6ddf」,ensure 因缺權杖 rc=4 失敗,
+#   但開席碼表已建 instances/6ddf/ ⇒ 艙號 6ddf 對到兩個艙,全艙 aib dm 6ddf/… 報 ambiguous-cabin。
+#   規則:有 instances/<名>/instance-token ⇒ 照名字;是 4 碼 hex ⇒ 找末 4 碼相同的新式艙,剛好一個就換成那艙;
+#   其他(對不到 / 多個 / 指名卻沒權杖)⇒ 拒絕,什麼夾都不建。
+# 印解析後的艙名;rc 2 = 拒絕(原因印 stderr)。$1=輸入 $2=instances 根 $3=1 只解析不拒(dry-run 用)
+aib_cabin_pick_named() {
+  local want="${1-}" root="${2-}" soft="${3-0}" d name hits=() n
+  aib_cabin_check_name "instance" "$want" || return 2
+  if [ -f "$root/$want/instance-token" ] && [ ! -L "$root/$want/instance-token" ]; then
+    printf '%s\n' "$want"; return 0
+  fi
+  case "$want" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+      for d in "$root"/*-"$want"; do
+        [ -d "$d" ] && [ ! -L "$d" ] && [ -f "$d/instance-token" ] && [ ! -L "$d/instance-token" ] || continue
+        name="${d##*/}"
+        aib_cabin_is_new_id "$name" && hits+=("$name")
+      done ;;
+  esac
+  n="${#hits[@]}"
+  if [ "$n" -eq 1 ]; then
+    printf 'aib: 艙號 %s ⇒ %s\n' "$want" "${hits[0]}" >&2
+    printf '%s\n' "${hits[0]}"; return 0
+  fi
+  if [ "$soft" = "1" ]; then   # 試跑不拒,但要說(r1 L1)
+    if [ "$n" -gt 1 ]; then printf 'aib: 演練:艙號 %s 對到 %s 個艙(%s),真跑會拒\n' "$want" "$n" "${hits[*]}" >&2
+    else printf 'aib: 演練:找不到艙 %s(%s 底下沒有這一艙或它的權杖),真跑會拒\n' "$want" "$root" >&2; fi
+    printf '%s\n' "$want"; return 0
+  fi
+  if [ "$n" -gt 1 ]; then
+    printf 'aib: 艙號 %s 對到 %s 個艙(%s),不猜;請寫完整艙名\n' "$want" "$n" "${hits[*]}" >&2
+  else
+    printf 'aib: 找不到艙 %s(%s 底下沒有這一艙或它的權杖);要開新艙請用 new,要看有哪些艙:ls %s\n' "$want" "$root" "$root" >&2
+  fi
+  return 2
+}
+
 aib_cabin_state_root() {     # 題五裁決的三層,與 seats_dir_lib.state_root() 同式
   printf '%s\n' "${EZ2_AIB_STATE_ROOT:-${EZ2_AIB_HOME:-$HOME/.ez2-aib}}"
 }

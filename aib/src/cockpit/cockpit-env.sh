@@ -122,6 +122,11 @@ if [ -n "$EZ2_AIB_INSTANCE_TOKEN" ]; then
     echo "invalid AIB instance ownership token" >&2
     return 2 2>/dev/null || exit 2
   fi
+elif [ "$EZ2_AIB_CABIN_NAMED" = "1" ] && [ "${AIB_NO_STATE_WRITE:-0}" != "1" ]; then
+  # 10-25(#373 r1 M2b):具名艙沒有權杖(指到不存在 / 建到一半的艙)⇒ 在下面 mkdir 之前就拒,不留空艙(源頭擋,不靠啟動器那層)。
+  #   新艙是啟動器先寫好 instance-token 才 source 這裡;試跑(AIB_NO_STATE_WRITE=1)不建夾,照舊放行。
+  echo "aib: 艙 $EZ2_AIB_INSTANCE 沒有權杖檔($EZ2_AIB_INSTANCE_HOME/instance-token):不是這台開的艙或建到一半;不建任何夾" >&2
+  return 2 2>/dev/null || exit 2
 fi
 
 # repo 根與大綱正本(戰情室機器可讀源)
