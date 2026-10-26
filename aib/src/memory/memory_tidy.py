@@ -273,7 +273,7 @@ class _FallbackFilter:
         if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
             return False, {"why": "tool_result"}
         text = str(item.get("text") or "").lstrip()
-        if not text or text.startswith(_MACHINE_PREFIX):
+        if not text or text.startswith(_MACHINE_PREFIX) or text.startswith("# AGENTS.md instructions"):
             return False, {"why": "machine"}
         try:                                                  # dm 抬頭只認 dm_header.parse(檔頭規定不另寫第二份 regex);
             import dm_header                                  #   名字帶空格的新式、舊式 [@x > @y …] 都在這裡擋(#312 審查 A1)
@@ -340,6 +340,8 @@ def human_words(ctx, since="", span_rounds=False):
         try:                                       # 退路:開席登記的那份
             import seat_fork
             p0 = seat_fork.find_transcript(ctx["seat_uid"])
+            if p0 is None:
+                p0 = seat_fork.find_record("codex", ctx["seat_uid"])
             paths = [str(p0)] if p0 else []
         except Exception:  # noqa: BLE001
             paths = []
@@ -364,7 +366,7 @@ def human_words(ctx, since="", span_rounds=False):
             continue
         with fh:
             out += _human_rows(fh, since, seat, human_filter)
-    return out[-HUMAN_MAX:]
+    return out if span_rounds else out[-HUMAN_MAX:]
 
 
 def _human_rows(fh, since, seat, human_filter):
@@ -375,7 +377,21 @@ def _human_rows(fh, since, seat, human_filter):
                 row = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(row, dict) or row.get("type") != "user":
+            if not isinstance(row, dict):
+                continue
+            if row.get("type") == "response_item":
+                payload = row.get("payload")
+                if not isinstance(payload, dict) or payload.get("type") != "message" or payload.get("role") != "user":
+                    continue
+                parts = payload.get("content")
+                if not isinstance(parts, list):
+                    continue
+                # Native Codex rows remain attributable to the original timestamp.
+                # Never consume event_msg/tool outputs, assistant text or compaction summaries.
+                row = dict(row, type="user", message={"content": [
+                    dict(b, type="text") if isinstance(b, dict) and b.get("type") == "input_text" else b
+                    for b in parts]})
+            if row.get("type") != "user":
                 continue
             ts = str(row.get("timestamp") or "")
             if since and _when(ts) < _when(since):
