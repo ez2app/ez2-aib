@@ -18,8 +18,8 @@
                CTX 那一行插 @席位;
     agy 席     自己的狀態列 agy/statusline-ez2-ctx.js 畫 CTX 那一行(標誌 + @席位);它只在有事件時重畫、
                不支援定時重跑 ⇒ 📌 那一行改畫在 hub 窗底部邊框(--border --now-only,tmux 每幾秒重畫);
-    Codex / Grok / Copilot 席  狀態列只能選內建項目、放不了自訂字 ⇒ 開席時 hub 窗開底部邊框,
-               邊框跑 `seat_now.py --border --window #{window_id} --socket #{socket_path}`。
+    Codex / Grok / Copilot 席  hub 窗底部邊框畫主項目，預留的第一條 status row 畫 CTX，
+               第二條 status row 保留艦長分頁；各行追蹤目前視窗。
   每一行帶「更新時間」(shown_line;10-17 起不畫啟動時間);窄視窗換短寫法。
 這一席是誰:seat_who.self_seat_uuid()(TMUX_PANE → 窗 id → 艙 → 席位檔交叉驗)→ seat_address.uuid_tail5。
   拿不到就回 2,不猜(寫到別席名下比沒寫更糟)。
@@ -735,8 +735,11 @@ def _gauge(wid, sock):
         return {}
 
 
-def border_line(wid, sock, *, provider="", state_root=None, now=None, width=None, now_only=False):
+def border_line(wid, sock, *, provider="", state_root=None, now=None, width=None, now_only=False, ctx_only=False):
     """Codex / Grok / Copilot 席(自己的狀態列放不了自訂字)的底部邊框:模型 | @席位 | 💧 Ez2 CTX n% · 📌【狀態】主項目 | …。"""
+    # Engines with their own context line keep the reserved status row empty.
+    if ctx_only and (not provider or provider in STATUSLINE_ENGINES + NOW_ONLY_ENGINES):
+        return ""
     code = code_for_window(wid, sock)
     if not code:
         return ""
@@ -757,6 +760,8 @@ def border_line(wid, sock, *, provider="", state_root=None, now=None, width=None
     ctx = "%s Ez2 CTX ?" % icon if pct is None else "%s Ez2 CTX %d%% %s" % (icon, pct, PC._ctx_bar(pct, tier))
     logo = logo_of(provider)
     ctx_part = "%s%s | @%s | %s" % (logo + "  " if logo else "", model, code, ctx)
+    if ctx_only:
+        return ansi_to_tmux(ctx_part)
     room = None
     if width:
         sys.path.insert(0, os.path.join(HERE, "render"))
@@ -777,9 +782,18 @@ def border_format(provider, python=None):
     import shutil
     # PATH 上的 python3(例 /opt/homebrew/bin/python3)是穩定的連結;sys.executable 是 python3.14 實體,升版就失效
     py = python or shutil.which("python3") or sys.executable
-    extra = " --now-only" if provider in NOW_ONLY_ENGINES else ""
+    extra = " --now-only"
     return " #(%s %s --border%s --window #{window_id} --socket #{socket_path} --width #{pane_width} --provider %s)" % (
         shlex.quote(py), shlex.quote(os.path.abspath(__file__)), extra, shlex.quote(provider))
+
+
+def context_status_format(python=None):
+    """The second seat row: context for the active window, above captain tabs."""
+    import shlex
+    import shutil
+    py = python or shutil.which("python3") or sys.executable
+    return "#[align=left]  #(%s %s --border --ctx-only --window #{window_id} --socket #{socket_path} --width #{window_width} --provider '#{@aib_provider}')" % (
+        shlex.quote(py), shlex.quote(os.path.abspath(__file__)))
 
 
 def apply_borders(*, hubs=None, tmux=None, code_for=None, dry_run=False, out=sys.stdout):
@@ -796,6 +810,11 @@ def apply_borders(*, hubs=None, tmux=None, code_for=None, dry_run=False, out=sys
             out.write("✗ %s\n" % T("aib.now.borders_unreachable", hub=hub))
             unreachable += 1
             continue
+        if not dry_run:
+            if (tmux(hub, "set-option", "-t", "aihub", "status", "2") is None
+                    or tmux(hub, "set-option", "-t", "aihub", "status-format[0]", context_status_format()) is None):
+                unreachable += 1
+                continue
         for row in listing.splitlines():
             wid, _, prov = row.partition("\t")
             prov = prov.strip()
@@ -838,6 +857,8 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--rank-field", action="store_true", help=argparse.SUPPRESS)   # 10-17:等級另成第 4 欄(殼把它放到 CTX 那一行 @席位 後面);沒帶 ⇒ 接在 📌 行尾   # 狀態列用:印「席位碼<TAB>📌 行」
     ap.add_argument("--border", action="store_true", help=argparse.SUPPRESS)       # Codex 等席底部邊框用
     ap.add_argument("--now-only", action="store_true", help=argparse.SUPPRESS)     # agy:邊框只畫 📌
+    ap.add_argument("--ctx-only", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--context-status-format", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--session", default="", help=argparse.SUPPRESS)              # 狀態列遞來的對話編號(沒有 TMUX_PANE 時用)
     ap.add_argument("--window", default="", help=argparse.SUPPRESS)
     ap.add_argument("--socket", default="", help=argparse.SUPPRESS)
@@ -885,6 +906,9 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         out.write((T("aib.now.swept", n=len(gone), codes=" ".join("@" + c for c in gone)) if gone
                    else T("aib.now.swept_none")) + "\n")
         return 0
+    if args.context_status_format:
+        out.write(context_status_format() + "\n")
+        return 0
     if args.border_format:
         out.write(border_format(args.border_format) + "\n")
         return 0
@@ -893,7 +917,7 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         return 1 if bad else 0
     if args.border:
         out.write(border_line(args.window, args.socket, provider=args.provider, state_root=state_root,
-                              width=args.width or None, now_only=args.now_only))
+                              width=args.width or None, now_only=args.now_only, ctx_only=args.ctx_only))
         return 0
     if args.statusline:
         facts = None if code else _pane_facts()
