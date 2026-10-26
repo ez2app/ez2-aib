@@ -1979,7 +1979,7 @@ def main(argv=None):
             current_name = str(thread.get("name") or "").strip()
             try:
                 from seat_address import uuid_tail5
-                wanted = _seat_name.with_seat_tag(current_name or title, uuid_tail5(args.session_id), fallback="CodexBot")
+                wanted = _seat_name.with_seat_tag(current_name or title, uuid_tail5(args.session_id), fallback="DotsBot")
                 if wanted != current_name:
                     rpc.call("thread/name/set", {"threadId": args.thread_id, "name": wanted}, timeout=15)
                     refresh_title(wanted)
@@ -2380,7 +2380,7 @@ def main(argv=None):
             try:
                 th = rpc.call("thread/read", {"threadId": args.thread_id, "includeTurns": False}, timeout=10)["thread"]
                 cur = str(th.get("name") or "").strip()
-                unbound = _seat_name.with_unbound(cur, fallback="CodexBot")
+                unbound = _seat_name.with_unbound(cur, fallback="DotsBot")
                 if unbound != cur:
                     rpc.call("thread/name/set", {"threadId": args.thread_id, "name": unbound}, timeout=10)
                 if closer is not None:

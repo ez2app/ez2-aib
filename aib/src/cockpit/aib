@@ -1254,7 +1254,7 @@ if [ "$PROVIDER" = "codexbot" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
     if _ep="$("${EZ2_PY3:-python3}" "$HERE/codexbot_server.py" ensure 2>/dev/null)" && [ -n "$_ep" ]; then
       export AIB_CODEXBOT_ENDPOINT="$_ep" AIB_CODEXAPP_ENDPOINT="$_ep"
     else
-      echo "aib: CodexBot 的本機 App Server 起不來(python3 $HERE/codexbot_server.py ensure 失敗);--check 會接著擋。" >&2
+      echo "aib: DotsBot 的本機 App Server 起不來(python3 $HERE/codexbot_server.py ensure 失敗);--check 會接著擋。" >&2
     fi
   fi
   # 09-24 the maintainer:右鍵新增時先列已知對話讓人選;30 秒沒選=沿用上次綁定(codexbot.env)。
@@ -1264,7 +1264,7 @@ if [ "$PROVIDER" = "codexbot" ] && [ "$AIB_SEAT_REREGISTER" != "1" ]; then
   aib_bot_thread_menu "$PROVIDER" || die "aib: ${PROVIDER} 開席取消(上次綁的對話已不在且沒選新的)" 2
   if [ -z "${AIB_CODEXBOT_THREAD_ID:-}" ] || [ -z "${AIB_CODEXBOT_ENDPOINT:-}" ]; then
     cat >&2 <<'HINT'
-aib: CodexBot 還不能開席。
+aib: DotsBot 還不能開席。
 
 它要綁「Codex 桌面裡已經打開的對話」，不是再開一顆 CLI。
 請先在 Codex 桌面打開要接的對話，再設：
@@ -1275,7 +1275,7 @@ aib: CodexBot 還不能開席。
 （舊名 AIB_CODEXAPP_* 也可以，會自動對齊。）
 或寫進 ~/.ez2-aib/secrets/codexbot.env（一行一個 KEY=value，權限 0600），右鍵就不用再 export。
 設好後可先跑：aib-codexbot --check
-或右鍵「另開 AI → CodexBot」再試一次。
+或右鍵「另開 AI → DotsBot」再試一次。
 HINT
     exit 2
   fi
@@ -1284,7 +1284,7 @@ HINT
   aib_bot_thread_held_guard "$PROVIDER" || die "aib: ${PROVIDER} 開席取消(那條對話已被另一隻占用)" 2
   if ! "${EZ2_PY3:-python3}" "$HERE/codexbot_bridge.py" --check; then
     cat >&2 <<'HINT'
-aib: CodexBot 連不上桌面對話（--check 失敗）。
+aib: DotsBot 連不上桌面對話（--check 失敗）。
 
 常見原因：
   1) Codex 桌面沒開，或那個 thread 沒載入

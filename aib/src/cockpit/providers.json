@@ -192,7 +192,7 @@
       "default_requested_model": "codexbot",
       "identity": "assigned-session-id",
       "identity_note": "Codex Desktop bridge (formerly codexapp). AIB bridge UUID is separate from desktop_thread_id and desktop_session_id. Connect only to the existing desktop App Server. Never launches CLI or Cursor. Cursor bridge id deleted 2026-09-18.",
-      "menu_label": "CodexBot",
+      "menu_label": "DotsBot",
       "menu_group": "bot"
     }
   ],
