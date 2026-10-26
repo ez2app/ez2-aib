@@ -2880,33 +2880,44 @@ def _pending_header_footer(width, seat, identity, size_mark, span, new_count=0,
 PENDING_RELAY_PREFIX = "長訊已落檔"      # 與 dm_relay.RELAY_RE / sender_origin.relay_pointer_line 字面相同(核心格式,不是介面字)
 PENDING_PREVIEW_MARK = "📄 "
 PENDING_WAIT_MARK = " ⏳"               # 只用符號:渲染器不讀 i18n(#370 r1 L5)
+PENDING_WAIT_CHARS = 40                # 放在列最前面,只留前 40 字(L-B1)
 
 
 def _pending_row_text(item, one_line, sender):
     """E(10-25 Andy 裁):長訊列改印前 200 字(資料層 dm_queue 讀好放 row["preview"],這裡不做 I/O);
-    進行中寫了「等什麼」(row["wait"]{"text"},由 A/B/C 那張寫入)⇒ 尾巴接「⏳…」。列上沒有這些鍵(舊資料 / 治具)⇒ 照舊。"""
+    進行中寫了「等什麼」(row["wait"]{"text"},由 A/B/C 那張寫入)⇒ 列最前面接「⏳<前 40 字> · 」
+    (#370 L-B1:放尾巴會在窄寬被截掉,最該看的反而看不到)。列上沒有這些鍵(舊資料 / 治具)⇒ 照舊。"""
     pv = item.get("preview")
     if isinstance(pv, str) and pv and one_line.startswith(PENDING_RELAY_PREFIX):
         one_line = PENDING_PREVIEW_MARK + pv
     w = _wait_text(item)
     if w:
-        one_line += PENDING_WAIT_MARK + w[:80]
+        one_line = PENDING_WAIT_MARK.strip() + w[:PENDING_WAIT_CHARS] + " · " + one_line
     return one_line, sender
+
+
+def _load_core_wait_text():
+    """模組載入時找一次核心的 dm_text.wait_text(#370 L-B2:不要每幀 try-import);載不到(治具)⇒ None。"""
+    try:
+        from pathlib import Path as _P
+        _d = str(_P(__file__).resolve().parents[1])
+        if _d not in sys.path:
+            sys.path.insert(0, _d)
+        from dm_text import wait_text
+        return wait_text
+    except Exception:
+        return None
+
+
+_CORE_WAIT_TEXT = _load_core_wait_text()
 
 
 def _wait_text(item):
     """跟 dm_queue 計數同一支判斷(dm_text.wait_text,#370 r2 L-new3);載不到核心(治具)⇒ 照同規則自己判。"""
-    try:
-        import sys as _sys
-        from pathlib import Path as _P
-        _d = str(_P(__file__).resolve().parents[1])
-        if _d not in _sys.path:
-            _sys.path.insert(0, _d)
-        from dm_text import wait_text
-    except Exception:
-        w = item.get("wait") if isinstance(item, dict) else None
-        return " ".join(str(w.get("text") or "").split()) if isinstance(w, dict) else ""
-    return wait_text(item)
+    if _CORE_WAIT_TEXT is not None:
+        return _CORE_WAIT_TEXT(item)
+    w = item.get("wait") if isinstance(item, dict) else None
+    return " ".join(str(w.get("text") or "").split()) if isinstance(w, dict) else ""
 
 
 def render_pending_box(rows, width, seat, offset=0, focus=-1,

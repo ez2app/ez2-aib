@@ -1402,10 +1402,12 @@ _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 MEASURED_SOURCES = ("pane_pid_chain", "bg_fork_chain")
 
 
-_PR_URL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|commit)/[0-9a-f]{1,40}/?")
+# PR 號只收 1–9 位數字、commit 收 7–40 位 hex;repo 段不能是「.」或含「..」(#370 L-B3)
+_PR_CORE = r"https://github\.com/ez2app/(?!\.?/)(?![^/\s]*\.\.)[A-Za-z0-9_.-]+/(?:pull/[0-9]{1,9}|commit/[0-9a-f]{7,40})"
+_PR_URL_RE = re.compile(_PR_CORE + r"/?")
 
 
-_EV_PR_IN = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|commit)/[0-9a-f]{1,40}")
+_EV_PR_IN = re.compile(r"(?<![\w/=])" + _PR_CORE + r"(?![0-9A-Za-z_])")   # 前面不能接字 / 斜線 / 等號(別的網址裡夾的不算)
 _EV_ITEM_IN = re.compile(r"\bq_[0-9a-f]{16}\b")
 _EV_SHA_IN = re.compile(r"\b[0-9a-f]{7,40}\b")
 _EV_PATH_IN = re.compile(r"(?:~|/)[^\s,;()「」『』,。、]+")
@@ -1496,35 +1498,91 @@ def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_chec
 
 PREVIEW_CHARS = 200
 PREVIEW_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered", "read")   # 還沒結的才讀檔(備存上千封不讀)
-_PREVIEW_BAD = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+# 控制 / 方向 / 隱形字元;U+200D(ZWJ)不剝,不然 emoji 組合字會拆開(#370 L-B5);U+00AD 軟連字號、U+061C 阿拉伯方向記號也剝(L-new2)
+_PREVIEW_BAD = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u00ad\u061c\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
 def _relay_head(path, limit=2048, env=None):
-    """長訊檔開頭(只讀前 limit 位元組、一般檔、不阻塞;每幀畫面都會叫到,不讀整檔)。不是長訊檔 / 讀不到 ⇒ None。"""
-    if not DR.relay_file_ok(path, env):
-        return None
+    """長訊檔開頭:正本在 dm_relay.relay_head(原話一行也用同一支,#370 L-new4)。"""
+    return DR.relay_head(path, limit, env)
+
+
+RELAY_INDEX_TAIL_MAX = 8 * 1024 * 1024      # 留痕索引太大時只讀最後 8MB(還沒結的信都是新的)
+_RELAY_TARGETS = {}                          # 索引路徑 → (dev, ino, 讀到哪, {長訊檔: {席碼}});只讀新增的尾巴
+
+
+def relay_index_path(env=None):
+    """dm-ctl 寄件那一刻寫的留痕索引(與它同一個狀態根,dm-ctl.sh _RELAY_INDEX)。"""
+    return state_root(env) / "state" / "relay" / "index.jsonl"
+
+
+def _target_codes(target):
+    """索引 target 欄 → 席碼集合:「@cfd04」「cfd04」「6ddf/cfd04」與逗號 / 空白隔開的多席都認。"""
+    out = set()
+    for tok in re.split(r"[,\s]+", str(target or "")):
+        code = tok.strip().lstrip("@").rsplit("/", 1)[-1]
+        if code:
+            out.add(code)
+    return out
+
+
+def _relay_targets(path, env=None):
+    """這個長訊檔寄給哪幾席(查留痕索引,dry-run 不算)。一般檔、不阻塞、只讀上次之後新增的整行;查不到 ⇒ 空集合。"""
+    idx = str(relay_index_path(env))
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        fd = os.open(idx, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except OSError:
-        return None
+        return set()
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
-        raw = os.read(fd, limit)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return set()
+        dev, ino, off, seen = _RELAY_TARGETS.get(idx, (None, None, 0, {}))
+        if (dev, ino) != (st.st_dev, st.st_ino) or st.st_size < off:
+            off, seen = 0, {}
+        skip_partial = False
+        if st.st_size - off > RELAY_INDEX_TAIL_MAX:
+            off, skip_partial = st.st_size - RELAY_INDEX_TAIL_MAX, True
+        os.lseek(fd, off, os.SEEK_SET)
+        chunks, left = [], st.st_size - off
+        while left > 0:
+            b = os.read(fd, min(left, 1 << 20))
+            if not b:
+                break
+            chunks.append(b)
+            left -= len(b)
     except OSError:
-        return None
+        return set()
     finally:
         os.close(fd)
-    return raw.decode("utf-8", "ignore")
+    raw = b"".join(chunks)
+    end = raw.rfind(b"\n") + 1                 # 寫到一半的最後一行留到下次
+    lines = raw[:end].split(b"\n")
+    if skip_partial and lines:
+        lines = lines[1:]
+    seen = dict(seen)
+    for ln in lines:
+        try:
+            row = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("kind") == "long" and not row.get("dry_run") and row.get("file"):
+            seen.setdefault(str(row["file"]), set()).update(_target_codes(row.get("target")))
+    _RELAY_TARGETS[idx] = (st.st_dev, st.st_ino, off + end, seen)
+    return seen.get(str(path), set())
 
 
-def _preview_fields(item, env=None):
+def _preview_fields(item, env=None, seat=None):
     """E(10-25 Andy 裁):清單 / 待審框帶長訊前 200 字。
     preview:長訊讀 RELAY 檔(限 relay 目錄、限量、不阻塞)、短訊就是本文;控制字元 / 方向字元拿掉、換行壓成空白。
-    全球 / IM 來信不讀(外人寫的,另有顯示規則)。#370 r1 M1:不再從正文抽「自報寄件席」(誰都能寫,量不到就不顯示)。"""
+    全球 / IM 來信不讀(外人寫的,另有顯示規則)。#370 r1 M1:不再從正文抽「自報寄件席」(誰都能寫,量不到就不顯示)。
+    #370 L-B4(@abb89 裁):長訊只預覽留痕索引寫明寄給本席的那封,指到別席的長訊檔 ⇒ 不預覽(檔名不動;
+    同帳號本機檔本來就不是防線,這條是不讓一封短訊把別席的信開頭搬進本席畫面)。"""
     if item.get("status") not in PREVIEW_STATUSES or _is_global_item(item) or item.get("im") \
             or item.get("sender_kind") == "external_im":
         return {"preview": None}
     msg = str(item.get("msg") or "")
     path = DR.relay_path_of(msg)
+    if path and (not seat or seat not in _relay_targets(path, env)):
+        return {"preview": None}
     head = _relay_head(path, env=env) if path else msg[:PREVIEW_CHARS * 4]
     if not isinstance(head, str):
         return {"preview": None}
@@ -2862,7 +2920,7 @@ def _row(item, seat, now, index=None, env=None):
         "legacy": bool(item.get("_legacy")),
         "done_ref": item.get("done_ref"),
     }
-    row.update(_preview_fields(item, env))
+    row.update(_preview_fields(item, env, seat))
     g = item.get("global")
     if isinstance(g, dict):
         # 全球來信:畫面標 [外部]、AI 用短碼回信(aib dm --reply);**不帶位址與 npub**(盤點 10-16 第 8、9 項)
