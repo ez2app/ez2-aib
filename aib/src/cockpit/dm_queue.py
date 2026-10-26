@@ -1820,21 +1820,26 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             tidy_on = False
     tidy_res = stage_tidy(seat, env=env, now=now) if tidy_on else None
     cleaned = tidy_res["cleaned"] if tidy_res else 0
-    rows = tabs_payload(seat, env=env, now=now)["tabs"]["waiting"]["rows"]
+    tabs = tabs_payload(seat, env=env, now=now)["tabs"]
+    rows = tabs["waiting"]["rows"]
     unread = TR.unread_ids(rows)
-    if prev is None and len(unread) <= (0 if tidy_on else TR.TRIAGE_MIN_UNREAD):
-        return None                        # 從沒超過三封(auto_tidy:一封都沒有):不建檔、不叫
+    # the maintainer 10-25 21:2x:進行中 ≥2 也叫(read 分頁)
+    inprog = TR.inprog_ids(tabs.get("read", {}).get("rows") or [], now=now)
+    if prev is None and len(unread) <= (0 if tidy_on else TR.TRIAGE_MIN_UNREAD) and len(inprog) < TR.INPROG_MIN:
+        return None                        # 待審 / 進行中都沒到門檻(auto_tidy:待審一封都沒有):不建檔、不叫
     cur = TR.batch_key(r["id"] for r in TR.eligible_rows(rows))
     # ★ review r12 M1:分類器換過(指紋不同)也重算 —— 不然舊版分類器認定的「通知」會被照舊代標已讀
     if prev is None or prev.get("batch") != cur or prev.get("classifier") != TR.CLASSIFIER_FP:
         rec = TR.build_record(seat, rows, prev=prev, now=now)
+        rec["inprog_ids"] = inprog
         TR.write(path, rec)
     else:
         # ★ review r2 m3:批次鍵(待審集合)沒變 ≠ 未讀集合沒變 —— 一封 delivered → hold 仍在待審、卻不再是未讀。
         #   分組/標籤沿用上一份,未讀 id 每拍從現在的列重算(否則 ≤3 封未讀也會被叫)。
         rec = dict(prev)
-        if [str(i) for i in (prev.get("unread_ids") or [])] != unread:
+        if [str(i) for i in (prev.get("unread_ids") or [])] != unread or list(prev.get("inprog_ids") or []) != inprog:
             rec["unread_ids"] = unread
+            rec["inprog_ids"] = inprog
             TR.write(path, rec)
     if not (TR.should_wake_tidy(rec, now=now, cooldown_s=TIDY_WAKE_COOLDOWN_S) if tidy_on else TR.should_wake(rec, now=now)):
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "no-new-batch-or-cooldown",
@@ -1849,7 +1854,10 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "screen-moving", "cleaned": cleaned}
     # 判忙與排空器同一個判準(drain_hold:登記表現查那一席在哪一艙哪個窗);忙就下一拍再試,不記 woke
     #   探針用**信檔本身**(帶 provider / hub;待審列沒有這兩欄),登記表查得到那一席時 drain_hold 會以登記表為準
-    probe = next((r for r in rows if r.get("wid")), None) or (rows[0] if rows else {})
+    #   只剩進行中(待審空)時 rows 是空的 ⇒ 退而拿 read 分頁第一列(#374 r2 L2:不然 digest 席判不出模式)
+    read_rows = tabs.get("read", {}).get("rows") or []
+    probe = (next((r for r in rows if r.get("wid")), None) or (rows[0] if rows else None)
+             or next((r for r in read_rows if r.get("wid")), None) or (read_rows[0] if read_rows else {}))
     probe = _load_item(seat, probe["id"], env) or probe if probe.get("id") else probe
     res = hold_fn(seat, probe) if hold_fn is not None else drain_hold(seat, probe, env=env)
     busy, why = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
@@ -1864,14 +1872,19 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     # review r2 m5:引擎以登記表(那一席現在的席位檔)為準;信上蓋的 provider 是寄信當下抄的,查不到登記才退回它
     reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
     mode = _triage_mode(reg_prov or probe.get("provider"))
-    if tidy_on:
+    if tidy_on and not (tidy_res["todo"] == 0 and len(inprog) >= TR.INPROG_MIN):
         notes = []                         # 通知已在機器層代標過,不再列
         st = tidy_res                      # 審查:不再跑第二次(相似度合併很花時間,而且在排空鎖裡)
-        text = TR.tidy_wake_text(seat, st["need_ai"], st["todo"], str(_HERE / "dm_queue.py"), mode=mode)
+        text = TR.tidy_wake_text(seat, st["need_ai"], st["todo"], str(_HERE / "dm_queue.py"), mode=mode,
+                                 inprog=len(inprog))
     else:
+        # auto_tidy 席待審已清空、只剩進行中 ≥2(#374 r1 M1):照一般席那句叫(帶進行中封數 + 子代理規則),
+        #   不然會貼「待審區有 0 封要你處理」白叫一次
+        if tidy_on:
+            notes = []
         text = TR.wake_text(seat, rec.get("counts") or {}, len(rec.get("ids") or []), str(_HERE / "dm_queue.py"),
                             mode=mode, digest=TR.human_lines(rec, rows) if mode == "digest" else None,
-                            notes=[(by_id.get(i) or {}).get("msg") or "" for i in notes])
+                            notes=[(by_id.get(i) or {}).get("msg") or "" for i in notes], inprog=len(inprog))
     text = _one_line_for_line_reader(text, reg_prov or probe.get("provider"))
     # id 故意不合 ITEM_RE:投遞器看到不是佇列 id 就不帶 AIB_DM_QUEUED_ITEM_ID,dm-ctl 也就不回佇列找它
     # no_relay:叫醒那句整段貼進去,不讓 dm-ctl 換成「去讀某檔」的指標(見 _dmctl_env)
@@ -1882,6 +1895,8 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     day_log = [int(t) for t in (rec.get("wake_log") or []) if isinstance(t, (int, float)) and now - int(t) < 86400]
     rec = dict(rec)
     rec.update({"woke_batch": rec.get("batch"), "woke_ids": list(rec.get("unread_ids") or []),
+                # #374 r2 M-B1:這次叫醒宣告過的待審 id 之後被席位讀掉變進行中,不算「新的進行中」
+                "woke_inprog_ids": sorted(set(rec.get("inprog_ids") or []) | set(rec.get("unread_ids") or [])),
                 "woke_at": now, "woke_rc": None, "woke_mode": mode, "auto_read": [],
                 "wake_log": day_log + [now]})
     if not TR.write(path, rec):
@@ -1896,7 +1911,7 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
 
 
 # 叫醒紀錄欄;rc=2 回滾時照上一份原樣放回(上一份沒有的欄就拿掉)
-_WOKE_KEYS = ("woke_batch", "woke_ids", "woke_at", "woke_rc", "woke_mode", "auto_read", "wake_log")
+_WOKE_KEYS = ("woke_batch", "woke_ids", "woke_inprog_ids", "woke_at", "woke_rc", "woke_mode", "auto_read", "wake_log")
 # ★ review r2 m1:wake_log(每日上限的帳)**永不回滾** —— 每一次投遞嘗試都花過一次 dm-ctl,照算
 _WOKE_ROLLBACK_KEYS = tuple(k for k in _WOKE_KEYS if k != "wake_log")
 # ★ review r2 m1:rc=2 最多回滾這麼多次,之後記成叫過。dm-ctl 的 2 以前也用在
@@ -2834,6 +2849,8 @@ def _row(item, seat, now, index=None, env=None):
         "msg": item.get("msg") or "",
         "rev": item_rev(item),
         "status": item.get("status") or "queued",
+        "read_by": item.get("read_by"),          # #374 r1 M2:系統代標已讀(system)的不算「進行中」
+        "wait": item.get("wait"),                # #374 r1 L1:在等誰(@044e0 B 寫入 {"text","at"});算進行中時排除
         "attempts": int(item.get("attempts") or 0),
         # hold_why 是**給人看的中文句**(只有 zh-TW);要四語的消費端請用 hold_rc 當鍵去查自己的字典,
         # 不要翻譯這一句(開發 B a seat 09-12 15:20 問任務區那行,答:印四語就用 hold_rc)。
