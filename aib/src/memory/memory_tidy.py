@@ -56,7 +56,7 @@ HUMAN_WORDS_NO_TRANSCRIPT = "transcript_missing(找不到這一席的對話檔)"
 _LAST_SOURCE = {}                      # 席碼 ⇒ 最後一次 human_words 的來源狀態(collect / 回顧寫進收據)
 # 退路篩丟掉的機器字樣:系統提醒 / 指令標籤、dm 標頭、Stop hook 回饋、子代理回報、自我提醒排程、接續摘要、中斷提示
 _MACHINE_PREFIX = ("<", "[Request interrupted", "[SYSTEM", "【自我提醒", "Stop hook feedback", "Another Claude session", "This session is being continued",
-                   "Caveat:", "Base directory for this skill")
+                   "Caveat:", "Base directory for this skill", "aib_local result: ", "aib_dm result: ")
 CROWN_PERSONA = "71c97a"
 PERSONA_LINE_RE = re.compile(r"^\s*-\s*(\S+?)\s*[::]\s*(.+?)\s*〔證據[::]「(.+?)」〕\s*$")
 IDENT_LINE_RE = re.compile(r"^\s*身分\s*[::]\s*(性別|生日|嗜好)\s*=\s*(.+?)\s*〔證據[::]「(.+?)」〕\s*$")
@@ -339,8 +339,14 @@ def human_words(ctx, since="", span_rounds=False):
     if not paths:
         try:                                       # 退路:開席登記的那份
             import seat_fork
-            p0 = seat_fork.find_transcript(ctx["seat_uid"])
-            if p0 is None:
+            provider = ctx.get("provider") or ""
+            p0 = seat_fork.find_transcript(ctx["seat_uid"]) if provider in ("", "claude") else None
+            if p0 is None and provider in ("agy", "copilot", "grok"):
+                import seat_native
+                p0 = seat_native.native_path({"provider": provider, "session_uuid": ctx["seat_uid"]})
+            elif p0 is None and provider in seat_fork.API_SESSIONS:
+                p0 = seat_fork.find_record(provider, ctx["seat_uid"], aib_home=str(state_root()))
+            elif p0 is None and provider in ("", "codex"):
                 p0 = seat_fork.find_record("codex", ctx["seat_uid"])
             paths = [str(p0)] if p0 else []
         except Exception:  # noqa: BLE001
@@ -360,6 +366,21 @@ def human_words(ctx, since="", span_rounds=False):
     _LAST_SOURCE[ctx["code"]] = human_words_status()          # 退路篩匯入失敗會在讀的過程改成讀不到
     out = []
     for path in paths:
+        if str(path).endswith(".db"):
+            try:
+                import seat_native
+                verified = seat_native.native_path({"provider": "agy", "session_uuid": ctx["seat_uid"]})
+                if not verified or Path(verified).resolve() != Path(path).resolve():
+                    raise ValueError("AGY session mismatch")
+                events, _asks, _ops, _off, _ids, oldest = seat_native.agy_tail(str(path), enough=lambda _events: False)
+                if oldest:
+                    raise ValueError("AGY evidence exceeded the bounded history window")
+                rows = (json.dumps({"type": e["kind"], "timestamp": _evidence_time(e.get("ts")),
+                                    "message": {"content": e["text"]}}) for e in events if e.get("ts") is not None)
+                out += _human_rows(rows, since, seat, human_filter)
+            except Exception:  # unreadable/truncated history is not human silence
+                _LAST_SOURCE[ctx["code"]] = HUMAN_WORDS_NO_TRANSCRIPT
+            continue
         try:
             fh = open(path, encoding="utf-8", errors="replace")
         except OSError:
@@ -367,6 +388,23 @@ def human_words(ctx, since="", span_rounds=False):
         with fh:
             out += _human_rows(fh, since, seat, human_filter)
     return out if span_rounds else out[-HUMAN_MAX:]
+
+
+
+def _evidence_time(value):
+    """Convert documented epoch-second history timestamps without inventing a time."""
+    if isinstance(value, str):
+        try:
+            datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return value
+        except ValueError:
+            return ""
+    if type(value) in (int, float):
+        try:
+            return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError):
+            pass
+    return ""
 
 
 def _human_rows(fh, since, seat, human_filter):
@@ -391,15 +429,43 @@ def _human_rows(fh, since, seat, human_filter):
                 row = dict(row, type="user", message={"content": [
                     dict(b, type="text") if isinstance(b, dict) and b.get("type") == "input_text" else b
                     for b in parts]})
+            if row.get("type") == "user.message":
+                data = row.get("data")
+                if not isinstance(data, dict) or data.get("parentToolCallId") or not isinstance(data.get("content"), (str, list)):
+                    continue
+                stamp = _evidence_time(row.get("timestamp"))
+                if not stamp:
+                    _LAST_SOURCE[str(seat.get("code") or "")] = HUMAN_WORDS_NO_TRANSCRIPT
+                    continue
+                row = dict(row, type="user", timestamp=stamp, message={"content": data.get("content")})
+            elif row.get("role") == "user" and row.get("type") in (None, "user"):
+                stamp = _evidence_time(row.get("timestamp") or row.get("ts"))
+                if not isinstance(row.get("content"), (str, list)):
+                    continue
+                if not stamp:
+                    _LAST_SOURCE[str(seat.get("code") or "")] = HUMAN_WORDS_NO_TRANSCRIPT
+                    continue
+                row = dict(row, type="user", timestamp=stamp, message={"content": row.get("content")})
+            elif row.get("type") == "user" and "message" not in row and "content" in row:
+                stamp = _evidence_time(row.get("timestamp"))
+                if not stamp:
+                    _LAST_SOURCE[str(seat.get("code") or "")] = HUMAN_WORDS_NO_TRANSCRIPT
+                    continue
+                row = dict(row, timestamp=stamp, message={"content": row["content"]})
             if row.get("type") != "user":
                 continue
             ts = str(row.get("timestamp") or "")
             if since and _when(ts) < _when(since):
                 continue
-            content = (row.get("message") or {}).get("content")
+            message = row.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
             if isinstance(content, list):
-                content = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
-            text = str(content or "").strip()
+                content = "\n".join(b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str))
+            if not isinstance(content, str):
+                continue
+            text = content.strip()
             if not text:
                 continue
             try:

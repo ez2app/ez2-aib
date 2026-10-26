@@ -149,7 +149,8 @@ def seat_context(seat: str = "") -> dict:
     out = {"seat_uid": uuid if UUID_RE.fullmatch(uuid) else "", "code": uuid[-5:] if uuid else "",
            "cabin": cabin, "persona_uid": "", "project_uid": str(rec.get("project_uid") or ""), "route_key": "",
            # 10-13 記憶整理第 3 包:每筆更新記「哪個模型、哪一席」;讀不到留空,由呼叫端寫「讀不到」
-           "seat_id": str(rec.get("seat_id") or ""), "model": str(rec.get("model_requested") or rec.get("model") or "")}
+           "seat_id": str(rec.get("seat_id") or ""), "model": str(rec.get("model_requested") or rec.get("model") or ""),
+           "provider": str(rec.get("provider") or "")}
     if uuid:
         code = uuid[-5:]
         for name, key in (("bindings.json", "bindings"), ("seat-display.json", "display")):
