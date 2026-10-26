@@ -7,7 +7,7 @@
                              [--with-thinking] [--with-sidechain] [--redact] [--json]
   aib seat pending <席碼> [--json]
 
-只讀:那一席的 Claude Code 對話紀錄 jsonl(席位檔 session_uuid → activity_probe.claude_transcript_paths)+ tmux 畫面最後幾行。
+只讀:那一席的 Claude Code / Codex 原生對話紀錄 jsonl + tmux 畫面最後幾行。
 不寫任何檔、不送任何鍵(C1 / C4 / C5 另一支,要 Touch ID)。
 事件:{id, ts, kind, text, meta};kind = user | dm | hook | human_shell | assistant | tool_call | tool_result | ask | system | thinking。
 """
@@ -81,6 +81,21 @@ def transcript_path(rec):
     if not sess:
         return None
     cands = []
+    if rec.get("provider") == "codex":
+        if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", sess):
+            return None
+        base = os.environ.get("EZ2_CODEX_SESSIONS_DIR") or os.path.join(
+            os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "sessions")
+        for path in glob.glob(os.path.join(base, "*", "*", "*", "rollout-*" + sess + ".jsonl")):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    meta = json.loads(fh.readline())
+                payload = meta.get("payload") or {}
+                if meta.get("type") == "session_meta" and (payload.get("session_id") or payload.get("id")) == sess:
+                    cands.append(path)
+            except (OSError, ValueError, AttributeError):
+                continue
+        return max(cands, key=os.path.getmtime) if cands else None
     pd = activity_probe.project_dir_from_cwd(rec.get("cwd"))
     if pd:
         cands.append(os.path.join(pd, sess + ".jsonl"))
@@ -193,6 +208,28 @@ def _notices(text):
     return [name for name, rx in NOTICE_PATTERNS if rx.search(text or "")]
 
 
+def _codex_message(rec, line):
+    """Normalize only public message items; never expose developer instructions or reasoning.
+
+    event_msg mirrors are intentionally ignored so each message appears once.
+    IDs derive from the original line when the native item has no ID, preserving cursors.
+    """
+    payload = rec.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "message":
+        return None
+    role = payload.get("role")
+    if role not in ("user", "assistant") or payload.get("channel") not in (None, "commentary", "final"):
+        return None
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return None
+    blocks = [{"type": "text", "text": x["text"]} for x in content
+              if isinstance(x, dict) and x.get("type") in ("input_text", "output_text") and isinstance(x.get("text"), str)]
+    return {"type": role, "uuid": payload.get("id") or hashlib.sha1(line).hexdigest()[:12],
+            "timestamp": rec.get("timestamp"), "message": {"role": role, "content": blocks},
+            "_codex_channel": payload.get("channel"), "_codex": True}
+
+
 def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0, align=False):
     """整份(或從 offset 起)⇒ (events, pending_ask_ids, queue_ops, end_offset, session_ids)。
     align:offset 可能落在一行中間(讀尾端用)⇒ 先跳到下一行開頭,不解析半行。"""
@@ -215,6 +252,10 @@ def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0,
                 continue
             if not isinstance(rec, dict):
                 continue
+            if rec.get("type") == "response_item":
+                rec = _codex_message(rec, line)
+                if rec is None:
+                    continue
             t = rec.get("type")
             sid = rec.get("sessionId")
             if sid and sid not in sessions:
@@ -231,6 +272,8 @@ def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0,
             ts = _ts(rec)
             uid = str(rec.get("uuid") or hashlib.sha1(line).hexdigest()[:12])
             side = {"sidechain": True} if rec.get("isSidechain") else {}
+            if rec.get("_codex"):
+                side.update(provider="codex", channel=rec.get("_codex_channel"))
             if t == "system":
                 sub = rec.get("subtype")
                 if sub == "compact_boundary":
