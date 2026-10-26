@@ -792,8 +792,11 @@ def context_status_format(python=None):
     import shlex
     import shutil
     py = python or shutil.which("python3") or sys.executable
-    return "#[align=left]  #(%s %s --border --ctx-only --window #{window_id} --socket #{socket_path} --width #{window_width} --provider '#{@aib_provider}')" % (
+    row = "#[align=left]  #(%s %s --border --ctx-only --window #{window_id} --socket #{socket_path} --width #{window_width} --provider '#{@aib_provider}')" % (
         shlex.quote(py), shlex.quote(os.path.abspath(__file__)))
+    # During an upgrade, older launchers can still create combined borders.
+    # Show the second context row only after that window has a task-only border.
+    return "#{?#{m:*--now-only*,#{pane-border-format}},%s,}" % row
 
 
 def apply_borders(*, hubs=None, tmux=None, code_for=None, dry_run=False, out=sys.stdout):
@@ -859,6 +862,7 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--now-only", action="store_true", help=argparse.SUPPRESS)     # agy:邊框只畫 📌
     ap.add_argument("--ctx-only", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--context-status-format", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--border-hub", default="", help=argparse.SUPPRESS)
     ap.add_argument("--session", default="", help=argparse.SUPPRESS)              # 狀態列遞來的對話編號(沒有 TMUX_PANE 時用)
     ap.add_argument("--window", default="", help=argparse.SUPPRESS)
     ap.add_argument("--socket", default="", help=argparse.SUPPRESS)
@@ -913,7 +917,8 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         out.write(border_format(args.border_format) + "\n")
         return 0
     if args.apply_borders:
-        _done, bad = apply_borders(dry_run=args.dry_run, out=out)
+        _done, bad = apply_borders(hubs=[args.border_hub] if args.border_hub else None,
+                                  dry_run=args.dry_run, out=out)
         return 1 if bad else 0
     if args.border:
         out.write(border_line(args.window, args.socket, provider=args.provider, state_root=state_root,
