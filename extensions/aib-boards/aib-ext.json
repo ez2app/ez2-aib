@@ -1,7 +1,7 @@
 {
   "name": "aib-boards",
   "kind": "mod",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "requires_aib": "0.1.6",
   "built_from": "0.70.11",
   "title": "AIB 席位 mod(Claude Code 介面:每席一台電腦、身分、CTX、信件卡片)",
@@ -54,6 +54,5 @@
     "tui/ts-ext.mjs": "1d9289a95d64ba37d8717fe4698196baf8bc90519ec13ba9f009fce108721394",
     "tui/ui.mjs": "09c9d80d305cab554129e076ec5941ffd3178040204c1df2cf9e23c0c5040163",
     "types/index.d.ts": "b1908713188af446f97b5ffa6581d8866fd578f7919871413665e39f5bdafa97"
-  },
-  "signature": "ed25519:rMMHfhnejeuGIhkp/jViHXWIpOe5yUNxCQWjY3kx5m2OHYTWvEzuGH1MJWztEBomfTUUmor7trW8q6rBEZJkBw=="
+  }
 }
