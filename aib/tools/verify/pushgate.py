@@ -448,10 +448,22 @@ def all_tests(repo):
         aib = False
     if aib:
         return sorted("tests/" + p.name for p in (Path(repo) / "tests").glob("test-*.py"))
+    # 10-26(@abb89 派,0.1.59 現況):開源 ez2-aib 倉的 aib 套件住在 aib/ 子目錄,而 aib test 會先把 --repo 正規化到 git 倉根 ⇒
+    #   倉根不是 aib 套件、aib/ 才是 ⇒ --all 以前退回通用找法,只撈到倉根 tests/ 的 23 支 test_*.py,還把 aib/tools/verify/test_entry.py
+    #   當測試跑。這裡認得「倉根底下的 aib/ 是 aib 套件」就回它的全套(aib/tests/test-*.py,路徑帶 aib/ 前綴,倉根與 aib/ 兩種 --repo 母體相同)。
+    sub = Path(repo) / "aib"
+    try:
+        sub_aib = sub.is_dir() and ship_profile.load(sub).gate_mode == "aib"
+    except Exception:  # noqa: BLE001 - 讀不到設定 ⇒ 不是
+        sub_aib = False
+    if sub_aib:
+        return sorted("aib/tests/" + p.name for p in (sub / "tests").glob("test-*.py"))
     if ship_profile.declared_tests(repo)[0] is not None:
         return ship_profile.discover_tests(repo)      # 10-07:設定檔宣告的就是測試,不再用 python 的寫法判
     out = []
     for rel in ship_profile.discover_tests(repo):
+        if "/tools/verify/" in "/" + rel:            # aib 隨包帶進專案的工具(test_entry.py 這種檔名像測試的執行器)不是專案的測試(10-26)
+            continue
         if rel.split("/")[0] in ("tests", "test") or rel.endswith(ship_profile.JS_TEST_SUFFIXES + ("_test.go", "Test.php")):
             out.append(rel)     # JS/TS:找法本身就靠 *.test.* / __tests__ 這種明確的命名(10-07),不再用 python 的寫法判
             continue

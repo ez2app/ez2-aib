@@ -24,7 +24,7 @@ P2 簽章驗過、版本較舊 ⇒ 列進落後清單;核心不用更新時由 c
 P3 核心有更新時,外掛交給一行安裝(新版程式)的 aib ext auto,舊碼不自己裝
 X1 不自動更新清單:預設有 hostguard(沒設定檔、on / off 之後都還在);add / list / remove 一般外掛不用證明;
    拿掉 hostguard 要本人證明,沒過 rc 2、清單不變;名稱不合法 rc 2
-X2 付費外掛來源 = aib-plugins main(測試用本機 bare 倉):簽章驗過、版本較舊 ⇒ 只列名(plugins_paid_behind)、不換、不拿租約,
+X2 付費外掛來源 = aib-plugins main(測試用本機 bare 倉):簽章驗過、版本較舊 ⇒ 只列名(plugins_manual_behind)、不換、不拿租約,
    status / doctor 提示本人;hostguard 在清單裡 ⇒ status 列為排除;簽章驗不過 ⇒ 列為簽章沒過
 X3 核心這次有更新、下一次也一樣:付費外掛一直只列名;外掛來源連不上 ⇒ 照樣做核心那部分,status 說來源連不上
 R1 時鐘跳過:狀態檔時間戳在未來(含 9999999999)⇒ 不算數、照常查與更新,status 標 clock_skew;下一次正常就清掉
@@ -669,7 +669,7 @@ class PaidSource(Base):
         return json.loads((Path(self.env["EZ2_AIB_STATE_ROOT"]) / "plugins" / name / "aib-ext.json").read_text())["version"]
 
     def test_x2_signed_paid_listed_not_installed(self):
-        """[A-M3] 付費外掛有新簽章版 ⇒ 只列名(plugins_paid_behind)、不換、不拿租約;hostguard 在排除清單照列排除;status / doctor 提示本人。"""
+        """[A-M3] 付費外掛有新簽章版 ⇒ 只列名(plugins_manual_behind)、不換、不拿租約;hostguard 在排除清單照列排除;status / doctor 提示本人。"""
         self.paid_repo({"demo-paid": "1.0.3", "hostguard": "2.0.0"})
         self.make_repos(latest=None)
         import aib_ext
@@ -678,12 +678,12 @@ class PaidSource(Base):
             inst.assert_not_called()
         self.assertEqual(res["result"], "up_to_date", res)
         self.assertEqual(res["plugin_source"], "ok")
-        self.assertEqual((res["plugins_behind"], res["plugins_paid_behind"]), ([], ["demo-paid"]))
+        self.assertEqual((res["plugins_behind"], res["plugins_manual_behind"]), ([], ["demo-paid"]))
         self.assertEqual(res["plugins_excluded"], ["hostguard"])
         self.assertEqual((self.installed_version("demo-paid"), self.installed_version("hostguard")), ("1.0.0", "1.0.0"))
         self.assertEqual((self.leases, self.installs), ([], []))
         p = AU.status_payload(self.env, platform="linux")
-        self.assertEqual((p["excluded"], p["plugins_excluded"], p["plugins_paid_behind"]), (["hostguard"], ["hostguard"], ["demo-paid"]))
+        self.assertEqual((p["excluded"], p["plugins_excluded"], p["plugins_manual_behind"]), (["hostguard"], ["hostguard"], ["demo-paid"]))
         text = "\n".join(AU.status_lines(p))
         self.assertIn("hostguard", text)
         self.assertIn("demo-paid", text)
@@ -762,7 +762,7 @@ class PaidSource(Base):
         self.make_repos(latest=None)
         res, _ = self._paid_check_signed()
         self.assertEqual(res["result"], "up_to_date", res)
-        self.assertEqual(sorted(res["plugins_paid_behind"]), ["demo-paid", "other"])
+        self.assertEqual(sorted(res["plugins_manual_behind"]), ["demo-paid", "other"])
         self.assertEqual((root / "demo-paid" / "user-notes.txt").read_text(encoding="utf-8"), "mine")
         self.assertIn("edited by me", (root / "other" / "m.py").read_text(encoding="utf-8"))
         self.assertEqual((self.installed_version("demo-paid"), self.installed_version("other")), ("1.0.0", "1.0.0"))
@@ -862,10 +862,10 @@ class PaidSource(Base):
         import aib_ext
         with mock.patch.object(aib_ext, "signed_ok", return_value=True):
             res = self.run_check(plugin_fetch=AU.fetch_plugin_source, install=self.fake_install)
-            self.assertEqual((res["result"], res["plugins_paid_behind"]), ("updated", ["demo-paid"]))
+            self.assertEqual((res["result"], res["plugins_manual_behind"]), ("updated", ["demo-paid"]))
             self.assertEqual((len(self.updates), self.installs), (1, []))
             res = self.run_check(now=NOW + 7200, plugin_fetch=AU.fetch_plugin_source, install=self.fake_install)
-            self.assertEqual((res["result"], res["plugins_paid_behind"]), ("up_to_date", ["demo-paid"]))
+            self.assertEqual((res["result"], res["plugins_manual_behind"]), ("up_to_date", ["demo-paid"]))
             self.assertEqual((len(self.updates), self.installs), (1, []))     # 下一次查也不換付費外掛
         res = self.run_check(now=NOW + 99999, plugin_fetch=lambda e: None)
         self.assertEqual((res["result"], res["plugin_source"]), ("up_to_date", "offline"))

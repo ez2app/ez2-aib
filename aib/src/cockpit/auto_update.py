@@ -185,7 +185,7 @@ def write_excludes(names, env=None, now=None):
 CLOCK_SKEW_S = 5 * 60               # 時間戳比現在晚超過這麼多 ⇒ 當成時鐘跳過,不算數
 _TS_KEYS = ("last_check", "last_attempt", "last_result_at")
 _STR_KEYS = ("have", "latest", "last_why", "plugin_source", "plugin_via", "plugin_problem")
-_LIST_KEYS = ("plugins_behind", "plugins_paid_behind", "plugins_excluded", "plugins_unsigned", "plugins_modified", "plugins_missing")
+_LIST_KEYS = ("plugins_behind", "plugins_manual_behind", "plugins_excluded", "plugins_unsigned", "plugins_modified", "plugins_missing")
 _RESULT_RX = re.compile(r"[a-z_]{1,40}")
 
 
@@ -218,6 +218,8 @@ def clean_status(d, now=None):
         v = d.get(k)
         if isinstance(v, list):
             out[k] = [x for x in v if isinstance(x, str)][:50]
+    if "plugins_manual_behind" not in out and isinstance(d.get("plugins_paid_behind"), list):   # 0.1.59 前的鍵名,升級後第一次讀照認
+        out["plugins_manual_behind"] = [x for x in d["plugins_paid_behind"] if isinstance(x, str)][:50]
     lu = d.get("last_update")
     if isinstance(lu, dict) and isinstance(lu.get("to"), str) and _num_ok(lu.get("at")):
         out["last_update"] = {"from": lu.get("from") if isinstance(lu.get("from"), str) else None, "to": lu["to"],
@@ -729,8 +731,10 @@ def safe_url(u):
             u = "%s://%s%s" % (p.scheme, p.netloc.rpartition("@")[2], p.path.split(";", 1)[0])
         except ValueError:
             u = "?"
-    else:
-        u = re.split(r"[?#;]", u.rpartition("@")[2], maxsplit=1)[0]
+    else:                                             # 只有 user@host:path 這種 scp 寫法才去 @ 前;本機路徑裡的 @ 留著(#349 r2 L4)
+        if re.match(r"^[^/\s@]+@[^/\s:]+:", u):      # user@host:path / user:pass@host:path;開頭是 / 的本機路徑不算
+            u = u.partition("@")[2]
+        u = re.split(r"[?#;]", u, maxsplit=1)[0]
     return u[:200] or "?"
 
 
@@ -768,8 +772,9 @@ def catalog_behind(env, excluded=(), deadline_s=None, api=None):
         return out
     limit = CATALOG_DEADLINE_S if deadline_s is None else deadline_s
     api = api or PC._public_api(env)
-    api.timeout = min(api.timeout, limit)
-    api.total_s = limit
+    # 整輪硬上限 = limit:api 的總期限 + 它自己的 2 秒寬限(JOIN_GRACE_S)加起來不超過 limit;socket 逾時那個欄位 api 內部
+    #   固定取 max(timeout, 60),改它沒用(#349 r2 L1)
+    api.total_s = max(1, limit - getattr(api, "JOIN_GRACE_S", 2))
     t0 = time.monotonic()
     entries, err = PC.catalog(env, api)
     if not err and time.monotonic() - t0 > limit:
@@ -799,7 +804,7 @@ def _catalog_safe(catalog, env, excluded):
     except Exception as exc:  # noqa: BLE001
         log("plugin catalog error: %s" % type(exc).__name__, env)
         return {"via": "catalog", "behind": [], "skipped": [], "missing": [], "unsigned": [],
-                "problem": "plugin_catalog_error"}, "?"
+                "problem": "plugin_catalog_error"}, None   # 沒網址就不印「查的是目錄:?」(#349 r2 L2)
 
 
 # ───────────────────────────── 查 / 更新 ─────────────────────────────
@@ -913,7 +918,7 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
             res.update(kw, result=result)
             if result not in ("checked_recently",) or skew:
                 st.update(last_result=result, last_result_at=int(now), last_why=why)
-                for k in ("have", "latest", "plugins_behind", "plugins_paid_behind", "plugins_excluded", "plugins_unsigned",
+                for k in ("have", "latest", "plugins_behind", "plugins_manual_behind", "plugins_excluded", "plugins_unsigned",
                           "plugins_modified", "plugins_missing", "plugin_source", "plugin_via", "plugin_via_url", "plugin_problem"):
                     if k in res:
                         st[k] = res[k]
@@ -958,8 +963,9 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
             paid, skipped, unsigned = paid_behind(cache, excluded, env) if cache else ([], [], [])
         log("plugin source via=%s url=%s problem=%s" % (res["plugin_via"], res["plugin_via_url"], cat["problem"] or "-"),
             env, now)
-        # 付費外掛只列名、不自動換(本機外掛只由維護席裝;簽過 ≠ 准上正式機)⇒ 狀態 / doctor 提示本人
-        res["plugins_paid_behind"] = [b["name"] for b in paid]
+        # 付費 / 會員外掛只列名、不自動換(本機外掛只由維護席裝;簽過 ≠ 准上正式機)⇒ 狀態 / doctor 提示本人
+        #   (鍵名 0.1.60 起 plugins_manual_behind:目錄上 access=member 的也會列進來,不只付費;#349 r1 L 收尾)
+        res["plugins_manual_behind"] = [b["name"] for b in paid]
         # 外掛資料夾裡有使用者 / 執行期自己的檔(改過、多出來;外掛宣告的 keep 夾除外)⇒ 自動路徑不換，交本人 aib ext install
         modified = [b["name"] for b in behind if local_changes(b)]
         behind = [b for b in behind if b["name"] not in modified]
@@ -968,7 +974,7 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
         if plan["why"] == "no_ref":
             return done("no_ref")
         if not plan["behind"] and not behind:
-            return done("up_to_date")       # 只有付費外掛落後也算 up_to_date(列在 plugins_paid_behind,不自動換)
+            return done("up_to_date")       # 只有付費外掛落後也算 up_to_date(列在 plugins_manual_behind,不自動換)
         if plan["behind"]:
             if plan["why"]:
                 return done("refused_" + plan["why"])
@@ -1027,7 +1033,7 @@ def status_payload(env=None, home=None, platform=None, now=None):
             else "not_mac", "interval_s": INTERVAL_S, "have": st.get("have"), "latest": st.get("latest"),
             "last_check": st.get("last_check"), "last_result": st.get("last_result"),
             "last_result_at": st.get("last_result_at"), "last_update": st.get("last_update"),
-            "plugins_behind": st.get("plugins_behind") or [], "plugins_paid_behind": st.get("plugins_paid_behind") or [],
+            "plugins_behind": st.get("plugins_behind") or [], "plugins_manual_behind": st.get("plugins_manual_behind") or [],
             "last_plugins": st.get("last_plugins") or [],
             "excluded": read_excludes(env), "plugins_excluded": st.get("plugins_excluded") or [],
             "plugins_unsigned": st.get("plugins_unsigned") or [], "plugins_modified": st.get("plugins_modified") or [],
@@ -1051,15 +1057,14 @@ def status_lines(p):
     out.append(T("status.excluded", names=", ".join(p["excluded"]) or T("exclude.none")))
     if p.get("plugins_excluded"):
         out.append(T("status.excluded_behind", names=", ".join(p["plugins_excluded"])))
-    if p.get("plugins_paid_behind"):
-        out.append(T("status.paid_behind", names=", ".join(p["plugins_paid_behind"])))
+    if p.get("plugins_manual_behind"):
+        out.append(T("status.manual_behind", names=", ".join(p["plugins_manual_behind"])))
     if p.get("plugins_unsigned"):
         out.append(T("status.unsigned", names=", ".join(p["plugins_unsigned"])))
     if p.get("plugins_modified"):
         out.append(T("status.modified", names=", ".join(p["plugins_modified"])))
-    if p.get("plugin_via"):
-        out.append(T("status.plugin_via_" + ("catalog" if p["plugin_via"] == "catalog" else "git"),
-                     url=p.get("plugin_via_url") or "?"))
+    if p.get("plugin_via") and p.get("plugin_via_url"):   # 目錄那步拋例外 ⇒ 沒網址 ⇒ 不印這行(#349 r2 L2)
+        out.append(T("status.plugin_via_" + ("catalog" if p["plugin_via"] == "catalog" else "git"), url=p["plugin_via_url"]))
     if p.get("plugin_source") == "offline":
         out.append(T("status.plugin_source_offline"))
     if p.get("plugin_source") == "rejected":
@@ -1083,9 +1088,11 @@ def doctor_line(env=None, now=None):
         return "note", T("doctor.plugin_rejected", code=p.get("plugin_problem") or "?", url=p.get("plugin_via_url") or "?")
     if p.get("plugin_source") == "incomplete":
         return "note", T("doctor.plugin_incomplete", code=p.get("plugin_problem") or "?", url=p.get("plugin_via_url") or "?")
-    if p.get("plugins_paid_behind"):
-        return "note", T("doctor.paid_behind", names=", ".join(p["plugins_paid_behind"])) + \
+    if p.get("plugins_manual_behind"):
+        return "note", T("doctor.manual_behind", names=", ".join(p["plugins_manual_behind"])) + \
             (" · " + T("doctor.via", url=p["plugin_via_url"]) if p.get("plugin_via_url") else "")
+    if p.get("plugins_missing"):                      # 只有「目錄沒列」也要提醒,不算 ok(#349 r2 L3)
+        return "note", T("doctor.plugins_missing", names=", ".join(p["plugins_missing"]))
     lu = p.get("last_update")
     if isinstance(lu, dict) and lu.get("to"):
         return "ok", T("doctor.updated", new=lu["to"], when=_when(lu.get("at")))
