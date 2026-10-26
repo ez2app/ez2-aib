@@ -77,7 +77,8 @@ def remote(host):
         raise ValueError("invalid-ssh-alias")
     source = Path(version_probe.__file__).read_text(encoding="utf-8")
     try:
-        p = subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+        p = subprocess.run(["ssh", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes",
+                            "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
                             "-o", "StrictHostKeyChecking=yes", "-o", "RemoteCommand=none",
                             host, "python3", "-"], input=source, text=True, stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL, timeout=30)
