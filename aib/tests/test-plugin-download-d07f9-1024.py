@@ -402,6 +402,12 @@ class Install(Box):
 
     def test_d7c_plan_required(self):
         # 目錄條目帶 plan、伺服器 403 plugin_plan_required details [需要的級] ⇒ 回條 detail 原碼 + plan、沒裝;值不在五級 / public 帶 plan ⇒ 整份目錄不合契約
+        import aib_ext
+        home = aib_ext.target("plugin", "captain-room")   # 帶 plan 的條目要銷售總開關 on 才看得到(D12);這格先開
+        home.mkdir(parents=True)
+        (home / aib_ext.MANIFEST).write_text(json.dumps(resign({"name": "captain-room", "kind": "plugin", "version": "0.0.1",
+                                                                "requires_aib": "0.1.0", "files": {}, "settings": {"sales": "on"}})), encoding="utf-8")
+        self.assertEqual(PC.sales_on(), (True, "signed"))
         data = self.tgz()
         ent = dict(self.entry(data, access="member"), plan="pro")
         srv = self.server([ent], {("probe", "0.0.1"): data})
@@ -424,6 +430,48 @@ class Install(Box):
         odd = FakeServer({"/plugins/packages/probe/0.0.1.tgz": (403, {"error": "plugin_plan_required", "details": ["<b>x</b>"]})})
         res, rc = self.install("probe", srv, paid_api=api(odd, token="ast_x"), machine_id=MID)
         self.assertEqual((rc, res["detail"], "plan" in res), (3, "plugin_plan_required", False), res)
+
+    def test_d12_sales_switch(self):
+        # 銷售總開關(Andy 10-25 23:5x):只認簽章內的 captain-room settings.sales;off ⇒ 帶 plan 的條目對這台不存在(目錄 / 安裝同一條路)
+        import aib_ext
+        data = self.tgz()
+        planned = dict(self.entry(data, access="member"), plan="pro")
+        plain = dict(self.entry(data, access="member"), version="0.0.2")
+        srv = self.server([planned, plain], {("probe", "0.0.1"): data, ("probe", "0.0.2"): data})
+        only = self.server([planned], {("probe", "0.0.1"): data})
+        self.assertEqual(PC.sales_on(), (False, "missing"))
+        res, rc = AP.catalog_cmd(dict(os.environ), api(srv))
+        self.assertEqual((rc, [e["version"] for e in res["plugins"]]), (0, ["0.0.2"]), res)
+        res, rc = self.install("probe", only)
+        self.assertEqual((rc, res["detail"]), (2, "plugin_not_in_catalog"), "off ⇒ 帶 plan 的條目裝不到")
+        home = aib_ext.target("plugin", "captain-room")
+        home.mkdir(parents=True)
+        base = {"name": "captain-room", "kind": "plugin", "version": "0.0.1", "requires_aib": "0.1.0", "files": {}}
+        def put(m):
+            (home / aib_ext.MANIFEST).write_text(json.dumps(m), encoding="utf-8")
+        put(dict(base, settings={"sales": "on"}))   # 沒簽 ⇒ 不認
+        self.assertEqual(PC.sales_on(), (False, "unsigned"))
+        put(resign(dict(base, settings={"sales": "on"})))
+        self.assertEqual(PC.sales_on(), (True, "signed"))
+        res, rc = AP.catalog_cmd(dict(os.environ), api(srv))
+        self.assertEqual(sorted(e["version"] for e in res["plugins"]), ["0.0.1", "0.0.2"], "on ⇒ 帶 plan 的條目列出")
+        m = resign(dict(base, settings={"sales": "on"}))
+        m["settings"]["sales"] = "off"
+        put(m)   # 簽完再改 ⇒ 簽章驗不過 ⇒ off
+        self.assertEqual(PC.sales_on(), (False, "unsigned"))
+        put(resign(dict(base, settings={"sales": "off"})))
+        self.assertEqual(PC.sales_on(), (False, "signed"))
+        res, rc = AP.catalog_cmd(dict(os.environ), api(srv))
+        self.assertEqual([e["version"] for e in res["plugins"]], ["0.0.2"])
+        put(resign(dict(base, settings={"sales": "yes"})))
+        self.assertEqual(PC.sales_on(), (False, "unset"))
+        put(resign(dict(base)))
+        self.assertEqual(PC.sales_on(), (False, "unset"))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            AP.main(["licensed", "farm", "--json"])
+        out = json.loads(buf.getvalue().strip().splitlines()[-1])
+        self.assertEqual((out["sales"], out["sales_source"]), ("off", "unset"), out)
 
     def test_d7_paid(self):
         data = self.tgz(addon="probe")

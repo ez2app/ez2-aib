@@ -435,8 +435,12 @@ def main(argv=None):
         print(USAGE, file=sys.stderr)
         return 2
     ok, why = licensed({"requires_addon": a[1]})
-    out = {"addon": a[1], "licensed": bool(ok), "why": why, "signature_enforced": license_check_enforced()}
-    print(json.dumps(out, ensure_ascii=False) if as_json else ("%s: %s (%s)" % (a[1], "licensed" if ok else "not licensed", why)))
+    sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+    import plugin_catalog as PC
+    sales, sales_src = PC.sales_on()   # 銷售總開關(簽章內的 captain-room settings.sales);外掛 / 艦長室都讀這一欄,不自己判
+    out = {"addon": a[1], "licensed": bool(ok), "why": why, "signature_enforced": license_check_enforced(),
+           "sales": "on" if sales else "off", "sales_source": sales_src}
+    print(json.dumps(out, ensure_ascii=False) if as_json else ("%s: %s (%s); sales %s" % (a[1], "licensed" if ok else "not licensed", why, out["sales"])))
     return 0 if ok else 1
 
 
