@@ -1037,7 +1037,12 @@ _whoami_token() {
   fi
   # ★ 10-15 18:4x 事故:刀測拿掉 _GL_OUT_ADDR 初始化時,這一輪從環境繼承到全球位址又走全球、又來推導,
   #   無限再入,兩千多個 bash 把整機行程數塞滿約 8 分鐘。⇒ 再入前清掉全球相關變數(第二層;第三層見下面分派那行)。
-  ident="$(env -u _GL_OUT_ADDR -u DM_REPLY ${own_hub:+EZ2_AIHUB_SOCKET="$own_hub"} AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
+  local -a identity_env=()
+  if [ -n "$own_hub" ]; then
+    # Re-entry derives identity from this hub, not the parent invocation's default cabin.
+    identity_env=(-u EZ2_AIB_INSTANCE -u EZ2_AIB_INSTANCE_HOME -u EZ2_AIB_INSTANCE_TOKEN -u EZ2_TMUX_SESSION "EZ2_AIHUB_SOCKET=$own_hub")
+  fi
+  ident="$(env -u _GL_OUT_ADDR -u DM_REPLY "${identity_env[@]}" AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
   ident="${ident##*$'\n'}"
   case "$ident" in *[!A-Za-z0-9_=-]*) ident="" ;; esac
   printf '%s' "$ident"
