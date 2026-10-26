@@ -1015,7 +1015,10 @@ def main(argv=None):
     if a.mode == "generic":
         sys.path.insert(0, str(HERE.parent / "release"))
         import ship_profile
-        tests, full = ship_profile.discover_tests(repo), None
+        # Use the same validated population as `aib test --all` and the ledger.
+        # Filename discovery also includes tools such as hit_test.py and misses
+        # the packaged checkout's aib/tests/test-*.py population.
+        tests, full = all_tests(repo), None
         foreign = probe_foreign(repo)
         if foreign:
             for name, where in foreign:
