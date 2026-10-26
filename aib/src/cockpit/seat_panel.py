@@ -28,6 +28,7 @@ if HERE not in sys.path:
 import activity_probe  # noqa: E402
 import seat_address  # noqa: E402
 import seats_dir_lib  # noqa: E402
+import seat_native  # noqa: E402
 
 V = 1
 LIMIT_DEFAULT = 500
@@ -80,6 +81,8 @@ def transcript_path(rec):
     sess = str(rec.get("session_uuid") or "").strip().lower()
     if not sess:
         return None
+    if rec.get("provider") in ("agy", "copilot", "grok"):
+        return seat_native.native_path(rec)
     cands = []
     if rec.get("provider") == "codex":
         if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", sess):
@@ -256,6 +259,10 @@ def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0,
                 rec = _codex_message(rec, line)
                 if rec is None:
                     continue
+            elif os.path.basename(path) in ("events.jsonl", "chat_history.jsonl"):
+                rec = seat_native.json_message(rec, path, line)
+                if rec is None:
+                    continue
             t = rec.get("type")
             sid = rec.get("sessionId")
             if sid and sid not in sessions:
@@ -274,6 +281,8 @@ def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0,
             side = {"sidechain": True} if rec.get("isSidechain") else {}
             if rec.get("_codex"):
                 side.update(provider="codex", channel=rec.get("_codex_channel"))
+            elif rec.get("_native_provider"):
+                side.update(provider=rec["_native_provider"])
             if t == "system":
                 sub = rec.get("subtype")
                 if sub == "compact_boundary":
@@ -413,14 +422,36 @@ TAIL_START = 512 * 1024      # 讀尾端:先讀最後 512 KB,不夠再倍增(10-
 def tail_events(path, enough, with_thinking=False, with_sidechain=False, start=None):
     """從檔尾往前讀,讀到 enough(events, at_head) 成立或讀到檔頭為止。回 events_from_jsonl 的五元組 + 起讀位置。
     最壞情況(要的東西在很前面 / 根本不在)= 整份讀一次,跟以前一樣。"""
+    if path.endswith('.db'):
+        got = seat_native.agy_tail(path, enough)
+        return _native_user_events(got)
     size = os.path.getsize(path)
     win = start or TAIL_START
     while True:
         off = max(0, size - win)
         got = events_from_jsonl(path, with_thinking, with_sidechain, off, align=True)
+        if os.path.basename(path) == 'chat_history.jsonl':
+            notice = seat_native.grok_notice(path)
+            extra = [{'id': notice['uuid'], 'ts': _ts(notice), 'kind': 'system', 'text': notice['content'],
+                      'meta': {'provider': 'grok', 'subtype': 'notice'}}] if notice else []
+            got = (got[0] + extra, got[1], got[2], 0, got[4])
         if off == 0 or enough(got[0]):
             return got + (off,)
         win *= 2
+
+
+def _native_user_events(got):
+    events = []
+    for event in got[0]:
+        if event['kind'] != 'user':
+            events.append(event)
+            continue
+        dms, rest = _dm_events(event['text'], event['id'], event['ts'])
+        events.extend(dms)
+        if rest:
+            kind, meta = _classify_user(rest)
+            events.append(dict(event, kind=kind, text=rest, meta=dict(event['meta'], **meta)))
+    return (events,) + got[1:]
 
 
 def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMIT_DEFAULT, clip=0,
@@ -434,6 +465,9 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
         return {"v": V, "ok": False, "why": "no-transcript", "seat": code, "session": rec.get("session_uuid")}, 4
     rotated = False
     cur_sess = str(rec.get("session_uuid") or "").lower()
+    snapshot = rec.get('provider') in ('agy', 'grok')
+    if snapshot and offset:
+        offset, rotated = 0, True  # native snapshots have no byte cursor; never apply a JSONL offset to SQLite
     if offset and not (since or before or only_id):
         # 頁面帶上一輪的 session + last_offset 來:席換了對話(壓縮 / 接回 / /clear)或檔比 offset 還短 ⇒ 從頭讀 + reset
         try:
@@ -457,11 +491,22 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
             if only_id:
                 return only_id in ids
             if since:
+                if path.endswith('.db') and re.fullmatch(r'agy:\d+:[0-9a-f]+', since):
+                    prefix = since.rsplit(':', 1)[0] + ':'
+                    if any(i.startswith(prefix) for i in ids):
+                        return True
                 return since in ids
             if before:
                 return bool(limit) and before in ids and ids.index(before) > limit
             return bool(limit) and len(evs) > limit             # limit 0 = 全要 ⇒ 讀到檔頭
-        events, pending, _q, end, sessions, start = tail_events(path, enough, with_thinking, with_sidechain)
+        if path.endswith('.db'):
+            try:
+                got = seat_native.agy_tail(path, enough, marker=before or only_id)
+                events, pending, _q, end, sessions, start = _native_user_events(got)
+            except (OSError, seat_native.sqlite3.Error):
+                return {"v": V, "ok": False, "why": "transcript-unavailable", "seat": code}, 4
+        else:
+            events, pending, _q, end, sessions, start = tail_events(path, enough, with_thinking, with_sidechain)
         head_cut = start > 0
     reset, since_lost = rotated, False
     if only_id:
@@ -478,7 +523,7 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
     truncated = head_cut and not (since or only_id)        # 前面還有沒讀的 ⇒ 頁面可再往上翻(before)
     if limit and len(events) > limit:
         truncated = True
-        events = events[:limit] if since else events[-limit:]
+        events = events[:limit] if since and not (snapshot and since_lost) else events[-limit:]
     if do_redact:
         events = [dict(e, text=redact(e["text"])) for e in events]
     events = clip_events(events, clip)
