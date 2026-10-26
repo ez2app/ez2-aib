@@ -6,6 +6,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib test --all              run the whole suite that way
     aib ship <subcommand> …     pre-push check, package, release (see `aib ship --help`)
     aib support [--write]       list what a de-identified bug report pack would hold; --write saves it locally (nothing is sent)
+    aib chat-mcp serve|start|stop|status|key new   local AIB chat MCP server (127.0.0.1:47820; P0)
     aib tmp [--apply]           list (or remove) what aib and its tests left in the temp folder; nothing else is touched
     aib cf grant <zone> <perm> --push host:/path   Touch ID, then a minutes-long, IP-locked Cloudflare token (`aib cf --help`)
     aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
@@ -23,7 +24,8 @@ HERE = os.path.dirname(os.path.realpath(__file__))     # 套件資料夾本身 =
 TARGETS = {"test": os.path.join(HERE, "tools", "verify", "test_entry.py"),
            "ship": os.path.join(HERE, "tools", "release", "ship.py"),
            "tmp": os.path.join(HERE, "tools", "verify", "tmp_sweep.py"),
-           "uninstall": os.path.join(HERE, "tools", "support", "uninstall.py")}
+           "uninstall": os.path.join(HERE, "tools", "support", "uninstall.py"),
+           "chat-mcp": os.path.join(HERE, "src", "chat_mcp", "cli_main.py")}
 
 
 def _locale():
