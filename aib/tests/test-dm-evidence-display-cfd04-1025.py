@@ -12,7 +12,7 @@ E1 tabs 每列帶 preview(長訊讀 RELAY 檔前 200 字、短訊就是本文;�
 E2 長訊檔限定(#370 r1 M2):指標指到長訊目錄外 / 捷徑指出去 / 檔名不是 RELAY-dm-*.txt / FIFO ⇒ preview None、原話一行 RELAY_UNREADABLE;
    只讀前 2048 位元組
 E3 tabs --counts 只印數量:每頁則數、依狀態分開、進行中沒寫「等什麼」的則數
-E4 待審框:長訊列印「📄 前 200 字」;row["wait"] 有字 ⇒ 尾巴接「⏳…」;沒這些鍵照舊
+E4 待審框:長訊列印「📄 前 200 字」;row["wait"] 有字 ⇒ 列最前面接「⏳… · 」(L-B1);沒這些鍵照舊
 E5 「等什麼」計數與畫面同一支 dm_text.wait_text(r2 L-new3);D3 證據提示寫完整 PR 網址(r2 L-new1)
 刀:evidence_ref 不抽說明文字 ⇒ D1 紅;收回「#數字」⇒ D2 紅;preview 不洗控制字元 ⇒ E1 紅;拿掉 relay_file_ok ⇒ E2 紅
 """
@@ -101,6 +101,10 @@ class Display(Base):
         d.mkdir(parents=True, exist_ok=True)
         p = d / name
         p.write_text(text, encoding="utf-8")
+        idx = Q.relay_index_path(self.env)                                     # L-B4:寄件時的留痕列(寄給本席)
+        idx.parent.mkdir(parents=True, exist_ok=True)
+        with open(idx, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"kind": "long", "file": str(p), "target": "@" + SEAT}) + "\n")
         return "長訊已落檔(%d 位元組),請讀:%s" % (len(text.encode()), p)
 
     def rows(self, tab="waiting"):
@@ -174,7 +178,7 @@ class Display(Base):
         self.assertEqual((line, sender), ("📄 前兩百字", "agent:offhub"))
         self.assertEqual(R._pending_row_text({"preview": "x"}, "短訊本文", "@74e8b"), ("短訊本文", "@74e8b"))   # 短訊不換
         line, _s = R._pending_row_text({"wait": {"text": "等 @abb89 \n收 #366"}}, "本文", "@x")
-        self.assertEqual(line, "本文 ⏳等 @abb89 收 #366")
+        self.assertEqual(line, "⏳等 @abb89 收 #366 · 本文")   # L-B1:放最前面
         self.assertEqual(R._pending_row_text({}, "本文", "@x"), ("本文", "@x"))
 
     def test_e5_wait_same_rule(self):   # #370 r2 L-new3:計數跟畫面同一支判斷
