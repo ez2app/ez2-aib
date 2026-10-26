@@ -99,6 +99,13 @@ WAITING_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered")
 # deliver/decide/report(交件/要裁/自報)永遠追加。沒帶 = other(也永遠追加)。
 KINDS = ("order", "rule", "pipeline", "deliver", "decide", "report", "other", "notice")   # notice:10-13 S7-2 知會,讀過即備存
 BROADCAST_KINDS = frozenset(("order", "rule", "pipeline"))
+# 10-25 @ee4f8 / @abb89(派工 C 補):派工類(要動手)的來信,回信不算做完 ⇒ --closes 不結,要 close --evidence
+CLOSE_BY_REPLY_REFUSED_KINDS = frozenset(("order", "pipeline"))
+
+
+def is_dispatch(item):
+    """派工信(回信不算做完)?看現在的 kind 也看 reclass 前的 kind_orig(#380 r1 M2:改分類不能繞過派工判定)。"""
+    return any(normalize_kind(item.get(k)) in CLOSE_BY_REPLY_REFUSED_KINDS for k in ("kind", "kind_orig") if item.get(k))
 # 寄件端量到的來源;v1 的 "ai" 讀進來當 seat。human 只在送信端三條件全量到時才會出現(dm-ctl 那一刀)。
 SENDER_KINDS = ("seat", "seat_claimed", "human", "system", "unknown", "external_seat", "owner_paired", "external_im")
 # external_im(開發文件第 39 節):別的通訊軟體(Telegram)經轉接程式收進來的;永遠不是 human,來源 telegram:<user_id>
@@ -169,6 +176,15 @@ SYSTEM_READ_WHYS = (AUTO_READ_WHY, ONBOARD_ACK_WHY)
 ONBOARD_MARKERS = ("「已就緒」", "「已更新」")
 TRANSITIONS[("queued", "read")] = ("seat", "system")
 TRANSITIONS[("delivered", "read")] = ("seat", "system")
+# ★ Andy 10-25 20:1x(@abb89 派工 A–C):同寄件席、同一張 PR 的新一輪來信「送達」⇒ 舊一輪自動結。
+#   系統結案只開這一條:why 必須以 SUPERSEDE_DONE_PREFIX 開頭(_transition 裡查),記成 done_kind=reason;
+#   hold_human 的信不在範圍(只從 delivered / read 結;新信是 hold 也不觸發)。
+SUPERSEDE_DONE_PREFIX = "superseded_by:"
+TRANSITIONS[("delivered", "done")] = ("seat", "system")
+TRANSITIONS[("read", "done")] = ("seat", "system")
+# 進行中(read)超過這麼久沒動、也沒寫「等什麼」⇒ 提醒(只提醒,不自動結;Andy 10-25 20:1x 選 4 小時)
+STALE_WAIT_S = 4 * 3600
+WAIT_MAX_CHARS = 300
 ARCHIVE_WHYS = ("days", "superseded", AUTO_ARCHIVE_WHY, "duplicate", "test_ping", "notice_read")   # 後兩個:stage-tidy 機器層(10-13)
 TRANSITION_REASON = {
     "ok": "",
@@ -1332,6 +1348,8 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         return refuse("actor")        # 系統只准刪「備存滿 30 天」那一種(the maintainer 09-30 17:1x)
     if to == "read" and cls == "system" and why not in SYSTEM_READ_WHYS:
         return refuse("actor")        # 系統只准代標「通知」組已讀(the maintainer 09-30 18:2x)
+    if to == "done" and cls == "system" and not (isinstance(why, str) and why.startswith(SUPERSEDE_DONE_PREFIX)):
+        return refuse("actor")        # 系統只准結「被新一輪取代」那一種(Andy 10-25 20:1x)
     done_kind = None
     if to == "done":
         # 10-13 S7-1(the maintainer 准;kimi / grok / gpt 三家都說「只收存在的檔」是進行中只進不出的主因):
@@ -1405,10 +1423,12 @@ _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 MEASURED_SOURCES = ("pane_pid_chain", "bg_fork_chain")
 
 
-_PR_URL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|commit)/[0-9a-f]{1,40}/?")
+# PR 號只收 1–9 位數字、commit 收 7–40 位 hex;repo 段不能是「.」或含「..」(#370 L-B3)
+_PR_CORE = r"https://github\.com/ez2app/(?!\.?/)(?![^/\s]*\.\.)[A-Za-z0-9_.-]+/(?:pull/[0-9]{1,9}|commit/[0-9a-f]{7,40})"
+_PR_URL_RE = re.compile(_PR_CORE + r"/?")
 
 
-_EV_PR_IN = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/(?:pull|commit)/[0-9a-f]{1,40}")
+_EV_PR_IN = re.compile(r"(?<![\w/=])" + _PR_CORE + r"(?![0-9A-Za-z_])")   # 前面不能接字 / 斜線 / 等號(別的網址裡夾的不算)
 _EV_ITEM_IN = re.compile(r"\bq_[0-9a-f]{16}\b")
 _EV_SHA_IN = re.compile(r"\b[0-9a-f]{7,40}\b")
 _EV_PATH_IN = re.compile(r"(?:~|/)[^\s,;()「」『』,。、]+")
@@ -1499,35 +1519,91 @@ def mark_read(seat, item_id, actor, env=None, now=None, if_rev=None, no_rev_chec
 
 PREVIEW_CHARS = 200
 PREVIEW_STATUSES = ("queued", "claimed", HOLD_STATUS, "delivered", "read")   # 還沒結的才讀檔(備存上千封不讀)
-_PREVIEW_BAD = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+# 控制 / 方向 / 隱形字元;U+200D(ZWJ)不剝,不然 emoji 組合字會拆開(#370 L-B5);U+00AD 軟連字號、U+061C 阿拉伯方向記號也剝(L-new2)
+_PREVIEW_BAD = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u00ad\u061c\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
 def _relay_head(path, limit=2048, env=None):
-    """長訊檔開頭(只讀前 limit 位元組、一般檔、不阻塞;每幀畫面都會叫到,不讀整檔)。不是長訊檔 / 讀不到 ⇒ None。"""
-    if not DR.relay_file_ok(path, env):
-        return None
+    """長訊檔開頭:正本在 dm_relay.relay_head(原話一行也用同一支,#370 L-new4)。"""
+    return DR.relay_head(path, limit, env)
+
+
+RELAY_INDEX_TAIL_MAX = 8 * 1024 * 1024      # 留痕索引太大時只讀最後 8MB(還沒結的信都是新的)
+_RELAY_TARGETS = {}                          # 索引路徑 → (dev, ino, 讀到哪, {長訊檔: {席碼}});只讀新增的尾巴
+
+
+def relay_index_path(env=None):
+    """dm-ctl 寄件那一刻寫的留痕索引(與它同一個狀態根,dm-ctl.sh _RELAY_INDEX)。"""
+    return state_root(env) / "state" / "relay" / "index.jsonl"
+
+
+def _target_codes(target):
+    """索引 target 欄 → 席碼集合:「@cfd04」「cfd04」「6ddf/cfd04」與逗號 / 空白隔開的多席都認。"""
+    out = set()
+    for tok in re.split(r"[,\s]+", str(target or "")):
+        code = tok.strip().lstrip("@").rsplit("/", 1)[-1]
+        if code:
+            out.add(code)
+    return out
+
+
+def _relay_targets(path, env=None):
+    """這個長訊檔寄給哪幾席(查留痕索引,dry-run 不算)。一般檔、不阻塞、只讀上次之後新增的整行;查不到 ⇒ 空集合。"""
+    idx = str(relay_index_path(env))
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        fd = os.open(idx, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except OSError:
-        return None
+        return set()
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
-        raw = os.read(fd, limit)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return set()
+        dev, ino, off, seen = _RELAY_TARGETS.get(idx, (None, None, 0, {}))
+        if (dev, ino) != (st.st_dev, st.st_ino) or st.st_size < off:
+            off, seen = 0, {}
+        skip_partial = False
+        if st.st_size - off > RELAY_INDEX_TAIL_MAX:
+            off, skip_partial = st.st_size - RELAY_INDEX_TAIL_MAX, True
+        os.lseek(fd, off, os.SEEK_SET)
+        chunks, left = [], st.st_size - off
+        while left > 0:
+            b = os.read(fd, min(left, 1 << 20))
+            if not b:
+                break
+            chunks.append(b)
+            left -= len(b)
     except OSError:
-        return None
+        return set()
     finally:
         os.close(fd)
-    return raw.decode("utf-8", "ignore")
+    raw = b"".join(chunks)
+    end = raw.rfind(b"\n") + 1                 # 寫到一半的最後一行留到下次
+    lines = raw[:end].split(b"\n")
+    if skip_partial and lines:
+        lines = lines[1:]
+    seen = dict(seen)
+    for ln in lines:
+        try:
+            row = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("kind") == "long" and not row.get("dry_run") and row.get("file"):
+            seen.setdefault(str(row["file"]), set()).update(_target_codes(row.get("target")))
+    _RELAY_TARGETS[idx] = (st.st_dev, st.st_ino, off + end, seen)
+    return seen.get(str(path), set())
 
 
-def _preview_fields(item, env=None):
+def _preview_fields(item, env=None, seat=None):
     """E(10-25 Andy 裁):清單 / 待審框帶長訊前 200 字。
     preview:長訊讀 RELAY 檔(限 relay 目錄、限量、不阻塞)、短訊就是本文;控制字元 / 方向字元拿掉、換行壓成空白。
-    全球 / IM 來信不讀(外人寫的,另有顯示規則)。#370 r1 M1:不再從正文抽「自報寄件席」(誰都能寫,量不到就不顯示)。"""
+    全球 / IM 來信不讀(外人寫的,另有顯示規則)。#370 r1 M1:不再從正文抽「自報寄件席」(誰都能寫,量不到就不顯示)。
+    #370 L-B4(@abb89 裁):長訊只預覽留痕索引寫明寄給本席的那封,指到別席的長訊檔 ⇒ 不預覽(檔名不動;
+    同帳號本機檔本來就不是防線,這條是不讓一封短訊把別席的信開頭搬進本席畫面)。"""
     if item.get("status") not in PREVIEW_STATUSES or _is_global_item(item) or item.get("im") \
             or item.get("sender_kind") == "external_im":
         return {"preview": None}
     msg = str(item.get("msg") or "")
     path = DR.relay_path_of(msg)
+    if path and (not seat or seat not in _relay_targets(path, env)):
+        return {"preview": None}
     head = _relay_head(path, env=env) if path else msg[:PREVIEW_CHARS * 4]
     if not isinstance(head, str):
         return {"preview": None}
@@ -1643,6 +1719,8 @@ def reclass(seat, item_id, kind, actor, env=None, now=None, if_rev=None):
     if it.get("status") not in ("delivered", "read"):
         return {"ok": False, "reason": "transition"}
     old = it.get("kind")
+    if "kind_orig" not in it:
+        it["kind_orig"] = old           # #380 r1 M2:第一次改分類記下寄件人原本的分類,派工判定兩個都看
     it["kind"] = kind
     it["rev"] = item_rev(it) + 1
     _write_item(seat, it, env)
@@ -1665,9 +1743,88 @@ def _close_original(item, env=None, now=None):
             return None
         if it.get("sender_seat") and it.get("sender_seat") != item.get("seat"):
             return None       # 審查:回信要回給原信的寄件人,才算結了那一封
+        if is_dispatch(it):
+            return None       # 派工信:回信不算完成(送出前 dm-ctl 已用 close-check 擋;這裡是第二道)
         return mark_done(who, orig, "seat:%s" % who, item["id"], env=env, now=now, no_rev_check=True)
     except Exception:  # noqa: BLE001 —— 審查:結原信失敗不得讓投遞 / record 變失敗(信已送到)
         return None
+
+
+def closes_refusal(seat, item_id, env=None):
+    """`aib dm --closes <原信>` 送出前查:原信是派工類 ⇒ 回拒絕(含改用的指令);其他(含找不到)⇒ None,照舊。"""
+    it = _load_item(seat, item_id, env) if seat and item_id else None
+    if not it or not is_dispatch(it):
+        return None
+    kind = next(normalize_kind(it.get(k)) for k in ("kind", "kind_orig")
+                if normalize_kind(it.get(k)) in CLOSE_BY_REPLY_REFUSED_KINDS)
+    return {"ok": False, "reason": "closes_order", "id": item_id, "kind": kind,
+            "message": "原信是派工(%s),回信不算做完;做完後改用 dm_queue.py close --id %s --evidence <PR 網址 / commit>"
+                       % (kind, item_id)}
+
+
+_ROUND_RE = re.compile(r"#(\d{1,6})\s*r(\d{1,3})\b")
+_PR_NUM_RE = re.compile(r"#(\d{1,6})\b")
+
+
+def _full_text(item, env=None):
+    """正文;長訊指標 ⇒ 落檔全文(讀不到 / 太大 / 不是長訊目錄裡的 RELAY-dm-*.txt ⇒ None,#380 r1 M4 同 #370 那道)。"""
+    msg = item.get("msg") or ""
+    path = DR.relay_path_of(msg)
+    if not path:
+        return msg
+    if not DR.relay_file_ok(path, env):
+        return None
+    return _onboard_relay_text(path)
+
+
+def _sender_key(item):
+    """「同寄件席」的鍵:只認量到的寄件席(pane_pid_chain / bg_fork_chain)。
+    #380 r1 L3:艙外轉信的「寄件標籤 + 正文開頭 @席碼」是自報、誰都寫得出來 ⇒ 沒量到就不自動結(回 None)。"""
+    if item.get("sender_seat") and item.get("sender_source") in MEASURED_SOURCES:
+        return ("seat", item["sender_seat"])
+    return None
+
+
+def _rounds(text):
+    out = {}
+    for pr, rnd in _ROUND_RE.findall(text or ""):
+        out[pr] = max(out.get(pr, 0), int(rnd))
+    return out
+
+
+def _close_superseded(item, env=None, now=None):
+    """Andy 10-25 20:1x:新一輪來信**送達**⇒ 同寄件席、同一張 PR 較舊一輪的來信自動結(why=superseded_by:<新 id>)。
+    舊信條件:delivered / read(hold_human 不碰)、沒被結過、它提到的 PR 全都在新信裡、每張 PR 的輪數都比新信小。
+    寄件席只認量到的(_sender_key)。回結掉的 id 清單。失敗不影響投遞。
+    #380 r1 M1:不看 item["supersedes"] —— 那是 upsert 的廣播取代鏈(同 thread 新版,舊版標 superseded_by),
+    排隊那條在投遞前就寫好、直送那條在這之後才寫,看它會讓同一條鏈兩條路結果不同,而且不比 PR / 輪數。"""
+    try:
+        seat = item.get("seat")
+        if not seat or item.get("status") != "delivered":
+            return []
+        key = _sender_key(item)
+        new_rounds = _rounds(_full_text(item, env) or "") if key else {}
+        if not new_rounds:
+            return []
+        closed = []
+        for old in _all_items(seat, env=env):
+            if old["id"] == item["id"] or old.get("status") not in ("delivered", "read"):
+                continue
+            if _sender_key(old) != key:
+                continue
+            text = _full_text(old, env)
+            old_rounds = _rounds(text or "")
+            prs = set(_PR_NUM_RE.findall(text or ""))
+            if not (old_rounds and prs <= set(new_rounds)
+                    and all(pr in new_rounds and r < new_rounds[pr] for pr, r in old_rounds.items())):
+                continue
+            r = _transition(seat, old["id"], "done", "system", env=env, now=now,
+                            why=SUPERSEDE_DONE_PREFIX + item["id"], if_rev=item_rev(old), no_rev_check=False)
+            if r.get("ok"):
+                closed.append(old["id"])
+        return closed
+    except Exception:  # noqa: BLE001 —— 自動結失敗不得讓投遞 / record 變失敗(信已送到)
+        return []
 
 
 def archive_item(seat, item_id, actor="system", why="days", env=None, now=None):
@@ -2745,6 +2902,7 @@ def record(seat, msg, sender_label, status="delivered", rc=None, env=None, now=N
     _write_item(seat, item, env)
     if status == "delivered":
         _close_original(item, env=env, now=now)   # S7-3:直送那條送達才結原信
+        _close_superseded(item, env=env, now=now)
     if status == HOLD_STATUS:
         # hold 的信人要看得到、要能 requeue ⇒ 留在 order.json。
         _order_append(seat, item["id"], env)
@@ -2882,7 +3040,7 @@ def _row(item, seat, now, index=None, env=None):
         "legacy": bool(item.get("_legacy")),
         "done_ref": item.get("done_ref"),
     }
-    row.update(_preview_fields(item, env))
+    row.update(_preview_fields(item, env, seat))
     g = item.get("global")
     if isinstance(g, dict):
         # 全球來信:畫面標 [外部]、AI 用短碼回信(aib dm --reply);**不帶位址與 npub**(盤點 10-16 第 8、9 項)
@@ -2903,9 +3061,39 @@ def _row(item, seat, now, index=None, env=None):
         # 第 39 節:別的通訊軟體來信;contact_key 連艦長室通訊錄那一筆(telegram:<user_id>)
         row["im"] = {"net": m.get("net"), "shown": m.get("shown"), "relation": m.get("relation"),
                      "contact_key": "%s:%s" % (m.get("net"), m.get("id"))}
+    w = item.get("wait")
+    if isinstance(w, dict) and w.get("text"):
+        row["wait"] = {"text": str(w["text"]), "at": w.get("at")}     # 只在寫過時才有這欄,舊列形狀不變
+    if wait_stale(item, now):
+        row["stale_wait"] = True
     if index is not None:
         row["index"] = index
     return row
+
+
+def _touched_at(item):
+    vals = [item.get("read_at"), item.get("touched_at")]
+    w = item.get("wait")
+    if isinstance(w, dict):
+        vals.append(w.get("at"))
+    got = []
+    for v in vals:
+        try:
+            got.append(int(v))
+        except (TypeError, ValueError):
+            pass
+    return max(got) if got else None
+
+
+def wait_stale(item, now):
+    """進行中(read)、沒寫等什麼、最後一次動它(讀 / 寫等待 / take)超過 STALE_WAIT_S ⇒ True。"""
+    if item.get("status") != "read":
+        return False
+    w = item.get("wait")
+    if isinstance(w, dict) and str(w.get("text") or "").strip():
+        return False
+    t = _touched_at(item)
+    return t is not None and int(now) - t > STALE_WAIT_S
 
 
 def _waiting_key(row, idx, vidx=None):
@@ -2976,6 +3164,8 @@ def tabs_payload(seat, env=None, now=None):
         "global_hold": sum(1 for r in waiting if r["status"] == HOLD_STATUS and r.get("global")),
         "decide": sum(1 for r in waiting if r["kind"] == "decide"),
         "human": sum(1 for r in waiting if r["sender_kind"] == "human"),
+        # 進行中逾 4 小時沒動、沒寫等什麼(Andy 10-25 20:1x);只提醒
+        "stale_wait": sum(1 for r in tabs["read"]["rows"] if r.get("stale_wait")),
     }
     return {"schema": TABS_SCHEMA, "seat": seat, "now": now, "source_rev": source_rev(seat, env),
             "tabs": tabs, "badges": badges, "errors": errors}
@@ -4377,6 +4567,7 @@ def _settle_delivery(seat, claimed, rc, env, sent, now=None):
         sent.append(res["item"] if res.get("ok") else claimed)
         if res.get("ok") and res.get("item"):
             _close_original(res["item"], env=env, now=now)   # S7-3:排隊那條送達才結原信
+            _close_superseded(res["item"], env=env, now=now)
         return
     if rc == 2:
         attempts = int(claimed.get("attempts") or 0) + 1
@@ -4838,6 +5029,22 @@ def main(argv=None, env=None):
     rc_.add_argument("--rc", type=int, default=None)
     rc_.add_argument("--attempts", type=int, default=None)   # 第 159 項:自動重送過幾次(dm-ctl 上限 1)
 
+    # Andy 10-25 20:1x(A + B):一個指令收 / 結 + 進行中寫等什麼(dm_take.py)
+    for name in ("take", "close", "wait"):
+        tk = sub.add_parser(name)
+        tk.add_argument("--seat", default=None)
+        tk.add_argument("--id", required=True)
+        tk.add_argument("--by", default=None)
+        if name == "take":
+            tk.add_argument("--wait", default=None)
+        elif name == "close":
+            tk.add_argument("--evidence", default=None)
+            tk.add_argument("--why", default=None)
+        else:
+            tk.add_argument("text", nargs="?", default="")
+    cc = sub.add_parser("close-check")             # dm-ctl --closes 送出前查(派工信不准用回信結)
+    cc.add_argument("--seat", required=True)
+    cc.add_argument("--id", required=True)
     for name in ("read", "done"):
         sp = sub.add_parser(name)
         sp.add_argument("--seat", default=None)      # 10-21 CLI 好用:不帶 ⇒ 呼叫的那一席(席位 pane 量到的)
@@ -5063,6 +5270,28 @@ def main(argv=None, env=None):
             origin=args.origin, env=env, **_v2_kw(args))
         _print_json(_strip_private(item))
         return 0
+
+    if args.cmd == "close-check":
+        out = closes_refusal(args.seat, args.id, env=env)
+        _print_json(out or {"ok": True, "reason": "ok", "id": args.id})
+        return 1 if out else 0
+
+    if args.cmd in ("take", "close", "wait"):
+        import dm_take as TK
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage", "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": args.id}})
+                return 2
+        args.by = args.by or "seat:" + args.seat
+        if args.cmd == "take":
+            out = TK.take(args.seat, args.id, args.by, wait=args.wait, env=env)
+        elif args.cmd == "close":
+            out = TK.close(args.seat, args.id, args.by, evidence=args.evidence, why=args.why, env=env)
+        else:
+            out = TK.set_wait(args.seat, args.id, args.by, args.text, env=env)
+        TK.emit(out)
+        return 0 if out.get("ok") else _TRANSITION_RC.get(out.get("reason"), 4)
 
     if args.cmd in ("read", "done"):
         if not args.seat:

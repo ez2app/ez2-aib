@@ -4,7 +4,7 @@
 #
 #   aib dm <目標> [訊息...] [--file F] [--dry-run] [--verify]
 #              [--thread <項號>/<字串>] [--kind order|rule|pipeline|deliver|decide|report|other|notice]
-#              [--close <原信 q_ id>](10-13 S7-3:這封回信送達後,把自己佇列裡的原信標完成,證據 = 這封的 id)
+#              [--close|--closes <原信 q_ id>](10-13 S7-3:這封回信送達後,把自己佇列裡的原信標完成,證據 = 這封的 id)
 #              [--expires <epoch> | --ttl-min <分鐘>]          ← 第 70 項 P3(接口 IFACE-dm-queue-v2 §1/§3)
 #              [--retry-until <秒>] [--retry-every <秒>]       ← 被擋(rc=2)時重試;沒給 --retry-until 則行為與從前逐位元組相同
 #              [--probe-box]                                  ← 只讀對方輸入框,印 box=empty|draft|placeholder|unknown,不貼不送
@@ -85,7 +85,7 @@ if [ -n "${EZ2_AIHUB_SOCKET+x}" ]; then
   _DM_SOCKET_WAS_SET=1
 fi
 _DM_ORIG_ARGS=("$@")
-. "$HERE/cockpit-env.sh"
+. "$HERE/cockpit-env.sh" || exit $?   # 10-26(#373 r2B M1):守門 return 2 要真的停(這支沒 set -e);不然 aib dm 自己把 instances/<鬼艙> 建出來
 
 PY3="${EZ2_PY3:-python3}"
 # 畫面字走四語字典(語系盤查第 14 條,10-14):_dmt <鍵> [名=值 …];每次照 i18n_lib.resolve_locale() 取。
@@ -761,8 +761,9 @@ while [ $# -gt 0 ]; do
     --thread=*) DM_THREAD="${1#--thread=}"; shift ;;
     --kind) DM_KIND="${2:-}"; shift 2 ;;
     --kind=*) DM_KIND="${1#--kind=}"; shift ;;
-    --close) DM_CLOSE="${2:-}"; shift 2 ;;
+    --close|--closes) DM_CLOSE="${2:-}"; shift 2 ;;   # --closes:Andy 10-25 20:1x 派工 C 的寫法,同一件事
     --close=*) DM_CLOSE="${1#--close=}"; shift ;;
+    --closes=*) DM_CLOSE="${1#--closes=}"; shift ;;
     --expires) DM_EXPIRES="${2:-}"; shift 2 ;;
     --expires=*) DM_EXPIRES="${1#--expires=}"; shift ;;
     --ttl-min) DM_TTL_MIN="${2:-}"; shift 2 ;;
@@ -1036,7 +1037,12 @@ _whoami_token() {
   fi
   # ★ 10-15 18:4x 事故:刀測拿掉 _GL_OUT_ADDR 初始化時,這一輪從環境繼承到全球位址又走全球、又來推導,
   #   無限再入,兩千多個 bash 把整機行程數塞滿約 8 分鐘。⇒ 再入前清掉全球相關變數(第二層;第三層見下面分派那行)。
-  ident="$(env -u _GL_OUT_ADDR -u DM_REPLY ${own_hub:+EZ2_AIHUB_SOCKET="$own_hub"} AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
+  local -a identity_env=()
+  if [ -n "$own_hub" ]; then
+    # Re-entry derives identity from this hub, not the parent invocation's default cabin.
+    identity_env=(-u EZ2_AIB_INSTANCE -u EZ2_AIB_INSTANCE_HOME -u EZ2_AIB_INSTANCE_TOKEN -u EZ2_TMUX_SESSION "EZ2_AIHUB_SOCKET=$own_hub")
+  fi
+  ident="$(env -u _GL_OUT_ADDR -u DM_REPLY "${identity_env[@]}" AIB_DM_XHOST_WHOAMI=1 bash "$SOURCE" @xhost </dev/null 2>/dev/null)" || ident=""
   ident="${ident##*$'\n'}"
   case "$ident" in *[!A-Za-z0-9_=-]*) ident="" ;; esac
   printf '%s' "$ident"
@@ -2200,6 +2206,15 @@ print(s.get("code") or "unknown")' "$RESOLVED" 2>/dev/null || echo unknown)"
 # L8b R3(派工單原本那條,保留為第三順位):被擋席自己送訊息時也提醒一次。
 # ★ 它單獨不夠 —— 09-05 那件裡被擋席 4.5 小時沒有 dm 任何人,這條剛好不會開火。
 #   主路徑是右欄每輪都跑的那一條。
+# 10-25 @ee4f8 / @abb89(派工 C 補):--closes 只結問意見 / 通知類;原信是派工(order / pipeline)⇒ 回信不算做完,拒。
+#   只看明確的 closes_order(查不到 / 查詢本身壞掉 ⇒ 照舊送,結原信那段 dm_queue 還有第二道)。
+#   #380 r1 M5:拒絕用 rc 4 不用 2 —— 2 是「可安全重送」,--retry-until 會每 30 秒重試到期限;這封改了寫法才該再送。
+if [ -n "$DM_CLOSE" ] && [ "$AIB_DM_SELF_CODE" != "unknown" ] && [ -f "$HERE/dm_queue.py" ]; then
+  _CC_OUT="$("$PY3" "$HERE/dm_queue.py" close-check --seat "$AIB_DM_SELF_CODE" --id "$DM_CLOSE" 2>/dev/null || true)"
+  case "$_CC_OUT" in
+    *'"closes_order"'*) die "--closes $DM_CLOSE 是派工信,回信不算做完;做完後改用 dm_queue.py close --id $DM_CLOSE --evidence <PR 網址 / commit>(這封沒送)" 4 ;;
+  esac
+fi
 if [ "$AIB_DM_SELF_CODE" != "unknown" ] && [ -f "$_COMPOSER_NOTICE" ]; then
   _SELF_NOTICE="$("$PY3" "$_COMPOSER_NOTICE" render --seat "$AIB_DM_SELF_CODE" 2>/dev/null || true)"
   if [ -n "$_SELF_NOTICE" ]; then

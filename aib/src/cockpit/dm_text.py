@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 OK = "ok"
 EMPTY = "empty"
@@ -31,6 +30,7 @@ ROUTE_HEAD_RE = re.compile(r"^\[[^\]]*→[^\]]*\]")
 REPORT_HEAD_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} 台北")
 FIELD_SEP_RE = re.compile(r"\s*·\s*")
 HUMAN_ORDER = "the maintainer 令"
+RELAY_LINE_MAX = 8192   # 原話只要前幾個非空行,長訊檔讀前 8KB 就夠
 
 
 def wait_text(row):
@@ -51,11 +51,8 @@ def original_line(msg):
     path = _relay_path_of(raw)
     if path:
         import dm_relay  # noqa: WPS433
-        if not dm_relay.relay_file_ok(path):      # #370 r1 M2:只讀長訊目錄裡的 RELAY-dm-*.txt
-            return RELAY_UNREADABLE, ""
-        try:
-            raw = Path(path).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        raw = dm_relay.relay_head(path, RELAY_LINE_MAX)   # 只讀長訊目錄裡的 RELAY-dm-*.txt(#370 r1 M2);限量、不阻塞(L-new4)
+        if raw is None:
             return RELAY_UNREADABLE, ""
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     if not lines:

@@ -234,6 +234,7 @@ class DmCtl(unittest.TestCase):
         self.home = _sandbox_home(base, self.env)
         self.root = self.home / ".ez2-aib"
         (self.root / "instances" / INST / "seats").mkdir(parents=True)
+        (self.root / "instances" / INST / "instance-token").write_text("0123456789abcdef0123456789abcdef")
         (self.root / "seats").mkdir(parents=True)
         self.env.update({"PATH": "%s:%s" % (bindir, self.env.get("PATH", "")),
                          "AIB_DM_TMUX": str(bindir / "tmux"), "DM_CALLS": str(self.calls),

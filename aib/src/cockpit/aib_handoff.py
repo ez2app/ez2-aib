@@ -945,10 +945,14 @@ def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
             import dm_queue
             b = dm_queue.brief_payload(code)
             facts["pending_box"] = {k: b.get(k) for k in ("unread", "hold", "decide", "human", "expired",
-                                                          "oldest_when", "errors")}
+                                                          "oldest_when", "errors", "stale_wait")}
             rows = dm_queue.tabs_payload(code)["tabs"]["waiting"]["rows"]    # §8e:未讀逐封預填、對帳
             facts["unread"] = [{"id": r.get("id"), "from": r.get("sender"), "summary": str(r.get("msg") or "")[:80]}
                                for r in rows if r.get("status") in ("delivered", "queued") and not r.get("read_at")][:20]
+            if b.get("stale_wait"):     # Andy 10-25 20:1x:進行中逾 4 小時沒寫等什麼 ⇒ 交接時逐封列出(只提醒)
+                rd = dm_queue.tabs_payload(code)["tabs"]["read"]["rows"]
+                facts["stale_wait"] = [{"id": r.get("id"), "from": r.get("sender"), "summary": str(r.get("msg") or "")[:80]}
+                                       for r in rd if r.get("stale_wait")][:20]
         except Exception as exc:  # noqa: BLE001
             miss.append({"item": "pending_box", "why": repr(exc)[:200]})
     # 卡住沒送到的 dm(10-18 @9f808 建議、維護者同意由 @abb89 做):對方輸入框有草稿 ⇒ blocked / hold_human、不會自己重送;
@@ -1167,6 +1171,8 @@ def render_draft(facts: dict, auto: bool = False) -> str:
     pb = facts.get("pending_box") or {}
     if pb:
         lines.append("- %s: %s" % (T("aib.handoff.fact.pending_box"), json.dumps(pb, ensure_ascii=False)))
+    for r in facts.get("stale_wait") or []:
+        lines.append("  - ⏳ %s(%s)%s" % (r.get("id"), r.get("from"), r.get("summary")))
     sd = facts.get("stuck_dm")
     if isinstance(sd, dict):
         lines.append("- %s: %s" % (T("aib.handoff.fact.stuck_dm", out=sd.get("out_total", 0), inn=sd.get("in_total", 0)),

@@ -979,7 +979,20 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     rec = write(code, item, steps[0], steps[1], state=args.state, state_root=state_root, started_at=started,
                 new=args.new)
     out.write("@%s %s\n" % (code, line_of(item, steps[0], steps[1], args.state, started_at=rec["started_at"], at=rec["at"])))
+    nudge = dm_stale_nudge(code) if state_root is None else ""
+    if nudge:
+        out.write(nudge + "\n")
     return 0
+
+
+def dm_stale_nudge(code, env=None, now=None):
+    """Andy 10-25 20:1x:待審區有進行中逾 4 小時沒寫等什麼的信 ⇒ 換階段時順便提醒一行(只在寫 📌 時查,狀態列不查)。"""
+    try:
+        import dm_queue
+        n = int(dm_queue.brief_payload(code, env=env, now=now).get("stale_wait") or 0)
+    except Exception:  # noqa: BLE001 —— 提醒讀不到不影響 aib now
+        return ""
+    return T("aib.now.dm_stale_wait", n=n, code=code) if n else ""
 
 
 if __name__ == "__main__":

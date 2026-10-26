@@ -4,6 +4,7 @@
 """「長訊已落檔」指標信的格式(10-08 從 pending_edit 搬到核心:訊息待審做成收費外掛後,核心的 dm_text 仍要認得指標信)。"""
 import os
 import re
+import stat
 
 # 10-15 B9:背景分身寄的長訊指標是「來自 @五碼 的背景分身」(sender_origin.relay_pointer_line),原本認不出 ⇒ 指標信當普通短訊。
 RELAY_RE = re.compile(
@@ -46,3 +47,23 @@ def relay_file_ok(path, env=None):
     except (OSError, ValueError, TypeError):
         return False
     return bool(_RELAY_NAME_RE.match(os.path.basename(rp))) and os.path.dirname(rp) in relay_dirs(env)
+
+
+def relay_head(path, limit=2048, env=None):
+    """長訊檔開頭(只讀前 limit 位元組、一般檔、不阻塞)。不是長訊檔 / 讀不到 ⇒ None。
+    待審框每幀畫面、原話一行(dm_text.original_line)共用這一支,FIFO / 很大的檔都不會卡住(#370 L-new4)。"""
+    if not relay_file_ok(path, env):
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        raw = os.read(fd, limit)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return raw.decode("utf-8", "ignore")
