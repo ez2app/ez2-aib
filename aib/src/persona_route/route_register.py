@@ -405,14 +405,11 @@ def route_label(route_key, root=None, contract=None, spec=None):
 
 
 def vault_root_guess():
-    """與 brain_write_plan.vault_root 同一條規則(EZ2_VAULT_DIR > EZ2_VAULT_ROOT > ~/Desktop/Obsidian/Ez2);
-    這裡不 import 它,避免 persona_route ↔ memory 循環引用。回 str 或 None。"""
-    import os
-    for var in ("EZ2_VAULT_DIR", "EZ2_VAULT_ROOT"):
-        v = os.environ.get(var)
-        if v:
-            return os.path.expanduser(v)
-    return None                             # ★ 不猜桌面預設:沒設 env 就沒有 vault(a seat 批4 同一教訓——猜到真庫會拿 A 庫的地圖走 B 庫;test-persona-pack 8 紅之一就是這樣來的)
+    """沿用 default_vault 的共用順位,讓沒有繼承環境變數的工具殼也讀同一份索引。
+
+    明確的環境設定仍優先;不掃描其他知識庫。uid 版面與索引存在性由呼叫端檢查。
+    """
+    return default_vault()
 
 
 def vault_is_uid_layout(root=None):
