@@ -788,6 +788,11 @@ else
   scrub_outer_session_environment
 fi
 
+# Configure the outer colour conversion before the launcher attaches a client.
+# Existing clients cache terminal capabilities until they reconnect.
+. "$C/terminal-compat.sh"
+aib_terminal_compat outer_tmux
+
 # A viewer pane may die if an older hub disappeared; reviving that attach does
 # not restart or signal any provider process.  Side renderers are likewise
 # respawned only when already dead, never while a live UI is running.
