@@ -976,7 +976,7 @@ class Knife(unittest.TestCase):
             self._knife("    if http == 403 and code == SCOPE_MISSING:", "    if False:", case)
 
     def test_k10_no_total_deadline(self):
-        self._knife("        t.join(total_s + 2)", "        t.join()", "Slow.test_d1c_total_deadline",
+        self._knife("        t.join(total_s + self.JOIN_GRACE_S)", "        t.join()", "Slow.test_d1c_total_deadline",
                     rel="src/cockpit/page/api.py")
 
     def test_k9_no_read_deadline(self):
