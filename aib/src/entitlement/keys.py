@@ -30,3 +30,10 @@ DRAFT_ACCEPT_ANY = False   # 公開版:授權過渡期已結束,只認信任公�
 TRUSTED_ACTIVATION_KEYS: tuple = (
     # "ed25519:<64 hex>",   ← tools/license/activation_server.py --print-pubkey 印出的那一行
 )
+
+# 10-25 the maintainer 同意另備試用鑰:伺服器自動發方案試用(plan-trial.json)用。只認 "trial": true、
+#   天數 ≤ plan.TRIAL_MAX_DAYS 的授權,簽不出正式級別、也不能簽 license.json;外洩時只撤這把。
+#   空的 = 試用只能由上面的發證主鑰簽。加鑰要 the maintainer 點頭。
+TRUSTED_TRIAL_KEYS: tuple = (
+    # "ed25519:<64 hex>",
+)
