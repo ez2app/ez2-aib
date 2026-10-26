@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -246,15 +247,23 @@ def send_text(rec, text, tmux="tmux", run=subprocess.run):
         return False, "no-pane"
     base = [tmux, "-L", sock]
     if "\n" in text:
+        buffer_name = "aib-panel-" + secrets.token_hex(16)
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, prefix="aib-panel-") as fh:
             fh.write(text)
             tmp = fh.name
         try:
-            r = run(base + ["load-buffer", "-b", "aib-panel", tmp], capture_output=True, text=True, env=_tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
+            r = run(base + ["load-buffer", "-b", buffer_name, tmp], capture_output=True, text=True, env=_tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
             if r.returncode != 0:
                 return False, "tmux-load-buffer"
-            r = run(base + ["paste-buffer", "-p", "-d", "-b", "aib-panel", "-t", wid], capture_output=True, text=True, env=_tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
+            r = run(base + ["paste-buffer", "-p", "-d", "-b", buffer_name, "-t", wid], capture_output=True, text=True, env=_tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
         finally:
+            # -d consumes a successful paste; failure/timeout may leave the loaded text.
+            # Delete only this call's buffer, even if load failed after creating it.
+            try:
+                run(base + ["delete-buffer", "-b", buffer_name], capture_output=True, text=True,
+                    env=_tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                pass  # tmux may have exited; cleanup must not hide the original failure.
             try:
                 os.unlink(tmp)
             except OSError:
