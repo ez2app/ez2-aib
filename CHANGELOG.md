@@ -4,6 +4,16 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.61
+
+- **Human memory evidence across AI providers**: tidy and handoff can read native Codex, Copilot (including Kimi), Grok, AGY/Gemini and supported API-seat histories. Session identity is checked where available; assistant/tool output, injected instructions and relayed messages are excluded. Missing or truncated evidence is reported as unavailable. Omission reviews retain every request in the selected window, including more than 40; UTC `Z` timestamps also work on Python 3.9.
+- **Native conversations in the seat panel**: Codex, AGY, Copilot and Grok conversations use their native history readers, with injected Grok reminders hidden. Bundled aib-boards 0.2.5 recognises the current seat when window metadata needs a fallback.
+- **Reliable inbox follow-up**: take, wait and evidence-backed close commands track work and revisions; replies can close eligible related mail. Assignment mail still requires explicit completion evidence. Triage keeps pending work separate from read notices and avoids repeating the same reminder within an hour.
+- **Create and bind a seat in one flow**: `aib newproj` can open a seat, bind its persona and project, and deliver the persona pack. CLI installation, sign-in and model readiness are checked before opening; unresolved, ambiguous or unauthorised short cabin names fail before an empty cabin is created.
+- **Membership and individual entitlements**: the free / go / plus / pro / ultra plan axis and individual purchase, rental and trial records share expiry-aware checks. Plugin catalog plan requirements and the signed sales switch control listing, installation and automatic updates; installation does not issue an execution licence.
+- **Cross-host and test fixes**: relayed replies resolve identity in the sender's cabin; `aib test --all` finds the open-source `aib/tests` population from the repo root or subfolder. Automatic update receipts distinguish plugins needing manual attention.
+- **GitHub and PyPI releases stay aligned**: successful main CI for a new version starts the release workflow. Existing tags do not publish twice; package prechecks, the PyPI environment approval and clean-install/upgrade verification remain required.
+
 ## 0.1.60
 
 - **Queued seat input never pops Touch ID and never extends the unlock window (`aib seat input --queued`)**: only the local unlock window counts; when it is closed the receipt is `locked` (rc 3) with a hint in four languages, no biometrics, no window opened; a send inside the window does not extend it. Meant for the captain's room "queued" quick buttons.
