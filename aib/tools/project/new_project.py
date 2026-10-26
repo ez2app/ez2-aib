@@ -786,6 +786,12 @@ def run_newproj(args) -> int:
     import bind_one as BO  # noqa: E402
     root = state_root_of(args.state_root) if args.state_root else state_root_of()
     seat_arg = (args.seat or "").strip()
+    if (getattr(args, "persona_card", "") or "").strip():
+        # 10-25 @7c510(@abb89 裁掛 newproj):開席 → 綁人格 → 綁專案一步到位;帶 --seat 是從卡住那步續做
+        import types
+        import seat_bootstrap  # noqa: E402
+        return seat_bootstrap.run(args, root, types.SimpleNamespace(
+            T=T, _say=_say, load_card=load_card, _uid_refusal=_uid_refusal, _resolve_seat=_resolve_seat, run_newproj=run_newproj))
     if args.new_seat:
         if seat_arg:
             return _refuse(T("aib.newproj.seat_xor_new"), seat_arg)
@@ -1498,6 +1504,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--new-seat", action="store_true", help=T("aib.newproj.help_new_seat"))
     ap.add_argument("--engine", default="claude", help=T("aib.newproj.help_engine"))
     ap.add_argument("--role", default="", help="--new-seat: role of the new seat (a defined role; default dev)")
+    ap.add_argument("--persona-card", default="", help=T("aib.newproj.help_persona_card"))
+    ap.add_argument("--cabin", default="", help=T("aib.newproj.help_cabin"))
+    ap.add_argument("--confirm", default="", help=T("aib.newproj.help_confirm"))
+    ap.add_argument("--model", default="", help=argparse.SUPPRESS)
     ap.add_argument("--entry", default="", choices=["", "newproj"], help=argparse.SUPPRESS)
     ap.add_argument("--approve", default="", metavar="PROJECT_UID", help=T("aib.newproj.help_approve"))
     ap.add_argument("--propose-goals", default="", metavar="PROJECT_UID", help=T("aib.newproj.help_propose_goals"))
