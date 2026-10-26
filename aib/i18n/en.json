@@ -5685,5 +5685,6 @@
   "aib.seat.panel.prompt_why_permission": "It is waiting for a permission answer; answer the prompt above first",
   "aib.seat.panel.prompt_why_no_prompt": "Its input box is not on screen; open the terminal to check",
   "aib.seat.panel.prompt_why_no_screen": "Could not read its screen (tmux did not answer); try again later or open the terminal",
-  "aib.seat.panel.prompt_why_unknown": "It seems busy; type again once it stops (or press Stop first)"
+  "aib.seat.panel.prompt_why_unknown": "It seems busy; type again once it stops (or press Stop first)",
+  "aib.now.dm_stale_wait": "⏳ {n} in-progress message(s) untouched for 4+ hours with no wait note: close them with dm_queue.py close --seat {code} --id <id> --evidence …, or note what you are waiting for with wait --seat {code} --id <id> \"who / what\""
 }
