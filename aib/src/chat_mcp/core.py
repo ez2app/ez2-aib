@@ -28,6 +28,9 @@ from pathlib import Path
 API_VERSION = "aib-chat-mcp/0.1-p0"
 ADAPTER_VERSION = "bridge-ro/1"
 RETENTION_SECS = 90 * 86400
+PURGE_INTERVAL_SECS = 3600  # 長駐伺服器每小時清一次過期資料
+SIG_USED_KEEP_SECS = 86400  # 已用簽章記錄保留一天(遠大於簽章有效時窗)
+DELIVERED_WINDOW_SECS = 600  # 只讀這段時間內修改過的 delivered 檔
 KEY_TTL_SECS = 90 * 86400
 SEND_PER_MIN = 20
 READ_PER_MIN = 120
@@ -108,6 +111,7 @@ CREATE TABLE IF NOT EXISTS messages(message_id TEXT PRIMARY KEY, from_seat TEXT,
   UNIQUE(principal_id, binding_id, idem_key), UNIQUE(src_ref));
 CREATE INDEX IF NOT EXISTS ix_to ON messages(to_seat, created, message_id);
 CREATE INDEX IF NOT EXISTS ix_from ON messages(from_seat, created, message_id);
+CREATE TABLE IF NOT EXISTS sig_used(hmac TEXT PRIMARY KEY, message_id TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS audit(ts REAL, request_id TEXT, principal_id TEXT, tool TEXT, outcome TEXT, message_id TEXT);
 """
 
@@ -138,15 +142,27 @@ class Store:
             os.write(fd, secrets.token_bytes(32))
             os.close(fd)
         self.cursor_secret = sp.read_bytes()
+        self._last_purge = 0.0
         self.purge()
+
+    def maybe_purge(self, now=None):
+        """長駐時定期清(預設每小時);呼叫端在每次請求／匯入時呼叫,便宜。"""
+        now = time.time() if now is None else now
+        if now - self._last_purge >= PURGE_INTERVAL_SECS:
+            self.purge(now)
+            return True
+        return False
 
     def q(self, sql, args=()):
         with self.lock:
             return self.db.execute(sql, args).fetchall()
 
-    def purge(self):
-        cut = time.time() - RETENTION_SECS
+    def purge(self, now=None):
+        now = time.time() if now is None else now
+        self._last_purge = now
+        cut = now - RETENTION_SECS
         with self.lock:
+            self.db.execute("DELETE FROM sig_used WHERE ts < ?", (now - SIG_USED_KEEP_SECS,))
             self.db.execute("DELETE FROM messages WHERE created < ?", (cut,))
             self.db.execute("DELETE FROM audit WHERE ts < ?", (cut,))
 
@@ -292,9 +308,9 @@ class SignedIndex:
     """SPEC §17:各席 bridge/<session>/delivered/*.json 裡由 drainer 加的 `_aib_sig`,驗得過才收進索引。
     另核對:簽章裡的寄件席 = 該 session 資料夾 status.json 的 cabin/code(信必須真的出自那一席的寄件匣)。
     只讀;一筆簽章只認一封收件匣信(防同文重放)。"""
-    def __init__(self, root):
+    def __init__(self, root, store=None):
         self.root = Path(root)
-        self._sig = None
+        self.store = store  # 已用簽章存 SQLite(重啟後仍生效);無 store 時退回記憶體
         self.recs = []
         self.used = set()
 
@@ -313,8 +329,11 @@ class SignedIndex:
                 owner = "%s/%s" % (str(st.get("cabin") or "").strip(), str(st.get("code") or "").strip().lstrip("@"))
             except (OSError, ValueError, AttributeError):
                 continue
+            cutoff = time.time() - DELIVERED_WINDOW_SECS
             for f in sorted(dd.glob("*.json")):
                 try:
+                    if f.stat().st_mtime < cutoff:  # 舊檔不可能再對上(簽章時窗 600 秒),不讀
+                        continue
                     rec = json.loads(f.read_text(encoding="utf-8")).get(bs.SIG_FIELD)
                 except (OSError, ValueError, AttributeError):
                     continue
@@ -328,10 +347,25 @@ class SignedIndex:
         bh = bs.body_hash(body)
         for rec in self.recs:
             if (rec["from_seat"] == from_seat and rec["to_seat"] == to_seat and rec["body_sha256"] == bh
-                    and abs(float(t) - int(rec["ts"])) <= bs.MAX_SKEW_SECS and rec["hmac"] not in self.used):
-                self.used.add(rec["hmac"])
+                    and abs(float(t) - int(rec["ts"])) <= bs.MAX_SKEW_SECS and self._claim(rec)):
                 return True
         return False
+
+    def _claim(self, rec, message_id=None):
+        """一筆簽章只認一次;存 SQLite 用 PRIMARY KEY 原子佔用。"""
+        h = rec["hmac"]
+        if self.store is None:
+            if h in self.used:
+                return False
+            self.used.add(h)
+            return True
+        with self.store.lock:
+            try:
+                self.store.db.execute("INSERT INTO sig_used(hmac,message_id,ts) VALUES(?,?,?)",
+                                      (h, str(rec.get("message_id") or ""), float(rec.get("ts") or time.time())))
+                return True
+            except sqlite3.IntegrityError:
+                return False
 
 
 def bridge_sender(index, binding, text, t):
@@ -355,7 +389,7 @@ class BridgeAdapter:
     def __init__(self, store, root=None):
         self.store, self.root = store, Path(root) if root else bridge_root()
         self._seen = {}  # session_uuid -> (inbox mtime_ns, claimed mtime_ns);目錄沒變就不重掃
-        self.signed = SignedIndex(self.root)
+        self.signed = SignedIndex(self.root, store)
 
     def _session_dir(self, session_uuid):
         if not session_uuid or not __import__("re").fullmatch(r"[0-9a-f-]{36}", session_uuid):
@@ -368,6 +402,7 @@ class BridgeAdapter:
         d = self._session_dir(binding.get("session_uuid"))
         if not d:
             return 0
+        self.store.maybe_purge()
         sig = []
         for sub in (d / "inbox", d / "inbox" / "claimed"):
             try:

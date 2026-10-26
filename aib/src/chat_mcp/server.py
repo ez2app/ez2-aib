@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import core
@@ -13,6 +14,7 @@ from .tools import TOOLS, Tools
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2025-11-25")
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
 MAX_REQ = 64 * 1024
+MAX_SESSIONS = 1000  # 超過就淘汰最舊的一個(不整批清空)
 
 
 def _origin_ok(origin):
@@ -26,7 +28,7 @@ def _origin_ok(origin):
 
 
 def make_handler(tools, auth):
-    sessions, slock = set(), threading.Lock()  # 本程序發出的 Mcp-Session-Id;帶了未知 id → 404
+    sessions, slock = OrderedDict(), threading.Lock()  # 本程序發出的 Mcp-Session-Id;帶了未知 id → 404
 
     class H(BaseHTTPRequestHandler):
         server_version = "aib-chat-mcp"
@@ -54,6 +56,10 @@ def make_handler(tools, auth):
         def do_POST(self):
             if self.path.split("?")[0] != "/mcp":
                 return self._send(404)
+            try:
+                tools.store.maybe_purge()  # 每小時一次的 90 天清理
+            except Exception:  # noqa: BLE001
+                pass
             if not _origin_ok(self.headers.get("Origin")):
                 return self._send(403, {"error": "origin not allowed"})
             try:
@@ -80,7 +86,14 @@ def make_handler(tools, auth):
                 return self._send(400, {"jsonrpc": "2.0", "id": req.get("id"),
                                         "error": {"code": -32600, "message": "unsupported MCP-Protocol-Version"}})
             sid = self.headers.get("Mcp-Session-Id")
-            if sid and req.get("method") != "initialize" and sid not in sessions:
+            if sid and req.get("method") != "initialize":
+                with slock:
+                    known = sid in sessions
+                    if known:
+                        sessions.move_to_end(sid)  # 最近用過的排後面,淘汰時保留
+            else:
+                known = True
+            if not known:
                 return self._send(404, {"jsonrpc": "2.0", "id": req.get("id"),
                                         "error": {"code": -32001, "message": "session not found"}})
             if "id" not in req:  # notification
@@ -91,9 +104,9 @@ def make_handler(tools, auth):
                 pv = params.get("protocolVersion")
                 headers["Mcp-Session-Id"] = secrets.token_urlsafe(16)
                 with slock:
-                    if len(sessions) > 1000:
-                        sessions.clear()
-                    sessions.add(headers["Mcp-Session-Id"])
+                    sessions[headers["Mcp-Session-Id"]] = True
+                    while len(sessions) > MAX_SESSIONS:
+                        sessions.popitem(last=False)
                 result = {"protocolVersion": pv if pv in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
                           "capabilities": {"tools": {"listChanged": False}},
                           "serverInfo": {"name": "aib-chat-mcp", "version": core.API_VERSION}}

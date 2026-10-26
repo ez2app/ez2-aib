@@ -131,6 +131,51 @@ class Sig(unittest.TestCase):
         self.assertTrue(d.exists())
         self.assertNotIn(bs.SIG_FIELD, json.loads(d.read_text()))
 
+    def test_r1b_1_replay_blocked_after_restart(self):
+        self.send("重啟後")
+        self.arrive("b81c8", "重啟後", "1-human.json")
+        self.assertEqual(self.senders(), [A])
+        self.store.db.close()
+        self.store = core.Store(self.tmp / "home")  # 模擬伺服器重開
+        self.arrive("b81c8", "重啟後", "2-human.json")
+        self.assertEqual(sorted(self.senders()), sorted([A, "bridge:unknown"]))
+        self.assertEqual(self.store.q("SELECT COUNT(*) FROM sig_used")[0][0], 1)
+
+    def test_r1b_1_sig_used_purged(self):
+        self.send("清")
+        self.arrive("b81c8", "清")
+        self.senders()
+        self.store.purge(time.time() + core.SIG_USED_KEEP_SECS + 10)
+        self.assertEqual(self.store.q("SELECT COUNT(*) FROM sig_used")[0][0], 0)
+
+    def test_r1b_2_old_delivered_skipped(self):
+        d = self.send("舊檔")
+        old = time.time() - core.DELIVERED_WINDOW_SECS - 5
+        os.utime(d, (old, old))
+        self.arrive("b81c8", "舊檔")
+        self.assertEqual(self.senders(), ["bridge:unknown"])
+
+    def test_r1b_delivered_without_status_or_sig(self):
+        p = self.a / "outbox" / "9-nost.json"
+        p.write_text(json.dumps({"schema": dr.MSG_SCHEMA, "provider": "musebot", "to": B, "text": "沒 status",
+                                 "created_epoch": int(time.time())}))
+        self.assertEqual(dr.deliver_one(p, OK, status=None), "delivered")
+        out = self.a / "delivered" / p.name
+        self.assertTrue(out.exists())
+        self.assertNotIn(bs.SIG_FIELD, json.loads(out.read_text()))
+        p2 = self.a / "outbox" / "9-boom.json"
+        p2.write_text(json.dumps({"schema": dr.MSG_SCHEMA, "provider": "musebot", "to": B, "text": "簽章炸",
+                                  "created_epoch": int(time.time())}))
+        orig = bs.make_sig
+        bs.make_sig = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            st = json.loads((self.a / "status.json").read_text())
+            self.assertEqual(dr.deliver_one(p2, OK, status=st), "delivered")
+        finally:
+            bs.make_sig = orig
+        self.assertTrue((self.a / "delivered" / p2.name).exists())
+        self.assertFalse(p2.exists())
+
     def test_constant_time_compare_used(self):
         import inspect
         self.assertIn("compare_digest", inspect.getsource(bs.verify_sig))

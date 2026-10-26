@@ -23,6 +23,7 @@ SESS_B = "e32847d6-5a8e-481b-aa67-6d6dc438f067"
 class P0(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="aib-chat-mcp-test-")
+        self._saved_sd = os.environ.pop("AIB_CHAT_MCP_SECRETS_DIR", None)  # NIT-6:不受外部環境影響
         self.bridge = Path(self.tmp) / "bridge"
         os.environ["AIB_CHAT_MCP_BRIDGE_ROOT"] = str(self.bridge)
         os.environ.pop("AIB_CHAT_MCP_BRIDGE_DISPATCH", None)
@@ -40,6 +41,8 @@ class P0(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         shutil.rmtree(self.tmp, ignore_errors=True)
+        if self._saved_sd is not None:
+            os.environ["AIB_CHAT_MCP_SECRETS_DIR"] = self._saved_sd
 
     def rpc(self, who, method, params=None, token=None, headers=None):
         self.n += 1
@@ -318,6 +321,45 @@ class P0(unittest.TestCase):
             self.assertTrue((Path(self.tmp) / "alt" / "cursor.secret").exists())
         finally:
             os.environ.pop("AIB_CHAT_MCP_SECRETS_DIR", None)
+
+    def test_r1b_3_periodic_purge(self):
+        old = time.time() - core.RETENTION_SECS - 10
+        self.store.db.execute("INSERT INTO audit VALUES(?,?,?,?,?,?)", (old, "r", "grok", "t", "ok", None))
+        self.assertFalse(self.store.maybe_purge())  # 剛清過,一小時內不再清
+        self.assertEqual(self.store.q("SELECT COUNT(*) FROM audit WHERE ts<?", (old + 1,))[0][0], 1)
+        self.assertTrue(self.store.maybe_purge(time.time() + core.PURGE_INTERVAL_SECS + 1))
+        self.assertEqual(self.store.q("SELECT COUNT(*) FROM audit WHERE ts<?", (old + 1,))[0][0], 0)
+
+    def test_r1b_4_session_lru_evicts_oldest(self):
+        saved = server.MAX_SESSIONS
+        server.MAX_SESSIONS = 2
+        try:
+            def init():
+                req = urllib.request.Request(self.url, data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                             "params": {"protocolVersion": "2025-06-18"}}).encode(),
+                                             headers={"Authorization": "Bearer " + self.k["grok"],
+                                                      "Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+                with urllib.request.urlopen(req) as r:
+                    return r.headers["Mcp-Session-Id"]
+
+            def ping(sid):
+                req = urllib.request.Request(self.url, data=json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}).encode(),
+                                             headers={"Authorization": "Bearer " + self.k["grok"], "Mcp-Session-Id": sid,
+                                                      "MCP-Protocol-Version": "2025-06-18",
+                                                      "Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+                try:
+                    with urllib.request.urlopen(req) as r:
+                        return r.status
+                except urllib.error.HTTPError as e:
+                    return e.code
+            s1, s2 = init(), init()
+            self.assertEqual(ping(s1), 200)  # s1 變最近用過
+            s3 = init()  # 淘汰最舊的 s2,不是整批清空
+            self.assertEqual(ping(s1), 200)
+            self.assertEqual(ping(s3), 200)
+            self.assertEqual(ping(s2), 404)
+        finally:
+            server.MAX_SESSIONS = saved
 
     def test_r1_m7_bridge_sender_untrusted(self):
         inbox = self.bridge / SESS_B / "inbox"
