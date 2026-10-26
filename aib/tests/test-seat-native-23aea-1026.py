@@ -84,6 +84,10 @@ class Native(unittest.TestCase):
         with p.open('a') as f:f.write(json.dumps({'id':'next','type':'assistant.message','data':{'content':'next reply'}})+'\n')
         self.assertEqual(self.transcript(offset=d['last_offset'])['events'][0]['text'],'next reply')
 
+    def test_grok_injected_reminders_are_hidden(self):
+        rec = {'type':'user','content':[{'type':'text','text':'<system-reminder>private skills</system-reminder>'}]}
+        self.assertIsNone(N.json_message(rec, '/tmp/chat_history.jsonl', b'reminder'))
+
     def test_copilot_wrong_session_and_invalid_glob(self):
         p = self.copilot([]); p.write_text(json.dumps({'type':'session.start','data':{'sessionId':'other'}})+'\n')
         self.assertIsNone(N.native_path({'provider':'copilot','session_uuid':SID}))

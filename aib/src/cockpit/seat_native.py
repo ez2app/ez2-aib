@@ -88,6 +88,8 @@ def json_message(rec, path, raw):
         blocks = [x for x in text if isinstance(x, dict) and x.get('type') == 'text' and isinstance(x.get('text'), str)]
     else:
         blocks = [{'type': 'text', 'text': text}]
+    if provider == 'grok' and role == 'user' and blocks and all(b['text'].lstrip().startswith('<system-reminder>') for b in blocks):
+        return None
     out = {'type': role, 'uuid': rec.get('id') or hashlib.sha1(raw).hexdigest()[:20],
            'timestamp': rec.get('timestamp'), 'message': {'role': role, 'content': blocks},
            'isSidechain': sidechain, '_native_provider': provider}
