@@ -209,6 +209,35 @@ def _target(rec):
     return sock, wid
 
 
+_TARGET_FIELDS = ("session_uuid", "socket", "window_id", "pid")
+
+
+def expected_target(rec, expected_session=None, expected_instance=None):
+    """Optional browser identity contract, checked before asking for approval."""
+    if expected_session is not None and (not expected_session or rec.get("session_uuid") != expected_session):
+        return False
+    if expected_instance is not None:
+        path = rec.get("_file")
+        if not expected_instance or not path or Path(path).parent.parent.name != expected_instance:
+            return False
+    return True
+
+
+def fresh_target(rec, code, env):
+    """Approval authorizes this record only, never a replacement in the same pane."""
+    path = rec.get("_file")
+    if not path:
+        return False
+    try:
+        current = json.loads(Path(path).read_text(encoding="utf-8"))
+        selected = SPN.find_seat(code, str(state_root(env)))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(current, dict) or current.get("retired") or not selected or selected.get("_file") != path:
+        return False
+    return all(current.get(k) == rec.get(k) == selected.get(k) for k in _TARGET_FIELDS)
+
+
 def send_text(rec, text, tmux="tmux", run=subprocess.run):
     """多行用 load-buffer + paste-buffer -p(bracketed paste),單行 send-keys -l;最後 Enter。"""
     import dangerous_seat_actions as DSA
@@ -271,7 +300,7 @@ def prompt_hint(why):
 # ── C1 ──
 
 def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run, minutes=None,
-             window_only=False, queued=False):
+             window_only=False, queued=False, expected_session=None, expected_instance=None):
     """window_only = 手機遠端過來的(remote_link):視窗沒開 ⇒ 拒 locked,不在 Mac 上彈 Touch ID(手機那頭沒人按得到)
     queued = 艦長室排隊背景送的(@abb89 10-25):只看本機解鎖窗 unlock_left;窗關 ⇒ 拒 locked、不彈 Touch ID;
              窗內送成功也不延長(只有真人親下的指令才重新閒置倒數)"""
@@ -290,6 +319,9 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
     if rec is None:
         out["why"] = "no-seat"
         return out, 2
+    if not expected_target(rec, expected_session, expected_instance):
+        out["why"] = "stale-session"
+        return out, 2
     pend, _rc = SPN.pending(code, state_root=str(state_root(env)), screen=screen, env=env)
     if pend.get("ask"):
         out["why"], out["ask_id"] = "asking", pend["ask"]["id"]
@@ -306,6 +338,7 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
     m = unlock_minutes(env) if clamp_minutes(minutes) is None else clamp_minutes(minutes)
     reason = reason_for("input", code, text, m)
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
+    needs_grant = False
     if left > 0:
         out["via"] = "unlock-window"
     elif queued:
@@ -321,6 +354,18 @@ def do_input(code, text, env=None, screen=None, touchid=None, touchid_available=
             out["why"] = why
             log_action(code, "input", env, ok=False, why=why, chars=len(text))
             return out, 3
+        needs_grant = True
+    if not fresh_target(rec, code, env):
+        out["why"] = "stale-session"
+        return out, 2
+    final_pending, _rc = SPN.pending(code, state_root=str(state_root(env)), screen=screen, env=env)
+    if final_pending.get("ask") or final_pending.get("at_prompt") is not True:
+        out["why"] = "asking" if final_pending.get("ask") else "not-at-prompt"
+        return out, 2
+    if not fresh_target(rec, code, env):
+        out["why"] = "stale-session"
+        return out, 2
+    if needs_grant:
         left = grant_unlock(code, env, m, via="touchid")
     ok, why = send_text(rec, text, tmux=tmux, run=run)
     if ok and out["via"] == "unlock-window" and not queued:
@@ -486,7 +531,7 @@ def _answer_keys(ask, choice, free_text):
 
 
 def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, touchid=None, touchid_available=None, platform=None,
-              tmux="tmux", run=subprocess.run, grant=None, grant_keys=None, machine=None):
+              tmux="tmux", run=subprocess.run, grant=None, grant_keys=None, machine=None, expected_session=None, expected_instance=None):
     """grant = 手機那頭的回答單(remote_grant.verify_answer:綁這一題 + 這個選項，一次一張);沒有就照舊每次 Touch ID"""
     env = dict(os.environ if env is None else env)
     out = _out(False, code, "answer")
@@ -496,6 +541,9 @@ def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, 
     rec = SPN.find_seat(code, str(state_root(env)))
     if rec is None:
         out["why"] = "no-seat"
+        return out, 2
+    if not expected_target(rec, expected_session, expected_instance):
+        out["why"] = "stale-session"
         return out, 2
     pend, _rc = SPN.pending(code, state_root=str(state_root(env)), screen=screen, env=env)
     ask = pend.get("ask")
@@ -525,6 +573,16 @@ def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, 
         out["why"] = why
         log_action(code, "answer", env, ok=False, why=why, ask_id=ask["id"])
         return out, 3
+    if not fresh_target(rec, code, env):
+        out["why"] = "stale-session"
+        return out, 2
+    final_pending, _rc = SPN.pending(code, state_root=str(state_root(env)), screen=screen, env=env)
+    if final_pending.get("ask") != ask:
+        out["why"] = "stale"
+        return out, 2
+    if not fresh_target(rec, code, env):
+        out["why"] = "stale-session"
+        return out, 2
     if keys == ["__text__"]:
         ok, why = send_text(rec, free_text, tmux=tmux, run=run)
     else:
@@ -536,7 +594,7 @@ def do_answer(code, choice, ask_id=None, free_text=None, env=None, screen=None, 
 
 # ── C5 ──
 
-def do_stop(code, hard=False, env=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run, window_only=False):
+def do_stop(code, hard=False, env=None, touchid=None, touchid_available=None, platform=None, tmux="tmux", run=subprocess.run, window_only=False, expected_session=None, expected_instance=None):
     """window_only = 手機遠端過來的：視窗開著 ⇒ 不彈 Touch ID 直接停;沒開 ⇒ 拒 locked"""
     env = dict(os.environ if env is None else env)
     out = _out(False, code, "stop")
@@ -546,6 +604,9 @@ def do_stop(code, hard=False, env=None, touchid=None, touchid_available=None, pl
     rec = SPN.find_seat(code, str(state_root(env)))
     if rec is None:
         out["why"] = "no-seat"
+        return out, 2
+    if not expected_target(rec, expected_session, expected_instance):
+        out["why"] = "stale-session"
         return out, 2
     doing = None
     path = SPN.transcript_path(rec)
@@ -569,6 +630,9 @@ def do_stop(code, hard=False, env=None, touchid=None, touchid_available=None, pl
         out["why"] = why
         log_action(code, "stop", env, ok=False, why=why, hard=hard)
         return out, 3
+    if not fresh_target(rec, code, env):
+        out["why"] = "stale-session"
+        return out, 2
     ok, why = send_keys(rec, ["C-c"] if hard else ["Escape"], tmux=tmux, run=run)
     out.update(ok=ok, why=(None if ok else why), hard=hard, doing=doing)
     log_action(code, "stop", env, ok=ok, why=why or None, hard=hard)
@@ -607,6 +671,9 @@ def main(argv=None, out=sys.stdout):
     s = sub.add_parser("stop")
     s.add_argument("code")
     s.add_argument("--hard", action="store_true")
+    for p in (i, a, s):
+        p.add_argument("--expected-session")
+        p.add_argument("--expected-instance")
     for p in (i, a, s, u, lk, st, rm):
         p.add_argument("--json", action="store_true")
     ns = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
@@ -618,7 +685,7 @@ def main(argv=None, out=sys.stdout):
             except OSError:
                 out.write(json.dumps(_out(False, ns.code, "input", why="bad-file"), ensure_ascii=False) + "\n")
                 return 2
-        res, rc = do_input(ns.code, text, minutes=ns.unlock_min, queued=ns.queued)
+        res, rc = do_input(ns.code, text, minutes=ns.unlock_min, queued=ns.queued, expected_session=ns.expected_session, expected_instance=ns.expected_instance)
     elif ns.cmd == "unlock":
         grant = None
         if ns.grant:
@@ -639,9 +706,9 @@ def main(argv=None, out=sys.stdout):
     elif ns.cmd == "unlocked":
         res, rc = do_unlocked(ns.code)
     elif ns.cmd == "answer":
-        res, rc = do_answer(ns.code, ns.choice, ask_id=ns.ask_id, free_text=ns.text)
+        res, rc = do_answer(ns.code, ns.choice, ask_id=ns.ask_id, free_text=ns.text, expected_session=ns.expected_session, expected_instance=ns.expected_instance)
     elif ns.cmd == "stop":
-        res, rc = do_stop(ns.code, hard=ns.hard)
+        res, rc = do_stop(ns.code, hard=ns.hard, expected_session=ns.expected_session, expected_instance=ns.expected_instance)
     else:
         ap.print_usage(sys.stderr)
         return 2
