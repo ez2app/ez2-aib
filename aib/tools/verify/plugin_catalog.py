@@ -28,7 +28,8 @@ ADDON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
 ACCESS = ("public", "member", "paid")   # 契約 plugins.catalog_entry.access
 CALLER_DEAD = ("page_api_token_revoked", "page_api_token_expired", "page_api_token_invalid", "page_api_token_missing")
-SERVER_CODES = ("plugin_unknown", "plugin_license_none", "plugin_license_device_limit")   # 契約 plugins.codes
+SERVER_CODES = ("plugin_unknown", "plugin_license_none", "plugin_license_device_limit", "plugin_plan_required")   # 契約 plugins.codes
+PLANS = ("free", "go", "plus", "pro", "ultra")   # 契約 plugins.catalog_entry.plan(可選;10-25 方案五級)
 SCOPE_MISSING = "page_api_scope_mismatch"   # 契約 plugins_package / plugins_license 的 scope_missing
 
 
@@ -89,8 +90,11 @@ def parse_catalog(payload):
         access = e["access"] if "access" in e else ("paid" if addon is not None else "public")   # 舊伺服器沒這欄
         if access not in ACCESS or (access == "paid") != (addon is not None):
             return None
+        plan = e.get("plan")   # 可選:這一級以上的方案含在內;public 不准有
+        if plan is not None and (plan not in PLANS or access == "public"):
+            return None
         price, summary = e.get("price"), e.get("summary")
-        out.append({"name": name, "version": ver, "sha256": sha, "size": size, "access": access, "addon": addon, "requires_aib": req,
+        out.append({"name": name, "version": ver, "sha256": sha, "size": size, "access": access, "addon": addon, "plan": plan, "requires_aib": req,
                     "price": _clean(price, 40) if isinstance(price, str) else None,
                     "summary": _clean(summary, 120) if isinstance(summary, str) else None})
     return out
@@ -158,6 +162,9 @@ def _server_err(exc):
     if code in CALLER_DEAD:
         import revoked_note
         return code, 3, {"note": revoked_note.note(exc)}
+    if code == "plugin_plan_required":   # 方案不到目錄要的級、也沒單買(10-25);回條多帶 plan = 需要的級
+        need = exc.details[0] if exc.details and isinstance(exc.details[0], str) and exc.details[0] in PLANS else ""
+        return code, 4 if http >= 500 else 3, ({"plan": need} if need else {})   # rc 同其他 SERVER_CODES(#378 r1 L1)
     if code in SERVER_CODES:
         return code, 4 if http >= 500 else 3, {}
     if http == 403 and code == SCOPE_MISSING:   # 序號綁的憑證沒有 plugins:read(10-25 @abb89)⇒ 指去用配對碼重綁

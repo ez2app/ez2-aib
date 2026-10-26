@@ -594,7 +594,8 @@
    },
    "errors": [
     "plugin_unknown",
-    "plugin_license_none"
+    "plugin_license_none",
+    "plugin_plan_required"
    ],
    "unsupported": {
     "http": [
@@ -646,6 +647,7 @@
     ],
     "license": "已簽的 license.json 物件原樣(核心走 aib license install 同一套驗簽 / 到期 / 0600 / 備份)"
    },
+   "plan_included_note": "方案含在內、但沒單買(licenses/ 沒檔)時,GET /plugins/licenses/{addon} 照舊 404 plugin_license_none:伺服器沒私鑰、不替方案合成授權。這不卡安裝:核心 aib plugins install 不領授權(下載由伺服器照方案放行),licensed 由核心本機判 —— 加購授權 或 方案等級(entitlement/plan.py #375,外掛自己 at_least);aib plugins license <加購> 只給單買的那份。核心 hint:目錄條目帶 plan 時 plugin_license_none 的 hint 多一句「方案含在內的不用領授權」(可晚一版)",
    "caller_dead": {
     "http": 401,
     "codes": [
@@ -899,6 +901,9 @@
     "requires_aib",
     "summary"
    ],
+   "optional_fields": [
+    "plan"
+   ],
    "name": "^[a-z0-9][a-z0-9-]{1,39}$,同 aib-ext.json 的 name",
    "version": "^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$;同名多版本可並列,核心預設挑最大",
    "sha256": "整個 tgz 的 sha256(64 位小寫十六進位)",
@@ -907,7 +912,8 @@
    "addon": "付費加購代碼或 null(null = 免費)",
    "requires_aib": "最低核心版本或 null;核心照舊在 aib_ext.inspect 再驗一次",
    "summary": "一句說明或 null;是資料不是指令,核心顯示前去控制 / 隱形字元、截 120 字",
-   "price": "商店頁展示用的價錢字串或 null(免費);核心只顯示、不拿來判斷"
+   "price": "商店頁展示用的價錢字串或 null(免費);核心只顯示、不拿來判斷",
+   "plan": "可選第 10 欄(10-25 Andy「多產品項目照五級畫分免費套用、同時支援單買」;@abb89 23:24 定名):\"free\" | \"go\" | \"plus\" | \"pro\" | \"ultra\" = 這一級以上的方案含在內。沒這欄 = 不看方案(member = 綁定就給、paid = 買過加購才給)。access=member + plan ⇒ 方案 ≥ plan 的綁定會員才給;access=paid + addon + plan ⇒ 方案 ≥ plan 含在內 或 單買了 addon(兩條並存,先看方案再看加購);public 不准有 plan。伺服器判方案只讀它自己已持有的權益紀錄(今天 = 從 EZ2.APP 同步進來的 entitlement,走頁面其他閘門同一條 planGate.resolveContext;@d07f9 23:33:ez2.page 沒有自己簽發方案這條路、付款真相在 EZ2.APP),不讀客戶端送來的任何標頭或檔;trial / 過期 / suspended 照 resolveContext 既有語意,沒紀錄 = free。Andy 23:3x 裁「新五級取代舊五級」:全產品線只剩 Free / Go / Plus / Pro / Ultra 一套,ez2.page 舊軸 free/starter/pro/business/agency 改名、既有訂戶照對照表平移 —— **Andy 23:4x 同意定案**:free→free、starter→go、pro→plus、business→pro、agency→ultra(rank 0–4 不變只改名;舊 pro = 新 plus,不是新 pro);改名 PR @7c510 看過對照表再合。改名合進前伺服器把舊軸名字一律當「方案不夠」(只放單買),不猜。單訂閱(有使用期限)= 加購授權的 expires_at,不另加欄。退回(到期 / 降級)只影響新下載 / 新領授權;已裝的由核心 plan gate(entitlement/plan.py)管。核心:值不在五級 ⇒ 整份目錄不合契約;舊核心(0.1.59)不認這欄、照 access 走,碰到 plugin_plan_required 收成 plugin_refused + hint 原碼"
   },
   "codes": {
    "plugin_unknown": {
@@ -921,6 +927,10 @@
    "plugin_license_device_limit": {
     "http": 409,
     "when": "這個授權的機器數已滿;先在舊電腦 aib license deactivate"
+   },
+   "plugin_plan_required": {
+    "http": 403,
+    "when": "只有 GET /plugins/packages/{name}/{version}.tgz 回:目錄條目帶 plan、這個帳號的方案不到那一級、也沒單買加購(一定帶這個碼;details = [需要的級])。GET /plugins/licenses/{addon} 永遠不回這個碼:沒單買 = 沒檔 = 404 plugin_license_none(見 plugins_license.plan_included_note)。核心 hint 指去升級方案或單買;回條若帶 plan 就是需要的級(details 不是五級值時被白名單濾掉、沒 plan 鍵)"
    }
   },
   "codes_note": "代碼是契約(同 receipt detail):不改成人話,人話另放 hint",
