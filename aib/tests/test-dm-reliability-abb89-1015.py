@@ -134,6 +134,7 @@ class Box:
         self.aib_home = self.home / ".ez2-aib"
         self.seats = self.aib_home / "instances" / "t1" / "seats"
         self.seats.mkdir(parents=True)
+        (self.seats.parent / "instance-token").write_text("sandbox-token")
         for w, u in seats:
             self.write_seat(w, u)
         self.rc_seq("0")
