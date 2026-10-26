@@ -150,6 +150,8 @@ class Probe(unittest.TestCase):
             self.assertEqual(US.remote("known-host")["state"], "observed")
             self.assertIn("StrictHostKeyChecking=yes", call.call_args[0][0])
             self.assertIn("BatchMode=yes", call.call_args[0][0])
+            self.assertIn("ForwardAgent=no", call.call_args[0][0])
+            self.assertIn("ClearAllForwardings=yes", call.call_args[0][0])
 
 
 class Progress(unittest.TestCase):
