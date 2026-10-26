@@ -274,14 +274,88 @@ class RateLimiter:
 
 # ---------------- 檔案橋 adapter(只讀 + 選用寄出) ----------------
 BRIDGE_UNKNOWN_SENDER = "bridge:unknown"
+_COCKPIT = Path(__file__).resolve().parent.parent / "cockpit"
+
+
+def _cockpit_mod(name):
+    import importlib
+    import sys
+    if str(_COCKPIT) not in sys.path:
+        sys.path.insert(0, str(_COCKPIT))
+    try:
+        return importlib.import_module(name)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class SignedIndex:
+    """SPEC §17:各席 bridge/<session>/delivered/*.json 裡由 drainer 加的 `_aib_sig`,驗得過才收進索引。
+    另核對:簽章裡的寄件席 = 該 session 資料夾 status.json 的 cabin/code(信必須真的出自那一席的寄件匣)。
+    只讀;一筆簽章只認一封收件匣信(防同文重放)。"""
+    def __init__(self, root):
+        self.root = Path(root)
+        self._sig = None
+        self.recs = []
+        self.used = set()
+
+    def refresh(self):
+        bs = _cockpit_mod("bridge_sign")
+        key = bs.load_key(self.root.parent) if bs else None
+        self.recs = []
+        if not key or not self.root.is_dir():
+            return
+        for sess in sorted(p for p in self.root.iterdir() if p.is_dir()):
+            dd = sess / "delivered"
+            if not dd.is_dir():
+                continue
+            try:
+                st = json.loads((sess / "status.json").read_text(encoding="utf-8"))
+                owner = "%s/%s" % (str(st.get("cabin") or "").strip(), str(st.get("code") or "").strip().lstrip("@"))
+            except (OSError, ValueError, AttributeError):
+                continue
+            for f in sorted(dd.glob("*.json")):
+                try:
+                    rec = json.loads(f.read_text(encoding="utf-8")).get(bs.SIG_FIELD)
+                except (OSError, ValueError, AttributeError):
+                    continue
+                if isinstance(rec, dict) and rec.get("from_seat") == owner and bs.verify_sig(key, rec):
+                    self.recs.append(rec)
+
+    def match(self, from_seat, to_seat, body, t):
+        bs = _cockpit_mod("bridge_sign")
+        if not bs:
+            return False
+        bh = bs.body_hash(body)
+        for rec in self.recs:
+            if (rec["from_seat"] == from_seat and rec["to_seat"] == to_seat and rec["body_sha256"] == bh
+                    and abs(float(t) - int(rec["ts"])) <= bs.MAX_SKEW_SECS and rec["hmac"] not in self.used):
+                self.used.add(rec["hmac"])
+                return True
+        return False
+
+
+def bridge_sender(index, binding, text, t):
+    """收件匣信的寄件席:dm 抬頭寫的寄件席 @碼 + 正文,要對上一筆驗得過的簽章才認;否則 bridge:unknown。"""
+    dh = _cockpit_mod("dm_header")
+    got = dh.parse(text) if dh else None
+    if not got or got.get("sender_kind") != "seat":
+        return BRIDGE_UNKNOWN_SENDER
+    s = got.get("sender") or {}
+    code = str(s.get("code") or "").strip().lstrip("@")
+    cabin = str(s.get("cabin") or "").strip() or binding["seat"].split("/", 1)[0]
+    cand = "%s/%s" % (cabin, code)
+    if code and index.match(cand, binding["seat"], got.get("body") or "", t):
+        return cand
+    return BRIDGE_UNKNOWN_SENDER
 
 
 class BridgeAdapter:
     """寄件人:檔內自填的 `from` 不可信(同 musebot_outbox_drainer 原則),一律不採用。
-    收件席由 binding(session 資料夾)推得;寄件席在檔案橋上無法由資料夾驗證,故一律標 bridge:unknown。"""
+    收件席由 binding(session 資料夾)推得;寄件席只有在對上 drainer 的 `_aib_sig`(SPEC §17)時才認,否則 bridge:unknown。"""
     def __init__(self, store, root=None):
         self.store, self.root = store, Path(root) if root else bridge_root()
         self._seen = {}  # session_uuid -> (inbox mtime_ns, claimed mtime_ns);目錄沒變就不重掃
+        self.signed = SignedIndex(self.root)
 
     def _session_dir(self, session_uuid):
         if not session_uuid or not __import__("re").fullmatch(r"[0-9a-f-]{36}", session_uuid):
@@ -304,6 +378,7 @@ class BridgeAdapter:
         if self._seen.get(binding["session_uuid"]) == sig:
             return 0
         self._seen[binding["session_uuid"]] = sig
+        self.signed.refresh()
         n = 0
         for sub in (d / "inbox", d / "inbox" / "claimed"):
             if not sub.is_dir():
@@ -320,12 +395,17 @@ class BridgeAdapter:
                 ref = "bridge:" + _sha(binding["session_uuid"] + "\0" + f.name + "\0" + _sha(raw))
                 t = float(msg.get("created_epoch") or f.stat().st_mtime)
                 with self.store.lock:
+                    seen = self.store.db.execute("SELECT 1 FROM messages WHERE src_ref=?", (ref,)).fetchone()
+                if seen:
+                    continue
+                sender = bridge_sender(self.signed, binding, text, t)
+                with self.store.lock:
                     try:
                         self.store.db.execute(
                             "INSERT INTO messages(message_id,from_seat,to_seat,body_hash,body,origin,hop_count,state,"
                             "revision,source,src_ref,duplicate_possible,created,updated) "
                             "VALUES(?,?,?,?,?,?,0,'received',1,'bridge',?,1,?,?)",
-                            (new_ulid(), BRIDGE_UNKNOWN_SENDER, binding["seat"],
+                            (new_ulid(), sender, binding["seat"],
                              _sha(text), text[:64 * 1024], "file-bridge", ref, t, time.time()))
                         n += 1
                     except sqlite3.IntegrityError:
