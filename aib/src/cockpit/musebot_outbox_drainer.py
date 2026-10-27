@@ -185,7 +185,9 @@ def deliver_one(msg_path: Path, runner, say=None, status: dict | None = None, no
     except Exception as exc:  # noqa: BLE001 —— 送信炸掉不能讓橋停
         outcome = f"DM 未送出:排水器呼叫寄信失敗({type(exc).__name__}:{str(exc)[:120]})"
     if _outcome_ok(outcome):
-        _park(sending, "delivered")
+        parked = _park(sending, "delivered")
+        if parked is not None:
+            _sign_delivered(parked, msg, target, text, status)
         say(f"{PROVIDER} → {target}:已送出({str(outcome)[:100]})")
         return "delivered"
     retry = _retry_path(msg_path)
@@ -204,6 +206,33 @@ def deliver_one(msg_path: Path, runner, say=None, status: dict | None = None, no
         pass
     say(f"{PROVIDER} → {target}:沒送達(第 {n}/{MAX_RETRIES} 次,留著重送):{str(outcome)[:160]}")
     return "failed"
+
+
+def _sign_delivered(path: Path, msg: dict, target: str, text: str, status: dict | None) -> bool:
+    """送達後在 delivered/ 那份信加 `_aib_sig`(SPEC §17)。寄件席取自本席橋寫的 status.json(cabin/code),
+    不取檔內 from。任何失敗只略過簽章,不影響已送達(簽章是附加資訊,不是送信條件)。"""
+    try:
+        import bridge_sign as _bs
+        st = status if isinstance(status, dict) else {}
+        cabin, code = str(st.get("cabin") or "").strip(), str(st.get("code") or "").strip().lstrip("@")
+        if not re.fullmatch(r"[0-9a-z]{1,4}", cabin) or not re.fullmatch(r"[0-9a-z]{4,8}", code):
+            return False
+        to = target.split("/", 1)[1] if target.count("/") == 2 else target  # 去掉跨主機 IP/ 前綴
+        to = re.sub(r"/@", "/", to)
+        state_root = path.parent.parent.parent.parent  # <state root>/bridge/<session>/delivered/<信>
+        key = _bs.load_key(state_root if (state_root / "bridge").is_dir() else None, create=True)
+        if not key:
+            return False
+        stem = path.name[: -len(".json")] if path.name.endswith(".json") else path.name
+        mid = str(msg.get("message_id") or stem)
+        d = dict(msg)
+        d[_bs.SIG_FIELD] = _bs.make_sig(key, f"{cabin}/{code}", to, mid, text, time.time())
+        tmp = path.with_name("." + path.name + ".sigtmp")
+        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except Exception:  # noqa: BLE001 —— 簽章失敗不能讓橋停
+        return False
 
 
 class _RateWindow:
