@@ -11,6 +11,7 @@ only the affected tests rerun, and nothing ships while something new is red.
     aib lease                   who holds this machine's test lease, until when, and who is queued (changes neither)
     aib update [--tools]        update this copy to the latest version (same as re-running the one-line install)
     aib update auto on|off|status   update automatically when a new version is released (default on)
+    aib update status [--host H]   installed versions and the room's PID-verified startup version
     aib uninstall [--all] [--yes]   remove aib from this computer (lists first; --yes removes; --all also records)
     aib <provider> <dgrs|safe> <role>   open an AI seat in the cockpit (macOS + tmux; see `aib --help-cockpit`)
     aib <other commands> …      everything else goes to the cockpit (seats, fleet, handoff, new project / role)
@@ -65,8 +66,16 @@ def _update(args):
     10-10(Mac a seat 實測):網站還在回舊的私有版安裝程式 ⇒「下載得到」不夠,還要是公開版(內含 PUBLIC_MARK);
     不是 ⇒ 當成這個網址不能用,換下一個。"""
     if any(a in ("-h", "--help") for a in args):
+        if args[:1] == ["status"]:
+            sys.path.insert(0, os.path.join(HERE, "src", "cockpit"))
+            import update_status
+            return update_status.main(list(args[1:]))
         sys.stdout.write(UPDATE_HELP)     # 10-15 稽核 C13:說明要先印、不下載、不建安裝紀錄
         return 0
+    if args[:1] == ["status"]:
+        sys.path.insert(0, os.path.join(HERE, "src", "cockpit"))
+        import update_status
+        return update_status.main(list(args[1:]))
     if args[:1] == ["auto"]:
         # 10-23 Andy「更新版本要自動 aib update」:開關 / 狀態;查與更新本身在 auto_update.py(開席與排程叫它)
         sys.path.insert(0, os.path.join(HERE, "src", "cockpit"))
