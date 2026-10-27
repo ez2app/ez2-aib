@@ -5713,5 +5713,6 @@
   "aib.update_status.stale_record": "stale PID record",
   "aib.update_status.stopped_or_unreadable": "stopped or unreadable",
   "aib.update_status.unavailable": "unavailable",
-  "aib.update_status.unmeasured": "unmeasured"
+  "aib.update_status.unmeasured": "unmeasured",
+  "aib.now.dm_wait_overdue": "⏳ {n} message(s) have a wait note but nothing has moved for 4+ hours: if it arrived, close with dm_queue.py close --seat {code} --id <id> --evidence …; if still waiting, rewrite wait --seat {code} --id <id> \"who / what\""
 }

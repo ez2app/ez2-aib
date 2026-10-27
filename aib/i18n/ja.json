@@ -5713,5 +5713,6 @@
   "aib.update_status.stale_record": "古い PID 記録",
   "aib.update_status.stopped_or_unreadable": "停止または読み取り不能",
   "aib.update_status.unavailable": "取得不能",
-  "aib.update_status.unmeasured": "未測定"
+  "aib.update_status.unmeasured": "未測定",
+  "aib.now.dm_wait_overdue": "⏳ 待機メモ付きで 4 時間以上動いていないメッセージが {n} 件:届いたら dm_queue.py close --seat {code} --id <id> --evidence … で完了、まだ待つなら wait --seat {code} --id <id> \"誰 / 何を\" を書き直してください"
 }

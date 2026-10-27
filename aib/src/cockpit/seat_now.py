@@ -1018,10 +1018,14 @@ def dm_stale_nudge(code, env=None, now=None):
     """Andy 10-25 20:1x:待審區有進行中逾 4 小時沒寫等什麼的信 ⇒ 換階段時順便提醒一行(只在寫 📌 時查,狀態列不查)。"""
     try:
         import dm_queue
-        n = int(dm_queue.brief_payload(code, env=env, now=now).get("stale_wait") or 0)
+        b = dm_queue.brief_payload(code, env=env, now=now)
+        n = int(b.get("stale_wait") or 0)
+        m = int(b.get("wait_overdue") or 0)     # 0.1.61:寫了等什麼、逾 4 小時沒動
     except Exception:  # noqa: BLE001 —— 提醒讀不到不影響 aib now
         return ""
-    return T("aib.now.dm_stale_wait", n=n, code=code) if n else ""
+    lines = ([T("aib.now.dm_stale_wait", n=n, code=code)] if n else []) + \
+        ([T("aib.now.dm_wait_overdue", n=m, code=code)] if m else [])
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

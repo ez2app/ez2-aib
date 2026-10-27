@@ -182,6 +182,16 @@ TRANSITIONS[("delivered", "read")] = ("seat", "system")
 SUPERSEDE_DONE_PREFIX = "superseded_by:"
 TRANSITIONS[("delivered", "done")] = ("seat", "system")
 TRANSITIONS[("read", "done")] = ("seat", "system")
+# ★ Andy 10-25 21:4x(@abb89 派工,0.1.61):整理子代理 actor = agent:<收件席>/<子代理 id>,等同收件席本人,
+#   但只開「讀」與「結」;hold 放行、刪、改分類都不開(_transition 另查前綴要是收件席)。這是標記不是防線
+#   (子代理與席位同帳號,見同帳號 AI 威脅守則),用途是稽核追得到是誰結的。
+AGENT_TRANSITIONS = (("queued", "read"), ("delivered", "read"), ("delivered", "done"), ("read", "done"))
+for _k in AGENT_TRANSITIONS:
+    TRANSITIONS[_k] = TRANSITIONS[_k] + ("agent",)
+del _k
+# 結錯了可回復(@abb89 22:02):done → read,只限收件席本人 / human,why 要以 REOPEN_WHY_PREFIX 開頭;回復後清掉 done_*。
+REOPEN_WHY_PREFIX = "reopen:"
+TRANSITIONS[("done", "read")] = ("seat", "human")
 # 進行中(read)超過這麼久沒動、也沒寫「等什麼」⇒ 提醒(只提醒,不自動結;Andy 10-25 20:1x 選 4 小時)
 STALE_WAIT_S = 4 * 3600
 WAIT_MAX_CHARS = 300
@@ -962,6 +972,8 @@ def parse_actor(actor):
     cls, ident = cls.strip(), ident.strip()
     if cls in ("seat", "sender", "human") and ident:
         return cls, ident
+    if cls == "agent" and re.fullmatch(r"[0-9a-f]{5}/[0-9A-Za-z._-]{1,64}", ident):
+        return cls, ident          # 0.1.61 整理子代理:agent:<收件席>/<子代理 id>
     return None, None
 
 
@@ -1334,6 +1346,11 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         return refuse("actor")
     if cls == "seat" and ident != seat:
         return refuse("actor")
+    if cls == "agent" and ident.split("/", 1)[0] != seat:
+        return refuse("actor")        # 整理子代理只能動自己那一席的信
+    if frm == "done" and to == "read" and not (isinstance(why, str) and why.startswith(REOPEN_WHY_PREFIX)
+                                               and why[len(REOPEN_WHY_PREFIX):].strip()):
+        return refuse("transition")   # 回復要寫理由(reopen:<為什麼>)
     if to == "read" and frm == HOLD_STATUS and cls == "seat" and item.get("global"):
         return refuse("actor")        # 陌生全球來信待審中:收件席自己不准讀(主人放行才給 AI;盤點 10-16 第 2 項)
     if to == "read" and cls == "human" and _human_from_seat("human:x", env):
@@ -1372,6 +1389,11 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
         item["claim_id"] = None
     elif to == "read":
         item["read_at"] = now
+        if frm == "done":
+            for k in ("done_at", "done_evidence", "done_kind", "done_why", "consolidated_into"):
+                item.pop(k, None)
+            item["reopened_at"] = now
+            item["reopen_why"] = why.strip()[:500]
         if cls == "system":
             item["read_by"] = "system"
             item["read_why"] = why
@@ -1412,8 +1434,9 @@ def _transition(seat, item_id, to, actor, env=None, now=None, why=None, evidence
     _write_item(seat, item, env)
     if to not in ACTIVE_STATUSES:
         _order_remove(seat, item_id, env)
+    extra = {"evidence": item.get("done_evidence")} if to == "done" else {}   # 看板抽查子代理結案用(0.1.61)
     _audit(seat, env, ts=now, id=item_id, **{"from": frm}, to=to, actor=actor, ok=True,
-           reason="ok", rev=item_rev(item), why=why)
+           reason="ok", rev=item_rev(item), why=why, **extra)
     if item.get("global"):
         _global_delivery_for_transition(item, frm, to, cls, why, seat, env, now)
     return {"ok": True, "reason": "ok", "rev": item_rev(item), "item": item, "message": ""}
@@ -1792,6 +1815,18 @@ def _rounds(text):
     return out
 
 
+def is_older_round(old, key, new_rounds, env=None):
+    """old 是不是「同寄件鍵、同一批 PR 的較舊一輪」:它提到的 PR 全都在新的那輪裡、每張 PR 的輪數都比較小。
+    新一輪自動結(_close_superseded)與待審整理計畫(dm_triage_agent.plan)共用這一個判準。"""
+    if not key or not new_rounds or _sender_key(old) != key:
+        return False
+    text = _full_text(old, env)
+    old_rounds = _rounds(text or "")
+    prs = set(_PR_NUM_RE.findall(text or ""))
+    return bool(old_rounds) and prs <= set(new_rounds) and \
+        all(pr in new_rounds and r < new_rounds[pr] for pr, r in old_rounds.items())
+
+
 def _close_superseded(item, env=None, now=None):
     """Andy 10-25 20:1x:新一輪來信**送達**⇒ 同寄件席、同一張 PR 較舊一輪的來信自動結(why=superseded_by:<新 id>)。
     舊信條件:delivered / read(hold_human 不碰)、沒被結過、它提到的 PR 全都在新信裡、每張 PR 的輪數都比新信小。
@@ -1810,13 +1845,7 @@ def _close_superseded(item, env=None, now=None):
         for old in _all_items(seat, env=env):
             if old["id"] == item["id"] or old.get("status") not in ("delivered", "read"):
                 continue
-            if _sender_key(old) != key:
-                continue
-            text = _full_text(old, env)
-            old_rounds = _rounds(text or "")
-            prs = set(_PR_NUM_RE.findall(text or ""))
-            if not (old_rounds and prs <= set(new_rounds)
-                    and all(pr in new_rounds and r < new_rounds[pr] for pr, r in old_rounds.items())):
+            if not is_older_round(old, key, new_rounds, env):
                 continue
             r = _transition(seat, old["id"], "done", "system", env=env, now=now,
                             why=SUPERSEDE_DONE_PREFIX + item["id"], if_rev=item_rev(old), no_rev_check=False)
@@ -1928,6 +1957,118 @@ def triage_path(seat, env=None):
     return seat_dir(seat, env) / TR.TRIAGE_FILE
 
 
+TRIAGE_AGENT_LOCK_FILE = "triage-agent.json"     # 整理子代理自願登記(dm_triage_agent.agent_lock 寫、收口讀)
+
+
+def _triage_machine_clean(seat, env, now):
+    """Andy 10-25 22:5x 同意(0.1.61):固定規則就判得出來的,系統先收,子代理只看要動腦的。
+    收的只有「純通知」:kind=notice 或整封符合 dm_triage 通知表(TR.is_notice,寫死的回執形狀),而且已經貼到那一席眼前
+    (delivered)或它已讀過(read)。排隊中(沒看過)/ 人審 / 寫了等什麼 / 別的通訊軟體 / 全球來信 / 艙沒開排隊一律不碰。
+    delivered → 系統代標已讀(AUTO_READ_WHY)→ 備存(notice_read);read → 備存。以前代標已讀的通知會留在「進行中」
+    把門檻撐到 2,叫一個子代理來收兩句「收到」。被新一輪取代的舊信已在新信送達時結掉(_close_superseded),這裡不重做。
+    每封帶當下修訂號,中途被改過就不動。回備存的 id。"""
+    out = []
+    # ★ 審查 L2:那一席所在的艙沒開信件排隊 ⇒ 不替它收(同 auto_tidy 那條,不動別艙的信)
+    hubs = [r[2] for r in _seat_records_all_cabins(seat, env) if r[2]]
+    if hubs and all(_cabin_queue_enabled(h, env) is False for h in hubs):
+        return out
+    for it in _all_items(seat, env=env):
+        st = it.get("status")
+        if st not in ("delivered", "read") or it.get("im") or it.get("sender_kind") == "external_im":
+            continue
+        if _is_global_item(it):
+            continue                       # 審查 L2:全球來信系統標已讀會回條給外人,不收
+        w = it.get("wait")
+        if isinstance(w, dict) and str(w.get("text") or "").strip():
+            continue
+        if not (normalize_kind(it.get("kind")) == "notice" or TR.is_notice(it.get("msg"))):
+            continue
+        rev = item_rev(it)
+        if st == "delivered":
+            r = _transition(seat, it["id"], "read", "system", env=env, now=now, why=AUTO_READ_WHY,
+                            if_rev=rev, no_rev_check=False, expect_status="delivered")
+            if not r.get("ok"):
+                continue
+            rev = r.get("rev")
+        r = _transition(seat, it["id"], "archived", "system", env=env, now=now, why="notice_read",
+                        if_rev=rev, no_rev_check=False, expect_status="read")
+        if r.get("ok"):
+            out.append(it["id"])
+    return out
+
+
+LOAD_FN = os.getloadavg            # 測試換掉;量不到 ⇒ None(不擋叫醒)
+
+
+def _load1():
+    try:
+        return float(LOAD_FN()[0])
+    except (OSError, AttributeError, TypeError, ValueError, IndexError):
+        return None
+
+
+BUSY_GAP_S = 300                   # 兩次判到忙相隔超過這麼久 ⇒ 忙的起算重來
+_SPAWN_ENV_DROP_PREFIX = ("TMUX", "CLAUDECODE", "CLAUDE_CODE_", "AIB_SEAT")
+_SPAWN_ENV_DROP = frozenset(("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY",
+                             "OPENAI_BASE_URL", "CODEX_API_KEY"))
+
+
+def _spawn_env(env):
+    """背景整理行程的環境:留狀態根,剝掉席位 / tmux / 父 Claude 工作階段 / API 金鑰(審查 L4,同 power_ask._clean_env)。"""
+    return {k: v for k, v in dict(_env(env)).items()
+            if not k.startswith(_SPAWN_ENV_DROP_PREFIX) and k not in _SPAWN_ENV_DROP}
+
+
+def _spawn_headless(seat, brand, env):
+    """背景起一輪 dm_queue.py triage-headless(自成一組、不等它;輸出進那一席的 headless.log)。"""
+    d = seat_dir(seat, env)
+    d.mkdir(parents=True, exist_ok=True)
+    with open(str(d / "headless.log"), "ab") as log:
+        subprocess.Popen([sys.executable, str(_HERE / "dm_queue.py"), "triage-headless", "--seat", seat, "--brand", brand],
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                         env=_spawn_env(env), cwd=str(d))
+
+
+SPAWN_HEADLESS = _spawn_headless   # 測試換掉
+
+
+def _triage_headless_maybe(seat, rec, path, env, now, probe):
+    """0.1.62(Andy 22:3x「不要跳過」、@abb89 23:22 定案):到門檻但那一席一直忙 ⇒ 記 busy_since;忙滿
+    dm_triage_headless.HEADLESS_AFTER_S 且引擎是 claude / codex ⇒ 背景起整理 AI 代做一輪(算進每日上限)。回起了沒。"""
+    import dm_triage_headless as H
+    rec = dict(rec)
+    try:
+        gap = now - int(rec.get("busy_seen_at"))
+    except (TypeError, ValueError):
+        gap = None
+    if rec.get("busy_since") is None or gap is None or gap > BUSY_GAP_S:
+        rec["busy_since"] = now            # 審查 M2:兩次判到忙隔太久(中間沒量 / 可能閒過)⇒ 從頭算 30 分
+    rec["busy_seen_at"] = now
+    reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
+    brand = str(reg_prov or probe.get("provider") or "")
+    ok, _why = H.should_start(rec, now, _triage_lock(seat, env), _load1(), rec["busy_since"], brand, _triage_mode(brand))
+    if ok:
+        day_log = [int(t) for t in (rec.get("wake_log") or []) if isinstance(t, (int, float)) and now - int(t) < 86400]
+        rec.update({"headless_at": now, "wake_log": day_log + [now]})
+    if not TR.write(path, rec):
+        return False                       # 記不下來就不起(否則下一拍看不到起過,會一直起)
+    if ok:
+        try:
+            SPAWN_HEADLESS(seat, brand, env)
+        except OSError:
+            return False
+    return ok
+
+
+def _triage_lock(seat, env=None):
+    """那一席 triage-agent.json 的原樣內容(子代理自願登記;只是協調,不是防線);沒有 / 壞檔回 None。"""
+    try:
+        lk = json.loads((seat_dir(seat, env) / TRIAGE_AGENT_LOCK_FILE).read_text(encoding="utf-8"))
+        return lk if isinstance(lk, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
 class TriageLockBusy(RuntimeError):
     """triage --apply 等不到每席 triage 小鎖(review r4 m7):不寫檔,呼叫端回錯誤。"""
 
@@ -1976,7 +2117,7 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
         if hubs and all(_cabin_queue_enabled(h, env) is False for h in hubs):
             tidy_on = False
     tidy_res = stage_tidy(seat, env=env, now=now) if tidy_on else None
-    cleaned = tidy_res["cleaned"] if tidy_res else 0
+    cleaned = tidy_res["cleaned"] if tidy_res else len(_triage_machine_clean(seat, env, now))
     tabs = tabs_payload(seat, env=env, now=now)["tabs"]
     rows = tabs["waiting"]["rows"]
     unread = TR.unread_ids(rows)
@@ -1998,10 +2139,30 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             rec["unread_ids"] = unread
             rec["inprog_ids"] = inprog
             TR.write(path, rec)
-    if not (TR.should_wake_tidy(rec, now=now, cooldown_s=TIDY_WAKE_COOLDOWN_S) if tidy_on else TR.should_wake(rec, now=now)):
-        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "no-new-batch-or-cooldown",
-                "cleaned": cleaned}
-    gate_ok, gate_why = _wake_gate(seat, rec, env, now, idle_cap=not tidy_on)
+    # Andy 10-25 22:3x「更即時、不要跳過」:到門檻 + 沒有子代理在做 ⇒ 每一拍都可以叫(TR.wake_decision);
+    #   叫了沒人接 ⇒ ACK_S 後再叫,最多 REWAKE_MAX 次後標 triage_stalled;子代理做完放鎖 ⇒ 下一拍接著叫下一批。
+    rewake = False
+    if tidy_on:
+        normal, why = TR.should_wake_tidy(rec, now=now, cooldown_s=TIDY_WAKE_COOLDOWN_S), "no-new-batch-or-cooldown"
+    else:
+        normal, why, rewake = TR.wake_decision(rec, now, _triage_lock(seat, env), _load1())
+        stalled = why == "triage-stalled"
+        if stalled != bool(rec.get("triage_stalled")) and why != "waiting-pickup":
+            rec = dict(rec)
+            rec["triage_stalled"] = stalled
+            if stalled:
+                rec["stalled_at"] = now
+            else:
+                rec.pop("stalled_at", None)
+            TR.write(path, rec)
+    if not normal:
+        if why in ("under-threshold", "all-handled") and rec.get("busy_since") is not None:
+            rec = dict(rec)
+            rec.pop("busy_since", None)            # 沒事要整理了:忙的起算歸零(下次到門檻重新算 30 分)
+            TR.write(path, rec)
+        return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": why, "cleaned": cleaned}
+    # 子代理那條(非 auto_tidy):閒很久也叫(Andy 要立刻消化);每日上限維持 WAKE_DAILY_MAX(Andy 22:5x「是,但每日上限維持 12」)
+    gate_ok, gate_why = _wake_gate(seat, rec, env, now, idle_cap=False)
     if not gate_ok:
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": gate_why, "cleaned": cleaned}
     if tidy_on:
@@ -2019,7 +2180,16 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
     res = hold_fn(seat, probe) if hold_fn is not None else drain_hold(seat, probe, env=env)
     busy, why = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
     if busy:
+        if not tidy_on and why not in (PANE_DEAD_WHY, "no-screen", SEAT_UNRESOLVED_WHY):
+            # 審查 M5:死窗 / 問不到窗 / 登記表對不上 ≠ 在忙,不替關掉的席起背景整理
+            started = _triage_headless_maybe(seat, rec, path, env, now, probe)
+            if started:
+                return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "headless-started"}
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": why or "busy"}
+    if rec.get("busy_since") is not None:
+        rec = dict(rec)
+        rec.pop("busy_since", None)                # 閒下來了:忙的起算歸零
+        TR.write(path, rec)
     # 通知組裡**已送達**(delivered)的 ⇒ 叫醒成功後由系統代標已讀,提醒裡照樣列出來。
     #   ★ review r1 M4:排隊中(queued)的從沒貼到那一席眼前,代標已讀 = 那一席永遠不知道有這封;人審不代標。
     by_id = {str(r.get("id")): r for r in rows}
@@ -2042,6 +2212,8 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
         text = TR.wake_text(seat, rec.get("counts") or {}, len(rec.get("ids") or []), str(_HERE / "dm_queue.py"),
                             mode=mode, digest=TR.human_lines(rec, rows) if mode == "digest" else None,
                             notes=[(by_id.get(i) or {}).get("msg") or "" for i in notes], inprog=len(inprog))
+    if rewake:
+        text = TR.FOLLOWUP_PREFIX % max(1, (now - int(rec.get("woke_at") or now)) // 60) + text
     text = _one_line_for_line_reader(text, reg_prov or probe.get("provider"))
     # id 故意不合 ITEM_RE:投遞器看到不是佇列 id 就不帶 AIB_DM_QUEUED_ITEM_ID,dm-ctl 也就不回佇列找它
     # no_relay:叫醒那句整段貼進去,不讓 dm-ctl 換成「去讀某檔」的指標(見 _dmctl_env)
@@ -2055,7 +2227,10 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
                 # #374 r2 M-B1:這次叫醒宣告過的待審 id 之後被席位讀掉變進行中,不算「新的進行中」
                 "woke_inprog_ids": sorted(set(rec.get("inprog_ids") or []) | set(rec.get("unread_ids") or [])),
                 "woke_at": now, "woke_rc": None, "woke_mode": mode, "auto_read": [],
-                "wake_log": day_log + [now]})
+                "wake_log": day_log + [now],
+                # 看板用:叫醒當時的封數(再叫一次沿用第一次的);followups = 沒人接、再叫了幾次
+                "woke_live_n": rec.get("woke_live_n") if rewake else len(unread) + len(inprog),
+                "followups": int(rec.get("followups") or 0) + 1 if rewake else 0, "triage_stalled": False})
     if not TR.write(path, rec):
         # review r1 m3:記不下來就不叫 —— 否則下一拍看不到叫過,每分鐘都叫一次
         return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": "triage-write-failed"}
@@ -2068,7 +2243,8 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
 
 
 # 叫醒紀錄欄;rc=2 回滾時照上一份原樣放回(上一份沒有的欄就拿掉)
-_WOKE_KEYS = ("woke_batch", "woke_ids", "woke_inprog_ids", "woke_at", "woke_rc", "woke_mode", "auto_read", "wake_log")
+_WOKE_KEYS = ("woke_batch", "woke_ids", "woke_inprog_ids", "woke_at", "woke_rc", "woke_mode", "auto_read", "wake_log",
+              "woke_live_n", "followups", "triage_stalled")
 # ★ review r2 m1:wake_log(每日上限的帳)**永不回滾** —— 每一次投遞嘗試都花過一次 dm-ctl,照算
 _WOKE_ROLLBACK_KEYS = tuple(k for k in _WOKE_KEYS if k != "wake_log")
 # ★ review r2 m1:rc=2 最多回滾這麼多次,之後記成叫過。dm-ctl 的 2 以前也用在
@@ -3066,6 +3242,8 @@ def _row(item, seat, now, index=None, env=None):
         row["wait"] = {"text": str(w["text"]), "at": w.get("at")}     # 只在寫過時才有這欄,舊列形狀不變
     if wait_stale(item, now):
         row["stale_wait"] = True
+    elif wait_overdue(item, now):
+        row["wait_overdue"] = True
     if index is not None:
         row["index"] = index
     return row
@@ -3083,6 +3261,18 @@ def _touched_at(item):
         except (TypeError, ValueError):
             pass
     return max(got) if got else None
+
+
+def wait_overdue(item, now):
+    """Andy 10-25 22:5x 同意(0.1.61):寫了等什麼、之後超過 STALE_WAIT_S 沒人動它 ⇒ True(提醒本席看一下還在等嗎;
+    重寫一次等什麼就重新算)。不自動結、不叫子代理。"""
+    if item.get("status") != "read":
+        return False
+    w = item.get("wait")
+    if not (isinstance(w, dict) and str(w.get("text") or "").strip()):
+        return False
+    t = _touched_at(item)
+    return t is not None and int(now) - t > STALE_WAIT_S
 
 
 def wait_stale(item, now):
@@ -3166,6 +3356,7 @@ def tabs_payload(seat, env=None, now=None):
         "human": sum(1 for r in waiting if r["sender_kind"] == "human"),
         # 進行中逾 4 小時沒動、沒寫等什麼(Andy 10-25 20:1x);只提醒
         "stale_wait": sum(1 for r in tabs["read"]["rows"] if r.get("stale_wait")),
+        "wait_overdue": sum(1 for r in tabs["read"]["rows"] if r.get("wait_overdue")),
     }
     return {"schema": TABS_SCHEMA, "seat": seat, "now": now, "source_rev": source_rev(seat, env),
             "tabs": tabs, "badges": badges, "errors": errors}
@@ -3194,6 +3385,13 @@ def brief_payload(seat, env=None, now=None):
     unread_rows = [r for r in (w.get("rows") or [])
                    if r.get("status") in ("queued", "delivered", "claimed") and not r.get("expired_now")]
     first = min(unread_rows, key=lambda r: int(r.get("ts") or 0)) if unread_rows else None
+    # 常駐規則那一句(@abb89 派工 B)要的兩個數:跟叫醒同一個算法(dm_triage.unread_ids / inprog_ids)
+    out["triage_unread"] = len(TR.unread_ids(w.get("rows") or []))
+    out["triage_inprog"] = len(TR.inprog_ids(t["tabs"].get("read", {}).get("rows") or []))
+    try:                                   # 收口標的「未整理」(叫了兩次沒動;@abb89 派工 A),給待審框 / 艦長室畫
+        out["triage_stalled"] = bool((TR.load(triage_path(seat, env)) or {}).get("triage_stalled"))
+    except Exception:  # noqa: BLE001 —— 分組檔是輔助資訊
+        out["triage_stalled"] = False
     out.update({"seat": seat,
                 "oldest_when": ((first.get("when") or "")[6:11] or None) if first else None,
                 "oldest_ts": (int(first.get("ts") or 0) if first else None),
@@ -5042,6 +5240,30 @@ def main(argv=None, env=None):
             tk.add_argument("--why", default=None)
         else:
             tk.add_argument("text", nargs="?", default="")
+    tp = sub.add_parser("triage-plan")              # 0.1.61:待審整理子代理的分組 + 建議(唯讀,dm_triage_agent.py)
+    tp.add_argument("--seat", default=None)
+    tp.add_argument("--json", action="store_true")
+    cs = sub.add_parser("consolidate")              # 同類幾封合成一份整理檔,每封 done、evidence 指那份檔(原信保留)
+    cs.add_argument("--seat", default=None)
+    cs.add_argument("--ids", required=True)        # 逗號分隔
+    cs.add_argument("--file", required=True)
+    cs.add_argument("--by", default=None)           # seat:<席> 或整理子代理 agent:<席>/<id>
+    ro = sub.add_parser("reopen")                   # 結錯了回復:done → read(只限收件席本人 / human)
+    ro.add_argument("--seat", default=None)
+    ro.add_argument("--id", required=True)
+    ro.add_argument("--why", required=True)
+    ro.add_argument("--by", default=None)
+    th = sub.add_parser("triage-headless")          # 0.1.62:背景整理 AI 代做一輪(通常由叫醒那一拍自動起)
+    th.add_argument("--seat", required=True)
+    th.add_argument("--brand", required=True)
+    ts_ = sub.add_parser("triage-status")           # 看板:每席叫醒 / 封數變化 / stalled / 子代理登記(唯讀)
+    ts_.add_argument("--seat", default=None)
+    ts_.add_argument("--json", action="store_true")
+    tl = sub.add_parser("triage-lock")              # 整理子代理開工前自願登記(每席同時 1 個;只是協調,不是防線)
+    tl.add_argument("--seat", default=None)
+    tl.add_argument("--by", default=None)
+    tl.add_argument("--release", action="store_true")
+    tl.add_argument("--status", action="store_true")
     cc = sub.add_parser("close-check")             # dm-ctl --closes 送出前查(派工信不准用回信結)
     cc.add_argument("--seat", required=True)
     cc.add_argument("--id", required=True)
@@ -5270,6 +5492,56 @@ def main(argv=None, env=None):
             origin=args.origin, env=env, **_v2_kw(args))
         _print_json(_strip_private(item))
         return 0
+
+    if args.cmd == "triage-plan":
+        import dm_triage_agent as TA
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage", "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": "-"}})
+                return 2
+        _print_json(TA.plan(args.seat, env=env))
+        return 0
+
+    if args.cmd == "triage-headless":
+        import dm_triage_headless as H
+        out = H.run(args.seat, args.brand, env=env)
+        _print_json(out)
+        return 0 if out.get("ok") else 1
+
+    if args.cmd == "triage-status":
+        import dm_triage_agent as TA
+        _print_json(TA.status(env=env, seat=args.seat))
+        return 0
+
+    if args.cmd == "triage-lock":
+        import dm_triage_agent as TA
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage", "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": "-"}})
+                return 2
+        out = TA.agent_lock(args.seat, args.by or "seat:" + args.seat, env=env, release=args.release, status=args.status)
+        _print_json(out)
+        return 0 if out.get("ok") else 3
+
+    if args.cmd in ("consolidate", "reopen"):
+        import dm_triage_agent as TA
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage",
+                             "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": getattr(args, "id", "-")}})
+                return 2
+        args.by = args.by or "seat:" + args.seat
+        if args.cmd == "consolidate":
+            ids = [i.strip() for i in args.ids.split(",") if i.strip()]
+            out = TA.consolidate(args.seat, ids, args.file, args.by, env=env)
+            _print_json(out)
+            return 0 if out.get("ok") else _TRANSITION_RC.get(out.get("reason"), 4)
+        out = TA.reopen(args.seat, args.id, args.by, args.why, env=env)
+        _print_json(out)
+        return 0 if out.get("ok") else _TRANSITION_RC.get(out.get("reason"), 4)
 
     if args.cmd == "close-check":
         out = closes_refusal(args.seat, args.id, env=env)

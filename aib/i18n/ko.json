@@ -5713,5 +5713,6 @@
   "aib.update_status.stale_record": "오래된 PID 기록",
   "aib.update_status.stopped_or_unreadable": "중지 또는 읽기 불가",
   "aib.update_status.unavailable": "측정 불가",
-  "aib.update_status.unmeasured": "미측정"
+  "aib.update_status.unmeasured": "미측정",
+  "aib.now.dm_wait_overdue": "⏳ 대기 메모가 있는데 4시간 넘게 움직임이 없는 메시지 {n}건: 도착했으면 dm_queue.py close --seat {code} --id <id> --evidence … 로 종료, 아직 기다리면 wait --seat {code} --id <id> \"누구 / 무엇\" 을 다시 적으세요"
 }

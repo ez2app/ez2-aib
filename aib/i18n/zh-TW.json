@@ -5713,5 +5713,6 @@
   "aib.update_status.stale_record": "過期的程序紀錄",
   "aib.update_status.stopped_or_unreadable": "已停止或無法讀取",
   "aib.update_status.unavailable": "無法量測",
-  "aib.update_status.unmeasured": "未量測"
+  "aib.update_status.unmeasured": "未量測",
+  "aib.now.dm_wait_overdue": "⏳ 待審區有 {n} 封寫了等什麼、超過 4 小時沒動:等到了用 dm_queue.py close --seat {code} --id <id> --evidence …;還在等就重寫一次 wait --seat {code} --id <id> \"等誰 / 等什麼\""
 }
