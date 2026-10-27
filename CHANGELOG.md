@@ -4,6 +4,15 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.62
+
+- **Local chat MCP server**: `aib chat-mcp` serves the AIB conversation over Streamable HTTP `/mcp` with hashed bearer keys, per-seat bindings, idempotent sends, ack revisions and rate limits. File-bridge deliveries are signed (HMAC) so the sender seat is only trusted when the signature checks out.
+- **Inbox triage helpers**: when a seat has 2+ waiting or 2+ in-progress messages, a triage sub-agent is woken promptly (`triage-plan`, `triage-lock`, `consolidate`, `reopen`, `triage-status`). Plain notices are filed automatically; wait notes older than 4 hours are flagged. If a claude/codex seat stays busy for 30 minutes, a tool-less background AI proposes actions and the core applies only verified ones (close requires a merged ez2app PR).
+- **Safer seat panel input**: typing, answering and stopping recheck that the same seat session is still at its prompt right before sending; multi-line pastes use a private tmux buffer. Codex prompts and permission menus are recognised.
+- **Terminal and status line**: Apple Terminal gets indexed colours so the Codex composer text stays visible; providers without a native context line use the reserved status row.
+- **Release visibility**: `aib update status [--host H]` shows installed versions and PID-verified room startup records; `aib ship preflight` / `aib ship status` check version and archive integrity and observe release stages without changing anything. CI runs the preflight.
+- **DotsBot**: the CodexBot display name is now DotsBot (provider id, keys and environment unchanged).
+
 ## 0.1.61
 
 - **Human memory evidence across AI providers**: tidy and handoff can read native Codex, Copilot (including Kimi), Grok, AGY/Gemini and supported API-seat histories. Session identity is checked where available; assistant/tool output, injected instructions and relayed messages are excluded. Missing or truncated evidence is reported as unavailable. Omission reviews retain every request in the selected window, including more than 40; UTC `Z` timestamps also work on Python 3.9.

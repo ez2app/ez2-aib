@@ -313,7 +313,7 @@ def call_tool(name, args, runner=None, log=None, meta=None):
         if caller:
             sock = live[caller]
         elif len(live) >= 2:
-            return finish("rejected", "DM 未送出:現在有 %d 隻 CodexBot 同時在線,這個工具分不出是哪一條桌面對話在呼叫;"
+            return finish("rejected", "DM 未送出:現在有 %d 隻 DotsBot 同時在線,這個工具分不出是哪一條桌面對話在呼叫;"
                           "為了不用別隻的名義送出,這則不送。請改在那一隻的 AIB 席上用 /dm <@席> <訊>。" % len(live), False)
         else:
             sock = bridge_socket()

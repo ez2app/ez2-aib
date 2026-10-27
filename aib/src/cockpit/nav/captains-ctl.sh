@@ -594,7 +594,12 @@ install_status() {
   #   就只設空行、不猜第 1 行。a seat 10-10 已在 931e/9668 活艙照這組選項套過,the maintainer 眼驗過。
   _fmt0="$(hub_tmux show-option -gv 'status-format[0]' 2>/dev/null || true)"
   run hub_tmux set-option -t aihub status 2
-  run hub_tmux set-option -t aihub 'status-format[0]' ''
+  # Normalize older/newly restored seat borders in this hub before adding CTX.
+  run "${EZ2_PY3:-python3}" "$COCKPIT/seat_now.py" --apply-borders --border-hub "$HUB" >/dev/null
+  # Providers without a native context line use this reserved row; their pane
+  # border contains only the task. Claude/agy leave the row empty as before.
+  _ctx_fmt="$("${EZ2_PY3:-python3}" "$COCKPIT/seat_now.py" --context-status-format)"
+  run hub_tmux set-option -t aihub 'status-format[0]' "$_ctx_fmt"
   if [ -n "$_fmt0" ]; then
     run hub_tmux set-option -t aihub 'status-format[1]' "$_fmt0"
   fi

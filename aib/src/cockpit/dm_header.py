@@ -163,7 +163,7 @@ _CODE_TOKEN_RE = re.compile(r"^@(?P<code>[0-9a-z]{4,8})(?:[((](?P<nick>[^))]*)[)
 # 不是席、不是真人的白話寄件者裡,哪些算「系統」:用 sender_origin 的機器名判(dm-ctl 知道),
 #   舊式抬頭只有白話名時用這張字面表(與 codexbot_bridge 既有 SYSTEM_SENDER_LABELS 同集合)。
 SYSTEM_LABELS = ("開席通知", "排序暫存", "系統", "巡查", "aib-system", "系統狀態通知", "自動降溫", "強制回報點",
-                 "艦隊狀態", "指令訊息轉送", "開啟六席艦隊", "AI 啟動器", "CodexBot活檢")
+                 "艦隊狀態", "指令訊息轉送", "開啟六席艦隊", "AI 啟動器", "CodexBot活檢", "DotsBot活檢")
 HUMAN_ORIGINS = ("mouse_ctl",)          # 待審區真人送出:是 the maintainer 按的
 BOT_ORIGINS = {"grokbot": "GrokBot"}
 # 艦長室網頁(src/cockpit/captain_room.py)寄的 dm:抬頭寫「艦長室@room」,不混進「系統@aib」——

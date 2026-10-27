@@ -84,8 +84,8 @@ def main(argv=None) -> int:
         return checked.returncode or 2
 
     _write_binding(target, args.thread, endpoint)
-    print(f"CodexBot 已連結：thread={args.thread}")
-    print(f"設定已寫入 {target}；現在可由右鍵另開 AI -> CodexBot。")
+    print(f"DotsBot 已連結：thread={args.thread}")
+    print(f"設定已寫入 {target}；現在可由右鍵另開 AI -> DotsBot。")
     return 0
 
 

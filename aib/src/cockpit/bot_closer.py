@@ -185,7 +185,7 @@ def close_codexbot(p: dict, root: Path) -> str:
         record = os.environ.get(ENV_RECORD)
         if record:                                   # 尺用:不連 app-server
             cur = p.get("record_current_name") or ""
-            unbound = bot_seat_name.with_unbound(cur, fallback="CodexBot")
+            unbound = bot_seat_name.with_unbound(cur, fallback="DotsBot")
             with open(record, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"method": "thread/name/set", "params": {"threadId": tid, "name": unbound}},
                                     ensure_ascii=False) + "\n")
@@ -196,7 +196,7 @@ def close_codexbot(p: dict, root: Path) -> str:
             try:
                 th = rpc.call("thread/read", {"threadId": tid, "includeTurns": False}, timeout=15)["thread"]
                 cur = str(th.get("name") or "").strip()
-                unbound = bot_seat_name.with_unbound(cur, fallback="CodexBot")
+                unbound = bot_seat_name.with_unbound(cur, fallback="DotsBot")
                 if unbound == cur:
                     result = "already_unbound"
                 else:

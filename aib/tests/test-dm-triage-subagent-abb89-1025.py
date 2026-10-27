@@ -46,6 +46,7 @@ def tearDownModule():
 
 
 SETUP = (
+    "Q.LOAD_FN = lambda: (0.0, 0.0, 0.0)\n"      # 叫醒有 load1 ≤ 12 這道閘;測試機忙不該讓斷言變
     "def put(msg, now):\n"
     "    return Q.record(%r, msg, '@77777', status='delivered', rc=0, env=env, now=now,\n"
     "                    sender_kind='ai', wid='@2', provider='claude', hub='aihub-t1')['id']\n"
@@ -88,12 +89,16 @@ class S1WaitingThreshold(unittest.TestCase):
 class S2InProgressThreshold(unittest.TestCase):
 
     def test_two_in_progress_wakes_once_then_only_on_new(self):
+        # Andy 10-25 22:3x(@044e0 改):不再靠 10 分鐘冷卻;整理子代理看過、放鎖後留下的同一批不重叫,多一封新的立刻叫
         b = HN.QBox(self)
         out = b.py(SETUP + (
+            "import dm_triage_agent as TA\n"
             "t = int(__import__('time').time())\n"
             "inprog('進行中一:審查還沒回來', t); inprog('進行中二:等 CI', t)\n"
             "tick(t + 10)\n"
             "n1 = len(sent)\n"
+            "TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 20)\n" % (SEAT, SEAT) +
+            "TA.agent_lock(%r, 'agent:%s/tri-1', env=env, now=t + 30, release=True)\n" % (SEAT, SEAT) +
             "tick(t + 10 + 3600)\n"
             "n2 = len(sent)\n"
             "inprog('進行中三:新的一件', t + 7300)\n"
@@ -101,7 +106,7 @@ class S2InProgressThreshold(unittest.TestCase):
             "print(json.dumps({'n1': n1, 'n2': n2, 'sent': sent}))\n"))
         self.assertEqual(out["n1"], 1, "進行中 2 封、待審 0 ⇒ 也要叫:%r" % out)
         self.assertIn("進行中 2 封", out["sent"][0])
-        self.assertEqual(out["n2"], 1, "同一批進行中過了冷卻也不再叫(卡著等別人的不能每 10 分鐘叫):%r" % out)
+        self.assertEqual(out["n2"], 1, "子代理看過、留給本席的同一批不重叫(卡著等別人的不能一直叫):%r" % out)
         self.assertEqual(len(out["sent"]), 2, "多一封新的進行中 ⇒ 再叫:%r" % out)
 
     def test_one_in_progress_does_not_wake(self):
@@ -126,7 +131,7 @@ class S3WakeRules(unittest.TestCase):
         text = out["sent"][0]
         for must in ("整理子代理", "只做三件事", "--done --evidence", "重新整理", "DMTRIAGE-%s-" % SEAT,
                      "原信不刪", "只擬稿", "不准", "寄信", "刪信", "合併 PR", "發版", "簽章", "正式站",
-                     "不算數", "--by seat:%s" % SEAT, "triage --seat %s" % SEAT, "tabs --seat %s" % SEAT):
+                     "不算數", "--by agent:%s/" % SEAT, "triage --seat %s" % SEAT, "tabs --seat %s" % SEAT):
             self.assertIn(must, text, "叫醒那句少了「%s」:%s" % (must, text))
         self.assertNotIn("%(seat)s", text)
 
@@ -134,7 +139,7 @@ class S3WakeRules(unittest.TestCase):
 class S4AgentCloseWorks(unittest.TestCase):
 
     def test_rules_close_command_accepted(self):
-        """規則裡給子代理的那一行(read --done --by seat:<席> --if-rev --evidence)要真的被收。"""
+        """規則裡給子代理的那一行(read --done --by agent:<席>/<代號> --if-rev --evidence)要真的被收。"""
         b = HN.QBox(self)
         ids = b.py(SETUP + (
             "t = int(__import__('time').time())\n"
@@ -143,7 +148,7 @@ class S4AgentCloseWorks(unittest.TestCase):
             "ev = env['HOME'] + '/DMTRIAGE-%s-test.md'\n"
             "open(ev, 'w').write('重新整理:' + i)\n"
             "print(json.dumps({'id': i, 'rev': it.get('rev'), 'ev': ev}))\n" % (SEAT, SEAT)))
-        p = b.dq("read", "--seat", SEAT, "--id", ids["id"], "--by", "seat:%s" % SEAT,
+        p = b.dq("read", "--seat", SEAT, "--id", ids["id"], "--by", "agent:%s/tri-1" % SEAT,
                  "--if-rev", str(ids["rev"]), "--done", "--evidence", ids["ev"])
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertTrue(json.loads(p.stdout.strip().splitlines()[-1]).get("ok"), p.stdout)
@@ -180,7 +185,7 @@ class S6SystemAutoReadNotInProgress(unittest.TestCase):
         self.assertEqual(TR.inprog_ids(rows), ["b", "c"])
 
     def test_auto_read_notice_does_not_rewake(self):
-        """非 tidy 席:第一拍叫醒 + 代標「到」為已讀 ⇒ 10 分後進行中多了那封「到」,不得再叫。"""
+        """非 tidy 席:「到」這種純通知不算數(0.1.61 起系統先收掉,不留在進行中撐門檻)⇒ 卡著 1 + 真事 1 不到門檻,前後都不叫。"""
         b = HN.QBox(self)
         out = b.py(SETUP + (
             "t = int(__import__('time').time())\n"
@@ -189,11 +194,12 @@ class S6SystemAutoReadNotInProgress(unittest.TestCase):
             "tick(t + 10)\n"
             "n1 = len(sent)\n"
             "tick(t + 710)\n"
-            "rows = Q.tabs_payload(%r, env=env)['tabs']['read']['rows']\n"
-            "print(json.dumps({'n1': n1, 'n2': len(sent), 'read_by': sorted(str(r.get('read_by')) for r in rows)}))\n" % SEAT))
-        self.assertEqual(out["n1"], 1, out)
-        self.assertIn("system", out["read_by"], "治具前提:「到」要被系統代標已讀:%r" % out)
-        self.assertEqual(out["n2"], 1, "代標已讀的通知不算進行中,不得再叫:%r" % out)
+            "tabs = Q.tabs_payload(%r, env=env)['tabs']\n"
+            "open_msgs = [str(r.get('msg')) for k in tabs for r in (tabs[k].get('rows') or []) if k in ('waiting', 'read')]\n"
+            "print(json.dumps({'n1': n1, 'n2': len(sent), 'open': open_msgs}))\n" % SEAT))
+        self.assertNotIn("到", out["open"], "治具前提:「到」要被系統收掉:%r" % out)
+        self.assertEqual(out["n1"], 0, "通知不算待審,卡著 1 + 真事 1 不到門檻:%r" % out)
+        self.assertEqual(out["n2"], 0, "通知不算進行中,之後也不得叫:%r" % out)
 
 
 class S7Rc2Rollback(unittest.TestCase):

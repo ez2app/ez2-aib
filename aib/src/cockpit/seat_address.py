@@ -351,7 +351,7 @@ def _identity_path(name, aib_home=None):
     return os.path.join(root, IDENTITY_DIRNAME, name)
 
 
-CODEXBOT_NICK = "CodexBot 桌面"
+CODEXBOT_NICK = "DotsBot 桌面"
 
 
 def nickname_of(code, aib_home=None):

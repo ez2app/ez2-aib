@@ -32,6 +32,17 @@ import seat_native  # noqa: E402
 
 V = 1
 LIMIT_DEFAULT = 500
+# Incremental pages stop only between complete JSONL records. A record may contain
+# several public events, so it is delivered whole even when it crosses the limit.
+INCREMENT_MAX_EVENTS = 5000
+INCREMENT_MAX_BYTES = 4 * 1024 * 1024
+INCREMENT_MAX_LINE = 8 * 1024 * 1024
+
+
+class TranscriptRecordTooLarge(ValueError):
+    """Refuse an oversized record without advancing the client's cursor."""
+
+
 CODE_RE = re.compile(r"^[a-z0-9]{5}$")
 DM_LINE = re.compile(r"^IP:(\S+)/(\S+)/([^@\n]+)@([a-z0-9]{5}|aib|offhub) >> IP:(\S+)/(\S+)/([^@\n]+)@([a-z0-9]{5}) "
                      r"(\d\d-\d\d \d\d:\d\d)\(台北時間\) ?(.*)$")
@@ -233,9 +244,11 @@ def _codex_message(rec, line):
             "_codex_channel": payload.get("channel"), "_codex": True}
 
 
-def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0, align=False):
+def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0, align=False,
+                      event_limit=None, byte_limit=None, line_limit=None):
     """整份(或從 offset 起)⇒ (events, pending_ask_ids, queue_ops, end_offset, session_ids)。
-    align:offset 可能落在一行中間(讀尾端用)⇒ 先跳到下一行開頭,不解析半行。"""
+    align:offset 可能落在一行中間(讀尾端用)⇒ 先跳到下一行開頭,不解析半行。
+    Optional page limits stop before the next record; incomplete final lines never advance end_offset."""
     events, queue_ops, sessions = [], 0, []
     tool_calls, answered = {}, set()
     with open(path, "rb") as fh:
@@ -244,10 +257,17 @@ def events_from_jsonl(path, with_thinking=False, with_sidechain=False, offset=0,
             fh.readline()                           # 前一個位元組是換行 ⇒ 只吃掉那個換行,剛好停在行首
         elif offset:
             fh.seek(offset)
+        page_start = fh.tell()
         while True:
-            line = fh.readline()
-            if not line:
-                end = fh.tell()
+            end = fh.tell()
+            if (event_limit and len(events) >= event_limit) or (byte_limit and end - page_start >= byte_limit):
+                break
+            line = fh.readline(line_limit + 1) if line_limit else fh.readline()
+            if line_limit and len(line) > line_limit:
+                raise TranscriptRecordTooLarge("transcript-record-too-large")
+            if not line or not line.endswith(b"\n"):
+                # A writer may still be appending JSON (including a valid JSON value
+                # whose newline has not landed). Retry this record on the next poll.
                 break
             try:
                 rec = json.loads(line.decode("utf-8", "replace"))
@@ -466,9 +486,10 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
     rotated = False
     cur_sess = str(rec.get("session_uuid") or "").lower()
     snapshot = rec.get('provider') in ('agy', 'grok')
+    cursor_request = not (since or before or only_id) and (bool(offset) or session is not None)
     if snapshot and offset:
         offset, rotated = 0, True  # native snapshots have no byte cursor; never apply a JSONL offset to SQLite
-    if offset and not (since or before or only_id):
+    if cursor_request:
         # 頁面帶上一輪的 session + last_offset 來:席換了對話(壓縮 / 接回 / /clear)或檔比 offset 還短 ⇒ 從頭讀 + reset
         try:
             size = os.path.getsize(path)
@@ -482,8 +503,17 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
         if path2 != path:
             path, offset, rotated = path2, 0, True
     head_cut = False
-    if offset and not (since or before or only_id):
-        events, pending, _q, end, sessions = events_from_jsonl(path, with_thinking, with_sidechain, offset)
+    incremental = cursor_request and not snapshot
+    page_more = False
+    if incremental:
+        page_limit = min(limit, INCREMENT_MAX_EVENTS) if limit > 0 else INCREMENT_MAX_EVENTS
+        try:
+            events, pending, _q, end, sessions = events_from_jsonl(
+                path, with_thinking, with_sidechain, offset, event_limit=page_limit,
+                byte_limit=INCREMENT_MAX_BYTES, line_limit=INCREMENT_MAX_LINE)
+        except TranscriptRecordTooLarge:
+            return {"v": V, "ok": False, "why": "transcript-record-too-large", "seat": code}, 4
+        page_more = end < os.path.getsize(path)
     else:
         # 沒帶 offset 的(第一次載入 / since / before / id):從檔尾往前讀到夠用就停,不從檔頭掃整份
         def enough(evs):
@@ -520,8 +550,8 @@ def transcript(code, since=None, before=None, only_id=None, offset=0, limit=LIMI
     elif before:
         idx = next((i for i, e in enumerate(events) if e["id"] == before), None)
         events = events[:idx] if idx is not None else []
-    truncated = head_cut and not (since or only_id)        # 前面還有沒讀的 ⇒ 頁面可再往上翻(before)
-    if limit and len(events) > limit:
+    truncated = page_more or (head_cut and not (since or only_id))  # Incremental: next offset page; initial/history: older records.
+    if not incremental and limit and len(events) > limit:
         truncated = True
         events = events[:limit] if since and not (snapshot and since_lost) else events[-limit:]
     if do_redact:

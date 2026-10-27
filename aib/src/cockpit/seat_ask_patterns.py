@@ -30,6 +30,64 @@ _CLAUDE_ESC_CANCEL = re.compile(r"Esc to cancel", re.I)
 _GROK_PROMPT = re.compile(r"Enter:send|Shift\+Tab:mode")
 _GROK_THINKING = re.compile(r"Thinking…|Worked for|⠧|⠇|Esc:cancel")
 
+# Codex has a borderless composer. A bare history quote is not an input field.
+_CODEX_PROMPT = re.compile(r"^›(?:\s+(.*)|$)")
+_CODEX_CONTEXT = r"(?:100|[0-9]{1,2})% context left"
+_CODEX_WARNINGS = r"(?:[ ]+⚠?[ ]*[0-9]+ warnings?(?:[ ]*·[ ]*f2 to view)?)?"
+_CODEX_FOOTER = re.compile(r"^[ ]*(?:Main \[[A-Za-z0-9_-]+\][ ]+" + _CODEX_CONTEXT
+                           + r"|\? for shortcuts(?:[ ]+" + _CODEX_CONTEXT + r")?)" + _CODEX_WARNINGS + r"[ ]*\Z")
+_CODEX_THINKING = re.compile(r"^\s*[•●]\s+(?:Working|Thinking|Reconnecting|Waiting)\b[^\n]*(?:esc to interrupt|\([^\n]*\d[^\n]*\))", re.I)
+_CODEX_QUEUE = re.compile(r"^\s*tab to queue message\b", re.I)
+_CODEX_MENU = re.compile(r"^\s*(?:(?:›\s*)?/(?:model|fast|presets|permissions|skills|review|ide|status)\s{2,}\S|(?:Select|Choose) (?:a model|reasoning effort|permissions|approval policy)\b)", re.I)
+_CODEX_ASK = re.compile(r"^\s*((?:Would you like to|Do you want to) (?:run|allow|make|apply|proceed)[^\n]*\?)\s*$", re.I)
+_CODEX_OPTION = re.compile(r"^\s*(?:›\s*)?(\d)\.\s+(.+?)\s*$")
+_CODEX_PLACEHOLDERS = frozenset(("Ask Codex to do anything",))
+
+
+def _codex_permission(lines):
+    questions = [(i, _CODEX_ASK.match(line)) for i, line in enumerate(lines)]
+    questions = [(i, match) for i, match in questions if match]
+    if not questions:
+        return None
+    start, question = questions[-1]
+    options = []
+    for line in lines[start + 1:]:
+        match = _CODEX_OPTION.match(line)
+        if match:
+            options.append({"key": match.group(1), "label": match.group(2).strip()})
+        elif _CODEX_PROMPT.match(line):
+            # A new composer below a historical approval is no longer that menu.
+            return None
+    if len(options) < 2:
+        return None
+    return {"prompt": question.group(1).strip(), "options": options, "multi": False}
+
+
+def _codex_block(lines):
+    for line in lines:
+        if _CODEX_THINKING.match(line) or _CODEX_QUEUE.match(line):
+            return "thinking", _clip(line)
+    for line in lines:
+        if _CLAUDE_ESC_CANCEL.search(line):
+            return "esc-cancel", _clip(line)
+        if _CODEX_MENU.match(line):
+            return "permission", ""
+    candidates = [(i, _CODEX_PROMPT.match(line)) for i, line in enumerate(lines)]
+    candidates = [(i, match) for i, match in candidates if match]
+    if not candidates:
+        return "no-prompt", _clip(lines[-1] if lines else "")
+    index, prompt = candidates[-1]
+    after = [line for line in lines[index + 1:] if line.strip()]
+    # The active composer must end at the status footer; intervening content may be
+    # a multiline draft, output, or a menu, none of which is safe to overwrite.
+    if len(after) != 1 or not _CODEX_FOOTER.fullmatch(after[0]):
+        return "no-prompt", ""
+    body = (prompt.group(1) or "").strip()
+    if body and body not in _CODEX_PLACEHOLDERS:
+        return "draft", "› …(%d 字)" % len(body)
+    return None, ""
+
+
 PROVIDERS = ("claude", "grok", "codex")
 
 
@@ -46,7 +104,9 @@ def _strip_ansi(s):
 
 
 def permission_ask(screen, provider="claude"):
-    """畫面最後幾行有權限框 ⇒ {prompt, options, multi};沒有 ⇒ None。只做 Claude Code;其他家回 None。"""
+    """畫面最後幾行有權限框 ⇒ {prompt, options, multi};沒有 ⇒ None。Claude Code / Codex 已知權限選單;其他家回 None。"""
+    if provider == "codex":
+        return _codex_permission([_strip_ansi(x) for x in tail(screen)])
     if provider not in ("claude", None, ""):
         return None
     lines = [_strip_ansi(x) for x in tail(screen)]
@@ -71,8 +131,11 @@ def ask_id(ask):
 
 
 def busy_state(screen, provider="claude"):
-    lines = [_strip_ansi(x) for x in tail(screen, 20)]
+    lines = [_strip_ansi(x) for x in tail(screen, 0 if provider == "codex" else 20)]
     text = "\n".join(lines)
+    if provider == "codex":
+        why, _line = prompt_block(screen, provider)
+        return "thinking" if why == "thinking" else "idle" if why in (None, "draft") else "unknown"
     if provider == "grok":
         if _GROK_THINKING.search(text) and "Enter:send" not in text:
             return "thinking"
@@ -95,11 +158,13 @@ def prompt_block(screen, provider="claude"):
     10-25 Andy:席位明明停著、艦長室卻說「它正在忙」,被擋那次沒留紀錄查不出原因 ⇒ 呼叫端把代碼與這一行記下來。"""
     if permission_ask(screen, provider):
         return "permission", ""
-    lines = [_strip_ansi(x) for x in tail(screen, 20)]
+    lines = [_strip_ansi(x) for x in tail(screen, 0 if provider == "codex" else 20)]
     text = "\n".join(lines)
     m = _PAGER.search(text)
     if m:
         return "pager", m.group(0)
+    if provider == "codex":
+        return _codex_block(lines)
     if provider == "grok":
         m = _GROK_THINKING.search(text.replace("Esc:cancel", ""))
         if m:

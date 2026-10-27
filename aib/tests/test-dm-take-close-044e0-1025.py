@@ -167,7 +167,9 @@ class Wait(Base):
         t = Q.tabs_payload(SEAT, env=self.env, now=later + Q.STALE_WAIT_S * 3)   # 寫了等什麼 ⇒ 不再提醒
         row = [r for r in t["tabs"]["read"]["rows"] if r["id"] == it["id"]][0]
         self.assertEqual((row.get("stale_wait"), row["wait"]["text"], t["badges"]["stale_wait"]), (None, "等 @abb89 合 #363", 0))
-        self.assertEqual(seat_now.dm_stale_nudge(SEAT, env=self.env, now=later + Q.STALE_WAIT_S * 3), "")
+        # 0.1.61(Andy 22:5x):寫了等什麼不再算「沒寫」,但逾 4 小時沒動改提醒「寫了等什麼、沒動」那一行
+        self.assertEqual(seat_now.dm_stale_nudge(SEAT, env=self.env, now=later + Q.STALE_WAIT_S * 3),
+                         seat_now.T("aib.now.dm_wait_overdue", n=1, code=SEAT))
         it2 = self.rec("@abb89:#401")
         TK.take(SEAT, it2["id"], ME, env=self.env, now=NOW)
         self.assertEqual(Q.tabs_payload(SEAT, env=self.env, now=NOW + 60)["badges"]["stale_wait"], 0)   # 剛動過
@@ -317,8 +319,8 @@ KNIVES = [
      "Close.test_t2_close"),
     ("K3", "src/cockpit/dm_take.py", "    if text is None:\n        return {\"ok\": False, \"reason\": \"relay_unreadable\", \"relay_path\": relay_path,\n"
      "                \"message\": \"長訊落檔讀不到(不存在 / 不是一般檔 / 太大),沒有標已讀\"}\n", "", "Take.test_t1_take"),
-    ("K4", "src/cockpit/dm_queue.py", "            if not (old_rounds and prs <= set(new_rounds)\n",
-     "            if not (old_rounds\n", "Supersede.test_t4_new_round_closes_old"),
+    ("K4", "src/cockpit/dm_queue.py", "    return bool(old_rounds) and prs <= set(new_rounds) and \\\n",
+     "    return bool(old_rounds) and \\\n", "Supersede.test_t4_new_round_closes_old"),
     ("K5", "src/cockpit/dm_queue.py", "    if isinstance(w, dict) and str(w.get(\"text\") or \"\").strip():\n        return False\n", "",
      "Wait.test_t3_wait_and_stale"),
     ("K6", "src/cockpit/dm_queue.py", "        if is_dispatch(it):\n            return None       # 派工信",

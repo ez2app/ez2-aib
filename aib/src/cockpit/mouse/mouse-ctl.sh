@@ -2867,7 +2867,7 @@ EOF
     if [ -n "$_why" ]; then
       _notice="$_why"
     elif [ "$NEW_AI_ENGINE" = "codexbot" ]; then
-      _notice="CodexBot 尚未連結。請先執行：aib bot connect codexbot --thread <UUID> --endpoint <本機位址>"
+      _notice="DotsBot 尚未連結。請先執行：aib bot connect codexbot --thread <UUID> --endpoint <本機位址>"
     else
       _notice="aib: ${NEW_AI_ENGINE} 開席失敗(rc=${_open_rc});原因在 ${RUNSHELL_LOG}"
     fi

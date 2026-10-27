@@ -2807,6 +2807,17 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="ship")
     ap.add_argument("--repo", default=".")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    pre = sub.add_parser("preflight", help="fast version and archive integrity checks; changes nothing")
+    pre.add_argument("--repo", default=argparse.SUPPRESS)
+    pre.add_argument("--artifact", action="append", default=[])
+    pre.add_argument("--plugin", action="append", default=[])
+    pre.add_argument("--json", action="store_true")
+    progress = sub.add_parser("status", help="observe GitHub, PyPI and explicitly requested target versions")
+    progress.add_argument("--github", required=True)
+    progress.add_argument("--version", required=True)
+    progress.add_argument("--pr", type=int)
+    progress.add_argument("--host", action="append", default=[])
+    progress.add_argument("--json", action="store_true")
     c = sub.add_parser("check")
     c.add_argument("--since")
     c.add_argument("--rev", default="HEAD")
@@ -2861,6 +2872,22 @@ def main(argv=None):
     w.add_argument("--quiet", type=float, default=10.0)
     w.add_argument("--once", action="store_true")
     a = ap.parse_args(argv)
+    if a.cmd == "preflight":
+        import release_preflight
+        options = ["--repo", a.repo] + (["--json"] if a.json else [])
+        for artifact in a.artifact:
+            options += ["--artifact", artifact]
+        for plugin in a.plugin:
+            options += ["--plugin", plugin]
+        return release_preflight.main(options)
+    if a.cmd == "status":
+        import release_status
+        options = ["--github", a.github, "--version", a.version] + (["--json"] if a.json else [])
+        if a.pr is not None:
+            options += ["--pr", str(a.pr)]
+        for host in a.host:
+            options += ["--host", host]
+        return release_status.main(options)
     a.repo = str(Path(a.repo).resolve())
     a.prof = sp.load(a.repo)
     if not (a.cmd == "ci" and a.print):     # --print 的輸出要能直接存成檔:不印專案抬頭
