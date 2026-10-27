@@ -4,6 +4,15 @@
 
 版號跟 `pyproject.toml` 的 `version` 一致;發版 = 維護者打的 `v<版號>` 標籤。
 
+## 0.1.62
+
+- **本機對話 MCP 伺服器**：`aib chat-mcp` 以 Streamable HTTP `/mcp` 提供 AIB 對話，金鑰雜湊存放、每席綁定、寄信冪等、已讀修訂號與限流。檔案橋送達會加簽章（HMAC），驗簽通過才認寄件席。
+- **待審整理助手**：席位待審 ≥2 或進行中 ≥2 就立即叫整理子代理（`triage-plan`、`triage-lock`、`consolidate`、`reopen`、`triage-status`）。純通知由系統自動收；寫了等什麼逾 4 小時會提醒。claude/codex 席忙滿 30 分鐘時，由不拿工具的背景 AI 提建議，核心逐條驗過才套用（結案只認已合併的 ez2app PR）。
+- **座席面板送字更安全**：打字、回答、停止在送出前再確認仍是同一個席位工作階段且停在提示列；多行貼上改用專屬 tmux 暫存區。可辨識 Codex 的提示列與權限選單。
+- **終端機與狀態列**：Apple Terminal 改用索引色，Codex 輸入框文字不再被背景蓋住；沒有原生 context 行的 AI 改用保留的狀態列那一行。
+- **發版進度可見**：`aib update status [--host H]` 顯示已安裝版本與以 PID 驗證的艙啟動紀錄；`aib ship preflight`／`aib ship status` 只檢查版號與封包完整性、觀察發版各階段，不改任何東西。CI 會跑預檢。
+- **DotsBot**：CodexBot 顯示名改為 DotsBot（provider id、金鑰與環境變數不變）。
+
 ## 0.1.61
 
 - **多種 AI 的真人記憶證據**：整理記憶與交接可讀原生 Codex、Copilot（含 Kimi）、Grok、AGY/Gemini 及支援的 API 席對話。依來源核對會話身分，排除 AI／工具輸出、注入指令與中繼訊息；缺失或截斷的證據明確標示不可讀。查漏保留所選時段的全部要求，超過 40 則也不截掉；Python 3.9 正確解析 UTC `Z` 時間。
