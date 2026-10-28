@@ -35,7 +35,7 @@ mod 本身就是 Claude Code 外掛(根目錄有 .claude-plugin/marketplace.json
   3. 檔案完整:每支檔的 sha256 跟說明檔一致,不多不少
   4. 信任:純資料(佈景、角色卡、設定預設)不帶程式檔就能裝;
      會跑程式的(外掛、skill、mod)要有受信鑰匙的簽章,或使用者自己加 --allow-unsigned(表示「我信這個來源」)。
-     受信鑰匙 = aib 內建的發證公鑰 + <狀態根>/trusted-ext-keys 每行一把(ed25519:<hex>)。
+     受信鑰匙 = 只有 aib 內建的發證公鑰(不讀任何本機檔 / 環境變數;10-28 拿掉 trusted-ext-keys)。
 """
 from __future__ import annotations
 
@@ -145,17 +145,14 @@ def purge_bytecode(folder, out=sys.stdout):
 
 
 def trusted_keys():
+    """只認 aib 內建的發證公鑰。10-28 @aeb40 TID-K:拿掉 <狀態根>/trusted-ext-keys —— 同帳號 AI 寫一行自己的公鑰
+    就能自簽外掛過 signed_ok(本機檔不能當信任底);測試改 mock entitlement.keys.TRUSTED_PUBLIC_KEYS,不留檔案 / 環境變數後門。"""
     keys = []
     try:
         sys.path.insert(0, str(Path(HERE).parents[1] / "src"))
         from entitlement import keys as EK
         keys += list(EK.TRUSTED_PUBLIC_KEYS)
     except Exception:  # noqa: BLE001
-        pass
-    try:
-        keys += [l.strip() for l in (state_root() / "trusted-ext-keys").read_text(encoding="utf-8").splitlines()
-                 if l.strip().startswith("ed25519:")]
-    except OSError:
         pass
     return tuple(keys)
 
