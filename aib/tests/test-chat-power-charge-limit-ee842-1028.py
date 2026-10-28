@@ -17,8 +17,10 @@ L6 140 W + 40% 沒在充 ⇒ ⚠ 沒在充,不說太弱、不說暫停
 L7 非 Mac(ac None)⇒ 不印電源行
 E1 從 pmset / ioreg 文字一路到那一行(Pro 實況)⇒ 充電暫停
 D1 四語字典新兩條都在、參數名一致
+C1 chat_power.charge_state:charging / battery / paused / weak / idle / 非 Mac None(10-28 @f5fb8:艦長室橫幅讀同一欄,不各自判)
+C2 power_info 帶 charge_state;status --json 的 power 也帶(艦長室 power_now 讀這裡)
 刀(複本):K1 parse_watts 回到只認 `(W)` ⇒ W1 紅;K2 拿掉暫停分支 ⇒ L1 紅;K3 讀不到瓦數也說太弱 ⇒ L2 紅;
-          K4 power_info 不讀 ioreg ⇒ E1 紅
+          K4 power_info 不讀 ioreg ⇒ E1 紅;K5 power_info 不帶 charge_state ⇒ C2 紅
 """
 import json
 import os
@@ -158,6 +160,42 @@ class Lines(unittest.TestCase):
         self.assertNotIn("太弱", x)
 
 
+class State(unittest.TestCase):
+    def test_c1_charge_state(self):
+        cs = CP.charge_state
+        self.assertIsNone(cs({"ac": None}))
+        self.assertIsNone(cs({}))
+        self.assertEqual(cs({"ac": False, "charging": False, "pct": 47}), "battery")
+        self.assertEqual(cs({"ac": True, "charging": True, "pct": 55, "watts": 140}), "charging")
+        self.assertEqual(cs({"ac": True, "charging": None, "pct": 55}), "charging")
+        self.assertEqual(cs({"ac": True, "charging": False, "pct": 80, "watts": 140}), "paused")
+        self.assertEqual(cs({"ac": True, "charging": False, "pct": 80, "watts": None, "not_charging_reason": 4096}), "paused")
+        self.assertEqual(cs({"ac": True, "charging": False, "pct": 31, "watts": 15}), "weak")
+        self.assertEqual(cs({"ac": True, "charging": False, "pct": 80, "watts": 15, "not_charging_reason": 4096}), "weak")
+        self.assertEqual(cs({"ac": True, "charging": False, "pct": 80, "watts": None}), "idle")
+        self.assertEqual(cs({"ac": True, "charging": False, "pct": 40, "watts": 140}), "idle")
+        self.assertEqual(set(CP.CHARGE_STATES), {"charging", "battery", "paused", "weak", "idle"})
+
+    def test_c2_power_info_and_status_json(self):
+        with tempfile.TemporaryDirectory(prefix="aib-pwr-") as td:
+            pm, io, _calls = fake(BATT_80, AC_140, IOREG_PAUSED)
+            self.assertEqual(CP.power_info(td, platform="darwin", pmset=pm, ioreg=io)["charge_state"], "paused")
+            self.assertIsNone(CP.power_info(td, platform="linux", pmset=pm, ioreg=io)["charge_state"])
+            root, home = Path(td) / "bridge", Path(td) / "home"
+            home.mkdir()
+            import dm_global_files as GF
+            GF.ensure_dirs(root)
+            env = {"HOME": str(home), "AIB_CHAT_BRIDGE_DIR": str(root), "EZ2_AIB_LOCALE": "zh-TW",
+                   "EZ2_AIB_STATE_ROOT": str(home / ".ez2-aib")}
+            orig = CP.power_info
+            CP.power_info = lambda r: orig(r, platform="darwin", pmset=pm, ioreg=io)
+            try:
+                rec = CB.status_record(env)
+            finally:
+                CP.power_info = orig
+        self.assertEqual(rec["power"]["charge_state"], "paused", rec["power"])
+
+
 class Dict(unittest.TestCase):
     def test_d1_four_locales(self):
         for loc in ("zh-TW", "en", "ja", "ko"):
@@ -181,16 +219,20 @@ class Knife(unittest.TestCase):
                "Parse.test_w1_watts_both_formats")
 
     def test_k2_no_paused_branch(self):
-        _knife(self, "src/cockpit/chat_bridge.py", "        if high and (", "        if False and (",
+        _knife(self, "src/cockpit/chat_power.py", "    if high and (", "    if False and (",
                "Lines.test_l1_charge_limit_is_paused")
 
     def test_k3_unknown_watts_called_weak(self):
-        _knife(self, "src/cockpit/chat_bridge.py", "        if known_w and watts < POWER_WEAK_W:\n",
-               "        if not known_w or watts < POWER_WEAK_W:\n", "Lines.test_l2_unknown_watts_not_weak")
+        _knife(self, "src/cockpit/chat_power.py", "    if known_w and watts < POWER_WEAK_W:\n",
+               "    if not known_w or watts < POWER_WEAK_W:\n", "Lines.test_l2_unknown_watts_not_weak")
 
     def test_k4_power_info_skips_ioreg(self):
         _knife(self, "src/cockpit/chat_power.py", "    reason = parse_not_charging_reason((ioreg or _ioreg)()) if ac",
                "    reason = None if ac", "Lines.test_e1_pro_reality_end_to_end")
+
+    def test_k5_no_charge_state_field(self):
+        _knife(self, "src/cockpit/chat_power.py", '    info["charge_state"] = charge_state(info)\n', "",
+               "State.test_c2_power_info_and_status_json")
 
 
 if __name__ == "__main__":
