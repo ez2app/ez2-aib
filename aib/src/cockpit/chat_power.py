@@ -34,6 +34,7 @@ from atomic_json import write_json  # noqa: E402
 SLEEP_GAP_S = 90
 SPANS_MAX = 20
 PMSET = "/usr/bin/pmset"
+IOREG = "/usr/sbin/ioreg"
 CAFFEINATE = "/usr/bin/caffeinate"
 STATES = ("awake", "asleep", "offline", "unknown")
 
@@ -43,6 +44,15 @@ STATES = ("awake", "asleep", "offline", "unknown")
 def _pmset(*args, run=subprocess.run):
     try:
         r = run([PMSET] + list(args), capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _ioreg(run=subprocess.run):
+    """`ioreg -r -c AppleSmartBattery`(沒電池 / 非 Mac / 跑不起來 ⇒ "")。"""
+    try:
+        r = run([IOREG, "-r", "-c", "AppleSmartBattery"], capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return ""
     return r.stdout if r.returncode == 0 else ""
@@ -79,10 +89,18 @@ def parse_pct(text):
 
 
 def parse_watts(text):
-    """`pmset -g ac` 的 ` Wattage (W) = 15` ⇒ 15;`No adapter attached.` ⇒ 0;讀不到 ⇒ None。"""
+    """`pmset -g ac` 的 ` Wattage (W) = 15` 或 ` Wattage = 140W`(10-28 Pro 接 Apple 140W 是後一種)⇒ 15 / 140;
+    `No adapter attached.` ⇒ 0;讀不到 ⇒ None。"""
     if "No adapter attached" in (text or ""):
         return 0
-    m = re.search(r"Wattage\s*\(W\)\s*=\s*(\d+)", text or "")
+    m = re.search(r"Wattage\s*(?:\(W\))?\s*=\s*(\d+)\s*W?\b", text or "")
+    return int(m.group(1)) if m else None
+
+
+def parse_not_charging_reason(text):
+    """`ioreg -r -c AppleSmartBattery` 的 ChargerData 裡 `"NotChargingReason"=4096` ⇒ 4096;0 = 沒有不充的原因;
+    讀不到(沒這欄 / 沒電池 / 非 Mac)⇒ None。數字的意思 Apple 沒公開,只拿「有沒有原因」當輔助。"""
+    m = re.search(r'"NotChargingReason"\s*=\s*(\d+)', text or "")
     return int(m.group(1)) if m else None
 
 
@@ -107,19 +125,24 @@ def kept_awake(root):
     return True
 
 
-def power_info(root, platform=None, pmset=None):
-    """這台的電源與睡眠設定。非 Mac ⇒ sleeps None(不知道,不亂講)。pmset 只給測試換掉。"""
+def power_info(root, platform=None, pmset=None, ioreg=None):
+    """這台的電源與睡眠設定。非 Mac ⇒ sleeps None(不知道,不亂講)。pmset / ioreg 只給測試換掉。"""
     platform = sys.platform if platform is None else platform
     if platform != "darwin":
-        return {"sleeps": None, "sleep_min": None, "ac": None, "kept_awake": False, "charging": None, "pct": None, "watts": None}
+        return {"sleeps": None, "sleep_min": None, "ac": None, "kept_awake": False, "charging": None, "pct": None, "watts": None,
+                "not_charging_reason": None}
     get = pmset or _pmset
     batt = get("-g", "batt")
     sleep_min, ac = parse_sleep_min(get("-g")), parse_ac(batt)
     keep = kept_awake(root)
     sleeps = None if sleep_min is None else (sleep_min > 0 and not (keep and ac is not False))
     # 10-20 @abb89 #16 核心這半:電池 / 外接 / 瓦數 / 在不在充 —— 會員看得出「接了電但沒在充」
+    charging = parse_charging(batt)
+    # 10-28:接電沒在充才問 ioreg 為什麼(充電上限 / 最佳化電池充電停在 80% 也是 not charging)
+    reason = parse_not_charging_reason((ioreg or _ioreg)()) if ac and charging is False else None
     return {"sleeps": sleeps, "sleep_min": sleep_min, "ac": ac, "kept_awake": keep,
-            "charging": parse_charging(batt), "pct": parse_pct(batt), "watts": parse_watts(get("-g", "ac")) if ac else 0}
+            "charging": charging, "pct": parse_pct(batt), "watts": parse_watts(get("-g", "ac")) if ac else 0,
+            "not_charging_reason": reason}
 
 
 def power_path(root):
