@@ -122,12 +122,16 @@ def _project_name(seat_rec) -> str:
 # 彈窗一列 = 「 [h] 」5 欄 + 「★ @碼 · 人格 · 專案 · 月-日 時:分 · 使用中(會分出新碼)」。
 # 10-28 Andy「使用中保留完整字樣就好,名字縮短沒關係」⇒ 尾巴永遠完整,名字先縮。
 # ★ #399 R1(@aeb40):選單開在 display-popup -w POPUP_W_PCT% 裡,open_menu_popup.fit 再截 cols−1 ⇒ 預算要用**彈窗內寬**
-#   (終端寬 × 90% − 2 框線),不是終端寬。選單殼量 tmux client_width 換算後用 --popup-cols 交進來;量不到用 80 欄終端的值。
-#   一列 = 5 + 2(★,沒有也預留)+ 9(@碼 · )+ 人格 + 3 + 專案 + 3 + 11(時間)[+ 3 + 使用中] ≤ 內寬 − 1,人格 = 專案 = 剩下的一半,
-#   上限 NAME_COLS、下限 NAME_MIN(80 欄終端 zh-TW:沒在用的列各 18 欄,使用中的列各 7 欄)。
-POPUP_W_PCT = 90              # 與 cli-session-menu.sh 的 display-popup -w 同一個值
+#   (量到的寬 × 90% − 2 框線)。選單殼量 tmux client_width 換算後用 --popup-cols 交進來;量不到用 80 欄終端的值。
+# ★ #399 R2(@aeb40 定的讓位順序,之後同類邊角照這個):名字縮到 NAME_MIN → 專案欄整欄拿掉 → 人格欄拿掉
+#   → 時間欄拿掉 → 只剩「@碼 · 使用中(會分出新碼)」;再擠不下才交給 fit 截(極端窄,接受)。★ 永遠保留(前綴預留)。
+#   (指揮艙中間格是內嵌 tmux,量到的是中間格寬:120 欄筆電中間格約 64 ⇒ 彈窗內寬約 55,要靠讓位。)
+POPUP_W_PCT = 90              # 與 cli-session-menu.sh 的 display-popup -w 同一個值(測試 S3 對兩邊)
 POPUP_COLS_DEFAULT = 80 * POPUP_W_PCT // 100 - 2
-ROW_FIXED = 5 + 2 + 9 + 3 + 3 + 11
+ROW_HEAD = 5 + 2 + 9          # 「 [h] 」+「★ 」(沒有也預留)+「@碼 · 」
+WHEN_COLS = 11                # 「月-日 時:分」
+SEP = 3                       # 「 · 」
+ROW_FIXED = ROW_HEAD + SEP + SEP + WHEN_COLS
 NAME_COLS = 18
 NAME_MIN = 3
 
@@ -142,9 +146,9 @@ def _width(text: str) -> int:
 
 
 def _name_cols(live_label: str, popup_cols: int = POPUP_COLS_DEFAULT) -> int:
-    """這一列人格、專案各給幾欄。live_label = 這一列尾端的使用中字樣(沒在用 = 空)。"""
-    rest = popup_cols - 1 - ROW_FIXED - ((3 + _width(live_label)) if live_label else 0)
-    return max(NAME_MIN, min(NAME_COLS, rest // 2))
+    """兩個名字都在時各給幾欄(未夾下限;< NAME_MIN ⇒ 該讓位了)。live_label = 這一列尾端的使用中字樣(沒在用 = 空)。"""
+    rest = popup_cols - 1 - ROW_FIXED - ((SEP + _width(live_label)) if live_label else 0)
+    return min(NAME_COLS, rest // 2)
 
 
 def _fit(text: str, cols: int) -> str:
@@ -162,10 +166,19 @@ def _fit(text: str, cols: int) -> str:
 
 def four_tail(persona: str, project: str, when: str, live_label: str = "",
               popup_cols: int = POPUP_COLS_DEFAULT) -> str:
-    """「人格 · 專案 · 月-日 時:分[ · 使用中(會分出新碼)]」:名字依彈窗內寬截短,使用中字樣永遠完整。"""
+    """「人格 · 專案 · 月-日 時:分[ · 使用中(會分出新碼)]」:依彈窗內寬照 #399 R2 讓位順序收,使用中字樣永遠完整。"""
+    avail = popup_cols - 1 - ROW_HEAD
+    live = [live_label] if live_label else []
+    live_w = (SEP + _width(live_label)) if live_label else 0
     cols = _name_cols(live_label, popup_cols)
-    return "%s · %s · %s%s" % (_fit(persona, cols), _fit(project, cols), when,
-                               " · " + live_label if live_label else "")
+    if cols >= NAME_MIN:                                            # ① 兩個名字都在(先縮)
+        return " · ".join([_fit(persona, cols), _fit(project, cols), when] + live)
+    one = min(NAME_COLS, avail - SEP - WHEN_COLS - live_w)
+    if one >= NAME_MIN:                                             # ② 專案欄拿掉
+        return " · ".join([_fit(persona, one), when] + live)
+    if WHEN_COLS + live_w <= avail or not live_label:               # ③ 人格欄拿掉(沒有使用中 ⇒ 至少留時間)
+        return " · ".join([when] + live)
+    return live_label                                               # ④ 時間欄拿掉;再擠不下交給 fit
 
 
 def _has_record_content(provider: str, path: Path | None) -> bool:

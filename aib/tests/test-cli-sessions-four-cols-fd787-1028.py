@@ -8,6 +8,9 @@ F3 讀不到不掛:cards.json 壞掉 / 人格卡不見 / 名字帶 `@` `|` ⇒ �
 F4 寬度:預算用彈窗內寬(終端 × 90% − 2;#399 R1),80 / 100 欄終端、四語,使用中字樣完整(10-28 Andy)、名字先縮補「…」。
 F5 寬度算法與 open_menu_popup.fit 同一套(組合字元 0 欄)。
 F6 活席檔與 retired 檔時間一樣 ⇒ 活席檔的專案名優先。
+F7 讓位順序(#399 R2):名字縮到下限 → 專案欄拿掉 → 人格欄拿掉 → 時間欄拿掉;popup_cols=54 / 40 四語字尾完整,
+   100→20 一路掃過去欄位只會照這個順序少、不會跳回來。
+S3 殼的 popup_w_pct 與 cli_sessions.POPUP_W_PCT 相等(兩邊各寫一份,改一邊另一邊會錯算)。
 S2 選單殼量 client_width 換成彈窗內寬交給 cli_sessions(--popup-cols);量不到 ⇒ 0(保守值)。
 S1 選單殼:four_col 列畫成「★ @碼 · 人格 · 專案 · 時間」,沒有〔模型〕與「載入」;four_col=false(橋接 bot)照舊格式。
 刀:拿掉 four_col 分支 ⇒ F1/S1 紅(列裡又出現「大腦:」「〔」)。
@@ -146,6 +149,63 @@ class FourCols(unittest.TestCase):
         # 沒在用的列名字給長一點;量不到內寬 ⇒ 80 欄終端的值
         self.assertGreater(C._name_cols(""), C._name_cols("使用中(會分出新碼)"))
         self.assertEqual(C.POPUP_COLS_DEFAULT, 70)
+
+    def test_f7_yield_order(self):
+        """#399 R2:指揮艙中間格量到的寬很窄(120 欄筆電約 64 ⇒ 內寬約 55)⇒ 照 @aeb40 定的順序讓位,使用中字尾完整。"""
+        sys.path.insert(0, str(COCKPIT))
+        import cli_sessions as C
+        import open_menu_popup as P
+        long_p, long_j, when = "超長的人格名稱二樓辦公室後端工程師", "非常非常長的專案名稱一定會被截斷吧", "10-28 17:15"
+        for loc in ("zh-TW", "en", "ja", "ko"):
+            live = json.loads((ROOT / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))["aib.climenu.live"]
+            for lab in (live, ""):
+                stages = []
+                for inner in range(100, 19, -1):
+                    tail = C.four_tail(long_p, long_j, when, lab, inner)
+                    parts = tail.split(" · ")
+                    with self.subTest(loc=loc, inner=inner, live=bool(lab)):
+                        if lab:
+                            self.assertTrue(tail == lab or tail.endswith(" · " + lab))
+                            body = parts[:-1] if tail != lab else []
+                        else:
+                            self.assertIn(when, parts)          # 沒有使用中 ⇒ 至少留時間
+                            body = parts
+                        # 專案在 ⇒ 人格在;人格在 ⇒ 時間在(讓位只從前面的名字往後拿)
+                        n = len(body)
+                        self.assertEqual(body, [x for x in body if x], tail)
+                        if n >= 1:
+                            self.assertEqual(body[-1], when)
+                        if n == 3:
+                            self.assertTrue(body[0].startswith(long_p[0]) and body[1].startswith(long_j[0]))
+                        if n == 2:
+                            self.assertTrue(body[0].startswith(long_p[0]))
+                        line = " [h] ★ @aeb40 · " + tail
+                        if (lab and n >= 1) or (not lab and inner - 1 >= C.ROW_HEAD + C.WHEN_COLS):
+                            self.assertEqual(P.fit(line, inner), line)   # 還在讓位的範圍內 ⇒ 彈窗不截(更窄 = 交給 fit,接受)
+                        stages.append(n)
+                    self.assertEqual(stages, sorted(stages, reverse=True), (loc, bool(lab)))   # 只減不回升
+            with self.subTest(loc=loc, inner=54):
+                t54 = C.four_tail(long_p, long_j, when, live, 54)
+                self.assertTrue(t54.endswith(live) and long_p[0] not in t54 and long_j[0] not in t54)
+                if loc == "zh-TW":
+                    self.assertEqual(t54, when + " · " + live)      # zh-TW 54:名字都讓掉,時間 + 使用中(en 字樣長,連時間也讓)
+                self.assertEqual(P.fit(" [h] ★ @aeb40 · " + t54, 54), " [h] ★ @aeb40 · " + t54)
+            with self.subTest(loc=loc, inner=40):
+                self.assertEqual(C.four_tail(long_p, long_j, when, live, 40), live)   # 40:只剩使用中
+        # 55 欄:專案欄拿掉、人格縮著留
+        t55 = C.four_tail(long_p, long_j, when, "使用中(會分出新碼)", 55).split(" · ")
+        self.assertEqual(len(t55), 3)
+        self.assertTrue(t55[0].endswith("…"))
+
+    def test_s3_shell_popup_pct_matches(self):
+        """殼的 display-popup -w 百分比與 cli_sessions.POPUP_W_PCT 一樣(預算才算得對)。"""
+        sys.path.insert(0, str(COCKPIT))
+        import re
+        import cli_sessions as C
+        m = re.search(r"^\s*local popup_w_pct=(\d+)\b", MENU.read_text(encoding="utf-8"), re.M)
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(1)), C.POPUP_W_PCT)
+        self.assertIn('-w "${popup_w_pct}%"', MENU.read_text(encoding="utf-8"))
 
     def test_f5_width_matches_popup_fit(self):
         """寬度算法與 open_menu_popup.fit 同一套:組合字元算 0 欄。"""
