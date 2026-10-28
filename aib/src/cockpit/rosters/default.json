@@ -31,7 +31,7 @@
     {"role": "pm",      "provider": "claude",  "requested_model": "claude-opus-5-5",     "icon": "👔"},
     {"role": "dev1",    "provider": "copilot", "requested_model": "kimi-k3",              "icon": "🧞"},
     {"role": "design",  "provider": "claude",  "requested_model": "claude-opus-5-5",     "icon": "🎨"},
-    {"role": "qa",      "provider": "codex",   "requested_model": "gpt-6-luna",          "icon": "🔍"},
+    {"role": "qa",      "provider": "codex",   "requested_model": "gpt-6.1-terra",       "icon": "🔍"},
     {"role": "monitor", "provider": "agy",     "requested_model": "gemini-3.1-pro-high", "icon": "📡"}
   ]
 }

@@ -713,7 +713,7 @@ _run_codex_capture() {
 }
 
 # 套組開著時，Codex 因讀不到帳號而結束就再進選單。選單按離開才真的結束。
-# 自動挑的最新 Luna 若被登入拒絕，只改試清單裡的上一版。額度用完不換模型。
+# 自動挑的最新 Terra(或 Luna)若被登入拒絕，只改試清單裡的上一版。額度用完不換模型。
 if [ "$PROVIDER" = "codex" ] && [ "${_codex_pack:-1}" = "1" ]; then
   _luna_switched=0
   while true; do
@@ -730,7 +730,7 @@ import codex_luna_model
 seen=sys.stdin.read()
 if not codex_luna_model.model_rejected(seen):
     raise SystemExit(0)
-print(codex_luna_model.previous_luna_slug(sys.argv[2]))' "$HERE" "$REQUESTED_MODEL" <<<"$_codex_seen" 2>/dev/null || true)"
+print(codex_luna_model.previous_default_slug(sys.argv[2]))' "$HERE" "$REQUESTED_MODEL" <<<"$_codex_seen" 2>/dev/null || true)"
     fi
     if [ -n "$_older" ]; then
       echo "provider-launch: ${REQUESTED_MODEL} 開不起來，改用舊一版 ${_older}" >&2

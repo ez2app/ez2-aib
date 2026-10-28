@@ -1362,7 +1362,7 @@ print(value)' "$HERE/providers.json" "$PROVIDER")" || MODEL_REQUESTED=""
     printf '%s\n' "$(t aib.launch.revive_model_default "value=$MODEL_REQUESTED" "session=$AIB_REVIVE_SESSION_UUID")" >&2
   fi
 fi
-# 沒有手指定型號的 Codex 席：用本機清單裡版本號最大、而且有列出來的 gpt-*-luna。
+# 沒有手指定型號的 Codex 席：用本機清單裡版本號最大、而且有列出來的 gpt-*-terra(沒有 Terra 才用 Luna)。
 # 清單不在就維持登記簿的後備型號。推理等級不在這裡帶，這版 Codex 沒有 --effort。
 _codex_pack_on=1
 if [ "$PROVIDER" = "codex" ]; then
@@ -1377,7 +1377,7 @@ if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$MODEL_FROM_
   _luna="$("$T_PY3" -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import codex_luna_model
-print(codex_luna_model.latest_luna_slug())' "$HERE" 2>/dev/null || true)"
+print(codex_luna_model.latest_default_slug())' "$HERE" 2>/dev/null || true)"
   if [ -n "$_luna" ]; then
     MODEL_REQUESTED="$_luna"
   fi
