@@ -148,11 +148,13 @@ class Box(unittest.TestCase):
         bindir.mkdir()
         victim = self.tmp / "victim.txt"
         victim.write_text("keep\n")
-        (bindir / (".%s.tmp-%d" % (SA.SHIM_NAME, os.getpid()))).symlink_to(victim)
+        (bindir / (".%s.tmp" % SA.SHIM_NAME)).symlink_to(victim)
+        (bindir / (".%s.tmp-%d" % (SA.SHIM_NAME, os.getpid() + 1))).symlink_to(victim)   # 別的 pid 留下的(舊版名)
         self.assertEqual(SA.ensure_shim(self.state), "created")
         self.assertEqual(victim.read_text(), "keep\n")
         self.assertIn(SA.SHIM_MARK, (bindir / SA.SHIM_NAME).read_text())
         self.assertFalse((bindir / SA.SHIM_NAME).is_symlink())
+        self.assertEqual(sorted(p.name for p in bindir.iterdir()), [SA.SHIM_NAME], "暫存殘留都清掉(@aeb40 #404 R2 Low)")
 
     def test_s6c_shim_temp_race_refused(self):
         """拿掉殘留之後、開檔之前又被放回符號連結(競態):O_EXCL|O_NOFOLLOW ⇒ 開檔失敗、不寫到連結指的檔。"""
@@ -160,10 +162,9 @@ class Box(unittest.TestCase):
         bindir.mkdir()
         victim = self.tmp / "victim.txt"
         victim.write_text("keep\n")
-        (bindir / (".%s.tmp-%d" % (SA.SHIM_NAME, os.getpid()))).symlink_to(victim)
+        (bindir / (".%s.tmp" % SA.SHIM_NAME)).symlink_to(victim)
         with mock.patch.object(SA.os, "unlink", lambda p: None):
-            with self.assertRaises(OSError):
-                SA.ensure_shim(self.state)
+            self.assertEqual(SA.ensure_shim(self.state), "refused", "開不了暫存檔 ⇒ 回拒,不丟例外")
         self.assertEqual(victim.read_text(), "keep\n")
         self.assertFalse((bindir / SA.SHIM_NAME).exists())
 

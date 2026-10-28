@@ -42,6 +42,7 @@ sys.path.insert(0, str(ROOT / "src" / "cockpit"))
 import touchid_approve as TA  # noqa: E402
 
 THIS = pathlib.Path(__file__).name
+FULL_OK = lambda title, intro, body, check: {"ok": True, "why": "ok"}   # 全文確認窗替身(TID-1b;不開真視窗)
 PY = sys.executable
 OSA = os.path.exists(TA.OSASCRIPT) and sys.platform == "darwin"
 NONCE_RE = re.compile(r'NONCE = ("[0-9a-f]+")')
@@ -204,11 +205,11 @@ class Approve(unittest.TestCase):
         out = _FakeIO()
         rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=out,
                                           touchid=lambda reason: asked.append(reason) or {"ok": True, "why": "ok"},
-                                          touchid_available=lambda: True)
+                                          touchid_available=lambda: True, fulltext=FULL_OK)
         self.assertEqual(rc, 0)
         self.assertEqual(len(asked), 1, "一次核准只問一次")
         reason = asked[0]
-        self.assertIn(self.uid, reason)
+        self.assertRegex(reason, r"內容碼 [0-9a-f]{8}$", "TID-1b:uid 換成內容碼(全文窗第一行有 uid)")
         self.assertIn("目標 2 條", reason)
         self.assertIn("紅線 1 條", reason)
         self.assertIn('Demo "島" 第二行', reason, "標題壓成一行放進去")
@@ -233,11 +234,11 @@ class Approve(unittest.TestCase):
             with self.subTest(why=why):
                 rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=_FakeIO(),
                                                   touchid=lambda reason, w=why: {"ok": False, "why": w},
-                                                  touchid_available=lambda: True)
+                                                  touchid_available=lambda: True, fulltext=FULL_OK)
                 self.assertEqual(rc, 2)
                 self.assertIs(self._const()["approved"], False)
         rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=_FakeIO(),
-                                          touchid=lambda reason: "yes", touchid_available=lambda: True)
+                                          touchid=lambda reason: "yes", touchid_available=lambda: True, fulltext=FULL_OK)
         self.assertEqual(rc, 2, "回的不是 {ok: True} 就不算")
         called = []
         rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=_FakeIO(),
@@ -256,7 +257,7 @@ class Approve(unittest.TestCase):
         rc = self.np.approve_constitution(self.root, self.uid, human_check=lambda: (True, "tester", []),
                                           stdin=_FakeIO(self.uid + "\n", tty=True), stdout=_FakeIO(tty=True),
                                           touchid=lambda reason: called.append(1) or {"ok": True},
-                                          touchid_available=lambda: True)
+                                          touchid_available=lambda: True, fulltext=FULL_OK)
         self.assertEqual(rc, 0)
         self.assertEqual(called, [])
         self.assertEqual(self._const()["approved_via"], "tty")
@@ -273,14 +274,14 @@ class Approve(unittest.TestCase):
             fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)   # 別席正在等指紋
             rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=out,
                                               touchid=lambda reason: called.append(1) or {"ok": True, "why": "ok"},
-                                              touchid_available=lambda: True)
+                                              touchid_available=lambda: True, fulltext=FULL_OK)
         self.assertEqual(rc, 2)
         self.assertEqual(called, [], "鎖被拿著就不跳第二個視窗")
         self.assertIn("busy", err.getvalue() + "".join(out.out))
         self.assertIs(self._const()["approved"], False)
         rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=_FakeIO(),
                                           touchid=lambda reason: called.append(1) or {"ok": True, "why": "ok"},
-                                          touchid_available=lambda: True)
+                                          touchid_available=lambda: True, fulltext=FULL_OK)
         self.assertEqual((rc, called), (0, [1]), "鎖放掉後照常能核")
 
 
@@ -298,7 +299,7 @@ class Knife(unittest.TestCase):
                   'if out.get("ok") is True:', "Ask.test_T2_wrong_nonce_fails")
 
     def test_K2_ignore_touchid_result(self):
-        self._cut("tools/project/new_project.py", 'if not (isinstance(res, dict) and res.get("ok") is True) or not human_id:',
+        self._cut("tools/project/new_project.py", 'if not (isinstance(got, dict) and got.get("ok") is True) or not human_id:',
                   "if not human_id:", "Approve.test_T8_touchid_fail_or_absent_refuses")
 
     def test_K3_no_off_switch(self):
@@ -306,7 +307,7 @@ class Knife(unittest.TestCase):
                   "if False:", "Available.test_T6_available")
 
     def test_K4_no_one_at_a_time(self):
-        self._cut("src/cockpit/approve_gate.py", "if gate.held else", "if True else", "Approve.test_T10_one_window_at_a_time")
+        self._cut("src/cockpit/approve_gate.py", "        if not gate.held:\n", "        if False:\n", "Approve.test_T10_one_window_at_a_time")
 
 
     def test_K5_no_c1(self):

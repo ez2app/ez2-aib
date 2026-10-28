@@ -64,6 +64,8 @@ def _proof_then_pass(reason, env, root, out, twice=False, proved=False):
         if why:
             out.write(_t("owner_proof_failed", why=why) + "\n")
             return None
+    elif getattr(reason, "refused", None):   # 前面那次證明已涵蓋、不擋;這一步自己的字放不下也照實記一行(@aeb40 #404 R2 Low)
+        out.write(_t("owner_proof_covered_refused", why=reason.refused) + "\n")
     out.write(_t("owner_pass_hint") + "\n")
     try:
         pw = READ_PASS(_t("owner_pass_ask"))
