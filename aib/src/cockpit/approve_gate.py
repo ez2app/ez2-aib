@@ -24,6 +24,7 @@
 """
 import os
 import sys
+import threading
 from pathlib import Path
 
 import touchid_approve as TA
@@ -150,6 +151,7 @@ SITES = {
 # 登記簿:id(Reason) ⇒ (那個物件本身, site, category, refused)。存物件本身 ⇒ 活著就不會撞 id;查的時候比 is。
 _MINTED = {}
 _MINTED_MAX = 4096               # 超過就丟最舊的(丟掉的那句再交給 ask ⇒ 拒;寧可多按一次不放行)
+_MINT_LOCK = threading.Lock()    # 多執行緒同時 mint:丟最舊那段不准交錯(@aeb40 #413 r1 Low-1);本模組不在 fork 前 mint
 UNMINTED = "unminted"
 
 
@@ -187,9 +189,10 @@ def _lookup(r):
 
 def _mint(text, site, category, refused=None):
     r = Reason(text)
-    while len(_MINTED) >= _MINTED_MAX:
-        _MINTED.pop(next(iter(_MINTED)))
-    _MINTED[id(r)] = (r, site, category, refused)
+    with _MINT_LOCK:
+        while len(_MINTED) >= _MINTED_MAX:
+            _MINTED.pop(next(iter(_MINTED)))
+        _MINTED[id(r)] = (r, site, category, refused)
     return r
 
 
@@ -338,13 +341,14 @@ def ask(r, lock_root, touchid=None, before=None):
     """彈 Touch ID / 登入密碼視窗。回 {"ok", "why", "category", "site"};why 是 touchid_approve 的原因或 busy / refused。
     lock_root = 放 locks/touchid-approve.lock 的那層(各支照原本的位置)。呼叫端先跑 ready()。
     before():拿到整台鎖之後、彈指紋之前先跑(例:全文確認窗);回的不是 {"ok": True} ⇒ 不彈指紋,
-    回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。"""
-    no = refusal(r)
-    out = {"ok": False, "why": "refused", "category": UNREGISTERED, "site": None}
-    if no:                       # 純字串 / 自己造的 Reason / 欄位超長 / 組不出字 ⇒ 不彈窗
+    回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。
+    整句超過 LA_MAX ⇒ 拒(不交給視窗去截;各支不用再自己擋)。"""
+    e = _lookup(r)
+    out = {"ok": False, "why": "refused", "category": e[2] if e else UNREGISTERED, "site": e[1] if e else None}
+    no = refusal(r) or (None if len(str(r)) <= LA_MAX else "too_long")
+    if no:                       # 純字串 / 自己造的 Reason / 欄位超長 / 組不出字 / 視窗放不下 ⇒ 不彈窗
         out["detail"] = no
         return out
-    out.update(category=r.category, site=r.site)
     with TA.one_at_a_time(lock_path(lock_root)) as gate:
         if not gate.held:
             res = {"ok": False, "why": "busy"}

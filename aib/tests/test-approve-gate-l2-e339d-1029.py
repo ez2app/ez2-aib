@@ -11,7 +11,10 @@ L5 那層要是 sys.modules 裡那支模組本身:真檔名 compile 但 globals 
 L6 真模組照常:真的 import aib_quote 去組 ⇒ quote 類;新登記的 auto_update.exclude / chat_phone_forward.loosen 是高風險
 L7 靜態掃描:src / tools 裡 prove / ask / se_reason 交純字串(字面、f 字串、T(...)、format…)或叫 coerce() ⇒ 紅
                                                                                                     (刀 KS1 chat_owner 加回 coerce、KS2 auto_update 改回 T(...) ⇒ 紅)
-L8 登記簿有上限,丟掉的那句再交給 ask ⇒ 拒
+L8 登記簿有上限,丟掉的那句再交給 ask ⇒ 拒;丟最舊那段在鎖裡做(多執行緒不交錯)              (刀 KR1 拿掉鎖 ⇒ 紅)
+L10 #413 r1:已登記但被拒的 Reason,ask() 照樣回它真的類別 / site(紀錄不誤導)                   (刀 KR3 ⇒ 紅)
+    ask() 統一擋 LA_MAX:整句超過就拒、不彈窗(不交給視窗去截)                                (刀 KR4 ⇒ 紅)
+    靜態掃描:(prove or SA.prove)("x") 這種包起來的、別名 PROVE 也抓(先放進變數再交的不抓,要資料流)
 
 說明照實寫:這些只防「核心程式裡低類別冒用 / 漏登記 / 寫錯」。行程內的程式做得到 mint_as 一樣的事(L5 那個 helper 就是示範),
 同帳號 AI 也改得到 approve_gate.py;真正的防線仍是指紋 / 登入密碼本身,之後的時間窗授權單由 Secure Enclave 簽。
@@ -222,7 +225,7 @@ class L6RealModules(Env):
 
 
 # 交給這些的第一個(或指定位置)參數必須是 reason() 組好的,不准是字串字面 / f 字串 / T(...) / format…
-GATED = {"prove": 0, "_prove": 0, "se_reason": 0, "human_gate": 0, "_proof_then_pass": 0, "sign_list_change": 2}
+GATED = {"prove": 0, "_prove": 0, "PROVE": 0, "se_reason": 0, "human_gate": 0, "_proof_then_pass": 0, "sign_list_change": 2}
 AG_NAMES = {"AG", "approve_gate"}
 STRINGY_CALLS = {"T", "_", "t", "tr", "str", "format", "join", "replace", "strip"}
 
@@ -246,19 +249,28 @@ def _stringy(node):
     return False
 
 
+def _funcs(f):
+    """被叫的那個東西;(prove or SA.prove)(...) 這種 BoolOp 拆開每一個(#413 r1 Low-2)。"""
+    if isinstance(f, ast.BoolOp):
+        return [g for v in f.values for g in _funcs(v)]
+    return [f]
+
+
 def scan(src, filename):
+    """只抓「直接交字面」那種;先放進變數再交的要資料流,不抓(誤判多)。執行時照樣會拒。"""
     bad = []
     for node in ast.walk(ast.parse(src, filename)):
         if not isinstance(node, ast.Call):
             continue
-        f = node.func
-        name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
-        if name == "coerce" and isinstance(f, ast.Attribute) and _is_ag(f.value):
-            bad.append("%s:%d coerce()" % (filename, node.lineno))
-            continue
-        idx = 0 if (name == "ask" and isinstance(f, ast.Attribute) and _is_ag(f.value)) else GATED.get(name)
-        if idx is not None and len(node.args) > idx and _stringy(node.args[idx]):
-            bad.append("%s:%d %s(純字串)" % (filename, node.lineno, name))
+        for f in _funcs(node.func):
+            name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+            if name == "coerce" and isinstance(f, ast.Attribute) and _is_ag(f.value):
+                bad.append("%s:%d coerce()" % (filename, node.lineno))
+                break
+            idx = 0 if (name == "ask" and isinstance(f, ast.Attribute) and _is_ag(f.value)) else GATED.get(name)
+            if idx is not None and len(node.args) > idx and _stringy(node.args[idx]):
+                bad.append("%s:%d %s(純字串)" % (filename, node.lineno, name))
+                break
     return bad
 
 
@@ -284,9 +296,13 @@ class L7StaticScan(unittest.TestCase):
                "def c(env):\n    return __import__('approve_gate').se_reason(f'x{env}')\n"
                "def d(r):\n    return AG.coerce(r, 120)\n"
                "def e(env, out):\n    return OC.sign_list_change(env, out, 'x' + 'y', None)\n"
-               "def ok(env):\n    r = AG.reason('s', {})\n    A.ask('claude', 'q')\n    return prove(r, env)\n")
+               "def f(env, prove=None):\n    return (prove or SA.prove)(T('k'), env)\n"
+               "def g(env):\n    return PROVE('x', env)\n"
+               "def ok(env, prove=None):\n    r = AG.reason('s', {})\n    A.ask('claude', 'q')\n"
+               "    (prove or SA.prove)(r, env)\n    return prove(r, env)\n")
         got = [b.split(" ", 1)[1] for b in scan(src, "x.py")]
-        self.assertEqual(got, ["prove(純字串)", "ask(純字串)", "se_reason(純字串)", "coerce()", "sign_list_change(純字串)"])
+        self.assertEqual(got, ["prove(純字串)", "ask(純字串)", "se_reason(純字串)", "coerce()", "sign_list_change(純字串)",
+                               "prove(純字串)", "PROVE(純字串)"])
 
 
 class L8RegistryCap(Env):
@@ -298,6 +314,60 @@ class L8RegistryCap(Env):
             self.assertLessEqual(len(AG._MINTED), 3)
             self.assertEqual(AG.refusal(first), AG.UNMINTED)
             self.no_window(first)
+
+
+class _LockCheckingDict(dict):
+    def __len__(self):
+        if not AG._MINT_LOCK.locked():
+            raise AssertionError("丟最舊那段沒在鎖裡")
+        return dict.__len__(self)
+
+
+class L10R1Followups(Env):
+    def test_evict_under_lock(self):
+        with mock.patch.object(AG, "_MINTED", _LockCheckingDict()), mock.patch.object(AG, "_MINTED_MAX", 2):
+            for _ in range(5):
+                mint_site()
+            self.assertLessEqual(dict.__len__(AG._MINTED), 2)
+
+    def test_threads_no_exception(self):
+        import threading
+        errs = []
+
+        def work():
+            try:
+                for _ in range(300):
+                    AG.coerce("x")
+            except Exception as exc:  # noqa: BLE001
+                errs.append(repr(exc))
+        old = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            with mock.patch.object(AG, "_MINTED_MAX", 8), mock.patch.dict(AG._MINTED, clear=True):
+                ts = [threading.Thread(target=work) for _ in range(8)]
+                for t in ts:
+                    t.start()
+                for t in ts:
+                    t.join(60)
+        finally:
+            sys.setswitchinterval(old)
+        self.assertEqual(errs, [])
+
+    def test_refused_keeps_real_category(self):
+        bad = mint_site("auto_update.exclude", {"name": "n" * (AG.FULL_MAX + 1)})
+        res = self.no_window(bad)
+        self.assertEqual((res["category"], res["site"]), ("auto_update", "auto_update.exclude"))
+        self.assertTrue(res["detail"].startswith("fact_too_long"))
+
+    def test_ask_refuses_over_la_max(self):
+        r = mint_site("auto_update.exclude", {"name": "n" * (AG.LA_MAX + 1)})    # 欄位沒超 FULL_MAX,整句超過視窗
+        self.assertIsNone(AG.refusal(r))
+        seen = []
+        res = AG.ask(r, self.root, touchid=lambda t: seen.append(t) or {"ok": True})
+        self.assertEqual((res["ok"], res.get("detail"), seen), (False, "too_long", []))
+        self.assertEqual(res["category"], "auto_update")
+        ok = mint_site("auto_update.exclude", {"name": "captain-room"})
+        self.assertTrue(AG.ask(ok, self.root, touchid=lambda t: {"ok": True})["ok"])
 
 
 class L9Knife(unittest.TestCase):
@@ -324,6 +394,12 @@ class L9Knife(unittest.TestCase):
          "L5ModuleIdentity.test_module_file_elsewhere"),
         ("KS1", "src/cockpit/chat_owner.py", "    if AG.refusal(reason):", "    reason = AG.coerce(reason, 120)\n    if AG.refusal(reason):",
          "L7StaticScan.test_no_plain_string_or_coerce"),
+        ("KR1", GATE, "    with _MINT_LOCK:\n        while len(_MINTED) >= _MINTED_MAX:", "    if True:\n        while len(_MINTED) >= _MINTED_MAX:",
+         "L10R1Followups.test_evict_under_lock"),
+        ("KR3", GATE, '"category": e[2] if e else UNREGISTERED, "site": e[1] if e else None}', '"category": UNREGISTERED, "site": None}',
+         "L10R1Followups.test_refused_keeps_real_category"),
+        ("KR4", GATE, '    no = refusal(r) or (None if len(str(r)) <= LA_MAX else "too_long")', "    no = refusal(r)",
+         "L10R1Followups.test_ask_refuses_over_la_max"),
         ("KS2", "src/cockpit/auto_update.py", "        _via, why = prove(shown, env, platform=platform)",
          '        _via, why = prove(T("exclude.touchid_reason", name=name), env, platform=platform)',
          "L7StaticScan.test_no_plain_string_or_coerce"),
