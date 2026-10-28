@@ -340,8 +340,11 @@ def _reason_full(req, env=None):
               "AIB consent · %s wants to run: %s" % (_who(req), cmd), env)
 
 
-def touchid_reason(req, env=None):
-    return TA.clean(_reason_full(req, env), REASON_MAX)
+def touchid_reason(req, env=None, kind=None):
+    """統一入口:SIGN 腳本 = 發版簽章(高風險),其他 = 一般指令核准;類別由 classify 的結果定,申請檔給不了。"""
+    import approve_gate as AG
+    return AG.reason("consent.sign_script" if kind == "sign_script" else "consent.command",
+                     {"who": _who(req), "cmd": display_cmd(req["argv"])}, env=env)
 
 
 def _sign_info(path):
@@ -407,7 +410,10 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
         s = ask_strong_fn(view, env=env)
         if not s.get("ok"):
             return "denied", {"why": s.get("why")}, None, None
-    a = ask(touchid_reason(view, env))
+    reason = touchid_reason(view, env, kind)
+    if __import__("approve_gate").se_reason(reason) is None:
+        return "denied", {"why": "reason_refused"}, None, None
+    a = ask(reason)
     if not a.get("ok"):
         return "denied", {"why": a.get("why")}, None, None
     if kind == "aib":

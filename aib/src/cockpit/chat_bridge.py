@@ -1245,8 +1245,9 @@ def cmd_connect(a, env, out):
     if share or space:                       # 改分享 = 本人的動作:全部擠進一個視窗,列改完後的實際等級
         cur_sh = CR.share_level(owner, env) if known else (CR.read_share(env)["per"].get(owner) or CR.read_share(env)["default"])
         cur_sp = CR.space_level(owner, env) if known else (CR.read_space(env)["per"].get(owner) or CR.read_space(env)["default"])
-        rc = human_gate(T("touchid_share_space" if known else "touchid_connect", who=_gate_who(a.target, env),
-                          level=T("share_" + (share or cur_sh)), space=T("space_" + (space or cur_sp))), env, out, a.json)
+        rc = human_gate(__import__("approve_gate").reason("chat_bridge.share_space" if known else "chat_bridge.connect", {
+            "who": _gate_who(a.target, env), "level": T("share_" + (share or cur_sh)), "space": T("space_" + (space or cur_sp))}),
+            env, out, a.json)
         if rc is not None:
             return rc
     req = {"rc": 0, "why": "already_friend"}
@@ -1318,7 +1319,7 @@ def cmd_invite(a, env, out):
     if not pub:
         out.write((json.dumps({"v": 1, "ok": False, "why": "no_seat"}) if a.json else T("request_no_seat")) + "\n")
         return 2
-    rc = human_gate(T("touchid_invite"), env, out, a.json)
+    rc = human_gate(__import__("approve_gate").reason("chat_bridge.invite"), env, out, a.json)
     if rc is not None:
         return rc
     root = bridge_root(env)
@@ -1699,16 +1700,16 @@ def human_gate(reason, env, out, as_json=False):
 def gate_reason(kind, who, env, level=None, space=None):
     """Touch ID 視窗那一句:只由核心組,名字先過 TA.clean。who=None ⇒ 改預設(全部好友)。
     space(只配 kind=share):在線 + 空間一起改 ⇒ 同一個視窗列出兩項,按一次(10-24 Andy「一次改多項」)。"""
+    import approve_gate as AG
     import chat_human as CH
-    import touchid_approve as TA
     if space:
         kind, extra = "share_space", {"space": T("space_" + space)}
         level = T("share_" + level) if level else "-"
     else:
         extra = {}
     if who is None:
-        return T("touchid_" + kind + "_default", level=level or "-", **extra)
-    return T("touchid_" + kind, who=TA.clean(CH._who(who, env), 32), level=level or "-", **extra)
+        return AG.reason("chat_bridge." + kind + "_default", dict(extra, level=level or "-"))
+    return AG.reason("chat_bridge." + kind, dict(extra, who=CH._who(who, env), level=level or "-"))
 
 
 def share_payload(env=None):

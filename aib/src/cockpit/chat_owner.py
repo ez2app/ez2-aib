@@ -366,15 +366,12 @@ def prove(reason, env, platform=None, touchid=None, touchid_available=None, atte
     touchid / touchid_available / attest / platform 只給測試換掉(不讀環境變數決定)。"""
     platform = sys.platform if platform is None else platform
     if platform == "darwin":
-        import touchid_approve as TA
-        if str(env.get("AIB_TOUCHID", "")).strip() == "0":
-            return "touchid_off"
-        if not (touchid_available() if touchid_available else TA.available(platform=platform, environ=env)):
-            return "touchid_unavailable"
-        lock = Path(root or NK.secrets_dir(env)) / "locks" / "touchid-approve.lock"
-        with TA.one_at_a_time(lock) as gate:
-            res = (touchid or TA.ask)(TA.clean(reason, 120)) if gate.held else {"ok": False, "why": "busy"}
-        return None if res.get("ok") is True else "touchid_" + str(res.get("why") or "failed").split(":")[0]
+        import approve_gate as AG          # 統一入口:reason 由呼叫點的 AG.reason 組(純字串 = 未登記、高風險)
+        off = AG.ready(env, platform, touchid_available)
+        if off:
+            return "touchid_" + off
+        res = AG.ask(reason, root or NK.secrets_dir(env), touchid, total=120)
+        return None if res["ok"] else "touchid_" + res["why"].split(":")[0]
     import human_attest as HA
     res = (attest or (lambda: HA.attest(pid=os.getppid(), env=env)))()
     return None if res.get("human") else "not_human"

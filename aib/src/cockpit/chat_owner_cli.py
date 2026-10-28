@@ -22,6 +22,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+import approve_gate as AG  # noqa: E402
 import chat_devices as DV  # noqa: E402
 import chat_owner as CO  # noqa: E402
 import chat_roster as CR  # noqa: E402
@@ -97,7 +98,7 @@ def cmd_owner(a, env, out):
         return 2
     CB = _bridge()
     root = CB.bridge_root(env)
-    pw = _proof_then_pass(_t("owner_protect_reason"), env, root, out, twice=True)
+    pw = _proof_then_pass(AG.reason("chat_owner_cli.protect"), env, root, out, twice=True)
     if pw is None:
         return 2
     try:
@@ -132,7 +133,7 @@ def _repair(st, env, out):
         out.write(_t("owner_repair_none") + "\n")
         return 0
     CB = _bridge()
-    pw = _proof_then_pass(_t("owner_repair_reason"), env, CB.bridge_root(env), out)
+    pw = _proof_then_pass(AG.reason("chat_owner_cli.repair"), env, CB.bridge_root(env), out)
     if pw is None:
         return 2
     try:
@@ -242,8 +243,9 @@ def cmd_devices(a, env, out):
     relay = frec.get("list")
     diff = CO.list_diff(relay or cur, nxt)                  # 跟中繼站那份比:被拿掉的停用機器也列在「−」
     _show_diff(out, diff, nxt, verified, cur, stale=bool(relay) and not verified)
-    reason = "%s%s %s" % ("" if verified else _t("devices_base_stale_short") + " ", reason,
-                          _t("devices_diff_short", a=len(diff["added"]), r=len(diff["removed"]), n=diff["total"]))
+    reason = AG.reason("chat_owner_cli.list_change", {
+        "base": ("" if verified else _t("devices_base_stale_short") + " ") + reason,
+        "diff": _t("devices_diff_short", a=len(diff["added"]), r=len(diff["removed"]), n=diff["total"])})
     pw = _proof_then_pass(reason, env, root, out)
     if pw is None:
         return 2
@@ -293,8 +295,9 @@ def sign_list_change(env, out, reason_base, mutate, proved=False):
     relay = frec.get("list")
     diff = CO.list_diff(relay or cur, nxt)
     _show_diff(out, diff, nxt, verified, cur, stale=bool(relay) and not verified)
-    reason = "%s%s %s" % ("" if verified else _t("devices_base_stale_short") + " ", reason_base,
-                          _t("devices_diff_short", a=len(diff["added"]), r=len(diff["removed"]), n=diff["total"]))
+    reason = AG.reason("chat_owner_cli.list_change", {
+        "base": ("" if verified else _t("devices_base_stale_short") + " ") + reason_base,
+        "diff": _t("devices_diff_short", a=len(diff["added"]), r=len(diff["removed"]), n=diff["total"])})
     pw = _proof_then_pass(reason, env, root, out, proved=proved)
     if pw is None:
         return 2, None
@@ -341,7 +344,7 @@ def off_owner_roster(env, out):
     CB = _bridge()
     root = CB.bridge_root(env)
     owner = (NK.read_map(env).get("owner") or {}).get("npub")
-    pw = _proof_then_pass(_t("off_owner_reason"), env, root, out)
+    pw = _proof_then_pass(AG.reason("chat_owner_cli.off_owner"), env, root, out)
     ok = False
     if pw is not None:
         try:

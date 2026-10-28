@@ -446,7 +446,7 @@ class Knife(unittest.TestCase):
         self.assertIn("AssertionError", r.stdout + r.stderr)
 
     def test_k1_no_touchid(self):
-        self._knife("    a = ask(touchid_reason(view, env))\n", "    a = {\"ok\": True}\n",
+        self._knife("    a = ask(reason)\n", "    a = {\"ok\": True}\n",
                     "Process.test_c2_touchid_denied_not_run")
 
     def test_k2_whitelist_open(self):

@@ -264,7 +264,7 @@ class Knife(unittest.TestCase):
     def test_k3_touchid_ignored(self):
         name = Path(__file__).name
         with knife_copy(REPO, "src/cockpit/chat_human.py",
-                        '        return "touchid", None if res.get("ok") is True else "touchid_" + str(res.get("why") or "failed").split(":")[0]\n',
+                        '        return "touchid", None if res["ok"] else "touchid_" + res["why"].split(":")[0]\n',
                         '        return "touchid", None\n', tests=(name, "test-chat-send-d07f9-1016.py")) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "Human.test_h5_touchid"], cwd=str(root), max_procs=120, timeout=400)
         self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))

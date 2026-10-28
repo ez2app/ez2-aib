@@ -1444,17 +1444,16 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
             _say(T("aib.newproj.approve_cancel"), "[x]")
             return 3
     else:
-        TA = _touchid()
+        import approve_gate as AG   # src/cockpit;統一入口:類別 project_ruling(高風險)
         # 視窗文字只由這裡組:動作 + 卡上的標題與 uid + 條數(呼叫端沒有任何一個字進得來)
-        reason = T("aib.newproj.approve_touchid_reason_amend" if amending else "aib.newproj.approve_touchid_reason", {
-            "title": TA.clean(card.get("title") or uid, 60), "uid": uid,
+        reason = AG.reason("newproj.approve_amend" if amending else "newproj.approve", {
+            "title": card.get("title") or uid, "uid": uid,
             "goals": len(const["goals"] or []), "red_lines": len(const["red_lines"] or []),
             "rl": T("aib.newproj.approve_rl_word_" + rl_state)})
         stdout.write("\n".join(show) + "\n")
         stdout.flush()
         _say(T("aib.newproj.approve_touchid_wait", {"uid": uid}))
-        with TA.one_at_a_time(Path(root) / "locks" / "touchid-approve.lock") as gate:
-            res = (touchid or TA.ask)(reason) if gate.held else {"ok": False, "why": "busy"}
+        res = AG.ask(reason, root, touchid)
         human_id = _login_name()
         if not (isinstance(res, dict) and res.get("ok") is True) or not human_id:
             why = (res.get("why") if isinstance(res, dict) else None) or "?"

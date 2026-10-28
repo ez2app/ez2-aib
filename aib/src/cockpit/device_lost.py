@@ -240,7 +240,7 @@ def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None, a
             out.write(T("target_" + t["kind"], name=t["name"], code=t.get("code") or "", fp=t.get("fp") or "",
                         at=_day(t.get("last_used_at"))) + "\n")
         out.flush()
-    reason = T("touchid_reason", items="、".join(items)) or "撤銷遺失的裝置:" + "、".join(items)
+    reason = __import__("approve_gate").reason("device_lost.revoke", {"items": "、".join(items)})   # 名稱 + 指紋不截;太長直接拒
     why = (prove or (lambda r, e: CO.prove(r, e)))(reason, env)
     if why:
         res = {"ok": False, "why": why, "targets": targets, "chat": {"state": "skipped"}, "page": {"state": "skipped"}}

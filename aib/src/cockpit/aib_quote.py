@@ -94,8 +94,8 @@ def evt_of(payload):
 
 
 def touchid_reason(text, env=None):
-    import i18n_lib
-    return i18n_lib.t("aib.quote.touchid_reason", {"text": text}, locale=i18n_lib.resolve_locale())
+    import approve_gate as AG        # 統一入口:類別 quote(高風險);原話不截,太長直接拒
+    return AG.reason("aib_quote.add", {"text": text})
 
 
 # ---- 這台的 SE 鑰 ----
@@ -207,7 +207,10 @@ def add(text, seat="", env=None, run=subprocess.run, helper=None, platform=None,
     payload = {"v": 1, "text": t, "at": now or _now_iso(), "seat": str(seat or ""),
                "nonce": secrets.token_hex(8), "key_fp": key_fp(pub)}
     msg = canonical(payload)
-    args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", touchid_reason(t, env)]
+    shown = __import__("approve_gate").se_reason(touchid_reason(t, env))
+    if not shown:
+        return None, "too_long"
+    args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", shown]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:
             return None, "busy"
