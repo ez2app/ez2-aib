@@ -58,9 +58,11 @@ export function statusLabel(s: SeatInfo, ctxPercent: number | null): string {
   return tr('seat_st_line', { context: ctx, instance: s.cabin_code ?? na, role: s.role ?? tr('seat_unbound'), code: s.code ?? na, msg: dmLabel(s) })
 }
 
-/** 10-28 Andy 工作單 S:接在 💧 狀態列尾巴的那一段 —— 未讀 dm + 交接標記(只在有時)。CTX、席碼那條已經有,艙號 Andy 沒列 ⇒ 不帶 */
+/** 10-28 Andy 工作單 S:接在 💧 狀態列尾巴的那一段 —— 未讀 dm + 交接標記(只在有時)。CTX、席碼那條已經有,艙號 Andy 沒列 ⇒ 不帶。
+ *  #401 R1:交接標記放最前面(窄終端截長行時從尾端截,先保住它) */
 export function tailLabel(s: SeatInfo, ctxPercent: number | null): string {
-  return dmLabel(s) + handoffTag(s, ctxPercent)
+  const tag = handoffTag(s, ctxPercent).trim()
+  return tag ? `${tag} · ${dmLabel(s)}` : dmLabel(s)
 }
 
 /** src = 誰量的(Claude 席是 aib-boards mod;非 Claude 席是 aib-seat-hooks 外掛) */

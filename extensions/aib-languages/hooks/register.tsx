@@ -64,7 +64,7 @@ async function readStatus($: EngineInterface, args: string[] = []): Promise<Lang
 async function tFor($: EngineInterface, loc: Loc) { return makeT(PREFIX, await bundle($, PREFIX, loc)) }
 
 // 10-28 Andy 工作單 S「這個 aib 太多行了,我希望縮成一行」:「🌐 語系」交給 💧 狀態列尾巴(核心 statusline_tail.py)。
-//   那條狀態列有在畫這個對話(put 回 shown)⇒ 收掉自己這一行;沒在畫(會員用自己的狀態列、核心太舊、沒有 aib 倉)⇒ 照舊自己一行。
+//   那條狀態列把這段畫出過(put 回 shown;#401 R1 起記號黏住、不看時間)⇒ 收掉自己這一行;沒在畫(會員用自己的狀態列、核心太舊、沒有 aib 倉)⇒ 照舊自己一行。
 //   段 300 秒沒更新就過期 ⇒ 輪詢時每 TAIL_BEAT_MS 補寫一次當心跳。
 const TAIL_BEAT_MS = 60_000
 let tailText = ''

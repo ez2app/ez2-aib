@@ -969,13 +969,14 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
             fields.append(r_text if c else "")
         if args.rank_field and args.tail_field:
             # 10-28 Andy「這個 aib 太多行了,我希望縮成一行」:mod 的狀態段併進 CTX 那一行尾巴(statusline_tail.py)。
-            #   帶了 --tail-field 才是新版殼 ⇒ 才留「有在畫」記號,mod 看到才收掉自己那一行。
+            #   帶了 --tail-field 才是新版殼 ⇒ 才記「這次畫出了哪幾個 mod 的段」,mod 自己那段畫出過才收掉自己那一行(#401 R1)。
             tail = ""
             if c and args.session:
                 try:
                     import statusline_tail
-                    statusline_tail.mark_shown(args.session, state_root=state_root)
-                    tail = statusline_tail.tail_text(args.session, state_root=state_root)
+                    parts = statusline_tail.tail_parts(args.session, state_root=state_root)
+                    tail = statusline_tail.JOIN.join(t for _, t in parts)
+                    statusline_tail.mark_shown(args.session, [m for m, _ in parts], state_root=state_root)
                 except Exception:  # noqa: BLE001 —— 尾巴讀不到不能讓狀態列掛掉
                     tail = ""
             fields.append(tail)

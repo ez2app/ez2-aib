@@ -80,14 +80,17 @@ async function takeMail($: EngineInterface, q: QItem): Promise<void> {
   $.ui.invalidate('ui.render')
 }
 // 10-28 Andy 工作單 S「這個 aib 太多行了,我希望縮成一行」:未讀 dm(+交接標記)交給 💧 狀態列尾巴(核心 statusline_tail.py)。
-//   那條狀態列有在畫這個對話(put 回 shown)⇒ 收掉自己這一行;沒在畫(會員用自己的狀態列、核心太舊)⇒ 照舊自己一行。
-//   同一段字 60 秒內不重寫(turn.complete 每輪都會叫);null = 拿掉這段(量不到席位 / mod 依角色關)。
+//   那條狀態列把這段畫出過(put 回 shown;#401 R1 起記號黏住、不看時間)⇒ 收掉自己這一行;
+//   沒畫出過(會員用自己的狀態列、核心太舊、還沒畫到含這段的那次)⇒ 照舊自己一行。
+//   同一段字 60 秒內不重寫(turn.complete 每輪都會叫);還沒收(shown=false)⇒ TAIL_RECHECK_MS 就再問,畫出來了早點收。
+//   null = 拿掉這段(量不到席位 / mod 依角色關)。
+const TAIL_RECHECK_MS = 10_000
 let tailText: string | null = null
 let tailAt = 0
 let tailShown = false
 async function putTail($: EngineInterface, text: string | null): Promise<boolean> {
   const now = await $.clock.now().catch(() => Date.now())
-  if (text === tailText && now - tailAt < REFRESH_MS - 5000) return tailShown
+  if (text === tailText && now - tailAt < (tailShown ? REFRESH_MS - 5000 : TAIL_RECHECK_MS)) return tailShown
   const sid = await $.session.id().catch(() => '')
   if (!sid) { tailShown = false; return false }
   const r = await $.process.run([await py($), '-I', `${$.plugin.root}/bin/seat-info.py`, '--tail-put', sid,

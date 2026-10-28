@@ -55,7 +55,10 @@ _EZ2_TAIL=""
 if [ -n "${TMUX_PANE:-}" ] || [ -n "$SID" ]; then
   _ez2_now_out=""
   if [ -n "${EZ2_AIB_ROOT:-}" ] && [ -f "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" ]; then
-    _ez2_now_out="$(/usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --rank-field --tail-field --session "$SID" 2>/dev/null || true)"
+    # 10-28 #401 R1:腳本新、核心舊(不認得 --tail-field)⇒ 先用 grep 看一眼,免得每次多起一次會失敗的 python
+    if grep -qF 'add_argument("--tail-field"' "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" 2>/dev/null; then
+      _ez2_now_out="$(/usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --rank-field --tail-field --session "$SID" 2>/dev/null || true)"
+    fi
     # 10-28:舊版 seat_now 不認得 --tail-field ⇒ 空 ⇒ 只帶 --rank-field 再問(沒有尾巴;mod 照舊自己一行)
     [ -n "$_ez2_now_out" ] || _ez2_now_out="$(/usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --rank-field --session "$SID" 2>/dev/null || true)"
     # 10-17:舊版 seat_now 不認得 --rank-field ⇒ 空 ⇒ 不帶旗再問一次(等級就接在 📌 行尾)

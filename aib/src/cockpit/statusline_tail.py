@@ -9,10 +9,13 @@ Andy 10-28:「這個 aib 太多行了,我希望縮成一行」⇒ 要的樣子
   - mod(aib-boards、aib-languages)在跑的時候呼叫 `put`,把自己那一段(已照語系翻好)連時間寫進
     <狀態根>/state/statusline-tail/<對話 id>.<mod>.json。**沒裝的 mod 從來不寫** ⇒ 狀態列自然不帶它那段;
     mod 停了,段過期(TTL_S)就消失。判準不看本機路徑、不看 settings.json 裝了什麼。
-  - Claude 狀態列(statusline-ez2-v215.sh → seat_now.py --statusline --tail-field)用 `tail_text` 讀新鮮的段,
-    照 ORDER 接起來,並用 `mark_shown` 留「這個對話的 Ez2 狀態列有在畫」記號(最多 SHOWN_EVERY_S 寫一次)。
-  - mod 的 `put` 回 {"shown": true} = 記號還新 ⇒ mod 收掉自己的 $.ui.status 那一行;false(會員用自己的狀態列、
-    或 Ez2 狀態列還沒跑過)⇒ mod 照舊自己一行,資訊不會因為併行而整個不見。
+  - Claude 狀態列(statusline-ez2-v215.sh → seat_now.py --statusline --tail-field)用 `tail_parts` 讀新鮮的段,
+    照 ORDER 接起來畫,並用 `mark_shown` 記下「這個對話的 Ez2 狀態列畫出過哪幾個 mod 的段」。
+  - mod 的 `put` 回 {"shown": true} = 自己那段**已經畫進尾巴過** ⇒ mod 收掉自己的 $.ui.status 那一行;false(會員用自己的
+    狀態列、Ez2 狀態列還沒跑過、或還沒畫到含這段的那一次)⇒ mod 照舊自己一行,資訊不會因為併行而整個不見。
+  - #401 R1(@aeb40):記號**黏住、不看時間**——對話內畫過一次就不翻回(會員沒設 refreshInterval、閒置很久,
+    狀態列不重跑也不會讓 mod 那行又跳回來、跟凍住的尾巴兩個數字並存)。只有狀態列設定(settings.json 的 statusLine)
+    換掉才失效:記號裡存設定的指紋,put 時再算一次對不上 ⇒ shown=false。
 
 鍵用 Claude 的對話 id:狀態列輸入有 session_id,mod 有 $.session.id(),兩邊同一個值;席碼 languages 不知道。
 
@@ -36,8 +39,6 @@ if HERE not in sys.path:
 SUBDIR = os.path.join("state", "statusline-tail")
 ORDER = ("aib-boards", "aib-languages")     # 尾巴的順序:未讀 dm(+交接標記)在前、語系在後;不在表上的 mod 不收
 TTL_S = 300                                  # 段多久沒更新就當 mod 不在了(boards 60 秒刷一次、languages 60 秒心跳)
-SHOWN_EVERY_S = 30                           # 「有在畫」記號最多多久寫一次(狀態列每次重跑都會問)
-SHOWN_TTL_S = 180                            # 記號多新才算「Ez2 狀態列有在畫」
 TEXT_MAX = 60                                # 一段最多幾個字
 SID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 JOIN = " · "
@@ -72,17 +73,41 @@ def _shown_path(sid: str, state_root: str | None) -> str:
     return os.path.join(tail_dir(state_root), "%s.shown" % sid)
 
 
-def is_shown(sid: str, *, state_root: str | None = None, now: float | None = None) -> bool:
-    if not SID_RE.fullmatch(sid or ""):
-        return False
+def statusline_fingerprint(settings_path: str | None = None) -> str:
+    """Claude 設定裡 statusLine 那一段的指紋(換狀態列 ⇒ 指紋變 ⇒ 記號失效)。讀不到 / 沒設 ⇒ "-"。"""
+    if settings_path is None:
+        base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+        settings_path = os.path.join(base, "settings.json")
     try:
-        age = (now if now is not None else time.time()) - os.path.getmtime(_shown_path(sid, state_root))
-    except OSError:
+        with open(settings_path, encoding="utf-8") as fh:
+            sl = json.load(fh).get("statusLine")
+    except (OSError, ValueError, AttributeError):
+        return "-"
+    if sl is None:
+        return "-"
+    import hashlib
+    return hashlib.sha256(json.dumps(sl, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+
+
+def _read_shown(sid: str, state_root: str | None) -> dict:
+    try:
+        with open(_shown_path(sid, state_root), encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) and isinstance(d.get("mods"), list) and isinstance(d.get("cfg"), str) else {}
+
+
+def is_shown(sid: str, mod: str, *, state_root: str | None = None, settings_path: str | None = None) -> bool:
+    """這個對話的 Ez2 狀態列畫出過 mod 那段、而且狀態列設定沒換過。不看時間(#401 R1)。"""
+    if not SID_RE.fullmatch(sid or "") or mod not in ORDER:
         return False
-    return age < SHOWN_TTL_S
+    d = _read_shown(sid, state_root)
+    return bool(d) and mod in d["mods"] and d["cfg"] == statusline_fingerprint(settings_path)
 
 
-def put(mod: str, sid: str, text: str | None, *, state_root: str | None = None, now: float | None = None) -> dict:
+def put(mod: str, sid: str, text: str | None, *, state_root: str | None = None, now: float | None = None,
+        settings_path: str | None = None) -> dict:
     """mod 寫自己那一段(text=None ⇒ 拿掉)。回 {"ok", "shown"};寫不進去不拋例外(狀態列的事不能讓 mod 掛掉)。"""
     if mod not in ORDER:
         return {"ok": False, "reason": "unknown_mod", "shown": False}
@@ -100,14 +125,14 @@ def put(mod: str, sid: str, text: str | None, *, state_root: str | None = None, 
                           "at": int(now if now is not None else time.time())})
     except (OSError, ValueError) as e:
         return {"ok": False, "reason": "write_failed:%s" % type(e).__name__,
-                "shown": is_shown(sid, state_root=state_root, now=now)}
-    return {"ok": True, "shown": is_shown(sid, state_root=state_root, now=now)}
+                "shown": is_shown(sid, mod, state_root=state_root, settings_path=settings_path)}
+    return {"ok": True, "shown": is_shown(sid, mod, state_root=state_root, settings_path=settings_path)}
 
 
-def tail_text(sid: str, *, state_root: str | None = None, now: float | None = None) -> str:
-    """接好的尾巴(照 ORDER、只收 TTL_S 內的段);沒有就空字串。讀壞、過期、不是這個對話的一律跳過。"""
+def tail_parts(sid: str, *, state_root: str | None = None, now: float | None = None) -> list:
+    """[(mod, 段)](照 ORDER、只收 TTL_S 內的段);讀壞、過期、不是這個對話的一律跳過。"""
     if not SID_RE.fullmatch(sid or ""):
-        return ""
+        return []
     t_now = now if now is not None else time.time()
     parts = []
     for mod in ORDER:
@@ -123,27 +148,28 @@ def tail_text(sid: str, *, state_root: str | None = None, now: float | None = No
             continue
         text = clean(d.get("text"))
         if text:
-            parts.append(text)
-    return JOIN.join(parts)
+            parts.append((mod, text))
+    return parts
 
 
-def mark_shown(sid: str, *, state_root: str | None = None, now: float | None = None) -> bool:
-    """「這個對話的 Ez2 狀態列有在畫」:SHOWN_EVERY_S 內寫過就不再寫(狀態列重跑很頻繁)。寫不進去就算了。"""
-    if not SID_RE.fullmatch(sid or ""):
+def tail_text(sid: str, *, state_root: str | None = None, now: float | None = None) -> str:
+    """接好的尾巴;沒有就空字串。"""
+    return JOIN.join(t for _, t in tail_parts(sid, state_root=state_root, now=now))
+
+
+def mark_shown(sid: str, mods, *, state_root: str | None = None, settings_path: str | None = None) -> bool:
+    """記下「這次畫出了 mods 的段」(跟之前畫過的取聯集;設定指紋變了就重來)。沒有新東西就不寫(狀態列重跑很頻繁)。"""
+    mods = [m for m in mods if m in ORDER]
+    if not SID_RE.fullmatch(sid or "") or not mods:
         return False
-    at = int(now if now is not None else time.time())
-    path = _shown_path(sid, state_root)
+    cfg = statusline_fingerprint(settings_path)
+    d = _read_shown(sid, state_root)
+    have = [m for m in d.get("mods", []) if m in ORDER] if d.get("cfg") == cfg else []
+    if set(mods) <= set(have):
+        return False
     try:
-        if at - os.path.getmtime(path) < SHOWN_EVERY_S:
-            return False
-    except OSError:
-        pass
-    try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("%d\n" % at)
-        os.utime(path, (at, at))
-    except OSError:
+        _write(_shown_path(sid, state_root), {"cfg": cfg, "mods": [m for m in ORDER if m in set(have) | set(mods)]})
+    except (OSError, ValueError):
         return False
     return True
 

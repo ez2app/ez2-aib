@@ -43,13 +43,12 @@ test('💧 狀態列沒在畫(會員用自己的狀態列)⇒ 照舊自己一行
   expect(w.statuses.at(-1)).toContain('6ddf')
 })
 
-test('CTX 到交接門檻 ⇒ 交接標記跟著接到尾巴(只在有時)', async ($: Any, on: Any) => {
+test('CTX 到交接門檻 ⇒ 交接標記跟著接到尾巴(只在有時),放最前面(#401 R1:窄終端從尾端截,先保它)', async ($: Any, on: Any) => {
   const w = { shown: true, seat: { ...SEAT, unread: 0 }, pct: 85, puts: [] as string[][], statuses: [] as (string | undefined)[] }
   wire(on, w)
   await $.session.start({ source: 'startup', cwd: '/repo' })
   const text = w.puts.at(-1)![2]!
-  expect(text.startsWith('dm 0')).toBe(true)
-  expect(text).toContain('該交接')
+  expect(text).toBe('⚠ 該交接 · dm 0')
 })
 
 test('量不到席位 ⇒ 尾巴拿掉這段(--clear),自己那句量不到照舊', async ($: Any, on: Any) => {
