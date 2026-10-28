@@ -11,9 +11,14 @@ S2 Sweep(no_repo):分支 / 工作樹 / 推包那幾段不跑 git,記成沒量到
 S3 Sweep(repo=席的倉):git 量那個倉;機器租約工具照舊從 aib 程式碼樹拿。
 S4 推包標籤：倉根底下沒有 tools/ 也照算真身分(以前從 <倉>/tools/verify 載 reuse_index,倉根載不到就退回路徑)。
 S5 collect 把量到的倉(git 頂層)交給 run_sweep;倉量不到 ⇒ 交空字串。
+S6 帶進來的不是 git 倉(倉被刪 / 手帶非倉 --repo)⇒ 記成沒量到,不假裝量過(#405 R1)。
+S7 離艙席工作樹的 git status 吃同一個總時限:超時就停、記 missed,單次逾時不超過剩下的時間(#405 R1)。
+S8 工作樹 git status 帶 --no-optional-locks(不刷別席工作樹的 index、不撞 index.lock)(#405 R1)。
 刀:K1 run_sweep 改回不帶 --repo ⇒ S1 紅;K2 拿掉 no_repo 的提早返回 ⇒ S2 紅;
    K3 租約工具改回 self.repo ⇒ S3 紅;K4 _ship_tag 改回從 <倉>/tools/verify 載 ⇒ S4 紅;
-   K5 collect 不把倉交給 run_sweep ⇒ S5 紅。
+   K5 collect 不把倉交給 run_sweep ⇒ S5 紅;K6 拿掉「先確認是倉」⇒ S6 紅;K7 工作樹不看時限 ⇒ S7 紅;
+   K8 拿掉 --no-optional-locks ⇒ S8 紅。
+需要 git 2.28 以上(`git init -b`);GIT_CONFIG_GLOBAL=/dev/null 要 git 2.32 以上才生效,舊版只是不隔離使用者設定。
 """
 import json
 import os
@@ -93,11 +98,15 @@ class SweepRepo(unittest.TestCase):
         self.assertNotIn("--repo", argv, "量不到倉不准默默改量程式碼樹")
         self.assertIn("--no-repo", self._sweep_argv(), "沒給倉 = 量不到倉")
 
-    def _calls(self, sweep, step):
+    def _calls(self, sweep, step, answer=None):
         calls = []
 
         def run(argv, cwd=None, timeout=None):
-            calls.append(list(argv))
+            calls.append(list(argv) + ([("timeout", timeout)] if timeout is not None else []))
+            if answer is not None:
+                return answer(argv)
+            if "--is-inside-work-tree" in argv:
+                return _Done(0, "true\n")
             return _Done(0, "")
         with mock.patch.object(PSW, "_run", side_effect=run):
             step(sweep)
@@ -118,6 +127,7 @@ class SweepRepo(unittest.TestCase):
         gits = [c for c in calls if c and c[0] == "git"]
         self.assertTrue(gits)
         self.assertTrue(all(c[1:3] == ["-C", str(repo)] for c in gits), gits)
+        self.assertFalse(any("不是 git 倉" in m for m in sw.missed), sw.missed)
         lease = self._calls(sw, PSW.Sweep.lease)
         tool = str(PSW.REPO_DEFAULT / "tools" / "governance" / "host_lease.py")
         if Path(tool).is_file():
@@ -143,6 +153,63 @@ class SweepRepo(unittest.TestCase):
         self.assertEqual(tags[0], tags[1], "倉根與子目錄是同一個倉,標籤要一樣(倉根不能退回路徑)")
         path_tag = __import__("hashlib").sha256(str(repo.resolve()).encode("utf-8")).hexdigest()[:16]
         self.assertNotEqual(tags[0], path_tag, "倉根算出來的是路徑標籤 ⇒ reuse_index 沒載到")
+
+    def test_s6_not_a_repo_is_unmeasured(self):
+        notrepo = self.td / "plain"
+        notrepo.mkdir()
+        sw = PSW.Sweep("proj:1111111111111111", root=str(self.state), repo=str(notrepo))
+        calls = self._calls(sw, PSW.Sweep.branches_and_worktrees,
+                            answer=lambda argv: _Done(128, "") if "--is-inside-work-tree" in argv else _Done(0, ""))
+        self.assertEqual(len(calls), 1, "確認不是倉就停,不再跑後面的 git:%r" % calls)
+        self.assertTrue(any("不是 git 倉" in m for m in sw.missed), sw.missed)
+        # 真跑一次(不 mock):暫存目錄不是倉
+        sw2 = PSW.Sweep("proj:1111111111111111", root=str(self.state), repo=str(notrepo))
+        sw2.branches_and_worktrees()
+        self.assertTrue(any("不是 git 倉" in m for m in sw2.missed), sw2.missed)
+
+    def _dead_seat_with_worktrees(self, n=3):
+        wts = []
+        for i in range(n):
+            d = self.td / ("wt-abcde-%d" % i)
+            d.mkdir(exist_ok=True)
+            wts.append("worktree %s\nbranch refs/heads/feat/x-abcde-%d\n" % (d, i))
+        listing = "\n".join(wts)
+
+        def answer(argv):
+            if "--is-inside-work-tree" in argv:
+                return _Done(0, "true\n")
+            if "worktree" in argv and "list" in argv:
+                return _Done(0, listing)
+            if "status" in argv:
+                return _Done(0, " M a.txt\n")
+            return _Done(0, "")
+        sw = PSW.Sweep("proj:1111111111111111", root=str(self.state), repo=str(self.td))
+        sw.seats = [{"seat_id": "s1", "codes": ["abcde"], "live": [], "in_registry": True}]
+        return sw, answer
+
+    def test_s7_worktree_status_shares_deadline(self):
+        sw, answer = self._dead_seat_with_worktrees()
+        with mock.patch.object(PSW, "BRANCH_BUDGET_S", 0):
+            calls = self._calls(sw, PSW.Sweep.branches_and_worktrees, answer=answer)
+        self.assertFalse([c for c in calls if "status" in c], "時限到了就不再跑 git status:%r" % calls)
+        self.assertEqual(len([m for m in sw.missed if "工作樹未提交檢查" in m]), 1, sw.missed)
+        # 時限內:每次 git status 的逾時不超過剩下的時間(也不超過單步上限)
+        sw, answer = self._dead_seat_with_worktrees()
+        calls = self._calls(sw, PSW.Sweep.branches_and_worktrees, answer=answer)
+        st = [c for c in calls if "status" in c]
+        self.assertEqual(len(st), 3, calls)
+        for c in st:
+            t = dict(x for x in c if isinstance(x, tuple)).get("timeout")
+            self.assertIsNotNone(t, c)
+            self.assertLessEqual(t, min(PSW.STEP_TIMEOUT_S, PSW.BRANCH_BUDGET_S))
+        self.assertEqual(len([k for k in sw.items if k.startswith("worktree:")]), 3, sw.items)
+
+    def test_s8_status_no_optional_locks(self):
+        sw, answer = self._dead_seat_with_worktrees(1)
+        calls = self._calls(sw, PSW.Sweep.branches_and_worktrees, answer=answer)
+        st = [c for c in calls if "status" in c]
+        self.assertTrue(st)
+        self.assertTrue(all(c[:2] == ["git", "--no-optional-locks"] for c in st), st)
 
     def test_s5_collect_hands_its_repo_to_sweep(self):
         repo = self._repo()

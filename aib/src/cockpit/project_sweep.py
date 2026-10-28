@@ -126,6 +126,11 @@ class Sweep:
         if self.repo is None:
             self.missed.append("分支與工作樹(這一席量不到倉)")
             return
+        # 10-28(#405 R1):清查範圍擴大到會員的倉 ⇒ 先確認真的是 git 倉;倉被刪 / 手帶非倉 --repo 不假裝量過
+        chk = _run(["git", "-C", str(self.repo), "rev-parse", "--is-inside-work-tree"])
+        if chk is None or chk.returncode != 0 or chk.stdout.strip() != "true":
+            self.missed.append("分支與工作樹(%s 不是 git 倉)" % mask(self.repo))
+            return
         main = "github/main" if _git(self.repo, "rev-parse", "-q", "--verify", "refs/remotes/github/main").strip() else "origin/main"
         heads = [b for b in _git(self.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").split() if b]
         remote = set()
@@ -135,6 +140,7 @@ class Sweep:
         main_subjects = None
         deadline = time.time() + BRANCH_BUDGET_S
         over = False
+        wt_over = False
         wts, cur = [], {}
         for ln in _git(self.repo, "worktree", "list", "--porcelain").splitlines() + [""]:
             if not ln:
@@ -178,7 +184,16 @@ class Sweep:
                     path = w.get("worktree", "")
                     if not code_in(code, path) and not code_in(code, w.get("branch", "")):
                         continue
-                    st = _run(["git", "-C", path, "status", "--porcelain"]) if os.path.isdir(path) else None
+                    # 10-28(#405 R1):工作樹檢查吃同一個總時限(超時記 missed,不讓整份清查逾時連佇列 / 待裁一起丟);
+                    #   --no-optional-locks:只讀,不在會員倉刷別席工作樹的 index、不撞 index.lock
+                    left = deadline - time.time()
+                    if left <= 0:
+                        if not wt_over:
+                            self.missed.append("工作樹未提交檢查(超過 %d 秒,還有沒看的)" % BRANCH_BUDGET_S)
+                        wt_over = True
+                        continue
+                    st = _run(["git", "--no-optional-locks", "-C", path, "status", "--porcelain"],
+                              timeout=min(STEP_TIMEOUT_S, left)) if os.path.isdir(path) else None
                     n = len([x for x in (st.stdout if st is not None else "").splitlines() if x.strip()])
                     if n:
                         self.add(0, "worktree:" + path, "@" + code, "工作樹 %s 有 %d 個未提交檔" % (path, n),
