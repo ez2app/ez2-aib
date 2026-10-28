@@ -857,6 +857,7 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--seat", metavar="SEAT", default="",
                     help=T("aib.now.help.seat"))
     ap.add_argument("--statusline", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--tail-field", action="store_true", help=argparse.SUPPRESS)   # 10-28 Andy 工作單 S:mod 狀態段(未讀 dm、🌐 語系)另成第 5 欄,殼接在 CTX 那一行尾端;要連 --rank-field 一起帶
     ap.add_argument("--rank-field", action="store_true", help=argparse.SUPPRESS)   # 10-17:等級另成第 4 欄(殼把它放到 CTX 那一行 @席位 後面);沒帶 ⇒ 接在 📌 行尾   # 狀態列用:印「席位碼<TAB>📌 行」
     ap.add_argument("--border", action="store_true", help=argparse.SUPPRESS)       # Codex 等席底部邊框用
     ap.add_argument("--now-only", action="store_true", help=argparse.SUPPRESS)     # agy:邊框只畫 📌
@@ -966,6 +967,18 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         fields = [c, line, statusline_logo(prov) if c else ""]
         if args.rank_field:
             fields.append(r_text if c else "")
+        if args.rank_field and args.tail_field:
+            # 10-28 Andy「這個 aib 太多行了,我希望縮成一行」:mod 的狀態段併進 CTX 那一行尾巴(statusline_tail.py)。
+            #   帶了 --tail-field 才是新版殼 ⇒ 才留「有在畫」記號,mod 看到才收掉自己那一行。
+            tail = ""
+            if c and args.session:
+                try:
+                    import statusline_tail
+                    statusline_tail.mark_shown(args.session, state_root=state_root)
+                    tail = statusline_tail.tail_text(args.session, state_root=state_root)
+                except Exception:  # noqa: BLE001 —— 尾巴讀不到不能讓狀態列掛掉
+                    tail = ""
+            fields.append(tail)
         out.write(SEP.join(fields) + "\n")
         return 0
     if args.seat and not code:

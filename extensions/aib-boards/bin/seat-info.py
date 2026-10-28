@@ -22,6 +22,17 @@ try:
 except Exception:
     home = os.path.expanduser("~/.ez2-aib")   # 與 seats_dir_lib.STATE_ROOT_DEFAULT 相同;舊變數已退場,不再讀
 out["home"] = home
+# --tail-put <對話 id> (--text T | --clear):把這一席的狀態段(未讀 dm、交接標記)交給 💧 狀態列尾巴(statusline_tail.py,
+#   10-28 Andy 工作單 S「這個 aib 太多行了,我希望縮成一行」);印 {"ok", "shown"} 就走,不跑整份探測
+if sys.argv[1:2] == ["--tail-put"]:
+    try:
+        import statusline_tail
+        _a = sys.argv[2:]
+        _txt = None if _a[1:2] == ["--clear"] else (_a[2] if _a[1:2] == ["--text"] and len(_a) > 2 else None)
+        print(json.dumps(statusline_tail.put("aib-boards", _a[0] if _a else "", _txt), ensure_ascii=False))
+    except Exception as e:  # noqa: BLE001 —— 核心太舊沒有 statusline_tail ⇒ shown=false,mod 照舊自己一行
+        print(json.dumps({"ok": False, "reason": "no_statusline_tail:%s" % type(e).__name__, "shown": False}))
+    sys.exit(0)
 FLEET = "--fleet" in sys.argv[1:]   # 艦長視角:逐席量 CTX/未讀/交接/派工(較貴,只有要看時才帶)
 INTEG = "--integrator" in sys.argv[1:]   # 整合席視角:待併的包、推包閘門、機器鎖、主線
 # captain's room web page (every seat: /aib room needs it; was captain-only before 10-14)

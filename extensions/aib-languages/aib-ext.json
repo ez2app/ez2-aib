@@ -1,7 +1,7 @@
 {
   "name": "aib-languages",
   "kind": "mod",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "requires_aib": "0.1.7",
   "built_from": "0.70.11",
   "title": "切換 AIB 語言(Claude Code mod)",

@@ -17,7 +17,7 @@ const BUNDLE: Record<string, Record<string, string>> = {
 BUNDLE.ja = { ...BUNDLE.en!, 'mod.aib_languages.switched': '言語を {value} に切り替えました', 'mod.aib_languages.reply_line': '返答言語:{value}。', 'mod.aib_languages.current': '現在:{value}(由来:{what})' }
 BUNDLE.ko = { ...BUNDLE.en!, 'mod.aib_languages.switched': '언어를 {value}(으)로 바꿨습니다', 'mod.aib_languages.reply_line': '답변 언어: {value}.' }
 
-type World = { locale: string; source: string; cabin?: string; mtime: number; runs: string[][]; env: Record<string, string | undefined>; toasts: string[]; status: string[] }
+type World = { locale: string; source: string; cabin?: string; mtime: number; runs: string[][]; env: Record<string, string | undefined>; toasts: string[]; status: string[]; shown?: boolean }
 function world(locale = 'zh-TW', cabin?: string): World { return { locale, source: 'user', cabin, mtime: 1000, runs: [], env: {}, toasts: [], status: [] } }
 function wire(on: Parameters<Parameters<typeof test>[1]>[1], w: World, exists = true) {
   // kit 底下沒有引擎:這幾個呼叫由測試自己答(session.start / command.register / ui.open / ui.close / prompt.compose 的底)
@@ -32,6 +32,7 @@ function wire(on: Parameters<Parameters<typeof test>[1]>[1], w: World, exists = 
   on('fs.stat', async () => ({ value: { kind: 'file', size: 3, mtimeMs: w.mtime, isSymlink: false } }) as never)
   on('ui.toast', async (_$, e) => { w.toasts.push((e as { text: string }).text); return { value: undefined } as never })
   on('ui.status', async (_$, e) => { w.status.push(String((e as { text?: string }).text)); return { value: undefined } as never })
+  on('session.id', async () => ({ value: 'sid-1' }) as never)
   on('process.run', async (_$, e) => {
     const argv = [...(e as { argv: readonly string[] }).argv]
     w.runs.push(argv)
@@ -39,6 +40,7 @@ function wire(on: Parameters<Parameters<typeof test>[1]>[1], w: World, exists = 
       const loc = argv[argv.indexOf('--locale') + 1]!
       return ok(JSON.stringify(BUNDLE[loc] ?? BUNDLE.en))
     }
+    if (argv[2]?.endsWith('/statusline_tail.py')) return ok(JSON.stringify({ ok: true, shown: !!w.shown }))   // 💧 狀態列尾巴(10-28 工作單 S)
     if (argv[1] === 'lang') {
       const want = argv[2] && !argv[2].startsWith('--') ? argv[2] : null
       if (want) { w.locale = want; w.source = argv.includes('--cabin') ? 'cabin' : 'user'; w.mtime += 1 }
@@ -125,4 +127,36 @@ test('找不到 aib:說出來,不猜', async ($, on) => {
   await $.session.start(START)
   const r = await $.command.run({ command: 'aib-languages', args: 'en' })
   expect(r.text).toMatch(/找不到 aib|Cannot find the aib command/)
+})
+
+// 10-28 Andy 工作單 S「這個 aib 太多行了,我希望縮成一行」:🌐 段交給 💧 狀態列尾巴(核心 statusline_tail.py)
+const tailPuts = (w: World) => w.runs.filter(a => a[2]?.endsWith('/statusline_tail.py'))
+
+test('💧 狀態列有在畫(shown)⇒ 🌐 段交給尾巴、收掉自己這一行', async ($, on) => {
+  const w = world('en'); w.shown = true; wire(on, w)
+  await $.session.start(START)
+  expect(tailPuts(w).at(-1)!.slice(3)).toEqual(['put', '--mod', 'aib-languages', '--session', 'sid-1', '--text', '🌐 en'])
+  expect(w.status.at(-1)).toBe('undefined')
+})
+
+test('💧 狀態列沒在畫(會員用自己的狀態列)⇒ 照舊自己一行', async ($, on) => {
+  const w = world('ja'); w.shown = false; wire(on, w)
+  await $.session.start(START)
+  expect(tailPuts(w).length).toBe(1)
+  expect(w.status.at(-1)).toBe('🌐 ja')
+})
+
+test('尾巴段每 60 秒心跳一次;狀態列開始畫了就收掉自己這一行', async ($, on) => {
+  const w = world('zh-TW'); wire(on, w)
+  const clock = mock.clock(on)
+  await $.session.start(START)
+  expect(w.status.at(-1)).toBe('🌐 zh-TW')
+  const n = tailPuts(w).length
+  await clock.advance(30_000)
+  expect(tailPuts(w).length).toBe(n)                                    // 60 秒內不重寫
+  w.shown = true                                                        // 💧 狀態列開始畫這個對話
+  await clock.advance(35_000)
+  await clock.advance(1)
+  expect(tailPuts(w).length).toBe(n + 1)
+  expect(w.status.at(-1)).toBe('undefined')
 })
