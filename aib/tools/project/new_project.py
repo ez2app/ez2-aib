@@ -649,24 +649,28 @@ def _resolve_seat(state_root: Path, seat_arg: str):
 
 
 def ensure_ledger(state_root: Path, create: bool = True) -> bool:
-    """帳本目錄缺就照 aib init 同一套補建(只建 ledger/ 與空帳本檔,其他不動);建不起來回 False。
+    """帳本缺就照 aib init 同一套補建(只建 ledger/ 與空帳本檔,其他不動);建不起來回 False。
     10-28 2F 驗收 G1:aib init 沒跑成的新會員,從頁面開第一席會被 no-ledger 擋;他沒辦法自己補。
-    create=False(試跑):不寫,只回「真跑時建不建得起來」。"""
+    create=False(試跑):不寫,只回「真跑時大概建得起來」。目錄先成才建檔(跟 init 一樣 fail-closed);
+    最後一律重看一次結果 ⇒ 兩個程序同時補建、輸的那個收到 EEXIST 也算成。"""
     root = Path(state_root)
-    if (root / "ledger").is_dir():
+    led = root / "ledger"
+    book = led / "aib-ledger.jsonl"
+    if led.is_dir() and book.is_file():
         return True
-    if root.is_symlink() or not root.is_dir() or (root / "ledger").is_symlink() or (root / "ledger").exists():
+    if root.is_symlink() or not root.is_dir():
         return False
     if not create:
-        return os.access(str(root), os.W_OK)
+        return os.access(str(led if led.is_dir() else root), os.W_OK | os.X_OK)
     boot = str(REPO_ROOT / "src" / "bootstrap")
     if boot not in sys.path:
         sys.path.insert(0, boot)
     import aib_init as AI  # noqa: E402
-    for item in (AI.ensure_dir(root / "ledger", AI.DIR_MODE), AI.ensure_file(root / "ledger" / "aib-ledger.jsonl", AI.FILE_MODE)):
-        if item["action"] == AI.FAIL:
-            return False
-    return True
+    if not led.is_dir() and AI.ensure_dir(led, AI.DIR_MODE)["action"] == AI.FAIL:
+        return led.is_dir() and book.is_file()
+    if not book.is_file():
+        AI.ensure_file(book, AI.FILE_MODE)
+    return led.is_dir() and book.is_file()
 
 
 def _ledger_note(state_root: Path, agent_uid: str, actor: dict, zh: str, en: str) -> None:

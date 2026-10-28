@@ -15,7 +15,7 @@ B8 回條契約:why 是代碼、hint 是人話、next 是可直接跑的那一�
 B9 --deliver:綁完人格把人格包寄給新席(CBP.deliver_persona,假的記呼叫),回條帶 persona_pack;沒帶就不寄
 B10 CLI 就緒(@abb89 10-26):installed / login / model 任一不過 ⇒ resolve why=cli_not_ready、0 席、hint 帶登入指令;量不到登入不算不過;續做不重探
 刀 K3 拿掉就緒擋 ⇒ B10 紅
-B11 沒有帳本(aib init 沒跑成的新會員,10-28 2F 驗收 G1)⇒ 開席時補建 ledger/(0700)+ 空帳本(0600),stage=done;試跑不建;ledger 是檔案 ⇒ no-ledger、0 席
+B11 沒有帳本(aib init 沒跑成的新會員,10-28 2F 驗收 G1)⇒ 開席時補建 ledger/(0700)+ 空帳本(0600),stage=done;試跑不建;目錄在、帳本檔不見 ⇒ 補檔;ledger 是檔案 ⇒ no-ledger、0 席
 刀 K4 改回「沒帳本就擋」⇒ B11 紅
 刀(複本):K1 拿掉 no_biometry 那道 ⇒ B6 紅;K2 拿掉散熱擋 ⇒ B7 紅
 """
@@ -309,6 +309,10 @@ class Boot(Sandbox):
         self.assertTrue(led.is_dir())
         self.assertEqual(oct(led.stat().st_mode & 0o777), "0o700")
         self.assertEqual(oct((led / "aib-ledger.jsonl").stat().st_mode & 0o777), "0o600")
+        (led / "aib-ledger.jsonl").unlink()   # 目錄在、帳本檔不見(上次建檔失敗)⇒ 補檔,不是直接放行
+        rc, out, _ = self.boot()
+        self.assertEqual(out["stage"], "done", out)
+        self.assertTrue((led / "aib-ledger.jsonl").is_file())
         shutil.rmtree(led)
         led.write_text("x", encoding="utf-8")
         self.opened.clear()
