@@ -586,7 +586,7 @@ def main(argv=None) -> int:
             return RC_USAGE
         try:
             ok = agent_bound(args.agent_id)
-        except (OSError, ValueError) as exc:   # 量不到 ≠ 沒綁:rc 3,開席那邊不跳視窗
+        except Exception as exc:  # noqa: BLE001 —— 量不到 ≠ 沒綁:rc 3,開席那邊不跳視窗(Python 崩潰的 rc 1 會被當成沒綁)
             print("讀不到綁定(%s)" % type(exc).__name__, file=sys.stderr)
             return RC_UNREADABLE
         print(json.dumps({"agentId": args.agent_id, "bound": ok}, ensure_ascii=False))

@@ -126,11 +126,15 @@ class C2Dialog(Base):
         osa = [c for c in self.calls() if c["tool"] == "osascript"][0]["argv"]
         self.assertEqual(osa[:2], ["-l", "JavaScript"])
         cfg = json.loads(osa[-1])
+        old = os.environ.get("EZ2_AIB_LOCALE")
         os.environ["EZ2_AIB_LOCALE"] = "zh-TW"
         try:
             self.assertEqual(cfg["copy_text"], gt.routine_request(AGENT))
         finally:
-            os.environ.pop("EZ2_AIB_LOCALE", None)
+            if old is None:
+                os.environ.pop("EZ2_AIB_LOCALE", None)
+            else:
+                os.environ["EZ2_AIB_LOCALE"] = old
         self.assertEqual(cfg["copy"], "複製給 bot 的話")
         self.assertEqual(cfg["copied"], "已複製 ✓")
         info = osa[-2]
