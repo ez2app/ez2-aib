@@ -2382,6 +2382,8 @@
   "aib.climenu.note_blank": "沒選=空白開席",
   "aib.climenu.model_unknown": "模型不明",
   "aib.climenu.load": "載入",
+  "aib.climenu.unbound": "未綁",
+  "aib.climenu.live": "使用中(會分出新碼)",
   "aib.climenu.blank_default": "空白開席(預設)",
   "aib.climenu.spec_fail": "開席選單規格寫不出來,空白開席、不投開席單",
   "aib.climenu.popup_fail": "開席選單跳不出來(display-popup rc={rc}),空白開席、不投開席單",

@@ -2382,6 +2382,8 @@
   "aib.climenu.note_blank": "no pick = blank seat",
   "aib.climenu.model_unknown": "model unknown",
   "aib.climenu.load": "load",
+  "aib.climenu.unbound": "unbound",
+  "aib.climenu.live": "in use (forks a new code)",
   "aib.climenu.blank_default": "blank seat (default)",
   "aib.climenu.spec_fail": "could not write the seat-opening menu spec; blank seat, no onboarding sheet",
   "aib.climenu.popup_fail": "the seat-opening menu would not open (display-popup rc={rc}); blank seat, no onboarding sheet",
