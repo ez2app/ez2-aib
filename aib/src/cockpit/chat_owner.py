@@ -364,9 +364,12 @@ def prove(reason, env, platform=None, touchid=None, touchid_available=None, atte
     """Mac ⇒ 只准 Touch ID(AIB_TOUCHID=0 / 叫不出來一律拒,不退別的路;同 #144);非 Mac ⇒ 終端機三條件(human_attest)。
     回 None = 過;否則原因碼。之後呼叫端照樣要本人輸密語(真正的防線是密語)。
     touchid / touchid_available / attest / platform 只給測試換掉(不讀環境變數決定)。"""
+    import approve_gate as AG              # 統一入口:reason 由呼叫點的 AG.reason 組(純字串 = 未登記、高風險)
     platform = sys.platform if platform is None else platform
+    r = AG.coerce(reason, 120)
+    if r.refused or not str(r):            # 欄位超長 / 組不出字 ⇒ 兩條路都拒(非 Mac 不准因此放行、印空白;@aeb40 #404 R1 L1)
+        return "reason_refused"
     if platform == "darwin":
-        import approve_gate as AG          # 統一入口:reason 由呼叫點的 AG.reason 組(純字串 = 未登記、高風險)
         off = AG.ready(env, platform, touchid_available)
         if off:
             return "touchid_" + off

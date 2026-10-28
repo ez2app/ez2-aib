@@ -256,16 +256,31 @@ class CfGrant(Base):
                 CG.parse_perms(bad)
 
     def test_g3d_touchid_shows_every_perm(self):
-        """白名單全選:視窗字不能截斷(截掉的可能是 write / 帳號層);會改整個網域的權限附風險說明。"""
-        allp = ",".join(CG.PERMS)
-        rc, res = self.grant(["ez2.app", allp, "--push", "eu01:/etc/x.env"])
+        """視窗字不能截斷(截掉的可能是 write / 帳號層 / 風險說明);會改整個網域的權限附風險說明。"""
+        two = "dns-write,zone-settings-write"
+        rc, res = self.grant(["ez2.app", two, "--push", "eu01:/etc/x.env"])
         self.assertEqual(rc, 0, res)
-        for p in CG.PERMS:
-            self.assertIn(p, self.touch.reason, p)
-        self.assertIn(allp, self.touch.reason)
+        self.assertIn(two, self.touch.reason)
         self.assertIn(CG._t("aib.cf.touchid_risk.zone_settings_write"), self.touch.reason)
         self.assertIn(CG._t("aib.cf.touchid_risk.dns_write"), self.touch.reason)
+        self.assertTrue(self.touch.reason.endswith(CG._t("aib.cf.touchid_risk.dns_write")), "最後一句警告要完整在視窗裡")
         self.assertNotIn("decoy-", json.dumps(self.posts()[0][2]))             # 範圍不對的同名群組不收
+
+    def test_g3e_too_long_for_unseal_refused(self):
+        """白名單全選 + 風險說明 ≈ 335 字 > unseal 上限 200:舊版交給 helper 無聲截到 200,主機與 ⚠ 被推出視窗
+        (@aeb40 #404 R1 Medium)⇒ 整句超過 unseal 上限直接拒、不彈窗、不交給 helper。"""
+        allp = ",".join(CG.PERMS)
+        rc, res = self.grant(["ez2.app", allp, "--push", "eu01:/etc/x.env"])
+        self.assertEqual(rc, 2, res)
+        self.assertEqual(res["why"], "reason_refused")
+        self.assertEqual(self.touch.n, 0, "超長不准叫 SE 視窗")
+        self.assertEqual(self.cf.calls, [])
+
+    def test_g3f_helper_refuses_long_unseal_reason(self):
+        """aib-sehelper 那端也不截:unseal 超過 maxUnsealReason 回 reason_too_long。"""
+        src = (REPO / "src" / "cockpit" / "sehelper" / "aib-sehelper.swift").read_text(encoding="utf-8")
+        self.assertIn("let maxUnsealReason = 200", src)
+        self.assertIn('guard cleanFull(reason).count <= maxUnsealReason else { throw Fail("reason_too_long") }', src)
         rc, res = self.grant(["ez2.app", "zone-read", "--push", "eu01:/etc/x.env"])
         self.assertNotIn("⚠", self.touch.reason)                               # 唯讀不附
 

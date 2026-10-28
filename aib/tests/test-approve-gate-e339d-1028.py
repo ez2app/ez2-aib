@@ -146,6 +146,28 @@ class G4Clean(Env):
         self.assertIn("example", r)
         self.assertNotIn(RLO, r)
 
+    def test_fact_clean_alone_counts_cleaned_length(self):
+        """只靠「事實清字」這道:隱形字灌長的 FULL 欄位,清完才算長度 ⇒ 不被誤拒(拿掉事實清字 ⇒ 紅)。"""
+        r = mint_site("aib_quote.add", {"text": ZWSP * (AG.FULL_MAX + 50) + "hello"})
+        self.assertIsNone(r.refused)
+        self.assertIn("hello", r)
+
+    def test_sentence_clean_alone_cleans_template(self):
+        """只靠「整句再清」這道:句子模板本身(字典)夾方向字元 ⇒ 也拿掉(拿掉整句清 ⇒ 紅)。"""
+        import i18n_lib
+        with mock.patch.object(i18n_lib, "t", lambda key, params=None, locale=None, **k: "ok" + RLO + " {text}".replace("{text}", (params or {}).get("text", ""))):
+            r = mint_site("aib_quote.add", {"text": "hi"})
+        self.assertNotIn(RLO, r)
+        self.assertIn("hi", r)
+
+    def test_downstream_limit(self):
+        """整句照下游 helper 上限比:unseal 200、se-sign 320;超過就拒,不交給 helper 截(@aeb40 #404 R1 Medium)。"""
+        r = mint_site("aib_quote.add", {"text": "q" * 250})
+        self.assertIsNone(r.refused)
+        self.assertIsNotNone(AG.se_reason(r))
+        self.assertIsNone(AG.se_reason(r, AG.UNSEAL_MAX))
+        self.assertIsNone(AG.se_reason(mint_site("aib_quote.add", {"text": "q" * 320})), "整句(含句頭)超過 320")
+
     def test_suffix_whitelist(self):
         r = mint_site("cf_grant.grant", {"zone": "z", "perms": "dns-write", "ttl": "5m", "host": "h"}, suffix=["dns_write"])
         self.assertIsNone(r.refused)
@@ -173,6 +195,18 @@ class G5AskAndReady(Env):
         self.assertEqual(AG.ready({"AIB_TOUCHID": "0"}, "darwin", lambda: True), "off")
         self.assertEqual(AG.ready({}, "darwin", lambda: False), "unavailable")
         self.assertIsNone(AG.ready({}, "darwin", lambda: True))
+
+
+class G5bRefusedOnEveryPath(Env):
+    def test_chat_owner_non_mac_refuses(self):
+        """非 Mac 走 human_attest 那條也要先看 refused,不准因欄位超長放行(@aeb40 #404 R1 L1)。"""
+        import chat_owner as CO
+        bad = mint_site("aib_approve.yes", {"code": "1", "site": "s" * (AG.FULL_MAX + 1), "user": "u", "ip": "i"})
+        self.assertEqual(CO.prove(bad, {}, platform="linux", attest=lambda: {"human": True}), "reason_refused")
+        self.assertEqual(CO.prove(bad, {}, platform="darwin", touchid=lambda t: {"ok": True},
+                                  touchid_available=lambda: True, root=self.root), "reason_refused")
+        ok = mint_site("chat_human.send", {"who": "a", "text": "b"})
+        self.assertIsNone(CO.prove(ok, {}, platform="linux", attest=lambda: {"human": True}))
 
 
 class G6EveryCallSiteUsesGate(unittest.TestCase):

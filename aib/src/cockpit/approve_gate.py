@@ -25,6 +25,9 @@ import touchid_approve as TA
 
 FULL = "full"
 FULL_MAX = 320                   # 不截欄位的上限(清完碼位數;跟 aib-sehelper maxSignReason 同)
+# 下游視窗的實際上限(整句,清完碼位數):超過就拒、不截 —— 截掉的那段可能正是警告或真主機(@aeb40 #404 R1 Medium)
+SE_SIGN_MAX = 320                # aib-sehelper se-sign(maxSignReason)
+UNSEAL_MAX = 200                 # aib-sehelper unseal(maxUnsealReason)
 
 H = 3600
 # 類別表:id ⇒ high_risk(不開時間窗)、max_window(秒;高風險 = 0)。四語名稱在 i18n「aib.approve_gate.cat.<id>」。
@@ -263,10 +266,11 @@ def ask(r, lock_root, touchid=None, total=160):
     return out
 
 
-def se_reason(r):
-    """se-sign 用(以及自己拿著鎖的 consent):回能交給視窗的字;拒 ⇒ None。"""
+def se_reason(r, limit=SE_SIGN_MAX):
+    """se-sign / unseal 用(以及自己拿著鎖的 consent):回能交給視窗的字;拒 ⇒ None。
+    limit = 下游 helper 的整句上限(unseal 傳 UNSEAL_MAX);整句超過就拒,不交給 helper 去截。"""
     r = coerce(r)
-    return None if r.refused or not str(r) else str(r)
+    return None if r.refused or not str(r) or len(str(r)) > limit else str(r)
 
 
 def category_name(cat, locale=None):

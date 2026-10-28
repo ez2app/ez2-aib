@@ -322,9 +322,9 @@ def grant_cmd(argv, env=None, platform=None, unseal=None, opener=None, ssh_run=N
         return done(2, log=False)
     # 3. 視窗那句話只由 aib 組 ⇒ SE 解封母鑰(系統 Touch ID = 唯一一次核准)
     # 權限不截斷(白名單全選也放得下):截掉的那段可能正是 write 或帳號層權限,本人會看不到(@abb89 #368 r1)
-    import approve_gate as AG            # 統一入口:類別 cf_token(高風險);權限 / 主機不截,太長直接拒
+    import approve_gate as AG            # 統一入口:類別 cf_token(高風險);欄位不截,整句超過 unseal 上限(200)直接拒,不交給 helper 截
     reason = AG.se_reason(AG.reason("cf_grant.grant", {"zone": zone, "perms": ",".join(perms), "ttl": "%dm" % ttl, "host": where},
-                                    suffix=[p.replace("-", "_") for p in RISKY if p in perms]))
+                                    suffix=[p.replace("-", "_") for p in RISKY if p in perms]), limit=AG.UNSEAL_MAX)
     if not reason:
         res["why"] = "reason_refused"
         return done(2, log=False)

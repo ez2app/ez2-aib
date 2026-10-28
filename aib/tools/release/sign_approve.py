@@ -142,9 +142,17 @@ def ensure_shim(state_root, python=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     if old is not None and SHIM_MARK not in old:
         shutil.copy2(path, path.with_name(SHIM_NAME + ".bak-" + time.strftime("%Y%m%d-%H%M%S")))
-    tmp = path.with_name("." + SHIM_NAME + ".tmp")
-    tmp.write_text(body, encoding="utf-8")
-    os.chmod(tmp, 0o755)
+    tmp = path.with_name(".%s.tmp-%d" % (SHIM_NAME, os.getpid()))
+    try:
+        os.unlink(tmp)                   # 上次殘留(也可能是別人放的符號連結):拿掉再建,不跟著寫(@aeb40 #404 R1 L3)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o755)
+    try:
+        os.write(fd, body.encode("utf-8"))
+        os.fchmod(fd, 0o755)
+    finally:
+        os.close(fd)
     os.replace(tmp, path)
     return "created" if old is None else "updated"
 

@@ -142,6 +142,31 @@ class Box(unittest.TestCase):
         other = self.tmp / "s2"
         self.assertEqual(SA.ensure_shim(other), "created")
 
+    def test_s6b_shim_temp_not_followed(self):
+        """暫存檔位置先被放了符號連結 ⇒ 不跟著寫到連結指的檔(@aeb40 #404 R1 L3)。"""
+        bindir = self.state / "bin"
+        bindir.mkdir()
+        victim = self.tmp / "victim.txt"
+        victim.write_text("keep\n")
+        (bindir / (".%s.tmp-%d" % (SA.SHIM_NAME, os.getpid()))).symlink_to(victim)
+        self.assertEqual(SA.ensure_shim(self.state), "created")
+        self.assertEqual(victim.read_text(), "keep\n")
+        self.assertIn(SA.SHIM_MARK, (bindir / SA.SHIM_NAME).read_text())
+        self.assertFalse((bindir / SA.SHIM_NAME).is_symlink())
+
+    def test_s6c_shim_temp_race_refused(self):
+        """拿掉殘留之後、開檔之前又被放回符號連結(競態):O_EXCL|O_NOFOLLOW ⇒ 開檔失敗、不寫到連結指的檔。"""
+        bindir = self.state / "bin"
+        bindir.mkdir()
+        victim = self.tmp / "victim.txt"
+        victim.write_text("keep\n")
+        (bindir / (".%s.tmp-%d" % (SA.SHIM_NAME, os.getpid()))).symlink_to(victim)
+        with mock.patch.object(SA.os, "unlink", lambda p: None):
+            with self.assertRaises(OSError):
+                SA.ensure_shim(self.state)
+        self.assertEqual(victim.read_text(), "keep\n")
+        self.assertFalse((bindir / SA.SHIM_NAME).exists())
+
     def test_s7_not_mac(self):
         buf = io.StringIO()
         with redirect_stdout(buf):
