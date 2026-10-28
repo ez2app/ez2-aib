@@ -2382,6 +2382,8 @@
   "aib.climenu.note_blank": "選ばなければ空の開席",
   "aib.climenu.model_unknown": "モデル不明",
   "aib.climenu.load": "読み込む",
+  "aib.climenu.unbound": "未紐付け",
+  "aib.climenu.live": "使用中(新コードで分岐)",
   "aib.climenu.blank_default": "空の開席(既定)",
   "aib.climenu.spec_fail": "開席メニューの仕様が書けない、空の開席、開席票は送らない",
   "aib.climenu.popup_fail": "開席メニューが出ない(display-popup rc={rc})、空の開席、開席票は送らない",

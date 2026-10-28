@@ -2382,6 +2382,8 @@
   "aib.climenu.note_blank": "안 고르면 = 빈 개석",
   "aib.climenu.model_unknown": "모델 알 수 없음",
   "aib.climenu.load": "불러오기",
+  "aib.climenu.unbound": "미연결",
+  "aib.climenu.live": "사용 중(새 코드로 분기)",
   "aib.climenu.blank_default": "빈 개석(기본)",
   "aib.climenu.spec_fail": "개석 메뉴 사양을 쓸 수 없어 빈 개석, 개석 안내 안 보냄",
   "aib.climenu.popup_fail": "개석 메뉴가 열리지 않음(display-popup rc={rc}), 빈 개석, 개석 안내 안 보냄",

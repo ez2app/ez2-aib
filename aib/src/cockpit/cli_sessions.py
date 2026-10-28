@@ -17,6 +17,10 @@
   cli_sessions.py --provider claude --cwd DIR [--seats-dir D] [--role R] [--limit 9] --json
   ⇒ {"supported": bool, "rows": [{"id","code","role","model","bot_name","window","when","brain",
                                   "handoff","live","star","bound","tail"}]}
+  ★ 10-28 Andy「下方的載入席位,只要顯示 席位/人格/專案名稱/最新開啟時間 這樣就好」⇒ four_col 列
+    (claude / codex / CLI 等非橋接 bot):tail = 「人格 · 專案 · 月-日 時:分」(選單在前面接 ★ 與 @碼),
+    使用中標記留在尾端;沒綁 / 讀不到 ⇒ 字典的「未綁」。人格名、專案名只讀既有綁定資料的顯示名,
+    不顯示 uid / fld_ 路徑。橋接 bot(load_kind=persona)列這次不動,照舊格式(four_col=false)。
   bot_name = Grok Bot 側欄顯示名(有 agent 綁定時);空則選單退回 model / 「模型不明」。
   bound = 已連 Grok Bot agent(status.agent_id);選單灰階(dim)。「未綁」標籤仍只看 persona_uid。
   limit 預留 agent 或 persona 已綁席,避免未綁擠掉。
@@ -29,6 +33,7 @@ import json
 import os
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -64,6 +69,85 @@ def _brain(aib_home: str, uuid: str) -> str:
     except Exception:
         f = ""
     return f if f and f not in ("UNRESOLVED", "未綁", "—") else "沒有"
+
+
+def _t(key: str) -> str:
+    try:
+        import i18n_lib
+        return i18n_lib.t(key)
+    except Exception:
+        return key
+
+
+def _clean_name(value) -> str:
+    """外部字串進選單:與右欄同一套消毒(seat_persona.clean_text),並拒 `@` / `|`(冒充別席、多切一欄)。"""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        import seat_persona
+        text = seat_persona.well_formed_name(seat_persona.clean_text(value, 120))
+    except Exception:
+        return ""
+    return "" if (not text or "@" in text or "|" in text) else text
+
+
+def _persona_name(code: str, home: str) -> str:
+    """席碼 → 綁的人格卡顯示名(cards.json display_name,退 seat-display.json 投影)。讀不到 ⇒ 空。"""
+    try:
+        uid = seat_fork.old_binding(code, home)["persona_uid"]
+        if not uid:
+            return ""
+        ident = Path(home) / "identity"
+        card = ((_load(str(ident / "cards.json")).get("cards") or {}).get(uid) or {})
+        name = _clean_name(card.get("display_name") if isinstance(card, dict) else "")
+        if name:
+            return name
+        d = ((_load(str(ident / "seat-display.json")).get("display") or {}).get(code) or {})
+        if isinstance(d, dict) and d.get("persona_uid") == uid:
+            return _clean_name(d.get("display_name"))
+    except Exception:
+        pass
+    return ""
+
+
+def _project_name(seat_rec) -> str:
+    """席位檔綁的專案卡標題(與右欄同一支 seat_persona.project_title_of)。讀不到 ⇒ 空。"""
+    try:
+        import seat_persona
+        return seat_persona.project_title_of(seat_rec) if seat_rec else ""
+    except Exception:
+        return ""
+
+
+# 彈窗一列 = 「 [h] 」5 欄 + 「★ @碼 · 人格 · 專案 · 月-日 時:分 · 使用中(會分出新碼)」;80 欄終端最多畫 79 欄。
+# 10-28 Andy「使用中保留完整字樣就好,名字縮短沒關係」⇒ 名字欄寬依使用中字樣的寬度算:
+#   5 + 11(★ @碼 · )+ 人格 + 3 + 專案 + 3 + 11(時間)+ 3 + 使用中 ≤ 79 ⇒ 人格 = 專案 = (43 − 使用中)/2,
+#   上限 NAME_COLS、下限 NAME_MIN(zh-TW 使用中 18 欄 ⇒ 名字各 12 欄)。
+NAME_COLS = 18
+NAME_MIN = 6
+
+
+def _name_cols(live_label: str) -> int:
+    return max(NAME_MIN, min(NAME_COLS, (43 - _width(live_label)) // 2))
+
+
+def _width(text: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _fit(text: str, cols: int) -> str:
+    """依終端欄寬(全形算 2)截到 cols 欄,截了補「…」:一列要在 80 欄內(10-28 工作單 M)。"""
+    def width(ch):
+        return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    if sum(width(ch) for ch in text) <= cols:
+        return text
+    w, out = 0, []
+    for ch in text:
+        if w + width(ch) > cols - 1:
+            break
+        out.append(ch)
+        w += width(ch)
+    return "".join(out).rstrip() + "…"
 
 
 def _has_record_content(provider: str, path: Path | None) -> bool:
@@ -182,7 +266,7 @@ def collect(provider: str, cwd: str = "", aib_home: str | None = None, seats_dir
             if prev is None or when >= prev["_when"]:
                 cands[u] = {"id": u, "role": s.get("role") or "?", "window": s.get("window_id") or "",
                             "model": s.get("model_requested") or s.get("model") or (prev or {}).get("model", ""),
-                            "_when": when, "_has_transcript": _has_record_content(provider, t)}
+                            "_seat": s, "_when": when, "_has_transcript": _has_record_content(provider, t)}
     if provider == "claude" and cwd:
         proj = last_cli_session._claude_project_dir(cwd)
         if config_dir is not None:
@@ -234,6 +318,17 @@ def collect(provider: str, cwd: str = "", aib_home: str | None = None, seats_dir
         agent = bool(r.pop("_agent_linked", bool(_bridge_agent_id(provider, u, home))))
         r.pop("_bound", None)
         r["bound"] = agent
+        seat_rec = r.pop("_seat", None)
+        r["four_col"] = seat_fork.load_kind(provider) != "persona"
+        if r["four_col"]:
+            unbound, live = _t("aib.climenu.unbound"), _t("aib.climenu.live")
+            cols = _name_cols(live)
+            r["persona_name"] = _persona_name(r["code"], home)
+            r["project_name"] = _project_name(seat_rec)
+            r["tail"] = "%s · %s · %s%s" % (
+                _fit(r["persona_name"] or unbound, cols), _fit(r["project_name"] or unbound, cols), r["when"],
+                " · " + live if r["live"] else "")
+            continue
         extras = []
         if not persona and seat_fork.load_kind(provider) == "persona":
             extras.append("未綁")
@@ -259,7 +354,8 @@ def main(argv=None) -> int:
         print(json.dumps(d, ensure_ascii=False))
     else:
         for r in d["rows"]:
-            print("%s@%s %s%s" % ("★ " if r["star"] else "  ", r["code"], r["tail"], ""))
+            sep = " · " if r.get("four_col") else " "
+            print("%s@%s%s%s" % ("★ " if r["star"] else "  ", r["code"], sep, r["tail"]))
     return 0
 
 

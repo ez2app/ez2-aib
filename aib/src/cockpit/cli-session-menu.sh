@@ -73,9 +73,10 @@ for r in d.get("rows") or []:
     # ★ bound 必須在 bot_name 前:bash IFS=$'\t' read 會把空欄位吃掉,空 bot 會把 bound「1/0」讀成名(顯示〔1〕且丟灰階)。
     bot = (r.get("bot_name") or "").replace("\t", " ").replace("\n", " ")
     model = (r.get("model") or "").replace("\t", " ")
-    print("%s\t%s\t%s\t%s\t%s\t%s\t%s" % (
-        r["id"], r.get("code") or "", "1" if r.get("star") else "0", tail[:90],
-        model, "1" if r.get("bound") else "0", bot))
+    # four 接在 star 後、tail 前(兩個都不會空),免得被前面講的空欄吞掉而錯位
+    print("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (
+        r["id"], r.get("code") or "", "1" if r.get("star") else "0", "1" if r.get("four_col") else "0",
+        tail[:90], model, "1" if r.get("bound") else "0", bot))
 ' "${AIB_CLI_SESSION_MENU_EXCLUDE:-}" 2>/dev/null)" || rows=""
   fi
   [ -n "$rows" ] || [ "$with_onboard" = "1" ] || return 0      # 沒舊席位也沒開席單 ⇒ 不跳選單
@@ -97,7 +98,7 @@ for r in d.get("rows") or []:
   # 逾時留下的選擇檔(見檔頭)一小時後清掉;只清本選單的檔名
   find "$state_dir" -maxdepth 1 -name 'cli-session-choice-*' -mmin +60 -delete 2>/dev/null || true
   local choice_f="$state_dir/cli-session-choice-$$"; rm -f "$choice_f" 2>/dev/null
-  local n=0 id code star tail label key title note spec items_tsv=""
+  local n=0 id code star four tail label key title note spec items_tsv=""
   local keys="abcdefghi"
   _aib_menu_item() { items_tsv="${items_tsv}$2"$'\t'"$1"$'\t'"$3"$'\t'"${4:-0}"$'\n'; }   # $1=標籤 $2=鍵 $3=值 $4=dim(1=已綁灰階)
   if [ "$with_onboard" = "1" ]; then
@@ -109,13 +110,20 @@ for r in d.get("rows") or []:
   else
     title="$(_csm aib.climenu.title_pick_old provider="${provider}")"; note="$(_csm aib.climenu.note_blank)"
   fi
-  # ★ the maintainer 09-26:「每一欄的最左邊要帶入上一次的 AI 模型」⇒ 有 bot_name(側欄名)用它,否則用 model。
+  # ★ 10-28 Andy「下方的載入席位,只要顯示 席位/人格/專案名稱/最新開啟時間 這樣就好」取代 the maintainer 09-26
+  #   「最左帶上一次 AI 模型」:four=1 的列(claude / codex / CLI)只剩「★ @碼 · 人格 · 專案 · 時間 [· 使用中]」,
+  #   不再帶〔模型〕、「載入」、角色、大腦、交接。橋接 bot 列(four=0)這次不動,照下面 09-26 的舊格式。
+  # ★ the maintainer 09-26(bot 列):有 bot_name(側欄名)用它,否則用 model,放最左。
   # ★ the maintainer 09-26 灰階:已連 Grok Bot agent(bound=1)列 dim;「未綁」字樣仍=無 persona(資料層分開)。
-  # ★ TSV 欄序 id/code/star/tail/model/bound/bot_name —— bound 不可接在空 bot 後面(bash 吞空欄)。
+  # ★ TSV 欄序 id/code/star/four/tail/model/bound/bot_name —— bound 不可接在空 bot 後面(bash 吞空欄)。
   local load_word=""; [ "$with_onboard" = "1" ] && load_word="$(_csm aib.climenu.load)"   # 迴圈外取一次(每列叫一次 python 會讓彈窗慢)
-  while IFS=$'\t' read -r id code star tail model bound bot_name; do
+  while IFS=$'\t' read -r id code star four tail model bound bot_name; do
     [ -n "$id" ] || continue; n=$((n+1)); [ "$n" -le 9 ] || break
     if [ "$with_onboard" = "1" ]; then key="${keys:$((n-1)):1}"; else key="$n"; fi
+    if [ "$four" = "1" ]; then
+      label="@${code} · $tail"; [ "$star" = "1" ] && label="★ $label"
+      _aib_menu_item "$label" "$key" "$id" "${bound:-0}"; continue
+    fi
     name="${bot_name:-${model:-$(_csm aib.climenu.model_unknown)}}"
     label="〔${name}〕 @${code}"
     [ "$star" = "1" ] && label="$label ★"
