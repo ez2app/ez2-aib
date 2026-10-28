@@ -319,12 +319,40 @@ ENV_OPEN = "AIB_GROKBOT_OPEN"   # 尺用:換成假的 open
 ENV_PBCOPY = "AIB_GROKBOT_PBCOPY"   # 尺用:換成假的 pbcopy
 
 
+def _t(key: str, fallback: str, **params) -> str:
+    """四語字典(i18n/<locale>.json,語系照 i18n_lib.resolve_locale)。字典壞掉或缺鍵 ⇒ 用呼叫端給的 zh-TW 原句,不讓 connect 當。"""
+    try:
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import i18n_lib
+        text = i18n_lib.t(key, params or None, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001 —— i18n_lib 故意大聲失敗;這裡只要字
+        text = ""
+    if not text or text.startswith("!!"):
+        try:
+            text = fallback.format(**params)
+        except (KeyError, IndexError, ValueError):
+            text = fallback
+    return text
+
+
+ROUTINE_NAME = "AIB 收信"   # 例行任務名稱(bot 側的識別字,不翻譯)
+BOT_ASK_FALLBACK = (
+    "請幫我接上 AIB 席位的門鈴(Grok Bot agent id:{agent})。\n"
+    "1. 如果你還沒有觸發方式是 Webhook、名稱「AIB 收信」的例行任務,就建一個。指示:每次被觸發時,用 local-exec 執行 "
+    "~/.local/bin/aib-grokbot-mail pull --agent {agent} 收信,照輸出裡的說明處理每一則,"
+    "回覆一律用輸出裡給的 post / dm 指令寫回(通行碼也在輸出裡)。\n"
+    "2. 建好(或本來就有)之後,直接回我「Webhook URL」和「Webhook 金鑰」兩個可以點開的欄位連結,我點開複製後貼回 AIB 的綁定視窗。\n"
+    "3. 不要在聊天裡貼出金鑰本身,只給連結。")
+
+
 def routine_request(agent_id: str) -> str:
-    """貼給 bot 的那一句:請它自己建 Webhook 觸發的例行任務(app 規定例行任務要在聊天裡請 bot 建,沒有新增按鈕)。
-    指示照 docs/GROKBOT-DESKTOP.md §9.4 真機打通那一版:門鈴只是叫醒,內容要它自己用 pull 拿、用 post 回。"""
-    return ("請幫我建立一個例行任務,觸發方式選 Webhook,名稱「AIB 收信」。指示:每次被觸發時,用 local-exec 執行 "
-            "~/.local/bin/aib-grokbot-mail pull --agent %s 收信,照輸出裡的說明處理每一則,"
-            "回覆一律用輸出裡給的 post / dm 指令寫回(通行碼也在輸出裡)。建好後告訴我建好了。" % agent_id)
+    """「複製給 bot 的話」那段(10-28 Andy 准:綁定視窗的按鈕複製這段,不再跳窗前偷放剪貼簿)。
+    請被綁的 bot ①沒有 Webhook 觸發的「AIB 收信」例行任務就建一個 ②回「Webhook URL」「Webhook 金鑰」兩個可點的欄位連結
+    ③不在聊天裡貼金鑰本身;帶 agent id 讓它知道是哪一席。
+    收信指示照 docs/GROKBOT-DESKTOP.md §9.4 真機打通那一版:門鈴只是叫醒,內容要它自己用 pull 拿、用 post 回。"""
+    return _t("aib.grokconnect.bot_ask", BOT_ASK_FALLBACK, agent=agent_id)
 
 
 def copy_to_clipboard(text: str) -> bool:
@@ -387,8 +415,10 @@ def ask_dialog(prompt: str, hidden: bool = False) -> str:
 
 TWO_FIELD_JXA = r"""
 ObjC.import('Cocoa');
-function run(argv) {
-  var title = argv[0], info = argv[1];
+function build(argv) {
+  var title = argv[0], info = argv[1], cfg = {};
+  try { cfg = JSON.parse(argv[2] || '{}') || {}; } catch (e) { cfg = {}; }
+  function s(k, d) { return (typeof cfg[k] === 'string' && cfg[k]) ? cfg[k] : d; }
   var app = $.NSApplication.sharedApplication;
   app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
   // 用腳本叫出的原生視窗沒有「編輯」選單 ⇒ ⌘V 貼不上。自己補一個。
@@ -405,40 +435,96 @@ function run(argv) {
   var alert = $.NSAlert.alloc.init;
   alert.messageText = title;
   alert.informativeText = info;
-  alert.addButtonWithTitle('確定');
-  alert.addButtonWithTitle('取消');
-  var v = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 440, 118));
+  alert.addButtonWithTitle(s('ok', '確定'));
+  alert.addButtonWithTitle(s('cancel', '取消'));
+  var copyText = s('copy_text', '');
+  var top = copyText ? 40 : 0;
+  var v = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 440, 118 + top));
+  var out = {alert: alert, btn: null, target: null};
+  if (copyText) {
+    // 「複製給 bot 的話」:NSAlert 自己的按鈕按了會關窗 ⇒ 放在 accessoryView 裡的 NSButton,target/action 自己接,視窗不關
+    ObjC.registerSubclass({
+      name: 'AIBGrokCopyAskTarget',
+      superclass: 'NSObject',
+      methods: {
+        'copyAsk:': {
+          types: ['void', ['id']],
+          implementation: function (sender) {
+            var pb = cfg.pasteboard ? $.NSPasteboard.pasteboardWithName(cfg.pasteboard) : $.NSPasteboard.generalPasteboard;
+            pb.clearContents;
+            var ok = pb.setStringForType($(copyText), $.NSPasteboardTypeString);
+            sender.title = ok ? s('copied', '已複製 ✓') : s('copy_failed', '複製失敗');
+          }
+        }
+      }
+    });
+    out.target = $.AIBGrokCopyAskTarget.alloc.init;
+    out.btn = $.NSButton.buttonWithTitleTargetAction(s('copy', '複製給 bot 的話'), out.target, 'copyAsk:');
+    out.btn.frame = $.NSMakeRect(0, 118 + 6, 260, 28);
+    v.addSubview(out.btn);
+  }
   function label(text, y) {
     var l = $.NSTextField.labelWithString(text);
     l.frame = $.NSMakeRect(0, y, 440, 18);
     v.addSubview(l);
   }
-  label('POST 到(Webhook URL)', 98);
+  label(s('url_label', 'POST 到(Webhook URL)'), 98);
   var url = $.NSTextField.alloc.initWithFrame($.NSMakeRect(0, 70, 440, 24));
   url.placeholderString = 'https://api2.cursor.sh/automations/webhook/…';
   v.addSubview(url);
-  label('金鑰(輸入會隱藏;貼「標頭」那格也可以)', 42);
+  label(s('key_label', '金鑰(輸入會隱藏;貼「標頭」那格也可以)'), 42);
   var key = $.NSSecureTextField.alloc.initWithFrame($.NSMakeRect(0, 14, 440, 24));
   v.addSubview(key);
   url.nextKeyView = key;
   alert.accessoryView = v;
   alert.window.initialFirstResponder = url;
-  app.activateIgnoringOtherApps(true);
-  var r = alert.runModal;
+  out.url = url;
+  out.key = key;
+  return out;
+}
+function run(argv) {
+  var b = build(argv);
+  $.NSApplication.sharedApplication.activateIgnoringOtherApps(true);
+  var r = b.alert.runModal;
   if (r != $.NSAlertFirstButtonReturn) { throw new Error('User canceled. (-128)'); }
-  return url.stringValue.js + '\n' + key.stringValue.js;
+  return b.url.stringValue.js + '\n' + b.key.stringValue.js;
 }
 """
 
 
-def ask_two_fields(title: str, info: str) -> str:
+def dialog_texts(label: str) -> dict:
+    """綁定視窗上人看得到的字(四語)。copy_text 另外塞。"""
+    return {
+        "title": _t("aib.grokconnect.title", "AIB 綁定 Grok Bot「{label}」", label=label),
+        "info": _t("aib.grokconnect.info",
+                   "app 已切到這個 agent 的「例行任務」頁。\n\n"
+                   "步驟:按「複製給 bot 的話」→ 貼到跟它的聊天送出 → 點它回的「Webhook URL」和「Webhook 金鑰」"
+                   "兩個連結,各自複製 → 貼回下面這兩格,按「確定」。\n\n"
+                   "已經有 Webhook 例行任務的話,也可以直接從例行任務頁把「POST 到」和「金鑰」兩格複製過來。"),
+        "ok": _t("aib.grokconnect.ok", "確定"),
+        "cancel": _t("aib.grokconnect.cancel", "取消"),
+        "url_label": _t("aib.grokconnect.url_label", "POST 到(Webhook URL)"),
+        "key_label": _t("aib.grokconnect.key_label", "金鑰(輸入會隱藏;貼「標頭」那格也可以)"),
+        "copy": _t("aib.grokconnect.copy", "複製給 bot 的話"),
+        "copied": _t("aib.grokconnect.copied", "已複製 ✓"),
+        "copy_failed": _t("aib.grokconnect.copy_failed", "複製失敗:請自己在聊天裡請 bot 回兩個連結"),
+    }
+
+
+def ask_two_fields(title: str, info: str, texts=None, copy_text: str = "") -> str:
     """一個視窗兩格(the maintainer 09-25:「為什麼不要二格?這比較易懂」):網址一格、金鑰一格(隱藏)。
+    copy_text 非空 ⇒ 視窗上多一顆「複製給 bot 的話」按鈕(10-28 Andy 准):按了把這段放進剪貼簿、視窗不關、字改「已複製 ✓」。
+    texts:按鈕與欄位的字(dialog_texts);不給 ⇒ JXA 用原本的中文字。
 
     回「網址\n金鑰」,交給 parse_pasted 拆,與 --stdin 同一套判準。取消 / 逾時 / 空白各自丟 DialogAborted。"""
     import subprocess
     exe = os.environ.get(ENV_OSASCRIPT) or "osascript"
+    cfg = {k: v for k, v in (texts or {}).items() if k not in ("title", "info") and isinstance(v, str)}
+    if copy_text:
+        cfg["copy_text"] = copy_text
     try:
-        r = subprocess.run([exe, "-l", "JavaScript", "-e", TWO_FIELD_JXA, title, info],
+        r = subprocess.run([exe, "-l", "JavaScript", "-e", TWO_FIELD_JXA, title, info,
+                            json.dumps(cfg, ensure_ascii=False)],
                            stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            timeout=DIALOG_TIMEOUT_S + 60)
     except FileNotFoundError as exc:
@@ -495,18 +581,11 @@ def main(argv=None) -> int:
             except (RosterSchemaChanged, RosterUnreadable):
                 names = {}
             label = names.get(args.agent) or args.agent[:8]
-            # 10-11 a seat(Bot 開發 P4):請 bot 建例行任務那一句先放進剪貼簿,人只要貼給它,不用自己想怎麼講
-            copied = copy_to_clipboard(routine_request(args.agent))
+            # 10-28 Andy 准:不再跳窗前偷放剪貼簿;視窗上「複製給 bot 的話」按鈕按了才放(請 bot 建例行任務 + 回兩個連結)
             open_routines(args.agent)
+            texts = dialog_texts(label)
             try:
-                pasted = ask_two_fields(
-                    "AIB 綁定 Grok Bot「%s」" % label,
-                    "app 已切到這個 agent 的「例行任務」頁。點進觸發方式是 Webhook 的那個例行任務,"
-                    "把「POST 到」和「金鑰」兩格分別複製到下面。\n\n"
-                    + ("還沒有例行任務:剪貼簿已經放好一句話 —— 到跟它的聊天裡貼上送出,它會幫你建;"
-                       "建好後回例行任務頁複製兩格。" if copied else
-                       "還沒有例行任務:先在跟它的聊天裡請它建一個 Webhook 觸發的例行任務"
-                       "(app 規定例行任務要在聊天裡請 bot 建)。"))
+                pasted = ask_two_fields(texts["title"], texts["info"], texts, copy_text=routine_request(args.agent))
             except DialogAborted as exc:
                 print("沒綁定:" + str(exc), file=sys.stderr)
                 return RC_USAGE

@@ -373,7 +373,7 @@ aib_grokbot_agent_preflight() {
   aib_bot_thread_menu grokbot || return 1
   aib_bot_thread_held_guard grokbot || return 1
   # P4(10-11 a seat,the maintainer「最少步驟串成 bot」):選到的 agent 還沒接門鈴 ⇒ 開席前直接跳貼兩格的視窗
-  #   (同 aib bot connect grokbot:切到 app 例行任務頁、請 bot 建例行任務那句已放剪貼簿)。
+  #   (同 aib bot connect grokbot:切到 app 例行任務頁;視窗上「複製給 bot 的話」按了才放剪貼簿,10-28)。
   #   取消或失敗不擋開席:席照開,席上打 /connect 再接。試跑、AIB_GROKBOT_AUTO_CONNECT=0 不跳。
   if [ -n "${AIB_GROKBOT_AGENT_ID:-}" ] && [ "${DRY:-0}" != "1" ] && [ "${AIB_DRY_RUN:-0}" != "1" ] \
      && [ "${AIB_GROKBOT_AUTO_CONNECT:-1}" != "0" ]; then
