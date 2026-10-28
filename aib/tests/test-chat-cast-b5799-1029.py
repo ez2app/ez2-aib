@@ -164,7 +164,9 @@ class C2Void(Base):
         self.beat(g, now=now)
         mutate(g)
         out = self.tick(now=now)
-        self.assertEqual([(o["kind"], o["to"]) for o in out], list(closes))   # 簽章不過 ⇒ 收件人也不可信,不送
+        self.assertEqual(out, [])
+        got = [("close", rec["to"]) for _p, rec in CC.queued(self.root, now=now) if rec["msg"] == {"op": "close", "grant_id": g, "at": now}]
+        self.assertEqual(got, list(closes))   # close 進佇列(送失敗下一輪補);簽章不過 ⇒ 收件人也不可信,不送
         self.assertNotIn(g, self.grants())
         log = [json.loads(x) for x in (CC._home(self.env) / "cast.jsonl").read_text().splitlines()]
         return log[-1]
@@ -182,14 +184,15 @@ class C2Void(Base):
 
     def test_expired(self):
         g = self.issue()["grant_id"]
-        out = self.tick(now=T0 + 3600)
-        self.assertEqual([o["kind"] for o in out], ["close"])
+        self.assertEqual(self.tick(now=T0 + 3600), [])
+        self.assertIn({"op": "close", "grant_id": g, "at": T0 + 3600}, [r["msg"] for _p, r in CC.queued(self.root, now=T0 + 3600)])
         self.assertNotIn(g, self.grants())
 
     def test_clock_back(self):
         g = self.issue()["grant_id"]
         self.beat(g, now=T0 - 600)
-        self.assertEqual([o["kind"] for o in self.tick(now=T0 - 600)], ["close"])
+        self.tick(now=T0 - 600)
+        self.assertNotIn(g, self.grants())
 
     def test_reboot(self):
         self.assertEqual(self.run_void(lambda g: self.ep.update(boot=222))["why"], "reboot")
@@ -256,12 +259,15 @@ class C4Whitelist(Base):
 
 
 class C5Viewer(Base):
-    def open(self, gid="a" * 16, who=FRIEND, now=T0):
+    def open(self, gid="a" * 16, who=FRIEND, now=T0, ask=True):
+        if ask:
+            CC.request(self.env, self.root, who, now=now)          # M2:要先請求過
         return CC.on_incoming(self.env, who, {"op": "open", "grant_id": gid, "until": now + 3600, "at": now}, now=now)
 
-    def frame(self, gid="a" * 16, who=FRIEND, now=T0, data=GOOD, h="h1"):
-        return CC.on_incoming(self.env, who, {"op": "frame", "grant_id": gid, "seq": 1, "hash": h, "interval": 5, "at": now,
-                                              "data": data}, now=now)
+    def frame(self, gid="a" * 16, who=FRIEND, now=T0, data=GOOD, h="h1", seq=None, at=None):
+        self.seq = getattr(self, "seq", 0) + 1
+        return CC.on_incoming(self.env, who, {"op": "frame", "grant_id": gid, "seq": self.seq if seq is None else seq, "hash": h,
+                                              "interval": 5, "at": now if at is None else at, "data": data}, now=now)
 
     def test_spoofed_sender_dropped(self):
         self.assertEqual(self.open(), "opened")
@@ -277,7 +283,7 @@ class C5Viewer(Base):
         self.open()
         self.assertEqual(self.frame(now=T0 + 1), "frame")
         self.assertEqual(self.frame(now=T0 + 2), "rate")
-        self.assertEqual(CC.on_incoming(self.env, FRIEND, {"op": "unchanged", "grant_id": "a" * 16, "hash": "h1"}, now=T0 + 5), "alive")
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, {"op": "unchanged", "grant_id": "a" * 16, "hash": "h1", "at": T0 + 5}, now=T0 + 5), "alive")
         self.assertEqual(self.frame(now=T0 + 3601), "expired")
 
     def test_per_owner_max(self):
@@ -288,7 +294,7 @@ class C5Viewer(Base):
     def test_close_removes_frame(self):
         self.open()
         self.frame(now=T0 + 1)
-        self.assertEqual(CC.on_incoming(self.env, FRIEND, {"op": "close", "grant_id": "a" * 16}, now=T0 + 2), "closed")
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, {"op": "close", "grant_id": "a" * 16, "at": T0 + 2}, now=T0 + 2), "closed")
         self.assertFalse((CC.frames_dir(self.env) / ("a" * 16 + ".json")).exists())
         self.assertEqual(self.frame(now=T0 + 9), "expired")
 
@@ -359,8 +365,9 @@ class C8Files(Base):
         g = self.issue(pin=True)["grant_id"]
         self.beat(g)
         self.tick(now=T0 + 1)
-        CC.on_incoming(self.env, FRIEND, {"op": "open", "grant_id": "b" * 16, "until": T0 + 3600}, now=T0)
-        CC.on_incoming(self.env, FRIEND, {"op": "frame", "grant_id": "b" * 16, "hash": "x", "data": GOOD}, now=T0 + 1)
+        CC.request(self.env, self.root, FRIEND, now=T0)
+        CC.on_incoming(self.env, FRIEND, {"op": "open", "grant_id": "b" * 16, "until": T0 + 3600, "at": T0}, now=T0)
+        CC.on_incoming(self.env, FRIEND, {"op": "frame", "grant_id": "b" * 16, "seq": 1, "hash": "x", "data": GOOD, "at": T0 + 1}, now=T0 + 1)
         home = CC._home(self.env)
         for p in (CC.path(self.env), home / "cast.jsonl", CC.frames_dir(self.env) / ("b" * 16 + ".json")):
             self.assertEqual(oct(p.stat().st_mode & 0o777), "0o600", p)
@@ -381,8 +388,8 @@ class C8Files(Base):
             self.assertNotIn(str(T0 - 100 * 86400), p.read_text())
 
     def test_payload_schema(self):
-        CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "c" * 16}, now=T0)
-        self.assertEqual(CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "d" * 16}, now=T0 + 5), "quiet")
+        CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "c" * 16, "at": T0}, now=T0)
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "d" * 16, "at": T0 + 5}, now=T0 + 5), "quiet")
         pl = CC.payload(self.env, now=T0)
         self.assertEqual(pl["schema"], "aib-cast/v1")
         kinds = {t["key"]: t["kind"] for t in pl["targets"]}
@@ -422,6 +429,92 @@ class C8Cli(Base):
         self.assertEqual((rc, json.loads(out.getvalue())["why"]), (2, "bridge_off"))
 
 
+class R1Fixes(Base):
+    """#411 R1(@aeb40):M1 重放、M2 沒請求的 open、M3 epoch 快取 + 退避、L2 限流看最後請求、L3 封鎖者不顯示。"""
+    def test_m1_old_watch_dropped(self):
+        g = self.issue()["grant_id"]
+        msg = {"op": "watch", "grant_id": g, "visible": True, "at": T0 - 2 * 86400}
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, msg, now=T0), "old")      # 補收兩天前的心跳
+        self.assertEqual(self.tick(now=T0 + 1), [])
+        self.beat(g, now=T0 + 10)
+        self.assertEqual(self.beat(g, now=T0 + 10), "old", "不比上一則新")
+        no_at = {"op": "watch", "grant_id": g, "visible": True}
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, no_at, now=T0 + 11), "bad")
+
+    def test_m1_old_request_does_not_reopen(self):
+        CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "c" * 16, "at": T0}, now=T0)
+        CC.reject(self.env, self.root, "c" * 16, now=T0 + 1)
+        got = CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "c" * 16, "at": T0}, now=T0 + 7200)
+        self.assertEqual(got, "old")
+        self.assertEqual(CC.read(self.env)["req_in"][FRIEND]["status"], "rejected")
+
+    def test_m1_frame_seq_only_up(self):
+        CC.request(self.env, self.root, FRIEND, now=T0)
+        CC.on_incoming(self.env, FRIEND, {"op": "open", "grant_id": "a" * 16, "until": T0 + 3600, "at": T0}, now=T0)
+        f = lambda seq, at, now: CC.on_incoming(self.env, FRIEND, {"op": "frame", "grant_id": "a" * 16, "seq": seq, "hash": "h%d" % seq,
+                                                                   "at": at, "data": GOOD}, now=now)
+        self.assertEqual(f(5, T0 + 1, T0 + 1), "frame")
+        self.assertEqual(f(4, T0 + 10, T0 + 10), "old")
+        self.assertEqual(f(5, T0 + 20, T0 + 20), "old")
+        self.assertEqual(f(9, T0 - 600, T0 + 30), "old", "寄出時間太舊")
+        self.assertEqual(f(6, T0 + 40, T0 + 40), "frame")
+
+    def test_m1_control_ops_deduped_in_bridge(self):
+        src = (COCKPIT / "chat_nostr.py").read_text(encoding="utf-8")
+        body = src.split("async def on_cast", 1)[1].split("\n    async def ", 1)[0]
+        self.assertIn('if msg["op"] not in ("frame", "unchanged") and msgid:', body)
+        self.assertIn('self.led.seen("m:" + msgid)', body)
+        self.assertIn("self.on_cast(rumor, tags, from_npub, msgid)", src)
+
+    def test_m2_open_needs_request(self):
+        msg = {"op": "open", "grant_id": "a" * 16, "until": T0 + 3600, "at": T0}
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, msg, now=T0), "unrequested")
+        CC.request(self.env, self.root, FRIEND, now=T0 - 2 * 86400)
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, msg, now=T0), "unrequested", "請求過期了")
+        CC.request(self.env, self.root, FRIEND, now=T0)
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, msg, now=T0), "opened")
+        msg2 = dict(msg, grant_id="b" * 16)
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, msg2, now=T0 + 1), "unrequested", "一個請求只開一格")
+
+    def test_m3_epoch_cached(self):
+        n = []
+        with mock.patch.object(CC, "EPOCH", None), mock.patch.object(CC, "session_epoch", lambda: n.append(1) or {"boot": 1, "locked": False}):
+            CC._EPOCH.update(at=None)
+            for _ in range(20):
+                CC._epoch()
+            self.assertEqual(len(n), 1)
+            CC._EPOCH.update(at=CC.time.monotonic() - CC.EPOCH_CACHE_S - 1)
+            CC._epoch()
+            self.assertEqual(len(n), 2)
+
+    def test_m3_failed_send_backs_off(self):
+        g = self.issue()["grant_id"]
+        self.beat(g, now=T0)
+        self.assertEqual([o["kind"] for o in self.tick(now=T0 + 1)], ["frame"])     # 沒呼叫 sent() = 送失敗
+        for t in (2, 3, 4, 5):
+            self.assertEqual(self.tick(now=T0 + t), [], "送失敗也等滿 5 秒")
+        self.assertEqual([o["kind"] for o in self.tick(now=T0 + 6)], ["frame"])
+
+    def test_l2_request_limit_by_last_time(self):
+        CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "c" * 16, "at": T0}, now=T0)
+        CC.reject(self.env, self.root, "c" * 16, now=T0 + 1)
+        got = CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "d" * 16, "at": T0 + 60}, now=T0 + 60)
+        self.assertEqual(got, "quiet")
+        got = CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "d" * 16, "at": T0 + 3601}, now=T0 + 3601)
+        self.assertEqual(got, "pending")
+
+    def test_l3_blocked_hidden(self):
+        g = self.issue()["grant_id"]
+        CC.request(self.env, self.root, FRIEND, now=T0)
+        CC.on_incoming(self.env, FRIEND, {"op": "open", "grant_id": "a" * 16, "until": T0 + 3600, "at": T0}, now=T0)
+        pl = CC.payload(self.env, now=T0)
+        self.assertEqual((len(pl["watchers"]), len(pl["grants"])), (1, 1))
+        CR.add_friend(FRIEND, None, self.env, kind="blocks")
+        pl = CC.payload(self.env, now=T0)
+        self.assertEqual((pl["watchers"], pl["grants"]), ([], []))
+        self.assertTrue(g)
+
+
 KNIVES = [
     ("K1", '''    why = _human_gate(env, _who_label(o, env), hours, until, pin is True, prove)''', '''    why = None''',
      "C1Issue.test_gate_failures_issue_nothing"),
@@ -435,6 +528,19 @@ KNIVES = [
      '''        if not mine:''', "C5Viewer.test_spoofed_sender_dropped"),
     ("K6", '''    if ep.get("boot") != p.get("boot"):
         return "reboot"''', "", "C2Void.test_reboot"),
+    ("K9", '''    if ep.get("locked"):
+        return "locked"''', "", "C2Void.test_locked"),
+    ("K10", '''            if w.get("visible") is not True:
+                continue''', '''            if False:
+                continue''', "C3Heartbeat.test_hidden_no_push_but_watching"),
+    ("K11", '''            if not (isinstance(asked, dict) and asked.get("status") == "sent"''',
+     '''            if False and not (isinstance(asked, dict) and asked.get("status") == "sent"''', "R1Fixes.test_m2_open_needs_request"),
+    ("K12", '''        if type(msg.get("seq")) is not int or msg["seq"] <= int(mine.get("seq") or 0):''',
+     '''        if type(msg.get("seq")) is not int:''', "R1Fixes.test_m1_frame_seq_only_up"),
+    ("K13", '''    if op in ("watch", "frame", "unchanged") and now - sent_at > ALIVE_S:''',
+     '''    if False:''', "R1Fixes.test_m1_old_watch_dropped"),
+    ("K14", '''                continue                                  # 送失敗也至少等滿一個間隔''',
+     '''                pass                                      # 送失敗也至少等滿一個間隔''', "R1Fixes.test_m3_failed_send_backs_off"),
     ("K8", '''    return max(iv, min(SLOW_S, max(BASE_S, w)))''', '''    return w if type(want) is int else iv''',
      "C6Interval.test_levels"),
 ]

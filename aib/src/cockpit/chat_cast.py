@@ -55,6 +55,8 @@ UNCHANGED_S = 60
 RATE_S = 3                   # 觀看端每格最快 1 份 / 3 秒
 PER_OWNER_MAX = 4
 REQUEST_EVERY_S = 3600
+REQUEST_VALID_S = 86400      # 觀看端:送出請求後一天內的 open 才收(#411 R1 M2)
+EPOCH_CACHE_S = 5            # session_epoch 兩個子行程:5 秒才重量一次(#411 R1 M3)
 CLOCK_SKEW_S = 60
 WIRE_MAX = 48 * 1024
 SEATS_MAX = 32
@@ -130,12 +132,21 @@ def session_epoch(platform=None, run=subprocess.run):
     return {"boot": int(m.group(1)), "locked": locked}
 
 
+_EPOCH = {"at": None, "val": None}
+
+
 def _epoch():
+    """session_epoch 快取 EPOCH_CACHE_S 秒(轉接程式每 0.2 秒叫 tick;不能每次都開 sysctl + ioreg)。"""
+    if EPOCH is None and _EPOCH["at"] is not None and 0 <= time.monotonic() - _EPOCH["at"] < EPOCH_CACHE_S:
+        return _EPOCH["val"]
     try:
         ep = session_epoch()
     except Exception:   # noqa: BLE001
-        return None
-    return ep if isinstance(ep, dict) and type(ep.get("boot")) is int else None
+        ep = None
+    ep = ep if isinstance(ep, dict) and type(ep.get("boot")) is int else None
+    if EPOCH is None:
+        _EPOCH.update(at=time.monotonic(), val=ep)
+    return ep
 
 
 # ── 帳 ──
@@ -570,8 +581,7 @@ def tick(env, root, now=None, load=None, ncpu=None, power=None, build=None):
                 rec["grants"].pop(gid)
                 changed = True
                 if viewer and why != "sig":           # 簽章不過 ⇒ 連觀看者欄都不可信,不送;對方那格到期自己收
-                    out.append({"to": viewer, "msg": {"op": "close", "grant_id": gid, "at": now}, "grant_id": gid,
-                                "kind": "close", "hash": None, "interval": None})
+                    _enqueue(root, viewer, {"op": "close", "grant_id": gid, "at": now}, now)   # 進佇列:送失敗下一輪補(#411 R1 L1)
                 log(env, "void", gid, viewer, now, why=why)
                 continue
             w = g.get("watch") if isinstance(g.get("watch"), dict) else None
@@ -595,8 +605,8 @@ def tick(env, root, now=None, load=None, ncpu=None, power=None, build=None):
                 log(env, "interval", gid, viewer, now, interval=iv)
                 last["interval"] = iv
                 changed = True
-            if now - int(last.get("sent_at") or 0) < iv:
-                continue
+            if now - max(int(last.get("sent_at") or 0), int(last.get("tried_at") or 0)) < iv:
+                continue                                  # 送失敗也至少等滿一個間隔(#411 R1 M3:不 5Hz 狂送)
             if frame_raw is None:
                 frame_raw = (build or build_frame)(env, now, pw[0])
             data = whitelist(frame_raw, g["payload"].get("show_pin") is True)
@@ -605,12 +615,16 @@ def tick(env, root, now=None, load=None, ncpu=None, power=None, build=None):
                 if now - int(last.get("beat_at") or 0) >= UNCHANGED_S:
                     out.append({"to": viewer, "msg": {"op": "unchanged", "grant_id": gid, "hash": h, "at": now},
                                 "grant_id": gid, "kind": "unchanged", "hash": h, "interval": iv})
+                    last["tried_at"] = now
+                    changed = True
                 continue
             msg = {"op": "frame", "grant_id": gid, "seq": int(last.get("seq") or 0) + 1, "hash": h, "interval": iv,
                    "at": now, "data": data}
             if len(_canon(msg)) > WIRE_MAX:
                 continue
             out.append({"to": viewer, "msg": msg, "grant_id": gid, "kind": "frame", "hash": h, "interval": iv})
+            last["tried_at"] = now
+            changed = True
         if changed:
             _save(rec, env)
     return out
@@ -656,15 +670,22 @@ def on_incoming(env, owner, msg, now=None):
     if not o or not isinstance(msg, dict):
         return None
     op, gid = msg.get("op"), msg.get("grant_id")
+    sent_at = msg.get("at") if type(msg.get("at")) is int else None
+    if sent_at is None or sent_at > now + CLOCK_SKEW_S:
+        return "bad"                                  # 寄出時間一定要有(#411 R1 M1:重放比的是這個)
+    if op in ("watch", "frame", "unchanged") and now - sent_at > ALIVE_S:
+        return "old"                                  # 重啟補收的舊心跳 / 舊畫面:不當現在
     with _locked(env):
         rec = read(env)
         g = rec["grants"].get(gid) if gid else None
         mine = rec["in"].get(gid) if gid else None
         if op == "request":
             cur = rec["req_in"].get(o)
-            if isinstance(cur, dict) and cur.get("status") == "pending" and now - int(cur.get("at") or 0) < REQUEST_EVERY_S:
-                return "quiet"
-            rec["req_in"][o] = {"at": now, "req_id": msg["req_id"], "status": "pending"}
+            if isinstance(cur, dict) and sent_at <= int(cur.get("sent_at") or 0):
+                return "old"                              # 不比上一則新(重放)⇒ 不把已接受 / 已拒變回待審
+            if isinstance(cur, dict) and now - int(cur.get("at") or 0) < REQUEST_EVERY_S:
+                return "quiet"                            # 限流看最後一次請求,不管狀態(#411 R1 L2)
+            rec["req_in"][o] = {"at": now, "sent_at": sent_at, "req_id": msg["req_id"], "status": "pending"}
             _save(rec, env)
             return "pending"
         if op == "reject":
@@ -681,7 +702,10 @@ def on_incoming(env, owner, msg, now=None):
                 g["live"] = False
                 _save(rec, env)
                 return "stopped"
-            g["watch"] = {"at": now, "visible": msg.get("visible") is True,
+            prev = g.get("watch") if isinstance(g.get("watch"), dict) else {}
+            if sent_at <= int(prev.get("sent_at") or 0):
+                return "old"
+            g["watch"] = {"at": now, "sent_at": sent_at, "visible": msg.get("visible") is True,
                           "want": msg.get("want") if type(msg.get("want")) is int else None}
             if not g.get("live"):
                 g["live"] = True
@@ -694,6 +718,10 @@ def on_incoming(env, owner, msg, now=None):
                 return "bad"
             if mine:
                 return "dup"
+            asked = rec["req_out"].get(o)
+            if not (isinstance(asked, dict) and asked.get("status") == "sent" and now - int(asked.get("at") or 0) <= REQUEST_VALID_S
+                    and sent_at >= int(asked.get("at") or 0) - CLOCK_SKEW_S):
+                return "unrequested"                      # 沒請求過就不收(#411 R1 M2:好友不能自己在我牆上開格)
             act = [k for k, v in rec["in"].items() if v.get("owner") == o and v.get("status") != "closed"
                    and int(v.get("until") or 0) > now]
             if len(act) >= PER_OWNER_MAX:
@@ -716,14 +744,18 @@ def on_incoming(env, owner, msg, now=None):
             return "expired"
         if now - int(mine.get("rx_at") or 0) < RATE_S:
             return "rate"
+        if sent_at < int(mine.get("sent_at") or 0):
+            return "old"
         if op == "unchanged":
             if msg.get("hash") == mine.get("hash"):
-                mine.update(rx_at=now, alive_at=now)
+                mine.update(rx_at=now, alive_at=now, sent_at=sent_at)
                 _save(rec, env)
                 return "alive"
             return "stale"
         if op != "frame":
             return None
+        if type(msg.get("seq")) is not int or msg["seq"] <= int(mine.get("seq") or 0):
+            return "old"                                  # seq 只准往上(舊畫面不蓋新畫面)
         data = whitelist(msg.get("data"), True)          # 投放端決定給不給 topic;這裡只再洗一次
         iv = msg.get("interval") if type(msg.get("interval")) is int and BASE_S <= msg["interval"] <= SLOW_S else None
         d = frames_dir(env)
@@ -733,7 +765,7 @@ def on_incoming(env, owner, msg, now=None):
         _write(d / (gid + ".json"), json.dumps({"grant_id": gid, "owner": o, "at": now, "hash": msg.get("hash"),
                                                 "interval": iv, "data": data}, ensure_ascii=False, sort_keys=True))
         mine.update(status="live", rx_at=now, alive_at=now, hash=msg.get("hash") if isinstance(msg.get("hash"), str) else None,
-                    interval=iv)
+                    interval=iv, seq=msg["seq"], sent_at=sent_at)
         _save(rec, env)
         return "frame"
 
@@ -769,12 +801,16 @@ def payload(env=None, now=None):
     watchers = []
     for gid, g in sorted(rec["grants"].items()):
         p = g.get("payload") or {}
+        if not _friend(p.get("viewer"), env):         # 封鎖 / 解除好友的不顯示(下一輪 tick 會作廢)(#411 R1 L3)
+            continue
         w = g.get("watch") if isinstance(g.get("watch"), dict) else None
         watchers.append({"grant_id": gid, "owner": p.get("viewer"), "name": (names.get(p.get("viewer")) or (None,))[0],
                          "npub_short": npub_short(p.get("viewer")), "until": p.get("until"), "pin": p.get("show_pin") is True,
                          "live": bool(w) and now - int(w.get("at") or 0) <= ALIVE_S})
     grants = []
     for gid, g in sorted(rec["in"].items(), key=lambda kv: -int(kv[1].get("at") or 0)):
+        if not _friend(g.get("owner"), env):
+            continue
         st = g.get("status")
         iv = g.get("interval") or BASE_S
         if st == "live" and now - int(g.get("alive_at") or 0) > max(2 * iv, UNCHANGED_S) + 10:

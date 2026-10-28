@@ -877,8 +877,6 @@ class Sender(object):
         for item in await asyncio.to_thread(CC.tick, None, self.root, now):
             if await self._send_owner_msg(item["to"], "cast", json.dumps(item["msg"], ensure_ascii=False)):
                 CC.sent(None, item)
-                if item["kind"] == "close":
-                    audit(self.root, "cast-out", "-", item["to"], "close")
 
     async def _push_card(self, tgt, owner, frm, now):
         """名片(第 32 節,Andy 23:5x「社群只給好友看」):我宣告的社群帳號私下送給這位好友 / 我的機器;
@@ -1714,8 +1712,10 @@ class Receiver(object):
         got = CVI.on_incoming(None, owner, msg)
         audit(self.root, "visit-in", "-", from_npub, "%s:%s" % (msg["op"], got or "ignored"))
 
-    async def on_cast(self, rumor, tags, from_npub):
-        """影音牆投放(chat_cast):只收驗得到名冊的好友 / 我的機器;寄件席要對得上;記帳 / 存畫面,不進佇列、不進 AI 框、不回條。"""
+    async def on_cast(self, rumor, tags, from_npub, msgid=None):
+        """影音牆投放(chat_cast):只收驗得到名冊的好友 / 我的機器;寄件席要對得上;記帳 / 存畫面,不進佇列、不進 AI 框、不回條。
+        控制類(request / open / reject / close / watch)照 msgid 去重(#411 R1 M1:重啟補收兩天時舊的不能當新的);
+        frame / unchanged 一直來,不佔去重名額,改由 chat_cast 比 seq / 寄出時間。"""
         import chat_cast as CC
         parsed = GF.parse_address(tags.get("aib-from") or "") or {}
         owner = parsed.get("owner")
@@ -1728,6 +1728,10 @@ class Receiver(object):
         if msg is None:
             audit(self.root, "cast-in", "-", from_npub, "bad")
             return
+        if msg["op"] not in ("frame", "unchanged") and msgid:
+            if self.led.seen("m:" + msgid):
+                return
+            self.led.mark("m:" + msgid)
         got = CC.on_incoming(None, owner, msg)
         if msg["op"] not in ("frame", "unchanged", "watch") or got not in ("frame", "alive", "watch"):
             audit(self.root, "cast-in", "-", from_npub, "%s:%s" % (msg["op"], got or "ignored"))
@@ -1879,7 +1883,7 @@ class Receiver(object):
         kind = GF.inbound_kind(tags)
         if not msgid:
             return
-        if kind not in ("presence", "card", "space", "cast"):      # 這四種重收無害(cast:畫面一直來,去重帳會撐爆;帳本身驗 grant_id)(寄出時間 / 內容比過),不佔去重名額(#303 審 A-M6)
+        if kind not in ("presence", "card", "space", "cast"):      # 這三種重收無害(寄出時間 / 內容比過),不佔去重名額(#303 審 A-M6);cast 在 on_cast 裡分(畫面免、控制類照去重)
             if self.led.seen("m:" + msgid):
                 return
             self.led.mark("m:" + msgid)
@@ -1894,7 +1898,7 @@ class Receiver(object):
         if kind == "visit":
             return await self.on_visit(rumor, tags, from_npub)
         if kind == "cast":
-            return await self.on_cast(rumor, tags, from_npub)
+            return await self.on_cast(rumor, tags, from_npub, msgid)
         if kind == "unknown":
             # 對方版本比這台新:不進 AI 框、不回條;記一行好查(型別名截短,不記內容)
             audit(self.root, "in", msgid, from_npub, "unknown-type:" + str(tags.get("aib-type"))[:32])
