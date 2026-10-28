@@ -504,6 +504,7 @@ def close(env, root, gid, now=None, why="closed"):
         g = rec["grants"].pop(gid, None)
         mine = rec["in"].get(gid)
         if g:
+            _ended(rec, (g.get("payload") or {}).get("viewer"))
             _save(rec, env)
         elif mine:
             mine.update(status="closed", closed_at=now)
@@ -518,6 +519,14 @@ def close(env, root, gid, now=None, why="closed"):
     _drop_frame(env, gid)
     _enqueue(root, mine["owner"], {"op": "close", "grant_id": gid, "at": now}, now)
     return {"grant_id": gid, "side": "viewer"}
+
+
+def _ended(rec, viewer):
+    """投放單結束(收回 / 作廢 / 到期)⇒ 這位好友的請求限流歸零,馬上能再請求(#411 R2 M:鎖屏作廢後不用等一小時)。
+    sent_at 留著:舊請求重放照樣擋。"""
+    cur = rec["req_in"].get(viewer) if viewer else None
+    if isinstance(cur, dict):
+        cur["at"] = 0
 
 
 def _void_why(g, now, ep, env):
@@ -580,6 +589,8 @@ def tick(env, root, now=None, load=None, ncpu=None, power=None, build=None):
             if why:
                 rec["grants"].pop(gid)
                 changed = True
+                if why != "sig":
+                    _ended(rec, viewer)
                 if viewer and why != "sig":           # 簽章不過 ⇒ 連觀看者欄都不可信,不送;對方那格到期自己收
                     _enqueue(root, viewer, {"op": "close", "grant_id": gid, "at": now}, now)   # 進佇列:送失敗下一輪補(#411 R1 L1)
                 log(env, "void", gid, viewer, now, why=why)
@@ -673,7 +684,7 @@ def on_incoming(env, owner, msg, now=None):
     sent_at = msg.get("at") if type(msg.get("at")) is int else None
     if sent_at is None or sent_at > now + CLOCK_SKEW_S:
         return "bad"                                  # 寄出時間一定要有(#411 R1 M1:重放比的是這個)
-    if op in ("watch", "frame", "unchanged") and now - sent_at > ALIVE_S:
+    if op in ("watch", "frame", "unchanged") and now - sent_at > ALIVE_S + CLOCK_SKEW_S:
         return "old"                                  # 重啟補收的舊心跳 / 舊畫面:不當現在
     with _locked(env):
         rec = read(env)
@@ -719,18 +730,24 @@ def on_incoming(env, owner, msg, now=None):
             if mine:
                 return "dup"
             asked = rec["req_out"].get(o)
-            if not (isinstance(asked, dict) and asked.get("status") == "sent" and now - int(asked.get("at") or 0) <= REQUEST_VALID_S
-                    and sent_at >= int(asked.get("at") or 0) - CLOCK_SKEW_S):
-                return "unrequested"                      # 沒請求過就不收(#411 R1 M2:好友不能自己在我牆上開格)
+            fresh = (isinstance(asked, dict) and asked.get("status") == "sent" and now - int(asked.get("at") or 0) <= REQUEST_VALID_S
+                     and sent_at >= int(asked.get("at") or 0) - CLOCK_SKEW_S)
+            prev = rec["in"].get(asked.get("grant_id")) if isinstance(asked, dict) and asked.get("status") == "opened" else None
+            ended = None
+            if isinstance(prev, dict) and prev.get("owner") == o:
+                ended = prev.get("closed_at") if prev.get("status") == "closed" else (
+                    prev.get("until") if int(prev.get("until") or 0) <= now else None)
+            reopen = (type(ended) is int and now - ended <= REQUEST_VALID_S and sent_at >= ended - CLOCK_SKEW_S)
+            if not (fresh or reopen):
+                return "unrequested"                      # 沒請求過就不收(#411 R1 M2);請求開過、那格已關 ⇒ 認重開一次(#411 R2 M)
             act = [k for k, v in rec["in"].items() if v.get("owner") == o and v.get("status") != "closed"
                    and int(v.get("until") or 0) > now]
             if len(act) >= PER_OWNER_MAX:
                 return "full"
             rec["in"][gid] = {"owner": o, "until": until, "status": "waiting", "at": now, "rx_at": 0, "hash": None,
                               "interval": None}
-            cur = rec["req_out"].get(o)
-            if isinstance(cur, dict) and cur.get("status") == "sent":
-                cur.update(status="opened", answered_at=now)
+            if isinstance(asked, dict):
+                asked.update(status="opened", answered_at=now, grant_id=gid)
             _save(rec, env)
             return "opened"
         if not mine or mine.get("owner") != o:          # 冒名:寄件主人 ≠ 投放單主人 ⇒ 丟

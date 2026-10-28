@@ -1265,6 +1265,23 @@ async def _send_to(target, own, gw, mine):
 BACKFILL = 2 * 86400 + 600       # gift wrap 時間戳往回亂數最多 2 天 ⇒ 補收要往回 2 天 10 分
 KEEP = 7 * 86400                 # 去重紀錄保留 7 天
 SEEN_KEY_LEN = 18                # 去重鍵只存「e:/m: + 前 16 個十六進位」(64 位元,撞號可略);全長 64 碼的 event id 一週就撐爆 64 KB
+CAST_NOSEEN = ("frame", "unchanged", "watch")   # 投放的這三種免去重(靠寄出時間只准往前 + seq 擋重放;#411 R2 H)
+
+
+def _cast_op(rumor):
+    try:
+        d = json.loads(rumor.content())
+    except (ValueError, TypeError):
+        return None
+    return d.get("op") if isinstance(d, dict) else None
+
+
+def cast_noseen(led, eid, tags, rumor):
+    """投放畫面 / 心跳一直來(每 5 秒一則):拿掉這則的去重紀錄,免得 SEEN_MAX 被擠滿、私訊的去重被丟(#411 R2 H)。"""
+    if tags.get("aib-type") == "cast" and _cast_op(rumor) in CAST_NOSEEN:
+        led.forget("e:" + eid)
+
+
 SEEN_MAX = 1500                  # 去重紀錄最多幾筆(短鍵每筆約 30 bytes ⇒ 約 45 KB,留在 atomic_json 64 KB 上限內);超過丟最舊的
 RESUB_EVERY = GF.env_secs("AIB_CHAT_RESUB_EVERY", 30)   # 秒;席的金鑰有變(新席、封存)就重新訂閱(壞值退回預設、最少 1 秒)
 RECEIPT_STAGES_OUT = ("queued", "delivered", "held", "refused", "expired", "still_waiting")   # read 另走一批一次(1.8)
@@ -1441,6 +1458,9 @@ class Ledger(object):
     def mark(self, key):
         self.st["seen"][self._k(key)] = int(time.time())
 
+    def forget(self, key):
+        self.st["seen"].pop(self._k(key), None)
+
     def received(self, msgid, rec=None):
         p = self.root / "received" / (msgid + ".json")
         if rec is None:
@@ -1556,6 +1576,7 @@ class Receiver(object):
             refs = [v[1] for v in (t.to_vec() for t in rumor.tags()) if len(v) >= 2 and v[0] == "aib-ref"]
             self.on_receipt(tags, from_npub, refs)
             return self.led.save()
+        cast_noseen(self.led, eid, tags, rumor)
         await self.on_dm(rumor, tags, from_npub, entry)
         self.led.save()
 
@@ -1714,8 +1735,8 @@ class Receiver(object):
 
     async def on_cast(self, rumor, tags, from_npub, msgid=None):
         """影音牆投放(chat_cast):只收驗得到名冊的好友 / 我的機器;寄件席要對得上;記帳 / 存畫面,不進佇列、不進 AI 框、不回條。
-        控制類(request / open / reject / close / watch)照 msgid 去重(#411 R1 M1:重啟補收兩天時舊的不能當新的);
-        frame / unchanged 一直來,不佔去重名額,改由 chat_cast 比 seq / 寄出時間。"""
+        控制類(request / open / reject / close)照 msgid 去重(#411 R1 M1:重啟補收兩天時舊的不能當新的);
+        frame / unchanged / watch 一直來,不佔去重名額(#411 R2 H),改由 chat_cast 比 seq / 寄出時間只准往前。"""
         import chat_cast as CC
         parsed = GF.parse_address(tags.get("aib-from") or "") or {}
         owner = parsed.get("owner")
@@ -1728,7 +1749,7 @@ class Receiver(object):
         if msg is None:
             audit(self.root, "cast-in", "-", from_npub, "bad")
             return
-        if msg["op"] not in ("frame", "unchanged") and msgid:
+        if msg["op"] not in CAST_NOSEEN and msgid:
             if self.led.seen("m:" + msgid):
                 return
             self.led.mark("m:" + msgid)

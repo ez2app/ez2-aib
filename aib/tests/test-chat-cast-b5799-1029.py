@@ -462,7 +462,10 @@ class R1Fixes(Base):
     def test_m1_control_ops_deduped_in_bridge(self):
         src = (COCKPIT / "chat_nostr.py").read_text(encoding="utf-8")
         body = src.split("async def on_cast", 1)[1].split("\n    async def ", 1)[0]
-        self.assertIn('if msg["op"] not in ("frame", "unchanged") and msgid:', body)
+        self.assertIn('if msg["op"] not in CAST_NOSEEN and msgid:', body)
+        self.assertIn('CAST_NOSEEN = ("frame", "unchanged", "watch")', src)
+        wrap = src.split("async def on_wrap", 1)[1].split("\n    def ", 1)[0]
+        self.assertIn("cast_noseen(self.led, eid, tags, rumor)", wrap)
         self.assertIn('self.led.seen("m:" + msgid)', body)
         self.assertIn("self.on_cast(rumor, tags, from_npub, msgid)", src)
 
@@ -515,6 +518,94 @@ class R1Fixes(Base):
         self.assertTrue(g)
 
 
+class R2Fixes(Base):
+    """#411 R2(@aeb40):M 鎖屏 / 重開機作廢後能馬上重開;L 太舊門檻含時鐘誤差。H 在 R2Seen(要 nostr-sdk)。"""
+    def _open(self, gid, now):
+        return CC.on_incoming(self.env, FRIEND, {"op": "open", "grant_id": gid, "until": now + 3600, "at": now}, now=now)
+
+    def test_m_void_resets_request_limit(self):
+        CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "c" * 16, "at": T0}, now=T0)
+        g = self.issue(now=T0 + 1)["grant_id"]
+        self.beat(g, now=T0 + 2)
+        self.ep["locked"] = True
+        self.tick(now=T0 + 3)
+        self.assertNotIn(g, CC.read(self.env)["grants"], "鎖屏作廢")
+        got = CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "d" * 16, "at": T0 + 60}, now=T0 + 60)
+        self.assertEqual(got, "pending", "作廢後馬上能再請求,不用等一小時")
+        got = CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "c" * 16, "at": T0}, now=T0 + 61)
+        self.assertEqual(got, "old", "舊請求重放照樣擋")
+
+    def test_m_close_resets_request_limit(self):
+        CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "c" * 16, "at": T0}, now=T0)
+        g = self.issue(now=T0 + 1)["grant_id"]
+        CC.close(self.env, self.root, g, now=T0 + 2)
+        got = CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "d" * 16, "at": T0 + 60}, now=T0 + 60)
+        self.assertEqual(got, "pending")
+
+    def test_m_viewer_accepts_reopen_after_close(self):
+        CC.request(self.env, self.root, FRIEND, now=T0)
+        self.assertEqual(self._open("a" * 16, T0), "opened")
+        self.assertEqual(self._open("b" * 16, T0 + 1), "unrequested", "那格還開著:不認第二格")
+        CC.on_incoming(self.env, FRIEND, {"op": "close", "grant_id": "a" * 16, "at": T0 + 10}, now=T0 + 10)
+        self.assertEqual(self._open("b" * 16, T0 + 20), "opened", "那格關了:投放端重發要認")
+        self.assertEqual(self._open("c" * 16, T0 + 21), "unrequested", "一次關只認一次重開")
+        CC.on_incoming(self.env, FRIEND, {"op": "close", "grant_id": "b" * 16, "at": T0 + 30}, now=T0 + 30)
+        self.assertEqual(self._open("d" * 16, T0 + 30 + 86400 + 1), "unrequested", "關了一天以上就要重新請求")
+
+    def test_m_viewer_accepts_reopen_after_expiry(self):
+        CC.request(self.env, self.root, FRIEND, now=T0)
+        self.assertEqual(self._open("a" * 16, T0), "opened")
+        self.assertEqual(self._open("b" * 16, T0 + 3601), "opened", "那格到期了:認重開")
+
+    def test_l_old_threshold_has_skew(self):
+        g = self.issue()["grant_id"]
+        msg = {"op": "watch", "grant_id": g, "visible": True, "at": T0}
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, msg, now=T0 + CC.ALIVE_S + CC.CLOCK_SKEW_S - 1), "watch")
+        msg = dict(msg, at=T0 + 1)
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, msg, now=T0 + 1 + CC.ALIVE_S + CC.CLOCK_SKEW_S + 1), "old")
+
+
+NOSTR_VENV = os.environ.get("AIB_TEST_NOSTR_VENV") or ""
+VPY = str(Path(NOSTR_VENV) / "bin" / "python") if NOSTR_VENV else ""
+HAVE_NOSTR = bool(VPY) and Path(VPY).exists()
+SEEN_PROBE = r'''
+import hashlib, json, sys
+sys.path.insert(0, sys.argv[1])
+import chat_nostr as CN
+class R:
+    def __init__(self, c): self.c = c
+    def content(self): return self.c
+L = CN.Ledger(sys.argv[2])
+L.mark("m:" + "ab" * 16)                       # 一則舊私訊的去重紀錄
+L.save()
+for i in range(2000):                          # 灌 2000 則畫面 / 心跳(約 3 小時份)
+    eid = hashlib.sha256(b"f%d" % i).hexdigest()    # 去重只存前 16 碼:要真的不一樣
+    L.mark("e:" + eid)
+    CN.cast_noseen(L, eid, {"aib-type": "cast"}, R(json.dumps({"op": ("frame", "unchanged", "watch")[i % 3]})))
+    L.save()
+eid = hashlib.sha256(b"ctl").hexdigest()
+L.mark("e:" + eid)
+CN.cast_noseen(L, eid, {"aib-type": "cast"}, R(json.dumps({"op": "request"})))
+L.save()
+L2 = CN.Ledger(sys.argv[2])
+print(json.dumps({"dm": L2.seen("m:" + "ab" * 16), "n": len(L2.st["seen"]), "ctl": L2.seen("e:" + eid)}))
+'''
+
+
+@unittest.skipUnless(HAVE_NOSTR, "要 AIB_TEST_NOSTR_VENV(chat_nostr 要 nostr-sdk)")
+class R2Seen(unittest.TestCase):
+    """#411 R2 H:投放畫面不佔去重名額;灌 2000 則畫面後,舊私訊的去重紀錄還在(重連補收時不會再送進席)。"""
+    def test_h_frames_do_not_evict_dm_dedupe(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = run_guarded([VPY, "-B", "-c", SEEN_PROBE, str(COCKPIT), d], cwd=d, max_procs=10, timeout=120,
+                            env=dict(os.environ, EZ2_AIB_STATE_ROOT=d))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            got = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertTrue(got["dm"], "舊私訊的去重被擠掉了:重連補收會再送進席")
+        self.assertTrue(got["ctl"], "控制類照樣記去重")
+        self.assertLessEqual(got["n"], 3)
+
+
 KNIVES = [
     ("K1", '''    why = _human_gate(env, _who_label(o, env), hours, until, pin is True, prove)''', '''    why = None''',
      "C1Issue.test_gate_failures_issue_nothing"),
@@ -533,14 +624,16 @@ KNIVES = [
     ("K10", '''            if w.get("visible") is not True:
                 continue''', '''            if False:
                 continue''', "C3Heartbeat.test_hidden_no_push_but_watching"),
-    ("K11", '''            if not (isinstance(asked, dict) and asked.get("status") == "sent"''',
-     '''            if False and not (isinstance(asked, dict) and asked.get("status") == "sent"''', "R1Fixes.test_m2_open_needs_request"),
+    ("K11", '''            fresh = (isinstance(asked, dict) and asked.get("status") == "sent"''',
+     '''            fresh = True or (isinstance(asked, dict) and asked.get("status") == "sent"''', "R1Fixes.test_m2_open_needs_request"),
     ("K12", '''        if type(msg.get("seq")) is not int or msg["seq"] <= int(mine.get("seq") or 0):''',
      '''        if type(msg.get("seq")) is not int:''', "R1Fixes.test_m1_frame_seq_only_up"),
-    ("K13", '''    if op in ("watch", "frame", "unchanged") and now - sent_at > ALIVE_S:''',
+    ("K13", '''    if op in ("watch", "frame", "unchanged") and now - sent_at > ALIVE_S + CLOCK_SKEW_S:''',
      '''    if False:''', "R1Fixes.test_m1_old_watch_dropped"),
-    ("K14", '''                continue                                  # 送失敗也至少等滿一個間隔''',
-     '''                pass                                      # 送失敗也至少等滿一個間隔''', "R1Fixes.test_m3_failed_send_backs_off"),
+    ("K14", '''max(int(last.get("sent_at") or 0), int(last.get("tried_at") or 0))''',
+     '''int(last.get("sent_at") or 0)''', "R1Fixes.test_m3_failed_send_backs_off"),          # R2 L:只拿掉 tried_at
+    ("K15", '''                    _ended(rec, viewer)''', '''                    pass''', "R2Fixes.test_m_void_resets_request_limit"),
+    ("K16", '''            if not (fresh or reopen):''', '''            if not fresh:''', "R2Fixes.test_m_viewer_accepts_reopen_after_close"),
     ("K8", '''    return max(iv, min(SLOW_S, max(BASE_S, w)))''', '''    return w if type(want) is int else iv''',
      "C6Interval.test_levels"),
 ]
@@ -559,6 +652,20 @@ class Knife(unittest.TestCase):
                 self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s" % (tag, out))
                 self.assertIn("FAIL: " + target.split(".")[-1], out, "%s 紅的不是目標斷言\n%s" % (tag, out))
                 self.assertNotIn("ERROR: ", out, "%s 是炸掉不是斷言紅\n%s" % (tag, out))
+
+    def test_k17_frames_take_seen(self):
+        """K17(R2 H):cast_noseen 不拿掉去重紀錄 ⇒ R2Seen 紅。"""
+        if not HAVE_NOSTR:
+            self.skipTest("要 AIB_TEST_NOSTR_VENV")
+        name = Path(__file__).name
+        with knife_copy(REPO, "src/cockpit/chat_nostr.py", '''        led.forget("e:" + eid)''', '''        pass''', tests=(name,)) as root:
+            r = run_guarded([sys.executable, "-B", str(root / "tests" / name), "R2Seen.test_h_frames_do_not_evict_dm_dedupe"],
+                            cwd=str(root), max_procs=40, timeout=180, env=dict(os.environ, AIB_TEST_NOSTR_VENV=NOSTR_VENV))
+        out = r.stdout + r.stderr
+        self.assertNotIn("skipped", out, "刀版沒真跑(少 venv)\n" + out)
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("FAIL: test_h_frames_do_not_evict_dm_dedupe", out)
+        self.assertNotIn("ERROR: ", out, out)
 
     def test_k7_static_scan(self):
         """K7:有別支(例:seat_act)去讀 cast/in ⇒ C7 紅。刀落在複本的 seat_act.py。"""
