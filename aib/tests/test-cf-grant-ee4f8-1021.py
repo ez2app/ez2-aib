@@ -445,6 +445,28 @@ class SeVault(unittest.TestCase):
         self.assertIn("--reason", calls[1][0])
         self.assertTrue(calls[0][0][calls[0][0].index("--dir") + 1].startswith(self.env["EZ2_AIB_STATE_ROOT"]))
 
+    def test_stale_helper_without_swiftc_refused(self):
+        """helper 原始碼變了(#404 R1 改了 sehelper)、這台又沒有 swiftc / Xcode CLT ⇒ 回 no_swiftc、拒;
+        舊版 helper 還在磁碟上也不拿來用(不退回舊版)。"""
+        import se_vault as SV
+        bindir = Path(self.env["EZ2_AIB_STATE_ROOT"]) / "bin"
+        bindir.mkdir(parents=True)
+        old = bindir / "aib-sehelper"
+        old.write_text("#!/bin/sh\necho OLD\n")
+        old.chmod(0o700)
+        (bindir / "aib-sehelper.sha256").write_text("0" * 64 + "\n")
+        sd = Path(SV.se_dir(self.env))
+        sd.mkdir(parents=True, exist_ok=True)
+        (sd / "CF_TOKEN_MINTER.sealed").write_text("{}")
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        self.assertEqual(SV.build_helper(self.env, run=run, platform="darwin"), (None, "no_swiftc"))
+        self.assertEqual(SV.unseal("CF_TOKEN_MINTER", "核准", env=self.env, run=run, platform="darwin"), (None, "no_swiftc"))
+        self.assertFalse(any(str(old) in " ".join(map(str, c)) for c in calls), "不准叫舊版 helper")
+
     def test_errors(self):
         import se_vault as SV
         self.assertEqual(SV.seal("bad name", "x", env=self.env), (None, "bad_name"))
