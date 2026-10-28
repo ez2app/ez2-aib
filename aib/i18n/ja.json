@@ -158,7 +158,7 @@
   "aib.lang.notice": "AIB の言語を {value} に切り替えました。次の返答からこの言語で答えてください(UI・ステータスバー・mod は自動で追従)。",
   "aib.help.title": "aib - Ez2 AIB v{version} コックピットランチャー",
   "aib.edition.missing": "aib {cmd}:この機能はまだ開発中で、一般公開していません。",
-  "aib.help.usage": "使い方: aib <provider> <dgrs|safe> <role> [new] [--model MODEL] [--dry-run]",
+  "aib.help.usage": "使い方: aib <provider> <dgrs|safe> <role> [new] [dm] [--model MODEL] [--dry-run]",
   "aib.idle.close.aborted": "中止しました。何も変更していません",
   "aib.idle.close.confirm": "{target} を閉じますか?[y/N] ",
   "aib.idle.close.done": "{target} を閉じました:TERM {n} 件、生存 {survivors} 件",
@@ -5751,5 +5751,11 @@
   "aib.release.sign_approve.notify_ok": "✓ 署名済み {plugin} {ver}",
   "aib.release.sign_approve.notify_fail": "✗ 署名できませんでした {plugin} {ver}",
   "aib.release.sign_approve.no_output": "(出力なし)",
-  "aib.release.sign_approve.shim": "リリース署名シム {path}:{did}"
+  "aib.release.sign_approve.shim": "リリース署名シム {path}:{did}",
+  "aib.dmopen.on": "aib: 承認待ちエリアを開きました。これから開く席でも自動で開きます(取り消し:--no-dm)",
+  "aib.dmopen.auto": "aib: 承認待ちエリアを自動で開きました(dm 設定済み。取り消し:--no-dm)",
+  "aib.dmopen.off": "aib: 新しい席で承認待ちエリアを自動で開くのをやめました。開いているものはそのままです",
+  "aib.dmopen.not_advanced": "aib: 承認待ちエリアはアドバンスプランが必要です。今回は開きません",
+  "aib.dmopen.plugin_missing": "aib: 承認待ちエリアをオンにしましたが、pending-review プラグインが入っていません。入れると表示されます",
+  "aib.dmopen.no_cabin_home": "aib: このキャビンのフォルダが見つからず、承認待ちエリアは開きませんでした"
 }

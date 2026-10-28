@@ -158,7 +158,7 @@
   "aib.lang.notice": "AIB language switched to {value}: from your next reply on, answer in this language (the interface, status bar and mods follow automatically).",
   "aib.help.title": "aib — Ez2 AIB v{version} cockpit launcher",
   "aib.edition.missing": "aib {cmd}: this feature is still in development and not open to the public yet.",
-  "aib.help.usage": "Usage: aib <provider> <dgrs|safe> <role> [new] [--model MODEL] [--dry-run]",
+  "aib.help.usage": "Usage: aib <provider> <dgrs|safe> <role> [new] [dm] [--model MODEL] [--dry-run]",
   "aib.idle.close.aborted": "Aborted, nothing touched",
   "aib.idle.close.confirm": "Close {target}? [y/N] ",
   "aib.idle.close.done": "{target} closed: TERM sent to {n}, {survivors} still alive",
@@ -5751,5 +5751,11 @@
   "aib.release.sign_approve.notify_ok": "✓ Signed {plugin} {ver}",
   "aib.release.sign_approve.notify_fail": "✗ Signing failed {plugin} {ver}",
   "aib.release.sign_approve.no_output": "(no output)",
-  "aib.release.sign_approve.shim": "Release-signing shim {path}: {did}"
+  "aib.release.sign_approve.shim": "Release-signing shim {path}: {did}",
+  "aib.dmopen.on": "aib: review queue opened; every seat you open from now on opens it too (undo: --no-dm)",
+  "aib.dmopen.auto": "aib: review queue opened automatically (you set dm; undo: --no-dm)",
+  "aib.dmopen.off": "aib: new seats will no longer open the review queue automatically; already-open ones stay",
+  "aib.dmopen.not_advanced": "aib: the review queue needs the Advanced plan; not opened",
+  "aib.dmopen.plugin_missing": "aib: review queue switched on, but the pending-review plugin is not installed; it appears once installed",
+  "aib.dmopen.no_cabin_home": "aib: could not find this cabin's folder; review queue not opened"
 }

@@ -52,7 +52,7 @@ fi
 
 # aib - Ez2 AIB cockpit launcher (E2.9/E2.17/ED.11 直起+E2.19 席位紀錄).
 #
-#   aib <provider> <dgrs|safe> <role> [new] [--model MODEL] [--dry-run]
+#   aib <provider> <dgrs|safe> <role> [new] [dm] [--model MODEL] [--dry-run]   (dm / --dm / --no-dm:待審區,open_dm_panel.py)
 #
 # `new` is deliberately positional because that is the human-facing command
 # the maintainer approved.  `--new` remains an exact compatibility alias.
@@ -153,6 +153,7 @@ REPORTS_TO_RE='^[0-9a-z]{4,8}$'
 DRY="${AIB_DRY_RUN:-0}"
 NEW=0
 AGAIN=0
+OPEN_DM=auto   # 10-29 Andy:dm / --dm ⇒ on(打開待審區、整台記住);--no-dm ⇒ off;open_dm_panel.py
 MAIN_EXPLICIT=0   # 10-11:main 是人親手寫的(第四參數 / --instance=main)才算;從環境導出的不算
 MAIN_FROM=""
 _AIB_ENV_INSTANCE_AT_START="${EZ2_AIB_INSTANCE-}"   # 判 main 從哪來:呼叫端環境帶的,還是 aib 自己的預設
@@ -1025,6 +1026,8 @@ while [ "$#" -gt 0 ]; do
     --dry-run) DRY=1 ;;
     --new) NEW=1 ;;
     --again) AGAIN=1 ;;
+    --dm) OPEN_DM=on ;;
+    --no-dm) OPEN_DM=off ;;
     --reports-to)
       shift
       [ "$#" -gt 0 ] && [ -n "$1" ] || die "$(t aib.err.usage)"
@@ -1070,6 +1073,15 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+# 10-29 Andy:開席最後一個字寫 dm ⇒ 同 --dm(第 4 個字以後才認;dm 因此保留、不能當艙名)。
+if [ "${#POS[@]}" -ge 4 ] && [ "${POS[${#POS[@]}-1]}" = "dm" ]; then
+  case " $PROVIDERS " in *" ${POS[0]} "*)
+    OPEN_DM=on
+    unset "POS[${#POS[@]}-1]"
+    POS=("${POS[@]}") ;;
+  esac
+fi
 
 # Owner-facing batch form: aib <provider> <mode> <root-role> <N>sits [new].
 # It enters the ordinary new-instance resolver once, then seats_batch calls the
@@ -2016,6 +2028,13 @@ aib_run_ensure() {   # 起訖都記進碼表;rc 原樣回給呼叫端。note=def
   aib_attempt_mark ensure_done "${WINDOW_ID:-}" "rc=$_ensure_rc"
   return "$_ensure_rc"
 }
+# 10-29 Andy:待審區(dm 佇列 + 待審框 + 版面)開席時照 dm / --dm / 整台記憶打開;建艙 / ensure 之前寫好,畫框時就讀得到。
+#   失敗只印一行、不擋開席(open_dm_panel.py rc 恆 0)。
+if [ "$DRY" != "1" ]; then
+  "${EZ2_PY3:-python3}" "$HERE/open_dm_panel.py" "$OPEN_DM" </dev/null || true
+elif [ "$OPEN_DM" != "auto" ]; then
+  echo "aib: (dry-run) dm=$OPEN_DM" >&2
+fi
 AIB_ENSURE_DEFERRED=0
 if aib_cabin_is_up; then
   AIB_ENSURE_DEFERRED=1

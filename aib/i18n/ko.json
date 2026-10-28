@@ -158,7 +158,7 @@
   "aib.lang.notice": "AIB 언어를 {value}(으)로 바꿨습니다. 다음 답변부터 이 언어로 답해 주세요(UI, 상태 표시줄, mod는 자동으로 따라갑니다).",
   "aib.help.title": "aib - Ez2 AIB v{version} 콕핏 실행기",
   "aib.edition.missing": "aib {cmd}: 이 기능은 아직 개발 중이며 공개되지 않았습니다.",
-  "aib.help.usage": "사용법: aib <provider> <dgrs|safe> <role> [new] [--model MODEL] [--dry-run]",
+  "aib.help.usage": "사용법: aib <provider> <dgrs|safe> <role> [new] [dm] [--model MODEL] [--dry-run]",
   "aib.idle.close.aborted": "취소됨, 아무것도 건드리지 않음",
   "aib.idle.close.confirm": "{target}을(를) 닫을까요? [y/N] ",
   "aib.idle.close.done": "{target} 닫음: TERM {n}개 전송, {survivors}개 생존",
@@ -5751,5 +5751,11 @@
   "aib.release.sign_approve.notify_ok": "✓ 서명함 {plugin} {ver}",
   "aib.release.sign_approve.notify_fail": "✗ 서명 실패 {plugin} {ver}",
   "aib.release.sign_approve.no_output": "(출력 없음)",
-  "aib.release.sign_approve.shim": "릴리스 서명 셈 {path}: {did}"
+  "aib.release.sign_approve.shim": "릴리스 서명 셈 {path}: {did}",
+  "aib.dmopen.on": "aib: 검토 대기 영역을 열었어요. 앞으로 여는 모든 자리에서도 자동으로 열려요(취소: --no-dm)",
+  "aib.dmopen.auto": "aib: 검토 대기 영역을 자동으로 열었어요(dm 설정됨, 취소: --no-dm)",
+  "aib.dmopen.off": "aib: 새 자리에서 검토 대기 영역을 자동으로 여는 것을 껐어요. 이미 열린 것은 그대로예요",
+  "aib.dmopen.not_advanced": "aib: 검토 대기 영역은 고급 요금제가 필요해요. 이번에는 열지 않았어요",
+  "aib.dmopen.plugin_missing": "aib: 검토 대기 영역을 켰지만 pending-review 플러그인이 설치되지 않았어요. 설치하면 보여요",
+  "aib.dmopen.no_cabin_home": "aib: 이 캐빈 폴더를 찾지 못해 검토 대기 영역을 열지 않았어요"
 }
