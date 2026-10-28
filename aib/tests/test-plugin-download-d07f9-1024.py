@@ -116,7 +116,6 @@ class Box(unittest.TestCase):
         self.tmp = Path(td.name)
         self.state = self.tmp / "home" / ".ez2-aib"
         self.state.mkdir(parents=True)
-        (self.state / "trusted-ext-keys").write_text(PUB + "\n", encoding="utf-8")
         self.env = {"HOME": str(self.tmp / "home"), "EZ2_AIB_STATE_ROOT": str(self.state), "EZ2_AIB_HOME": str(self.state),
                     "EZ2_AIB_LOCALE": "zh-TW", "EZ2_PAGE_API_BASE": "https://page.test"}
         p = mock.patch.dict(os.environ, self.env)

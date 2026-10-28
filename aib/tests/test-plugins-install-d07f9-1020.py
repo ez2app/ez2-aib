@@ -64,12 +64,14 @@ class Box(unittest.TestCase):
         self.home = self.tmp / "home"
         self.state = self.home / ".ez2-aib"
         self.state.mkdir(parents=True)
-        (self.state / "trusted-ext-keys").write_text(PUB + "\n", encoding="utf-8")
+        self.keyp = mock.patch.object(keys, "TRUSTED_PUBLIC_KEYS", (PUB,))
+        self.keyp.start()
         self.envp = mock.patch.dict(os.environ, {"HOME": str(self.home), "EZ2_AIB_STATE_ROOT": str(self.state),
                                                  "EZ2_AIB_HOME": str(self.state), "EZ2_AIB_LOCALE": "zh-TW"})
         self.envp.start()
 
     def tearDown(self):
+        self.keyp.stop()
         self.envp.stop()
         self.td.cleanup()
 
