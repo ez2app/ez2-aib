@@ -713,9 +713,9 @@ _run_codex_capture() {
 }
 
 # 套組開著時，Codex 因讀不到帳號而結束就再進選單。選單按離開才真的結束。
-# 自動挑的最新 Terra(或 Luna)若被登入拒絕，只改試清單裡的上一版。額度用完不換模型。
+# 自動挑的最新 Terra(或 Luna)若被登入拒絕，照清單一版一版往舊的試(Terra 試完換 Luna),最多 4 次。額度用完不換模型。
 if [ "$PROVIDER" = "codex" ] && [ "${_codex_pack:-1}" = "1" ]; then
-  _luna_switched=0
+  _model_steps=0
   while true; do
     _run_codex_capture
     # 月上限這句出現後,Codex 常常以 0 結束。0 不是「自己關掉」,一樣要進續跑。
@@ -723,7 +723,7 @@ if [ "$PROVIDER" = "codex" ] && [ "${_codex_pack:-1}" = "1" ]; then
       exit 0
     fi
     _older=""
-    if [ "${AIB_CODEX_LUNA_AUTO:-0}" = "1" ] && [ "$_luna_switched" != "1" ]; then
+    if [ "${AIB_CODEX_LUNA_AUTO:-0}" = "1" ] && [ "$_model_steps" -lt 4 ]; then
       _older="$("${EZ2_PY3:-python3}" -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import codex_luna_model
@@ -746,7 +746,7 @@ print(codex_luna_model.previous_default_slug(sys.argv[2]))' "$HERE" "$REQUESTED_
       done
       ARGS=("${_swapped[@]}")
       REQUESTED_MODEL="$_older"
-      _luna_switched=1
+      _model_steps=$((_model_steps + 1))
       continue
     fi
     _handoff_home="${CODEX_HOME:-$HOME/.codex}"

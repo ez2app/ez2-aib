@@ -7,7 +7,8 @@ T2 清單沒有 Terra ⇒ 退回最新 Luna;清單讀不到 ⇒ 空字串。
 T3 藏起來的 Terra(visibility=hide)不算。
 T4 previous_default_slug:Terra 退同家族上一版;最舊的 Terra 退最新 Luna;Luna 最舊 / 不在清單 / 非預設家族 ⇒ 空字串。
 T5 登記簿後備型號(providers.json / rosters/default.json 的 codex)是 gpt-6.1-terra。
-刀:K1 FAMILIES 改回只有 luna ⇒ T1 紅;K2 previous 不跨家族 ⇒ T4 紅。
+T6 啟動迴圈被拒會連退:6.1-terra → 5.6-terra → 6-luna(provider-launch 用次數上限，不是只退一次)。
+刀:K1 FAMILIES 改回只有 luna ⇒ T1 紅;K2 previous 不跨家族 ⇒ T4 紅;K3 provider-launch 改回只退一次 ⇒ T6 紅。
 """
 import json
 import pathlib
@@ -66,6 +67,19 @@ class CodexDefaultTerra(unittest.TestCase):
         self.assertEqual(M.previous_default_slug("gpt-5.6-luna", cache), "")
         self.assertEqual(M.previous_default_slug("gpt-9-terra", cache), "")
         self.assertEqual(M.previous_default_slug("gpt-6.1-sol", cache), "")
+
+    def test_t6_launch_loop_reaches_luna(self):
+        cache = _cache(self.tmp, LISTED)
+        chain, cur = [], "gpt-6.1-terra"
+        while True:
+            cur = M.previous_default_slug(cur, cache)
+            if not cur:
+                break
+            chain.append(cur)
+        self.assertEqual(chain, ["gpt-5.6-terra", "gpt-6-luna", "gpt-5.6-luna"])
+        src = (COCKPIT / "provider-launch.sh").read_text(encoding="utf-8")
+        self.assertIn('[ "$_model_steps" -lt 4 ]', src, "被拒時要能連退多版,不是只退一次")
+        self.assertIn("_model_steps=$((_model_steps + 1))", src)
 
     def test_t5_registry_fallback_is_terra(self):
         providers = json.loads((COCKPIT / "providers.json").read_text(encoding="utf-8"))
