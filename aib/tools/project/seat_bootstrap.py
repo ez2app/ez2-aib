@@ -212,7 +212,7 @@ class Bootstrap:
             BO.actor_of(self.sig)
         except BO.BindError as exc:
             return self.refuse("resolve", "bad-actor", str(exc))
-        if not (root / "ledger").is_dir():
+        if not self.np.ensure_ledger(root, create=not a.dry_run):   # 10-28 G1:aib init 沒跑成的新會員,開第一席時補建帳本
             return self.refuse("resolve", "no-ledger", T("aib.newproj.no_ledger", {"path": root / "ledger"}))
         if self.np.load_card(root, self.uid) is None:
             return self.refuse("resolve", "project-not-found", self.np._uid_refusal(root, self.uid))
