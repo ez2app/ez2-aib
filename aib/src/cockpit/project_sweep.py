@@ -79,10 +79,14 @@ def _dm_list(code, root):
 
 
 class Sweep:
-    def __init__(self, uid, root=None, repo=None, captain=None):
+    def __init__(self, uid, root=None, repo=None, captain=None, no_repo=False):
         self.uid = uid
         self.root = PS.state_root(root)
-        self.repo = Path(repo or REPO_DEFAULT)
+        # 10-28(@aeb40 裁 A):要清查的 git 倉(分支 / 工作樹 / 推包標籤)與 aib 程式碼的位置(工具檔)分開。
+        #   交接帶進來的是「這一席的倉」;no_repo = 交接量不到倉 ⇒ 分支那段不量、記成沒量到,不默默改量程式碼樹。
+        #   沒帶 --repo 的人工 `aib project sweep` 照舊量程式碼樹。
+        self.code = REPO_DEFAULT
+        self.repo = None if no_repo else Path(repo or REPO_DEFAULT)
         self.captain = captain
         self.items = {}
         self.missed = []
@@ -119,6 +123,9 @@ class Sweep:
 
     # ── 0 / 待人確認:分支與工作樹 ──
     def branches_and_worktrees(self):
+        if self.repo is None:
+            self.missed.append("分支與工作樹(這一席量不到倉)")
+            return
         main = "github/main" if _git(self.repo, "rev-parse", "-q", "--verify", "refs/remotes/github/main").strip() else "origin/main"
         heads = [b for b in _git(self.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").split() if b]
         remote = set()
@@ -179,7 +186,7 @@ class Sweep:
 
     # ── 1:機器租約持有者死了沒人收 ──
     def lease(self):
-        tool = self.repo / "tools" / "governance" / "host_lease.py"
+        tool = self.code / "tools" / "governance" / "host_lease.py"
         p = _run([sys.executable, str(tool), "status", "--json"]) if tool.is_file() else None
         if p is None:
             self.missed.append("機器租約")
@@ -201,6 +208,9 @@ class Sweep:
           last-refuse-*.json 比同標籤的 last-push-*.json 新 ⇒ 1 類「推包被擋」(列新紅前幾支)"""
         d = self.root / "ship"
         if not d.is_dir():
+            return
+        if self.repo is None:
+            self.missed.append("推包狀態(這一席量不到倉)")
             return
         tags = _project_ship_tags(self.repo, d)
         # 只讀這個專案的(10-13 真跑:資料夾裡還有別的倉 / 治具留的 known-base-reds,讀全部會報假的主線紅);
@@ -365,7 +375,7 @@ def _ship_tag(repo):
     取不到身分 ⇒ 依路徑。不 import ship.py(太重),只抄這一行規則 —— test-project-sweep W13 釘兩邊相同。"""
     import hashlib
     try:
-        vd = str(Path(repo) / "tools" / "verify")
+        vd = str(REPO_DEFAULT / "tools" / "verify")   # 程式從 aib 程式碼樹載;身分照算傳進來的倉(倉根底下不一定有 tools/)
         if vd not in sys.path:
             sys.path.insert(0, vd)
         import reuse_index
@@ -515,13 +525,14 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--repo", default=None)
+    ap.add_argument("--no-repo", action="store_true", help="交接量不到倉:分支 / 工作樹 / 推包那幾段不量(不改量程式碼樹)")
     ap.add_argument("--brief", action="store_true", help="開工簡報:沒事就不印;不放別席信件內文")
     a = ap.parse_args(argv)
     uid = a.project or my_project()
     if not uid:
         print("找不到這一席綁的專案;用 --project proj:… 指定", file=sys.stderr)
         return 2
-    res = Sweep(uid, repo=a.repo, captain=captain_code()).run()
+    res = Sweep(uid, repo=a.repo, captain=captain_code(), no_repo=a.no_repo).run()
     if a.json:
         print(mask(json.dumps(res, ensure_ascii=False)))
     else:
