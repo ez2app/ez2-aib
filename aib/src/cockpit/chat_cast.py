@@ -707,7 +707,9 @@ def on_incoming(env, owner, msg, now=None):
             return "rejected"
         if op in ("watch", "close") and g and g["payload"].get("viewer") == o:     # 我是投放端
             if op == "close":
-                g["watch"] = None
+                prev = g.get("watch") if isinstance(g.get("watch"), dict) else {}
+                g["watch"] = {"at": 0, "sent_at": max(sent_at, int(prev.get("sent_at") or 0)), "visible": False, "want": None}
+                # 寄出時間留著(#411 R3 M1):關之前那則心跳被補收時,照「不比上一則新」丟
                 if g.get("live"):
                     log(env, "watch-end", gid, o, now)
                 g["live"] = False
@@ -730,24 +732,18 @@ def on_incoming(env, owner, msg, now=None):
             if mine:
                 return "dup"
             asked = rec["req_out"].get(o)
-            fresh = (isinstance(asked, dict) and asked.get("status") == "sent" and now - int(asked.get("at") or 0) <= REQUEST_VALID_S
-                     and sent_at >= int(asked.get("at") or 0) - CLOCK_SKEW_S)
-            prev = rec["in"].get(asked.get("grant_id")) if isinstance(asked, dict) and asked.get("status") == "opened" else None
-            ended = None
-            if isinstance(prev, dict) and prev.get("owner") == o:
-                ended = prev.get("closed_at") if prev.get("status") == "closed" else (
-                    prev.get("until") if int(prev.get("until") or 0) <= now else None)
-            reopen = (type(ended) is int and now - ended <= REQUEST_VALID_S and sent_at >= ended - CLOCK_SKEW_S)
-            if not (fresh or reopen):
-                return "unrequested"                      # 沒請求過就不收(#411 R1 M2);請求開過、那格已關 ⇒ 認重開一次(#411 R2 M)
+            if not (isinstance(asked, dict) and asked.get("status") == "sent" and now - int(asked.get("at") or 0) <= REQUEST_VALID_S
+                    and sent_at >= int(asked.get("at") or 0) - CLOCK_SKEW_S):
+                return "unrequested"                      # 沒請求過就不收(#411 R1 M2);單結束後一律重新請求(#411 R3 M2)
             act = [k for k, v in rec["in"].items() if v.get("owner") == o and v.get("status") != "closed"
                    and int(v.get("until") or 0) > now]
             if len(act) >= PER_OWNER_MAX:
                 return "full"
             rec["in"][gid] = {"owner": o, "until": until, "status": "waiting", "at": now, "rx_at": 0, "hash": None,
                               "interval": None}
-            if isinstance(asked, dict):
-                asked.update(status="opened", answered_at=now, grant_id=gid)
+            cur = rec["req_out"].get(o)
+            if isinstance(cur, dict) and cur.get("status") == "sent":
+                cur.update(status="opened", answered_at=now)
             _save(rec, env)
             return "opened"
         if not mine or mine.get("owner") != o:          # 冒名:寄件主人 ≠ 投放單主人 ⇒ 丟

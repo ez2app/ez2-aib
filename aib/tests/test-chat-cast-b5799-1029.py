@@ -519,7 +519,7 @@ class R1Fixes(Base):
 
 
 class R2Fixes(Base):
-    """#411 R2(@aeb40):M 鎖屏 / 重開機作廢後能馬上重開;L 太舊門檻含時鐘誤差。H 在 R2Seen(要 nostr-sdk)。"""
+    """#411 R2 / R3(@aeb40):作廢後限流歸零、一律重新請求;close 保留心跳寄出時間;太舊門檻含時鐘誤差。H 在 R2Seen(要 nostr-sdk)。"""
     def _open(self, gid, now):
         return CC.on_incoming(self.env, FRIEND, {"op": "open", "grant_id": gid, "until": now + 3600, "at": now}, now=now)
 
@@ -542,20 +542,26 @@ class R2Fixes(Base):
         got = CC.on_incoming(self.env, FRIEND, {"op": "request", "req_id": "d" * 16, "at": T0 + 60}, now=T0 + 60)
         self.assertEqual(got, "pending")
 
-    def test_m_viewer_accepts_reopen_after_close(self):
+    def test_m_void_then_new_request_opens(self):
+        """R3 M2:單結束後一律重新請求;沒新請求的 open 丟。"""
         CC.request(self.env, self.root, FRIEND, now=T0)
         self.assertEqual(self._open("a" * 16, T0), "opened")
-        self.assertEqual(self._open("b" * 16, T0 + 1), "unrequested", "那格還開著:不認第二格")
         CC.on_incoming(self.env, FRIEND, {"op": "close", "grant_id": "a" * 16, "at": T0 + 10}, now=T0 + 10)
-        self.assertEqual(self._open("b" * 16, T0 + 20), "opened", "那格關了:投放端重發要認")
-        self.assertEqual(self._open("c" * 16, T0 + 21), "unrequested", "一次關只認一次重開")
-        CC.on_incoming(self.env, FRIEND, {"op": "close", "grant_id": "b" * 16, "at": T0 + 30}, now=T0 + 30)
-        self.assertEqual(self._open("d" * 16, T0 + 30 + 86400 + 1), "unrequested", "關了一天以上就要重新請求")
+        self.assertEqual(self._open("b" * 16, T0 + 20), "unrequested", "那格關了也不能自己重開")
+        CC.request(self.env, self.root, FRIEND, now=T0 + 30)
+        self.assertEqual(self._open("b" * 16, T0 + 31), "opened", "新請求 ⇒ 收")
+        self.assertEqual(self._open("c" * 16, T0 + 32), "unrequested", "一個請求只開一格")
 
-    def test_m_viewer_accepts_reopen_after_expiry(self):
-        CC.request(self.env, self.root, FRIEND, now=T0)
-        self.assertEqual(self._open("a" * 16, T0), "opened")
-        self.assertEqual(self._open("b" * 16, T0 + 3601), "opened", "那格到期了:認重開")
+    def test_m1_close_keeps_heartbeat_sent_at(self):
+        """R3 M1:觀看端 close 後,關之前那則心跳被補收 ⇒ 丟,不再推。"""
+        g = self.issue()["grant_id"]
+        self.assertEqual(self.beat(g, now=T0 + 10), "watch")
+        CC.on_incoming(self.env, FRIEND, {"op": "close", "grant_id": g, "at": T0 + 20}, now=T0 + 20)
+        self.assertEqual(self.tick(now=T0 + 21), [])
+        old = {"op": "watch", "grant_id": g, "visible": True, "at": T0 + 10}
+        self.assertEqual(CC.on_incoming(self.env, FRIEND, old, now=T0 + 90), "old", "關之前的心跳重放")
+        self.assertEqual(self.tick(now=T0 + 91), [])
+        self.assertEqual(self.beat(g, now=T0 + 100), "watch", "之後的新心跳照收")
 
     def test_l_old_threshold_has_skew(self):
         g = self.issue()["grant_id"]
@@ -624,8 +630,8 @@ KNIVES = [
     ("K10", '''            if w.get("visible") is not True:
                 continue''', '''            if False:
                 continue''', "C3Heartbeat.test_hidden_no_push_but_watching"),
-    ("K11", '''            fresh = (isinstance(asked, dict) and asked.get("status") == "sent"''',
-     '''            fresh = True or (isinstance(asked, dict) and asked.get("status") == "sent"''', "R1Fixes.test_m2_open_needs_request"),
+    ("K11", '''            if not (isinstance(asked, dict) and asked.get("status") == "sent"''',
+     '''            if False and not (isinstance(asked, dict) and asked.get("status") == "sent"''', "R1Fixes.test_m2_open_needs_request"),
     ("K12", '''        if type(msg.get("seq")) is not int or msg["seq"] <= int(mine.get("seq") or 0):''',
      '''        if type(msg.get("seq")) is not int:''', "R1Fixes.test_m1_frame_seq_only_up"),
     ("K13", '''    if op in ("watch", "frame", "unchanged") and now - sent_at > ALIVE_S + CLOCK_SKEW_S:''',
@@ -633,7 +639,8 @@ KNIVES = [
     ("K14", '''max(int(last.get("sent_at") or 0), int(last.get("tried_at") or 0))''',
      '''int(last.get("sent_at") or 0)''', "R1Fixes.test_m3_failed_send_backs_off"),          # R2 L:只拿掉 tried_at
     ("K15", '''                    _ended(rec, viewer)''', '''                    pass''', "R2Fixes.test_m_void_resets_request_limit"),
-    ("K16", '''            if not (fresh or reopen):''', '''            if not fresh:''', "R2Fixes.test_m_viewer_accepts_reopen_after_close"),
+    ("K16", '''                g["watch"] = {"at": 0, "sent_at": max(sent_at, int(prev.get("sent_at") or 0)), "visible": False, "want": None}''',
+     '''                g["watch"] = None''', "R2Fixes.test_m1_close_keeps_heartbeat_sent_at"),                   # R3 M1
     ("K8", '''    return max(iv, min(SLOW_S, max(BASE_S, w)))''', '''    return w if type(want) is int else iv''',
      "C6Interval.test_levels"),
 ]
