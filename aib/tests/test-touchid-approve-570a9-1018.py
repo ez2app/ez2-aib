@@ -224,8 +224,9 @@ class Approve(unittest.TestCase):
         self.assertIn("(touchid)", ledger)
         params = inspect.signature(self.np.approve_constitution).parameters
         self.assertFalse({"reason", "text", "message", "prompt"} & set(params), "呼叫端不能帶視窗文字")
-        self.assertIn('"aib.newproj.approve_touchid_reason"', (ROOT / "tools" / "project" / "new_project.py")
-                      .read_text(encoding="utf-8"))
+        self.assertIn('"newproj.approve"', (ROOT / "tools" / "project" / "new_project.py").read_text(encoding="utf-8"))
+        self.assertIn('"aib.newproj.approve_touchid_reason"', (ROOT / "src" / "cockpit" / "approve_gate.py")
+                      .read_text(encoding="utf-8"), "視窗句由統一入口 approve_gate 登記(10-28 TID-1)")
 
     def test_T8_touchid_fail_or_absent_refuses(self):
         for why in ("cancel", "timeout", "nonce_mismatch", "osascript_rc:1"):
@@ -305,7 +306,7 @@ class Knife(unittest.TestCase):
                   "if False:", "Available.test_T6_available")
 
     def test_K4_no_one_at_a_time(self):
-        self._cut("tools/project/new_project.py", "if gate.held else", "if True else", "Approve.test_T10_one_window_at_a_time")
+        self._cut("src/cockpit/approve_gate.py", "if gate.held else", "if True else", "Approve.test_T10_one_window_at_a_time")
 
 
     def test_K5_no_c1(self):

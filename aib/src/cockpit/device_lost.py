@@ -229,34 +229,49 @@ def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None, a
     if dev:   # 視窗字 / 列表用到的名稱在這裡再清一次(來源不管是聊天清單還是伺服器回的)
         name = _clean(dev["name"], 32) or "-"
         targets.append({"kind": "chat", "code": dev["code"], "name": name})
-        items.append(T("item_chat", name=name, code=dev["code"]) or "chat %s" % dev["code"])
+        items.append(("chat", T("item_chat", name=name, code=dev["code"]) or "chat %s" % dev["code"]))
     if m:
         name = _clean(m.get("name"), 32) or "-"
         targets.append({"kind": "page", "fp": m["fp"][:8], "name": name, "last_used_at": m.get("last_used_at")})
-        items.append(T("item_page", name=name, fp=m["fp"][:8], at=_day(m.get("last_used_at"))) or "page %s" % m["fp"][:8])
+        items.append(("page", T("item_page", name=name, fp=m["fp"][:8], at=_day(m.get("last_used_at"))) or "page %s" % m["fp"][:8]))
     if not as_json:   # 提案:撤之前印出名稱 + 最後上線,本人看過才按
         out.write(T("targets_head") + "\n")
         for t in targets:
             out.write(T("target_" + t["kind"], name=t["name"], code=t.get("code") or "", fp=t.get("fp") or "",
                         at=_day(t.get("last_used_at"))) + "\n")
         out.flush()
-    reason = T("touchid_reason", items="、".join(items)) or "撤銷遺失的裝置:" + "、".join(items)
-    why = (prove or (lambda r, e: CO.prove(r, e)))(reason, env)
-    if why:
-        res = {"ok": False, "why": why, "targets": targets, "chat": {"state": "skipped"}, "page": {"state": "skipped"}}
-        res["hint"] = _hint(res)
-        return res, 2
-    res = {"ok": True, "targets": targets}
-    res["chat"] = _chat_revoke(env, out, dev, reason, sign=sign) if dev else {"state": "skipped"}
-    res["page"] = _page_revoke(api, m) if m else {"state": "skipped"}
+    res = {"ok": True, "targets": targets, "chat": {"state": "skipped"}, "page": {"state": "skipped"}}
+    for n, (kinds, reason) in enumerate(revoke_batches(items)):   # 名稱 + 指紋不截;一句放不下就拆成每台一次(遺失裝置一定要撤得掉)
+        why = (prove or (lambda r, e: CO.prove(r, e)))(reason, env)
+        if why:
+            if n == 0:
+                res = {"ok": False, "why": why, "targets": targets, "chat": {"state": "skipped"}, "page": {"state": "skipped"}}
+                res["hint"] = _hint(res)
+                return res, 2
+            res["why"] = why                     # 前一批已撤;這一批沒過 ⇒ 照實回 skipped
+            break
+        if "chat" in kinds:
+            res["chat"] = _chat_revoke(env, out, dev, reason, sign=sign)
+        if "page" in kinds:
+            res["page"] = _page_revoke(api, m)
     for k in ("chat", "page"):
         h = _hint(res[k])
         if h:
             res[k]["hint"] = h
     if res["page"]["state"] == "revoked":   # 0.1.42:撤銷時自動換 EZP- 序號(Andy 10-23)
         res["page"]["hint"] = T("serial_rotated" if res["page"]["serial_rotated"] else "serial_kept")
-    res["ok"] = all(res[k]["state"] in ("revoked", "skipped") for k in ("chat", "page"))
+    res["ok"] = all(res[k]["state"] in ("revoked", "skipped") for k in ("chat", "page")) and not res.get("why")
     return res, 0 if res["ok"] else 1
+
+
+def revoke_batches(items):
+    """[(種類, 那一台的字)…] ⇒ [(種類集合, 視窗那句 Reason)…]。全部放得進一句 ⇒ 一批、按一次;
+    放不下(FULL 欄位超過上限、會被拒)⇒ 每台一批,各按一次、字都完整(@aeb40 #404 R1)。"""
+    import approve_gate as AG
+    whole = AG.reason("device_lost.revoke", {"items": "、".join(t for _k, t in items)})
+    if not whole.refused or len(items) <= 1:
+        return [({k for k, _t in items}, whole)]
+    return [({k}, AG.reason("device_lost.revoke", {"items": t})) for k, t in items]
 
 
 def list_all(env, api=None):

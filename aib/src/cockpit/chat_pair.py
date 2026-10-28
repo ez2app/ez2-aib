@@ -265,8 +265,8 @@ def hold_queued_from(npub, env=None):
 def cmd_pair(a, env, out):
     import chat_bridge as CB
     import chat_owner as CO
+    import approve_gate as AG
     import chat_owner_cli as OC
-    import touchid_approve as TA
     T = CB.T
     root = CB.bridge_root(env)
     if a.action in (None, "list"):
@@ -298,7 +298,7 @@ def cmd_pair(a, env, out):
                 nxt = CO.next_list(nxt, now, revoke=n)
                 hit.append(n)
             return nxt
-        rc, _nxt = OC.sign_list_change(env, out, T("pair_reason_revoke", target=TA.clean(target, 24)), mutate)
+        rc, _nxt = OC.sign_list_change(env, out, AG.reason("chat_pair.revoke", {"target": target}), mutate)
         if rc != 0:
             return 2
         gone = set(hit)
@@ -321,7 +321,7 @@ def cmd_pair(a, env, out):
         if not seat:
             out.write(T("pair_no_seat") + "\n")
             return 2
-        why = _prove(T("pair_reason_start", seat=seat), env, root)
+        why = _prove(AG.reason("chat_pair.start", {"seat": seat}), env, root)
         if why:
             out.write(T("pair_proof_failed", why=why) + "\n")
             return 2
@@ -368,7 +368,7 @@ def _confirm(a, env, out, root):
             phone = cands[0]
             clear_pending(root)
             rc, _nxt = OC.sign_list_change(
-                env, out, T("pair_reason_confirm", phone=short(phone)),
+                env, out, AG.reason("chat_pair.confirm", {"phone": short(phone)}),
                 lambda cur, now: CO.next_list(cur, now, add={"npub": phone, "name": "phone", "role": "phone"}))
             if rc != 0:
                 out.write((json.dumps({"ok": False, "why": "not_signed"}) if a.json else T("pair_rejected", phone=short(phone),

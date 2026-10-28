@@ -181,6 +181,7 @@ def _publish(env=None, run=subprocess.run, helper=None, platform=None, dest=None
     dest = {"site","host","path"}(aib approve enroll):視窗字與簽的位元組都帶目的地(kid 在最前、真實 host:port、路徑)。
     同帳號 AI 把 .sekey 換成沒有指紋限制的鑰 ⇒ 這一步不會跳指紋:說明裡要本人「沒跳就停」。
     換掉 aib-sehelper 本身仍擋不住(殘餘風險,第二階段:root 擁有路徑 + Developer ID 簽)。"""
+    import approve_gate as AG
     import se_vault
     import touchid_approve as TA
     from entitlement import p256
@@ -194,14 +195,14 @@ def _publish(env=None, run=subprocess.run, helper=None, platform=None, dest=None
     kid = kid_of(pub)
     if dest:
         msg = "|".join(("ez2-aib-approve-publish", kid, dest["site"], dest["host"], dest["path"])).encode("utf-8")
-        reason = _t("aib.approve.touchid_enroll", dict(dest, kid=kid), env,
-                    "kid %s · publish the AIB approval key to %s (%s) · %s" % (kid, dest["site"], dest["host"], dest["path"]))
+        reason = AG.reason("aib_approve.enroll", dict(dest, kid=kid), env=env)
     else:
         msg = ("ez2-aib-approve-publish|" + kid).encode("ascii")
-        reason = _t("aib.approve.touchid_publish", {"kid": kid}, env,
-                    "Publish the AIB approval key · kid %s (only publish when you are sure this Mac is untouched; "
-                    "write the kid down somewhere off this Mac)" % kid)
-    args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", reason]
+        reason = AG.reason("aib_approve.publish", {"kid": kid}, env=env)
+    shown = AG.se_reason(reason)             # 統一入口:類別 trusted_device(高風險);kid / 主機 / 路徑不截,太長直接拒
+    if not shown:
+        return None, None, "touchid_unavailable"
+    args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", shown]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:
             return None, None, "busy"
@@ -511,9 +512,10 @@ def _t(key, params, env, fallback):
 
 
 def touchid_reason(d, env=None):
+    """統一入口:類別 wp_login(高風險);站、帳號、IP 是站上給的字 ⇒ 清過、不截,太長直接拒。"""
+    import approve_gate as AG
     f = d["fields"]
-    return _t("aib.approve.touchid_reason", {"code": d["code"], "site": f["site"], "user": f["user_login"], "ip": f["ip"]},
-              env, "Code %s · %s: approve %s signing in · IP %s" % (d["code"], f["site"], f["user_login"], f["ip"]))
+    return AG.reason("aib_approve.yes", {"code": d["code"], "site": f["site"], "user": f["user_login"], "ip": f["ip"]}, env=env)
 
 
 def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=None, now=None, detail=None):
@@ -542,7 +544,12 @@ def yes(nonce, env=None, http=None, run=subprocess.run, helper=None, platform=No
         detail.append("off")
         _record(env, d, "touchid_unavailable")
         return "touchid_unavailable", None
-    args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", touchid_reason(d, env)]
+    shown = __import__("approve_gate").se_reason(touchid_reason(d, env))
+    if not shown:                            # 站上給的字太長 ⇒ 不彈窗、不簽(關鍵資訊不截)
+        detail.append("reason_refused")
+        _record(env, d, "touchid_unavailable")
+        return "touchid_unavailable", None
+    args = ["se-sign", "--name", KEY_NAME, "--dir", se_vault.se_dir(env), "--reason", shown]
     with TA.one_at_a_time(state_root(env) / "locks" / "touchid-approve.lock") as gate:
         if not gate.held:  # 另一個指紋視窗開著:這次不算、不佔限速
             _record(env, d, "touchid_unavailable")

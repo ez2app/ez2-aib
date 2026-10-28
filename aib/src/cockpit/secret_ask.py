@@ -170,17 +170,15 @@ def prove_human(name, dest, env, platform, touchid=None, touchid_available=None)
     """Mac ⇒ 一定 Touch ID;非 Mac ⇒ 已經是本人在終端機打(collect 只收 tty)。回 None = 過。"""
     if platform != "darwin":
         return None
-    import touchid_approve as TA
-    if str(env.get("AIB_TOUCHID", "")).strip() == "0":
-        return "touchid_off"
-    if not (touchid_available() if touchid_available else TA.available(platform=platform, environ=env)):
-        return "touchid_unavailable"
-    reason = _t("aib.secret.touchid_reason", {"name": TA.clean(name, 64), "dest": TA.clean(dest, 160)})
+    import approve_gate as AG
+    off = AG.ready(env, platform, touchid_available)
+    if off:
+        return "touchid_" + off
+    reason = AG.reason("secret_ask.ask", {"name": name, "dest": dest})   # 目的地(真主機)不截;太長直接拒
     import seats_dir_lib
     root = seats_dir_lib.state_root(env)[0]     # 同單源順位:EZ2_AIB_STATE_ROOT > EZ2_AIB_HOME > ~/.ez2-aib(@abb89 審:不然鎖檔分家、一次一窗破功)
-    with TA.one_at_a_time(os.path.join(root, "locks", "touchid-approve.lock")) as gate:
-        res = (touchid or TA.ask)(reason) if gate.held else {"ok": False, "why": "busy"}
-    return None if res.get("ok") is True else "touchid_" + str(res.get("why") or "failed").split(":")[0]
+    res = AG.ask(reason, root, touchid)
+    return None if res["ok"] else "touchid_" + res["why"].split(":")[0]
 
 
 def parse_push(spec, owner):

@@ -242,8 +242,7 @@ def submit(env, tar_path, prove=None, api=None, machine_id=None):
         return _fail("creator_not_bound", 2)
     title = pkg["creator"].get("title")
     title = next(iter(title.values()), "") if isinstance(title, dict) and title else ""
-    reason = (T("touchid_reason", kind=_clean(pkg["kind"], 24), n=len(pkg["items"]), title=_clean(title, 40))
-              or "送審作品:%s %d 件" % (_clean(pkg["kind"], 24), len(pkg["items"])))
+    reason = __import__("approve_gate").reason("create_cli.submit", {"kind": pkg["kind"], "n": len(pkg["items"]), "title": title})
     why = (prove or (lambda r, e: CO.prove(r, e)))(reason, env)
     if why:
         res, rc = _fail("creator_attest_cancelled", 5)

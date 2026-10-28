@@ -247,7 +247,7 @@ def send_as_human(root, uid, text, api, env, prove=None):
     """艦長室 / 指令代表主人寄:先本人證明(Mac Touch ID;同 chat_owner.prove),過了才寄。"""
     import chat_owner as CO
     shown = (load_state(root)["contacts"].get(str(uid)) or {}).get("shown") or "Telegram"
-    why = (prove or CO.prove)("寄 Telegram 給 %s:%s" % (_clean(shown, 24), _clean(text, 40)), env)
+    why = (prove or CO.prove)(__import__("approve_gate").reason("chat_telegram.send", {"who": shown, "text": text}), env)
     if why:
         return {"ok": False, "stage": "failed", "detail": why}
     return send(root, uid, text, api)
@@ -348,7 +348,7 @@ def main(argv=None, env=None, out=None):
         return 0
     if a.cmd in ("on", "send"):
         import chat_owner as CO
-        why = None if a.cmd == "send" else CO.prove("開啟 Telegram 轉接(收進艦長席 @%s)" % _clean(a.seat, 5), env)
+        why = None if a.cmd == "send" else CO.prove(__import__("approve_gate").reason("chat_telegram.on", {"seat": a.seat}), env)
         if why:
             out.write(json.dumps({"ok": False, "why": why}) + "\n")
             return 3

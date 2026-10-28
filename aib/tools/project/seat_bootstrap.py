@@ -259,14 +259,14 @@ class Bootstrap:
         if mode in ("", "none"):
             return None
         sys.path.insert(0, str(_cockpit_dir(Path(__import__("create_and_bind_persona").REPO_ROOT))))
+        import approve_gate as AG  # noqa: E402  統一入口:類別 seat_input
         import touchid_approve  # noqa: E402
         card_title = self.card
         proj = (self.np.load_card(self.root, self.uid) or {}).get("title") or self.uid
-        reason = self.T("aib.newproj.boot_confirm", {"cabin": self.cabin, "role": self.role,
-                                                     "persona": touchid_approve.clean(card_title), "project": touchid_approve.clean(proj)})
+        reason = AG.reason("newproj.boot_confirm", {"cabin": self.cabin, "role": self.role, "persona": card_title, "project": proj})
         if not touchid_approve.available():
             return self.refuse("resolve", "no_biometry", self.T("aib.newproj.boot_no_biometry", {"cmd": self.next_cmd()}), next_cmd=self.next_cmd())
-        r = touchid_approve.ask(reason)
+        r = AG.ask(reason, AG.state_root_default())
         if not r.get("ok"):
             return self.refuse("resolve", "touchid_%s" % r.get("why", "denied"), self.T("aib.newproj.boot_denied", {"why": r.get("why")}))
         return None
