@@ -20,6 +20,7 @@
     python3 src/cockpit/grokbot_threads.py connect --agent <agentId>           # 跳一個視窗兩格:網址、金鑰(隱藏)(預設)
     python3 src/cockpit/grokbot_threads.py connect --agent <agentId> --stdin   # 同一套拆法,從 stdin 讀(尺用)
     python3 src/cockpit/grokbot_threads.py connected                   # 哪些 agent 已綁 webhook(只列 id)
+    python3 src/cockpit/grokbot_threads.py bound <agentId>             # 這一個 agent 綁好了沒(rc 0 好、1 沒)
   connect 成功後會問要不要同步到其他機器(grokbot_bind_sync.py;aib grokbot sync-bind)
 """
 from __future__ import annotations
@@ -542,6 +543,15 @@ def ask_two_fields(title: str, info: str, texts=None, copy_text: str = "") -> st
     return val
 
 
+def agent_bound(agent_id: str, base=None) -> bool:
+    """這一個 agent 真的綁好了沒:有它自己的設定檔,而且網址 / 金鑰形狀對(同 connect 的判準)。
+    10-28:開席前要看「這次要開的那一個」,不是「任何一個綁過」(connected_agents 只看檔案在不在)。"""
+    if not AGENT_ID_RE.match(agent_id or ""):
+        return False
+    url, key = read_agent_wake(agent_id, base)
+    return not validate_wake(url, key)
+
+
 def connected_agents(base=None) -> list[str]:
     d = _state_root(base) / "secrets" / AGENT_WAKE_DIR
     return sorted(p.stem for p in d.glob("*.env") if AGENT_ID_RE.match(p.stem)) if d.is_dir() else []
@@ -562,12 +572,25 @@ def main(argv=None) -> int:
     cp.add_argument("--stdin", action="store_true",
                     help="從 stdin 讀(與對話框同一套拆法);沒給就跳 macOS 對話框(預設、the maintainer 定的必要流程)")
     sub.add_parser("connected")
+    bp = sub.add_parser("bound")   # rc 0 = 這個 agent 綁好了、1 = 沒綁或設定壞了、2 = id 形狀不對
+    bp.add_argument("agent_id")
     ap_acct = sub.add_parser("account")
     ap_acct.add_argument("--dir", default="")
     args = ap.parse_args(argv)
     if args.cmd == "account":
         print(app_account(args.dir or None) or "讀不到")
         return RC_OK
+    if args.cmd == "bound":
+        if not AGENT_ID_RE.match(args.agent_id or ""):
+            print("agentId 形狀不對", file=sys.stderr)
+            return RC_USAGE
+        try:
+            ok = agent_bound(args.agent_id)
+        except (OSError, ValueError) as exc:   # 量不到 ≠ 沒綁:rc 3,開席那邊不跳視窗
+            print("讀不到綁定(%s)" % type(exc).__name__, file=sys.stderr)
+            return RC_UNREADABLE
+        print(json.dumps({"agentId": args.agent_id, "bound": ok}, ensure_ascii=False))
+        return RC_OK if ok else 1
     if args.cmd == "connected":
         print(json.dumps({"connected": connected_agents()}, ensure_ascii=False))
         return RC_OK

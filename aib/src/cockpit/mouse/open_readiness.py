@@ -67,8 +67,15 @@ def _state_root(environ):
 def _bot_hint(provider, environ):
     base = _state_root(environ)
     if provider == "grokbot":
+        # 10-28:看「這次要開的那一個 agent」綁了沒(read_agent_wake + 形狀),不是「任何一個綁過就放行」。
+        #   右鍵選單這一步多半還不知道要開哪一個(選 agent 在 bot-thread-menu 的 aib_grokbot_agent_preflight):
+        #   知道(環境帶了 AIB_GROKBOT_AGENT_ID)⇒ 只看它;不知道 ⇒ 至少要有一個**真的能用**的綁定才不標,
+        #   選定之後 preflight 會用同一個判準(grokbot_threads.py bound)再看一次:沒綁跳 connect 視窗、綁了直接用不問。
         import grokbot_threads as gt
-        return "" if gt.connected_agents(base) else "no_doorbell"
+        agent = (_env(environ).get("AIB_GROKBOT_AGENT_ID") or "").strip()
+        if agent:
+            return "" if gt.agent_bound(agent, base) else "no_doorbell"
+        return "" if any(gt.agent_bound(a, base) for a in gt.connected_agents(base)) else "no_doorbell"
     if provider == "codexbot":
         env = _env(environ)
         if any((env.get(k) or "").strip() for k in CODEXBOT_THREAD_KEYS):

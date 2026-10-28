@@ -107,7 +107,17 @@ class Bots(Base):
         d = self.tmp / "secrets" / gt.AGENT_WAKE_DIR
         d.mkdir(parents=True)
         (d / "bc-00000000-0000-0000-0000-000000000001.env").write_text("GROKBOT_WAKE_URL=x\n")
+        # 10-28:設定檔在但網址 / 金鑰不能用 ⇒ 不算綁過(以前只看檔案在不在,任一 agent 有檔就放行)
+        self.assertEqual(R.check("grokbot", environ=self.env), ("hint", "no_doorbell"))
+        (d / "bc-00000000-0000-0000-0000-000000000001.env").write_text(
+            "GROKBOT_WAKE_URL=https://api2.cursor.sh/automations/webhook/0123abcd-0123-4567-89ab-0123456789ab\n"
+            "GROKBOT_WAKE_KEY=k_valid\n")
         self.assertEqual(R.check("grokbot", environ=self.env), ("ok", ""))
+        # 環境帶了這次要開的 agent ⇒ 只看它:別的 agent 綁了不算
+        self.assertEqual(R.check("grokbot", environ=dict(self.env, AIB_GROKBOT_AGENT_ID="other-agent")),
+                         ("hint", "no_doorbell"))
+        self.assertEqual(R.check("grokbot", environ=dict(
+            self.env, AIB_GROKBOT_AGENT_ID="bc-00000000-0000-0000-0000-000000000001")), ("ok", ""))
 
     def test_codexbot_thread_from_env_or_file(self):
         self.assertEqual(R.check("codexbot", environ=self.env), ("hint", "no_codex_thread"))

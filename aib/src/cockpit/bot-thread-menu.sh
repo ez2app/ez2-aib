@@ -385,12 +385,13 @@ aib_grokbot_agent_preflight() {
   #   取消或失敗不擋開席:席照開,席上打 /connect 再接。試跑、AIB_GROKBOT_AUTO_CONNECT=0 不跳。
   if [ -n "${AIB_GROKBOT_AGENT_ID:-}" ] && [ "${DRY:-0}" != "1" ] && [ "${AIB_DRY_RUN:-0}" != "1" ] \
      && [ "${AIB_GROKBOT_AUTO_CONNECT:-1}" != "0" ]; then
-    local _gb_conn=""
-    _gb_conn="$("$py" "$here/grokbot_threads.py" connected 2>/dev/null)" || _gb_conn=""
-    case "$_gb_conn" in
-      *"\"${AIB_GROKBOT_AGENT_ID}\""*) ;;
-      "") ;;   # 量不到 ≠ 沒接:不跳
-      *)
+    # 10-28:看「選定的這一個 agent」真的綁好了沒(grokbot_threads.py bound:設定檔在、網址 / 金鑰形狀對;與 open_readiness 同判準)。
+    #   rc 0 綁好 ⇒ 直接用、不問;rc 1 沒綁 / 壞了 ⇒ 跳 connect 視窗;其他(量不到)⇒ 不跳(量不到 ≠ 沒接)。
+    local _gb_rc=0
+    "$py" "$here/grokbot_threads.py" bound "$AIB_GROKBOT_AGENT_ID" >/dev/null 2>&1 || _gb_rc=$?
+    case "$_gb_rc" in
+      0) ;;
+      1)
         echo "aib: $(_btm_t aib.botmenu.grok_doorbell id="${AIB_GROKBOT_AGENT_ID}")" >&2
         if "$py" "$here/grokbot_threads.py" connect --agent "$AIB_GROKBOT_AGENT_ID" >&2; then
           echo "aib: $(_btm_t aib.botmenu.grok_doorbell_ok)" >&2
