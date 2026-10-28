@@ -75,13 +75,18 @@ def record(old: str, new: str, *, window: str = "", reason: str = "model_rejecte
     if path is not None and path.is_file():
         from atomic_json import update_json
 
+        skipped = []
+
         def _mutate(rec):
             rec = dict(rec)
+            if rec.get("requested_source") == "flag":
+                skipped.append(True)      # 手指定的席不改(使用者明講的型號不偷換,#400 審查 Medium)
+                return rec
             rec["model_requested"] = new
             return rec
         try:
             update_json(str(path), _mutate)
-            seat_written = True
+            seat_written = not skipped
         except Exception:  # noqa: BLE001  寫不進席位檔不擋開席，紀錄檔照記、stderr 照印
             seat_written = False
     row = {"ts": when, "from": old, "to": new, "reason": reason, "window": window,
@@ -134,6 +139,10 @@ def launch_with_fallback(argv_for: Callable[[str], list[str]], model: str, env: 
         else:
             rc = run(argv, env=env, check=False).returncode
         if not auto or steps >= MAX_STEPS:
+            return rc, model, steps
+        if rc == 0:
+            # 正常結束不判被拒(同 provider-launch:rc 0 且不用續跑就收)。畫面上可能還殘留先前的
+            #   "model is not supported",不看 rc 的話使用者正常離開後又會開更舊的型號(#400 審查 Low)。
             return rc, model, steps
         seen = capture() if capture is not None else capture_seen(env, run, errfile)
         if not codex_luna_model.model_rejected(seen):

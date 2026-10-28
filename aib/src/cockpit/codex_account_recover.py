@@ -608,14 +608,17 @@ def launch_after_login(slot: str, environ=None, run=None) -> int:
     environ = dict(os.environ if environ is None else environ)
     run = subprocess.run if run is None else run
     window = fb.own_window(environ, run)
-    seat_model = ""
+    seat_model, seat_source = "", ""
     path = fb.seat_file(environ, window)
     if path is not None:
         try:
-            seat_model = str(json.loads(path.read_text(encoding="utf-8")).get("model_requested") or "").strip()
+            rec = json.loads(path.read_text(encoding="utf-8"))
+            seat_model = str(rec.get("model_requested") or "").strip()
+            seat_source = str(rec.get("requested_source") or "")
         except (OSError, ValueError, AttributeError):
-            seat_model = ""
-    explicit = environ.get("AIB_CODEX_MODEL_EXPLICIT") == "1" and bool(seat_model)
+            seat_model, seat_source = "", ""
+    # 手指定:環境帶 AIB_CODEX_MODEL_EXPLICIT,或席位檔記 requested_source=flag(原地復活後環境可能沒帶,#400 審查 Medium)。
+    explicit = bool(seat_model) and (environ.get("AIB_CODEX_MODEL_EXPLICIT") == "1" or seat_source == "flag")
     if explicit:
         model = seat_model
         sys.stdout.write("\n登入完成，照這一席指定的型號 %s 開這一格。\n" % model)
@@ -633,7 +636,8 @@ def launch_after_login(slot: str, environ=None, run=None) -> int:
         argv_for, model, env, auto=not explicit, run=run, window=window,
         errfile=environ.get("AIB_CODEX_LUNA_ERRFILE") or "")
     if not explicit and seat_model and used != seat_model and not _steps:
-        # 沒退版但跟席位檔不同(席位檔是舊預設):照實際開的那一版寫回，復活時才對得上。
+        # 自動挑的席、沒退版但跟席位檔不同(席位檔是舊預設):照實際開的那一版寫回，復活時才對得上。
+        #   手指定的席不寫回(使用者明講的型號不偷換)。
         fb.record(seat_model, used, window=window, reason="recover_login", environ=env)
     return rc
 
