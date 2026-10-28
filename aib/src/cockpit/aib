@@ -161,6 +161,7 @@ INSTANCE=""
 INSTANCE_TOKEN=""
 MODEL_REQUESTED=""
 MODEL_FROM_FLAG=0
+MODEL_FROM_RECORD=0   # re-register 拿到的型號(啟動指令的 --model 或舊席位檔):照記錄,不換成清單最新
 RESET_SESSION_IDENTITY=0
 AIB_SEAT_REREGISTER=0   # 工單 AS:`aib seat re-register` 的旗標,見下面兩段
 REREG_ARGS=()
@@ -1162,7 +1163,11 @@ PYRR
     _rr_model="${_rr_model:-$_f_model}"
   fi
   POS=("$_rr_provider" "$_rr_mode" "$_rr_role")
-  [ -z "$_rr_model" ] || MODEL_REQUESTED="$_rr_model"
+  # 10-28(@aeb40 工作單 A):重新登記拿到的型號就是開席時記下的那個 ⇒ 標成照記錄。
+  #   以前只改 MODEL_REQUESTED、沒標 ⇒ 下面「Codex 沒手指定就用清單最新」那段把它換掉,
+  #   `aib codex … --model gpt-6.1-terra` 開的席,pane 一起來自登記就被寫成清單裡的 gpt-6-luna;
+  #   之後原地復活照席位檔開,就換回舊型號。
+  if [ -n "$_rr_model" ]; then MODEL_REQUESTED="$_rr_model"; MODEL_FROM_RECORD=1; fi
   # cwd 只認旗標或既有登記;都沒有就留空,write_seat_record 對空值不寫該欄——
   # 不拿操作者此刻站的目錄冒充席位的專案目錄。
   CALLER_CWD="$_rr_cwd"
@@ -1343,12 +1348,24 @@ if [ -z "$MODEL_REQUESTED" ] && [ -n "${AIB_REVIVE_SESSION_UUID:-}" ]; then
 sys.path.insert(0, sys.argv[1])
 import seat_fork
 m, layer = seat_fork.revive_model(sys.argv[2], sys.argv[3], sys.argv[4])
-print(m + "\t" + layer)' "$HERE" "$PROVIDER" "$AIB_REVIVE_SESSION_UUID" "${EZ2_AIB_HOME:-$HOME/.ez2-aib}" 2>/dev/null || true)"
+try:  # 讀不到來源不能連累復活型號(#400 R2 Low):讀壞就當沒有記號
+    src = str((seat_fork.seat_record_for(sys.argv[3], sys.argv[4]) or {}).get("requested_source") or "")
+except Exception:
+    src = ""
+print(m + "\t" + layer + "\t" + src)' "$HERE" "$PROVIDER" "$AIB_REVIVE_SESSION_UUID" "${EZ2_AIB_HOME:-$HOME/.ez2-aib}" 2>/dev/null || true)"
   _revive_model="${_revive_pick%%$'\t'*}"
-  _revive_layer="${_revive_pick#*$'\t'}"
+  _revive_rest="${_revive_pick#*$'\t'}"
+  _revive_layer="${_revive_rest%%$'\t'*}"
+  _revive_source=""
+  [ "$_revive_rest" = "$_revive_layer" ] || _revive_source="${_revive_rest#*$'\t'}"
   if [ -n "$_revive_model" ]; then
     MODEL_REQUESTED="$_revive_model"
     MODEL_FROM_REVIVE=1
+    # 10-28(#400 審查 Medium):舊席是手指定型號開的(席位檔 requested_source=flag)⇒ 復活後照樣算手指定,
+    #   帶 AIB_CODEX_MODEL_EXPLICIT、不帶 LUNA_AUTO;否則換帳號登入時會被當成自動挑,寫回清單最新。
+    if [ "$_revive_source" = "flag" ]; then
+      MODEL_FROM_FLAG=1
+    fi
     printf '%s\n' "$(t "aib.launch.revive_model_${_revive_layer}" "value=$MODEL_REQUESTED" "session=$AIB_REVIVE_SESSION_UUID")" >&2
   fi
 fi
@@ -1373,7 +1390,7 @@ print("1" if codex_pack.enabled() else "0")' "$HERE" 2>/dev/null || printf '1')"
   _codex_pack_on="$(printf '%s' "$_codex_pack_raw" | tr -d '[:space:]')"
   [ "$_codex_pack_on" = "0" ] || _codex_pack_on=1
 fi
-if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$MODEL_FROM_REVIVE" != "1" ] && [ "$_codex_pack_on" = "1" ]; then
+if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$MODEL_FROM_REVIVE" != "1" ] && [ "$MODEL_FROM_RECORD" != "1" ] && [ "$_codex_pack_on" = "1" ]; then
   _luna="$("$T_PY3" -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import codex_luna_model
@@ -1668,7 +1685,17 @@ write_seat_record() {
   local pane_pid=""
   pane_pid="$(env -u TMUX tmux -L "$HUB" display-message -p -t "$pane_id" '#{pane_pid}' 2>/dev/null || true)"
   local write_rc=0
-  AIB_SEAT_FORKED_FROM="${_aib_fork_src:-}" \
+  # 10-28(#400 審查 Medium):型號是手指定(flag)還是自動挑(auto),記進席位檔 requested_source
+  #   (欄名不能含 model:下面會刪掉 model_requested 以外帶 model 的欄,fleet_restore 也拒收)。
+  #   重新登記時看啟動指令帶的 AIB_CODEX_MODEL_EXPLICIT / AIB_CODEX_LUNA_AUTO;開新席時看旗標。
+  #   兩者都不是(心跳、人工 re-register)⇒ 空字串 = 不動既有值。
+  local req_source=""
+  if [ "${AIB_SEAT_REREGISTER:-0}" = "1" ]; then
+    if [ "${AIB_CODEX_MODEL_EXPLICIT:-0}" = "1" ]; then req_source="flag"
+    elif [ "${AIB_CODEX_LUNA_AUTO:-0}" = "1" ]; then req_source="auto"; fi
+  elif [ "$MODEL_FROM_FLAG" = "1" ]; then req_source="flag"
+  elif [ "$PROVIDER" = "codex" ]; then req_source="auto"; fi
+  AIB_SEAT_FORKED_FROM="${_aib_fork_src:-}" AIB_SEAT_REQUESTED_SOURCE="$req_source" \
   "$T_PY3" - "$seats_dir" "$window_id" "$ROLE" "$PROVIDER" "$MODE" "${pane_pid:-0}" "$HERE" "${SEAT_SESSION_UUID:-}" "$CALLER_CWD" "$MODEL_REQUESTED" "$RESET_SESSION_IDENTITY" "${EZ2_AIB_INSTANCE:-}" \
     "${HUB:-}" "${REPORTS_TO:-}" <<'PYSEAT' 2>/dev/null || write_rc=$?
 import os, re, sys, time
@@ -1775,6 +1802,9 @@ def _mutate(rec):
     for key in list(rec):
         if "model" in key.casefold() and key != "model_requested":
             rec.pop(key, None)
+    _req_source = os.environ.get("AIB_SEAT_REQUESTED_SOURCE") or ""
+    if _req_source in ("flag", "auto"):
+        rec["requested_source"] = _req_source
     # ★ EH.3:cwd = 開席當下的工作目錄,也就是那個 AI 真正的專案目錄
     #   (aib:22 CALLER_CWD="$(pwd -P)",同一個值在 :395 當 PROJECT_DIR
     #   傳給 provider-launch.sh —— 兩者不會分岔)。

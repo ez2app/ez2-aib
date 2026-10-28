@@ -594,15 +594,52 @@ def main(argv: list[str] | None = None) -> int:
         if result:
             Path(result).write_text(slot + "\n", encoding="utf-8")
             return 0
-        sys.stdout.write("\n登入完成，正在用最新的預設型號開這一格。\n")
-        sys.stdout.flush()
-        import codex_luna_model
+        return launch_after_login(slot)
+
+
+def launch_after_login(slot: str, environ=None, run=None) -> int:
+    """登入完成後開這一格。10-28(@aeb40 工作單 B):以前直接 exec 最新預設型號，被拒就停住;
+    現在走 codex_model_fallback:自動挑的型號被拒就照退版表退一版重試(上限、紀錄、席位檔跟著寫)。
+    手指定型號的席(AIB_CODEX_MODEL_EXPLICIT=1)照席位檔那一版開、不退版。"""
+    import subprocess
+    import codex_daemon_flag
+    import codex_luna_model
+    import codex_model_fallback as fb
+    environ = dict(os.environ if environ is None else environ)
+    run = subprocess.run if run is None else run
+    window = fb.own_window(environ, run)
+    seat_model, seat_source = "", ""
+    path = fb.seat_file(environ, window)
+    if path is not None:
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+            seat_model = str(rec.get("model_requested") or "").strip()
+            seat_source = str(rec.get("requested_source") or "")
+        except (OSError, ValueError, AttributeError):
+            seat_model, seat_source = "", ""
+    # 手指定:環境帶 AIB_CODEX_MODEL_EXPLICIT,或席位檔記 requested_source=flag(原地復活後環境可能沒帶,#400 審查 Medium)。
+    explicit = bool(seat_model) and (environ.get("AIB_CODEX_MODEL_EXPLICIT") == "1" or seat_source == "flag")
+    if explicit:
+        model = seat_model
+        sys.stdout.write("\n登入完成，照這一席指定的型號 %s 開這一格。\n" % model)
+    else:
         model = codex_luna_model.latest_default_slug() or "gpt-6.1-terra"
-        bin_path = os.environ.get("CODEX_BIN") or "codex"
-        import codex_daemon_flag
-        os.execvpe(bin_path, [bin_path, "--dangerously-bypass-approvals-and-sandbox",
-                              *codex_daemon_flag.flag_args(bin_path), "--model", model],
-                   {**os.environ, "CODEX_HOME": slot})
+        sys.stdout.write("\n登入完成，正在用最新的預設型號開這一格。\n")
+    sys.stdout.flush()
+    bin_path = environ.get("CODEX_BIN") or "codex"
+    env = {**environ, "CODEX_HOME": slot}
+    flags = codex_daemon_flag.flag_args(bin_path)
+
+    def argv_for(m: str) -> list[str]:
+        return [bin_path, "--dangerously-bypass-approvals-and-sandbox", *flags, "--model", m]
+    rc, used, _steps = fb.launch_with_fallback(
+        argv_for, model, env, auto=not explicit, run=run, window=window,
+        errfile=environ.get("AIB_CODEX_LUNA_ERRFILE") or "")
+    if not explicit and seat_model and used != seat_model and not _steps:
+        # 自動挑的席、沒退版但跟席位檔不同(席位檔是舊預設):照實際開的那一版寫回，復活時才對得上。
+        #   手指定的席不寫回(使用者明講的型號不偷換)。
+        fb.record(seat_model, used, window=window, reason="recover_login", environ=env)
+    return rc
 
 
 if __name__ == "__main__":

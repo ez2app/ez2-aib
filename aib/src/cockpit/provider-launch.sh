@@ -745,6 +745,9 @@ print(codex_luna_model.previous_default_slug(sys.argv[2]))' "$HERE" "$REQUESTED_
         _prev="$_a"
       done
       ARGS=("${_swapped[@]}")
+      # 10-28(@aeb40 工作單 B):退到哪一版寫回這一席的席位檔 + 狀態根的 codex-model-fallback.jsonl,
+      #   原地復活照席位檔開時才是實際能用的那一版。寫不進去不擋開席。
+      "${EZ2_PY3:-python3}" "$HERE/codex_model_fallback.py" record "$REQUESTED_MODEL" "$_older" </dev/null >/dev/null 2>&1 || true
       REQUESTED_MODEL="$_older"
       _model_steps=$((_model_steps + 1))
       continue
