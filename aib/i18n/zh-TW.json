@@ -5745,6 +5745,7 @@
   "aib.approve_gate.cat.page_bind": "綁定 ez2.page",
   "aib.approve_gate.cat.phone_pair": "手機配對 / 撤銷",
   "aib.approve_gate.cat.project_ruling": "專案目標與紅線核准",
+  "aib.approve_gate.cat.auto_update": "允許自動更新外掛",
   "aib.approve_gate.cat.unregistered": "未登記的動作",
   "aib.approve_gate.cat.seat_input": "開席 / 核准輸入框",
   "aib.approve_gate.cat.outbound": "對外發信 / 分享",

@@ -9,10 +9,15 @@
   - se-sign 那幾支(aib approve / aib quote / cf grant)只拿 reason() 組好的字給 aib-sehelper,指紋由 Secure Enclave 自己彈。
 
 類別判定(說明照實寫):
-  - 呼叫端不能自報類別:API 沒有類別參數;reason() 查叫它的那支檔案,跟 SITES 登記的模組不同 ⇒ 當「未登記」。
-  - 沒登記的 site、或直接把純字串交給 ask() ⇒ 「未登記」= 高風險(之後的時間窗一律不開)。
-  - 這兩條只防「核心程式裡低類別冒用 / 漏登記」。同帳號的 AI 改得到這支檔本身(GUIDE-same-user-ai-threat-model),
-    真正的防線仍是指紋 / 登入密碼本身,一次一按。
+  - 呼叫端不能自報類別:API 沒有類別參數;reason() 只看直接叫它的那一層(沒有可調的深度參數),
+    那支檔 resolve 後要「完全等於」登記的 src/<mod> 或 tools/<mod>(不是路徑尾端相同),
+    而且那層的 globals 就是 sys.modules 裡那支模組本身、模組 __file__ 也指向同一支 ⇒ 才給表上的類別,否則「未登記」。
+  - 類別 / site / 拒的原因不存在 Reason 上(Reason 沒有可寫的屬性):reason() 組好就記進本模組的登記簿,
+    ask() / se_reason() / 之後的時間窗只查登記簿(認的是同一個物件,不是同樣的字)。
+  - 沒登記的 site ⇒「未登記」= 高風險(之後的時間窗一律不開);純字串 / 自己造的 Reason 交給 ask() / se_reason() ⇒ 直接拒(reason_refused)。
+    coerce() 只給測試用(src / tools 叫它 = 靜態掃描紅)。
+  - 這些只防「核心程式裡低類別冒用 / 漏登記 / 寫錯」。同帳號的 AI 改得到這支檔本身、也能直接動登記簿
+    (GUIDE-same-user-ai-threat-model),不算防線;真正的防線仍是指紋 / 登入密碼本身,一次一按。
 清字(TA.clean 同一套:控制字元、方向控制、零寬字):
   - 欄位標數字 = 截到那個長度;標 FULL = 關鍵資訊(指紋、真主機、版號頭碼、原話…)不截,清完超過 FULL_MAX ⇒ 不彈窗、直接拒。
 失敗 / 取消 / 逾時 / 叫不出 / 不是 Mac / AIB_TOUCHID=0 ⇒ 一律拒,不退回比較弱的方式。這一版仍一次一按(時間窗是 TID-2)。
@@ -44,6 +49,7 @@ CATEGORIES = {
     "page_bind":      {"high_risk": True,  "max_window": 0},
     "phone_pair":     {"high_risk": True,  "max_window": 0},
     "project_ruling": {"high_risk": True,  "max_window": 0},
+    "auto_update":    {"high_risk": True,  "max_window": 0},
     "unregistered":   {"high_risk": True,  "max_window": 0},
     "seat_input":     {"high_risk": False, "max_window": 24 * H},
     "outbound":       {"high_risk": False, "max_window": 3 * H},
@@ -124,27 +130,71 @@ SITES = {
                                  "add": FULL, "rm": FULL, "code": FULL}),
     "newproj.boot_confirm": _s("project/seat_bootstrap.py", "seat_input", "aib.newproj.boot_confirm",
                                {"cabin": FULL, "role": FULL, "persona": 80, "project": 80}),
+    # 10-29 TID-2a(@aeb40 L2 Q4):原本交純字串的兩處補登記,都列高風險(一次一按)
+    "auto_update.exclude": _s("cockpit/auto_update.py", "auto_update", "aib.auto_update.exclude.touchid_reason",
+                              {"name": FULL}, "Allow aib to auto-update the plugin {name}"),
+    "chat_phone_forward.loosen": _s("cockpit/chat_phone_forward.py", "phone_pair", "aib.chat.phone_forward.touchid_reason",
+                                    {"minutes": FULL, "per_hour": FULL},
+                                    "Turn on BB Call phone forwarding: after {minutes} minutes, send \"N new letters\" "
+                                    "to your paired phones, at most {per_hour} per hour"),
     "release.sign_approve": _s("release/sign_approve.py", "release_sign", "aib.release.sign_approve_reason",
                                {"plugin": FULL, "ver": FULL, "pin": FULL},
                                "Sign and release {plugin} {ver} · head {pin}"),
 }
 
 
+# 登記簿:id(Reason) ⇒ (那個物件本身, site, category, refused)。存物件本身 ⇒ 活著就不會撞 id;查的時候比 is。
+_MINTED = {}
+_MINTED_MAX = 4096               # 超過就丟最舊的(丟掉的那句再交給 ask ⇒ 拒;寧可多按一次不放行)
+UNMINTED = "unminted"
+
+
 class Reason(str):
-    """視窗那句話(就是 str,舊的比字照過),多帶 site / category / refused。只由 reason() 造。"""
-    site = None
-    category = UNREGISTERED
-    refused = None               # None = 可以彈窗;否則是拒的原因(例 "fact_too_long")
+    """視窗那句話(就是 str,舊的比字照過)。site / category / refused 是唯讀的,查登記簿;只有 reason() 記得進去。"""
+    __slots__ = ()
+
+    @property
+    def site(self):
+        e = _lookup(self)
+        return e[1] if e else None
+
+    @property
+    def category(self):
+        e = _lookup(self)
+        return e[2] if e else UNREGISTERED
+
+    @property
+    def refused(self):
+        """None = 可以彈窗;否則是拒的原因(例 "fact_too_long";沒登記過的物件 = "unminted")。"""
+        e = _lookup(self)
+        return e[3] if e else UNMINTED
 
     @property
     def high_risk(self):
         return CATEGORIES.get(self.category, CATEGORIES[UNREGISTERED])["high_risk"]
 
 
-def _make(text, site, category, refused=None):
+def _lookup(r):
+    if type(r) is not Reason:
+        return None
+    e = _MINTED.get(id(r))
+    return e if e is not None and e[0] is r else None
+
+
+def _mint(text, site, category, refused=None):
     r = Reason(text)
-    r.site, r.category, r.refused = site, category, refused
+    while len(_MINTED) >= _MINTED_MAX:
+        _MINTED.pop(next(iter(_MINTED)))
+    _MINTED[id(r)] = (r, site, category, refused)
     return r
+
+
+def refusal(r):
+    """不准彈窗的原因;None = 可以彈。純字串 / 沒登記過的物件 ⇒ "unminted";組不出字 ⇒ "no_text"。"""
+    e = _lookup(r)
+    if e is None:
+        return UNMINTED
+    return e[3] or (None if str(r) else "no_text")
 
 
 def clean_full(text):
@@ -152,17 +202,36 @@ def clean_full(text):
     return TA._CTRL.sub(" ", TA._INVISIBLE.sub("", str("" if text is None else text))).strip()
 
 
-def _caller_file(depth):
+AIB_SRC = Path(__file__).resolve().parents[1]           # cockpit/* 在 aib/src
+AIB_TOOLS = Path(__file__).resolve().parents[2] / "tools"   # project/*、release/* 在 aib/tools
+
+
+def _resolve(path):
     try:
-        return Path(sys._getframe(depth + 1).f_code.co_filename).as_posix()
-    except (ValueError, AttributeError):
-        return ""
+        return Path(path).resolve() if path else None
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
 
 
-def category_of(site, caller_file):
-    """核心依呼叫點定類別:site 沒登記、或叫的檔不是登記的那支 ⇒ 未登記(高風險)。"""
+def module_paths(mod):
+    """登記的 mod 能對到的真檔(resolve 過;src / tools 只會有一支存在)。"""
+    return {p for p in (_resolve(AIB_SRC / mod), _resolve(AIB_TOOLS / mod)) if p is not None and p.is_file()}
+
+
+def category_of(site, frame):
+    """核心依呼叫點定類別:site 沒登記、叫的那層不是登記的那支真檔、或那層不是 sys.modules 裡那支模組在跑 ⇒ 未登記(高風險)。"""
     spec = SITES.get(site)
-    if not spec or not str(caller_file).endswith("/" + spec["mod"]):
+    if not spec or frame is None:
+        return UNREGISTERED
+    here = _resolve(frame.f_code.co_filename)
+    if here is None or here not in module_paths(spec["mod"]):
+        return UNREGISTERED
+    g = frame.f_globals
+    name = g.get("__name__")
+    mod = sys.modules.get(name) if isinstance(name, str) else None
+    if mod is None or getattr(mod, "__dict__", None) is not g:
+        return UNREGISTERED
+    if _resolve(getattr(mod, "__file__", None)) != here:
         return UNREGISTERED
     return spec["cat"]
 
@@ -198,38 +267,45 @@ def _render(key, params, fallback, env=None):
     return text
 
 
-def reason(site, facts=None, suffix=(), env=None, _depth=1):
-    """組視窗那句話。回 Reason(refused 有值 = 不准彈窗,呼叫端當沒過)。env 只用來定語系。"""
+def reason(site, facts=None, suffix=(), env=None):
+    """組視窗那句話。回 Reason(refused 有值 = 不准彈窗,呼叫端當沒過)。env 只用來定語系。
+    類別看的是直接叫 reason() 的那一層;要包一層 helper ⇒ 把 helper 那支登記成 mod,不開深度參數。"""
     spec = SITES.get(site)
-    cat = category_of(site, _caller_file(_depth))
+    try:
+        caller = sys._getframe(1)
+    except ValueError:
+        caller = None
+    cat = category_of(site, caller)
+    del caller
     if not spec:
-        return _make(_render("aib.approve_gate.unregistered", {"site": TA.clean(site, 40)},
+        return _mint(_render("aib.approve_gate.unregistered", {"site": TA.clean(site, 40)},
                              "Approve an unregistered action: {site}", env), site, UNREGISTERED)
     params, why = _clean_facts(spec["facts"], facts)
     if why:
-        return _make("", site, cat, why)
+        return _mint("", site, cat, why)
     text = _render(spec["key"], params, spec["fallback"], env)
     for name in suffix or ():
         if name not in spec["suffix"]:
-            return _make("", site, cat, "bad_suffix:" + TA.clean(name, 24))
+            return _mint("", site, cat, "bad_suffix:" + TA.clean(name, 24))
         skey, sfacts, joiner = spec["suffix"][name]
         sp, why = _clean_facts(sfacts, facts)
         if why:
-            return _make("", site, cat, why)
+            return _mint("", site, cat, why)
         text += joiner + _render(skey, sp, None, env)
     if not text:
-        return _make("", site, cat, "no_text")
+        return _mint("", site, cat, "no_text")
     text = clean_full(text)
     if spec["total"]:
         text = TA.clean(text, spec["total"])
-    return _make(text, site, cat)
+    return _mint(text, site, cat)
 
 
 def coerce(r, total=160):
-    """純字串(沒走 reason())⇒ 未登記 = 高風險,字照樣清過。"""
-    if isinstance(r, Reason):
+    """只給測試:純字串 ⇒ 記成未登記(高風險)的 Reason,字照樣清過。src / tools 不准叫(靜態掃描紅);
+    正式路徑交純字串給 ask() / se_reason() 一律拒。"""
+    if _lookup(r) is not None:
         return r
-    return _make(TA.clean(r, total), None, UNREGISTERED)
+    return _mint(TA.clean(r, total), None, UNREGISTERED)
 
 
 def ready(env=None, platform=None, available=None):
@@ -254,16 +330,17 @@ def state_root_default(env=None):
     return seats_dir_lib.state_root(env)[0]
 
 
-def ask(r, lock_root, touchid=None, total=160, before=None):
+def ask(r, lock_root, touchid=None, before=None):
     """彈 Touch ID / 登入密碼視窗。回 {"ok", "why", "category", "site"};why 是 touchid_approve 的原因或 busy / refused。
     lock_root = 放 locks/touchid-approve.lock 的那層(各支照原本的位置)。呼叫端先跑 ready()。
     before():拿到整台鎖之後、彈指紋之前先跑(例:全文確認窗);回的不是 {"ok": True} ⇒ 不彈指紋,
     回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。"""
-    r = coerce(r, total)
-    out = {"ok": False, "why": "refused", "category": r.category, "site": r.site}
-    if r.refused or not str(r):
-        out["detail"] = r.refused or "no_text"
+    no = refusal(r)
+    out = {"ok": False, "why": "refused", "category": UNREGISTERED, "site": None}
+    if no:                       # 純字串 / 自己造的 Reason / 欄位超長 / 組不出字 ⇒ 不彈窗
+        out["detail"] = no
         return out
+    out.update(category=r.category, site=r.site)
     with TA.one_at_a_time(lock_path(lock_root)) as gate:
         if not gate.held:
             res = {"ok": False, "why": "busy"}
@@ -282,8 +359,7 @@ def ask(r, lock_root, touchid=None, total=160, before=None):
 def se_reason(r, limit=SE_SIGN_MAX):
     """se-sign / unseal 用(以及自己拿著鎖的 consent):回能交給視窗的字;拒 ⇒ None。
     limit = 下游 helper 的整句上限(unseal 傳 UNSEAL_MAX);整句超過就拒,不交給 helper 去截。"""
-    r = coerce(r)
-    return None if r.refused or not str(r) or len(str(r)) > limit else str(r)
+    return None if refusal(r) or len(str(r)) > limit else str(r)
 
 
 def category_name(cat, locale=None):

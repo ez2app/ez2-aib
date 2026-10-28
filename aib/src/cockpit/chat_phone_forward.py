@@ -199,8 +199,8 @@ def cmd(a, env, out, prove=None):
                 import seat_act as SA
                 prove = SA.prove
             cur = load(env)
-            _via, why = prove(T("touchid_reason", {"minutes": a.minutes or cur["minutes"],
-                                                   "per_hour": a.per_hour or cur["per_hour"]}), e)
+            _via, why = prove(__import__("approve_gate").reason("chat_phone_forward.loosen", {
+                "minutes": a.minutes or cur["minutes"], "per_hour": a.per_hour or cur["per_hour"]}, env=e), e)
         res = None
         if not why:
             res, why = configure(env, on=on, minutes=a.minutes, per_hour=a.per_hour)

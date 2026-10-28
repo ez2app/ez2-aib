@@ -3,7 +3,7 @@
 
 G1 類別表:規格列的高風險類都在、都不開窗;可開窗三類的上限照 D5;SITES 用到的類別都在表裡、登記的模組檔都在
 G2 呼叫端不能自報類別:不是登記的那支檔去組 ⇒ 未登記;登記的那支組 ⇒ 表上的類別          (刀:拿掉模組比對 ⇒ 紅)
-G3 未登記 = 高風險:沒登記的 site、純字串交給 ask() 都是 unregistered + high_risk           (刀:拿掉 ⇒ 紅)
+G3 未登記 = 高風險:沒登記的 site 是 unregistered + high_risk;純字串交給 ask() 直接拒(10-29 TID-2a)(刀:拿掉 ⇒ 紅)
 G4 清字:控制字元 / 方向控制 / 零寬字拿掉;數字欄位截長;FULL 欄位不截、超過 FULL_MAX 直接拒、拒了不彈窗(刀:拿掉 clean ⇒ 紅)
 G5 ask:一次一個視窗(別人拿著鎖 ⇒ busy)、取消 / 讀不懂 ⇒ 不過;ready:非 Mac / AIB_TOUCHID=0 / 叫不出 ⇒ 拒
 G6 呼叫點都走統一入口:SITES 每個 site 在登記的模組裡真的用到;除了自己拿鎖的 consent,沒有人直接叫 TA.ask
@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -28,12 +29,25 @@ import touchid_approve as TA  # noqa: E402
 RLO, ZWSP, BOM = chr(0x202E), chr(0x200B), chr(0xFEFF)
 
 
+def real_path(rel):
+    p = ROOT / "src" / rel
+    return p if p.is_file() else ROOT / "tools" / rel
+
+
 def mint_as(rel, site, facts=None, suffix=()):
-    """假裝是 rel 那支檔在組(compile 的檔名 = 登記的路徑尾端)。"""
-    ns = {"AG": AG}
-    code = compile("r = AG.reason(%r, %r, suffix=%r)" % (site, facts or {}, tuple(suffix)), "/x/aib/src/" + rel, "exec")
-    exec(code, ns)
-    return ns["r"]
+    """假裝是 rel 那支真檔在組:在 sys.modules 放一個 __file__ = 那支真檔的模組,用它的 globals、真檔名 compile。
+    (這正是 L2 只防誤用、不算防線的示範:行程內的程式做得到一樣的事。)"""
+    path = real_path(rel)
+    name = "aibtest_mint_" + re.sub(r"\W", "_", rel)
+    mod = types.ModuleType(name)
+    mod.__file__ = str(path)
+    mod.AG = AG
+    sys.modules[name] = mod
+    try:
+        exec(compile("r = AG.reason(%r, %r, suffix=%r)" % (site, facts or {}, tuple(suffix)), str(path), "exec"), mod.__dict__)
+    finally:
+        sys.modules.pop(name, None)
+    return mod.__dict__["r"]
 
 
 def mint_site(site, facts=None, suffix=()):
@@ -108,8 +122,12 @@ class G3UnregisteredIsHighRisk(Env):
         r = AG.coerce("do something")
         self.assertEqual(r.category, AG.UNREGISTERED)
         self.assertTrue(r.high_risk)
-        seen = []
+        seen = []                        # 10-29 TID-2a:純字串直接拒、不彈窗;coerce 只給測試(詳見 test-approve-gate-l2)
         res = AG.ask("do something", self.root, touchid=lambda t: seen.append(t) or {"ok": True})
+        self.assertFalse(res["ok"])
+        self.assertEqual((res["category"], res["detail"]), (AG.UNREGISTERED, AG.UNMINTED))
+        self.assertEqual(seen, [])
+        res = AG.ask(r, self.root, touchid=lambda t: seen.append(t) or {"ok": True})
         self.assertTrue(res["ok"])
         self.assertEqual(res["category"], AG.UNREGISTERED)
         self.assertEqual(seen, ["do something"])
