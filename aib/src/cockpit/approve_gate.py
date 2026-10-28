@@ -28,6 +28,7 @@ FULL_MAX = 320                   # 不截欄位的上限(清完碼位數;跟 aib
 # 下游視窗的實際上限(整句,清完碼位數):超過就拒、不截 —— 截掉的那段可能正是警告或真主機(@aeb40 #404 R1 Medium)
 SE_SIGN_MAX = 320                # aib-sehelper se-sign(maxSignReason)
 UNSEAL_MAX = 200                 # aib-sehelper unseal(maxUnsealReason)
+LA_MAX = 160                     # LAContext 視窗(touchid_approve.ask;跟 consent.REASON_MAX 同):整句超過就拒
 
 H = 3600
 # 類別表:id ⇒ high_risk(不開時間窗)、max_window(秒;高風險 = 0)。四語名稱在 i18n「aib.approve_gate.cat.<id>」。
@@ -114,10 +115,13 @@ SITES = {
                           "AIB consent · {who} wants to run: {cmd}", total=160),
     "consent.sign_script": _s("cockpit/consent.py", "release_sign", "aib.consent.touchid_reason", {"who": FULL, "cmd": 160},
                               "AIB consent · {who} wants to run: {cmd}", total=160),
+    # TID-1b:條數 + 修訂增減 + 內容碼不截(本人拿來跟全文窗對);標題只是名字,截 40 —— 內容碼才是那一份
+    # (uid 拿掉:放不下 LA_MAX,全文窗第一行有 uid)
     "newproj.approve": _s("project/new_project.py", "project_ruling", "aib.newproj.approve_touchid_reason",
-                          {"title": 60, "uid": FULL, "goals": FULL, "red_lines": FULL, "rl": FULL}),
+                          {"title": 40, "goals": FULL, "red_lines": FULL, "code": FULL}),
     "newproj.approve_amend": _s("project/new_project.py", "project_ruling", "aib.newproj.approve_touchid_reason_amend",
-                                {"title": 60, "uid": FULL, "goals": FULL, "red_lines": FULL, "rl": FULL}),
+                                {"title": 40, "goals": FULL, "red_lines": FULL, "rl": FULL,
+                                 "add": FULL, "rm": FULL, "code": FULL}),
     "newproj.boot_confirm": _s("project/seat_bootstrap.py", "seat_input", "aib.newproj.boot_confirm",
                                {"cabin": FULL, "role": FULL, "persona": 80, "project": 80}),
     "release.sign_approve": _s("release/sign_approve.py", "release_sign", "aib.release.sign_approve_reason",
@@ -250,16 +254,25 @@ def state_root_default(env=None):
     return seats_dir_lib.state_root(env)[0]
 
 
-def ask(r, lock_root, touchid=None, total=160):
+def ask(r, lock_root, touchid=None, total=160, before=None):
     """彈 Touch ID / 登入密碼視窗。回 {"ok", "why", "category", "site"};why 是 touchid_approve 的原因或 busy / refused。
-    lock_root = 放 locks/touchid-approve.lock 的那層(各支照原本的位置)。呼叫端先跑 ready()。"""
+    lock_root = 放 locks/touchid-approve.lock 的那層(各支照原本的位置)。呼叫端先跑 ready()。
+    before():拿到整台鎖之後、彈指紋之前先跑(例:全文確認窗);回的不是 {"ok": True} ⇒ 不彈指紋,
+    回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。"""
     r = coerce(r, total)
     out = {"ok": False, "why": "refused", "category": r.category, "site": r.site}
     if r.refused or not str(r):
         out["detail"] = r.refused or "no_text"
         return out
     with TA.one_at_a_time(lock_path(lock_root)) as gate:
-        res = (touchid or TA.ask)(r) if gate.held else {"ok": False, "why": "busy"}
+        if not gate.held:
+            res = {"ok": False, "why": "busy"}
+        else:
+            pre = before() if before else {"ok": True}
+            if not (isinstance(pre, dict) and pre.get("ok") is True):
+                out.update(why=str((pre or {}).get("why") if isinstance(pre, dict) else "") or "failed", stage="before")
+                return out
+            res = (touchid or TA.ask)(r)
     res = res if isinstance(res, dict) else {}
     out["ok"] = res.get("ok") is True
     out["why"] = "ok" if out["ok"] else str(res.get("why") or "failed")

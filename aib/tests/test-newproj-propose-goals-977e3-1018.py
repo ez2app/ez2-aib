@@ -13,9 +13,9 @@ P7 指令列 new_project.py --propose-goals <uid> --goal a --goal b ⇒ 印 JSON
 P8 新字串四語都有
 P9 候選檔被改了紅線 / 刪了本人裁示再 --approve ⇒ 印出來的、視窗條數、寫進卡的,紅線與裁示都是卡上生效的(@977e3 子代理審)
 P11 目標帶 ANSI 跳脫(\x1b[…)、控制字元、方向控制(U+202E)、零寬字 ⇒ 濾掉後才寫;濾完空的 ⇒ 整批拒(@abb89 審)
-P10 等 Touch ID 期間又提了新目標 ⇒ 核的是按之前那份;新那份留在候選檔等下次核,不被蓋掉
+P10 等 Touch ID 期間又提了新目標 ⇒ 內容碼對不上、content_changed 不寫(TID-1b);新那份留在候選檔等下次核,不被蓋掉
 刀(複本):K1 --approve 照舊只看卡已核准 ⇒ P2 紅;K2 不比目標、候選沒核准就當修訂 ⇒ P3 紅;
-         K3 拿掉條數 / 字數檢查 ⇒ P5 紅;K4 修訂照收候選檔的紅線 ⇒ P9 紅;K5 核完照蓋候選檔 ⇒ P10 紅;
+         K3 拿掉條數 / 字數檢查 ⇒ P5 紅;K4 修訂照收候選檔的紅線 ⇒ P9 紅;K5 拿掉內容碼比對 ⇒ P10 紅(TID-1b);
          K6 沒核准過的卡也拿卡當底 ⇒ P6 紅;K7 不濾字元 ⇒ P11 紅
 """
 import importlib.util
@@ -36,6 +36,7 @@ from aib_proc_guard import run_guarded  # noqa: E402
 
 ROOT = HERE.parent
 THIS = pathlib.Path(__file__).name
+FULL_OK = lambda title, intro, body, check: {"ok": True, "why": "ok"}   # 全文確認窗替身(TID-1b;不開真視窗)
 PY = sys.executable
 NP = ROOT / "tools" / "project" / "new_project.py"
 
@@ -100,7 +101,7 @@ class Propose(unittest.TestCase):
         asked = []
         rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=out or _FakeIO(),
                                           touchid=lambda reason: asked.append(reason) or touch(reason),
-                                          touchid_available=lambda: True)
+                                          touchid_available=lambda: True, fulltext=FULL_OK)
         return rc, asked
 
     def _const(self):
@@ -134,7 +135,8 @@ class Propose(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len(asked), 1)
         self.assertIn("目標修訂", asked[0])
-        self.assertIn("目標改成 3 條", asked[0])
+        self.assertIn("目標 3 條", asked[0])
+        self.assertIn("修訂 +3 \u22120", asked[0], "Touch ID 字帶修訂增減(TID-1b)")
         self.assertIn("紅線和上次相同", asked[0])
         self.assertIn("這是修訂", "".join(out.out))
         c = self._const()
@@ -206,15 +208,19 @@ class Propose(unittest.TestCase):
         self.assertEqual(c["human_rulings"][:len(rulings)], rulings, "本人裁示一條都不准少")
 
     def test_P10_newer_proposal_kept(self):
+        """等指紋期間又提了新目標 ⇒ 內容碼對不上 = content_changed、卡不動(TID-1b 前是核舊的那份);新提的留著等下次核。"""
         self._approved_card()
         self.np.propose_goals(self.root, self.uid, ["first"])
+        before = self._const()["goals"]
 
         def touch(reason):
             self.assertEqual(self.np.propose_goals(self.root, self.uid, ["second"]), 0)
             return OK
-        rc, _ = self._approve(touch=touch)
-        self.assertEqual(rc, 0)
-        self.assertEqual(self._const()["goals"], ["first"], "核的是按之前看到的那份")
+        out = _FakeIO()
+        rc, _ = self._approve(touch=touch, out=out)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads("".join(out.out).strip().splitlines()[-1])["why"], "content_changed")
+        self.assertEqual(self._const()["goals"], before, "看到的那份已不是現在的 ⇒ 不寫")
         cand = json.loads(self.cand.read_text(encoding="utf-8"))
         self.assertIs(cand["approved"], False)
         self.assertEqual(cand["constitution"]["goals"], ["second"], "新提的不准被蓋掉")
@@ -281,11 +287,12 @@ class Knife(unittest.TestCase):
 
 
     def test_K4_amend_trusts_candidate_red_lines(self):
-        self._cut('    if amending:                              # 修訂只換目標', '    if False:                              # 修訂只換目標',
+        self._cut('    if amending:\n        const.update({k: list(card_const.get(k)', '    if False:\n        const.update({k: list(card_const.get(k)',
                   "Propose.test_P9_candidate_tamper_ignored")
 
-    def test_K5_clobber_newer_proposal(self):
-        self._cut("if cand_now and not newer:", "if cand_now:", "Propose.test_P10_newer_proposal_kept")
+    def test_K5_no_content_code_check(self):
+        """TID-1b 起 P10 由內容碼比對守(等指紋期間提了新目標 ⇒ 不寫);拿掉比對 ⇒ 核了舊的、P10 紅。"""
+        self._cut("or _const_sha(fresh) != sha:", ":", "Propose.test_P10_newer_proposal_kept")
 
     def test_K6_unapproved_uses_card(self):
         self._cut('base = card_const if approved or not isinstance(cand.get("constitution"), dict) else cand["constitution"]',

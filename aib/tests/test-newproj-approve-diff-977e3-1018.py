@@ -37,6 +37,7 @@ from aib_proc_guard import run_guarded  # noqa: E402
 
 ROOT = HERE.parent
 THIS = pathlib.Path(__file__).name
+FULL_OK = lambda title, intro, body, check: {"ok": True, "why": "ok"}   # 全文確認窗替身(TID-1b;不開真視窗)
 PY = sys.executable
 NP = ROOT / "tools" / "project" / "new_project.py"
 SHA_RE = re.compile(r"; constitution sha256=([0-9a-f]{64})")   # 英文那句(一筆帳中英各記一次)
@@ -106,7 +107,7 @@ class Diff(unittest.TestCase):
         asked, out = [], _FakeIO()
         rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=out,
                                           touchid=lambda reason: asked.append(reason) or touch(reason),
-                                          touchid_available=lambda: True)
+                                          touchid_available=lambda: True, fulltext=FULL_OK)
         return rc, asked, out.text()
 
     def _card(self):
@@ -277,7 +278,7 @@ class Knife(unittest.TestCase):
         self.assertNotIn("ERROR:", out, "刀的複本裡出現 ERROR = 沒驗到要驗的東西:\n" + out)
 
     def test_K1_bogus_hash(self):
-        self._cut("    sha = _const_sha(const)\n", '    sha = "0" * 64\n', "Diff.test_D1_hash_in_ledger_and_snapshot")
+        self._cut("    sha = _const_sha(const)   ", '    sha = "0" * 64   ', "Diff.test_D1_hash_in_ledger_and_snapshot")
 
     def test_K2_no_goal_diff(self):
         self._cut("show[2:2] = diff + rl_lines", "show[2:2] = rl_lines", "Diff.test_D2_goal_diff")
@@ -298,7 +299,7 @@ class Knife(unittest.TestCase):
         self._cut('    show.append("  " + T("aib.newproj.approve_unsigned_note"))\n', "", "Diff.test_D7_unsigned_note_every_time")
 
     def test_K7_no_recheck(self):
-        self._cut('if list(live.get("red_lines") or []) != shown_red:', "if False:",
+        self._cut('if (live.get("approved") is True) != amending or _const_sha(fresh) != sha:', "if False:",
                   "Diff.test_D8_red_lines_moved_during_touchid")
 
 
@@ -307,7 +308,7 @@ class Knife(unittest.TestCase):
                   "same = True", "Diff.test_D10_snapshot_missing_falls_back_to_card_hash")
 
     def test_K9_snapshot_after_ledger(self):
-        self._cut("    _write_approved_snapshot(root, uid, sha, const)\n    try:\n", "    try:\n",
+        self._cut("        _write_approved_snapshot(root, uid, sha, const)\n", "",
                   "Diff.test_D11_failure_after_ledger_does_not_misreport")
 
 

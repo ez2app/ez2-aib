@@ -1373,26 +1373,79 @@ def _list_diff(old: Any, new: Any) -> tuple:
     return [x for x in n if x not in o], [x for x in o if x not in n]
 
 
+def _list_changes(old: Any, new: Any) -> tuple:
+    """(新增, 拿掉, 改字):同一位置舊的那條不見了、新的那條是新來的 ⇒ 算改字([~] 舊 → 新),其餘照增減列。"""
+    o = [_plain(x) for x in (old or [])]
+    n = [_plain(x) for x in (new or [])]
+    changed = [(o[i], n[i]) for i in range(min(len(o), len(n))) if o[i] not in n and n[i] not in o]
+    olds, news = {a for a, _b in changed}, {b for _a, b in changed}
+    return [x for x in n if x not in o and x not in news], [x for x in o if x not in n and x not in olds], changed
+
+
+def _approve_const(card_const: Mapping[str, Any], cand: Mapping[str, Any], amending: bool) -> dict:
+    """要核准的那一份:候選檔的(沒有就卡上的);修訂只換目標,紅線、本人裁示照卡上生效的(候選檔裡的不信)。"""
+    draft = cand.get("constitution") if isinstance(cand.get("constitution"), dict) else card_const
+    const = dict(PC.empty_constitution(), **{k: v for k, v in draft.items() if k in ("goals", "red_lines", "human_rulings")})
+    if amending:
+        const.update({k: list(card_const.get(k) or []) for k in ("red_lines", "human_rulings")})
+    return const
+
+
+def _why_code(why: Any) -> str:
+    """視窗(全文窗 / Touch ID)沒過的原因 ⇒ 給艦長室的代碼:timeout / unavailable / busy / declined。"""
+    w = str(why or "")
+    if w in ("timeout", "busy"):
+        return w
+    if w in ("unavailable", "off", "no_biometry", "no_passcode", "lockout") or w.startswith("osascript_"):
+        return "unavailable"
+    return "declined"
+
+
+def _fulltext_window(title: str, intro: str, body: str, check: str) -> dict:
+    """全文確認窗(可捲動;consent --strong 那一種,核心組的字)。不是 Mac / AIB_TOUCHID=0 ⇒ 不彈、回 unavailable。"""
+    import approve_gate as AG   # src/cockpit
+    if AG.ready():
+        return {"ok": False, "why": "unavailable"}
+    import consent   # src/cockpit
+    return consent.ask_checkbox(title, body, check, intro=intro)
+
+
 def approve_constitution(root: Path, project_uid: str, *, human_check: Any = None, ask: Any = None,
                          stdin: Any = None, stdout: Any = None, touchid: Any = None,
-                         touchid_available: Any = None) -> int:
+                         touchid_available: Any = None, fulltext: Any = None) -> int:
     """真人核准專案憲法初稿:候選檔 → 卡上 layers.constitution,approved=true,先入帳再寫。
-    兩條路:終端機三條件全到 ⇒ 打一次 uid;否則 macOS 彈 Touch ID 視窗(touchid(reason) 回 {ok, why})。
-    rc:0 核准(或本來就核准)/ 2 拒(找不到卡、不是真人、沒終端機、Touch ID 沒過)/ 3 真人打錯 uid 取消。"""
-    stdin = stdin or sys.stdin
+    兩條路:終端機三條件全到 ⇒ 打一次 uid;否則(含艦長室按鈕這種非終端呼叫,不退回終端 attest)
+    macOS 先彈全文確認窗(fulltext(title, intro, body, check) 回 {ok, why}),再彈 Touch ID(touchid(reason) 回 {ok, why})。
+    rc:0 核准(或本來就核准)/ 2 拒 / 3 真人打錯 uid 取消。
+    stdout 最後一行一律是 JSON {ok, why, project_uid, content_code, approved}(艦長室按鈕讀 why;成不成仍以卡上 approved 為準):
+    why = null 核准 / already / not_found / declined / timeout / unavailable / busy / content_changed / reason_refused / failed。"""
     stdout = stdout or sys.stdout
+    res: dict = {"uid": project_uid, "code": None}
+    rc, why = _approve_constitution(root, project_uid, res, human_check=human_check, ask=ask, stdin=stdin,
+                                    stdout=stdout, touchid=touchid, touchid_available=touchid_available,
+                                    fulltext=fulltext)
+    stdout.write(json.dumps({"ok": rc == 0, "why": None if why == "approved" else why, "project_uid": res["uid"],
+                             "content_code": res["code"], "approved": rc == 0}, ensure_ascii=True, sort_keys=True) + "\n")
+    stdout.flush()
+    return rc
+
+
+def _approve_constitution(root: Path, project_uid: str, res: dict, *, human_check: Any, ask: Any, stdin: Any,
+                          stdout: Any, touchid: Any, touchid_available: Any, fulltext: Any) -> tuple:
+    stdin = stdin or sys.stdin
     card = load_card(root, project_uid)
     if card is None:
         _say(T("aib.newproj.approve_not_found", {"uid": project_uid}), "[x]")
-        return 2
+        return 2, "not_found"
     uid = card["project_uid"]
+    res["uid"] = uid
     cand_path = candidate_path_of(root, uid)
     cand = _load_json(cand_path) or {}
     card_const = card["layers"].get("constitution") or {}
     amending = card_const.get("approved") is True
     if amending and not _pending_amendment(card_const, cand):
         _say(T("aib.newproj.approve_already", {"uid": uid}))
-        return 0
+        return 0, "already"
     try:
         tty = bool(stdin.isatty() and stdout.isatty())
     except (AttributeError, ValueError):
@@ -1403,12 +1456,12 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         can_touch = touchid_available() if touchid_available else (touchid is not None or _touchid().available())
         if not can_touch:
             _say(T("aib.newproj.approve_need_human", {"why": ",".join(missing) or "?"}), "[x]")
-            return 2
+            return 2, "unavailable"
         via = "touchid"
-    draft = cand.get("constitution") if isinstance(cand.get("constitution"), dict) else card["layers"]["constitution"]
-    const = dict(PC.empty_constitution(), **{k: v for k, v in draft.items() if k in ("goals", "red_lines", "human_rulings")})
-    if amending:                              # 修訂只換目標;紅線、本人裁示照卡上生效的(候選檔裡的不信)
-        const.update({k: list(card_const.get(k) or []) for k in ("red_lines", "human_rulings")})
+    const = _approve_const(card_const, cand, amending)
+    sha = _const_sha(const)                   # 內容碼 = 這個雜湊的前 8 碼:全文窗、Touch ID 字、寫卡前重算都是這一個
+    code = sha[:8]
+    res["code"] = code
 
     def lines(items):
         return ["    - %s" % _plain(i) for i in (items or [])] or ["    " + T("aib.newproj.approve_empty")]
@@ -1417,11 +1470,13 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
             "  " + T("aib.newproj.approve_goals")] + lines(const["goals"]) + \
            ["  " + T("aib.newproj.approve_red_lines")] + lines(const["red_lines"]) + \
            ["  " + T("aib.newproj.approve_rulings")] + lines(const["human_rulings"])
-    rl_state = "new"
+    rl_state, n_add, n_rm = "new", 0, 0
     if amending:                              # 已核准的卡:這次核的是修訂;生效的版本到按下去才換
         show.insert(1, "  " + T("aib.newproj.approve_amend_note", {"goals": len(card_const.get("goals") or [])}))
-        added, removed = _list_diff(card_const.get("goals"), const["goals"])
-        diff = ["  " + T("aib.newproj.approve_goals_diff")] + ["    [+] %s" % x for x in added] + ["    [-] %s" % x for x in removed]
+        added, removed, changed = _list_changes(card_const.get("goals"), const["goals"])
+        n_add, n_rm = len(added) + len(changed), len(removed) + len(changed)
+        diff = ["  " + T("aib.newproj.approve_goals_diff")] + ["    [+] %s" % x for x in added] + \
+               ["    [-] %s" % x for x in removed] + ["    [~] %s → %s" % ab for ab in changed]
         last = _last_approved(root, uid)
         if not last["sha"]:
             rl_state, rl_lines = "unknown", ["  " + T("aib.newproj.approve_red_lines_unknown")]
@@ -1435,6 +1490,9 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
             rl_state = "same" if same else "changed"
             rl_lines = ["  " + T("aib.newproj.approve_red_lines_same" if same else "aib.newproj.approve_card_changed_no_list")]
         show[2:2] = diff + rl_lines
+    else:
+        show.insert(1, "  " + T("aib.newproj.approve_first_note"))
+    show.insert(1, "  " + T("aib.newproj.approve_content_code", {"code": code}))
     show.append("  " + T("aib.newproj.approve_unsigned_note"))
     if via == "tty":
         stdout.write("\n".join(show) + "\n" + T("aib.newproj.approve_prompt", {"uid": uid}))
@@ -1442,55 +1500,67 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         ans = (ask() if ask else stdin.readline()).strip()
         if ans != uid:
             _say(T("aib.newproj.approve_cancel"), "[x]")
-            return 3
+            return 3, "declined"
     else:
         import approve_gate as AG   # src/cockpit;統一入口:類別 project_ruling(高風險)
-        # 視窗文字只由這裡組:動作 + 卡上的標題與 uid + 條數(呼叫端沒有任何一個字進得來)
+        # 視窗文字只由這裡組:動作 + 卡上的標題與 uid + 條數 + 修訂增減 + 內容碼(呼叫端沒有任何一個字進得來)
         reason = AG.reason("newproj.approve_amend" if amending else "newproj.approve", {
-            "title": card.get("title") or uid, "uid": uid,
+            "title": card.get("title") or uid, "code": code,
             "goals": len(const["goals"] or []), "red_lines": len(const["red_lines"] or []),
-            "rl": T("aib.newproj.approve_rl_word_" + rl_state)})
+            "add": n_add, "rm": n_rm, "rl": T("aib.newproj.approve_rl_word_" + rl_state)})
         stdout.write("\n".join(show) + "\n")
         stdout.flush()
-        _say(T("aib.newproj.approve_touchid_wait", {"uid": uid}))
-        res = AG.ask(reason, root, touchid)
+        if AG.se_reason(reason, AG.LA_MAX) is None:      # Touch ID 視窗放不下 ⇒ 拒,不截(截掉的可能正是內容碼)
+            _say(T("aib.newproj.approve_reason_refused"), "[x]")
+            return 2, "reason_refused"
+
+        def read_full():                      # 拿到整台鎖之後先跑:全文窗沒勾 / 取消 ⇒ 不彈指紋
+            _say(T("aib.newproj.approve_full_wait", {"code": code}))
+            seen = (fulltext or _fulltext_window)(T("aib.newproj.approve_full_title"),
+                                                  T("aib.newproj.approve_full_intro", {"code": code}),
+                                                  "\n".join(show), T("aib.newproj.approve_full_check"))
+            if isinstance(seen, dict) and seen.get("ok") is True:
+                _say(T("aib.newproj.approve_touchid_wait", {"uid": uid, "code": code}))
+            return seen
+
+        got = AG.ask(reason, root, touchid, before=read_full)
         human_id = _login_name()
-        if not (isinstance(res, dict) and res.get("ok") is True) or not human_id:
-            why = (res.get("why") if isinstance(res, dict) else None) or "?"
-            _say(T("aib.newproj.approve_touchid_failed", {"why": why}), "[x]")
-            return 2
+        if not (isinstance(got, dict) and got.get("ok") is True) or not human_id:
+            why = (got.get("why") if isinstance(got, dict) else None) or "?"
+            full = isinstance(got, dict) and got.get("stage") == "before"
+            _say(T("aib.newproj.approve_full_failed" if full else "aib.newproj.approve_touchid_failed", {"why": why}), "[x]")
+            return 2, _why_code(why)
     now_ms = int(time.time() * 1000)
     actor = {"ai_id": "human:%s" % human_id, "sig": "human@0000/Human", "kind": "human"}
-    import role_model as RM  # noqa: E402 —— 先入帳(入不了帳 ⇒ 卡不動)
+    import role_model as RM  # noqa: E402
     if not (root / "ledger").is_dir():      # 只建卡沒跑過 aib init 的新機器:先建狀態樹(明給狀態根,不靠環境猜)
         subprocess.run([sys.executable, str(REPO_ROOT / "src" / "bootstrap" / "aib_init.py"), "--state-root", str(root)],
                        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
-    shown_red = list(const.get("red_lines") or [])         # 原文(不是清過的):多一個零寬字也算變了
-    sha = _const_sha(const)
-    # 留底先寫、再入帳:入帳後才失敗(鎖內重查、備份、驗卡)也不會變成「帳本有雜湊、留底不在」而誤報不同;
-    # 沒被帳本指到的留底不會被讀到,留著無害(@977e3 子代理審 #4)。留底是本機檔,不是防線。
-    _write_approved_snapshot(root, uid, sha, const)
-    try:
-        RM.RoleModel(state_root=str(root))._append_event(
-            "decision.resolved",
-            "專案 %s 的目標與紅線由真人 %s 核准(%s);constitution sha256=%s" % (uid, human_id, via, sha),
-            "project %s goals and red lines approved by human %s (%s); constitution sha256=%s" % (uid, human_id, via, sha),
-            uid, actor)
-    except RM.RoleModelError as exc:
-        _say(T("aib.newproj.approve_ledger_failed", {"err": exc}), "[x]")
-        return 2
     c_path = card_path_of(root, uid)
     with _card_lock(c_path):
+        raw = _load_json(c_path) or {}
+        live = (raw.get("layers") or {}).get("constitution") or {}
+        fresh = _approve_const(live, _load_json(cand_path) or {}, amending)
+        if (live.get("approved") is True) != amending or _const_sha(fresh) != sha:
+            _say(T("aib.newproj.approve_content_changed", {"code": code}), "[x]")   # 看到的那份跟現在不一樣 ⇒ 帳、卡都不動
+            return 2, "content_changed"
+        # 留底先寫、再入帳:入帳後才失敗(備份、驗卡)也不會變成「帳本有雜湊、留底不在」而誤報不同;
+        # 沒被帳本指到的留底不會被讀到,留著無害(@977e3 子代理審 #4)。留底是本機檔,不是防線。
+        _write_approved_snapshot(root, uid, sha, const)
+        try:                                  # 先入帳(入不了帳 ⇒ 卡不動)
+            RM.RoleModel(state_root=str(root))._append_event(
+                "decision.resolved",
+                "專案 %s 的目標與紅線由真人 %s 核准(%s);constitution sha256=%s" % (uid, human_id, via, sha),
+                "project %s goals and red lines approved by human %s (%s); constitution sha256=%s" % (uid, human_id, via, sha),
+                uid, actor)
+        except RM.RoleModelError as exc:
+            _say(T("aib.newproj.approve_ledger_failed", {"err": exc}), "[x]")
+            return 2, "failed"
         snap = _archive_snapshot(c_path, "project", uid)
         if snap.get("status") == "failed":
             _say(T("aib.newproj.approve_backup_failed", {"err": snap.get("error")}), "[x]")
-            return 2
-        raw = _load_json(c_path) or {}
-        if amending:                          # 鎖內再取一次生效的紅線 / 裁示(等 Touch ID 期間別人核過也不丟)
-            live = (raw.get("layers") or {}).get("constitution") or {}
-            if list(live.get("red_lines") or []) != shown_red:
-                _say(T("aib.newproj.approve_red_lines_moved"), "[x]")   # 按指紋前看到的紅線跟現在不一樣 ⇒ 不寫
-                return 2
+            return 2, "failed"
+        if amending:                          # 本人裁示照鎖內那份(等 Touch ID 期間別人加的不丟;紅線上面已比過一樣)
             const.update({k: list(live.get(k) or []) for k in ("red_lines", "human_rulings")})
         import datetime as _dt                                    # +08:00 形(跟既有卡同形);不靠 %z(有的平台給時區名)
         at = _dt.datetime.fromtimestamp(now_ms / 1000).astimezone().isoformat(timespec="seconds")
@@ -1505,11 +1575,11 @@ def approve_constitution(root: Path, project_uid: str, *, human_check: Any = Non
         _atomic_write_json(c_path, raw)
         cand_now = _load_json(cand_path) or {}
         newer = isinstance(cand_now.get("constitution"), dict) and _goals_of(cand_now["constitution"]) != _goals_of(const)
-        if cand_now and not newer:            # 等 Touch ID 期間又有人提了新目標 ⇒ 留著那份等下次核,不蓋掉
+        if cand_now and not newer:            # 寫卡這一刻又有人提了新目標 ⇒ 留著那份等下次核,不蓋掉
             cand_now.update({"approved": True, "constitution": const, "approved_wall_ms": now_ms})
             _atomic_write_json(cand_path, cand_now)
     _say(T("aib.newproj.approve_done", {"uid": uid}))
-    return 0
+    return 0, "approved"
 
 
 def main(argv: Optional[list[str]] = None) -> int:
