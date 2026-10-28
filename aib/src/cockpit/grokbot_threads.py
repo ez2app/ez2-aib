@@ -20,6 +20,7 @@
     python3 src/cockpit/grokbot_threads.py connect --agent <agentId>           # 跳一個視窗兩格:網址、金鑰(隱藏)(預設)
     python3 src/cockpit/grokbot_threads.py connect --agent <agentId> --stdin   # 同一套拆法,從 stdin 讀(尺用)
     python3 src/cockpit/grokbot_threads.py connected                   # 哪些 agent 已綁 webhook(只列 id)
+  connect 成功後會問要不要同步到其他機器(grokbot_bind_sync.py;aib grokbot sync-bind)
 """
 from __future__ import annotations
 
@@ -602,6 +603,13 @@ def main(argv=None) -> int:
         except ValueError as exc:
             print("沒綁定:" + str(exc), file=sys.stderr)
             return RC_USAGE
+        # 10-28 Andy 准(必要功能):綁好後一定問「要不要同步到其他機器」,按「同步」才傳;--stdin / 沒有交談終端 ⇒ 不傳,只印指令。
+        #   同步自己出錯不改 connect 的結束碼(這台已經綁好了)。
+        try:
+            import grokbot_bind_sync
+            grokbot_bind_sync.offer_after_connect(args.agent, interactive=(not args.stdin) and sys.stdin.isatty())
+        except Exception as exc:  # noqa: BLE001
+            print("aib: grokbot sync-bind: %s" % type(exc).__name__, file=sys.stderr)
         return RC_OK
     if args.cmd == "held":
         try:

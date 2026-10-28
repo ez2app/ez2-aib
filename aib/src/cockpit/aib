@@ -432,6 +432,12 @@ if [ "${1:-}" = "flap" ]; then
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/flap_guard.py" "$@"
 fi
 
+# 10-28 Andy 准:grokbot webhook 綁定跨機同步(先列目標、問了才傳;只走自己的 SSH)。在 provider 解析之前:sync-bind 不是開席模式。
+if [ "${1:-}" = "grokbot" ] && [ "${2:-}" = "sync-bind" ]; then
+  shift 2
+  exec "$T_PY3" "$HERE/grokbot_bind_sync.py" "$@"
+fi
+
 # CodexBot one-time desktop binding.  This is deliberately outside provider
 # parsing: it verifies the already-loaded desktop thread before persisting any
 # value and never opens a cockpit window.
@@ -463,6 +469,7 @@ if [ "${1:-}" = "bot" ]; then
   echo "usage: aib bot list [--provider codexbot|--all] [--limit N] [--json]" >&2
   echo "       aib bot connect codexbot --thread <UUID> [--endpoint <local ws://|unix://>]" >&2
   echo "       aib bot connect grokbot --agent <agentId>   (跳視窗貼 webhook 網址與金鑰)" >&2
+  echo "       aib grokbot sync-bind --agent <agentId> [--to host,...]   (綁定同步到其他機器;先問再傳)" >&2
   echo "       aib bot ping @席碼 [--timeout 秒] [--json]   (一鍵檢查通不通;會真的叫醒 AI 一輪)" >&2
   echo "       aib bot reap [--apply]   (收掉行程已死、狀態還寫活著的橋接席;預設只列出)" >&2
   exit 2
