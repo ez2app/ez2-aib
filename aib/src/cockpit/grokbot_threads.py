@@ -629,7 +629,7 @@ def main(argv=None) -> int:
         # 10-28 Andy:補救 —— bot 例行任務要跑的收信入口不在 / 過時 ⇒ 建好(只印有改動或失敗的;失敗不改結束碼)
         try:
             import bot_launchers
-            for ln in bot_launchers.lines(bot_launchers.ensure(only=["aib-grokbot-mail"]), quiet=True):
+            for ln in bot_launchers.lines(bot_launchers.ensure(only=["aib-grokbot-mail"], repair_only=True), quiet=True):
                 print("aib: " + ln, file=sys.stderr)
         except Exception as exc:  # noqa: BLE001
             print("aib: bot launchers: %s" % type(exc).__name__, file=sys.stderr)

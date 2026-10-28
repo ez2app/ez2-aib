@@ -16,7 +16,7 @@
   不是 aib 寫的一般檔案先備份到 ~/.ez2-aib/backup/launchers/。先寫暫檔再原子 rename。
   AIB_BOT_LAUNCHERS=0 全關;AIB_PATH_BIN 換放置資料夾(預設 ~/.local/bin)。
 
-    python3 bot_launchers.py ensure [--quiet] [--only aib-grokbot-mail]   rc 0 = 全部就緒、1 = 有寫不進去的
+    python3 bot_launchers.py ensure [--quiet] [--only aib-grokbot-mail] [--repair-only]   rc 0 = 全部就緒、1 = 有寫不進去的
     python3 bot_launchers.py status [--json]                              只看,不寫
 """
 from __future__ import annotations
@@ -96,8 +96,10 @@ def _parse(text: str):
     return None
 
 
-def state(name: str, env=None) -> tuple:
-    """(狀態, 原因)。狀態 ∈ ok / missing / stale;原因給人看(不含機密,這些檔本來就沒有機密)。"""
+def state(name: str, env=None, repair_only: bool = False) -> tuple:
+    """(狀態, 原因)。狀態 ∈ ok / missing / stale;原因給人看(不含機密,這些檔本來就沒有機密)。
+    repair_only(開席 / connect 的補救用):aib 寫的、指向**另一份還在的** aib 安裝 ⇒ 算 ok,不搶過來
+    (同一台有兩份 aib、或從工作樹開席時,不會每開一次席就來回改;那份不見了才修)。安裝 / 更新一律指向目前這份。"""
     p = bin_dir(env) / name
     if p.is_symlink():
         return "stale", "symlink → %s" % os.readlink(p)
@@ -113,7 +115,8 @@ def state(name: str, env=None) -> tuple:
     if got is None:
         return "stale", "not written by aib"
     py, script = got
-    if Path(script) != target(name):
+    if Path(script) != target(name) and not (repair_only and Path(script).name == LAUNCHERS[name]
+                                             and Path(script).is_file()):
         return "stale", "points to %s" % script
     if not (os.path.isfile(py) and os.access(py, os.X_OK)):
         return "stale", "python missing: %s" % py
@@ -137,9 +140,9 @@ def _backup(p: Path, env) -> None:
         pass
 
 
-def ensure_one(name: str, env=None, python: str = None) -> tuple:
+def ensure_one(name: str, env=None, python: str = None, repair_only: bool = False) -> tuple:
     env = os.environ if env is None else env
-    st, why = state(name, env)
+    st, why = state(name, env, repair_only)
     if st == "ok":
         return OK, ""
     if not target(name).is_file():
@@ -164,13 +167,13 @@ def ensure_one(name: str, env=None, python: str = None) -> tuple:
     return (CREATED if st == "missing" else UPDATED), why
 
 
-def ensure(env=None, only=None, python: str = None) -> list:
+def ensure(env=None, only=None, python: str = None, repair_only: bool = False) -> list:
     """→ [(入口名, 動作, 原因)]。AIB_BOT_LAUNCHERS=0 ⇒ 全部 off、什麼都不寫。"""
     env = os.environ if env is None else env
     names = [n for n in LAUNCHERS if not only or n in only]
     if (env.get(ENV_OFF) or "1") == "0":
         return [(n, OFF, "") for n in names]
-    return [(n,) + ensure_one(n, env, python) for n in names]
+    return [(n,) + ensure_one(n, env, python, repair_only) for n in names]
 
 
 def lines(rows, quiet=False, env=None) -> list:
@@ -201,6 +204,8 @@ def main(argv=None) -> int:
     ap.add_argument("--quiet", action="store_true", help="只印有改動或失敗的")
     ap.add_argument("--only", action="append", default=[], choices=sorted(LAUNCHERS))
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--repair-only", action="store_true",
+                    help="開席 / connect 補救用:指向另一份還在的 aib 就不動,只修不在 / 壞掉 / 不是 aib 寫的")
     args = ap.parse_args(argv)
     if args.cmd == "status":
         rows = [(n,) + state(n) for n in LAUNCHERS if not args.only or n in args.only]
@@ -211,7 +216,7 @@ def main(argv=None) -> int:
             for n, s, w in rows:
                 print("%s  %s%s" % (s, bin_dir() / n, ("  (%s)" % w) if w else ""))
         return 0 if all(s == "ok" for _, s, _ in rows) else 1
-    rows = ensure(only=args.only or None)
+    rows = ensure(only=args.only or None, repair_only=args.repair_only)
     if args.json:
         print(json.dumps([{"name": n, "action": a, "why": w} for n, a, w in rows], ensure_ascii=False))
     else:

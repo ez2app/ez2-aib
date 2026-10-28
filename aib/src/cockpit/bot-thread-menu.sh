@@ -363,7 +363,7 @@ aib_bot_thread_held_guard() {
 #   (bot_launchers.py;安裝與更新時已經跑過,這裡是補救)。試跑不動;AIB_BOT_LAUNCHERS=0 全關;失敗不擋開席(只印一行)。
 _aib_bot_launchers_ensure() {   # $1=入口名(aib-grokbot-mail…)
   [ "${DRY:-0}" != "1" ] && [ "${AIB_DRY_RUN:-0}" != "1" ] || return 0
-  "${T_PY3:-${EZ2_PY3:-python3}}" "${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/bot_launchers.py" ensure --quiet --only "$1" </dev/null || true
+  "${T_PY3:-${EZ2_PY3:-python3}}" "${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/bot_launchers.py" ensure --quiet --repair-only --only "$1" </dev/null || true
 }
 
 # 09-25 a seat(a seat 派):aib 開 grokbot 席前的整段——預設 agent、30 秒選單、占用關卡、講清楚綁了誰。

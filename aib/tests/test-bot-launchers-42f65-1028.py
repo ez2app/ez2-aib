@@ -130,6 +130,27 @@ class Stale(Base):
         self.assertGood("aib-musebot-mail")
         self.assertFalse((self.home / ".ez2-aib" / "backup").exists(), "aib 自己寫的不用備份")
 
+    def test_l4d_repair_only_keeps_other_live_install(self):
+        # 開席 / connect 補救:指向另一份還在的 aib ⇒ 不搶;那份不見了 ⇒ 修。安裝 / 更新(不帶 --repair-only)⇒ 一律改成這份
+        other = self.td / "other-aib" / "src" / "cockpit"
+        other.mkdir(parents=True)
+        (other / "grokbot_mailbox.py").write_text("print('other')\n")
+        self.bin.mkdir(parents=True)
+        f = self.bin / "aib-grokbot-mail"
+        f.write_text(bl.desired("aib-grokbot-mail").replace(str(COCKPIT), str(other)))
+        f.chmod(0o755)
+        before = f.read_text()
+        r = self.run_tool("ensure", "--quiet", "--repair-only", "--only", "aib-grokbot-mail")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(f.read_text(), before)
+        (other / "grokbot_mailbox.py").unlink()
+        self.run_tool("ensure", "--quiet", "--repair-only", "--only", "aib-grokbot-mail")
+        self.assertGood("aib-grokbot-mail")
+        (other / "grokbot_mailbox.py").write_text("print('other')\n")
+        f.write_text(before)
+        self.run_tool("ensure", "--quiet", "--only", "aib-grokbot-mail")
+        self.assertGood("aib-grokbot-mail")
+
     def test_l4c_missing_python_and_not_executable(self):
         self.bin.mkdir(parents=True)
         (self.bin / "aib-claudebot-mail").write_text(bl.desired("aib-claudebot-mail", python=str(self.td / "gone-python")))
