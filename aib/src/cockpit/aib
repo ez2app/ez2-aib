@@ -161,6 +161,7 @@ INSTANCE=""
 INSTANCE_TOKEN=""
 MODEL_REQUESTED=""
 MODEL_FROM_FLAG=0
+MODEL_FROM_RECORD=0   # re-register 拿到的型號(啟動指令的 --model 或舊席位檔):照記錄,不換成清單最新
 RESET_SESSION_IDENTITY=0
 AIB_SEAT_REREGISTER=0   # 工單 AS:`aib seat re-register` 的旗標,見下面兩段
 REREG_ARGS=()
@@ -1162,7 +1163,11 @@ PYRR
     _rr_model="${_rr_model:-$_f_model}"
   fi
   POS=("$_rr_provider" "$_rr_mode" "$_rr_role")
-  [ -z "$_rr_model" ] || MODEL_REQUESTED="$_rr_model"
+  # 10-28(@aeb40 工作單 A):重新登記拿到的型號就是開席時記下的那個 ⇒ 標成照記錄。
+  #   以前只改 MODEL_REQUESTED、沒標 ⇒ 下面「Codex 沒手指定就用清單最新」那段把它換掉,
+  #   `aib codex … --model gpt-6.1-terra` 開的席,pane 一起來自登記就被寫成清單裡的 gpt-6-luna;
+  #   之後原地復活照席位檔開,就換回舊型號。
+  if [ -n "$_rr_model" ]; then MODEL_REQUESTED="$_rr_model"; MODEL_FROM_RECORD=1; fi
   # cwd 只認旗標或既有登記;都沒有就留空,write_seat_record 對空值不寫該欄——
   # 不拿操作者此刻站的目錄冒充席位的專案目錄。
   CALLER_CWD="$_rr_cwd"
@@ -1373,7 +1378,7 @@ print("1" if codex_pack.enabled() else "0")' "$HERE" 2>/dev/null || printf '1')"
   _codex_pack_on="$(printf '%s' "$_codex_pack_raw" | tr -d '[:space:]')"
   [ "$_codex_pack_on" = "0" ] || _codex_pack_on=1
 fi
-if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$MODEL_FROM_REVIVE" != "1" ] && [ "$_codex_pack_on" = "1" ]; then
+if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$MODEL_FROM_REVIVE" != "1" ] && [ "$MODEL_FROM_RECORD" != "1" ] && [ "$_codex_pack_on" = "1" ]; then
   _luna="$("$T_PY3" -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import codex_luna_model
