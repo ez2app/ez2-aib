@@ -63,6 +63,7 @@ CAPS = {
     "chat.events": _has_file("room_events.py"),
     "chat.open": _has_file("chat_visit.py"),
     "chat.visit": _has_file("chat_visit.py"),
+    "chat.cast": _has_file("chat_cast.py"),
     "chat.open.touchid": _has_def("chat_bridge.py", "human_gate"),
     "chat.address": _has_def("chat_bridge.py", "address_payload"),
     "chat.boot": _has_def("chat_bridge.py", "install_boot"),

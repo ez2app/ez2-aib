@@ -5751,5 +5751,12 @@
   "aib.release.sign_approve.notify_ok": "✓ 署名済み {plugin} {ver}",
   "aib.release.sign_approve.notify_fail": "✗ 署名できませんでした {plugin} {ver}",
   "aib.release.sign_approve.no_output": "(出力なし)",
-  "aib.release.sign_approve.shim": "リリース署名シム {path}:{did}"
+  "aib.release.sign_approve.shim": "リリース署名シム {path}:{did}",
+  "aib.chat.cast.touchid_issue": "aib:{who} に艦長室の画面を {hours} 時間見せる({until} まで)",
+  "aib.chat.cast.touchid_pin": "(📌 主項目の文字も含む)",
+  "aib.chat.help.cast": "動画ウォールへの AIB 画面投影(リクエスト / 許可 / 終了 / ハートビート / 画面)",
+  "aib.chat.cast_usage": "使い方:aib chat cast list|frames|request <友だち>|approve <リクエスト>|reject <リクエスト>|close <許可>|watch <許可>",
+  "aib.chat.cast_err": "投影できませんでした:{code}",
+  "aib.chat.cast_done": "投影:完了",
+  "aib.chat.cast_summary": "👁 {watching} 人が視聴中 · 視聴リクエスト {incoming} 件 · 受信中 {grants} 枠"
 }

@@ -866,6 +866,20 @@ class Sender(object):
                 p.unlink(missing_ok=True)
                 audit(self.root, "visit-out", "-", rec.get("to"), rec["msg"].get("op"))
 
+    async def push_casts(self, now=None):
+        """影音牆投放(chat_cast):cast-out 裡的控制訊息(請求 / 開放 / 心跳 / 收回)送出去;再跑投放端 tick
+        (有人在看才推畫面;送成功才記,送不出去下一輪再推)。"""
+        import chat_cast as CC
+        for p, rec in CC.queued(self.root, now):
+            if await self._send_owner_msg(rec.get("to"), "cast", json.dumps(rec["msg"], ensure_ascii=False)):
+                p.unlink(missing_ok=True)
+                audit(self.root, "cast-out", "-", rec.get("to"), rec["msg"].get("op"))
+        for item in await asyncio.to_thread(CC.tick, None, self.root, now):
+            if await self._send_owner_msg(item["to"], "cast", json.dumps(item["msg"], ensure_ascii=False)):
+                CC.sent(None, item)
+                if item["kind"] == "close":
+                    audit(self.root, "cast-out", "-", item["to"], "close")
+
     async def _push_card(self, tgt, owner, frm, now):
         """名片(第 32 節,Andy 23:5x「社群只給好友看」):我宣告的社群帳號私下送給這位好友 / 我的機器;
         內容有變就送,沒變一天一次。分享等級 off 也照送(名片跟在線狀態是兩回事);陌生人不會在 targets 裡。"""
@@ -1700,6 +1714,24 @@ class Receiver(object):
         got = CVI.on_incoming(None, owner, msg)
         audit(self.root, "visit-in", "-", from_npub, "%s:%s" % (msg["op"], got or "ignored"))
 
+    async def on_cast(self, rumor, tags, from_npub):
+        """影音牆投放(chat_cast):只收驗得到名冊的好友 / 我的機器;寄件席要對得上;記帳 / 存畫面,不進佇列、不進 AI 框、不回條。"""
+        import chat_cast as CC
+        parsed = GF.parse_address(tags.get("aib-from") or "") or {}
+        owner = parsed.get("owner")
+        if not owner or CR.is_blocked(owner) or not (CR.is_mine(owner) or CR.is_friend(owner)):
+            return
+        rc, res = await self.sender._resolve(tags.get("aib-from"))
+        if rc != 0 or res["seat"]["npub"] != from_npub:
+            return
+        msg = CC.parse(rumor.content())
+        if msg is None:
+            audit(self.root, "cast-in", "-", from_npub, "bad")
+            return
+        got = CC.on_incoming(None, owner, msg)
+        if msg["op"] not in ("frame", "unchanged", "watch") or got not in ("frame", "alive", "watch"):
+            audit(self.root, "cast-in", "-", from_npub, "%s:%s" % (msg["op"], got or "ignored"))
+
     async def on_card(self, rumor, tags, from_npub):
         """名片(第 32 節):好友 / 我的其他機器私下送來的社群帳號。陌生、封鎖 ⇒ 靜默丟;不進佇列、不回條。"""
         parsed = GF.parse_address(tags.get("aib-from") or "") or {}
@@ -1847,7 +1879,7 @@ class Receiver(object):
         kind = GF.inbound_kind(tags)
         if not msgid:
             return
-        if kind not in ("presence", "card", "space"):      # 這三種重收無害(寄出時間 / 內容比過),不佔去重名額(#303 審 A-M6)
+        if kind not in ("presence", "card", "space", "cast"):      # 這四種重收無害(cast:畫面一直來,去重帳會撐爆;帳本身驗 grant_id)(寄出時間 / 內容比過),不佔去重名額(#303 審 A-M6)
             if self.led.seen("m:" + msgid):
                 return
             self.led.mark("m:" + msgid)
@@ -1861,6 +1893,8 @@ class Receiver(object):
             return await self.on_offer(rumor, tags, from_npub)
         if kind == "visit":
             return await self.on_visit(rumor, tags, from_npub)
+        if kind == "cast":
+            return await self.on_cast(rumor, tags, from_npub)
         if kind == "unknown":
             # 對方版本比這台新:不進 AI 框、不回條;記一行好查(型別名截短,不記內容)
             audit(self.root, "in", msgid, from_npub, "unknown-type:" + str(tags.get("aib-type"))[:32])
@@ -2347,6 +2381,10 @@ async def serve(root):
                 await sender.push_visits()
             except Exception as err:   # noqa: BLE001
                 sys.stderr.write("visits:%s\n" % type(err).__name__)
+            try:
+                await sender.push_casts()
+            except Exception as err:   # noqa: BLE001
+                sys.stderr.write("casts:%s\n" % type(err).__name__)
             if time.time() - last_presence >= PRESENCE_TICK_S:
                 last_presence = time.time()
                 try:
