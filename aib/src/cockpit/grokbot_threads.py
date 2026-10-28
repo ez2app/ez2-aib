@@ -603,6 +603,13 @@ def main(argv=None) -> int:
         except ValueError as exc:
             print("沒綁定:" + str(exc), file=sys.stderr)
             return RC_USAGE
+        # 10-28 Andy:補救 —— bot 例行任務要跑的收信入口不在 / 過時 ⇒ 建好(只印有改動或失敗的;失敗不改結束碼)
+        try:
+            import bot_launchers
+            for ln in bot_launchers.lines(bot_launchers.ensure(only=["aib-grokbot-mail"]), quiet=True):
+                print("aib: " + ln, file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001
+            print("aib: bot launchers: %s" % type(exc).__name__, file=sys.stderr)
         # 10-28 Andy 准(必要功能):綁好後一定問「要不要同步到其他機器」,按「同步」才傳;--stdin / 沒有交談終端 ⇒ 不傳,只印指令。
         #   同步自己出錯不改 connect 的結束碼(這台已經綁好了)。
         try:

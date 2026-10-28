@@ -66,7 +66,9 @@ class Base(unittest.TestCase):
         self.env.update({"AIB_GROKBOT_DIR": str(self.app), "EZ2_AIB_STATE_ROOT": str(self.state),
                          "AIB_GROKBOT_PBCOPY": str(bin_ / "pbcopy"), "AIB_GROKBOT_OPEN": str(bin_ / "open"),
                          "AIB_GROKBOT_OSASCRIPT": str(bin_ / "osascript"), "EZ2_AIB_LOCALE": "zh-TW",
-                         "PYTHONDONTWRITEBYTECODE": "1"})
+                         "PYTHONDONTWRITEBYTECODE": "1",
+                         # connect 綁好後會補建收信入口、問要不要同步:一律在暫存 HOME 裡,不碰真的 ~/.local/bin
+                         "HOME": str(self.td / "home"), "AIB_PATH_BIN": str(self.td / "home" / "lbin")})
 
     def tearDown(self):
         shutil.rmtree(self.td, ignore_errors=True)

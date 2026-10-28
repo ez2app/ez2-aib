@@ -292,6 +292,19 @@ def _ensure_statusline():
     return lines
 
 
+def _ensure_bot_launchers():
+    """10-28 Andy(必要功能):pip / pipx 首次安裝後跑的就是 aib init ⇒ 這裡把 bot 收信入口(~/.local/bin/aib-<bot>-mail)建好或改好
+    (src/cockpit/bot_launchers.py;可重跑;AIB_BOT_LAUNCHERS=0 全關)。失敗只警告,不算 init 失敗。→ [印給人看的行]。"""
+    cockpit = str(Path(__file__).resolve().parents[1] / "cockpit")
+    if cockpit not in sys.path:
+        sys.path.insert(0, cockpit)
+    try:
+        import bot_launchers
+        return bot_launchers.lines(bot_launchers.ensure(), quiet=True)
+    except Exception as err:  # noqa: BLE001
+        return ["bot launchers: %s" % str(err)[:200]]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="aib init", description=_T("aib.init.help.description"))
@@ -313,13 +326,15 @@ def main(argv=None):
         return 2
     hooks = _ensure_hooks()
     statusline = _ensure_statusline()
+    launchers = _ensure_bot_launchers()
     counts = {CREATED: 0, FIXED: 0, OK: 0, FAIL: 0}
     for i in items:
         counts[i["action"]] += 1
 
     if args.json:
         print(json.dumps({"state_root": str(Path(os.path.expanduser(args.state_root))),
-                          "items": items, "counts": counts, "hooks": hooks, "statusline": statusline},
+                          "items": items, "counts": counts, "hooks": hooks, "statusline": statusline,
+                          "launchers": launchers},
                          ensure_ascii=False, indent=2))
     else:
         mark = {CREATED: _T("aib.init.mark_created"), FIXED: _T("aib.init.mark_fixed"), OK: "OK  ", FAIL: "FAIL"}
@@ -337,7 +352,7 @@ def main(argv=None):
               % (counts[CREATED], counts[FIXED], counts[OK], counts[FAIL]))
         for h in hooks:
             sys.stderr.write(h["line"] + "\n")
-        for ln in statusline:
+        for ln in statusline + launchers:
             sys.stderr.write(ln + "\n")
         auto_ext()
 
