@@ -53,12 +53,20 @@ aib_cli_session_menu() {
   [ -z "${AIB_FORK_FROM_SESSION_UUID:-}" ] || with_fork=0          # 已明確指定來源
   local py="${T_PY3:-${EZ2_PY3:-python3}}" here="${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
   local json rows=""
+  local target="${AIB_CLI_SESSION_MENU_TARGET:-${EZ2_TMUX_SESSION_NAME:-aihub}}"
+  local hub_sock="${HUB:-${EZ2_AIHUB_SOCKET:-aihub}}"
+  local popup_w_pct=90        # 與 cli_sessions.POPUP_W_PCT 同一個值
   if [ "$with_fork" = "1" ]; then
     if [ -n "${AIB_CLI_SESSIONS_JSON_FILE:-}" ]; then
       json="$(cat "$AIB_CLI_SESSIONS_JSON_FILE" 2>/dev/null)" || json=""
     else
+      # #399 R1(@aeb40):列的寬度預算要用**彈窗內寬**(終端寬 × 90% − 2 框線),不是終端寬 ⇒ 先量彈窗要開在的那個 client;
+      #   量不到(沒有 tmux、非數字)⇒ 不給,cli_sessions 用 80 欄終端的保守值
+      local client_w popup_cols=0
+      client_w="$(env -u TMUX "${AIB_TMUX_BIN:-tmux}" -L "$hub_sock" display-message -p -t "$target" '#{client_width}' 2>/dev/null || true)"
+      case "$client_w" in ''|*[!0-9]*) ;; *) popup_cols=$(( client_w * popup_w_pct / 100 - 2 )) ;; esac
       json="$("$py" "$here/cli_sessions.py" --provider "$provider" --cwd "$cwd" --seats-dir "$seats_dir" \
-                --role "$role" --limit 9 --json 2>/dev/null)" || json=""
+                --role "$role" --limit 9 --popup-cols "$popup_cols" --json 2>/dev/null)" || json=""
     fi
     [ -z "$json" ] || rows="$(printf '%s' "$json" | "$py" -c '
 import sys, json
@@ -81,8 +89,6 @@ for r in d.get("rows") or []:
   fi
   [ -n "$rows" ] || [ "$with_onboard" = "1" ] || return 0      # 沒舊席位也沒開席單 ⇒ 不跳選單
   local limit="${AIB_SEAT_RESUME_MENU_TIMEOUT_S:-${AIB_ONBOARD_MENU_TIMEOUT_S:-30}}"
-  local target="${AIB_CLI_SESSION_MENU_TARGET:-${EZ2_TMUX_SESSION_NAME:-aihub}}"
-  local hub_sock="${HUB:-${EZ2_AIHUB_SOCKET:-aihub}}"
   # 看的是**外層艙**(aib 最後 attach 的那個 session,在 default 伺服器)有沒有人接著;
   # hub 上永遠接著一個 client —— 指揮艙中間那格內嵌的 tmux ⇒ 問 hub 恆為「有人」(23:44 測試艙實測)。
   local outer="${AIB_CLI_SESSION_MENU_OUTER-${S:-}}" viewers=1
@@ -157,7 +163,7 @@ json.dump({"title": title, "note": note, "deadline": int(deadline), "choice_file
   nlines="$(printf '%s' "$items_tsv" | grep -c '' || true)"
   local popup_cmd; printf -v popup_cmd '%q %q %q' "$py" "$here/open_menu_popup.py" "$spec"
   env -u TMUX "${AIB_TMUX_BIN:-tmux}" -L "$hub_sock" display-popup -E -t "$target" -x C -y C \
-      -w 90% -h "$(( nlines + 6 ))" -T " ${title} " "$popup_cmd" 2>/dev/null &
+      -w "${popup_w_pct}%" -h "$(( nlines + 6 ))" -T " ${title} " "$popup_cmd" 2>/dev/null &
   local mpid=$!; sleep 0.5
   if ! kill -0 "$mpid" 2>/dev/null; then
     _menu_rc=0; wait "$mpid" 2>/dev/null || _menu_rc=$?
