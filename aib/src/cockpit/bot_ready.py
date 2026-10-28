@@ -43,6 +43,17 @@ def _row(ok: bool, kind: str, what: str, fix: str = "") -> dict:
     return {"ok": ok, "kind": kind, "what": what, "fix": fix}
 
 
+def _hint_mail(path: str) -> str:
+    try:
+        import i18n_lib
+        text = i18n_lib.t("aib.launchers.hint_missing", {"path": path}, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001
+        text = ""
+    if not text or text.startswith("!!"):
+        text = "bot 收信要跑的 %s 不在(或連結斷了):跑 aib bot install-launchers 裝上" % path
+    return text
+
+
 def _grokbot(agent: str, base) -> list[dict]:
     import grokbot_threads as gt
     rows = []
@@ -59,10 +70,11 @@ def _grokbot(agent: str, base) -> list[dict]:
                      "沒接門鈴(%s),bot 收不到叫醒:在席上打 /connect(或 aib bot connect grokbot --agent %s),接好就生效,不用重開"
                      % (";".join(problems), agent)))
     # 10-11 a seat:例行任務請 bot 跑的是 ~/.local/bin/aib-grokbot-mail(grokbot_threads.routine_request);這台沒裝 / 連結斷了
-    #   ⇒ 門鈴響了、bot 也醒了,但每次收信都默默失敗。tools/aib-install-path 會裝。
+    #   ⇒ 門鈴響了、bot 也醒了,但每次收信都默默失敗。10-28 起 aib 安裝 / 更新 / 開席時自己裝(bot_launchers.py);
+    #   手動補:aib bot install-launchers(公開版沒有 tools/aib-install-path,舊提示叫人跑的指令不存在)。
     mail = Path(os.environ.get(ENV_MAIL_BIN) or (Path.home() / ".local" / "bin" / "aib-grokbot-mail"))
     rows.append(_row(os.path.isfile(mail) and os.access(mail, os.X_OK), KIND_NO_MAIL_TOOL, "收信工具 aib-grokbot-mail 在",
-                     "bot 收信要跑的 %s 不在(或連結斷了):跑 bash tools/aib-install-path 裝上" % mail))
+                     _hint_mail(str(mail))))
     return rows
 
 

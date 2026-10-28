@@ -359,10 +359,18 @@ aib_bot_thread_held_guard() {
 }
 
 
+# 10-28 Andy(必要功能):開 bot 席前補救 —— 這家的收信入口(~/.local/bin/aib-<bot>-mail)不在 / 指向舊倉 / 過時 ⇒ 由 aib 自己建或改好
+#   (bot_launchers.py;安裝與更新時已經跑過,這裡是補救)。試跑不動;AIB_BOT_LAUNCHERS=0 全關;失敗不擋開席(只印一行)。
+_aib_bot_launchers_ensure() {   # $1=入口名(aib-grokbot-mail…)
+  [ "${DRY:-0}" != "1" ] && [ "${AIB_DRY_RUN:-0}" != "1" ] || return 0
+  "${T_PY3:-${EZ2_PY3:-python3}}" "${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/bot_launchers.py" ensure --quiet --repair-only --only "$1" </dev/null || true
+}
+
 # 09-25 a seat(a seat 派):aib 開 grokbot 席前的整段——預設 agent、30 秒選單、占用關卡、講清楚綁了誰。
 #   預設=環境已帶的 AIB_GROKBOT_AGENT_ID;沒帶且恰好一個 agent 綁過 webhook(aib bot connect grokbot)就用它;兩個以上不猜。
 #   回 0=可開(可能沒綁 agent,已印一句);1=那個 agent 被占用(已印原因)。
 aib_grokbot_agent_preflight() {
+  _aib_bot_launchers_ensure aib-grokbot-mail
   local py="${T_PY3:-${EZ2_PY3:-python3}}" here="${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
   if [ -z "${AIB_GROKBOT_AGENT_ID:-}" ]; then
     local only=""
@@ -373,16 +381,17 @@ aib_grokbot_agent_preflight() {
   aib_bot_thread_menu grokbot || return 1
   aib_bot_thread_held_guard grokbot || return 1
   # P4(10-11 a seat,the maintainer「最少步驟串成 bot」):選到的 agent 還沒接門鈴 ⇒ 開席前直接跳貼兩格的視窗
-  #   (同 aib bot connect grokbot:切到 app 例行任務頁、請 bot 建例行任務那句已放剪貼簿)。
+  #   (同 aib bot connect grokbot:切到 app 例行任務頁;視窗上「複製給 bot 的話」按了才放剪貼簿,10-28)。
   #   取消或失敗不擋開席:席照開,席上打 /connect 再接。試跑、AIB_GROKBOT_AUTO_CONNECT=0 不跳。
   if [ -n "${AIB_GROKBOT_AGENT_ID:-}" ] && [ "${DRY:-0}" != "1" ] && [ "${AIB_DRY_RUN:-0}" != "1" ] \
      && [ "${AIB_GROKBOT_AUTO_CONNECT:-1}" != "0" ]; then
-    local _gb_conn=""
-    _gb_conn="$("$py" "$here/grokbot_threads.py" connected 2>/dev/null)" || _gb_conn=""
-    case "$_gb_conn" in
-      *"\"${AIB_GROKBOT_AGENT_ID}\""*) ;;
-      "") ;;   # 量不到 ≠ 沒接:不跳
-      *)
+    # 10-28:看「選定的這一個 agent」真的綁好了沒(grokbot_threads.py bound:設定檔在、網址 / 金鑰形狀對;與 open_readiness 同判準)。
+    #   rc 0 綁好 ⇒ 直接用、不問;rc 1 沒綁 / 壞了 ⇒ 跳 connect 視窗;其他(量不到)⇒ 不跳(量不到 ≠ 沒接)。
+    local _gb_rc=0
+    "$py" "$here/grokbot_threads.py" bound "$AIB_GROKBOT_AGENT_ID" >/dev/null 2>&1 || _gb_rc=$?
+    case "$_gb_rc" in
+      0) ;;
+      1)
         echo "aib: $(_btm_t aib.botmenu.grok_doorbell id="${AIB_GROKBOT_AGENT_ID}")" >&2
         if "$py" "$here/grokbot_threads.py" connect --agent "$AIB_GROKBOT_AGENT_ID" >&2; then
           echo "aib: $(_btm_t aib.botmenu.grok_doorbell_ok)" >&2
@@ -404,6 +413,7 @@ aib_grokbot_agent_preflight() {
 #   預設=環境已帶的 AIB_CLAUDEBOT_SESSION_ID;沒有就不猜(本機對話很多,猜錯會把別條對話接進 AIB)。
 #   回 0=可開(可能沒綁,已印一句);1=那條對話被占用(已印原因)。
 aib_claudebot_session_preflight() {
+  _aib_bot_launchers_ensure aib-claudebot-mail
   if [ -n "${AIB_CLAUDEBOT_SESSION_ID:-}" ] && ! [[ "$AIB_CLAUDEBOT_SESSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
     echo "aib: $(_btm_t aib.botmenu.claude_bad_uuid id="${AIB_CLAUDEBOT_SESSION_ID}")" >&2
     return 1
@@ -444,6 +454,7 @@ aib_claudebot_session_preflight() {
 #   預設=環境已帶的 AIB_MUSEBOT_CONVERSATION_ID;沒有就不猜(Muse 對話 id 不透明,形狀由 Muse 側定義)。
 #   沒有 30 秒選單(bot_threads 尚無 musebot 後端,見 UNSUPPORTED 註記)。回 0=可開(可能沒綁,已印一句)。
 aib_musebot_preflight() {
+  _aib_bot_launchers_ensure aib-musebot-mail
   local conv="${AIB_MUSEBOT_CONVERSATION_ID:-}"
   # 10-09 a seat(D8):沒帶 id ⇒ 預設沿用綁過的 Muse 對話。
   #   沒帶就開成「沒綁」的席,右欄是綠的、Muse 側看守找不到它,寄來的信永遠沒人讀(10-09 a seat/a seat 實量)。

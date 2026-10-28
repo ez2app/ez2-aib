@@ -847,6 +847,11 @@ grok|Grok(xAI)|grok|bash:https://x.ai/cli/install.sh|grok login|最快約 3 秒|
         for _adh in "$DIR/aib/src/identity/auto_distill_hook.py" "$DIR/src/identity/auto_distill_hook.py"; do
           if [ -f "$_adh" ]; then python3 "$_adh" ensure-all </dev/null || true; break; fi
         done
+        # 10-28 Andy(必要功能):bot 收信入口(~/.local/bin/aib-grokbot-mail、aib-claudebot-mail、aib-musebot-mail)由 aib 自己建 / 改好
+        #   (公開版沒有 tools/aib-install-path;可重跑;指向舊倉或過時就覆寫)。失敗只記一筆,不擋安裝 / 升級。
+        for _bl in "$DIR/aib/src/cockpit/bot_launchers.py" "$DIR/src/cockpit/bot_launchers.py"; do
+          if [ -f "$_bl" ]; then python3 "$_bl" ensure --quiet </dev/null || note+=("bot 收信入口沒裝好:之後可以自己跑 aib bot install-launchers"); break; fi
+        done
         # 10-17(the maintainer「以後都應該自動更新」):狀態列腳本跟著換新 —— 只換 aib 裝的舊版、你改過的不動(印一行手動換法)、
         #   先備份、沒在用的那家不建;AIB_STATUSLINE_AUTO=0 全關。失敗只記一筆,不擋安裝 / 升級。
         for _sli in "$DIR/aib/tools/statusline-install.sh" "$DIR/tools/statusline-install.sh"; do
