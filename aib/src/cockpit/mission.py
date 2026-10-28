@@ -13,7 +13,9 @@ aib mission new|list|show|roster|team|task|tick … [--json]
   qa/<收據 id>.json   品管收據原件。
 
 狀態機:
-  團   draft 草稿 → ready 待開始 → running 進行中 ⇄ paused 暫停;running|paused → halted 叫停 → running(本人再按開始)
+  團   draft 草稿 → ready 待開始 → running 進行中 ⇄ paused 暫停;
+       ready 倒數 AUTOSTART_S(30 秒,Andy 03:1x 裁示 7):沒人按停(hold)⇒ tick 由 system 寫 autostart;
+       hold = 按「改範圍 / 預算 / 只要討論」停倒數,再 submit 一次重新倒數;本人按開始(Touch ID)隨時可以;running|paused → halted 叫停 → running(本人再按開始)
        running → verified 已驗證(全部任務 passed,機器判)→ handed 待人收下 → archived 已封存(本人收下)
        verified|handed → running(退回重做)
   任務 todo 待做 → assigned 已派 → doing 做中 ⇄ blocked 卡關;doing → qa 品管中 → passed 通過 | returned 退回 → assigned
@@ -23,6 +25,7 @@ aib mission new|list|show|roster|team|task|tick … [--json]
   任務帶 rev(每次變動 +1,--if-rev 不合 ⇒ stale_rev)、accept_rev(驗收版本)、code(派工代號)。
 
 本人動作(開始 / 收下)走 approve_gate 的 Touch ID;非 Mac / 叫不出 / 取消 ⇒ 拒。
+  開始也可以不按:待開始倒數 30 秒沒人按停就自動開始(Andy 03:1x 裁示 7);收下一定要按。
 同帳號威脅模型(GUIDE-same-user-ai-threat-model):missions/ 所有 AI 都寫得到;--by 是自報。角色表、租期、eid、
   收據格式只防誤操作與 AI 之間互踩,不是防線。真正的防線只有 Touch ID 那兩步;改了驗得出要等 S4 的 SE 簽授權單。
   收據裡的 rc / CI 結論也是自報 ⇒ show 的 verified_pct 只算 ci / pr_merged 兩種(S2 起由核心重跑再補)。
@@ -47,6 +50,7 @@ if HERE not in sys.path:
 
 V = 1
 LEASE_S = 900
+AUTOSTART_S = 30
 ID_RE = re.compile(r"^m_[0-9a-f]{12}$")
 TASK_RE = re.compile(r"^t[0-9]{1,4}$")
 EID_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,64}$")
@@ -64,7 +68,9 @@ TEXT_MAX, LIST_MAX = 200, 20
 
 # 團的轉移:動作 ⇒ (從哪些狀態, 到, 誰能做)。human 那兩步另過 Touch ID(_human_gate)。
 TEAM_MOVES = {
-    "submit":  (("draft",), "ready", ("pm",)),
+    "submit":  (("draft", "ready"), "ready", ("pm",)),
+    "hold":    (("ready",), "ready", ("pm", "human")),
+    "autostart": (("ready",), "running", ("system",)),
     "start":   (("ready", "halted"), "running", ("human",)),
     "pause":   (("running",), "paused", ("pm", "monitor", "human")),
     "resume":  (("paused",), "running", ("pm", "human")),
@@ -254,9 +260,8 @@ def apply(st, ev):
         raise MissionError("bad_event")
     if ev["eid"] in st["eids"]:
         raise MissionError("dup_eid")
-    if typ != "expire" and not BY_RE.match(str(by or "")):
-        raise MissionError("bad_by")
-    if typ == "expire" and by != "system":
+    system = typ == "expire" or (typ == "team" and d.get("move") == "autostart")
+    if (by == "system") != system or (not system and not BY_RE.match(str(by or ""))):
         raise MissionError("bad_by")
     if st["status"] is None and typ != "created":
         raise MissionError("not_created")
@@ -281,9 +286,20 @@ def apply(st, ev):
         if not mv:
             raise MissionError("bad_move")
         frm, to, who = mv
-        _need(st, by, who)
+        if who != ("system",):
+            _need(st, by, who)
         if st["status"] not in frm:
             raise MissionError("bad_transition")
+        if d["move"] == "submit":
+            if st["status"] == "ready" and not st.get("hold"):
+                raise MissionError("bad_transition")
+            st.update(ready_at=at, hold=False)
+        if d["move"] == "hold":
+            if st.get("hold"):
+                raise MissionError("bad_transition")
+            st["hold"] = True
+        if d["move"] == "autostart" and (st.get("hold") or at - int(st.get("ready_at") or at) < AUTOSTART_S):
+            raise MissionError("not_due")
         if d["move"] == "verify":
             live = [t for t in st["tasks"].values() if t["status"] != "cancelled"]
             if not live or any(t["status"] != "passed" for t in live):
@@ -455,6 +471,7 @@ def _req_digest(typ, by, task, data):
 
 def _snapshots(d, st):
     _write(d / "charter.json", json.dumps({"v": V, "id": st["id"], "status": st["status"], "rev": st["rev"],
+                                           "ready_at": st.get("ready_at"), "hold": bool(st.get("hold")),
                                            "charter": st["charter"], "created_at": st["created_at"],
                                            "updated_at": st["updated_at"]}, ensure_ascii=False, sort_keys=True))
     _write(d / "roster.json", json.dumps({"v": V, "roster": st["roster"]}, ensure_ascii=False, sort_keys=True))
@@ -478,10 +495,18 @@ def _append(d, ev, torn):
 
 
 def _expire_due(d, st, evs_torn, now):
-    """租期過了的任務寫 expire(system)。回寫了幾筆。"""
+    """倒數滿了沒人按停 ⇒ autostart;租期過了的任務寫 expire。都是 system 寫。回寫了幾筆。"""
     n = 0
+    if st["status"] == "ready" and not st.get("hold") and now - int(st.get("ready_at") or now) >= AUTOSTART_S:
+        ev = {"v": V, "seq": st["seq"] + 1, "eid": "x_" + secrets.token_hex(8), "req": None, "at": now,
+              "by": "system", "type": "team", "data": {"move": "autostart"}}
+        apply(st, ev)
+        _append(d, ev, evs_torn)
+        evs_torn = None
+        n += 1
+        st["_autostarted"] = True
     if st["status"] != "running":
-        return 0
+        return n
     for t in sorted(st["tasks"].values(), key=lambda t: int(t["id"][1:])):
         if t["status"] in LEASED and (t.get("lease_until") or 0) < now:
             ev = {"v": V, "seq": st["seq"] + 1, "eid": "x_" + secrets.token_hex(8), "req": None, "at": now,
@@ -530,7 +555,7 @@ def commit(mid, typ, by, data, env=None, task=None, eid=None, now=None):
 
 
 def tick(mid, env=None, now=None):
-    """aib mission tick:把租期過期的任務放回待做。回 [{"task","from"}]。"""
+    """aib mission tick:倒數滿了自動開始;租期過期的任務放回待做。回 [{"task","from"}]。"""
     now = int(time.time() if now is None else now)
     d = mdir(mid, env)
     with _locked(d):
@@ -582,7 +607,9 @@ def view(st, now=None):
             "budget": st["budget"], "roster": st["roster"], "created_at": st["created_at"], "updated_at": st["updated_at"],
             "tasks": [dict({k: v for k, v in t.items() if k not in ("code", "codes")}, code_set=bool(t.get("code")),
                            lease_left=max(0, t["lease_until"] - now) if t.get("lease_until") else None) for t in tasks],
-            "receipts": st["receipts"],
+            "receipts": st["receipts"], "hold": bool(st.get("hold")),
+            "autostart_in": (max(0, int(st["ready_at"]) + AUTOSTART_S - now)
+                             if st["status"] == "ready" and not st.get("hold") and st.get("ready_at") else None),
             "passed": sum(1 for t in live if t["status"] == "passed"), "total": len(live),
             "verified_pct": int(100 * len(mv) / len(live)) if live else 0}
 
@@ -673,7 +700,7 @@ def _parser():
             s.add_argument("seat")
             s.add_argument("--role", choices=ROLES, default=None)
         if name == "team":
-            s.add_argument("move", choices=sorted(TEAM_MOVES))
+            s.add_argument("move", choices=sorted(m for m in TEAM_MOVES if m != "autostart"))
         if name == "task":
             s.add_argument("op", choices=("add", "dispatch", "report", "qa", "cancel", "amend"))
             s.add_argument("task", nargs="?")
@@ -728,7 +755,7 @@ def run(argv, env=None, out=None):
             return _emit(out, a, dict(v, ok=True), text.rstrip())
         if a.cmd == "tick":
             got = tick(a.id, env)
-            return _emit(out, a, {"ok": True, "expired": got}, T("ok"))
+            return _emit(out, a, {"ok": True, "expired": got, "status": replay(a.id, env)["status"]}, T("ok"))
         by = _by(a)
         if a.cmd == "new":
             budget = {k: v for k, v in (("minutes", a.minutes), ("seats_max", a.seats_max)) if v}

@@ -10,6 +10,8 @@ M5 「通過」只能品管收據翻:PM / 工人 / 本人都不行(K4);做過的
 M6 唯一 id:同 eid 重送不重做、不同內容 eid_conflict(K7);開團 / 開單重送不多開;--if-rev 不合拒
 M7 重開機接得回:從 events.jsonl 重放;斷電半行當沒寫、下次寫入截掉(K8);中間被改成非法 ⇒ 讀不起來(K9)
 M8 本人兩步(開始 / 收下)走 approve_gate:沒過 / 不是 human ⇒ 拒(K10);全部通過才能 verify(K11)
+M10 倒數 30 秒自動開始(Andy 03:1x 裁示 7):滿 30 秒沒按停 ⇒ tick 寫 system autostart(K12 不滿 30 秒也收);
+    hold 停倒數(K13);再 submit 重新倒數;system 以外不能寫 autostart
 M9 改驗收:舊通過作廢回品管中;檔權限 0600 / 0700;CLI --json
 """
 import json
@@ -438,6 +440,55 @@ class M9Amend(Base):
         self.assertIn("Task team command refused", r.stdout)
 
 
+class M10Autostart(Base):
+    def ready(self):
+        self.mk(running=False)
+        self.c("team", by(PM), {"move": "submit"}, now=T0)
+
+    def test_autostart_after_30s(self):
+        self.ready()
+        M.tick(self.mid, self.env, now=T0 + 29)
+        self.assertEqual(self.st()["status"], "ready")
+        self.assertEqual(M.view(self.st(), now=T0 + 10)["autostart_in"], 20)
+        M.tick(self.mid, self.env, now=T0 + 30)
+        st = self.st()
+        self.assertEqual(st["status"], "running")
+        ev = json.loads((M.mdir(self.mid, self.env) / "events.jsonl").read_text().splitlines()[-1])
+        self.assertEqual((ev["by"], ev["data"]["move"]), ("system", "autostart"))
+        self.assertEqual(self.proved, [])                          # 自動開始不彈窗
+
+    def test_any_write_after_30s_autostarts_first(self):
+        self.ready()
+        self.dispatch(now=T0 + 31)                                 # 派工前先把到期的倒數走完
+        self.assertEqual(self.st()["status"], "running")
+
+    def test_hold_stops_countdown_and_resubmit_restarts(self):
+        self.ready()
+        self.c("team", by(PM), {"move": "hold"}, now=T0 + 10)
+        self.ok(M.tick, self.mid, self.env, now=T0 + 500)
+        self.assertEqual(self.st()["status"], "ready")
+        self.assertIsNone(M.view(self.st(), now=T0 + 500)["autostart_in"])
+        self.c("team", by(PM), {"move": "submit"}, now=T0 + 600)
+        M.tick(self.mid, self.env, now=T0 + 620)
+        self.assertEqual(self.st()["status"], "ready")
+        M.tick(self.mid, self.env, now=T0 + 630)
+        self.assertEqual(self.st()["status"], "running")
+
+    def test_only_system_and_only_when_due(self):
+        self.ready()
+        self.bad("bad_by", self.c, "team", by(PM), {"move": "autostart"}, now=T0 + 5)
+        self.bad("bad_by", self.c, "team", "system", {"move": "pause"}, now=T0 + 1)
+
+    def test_early_autostart_unreadable(self):
+        self.ready()
+        p = M.mdir(self.mid, self.env) / "events.jsonl"
+        lines = p.read_text().splitlines()
+        ev = {"v": 1, "seq": len(lines) + 1, "eid": "x_forged000001", "req": None, "at": T0 + 5, "by": "system",
+              "type": "team", "data": {"move": "autostart"}}
+        p.write_text("\n".join(lines + [json.dumps(ev)]) + "\n")
+        self.bad("corrupt:%d" % ev["seq"], M.replay, self.mid, self.env)
+
+
 KNIVES = [
     ("K1", '''        if st["status"] not in frm:
             raise MissionError("bad_transition")''', "", "M1Team.test_illegal_transitions"),
@@ -458,6 +509,11 @@ KNIVES = [
     ("K10", '''    if move in HUMAN_SITES:''', '''    if False:''', "M8Human.test_start_needs_touchid"),
     ("K11", '''            if not live or any(t["status"] != "passed" for t in live):''', '''            if not live:''',
      "M8Human.test_verify_needs_all_passed"),
+    ("K12", '''        if d["move"] == "autostart" and (st.get("hold") or at - int(st.get("ready_at") or at) < AUTOSTART_S):''',
+     '''        if d["move"] == "autostart" and st.get("hold"):''', "M10Autostart.test_early_autostart_unreadable"),
+    ("K13", '''    if st["status"] == "ready" and not st.get("hold") and now - int(st.get("ready_at") or now) >= AUTOSTART_S:''',
+     '''    if st["status"] == "ready" and now - int(st.get("ready_at") or now) >= AUTOSTART_S:''',
+     "M10Autostart.test_hold_stops_countdown_and_resubmit_restarts"),
 ]
 
 
