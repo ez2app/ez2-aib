@@ -8,6 +8,7 @@ G4 清字:控制字元 / 方向控制 / 零寬字拿掉;數字欄位截長;FULL 
 G5 ask:一次一個視窗(別人拿著鎖 ⇒ busy)、取消 / 讀不懂 ⇒ 不過;ready:非 Mac / AIB_TOUCHID=0 / 叫不出 ⇒ 拒
 G6 呼叫點都走統一入口:SITES 每個 site 在登記的模組裡真的用到;除了自己拿鎖的 consent,沒有人直接叫 TA.ask
 G7 語系:四語都有類別名與新句子;en 下視窗字是英文
+G8 用到 AG / TA 的函式,那個名字在自己的作用域裡真的有定義(不靠 NOSTR venv 也抓得到漏 import;10-29 chat_pair._confirm)
 """
 import os
 import re
@@ -230,6 +231,51 @@ class G6EveryCallSiteUsesGate(unittest.TestCase):
         self.assertEqual(bad, [], "直接叫 TA.ask(沒走 approve_gate)")
 
 
+class G8NamesBoundInScope(unittest.TestCase):
+    """函式裡用 AG / TA,卻只在別的函式 import ⇒ 執行到才 NameError(chat 測試沒 NOSTR venv 全格跳過,全套抓不到)。
+    用 symtable 看真正的作用域:區域 / 閉包(外層函式 import 的)都算有;隱含全域又沒有模組層定義 ⇒ 漏了。"""
+
+    NAMES = ("AG", "TA")
+
+    def _missing(self, src, filename):
+        import symtable
+        top = symtable.symtable(src, filename, "exec")
+        bound = {s.get_name() for s in top.get_symbols() if s.is_assigned() or s.is_imported()}
+        bad = []
+
+        def walk(tab):
+            for child in tab.get_children():
+                if child.get_type() == "function":
+                    for name in self.NAMES:
+                        try:
+                            sym = child.lookup(name)
+                        except KeyError:
+                            continue
+                        if sym.is_referenced() and sym.is_global() and not sym.is_local() and name not in bound:
+                            bad.append("%s:%s() %s" % (filename, child.get_name(), name))
+                walk(child)
+        walk(top)
+        return bad
+
+    def test_every_use_is_bound(self):
+        bad = []
+        for base in (ROOT / "src", ROOT / "tools"):
+            for p in base.rglob("*.py"):
+                src = p.read_text(encoding="utf-8", errors="replace")
+                if not re.search(r"\b(AG|TA)\.", src):
+                    continue
+                try:
+                    bad += self._missing(src, str(p.relative_to(ROOT)))
+                except SyntaxError:
+                    continue
+        self.assertEqual(bad, [], "用到卻沒 import(執行到才 NameError)")
+
+    def test_detects_missing(self):
+        src = "def a():\n    import approve_gate as AG\n    return AG\n\ndef b():\n    return AG.reason('x')\n\n" \
+              "def c():\n    import approve_gate as AG\n    def inner():\n        return AG\n    return inner\n"
+        self.assertEqual(self._missing(src, "x.py"), ["x.py:b() AG"], "只有 b 漏;c 的閉包算有")
+
+
 class G7Locales(unittest.TestCase):
     def test_four_locales(self):
         import json
@@ -253,6 +299,23 @@ class G7Locales(unittest.TestCase):
         self.assertIn("Telegram", r)
         self.assertIn("Amy", r)
         self.assertEqual(AG.category_name("outbound", "en"), "Outgoing messages / sharing")
+
+
+class G8Knife(unittest.TestCase):
+    def test_k_drop_confirm_import(self):
+        """刀:把 chat_pair._confirm 補的 import 拿掉 ⇒ G8 紅在斷言上。"""
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from aib_knife_copy import knife_copy
+        from aib_proc_guard import run_guarded
+        this = Path(__file__).name
+        with knife_copy(ROOT, "src/cockpit/chat_pair.py", "    import approve_gate as AG      # R1", "    pass      # R1",
+                        tests=(this,)) as copy_root:
+            r = run_guarded([sys.executable, str(copy_root / "tests" / this), "G8NamesBoundInScope.test_every_use_is_bound"],
+                            cwd=str(copy_root), timeout=300)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("FAIL:", out, out)
+        self.assertIn("_confirm() AG", out)
 
 
 if __name__ == "__main__":

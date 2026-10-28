@@ -340,6 +340,7 @@ def cmd_pair(a, env, out):
 def _confirm(a, env, out, root):
     """等手機傳回配對碼。同一窗期一個以上候選 ⇒ 整批作廢 + 警告(@abb89 F5:讀到碼的 AI 可能搶先送);
     只有一個 ⇒ 簽進主人清單(第二窗字「把手機 <頭…中…尾> 配成主人手機」+ 差異;要主人密語)。"""
+    import approve_gate as AG      # R1 從 cmd_pair 拆出來時漏帶 ⇒ pair confirm NameError(10-29 補)
     import chat_bridge as CB
     import chat_owner as CO
     import chat_owner_cli as OC
