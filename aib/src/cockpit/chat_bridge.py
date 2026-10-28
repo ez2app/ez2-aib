@@ -2565,36 +2565,21 @@ def cmd_status(a, env, out):
     return 0
 
 
-POWER_ENOUGH_W = 60       # 10-28:夠充筆電的瓦數(Apple 原廠 61 / 67 / 96 / 140 W)
-POWER_WEAK_W = 30         # 低於這個才算「充電頭太弱」(10-20 那顆 15 W 手機頭)
-POWER_PAUSE_PCT = 75      # 充電上限 / 最佳化電池充電多停在 80%(使用者也可能設更高)
-
-
 def power_supply_lines(info):
     """10-20 @abb89 #16 核心這半:電源一行(外接幾瓦 / 電池幾 %)。非 Mac(ac None)⇒ 不印。
-    接了電卻沒在充(10-28 Andy:Pro 接 140 W、停在 80% 被誤報太弱)分三種:
-    瓦數夠 + 電量 ≥ 75%,或 ioreg 說有不充的原因 + 電量 ≥ 75% ⇒ 充電暫停(電池保護 / 充電上限),不加 ⚠;
-    瓦數確實低(< 30 W)⇒ ⚠ 充電頭太弱;其餘(瓦數讀不到、30–60 W、電量低)⇒ ⚠ 沒在充,不猜原因。"""
-    ac = info.get("ac")
-    if ac is None:
+    接了電卻沒在充分三種(判法在 chat_power.charge_state,艦長室頁面讀同一欄):paused 不加 ⚠、weak ⚠ 太弱、idle ⚠ 沒在充。"""
+    import chat_power as CP
+    state = CP.charge_state(info)
+    if state is None:
         return []
     pct = info.get("pct")
     pct_s = "%d%%" % pct if isinstance(pct, int) else "?"
-    if not ac:
+    if state == "battery":
         return [T("status_power_on_battery", pct=pct_s)]
     watts = info.get("watts")
-    known_w = isinstance(watts, int) and not isinstance(watts, bool) and watts > 0
-    watts_s = "%d W" % watts if known_w else "?"
-    if info.get("charging") is False:
-        reason = info.get("not_charging_reason")
-        high = isinstance(pct, int) and pct >= POWER_PAUSE_PCT
-        if high and ((known_w and watts >= POWER_ENOUGH_W) or
-                     (isinstance(reason, int) and reason > 0 and not (known_w and watts < POWER_WEAK_W))):
-            return [T("status_power_paused", watts=watts_s, pct=pct_s)]
-        if known_w and watts < POWER_WEAK_W:
-            return [T("status_power_not_charging", watts=watts_s, pct=pct_s)]
-        return [T("status_power_idle", watts=watts_s, pct=pct_s)]
-    return [T("status_power_ac", watts=watts_s, pct=pct_s)]
+    watts_s = "%d W" % watts if isinstance(watts, int) and not isinstance(watts, bool) and watts > 0 else "?"
+    key = {"paused": "status_power_paused", "weak": "status_power_not_charging", "idle": "status_power_idle"}.get(state, "status_power_ac")
+    return [T(key, watts=watts_s, pct=pct_s)]
 
 
 def power_lines(env):
