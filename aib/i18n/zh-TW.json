@@ -4660,6 +4660,8 @@
   "aib.chat.status_power_battery": "⚠ 這台在用電池:閒置 {n} 分鐘照常睡(接上電源才撐得住)",
   "aib.chat.status_power_ac": "電源:外接 {watts},電池 {pct}",
   "aib.chat.status_power_not_charging": "⚠ 電源:接著 {watts} 充電頭但沒在充(電池 {pct});充電頭太弱,換原廠或 60 W 以上的",
+  "aib.chat.status_power_paused": "電源:外接 {watts},電池 {pct},充電暫停(電池保護 / 充電上限,正常)",
+  "aib.chat.status_power_idle": "⚠ 電源:接著 {watts} 但沒在充(電池 {pct})",
   "aib.chat.status_power_on_battery": "電源:電池 {pct},沒接電",
   "aib.chat.status_mine_old": "⚠ 你的「{name}」還在 aib {v}(這台 {mine}):請在那台跑 aib update",
   "aib.chat.help.contacts_refresh": "立刻重抓這位主人(或 all = 全部好友與我的其他機器)的名冊,通訊錄的席位換成名冊目前公開的",

@@ -4660,6 +4660,8 @@
   "aib.chat.status_power_battery": "⚠ This machine is on battery: it still sleeps after {n} idle minutes (plug in to stay awake)",
   "aib.chat.status_power_ac": "Power: adapter {watts}, battery {pct}",
   "aib.chat.status_power_not_charging": "⚠ Power: a {watts} adapter is attached but the battery is not charging ({pct}); it is too weak, use the original or a 60 W+ adapter",
+  "aib.chat.status_power_paused": "Power: adapter {watts}, battery {pct}, charging paused (battery protection / charge limit, normal)",
+  "aib.chat.status_power_idle": "⚠ Power: {watts} attached but the battery is not charging ({pct})",
   "aib.chat.status_power_on_battery": "Power: battery {pct}, not plugged in",
   "aib.chat.status_mine_old": "⚠ Your \"{name}\" is still on aib {v} (this machine {mine}): run aib update there",
   "aib.chat.help.contacts_refresh": "Re-fetch this owner's roster now (or all = every friend and my other machines); contact seats become the roster's current public seats",

@@ -4660,6 +4660,8 @@
   "aib.chat.status_power_battery": "⚠ 배터리 사용 중: {n}분 유휴 후 평소처럼 잠자기(전원을 연결해야 깨어 있음)",
   "aib.chat.status_power_ac": "전원: 어댑터 {watts}, 배터리 {pct}",
   "aib.chat.status_power_not_charging": "⚠ 전원: {watts} 어댑터가 연결되어 있지만 충전되지 않음(배터리 {pct}). 출력이 약합니다. 정품 또는 60 W 이상을 쓰세요",
+  "aib.chat.status_power_paused": "전원: 어댑터 {watts}, 배터리 {pct}, 충전 일시 중지(배터리 보호 / 충전 한도, 정상)",
+  "aib.chat.status_power_idle": "⚠ 전원: {watts} 연결되어 있지만 충전되지 않음(배터리 {pct})",
   "aib.chat.status_power_on_battery": "전원: 배터리 {pct}, 미연결",
   "aib.chat.status_mine_old": "⚠ 내 \"{name}\"은(는) 아직 aib {v}(이 기기 {mine}): 그 기기에서 aib update를 실행하세요",
   "aib.chat.help.contacts_refresh": "이 주인(all = 모든 친구와 내 다른 기기)의 명부를 지금 다시 받아 연락처의 자리를 명부에 지금 공개된 자리로 바꿈",
