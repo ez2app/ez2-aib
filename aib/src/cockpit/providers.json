@@ -37,7 +37,7 @@
       "id": "codex",
       "letter": "CDX",
       "status": "supported",
-      "default_requested_model": "gpt-6-luna",
+      "default_requested_model": "gpt-6.1-terra",
       "identity": "probe:lsof-rollout-meta",
       "identity_note": "讀開檔中的 ~/.codex/sessions/rollout-*.jsonl meta 首行的 payload.session_id。★ 檔名的 uuid 是 thread id 不是 session id,fork/resume 下用檔名猜必錯(seat-detect.py 檔頭 08-14 實錯)。",
       "menu_label": "Codex",

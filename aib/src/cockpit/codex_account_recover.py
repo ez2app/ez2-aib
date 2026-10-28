@@ -594,10 +594,10 @@ def main(argv: list[str] | None = None) -> int:
         if result:
             Path(result).write_text(slot + "\n", encoding="utf-8")
             return 0
-        sys.stdout.write("\n登入完成，正在用最新的 Luna 開這一格。\n")
+        sys.stdout.write("\n登入完成，正在用最新的預設型號開這一格。\n")
         sys.stdout.flush()
         import codex_luna_model
-        model = codex_luna_model.latest_luna_slug() or "gpt-6-luna"
+        model = codex_luna_model.latest_default_slug() or "gpt-6.1-terra"
         bin_path = os.environ.get("CODEX_BIN") or "codex"
         import codex_daemon_flag
         os.execvpe(bin_path, [bin_path, "--dangerously-bypass-approvals-and-sandbox",
