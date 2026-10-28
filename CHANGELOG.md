@@ -14,6 +14,7 @@ Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` t
 - **Handoff sweep checks the seat's own repo**: not the aib code tree; read-only, time-bounded, no optional locks on other seats' worktrees, and a non-repo is recorded as "could not check".
 - **Ledger created on first seat open**: when `aib init` did not create it, the first seat open / bind creates `ledger/` (0700) and `aib-ledger.jsonl` (0600).
 - **Tests**: four missing regression tests restored; the handoff test no longer reads the real home directory.
+- **Charge state for other screens**: `chat_power.charge_state` returns the same charging state as the power line (charging / paused / charger too weak / not charging) and `status --json` carries it under `power`, so the captain room banner reads the same field instead of re-parsing.
 
 ## 0.1.62
 
