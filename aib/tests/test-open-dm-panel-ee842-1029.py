@@ -13,6 +13,7 @@ A5 off ⇒ 偏好改關,不碰艙
 A6 方案不是進階 ⇒ 艙不寫,說 not_advanced(on 仍記偏好,升級後下一次開席生效)
 A7 沒裝 pending-review ⇒ 開關照寫,說 plugin_missing
 A8 main 不管怎樣都回 0(開席不能因為這一步倒)
+A9 記憶檔位置 = <狀態根>/state/open-dm-panel.json,跟 aib 腳本「沒記憶檔就不起 python」看的是同一個
 D1 四語六句都在;用法那行有 [dm]
 刀(複本):K1 拿掉最後一個字 dm 的辨認 ⇒ P1 紅;K2 auto 也硬開 ⇒ A3 紅;K3 不看整台偏好 ⇒ A4 紅
 """
@@ -137,6 +138,10 @@ class Cabin(unittest.TestCase):
         finally:
             os.environ.clear()
             os.environ.update(orig)
+
+    def test_a9_pref_path_matches_shell_gate(self):
+        self.assertEqual(ODP.pref_path(self.env), Path(self.env["EZ2_AIB_STATE_ROOT"]) / "state" / "open-dm-panel.json")
+        self.assertIn('[ -f "$(aib_cabin_state_root)/state/open-dm-panel.json" ]', AIB.read_text(encoding="utf-8"))
 
 
 class Args(unittest.TestCase):

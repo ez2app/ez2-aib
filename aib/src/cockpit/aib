@@ -2030,8 +2030,11 @@ aib_run_ensure() {   # 起訖都記進碼表;rc 原樣回給呼叫端。note=def
 }
 # 10-29 Andy:待審區(dm 佇列 + 待審框 + 版面)開席時照 dm / --dm / 整台記憶打開;建艙 / ensure 之前寫好,畫框時就讀得到。
 #   失敗只印一行、不擋開席(open_dm_panel.py rc 恆 0)。
+#   沒打過 dm(auto 且沒有整台記憶檔)⇒ 不起 python(開席每一步都算秒數;open_dm_panel 光載入就 60–130 ms)。
 if [ "$DRY" != "1" ]; then
-  "${EZ2_PY3:-python3}" "$HERE/open_dm_panel.py" "$OPEN_DM" </dev/null || true
+  if [ "$OPEN_DM" != "auto" ] || [ -f "$(aib_cabin_state_root)/state/open-dm-panel.json" ]; then
+    "${EZ2_PY3:-python3}" "$HERE/open_dm_panel.py" "$OPEN_DM" </dev/null || true
+  fi
 elif [ "$OPEN_DM" != "auto" ]; then
   echo "aib: (dry-run) dm=$OPEN_DM" >&2
 fi
