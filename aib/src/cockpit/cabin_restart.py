@@ -194,6 +194,7 @@ def collect(*, cabins=None, tmux=None, session_of=None, state_root=None, here_ca
                 "role": rec.get("role") or w["role_tag"] or "",
                 "mode": rec.get("mode") or "",
                 "model": rec.get("model_requested") or "",
+                "requested_source": rec.get("requested_source") or "",
                 "uuid": rec.get("session_uuid") or "",
                 "cwd": rec.get("cwd") or "",
                 "seat_id": rec.get("seat_id") or "",
@@ -716,8 +717,7 @@ def revive_cabin(c, *, state_root=None, out=sys.stdout, log_dir=None, wait_s=30)
         win_names = (seat_pool._tmux(hub, "list-windows", "-F", "#{window_name}") or "").split()
         again = ["--again"] if any(re.fullmatch(r"%s[0-9]*-%s" % (re.escape(s.get("role") or "root"), re.escape(prov)), n)
                                   for n in win_names) else []
-        model = s.get("model") or ""
-        margs = ["--model", model] if model and model != prov else []
+        margs = _restore_model_args(prov, s)
         extra = {}
         benv, bval = _bot_binding(prov, uuid, root)
         if benv and bval:
@@ -750,6 +750,19 @@ def revive_cabin(c, *, state_root=None, out=sys.stdout, log_dir=None, wait_s=30)
         ok += 1
         time.sleep(3)
     return ok, bad
+
+
+def _restore_model_args(prov, s):
+    """還原時要不要帶 --model。帶了 aib 就當手指定(席位檔記 requested_source=flag、換帳號不退版)。
+    10-28(#400 R2 Medium):Codex 席只有原本就手指定(快照 requested_source=flag)才帶;自動挑的、
+    舊快照沒這欄的 ⇒ 不帶，交給 aib 復活取型號(對話紀錄 > 席位檔 > 清單最新),來源維持 auto。
+    其他家照舊帶(requested_source 只有 Codex 用)。"""
+    model = s.get("model") or ""
+    if not model or model == prov:
+        return []
+    if prov == "codex" and s.get("requested_source") != "flag":
+        return []
+    return ["--model", model]
 
 
 def restore(code, *, yes=False, force=False, attach=True, out=sys.stdout, view=None, ask=input):

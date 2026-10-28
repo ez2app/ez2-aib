@@ -1348,7 +1348,10 @@ if [ -z "$MODEL_REQUESTED" ] && [ -n "${AIB_REVIVE_SESSION_UUID:-}" ]; then
 sys.path.insert(0, sys.argv[1])
 import seat_fork
 m, layer = seat_fork.revive_model(sys.argv[2], sys.argv[3], sys.argv[4])
-src = str(seat_fork.seat_record_for(sys.argv[3], sys.argv[4]).get("requested_source") or "")
+try:  # 讀不到來源不能連累復活型號(#400 R2 Low):讀壞就當沒有記號
+    src = str((seat_fork.seat_record_for(sys.argv[3], sys.argv[4]) or {}).get("requested_source") or "")
+except Exception:
+    src = ""
 print(m + "\t" + layer + "\t" + src)' "$HERE" "$PROVIDER" "$AIB_REVIVE_SESSION_UUID" "${EZ2_AIB_HOME:-$HOME/.ez2-aib}" 2>/dev/null || true)"
   _revive_model="${_revive_pick%%$'\t'*}"
   _revive_rest="${_revive_pick#*$'\t'}"

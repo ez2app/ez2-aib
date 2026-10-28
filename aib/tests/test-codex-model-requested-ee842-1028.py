@@ -17,10 +17,14 @@ B6 手指定型號的席登入後照席位檔那一版開、不換成清單最�
 B7 provider-launch 啟動迴圈(抽真碼跑、假 codex / tmux)被拒退版後，席位檔真的寫成實際那一版。
 B8 Codex 正常結束(rc 0)時畫面殘留舊的 "not supported" 也不退版(#400 審查 Low)。
 M1 手指定開席 → 原地復活 → 換帳號登入 ⇒ model_requested 仍是 gpt-6.1-terra(#400 審查 Medium;
-   清單最新是 gpt-6-luna,修前會被寫回 luna):開席寫 requested_source=flag、復活帶回手指定、換帳號不寫回。
+   清單裡 gpt-6.1-terra 已下架、最新是別的版本,修前會被寫回那一版):開席寫 requested_source=flag、復活帶回手指定、換帳號不寫回。
 M2 自動挑的席復活後仍是自動(不被誤標成手指定)。
+M3 停電還原(cabin_restart)→ 復活 → 換帳號：自動挑的席仍自動(還原不帶 --model、復活帶 LUNA_AUTO、換帳號照退版)、
+   手指定的席仍手指定(還原帶 --model、換帳號不寫回);舊快照沒 requested_source ⇒ 當自動(#400 R2 Medium)。
+M4 席位檔讀來源時出錯，不連累復活型號(#400 R2 Low)。
 刀:K1 拿掉 re-register 的 MODEL_FROM_RECORD ⇒ A1 紅;K2 launch_with_fallback 不看 MAX_STEPS ⇒ B2 紅;
-   K3 recover 改回直接 exec ⇒ B5 紅;K4 復活不看 requested_source ⇒ M1 紅;K5 退版迴圈不看 rc ⇒ B8 紅。
+   K3 recover 改回直接 exec ⇒ B5 紅;K4 復活不看 requested_source ⇒ M1 紅;K5 退版迴圈不看 rc ⇒ B8 紅;
+   K7 還原照舊每席都帶 --model ⇒ M3 紅。
 """
 import io
 import json
@@ -36,6 +40,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 COCKPIT = HERE.parent / "src" / "cockpit"
 sys.path.insert(0, str(COCKPIT))
 
+import cabin_restart as CR  # noqa: E402
 import codex_account_recover as R  # noqa: E402
 import codex_model_fallback as FB  # noqa: E402
 
@@ -314,12 +319,12 @@ class ExplicitSurvivesRevive(unittest.TestCase):
         self.state = self.tmp / "state"
         self.seats = self.state / "instances" / "t" / "seats"
         self.seats.mkdir(parents=True)
-        luna_latest = [m for m in LISTED if m["slug"] != "gpt-6.1-terra"] + [
+        terra_delisted = [m for m in LISTED if m["slug"] != "gpt-6.1-terra"] + [
             {"slug": "gpt-6.1-terra", "visibility": "hide"}]
         self.env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.tmp / "home"),
                     "EZ2_AIB_STATE_ROOT": str(self.state), "EZ2_AIB_HOME": str(self.state),
                     "EZ2_AIHUB_SOCKET": "aihub-t", "EZ2_AIB_INSTANCE": "t", "AIB_CODEX_PACK": "1",
-                    "CODEX_HOME": str(self.tmp / "codex"), "EZ2_CODEX_MODELS_CACHE": _cache(self.tmp, luna_latest)}
+                    "CODEX_HOME": str(self.tmp / "codex"), "EZ2_CODEX_MODELS_CACHE": _cache(self.tmp, terra_delisted)}
         self._old_env = dict(os.environ)
 
     def tearDown(self):
@@ -368,7 +373,7 @@ class ExplicitSurvivesRevive(unittest.TestCase):
         self.assertEqual(got["FLAG"], "1")
         self.assertIn("AIB_CODEX_MODEL_EXPLICIT=1", got["ENV"])
         self.assertNotIn("AIB_CODEX_LUNA_AUTO", got["ENV"])
-        # 換帳號登入：就算環境沒帶 EXPLICIT,也照席位檔記號當手指定 ⇒ 開 terra、不寫回 luna
+        # 換帳號登入：就算環境沒帶 EXPLICIT,也照席位檔記號當手指定 ⇒ 開 gpt-6.1-terra、不寫回清單最新
         env = dict(self.env, TMUX_PANE="%1", AIB_TMUX_BIN="faketmux", CODEX_BIN=str(self.tmp / "no-codex"),
                    AIB_CODEX_LUNA_ERRFILE=str(self.tmp / "err.txt"))
         os.environ.update(env)
@@ -384,8 +389,69 @@ class ExplicitSurvivesRevive(unittest.TestCase):
         rec = json.loads((self.seats / "w7.json").read_text(encoding="utf-8"))
         self.assertEqual(rec["model_requested"], "gpt-6.1-terra")
         # record 也不改手指定的席
-        self.assertFalse(FB.record("gpt-6.1-terra", "gpt-6-luna", window="@7", environ=env)["seat_written"])
+        self.assertFalse(FB.record("gpt-6.1-terra", "gpt-5.6-terra", window="@7", environ=env)["seat_written"])
         self.assertEqual(json.loads((self.seats / "w7.json").read_text())["model_requested"], "gpt-6.1-terra")
+
+    def _recover(self, rejected):
+        env = dict(self.env, TMUX_PANE="%1", AIB_TMUX_BIN="faketmux", CODEX_BIN=str(self.tmp / "no-codex"),
+                   AIB_CODEX_LUNA_ERRFILE=str(self.tmp / "err.txt"))
+        os.environ.update(env)
+        ran = []
+
+        def run(argv, **kw):
+            if argv[0] == "faketmux":
+                return _Done(0, "@7\n")
+            ran.append(argv[-1])
+            if argv[-1] in rejected:
+                kw["stdout"].write(REJECT)
+                return _Done(1)
+            return _Done(0)
+        rc = R.launch_after_login(str(self.tmp / "slot"), environ=env, run=run)
+        return rc, ran, json.loads((self.seats / "w7.json").read_text(encoding="utf-8"))
+
+    def test_m3_restore_keeps_source(self):
+        # 自動挑的席：快照記 auto ⇒ 還原不帶 --model;復活照席位檔那一版、仍算自動;換帳號被拒會退版、寫回
+        snap = {"model": "gpt-6.1-terra", "requested_source": "auto"}
+        self.assertEqual(CR._restore_model_args("codex", snap), [])
+        self.assertEqual(CR._restore_model_args("codex", {"model": "gpt-6.1-terra"}), [], "舊快照沒這欄 ⇒ 當自動")
+        self._write_seat("gpt-6.1-terra", "auto")
+        got = self._revive()
+        self.assertEqual((got["MODEL"], got["FLAG"]), ("gpt-6.1-terra", "0"))
+        self.assertIn("AIB_CODEX_LUNA_AUTO=1", got["ENV"])
+        self.assertEqual(self._source(flag=False, rereg="1", AIB_CODEX_LUNA_AUTO="1"), "auto")
+        # 清單最新(gpt-6.1-terra 下架後)是 gpt-5.6-terra;它也被拒 ⇒ 退到 gpt-6-luna,席位檔跟著寫、仍是 auto
+        rc, ran, rec = self._recover({"gpt-5.6-terra"})
+        self.assertEqual((rc, ran), (0, ["gpt-5.6-terra", "gpt-6-luna"]))
+        self.assertEqual((rec["model_requested"], rec["requested_source"]), ("gpt-6-luna", "auto"))
+
+    def test_m3b_restore_flag_stays_flag(self):
+        snap = {"model": "gpt-6.1-terra", "requested_source": "flag"}
+        self.assertEqual(CR._restore_model_args("codex", snap), ["--model", "gpt-6.1-terra"])
+        self.assertEqual(self._source(flag=True), "flag")          # 還原帶 --model ⇒ 開席算手指定
+        self._write_seat("gpt-6.1-terra", "flag")
+        rc, ran, rec = self._recover({"gpt-6.1-terra"})
+        self.assertEqual((rc, ran), (1, ["gpt-6.1-terra"]))
+        self.assertEqual((rec["model_requested"], rec["requested_source"]), ("gpt-6.1-terra", "flag"))
+        # 其他家照舊帶 --model
+        self.assertEqual(CR._restore_model_args("claude", {"model": "claude-opus-5-5"}),
+                         ["--model", "claude-opus-5-5"])
+
+    def test_m4_source_read_error_keeps_revive_model(self):
+        fake = self.tmp / "fakecockpit"
+        fake.mkdir()
+        (fake / "seat_fork.py").write_text(
+            "def revive_model(p, u, h):\n    return 'gpt-6.1-terra', 'seat_file'\n"
+            "def seat_record_for(u, h):\n    raise RuntimeError('boom')\n", encoding="utf-8")
+        (fake / "codex_pack.py").write_text("def enabled():\n    return True\n", encoding="utf-8")
+        (fake / "codex_luna_model.py").write_text("def latest_default_slug():\n    return 'gpt-6-luna'\n",
+                                                  encoding="utf-8")
+        script = self.model
+        pre = "\n".join(['die() { printf "%s\\n" "$1" >&2; exit "${2:-1}"; }', 't() { :; }',
+                         "T_PY3=%s" % sys.executable, "HERE=%s" % fake, "PROVIDER=codex",
+                         'MODEL_REQUESTED=""', "MODEL_FROM_FLAG=0", "MODEL_FROM_RECORD=0"])
+        out = self._bash(pre + "\n" + script + 'printf "MODEL=%s\\n" "$MODEL_REQUESTED"\n',
+                         AIB_REVIVE_SESSION_UUID=self.UUID)
+        self.assertIn("MODEL=gpt-6.1-terra", out)
 
     def test_m2_auto_seat_stays_auto(self):
         self.assertEqual(self._source(flag=False), "auto")
