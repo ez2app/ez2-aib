@@ -104,6 +104,36 @@ def parse_not_charging_reason(text):
     return int(m.group(1)) if m else None
 
 
+POWER_ENOUGH_W = 60       # 10-28:夠充筆電的瓦數(Apple 原廠 61 / 67 / 96 / 140 W)
+POWER_WEAK_W = 30         # 低於這個才算「充電頭太弱」(10-20 那顆 15 W 手機頭)
+POWER_PAUSE_PCT = 75      # 充電上限 / 最佳化電池充電多停在 80%(使用者也可能設更高)
+CHARGE_STATES = ("charging", "battery", "paused", "weak", "idle")
+
+
+def charge_state(info):
+    """power_info ⇒ charging / battery / paused / weak / idle;非 Mac(ac None)⇒ None。
+    10-28 Andy:Pro 接 140 W、停在 80% 被誤報太弱。接電沒在充分三種:
+    電量 ≥ 75% 且(瓦數 ≥ 60 W,或 ioreg 有不充的原因且瓦數不是確實 < 30 W)⇒ paused(電池保護 / 充電上限,正常);
+    瓦數確實 < 30 W ⇒ weak;其餘(瓦數讀不到、30–60 W、電量低)⇒ idle(不猜原因)。
+    核心 status 那一行與艦長室頁面(10-28 @f5fb8 橫幅)都讀這個,不各自再判。"""
+    ac = (info or {}).get("ac")
+    if ac is None:
+        return None
+    if not ac:
+        return "battery"
+    if info.get("charging") is not False:
+        return "charging"
+    pct, watts, reason = info.get("pct"), info.get("watts"), info.get("not_charging_reason")
+    known_w = isinstance(watts, int) and not isinstance(watts, bool) and watts > 0
+    high = isinstance(pct, int) and not isinstance(pct, bool) and pct >= POWER_PAUSE_PCT
+    if high and ((known_w and watts >= POWER_ENOUGH_W) or
+                 (isinstance(reason, int) and not isinstance(reason, bool) and reason > 0 and not (known_w and watts < POWER_WEAK_W))):
+        return "paused"
+    if known_w and watts < POWER_WEAK_W:
+        return "weak"
+    return "idle"
+
+
 def keep_path(root):
     return Path(root) / "power-keep.json"
 
@@ -130,7 +160,7 @@ def power_info(root, platform=None, pmset=None, ioreg=None):
     platform = sys.platform if platform is None else platform
     if platform != "darwin":
         return {"sleeps": None, "sleep_min": None, "ac": None, "kept_awake": False, "charging": None, "pct": None, "watts": None,
-                "not_charging_reason": None}
+                "not_charging_reason": None, "charge_state": None}
     get = pmset or _pmset
     batt = get("-g", "batt")
     sleep_min, ac = parse_sleep_min(get("-g")), parse_ac(batt)
@@ -140,9 +170,11 @@ def power_info(root, platform=None, pmset=None, ioreg=None):
     charging = parse_charging(batt)
     # 10-28:接電沒在充才問 ioreg 為什麼(充電上限 / 最佳化電池充電停在 80% 也是 not charging)
     reason = parse_not_charging_reason((ioreg or _ioreg)()) if ac and charging is False else None
-    return {"sleeps": sleeps, "sleep_min": sleep_min, "ac": ac, "kept_awake": keep,
+    info = {"sleeps": sleeps, "sleep_min": sleep_min, "ac": ac, "kept_awake": keep,
             "charging": charging, "pct": parse_pct(batt), "watts": parse_watts(get("-g", "ac")) if ac else 0,
             "not_charging_reason": reason}
+    info["charge_state"] = charge_state(info)
+    return info
 
 
 def power_path(root):
