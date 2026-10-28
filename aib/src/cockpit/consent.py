@@ -324,9 +324,8 @@ def build_strong_script(title, body, check, go, no, nonce, intro=None):
     rep = {"__TITLE__": title, "__INTRO__": intro or "", "__BODY__": body, "__CHECK__": check, "__GO__": go,
            "__NO__": no, "__NONCE__": nonce}
     s = STRONG_JXA if intro is None else SCROLL_JXA
-    for k, v in rep.items():
-        s = s.replace(k, json.dumps(str(v)))
-    return s
+    # 一次替換:BODY 裡就算有 __NONCE__ / __GO__ 這種字也只是字,不會被下一輪再換(@aeb40 #409 R1 L1)
+    return re.sub("|".join(re.escape(k) for k in rep), lambda m: json.dumps(str(rep[m.group(0)])), s)
 
 
 def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):

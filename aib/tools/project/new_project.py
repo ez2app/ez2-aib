@@ -1391,13 +1391,21 @@ def _approve_const(card_const: Mapping[str, Any], cand: Mapping[str, Any], amend
     return const
 
 
+def _unclean(const: Mapping[str, Any]) -> bool:
+    """目標 / 紅線有一條不是純字串、或跟畫面上那行(_plain:清控制 / 方向 / 零寬字、壓空白)不同 ⇒ True。
+    窗上顯示的是清過的字,雜湊與寫卡用原文 ⇒ 兩者必須一樣,不然本人看到乾淨的、卡上存夾帶版(@aeb40 #409 R1 Medium)。"""
+    return any(not isinstance(i, str) or i != _plain(i) for k in ("goals", "red_lines") for i in (const.get(k) or []))
+
+
 def _why_code(why: Any) -> str:
     """視窗(全文窗 / Touch ID)沒過的原因 ⇒ 給艦長室的代碼:timeout / unavailable / busy / declined。"""
     w = str(why or "")
     if w in ("timeout", "busy"):
         return w
-    if w in ("unavailable", "off", "no_biometry", "no_passcode", "lockout") or w.startswith("osascript_"):
+    if w in ("unavailable", "off", "no_biometry", "no_passcode", "lockout", "unreadable") or w.startswith("osascript_"):
         return "unavailable"
+    if w in ("nonce_mismatch", "no_login_name"):   # 不是本人按了取消(@aeb40 #409 R1 L2)
+        return "failed"
     return "declined"
 
 
@@ -1459,6 +1467,9 @@ def _approve_constitution(root: Path, project_uid: str, res: dict, *, human_chec
             return 2, "unavailable"
         via = "touchid"
     const = _approve_const(card_const, cand, amending)
+    if _unclean(const):                       # 顯示的 = 雜湊的 = 寫進去的;不一樣就拒,不替人清(清了也是 AI 改過的那份)
+        _say(T("aib.newproj.approve_content_unclean", {"uid": uid}), "[x]")
+        return 2, "content_unclean"
     sha = _const_sha(const)                   # 內容碼 = 這個雜湊的前 8 碼:全文窗、Touch ID 字、寫卡前重算都是這一個
     code = sha[:8]
     res["code"] = code
@@ -1527,6 +1538,8 @@ def _approve_constitution(root: Path, project_uid: str, res: dict, *, human_chec
         human_id = _login_name()
         if not (isinstance(got, dict) and got.get("ok") is True) or not human_id:
             why = (got.get("why") if isinstance(got, dict) else None) or "?"
+            if isinstance(got, dict) and got.get("ok") is True:   # 指紋過了但量不到登入名 ⇒ 不是本人取消
+                why = "no_login_name"
             full = isinstance(got, dict) and got.get("stage") == "before"
             _say(T("aib.newproj.approve_full_failed" if full else "aib.newproj.approve_touchid_failed", {"why": why}), "[x]")
             return 2, _why_code(why)
@@ -1541,7 +1554,8 @@ def _approve_constitution(root: Path, project_uid: str, res: dict, *, human_chec
         raw = _load_json(c_path) or {}
         live = (raw.get("layers") or {}).get("constitution") or {}
         fresh = _approve_const(live, _load_json(cand_path) or {}, amending)
-        if (live.get("approved") is True) != amending or _const_sha(fresh) != sha:
+        moved = amending and _goals_of(live) != _goals_of(card_const)   # 修訂差別是對著生效版列的:生效版變了也算(R1 L3)
+        if (live.get("approved") is True) != amending or moved or _const_sha(fresh) != sha:
             _say(T("aib.newproj.approve_content_changed", {"code": code}), "[x]")   # 看到的那份跟現在不一樣 ⇒ 帳、卡都不動
             return 2, "content_changed"
         # 留底先寫、再入帳:入帳後才失敗(備份、驗卡)也不會變成「帳本有雜湊、留底不在」而誤報不同;

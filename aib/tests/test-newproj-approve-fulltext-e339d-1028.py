@@ -16,8 +16,13 @@ F9 全文窗 + 指紋同一把整台鎖(全文窗開著時別人拿不到鎖)
 F10 全文窗腳本:可捲動唯讀文字框、全文經 json.dumps 放進去;Mac 上 osacompile 編得過
 F11 CLI:非終端、沒有 Touch ID 路 ⇒ stdout 最後一行 JSON why=unavailable
 F12 最壞情況(標題 40 字、兩位數條數)四語都放得進 Touch ID 上限
+F13 顯示的 = 寫進去的:目標夾零寬 / 方向控制、目標寫成 dict、第一次核准的紅線夾控制字 ⇒ content_unclean,不彈窗、卡不動(#409 R1 Medium)
+F14 修訂:等指紋期間卡上生效的目標被改 ⇒ content_changed(差別是對著生效版列的;R1 L3)
+F15 全文窗腳本一次替換:全文裡有 __NONCE__ / __GO__ 也只是字(R1 L1)
+F16 指紋過了但量不到登入名 ⇒ failed,不說成本人取消(R1 L2)
 刀(複本):K1 拿掉內容碼比對 ⇒ F4 紅;K2 拿掉修訂差別(改字)⇒ F2 紅;K3 全文窗沒過照樣彈指紋 ⇒ F3 紅;
-         K4 Touch ID 字不帶內容碼 ⇒ F1 紅
+         K4 Touch ID 字不帶內容碼 ⇒ F1 紅;K5 拿掉 content_unclean ⇒ F13 紅;K6 鎖內不比生效目標 ⇒ F14 紅;
+         K7 腳本改回依序替換 ⇒ F15 紅
 """
 import fcntl
 import importlib.util
@@ -177,7 +182,8 @@ class Full(unittest.TestCase):
     def test_F3_fulltext_not_passed(self):
         before, shas = self.card.read_bytes(), self._ledger_shas()
         for why, code in (("cancel", "declined"), ("not_checked", "declined"), ("timeout", "timeout"),
-                          ("unavailable", "unavailable"), ("osascript_failed", "unavailable"), ("nonce_mismatch", "declined")):
+                          ("unavailable", "unavailable"), ("osascript_failed", "unavailable"), ("unreadable", "unavailable"),
+                          ("nonce_mismatch", "failed")):
             with self.subTest(why=why):
                 rc, asked, shown, out = self._approve(full=lambda *a, w=why: {"ok": False, "why": w})
                 self.assertEqual(rc, 2)
@@ -291,6 +297,50 @@ class Full(unittest.TestCase):
                     self.assertLessEqual(len(d[key].format(**p)), AG.LA_MAX)
                     self.assertIn("{code}", d[key])
 
+    def test_F13_shown_equals_written(self):
+        zw, rlo, esc = chr(0x200B), chr(0x202E), chr(0x1B)
+        cases = (("zero-width goal", ["a", "b" + zw + "c"], None),
+                 ("bidi goal", ["a" + rlo + "b"], None),
+                 ("dict goal", [{"text": "a", "x": "hidden"}], None),
+                 ("double space", ["a  b"], None),
+                 ("first red line", ["a"], ["ok" + esc + "[2Khidden"]))
+        for name, goals, red in cases:
+            with self.subTest(name):
+                self._set_cand(goals, red if red is not None else ["never push to main"])
+                before, shas = self.card.read_bytes(), self._ledger_shas()
+                rc, asked, shown, out = self._approve()
+                self.assertEqual((rc, asked, shown), (2, [], []), "不彈窗")
+                self.assertEqual(out.last_json()["why"], "content_unclean")
+                self._unchanged(before, shas)
+        self._set_cand(["a", "b"], ["never push to main"])
+        self.assertEqual(self._approve()[0], 0, "乾淨的照常核")
+
+    def test_F14_effective_goals_moved_during_touchid(self):
+        self._set_cand(["a", "b"])
+        self.assertEqual(self._approve()[0], 0)
+        self.assertEqual(self.np.propose_goals(self.root, self.uid, ["a", "c"]), 0)
+
+        def touch(r):
+            raw = json.loads(self.card.read_text(encoding="utf-8"))
+            raw["layers"]["constitution"]["goals"] = ["zzz"]       # 生效版被直接改(本人看到的差別是對著 a, b 列的)
+            self.card.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            return OK
+        rc, _, _, out = self._approve(touch=touch)
+        self.assertEqual((rc, out.last_json()["why"]), (2, "content_changed"))
+        self.assertEqual(self._const()["goals"], ["zzz"], "核准內容沒寫上去")
+
+    def test_F15_script_single_pass(self):
+        body = "看 __NONCE__ 跟 __GO__ 還有 __CHECK__"
+        s = consent.build_strong_script("T", body, "chk", "Go", "No", "n0nce", intro="i")
+        self.assertIn(json.dumps(body), s, "全文原樣放進去")
+        self.assertEqual(s.count(json.dumps("n0nce")), 1, "nonce 只在它自己的位置")
+
+    def test_F16_ok_without_login_name(self):
+        with mock.patch.object(self.np, "_login_name", lambda: None):
+            rc, _, _, out = self._approve()
+        self.assertEqual((rc, out.last_json()["why"]), (2, "failed"))
+        self.assertIs(self._const()["approved"], False)
+
 
 class Knife(unittest.TestCase):
     def _cut(self, rel, needle, repl, test):
@@ -312,6 +362,20 @@ class Knife(unittest.TestCase):
     def test_K3_fulltext_result_ignored(self):
         self._cut("src/cockpit/approve_gate.py", 'if not (isinstance(pre, dict) and pre.get("ok") is True):', "if False:",
                   "Full.test_F3_fulltext_not_passed")
+
+    def test_K5_no_unclean_check(self):
+        self._cut("tools/project/new_project.py", "    if _unclean(const):", "    if False:",
+                  "Full.test_F13_shown_equals_written")
+
+    def test_K6_no_effective_goals_check(self):
+        self._cut("tools/project/new_project.py", "moved = amending and _goals_of(live) != _goals_of(card_const)",
+                  "moved = False", "Full.test_F14_effective_goals_moved_during_touchid")
+
+    def test_K7_sequential_replace(self):
+        self._cut("src/cockpit/consent.py",
+                  'return re.sub("|".join(re.escape(k) for k in rep), lambda m: json.dumps(str(rep[m.group(0)])), s)',
+                  "for k, v in rep.items():\n        s = s.replace(k, json.dumps(str(v)))\n    return s",
+                  "Full.test_F15_script_single_pass")
 
     def test_K4_touchid_without_code(self):
         self._cut("tools/project/new_project.py", '"title": card.get("title") or uid, "code": code,', '"title": card.get("title") or uid, "code": "",',

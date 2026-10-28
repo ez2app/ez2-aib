@@ -3644,6 +3644,7 @@
   "aib.newproj.approve_full_wait": "Mac に全文確認ウインドウを出しました(内容コード {code}):読んでチェックし、続けるを押すと Touch ID に進みます。",
   "aib.newproj.approve_full_failed": "全文確認ウインドウを通りませんでした({why})。目標とレッドラインは承認されていません。何も変えていません。",
   "aib.newproj.approve_content_changed": "全文を表示してから承認するまでの間に目標かレッドラインが変わりました(内容コード {code} の版ではありません)。台帳にもカードにも書いていません。もう一度 --approve を実行して確認してください。",
+  "aib.newproj.approve_content_unclean": "プロジェクト {uid} の目標かレッドラインに見えない文字(制御・方向・ゼロ幅)、余分な空白、またはプレーンテキストでない項目があります。画面に見える内容とカードに書かれる内容が違ってしまうため承認しません。aib newproj --propose-goals {uid} で目標を出し直してください。何も変えていません。",
   "aib.newproj.approve_reason_refused": "今回の承認の要約が Touch ID ウインドウに収まりません(切り詰めません)。目標とレッドラインは承認されていません。何も変えていません。",
   "aib.cockpit.hub_captain_label": "艦長:",
   "aib.ship.moved_watch_unmeasurable": "出荷前チェックの途中で main が {sha} に進みました:{why} —— 測れないだけでは途中で止めず、プッシュの段階で判断します",

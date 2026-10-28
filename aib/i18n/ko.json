@@ -3644,6 +3644,7 @@
   "aib.newproj.approve_full_wait": "Mac에 전문 확인 창을 띄웠습니다(내용 코드 {code}): 읽고 체크한 뒤 계속을 누르면 Touch ID로 넘어갑니다.",
   "aib.newproj.approve_full_failed": "전문 확인 창을 통과하지 못했습니다({why}). 목표와 레드라인은 승인되지 않았습니다. 아무것도 바꾸지 않았습니다.",
   "aib.newproj.approve_content_changed": "전문을 보여 준 뒤 승인하기 전에 목표나 레드라인이 바뀌었습니다(내용 코드 {code}의 버전이 아님). 원장과 카드 모두 쓰지 않았습니다. --approve를 다시 실행해 확인하세요.",
+  "aib.newproj.approve_content_unclean": "프로젝트 {uid}의 목표나 레드라인에 보이지 않는 문자(제어·방향·폭 없음), 불필요한 공백, 또는 일반 텍스트가 아닌 항목이 있습니다. 화면에 보이는 내용과 카드에 쓰이는 내용이 달라지므로 승인하지 않습니다. aib newproj --propose-goals {uid}로 목표를 다시 제안하세요. 아무것도 바꾸지 않았습니다.",
   "aib.newproj.approve_reason_refused": "이번 승인 요약이 Touch ID 창에 들어가지 않습니다(잘라 내지 않음). 목표와 레드라인은 승인되지 않았습니다. 아무것도 바꾸지 않았습니다.",
   "aib.cockpit.hub_captain_label": "함장:",
   "aib.ship.moved_watch_unmeasurable": "출하 전 검사 도중 main 이 {sha} 로 이동했습니다: {why} — 측정할 수 없다는 이유만으로 일찍 멈추지 않고, 푸시 단계에서 판단합니다",

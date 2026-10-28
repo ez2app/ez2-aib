@@ -3644,6 +3644,7 @@
   "aib.newproj.approve_full_wait": "已在 Mac 上跳出全文確認視窗(內容碼 {code}):看完勾選、按繼續,接著才是 Touch ID。",
   "aib.newproj.approve_full_failed": "全文確認視窗沒有通過({why}),目標與紅線沒有核准。什麼都沒改。",
   "aib.newproj.approve_content_changed": "從你看到全文到按下核准之間,目標或紅線被改了(已不是內容碼 {code} 那一份);帳本與卡都沒寫,請重跑 --approve 再看一次。",
+  "aib.newproj.approve_content_unclean": "專案 {uid} 的目標或紅線裡有看不見的字元(控制 / 方向 / 零寬字)、多餘空白,或不是純文字的一條;畫面上看到的會跟寫進卡的不一樣,所以不核准。請用 aib newproj --propose-goals {uid} 重新提出目標。什麼都沒改。",
   "aib.newproj.approve_reason_refused": "Touch ID 視窗放不下這次核准的摘要(不截字),目標與紅線沒有核准。什麼都沒改。",
   "aib.cockpit.hub_captain_label": "艦長:",
   "aib.ship.moved_watch_unmeasurable": "推前檢查跑到一半,主線被推到 {sha}:{why} —— 量不到不算推不上去,不提早停,推的那一步再判",

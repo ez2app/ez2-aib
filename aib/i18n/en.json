@@ -3644,6 +3644,7 @@
   "aib.newproj.approve_full_wait": "A full-text window is open on the Mac (content code {code}): read it, tick the box and press Continue; Touch ID comes after that.",
   "aib.newproj.approve_full_failed": "The full-text window did not pass ({why}); the goals and red lines are not approved. Nothing changed.",
   "aib.newproj.approve_content_changed": "The goals or red lines changed between showing the full text and approving (no longer the version with content code {code}); nothing was written to the ledger or the card. Run --approve again to review it.",
+  "aib.newproj.approve_content_unclean": "The goals or red lines of project {uid} contain invisible characters (control / direction / zero-width), extra whitespace, or an entry that is not plain text; what you would see differs from what would be written, so it is not approved. Re-propose the goals with aib newproj --propose-goals {uid}. Nothing changed.",
   "aib.newproj.approve_reason_refused": "The approval summary does not fit in the Touch ID window (it is never cut); the goals and red lines are not approved. Nothing changed.",
   "aib.cockpit.hub_captain_label": "Captain:",
   "aib.ship.moved_watch_unmeasurable": "main moved to {sha} during the pre-ship check: {why} — not being able to measure is not a reason to stop early; the push step decides",
