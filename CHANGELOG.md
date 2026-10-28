@@ -4,6 +4,17 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.63
+
+- **One entry point for human approval**: every Touch ID / login-password approval now goes through the core `approve_gate`. The core decides the category from the registered call site (callers cannot claim a lower one; unregistered sites are high-risk). Popup text is built and cleaned by the core; key fields are never truncated, and text over the downstream limit (Touch ID 160, Secure Enclave signing 320, unseal 200) is refused. Revoking many lost devices is split into batches, each shown in full. `aib-sign-approve` moved into the repo (`tools/release/sign_approve.py`); `aib init` installs a thin shim. The Secure Enclave helper source changed: it is rebuilt on next use, and is refused (no fallback to the old helper) when swiftc is missing.
+- **Plugins trust only built-in release keys**: `<state>/trusted-ext-keys` is no longer read; a locally added key cannot make a self-signed plugin pass.
+- **Codex seats keep the model you asked for**: seats opened with `--model` keep it across revival, account re-login and power-loss restore; auto-picked seats step down at most 4 versions when rejected and record the model actually used. New Codex seats default to the newest listed Terra model.
+- **Seat menu shows four columns**: `@code · persona · project · last opened`; columns give way by the popup's real width (shorten names → drop project → persona → time), and "in use (forks a new code)" is never cut.
+- **Power line no longer misreports**: reads `Wattage = 140W`; plugged-in-not-charging is split into "charging paused (battery protection / charge limit)", "charger too weak (< 30 W)" and "not charging".
+- **Handoff sweep checks the seat's own repo**: not the aib code tree; read-only, time-bounded, no optional locks on other seats' worktrees, and a non-repo is recorded as "could not check".
+- **Ledger created on first seat open**: when `aib init` did not create it, the first seat open / bind creates `ledger/` (0700) and `aib-ledger.jsonl` (0600).
+- **Tests**: four missing regression tests restored; the handoff test no longer reads the real home directory.
+
 ## 0.1.62
 
 - **Local chat MCP server**: `aib chat-mcp` serves the AIB conversation over Streamable HTTP `/mcp` with hashed bearer keys, per-seat bindings, idempotent sends, ack revisions and rate limits. File-bridge deliveries are signed (HMAC) so the sender seat is only trusted when the signature checks out.
