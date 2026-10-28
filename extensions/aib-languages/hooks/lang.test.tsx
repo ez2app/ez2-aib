@@ -33,6 +33,7 @@ function wire(on: Parameters<Parameters<typeof test>[1]>[1], w: World, exists = 
   on('ui.toast', async (_$, e) => { w.toasts.push((e as { text: string }).text); return { value: undefined } as never })
   on('ui.status', async (_$, e) => { w.status.push(String((e as { text?: string }).text)); return { value: undefined } as never })
   on('session.id', async () => ({ value: 'sid-1' }) as never)
+  on('session.cwd', async () => ({ value: '/proj' }) as never)   // #401 R2:put 帶這個對話的 cwd
   on('process.run', async (_$, e) => {
     const argv = [...(e as { argv: readonly string[] }).argv]
     w.runs.push(argv)
@@ -135,7 +136,7 @@ const tailPuts = (w: World) => w.runs.filter(a => a[2]?.endsWith('/statusline_ta
 test('💧 狀態列有在畫(shown)⇒ 🌐 段交給尾巴、收掉自己這一行', async ($, on) => {
   const w = world('en'); w.shown = true; wire(on, w)
   await $.session.start(START)
-  expect(tailPuts(w).at(-1)!.slice(3)).toEqual(['put', '--mod', 'aib-languages', '--session', 'sid-1', '--text', '🌐 en'])
+  expect(tailPuts(w).at(-1)!.slice(3)).toEqual(['put', '--mod', 'aib-languages', '--session', 'sid-1', '--cwd', '/proj', '--text', '🌐 en'])
   expect(w.status.at(-1)).toBe('undefined')
 })
 

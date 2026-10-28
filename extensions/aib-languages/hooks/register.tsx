@@ -74,8 +74,9 @@ async function putTail($: EngineInterface, text: string): Promise<boolean> {
   const sid = await $.session.id().catch(() => '')
   if (!root || !sid) return false
   const py = (await $.env.get('EZ2_PY3').catch(() => undefined)) ?? 'python3'
+  const cwd = await $.session.cwd().catch(() => '')   // #401 R2:專案層狀態列設定在這裡
   const r = await $.process.run([py, '-I', `${root}/src/cockpit/statusline_tail.py`, 'put', '--mod', 'aib-languages',
-    '--session', sid, '--text', text], { timeoutMs: 5000 }).catch(() => null)
+    '--session', sid, ...(cwd ? ['--cwd', cwd] : []), '--text', text], { timeoutMs: 5000 }).catch(() => null)
   try { return (JSON.parse(r?.stdout.trim().split('\n').pop() || '{}') as { shown?: unknown }).shown === true } catch { return false }
 }
 async function showStatus($: EngineInterface, text: string) {

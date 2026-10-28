@@ -8,8 +8,12 @@ T1 組合:boards + languages 都在 = 「未讀 dm 5 · 🌐 zh-TW」;只有 lan
 T2 判準不靠路徑:段過期(TTL)、檔裡的對話 id / mod 名對不上、壞 JSON ⇒ 不收;不在表上的 mod、壞對話 id ⇒ put 拒收
 T3 消毒:控制字元、\\x1f、& \\、換行拿掉,一段最多 TEXT_MAX 字
 T4 「畫出過」記號(#401 R1):mark_shown(畫出的 mod)之後那個 mod 的 put 回 shown=true,沒畫到的 mod 仍 false;
-   沒有新東西不重寫;閒置多久都不翻回(不看時間);狀態列設定(settings.json statusLine)換掉 ⇒ false;沒記號 = false
-S1 seat_now --statusline --rank-field --tail-field:第 5 欄 = 尾巴,並留記號;沒帶 --tail-field ⇒ 照舊 4 欄、不留記號(舊殼)
+   沒有新東西不重寫;閒置 24 小時內不翻回;換狀態列 ⇒ false;沒記號 = false
+T5 指紋範圍(#401 R2,@aeb40 定):(a) 專案層 settings.local.json / settings.json 換了狀態列 ⇒ false;
+   (b) 狀態列只在專案層、使用者層沒有,移除後 ⇒ false;(c) 腳本檔換舊版 / 刪掉、settings 不動 ⇒ false;
+   保險期限:SHOWN_MAX_S 沒畫過 ⇒ false,畫著的對話每 SHOWN_TOUCH_S 刷新記號時間
+S1 seat_now --statusline --rank-field --tail-field:第 5 欄 = 尾巴,並留記號;沒帶 --tail-field ⇒ 照舊 4 欄、不留記號(舊殼);
+   --tail-stdin ⇒ 指紋用狀態列輸入裡的 workspace.current_dir(專案層)
 E1 狀態列腳本:第 5 欄接在 CTX 那一行最後面;沒有第 5 欄 ⇒ 跟現在一樣
 E2 舊 seat_now 不認得 --tail-field ⇒ 先 grep 看出來、直接只帶 --rank-field(不多起一次失敗的 python;#401 R1),
    grep 說有但跑起來還是空 ⇒ 照舊退回 --rank-field;等級照畫、沒有尾巴
@@ -44,24 +48,34 @@ class Tail(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = self._tmp.name
-        self.settings = os.path.join(self.root, "settings.json")
+        self.cfg = os.path.join(self.root, "cc")                  # 假 ~/.claude(使用者層 + 腳本檔)
+        self.cwd = os.path.join(self.root, "proj")                 # 這個對話的 cwd(專案層 .claude/)
+        os.makedirs(os.path.join(self.cwd, ".claude"))
+        os.makedirs(self.cfg)
+        self.settings = os.path.join(self.cfg, "settings.json")
         self.set_statusline("/bin/bash $HOME/.claude/statusline-ez2-v215.sh")
+        self.script = os.path.join(self.cfg, ST.SCRIPT_NAME)
+        with open(self.script, "w") as fh:
+            fh.write("#!/bin/bash\necho new\n")
 
     def tearDown(self):
         self._tmp.cleanup()
 
-    def set_statusline(self, cmd):
-        with open(self.settings, "w", encoding="utf-8") as fh:
-            json.dump({"statusLine": {"type": "command", "command": cmd}}, fh)
+    def set_statusline(self, cmd, path=None):
+        with open(path or self.settings, "w", encoding="utf-8") as fh:
+            json.dump({"statusLine": {"type": "command", "command": cmd}} if cmd else {}, fh)
 
-    def shown(self, mod):
-        return ST.is_shown(SID, mod, state_root=self.root, settings_path=self.settings)
+    def proj(self, name):
+        return os.path.join(self.cwd, ".claude", name)
 
-    def mark(self, mods, sid=SID):
-        return ST.mark_shown(sid, mods, state_root=self.root, settings_path=self.settings)
+    def shown(self, mod, now=NOW):
+        return ST.is_shown(SID, mod, state_root=self.root, cwd=self.cwd, config_dir=self.cfg, now=now)
+
+    def mark(self, mods, sid=SID, now=NOW):
+        return ST.mark_shown(sid, mods, state_root=self.root, cwd=self.cwd, config_dir=self.cfg, now=now)
 
     def put(self, mod, text, now=NOW, sid=SID):
-        return ST.put(mod, sid, text, state_root=self.root, now=now, settings_path=self.settings)
+        return ST.put(mod, sid, text, state_root=self.root, now=now, cwd=self.cwd, config_dir=self.cfg)
 
     def tail(self, now=NOW, sid=SID):
         return ST.tail_text(sid, state_root=self.root, now=now)
@@ -108,9 +122,9 @@ class Tail(unittest.TestCase):
         self.assertTrue(self.mark(["aib-languages"]))
         self.assertTrue(self.shown("aib-boards") and self.shown("aib-languages"))   # 聯集
         # #401 R1 Medium:會員沒設 refreshInterval、閒置遠超過舊的 3 分鐘 ⇒ 狀態列不重跑,記號也不翻回
-        idle = NOW + 24 * 3600
-        old = os.path.getmtime(ST._shown_path(SID, self.root)) - 24 * 3600
-        os.utime(ST._shown_path(SID, self.root), (old, old))                  # 記號檔也老了一天(不能靠檔案時間判)
+        idle = NOW + 23 * 3600
+        old = os.path.getmtime(ST._shown_path(SID, self.root)) - 23 * 3600
+        os.utime(ST._shown_path(SID, self.root), (old, old))                  # 記號檔也老了(不靠檔案時間判)
         self.assertTrue(self.put("aib-boards", "dm 1", now=idle)["shown"])
         self.assertTrue(self.put("aib-languages", "🌐 zh-TW", now=idle)["shown"])
         # 換成自己的狀態列 ⇒ 指紋對不上 ⇒ mod 自己那一行回來;換回來再畫一次才收
@@ -122,7 +136,51 @@ class Tail(unittest.TestCase):
         os.unlink(self.settings)
         self.assertFalse(self.shown("aib-boards"))
         self.assertFalse(self.mark("x/../y"))
-        self.assertFalse(ST.mark_shown(SID, ["not-a-mod"], state_root=self.root, settings_path=self.settings))
+        self.assertFalse(ST.mark_shown(SID, ["not-a-mod"], state_root=self.root, cwd=self.cwd, config_dir=self.cfg))
+
+    def test_t5a_project_layer_changed(self):
+        """(a) resume 到另一專案 / 專案層換了狀態列(settings.local.json、settings.json)⇒ 翻回。"""
+        self.mark(["aib-boards"])
+        self.assertTrue(self.shown("aib-boards"))
+        self.set_statusline("/usr/local/bin/their-statusline", self.proj("settings.local.json"))
+        self.assertFalse(self.shown("aib-boards"))
+        os.unlink(self.proj("settings.local.json"))
+        self.assertTrue(self.shown("aib-boards"))
+        self.set_statusline("/usr/local/bin/team-statusline", self.proj("settings.json"))
+        self.assertFalse(self.shown("aib-boards"))
+        other = os.path.join(self.root, "other")                              # 同一對話換到另一個 cwd、那邊專案層有自己的
+        os.makedirs(os.path.join(other, ".claude"))
+        self.set_statusline("/x", os.path.join(other, ".claude", "settings.json"))
+        self.assertFalse(ST.is_shown(SID, "aib-boards", state_root=self.root, cwd=other, config_dir=self.cfg, now=NOW))
+
+    def test_t5b_project_only_then_removed(self):
+        """(b) 使用者層沒有 statusLine、只在專案層 ⇒ 移除後翻回(舊做法使用者層兩邊都是 '-' 會一直有效)。"""
+        self.set_statusline("")
+        self.set_statusline("/bin/bash $HOME/.claude/statusline-ez2-v215.sh", self.proj("settings.json"))
+        self.mark(["aib-boards"])
+        self.assertTrue(self.shown("aib-boards"))
+        self.set_statusline("", self.proj("settings.json"))
+        self.assertFalse(self.shown("aib-boards"))
+
+    def test_t5c_script_replaced_or_removed(self):
+        """(c) settings 不動,但 statusline-ez2-v215.sh 被換舊版 / 刪掉 ⇒ 翻回。"""
+        self.mark(["aib-boards"])
+        with open(self.script, "w") as fh:
+            fh.write("#!/bin/bash\necho old-version-without-tail\n")
+        self.assertFalse(self.shown("aib-boards"))
+        self.mark(["aib-boards"])
+        self.assertTrue(self.shown("aib-boards"))
+        os.unlink(self.script)
+        self.assertFalse(self.shown("aib-boards"))
+
+    def test_t5d_insurance_expiry(self):
+        """保險:SHOWN_MAX_S 沒畫過 ⇒ 翻回;畫著的對話每 SHOWN_TOUCH_S 刷一次記號時間。"""
+        self.mark(["aib-boards"])
+        self.assertTrue(self.shown("aib-boards", now=NOW + ST.SHOWN_MAX_S))
+        self.assertFalse(self.shown("aib-boards", now=NOW + ST.SHOWN_MAX_S + 1))
+        self.assertFalse(self.mark(["aib-boards"], now=NOW + ST.SHOWN_TOUCH_S - 1))   # 還新 ⇒ 不寫
+        self.assertTrue(self.mark(["aib-boards"], now=NOW + ST.SHOWN_TOUCH_S))        # 刷時間
+        self.assertTrue(self.shown("aib-boards", now=NOW + ST.SHOWN_MAX_S + 1))
 
 
 class SeatNowField(unittest.TestCase):
@@ -131,18 +189,18 @@ class SeatNowField(unittest.TestCase):
         self.root = self._tmp.name
         self._env = dict(os.environ)
         os.environ["EZ2_AIB_STATE_ROOT"] = self.root
-        os.environ["CLAUDE_CONFIG_DIR"] = self.root   # 指紋讀暫存的 settings.json(不存在 ⇒ "-"),不碰真 ~/.claude
+        os.environ["CLAUDE_CONFIG_DIR"] = self.root   # 指紋讀暫存的設定與腳本(都不存在),不碰真 ~/.claude
 
     def tearDown(self):
         os.environ.clear()
         os.environ.update(self._env)
         self._tmp.cleanup()
 
-    def run_now(self, *flags):
+    def run_now(self, *flags, stdin=None):
         import seat_now
         out = io.StringIO()
         rc = seat_now.main(["--statusline", *flags, "--session", SID], code="fd787", out=out, err=io.StringIO(),
-                           state_root=self.root, gate_check=False)
+                           state_root=self.root, gate_check=False, stdin=io.StringIO(stdin or ""))
         self.assertEqual(rc, 0)
         return out.getvalue().rstrip("\n").split("\x1f")
 
@@ -154,6 +212,21 @@ class SeatNowField(unittest.TestCase):
         self.assertEqual((f[0], f[4]), ("fd787", "未讀 dm 5 · 🌐 zh-TW"))
         self.assertTrue(ST.is_shown(SID, "aib-boards", state_root=self.root))
         self.assertTrue(ST.is_shown(SID, "aib-languages", state_root=self.root))
+
+    def test_s1_stdin_cwd_in_fingerprint(self):
+        """--tail-stdin:指紋用狀態列輸入的 workspace.current_dir(那邊專案層換狀態列 ⇒ 翻回)。"""
+        proj = os.path.join(self.root, "proj")
+        os.makedirs(os.path.join(proj, ".claude"))
+        with open(os.path.join(proj, ".claude", "settings.json"), "w") as fh:   # 專案層自己有一份 ⇒ 跟行程 cwd 的指紋不同
+            json.dump({"statusLine": {"type": "command", "command": "/bin/bash $HOME/.claude/statusline-ez2-v215.sh"}}, fh)
+        ST.put("aib-boards", SID, "未讀 dm 5", state_root=self.root)
+        f = self.run_now("--rank-field", "--tail-field", "--tail-stdin",
+                         stdin=json.dumps({"session_id": SID, "workspace": {"current_dir": proj}}))
+        self.assertEqual(f[4], "未讀 dm 5")
+        self.assertTrue(ST.is_shown(SID, "aib-boards", state_root=self.root, cwd=proj))
+        with open(os.path.join(proj, ".claude", "settings.local.json"), "w") as fh:
+            json.dump({"statusLine": {"type": "command", "command": "/x"}}, fh)
+        self.assertFalse(ST.is_shown(SID, "aib-boards", state_root=self.root, cwd=proj))
 
     def test_s1_old_shell_no_field_no_mark(self):
         ST.put("aib-boards", SID, "未讀 dm 5", state_root=self.root)
@@ -201,6 +274,8 @@ class Script(unittest.TestCase):
 
     def test_e1_tail_appended(self):
         self.seat_now(tail="未讀 dm 5 · 🌐 zh-TW")
+        self.run_sl()
+        self.assertIn("--tail-stdin", self.calls.read_text().splitlines()[0])   # 輸入交給 seat_now 取 cwd(#401 R2)
         self.assertEqual(self.run_sl().split("\n")[0],
                          "LOGO  Opus 5.5 | @fd787 5⭐ | 💧 Ez2 CTX 10% 100k/1M 未讀 dm 5 · 🌐 zh-TW")
         self.seat_now(tail="")

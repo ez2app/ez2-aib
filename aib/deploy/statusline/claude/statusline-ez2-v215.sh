@@ -57,14 +57,15 @@ if [ -n "${TMUX_PANE:-}" ] || [ -n "$SID" ]; then
   if [ -n "${EZ2_AIB_ROOT:-}" ] && [ -f "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" ]; then
     # 10-28 #401 R1:腳本新、核心舊(不認得 --tail-field)⇒ 先用 grep 看一眼,免得每次多起一次會失敗的 python
     if grep -qF 'add_argument("--tail-field"' "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" 2>/dev/null; then
-      _ez2_now_out="$(/usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --rank-field --tail-field --session "$SID" 2>/dev/null || true)"
+      # #401 R2:狀態列輸入從 stdin 交過去(seat_now 取這個對話的 cwd,專案層狀態列設定算進指紋)
+      _ez2_now_out="$(printf '%s' "$INPUT" | /usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --rank-field --tail-field --tail-stdin --session "$SID" 2>/dev/null || true)"
     fi
     # 10-28:舊版 seat_now 不認得 --tail-field ⇒ 空 ⇒ 只帶 --rank-field 再問(沒有尾巴;mod 照舊自己一行)
     [ -n "$_ez2_now_out" ] || _ez2_now_out="$(/usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --rank-field --session "$SID" 2>/dev/null || true)"
     # 10-17:舊版 seat_now 不認得 --rank-field ⇒ 空 ⇒ 不帶旗再問一次(等級就接在 📌 行尾)
     [ -n "$_ez2_now_out" ] || _ez2_now_out="$(/usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --session "$SID" 2>/dev/null || true)"
   elif command -v aib >/dev/null 2>&1; then
-    _ez2_now_out="$(aib now --statusline --rank-field --tail-field --session "$SID" 2>/dev/null || true)"
+    _ez2_now_out="$(printf '%s' "$INPUT" | aib now --statusline --rank-field --tail-field --tail-stdin --session "$SID" 2>/dev/null || true)"
     [ -n "$_ez2_now_out" ] || _ez2_now_out="$(aib now --statusline --rank-field --session "$SID" 2>/dev/null || true)"
     [ -n "$_ez2_now_out" ] || _ez2_now_out="$(aib now --statusline --session "$SID" 2>/dev/null || true)"
   fi

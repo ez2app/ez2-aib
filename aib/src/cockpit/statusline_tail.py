@@ -14,8 +14,11 @@ Andy 10-28:「這個 aib 太多行了,我希望縮成一行」⇒ 要的樣子
   - mod 的 `put` 回 {"shown": true} = 自己那段**已經畫進尾巴過** ⇒ mod 收掉自己的 $.ui.status 那一行;false(會員用自己的
     狀態列、Ez2 狀態列還沒跑過、或還沒畫到含這段的那一次)⇒ mod 照舊自己一行,資訊不會因為併行而整個不見。
   - #401 R1(@aeb40):記號**黏住、不看時間**——對話內畫過一次就不翻回(會員沒設 refreshInterval、閒置很久,
-    狀態列不重跑也不會讓 mod 那行又跳回來、跟凍住的尾巴兩個數字並存)。只有狀態列設定(settings.json 的 statusLine)
-    換掉才失效:記號裡存設定的指紋,put 時再算一次對不上 ⇒ shown=false。
+    狀態列不重跑也不會讓 mod 那行又跳回來、跟凍住的尾巴兩個數字並存)。只有狀態列換掉才失效:記號裡存指紋,put 時再算一次
+    對不上 ⇒ shown=false。
+  - #401 R2(@aeb40 定範圍,同類照這個):指紋 = 使用者層 settings.json + 這個對話 cwd 的專案層
+    (.claude/settings.json、.claude/settings.local.json)的 statusLine + 實際腳本檔(statusline-ez2-v215.sh)的大小與 mtime;
+    外加保險期限:SHOWN_MAX_S(24 小時)沒畫過 ⇒ 翻回(畫著的對話每 SHOWN_TOUCH_S 刷一次記號時間)。
 
 鍵用 Claude 的對話 id:狀態列輸入有 session_id,mod 有 $.session.id(),兩邊同一個值;席碼 languages 不知道。
 
@@ -40,6 +43,9 @@ SUBDIR = os.path.join("state", "statusline-tail")
 ORDER = ("aib-boards", "aib-languages")     # 尾巴的順序:未讀 dm(+交接標記)在前、語系在後;不在表上的 mod 不收
 TTL_S = 300                                  # 段多久沒更新就當 mod 不在了(boards 60 秒刷一次、languages 60 秒心跳)
 TEXT_MAX = 60                                # 一段最多幾個字
+SHOWN_MAX_S = 24 * 3600                      # 記號多久沒畫過就翻回(保險;#401 R2)
+SHOWN_TOUCH_S = 3600                         # 畫著的對話多久刷一次記號時間(狀態列重跑很頻繁,不必每次寫)
+SCRIPT_NAME = "statusline-ez2-v215.sh"
 SID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 JOIN = " · "
 
@@ -73,20 +79,35 @@ def _shown_path(sid: str, state_root: str | None) -> str:
     return os.path.join(tail_dir(state_root), "%s.shown" % sid)
 
 
-def statusline_fingerprint(settings_path: str | None = None) -> str:
-    """Claude 設定裡 statusLine 那一段的指紋(換狀態列 ⇒ 指紋變 ⇒ 記號失效)。讀不到 / 沒設 ⇒ "-"。"""
-    if settings_path is None:
-        base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
-        settings_path = os.path.join(base, "settings.json")
+def _config_dir() -> str:
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def _statusline_of(path: str):
     try:
-        with open(settings_path, encoding="utf-8") as fh:
-            sl = json.load(fh).get("statusLine")
-    except (OSError, ValueError, AttributeError):
-        return "-"
-    if sl is None:
-        return "-"
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return d.get("statusLine") if isinstance(d, dict) else None
+
+
+def statusline_fingerprint(cwd: str | None = None, *, config_dir: str | None = None) -> str:
+    """狀態列設定 + 腳本檔的指紋(#401 R2 範圍):使用者層、cwd 專案層兩份的 statusLine,加腳本檔大小 / mtime。
+    任何一樣換掉 ⇒ 指紋變 ⇒ 記號失效。讀不到的那份記成 null(移除也算換)。"""
+    base = config_dir or _config_dir()
+    cwd = cwd or os.getcwd()
+    layers = [_statusline_of(os.path.join(base, "settings.json"))]
+    for name in ("settings.json", "settings.local.json"):
+        layers.append(_statusline_of(os.path.join(cwd, ".claude", name)))
+    try:
+        st = os.stat(os.path.join(base, SCRIPT_NAME))
+        script = [st.st_size, st.st_mtime_ns]
+    except OSError:
+        script = None
     import hashlib
-    return hashlib.sha256(json.dumps(sl, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    blob = json.dumps({"layers": layers, "script": script}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def _read_shown(sid: str, state_root: str | None) -> dict:
@@ -95,19 +116,26 @@ def _read_shown(sid: str, state_root: str | None) -> dict:
             d = json.load(fh)
     except (OSError, ValueError):
         return {}
-    return d if isinstance(d, dict) and isinstance(d.get("mods"), list) and isinstance(d.get("cfg"), str) else {}
+    ok = isinstance(d, dict) and isinstance(d.get("mods"), list) and isinstance(d.get("cfg"), str) \
+        and isinstance(d.get("at"), (int, float))
+    return d if ok else {}
 
 
-def is_shown(sid: str, mod: str, *, state_root: str | None = None, settings_path: str | None = None) -> bool:
-    """這個對話的 Ez2 狀態列畫出過 mod 那段、而且狀態列設定沒換過。不看時間(#401 R1)。"""
+def is_shown(sid: str, mod: str, *, state_root: str | None = None, cwd: str | None = None,
+             config_dir: str | None = None, now: float | None = None) -> bool:
+    """這個對話的 Ez2 狀態列畫出過 mod 那段、狀態列(設定 + 腳本)沒換過、而且 SHOWN_MAX_S 內畫過(#401 R1 / R2)。"""
     if not SID_RE.fullmatch(sid or "") or mod not in ORDER:
         return False
     d = _read_shown(sid, state_root)
-    return bool(d) and mod in d["mods"] and d["cfg"] == statusline_fingerprint(settings_path)
+    if not d or mod not in d["mods"]:
+        return False
+    if (now if now is not None else time.time()) - d["at"] > SHOWN_MAX_S:
+        return False
+    return d["cfg"] == statusline_fingerprint(cwd, config_dir=config_dir)
 
 
 def put(mod: str, sid: str, text: str | None, *, state_root: str | None = None, now: float | None = None,
-        settings_path: str | None = None) -> dict:
+        cwd: str | None = None, config_dir: str | None = None) -> dict:
     """mod 寫自己那一段(text=None ⇒ 拿掉)。回 {"ok", "shown"};寫不進去不拋例外(狀態列的事不能讓 mod 掛掉)。"""
     if mod not in ORDER:
         return {"ok": False, "reason": "unknown_mod", "shown": False}
@@ -125,8 +153,8 @@ def put(mod: str, sid: str, text: str | None, *, state_root: str | None = None, 
                           "at": int(now if now is not None else time.time())})
     except (OSError, ValueError) as e:
         return {"ok": False, "reason": "write_failed:%s" % type(e).__name__,
-                "shown": is_shown(sid, mod, state_root=state_root, settings_path=settings_path)}
-    return {"ok": True, "shown": is_shown(sid, mod, state_root=state_root, settings_path=settings_path)}
+                "shown": is_shown(sid, mod, state_root=state_root, cwd=cwd, config_dir=config_dir, now=now)}
+    return {"ok": True, "shown": is_shown(sid, mod, state_root=state_root, cwd=cwd, config_dir=config_dir, now=now)}
 
 
 def tail_parts(sid: str, *, state_root: str | None = None, now: float | None = None) -> list:
@@ -157,18 +185,21 @@ def tail_text(sid: str, *, state_root: str | None = None, now: float | None = No
     return JOIN.join(t for _, t in tail_parts(sid, state_root=state_root, now=now))
 
 
-def mark_shown(sid: str, mods, *, state_root: str | None = None, settings_path: str | None = None) -> bool:
-    """記下「這次畫出了 mods 的段」(跟之前畫過的取聯集;設定指紋變了就重來)。沒有新東西就不寫(狀態列重跑很頻繁)。"""
+def mark_shown(sid: str, mods, *, state_root: str | None = None, cwd: str | None = None,
+               config_dir: str | None = None, now: float | None = None) -> bool:
+    """記下「這次畫出了 mods 的段」(跟之前畫過的取聯集;指紋變了就重來)。沒有新東西、記號時間也還新就不寫。"""
     mods = [m for m in mods if m in ORDER]
     if not SID_RE.fullmatch(sid or "") or not mods:
         return False
-    cfg = statusline_fingerprint(settings_path)
+    at = int(now if now is not None else time.time())
+    cfg = statusline_fingerprint(cwd, config_dir=config_dir)
     d = _read_shown(sid, state_root)
     have = [m for m in d.get("mods", []) if m in ORDER] if d.get("cfg") == cfg else []
-    if set(mods) <= set(have):
+    if set(mods) <= set(have) and at - d.get("at", 0) < SHOWN_TOUCH_S:
         return False
     try:
-        _write(_shown_path(sid, state_root), {"cfg": cfg, "mods": [m for m in ORDER if m in set(have) | set(mods)]})
+        _write(_shown_path(sid, state_root),
+               {"cfg": cfg, "mods": [m for m in ORDER if m in set(have) | set(mods)], "at": at})
     except (OSError, ValueError):
         return False
     return True
@@ -180,6 +211,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("put")
     p.add_argument("--mod", required=True)
     p.add_argument("--session", required=True)
+    p.add_argument("--cwd", default=None)   # 這個對話的 cwd(專案層設定在這裡;#401 R2);沒給 ⇒ 行程自己的 cwd
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--text")
     g.add_argument("--clear", action="store_true")
@@ -187,7 +219,7 @@ def main(argv=None) -> int:
     s.add_argument("--session", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "put":
-        r = put(a.mod, a.session, None if a.clear else a.text)
+        r = put(a.mod, a.session, None if a.clear else a.text, cwd=a.cwd)
         print(json.dumps(r, ensure_ascii=False))
         return 0 if r.get("ok") else 1
     print(tail_text(a.session))

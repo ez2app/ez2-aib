@@ -93,8 +93,9 @@ async function putTail($: EngineInterface, text: string | null): Promise<boolean
   if (text === tailText && now - tailAt < (tailShown ? REFRESH_MS - 5000 : TAIL_RECHECK_MS)) return tailShown
   const sid = await $.session.id().catch(() => '')
   if (!sid) { tailShown = false; return false }
+  const cwd = await $.session.cwd().catch(() => '')   // #401 R2:專案層狀態列設定在這裡
   const r = await $.process.run([await py($), '-I', `${$.plugin.root}/bin/seat-info.py`, '--tail-put', sid,
-    ...(text === null ? ['--clear'] : ['--text', text])], { timeoutMs: 5000 }).catch(() => null)
+    ...(text === null ? ['--clear'] : ['--text', text]), ...(cwd ? ['--cwd', cwd] : [])], { timeoutMs: 5000 }).catch(() => null)
   let shown = false
   try { shown = (JSON.parse(r?.stdout.trim().split('\n').pop() || '{}') as { shown?: unknown }).shown === true } catch { shown = false }
   tailText = text; tailAt = now; tailShown = text !== null && shown

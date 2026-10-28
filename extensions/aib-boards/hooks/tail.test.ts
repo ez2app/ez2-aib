@@ -20,6 +20,7 @@ function wire(on: Any, w: { shown: boolean; seat: unknown; pct?: number; puts: s
   })
   on('fs.exists', async (_$: Any, e: Any) => ({ value: String(e.path ?? '').endsWith('/i18n_lib.py') }) as never)   // 字典要找得到倉才載
   on('session.id', async () => ({ value: 'sid-1' }) as never)
+  on('session.cwd', async () => ({ value: '/proj' }) as never)   // #401 R2:put 帶這個對話的 cwd
   on('session.usage', async () => ({ value: w.pct === undefined ? {} : { context: { percent: w.pct } } }) as never)
   on('ui.status', async (_$: Any, e: Any) => { w.statuses.push(e.text); return { value: undefined } as never })
   on('command.register', async () => ({ value: undefined }) as never)
@@ -30,7 +31,7 @@ test('💧 狀態列有在畫(shown)⇒ 未讀 dm 交給尾巴、收掉自己這
   const w = { shown: true, seat: SEAT, puts: [] as string[][], statuses: [] as (string | undefined)[] }
   wire(on, w)
   await $.session.start({ source: 'startup', cwd: '/repo' })
-  expect(w.puts.at(-1)).toEqual(['sid-1', '--text', '未讀 dm 2'])
+  expect(w.puts.at(-1)).toEqual(['sid-1', '--text', '未讀 dm 2', '--cwd', '/proj'])
   expect(w.statuses.at(-1)).toBe(undefined)
 })
 
@@ -55,6 +56,6 @@ test('量不到席位 ⇒ 尾巴拿掉這段(--clear),自己那句量不到照�
   const w = { shown: true, seat: null, puts: [] as string[][], statuses: [] as (string | undefined)[] }
   wire(on, w)
   await $.session.start({ source: 'startup', cwd: '/repo' })
-  expect(w.puts.at(-1)).toEqual(['sid-1', '--clear'])
+  expect(w.puts.at(-1)).toEqual(['sid-1', '--clear', '--cwd', '/proj'])
   expect(typeof w.statuses.at(-1)).toBe('string')
 })
