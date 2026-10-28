@@ -648,6 +648,27 @@ def _resolve_seat(state_root: Path, seat_arg: str):
     return seat_id, rec, instance, None
 
 
+def ensure_ledger(state_root: Path, create: bool = True) -> bool:
+    """帳本目錄缺就照 aib init 同一套補建(只建 ledger/ 與空帳本檔,其他不動);建不起來回 False。
+    10-28 2F 驗收 G1:aib init 沒跑成的新會員,從頁面開第一席會被 no-ledger 擋;他沒辦法自己補。
+    create=False(試跑):不寫,只回「真跑時建不建得起來」。"""
+    root = Path(state_root)
+    if (root / "ledger").is_dir():
+        return True
+    if root.is_symlink() or not root.is_dir() or (root / "ledger").is_symlink() or (root / "ledger").exists():
+        return False
+    if not create:
+        return os.access(str(root), os.W_OK)
+    boot = str(REPO_ROOT / "src" / "bootstrap")
+    if boot not in sys.path:
+        sys.path.insert(0, boot)
+    import aib_init as AI  # noqa: E402
+    for item in (AI.ensure_dir(root / "ledger", AI.DIR_MODE), AI.ensure_file(root / "ledger" / "aib-ledger.jsonl", AI.FILE_MODE)):
+        if item["action"] == AI.FAIL:
+            return False
+    return True
+
+
 def _ledger_note(state_root: Path, agent_uid: str, actor: dict, zh: str, en: str) -> None:
     """先入帳。用既有的 identity.bound(事件種類是封閉清單,不為專案加第 16 種)。"""
     import role_model as RM  # noqa: E402
@@ -791,7 +812,8 @@ def run_newproj(args) -> int:
         import types
         import seat_bootstrap  # noqa: E402
         return seat_bootstrap.run(args, root, types.SimpleNamespace(
-            T=T, _say=_say, load_card=load_card, _uid_refusal=_uid_refusal, _resolve_seat=_resolve_seat, run_newproj=run_newproj))
+            T=T, _say=_say, load_card=load_card, _uid_refusal=_uid_refusal, _resolve_seat=_resolve_seat, run_newproj=run_newproj,
+            ensure_ledger=ensure_ledger))
     if args.new_seat:
         if seat_arg:
             return _refuse(T("aib.newproj.seat_xor_new"), seat_arg)
@@ -825,7 +847,7 @@ def run_newproj(args) -> int:
             # 新開的席一定還沒綁人格,bind_one 規定沒人格不能綁資料夾 ⇒ 這個組合真跑必被擋,開席前就說
             return _refuse(T("aib.newproj.folder_unbindable", {"key": _want, "err": T("aib.newproj.new_seat_no_persona")}),
                            "(new seat)")
-        if not (root / "ledger").is_dir():
+        if not ensure_ledger(root, create=not args.dry_run):
             return _refuse(T("aib.newproj.no_ledger", {"path": root / "ledger"}), "(new seat)")
         if not (args.actor or os.environ.get("EZ2_OWNER_SIG") or "").strip():
             return _refuse(T("aib.newproj.need_actor"), "(new seat)")
@@ -867,7 +889,7 @@ def run_newproj(args) -> int:
         _role, session_uuid, agent_uid = BO.seat_binding_inputs(dict(seat_rec))
     except BO.BindError as exc:
         return _refuse(str(exc), seat_arg)
-    if not (root / "ledger").is_dir():
+    if not ensure_ledger(root, create=not args.dry_run):
         return _refuse(T("aib.newproj.no_ledger", {"path": root / "ledger"}), seat_arg)
 
     now_ms = int(time.time() * 1000)
