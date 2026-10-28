@@ -241,7 +241,8 @@ def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None, a
                         at=_day(t.get("last_used_at"))) + "\n")
         out.flush()
     res = {"ok": True, "targets": targets, "chat": {"state": "skipped"}, "page": {"state": "skipped"}}
-    for n, (kinds, reason) in enumerate(revoke_batches(items)):   # 名稱 + 指紋不截;一句放不下就拆成每台一次(遺失裝置一定要撤得掉)
+    batches = revoke_batches(items)
+    for n, (kinds, reason) in enumerate(batches):   # 名稱 + 指紋不截;一句放不下就拆成每台一次(遺失裝置一定要撤得掉)
         why = (prove or (lambda r, e: CO.prove(r, e)))(reason, env)
         if why:
             if n == 0:
@@ -249,6 +250,10 @@ def lost(env, chat=None, page=None, prove=None, api=None, sign=None, out=None, a
                 res["hint"] = _hint(res)
                 return res, 2
             res["why"] = why                     # 前一批已撤;這一批沒過 ⇒ 照實回 skipped
+            # 原參數重跑會在已撤的那台停住(chat_not_found)⇒ 告訴本人只帶還沒撤的那幾台(@aeb40 #404 R2 Low)
+            left = [k for b in batches[n:] for k in sorted(b[0])]
+            flags = " ".join("--chat %s" % chat if k == "chat" else "--page %s" % page for k in left)
+            res["hint"] = T("hint.rerun_rest", flags=flags) or "aib device lost " + flags
             break
         if "chat" in kinds:
             res["chat"] = _chat_revoke(env, out, dev, reason, sign=sign)

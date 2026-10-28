@@ -128,7 +128,8 @@ def one(job, env=None, run=subprocess.run, head_fn=None, touchid=None):
 
 def ensure_shim(state_root, python=None):
     """<狀態根>/bin/aib-sign-approve 寫成只 exec 這一支的薄殼(aib init 呼叫;安裝 / 更新都會跑到)。
-    舊的獨立版(沒有標記)先備份成 .bak-<時間> 再換。回 "created" / "updated" / "unchanged"。"""
+    舊的獨立版(沒有標記)先備份成 .bak-<時間> 再換。回 "created" / "updated" / "unchanged" / "refused"
+    (暫存檔開不了:拿掉殘留後又被放回符號連結之類 ⇒ 不寫、不丟例外)。"""
     path = Path(state_root) / "bin" / SHIM_NAME
     body = "#!/bin/sh\n%s\n# 本體:%s(改這裡沒用,下次 aib init 會重寫)\nexec %s \"%s\" \"$@\"\n" % (
         SHIM_MARK, HERE, python or "/usr/bin/env python3", HERE)
@@ -142,12 +143,16 @@ def ensure_shim(state_root, python=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     if old is not None and SHIM_MARK not in old:
         shutil.copy2(path, path.with_name(SHIM_NAME + ".bak-" + time.strftime("%Y%m%d-%H%M%S")))
-    tmp = path.with_name(".%s.tmp-%d" % (SHIM_NAME, os.getpid()))
+    tmp = path.with_name(".%s.tmp" % SHIM_NAME)   # 固定名 + O_EXCL(@aeb40 #404 R2 Low:別的 pid 留下的 .tmp-* 也會堆)
+    for left in path.parent.glob(".%s.tmp*" % SHIM_NAME):
+        try:
+            os.unlink(left)              # 上次殘留(含舊版 .tmp-<pid>,也可能是別人放的符號連結):拿掉再建,不跟著寫(R1 L3)
+        except OSError:
+            pass
     try:
-        os.unlink(tmp)                   # 上次殘留(也可能是別人放的符號連結):拿掉再建,不跟著寫(@aeb40 #404 R1 L3)
-    except FileNotFoundError:
-        pass
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o755)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o755)
+    except OSError:                      # 拿掉之後又被放回(競態)/ 是資料夾 ⇒ 拒,不寫、不印 traceback
+        return "refused"
     try:
         os.write(fd, body.encode("utf-8"))
         os.fchmod(fd, 0o755)
