@@ -100,7 +100,7 @@ class BindFailedCardKept(unittest.TestCase):
         rc, text = self._run(extra=("--vault", str(selected)))
         self.assertNotEqual(rc, 0)  # 測試的 binder 故意拒絕,仍需先走到 binder。
         self.assertEqual(self.bound_vault, str(selected.resolve()))
-        self.assertTrue(str(self._card_path(text)).startswith(str(selected)))
+        self.assertTrue(str(self._card_path(text).resolve()).startswith(str(selected.resolve())))   # macOS /var→/private/var
 
     def test_B2_existing_card_says_untouched(self):
         self._run()
