@@ -5799,5 +5799,6 @@
   "aib.doctor.check.grants.lockwatch_ok": "시간 창 승인: 화면 잠금 감지 실행 중",
   "aib.doctor.check.grants.lockwatch_missing": "시간 창 승인이 있지만 화면 잠금 감지가 실행되지 않습니다({why}) ⇒ 자동 승인 꺼짐, 매번 한 번씩 승인",
   "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on 으로 화면 잠금 감지를 설치(없으면 시간 창이 꺼지고 매번 한 번씩 승인)",
-  "aib.doctor.check.grants.error": "시간 창 상태를 읽을 수 없음: {error}"
+  "aib.doctor.check.grants.error": "시간 창 상태를 읽을 수 없음: {error}",
+  "aib.approve_grants.touchid_lockwatch_on": "화면 잠금 감지를 켜서 이 Mac에서 시간 창 승인이 적용되게 하기"
 }

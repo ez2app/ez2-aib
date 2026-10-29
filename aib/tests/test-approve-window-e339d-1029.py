@@ -16,9 +16,11 @@ W9 端到端(GateWindow + 假 helper + 假選單):選 1h ⇒ 視窗字以這次�
 W10 舊 helper(se-pub 沒回 owner_acl)⇒ old_helper,不開窗
 W11 durations_for:outbound ≤ 3h、seat_input 到 24h
 W14 鎖屏偵測沒在跑 ⇒ 不出時長選單(只這次)
-W12 --lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單沒 lockwatch ⇒ note
+W15 沒裝 lockwatch + 簽章正確的有效窗單 ⇒ ask 仍一次一按、不出選單
+W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單沒 lockwatch ⇒ note
 刀(複本落刀,錨要恰好一次):KL1 拿掉心跳過期 ⇒ W2 紅;KL2 拿掉鎖屏後作廢 ⇒ W3 紅;KL3 拿掉「現在鎖著」⇒ W2 紅;
   KL4 拿掉 owner_acl 檢查 ⇒ W10 紅;KL5 拿掉 find_valid 的高風險排除 ⇒ W4 紅;KL6 拿掉沒 lockwatch 不出選單 ⇒ W14 紅;
+  KL7 find_valid 拿掉 lock_state ⇒ W15 紅;KL8 --lockwatch on 拿掉 Touch ID ⇒ W12 紅;
   KG1 ask 拿掉高風險不走窗 ⇒ W8 紅;KG2 拿掉記帳 ⇒ W5 紅;KG3 拿掉取消 ⇒ W6 紅
 """
 import importlib.util
@@ -218,6 +220,44 @@ def cell_w14(t, M):
         e.close()
 
 
+def cell_w12_needs_touchid(t, M, e, lc, home, calls):
+    """--lockwatch on 要本人按一次;取消 ⇒ 不寫 plist、不叫 launchctl。"""
+    out = io.StringIO()
+    rc = M.main(["--lockwatch", "on"], out=out, ctx=e.ctx(M), launchctl=lc, home=home,
+                touchid=lambda r: {"ok": False, "why": "cancel"})
+    t.assertEqual((rc, json.loads(out.getvalue()).get("why")), (2, "cancel"))
+    t.assertFalse(os.path.exists(M.lockwatch_plist_path(home)))
+    t.assertEqual(calls, [])
+
+
+def cell_w12k(t, M):
+    e = Env()
+    home = tempfile.mkdtemp(prefix="aib-window-home-")
+    calls = []
+    try:
+        cell_w12_needs_touchid(t, M, e, lambda *a: calls.append(a) or (0, ""), home, calls)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        e.close()
+
+
+def cell_w15(t, M):
+    """沒裝 lockwatch 時,就算有一張簽章正確的有效窗單,ask 仍一次一按(@aeb40 16:36 加刀)。"""
+    e = Env()
+    td = tempfile.mkdtemp(prefix="aib-window-lock-")
+    try:
+        doc, _ = M.sign(["seat_input"], "24h", e.ctx(M))
+        t.assertTrue(M.verify(T2B._grant(M, e, doc), "seat_input", e.ctx(M))[0])     # 單本身是好的
+        seen = []
+        win = M.GateWindow(e.ctx(M), run=lambda *a, **k: t.fail("沒 lockwatch 不該出選單"))
+        res = AG.ask(_r(AG), td, touchid=lambda x: seen.append(x) or {"ok": True, "why": "ok"}, window=win)
+        t.assertEqual(len(seen), 1)
+        t.assertNotEqual(res["why"], "window")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+        e.close()
+
+
 def cell_w10(t, M):
     e = Env()
     try:
@@ -243,6 +283,8 @@ class Cells(unittest.TestCase):
     def test_w7(self): cell_w7(self, AG)
     def test_w8(self): cell_w8(self, AG)
     def test_w10(self): cell_w10(self, GR)
+    def test_w12k(self): cell_w12k(self, GR)
+    def test_w15(self): cell_w15(self, GR)
 
     def test_w9_end_to_end(self):
         e = Env()
@@ -303,8 +345,12 @@ class Cells(unittest.TestCase):
         calls = []
         try:
             lc = lambda *a: calls.append(a) or (0, "")                  # noqa: E731
+            cell_w12_needs_touchid(self, GR, e, lc, home, calls)
+            asked = []
             out = io.StringIO()
-            self.assertEqual(GR.main(["--lockwatch", "on"], out=out, ctx=e.ctx(), launchctl=lc, home=home), 0)
+            self.assertEqual(GR.main(["--lockwatch", "on"], out=out, ctx=e.ctx(), launchctl=lc, home=home,
+                                     touchid=lambda r: asked.append(r) or {"ok": True, "why": "ok"}), 0)
+            self.assertEqual([(a.category, a.site) for a in asked], [("window_grant", "approve_grants.lockwatch_on")])
             path = GR.lockwatch_plist_path(home)
             import plistlib
             with open(path, "rb") as f:
@@ -344,6 +390,8 @@ KNIVES_GR = [
     ("KL4", '    if isinstance(res, dict) and res.get("ok") is True and res.get("owner_acl") != "probed":\n',
      '    if False:\n', cell_w10),
     ("KL6", '        if lock_state(self.ctx)[1] is not None:\n            return "once"\n', '', cell_w14),
+    ("KL7", '    last_lock, why = lock_state(ctx)\n    if why:\n        return None, why\n', '    last_lock = 0\n', cell_w15),
+    ("KL8", '            ok, why = approve_lockwatch_on(ctx, touchid)\n', '            ok, why = True, None\n', cell_w12k),
     ("KL5", '    if not spec or spec["high_risk"] or spec["max_window"] <= 0:\n        return None, "no_window_category"\n'
      '    last_lock, why', '    last_lock, why', cell_w4),
 ]

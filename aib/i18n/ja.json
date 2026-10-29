@@ -5799,5 +5799,6 @@
   "aib.doctor.check.grants.lockwatch_ok": "時間枠の許可:画面ロック検知が動作中",
   "aib.doctor.check.grants.lockwatch_missing": "時間枠の許可がありますが、画面ロック検知が動いていません({why})⇒ 自動承認は効かず、毎回その都度承認",
   "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on で画面ロック検知を入れる(なければ時間枠は効かず、毎回その都度承認)",
-  "aib.doctor.check.grants.error": "時間枠の状態を読めません:{error}"
+  "aib.doctor.check.grants.error": "時間枠の状態を読めません:{error}",
+  "aib.approve_grants.touchid_lockwatch_on": "画面ロック検知をオンにして、この Mac で時間枠の許可を有効にする"
 }

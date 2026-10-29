@@ -177,13 +177,12 @@ def window_reason(cats, dur, rekey=None, env=None, action=""):
     loc = _locale(env)
     names = ("、" if loc in ("zh-TW", "ja") else ", ").join(AG.category_name(c, loc) for c in cats)
     facts = {"cats": names, "dur": _dur_name(dur, env)}
-    site = "approve_grants.sign"
     if action:
         facts["action"] = action
-        site += "_with"
     if rekey:
         facts.update(old=rekey[0] or "-", new=rekey[1])
-        site += "_rekey"
+    site = {(False, False): "approve_grants.sign", (True, False): "approve_grants.sign_with",
+            (False, True): "approve_grants.sign_rekey", (True, True): "approve_grants.sign_with_rekey"}[(bool(action), bool(rekey))]
     return AG.reason(site, facts, env=env)
 
 
@@ -646,7 +645,19 @@ def _fmt_left(s):
     return "%d:%02d:%02d" % (s // 3600, s % 3600 // 60, s % 60)
 
 
-def main(argv=None, out=None, ctx=None, launchctl=None, home=None):
+def approve_lockwatch_on(ctx, touchid=None):
+    """裝 lockwatch 會讓時間窗生效 ⇒ 本人按一次(類別 window_grant = 高風險,一次一按;@aeb40 16:36)。
+    回 (True, None) 或 (False, why)。不是 Mac / 關掉 / 叫不出 ⇒ 拒。touchid 只給測試注入。"""
+    if touchid is None:
+        no = AG.ready(ctx.env, platform=ctx.platform)
+        if no:
+            return False, no
+    r = AG.reason("approve_grants.lockwatch_on", {}, env=ctx.env)
+    res = AG.ask(r, AG.state_root_default(ctx.env), touchid=touchid)
+    return (True, None) if res.get("ok") is True else (False, str(res.get("why") or "failed"))
+
+
+def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None):
     """aib approve grants [--json] | --revoke <類別|all> | --extend <類別,類別> --for <時長> | --rotate-key"""
     out = out or sys.stdout
     ap = argparse.ArgumentParser(prog="aib approve grants")
@@ -670,6 +681,9 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None):
     if o.lockwatch:
         lc, hm = launchctl or _real_launchctl, home or os.path.expanduser("~")
         if o.lockwatch == "on":
+            ok, why = approve_lockwatch_on(ctx, touchid)
+            if not ok:
+                return emit({"ok": False, "why": why}, 2)
             kind, info = install_lockwatch(ctx, lc, hm)
             return emit({"ok": kind == "installed", "result": kind, "info": info}, 0 if kind == "installed" else 2)
         if o.lockwatch == "off":

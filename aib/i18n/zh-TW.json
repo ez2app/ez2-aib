@@ -5799,5 +5799,6 @@
   "aib.doctor.check.grants.lockwatch_ok": "時間窗授權單:鎖屏偵測在跑",
   "aib.doctor.check.grants.lockwatch_missing": "有時間窗授權單,但鎖屏偵測沒在跑({why})⇒ 自動同意不會生效,一律一次一按",
   "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on 裝鎖屏偵測(沒裝 = 時間窗不生效,照舊一次一按)",
-  "aib.doctor.check.grants.error": "讀不到時間窗狀態:{error}"
+  "aib.doctor.check.grants.error": "讀不到時間窗狀態:{error}",
+  "aib.approve_grants.touchid_lockwatch_on": "開啟鎖屏偵測,讓這台 Mac 的時間窗授權可以生效"
 }

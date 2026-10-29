@@ -5799,5 +5799,6 @@
   "aib.doctor.check.grants.lockwatch_ok": "Time-window grants: lock watcher running",
   "aib.doctor.check.grants.lockwatch_missing": "Time-window grants exist but the lock watcher is not running ({why}) ⇒ auto-approve is off; every approval asks once",
   "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on installs the lock watcher (without it, time windows stay off and every approval asks once)",
-  "aib.doctor.check.grants.error": "Could not read time-window state: {error}"
+  "aib.doctor.check.grants.error": "Could not read time-window state: {error}",
+  "aib.approve_grants.touchid_lockwatch_on": "Turn on the lock watcher so time-window grants can take effect on this Mac"
 }
