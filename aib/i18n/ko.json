@@ -5730,6 +5730,7 @@
   "aib.update_status.unavailable": "측정 불가",
   "aib.update_status.unmeasured": "미측정",
   "aib.now.dm_wait_overdue": "⏳ 대기 메모가 있는데 4시간 넘게 움직임이 없는 메시지 {n}건: 도착했으면 dm_queue.py close --seat {code} --id <id> --evidence … 로 종료, 아직 기다리면 wait --seat {code} --id <id> \"누구 / 무엇\" 을 다시 적으세요",
+  "aib.approve_gate.too_long_hint": "확인할 문장이 너무 길어 Touch ID 창에 들어가지 않아 띄우지 않았습니다. 이름을 짧게 바꾼 뒤 다시 시도해 주세요.",
   "aib.approve_gate.unregistered": "등록되지 않은 작업 승인: {site}",
   "aib.chat.telegram.touchid_send": "{who}에게 Telegram 보내기: {text}",
   "aib.chat.telegram.touchid_on": "Telegram 중계 켜기(함장석 @{seat}로 수신)",

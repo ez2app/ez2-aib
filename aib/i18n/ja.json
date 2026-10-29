@@ -5730,6 +5730,7 @@
   "aib.update_status.unavailable": "取得不能",
   "aib.update_status.unmeasured": "未測定",
   "aib.now.dm_wait_overdue": "⏳ 待機メモ付きで 4 時間以上動いていないメッセージが {n} 件:届いたら dm_queue.py close --seat {code} --id <id> --evidence … で完了、まだ待つなら wait --seat {code} --id <id> \"誰 / 何を\" を書き直してください",
+  "aib.approve_gate.too_long_hint": "確認する文が長すぎて Touch ID の画面に入らないため、表示しませんでした。名前を短くしてもう一度お試しください。",
   "aib.approve_gate.unregistered": "未登録の操作を承認:{site}",
   "aib.chat.telegram.touchid_send": "{who} に Telegram を送信:{text}",
   "aib.chat.telegram.touchid_on": "Telegram 中継をオン(艦長席 @{seat} で受信)",

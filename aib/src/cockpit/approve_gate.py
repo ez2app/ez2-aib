@@ -129,8 +129,9 @@ SITES = {
     "newproj.approve_amend": _s("project/new_project.py", "project_ruling", "aib.newproj.approve_touchid_reason_amend",
                                 {"title": 40, "goals": FULL, "red_lines": FULL, "rl": FULL,
                                  "add": FULL, "rm": FULL, "code": FULL}),
+    # #420 r1 M1:艙名(20 字)/ 角色不截 ⇒ 人格 / 專案各截 36,en 整句最長 153 ≤ LA_MAX(截 40 時 en 是 161,會被 ask 拒)
     "newproj.boot_confirm": _s("project/seat_bootstrap.py", "seat_input", "aib.newproj.boot_confirm",
-                               {"cabin": FULL, "role": FULL, "persona": 80, "project": 80}),
+                               {"cabin": FULL, "role": FULL, "persona": 36, "project": 36}),
     "chat_cast.issue": _s("cockpit/chat_cast.py", "trusted_device", "aib.chat.cast.touchid_issue",
                           {"who": FULL, "hours": FULL, "until": FULL},
                           "Let {who} see your captain's room screen for {hours} h, until {until}",
@@ -335,6 +336,17 @@ def state_root_default(env=None):
     """沒有自己狀態根的呼叫點用這個放鎖(同單源順位:EZ2_AIB_STATE_ROOT > EZ2_AIB_HOME > ~/.ez2-aib)。"""
     import seats_dir_lib
     return seats_dir_lib.state_root(env)[0]
+
+
+def too_long_hint(res, env=None):
+    """ask() 因整句超過 LA_MAX 被拒時給一句人話(代碼照舊是 refused / detail too_long);其他情況回 None。"""
+    if not isinstance(res, dict) or res.get("detail") != "too_long":
+        return None
+    try:
+        import i18n_lib
+        return i18n_lib.t("aib.approve_gate.too_long_hint", None, locale=i18n_lib.resolve_locale(env=env))
+    except Exception:  # noqa: BLE001  語系壞掉 ⇒ 備用句
+        return "The confirmation text is too long for the Touch ID window, so it was not shown. Shorten the name and try again."
 
 
 def ask(r, lock_root, touchid=None, before=None):

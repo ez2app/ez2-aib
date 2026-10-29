@@ -44,7 +44,7 @@ def real_path(rel):
     return p if p.is_file() else ROOT / "tools" / rel
 
 
-def run_in(filename, site, facts=None, file_attr=None, globals_override=None):
+def run_in(filename, site, facts=None, file_attr=None, globals_override=None, suffix=()):
     """在 sys.modules 放一個模組(__file__ 預設 = filename),用 filename compile 去叫 AG.reason。"""
     name = "aibtest_l2_%d" % id(object())
     mod = types.ModuleType(name)
@@ -53,14 +53,14 @@ def run_in(filename, site, facts=None, file_attr=None, globals_override=None):
     sys.modules[name] = mod
     g = mod.__dict__ if globals_override is None else globals_override(name)
     try:
-        exec(compile("r = AG.reason(%r, %r)" % (site, facts or {}), str(filename), "exec"), g)
+        exec(compile("r = AG.reason(%r, %r, %r)" % (site, facts or {}, tuple(suffix)), str(filename), "exec"), g)
     finally:
         sys.modules.pop(name, None)
     return g["r"]
 
 
-def mint_site(site=SITE, facts=None):
-    return run_in(real_path(AG.SITES[site]["mod"]), site, facts if facts is not None else FACTS)
+def mint_site(site=SITE, facts=None, suffix=()):
+    return run_in(real_path(AG.SITES[site]["mod"]), site, facts if facts is not None else FACTS, suffix=suffix)
 
 
 class Env(unittest.TestCase):
@@ -400,6 +400,9 @@ class L9Knife(unittest.TestCase):
          "L10R1Followups.test_refused_keeps_real_category"),
         ("KR4", GATE, '    no = refusal(r) or (None if len(str(r)) <= LA_MAX else "too_long")', "    no = refusal(r)",
          "L10R1Followups.test_ask_refuses_over_la_max"),
+        ("KM1", GATE, '{"cabin": FULL, "role": FULL, "persona": 36, "project": 36}',
+         '{"cabin": FULL, "role": FULL, "persona": 80, "project": 80}',
+         "L11FitsLaMax.test_every_ask_site_fits_in_four_locales"),
         ("KS2", "src/cockpit/auto_update.py", "        _via, why = prove(shown, env, platform=platform)",
          '        _via, why = prove(T("exclude.touchid_reason", name=name), env, platform=platform)',
          "L7StaticScan.test_no_plain_string_or_coerce"),
@@ -418,6 +421,52 @@ class L9Knife(unittest.TestCase):
                 out = r.stdout + r.stderr
                 self.assertNotEqual(r.returncode, 0, "%s 沒紅:%s" % (kid, out[-800:]))
                 self.assertRegex(out, r"(FAIL|ERROR): test_", kid)
+
+
+# 走 ask()(LAContext 視窗,整句 ≤ LA_MAX)的登記處:不截欄位填「實際最長值」,有上限的欄位填滿(#420 r1 M1)。
+# chat_owner_cli.list_change 不列:diff 就是要本人看的內容,太長 ⇒ 拒是設計(不截)。
+REAL_MAX = {
+    "seat": "96e0/e339d", "min": "1440", "cabin": "20261028-153924-96e0", "role": "x" * 12,
+    "goals": "99", "red_lines": "99", "rl": "99", "add": "99", "rm": "99", "code": "0123abcd",
+    "who": "W" * 32, "hours": "24", "until": "10-29 23:59",
+    "plugin": "captain-room-extra", "ver": "0.1.100", "pin": "0123456789ab",
+    "dest": "eu01.example.com:/home/ez2/.config/aib/secrets",
+}
+ASK_SITES = (
+    ("seat_act.input", ("tail",)), ("seat_act.unlock", ()), ("seat_act.answer", ()), ("seat_act.stop", ()),
+    ("seat_act.stop_hard", ()), ("seat_act.remote_on", ()), ("chat_human.send", ()), ("secret_ask.ask", ()),
+    ("chat_cast.issue", ("pin",)), ("release.sign_approve", ()), ("newproj.approve", ()),
+    ("newproj.approve_amend", ()), ("newproj.boot_confirm", ()),
+    ("chat_owner_cli.protect", ()), ("chat_owner_cli.repair", ()), ("chat_owner_cli.off_owner", ()),
+)
+
+
+class L11FitsLaMax(Env):
+    def test_every_ask_site_fits_in_four_locales(self):
+        for site, suffix in ASK_SITES:
+            facts = {}
+            for k, lim in AG.SITES[site]["facts"].items():
+                facts[k] = REAL_MAX.get(k, "W" * 24) if lim == AG.FULL else "W" * (lim + 20)
+            for loc in ("zh-TW", "en", "ja", "ko"):
+                with self.subTest(site=site, loc=loc), mock.patch.dict(os.environ, {"EZ2_AIB_LOCALE": loc}):
+                    r = mint_site(site, facts, suffix=suffix)
+                    self.assertIsNone(AG.refusal(r), site)
+                    self.assertLessEqual(len(str(r)), AG.LA_MAX, "%s %s %d 字" % (site, loc, len(str(r))))
+
+    def test_too_long_hint(self):
+        self.assertIsNone(AG.too_long_hint({"ok": False, "why": "refused", "detail": "unminted"}))
+        self.assertIsNone(AG.too_long_hint({"ok": True}))
+        for loc in ("zh-TW", "en", "ja", "ko"):
+            h = AG.too_long_hint({"ok": False, "why": "refused", "detail": "too_long"}, env={"EZ2_AIB_LOCALE": loc})
+            self.assertTrue(h and "aib.approve_gate" not in h, (loc, h))
+
+    def test_secret_ask_too_long_keeps_code_adds_hint(self):
+        import secret_ask
+        seen, out = [], {}
+        why = secret_ask.prove_human("CF_TOKEN", "h:/" + "p" * 300, dict(os.environ), "darwin",
+                                     touchid=lambda r: seen.append(r) or {"ok": True}, touchid_available=lambda: True, out=out)
+        self.assertEqual((why, seen), ("touchid_refused", []))        # 代碼不換、沒彈窗
+        self.assertTrue(out.get("hint"))
 
 
 if __name__ == "__main__":

@@ -5730,6 +5730,7 @@
   "aib.update_status.unavailable": "unavailable",
   "aib.update_status.unmeasured": "unmeasured",
   "aib.now.dm_wait_overdue": "⏳ {n} message(s) have a wait note but nothing has moved for 4+ hours: if it arrived, close with dm_queue.py close --seat {code} --id <id> --evidence …; if still waiting, rewrite wait --seat {code} --id <id> \"who / what\"",
+  "aib.approve_gate.too_long_hint": "The confirmation text is too long for the Touch ID window, so it was not shown. Shorten the name and try again.",
   "aib.approve_gate.unregistered": "Approve an unregistered action: {site}",
   "aib.chat.telegram.touchid_send": "Send a Telegram message to {who}: {text}",
   "aib.chat.telegram.touchid_on": "Turn on the Telegram relay (into captain seat @{seat})",
