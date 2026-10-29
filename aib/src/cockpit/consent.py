@@ -112,6 +112,41 @@ var checked = Number(a.suppressionButton.state) === 1;   // JXA 回的是字串 
 JSON.stringify((Number(r) === 1000 && checked) ? {ok: true, nonce: NONCE} : {ok: false, go: Number(r) === 1000, checked: checked});
 """
 
+# 全文版(newproj --approve 的全文確認窗;TID-1b):說明放 informativeText,全文放可捲動、唯讀的文字框
+SCROLL_JXA = r"""
+ObjC.import('AppKit');
+var TITLE = __TITLE__, INTRO = __INTRO__, BODY = __BODY__, CHECK = __CHECK__, GO = __GO__, NO = __NO__, NONCE = __NONCE__;
+var app = $.NSApplication.sharedApplication;
+app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+app.activateIgnoringOtherApps(true);
+var a = $.NSAlert.alloc.init;
+a.messageText = TITLE;
+a.informativeText = INTRO;
+var sv = $.NSScrollView.alloc.initWithFrame($.NSMakeRect(0, 0, 560, 340));
+sv.hasVerticalScroller = true;
+sv.borderType = $.NSBezelBorder;
+var tv = $.NSTextView.alloc.initWithFrame($.NSMakeRect(0, 0, 545, 340));
+tv.editable = false;
+tv.selectable = true;
+tv.verticallyResizable = true;
+tv.horizontallyResizable = false;
+tv.autoresizingMask = $.NSViewWidthSizable;
+tv.textContainer.widthTracksTextView = true;
+tv.font = $.NSFont.userFixedPitchFontOfSize(12);
+tv.string = BODY;
+sv.documentView = tv;
+a.accessoryView = sv;
+a.showsSuppressionButton = true;
+a.suppressionButton.title = CHECK;
+a.addButtonWithTitle(GO);
+a.addButtonWithTitle(NO);
+a.layout;
+a.window.level = 3;
+var r = a.runModal;
+var checked = Number(a.suppressionButton.state) === 1;
+JSON.stringify((Number(r) === 1000 && checked) ? {ok: true, nonce: NONCE} : {ok: false, go: Number(r) === 1000, checked: checked});
+"""
+
 
 # ---- 路徑 ----
 
@@ -284,12 +319,13 @@ def _who(req):
     return "@" + req["seat"] if req.get("seat") else "?"
 
 
-def build_strong_script(title, body, check, go, no, nonce):
-    rep = {"__TITLE__": title, "__BODY__": body, "__CHECK__": check, "__GO__": go, "__NO__": no, "__NONCE__": nonce}
-    s = STRONG_JXA
-    for k, v in rep.items():
-        s = s.replace(k, json.dumps(str(v)))
-    return s
+def build_strong_script(title, body, check, go, no, nonce, intro=None):
+    """intro 有值 ⇒ 全文版(SCROLL_JXA):intro 是上方說明,body 放可捲動的文字框。"""
+    rep = {"__TITLE__": title, "__INTRO__": intro or "", "__BODY__": body, "__CHECK__": check, "__GO__": go,
+           "__NO__": no, "__NONCE__": nonce}
+    s = STRONG_JXA if intro is None else SCROLL_JXA
+    # 一次替換:BODY 裡就算有 __NONCE__ / __GO__ 這種字也只是字,不會被下一輪再換(@aeb40 #409 R1 L1)
+    return re.sub("|".join(re.escape(k) for k in rep), lambda m: json.dumps(str(rep[m.group(0)])), s)
 
 
 def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
@@ -305,12 +341,13 @@ def ask_strong(req, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
                         _t("aib.consent.strong_check", {}, "I have read this", env), env=env, run=run, wait=wait)
 
 
-def ask_checkbox(title, body, check, env=None, run=subprocess.run, wait=TA.WAIT_S * 3):
-    """勾選框對話框(核心組的字;aib approve enroll 也用)。回 {"ok": bool, "why": str}:
-    勾了按繼續 = ok;取消 = cancel;沒勾就按繼續 = not_checked;逾時 / 讀不懂 / 回的 nonce 不對 ⇒ 不 ok。"""
+def ask_checkbox(title, body, check, env=None, run=subprocess.run, wait=TA.WAIT_S * 3, intro=None):
+    """勾選框對話框(核心組的字;aib approve enroll、newproj --approve 全文窗也用)。回 {"ok": bool, "why": str}:
+    勾了按繼續 = ok;取消 = cancel;沒勾就按繼續 = not_checked;逾時 / 讀不懂 / 回的 nonce 不對 ⇒ 不 ok。
+    intro 有值 ⇒ 全文版:body 放可捲動的唯讀文字框(多長都看得完,不截)。"""
     nonce = secrets.token_hex(16)
     script = build_strong_script(title, body, check, _t("aib.consent.go", {}, "Continue", env),
-                                 _t("aib.consent.no", {}, "Cancel", env), nonce)
+                                 _t("aib.consent.no", {}, "Cancel", env), nonce, intro=intro)
     try:
         r = run([TA.OSASCRIPT, "-l", "JavaScript", "-"], input=script, capture_output=True, text=True, timeout=wait)
     except subprocess.TimeoutExpired:
@@ -340,8 +377,11 @@ def _reason_full(req, env=None):
               "AIB consent · %s wants to run: %s" % (_who(req), cmd), env)
 
 
-def touchid_reason(req, env=None):
-    return TA.clean(_reason_full(req, env), REASON_MAX)
+def touchid_reason(req, env=None, kind=None):
+    """統一入口:SIGN 腳本 = 發版簽章(高風險),其他 = 一般指令核准;類別由 classify 的結果定,申請檔給不了。"""
+    import approve_gate as AG
+    return AG.reason("consent.sign_script" if kind == "sign_script" else "consent.command",
+                     {"who": _who(req), "cmd": display_cmd(req["argv"])}, env=env)
 
 
 def _sign_info(path):
@@ -407,7 +447,10 @@ def decide(req, env=None, ask=None, ask_strong_fn=None, available=None, now=None
         s = ask_strong_fn(view, env=env)
         if not s.get("ok"):
             return "denied", {"why": s.get("why")}, None, None
-    a = ask(touchid_reason(view, env))
+    reason = touchid_reason(view, env, kind)
+    if __import__("approve_gate").se_reason(reason) is None:
+        return "denied", {"why": "reason_refused"}, None, None
+    a = ask(reason)
     if not a.get("ok"):
         return "denied", {"why": a.get("why")}, None, None
     if kind == "aib":

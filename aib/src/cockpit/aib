@@ -52,7 +52,7 @@ fi
 
 # aib - Ez2 AIB cockpit launcher (E2.9/E2.17/ED.11 直起+E2.19 席位紀錄).
 #
-#   aib <provider> <dgrs|safe> <role> [new] [--model MODEL] [--dry-run]
+#   aib <provider> <dgrs|safe> <role> [new] [dm] [--model MODEL] [--dry-run]   (dm / --dm / --no-dm:待審區,open_dm_panel.py)
 #
 # `new` is deliberately positional because that is the human-facing command
 # the maintainer approved.  `--new` remains an exact compatibility alias.
@@ -153,6 +153,7 @@ REPORTS_TO_RE='^[0-9a-z]{4,8}$'
 DRY="${AIB_DRY_RUN:-0}"
 NEW=0
 AGAIN=0
+OPEN_DM=auto   # 10-29 Andy:dm / --dm ⇒ on(打開待審區、整台記住);--no-dm ⇒ off;open_dm_panel.py
 MAIN_EXPLICIT=0   # 10-11:main 是人親手寫的(第四參數 / --instance=main)才算;從環境導出的不算
 MAIN_FROM=""
 _AIB_ENV_INSTANCE_AT_START="${EZ2_AIB_INSTANCE-}"   # 判 main 從哪來:呼叫端環境帶的,還是 aib 自己的預設
@@ -161,6 +162,7 @@ INSTANCE=""
 INSTANCE_TOKEN=""
 MODEL_REQUESTED=""
 MODEL_FROM_FLAG=0
+MODEL_FROM_RECORD=0   # re-register 拿到的型號(啟動指令的 --model 或舊席位檔):照記錄,不換成清單最新
 RESET_SESSION_IDENTITY=0
 AIB_SEAT_REREGISTER=0   # 工單 AS:`aib seat re-register` 的旗標,見下面兩段
 REREG_ARGS=()
@@ -1039,6 +1041,8 @@ while [ "$#" -gt 0 ]; do
     --dry-run) DRY=1 ;;
     --new) NEW=1 ;;
     --again) AGAIN=1 ;;
+    --dm) OPEN_DM=on ;;
+    --no-dm) OPEN_DM=off ;;
     --reports-to)
       shift
       [ "$#" -gt 0 ] && [ -n "$1" ] || die "$(t aib.err.usage)"
@@ -1084,6 +1088,15 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+# 10-29 Andy:開席最後一個字寫 dm ⇒ 同 --dm(第 4 個字以後才認;dm 因此保留、不能當艙名)。
+if [ "${#POS[@]}" -ge 4 ] && [ "${POS[${#POS[@]}-1]}" = "dm" ]; then
+  case " $PROVIDERS " in *" ${POS[0]} "*)
+    OPEN_DM=on
+    unset "POS[${#POS[@]}-1]"
+    POS=("${POS[@]}") ;;
+  esac
+fi
 
 # Owner-facing batch form: aib <provider> <mode> <root-role> <N>sits [new].
 # It enters the ordinary new-instance resolver once, then seats_batch calls the
@@ -1177,7 +1190,11 @@ PYRR
     _rr_model="${_rr_model:-$_f_model}"
   fi
   POS=("$_rr_provider" "$_rr_mode" "$_rr_role")
-  [ -z "$_rr_model" ] || MODEL_REQUESTED="$_rr_model"
+  # 10-28(@aeb40 工作單 A):重新登記拿到的型號就是開席時記下的那個 ⇒ 標成照記錄。
+  #   以前只改 MODEL_REQUESTED、沒標 ⇒ 下面「Codex 沒手指定就用清單最新」那段把它換掉,
+  #   `aib codex … --model gpt-6.1-terra` 開的席,pane 一起來自登記就被寫成清單裡的 gpt-6-luna;
+  #   之後原地復活照席位檔開,就換回舊型號。
+  if [ -n "$_rr_model" ]; then MODEL_REQUESTED="$_rr_model"; MODEL_FROM_RECORD=1; fi
   # cwd 只認旗標或既有登記;都沒有就留空,write_seat_record 對空值不寫該欄——
   # 不拿操作者此刻站的目錄冒充席位的專案目錄。
   CALLER_CWD="$_rr_cwd"
@@ -1358,12 +1375,24 @@ if [ -z "$MODEL_REQUESTED" ] && [ -n "${AIB_REVIVE_SESSION_UUID:-}" ]; then
 sys.path.insert(0, sys.argv[1])
 import seat_fork
 m, layer = seat_fork.revive_model(sys.argv[2], sys.argv[3], sys.argv[4])
-print(m + "\t" + layer)' "$HERE" "$PROVIDER" "$AIB_REVIVE_SESSION_UUID" "${EZ2_AIB_HOME:-$HOME/.ez2-aib}" 2>/dev/null || true)"
+try:  # 讀不到來源不能連累復活型號(#400 R2 Low):讀壞就當沒有記號
+    src = str((seat_fork.seat_record_for(sys.argv[3], sys.argv[4]) or {}).get("requested_source") or "")
+except Exception:
+    src = ""
+print(m + "\t" + layer + "\t" + src)' "$HERE" "$PROVIDER" "$AIB_REVIVE_SESSION_UUID" "${EZ2_AIB_HOME:-$HOME/.ez2-aib}" 2>/dev/null || true)"
   _revive_model="${_revive_pick%%$'\t'*}"
-  _revive_layer="${_revive_pick#*$'\t'}"
+  _revive_rest="${_revive_pick#*$'\t'}"
+  _revive_layer="${_revive_rest%%$'\t'*}"
+  _revive_source=""
+  [ "$_revive_rest" = "$_revive_layer" ] || _revive_source="${_revive_rest#*$'\t'}"
   if [ -n "$_revive_model" ]; then
     MODEL_REQUESTED="$_revive_model"
     MODEL_FROM_REVIVE=1
+    # 10-28(#400 審查 Medium):舊席是手指定型號開的(席位檔 requested_source=flag)⇒ 復活後照樣算手指定,
+    #   帶 AIB_CODEX_MODEL_EXPLICIT、不帶 LUNA_AUTO;否則換帳號登入時會被當成自動挑,寫回清單最新。
+    if [ "$_revive_source" = "flag" ]; then
+      MODEL_FROM_FLAG=1
+    fi
     printf '%s\n' "$(t "aib.launch.revive_model_${_revive_layer}" "value=$MODEL_REQUESTED" "session=$AIB_REVIVE_SESSION_UUID")" >&2
   fi
 fi
@@ -1377,7 +1406,7 @@ print(value)' "$HERE/providers.json" "$PROVIDER")" || MODEL_REQUESTED=""
     printf '%s\n' "$(t aib.launch.revive_model_default "value=$MODEL_REQUESTED" "session=$AIB_REVIVE_SESSION_UUID")" >&2
   fi
 fi
-# 沒有手指定型號的 Codex 席：用本機清單裡版本號最大、而且有列出來的 gpt-*-luna。
+# 沒有手指定型號的 Codex 席：用本機清單裡版本號最大、而且有列出來的 gpt-*-terra(沒有 Terra 才用 Luna)。
 # 清單不在就維持登記簿的後備型號。推理等級不在這裡帶，這版 Codex 沒有 --effort。
 _codex_pack_on=1
 if [ "$PROVIDER" = "codex" ]; then
@@ -1388,11 +1417,11 @@ print("1" if codex_pack.enabled() else "0")' "$HERE" 2>/dev/null || printf '1')"
   _codex_pack_on="$(printf '%s' "$_codex_pack_raw" | tr -d '[:space:]')"
   [ "$_codex_pack_on" = "0" ] || _codex_pack_on=1
 fi
-if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$MODEL_FROM_REVIVE" != "1" ] && [ "$_codex_pack_on" = "1" ]; then
+if [ "$PROVIDER" = "codex" ] && [ "$MODEL_FROM_FLAG" != "1" ] && [ "$MODEL_FROM_REVIVE" != "1" ] && [ "$MODEL_FROM_RECORD" != "1" ] && [ "$_codex_pack_on" = "1" ]; then
   _luna="$("$T_PY3" -c 'import sys
 sys.path.insert(0, sys.argv[1])
 import codex_luna_model
-print(codex_luna_model.latest_luna_slug())' "$HERE" 2>/dev/null || true)"
+print(codex_luna_model.latest_default_slug())' "$HERE" 2>/dev/null || true)"
   if [ -n "$_luna" ]; then
     MODEL_REQUESTED="$_luna"
   fi
@@ -1524,6 +1553,15 @@ aib_refuse_implicit_main_cabin
 : "${AIB_TMUX_BIN:=$(command -v tmux 2>/dev/null || printf 'tmux')}"
 export AIB_TMUX_BIN
 
+# 10-29 #412 R1 M1:批次開席帶 dm / --dm / --no-dm ⇒ exec 前先記整台偏好(只記偏好、不碰艙);
+#   子席各自走 auto ⇒ 這批每一席開好時各自打開,那一艙明關過的不硬開(跟單席 dm 的 on 差在這裡)。
+if [ -n "$BATCH_COUNT" ] && [ "$OPEN_DM" != "auto" ]; then
+  if [ "$DRY" = "1" ]; then
+    echo "aib: (dry-run) dm=$OPEN_DM (batch: pref only)" >&2
+  else
+    "$T_PY3" "$HERE/open_dm_panel.py" "$OPEN_DM" --pref-only </dev/null || true
+  fi
+fi
 if [ -n "$BATCH_COUNT" ]; then
   export AIB_SITS_MODE_OVERRIDE="$MODE"
   export AIB_SITS_NEW_INSTANCE="$NEW"
@@ -1683,7 +1721,17 @@ write_seat_record() {
   local pane_pid=""
   pane_pid="$(env -u TMUX tmux -L "$HUB" display-message -p -t "$pane_id" '#{pane_pid}' 2>/dev/null || true)"
   local write_rc=0
-  AIB_SEAT_FORKED_FROM="${_aib_fork_src:-}" \
+  # 10-28(#400 審查 Medium):型號是手指定(flag)還是自動挑(auto),記進席位檔 requested_source
+  #   (欄名不能含 model:下面會刪掉 model_requested 以外帶 model 的欄,fleet_restore 也拒收)。
+  #   重新登記時看啟動指令帶的 AIB_CODEX_MODEL_EXPLICIT / AIB_CODEX_LUNA_AUTO;開新席時看旗標。
+  #   兩者都不是(心跳、人工 re-register)⇒ 空字串 = 不動既有值。
+  local req_source=""
+  if [ "${AIB_SEAT_REREGISTER:-0}" = "1" ]; then
+    if [ "${AIB_CODEX_MODEL_EXPLICIT:-0}" = "1" ]; then req_source="flag"
+    elif [ "${AIB_CODEX_LUNA_AUTO:-0}" = "1" ]; then req_source="auto"; fi
+  elif [ "$MODEL_FROM_FLAG" = "1" ]; then req_source="flag"
+  elif [ "$PROVIDER" = "codex" ]; then req_source="auto"; fi
+  AIB_SEAT_FORKED_FROM="${_aib_fork_src:-}" AIB_SEAT_REQUESTED_SOURCE="$req_source" \
   "$T_PY3" - "$seats_dir" "$window_id" "$ROLE" "$PROVIDER" "$MODE" "${pane_pid:-0}" "$HERE" "${SEAT_SESSION_UUID:-}" "$CALLER_CWD" "$MODEL_REQUESTED" "$RESET_SESSION_IDENTITY" "${EZ2_AIB_INSTANCE:-}" \
     "${HUB:-}" "${REPORTS_TO:-}" <<'PYSEAT' 2>/dev/null || write_rc=$?
 import os, re, sys, time
@@ -1790,6 +1838,9 @@ def _mutate(rec):
     for key in list(rec):
         if "model" in key.casefold() and key != "model_requested":
             rec.pop(key, None)
+    _req_source = os.environ.get("AIB_SEAT_REQUESTED_SOURCE") or ""
+    if _req_source in ("flag", "auto"):
+        rec["requested_source"] = _req_source
     # ★ EH.3:cwd = 開席當下的工作目錄,也就是那個 AI 真正的專案目錄
     #   (aib:22 CALLER_CWD="$(pwd -P)",同一個值在 :395 當 PROJECT_DIR
     #   傳給 provider-launch.sh —— 兩者不會分岔)。
@@ -2001,6 +2052,16 @@ aib_run_ensure() {   # 起訖都記進碼表;rc 原樣回給呼叫端。note=def
   aib_attempt_mark ensure_done "${WINDOW_ID:-}" "rc=$_ensure_rc"
   return "$_ensure_rc"
 }
+# 10-29 Andy:待審區(dm 佇列 + 待審框 + 版面)開席時照 dm / --dm / 整台記憶打開;建艙 / ensure 之前寫好,畫框時就讀得到。
+#   失敗只印一行、不擋開席(open_dm_panel.py rc 恆 0)。
+#   沒打過 dm(auto 且沒有整台記憶檔)⇒ 不起 python(開席每一步都算秒數;open_dm_panel 光載入就 60–130 ms)。
+if [ "$DRY" != "1" ]; then
+  if [ "$OPEN_DM" != "auto" ] || [ -f "$(aib_cabin_state_root)/state/open-dm-panel.json" ]; then
+    "$T_PY3" "$HERE/open_dm_panel.py" "$OPEN_DM" </dev/null || true
+  fi
+elif [ "$OPEN_DM" != "auto" ]; then
+  echo "aib: (dry-run) dm=$OPEN_DM" >&2
+fi
 AIB_ENSURE_DEFERRED=0
 if aib_cabin_is_up; then
   AIB_ENSURE_DEFERRED=1

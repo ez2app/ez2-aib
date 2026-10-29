@@ -171,28 +171,19 @@ def lock_now(code, env=None):
 
 
 def prove(reason, env, touchid=None, touchid_available=None, platform=None):
-    """本人證明:只認 Touch ID。回 (via, why);why None = 過。"""
-    import touchid_approve as TA
-    platform = sys.platform if platform is None else platform
-    if platform != "darwin":
-        return "touchid", "touchid_unavailable"
-    if str(env.get("AIB_TOUCHID", "")).strip() == "0":
-        return "touchid", "touchid_off"
-    can = touchid_available() if touchid_available else TA.available(platform=platform, environ=env)
-    if not can:
-        return "touchid", "touchid_unavailable"
-    root = state_root(env)
-    with TA.one_at_a_time(root / "locks" / "touchid-approve.lock") as gate:
-        res = (touchid or TA.ask)(reason) if gate.held else {"ok": False, "why": "busy"}
-    return "touchid", None if res.get("ok") is True else "touchid_" + str(res.get("why") or "failed").split(":")[0]
+    """本人證明:只認 Touch ID(統一入口 approve_gate;reason 由 reason_for / AG.reason 組)。回 (via, why);why None = 過。"""
+    import approve_gate as AG
+    off = AG.ready(env, platform, touchid_available)
+    if off:
+        return "touchid", "touchid_" + off
+    res = AG.ask(reason, state_root(env), touchid)
+    return "touchid", None if res["ok"] else "touchid_" + res["why"].split(":")[0]
 
 
 def reason_for(action, code, text, minutes=None):
-    import touchid_approve as TA
-    r = T("touchid_" + action, seat=code, text=TA.clean(text or "", 40))
-    if action == "input" and minutes:
-        r += T("touchid_unlock_tail", min=minutes)   # 本人按指紋前看得到「之後閒置 N 分鐘才上鎖」
-    return r
+    import approve_gate as AG
+    tail = ("tail",) if action == "input" and minutes else ()   # 本人按指紋前看得到「之後閒置 N 分鐘才上鎖」
+    return AG.reason("seat_act." + action, {"seat": code, "text": text or "", "min": minutes}, suffix=tail)
 
 
 # ── tmux ──
@@ -415,7 +406,7 @@ def do_unlock(code, minutes=None, env=None, touchid=None, touchid_available=None
         out.update(ok=True, unlock_left_s=left, minutes=gm)
         log_action(code, "unlock", env, ok=True, via="remote-grant", minutes=gm, auth=grant.get("auth"))
         return out, 0
-    reason = T("touchid_unlock", seat=code, min=m)
+    reason = __import__("approve_gate").reason("seat_act.unlock", {"seat": code, "min": m})
     out["touchid"] = {"prompt": reason, "wait_s": __import__("touchid_approve").WAIT_S}
     if unlock_left(code, env) > 0:
         out["via"] = "unlock-window"
@@ -474,7 +465,7 @@ def do_remote(state, env=None, max_min=None, allow=None, touchid=None, touchid_a
         if caller_is_seat(env):
             out["why"] = "caller-is-seat"
             return out, 3
-        out["via"], why = prove(T("touchid_remote_on"), env, touchid, touchid_available, platform)
+        out["via"], why = prove(__import__("approve_gate").reason("seat_act.remote_on"), env, touchid, touchid_available, platform)
         if why:
             out["why"] = why
             return out, 3

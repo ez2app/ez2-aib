@@ -10,7 +10,7 @@ P2 power_info 多三欄 charging / pct / watts;用電池時不叫 pmset -g ac(wa
 P3 status 那幾行:接電 + 充電中 ⇒ 「電源:外接 65 W,電池 31%」;接電 + 沒在充 ⇒ ⚠ 帶瓦數;用電池 ⇒ 「電池 31%,沒接電」;
    ac 不明(非 Mac)⇒ 不印;原本的「會睡 / 撐著」那行照舊
 P4 四語字典三條都在,參數名一致
-刀(複本):K1 沒在充不警告 ⇒ P3 紅
+刀(複本):K1 沒在充不警告(10-28 起砍 chat_power.charge_state)⇒ P3 紅
 """
 import importlib.util
 import json
@@ -142,7 +142,8 @@ class Status(unittest.TestCase):
 class Knife(unittest.TestCase):
     def test_k1_not_charging_silent(self):
         name = Path(__file__).name
-        with knife_copy(REPO, "src/cockpit/chat_bridge.py", '    if info.get("charging") is False:\n', "    if False:\n",
+        # 10-28:判法搬到 chat_power.charge_state(艦長室頁面同讀);刀改成「沒在充也當充電中」
+        with knife_copy(REPO, "src/cockpit/chat_power.py", '    if info.get("charging") is not False:\n', "    if True:\n",
                         tests=(name,)) as root:
             r = run_guarded([sys.executable, str(root / "tests" / name), "Status.test_p3_lines"], cwd=str(root),
                             max_procs=40, timeout=300)

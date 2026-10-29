@@ -194,6 +194,10 @@ class Sandbox(unittest.TestCase):
         return H.resolve_seat("zz9q/abcde")
 
     def aib(self, *args, **kw):
+        # 預設在沙盒裡跑(10-28):`aib handoff collect` 沒帶 --repo 就量目前目錄那個倉;不設的話量到的是跑測試的那棵樹,
+        #   連帶 `git worktree list` 列出主倉所有工作樹、逐棵 `git status` ⇒ 讀到真家目錄底下的工作樹,
+        #   結果也跟著這台機器有哪些工作樹變。要量倉的格照舊帶 --repo self.repo。
+        kw.setdefault("cwd", str(self.td))
         return subprocess.run(["bash", str(ROOT / "src" / "cockpit" / "aib"), "handoff"] + list(args),
                               capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120, **kw)
 

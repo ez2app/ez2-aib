@@ -285,7 +285,7 @@ class Knives(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "刀落了測試還綠:" + test)
 
     def test_k1_touchid_skipped(self):
-        self._red('    return None if res.get("ok") is True else "touchid_"', '    return None\n    return None if res.get("ok") is True else "touchid_"',
+        self._red('    return None if res["ok"] else "touchid_"', '    return None\n    return None if res["ok"] else "touchid_"',
                   "test_s4_touchid_gate")
 
     def test_k3_host_not_shown(self):

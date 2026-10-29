@@ -320,7 +320,7 @@ class Knife(unittest.TestCase):
         self._knife("src/cockpit/remote_grant.py", "    if _seen(env, nonce, exp, t, mark=True):", "    if False:", "Grant.test_g3_rejects")
 
     def test_k3_on_no_touchid(self):
-        self._knife("src/cockpit/seat_act.py", '        out["via"], why = prove(T("touchid_remote_on"), env, touchid, touchid_available, platform)',
+        self._knife("src/cockpit/seat_act.py", '        out["via"], why = prove(__import__("approve_gate").reason("seat_act.remote_on"), env, touchid, touchid_available, platform)',
                     '        out["via"], why = "touchid", None', "Grant.test_g2_switch")
 
     def test_k4_answer_unchecked(self):

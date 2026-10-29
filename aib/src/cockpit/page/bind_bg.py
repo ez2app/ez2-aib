@@ -273,15 +273,8 @@ def confirm(env=None, clock=None, prove=None, caller_is_seat=None, reason_fn=Non
 
 
 def _reason(slug):
-    import touchid_approve as TA
-    try:
-        import i18n_lib
-        text = i18n_lib.t("aib.page.touchid_bind", {"slug": TA.clean(slug, 40)}, locale=i18n_lib.resolve_locale())
-    except Exception:  # noqa: BLE001
-        text = ""
-    if not text or text.startswith("!!") or text == "aib.page.touchid_bind":
-        text = "把這台綁到帳號 %s" % TA.clean(slug, 40)
-    return text
+    import approve_gate as AG        # 統一入口:類別 page_bind(高風險)、slug 清過截 40
+    return AG.reason("page_bind.bind", {"slug": slug})
 
 
 def cancel(env=None):

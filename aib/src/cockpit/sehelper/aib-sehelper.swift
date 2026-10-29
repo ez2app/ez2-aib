@@ -44,6 +44,8 @@ func usage() -> String {
 
 // se-sign 的視窗字是要簽的原話本身(aib quote):截掉 = 本人沒看全就簽 ⇒ 超過這個長度直接拒,不截(@abb89 10-21 Q3)
 let maxSignReason = 320
+// unseal 的視窗字(cf grant:zone、權限、主機、⚠ 高風險權限):截掉 = 警告可能被推出視窗 ⇒ 同樣超長拒、不截(@aeb40 #404 R1)
+let maxUnsealReason = 200
 
 func cleanReason(_ s: String, limit: Int = 200) -> String {
     let t = cleanFull(s)
@@ -189,7 +191,7 @@ func unseal(_ name: String, _ dir: String, _ reason: String) throws {
     }
     guard SecureEnclave.isAvailable else { throw Fail("no_se") }
     let se = try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: try b64(doc, "se_key"),
-                                                             authenticationContext: context(reason))
+                                                             authenticationContext: context(reason, limit: maxUnsealReason))
     let eph = try P256.KeyAgreement.PublicKey(x963Representation: try b64(doc, "eph_pub"))
     let shared = try se.sharedSecretFromKeyAgreement(with: eph)        // ← 這裡 SE 要求生物辨識
     let key = shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: try b64(doc, "salt"), sharedInfo: info(name),
@@ -245,7 +247,8 @@ struct Main {
             switch sub {
             case "seal": try seal(name, dir)
             case "unseal":
-                guard !cleanReason(reason).isEmpty else { throw Fail("no_reason") }
+                guard !cleanFull(reason).isEmpty else { throw Fail("no_reason") }
+                guard cleanFull(reason).count <= maxUnsealReason else { throw Fail("reason_too_long") }
                 try unseal(name, dir, reason)
             case "se-create": try seCreate(name, dir)
             case "se-sign":

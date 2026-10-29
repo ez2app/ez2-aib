@@ -257,7 +257,6 @@ def build_body(zone, zone_id, account_id, perms, group_ids, ips, host, ttl, now)
 def grant_cmd(argv, env=None, platform=None, unseal=None, opener=None, ssh_run=None, getaddr=None, now=None,
               out=sys.stdout, err=sys.stderr):
     import argparse
-    import touchid_approve as TA
     env = dict(os.environ if env is None else env)
     platform = sys.platform if platform is None else platform
     opener = opener or urllib.request.urlopen
@@ -323,9 +322,12 @@ def grant_cmd(argv, env=None, platform=None, unseal=None, opener=None, ssh_run=N
         return done(2, log=False)
     # 3. 視窗那句話只由 aib 組 ⇒ SE 解封母鑰(系統 Touch ID = 唯一一次核准)
     # 權限不截斷(白名單全選也放得下):截掉的那段可能正是 write 或帳號層權限,本人會看不到(@abb89 #368 r1)
-    reason = _t("aib.cf.touchid_reason", {"zone": TA.clean(zone, 64), "perms": TA.clean(",".join(perms), len(",".join(PERMS))),
-                                         "ttl": "%dm" % ttl, "host": TA.clean(where, 160)})
-    reason += "".join(" " + _t("aib.cf.touchid_risk." + p.replace("-", "_")) for p in RISKY if p in perms)
+    import approve_gate as AG            # 統一入口:類別 cf_token(高風險);欄位不截,整句超過 unseal 上限(200)直接拒,不交給 helper 截
+    reason = AG.se_reason(AG.reason("cf_grant.grant", {"zone": zone, "perms": ",".join(perms), "ttl": "%dm" % ttl, "host": where},
+                                    suffix=[p.replace("-", "_") for p in RISKY if p in perms]), limit=AG.UNSEAL_MAX)
+    if not reason:
+        res["why"] = "reason_refused"
+        return done(2, log=False)
     key, why = get_minter(env, reason, platform, unseal=unseal)
     if not key:
         res["why"] = why

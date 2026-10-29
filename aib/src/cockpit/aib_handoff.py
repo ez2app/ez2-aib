@@ -999,7 +999,7 @@ def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
             if BG_RE.search(cmd) and "worktrees/" in cmd:
                 facts["background"].append({"pid": pid, "etime": etime, "cmd": cmd[:200]})
         _seat_children(facts, procs, rec.get("pid"), me)
-    facts["sweep"] = run_sweep(code, facts["seat"]["project_uid"], home)
+    facts["sweep"] = run_sweep(code, facts["seat"]["project_uid"], home, repo=top)
     facts["took_s"] = round(time.time() - t0, 2)
     return facts
 
@@ -1007,12 +1007,15 @@ def _collect(seat, repo, since_hours, home, t0, deadline) -> dict:
 SWEEP_TIMEOUT_S = 15
 
 
-def run_sweep(code: str, project_uid: str = "", home=None) -> dict:
+def run_sweep(code: str, project_uid: str = "", home=None, repo: str = "") -> dict:
     """專案清查(docs/DESIGN-project-sweep-1012.md §3 第一版:交接前必跑)。跑了就算數:失敗 / 逾時只記狀態,
     **絕不擋交接**(a seat 審:對話快滿時被 sweep 自己的毛病擋住最危險)。回 {state, at, counts, top}。
     state ∈ ok / failed / timeout / no_project。"""
     at = _iso(time.time())
     args = [sys.executable, str(HERE / "project_sweep.py"), "--json"]
+    # 10-28(@aeb40 裁 A):清查跟 collect 量同一個倉(這一席的倉);量不到 ⇒ --no-repo,
+    #   不讓 project_sweep 默默改量 aib 程式碼那棵樹(兩個來源;測試裡還會掃到真家目錄的工作樹)。
+    args += ["--repo", repo] if repo else ["--no-repo"]
     if project_uid:
         args += ["--project", project_uid]
     env = dict(os.environ, AIB_SEAT_CODE=code) if code else None
@@ -1727,7 +1730,8 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
             facts = {"seat": {"code": code}, "unmeasured": [{"item": "repo", "why": T("aib.handoff.why.facts_gone")}]}
         sweep = facts.get("sweep") if isinstance(facts.get("sweep"), dict) else None
         if not sweep:          # 收集那一步沒跑到(舊版收集 / 事實檔不見)⇒ 這裡補跑:交接一定有嘗試過 sweep
-            sweep = run_sweep(code, str((facts.get("seat") or {}).get("project_uid") or seat.get("project_uid") or ""), home)
+            sweep = run_sweep(code, str((facts.get("seat") or {}).get("project_uid") or seat.get("project_uid") or ""), home,
+                              repo=str((facts.get("repo") or {}).get("path") or ""))
         target = _unique(pd / ("HANDOFF-%s-%s.md" % (code, time.strftime("%m%d-%H%M", time.localtime(now)))))
         checks = round_checks(code)                    # 第 5 包:本輪整理 / 總結有沒有做(只記,不擋交接)
         text = text + checks["block"]

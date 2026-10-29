@@ -15,7 +15,7 @@ A3 已裝的版本跟資料夾不同 ⇒ marketplace update + plugin update
 A4 這台沒有 claude ⇒ 照實說跳過、rc 0、檔案照放
 A5 disable ⇒ uninstall + marketplace remove、狀態清掉;remove ⇒ 同樣撤掉再刪資料夾
 A6 auto:extensions/ 裡受信鑰匙簽過的延伸外掛都裝(mod 進 mods/、skill 進 skills/);沒簽章、要加購的不裝;
-   有動到才印「每席 /restart」;再跑一次不印(改過說明檔的複本用測試鑰匙重簽,鑰匙寫進 <狀態根>/trusted-ext-keys)
+   有動到才印「每席 /restart」;再跑一次不印(改過說明檔的複本用測試鑰匙重簽,測試鑰匙 mock 進內建鑰清單;10-28 起不讀本機檔)
 A7 AIB_EXT_AUTO=0 ⇒ 什麼都不裝,說一句
 A8 有舊的 aib-seat@ez2-aib-mods ⇒ 提示怎麼移除,不替人刪
 A9 aib init(子行程、AIB_EXT_AUTO=1)⇒ 裝好並登記 aib-boards;不是終端機又沒設 AIB_EXT_AUTO ⇒ 不裝
@@ -47,7 +47,7 @@ sys.path.insert(0, str(ROOT / "src" / "cockpit"))
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "src"))
 import aib_ext  # noqa: E402
-from entitlement import ed25519, signing  # noqa: E402
+from entitlement import ed25519, keys, signing  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 
 PH = re.compile(r"\{[a-z_]+\}")
@@ -141,9 +141,12 @@ class Base(unittest.TestCase):
         shutil.copytree(BOARDS, self.src / "aib-boards")
         self.mods = self.home / ".ez2-aib" / "mods"
         (self.home / ".ez2-aib").mkdir(parents=True, exist_ok=True)
-        (self.home / ".ez2-aib" / "trusted-ext-keys").write_text("ed25519:%s\n" % ed25519.public_key(SEED).hex())
+        self.keyp = mock.patch.object(keys, "TRUSTED_PUBLIC_KEYS",
+                                      tuple(keys.TRUSTED_PUBLIC_KEYS) + ("ed25519:%s" % ed25519.public_key(SEED).hex(),))
+        self.keyp.start()
 
     def tearDown(self):
+        self.keyp.stop()
         self.envp.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
 

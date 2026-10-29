@@ -1245,8 +1245,9 @@ def cmd_connect(a, env, out):
     if share or space:                       # 改分享 = 本人的動作:全部擠進一個視窗,列改完後的實際等級
         cur_sh = CR.share_level(owner, env) if known else (CR.read_share(env)["per"].get(owner) or CR.read_share(env)["default"])
         cur_sp = CR.space_level(owner, env) if known else (CR.read_space(env)["per"].get(owner) or CR.read_space(env)["default"])
-        rc = human_gate(T("touchid_share_space" if known else "touchid_connect", who=_gate_who(a.target, env),
-                          level=T("share_" + (share or cur_sh)), space=T("space_" + (space or cur_sp))), env, out, a.json)
+        rc = human_gate(__import__("approve_gate").reason("chat_bridge.share_space" if known else "chat_bridge.connect", {
+            "who": _gate_who(a.target, env), "level": T("share_" + (share or cur_sh)), "space": T("space_" + (space or cur_sp))}),
+            env, out, a.json)
         if rc is not None:
             return rc
     req = {"rc": 0, "why": "already_friend"}
@@ -1318,7 +1319,7 @@ def cmd_invite(a, env, out):
     if not pub:
         out.write((json.dumps({"v": 1, "ok": False, "why": "no_seat"}) if a.json else T("request_no_seat")) + "\n")
         return 2
-    rc = human_gate(T("touchid_invite"), env, out, a.json)
+    rc = human_gate(__import__("approve_gate").reason("chat_bridge.invite"), env, out, a.json)
     if rc is not None:
         return rc
     root = bridge_root(env)
@@ -1699,16 +1700,16 @@ def human_gate(reason, env, out, as_json=False):
 def gate_reason(kind, who, env, level=None, space=None):
     """Touch ID 視窗那一句:只由核心組,名字先過 TA.clean。who=None ⇒ 改預設(全部好友)。
     space(只配 kind=share):在線 + 空間一起改 ⇒ 同一個視窗列出兩項,按一次(10-24 Andy「一次改多項」)。"""
+    import approve_gate as AG
     import chat_human as CH
-    import touchid_approve as TA
     if space:
         kind, extra = "share_space", {"space": T("space_" + space)}
         level = T("share_" + level) if level else "-"
     else:
         extra = {}
     if who is None:
-        return T("touchid_" + kind + "_default", level=level or "-", **extra)
-    return T("touchid_" + kind, who=TA.clean(CH._who(who, env), 32), level=level or "-", **extra)
+        return AG.reason("chat_bridge." + kind + "_default", dict(extra, level=level or "-"))
+    return AG.reason("chat_bridge." + kind, dict(extra, who=CH._who(who, env), level=level or "-"))
 
 
 def share_payload(env=None):
@@ -2204,6 +2205,57 @@ def cmd_send(a, env, out):
     return res["rc"]
 
 
+def cmd_cast(a, env, out):
+    """影音牆投放 AIB 畫面(SPEC-ytwall-aib-cast-aeb40-1029):
+    aib chat cast list [--json]                        給頁面:可選來源、想看我的、誰在看(👁)、我收到的格 + 畫面
+    aib chat cast frames --json                        同 list(外掛只走這兩支讀畫面)
+    aib chat cast request <好友>                       觀看端:請求觀看
+    aib chat cast approve <req_id|好友> --hours N [--pin]   投放端:發投放單(Touch ID 高風險一次一按)
+    aib chat cast reject <req_id> / close <grant_id>  收權不用按
+    aib chat cast watch <grant_id> [--hidden] [--want S]    觀看端心跳(每 30 秒)"""
+    import chat_cast as CC
+    root = bridge_root(env)
+    act = a.action
+
+    def emit(rc, body, line):
+        out.write((json.dumps(dict(body, v=1), ensure_ascii=False) if a.json else line) + "\n")
+        return rc
+    if act in ("list", "frames"):
+        pl = CC.payload(env)
+        if a.json:
+            out.write(json.dumps(pl, ensure_ascii=False) + "\n")
+            return 0
+        out.write(T("cast_summary", watching=pl["watching"], incoming=len(pl["incoming"]),
+                    grants=sum(1 for g in pl["grants"] if g["state"] != "closed")) + "\n")
+        return 0
+    if not a.target:
+        return emit(2, {"ok": False, "why": "usage"}, T("cast_usage"))
+    if act in ("request", "approve", "watch") and not GF.bridge_alive(root):
+        return emit(2, {"ok": False, "why": "bridge_off"}, T("visit_bridge_off"))   # 送不出去就先講,不白按指紋
+    gate = {}
+
+    def prove(r):
+        gate["rc"] = human_gate(r, env, out, a.json)
+        return None if gate["rc"] is None else "gate"
+    try:
+        if act == "request":
+            res = CC.request(env, root, a.target)
+        elif act == "approve":
+            owner = CC.req_owner(env, a.target) or a.target
+            res = CC.issue(env, root, owner, a.hours, a.pin, prove=prove)
+        elif act == "reject":
+            res = CC.reject(env, root, a.target)
+        elif act == "close":
+            res = CC.close(env, root, a.target)
+        else:
+            res = CC.watch(env, root, a.target, visible=not a.hidden, want=a.want)
+    except CC.CastError as err:
+        if str(err) == "gate":
+            return gate["rc"]                     # human_gate 已印過那一行
+        return emit(2, {"ok": False, "why": str(err)}, T("cast_err", code=str(err)))
+    return emit(0, {"ok": True, "action": act, "result": res}, T("cast_done"))
+
+
 def cmd_visit(a, env, out):
     """第二波 #1(NOTE-member-ux A1 / A2):
     aib chat open <好友>                     一鍵開放艦長室(share status + space room)並通知對方
@@ -2565,19 +2617,20 @@ def cmd_status(a, env, out):
 
 
 def power_supply_lines(info):
-    """10-20 @abb89 #16 核心這半:電源一行(外接幾瓦 / 電池幾 %);接了電卻沒在充(充電頭太弱)⇒ ⚠。非 Mac(ac None)⇒ 不印。"""
-    ac = info.get("ac")
-    if ac is None:
+    """10-20 @abb89 #16 核心這半:電源一行(外接幾瓦 / 電池幾 %)。非 Mac(ac None)⇒ 不印。
+    接了電卻沒在充分三種(判法在 chat_power.charge_state,艦長室頁面讀同一欄):paused 不加 ⚠、weak ⚠ 太弱、idle ⚠ 沒在充。"""
+    import chat_power as CP
+    state = CP.charge_state(info)
+    if state is None:
         return []
     pct = info.get("pct")
     pct_s = "%d%%" % pct if isinstance(pct, int) else "?"
-    if not ac:
+    if state == "battery":
         return [T("status_power_on_battery", pct=pct_s)]
     watts = info.get("watts")
-    watts_s = "%d W" % watts if isinstance(watts, int) and watts > 0 else "?"
-    if info.get("charging") is False:
-        return [T("status_power_not_charging", watts=watts_s, pct=pct_s)]
-    return [T("status_power_ac", watts=watts_s, pct=pct_s)]
+    watts_s = "%d W" % watts if isinstance(watts, int) and not isinstance(watts, bool) and watts > 0 else "?"
+    key = {"paused": "status_power_paused", "weak": "status_power_not_charging", "idle": "status_power_idle"}.get(state, "status_power_ac")
+    return [T(key, watts=watts_s, pct=pct_s)]
 
 
 def power_lines(env):
@@ -2740,6 +2793,14 @@ def main(argv=None, env=None, out=sys.stdout):
     vi.add_argument("who")
     vi.add_argument("who2", nargs="?")
     vi.add_argument("--json", action="store_true")
+    ca = sub.add_parser("cast", help=T("help.cast"))           # 影音牆投放 AIB 畫面
+    ca.add_argument("action", choices=("list", "frames", "request", "approve", "reject", "close", "watch"))
+    ca.add_argument("target", nargs="?")
+    ca.add_argument("--hours", type=int, default=1)
+    ca.add_argument("--pin", action="store_true")
+    ca.add_argument("--hidden", action="store_true")
+    ca.add_argument("--want", type=int, default=None)
+    ca.add_argument("--json", action="store_true")
     vs = sub.add_parser("visits", help=T("help.visits"))
     vs.add_argument("--json", action="store_true")
     ofs = sub.add_parser("offers", help=T("help.offers"))
@@ -2917,6 +2978,8 @@ def main(argv=None, env=None, out=sys.stdout):
         return cmd_space(a, env, out)
     if a.cmd in ("open", "visit", "visits"):
         return cmd_visit(a, env, out)
+    if a.cmd == "cast":
+        return cmd_cast(a, env, out)
     if a.cmd == "friends":
         return cmd_friends(a, env, out)
     if a.cmd == "enabled":

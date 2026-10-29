@@ -478,7 +478,7 @@ class Knife(unittest.TestCase):
                   "", "Short.test_i9_impostor")
 
     def test_k5_invite_ungated(self):
-        self._run("src/cockpit/chat_bridge.py", '    rc = human_gate(T("touchid_invite"), env, out, a.json)\n',
+        self._run("src/cockpit/chat_bridge.py", '    rc = human_gate(__import__("approve_gate").reason("chat_bridge.invite"), env, out, a.json)\n',
                   "    rc = None\n", "Cli.test_i10_invite_needs_human")
 
     def test_k3_no_clash_check(self):

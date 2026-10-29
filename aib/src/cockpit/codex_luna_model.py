@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""開席沒指定型號時，從 Codex 本機模型清單挑版本號最大的 gpt-*-luna。"""
+"""開席沒指定型號時，從 Codex 本機模型清單挑版本號最大的 gpt-*-terra;清單沒有 Terra 才挑 gpt-*-luna。
+
+10-28 Andy:Codex 席預設改 GPT-6.1 Terra。檔名沿用(呼叫端多)。
+"""
 from __future__ import annotations
 
 import json
@@ -7,7 +10,9 @@ import os
 import re
 from pathlib import Path
 
-_SLUG = re.compile(r"^gpt-(\d+(?:\.\d+)*)-luna$")
+#: 預設家族優先序:前一家清單裡一個都沒有才換下一家。
+FAMILIES = ("terra", "luna")
+_SLUG = re.compile(r"^gpt-(\d+(?:\.\d+)*)-(terra|luna)$")
 
 
 def _cache_path(cache_path: str | None) -> str:
@@ -19,8 +24,8 @@ def _cache_path(cache_path: str | None) -> str:
     return os.path.expanduser("~/.codex/models_cache.json")
 
 
-def listed_luna_slugs(cache_path: str | None = None) -> list[str]:
-    """有列出來的 gpt-*-luna，版本號由新到舊。藏起來的不算。"""
+def listed_slugs(family: str, cache_path: str | None = None) -> list[str]:
+    """有列出來的 gpt-*-<family>，版本號由新到舊。藏起來的不算。"""
     path = _cache_path(cache_path)
     if not path:
         return []
@@ -39,7 +44,7 @@ def listed_luna_slugs(cache_path: str | None = None) -> list[str]:
             continue
         slug = str(item.get("slug") or "")
         matched = _SLUG.match(slug)
-        if not matched:
+        if not matched or matched.group(2) != family:
             continue
         version = tuple(int(part) for part in matched.group(1).split("."))
         found.append((version, slug))
@@ -47,22 +52,34 @@ def listed_luna_slugs(cache_path: str | None = None) -> list[str]:
     return [slug for _version, slug in found]
 
 
-def latest_luna_slug(cache_path: str | None = None) -> str:
-    """回傳有列出來的最新 Luna。清單讀不到、或沒有這種型號時回空字串。"""
-    slugs = listed_luna_slugs(cache_path)
-    return slugs[0] if slugs else ""
+def latest_default_slug(cache_path: str | None = None) -> str:
+    """依 FAMILIES 回傳第一個有列出型號的家族的最新版。清單讀不到、或都沒有時回空字串。"""
+    for family in FAMILIES:
+        slugs = listed_slugs(family, cache_path)
+        if slugs:
+            return slugs[0]
+    return ""
 
 
-def previous_luna_slug(current: str, cache_path: str | None = None) -> str:
-    """目前這一版的上一版。沒有更舊的、或目前這版不在清單裡，回空字串。"""
-    slugs = listed_luna_slugs(cache_path)
+def previous_default_slug(current: str, cache_path: str | None = None) -> str:
+    """同家族裡目前這一版的上一版;已是最舊的 Terra 就退最新的 Luna。目前這版不在清單裡回空字串。"""
+    current = str(current or "")
+    matched = _SLUG.match(current)
+    if not matched or matched.group(2) not in FAMILIES:
+        return ""
+    family = matched.group(2)
+    slugs = listed_slugs(family, cache_path)
     try:
-        index = slugs.index(str(current or ""))
+        index = slugs.index(current)
     except ValueError:
         return ""
-    if index + 1 >= len(slugs):
-        return ""
-    return slugs[index + 1]
+    if index + 1 < len(slugs):
+        return slugs[index + 1]
+    for later in FAMILIES[FAMILIES.index(family) + 1:]:
+        older = listed_slugs(later, cache_path)
+        if older:
+            return older[0]
+    return ""
 
 
 def model_rejected(text: str) -> bool:

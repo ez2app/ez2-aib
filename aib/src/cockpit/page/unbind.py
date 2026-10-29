@@ -39,9 +39,8 @@ def _t(key, params=None, fallback=""):
 
 
 def reason(slug):
-    import touchid_approve as TA
-    s = TA.clean(slug, 40)
-    return _t("aib.page.touchid_unbind", {"slug": s}, "解除這台跟帳號 %s 的綁定" % s)
+    import approve_gate as AG        # 統一入口:類別 page_bind(高風險)、slug 清過截 40
+    return AG.reason("page_unbind.unbind", {"slug": slug})
 
 
 def sweep_leftovers(env=None):

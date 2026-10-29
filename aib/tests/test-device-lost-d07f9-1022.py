@@ -181,6 +181,64 @@ class Show(Base):
         self.assertEqual((rc, res["page"]["state"]), (0, "revoked"), "只撤 page 的卡片照常")
 
 
+class Split(Base):
+    """一句放不下就拆成每台一次(@aeb40 #404 R1:遺失裝置一定要撤得掉,不能因字太長被拒)。
+    實際名稱清到 32 字、一次最多兩台,放得進 320;這裡把上限調小,逼出拆批那條路。"""
+
+    def _run_with_limit(self, limit, why=None):
+        import approve_gate as AG
+        from unittest import mock
+        self.reasons, self.signed = [], []
+        with mock.patch.object(AG, "FULL_MAX", limit):
+            return DL.lost(self.env, chat="qq7xk2ma", page=FP_A[:8], prove=self.prove(why), api=FakeApi(),
+                           sign=self.sign(), out=io.StringIO())
+
+    def test_d14_split_when_too_long(self):
+        found = False
+        for limit in range(200, 10, -1):
+            res, rc = self._run_with_limit(limit)
+            if len(self.reasons) == 2:
+                found = True
+                self.assertEqual(rc, 0, res)
+                self.assertIn("qq7xk2ma", self.reasons[0])
+                self.assertNotIn(FP_A[:8], self.reasons[0])
+                self.assertIn(FP_A[:8], self.reasons[1])
+                self.assertTrue(all(r.refused is None for r in self.reasons), "每批字都完整、沒被拒")
+                self.assertEqual((res["chat"]["state"], res["page"]["state"]), ("revoked", "revoked"))
+                self.assertEqual([p for _r, p in self.signed], [True], "聊天清單那一步沿用剛剛那次證明")
+                break
+            self.assertEqual(len(self.reasons), 1, limit)
+        self.assertTrue(found, "上限調小也沒拆成兩批")
+
+    def test_d15_second_batch_denied(self):
+        for limit in range(200, 10, -1):
+            res, rc = self._run_with_limit(limit)
+            if len(self.reasons) == 2:
+                break
+        calls = []
+
+        def p(reason, env):
+            calls.append(reason)
+            return None if len(calls) == 1 else "touchid_cancel"
+        import approve_gate as AG
+        from unittest import mock
+        with mock.patch.object(AG, "FULL_MAX", limit):
+            res, rc = DL.lost(self.env, chat="qq7xk2ma", page=FP_A[:8], prove=p, api=FakeApi(), sign=self.sign(),
+                              out=io.StringIO())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(res["chat"]["state"], "revoked")
+        self.assertEqual(res["page"]["state"], "skipped")
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["why"], "touchid_cancel")
+        self.assertEqual(rc, 1)
+        self.assertIn("--page %s" % FP_A[:8], res["hint"], "只帶還沒撤的那台重跑(@aeb40 #404 R2 Low)")
+        self.assertNotIn("--chat", res["hint"], "已撤的聊天那台不再帶(帶了會 chat_not_found 停住)")
+        out = io.StringIO()
+        with mock.patch.object(AG, "FULL_MAX", limit), mock.patch.object(DL, "lost", lambda *a, **k: (res, 1)):
+            DL.main(["lost", "--chat", "qq7xk2ma", "--page", FP_A[:8]], env=self.env, out=out)
+        self.assertIn("aib device lost --page %s" % FP_A[:8], out.getvalue(), "終端機那行也印出來")
+
+
 class _Resp:
     def __init__(self, status, body):
         self.status, self._body = status, body
@@ -230,6 +288,14 @@ class Owner(unittest.TestCase):
             calls.clear()
             self.assertEqual(OC._proof_then_pass("r", {}, Path("."), io.StringIO()), "pw")
             self.assertEqual(calls, ["prove", "pass"], "預設照舊證明")
+            calls.clear()                      # proved 但這一步的字被拒:不擋(已涵蓋),照實記一行(@aeb40 #404 R2 Low)
+            import approve_gate as AG
+            bad = AG.reason("chat_owner_cli.list_change", {"base": "x" * (AG.FULL_MAX + 1), "diff": "d"})
+            self.assertTrue(bad.refused)
+            log = io.StringIO()
+            self.assertEqual(OC._proof_then_pass(bad, {}, Path("."), log, proved=True), "pw")
+            self.assertEqual(calls, ["pass"])
+            self.assertIn(bad.refused, log.getvalue())
         finally:
             OC.PROVE, OC.READ_PASS = orig
 
@@ -257,8 +323,8 @@ class Knife(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "刀沒砍出紅\n" + r.stdout + r.stderr)
 
     def test_k1_no_proof_gate(self):
-        self._knife("src/cockpit/device_lost.py", "    if why:\n        res = {\"ok\": False, \"why\": why, \"targets\"",
-                    "    if False:\n        res = {\"ok\": False, \"why\": why, \"targets\"", "Lost.test_d2_proof_refused")
+        self._knife("src/cockpit/device_lost.py", "        why = (prove or (lambda r, e: CO.prove(r, e)))(reason, env)\n        if why:\n",
+                    "        why = (prove or (lambda r, e: CO.prove(r, e)))(reason, env)\n        if False:\n", "Lost.test_d2_proof_refused")
 
     def test_k2_proved_default_skips(self):
         self._knife("src/cockpit/chat_owner_cli.py", "    if not proved:\n", "    if False:\n",

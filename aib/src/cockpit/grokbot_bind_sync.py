@@ -6,9 +6,9 @@
 規則(Andy 選「要同步,但每次同步前都先問我」):
   - connect 成功後一定會問「要不要同步到其他機器」,列出目標;按「同步」才傳。不無聲自動傳。
   - 沒有交談終端(--stdin / stdin 不是 tty)⇒ 不傳,只印要跑的指令。
-  - 目標清單:專案既有的跨主機清單 ~/.ez2-aib/user/dm-hosts.json({"IP": "ssh 主機名"},aib dm 跨主機同一份;
+  - 目標清單:專案既有的跨主機清單 ~/.ez2-aib/user/dm-hosts.json({"IP": "SSH 主機名"},aib dm 跨主機同一份;
     AIB_DM_XHOST_HOSTS 可換),去掉本機自己的 IP;--to 指定則只用指定的。不寫死任何主機或 IP。
-  - 傳送:只走使用者現有的 SSH(BatchMode,不轉發 agent / port)。網址與金鑰只走 ssh 的 stdin,
+  - 傳送:只走使用者現有的 SSH(BatchMode,不轉發 agent / port)。網址與金鑰只走 SSH 的 stdin,
     不進命令列參數、不寫本機暫存檔、不進 log、任何輸出都不印。目標端目錄 0700、檔案 0600,先寫暫檔再原子 rename。
   - 目標已有同一 agent:內容相同 ⇒ 跳過;不同 ⇒ 列出(不印值)再另問要不要覆蓋。連不上 ⇒ 跳過,提示上線後補跑。
   - 絕不經聊天、GitHub、AIB 私訊或 relay。
@@ -33,7 +33,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import grokbot_threads as gt  # noqa: E402
 
-ENV_SSH = "AIB_GROKBOT_SSH"            # 尺用:換成假的 ssh
+ENV_SSH = "AIB_GROKBOT_SSH"            # 尺用:換成假的 SSH 程式
 ENV_HOSTS = "AIB_DM_XHOST_HOSTS"       # 與 dm_xhost.ssh_target 同一個覆寫
 HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$")   # 同 update_status.valid_host
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "ForwardAgent=no",

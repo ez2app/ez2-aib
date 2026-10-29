@@ -167,28 +167,22 @@ def _who(to, env):
 
 
 def touchid_reason(to, text, env):
-    """Touch ID 視窗那一句:只由核心組,資料先過 touchid_approve.clean(去控制字元、零寬字、截長)。"""
-    import touchid_approve as TA
-    import i18n_lib
-    return i18n_lib.t("aib.chat.send_touchid_reason", {"who": TA.clean(_who(to, env), 32), "text": TA.clean(text, 40)},
-                      locale=i18n_lib.resolve_locale())
+    """Touch ID 視窗那一句:只由核心組(approve_gate 登記 chat_human.send;欄位清法在表裡)。"""
+    import approve_gate as AG
+    return AG.reason("chat_human.send", {"who": _who(to, env), "text": text})
 
 
 def prove_human(to, text, pin, env, touchid=None, touchid_available=None, platform=None):
     """本人證明:Mac ⇒ 只准 Touch ID(彈視窗,PIN 不看;不能用就拒、不退 PIN);非 Mac ⇒ PIN。
     回 (via, why);why None = 過。platform 只給測試換掉(真用時就是 sys.platform,不讀環境變數)。"""
-    import touchid_approve as TA
+    import approve_gate as AG
     platform = sys.platform if platform is None else platform
     if platform == "darwin":
-        if str(env.get("AIB_TOUCHID", "")).strip() == "0":
-            return "touchid", "touchid_off"
-        can = touchid_available() if touchid_available else TA.available(platform=platform, environ=env)
-        if not can:
-            return "touchid", "touchid_unavailable"
-        root = _state_root(env)
-        with TA.one_at_a_time(root / "locks" / "touchid-approve.lock") as gate:
-            res = (touchid or TA.ask)(touchid_reason(to, text, env)) if gate.held else {"ok": False, "why": "busy"}
-        return "touchid", None if res.get("ok") is True else "touchid_" + str(res.get("why") or "failed").split(":")[0]
+        off = AG.ready(env, platform, touchid_available)
+        if off:
+            return "touchid", "touchid_" + off
+        res = AG.ask(touchid_reason(to, text, env), _state_root(env), touchid)
+        return "touchid", None if res["ok"] else "touchid_" + res["why"].split(":")[0]
     return "pin", check_pin(pin, env)
 
 

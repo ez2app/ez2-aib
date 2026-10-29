@@ -53,12 +53,20 @@ aib_cli_session_menu() {
   [ -z "${AIB_FORK_FROM_SESSION_UUID:-}" ] || with_fork=0          # 已明確指定來源
   local py="${T_PY3:-${EZ2_PY3:-python3}}" here="${HERE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
   local json rows=""
+  local target="${AIB_CLI_SESSION_MENU_TARGET:-${EZ2_TMUX_SESSION_NAME:-aihub}}"
+  local hub_sock="${HUB:-${EZ2_AIHUB_SOCKET:-aihub}}"
+  local popup_w_pct=90        # 與 cli_sessions.POPUP_W_PCT 同一個值
   if [ "$with_fork" = "1" ]; then
     if [ -n "${AIB_CLI_SESSIONS_JSON_FILE:-}" ]; then
       json="$(cat "$AIB_CLI_SESSIONS_JSON_FILE" 2>/dev/null)" || json=""
     else
+      # #399 R1(@aeb40):列的寬度預算要用**彈窗內寬**(終端寬 × 90% − 2 框線),不是終端寬 ⇒ 先量彈窗要開在的那個 client;
+      #   量不到(沒有 tmux、非數字)⇒ 不給,cli_sessions 用 80 欄終端的保守值
+      local client_w popup_cols=0
+      client_w="$(env -u TMUX "${AIB_TMUX_BIN:-tmux}" -L "$hub_sock" display-message -p -t "$target" '#{client_width}' 2>/dev/null || true)"
+      case "$client_w" in ''|*[!0-9]*) ;; *) popup_cols=$(( client_w * popup_w_pct / 100 - 2 )) ;; esac
       json="$("$py" "$here/cli_sessions.py" --provider "$provider" --cwd "$cwd" --seats-dir "$seats_dir" \
-                --role "$role" --limit 9 --json 2>/dev/null)" || json=""
+                --role "$role" --limit 9 --popup-cols "$popup_cols" --json 2>/dev/null)" || json=""
     fi
     [ -z "$json" ] || rows="$(printf '%s' "$json" | "$py" -c '
 import sys, json
@@ -73,15 +81,14 @@ for r in d.get("rows") or []:
     # ★ bound 必須在 bot_name 前:bash IFS=$'\t' read 會把空欄位吃掉,空 bot 會把 bound「1/0」讀成名(顯示〔1〕且丟灰階)。
     bot = (r.get("bot_name") or "").replace("\t", " ").replace("\n", " ")
     model = (r.get("model") or "").replace("\t", " ")
-    print("%s\t%s\t%s\t%s\t%s\t%s\t%s" % (
-        r["id"], r.get("code") or "", "1" if r.get("star") else "0", tail[:90],
-        model, "1" if r.get("bound") else "0", bot))
+    # four 接在 star 後、tail 前(兩個都不會空),免得被前面講的空欄吞掉而錯位
+    print("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (
+        r["id"], r.get("code") or "", "1" if r.get("star") else "0", "1" if r.get("four_col") else "0",
+        tail[:90], model, "1" if r.get("bound") else "0", bot))
 ' "${AIB_CLI_SESSION_MENU_EXCLUDE:-}" 2>/dev/null)" || rows=""
   fi
   [ -n "$rows" ] || [ "$with_onboard" = "1" ] || return 0      # 沒舊席位也沒開席單 ⇒ 不跳選單
   local limit="${AIB_SEAT_RESUME_MENU_TIMEOUT_S:-${AIB_ONBOARD_MENU_TIMEOUT_S:-30}}"
-  local target="${AIB_CLI_SESSION_MENU_TARGET:-${EZ2_TMUX_SESSION_NAME:-aihub}}"
-  local hub_sock="${HUB:-${EZ2_AIHUB_SOCKET:-aihub}}"
   # 看的是**外層艙**(aib 最後 attach 的那個 session,在 default 伺服器)有沒有人接著;
   # hub 上永遠接著一個 client —— 指揮艙中間那格內嵌的 tmux ⇒ 問 hub 恆為「有人」(23:44 測試艙實測)。
   local outer="${AIB_CLI_SESSION_MENU_OUTER-${S:-}}" viewers=1
@@ -97,7 +104,7 @@ for r in d.get("rows") or []:
   # 逾時留下的選擇檔(見檔頭)一小時後清掉;只清本選單的檔名
   find "$state_dir" -maxdepth 1 -name 'cli-session-choice-*' -mmin +60 -delete 2>/dev/null || true
   local choice_f="$state_dir/cli-session-choice-$$"; rm -f "$choice_f" 2>/dev/null
-  local n=0 id code star tail label key title note spec items_tsv=""
+  local n=0 id code star four tail label key title note spec items_tsv=""
   local keys="abcdefghi"
   _aib_menu_item() { items_tsv="${items_tsv}$2"$'\t'"$1"$'\t'"$3"$'\t'"${4:-0}"$'\n'; }   # $1=標籤 $2=鍵 $3=值 $4=dim(1=已綁灰階)
   if [ "$with_onboard" = "1" ]; then
@@ -109,13 +116,20 @@ for r in d.get("rows") or []:
   else
     title="$(_csm aib.climenu.title_pick_old provider="${provider}")"; note="$(_csm aib.climenu.note_blank)"
   fi
-  # ★ the maintainer 09-26:「每一欄的最左邊要帶入上一次的 AI 模型」⇒ 有 bot_name(側欄名)用它,否則用 model。
+  # ★ 10-28 Andy「下方的載入席位,只要顯示 席位/人格/專案名稱/最新開啟時間 這樣就好」取代 the maintainer 09-26
+  #   「最左帶上一次 AI 模型」:four=1 的列(claude / codex / CLI)只剩「★ @碼 · 人格 · 專案 · 時間 [· 使用中]」,
+  #   不再帶〔模型〕、「載入」、角色、大腦、交接。橋接 bot 列(four=0)這次不動,照下面 09-26 的舊格式。
+  # ★ the maintainer 09-26(bot 列):有 bot_name(側欄名)用它,否則用 model,放最左。
   # ★ the maintainer 09-26 灰階:已連 Grok Bot agent(bound=1)列 dim;「未綁」字樣仍=無 persona(資料層分開)。
-  # ★ TSV 欄序 id/code/star/tail/model/bound/bot_name —— bound 不可接在空 bot 後面(bash 吞空欄)。
+  # ★ TSV 欄序 id/code/star/four/tail/model/bound/bot_name —— bound 不可接在空 bot 後面(bash 吞空欄)。
   local load_word=""; [ "$with_onboard" = "1" ] && load_word="$(_csm aib.climenu.load)"   # 迴圈外取一次(每列叫一次 python 會讓彈窗慢)
-  while IFS=$'\t' read -r id code star tail model bound bot_name; do
+  while IFS=$'\t' read -r id code star four tail model bound bot_name; do
     [ -n "$id" ] || continue; n=$((n+1)); [ "$n" -le 9 ] || break
     if [ "$with_onboard" = "1" ]; then key="${keys:$((n-1)):1}"; else key="$n"; fi
+    if [ "$four" = "1" ]; then
+      label="@${code} · $tail"; [ "$star" = "1" ] && label="★ $label"
+      _aib_menu_item "$label" "$key" "$id" "${bound:-0}"; continue
+    fi
     name="${bot_name:-${model:-$(_csm aib.climenu.model_unknown)}}"
     label="〔${name}〕 @${code}"
     [ "$star" = "1" ] && label="$label ★"
@@ -149,7 +163,7 @@ json.dump({"title": title, "note": note, "deadline": int(deadline), "choice_file
   nlines="$(printf '%s' "$items_tsv" | grep -c '' || true)"
   local popup_cmd; printf -v popup_cmd '%q %q %q' "$py" "$here/open_menu_popup.py" "$spec"
   env -u TMUX "${AIB_TMUX_BIN:-tmux}" -L "$hub_sock" display-popup -E -t "$target" -x C -y C \
-      -w 90% -h "$(( nlines + 6 ))" -T " ${title} " "$popup_cmd" 2>/dev/null &
+      -w "${popup_w_pct}%" -h "$(( nlines + 6 ))" -T " ${title} " "$popup_cmd" 2>/dev/null &
   local mpid=$!; sleep 0.5
   if ! kill -0 "$mpid" 2>/dev/null; then
     _menu_rc=0; wait "$mpid" 2>/dev/null || _menu_rc=$?

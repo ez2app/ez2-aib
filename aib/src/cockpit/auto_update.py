@@ -1148,7 +1148,8 @@ def cmd_exclude(action, name=None, env=None, out=sys.stdout, as_json=False, prov
         if prove is None:
             import seat_act
             prove = seat_act.prove
-        _via, why = prove(T("exclude.touchid_reason", name=name), env, platform=platform)
+        shown = __import__("approve_gate").reason("auto_update.exclude", {"name": name}, env=env)   # 高風險、一次一按
+        _via, why = prove(shown, env, platform=platform)
         if why:
             out.write(T("exclude.needs_touchid", name=name, why=why) + "\n")
             return 2

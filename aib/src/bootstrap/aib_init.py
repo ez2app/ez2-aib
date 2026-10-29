@@ -305,6 +305,23 @@ def _ensure_bot_launchers():
         return ["bot launchers: %s" % str(err)[:200]]
 
 
+def _ensure_sign_shim(state_root):
+    """10-28 @aeb40 TID-1:<狀態根>/bin/aib-sign-approve = 只 exec 倉內 tools/release/sign_approve.py 的薄殼
+    (安裝 / 更新都會跑 aib init ⇒ 會員也有)。失敗只警告,不算 init 失敗。→ [印給人看的行]。"""
+    rel = str(Path(__file__).resolve().parents[2] / "tools" / "release")
+    if rel not in sys.path:
+        sys.path.insert(0, rel)
+    try:
+        import sign_approve
+        did = sign_approve.ensure_shim(Path(os.path.expanduser(state_root)))
+    except Exception as err:  # noqa: BLE001
+        return ["sign-approve shim: %s" % str(err)[:200]]
+    if did == "unchanged":
+        return []
+    return [_T("aib.release.sign_approve.shim", {"path": str(Path(os.path.expanduser(state_root)) / "bin" / sign_approve.SHIM_NAME),
+                                                  "did": did})]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="aib init", description=_T("aib.init.help.description"))
@@ -327,6 +344,7 @@ def main(argv=None):
     hooks = _ensure_hooks()
     statusline = _ensure_statusline()
     launchers = _ensure_bot_launchers()
+    sign_shim = _ensure_sign_shim(args.state_root)
     counts = {CREATED: 0, FIXED: 0, OK: 0, FAIL: 0}
     for i in items:
         counts[i["action"]] += 1
@@ -334,7 +352,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps({"state_root": str(Path(os.path.expanduser(args.state_root))),
                           "items": items, "counts": counts, "hooks": hooks, "statusline": statusline,
-                          "launchers": launchers},
+                          "launchers": launchers, "sign_shim": sign_shim},
                          ensure_ascii=False, indent=2))
     else:
         mark = {CREATED: _T("aib.init.mark_created"), FIXED: _T("aib.init.mark_fixed"), OK: "OK  ", FAIL: "FAIL"}
@@ -352,7 +370,7 @@ def main(argv=None):
               % (counts[CREATED], counts[FIXED], counts[OK], counts[FAIL]))
         for h in hooks:
             sys.stderr.write(h["line"] + "\n")
-        for ln in statusline + launchers:
+        for ln in statusline + launchers + sign_shim:
             sys.stderr.write(ln + "\n")
         auto_ext()
 

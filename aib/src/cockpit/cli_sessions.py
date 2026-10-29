@@ -17,6 +17,10 @@
   cli_sessions.py --provider claude --cwd DIR [--seats-dir D] [--role R] [--limit 9] --json
   ⇒ {"supported": bool, "rows": [{"id","code","role","model","bot_name","window","when","brain",
                                   "handoff","live","star","bound","tail"}]}
+  ★ 10-28 Andy「下方的載入席位,只要顯示 席位/人格/專案名稱/最新開啟時間 這樣就好」⇒ four_col 列
+    (claude / codex / CLI 等非橋接 bot):tail = 「人格 · 專案 · 月-日 時:分」(選單在前面接 ★ 與 @碼),
+    使用中標記留在尾端;沒綁 / 讀不到 ⇒ 字典的「未綁」。人格名、專案名只讀既有綁定資料的顯示名,
+    不顯示 uid / fld_ 路徑。橋接 bot(load_kind=persona)列這次不動,照舊格式(four_col=false)。
   bot_name = Grok Bot 側欄顯示名(有 agent 綁定時);空則選單退回 model / 「模型不明」。
   bound = 已連 Grok Bot agent(status.agent_id);選單灰階(dim)。「未綁」標籤仍只看 persona_uid。
   limit 預留 agent 或 persona 已綁席,避免未綁擠掉。
@@ -29,6 +33,7 @@ import json
 import os
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -64,6 +69,116 @@ def _brain(aib_home: str, uuid: str) -> str:
     except Exception:
         f = ""
     return f if f and f not in ("UNRESOLVED", "未綁", "—") else "沒有"
+
+
+def _t(key: str) -> str:
+    try:
+        import i18n_lib
+        return i18n_lib.t(key)
+    except Exception:
+        return key
+
+
+def _clean_name(value) -> str:
+    """外部字串進選單:與右欄同一套消毒(seat_persona.clean_text),並拒 `@` / `|`(冒充別席、多切一欄)。"""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        import seat_persona
+        text = seat_persona.well_formed_name(seat_persona.clean_text(value, 120))
+    except Exception:
+        return ""
+    return "" if (not text or "@" in text or "|" in text) else text
+
+
+def _persona_name(code: str, home: str) -> str:
+    """席碼 → 綁的人格卡顯示名(cards.json display_name,退 seat-display.json 投影)。讀不到 ⇒ 空。"""
+    try:
+        uid = seat_fork.old_binding(code, home)["persona_uid"]
+        if not uid:
+            return ""
+        ident = Path(home) / "identity"
+        card = ((_load(str(ident / "cards.json")).get("cards") or {}).get(uid) or {})
+        name = _clean_name(card.get("display_name") if isinstance(card, dict) else "")
+        if name:
+            return name
+        d = ((_load(str(ident / "seat-display.json")).get("display") or {}).get(code) or {})
+        if isinstance(d, dict) and d.get("persona_uid") == uid:
+            return _clean_name(d.get("display_name"))
+    except Exception:
+        pass
+    return ""
+
+
+def _project_name(seat_rec) -> str:
+    """席位檔綁的專案卡標題(與右欄同一支 seat_persona.project_title_of)。讀不到 ⇒ 空。"""
+    try:
+        import seat_persona
+        return seat_persona.project_title_of(seat_rec) if seat_rec else ""
+    except Exception:
+        return ""
+
+
+# 彈窗一列 = 「 [h] 」5 欄 + 「★ @碼 · 人格 · 專案 · 月-日 時:分 · 使用中(會分出新碼)」。
+# 10-28 Andy「使用中保留完整字樣就好,名字縮短沒關係」⇒ 尾巴永遠完整,名字先縮。
+# ★ #399 R1(@aeb40):選單開在 display-popup -w POPUP_W_PCT% 裡,open_menu_popup.fit 再截 cols−1 ⇒ 預算要用**彈窗內寬**
+#   (量到的寬 × 90% − 2 框線)。選單殼量 tmux client_width 換算後用 --popup-cols 交進來;量不到用 80 欄終端的值。
+# ★ #399 R2(@aeb40 定的讓位順序,之後同類邊角照這個):名字縮到 NAME_MIN → 專案欄整欄拿掉 → 人格欄拿掉
+#   → 時間欄拿掉 → 只剩「@碼 · 使用中(會分出新碼)」;再擠不下才交給 fit 截(極端窄,接受)。★ 永遠保留(前綴預留)。
+#   (指揮艙中間格是內嵌 tmux,量到的是中間格寬:120 欄筆電中間格約 64 ⇒ 彈窗內寬約 55,要靠讓位。)
+POPUP_W_PCT = 90              # 與 cli-session-menu.sh 的 display-popup -w 同一個值(測試 S3 對兩邊)
+POPUP_COLS_DEFAULT = 80 * POPUP_W_PCT // 100 - 2
+ROW_HEAD = 5 + 2 + 9          # 「 [h] 」+「★ 」(沒有也預留)+「@碼 · 」
+WHEN_COLS = 11                # 「月-日 時:分」
+SEP = 3                       # 「 · 」
+ROW_FIXED = ROW_HEAD + SEP + SEP + WHEN_COLS
+NAME_COLS = 18
+NAME_MIN = 3
+
+
+def _cw(ch: str) -> int:
+    """一個字畫幾欄:與 open_menu_popup.fit 同一套(全形 2、組合字元 0、其他 1),兩邊算的才會一樣。"""
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else (0 if unicodedata.combining(ch) else 1)
+
+
+def _width(text: str) -> int:
+    return sum(_cw(ch) for ch in text)
+
+
+def _name_cols(live_label: str, popup_cols: int = POPUP_COLS_DEFAULT) -> int:
+    """兩個名字都在時各給幾欄(未夾下限;< NAME_MIN ⇒ 該讓位了)。live_label = 這一列尾端的使用中字樣(沒在用 = 空)。"""
+    rest = popup_cols - 1 - ROW_FIXED - ((SEP + _width(live_label)) if live_label else 0)
+    return min(NAME_COLS, rest // 2)
+
+
+def _fit(text: str, cols: int) -> str:
+    """依欄寬截到 cols 欄,截了補「…」(寬度算法同 _cw)。"""
+    if _width(text) <= cols:
+        return text
+    w, out = 0, []
+    for ch in text:
+        if w + _cw(ch) > cols - 1:
+            break
+        out.append(ch)
+        w += _cw(ch)
+    return "".join(out).rstrip() + "…"
+
+
+def four_tail(persona: str, project: str, when: str, live_label: str = "",
+              popup_cols: int = POPUP_COLS_DEFAULT) -> str:
+    """「人格 · 專案 · 月-日 時:分[ · 使用中(會分出新碼)]」:依彈窗內寬照 #399 R2 讓位順序收,使用中字樣永遠完整。"""
+    avail = popup_cols - 1 - ROW_HEAD
+    live = [live_label] if live_label else []
+    live_w = (SEP + _width(live_label)) if live_label else 0
+    cols = _name_cols(live_label, popup_cols)
+    if cols >= NAME_MIN:                                            # ① 兩個名字都在(先縮)
+        return " · ".join([_fit(persona, cols), _fit(project, cols), when] + live)
+    one = min(NAME_COLS, avail - SEP - WHEN_COLS - live_w)
+    if one >= NAME_MIN:                                             # ② 專案欄拿掉
+        return " · ".join([_fit(persona, one), when] + live)
+    if WHEN_COLS + live_w <= avail or not live_label:               # ③ 人格欄拿掉(沒有使用中 ⇒ 至少留時間)
+        return " · ".join([when] + live)
+    return live_label                                               # ④ 時間欄拿掉;再擠不下交給 fit
 
 
 def _has_record_content(provider: str, path: Path | None) -> bool:
@@ -159,7 +274,8 @@ def _pick_limited(loadable: list[dict], limit: int, home: str, provider: str = "
 
 
 def collect(provider: str, cwd: str = "", aib_home: str | None = None, seats_dir: str = "",
-            role: str = "", limit: int = 9, procs=None, config_dir: Path | None = None) -> dict:
+            role: str = "", limit: int = 9, procs=None, config_dir: Path | None = None,
+            popup_cols: int = POPUP_COLS_DEFAULT) -> dict:
     if not provider:
         return {"supported": False, "rows": []}
     home = aib_home if aib_home is not None else seat_liveness.default_aib_home()
@@ -179,10 +295,13 @@ def collect(provider: str, cwd: str = "", aib_home: str | None = None, seats_dir
             t = seat_fork.find_record(provider, u, home, config_dir)
             when = os.path.getmtime(t) if t else os.path.getmtime(f)
             prev = cands.get(u)
-            if prev is None or when >= prev["_when"]:
+            retired = os.path.basename(os.path.dirname(f)) == "retired"
+            # #399 R1:同一 uuid 同時有活席檔與 retired 檔、時間一樣(都看同一份對話紀錄)⇒ 活席檔優先(專案名才是現在的)
+            if prev is None or when > prev["_when"] or (when == prev["_when"] and prev.get("_retired") and not retired):
                 cands[u] = {"id": u, "role": s.get("role") or "?", "window": s.get("window_id") or "",
                             "model": s.get("model_requested") or s.get("model") or (prev or {}).get("model", ""),
-                            "_when": when, "_has_transcript": _has_record_content(provider, t)}
+                            "_seat": s, "_retired": retired, "_when": when,
+                            "_has_transcript": _has_record_content(provider, t)}
     if provider == "claude" and cwd:
         proj = last_cli_session._claude_project_dir(cwd)
         if config_dir is not None:
@@ -224,6 +343,7 @@ def collect(provider: str, cwd: str = "", aib_home: str | None = None, seats_dir
         r["bot_name"] = _bot_display_name(provider, u, home, agent_names)
         r["when"] = time.strftime("%m-%d %H:%M", time.localtime(r.pop("_when")))
         r.pop("_has_transcript", None)
+        r.pop("_retired", None)
         r["brain"] = _brain(home, u)
         h = seat_fork.latest_handoff(r["code"], home)
         r["handoff"] = os.path.basename(h) if h else "無"
@@ -234,6 +354,15 @@ def collect(provider: str, cwd: str = "", aib_home: str | None = None, seats_dir
         agent = bool(r.pop("_agent_linked", bool(_bridge_agent_id(provider, u, home))))
         r.pop("_bound", None)
         r["bound"] = agent
+        seat_rec = r.pop("_seat", None)
+        r["four_col"] = seat_fork.load_kind(provider) != "persona"
+        if r["four_col"]:
+            unbound, live = _t("aib.climenu.unbound"), _t("aib.climenu.live")
+            r["persona_name"] = _persona_name(r["code"], home)
+            r["project_name"] = _project_name(seat_rec)
+            r["tail"] = four_tail(r["persona_name"] or unbound, r["project_name"] or unbound, r["when"],
+                                  live if r["live"] else "", popup_cols)
+            continue
         extras = []
         if not persona and seat_fork.load_kind(provider) == "persona":
             extras.append("未綁")
@@ -253,13 +382,16 @@ def main(argv=None) -> int:
     ap.add_argument("--role", default="")
     ap.add_argument("--limit", type=int, default=9)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--popup-cols", type=int, default=0)   # 選單彈窗內寬(殼量);0 / 不合理 ⇒ 80 欄終端的值
     a = ap.parse_args(argv)
-    d = collect(a.provider, cwd=a.cwd, seats_dir=a.seats_dir, role=a.role, limit=a.limit)
+    pc = a.popup_cols if 20 <= a.popup_cols <= 1000 else POPUP_COLS_DEFAULT
+    d = collect(a.provider, cwd=a.cwd, seats_dir=a.seats_dir, role=a.role, limit=a.limit, popup_cols=pc)
     if a.json:
         print(json.dumps(d, ensure_ascii=False))
     else:
         for r in d["rows"]:
-            print("%s@%s %s%s" % ("★ " if r["star"] else "  ", r["code"], r["tail"], ""))
+            sep = " · " if r.get("four_col") else " "
+            print("%s@%s%s%s" % ("★ " if r["star"] else "  ", r["code"], sep, r["tail"]))
     return 0
 
 
