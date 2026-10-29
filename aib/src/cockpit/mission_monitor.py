@@ -105,6 +105,8 @@ def evaluate(st, now, probe):
     """⇒ [(typ, data)]。純函式:同一份 st、同一組 probe ⇒ 同一串結果;不寫檔、不改 st。"""
     out = []
     status = st["status"]
+    if status in (None, "archived"):                  # 封存的團不收任何事件(apply 拒 archived)
+        return out
     live = status in ("running", "paused")
     # R3 降速(任何狀態都看;回差 2 免得在 12 附近一直跳)
     try:

@@ -542,6 +542,8 @@ def apply(st, ev):
     elif typ == "budget_set":
         _need(st, by, ("pm", "human"))
         new = _budget(d.get("budget"))
+        if new == st["budget"]:
+            raise MissionError("no_change")           # 沒改內容不收:不然一筆空改就能清掉叫停記號
         if _raises(st["budget"], new):
             if by != "human":
                 raise MissionError("not_allowed")   # 提高上限 = 花額度 ⇒ 只有本人

@@ -4,7 +4,8 @@
 B1 分鐘只算 running(暫停不算,K2)
 B2 80% 寫一次 warn,再 tick 不重寫(K1)
 B3 100% 寫 budget/halt + team/halt(reason=budget),再 tick 不重寫
-B4 預算叫停後本人直接開始 ⇒ over_budget;本人提高預算(Touch ID mission.budget)再開始才過;PM 只能調低
+B4 預算叫停後本人直接開始 ⇒ over_budget;本人提高預算(Touch ID mission.budget)再開始才過;PM 只能調低;沒改內容拒 no_change
+B4b 封存的團 tick 不寫任何事件(負載超過 12 也不寫)
 B5 席數硬上限:加人超過 seats_max ⇒ over_seats;有人離開後可加
 B6 額度:基準 40%、現在 64%、上限 30% ⇒ 用量 24% 寫 warn;到 70% ⇒ halt
 B7 額度視窗重設:現值比基準小 ⇒ 基準換現值、從 0 累加
@@ -16,6 +17,7 @@ M4 降速回差(K4);M5 品管連退兩次(pass / amend 重新計);M6 卡關 > 15
 M8 evaluate 是純函式(不改 st、不碰檔)
 W1 watch 一屏、四語鍵齊;W2 量不到不寫 0%;W3 退出碼 0 / 3 / 2、--json 欄位固定
 G1 approve_gate 登記 mission.budget 為高風險類(不開時間窗)
+刀 K1–K6(K5 封存不寫、K6 沒改內容拒)
 """
 import copy
 import io
@@ -205,6 +207,20 @@ class B1to5Budget(Base):
         self.bad("not_allowed", M.budget_set, self.mid, by(PM), {"minutes": 0}, env=self.env, now=T0 + 23 * MIN)
         self.bad("not_allowed", self.c, "budget_set", by(PM), {"budget": {"minutes": 90}, "proved": True}, now=T0 + 23 * MIN)
         self.bad("not_proved", self.c, "budget_set", "human", {"budget": {"minutes": 90}}, now=T0 + 23 * MIN)
+        self.bad("no_change", M.budget_set, self.mid, by(PM), {"minutes": 50}, env=self.env, now=T0 + 23 * MIN)
+        self.bad("no_change", M.budget_set, self.mid, by(PM), {}, env=self.env, now=T0 + 23 * MIN)
+
+    def test_b4b_archived_tick_writes_nothing(self):
+        self.mk()
+        self.to_qa()
+        M.qa(self.mid, "t1", by(QA), "pass", self.receipt(), env=self.env, now=T0)
+        self.c("team", by(MON), {"move": "verify"})
+        self.c("team", by(PM), {"move": "handoff"})
+        M.team(self.mid, "accept", "human", env=self.env, now=T0)
+        n = len(self.events())
+        self.fp.load = 13.0
+        self.tick(T0 + 30 * MIN)
+        self.assertEqual(len(self.events()), n)
 
     def test_b5_seats_hard_cap(self):
         self.mk({"seats_max": 3}, roster=((W1, "worker"), (W2, "worker")))
@@ -463,6 +479,9 @@ KNIVES = [
      "B6to10Quota.test_b10_forged_budget_unreadable"),
     ("K4", MON_PY, '''        elif st["throttle"] and load <= THROTTLE_OFF:''', '''        elif st["throttle"] and load <= THROTTLE_ON:''',
      "M1to4Rules.test_m4_throttle_hysteresis"),
+    ("K5", MON_PY, '''    if status in (None, "archived"):''', '''    if status is None:''',
+     "B1to5Budget.test_b4b_archived_tick_writes_nothing"),
+    ("K6", MIS_PY, '''        if new == st["budget"]:''', '''        if False:''', "B1to5Budget.test_b4_restart_needs_budget_raise"),
 ]
 
 
