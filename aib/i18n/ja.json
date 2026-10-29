@@ -5754,6 +5754,7 @@
   "aib.release.sign_approve.shim": "リリース署名シム {path}:{did}",
   "aib.dmopen.on": "aib: 承認待ちエリアを開きました。これから開く席でも自動で開きます(取り消し:--no-dm)",
   "aib.dmopen.auto": "aib: 承認待ちエリアを自動で開きました(dm 設定済み。取り消し:--no-dm)",
+  "aib.dmopen.batch": "aib: dm を記憶しました:このバッチの各席が起動時にレビュー欄を開きます(明示的に閉じた艙はそのまま;取り消し:--no-dm)",
   "aib.dmopen.off": "aib: 新しい席で承認待ちエリアを自動で開くのをやめました。開いているものはそのままです",
   "aib.dmopen.not_advanced": "aib: 承認待ちエリアはアドバンスプランが必要です。今回は開きません",
   "aib.dmopen.plugin_missing": "aib: 承認待ちエリアをオンにしましたが、pending-review プラグインが入っていません。入れると表示されます",

@@ -5754,6 +5754,7 @@
   "aib.release.sign_approve.shim": "Release-signing shim {path}: {did}",
   "aib.dmopen.on": "aib: review queue opened; every seat you open from now on opens it too (undo: --no-dm)",
   "aib.dmopen.auto": "aib: review queue opened automatically (you set dm; undo: --no-dm)",
+  "aib.dmopen.batch": "aib: dm remembered: each seat in this batch opens the review queue as it starts (cabins where you turned it off stay off; undo: --no-dm)",
   "aib.dmopen.off": "aib: new seats will no longer open the review queue automatically; already-open ones stay",
   "aib.dmopen.not_advanced": "aib: the review queue needs the Advanced plan; not opened",
   "aib.dmopen.plugin_missing": "aib: review queue switched on, but the pending-review plugin is not installed; it appears once installed",

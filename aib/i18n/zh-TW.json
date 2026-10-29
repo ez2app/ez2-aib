@@ -5754,6 +5754,7 @@
   "aib.release.sign_approve.shim": "發版簽核薄殼 {path}:{did}",
   "aib.dmopen.on": "aib: 待審區已打開;之後新開的每一席也會自動打開(取消:--no-dm)",
   "aib.dmopen.auto": "aib: 待審區已自動打開(你設過 dm;取消:--no-dm)",
+  "aib.dmopen.batch": "aib: 已記住 dm:這批每一席開好時各自打開待審區(那一艙明關過的不硬開;取消:--no-dm)",
   "aib.dmopen.off": "aib: 已取消「新開的席自動打開待審區」;已經打開的不動",
   "aib.dmopen.not_advanced": "aib: 待審區要進階方案,這次沒有打開",
   "aib.dmopen.plugin_missing": "aib: 待審區開關已打開,但沒裝待審區外掛 pending-review;裝好就會出現",

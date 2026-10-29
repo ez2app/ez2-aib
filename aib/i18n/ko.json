@@ -5754,6 +5754,7 @@
   "aib.release.sign_approve.shim": "릴리스 서명 셈 {path}: {did}",
   "aib.dmopen.on": "aib: 검토 대기 영역을 열었어요. 앞으로 여는 모든 자리에서도 자동으로 열려요(취소: --no-dm)",
   "aib.dmopen.auto": "aib: 검토 대기 영역을 자동으로 열었어요(dm 설정됨, 취소: --no-dm)",
+  "aib.dmopen.batch": "aib: dm 기억함: 이번 배치의 각 자리가 시작할 때 검토 영역을 엽니다(직접 끈 캐빈은 그대로; 취소: --no-dm)",
   "aib.dmopen.off": "aib: 새 자리에서 검토 대기 영역을 자동으로 여는 것을 껐어요. 이미 열린 것은 그대로예요",
   "aib.dmopen.not_advanced": "aib: 검토 대기 영역은 고급 요금제가 필요해요. 이번에는 열지 않았어요",
   "aib.dmopen.plugin_missing": "aib: 검토 대기 영역을 켰지만 pending-review 플러그인이 설치되지 않았어요. 설치하면 보여요",

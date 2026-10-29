@@ -14,8 +14,16 @@ A6 方案不是進階 ⇒ 艙不寫,說 not_advanced(on 仍記偏好,升級後�
 A7 沒裝 pending-review ⇒ 開關照寫,說 plugin_missing
 A8 main 不管怎樣都回 0(開席不能因為這一步倒)
 A9 記憶檔位置 = <狀態根>/state/open-dm-panel.json,跟 aib 腳本「沒記憶檔就不起 python」看的是同一個
-D1 四語六句都在;用法那行有 [dm]
+D1 四語七句都在;用法那行有 [dm]
+(10-29 #412 R1)
+P2 批次 <N>sits dm / new dm / --dm ⇒ dry-run 印 dm=on;exec seats_batch 之前先跑 open_dm_panel --pref-only
+A10 auto + 外掛沒裝 / 非進階 ⇒ 安靜(訊息空);on 才說(M2)
+A11 auto + 讀不懂的 dm-queue / feature-policy(壞 JSON、"false" 字串、型別錯)⇒ 不寫、檔不變、列 kept_off;on 照開(M4 / L1)
+A12 壞的整台偏好檔五種(壞 JSON、[1]、schema 錯、on:"true"、是目錄)⇒ pref_off、艙裡不寫(L2)
+A13 總時限:apply 卡住 ⇒ main 在時限內回 0、印一行(M3)
+A14 --pref-only:只記偏好、不碰艙,訊息是 batch 那句;off 刪掉偏好檔;state/ 是 0700(L3 / L4)
 刀(複本):K1 拿掉最後一個字 dm 的辨認 ⇒ P1 紅;K2 auto 也硬開 ⇒ A3 紅;K3 不看整台偏好 ⇒ A4 紅
+  K4 auto 把讀不懂當沒設 ⇒ A11 紅;K5 auto 也印外掛 / 方案那句 ⇒ A10 紅;K6 批次不先記偏好 ⇒ P2 紅;K7 不設時限 ⇒ A13 紅
 """
 import json
 import os
@@ -35,7 +43,7 @@ from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 import open_dm_panel as ODP  # noqa: E402
 
-KEYS = ("on", "auto", "off", "not_advanced", "plugin_missing", "no_cabin_home")
+KEYS = ("on", "auto", "batch", "off", "not_advanced", "plugin_missing", "no_cabin_home")
 
 
 class Cabin(unittest.TestCase):
@@ -112,6 +120,7 @@ class Cabin(unittest.TestCase):
         ODP.write_pref(True, self.env)
         r = self.apply("off")
         self.assertFalse(ODP.read_pref(self.env))
+        self.assertFalse(ODP.pref_path(self.env).exists(), "off 刪掉偏好檔,之後開席不再起 python")
         self.assertEqual(sorted(os.listdir(self.cabin / "state")), [])
         self.assertIn("已取消", ODP.message(r))
 
@@ -143,6 +152,80 @@ class Cabin(unittest.TestCase):
         self.assertEqual(ODP.pref_path(self.env), Path(self.env["EZ2_AIB_STATE_ROOT"]) / "state" / "open-dm-panel.json")
         self.assertIn('[ -f "$(aib_cabin_state_root)/state/open-dm-panel.json" ]', AIB.read_text(encoding="utf-8"))
 
+    def test_a10_auto_quiet(self):
+        ODP.write_pref(True, self.env)
+        r = self.apply("auto", present=False)
+        self.assertEqual(r["why"], "plugin_missing")
+        self.assertEqual(ODP.message(r), "", "auto 沒裝外掛要安靜")
+        self.plan = "basic"
+        r = self.apply("auto")
+        self.assertEqual((r["why"], ODP.message(r)), ("not_advanced", ""), "auto 非進階要安靜")
+        self.assertIn("進階方案", ODP.message(self.apply("on")))
+        self.plan = "advanced"
+        self.assertIn("pending-review", ODP.message(self.apply("on", present=False)))
+
+    def test_a11_auto_leaves_unreadable(self):
+        ODP.write_pref(True, self.env)
+        cases = (('{"schema": "aib-dm-queue-policy/v1", "enabled": "false"}',
+                  '{"schema": "aib-feature-policy/v1", "features": {"pending_panel": "no", "task_zone": true}}'),
+                 ("{壞", "{壞"),
+                 ('{"schema": "aib-dm-queue-policy/v1"}', '{"schema": "aib-feature-policy/v1", "features": [1]}'))
+        for dq, fp in cases:
+            (self.cabin / "state" / "dm-queue-policy.json").write_text(dq, encoding="utf-8")
+            (self.cabin / "state" / "feature-policy.json").write_text(fp, encoding="utf-8")
+            r = self.apply("auto")
+            self.assertEqual(r["opened"], [], (dq, fp))
+            self.assertEqual(set(r["kept_off"]), {"dm_queue", "pending_panel"}, (dq, fp))
+            self.assertEqual((self.cabin / "state" / "dm-queue-policy.json").read_text(encoding="utf-8"), dq)
+            self.assertEqual((self.cabin / "state" / "feature-policy.json").read_text(encoding="utf-8"), fp)
+            self.assertEqual(ODP.message(r), "")
+        r = self.apply("on")
+        self.assertEqual(set(r["opened"]), {"dm_queue", "pending_panel"}, "on = 真人明講,照開")
+        self.assertIs(self.f("dm-queue-policy.json")["enabled"], True)
+
+    def test_a11b_auto_ok_file_without_key(self):
+        ODP.write_pref(True, self.env)
+        self.put("feature-policy.json", {"schema": "aib-feature-policy/v1", "features": {"task_zone": True}})
+        r = self.apply("auto")
+        self.assertIn("pending_panel", r["opened"], "檔讀得懂但沒這個鍵 = 沒設過")
+        self.assertIs(self.f("feature-policy.json")["features"]["task_zone"], True, "其他功能不動")
+
+    def test_a12_bad_pref_files(self):
+        p = ODP.pref_path(self.env)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        for raw in ("{壞", "[1]", '{"schema": "x", "on": true}', '{"schema": "%s", "on": "true"}' % ODP.SCHEMA, None):
+            if p.is_dir():
+                p.rmdir()
+            elif p.exists():
+                p.unlink()
+            if raw is None:
+                p.mkdir()
+            else:
+                p.write_text(raw, encoding="utf-8")
+            r = self.apply("auto")
+            self.assertEqual(r["why"], "pref_off", raw)
+            self.assertEqual(sorted(os.listdir(self.cabin / "state")), [], raw)
+
+    def test_a13_time_limit(self):
+        import time as _t
+        orig_apply, orig_lim = ODP.apply, ODP.TIME_LIMIT_S
+        ODP.apply = lambda *a, **k: _t.sleep(5)
+        ODP.TIME_LIMIT_S = 0.3
+        try:
+            t0 = _t.monotonic()
+            self.assertEqual(ODP.main(["auto"]), 0)
+            self.assertLess(_t.monotonic() - t0, 2.0, "要在時限內放手")
+        finally:
+            ODP.apply, ODP.TIME_LIMIT_S = orig_apply, orig_lim
+
+    def test_a14_pref_only(self):
+        r = ODP.apply("on", env=self.env, plugin_present=True, pref_only=True)
+        self.assertEqual(r["why"], "pref_only")
+        self.assertTrue(ODP.read_pref(self.env))
+        self.assertEqual(sorted(os.listdir(self.cabin / "state")), [], "批次只記偏好、不碰艙")
+        self.assertIn("這批每一席", ODP.message(r))
+        self.assertEqual(ODP.pref_path(self.env).parent.stat().st_mode & 0o777, 0o700)
+
 
 class Args(unittest.TestCase):
     def dry(self, *args, aib=AIB):
@@ -161,6 +244,16 @@ class Args(unittest.TestCase):
         p = self.dry("claude", "safe", "dev", aib=aib)
         self.assertEqual(p.returncode, 0, p.stderr[-600:])
         self.assertNotIn("dm=", p.stderr)
+
+    def test_p2_batch(self, aib=AIB):
+        for args in (("claude", "safe", "dev", "2sits", "dm"), ("claude", "safe", "dev", "2sits", "new", "dm"),
+                     ("claude", "safe", "dev", "2sits", "--dm")):
+            p = self.dry(*args, aib=aib)
+            self.assertEqual(p.returncode, 0, (args, p.stderr[-600:]))
+            self.assertIn("aib: (dry-run) dm=on (batch", p.stderr, args)
+        src = Path(aib).read_text(encoding="utf-8")
+        i = src.index('"$HERE/open_dm_panel.py" "$OPEN_DM" --pref-only')
+        self.assertLess(i, src.index('exec bash "$HERE/seats_batch.sh" "${BATCH_COUNT}sits"'), "exec seats_batch 之前先記偏好")
 
 
 class Dict(unittest.TestCase):
@@ -185,8 +278,24 @@ class Knife(unittest.TestCase):
         _knife(self, "src/cockpit/aib", '    OPEN_DM=on\n    unset "POS[${#POS[@]}-1]"\n', '    :\n', "Args.test_p1_args")
 
     def test_k2_auto_forces(self):
-        _knife(self, "src/cockpit/open_dm_panel.py", '    if force or q is None or not isinstance(q.get("enabled"), bool):\n',
-               "    if True:\n", "Cabin.test_a3_auto_respects_explicit_off")
+        _knife(self, "src/cockpit/open_dm_panel.py", "    elif force or unset:\n",
+               "    elif True:\n", "Cabin.test_a3_auto_respects_explicit_off")
+
+    def test_k4_auto_overwrites_unreadable(self):
+        _knife(self, "src/cockpit/open_dm_panel.py", '    elif force or q_how == "missing":\n',
+               '    elif force or q_how != "ok":\n', "Cabin.test_a11_auto_leaves_unreadable")
+
+    def test_k5_auto_talks(self):
+        _knife(self, "src/cockpit/open_dm_panel.py", '        return T(why) if mode == "on" else ""',
+               "        return T(why)", "Cabin.test_a10_auto_quiet")
+
+    def test_k6_batch_skips_pref(self):
+        _knife(self, "src/cockpit/aib", '    "$T_PY3" "$HERE/open_dm_panel.py" "$OPEN_DM" --pref-only </dev/null || true\n',
+               "    :\n", "Args.test_p2_batch")
+
+    def test_k7_no_time_limit(self):
+        _knife(self, "src/cockpit/open_dm_panel.py", "            signal.setitimer(signal.ITIMER_REAL, TIME_LIMIT_S)\n",
+               "            pass\n", "Cabin.test_a13_time_limit")
 
     def test_k3_ignores_pref(self):
         _knife(self, "src/cockpit/open_dm_panel.py", '    if not out["pref"]:\n', "    if False:\n",

@@ -1538,6 +1538,15 @@ aib_refuse_implicit_main_cabin
 : "${AIB_TMUX_BIN:=$(command -v tmux 2>/dev/null || printf 'tmux')}"
 export AIB_TMUX_BIN
 
+# 10-29 #412 R1 M1:批次開席帶 dm / --dm / --no-dm ⇒ exec 前先記整台偏好(只記偏好、不碰艙);
+#   子席各自走 auto ⇒ 這批每一席開好時各自打開,那一艙明關過的不硬開(跟單席 dm 的 on 差在這裡)。
+if [ -n "$BATCH_COUNT" ] && [ "$OPEN_DM" != "auto" ]; then
+  if [ "$DRY" = "1" ]; then
+    echo "aib: (dry-run) dm=$OPEN_DM (batch: pref only)" >&2
+  else
+    "$T_PY3" "$HERE/open_dm_panel.py" "$OPEN_DM" --pref-only </dev/null || true
+  fi
+fi
 if [ -n "$BATCH_COUNT" ]; then
   export AIB_SITS_MODE_OVERRIDE="$MODE"
   export AIB_SITS_NEW_INSTANCE="$NEW"
@@ -2033,7 +2042,7 @@ aib_run_ensure() {   # 起訖都記進碼表;rc 原樣回給呼叫端。note=def
 #   沒打過 dm(auto 且沒有整台記憶檔)⇒ 不起 python(開席每一步都算秒數;open_dm_panel 光載入就 60–130 ms)。
 if [ "$DRY" != "1" ]; then
   if [ "$OPEN_DM" != "auto" ] || [ -f "$(aib_cabin_state_root)/state/open-dm-panel.json" ]; then
-    "${EZ2_PY3:-python3}" "$HERE/open_dm_panel.py" "$OPEN_DM" </dev/null || true
+    "$T_PY3" "$HERE/open_dm_panel.py" "$OPEN_DM" </dev/null || true
   fi
 elif [ "$OPEN_DM" != "auto" ]; then
   echo "aib: (dry-run) dm=$OPEN_DM" >&2
