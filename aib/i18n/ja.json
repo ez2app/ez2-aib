@@ -5745,6 +5745,7 @@
   "aib.approve_gate.cat.page_bind": "ez2.page の連携",
   "aib.approve_gate.cat.phone_pair": "スマホのペアリング / 解除",
   "aib.approve_gate.cat.project_ruling": "プロジェクト目標とレッドラインの承認",
+  "aib.approve_gate.cat.auto_update": "プラグインの自動更新を許可",
   "aib.approve_gate.cat.unregistered": "未登録の操作",
   "aib.approve_gate.cat.seat_input": "席を開く / 入力欄の承認",
   "aib.approve_gate.cat.outbound": "外部への送信 / 共有",

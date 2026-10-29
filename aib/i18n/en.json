@@ -5745,6 +5745,7 @@
   "aib.approve_gate.cat.page_bind": "Bind ez2.page",
   "aib.approve_gate.cat.phone_pair": "Phone pairing / revoking",
   "aib.approve_gate.cat.project_ruling": "Project goals and red lines approval",
+  "aib.approve_gate.cat.auto_update": "Allow plugin auto-update",
   "aib.approve_gate.cat.unregistered": "Unregistered action",
   "aib.approve_gate.cat.seat_input": "Open seats / approve seat input",
   "aib.approve_gate.cat.outbound": "Outgoing messages / sharing",

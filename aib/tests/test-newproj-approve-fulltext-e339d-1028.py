@@ -59,6 +59,7 @@ LONG_GOAL = "長目標" + "很長的一段說明" * 38          # 約 270 字:To
 def _load_new_project():
     spec = importlib.util.spec_from_file_location("new_project_fulltext", str(NP))
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod         # approve_gate 認「sys.modules 裡那支模組」才給登記的類別(10-29 TID-2a)
     spec.loader.exec_module(mod)
     return mod
 
