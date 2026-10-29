@@ -15,12 +15,20 @@ A11 link 只有已定的卡;task_ids 合併排序
 A12 eid:同 eid 同內容回原結果、不同內容 eid_conflict;重放:改過的事件(假的 system 預設採用)讀不起來;斷尾當沒寫
 A13 next:輪到還沒出卡的席;列出等挑人 / 等三方 / 等預設的分岔
 A14 CLI --json 走得通;四語鍵一致、沒有 !!
+A15 (#429 R1 H1)暫停中過了時間 ⇒ tick 照樣散會(closed_by=timeout),不會卡在 paused;散會後 resume 回 closed
+A16 (#429 R1 M1)events.jsonl 被追加型別錯的一行(link card / card target / fork / table move 是 list、created fuses=[1]、
+    深巢狀)⇒ 那場乾淨讀不起來 corrupt:<seq>(MeetingError,不是 traceback);aib meeting list 照列(那場標錯)、別場 new --eid 照開
+A17 (#429 R1 L1)事件總數上限 EVENTS_MAX:滿了拒新事件 too_many_events;散會(close / timeout)照收
+A18 (#429 R1 L3)兩個同 eid 的 new 同時跑 ⇒ 只開出一場(去重在鎖內)
+A19 (#429 R1 L5)--json 時用法錯也出 JSON {"ok": false, "error": "usage"},rc 2;--help 照舊 rc 0
 """
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -306,6 +314,111 @@ class Replay(Base):
         self.assertEqual(self.st()["status"], "closed")                     # 同一筆換成 system 就合法(刀要紅在上面)
 
 
+class PausedTimeout(Base):
+    def test_a15_paused_then_timeout(self):
+        self.mk(fuses={"minutes": 1})
+        self.c("table", "human", {"move": "pause"})
+        self.assertEqual(self.st()["status"], "paused")
+        r = self.ok(G.tick, self.gid, env=self.env, now=T0 + 120)
+        self.assertEqual((r["wrote"], r["state"]["status"], r["state"]["closed_by"]), (1, "closed", "timeout"))
+        self.bad("closed", self.c, "table", "human", {"move": "resume"}, now=T0 + 121)
+        self.assertEqual(self.st()["closed_by"], "timeout")
+
+
+class Corrupt(Base):
+    def _ev(self, seq, typ, data, card=None, by_="human"):
+        ev = {"v": 1, "seq": seq, "eid": "e_%016x" % seq, "req": None, "at": T0 + 5, "by": by_, "type": typ, "data": data}
+        if card is not None:
+            ev["card"] = card
+        return (json.dumps(ev) + "\n").encode()
+
+    def bad(self, want, fn, *a, **k):            # 炸 traceback 也要算斷言紅(刀 K13 / K14 要紅在這裡,不是 ERROR)
+        try:
+            super().bad(want, fn, *a, **k)
+        except G.MeetingError:
+            raise
+        except AssertionError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            self.fail("丟了 %s 不是 MeetingError" % type(err).__name__)
+
+    def list_json(self):
+        buf = io.StringIO()
+        try:
+            rc = G.run(["list", "--json"], env=self.env, out=buf)
+        except Exception as err:  # noqa: BLE001
+            self.fail("list 丟了 %s" % type(err).__name__)
+        self.assertEqual(rc, 0)
+        return json.loads(buf.getvalue().strip().splitlines()[-1])["meetings"]
+
+    def test_a16_bad_types_are_corrupt(self):
+        self.mk()
+        c1 = self.card(by(HOST), "claim", "p", evidence=["r"])
+        p = G.gdir(self.gid, self.env) / "events.jsonl"
+        good = p.read_bytes()
+        seq = self.st()["seq"] + 1
+        rows = {
+            "link card list": self._ev(seq, "link", {"task_ids": ["t1"]}, card=[c1]),
+            "card target list": self._ev(seq, "card", {"kind": "second", "text": "x", "target": [c1]}, by_=by(A)),
+            "fork list": self._ev(seq, "fork", {"op": "panel", "fork": ["f1"], "seats": [A]}, by_=by(HOST)),
+            "table move list": self._ev(seq, "table", {"move": ["pause"]}),
+            "deep nesting": b"[" * 200000 + b"\n",
+        }
+        for tag, row in rows.items():
+            with self.subTest(tag):
+                p.write_bytes(good + row)
+                self.bad("corrupt:%d" % seq, self.st)
+                got = self.list_json()
+                self.assertTrue(got[0]["error"].startswith("corrupt:"), got)
+        p.write_bytes(good)
+        # created 的 fuses 是 list ⇒ 那場讀不起來,別場 new --eid 照開
+        d2 = G.gdir("g_000000000001", self.env)
+        d2.mkdir(parents=True)
+        bad_created = {"v": 1, "seq": 1, "eid": "e_badcreated01", "req": None, "at": T0, "by": by(HOST), "type": "created",
+                       "data": {"topic": "t", "attend": {HOST: {"role": "host"}}, "host": HOST, "fuses": [1]}}
+        (d2 / "events.jsonl").write_bytes((json.dumps(bad_created) + "\n").encode())
+        self.bad("corrupt:1", G.replay, "g_000000000001", self.env)
+        r = self.ok(G.new, by(HOST), "again", {HOST: {"role": "host"}}, HOST, env=self.env, eid="eid-new-after-bad")
+        self.assertFalse(r["duplicate"])
+        self.assertEqual(len(self.list_json()), 3)
+
+
+class EventsMax(Base):
+    def test_a17_events_cap(self):
+        self.mk()
+        with mock.patch.object(G, "EVENTS_MAX", 3):
+            self.ok(self.c, "note", "human", {"text": "n1", "ref": None})
+            self.ok(self.c, "note", "human", {"text": "n2", "ref": None})
+            self.bad("too_many_events", self.c, "note", "human", {"text": "n3", "ref": None})
+            self.ok(self.c, "table", "human", {"move": "close"})
+        self.assertEqual(self.st()["status"], "closed")
+
+
+class NewRace(Base):
+    def test_a18_same_eid_new_once(self):
+        import threading
+        real = G.list_ids
+        gate = threading.Barrier(2)
+
+        def slow(env=None):
+            ids = real(env)
+            time.sleep(0.3)
+            return ids
+        out = []
+        attend = {HOST: {"role": "host"}}
+
+        def go():
+            gate.wait()
+            out.append(G.new(by(HOST), "t", attend, HOST, env=self.env, eid="eid-race-0001")["id"])
+        with mock.patch.object(G, "list_ids", slow):
+            ts = [threading.Thread(target=go) for _ in range(2)]
+            [t.start() for t in ts]
+            [t.join(30) for t in ts]
+        self.assertEqual(len(out), 2)
+        self.assertEqual(len(set(out)), 1, out)
+        self.assertEqual(len(G.list_ids(self.env)), 1)
+
+
 class Next(Base):
     def test_a13_next(self):
         self.forked()
@@ -350,6 +463,18 @@ class Cli(Base):
             keys.append(ks)
         self.assertTrue(all(k == keys[0] for k in keys))
 
+    def test_a19_usage_error_json(self):
+        buf = io.StringIO()
+        with mock.patch("sys.stderr", io.StringIO()):
+            try:
+                rc = G.run(["card", "--json"], env=self.env, out=buf)
+            except SystemExit as ex:
+                self.fail("用法錯直接 SystemExit(%s),沒出 JSON" % ex.code)
+        self.assertEqual((rc, json.loads(buf.getvalue().strip().splitlines()[-1])), (2, {"ok": False, "error": "usage"}))
+        with mock.patch("sys.stdout", io.StringIO()), self.assertRaises(SystemExit) as cm:
+            G.run(["--help", "--json"], env=self.env, out=io.StringIO())
+        self.assertEqual(cm.exception.code, 0)                             # --help 照舊印說明、rc 0
+
 
 KNIVES = [
     ("K1 不看證據", 'if seconds and ev:', 'if seconds:', "Settle.test_a2_threshold"),
@@ -369,6 +494,16 @@ KNIVES = [
     ("K10 沒定也能 link", 'if claim_state(st, c) != "settled":\n            raise MeetingError("not_settled")',
      'if False:\n            raise MeetingError("not_settled")', "Summary.test_a11_link"),
     ("K11 system 不驗", '    if (by == "system") != system or', '    if False or', "Replay.test_a12_eid_and_replay"),
+    ("K12 暫停擋散會", 'typ not in ("table", "note", "link", "timeout"):', 'typ not in ("table", "note", "link"):',
+     "PausedTimeout.test_a15_paused_then_timeout"),
+    ("K13 型別錯丟 traceback", '            raise MeetingError("corrupt:%s:bad_event" % ev.get("seq"))', '            raise',
+     "Corrupt.test_a16_bad_types_are_corrupt"),
+    ("K14 深巢狀不接", 'except (ValueError, RecursionError):', 'except ValueError:',
+     "Corrupt.test_a16_bad_types_are_corrupt"),
+    ("K15 沒有事件上限", 'if st["seq"] >= EVENTS_MAX and', 'if False and', "EventsMax.test_a17_events_cap"),
+    ("K16 去重在鎖外", '    with _locked(root(env), create=True):', '    with open(os.devnull):',
+     "NewRace.test_a18_same_eid_new_once"),
+    ("K17 用法錯不出 JSON", 'if ex.code and "--json" in argv:', 'if False:', "Cli.test_a19_usage_error_json"),
 ]
 
 

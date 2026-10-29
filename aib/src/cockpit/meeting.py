@@ -30,6 +30,9 @@ aib meeting new|list|show|summary|next|card|fork|note|table|link|tick … [--jso
 同帳號威脅模型(GUIDE-same-user-ai-threat-model):meetings/ 所有 AI 都寫得到;--by 是自報(含 human)。
   狀態由卡算、eid、rev 只防誤操作與 AI 之間互踩,不是防線;這裡沒有高風險動作 ⇒ 不走 Touch ID
   (🚀 之後真的開團 / 花額度,走 aib mission 的 Touch ID)。
+  給畫面 / 之後簡報室的規矩(#429 R1 L2 / L4):by=human 不能當「本人按的」證明(任何 AI 都能自報 human、自報主持);
+  evidence / note 的 ref 是任意字串(可能是 javascript:…),畫面只當文字顯示,不直接當連結。
+事件總數上限 EVENTS_MAX(滿了只收散會);被改壞的 events.jsonl ⇒ 那場 corrupt:<seq>,list 照列、別場不受影響。
 """
 from __future__ import annotations
 
@@ -69,6 +72,7 @@ FLAGS = ("intervene", "away")
 DEFAULTS = {"rounds": 3, "minutes": 30, "chars": 400}
 LIMITS = {"rounds": (1, 20), "minutes": (1, 240), "chars": (40, 2000)}
 TOPIC_MAX, REF_MAX, LIST_MAX, ATTEND_MAX, CARDS_MAX = 120, 200, 20, 12, 2000
+EVENTS_MAX = 20000                   # 一場事件總數上限(table 開關 / link 沒有別的上限;#429 R1 L1);散會照收
 
 
 class MeetingError(Exception):
@@ -157,7 +161,7 @@ def _read_events(d):
             ev = json.loads(line)
             if not isinstance(ev, dict):
                 raise ValueError("not_obj")
-        except ValueError:
+        except (ValueError, RecursionError):        # 深巢狀的 JSON 丟 RecursionError,不是 ValueError(#429 R1 M1)
             if pos + len(line) == len(raw) and not line.endswith(b"\n"):
                 torn = pos
                 break
@@ -185,6 +189,8 @@ def _load(d, gid):
             apply(st, ev)
         except MeetingError as err:
             raise MeetingError("corrupt:%s:%s" % (ev.get("seq"), err))
+        except Exception:  # noqa: BLE001 —— 被改過的行型別不對(list 當卡號…)⇒ 這場讀不起來,不丟 traceback(#429 R1 M1)
+            raise MeetingError("corrupt:%s:bad_event" % ev.get("seq"))
     return st, torn, evs
 
 
@@ -259,8 +265,10 @@ def apply(st, ev):
         raise MeetingError("not_created")
     if st["status"] == "closed" and typ != "link":
         raise MeetingError("closed")
-    if st["status"] == "paused" and typ not in ("table", "note", "link"):
-        raise MeetingError("paused")
+    if st["status"] == "paused" and typ not in ("table", "note", "link", "timeout"):
+        raise MeetingError("paused")                # 暫停中時間到照樣散會,不然 resume / close 全被擋(#429 R1 H1)
+    if st["seq"] >= EVENTS_MAX and typ != "timeout" and not (typ == "table" and d.get("move") == "close"):
+        raise MeetingError("too_many_events")
     role = _role(st, by)
     if typ == "created":
         if st["status"] is not None:
@@ -631,19 +639,20 @@ def tick(gid, env=None, now=None):
 
 def new(by, topic, attend, host, mission=None, fuses=None, env=None, eid=None, now=None):
     data = {"topic": topic, "attend": attend, "host": host, "mission": mission, "fuses": fuses or {}}
-    if eid:                                   # 同 eid 重送 ⇒ 找回原本那場
-        for gid in list_ids(env):
-            try:
-                st = replay(gid, env)
-            except MeetingError:
-                continue
-            if eid in st["eids"]:
-                if st["eids"][eid]["req"] != _req_digest("created", by, None, data):
-                    raise MeetingError("eid_conflict")
-                return {"ok": True, "duplicate": True, "id": gid, "state": st}
     _mkdir(root(env))
-    gid = "g_" + secrets.token_hex(6)
-    res = commit(gid, "created", by, data, env=env, eid=eid, now=now)
+    with _locked(root(env), create=True):     # 帶 eid 的去重與開場在同一把鎖內(兩個同 eid 同時 new 只開一場;#429 R1 L3)
+        if eid:                               # 同 eid 重送 ⇒ 找回原本那場
+            for gid in list_ids(env):
+                try:
+                    st = replay(gid, env)
+                except MeetingError:
+                    continue
+                if eid in st["eids"]:
+                    if st["eids"][eid]["req"] != _req_digest("created", by, None, data):
+                        raise MeetingError("eid_conflict")
+                    return {"ok": True, "duplicate": True, "id": gid, "state": st}
+        gid = "g_" + secrets.token_hex(6)
+        res = commit(gid, "created", by, data, env=env, eid=eid, now=now)
     res["id"] = gid
     return res
 
@@ -749,7 +758,13 @@ def _text_summary(s):
 
 def run(argv, env=None, out=None):
     out = out or sys.stdout
-    a = _parser().parse_args(argv)
+    try:
+        a = _parser().parse_args(argv)
+    except SystemExit as ex:                  # --json 時用法錯也出 JSON(#429 R1 L5);--help 照舊
+        if ex.code and "--json" in argv:
+            out.write(json.dumps({"ok": False, "error": "usage"}) + "\n")
+            return 2
+        raise
     try:
         if a.cmd is None:
             raise MeetingError("usage")
