@@ -166,7 +166,7 @@ def verify(name, value, opener=urllib.request.urlopen):
         return "unreachable"
 
 
-def prove_human(name, dest, env, platform, touchid=None, touchid_available=None):
+def prove_human(name, dest, env, platform, touchid=None, touchid_available=None, out=None):
     """Mac ⇒ 一定 Touch ID;非 Mac ⇒ 已經是本人在終端機打(collect 只收 tty)。回 None = 過。"""
     if platform != "darwin":
         return None
@@ -178,6 +178,9 @@ def prove_human(name, dest, env, platform, touchid=None, touchid_available=None)
     import seats_dir_lib
     root = seats_dir_lib.state_root(env)[0]     # 同單源順位:EZ2_AIB_STATE_ROOT > EZ2_AIB_HOME > ~/.ez2-aib(@abb89 審:不然鎖檔分家、一次一窗破功)
     res = AG.ask(reason, root, touchid)
+    hint = AG.too_long_hint(res, env)
+    if hint and out is not None:     # 代碼不換,只多 hint(#420 r1 L1)
+        out["hint"] = hint
     return None if res["ok"] else "touchid_" + res["why"].split(":")[0]
 
 
@@ -291,7 +294,7 @@ def ask_cmd(argv, env=None, platform=None, ask=None, touchid=None, touchid_avail
                 res["why"] = "check_" + bad
                 return done(2)
             res["checked"] = True
-        why = prove_human(a.name, dest, env, platform, touchid=touchid, touchid_available=touchid_available)
+        why = prove_human(a.name, dest, env, platform, touchid=touchid, touchid_available=touchid_available, out=res)
         if why:
             res["why"] = why
             return done(2)
@@ -335,7 +338,7 @@ def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpas
             err.write(_t("aib.secret.no_gui_hint") + "\n")
         return done(2)
     try:
-        why = prove_human(a.name, dest, env, platform, touchid=touchid, touchid_available=touchid_available)
+        why = prove_human(a.name, dest, env, platform, touchid=touchid, touchid_available=touchid_available, out=res)
         if why:
             res["why"] = why
             return done(2)
