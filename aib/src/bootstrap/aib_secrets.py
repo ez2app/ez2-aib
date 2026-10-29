@@ -306,6 +306,13 @@ REMOTE_ONLY_FILES = ("fluentmail.env",)  # 前綴對到這類的名字(FLUENTMAI
 #   10-29 @aeb40(#416 R1 L2、#247 codex M1):PIXEL_CLAUDE_OAUTH_TOKEN 只有本人跑 claude setup-token 才有,補填請求沒有意義;
 #   由名冊決定、不靠呼叫端旗標(呼叫端另可 secret(name, fill=False),兩者取「不補填」)
 NO_FILL_NAMES = ("PIXEL_CLAUDE_OAUTH_TOKEN",)
+# 依檔判斷:落到這些檔的名字(PIXEL_CLAUDE_OAUTH_TOKEN_2 這類前綴名)也一律不補填(@aeb40 #425 L2:只認完整名會漏)
+NO_FILL_FILES = ("pixel-claude.env",)
+
+
+def no_fill(name):
+    """名冊說這個名字缺值時不發補填請求(完整名在 NO_FILL_NAMES,或落到 NO_FILL_FILES 的檔)。"""
+    return name in NO_FILL_NAMES or file_for_name(name) in NO_FILL_FILES
 
 
 def file_for_name(name):
@@ -406,7 +413,7 @@ def secret(name, env=None, now=None, token_check=None, send=None, fill=True):
     """取一支金鑰。成功回字串;失敗丟 SecretError。
 
     讀之前先過開關:關閉、算力不足、不在時段、到期需確認,都不回值。
-    缺值時:fill 為真且名字不在 NO_FILL_NAMES 才發補填請求;否則只丟 missing_file / missing_line。
+    缺值時:fill 為真且 no_fill(name) 為假才發補填請求;否則只丟 missing_file / missing_line。
     """
     from secret_read_gate import assert_read_allowed
     assert_read_allowed(name, env=env, now=now, token_check=token_check,
@@ -428,7 +435,7 @@ def secret(name, env=None, now=None, token_check=None, send=None, fill=True):
         rows = parse_env_bytes(_read_file(path))
     raw = rows.get(name) if name in rows else ""
     if not raw:
-        if fill and name not in NO_FILL_NAMES:
+        if fill and not no_fill(name):
             from secret_collect import request_fill, NEEDS_FILL as FILL
             payload = request_fill(name, env=env, send=send, now=now)
             if payload is not None:
