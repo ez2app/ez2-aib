@@ -4,6 +4,21 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.63
+
+- **One entry point for human approval**: every Touch ID / login-password approval now goes through the core `approve_gate`. The core decides the category from the registered call site (callers cannot claim a lower one; unregistered sites are high-risk). Popup text is built and cleaned by the core; key fields are never truncated, and text over the downstream limit (Touch ID 160, Secure Enclave signing 320, unseal 200) is refused. Revoking many lost devices is split into batches, each shown in full. `aib-sign-approve` moved into the repo (`tools/release/sign_approve.py`); `aib init` installs a thin shim. The Secure Enclave helper source changed: it is rebuilt on next use, and is refused (no fallback to the old helper) when swiftc is missing.
+- **Plugins trust only built-in release keys**: `<state>/trusted-ext-keys` is no longer read; a locally added key cannot make a self-signed plugin pass.
+- **Codex seats keep the model you asked for**: seats opened with `--model` keep it across revival, account re-login and power-loss restore; auto-picked seats step down at most 4 versions when rejected and record the model actually used. New Codex seats default to the newest listed Terra model.
+- **Seat menu shows four columns**: `@code · persona · project · last opened`; columns give way by the popup's real width (shorten names → drop project → persona → time), and "in use (forks a new code)" is never cut.
+- **Power line no longer misreports**: reads `Wattage = 140W`; plugged-in-not-charging is split into "charging paused (battery protection / charge limit)", "charger too weak (< 30 W)" and "not charging".
+- **Handoff sweep checks the seat's own repo**: not the aib code tree; read-only, time-bounded, no optional locks on other seats' worktrees, and a non-repo is recorded as "could not check".
+- **Ledger created on first seat open**: when `aib init` did not create it, the first seat open / bind creates `ledger/` (0700) and `aib-ledger.jsonl` (0600).
+- **Tests**: four missing regression tests restored; the handoff test no longer reads the real home directory.
+- **Charge state for other screens**: `chat_power.charge_state` returns the same charging state as the power line (charging / paused / charger too weak / not charging) and `status --json` carries it under `power`, so the captain room banner reads the same field instead of re-parsing.
+- **Phone pairing confirm fixed**: `aib chat pair confirm` no longer fails with a NameError; a new check scans every approval call site for missing imports even without the chat test environment.
+- **New-project approval shows the full text**: `newproj --approve` opens a full-text confirmation window and the Touch ID prompt carries a summary plus a content code; text with hidden or direction-control characters is refused (`content_unclean`), and if the candidate file changes before writing it is refused (`content_changed`). JSON results use stable codes.
+- **Screen casting core (waiting for signing)**: `aib chat cast` lets a friend or another of your machines request to watch your captain room screen on their 2F video wall: request, approve (Touch ID, high-risk, one press each time), heartbeat, adaptive interval (5 s base, slower under load or on battery, stops when the viewer is not looking) and a whitelist of what the frame may carry (no terminal, messages, paths or hosts). Approving currently returns `sign_unavailable` and issues nothing until the grant-signing feature ships.
+
 ## 0.1.62
 
 - **Local chat MCP server**: `aib chat-mcp` serves the AIB conversation over Streamable HTTP `/mcp` with hashed bearer keys, per-seat bindings, idempotent sends, ack revisions and rate limits. File-bridge deliveries are signed (HMAC) so the sender seat is only trusted when the signature checks out.
