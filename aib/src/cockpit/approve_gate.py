@@ -24,6 +24,7 @@
 """
 import os
 import sys
+import threading
 from pathlib import Path
 
 import touchid_approve as TA
@@ -128,8 +129,9 @@ SITES = {
     "newproj.approve_amend": _s("project/new_project.py", "project_ruling", "aib.newproj.approve_touchid_reason_amend",
                                 {"title": 40, "goals": FULL, "red_lines": FULL, "rl": FULL,
                                  "add": FULL, "rm": FULL, "code": FULL}),
+    # #420 r1 M1:艙名(20 字)/ 角色不截 ⇒ 人格 / 專案各截 36,en 整句最長 153 ≤ LA_MAX(截 40 時 en 是 161,會被 ask 拒)
     "newproj.boot_confirm": _s("project/seat_bootstrap.py", "seat_input", "aib.newproj.boot_confirm",
-                               {"cabin": FULL, "role": FULL, "persona": 80, "project": 80}),
+                               {"cabin": FULL, "role": FULL, "persona": 36, "project": 36}),
     "chat_cast.issue": _s("cockpit/chat_cast.py", "trusted_device", "aib.chat.cast.touchid_issue",
                           {"who": FULL, "hours": FULL, "until": FULL},
                           "Let {who} see your captain's room screen for {hours} h, until {until}",
@@ -156,6 +158,7 @@ SITES = {
 # 登記簿:id(Reason) ⇒ (那個物件本身, site, category, refused)。存物件本身 ⇒ 活著就不會撞 id;查的時候比 is。
 _MINTED = {}
 _MINTED_MAX = 4096               # 超過就丟最舊的(丟掉的那句再交給 ask ⇒ 拒;寧可多按一次不放行)
+_MINT_LOCK = threading.Lock()    # 多執行緒同時 mint:丟最舊那段不准交錯(@aeb40 #413 r1 Low-1);本模組不在 fork 前 mint
 UNMINTED = "unminted"
 
 
@@ -193,9 +196,10 @@ def _lookup(r):
 
 def _mint(text, site, category, refused=None):
     r = Reason(text)
-    while len(_MINTED) >= _MINTED_MAX:
-        _MINTED.pop(next(iter(_MINTED)))
-    _MINTED[id(r)] = (r, site, category, refused)
+    with _MINT_LOCK:
+        while len(_MINTED) >= _MINTED_MAX:
+            _MINTED.pop(next(iter(_MINTED)))
+        _MINTED[id(r)] = (r, site, category, refused)
     return r
 
 
@@ -340,17 +344,29 @@ def state_root_default(env=None):
     return seats_dir_lib.state_root(env)[0]
 
 
+def too_long_hint(res, env=None):
+    """ask() 因整句超過 LA_MAX 被拒時給一句人話(代碼照舊是 refused / detail too_long);其他情況回 None。"""
+    if not isinstance(res, dict) or res.get("detail") != "too_long":
+        return None
+    try:
+        import i18n_lib
+        return i18n_lib.t("aib.approve_gate.too_long_hint", None, locale=i18n_lib.resolve_locale(env=env))
+    except Exception:  # noqa: BLE001  語系壞掉 ⇒ 備用句
+        return "The confirmation text is too long for the Touch ID window, so it was not shown. Shorten the name and try again."
+
+
 def ask(r, lock_root, touchid=None, before=None):
     """彈 Touch ID / 登入密碼視窗。回 {"ok", "why", "category", "site"};why 是 touchid_approve 的原因或 busy / refused。
     lock_root = 放 locks/touchid-approve.lock 的那層(各支照原本的位置)。呼叫端先跑 ready()。
     before():拿到整台鎖之後、彈指紋之前先跑(例:全文確認窗);回的不是 {"ok": True} ⇒ 不彈指紋,
-    回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。"""
-    no = refusal(r)
-    out = {"ok": False, "why": "refused", "category": UNREGISTERED, "site": None}
-    if no:                       # 純字串 / 自己造的 Reason / 欄位超長 / 組不出字 ⇒ 不彈窗
+    回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。
+    整句超過 LA_MAX ⇒ 拒(不交給視窗去截;各支不用再自己擋)。"""
+    e = _lookup(r)
+    out = {"ok": False, "why": "refused", "category": e[2] if e else UNREGISTERED, "site": e[1] if e else None}
+    no = refusal(r) or (None if len(str(r)) <= LA_MAX else "too_long")
+    if no:                       # 純字串 / 自己造的 Reason / 欄位超長 / 組不出字 / 視窗放不下 ⇒ 不彈窗
         out["detail"] = no
         return out
-    out.update(category=r.category, site=r.site)
     with TA.one_at_a_time(lock_path(lock_root)) as gate:
         if not gate.held:
             res = {"ok": False, "why": "busy"}
