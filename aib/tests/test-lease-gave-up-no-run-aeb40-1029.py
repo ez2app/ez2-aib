@@ -70,7 +70,10 @@ class G1Lease(_Base):
 class G2Main(_Base):
     def _main(self, why, argv=()):
         ran = []
-        with mock.patch.object(self.te.reuse_index, "auto_compact", return_value=[]), \
+        # 在 aib test 底下跑時外層會設 AIB_TEST_TMPDIR ⇒ main 走 nested、不排隊;這裡要測的是頂層那條路
+        env = {k: v for k, v in os.environ.items() if k != "AIB_TEST_TMPDIR"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(self.te.reuse_index, "auto_compact", return_value=[]), \
                 mock.patch.object(self.te, "_lease_now", return_value=(None, None)), \
                 mock.patch.object(self.te, "_ci_or_fixture_home", return_value=True), \
                 mock.patch.object(self.te, "exclusive_block", return_value=None), \
