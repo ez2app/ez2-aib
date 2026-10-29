@@ -48,6 +48,13 @@ LAYOUT = (
     ("api-key-claude.env", "claude", "type",
      "Claude／Anthropic 雲端 API key。一行 ANTHROPIC_API_KEY=…",
      (("ANTHROPIC_API_KEY", "Anthropic API", "claude", "ai-api", False),)),
+    # 10-29 @35fe6(@f5fb8 裁、@aeb40 審):像素工坊找參考叫 claude 時,隔離子行程用的長效 token(本人跑 claude setup-token)。
+    #   不放 api-key-claude.env:那份是 claude-apikey 開關(apiKeyHelper)與計費組席位讀的,OAuth token 帶進席位會讓開著的席換登入。
+    #   這份只走 aib secret ask 寫、只有像素工坊找參考讀進子行程 env(不進 argv / 日誌);沒有席位 env 載入器讀它
+    #   (tests/test-secret-pixel-claude-35fe6-1029.py 掃過)。前綴 PIXEL_CLAUDE_ 比 CLAUDE_ 長 ⇒ 最長匹配落這檔。
+    ("pixel-claude.env", "pixel-claude", "type",
+     "像素工坊找參考專用的 Claude 長效 token(claude setup-token)。只給隔離子行程;席位與 claude-apikey 開關不讀。",
+     (("PIXEL_CLAUDE_OAUTH_TOKEN", "像素工坊找參考 claude 長效 token", "pixel-studio", "pixel-ref", False),)),
     ("api-key-codex.env", "codex", "type",
      "Codex／OpenAI 雲端 API key。一行 OPENAI_API_KEY=…",
      (("OPENAI_API_KEY", "OpenAI API", "codex", "ai-api", False),)),
