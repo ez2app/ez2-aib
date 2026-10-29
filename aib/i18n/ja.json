@@ -5023,7 +5023,7 @@
   "aib.approve.enroll.seen_body": "いま Touch ID の指紋ウィンドウが出て、kid {kid} と表示されましたか?出なかった場合、この Mac の鍵が指紋不要の鍵に替えられている可能性があります。キャンセルしてください。",
   "aib.approve.enroll.seen_check": "出て、kid {kid} と表示された",
   "aib.approve.enroll.done": "{site} の AIB 承認を有効化しました。kid {kid}——この Mac 以外に控えてください。",
-  "aib.approve.help.usage": "使い方:aib approve key init|status|pem [--json]\n        aib approve site add <サイト> [--url https://…](機械室トークンは stdin)| site list\n        aib approve pending [--json]\n        aib approve yes|no <nonce> [--json]\n        aib approve history [--json]\n        aib approve enroll <サイト> --host <SSH エイリアス> [--url https://…](ワンクリック有効化)\n      aib approve grants [--json] | --revoke <種類|all> | --extend <種類,…> --for 15m|30m|1h|3h|24h | --rotate-key(時間枠の許可)",
+  "aib.approve.help.usage": "使い方:aib approve key init|status|pem [--json]\n        aib approve site add <サイト> [--url https://…](機械室トークンは stdin)| site list\n        aib approve pending [--json]\n        aib approve yes|no <nonce> [--json]\n        aib approve history [--json]\n        aib approve enroll <サイト> --host <SSH エイリアス> [--url https://…](ワンクリック有効化)\n      aib approve grants [--json] | --revoke <種類|all> | --extend <種類,…> --for 15m|30m|1h|3h|24h | --rotate-key | --lockwatch on|off|status(時間枠の許可)",
   "aib.temp.help.usage": "使い方:aib temp add <ホスト> \"<説明>\" --until <YYYY-MM-DD|ISO 時刻> --undo \"<戻し方>\" [--seat <席>]\n        aib temp list [--all] | check | done <id> [--why \"<一言>\"]   (すべて --json 可)",
   "aib.temp.added": "{id} を登録しました。期限 {until}。戻したら aib temp done {id}",
   "aib.temp.done": "{id} を戻し済みにしました",
@@ -5786,5 +5786,18 @@
   "aib.approve_grants.dur.30m": "30 分",
   "aib.approve_grants.dur.1h": "1 時間",
   "aib.approve_grants.dur.3h": "3 時間",
-  "aib.approve_grants.dur.24h": "24 時間"
+  "aib.approve_grants.dur.24h": "24 時間",
+  "aib.approve_grants.touchid_sign_with": "{action}。さらに時間枠:{dur}の間、この Mac のすべての AI を次の操作で自動承認:{cats}",
+  "aib.approve_grants.touchid_sign_with_rekey": "⚠ 署名鍵が変わりました({old} → {new})。{action}。さらに時間枠:{dur}の間、この Mac のすべての AI を次の操作で自動承認:{cats}",
+  "aib.approve_grants.choose.note": "時間を選ぶ = その間この Mac のすべての AI の「{cat}」を自動承認(次の指紋の画面にも時間が出ます)。",
+  "aib.approve_grants.choose.active": "有効な許可:{list}",
+  "aib.approve_grants.choose.none": "なし",
+  "aib.approve_grants.choose.once": "今回だけ",
+  "aib.approve_grants.choose.ok": "次へ",
+  "aib.approve_grants.choose.cancel": "キャンセル",
+  "aib.doctor.check.grants.no_grants": "時間枠の許可なし(毎回その都度承認)",
+  "aib.doctor.check.grants.lockwatch_ok": "時間枠の許可:画面ロック検知が動作中",
+  "aib.doctor.check.grants.lockwatch_missing": "時間枠の許可がありますが、画面ロック検知が動いていません({why})⇒ 自動承認は効かず、毎回その都度承認",
+  "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on で画面ロック検知を入れる(なければ時間枠は効かず、毎回その都度承認)",
+  "aib.doctor.check.grants.error": "時間枠の状態を読めません:{error}"
 }

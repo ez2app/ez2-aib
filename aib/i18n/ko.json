@@ -5023,7 +5023,7 @@
   "aib.approve.enroll.seen_body": "방금 Touch ID 지문 창이 뜨고 kid {kid}가 표시되었나요? 뜨지 않았다면 이 Mac의 키가 지문이 필요 없는 키로 바뀌었을 수 있습니다. 취소를 누르세요.",
   "aib.approve.enroll.seen_check": "떴고 kid {kid}가 표시됨",
   "aib.approve.enroll.done": "{site}의 AIB 승인을 활성화했습니다. kid {kid} — 이 Mac 밖에 적어 두세요.",
-  "aib.approve.help.usage": "사용법: aib approve key init|status|pem [--json]\n        aib approve site add <사이트> [--url https://…] (기계실 토큰은 stdin) | site list\n        aib approve pending [--json]\n        aib approve yes|no <nonce> [--json]\n        aib approve history [--json]\n        aib approve enroll <사이트> --host <SSH 별칭> [--url https://…] (원클릭 활성화)\n      aib approve grants [--json] | --revoke <유형|all> | --extend <유형,…> --for 15m|30m|1h|3h|24h | --rotate-key (시간 창 승인)",
+  "aib.approve.help.usage": "사용법: aib approve key init|status|pem [--json]\n        aib approve site add <사이트> [--url https://…] (기계실 토큰은 stdin) | site list\n        aib approve pending [--json]\n        aib approve yes|no <nonce> [--json]\n        aib approve history [--json]\n        aib approve enroll <사이트> --host <SSH 별칭> [--url https://…] (원클릭 활성화)\n      aib approve grants [--json] | --revoke <유형|all> | --extend <유형,…> --for 15m|30m|1h|3h|24h | --rotate-key | --lockwatch on|off|status (시간 창 승인)",
   "aib.temp.help.usage": "사용법: aib temp add <호스트> \"<설명>\" --until <YYYY-MM-DD|ISO 시각> --undo \"<되돌리는 법>\" [--seat <좌석>]\n        aib temp list [--all] | check | done <id> [--why \"<한 줄>\"]   (모두 --json 가능)",
   "aib.temp.added": "{id} 등록됨, 기한 {until}. 되돌린 뒤 aib temp done {id}",
   "aib.temp.done": "{id} 를 되돌림으로 표시했습니다",
@@ -5786,5 +5786,18 @@
   "aib.approve_grants.dur.30m": "30분",
   "aib.approve_grants.dur.1h": "1시간",
   "aib.approve_grants.dur.3h": "3시간",
-  "aib.approve_grants.dur.24h": "24시간"
+  "aib.approve_grants.dur.24h": "24시간",
+  "aib.approve_grants.touchid_sign_with": "{action} · 그리고 시간 창: {dur} 동안 이 Mac의 모든 AI를 다음 작업에 자동 승인: {cats}",
+  "aib.approve_grants.touchid_sign_with_rekey": "⚠ 서명 키가 바뀌었습니다({old} → {new}). {action} · 그리고 시간 창: {dur} 동안 이 Mac의 모든 AI를 다음 작업에 자동 승인: {cats}",
+  "aib.approve_grants.choose.note": "시간 선택 = 그동안 이 Mac의 모든 AI의 “{cat}” 작업을 자동 승인(다음 지문 단계에도 시간이 다시 표시됩니다).",
+  "aib.approve_grants.choose.active": "유효한 승인: {list}",
+  "aib.approve_grants.choose.none": "없음",
+  "aib.approve_grants.choose.once": "이번만",
+  "aib.approve_grants.choose.ok": "다음",
+  "aib.approve_grants.choose.cancel": "취소",
+  "aib.doctor.check.grants.no_grants": "시간 창 승인 없음(매번 한 번씩 승인)",
+  "aib.doctor.check.grants.lockwatch_ok": "시간 창 승인: 화면 잠금 감지 실행 중",
+  "aib.doctor.check.grants.lockwatch_missing": "시간 창 승인이 있지만 화면 잠금 감지가 실행되지 않습니다({why}) ⇒ 자동 승인 꺼짐, 매번 한 번씩 승인",
+  "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on 으로 화면 잠금 감지를 설치(없으면 시간 창이 꺼지고 매번 한 번씩 승인)",
+  "aib.doctor.check.grants.error": "시간 창 상태를 읽을 수 없음: {error}"
 }

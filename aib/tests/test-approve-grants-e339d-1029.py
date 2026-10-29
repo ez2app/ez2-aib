@@ -17,7 +17,7 @@ G9 換鑰:登記的 kid 不同 ⇒ 視窗字第一行標「簽單鑰換過了(�
 G10 撤銷 ⇒ revoked;--rotate-key ⇒ 舊單全部驗不過(新鑰驗舊簽章 bad_sig)
 G11 CLI:--extend 簽 / 列 / --revoke(JSON)
 G12 視窗字由 approve_gate 登記的 site 組:類別 window_grant = 高風險;字不截(超長 ⇒ 拒)
-G13 ask() 行為完全不變:src / tools 只有 approve_grants 自己和 aib_approve(CLI)import 它;ask() 不讀授權單
+G13 注入 touchid、沒給 window ⇒ ask() 不讀授權單(TID-2c 後只有正式路徑才開窗);import 它的只有 CLI / approve_gate / doctor
 G14 sehelper:se-pub / se-verify 的公鑰從 SE 鑰本體重算(不讀 public_key 欄位)、先探 ACL(只認 notInteractive,
     簽得出來 ⇒ weak_key);grant-create = userPresence 且只准 GRANT_KEY;grantkey 簽時視窗字雜湊要等於 text_sha256
 G15 到期被拉長(時長仍寫 1h)、字雜湊正確 ⇒ bad_time
@@ -72,7 +72,11 @@ if sub == "grant-create":
         json.dump({"k": os.urandom(16).hex()}, f)
     print(json.dumps({"ok": True}))
 elif sub == "se-pub":
-    print(json.dumps({"ok": True, "public_key": base64.b64encode(hashlib.sha256(key()).digest()).decode()}))
+    k = key()
+    if os.environ.get("FAKE_OLD_HELPER") != "1":
+        print(json.dumps({"ok": True, "owner_acl": "probed", "public_key": base64.b64encode(hashlib.sha256(k).digest()).decode()}))
+    else:
+        print(json.dumps({"ok": True, "public_key": base64.b64encode(hashlib.sha256(k).digest()).decode()}))
 elif sub == "se-sign":
     data = sys.stdin.buffer.read()
     k = key()
@@ -86,7 +90,7 @@ elif sub == "se-verify":
     good = base64.b64encode(hmac.new(key(), data, "sha256").digest()).decode()
     if not hmac.compare_digest(good, o["--sig"]):
         sys.stderr.write("bad_sig\n"); sys.exit(5)
-    print(json.dumps({"ok": True}))
+    print(json.dumps({"ok": True, "owner_acl": "probed"}))
 else:
     sys.stderr.write("usage\n"); sys.exit(2)
 ''' % sys.executable
@@ -375,10 +379,10 @@ class Cells(unittest.TestCase):
                 if re.search(r"^\s*(import approve_grants|from approve_grants )|import_module\(.approve_grants",
                              p.read_text(encoding="utf-8", errors="replace"), re.M):
                     users.append(p.relative_to(ROOT).as_posix())
-        self.assertEqual(sorted(users), ["src/cockpit/aib_approve.py"])
+        self.assertEqual(sorted(users), ["src/bootstrap/aib_doctor.py", "src/cockpit/aib_approve.py",
+                                         "src/cockpit/approve_gate.py"])
         gate = (SRC / "approve_gate.py").read_text(encoding="utf-8")
-        self.assertNotIn("import approve_grants", gate)
-        self.assertNotIn("grants/", gate)
+        self.assertEqual(gate.count("import approve_grants"), 1)          # 只在 _default_window(懶載入)
         called = []
         saved = {n: getattr(GR, n) for n in ("verify", "active", "load_all", "revoked")}
         try:
@@ -401,6 +405,7 @@ class Cells(unittest.TestCase):
     def test_g14_helper_source(self):
         sw = (SRC / "sehelper" / "aib-sehelper.swift").read_text(encoding="utf-8")
         body = sw[sw.index("func sePublicKey"):sw.index("func sePub(")]
+        self.assertIn('\\"owner_acl\\": \\"probed\\"', sw[sw.index("func sePub("):sw.index("func seVerify")])
         self.assertIn('dataRepresentation: try b64(doc, "se_key")', body)
         self.assertNotIn("public_key", body)
         vbody = sw[sw.index("func seVerify"):sw.index("func seSign")]
@@ -411,7 +416,9 @@ class Cells(unittest.TestCase):
         self.assertIn('guard name == grantKeyName else { throw Fail("bad_name") }', sw)
         # M1 探針:sePublicKey 先 requireOwnerACL;只認 notInteractive;簽得出來 ⇒ weak_key
         self.assertIn("try requireOwnerACL(doc)", body)
-        probe = sw[sw.index("func requireOwnerACL"):sw.index("func sePublicKey")]
+        probe = sw[sw.index("func probeOnce"):sw.index("func sePublicKey")]
+        self.assertIn("try probeOnce(doc, password: pw)", sw[sw.index("func requireOwnerACL"):sw.index("func probeOnce")])
+        self.assertIn("ctx.setCredential(pw, type: .applicationPassword)", probe)
         self.assertIn("ctx.interactionNotAllowed = true", probe)
         self.assertIn("ns.code == LAError.notInteractive.rawValue { return }", probe)
         self.assertIn('throw Fail("weak_key", 6)', probe)

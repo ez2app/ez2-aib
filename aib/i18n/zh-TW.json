@@ -5023,7 +5023,7 @@
   "aib.approve.enroll.seen_body": "剛才有跳出 Touch ID 指紋視窗、而且寫著 kid {kid} 嗎?沒跳 = 這台的鑰可能被換成不用指紋的，請按取消。",
   "aib.approve.enroll.seen_check": "有跳，而且寫著 kid {kid}",
   "aib.approve.enroll.done": "已啟用 {site} 的 AIB 核准。kid {kid}——請抄到這台 Mac 以外的地方。",
-  "aib.approve.help.usage": "用法:aib approve key init|status|pem [--json]\n      aib approve site add <站> [--url https://…](機房 token 從 stdin)| site list\n      aib approve pending [--json]\n      aib approve yes|no <nonce> [--json]\n      aib approve history [--json]\n      aib approve enroll <站> --host <SSH 別名> [--url https://…](一鍵啟用)\n      aib approve grants [--json] | --revoke <類別|all> | --extend <類別,…> --for 15m|30m|1h|3h|24h | --rotate-key(時間窗授權單)",
+  "aib.approve.help.usage": "用法:aib approve key init|status|pem [--json]\n      aib approve site add <站> [--url https://…](機房 token 從 stdin)| site list\n      aib approve pending [--json]\n      aib approve yes|no <nonce> [--json]\n      aib approve history [--json]\n      aib approve enroll <站> --host <SSH 別名> [--url https://…](一鍵啟用)\n      aib approve grants [--json] | --revoke <類別|all> | --extend <類別,…> --for 15m|30m|1h|3h|24h | --rotate-key | --lockwatch on|off|status(時間窗授權單)",
   "aib.temp.help.usage": "用法:aib temp add <主機> \"<描述>\" --until <YYYY-MM-DD|ISO 時間> --undo \"<怎麼拆>\" [--seat <席碼>]\n      aib temp list [--all] | check | done <id> [--why \"<一句>\"]   (都可加 --json)",
   "aib.temp.added": "已登記 {id},到期 {until};拆了記得 aib temp done {id}",
   "aib.temp.done": "{id} 已標為拆掉",
@@ -5786,5 +5786,18 @@
   "aib.approve_grants.dur.30m": "30 分鐘",
   "aib.approve_grants.dur.1h": "1 小時",
   "aib.approve_grants.dur.3h": "3 小時",
-  "aib.approve_grants.dur.24h": "24 小時"
+  "aib.approve_grants.dur.24h": "24 小時",
+  "aib.approve_grants.touchid_sign_with": "{action}。並開時間窗:{dur}內本機所有 AI 做這些事都自動同意:{cats}",
+  "aib.approve_grants.touchid_sign_with_rekey": "⚠ 簽單鑰換過了({old} → {new})。{action}。並開時間窗:{dur}內本機所有 AI 做這些事都自動同意:{cats}",
+  "aib.approve_grants.choose.note": "選時長 = 這段時間本機所有 AI 做「{cat}」都自動同意(下一步按指紋時會再寫一次時長)。",
+  "aib.approve_grants.choose.active": "目前有效的授權:{list}",
+  "aib.approve_grants.choose.none": "沒有",
+  "aib.approve_grants.choose.once": "只這次",
+  "aib.approve_grants.choose.ok": "下一步",
+  "aib.approve_grants.choose.cancel": "取消",
+  "aib.doctor.check.grants.no_grants": "沒有時間窗授權單(每次都一次一按)",
+  "aib.doctor.check.grants.lockwatch_ok": "時間窗授權單:鎖屏偵測在跑",
+  "aib.doctor.check.grants.lockwatch_missing": "有時間窗授權單,但鎖屏偵測沒在跑({why})⇒ 自動同意不會生效,一律一次一按",
+  "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on 裝鎖屏偵測(沒裝 = 時間窗不生效,照舊一次一按)",
+  "aib.doctor.check.grants.error": "讀不到時間窗狀態:{error}"
 }
