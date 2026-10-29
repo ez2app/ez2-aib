@@ -275,6 +275,7 @@ CUSTOMER_FIRST_BATCH = (
 
 # 只登記完整平台前綴、不登記行名第一段的檔:10-29 @aeb40(#416 R1 L1)PIXEL_ 整段會被 pixel-claude.env 吃掉,
 #   像素工坊之後的別的秘密(PIXEL_GROK_…)會默默寫進 claude 專用 token 檔;不登記 ⇒ 那些名字回 unknown_name,要另開一格。
+#   新的 pixel-* 檔(例 pixel-grok.env)也要加進來:這是檔名清單,沒列的那一檔會改登記 PIXEL_、整段又被它吃掉(@aeb40 #425 L1)。
 NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env",)
 
 
