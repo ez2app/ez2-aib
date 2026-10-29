@@ -13,7 +13,10 @@ P2 沒有席位 env 載入器 / 開關會讀它:
    c. 核心 src / bin / tools 裡提到這個名字或 pixel-claude.env 的只有名冊 aib_secrets.py(誰新加讀它的地方這格就紅,審查時要看到)
 P3 前綴比對:PIXEL_CLAUDE_ 開頭的一律落 pixel-claude.env,不歸到 api-key-claude.env(CLAUDE_ 較短);反向:ANTHROPIC_API_KEY /
    CLAUDE_CODE_OAUTH_TOKEN 照舊落 api-key-claude.env
-刀:K1 名冊拿掉這一格 ⇒ P1 / P3 紅;K2 環境門前綴加 PIXEL_ ⇒ P2a 紅;K3 別的核心檔提到 pixel-claude.env ⇒ P2c 紅
+P4 不補填(@aeb40 #416、#247 codex M1):檔不存在 / 空值 / 兩次讀中間被清空 ⇒ secret() 只丟 missing_*,補填待辦與請求紀錄都沒新增;
+   對照組 CF_API_TOKEN 缺值照舊發補填(證明這格量得到);secret(name, fill=False) 對一般名字也不補填
+刀:K1 名冊拿掉這一格 ⇒ P1 / P3 紅;K2 環境門前綴加 PIXEL_ ⇒ P2a 紅;K3 別的核心檔提到 pixel-claude.env ⇒ P2c 紅;
+   K4 NO_FILL_NAMES 拿掉它(request_fill 的擋也拿掉)⇒ P4 紅
 """
 import io
 import json
@@ -31,6 +34,7 @@ sys.path.insert(0, str(REPO / "src" / "cockpit"))
 sys.path.insert(0, str(REPO / "src" / "bootstrap"))
 import aib_secrets as S  # noqa: E402
 import secret_ask as SA  # noqa: E402
+import secret_collect as SC  # noqa: E402
 
 NAME = "PIXEL_CLAUDE_OAUTH_TOKEN"
 REL = "pixel-claude.env"
@@ -127,6 +131,39 @@ class PixelClaudeSecret(unittest.TestCase):
                 if NAME in t or REL in t:
                     hits.append(str(p.relative_to(REPO)))
         self.assertEqual(hits, ["src/bootstrap/aib_secrets.py"])
+
+    def fill_traces(self):
+        """補填待辦的項目名 + 請求紀錄行數(寫入時 cancel_fill 會建空的待辦檔,那不算請求)。"""
+        pend = self.sec / SC.PENDING_NAME
+        items = [r.get("name") for r in json.loads(pend.read_text(encoding="utf-8")).get("items", [])] if pend.exists() else []
+        req = self.sec / SC.REQUESTS_NAME
+        return items, (len(req.read_text(encoding="utf-8").splitlines()) if req.exists() else 0)
+
+    def read_reason(self, name, **kw):
+        with self.assertRaises(S.SecretError) as cm:
+            S.secret(name, env=dict(self.env), send=lambda payload: self.sent.append(payload), **kw)
+        return cm.exception.reason
+
+    def test_p4_no_fill_request(self):
+        self.sent = []
+        self.sec.mkdir(mode=0o700)
+        self.assertIn(NAME, S.NO_FILL_NAMES)
+        self.assertEqual(self.read_reason(NAME), S.MISSING_FILE)   # 檔不存在
+        (self.sec / REL).write_text(NAME + "=\n", encoding="utf-8")
+        os.chmod(self.sec / REL, 0o600)
+        self.assertEqual(self.read_reason(NAME), S.MISSING_LINE)   # 空值
+        f = Fake([VALUE])
+        SA.ask_cmd([NAME], env=dict(self.env), platform="darwin", ask=f.ask, touchid=f.touchid,
+                   touchid_available=lambda: True, out=io.StringIO(), ssh_run=lambda *a, **k: None)
+        self.assertTrue(S.load_file(REL, dict(self.env)).get(NAME))   # 先查有值(外掛的預查)
+        (self.sec / REL).write_text("", encoding="utf-8")            # 兩次讀中間被清空
+        self.assertIn(self.read_reason(NAME), (S.MISSING_LINE, S.MISSING_FILE))
+        self.assertIsNone(SC.request_fill(NAME, env=dict(self.env)))  # 直接叫補填也不發
+        self.assertEqual((self.fill_traces(), self.sent), (([], 0), []))
+        self.assertEqual(self.read_reason("CF_API_TOKEN", fill=False), S.MISSING_FILE)   # 呼叫端旗標
+        self.assertEqual((self.fill_traces(), self.sent), (([], 0), []))
+        self.assertEqual(self.read_reason("CF_API_TOKEN"), SC.NEEDS_FILL)   # 對照:一般名字照舊發補填
+        self.assertEqual(self.fill_traces(), (["CF_API_TOKEN"], 1))
 
     def test_p3_prefix_goes_to_own_file(self):
         for n in (NAME, "PIXEL_CLAUDE_OAUTH_TOKEN_2", "PIXEL_CLAUDE_X"):
