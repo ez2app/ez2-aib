@@ -26,10 +26,16 @@ TID-2c(#428,Andy 10-29 20:5x 裁 H1):ask() 的時間窗**先關**。本機驗單
 
 系統錨定驗單第 1 張(10-30):helper 只認 anchored_helper.EXE(root 擁有的固定路徑、往上每層 root 擁有不可寫、
 stamp = 原始碼雜湊),不吃 EZ2_AIB_STATE_ROOT / PATH、不退回 <狀態根>/bin;沒裝 / 舊版 ⇒ 驗單、簽單一律不過。
-安裝本人跑:aib approve grants --helper status 印出的那一行(sudo,AI 不代跑)。鎖屏改看系統日誌是第 2 張。
+安裝本人跑:aib approve grants --helper status 印出的那一行(sudo,AI 不代跑)。
+
+系統錨定驗單第 2 張(10-30):「簽單之後鎖過螢幕 ⇒ 單作廢」改看系統日誌(unified log)裡 loginwindow 的鎖屏 / 解鎖事件,
+不再信 lockwatch.json(本機檔,AI 自己寫一份就算「沒鎖過」)。loginwindow 的路徑受 SIP 保護,同帳號行程寫不出
+processImagePath = loginwindow 的紀錄;清不掉、改不了等級(log erase / log config 要 root)。查詢上限 3 秒
+(Andy 10-29 21:1x Q2),超過 / 失敗 / 讀不懂 ⇒ 當鎖過。時間窗仍關著(approve_gate._default_window),另一張才接回。
 """
 import argparse
 import calendar
+import datetime
 import hashlib
 import json
 import os
@@ -124,16 +130,22 @@ def screen_locked_now(run=subprocess.run, platform=None):
 
 
 class Ctx:
-    """外部依賴一處注入(測試換假 helper / 時鐘 / 開機 / 機器)。"""
+    """外部依賴一處注入(測試換假 helper / 時鐘 / 開機 / 機器 / 系統日誌)。"""
 
     def __init__(self, env=None, run=subprocess.run, helper=None, platform=None, now=None, boot=None, machine=None,
-                 screen_locked=None, anchored=None):
+                 screen_locked=None, anchored=None, syslog=None):
         self.env = dict(os.environ if env is None else env)
         self.run, self.helper, self.platform = run, helper, platform
         self.now = now or time.time
         self._boot, self._machine = boot, machine
         self._screen_locked = screen_locked
         self._anchored = anchored            # 只給測試換掉 anchored_helper.check
+        self._syslog = syslog                # 只給測試換掉 syslog_locks(since, now) -> (事件秒數清單, None) | (None, why)
+
+    def syslog(self, since, now):
+        if self._syslog is not None:
+            return self._syslog(since, now)
+        return syslog_locks(since, now, platform=self.platform)
 
     def screen_locked(self):
         """現在是不是鎖屏中;量不到 ⇒ True(當鎖著,不自動同意)。"""
@@ -460,34 +472,101 @@ def rotate_key(ctx):
 
 
 
-# ───────────── TID-2c:鎖屏作廢 + 自動同意 ─────────────
-BEAT_MAX_S = 90                  # lockwatch 每 30 秒心跳;超過 90 秒沒跳 = 當鎖過(@aeb40 Q2:失敗不放行)
+# ───────────── TID-2c:鎖屏作廢 + 自動同意(系統錨定驗單第 2 張:看系統日誌)─────────────
+BEAT_MAX_S = 90                  # (舊)lockwatch 心跳上限;鎖屏判斷已改看系統日誌,lockwatch 只剩 --lockwatch on / off
 LOCKWATCH_LABEL = "com.ez2.aib-lockwatch"
+LOG = "/usr/bin/log"
+LOGINWINDOW = "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow"
+# 10-30 實機:鎖屏時 loginwindow 記 -[LWShieldWindowController _createShieldWindowIfNeeded],解鎖時一串 -[LWScreenLock …];
+# 平常(沒鎖)這兩類一筆都沒有(24 小時內只在真的鎖 / 解鎖那兩個時段出現)。多算 = 多按一次,少算才危險 ⇒ 兩類都算。
+LOCK_PREDICATE = ('processImagePath == "%s" AND (eventMessage BEGINSWITH "-[LWScreenLock " OR '
+                  'eventMessage BEGINSWITH "-[LWShieldWindowController _createShieldWindowIfNeeded]")' % LOGINWINDOW)
+LOG_BUDGET_S = 3.0               # Andy 10-29 21:1x Q2:查詢上限 3 秒,超過 ⇒ 當鎖過
+LOG_SPAN_S = 3 * 3600            # 一支 log show 查 3 小時(實測 24 小時一支 ~5 秒、切 8 段並行 ~2 秒)
+LOG_SPANS_MAX = 8                # 24 小時(最長時長)= 8 段;再長 ⇒ log_span(不查,當鎖過)
 
 
 def lockwatch_path(env):
     return os.path.join(_key_dir(env), "lockwatch.json")
 
 
-def lock_state(ctx):
-    """回 (最後一次鎖屏的秒數, None) 或 (None, why)。心跳過期 / 讀不到 / 現在鎖著 ⇒ why(當鎖過、窗作廢)。
-    照實寫(#428 R1 M1):lockwatch.json 是本機檔,**只防本人離座 / 誤操作,不防同帳號 AI** —— AI 不經 --lockwatch on
-    自己寫一份心跳就算「裝了」,把 last_lock 改回簽單前舊單就復活(到單上到期 + 同一次開機)。"""
+def _log_local(t):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(t)))
+
+
+def _log_ts(s):
+    """ndjson 的 timestamp(例 2026-10-29 12:48:44.123456+0800)⇒ 秒;讀不懂 ⇒ None。"""
+    try:
+        return int(datetime.datetime.strptime(str(s), "%Y-%m-%d %H:%M:%S.%f%z").timestamp())
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def syslog_locks(since, now, popen=subprocess.Popen, platform=None, clock=time.monotonic, budget=LOG_BUDGET_S):
+    """[since, now] 之間 loginwindow 的鎖屏 / 解鎖事件(秒數清單)。回 (清單, None) 或 (None, why);
+    why ∈ log_not_mac / log_clock / log_span / log_failed / log_timeout / log_unreadable —— 呼叫端一律當鎖過。
+    切成 ≤ 8 段並行查,全部要在 budget 秒內回來;/usr/bin/log 絕對路徑(SIP 保護)、env 只給 PATH。"""
+    if (platform or sys.platform) != "darwin":
+        return None, "log_not_mac"
+    since, now = int(since), int(now)
+    if now < since:
+        return None, "log_clock"
+    n = max(1, -(-(now - since) // LOG_SPAN_S))
+    if n > LOG_SPANS_MAX:
+        return None, "log_span"
+    edges = [since + (now - since) * i // n for i in range(n + 1)]
+    deadline = clock() + budget
+    procs, events = [], []
+    try:
+        for a, b in zip(edges, edges[1:]):          # 每段多查 1 秒(邊界重疊,不漏)
+            procs.append(popen([LOG, "show", "--start", _log_local(a), "--end", _log_local(b + 1), "--style", "ndjson",
+                                "--no-info", "--no-debug", "--no-signpost", "--predicate", LOCK_PREDICATE],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                               env={"PATH": "/usr/bin:/bin"}))
+        for p in procs:
+            left = deadline - clock()
+            if left <= 0:
+                return None, "log_timeout"
+            out, _ = p.communicate(timeout=left)
+            if p.returncode != 0:
+                return None, "log_failed"
+            for line in (out or b"").splitlines():
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue                          # 開頭的 Filtering… / 結尾摘要不是事件
+                if not isinstance(d, dict) or "eventMessage" not in d:
+                    continue
+                if d.get("processImagePath") != LOGINWINDOW:
+                    continue
+                ts = _log_ts(d.get("timestamp"))
+                if ts is None:
+                    return None, "log_unreadable"
+                events.append(ts)
+        return events, None
+    except subprocess.TimeoutExpired:
+        return None, "log_timeout"
+    except (OSError, subprocess.SubprocessError):
+        return None, "log_failed"
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+                try:
+                    p.wait(timeout=2)
+                except subprocess.SubprocessError:
+                    pass
+
+
+def lock_state(ctx, since):
+    """回 (since 之後最後一次鎖屏 / 解鎖事件的秒數,沒有 = 0, None) 或 (None, why)。
+    現在鎖著 / 量不到 / 系統日誌查不到 / 超過 3 秒 ⇒ why(當鎖過、窗作廢)。不讀 lockwatch.json(本機檔,AI 寫得出來)。"""
     if ctx.screen_locked():
         return None, "screen_locked"
-    try:
-        with open(lockwatch_path(ctx.env), encoding="utf-8") as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return None, "no_lockwatch"
-    beat = _parse_utc(str(d.get("beat_utc") or "").replace(".000", "")) if isinstance(d, dict) else None
-    last = _parse_utc(str(d.get("last_lock_utc") or "").replace(".000", "")) if isinstance(d, dict) else None
-    if beat is None or last is None:
-        return None, "no_lockwatch"
-    now = int(ctx.now())
-    if not 0 <= now - beat <= BEAT_MAX_S:
-        return None, "lockwatch_stale"
-    return last, None
+    events, why = ctx.syslog(int(since), int(ctx.now()))
+    if why:
+        return None, why
+    return (max(events) if events else 0), None
 
 
 def find_valid(cat, ctx):
@@ -495,25 +574,29 @@ def find_valid(cat, ctx):
     spec = AG.CATEGORIES.get(cat)
     if not spec or spec["high_risk"] or spec["max_window"] <= 0:
         return None, "no_window_category"
-    last_lock, why = lock_state(ctx)
-    if why:
-        return None, why
     kid, why = current_kid(ctx)
     if not kid:
         return None, why
     rv = revoked(ctx.env)
-    why = "no_grant"
+    why, ok = "no_grant", []
     for g in load_all(ctx.env):
-        ok, w = verify(g, cat, ctx, kid=kid, revoked_set=rv)
-        if not ok:
+        good, w = verify(g, cat, ctx, kid=kid, revoked_set=rv)
+        if not good:
             why = w if why == "no_grant" and w not in ("category",) else why
             continue
         issued = _parse_utc(g["doc"]["issued_utc"])
-        if issued is None or issued <= last_lock:
-            why = "locked_since"          # 鎖過螢幕之後,鎖之前簽的單作廢(D3)
-            continue
-        return g["doc"], None
-    return None, why
+        if issued is not None:
+            ok.append((issued, g["doc"]))
+    if not ok:
+        return None, why
+    issued, doc = max(ok, key=lambda x: x[0])
+    # 只查最新那張簽發之後:它之後鎖過 ⇒ 更早的單也都在鎖之前簽 ⇒ 全部作廢;沒鎖過 ⇒ 用它。時段最短、查得最快。
+    last_lock, why = lock_state(ctx, issued)
+    if why:
+        return None, why
+    if issued > last_lock:
+        return doc, None
+    return None, "locked_since"          # 鎖過螢幕之後,鎖之前簽的單作廢(D3)
 
 
 def record_use(ctx, doc, site, cat):
@@ -575,15 +658,16 @@ def _real_launchctl(*args):
 
 
 def doctor_line(ctx=None):
-    """(ok|note, 代碼)。aib doctor:有有效單卻沒有活的 lockwatch ⇒ note(窗用不到,一律一次一按)。唯讀。"""
+    """(ok|note, 代碼)。aib doctor:有單但 helper 沒好 / 系統日誌查不到 ⇒ note(窗用不到,一律一次一按)。唯讀。"""
     ctx = ctx or Ctx()
     if not load_all(ctx.env):
         return "ok", "no_grants"
     _, why = ctx.helper_exe()
     if why:                                  # 沒裝 / 舊版 / 擁有者不對 ⇒ 驗單一律不過(Q1:update 改了 helper ⇒ 窗自動關)
         return "note", why
-    _, why = lock_state(Ctx(env=ctx.env, now=ctx.now, screen_locked=False))
-    return ("ok", "lockwatch_ok") if why is None else ("note", why)
+    _, why = lock_state(Ctx(env=ctx.env, now=ctx.now, platform=ctx.platform, screen_locked=False, syslog=ctx._syslog),
+                        int(ctx.now()) - 60)
+    return ("ok", "syslog_ok") if why is None else ("note", why)
 
 
 def _t(key, params=None, env=None):
@@ -658,8 +742,8 @@ class GateWindow:
         record_use(self.ctx, doc, site, cat)
 
     def choose(self, r):
-        # 鎖屏偵測沒在跑 ⇒ 開了窗也不會生效 ⇒ 不出時長選單,直接只這次(也不會在沒裝 lockwatch 的測試 / 機器上彈選單)
-        if lock_state(self.ctx)[1] is not None:
+        # helper 不在系統位置 / 系統日誌查不到 ⇒ 開了窗也不會生效 ⇒ 不出時長選單,直接只這次
+        if self.ctx.helper_exe()[1] is not None or lock_state(self.ctx, int(self.ctx.now()) - 60)[1] is not None:
             return "once"
         return choose_window(r, self.ctx, self.run)
 
@@ -719,8 +803,9 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
             return emit({"ok": kind == "installed", "result": kind, "info": info}, 0 if kind == "installed" else 2)
         if o.lockwatch == "off":
             return emit({"ok": True, "removed": remove_lockwatch(ctx, lc, hm)}, 0)
-        _, why = lock_state(Ctx(env=ctx.env, now=ctx.now, screen_locked=False))
-        return emit({"ok": why is None, "why": why}, 0)
+        _, why = lock_state(Ctx(env=ctx.env, now=ctx.now, platform=ctx.platform, screen_locked=False, syslog=ctx._syslog),
+                            int(ctx.now()) - 60)            # 鎖屏判斷看系統日誌(第 2 張);這裡回它查不查得到
+        return emit({"ok": why is None, "why": why, "source": "syslog"}, 0)
     if o.revoke:
         return emit({"ok": True, "revoked": revoke(o.revoke, ctx)}, 0)
     if o.rotate_key:

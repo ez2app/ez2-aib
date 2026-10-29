@@ -4,9 +4,10 @@
 """TID-2c 時間窗接上 ask()(10-29,草稿 DRAFT-TID2-window-grants-e339d-1029;@aeb40 13:43 Q2、#419 R2)。
 
 假 aib-sehelper 跟 test-approve-grants-e339d-1029 同一支(HMAC 模擬);LaunchAgent / launchctl / osascript 一律假的。
-W1 有效單 + lockwatch 心跳新 + 簽在最後一次鎖屏之後 ⇒ find_valid 找得到
-W2 lockwatch 沒檔 ⇒ no_lockwatch;心跳 > 90 秒 ⇒ lockwatch_stale;現在鎖著 / 量不到 ⇒ screen_locked
-W3 簽單之後鎖過螢幕 ⇒ locked_since(D3)
+(系統錨定驗單第 2 張起:鎖屏看系統日誌 —— 這裡用 Ctx(syslog=) 注入假查詢;真的 log show 解析在 test-approve-syslog-e339d-1030)
+W1 有效單 + 系統日誌查得到 + 簽單之後沒有鎖屏事件 ⇒ find_valid 找得到
+W2 系統日誌查不到 ⇒ log_failed;超過 3 秒 ⇒ log_timeout;現在鎖著 / 量不到 ⇒ screen_locked
+W3 簽單之後鎖過螢幕 ⇒ locked_since(D3);查詢起點 = 最新那張的簽發時間
 W4 高風險 / 未登記類別 ⇒ find_valid 一律 no_window_category;durations_for 空
 W5 ask():有單 ⇒ 不彈窗、why window、記一列 grant-uses
 W6 ask():沒單 ⇒ 選單;選 1h ⇒ SE 簽單(同一次指紋)、不叫 LAContext;只這次 ⇒ LAContext;取消 ⇒ 都不叫
@@ -15,14 +16,15 @@ W8 ask():高風險類 ⇒ 找單、選單都不叫(介面一處)
 W9 端到端(GateWindow + 假 helper + 假選單):選 1h ⇒ 視窗字以這次的句子開頭、單驗得過;下一次同類 ⇒ 自動同意 + 記帳
 W10 舊 helper(se-pub 沒回 owner_acl)⇒ old_helper,不開窗
 W11 durations_for:outbound ≤ 3h、seat_input 到 24h
-W14 鎖屏偵測沒在跑 ⇒ 不出時長選單(只這次)
-W15 沒裝 lockwatch + 簽章正確的有效窗單 ⇒ ask 仍一次一按、不出選單
+W14 系統日誌查不到 / helper 不在 ⇒ 不出時長選單(只這次)
+W15 系統日誌查不到 + 簽章正確的有效窗單 ⇒ ask 仍一次一按、不出選單
 W16 #428 H1:正式路徑(不注入 touchid / window)授權單模組給得出有效單也照舊一次一按(預設窗關著)
 W17 審查探針 P4 + P1:EZ2_AIB_STATE_ROOT + 種假 sehelper(stamp = 真原始碼雜湊)+ 自寫 lockwatch.json ⇒ ask 仍彈窗
-W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單沒 lockwatch ⇒ note
-刀(複本落刀,錨要恰好一次):KL1 拿掉心跳過期 ⇒ W2 紅;KL2 拿掉鎖屏後作廢 ⇒ W3 紅;KL3 拿掉「現在鎖著」⇒ W2 紅;
-  KL4 拿掉 owner_acl 檢查 ⇒ W10 紅;KL5 拿掉 find_valid 的高風險排除 ⇒ W4 紅;KL6 拿掉沒 lockwatch 不出選單 ⇒ W14 紅;
-  KL7 find_valid 拿掉 lock_state ⇒ W15 紅;KL8 --lockwatch on 拿掉 Touch ID ⇒ W12 紅;
+W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單但系統日誌查不到 ⇒ note
+  (第 2 張起 lockwatch.json 不再參與判斷;W2 另驗自寫一份「沒鎖過」的 lockwatch.json 也不會讓單生效)
+刀(複本落刀,錨要恰好一次):KL1 lock_state 不理查詢失敗 ⇒ W2 紅;KL2 拿掉鎖屏後作廢 ⇒ W3 紅;KL3 拿掉「現在鎖著」⇒ W2 紅;
+  KL4 拿掉 owner_acl 檢查 ⇒ W10 紅;KL5 拿掉 find_valid 的高風險排除 ⇒ W4 紅;KL6 拿掉查不到不出選單 ⇒ W14 紅;
+  KL7 find_valid 拿掉 lock_state ⇒ W15 紅;KL9 lock_state 改回讀 lockwatch.json ⇒ W2 紅;KL8 --lockwatch on 拿掉 Touch ID ⇒ W12 紅;
   KG1 ask 拿掉高風險不走窗 ⇒ W8 紅;KG2 拿掉記帳 ⇒ W5 紅;KG3 拿掉取消 ⇒ W6 紅
   KH1 / KH2 _default_window 改回開窗 ⇒ W16 / W17 紅
 """
@@ -56,14 +58,22 @@ class Env(T2B.Env):
     def __init__(self):
         super().__init__()
         self.locked = [False]
+        self.locks, self.log_why, self.log_calls = None, None, []      # 預設:系統日誌查不到
 
     def ctx(self, M=GR):
         return M.Ctx(env=self.env, helper=self.helper, platform="darwin", now=lambda: self.t[0],
-                     boot=lambda: self.boot[0], machine=lambda: self.machine[0], screen_locked=lambda: self.locked[0])
+                     boot=lambda: self.boot[0], machine=lambda: self.machine[0], screen_locked=lambda: self.locked[0],
+                     syslog=self._syslog)
 
-    def beat(self, M=GR, beat=None, last_lock=None):
-        M._write_json(M.lockwatch_path(self.env), {"v": 1, "beat_utc": M._utc(self.t[0] if beat is None else beat),
-                                                   "last_lock_utc": M._utc(T0 - 600 if last_lock is None else last_lock)})
+    def _syslog(self, since, now):
+        self.log_calls.append((since, now))
+        if self.log_why or self.locks is None:
+            return None, self.log_why or "log_failed"
+        return [x for x in self.locks if since <= x <= now], None
+
+    def log(self, locks=(), why=None):
+        """假系統日誌:locks = loginwindow 鎖屏 / 解鎖事件的秒數;why = 查詢失敗原因(log_timeout …)。"""
+        self.locks, self.log_why = list(locks), why
 
 
 def _r(G, cat="seat_input", site="seat_act.input", text="核准:在 @abc12 輸入「繼續」"):
@@ -104,7 +114,7 @@ def cell_w1(t, M):
     try:
         doc, why = M.sign(["seat_input"], "1h", e.ctx(M))
         t.assertIsNone(why)
-        e.beat(M)
+        e.log()
         got, why = M.find_valid("seat_input", e.ctx(M))
         t.assertIsNone(why)
         t.assertEqual(got["nonce"], doc["nonce"])
@@ -116,10 +126,13 @@ def cell_w2(t, M):
     e = Env()
     try:
         M.sign(["seat_input"], "1h", e.ctx(M))
-        t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "no_lockwatch"))
-        e.beat(M, beat=T0 - 91)
-        t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "lockwatch_stale"))
-        e.beat(M)
+        t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "log_failed"))
+        now = int(e.t[0])                       # AI 不經 --lockwatch on 自寫一份「心跳新、沒鎖過」⇒ 不採信(第 2 張)
+        M._write_json(M.lockwatch_path(e.env), {"v": 1, "beat_utc": M._utc(now), "last_lock_utc": M._utc(now - 3600)})
+        t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "log_failed"))
+        e.log(why="log_timeout")
+        t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "log_timeout"))
+        e.log()
         e.locked[0] = True
         t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "screen_locked"))
         e.locked[0] = False
@@ -134,10 +147,14 @@ def cell_w3(t, M):
     try:
         M.sign(["seat_input"], "3h", e.ctx(M))
         e.t[0] = T0 + 600
-        e.beat(M, last_lock=T0 + 300)                                  # 簽完之後鎖過一次
+        e.log(locks=[T0 - 600, T0 + 300])                              # 簽之前鎖過(不算)、簽完之後又鎖過一次
         t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "locked_since"))
+        t.assertEqual(e.log_calls[-1], (T0, T0 + 600))                 # 從簽發時間查到現在
+        e.t[0] = T0 + 700
         doc, _ = M.sign(["seat_input"], "3h", e.ctx(M))                # 解鎖後重簽 ⇒ 有效
+        e.t[0] = T0 + 800
         t.assertEqual(M.find_valid("seat_input", e.ctx(M))[0]["nonce"], doc["nonce"])
+        t.assertEqual(e.log_calls[-1], (T0 + 700, T0 + 800))           # 只查最新那張之後
     finally:
         e.close()
 
@@ -145,7 +162,7 @@ def cell_w3(t, M):
 def cell_w4(t, M):
     e = Env()
     try:
-        e.beat(M)
+        e.log()
         for cat in ("release_sign", "trusted_device", "window_grant", "unregistered", "nope"):
             t.assertEqual(M.find_valid(cat, e.ctx(M)), (None, "no_window_category"), cat)
             t.assertEqual(M.durations_for(cat), [], cat)
@@ -248,14 +265,14 @@ def cell_w12k(t, M):
 
 
 def cell_w15(t, M):
-    """沒裝 lockwatch 時,就算有一張簽章正確的有效窗單,ask 仍一次一按(@aeb40 16:36 加刀)。"""
+    """系統日誌查不到時,就算有一張簽章正確的有效窗單,ask 仍一次一按(@aeb40 16:36 加刀;第 2 張改看系統日誌)。"""
     e = Env()
     td = tempfile.mkdtemp(prefix="aib-window-lock-")
     try:
         doc, _ = M.sign(["seat_input"], "24h", e.ctx(M))
         t.assertTrue(M.verify(T2B._grant(M, e, doc), "seat_input", e.ctx(M))[0])     # 單本身是好的
         seen = []
-        win = M.GateWindow(e.ctx(M), run=lambda *a, **k: t.fail("沒 lockwatch 不該出選單"))
+        win = M.GateWindow(e.ctx(M), run=lambda *a, **k: t.fail("系統日誌查不到不該出選單"))
         res = AG.ask(_r(AG), td, touchid=lambda x: seen.append(x) or {"ok": True, "why": "ok"}, window=win)
         t.assertEqual(len(seen), 1)
         t.assertNotEqual(res["why"], "window")
@@ -297,8 +314,10 @@ def cell_w17(t, G):
         os.chmod(exe, 0o700)
         with open(se_vault.SRC, "rb") as f, open(exe + ".sha256", "w") as g:
             g.write(hashlib.sha256(f.read()).hexdigest())
-        seen, chose = [], []
+        seen, chose, found = [], [], []
+        real_find = GR.find_valid
         with mock.patch.object(GR.anchored_helper, "check", lambda **k: (None, "not_installed")), \
+                mock.patch.object(GR, "find_valid", lambda *a, **k: found.append(a) or real_find(*a, **k)), \
                 mock.patch.object(GR, "screen_locked_now", lambda *a, **k: False), \
                 mock.patch.object(GR, "choose_window", lambda r, ctx, run=None: chose.append(r) or "once"), \
                 mock.patch.dict(os.environ, env), \
@@ -307,7 +326,7 @@ def cell_w17(t, G):
             now = int(time.time())
             GR._write_json(GR.lockwatch_path(env), {"v": 1, "beat_utc": GR._utc(now), "last_lock_utc": GR._utc(now - 3600)})
             res = G.ask(_r(G), os.path.join(td, "lk"))
-        t.assertEqual((len(seen), chose), (1, []))
+        t.assertEqual((len(seen), chose, found), (1, [], []))     # 窗關著:連找單都不找(第 2 張起 choose 也會擋)
         t.assertNotEqual(res.get("why"), "window")
     finally:
         shutil.rmtree(td, ignore_errors=True)
@@ -317,7 +336,7 @@ def cell_w10(t, M):
     e = Env()
     try:
         M.sign(["seat_input"], "1h", e.ctx(M))
-        e.beat(M)
+        e.log()
         flag = os.path.join(M._key_dir(e.ctx(M).env), "fake-old-helper")   # 假 helper 看 --dir 裡的旗標檔
         open(flag, "w").close()                         # (helper 子行程只拿乾淨 env,不吃行程環境;#432 R1 H1)
         try:
@@ -348,7 +367,7 @@ class Cells(unittest.TestCase):
         e = Env()
         td = tempfile.mkdtemp(prefix="aib-window-lock-")
         try:
-            e.beat()
+            e.log()
             picked = []
 
             def fake_run(cmd, **kw):                                    # 假 osascript 選單:選「1 小時」
@@ -380,14 +399,19 @@ class Cells(unittest.TestCase):
 
     def test_w14_cell(self): cell_w14(self, GR)
 
-    def test_w14_no_menu_without_lockwatch(self):
+    def test_w14_no_menu_without_syslog(self):
         e = Env()
         try:
             ran = []
             win = GR.GateWindow(e.ctx(), run=lambda *a, **k: ran.append(a))
-            self.assertEqual(win.choose(_r(AG)), "once")               # 沒 lockwatch ⇒ 不出選單
-            e.beat(beat=T0 - 200)
-            self.assertEqual(win.choose(_r(AG)), "once")               # 心跳過期也一樣
+            self.assertEqual(win.choose(_r(AG)), "once")               # 系統日誌查不到 ⇒ 不出選單
+            e.log(why="log_timeout")
+            self.assertEqual(win.choose(_r(AG)), "once")               # 超過 3 秒也一樣
+            e.log()
+            ctx = e.ctx()
+            ctx.helper = None
+            ctx._anchored = lambda platform=None: (None, "not_installed")
+            self.assertEqual(GR.GateWindow(ctx, run=lambda *a, **k: ran.append(a)).choose(_r(AG)), "once")  # helper 不在
             self.assertEqual(ran, [])
         finally:
             e.close()
@@ -420,9 +444,9 @@ class Cells(unittest.TestCase):
             self.assertEqual([c[0] for c in calls], ["bootout", "bootstrap"])
             self.assertEqual(GR.doctor_line(e.ctx()), ("ok", "no_grants"))
             GR.sign(["seat_input"], "1h", e.ctx())
-            self.assertEqual(GR.doctor_line(e.ctx()), ("note", "no_lockwatch"))
-            e.beat()
-            self.assertEqual(GR.doctor_line(e.ctx()), ("ok", "lockwatch_ok"))
+            self.assertEqual(GR.doctor_line(e.ctx()), ("note", "log_failed"))
+            e.log()
+            self.assertEqual(GR.doctor_line(e.ctx()), ("ok", "syslog_ok"))
             out = io.StringIO()
             GR.main(["--lockwatch", "off"], out=out, ctx=e.ctx(), launchctl=lc, home=home)
             self.assertTrue(json.loads(out.getvalue())["removed"])
@@ -442,16 +466,22 @@ class Cells(unittest.TestCase):
 
 # ---- 刀 ----
 KNIVES_GR = [
-    ("KL1", '    if not 0 <= now - beat <= BEAT_MAX_S:\n', '    if False:\n', cell_w2),
-    ("KL2", '        if issued is None or issued <= last_lock:\n', '        if issued is None:\n', cell_w3),
+    ("KL1", '    events, why = ctx.syslog(int(since), int(ctx.now()))\n    if why:\n        return None, why\n',
+     '    events, why = ctx.syslog(int(since), int(ctx.now()))\n    events = events or []\n', cell_w2),
+    ("KL2", '    if issued > last_lock:\n        return doc, None\n', '    return doc, None\n', cell_w3),
     ("KL3", '    if ctx.screen_locked():\n        return None, "screen_locked"\n', '', cell_w2),
     ("KL4", '    if isinstance(res, dict) and res.get("ok") is True and res.get("owner_acl") != "probed":\n',
      '    if False:\n', cell_w10),
-    ("KL6", '        if lock_state(self.ctx)[1] is not None:\n            return "once"\n', '', cell_w14),
-    ("KL7", '    last_lock, why = lock_state(ctx)\n    if why:\n        return None, why\n', '    last_lock = 0\n', cell_w15),
+    ("KL6", '        if self.ctx.helper_exe()[1] is not None or lock_state(self.ctx, int(self.ctx.now()) - 60)[1] is not None:\n'
+     '            return "once"\n', '', cell_w14),
+    ("KL7", '    last_lock, why = lock_state(ctx, issued)\n    if why:\n        return None, why\n', '    last_lock = 0\n', cell_w15),
+    ("KL9", '    events, why = ctx.syslog(int(since), int(ctx.now()))\n',
+     '    try:\n        with open(lockwatch_path(ctx.env), encoding="utf-8") as fh:\n'
+     '            events, why = [_parse_utc(json.load(fh)["last_lock_utc"])], None\n'
+     '    except (OSError, ValueError, KeyError):\n        events, why = None, "no_lockwatch"\n', cell_w2),
     ("KL8", '            ok, why = approve_lockwatch_on(ctx, touchid)\n', '            ok, why = True, None\n', cell_w12k),
     ("KL5", '    if not spec or spec["high_risk"] or spec["max_window"] <= 0:\n        return None, "no_window_category"\n'
-     '    last_lock, why', '    last_lock, why', cell_w4),
+     '    kid, why = current_kid(ctx)\n', '    kid, why = current_kid(ctx)\n', cell_w4),
 ]
 _H1_ANCHOR = '    在那之前 ask() 不讀單、不出時長選單,一律照舊一次一按。"""\n    return None\n'
 _H1_OPEN = '    """\n    import approve_grants\n    return approve_grants.GateWindow()\n'
