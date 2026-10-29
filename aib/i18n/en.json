@@ -5879,5 +5879,7 @@
   "aib.meeting.sum.title": "Meeting summary: {topic}",
   "aib.meeting.sum.conclusions": "{n} conclusions",
   "aib.meeting.sum.undecided": "{n} undecided (not handed to the mission team)",
-  "aib.meeting.sum.needs_you": "{n} items need you"
+  "aib.meeting.sum.needs_you": "{n} items need you",
+  "aib.secret.touchid_copy": "Copy secret {name} to clipboard; any program here (AI too) can read it; cleared in 30 s",
+  "aib.secret.touchid_paste": "Show secret {name} to the AI in seat {seat}; it stays in that transcript (typed, no Enter)"
 }

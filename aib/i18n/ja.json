@@ -5879,5 +5879,7 @@
   "aib.meeting.sum.title": "会議まとめ:{topic}",
   "aib.meeting.sum.conclusions": "結論 {n} 件",
   "aib.meeting.sum.undecided": "未決 {n} 件(任務団には渡しません)",
-  "aib.meeting.sum.needs_you": "あなたの判断が必要 {n} 件"
+  "aib.meeting.sum.needs_you": "あなたの判断が必要 {n} 件",
+  "aib.secret.touchid_copy": "シークレット {name} をクリップボードにコピー:同じアカウントのどのプログラム(AI 含む)も読めます。30 秒後に消去",
+  "aib.secret.touchid_paste": "{seat} 席の AI にシークレット {name} を見せ、その席の会話記録に残ります(入力のみ、Enter は押しません)"
 }

@@ -5879,5 +5879,7 @@
   "aib.meeting.sum.title": "회의 한 장 요약: {topic}",
   "aib.meeting.sum.conclusions": "결론 {n}개",
   "aib.meeting.sum.undecided": "미결 {n}개(임무단에 넘기지 않음)",
-  "aib.meeting.sum.needs_you": "당신이 필요한 항목 {n}개"
+  "aib.meeting.sum.needs_you": "당신이 필요한 항목 {n}개",
+  "aib.secret.touchid_copy": "시크릿 {name}을(를) 클립보드에 복사: 같은 계정의 모든 프로그램(AI 포함)이 읽을 수 있음, 30초 후 지움",
+  "aib.secret.touchid_paste": "{seat} 자리의 AI가 시크릿 {name}을(를) 보게 되고 그 자리 대화 기록에 남음(입력만, Enter는 안 누름)"
 }
