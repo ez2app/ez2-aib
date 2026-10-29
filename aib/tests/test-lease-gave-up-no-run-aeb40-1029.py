@@ -47,24 +47,59 @@ class _Base(unittest.TestCase):
 
 
 class G1Lease(_Base):
-    def test_g1_held_forever_cap0_gives_up_without_acquire(self):
-        held = ("held", {"owner": "@other", "what": "aib test 300", "expiry_at": "05:06"}, None)
-        tool_calls, said = [], []
+    HELD = ("held", {"owner": "@other", "what": "aib test 300", "expiry_at": "05:06"}, None)
+
+    def _run(self, wait_max, clock=None):
+        tool_calls, said, slept = [], [], []
 
         def tool(*args, env=None):
             tool_calls.append(args[:2])
             return 0, ""
-        with mock.patch.object(self.te, "_lease_now", return_value=held), \
+        kw = {"clock": clock} if clock else {}
+        with mock.patch.object(self.te, "_lease_now", return_value=self.HELD), \
                 mock.patch.object(self.te, "_lease_tool", side_effect=tool), \
                 mock.patch.object(self.te, "lease_ttl", return_value=600), \
                 mock.patch.object(self.te, "_holder_is_ancestor", return_value=False), \
                 mock.patch.object(self.te, "exclusive_block", return_value=None):
-            r = self.te.big_batch_lease(999, self.repo, said.append, sleep=lambda s: None, force=True, wait_max=0)
+            r = self.te.big_batch_lease(999, self.repo, said.append, sleep=slept.append, force=True,
+                                        wait_max=wait_max, **kw)
+        return r, tool_calls, said, slept
+
+    def test_g1_held_forever_cap0_gives_up_without_acquire(self):
+        r, tool_calls, said, slept = self._run(0)
         self.assertEqual(r["why"], "gave_up")
         self.assertIsNone(r["run_id"])
         self.assertNotIn("acquire", [c[0] for c in tool_calls], "被拿著時不該去搶")
-        self.assertIn(("queue", "remove"), tool_calls, "排過隊要退出名單")
+        self.assertEqual(slept, [], "--wait-max 0 不准先睡一輪(#421 審查 Low 1)")
+        self.assertNotIn(("queue", "add"), tool_calls, "--wait-max 0 不排隊")
         self.assertTrue(any("--wait-max" in s for s in said), said)
+
+    def test_g1b_cap_positive_queues_then_leaves(self):
+        t = [0.0]
+
+        def clock():
+            return t[0]
+
+        def tick(s):
+            t[0] += s
+        # 每睡一輪時鐘往前 30 秒;上限 60 ⇒ 排兩輪後放棄
+        with mock.patch.object(self.te, "LEASE_POLL_S", 30):
+            tool_calls, said, slept = [], [], []
+
+            def tool(*args, env=None):
+                tool_calls.append(args[:2])
+                return 0, ""
+            with mock.patch.object(self.te, "_lease_now", return_value=self.HELD), \
+                    mock.patch.object(self.te, "_lease_tool", side_effect=tool), \
+                    mock.patch.object(self.te, "lease_ttl", return_value=600), \
+                    mock.patch.object(self.te, "_holder_is_ancestor", return_value=False), \
+                    mock.patch.object(self.te, "exclusive_block", return_value=None):
+                r = self.te.big_batch_lease(999, self.repo, said.append, sleep=lambda s: (slept.append(s), tick(s)),
+                                            clock=clock, force=True, wait_max=60)
+        self.assertEqual(r["why"], "gave_up")
+        self.assertIn(("queue", "add"), tool_calls)
+        self.assertIn(("queue", "remove"), tool_calls, "排過隊要退出名單")
+        self.assertEqual(slept, [30, 30])
 
 
 class G2Main(_Base):

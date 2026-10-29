@@ -9,7 +9,7 @@
   判不了的照實寫「要人判」,不猜。
 - 純函式(ctx 是 dict),好測;文字一律走 aib.advice.* 四語字典。
 
-ctx 欄位:lease_wait_s、lease_why(big/small/inherited/nested/gave_up/unavailable)、ahead(排在誰後面,字串或 None)、
+ctx 欄位:lease_wait_s、lease_why(big/small/inherited/nested/unavailable;gave_up 10-29 起不跑、不會進來)、ahead(排在誰後面,字串或 None)、
 tests(aib test 的結果列:name、reused、unverified、why、why_detail、elapsed_s)、no_reuse(這一輪帶 --fresh / --strict /
 AIB_TEST_NO_REUSE=1 ⇒ 該旗標的名字,否則 None)。
 """

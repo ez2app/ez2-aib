@@ -1434,6 +1434,13 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
                 state, behind = "held", (_out or "").strip()
                 if behind:                # 機器空著(或租約過期)但前面有人排:照 host_lease 那句講,不印過期的持有者(審查 L5)
                     say(behind); said = True
+        if cap <= 0:      # --wait-max 0 = 只試這一次、不排隊不睡(#421 審查 Low 1:以前會先睡一輪 30 秒才放棄)
+            if state == "held" and exclusive_block(cur) is not None:
+                say(T("lease_exclusive_blocked", {"name": (cur or {}).get("owner", "?"), "what": (cur or {}).get("what", "?"),
+                                                  "at": (cur or {}).get("expiry_at", "?")}))
+                return leave("exclusive_held")
+            say(T("lease_queue_gave_up", {"waited": int(clock() - t0)}))
+            return leave("gave_up")
         # 10-13:要等 ⇒ 登記排隊名單(登記到拿到的秒數記進 ledger;機器空時只准隊頭拿)。每輪都再登記一次 = 續期,
         #   位置不變(審查 L4:ps 量不到起始時刻時登記退回只看到期,一次登記 30 分鐘後會悄悄掉出名單)
         qrc, _o = _lease_tool("queue", "add", "--owner", owner, "--what", what, "--run-id", run_id,
