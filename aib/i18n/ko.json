@@ -5819,9 +5819,9 @@
   "aib.approve_grants.choose.ok": "다음",
   "aib.approve_grants.choose.cancel": "취소",
   "aib.doctor.check.grants.no_grants": "시간 창 승인 없음(매번 한 번씩 승인)",
-  "aib.doctor.check.grants.lockwatch_ok": "시간 창 허가서: 잠금 감지 실행 중(자동 승인은 지금 꺼져 있어 매번 한 번씩 확인합니다)",
+  "aib.doctor.check.grants.lockwatch_ok": "시간 창 승인: 잠금 감지 실행 중(자동 승인은 지금 꺼져 있어 매번 한 번씩 확인합니다)",
   "aib.doctor.check.grants.lockwatch_missing": "시간 창 승인이 있지만 화면 잠금 감지가 실행되지 않습니다({why}) ⇒ 자동 승인 꺼짐, 매번 한 번씩 승인",
-  "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on 으로 화면 잠금 감지를 설치(없으면 시간 창이 꺼지고 매번 한 번씩 승인)",
+  "aib.doctor.check.grants.remedy": "자동 승인은 지금 꺼져 있으니 설치하지 않아도 됩니다. 열린 뒤 aib approve grants --lockwatch on 으로 화면 잠금 감지를 설치하세요",
   "aib.doctor.check.grants.error": "시간 창 상태를 읽을 수 없음: {error}",
   "aib.approve_grants.touchid_lockwatch_on": "잠금 감지를 켭니다(시간 창 자동 승인은 아직 꺼져 있으며, 열리면 그때 사용됩니다)"
 }

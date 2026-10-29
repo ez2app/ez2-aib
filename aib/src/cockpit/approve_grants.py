@@ -707,12 +707,13 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
         doc, why = sign([c.strip() for c in o.extend.split(",") if c.strip()], o.dur, ctx, source="cli")
         return emit({"ok": True, "nonce": doc["nonce"], "expires_utc": doc["expires_utc"]} if doc
                     else {"ok": False, "why": why}, 0 if doc else 2)
-    rows = [{"cats": d["cats"], "left_s": left, "expires_utc": d["expires_utc"], "nonce": d["nonce"]}
+    auto = "off" if AG._default_window() is None else "on"     # #428 R2 L1:正式路徑時間窗關著 ⇒ 單在也不會自動同意
+    rows = [{"cats": d["cats"], "left_s": left, "expires_utc": d["expires_utc"], "nonce": d["nonce"], "auto_approve": auto}
             for d, left in active(ctx)]
     if o.json:
         return emit(rows, 0)
     for r in rows:
-        out.write("%s  %s  %s\n" % (_fmt_left(r["left_s"]), ",".join(r["cats"]), r["nonce"][:8]))
+        out.write("%s  %s  %s  auto_approve:%s\n" % (_fmt_left(r["left_s"]), ",".join(r["cats"]), r["nonce"][:8], r["auto_approve"]))
     return 0
 
 

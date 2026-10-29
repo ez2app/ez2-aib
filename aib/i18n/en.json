@@ -5821,7 +5821,7 @@
   "aib.doctor.check.grants.no_grants": "No time-window grants (every approval asks once)",
   "aib.doctor.check.grants.lockwatch_ok": "Time-window grants: lock watcher running (auto-approve is off for now; every approval still asks once)",
   "aib.doctor.check.grants.lockwatch_missing": "Time-window grants exist but the lock watcher is not running ({why}) ⇒ auto-approve is off; every approval asks once",
-  "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on installs the lock watcher (without it, time windows stay off and every approval asks once)",
+  "aib.doctor.check.grants.remedy": "Auto-approve is off for now, so you can skip this; once it opens, run aib approve grants --lockwatch on to install the lock watcher",
   "aib.doctor.check.grants.error": "Could not read time-window state: {error}",
   "aib.approve_grants.touchid_lockwatch_on": "Turn on the lock watcher (time-window auto-approve is still off; it is used once that opens)"
 }

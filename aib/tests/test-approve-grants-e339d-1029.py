@@ -352,6 +352,10 @@ class Cells(unittest.TestCase):
             rows = json.loads(out.getvalue())
             self.assertEqual([r["cats"] for r in rows], [["command", "seat_input"]])
             self.assertEqual(rows[0]["left_s"], 3600)
+            self.assertEqual(rows[0]["auto_approve"], "off")              # #428 R2:正式路徑時間窗關著
+            out = io.StringIO()
+            GR.main([], out=out, ctx=e.ctx())
+            self.assertIn("auto_approve:off", out.getvalue())
             out = io.StringIO()
             GR.main(["--revoke", "all"], out=out, ctx=e.ctx())
             self.assertEqual(json.loads(out.getvalue())["revoked"], 1)
