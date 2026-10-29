@@ -634,6 +634,9 @@ def main(argv=None, out=None, env=None, stdin=None, run=None):
     for x in (k, s, p, y, n, h, e):
         x.add_argument("--json", action="store_true")
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "grants":  # TID-2b 時間窗授權單:列 / 撤銷 / 延長 / 換鑰(approve_grants.main)
+        import approve_grants
+        return approve_grants.main(argv[1:], out=out, ctx=approve_grants.Ctx(env=env, run=run or subprocess.run))
     if argv and argv[0] in ("yes", "no"):  # base64url 的 nonce 可能以「-」開頭,不是選項(@74e8b 10-24)
         dash = [a for a in argv[1:] if a.startswith("-") and NONCE_RE.fullmatch(a)]
         if len(dash) == 1 and "--" not in argv:  # 旗標留在前面,nonce 放 -- 後面:--json 前後都認

@@ -51,6 +51,7 @@ CATEGORIES = {
     "phone_pair":     {"high_risk": True,  "max_window": 0},
     "project_ruling": {"high_risk": True,  "max_window": 0},
     "auto_update":    {"high_risk": True,  "max_window": 0},
+    "window_grant":   {"high_risk": True,  "max_window": 0},   # TID-2b:簽時間窗授權單本身一次一按
     "unregistered":   {"high_risk": True,  "max_window": 0},
     "seat_input":     {"high_risk": False, "max_window": 24 * H},
     "outbound":       {"high_risk": False, "max_window": 3 * H},
@@ -149,6 +150,14 @@ SITES = {
     "mission.accept": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_accept",
                          {"title": 60, "id": FULL, "n": FULL, "k": FULL},
                          "Accept and archive task team {title} ({id}, {n} tasks, {k} cancelled)"),
+    # 10-29 TID-2b:時間窗授權單(se-sign 的視窗字;類別、時長不截,換鑰那句第一行標舊 → 新 kid)
+    "approve_grants.sign": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign",
+                              {"cats": FULL, "dur": FULL},
+                              "Time window: for {dur}, every AI on this Mac is auto-approved for: {cats}"),
+    "approve_grants.sign_rekey": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign_rekey",
+                                    {"cats": FULL, "dur": FULL, "old": FULL, "new": FULL},
+                                    "The grant signing key changed ({old} -> {new}). Time window: for {dur}, every AI on "
+                                    "this Mac is auto-approved for: {cats}"),
     "release.sign_approve": _s("release/sign_approve.py", "release_sign", "aib.release.sign_approve_reason",
                                {"plugin": FULL, "ver": FULL, "pin": FULL},
                                "Sign and release {plugin} {ver} · head {pin}"),
