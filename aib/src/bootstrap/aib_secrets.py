@@ -273,6 +273,11 @@ CUSTOMER_FIRST_BATCH = (
 )
 
 
+# 只登記完整平台前綴、不登記行名第一段的檔:10-29 @aeb40(#416 R1 L1)PIXEL_ 整段會被 pixel-claude.env 吃掉,
+#   像素工坊之後的別的秘密(PIXEL_GROK_…)會默默寫進 claude 專用 token 檔;不登記 ⇒ 那些名字回 unknown_name,要另開一格。
+NO_SEGMENT_PREFIX_FILES = ("pixel-claude.env",)
+
+
 def _name_maps():
     """精確行名優先;其餘用平台前綴最長匹配(LINE_SHOP2_…、YOUTUBE_LIVE_…)。"""
     exact = {}
@@ -283,7 +288,7 @@ def _name_maps():
         for name, _p, _cons, _feat, _fb in keys:
             exact[name] = rel
             i = name.find("_")
-            if i > 0:
+            if i > 0 and rel not in NO_SEGMENT_PREFIX_FILES:
                 prefixes.setdefault(name[: i + 1], rel)
     return exact, tuple(sorted(prefixes.items(), key=lambda kv: (-len(kv[0]), kv[0])))
 
