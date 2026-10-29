@@ -16,6 +16,7 @@
 //   se-pub    --name N --dir D             不要指紋:**從 SE 鑰本體重算**公鑰(不讀檔裡的 public_key 欄位,那欄改得到),
 //                                          並探過這把鑰一定要本人(換成不帶 ACL 的 SE 鑰 ⇒ weak_key)。
 //   se-verify --name N --dir D --sig B64   不要指紋:stdin 資料 + DER 簽章,用重算的公鑰驗;過 ⇒ {"ok": true},不過 ⇒ bad_sig。
+//   lockwatch --name GRANT_KEY --dir D     長駐:鎖螢幕 / 螢幕保護開始 ⇒ D/lockwatch.json 的 last_lock_utc;每 30 秒心跳。
 //
 // 規矩:
 //   - 沒有任何略過生物辨識的旗標;accessControl 固定 [.privateKeyUsage, .biometryCurrentSet](換了指紋就失效,要重封);
@@ -244,10 +245,21 @@ func loadKeyDoc(_ name: String, _ dir: String) throws -> [String: Any] {
     return doc
 }
 
-// 這把鑰一定要本人:不准互動的 LAContext 試簽,只認 LAError.notInteractive;簽得出來 ⇒ weak_key
+// 這把鑰一定要本人:不准互動的 LAContext 試簽兩次,都只認 LAError.notInteractive;簽得出來 ⇒ weak_key。
+// 第二次帶 32 位元組隨機 applicationPassword(#419 R2-M1 實機:applicationPassword 鑰第一次也回 -1004,
+// 帶隨機密碼回 CryptoTokenKit -3 ⇒ 擋下;真 userPresence 鑰兩次都 -1004)。只在 10-29 這台 macOS 實測,其他 ACL 組合沒窮舉。
 func requireOwnerACL(_ doc: [String: Any]) throws {
+    try probeOnce(doc, password: nil)
+    var pw = Data(count: 32)
+    let rc = pw.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+    guard rc == errSecSuccess else { throw Fail("key_probe_failed", 6) }
+    try probeOnce(doc, password: pw)
+}
+
+func probeOnce(_ doc: [String: Any], password: Data?) throws {
     let ctx = LAContext()
     ctx.interactionNotAllowed = true
+    if let pw = password, !ctx.setCredential(pw, type: .applicationPassword) { throw Fail("key_probe_failed", 6) }
     do {
         let k = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: try b64(doc, "se_key"), authenticationContext: ctx)
         _ = try k.signature(for: Data("aib-sehelper owner-acl probe".utf8))
@@ -268,7 +280,8 @@ func sePublicKey(_ doc: [String: Any]) throws -> P256.Signing.PublicKey {
 
 func sePub(_ name: String, _ dir: String) throws {
     let pub = try sePublicKey(try loadKeyDoc(name, dir))
-    print("{\"ok\": true, \"name\": \"\(name)\", \"public_key\": \"\(pub.x963Representation.base64EncodedString())\"}")
+    // owner_acl = probed:這版 helper 探過 ACL(Python 沒看到這欄 = 舊 helper ⇒ 拒;#419 R2-L1)
+    print("{\"ok\": true, \"name\": \"\(name)\", \"owner_acl\": \"probed\", \"public_key\": \"\(pub.x963Representation.base64EncodedString())\"}")
 }
 
 func seVerify(_ name: String, _ dir: String, _ sigB64: String) throws {
@@ -279,7 +292,31 @@ func seVerify(_ name: String, _ dir: String, _ sigB64: String) throws {
         throw Fail("bad_sig", 5)
     }
     guard pub.isValidSignature(sig, for: data) else { throw Fail("bad_sig", 5) }
-    print("{\"ok\": true}")
+    print("{\"ok\": true, \"owner_acl\": \"probed\"}")
+}
+
+// lockwatch(TID-2c,D3):長駐(launchd KeepAlive)。螢幕鎖定 ⇒ 立刻寫 last_lock;每 30 秒寫一次心跳。
+// 只寫 D/lockwatch.json(600)。是本機檔 ⇒ 只防誤操作;Python 端心跳過期 / 讀不到一律當鎖過(@aeb40 Q2)。
+func lockwatch(_ dir: String) throws {
+    try secureDir(dir)
+    let path = dir + "/lockwatch.json"
+    let iso = ISO8601DateFormatter()
+    var lastLock = iso.string(from: Date())          // 剛啟動 = 當作剛鎖過(開機 / 重啟前的單一律不算)
+    func write() {
+        let doc: [String: Any] = ["v": version, "last_lock_utc": lastLock, "beat_utc": iso.string(from: Date()),
+                                  "pid": Int(getpid())]
+        if let d = try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys]) { try? writePrivate(path, d) }
+    }
+    write()
+    let center = DistributedNotificationCenter.default()
+    for n in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
+        center.addObserver(forName: Notification.Name(n), object: nil, queue: .main) { _ in
+            lastLock = iso.string(from: Date())
+            write()
+        }
+    }
+    Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in write() }
+    RunLoop.main.run()
 }
 
 func seSign(_ name: String, _ dir: String, _ reason: String) throws {
@@ -322,6 +359,9 @@ struct Main {
                 guard name == grantKeyName else { throw Fail("bad_name") }
                 try seCreate(name, dir, kind: "grantkey")
             case "se-pub": try sePub(name, dir)
+            case "lockwatch":
+                guard name == grantKeyName else { throw Fail("bad_name") }
+                try lockwatch(dir)
             case "se-verify":
                 guard let sig = o["sig"], !sig.isEmpty else { throw Fail("bad_arg") }
                 try seVerify(name, dir, sig)
