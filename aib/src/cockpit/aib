@@ -773,6 +773,13 @@ if [ "${1:-}" = "mission" ]; then
   exec "$T_PY3" "$HERE/mission.py" "$@"
 fi
 
+# aib meeting new|list|show|summary|next|card|fork|note|table|link|tick(10-29,SPEC-meeting-table-f5fb8-1029):
+#   思維桌主張卡資料契約 meetings/<id>/。整段委派 meeting.py。
+if [ "${1:-}" = "meeting" ]; then
+  shift
+  exec "$T_PY3" "$HERE/meeting.py" "$@"
+fi
+
 # aib secret ask NAME(維護者 10-18):彈遮字輸入框貼金鑰 → Touch ID → 加密進金鑰櫃(可 --push 到伺服器)。委派 secret_ask.py。
 if [ "${1:-}" = "secret" ]; then
   shift
