@@ -5023,7 +5023,7 @@
   "aib.approve.enroll.seen_body": "いま Touch ID の指紋ウィンドウが出て、kid {kid} と表示されましたか?出なかった場合、この Mac の鍵が指紋不要の鍵に替えられている可能性があります。キャンセルしてください。",
   "aib.approve.enroll.seen_check": "出て、kid {kid} と表示された",
   "aib.approve.enroll.done": "{site} の AIB 承認を有効化しました。kid {kid}——この Mac 以外に控えてください。",
-  "aib.approve.help.usage": "使い方:aib approve key init|status|pem [--json]\n        aib approve site add <サイト> [--url https://…](機械室トークンは stdin)| site list\n        aib approve pending [--json]\n        aib approve yes|no <nonce> [--json]\n        aib approve history [--json]\n        aib approve enroll <サイト> --host <SSH エイリアス> [--url https://…](ワンクリック有効化)",
+  "aib.approve.help.usage": "使い方:aib approve key init|status|pem [--json]\n        aib approve site add <サイト> [--url https://…](機械室トークンは stdin)| site list\n        aib approve pending [--json]\n        aib approve yes|no <nonce> [--json]\n        aib approve history [--json]\n        aib approve enroll <サイト> --host <SSH エイリアス> [--url https://…](ワンクリック有効化)\n      aib approve grants [--json] | --revoke <種類|all> | --extend <種類,…> --for 15m|30m|1h|3h|24h | --rotate-key(時間枠の許可)",
   "aib.temp.help.usage": "使い方:aib temp add <ホスト> \"<説明>\" --until <YYYY-MM-DD|ISO 時刻> --undo \"<戻し方>\" [--seat <席>]\n        aib temp list [--all] | check | done <id> [--why \"<一言>\"]   (すべて --json 可)",
   "aib.temp.added": "{id} を登録しました。期限 {until}。戻したら aib temp done {id}",
   "aib.temp.done": "{id} を戻し済みにしました",
@@ -5778,5 +5778,13 @@
   "aib.dmopen.not_advanced": "aib: 承認待ちエリアはアドバンスプランが必要です。今回は開きません",
   "aib.dmopen.plugin_missing": "aib: 承認待ちエリアをオンにしましたが、pending-review プラグインが入っていません。入れると表示されます",
   "aib.dmopen.no_cabin_home": "aib: このキャビンのフォルダが見つからず、承認待ちエリアは開きませんでした",
-  "aib.dmopen.timeout": "aib: 承認待ちエリアの処理が {s} 秒を超えたので今回は飛ばしました(席はそのまま開きます)"
+  "aib.dmopen.timeout": "aib: 承認待ちエリアの処理が {s} 秒を超えたので今回は飛ばしました(席はそのまま開きます)",
+  "aib.approve_gate.cat.window_grant": "時間枠の許可",
+  "aib.approve_grants.touchid_sign": "時間枠:{dur}の間、この Mac のすべての AI を次の操作で自動承認:{cats}",
+  "aib.approve_grants.touchid_sign_rekey": "⚠ 署名鍵が変わりました({old} → {new})。時間枠:{dur}の間、この Mac のすべての AI を次の操作で自動承認:{cats}",
+  "aib.approve_grants.dur.15m": "15 分",
+  "aib.approve_grants.dur.30m": "30 分",
+  "aib.approve_grants.dur.1h": "1 時間",
+  "aib.approve_grants.dur.3h": "3 時間",
+  "aib.approve_grants.dur.24h": "24 時間"
 }

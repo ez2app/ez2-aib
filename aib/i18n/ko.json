@@ -5023,7 +5023,7 @@
   "aib.approve.enroll.seen_body": "방금 Touch ID 지문 창이 뜨고 kid {kid}가 표시되었나요? 뜨지 않았다면 이 Mac의 키가 지문이 필요 없는 키로 바뀌었을 수 있습니다. 취소를 누르세요.",
   "aib.approve.enroll.seen_check": "떴고 kid {kid}가 표시됨",
   "aib.approve.enroll.done": "{site}의 AIB 승인을 활성화했습니다. kid {kid} — 이 Mac 밖에 적어 두세요.",
-  "aib.approve.help.usage": "사용법: aib approve key init|status|pem [--json]\n        aib approve site add <사이트> [--url https://…] (기계실 토큰은 stdin) | site list\n        aib approve pending [--json]\n        aib approve yes|no <nonce> [--json]\n        aib approve history [--json]\n        aib approve enroll <사이트> --host <SSH 별칭> [--url https://…] (원클릭 활성화)",
+  "aib.approve.help.usage": "사용법: aib approve key init|status|pem [--json]\n        aib approve site add <사이트> [--url https://…] (기계실 토큰은 stdin) | site list\n        aib approve pending [--json]\n        aib approve yes|no <nonce> [--json]\n        aib approve history [--json]\n        aib approve enroll <사이트> --host <SSH 별칭> [--url https://…] (원클릭 활성화)\n      aib approve grants [--json] | --revoke <유형|all> | --extend <유형,…> --for 15m|30m|1h|3h|24h | --rotate-key (시간 창 승인)",
   "aib.temp.help.usage": "사용법: aib temp add <호스트> \"<설명>\" --until <YYYY-MM-DD|ISO 시각> --undo \"<되돌리는 법>\" [--seat <좌석>]\n        aib temp list [--all] | check | done <id> [--why \"<한 줄>\"]   (모두 --json 가능)",
   "aib.temp.added": "{id} 등록됨, 기한 {until}. 되돌린 뒤 aib temp done {id}",
   "aib.temp.done": "{id} 를 되돌림으로 표시했습니다",
@@ -5778,5 +5778,13 @@
   "aib.dmopen.not_advanced": "aib: 검토 대기 영역은 고급 요금제가 필요해요. 이번에는 열지 않았어요",
   "aib.dmopen.plugin_missing": "aib: 검토 대기 영역을 켰지만 pending-review 플러그인이 설치되지 않았어요. 설치하면 보여요",
   "aib.dmopen.no_cabin_home": "aib: 이 캐빈 폴더를 찾지 못해 검토 대기 영역을 열지 않았어요",
-  "aib.dmopen.timeout": "aib: 검토 대기 영역 단계가 {s}초를 넘어 이번에는 건너뛰었어요(자리는 그대로 열려요)"
+  "aib.dmopen.timeout": "aib: 검토 대기 영역 단계가 {s}초를 넘어 이번에는 건너뛰었어요(자리는 그대로 열려요)",
+  "aib.approve_gate.cat.window_grant": "시간 창 승인",
+  "aib.approve_grants.touchid_sign": "시간 창: {dur} 동안 이 Mac의 모든 AI를 다음 작업에 자동 승인: {cats}",
+  "aib.approve_grants.touchid_sign_rekey": "⚠ 서명 키가 바뀌었습니다({old} → {new}). 시간 창: {dur} 동안 이 Mac의 모든 AI를 다음 작업에 자동 승인: {cats}",
+  "aib.approve_grants.dur.15m": "15분",
+  "aib.approve_grants.dur.30m": "30분",
+  "aib.approve_grants.dur.1h": "1시간",
+  "aib.approve_grants.dur.3h": "3시간",
+  "aib.approve_grants.dur.24h": "24시간"
 }
