@@ -73,7 +73,7 @@ if sub == "grant-create":
     print(json.dumps({"ok": True}))
 elif sub == "se-pub":
     k = key()
-    if os.environ.get("FAKE_OLD_HELPER") != "1":
+    if not os.path.isfile(os.path.join(o["--dir"], "fake-old-helper")):   # 旗標檔(helper 只拿乾淨 env,#432 R1 H1)
         print(json.dumps({"ok": True, "owner_acl": "probed", "public_key": base64.b64encode(hashlib.sha256(k).digest()).decode()}))
     else:
         print(json.dumps({"ok": True, "public_key": base64.b64encode(hashlib.sha256(k).digest()).decode()}))

@@ -5860,6 +5860,8 @@
   "aib.doctor.check.grants.lockwatch_ok": "時間枠の許可:ロック検知は動作中(自動承認は今は止めてあり、毎回 1 回ずつ確認します)",
   "aib.doctor.check.grants.lockwatch_missing": "時間枠の許可がありますが、画面ロック検知が動いていません({why})⇒ 自動承認は効かず、毎回その都度承認",
   "aib.doctor.check.grants.remedy": "自動承認は今は止めてあるので、入れなくてかまいません。開放後に aib approve grants --lockwatch on で画面ロック検知を入れてください",
+  "aib.doctor.check.grants.helper_missing": "時間枠用の Secure Enclave helper がシステムの場所にないか、古い版です({why})⇒ 許可は必ず検証に失敗し、毎回 1 回ずつ確認します",
+  "aib.doctor.check.grants.helper_remedy": "自動承認は今は止めてあるので、入れなくてかまいません。入れるときは本人がターミナルで実行:{cmd}(管理者パスワードが必要。AI は代わりに実行しません)",
   "aib.doctor.check.grants.error": "時間枠の状態を読めません:{error}",
   "aib.approve_grants.touchid_lockwatch_on": "ロック検知をオンにします(時間枠の自動承認はまだ止めてあり、開放後に使われます)",
   "aib.meeting.ok": "完了",
