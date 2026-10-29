@@ -268,7 +268,11 @@ class Bootstrap:
             return self.refuse("resolve", "no_biometry", self.T("aib.newproj.boot_no_biometry", {"cmd": self.next_cmd()}), next_cmd=self.next_cmd())
         r = AG.ask(reason, AG.state_root_default())
         if not r.get("ok"):
-            return self.refuse("resolve", "touchid_%s" % r.get("why", "denied"), self.T("aib.newproj.boot_denied", {"why": r.get("why")}))
+            hint = self.T("aib.newproj.boot_denied", {"why": r.get("why")})
+            extra = AG.too_long_hint(r)
+            if extra:                # 代碼不換(touchid_refused),只多一句人話(#420 r1 L1)
+                hint = hint + " " + extra
+            return self.refuse("resolve", "touchid_%s" % r.get("why", "denied"), hint, detail=r.get("detail"))
         return None
 
     def open(self) -> Optional[int]:

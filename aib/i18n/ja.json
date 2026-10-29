@@ -5730,6 +5730,7 @@
   "aib.update_status.unavailable": "取得不能",
   "aib.update_status.unmeasured": "未測定",
   "aib.now.dm_wait_overdue": "⏳ 待機メモ付きで 4 時間以上動いていないメッセージが {n} 件:届いたら dm_queue.py close --seat {code} --id <id> --evidence … で完了、まだ待つなら wait --seat {code} --id <id> \"誰 / 何を\" を書き直してください",
+  "aib.approve_gate.too_long_hint": "確認する文が長すぎて Touch ID の画面に入らないため、表示しませんでした。名前を短くしてもう一度お試しください。",
   "aib.approve_gate.unregistered": "未登録の操作を承認:{site}",
   "aib.chat.telegram.touchid_send": "{who} に Telegram を送信:{text}",
   "aib.chat.telegram.touchid_on": "Telegram 中継をオン(艦長席 @{seat} で受信)",
@@ -5773,7 +5774,7 @@
   "aib.chat.cast_summary": "👁 {watching} 人が視聴中 · 視聴リクエスト {incoming} 件 · 受信中 {grants} 枠",
   "aib.dmopen.on": "aib: 承認待ちエリアを開きました。これから開く席でも自動で開きます(取り消し:--no-dm)",
   "aib.dmopen.auto": "aib: 承認待ちエリアを自動で開きました(dm 設定済み。取り消し:--no-dm)",
-  "aib.dmopen.batch": "aib: dm を記憶しました:このバッチの各席が起動時にレビュー欄を開きます(明示的に閉じた艙はそのまま;取り消し:--no-dm)",
+  "aib.dmopen.batch": "aib: dm を記憶しました。このバッチの各席が起動時に承認待ちエリアを開きます(自分で閉じたキャビンはそのまま。取り消し:--no-dm)",
   "aib.dmopen.off": "aib: 新しい席で承認待ちエリアを自動で開くのをやめました。開いているものはそのままです",
   "aib.dmopen.not_advanced": "aib: 承認待ちエリアはアドバンスプランが必要です。今回は開きません",
   "aib.dmopen.plugin_missing": "aib: 承認待ちエリアをオンにしましたが、pending-review プラグインが入っていません。入れると表示されます",
@@ -5825,5 +5826,6 @@
   "aib.mission.watch.w_handed": "受け取り待ち",
   "aib.mission.watch.w_halted_budget": "予算で停止:開始を押す前に予算を調整してください",
   "aib.mission.watch.w_halted": "停止中({by} による)",
-  "aib.mission.watch.w_qa_loop": "{task} 品質確認で差し戻しが続いています、人の確認が必要"
+  "aib.mission.watch.w_qa_loop": "{task} 品質確認で差し戻しが続いています、人の確認が必要",
+  "aib.dmopen.timeout": "aib: 承認待ちエリアの処理が {s} 秒を超えたので今回は飛ばしました(席はそのまま開きます)"
 }

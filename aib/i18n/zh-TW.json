@@ -5730,6 +5730,7 @@
   "aib.update_status.unavailable": "無法量測",
   "aib.update_status.unmeasured": "未量測",
   "aib.now.dm_wait_overdue": "⏳ 待審區有 {n} 封寫了等什麼、超過 4 小時沒動:等到了用 dm_queue.py close --seat {code} --id <id> --evidence …;還在等就重寫一次 wait --seat {code} --id <id> \"等誰 / 等什麼\"",
+  "aib.approve_gate.too_long_hint": "要確認的這句話太長，放不進 Touch ID 視窗，所以沒有彈窗。請把名稱改短一點再試。",
   "aib.approve_gate.unregistered": "核准未登記的動作:{site}",
   "aib.chat.telegram.touchid_send": "寄 Telegram 給 {who}:{text}",
   "aib.chat.telegram.touchid_on": "開啟 Telegram 轉接(收進艦長席 @{seat})",
@@ -5825,5 +5826,6 @@
   "aib.mission.watch.w_handed": "待你收下",
   "aib.mission.watch.w_halted_budget": "預算叫停:按開始前先調預算",
   "aib.mission.watch.w_halted": "叫停(由 {by})",
-  "aib.mission.watch.w_qa_loop": "{task} 品管連退,要人看"
+  "aib.mission.watch.w_qa_loop": "{task} 品管連退,要人看",
+  "aib.dmopen.timeout": "aib: 待審區這一步超過 {s} 秒沒做完,先略過(開席照常)"
 }

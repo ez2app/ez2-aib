@@ -29,7 +29,7 @@ aib cf revoke <token_id>
 
 ## 其他規則
 
-- **權限**(白名單):`dns-read` `dns-write` `cache-purge` `zone-read` `waf-write` `ssl-write` `zone-settings-read` `zone-settings-write` `routes-write` `workers-write` `redirect-read` `redirect-write` `bulk-redirect-read` `rule-lists-read`。
+- **權限**(白名單):`dns-read` `dns-write` `cache-purge` `zone-read` `waf-write` `ssl-write` `zone-settings-read` `zone-settings-write` `routes-write` `workers-write` `redirect-read` `redirect-write` `bulk-redirect-read` `rule-lists-read` `analytics-read`。
 - **IP 鎖**:ssh 連的那個位址 + 伺服器自己對 Cloudflare 的出口 IPv4/IPv6 + 你另給的 `--ip CIDR`。一個都找不到就不建。
 - 沒有任何略過 Touch ID 的旗標或環境變數;不是 Mac ⇒ 不建。`AIB_TOUCHID=0` 只會把它關掉。
 - `--dry-run` 只檢查參數和 IP 鎖、印出計畫;要查網域就得用母鑰(= 要指紋),所以 dry-run 不打 Cloudflare。

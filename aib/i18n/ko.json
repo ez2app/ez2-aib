@@ -5730,6 +5730,7 @@
   "aib.update_status.unavailable": "측정 불가",
   "aib.update_status.unmeasured": "미측정",
   "aib.now.dm_wait_overdue": "⏳ 대기 메모가 있는데 4시간 넘게 움직임이 없는 메시지 {n}건: 도착했으면 dm_queue.py close --seat {code} --id <id> --evidence … 로 종료, 아직 기다리면 wait --seat {code} --id <id> \"누구 / 무엇\" 을 다시 적으세요",
+  "aib.approve_gate.too_long_hint": "확인할 문장이 너무 길어 Touch ID 창에 들어가지 않아 띄우지 않았습니다. 이름을 짧게 바꾼 뒤 다시 시도해 주세요.",
   "aib.approve_gate.unregistered": "등록되지 않은 작업 승인: {site}",
   "aib.chat.telegram.touchid_send": "{who}에게 Telegram 보내기: {text}",
   "aib.chat.telegram.touchid_on": "Telegram 중계 켜기(함장석 @{seat}로 수신)",
@@ -5773,7 +5774,7 @@
   "aib.chat.cast_summary": "👁 {watching}명 시청 중 · 시청 요청 {incoming}건 · 받는 중 {grants}칸",
   "aib.dmopen.on": "aib: 검토 대기 영역을 열었어요. 앞으로 여는 모든 자리에서도 자동으로 열려요(취소: --no-dm)",
   "aib.dmopen.auto": "aib: 검토 대기 영역을 자동으로 열었어요(dm 설정됨, 취소: --no-dm)",
-  "aib.dmopen.batch": "aib: dm 기억함: 이번 배치의 각 자리가 시작할 때 검토 영역을 엽니다(직접 끈 캐빈은 그대로; 취소: --no-dm)",
+  "aib.dmopen.batch": "aib: dm을 기억했어요. 이번 배치의 각 자리가 시작할 때 검토 대기 영역을 열어요(직접 끈 캐빈은 그대로예요, 취소: --no-dm)",
   "aib.dmopen.off": "aib: 새 자리에서 검토 대기 영역을 자동으로 여는 것을 껐어요. 이미 열린 것은 그대로예요",
   "aib.dmopen.not_advanced": "aib: 검토 대기 영역은 고급 요금제가 필요해요. 이번에는 열지 않았어요",
   "aib.dmopen.plugin_missing": "aib: 검토 대기 영역을 켰지만 pending-review 플러그인이 설치되지 않았어요. 설치하면 보여요",
@@ -5825,5 +5826,6 @@
   "aib.mission.watch.w_handed": "받기를 기다리는 중",
   "aib.mission.watch.w_halted_budget": "예산으로 정지: 시작을 누르기 전에 예산을 조정하세요",
   "aib.mission.watch.w_halted": "정지됨({by})",
-  "aib.mission.watch.w_qa_loop": "{task} 품질 확인 반려가 반복됨, 사람이 봐야 함"
+  "aib.mission.watch.w_qa_loop": "{task} 품질 확인 반려가 반복됨, 사람이 봐야 함",
+  "aib.dmopen.timeout": "aib: 검토 대기 영역 단계가 {s}초를 넘어 이번에는 건너뛰었어요(자리는 그대로 열려요)"
 }
