@@ -24,11 +24,16 @@ aib mission new|list|show|roster|team|task|tick … [--json]
 唯一識別 + 版本:每筆指令可帶 --eid;同 eid 同內容 ⇒ 回原結果不重做,同 eid 不同內容 ⇒ eid_conflict。
   任務帶 rev(每次變動 +1,--if-rev 不合 ⇒ stale_rev)、accept_rev(驗收版本)、code(派工代號)。
 
-本人動作(開始 / 收下)走 approve_gate 的 Touch ID;非 Mac / 叫不出 / 取消 ⇒ 拒。
+本人動作(開始 / 收下)走 approve_gate 的 Touch ID(都是高風險,一次一按);非 Mac / 叫不出 / 取消 ⇒ 拒。
   開始也可以不按:待開始倒數 30 秒沒人按停就自動開始(Andy 03:1x 裁示 7);收下一定要按。
+  契約(#414 R1 M1):started_by = "human" | "autostart"(charter.json / show 都有)。自動開始的 running ≠ 本人授權:
+  S1 的自動開始只改狀態(不開席、不起行程、不花額度);S4 要開席 / 花額度一定要看 started_by,autostart 只能用免簽額度(grant §7)。
+  本人按暫停 ⇒ 只有本人能恢復(paused_by)。
 同帳號威脅模型(GUIDE-same-user-ai-threat-model):missions/ 所有 AI 都寫得到;--by 是自報。角色表、租期、eid、
   收據格式只防誤操作與 AI 之間互踩,不是防線。真正的防線只有 Touch ID 那兩步;改了驗得出要等 S4 的 SE 簽授權單。
   收據裡的 rc / CI 結論也是自報 ⇒ show 的 verified_pct 只算 ci / pr_merged 兩種(S2 起由核心重跑再補)。
+  ci / pr_merged 收據的 head 要對得上任務回報的 artifact(前綴相符);回報沒帶 artifact ⇒ 只能用 test / checklist 收據。
+  verified「品管全過」= 每件任務都有通過的收據;machine_all = 每件的收據都是機器證據(只有 checklist / test 的團也收得了)。
 """
 from __future__ import annotations
 
@@ -123,7 +128,9 @@ def _mkdir(p):
 
 
 @contextmanager
-def _locked(d):
+def _locked(d, create=False):
+    if not create and not d.is_dir():
+        raise MissionError("no_mission")          # 不存在的 id 不留空目錄(#414 R1 L4)
     _mkdir(d)
     fd = os.open(str(d / ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -228,6 +235,10 @@ def _check_receipt(rec, t, tid):
     if t.get("artifact") and rec.get("artifact") != t["artifact"]:
         raise MissionError("receipt_stale")
     k = rec["kind"]
+    if k in MACHINE_VERIFIED:
+        head, art = str(rec.get("head") or ""), str(t.get("artifact") or "")
+        if not art or not HEAD_RE.match(head) or not (head.startswith(art) or art.startswith(head)):
+            raise MissionError("receipt_stale")      # CI / 已合要綁到這件任務的產物頭碼(#414 R1 M2)
     out = {"kind": k, "task": tid, "accept_rev": t["accept_rev"], "artifact": t.get("artifact"),
            "cmd": _txt(rec.get("cmd"), 400)}
     if k == "test":
@@ -308,6 +319,12 @@ def apply(st, ev):
             raise MissionError("not_proved")
         if d["move"] == "accept" and d.get("proved") is not True:
             raise MissionError("not_proved")
+        if d["move"] == "resume" and st.get("paused_by") == "human" and by != "human":
+            raise MissionError("not_allowed")       # 本人按的暫停只有本人能恢復(#414 R1 L9)
+        if d["move"] == "pause":
+            st["paused_by"] = "human" if by == "human" else _role(st, by)
+        if d["move"] in ("autostart", "start"):
+            st.update(started_by="autostart" if d["move"] == "autostart" else "human", started_at=at)   # #414 R1 M1
         if to == "running" and st["status"] in ("paused", "halted"):
             for t in st["tasks"].values():        # 暫停期間不算租期:回來時重給一整段
                 if t["status"] in LEASED:
@@ -342,7 +359,9 @@ def apply(st, ev):
             raise MissionError("bad_transition")
         if not TASK_RE.match(str(tid or "")) or tid in st["tasks"]:
             raise MissionError("bad_task")
-        deps = [x for x in (d.get("deps") or []) if x in st["tasks"]]
+        deps = list(d.get("deps") or [])
+        if any(x not in st["tasks"] for x in deps):
+            raise MissionError("bad_dep")             # 打錯的依賴不能當沒依賴(#414 R1 L3)
         parent = d.get("parent")
         if parent is not None and parent not in st["tasks"]:
             raise MissionError("bad_parent")
@@ -469,14 +488,27 @@ def _req_digest(typ, by, task, data):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _public_task(t):
+    """快照 / show 都不帶派工代號(#414 R1 L8;同帳號下不算防線,只防經 API 外流)。"""
+    return {k: v for k, v in t.items() if k not in ("code", "codes")}
+
+
+def _machine_all(st):
+    live = [t for t in st["tasks"].values() if t["status"] != "cancelled"]
+    return bool(live) and all(t["status"] == "passed" and (st["receipts"].get(t["receipt"]) or {}).get("machine_verified")
+                              for t in live)
+
+
 def _snapshots(d, st):
     _write(d / "charter.json", json.dumps({"v": V, "id": st["id"], "status": st["status"], "rev": st["rev"],
                                            "ready_at": st.get("ready_at"), "hold": bool(st.get("hold")),
+                                           "started_by": st.get("started_by"), "started_at": st.get("started_at"),
+                                           "paused_by": st.get("paused_by"), "machine_all": _machine_all(st),
                                            "charter": st["charter"], "created_at": st["created_at"],
                                            "updated_at": st["updated_at"]}, ensure_ascii=False, sort_keys=True))
     _write(d / "roster.json", json.dumps({"v": V, "roster": st["roster"]}, ensure_ascii=False, sort_keys=True))
     _write(d / "budget.json", json.dumps({"v": V, "budget": st["budget"]}, ensure_ascii=False, sort_keys=True))
-    _write(d / "tasks.jsonl", "".join(json.dumps(t, ensure_ascii=False, sort_keys=True) + "\n"
+    _write(d / "tasks.jsonl", "".join(json.dumps(_public_task(t), ensure_ascii=False, sort_keys=True) + "\n"
                                       for t in sorted(st["tasks"].values(), key=lambda t: int(t["id"][1:]))))
 
 
@@ -526,7 +558,7 @@ def commit(mid, typ, by, data, env=None, task=None, eid=None, now=None):
     if eid is not None and not EID_RE.match(str(eid)):
         raise MissionError("bad_eid")
     req = _req_digest(typ, by, task, data)
-    with _locked(d):
+    with _locked(d, create=typ == "created"):
         st, torn, evs = _load(d, mid)
         if typ == "created" and evs:
             raise MissionError("exists")
@@ -605,9 +637,11 @@ def view(st, now=None):
     mv = [t for t in live if t["status"] == "passed" and (st["receipts"].get(t["receipt"]) or {}).get("machine_verified")]
     return {"v": V, "id": st["id"], "status": st["status"], "rev": st["rev"], "seq": st["seq"], "charter": st["charter"],
             "budget": st["budget"], "roster": st["roster"], "created_at": st["created_at"], "updated_at": st["updated_at"],
-            "tasks": [dict({k: v for k, v in t.items() if k not in ("code", "codes")}, code_set=bool(t.get("code")),
+            "tasks": [dict(_public_task(t), code_set=bool(t.get("code")),
                            lease_left=max(0, t["lease_until"] - now) if t.get("lease_until") else None) for t in tasks],
             "receipts": st["receipts"], "hold": bool(st.get("hold")),
+            "started_by": st.get("started_by"), "started_at": st.get("started_at"), "paused_by": st.get("paused_by"),
+            "machine_all": _machine_all(st), "cancelled": len(tasks) - len(live),
             "autostart_in": (max(0, int(st["ready_at"]) + AUTOSTART_S - now)
                              if st["status"] == "ready" and not st.get("hold") and st.get("ready_at") else None),
             "passed": sum(1 for t in live if t["status"] == "passed"), "total": len(live),
@@ -620,8 +654,9 @@ def _human_gate(move, mid, st, env):
     """開始 / 收下:approve_gate 組字 + Touch ID(高風險類不開時間窗)。回 None = 過;否則原因碼。"""
     import approve_gate as AG
     site = HUMAN_SITES[move]
-    r = AG.reason(site, {"title": st["charter"].get("title") or mid, "id": mid,
-                         "n": str(len([t for t in st["tasks"].values() if t["status"] != "cancelled"]))}, env=env)
+    live = [t for t in st["tasks"].values() if t["status"] != "cancelled"]
+    r = AG.reason(site, {"title": st["charter"].get("title") or mid, "id": mid, "n": str(len(live)),
+                         "k": str(len(st["tasks"]) - len(live))}, env=env)     # 另取消 k 件也給本人看(#414 R1 L7)
     if PROVE:
         return PROVE(r, env)
     off = AG.ready(env)
@@ -637,6 +672,8 @@ def team(mid, move, by, env=None, eid=None, now=None):
         if by != "human":
             raise MissionError("not_allowed")
         st = replay(mid, env)
+        if eid and eid in st["eids"]:              # 重送 ⇒ 不再彈 Touch ID,直接回原結果 / eid_conflict(#414 R1 L5)
+            return commit(mid, "team", by, dict(data, proved=True), env=env, eid=eid, now=now)
         why = _human_gate(move, mid, st, env)
         if why:
             raise MissionError(why)

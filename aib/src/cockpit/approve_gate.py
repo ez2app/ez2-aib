@@ -141,10 +141,12 @@ SITES = {
                                     {"minutes": FULL, "per_hour": FULL},
                                     "Turn on BB Call phone forwarding: after {minutes} minutes, send \"N new letters\" "
                                     "to your paired phones, at most {per_hour} per hour"),
-    "mission.start": _s("cockpit/mission.py", "command", "aib.mission.touchid_start", {"title": 60, "id": FULL, "n": FULL},
+    # mission.start 高風險一次一按(#414 R1 L6,@aeb40 裁:會導向開席 / 花用量,grant §7 裁前不給時間窗)
+    "mission.start": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_start", {"title": 60, "id": FULL, "n": FULL},
                         "Start task team {title} ({id}, {n} tasks): seats may open and spend usage"),
-    "mission.accept": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_accept", {"title": 60, "id": FULL, "n": FULL},
-                         "Accept and archive task team {title} ({id}, {n} tasks)"),
+    "mission.accept": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_accept",
+                         {"title": 60, "id": FULL, "n": FULL, "k": FULL},
+                         "Accept and archive task team {title} ({id}, {n} tasks, {k} cancelled)"),
     "release.sign_approve": _s("release/sign_approve.py", "release_sign", "aib.release.sign_approve_reason",
                                {"plugin": FULL, "ver": FULL, "pin": FULL},
                                "Sign and release {plugin} {ver} · head {pin}"),

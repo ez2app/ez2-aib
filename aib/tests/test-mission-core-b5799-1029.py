@@ -13,6 +13,10 @@ M8 本人兩步(開始 / 收下)走 approve_gate:沒過 / 不是 human ⇒ 拒(K
 M10 倒數 30 秒自動開始(Andy 03:1x 裁示 7):滿 30 秒沒按停 ⇒ tick 寫 system autostart(K12 不滿 30 秒也收);
     hold 停倒數(K13);再 submit 重新倒數;system 以外不能寫 autostart
 M9 改驗收:舊通過作廢回品管中;檔權限 0600 / 0700;CLI --json
+M11 #414 R1(@aeb40):started_by 分得出自動 / 本人開始(K14);ci / pr_merged 收據 head 綁產物頭碼(K15);
+    machine_all 旗標;偽造的過期回報 / 未到期 expire 重放讀不起來(K16、K17);未知依賴拒(K18);
+    不存在的 id 不留空目錄;同 eid 重送不再彈 Touch ID(K19);收下的句子帶取消件數;快照不帶派工代號;
+    本人按的暫停只有本人能恢復(K20)
 """
 import json
 import os
@@ -215,7 +219,7 @@ class M3Lease(Base):
         self.c("team", by(PM), {"move": "pause"}, now=T0 + 100)
         self.assertEqual(M.tick(self.mid, self.env, now=T0 + 5000), [])
         self.c("team", by(PM), {"move": "resume"}, now=T0 + 5000)
-        self.report("doing", code, now=T0 + 5000 + M.LEASE_S - 1)
+        self.ok(self.report, "doing", code, now=T0 + 5000 + M.LEASE_S - 1)      # R1 L2:刀要紅成 FAIL
         self.assertEqual(self.st()["tasks"]["t1"]["status"], "doing")
 
 
@@ -489,6 +493,109 @@ class M10Autostart(Base):
         self.bad("corrupt:%d" % ev["seq"], M.replay, self.mid, self.env)
 
 
+class M11R1(Base):
+    def forge(self, ev):
+        p = M.mdir(self.mid, self.env) / "events.jsonl"
+        lines = p.read_text().splitlines()
+        ev = dict({"v": 1, "seq": len(lines) + 1, "req": None}, **ev)
+        p.write_text("\n".join(lines + [json.dumps(ev)]) + "\n")
+        return ev["seq"]
+
+    def test_m1_started_by(self):
+        self.mk(running=False)
+        self.c("team", by(PM), {"move": "submit"}, now=T0)
+        M.tick(self.mid, self.env, now=T0 + 30)
+        st = self.st()
+        self.assertEqual((st.get("started_by"), st.get("started_at")), ("autostart", T0 + 30))
+        self.assertEqual(M.view(st, now=T0)["started_by"], "autostart")
+        ch = json.loads((M.mdir(self.mid, self.env) / "charter.json").read_text())
+        self.assertEqual((ch["started_by"], ch["started_at"]), ("autostart", T0 + 30))
+        self.c("team", by(PM), {"move": "halt"}, now=T0 + 40)
+        M.team(self.mid, "start", "human", env=self.env, now=T0 + 50)
+        self.assertEqual((self.st()["started_by"], self.st()["started_at"]), ("human", T0 + 50))
+
+    def test_m2_ci_head_bound_to_artifact(self):
+        self.mk(tasks=3)
+        self.to_qa("t1", head="abc1234")
+        for rec in (self.receipt(kind="ci", head="fffffff"), self.receipt(kind="pr_merged", head="fffffff")):
+            with self.subTest(rec=rec["kind"]):
+                self.bad("receipt_stale", M.qa, self.mid, "t1", by(QA), "pass", rec, env=self.env, now=T0)
+        self.ok(M.qa, self.mid, "t1", by(QA), "pass", self.receipt(kind="ci", head="abc1234def0"), env=self.env, now=T0)
+        self.to_qa("t2", W2, head=None)                                 # 回報沒帶產物 ⇒ 只能 test / checklist
+        self.bad("receipt_stale", M.qa, self.mid, "t2", by(QA), "pass", self.receipt("t2", kind="ci", artifact=None),
+                 env=self.env, now=T0)
+        self.ok(M.qa, self.mid, "t2", by(QA), "pass", self.receipt("t2", artifact=None), env=self.env, now=T0)
+
+    def test_m3_machine_all(self):
+        self.mk()
+        self.to_qa()
+        M.qa(self.mid, "t1", by(QA), "pass", self.receipt(kind="checklist"), env=self.env, now=T0)
+        self.ok(self.c, "team", by(PM), {"move": "verify"})                # 純 checklist 的團照樣收得了
+        v = M.view(self.st(), now=T0)
+        self.assertEqual((v["status"], v["verified_pct"], v["machine_all"]), ("verified", 0, False))
+        self.assertFalse(json.loads((M.mdir(self.mid, self.env) / "charter.json").read_text())["machine_all"])
+        self.c("team", by(PM), {"move": "reopen"})
+        self.c("amend", by(PM), {"accept": ["ci"]}, task="t1")
+        M.qa(self.mid, "t1", by(QA), "pass", self.receipt(kind="ci", accept_rev=2), env=self.env, now=T0)
+        self.assertTrue(M.view(self.st(), now=T0)["machine_all"])
+
+    def test_l1_forged_report_after_lease_unreadable(self):
+        self.mk()
+        code = self.dispatch(now=T0)
+        seq = self.forge({"eid": "e_forged000002", "at": T0 + M.LEASE_S + 5, "by": by(W1), "type": "report", "task": "t1",
+                          "data": {"code": code, "state": "doing", "note": ""}})
+        self.bad("corrupt:%d" % seq, M.replay, self.mid, self.env)
+
+    def test_l1_forged_early_expire_unreadable(self):
+        self.mk()
+        self.dispatch(now=T0)
+        seq = self.forge({"eid": "x_forged000003", "at": T0 + 10, "by": "system", "type": "expire", "task": "t1", "data": {}})
+        self.bad("corrupt:%d" % seq, M.replay, self.mid, self.env)
+
+    def test_l3_unknown_dep_refused(self):
+        self.mk(running=False)
+        self.bad("bad_dep", self.c, "task_add", by(PM), {"title": "x", "deps": ["t9"]})
+        self.assertEqual(len(self.st()["tasks"]), 1)
+
+    def test_l4_unknown_id_leaves_no_dir(self):
+        mid = "m_" + "0" * 12
+        self.bad("no_mission", M.commit, mid, "team", by(PM), {"move": "submit"}, env=self.env, now=T0)
+        self.bad("no_mission", M.tick, mid, self.env, now=T0)
+        self.assertFalse(M.mdir(mid, self.env).exists())
+
+    def test_l5_resend_does_not_ask_again(self):
+        self.mk(running=False)
+        self.c("team", by(PM), {"move": "submit"})
+        a = M.team(self.mid, "start", "human", env=self.env, eid="start-0000001", now=T0)
+        b = self.ok(M.team, self.mid, "start", "human", env=self.env, eid="start-0000001", now=T0 + 1)
+        self.assertEqual((a["duplicate"], b["duplicate"], len(self.proved)), (False, True, 1))
+
+    def test_l7_accept_shows_cancelled(self):
+        self.mk(tasks=2)
+        self.to_qa("t1")
+        M.qa(self.mid, "t1", by(QA), "pass", self.receipt(), env=self.env, now=T0)
+        self.c("cancel", by(PM), {}, task="t2")
+        self.c("team", by(PM), {"move": "verify"})
+        self.c("team", by(PM), {"move": "handoff"})
+        M.team(self.mid, "accept", "human", env=self.env, now=T0)
+        self.assertIn("1 tasks, 1 cancelled", self.proved[-1])
+
+    def test_l8_snapshot_has_no_codes(self):
+        self.mk()
+        self.dispatch()
+        raw = (M.mdir(self.mid, self.env) / "tasks.jsonl").read_text()
+        self.assertNotIn('"code"', raw)
+        self.assertNotIn('"codes"', raw)
+
+    def test_l9_human_pause_only_human_resumes(self):
+        self.mk()
+        self.c("team", "human", {"move": "pause"})
+        self.bad("not_allowed", self.c, "team", by(PM), {"move": "resume"})
+        self.ok(self.c, "team", "human", {"move": "resume"})
+        self.c("team", by(MON), {"move": "pause"})
+        self.ok(self.c, "team", by(PM), {"move": "resume"})
+
+
 KNIVES = [
     ("K1", '''        if st["status"] not in frm:
             raise MissionError("bad_transition")''', "", "M1Team.test_illegal_transitions"),
@@ -500,7 +607,9 @@ KNIVES = [
     ("K5", '''            if by[5:] in t["workers"]:''', '''            if False:''', "M5Pass.test_maker_cannot_check"),
     ("K6", '''    if rec.get("task") != tid or rec.get("accept_rev") != t["accept_rev"]:''', '''    if rec.get("task") != tid:''',
      "M5Pass.test_receipt_bound_to_accept_rev_and_artifact"),
-    ("K7", '''        if eid and eid in st["eids"]:''', '''        if False:''', "M6Ids.test_same_eid_not_repeated"),
+    ("K7", '''        if eid and eid in st["eids"]:
+            if st["eids"][eid]["req"] != req:''', '''        if False:
+            if st["eids"][eid]["req"] != req:''', "M6Ids.test_same_eid_not_repeated"),
     ("K8", '''                torn = pos                     # 斷電寫一半的最後一行:當沒寫
                 break''', '''                pass''', "M7Replay.test_torn_tail_ignored_and_truncated"),
     ("K9", '''            raise MissionError("corrupt:%s:%s" % (ev.get("seq"), err))
@@ -514,6 +623,19 @@ KNIVES = [
     ("K13", '''    if st["status"] == "ready" and not st.get("hold") and now - int(st.get("ready_at") or now) >= AUTOSTART_S:''',
      '''    if st["status"] == "ready" and now - int(st.get("ready_at") or now) >= AUTOSTART_S:''',
      "M10Autostart.test_hold_stops_countdown_and_resubmit_restarts"),
+    ("K14", '''            st.update(started_by="autostart" if d["move"] == "autostart" else "human", started_at=at)   # #414 R1 M1''',
+     '''            st.update(started_by="human", started_at=at)''', "M11R1.test_m1_started_by"),
+    ("K15", '''        if not art or not HEAD_RE.match(head) or not (head.startswith(art) or art.startswith(head)):''',
+     '''        if False:''', "M11R1.test_m2_ci_head_bound_to_artifact"),
+    ("K16", '''            if t["status"] not in REPORT_MOVES or (t.get("lease_until") or 0) < at:''',
+     '''            if t["status"] not in REPORT_MOVES:''', "M11R1.test_l1_forged_report_after_lease_unreadable"),
+    ("K17", '''            if st["status"] != "running" or t["status"] not in LEASED or (t.get("lease_until") or 0) >= at:''',
+     '''            if st["status"] != "running" or t["status"] not in LEASED:''', "M11R1.test_l1_forged_early_expire_unreadable"),
+    ("K18", '''        if any(x not in st["tasks"] for x in deps):''', '''        if False:''', "M11R1.test_l3_unknown_dep_refused"),
+    ("K19", '''        if eid and eid in st["eids"]:              # 重送''', '''        if False:              # 重送''',
+     "M11R1.test_l5_resend_does_not_ask_again"),
+    ("K20", '''        if d["move"] == "resume" and st.get("paused_by") == "human" and by != "human":''',
+     '''        if False:''', "M11R1.test_l9_human_pause_only_human_resumes"),
 ]
 
 
