@@ -42,6 +42,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -192,6 +193,13 @@ C1 = NK.npub(NK.pubkey_hex("%064x" % 0x8203))
 
 class Short(unittest.TestCase):
     def setUp(self):
+        # 查碼會連「現在 +10 分」那天一起查 ⇒ UTC 23:50 後跑,多查一天、fetches 排的順序錯位(10-29 CI ubuntu 3.14 紅過)。
+        # 時鐘平移到今天 UTC 中午(照樣往前走),測試端與 chat_bridge 看同一個鐘;要測跨天的格(I14)自己再換。
+        real, start = time.time, time.time()
+        shift = (int(start) // 86400 * 86400 + 43200) - start
+        patcher = mock.patch.object(time, "time", lambda: real() + shift)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.td = Path(tempfile.mkdtemp(prefix="aib-invite-s-"))
         self.addCleanup(shutil.rmtree, self.td, True)
         self.env = {"HOME": str(self.td), "EZ2_AIB_STATE_ROOT": str(self.td / ".ez2-aib"), "EZ2_AIB_LOCALE": "zh-TW"}
