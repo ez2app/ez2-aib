@@ -23,6 +23,10 @@ approve_gate.ask() 完全不讀授權單(測試有一格證明)。
 TID-2c(#428,Andy 10-29 20:5x 裁 H1):ask() 的時間窗**先關**。本機驗單的結果信的是 helper binary(狀態根 bin/,
 原始碼雜湊相同就沿用)與狀態根裡的單 / lockwatch.json,而 EZ2_AIB_STATE_ROOT 換得掉狀態根 ⇒ 不算防線。
 這裡的簽 / 驗 / 選單 / lockwatch 都留著,等「系統錨定驗單」那題做完才由 approve_gate 接回。
+
+系統錨定驗單第 1 張(10-30):helper 只認 anchored_helper.EXE(root 擁有的固定路徑、往上每層 root 擁有不可寫、
+stamp = 原始碼雜湊),不吃 EZ2_AIB_STATE_ROOT / PATH、不退回 <狀態根>/bin;沒裝 / 舊版 ⇒ 驗單、簽單一律不過。
+安裝本人跑:aib approve grants --helper status 印出的那一行(sudo,AI 不代跑)。鎖屏改看系統日誌是第 2 張。
 """
 import argparse
 import calendar
@@ -36,6 +40,7 @@ import sys
 import time
 import unicodedata
 
+import anchored_helper
 import approve_gate as AG
 import se_vault
 
@@ -122,12 +127,13 @@ class Ctx:
     """外部依賴一處注入(測試換假 helper / 時鐘 / 開機 / 機器)。"""
 
     def __init__(self, env=None, run=subprocess.run, helper=None, platform=None, now=None, boot=None, machine=None,
-                 screen_locked=None):
+                 screen_locked=None, anchored=None):
         self.env = dict(os.environ if env is None else env)
         self.run, self.helper, self.platform = run, helper, platform
         self.now = now or time.time
         self._boot, self._machine = boot, machine
         self._screen_locked = screen_locked
+        self._anchored = anchored            # 只給測試換掉 anchored_helper.check
 
     def screen_locked(self):
         """現在是不是鎖屏中;量不到 ⇒ True(當鎖著,不自動同意)。"""
@@ -143,8 +149,19 @@ class Ctx:
         return self._machine() if callable(self._machine) else (self._machine if self._machine is not None
                                                                 else machine_id(self.run, self.platform))
 
+    def helper_exe(self):
+        """(路徑, None) 或 (None, why)。正式路徑只認 root 擁有的固定路徑那支(系統錨定驗單第 1 張);
+        不吃 EZ2_AIB_STATE_ROOT / PATH,也不退回 <狀態根>/bin 那支。helper= 只給測試注入。"""
+        if self.helper:
+            return self.helper, None
+        exe, why = (self._anchored or anchored_helper.check)(platform=self.platform)
+        return (exe, None) if exe else (None, "helper_" + str(why))
+
     def helper_call(self, args, data=b""):
-        return se_vault._call(args, self.env, data, self.run, self.helper, self.platform)
+        exe, why = self.helper_exe()
+        if not exe:
+            return None, why
+        return se_vault._call(args, self.env, data, self.run, exe, self.platform)
 
 
 def _utc(t):
@@ -522,7 +539,7 @@ def install_lockwatch(ctx, launchctl, home):
     沒裝 ⇒ lock_state 一律 no_lockwatch(不自動同意,回一次一按)。回 (installed|mac_only|failed, 說明)。"""
     if (ctx.platform or sys.platform) != "darwin":
         return "mac_only", ""
-    exe, why = (ctx.helper, None) if ctx.helper else se_vault.build_helper(ctx.env, run=ctx.run, platform=ctx.platform)
+    exe, why = ctx.helper_exe()
     if not exe:
         return "failed", why
     import plistlib
@@ -562,6 +579,9 @@ def doctor_line(ctx=None):
     ctx = ctx or Ctx()
     if not load_all(ctx.env):
         return "ok", "no_grants"
+    _, why = ctx.helper_exe()
+    if why:                                  # 沒裝 / 舊版 / 擁有者不對 ⇒ 驗單一律不過(Q1:update 改了 helper ⇒ 窗自動關)
+        return "note", why
     _, why = lock_state(Ctx(env=ctx.env, now=ctx.now, screen_locked=False))
     return ("ok", "lockwatch_ok") if why is None else ("note", why)
 
@@ -672,6 +692,7 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
     g.add_argument("--extend")
     g.add_argument("--rotate-key", action="store_true")
     g.add_argument("--lockwatch", choices=("on", "off", "status"))
+    g.add_argument("--helper", choices=("status",))
     ap.add_argument("--for", dest="dur", choices=sorted(DURATIONS))
     ap.add_argument("--json", action="store_true")
     try:
@@ -684,6 +705,10 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
         out.write(json.dumps(d, ensure_ascii=False) + "\n")
         return rc
 
+    if o.helper:                             # 唯讀:固定路徑 helper 裝了沒;沒裝 ⇒ 給本人在終端跑的那一行(AI 不代跑)
+        exe, why = ctx.helper_exe()
+        return emit({"ok": exe is not None, "path": anchored_helper.EXE, "why": why,
+                     "install": None if exe else anchored_helper.install_command()}, 0)
     if o.lockwatch:
         lc, hm = launchctl or _real_launchctl, home or os.path.expanduser("~")
         if o.lockwatch == "on":

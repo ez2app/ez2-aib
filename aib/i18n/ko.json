@@ -5860,6 +5860,8 @@
   "aib.doctor.check.grants.lockwatch_ok": "시간 창 승인: 잠금 감지 실행 중(자동 승인은 지금 꺼져 있어 매번 한 번씩 확인합니다)",
   "aib.doctor.check.grants.lockwatch_missing": "시간 창 승인이 있지만 화면 잠금 감지가 실행되지 않습니다({why}) ⇒ 자동 승인 꺼짐, 매번 한 번씩 승인",
   "aib.doctor.check.grants.remedy": "자동 승인은 지금 꺼져 있으니 설치하지 않아도 됩니다. 열린 뒤 aib approve grants --lockwatch on 으로 화면 잠금 감지를 설치하세요",
+  "aib.doctor.check.grants.helper_missing": "시간 창용 Secure Enclave helper 가 시스템 위치에 없거나 최신 버전이 아닙니다({why}) ⇒ 승인은 항상 검증에 실패하고 매번 한 번씩 확인합니다",
+  "aib.doctor.check.grants.helper_remedy": "자동 승인은 지금 꺼져 있으니 설치하지 않아도 됩니다. 설치할 때는 본인이 터미널에서 실행: {cmd}(관리자 암호가 필요하며 AI 는 대신 실행하지 않습니다)",
   "aib.doctor.check.grants.error": "시간 창 상태를 읽을 수 없음: {error}",
   "aib.approve_grants.touchid_lockwatch_on": "잠금 감지를 켭니다(시간 창 자동 승인은 아직 꺼져 있으며, 열리면 그때 사용됩니다)"
 }

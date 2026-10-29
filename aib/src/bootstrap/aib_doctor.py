@@ -639,6 +639,10 @@ def check_grants(state_root, repo_root, env=None):
         return _result("grants", NOTE, _C("grants.error", error=type(exc).__name__))
     if status == "ok":
         return _result("grants", OK, _C("grants." + code))
+    if code.startswith("helper_"):           # 系統錨定驗單:固定路徑 helper 沒裝 / 舊版 / 擁有者不對(安裝指令本人跑)
+        import anchored_helper
+        return _result("grants", NOTE, _C("grants.helper_missing", why=code[len("helper_"):]),
+                       _C("grants.helper_remedy", cmd=anchored_helper.install_command()))
     return _result("grants", NOTE, _C("grants.lockwatch_missing", why=code), _C("grants.remedy"))
 
 

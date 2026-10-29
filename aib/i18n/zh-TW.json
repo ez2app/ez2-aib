@@ -5860,6 +5860,8 @@
   "aib.doctor.check.grants.lockwatch_ok": "時間窗授權單:鎖屏偵測在跑(自動同意目前關著,每次仍一次一按)",
   "aib.doctor.check.grants.lockwatch_missing": "有時間窗授權單,但鎖屏偵測沒在跑({why})⇒ 自動同意不會生效,一律一次一按",
   "aib.doctor.check.grants.remedy": "自動同意目前關著,可先不裝;之後開放時再用 aib approve grants --lockwatch on 裝鎖屏偵測",
+  "aib.doctor.check.grants.helper_missing": "時間窗用的 Secure Enclave helper 不在系統位置或不是最新版({why})⇒ 授權單一律驗不過,每次仍一次一按",
+  "aib.doctor.check.grants.helper_remedy": "自動同意目前關著,可先不裝;要裝時本人在終端跑:{cmd}(會要管理員密碼,AI 不代跑)",
   "aib.doctor.check.grants.error": "讀不到時間窗狀態:{error}",
   "aib.approve_grants.touchid_lockwatch_on": "開啟鎖屏偵測(時間窗的自動同意目前仍關著,之後開放時才會用到)"
 }
