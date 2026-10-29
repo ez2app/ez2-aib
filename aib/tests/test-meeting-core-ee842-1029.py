@@ -5,7 +5,7 @@ A1 開會:主持一定在出席名單且只有一位;議題必填;保險絲超�
 A2 已定門檻 = ≥1 附議 + ≥1 證據 + 沒有未解反對:只有附議沒證據 ⇒ open;補證據卡 ⇒ settled(K1、K2)
 A3 自己附議 / 反對自己的主張拒;同一席對同一張只表態一次;品管只能出 question / evidence(K3)
 A4 反對 ⇒ 開分岔 f1、狀態 forked;第二個反對併進同一個分岔
-A5 分岔:主持挑 2–3 席(品管不能入選);三方都寫了主持才能定預設;預設要附證據(K4)
+A5 分岔:主持挑 2–3 席(品管不能入選);三方都寫了主持才能定預設;預設要附證據(K4);view 帶這個分岔的反對卡字
 A6 30 秒:倒數沒滿 tick 不動;滿了 tick 由 system 記「預設採用」;裁成主張 ⇒ 反對作廢可已定;裁成反對 ⇒ rejected(K5)
 A7 離開模式:預設一出就算數(不等 30 秒);本人 pick 隨時改選
 A8 本人:沒 ✋ 介入不能出卡;介入後可以;便條只有本人、記來源 human;暫停時不能出卡
@@ -177,6 +177,7 @@ class Fork(Base):
         self.ok(self.c, "fork", by(HOST), dflt)
         v = G.view(self.st(), T0 + 5)["forks"][0]
         self.assertEqual((v["decide_in"], v["same_brand"]), (26, False))
+        self.assertEqual(v["object_cards"], [{"id": "c3", "by": by(B), "text": "old users stuck", "why": ""}])
 
     def test_a6_countdown(self):
         c1 = self.forked()

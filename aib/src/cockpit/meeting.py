@@ -464,7 +464,10 @@ def card_view(st, c):
 def _fork_view(st, f, now):
     brands = [st["attend"].get(s, {}).get("brand") for s in f["panel"]]
     known = [b for b in brands if b]
+    objs = [st["cards"][o] for o in f["objections"] if o in st["cards"]]
     return dict(f, same_brand=len(known) != len(set(known)),
+                # 分岔卡並排兩條路:反對卡的字一起給(只限這個分岔的;@ad79b 15:36)
+                object_cards=[{"id": o["id"], "by": o["by"], "text": o["text"], "why": o["why"]} for o in objs],
                 decide_in=(max(0, f["default_at"] + FORK_S - now)
                            if f["status"] == "open" and f["default_at"] and not st["away"] else None))
 
