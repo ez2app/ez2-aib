@@ -46,6 +46,8 @@ def cmd_allowed(argv: List[str]) -> int:
     """aib license allowed <sku> [--free-at <plan>] [--json]:這件現在能不能用(方案內含 / 單買 / 單訂閱同一支判斷)。"""
     from .items import allowed
 
+    if "--batch" in argv:
+        return _allowed_batch()
     args = [a for a in argv if a != "--json"]
     sku, free_at = "", None
     i = 0
@@ -64,6 +66,37 @@ def cmd_allowed(argv: List[str]) -> int:
     safe = {k: r.get(k) for k in ("allowed", "source", "plan", "reason", "expires_at", "trial", "left_days", "was")}
     safe["sku"] = sku
     return _print_json(safe, 0)
+
+
+ALLOWED_FIELDS = ("allowed", "source", "plan", "reason", "expires_at", "trial", "left_days", "was")
+BATCH_MAX_ITEMS = 500
+BATCH_MAX_BYTES = 64 * 1024
+
+
+def _allowed_batch() -> int:
+    """aib license allowed --batch [--json]:stdin {"items": [{sku, free_at}, …]} ⇒ {"ok": true, "items": [...]}。
+    每筆欄位 = 單件版 + free_at,順序照輸入;單筆壞只那筆 bad-sku。整包壞 / 太多 / 太大 ⇒ rc 2、一筆都不回。"""
+    from .items import allowed_many
+
+    raw = sys.stdin.buffer.read(BATCH_MAX_BYTES + 1)
+    if len(raw) > BATCH_MAX_BYTES:
+        return _print_json({"ok": False, "error": "too-big"}, 2)
+    try:
+        req = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return _print_json({"ok": False, "error": "bad-input"}, 2)
+    rows = req.get("items") if isinstance(req, dict) else None
+    if not isinstance(rows, list):
+        return _print_json({"ok": False, "error": "bad-input"}, 2)
+    if len(rows) > BATCH_MAX_ITEMS:
+        return _print_json({"ok": False, "error": "too-many"}, 2)
+    pairs = [(r.get("sku"), r.get("free_at")) if isinstance(r, dict) else (None, None) for r in rows]
+    out = []
+    for (sku, free_at), r in zip(pairs, allowed_many(pairs)):
+        safe = {k: r.get(k) for k in ALLOWED_FIELDS}
+        safe["sku"], safe["free_at"] = sku, free_at
+        out.append(safe)
+    return _print_json({"ok": True, "items": out}, 0)
 
 
 def cmd_issue(argv: List[str]) -> int:
@@ -221,6 +254,7 @@ def main(argv: List[str] | None = None) -> int:
             "  status  print entitlement JSON (machine-readable)\n"
             "  plan [--json]  print plan JSON: free / go / plus / pro / ultra (signed license or trial)\n"
             "  allowed <sku> [--free-at <plan>] [--json]  is this sku usable now (plan tier, single purchase or rental)\n"
+            "  allowed --batch [--json]  same answer for many skus at once; stdin {\"items\": [{\"sku\": …, \"free_at\": …}]}\n"
             "  issue   draft shell only (no real key)\n"
             "  revoke  draft shell only (no real key)\n"
         )
