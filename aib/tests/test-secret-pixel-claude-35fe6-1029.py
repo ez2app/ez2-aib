@@ -12,11 +12,12 @@ P2 沒有席位 env 載入器 / 開關會讀它:
    b. providers.json(開席的金鑰名正本)沒有一家的 api_key_env 是它
    c. 核心 src / bin / tools 裡提到這個名字或 pixel-claude.env 的只有名冊 aib_secrets.py(誰新加讀它的地方這格就紅,審查時要看到)
 P3 前綴比對:PIXEL_CLAUDE_ 開頭的一律落 pixel-claude.env,不歸到 api-key-claude.env(CLAUDE_ 較短);反向:ANTHROPIC_API_KEY /
-   CLAUDE_CODE_OAUTH_TOKEN 照舊落 api-key-claude.env
-P4 不補填(@aeb40 #416、#247 codex M1):檔不存在 / 空值 / 兩次讀中間被清空 ⇒ secret() 只丟 missing_*,補填待辦與請求紀錄都沒新增;
+   CLAUDE_CODE_OAUTH_TOKEN 照舊落 api-key-claude.env;PIXEL_STUDIO_X / PIXEL_GROK_API_KEY / PIXEL_X 對不到(#416 R1 L1)
+P4 不補填(@aeb40 #416、#247 codex M1、#425 L2):檔不存在 / 空值 / 兩次讀中間被清空 / 前綴名 _2 ⇒ secret() 只丟 missing_*,補填待辦與請求紀錄都沒新增;
    對照組 CF_API_TOKEN 缺值照舊發補填(證明這格量得到);secret(name, fill=False) 對一般名字也不補填
 刀:K1 名冊拿掉這一格 ⇒ P1 / P3 紅;K2 環境門前綴加 PIXEL_ ⇒ P2a 紅;K3 別的核心檔提到 pixel-claude.env ⇒ P2c 紅;
-   K4 NO_FILL_NAMES 拿掉它(request_fill 的擋也拿掉)⇒ P4 紅
+   K4 NO_FILL_NAMES 拿掉它(request_fill 的擋也拿掉)⇒ P4 紅;K5 NO_SEGMENT_PREFIX_FILES 拿掉它 ⇒ P3 紅;
+   K6 NO_FILL_FILES 拿掉 pixel-claude.env ⇒ P4 紅(前綴名 _2)
 """
 import io
 import json
@@ -160,6 +161,11 @@ class PixelClaudeSecret(unittest.TestCase):
         self.assertIn(self.read_reason(NAME), (S.MISSING_LINE, S.MISSING_FILE))
         self.assertIsNone(SC.request_fill(NAME, env=dict(self.env)))  # 直接叫補填也不發
         self.assertEqual((self.fill_traces(), self.sent), (([], 0), []))
+        n2 = NAME + "_2"   # #425 L2:前綴名落同一檔,缺值也不補填(依檔判斷,不只認完整名)
+        self.assertEqual(S.file_for_name(n2), REL)
+        self.assertIn(self.read_reason(n2), (S.MISSING_LINE, S.MISSING_FILE))
+        self.assertIsNone(SC.request_fill(n2, env=dict(self.env)))
+        self.assertEqual((self.fill_traces(), self.sent), (([], 0), []))
         self.assertEqual(self.read_reason("CF_API_TOKEN", fill=False), S.MISSING_FILE)   # 呼叫端旗標
         self.assertEqual((self.fill_traces(), self.sent), (([], 0), []))
         self.assertEqual(self.read_reason("CF_API_TOKEN"), SC.NEEDS_FILL)   # 對照:一般名字照舊發補填
@@ -171,6 +177,9 @@ class PixelClaudeSecret(unittest.TestCase):
             self.assertNotEqual(S.file_for_name(n), "api-key-claude.env", n)
         for n in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):   # 反向:原本的照舊
             self.assertEqual(S.file_for_name(n), "api-key-claude.env", n)
+        for n in ("PIXEL_STUDIO_X", "PIXEL_GROK_API_KEY", "PIXEL_X"):   # #416 R1 L1:PIXEL_ 整段不歸這檔,新名字要另開一格
+            self.assertIsNone(S.file_for_name(n), n)
+        self.assertEqual(S.file_for_name("FACEBOOK_X"), "live/facebook-live.env")   # 別的檔的第一段前綴照舊
 
 
 if __name__ == "__main__":

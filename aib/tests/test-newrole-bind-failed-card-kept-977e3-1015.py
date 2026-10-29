@@ -56,6 +56,7 @@ class BindFailedCardKept(unittest.TestCase):
 
         def fake_run(cmd, cwd=None, extra_env=None):
             if any(str(c).endswith("bind_one.py") for c in cmd):
+                self.bound_vault = os.environ.get("EZ2_VAULT_DIR")
                 return 2, "", "bind-one: 46678:agent_uid 977e3 已存在但 role='bot',席位檔是 'dev'——這不是重跑,是衝突"
             return real(cmd, cwd=cwd, extra_env=extra_env)
 
@@ -90,6 +91,16 @@ class BindFailedCardKept(unittest.TestCase):
         self.assertTrue(self._card_path(text).is_file(), text)
         self.assertTrue(str(self._card_path(text).resolve()).startswith(str(pathlib.Path(self.tmp).resolve())),
                         "卡只准落在沙盒")
+
+    def test_explicit_vault_is_carried_to_binding(self):
+        selected = pathlib.Path(self.tmp, "selected-vault")
+        (selected / "10-Roles").mkdir(parents=True)
+        # 模擬工具殼帶著另一個庫;--vault 指定的庫必須傳到綁定子行程。
+        os.environ["EZ2_VAULT_DIR"] = str(pathlib.Path(self.tmp, "outer-vault"))
+        rc, text = self._run(extra=("--vault", str(selected)))
+        self.assertNotEqual(rc, 0)  # 測試的 binder 故意拒絕,仍需先走到 binder。
+        self.assertEqual(self.bound_vault, str(selected.resolve()))
+        self.assertTrue(str(self._card_path(text).resolve()).startswith(str(selected.resolve())))   # macOS /var→/private/var
 
     def test_B2_existing_card_says_untouched(self):
         self._run()

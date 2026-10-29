@@ -292,6 +292,19 @@ def _ensure_statusline():
     return lines
 
 
+def _ensure_bot_launchers():
+    """10-28 Andy(必要功能):pip / pipx 首次安裝後跑的就是 aib init ⇒ 這裡把 bot 收信入口(~/.local/bin/aib-<bot>-mail)建好或改好
+    (src/cockpit/bot_launchers.py;可重跑;AIB_BOT_LAUNCHERS=0 全關)。失敗只警告,不算 init 失敗。→ [印給人看的行]。"""
+    cockpit = str(Path(__file__).resolve().parents[1] / "cockpit")
+    if cockpit not in sys.path:
+        sys.path.insert(0, cockpit)
+    try:
+        import bot_launchers
+        return bot_launchers.lines(bot_launchers.ensure(), quiet=True)
+    except Exception as err:  # noqa: BLE001
+        return ["bot launchers: %s" % str(err)[:200]]
+
+
 def _ensure_sign_shim(state_root):
     """10-28 @aeb40 TID-1:<狀態根>/bin/aib-sign-approve = 只 exec 倉內 tools/release/sign_approve.py 的薄殼
     (安裝 / 更新都會跑 aib init ⇒ 會員也有)。失敗只警告,不算 init 失敗。→ [印給人看的行]。"""
@@ -330,6 +343,7 @@ def main(argv=None):
         return 2
     hooks = _ensure_hooks()
     statusline = _ensure_statusline()
+    launchers = _ensure_bot_launchers()
     sign_shim = _ensure_sign_shim(args.state_root)
     counts = {CREATED: 0, FIXED: 0, OK: 0, FAIL: 0}
     for i in items:
@@ -337,7 +351,8 @@ def main(argv=None):
 
     if args.json:
         print(json.dumps({"state_root": str(Path(os.path.expanduser(args.state_root))),
-                          "items": items, "counts": counts, "hooks": hooks, "statusline": statusline, "sign_shim": sign_shim},
+                          "items": items, "counts": counts, "hooks": hooks, "statusline": statusline,
+                          "launchers": launchers, "sign_shim": sign_shim},
                          ensure_ascii=False, indent=2))
     else:
         mark = {CREATED: _T("aib.init.mark_created"), FIXED: _T("aib.init.mark_fixed"), OK: "OK  ", FAIL: "FAIL"}
@@ -355,7 +370,7 @@ def main(argv=None):
               % (counts[CREATED], counts[FIXED], counts[OK], counts[FAIL]))
         for h in hooks:
             sys.stderr.write(h["line"] + "\n")
-        for ln in statusline + sign_shim:
+        for ln in statusline + launchers + sign_shim:
             sys.stderr.write(ln + "\n")
         auto_ext()
 

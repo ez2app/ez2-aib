@@ -154,6 +154,17 @@ SITES = {
     "approve_grants.sign": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign",
                               {"cats": FULL, "dur": FULL},
                               "Time window: for {dur}, every AI on this Mac is auto-approved for: {cats}"),
+    "approve_grants.lockwatch_on": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_lockwatch_on",
+                                      {}, "Turn on the lock watcher so time-window grants can take effect on this Mac"),
+    "approve_grants.sign_with": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign_with",
+                                   {"action": FULL, "cats": FULL, "dur": FULL},
+                                   "{action} · and open a time window: for {dur}, every AI on this Mac is auto-approved "
+                                   "for: {cats}"),
+    "approve_grants.sign_with_rekey": _s("cockpit/approve_grants.py", "window_grant",
+                                         "aib.approve_grants.touchid_sign_with_rekey",
+                                         {"action": FULL, "cats": FULL, "dur": FULL, "old": FULL, "new": FULL},
+                                         "The grant signing key changed ({old} -> {new}). {action} · and open a time "
+                                         "window: for {dur}, every AI on this Mac is auto-approved for: {cats}"),
     "approve_grants.sign_rekey": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign_rekey",
                                     {"cats": FULL, "dur": FULL, "old": FULL, "new": FULL},
                                     "The grant signing key changed ({old} -> {new}). Time window: for {dur}, every AI on "
@@ -364,31 +375,83 @@ def too_long_hint(res, env=None):
         return "The confirmation text is too long for the Touch ID window, so it was not shown. Shorten the name and try again."
 
 
-def ask(r, lock_root, touchid=None, before=None):
+def window_open(r):
+    """這句話的類別能不能開時間窗(高風險 / 未登記 / max_window 0 ⇒ 不能)。程式、介面兩處都看這一個。"""
+    spec = CATEGORIES.get(r.category, CATEGORIES[UNREGISTERED])
+    return not spec["high_risk"] and spec["max_window"] > 0
+
+
+def _default_window():
+    """正式路徑的時間窗:**關著**(Andy 10-29 20:5x 裁 #428 H1)。驗單要信 helper binary 與狀態根裡的檔,
+    同帳號 AI 設 EZ2_AIB_STATE_ROOT + 種假 sehelper + 自寫 lockwatch.json 就能零指紋放行 ⇒ 等「系統錨定驗單」做完才開。
+    在那之前 ask() 不讀單、不出時長選單,一律照舊一次一按。"""
+    return None
+
+
+def ask(r, lock_root, touchid=None, before=None, window=None):
     """彈 Touch ID / 登入密碼視窗。回 {"ok", "why", "category", "site"};why 是 touchid_approve 的原因或 busy / refused。
     lock_root = 放 locks/touchid-approve.lock 的那層(各支照原本的位置)。呼叫端先跑 ready()。
     before():拿到整台鎖之後、彈指紋之前先跑(例:全文確認窗);回的不是 {"ok": True} ⇒ 不彈指紋,
     回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。
-    整句超過 LA_MAX ⇒ 拒(不交給視窗去截;各支不用再自己擋)。"""
+    整句超過 LA_MAX ⇒ 拒(不交給視窗去截;各支不用再自己擋)。
+    TID-2c 時間窗(window = approve_grants.GateWindow):正式路徑目前**不開**(_default_window 回 None,#428 H1);
+    只有呼叫端明確傳 window 才走下面這段:
+      - 可開窗的類別先找有效單(簽章 / 範圍 / 類別 / 到期 / 開機 / 機器 / 撤銷 / 鎖屏後作廢)⇒ 有就不彈窗,why "window",記一列;
+      - 沒有 ⇒ 彈時長選單(只這次 / ≤ 該類 max_window 的時長);選了時長 ⇒ SE 簽單(同一次指紋核准這件 + 開窗),
+        只這次 ⇒ 照舊 LAContext。高風險類兩處都不走窗(找單、選單都不叫)。任何一步失敗 ⇒ 一次一按,不放行。"""
     e = _lookup(r)
     out = {"ok": False, "why": "refused", "category": e[2] if e else UNREGISTERED, "site": e[1] if e else None}
     no = refusal(r) or (None if len(str(r)) <= LA_MAX else "too_long")
     if no:                       # 純字串 / 自己造的 Reason / 欄位超長 / 組不出字 / 視窗放不下 ⇒ 不彈窗
         out["detail"] = no
         return out
+    if window is None and touchid is None and window_open(r):
+        try:
+            window = _default_window()
+        except Exception:  # noqa: BLE001  模組壞了 ⇒ 沒有窗,一次一按
+            window = None
+    win = window if window_open(r) else None
     with TA.one_at_a_time(lock_path(lock_root)) as gate:
         if not gate.held:
             res = {"ok": False, "why": "busy"}
         else:
+            if win is not None:
+                doc, _why = _safe(win.find, r.category)
+                if doc:
+                    _safe(win.use, doc, r.site, r.category)
+                    out.update(ok=True, why="window", grant=doc.get("nonce"))
+                    return out
             pre = before() if before else {"ok": True}
             if not (isinstance(pre, dict) and pre.get("ok") is True):
                 out.update(why=str((pre or {}).get("why") if isinstance(pre, dict) else "") or "failed", stage="before")
                 return out
-            res = (touchid or TA.ask)(r)
+            choice = _safe(win.choose, r)[0] if win is not None else "once"
+            if choice == "cancel":
+                res = {"ok": False, "why": "cancel"}
+            elif win is not None and choice != "once":
+                doc, why = _safe(win.sign, r, choice)
+                if doc:
+                    out["grant"] = doc.get("nonce")
+                    res = {"ok": True, "why": "ok"}
+                elif str(why or "").startswith("reason_refused"):     # 句子加上時長放不下 ⇒ 退回只這次
+                    res = (touchid or TA.ask)(r)
+                else:
+                    res = {"ok": False, "why": str(why or "failed")}
+            else:
+                res = (touchid or TA.ask)(r)
     res = res if isinstance(res, dict) else {}
     out["ok"] = res.get("ok") is True
     out["why"] = "ok" if out["ok"] else str(res.get("why") or "failed")
     return out
+
+
+def _safe(fn, *a):
+    """時間窗那幾步拋什麼都當沒過(回 (None, why));choose 拋例外 ⇒ "once" 以外的值都不會出現。"""
+    try:
+        res = fn(*a)
+    except Exception as exc:  # noqa: BLE001
+        return (None, "window_error:" + type(exc).__name__) if fn.__name__ != "choose" else ("once", None)
+    return res if isinstance(res, tuple) else (res, None)
 
 
 def se_reason(r, limit=SE_SIGN_MAX):

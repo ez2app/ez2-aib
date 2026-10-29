@@ -1,1 +1,1 @@
-{ "name": "aib-languages", "version": "0.1.1", "description": "Ez2 AIB 切換語言(zh-TW / en / ja / ko):/aib-languages 開選單;切完介面、狀態列、mod、AI 回答下一句就跟,不用 /clear", "author": { "name": "Ez2 AIB @00000" }, "types": "./types/index.d.ts" }
+{ "name": "aib-languages", "version": "0.1.2", "description": "Ez2 AIB 切換語言(zh-TW / en / ja / ko):/aib-languages 開選單;切完介面、狀態列、mod、AI 回答下一句就跟,不用 /clear", "author": { "name": "Ez2 AIB @00000" }, "types": "./types/index.d.ts" }
