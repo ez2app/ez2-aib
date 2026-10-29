@@ -14,11 +14,14 @@ A13 #432 R1 L3:固定路徑是目錄(root 擁有、不可寫)⇒ not_file
 A14 #432 R1 H1 縱深:叫 helper 只給 PATH=/usr/bin:/bin(呼叫端的 DYLD_INSERT_LIBRARIES / HOME 不帶過去)
 A9 另驗 #432 R1 M1 / H1:只編、只雜湊 root 暫存夾裡的複本(編譯中原檔被換 ⇒ stamp 仍是複本的雜湊);簽章帶 -o runtime;
   子行程 env = PATH / HOME=/var/root;先印安裝程式 / 原始碼 sha256 與 git HEAD(L1)
+A9b #432 R2 L2:複本寫好、算雜湊之前原檔被換 ⇒ stamp 與印出的 digest 都是複本(真正裝的那份)的雜湊
+A15 #432 R2 L1:git_head 只收 refs/ 開頭、不含 .. 的 ref,讀出值只收 40 位十六進位(ref: ../../<檔> 不會讓 root 讀檔印出)
 刀(複本落刀,錨要恰好一次):KA1 拿掉擁有者檢查 ⇒ A2 紅;KA2 拿掉可寫檢查 ⇒ A3 紅;KA3 拿掉捷徑檢查 ⇒ A4 紅;
   KA4 只查 binary 不查上層 ⇒ A5 紅;KA5 拿掉 stamp 比對 ⇒ A6 紅;KA6 helper_exe 退回狀態根 build_helper ⇒ A8 紅;
   KA7 安裝程式拿掉上層檢查 ⇒ A9 紅;KA8 安裝程式拿掉 euid 檢查 ⇒ A9 紅;KA9 拿掉 hardened 檢查 ⇒ A12 紅;
   KA10 安裝程式簽章拿掉 -o runtime ⇒ A9 紅;KA11 拿掉 S_ISREG ⇒ A13 紅;KA12 安裝程式改編原檔 ⇒ A9 紅;
-  KA13 se_vault._call 不給 env ⇒ A14 紅。
+  KA13 se_vault._call 不給 env ⇒ A14 紅;KA14 git_head 拿掉 ref 檢查 ⇒ A15 紅;KA15 拿掉值的十六進位檢查 ⇒ A15 紅;
+  KA16 雜湊改算原檔 ⇒ A9b 紅。
 全部假 stat / 假 run / 暫存目錄;不碰 /usr/local、不跑 sudo、不編譯、不叫 Secure Enclave。
 """
 import hashlib
@@ -196,12 +199,14 @@ class _Run:
         return type("P", (), {"returncode": 0 if self.ok else 1, "stdout": "", "stderr": ""})()
 
 
-def _inst(M, td, euid=0, parents_ok=True):
+def _inst(M, td, euid=0, parents_ok=True, presrc=None):
     os.makedirs(td)
     td = os.path.realpath(td)            # /var → /private/var 是捷徑;安裝程式會擋捷徑
     src = os.path.join(td, "aib-sehelper.swift")
     with open(src, "w") as f:
         f.write("// swift\n")
+    if presrc is not None:               # A9b:讓「算雜湊前換原檔」換的是這次的原檔
+        presrc[0] = src
     anchor = os.path.join(td, "root", "usr", "local", "libexec", "ez2-aib")
     owned = []
     real = os.lstat
@@ -252,6 +257,76 @@ def cell_a9(t, M):
         shutil.rmtree(td, ignore_errors=True)
 
 
+def cell_a9b(t, M):
+    td = tempfile.mkdtemp(prefix="aib-anch-a9b-")
+    real = M._sha256
+    try:
+        src_box = []
+
+        def swap_then_hash(path):          # 每次算雜湊前,AI 先把原檔換成惡意版
+            if src_box:
+                with open(src_box[0], "w") as f:
+                    f.write("// evil\n")
+            return real(path)
+        M._sha256 = swap_then_hash
+        os.makedirs(os.path.join(td, "x"))
+        src_box.append(os.path.join(os.path.realpath(td), "x", "aib-sehelper.swift"))
+        good = hashlib.sha256(b"// swift\n").hexdigest()
+        rc, anchor, _, _, msg = _inst(M, os.path.join(td, "ok"), presrc=src_box)
+        t.assertEqual(rc, 0)
+        with open(os.path.join(anchor, "aib-sehelper.sha256")) as g:
+            t.assertEqual(g.read().strip(), good)
+        t.assertIn("sha256 " + good, msg)
+    finally:
+        M._sha256 = real
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def _repo(td, head, refs=None, gitfile=False):
+    os.makedirs(td)
+    g = os.path.join(td, "gitdir" if gitfile else ".git")
+    os.makedirs(g)
+    with open(os.path.join(g, "HEAD"), "w") as f:
+        f.write(head + "\n")
+    for k, v in (refs or {}).items():
+        os.makedirs(os.path.dirname(os.path.join(g, k)), exist_ok=True)
+        with open(os.path.join(g, k), "w") as f:
+            f.write(v + "\n")
+    if gitfile:
+        with open(os.path.join(td, ".git"), "w") as f:
+            f.write("gitdir: " + g + "\n")
+    os.makedirs(os.path.join(td, "aib"))
+    return os.path.join(td, "aib")
+
+
+def cell_a15(t, M):
+    td = tempfile.mkdtemp(prefix="aib-anch-a15-")
+    try:
+        h = "a" * 40
+        secret = os.path.join(td, "root-secret")
+        with open(secret, "w") as f:
+            f.write("TOPSECRET-" + "b" * 40 + "\n")
+        t.assertEqual(M.git_head(_repo(os.path.join(td, "r1"), "ref: refs/heads/main", {"refs/heads/main": h})),
+                      h + " (refs/heads/main)")
+        t.assertEqual(M.git_head(_repo(os.path.join(td, "r2"), h)), h)                        # detached
+        t.assertEqual(M.git_head(_repo(os.path.join(td, "r3"), "ref: refs/heads/w", {"refs/heads/w": h}, gitfile=True)),
+                      h + " (refs/heads/w)")
+        rel = os.path.relpath(secret, os.path.join(td, "r4", ".git"))
+        for i, head in enumerate(("ref: " + rel, "ref: refs/../../" + rel, "ref: " + secret, "TOPSECRET")):
+            got = M.git_head(_repo(os.path.join(td, "t%d" % i), head))
+            t.assertEqual(got, "unknown", head)
+            t.assertNotIn("TOPSECRET", got)
+        got = M.git_head(_repo(os.path.join(td, "t9"), "ref: refs/heads/x", {"refs/heads/x": "TOPSECRET-not-hex"}))
+        t.assertEqual(got, "unknown")
+        hexfile = os.path.join(td, "root-hex")          # 穿越到的檔剛好是 40 位十六進位 ⇒ 也不讀(ref 檢查本身要擋)
+        with open(hexfile, "w") as f:
+            f.write("c" * 40 + "\n")
+        for i, ref in enumerate((os.path.relpath(hexfile, os.path.join(td, "h0", ".git")), "refs/../../root-hex")):
+            t.assertEqual(M.git_head(_repo(os.path.join(td, "h%d" % i), "ref: " + ref)), "unknown", ref)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def cell_a10(t, G):
     with mock.patch.object(G, "load_all", lambda env: [{"nonce": "n"}]):
         ctx = G.Ctx(env=dict(os.environ), platform="darwin", anchored=lambda platform=None: (None, "not_installed"))
@@ -283,6 +358,8 @@ class Cells(unittest.TestCase):
     def test_a9(self): cell_a9(self, INST)
     def test_a10(self): cell_a10(self, GR)
     def test_a11(self): cell_a11(self, GR)
+    def test_a9b(self): cell_a9b(self, INST)
+    def test_a15(self): cell_a15(self, INST)
     def test_a12(self): cell_a12(self, AH)
     def test_a13(self): cell_a13(self, AH)
     def test_a14(self): cell_a14(self, SV)
@@ -317,6 +394,10 @@ KNIVES_INST = [
     ("KA8", "    if euid() != 0:\n", "    if False:\n", cell_a9),
     ("KA10", '"-s", "-", "-f", "-o", "runtime", exe_tmp]', '"-s", "-", "-f", exe_tmp]', cell_a9),
     ("KA12", '["-o", exe_tmp, copy]', '["-o", exe_tmp, src]', cell_a9),
+    ("KA14", '                if not _REF.match(ref) or ".." in ref.split("/"):\n                    return "unknown"\n', '', cell_a15),
+    ("KA15", '                        return v + " (" + ref + ")" if _HEX40.match(v) else "unknown"\n',
+     '                        return v[:40] + " (" + ref + ")"\n', cell_a15),
+    ("KA16", '        digest = _sha256(copy)', '        digest = _sha256(src)', cell_a9b),
 ]
 
 

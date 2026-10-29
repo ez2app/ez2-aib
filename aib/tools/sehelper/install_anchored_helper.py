@@ -19,6 +19,7 @@
 import hashlib
 import json
 import os
+import re
 import stat
 import shutil
 import subprocess
@@ -70,8 +71,14 @@ def _sha256(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
+_HEX40 = re.compile(r"^[0-9a-f]{40}$")
+_REF = re.compile(r"^refs/[A-Za-z0-9._/-]{1,200}$")
+
+
 def git_head(start):
-    """往上找 .git 讀 HEAD(不跑 git:root 跑 git 會吃倉裡的 config / fsmonitor)。讀不到 ⇒ "unknown"。"""
+    """往上找 .git 讀 HEAD(不跑 git:root 跑 git 會吃倉裡的 config / fsmonitor)。讀不到 ⇒ "unknown"。
+    #432 R2 L1:HEAD 的 ref 是同帳號寫得到的字 ⇒ 只收 refs/ 開頭、不含 ..;讀出的值只收 40 位十六進位
+    (否則 ref: ../../<root 的檔> 就能讓 root 讀任意檔、把開頭印在終端)。"""
     d = os.path.abspath(start)
     try:
         while True:
@@ -83,14 +90,17 @@ def git_head(start):
                 with open(os.path.join(g, "HEAD"), encoding="utf-8") as f:
                     head = f.read(256).strip()
                 if not head.startswith("ref: "):
-                    return head[:40]
-                ref = head[5:]
+                    return head if _HEX40.match(head) else "unknown"
+                ref = head[5:].strip()
+                if not _REF.match(ref) or ".." in ref.split("/"):
+                    return "unknown"
                 for base in (g, _common_dir(g)):
                     p = os.path.join(base, ref)
                     if os.path.isfile(p):
                         with open(p, encoding="utf-8") as f:
-                            return f.read(64).strip()[:40] + " (" + ref + ")"
-                return ref
+                            v = f.read(64).strip()
+                        return v + " (" + ref + ")" if _HEX40.match(v) else "unknown"
+                return "unknown"
             if os.path.dirname(d) == d:
                 return "unknown"
             d = os.path.dirname(d)
@@ -119,8 +129,6 @@ def install(src=SRC, anchor_dir=ANCHOR_DIR, run=subprocess.run, euid=os.geteuid,
     if bad:
         out.write("aib: %s 不是 root 擁有 / 別人寫得進去 ⇒ 裝在這底下換得掉,不裝\n" % bad)
         return 3
-    out.write("aib: 安裝程式 %s sha256 %s\naib: 原始碼 %s sha256 %s\naib: git HEAD %s(建議從已發版的 tag 跑)\n"
-              % (os.path.abspath(__file__), _sha256(os.path.abspath(__file__)), src, _sha256(src), git_head(src)))
     td = tempfile.mkdtemp(prefix="aib-sehelper-root-", dir=tmp_parent)   # 0700,擁有者 = 跑的人(root)
     try:
         copy = os.path.join(td, "aib-sehelper.swift")
@@ -128,6 +136,9 @@ def install(src=SRC, anchor_dir=ANCHOR_DIR, run=subprocess.run, euid=os.geteuid,
         with open(src, "rb") as f, os.fdopen(fd, "wb") as fh:
             fh.write(f.read())
         digest = _sha256(copy)                          # 雜湊、編譯都用這份複本(原檔之後怎麼換都不影響)
+        out.write("aib: 安裝程式 %s sha256 %s\naib: 要裝的原始碼(%s 的複本)sha256 %s\n"
+                  "aib: git HEAD %s(建議從已發版的 tag 跑)\n"
+                  % (os.path.abspath(__file__), _sha256(os.path.abspath(__file__)), src, digest, git_head(src)))
         exe_tmp = os.path.join(td, "aib-sehelper")
         r = run(["/usr/bin/xcrun", "swiftc", "-O", "-parse-as-library", "-module-cache-path", os.path.join(td, "mc")]
                 + _vfs_overlay(td) + ["-o", exe_tmp, copy],
