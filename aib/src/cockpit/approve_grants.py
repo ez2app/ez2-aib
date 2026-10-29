@@ -31,7 +31,9 @@ stamp = 原始碼雜湊),不吃 EZ2_AIB_STATE_ROOT / PATH、不退回 <狀態根
 系統錨定驗單第 2 張(10-30):「簽單之後鎖過螢幕 ⇒ 單作廢」改看系統日誌(unified log)裡 loginwindow 的鎖屏 / 解鎖事件,
 不再信 lockwatch.json(本機檔,AI 自己寫一份就算「沒鎖過」)。loginwindow 的路徑受 SIP 保護,同帳號行程寫不出
 processImagePath = loginwindow 的紀錄;清不掉、改不了等級(log erase / log config 要 root)。查詢上限 3 秒
-(Andy 10-29 21:1x Q2),超過 / 失敗 / 讀不懂 ⇒ 當鎖過。時間窗仍關著(approve_gate._default_window),另一張才接回。
+(Andy 10-29 21:1x Q2),超過 / 失敗 / 讀不懂 ⇒ 當鎖過。時間一律 UTC(#433 R1 H1:不吃呼叫端 TZ);另查 since 之前
+要還有 loginwindow 紀錄(#433 R1 M1:灌 log 擠掉鎖屏段 ⇒ log_uncovered)。時間窗仍關著(approve_gate._default_window),
+另一張才接回;接回前要先有 macOS build 白名單(#433 R1 M2,規格補記)。
 """
 import argparse
 import calendar
@@ -484,14 +486,20 @@ LOCK_PREDICATE = ('processImagePath == "%s" AND (eventMessage BEGINSWITH "-[LWSc
 LOG_BUDGET_S = 3.0               # Andy 10-29 21:1x Q2:查詢上限 3 秒,超過 ⇒ 當鎖過
 LOG_SPAN_S = 3 * 3600            # 一支 log show 查 3 小時(實測 24 小時一支 ~5 秒、切 8 段並行 ~2 秒)
 LOG_SPANS_MAX = 8                # 24 小時(最長時長)= 8 段;再長 ⇒ log_span(不查,當鎖過)
+# #433 R1 M1 覆蓋檢查:since 之前 30 分鐘內要查得到至少一筆 loginwindow 紀錄(10-30 實機:30 小時內每小時 ≥ 31 筆,
+# 存在比 Persist 久的存檔)。日誌由舊到新整檔輪替 ⇒ since 之前的還在 = since 之後的都還在;時間戳由 logd 打、
+# loginwindow 路徑受 SIP 保護 ⇒ AI 灌 log 擠掉鎖屏段之後補不回「since 之前的 loginwindow 紀錄」⇒ log_uncovered。
+COVER_PREDICATE = 'processImagePath == "%s"' % LOGINWINDOW
+COVER_S = 1800
 
 
 def lockwatch_path(env):
     return os.path.join(_key_dir(env), "lockwatch.json")
 
 
-def _log_local(t):
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(t)))
+def _log_utc(t):
+    """一律 UTC 帶 +0000(#433 R1 H1:本地字串照呼叫端 TZ 算、log 照系統時區解讀 ⇒ TZ=AAA-24 起點晚 16 小時漏查)。"""
+    return time.strftime("%Y-%m-%d %H:%M:%S+0000", time.gmtime(int(t)))
 
 
 def _log_ts(s):
@@ -504,8 +512,8 @@ def _log_ts(s):
 
 def syslog_locks(since, now, popen=subprocess.Popen, platform=None, clock=time.monotonic, budget=LOG_BUDGET_S):
     """[since, now] 之間 loginwindow 的鎖屏 / 解鎖事件(秒數清單)。回 (清單, None) 或 (None, why);
-    why ∈ log_not_mac / log_clock / log_span / log_failed / log_timeout / log_unreadable —— 呼叫端一律當鎖過。
-    切成 ≤ 8 段並行查,全部要在 budget 秒內回來;/usr/bin/log 絕對路徑(SIP 保護)、env 只給 PATH。"""
+    why ∈ log_not_mac / log_clock / log_span / log_failed / log_timeout / log_unreadable / log_uncovered —— 呼叫端一律當鎖過。
+    切成 ≤ 8 段 + 1 支覆蓋檢查並行查,全部要在 budget 秒內回來;/usr/bin/log 絕對路徑(SIP 保護)、env 只給 PATH、時間一律 UTC。"""
     if (platform or sys.platform) != "darwin":
         return None, "log_not_mac"
     since, now = int(since), int(now)
@@ -516,14 +524,17 @@ def syslog_locks(since, now, popen=subprocess.Popen, platform=None, clock=time.m
         return None, "log_span"
     edges = [since + (now - since) * i // n for i in range(n + 1)]
     deadline = clock() + budget
-    procs, events = [], []
+    procs, events, covered = [], [], False
+    spans = [(a, b + 1, LOCK_PREDICATE) for a, b in zip(edges, edges[1:])]     # 每段多查 1 秒(邊界重疊,不漏)
+    spans.append((since - COVER_S, since, COVER_PREDICATE))                    # 最後一支 = 覆蓋檢查
     try:
-        for a, b in zip(edges, edges[1:]):          # 每段多查 1 秒(邊界重疊,不漏)
-            procs.append(popen([LOG, "show", "--start", _log_local(a), "--end", _log_local(b + 1), "--style", "ndjson",
-                                "--no-info", "--no-debug", "--no-signpost", "--predicate", LOCK_PREDICATE],
+        for a, b, pred in spans:
+            procs.append(popen([LOG, "show", "--start", _log_utc(a), "--end", _log_utc(b), "--style", "ndjson",
+                                "--no-info", "--no-debug", "--no-signpost", "--predicate", pred],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                                env={"PATH": "/usr/bin:/bin"}))
-        for p in procs:
+        for k, p in enumerate(procs):
+            cover = k == len(procs) - 1
             left = deadline - clock()
             if left <= 0:
                 return None, "log_timeout"
@@ -542,7 +553,12 @@ def syslog_locks(since, now, popen=subprocess.Popen, platform=None, clock=time.m
                 ts = _log_ts(d.get("timestamp"))
                 if ts is None:
                     return None, "log_unreadable"
-                events.append(ts)
+                if not cover:
+                    events.append(ts)
+                elif ts <= since:
+                    covered = True
+        if not covered:
+            return None, "log_uncovered"
         return events, None
     except subprocess.TimeoutExpired:
         return None, "log_timeout"
