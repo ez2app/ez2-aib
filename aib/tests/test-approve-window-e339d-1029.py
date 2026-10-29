@@ -17,12 +17,16 @@ W10 舊 helper(se-pub 沒回 owner_acl)⇒ old_helper,不開窗
 W11 durations_for:outbound ≤ 3h、seat_input 到 24h
 W14 鎖屏偵測沒在跑 ⇒ 不出時長選單(只這次)
 W15 沒裝 lockwatch + 簽章正確的有效窗單 ⇒ ask 仍一次一按、不出選單
+W16 #428 H1:正式路徑(不注入 touchid / window)授權單模組給得出有效單也照舊一次一按(預設窗關著)
+W17 審查探針 P4 + P1(只 Mac):EZ2_AIB_STATE_ROOT + 種假 sehelper(stamp = 真原始碼雜湊)+ 自寫 lockwatch.json ⇒ ask 仍彈窗
 W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單沒 lockwatch ⇒ note
 刀(複本落刀,錨要恰好一次):KL1 拿掉心跳過期 ⇒ W2 紅;KL2 拿掉鎖屏後作廢 ⇒ W3 紅;KL3 拿掉「現在鎖著」⇒ W2 紅;
   KL4 拿掉 owner_acl 檢查 ⇒ W10 紅;KL5 拿掉 find_valid 的高風險排除 ⇒ W4 紅;KL6 拿掉沒 lockwatch 不出選單 ⇒ W14 紅;
   KL7 find_valid 拿掉 lock_state ⇒ W15 紅;KL8 --lockwatch on 拿掉 Touch ID ⇒ W12 紅;
   KG1 ask 拿掉高風險不走窗 ⇒ W8 紅;KG2 拿掉記帳 ⇒ W5 紅;KG3 拿掉取消 ⇒ W6 紅
+  KH1 / KH2 _default_window 改回開窗 ⇒ W16 / W17 紅(KH2 只在 Mac)
 """
+import hashlib
 import importlib.util
 import io
 import json
@@ -30,8 +34,10 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src" / "cockpit"
@@ -258,6 +264,55 @@ def cell_w15(t, M):
         e.close()
 
 
+def cell_w16(t, G):
+    """#428 H1(Andy 20:5x):正式路徑(不注入 touchid / window)就算授權單模組給得出一張有效單,ask 也照舊一次一按。"""
+    td = tempfile.mkdtemp(prefix="aib-window-h1-")
+    try:
+        fake = FakeWin(doc={"nonce": "n" * 32}, choice="1h")
+        seen = []
+        with mock.patch.object(GR, "GateWindow", lambda *a, **k: fake), \
+                mock.patch.object(G.TA, "ask", lambda r: seen.append(r) or {"ok": True, "why": "ok"}):
+            res = G.ask(_r(G), td)
+        t.assertEqual((len(seen), fake.calls), (1, []))          # 彈了一次指紋;沒找單、沒出選單
+        t.assertNotEqual(res.get("why"), "window")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def cell_w17(t, G):
+    """審查探針 P4 + P1(Mac 才量得到開機 / 機器 / 鎖屏):EZ2_AIB_STATE_ROOT 指到自己的目錄 + 種假 bin/aib-sehelper
+    (stamp 寫真原始碼雜湊)+ 不經 --lockwatch on 自寫 lockwatch.json + 簽一張單 ⇒ 正式路徑 ask(seat_input) 仍彈窗。"""
+    if sys.platform != "darwin":
+        return
+    import se_vault
+    td = tempfile.mkdtemp(prefix="aib-window-p4-")
+    try:
+        root = os.path.join(td, "state")
+        env = dict(os.environ, EZ2_AIB_STATE_ROOT=root, EZ2_AIB_HOME=root, EZ2_AIB_LOCALE="zh-TW")
+        bindir = os.path.join(root, "bin")
+        os.makedirs(bindir, mode=0o700)
+        exe = os.path.join(bindir, "aib-sehelper")
+        with open(exe, "w") as f:
+            f.write(T2B.FAKE)
+        os.chmod(exe, 0o700)
+        with open(se_vault.SRC, "rb") as f, open(exe + ".sha256", "w") as g:
+            g.write(hashlib.sha256(f.read()).hexdigest())
+        ctx = GR.Ctx(env=env)
+        doc, why = GR.sign(["seat_input"], "24h", ctx)
+        if doc is None:                              # 量不到開機 / 機器(或現在鎖著)⇒ 這台做不出探針前提,不算過也不算紅
+            t.skipTest("前提量不到:" + str(why))
+        now = int(time.time())
+        GR._write_json(GR.lockwatch_path(env), {"v": 1, "beat_utc": GR._utc(now), "last_lock_utc": GR._utc(now - 3600)})
+        seen = []
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(G.TA, "ask", lambda r: seen.append(r) or {"ok": True, "why": "ok"}):
+            res = G.ask(_r(G), os.path.join(td, "lk"))
+        t.assertEqual(len(seen), 1)
+        t.assertNotEqual(res.get("why"), "window")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def cell_w10(t, M):
     e = Env()
     try:
@@ -285,6 +340,8 @@ class Cells(unittest.TestCase):
     def test_w10(self): cell_w10(self, GR)
     def test_w12k(self): cell_w12k(self, GR)
     def test_w15(self): cell_w15(self, GR)
+    def test_w16(self): cell_w16(self, AG)
+    def test_w17(self): cell_w17(self, AG)
 
     def test_w9_end_to_end(self):
         e = Env()
@@ -395,12 +452,17 @@ KNIVES_GR = [
     ("KL5", '    if not spec or spec["high_risk"] or spec["max_window"] <= 0:\n        return None, "no_window_category"\n'
      '    last_lock, why', '    last_lock, why', cell_w4),
 ]
+_H1_ANCHOR = '    在那之前 ask() 不讀單、不出時長選單,一律照舊一次一按。"""\n    return None\n'
+_H1_OPEN = '    """\n    import approve_grants\n    return approve_grants.GateWindow()\n'
 KNIVES_AG = [
     ("KG1", '    win = window if window_open(r) else None\n', '    win = window\n', cell_w8),
     ("KG2", '                    _safe(win.use, doc, r.site, r.category)\n', '', cell_w5),
     ("KG3", '            if choice == "cancel":\n                res = {"ok": False, "why": "cancel"}\n            elif',
      '            if False:\n                pass\n            elif', cell_w6),
+    ("KH1", _H1_ANCHOR, _H1_OPEN, cell_w16),
 ]
+if sys.platform == "darwin":                 # P4 / P1 實機前提只有 Mac 量得到
+    KNIVES_AG.append(("KH2", _H1_ANCHOR, _H1_OPEN, cell_w17))
 
 
 def _load_copy(name, src_file, anchor, repl):

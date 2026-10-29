@@ -5819,9 +5819,9 @@
   "aib.approve_grants.choose.ok": "下一步",
   "aib.approve_grants.choose.cancel": "取消",
   "aib.doctor.check.grants.no_grants": "沒有時間窗授權單(每次都一次一按)",
-  "aib.doctor.check.grants.lockwatch_ok": "時間窗授權單:鎖屏偵測在跑",
+  "aib.doctor.check.grants.lockwatch_ok": "時間窗授權單:鎖屏偵測在跑(自動同意目前關著,每次仍一次一按)",
   "aib.doctor.check.grants.lockwatch_missing": "有時間窗授權單,但鎖屏偵測沒在跑({why})⇒ 自動同意不會生效,一律一次一按",
   "aib.doctor.check.grants.remedy": "aib approve grants --lockwatch on 裝鎖屏偵測(沒裝 = 時間窗不生效,照舊一次一按)",
   "aib.doctor.check.grants.error": "讀不到時間窗狀態:{error}",
-  "aib.approve_grants.touchid_lockwatch_on": "開啟鎖屏偵測,讓這台 Mac 的時間窗授權可以生效"
+  "aib.approve_grants.touchid_lockwatch_on": "開啟鎖屏偵測(時間窗的自動同意目前仍關著,之後開放時才會用到)"
 }

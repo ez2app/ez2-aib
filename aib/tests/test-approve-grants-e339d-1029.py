@@ -379,10 +379,9 @@ class Cells(unittest.TestCase):
                 if re.search(r"^\s*(import approve_grants|from approve_grants )|import_module\(.approve_grants",
                              p.read_text(encoding="utf-8", errors="replace"), re.M):
                     users.append(p.relative_to(ROOT).as_posix())
-        self.assertEqual(sorted(users), ["src/bootstrap/aib_doctor.py", "src/cockpit/aib_approve.py",
-                                         "src/cockpit/approve_gate.py"])
+        self.assertEqual(sorted(users), ["src/bootstrap/aib_doctor.py", "src/cockpit/aib_approve.py"])
         gate = (SRC / "approve_gate.py").read_text(encoding="utf-8")
-        self.assertEqual(gate.count("import approve_grants"), 1)          # 只在 _default_window(懶載入)
+        self.assertEqual(gate.count("import approve_grants"), 0)          # #428 H1:正式路徑時間窗關著,gate 不載授權單
         called = []
         saved = {n: getattr(GR, n) for n in ("verify", "active", "load_all", "revoked")}
         try:

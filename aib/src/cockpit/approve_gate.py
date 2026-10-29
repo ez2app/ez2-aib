@@ -382,8 +382,10 @@ def window_open(r):
 
 
 def _default_window():
-    import approve_grants
-    return approve_grants.GateWindow()
+    """正式路徑的時間窗:**關著**(Andy 10-29 20:5x 裁 #428 H1)。驗單要信 helper binary 與狀態根裡的檔,
+    同帳號 AI 設 EZ2_AIB_STATE_ROOT + 種假 sehelper + 自寫 lockwatch.json 就能零指紋放行 ⇒ 等「系統錨定驗單」做完才開。
+    在那之前 ask() 不讀單、不出時長選單,一律照舊一次一按。"""
+    return None
 
 
 def ask(r, lock_root, touchid=None, before=None, window=None):
@@ -392,7 +394,8 @@ def ask(r, lock_root, touchid=None, before=None, window=None):
     before():拿到整台鎖之後、彈指紋之前先跑(例:全文確認窗);回的不是 {"ok": True} ⇒ 不彈指紋,
     回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。
     整句超過 LA_MAX ⇒ 拒(不交給視窗去截;各支不用再自己擋)。
-    TID-2c 時間窗(window = approve_grants.GateWindow;只在正式路徑 = 沒注入 touchid 時預設開):
+    TID-2c 時間窗(window = approve_grants.GateWindow):正式路徑目前**不開**(_default_window 回 None,#428 H1);
+    只有呼叫端明確傳 window 才走下面這段:
       - 可開窗的類別先找有效單(簽章 / 範圍 / 類別 / 到期 / 開機 / 機器 / 撤銷 / 鎖屏後作廢)⇒ 有就不彈窗,why "window",記一列;
       - 沒有 ⇒ 彈時長選單(只這次 / ≤ 該類 max_window 的時長);選了時長 ⇒ SE 簽單(同一次指紋核准這件 + 開窗),
         只這次 ⇒ 照舊 LAContext。高風險類兩處都不走窗(找單、選單都不叫)。任何一步失敗 ⇒ 一次一按,不放行。"""

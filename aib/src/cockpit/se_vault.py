@@ -70,8 +70,10 @@ def build_helper(env, run=subprocess.run, platform=None):
     bindir = os.path.join(_state_root(env), "bin")
     exe, stamp = os.path.join(bindir, "aib-sehelper"), os.path.join(bindir, "aib-sehelper.sha256")
     try:
-        if os.path.isfile(exe) and open(stamp).read().strip() == digest:
-            return exe, None
+        if os.path.isfile(exe):
+            with open(stamp) as f:
+                if f.read().strip() == digest:
+                    return exe, None
     except OSError:
         pass
     try:

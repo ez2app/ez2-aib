@@ -19,6 +19,10 @@ approve_gate.ask() 完全不讀授權單(測試有一格證明)。
   - 高風險類別不准進單(簽、驗兩處都擋);時長只能是 DURATIONS 裡的,而且 ≤ 每個類別的 max_window(D5)。
   - 撤銷清單、事件、kid 登記都是本機檔 ⇒ 只防誤操作;真正收回 = 換簽單鑰(--rotate-key,按一次指紋)。
 失敗 / 量不到 / 讀不懂 ⇒ 一律當沒有有效單(之後 TID-2c 退回一次一按),不放行。
+
+TID-2c(#428,Andy 10-29 20:5x 裁 H1):ask() 的時間窗**先關**。本機驗單的結果信的是 helper binary(狀態根 bin/,
+原始碼雜湊相同就沿用)與狀態根裡的單 / lockwatch.json,而 EZ2_AIB_STATE_ROOT 換得掉狀態根 ⇒ 不算防線。
+這裡的簽 / 驗 / 選單 / lockwatch 都留著,等「系統錨定驗單」那題做完才由 approve_gate 接回。
 """
 import argparse
 import calendar
@@ -450,7 +454,8 @@ def lockwatch_path(env):
 
 def lock_state(ctx):
     """回 (最後一次鎖屏的秒數, None) 或 (None, why)。心跳過期 / 讀不到 / 現在鎖著 ⇒ why(當鎖過、窗作廢)。
-    lockwatch.json 是本機檔 ⇒ 只防誤操作:AI 改得到 last_lock 讓舊單復活,但最多到單上到期 + 同一次開機。"""
+    照實寫(#428 R1 M1):lockwatch.json 是本機檔,**只防本人離座 / 誤操作,不防同帳號 AI** —— AI 不經 --lockwatch on
+    自己寫一份心跳就算「裝了」,把 last_lock 改回簽單前舊單就復活(到單上到期 + 同一次開機)。"""
     if ctx.screen_locked():
         return None, "screen_locked"
     try:
@@ -546,7 +551,7 @@ def remove_lockwatch(ctx, launchctl, home):
 
 def _real_launchctl(*args):
     try:
-        p = subprocess.run(["launchctl"] + list(args), capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
+        p = subprocess.run(["/bin/launchctl"] + list(args), capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
         return p.returncode, (p.stderr or p.stdout).strip()
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, str(exc)
@@ -619,7 +624,8 @@ def choose_window(r, ctx, run=subprocess.run):
 
 
 class GateWindow:
-    """approve_gate.ask() 用的時間窗(TID-2c)。每個方法失敗都由 ask 收成「一次一按」。"""
+    """approve_gate.ask() 用的時間窗(TID-2c)。每個方法失敗都由 ask 收成「一次一按」。
+    正式路徑目前不建這個(approve_gate._default_window 回 None,#428 H1);等系統錨定驗單做完才接回。"""
 
     def __init__(self, ctx=None, run=subprocess.run):
         self.ctx = ctx or Ctx()
