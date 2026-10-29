@@ -28,7 +28,7 @@ aib mission new|list|show|roster|team|task|tick … [--json]
   開始也可以不按:待開始倒數 30 秒沒人按停就自動開始(Andy 03:1x 裁示 7);收下一定要按。
   契約(#414 R1 M1):started_by = "human" | "autostart"(charter.json / show 都有)。自動開始的 running ≠ 本人授權:
   S1 的自動開始只改狀態(不開席、不起行程、不花額度);S4 要開席 / 花額度一定要看 started_by,autostart 只能用免簽額度(grant §7)。
-  本人按暫停 ⇒ 只有本人能恢復(paused_by)。
+  本人按暫停 ⇒ 只有本人能恢復(paused_by)。暫停 / 恢復的 --by human 是自報(沒過 Touch ID):只防誤操作,不是防線。
 同帳號威脅模型(GUIDE-same-user-ai-threat-model):missions/ 所有 AI 都寫得到;--by 是自報。角色表、租期、eid、
   收據格式只防誤操作與 AI 之間互踩,不是防線。真正的防線只有 Touch ID 那兩步;改了驗得出要等 S4 的 SE 簽授權單。
   收據裡的 rc / CI 結論也是自報 ⇒ show 的 verified_pct 只算 ci / pr_merged 兩種(S2 起由核心重跑再補)。
@@ -359,8 +359,8 @@ def apply(st, ev):
             raise MissionError("bad_transition")
         if not TASK_RE.match(str(tid or "")) or tid in st["tasks"]:
             raise MissionError("bad_task")
-        deps = list(d.get("deps") or [])
-        if any(x not in st["tasks"] for x in deps):
+        deps = d.get("deps") or []
+        if not isinstance(deps, list) or any(not isinstance(x, str) or x not in st["tasks"] for x in deps):
             raise MissionError("bad_dep")             # 打錯的依賴不能當沒依賴(#414 R1 L3)
         parent = d.get("parent")
         if parent is not None and parent not in st["tasks"]:

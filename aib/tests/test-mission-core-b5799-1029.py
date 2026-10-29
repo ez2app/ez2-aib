@@ -555,6 +555,8 @@ class M11R1(Base):
     def test_l3_unknown_dep_refused(self):
         self.mk(running=False)
         self.bad("bad_dep", self.c, "task_add", by(PM), {"title": "x", "deps": ["t9"]})
+        for bad in ([["t1"]], [1], "t1", {"t1": 1}):            # R2 N2:型別不對也是 bad_dep,不炸
+            self.bad("bad_dep", self.c, "task_add", by(PM), {"title": "x", "deps": bad})
         self.assertEqual(len(self.st()["tasks"]), 1)
 
     def test_l4_unknown_id_leaves_no_dir(self):
@@ -631,7 +633,7 @@ KNIVES = [
      '''            if t["status"] not in REPORT_MOVES:''', "M11R1.test_l1_forged_report_after_lease_unreadable"),
     ("K17", '''            if st["status"] != "running" or t["status"] not in LEASED or (t.get("lease_until") or 0) >= at:''',
      '''            if st["status"] != "running" or t["status"] not in LEASED:''', "M11R1.test_l1_forged_early_expire_unreadable"),
-    ("K18", '''        if any(x not in st["tasks"] for x in deps):''', '''        if False:''', "M11R1.test_l3_unknown_dep_refused"),
+    ("K18", '''        if not isinstance(deps, list) or any(not isinstance(x, str) or x not in st["tasks"] for x in deps):''', '''        if False:''', "M11R1.test_l3_unknown_dep_refused"),
     ("K19", '''        if eid and eid in st["eids"]:              # 重送''', '''        if False:              # 重送''',
      "M11R1.test_l5_resend_does_not_ask_again"),
     ("K20", '''        if d["move"] == "resume" and st.get("paused_by") == "human" and by != "human":''',
