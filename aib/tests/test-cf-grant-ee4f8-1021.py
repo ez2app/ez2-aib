@@ -255,6 +255,20 @@ class CfGrant(Base):
             with self.assertRaises(ValueError):
                 CG.parse_perms(bad)
 
+    def test_g3e_analytics_read_zone_only(self):
+        # 流量統計只讀、只給那個 zone,不給帳號層,也不算會改整個網域的權限
+        self.assertEqual(CG.PERMS["analytics-read"], ("Analytics Read", "zone"))
+        self.assertNotIn("analytics-read", CG.RISKY)
+        rc, res = self.grant(["suntan.com.hk", "analytics-read", "--push", "eu01:/etc/x.env"])
+        self.assertEqual(rc, 0, res)
+        pol = self.posts()[0][2]["policies"]
+        self.assertEqual(pol, [{"effect": "allow",
+                                "permission_groups": [{"id": "g-analytics-read"}],
+                                "resources": {"com.cloudflare.api.account.zone." + ZID: "*"}}])
+        for bad in ("analytics", "analytics-write", "Analytics Read"):
+            with self.assertRaises(ValueError):
+                CG.parse_perms(bad)
+
     def test_g3d_touchid_shows_every_perm(self):
         """視窗字不能截斷(截掉的可能是 write / 帳號層 / 風險說明);會改整個網域的權限附風險說明。"""
         two = "dns-write,zone-settings-write"
