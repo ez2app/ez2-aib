@@ -5883,5 +5883,6 @@
   "aib.mission.help.by": "who is acting: seat:<5-char seat code> (e.g. seat:ee842) or human",
   "aib.mission.help.eid": "unique id for this command (resends are not redone): 8–64 letters, digits or _ . : -",
   "aib.mission.help.seat": "bare 5-char seat code (e.g. ee842), without seat:",
-  "aib.mission.help.code": "the code from the dispatch receipt (12 chars); workers must pass it when reporting"
+  "aib.mission.help.code": "the code from the dispatch receipt (12 chars); workers must pass it when reporting",
+  "aib.mission.help.clock": "Time always comes from the system clock; commands take no time option (the 15-minute lease runs on real time)"
 }

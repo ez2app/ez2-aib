@@ -20,6 +20,7 @@ aib mission new|list|show|roster|team|task|tick … [--json]
        verified|handed → running(退回重做)
   任務 todo 待做 → assigned 已派 → doing 做中 ⇄ blocked 卡關;doing → qa 品管中 → passed 通過 | returned 退回 → assigned
        租期 LEASE_S(15 分):派工 / 每次回報續租;過期 ⇒ 回 todo、派工代號作廢(PM 改派發新代號,舊代號的回報拒收)。
+       時間一律讀系統鐘,CLI 不收時間參數(同帳號 AI 能自報時間繞租期;@aeb40 10-29 11:18);只有函式層 now= 給測試。
        passed 只有品管收據翻得了(PM / 工人 / 本人都不行);改驗收(amend)⇒ 舊通過作廢回 qa 重驗。
 唯一識別 + 版本:每筆指令可帶 --eid;同 eid 同內容 ⇒ 回原結果不重做,同 eid 不同內容 ⇒ eid_conflict。
   任務帶 rev(每次變動 +1,--if-rev 不合 ⇒ stale_rev)、accept_rev(驗收版本)、code(派工代號)。
@@ -736,7 +737,7 @@ def T(key, **kw):
 
 
 def _parser():
-    p = argparse.ArgumentParser(prog="aib mission", add_help=True)
+    p = argparse.ArgumentParser(prog="aib mission", add_help=True, description=T("help.clock"))
     sub = p.add_subparsers(dest="cmd")
     for name in ("new", "list", "show", "roster", "team", "task", "tick", "why"):
         s = sub.add_parser(name)

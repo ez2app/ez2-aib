@@ -641,7 +641,10 @@ class M12S2(Base):
         for want in ("seat:ee842", "human", "8", "64"):
             self.assertIn(want, task)
         self.assertIn("ee842", roster)
-        self.assertIn("why", M._parser().format_help())
+        top = M._parser().format_help()
+        self.assertIn("why", top)
+        self.assertIn("system clock", top)
+        self.assertFalse(any(o.startswith("--now") for sp in subs.values() for act in sp._actions for o in act.option_strings))
 
 
 KNIVES = [
