@@ -13,11 +13,15 @@
 //                                          reason 超過 maxSignReason 字 ⇒ reason_too_long(不截,視窗字就是要簽的原話)。
 //   grant-create --name N --dir D          TID-2b 授權單簽單鑰 ⇒ D/N.sekey(kind grantkey),ACL = userPresence
 //                                          (Touch ID 或登入密碼;無指紋 Mac 也能用 —— @aeb40 10-29 Q1)。se-sign 一樣能用它簽。
-//   se-pub    --name N --dir D             不要指紋:**從 SE 鑰本體重算**公鑰(不讀檔裡的 public_key 欄位,那欄改得到)。
+//   se-pub    --name N --dir D             不要指紋:**從 SE 鑰本體重算**公鑰(不讀檔裡的 public_key 欄位,那欄改得到),
+//                                          並探過這把鑰一定要本人(換成不帶 ACL 的 SE 鑰 ⇒ weak_key)。
 //   se-verify --name N --dir D --sig B64   不要指紋:stdin 資料 + DER 簽章,用重算的公鑰驗;過 ⇒ {"ok": true},不過 ⇒ bad_sig。
 //
 // 規矩:
-//   - 沒有任何略過生物辨識的旗標;accessControl 固定 [.privateKeyUsage, .biometryCurrentSet](換了指紋就失效,要重封)。
+//   - 沒有任何略過生物辨識的旗標;accessControl 固定 [.privateKeyUsage, .biometryCurrentSet](換了指紋就失效,要重封);
+//     唯一例外是授權單簽單鑰 GRANT_KEY(kind grantkey):[.privateKeyUsage, .userPresence](指紋或登入密碼),只准這個名字用。
+//   - se-pub / se-verify 載鑰後先探一次:全新 LAContext + interactionNotAllowed 試簽,只有拿到「需要使用者互動」
+//     (LAError.notInteractive)才算合格;簽得出來 = 這把鑰不要本人 ⇒ weak_key;其他錯 ⇒ key_probe_failed(@aeb40 #419 M1)。
 //   - reason 由 aib 組好傳進來;這裡再擋控制字元 / 方向字元、截長度(跟 touchid_approve.clean 同精神)。
 //   - 秘密值只走 stdin / stdout;不進 argv、不寫 log。錯誤只回一行原因代碼到 stderr。
 //   - 只用 Foundation / CryptoKit / LocalAuthentication / Security。
@@ -228,18 +232,37 @@ func seCreate(_ name: String, _ dir: String, kind: String = "sekey") throws {
     print("{\"ok\": true, \"name\": \"\(name)\", \"public_key\": \"\(k.publicKey.x963Representation.base64EncodedString())\"}")
 }
 
+let grantKeyName = "GRANT_KEY"
+
+// GRANT_KEY ⇔ kind grantkey(userPresence);其他名字只收 biometryCurrentSet 的 sekey(不讓別的鑰降級成可用密碼簽)
 func loadKeyDoc(_ name: String, _ dir: String) throws -> [String: Any] {
     let doc = try readJSON(dir + "/" + name + ".sekey")
-    guard (doc["v"] as? Int) == version, (doc["name"] as? String) == name,
-          ["sekey", "grantkey"].contains(doc["kind"] as? String ?? "") else {
+    let kind = name == grantKeyName ? "grantkey" : "sekey"
+    guard (doc["v"] as? Int) == version, (doc["name"] as? String) == name, (doc["kind"] as? String) == kind else {
         throw Fail("corrupt")
     }
     return doc
 }
 
+// 這把鑰一定要本人:不准互動的 LAContext 試簽,只認 LAError.notInteractive;簽得出來 ⇒ weak_key
+func requireOwnerACL(_ doc: [String: Any]) throws {
+    let ctx = LAContext()
+    ctx.interactionNotAllowed = true
+    do {
+        let k = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: try b64(doc, "se_key"), authenticationContext: ctx)
+        _ = try k.signature(for: Data("aib-sehelper owner-acl probe".utf8))
+    } catch {
+        let ns = error as NSError
+        if ns.domain == LAError.errorDomain && ns.code == LAError.notInteractive.rawValue { return }
+        throw Fail("key_probe_failed", 6)
+    }
+    throw Fail("weak_key", 6)
+}
+
 // 公鑰一律從 SE 鑰本體重算(dataRepresentation 只有這台 SE 解得開);檔裡的 public_key 欄位不採信
 func sePublicKey(_ doc: [String: Any]) throws -> P256.Signing.PublicKey {
     guard SecureEnclave.isAvailable else { throw Fail("no_se") }
+    try requireOwnerACL(doc)
     return try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: try b64(doc, "se_key")).publicKey
 }
 
@@ -263,6 +286,13 @@ func seSign(_ name: String, _ dir: String, _ reason: String) throws {
     let doc = try loadKeyDoc(name, dir)
     let data = FileHandle.standardInput.readDataToEndOfFile()
     guard !data.isEmpty, data.count <= 65536 else { throw Fail("bad_data") }
+    if name == grantKeyName {
+        // 授權單:視窗字的雜湊要等於單上的 text_sha256(直接叫 helper 自帶無害字 ⇒ 不簽;@aeb40 #419 L1 加固)
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let want = obj["text_sha256"] as? String, cleanFull(reason) == reason else { throw Fail("reason_mismatch") }
+        let got = SHA256.hash(data: Data(reason.utf8)).map { String(format: "%02x", $0) }.joined()
+        guard got == want else { throw Fail("reason_mismatch") }
+    }
     guard SecureEnclave.isAvailable else { throw Fail("no_se") }
     let k = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: try b64(doc, "se_key"),
                                                       authenticationContext: context(reason, limit: maxSignReason))
@@ -288,7 +318,9 @@ struct Main {
                 guard cleanFull(reason).count <= maxUnsealReason else { throw Fail("reason_too_long") }
                 try unseal(name, dir, reason)
             case "se-create": try seCreate(name, dir)
-            case "grant-create": try seCreate(name, dir, kind: "grantkey")
+            case "grant-create":
+                guard name == grantKeyName else { throw Fail("bad_name") }
+                try seCreate(name, dir, kind: "grantkey")
             case "se-pub": try sePub(name, dir)
             case "se-verify":
                 guard let sig = o["sig"], !sig.isEmpty else { throw Fail("bad_arg") }

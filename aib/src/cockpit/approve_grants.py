@@ -8,10 +8,14 @@ approve_gate.ask() 完全不讀授權單(測試有一格證明)。
 
   - 簽單鑰:aib-sehelper grant-create(ACL userPresence = 指紋或登入密碼;換了指紋不失效 —— 能新增指紋的人本來就有
     登入密碼,不算降級,@aeb40 Q1)。公鑰一律由 se-pub 從 SE 鑰本體重算,驗簽走 se-verify;檔裡的 public_key 欄位不採信。
+  - 鑰檔 GRANT_KEY.sekey 是本機檔:同帳號 AI 能換成一把不帶 ACL 的 SE 鑰(#419 R1 M1)⇒ se-pub / se-verify 每次先探
+    (不准互動的試簽,只認「需要使用者互動」),簽得出來 = weak_key ⇒ 沒有有效單。門檻因此回到「改 / 換 helper 程式碼」
+    (已定案的邊界:AI 改核心程式碼本來就擋不住)。
   - kid = 公鑰的 sha256 前 16 碼。第一次登記在 grant-kid.json;跟登記的不同 ⇒ 視窗第一行「簽單鑰換過了(舊 → 新)」
-    並記事件。照實寫:換鑰 = 騙到一次指紋,不宣稱防得住(S4 §10-2 同)。登記檔是本機檔,只供提示。
-  - 視窗字由 approve_gate.reason() 依類別 + 時長組;單上的 text_sha256 = 那句話的雜湊,驗單時重組再比
-    ⇒ 單上的類別 / 時長一定是本人在視窗上看到的字。字太長 ⇒ 直接拒、不截(呼叫端拆兩張)。
+    並記事件。照實寫:換一把真的要本人的鑰 = 要騙到一次指紋才簽得出單;登記檔是本機檔,只供提示。
+  - 視窗字由 approve_gate.reason() 依類別 + 時長組;單上的 text_sha256 = 那句話的雜湊,驗單時重組再比 ⇒ **走核心路徑簽的單**,
+    視窗字 = 單上類別 / 時長。helper 也會擋「--reason 的雜湊 ≠ 單上 text_sha256」(直接叫 helper 自帶無害字 ⇒ 不簽);
+    再往下(自己編 helper)跟上一條同邊界,不在這裡的保證內(#419 R1 L1)。字太長 ⇒ 直接拒、不截(呼叫端拆兩張)。
   - 高風險類別不准進單(簽、驗兩處都擋);時長只能是 DURATIONS 裡的,而且 ≤ 每個類別的 max_window(D5)。
   - 撤銷清單、事件、kid 登記都是本機檔 ⇒ 只防誤操作;真正收回 = 換簽單鑰(--rotate-key,按一次指紋)。
 失敗 / 量不到 / 讀不懂 ⇒ 一律當沒有有效單(之後 TID-2c 退回一次一按),不放行。
@@ -204,20 +208,30 @@ def registered_kid(env):
         return None
 
 
+def _private_dir(d):
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)                   # 已存在的目錄也修(makedirs 不動既有目錄的權限)
+
+
 def _write_json(path, obj):
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    tmp = "%s.tmp-%d" % (path, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as f:
+    _private_dir(os.path.dirname(path))
+    tmp = "%s.tmp-%d-%s" % (path, os.getpid(), secrets.token_hex(4))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, sort_keys=True)
-    os.chmod(tmp, 0o600)
     os.replace(tmp, path)
 
 
+def _append(path, line):
+    _private_dir(os.path.dirname(path))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
 def _event(env, row):
-    path = os.path.join(_dir(env), "events.jsonl")
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(dict(row, at=_utc(time.time())), ensure_ascii=False, sort_keys=True) + "\n")
+    _append(os.path.join(_dir(env), "events.jsonl"),
+            json.dumps(dict(row, at=_utc(time.time())), ensure_ascii=False, sort_keys=True))
 
 
 def ensure_key(ctx):
@@ -370,9 +384,7 @@ def revoke(target, ctx):
     path = os.path.join(_dir(ctx.env), "revoked.jsonl")
     for doc, _left in active(ctx):
         if target == "all" or target in doc["cats"]:
-            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"nonce": doc["nonce"], "at": _utc(ctx.now())}) + "\n")
+            _append(path, json.dumps({"nonce": doc["nonce"], "at": _utc(ctx.now())}))
             n += 1
     if n:
         _event(ctx.env, {"event": "revoke", "target": target, "count": n})
