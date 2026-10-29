@@ -860,7 +860,9 @@ def run_core_update(env, root=None, ref=None, run=_run_group):
     with (fh or open(os.devnull, "w")) as fh:
         rc = run(["/bin/bash", "-c", script, "aib-install", "--dir", str(root)], fh, e, root, UPDATE_TIMEOUT_S)
         if rc == 0:
-            for tool, arg in (("src/identity/auto_distill_hook.py", "ensure-all"), ("src/cockpit/chat_bridge.py", "restart")):
+            # 10-28 Andy:bot 收信入口跟著換版後這份重寫(bot_launchers.py ensure;可重跑)
+            for tool, arg in (("src/identity/auto_distill_hook.py", "ensure-all"), ("src/cockpit/bot_launchers.py", "ensure"),
+                              ("src/cockpit/chat_bridge.py", "restart")):
                 path = root / "aib" / tool
                 if path.is_file():
                     run([sys.executable, str(path), arg], fh, e, root, POST_TIMEOUT_S)

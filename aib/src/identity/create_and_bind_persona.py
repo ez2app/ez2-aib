@@ -867,6 +867,8 @@ def main():
         return 2
 
     vault_dir = Path(args.vault).expanduser().resolve()
+    # --vault 必須同時決定角色庫與後續 bind_one / 投影子行程讀的路由索引。
+    os.environ["EZ2_VAULT_DIR"] = str(vault_dir)
     # 角色庫位置從路由契約現查(the maintainer 08-27 第二鐵律;09-26 R9 資料夾要改 uid,改的是契約,這裡不動)
     sys.path.insert(0, str(REPO_ROOT / "src" / "persona_route"))   # 其他零件一律從 REPO_ROOT(EZ2_AIB_REPO)找
     from route_register import resolve_route_folder, default_contract_spec, BUNDLED_CONTRACT

@@ -434,6 +434,12 @@ if [ "${1:-}" = "flap" ]; then
   aib_delegate_subcommand py "$AIB_SOURCE_ROOT/src/cockpit/flap_guard.py" "$@"
 fi
 
+# 10-28 Andy 准:grokbot webhook 綁定跨機同步(先列目標、問了才傳;只走自己的 SSH)。在 provider 解析之前:sync-bind 不是開席模式。
+if [ "${1:-}" = "grokbot" ] && [ "${2:-}" = "sync-bind" ]; then
+  shift 2
+  exec "$T_PY3" "$HERE/grokbot_bind_sync.py" "$@"
+fi
+
 # CodexBot one-time desktop binding.  This is deliberately outside provider
 # parsing: it verifies the already-loaded desktop thread before persisting any
 # value and never opens a cockpit window.
@@ -446,6 +452,11 @@ if [ "${1:-}" = "bot" ]; then
     # 09-25 a seat:一個 Grok Bot agent 綁一組 webhook(跳一個視窗貼網址與金鑰;金鑰不走 argv)
     shift 3
     exec "$T_PY3" "$HERE/grokbot_threads.py" connect "$@"
+  fi
+  if [ "${2:-}" = "install-launchers" ]; then
+    # 10-28 Andy:bot 收信入口(~/.local/bin/aib-grokbot-mail、aib-claudebot-mail、aib-musebot-mail)由 aib 自己裝;可重跑
+    shift 2
+    exec "$T_PY3" "$HERE/bot_launchers.py" ensure "$@"
   fi
   if [ "${2:-}" = "reap" ]; then
     # 10-07 a seat:收掉行程已死、status.json 還寫活著的橋接席(預設只列出,--apply 才改)
@@ -465,7 +476,9 @@ if [ "${1:-}" = "bot" ]; then
   echo "usage: aib bot list [--provider codexbot|--all] [--limit N] [--json]" >&2
   echo "       aib bot connect codexbot --thread <UUID> [--endpoint <local ws://|unix://>]" >&2
   echo "       aib bot connect grokbot --agent <agentId>   (跳視窗貼 webhook 網址與金鑰)" >&2
+  echo "       aib grokbot sync-bind --agent <agentId> [--to host,...]   (綁定同步到其他機器;先問再傳)" >&2
   echo "       aib bot ping @席碼 [--timeout 秒] [--json]   (一鍵檢查通不通;會真的叫醒 AI 一輪)" >&2
+  echo "       aib bot install-launchers   (建 / 修 bot 收信入口 ~/.local/bin/aib-<bot>-mail;可重跑)" >&2
   echo "       aib bot reap [--apply]   (收掉行程已死、狀態還寫活著的橋接席;預設只列出)" >&2
   exit 2
 fi
@@ -500,6 +513,8 @@ fi
 if [ "${1:-}" = "install" ]; then
   shift
   INSTALL="$AIB_SOURCE_ROOT/tools/aib-install-path"
+  # 10-28:公開版沒有 aib-install-path ⇒ 至少把 bot 收信入口裝好(其餘周邊指令公開版本來就沒有)
+  [ -e "$INSTALL" ] || exec "$T_PY3" "$HERE/bot_launchers.py" ensure
   aib_need "$INSTALL" install
   # 預設連 launcher 一起裝，使「安裝 aib」後 grokbot 可用
   case " $* " in

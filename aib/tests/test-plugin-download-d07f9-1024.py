@@ -462,6 +462,19 @@ class Install(Box):
         self.assertEqual(PC.sales_on(), (False, "signed"))
         res, rc = AP.catalog_cmd(dict(os.environ), api(srv))
         self.assertEqual([e["version"] for e in res["plugins"]], ["0.0.2"])
+        priced = dict(self.entry(data, access="paid", addon="probe"), price="NT$99")   # off ⇒ 畫面不印價錢(資料照在 --json)
+        res, rc = AP.catalog_cmd(dict(os.environ), api(self.server([priced], {})))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            AP._emit(res, rc)
+        self.assertNotIn("NT$99", buf.getvalue())
+        self.assertEqual(buf.getvalue().split()[2], "-", buf.getvalue())   # 付費條目 off 時只印「-」
+        self.assertEqual(res["plugins"][0]["price"], "NT$99")
+        put(resign(dict(base, settings={"sales": "on"})))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            AP._emit(res, rc)
+        self.assertIn("NT$99", buf.getvalue())
         put(resign(dict(base, settings={"sales": "yes"})))
         self.assertEqual(PC.sales_on(), (False, "unset"))
         put(resign(dict(base)))
