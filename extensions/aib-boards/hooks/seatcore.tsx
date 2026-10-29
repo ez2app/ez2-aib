@@ -5,7 +5,7 @@ import { integPromptLines, integAlerts } from './seat/integrator'
 import { devPromptLines, devAlerts } from './seat/dev'
 import { qaPromptLines, qaAlerts } from './seat/qa'
 import { cardOf, toastOf, upsert, syncRequests, relayPath, iconOf, clip, STATUS, REQ_PREFIX, type MailCard, type QItem } from './seat/mailcard'
-import { statusLabel, promptSection, handoffState, newBlocks, label, type SeatInfo } from './seat/seat-label'
+import { statusLabel, tailLabel, promptSection, handoffState, newBlocks, label, type SeatInfo } from './seat/seat-label'
 import { tr } from './i18n'
 import { openRoom } from './room'   // /aib room(艦長室外掛)拆在 room.ts
 import { ready } from './ready'   // 出字前先讀語系 + 字典(與 register.tsx 同一份快取)
@@ -79,14 +79,39 @@ async function takeMail($: EngineInterface, q: QItem): Promise<void> {
   await update($, mailCards, list => upsert(list, c, gone))
   $.ui.invalidate('ui.render')
 }
+// 10-28 Andy 工作單 S「這個 aib 太多行了,我希望縮成一行」:未讀 dm(+交接標記)交給 💧 狀態列尾巴(核心 statusline_tail.py)。
+//   那條狀態列把這段畫出過(put 回 shown;#401 R1 起記號黏住、不看時間)⇒ 收掉自己這一行;
+//   沒畫出過(會員用自己的狀態列、核心太舊、還沒畫到含這段的那次)⇒ 照舊自己一行。
+//   同一段字 60 秒內不重寫(turn.complete 每輪都會叫);還沒收(shown=false)⇒ TAIL_RECHECK_MS 就再問,畫出來了早點收。
+//   null = 拿掉這段(量不到席位 / mod 依角色關)。
+const TAIL_RECHECK_MS = 10_000
+let tailText: string | null = null
+let tailAt = 0
+let tailShown = false
+async function putTail($: EngineInterface, text: string | null): Promise<boolean> {
+  const now = await $.clock.now().catch(() => Date.now())
+  if (text === tailText && now - tailAt < (tailShown ? REFRESH_MS - 5000 : TAIL_RECHECK_MS)) return tailShown
+  const sid = await $.session.id().catch(() => '')
+  if (!sid) { tailShown = false; return false }
+  const cwd = await $.session.cwd().catch(() => '')   // #401 R2:專案層狀態列設定在這裡
+  const r = await $.process.run([await py($), '-I', `${$.plugin.root}/bin/seat-info.py`, '--tail-put', sid,
+    ...(text === null ? ['--clear'] : ['--text', text]), ...(cwd ? ['--cwd', cwd] : [])], { timeoutMs: 5000 }).catch(() => null)
+  let shown = false
+  try { shown = (JSON.parse(r?.stdout.trim().split('\n').pop() || '{}') as { shown?: unknown }).shown === true } catch { shown = false }
+  tailText = text; tailAt = now; tailShown = text !== null && shown
+  return tailShown
+}
+async function showSeat($: EngineInterface, s: SeatInfo, pct: number | null): Promise<void> {
+  $.ui.status((await putTail($, tailLabel(s, pct))) ? undefined : statusLabel(s, pct))
+}
 async function refresh($: EngineInterface): Promise<void> {
   await ready($)
   const [s, pct] = await Promise.all([probe($), readCtx($)])
   ctxPercent = pct
-  if (!s) { $.ui.status(tr('seat_st_na', { context: pct === null ? '' : ` · CTX ${Math.round(pct)}%` })); return }
+  if (!s) { await putTail($, null); $.ui.status(tr('seat_st_na', { context: pct === null ? '' : ` · CTX ${Math.round(pct)}%` })); return }
   seat = s
-  if (!modOn()) { $.ui.status(tr('seat_st_off', { role: s.role ?? tr('seat_unbound'), why: s.mod?.why ?? '' })); return }
-  $.ui.status(statusLabel(s, pct))
+  if (!modOn()) { await putTail($, null); $.ui.status(tr('seat_st_off', { role: s.role ?? tr('seat_unbound'), why: s.mod?.why ?? '' })); return }
+  await showSeat($, s, pct)
   // 新信卡片的後備(監看沒登記上時):照未讀清單補卡;已有的卡重讀一次信件檔更新狀態(已讀 / 完成)
   if (mailBaseline === null) mailBaseline = new Set((s.unread_list ?? []).map(m => m.id))
   const dir = await dmDirOf($)
@@ -116,6 +141,7 @@ async function refresh($: EngineInterface): Promise<void> {
 // 同一個事件不能登記兩次;信件資料夾由 classic.SessionStart 一起登記監看
 export async function seatOnStart($: EngineInterface): Promise<void> {
   warnedHandoff = false; toldHandoffDone = false; ctxPercent = null
+  tailAt = 0; tailShown = false   // /clear 換了對話 id ⇒ 尾巴段要寫到新 id 底下,不沿用快取
   await $.command.register({ name: 'aib', description: 'Ez2 AIB seat: /aib room opens the captain-room web page' })
   await refresh($)
   if (seat?.seat_file_has_uuid === false && modOn()) $.ui.toast(tr('seat_toast_no_uuid'), { timeoutMs: 10000 })
@@ -147,7 +173,7 @@ export const registerSeat: Register = on => {
     const pct = await readCtx($)
     if (pct !== null && pct !== ctxPercent) {
       ctxPercent = pct
-      if (seat && modOn()) $.ui.status(statusLabel(seat, pct))
+      if (seat && modOn()) await showSeat($, seat, pct)
     }
     return r
   })
