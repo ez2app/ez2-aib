@@ -650,6 +650,7 @@ _engine_block_kind() {   # $1=引擎 log 檔
     *"block_kind=history"*) printf 'history-mode\n'; return 0 ;;   # 10-14 K8:Claude 框在輸入歷史,不是卡稿
     *"block_kind=modal"*|*"block_kind=draft"*) printf 'foreign-draft\n'; return 0 ;;
     *未送出草稿*|*拒絕投遞*) printf 'foreign-draft\n'; return 0 ;;
+    *'"code":"r30_lint"'*) printf 'r30-lint\n'; return 0 ;;   # 10-29 e 張:咽喉 R-30 擋內容(原本只看得到 engine-rc-3)
   esac
   return 0
 }
@@ -3353,6 +3354,15 @@ print(((json.loads(sys.argv[1]).get("matches") or [{}])[0].get("rec") or {}).get
       _aib_emit_engine_log final
       _auto_resend history-mode
       emit_json 2 history-mode "對方 Claude 的輸入框停在輸入歷史(框頂線 History n/m),框裡是別席的舊訊息、**不是卡稿**;引擎試著按 ↓ 退回空框沒成功(畫面在動或按到上限),一個字都沒進目標;該席按 ↓ 直到 History 消失後**可安全重送**(原 rc=$RC)"
+      exit 2
+    fi
+    # 10-29 e 張:R-30 lint 在咽喉最前面、貼之前就擋 ⇒ 一個字都沒進目標。原本落到下面兩幀比對,
+    #   對方畫面在動就變 blocked-unconfirmed(rc 4),收據只寫 engine-rc-3,寄件人看不出是自己的字被擋、改什麼。
+    #   ⇒ 收據直接帶 lint 列出的位置與建議;不自動重送(同一段字再送一樣擋),改字後再送。
+    if [ "$_AE_BLOCK_KIND" = "r30-lint" ]; then
+      _aib_emit_engine_log final
+      _AE_LINT="$(grep -E '^[[:space:]]+[0-9]+:[0-9]+ ' "$_ENG_LOG" 2>/dev/null | sed -E 's/^[[:space:]]+//' | head -5 | paste -sd ';' -)"
+      emit_json 2 r30-lint "內容被 R-30 lint 擋下,一個字都沒進目標(原 rc=$RC):${_AE_LINT:-見上方 lint 輸出};改掉這些字再送(不會自動重送)"
       exit 2
     fi
     if [ "$_AE_RESID" = "0" ]; then
