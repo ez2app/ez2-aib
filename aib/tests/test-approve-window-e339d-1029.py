@@ -20,9 +20,12 @@ W14 系統日誌查不到 / helper 不在 ⇒ 不出時長選單(只這次)
 W15 系統日誌查不到 + 簽章正確的有效窗單 ⇒ ask 仍一次一按、不出選單
 W16 #428 H1:正式路徑(不注入 touchid / window)授權單模組給得出有效單也照舊一次一按(預設窗關著)
 W17 審查探針 P4 + P1:EZ2_AIB_STATE_ROOT + 種假 sehelper(stamp = 真原始碼雜湊)+ 自寫 lockwatch.json ⇒ ask 仍彈窗
+W18 #433 R1 M2:這版 macOS 不在實機驗過的名單 / 讀不到 build ⇒ find_valid 回 os_unverified(不查系統日誌);
+    doctor_line ⇒ note os_unverified;os_build 只跑 /usr/bin/sw_vers -buildVersion、env 只給 PATH,不是 Mac 不跑
 W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單但系統日誌查不到 ⇒ note
   (第 2 張起 lockwatch.json 不再參與判斷;W2 另驗自寫一份「沒鎖過」的 lockwatch.json 也不會讓單生效)
 刀(複本落刀,錨要恰好一次):KL1 lock_state 不理查詢失敗 ⇒ W2 紅;KL2 拿掉鎖屏後作廢 ⇒ W3 紅;KL3 拿掉「現在鎖著」⇒ W2 紅;
+  KL10 lock_state 拿掉 build 名單 ⇒ W18 紅;KL11 os_build 不給乾淨 env ⇒ W18 紅;
   KL4 拿掉 owner_acl 檢查 ⇒ W10 紅;KL5 拿掉 find_valid 的高風險排除 ⇒ W4 紅;KL6 拿掉查不到不出選單 ⇒ W14 紅;
   KL7 find_valid 拿掉 lock_state ⇒ W15 紅;KL9 lock_state 改回讀 lockwatch.json ⇒ W2 紅;KL8 --lockwatch on 拿掉 Touch ID ⇒ W12 紅;
   KG1 ask 拿掉高風險不走窗 ⇒ W8 紅;KG2 拿掉記帳 ⇒ W5 紅;KG3 拿掉取消 ⇒ W6 紅
@@ -34,6 +37,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -54,16 +58,21 @@ _spec.loader.exec_module(T2B)
 T0 = T2B.T0
 
 
+VERIFIED = object()                  # Env.build 的預設:用受測模組名單裡的第一個 build
+
+
 class Env(T2B.Env):
     def __init__(self):
         super().__init__()
         self.locked = [False]
         self.locks, self.log_why, self.log_calls = None, None, []      # 預設:系統日誌查不到
+        self.build = [VERIFIED]                                        # 預設:名單裡的 macOS build
 
     def ctx(self, M=GR):
         return M.Ctx(env=self.env, helper=self.helper, platform="darwin", now=lambda: self.t[0],
                      boot=lambda: self.boot[0], machine=lambda: self.machine[0], screen_locked=lambda: self.locked[0],
-                     syslog=self._syslog)
+                     syslog=self._syslog,
+                     os_build=lambda: sorted(M.VERIFIED_BUILDS)[0] if self.build[0] is VERIFIED else self.build[0])
 
     def _syslog(self, since, now):
         self.log_calls.append((since, now))
@@ -348,6 +357,40 @@ def cell_w10(t, M):
         e.close()
 
 
+def cell_w18(t, M):
+    e = Env()
+    try:
+        M.sign(["seat_input"], "1h", e.ctx(M))
+        e.log()
+        t.assertIsNotNone(M.find_valid("seat_input", e.ctx(M))[0])
+        for b in ("99Z999", None, ""):                                  # 新版 macOS / 讀不到
+            e.build[0] = b
+            n = len(e.log_calls)
+            t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "os_unverified"), b)
+            t.assertEqual(len(e.log_calls), n, b)                      # 不查系統日誌
+            t.assertEqual(M.doctor_line(e.ctx(M)), ("note", "os_unverified"), b)
+        seen = []
+
+        def run(argv, **kw):
+            seen.append((argv, kw))
+            return subprocess.CompletedProcess(argv, run.rc, run.out, "")
+        run.rc, run.out = 0, "24G830\n"
+        t.assertEqual(M.os_build(run, "darwin"), "24G830")
+        t.assertEqual(seen[-1][0], ["/usr/bin/sw_vers", "-buildVersion"])
+        t.assertEqual(seen[-1][1].get("env"), {"PATH": "/usr/bin:/bin"})
+        t.assertEqual(seen[-1][1].get("stdin"), subprocess.DEVNULL)
+        for rc, out in ((1, "24G830\n"), (0, ""), (0, "24G830 ; rm -rf\n"), (0, "x" * 40)):
+            run.rc, run.out = rc, out
+            t.assertIsNone(M.os_build(run, "darwin"), (rc, out))
+        n = len(seen)
+        t.assertIsNone(M.os_build(run, "linux"))
+        t.assertEqual(len(seen), n)                                    # 不是 Mac 不跑
+        c = M.Ctx(env=e.env, platform="darwin", run=lambda a, **k: subprocess.CompletedProcess(a, 0, "99Z999\n", ""))
+        t.assertEqual(c.os_build(), "99Z999")                          # Ctx 預設走 os_build(帶 Ctx 的 run / platform)
+    finally:
+        e.close()
+
+
 class Cells(unittest.TestCase):
     def test_w1(self): cell_w1(self, GR)
     def test_w2(self): cell_w2(self, GR)
@@ -362,6 +405,25 @@ class Cells(unittest.TestCase):
     def test_w15(self): cell_w15(self, GR)
     def test_w16(self): cell_w16(self, AG)
     def test_w17(self): cell_w17(self, AG)
+    def test_w18(self): cell_w18(self, GR)
+
+    def test_w18_doctor(self):
+        sys.path.insert(0, str(ROOT / "src" / "bootstrap"))
+        import aib_doctor
+        td = tempfile.mkdtemp(prefix="aib-window-doctor-")
+        try:
+            with mock.patch.object(GR, "doctor_line", return_value=("note", "os_unverified")):
+                r = aib_doctor.check_grants(td, ROOT, env={"EZ2_AIB_LOCALE": "zh-TW"})
+            self.assertEqual(r["status"], aib_doctor.NOTE)
+            self.assertIn("macOS", r["detail"])
+            self.assertTrue(r["remedy"])
+            for loc in ("zh-TW", "en", "ja", "ko"):
+                with open(ROOT / "i18n" / ("%s.json" % loc), encoding="utf-8") as f:
+                    d = json.load(f)
+                for k in ("os_unverified", "os_remedy"):
+                    self.assertIn("macOS", d["aib.doctor.check.grants." + k], (loc, k))
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
 
     def test_w9_end_to_end(self):
         e = Env()
@@ -479,6 +541,9 @@ KNIVES_GR = [
      '    try:\n        with open(lockwatch_path(ctx.env), encoding="utf-8") as fh:\n'
      '            events, why = [_parse_utc(json.load(fh)["last_lock_utc"])], None\n'
      '    except (OSError, ValueError, KeyError):\n        events, why = None, "no_lockwatch"\n', cell_w2),
+    ("KL10", '    if ctx.os_build() not in VERIFIED_BUILDS:\n        return None, "os_unverified"\n', '', cell_w18),
+    ("KL11", '                env={"PATH": "/usr/bin:/bin"}, stdin=subprocess.DEVNULL)\n    except (OSError, subprocess.SubprocessError):\n        return None\n    b =',
+     '                stdin=subprocess.DEVNULL)\n    except (OSError, subprocess.SubprocessError):\n        return None\n    b =', cell_w18),
     ("KL8", '            ok, why = approve_lockwatch_on(ctx, touchid)\n', '            ok, why = True, None\n', cell_w12k),
     ("KL5", '    if not spec or spec["high_risk"] or spec["max_window"] <= 0:\n        return None, "no_window_category"\n'
      '    kid, why = current_kid(ctx)\n', '    kid, why = current_kid(ctx)\n', cell_w4),

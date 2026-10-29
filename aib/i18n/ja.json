@@ -5862,6 +5862,8 @@
   "aib.doctor.check.grants.syslog_ok": "時間枠の許可:システムログから画面ロックの記録を読めます(自動承認は今は止めてあり、毎回 1 回ずつ確認します)",
   "aib.doctor.check.grants.syslog_missing": "時間枠の許可がありますが、システムログから画面ロックの記録を読めません({why})⇒ 自動承認は効かず、毎回その都度承認",
   "aib.doctor.check.grants.syslog_remedy": "自動承認は今は止めてあるので対応は不要です。開放後も、照会が 3 秒を超えたり失敗したりしたら画面ロックありとみなします(1 回多く承認するだけです)",
+  "aib.doctor.check.grants.os_unverified": "時間枠の許可がありますが、この macOS はまだ画面ロックの記録を実機で確認していません ⇒ 自動承認は効かず、毎回その都度承認",
+  "aib.doctor.check.grants.os_remedy": "対応は不要です。新しい macOS は本人が画面ロック / 解除で確認したあと、aib の更新でリストに追加されてから有効になります",
   "aib.doctor.check.grants.error": "時間枠の状態を読めません:{error}",
   "aib.approve_grants.touchid_lockwatch_on": "ロック検知をオンにします(時間枠の自動承認はまだ止めてあり、開放後に使われます)",
   "aib.meeting.ok": "完了",

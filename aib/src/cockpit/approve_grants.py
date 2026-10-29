@@ -135,7 +135,7 @@ class Ctx:
     """外部依賴一處注入(測試換假 helper / 時鐘 / 開機 / 機器 / 系統日誌)。"""
 
     def __init__(self, env=None, run=subprocess.run, helper=None, platform=None, now=None, boot=None, machine=None,
-                 screen_locked=None, anchored=None, syslog=None):
+                 screen_locked=None, anchored=None, syslog=None, os_build=None):
         self.env = dict(os.environ if env is None else env)
         self.run, self.helper, self.platform = run, helper, platform
         self.now = now or time.time
@@ -143,6 +143,12 @@ class Ctx:
         self._screen_locked = screen_locked
         self._anchored = anchored            # 只給測試換掉 anchored_helper.check
         self._syslog = syslog                # 只給測試換掉 syslog_locks(since, now) -> (事件秒數清單, None) | (None, why)
+        self._os_build = os_build            # 只給測試換掉 os_build() -> build 字串 | None
+
+    def os_build(self):
+        if self._os_build is not None:
+            return self._os_build() if callable(self._os_build) else self._os_build
+        return os_build(self.run, self.platform)
 
     def syslog(self, since, now):
         if self._syslog is not None:
@@ -489,8 +495,31 @@ LOG_SPANS_MAX = 8                # 24 小時(最長時長)= 8 段;再長 ⇒ log
 # #433 R1 M1 覆蓋檢查:since 之前 30 分鐘內要查得到至少一筆 loginwindow 紀錄(10-30 實機:30 小時內每小時 ≥ 31 筆,
 # 存在比 Persist 久的存檔)。日誌由舊到新整檔輪替 ⇒ since 之前的還在 = since 之後的都還在;時間戳由 logd 打、
 # loginwindow 路徑受 SIP 保護 ⇒ AI 灌 log 擠掉鎖屏段之後補不回「since 之前的 loginwindow 紀錄」⇒ log_uncovered。
-COVER_PREDICATE = 'processImagePath == "%s"' % LOGINWINDOW
+# #433 R2 L1:覆蓋只算 Default 等級的 logEvent(跟鎖屏事件同行程、同等級 ⇒ 同一個保存區;Error / Fault /
+# activity 存法不同,不能拿來證明鎖屏那段還在)。predicate 先篩等級,Python 端再驗一次(activity 事件沒有 messageType)。
+COVER_PREDICATE = 'processImagePath == "%s" AND messageType == default' % LOGINWINDOW
 COVER_S = 1800
+# #433 R1 M2:鎖屏判斷靠 loginwindow 的訊息字串,macOS 一改字就會靜靜查無(= 當沒鎖過)⇒ 只認實機驗過的 build。
+# 名單跟著簽章發版走(改它 = 改核心程式碼,已定案邊界);不在名單 ⇒ os_unverified(窗不生效,一次一按)。
+# 驗一個 build:本人鎖屏 / 解鎖一次,唯讀 log show 確認 LOCK_PREDICATE 兩類事件都查得到,再把 build 加進來。
+VERIFIED_BUILDS = frozenset({
+    "24G830",                    # 10-30 Mac Pro 實機:鎖屏 _createShieldWindowIfNeeded、解鎖 LWScreenLock 都查得到
+})
+SW_VERS = "/usr/bin/sw_vers"
+_BUILD = re.compile(r"^[0-9A-Za-z]{3,16}$")
+
+
+def os_build(run=subprocess.run, platform=None):
+    """macOS build(sw_vers -buildVersion,SIP 保護的絕對路徑、env 只給 PATH)。不是 Mac / 讀不到 / 格式不對 ⇒ None。"""
+    if (platform or sys.platform) != "darwin":
+        return None
+    try:
+        p = run([SW_VERS, "-buildVersion"], capture_output=True, text=True, timeout=5,
+                env={"PATH": "/usr/bin:/bin"}, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    b = (p.stdout or "").strip() if p.returncode == 0 else ""
+    return b if _BUILD.match(b) else None
 
 
 def lockwatch_path(env):
@@ -555,7 +584,7 @@ def syslog_locks(since, now, popen=subprocess.Popen, platform=None, clock=time.m
                     return None, "log_unreadable"
                 if not cover:
                     events.append(ts)
-                elif ts <= since:
+                elif ts <= since and d.get("messageType") == "Default" and d.get("eventType") == "logEvent":
                     covered = True
         if not covered:
             return None, "log_uncovered"
@@ -576,13 +605,22 @@ def syslog_locks(since, now, popen=subprocess.Popen, platform=None, clock=time.m
 
 def lock_state(ctx, since):
     """回 (since 之後最後一次鎖屏 / 解鎖事件的秒數,沒有 = 0, None) 或 (None, why)。
-    現在鎖著 / 量不到 / 系統日誌查不到 / 超過 3 秒 ⇒ why(當鎖過、窗作廢)。不讀 lockwatch.json(本機檔,AI 寫得出來)。"""
+    現在鎖著 / 量不到 / 這版 macOS 沒驗過 / 系統日誌查不到 / 超過 3 秒 ⇒ why(當鎖過、窗作廢)。
+    不讀 lockwatch.json(本機檔,AI 寫得出來)。"""
     if ctx.screen_locked():
         return None, "screen_locked"
+    if ctx.os_build() not in VERIFIED_BUILDS:
+        return None, "os_unverified"
     events, why = ctx.syslog(int(since), int(ctx.now()))
     if why:
         return None, why
     return (max(events) if events else 0), None
+
+
+def _probe(ctx):
+    """doctor / --lockwatch status 用:同一套查法,只是不看「現在鎖著沒」(問的是查不查得到)。"""
+    return Ctx(env=ctx.env, run=ctx.run, now=ctx.now, platform=ctx.platform, screen_locked=False,
+               syslog=ctx._syslog, os_build=ctx._os_build)
 
 
 def find_valid(cat, ctx):
@@ -681,7 +719,7 @@ def doctor_line(ctx=None):
     _, why = ctx.helper_exe()
     if why:                                  # 沒裝 / 舊版 / 擁有者不對 ⇒ 驗單一律不過(Q1:update 改了 helper ⇒ 窗自動關)
         return "note", why
-    _, why = lock_state(Ctx(env=ctx.env, now=ctx.now, platform=ctx.platform, screen_locked=False, syslog=ctx._syslog),
+    _, why = lock_state(_probe(ctx),
                         int(ctx.now()) - 60)
     return ("ok", "syslog_ok") if why is None else ("note", why)
 
@@ -819,7 +857,7 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
             return emit({"ok": kind == "installed", "result": kind, "info": info}, 0 if kind == "installed" else 2)
         if o.lockwatch == "off":
             return emit({"ok": True, "removed": remove_lockwatch(ctx, lc, hm)}, 0)
-        _, why = lock_state(Ctx(env=ctx.env, now=ctx.now, platform=ctx.platform, screen_locked=False, syslog=ctx._syslog),
+        _, why = lock_state(_probe(ctx),
                             int(ctx.now()) - 60)            # 鎖屏判斷看系統日誌(第 2 張);這裡回它查不查得到
         return emit({"ok": why is None, "why": why, "source": "syslog"}, 0)
     if o.revoke:

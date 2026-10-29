@@ -5862,6 +5862,8 @@
   "aib.doctor.check.grants.syslog_ok": "時間窗授權單:系統日誌查得到鎖屏紀錄(自動同意目前關著,每次仍一次一按)",
   "aib.doctor.check.grants.syslog_missing": "有時間窗授權單,但查不到系統日誌的鎖屏紀錄({why})⇒ 自動同意不會生效,一律一次一按",
   "aib.doctor.check.grants.syslog_remedy": "自動同意目前關著,不用處理;之後開放時,查詢超過 3 秒或失敗也一律當鎖過螢幕(只會多按一次)",
+  "aib.doctor.check.grants.os_unverified": "有時間窗授權單,但這版 macOS 還沒實機驗過鎖屏紀錄 ⇒ 自動同意不會生效,一律一次一按",
+  "aib.doctor.check.grants.os_remedy": "不用處理;新版 macOS 要先本人鎖屏 / 解鎖實測過、隨 aib 更新加進名單,之後才會生效",
   "aib.doctor.check.grants.error": "讀不到時間窗狀態:{error}",
   "aib.approve_grants.touchid_lockwatch_on": "開啟鎖屏偵測(時間窗的自動同意目前仍關著,之後開放時才會用到)",
   "aib.meeting.ok": "好了",

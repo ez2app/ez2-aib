@@ -5862,6 +5862,8 @@
   "aib.doctor.check.grants.syslog_ok": "Time-window grants: screen-lock records are readable from the system log (auto-approve is off for now; every approval still asks once)",
   "aib.doctor.check.grants.syslog_missing": "Time-window grants exist but screen-lock records cannot be read from the system log ({why}) ⇒ auto-approve is off; every approval asks once",
   "aib.doctor.check.grants.syslog_remedy": "Auto-approve is off for now, so nothing to do; once it opens, a lookup over 3 seconds or a failed lookup still counts as a screen lock (you just approve once more)",
+  "aib.doctor.check.grants.os_unverified": "Time-window grants exist, but this macOS version's screen-lock records have not been checked on a real Mac yet ⇒ auto-approve is off; every approval asks once",
+  "aib.doctor.check.grants.os_remedy": "Nothing to do; a new macOS version is added to the list in an aib update after someone locks and unlocks the screen to check it",
   "aib.doctor.check.grants.error": "Could not read time-window state: {error}",
   "aib.approve_grants.touchid_lockwatch_on": "Turn on the lock watcher (time-window auto-approve is still off; it is used once that opens)",
   "aib.meeting.ok": "Done",

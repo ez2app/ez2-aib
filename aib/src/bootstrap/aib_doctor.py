@@ -643,6 +643,8 @@ def check_grants(state_root, repo_root, env=None):
         import anchored_helper
         return _result("grants", NOTE, _C("grants.helper_missing", why=code[len("helper_"):]),
                        _C("grants.helper_remedy", cmd=anchored_helper.install_command()))
+    if code == "os_unverified":              # #433 R1 M2:這版 macOS 不在實機驗過的名單(鎖屏紀錄字串可能改了)
+        return _result("grants", NOTE, _C("grants.os_unverified"), _C("grants.os_remedy"))
     return _result("grants", NOTE, _C("grants.syslog_missing", why=code), _C("grants.syslog_remedy"))
 
 
