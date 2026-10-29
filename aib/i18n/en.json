@@ -5776,5 +5776,6 @@
   "aib.dmopen.off": "aib: new seats will no longer open the review queue automatically; already-open ones stay",
   "aib.dmopen.not_advanced": "aib: the review queue needs the Advanced plan; not opened",
   "aib.dmopen.plugin_missing": "aib: review queue switched on, but the pending-review plugin is not installed; it appears once installed",
-  "aib.dmopen.no_cabin_home": "aib: could not find this cabin's folder; review queue not opened"
+  "aib.dmopen.no_cabin_home": "aib: could not find this cabin's folder; review queue not opened",
+  "aib.dmopen.timeout": "aib: the review-queue step took longer than {s}s; skipped (the seat opens as usual)"
 }

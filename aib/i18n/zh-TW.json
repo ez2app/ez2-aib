@@ -5776,5 +5776,6 @@
   "aib.dmopen.off": "aib: 已取消「新開的席自動打開待審區」;已經打開的不動",
   "aib.dmopen.not_advanced": "aib: 待審區要進階方案,這次沒有打開",
   "aib.dmopen.plugin_missing": "aib: 待審區開關已打開,但沒裝待審區外掛 pending-review;裝好就會出現",
-  "aib.dmopen.no_cabin_home": "aib: 量不到這一艙的資料夾,待審區這次沒有打開"
+  "aib.dmopen.no_cabin_home": "aib: 量不到這一艙的資料夾,待審區這次沒有打開",
+  "aib.dmopen.timeout": "aib: 待審區這一步超過 {s} 秒沒做完,先略過(開席照常)"
 }

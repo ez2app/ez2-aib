@@ -21,6 +21,8 @@ A10 auto + 外掛沒裝 / 非進階 ⇒ 安靜(訊息空);on 才說(M2)
 A11 auto + 讀不懂的 dm-queue / feature-policy(壞 JSON、"false" 字串、型別錯)⇒ 不寫、檔不變、列 kept_off;on 照開(M4 / L1)
 A12 壞的整台偏好檔五種(壞 JSON、[1]、schema 錯、on:"true"、是目錄)⇒ pref_off、艙裡不寫(L2)
 A13 總時限:apply 卡住 ⇒ main 在時限內回 0、印一行(M3)
+A13 也驗逾時那行走四語字典(R2 L-a),不是寫死英文
+D2 同一個東西四語用同一個詞:ja 承認待ちエリア、ko 검토 대기 영역;ja 不夾「艙」(R2 附帶)
 A14 --pref-only:只記偏好、不碰艙,訊息是 batch 那句;off 刪掉偏好檔;state/ 是 0700(L3 / L4)
 刀(複本):K1 拿掉最後一個字 dm 的辨認 ⇒ P1 紅;K2 auto 也硬開 ⇒ A3 紅;K3 不看整台偏好 ⇒ A4 紅
   K4 auto 把讀不懂當沒設 ⇒ A11 紅;K5 auto 也印外掛 / 方案那句 ⇒ A10 紅;K6 批次不先記偏好 ⇒ P2 紅;K7 不設時限 ⇒ A13 紅
@@ -43,7 +45,7 @@ from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 import open_dm_panel as ODP  # noqa: E402
 
-KEYS = ("on", "auto", "batch", "off", "not_advanced", "plugin_missing", "no_cabin_home")
+KEYS = ("on", "auto", "batch", "off", "not_advanced", "plugin_missing", "no_cabin_home", "timeout")
 
 
 class Cabin(unittest.TestCase):
@@ -212,9 +214,14 @@ class Cabin(unittest.TestCase):
         ODP.apply = lambda *a, **k: _t.sleep(5)
         ODP.TIME_LIMIT_S = 0.3
         try:
+            import contextlib
+            import io
+            err = io.StringIO()
             t0 = _t.monotonic()
-            self.assertEqual(ODP.main(["auto"]), 0)
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(ODP.main(["auto"]), 0)
             self.assertLess(_t.monotonic() - t0, 2.0, "要在時限內放手")
+            self.assertIn("待審區這一步超過 0.3 秒", err.getvalue(), "逾時那行走字典(zh-TW)")
         finally:
             ODP.apply, ODP.TIME_LIMIT_S = orig_apply, orig_lim
 
@@ -263,6 +270,14 @@ class Dict(unittest.TestCase):
             for k in KEYS:
                 self.assertTrue(d.get("aib.dmopen." + k), (loc, k))
             self.assertIn("[dm]", d["aib.help.usage"], loc)
+
+    def test_d2_same_term(self):
+        for loc, term in (("ja", "承認待ちエリア"), ("ko", "검토 대기 영역")):
+            d = json.loads((REPO / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
+            for k in ("on", "auto", "batch", "off", "not_advanced", "plugin_missing", "no_cabin_home", "timeout"):
+                self.assertIn(term, d["aib.dmopen." + k], (loc, k))
+            if loc == "ja":
+                self.assertFalse(any("艙" in d["aib.dmopen." + k] for k in KEYS), "ja 不夾中文「艙」")
 
 
 def _knife(test, path, old, new, case):
