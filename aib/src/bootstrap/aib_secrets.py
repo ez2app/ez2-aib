@@ -48,6 +48,13 @@ LAYOUT = (
     ("api-key-claude.env", "claude", "type",
      "Claude／Anthropic 雲端 API key。一行 ANTHROPIC_API_KEY=…",
      (("ANTHROPIC_API_KEY", "Anthropic API", "claude", "ai-api", False),)),
+    # 10-29 @35fe6(@f5fb8 裁、@aeb40 審):像素工坊找參考叫 claude 時,隔離子行程用的長效 token(本人跑 claude setup-token)。
+    #   不放 api-key-claude.env:那份是 claude-apikey 開關(apiKeyHelper)與計費組席位讀的,OAuth token 帶進席位會讓開著的席換登入。
+    #   這份只走 aib secret ask 寫、只有像素工坊找參考讀進子行程 env(不進 argv / 日誌);沒有席位 env 載入器讀它
+    #   (tests/test-secret-pixel-claude-35fe6-1029.py 掃過)。前綴 PIXEL_CLAUDE_ 比 CLAUDE_ 長 ⇒ 最長匹配落這檔。
+    ("pixel-claude.env", "pixel-claude", "type",
+     "像素工坊找參考專用的 Claude 長效 token(claude setup-token)。只給隔離子行程;席位與 claude-apikey 開關不讀。",
+     (("PIXEL_CLAUDE_OAUTH_TOKEN", "像素工坊找參考 claude 長效 token", "pixel-studio", "pixel-ref", False),)),
     ("api-key-codex.env", "codex", "type",
      "Codex／OpenAI 雲端 API key。一行 OPENAI_API_KEY=…",
      (("OPENAI_API_KEY", "OpenAI API", "codex", "ai-api", False),)),
@@ -289,6 +296,10 @@ SE_ONLY_NAMES = ("CF_TOKEN_MINTER",)
 # 只准送到伺服器的名字(aib secret ask … --push … --remote-only):金鑰櫃檔案一律拒寫(10-24 @ee4f8)
 REMOTE_ONLY_NAMES = ("FLUENTMAIL_AWS_ACCESS_KEY_ID", "FLUENTMAIL_AWS_SECRET_ACCESS_KEY")
 REMOTE_ONLY_FILES = ("fluentmail.env",)  # 前綴對到這類的名字(FLUENTMAIL_…_SITE2)也一樣(@abb89 審 #301)
+# 讀不到 / 空值時絕不發補填請求(不 request_fill、不寫 LINE 待辦)的名字:只丟 missing_file / missing_line。
+#   10-29 @aeb40(#416 R1 L2、#247 codex M1):PIXEL_CLAUDE_OAUTH_TOKEN 只有本人跑 claude setup-token 才有,補填請求沒有意義;
+#   由名冊決定、不靠呼叫端旗標(呼叫端另可 secret(name, fill=False),兩者取「不補填」)
+NO_FILL_NAMES = ("PIXEL_CLAUDE_OAUTH_TOKEN",)
 
 
 def file_for_name(name):
@@ -385,10 +396,11 @@ def _read_file(path):
         return fh.read()
 
 
-def secret(name, env=None, now=None, token_check=None, send=None):
+def secret(name, env=None, now=None, token_check=None, send=None, fill=True):
     """取一支金鑰。成功回字串;失敗丟 SecretError。
 
     讀之前先過開關:關閉、算力不足、不在時段、到期需確認,都不回值。
+    缺值時:fill 為真且名字不在 NO_FILL_NAMES 才發補填請求;否則只丟 missing_file / missing_line。
     """
     from secret_read_gate import assert_read_allowed
     assert_read_allowed(name, env=env, now=now, token_check=token_check,
@@ -410,10 +422,11 @@ def secret(name, env=None, now=None, token_check=None, send=None):
         rows = parse_env_bytes(_read_file(path))
     raw = rows.get(name) if name in rows else ""
     if not raw:
-        from secret_collect import request_fill, NEEDS_FILL as FILL
-        payload = request_fill(name, env=env, send=send, now=now)
-        if payload is not None:
-            raise SecretError(FILL, name, "awaiting line fill")
+        if fill and name not in NO_FILL_NAMES:
+            from secret_collect import request_fill, NEEDS_FILL as FILL
+            payload = request_fill(name, env=env, send=send, now=now)
+            if payload is not None:
+                raise SecretError(FILL, name, "awaiting line fill")
         if not path.is_file():
             raise SecretError(MISSING_FILE, name, "file")
         raise SecretError(MISSING_LINE, name)
