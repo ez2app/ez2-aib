@@ -158,7 +158,7 @@
   "aib.lang.notice": "AIB 語系已切換成 {value}:從下一句起請用這個語言回覆(介面、狀態列、mod 會自動跟)。",
   "aib.help.title": "aib — Ez2 AIB v{version} 指揮艙啟動器",
   "aib.edition.missing": "aib {cmd}:這個功能還在開發中,尚未對外開放。",
-  "aib.help.usage": "用法:aib <provider> <dgrs|safe> <role> [new] [--model MODEL] [--dry-run]",
+  "aib.help.usage": "用法:aib <provider> <dgrs|safe> <role> [new] [dm] [--model MODEL] [--dry-run]",
   "aib.idle.close.aborted": "已取消,沒動任何東西",
   "aib.idle.close.confirm": "確定關閉 {target}?[y/N] ",
   "aib.idle.close.done": "{target} 已關閉:送出 TERM {n} 個,存活 {survivors} 個",
@@ -5769,5 +5769,12 @@
   "aib.chat.cast_usage": "用法:aib chat cast list|frames|request <好友>|approve <請求>|reject <請求>|close <投放單>|watch <投放單>",
   "aib.chat.cast_err": "投放沒做:{code}",
   "aib.chat.cast_done": "投放:好了",
-  "aib.chat.cast_summary": "👁 {watching} 位正在看 · {incoming} 個想看的請求 · 我收到 {grants} 格"
+  "aib.chat.cast_summary": "👁 {watching} 位正在看 · {incoming} 個想看的請求 · 我收到 {grants} 格",
+  "aib.dmopen.on": "aib: 待審區已打開;之後新開的每一席也會自動打開(取消:--no-dm)",
+  "aib.dmopen.auto": "aib: 待審區已自動打開(你設過 dm;取消:--no-dm)",
+  "aib.dmopen.batch": "aib: 已記住 dm:這批每一席開好時各自打開待審區(那一艙明關過的不硬開;取消:--no-dm)",
+  "aib.dmopen.off": "aib: 已取消「新開的席自動打開待審區」;已經打開的不動",
+  "aib.dmopen.not_advanced": "aib: 待審區要進階方案,這次沒有打開",
+  "aib.dmopen.plugin_missing": "aib: 待審區開關已打開,但沒裝待審區外掛 pending-review;裝好就會出現",
+  "aib.dmopen.no_cabin_home": "aib: 量不到這一艙的資料夾,待審區這次沒有打開"
 }
