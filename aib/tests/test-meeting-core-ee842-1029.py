@@ -18,7 +18,8 @@ A14 CLI --json 走得通;四語鍵一致、沒有 !!
 A15 (#429 R1 H1)暫停中過了時間 ⇒ tick 照樣散會(closed_by=timeout),不會卡在 paused;散會後 resume 回 closed
 A16 (#429 R1 M1)events.jsonl 被追加型別錯的一行(link card / card target / fork / table move 是 list、created fuses=[1]、
     深巢狀)⇒ 那場乾淨讀不起來 corrupt:<seq>(MeetingError,不是 traceback);aib meeting list 照列(那場標錯)、別場 new --eid 照開
-A17 (#429 R1 L1)事件總數上限 EVENTS_MAX:滿了拒新事件 too_many_events;散會(close / timeout)照收
+A17 (#429 R1 L1 / R2 M2)事件總數上限 EVENTS_MAX:滿了拒新事件 too_many_events;散會(close / timeout)與到期分岔
+    (fork_expire,受分岔數限制)照收 ⇒ 到上限又有到期分岔,close 照樣散得了
 A18 (#429 R1 L3)兩個同 eid 的 new 同時跑 ⇒ 只開出一場(去重在鎖內)
 A19 (#429 R1 L5)--json 時用法錯也出 JSON {"ok": false, "error": "usage"},rc 2;--help 照舊 rc 0
 """
@@ -393,6 +394,14 @@ class EventsMax(Base):
             self.ok(self.c, "table", "human", {"move": "close"})
         self.assertEqual(self.st()["status"], "closed")
 
+    def test_a17_cap_with_due_fork_still_closes(self):
+        self.forked()
+        self.to_default(now=T0 + 10)
+        with mock.patch.object(G, "EVENTS_MAX", self.st()["seq"]):   # 剛好到上限,又有到期的分岔
+            r = self.ok(self.c, "table", "human", {"move": "close"}, now=T0 + 10 + G.FORK_S + 1)
+        st = self.st()
+        self.assertEqual((r["state"]["status"], st["status"], st["forks"]["f1"]["status"] != "open"), ("closed", "closed", True))
+
 
 class NewRace(Base):
     def test_a18_same_eid_new_once(self):
@@ -500,6 +509,8 @@ KNIVES = [
      "Corrupt.test_a16_bad_types_are_corrupt"),
     ("K14 深巢狀不接", 'except (ValueError, RecursionError):', 'except ValueError:',
      "Corrupt.test_a16_bad_types_are_corrupt"),
+    ("K18 上限擋到期分岔", 'typ not in ("timeout", "fork_expire")', 'typ not in ("timeout",)',
+     "EventsMax.test_a17_cap_with_due_fork_still_closes"),
     ("K15 沒有事件上限", 'if st["seq"] >= EVENTS_MAX and', 'if False and', "EventsMax.test_a17_events_cap"),
     ("K16 去重在鎖外", '    with _locked(root(env), create=True):', '    with open(os.devnull):',
      "NewRace.test_a18_same_eid_new_once"),

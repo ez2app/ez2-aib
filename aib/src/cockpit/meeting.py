@@ -267,7 +267,8 @@ def apply(st, ev):
         raise MeetingError("closed")
     if st["status"] == "paused" and typ not in ("table", "note", "link", "timeout"):
         raise MeetingError("paused")                # 暫停中時間到照樣散會,不然 resume / close 全被擋(#429 R1 H1)
-    if st["seq"] >= EVENTS_MAX and typ != "timeout" and not (typ == "table" and d.get("move") == "close"):
+    # 上限也放行到期分岔(數量受 CARDS_MAX 限制):_due 先寫 fork_expire 再散會,擋掉就永遠散不了(#429 R2 M2)
+    if st["seq"] >= EVENTS_MAX and typ not in ("timeout", "fork_expire") and not (typ == "table" and d.get("move") == "close"):
         raise MeetingError("too_many_events")
     role = _role(st, by)
     if typ == "created":
