@@ -14,10 +14,12 @@ copy_failed / not_mac / caller_is_seat。
   - 每次都 Touch ID,一次一按:兩個 site 都是 secret 類(高風險、max_window 0)。copy 也一樣 —— 剪貼簿同帳號任何程式
     (含 AI)都讀得到,開時間窗 = 窗內 AI 自己 copy 再讀剪貼簿就拿到值。失敗 / 取消 / 逾時 / 叫不出 / 不是 Mac ⇒ 一律不給。
   - 視窗那句由核心組:金鑰櫃名字、席位(艙位碼 / 席碼,從名冊現查)都不截;整句放不下 ⇒ too_long,不截。
+  - 順序:先查讀取開關(擋下 ⇒ 不彈指紋、不讀值)⇒ Touch ID ⇒ 才讀值。開關是本人設的守門,按過指紋也不繞。
   - 值只在本行程記憶體與管線裡:讀金鑰櫃、pbcopy(stdin)、tmux load-buffer(stdin)、比雜湊都在核心行程內;
     不進任何 argv、環境變數、暫存檔、輸出、錯誤、紀錄。清剪貼簿的背景行程從 stdin 拿雜湊,不拿值。
   - 清除固定 30 秒,沒有參數(AI 叫得到指令,可調就能把清除拉長)。
-  - 紀錄只記 op / ok / why;金鑰櫃名字與值都不記。
+  - 紀錄只記 op / ok / why;金鑰櫃名字與值都不記。例外(@aeb40 10-30 03:10):讀取開關擋下時,開關本身照舊在
+    金鑰櫃夾的提醒紀錄寫一列(含名字)—— 那是金鑰櫃既有的稽核,只在被擋時記,這裡不改。
   - 30 秒清剪貼簿、只打字不按 Enter 都只防本人誤操作,不算防線;真正的防線是那一按。
 """
 import hashlib
@@ -60,15 +62,35 @@ def log_action(op, ok, why, env=None):
         pass
 
 
-def read_value(name, env):
-    """回 (值, None) 或 (None, 代碼)。SE 專用 / 只放遠端的名字本機沒有值 ⇒ no_vault;讀取開關擋下 ⇒ vault_off。"""
+GATE_REASONS = ("disabled", "token_short", "outside_window", "needs_confirm")
+
+
+def precheck(name, env):
+    """彈指紋之前:名字要是本機金鑰櫃的(SE 專用 / 只放遠端 / 不認得 ⇒ no_vault),讀取開關要開(擋下 ⇒ vault_off)。
+    不讀值。開關是本人設的守門,按過指紋也不繞(@aeb40 10-30 03:10);被擋時開關自己寫的提醒紀錄是金鑰櫃既有稽核,照舊。"""
     import aib_secrets as S
+    from secret_read_gate import assert_read_allowed
     if not S.valid_name(name) or S.file_for_name(name) is None or name in S.SE_ONLY_NAMES or S.is_remote_only(name):
-        return None, "no_vault"
+        return "no_vault"
+    try:
+        assert_read_allowed(name, env=env)
+    except S.SecretError as e:
+        return "vault_off" if e.reason in GATE_REASONS else "no_vault"
+    except Exception:  # noqa: BLE001
+        return "vault_off"
+    return None
+
+
+def read_value(name, env):
+    """按過指紋之後才叫。回 (值, None) 或 (None, 代碼)。"""
+    import aib_secrets as S
+    why = precheck(name, env)
+    if why:
+        return None, why
     try:
         value = S.secret(name, env=env, fill=False)
     except S.SecretError as e:
-        return None, "vault_off" if e.reason in ("disabled", "token_short", "outside_window", "needs_confirm") else "no_vault"
+        return None, "vault_off" if e.reason in GATE_REASONS else "no_vault"
     except Exception:  # noqa: BLE001  例外訊息可能帶路徑 / 內容 ⇒ 只回代碼
         return None, "no_vault"
     if not isinstance(value, str) or not value:
@@ -131,13 +153,16 @@ def do_copy(name, env=None, platform=None, touchid=None, touchid_available=None,
         return {"ok": False, "why": "caller_is_seat"}, 3
     if platform != "darwin":
         return {"ok": False, "why": "not_mac"}, 2
-    value, why = read_value(name, env)
+    why = precheck(name, env)                        # 開關擋下 ⇒ 不彈指紋、不讀值
+    if why:
+        return {"ok": False, "why": why}, 2
+    why = prove(AG.reason("secret_share.copy", {"name": name}, env=env), env, platform, touchid, touchid_available)
+    if why:
+        return {"ok": False, "why": why}, 3
+    value, why = read_value(name, env)               # 按過才讀
     try:
         if why:
             return {"ok": False, "why": why}, 2
-        why = prove(AG.reason("secret_share.copy", {"name": name}, env=env), env, platform, touchid, touchid_available)
-        if why:
-            return {"ok": False, "why": why}, 3
         try:
             r = run([PBCOPY], input=value, capture_output=True, text=True, timeout=5,
                     env={"PATH": "/usr/bin:/bin", "LC_CTYPE": "UTF-8"})
@@ -223,15 +248,18 @@ def do_paste(name, seat, env=None, platform=None, touchid=None, touchid_availabl
     code = seat_address.code_of(rec)
     if not _at_prompt(code, env, screen):
         return {"ok": False, "why": "seat_busy"}, 2
-    value, why = read_value(name, env)
+    why = precheck(name, env)                        # 開關擋下 ⇒ 不彈指紋、不讀值
+    if why:
+        return {"ok": False, "why": why}, 2
+    # 句子裡的席位用名冊現查出來的那筆,不照呼叫端傳的字串印
+    r = AG.reason("secret_share.paste", {"seat": "%s/%s" % (cabin_of(rec), code), "name": name}, env=env)
+    why = prove(r, env, platform, touchid, touchid_available)
+    if why:
+        return {"ok": False, "why": why}, 3
+    value, why = read_value(name, env)               # 按過才讀
     try:
         if why:
             return {"ok": False, "why": why}, 2
-        # 句子裡的席位用名冊現查出來的那筆,不照呼叫端傳的字串印
-        r = AG.reason("secret_share.paste", {"seat": "%s/%s" % (cabin_of(rec), code), "name": name}, env=env)
-        why = prove(r, env, platform, touchid, touchid_available)
-        if why:
-            return {"ok": False, "why": why}, 3
         if not SA.fresh_target(rec, code, env) or not _at_prompt(code, env, screen):
             return {"ok": False, "why": "seat_busy"}, 2       # 按指紋期間換了人 / 開始忙 ⇒ 不打
         why = paste_value(rec, value, tmux=tmux, run=run)

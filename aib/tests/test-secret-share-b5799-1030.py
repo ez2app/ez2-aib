@@ -12,9 +12,10 @@ P6 paste 擋:只給席碼 / 艙位碼不對 / 找不到 ⇒ no_seat;不在提示
    load-buffer 失敗 ⇒ paste_failed 且照樣 delete-buffer
 P7 讀金鑰櫃:SE 專用 / 只放遠端 / 不認得的名字 ⇒ no_vault;讀取開關擋下 ⇒ vault_off;值有換行 / 控制字元 ⇒ bad_value
 P8 紀錄:secret-share.jsonl 每列只有 at / op / ok / why;金鑰櫃名字、值都不進紀錄與輸出
+P10 順序(@aeb40 10-30 03:10):先查讀取開關 ⇒ Touch ID ⇒ 才讀值;開關擋下 ⇒ vault_off、不彈指紋、不讀值
 P9 真 tmux(有 tmux 才跑):paste 期間每次叫 tmux 都掃一次 ps -axww,掃出來沒有值;那一席的畫面打出了值、沒有送出
 刀(手動):K1 paste 改 send-keys -l 值 ⇒ P5 / P9 紅;K2 copy 拿掉 Touch ID ⇒ P3 紅;K3 清除不比雜湊 ⇒ P4 紅;
-    K4 site 類別改 seat_input ⇒ P1 紅
+    K4 site 類別改 seat_input ⇒ P1 紅;K5 先讀值再彈指紋(拿掉 precheck)⇒ P10 紅
 """
 import hashlib
 import io
@@ -38,6 +39,7 @@ import aib_secrets as S  # noqa: E402
 import approve_gate as AG  # noqa: E402
 import secret_share as SS  # noqa: E402
 import seat_panel as SPN  # noqa: E402
+import secret_read_gate as GATE  # noqa: E402
 
 VALUE = "sk-ant-api03-" + "Qw7" * 20
 NAME = "ANTHROPIC_API_KEY"
@@ -63,12 +65,22 @@ class Base(unittest.TestCase):
             os.environ.pop(k, None)
         self.reasons = []
         self.calls = []
-        p = mock.patch.object(S, "secret", side_effect=lambda name, env=None, fill=True: VALUE)
+        self.order = []
+        p = mock.patch.object(S, "secret", side_effect=lambda name, env=None, fill=True: self.order.append("read") or VALUE)
+        p.start()
+        self.addCleanup(p.stop)
+        self.gate = None          # None = 開關放行;否則丟這個原因的 SecretError
+        def gate(name, env=None, **kw):
+            self.order.append("gate")
+            if self.gate:
+                raise S.SecretError(self.gate, name)
+        p = mock.patch.object(GATE, "assert_read_allowed", side_effect=gate)
         p.start()
         self.addCleanup(p.stop)
 
     def touch(self, ok=True):
         def t(r):
+            self.order.append("touch")
             self.reasons.append(r)
             return {"ok": ok, "why": "ok" if ok else "cancel"}
         return t
@@ -151,7 +163,7 @@ class P3CopyRefused(Base):
 
     def test_too_long_not_truncated(self):
         long_name = "A" + "B" * 127
-        with mock.patch.object(SS, "read_value", return_value=(VALUE, None)):
+        with mock.patch.object(SS, "precheck", return_value=None), mock.patch.object(SS, "read_value", return_value=(VALUE, None)):
             res, _ = SS.do_copy(long_name, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
                                 run=self.run_ok)
         self.assertEqual(res["why"], "too_long")
@@ -291,6 +303,35 @@ class P8Log(Seat):
         self.assertNotIn(NAME, blob)
         self.assertNotIn(VALUE, blob)
         self.assertEqual(stat.S_IMODE((self.root / "logs" / "secret-share.jsonl").stat().st_mode), 0o600)
+
+
+class P10Order(Seat):
+    def test_gate_then_touch_then_read(self):
+        res, _ = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
+                            run=self.run_ok, spawn=lambda v: True)
+        self.assertTrue(res["ok"])
+        self.assertEqual(self.order[:2], ["gate", "touch"])
+        self.assertEqual(self.order[2:].count("read"), 1)
+        self.order.clear()
+        self.assertEqual(self.paste()[0], {"ok": True})
+        self.assertEqual(self.order[:2], ["gate", "touch"])
+        self.assertIn("read", self.order[2:])
+
+    def test_gate_blocks_before_touch(self):
+        for reason in ("disabled", "outside_window", "needs_confirm", "token_short"):
+            with self.subTest(reason=reason):
+                self.gate, self.order[:] = reason, []
+                res, _ = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
+                                    run=self.run_ok, spawn=lambda v: True)
+                self.assertEqual(res, {"ok": False, "why": "vault_off"})
+                self.assertEqual(self.paste()[0], {"ok": False, "why": "vault_off"})
+                self.assertEqual(self.order, ["gate", "gate"], "不彈指紋、不讀值")
+        self.assertEqual((self.reasons, self.calls), ([], []))
+
+    def test_denied_never_reads(self):
+        SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(False), touchid_available=lambda: True, run=self.run_ok)
+        self.paste(ok=False)
+        self.assertNotIn("read", self.order, "沒按過就不讀值")
 
 
 TMUX = shutil.which("tmux")
