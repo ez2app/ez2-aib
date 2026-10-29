@@ -5799,5 +5799,6 @@
   "aib.mission.task.qa": "In QA",
   "aib.mission.task.passed": "Passed",
   "aib.mission.task.returned": "Returned",
-  "aib.mission.task.cancelled": "Cancelled"
+  "aib.mission.task.cancelled": "Cancelled",
+  "aib.dmopen.timeout": "aib: the review-queue step took longer than {s}s; skipped (the seat opens as usual)"
 }

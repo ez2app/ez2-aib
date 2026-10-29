@@ -528,23 +528,31 @@ def self_check():
     return _GATE["res"]
 
 
-def _pool_rows_after(pool: Path, offset: int):
-    """Rows appended to the pool file after byte `offset` (an unreadable pool = no rows)."""
+def _repo_needles(repo):
+    """`repo` as it can appear inside a row (jsonl_safe.dumps writes ensure_ascii=False; plain json.dumps escapes)."""
+    return {json.dumps(str(repo), ensure_ascii=a)[1:-1].encode("utf-8") for a in (False, True)}
+
+
+def _pool_rows_after(pool: Path, offset: int, repo=None):
+    """Rows appended to the pool file after byte `offset` (an unreadable pool = no rows).
+    10-29:逐行讀(行界同 jsonl_safe.split_lines,只認 "\n")。以前整檔 f.read() ⇒ 對帳不足時整檔重掃連 1.5GB 的
+    <池>.archive 一起讀進來,主程式長到 7.6GB 被 memguard 砍(rc 137,測試全跑完卻沒結果)。
+    給 `repo` ⇒ 行內沒有這個倉路徑的列先跳過不解析(只省時間;列的 repo 欄位仍由呼叫端比對)。"""
+    needles = _repo_needles(repo) if repo is not None else None
     try:
         with open(pool, "rb") as f:
             f.seek(offset)
-            data = f.read()
+            for raw in f:
+                if needles is not None and not any(n in raw for n in needles):
+                    continue
+                try:
+                    row = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    yield row
     except OSError:
-        return []
-    out = []
-    for line in jsonl_safe.split_lines(data.decode("utf-8", "replace")):
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            out.append(row)
-    return out
+        return
 
 
 def _pool_size(pool: Path) -> int:
@@ -1715,7 +1723,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
                 go_done[gk] = results[-1]
         # Step 2's second half: count what really landed in the pool, not what _traced_run said it did.
         here = str(repo)
-        landed = {r.get("test") for r in _pool_rows_after(pool, offset)
+        landed = {r.get("test") for r in _pool_rows_after(pool, offset, here)
                   if r.get("repo") == here and r.get("key")}
         kept = sum(1 for n in set(ran_names) if n in landed)
         if kept < len(set(ran_names)):
@@ -1726,7 +1734,7 @@ def run_tests(repo, tests, *, strict=None, fresh=False, timeout=None, environ=No
             #   重跑同一支,每支只留最新 3 把鑰匙)⇒ 只掃池檔會少那一列。整檔重掃時封存檔一起掃;仍只數這一輪之後寫的。
             wanted = set(ran_names)
             for src in (pool, Path(str(pool) + ".archive")):
-                landed |= {r.get("test") for r in _pool_rows_after(src, 0)
+                landed |= {r.get("test") for r in _pool_rows_after(src, 0, here)
                            if r.get("repo") == here and r.get("key") and r.get("test") in wanted
                            and str(r.get("time_utc") or "") >= started_utc}
             kept = sum(1 for n in wanted if n in landed)

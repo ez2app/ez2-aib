@@ -5799,5 +5799,6 @@
   "aib.mission.task.qa": "品管中",
   "aib.mission.task.passed": "通過",
   "aib.mission.task.returned": "退回",
-  "aib.mission.task.cancelled": "取消"
+  "aib.mission.task.cancelled": "取消",
+  "aib.dmopen.timeout": "aib: 待審區這一步超過 {s} 秒沒做完,先略過(開席照常)"
 }

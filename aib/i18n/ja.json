@@ -5773,7 +5773,7 @@
   "aib.chat.cast_summary": "👁 {watching} 人が視聴中 · 視聴リクエスト {incoming} 件 · 受信中 {grants} 枠",
   "aib.dmopen.on": "aib: 承認待ちエリアを開きました。これから開く席でも自動で開きます(取り消し:--no-dm)",
   "aib.dmopen.auto": "aib: 承認待ちエリアを自動で開きました(dm 設定済み。取り消し:--no-dm)",
-  "aib.dmopen.batch": "aib: dm を記憶しました:このバッチの各席が起動時にレビュー欄を開きます(明示的に閉じた艙はそのまま;取り消し:--no-dm)",
+  "aib.dmopen.batch": "aib: dm を記憶しました。このバッチの各席が起動時に承認待ちエリアを開きます(自分で閉じたキャビンはそのまま。取り消し:--no-dm)",
   "aib.dmopen.off": "aib: 新しい席で承認待ちエリアを自動で開くのをやめました。開いているものはそのままです",
   "aib.dmopen.not_advanced": "aib: 承認待ちエリアはアドバンスプランが必要です。今回は開きません",
   "aib.dmopen.plugin_missing": "aib: 承認待ちエリアをオンにしましたが、pending-review プラグインが入っていません。入れると表示されます",
@@ -5799,5 +5799,6 @@
   "aib.mission.task.qa": "品質確認中",
   "aib.mission.task.passed": "合格",
   "aib.mission.task.returned": "差し戻し",
-  "aib.mission.task.cancelled": "取り消し"
+  "aib.mission.task.cancelled": "取り消し",
+  "aib.dmopen.timeout": "aib: 承認待ちエリアの処理が {s} 秒を超えたので今回は飛ばしました(席はそのまま開きます)"
 }
