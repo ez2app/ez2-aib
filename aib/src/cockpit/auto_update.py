@@ -30,6 +30,8 @@
   安裝目錄沒有改過沒提交的檔、是單純快轉(歷史分叉就不動)、在 main(或沒有分支)上、
   不是落後太多(大 / 中版號不同或差 CLEAN_GAP 個小版以上;門檻固定、不讀環境 —— 那種要本人自己跑 aib update)、
   距離上次自動更新超過 1 小時。
+  只有租約 / aib test 佔著時,「查」那半(fetch、比版號、看外掛目錄、寫狀態)照做,換檔等下次;排程檔每 30 分醒一次
+  (--why tick),上次查完了就滿 6 小時才再查,上次被擋就 30 分後再試(d 張 10-29)。
   開始前自己拿測試租約(--exclusive),做完放掉:更新中途不會有測試插進來。
 怎麼更新:
   核心 = 跑已 fetch 的那個標籤裡的 install.sh(git show <標籤>:install.sh;不從網站下載),--dir 這份 checkout:
@@ -71,7 +73,12 @@ LOCK = "auto-update.lock"
 LOG = "auto-update.log"
 LOG_MAX = 256 * 1024
 AGENT_LABEL = "com.ez2.aib-auto-update"
-INTERVAL_S = 6 * 3600                # 排程:每 6 小時
+INTERVAL_S = 6 * 3600                # 完整查一次的間隔:6 小時
+RETRY_S = 30 * 60                    # 排程醒來的間隔:上次沒查完 / 被擋 ⇒ 30 分後再試(d 張 10-29;以前碰上租約就等 6 小時)
+SETTLED = ("up_to_date", "updated", "no_change")   # 上次是這幾種 ⇒ 排程滿 INTERVAL_S 才再查
+#   只等租約的那幾種:fetch / 比版號 / 看目錄照做(不換檔,不必拿租約);會碰同一個 checkout 的(本人 aib update、推包、git push)
+#   照舊整輪不查
+CHECK_WHILE_BUSY = ("lease", "tests")
 CHECK_GAP_S = 10 * 60                # 開席那次:10 分鐘內查過就不再查
 ATTEMPT_GAP_S = 3600                 # 真的更新:一小時最多一次
 UPDATE_TIMEOUT_S = 30 * 60
@@ -319,7 +326,8 @@ def agent_plist_path(home=None):
 
 
 def agent_plist(env=None, python=None, script=None, log_file=None):
-    """LaunchAgent 內容(dict,給 plistlib)。每 INTERVAL_S 秒跑一次 check --why schedule;環境只帶路徑 / 語系。"""
+    """LaunchAgent 內容(dict,給 plistlib)。每 RETRY_S 秒跑一次 check --why tick(要不要真的查由 check 看 INTERVAL_S);
+    環境只帶路徑 / 語系。"""
     env = os.environ if env is None else env
     parts = [d for d in (env.get("PATH") or "").split(os.pathsep) if d]
     for extra in (str(Path(env.get("HOME") or os.path.expanduser("~")) / ".local" / "bin"),) + _PATH_EXTRA:
@@ -330,8 +338,8 @@ def agent_plist(env=None, python=None, script=None, log_file=None):
     ev.setdefault("HOME", os.path.expanduser("~"))
     logp = str(log_file or log_path(env))
     return {"Label": AGENT_LABEL,
-            "ProgramArguments": [python or sys.executable, script or str(HERE / "auto_update.py"), "check", "--why", "schedule"],
-            "StartInterval": INTERVAL_S, "RunAtLoad": False, "ProcessType": "Background", "LowPriorityIO": True,
+            "ProgramArguments": [python or sys.executable, script or str(HERE / "auto_update.py"), "check", "--why", "tick"],
+            "StartInterval": RETRY_S, "RunAtLoad": False, "ProcessType": "Background", "LowPriorityIO": True,
             "Nice": 10, "EnvironmentVariables": ev, "StandardOutPath": logp, "StandardErrorPath": logp}
 
 
@@ -365,6 +373,17 @@ def dev_worktree(root=None):
 
 def agent_installed(home=None):
     return agent_plist_path(home).is_file()
+
+
+def agent_stale(home=None):
+    """已裝的排程檔是舊間隔(0.1.63 前每 6 小時醒一次)⇒ True,開席時重裝一次換成 RETRY_S。讀不懂也算舊。"""
+    import plistlib
+    try:
+        with open(agent_plist_path(home), "rb") as fh:
+            d = plistlib.load(fh)
+        return d.get("StartInterval") != RETRY_S or (d.get("ProgramArguments") or [])[-1:] != ["tick"]
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def install_agent(env=None, home=None, platform=None, launchctl=_launchctl, dev_tree=None, plist=None):
@@ -899,7 +918,7 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
     res = {"why": why, "at": int(now)}
     dev = dev_worktree(root) if dev_tree is None else dev_tree
     plat = platform or sys.platform
-    if why == "seat-open" and plat == "darwin" and not dev and not agent_installed(home):
+    if why == "seat-open" and plat == "darwin" and not dev and (not agent_installed(home) or agent_stale(home)):
         res["agent"] = install_agent(env, home=home, platform=plat, launchctl=launchctl, dev_tree=dev)[0]
     with _lock(env) as got:
         if not got:
@@ -933,8 +952,12 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
             return done("dev_tree")
         if why == "seat-open" and now - float(st.get("last_check") or 0) < CHECK_GAP_S:
             return done("checked_recently")
+        if why == "tick":                   # 排程檔每 RETRY_S 醒一次:上次查完了 ⇒ 滿 INTERVAL_S 才再查(不寫紀錄)
+            if now - float(st.get("last_check") or 0) < INTERVAL_S - 60 and st.get("last_result") in SETTLED:
+                return done("checked_recently")
+            why = res["why"] = "schedule"
         busy = lease_state(env, now) or busy_procs(proc_rows() if rows is None else rows)
-        if busy:
+        if busy and busy not in CHECK_WHILE_BUSY:
             return done("refused_" + busy)
         if now - float(st.get("last_attempt") or 0) < ATTEMPT_GAP_S:
             return done("too_soon")
@@ -966,6 +989,8 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
         # 付費 / 會員外掛只列名、不自動換(本機外掛只由維護席裝;簽過 ≠ 准上正式機)⇒ 狀態 / doctor 提示本人
         #   (鍵名 0.1.60 起 plugins_manual_behind:目錄上 access=member 的也會列進來,不只付費;#349 r1 L 收尾)
         res["plugins_manual_behind"] = [b["name"] for b in paid]
+        if paid:                            # 看紀錄就知道哪幾個在等本人裝(d 張 10-29;以前只在 status / doctor 看得到)
+            log("plugins_manual_behind=%s" % ",".join(b["name"] for b in paid), env, now)
         # 外掛資料夾裡有使用者 / 執行期自己的檔(改過、多出來;外掛宣告的 keep 夾除外)⇒ 自動路徑不換，交本人 aib ext install
         modified = [b["name"] for b in behind if local_changes(b)]
         behind = [b for b in behind if b["name"] not in modified]
@@ -980,6 +1005,8 @@ def check(env=None, why="schedule", now=None, root=None, platform=None, home=Non
                 return done("refused_" + plan["why"])
             if far_behind(plan["have"], plan["latest"], CLEAN_GAP):
                 return done("refused_far_behind")
+        if busy:                            # 租約 / 測試佔著:查過了、狀態寫好,換檔等下次(RETRY_S 後)
+            return done("refused_" + busy)
         rid = "auto-update-%d-%d" % (os.getpid(), int(now))
         if lease("acquire", rid, env) != 0:
             return done("refused_lease")
@@ -1065,6 +1092,8 @@ def status_lines(p):
         out.append(T("status.modified", names=", ".join(p["plugins_modified"])))
     if p.get("plugin_via") and p.get("plugin_via_url"):   # 目錄那步拋例外 ⇒ 沒網址 ⇒ 不印這行(#349 r2 L2)
         out.append(T("status.plugin_via_" + ("catalog" if p["plugin_via"] == "catalog" else "git"), url=p["plugin_via_url"]))
+    if p.get("plugin_via") == "git" and p.get("plugin_problem") == "plugin_unsupported":
+        out.append(T("status.plugin_unsupported"))   # 正式站還沒開外掛目錄 ⇒ 講清楚不是這台設定錯(d 張 10-29)
     if p.get("plugin_source") == "offline":
         out.append(T("status.plugin_source_offline"))
     if p.get("plugin_source") == "rejected":
@@ -1191,7 +1220,7 @@ def main(argv=None, out=sys.stdout, sleep=time.sleep, wait_s=None):
     ap.add_argument("sub", nargs="?", choices=["add", "remove", "list"])
     ap.add_argument("name", nargs="?")
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--why", default="schedule", choices=["schedule", "seat-open", "manual"])
+    ap.add_argument("--why", default="schedule", choices=["schedule", "tick", "seat-open", "manual"])
     ap.add_argument("--detach", action="store_true")
     a = ap.parse_args(argv)
     # --json:每條路結束只印一個 JSON(人看的字收進 lines;例外也包成一個 JSON,不印 traceback)
