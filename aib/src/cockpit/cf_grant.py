@@ -64,6 +64,8 @@ PERMS = {
     "redirect-write": ("Dynamic URL Redirects Write", "zone"),
     "bulk-redirect-read": ("Mass URL Redirects Read", "account"),
     "rule-lists-read": ("Account Rule Lists Read", "account"),
+    # 流量統計(10-29 suntan 502 對時間):GraphQL httpRequests*Groups 讀 5xx;只讀、只給那個 zone
+    "analytics-read": ("Analytics Read", "zone"),
 }
 # 範圍 ⇒ Cloudflare 權限群組的 scope(同名群組可能有不同範圍，只收對的那個)
 SCOPES = {"zone": "com.cloudflare.api.account.zone", "account": "com.cloudflare.api.account"}

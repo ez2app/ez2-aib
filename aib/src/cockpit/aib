@@ -766,6 +766,13 @@ if [ "${1:-}" = "now" ]; then
   exec "$T_PY3" "$HERE/seat_now.py" "$@"
 fi
 
+# aib mission new|list|show|roster|team|task|tick(10-29 S1,SPEC-mission-team-f5fb8-1029):任務團資料契約 missions/<id>/。
+#   整段委派 mission.py。
+if [ "${1:-}" = "mission" ]; then
+  shift
+  exec "$T_PY3" "$HERE/mission.py" "$@"
+fi
+
 # aib secret ask NAME(維護者 10-18):彈遮字輸入框貼金鑰 → Touch ID → 加密進金鑰櫃(可 --push 到伺服器)。委派 secret_ask.py。
 if [ "${1:-}" = "secret" ]; then
   shift
