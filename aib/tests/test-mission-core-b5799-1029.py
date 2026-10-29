@@ -457,7 +457,8 @@ class M10Autostart(Base):
         M.tick(self.mid, self.env, now=T0 + 30)
         st = self.st()
         self.assertEqual(st["status"], "running")
-        ev = json.loads((M.mdir(self.mid, self.env) / "events.jsonl").read_text().splitlines()[-1])
+        evs = [json.loads(x) for x in (M.mdir(self.mid, self.env) / "events.jsonl").read_text().splitlines()]
+        ev = [e for e in evs if e["type"] == "team"][-1]           # S4 起 tick 之後還會寫監看事件
         self.assertEqual((ev["by"], ev["data"]["move"]), ("system", "autostart"))
         self.assertEqual(self.proved, [])                          # 自動開始不彈窗
 

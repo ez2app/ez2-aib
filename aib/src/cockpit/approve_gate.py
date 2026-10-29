@@ -147,6 +147,10 @@ SITES = {
     "mission.accept": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_accept",
                          {"title": 60, "id": FULL, "n": FULL, "k": FULL},
                          "Accept and archive task team {title} ({id}, {n} tasks, {k} cancelled)"),
+    # mission.budget 提高預算 = 花額度 ⇒ 高風險一次一按、不進時間窗(S4 前半,@f5fb8 / @aeb40 10-29 裁);調低不用按
+    "mission.budget": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_budget",
+                         {"title": 60, "id": FULL, "what": FULL},
+                         "Raise the budget of task team {title} ({id}): {what} (spends more usage)"),
     "release.sign_approve": _s("release/sign_approve.py", "release_sign", "aib.release.sign_approve_reason",
                                {"plugin": FULL, "ver": FULL, "pin": FULL},
                                "Sign and release {plugin} {ver} · head {pin}"),
