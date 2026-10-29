@@ -5763,5 +5763,12 @@
   "aib.release.sign_approve.notify_ok": "✓ Signed {plugin} {ver}",
   "aib.release.sign_approve.notify_fail": "✗ Signing failed {plugin} {ver}",
   "aib.release.sign_approve.no_output": "(no output)",
-  "aib.release.sign_approve.shim": "Release-signing shim {path}: {did}"
+  "aib.release.sign_approve.shim": "Release-signing shim {path}: {did}",
+  "aib.chat.cast.touchid_issue": "aib: let {who} see your captain's room screen for {hours} h, until {until}",
+  "aib.chat.cast.touchid_pin": "(including 📌 current-task text)",
+  "aib.chat.help.cast": "Cast AIB screens to the video wall (request / approve / close / heartbeat / frames)",
+  "aib.chat.cast_usage": "Usage: aib chat cast list|frames|request <friend>|approve <request>|reject <request>|close <grant>|watch <grant>",
+  "aib.chat.cast_err": "Cast not done: {code}",
+  "aib.chat.cast_done": "Cast: done",
+  "aib.chat.cast_summary": "👁 {watching} watching · {incoming} requests to watch · {grants} casts received"
 }

@@ -5763,5 +5763,12 @@
   "aib.release.sign_approve.notify_ok": "✓ 已簽 {plugin} {ver}",
   "aib.release.sign_approve.notify_fail": "✗ 沒簽成 {plugin} {ver}",
   "aib.release.sign_approve.no_output": "(沒有輸出)",
-  "aib.release.sign_approve.shim": "發版簽核薄殼 {path}:{did}"
+  "aib.release.sign_approve.shim": "發版簽核薄殼 {path}:{did}",
+  "aib.chat.cast.touchid_issue": "aib:允許 {who} 看你的艦長室畫面 {hours} 小時,到 {until}",
+  "aib.chat.cast.touchid_pin": "(含📌 主項目字)",
+  "aib.chat.help.cast": "影音牆投放 AIB 畫面(請求 / 同意 / 收回 / 心跳 / 畫面)",
+  "aib.chat.cast_usage": "用法:aib chat cast list|frames|request <好友>|approve <請求>|reject <請求>|close <投放單>|watch <投放單>",
+  "aib.chat.cast_err": "投放沒做:{code}",
+  "aib.chat.cast_done": "投放:好了",
+  "aib.chat.cast_summary": "👁 {watching} 位正在看 · {incoming} 個想看的請求 · 我收到 {grants} 格"
 }

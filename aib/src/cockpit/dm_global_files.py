@@ -111,7 +111,7 @@ def new_msgid():
 # 收件端認得的 aib-type。新版加新型別時,舊版收件端不認得 ⇒ 以前會當一般信送進 AI 框
 # (10-17 Pro 轉接程式還跑 0.1.16 以前的碼,Mini 的島快照 aib-type=space 進了 @d07f9 待審框)。
 # 一般信:aib-type=dm,或根本不是 aib 寄件人(沒有 aib-type)。receipt 在進 on_dm 之前就分走了,不在這裡。
-INBOUND_TYPES = ("dm", "friend-request", "presence", "card", "space", "offer", "visit")   # visit:參觀請求 / 開放(chat_visit)
+INBOUND_TYPES = ("dm", "friend-request", "presence", "card", "space", "offer", "visit", "cast")   # visit:參觀請求 / 開放(chat_visit);cast:影音牆投放(chat_cast)
 
 
 def inbound_kind(tags):

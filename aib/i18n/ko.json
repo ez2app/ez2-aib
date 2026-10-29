@@ -5763,5 +5763,12 @@
   "aib.release.sign_approve.notify_ok": "✓ 서명함 {plugin} {ver}",
   "aib.release.sign_approve.notify_fail": "✗ 서명 실패 {plugin} {ver}",
   "aib.release.sign_approve.no_output": "(출력 없음)",
-  "aib.release.sign_approve.shim": "릴리스 서명 셈 {path}: {did}"
+  "aib.release.sign_approve.shim": "릴리스 서명 셈 {path}: {did}",
+  "aib.chat.cast.touchid_issue": "aib: {who} 에게 함장실 화면을 {hours}시간 보여주기({until}까지)",
+  "aib.chat.cast.touchid_pin": "(📌 주요 항목 글자 포함)",
+  "aib.chat.help.cast": "영상 벽 AIB 화면 투영(요청 / 승인 / 종료 / 하트비트 / 화면)",
+  "aib.chat.cast_usage": "사용법: aib chat cast list|frames|request <친구>|approve <요청>|reject <요청>|close <허가>|watch <허가>",
+  "aib.chat.cast_err": "투영하지 못함: {code}",
+  "aib.chat.cast_done": "투영: 완료",
+  "aib.chat.cast_summary": "👁 {watching}명 시청 중 · 시청 요청 {incoming}건 · 받는 중 {grants}칸"
 }

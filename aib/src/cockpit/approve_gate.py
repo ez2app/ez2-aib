@@ -130,6 +130,10 @@ SITES = {
                                  "add": FULL, "rm": FULL, "code": FULL}),
     "newproj.boot_confirm": _s("project/seat_bootstrap.py", "seat_input", "aib.newproj.boot_confirm",
                                {"cabin": FULL, "role": FULL, "persona": 80, "project": 80}),
+    "chat_cast.issue": _s("cockpit/chat_cast.py", "trusted_device", "aib.chat.cast.touchid_issue",
+                          {"who": FULL, "hours": FULL, "until": FULL},
+                          "Let {who} see your captain's room screen for {hours} h, until {until}",
+                          suffix={"pin": ("aib.chat.cast.touchid_pin", {}, " ")}),
     # 10-29 TID-2a(@aeb40 L2 Q4):原本交純字串的兩處補登記,都列高風險(一次一按)
     "auto_update.exclude": _s("cockpit/auto_update.py", "auto_update", "aib.auto_update.exclude.touchid_reason",
                               {"name": FULL}, "Allow aib to auto-update the plugin {name}"),
