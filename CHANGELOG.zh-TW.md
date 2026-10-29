@@ -9,6 +9,7 @@
 - **開席帶 dm 待審區**：開席最後一個字打 `dm`(或 `--dm`)就打開訊息待審區，並記成整台偏好：之後新開的每一艙都開著；真人明關過的艙不硬開。`--no-dm` / `off` 只改偏好。逾時訊息走四語。
 - **本人核准類別收緊**：`approve_gate` 只收核心登記過的呼叫點與類別，純字串一律拒；被拒時回報真正的類別。所有彈窗字統一擋 160 字上限，開席確認的人格名 / 專案名截 36 字，句子太長被擋時多一句人話提示(代碼仍是 `touchid_refused`)。
 - **時間窗授權單(先不自動同意)**:Secure Enclave 簽單鑰(要 Touch ID 或登入密碼)、授權單簽 / 驗 / 撤銷 / 換鑰，`aib approve grants` 列出 / 撤銷 / 延長 / 換鑰;小工具探兩次權限，只收真的要本人在場的鑰匙(否則 `weak_key` / `key_probe_failed`)。`aib approve grants --lockwatch on`(要 Touch ID)可裝鎖屏監看。**自動同意目前關著**：每次核准照舊一次一按；等系統錨定驗單上線才開。
+- **系統錨定的 Secure Enclave helper(打底;自動同意仍關著)**:`aib-sehelper` 只認 root 擁有的固定路徑 `/usr/local/libexec/ez2-aib`。helper、stamp 與每一層上層資料夾都要 root 擁有、別人寫不進去、不是捷徑;要以 hardened runtime 簽章;stamp 要等於原始碼 sha256。不符合就不用，也不退回狀態資料夾。由本人自己跑 `sudo /usr/bin/python3 -I <repo>/aib/tools/sehelper/install_anchored_helper.py` 安裝：先把原始碼複製到只有 root 能進的暫存夾，只對複本算雜湊、編譯，並印出安裝程式 / 原始碼的 sha256 與 git HEAD 給本人核對。叫 helper 時只給乾淨的環境。`aib doctor` 四語說明狀態。
 - **任務團核心 `aib mission`**:事件紀錄為正本、團與任務狀態機、租期與一次性派工代號、品管收據才能通過；待開始 30 秒沒人按停就自動開始(只在 `tick` 或寫入時)。
 - **思維桌核心 `aib meeting`**:主張卡、附議 / 反對、分岔 30 秒預設、暫停 / 繼續、散會一頁；事件紀錄壞掉回 `corrupt:<n>`(rc 2)不拖垮別場，暫停中逾時照樣散會，事件數有上限。
 - **自動更新不再整輪放棄**:測試租約被佔時仍先查版號(不換檔),30 分後再試換檔；只有租約被佔 / 測試被擋 / 離線走 30 分重試，其他照舊 6 小時。拿到鎖才換排程(不會砍掉正在跑的安裝);付費外掛提示改說「要本人 `aib plugins install`」。
