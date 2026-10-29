@@ -15,6 +15,7 @@
 - **狀態列併成一行**:aib-boards 0.2.6 / aib-languages 0.1.2 的未讀 dm 與 🌐 語系併進 💧 狀態列尾巴，不再各佔一行；沒畫 💧 狀態列時照舊自己一行。
 - **金鑰**:新增 `PIXEL_CLAUDE_OAUTH_TOKEN` → `pixel-claude.env`(像素工坊找參考專用，不落 `api-key-claude.env`);這個檔的名字缺值時不發補填，`PIXEL_` 其他名字不再被當成它的金鑰。
 - **`aib cf grant` 加 `analytics-read`**:只給指定 zone、唯讀。
+- **`aib license allowed --batch`**:一次查多件。stdin 讀 `{"items": [{"sku", "free_at"}, …]}`(最多 500 筆 / 64 KB),每筆回跟單件版相同的欄位，順序照輸入。單筆壞只那筆標 `bad-sku`;整包壞、太多或太大回 rc 2、一筆都不回。`--batch` 混 sku / `--free-at`、或 stdin 是終端機，印用法(rc 2)。
 - **銷售總開關、知識庫路徑、GrokBot 綁定**:總開關 off 時外掛目錄不印價錢與方案；沒設環境變數也找得到知識庫路徑;GrokBot 綁定視窗可複製給 bot 的話、跨機同步要先問、bot 收信入口由 aib 自己裝。
 - **`aib test`**:大批排隊等滿上限不再沒拿租約照跑，改回 rc 5 請重排，新增 `--wait-max <秒>`(0 = 只試一次);全套收尾對帳改逐行讀(不再吃到 7 GB 被砍)。
 - **dm 被 R-30 擋時寫原因**:收據寫 `r30-lint` 與要改的字，不再只有 `engine-rc-3`。
