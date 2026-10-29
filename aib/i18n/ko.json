@@ -5879,5 +5879,9 @@
   "aib.meeting.sum.title": "회의 한 장 요약: {topic}",
   "aib.meeting.sum.conclusions": "결론 {n}개",
   "aib.meeting.sum.undecided": "미결 {n}개(임무단에 넘기지 않음)",
-  "aib.meeting.sum.needs_you": "당신이 필요한 항목 {n}개"
+  "aib.meeting.sum.needs_you": "당신이 필요한 항목 {n}개",
+  "aib.mission.help.by": "실행자: seat:<5자리 좌석 코드>(예 seat:ee842) 또는 human",
+  "aib.mission.help.eid": "이 명령의 고유 ID(재전송해도 다시 실행하지 않음): 영문·숫자 또는 _ . : - 8–64자",
+  "aib.mission.help.seat": "좌석 코드 5자리 그대로(예 ee842), seat: 없이",
+  "aib.mission.help.code": "배정 회신에 있는 코드(12자리). 작업자가 보고할 때 꼭 넣어야 함"
 }

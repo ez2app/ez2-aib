@@ -5879,5 +5879,9 @@
   "aib.meeting.sum.title": "散會一頁:{topic}",
   "aib.meeting.sum.conclusions": "結論 {n} 條",
   "aib.meeting.sum.undecided": "未決 {n} 條(不進任務團)",
-  "aib.meeting.sum.needs_you": "需要你的 {n} 件"
+  "aib.meeting.sum.needs_you": "需要你的 {n} 件",
+  "aib.mission.help.by": "誰在下指令:seat:<5 碼席碼>(例 seat:ee842)或 human",
+  "aib.mission.help.eid": "這筆指令的唯一編號(重送不重做):8–64 個英數或 _ . : -",
+  "aib.mission.help.seat": "席碼裸碼 5 碼(例 ee842),不加 seat:",
+  "aib.mission.help.code": "派工回條裡的代號(12 碼),工人回報要帶"
 }

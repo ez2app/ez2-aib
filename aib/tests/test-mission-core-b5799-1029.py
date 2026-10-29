@@ -17,6 +17,8 @@ M11 #414 R1(@aeb40):started_by 分得出自動 / 本人開始(K14);ci / pr_merge
     machine_all 旗標;偽造的過期回報 / 未到期 expire 重放讀不起來(K16、K17);未知依賴拒(K18);
     不存在的 id 不留空目錄;同 eid 重送不再彈 Touch ID(K19);收下的句子帶取消件數;快照不帶派工代號;
     本人按的暫停只有本人能恢復(K20)
+M12 S2 試用回饋(@f5fb8):品管先擋角色再讀收據(K21);aib mission why 列事件鏈、不帶派工代號(K22);
+    --help 寫清 --by / 席碼 / eid / 代號格式
 """
 import json
 import os
@@ -598,6 +600,50 @@ class M11R1(Base):
         self.ok(self.c, "team", by(PM), {"move": "resume"})
 
 
+class M12S2(Base):
+    def cli(self, *argv):
+        buf = _Buf()
+        rc = M.run(list(argv) + ["--json"], env=self.env, out=buf)
+        return rc, json.loads(buf.text)
+
+    def test_qa_role_before_receipt(self):
+        self.mk()
+        self.to_qa()
+        gone = str(self.root / "no-such-receipt.json")
+        self.assertEqual(self.cli("task", self.mid, "qa", "t1", "--by", by(PM), "--pass", "--receipt", gone),
+                         (2, {"ok": False, "error": "not_allowed"}))
+        self.assertEqual(self.cli("task", self.mid, "qa", "t1", "--by", by(PM), "--pass"),
+                         (2, {"ok": False, "error": "not_allowed"}))
+        self.assertEqual(self.cli("task", self.mid, "qa", "t1", "--by", by(QA), "--pass", "--receipt", gone),
+                         (2, {"ok": False, "error": "bad_receipt"}))
+        self.assertEqual(self.cli("task", "m_" + "0" * 12, "qa", "t1", "--by", by(QA), "--pass", "--receipt", gone),
+                         (2, {"ok": False, "error": "no_mission"}))
+
+    def test_why_chain(self):
+        self.mk()
+        code = self.to_qa()
+        M.qa(self.mid, "t1", by(QA), "pass", self.receipt(), env=self.env, now=T0)
+        rc, body = self.cli("why", self.mid, "t1")
+        self.assertEqual((rc, body["ok"], body["task"], body["status"]), (0, True, "t1", "passed"))
+        self.assertEqual([e["type"] for e in body["events"]], ["task_add", "dispatch", "report", "report", "qa"])
+        self.assertEqual([e["by"] for e in body["events"]][1:], [by(PM), by(W1), by(W1), by(QA)])
+        self.assertEqual(body["events"][-1]["data"]["receipt"]["kind"], "test")
+        self.assertNotIn(code, json.dumps(body))
+        self.assertNotIn('"code"', json.dumps(body))
+        for argv, want in ((("why", self.mid, "t9"), "no_task"), (("why", self.mid, "x1"), "bad_task"),
+                           (("why", "m_" + "0" * 12, "t1"), "no_mission")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.cli(*argv), (2, {"ok": False, "error": want}))
+
+    def test_help_explains_formats(self):
+        subs = M._parser()._subparsers._group_actions[0].choices
+        task, roster = subs["task"].format_help(), subs["roster"].format_help()
+        for want in ("seat:ee842", "human", "8", "64"):
+            self.assertIn(want, task)
+        self.assertIn("ee842", roster)
+        self.assertIn("why", M._parser().format_help())
+
+
 KNIVES = [
     ("K1", '''        if st["status"] not in frm:
             raise MissionError("bad_transition")''', "", "M1Team.test_illegal_transitions"),
@@ -638,6 +684,9 @@ KNIVES = [
      "M11R1.test_l5_resend_does_not_ask_again"),
     ("K20", '''        if d["move"] == "resume" and st.get("paused_by") == "human" and by != "human":''',
      '''        if False:''', "M11R1.test_l9_human_pause_only_human_resumes"),
+    ("K21", '''        _need(st, by, ("qa",))
+        if a.verdict == "pass" and not a.receipt:''', '''        if a.verdict == "pass" and not a.receipt:''', "M12S2.test_qa_role_before_receipt"),
+    ("K22", '''if k not in ("code", "receipt")}''', '''if k not in ("receipt",)}''', "M12S2.test_why_chain"),
 ]
 
 
