@@ -8,7 +8,7 @@
 
 兩支都只回代碼:{"ok": true[, "cleared_after": 30]} | {"ok": false, "why": "<代碼>"}。
 代碼:bad_args / no_vault / vault_off / bad_value / denied / too_long / no_seat / seat_busy / paste_failed /
-copy_failed / not_mac / caller_is_seat。
+copy_failed / clear_failed / not_mac / caller_is_seat。
 
 防線(GUIDE-same-user-ai-threat-model):
   - 每次都 Touch ID,一次一按:兩個 site 都是 secret 類(高風險、max_window 0)。copy 也一樣 —— 剪貼簿同帳號任何程式
@@ -114,16 +114,25 @@ def prove(r, env, platform, touchid=None, touchid_available=None):
 
 # ── copy ──
 
-def clear_later(value, run=subprocess.Popen):
-    """背景 30 秒後清剪貼簿:子行程從 stdin 拿 sha256(不拿值),到時讀剪貼簿比對,還是同一份才清。"""
+def start_clearer(run=subprocess.Popen):
+    """先起清除子行程(30 秒後比雜湊清剪貼簿),起不來就不 pbcopy(#435 R1 L4)。子行程從 stdin 拿 sha256、不拿值;
+    回 Popen 或 None。"""
     try:
-        p = run([sys.executable, "-I", os.path.abspath(__file__), "_clear"], stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
-                env={"PATH": "/usr/bin:/bin", "LC_CTYPE": "UTF-8"})
-        p.stdin.write(_sha(value).encode("ascii"))
-        p.stdin.close()
-        return True
+        return run([sys.executable, "-I", os.path.abspath(__file__), "_clear"], stdin=subprocess.PIPE,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                   env={"PATH": "/usr/bin:/bin", "LC_CTYPE": "UTF-8"})
     except (OSError, ValueError):
+        return None
+
+
+def arm_clearer(proc, value):
+    """pbcopy 成功後才交雜湊;value None ⇒ 只關 stdin(子行程讀到空的就 rc 1 收工,不碰剪貼簿)。回 True = 已交。"""
+    try:
+        if value is not None:
+            proc.stdin.write(_sha(value).encode("ascii"))
+        proc.stdin.close()
+        return value is not None
+    except (OSError, ValueError, AttributeError):
         return False
 
 
@@ -163,15 +172,21 @@ def do_copy(name, env=None, platform=None, touchid=None, touchid_available=None,
     try:
         if why:
             return {"ok": False, "why": why}, 2
+        proc = (spawn or start_clearer)()           # 清除排得上才放剪貼簿
+        if proc is None:
+            return {"ok": False, "why": "clear_failed"}, 4
         try:
             r = run([PBCOPY], input=value, capture_output=True, text=True, timeout=5,
                     env={"PATH": "/usr/bin:/bin", "LC_CTYPE": "UTF-8"})
+            copied = r.returncode == 0
         except (OSError, subprocess.SubprocessError):
+            copied = False
+        if not copied:
+            arm_clearer(proc, None)
             return {"ok": False, "why": "copy_failed"}, 4
-        if r.returncode != 0:
-            return {"ok": False, "why": "copy_failed"}, 4
-        if not (spawn or clear_later)(value):
-            return {"ok": False, "why": "copy_failed"}, 4     # 清不掉就不算成功(值已在剪貼簿,本人看得到這個代碼)
+        if not arm_clearer(proc, value):            # 已放進去但交不了雜湊 ⇒ 現在就比對清掉
+            clear_if_ours(_sha(value), run=run, sleep=lambda s: None)
+            return {"ok": False, "why": "clear_failed"}, 4
         return {"ok": True, "cleared_after": CLEAR_AFTER_S}, 0
     finally:
         value = None  # noqa: F841

@@ -6,16 +6,17 @@
 P1 類別:兩個 site 都是 secret(高風險、max_window 0、時間窗不開);句子帶完整金鑰櫃名字 / 艙位碼/席碼,copy 句尾有 30 秒
 P2 copy 正路:Touch ID 過 ⇒ pbcopy 的 stdin = 值;清除行程拿到的 stdin 是 sha256 不是值;argv / env / 輸出都沒有值
 P3 copy 沒過:Touch ID 取消 / AIB_TOUCHID=0 / 不是 Mac / 席位呼叫 ⇒ 不碰剪貼簿;句子太長 ⇒ too_long、不截
-P4 清剪貼簿:固定 30 秒;還是同一份才清(pbcopy 空字串);被換掉 ⇒ 不清
+P4 清剪貼簿:先起清除行程、起不來就不 pbcopy(clear_failed);交不了雜湊就當場清;固定 30 秒;還是同一份才清(pbcopy 空字串);被換掉 ⇒ 不清
 P5 paste 正路:load-buffer -b <隨機名> -(值走 stdin)⇒ paste-buffer -p -d ⇒ delete-buffer;不送 Enter;argv 沒有值
 P6 paste 擋:只給席碼 / 艙位碼不對 / 找不到 ⇒ no_seat;不在提示列 ⇒ seat_busy(不彈窗);Touch ID 沒過 ⇒ 不碰 tmux;
-   load-buffer 失敗 ⇒ paste_failed 且照樣 delete-buffer
+   load-buffer 失敗 ⇒ paste_failed 且照樣 delete-buffer;按指紋期間席位檔換了 ⇒ seat_busy、沒叫 tmux
 P7 讀金鑰櫃:SE 專用 / 只放遠端 / 不認得的名字 ⇒ no_vault;讀取開關擋下 ⇒ vault_off;值有換行 / 控制字元 ⇒ bad_value
 P8 紀錄:secret-share.jsonl 每列只有 at / op / ok / why;金鑰櫃名字、值都不進紀錄與輸出
 P10 順序(@aeb40 10-30 03:10):先查讀取開關 ⇒ Touch ID ⇒ 才讀值;開關擋下 ⇒ vault_off、不彈指紋、不讀值
 P9 真 tmux(有 tmux 才跑):paste 期間每次叫 tmux 都掃一次 ps -axww,掃出來沒有值;那一席的畫面打出了值、沒有送出
 刀(手動):K1 paste 改 send-keys -l 值 ⇒ P5 / P9 紅;K2 copy 拿掉 Touch ID ⇒ P3 紅;K3 清除不比雜湊 ⇒ P4 紅;
-    K4 site 類別改 seat_input ⇒ P1 紅;K5 先讀值再彈指紋(拿掉 precheck)⇒ P10 紅
+    K4 site 類別改 seat_input ⇒ P1 紅;K5 先讀值再彈指紋(拿掉 precheck)⇒ P10 紅;
+    K6 先 pbcopy 再起清除行程 ⇒ P2 紅;K7 按指紋後不重查 fresh_target ⇒ P6 紅
 """
 import hashlib
 import io
@@ -78,6 +79,18 @@ class Base(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
+    def clearer(self, fail=False):
+        """假清除子行程:記下 stdin 收到什麼;fail = 起不來(回 None)。"""
+        def start():
+            self.order.append("clearer")
+            if fail:
+                return None
+            buf = io.BytesIO()
+            buf.close = lambda: self.cleared.append(buf.getvalue())
+            return type("P", (), {"stdin": buf})()
+        self.cleared = []
+        return start
+
     def touch(self, ok=True):
         def t(r):
             self.order.append("touch")
@@ -111,7 +124,7 @@ class P1Category(Base):
 
     def test_copy_sentence_full_name_and_30s(self):
         res, rc = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
-                             run=self.run_ok, spawn=lambda v: True)
+                             run=self.run_ok, spawn=self.clearer())
         self.assertEqual((res, rc), ({"ok": True, "cleared_after": 30}, 0))
         r = self.reasons[0]
         self.assertIn(NAME, str(r))
@@ -122,13 +135,41 @@ class P1Category(Base):
 
 class P2Copy(Base):
     def test_value_only_on_stdin(self):
-        spawned = []
         res, rc = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
-                             run=self.run_ok, spawn=lambda v: spawned.append(v) or True)
+                             run=self.run_ok, spawn=self.clearer())
         self.assertEqual(rc, 0)
         self.assertEqual([(a, i) for a, i, _e in self.calls], [([SS.PBCOPY], VALUE)])
+        self.assertEqual(self.cleared, [hashlib.sha256(VALUE.encode()).hexdigest().encode()], "清除行程只拿到雜湊")
+        self.assertLess(self.order.index("clearer"), len(self.order))
         self.no_value_anywhere()
         self.assertNotIn(VALUE, json.dumps(res))
+
+    def test_clearer_first_or_no_copy(self):
+        """#435 R1 L4:清除行程起不來 ⇒ 不 pbcopy、回 clear_failed;pbcopy 失敗 ⇒ 清除行程只收到空的"""
+        res, rc = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
+                             run=self.run_ok, spawn=self.clearer(fail=True))
+        self.assertEqual((res, rc), ({"ok": False, "why": "clear_failed"}, 4))
+        self.assertEqual(self.calls, [], "沒排上清除就不放剪貼簿")
+        def bad_copy(argv, **kw):
+            self.calls.append((list(argv), kw.get("input"), {}))
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        self.calls[:] = []
+        res, _ = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
+                            run=bad_copy, spawn=self.clearer())
+        self.assertEqual(res["why"], "copy_failed")
+        self.assertEqual(self.cleared, [b""])
+
+    def test_arm_fails_clears_now(self):
+        """pbcopy 成功但交不了雜湊 ⇒ 當場比對清掉、回 clear_failed"""
+        seen = []
+        def run(argv, **kw):
+            seen.append((argv, kw.get("input")))
+            return subprocess.CompletedProcess(argv, 0, VALUE if argv == [SS.PBPASTE] else "", "")
+        broken = lambda: type("P", (), {"stdin": None})()
+        res, _ = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
+                            run=run, spawn=broken)
+        self.assertEqual(res, {"ok": False, "why": "clear_failed"})
+        self.assertEqual(seen, [([SS.PBCOPY], VALUE), ([SS.PBPASTE], None), ([SS.PBCOPY], "")])
 
     def test_clear_later_gets_hash_not_value(self):
         got = {}
@@ -138,7 +179,8 @@ class P2Copy(Base):
                 got["argv"], got["env"] = argv, kw.get("env")
                 self.stdin = io.BytesIO()
                 self.stdin.close = lambda: got.setdefault("stdin", self.stdin.getvalue())
-        self.assertTrue(SS.clear_later(VALUE, run=P))
+        proc = SS.start_clearer(run=P)
+        self.assertTrue(SS.arm_clearer(proc, VALUE))
         self.assertEqual(got["stdin"], hashlib.sha256(VALUE.encode()).hexdigest().encode())
         self.assertNotIn(VALUE, json.dumps(got["argv"]) + json.dumps(got["env"]))
         self.assertEqual(got["argv"][-1], "_clear")
@@ -147,7 +189,7 @@ class P2Copy(Base):
 class P3CopyRefused(Base):
     def test_denied_never_touches_clipboard(self):
         res, rc = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(False), touchid_available=lambda: True,
-                             run=self.run_ok, spawn=lambda v: self.fail("不該清"))
+                             run=self.run_ok, spawn=lambda: self.fail("不該起清除"))
         self.assertEqual(res, {"ok": False, "why": "denied"})
         self.assertEqual(self.calls, [])
 
@@ -255,6 +297,24 @@ class P6PasteRefused(Seat):
                 self.assertEqual(self.paste(seat)[0], {"ok": False, "why": "no_seat"})
         self.assertEqual((self.reasons, self.calls), ([], []))
 
+    def test_record_changed_during_touch(self):
+        """#435 R1 L1:按指紋期間席位檔換了(同席碼換窗 / 換人)⇒ seat_busy、完全沒叫 tmux"""
+        for change in ({"window_id": "@9"}, {"pid": 999}, {"retired": True}):
+            with self.subTest(change=change):
+                orig = self.rec_file.read_text()
+                def t(r, change=change):
+                    self.reasons.append(r)
+                    rec = json.loads(orig)
+                    rec.update(change)
+                    self.rec_file.write_text(json.dumps(rec))
+                    return {"ok": True, "why": "ok"}
+                self.calls[:] = []
+                res, _ = SS.do_paste(NAME, "%s/%s" % (CABIN, CODE), env=self.env, platform="darwin", touchid=t,
+                                     touchid_available=lambda: True, run=self.run_ok)
+                self.assertEqual(res, {"ok": False, "why": "seat_busy"})
+                self.assertEqual(self.calls, [])
+                self.rec_file.write_text(orig)
+
     def test_busy_no_popup(self):
         self.at_prompt = False
         self.assertEqual(self.paste()[0], {"ok": False, "why": "seat_busy"})
@@ -308,7 +368,7 @@ class P8Log(Seat):
 class P10Order(Seat):
     def test_gate_then_touch_then_read(self):
         res, _ = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
-                            run=self.run_ok, spawn=lambda v: True)
+                            run=self.run_ok, spawn=self.clearer())
         self.assertTrue(res["ok"])
         self.assertEqual(self.order[:2], ["gate", "touch"])
         self.assertEqual(self.order[2:].count("read"), 1)
@@ -322,7 +382,7 @@ class P10Order(Seat):
             with self.subTest(reason=reason):
                 self.gate, self.order[:] = reason, []
                 res, _ = SS.do_copy(NAME, env=self.env, platform="darwin", touchid=self.touch(), touchid_available=lambda: True,
-                                    run=self.run_ok, spawn=lambda v: True)
+                                    run=self.run_ok, spawn=self.clearer())
                 self.assertEqual(res, {"ok": False, "why": "vault_off"})
                 self.assertEqual(self.paste()[0], {"ok": False, "why": "vault_off"})
                 self.assertEqual(self.order, ["gate", "gate"], "不彈指紋、不讀值")

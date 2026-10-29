@@ -5881,5 +5881,5 @@
   "aib.meeting.sum.undecided": "未決 {n} 條(不進任務團)",
   "aib.meeting.sum.needs_you": "需要你的 {n} 件",
   "aib.secret.touchid_copy": "複製金鑰 {name} 到剪貼簿:同帳號任何程式(含 AI)都讀得到,30 秒後清",
-  "aib.secret.touchid_paste": "讓 {seat} 席的 AI 看到金鑰 {name},並留在該席對話紀錄(只打字、不按 Enter)"
+  "aib.secret.touchid_paste": "把金鑰 {name} 打進 {seat} 席的輸入框(不按 Enter):同帳號任何程式(含 AI)都讀得到該席畫面與對話紀錄"
 }
