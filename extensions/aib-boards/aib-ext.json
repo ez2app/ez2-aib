@@ -10,10 +10,10 @@
   "data_only": false,
   "files": {
     ".claude-plugin/marketplace.json": "a729d6a8985a32488f0879acbd1bccaf31dc58c62282b8292ec4f6bf80a90685",
-    ".claude-plugin/plugin.json": "3d499ea7f0fc729a19f8f8175f0f0ee1ec847e4bda29186d98f7079c28ddbf4a",
+    ".claude-plugin/plugin.json": "8ef85600417d593aa6c6192dd70da719f4899dffb9a34e306b9ad6d639e81711",
     "README.md": "08657bc08af9fdb5d2e03dc3ed30a9c530a6b63a1b5bf6f218e4f17b2f94a8e6",
     "bin/relay_line.py": "db77bfd29c0aaf1d4236ee609324ab5d8439ccea16a216f1fb6ebf638eb8f06f",
-    "bin/seat-info.py": "6c7c151e55d1275eb1632667e009de80a0f2e9098caf3f0e6f107b0787d9c6d4",
+    "bin/seat-info.py": "098d56433a67192bc3f1abd5d60c1f7507f10ce940089190a787836eca8489bd",
     "hooks/charts.ts": "0c7bca764d7acbd14ab8c821a56fe98f773899090fa847e989f3ffc37ec6fc83",
     "hooks/chartset.ts": "827ae4190afea90e8161d703b074a000ed5101d85bac705bdcd353114cc02daf",
     "hooks/ctx.test.ts": "aba1ddb62adccb0fadc21283a69b26555f825f907aeee67b622279b575cdfd57",
@@ -40,8 +40,9 @@
     "hooks/seat/qa.test.ts": "477e3bf5b1cecb3973ae37b662b10e1e1857e721fc873601ff0205af02210c45",
     "hooks/seat/qa.ts": "fe8aee06d70d49b213d8cb2d20b7d99e9c01f75114219ba3deacac9cb220d6ea",
     "hooks/seat/seat-label.test.ts": "710e5002aabcf807a5d5cc06e54688c517ec53f6c1a000173d92224dc6a209ac",
-    "hooks/seat/seat-label.ts": "8386f3dda1883ed082b48013b340519357dde97353f6986e4959f805dcab746e",
-    "hooks/seatcore.tsx": "dd5d294653200e996f047420c84ea2d544abd8f54bc259e5e17592412f39b34e",
+    "hooks/seat/seat-label.ts": "280198699ca6e3141816bda7c1363927ebebd5c1c949c8dbf9e4579c89375039",
+    "hooks/seatcore.tsx": "43fcdf2f9ee8ccda5921849f63629ee9b20604aee8b7d42a6c982c6876cbdb3a",
+    "hooks/tail.test.ts": "bc89578f3839b7e68e2fdba874eea975a7953288e2cf484bd3ccc9c8e282f50d",
     "hooks/tiercharts.ts": "234ac7eb95e7d91bfaa5eb3114230e91aa2bf8e7e86ababb7a863f70c6a5ba1a",
     "hooks/tiers.test.tsx": "27aebc9c038bad168d90e21166204e23b2a4d9846bf8952a8653e6aac3fc0ad2",
     "hooks/toast.test.ts": "069c6bc73f43b4b59a40e894b434ae990b6f0b86dc9a935adad74427410140e8",
@@ -55,5 +56,5 @@
     "tui/ui.mjs": "09c9d80d305cab554129e076ec5941ffd3178040204c1df2cf9e23c0c5040163",
     "types/index.d.ts": "b1908713188af446f97b5ffa6581d8866fd578f7919871413665e39f5bdafa97"
   },
-  "signature": "ed25519:77Bopaix/PE7DyZaBfG1cXawe8F7ucArJEsSpiTKzfO2FWtRzN7+IJ8Viu7lzIzD0rQwDK+NRvV0V/apHA7qAA=="
+  "signature": "ed25519:HGtzBv33WKcQX6oVE2UzgSHeszf7+4i5kf3cJ+iXfCU0LijT+W0cTvBRImyDz2TpOqXQ4w0tEz81kD/c8XCLDw=="
 }
