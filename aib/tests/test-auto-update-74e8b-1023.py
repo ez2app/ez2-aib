@@ -4,7 +4,7 @@
 """aib update auto(10-23 Andy「更新版本要自動 aib update」;@74e8b)。
 
 S1 設定:沒檔 = 開(預設);off 寫 on:false 並拆排程;on 寫回開並裝排程;檔壞 ⇒ 當成關(unreadable);關著 check 不動
-S2 排程 plist:Label、ProgramArguments = check --why schedule、StartInterval 6 小時、RunAtLoad 關、權限 0600、
+S2 排程 plist:Label、ProgramArguments = check --why tick、StartInterval 30 分(d 張 10-29;6 小時閘在 check 裡)、RunAtLoad 關、權限 0600、
    環境只帶路徑 / 語系(AIB_INSTALL_URL、token 一律不帶)
 S3 非 macOS:不裝排程、不叫 launchctl(on / off 都不叫);cmd_on 照樣 rc 0;開席那次 check 也不裝
 S4 開發用 worktree:不裝排程、check 回 dev_tree、不更新
@@ -196,8 +196,8 @@ class Agent(Base):
         env = dict(self.env, AIB_INSTALL_URL="https://evil.invalid/i.sh", GH_TOKEN="ghp_secret", X_CAPTAIN_TOKEN="cap-secret")
         d = AU.agent_plist(env, python="/py", script="/s/auto_update.py")
         self.assertEqual(d["Label"], "com.ez2.aib-auto-update")
-        self.assertEqual(d["ProgramArguments"], ["/py", "/s/auto_update.py", "check", "--why", "schedule"])
-        self.assertEqual(d["StartInterval"], 6 * 3600)
+        self.assertEqual(d["ProgramArguments"], ["/py", "/s/auto_update.py", "check", "--why", "tick"])
+        self.assertEqual(d["StartInterval"], 30 * 60)
         self.assertIs(d["RunAtLoad"], False)
         self.assertNotIn("KeepAlive", d)
         ev = d["EnvironmentVariables"]
@@ -213,7 +213,7 @@ class Agent(Base):
         self.assertEqual(kind, "installed")
         self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
         with open(path, "rb") as fh:
-            self.assertEqual(plistlib.load(fh)["StartInterval"], 21600)
+            self.assertEqual(plistlib.load(fh)["StartInterval"], 1800)
         self.assertEqual([c[0] for c in ctl.calls], ["bootout", "bootstrap"])
         ctl2 = FakeCtl(fail=True)
         self.assertEqual(AU.install_agent(env, home=self.home, platform="darwin", launchctl=ctl2, dev_tree=False)[0], "failed")
