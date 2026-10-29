@@ -8,7 +8,7 @@ D2 修訂:印目標增減([+] 新增、[-] 拿掉),沒變的那條不出現在�
 D3 卡上紅線被直接改了(AI 不走核准)⇒ 印「和上次核准不同」+ 列出多 / 少哪條;Touch ID 視窗字寫「和上次不同」
 D4 上次核准沒記雜湊(0.1.24 以前)⇒ 印「無法比對」,視窗字寫「無法比對」;核完就有雜湊
 D5 留底也被改成跟卡一樣 ⇒ 不被騙成「相同」:雜湊對不上 ⇒「不同」+「列不出來」
-D6 印給本人看的字(標題、目標、紅線)清掉 ANSI / 方向控制 / 零寬字
+D6 印給本人看的字(標題)清掉 ANSI / 方向控制 / 零寬字;目標 / 紅線夾這些 ⇒ content_unclean 不核(TID-1b R1)
 D7 每次核准都印「卡檔沒簽章,核准只證明本人按過」
 D8 等指紋期間紅線被改 ⇒ rc 2、卡上核准內容不寫(留底先寫了也無害:帳本沒換到卡上)
 D9 Touch ID 沒過 ⇒ 帳本不多記、不留新留底
@@ -37,6 +37,7 @@ from aib_proc_guard import run_guarded  # noqa: E402
 
 ROOT = HERE.parent
 THIS = pathlib.Path(__file__).name
+FULL_OK = lambda title, intro, body, check: {"ok": True, "why": "ok"}   # 全文確認窗替身(TID-1b;不開真視窗)
 PY = sys.executable
 NP = ROOT / "tools" / "project" / "new_project.py"
 SHA_RE = re.compile(r"; constitution sha256=([0-9a-f]{64})")   # 英文那句(一筆帳中英各記一次)
@@ -106,7 +107,7 @@ class Diff(unittest.TestCase):
         asked, out = [], _FakeIO()
         rc = self.np.approve_constitution(self.root, self.uid, stdin=_FakeIO(), stdout=out,
                                           touchid=lambda reason: asked.append(reason) or touch(reason),
-                                          touchid_available=lambda: True)
+                                          touchid_available=lambda: True, fulltext=FULL_OK)
         return rc, asked, out.text()
 
     def _card(self):
@@ -197,10 +198,18 @@ class Diff(unittest.TestCase):
         doc["constitution"]["goals"] = ["g\u202e1"]
         self.cand.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
         rc, _, out = self._approve()
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 2, "TID-1b R1:目標 / 紅線夾隱形字 ⇒ content_unclean 不核(顯示的要 = 寫進去的)")
+        self.assertIn('"content_unclean"', out)
         for bad in ("\x1b", "\u202e", "\u200b"):
             self.assertNotIn(bad, out, repr(bad))
-        self.assertIn("hidden", out, "字濾掉、內容留著")
+        doc = json.loads(self.cand.read_text(encoding="utf-8"))   # 標題照樣清過才印(目標乾淨就核得過)
+        doc["constitution"]["red_lines"], doc["constitution"]["goals"] = ["ok"], ["g1"]
+        self.cand.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        rc, _, out = self._approve()
+        self.assertEqual(rc, 0)
+        self.assertIn("Demo", out)
+        for bad in ("\u202e", "\u200b"):
+            self.assertNotIn(bad, out, repr(bad))
 
     def test_D7_unsigned_note_every_time(self):
         out = self._first_approval()
@@ -277,7 +286,7 @@ class Knife(unittest.TestCase):
         self.assertNotIn("ERROR:", out, "刀的複本裡出現 ERROR = 沒驗到要驗的東西:\n" + out)
 
     def test_K1_bogus_hash(self):
-        self._cut("    sha = _const_sha(const)\n", '    sha = "0" * 64\n', "Diff.test_D1_hash_in_ledger_and_snapshot")
+        self._cut("    sha = _const_sha(const)   ", '    sha = "0" * 64   ', "Diff.test_D1_hash_in_ledger_and_snapshot")
 
     def test_K2_no_goal_diff(self):
         self._cut("show[2:2] = diff + rl_lines", "show[2:2] = rl_lines", "Diff.test_D2_goal_diff")
@@ -298,7 +307,7 @@ class Knife(unittest.TestCase):
         self._cut('    show.append("  " + T("aib.newproj.approve_unsigned_note"))\n', "", "Diff.test_D7_unsigned_note_every_time")
 
     def test_K7_no_recheck(self):
-        self._cut('if list(live.get("red_lines") or []) != shown_red:', "if False:",
+        self._cut('if (live.get("approved") is True) != amending or moved or _const_sha(fresh) != sha:', "if False:",
                   "Diff.test_D8_red_lines_moved_during_touchid")
 
 
@@ -307,7 +316,7 @@ class Knife(unittest.TestCase):
                   "same = True", "Diff.test_D10_snapshot_missing_falls_back_to_card_hash")
 
     def test_K9_snapshot_after_ledger(self):
-        self._cut("    _write_approved_snapshot(root, uid, sha, const)\n    try:\n", "    try:\n",
+        self._cut("        _write_approved_snapshot(root, uid, sha, const)\n", "",
                   "Diff.test_D11_failure_after_ledger_does_not_misreport")
 
 

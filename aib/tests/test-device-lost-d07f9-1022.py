@@ -231,6 +231,12 @@ class Split(Base):
         self.assertFalse(res["ok"])
         self.assertEqual(res["why"], "touchid_cancel")
         self.assertEqual(rc, 1)
+        self.assertIn("--page %s" % FP_A[:8], res["hint"], "只帶還沒撤的那台重跑(@aeb40 #404 R2 Low)")
+        self.assertNotIn("--chat", res["hint"], "已撤的聊天那台不再帶(帶了會 chat_not_found 停住)")
+        out = io.StringIO()
+        with mock.patch.object(AG, "FULL_MAX", limit), mock.patch.object(DL, "lost", lambda *a, **k: (res, 1)):
+            DL.main(["lost", "--chat", "qq7xk2ma", "--page", FP_A[:8]], env=self.env, out=out)
+        self.assertIn("aib device lost --page %s" % FP_A[:8], out.getvalue(), "終端機那行也印出來")
 
 
 class _Resp:
@@ -282,6 +288,14 @@ class Owner(unittest.TestCase):
             calls.clear()
             self.assertEqual(OC._proof_then_pass("r", {}, Path("."), io.StringIO()), "pw")
             self.assertEqual(calls, ["prove", "pass"], "預設照舊證明")
+            calls.clear()                      # proved 但這一步的字被拒:不擋(已涵蓋),照實記一行(@aeb40 #404 R2 Low)
+            import approve_gate as AG
+            bad = AG.reason("chat_owner_cli.list_change", {"base": "x" * (AG.FULL_MAX + 1), "diff": "d"})
+            self.assertTrue(bad.refused)
+            log = io.StringIO()
+            self.assertEqual(OC._proof_then_pass(bad, {}, Path("."), log, proved=True), "pw")
+            self.assertEqual(calls, ["pass"])
+            self.assertIn(bad.refused, log.getvalue())
         finally:
             OC.PROVE, OC.READ_PASS = orig
 
