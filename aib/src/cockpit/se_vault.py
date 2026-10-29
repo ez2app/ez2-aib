@@ -105,7 +105,8 @@ def _call(args, env, data, run, helper, platform):
     if not exe:
         return None, why
     try:
-        r = run([exe] + args, input=data, capture_output=True, timeout=120)
+        # 乾淨環境(#432 R1 H1 縱深):不把呼叫端的 DYLD_* / HOME 等帶給 helper;真正擋注入的是 hardened runtime 簽章
+        r = run([exe] + args, input=data, capture_output=True, timeout=120, env={"PATH": "/usr/bin:/bin"})
     except (OSError, subprocess.TimeoutExpired):
         return None, "helper_failed"
     if r.returncode != 0:

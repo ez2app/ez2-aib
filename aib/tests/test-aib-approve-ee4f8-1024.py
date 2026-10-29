@@ -92,7 +92,7 @@ class FakeSE:
         self.d = secrets.randbelow(p256.N - 1) + 1
         self.calls, self.inputs, self.fail = [], [], fail
 
-    def __call__(self, argv, input=None, capture_output=True, timeout=None):
+    def __call__(self, argv, input=None, capture_output=True, timeout=None, env=None):
         self.calls.append(argv)
         sub = argv[1]
         opts = dict(zip(argv[2::2], argv[3::2]))

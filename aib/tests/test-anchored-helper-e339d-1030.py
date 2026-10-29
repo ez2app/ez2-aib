@@ -9,9 +9,16 @@ A6 stamp ≠ 原始碼雜湊(aib update 改了 helper)⇒ outdated     A7 不是
 A8 K-A1 / K-A3:EZ2_AIB_STATE_ROOT + 狀態根假 helper(stamp = 真原始碼雜湊)+ PATH 墊假的 ⇒ 正式 Ctx 不採用、一次都沒叫
 A9 安裝程式:root 才裝;上層可寫 ⇒ 不裝;裝好 binary 0755 / stamp 0644 / 都 chown 0:0 / stamp = 原始碼雜湊
 A10 doctor:有單但 helper 沒裝 ⇒ note helper_not_installed      A11 --helper status 給本人跑的指令,不代跑
+A12 #432 R1 H1:簽章沒 hardened runtime / codesign 失敗 / 讀不懂 ⇒ not_hardened(沒 runtime 的 root binary 吃 DYLD_*)
+A13 #432 R1 L3:固定路徑是目錄(root 擁有、不可寫)⇒ not_file
+A14 #432 R1 H1 縱深:叫 helper 只給 PATH=/usr/bin:/bin(呼叫端的 DYLD_INSERT_LIBRARIES / HOME 不帶過去)
+A9 另驗 #432 R1 M1 / H1:只編、只雜湊 root 暫存夾裡的複本(編譯中原檔被換 ⇒ stamp 仍是複本的雜湊);簽章帶 -o runtime;
+  子行程 env = PATH / HOME=/var/root;先印安裝程式 / 原始碼 sha256 與 git HEAD(L1)
 刀(複本落刀,錨要恰好一次):KA1 拿掉擁有者檢查 ⇒ A2 紅;KA2 拿掉可寫檢查 ⇒ A3 紅;KA3 拿掉捷徑檢查 ⇒ A4 紅;
   KA4 只查 binary 不查上層 ⇒ A5 紅;KA5 拿掉 stamp 比對 ⇒ A6 紅;KA6 helper_exe 退回狀態根 build_helper ⇒ A8 紅;
-  KA7 安裝程式拿掉上層檢查 ⇒ A9 紅;KA8 安裝程式拿掉 euid 檢查 ⇒ A9 紅。
+  KA7 安裝程式拿掉上層檢查 ⇒ A9 紅;KA8 安裝程式拿掉 euid 檢查 ⇒ A9 紅;KA9 拿掉 hardened 檢查 ⇒ A12 紅;
+  KA10 安裝程式簽章拿掉 -o runtime ⇒ A9 紅;KA11 拿掉 S_ISREG ⇒ A13 紅;KA12 安裝程式改編原檔 ⇒ A9 紅;
+  KA13 se_vault._call 不給 env ⇒ A14 紅。
 全部假 stat / 假 run / 暫存目錄;不碰 /usr/local、不跑 sudo、不編譯、不叫 Secure Enclave。
 """
 import hashlib
@@ -34,6 +41,7 @@ sys.path.insert(0, str(SRC))
 os.environ["EZ2_AIB_LOCALE"] = "zh-TW"
 import anchored_helper as AH  # noqa: E402
 import approve_grants as GR  # noqa: E402
+import se_vault as SV  # noqa: E402
 
 _ispec = importlib.util.spec_from_file_location("aib_install_anchored", str(TOOLS / "install_anchored_helper.py"))
 INST = importlib.util.module_from_spec(_ispec)
@@ -69,8 +77,20 @@ def tree(**over):
 GOOD = hashlib.sha256(b"src").hexdigest()
 
 
-def chk(M, lstat, stamp=GOOD, platform="darwin"):
-    return M.check(lstat=lstat, read=lambda p: stamp + "\n", src_digest=lambda: GOOD, platform=platform)
+class _Codesign:
+    """假 /usr/bin/codesign -d:預設回帶 runtime 的旗標(真機輸出的格式)。"""
+    def __init__(self, line="flags=0x10002(adhoc,runtime)", rc=0):
+        self.line, self.rc, self.calls = line, rc, []
+
+    def __call__(self, argv, **k):
+        self.calls.append((argv, k))
+        return type("P", (), {"returncode": self.rc, "stdout": "",
+                              "stderr": "Executable=%s\nCodeDirectory v=20500 size=1334 %s hashes=35+2\n" % (argv[-1], self.line)})()
+
+
+def chk(M, lstat, stamp=GOOD, platform="darwin", run=None):
+    return M.check(lstat=lstat, read=lambda p: stamp + "\n", src_digest=lambda: GOOD, platform=platform,
+                   run=run or _Codesign())
 
 
 def cell_a1(t, M):
@@ -104,6 +124,35 @@ def cell_a7(t, M):
     t.assertEqual(chk(M, lambda p: (_ for _ in ()).throw(FileNotFoundError(p))), (None, "not_installed"))
 
 
+def cell_a12(t, M):
+    cs = _Codesign()
+    t.assertEqual(chk(M, tree(), run=cs), (M.EXE, None))
+    t.assertEqual([(c[0], c[1].get("env")) for c in cs.calls][:1],
+                  [(["/usr/bin/codesign", "-d", "--verbose=2", M.EXE], {"PATH": "/usr/bin:/bin"})])
+    t.assertEqual(chk(M, tree(), run=_Codesign("flags=0x2(adhoc)")), (None, "not_hardened"))
+    t.assertEqual(chk(M, tree(), run=_Codesign("flags=0x2(adhoc,runtime)")), (None, "not_hardened"))    # 位元沒有
+    t.assertEqual(chk(M, tree(), run=_Codesign("flags=0x10002(adhoc)")), (None, "not_hardened"))        # 名稱沒有
+    t.assertEqual(chk(M, tree(), run=_Codesign(rc=1)), (None, "not_hardened"))
+    t.assertEqual(chk(M, tree(), run=_Codesign("garbage")), (None, "not_hardened"))
+    t.assertEqual(chk(M, tree(), run=lambda *a, **k: (_ for _ in ()).throw(OSError("no codesign"))), (None, "not_hardened"))
+
+
+def cell_a13(t, M):
+    t.assertEqual(chk(M, tree(**{M.EXE: st(DIR)})), (None, "not_file"))
+    t.assertEqual(chk(M, tree(**{M.STAMP: st(DIR)})), (None, "not_file"))
+
+
+def cell_a14(t, SV):
+    seen = []
+
+    def run(argv, **k):
+        seen.append(k)
+        return type("P", (), {"returncode": 0, "stdout": b"{}", "stderr": b""})()
+    env = dict(os.environ, DYLD_INSERT_LIBRARIES="/tmp/evil.dylib", DYLD_LIBRARY_PATH="/tmp", HOME="/tmp/fakehome")
+    t.assertEqual(SV._call(["se-pub"], env, b"", run, "/x/aib-sehelper", "darwin"), (b"{}", None))
+    t.assertEqual(seen[0].get("env"), {"PATH": "/usr/bin:/bin"})
+
+
 def cell_a8(t, G):
     """正式 Ctx(沒注入 helper):狀態根種好假 helper + stamp、PATH 也墊一支 ⇒ 都不採用,run 一次都沒被叫。"""
     td = tempfile.mkdtemp(prefix="aib-anch-a8-")
@@ -132,12 +181,16 @@ def cell_a8(t, G):
 
 
 class _Run:
-    def __init__(self, ok=True):
-        self.calls, self.ok = [], ok
+    def __init__(self, ok=True, swap=None):
+        self.calls, self.kw, self.ok, self.swap = [], [], ok, swap
 
     def __call__(self, argv, **k):
         self.calls.append(argv)
+        self.kw.append(k)
         if "swiftc" in argv:
+            if self.swap:                 # 編譯開始時同帳號 AI 把原檔換成惡意版(M1)
+                with open(self.swap, "w") as f:
+                    f.write("// evil\n")
             with open(argv[argv.index("-o") + 1], "wb") as f:
                 f.write(b"\xcf\xfa\xed\xfe fake mach-o")
         return type("P", (), {"returncode": 0 if self.ok else 1, "stdout": "", "stderr": ""})()
@@ -159,21 +212,35 @@ def _inst(M, td, euid=0, parents_ok=True):
         return os.stat_result((mode,) + tuple(r)[1:4] + (0,) + tuple(r)[5:])
     os.makedirs(os.path.dirname(os.path.dirname(anchor)))
     out = io.StringIO()
-    rc = M.install(src=src, anchor_dir=anchor, run=_Run(), euid=lambda: euid,
-                   chown=lambda p, u, g: owned.append((os.path.basename(p), u, g)), lstat=lstat, out=out, platform="darwin")
+    run = _Run(swap=src)
+    rc = M.install(src=src, anchor_dir=anchor, run=run, euid=lambda: euid,
+                   chown=lambda p, u, g: owned.append((os.path.basename(p), u, g)), lstat=lstat, out=out, platform="darwin",
+                   tmp_parent=td)
+    _inst.last_run = run
     return rc, anchor, owned, src, out.getvalue()
 
 
 def cell_a9(t, M):
     td = tempfile.mkdtemp(prefix="aib-anch-a9-")
     try:
-        rc, anchor, owned, src, _ = _inst(M, os.path.join(td, "ok"))
+        rc, anchor, owned, src, msg = _inst(M, os.path.join(td, "ok"))
         t.assertEqual(rc, 0)
         exe, stamp = os.path.join(anchor, "aib-sehelper"), os.path.join(anchor, "aib-sehelper.sha256")
         t.assertEqual(stat.S_IMODE(os.stat(exe).st_mode), 0o755)
         t.assertEqual(stat.S_IMODE(os.stat(stamp).st_mode), 0o644)
-        with open(src, "rb") as f, open(stamp) as g:
-            t.assertEqual(g.read().strip(), hashlib.sha256(f.read()).hexdigest())
+        with open(stamp) as g:            # 原檔在編譯時被換成 evil ⇒ stamp 仍是換之前(複本)的雜湊
+            t.assertEqual(g.read().strip(), hashlib.sha256(b"// swift\n").hexdigest())
+        run = _inst.last_run
+        swift = [c for c in run.calls if "swiftc" in c][0]
+        t.assertNotEqual(swift[-1], src)                      # 編的是複本,不是使用者可寫的原檔
+        t.assertNotEqual(os.path.dirname(swift[-1]), os.path.dirname(src))
+        t.assertIn("-module-cache-path", swift)
+        sign = [c for c in run.calls if c[0] == "/usr/bin/codesign"][0]
+        t.assertEqual(sign[1:6], ["-s", "-", "-f", "-o", "runtime"])
+        for k in run.kw:
+            t.assertEqual(k.get("env"), {"PATH": "/usr/bin:/bin", "HOME": "/var/root"})
+        t.assertIn(hashlib.sha256(b"// swift\n").hexdigest(), msg)        # L1:先印原始碼 sha256 / git HEAD 給本人核對
+        t.assertIn("git HEAD", msg)
         t.assertEqual(sorted(owned), sorted([("ez2-aib", 0, 0), ("aib-sehelper.new", 0, 0), ("aib-sehelper.sha256.new", 0, 0)]))
         t.assertFalse(os.path.exists(exe + ".new"))
         rc, anchor, owned, _, msg = _inst(M, os.path.join(td, "user"), euid=501)
@@ -216,6 +283,9 @@ class Cells(unittest.TestCase):
     def test_a9(self): cell_a9(self, INST)
     def test_a10(self): cell_a10(self, GR)
     def test_a11(self): cell_a11(self, GR)
+    def test_a12(self): cell_a12(self, AH)
+    def test_a13(self): cell_a13(self, AH)
+    def test_a14(self): cell_a14(self, SV)
 
     def test_doctor_i18n(self):
         for loc in ("zh-TW", "en", "ja", "ko"):
@@ -232,6 +302,11 @@ KNIVES_AH = [
     ("KA3", "    if _stat.S_ISLNK(st.st_mode):\n        return \"symlink\"\n", "", cell_a4),
     ("KA4", "        if d == \"/\":\n            break\n        d = os.path.dirname(d)\n", "        break\n", cell_a5),
     ("KA5", "    if got != want:\n        return None, \"outdated\"\n", "", cell_a6),
+    ("KA9", "    if not hardened(EXE, run):\n        return None, \"not_hardened\"\n", "", cell_a12),
+    ("KA11", "        if not _stat.S_ISREG(lstat(p).st_mode):\n            return None, \"not_file\"\n", "", cell_a13),
+]
+KNIVES_SV = [
+    ("KA13", ', timeout=120, env={"PATH": "/usr/bin:/bin"})\n', ", timeout=120)\n", cell_a14),
 ]
 KNIVES_GR = [
     ("KA6", "        exe, why = (self._anchored or anchored_helper.check)(platform=self.platform)\n",
@@ -240,6 +315,8 @@ KNIVES_GR = [
 KNIVES_INST = [
     ("KA7", "    bad = _parents_locked(anchor_dir, lstat)\n", "    bad = None\n", cell_a9),
     ("KA8", "    if euid() != 0:\n", "    if False:\n", cell_a9),
+    ("KA10", '"-s", "-", "-f", "-o", "runtime", exe_tmp]', '"-s", "-", "-f", exe_tmp]', cell_a9),
+    ("KA12", '["-o", exe_tmp, copy]', '["-o", exe_tmp, src]', cell_a9),
 ]
 
 
@@ -279,6 +356,9 @@ class Knives(unittest.TestCase):
         def patch(M):
             M.window_reason = GR.window_reason          # 視窗字要從登記的那支組(複本不是登記檔)
         self._run(KNIVES_GR, SRC / "approve_grants.py", patch)
+
+    def test_knives_se_vault(self):
+        self._run(KNIVES_SV, SRC / "se_vault.py")
 
     def test_knives_installer(self):
         self._run(KNIVES_INST, TOOLS / "install_anchored_helper.py")
