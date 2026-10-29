@@ -9,6 +9,8 @@ E2 一份快照:一批 26 件 ⇒ signing.verify_object 只被叫 2 次(current 
 E3 壞一筆不拖累整批;重複 sku 各回一筆、順序照輸入;free_at 不是字串 ⇒ 那筆 bad-sku
 E4 整包壞(不是 JSON / 沒 items / items 不是陣列)/ 超過 500 筆 / 超過 64 KB ⇒ rc 2、沒有 items
 E5 CLI:--batch --json stdin → stdout,每筆十欄(單件九欄 + free_at)、不含簽章;不帶 --batch 的單件輸出不變
+E6 輸入有孤立代理字元 ⇒ 那欄印 None、整包照常輸出(真子行程 UTF-8 stdout;#431 審查 L1)
+E7 --batch 混 sku / --free-at、或 stdin 是終端機 ⇒ usage rc 2(#431 審查 L2)
 刀(複本):K1 allowed_many 每筆都用第一筆的 free_at ⇒ E1 紅;K2 拿掉快照(每筆重讀)⇒ E2 紅
 """
 import base64
@@ -181,6 +183,51 @@ class Batch(Base):
         rc1, single = self.cli(["allowed", "x.buy", "--free-at", "plus", "--json"], "")
         self.assertEqual(rc1, 0)
         self.assertEqual(set(json.loads(single)), fields - {"free_at"})
+
+    def test_e6_lone_surrogate_echo(self):
+        """#431 審查 L1:孤立代理字元原樣印回 + ensure_ascii=False ⇒ 寫一半爆 UnicodeEncodeError、stdout 截斷。
+        要真的子行程(真 UTF-8 stdout)才會爆;StringIO 不會。"""
+        import subprocess
+        self.put(_signed(_lic("free", ITEMS)))
+        req = '{"items": [{"sku": "x.buy"}, {"sku": "\\ud800"}, {"sku": "x.rent", "free_at": "\\udfff"}]}'
+        code = ("import sys; sys.path.insert(0, %r); from entitlement import cli, keys; "
+                "keys.TRUSTED_PUBLIC_KEYS, keys.DRAFT_ACCEPT_ANY = (%r,), False; "
+                "sys.exit(cli.main(['allowed', '--batch', '--json']))") % (str(REPO / "src"), PUB)
+        env = dict(os.environ, EZ2_AIB_HOME=str(self.home), PYTHONIOENCODING="utf-8")
+        p = subprocess.run([sys.executable, "-B", "-c", code], input=req.encode("utf-8"), capture_output=True,
+                           env=env, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr.decode("utf-8", "replace"))
+        body = json.loads(p.stdout.decode("utf-8"))
+        # 子行程用真機器 id,對不上測試的 RAW ⇒ 只驗整包印完、壞的那欄是 None、那筆 bad-sku
+        self.assertEqual([(r["sku"], r["free_at"]) for r in body["items"]], [("x.buy", None), (None, None), ("x.rent", None)])
+        self.assertEqual(body["items"][1]["reason"], "bad-sku")
+        self.assertNotEqual(body["items"][0]["reason"], "bad-sku")
+
+    def test_e7_batch_usage(self):
+        """#431 審查 L2:--batch 混了 sku / --free-at ⇒ usage rc 2(不悄悄丟);stdin 是終端機 ⇒ usage rc 2(不卡住)。"""
+        self.put(_signed(_lic("free", ITEMS)))
+        for argv in (["allowed", "x.buy", "--batch", "--json"], ["allowed", "--batch", "--free-at", "plus"]):
+            err = io.StringIO()
+            real = sys.stderr
+            sys.stderr = err
+            try:
+                rc, out = self.cli(argv, '{"items": []}')
+            finally:
+                sys.stderr = real
+            self.assertEqual((rc, out), (2, ""), argv)
+            self.assertIn("usage", err.getvalue())
+
+        class Tty(io.StringIO):
+            def isatty(self):
+                return True
+
+        real_in, real_err = sys.stdin, sys.stderr
+        sys.stdin, sys.stderr = Tty(""), io.StringIO()
+        try:
+            rc = cli.main(["allowed", "--batch", "--json"])
+        finally:
+            sys.stdin, sys.stderr = real_in, real_err
+        self.assertEqual(rc, 2)
 
 
 class Knife(unittest.TestCase):

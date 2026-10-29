@@ -9,6 +9,7 @@ issue / revoke → 草稿殼 only，不接真金鑰（TODO the maintainer）。
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import List
 
@@ -47,6 +48,10 @@ def cmd_allowed(argv: List[str]) -> int:
     from .items import allowed
 
     if "--batch" in argv:
+        # 批次只吃 stdin:混了 sku / --free-at 會被悄悄丟掉、終端機沒接 stdin 會卡住 ⇒ 都回 usage(#431 審查 L2)
+        if [a for a in argv if a not in ("--batch", "--json")] or sys.stdin.isatty():
+            sys.stderr.write("usage: aib license allowed --batch [--json] < items.json\n")
+            return 2
         return _allowed_batch()
     args = [a for a in argv if a != "--json"]
     sku, free_at = "", None
@@ -71,12 +76,13 @@ def cmd_allowed(argv: List[str]) -> int:
 ALLOWED_FIELDS = ("allowed", "source", "plan", "reason", "expires_at", "trial", "left_days", "was")
 BATCH_MAX_ITEMS = 500
 BATCH_MAX_BYTES = 64 * 1024
+_PLAN_RE = re.compile(r"[A-Za-z0-9._-]{0,32}")
 
 
 def _allowed_batch() -> int:
     """aib license allowed --batch [--json]:stdin {"items": [{sku, free_at}, …]} ⇒ {"ok": true, "items": [...]}。
     每筆欄位 = 單件版 + free_at,順序照輸入;單筆壞只那筆 bad-sku。整包壞 / 太多 / 太大 ⇒ rc 2、一筆都不回。"""
-    from .items import allowed_many
+    from .items import SKU_RE, allowed_many
 
     raw = sys.stdin.buffer.read(BATCH_MAX_BYTES + 1)
     if len(raw) > BATCH_MAX_BYTES:
@@ -94,7 +100,9 @@ def _allowed_batch() -> int:
     out = []
     for (sku, free_at), r in zip(pairs, allowed_many(pairs)):
         safe = {k: r.get(k) for k in ALLOWED_FIELDS}
-        safe["sku"], safe["free_at"] = sku, free_at
+        # 只把合格的值原樣印回;其他(含孤立代理字元)印 None,免得 ensure_ascii=False 寫一半爆掉(#431 審查 L1)
+        safe["sku"] = sku if isinstance(sku, str) and SKU_RE.fullmatch(sku) else None
+        safe["free_at"] = free_at if isinstance(free_at, str) and _PLAN_RE.fullmatch(free_at) else None
         out.append(safe)
     return _print_json({"ok": True, "items": out}, 0)
 
