@@ -13,6 +13,11 @@ D6 排程檔每 30 分醒(--why tick):上次 up_to_date / updated / no_change �
    上次被擋(refused_lease 等)或滿 6 小時 ⇒ 照排程查(紀錄 why=schedule)
 D7 舊排程檔(每 6 小時、--why schedule)/ 讀不懂 ⇒ agent_stale;開席那次重裝成新的;新的不重裝
 D8 四語都有新鍵 status.plugin_unsupported,且沒有 !!
+D9 (#424 R1 M1)開席碰上舊排程檔、但鎖被拿著(舊排程正在查 / 跑 install.sh)⇒ 不叫 launchctl(不 bootout 砍掉在跑的工作),
+   結果 busy;鎖放開後下一次開席才換。沒裝過排程照舊開席就裝
+D10 (#424 R1 M2)30 分重試只給白名單 refused_lease / refused_tests / offline;failed / plugins_failed / refused_dirty /
+   refused_diverged / paused / no_ref / too_soon 等 ⇒ 6 小時內 tick 一律 checked_recently(不 fetch、不重跑 install.sh)
+D11 (#424 R1 L1 / L2)why.refused_tests 跟 refused_lease 同樣寫 30 分;排程檔還是舊的 ⇒ status 多 schedule_stale 與一行提示
 """
 import importlib.util
 import io
@@ -154,6 +159,81 @@ class Stale(B.Base):
         self.assertEqual(ctl2.calls, [])                                   # 新的不重裝
 
 
+class StaleLocked(B.Base):
+    def _old_plist(self):
+        path = AU.agent_plist_path(self.home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        old = dict(AU.agent_plist(self.env), StartInterval=6 * 3600)
+        old["ProgramArguments"] = old["ProgramArguments"][:-1] + ["schedule"]
+        path.write_bytes(plistlib.dumps(old))
+        return path
+
+    def test_d9_stale_but_locked_keeps_running_job(self):
+        self._old_plist()
+        self.make_repos(latest=None)
+        ctl = B.FakeCtl()
+        with AU._lock(self.env) as got:                      # 舊排程正在跑(拿著鎖)
+            self.assertTrue(got)
+            res = self.run_check(why="seat-open", platform="darwin", launchctl=ctl)
+        self.assertEqual((res["result"], ctl.calls), ("busy", []))
+        self.assertNotIn("agent", res)
+        self.assertTrue(AU.agent_stale(self.home))
+        ctl2 = B.FakeCtl()
+        self.run_check(why="seat-open", platform="darwin", launchctl=ctl2)
+        self.assertEqual([c[0] for c in ctl2.calls], ["bootout", "bootstrap"])
+        self.assertFalse(AU.agent_stale(self.home))
+
+    def test_d9_missing_agent_still_installed_on_open(self):
+        self.make_repos(latest=None)
+        ctl = B.FakeCtl()
+        res = self.run_check(why="seat-open", platform="darwin", launchctl=ctl)
+        self.assertEqual(res.get("agent"), "installed")
+        self.assertEqual([c[0] for c in ctl.calls], ["bootout", "bootstrap"])
+
+
+class RetryWhitelist(B.Base):
+    def test_d10_only_whitelist_retries_soon(self):
+        self.make_repos(latest=None)
+        called = []
+        spy = lambda r, e: called.append(1) or AU.fetch(r, e)   # noqa: E731
+        for last in ("failed", "plugins_failed", "refused_dirty", "refused_diverged", "refused_branch",
+                     "refused_far_behind", "paused", "no_ref", "too_soon", "refused_update", "", None):
+            AU.write_status({"last_check": int(NOW - 3600), "last_result": last}, self.env)
+            res = self.run_check(why="tick", do_fetch=spy)
+            self.assertEqual((res["result"], called), ("checked_recently", []), last)
+        for last in ("refused_lease", "refused_tests", "offline"):
+            called.clear()
+            AU.write_status({"last_check": int(NOW - 3600), "last_result": last}, self.env)
+            res = self.run_check(why="tick", do_fetch=spy)
+            self.assertEqual((res["result"], called), ("up_to_date", [1]), last)
+        called.clear()                                         # 滿 6 小時:不管上次是什麼都查
+        AU.write_status({"last_check": int(NOW - AU.INTERVAL_S), "last_result": "failed"}, self.env)
+        self.assertEqual((self.run_check(why="tick", do_fetch=spy)["result"], called), ("up_to_date", [1]))
+
+    def test_d10_failed_install_not_rerun_hourly(self):
+        AU.write_status({"last_check": int(NOW), "last_attempt": int(NOW), "last_result": "failed"}, self.env)
+        self.make_repos()
+        ran = []
+        for k in range(1, 12):                                 # 30 分一醒,醒 11 次(5.5 小時)
+            self.run_check(why="tick", now=NOW + k * AU.RETRY_S, run_update=lambda *a, **kw: ran.append(1) or (1, ""))
+        self.assertEqual(ran, [])
+
+
+class StaleHint(B.Base):
+    def test_d11_stale_schedule_hint(self):
+        path = AU.agent_plist_path(self.home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        old = dict(AU.agent_plist(self.env), StartInterval=6 * 3600)
+        old["ProgramArguments"] = old["ProgramArguments"][:-1] + ["schedule"]
+        path.write_bytes(plistlib.dumps(old))
+        p = AU.status_payload(self.env, home=self.home, platform="darwin", now=NOW)
+        self.assertEqual((p["schedule"], p["schedule_stale"]), ("installed", True))
+        AU.agent_plist_path(self.home).write_bytes(plistlib.dumps(AU.agent_plist(self.env)))
+        p = AU.status_payload(self.env, home=self.home, platform="darwin", now=NOW)
+        self.assertEqual((p["schedule"], p["schedule_stale"]), ("installed", False))
+        self.assertFalse(AU.status_payload(self.env, home=self.home, platform="linux", now=NOW)["schedule_stale"])
+
+
 class Dict(unittest.TestCase):
     def test_d8_four_langs(self):
         root = HERE.parent / "i18n"
@@ -162,6 +242,9 @@ class Dict(unittest.TestCase):
             v = d.get("aib.auto_update.status.plugin_unsupported")
             self.assertTrue(v and "!!" not in v and "plugin_unsupported" in v, lang)
             self.assertIn("30", d["aib.auto_update.why.refused_lease"], lang)
+            self.assertIn("30", d["aib.auto_update.why.refused_tests"], lang)
+            v = d.get("aib.auto_update.status.schedule_stale")
+            self.assertTrue(v and "!!" not in v and "6" in v and "30" in v, lang)
 
 
 if __name__ == "__main__":
