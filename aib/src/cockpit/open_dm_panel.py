@@ -169,6 +169,14 @@ def _time_up(_sig, _frame):
     raise _TimeUp("timeout %.0fs" % TIME_LIMIT_S)
 
 
+def _timeout_msg():
+    try:
+        import i18n_lib
+        return i18n_lib.t("aib.dmopen.timeout", {"s": "%g" % TIME_LIMIT_S}, locale=i18n_lib.resolve_locale())
+    except Exception:  # noqa: BLE001  字典讀不到也要有一行
+        return "aib: dm: timeout %gs" % TIME_LIMIT_S
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     mode = argv[0] if argv else "auto"
@@ -180,7 +188,9 @@ def main(argv=None):
         res = apply(mode, pref_only="--pref-only" in argv[1:])
         msg = message(res)
     except Exception as e:  # noqa: BLE001  開席不能因為這一步倒(含逾時)
-        msg = "aib: dm (%s): %s" % (mode, str(e)[:160])
+        if timed:
+            signal.setitimer(signal.ITIMER_REAL, 0)   # 先停鬧鐘:不然印訊息時剛好到點會在 except 裡再丟一次、印 traceback
+        msg = _timeout_msg() if isinstance(e, _TimeUp) else "aib: dm (%s): %s" % (mode, str(e)[:160])
     finally:
         if timed:
             signal.setitimer(signal.ITIMER_REAL, 0)
