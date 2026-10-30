@@ -33,6 +33,8 @@ W20b #441 R1 M2:只改行程 HOME(單在 <假 HOME>/.ez2-aib,pwd 家目錄不同
 W23 H2 刀:--revoke(撤銷 = 鎖屏)之後刪 revoked.jsonl 重播 ⇒ locked_since;鎖屏失敗時刪紀錄就回來 = 已知限制(斷言照實)
 W24 H2 刀:--rotate-key(換鑰 + 鎖屏)之後還原退休鑰 + grant-kid.json 重播 ⇒ locked_since
 W25 系統日誌涵蓋不到簽發 → 現在(log_uncovered)⇒ 有效單也要彈指紋、不出選單
+W26 #441 R2 H1 容差邊界重播:helper 在 T 簽(stamp issued = T),T+0 / +1 / +2 / +5 鎖屏,T+6 使用 ⇒ locked_since;
+    沒鎖屏 ⇒ 有效;改 stamp 把起算挪到鎖屏之後 ⇒ 簽章不符、不採用;叫 helper 時自帶未來 issued_utc ⇒ 不簽
 W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單但系統日誌查不到 ⇒ note
   (第 2 張起 lockwatch.json 不再參與判斷;W2 另驗自寫一份「沒鎖過」的 lockwatch.json 也不會讓單生效)
 刀(複本落刀,錨要恰好一次):KL1 lock_state 不理查詢失敗 ⇒ W2 紅;KL2 拿掉鎖屏後作廢 ⇒ W3 紅;KL3 拿掉「現在鎖著」⇒ W2 紅;
@@ -43,6 +45,7 @@ W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plis
   KH1 / KH2 _default_window 拿掉固定路徑 helper 檢查 ⇒ W16 / W17 紅;KH3 拿掉平台檢查 ⇒ W16 紅
   KW1 pinned_env 照收呼叫端 env(狀態根跟著 EZ2_AIB_STATE_ROOT)⇒ W20 紅;KW2 helper_exe 退回 <狀態根>/bin ⇒ W21 紅;
   KW3 正式路徑 lock_state 改讀 lockwatch.json ⇒ W22 紅;KW4 pinned_env 改看行程 HOME ⇒ W20b 紅;
+  KW8 find_valid 查鎖屏時起算容 5 秒(= 舊的 issued 容差)⇒ W26 紅;
   KW5 --revoke 不鎖屏 ⇒ W23 紅;KW6 --rotate-key 不鎖屏 ⇒ W24 紅;KW7 涵蓋不足當沒鎖過 ⇒ W25 紅;
   KH4 anchored_helper 拿掉擁有者檢查 ⇒ W16o 紅
 """
@@ -620,6 +623,41 @@ def cell_w25(t, M):
         e.close()
 
 
+def cell_w26(t, M):
+    """#441 R2 H1:容差邊界完整重播。簽 → 鎖屏(簽後 0–5 秒)→ 使用 ⇒ locked_since(起算 = helper 簽的這一刻,沒有容差)。"""
+    for lock_at in (0, 1, 2, 5, None):
+        e = Env()
+        try:
+            e.log()
+            doc, _ = M.sign(["seat_input"], "1h", e.ctx(M))
+            g = _grant_of(M, e, doc)
+            t.assertEqual(g["stamp"]["issued"], T0)                         # helper 的時鐘,不是呼叫端給的
+            if lock_at is not None:
+                e.locks.append(T0 + lock_at)
+            e.t[0] = T0 + 6
+            got = M.find_valid("seat_input", e.ctx(M))
+            if lock_at is None:
+                t.assertEqual(got[0]["nonce"], doc["nonce"])
+                continue
+            t.assertEqual(got, (None, "locked_since"), lock_at)
+            if lock_at == 2:
+                g["stamp"] = dict(g["stamp"], issued=T0 + 4, expires=T0 + 3604)   # AI 把起算挪到鎖屏之後
+                M._write_json(os.path.join(M._dir(e.env), doc["nonce"] + ".json"), g)
+                t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "bad_sig"))
+                d = dict(g["doc"], nonce="e" * 32, issued_utc=M._utc(T0 + 10))     # 重簽一張自帶未來起算的 ⇒ helper 不簽
+                r = T2B._txt(d["cats"], d["dur"])
+                _, why = e.ctx(M).helper_call(["se-sign", "--name", M.KEY_NAME, "--dir", M._key_dir(e.env), "--reason", r],
+                                              M.canonical(d))
+                t.assertEqual(why, "bad_time")
+        finally:
+            e.close()
+
+
+def _grant_of(M, e, doc):
+    with open(os.path.join(M._dir(e.env), doc["nonce"] + ".json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
 def cell_w10(t, M):
     e = Env()
     try:
@@ -693,6 +731,7 @@ class Cells(unittest.TestCase):
     def test_w23(self): cell_w23(self, GR)
     def test_w24(self): cell_w24(self, GR)
     def test_w25(self): cell_w25(self, GR)
+    def test_w26(self): cell_w26(self, GR)
     def test_w18(self): cell_w18(self, GR)
 
     def test_w18_doctor(self):
@@ -844,6 +883,7 @@ KNIVES_GR = [
     ("KW7", '    events, why = ctx.syslog(int(since), int(ctx.now()))\n    if why:\n        return None, why\n',
      '    events, why = ctx.syslog(int(since), int(ctx.now()))\n    if why == "log_uncovered":\n        events, why = [], None\n'
      '    if why:\n        return None, why\n', cell_w25),
+    ("KW8", '    last_lock, why = lock_state(ctx, issued)\n', '    last_lock, why = lock_state(ctx, issued + 5)\n', cell_w26),
     ("KW3", '    events, why = ctx.syslog(int(since), int(ctx.now()))\n',
      '    try:\n        with open(lockwatch_path(ctx.env), encoding="utf-8") as fh:\n'
      '            events, why = [_parse_utc(json.load(fh)["last_lock_utc"])], None\n'

@@ -60,7 +60,10 @@ DURATIONS = {"15m": 900, "30m": 1800, "1h": 3600, "3h": 3 * 3600, "24h": 24 * 36
 # 撤銷 = 鎖屏(Andy 19:3x 選 A):鎖一次 ⇒ 之前簽的單全部作廢;窗越短,沒鎖屏時「刪撤銷紀錄重播」的風險越短。
 WINDOW_CAP_S = 7 * 3600
 _NONCE = re.compile(r"^[0-9a-f]{32}$")
-V = 1
+V = 2                  # v2(#441 R2 H1):簽發時間 / 期限 / 開機識別不在單上,由 helper 產生、簽進 stamp
+# helper 簽的位元組 = canonical(單) + 這一行(helper 用自己的系統時鐘 / kern.boottime 填;Python 只收不填)
+STAMP_FMT = "\naib-grant-stamp v1 issued=%d expires=%d boot=%d"
+_HELPER_FIELDS = ("issued_utc", "expires_utc", "boot")
 
 
 def pinned_env(environ=None, home=None):
@@ -380,8 +383,7 @@ def sign(cats, dur, ctx, source=None, action=""):
     if text is None:
         return None, "reason_refused:" + str(AG.refusal(r) or "too_long")
     now = int(ctx.now())
-    doc = {"v": V, "kind": "window", "cats": cats, "dur": dur, "issued_utc": _utc(now),
-           "expires_utc": _utc(now + DURATIONS[dur]), "boot": int(boot), "machine": machine, "kid": kid,
+    doc = {"v": V, "kind": "window", "cats": cats, "dur": dur, "machine": machine, "kid": kid,
            "nonce": secrets.token_hex(16), "locale": _locale(ctx.env) or "", "rekey_from": rekey[0] if rekey else "",
            "action": str(action or ""),
            "text_sha256": _text_sha(r), "source": str(source or "")[:64]}
@@ -389,16 +391,44 @@ def sign(cats, dur, ctx, source=None, action=""):
                                canonical(doc))
     if why:
         return None, why
-    sig = out.decode("ascii", "replace").strip()
-    if not re.fullmatch(r"[A-Za-z0-9+/=]{16,256}", sig):
+    try:
+        got = json.loads(out.decode("utf-8"))
+    except (ValueError, UnicodeError):
         return None, "helper_failed"
-    _write_json(os.path.join(_dir(ctx.env), doc["nonce"] + ".json"), {"doc": doc, "sig": sig})
+    sig, stamp = (got.get("sig"), _stamp(got)) if isinstance(got, dict) else (None, None)
+    if not isinstance(sig, str) or not re.fullmatch(r"[A-Za-z0-9+/=]{16,256}", sig) or stamp is None:
+        return None, "helper_failed"
+    if stamp["expires"] - stamp["issued"] != DURATIONS[dur]:
+        return None, "helper_failed"
+    _write_json(os.path.join(_dir(ctx.env), doc["nonce"] + ".json"), {"doc": doc, "sig": sig, "stamp": stamp})
     if old != kid:
         _write_json(_kid_path(ctx.env), {"kid": kid, "at": _utc(now)})
         if rekey:
             _event(ctx.env, {"event": "rekey", "old": old, "new": kid})
     _event(ctx.env, {"event": "sign", "nonce": doc["nonce"], "cats": doc["cats"], "dur": dur})
-    return doc, None
+    return _view(doc, stamp), None
+
+
+def _stamp(d):
+    """helper 簽進去的 issued / expires / boot(三個正整數)。格式不對 ⇒ None。"""
+    if not isinstance(d, dict):
+        return None
+    try:
+        st = {k: d[k] for k in ("issued", "expires", "boot")}
+    except KeyError:
+        return None
+    if not all(type(v) is int and 0 < v < 1 << 40 for v in st.values()) or st["expires"] <= st["issued"]:
+        return None
+    return st
+
+
+def _view(doc, stamp):
+    """給呼叫端看的單(加上 helper 簽的時間);存檔 / 驗章用的是不含這三欄的 doc + stamp。"""
+    return dict(doc, issued_utc=_utc(stamp["issued"]), expires_utc=_utc(stamp["expires"]), boot=stamp["boot"])
+
+
+def _signed_bytes(doc, stamp):
+    return canonical(doc) + (STAMP_FMT % (stamp["issued"], stamp["expires"], stamp["boot"])).encode("ascii")
 
 
 def revoked(env):
@@ -421,11 +451,13 @@ def verify(grant, cat, ctx, kid=None, revoked_set=None):
     """這張單現在能不能讓類別 cat 自動同意。回 (True, None) 或 (False, why)。任何一項量不到 / 對不上 ⇒ False。"""
     if not isinstance(grant, dict) or not isinstance(grant.get("doc"), dict) or not isinstance(grant.get("sig"), str):
         return False, "corrupt"
-    doc, sig = grant["doc"], grant["sig"]
+    doc, sig, stamp = grant["doc"], grant["sig"], _stamp(grant.get("stamp"))
     if doc.get("v") != V or doc.get("kind") != "window" or not _NONCE.match(str(doc.get("nonce"))):
         return False, "corrupt"
+    if stamp is None or any(k in doc for k in _HELPER_FIELDS):      # 時間 / 開機只認 helper 簽的 stamp
+        return False, "corrupt"
     out, why = ctx.helper_call(["se-verify", "--name", KEY_NAME, "--dir", _key_dir(ctx.env), "--sig", sig],
-                               canonical(doc))
+                               _signed_bytes(doc, stamp))
     if why:
         return False, "bad_sig" if why == "bad_sig" else why
     try:
@@ -454,13 +486,13 @@ def verify(grant, cat, ctx, kid=None, revoked_set=None):
         return False, "corrupt"
     if _text_sha(window_reason(cats, doc["dur"], rekey, env, action=action)) != doc.get("text_sha256"):
         return False, "text_mismatch"
-    issued, expires, now = _parse_utc(doc.get("issued_utc")), _parse_utc(doc.get("expires_utc")), int(ctx.now())
-    if issued is None or expires is None or expires - issued != DURATIONS[doc["dur"]]:
+    issued, expires, now = stamp["issued"], stamp["expires"], int(ctx.now())
+    if expires - issued != DURATIONS[doc["dur"]]:
         return False, "bad_time"
     if not issued <= now < expires:
         return False, "expired" if now >= expires else "not_yet"
     boot, machine = ctx.boot(), ctx.machine()
-    if not boot or doc.get("boot") != int(boot):
+    if not boot or stamp["boot"] != int(boot):
         return False, "boot"
     if not machine or doc.get("machine") != machine:
         return False, "machine"
@@ -499,7 +531,8 @@ def active(ctx):
         doc = g.get("doc") if isinstance(g.get("doc"), dict) else {}
         cats = doc.get("cats") if isinstance(doc.get("cats"), list) else []
         if any(verify(g, c, ctx, kid=kid, revoked_set=rv)[0] for c in cats):
-            out.append((doc, _parse_utc(doc["expires_utc"]) - int(ctx.now())))
+            st = _stamp(g.get("stamp"))
+            out.append((_view(doc, st), st["expires"] - int(ctx.now())))
     return out
 
 
@@ -690,9 +723,8 @@ def find_valid(cat, ctx):
         if not good:
             why = w if why == "no_grant" and w not in ("category",) else why
             continue
-        issued = _parse_utc(g["doc"]["issued_utc"])
-        if issued is not None:
-            ok.append((issued, g["doc"]))
+        st = _stamp(g.get("stamp"))                    # 驗過 ⇒ stamp 是 helper 簽的
+        ok.append((st["issued"], _view(g["doc"], st)))
     if not ok:
         return None, why
     issued, doc = max(ok, key=lambda x: x[0])
