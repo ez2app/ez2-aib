@@ -412,6 +412,33 @@ class P6PasteRefused(Seat):
                     return self.run_ok(argv, **kw)
                 self.assertEqual(self.paste(run=run), ({"ok": True}, 0))
 
+    def test_interrupt_still_cleans(self):
+        """#444 r1 M1:load / paste 等待時被 Ctrl-C ⇒ 照樣刪 + 確認,KeyboardInterrupt 照樣往上丟"""
+        for where in ("load-buffer", "paste-buffer"):
+            with self.subTest(where=where):
+                self.calls[:] = []
+                def run(argv, where=where, **kw):
+                    if where in argv:
+                        self.calls.append((list(argv), None, {}))
+                        raise KeyboardInterrupt
+                    return self.run_ok(argv, **kw)
+                with self.assertRaises(KeyboardInterrupt):
+                    self.paste(run=run)
+                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"][-2:], ["delete-buffer", "list-buffers"])
+
+    def test_list_decode_error_is_unconfirmed(self):
+        """#444 r1 M2:list-buffers 輸出解不了碼 ⇒ 不逸出例外,算沒確認 ⇒ buffer_left;呼叫帶 errors=replace"""
+        self.calls[:] = []
+        kws = []
+        def run(argv, **kw):
+            if "list-buffers" in argv:
+                kws.append(kw.get("errors"))
+                self.calls.append((list(argv), None, {}))
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
+            return self.run_ok(argv, **kw)
+        self.assertEqual(self.paste(run=run), ({"ok": False, "why": "buffer_left"}, 4))
+        self.assertEqual(kws, ["replace"] * 3)
+
     def test_pid_reused_or_unknown_start(self):
         """#442 r1 M1:名冊不變、PID 數字相同但行程世代不同(啟動時間對不上)/ 查不到 / 名冊沒有 started_epoch ⇒ seat_busy,值不進 buffer"""
         orig = self.rec_file.read_text()

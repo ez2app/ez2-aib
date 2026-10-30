@@ -270,14 +270,14 @@ def drop_buffer(base, buf, run=subprocess.run):
     import seat_act as SA
     for _ in range(CLEAN_TRIES):
         try:
-            run(base + ["delete-buffer", "-b", buf], capture_output=True, text=True, env=SA._tmux_env(),
+            run(base + ["delete-buffer", "-b", buf], capture_output=True, text=True, errors="replace", env=SA._tmux_env(),
                 stdin=subprocess.DEVNULL, timeout=10)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, ValueError):
             pass
         try:
-            r = run(base + ["list-buffers", "-F", "#{buffer_name}"], capture_output=True, text=True, env=SA._tmux_env(),
-                    stdin=subprocess.DEVNULL, timeout=10)
-        except (OSError, subprocess.SubprocessError):
+            r = run(base + ["list-buffers", "-F", "#{buffer_name}"], capture_output=True, text=True, errors="replace",
+                    env=SA._tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.SubprocessError, ValueError):   # 非 UTF-8 輸出等解碼錯也算沒確認(#444 r1 M2)
             continue
         if r.returncode == 0 and buf not in (r.stdout or "").split():
             return True
@@ -298,16 +298,18 @@ def paste_value(rec, value, tmux="tmux", run=subprocess.run):
     pane = seat_pane(base, wid, rec.get("pid"), run=run, started=rec.get("started_epoch")) if str(rec.get("pid") or "").isdigit() else None
     if pane is None:
         return "seat_busy"
-    why = "paste_failed"
+    why, gone = "paste_failed", False
     try:
         r = run(base + ["load-buffer", "-b", buf, "-"], input=value, capture_output=True, text=True, env=SA._tmux_env(), timeout=10)
         if r.returncode == 0:
             r = run(base + ["paste-buffer", "-p", "-d", "-b", buf, "-t", pane], capture_output=True, text=True,
                     env=SA._tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
             why = None if r.returncode == 0 else "paste_failed"
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, ValueError):
         why = "paste_failed"
-    return why if drop_buffer(base, buf, run=run) else "buffer_left"
+    finally:   # Ctrl-C 等例外中斷也要清(#444 r1 M1);例外照樣往上丟
+        gone = drop_buffer(base, buf, run=run)
+    return why if gone else "buffer_left"
 
 
 def _at_prompt(code, env, screen):
