@@ -24,6 +24,7 @@ copy_failed / clear_failed / not_mac / caller_is_seat。
 """
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -216,18 +217,66 @@ def find_seat(spec, env):
     return hits[0] if hits else None
 
 
+def pid_started(pid, run=subprocess.run):
+    """行程啟動時間(epoch 秒,ps -o lstart= 用 C 語系);查不到 ⇒ None。"""
+    try:
+        r = run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10,
+                env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+        if r.returncode != 0:
+            return None
+        return time.mktime(time.strptime(" ".join((r.stdout or "").split()), "%a %b %d %H:%M:%S %Y"))
+    except (OSError, subprocess.SubprocessError, ValueError, OverflowError):
+        return None
+
+
+PANE_START_EARLY_S = 2     # pane 行程比席位檔 started_epoch 早:實測最多 1 秒
+PANE_START_LATE_S = 120    # 晚:開席外殼可能晚起(10-30 本艙 20 席有一席晚 30 秒,@fd787 旁審);只防 PID 重用,不必更緊
+
+
+def seat_pane(base, wid, pid, run=subprocess.run, started=None):
+    """視窗裡 pane_pid = 席位檔 pid 的那一格(%N);找不到 ⇒ None。-t @N 會打到視窗目前作用中的 pane,
+    同視窗另切一格再 select-pane 就會打錯格(#435 R1 L3:不是防線,只減少打錯格)。
+    PID 會被重用:那一格行程的啟動時間要落在席位檔 started_epoch 前 2 秒到後 120 秒內,缺或不符 ⇒ None(#442 r1 M1)。"""
+    import seat_act as SA
+    try:
+        r = run(base + ["list-panes", "-t", wid, "-F", "#{pane_id} #{pane_pid}"], capture_output=True, text=True,
+                env=SA._tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    hits = [f[0] for f in (ln.split() for ln in (r.stdout or "").splitlines())
+            if len(f) == 2 and re.fullmatch(r"%\d+", f[0]) and f[1] == str(pid)]
+    if len(hits) != 1:
+        return None
+    try:
+        want = float(started)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(want):   # NaN 跟誰比都不大於 2 秒,會繞過比對(#442 r2 L2)
+        return None
+    got = pid_started(pid, run=run)
+    if got is None or not (want - PANE_START_EARLY_S <= got <= want + PANE_START_LATE_S):
+        return None
+    return hits[0]
+
+
 def paste_value(rec, value, tmux="tmux", run=subprocess.run):
-    """值走 stdin 進 tmux(load-buffer -),paste-buffer -p -d 打進那一席;不按 Enter。buffer 名隨機,失敗也刪。"""
+    """值走 stdin 進 tmux(load-buffer -),paste-buffer -p -d 打進那一席自己的 pane(pane_pid 對席位檔 pid);不按 Enter。
+    buffer 名隨機,失敗也刪。找不到那一格 ⇒ seat_busy,值不進 buffer。"""
     import seat_act as SA
     sock, wid = SA._target(rec)
     if not sock:
         return "paste_failed"
     base, buf = [tmux, "-L", sock], "aib-secret-" + secrets.token_hex(16)
+    pane = seat_pane(base, wid, rec.get("pid"), run=run, started=rec.get("started_epoch")) if str(rec.get("pid") or "").isdigit() else None
+    if pane is None:
+        return "seat_busy"
     try:
         r = run(base + ["load-buffer", "-b", buf, "-"], input=value, capture_output=True, text=True, env=SA._tmux_env(), timeout=10)
         if r.returncode != 0:
             return "paste_failed"
-        r = run(base + ["paste-buffer", "-p", "-d", "-b", buf, "-t", wid], capture_output=True, text=True,
+        r = run(base + ["paste-buffer", "-p", "-d", "-b", buf, "-t", pane], capture_output=True, text=True,
                 env=SA._tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
         return None if r.returncode == 0 else "paste_failed"
     except (OSError, subprocess.SubprocessError):
@@ -279,7 +328,7 @@ def do_paste(name, seat, env=None, platform=None, touchid=None, touchid_availabl
             return {"ok": False, "why": "seat_busy"}, 2       # 按指紋期間換了人 / 開始忙 ⇒ 不打
         why = paste_value(rec, value, tmux=tmux, run=run)
         if why:
-            return {"ok": False, "why": why}, 4
+            return {"ok": False, "why": why}, 2 if why == "seat_busy" else 4
         return {"ok": True}, 0
     finally:
         value = None  # noqa: F841
