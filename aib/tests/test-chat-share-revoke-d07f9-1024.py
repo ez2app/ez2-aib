@@ -326,13 +326,15 @@ class Revoke(unittest.TestCase):
 
         CR.set_space("none", a.owner, b.env())              # 改等級要本人 Touch ID(門在 CLI),測試直接走函式
         self.assertTrue(a.wait_for(lambda: not snap.exists(), 40), "空間改 none,對方的舊快照還在")
-        self.assertIn("space", audit_dirs(a, "revoke-in"))
+        # 工人先刪格子、寫撤回帳(要拿鎖)、最後才記稽核 ⇒ 等它出現,別看一眼(10-30 #437 審 L2)
+        self.assertTrue(a.wait_for(lambda: "space" in audit_dirs(a, "revoke-in"), 20), audit_dirs(a, "revoke-in"))
         self.assertTrue(b.wait_for(lambda: "space" not in (GF.read_shared_sent(b.root).get(a.owner) or {}), 20))
         self.assertTrue(cells(), "只撤空間,在線格要留著")
 
         CR.set_share("off", a.owner, b.env())
         self.assertTrue(a.wait_for(lambda: not cells(), 40), "在線改 off,對方還看得到在線")
-        self.assertIn("share", audit_dirs(a, "revoke-in"))
+        # 工人先刪格子、寫撤回帳(要拿鎖)、最後才記稽核 ⇒ 等它出現,別看一眼(10-30 #437 審 L2)
+        self.assertTrue(a.wait_for(lambda: "share" in audit_dirs(a, "revoke-in"), 20), audit_dirs(a, "revoke-in"))
 
         CR.set_space("island", a.owner, b.env())
         self.assertTrue(a.wait_for(snap.exists, 40), "再開分享要立刻送,不等一天")
