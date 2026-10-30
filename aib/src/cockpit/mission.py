@@ -108,6 +108,8 @@ REPORT_MOVES = {"assigned": ("doing",), "doing": ("doing", "blocked", "qa"), "bl
 PLANNING = ("draft", "ready", "running", "paused")
 
 PROVE = None          # 測試換掉 Touch ID(reason, env) ⇒ None 過 / 原因碼
+PROBE = None          # 測試換掉監看量測(mission_monitor.Probe 的替身);寫入路徑驗額度用
+BUDGET_MAX = {"minutes": 100000, "seats_max": 500, "quota_pct": 100}   # 上限的上限(#427 Codex r1 M2:10**400 也收)
 
 
 class MissionError(Exception):
@@ -250,13 +252,16 @@ def _bump(t, at, status=None):
 
 
 def _budget(raw):
-    """建團 / 改預算的上限:正整數;quota_pct 1–100。"""
-    if not isinstance(raw, dict):
+    """建團 / 改預算的上限:正整數,不超過 BUDGET_MAX(quota_pct 1–100)。
+    不認得的欄位、負數、0、非整數、超過上限 ⇒ bad_budget,不靜默丟掉(#427 Codex r1 M2:丟掉 = 變成不限)。"""
+    if raw is None:
         return {}
-    out = {k: raw[k] for k in BUDGET_DIMS.values() if type(raw.get(k)) is int and raw[k] > 0}
-    if out.get("quota_pct", 0) > 100:
+    if not isinstance(raw, dict) or any(k not in BUDGET_MAX for k in raw):
         raise MissionError("bad_budget")
-    return out
+    for k, v in raw.items():
+        if type(v) is not int or not 0 < v <= BUDGET_MAX[k]:
+            raise MissionError("bad_budget")
+    return {k: raw[k] for k in BUDGET_DIMS.values() if k in raw}
 
 
 def _raises(old, new):
@@ -550,8 +555,10 @@ def apply(st, ev):
                 raise MissionError("not_allowed")   # 提高上限 = 花額度 ⇒ 只有本人
             if d.get("proved") is not True:
                 raise MissionError("not_proved")
-        st["budget"] = new
-        st["budget_marks"] = {}                     # 改預算 ⇒ 門檻重新計
+        old, st["budget"] = st["budget"], new
+        for dim, key in BUDGET_DIMS.items():        # 只重計真的改了的那一維(#427 Codex r1 H3:調低席數不能清掉額度叫停)
+            if old.get(key) != new.get(key):
+                st["budget_marks"].pop(dim, None)
     elif typ == "anomaly":
         rule, key, end = d.get("rule"), d.get("key"), d.get("end")
         if rule not in RULES or not isinstance(key, str) or not 0 < len(key) <= 40 or type(end) is not bool:
@@ -660,10 +667,34 @@ def _append(d, ev, torn):
     os.chmod(str(p), 0o600)
 
 
-def _expire_due(d, st, evs_torn, now):
-    """倒數滿了沒人按停 ⇒ autostart;租期過了的任務寫 expire。都是 system 寫。回寫了幾筆。"""
+def _system(d, st, typ, data, now, torn):
+    ev = {"v": V, "seq": st["seq"] + 1, "eid": "x_" + secrets.token_hex(8), "req": None, "at": now,
+          "by": "system", "type": typ, "data": data}
+    apply(st, ev)
+    _append(d, ev, torn)
+    return ev
+
+
+def _budget_gate(d, st, now, probe, torn):
+    """派工 / 進 running 之前,在團鎖內驗預算(#427 Codex r1 H1:不能只靠 tick)。
+    先把該寫的 system 事件寫掉(額度基準、超限記號;running 的團超限 ⇒ team/halt),回 (寫了幾筆, 拒絕碼 或 None)。
+    over_budget = 超限;quota_unmeasured = 設了額度上限但量不到 ⇒ 不放行(fail-close)。"""
+    import mission_monitor as MM
+    evs, why = MM.precheck(st, now, probe)
+    for typ, data in evs:
+        _system(d, st, typ, data, now, torn)
+        torn = None
+    return len(evs), why
+
+
+def _expire_due(d, st, evs_torn, now, probe=None):
+    """倒數滿了沒人按停 ⇒ autostart(預算驗過才開);租期過了的任務寫 expire。都是 system 寫。回寫了幾筆。"""
     n = 0
     if st["status"] == "ready" and not st.get("hold") and now - int(st.get("ready_at") or now) >= AUTOSTART_S:
+        n, why = _budget_gate(d, st, now, probe, evs_torn)
+        evs_torn = None if n else evs_torn
+        if why:
+            return n                                # 超限 / 額度量不到 ⇒ 不自動開始,等本人改預算或量得到
         ev = {"v": V, "seq": st["seq"] + 1, "eid": "x_" + secrets.token_hex(8), "req": None, "at": now,
               "by": "system", "type": "team", "data": {"move": "autostart"}}
         apply(st, ev)
@@ -685,13 +716,24 @@ def _expire_due(d, st, evs_torn, now):
     return n
 
 
-def commit(mid, typ, by, data, env=None, task=None, eid=None, now=None):
+def _probe(probe, env, now):
+    import mission_monitor as MM
+    return probe or PROBE or MM.Probe(env, now)
+
+
+def _to_running(st, typ, data):
+    mv = TEAM_MOVES.get((data or {}).get("move")) if typ == "team" else None
+    return bool(mv) and mv[1] == "running" and st["status"] in mv[0]
+
+
+def commit(mid, typ, by, data, env=None, task=None, eid=None, now=None, probe=None):
     """寫一筆。回 {"ok", "duplicate", "seq", "state"}。先把過期的租期處理掉(過期的回報才拒得掉)。"""
     now = int(time.time() if now is None else now)
     d = mdir(mid, env)
     if eid is not None and not EID_RE.match(str(eid)):
         raise MissionError("bad_eid")
     req = _req_digest(typ, by, task, data)
+    probe = _probe(probe, env, now)
     with _locked(d, create=typ == "created"):
         st, torn, evs = _load(d, mid)
         if typ == "created" and evs:
@@ -703,8 +745,15 @@ def commit(mid, typ, by, data, env=None, task=None, eid=None, now=None):
             return {"ok": True, "duplicate": True, "seq": orig["seq"], "state": st, "task": orig.get("task"), "event": orig}
         if typ == "task_add" and task is None:     # 編號在鎖內配(兩席同時開單不撞號)
             task = "t%d" % (len(st["tasks"]) + 1)
-        n = _expire_due(d, st, torn, now)
+        n = _expire_due(d, st, torn, now, probe)
         torn = None if n else torn
+        if typ == "dispatch" or _to_running(st, typ, data):
+            k, why = _budget_gate(d, st, now, probe, torn)
+            n, torn = n + k, None if k else torn
+            if why:
+                if n:
+                    _snapshots(d, st)
+                raise MissionError(why)
         ev = {"v": V, "seq": st["seq"] + 1, "eid": eid or ("e_" + secrets.token_hex(8)), "req": req, "at": now,
               "by": by, "type": typ, "task": task, "data": data}
         if task is None:
@@ -726,14 +775,15 @@ def tick(mid, env=None, now=None, probe=None):
     import mission_monitor as MM
     now = int(time.time() if now is None else now)
     d = mdir(mid, env)
+    probe = _probe(probe, env, now)
     with _locked(d):
         st, torn, evs = _load(d, mid)
         if not evs:
             raise MissionError("no_mission")
-        n = _expire_due(d, st, torn, now)
+        n = _expire_due(d, st, torn, now, probe)
         torn = None if n else torn
         wrote = []
-        for typ, data in MM.evaluate(st, now, probe or MM.Probe(env)):
+        for typ, data in MM.evaluate(st, now, probe):
             ev = {"v": V, "seq": st["seq"] + 1, "eid": "x_" + secrets.token_hex(8), "req": None, "at": now,
                   "by": "system", "type": typ, "data": data}
             apply(st, ev)

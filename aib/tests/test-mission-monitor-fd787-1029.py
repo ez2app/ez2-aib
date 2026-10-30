@@ -17,7 +17,13 @@ M4 降速回差(K4);M5 品管連退兩次(pass / amend 重新計);M6 卡關 > 15
 M8 evaluate 是純函式(不改 st、不碰檔)
 W1 watch 一屏、四語鍵齊;W2 量不到不寫 0%;W3 退出碼 0 / 3 / 2、--json 欄位固定
 G1 approve_gate 登記 mission.budget 為高風險類(不開時間窗)
-刀 K1–K6(K5 封存不寫、K6 沒改內容拒)
+R1 Codex r1(10-30,@b5799 接手):
+  H1 超限沒 tick 也不能派工(派工當下寫叫停、拒 over_budget;同 eid 重送照回原結果);暫停中超限不能恢復;額度量不到 ⇒ 派工 / 開始 / 自動開始都拒(fail-close)
+  H2 tick 寫完 budget/halt、還沒寫 team/halt 就中斷 ⇒ 下一次 tick / 派工補叫停;每個寫檔邊界都驗
+  H3 調低別的維度不清額度叫停;改了額度上限、用量還在上限以上 ⇒ 開始仍拒
+  M1 watch 只有異常 / 卡住也回 3
+  M2 建團 / 改預算:負數、非整數、不認得的欄位、超過上限 ⇒ bad_budget(不靜默變不限)
+刀 K1–K6(K5 封存不寫、K6 沒改內容拒);K7–K11 對 R1 五題
 """
 import copy
 import io
@@ -90,6 +96,9 @@ class Base(unittest.TestCase):
         self.addCleanup(p2.stop)
         self.prove_why = None
         self.fp = FP()
+        p3 = mock.patch.object(M, "PROBE", self.fp)   # 寫入路徑(派工 / 進 running)也用同一組假量測(#427 r1 H1)
+        p3.start()
+        self.addCleanup(p3.stop)
 
     def c(self, typ, who, data, task=None, now=T0):
         return M.commit(self.mid, typ, who, data, env=self.env, task=task, now=now)
@@ -107,12 +116,15 @@ class Base(unittest.TestCase):
         self.assertEqual(str(cm.exception).split(":")[0] if not want.startswith("corrupt") else str(cm.exception)[:len(want)],
                          want)
 
-    def mk(self, budget=None, roster=((W1, "worker"), (W2, "worker"), (QA, "qa"), (MON, "monitor")), tasks=1, running=True):
+    def mk(self, budget=None, roster=((W1, "worker"), (W2, "worker"), (QA, "qa"), (MON, "monitor")), tasks=1, running=True,
+           usage=None):
         self.mid = M.new(by(PM), "S4 監看", "goal", ["green"], budget=budget or {}, env=self.env, now=T0)["id"]
         for s, r in roster:
             self.c("roster", by(PM), {"op": "add", "seat": s, "role": r})
         for i in range(tasks):
             self.c("task_add", by(PM), {"title": "task %d" % (i + 1), "accept": ["rc 0"], "deps": []})
+        if (budget or {}).get("quota_pct"):          # 設了額度上限 ⇒ 開始時要量得到(#427 r1 H1 fail-close),開始那刻記基準
+            self.fp.usage_v = dict(usage or {Q: 0})
         if running:
             self.c("team", by(PM), {"move": "submit"})
             M.team(self.mid, "start", "human", env=self.env, now=T0)
@@ -236,8 +248,7 @@ class B1to5Budget(Base):
 
 class B6to10Quota(Base):
     def test_b6_quota_warn_then_halt(self):
-        self.mk({"quota_pct": 30})
-        self.fp.usage_v = {Q: 40, "claude/7d/shared": 10}
+        self.mk({"quota_pct": 30}, usage={Q: 40, "claude/7d/shared": 10})
         self.tick(T0 + MIN)
         self.assertEqual(self.st()["quota_base"], {Q: 40, "claude/7d/shared": 10})
         self.fp.usage_v = {Q: 64, "claude/7d/shared": 12}
@@ -249,8 +260,7 @@ class B6to10Quota(Base):
         self.assertEqual(self.st()["status"], "halted")
 
     def test_b7_window_reset(self):
-        self.mk({"quota_pct": 30})
-        self.fp.usage_v = {Q: 90}
+        self.mk({"quota_pct": 30}, usage={Q: 90})
         self.tick(T0 + MIN)
         self.fp.usage_v = {Q: 5}
         self.tick(T0 + 2 * MIN)
@@ -261,7 +271,7 @@ class B6to10Quota(Base):
         self.assertEqual(w["budget"]["quota"]["used"], 15)
 
     def test_b8_quota_unmeasured(self):
-        self.mk({"quota_pct": 30})
+        self.mk({"quota_pct": 30}, usage={Q: 10})
         self.fp.usage_v = None
         for i in range(3):
             self.tick(T0 + (i + 1) * MIN)
@@ -400,7 +410,7 @@ class M5to8Rules(Base):
         self.assertEqual(len(self.events()), n)
 
     def test_m8_evaluate_pure(self):
-        self.mk({"minutes": 20, "quota_pct": 30})
+        self.mk({"minutes": 20, "quota_pct": 30}, usage={Q: 50})
         self.fp.load, self.fp.usage_v, self.fp.now_at = 13.0, {Q: 50}, {W1: None}
         st = self.st()
         before = copy.deepcopy(st)
@@ -417,8 +427,7 @@ class M5to8Rules(Base):
 
 class W1to3Watch(Base):
     def test_w1_screen_and_i18n(self):
-        self.mk({"minutes": 60, "seats_max": 6, "quota_pct": 30})
-        self.fp.usage_v = {Q: 40}
+        self.mk({"minutes": 60, "seats_max": 6, "quota_pct": 30}, usage={Q: 40})
         self.tick(T0 + MIN)
         rc, text = self.watch(T0 + 2 * MIN, as_json=False)
         lines = text.rstrip("\n").splitlines()
@@ -434,7 +443,7 @@ class W1to3Watch(Base):
             self.assertIn("aib.mission.touchid_budget", d, lang)
 
     def test_w2_unmeasured_not_zero(self):
-        self.mk({"quota_pct": 30})
+        self.mk({"quota_pct": 30}, usage={Q: 40})
         self.fp.usage_v, self.fp.load = None, None
         rc, w = self.watch(T0 + MIN)
         self.assertEqual((w["budget"]["quota"]["used"], w["budget"]["quota"]["pct"]), (None, None))
@@ -469,6 +478,110 @@ class G1Gate(unittest.TestCase):
         self.assertEqual(AG.CATEGORIES[spec["cat"]]["max_window"], 0)
 
 
+class R1Codex(Base):
+    """#427 Codex r1:3 High / 2 Medium 的回歸。"""
+
+    def test_h1_dispatch_over_budget_without_tick(self):
+        self.mk({"minutes": 1}, tasks=2)
+        code = os.urandom(6).hex()
+        first = self.ok(M.commit, self.mid, "dispatch", by(PM), {"to": W1, "code": code}, env=self.env, task="t1",
+                        eid="e_dispatch_t1", now=T0 + 30)
+        self.bad("over_budget", self.dispatch, "t2", W2, T0 + MIN)
+        st = self.st()
+        self.assertEqual((st["status"], st["halt_reason"]), ("halted", "budget"))
+        self.assertEqual(st["tasks"]["t2"]["status"], "todo")
+        self.assertEqual([e["data"]["dim"] for e in self.budget_evs("halt")], ["minutes"])
+        again = self.ok(M.commit, self.mid, "dispatch", by(PM), {"to": W1, "code": code}, env=self.env, task="t1",
+                        eid="e_dispatch_t1", now=T0 + 2 * MIN)
+        self.assertEqual((again["duplicate"], again["seq"]), (True, first["seq"]), "同 eid 重送照回原結果,不當新派工")
+
+    def test_h1_resume_over_budget(self):
+        self.mk({"minutes": 1})
+        self.c("team", by(PM), {"move": "pause"}, now=T0 + MIN + 5)        # 超限了還沒 tick 就暫停
+        self.bad("over_budget", self.c, "team", by(PM), {"move": "resume"}, None, T0 + 2 * MIN)
+        self.assertEqual(self.st()["status"], "paused")
+
+    def test_h1_quota_unmeasured_fail_close(self):
+        self.mk({"quota_pct": 30}, usage={Q: 10}, tasks=2)
+        self.fp.usage_v = None
+        self.bad("quota_unmeasured", self.dispatch, "t1", W1, T0 + MIN)
+        self.assertEqual(self.st()["tasks"]["t1"]["status"], "todo")
+        self.fp.usage_v = {Q: 12}
+        self.ok(self.dispatch, "t1", W1, T0 + 2 * MIN)
+        self.mid = M.new(by(PM), "第二團", "goal", ["green"], budget={"quota_pct": 30}, env=self.env, now=T0)["id"]
+        self.c("task_add", by(PM), {"title": "x", "accept": ["rc 0"], "deps": []})
+        self.c("team", by(PM), {"move": "submit"})
+        self.fp.usage_v = None
+        self.bad("quota_unmeasured", M.team, self.mid, "start", "human", env=self.env, now=T0)
+        self.tick(T0 + M.AUTOSTART_S + 1)
+        self.assertEqual(self.st()["status"], "ready", "量不到額度不自動開始")
+        self.fp.usage_v = {Q: 5}
+        self.tick(T0 + M.AUTOSTART_S + 2)
+        self.assertEqual(self.st()["status"], "running")
+
+    def test_h2_halt_mark_without_team_halt_recovers(self):
+        for crash_at, via in ((1, "tick"), (1, "dispatch"), (0, "tick")):
+            with self.subTest(crash_at=crash_at, via=via):
+                self.mk({"minutes": 20}, tasks=1)
+                real, n = M._append, []
+
+                def flaky(d, ev, torn):
+                    if ev.get("by") == "system" and ev["type"] in ("budget", "team"):
+                        if len(n) == crash_at:
+                            raise OSError("斷電")
+                        n.append(ev["type"])
+                    return real(d, ev, torn)
+                with mock.patch.object(M, "_append", flaky), self.assertRaises(OSError):
+                    M.tick(self.mid, self.env, now=T0 + 20 * MIN, probe=self.fp)
+                st = self.st()
+                self.assertEqual(st["status"], "running", "中斷時團還沒停")
+                self.assertEqual(st["budget_marks"], {"minutes": ["halt"]} if crash_at else {})
+                if via == "tick":
+                    self.tick(T0 + 21 * MIN)
+                else:
+                    self.bad("over_budget", self.dispatch, "t1", W1, T0 + 21 * MIN)
+                st = self.st()
+                self.assertEqual((st["status"], st["halt_reason"]), ("halted", "budget"))
+                self.assertEqual(len(self.budget_evs("halt")), 1, "叫停記號只一筆")
+                self.assertEqual(len([e for e in self.events("team") if e["data"]["move"] == "halt"]), 1)
+
+    def test_h3_lower_other_dim_keeps_quota_block(self):
+        self.mk({"quota_pct": 30, "seats_max": 6}, usage={Q: 0})
+        self.fp.usage_v = {Q: 30}
+        self.tick(T0 + MIN)
+        self.assertEqual((self.st()["status"], self.st()["budget_marks"].get("quota")), ("halted", ["halt"]))
+        self.ok(M.budget_set, self.mid, by(PM), {"seats_max": 5}, env=self.env, now=T0 + 2 * MIN)
+        self.assertEqual(self.st()["budget_marks"].get("quota"), ["halt"], "調低席數不清額度叫停")
+        self.bad("over_budget", M.team, self.mid, "start", "human", env=self.env, now=T0 + 3 * MIN)
+        self.ok(M.budget_set, self.mid, "human", {"quota_pct": 40}, env=self.env, now=T0 + 4 * MIN)
+        self.fp.usage_v = {Q: 45}                                          # 改了上限、用量還在新上限以上
+        self.bad("over_budget", M.team, self.mid, "start", "human", env=self.env, now=T0 + 5 * MIN)
+        self.ok(M.budget_set, self.mid, "human", {"quota_pct": 60}, env=self.env, now=T0 + 6 * MIN)
+        self.ok(M.team, self.mid, "start", "human", env=self.env, now=T0 + 7 * MIN)
+        self.assertEqual(self.st()["status"], "running")
+
+    def test_m1_watch_rc_anomaly_only(self):
+        self.mk({"minutes": 600})
+        self.tick(T0 + 11 * MIN)                                           # 工人 10 分沒動 ⇒ idle
+        rc, w = self.watch(T0 + 12 * MIN)
+        self.assertEqual(w["waiting"], [])
+        self.assertTrue(w["anomalies"])
+        self.assertEqual(rc, 3, "只有異常也要 3")
+
+    def test_m2_strict_budget_input(self):
+        for b in ({"quota_pct": -1}, {"minutes": -5}, {"minutes": 10 ** 400}, {"quota_pct": 101}, {"seats_max": 501},
+                  {"minutes": "5"}, {"minutes": True}, {"bogus": 3}, {"minutes": 0}, ["minutes"]):
+            with self.subTest(b=b):
+                self.bad("bad_budget", M.new, by(PM), "x", "g", ["a"], budget=b, env=self.env, now=T0)
+        self.mk({"minutes": 20})
+        for ch in ({"minutes": 10 ** 6}, {"quota_pct": 101}, {"minutes": -1}, {"bogus": 1}):
+            with self.subTest(ch=ch):
+                self.bad("bad_budget", M.budget_set, self.mid, "human", ch, env=self.env, now=T0 + 1)
+        out = io.StringIO()
+        self.assertEqual(M.run(["new", "--title", "x", "--quota-pct", "-1", "--by", by(PM), "--json"], env=self.env, out=out), 2)
+        self.assertIn("bad_budget", out.getvalue())
+
+
 MON_PY, MIS_PY = "src/cockpit/mission_monitor.py", "src/cockpit/mission.py"
 KNIVES = [
     ("K1", MON_PY, '''            if lv is None or "halt" in marks or lv in marks:''', '''            if lv is None:''',
@@ -482,6 +595,16 @@ KNIVES = [
     ("K5", MON_PY, '''    if status in (None, "archived"):''', '''    if status is None:''',
      "B1to5Budget.test_b4b_archived_tick_writes_nothing"),
     ("K6", MIS_PY, '''        if new == st["budget"]:''', '''        if False:''', "B1to5Budget.test_b4_restart_needs_budget_raise"),
+    ("K7", MIS_PY, '''        if typ == "dispatch" or _to_running(st, typ, data):''', '''        if False:''',
+     "R1Codex.test_h1_dispatch_over_budget_without_tick"),
+    ("K8", MON_PY, '''        if status == "running" and not halting and stale:''', '''        if False:''',
+     "R1Codex.test_h2_halt_mark_without_team_halt_recovers"),
+    ("K9", MIS_PY, '''            if old.get(key) != new.get(key):''', '''            if True:''',
+     "R1Codex.test_h3_lower_other_dim_keeps_quota_block"),
+    ("K10", MON_PY, '''    return 3 if w["waiting"] or w["anomalies"] or w["stuck"] else 0''', '''    return 3 if w["waiting"] else 0''',
+     "R1Codex.test_m1_watch_rc_anomaly_only"),
+    ("K11", MIS_PY, '''        if type(v) is not int or not 0 < v <= BUDGET_MAX[k]:''', '''        if type(v) is not int:''',
+     "R1Codex.test_m2_strict_budget_input"),
 ]
 
 

@@ -13,7 +13,7 @@ evaluate(st, now, probe) ⇒ [(事件類別, data)]:純函式(不碰檔、不改
         R5 blocked_long(卡關 > 15 分)。同一條規則對同一個對象只在進入 / 解除各寫一筆 anomaly ⇒ 事件量有上限。
         量不到(load、aib now 讀檔失敗)⇒ 那條這輪跳過,不猜、不洗版。
   監看只寫事件,不改任務、不改計畫;叫停只有預算那條自動,其他異常要不要停由 monitor 席自己 team halt。
-watch:一屏印完就結束(要持續看外面包 watch -n 10);只讀,不寫事件。退出碼 0 正常 / 3 有待人或預算叫停 / 2 沒這團。
+watch:一屏印完就結束(要持續看外面包 watch -n 10);只讀,不寫事件。退出碼 0 正常 / 3 有待人、預算叫停、異常或卡住(降速只標記不算)/ 2 沒這團。
 同帳號威脅模型:missions/ 所有 AI 都寫得到,預算叫停與監看只防誤操作與失控,不是防線;額度量測是本機檔 ⇒ 寧可高估。
   不主動 probe 用量(主動 probe 會花額度),只讀 usage_probe 已經寫好的紀錄檔。
 """
@@ -148,6 +148,11 @@ def evaluate(st, now, probe):
             if lv == "halt" and not halting:
                 halting = True
                 out.append(("team", {"move": "halt", "reason": "budget", "dim": dim}))
+        # 已有叫停記號、團卻還在跑 = 上一輪寫完 budget/halt、還沒寫 team/halt 就中斷(#427 Codex r1 H2)⇒ 補叫停
+        stale = sorted(dim for dim, m in st["budget_marks"].items() if "halt" in m)
+        if status == "running" and not halting and stale:
+            halting = True
+            out.append(("team", {"move": "halt", "reason": "budget", "dim": stale[0]}))
     running = status == "running" and not halting
     if running:
         since = int(st.get("run_since") or now)
@@ -184,6 +189,36 @@ def evaluate(st, now, probe):
             rule, key = k.split(":", 1)
             out.append(("anomaly", {"rule": rule, "key": key, "end": True}))
     return out
+
+
+def precheck(st, now, probe):
+    """寫入路徑(派工 / 進 running)在團鎖內先驗預算 ⇒ ([(typ, data)], 拒絕碼 或 None)。純函式,呼叫端照順序寫。
+    - 設了額度上限:量一次;量不到 ⇒ quota_unmeasured(fail-close,不派工、不開始);第一次量到 / 視窗重設 ⇒ budget/base。
+    - 任一維到上限(席數是超過)或還有沒被改預算清掉的叫停記號 ⇒ over_budget;
+      沒記號的維補 budget/halt,團在 running ⇒ 再補 team/halt(下一個 tick 不用再等)。"""
+    out = []
+    b = st["budget"]
+    used = {"minutes": M.used_minutes(st, now), "seats": M.used_seats(st)}
+    if b.get("quota_pct"):
+        try:
+            usage = probe.usage()
+        except Unmeasured:
+            return out, "quota_unmeasured"
+        base, used["quota"] = _quota(st, usage)
+        if base is not None:
+            out.append(("budget", {"level": "base", "dim": "quota", "base": base}))
+    over = []
+    for dim, key in M.BUDGET_DIMS.items():
+        cap, marks = b.get(key), st["budget_marks"].get(dim, [])
+        if cap and dim in used and _level(used[dim], cap, dim) == "halt":
+            over.append(dim)
+            if "halt" not in marks:
+                out.append(("budget", {"level": "halt", "dim": dim, "used": used[dim], "cap": cap}))
+        elif "halt" in marks:
+            over.append(dim)
+    if over and st["status"] == "running":
+        out.append(("team", {"move": "halt", "reason": "budget", "dim": over[0]}))
+    return out, ("over_budget" if over else None)
 
 
 # ── watch ──
@@ -310,4 +345,4 @@ def watch_cmd(mid, as_json, env=None, out=None, now=None, probe=None):
         return 2
     w = watch_view(st, now, probe or Probe(env, now))
     out.write((json.dumps(dict(w, ok=True), ensure_ascii=False) if as_json else render(w, now)) + "\n")
-    return 3 if w["waiting"] else 0
+    return 3 if w["waiting"] or w["anomalies"] or w["stuck"] else 0   # 降速只是標記,不算(#427 Codex r1 M1)
