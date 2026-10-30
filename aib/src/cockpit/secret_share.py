@@ -229,13 +229,14 @@ def pid_started(pid, run=subprocess.run):
         return None
 
 
-PANE_START_SLACK_S = 2   # 席位檔 started_epoch 與 pane 行程 lstart 實測差 0–1 秒
+PANE_START_EARLY_S = 2     # pane 行程比席位檔 started_epoch 早:實測最多 1 秒
+PANE_START_LATE_S = 120    # 晚:開席外殼可能晚起(10-30 本艙 20 席有一席晚 30 秒,@fd787 旁審);只防 PID 重用,不必更緊
 
 
 def seat_pane(base, wid, pid, run=subprocess.run, started=None):
     """視窗裡 pane_pid = 席位檔 pid 的那一格(%N);找不到 ⇒ None。-t @N 會打到視窗目前作用中的 pane,
     同視窗另切一格再 select-pane 就會打錯格(#435 R1 L3:不是防線,只減少打錯格)。
-    PID 會被重用:那一格行程的啟動時間也要對上席位檔 started_epoch(±2 秒),缺或不符 ⇒ None(#442 r1 M1)。"""
+    PID 會被重用:那一格行程的啟動時間要落在席位檔 started_epoch 前 2 秒到後 120 秒內,缺或不符 ⇒ None(#442 r1 M1)。"""
     import seat_act as SA
     try:
         r = run(base + ["list-panes", "-t", wid, "-F", "#{pane_id} #{pane_pid}"], capture_output=True, text=True,
@@ -255,7 +256,7 @@ def seat_pane(base, wid, pid, run=subprocess.run, started=None):
     if not math.isfinite(want):   # NaN 跟誰比都不大於 2 秒,會繞過比對(#442 r2 L2)
         return None
     got = pid_started(pid, run=run)
-    if got is None or abs(got - want) > PANE_START_SLACK_S:
+    if got is None or not (want - PANE_START_EARLY_S <= got <= want + PANE_START_LATE_S):
         return None
     return hits[0]
 

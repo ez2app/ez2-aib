@@ -377,7 +377,7 @@ class P6PasteRefused(Seat):
     def test_pid_reused_or_unknown_start(self):
         """#442 r1 M1:名冊不變、PID 數字相同但行程世代不同(啟動時間對不上)/ 查不到 / 名冊沒有 started_epoch ⇒ seat_busy,值不進 buffer"""
         orig = self.rec_file.read_text()
-        cases = (("reused", {"pstart": START + 3600}), ("slack-edge-out", {"pstart": START + 3}), ("ps-fails", {"psfail": True}),
+        cases = (("reused", {"pstart": START + 3600}), ("late-edge-out", {"pstart": START + 121}), ("early-edge-out", {"pstart": START - 3}), ("ps-fails", {"psfail": True}),
                  ("no-started", {"rec": {"started_epoch": None}}), ("nan-started", {"rec": {"started_epoch": "NaN"}}),
                  ("inf-started", {"rec": {"started_epoch": "inf"}}), ("list-rc", {"listrc": 1}), ("list-timeout", {"listexc": True}))
         for label, c in cases:
@@ -398,9 +398,10 @@ class P6PasteRefused(Seat):
                     return self.run_ok(argv, **kw)
                 self.assertEqual(self.paste(run=run), ({"ok": False, "why": "seat_busy"}, 2), label)
                 self.assertFalse([a for a, _i, _e in self.calls if "load-buffer" in a], label)
-        self.rec_file.write_text(orig); self.pstart = START + 2
-        self.calls[:] = []
-        self.assertEqual(self.paste(), ({"ok": True}, 0), "差 2 秒內照樣貼")
+        for ok_start in (START - 2, START + 30, START + 120):   # 開席外殼晚起 30 秒(@fd787 實測)仍要能貼
+            self.rec_file.write_text(orig); self.pstart = ok_start
+            self.calls[:] = []
+            self.assertEqual(self.paste(), ({"ok": True}, 0), ok_start - START)
 
     def test_not_mac(self):
         """#435 R1 L2:paste 也先擋非 Mac ⇒ not_mac,不查名冊、不彈窗、不叫 tmux"""
