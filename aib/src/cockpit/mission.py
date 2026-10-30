@@ -46,6 +46,21 @@ S4 前半(SPEC-mission-monitor-fd787-1029,§8 @f5fb8 裁示):預算硬上限 + �
   Touch ID 只擋走正常 CLI 的那條路;要真的擋得住,得等 SE 簽的授權單(事件帶簽章、重放時驗)。
   監看規則在 mission_monitor.evaluate(純函式);只寫 budget / anomaly / throttle 事件(都是 system 寫),不改任務、不改計畫。
   誰定期叫 tick:monitor 席每 60 秒叫一次,核心不加常駐。
+
+G0 分組(SPEC-mission-team §A–§G / §J,@22220 REVIEW-mission-groups;10-29 14:11 @aeb40 定範圍):
+  mode single → grouped 只走 group/split(pm / 本人):要有契約 Task v1(kind=contract,producer / consumers 都在要拆的組裡)、
+  每組一位組長(roster role=lead,不能是 PM ⇒ 總指揮不兼組長)、團裡要有品管;編不足 ⇒ understaffed。
+  拆完全團有效席不能超過授權單合計(還沒接 S4 授權單前 = 一張硬頂 GRANT_SEATS 6)⇒ out_of_grant:seats;
+  各組預扣分鐘合計 ≤ 團預算 ×(100 − 預備金 15%)、預扣席 ≥ 該組人數 ⇒ 否則 over_group_budget;進行中有人在做還拆 ⇒ 要帶差異單(diff)。
+  組員只能進一組;組滿(預扣席)再加人 ⇒ over_group_budget。合組(group/merge)不自動,PM / 本人寫。
+  組長(lead):只能在自己組開單(不能開契約)、只派自己組的工給自己組的人;寫別組任務的 task_add / dispatch / report ⇒ cross_group。
+  組長每 3 筆該組事件或卡關要寫 group/summary(要 why);未滿 3 筆又不是卡關 ⇒ too_soon(R9 逾期由 G1 監看判)。
+  組長離隊 ⇒ 該組已派 / 做中 / 卡關回待做,PM 用 group/lead 改派新組長(不自動把工人升組長)。
+  契約 Task:只有 PM 開、group 空、持有人 = PM(派工只准派給持有人,不派給工人)、帶 contract{producer, consumers, path, rev};
+  消費組的實作 Task deps 必含該契約;contract_rev(只 PM)⇒ 契約與依賴它的已通過任務作廢回 qa(同 amend)。
+  整合收據 kind=integration:只用在 kind=integration 的任務;checks 要含契約本身 + 每一組至少一件已通過的產物、每條帶可重跑指令;
+  品管席若在任一被檢查任務的 workers[] ⇒ maker_is_checker;綁組的品管不能寫整合。PM / 組長本來就不能寫品管事件。
+  照實寫:組 / 角色 / 契約跟其他名冊欄位一樣都是 events.jsonl 裡的自報資料,只防 AI 之間互踩與誤操作,不是防線。
   ci / pr_merged 收據的 head 要對得上任務回報的 artifact(前綴相符);回報沒帶 artifact ⇒ 只能用 test / checklist 收據。
   verified「品管全過」= 每件任務都有通過的收據;machine_all = 每件的收據都是機器證據(只有 checklist / test 的團也收得了)。
 """
@@ -77,11 +92,27 @@ CODE_RE = re.compile(r"^[0-9a-f]{12}$")
 SEAT_RE = re.compile(r"^[0-9a-f]{5}$")
 HEAD_RE = re.compile(r"^[0-9a-f]{7,40}$")
 BY_RE = re.compile(r"^(seat:[0-9a-f]{5}|human)$")
-ROLES = ("pm", "worker", "qa", "monitor")
+ROLES = ("pm", "worker", "qa", "monitor", "lead")
+GROUP_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}$")
+GROUPS_MAX = 4
+CONTRACT_SEG_RE = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
+
+
+def _contract_path_ok(path):
+    """契約檔只准放團的 contracts/ 底下;每段只收 [A-Za-z0-9._-]、不准 . / ..、不准空段(#451 r1 L)"""
+    parts = path.split("/") if isinstance(path, str) else []
+    return len(parts) >= 2 and parts[0] == "contracts" and all(CONTRACT_SEG_RE.match(x) and x not in (".", "..") for x in parts[1:])
+
+
+GROUP_ROW_KEYS = {"id", "name", "lead", "members", "quota"}   # split 每組只收這些欄位;members / quota / name 可省(省 = 只有組長 / 預設額度 / 用 id)
+GRANT_SEATS = 6          # 一張授權單的席數硬頂(S4 授權單接上前,分組用這個當授權單合計)
+RESERVE_PCT = 15         # 總指揮整合預備金(艦長裁 G-3)
+SUMMARY_EVERY = 3        # 組長每 3 筆該組事件或卡關要摘要(定案 10)
+TASK_KINDS = (None, "contract", "integration")
 TEAM = ("draft", "ready", "running", "paused", "halted", "verified", "handed", "archived")
 TASK = ("todo", "assigned", "doing", "blocked", "qa", "passed", "returned", "cancelled")
 LEASED = ("assigned", "doing", "blocked")
-RECEIPT_KINDS = ("test", "ci", "pr_merged", "checklist")
+RECEIPT_KINDS = ("test", "ci", "pr_merged", "checklist", "integration")
 MACHINE_VERIFIED = ("ci", "pr_merged")
 TEXT_MAX, LIST_MAX = 200, 20
 # S4 前半:預算三維(事件裡的 dim ⇒ budget 欄位)、門檻、監看規則、system 才能寫的事件
@@ -202,7 +233,8 @@ def _empty(mid):
     return {"v": V, "id": mid, "status": None, "rev": 0, "seq": 0, "charter": {}, "budget": {}, "roster": {},
             "tasks": {}, "eids": {}, "receipts": {}, "created_at": None, "updated_at": None,
             "budget_marks": {}, "budget_block": {}, "anomalies": {}, "throttle": False, "run_s": 0, "run_since": None,
-            "last_by": {}, "quota_base": None, "halt_reason": None}
+            "last_by": {}, "quota_base": None, "halt_reason": None,
+            "mode": "single", "groups": {}, "reserve_pct": RESERVE_PCT}
 
 
 def replay(mid, env=None):
@@ -301,6 +333,95 @@ def _uint(v):
     return type(v) is int and v >= 0
 
 
+def _seat_of(by):
+    return by[5:] if isinstance(by, str) and by.startswith("seat:") else None
+
+
+def _group_of(st, seat):
+    """這席現在在哪一組(只有 grouped 模式算;不在名冊 / 離隊 / 沒分組 ⇒ None)"""
+    r = st["roster"].get(seat) if seat else None
+    return r.get("group_id") if r and not r.get("left_at") and st["mode"] == "grouped" else None
+
+
+def _live_group(st, gid):
+    g = st["groups"].get(gid) if isinstance(gid, str) else None
+    if st["mode"] != "grouped" or not g or g.get("merged_at"):
+        raise MissionError("bad_group")
+    return g
+
+
+def _group_staff(st, gid):
+    return [s for s, r in st["roster"].items() if not r.get("left_at") and r.get("group_id") == gid]
+
+
+def _contracts(st):
+    return [t for t in st["tasks"].values() if t.get("kind") == "contract" and t["status"] != "cancelled"]
+
+
+def _cross(st, by, t):
+    """組長 / 組員碰別組的任務 ⇒ cross_group(PM / 本人不在這裡擋;沒組的任務 = 契約 / 整合,誰能派另外擋)"""
+    mine = _group_of(st, _seat_of(by))
+    if st["mode"] == "grouped" and _role(st, by) in ("lead", "worker") and t.get("group") and mine != t["group"]:
+        raise MissionError("cross_group")
+
+
+def _check_integration(st, rec, by):
+    """整合收據(艦長裁 G-1):checks 要含契約 + 每一組至少一件已通過的產物,每條有可重跑指令;做過其中任一件 ⇒ maker_is_checker"""
+    cid = rec.get("contract")
+    c = st["tasks"].get(cid) if isinstance(cid, str) else None
+    if not c or c.get("kind") != "contract" or c["status"] != "passed":
+        raise MissionError("receipt_stale")
+    checks = rec.get("checks") if isinstance(rec.get("checks"), list) else []
+    if not checks or len(checks) > LIST_MAX:
+        raise MissionError("bad_receipt")
+    seen, clean = set(), []
+    for ck in checks:
+        x = st["tasks"].get(ck.get("task")) if isinstance(ck, dict) and isinstance(ck.get("task"), str) else None
+        cmd = _txt(ck.get("cmd"), 400) if isinstance(ck, dict) else ""
+        if not x or ck.get("ok") is not True or not cmd or x["status"] != "passed":
+            raise MissionError("receipt_not_green")
+        if _seat_of(by) in x["workers"]:
+            raise MissionError("maker_is_checker")
+        seen.add(x["id"])
+        clean.append({"task": x["id"], "cmd": cmd, "ok": True, "accept_rev": x["accept_rev"]})   # 綁被檢查任務的版本(#451 r1 H1)
+    groups = {c["contract"]["producer"], *c["contract"]["consumers"]}
+    covered = {st["tasks"][i].get("group") for i in seen}
+    if cid not in seen or not groups <= covered:
+        raise MissionError("receipt_not_green")
+    return {"contract": cid, "contract_rev": c["contract"]["rev"], "checks": clean}
+
+
+def _integration_stale(st, t):
+    """已通過的整合單：收據記的契約版本 / 被檢查任務版本跟現在不同,或被檢查任務不再是 passed ⇒ True(#451 r1 H1)"""
+    if t.get("kind") != "integration" or t["status"] != "passed":
+        return False
+    rec = st["receipts"].get(t.get("receipt")) or {}
+    c = st["tasks"].get(rec.get("contract")) or {}
+    if c.get("kind") != "contract" or c["status"] != "passed" or rec.get("contract_rev") != c["contract"]["rev"]:
+        return True
+    for ck in rec.get("checks") or []:
+        x = st["tasks"].get(ck.get("task")) or {}
+        if x.get("status") != "passed" or ck.get("accept_rev") != x.get("accept_rev"):
+            return True
+    return False
+
+
+def _contract_affected(st, cid):
+    """契約改版要重驗的任務：契約本身 + 直接 / 間接依賴它的 + 收據檢查過其中任一件(或這份契約)的整合單"""
+    hit, grew = {cid}, True
+    while grew:
+        grew = False
+        for x in st["tasks"].values():
+            if x["id"] in hit:
+                continue
+            rec = st["receipts"].get(x.get("receipt")) or {} if x.get("kind") == "integration" else {}
+            checked = {ck.get("task") for ck in rec.get("checks") or [] if isinstance(ck, dict)}
+            if hit & set(x["deps"]) or rec.get("contract") in hit or hit & checked:
+                hit.add(x["id"])
+                grew = True
+    return [st["tasks"][i] for i in sorted(hit)]
+
+
 def _check_receipt(rec, t, tid):
     """品管收據:綁任務 + 驗收版本 + 產物版本,而且要有機器證據(rc / CI / 已合 / 逐項勾)。回清過的收據。"""
     if not isinstance(rec, dict) or rec.get("kind") not in RECEIPT_KINDS:
@@ -326,6 +447,8 @@ def _check_receipt(rec, t, tid):
     elif k == "pr_merged":
         ok = rec.get("merged") is True and HEAD_RE.match(str(rec.get("head") or "")) is not None
         out.update(merged=rec.get("merged"), head=rec.get("head"), url=_txt(rec.get("url"), 200))
+    elif k == "integration":
+        ok = True                                   # 內容由 _check_integration 驗(要看整個團的狀態)
     else:
         items = rec.get("items") if isinstance(rec.get("items"), list) else []
         clean = [{"text": _txt(i.get("text")), "ok": i.get("ok") is True} for i in items if isinstance(i, dict)]
@@ -390,6 +513,8 @@ def apply(st, ev):
             live = [t for t in st["tasks"].values() if t["status"] != "cancelled"]
             if not live or any(t["status"] != "passed" for t in live):
                 raise MissionError("not_all_passed")
+            if any(_integration_stale(st, t) for t in live):
+                raise MissionError("receipt_stale")     # 整合收據檢查的版本已經不是現在的(#451 r1 H1)
         if d["move"] == "start" and d.get("proved") is not True:
             raise MissionError("not_proved")
         if d["move"] == "start" and st["status"] == "halted" and _over_budget(st, at):
@@ -429,20 +554,46 @@ def apply(st, ev):
                 raise MissionError("already_in")
             if st["budget"].get("seats_max") and used_seats(st) >= st["budget"]["seats_max"]:
                 raise MissionError("over_seats")    # 席數是硬上限:加人時就擋,不等事後叫停
+            gid = d.get("group")
+            if gid is not None:                     # 分組後加進某組:只收工人 / 品管(組長走 group/lead);PM / 監看不屬於任何組
+                g = _live_group(st, gid)
+                if role not in ("worker", "qa"):
+                    raise MissionError("bad_group")
+                if len(_group_staff(st, gid)) >= g["quota"]["seats"]:
+                    raise MissionError("over_group_budget")
+            if st["mode"] == "grouped" and used_seats(st) >= GRANT_SEATS * st.get("grants", 1):
+                raise MissionError("out_of_grant:seats")
             st["roster"][seat] = {"role": role, "joined_at": at, "left_at": None}
+            if gid is not None:
+                st["roster"][seat]["group_id"] = gid
         elif d.get("op") == "remove":
             cur = st["roster"].get(seat)
             if not cur or cur.get("left_at"):
                 raise MissionError("not_in")
             cur["left_at"] = at
+            led = [g for g in st["groups"].values() if g.get("lead") == seat and not g.get("merged_at")]
+            for g in led:                         # 組長離隊:該組已派 / 做中 / 卡關都回待做,等 PM 用 group/lead 改派(不自動升工人)
+                g["lead"] = None
             for t in st["tasks"].values():        # 離隊 ⇒ 手上的任務回待做(同租期過期)
-                if t.get("assignee") == seat and t["status"] in LEASED:
+                if t["status"] in LEASED and (t.get("assignee") == seat or any(t.get("group") == g["id"] for g in led)):
                     t.update(assignee=None, code=None, lease_until=None)
                     _bump(t, at, "todo")
         else:
             raise MissionError("bad_op")
     elif typ == "task_add":
-        _need(st, by, ("pm",))
+        _need(st, by, ("pm", "lead"))
+        kind, gid = d.get("kind"), d.get("group")
+        if kind not in TASK_KINDS:
+            raise MissionError("bad_kind")
+        if _role(st, by) == "lead":               # 組長只在自己組開一般單(不能開契約 / 整合)
+            if st["mode"] != "grouped" or gid != _group_of(st, _seat_of(by)) or gid is None:
+                raise MissionError("cross_group")
+            if kind is not None:
+                raise MissionError("not_allowed")
+        if gid is not None:
+            _live_group(st, gid)
+            if kind is not None:
+                raise MissionError("bad_group")       # 契約 / 整合不屬於任何一組
         if st["status"] not in PLANNING:
             raise MissionError("bad_transition")
         if not TASK_RE.match(str(tid or "")) or tid in st["tasks"]:
@@ -459,24 +610,49 @@ def apply(st, ev):
         title = _txt(d.get("title"), 80)
         if not title:
             raise MissionError("no_title")
+        extra = {}
+        if kind == "contract":
+            producer, consumers, path = d.get("producer"), d.get("consumers"), _txt(d.get("path"), 200)
+            if (not GROUP_RE.match(str(producer or "")) or not isinstance(consumers, list) or not 1 <= len(consumers) < GROUPS_MAX
+                    or any(not GROUP_RE.match(str(c or "")) for c in consumers) or len(set(consumers)) != len(consumers)
+                    or producer in consumers or not _contract_path_ok(path)):
+                raise MissionError("bad_contract")
+            extra = {"kind": kind, "holder": _seat_of(by),
+                     "contract": {"producer": producer, "consumers": list(consumers), "path": path, "rev": 1}}
+        elif kind == "integration":
+            extra = {"kind": kind}
+        if gid is not None:
+            need = [c["id"] for c in _contracts(st) if gid in c["contract"]["consumers"]]
+            if any(c not in deps for c in need):
+                raise MissionError("contract_dep_missing")   # 消費組的實作 Task 一定要等契約(定案 9)
+            extra["group"] = gid
         st["tasks"][tid] = {"id": tid, "title": title, "accept": _list(d.get("accept")), "deps": deps, "parent": parent, "weight": weight,
                             "est": None, "status": "todo",
                             "rev": 1, "accept_rev": 1, "assignee": None, "code": None, "lease_until": None,
-                            "artifact": None, "receipt": None, "workers": [], "codes": [], "created_at": at, "updated_at": at}
+                            "artifact": None, "receipt": None, "workers": [], "codes": [], "created_at": at, "updated_at": at,
+                            **extra}
     elif typ in ("dispatch", "report", "qa", "cancel", "amend", "expire"):
         t = _task(st, tid)
         if type(d.get("if_rev")) is int and d["if_rev"] != t["rev"]:
             raise MissionError("stale_rev")
         if typ == "dispatch":
-            _need(st, by, ("pm",))
+            _need(st, by, ("pm", "lead"))
+            if _role(st, by) == "lead" and (st["mode"] != "grouped" or t.get("group") is None):
+                raise MissionError("cross_group")   # 沒分組時組長不派工;沒組的任務(契約 / 整合)只有 PM 派
+            _cross(st, by, t)                     # 組長只派自己組的任務
             if st["status"] != "running":
                 raise MissionError("team_not_running")
             if t["status"] not in ("todo", "returned"):
                 raise MissionError("bad_transition")
             to = d.get("to")
             r = st["roster"].get(to)
-            if not r or r.get("left_at") or r["role"] != "worker":
+            if t.get("kind") == "contract":         # 契約只派給持有人(總指揮),不派給工人
+                if to != t.get("holder") or _role(st, "seat:%s" % to) != "pm":
+                    raise MissionError("contract_holder")
+            elif not r or r.get("left_at") or r["role"] not in ("worker", "lead"):
                 raise MissionError("not_worker")
+            elif st["mode"] == "grouped" and t.get("group") and r.get("group_id") != t["group"]:
+                raise MissionError("cross_group")   # 有組的任務只派給同組的人
             if not CODE_RE.match(str(d.get("code") or "")) or d["code"] in t["codes"]:
                 raise MissionError("bad_code")          # 代號一次性:用過的(含已作廢的)不能再發
             undone = [x for x in t["deps"] if st["tasks"][x]["status"] not in ("passed", "cancelled")]
@@ -490,6 +666,7 @@ def apply(st, ev):
         elif typ == "report":
             if st["status"] != "running":
                 raise MissionError("team_not_running")
+            _cross(st, by, t)
             if d.get("code") != t.get("code"):
                 raise MissionError("stale_code")       # 舊代號(過期 / 改派前)的結果一律拒收
             if by != "seat:%s" % t.get("assignee"):
@@ -521,8 +698,15 @@ def apply(st, ev):
                 raise MissionError("bad_transition")
             if by[5:] in t["workers"]:
                 raise MissionError("maker_is_checker")
+            mine = _group_of(st, _seat_of(by))
+            if mine is not None and t.get("group") != mine:
+                raise MissionError("cross_group")       # 綁組的品管只驗自己組(整合要全團品管)
             if d.get("verdict") == "pass":
                 rec = _check_receipt(d.get("receipt"), t, tid)
+                if (rec["kind"] == "integration") != (t.get("kind") == "integration"):
+                    raise MissionError("bad_receipt")   # 整合收據只給整合任務,整合任務只收整合收據
+                if rec["kind"] == "integration":
+                    rec.update(_check_integration(st, d["receipt"], by))
                 rid = d.get("receipt_id")
                 if not EID_RE.match(str(rid or "")):
                     raise MissionError("bad_receipt")
@@ -559,6 +743,28 @@ def apply(st, ev):
             t["expired_from"] = t.get("assignee")
             t.update(assignee=None, code=None, lease_until=None)
             _bump(t, at, "todo")
+    elif typ == "group":
+        _apply_group(st, by, at, d)
+    elif typ == "contract_rev":
+        _need(st, by, ("pm",))
+        t = _task(st, tid)
+        if t.get("kind") != "contract" or t["status"] == "cancelled" or st["status"] not in PLANNING:
+            raise MissionError("bad_transition")
+        if type(d.get("if_rev")) is int and d["if_rev"] != t["rev"]:
+            raise MissionError("stale_rev")
+        path = _txt(d.get("path"), 200) if d.get("path") is not None else t["contract"]["path"]
+        if not _contract_path_ok(path):
+            raise MissionError("bad_contract")
+        t["contract"] = dict(t["contract"], path=path, rev=t["contract"]["rev"] + 1)
+        for x in _contract_affected(st, tid):    # 含間接依賴 + 檢查過受影響任務的整合單(#451 r1 H1)
+            if x["status"] == "cancelled":
+                continue
+            x["accept_rev"] += 1                    # 舊 rev 的通過作廢、回品管重驗(沿用 amend)
+            if x["status"] == "passed":
+                x["receipt"] = None
+                _bump(x, at, "qa")
+            else:
+                _bump(x, at)
     elif typ == "budget":
         _apply_budget(st, d)
     elif typ == "budget_set":
@@ -605,11 +811,112 @@ def apply(st, ev):
         raise MissionError("bad_type")
     if isinstance(by, str) and by.startswith("seat:"):
         st["last_by"][by[5:]] = at                   # R1 idle:這席最後一次自己寫事件
+    g = st["groups"].get((st["tasks"].get(tid) or {}).get("group")) if tid else None
+    if g and not g.get("merged_at") and st["mode"] == "grouped":
+        g["since_summary"] += 1                      # 組長摘要節奏:該組任務每一筆事件都算
     st["seq"] = ev["seq"]
     st["eids"][ev["eid"]] = {"req": ev.get("req"), "seq": ev["seq"], "task": tid}
     st["rev"] += 1
     st["updated_at"] = at
     return st
+
+
+def _apply_group(st, by, at, d):
+    op = d.get("op")
+    if op == "split":
+        _need(st, by, ("pm", "human"))
+        if st["mode"] == "grouped" or st["status"] not in PLANNING:
+            raise MissionError("bad_transition")
+        rows = d.get("groups")
+        if not isinstance(rows, list) or not 2 <= len(rows) <= GROUPS_MAX or any(not isinstance(r, dict) for r in rows):
+            raise MissionError("bad_group")
+        if any(not set(r) <= GROUP_ROW_KEYS or not isinstance(r.get("lead"), str)
+               or not isinstance(r.get("members", []), list) or any(not isinstance(m, str) for m in r.get("members", []))
+               or len(set(r.get("members", []))) != len(r.get("members", []))
+               or not isinstance(r.get("quota", {}), dict) or not set(r.get("quota", {})) <= {"seats", "minutes"}
+               or (r.get("name") is not None and not isinstance(r.get("name"), str)) for r in rows):
+            raise MissionError("bad_group")         # 型別先驗,不讓 [] / {} 變成 TypeError;未知欄位、同組重複成員一律拒(#451 r1 M)
+        ids = [r.get("id") for r in rows]
+        if any(not GROUP_RE.match(str(i or "")) for i in ids) or len(set(ids)) != len(ids):
+            raise MissionError("bad_group")
+        c = st["tasks"].get(d.get("contract")) if isinstance(d.get("contract"), str) else None
+        if (not c or c.get("kind") != "contract" or c["status"] == "cancelled"
+                or not {c["contract"]["producer"], *c["contract"]["consumers"]} <= set(ids)):
+            raise MissionError("no_contract")
+        active = {s: r for s, r in st["roster"].items() if not r.get("left_at")}
+        leads = [r.get("lead") for r in rows]
+        if (len(set(leads)) != len(leads) or any((active.get(x) or {}).get("role") != "lead" for x in leads)
+                or not any(r["role"] == "qa" for r in active.values())):
+            raise MissionError("understaffed")      # 每組一位組長(PM 不兼)+ 團裡有品管;不夠就維持單組
+        taken, plan = set(leads), {}
+        for r in rows:
+            members = r.get("members", [])       # 明訂:沒寫 members = 這組只有組長
+            if not isinstance(members, list) or any((active.get(x) or {}).get("role") != "worker" or x in taken for x in members):
+                raise MissionError("bad_group")
+            taken.update(members)
+            q = r.get("quota", {})
+            seats, minutes = q.get("seats", 1 + len(members)), q.get("minutes")
+            if type(seats) is not int or seats < 1 + len(members) or seats > GRANT_SEATS * 2 \
+                    or (minutes is not None and (type(minutes) is not int or minutes < 1)):
+                raise MissionError("over_group_budget")
+            plan[r["id"]] = {"id": r["id"], "name": _txt(r.get("name"), 40) or r["id"], "lead": r["lead"], "members": list(members),
+                             "quota": {"seats": seats, **({"minutes": minutes} if minutes else {})}}
+        reserve = d.get("reserve_pct", RESERVE_PCT)
+        if type(reserve) is not int or not RESERVE_PCT <= reserve <= 50:   # 只能加大,不能低於 15%(#451 r1 H2)
+            raise MissionError("bad_group")
+        cap = st["budget"].get("minutes")
+        if cap and sum(g["quota"].get("minutes", 0) for g in plan.values()) > cap * (100 - reserve) // 100:
+            raise MissionError("over_group_budget")  # 預扣合計不能吃掉預備金
+        if len(active) > GRANT_SEATS * st.get("grants", 1):
+            raise MissionError("out_of_grant:seats")
+        if st["budget"].get("seats_max") and sum(g["quota"]["seats"] for g in plan.values()) \
+                + sum(1 for s in active if s not in taken) > st["budget"]["seats_max"]:
+            raise MissionError("over_seats")
+        busy = any(t["status"] in LEASED for t in st["tasks"].values())
+        if busy and not _txt(d.get("diff")):
+            raise MissionError("no_diff")         # 進行中再拆 = 改範圍:要總指揮的差異單
+        for gid, g in plan.items():
+            st["groups"][gid] = dict(g, since_summary=0, last_summary=None, created_at=at, merged_at=None)
+            for x in [g["lead"]] + g["members"]:
+                st["roster"][x]["group_id"] = gid
+        st.update(mode="grouped", reserve_pct=reserve)
+    elif op == "merge":
+        _need(st, by, ("pm", "human"))
+        if st["mode"] != "grouped":
+            raise MissionError("bad_transition")
+        for g in st["groups"].values():
+            g.setdefault("merged_at", None)
+            if not g["merged_at"]:
+                g["merged_at"] = at
+        for r in st["roster"].values():
+            r.pop("group_id", None)
+        st["mode"] = "single"
+    elif op == "lead":                              # 改派組長(組長離隊後;不自動升工人)
+        _need(st, by, ("pm", "human"))
+        g = _live_group(st, d.get("group"))
+        seat = d.get("seat")
+        r = st["roster"].get(seat) if isinstance(seat, str) else None
+        if not r or r.get("left_at") or r["role"] != "lead" or any(x.get("lead") == seat for x in st["groups"].values()
+                                                                   if not x.get("merged_at")):
+            raise MissionError("understaffed")
+        if r.get("group_id") not in (None, g["id"]):
+            raise MissionError("cross_group")
+        g["lead"] = seat
+        r["group_id"] = g["id"]
+    elif op == "summary":
+        g = _live_group(st, d.get("group"))
+        _need(st, by, ("lead",))
+        if g.get("lead") != _seat_of(by):
+            raise MissionError("cross_group")       # 只有該組組長寫該組摘要
+        why = _txt(d.get("why"))
+        if not why:
+            raise MissionError("no_why")
+        stuck = d.get("stuck") is True and any(t.get("group") == g["id"] and t["status"] == "blocked" for t in st["tasks"].values())
+        if g["since_summary"] < SUMMARY_EVERY and not stuck:
+            raise MissionError("too_soon")
+        g.update(since_summary=0, last_summary={"at": at, "why": why, "stuck": stuck})
+    else:
+        raise MissionError("bad_op")
 
 
 def _apply_budget(st, d):
@@ -680,6 +987,7 @@ def _snapshots(d, st):
                                            "ready_at": st.get("ready_at"), "hold": bool(st.get("hold")),
                                            "started_by": st.get("started_by"), "started_at": st.get("started_at"),
                                            "paused_by": st.get("paused_by"), "machine_all": _machine_all(st),
+                                           "mode": st["mode"], "groups": st["groups"], "reserve_pct": st["reserve_pct"],
                                            "charter": st["charter"], "created_at": st["created_at"],
                                            "updated_at": st["updated_at"]}, ensure_ascii=False, sort_keys=True))
 
@@ -878,6 +1186,7 @@ def view(st, now=None):
             "receipts": st["receipts"], "hold": bool(st.get("hold")),
             "started_by": st.get("started_by"), "started_at": st.get("started_at"), "paused_by": st.get("paused_by"),
             "machine_all": _machine_all(st), "cancelled": len(tasks) - len(live),
+            "mode": st["mode"], "groups": st["groups"], "reserve_pct": st["reserve_pct"],
             "autostart_in": (max(0, int(st["ready_at"]) + AUTOSTART_S - now)
                              if st["status"] == "ready" and not st.get("hold") and st.get("ready_at") else None),
             "passed": sum(1 for t in live if t["status"] == "passed"), "total": len(live),
@@ -1009,7 +1318,7 @@ def T(key, **kw):
 def _parser():
     p = argparse.ArgumentParser(prog="aib mission", add_help=True, description=T("help.clock"))
     sub = p.add_subparsers(dest="cmd")
-    for name in ("new", "list", "show", "roster", "team", "task", "tick", "why", "budget", "watch"):
+    for name in ("new", "list", "show", "roster", "team", "task", "tick", "why", "budget", "watch", "group"):
         s = sub.add_parser(name)
         s.add_argument("--json", action="store_true")
         s.add_argument("--by", default=None, help=T("help.by"))
@@ -1023,7 +1332,7 @@ def _parser():
             s.add_argument("--minutes", type=int, default=None)
             s.add_argument("--seats-max", type=int, default=None)
             s.add_argument("--quota-pct", type=int, default=None)
-        if name in ("show", "roster", "team", "task", "tick", "why", "budget", "watch"):
+        if name in ("show", "roster", "team", "task", "tick", "why", "budget", "watch", "group"):
             s.add_argument("id")
         if name == "why":
             s.add_argument("task")
@@ -1031,10 +1340,11 @@ def _parser():
             s.add_argument("op", choices=("add", "remove"))
             s.add_argument("seat", help=T("help.seat"))
             s.add_argument("--role", choices=ROLES, default=None)
+            s.add_argument("--group", default=None, help=T("help.group"))
         if name == "team":
             s.add_argument("move", choices=sorted(m for m in TEAM_MOVES if m != "autostart"))
         if name == "task":
-            s.add_argument("op", choices=("add", "dispatch", "report", "qa", "cancel", "amend"))
+            s.add_argument("op", choices=("add", "dispatch", "report", "qa", "cancel", "amend", "contract-rev"))
             s.add_argument("task", nargs="?")
             s.add_argument("--title", default="")
             s.add_argument("--accept", action="append", default=None)
@@ -1052,6 +1362,18 @@ def _parser():
             s.add_argument("--receipt", default=None)
             s.add_argument("--why", default="")
             s.add_argument("--if-rev", type=int, default=None)
+            s.add_argument("--group", default=None, help=T("help.group"))
+            s.add_argument("--kind", choices=("contract", "integration"), default=None)
+            s.add_argument("--producer", default=None, help=T("help.group"))
+            s.add_argument("--consumer", action="append", default=[], help=T("help.group"))
+            s.add_argument("--path", default=None, help=T("help.contract_path"))
+        if name == "group":
+            s.add_argument("op", choices=("split", "merge", "lead", "summary"))
+            s.add_argument("--plan", default=None, help=T("help.group_plan"))
+            s.add_argument("--group", default=None, help=T("help.group"))
+            s.add_argument("--seat", default=None, help=T("help.seat"))
+            s.add_argument("--why", default="")
+            s.add_argument("--stuck", action="store_true")
     return p
 
 
@@ -1111,7 +1433,12 @@ def run(argv, env=None, out=None):
             res = new(by, a.title, a.goal, a.accept, a.pm, budget, env=env, eid=a.eid)
             return _emit(out, a, {"ok": True, "id": res["id"], "duplicate": res["duplicate"]}, res["id"])
         if a.cmd == "roster":
-            res = commit(a.id, "roster", by, {"op": a.op, "seat": a.seat, "role": a.role}, env=env, eid=a.eid)
+            data = {"op": a.op, "seat": a.seat, "role": a.role}
+            if a.group:
+                data["group"] = a.group
+            res = commit(a.id, "roster", by, data, env=env, eid=a.eid)
+        elif a.cmd == "group":
+            res = commit(a.id, "group", by, _group_data(a), env=env, eid=a.eid)
         elif a.cmd == "team":
             res = team(a.id, a.move, by, env=env, eid=a.eid)
         else:
@@ -1141,6 +1468,12 @@ def _task_cmd(a, by, env):
             data["parent"] = a.parent
         if a.weight is not None:
             data["weight"] = a.weight
+        if a.group:
+            data["group"] = a.group
+        if a.kind:
+            data["kind"] = a.kind
+        if a.kind == "contract":
+            data.update(producer=a.producer, consumers=a.consumer, path=a.path)
         return commit(a.id, "task_add", by, data, env=env, eid=a.eid)
     if not TASK_RE.match(str(a.task or "")):
         raise MissionError("bad_task")
@@ -1162,8 +1495,29 @@ def _task_cmd(a, by, env):
                   env=env, eid=a.eid, if_rev=a.if_rev)
     elif a.op == "amend":
         data["accept"] = a.accept or []
-    return commit(a.id, {"dispatch": "dispatch", "report": "report", "cancel": "cancel", "amend": "amend"}[a.op],
+    elif a.op == "contract-rev":
+        if a.path is not None:
+            data["path"] = a.path
+    return commit(a.id, {"dispatch": "dispatch", "report": "report", "cancel": "cancel", "amend": "amend",
+                         "contract-rev": "contract_rev"}[a.op],
                   by, data, env=env, task=a.task, eid=a.eid)
+
+
+def _group_data(a):
+    """group split 的分組計畫走 --plan <JSON 檔>:{groups:[{id,name,lead,members,quota{seats,minutes}}], contract, reserve_pct?, diff?}"""
+    if a.op == "split":
+        try:
+            plan = json.loads(Path(a.plan).read_text(encoding="utf-8")) if a.plan else None
+        except (OSError, ValueError):
+            plan = None
+        if not isinstance(plan, dict) or set(plan) - {"groups", "contract", "reserve_pct", "diff"}:
+            raise MissionError("bad_group")
+        return dict(plan, op="split")
+    if a.op == "lead":
+        return {"op": "lead", "group": a.group, "seat": a.seat}
+    if a.op == "summary":
+        return {"op": "summary", "group": a.group, "why": a.why, "stuck": a.stuck}
+    return {"op": "merge"}
 
 
 def _emit(out, a, body, text):

@@ -5929,5 +5929,8 @@
   "aib.mission.watch.w_qa_loop": "{task} 品質確認で差し戻しが続いています、人の確認が必要",
   "aib.secret.touchid_copy": "シークレット {name} をクリップボードにコピー:同じアカウントのどのプログラム(AI 含む)も読めます。30 秒後に消去",
   "aib.secret.touchid_paste": "シークレット {name} を {seat} 席の入力欄に入力(Enter なし):同じアカウントのどのプログラム(AI 含む)もその画面と会話記録を読めます",
-  "aib.pixel.touchid_real_gen": "ピクセル工房:実画像生成を {hours} 時間許可(codex の画像生成は枠を消費)"
+  "aib.pixel.touchid_real_gen": "ピクセル工房:実画像生成を {hours} 時間許可(codex の画像生成は枠を消費)",
+  "aib.mission.help.group": "グループ ID:英小文字で始まる 16 文字以内の英数字か _ -(例 api、web)",
+  "aib.mission.help.contract_path": "契約ファイルのパス(contracts/<ファイル名>、チームフォルダ missions/<id>/ からの相対パス。書けるのは総指揮のみ)",
+  "aib.mission.help.group_plan": "分組計画の JSON ファイル:groups(id / name / lead / members / quota)、contract、reserve_pct、作業中なら diff も"
 }
