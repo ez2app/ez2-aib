@@ -216,9 +216,25 @@ def find_seat(spec, env):
     return hits[0] if hits else None
 
 
-def seat_pane(base, wid, pid, run=subprocess.run):
+def pid_started(pid, run=subprocess.run):
+    """行程啟動時間(epoch 秒,ps -o lstart= 用 C 語系);查不到 ⇒ None。"""
+    try:
+        r = run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10,
+                env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+        if r.returncode != 0:
+            return None
+        return time.mktime(time.strptime(" ".join((r.stdout or "").split()), "%a %b %d %H:%M:%S %Y"))
+    except (OSError, subprocess.SubprocessError, ValueError, OverflowError):
+        return None
+
+
+PANE_START_SLACK_S = 2   # 席位檔 started_epoch 與 pane 行程 lstart 實測差 0–1 秒
+
+
+def seat_pane(base, wid, pid, run=subprocess.run, started=None):
     """視窗裡 pane_pid = 席位檔 pid 的那一格(%N);找不到 ⇒ None。-t @N 會打到視窗目前作用中的 pane,
-    同視窗另切一格再 select-pane 就會打錯格(#435 R1 L3:不是防線,只減少打錯格)。"""
+    同視窗另切一格再 select-pane 就會打錯格(#435 R1 L3:不是防線,只減少打錯格)。
+    PID 會被重用:那一格行程的啟動時間也要對上席位檔 started_epoch(±2 秒),缺或不符 ⇒ None(#442 r1 M1)。"""
     import seat_act as SA
     try:
         r = run(base + ["list-panes", "-t", wid, "-F", "#{pane_id} #{pane_pid}"], capture_output=True, text=True,
@@ -229,7 +245,16 @@ def seat_pane(base, wid, pid, run=subprocess.run):
         return None
     hits = [f[0] for f in (ln.split() for ln in (r.stdout or "").splitlines())
             if len(f) == 2 and re.fullmatch(r"%\d+", f[0]) and f[1] == str(pid)]
-    return hits[0] if len(hits) == 1 else None
+    if len(hits) != 1:
+        return None
+    try:
+        want = float(started)
+    except (TypeError, ValueError):
+        return None
+    got = pid_started(pid, run=run)
+    if got is None or abs(got - want) > PANE_START_SLACK_S:
+        return None
+    return hits[0]
 
 
 def paste_value(rec, value, tmux="tmux", run=subprocess.run):
@@ -240,7 +265,7 @@ def paste_value(rec, value, tmux="tmux", run=subprocess.run):
     if not sock:
         return "paste_failed"
     base, buf = [tmux, "-L", sock], "aib-secret-" + secrets.token_hex(16)
-    pane = seat_pane(base, wid, rec.get("pid"), run=run) if str(rec.get("pid") or "").isdigit() else None
+    pane = seat_pane(base, wid, rec.get("pid"), run=run, started=rec.get("started_epoch")) if str(rec.get("pid") or "").isdigit() else None
     if pane is None:
         return "seat_busy"
     try:
