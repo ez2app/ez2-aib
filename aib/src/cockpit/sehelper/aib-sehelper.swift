@@ -234,6 +234,9 @@ func seCreate(_ name: String, _ dir: String, kind: String = "sekey") throws {
 }
 
 let grantKeyName = "GRANT_KEY"
+let grantIssuedAhead: TimeInterval = 5         // issued_utc 最多比 helper 時鐘快 5 秒(同一台機器,只容秒數取整)
+let grantIssuedBehind: TimeInterval = 120      // 最多慢 2 分鐘(Python 組單 → 叫 helper 之間)
+let grantMaxWindow: TimeInterval = 7 * 3600    // = approve_grants.WINDOW_CAP_S(日誌涵蓋得到的範圍)
 
 // GRANT_KEY ⇔ kind grantkey(userPresence);其他名字只收 biometryCurrentSet 的 sekey(不讓別的鑰降級成可用密碼簽)
 func loadKeyDoc(_ name: String, _ dir: String) throws -> [String: Any] {
@@ -329,6 +332,14 @@ func seSign(_ name: String, _ dir: String, _ reason: String) throws {
               let want = obj["text_sha256"] as? String, cleanFull(reason) == reason else { throw Fail("reason_mismatch") }
         let got = SHA256.hash(data: Data(reason.utf8)).map { String(format: "%02x", $0) }.joined()
         guard got == want else { throw Fail("reason_mismatch") }
+        // #441 R1 H1:簽發時間 / 期限由 helper 的時鐘核(系統時鐘,同帳號改不了)。呼叫端送未來的 issued_utc ⇒
+        // 「簽 → 鎖屏 → 假起算 → 用」會躲掉鎖屏作廢(只查 issued 之後的鎖屏)⇒ 不簽。
+        let iso = ISO8601DateFormatter()
+        guard let iss = (obj["issued_utc"] as? String).flatMap({ iso.date(from: $0) }),
+              let exp = (obj["expires_utc"] as? String).flatMap({ iso.date(from: $0) }) else { throw Fail("bad_time") }
+        let now = Date()
+        guard iss.timeIntervalSince(now) <= grantIssuedAhead, now.timeIntervalSince(iss) <= grantIssuedBehind,
+              exp > iss, exp.timeIntervalSince(iss) <= grantMaxWindow else { throw Fail("bad_time") }
     }
     guard SecureEnclave.isAvailable else { throw Fail("no_se") }
     let k = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: try b64(doc, "se_key"),

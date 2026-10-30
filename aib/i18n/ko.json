@@ -5866,6 +5866,7 @@
   "aib.doctor.check.grants.os_remedy": "할 일은 없습니다. 새 macOS 버전은 본인이 화면 잠금 / 해제로 확인한 뒤 aib 업데이트로 목록에 추가되어야 적용됩니다",
   "aib.doctor.check.grants.error": "시간 창 상태를 읽을 수 없음: {error}",
   "aib.approve_grants.touchid_lockwatch_on": "잠금 감지를 켭니다(시간 창 자동 승인은 아직 꺼져 있으며, 열리면 그때 사용됩니다)",
+  "aib.approve_grants.revoke_lock_hint": "취소를 기록했습니다. 실제로 무효화하는 것은 화면 잠금입니다. 화면 잠금을 시도했으니, 잠기지 않았다면 직접 한 번 잠가 주세요(한 번 잠그면 그 전에 서명한 시간 창 승인이 모두 무효가 됩니다)",
   "aib.meeting.ok": "완료",
   "aib.meeting.none": "아직 회의가 없습니다",
   "aib.meeting.err": "회의 명령이 거부됨: {code}",

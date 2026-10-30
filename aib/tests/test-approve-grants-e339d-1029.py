@@ -6,8 +6,8 @@
 假 aib-sehelper(HMAC 模擬簽 / 驗,只測核心邏輯;真 SE 的 se-pub / se-verify 在 Mac 上手動驗收)。
 G1 簽一張 seat_input 1h ⇒ 存檔、該類驗過;別類 ⇒ category
 G2 高風險類簽不進單;偽造含高風險類的單(helper 直接簽)⇒ 驗不過;字雜湊照核心算對 ⇒ scope:high_risk
-G3 時長超過該類 max_window(outbound 24h)⇒ over_max_window;時長不在表上 ⇒ bad_duration;
-   字雜湊照核心算對的 24h outbound 單 ⇒ scope:over_max_window
+G3 時長超過該類 max_window(outbound 24h)⇒ over_max_window;時長不在表上 ⇒ bad_duration;超過日誌涵蓋上限(seat_input 24h)
+   ⇒ over_log_cover;字雜湊照核心算對、繞過 helper 直接簽的 24h 單 ⇒ scope:over_max_window / scope:over_log_cover
 G4 改單上任何欄位(到期)⇒ bad_sig
 G5 過期 ⇒ expired
 G6 換開機 ⇒ boot;換機器 ⇒ machine;量不到開機 ⇒ 簽不出(unmeasured)、驗不過
@@ -20,12 +20,14 @@ G12 視窗字由 approve_gate 登記的 site 組:類別 window_grant = 高風險
 G13 注入 touchid、沒給 window ⇒ ask() 不讀授權單(TID-2c 後只有正式路徑才開窗);import 它的只有 CLI / approve_gate / doctor
 G14 sehelper:se-pub / se-verify 的公鑰從 SE 鑰本體重算(不讀 public_key 欄位)、先探 ACL(只認 notInteractive,
     簽得出來 ⇒ weak_key);grant-create = userPresence 且只准 GRANT_KEY;grantkey 簽時視窗字雜湊要等於 text_sha256
+G17 #441 R1 H1:直接叫 helper 送未來起算 / 太舊 / 期限超過 7 小時的單 ⇒ helper 不簽(bad_time;假 helper 跟 Swift 同規則)
 G15 到期被拉長(時長仍寫 1h)、字雜湊正確 ⇒ bad_time
 G16 鑰檔換成不帶 ACL 的鑰(helper 回 weak_key)⇒ 驗不過、列不出、簽不出
 刀(複本落刀,錨要恰好一次):KW1 拿掉簽章驗 ⇒ G4 紅;KW2 拿掉到期 ⇒ G5 紅;KW3 拿掉開機 ⇒ G6 紅;
   KW4 拿掉類別比對 ⇒ G1 紅;KW5 拿掉高風險排除 ⇒ G2 紅(驗單端會改成 over_max_window,斷言分開);
   KW6 拿掉驗單端的範圍重查 ⇒ G2 紅;KW11 拿掉「到期 − 簽發 = 時長」⇒ G15 紅;KW7 拿掉 max_window ⇒ G3 紅;KW8 拿掉字雜湊比對 ⇒ G7 紅;
-  KW9 拿掉 kid 比對 ⇒ G8 紅;KW10 拿掉換鑰標記 ⇒ G9 紅;KW12 拿掉撤銷 ⇒ G10 紅
+  KW9 拿掉 kid 比對 ⇒ G8 紅;KW10 拿掉換鑰標記 ⇒ G9 紅;KW12 拿掉撤銷 ⇒ G10 紅;
+  KW13 拿掉日誌涵蓋上限 ⇒ G3 紅
 """
 import base64
 import hashlib
@@ -40,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +53,7 @@ import approve_gate as AG  # noqa: E402
 import approve_grants as GR  # noqa: E402
 
 FAKE = r'''#!%s
-import base64, hashlib, hmac, json, os, sys
+import base64, calendar, hashlib, hmac, json, os, sys, time
 a = sys.argv[1:]
 sub = a[0]
 o = dict(zip(a[1::2], a[2::2]))
@@ -82,6 +85,20 @@ elif sub == "se-sign":
     k = key()
     if hashlib.sha256(o["--reason"].encode()).hexdigest() != json.loads(data).get("text_sha256"):   # 真 helper 同規則
         sys.stderr.write("reason_mismatch\n"); sys.exit(2)
+    if o["--name"] == "GRANT_KEY":       # 真 helper 同規則(#441 R1 H1):簽發時間 / 期限照 helper 的時鐘核
+        try:
+            with open(os.path.join(o["--dir"], "fake-clock")) as f:
+                now = int(f.read())
+        except OSError:
+            now = int(time.time())
+        d = json.loads(data)
+        try:
+            iss = calendar.timegm(time.strptime(d["issued_utc"], "%%Y-%%m-%%dT%%H:%%M:%%SZ"))
+            exp = calendar.timegm(time.strptime(d["expires_utc"], "%%Y-%%m-%%dT%%H:%%M:%%SZ"))
+        except (KeyError, TypeError, ValueError):
+            sys.stderr.write("bad_time\n"); sys.exit(2)
+        if not (iss - now <= 5 and now - iss <= 120 and iss < exp and exp - iss <= 7 * 3600):
+            sys.stderr.write("bad_time\n"); sys.exit(2)
     with open(log, "a") as f:
         f.write(json.dumps({"reason": o["--reason"]}, ensure_ascii=False) + "\n")
     print(base64.b64encode(hmac.new(k, data, "sha256").digest()).decode())
@@ -111,8 +128,27 @@ class Env:
         self.machine = ["m" * 16]
 
     def ctx(self, M=GR):
+        self.clock(M)
         return M.Ctx(env=self.env, helper=self.helper, platform="darwin", now=lambda: self.t[0],
-                     boot=lambda: self.boot[0], machine=lambda: self.machine[0])
+                     boot=lambda: self.boot[0], machine=lambda: self.machine[0], lock_screen=self._lock)
+
+    def clock(self, M=GR):
+        """假 helper 的時鐘 = 測試時鐘(寫在 --dir 裡;真 helper 用系統時鐘)。"""
+        d = M._key_dir(self.env)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "fake-clock"), "w") as f:
+            f.write(str(int(self.t[0])))
+
+    def _lock(self):
+        """假鎖屏(不碰真螢幕):記一筆,子類別可接到假系統日誌。"""
+        self.lock_calls = getattr(self, "lock_calls", []) + [int(self.t[0])]
+        return "locked"
+
+    def sign_bypass(self, M, doc):
+        """不經 helper、直接用假鑰算 HMAC(模擬「helper 的時間檢查不存在」時驗單端還擋不擋得住)。"""
+        with open(os.path.join(M._key_dir(self.env), M.KEY_NAME + ".sekey")) as f:
+            k = json.load(f)["k"].encode()
+        return {"doc": doc, "sig": base64.b64encode(hmac.new(k, M.canonical(doc), "sha256").digest()).decode()}
 
     def sign_raw(self, M, doc, reason):
         """繞過核心檢查、直接叫 helper 簽(模擬 AI 自己拼一張單去騙指紋;reason = 視窗上給本人看的字)。"""
@@ -184,13 +220,37 @@ def cell_g3(t, M):
         t.assertEqual(M.sign(["outbound"], "24h", e.ctx(M)), (None, "over_max_window"))
         t.assertEqual(M.sign(["seat_input", "command"], "24h", e.ctx(M)), (None, "over_max_window"))
         t.assertEqual(M.sign(["seat_input"], "2h", e.ctx(M)), (None, "bad_duration"))
-        doc, _ = M.sign(["seat_input"], "24h", e.ctx(M))
+        t.assertEqual(M.sign(["seat_input"], "24h", e.ctx(M)), (None, "over_log_cover"))   # #441:上限 = 日誌涵蓋範圍
+        doc, _ = M.sign(["seat_input"], "3h", e.ctx(M))
         t.assertIsNotNone(doc)
         good = _grant(M, e, doc)["doc"]
         forged = e.sign_raw(M, dict(good, cats=["outbound"]), _txt(good["cats"], good["dur"]))
         t.assertFalse(M.verify(forged, "outbound", e.ctx(M))[0])
-        d, txt = _rehash(good, cats=["outbound"])                       # 24h 的 outbound,字雜湊正確
-        t.assertEqual(M.verify(e.sign_raw(M, d, txt), "outbound", e.ctx(M)), (False, "scope:over_max_window"))
+        now = int(e.t[0])                                               # 24h 的單:helper 不簽(bad_time)⇒ 驗單端再擋一次
+        long_ = dict(good, dur="24h", expires_utc=M._utc(now + 24 * 3600))
+        d, txt = _rehash(dict(long_, cats=["outbound"]))
+        t.assertEqual(M.verify(e.sign_bypass(M, d), "outbound", e.ctx(M)), (False, "scope:over_max_window"))
+        d, txt = _rehash(long_)
+        t.assertEqual(M.verify(e.sign_bypass(M, d), "seat_input", e.ctx(M)), (False, "scope:over_log_cover"))
+    finally:
+        e.close()
+
+
+def cell_g17(t, M):
+    """#441 R1 H1:直接叫 helper 送「未來起算」的單(簽 → 鎖屏 → 假起算 → 用)⇒ helper 不簽;簽發太舊 / 期限過長也不簽。"""
+    e = Env()
+    try:
+        doc, _ = M.sign(["seat_input"], "1h", e.ctx(M))
+        good = _grant(M, e, doc)["doc"]
+        txt = _txt(good["cats"], good["dur"])
+        now = int(e.t[0])
+        for iss, exp in ((now + 7200, now + 10800), (now + 60, now + 3660), (now - 600, now + 3000),
+                         (now, now + 8 * 3600), (now, now)):
+            d = dict(good, issued_utc=M._utc(iss), expires_utc=M._utc(exp), nonce="f" * 32)
+            out, why = e.ctx(M).helper_call(["se-sign", "--name", M.KEY_NAME, "--dir", M._key_dir(e.env), "--reason", txt],
+                                            M.canonical(d))
+            t.assertEqual(why, "bad_time", (iss - now, exp - now))
+        t.assertEqual(M.WINDOW_CAP_S, 7 * 3600)                       # = helper 的 grantMaxWindow(G14 對 Swift 原始碼)
     finally:
         e.close()
 
@@ -335,6 +395,8 @@ class Cells(unittest.TestCase):
     def test_g8(self): cell_g8(self, GR)
     def test_g9(self): cell_g9(self, GR)
     def test_g10(self): cell_g10(self, GR)
+    def test_g17(self): cell_g17(self, GR)
+
     def test_g15(self): cell_g15(self, GR)
     def test_g16(self): cell_g16(self, GR)
 
@@ -348,17 +410,22 @@ class Cells(unittest.TestCase):
             self.assertEqual(GR.main(["--extend", "secret", "--for", "1h"], out=out, ctx=e.ctx()), 2)
             self.assertEqual(json.loads(out.getvalue())["why"], "high_risk")
             out = io.StringIO()
-            GR.main(["--json"], out=out, ctx=e.ctx())
+            with mock.patch.object(AG, "_default_window", lambda: None):   # 不看這台有沒有裝固定路徑 helper
+                GR.main(["--json"], out=out, ctx=e.ctx())
             rows = json.loads(out.getvalue())
             self.assertEqual([r["cats"] for r in rows], [["command", "seat_input"]])
             self.assertEqual(rows[0]["left_s"], 3600)
             self.assertEqual(rows[0]["auto_approve"], "off")              # #428 R2:正式路徑時間窗關著
             out = io.StringIO()
-            GR.main([], out=out, ctx=e.ctx())
+            with mock.patch.object(AG, "_default_window", lambda: None):
+                GR.main([], out=out, ctx=e.ctx())
             self.assertIn("auto_approve:off", out.getvalue())
             out = io.StringIO()
             GR.main(["--revoke", "all"], out=out, ctx=e.ctx())
-            self.assertEqual(json.loads(out.getvalue())["revoked"], 1)
+            got = json.loads(out.getvalue())
+            self.assertEqual((got["revoked"], got["lock"]), (1, "locked"))   # 撤銷 = 鎖屏(假鎖屏)
+            self.assertEqual(len(e.lock_calls), 1)
+            self.assertTrue(got["hint"])
             out = io.StringIO()
             GR.main(["--json"], out=out, ctx=e.ctx())
             self.assertEqual(json.loads(out.getvalue()), [])
@@ -434,6 +501,13 @@ class Cells(unittest.TestCase):
         # L1:grantkey 簽時視窗字雜湊要等於單上 text_sha256
         sign = sw[sw.index("func seSign"):]
         self.assertIn('guard got == want else { throw Fail("reason_mismatch") }', sign)
+        # #441 R1 H1:grantkey 簽時 issued / expires 照 helper 時鐘核;上限跟 Python 同一個數
+        self.assertIn("guard iss.timeIntervalSince(now) <= grantIssuedAhead, now.timeIntervalSince(iss) <= grantIssuedBehind,", sign)
+        self.assertIn('exp > iss, exp.timeIntervalSince(iss) <= grantMaxWindow else { throw Fail("bad_time") }', sign)
+        self.assertIn("let grantIssuedAhead: TimeInterval = 5 ", sw)
+        self.assertIn("let grantIssuedBehind: TimeInterval = 120 ", sw)
+        self.assertIn("let grantMaxWindow: TimeInterval = 7 * 3600 ", sw)
+        self.assertEqual(GR.WINDOW_CAP_S, 7 * 3600)
 
 
 # ---- 刀 ----
@@ -445,6 +519,7 @@ KNIVES = [
     ("KW5", '        if spec["high_risk"]:\n            return "high_risk"\n', '', cell_g2),
     ("KW6", '    if check_scope(cats, doc.get("dur")):\n        return False, "scope:" + check_scope(cats, doc.get("dur"))\n', '', cell_g2),
     ("KW7", '        if DURATIONS[dur] > spec["max_window"]:\n            return "over_max_window"\n', '', cell_g3),
+    ("KW13", '    if DURATIONS[dur] > WINDOW_CAP_S:\n        return "over_log_cover"\n', '', cell_g3),
     ("KW8", ' != doc.get("text_sha256"):\n        return False, "text_mismatch"\n', ' != doc.get("text_sha256") and False:\n        pass\n', cell_g7),
     ("KW9", '    if doc.get("kid") != kid:\n        return False, "kid_mismatch"\n', '', cell_g8),
     ("KW10", '    rekey = (old, kid) if old != kid and old is not None else None\n    r = ', '    rekey = None\n    r = ', cell_g9),

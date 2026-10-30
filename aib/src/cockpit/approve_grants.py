@@ -56,6 +56,9 @@ import se_vault
 
 KEY_NAME = "GRANT_KEY"
 DURATIONS = {"15m": 900, "30m": 1800, "1h": 3600, "3h": 3 * 3600, "24h": 24 * 3600}
+# #441 R1(@aeb40 裁):時間窗上限縮到系統日誌涵蓋得到的範圍內(這台 Persist 約 7.5 小時)⇒ 24h 不給選、舊的 24h 單驗不過。
+# 撤銷 = 鎖屏(Andy 19:3x 選 A):鎖一次 ⇒ 之前簽的單全部作廢;窗越短,沒鎖屏時「刪撤銷紀錄重播」的風險越短。
+WINDOW_CAP_S = 7 * 3600
 _NONCE = re.compile(r"^[0-9a-f]{32}$")
 V = 1
 
@@ -145,11 +148,34 @@ def screen_locked_now(run=subprocess.run, platform=None):
     return any(isinstance(u, dict) and u.get("CGSSessionScreenIsLocked") is True for u in users)
 
 
+LOGIN_FW = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
+
+
+def lock_screen_now(platform=None, cdll=None, run=subprocess.run):
+    """立刻鎖屏(撤銷 = 鎖屏,#441 R1 H2)。回 locked / display_sleep / failed / not_mac。
+    先叫 login.framework 的 SACLockScreenImmediate(系統框架、SIP 保護);叫不到 ⇒ pmset displaysleepnow
+    (「螢幕關閉後立即要求密碼」開著才會鎖)。cdll / run 只給測試注入 —— 測試一律走 Ctx(lock_screen=),不碰真螢幕。"""
+    if (platform or sys.platform) != "darwin":
+        return "not_mac"
+    try:
+        import ctypes
+        if (cdll or ctypes.CDLL)(LOGIN_FW).SACLockScreenImmediate() == 0:
+            return "locked"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        p = run(["/usr/bin/pmset", "displaysleepnow"], capture_output=True, timeout=5,
+                env={"PATH": "/usr/bin:/bin"}, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return "failed"
+    return "display_sleep" if p.returncode == 0 else "failed"
+
+
 class Ctx:
     """外部依賴一處注入(測試換假 helper / 時鐘 / 開機 / 機器 / 系統日誌)。"""
 
     def __init__(self, env=None, run=subprocess.run, helper=None, platform=None, now=None, boot=None, machine=None,
-                 screen_locked=None, anchored=None, syslog=None, os_build=None):
+                 screen_locked=None, anchored=None, syslog=None, os_build=None, lock_screen=None):
         self.env = dict(os.environ if env is None else env)
         self.run, self.helper, self.platform = run, helper, platform
         self.now = now or time.time
@@ -158,6 +184,12 @@ class Ctx:
         self._anchored = anchored            # 只給測試換掉 anchored_helper.check
         self._syslog = syslog                # 只給測試換掉 syslog_locks(since, now) -> (事件秒數清單, None) | (None, why)
         self._os_build = os_build            # 只給測試換掉 os_build() -> build 字串 | None
+        self._lock_screen = lock_screen      # 只給測試換掉 lock_screen_now() -> locked | display_sleep | failed | not_mac
+
+    def lock_screen(self):
+        if self._lock_screen is not None:
+            return self._lock_screen()
+        return lock_screen_now(self.platform, run=self.run)
 
     def os_build(self):
         if self._os_build is not None:
@@ -223,6 +255,8 @@ def check_scope(cats, dur):
             return "high_risk"
         if DURATIONS[dur] > spec["max_window"]:
             return "over_max_window"
+    if DURATIONS[dur] > WINDOW_CAP_S:
+        return "over_log_cover"
     return None
 
 
@@ -470,7 +504,9 @@ def active(ctx):
 
 
 def revoke(target, ctx):
-    """撤銷(不用指紋;只防誤操作)。target = 類別或 all。回撤銷的張數。"""
+    """撤銷紀錄(不用指紋)。target = 類別或 all。回撤銷的張數。
+    #441 R1 H2:revoked.jsonl 是同帳號可寫的本機檔 ⇒ 只算方便功能(AI 刪掉紀錄、舊單就回來);真正的撤銷 = 鎖屏
+    (系統日誌裡 loginwindow 的鎖屏事件,AI 刪不掉 ⇒ 之前簽的單全部作廢)。CLI 的 --revoke 記完就叫 ctx.lock_screen()。"""
     n = 0
     path = os.path.join(_dir(ctx.env), "revoked.jsonl")
     for doc, _left in active(ctx):
@@ -483,7 +519,8 @@ def revoke(target, ctx):
 
 
 def rotate_key(ctx):
-    """換簽單鑰 = 舊單全部失效(真正的收回)。舊鑰檔改名留著,不刪。新鑰第一次簽單時本人按指紋。"""
+    """換簽單鑰 ⇒ 舊單驗不過。舊鑰檔改名留著,不刪。新鑰第一次簽單時本人按指紋。
+    #441 R1 H2:舊鑰檔 / grant-kid.json 同帳號可還原 ⇒ 換鑰本身不算收回;CLI 的 --rotate-key 換完就鎖屏(真正的收回)。"""
     old = os.path.join(_key_dir(ctx.env), KEY_NAME + ".sekey")
     if os.path.isfile(old):
         os.replace(old, old + ".retired-%d" % int(ctx.now()))
@@ -761,7 +798,8 @@ def durations_for(cat):
     spec = AG.CATEGORIES.get(cat)
     if not spec or spec["high_risk"] or spec["max_window"] <= 0:
         return []
-    return [d for d, sec in sorted(DURATIONS.items(), key=lambda kv: kv[1]) if sec <= spec["max_window"]]
+    return [d for d, sec in sorted(DURATIONS.items(), key=lambda kv: kv[1])
+            if sec <= min(spec["max_window"], WINDOW_CAP_S)]
 
 
 def choose_prompt(r, ctx):
@@ -875,11 +913,16 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
         _, why = lock_state(_probe(ctx),
                             int(ctx.now()) - 60)            # 鎖屏判斷看系統日誌(第 2 張);這裡回它查不查得到
         return emit({"ok": why is None, "why": why, "source": "syslog"}, 0)
-    if o.revoke:
-        return emit({"ok": True, "revoked": revoke(o.revoke, ctx)}, 0)
+    if o.revoke:                             # 撤銷 = 鎖屏(#441 R1 H2):紀錄只是方便,鎖屏才是 AI 回滾不了的那一步
+        n = revoke(o.revoke, ctx)
+        lk = ctx.lock_screen()
+        return emit({"ok": True, "revoked": n, "lock": lk,
+                     "hint": _t("aib.approve_grants.revoke_lock_hint", None, ctx.env)}, 0)
     if o.rotate_key:
         kid, why = rotate_key(ctx)
-        return emit({"ok": bool(kid), "kid": kid, "why": why}, 0 if kid else 2)
+        lk = ctx.lock_screen() if kid else None
+        return emit({"ok": bool(kid), "kid": kid, "why": why, "lock": lk,
+                     "hint": _t("aib.approve_grants.revoke_lock_hint", None, ctx.env) if kid else ""}, 0 if kid else 2)
     if o.extend:
         if not o.dur:
             return emit({"ok": False, "why": "need_for"}, 2)

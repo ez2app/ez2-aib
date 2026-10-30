@@ -5866,6 +5866,7 @@
   "aib.doctor.check.grants.os_remedy": "不用處理;新版 macOS 要先本人鎖屏 / 解鎖實測過、隨 aib 更新加進名單,之後才會生效",
   "aib.doctor.check.grants.error": "讀不到時間窗狀態:{error}",
   "aib.approve_grants.touchid_lockwatch_on": "開啟鎖屏偵測(時間窗的自動同意目前仍關著,之後開放時才會用到)",
+  "aib.approve_grants.revoke_lock_hint": "已記下撤銷;真正作廢靠鎖屏 —— 已試著幫你鎖螢幕,沒鎖上請自己鎖一次(鎖一次 ⇒ 之前簽的時間窗全部作廢)",
   "aib.meeting.ok": "好了",
   "aib.meeting.none": "還沒有會議",
   "aib.meeting.err": "會議指令被拒:{code}",

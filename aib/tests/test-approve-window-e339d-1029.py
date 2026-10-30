@@ -15,7 +15,7 @@ W7 ask():簽單句子放不下(reason_refused)⇒ 退回 LAContext;其他簽單�
 W8 ask():高風險類 ⇒ 找單、選單都不叫(介面一處)
 W9 端到端(GateWindow + 假 helper + 假選單):選 1h ⇒ 視窗字以這次的句子開頭、單驗得過;下一次同類 ⇒ 自動同意 + 記帳
 W10 舊 helper(se-pub 沒回 owner_acl)⇒ old_helper,不開窗
-W11 durations_for:outbound ≤ 3h、seat_input 到 24h
+W11 durations_for:outbound / command / seat_input 都 ≤ 3h(#441:上限 = 日誌涵蓋範圍 7 小時,24h 拿掉)
 W14 系統日誌查不到 / helper 不在 ⇒ 不出時長選單(只這次)
 W15 系統日誌查不到 + 簽章正確的有效窗單 ⇒ ask 仍一次一按、不出選單
 W16 正式路徑(不注入 touchid / window):不是 Mac / 固定路徑 helper 沒裝 ⇒ _default_window 回 None,
@@ -28,6 +28,11 @@ W19 第 3 張接窗:Mac + 固定路徑 helper 驗得過 ⇒ 正式路徑 ask(sea
 W20 刀:換狀態根 —— EZ2_AIB_STATE_ROOT / EZ2_AIB_HOME / HOME 都指到 AI 的目錄、裡面有一張驗得過的單 ⇒ 正式路徑不採用,一次一按
 W21 刀:覆寫 helper —— 固定路徑那支不是 root 擁有,AI 在 <家>/.ez2-aib/bin 種假 helper + 用它簽的單 ⇒ 不開窗,一次一按
 W22 刀:自寫鎖屏紀錄 —— 本人簽的單、系統日誌有簽單後的鎖屏,AI 自寫 lockwatch.json「沒鎖過」⇒ 一次一按
+W16o #441 R1 M1:真的 anchored_helper.check(只換 lstat / stamp / codesign):helper 不是 root 擁有 ⇒ 正式 ask() 一次一按
+W20b #441 R1 M2:只改行程 HOME(單在 <假 HOME>/.ez2-aib,pwd 家目錄不同)⇒ 一次一按
+W23 H2 刀:--revoke(撤銷 = 鎖屏)之後刪 revoked.jsonl 重播 ⇒ locked_since;鎖屏失敗時刪紀錄就回來 = 已知限制(斷言照實)
+W24 H2 刀:--rotate-key(換鑰 + 鎖屏)之後還原退休鑰 + grant-kid.json 重播 ⇒ locked_since
+W25 系統日誌涵蓋不到簽發 → 現在(log_uncovered)⇒ 有效單也要彈指紋、不出選單
 W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單但系統日誌查不到 ⇒ note
   (第 2 張起 lockwatch.json 不再參與判斷;W2 另驗自寫一份「沒鎖過」的 lockwatch.json 也不會讓單生效)
 刀(複本落刀,錨要恰好一次):KL1 lock_state 不理查詢失敗 ⇒ W2 紅;KL2 拿掉鎖屏後作廢 ⇒ W3 紅;KL3 拿掉「現在鎖著」⇒ W2 紅;
@@ -37,7 +42,9 @@ W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plis
   KG1 ask 拿掉高風險不走窗 ⇒ W8 紅;KG2 拿掉記帳 ⇒ W5 紅;KG3 拿掉取消 ⇒ W6 紅
   KH1 / KH2 _default_window 拿掉固定路徑 helper 檢查 ⇒ W16 / W17 紅;KH3 拿掉平台檢查 ⇒ W16 紅
   KW1 pinned_env 照收呼叫端 env(狀態根跟著 EZ2_AIB_STATE_ROOT)⇒ W20 紅;KW2 helper_exe 退回 <狀態根>/bin ⇒ W21 紅;
-  KW3 正式路徑 lock_state 改讀 lockwatch.json ⇒ W22 紅
+  KW3 正式路徑 lock_state 改讀 lockwatch.json ⇒ W22 紅;KW4 pinned_env 改看行程 HOME ⇒ W20b 紅;
+  KW5 --revoke 不鎖屏 ⇒ W23 紅;KW6 --rotate-key 不鎖屏 ⇒ W24 紅;KW7 涵蓋不足當沒鎖過 ⇒ W25 紅;
+  KH4 anchored_helper 拿掉擁有者檢查 ⇒ W16o 紅
 """
 import hashlib
 import importlib.util
@@ -78,8 +85,16 @@ class Env(T2B.Env):
         self.locks, self.log_why, self.log_calls = None, None, []      # 預設:系統日誌查不到
         self.build = [VERIFIED]                                        # 預設:名單裡的 macOS build
 
+    def _lock(self):
+        """假鎖屏:記一筆;假系統日誌開著時也記一筆 loginwindow 鎖屏事件(真鎖屏也會)。"""
+        self.lock_calls = getattr(self, "lock_calls", []) + [int(self.t[0])]
+        if self.locks is not None:
+            self.locks.append(int(self.t[0]))
+        return "locked"
+
     def ctx(self, M=GR):
-        return M.Ctx(env=self.env, helper=self.helper, platform="darwin", now=lambda: self.t[0],
+        self.clock(M)
+        return M.Ctx(env=self.env, helper=self.helper, platform="darwin", now=lambda: self.t[0], lock_screen=self._lock,
                      boot=lambda: self.boot[0], machine=lambda: self.machine[0], screen_locked=lambda: self.locked[0],
                      syslog=self._syslog,
                      os_build=lambda: sorted(M.VERIFIED_BUILDS)[0] if self.build[0] is VERIFIED else self.build[0])
@@ -288,7 +303,7 @@ def cell_w15(t, M):
     e = Env()
     td = tempfile.mkdtemp(prefix="aib-window-lock-")
     try:
-        doc, _ = M.sign(["seat_input"], "24h", e.ctx(M))
+        doc, _ = M.sign(["seat_input"], "3h", e.ctx(M))
         t.assertTrue(M.verify(T2B._grant(M, e, doc), "seat_input", e.ctx(M))[0])     # 單本身是好的
         seen = []
         win = M.GateWindow(e.ctx(M), run=lambda *a, **k: t.fail("系統日誌查不到不該出選單"))
@@ -321,6 +336,44 @@ def cell_w16(t, G):
         shutil.rmtree(td, ignore_errors=True)
 
 
+def _fake_lstat(owner_uid):
+    """假 lstat:固定路徑 helper 的擁有者 = owner_uid,其他(stamp / 每層目錄)都是 root、不可寫。"""
+    import stat as st
+
+    def lstat(p):
+        if p == GR.anchored_helper.EXE:
+            return types.SimpleNamespace(st_mode=st.S_IFREG | 0o755, st_uid=owner_uid)
+        if p == GR.anchored_helper.STAMP:
+            return types.SimpleNamespace(st_mode=st.S_IFREG | 0o644, st_uid=0)
+        return types.SimpleNamespace(st_mode=st.S_IFDIR | 0o755, st_uid=0)
+    return lstat
+
+
+def cell_w16_owner(t, AH, G=AG):
+    """#441 R1 M1:用真的 anchored_helper.check(只換 lstat / stamp / codesign);helper 不是 root 擁有 ⇒ 正式 ask() 一次一按。
+    AH = 受測的 anchored_helper(刀測拿複本)。"""
+    import functools
+    runtime = lambda *a, **k: subprocess.CompletedProcess(a, 0, "", "CodeDirectory flags=0x10002(adhoc,runtime)\n")  # noqa: E731
+    td = tempfile.mkdtemp(prefix="aib-window-owner-")
+    try:
+        for uid, want in ((0, (AH.EXE, None)), (501, (None, "not_root_owned"))):
+            check = functools.partial(AH.check, lstat=_fake_lstat(uid), read=lambda p: "d" * 64,
+                                      src_digest=lambda: "d" * 64, run=runtime)
+            t.assertEqual(check(platform="darwin"), want, uid)
+        fake = FakeWin(doc={"nonce": "n" * 32}, choice="1h")
+        seen = []
+        with mock.patch.object(GR, "GateWindow", lambda *a, **k: fake), \
+                mock.patch.object(G.sys, "platform", "darwin"), \
+                mock.patch.object(GR.anchored_helper, "check", check), \
+                mock.patch.object(G.TA, "ask", lambda r: seen.append(r) or {"ok": True, "why": "ok"}):
+            t.assertIsNone(G._default_window())
+            res = G.ask(_r(G), td)
+        t.assertEqual((len(seen), fake.calls), (1, []))
+        t.assertNotEqual(res.get("why"), "window")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def cell_w17(t, G):
     """審查探針 P4 + P1:EZ2_AIB_STATE_ROOT 指到自己的目錄 + 種假 bin/aib-sehelper(stamp 寫真原始碼雜湊)+ 不經
     --lockwatch on 自寫 lockwatch.json ⇒ 簽單拿不到 helper(helper_not_installed)、正式路徑 ask(seat_input) 仍彈窗、
@@ -347,7 +400,7 @@ def cell_w17(t, G):
                 mock.patch.object(GR, "choose_window", lambda r, ctx, run=None: chose.append(r) or "once"), \
                 mock.patch.dict(os.environ, env), \
                 mock.patch.object(G.TA, "ask", lambda r: seen.append(r) or {"ok": True, "why": "ok"}):
-            t.assertEqual(GR.sign(["seat_input"], "24h", GR.Ctx(env=env)), (None, "helper_not_installed"))
+            t.assertEqual(GR.sign(["seat_input"], "3h", GR.Ctx(env=env)), (None, "helper_not_installed"))
             now = int(time.time())
             GR._write_json(GR.lockwatch_path(env), {"v": 1, "beat_utc": GR._utc(now), "last_lock_utc": GR._utc(now - 3600)})
             res = G.ask(_r(G), os.path.join(td, "lk"))
@@ -437,7 +490,7 @@ def cell_w20(t, G, M=GR):
         os.makedirs(fake)
         with p.on(G, M, {"EZ2_AIB_STATE_ROOT": os.path.join(fake, "state"), "EZ2_AIB_HOME": os.path.join(fake, "state"),
                          "HOME": fake}):
-            M.sign(["seat_input"], "24h", M.Ctx(env=dict(os.environ), platform="darwin"))
+            M.sign(["seat_input"], "3h", M.Ctx(env=dict(os.environ), platform="darwin"))
             t.assertTrue(M.load_all(dict(os.environ)))                        # AI 那邊確實有單
             res = G.ask(_r(G), os.path.join(p.td, "lk"))
         t.assertEqual((res.get("why"), len(p.seen)), ("ok", 1))
@@ -458,7 +511,7 @@ def cell_w21(t, G, M=GR):
             g.write(hashlib.sha256(f.read()).hexdigest())
         with p.on(G, M):
             env = p.home_env()
-            M.sign(["seat_input"], "24h", M.Ctx(env=env, helper=exe, platform="darwin"))
+            M.sign(["seat_input"], "3h", M.Ctx(env=env, helper=exe, platform="darwin"))
             t.assertTrue(M.load_all(env))
             p.anchored = (None, "not_root_owned")
             res = G.ask(_r(G), os.path.join(p.td, "lk"))
@@ -482,6 +535,89 @@ def cell_w22(t, G, M=GR):
         t.assertNotEqual(res.get("grant"), doc["nonce"])
     finally:
         p.close()
+
+
+def cell_w20b(t, G, M=GR):
+    """#441 R1 M2:只改行程 HOME —— 單放在 <假 HOME>/.ez2-aib、pwd 家目錄是另一個 ⇒ 正式路徑不採用,一次一按。"""
+    p = Prod()
+    try:
+        fake = os.path.join(p.td, "ai-home")
+        os.makedirs(fake)
+        with p.on(G, M, {"HOME": fake}):
+            env = dict(os.environ, EZ2_AIB_STATE_ROOT=os.path.join(fake, ".ez2-aib"))
+            M.sign(["seat_input"], "3h", M.Ctx(env=env, platform="darwin"))
+            t.assertTrue(M.load_all(env))
+            t.assertNotIn("EZ2_AIB_STATE_ROOT", os.environ)
+            res = G.ask(_r(G), os.path.join(p.td, "lk"))
+        t.assertEqual((res.get("why"), len(p.seen)), ("ok", 1))
+    finally:
+        p.close()
+
+
+def cell_w23(t, M):
+    """#441 R1 H2 刀:撤銷 = 鎖屏。--revoke 之後 AI 刪掉 revoked.jsonl 重播 ⇒ 中間鎖過屏 ⇒ locked_since。
+    沒鎖上(鎖屏失敗)時刪紀錄就回來 = 已知限制(PR 照實寫),這裡也斷言它,免得以後誤以為擋得住。"""
+    for locked in (True, False):
+        e = Env()
+        try:
+            e.log()
+            if not locked:
+                e._lock = lambda: "failed"
+            doc, _ = M.sign(["seat_input"], "1h", e.ctx(M))
+            e.t[0] = T0 + 60
+            out = io.StringIO()
+            M.main(["--revoke", "all"], out=out, ctx=e.ctx(M))
+            t.assertEqual(json.loads(out.getvalue())["lock"], "locked" if locked else "failed")
+            e.t[0] = T0 + 120
+            t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "revoked"))   # 撤銷紀錄還在:先擋在這
+            os.unlink(os.path.join(M._dir(e.env), "revoked.jsonl"))          # AI 刪撤銷紀錄
+            got = M.find_valid("seat_input", e.ctx(M))
+            if locked:
+                t.assertEqual(got, (None, "locked_since"))
+            else:
+                t.assertEqual(got[0]["nonce"], doc["nonce"])                 # 已知限制:沒鎖屏 ⇒ 擋不住
+        finally:
+            e.close()
+
+
+def cell_w24(t, M):
+    """#441 R1 H2 刀:--rotate-key 之後 AI 還原退休鑰檔 + grant-kid.json 重播 ⇒ 中間鎖過屏 ⇒ locked_since。"""
+    e = Env()
+    try:
+        e.log()
+        doc, _ = M.sign(["seat_input"], "1h", e.ctx(M))
+        kd = M._key_dir(e.env)
+        keep = {n: open(os.path.join(kd, n), "rb").read() for n in (M.KEY_NAME + ".sekey", "grant-kid.json")}
+        e.t[0] = T0 + 60
+        out = io.StringIO()
+        M.main(["--rotate-key"], out=out, ctx=e.ctx(M))
+        t.assertEqual(json.loads(out.getvalue())["lock"], "locked")
+        for n, b in keep.items():                                           # AI 還原舊鑰 / 舊 kid
+            with open(os.path.join(kd, n), "wb") as f:
+                f.write(b)
+        e.t[0] = T0 + 120
+        t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "locked_since"))
+    finally:
+        e.close()
+
+
+def cell_w25(t, M):
+    """#441 R1(@aeb40):系統日誌涵蓋不到「簽發 → 現在」整段(log_uncovered)⇒ 有效單也不自動同意、不出選單,要彈指紋。"""
+    e = Env()
+    td = tempfile.mkdtemp(prefix="aib-window-cover-")
+    try:
+        doc, _ = M.sign(["seat_input"], "1h", e.ctx(M))
+        e.log()
+        t.assertEqual(M.find_valid("seat_input", e.ctx(M))[0]["nonce"], doc["nonce"])
+        e.log(why="log_uncovered")
+        seen = []
+        win = M.GateWindow(e.ctx(M), run=lambda *a, **k: t.fail("涵蓋不足不該出選單"))
+        res = AG.ask(_r(AG), td, touchid=lambda x: seen.append(x) or {"ok": True, "why": "ok"}, window=win)
+        t.assertEqual((len(seen), res["why"]), (1, "ok"))
+        t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "log_uncovered"))
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+        e.close()
 
 
 def cell_w10(t, M):
@@ -552,6 +688,11 @@ class Cells(unittest.TestCase):
     def test_w20(self): cell_w20(self, AG)
     def test_w21(self): cell_w21(self, AG)
     def test_w22(self): cell_w22(self, AG)
+    def test_w16_owner(self): cell_w16_owner(self, GR.anchored_helper)
+    def test_w20b(self): cell_w20b(self, AG)
+    def test_w23(self): cell_w23(self, GR)
+    def test_w24(self): cell_w24(self, GR)
+    def test_w25(self): cell_w25(self, GR)
     def test_w18(self): cell_w18(self, GR)
 
     def test_w18_doctor(self):
@@ -628,7 +769,7 @@ class Cells(unittest.TestCase):
     def test_w11_durations(self):
         self.assertEqual(GR.durations_for("outbound"), ["15m", "30m", "1h", "3h"])
         self.assertEqual(GR.durations_for("command"), ["15m", "30m", "1h", "3h"])
-        self.assertEqual(GR.durations_for("seat_input"), ["15m", "30m", "1h", "3h", "24h"])
+        self.assertEqual(GR.durations_for("seat_input"), ["15m", "30m", "1h", "3h"])   # #441:24h 超過日誌涵蓋
 
     def test_w12_lockwatch_install_and_doctor(self):
         e = Env()
@@ -695,6 +836,14 @@ KNIVES_GR = [
     ("KW2", '        return (exe, None) if exe else (None, "helper_" + str(why))\n',
      '        return (exe, None) if exe else (os.path.join(se_vault._state_root(self.env), "bin", "aib-sehelper"), None)\n',
      lambda t, M: cell_w21(t, AG, M)),
+    ("KW4", '    h = home or pwd.getpwuid(os.getuid()).pw_dir\n', '    h = home or os.environ["HOME"]\n',
+     lambda t, M: cell_w20b(t, AG, M)),
+    ("KW5", '        lk = ctx.lock_screen()\n        return emit({"ok": True, "revoked": n,', '        lk = "locked"\n        return emit({"ok": True, "revoked": n,',
+     cell_w23),
+    ("KW6", '        lk = ctx.lock_screen() if kid else None\n', '        lk = "locked"\n', cell_w24),
+    ("KW7", '    events, why = ctx.syslog(int(since), int(ctx.now()))\n    if why:\n        return None, why\n',
+     '    events, why = ctx.syslog(int(since), int(ctx.now()))\n    if why == "log_uncovered":\n        events, why = [], None\n'
+     '    if why:\n        return None, why\n', cell_w25),
     ("KW3", '    events, why = ctx.syslog(int(since), int(ctx.now()))\n',
      '    try:\n        with open(lockwatch_path(ctx.env), encoding="utf-8") as fh:\n'
      '            events, why = [_parse_utc(json.load(fh)["last_lock_utc"])], None\n'
@@ -731,6 +880,11 @@ def _load_copy(name, src_file, anchor, repl):
     return M, td
 
 
+KNIVES_AH = [
+    ("KH4", '    if st.st_uid != 0:\n        return "not_root_owned"\n', '', cell_w16_owner),
+]
+
+
 class Knives(unittest.TestCase):
     def _run(self, knives, src_file, patch):
         for name, anchor, repl, cell in knives:
@@ -748,6 +902,9 @@ class Knives(unittest.TestCase):
         def patch(M):
             M.window_reason = GR.window_reason          # 視窗字要從登記的那支組(複本不是登記檔)
         self._run(KNIVES_GR, SRC / "approve_grants.py", patch)
+
+    def test_knives_anchored(self):
+        self._run(KNIVES_AH, SRC / "anchored_helper.py", lambda M: None)
 
     def test_knives_gate(self):
         self._run(KNIVES_AG, SRC / "approve_gate.py", lambda M: None)
