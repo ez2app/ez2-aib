@@ -16,7 +16,8 @@ P10 順序(@aeb40 10-30 03:10):先查讀取開關 ⇒ Touch ID ⇒ 才讀值;開
 P9 真 tmux(有 tmux 才跑):paste 期間每次叫 tmux 都掃一次 ps -axww,掃出來沒有值;那一席的畫面打出了值、沒有送出
 刀(手動):K1 paste 改 send-keys -l 值 ⇒ P5 / P9 紅;K2 copy 拿掉 Touch ID ⇒ P3 紅;K3 清除不比雜湊 ⇒ P4 紅;
     K4 site 類別改 seat_input ⇒ P1 紅;K5 先讀值再彈指紋(拿掉 precheck)⇒ P10 紅;
-    K6 先 pbcopy 再起清除行程 ⇒ P2 紅;K7 按指紋後不重查 fresh_target ⇒ P6 紅
+    K6 先 pbcopy 再起清除行程 ⇒ P2 紅;K7 按指紋後不重查 fresh_target ⇒ P6 紅;
+    K8 paste 拿掉 not_mac ⇒ P6 test_not_mac 紅;K9 paste 改回 -t @N ⇒ P5 / P9 test_split_pane_gets_nothing 紅
 """
 import hashlib
 import io
@@ -100,7 +101,8 @@ class Base(unittest.TestCase):
 
     def run_ok(self, argv, **kw):
         self.calls.append((list(argv), kw.get("input"), dict(kw.get("env") or {})))
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        out = getattr(self, "panes", "%5 4242\n") if "list-panes" in argv else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
 
     def no_value_anywhere(self):
         for argv, _inp, env in self.calls:
@@ -269,8 +271,8 @@ class P5Paste(Seat):
         res, rc = self.paste()
         self.assertEqual((res, rc), ({"ok": True}, 0))
         argvs = [a for a, _i, _e in self.calls]
-        self.assertEqual([a[3] for a in argvs], ["load-buffer", "paste-buffer", "delete-buffer"])
-        load, paste, delete = argvs
+        self.assertEqual([a[3] for a in argvs], ["list-panes", "load-buffer", "paste-buffer", "delete-buffer"])
+        _panes, load, paste, delete = argvs
         self.assertEqual(load[-1], "-")
         buf = load[load.index("-b") + 1]
         self.assertRegex(buf, r"^aib-secret-[0-9a-f]{32}$")
@@ -278,7 +280,8 @@ class P5Paste(Seat):
         self.assertIn("-p", paste)
         self.assertEqual(paste[paste.index("-b") + 1], buf)
         self.assertEqual(delete[-1], buf)
-        self.assertEqual(self.calls[0][1], VALUE, "值只走 load-buffer 的 stdin")
+        self.assertEqual(paste[paste.index("-t") + 1], "%5", "打進 pane_pid = 席位檔 pid 那一格,不是 -t @5(#435 L3)")
+        self.assertEqual(self.calls[1][1], VALUE, "值只走 load-buffer 的 stdin")
         self.assertFalse([a for a in argvs if "send-keys" in a], "不送 Enter")
         self.no_value_anywhere()
 
@@ -327,9 +330,25 @@ class P6PasteRefused(Seat):
     def test_load_fails_still_deletes(self):
         def run(argv, **kw):
             self.calls.append((list(argv), kw.get("input"), {}))
-            return subprocess.CompletedProcess(argv, 1 if "load-buffer" in argv else 0, "", "")
+            return subprocess.CompletedProcess(argv, 1 if "load-buffer" in argv else 0, "%5 4242\n" if "list-panes" in argv else "", "")
         self.assertEqual(self.paste(run=run)[0], {"ok": False, "why": "paste_failed"})
-        self.assertEqual([a[3] for a, _i, _e in self.calls], ["load-buffer", "delete-buffer"])
+        self.assertEqual([a[3] for a, _i, _e in self.calls], ["list-panes", "load-buffer", "delete-buffer"])
+
+    def test_not_mac(self):
+        """#435 R1 L2:paste 也先擋非 Mac ⇒ not_mac,不查名冊、不彈窗、不叫 tmux"""
+        with mock.patch.object(SS, "find_seat", side_effect=AssertionError("不該查名冊")):
+            res, rc = SS.do_paste(NAME, "%s/%s" % (CABIN, CODE), env=self.env, platform="linux", touchid=self.touch(),
+                                  touchid_available=lambda: True, run=self.run_ok)
+        self.assertEqual((res, rc), ({"ok": False, "why": "not_mac"}, 2))
+        self.assertEqual((self.reasons, self.calls), ([], []))
+
+    def test_seat_pane_missing_no_buffer(self):
+        """#435 R1 L3:視窗裡找不到 pane_pid = 席位檔 pid 那一格(換了 / 兩格同 pid / list-panes 失敗)⇒ seat_busy,值不進 buffer"""
+        for panes in ("%7 999\n", "", "%5 4242\n%6 4242\n", "garbage\n"):
+            with self.subTest(panes=panes):
+                self.panes, self.calls[:] = panes, []
+                self.assertEqual(self.paste(), ({"ok": False, "why": "seat_busy"}, 2))
+                self.assertEqual([a[3] for a, _i, _e in self.calls], ["list-panes"])
 
 
 class P7Vault(Base):
@@ -413,9 +432,11 @@ class P9RealTmux(Seat):
         subprocess.run(base + ["new-session", "-d", "-x", "200", "-y", "20", "cat"], check=True, timeout=10,
                        stdin=subprocess.DEVNULL, capture_output=True)
         self.addCleanup(subprocess.run, base + ["kill-server"], capture_output=True, timeout=10)
-        wid = subprocess.run(base + ["display-message", "-p", "#{window_id}"], capture_output=True, text=True, timeout=10).stdout.strip()
+        wid, pane, ppid = subprocess.run(base + ["display-message", "-p", "#{window_id} #{pane_id} #{pane_pid}"], capture_output=True,
+                                         text=True, timeout=10).stdout.split()
         rec = json.loads(self.rec_file.read_text())
-        rec.update(socket=self.sock, window_id=wid)
+        rec.update(socket=self.sock, window_id=wid, pid=int(ppid))
+        self.pane = pane
         self.rec_file.write_text(json.dumps(rec))
         self.base = base
 
@@ -435,6 +456,22 @@ class P9RealTmux(Seat):
         self.assertEqual(lines, [VALUE], "打出了值、沒有按 Enter(cat 沒回顯第二份)")
         bufs = subprocess.run(self.base + ["list-buffers"], capture_output=True, text=True, timeout=10).stdout
         self.assertNotIn("aib-secret-", bufs, "buffer 用完即刪")
+
+    def test_split_pane_gets_nothing(self):
+        """#435 R1 L3:同視窗另切一格並設成作用中 ⇒ 值仍打進席位那一格,另一格沒有"""
+        subprocess.run(self.base + ["split-window", "-t", self.pane, "cat"], check=True, timeout=10, capture_output=True, stdin=subprocess.DEVNULL)
+        other = subprocess.run(self.base + ["display-message", "-p", "#{pane_id}"], capture_output=True, text=True, timeout=10).stdout.strip()
+        self.assertNotEqual(other, self.pane, "另一格是作用中")
+        res, _ = SS.do_paste(NAME, "%s/%s" % (CABIN, CODE), env=self.env, platform="darwin", touchid=self.touch(),
+                             touchid_available=lambda: True)
+        self.assertEqual(res, {"ok": True})
+        cap = lambda p: subprocess.run(self.base + ["capture-pane", "-p", "-t", p], capture_output=True, text=True, timeout=10).stdout
+        for _ in range(20):
+            if VALUE in cap(self.pane):
+                break
+            time.sleep(0.1)
+        self.assertIn(VALUE, cap(self.pane))
+        self.assertNotIn(VALUE, cap(other))
 
 
 if __name__ == "__main__":
