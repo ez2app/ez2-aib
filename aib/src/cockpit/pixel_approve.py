@@ -6,11 +6,13 @@
   - 類別 pixel_real_gen:真生圖會扣外部生圖額度 ⇒ 高風險、一次一按、不開時間窗(放行多久由外掛檔的 until 表示,不用授權單)。
   - hours 只收 1–24 的整數(bool / 字串 / 浮點 ⇒ bad_hours),在 ready() 和彈窗之前就擋;彈窗那句帶 hours,本人看得到放行多久。
   - 回 {"ok", "why"};why = ok / bad_hours / off / unavailable / busy / refused(視窗取消 / 逾時 / 失敗 / 句子組不出都算 refused)。
+    彈窗時底層回 no_biometry(這台沒有可用的生物辨識)也算 unavailable,不壓成 refused(#448 Codex r1 M1,@aeb40 裁)。
   - 放行檔只防誤跑、不算防線(GUIDE-same-user-ai-threat-model):同帳號 AI 寫得到那個檔;防線是這一次指紋 / 登入密碼。
 """
 import os
 
 MAX_HOURS = 24
+NO_DEVICE = ("no_biometry", "unavailable")   # 彈窗時才知道叫不出 ⇒ 跟 ready() 一樣回 unavailable
 
 
 def ask(hours, env=None, platform=None, touchid=None, touchid_available=None):
@@ -26,4 +28,7 @@ def ask(hours, env=None, platform=None, touchid=None, touchid_available=None):
     res = AG.ask(r, AG.state_root_default(env), touchid)
     if res.get("ok") is True:
         return {"ok": True, "why": "ok"}
-    return {"ok": False, "why": "busy" if res.get("why") == "busy" else "refused"}
+    why = res.get("why")
+    if why in NO_DEVICE:
+        return {"ok": False, "why": "unavailable"}
+    return {"ok": False, "why": "busy" if why == "busy" else "refused"}

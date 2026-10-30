@@ -6,9 +6,12 @@ P1 hours 只收 1–24 整數:bool / 字串 / 浮點 / 0 / 25 / None ⇒ bad_hou
 P2 不是 Mac ⇒ unavailable、不彈窗(CI 有 Linux;平台注入)
 P3 AIB_TOUCHID=0 ⇒ off、不彈窗;叫不出生物辨識 ⇒ unavailable
 P4 按過 ⇒ ok;彈窗那句是登記的 site / 類別 pixel_real_gen,字裡看得到 hours(en / zh-TW)
-P5 取消 / 失敗 / 怪回傳 ⇒ refused;整台鎖被佔 ⇒ busy(都不算放行)
+P5 取消 / 失敗 / 怪回傳 ⇒ refused;整台鎖被佔 ⇒ busy(都不算放行);彈窗時底層回 no_biometry ⇒ unavailable(#448 r1 M1)
 P6 類別表:pixel_real_gen 高風險、max_window 0、不開時間窗;四語類別名 + 彈窗句都在
-刀:K1 拿掉 hours 檢查 ⇒ P1 紅;K2 改成 high_risk False ⇒ P6 紅;K3 拿掉 ready() ⇒ P2 / P3 紅
+P7 回歸(#448 r1 L1):交一個「碰到就算錯」的時間窗替身,pixel 這句照樣每次都彈指紋、窗一次都沒碰;
+   連按兩次 = 兩次指紋;四語 24 小時整句 ≤ LA_MAX、真的彈得出來
+刀:K1 拿掉 hours 檢查 ⇒ P1 紅;K2 改成 high_risk False ⇒ P6 / P7 紅;K3 拿掉 ready() ⇒ P2 / P3 紅;
+   K4 拿掉 no_biometry 映射 ⇒ P5 紅
 """
 import json
 import os
@@ -97,6 +100,12 @@ class P5Refused(Env):
         for res in ({"ok": False, "why": "cancel"}, {"ok": "yes"}, {}, "ok"):
             self.assertEqual(self.ask(3, res=res), {"ok": False, "why": "refused"}, res)
 
+    def test_no_biometry_is_unavailable(self):
+        for why in ("no_biometry", "unavailable"):
+            self.assertEqual(self.ask(3, res={"ok": False, "why": why}), {"ok": False, "why": "unavailable"}, why)
+        for why in ("no_passcode", "lockout", "timeout", "cancel"):
+            self.assertEqual(self.ask(3, res={"ok": False, "why": why}), {"ok": False, "why": "refused"}, why)
+
     def test_busy(self):
         with TA.one_at_a_time(AG.lock_path(self.root)) as held:
             self.assertTrue(held.held)
@@ -116,6 +125,45 @@ class P6Table(unittest.TestCase):
             d = json.loads((ROOT / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
             self.assertTrue(d.get("aib.approve_gate.cat.pixel_real_gen"), loc)
             self.assertIn("{hours}", d.get("aib.pixel.touchid_real_gen", ""), loc)
+
+
+
+class EvilWindow:
+    """碰到任何一個方法就記一筆(pixel 是高風險類,時間窗一次都不該被叫)"""
+
+    def __init__(self):
+        self.touched = []
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        self.touched.append(name)
+        raise AssertionError("window." + name + " 被叫了")
+
+
+class P7Regression(Env):
+    def test_window_never_used_every_ask_authenticates(self):
+        self.assertTrue(self.ask(3)["ok"])
+        r = self.seen[-1]
+        evil, auths = EvilWindow(), []
+        for _ in range(2):
+            res = AG.ask(r, self.root, touchid=lambda t: auths.append(t) or {"ok": True}, window=evil)
+            self.assertTrue(res["ok"], res)
+            self.assertNotIn("grant", res)
+        self.assertEqual(len(auths), 2, "連按兩次 = 兩次指紋")
+        self.assertEqual(evil.touched, [], "高風險類不找單、不出時長選單")
+        self.assertFalse(AG.window_open(r))
+
+    def test_two_asks_two_prompts(self):
+        self.ask(24); self.ask(24)
+        self.assertEqual(len(self.seen), 2)
+
+    def test_four_locales_fit_at_max_hours(self):
+        for loc in ("zh-TW", "en", "ja", "ko"):
+            self.assertEqual(self.ask(PA.MAX_HOURS, env={"EZ2_AIB_LOCALE": loc}), {"ok": True, "why": "ok"}, loc)
+            text = str(self.seen[-1])
+            self.assertIn(str(PA.MAX_HOURS), text, loc)
+            self.assertLessEqual(len(text), AG.LA_MAX, loc)
 
 
 if __name__ == "__main__":
