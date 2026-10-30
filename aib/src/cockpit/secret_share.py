@@ -7,7 +7,7 @@
     aib secret paste NAME --seat <艙位碼>/<席碼> --json   打進那一席的提示列,只打字、不按 Enter
 
 兩支都只回代碼:{"ok": true[, "cleared_after": 30]} | {"ok": false, "why": "<代碼>"}。
-代碼:bad_args / no_vault / vault_off / bad_value / denied / too_long / no_seat / seat_busy / paste_failed /
+代碼:bad_args / no_vault / vault_off / bad_value / denied / too_long / no_seat / seat_busy / paste_failed / buffer_left /
 copy_failed / clear_failed / not_mac / caller_is_seat。
 
 防線(GUIDE-same-user-ai-threat-model):
@@ -261,9 +261,35 @@ def seat_pane(base, wid, pid, run=subprocess.run, started=None):
     return hits[0]
 
 
+CLEAN_TRIES = 3
+
+
+def drop_buffer(base, buf, run=subprocess.run):
+    """刪 buffer 並用 list-buffers 確認真的不在了(paste-buffer -d 成功時早已刪掉,delete-buffer 回非零是正常的,
+    所以不看 delete 的 rc,只看清單)。最多試 CLEAN_TRIES 次;清單讀不到也算沒確認。回 True = 確認不在。"""
+    import seat_act as SA
+    for _ in range(CLEAN_TRIES):
+        try:
+            run(base + ["delete-buffer", "-b", buf], capture_output=True, text=True, env=SA._tmux_env(),
+                stdin=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            r = run(base + ["list-buffers", "-F", "#{buffer_name}"], capture_output=True, text=True, env=SA._tmux_env(),
+                    stdin=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0 and buf not in (r.stdout or "").split():
+            return True
+        if r.returncode != 0 and "no server running" in (r.stderr or ""):   # tmux 伺服器已經不在 ⇒ buffer 也不在
+            return True
+    return False
+
+
 def paste_value(rec, value, tmux="tmux", run=subprocess.run):
     """值走 stdin 進 tmux(load-buffer -),paste-buffer -p -d 打進那一席自己的 pane(pane_pid 對席位檔 pid);不按 Enter。
-    buffer 名隨機,失敗也刪。找不到那一格 ⇒ seat_busy,值不進 buffer。"""
+    buffer 名隨機,失敗也刪。找不到那一格 ⇒ seat_busy,值不進 buffer。
+    值進過 buffer 後確認不了已刪 ⇒ buffer_left(蓋過原本結果;#442 r1 M2:paste 失敗 + 刪除也失敗會殘留)。"""
     import seat_act as SA
     sock, wid = SA._target(rec)
     if not sock:
@@ -272,21 +298,16 @@ def paste_value(rec, value, tmux="tmux", run=subprocess.run):
     pane = seat_pane(base, wid, rec.get("pid"), run=run, started=rec.get("started_epoch")) if str(rec.get("pid") or "").isdigit() else None
     if pane is None:
         return "seat_busy"
+    why = "paste_failed"
     try:
         r = run(base + ["load-buffer", "-b", buf, "-"], input=value, capture_output=True, text=True, env=SA._tmux_env(), timeout=10)
-        if r.returncode != 0:
-            return "paste_failed"
-        r = run(base + ["paste-buffer", "-p", "-d", "-b", buf, "-t", pane], capture_output=True, text=True,
-                env=SA._tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
-        return None if r.returncode == 0 else "paste_failed"
+        if r.returncode == 0:
+            r = run(base + ["paste-buffer", "-p", "-d", "-b", buf, "-t", pane], capture_output=True, text=True,
+                    env=SA._tmux_env(), stdin=subprocess.DEVNULL, timeout=10)
+            why = None if r.returncode == 0 else "paste_failed"
     except (OSError, subprocess.SubprocessError):
-        return "paste_failed"
-    finally:
-        try:
-            run(base + ["delete-buffer", "-b", buf], capture_output=True, text=True, env=SA._tmux_env(),
-                stdin=subprocess.DEVNULL, timeout=10)
-        except (OSError, subprocess.SubprocessError):
-            pass
+        why = "paste_failed"
+    return why if drop_buffer(base, buf, run=run) else "buffer_left"
 
 
 def _at_prompt(code, env, screen):
