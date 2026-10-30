@@ -32,8 +32,10 @@ stamp = 原始碼雜湊),不吃 EZ2_AIB_STATE_ROOT / PATH、不退回 <狀態根
 不再信 lockwatch.json(本機檔,AI 自己寫一份就算「沒鎖過」)。loginwindow 的路徑受 SIP 保護,同帳號行程寫不出
 processImagePath = loginwindow 的紀錄;清不掉、改不了等級(log erase / log config 要 root)。查詢上限 3 秒
 (Andy 10-29 21:1x Q2),超過 / 失敗 / 讀不懂 ⇒ 當鎖過。時間一律 UTC(#433 R1 H1:不吃呼叫端 TZ);另查 since 之前
-要還有 loginwindow 紀錄(#433 R1 M1:灌 log 擠掉鎖屏段 ⇒ log_uncovered)。時間窗仍關著(approve_gate._default_window),
-另一張才接回;接回前要先有 macOS build 白名單(#433 R1 M2,規格補記)。
+要還有 loginwindow 紀錄(#433 R1 M1:灌 log 擠掉鎖屏段 ⇒ log_uncovered);只認實機驗過的 macOS build(#436)。
+
+系統錨定驗單第 3 張(10-30):approve_gate._default_window 接回時間窗 —— 只在 Mac、固定路徑 root helper 驗得過時開,
+Ctx 的狀態根固定在本人真 HOME(pinned_env)。高風險類照舊一次一按(window_open + find_valid 兩處)。
 """
 import argparse
 import calendar
@@ -54,8 +56,26 @@ import se_vault
 
 KEY_NAME = "GRANT_KEY"
 DURATIONS = {"15m": 900, "30m": 1800, "1h": 3600, "3h": 3 * 3600, "24h": 24 * 3600}
+# #441 R1(@aeb40 裁):時間窗上限縮到系統日誌涵蓋得到的範圍內(這台 Persist 約 7.5 小時)⇒ 24h 不給選、舊的 24h 單驗不過。
+# 撤銷 = 鎖屏(Andy 19:3x 選 A):鎖一次 ⇒ 之前簽的單全部作廢;窗越短,沒鎖屏時「刪撤銷紀錄重播」的風險越短。
+WINDOW_CAP_S = 7 * 3600
 _NONCE = re.compile(r"^[0-9a-f]{32}$")
-V = 1
+V = 2                  # v2(#441 R2 H1):簽發時間 / 期限 / 開機識別不在單上,由 helper 產生、簽進 stamp
+# helper 簽的位元組 = canonical(單) + 這一行(helper 用自己的系統時鐘 / kern.boottime 填;Python 只收不填)
+STAMP_FMT = "\naib-grant-stamp v1 issued=%d expires=%d boot=%d"
+_HELPER_FIELDS = ("issued_utc", "expires_utc", "boot")
+
+
+def pinned_env(environ=None, home=None):
+    """正式路徑時間窗用的 env:狀態根固定在本人真家目錄的 .ez2-aib(系統錨定驗單第 3 張)。
+    家目錄用 pwd 查(行程的 HOME 也是同帳號 AI 改得到的字;預設狀態根走 expanduser,看的是行程 HOME 不是這份 env)
+    ⇒ 明寫 EZ2_AIB_STATE_ROOT = <pwd 家目錄>/.ez2-aib,拿掉 EZ2_AIB_HOME,HOME 也換成它。home 只給測試注入。"""
+    import pwd
+    h = home or pwd.getpwuid(os.getuid()).pw_dir
+    env = {k: v for k, v in (os.environ if environ is None else environ).items() if k != "EZ2_AIB_HOME"}
+    env["HOME"] = h
+    env["EZ2_AIB_STATE_ROOT"] = os.path.join(h, ".ez2-aib")
+    return env
 
 
 def _dir(env):
@@ -131,11 +151,34 @@ def screen_locked_now(run=subprocess.run, platform=None):
     return any(isinstance(u, dict) and u.get("CGSSessionScreenIsLocked") is True for u in users)
 
 
+LOGIN_FW = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
+
+
+def lock_screen_now(platform=None, cdll=None, run=subprocess.run):
+    """立刻鎖屏(撤銷 = 鎖屏,#441 R1 H2)。回 locked / display_sleep / failed / not_mac。
+    先叫 login.framework 的 SACLockScreenImmediate(系統框架、SIP 保護);叫不到 ⇒ pmset displaysleepnow
+    (「螢幕關閉後立即要求密碼」開著才會鎖)。cdll / run 只給測試注入 —— 測試一律走 Ctx(lock_screen=),不碰真螢幕。"""
+    if (platform or sys.platform) != "darwin":
+        return "not_mac"
+    try:
+        import ctypes
+        if (cdll or ctypes.CDLL)(LOGIN_FW).SACLockScreenImmediate() == 0:
+            return "locked"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        p = run(["/usr/bin/pmset", "displaysleepnow"], capture_output=True, timeout=5,
+                env={"PATH": "/usr/bin:/bin"}, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return "failed"
+    return "display_sleep" if p.returncode == 0 else "failed"
+
+
 class Ctx:
     """外部依賴一處注入(測試換假 helper / 時鐘 / 開機 / 機器 / 系統日誌)。"""
 
     def __init__(self, env=None, run=subprocess.run, helper=None, platform=None, now=None, boot=None, machine=None,
-                 screen_locked=None, anchored=None, syslog=None, os_build=None):
+                 screen_locked=None, anchored=None, syslog=None, os_build=None, lock_screen=None):
         self.env = dict(os.environ if env is None else env)
         self.run, self.helper, self.platform = run, helper, platform
         self.now = now or time.time
@@ -144,6 +187,12 @@ class Ctx:
         self._anchored = anchored            # 只給測試換掉 anchored_helper.check
         self._syslog = syslog                # 只給測試換掉 syslog_locks(since, now) -> (事件秒數清單, None) | (None, why)
         self._os_build = os_build            # 只給測試換掉 os_build() -> build 字串 | None
+        self._lock_screen = lock_screen      # 只給測試換掉 lock_screen_now() -> locked | display_sleep | failed | not_mac
+
+    def lock_screen(self):
+        if self._lock_screen is not None:
+            return self._lock_screen()
+        return lock_screen_now(self.platform, run=self.run)
 
     def os_build(self):
         if self._os_build is not None:
@@ -209,6 +258,8 @@ def check_scope(cats, dur):
             return "high_risk"
         if DURATIONS[dur] > spec["max_window"]:
             return "over_max_window"
+    if DURATIONS[dur] > WINDOW_CAP_S:
+        return "over_log_cover"
     return None
 
 
@@ -332,8 +383,7 @@ def sign(cats, dur, ctx, source=None, action=""):
     if text is None:
         return None, "reason_refused:" + str(AG.refusal(r) or "too_long")
     now = int(ctx.now())
-    doc = {"v": V, "kind": "window", "cats": cats, "dur": dur, "issued_utc": _utc(now),
-           "expires_utc": _utc(now + DURATIONS[dur]), "boot": int(boot), "machine": machine, "kid": kid,
+    doc = {"v": V, "kind": "window", "cats": cats, "dur": dur, "machine": machine, "kid": kid,
            "nonce": secrets.token_hex(16), "locale": _locale(ctx.env) or "", "rekey_from": rekey[0] if rekey else "",
            "action": str(action or ""),
            "text_sha256": _text_sha(r), "source": str(source or "")[:64]}
@@ -341,16 +391,44 @@ def sign(cats, dur, ctx, source=None, action=""):
                                canonical(doc))
     if why:
         return None, why
-    sig = out.decode("ascii", "replace").strip()
-    if not re.fullmatch(r"[A-Za-z0-9+/=]{16,256}", sig):
+    try:
+        got = json.loads(out.decode("utf-8"))
+    except (ValueError, UnicodeError):
         return None, "helper_failed"
-    _write_json(os.path.join(_dir(ctx.env), doc["nonce"] + ".json"), {"doc": doc, "sig": sig})
+    sig, stamp = (got.get("sig"), _stamp(got)) if isinstance(got, dict) else (None, None)
+    if not isinstance(sig, str) or not re.fullmatch(r"[A-Za-z0-9+/=]{16,256}", sig) or stamp is None:
+        return None, "helper_failed"
+    if stamp["expires"] - stamp["issued"] != DURATIONS[dur]:
+        return None, "helper_failed"
+    _write_json(os.path.join(_dir(ctx.env), doc["nonce"] + ".json"), {"doc": doc, "sig": sig, "stamp": stamp})
     if old != kid:
         _write_json(_kid_path(ctx.env), {"kid": kid, "at": _utc(now)})
         if rekey:
             _event(ctx.env, {"event": "rekey", "old": old, "new": kid})
     _event(ctx.env, {"event": "sign", "nonce": doc["nonce"], "cats": doc["cats"], "dur": dur})
-    return doc, None
+    return _view(doc, stamp), None
+
+
+def _stamp(d):
+    """helper 簽進去的 issued / expires / boot(三個正整數)。格式不對 ⇒ None。"""
+    if not isinstance(d, dict):
+        return None
+    try:
+        st = {k: d[k] for k in ("issued", "expires", "boot")}
+    except KeyError:
+        return None
+    if not all(type(v) is int and 0 < v < 1 << 40 for v in st.values()) or st["expires"] <= st["issued"]:
+        return None
+    return st
+
+
+def _view(doc, stamp):
+    """給呼叫端看的單(加上 helper 簽的時間);存檔 / 驗章用的是不含這三欄的 doc + stamp。"""
+    return dict(doc, issued_utc=_utc(stamp["issued"]), expires_utc=_utc(stamp["expires"]), boot=stamp["boot"])
+
+
+def _signed_bytes(doc, stamp):
+    return canonical(doc) + (STAMP_FMT % (stamp["issued"], stamp["expires"], stamp["boot"])).encode("ascii")
 
 
 def revoked(env):
@@ -373,11 +451,13 @@ def verify(grant, cat, ctx, kid=None, revoked_set=None):
     """這張單現在能不能讓類別 cat 自動同意。回 (True, None) 或 (False, why)。任何一項量不到 / 對不上 ⇒ False。"""
     if not isinstance(grant, dict) or not isinstance(grant.get("doc"), dict) or not isinstance(grant.get("sig"), str):
         return False, "corrupt"
-    doc, sig = grant["doc"], grant["sig"]
+    doc, sig, stamp = grant["doc"], grant["sig"], _stamp(grant.get("stamp"))
     if doc.get("v") != V or doc.get("kind") != "window" or not _NONCE.match(str(doc.get("nonce"))):
         return False, "corrupt"
+    if stamp is None or any(k in doc for k in _HELPER_FIELDS):      # 時間 / 開機只認 helper 簽的 stamp
+        return False, "corrupt"
     out, why = ctx.helper_call(["se-verify", "--name", KEY_NAME, "--dir", _key_dir(ctx.env), "--sig", sig],
-                               canonical(doc))
+                               _signed_bytes(doc, stamp))
     if why:
         return False, "bad_sig" if why == "bad_sig" else why
     try:
@@ -406,13 +486,13 @@ def verify(grant, cat, ctx, kid=None, revoked_set=None):
         return False, "corrupt"
     if _text_sha(window_reason(cats, doc["dur"], rekey, env, action=action)) != doc.get("text_sha256"):
         return False, "text_mismatch"
-    issued, expires, now = _parse_utc(doc.get("issued_utc")), _parse_utc(doc.get("expires_utc")), int(ctx.now())
-    if issued is None or expires is None or expires - issued != DURATIONS[doc["dur"]]:
+    issued, expires, now = stamp["issued"], stamp["expires"], int(ctx.now())
+    if expires - issued != DURATIONS[doc["dur"]]:
         return False, "bad_time"
     if not issued <= now < expires:
         return False, "expired" if now >= expires else "not_yet"
     boot, machine = ctx.boot(), ctx.machine()
-    if not boot or doc.get("boot") != int(boot):
+    if not boot or stamp["boot"] != int(boot):
         return False, "boot"
     if not machine or doc.get("machine") != machine:
         return False, "machine"
@@ -451,12 +531,15 @@ def active(ctx):
         doc = g.get("doc") if isinstance(g.get("doc"), dict) else {}
         cats = doc.get("cats") if isinstance(doc.get("cats"), list) else []
         if any(verify(g, c, ctx, kid=kid, revoked_set=rv)[0] for c in cats):
-            out.append((doc, _parse_utc(doc["expires_utc"]) - int(ctx.now())))
+            st = _stamp(g.get("stamp"))
+            out.append((_view(doc, st), st["expires"] - int(ctx.now())))
     return out
 
 
 def revoke(target, ctx):
-    """撤銷(不用指紋;只防誤操作)。target = 類別或 all。回撤銷的張數。"""
+    """撤銷紀錄(不用指紋)。target = 類別或 all。回撤銷的張數。
+    #441 R1 H2:revoked.jsonl 是同帳號可寫的本機檔 ⇒ 只算方便功能(AI 刪掉紀錄、舊單就回來);真正的撤銷 = 鎖屏
+    (系統日誌裡 loginwindow 的鎖屏事件,AI 刪不掉 ⇒ 之前簽的單全部作廢)。CLI 的 --revoke 記完就叫 ctx.lock_screen()。"""
     n = 0
     path = os.path.join(_dir(ctx.env), "revoked.jsonl")
     for doc, _left in active(ctx):
@@ -469,7 +552,8 @@ def revoke(target, ctx):
 
 
 def rotate_key(ctx):
-    """換簽單鑰 = 舊單全部失效(真正的收回)。舊鑰檔改名留著,不刪。新鑰第一次簽單時本人按指紋。"""
+    """換簽單鑰 ⇒ 舊單驗不過。舊鑰檔改名留著,不刪。新鑰第一次簽單時本人按指紋。
+    #441 R1 H2:舊鑰檔 / grant-kid.json 同帳號可還原 ⇒ 換鑰本身不算收回;CLI 的 --rotate-key 換完就鎖屏(真正的收回)。"""
     old = os.path.join(_key_dir(ctx.env), KEY_NAME + ".sekey")
     if os.path.isfile(old):
         os.replace(old, old + ".retired-%d" % int(ctx.now()))
@@ -497,6 +581,7 @@ LOG_SPANS_MAX = 8                # 24 小時(最長時長)= 8 段;再長 ⇒ log
 # loginwindow 路徑受 SIP 保護 ⇒ AI 灌 log 擠掉鎖屏段之後補不回「since 之前的 loginwindow 紀錄」⇒ log_uncovered。
 # #433 R2 L1:覆蓋只算 Default 等級的 logEvent(跟鎖屏事件同行程、同等級 ⇒ 同一個保存區;Error / Fault /
 # activity 存法不同,不能拿來證明鎖屏那段還在)。predicate 先篩等級,Python 端再驗一次(activity 事件沒有 messageType)。
+# predicate 只是縮小輸出量(activity 事件照樣穿過,#436 R1 L1 實測 4 列);**判定以 Python 端為準**,別拿掉那一道(刀 KS9)。
 COVER_PREDICATE = 'processImagePath == "%s" AND messageType == default' % LOGINWINDOW
 COVER_S = 1800
 # #433 R1 M2:鎖屏判斷靠 loginwindow 的訊息字串,macOS 一改字就會靜靜查無(= 當沒鎖過)⇒ 只認實機驗過的 build。
@@ -638,9 +723,8 @@ def find_valid(cat, ctx):
         if not good:
             why = w if why == "no_grant" and w not in ("category",) else why
             continue
-        issued = _parse_utc(g["doc"]["issued_utc"])
-        if issued is not None:
-            ok.append((issued, g["doc"]))
+        st = _stamp(g.get("stamp"))                    # 驗過 ⇒ stamp 是 helper 簽的
+        ok.append((st["issued"], _view(g["doc"], st)))
     if not ok:
         return None, why
     issued, doc = max(ok, key=lambda x: x[0])
@@ -746,7 +830,8 @@ def durations_for(cat):
     spec = AG.CATEGORIES.get(cat)
     if not spec or spec["high_risk"] or spec["max_window"] <= 0:
         return []
-    return [d for d, sec in sorted(DURATIONS.items(), key=lambda kv: kv[1]) if sec <= spec["max_window"]]
+    return [d for d, sec in sorted(DURATIONS.items(), key=lambda kv: kv[1])
+            if sec <= min(spec["max_window"], WINDOW_CAP_S)]
 
 
 def choose_prompt(r, ctx):
@@ -783,7 +868,7 @@ def choose_window(r, ctx, run=subprocess.run):
 
 class GateWindow:
     """approve_gate.ask() 用的時間窗(TID-2c)。每個方法失敗都由 ask 收成「一次一按」。
-    正式路徑目前不建這個(approve_gate._default_window 回 None,#428 H1);等系統錨定驗單做完才接回。"""
+    正式路徑由 approve_gate._default_window 建(固定路徑 root helper 驗得過、Ctx 的狀態根固定在真 HOME)。"""
 
     def __init__(self, ctx=None, run=subprocess.run):
         self.ctx = ctx or Ctx()
@@ -860,18 +945,23 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
         _, why = lock_state(_probe(ctx),
                             int(ctx.now()) - 60)            # 鎖屏判斷看系統日誌(第 2 張);這裡回它查不查得到
         return emit({"ok": why is None, "why": why, "source": "syslog"}, 0)
-    if o.revoke:
-        return emit({"ok": True, "revoked": revoke(o.revoke, ctx)}, 0)
+    if o.revoke:                             # 撤銷 = 鎖屏(#441 R1 H2):紀錄只是方便,鎖屏才是 AI 回滾不了的那一步
+        n = revoke(o.revoke, ctx)
+        lk = ctx.lock_screen()
+        return emit({"ok": True, "revoked": n, "lock": lk,
+                     "hint": _t("aib.approve_grants.revoke_lock_hint", None, ctx.env)}, 0)
     if o.rotate_key:
         kid, why = rotate_key(ctx)
-        return emit({"ok": bool(kid), "kid": kid, "why": why}, 0 if kid else 2)
+        lk = ctx.lock_screen() if kid else None
+        return emit({"ok": bool(kid), "kid": kid, "why": why, "lock": lk,
+                     "hint": _t("aib.approve_grants.revoke_lock_hint", None, ctx.env) if kid else ""}, 0 if kid else 2)
     if o.extend:
         if not o.dur:
             return emit({"ok": False, "why": "need_for"}, 2)
         doc, why = sign([c.strip() for c in o.extend.split(",") if c.strip()], o.dur, ctx, source="cli")
         return emit({"ok": True, "nonce": doc["nonce"], "expires_utc": doc["expires_utc"]} if doc
                     else {"ok": False, "why": why}, 0 if doc else 2)
-    auto = "off" if AG._default_window() is None else "on"     # #428 R2 L1:正式路徑時間窗關著 ⇒ 單在也不會自動同意
+    auto = "off" if AG._default_window() is None else "on"     # #428 R2 L1:正式路徑沒開窗(沒裝固定路徑 helper / 非 Mac)⇒ 單在也不會自動同意
     rows = [{"cats": d["cats"], "left_s": left, "expires_utc": d["expires_utc"], "nonce": d["nonce"], "auto_approve": auto}
             for d, left in active(ctx)]
     if o.json:
