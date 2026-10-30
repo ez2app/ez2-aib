@@ -359,6 +359,21 @@ class P6PasteRefused(Seat):
                 self.assertEqual(self.paste(run=run), ({"ok": False, "why": "paste_failed"}, 4))
                 self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"], ["list-panes", "load-buffer", "paste-buffer", "delete-buffer"])
 
+    def test_cleanup_fails_does_not_crash(self):
+        """#442 r1 L1:delete-buffer 非零 / 例外不改結果、不丟例外(殘留問題是 M2,另案)"""
+        for mode in ("rc", "raise"):
+            with self.subTest(mode=mode):
+                self.calls[:] = []
+                def run(argv, mode=mode, **kw):
+                    if "delete-buffer" in argv:
+                        self.calls.append((list(argv), None, {}))
+                        if mode == "raise":
+                            raise subprocess.TimeoutExpired("tmux", 10)
+                        return subprocess.CompletedProcess(argv, 1, "", "")
+                    return self.run_ok(argv, **kw)
+                self.assertEqual(self.paste(run=run), ({"ok": True}, 0))
+                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"][-1], "delete-buffer")
+
     def test_pid_reused_or_unknown_start(self):
         """#442 r1 M1:名冊不變、PID 數字相同但行程世代不同(啟動時間對不上)/ 查不到 / 名冊沒有 started_epoch ⇒ seat_busy,值不進 buffer"""
         orig = self.rec_file.read_text()
