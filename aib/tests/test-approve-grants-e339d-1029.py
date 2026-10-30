@@ -29,7 +29,7 @@ G16 鑰檔換成不帶 ACL 的鑰(helper 回 weak_key)⇒ 驗不過、列不出�
   KW4 拿掉類別比對 ⇒ G1 紅;KW5 拿掉高風險排除 ⇒ G2 紅(驗單端會改成 over_max_window,斷言分開);
   KW6 拿掉驗單端的範圍重查 ⇒ G2 紅;KW11 拿掉「到期 − 簽發 = 時長」⇒ G15 紅;KW7 拿掉 max_window ⇒ G3 紅;KW8 拿掉字雜湊比對 ⇒ G7 紅;
   KW9 拿掉 kid 比對 ⇒ G8 紅;KW10 拿掉換鑰標記 ⇒ G9 紅;KW12 拿掉撤銷 ⇒ G10 紅;
-  KW13 拿掉日誌涵蓋上限 ⇒ G3 紅
+  KW13 拿掉日誌涵蓋上限 ⇒ G3 紅;KW14 Python 用自己的時鐘填 stamp ⇒ G17 紅(helper 時鐘固定慢 4 秒)
 """
 import base64
 import hashlib
@@ -133,6 +133,7 @@ class Env:
         self.t = [T0]
         self.boot = [1_799_990_000]
         self.machine = ["m" * 16]
+        self.skew = 0                    # helper 時鐘 − 呼叫端時鐘(r3 備註:G17 / W26 固定差 4 秒,Python 改用自己的時間就紅)
 
     def ctx(self, M=GR):
         self.clock(M)
@@ -144,7 +145,7 @@ class Env:
         d = M._key_dir(self.env)
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "fake-clock"), "w") as f:
-            f.write(str(int(self.t[0])))
+            f.write(str(int(self.t[0]) + self.skew))
         with open(os.path.join(d, "fake-boot"), "w") as f:
             f.write(str(self.boot[0] or ""))
 
@@ -253,13 +254,14 @@ def cell_g17(t, M):
     """#441 R2 H1:時間 / 期限 / 開機由 helper 產生並簽進 stamp。呼叫端在單上自帶這三欄(想指定未來起算)⇒ helper 不簽;
     時長不在表上 / 超過 7 小時 ⇒ 不簽;簽出來的 stamp = helper 的時鐘與開機,存檔的單本身沒有這三欄。"""
     e = Env()
+    e.skew = -4                                                     # helper 的時鐘比呼叫端慢 4 秒
     try:
         doc, _ = M.sign(["seat_input"], "1h", e.ctx(M))
         g = _grant(M, e, doc)
         good = g["doc"]
         t.assertFalse(any(k in good for k in ("issued_utc", "expires_utc", "boot")))
-        t.assertEqual(g["stamp"], {"issued": T0, "expires": T0 + 3600, "boot": e.boot[0]})
-        t.assertEqual((doc["issued_utc"], doc["boot"]), (M._utc(T0), e.boot[0]))     # 回給呼叫端的是 helper 簽的
+        t.assertEqual(g["stamp"], {"issued": T0 - 4, "expires": T0 - 4 + 3600, "boot": e.boot[0]})
+        t.assertEqual((doc["issued_utc"], doc["boot"]), (M._utc(T0 - 4), e.boot[0]))  # 回給呼叫端的是 helper 簽的
         txt = _txt(good["cats"], good["dur"])
         now = int(e.t[0])
         for extra in ({"issued_utc": M._utc(now + 4)}, {"issued_utc": M._utc(now + 1), "expires_utc": M._utc(now + 3601)},
@@ -552,6 +554,9 @@ KNIVES = [
     ("KW5", '        if spec["high_risk"]:\n            return "high_risk"\n', '', cell_g2),
     ("KW6", '    if check_scope(cats, doc.get("dur")):\n        return False, "scope:" + check_scope(cats, doc.get("dur"))\n', '', cell_g2),
     ("KW7", '        if DURATIONS[dur] > spec["max_window"]:\n            return "over_max_window"\n', '', cell_g3),
+    ("KW14", '    _write_json(os.path.join(_dir(ctx.env), doc["nonce"] + ".json"), {"doc": doc, "sig": sig, "stamp": stamp})\n',
+     '    stamp = dict(stamp, issued=now, expires=now + DURATIONS[dur])\n'
+     '    _write_json(os.path.join(_dir(ctx.env), doc["nonce"] + ".json"), {"doc": doc, "sig": sig, "stamp": stamp})\n', cell_g17),
     ("KW13", '    if DURATIONS[dur] > WINDOW_CAP_S:\n        return "over_log_cover"\n', '', cell_g3),
     ("KW8", ' != doc.get("text_sha256"):\n        return False, "text_mismatch"\n', ' != doc.get("text_sha256") and False:\n        pass\n', cell_g7),
     ("KW9", '    if doc.get("kid") != kid:\n        return False, "kid_mismatch"\n', '', cell_g8),

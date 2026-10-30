@@ -33,7 +33,7 @@ W20b #441 R1 M2:只改行程 HOME(單在 <假 HOME>/.ez2-aib,pwd 家目錄不同
 W23 H2 刀:--revoke(撤銷 = 鎖屏)之後刪 revoked.jsonl 重播 ⇒ locked_since;鎖屏失敗時刪紀錄就回來 = 已知限制(斷言照實)
 W24 H2 刀:--rotate-key(換鑰 + 鎖屏)之後還原退休鑰 + grant-kid.json 重播 ⇒ locked_since
 W25 系統日誌涵蓋不到簽發 → 現在(log_uncovered)⇒ 有效單也要彈指紋、不出選單
-W26 #441 R2 H1 容差邊界重播:helper 在 T 簽(stamp issued = T),T+0 / +1 / +2 / +5 鎖屏,T+6 使用 ⇒ locked_since;
+W26 #441 R2 H1 容差邊界重播(helper 時鐘固定慢 4 秒):helper 在 T 簽(stamp issued = T),T+0 / +1 / +2 / +5 鎖屏,T+6 使用 ⇒ locked_since;
     沒鎖屏 ⇒ 有效;改 stamp 把起算挪到鎖屏之後 ⇒ 簽章不符、不採用;叫 helper 時自帶未來 issued_utc ⇒ 不簽
 W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單但系統日誌查不到 ⇒ note
   (第 2 張起 lockwatch.json 不再參與判斷;W2 另驗自寫一份「沒鎖過」的 lockwatch.json 也不會讓單生效)
@@ -624,16 +624,19 @@ def cell_w25(t, M):
 
 
 def cell_w26(t, M):
-    """#441 R2 H1:容差邊界完整重播。簽 → 鎖屏(簽後 0–5 秒)→ 使用 ⇒ locked_since(起算 = helper 簽的這一刻,沒有容差)。"""
+    """#441 R2 H1:容差邊界完整重播。簽 → 鎖屏(簽後 0–5 秒)→ 使用 ⇒ locked_since(起算 = helper 簽的這一刻,沒有容差)。
+    helper 時鐘固定比呼叫端慢 4 秒(r3 備註):起算若改用呼叫端時間,簽後 0–3 秒的鎖屏會漏掉 ⇒ 這格紅。"""
     for lock_at in (0, 1, 2, 5, None):
         e = Env()
+        e.skew = -4
+        H = T0 - 4                                                          # helper 簽的那一刻
         try:
             e.log()
             doc, _ = M.sign(["seat_input"], "1h", e.ctx(M))
             g = _grant_of(M, e, doc)
-            t.assertEqual(g["stamp"]["issued"], T0)                         # helper 的時鐘,不是呼叫端給的
+            t.assertEqual(g["stamp"]["issued"], H)                          # helper 的時鐘,不是呼叫端給的
             if lock_at is not None:
-                e.locks.append(T0 + lock_at)
+                e.locks.append(H + lock_at)
             e.t[0] = T0 + 6
             got = M.find_valid("seat_input", e.ctx(M))
             if lock_at is None:
@@ -641,7 +644,7 @@ def cell_w26(t, M):
                 continue
             t.assertEqual(got, (None, "locked_since"), lock_at)
             if lock_at == 2:
-                g["stamp"] = dict(g["stamp"], issued=T0 + 4, expires=T0 + 3604)   # AI 把起算挪到鎖屏之後
+                g["stamp"] = dict(g["stamp"], issued=H + 4, expires=H + 3604)     # AI 把起算挪到鎖屏之後
                 M._write_json(os.path.join(M._dir(e.env), doc["nonce"] + ".json"), g)
                 t.assertEqual(M.find_valid("seat_input", e.ctx(M)), (None, "bad_sig"))
                 d = dict(g["doc"], nonce="e" * 32, issued_utc=M._utc(T0 + 10))     # 重簽一張自帶未來起算的 ⇒ helper 不簽
