@@ -378,7 +378,8 @@ class P6PasteRefused(Seat):
         """#442 r1 M1:名冊不變、PID 數字相同但行程世代不同(啟動時間對不上)/ 查不到 / 名冊沒有 started_epoch ⇒ seat_busy,值不進 buffer"""
         orig = self.rec_file.read_text()
         cases = (("reused", {"pstart": START + 3600}), ("slack-edge-out", {"pstart": START + 3}), ("ps-fails", {"psfail": True}),
-                 ("no-started", {"rec": {"started_epoch": None}}), ("list-rc", {"listrc": 1}), ("list-timeout", {"listexc": True}))
+                 ("no-started", {"rec": {"started_epoch": None}}), ("nan-started", {"rec": {"started_epoch": "NaN"}}),
+                 ("inf-started", {"rec": {"started_epoch": "inf"}}), ("list-rc", {"listrc": 1}), ("list-timeout", {"listexc": True}))
         for label, c in cases:
             with self.subTest(case=label):
                 self.calls[:] = []

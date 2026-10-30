@@ -24,6 +24,7 @@ copy_failed / clear_failed / not_mac / caller_is_seat。
 """
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -249,7 +250,9 @@ def seat_pane(base, wid, pid, run=subprocess.run, started=None):
         return None
     try:
         want = float(started)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(want):   # NaN 跟誰比都不大於 2 秒,會繞過比對(#442 r2 L2)
         return None
     got = pid_started(pid, run=run)
     if got is None or abs(got - want) > PANE_START_SLACK_S:
