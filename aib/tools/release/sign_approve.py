@@ -13,6 +13,13 @@
   3. 視窗字由核心組(approve_gate「release.sign_approve」:外掛、版號、頭碼不截,太長直接拒);取消 / 失敗 / 逾時 = 不簽。
   4. 過了才 bash 跑那份複本;完整輸出寫 <狀態根>/pending/sign-logs/,最後一行回報 + 系統通知。
 防線只有指紋本身(LocalAuthentication,AI 按不到);整台同時只開一個核准視窗(跟 aib 其他核准共用鎖)。
+
+10-30 @aeb40(Andy 23:5x 選 1):也收授權單 LICENSE-<名>-<席>-<MMDD>.sh(簽發 / 重簽 license.json)。
+  - 腳本頂層要宣告 PLAN(free / go / plus / pro / ultra)、EXPIRES(ISO 時間)、BIND=this(只綁這台),
+    且內文要走私倉 aib-license.py sign-entitlement;缺一樣 ⇒ 跳過、不彈窗。
+  - 視窗字由核心組(approve_gate「release.license_approve」,類別「授權簽發」= 高風險、一次一按):名稱、方案、到期不截。
+  - 宣告值和腳本實際做的一不一樣,由腳本自己在簽之前比對現有授權後停(視窗只照宣告值寫);
+    同帳號 AI 讀得到簽章鑰,這一按是本人同意的紀錄,不是擋 AI 的防線(GUIDE-same-user-ai-threat-model)。
 """
 import os
 import re
@@ -21,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
@@ -31,6 +39,8 @@ import approve_gate as AG  # noqa: E402
 import touchid_approve as TA  # noqa: E402
 
 NAME_RE = re.compile(r"^SIGN-(?P<plugin>[a-z0-9-]+?)-(?P<ver>\d+\.\d+\.\d+)-")
+LIC_RE = re.compile(r"^LICENSE-(?P<name>[a-z0-9-]+?)-(?P<seat>[0-9a-f]{5})-(?P<date>\d{4})\.sh$")
+LIC_PLANS = ("free", "go", "plus", "pro", "ultra")
 PIN_RE = re.compile(r"^[0-9a-f]{7,40}$")
 SSH = ["ssh", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes"]
 RUN_TIMEOUT_S = 1200
@@ -55,16 +65,32 @@ def var(text, *names):
     return None
 
 
+def plan_license(p, m, text):
+    """讀授權單:PLAN / EXPIRES / BIND=this 都要有、內文要走 aib-license.py sign-entitlement。"""
+    plan_, exp, bind = var(text, "PLAN"), var(text, "EXPIRES"), var(text, "BIND")
+    try:
+        when = datetime.fromisoformat(exp) if exp else None
+    except ValueError:
+        when = None
+    if (plan_ not in LIC_PLANS or bind != "this" or when is None or when.tzinfo is None
+            or not re.search(r"aib-license\.py\S*\s+sign-entitlement", text)):
+        return None, "no_lic_vars"
+    return {"kind": "license", "path": p, "name": m.group("name"), "plan": plan_, "expires": exp}, None
+
+
 def plan(path):
-    """讀 SIGN 腳本。回 (job, None) 或 (None, why 代碼)。"""
+    """讀 SIGN 腳本或授權單。回 (job, None) 或 (None, why 代碼)。"""
     p = Path(path).expanduser()
+    lic = LIC_RE.match(p.name)
     m = NAME_RE.match(p.name)
-    if not m or not p.is_file():
+    if not (m or lic) or not p.is_file():
         return None, "bad_name"
     try:
         text = p.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None, "bad_name"
+    if lic:
+        return plan_license(p, lic, text)
     branch, pin, ver = var(text, "BRANCH", "BR"), var(text, "PIN_SHA"), var(text, "VER") or m.group("ver")
     repo = re.search(r"git@github\.com:(ez2app/[\w.-]+?)(?:\.git)?\s", text.replace('"', " "))
     if not (branch and pin and repo) or not PIN_RE.match(pin):
@@ -95,10 +121,16 @@ def notify(text, run=subprocess.run):
 def one(job, env=None, run=subprocess.run, head_fn=None, touchid=None):
     """簽一支。回 (ok, 一行回報)。"""
     env = os.environ if env is None else env
-    head = (head_fn or remote_head)(job["repo"], job["branch"])
-    if not head.startswith(job["pin"]):
-        return False, T("skip_head", plugin=job["plugin"], ver=job["ver"], head=head[:7] or "?", pin=job["pin"])
-    reason = AG.reason("release.sign_approve", {"plugin": job["plugin"], "ver": job["ver"], "pin": job["pin"]}, env=env)
+    if job.get("kind") == "license":
+        # 授權單沒有分支頭可對;回報沿用同一組字,「外掛」欄放 LICENSE-<名>、「版號」欄放方案
+        job = dict(job, plugin="LICENSE-" + job["name"], ver=job["plan"])
+        reason = AG.reason("release.license_approve", {"name": job["name"], "plan": job["plan"], "expires": job["expires"]},
+                           env=env)
+    else:
+        head = (head_fn or remote_head)(job["repo"], job["branch"])
+        if not head.startswith(job["pin"]):
+            return False, T("skip_head", plugin=job["plugin"], ver=job["ver"], head=head[:7] or "?", pin=job["pin"])
+        reason = AG.reason("release.sign_approve", {"plugin": job["plugin"], "ver": job["ver"], "pin": job["pin"]}, env=env)
     root = Path(AG.state_root_default(env))
     tmp = Path(tempfile.mkdtemp(prefix="sign-approve."))
     try:

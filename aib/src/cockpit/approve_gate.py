@@ -40,6 +40,7 @@ H = 3600
 # 類別表:id ⇒ high_risk(不開時間窗)、max_window(秒;高風險 = 0)。四語名稱在 i18n「aib.approve_gate.cat.<id>」。
 CATEGORIES = {
     "release_sign":   {"high_risk": True,  "max_window": 0},
+    "license_sign":   {"high_risk": True,  "max_window": 0},   # 10-30 @aeb40:簽發 / 重簽 license.json(aib-sign-approve 收 LICENSE-*.sh)
     "payment":        {"high_risk": True,  "max_window": 0},
     "delete_data":    {"high_risk": True,  "max_window": 0},
     "trusted_device": {"high_risk": True,  "max_window": 0},
@@ -178,6 +179,9 @@ SITES = {
     "release.sign_approve": _s("release/sign_approve.py", "release_sign", "aib.release.sign_approve_reason",
                                {"plugin": FULL, "ver": FULL, "pin": FULL},
                                "Sign and release {plugin} {ver} · head {pin}"),
+    "release.license_approve": _s("release/sign_approve.py", "license_sign", "aib.release.license_approve_reason",
+                                  {"name": FULL, "plan": FULL, "expires": FULL},
+                                  "Sign license {name}: plan {plan} · bound to this Mac only · expires {expires}"),
 }
 
 
