@@ -52,6 +52,7 @@ CATEGORIES = {
     "project_ruling": {"high_risk": True,  "max_window": 0},
     "auto_update":    {"high_risk": True,  "max_window": 0},
     "window_grant":   {"high_risk": True,  "max_window": 0},   # TID-2b:簽時間窗授權單本身一次一按
+    "pixel_real_gen": {"high_risk": True,  "max_window": 0},   # aib-plugins #320:真生圖會扣外部額度;放行多久由外掛檔 until 表示
     "unregistered":   {"high_risk": True,  "max_window": 0},
     "seat_input":     {"high_risk": False, "max_window": 24 * H},
     "outbound":       {"high_risk": False, "max_window": 3 * H},
@@ -107,6 +108,9 @@ SITES = {
                             "Copy secret {name} to clipboard; any program here (AI too) can read it; cleared in 30 s"),
     "secret_share.paste": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_paste", {"seat": FULL, "name": FULL},
                              "Type secret {name} into seat {seat}, no Enter; any app here (AI too) can read that screen and log"),
+    # aib-plugins #320(@aeb40 10-30):像素工坊真生圖放行;hours 不截,本人看得到放行多久
+    "pixel_approve.real_gen": _s("cockpit/pixel_approve.py", "pixel_real_gen", "aib.pixel.touchid_real_gen", {"hours": FULL},
+                                 "Pixel Studio: allow real image generation for {hours} h (codex image calls use quota)"),
     "cf_grant.grant": _s("cockpit/cf_grant.py", "cf_token", "aib.cf.touchid_reason",
                          {"zone": 64, "perms": FULL, "ttl": FULL, "host": FULL},
                          suffix={"dns_write": ("aib.cf.touchid_risk.dns_write", {}, " "),
