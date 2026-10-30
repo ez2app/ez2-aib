@@ -645,10 +645,12 @@ def _over_budget(st, at):
 
 # ── 寫 ──
 
-def _req_digest(typ, by, task, data):
+def _req_digest(typ, by, task, data, with_reset=False):
     """同 eid 重送比的是「要求」(不含系統產生的代號 / 收據 id)。
-    reset 是事件語意版本(budget_set 新版才帶),不是要求的內容 ⇒ 不算進來,舊版成功的指令原樣重送照回原結果(#427 r4 Medium)。"""
-    keep = {k: v for k, v in data.items() if k not in ("code", "receipt_id", "proved", "reset")}
+    reset 是事件語意版本(budget_set 新版才帶),不是要求的內容 ⇒ 不算進來,舊版成功的指令原樣重送照回原結果(#427 r4 Medium)。
+    with_reset:59fb3761 那版的算法(含 reset),比對時兩種都認(#427 r5)。"""
+    drop = ("code", "receipt_id", "proved") if with_reset else ("code", "receipt_id", "proved", "reset")
+    keep = {k: v for k, v in data.items() if k not in drop}
     raw = json.dumps([typ, by, task, keep], ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -775,7 +777,7 @@ def commit(mid, typ, by, data, env=None, task=None, eid=None, now=None, probe=No
         if typ == "created" and evs:
             raise MissionError("exists")
         if eid and eid in st["eids"]:
-            if st["eids"][eid]["req"] != req:
+            if st["eids"][eid]["req"] not in (req, _req_digest(typ, by, task, data, with_reset=True)):
                 raise MissionError("eid_conflict")
             orig = evs[st["eids"][eid]["seq"] - 1]
             return {"ok": True, "duplicate": True, "seq": orig["seq"], "state": st, "task": orig.get("task"), "event": orig}
