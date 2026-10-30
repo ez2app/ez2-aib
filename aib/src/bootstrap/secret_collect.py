@@ -249,8 +249,9 @@ def _set_encrypted_line(path, name, envelope):
         os.close(fd)
 
 
-def put_secret(name, plaintext, env=None):
-    """加密寫入對應檔。成功回 True。明文不得進 log。"""
+def put_secret(name, plaintext, env=None, fill=False):
+    """加密寫入對應檔。成功回 True。明文不得進 log。
+    fill=True = 補填路徑(LINE 回填):名冊說不補填的名字 / 檔(S.no_fill)一律拒,只能走 aib secret ask(Touch ID)。"""
     if not S.valid_name(name):
         raise S.SecretError("bad_name", repr(name)[:40], "bad name")
     rel = S.file_for_name(name)
@@ -260,6 +261,8 @@ def put_secret(name, plaintext, env=None):
         raise S.SecretError("se_only", name, "Secure Enclave only")
     if S.is_remote_only(name):  # 只在伺服器上用:本機不存(aib secret ask … --remote-only)
         raise S.SecretError("remote_only", name, "server only")
+    if fill and S.no_fill(name):   # 10-30 @aeb40 #426 L1:不補填的名字也不准從補填路徑寫進來
+        raise S.SecretError("no_fill", name, "not fillable")
     if not isinstance(plaintext, str) or not plaintext.strip():
         raise S.SecretError(S.MISSING_LINE, name, "empty fill")
     d = S.secrets_dir(env)
@@ -289,5 +292,8 @@ def apply_line_text(text, env=None):
     name = row.get("name")
     if not name:
         return None
-    put_secret(name, value, env=env)
+    if S.no_fill(name):   # 舊版留下的待填(#426 前發的)⇒ 收掉、這則文字不用(可能就是 token,不寫進任何檔)
+        cancel_fill(name, env=env)
+        return None
+    put_secret(name, value, env=env, fill=True)
     return name
