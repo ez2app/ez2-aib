@@ -5791,6 +5791,7 @@
   "aib.approve_gate.cat.phone_pair": "手機配對 / 撤銷",
   "aib.approve_gate.cat.project_ruling": "專案目標與紅線核准",
   "aib.approve_gate.cat.auto_update": "允許自動更新外掛",
+  "aib.approve_gate.cat.pixel_real_gen": "像素工坊真生圖放行(會扣生圖額度)",
   "aib.approve_gate.cat.unregistered": "未登記的動作",
   "aib.approve_gate.cat.seat_input": "開席 / 核准輸入框",
   "aib.approve_gate.cat.outbound": "對外發信 / 分享",
@@ -5900,5 +5901,6 @@
   "aib.mission.help.code": "派工回條裡的代號(12 碼),工人回報要帶",
   "aib.mission.help.clock": "時間一律讀系統鐘,指令不收時間參數(租期 15 分照真實時間算)",
   "aib.secret.touchid_copy": "複製金鑰 {name} 到剪貼簿:同帳號任何程式(含 AI)都讀得到,30 秒後清",
-  "aib.secret.touchid_paste": "把金鑰 {name} 打進 {seat} 席的輸入框(不按 Enter):同帳號任何程式(含 AI)都讀得到該席畫面與對話紀錄"
+  "aib.secret.touchid_paste": "把金鑰 {name} 打進 {seat} 席的輸入框(不按 Enter):同帳號任何程式(含 AI)都讀得到該席畫面與對話紀錄",
+  "aib.pixel.touchid_real_gen": "像素工坊:放行真生圖 {hours} 小時(codex 生圖會扣額度)"
 }

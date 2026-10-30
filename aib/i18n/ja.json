@@ -5791,6 +5791,7 @@
   "aib.approve_gate.cat.phone_pair": "スマホのペアリング / 解除",
   "aib.approve_gate.cat.project_ruling": "プロジェクト目標とレッドラインの承認",
   "aib.approve_gate.cat.auto_update": "プラグインの自動更新を許可",
+  "aib.approve_gate.cat.pixel_real_gen": "ピクセル工房の実画像生成の許可(生成枠を消費)",
   "aib.approve_gate.cat.unregistered": "未登録の操作",
   "aib.approve_gate.cat.seat_input": "席を開く / 入力欄の承認",
   "aib.approve_gate.cat.outbound": "外部への送信 / 共有",
@@ -5900,5 +5901,6 @@
   "aib.mission.help.code": "割り当て通知にあるコード(12 桁)。作業者が報告するときに必須",
   "aib.mission.help.clock": "時刻は常にシステム時計を使い、コマンドで時刻は指定できません(15 分のリースは実時間で数えます)",
   "aib.secret.touchid_copy": "シークレット {name} をクリップボードにコピー:同じアカウントのどのプログラム(AI 含む)も読めます。30 秒後に消去",
-  "aib.secret.touchid_paste": "シークレット {name} を {seat} 席の入力欄に入力(Enter なし):同じアカウントのどのプログラム(AI 含む)もその画面と会話記録を読めます"
+  "aib.secret.touchid_paste": "シークレット {name} を {seat} 席の入力欄に入力(Enter なし):同じアカウントのどのプログラム(AI 含む)もその画面と会話記録を読めます",
+  "aib.pixel.touchid_real_gen": "ピクセル工房:実画像生成を {hours} 時間許可(codex の画像生成は枠を消費)"
 }

@@ -5791,6 +5791,7 @@
   "aib.approve_gate.cat.phone_pair": "휴대폰 페어링 / 해제",
   "aib.approve_gate.cat.project_ruling": "프로젝트 목표와 레드라인 승인",
   "aib.approve_gate.cat.auto_update": "플러그인 자동 업데이트 허용",
+  "aib.approve_gate.cat.pixel_real_gen": "픽셀 공방 실제 이미지 생성 허용(생성 한도 차감)",
   "aib.approve_gate.cat.unregistered": "등록되지 않은 작업",
   "aib.approve_gate.cat.seat_input": "좌석 열기 / 입력창 승인",
   "aib.approve_gate.cat.outbound": "외부 발송 / 공유",
@@ -5900,5 +5901,6 @@
   "aib.mission.help.code": "배정 회신에 있는 코드(12자리). 작업자가 보고할 때 꼭 넣어야 함",
   "aib.mission.help.clock": "시간은 항상 시스템 시계를 쓰며 명령에서 시간을 지정할 수 없습니다(15분 임대는 실제 시간 기준)",
   "aib.secret.touchid_copy": "시크릿 {name}을(를) 클립보드에 복사: 같은 계정의 모든 프로그램(AI 포함)이 읽을 수 있음, 30초 후 지움",
-  "aib.secret.touchid_paste": "시크릿 {name}을(를) {seat} 자리 입력칸에 입력(Enter 없음): 같은 계정의 모든 프로그램(AI 포함)이 그 화면과 대화 기록을 읽을 수 있음"
+  "aib.secret.touchid_paste": "시크릿 {name}을(를) {seat} 자리 입력칸에 입력(Enter 없음): 같은 계정의 모든 프로그램(AI 포함)이 그 화면과 대화 기록을 읽을 수 있음",
+  "aib.pixel.touchid_real_gen": "픽셀 공방: 실제 이미지 생성을 {hours}시간 허용(codex 이미지 생성은 한도 차감)"
 }
