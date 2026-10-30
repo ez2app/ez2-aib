@@ -8,13 +8,15 @@ S1 切段:24 小時 ⇒ 8 段並行(/usr/bin/log 絕對路徑、predicate 綁 lo
 S2 解析:只收 processImagePath = loginwindow 且有 eventMessage 的那幾列;開頭的 Filtering… / 結尾摘要 / 別的行程略過;
    timestamp 讀不懂 ⇒ log_unreadable
 S3 失敗一律當鎖過:rc ≠ 0 ⇒ log_failed;超過 3 秒 ⇒ log_timeout,沒跑完的子行程都收掉;Popen 起不來 ⇒ log_failed
-S4 不是 Mac ⇒ log_not_mac,一支都不跑;Ctx 預設走 syslog_locks(帶 Ctx 的 platform)
+S4 不是 Mac ⇒ log_not_mac,一支都不跑;Ctx 預設走 syslog_locks(帶 Ctx 的 platform);沒注入 build ⇒ lock_state 先回 os_unverified
 S5 #433 R1 M1 覆蓋檢查:最後一支查 since 前 30 分鐘的 loginwindow 紀錄;一筆都沒有 / 只有 since 之後的 / 別的行程的
    ⇒ log_uncovered(灌 log 擠掉鎖屏段 ⇒ 當鎖過);覆蓋那支超時 ⇒ log_timeout
+S7 #433 R2 L1:覆蓋只算 messageType = Default 的 logEvent(predicate 也帶 messageType == default);
+   只有 Error / Fault / activity / stateEvent / Info ⇒ log_uncovered
 S6 #433 R1 H1:--start / --end 一律 UTC +0000;呼叫端設 TZ=AAA-24 字串也一樣
 刀(複本落刀,錨要恰好一次):KS1 拿掉 24 小時上限 ⇒ S1 紅;KS2 拿掉 rc 檢查 ⇒ S3 紅;KS3 communicate 不帶 timeout ⇒ S3 紅;
   KS4 拿掉收子行程 ⇒ S3 紅;KS5 拿掉平台檢查 ⇒ S4 紅;KS6 子行程不給乾淨 env ⇒ S1 紅;
-  KS7 時間字串改回本地時區 ⇒ S6 紅;KS8 拿掉覆蓋檢查 ⇒ S5 紅。
+  KS7 時間字串改回本地時區 ⇒ S6 紅;KS8 拿掉覆蓋檢查 ⇒ S5 紅;KS9 覆蓋拿掉 Default / logEvent 篩選 ⇒ S7 紅。
 """
 import importlib.util
 import json
@@ -37,8 +39,9 @@ NOW = 1798560000                     # 固定時間點(秒)
 LW = GR.LOGINWINDOW
 
 
-def _line(ts, path=LW, msg="-[LWScreenLock startUnlock:] | entered"):
-    return json.dumps({"timestamp": ts, "processImagePath": path, "eventMessage": msg}).encode()
+def _line(ts, path=LW, msg="-[LWScreenLock startUnlock:] | entered", mtype="Default", etype="logEvent"):
+    d = {"timestamp": ts, "processImagePath": path, "eventMessage": msg, "messageType": mtype, "eventType": etype}
+    return json.dumps({k: v for k, v in d.items() if v is not None}).encode()
 
 
 def _ts(sec):
@@ -157,8 +160,10 @@ def cell_s4(t, M):
     t.assertEqual(run(M, f, NOW - 3600, platform="linux"), (None, "log_not_mac"))
     ctx = M.Ctx(env=dict(os.environ), platform="linux")
     t.assertEqual(ctx.syslog(NOW - 60, NOW), (None, "log_not_mac"))
+    t.assertEqual(M.lock_state(M.Ctx(env=dict(os.environ), platform="linux", screen_locked=False,
+                                     os_build=sorted(M.VERIFIED_BUILDS)[0]), NOW - 60), (None, "log_not_mac"))
     t.assertEqual(M.lock_state(M.Ctx(env=dict(os.environ), platform="linux", screen_locked=False), NOW - 60),
-                  (None, "log_not_mac"))
+                  (None, "os_unverified"))                    # 不是 Mac ⇒ 讀不到 build,先擋
 
 
 def cell_s5(t, M):
@@ -194,6 +199,18 @@ def cell_s6(t, M):
         time.tzset()
 
 
+def cell_s7(t, M):
+    since = NOW - 3600
+    t.assertIn("messageType == default", M.COVER_PREDICATE)
+    before = _ts(since - 60)
+    for mtype, etype in (("Error", "logEvent"), ("Fault", "logEvent"), (None, "activityCreateEvent"),
+                         ("Default", "stateEvent"), ("Info", "logEvent")):
+        f = Fake(cover=[_line(before, mtype=mtype, etype=etype)])
+        t.assertEqual(run(M, f, since), (None, "log_uncovered"), (mtype, etype))
+    f = Fake(cover=[_line(before, mtype="Error"), _line(before, mtype="Default")])
+    t.assertEqual(run(M, f, since), ([], None))
+
+
 class Cells(unittest.TestCase):
     def test_s1(self): cell_s1(self, GR)
     def test_s2(self): cell_s2(self, GR)
@@ -201,6 +218,7 @@ class Cells(unittest.TestCase):
     def test_s4(self): cell_s4(self, GR)
     def test_s5(self): cell_s5(self, GR)
     def test_s6(self): cell_s6(self, GR)
+    def test_s7(self): cell_s7(self, GR)
 
 
 KNIVES = [
@@ -213,6 +231,7 @@ KNIVES = [
     ("KS7", '    return time.strftime("%Y-%m-%d %H:%M:%S+0000", time.gmtime(int(t)))\n',
      '    return time.strftime("%Y-%m-%d %H:%M:%S+0000", time.localtime(int(t)))\n', cell_s6),
     ("KS8", "        if not covered:\n            return None, \"log_uncovered\"\n", "", cell_s5),
+    ("KS9", ' and d.get("messageType") == "Default" and d.get("eventType") == "logEvent":\n', ":\n", cell_s7),
 ]
 
 
