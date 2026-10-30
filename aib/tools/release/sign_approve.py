@@ -91,27 +91,27 @@ def plan_license(p, m, raw):
 
 
 def build_license(job, env=None, raw_machine=None):
-    """核心自己組待簽內容 + 算綁機值。回 (obj, did, None) 或 (None, None, why)。"""
+    """核心自己組待簽內容 + 算綁機值。回 (obj, did, None, 驗過的現有授權) 或 (None, None, why, None)。"""
     from entitlement import device, signing, store
     cur = store.read_license_obj(env=env)
     if not isinstance(cur, dict) or set(cur) - set(LIC_KEEP) - {"issued_at", "signature"} or cur.get("tier") != "all":
-        return None, None, "lic_current"
+        return None, None, "lic_current", None
     if signing.verify_object(cur) != signing.OK:
-        return None, None, "lic_current"         # #449 r2 H1:舊授權要先過信任公鑰,才承接 addons / 到期
+        return None, None, "lic_current", None         # #449 r2 H1:舊授權要先過信任公鑰,才承接 addons / 到期
     try:
         when = datetime.fromisoformat(cur.get("expires_at") or "")
     except (TypeError, ValueError):
-        return None, None, "lic_current"
+        return None, None, "lic_current", None
     if when.tzinfo is None:
-        return None, None, "lic_current"
+        return None, None, "lic_current", None
     obj = {k: cur[k] for k in LIC_KEEP if k in cur}
     obj["plan"] = job["plan"]
     obj["license_id"] = "lic-" + secrets.token_hex(8)
     did = device.device_id(obj["license_id"], raw_machine)
     if not did:
-        return None, None, "lic_machine"
+        return None, None, "lic_machine", None
     obj["devices"] = [did]
-    return obj, did, None
+    return obj, did, None, cur
 
 
 def plan(path):
@@ -201,16 +201,35 @@ def _same_as_shown(signed, shown):
     return a == b
 
 
-def ECLI_restore(path, data):
-    """簽發途中現有授權被動過 ⇒ 用簽前那份蓋回去(0600、先寫暫存再換)。"""
-    tmp = path.with_name(".%s.restore.%d" % (path.name, os.getpid()))
+def _loads(data):
     try:
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        return json.loads(data)
+    except (TypeError, ValueError):
+        return None
+
+
+def ECLI_restore(path, data):
+    """簽發途中現有授權被動過 ⇒ 用簽前那份蓋回去。回 True = 蓋回且覆讀一致。
+    #449 r3:暫存名不可預測(mkstemp = O_EXCL、0600、同資料夾),失敗不吞:呼叫端看回值;換完覆讀比對。"""
+    fd, tmpname = None, None
+    try:
+        fd, tmpname = tempfile.mkstemp(prefix=".%s.restore." % path.name, dir=str(path.parent))
         with os.fdopen(fd, "wb") as fh:
+            fd = None
             fh.write(data)
-        os.replace(tmp, path)
+        os.chmod(tmpname, 0o600)
+        os.replace(tmpname, str(path))          # 換成功後暫存名已不在,finally 的 unlink 只是保險
+        return path.read_bytes() == data and not path.is_symlink()
     except OSError:
-        pass
+        return False
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmpname:
+            try:
+                os.unlink(tmpname)
+            except OSError:
+                pass
 
 
 def one_license(job, env=None, run=subprocess.run, touchid=None, raw_machine=None):
@@ -218,7 +237,15 @@ def one_license(job, env=None, run=subprocess.run, touchid=None, raw_machine=Non
     from entitlement import cli as ECLI, plan as EPLAN, signing
     env = os.environ if env is None else env
     label, ver = "LICENSE-" + job["name"], job["plan"]
-    obj, did, why = build_license(job, env, raw_machine)
+    from entitlement import store as ESTORE
+    lic_path = ESTORE.resolve_license_path(env)
+    try:
+        snap = lic_path.read_bytes()             # #449 r3:基準 = 驗簽過那份的位元組(先讀,再確認跟驗的是同一份)
+    except OSError:
+        snap = None
+    obj, did, why, cur = build_license(job, env, raw_machine)
+    if obj and (snap is None or _loads(snap) != cur):
+        obj, why = None, "lic_current"           # 讀位元組與驗簽之間被換過
     if not obj:
         return False, T("skip_" + why, path=label)
     reason = AG.reason("release.license_approve", {"name": job["name"], "plan": obj["plan"],
@@ -228,12 +255,6 @@ def one_license(job, env=None, run=subprocess.run, touchid=None, raw_machine=Non
     got = AG.ask(reason, root, touchid)
     if not got["ok"]:
         return False, T("busy" if got["why"] == "busy" else "denied", plugin=label, ver=ver, why=got["why"])
-    from entitlement import store as ESTORE
-    lic_path = ESTORE.resolve_license_path(env)
-    try:
-        snap = lic_path.read_bytes()
-    except OSError:
-        snap = None
     tmp = Path(tempfile.mkdtemp(prefix="sign-license."))
     logs = root / "pending" / "sign-logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -273,9 +294,7 @@ def one_license(job, env=None, run=subprocess.run, touchid=None, raw_machine=Non
         except OSError:
             now_bytes = None
         if now_bytes != snap:
-            if snap is not None:
-                ECLI_restore(lic_path, snap)
-            check = "current_touched"
+            check = "current_touched" if ECLI_restore(lic_path, snap) else "restore_failed"
         elif rc != 0:
             check = "sign_failed"
         elif not _same_as_shown(signed, obj):

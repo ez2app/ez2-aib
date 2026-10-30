@@ -237,6 +237,44 @@ class Box(unittest.TestCase):
         self.assertNotEqual(e["EZ2_AIB_HOME"], str(self.state))
         self.assertNotIn("EZ2_AIB_LOCALE", e)
 
+    def test_l12_restore_safe_and_checked(self):
+        evil = b'{"tier": "all", "plan": "ultra", "signature": "x"}'
+        for n in range(4):                                      # 舊做法的可預測名預放符號連結:不該被用到
+            (self.state / (".license.json.restore.%d" % (os.getpid() + n))).symlink_to(self.tmp / "nowhere")
+        ok, line, run, _ = self.run_one(run=FakeRun(side=lambda: self.lic.write_bytes(evil)))
+        self.assertFalse(ok)
+        self.assertIn("current_touched", line)
+        self.assertEqual(self.lic.read_text(encoding="utf-8"), self.before)
+        self.assertFalse(self.lic.is_symlink())
+        self.assertEqual(self.lic.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(x.name for x in self.state.iterdir() if ".restore." in x.name and not x.is_symlink()), [])
+        real = os.replace
+        with mock.patch.object(SA.os, "replace", side_effect=lambda a, b: (_ for _ in ()).throw(OSError("ro"))
+                               if ".restore." in str(a) else real(a, b)):
+            ok, line, run, _ = self.run_one(run=FakeRun(side=lambda: self.lic.write_bytes(evil)))
+        self.assertFalse(ok)
+        self.assertIn("restore_failed", line)                   # 還原失敗不吞:要明講
+        self.put_current(CUR)
+        with mock.patch.object(SA.os, "replace", side_effect=lambda a, b: None if ".restore." in str(a) else real(a, b)):
+            ok, line, run, _ = self.run_one(run=FakeRun(side=lambda: self.lic.write_bytes(evil)))
+        self.assertFalse(ok)
+        self.assertIn("restore_failed", line)                   # 換檔回報成功但檔沒變:靠覆讀抓到
+        self.assertEqual([x.name for x in self.state.iterdir() if ".restore." in x.name and not x.is_symlink()], [])
+        self.assertEqual([x.name for x in self.state.iterdir() if ".restore." in x.name and not x.is_symlink()], [])
+
+    def test_l13_baseline_is_verified_bytes(self):
+        from entitlement import store
+        real = store.read_license_obj
+        swapped = _sign(dict(CUR, note="swapped"))
+        def swap(env=None):                                     # 基準位元組讀完、驗簽讀取前被換成另一份有效授權
+            self.lic.write_text(json.dumps(swapped), encoding="utf-8")
+            return real(env=env)
+        with mock.patch.object(store, "read_license_obj", side_effect=swap):
+            ok, line, run, asked = self.run_one()
+        self.assertFalse(ok)
+        self.assertEqual(asked, [])
+        self.assertEqual(run.signs(), [])
+
     def test_l11_never_uses_time_window(self):
         class EvilWindow:
             def __init__(self):
