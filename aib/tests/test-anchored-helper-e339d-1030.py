@@ -21,7 +21,7 @@ A15 #432 R2 L1:git_head 只收 refs/ 開頭、不含 .. 的 ref,讀出值只收 
   KA7 安裝程式拿掉上層檢查 ⇒ A9 紅;KA8 安裝程式拿掉 euid 檢查 ⇒ A9 紅;KA9 拿掉 hardened 檢查 ⇒ A12 紅;
   KA10 安裝程式簽章拿掉 -o runtime ⇒ A9 紅;KA11 拿掉 S_ISREG ⇒ A13 紅;KA12 安裝程式改編原檔 ⇒ A9 紅;
   KA13 se_vault._call 不給 env ⇒ A14 紅;KA14 git_head 拿掉 ref 檢查 ⇒ A15 紅;KA15 拿掉值的十六進位檢查 ⇒ A15 紅;
-  KA16 雜湊改算原檔 ⇒ A9b 紅。
+  KA16 雜湊改算原檔 ⇒ A9b 紅;KA17 git_head 讀檔拿掉 O_NOFOLLOW ⇒ A15 紅(0.1.65 Low)。
 全部假 stat / 假 run / 暫存目錄;不碰 /usr/local、不跑 sudo、不編譯、不叫 Secure Enclave。
 """
 import hashlib
@@ -323,6 +323,14 @@ def cell_a15(t, M):
             f.write("c" * 40 + "\n")
         for i, ref in enumerate((os.path.relpath(hexfile, os.path.join(td, "h0", ".git")), "refs/../../root-hex")):
             t.assertEqual(M.git_head(_repo(os.path.join(td, "h%d" % i), "ref: " + ref)), "unknown", ref)
+        lk = _repo(os.path.join(td, "lk"), "ref: refs/heads/x")        # 0.1.65 Low:refs 檔是捷徑 ⇒ 不跟過去讀
+        os.makedirs(os.path.join(td, "lk", ".git", "refs", "heads"))
+        os.symlink(hexfile, os.path.join(td, "lk", ".git", "refs", "heads", "x"))
+        t.assertEqual(M.git_head(lk), "unknown")
+        hl = _repo(os.path.join(td, "hl"), "x")                           # HEAD 本身是捷徑
+        os.unlink(os.path.join(td, "hl", ".git", "HEAD"))
+        os.symlink(hexfile, os.path.join(td, "hl", ".git", "HEAD"))
+        t.assertEqual(M.git_head(hl), "unknown")
     finally:
         shutil.rmtree(td, ignore_errors=True)
 
@@ -398,6 +406,7 @@ KNIVES_INST = [
     ("KA15", '                        return v + " (" + ref + ")" if _HEX40.match(v) else "unknown"\n',
      '                        return v[:40] + " (" + ref + ")"\n', cell_a15),
     ("KA16", '        digest = _sha256(copy)', '        digest = _sha256(src)', cell_a9b),
+    ("KA17", '    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)\n', '    fd = os.open(path, os.O_RDONLY)\n', cell_a15),
 ]
 
 

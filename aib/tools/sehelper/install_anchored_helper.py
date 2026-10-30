@@ -75,6 +75,13 @@ _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _REF = re.compile(r"^refs/[A-Za-z0-9._/-]{1,200}$")
 
 
+def _read_nofollow(path, n):
+    """讀 path 開頭 n 位元組;最後一段是捷徑 ⇒ OSError(0.1.65 Low:root 不跟著同帳號放的捷徑去讀別的檔)。"""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as f:
+        return f.read(n).decode("utf-8")
+
+
 def git_head(start):
     """往上找 .git 讀 HEAD(不跑 git:root 跑 git 會吃倉裡的 config / fsmonitor)。讀不到 ⇒ "unknown"。
     #432 R2 L1:HEAD 的 ref 是同帳號寫得到的字 ⇒ 只收 refs/ 開頭、不含 ..;讀出的值只收 40 位十六進位
@@ -84,11 +91,9 @@ def git_head(start):
         while True:
             g = os.path.join(d, ".git")
             if os.path.isfile(g):                         # 工作樹:gitdir: <路徑>
-                with open(g, encoding="utf-8") as f:
-                    g = f.read(4096).strip().split("gitdir:", 1)[-1].strip()
+                g = _read_nofollow(g, 4096).strip().split("gitdir:", 1)[-1].strip()
             if os.path.isdir(g):
-                with open(os.path.join(g, "HEAD"), encoding="utf-8") as f:
-                    head = f.read(256).strip()
+                head = _read_nofollow(os.path.join(g, "HEAD"), 256).strip()
                 if not head.startswith("ref: "):
                     return head if _HEX40.match(head) else "unknown"
                 ref = head[5:].strip()
@@ -96,9 +101,8 @@ def git_head(start):
                     return "unknown"
                 for base in (g, _common_dir(g)):
                     p = os.path.join(base, ref)
-                    if os.path.isfile(p):
-                        with open(p, encoding="utf-8") as f:
-                            v = f.read(64).strip()
+                    if os.path.lexists(p):
+                        v = _read_nofollow(p, 64).strip()             # 捷徑 ⇒ OSError ⇒ unknown
                         return v + " (" + ref + ")" if _HEX40.match(v) else "unknown"
                 return "unknown"
             if os.path.dirname(d) == d:
@@ -110,8 +114,7 @@ def git_head(start):
 
 def _common_dir(g):
     try:
-        with open(os.path.join(g, "commondir"), encoding="utf-8") as f:
-            return os.path.normpath(os.path.join(g, f.read(4096).strip()))
+        return os.path.normpath(os.path.join(g, _read_nofollow(os.path.join(g, "commondir"), 4096).strip()))
     except OSError:
         return g
 

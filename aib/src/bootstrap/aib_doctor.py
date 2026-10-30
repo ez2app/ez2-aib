@@ -626,7 +626,7 @@ def check_auto_update(state_root, repo_root, env=None):
 
 
 def check_grants(state_root, repo_root, env=None):
-    """時間窗授權單(TID-2c):有單卻沒有活的 lockwatch ⇒ NOTE(窗用不到,一律一次一按;@aeb40 Q2)。唯讀,不叫指紋。"""
+    """時間窗授權單(TID-2c):有單但 helper 沒好 / 系統日誌查不到鎖屏紀錄 ⇒ NOTE(窗用不到,一律一次一按)。唯讀,不叫指紋。"""
     env = dict(os.environ if env is None else env)
     env["EZ2_AIB_STATE_ROOT"] = str(state_root)
     cock = str(Path(repo_root) / "src" / "cockpit")
@@ -643,7 +643,7 @@ def check_grants(state_root, repo_root, env=None):
         import anchored_helper
         return _result("grants", NOTE, _C("grants.helper_missing", why=code[len("helper_"):]),
                        _C("grants.helper_remedy", cmd=anchored_helper.install_command()))
-    return _result("grants", NOTE, _C("grants.lockwatch_missing", why=code), _C("grants.remedy"))
+    return _result("grants", NOTE, _C("grants.syslog_missing", why=code), _C("grants.syslog_remedy"))
 
 
 def check_badge_font(repo_root, env=None, runner=None, platform=None, state_root=None):
