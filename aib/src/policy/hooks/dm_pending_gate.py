@@ -37,6 +37,7 @@ SHOW_MAX = 3
 TRIAGE_AT = 2
 # claimed 不算(Codex r1 M1):排空器正在投遞,dm_queue 不准席位把 claimed 結案 —— 擋了也結不掉;卡住的 claim 由租約回收
 LIVE_STATUSES = ("queued", "delivered", "hold_human")
+_FOREIGN_KINDS = ("external_seat", "owner_paired", "external_im")   # 全球 / 配對 / IM:不是席位用 dm-queue 結得了的
 
 
 def pending_rows(rows, seat, now):
@@ -50,7 +51,8 @@ def pending_rows(rows, seat, now):
             continue
         if (r.get("sender_seat") or "") == seat:
             continue
-        if r.get("global") or r.get("im"):
+        # @fd787 旁審 L1:只有 sender_kind 的舊列也要認(同 dm_queue._is_global_item 與 IM 判準),不然擋了又結不了
+        if r.get("global") or r.get("im") or r.get("sender_kind") in _FOREIGN_KINDS:
             continue
         if st == "hold_human" and r.get("sender_kind") == "human":
             continue

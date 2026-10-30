@@ -68,6 +68,8 @@ class Filter(unittest.TestCase):
         self.assertEqual(self.ids([row(expired_now=True)]), [])
         self.assertEqual(self.ids([row(**{"global": {"x": 1}})]), [])
         self.assertEqual(self.ids([row(im={"x": 1})]), [])
+        for k in ("external_seat", "owner_paired", "external_im"):
+            self.assertEqual(self.ids([row(sender_kind=k)]), [], k)
         self.assertEqual(self.ids([row(ts=None)]), [])
         self.assertEqual(self.ids([row(status="read")]), [])
         self.assertEqual(self.ids([row(status="claimed")]), [])
