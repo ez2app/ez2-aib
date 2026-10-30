@@ -18,10 +18,16 @@ W10 舊 helper(se-pub 沒回 owner_acl)⇒ old_helper,不開窗
 W11 durations_for:outbound ≤ 3h、seat_input 到 24h
 W14 系統日誌查不到 / helper 不在 ⇒ 不出時長選單(只這次)
 W15 系統日誌查不到 + 簽章正確的有效窗單 ⇒ ask 仍一次一按、不出選單
-W16 #428 H1:正式路徑(不注入 touchid / window)授權單模組給得出有效單也照舊一次一按(預設窗關著)
+W16 正式路徑(不注入 touchid / window):不是 Mac / 固定路徑 helper 沒裝 ⇒ _default_window 回 None,
+    授權單模組給得出有效單也照舊一次一按(系統錨定驗單第 3 張起:兩項都成立才開窗)
 W17 審查探針 P4 + P1:EZ2_AIB_STATE_ROOT + 種假 sehelper(stamp = 真原始碼雜湊)+ 自寫 lockwatch.json ⇒ ask 仍彈窗
 W18 #433 R1 M2:這版 macOS 不在實機驗過的名單 / 讀不到 build ⇒ find_valid 回 os_unverified(不查系統日誌);
     doctor_line ⇒ note os_unverified;os_build 只跑 /usr/bin/sw_vers -buildVersion、env 只給 PATH,不是 Mac 不跑
+W19 第 3 張接窗:Mac + 固定路徑 helper 驗得過 ⇒ 正式路徑 ask(seat_input) 找到本人簽的單 ⇒ 不彈窗、why window、記帳;
+    高風險類照舊一次一按;GateWindow 的狀態根 = pwd 查到的家目錄(pinned_env 拿掉 EZ2_AIB_STATE_ROOT / EZ2_AIB_HOME、HOME 換掉)
+W20 刀:換狀態根 —— EZ2_AIB_STATE_ROOT / EZ2_AIB_HOME / HOME 都指到 AI 的目錄、裡面有一張驗得過的單 ⇒ 正式路徑不採用,一次一按
+W21 刀:覆寫 helper —— 固定路徑那支不是 root 擁有,AI 在 <家>/.ez2-aib/bin 種假 helper + 用它簽的單 ⇒ 不開窗,一次一按
+W22 刀:自寫鎖屏紀錄 —— 本人簽的單、系統日誌有簽單後的鎖屏,AI 自寫 lockwatch.json「沒鎖過」⇒ 一次一按
 W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單但系統日誌查不到 ⇒ note
   (第 2 張起 lockwatch.json 不再參與判斷;W2 另驗自寫一份「沒鎖過」的 lockwatch.json 也不會讓單生效)
 刀(複本落刀,錨要恰好一次):KL1 lock_state 不理查詢失敗 ⇒ W2 紅;KL2 拿掉鎖屏後作廢 ⇒ W3 紅;KL3 拿掉「現在鎖著」⇒ W2 紅;
@@ -29,18 +35,22 @@ W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plis
   KL4 拿掉 owner_acl 檢查 ⇒ W10 紅;KL5 拿掉 find_valid 的高風險排除 ⇒ W4 紅;KL6 拿掉查不到不出選單 ⇒ W14 紅;
   KL7 find_valid 拿掉 lock_state ⇒ W15 紅;KL9 lock_state 改回讀 lockwatch.json ⇒ W2 紅;KL8 --lockwatch on 拿掉 Touch ID ⇒ W12 紅;
   KG1 ask 拿掉高風險不走窗 ⇒ W8 紅;KG2 拿掉記帳 ⇒ W5 紅;KG3 拿掉取消 ⇒ W6 紅
-  KH1 / KH2 _default_window 改回開窗 ⇒ W16 / W17 紅
+  KH1 / KH2 _default_window 拿掉固定路徑 helper 檢查 ⇒ W16 / W17 紅;KH3 拿掉平台檢查 ⇒ W16 紅
+  KW1 pinned_env 照收呼叫端 env(狀態根跟著 EZ2_AIB_STATE_ROOT)⇒ W20 紅;KW2 helper_exe 退回 <狀態根>/bin ⇒ W21 紅;
+  KW3 正式路徑 lock_state 改讀 lockwatch.json ⇒ W22 紅
 """
 import hashlib
 import importlib.util
 import io
 import json
 import os
+import contextlib
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -291,16 +301,22 @@ def cell_w15(t, M):
 
 
 def cell_w16(t, G):
-    """#428 H1(Andy 20:5x):正式路徑(不注入 touchid / window)就算授權單模組給得出一張有效單,ask 也照舊一次一按。"""
+    """正式路徑(不注入 touchid / window):不是 Mac / 固定路徑 helper 沒裝 ⇒ 就算授權單模組給得出一張有效單,ask 也照舊一次一按。"""
     td = tempfile.mkdtemp(prefix="aib-window-h1-")
     try:
-        fake = FakeWin(doc={"nonce": "n" * 32}, choice="1h")
-        seen = []
-        with mock.patch.object(GR, "GateWindow", lambda *a, **k: fake), \
-                mock.patch.object(G.TA, "ask", lambda r: seen.append(r) or {"ok": True, "why": "ok"}):
-            res = G.ask(_r(G), td)
-        t.assertEqual((len(seen), fake.calls), (1, []))          # 彈了一次指紋;沒找單、沒出選單
-        t.assertNotEqual(res.get("why"), "window")
+        for plat, check in (("linux", lambda **k: (GR.anchored_helper.EXE, None)),
+                            ("darwin", lambda **k: (None, "not_installed")),
+                            ("darwin", lambda **k: (None, "not_root_owned"))):
+            fake = FakeWin(doc={"nonce": "n" * 32}, choice="1h")
+            seen = []
+            with mock.patch.object(GR, "GateWindow", lambda *a, **k: fake), \
+                    mock.patch.object(G.sys, "platform", plat), \
+                    mock.patch.object(GR.anchored_helper, "check", check), \
+                    mock.patch.object(G.TA, "ask", lambda r: seen.append(r) or {"ok": True, "why": "ok"}):
+                t.assertIsNone(G._default_window(), plat)
+                res = G.ask(_r(G), td)
+            t.assertEqual((len(seen), fake.calls), (1, []), plat)  # 彈了一次指紋;沒找單、沒出選單
+            t.assertNotEqual(res.get("why"), "window", plat)
     finally:
         shutil.rmtree(td, ignore_errors=True)
 
@@ -339,6 +355,133 @@ def cell_w17(t, G):
         t.assertNotEqual(res.get("why"), "window")
     finally:
         shutil.rmtree(td, ignore_errors=True)
+
+
+class Prod:
+    """正式路徑(_default_window)的假系統:pwd 家目錄 = self.home、固定路徑 helper = 假 helper(HMAC 模擬)、
+    系統日誌 / build / 開機 / 機器 / 現在鎖屏 / 時長選單 / LAContext 都換假的 ⇒ 不碰真 HOME、Secure Enclave、log、視窗。
+    M = 受測的 approve_grants(刀測拿複本;_default_window 裡 import 的那份也換成它)。"""
+
+    def __init__(self):
+        self.td = tempfile.mkdtemp(prefix="aib-window-prod-")
+        self.home = os.path.join(self.td, "home")
+        os.makedirs(self.home)
+        self.exe = os.path.join(self.td, "anchored", "aib-sehelper")
+        os.makedirs(os.path.dirname(self.exe))
+        with open(self.exe, "w") as f:
+            f.write(T2B.FAKE)
+        os.chmod(self.exe, 0o700)
+        self.anchored = (self.exe, None)
+        self.locks, self.seen, self.chose = [], [], []
+
+    def _syslog(self, since, now, **k):
+        return [x for x in self.locks if since <= x <= now], None
+
+    def on(self, G, M, environ=None):
+        st = contextlib.ExitStack()
+        st.enter_context(mock.patch.dict(sys.modules, {"approve_grants": M}))
+        st.enter_context(mock.patch.object(G.sys, "platform", "darwin"))
+        st.enter_context(mock.patch("pwd.getpwuid", lambda uid: types.SimpleNamespace(pw_dir=self.home)))
+        st.enter_context(mock.patch.object(M.anchored_helper, "check", lambda **k: self.anchored))
+        st.enter_context(mock.patch.object(M, "syslog_locks", self._syslog))
+        st.enter_context(mock.patch.object(M, "os_build", lambda *a, **k: sorted(M.VERIFIED_BUILDS)[0]))
+        st.enter_context(mock.patch.object(M, "screen_locked_now", lambda *a, **k: False))
+        st.enter_context(mock.patch.object(M, "boot_epoch", lambda *a, **k: 1_799_990_000))
+        st.enter_context(mock.patch.object(M, "machine_id", lambda *a, **k: "m" * 16))
+        st.enter_context(mock.patch.object(M, "choose_window", lambda r, ctx, run=None: self.chose.append(r) or "once"))
+        st.enter_context(mock.patch.object(G.TA, "ask", lambda r: self.seen.append(r) or {"ok": True, "why": "ok"}))
+        # 行程 HOME 一律指到暫存家目錄:程式就算退回 expanduser / 行程 env,也寫不到真 ~/.ez2-aib
+        st.enter_context(mock.patch.dict(os.environ, {"EZ2_AIB_LOCALE": "zh-TW", "HOME": self.home}))
+        for k in ("EZ2_AIB_STATE_ROOT", "EZ2_AIB_HOME"):
+            os.environ.pop(k, None)
+        if environ:
+            st.enter_context(mock.patch.dict(os.environ, environ))
+        return st
+
+    def home_env(self):
+        return dict(os.environ, HOME=self.home, EZ2_AIB_STATE_ROOT=os.path.join(self.home, ".ez2-aib"))
+
+    def sign_home(self, M, cats=("seat_input",), dur="1h"):
+        """本人在(假的)真家目錄簽一張(固定路徑 helper)。"""
+        doc, why = M.sign(list(cats), dur, M.Ctx(env=self.home_env(), platform="darwin"))
+        assert why is None, why
+        return doc
+
+    def close(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+
+def cell_w19(t, G, M=GR):
+    p = Prod()
+    try:
+        with p.on(G, M):
+            doc = p.sign_home(M)
+            w = G._default_window()
+            t.assertIsNotNone(w)
+            t.assertEqual(M._key_dir(w.ctx.env), os.path.join(p.home, ".ez2-aib", "secrets", "se"))
+            res = G.ask(_r(G), os.path.join(p.td, "lk"))
+            t.assertEqual((res.get("why"), res.get("grant"), p.seen), ("window", doc["nonce"], []))
+            res = G.ask(_r(G, cat="release_sign", site="x", text="核准:簽發版"), os.path.join(p.td, "lk"))
+            t.assertEqual((res.get("why"), len(p.seen)), ("ok", 1))            # 高風險照舊一次一按
+        env = M.pinned_env({"EZ2_AIB_STATE_ROOT": "/x", "EZ2_AIB_HOME": "/y", "HOME": "/z", "LANG": "C"}, home="/h")
+        t.assertEqual(env, {"HOME": "/h", "LANG": "C", "EZ2_AIB_STATE_ROOT": "/h/.ez2-aib"})
+    finally:
+        p.close()
+
+
+def cell_w20(t, G, M=GR):
+    """換狀態根:AI 的目錄裡有一張(用固定路徑 helper)驗得過的單;正式路徑只看 pwd 家目錄 ⇒ 沒單 ⇒ 一次一按。"""
+    p = Prod()
+    try:
+        fake = os.path.join(p.td, "ai")
+        os.makedirs(fake)
+        with p.on(G, M, {"EZ2_AIB_STATE_ROOT": os.path.join(fake, "state"), "EZ2_AIB_HOME": os.path.join(fake, "state"),
+                         "HOME": fake}):
+            M.sign(["seat_input"], "24h", M.Ctx(env=dict(os.environ), platform="darwin"))
+            t.assertTrue(M.load_all(dict(os.environ)))                        # AI 那邊確實有單
+            res = G.ask(_r(G), os.path.join(p.td, "lk"))
+        t.assertEqual((res.get("why"), len(p.seen)), ("ok", 1))
+    finally:
+        p.close()
+
+
+def cell_w21(t, G, M=GR):
+    """覆寫 helper:固定路徑那支不是 root 擁有;AI 在 <家>/.ez2-aib/bin 種假 helper(stamp = 真原始碼雜湊)+ 用它簽的單。"""
+    import se_vault
+    p = Prod()
+    try:
+        bindir = os.path.join(p.home, ".ez2-aib", "bin")
+        os.makedirs(bindir)
+        exe = os.path.join(bindir, "aib-sehelper")
+        shutil.copy(p.exe, exe)
+        with open(se_vault.SRC, "rb") as f, open(exe + ".sha256", "w") as g:
+            g.write(hashlib.sha256(f.read()).hexdigest())
+        with p.on(G, M):
+            env = p.home_env()
+            M.sign(["seat_input"], "24h", M.Ctx(env=env, helper=exe, platform="darwin"))
+            t.assertTrue(M.load_all(env))
+            p.anchored = (None, "not_root_owned")
+            res = G.ask(_r(G), os.path.join(p.td, "lk"))
+        t.assertEqual((res.get("why"), len(p.seen)), ("ok", 1))
+    finally:
+        p.close()
+
+
+def cell_w22(t, G, M=GR):
+    """自寫鎖屏紀錄:本人簽的單;系統日誌有簽單後的鎖屏;AI 自寫 lockwatch.json「心跳新、沒鎖過」⇒ 一次一按。"""
+    p = Prod()
+    try:
+        with p.on(G, M):
+            doc = p.sign_home(M)
+            now = int(time.time())
+            p.locks = [M._parse_utc(doc["issued_utc"])]                       # 簽完那一刻就鎖了
+            env = p.home_env()
+            M._write_json(M.lockwatch_path(env), {"v": 1, "beat_utc": M._utc(now), "last_lock_utc": M._utc(now - 86400)})
+            res = G.ask(_r(G), os.path.join(p.td, "lk"))
+        t.assertEqual((res.get("why"), len(p.seen)), ("ok", 1))
+        t.assertNotEqual(res.get("grant"), doc["nonce"])
+    finally:
+        p.close()
 
 
 def cell_w10(t, M):
@@ -405,6 +548,10 @@ class Cells(unittest.TestCase):
     def test_w15(self): cell_w15(self, GR)
     def test_w16(self): cell_w16(self, AG)
     def test_w17(self): cell_w17(self, AG)
+    def test_w19(self): cell_w19(self, AG)
+    def test_w20(self): cell_w20(self, AG)
+    def test_w21(self): cell_w21(self, AG)
+    def test_w22(self): cell_w22(self, AG)
     def test_w18(self): cell_w18(self, GR)
 
     def test_w18_doctor(self):
@@ -544,12 +691,20 @@ KNIVES_GR = [
     ("KL10", '    if ctx.os_build() not in VERIFIED_BUILDS:\n        return None, "os_unverified"\n', '', cell_w18),
     ("KL11", '                env={"PATH": "/usr/bin:/bin"}, stdin=subprocess.DEVNULL)\n    except (OSError, subprocess.SubprocessError):\n        return None\n    b =',
      '                stdin=subprocess.DEVNULL)\n    except (OSError, subprocess.SubprocessError):\n        return None\n    b =', cell_w18),
+    ("KW1", '    env["HOME"] = h\n    env["EZ2_AIB_STATE_ROOT"] = os.path.join(h, ".ez2-aib")\n', '', lambda t, M: cell_w20(t, AG, M)),
+    ("KW2", '        return (exe, None) if exe else (None, "helper_" + str(why))\n',
+     '        return (exe, None) if exe else (os.path.join(se_vault._state_root(self.env), "bin", "aib-sehelper"), None)\n',
+     lambda t, M: cell_w21(t, AG, M)),
+    ("KW3", '    events, why = ctx.syslog(int(since), int(ctx.now()))\n',
+     '    try:\n        with open(lockwatch_path(ctx.env), encoding="utf-8") as fh:\n'
+     '            events, why = [_parse_utc(json.load(fh)["last_lock_utc"])], None\n'
+     '    except (OSError, ValueError, KeyError):\n        events, why = None, "no_lockwatch"\n', lambda t, M: cell_w22(t, AG, M)),
     ("KL8", '            ok, why = approve_lockwatch_on(ctx, touchid)\n', '            ok, why = True, None\n', cell_w12k),
     ("KL5", '    if not spec or spec["high_risk"] or spec["max_window"] <= 0:\n        return None, "no_window_category"\n'
      '    kid, why = current_kid(ctx)\n', '    kid, why = current_kid(ctx)\n', cell_w4),
 ]
-_H1_ANCHOR = '    在那之前 ask() 不讀單、不出時長選單,一律照舊一次一按。"""\n    return None\n'
-_H1_OPEN = '    """\n    import approve_grants\n    return approve_grants.GateWindow()\n'
+_H1_ANCHOR = '    if ctx.helper_exe()[1] is not None:\n        return None\n'
+_H1_OPEN = ''
 KNIVES_AG = [
     ("KG1", '    win = window if window_open(r) else None\n', '    win = window\n', cell_w8),
     ("KG2", '                    _safe(win.use, doc, r.site, r.category)\n', '', cell_w5),
@@ -558,6 +713,8 @@ KNIVES_AG = [
     ("KH1", _H1_ANCHOR, _H1_OPEN, cell_w16),
 ]
 KNIVES_AG.append(("KH2", _H1_ANCHOR, _H1_OPEN, cell_w17))    # #432 R1 L2:不再只在 Mac、不再 skip
+KNIVES_AG.append(("KH3", '    if (platform or sys.platform) != "darwin":\n        return None\n    import approve_grants\n',
+                  '    import approve_grants\n', cell_w16))
 
 
 def _load_copy(name, src_file, anchor, repl):

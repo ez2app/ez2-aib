@@ -32,8 +32,10 @@ stamp = 原始碼雜湊),不吃 EZ2_AIB_STATE_ROOT / PATH、不退回 <狀態根
 不再信 lockwatch.json(本機檔,AI 自己寫一份就算「沒鎖過」)。loginwindow 的路徑受 SIP 保護,同帳號行程寫不出
 processImagePath = loginwindow 的紀錄;清不掉、改不了等級(log erase / log config 要 root)。查詢上限 3 秒
 (Andy 10-29 21:1x Q2),超過 / 失敗 / 讀不懂 ⇒ 當鎖過。時間一律 UTC(#433 R1 H1:不吃呼叫端 TZ);另查 since 之前
-要還有 loginwindow 紀錄(#433 R1 M1:灌 log 擠掉鎖屏段 ⇒ log_uncovered)。時間窗仍關著(approve_gate._default_window),
-另一張才接回;接回前要先有 macOS build 白名單(#433 R1 M2,規格補記)。
+要還有 loginwindow 紀錄(#433 R1 M1:灌 log 擠掉鎖屏段 ⇒ log_uncovered);只認實機驗過的 macOS build(#436)。
+
+系統錨定驗單第 3 張(10-30):approve_gate._default_window 接回時間窗 —— 只在 Mac、固定路徑 root helper 驗得過時開,
+Ctx 的狀態根固定在本人真 HOME(pinned_env)。高風險類照舊一次一按(window_open + find_valid 兩處)。
 """
 import argparse
 import calendar
@@ -56,6 +58,18 @@ KEY_NAME = "GRANT_KEY"
 DURATIONS = {"15m": 900, "30m": 1800, "1h": 3600, "3h": 3 * 3600, "24h": 24 * 3600}
 _NONCE = re.compile(r"^[0-9a-f]{32}$")
 V = 1
+
+
+def pinned_env(environ=None, home=None):
+    """正式路徑時間窗用的 env:狀態根固定在本人真家目錄的 .ez2-aib(系統錨定驗單第 3 張)。
+    家目錄用 pwd 查(行程的 HOME 也是同帳號 AI 改得到的字;預設狀態根走 expanduser,看的是行程 HOME 不是這份 env)
+    ⇒ 明寫 EZ2_AIB_STATE_ROOT = <pwd 家目錄>/.ez2-aib,拿掉 EZ2_AIB_HOME,HOME 也換成它。home 只給測試注入。"""
+    import pwd
+    h = home or pwd.getpwuid(os.getuid()).pw_dir
+    env = {k: v for k, v in (os.environ if environ is None else environ).items() if k != "EZ2_AIB_HOME"}
+    env["HOME"] = h
+    env["EZ2_AIB_STATE_ROOT"] = os.path.join(h, ".ez2-aib")
+    return env
 
 
 def _dir(env):
@@ -497,6 +511,7 @@ LOG_SPANS_MAX = 8                # 24 小時(最長時長)= 8 段;再長 ⇒ log
 # loginwindow 路徑受 SIP 保護 ⇒ AI 灌 log 擠掉鎖屏段之後補不回「since 之前的 loginwindow 紀錄」⇒ log_uncovered。
 # #433 R2 L1:覆蓋只算 Default 等級的 logEvent(跟鎖屏事件同行程、同等級 ⇒ 同一個保存區;Error / Fault /
 # activity 存法不同,不能拿來證明鎖屏那段還在)。predicate 先篩等級,Python 端再驗一次(activity 事件沒有 messageType)。
+# predicate 只是縮小輸出量(activity 事件照樣穿過,#436 R1 L1 實測 4 列);**判定以 Python 端為準**,別拿掉那一道(刀 KS9)。
 COVER_PREDICATE = 'processImagePath == "%s" AND messageType == default' % LOGINWINDOW
 COVER_S = 1800
 # #433 R1 M2:鎖屏判斷靠 loginwindow 的訊息字串,macOS 一改字就會靜靜查無(= 當沒鎖過)⇒ 只認實機驗過的 build。
@@ -783,7 +798,7 @@ def choose_window(r, ctx, run=subprocess.run):
 
 class GateWindow:
     """approve_gate.ask() 用的時間窗(TID-2c)。每個方法失敗都由 ask 收成「一次一按」。
-    正式路徑目前不建這個(approve_gate._default_window 回 None,#428 H1);等系統錨定驗單做完才接回。"""
+    正式路徑由 approve_gate._default_window 建(固定路徑 root helper 驗得過、Ctx 的狀態根固定在真 HOME)。"""
 
     def __init__(self, ctx=None, run=subprocess.run):
         self.ctx = ctx or Ctx()
@@ -871,7 +886,7 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
         doc, why = sign([c.strip() for c in o.extend.split(",") if c.strip()], o.dur, ctx, source="cli")
         return emit({"ok": True, "nonce": doc["nonce"], "expires_utc": doc["expires_utc"]} if doc
                     else {"ok": False, "why": why}, 0 if doc else 2)
-    auto = "off" if AG._default_window() is None else "on"     # #428 R2 L1:正式路徑時間窗關著 ⇒ 單在也不會自動同意
+    auto = "off" if AG._default_window() is None else "on"     # #428 R2 L1:正式路徑沒開窗(沒裝固定路徑 helper / 非 Mac)⇒ 單在也不會自動同意
     rows = [{"cats": d["cats"], "left_s": left, "expires_utc": d["expires_utc"], "nonce": d["nonce"], "auto_approve": auto}
             for d, left in active(ctx)]
     if o.json:

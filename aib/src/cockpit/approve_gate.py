@@ -387,11 +387,20 @@ def window_open(r):
     return not spec["high_risk"] and spec["max_window"] > 0
 
 
-def _default_window():
-    """正式路徑的時間窗:**關著**(Andy 10-29 20:5x 裁 #428 H1)。驗單要信 helper binary 與狀態根裡的檔,
-    同帳號 AI 設 EZ2_AIB_STATE_ROOT + 種假 sehelper + 自寫 lockwatch.json 就能零指紋放行 ⇒ 等「系統錨定驗單」做完才開。
-    在那之前 ask() 不讀單、不出時長選單,一律照舊一次一按。"""
-    return None
+def _default_window(platform=None):
+    """正式路徑的時間窗(系統錨定驗單第 3 張;#428 H1 關窗的理由都已換成系統層錨點):
+      - 只在 Mac(Q4);
+      - helper 只認 root 擁有的固定路徑那支(第 1 張:root 擁有、不可寫、stamp = 原始碼、hardened runtime);沒裝 / 不對 ⇒ None;
+      - 授權單 / 鑰的狀態根固定在本人真 HOME(pwd 查,不吃 EZ2_AIB_STATE_ROOT / EZ2_AIB_HOME / HOME)⇒ 換狀態根種不了單;
+      - 鎖屏看系統日誌(第 2 張)+ macOS build 白名單(#436),在 find / choose 時查;查不到 / 逾時 ⇒ 一次一按。
+    任何一步不成立 / 拋例外 ⇒ None(ask 照舊一次一按)。platform 只給測試注入。"""
+    if (platform or sys.platform) != "darwin":
+        return None
+    import approve_grants
+    ctx = approve_grants.Ctx(env=approve_grants.pinned_env(), platform=platform)
+    if ctx.helper_exe()[1] is not None:
+        return None
+    return approve_grants.GateWindow(ctx)
 
 
 def ask(r, lock_root, touchid=None, before=None, window=None):
@@ -400,8 +409,8 @@ def ask(r, lock_root, touchid=None, before=None, window=None):
     before():拿到整台鎖之後、彈指紋之前先跑(例:全文確認窗);回的不是 {"ok": True} ⇒ 不彈指紋,
     回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。
     整句超過 LA_MAX ⇒ 拒(不交給視窗去截;各支不用再自己擋)。
-    TID-2c 時間窗(window = approve_grants.GateWindow):正式路徑目前**不開**(_default_window 回 None,#428 H1);
-    只有呼叫端明確傳 window 才走下面這段:
+    TID-2c 時間窗(window = approve_grants.GateWindow):正式路徑由 _default_window 決定(只在固定路徑 root helper 驗得過時開);
+    呼叫端明確傳 touchid 而沒傳 window ⇒ 不開窗。有窗時:
       - 可開窗的類別先找有效單(簽章 / 範圍 / 類別 / 到期 / 開機 / 機器 / 撤銷 / 鎖屏後作廢)⇒ 有就不彈窗,why "window",記一列;
       - 沒有 ⇒ 彈時長選單(只這次 / ≤ 該類 max_window 的時長);選了時長 ⇒ SE 簽單(同一次指紋核准這件 + 開窗),
         只這次 ⇒ 照舊 LAContext。高風險類兩處都不走窗(找單、選單都不叫)。任何一步失敗 ⇒ 一次一按,不放行。"""
