@@ -22,7 +22,7 @@ approve_gate.ask() 完全不讀授權單(測試有一格證明)。
 
 TID-2c(#428,Andy 10-29 20:5x 裁 H1):ask() 的時間窗**先關**。本機驗單的結果信的是 helper binary(狀態根 bin/,
 原始碼雜湊相同就沿用)與狀態根裡的單 / lockwatch.json,而 EZ2_AIB_STATE_ROOT 換得掉狀態根 ⇒ 不算防線。
-這裡的簽 / 驗 / 選單 / lockwatch 都留著,等「系統錨定驗單」那題做完才由 approve_gate 接回。
+這裡的簽 / 驗 / 選單都留著,等「系統錨定驗單」那題做完才由 approve_gate 接回(#441 接回;lockwatch 10-31 退役)。
 
 系統錨定驗單第 1 張(10-30):helper 只認 anchored_helper.EXE(root 擁有的固定路徑、往上每層 root 擁有不可寫、
 stamp = 原始碼雜湊),不吃 EZ2_AIB_STATE_ROOT / PATH、不退回 <狀態根>/bin;沒裝 / 舊版 ⇒ 驗單、簽單一律不過。
@@ -565,7 +565,7 @@ def rotate_key(ctx):
 
 
 # ───────────── TID-2c:鎖屏作廢 + 自動同意(系統錨定驗單第 2 張:看系統日誌)─────────────
-BEAT_MAX_S = 90                  # (舊)lockwatch 心跳上限;鎖屏判斷已改看系統日誌,lockwatch 只剩 --lockwatch on / off
+# lockwatch(舊 LaunchAgent + lockwatch.json)已退役:鎖屏判斷看系統日誌。只留舊機器的清理(--lockwatch off)與 doctor 提示。
 LOCKWATCH_LABEL = "com.ez2.aib-lockwatch"
 LOG = "/usr/bin/log"
 LOGINWINDOW = "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow"
@@ -608,6 +608,7 @@ def os_build(run=subprocess.run, platform=None):
 
 
 def lockwatch_path(env):
+    """舊 lockwatch 寫的檔;已不讀,只在 --lockwatch off 時刪掉。"""
     return os.path.join(_key_dir(env), "lockwatch.json")
 
 
@@ -744,42 +745,19 @@ def record_use(ctx, doc, site, cat):
                        ensure_ascii=False, sort_keys=True))
 
 
-def lockwatch_plist(ctx, exe):
-    return {"Label": LOCKWATCH_LABEL, "ProgramArguments": [exe, "lockwatch", "--name", KEY_NAME, "--dir", _key_dir(ctx.env)],
-            "KeepAlive": True, "RunAtLoad": True, "ProcessType": "Background",
-            "EnvironmentVariables": {"HOME": ctx.env.get("HOME") or os.path.expanduser("~")}}
-
-
 def lockwatch_plist_path(home):
     return os.path.join(home, "Library", "LaunchAgents", LOCKWATCH_LABEL + ".plist")
 
 
-def install_lockwatch(ctx, launchctl, home):
-    """把 lockwatch 裝成 LaunchAgent(跟 auto_update 同一套 bootstrap 寫法)。只由明確的指令叫
-    (aib approve grants --lockwatch on;launchctl / home 一律由呼叫端給,測試給假的)——簽單、彈窗都不會順手裝。
-    沒裝 ⇒ lock_state 一律 no_lockwatch(不自動同意,回一次一按)。回 (installed|mac_only|failed, 說明)。"""
-    if (ctx.platform or sys.platform) != "darwin":
-        return "mac_only", ""
-    exe, why = ctx.helper_exe()
-    if not exe:
-        return "failed", why
-    import plistlib
-    path = lockwatch_plist_path(home)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as fh:
-        plistlib.dump(lockwatch_plist(ctx, exe), fh)
-    os.replace(path + ".tmp", path)
-    domain = "gui/%d" % os.getuid()
-    launchctl("bootout", "%s/%s" % (domain, LOCKWATCH_LABEL))
-    rc, err = launchctl("bootstrap", domain, path)
-    return ("installed", path) if rc == 0 else ("failed", err)
-
-
 def remove_lockwatch(ctx, launchctl, home):
-    """拿掉 lockwatch(之後時間窗一律不生效)。回是否刪了 plist。"""
+    """清掉舊版裝的 lockwatch:bootout + 刪 plist + 刪 lockwatch.json(新版 helper 沒有 lockwatch 子指令,
+    留著 KeepAlive 的 plist 只會一直重啟失敗)。只由 --lockwatch off 叫,不自動跑。回是否刪了 plist。"""
     if (ctx.platform or sys.platform) == "darwin":
         launchctl("bootout", "gui/%d/%s" % (os.getuid(), LOCKWATCH_LABEL))
+    try:
+        os.unlink(lockwatch_path(ctx.env))
+    except OSError:
+        pass
     path = lockwatch_plist_path(home)
     if os.path.isfile(path):
         os.unlink(path)
@@ -795,9 +773,12 @@ def _real_launchctl(*args):
         return 1, str(exc)
 
 
-def doctor_line(ctx=None):
-    """(ok|note, 代碼)。aib doctor:有單但 helper 沒好 / 系統日誌查不到 ⇒ note(窗用不到,一律一次一按)。唯讀。"""
+def doctor_line(ctx=None, home=None):
+    """(ok|note, 代碼)。aib doctor:舊 lockwatch 還裝著 ⇒ note lockwatch_leftover(請跑 --lockwatch off);
+    有單但 helper 沒好 / 系統日誌查不到 ⇒ note(窗用不到,一律一次一按)。唯讀。"""
     ctx = ctx or Ctx()
+    if os.path.isfile(lockwatch_plist_path(home or os.path.expanduser("~"))):
+        return "note", "lockwatch_leftover"
     if not load_all(ctx.env):
         return "ok", "no_grants"
     _, why = ctx.helper_exe()
@@ -894,18 +875,6 @@ def _fmt_left(s):
     return "%d:%02d:%02d" % (s // 3600, s % 3600 // 60, s % 60)
 
 
-def approve_lockwatch_on(ctx, touchid=None):
-    """裝 lockwatch 會讓時間窗生效 ⇒ 本人按一次(類別 window_grant = 高風險,一次一按;@aeb40 16:36)。
-    回 (True, None) 或 (False, why)。不是 Mac / 關掉 / 叫不出 ⇒ 拒。touchid 只給測試注入。"""
-    if touchid is None:
-        no = AG.ready(ctx.env, platform=ctx.platform)
-        if no:
-            return False, no
-    r = AG.reason("approve_grants.lockwatch_on", {}, env=ctx.env)
-    res = AG.ask(r, AG.state_root_default(ctx.env), touchid=touchid)
-    return (True, None) if res.get("ok") is True else (False, str(res.get("why") or "failed"))
-
-
 def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None):
     """aib approve grants [--json] | --revoke <類別|all> | --extend <類別,類別> --for <時長> | --rotate-key"""
     out = out or sys.stdout
@@ -934,17 +903,14 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
                      "install": None if exe else anchored_helper.install_command()}, 0)
     if o.lockwatch:
         lc, hm = launchctl or _real_launchctl, home or os.path.expanduser("~")
-        if o.lockwatch == "on":
-            ok, why = approve_lockwatch_on(ctx, touchid)
-            if not ok:
-                return emit({"ok": False, "why": why}, 2)
-            kind, info = install_lockwatch(ctx, lc, hm)
-            return emit({"ok": kind == "installed", "result": kind, "info": info}, 0 if kind == "installed" else 2)
+        if o.lockwatch == "on":                  # 已退役:鎖屏判斷看系統日誌,不用再裝什麼
+            return emit({"ok": False, "why": "retired", "source": "syslog"}, 2)
         if o.lockwatch == "off":
             return emit({"ok": True, "removed": remove_lockwatch(ctx, lc, hm)}, 0)
         _, why = lock_state(_probe(ctx),
                             int(ctx.now()) - 60)            # 鎖屏判斷看系統日誌(第 2 張);這裡回它查不查得到
-        return emit({"ok": why is None, "why": why, "source": "syslog"}, 0)
+        return emit({"ok": why is None, "why": why, "source": "syslog",
+                     "leftover": os.path.isfile(lockwatch_plist_path(hm))}, 0)
     if o.revoke:                             # 撤銷 = 鎖屏(#441 R1 H2):紀錄只是方便,鎖屏才是 AI 回滾不了的那一步
         n = revoke(o.revoke, ctx)
         lk = ctx.lock_screen()

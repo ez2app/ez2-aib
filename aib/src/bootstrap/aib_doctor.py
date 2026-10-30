@@ -634,7 +634,7 @@ def check_grants(state_root, repo_root, env=None):
         if cock not in sys.path:
             sys.path.insert(0, cock)
         import approve_grants
-        status, code = approve_grants.doctor_line(approve_grants.Ctx(env=env))
+        status, code = approve_grants.doctor_line(approve_grants.Ctx(env=env), home=env.get("HOME"))
     except Exception as exc:  # noqa: BLE001
         return _result("grants", NOTE, _C("grants.error", error=type(exc).__name__))
     if status == "ok":
@@ -643,6 +643,8 @@ def check_grants(state_root, repo_root, env=None):
         import anchored_helper
         return _result("grants", NOTE, _C("grants.helper_missing", why=code[len("helper_"):]),
                        _C("grants.helper_remedy", cmd=anchored_helper.install_command()))
+    if code == "lockwatch_leftover":         # 舊版 LaunchAgent 還在(新版 helper 沒有 lockwatch 子指令);清理本人跑
+        return _result("grants", NOTE, _C("grants.lockwatch_leftover"), _C("grants.lockwatch_remedy"))
     if code == "os_unverified":              # #433 R1 M2:這版 macOS 不在實機驗過的名單(鎖屏紀錄字串可能改了)
         return _result("grants", NOTE, _C("grants.os_unverified"), _C("grants.os_remedy"))
     return _result("grants", NOTE, _C("grants.syslog_missing", why=code), _C("grants.syslog_remedy"))
