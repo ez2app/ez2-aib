@@ -10,8 +10,11 @@ L5 簽出來的內容跟視窗不同(偷改方案 / 多一件外掛 / 換綁機)
 L6 簽章過不了信任公鑰 ⇒ 不換上
 L7 申請檔只讀一次:plan() 之後換檔,這一輪照舊用讀到的那份
 L8 取消 ⇒ 不簽;鎖被拿著 ⇒ 不簽
-L9 現有授權有沒處理的欄位 / tier 不是 all ⇒ 不彈窗
-刀(落下要紅):K1 拿掉內容比對 ⇒ L5;K2 拿掉 SIGN 碰授權的拒絕 ⇒ L2;K3 license_sign 改可開窗 ⇒ L3;K4 拿掉驗簽 ⇒ L6
+L9 現有授權有沒處理的欄位 / tier 不是 all / 簽章過不了(本機竄改)⇒ 不彈窗、不承接
+L10 簽發器在簽的途中動了現有授權 ⇒ 蓋回簽前那份、不換上;簽發器的 HOME / 狀態根指暫存
+L11 授權簽發類別不碰時間窗:連按兩次 = 兩次指紋
+刀(落下要紅):K1 拿掉內容比對 ⇒ L5;K2 拿掉 SIGN 碰授權的拒絕 ⇒ L2;K3 license_sign 改可開窗 ⇒ L3 / L11;K4 拿掉驗簽 ⇒ L6;
+     K5 拿掉舊授權驗簽 ⇒ L9;K6 拿掉簽後比對現有授權 ⇒ L10
 """
 import json
 import os
@@ -52,9 +55,9 @@ def _sign(obj, seed=SEED):
 class FakeRun:
     """git archive / tar 回成功;sign-entitlement 照 mutate 改內容再用 seed 簽,寫回草稿。"""
 
-    def __init__(self, mutate=None, seed=SEED, rc=0):
-        self.calls, self.mutate, self.seed, self.rc = [], mutate, seed, rc
-        self.draft_seen = None
+    def __init__(self, mutate=None, seed=SEED, rc=0, side=None):
+        self.calls, self.mutate, self.seed, self.rc, self.side = [], mutate, seed, rc, side
+        self.draft_seen = self.sign_env = None
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
@@ -63,6 +66,9 @@ class FakeRun:
             obj = json.loads(f.read_text(encoding="utf-8"))
             self.draft_seen = dict(obj)
             self.device_arg = argv[argv.index("--device") + 1]
+            self.sign_env = kw.get("env")
+            if self.side:
+                self.side()
             obj["issued_at"] = "2026-10-31T00:00:00+00:00"
             if self.mutate:
                 self.mutate(obj)
@@ -92,8 +98,8 @@ class Box(unittest.TestCase):
         self.lic = self.state / "license.json"
         self.put_current(CUR)
 
-    def put_current(self, obj):
-        self.lic.write_text(json.dumps(_sign(obj)), encoding="utf-8")
+    def put_current(self, obj, seed=SEED):
+        self.lic.write_text(json.dumps(_sign(obj, seed) if seed else obj), encoding="utf-8")
         os.chmod(self.lic, 0o600)
         self.before = self.lic.read_text(encoding="utf-8")
 
@@ -142,7 +148,7 @@ class Box(unittest.TestCase):
         ok, line, run, asked = self.run_one(touchid=None)
         r = asked[0]
         did = run.device_arg
-        for part in ("plan-ultra", "ultra", EXP, did[:8], "this Mac"):
+        for part in ("plan-ultra", "ultra", EXP, did[:8], "this Mac", "captain-room, hostguard"):
             self.assertIn(part, r)
         self.assertEqual(r.category, "license_sign")
         self.assertTrue(r.high_risk)
@@ -209,6 +215,48 @@ class Box(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertEqual(asked, [])
                 self.assertEqual(run.signs(), [])
+        tampered = _sign(CUR)
+        tampered["addons"] = tampered["addons"] + ["pixel-studio"]       # 本機改了 addons、簽章對不上
+        for k, cur, seed in (("tampered", tampered, None), ("unsigned", dict(CUR), None), ("other_key", CUR, OTHER)):
+            with self.subTest(k):
+                self.put_current(cur, seed)
+                ok, line, run, asked = self.run_one()
+                self.assertFalse(ok)
+                self.assertEqual(asked, [])
+                self.assertEqual(run.signs(), [])
+
+
+    def test_l10_signer_touches_current_license(self):
+        evil = b'{"tier": "all", "plan": "ultra", "signature": "x"}'
+        ok, line, run, _ = self.run_one(run=FakeRun(side=lambda: self.lic.write_bytes(evil)))
+        self.assertFalse(ok)
+        self.assertIn("current_touched", line)
+        self.assertEqual(self.lic.read_text(encoding="utf-8"), self.before)
+        e = run.sign_env
+        self.assertNotEqual(e["HOME"], str(self.tmp))
+        self.assertNotEqual(e["EZ2_AIB_HOME"], str(self.state))
+        self.assertNotIn("EZ2_AIB_LOCALE", e)
+
+    def test_l11_never_uses_time_window(self):
+        class EvilWindow:
+            def __init__(self):
+                self.touched = []
+
+            def __getattr__(self, name):
+                if name.startswith("__"):
+                    raise AttributeError(name)
+                self.touched.append(name)
+                raise AssertionError("window." + name)
+        _, _, run, asked = self.run_one(touchid=lambda t: {"ok": False, "why": "cancel"})
+        r, evil, auths = None, EvilWindow(), []
+        r = SA.AG.reason("release.license_approve", {"name": "x", "plan": "ultra", "addons": "-", "expires": EXP,
+                                                     "device": "abcd1234"}, env=self.env)
+        for _ in range(2):
+            res = AG.ask(r, self.state, touchid=lambda t: auths.append(t) or {"ok": True}, window=evil)
+            self.assertTrue(res["ok"], res)
+        self.assertEqual(len(auths), 2)
+        self.assertEqual(evil.touched, [])
+        self.assertFalse(AG.window_open(r))
 
 
 if __name__ == "__main__":

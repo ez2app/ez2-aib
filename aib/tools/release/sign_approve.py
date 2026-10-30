@@ -92,10 +92,12 @@ def plan_license(p, m, raw):
 
 def build_license(job, env=None, raw_machine=None):
     """核心自己組待簽內容 + 算綁機值。回 (obj, did, None) 或 (None, None, why)。"""
-    from entitlement import device, store
+    from entitlement import device, signing, store
     cur = store.read_license_obj(env=env)
     if not isinstance(cur, dict) or set(cur) - set(LIC_KEEP) - {"issued_at", "signature"} or cur.get("tier") != "all":
         return None, None, "lic_current"
+    if signing.verify_object(cur) != signing.OK:
+        return None, None, "lic_current"         # #449 r2 H1:舊授權要先過信任公鑰,才承接 addons / 到期
     try:
         when = datetime.fromisoformat(cur.get("expires_at") or "")
     except (TypeError, ValueError):
@@ -199,6 +201,18 @@ def _same_as_shown(signed, shown):
     return a == b
 
 
+def ECLI_restore(path, data):
+    """簽發途中現有授權被動過 ⇒ 用簽前那份蓋回去(0600、先寫暫存再換)。"""
+    tmp = path.with_name(".%s.restore.%d" % (path.name, os.getpid()))
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def one_license(job, env=None, run=subprocess.run, touchid=None, raw_machine=None):
     """授權申請:核心組內容 ⇒ 視窗 ⇒ 私倉工具只簽核心那份 ⇒ 比對 + 驗簽 + 評級 ⇒ 換上。回 (ok, 一行回報)。"""
     from entitlement import cli as ECLI, plan as EPLAN, signing
@@ -208,11 +222,18 @@ def one_license(job, env=None, run=subprocess.run, touchid=None, raw_machine=Non
     if not obj:
         return False, T("skip_" + why, path=label)
     reason = AG.reason("release.license_approve", {"name": job["name"], "plan": obj["plan"],
+                                                   "addons": ", ".join(obj.get("addons") or []) or "-",
                                                    "expires": obj["expires_at"], "device": did[:8]}, env=env)
     root = Path(AG.state_root_default(env))
     got = AG.ask(reason, root, touchid)
     if not got["ok"]:
         return False, T("busy" if got["why"] == "busy" else "denied", plugin=label, ver=ver, why=got["why"])
+    from entitlement import store as ESTORE
+    lic_path = ESTORE.resolve_license_path(env)
+    try:
+        snap = lic_path.read_bytes()
+    except OSError:
+        snap = None
     tmp = Path(tempfile.mkdtemp(prefix="sign-license."))
     logs = root / "pending" / "sign-logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -229,9 +250,13 @@ def one_license(job, env=None, run=subprocess.run, touchid=None, raw_machine=Non
             pk.mkdir()
             ok_tar = a.returncode == 0 and run(["tar", "-x", "-C", str(pk)], input=a.stdout, capture_output=True,
                                                timeout=120).returncode == 0
+            # #449 r2 H3:簽發器的 HOME / 狀態根都指暫存,只該碰草稿;簽完現有授權被動過 ⇒ 還原、不換上
+            senv = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "LC_ALL", "AIB_LICENSE_KEY")}
+            senv.setdefault("AIB_LICENSE_KEY", str(Path.home() / ".ez2-aib-signing" / "license.key"))
+            senv.update(HOME=str(tmp), EZ2_AIB_HOME=str(tmp / "home"), EZ2_AIB_STATE_ROOT=str(tmp / "home"))
             r = run([sys.executable, str(pk / "tools" / "license" / "aib-license.py"), "sign-entitlement", str(draft),
                      "--device", did], stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                    timeout=RUN_TIMEOUT_S) if ok_tar else None
+                    timeout=RUN_TIMEOUT_S, env=senv, cwd=str(tmp)) if ok_tar else None
             rc = r.returncode if r else 1
             so, se = (r.stdout or "", r.stderr or "") if r else ("", "git archive / tar failed")
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -243,7 +268,15 @@ def one_license(job, env=None, run=subprocess.run, touchid=None, raw_machine=Non
             except (OSError, ValueError):
                 signed = None
         check = "ok"
-        if rc != 0:
+        try:
+            now_bytes = lic_path.read_bytes()
+        except OSError:
+            now_bytes = None
+        if now_bytes != snap:
+            if snap is not None:
+                ECLI_restore(lic_path, snap)
+            check = "current_touched"
+        elif rc != 0:
             check = "sign_failed"
         elif not _same_as_shown(signed, obj):
             check = "not_as_shown"

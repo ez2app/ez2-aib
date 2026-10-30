@@ -180,8 +180,9 @@ SITES = {
                                {"plugin": FULL, "ver": FULL, "pin": FULL},
                                "Sign and release {plugin} {ver} · head {pin}"),
     "release.license_approve": _s("release/sign_approve.py", "license_sign", "aib.release.license_approve_reason",
-                                  {"name": FULL, "plan": FULL, "expires": FULL, "device": FULL},
-                                  "Sign license {name}: plan {plan} · bound to this Mac only ({device}…) · expires {expires}"),
+                                  {"name": FULL, "plan": FULL, "addons": FULL, "expires": FULL, "device": FULL},
+                                  "Sign license {name}: plan {plan} · add-ons {addons} · bound to this Mac only ({device}…) · "
+                                  "expires {expires}"),
 }
 
 
