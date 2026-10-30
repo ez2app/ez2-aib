@@ -101,6 +101,12 @@ SITES = {
     "seat_act.stop_hard": _s("cockpit/seat_act.py", "seat_input", "aib.seat.panel.touchid_stop_hard", {"seat": FULL, "text": 40}),
     "seat_act.remote_on": _s("cockpit/seat_act.py", "trusted_device", "aib.seat.panel.touchid_remote_on", {}),
     "secret_ask.ask": _s("cockpit/secret_ask.py", "secret", "aib.secret.touchid_reason", {"name": 64, "dest": FULL}),
+    # 10-30 指令庫第二步(@aeb40 §9):copy 也歸 secret 高風險 —— 窗內 AI 自己 copy 再讀剪貼簿 = 拿到值;名字 / 席位不截。
+    # paste 句照實寫:值進 pane 後同帳號任何程式 capture-pane / list-buffers / 對話紀錄都讀得到(#435 R1 M1)
+    "secret_share.copy": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_copy", {"name": FULL},
+                            "Copy secret {name} to clipboard; any program here (AI too) can read it; cleared in 30 s"),
+    "secret_share.paste": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_paste", {"seat": FULL, "name": FULL},
+                             "Type secret {name} into seat {seat}, no Enter; any app here (AI too) can read that screen and log"),
     "cf_grant.grant": _s("cockpit/cf_grant.py", "cf_token", "aib.cf.touchid_reason",
                          {"zone": 64, "perms": FULL, "ttl": FULL, "host": FULL},
                          suffix={"dns_write": ("aib.cf.touchid_risk.dns_write", {}, " "),

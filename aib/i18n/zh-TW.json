@@ -5888,5 +5888,7 @@
   "aib.mission.help.eid": "這筆指令的唯一編號(重送不重做):8–64 個英數或 _ . : -",
   "aib.mission.help.seat": "席碼裸碼 5 碼(例 ee842),不加 seat:",
   "aib.mission.help.code": "派工回條裡的代號(12 碼),工人回報要帶",
-  "aib.mission.help.clock": "時間一律讀系統鐘,指令不收時間參數(租期 15 分照真實時間算)"
+  "aib.mission.help.clock": "時間一律讀系統鐘,指令不收時間參數(租期 15 分照真實時間算)",
+  "aib.secret.touchid_copy": "複製金鑰 {name} 到剪貼簿:同帳號任何程式(含 AI)都讀得到,30 秒後清",
+  "aib.secret.touchid_paste": "把金鑰 {name} 打進 {seat} 席的輸入框(不按 Enter):同帳號任何程式(含 AI)都讀得到該席畫面與對話紀錄"
 }

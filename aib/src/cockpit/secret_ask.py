@@ -352,7 +352,9 @@ def _ask_se(a, res, done, env, platform, ask, touchid, touchid_available, getpas
         value = None  # noqa: F841
 
 
-USAGE = "usage: aib secret ask NAME [--check] [--push HOST:/abs/path [--owner USER] [--remote-only]]\n"
+USAGE = ("usage: aib secret ask NAME [--check] [--push HOST:/abs/path [--owner USER] [--remote-only]]\n"
+         "       aib secret copy NAME --json\n"
+         "       aib secret paste NAME --seat <cabin>/<seat> --json\n")
 
 
 def main(argv=None):
@@ -360,6 +362,9 @@ def main(argv=None):
     if not argv or argv[0] in ("-h", "--help", "help"):
         sys.stdout.write(USAGE)
         return 0 if argv else 2
+    if argv[0] in ("copy", "paste"):     # 指令庫第二步(secret_share.py)
+        import secret_share
+        return secret_share.main(argv)
     if argv[0] != "ask":
         sys.stderr.write(USAGE)
         return 2
