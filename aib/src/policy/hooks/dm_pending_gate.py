@@ -91,13 +91,17 @@ def check(seat, T, note, now=None, env=None):
     import time
     import dm_queue
     now = int(time.time() if now is None else now)
-    rows = dm_queue.tabs_payload(seat, env=env, now=now)["tabs"]["waiting"]["rows"]
-    hits = pending_rows(rows, seat, now)
+    tabs = dm_queue.tabs_payload(seat, env=env, now=now)["tabs"]
+    hits = pending_rows(tabs["waiting"]["rows"], seat, now)
     if not hits:
         return False, ""
     note("DMGATE BLOCK @%s n=%d ids=%s" % (seat, len(hits), ",".join(r.get("id") or "" for r in hits[:SHOW_MAX])))
     lines = "\n".join(_line(r) for r in hits[:SHOW_MAX])
     more = T("aib.dmgate.more", n=len(hits) - SHOW_MAX) if len(hits) > SHOW_MAX else ""
     triage = T("aib.dmgate.triage", n=len(hits)) if len(hits) >= TRIAGE_AT else ""
+    # @557fe 10-30 18:2x:進行中(read 過、沒結案、沒寫在等什麼)不擋,但擋下時一起列總數,看得到
+    inprog = sum(1 for r in tabs.get("read", {}).get("rows") or [] if not r.get("wait") and r.get("read_by") != "system")
+    if inprog:
+        triage += T("aib.dmgate.inprog", n=inprog)
     msg = T("aib.dmgate.block", code=seat, n=len(hits), lines=lines, more=more, triage=triage)
     return True, msg

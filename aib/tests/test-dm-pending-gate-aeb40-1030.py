@@ -6,7 +6,7 @@ D1 判準(純函式):別席寄、超過 3 分鐘、queued / delivered / 席位�
    自己寄的、3 分鐘內、真人寄的 hold_human、過期、全球 / IM、量不到時刻 ⇒ 不算
 D2 真佇列:1 封 ⇒ 擋、訊息有 id 與 rev;--done 結案後 ⇒ 放行;read 過(進行中頁)⇒ 不歸本支管
 D3 2 封以上 ⇒ 訊息多一句「整理子代理」;超過 5 封只列 5 封 + 還有幾封
-D4 長訊落檔 ⇒ 訊息帶 RELAY 路徑
+D4 長訊落檔 ⇒ 訊息帶 RELAY 路徑;進行中有信 ⇒ 擋下訊息另列進行中封數(不因它而擋)
 D5 逃生門 AIB_DM_GATE_REASON ⇒ 放行並留痕;AIB_DM_GATE=0 ⇒ 關
 S1 Stop 整條(子行程):純聊天回合也擋(rc 2、stderr 有 id);stop_hook_active ⇒ rc 0;
    不在要擋的名單 ⇒ rc 0;守門自己炸掉 ⇒ fail-open rc 0 + 留痕
@@ -135,6 +135,16 @@ class Live(unittest.TestCase):
     def test_D4_relay_path(self):
         self.put(msg="長訊已落檔(627 位元組),請讀:/Users/x/.ez2-aib/pending/RELAY-dm-96e0-1030-150933-619.txt")
         self.assertIn("RELAY-dm-96e0-1030-150933-619.txt", self.check()[1])
+
+    def test_D4_inprog_count_shown_not_gated(self):
+        a = self.put(msg="a")
+        Q.mark_read(SEAT, a, "seat:%s" % SEAT, env=self.env, now=NOW, no_rev_check=True)
+        self.assertEqual(self.check(), (False, ""))
+        self.put(msg="b")
+        block, msg = self.check()
+        self.assertTrue(block)
+        self.assertIn("aib.dmgate.inprog", msg)
+        self.assertNotIn("aib.dmgate.triage", msg)
 
     def test_D5_bypass(self):
         self.put()

@@ -2060,6 +2060,7 @@
   "aib.dmgate.block": "aib-dm-gate: @{code} has {n} message(s) from others in the waiting tab, older than 3 minutes and not closed (queued messages and long messages saved to a file do not appear in the input box):\n{lines}{more}\nClose each one once read and handled:\n  python3 src/cockpit/dm_queue.py read --seat {code} --id <id> --by seat:{code} --if-rev <rev> --done --evidence <existing file / your reply's RELAY file / commit / full PR URL>\nPure notices with nothing to do: replace --evidence … with --why \"<reason>\". Waiting on someone: dm_queue.py wait --seat {code} --id <id> \"<what>\".{triage}",
   "aib.dmgate.more": "\n  …and {n} more (dm_queue.py list --seat <seat> --tab waiting)",
   "aib.dmgate.triage": "\n{n} waiting (≥2): start one triage subagent per the dm-triage rule (close notices, merge, draft; never send or delete).",
+  "aib.dmgate.inprog": "\nAlso {n} in progress (read, not closed, no wait note): close them with --done when handled, or mark wait.",
   "aib.nowgate.start": "[AIB status line] @{code} ({source}) below the input box now: {line}\nFirst run `{cmd}` to record this seat's current main task; after that, update it again after each stage and before handing back to a person —{tail}\n",
   "aib.nowgate.start_hard": " if you don't, aib-now-gate blocks the end of the turn (the status check is turned on for this seat).",
   "aib.nowgate.start_soft": " (this is only a reminder: nothing is blocked for this seat.)",

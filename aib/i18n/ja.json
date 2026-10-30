@@ -2060,6 +2060,7 @@
   "aib.dmgate.block": "aib-dm-gate:@{code} の待審タブに、他席からの未完了メッセージが {n} 件あります(3 分以上経過。入力欄に出ないキュー待ち・長文ファイルも含む):\n{lines}{more}\n読んで処理したら完了にしてください:\n  python3 src/cockpit/dm_queue.py read --seat {code} --id <id> --by seat:{code} --if-rev <rev> --done --evidence <存在するファイル / 返信の RELAY ファイル / commit / PR の完全な URL>\n対応不要の通知は --evidence … を --why \"<理由>\" に置き換え。相手待ちは dm_queue.py wait --seat {code} --id <id> \"<待っている内容>\"。{triage}",
   "aib.dmgate.more": "\n  …ほか {n} 件(dm_queue.py list --seat <席コード> --tab waiting)",
   "aib.dmgate.triage": "\n待審 {n} 件(2 件以上):dm-triage ルールに従い整理用サブエージェントを 1 つ起動(通知の完了・統合・下書きのみ。送信・削除はしない)。",
+  "aib.dmgate.inprog": "\nほかに進行中 {n} 件(既読・未完了・待ち内容なし):処理したら --done、相手待ちなら wait。",
   "aib.nowgate.start": "[AIB 状態列] @{code}({source})入力欄の下は今:{line}\n最初に `{cmd}` を実行してこの席の主項目を書くこと。その後も段階が終わるごと、人に返す前に必ず更新 ——{tail}\n",
   "aib.nowgate.start_hard": "更新しないとターン終了時に aib-now-gate が止めます(この席は状態チェックがオン)。",
   "aib.nowgate.start_soft": "(これはお知らせだけです:この席は止められません。)",
