@@ -2057,6 +2057,10 @@
   "aib.nowgate.wt_indexed": "✖ Mac の Spotlight が索引する場所にワークツリー / clone を作ってはいけません:{paths}\n  (テストのたびにツリー全体が再索引されて重くなる。これはプログラムの規則で、注意喚起ではありません)\n  代わりに {suggest}(.noindex フォルダは索引されない)、または一時フォルダ / ~/.ez2-aib/worktrees/ に。",
   "aib.nowgate.never": "一度も報告なし",
   "aib.nowgate.block": "aib-now-gate:@{code} はこのターンで作業しましたが、📌 状態が更新されていません(前回更新:{when})。\nこの席は状態チェックがオンです:段階が終わるごと、人に返す前にまず状態列を更新してください。実行:\n  {cmd}\n今の画面:{line}",
+  "aib.dmgate.block": "aib-dm-gate:@{code} の待審に、他席からの未完了メッセージが {n} 件(3 分以上):{ids}\n確認:aib dm-queue list --seat {code} --tab waiting\n完了:aib dm-queue read --seat {code} --id <id> --by seat:{code} --if-rev <rev> --done --evidence <ファイル / commit / PR の URL>(通知は --why \"<理由>\"、相手待ちは read 後に wait){extra}",
+  "aib.dmgate.triage": "\n2 件以上:整理用サブエージェントを 1 つ起動(通知の完了・統合・下書きのみ。送信・削除はしない)。",
+  "aib.dmgate.inprog": "\nほかに進行中で未完了 {n} 件。",
+  "aib.dmgate.degraded": "aib-dm-gate:@{code} の待審キューに読めないファイルが {n} 件あるため、今回は止めません。aib dm-queue list --seat {code} --tab waiting で確認してください。",
   "aib.nowgate.start": "[AIB 状態列] @{code}({source})入力欄の下は今:{line}\n最初に `{cmd}` を実行してこの席の主項目を書くこと。その後も段階が終わるごと、人に返す前に必ず更新 ——{tail}\n",
   "aib.nowgate.start_hard": "更新しないとターン終了時に aib-now-gate が止めます(この席は状態チェックがオン)。",
   "aib.nowgate.start_soft": "(これはお知らせだけです:この席は止められません。)",
@@ -5914,5 +5918,7 @@
   "aib.mission.watch.w_handed": "受け取り待ち",
   "aib.mission.watch.w_halted_budget": "予算で停止:開始を押す前に予算を調整してください",
   "aib.mission.watch.w_halted": "停止中({by} による)",
-  "aib.mission.watch.w_qa_loop": "{task} 品質確認で差し戻しが続いています、人の確認が必要"
+  "aib.mission.watch.w_qa_loop": "{task} 品質確認で差し戻しが続いています、人の確認が必要",
+  "aib.secret.touchid_copy": "シークレット {name} をクリップボードにコピー:同じアカウントのどのプログラム(AI 含む)も読めます。30 秒後に消去",
+  "aib.secret.touchid_paste": "シークレット {name} を {seat} 席の入力欄に入力(Enter なし):同じアカウントのどのプログラム(AI 含む)もその画面と会話記録を読めます"
 }
