@@ -33,7 +33,7 @@ from aib_proc_guard import run_guarded  # noqa: E402
 
 PM, L1, L2, W1, W2, QA, MON = "aaaa1", "11111", "22222", "bbbb2", "cccc3", "dddd4", "eeee5"
 T0 = 1_800_000_000
-PATH = "missions/x/contracts/api.md"
+PATH = "contracts/api.md"
 
 
 def by(s):
@@ -240,11 +240,59 @@ class G6Quota(Base):
         groups[1]["quota"]["minutes"] = 35
         self.ok(self.c, "group", by(PM), plan(groups=groups))
 
+    def test_reserve_cannot_go_below_15(self):
+        """#451 r1 H2:reserve_pct 只能加大;帶 0 / 14 拒收,帶 30 照算"""
+        self.base(budget={"minutes": 100})
+        groups = plan()["groups"]
+        groups[0]["quota"]["minutes"], groups[1]["quota"]["minutes"] = 50, 50
+        for low in (0, 14):
+            self.bad("bad_group", self.c, "group", by(PM), plan(groups=groups, reserve_pct=low))
+        groups[0]["quota"]["minutes"], groups[1]["quota"]["minutes"] = 40, 31        # 71 > 100 × 70%
+        self.bad("over_group_budget", self.c, "group", by(PM), plan(groups=groups, reserve_pct=30))
+        groups[1]["quota"]["minutes"] = 30
+        self.ok(self.c, "group", by(PM), plan(groups=groups, reserve_pct=30))
+        self.assertEqual(self.st()["reserve_pct"], 30)
+
     def test_quota_seats_cover_staff(self):
         self.base()
         groups = plan()["groups"]
         groups[0]["quota"]["seats"] = 1                                            # 組長 + 1 工人 = 2 人
         self.bad("over_group_budget", self.c, "group", by(PM), plan(groups=groups))
+
+
+class G10Schema(Base):
+    def test_nested_shapes_rejected_not_crashed(self):
+        """#451 r1 M:巢狀欄位型別錯 ⇒ bad_group(不是 TypeError);未知欄位 / 同組重複成員也拒"""
+        self.base()
+        def with_row(**kw):
+            g = plan()["groups"]
+            g[0].update(kw)
+            return plan(groups=g)
+        for bad in (dict(lead=[]), dict(lead={}), dict(lead=None), dict(members=[{}]), dict(members=[[]]), dict(members="x"),
+                    dict(members=[W1, W1]), dict(quota=[]), dict(quota={"seats": 2, "evil": 1}), dict(name=[]), dict(evil=1)):
+            with self.subTest(bad=bad):
+                try:
+                    self.c("group", by(PM), with_row(**bad))
+                    got = "accepted"
+                except Exception as err:            # TypeError / AttributeError 也要算成斷言紅,不是測試炸掉
+                    got = str(err) if isinstance(err, M.MissionError) else type(err).__name__
+                self.assertEqual(got, "bad_group")
+        g = plan()["groups"]
+        del g[1]["members"], g[1]["quota"], g[1]["name"]                         # 明訂:可省 = 只有組長 / 預設額度 / 名稱用 id
+        self.ok(self.c, "group", by(PM), plan(groups=g))
+        self.assertEqual(self.st()["groups"]["web"]["members"], [])
+        self.assertEqual(self.st()["groups"]["web"]["name"], "web")
+
+    def test_contract_path_under_contracts(self):
+        """#451 r1 L:契約檔只准放團資料夾的 contracts/ 底下"""
+        self.mid = M.new(by(PM), "Two lines", "goal", ["green"], env=self.env, now=T0)["id"]
+        base = {"title": "API contract", "accept": ["schema"], "deps": [], "kind": "contract", "producer": "api", "consumers": ["web"]}
+        for bad in ("/etc/passwd", "api.md", "contracts/", "contracts/../x.md", "contracts/a/../../x", "contracts/./a", "contracts//a",
+                    "missions/x/contracts/api.md", "contracts/a b.md"):
+            with self.subTest(bad=bad):
+                self.bad("bad_contract", self.c, "task_add", by(PM), dict(base, path=bad))
+        self.ok(self.c, "task_add", by(PM), dict(base, path="contracts/api/v1.md"))
+        self.bad("bad_contract", self.c, "contract_rev", by(PM), {"path": "../x"}, task="t1")
 
 
 class G7Integration(Base):
@@ -277,6 +325,33 @@ class G7Integration(Base):
         self.c("roster", by(PM), {"op": "remove", "seat": W1})                      # 做過 t2 的人改當品管
         self.c("roster", by(PM), {"op": "add", "seat": W1, "role": "qa"})
         self.bad("maker_is_checker", M.qa, self.mid, "t4", by(W1), "pass", self.integ(self.checks("t1", "t2", "t3")), env=self.env, now=T0)
+
+    def passed_t4(self):
+        self.ready()
+        self.ok(M.qa, self.mid, "t4", by(QA), "pass", self.integ(self.checks("t1", "t2", "t3")), env=self.env, now=T0)
+
+    def test_contract_rev_voids_integration(self):
+        """#451 r1 H1:契約改版 ⇒ 間接依賴的整合單也回品管,重驗 t1 / t3 不能直接讓整團 verified"""
+        self.passed_t4()
+        rec = self.st()["receipts"][self.st()["tasks"]["t4"]["receipt"]]
+        self.assertEqual((rec["contract_rev"], [c["accept_rev"] for c in rec["checks"]]), (1, [1, 1, 1]))
+        self.ok(self.c, "contract_rev", by(PM), {"path": PATH + ".v2"}, task="t1")
+        st = self.st()
+        self.assertEqual({t: st["tasks"][t]["status"] for t in ("t1", "t2", "t3", "t4")},
+                         {"t1": "qa", "t2": "passed", "t3": "qa", "t4": "qa"})
+        self.assertIsNone(st["tasks"]["t4"]["receipt"])
+
+    def test_verify_refuses_stale_integration_receipt(self):
+        """#451 r1 H1:整合收據綁被檢查任務的版本;t3 改驗收重驗後,舊整合收據不能讓整團 verified"""
+        self.passed_t4()
+        self.ok(self.c, "amend", by(PM), {"accept": ["rc 0", "a11y"]}, task="t3")
+        self.pass_task("t3", "ccc3333")
+        st = self.st()
+        self.assertEqual({t: st["tasks"][t]["status"] for t in ("t1", "t2", "t3", "t4")}, dict.fromkeys(("t1", "t2", "t3", "t4"), "passed"))
+        self.bad("receipt_stale", M.team, self.mid, "verify", by(PM), env=self.env, now=T0)
+        self.ok(self.c, "amend", by(PM), {"accept": ["both sides", "rerun"]}, task="t4")
+        self.ok(M.qa, self.mid, "t4", by(QA), "pass", dict(self.integ(self.checks("t1", "t2", "t3")), accept_rev=2), env=self.env, now=T0)
+        self.ok(M.team, self.mid, "verify", by(PM), env=self.env, now=T0)
 
     def test_plain_task_refuses_integration_receipt(self):
         self.grouped()
@@ -364,11 +439,21 @@ KNIVES = [
     ("K5", '''                if to != t.get("holder") or _role(st, "seat:%s" % to) != "pm":''', '''                if False:''',
      "G4Contract.test_contract_only_to_holder"),
     ("K6", '''            if any(c not in deps for c in need):''', '''            if False:''', "G4Contract.test_consumer_must_depend_on_contract"),
-    ("K7", '''        for x in [t] + [x for x in st["tasks"].values() if tid in x["deps"]]:''', '''        for x in [t]:''',
+    ("K7", '''        for x in _contract_affected(st, tid):''', '''        for x in [st["tasks"][tid]]:''',
      "G4Contract.test_contract_rev_voids_passes"),
+    ("K7b", '''            if hit & set(x["deps"]) or rec.get("contract") in hit or hit & checked:''',
+     '''            if hit & set(x["deps"]) and x.get("kind") != "integration":''', "G7Integration.test_contract_rev_voids_integration"),
+    ("K7c", '''            if any(_integration_stale(st, t) for t in live):''', '''            if False:''',
+     "G7Integration.test_verify_refuses_stale_integration_receipt"),
     ("K8", '''            if st["mode"] == "grouped" and used_seats(st) >= GRANT_SEATS * st.get("grants", 1):''',
      '''            if False:''', "G5Grant.test_out_of_grant_on_add_after_split"),
     ("K9", '''                if len(_group_staff(st, gid)) >= g["quota"]["seats"]:''', '''                if False:''', "G6Quota.test_group_full"),
+    ("K9b", '''        if type(reserve) is not int or not RESERVE_PCT <= reserve <= 50:''',
+     '''        if type(reserve) is not int or not 0 <= reserve <= 50:''', "G6Quota.test_reserve_cannot_go_below_15"),
+    ("K9c", '''            raise MissionError("bad_group")         # 型別先驗''', '''            pass         # 型別先驗''',
+     "G10Schema.test_nested_shapes_rejected_not_crashed"),
+    ("K9d", '''    return len(parts) >= 2 and parts[0] == "contracts" and all(''', '''    return bool(path) or all(''',
+     "G10Schema.test_contract_path_under_contracts"),
     ("K10", '''    if cid not in seen or not groups <= covered:''', '''    if False:''', "G7Integration.test_integration_receipt"),
     ("K11", '''        if _seat_of(by) in x["workers"]:
             raise MissionError("maker_is_checker")''', '''        if False:

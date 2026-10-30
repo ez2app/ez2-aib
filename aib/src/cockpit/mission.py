@@ -95,6 +95,16 @@ BY_RE = re.compile(r"^(seat:[0-9a-f]{5}|human)$")
 ROLES = ("pm", "worker", "qa", "monitor", "lead")
 GROUP_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}$")
 GROUPS_MAX = 4
+CONTRACT_SEG_RE = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
+
+
+def _contract_path_ok(path):
+    """契約檔只准放團的 contracts/ 底下;每段只收 [A-Za-z0-9._-]、不准 . / ..、不准空段(#451 r1 L)"""
+    parts = path.split("/") if isinstance(path, str) else []
+    return len(parts) >= 2 and parts[0] == "contracts" and all(CONTRACT_SEG_RE.match(x) and x not in (".", "..") for x in parts[1:])
+
+
+GROUP_ROW_KEYS = {"id", "name", "lead", "members", "quota"}   # split 每組只收這些欄位;members / quota / name 可省(省 = 只有組長 / 預設額度 / 用 id)
 GRANT_SEATS = 6          # 一張授權單的席數硬頂(S4 授權單接上前,分組用這個當授權單合計)
 RESERVE_PCT = 15         # 總指揮整合預備金(艦長裁 G-3)
 SUMMARY_EVERY = 3        # 組長每 3 筆該組事件或卡關要摘要(定案 10)
@@ -373,12 +383,43 @@ def _check_integration(st, rec, by):
         if _seat_of(by) in x["workers"]:
             raise MissionError("maker_is_checker")
         seen.add(x["id"])
-        clean.append({"task": x["id"], "cmd": cmd, "ok": True})
+        clean.append({"task": x["id"], "cmd": cmd, "ok": True, "accept_rev": x["accept_rev"]})   # 綁被檢查任務的版本(#451 r1 H1)
     groups = {c["contract"]["producer"], *c["contract"]["consumers"]}
     covered = {st["tasks"][i].get("group") for i in seen}
     if cid not in seen or not groups <= covered:
         raise MissionError("receipt_not_green")
-    return {"contract": cid, "checks": clean}
+    return {"contract": cid, "contract_rev": c["contract"]["rev"], "checks": clean}
+
+
+def _integration_stale(st, t):
+    """已通過的整合單：收據記的契約版本 / 被檢查任務版本跟現在不同,或被檢查任務不再是 passed ⇒ True(#451 r1 H1)"""
+    if t.get("kind") != "integration" or t["status"] != "passed":
+        return False
+    rec = st["receipts"].get(t.get("receipt")) or {}
+    c = st["tasks"].get(rec.get("contract")) or {}
+    if c.get("kind") != "contract" or c["status"] != "passed" or rec.get("contract_rev") != c["contract"]["rev"]:
+        return True
+    for ck in rec.get("checks") or []:
+        x = st["tasks"].get(ck.get("task")) or {}
+        if x.get("status") != "passed" or ck.get("accept_rev") != x.get("accept_rev"):
+            return True
+    return False
+
+
+def _contract_affected(st, cid):
+    """契約改版要重驗的任務：契約本身 + 直接 / 間接依賴它的 + 收據檢查過其中任一件(或這份契約)的整合單"""
+    hit, grew = {cid}, True
+    while grew:
+        grew = False
+        for x in st["tasks"].values():
+            if x["id"] in hit:
+                continue
+            rec = st["receipts"].get(x.get("receipt")) or {} if x.get("kind") == "integration" else {}
+            checked = {ck.get("task") for ck in rec.get("checks") or [] if isinstance(ck, dict)}
+            if hit & set(x["deps"]) or rec.get("contract") in hit or hit & checked:
+                hit.add(x["id"])
+                grew = True
+    return [st["tasks"][i] for i in sorted(hit)]
 
 
 def _check_receipt(rec, t, tid):
@@ -472,6 +513,8 @@ def apply(st, ev):
             live = [t for t in st["tasks"].values() if t["status"] != "cancelled"]
             if not live or any(t["status"] != "passed" for t in live):
                 raise MissionError("not_all_passed")
+            if any(_integration_stale(st, t) for t in live):
+                raise MissionError("receipt_stale")     # 整合收據檢查的版本已經不是現在的(#451 r1 H1)
         if d["move"] == "start" and d.get("proved") is not True:
             raise MissionError("not_proved")
         if d["move"] == "start" and st["status"] == "halted" and _over_budget(st, at):
@@ -572,7 +615,7 @@ def apply(st, ev):
             producer, consumers, path = d.get("producer"), d.get("consumers"), _txt(d.get("path"), 200)
             if (not GROUP_RE.match(str(producer or "")) or not isinstance(consumers, list) or not 1 <= len(consumers) < GROUPS_MAX
                     or any(not GROUP_RE.match(str(c or "")) for c in consumers) or len(set(consumers)) != len(consumers)
-                    or producer in consumers or not path):
+                    or producer in consumers or not _contract_path_ok(path)):
                 raise MissionError("bad_contract")
             extra = {"kind": kind, "holder": _seat_of(by),
                      "contract": {"producer": producer, "consumers": list(consumers), "path": path, "rev": 1}}
@@ -710,10 +753,12 @@ def apply(st, ev):
         if type(d.get("if_rev")) is int and d["if_rev"] != t["rev"]:
             raise MissionError("stale_rev")
         path = _txt(d.get("path"), 200) if d.get("path") is not None else t["contract"]["path"]
-        if not path:
+        if not _contract_path_ok(path):
             raise MissionError("bad_contract")
         t["contract"] = dict(t["contract"], path=path, rev=t["contract"]["rev"] + 1)
-        for x in [t] + [x for x in st["tasks"].values() if tid in x["deps"]]:
+        for x in _contract_affected(st, tid):    # 含間接依賴 + 檢查過受影響任務的整合單(#451 r1 H1)
+            if x["status"] == "cancelled":
+                continue
             x["accept_rev"] += 1                    # 舊 rev 的通過作廢、回品管重驗(沿用 amend)
             if x["status"] == "passed":
                 x["receipt"] = None
@@ -785,6 +830,12 @@ def _apply_group(st, by, at, d):
         rows = d.get("groups")
         if not isinstance(rows, list) or not 2 <= len(rows) <= GROUPS_MAX or any(not isinstance(r, dict) for r in rows):
             raise MissionError("bad_group")
+        if any(not set(r) <= GROUP_ROW_KEYS or not isinstance(r.get("lead"), str)
+               or not isinstance(r.get("members", []), list) or any(not isinstance(m, str) for m in r.get("members", []))
+               or len(set(r.get("members", []))) != len(r.get("members", []))
+               or not isinstance(r.get("quota", {}), dict) or not set(r.get("quota", {})) <= {"seats", "minutes"}
+               or (r.get("name") is not None and not isinstance(r.get("name"), str)) for r in rows):
+            raise MissionError("bad_group")         # 型別先驗,不讓 [] / {} 變成 TypeError;未知欄位、同組重複成員一律拒(#451 r1 M)
         ids = [r.get("id") for r in rows]
         if any(not GROUP_RE.match(str(i or "")) for i in ids) or len(set(ids)) != len(ids):
             raise MissionError("bad_group")
@@ -799,11 +850,11 @@ def _apply_group(st, by, at, d):
             raise MissionError("understaffed")      # 每組一位組長(PM 不兼)+ 團裡有品管;不夠就維持單組
         taken, plan = set(leads), {}
         for r in rows:
-            members = r.get("members") or []
+            members = r.get("members", [])       # 明訂:沒寫 members = 這組只有組長
             if not isinstance(members, list) or any((active.get(x) or {}).get("role") != "worker" or x in taken for x in members):
                 raise MissionError("bad_group")
             taken.update(members)
-            q = r.get("quota") if isinstance(r.get("quota"), dict) else {}
+            q = r.get("quota", {})
             seats, minutes = q.get("seats", 1 + len(members)), q.get("minutes")
             if type(seats) is not int or seats < 1 + len(members) or seats > GRANT_SEATS * 2 \
                     or (minutes is not None and (type(minutes) is not int or minutes < 1)):
@@ -811,7 +862,7 @@ def _apply_group(st, by, at, d):
             plan[r["id"]] = {"id": r["id"], "name": _txt(r.get("name"), 40) or r["id"], "lead": r["lead"], "members": list(members),
                              "quota": {"seats": seats, **({"minutes": minutes} if minutes else {})}}
         reserve = d.get("reserve_pct", RESERVE_PCT)
-        if type(reserve) is not int or not 0 <= reserve <= 50:
+        if type(reserve) is not int or not RESERVE_PCT <= reserve <= 50:   # 只能加大,不能低於 15%(#451 r1 H2)
             raise MissionError("bad_group")
         cap = st["budget"].get("minutes")
         if cap and sum(g["quota"].get("minutes", 0) for g in plan.values()) > cap * (100 - reserve) // 100:

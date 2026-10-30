@@ -5922,6 +5922,6 @@
   "aib.secret.touchid_copy": "Copy secret {name} to clipboard; any program here (AI too) can read it; cleared in 30 s",
   "aib.secret.touchid_paste": "Type secret {name} into seat {seat}, no Enter; any app here (AI too) can read that screen and log",
   "aib.mission.help.group": "group id: starts with a lowercase letter, up to 16 letters, digits, _ or - (e.g. api, web)",
-  "aib.mission.help.contract_path": "contract file path (under missions/<id>/contracts/; only the lead PM writes it)",
+  "aib.mission.help.contract_path": "contract file path (contracts/<file>, relative to the team folder missions/<id>/; only the lead PM writes it)",
   "aib.mission.help.group_plan": "grouping plan JSON file: groups (id / name / lead / members / quota), contract, reserve_pct; add diff when work is in progress"
 }

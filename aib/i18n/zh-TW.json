@@ -5922,6 +5922,6 @@
   "aib.secret.touchid_copy": "複製金鑰 {name} 到剪貼簿:同帳號任何程式(含 AI)都讀得到,30 秒後清",
   "aib.secret.touchid_paste": "把金鑰 {name} 打進 {seat} 席的輸入框(不按 Enter):同帳號任何程式(含 AI)都讀得到該席畫面與對話紀錄",
   "aib.mission.help.group": "組代號:小寫英文開頭,最多 16 個英數或 _ -(例 api、web)",
-  "aib.mission.help.contract_path": "契約檔路徑(放 missions/<id>/contracts/,只有總指揮寫)",
+  "aib.mission.help.contract_path": "契約檔路徑(寫 contracts/<檔名>,相對於團資料夾 missions/<id>/;只有總指揮寫)",
   "aib.mission.help.group_plan": "分組計畫 JSON 檔:groups(id / name / lead / members / quota)、contract、reserve_pct、進行中要帶 diff"
 }

@@ -5922,6 +5922,6 @@
   "aib.secret.touchid_copy": "시크릿 {name}을(를) 클립보드에 복사: 같은 계정의 모든 프로그램(AI 포함)이 읽을 수 있음, 30초 후 지움",
   "aib.secret.touchid_paste": "시크릿 {name}을(를) {seat} 자리 입력칸에 입력(Enter 없음): 같은 계정의 모든 프로그램(AI 포함)이 그 화면과 대화 기록을 읽을 수 있음",
   "aib.mission.help.group": "그룹 ID: 영문 소문자로 시작, 16자 이내 영숫자 또는 _ - (예: api, web)",
-  "aib.mission.help.contract_path": "계약 파일 경로 (missions/<id>/contracts/ 아래, 총지휘만 작성)",
+  "aib.mission.help.contract_path": "계약 파일 경로(contracts/<파일명>, 팀 폴더 missions/<id>/ 기준 상대 경로. 총지휘만 작성)",
   "aib.mission.help.group_plan": "분조 계획 JSON 파일: groups (id / name / lead / members / quota), contract, reserve_pct, 진행 중이면 diff 포함"
 }
