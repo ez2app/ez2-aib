@@ -382,7 +382,7 @@ def cell_w17(t, G):
     --lockwatch on 自寫 lockwatch.json ⇒ 簽單拿不到 helper(helper_not_installed)、正式路徑 ask(seat_input) 仍彈窗、
     時長選單一次都沒叫。#432 R1 L2:改成斷言(原本這台沒裝固定路徑 helper 就 skip,KH2 落刀也不會真紅)。
     固定路徑那支的檢查換成「沒裝」、現在鎖屏換成「沒鎖」⇒ 每台機器結果一樣,不碰 Secure Enclave、不彈任何視窗。
-    平台注入成 darwin(#441 CI:Linux 會先在平台檢查早退 ⇒ KH2 拿掉 helper 檢查也落不到)。"""
+    平台、開機、機器識別都注入(#441 CI:Linux 會先在平台檢查早退 ⇒ KH2 落不到;沒有 sysctl / ioreg ⇒ 先回 unmeasured)。"""
     import se_vault
     td = tempfile.mkdtemp(prefix="aib-window-p4-")
     try:
@@ -402,6 +402,8 @@ def cell_w17(t, G):
                 mock.patch.object(GR.anchored_helper, "check", lambda **k: (None, "not_installed")), \
                 mock.patch.object(GR, "find_valid", lambda *a, **k: found.append(a) or real_find(*a, **k)), \
                 mock.patch.object(GR, "screen_locked_now", lambda *a, **k: False), \
+                mock.patch.object(GR, "boot_epoch", lambda *a, **k: 1_799_990_000), \
+                mock.patch.object(GR, "machine_id", lambda *a, **k: "m" * 16), \
                 mock.patch.object(GR, "choose_window", lambda r, ctx, run=None: chose.append(r) or "once"), \
                 mock.patch.dict(os.environ, env), \
                 mock.patch.object(G.TA, "ask", lambda r: seen.append(r) or {"ok": True, "why": "ok"}):
