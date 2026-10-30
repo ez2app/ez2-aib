@@ -12,6 +12,7 @@ D5 逃生門 AIB_DM_GATE_REASON ⇒ 放行並留痕;AIB_DM_GATE=0 ⇒ 關
 D6 佇列有壞檔(真的壞 JSON)⇒ 放行 + 一句不含路徑的原因 + 留痕;Stop 整條 rc 0、systemMessage 有那句
 S1 Stop 整條(子行程):純聊天回合也擋(rc 2、stderr 有 id);stop_hook_active ⇒ rc 0;
    不在要擋的名單 ⇒ rc 0;守門自己炸掉 ⇒ fail-open rc 0 + 留痕
+S2 兩道同時:now 擋 + 待審擋 ⇒ 一段 stderr 兩段都在;now 擋 + 待審壞檔放行 ⇒ 放行原因也附在 stderr(rc 2 時 stdout 不顯示)
 """
 import importlib.util
 import json
@@ -261,6 +262,33 @@ class StopHook(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("aib-dm-gate", json.loads(r.stdout.strip().splitlines()[-1])["systemMessage"])
         self.assertNotIn(self.root, r.stdout)
+
+    def tool_turn(self):
+        tp = os.path.join(self.root, "t2.jsonl")
+        with open(tp, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "user", "timestamp": "2026-10-30T09:00:00Z",
+                                "message": {"role": "user", "content": "做事"}}) + "\n")
+            f.write(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "id": "t1", "input": {}}]}}) + "\n")
+        return tp
+
+    def test_S2_both_gates_block_one_message(self):
+        qid = self.put_old()
+        r = self.run_stop(transcript_path=self.tool_turn())
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("aib-now-gate", r.stderr)
+        self.assertIn(qid, r.stderr)
+
+    def test_S2_now_blocks_dm_degraded_reason_kept(self):
+        self.put_old()
+        d = os.path.join(self.root, "state", "dm-queue", SEAT)
+        with open(os.path.join(d, "q_badbadbadbadbad0.json"), "w", encoding="utf-8") as f:
+            f.write("{not json")
+        r = self.run_stop(transcript_path=self.tool_turn())
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("aib-now-gate", r.stderr)
+        self.assertIn("aib-dm-gate", r.stderr)
+        self.assertNotIn(self.root, r.stderr)
 
     def test_S1_gate_crash_fails_open(self):
         """守門自己炸掉(讀佇列例外)⇒ 放行 rc 0 並留痕;now 那道照常。"""

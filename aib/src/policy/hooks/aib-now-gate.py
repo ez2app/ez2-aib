@@ -599,9 +599,11 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001
             _note("FAILOPEN dm-gate:%s" % e)
             dm_block, dm_msg = False, ""
-        if dm_block:
+        # dm 那句(擋下說明,或壞檔放行的原因)now 那道也擋時一起附上 —— rc 2 時 stdout 不顯示(Codex r2 L1)
+        if dm_msg and (block or dm_block):
             msg = (msg + "\n\n" + dm_msg) if block else dm_msg
             block = True
+            dm_msg = ""
         if block:
             # now 那道要擋 ⇒ 這一輪先不動影子續跑說明(rc 2 時 stdout 不會顯示);續跑那一輪 Stop 再顯示
             print(msg, file=sys.stderr)
