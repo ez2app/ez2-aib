@@ -20,6 +20,7 @@ aib mission new|list|show|roster|team|task|tick … [--json]
        verified|handed → running(退回重做)
   任務 todo 待做 → assigned 已派 → doing 做中 ⇄ blocked 卡關;doing → qa 品管中 → passed 通過 | returned 退回 → assigned
        租期 LEASE_S(15 分):派工 / 每次回報續租;過期 ⇒ 回 todo、派工代號作廢(PM 改派發新代號,舊代號的回報拒收)。
+       時間一律讀系統鐘,CLI 不收時間參數(同帳號 AI 能自報時間繞租期;@aeb40 10-29 11:18);只有函式層 now= 給測試。
        passed 只有品管收據翻得了(PM / 工人 / 本人都不行);改驗收(amend)⇒ 舊通過作廢回 qa 重驗。
 唯一識別 + 版本:每筆指令可帶 --eid;同 eid 同內容 ⇒ 回原結果不重做,同 eid 不同內容 ⇒ eid_conflict。
   任務帶 rev(每次變動 +1,--if-rev 不合 ⇒ stale_rev)、accept_rev(驗收版本)、code(派工代號)。
@@ -705,6 +706,26 @@ def qa(mid, tid, by, verdict, receipt=None, why="", env=None, eid=None, now=None
     return res
 
 
+def why(mid, tid, env=None):
+    """aib mission why:一件任務的事件鏈(開單 → 派工 → 回報 → 品管 → 收據),給戰情室血緣用。不帶派工代號。"""
+    if not TASK_RE.match(str(tid or "")):
+        raise MissionError("bad_task")
+    st, _torn, evs = _load(mdir(mid, env), mid)
+    if st["status"] is None:
+        raise MissionError("no_mission")
+    _task(st, tid)
+    chain = []
+    for ev in evs:
+        if ev.get("task") != tid:
+            continue
+        data = {k: v for k, v in ev["data"].items() if k not in ("code", "receipt")}
+        rec = st["receipts"].get(data.get("receipt_id"))
+        if rec:
+            data["receipt"] = {k: rec.get(k) for k in ("kind", "head", "artifact", "accept_rev")}
+        chain.append({"seq": ev["seq"], "at": ev["at"], "by": ev["by"], "type": ev["type"], "data": data})
+    return {"task": tid, "status": st["tasks"][tid]["status"], "events": chain}
+
+
 # ── CLI ──
 
 def T(key, **kw):
@@ -716,25 +737,27 @@ def T(key, **kw):
 
 
 def _parser():
-    p = argparse.ArgumentParser(prog="aib mission", add_help=True)
+    p = argparse.ArgumentParser(prog="aib mission", add_help=True, description=T("help.clock"))
     sub = p.add_subparsers(dest="cmd")
-    for name in ("new", "list", "show", "roster", "team", "task", "tick"):
+    for name in ("new", "list", "show", "roster", "team", "task", "tick", "why"):
         s = sub.add_parser(name)
         s.add_argument("--json", action="store_true")
-        s.add_argument("--by", default=None)
-        s.add_argument("--eid", default=None)
+        s.add_argument("--by", default=None, help=T("help.by"))
+        s.add_argument("--eid", default=None, help=T("help.eid"))
         if name == "new":
             s.add_argument("--title", required=True)
             s.add_argument("--goal", default="")
             s.add_argument("--accept", action="append", default=[])
-            s.add_argument("--pm", default=None)
+            s.add_argument("--pm", default=None, help=T("help.seat"))
             s.add_argument("--minutes", type=int, default=None)
             s.add_argument("--seats-max", type=int, default=None)
-        if name in ("show", "roster", "team", "task", "tick"):
+        if name in ("show", "roster", "team", "task", "tick", "why"):
             s.add_argument("id")
+        if name == "why":
+            s.add_argument("task")
         if name == "roster":
             s.add_argument("op", choices=("add", "remove"))
-            s.add_argument("seat")
+            s.add_argument("seat", help=T("help.seat"))
             s.add_argument("--role", choices=ROLES, default=None)
         if name == "team":
             s.add_argument("move", choices=sorted(m for m in TEAM_MOVES if m != "autostart"))
@@ -747,8 +770,8 @@ def _parser():
             s.add_argument("--parent", default=None)
             s.add_argument("--weight", type=int, default=None)
             s.add_argument("--est", type=int, default=None)
-            s.add_argument("--to", default=None)
-            s.add_argument("--code", default=None)
+            s.add_argument("--to", default=None, help=T("help.seat"))
+            s.add_argument("--code", default=None, help=T("help.code"))
             s.add_argument("--state", choices=("doing", "blocked", "qa"), default=None)
             s.add_argument("--artifact", default=None)
             s.add_argument("--note", default="")
@@ -790,6 +813,12 @@ def run(argv, env=None, out=None):
             text += "\n".join("  %s  %s  %s  @%s" % (t["id"], T("task." + t["status"]), t["title"], t.get("assignee") or "-")
                               for t in v["tasks"])
             return _emit(out, a, dict(v, ok=True), text.rstrip())
+        if a.cmd == "why":
+            res = why(a.id, a.task, env)
+            text = "%s  %s\n" % (res["task"], T("task." + res["status"]))
+            text += "\n".join("  #%d  %s  %s  %s" % (e["seq"], time.strftime("%m-%d %H:%M", time.localtime(e["at"])),
+                                                    e["by"], e["type"]) for e in res["events"])
+            return _emit(out, a, dict(res, ok=True), text.rstrip())
         if a.cmd == "tick":
             got = tick(a.id, env)
             return _emit(out, a, {"ok": True, "expired": got, "status": replay(a.id, env)["status"]}, T("ok"))
@@ -840,6 +869,10 @@ def _task_cmd(a, by, env):
         if a.est is not None:
             data["est"] = a.est
     elif a.op == "qa":
+        st = replay(a.id, env)                 # 角色先擋,再看收據(S2 回饋 2;commit 鎖內會再驗一次)
+        if st["status"] is None:
+            raise MissionError("no_mission")
+        _need(st, by, ("qa",))
         if a.verdict == "pass" and not a.receipt:
             raise MissionError("bad_receipt")
         return qa(a.id, a.task, by, a.verdict, load_receipt(a.receipt) if a.verdict == "pass" else None, a.why,
