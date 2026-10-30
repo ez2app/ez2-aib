@@ -1952,7 +1952,7 @@ def retention_tick(env=None, now=None):
 # ★ 絕不刪信、絕不標完成、絕不改狀態 —— 那是收件席讀過之後自己用 done --evidence 做的事。
 TRIAGE_EVERY_S = 60               # 排空器每幀都會叫到;每 60 秒最多掃一次所有席
 # 10-30 @aeb40:一席待審 32 封、叫醒紀錄停在兩天前,卻查不到這兩天每一拍為什麼不叫(load-high?忙?每日上限?)。
-#   每席最近一次的原因存 triage-why.json;原因換了才追加一列到 triage-why.jsonl(一拍 60 秒,原因不變不寫)。
+#   每席最近一次的原因存 triage-why.json(why / since / observed_at);原因換了才追加一列到 triage-why.jsonl。
 TRIAGE_WHY_LAST = "triage-why.json"
 TRIAGE_WHY_LOG = "triage-why.jsonl"
 TRIAGE_WHY_LOG_MAX = 256 * 1024    # 超過就只留後半(只是查問題用的紀錄,不是帳)
@@ -2803,47 +2803,73 @@ def triage_tick(env=None, now=None, hold_fn=None, deliver_fn=None, force=False):
 
 
 def _triage_why_log(rows, env, now):
-    """叫醒那一拍每席的結果 → 原因有變才留一列。holdnote 列不算(另一條)。回這一拍寫下的列(測試用)。"""
+    """叫醒那一拍每席的結果 → triage-why.json 每席 {why, since, observed_at};原因有變才追加一列到 .jsonl。
+    holdnote 列不算(另一條)。回這一拍寫進 .jsonl 的列(測試用)。
+    - observed_at 每拍都更新(Codex r1 M2):同因持續兩天 ≠ 兩天沒掃,守望看 observed_at 分得出。
+      since = 這個原因的起點。檔裡沒有某席 = 開始記錄後那一席從沒到門檻;到過又回門檻下 = why「-」。
+    - 整段在 triage-why.lock 裡做(Codex r1 M1):兩個排空器的拍子交錯時,較舊的拍子(now < 那席 observed_at)
+      不改那席的最新狀態、也不寫 .jsonl,since 不會倒退。
+    - 每席的項目逐一驗型別(Codex r1 L1):壞項(不是 dict / why 不是字串)當沒有,這一拍重建。"""
     root = queue_root(env)
     last_p = root / TRIAGE_WHY_LAST
+    fd = os.open(str(root / "triage-why.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        last = json.loads(last_p.read_text(encoding="utf-8"))
-        if not isinstance(last, dict):
-            last = {}
-    except (OSError, ValueError):
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            raw = json.loads(last_p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = {}
         last = {}
-    seen, changed = set(), []
-    for r in rows or []:
-        seat = r.get("seat") if isinstance(r, dict) else None
-        if not seat or "holdnote" in r:
-            continue
-        seen.add(seat)
-        why = "woke" if r.get("woke") else str(r.get("why") or "?")
-        if (last.get(seat) or {}).get("why") != why:
-            changed.append({"ts": int(now), "seat": seat, "why": why})
-    for seat in sorted(set(last) - seen):
-        if (last.get(seat) or {}).get("why") != TRIAGE_WHY_IDLE:
-            changed.append({"ts": int(now), "seat": seat, "why": TRIAGE_WHY_IDLE})
-    if not changed:
-        return []
-    for c in changed:
-        last[c["seat"]] = {"why": c["why"], "since": c["ts"]}
-    log_p = root / TRIAGE_WHY_LOG
-    with open(log_p, "a", encoding="utf-8") as f:
-        for c in changed:
-            f.write(json.dumps(c, ensure_ascii=False, sort_keys=True) + "\n")
-    try:
-        if log_p.stat().st_size > TRIAGE_WHY_LOG_MAX:
-            lines = log_p.read_text(encoding="utf-8").splitlines(True)
-            tmp = log_p.with_name(".%s.tmp.%d" % (log_p.name, os.getpid()))
-            tmp.write_text("".join(lines[len(lines) // 2:]), encoding="utf-8")
-            os.replace(str(tmp), str(log_p))
-    except OSError:
-        pass
-    tmp = last_p.with_name(".%s.tmp.%d" % (last_p.name, os.getpid()))
-    tmp.write_text(json.dumps(last, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(str(tmp), str(last_p))
-    return changed
+        for seat, ent in (raw.items() if isinstance(raw, dict) else ()):
+            if isinstance(ent, dict) and isinstance(ent.get("why"), str):
+                last[seat] = ent
+        now = int(now)
+        cur = {}
+        for r in rows or []:
+            seat = r.get("seat") if isinstance(r, dict) else None
+            if not seat or "holdnote" in r:
+                continue
+            cur[seat] = "woke" if r.get("woke") else str(r.get("why") or "?")
+        for seat in set(last) - set(cur):
+            cur[seat] = TRIAGE_WHY_IDLE
+        changed = []
+        for seat in sorted(cur):
+            ent = last.get(seat) or {}
+            try:
+                seen_at = int(ent.get("observed_at") or ent.get("since") or 0)
+            except (TypeError, ValueError):
+                seen_at = 0
+            if now < seen_at:
+                continue                     # 較舊的拍子:不蓋新結果
+            why = cur[seat]
+            if ent.get("why") != why:
+                changed.append({"ts": now, "seat": seat, "why": why})
+                last[seat] = {"why": why, "since": now, "observed_at": now}
+            else:
+                last[seat] = dict(ent, observed_at=now)
+        log_p = root / TRIAGE_WHY_LOG
+        if changed:
+            with open(log_p, "a", encoding="utf-8") as f:
+                for c in changed:
+                    f.write(json.dumps(c, ensure_ascii=False, sort_keys=True) + "\n")
+            try:
+                if log_p.stat().st_size > TRIAGE_WHY_LOG_MAX:
+                    lines = log_p.read_text(encoding="utf-8").splitlines(True)
+                    tmp = log_p.with_name(".%s.tmp.%d" % (log_p.name, os.getpid()))
+                    tmp.write_text("".join(lines[len(lines) // 2:]), encoding="utf-8")
+                    os.replace(str(tmp), str(log_p))
+            except OSError:
+                pass
+        if last:
+            tmp = last_p.with_name(".%s.tmp.%d" % (last_p.name, os.getpid()))
+            tmp.write_text(json.dumps(last, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(str(tmp), str(last_p))
+        return changed
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 # ── 待審區自動處理 stage-tidy(a seat × a seat 10-13,設計稿 DESIGN-dm-waiting-unify-1013 §S6)──

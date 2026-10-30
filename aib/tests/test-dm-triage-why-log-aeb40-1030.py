@@ -4,6 +4,9 @@
 
 Y1 純函式:原因第一次出現 ⇒ 寫一列;同一原因再一拍 ⇒ 不寫;換原因 ⇒ 再寫;上一拍有、這拍沒列 ⇒ 記「-」(回到門檻下)
 Y2 holdnote 列不算;紀錄超過上限 ⇒ 只留後半
+Y4 同因再一拍 ⇒ observed_at 前進、since 不動(同因兩天 ≠ 兩天沒掃)
+Y5 較舊的拍子(now < observed_at)⇒ 不蓋最新狀態、不寫 .jsonl
+Y6 檔是合法 JSON 但項目型別壞 ⇒ 壞項丟掉、這拍重建
 Y3 真 triage_tick:待審到門檻、load1 太高 ⇒ triage-why.json 該席 = load-high,jsonl 一列;
    降溫後叫醒 ⇒ 換成 woke 再一列;紀錄檔壞掉 ⇒ 照樣叫醒(紀錄不得擋)
 """
@@ -66,7 +69,26 @@ class Pure(unittest.TestCase):
         self.assertEqual([c["why"] for c in got], [Q.TRIAGE_WHY_IDLE])
         self.assertEqual(self.log([], NOW + 240), [])
         self.assertEqual([l["why"] for l in self.lines()], ["load-high", "woke", Q.TRIAGE_WHY_IDLE])
-        self.assertEqual(self.last()["aaaaa"], {"why": Q.TRIAGE_WHY_IDLE, "since": NOW + 180})
+        self.assertEqual(self.last()["aaaaa"], {"why": Q.TRIAGE_WHY_IDLE, "since": NOW + 180, "observed_at": NOW + 240})
+
+    def test_Y4_observed_at_moves_since_stays(self):
+        self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}])
+        self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}], NOW + 3600)
+        self.assertEqual(self.last()["aaaaa"], {"why": "load-high", "since": NOW, "observed_at": NOW + 3600})
+
+    def test_Y5_older_tick_does_not_overwrite(self):
+        self.log([{"seat": "aaaaa", "woke": False, "why": "busy"}], NOW + 120)
+        self.assertEqual(self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}], NOW + 60), [])
+        self.assertEqual(self.last()["aaaaa"]["why"], "busy")
+        self.assertEqual(self.last()["aaaaa"]["since"], NOW + 120)
+        self.assertEqual([l["why"] for l in self.lines()], ["busy"])
+
+    def test_Y6_bad_entries_rebuilt(self):
+        (Q.queue_root(self.env) / Q.TRIAGE_WHY_LAST).write_text(
+            json.dumps({"aaaaa": "bad", "bbbbb": {"why": 3}, "ccccc": [1]}), encoding="utf-8")
+        got = self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}])
+        self.assertEqual([(c["seat"], c["why"]) for c in got], [("aaaaa", "load-high")])
+        self.assertEqual(set(self.last()), {"aaaaa"})
 
     def test_Y2_holdnote_ignored_and_trim(self):
         self.assertEqual(self.log([{"seat": "aaaaa", "holdnote": False, "why": "x"}]), [])
