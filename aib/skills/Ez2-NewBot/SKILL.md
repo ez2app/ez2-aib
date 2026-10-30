@@ -94,7 +94,7 @@ aib test --fresh --repo . tests/test-provider-registry.py tests/test-bot-provide
 | `routing/table.json` → provider → 廠商 | 路由/額度歸錯家 |
 | `bot_threads.py` → `BACKENDS` 或 `UNSUPPORTED` | 開席前選對話那一步沒有它的說法 |
 | `entitlement/providers.py` → 備援名單 | 授權判斷漏它 |
-| `tools/aib-install-path` → `install_link aib-<bot>`、`aib-<bot>-mail` | **對方被教要呼叫的固定入口,`~/.local/bin` 裡根本沒有** |
+| `src/cockpit/bot_launchers.py` → `LAUNCHERS` 加 `aib-<bot>-mail`(公開版沒有 `tools/aib-install-path`;安裝 / 更新 / 開席時自動建,手動 `aib bot install-launchers`) | **對方被教要呼叫的固定入口,`~/.local/bin` 裡根本沒有** |
 | `i18n/{zh-TW,en,ja,ko}.json` → `aib.help.providers` | 四語 help 少一家 |
 | `render/seat_colors.py` → 席色,跑 `assert_seat_colors_safe()` | 與紅黃綠撞色,狀態燈看不出來 |
 | `bot-thread-menu.sh` → 開席前 preflight | 要不要先選對話沒人問 |

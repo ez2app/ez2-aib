@@ -174,7 +174,7 @@ def request_fill(name, env=None, send=None, now=None):
     policy = load_policy(env)
     if policy.get("enabled") is not True:
         return None
-    if S.file_for_name(name) is None or name in S.NO_FILL_NAMES:   # 10-29:名冊說不補填的名字一律不發(@aeb40 #416)
+    if S.file_for_name(name) is None or S.no_fill(name):   # 10-29:名冊說不補填的名字 / 檔一律不發(@aeb40 #416、#425 L2)
         return None
     payload = collect_payload(name, env=env, now=now)
     pending = _load_pending(env)

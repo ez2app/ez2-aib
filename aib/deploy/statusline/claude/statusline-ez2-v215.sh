@@ -50,21 +50,31 @@ _EZ2_SEAT_CODE=""
 _EZ2_NOW_LINE=""
 _EZ2_LOGO=""
 _EZ2_RANK=""
+_EZ2_TAIL=""
 # 10-10 a seat:有的 Claude 席沒有 TMUX_PANE ⇒ 也遞 session_id(seat_now 拿去比席位檔,恰好一席才用)
 if [ -n "${TMUX_PANE:-}" ] || [ -n "$SID" ]; then
   _ez2_now_out=""
   if [ -n "${EZ2_AIB_ROOT:-}" ] && [ -f "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" ]; then
-    _ez2_now_out="$(/usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --rank-field --session "$SID" 2>/dev/null || true)"
+    # 10-28 #401 R1:腳本新、核心舊(不認得 --tail-field)⇒ 先用 grep 看一眼,免得每次多起一次會失敗的 python
+    if grep -qF 'add_argument("--tail-field"' "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" 2>/dev/null; then
+      # #401 R2:狀態列輸入從 stdin 交過去(seat_now 取這個對話的 cwd,專案層狀態列設定算進指紋)
+      _ez2_now_out="$(printf '%s' "$INPUT" | /usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --rank-field --tail-field --tail-stdin --session "$SID" 2>/dev/null || true)"
+    fi
+    # 10-28:舊版 seat_now 不認得 --tail-field ⇒ 空 ⇒ 只帶 --rank-field 再問(沒有尾巴;mod 照舊自己一行)
+    [ -n "$_ez2_now_out" ] || _ez2_now_out="$(/usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --rank-field --session "$SID" 2>/dev/null || true)"
     # 10-17:舊版 seat_now 不認得 --rank-field ⇒ 空 ⇒ 不帶旗再問一次(等級就接在 📌 行尾)
     [ -n "$_ez2_now_out" ] || _ez2_now_out="$(/usr/bin/python3 "$EZ2_AIB_ROOT/src/cockpit/seat_now.py" --statusline --session "$SID" 2>/dev/null || true)"
   elif command -v aib >/dev/null 2>&1; then
-    _ez2_now_out="$(aib now --statusline --rank-field --session "$SID" 2>/dev/null || true)"
+    _ez2_now_out="$(printf '%s' "$INPUT" | aib now --statusline --rank-field --tail-field --tail-stdin --session "$SID" 2>/dev/null || true)"
+    [ -n "$_ez2_now_out" ] || _ez2_now_out="$(aib now --statusline --rank-field --session "$SID" 2>/dev/null || true)"
     [ -n "$_ez2_now_out" ] || _ez2_now_out="$(aib now --statusline --session "$SID" 2>/dev/null || true)"
   fi
   # 欄位用 \x1f 分(不是 tab:bash read 會把連續 tab 併成一個,📌 欄空時 AI 標誌會跑錯欄)
   # 第 4 欄 = 等級與資源(10-17 the maintainer:「5⭐ 30木材/12石塊」放在 CTX 那一行 @席位 後面;舊版只有 3 欄 ⇒ 空)
-  IFS=$'\x1f' read -r _EZ2_SEAT_CODE _EZ2_NOW_LINE _EZ2_LOGO _EZ2_RANK <<<"$_ez2_now_out"
-  case "$_EZ2_SEAT_CODE" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) _EZ2_SEAT_CODE=""; _EZ2_NOW_LINE=""; _EZ2_LOGO=""; _EZ2_RANK="" ;; esac
+  # 第 5 欄 = mod 狀態段(10-28 Andy「這個 aib 太多行了,我希望縮成一行」:未讀 dm · 🌐 語系,接在 CTX 那一行尾端;
+  #   statusline_tail.py 只收裝了、還在跑的 mod 寫的段 ⇒ 沒裝的 mod 不會出現;舊版只有 4 欄 ⇒ 空)
+  IFS=$'\x1f' read -r _EZ2_SEAT_CODE _EZ2_NOW_LINE _EZ2_LOGO _EZ2_RANK _EZ2_TAIL <<<"$_ez2_now_out"
+  case "$_EZ2_SEAT_CODE" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) _EZ2_SEAT_CODE=""; _EZ2_NOW_LINE=""; _EZ2_LOGO=""; _EZ2_RANK=""; _EZ2_TAIL="" ;; esac
 fi
 sl_safe_sid "$SID" || SID=""
 
@@ -76,6 +86,8 @@ EZ2LINE=$(printf '%s' "$INPUT" | node "$SL_DIR/statusline-ez2-ctx.js" 2>/dev/nul
 # 2026-10-10 the maintainer:「最前面要加上對應的 AI logo,比照右方 ai 席的 logo」—— 右欄同一個圖示與品牌色(seat_now.logo_of)。
 #   圖示後面空**兩**格:Nerd Font 圖示畫得比一格寬,會蓋掉一格空白(the maintainer 10-10「icon 與字要空一格」;右欄 09-02 同一件事)。
 [ -n "$_EZ2_LOGO" ] && [ -n "$EZ2LINE" ] && EZ2LINE="$_EZ2_LOGO  $EZ2LINE"
+# 10-28 Andy:「… 100k/1M 未讀 dm 5 · 🌐 zh-TW」—— mod 狀態段接在 CTX 那一行最後面(取代輸入框下方的 mod 狀態列)。
+[ -n "$_EZ2_TAIL" ] && [ -n "$EZ2LINE" ] && EZ2LINE="$EZ2LINE $_EZ2_TAIL"
 
 # D41(2026-09-06):pane id 只在單一 tmux server 內唯一,不能當跨艙身份鍵。
 # /clear 後位址仍是登記 session_uuid 的末五碼,所以 live session 改寫
@@ -192,6 +204,8 @@ if [ -n "$_main" ]; then
   printf '%s' "$_main"
   [ -n "$_EZ2_NOW_LINE" ] && printf '\n%s' "$_EZ2_NOW_LINE"
 else
+  # 10-28:CTX 那一行沒印(艙內量不到)⇒ mod 狀態段改接在 📌 那一行尾端 —— mod 已經看到「有在畫」收掉自己那一行,這裡不接就整段不見
+  [ -n "$_EZ2_TAIL" ] && _EZ2_NOW_LINE="${_EZ2_NOW_LINE:+$_EZ2_NOW_LINE · }$_EZ2_TAIL"
   [ -n "$_EZ2_NOW_LINE" ] && printf '%s' "$_EZ2_NOW_LINE"
 fi
 exit 0

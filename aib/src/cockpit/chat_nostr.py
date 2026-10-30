@@ -1522,27 +1522,36 @@ class Receiver(object):
     async def _session(self, stop, seats):
         c = await _client(CR.relays())
         self.client = c
+        pending = None
         try:
             since = int(self.led.st.get("last_at") or time.time()) - BACKFILL
             flt = N.Filter().kind(N.Kind(1059)).pubkeys([N.PublicKey.parse(h) for h in seats]) \
                 .since(N.Timestamp.from_secs(max(0, since)))
-            await c.subscribe(N.ReqTarget.auto([flt]))
+            # 接收器要在訂閱前建好:站在 REQ 一到就回放已存的信(離線期間寄來的),那時還沒有接收器 ⇒ 通知直接丟、
+            # 補收不到。10-30 phone-pair N1 單跑三次紅兩次就是這個(@aeb40)
             stream = c.notifications()
+            await c.subscribe(N.ReqTarget.auto([flt]))
             until = time.time() + RESUB_EVERY
             while not stop.is_set():
                 if time.time() >= until:
                     until = time.time() + RESUB_EVERY
                     if set(self._our_seats()[0]) != set(seats):
                         return                                   # 席變了 ⇒ 重新訂閱
-                try:
-                    n = await asyncio.wait_for(stream.next(), 1.0)
-                except asyncio.TimeoutError:
+                # 等下一則不取消:舊寫法 wait_for 每秒逾時取消 next(),剛好那一刻到的信被吃掉、這個 session 不再回放
+                # (10-30 #437 審 M1:真 SDK 300 則收 296–297)。同一個 next() 跨圈留著,1 秒沒到就回頭看 stop / 換席
+                if pending is None:
+                    pending = asyncio.ensure_future(stream.next())
+                done, _ = await asyncio.wait({pending}, timeout=1.0)
+                if not done:
                     continue
+                n, pending = pending.result(), None
                 if n is None:
                     return
                 if n.is_NEW_EVENT():
                     await self.on_wrap(n.event, seats)
         finally:
+            if pending is not None:
+                pending.cancel()        # session 收掉:這時沒收完的,下一個 session 往回 BACKFILL 補收
             self.client = None
             await c.shutdown()
 

@@ -625,6 +625,29 @@ def check_auto_update(state_root, repo_root, env=None):
                    "" if status == "ok" else _C("auto_update.remedy"))
 
 
+def check_grants(state_root, repo_root, env=None):
+    """時間窗授權單(TID-2c):有單但 helper 沒好 / 系統日誌查不到鎖屏紀錄 ⇒ NOTE(窗用不到,一律一次一按)。唯讀,不叫指紋。"""
+    env = dict(os.environ if env is None else env)
+    env["EZ2_AIB_STATE_ROOT"] = str(state_root)
+    cock = str(Path(repo_root) / "src" / "cockpit")
+    try:
+        if cock not in sys.path:
+            sys.path.insert(0, cock)
+        import approve_grants
+        status, code = approve_grants.doctor_line(approve_grants.Ctx(env=env))
+    except Exception as exc:  # noqa: BLE001
+        return _result("grants", NOTE, _C("grants.error", error=type(exc).__name__))
+    if status == "ok":
+        return _result("grants", OK, _C("grants." + code))
+    if code.startswith("helper_"):           # 系統錨定驗單:固定路徑 helper 沒裝 / 舊版 / 擁有者不對(安裝指令本人跑)
+        import anchored_helper
+        return _result("grants", NOTE, _C("grants.helper_missing", why=code[len("helper_"):]),
+                       _C("grants.helper_remedy", cmd=anchored_helper.install_command()))
+    if code == "os_unverified":              # #433 R1 M2:這版 macOS 不在實機驗過的名單(鎖屏紀錄字串可能改了)
+        return _result("grants", NOTE, _C("grants.os_unverified"), _C("grants.os_remedy"))
+    return _result("grants", NOTE, _C("grants.syslog_missing", why=code), _C("grants.syslog_remedy"))
+
+
 def check_badge_font(repo_root, env=None, runner=None, platform=None, state_root=None):
     """AI 符號(右欄 / 狀態列的引擎 logo,Nerd Font 私用區字)畫不畫得出(10-25 Mac Pro 13:字型檔裝了、
     Apple Terminal 設定檔卻還是 SF Mono ⇒ 空白)。畫得出 ⇒ OK;字型檔缺 / 終端機字型畫不出 ⇒ NOTE + 怎麼補;
@@ -842,6 +865,7 @@ def run_all(state_root, repo_root, providers, explicit_providers=True):
     checks.append(check_dm_latency(state_root, repo_root))
     checks.append(check_temp(state_root, repo_root))
     checks.append(check_auto_update(state_root, repo_root))
+    checks.append(check_grants(state_root, repo_root))
     checks.append(check_badge_font(repo_root, state_root=state_root))
     checks.append(check_page_features(state_root, repo_root))
     return checks

@@ -844,7 +844,7 @@ def usage_line():
     return "aib now: %s\n" % T("aib.now.usage")
 
 
-def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=None, gate_check=None):
+def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=None, gate_check=None, stdin=None):
     ap = argparse.ArgumentParser(prog="aib now", description=T("aib.now.help.desc"))
     ap.add_argument("item", nargs="?", help=T("aib.now.help.item"))
     ap.add_argument("steps", nargs="?", help=T("aib.now.help.steps"))
@@ -857,6 +857,8 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
     ap.add_argument("--seat", metavar="SEAT", default="",
                     help=T("aib.now.help.seat"))
     ap.add_argument("--statusline", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--tail-stdin", action="store_true", help=argparse.SUPPRESS)   # #401 R2:殼把狀態列輸入 JSON 從 stdin 交進來(取這個對話的 cwd 算指紋)
+    ap.add_argument("--tail-field", action="store_true", help=argparse.SUPPRESS)   # 10-28 Andy 工作單 S:mod 狀態段(未讀 dm、🌐 語系)另成第 5 欄,殼接在 CTX 那一行尾端;要連 --rank-field 一起帶
     ap.add_argument("--rank-field", action="store_true", help=argparse.SUPPRESS)   # 10-17:等級另成第 4 欄(殼把它放到 CTX 那一行 @席位 後面);沒帶 ⇒ 接在 📌 行尾   # 狀態列用:印「席位碼<TAB>📌 行」
     ap.add_argument("--border", action="store_true", help=argparse.SUPPRESS)       # Codex 等席底部邊框用
     ap.add_argument("--now-only", action="store_true", help=argparse.SUPPRESS)     # agy:邊框只畫 📌
@@ -966,6 +968,28 @@ def main(argv=None, *, code=None, out=sys.stdout, err=sys.stderr, state_root=Non
         fields = [c, line, statusline_logo(prov) if c else ""]
         if args.rank_field:
             fields.append(r_text if c else "")
+        if args.rank_field and args.tail_field:
+            # 10-28 Andy「這個 aib 太多行了,我希望縮成一行」:mod 的狀態段併進 CTX 那一行尾巴(statusline_tail.py)。
+            #   帶了 --tail-field 才是新版殼 ⇒ 才記「這次畫出了哪幾個 mod 的段」,mod 自己那段畫出過才收掉自己那一行(#401 R1)。
+            tail = ""
+            if c and args.session:
+                try:
+                    import statusline_tail
+                    parts = statusline_tail.tail_parts(args.session, state_root=state_root)
+                    tail = statusline_tail.JOIN.join(t for _, t in parts)
+                    sl_cwd = None
+                    if args.tail_stdin:   # 狀態列輸入:workspace.current_dir / cwd = 這個對話的 cwd(專案層設定在這裡)
+                        try:
+                            d = json.loads((stdin or sys.stdin).read(1 << 20) or "{}")
+                            w = d.get("workspace") if isinstance(d, dict) else None
+                            sl_cwd = (w.get("current_dir") if isinstance(w, dict) else None) or d.get("cwd")
+                            sl_cwd = sl_cwd if isinstance(sl_cwd, str) and os.path.isabs(sl_cwd) else None
+                        except (ValueError, OSError, AttributeError):
+                            sl_cwd = None
+                    statusline_tail.mark_shown(args.session, [m for m, _ in parts], state_root=state_root, cwd=sl_cwd)
+                except Exception:  # noqa: BLE001 —— 尾巴讀不到不能讓狀態列掛掉
+                    tail = ""
+            fields.append(tail)
         out.write(SEP.join(fields) + "\n")
         return 0
     if args.seat and not code:

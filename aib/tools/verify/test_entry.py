@@ -1277,7 +1277,8 @@ MEM_WAIT_MAX_S = 600       # 大批最多等這麼久,之後照跑(AIB_TEST_MEM_
 MEM_WAIT_SMALL_S = 30      # 小批(≤ BIG_BATCH)最多等這麼久:AI 席的 Bash 工具 2~10 分鐘就逾時,等久了只看到逾時、沒有紅綠(a seat 審)
 BIG_BATCH = 30             # 超過這麼多支算大批(AIB_TEST_BIG_BATCH 可改;0 = 都不排隊)
 LEASE_POLL_S = 30
-LEASE_WAIT_MAX_S = 3600    # 大批排隊最多等這麼久(推包一輪約 50 分鐘),之後不拿租約照跑並註明(AIB_TEST_LEASE_WAIT_MAX_S 可改)
+LEASE_WAIT_MAX_S = 3600    # 大批排隊最多等這麼久(推包一輪約 50 分鐘),等滿還沒輪到 ⇒ 這批不跑、回 RC_EXCLUSIVE 請重排
+                           # (10-29:以前是不拿租約照跑 ⇒ 跟持有人並跑、租約失去意義);--wait-max / AIB_TEST_LEASE_WAIT_MAX_S 可改
 
 
 def _env_int(name, default):
@@ -1382,7 +1383,7 @@ def exclusive_block(cur):
 
 
 def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, env=None, force=False, exclusive=False,
-                    names=None):
+                    names=None, wait_max=None):
     """大批(> BIG_BATCH 支)⇒ 拿機器租約,被別人拿著就排隊(每 LEASE_POLL_S 秒試一次,沒有上限:推包一輪約 50 分鐘,
     就是要等它)。回 {"run_id": 要放的租約 id 或 None, "waited": 秒, "why": big|small|inherited|unavailable}。
     租約已在呼叫自己的殼手上(推包、ship check --gate)⇒ 沿用,不重拿也不放。工具讀不到 ⇒ 不拿、照跑、說一聲。"""
@@ -1395,7 +1396,7 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
     run_id = "aib-test-%d-%d" % (os.getpid(), int(time.time()))
     owner = "aib test" + ((" @" + os.environ["AIB_SEAT_CODE"]) if os.environ.get("AIB_SEAT_CODE") else "")
     what = "aib test %d %s" % (n_tests, Path(repo).name)
-    cap = _env_int("AIB_TEST_LEASE_WAIT_MAX_S", LEASE_WAIT_MAX_S)
+    cap = wait_max if wait_max is not None else _env_int("AIB_TEST_LEASE_WAIT_MAX_S", LEASE_WAIT_MAX_S)
     ttl = lease_ttl(repo, names or [])     # 讀歷史秒數要幾秒(紀錄大時 2 秒多)⇒ 先算好再起表,不然沒等也說「等了 2 秒」(10-14)
     t0 = clock()
     first, queued, said = True, False, False
@@ -1407,7 +1408,7 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
         return {"run_id": None, "waited": int(clock() - t0), "why": why, "ahead": ahead[-1] if ahead else None}
 
     while True:
-        # 排隊上限(a seat 審):不拿租約照跑,結果註明。第一輪一定先試(上限設 0 也會在機器空時拿到 —— 審查第三輪)
+        # 排隊上限:等滿還沒輪到 ⇒ 不跑(呼叫端回 RC_EXCLUSIVE、請重排)。第一輪一定先試(上限設 0 也會在機器空時拿到 —— 審查第三輪)
         if not first and clock() - t0 >= cap:
             if state == "held" and exclusive_block(cur) is not None:   # 審查 M2:等滿了對方還在獨佔量耗時 ⇒ 不並跑
                 say(T("lease_exclusive_blocked", {"name": cur.get("owner", "?"), "what": cur.get("what", "?"),
@@ -1433,6 +1434,13 @@ def big_batch_lease(n_tests, repo, say, sleep=time.sleep, clock=time.monotonic, 
                 state, behind = "held", (_out or "").strip()
                 if behind:                # 機器空著(或租約過期)但前面有人排:照 host_lease 那句講,不印過期的持有者(審查 L5)
                     say(behind); said = True
+        if cap <= 0:      # --wait-max 0 = 只試這一次、不排隊不睡(#421 審查 Low 1:以前會先睡一輪 30 秒才放棄)
+            if state == "held" and exclusive_block(cur) is not None:
+                say(T("lease_exclusive_blocked", {"name": (cur or {}).get("owner", "?"), "what": (cur or {}).get("what", "?"),
+                                                  "at": (cur or {}).get("expiry_at", "?")}))
+                return leave("exclusive_held")
+            say(T("lease_queue_gave_up", {"waited": int(clock() - t0)}))
+            return leave("gave_up")
         # 10-13:要等 ⇒ 登記排隊名單(登記到拿到的秒數記進 ledger;機器空時只准隊頭拿)。每輪都再登記一次 = 續期,
         #   位置不變(審查 L4:ps 量不到起始時刻時登記退回只看到期,一次登記 30 分鐘後會悄悄掉出名單)
         qrc, _o = _lease_tool("queue", "add", "--owner", owner, "--what", what, "--run-id", run_id,
@@ -1874,6 +1882,7 @@ def main(argv=None):
     ap.add_argument("--overhead", action="store_true")   # 10-08:量追蹤讓每支慢多少(每支跑兩次)
     ap.add_argument("--exclusive", action="store_true")  # 10-13:要量耗時 ⇒ 不管幾支都拿租約並標獨佔(小批也不准並跑)
     ap.add_argument("--wait", action="store_true")       # 10-13:小批遇到別人的獨佔租約 ⇒ 排隊等,不是直接停
+    ap.add_argument("--wait-max", type=int, default=None, metavar="SEC")   # 10-29:大批排隊最多等幾秒(預設 3600);等滿不跑
     ap.add_argument("--changed", action="store_true")    # 10-13(取代 aib deliver):依改動挑測試,挑法同推包 select_changed
     ap.add_argument("--base", default="")                # --changed 的比較基準(預設 HEAD 與遠端 main 的分岔點)
     ap.add_argument("--dry", action="store_true")        # 只列出要跑哪些、幾支、估計幾秒,不跑
@@ -1985,8 +1994,9 @@ def main(argv=None):
                                               "at": excl.get("expiry_at", "?")}))
             return RC_EXCLUSIVE
         lease = big_batch_lease(len(names), repo, say, force=bool(a.exclusive or excl is not None),
-                                exclusive=bool(a.exclusive), names=names)
-        if lease["why"] == "exclusive_held":
+                                exclusive=bool(a.exclusive), names=names,
+                                wait_max=None if a.wait_max is None else max(0, a.wait_max))
+        if lease["why"] in ("exclusive_held", "gave_up"):   # 10-29:等滿也不並跑(並跑 = 租約沒意義)
             return RC_EXCLUSIVE
     try:
         return _main_run(repo, names, a, live, started, lease, mem)
@@ -2039,9 +2049,7 @@ def _main_run(repo, names, a, live, started, lease, mem):
         note = lease_note() if lease["why"] != "big" else T("lease_batch_mine", {"n": len(names)})
         if note:
             print(note)
-    if lease["why"] == "gave_up":
-        print(T("lease_queue_gave_up_note", {"waited": lease["waited"]}))
-    elif lease["waited"]:
+    if lease["waited"]:
         print(T("lease_queue_note", {"waited": lease["waited"]}))
     if mem["gave_up"]:       # 等滿還是不夠、照跑了:結果可能被別的程式擠到,要寫在結果裡(跟沒驗的一樣顯眼)
         print(T("mem_gave_up_note", {"waited": mem["waited"], "count": mem["free"], "limit": _env_int("AIB_TEST_MEM_MIN_MB", MEM_MIN_MB)}))

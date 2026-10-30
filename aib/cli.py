@@ -96,6 +96,7 @@ def _update(args):
               '[ -n "$s" ] || { echo "aib update: could not download the installer from: $0" >&2; exit 5; }; '
               'bash -c "$s" aib-install "$@"; rc=$?; '
               '[ "$rc" -ne 0 ] || [ ! -f "$AIB_UPDATE_HOOK" ] || "$AIB_UPDATE_PY" "$AIB_UPDATE_HOOK" ensure-all >&2; '
+              '[ "$rc" -ne 0 ] || [ ! -f "$AIB_UPDATE_LAUNCHERS" ] || "$AIB_UPDATE_PY" "$AIB_UPDATE_LAUNCHERS" ensure --quiet || true; '
               '[ "$rc" -ne 0 ] || [ ! -f "$AIB_UPDATE_BRIDGE" ] || "$AIB_UPDATE_PY" "$AIB_UPDATE_BRIDGE" restart >&2 || true; '
               '[ "$rc" -ne 0 ] || [ ! -f "$AIB_UPDATE_ROOM" ] || "$AIB_UPDATE_PY" "$AIB_UPDATE_ROOM" >&2 || true; '
               'exit "$rc"')
@@ -108,6 +109,9 @@ def _update(args):
     # 10-15(維護者「安裝 / 升級時就裝」):升級完成後用**升級後**這份的 ensure-all 把這台有裝的 AI CLI 都裝上
     #   CTX 用量表的 hook(網站上的安裝程式若還是舊版,也不會漏);安裝程式失敗 ⇒ 不裝,結束碼原樣傳回。
     os.environ["AIB_UPDATE_PY"] = sys.executable
+    # 10-28 Andy(必要功能):升級成功後用**升級後**那份 bot_launchers.py 建 / 改好 bot 收信入口(~/.local/bin/aib-<bot>-mail);
+    #   失敗不影響升級結束碼(開席時還會再補一次)。
+    os.environ["AIB_UPDATE_LAUNCHERS"] = os.path.join(HERE, "src", "cockpit", "bot_launchers.py")
     os.environ["AIB_UPDATE_HOOK"] = os.path.join(HERE, "src", "identity", "auto_distill_hook.py")
     os.execv("/bin/bash", ["bash", "-c", script, urls, PUBLIC_MARK, "--dir", root] + list(args))
 

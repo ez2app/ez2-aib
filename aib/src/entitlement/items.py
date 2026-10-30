@@ -77,13 +77,9 @@ def entitled_items(env: Optional[Mapping[str, str]] = None, now: Optional[dateti
     return {"reason": "ok", "items": out}
 
 
-def allowed(sku: str, free_at: Optional[str] = None, env: Optional[Mapping[str, str]] = None,
-            now: Optional[datetime] = None, raw_machine: Optional[str] = None) -> dict:
-    """這個 sku 現在能不能用 ⇒ {allowed, source: plan|buy|rent|none, plan, reason, expires_at, trial, left_days, was}。
-    free_at = 外掛 offers.json 標的「這級以上免費套用」;沒給 / 寫錯 ⇒ 不走方案這條(只看單買 / 單訂閱)。
-    trial = 走方案那條而且方案是試用;left_days = 到期前還有幾天(無期限 None);was = 以前有、現在沒了:plan-expired / rent-expired / trial-expired。
-    source=trial 是單件試用(items kind trial);方案級試用走 source=plan + trial=True。"""
-    now = now or datetime.now(timezone.utc)
+def _decide(sku: Any, free_at: Any, now: datetime, plan_now, ent_now) -> dict:
+    """單件判斷本體:allowed() 與 allowed_many() 共用這一支(批次不另寫判斷 ⇒ 不會單件拒、批次給)。
+    plan_now / ent_now = 取 current() / entitled_items() 的函式;用到才叫(方案夠就不讀 items,跟原本一樣)。"""
 
     def out(allowed_, source, p_, reason, expires_at, trial=False, was=None):
         exp = _parse_expires_at(expires_at) if expires_at else None
@@ -93,11 +89,11 @@ def allowed(sku: str, free_at: Optional[str] = None, env: Optional[Mapping[str, 
 
     if not isinstance(sku, str) or not SKU_RE.fullmatch(sku):
         return out(False, "none", "free", "bad-sku", None)
-    p = current(env, now, raw_machine)
+    p = plan_now()
     need = RANK.get(free_at.strip().lower()) if isinstance(free_at, str) else None
     if need is not None and RANK[p["plan"]] >= need:
         return out(True, "plan", p["plan"], p["reason"], p["expires_at"], trial=p.get("trial"))
-    ent = entitled_items(env, now, raw_machine)
+    ent = ent_now()
     mine = [it for it in ent["items"] if it["sku"] == sku]
     for it in mine:
         if it["active"]:
@@ -110,3 +106,39 @@ def allowed(sku: str, free_at: Optional[str] = None, env: Optional[Mapping[str, 
         return out(False, "none", p["plan"], "plan-too-low", None, was=was)
     reason = "not-owned" if ent["reason"] in ("ok", "none") else ent["reason"]
     return out(False, "none", p["plan"], reason, None)
+
+
+def allowed(sku: str, free_at: Optional[str] = None, env: Optional[Mapping[str, str]] = None,
+            now: Optional[datetime] = None, raw_machine: Optional[str] = None) -> dict:
+    """這個 sku 現在能不能用 ⇒ {allowed, source: plan|buy|rent|none, plan, reason, expires_at, trial, left_days, was}。
+    free_at = 外掛 offers.json 標的「這級以上免費套用」;沒給 / 寫錯 ⇒ 不走方案這條(只看單買 / 單訂閱)。
+    trial = 走方案那條而且方案是試用;left_days = 到期前還有幾天(無期限 None);was = 以前有、現在沒了:plan-expired / rent-expired / trial-expired。
+    source=trial 是單件試用(items kind trial);方案級試用走 source=plan + trial=True。"""
+    now = now or datetime.now(timezone.utc)
+    return _decide(sku, free_at, now, lambda: current(env, now, raw_machine),
+                   lambda: entitled_items(env, now, raw_machine))
+
+
+def allowed_many(pairs, env: Optional[Mapping[str, str]] = None, now: Optional[datetime] = None,
+                 raw_machine: Optional[str] = None) -> list:
+    """一批 (sku, free_at) ⇒ 每筆 allowed() 的結果,順序照輸入、重複照回(開艙說明 c 張:2F 一頁問 26 件)。
+    同一個 now、current() / entitled_items() 各最多讀一次 ⇒ 整批出自同一份授權快照,不會一半新一半舊。
+    free_at 不是字串也不是 None ⇒ 那筆當 bad-sku(單件 CLI 只會給字串),其他筆照算。"""
+    now = now or datetime.now(timezone.utc)
+    memo: dict = {}
+
+    def once(key, fn):
+        def get():
+            if key not in memo:
+                memo[key] = fn()
+            return memo[key]
+        return get
+
+    plan_now = once("plan", lambda: current(env, now, raw_machine))
+    ent_now = once("ent", lambda: entitled_items(env, now, raw_machine))
+    res = []
+    for sku, free_at in pairs:
+        if free_at is not None and not isinstance(free_at, str):
+            sku = None
+        res.append(_decide(sku, free_at, now, plan_now, ent_now))
+    return res

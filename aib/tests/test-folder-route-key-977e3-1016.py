@@ -207,6 +207,47 @@ class TestFolderAddRouteKey(Base):
         for want in (KEY, "LINE 圖文選單管理", path):
             self.assertEqual(NP.resolve_folder(c, want), (KEY, path, None), want)
 
+    def test_no_env_uses_default_vault_symlink_for_all_providers(self):
+        self.add_key()
+        legacy = self.home / "Desktop" / "Obsidian" / "Ez2"
+        legacy.parent.mkdir(parents=True)
+        legacy.symlink_to(self.v, target_is_directory=True)
+        os.environ.pop("EZ2_VAULT_DIR")
+        self.assertEqual(RR.check_against_contract(KEY, RR.load_contract())[:2], (True, "contract_ok"))
+        # 各家的工具殼沒有 EZ2_VAULT_* 時,實際 CLI 仍能解析同一條已登錄路由。
+        for provider in ("codex", "grok", "agy", "copilot", "claude"):
+            with self.subTest(provider=provider):
+                env = {k: os.environ[k] for k in ("HOME", "EZ2_ROUTE_CONTRACT_SPEC", "EZ2_EZ2AI_REPO",
+                                                  "EZ2_AIB_STATE_ROOT", "EZ2_AIB_HOME")}
+                env.update({"PATH": os.environ.get("PATH", ""), "EZ2_AIB_LOCALE": "en",
+                            "AIB_GENES": "0", "AIB_AUTO_BIND": "0", "EZ2_SESSION_PROVIDER": provider})
+                r = subprocess.run([PY, str(BIN_AIB), "newproj", "--title", "No env", "--folder", KEY,
+                                    "--dry-run"], cwd=str(self.tmp), env=env, capture_output=True,
+                                   text=True, stdin=subprocess.DEVNULL, timeout=30)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["route_key"], KEY)
+
+    def test_no_env_uses_aib_default_vault(self):
+        self.add_key()
+        dest = self.home / ".ez2-aib" / "vault"
+        dest.parent.mkdir(parents=True)
+        self.v.rename(dest)
+        os.environ.pop("EZ2_VAULT_DIR")
+        self.assertIn(KEY, RR.contract_route_keys(RR.load_contract()))
+
+    def test_explicit_vault_does_not_borrow_default_routes(self):
+        self.add_key()
+        legacy = self.home / "Desktop" / "Obsidian" / "Ez2"
+        legacy.parent.mkdir(parents=True)
+        legacy.symlink_to(self.v, target_is_directory=True)
+        other = self.tmp / "other-vault"
+        other.mkdir()
+        os.environ["EZ2_VAULT_DIR"] = str(other)
+        self.assertNotIn(KEY, RR.contract_route_keys(RR.load_contract()))
+        os.environ.pop("EZ2_VAULT_DIR")
+        os.environ["EZ2_VAULT_ROOT"] = str(other)
+        self.assertNotIn(KEY, RR.contract_route_keys(RR.load_contract()))
+
     def test_K6_newproj_cli(self):
         proj = self.tmp / "proj"
         proj.mkdir()

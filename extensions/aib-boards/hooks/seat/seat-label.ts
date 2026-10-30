@@ -48,11 +48,21 @@ function handoffTag(s: SeatInfo, ctxPercent: number | null): string {
   return h === 'done' ? tr('seat_ho_done', { at: s.handoff?.at ? ' ' + s.handoff.at : '' }) : h === 'due' ? tr('seat_ho_due') : ''
 }
 
+function dmLabel(s: SeatInfo): string {
+  return s.unread === null ? tr('seat_st_dm_na') : s.unread > 0 ? tr('seat_st_dm_unread', { n: s.unread }) : 'dm 0'
+}
+
 export function statusLabel(s: SeatInfo, ctxPercent: number | null): string {
   const na = tr('seat_na')
   const ctx = (ctxPercent === null ? `CTX ${na}` : `CTX ${Math.round(ctxPercent)}%`) + handoffTag(s, ctxPercent)
-  const dm = s.unread === null ? tr('seat_st_dm_na') : s.unread > 0 ? tr('seat_st_dm_unread', { n: s.unread }) : 'dm 0'
-  return tr('seat_st_line', { context: ctx, instance: s.cabin_code ?? na, role: s.role ?? tr('seat_unbound'), code: s.code ?? na, msg: dm })
+  return tr('seat_st_line', { context: ctx, instance: s.cabin_code ?? na, role: s.role ?? tr('seat_unbound'), code: s.code ?? na, msg: dmLabel(s) })
+}
+
+/** 10-28 Andy 工作單 S:接在 💧 狀態列尾巴的那一段 —— 未讀 dm + 交接標記(只在有時)。CTX、席碼那條已經有,艙號 Andy 沒列 ⇒ 不帶。
+ *  #401 R1:交接標記放最前面(窄終端截長行時從尾端截,先保住它) */
+export function tailLabel(s: SeatInfo, ctxPercent: number | null): string {
+  const tag = handoffTag(s, ctxPercent).trim()
+  return tag ? `${tag} · ${dmLabel(s)}` : dmLabel(s)
 }
 
 /** src = 誰量的(Claude 席是 aib-boards mod;非 Claude 席是 aib-seat-hooks 外掛) */

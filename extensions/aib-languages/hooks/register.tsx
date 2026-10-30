@@ -63,6 +63,27 @@ async function readStatus($: EngineInterface, args: string[] = []): Promise<Lang
 
 async function tFor($: EngineInterface, loc: Loc) { return makeT(PREFIX, await bundle($, PREFIX, loc)) }
 
+// 10-28 Andy 工作單 S「這個 aib 太多行了,我希望縮成一行」:「🌐 語系」交給 💧 狀態列尾巴(核心 statusline_tail.py)。
+//   那條狀態列把這段畫出過(put 回 shown;#401 R1 起記號黏住、不看時間)⇒ 收掉自己這一行;沒在畫(會員用自己的狀態列、核心太舊、沒有 aib 倉)⇒ 照舊自己一行。
+//   段 300 秒沒更新就過期 ⇒ 輪詢時每 TAIL_BEAT_MS 補寫一次當心跳。
+const TAIL_BEAT_MS = 60_000
+let tailText = ''
+let tailAt = 0
+async function putTail($: EngineInterface, text: string): Promise<boolean> {
+  const root = await repoRoot($)
+  const sid = await $.session.id().catch(() => '')
+  if (!root || !sid) return false
+  const py = (await $.env.get('EZ2_PY3').catch(() => undefined)) ?? 'python3'
+  const cwd = await $.session.cwd().catch(() => '')   // #401 R2:專案層狀態列設定在這裡
+  const r = await $.process.run([py, '-I', `${root}/src/cockpit/statusline_tail.py`, 'put', '--mod', 'aib-languages',
+    '--session', sid, ...(cwd ? ['--cwd', cwd] : []), '--text', text], { timeoutMs: 5000 }).catch(() => null)
+  try { return (JSON.parse(r?.stdout.trim().split('\n').pop() || '{}') as { shown?: unknown }).shown === true } catch { return false }
+}
+async function showStatus($: EngineInterface, text: string) {
+  tailText = text; tailAt = await $.clock.now().catch(() => Date.now())
+  $.ui.status((await putTail($, text)) ? undefined : text)
+}
+
 /** 把新語系套到本席:env、狀態列、重畫 */
 async function apply($: EngineInterface, st: LangStatus, announce: boolean) {
   const loc = normalize(st.locale) ?? 'zh-TW'
@@ -71,7 +92,7 @@ async function apply($: EngineInterface, st: LangStatus, announce: boolean) {
   await $.env.set('EZ2_AIB_LOCALE', loc)
   if (prev !== st.locale) forget()
   const t = await tFor($, loc)
-  $.ui.status(t('status', { value: loc }))
+  await showStatus($, t('status', { value: loc }))
   if (announce && prev !== st.locale) $.ui.toast(t('switched', { value: SELF_NAMES[loc] }))
   $.ui.invalidate('ui.render')
 }
@@ -79,6 +100,7 @@ async function apply($: EngineInterface, st: LangStatus, announce: boolean) {
 async function checkFiles($: EngineInterface) {
   const st = await read($, status)
   if (!st.locale) return
+  if (tailText && (await $.clock.now().catch(() => Date.now())) - tailAt >= TAIL_BEAT_MS) await showStatus($, tailText)   // 尾巴段心跳(也接住「狀態列開始畫了」)
   let changed = false
   for (const p of Object.values(st.files)) {
     if (!p) continue
