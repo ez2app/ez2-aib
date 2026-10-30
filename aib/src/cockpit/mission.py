@@ -572,11 +572,17 @@ def apply(st, ev):
             if d.get("proved") is not True:
                 raise MissionError("not_proved")
         old, st["budget"] = st["budget"], new
-        for dim, key in BUDGET_DIMS.items():        # 只重計真的改了的那一維(#427 Codex r1 H3:調低席數不能清掉額度叫停)
-            if old.get(key) != new.get(key):
-                st["budget_marks"].pop(dim, None)   # 「已通知」:改了就重新通知
-                if key in old and (key not in new or new[key] > old[key]):
-                    st["budget_block"].pop(dim, None)   # 「仍要擋」:只有放寬那一維才解除(r2 Low:兩件事分開存)
+        reset = d.get("reset")
+        if reset is None:                           # 舊事件(5cf99d94 以前):照舊版語意,改預算 = 全部記號與阻擋清掉(r3 High:舊序列要重放得回來)
+            st["budget_marks"], st["budget_block"] = {}, {}
+        elif reset != "dims":
+            raise MissionError("bad_event")
+        else:                                       # 新事件:只重計真的改了的那一維(r1 H3)
+            for dim, key in BUDGET_DIMS.items():
+                if old.get(key) != new.get(key):
+                    st["budget_marks"].pop(dim, None)   # 「已通知」:改了就重新通知
+                    if key in old and (key not in new or new[key] > old[key]):
+                        st["budget_block"].pop(dim, None)   # 「仍要擋」:只有放寬那一維才解除(r2 Low:兩件事分開存)
     elif typ == "anomaly":
         rule, key, end = d.get("rule"), d.get("key"), d.get("end")
         if rule not in RULES or not isinstance(key, str) or not 0 < len(key) <= 40 or type(end) is not bool:
@@ -920,7 +926,7 @@ def budget_set(mid, by, changes, env=None, eid=None, now=None):
         else:
             new.pop(k, None)
     new = _budget(new)
-    data = {"budget": new}
+    data = {"budget": new, "reset": "dims"}         # 帶旗標 = 新語意(只重計改了的維度);沒帶的舊事件照舊版解(r3 High)
     if eid and eid in st["eids"]:                    # 重送 ⇒ 不再彈 Touch ID,回原結果 / eid_conflict
         return commit(mid, "budget_set", by, dict(data, proved=True), env=env, eid=eid, now=now)
     if _raises(st["budget"], new):

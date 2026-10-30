@@ -28,7 +28,9 @@ R2 r2(@f5fb8 Codex 1H/1M/1L + @aeb40 L3/L5):
   Medium 額度量不到時先補已知超限 / 叫停記號的叫停;派工路徑、快照邊界中斷都能恢復
   Low 「已通知」(budget_marks)與「仍要擋」(budget_block)分開存:調低重新通知、只有放寬那一維才解除阻擋
   L3 CLI 建團 --minutes / --seats-max / --quota-pct 0 ⇒ bad_budget、不留空團目錄;L5 模組說明照實寫不防同帳號 AI
-刀 K1–K6(K5 封存不寫、K6 沒改內容拒);K7–K11 對 R1 五題;K12 對 r2 L3(CLI 的 0 不能變不限);K13–K16 對 r2 High / Medium / Low
+R3 r3(@f5fb8 Codex 1H + M1):budget_set 帶 reset:"dims" 才用新語意,沒帶的舊事件照舊版(改預算清掉記號與阻擋),
+  舊版完整序列(叫停 → 調低 → 開始 → 再叫停 → 再調低)升級後照讀;不認得的旗標 ⇒ corrupt;tick 每個寫檔邊界(基準 / 記號 / 叫停 / 快照)中斷都補齊
+刀 K1–K6(K5 封存不寫、K6 沒改內容拒);K7–K11 對 R1 五題;K12 對 r2 L3(CLI 的 0 不能變不限);K13–K16 對 r2 High / Medium / Low;K17 對 r3 High
 """
 import copy
 import io
@@ -684,6 +686,86 @@ class R2Codex(Base):
                 self.assertIn("budget_set by human proved", mod.__doc__)
 
 
+class R3Codex(Base):
+    """#427 r3(@f5fb8 Codex 1H + M1 補測):舊版完整事件序列照舊語意重放;每個寫檔邊界中斷都恢復。"""
+
+    def _raw(self, rows):
+        """照舊版(5cf99d94 以前)寫法逐筆寫事件:budget_set 沒有 reset 旗標。"""
+        mid = "m_" + os.urandom(6).hex()
+        d = M.mdir(mid, self.env)
+        d.mkdir(parents=True)
+        lines = []
+        for n, (at, who, typ, data, *task) in enumerate(rows, 1):
+            ev = {"v": 1, "seq": n, "eid": "e_legacy_%04d" % n, "req": "r%d" % n, "at": at, "by": who, "type": typ, "data": data}
+            if task:
+                ev["task"] = task[0]
+            lines.append(json.dumps(ev))
+        (d / "events.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return mid
+
+    def test_high_legacy_full_sequence_replays(self):
+        """舊版合法:額度 30 叫停 → PM 調低到 25 → 用量回落 → 本人開始 ⇒ 舊版重放 running,新版也要 running。"""
+        self.mid = self._raw([
+            (T0, by(PM), "created", {"title": "舊團", "goal": "", "accept": [], "pm": PM, "budget": {"quota_pct": 30}}),
+            (T0, by(PM), "roster", {"op": "add", "seat": W1, "role": "worker"}),
+            (T0, by(PM), "task_add", {"title": "t", "accept": ["rc 0"], "deps": []}, "t1"),
+            (T0, by(PM), "team", {"move": "submit"}),
+            (T0, "human", "team", {"move": "start", "proved": True}),
+            (T0 + 60, "system", "budget", {"level": "base", "dim": "quota", "base": {Q: 0}}),
+            (T0 + 120, "system", "budget", {"level": "halt", "dim": "quota", "used": 30, "cap": 30}),
+            (T0 + 120, "system", "team", {"move": "halt", "reason": "budget", "dim": "quota"}),
+            (T0 + 180, by(PM), "budget_set", {"budget": {"quota_pct": 25}}),
+            (T0 + 240, "human", "team", {"move": "start", "proved": True}),
+            (T0 + 300, "system", "budget", {"level": "halt", "dim": "quota", "used": 26, "cap": 25}),   # 舊版:記號已清、可再寫
+            (T0 + 300, "system", "team", {"move": "halt", "reason": "budget", "dim": "quota"}),
+            (T0 + 360, by(PM), "budget_set", {"budget": {"quota_pct": 20}}),
+        ])
+        st = self.ok(M.replay, self.mid, self.env)
+        self.assertEqual((st["status"], st["budget"], st["budget_marks"], st["budget_block"]),
+                         ("halted", {"quota_pct": 20}, {}, {}), "舊序列照舊語意:改預算清掉記號與阻擋")
+        self.assertEqual(st["seq"], 13)
+        self.ok(M.budget_set, self.mid, by(PM), {"quota_pct": 15}, env=self.env, now=T0 + 400)   # 之後的新事件照新語意
+        self.assertEqual(self.st()["budget"], {"quota_pct": 15})
+        self.assertEqual(self.events("budget_set")[-1]["data"].get("reset"), "dims")
+
+    def test_high_unknown_reset_flag_unreadable(self):
+        self.mid = self._raw([
+            (T0, by(PM), "created", {"title": "x", "goal": "", "accept": [], "pm": PM, "budget": {"minutes": 30}}),
+            (T0 + 1, by(PM), "budget_set", {"budget": {"minutes": 20}, "reset": "all"}),
+        ])
+        self.bad("corrupt", M.replay, self.mid, self.env)
+
+    def test_m1_every_write_boundary_recovers(self):
+        """tick 一輪寫 budget/base → budget/halt → team/halt → 快照;在每個邊界中斷,下一輪都補齊、不重寫。"""
+        for crash in ("base", "budget", "team", "snapshot"):
+            with self.subTest(crash=crash):
+                self.mk({"quota_pct": 30}, usage={Q: 0})
+                self.fp.usage_v = {Q: 30, "claude/7d/shared": 5}               # 新的 (引擎, 視窗) ⇒ 先寫基準
+                real_append, real_snap = M._append, M._snapshots
+
+                def flaky_append(d, ev, torn):
+                    if ev.get("by") == "system" and (ev["type"] == crash if crash == "team"
+                                                     else ev["type"] == "budget" and ev["data"]["level"] ==
+                                                     ("base" if crash == "base" else "halt")):
+                        raise OSError("斷電")
+                    return real_append(d, ev, torn)
+
+                def flaky_snap(d, st):
+                    if crash == "snapshot":
+                        raise OSError("斷電")
+                    return real_snap(d, st)
+                with mock.patch.object(M, "_append", flaky_append), mock.patch.object(M, "_snapshots", flaky_snap), \
+                        self.assertRaises(OSError):
+                    M.tick(self.mid, self.env, now=T0 + MIN, probe=self.fp)
+                self.tick(T0 + 2 * MIN)
+                st = self.st()
+                self.assertEqual((st["status"], st["halt_reason"]), ("halted", "budget"), crash)
+                self.assertEqual(st["quota_base"], {Q: 0, "claude/7d/shared": 5}, crash)
+                self.assertEqual(len(self.budget_evs("halt")), 1, crash)
+                self.assertEqual(len([e for e in self.events("team") if e["data"]["move"] == "halt"]), 1, crash)
+                self.assertEqual(len(self.budget_evs("base")), 2, "開始那筆 + 新視窗那筆,不重寫")
+
+
 MON_PY, MIS_PY = "src/cockpit/mission_monitor.py", "src/cockpit/mission.py"
 KNIVES = [
     ("K1", MON_PY, '''            if lv is None or "halt" in marks or lv in marks:''', '''            if lv is None:''',
@@ -716,6 +798,8 @@ KNIVES = [
      "R2Codex.test_low_notified_and_blocking_kept_apart"),
     ("K16", MON_PY, '''        stale = sorted(dim for dim, on in st["budget_block"].items() if on)''', '''        stale = []''',
      "R2Codex.test_medium_dispatch_path_crash_recovers"),
+    ("K17", MIS_PY, '''        if reset is None:                           # 舊事件''', '''        if False:                           # 舊事件''',
+     "R3Codex.test_high_legacy_full_sequence_replays"),
     ("K11", MIS_PY, '''        if type(v) is not int or not (0 if allow_zero else 1) <= v <= BUDGET_MAX[k]:''', '''        if type(v) is not int:''',
      "R1Codex.test_m2_strict_budget_input"),
 ]
