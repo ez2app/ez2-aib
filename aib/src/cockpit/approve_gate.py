@@ -161,6 +161,10 @@ SITES = {
     "mission.accept": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_accept",
                          {"title": 60, "id": FULL, "n": FULL, "k": FULL},
                          "Accept and archive task team {title} ({id}, {n} tasks, {k} cancelled)"),
+    # mission.budget 提高預算 = 花額度 ⇒ 高風險一次一按、不進時間窗(S4 前半,@f5fb8 / @aeb40 10-29 裁);調低不用按
+    "mission.budget": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_budget",
+                         {"title": 60, "id": FULL, "what": FULL},
+                         "Raise the budget of task team {title} ({id}): {what} (spends more usage)"),
     # 10-29 TID-2b:時間窗授權單(se-sign 的視窗字;類別、時長不截,換鑰那句第一行標舊 → 新 kid)
     "approve_grants.sign": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign",
                               {"cats": FULL, "dur": FULL},

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """任務團資料契約(S1,SPEC-mission-team-f5fb8-1029「三方審查定案」2 / 3 / 4 / 9)。只用標準庫。
 
-aib mission new|list|show|roster|team|task|tick … [--json]
+aib mission new|list|show|roster|team|task|tick|budget|watch … [--json]
 
 存在 <狀態根>/missions/<id>/(目錄 0700、檔 0600):
   events.jsonl   正本。一行一筆事件 {v, seq, eid, req, at, by, type, task?, data};seq 從 1 連號。
@@ -33,6 +33,19 @@ aib mission new|list|show|roster|team|task|tick … [--json]
 同帳號威脅模型(GUIDE-same-user-ai-threat-model):missions/ 所有 AI 都寫得到;--by 是自報。角色表、租期、eid、
   收據格式只防誤操作與 AI 之間互踩,不是防線。真正的防線只有 Touch ID 那兩步;改了驗得出要等 S4 的 SE 簽授權單。
   收據裡的 rc / CI 結論也是自報 ⇒ show 的 verified_pct 只算 ci / pr_merged 兩種(S2 起由核心重跑再補)。
+
+S4 前半(SPEC-mission-monitor-fd787-1029,§8 @f5fb8 裁示):預算硬上限 + 規則監看(不用 LLM)+ aib mission watch。
+  預算三維:minutes(團在 running 的時間,從事件算,暫停 / 叫停不算)、seats_max(加人時就擋 over_seats)、
+  quota_pct(額度:第一次量到記基準,用量 = 各 (引擎, 視窗) 現值 − 基準 取大;5h / 7d 都算;同帳號別席也算進來 ⇒ 寧可高估)。
+  tick 時 80% 寫 budget/warn、100% 寫 budget/halt + team/halt(reason=budget),同一維同一級只寫一次;
+  預算叫停後要本人先改預算(budget_set)再按開始。提高預算 = 花額度 ⇒ 只有本人 + Touch ID(site mission.budget,
+  高風險一次一按、不進時間窗);調低 PM 也能寫。量不到額度不當 0,寫 anomaly/quota_unmeasured;
+  設了額度上限時派工 / 開始量不到 ⇒ 拒 quota_unmeasured(#427 r1 H1);派工 / 進 running 前在團鎖內再驗一次預算。
+  照實寫(#427 r2 L5):預算上限只防失控與誤操作,不防同帳號 AI。AI 直接往 events.jsonl 補一筆
+  `budget_set by human proved:true` 就能解除叫停、不用 Touch ID;EZ2_USAGE_DIR / 用量紀錄檔也改得到。
+  Touch ID 只擋走正常 CLI 的那條路;要真的擋得住,得等 SE 簽的授權單(事件帶簽章、重放時驗)。
+  監看規則在 mission_monitor.evaluate(純函式);只寫 budget / anomaly / throttle 事件(都是 system 寫),不改任務、不改計畫。
+  誰定期叫 tick:monitor 席每 60 秒叫一次,核心不加常駐。
   ci / pr_merged 收據的 head 要對得上任務回報的 artifact(前綴相符);回報沒帶 artifact ⇒ 只能用 test / checklist 收據。
   verified「品管全過」= 每件任務都有通過的收據;machine_all = 每件的收據都是機器證據(只有 checklist / test 的團也收得了)。
 """
@@ -71,6 +84,13 @@ LEASED = ("assigned", "doing", "blocked")
 RECEIPT_KINDS = ("test", "ci", "pr_merged", "checklist")
 MACHINE_VERIFIED = ("ci", "pr_merged")
 TEXT_MAX, LIST_MAX = 200, 20
+# S4 前半:預算三維(事件裡的 dim ⇒ budget 欄位)、門檻、監看規則、system 才能寫的事件
+BUDGET_DIMS = {"minutes": "minutes", "seats": "seats_max", "quota": "quota_pct"}
+BUDGET_LEVELS = ("warn", "halt", "base")
+WARN_PCT = 80
+RULES = ("idle", "now_stale", "now_missing", "qa_loop", "blocked_long", "quota_unmeasured")
+SYSTEM_TYPES = ("expire", "budget", "anomaly", "throttle")
+BUDGET_SITE = "mission.budget"
 
 # 團的轉移:動作 ⇒ (從哪些狀態, 到, 誰能做)。human 那兩步另過 Touch ID(_human_gate)。
 TEAM_MOVES = {
@@ -92,6 +112,8 @@ REPORT_MOVES = {"assigned": ("doing",), "doing": ("doing", "blocked", "qa"), "bl
 PLANNING = ("draft", "ready", "running", "paused")
 
 PROVE = None          # 測試換掉 Touch ID(reason, env) ⇒ None 過 / 原因碼
+PROBE = None          # 測試換掉監看量測(mission_monitor.Probe 的替身);寫入路徑驗額度用
+BUDGET_MAX = {"minutes": 100000, "seats_max": 500, "quota_pct": 100}   # 上限的上限(#427 Codex r1 M2:10**400 也收)
 
 
 class MissionError(Exception):
@@ -178,7 +200,9 @@ def _read_events(d):
 
 def _empty(mid):
     return {"v": V, "id": mid, "status": None, "rev": 0, "seq": 0, "charter": {}, "budget": {}, "roster": {},
-            "tasks": {}, "eids": {}, "receipts": {}, "created_at": None, "updated_at": None}
+            "tasks": {}, "eids": {}, "receipts": {}, "created_at": None, "updated_at": None,
+            "budget_marks": {}, "budget_block": {}, "anomalies": {}, "throttle": False, "run_s": 0, "run_since": None,
+            "last_by": {}, "quota_base": None, "halt_reason": None}
 
 
 def replay(mid, env=None):
@@ -223,8 +247,58 @@ def _task(st, tid):
 def _bump(t, at, status=None):
     t["rev"] += 1
     t["updated_at"] = at
+    if status == "blocked" and t["status"] != "blocked":
+        t["blocked_since"] = at                  # R5 blocked_long 從進卡關那一刻算(卡關中再回報不重算)
+    elif status and status != "blocked":
+        t["blocked_since"] = None
     if status:
         t["status"] = status
+
+
+def _budget(raw):
+    """重放用(事件裡的預算):照舊寬鬆解讀 ⇒ 正整數留下、其他丟掉;quota_pct > 100 拒。
+    不套 BUDGET_MAX(#427 r2 High:main 寫過的 minutes 100001 / seats_max 501 是合法舊事件,升級後要讀得回來)。
+    新輸入一律先過 _budget_input(嚴格),所以新寫的事件不會再有被丟掉的欄位。"""
+    if not isinstance(raw, dict):
+        return {}
+    out = {k: raw[k] for k in BUDGET_DIMS.values() if type(raw.get(k)) is int and raw[k] > 0}
+    if out.get("quota_pct", 0) > 100:
+        raise MissionError("bad_budget")
+    return out
+
+
+def _budget_input(raw, allow_zero=False):
+    """新輸入(建團 / 改預算):不認得的欄位、負數、非整數、超過 BUDGET_MAX ⇒ bad_budget,不靜默丟掉
+    (#427 Codex r1 M2:丟掉 = 變成不限)。0:建團不收(r2 L3);改預算 allow_zero ⇒ 0 = 拿掉上限。"""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or any(k not in BUDGET_MAX for k in raw):
+        raise MissionError("bad_budget")
+    for k, v in raw.items():
+        if type(v) is not int or not (0 if allow_zero else 1) <= v <= BUDGET_MAX[k]:
+            raise MissionError("bad_budget")
+    return dict(raw)
+
+
+def _raises(old, new):
+    """新上限比舊的鬆(調高,或拿掉上限 = 不限)⇒ 花額度。舊的沒設 = 不限,新設一個上限只會更省。"""
+    return any(k in old and (k not in new or new[k] > old[k]) for k in BUDGET_DIMS.values())
+
+
+def used_minutes(st, now):
+    """團在 running 的分鐘數(從事件算;暫停 / 叫停 / 待開始不算)。"""
+    s = int(st.get("run_s") or 0)
+    if st.get("run_since") is not None:
+        s += max(0, int(now) - int(st["run_since"]))
+    return s // 60
+
+
+def used_seats(st):
+    return sum(1 for r in st["roster"].values() if not r.get("left_at"))
+
+
+def _uint(v):
+    return type(v) is int and v >= 0
 
 
 def _check_receipt(rec, t, tid):
@@ -272,7 +346,8 @@ def apply(st, ev):
         raise MissionError("bad_event")
     if ev["eid"] in st["eids"]:
         raise MissionError("dup_eid")
-    system = typ == "expire" or (typ == "team" and d.get("move") == "autostart")
+    system = typ in SYSTEM_TYPES or (typ == "team" and (d.get("move") == "autostart"
+                                                       or (d.get("move") == "halt" and d.get("reason") == "budget")))
     if (by == "system") != system or (not system and not BY_RE.match(str(by or ""))):
         raise MissionError("bad_by")
     if st["status"] is None and typ != "created":
@@ -288,8 +363,7 @@ def apply(st, ev):
             raise MissionError("bad_seat")
         st.update(status="draft", created_at=at, charter={"title": _txt(d.get("title"), 80), "goal": _txt(d.get("goal")),
                                                           "accept": _list(d.get("accept"))},
-                  budget={k: d["budget"][k] for k in ("minutes", "seats_max") if isinstance(d.get("budget"), dict)
-                          and type(d["budget"].get(k)) is int and d["budget"][k] > 0})
+                  budget=_budget(d.get("budget")))
         if not st["charter"]["title"]:
             raise MissionError("no_title")
         st["roster"][pm] = {"role": "pm", "joined_at": at, "left_at": None}
@@ -298,7 +372,7 @@ def apply(st, ev):
         if not mv:
             raise MissionError("bad_move")
         frm, to, who = mv
-        if who != ("system",):
+        if who != ("system",) and by != "system":     # system 只寫得了 autostart 與預算叫停(上面 bad_by 擋)
             _need(st, by, who)
         if st["status"] not in frm:
             raise MissionError("bad_transition")
@@ -318,6 +392,10 @@ def apply(st, ev):
                 raise MissionError("not_all_passed")
         if d["move"] == "start" and d.get("proved") is not True:
             raise MissionError("not_proved")
+        if d["move"] == "start" and st["status"] == "halted" and _over_budget(st, at):
+            raise MissionError("over_budget")       # 預算叫停後沒先改預算 ⇒ 開了下一次 tick 又停(S4 §1.2)
+        if d["move"] == "halt":
+            st["halt_reason"] = "budget" if by == "system" else ("human" if by == "human" else _role(st, by))
         if d["move"] == "accept" and d.get("proved") is not True:
             raise MissionError("not_proved")
         if d["move"] == "resume" and st.get("paused_by") == "human" and by != "human":
@@ -330,6 +408,13 @@ def apply(st, ev):
             for t in st["tasks"].values():        # 暫停期間不算租期:回來時重給一整段
                 if t["status"] in LEASED:
                     t["lease_until"] = at + LEASE_S
+        if st["status"] == "running" and to != "running":     # 預算分鐘:只算 running 的時間
+            st["run_s"] = int(st.get("run_s") or 0) + max(0, at - int(st["run_since"]))
+            st["run_since"] = None
+        elif to == "running" and st["status"] != "running":
+            st["run_since"] = at
+        if to == "running":
+            st["halt_reason"] = None
         st["status"] = to
     elif typ == "roster":
         _need(st, by, ("pm", "human"))
@@ -342,6 +427,8 @@ def apply(st, ev):
             cur = st["roster"].get(seat)
             if cur and not cur.get("left_at"):
                 raise MissionError("already_in")
+            if st["budget"].get("seats_max") and used_seats(st) >= st["budget"]["seats_max"]:
+                raise MissionError("over_seats")    # 席數是硬上限:加人時就擋,不等事後叫停
             st["roster"][seat] = {"role": role, "joined_at": at, "left_at": None}
         elif d.get("op") == "remove":
             cur = st["roster"].get(seat)
@@ -441,10 +528,10 @@ def apply(st, ev):
                     raise MissionError("bad_receipt")
                 rec.update(id=rid, by=by, at=at)
                 st["receipts"][rid] = rec
-                t["receipt"] = rid
+                t.update(receipt=rid, returns=0)
                 _bump(t, at, "passed")
             elif d.get("verdict") == "return":
-                t.update(assignee=None, code=None, why=_txt(d.get("why")))
+                t.update(assignee=None, code=None, why=_txt(d.get("why")), returns=int(t.get("returns") or 0) + 1)
                 _bump(t, at, "returned")
             else:
                 raise MissionError("bad_verdict")
@@ -460,6 +547,7 @@ def apply(st, ev):
                 raise MissionError("bad_transition")
             t["accept"] = _list(d.get("accept"))
             t["accept_rev"] += 1
+            t["returns"] = 0                        # 改驗收 ⇒ 品管連退重新計(R4)
             if t["status"] == "passed":             # 驗收改了:舊「通過」作廢,回品管重驗
                 t["receipt"] = None
                 _bump(t, at, "qa")
@@ -471,8 +559,52 @@ def apply(st, ev):
             t["expired_from"] = t.get("assignee")
             t.update(assignee=None, code=None, lease_until=None)
             _bump(t, at, "todo")
+    elif typ == "budget":
+        _apply_budget(st, d)
+    elif typ == "budget_set":
+        _need(st, by, ("pm", "human"))
+        new = _budget(d.get("budget"))
+        if new == st["budget"]:
+            raise MissionError("no_change")           # 沒改內容不收:不然一筆空改就能清掉叫停記號
+        if _raises(st["budget"], new):
+            if by != "human":
+                raise MissionError("not_allowed")   # 提高上限 = 花額度 ⇒ 只有本人
+            if d.get("proved") is not True:
+                raise MissionError("not_proved")
+        old, st["budget"] = st["budget"], new
+        reset = d.get("reset")
+        if reset is None:                           # 舊事件(5cf99d94 以前):照舊版語意,改預算 = 全部記號與阻擋清掉(r3 High:舊序列要重放得回來)
+            st["budget_marks"], st["budget_block"] = {}, {}
+        elif reset != "dims":
+            raise MissionError("bad_event")
+        else:                                       # 新事件:只重計真的改了的那一維(r1 H3)
+            for dim, key in BUDGET_DIMS.items():
+                if old.get(key) != new.get(key):
+                    st["budget_marks"].pop(dim, None)   # 「已通知」:改了就重新通知
+                    if key in old and (key not in new or new[key] > old[key]):
+                        st["budget_block"].pop(dim, None)   # 「仍要擋」:只有放寬那一維才解除(r2 Low:兩件事分開存)
+    elif typ == "anomaly":
+        rule, key, end = d.get("rule"), d.get("key"), d.get("end")
+        if rule not in RULES or not isinstance(key, str) or not 0 < len(key) <= 40 or type(end) is not bool:
+            raise MissionError("bad_event")
+        k = rule + ":" + key
+        if end != (k in st["anomalies"]):            # 只在進入 / 解除各寫一筆;重複的進入或沒開過的解除 = 檔被改過
+            raise MissionError("bad_event")
+        if end:
+            st["anomalies"].pop(k)
+        else:
+            st["anomalies"][k] = {"rule": rule, "key": key, "since": at,
+                                  "data": {x: d[x] for x in ("last_at", "at", "returns", "since") if _uint(d.get(x))}}
+    elif typ == "throttle":
+        on, load = d.get("on"), d.get("load1")
+        if type(on) is not bool or on == bool(st["throttle"]) or not isinstance(load, (int, float)) or isinstance(load, bool):
+            raise MissionError("bad_event")
+        st["throttle"] = on
+        st["load1"] = load
     else:
         raise MissionError("bad_type")
+    if isinstance(by, str) and by.startswith("seat:"):
+        st["last_by"][by[5:]] = at                   # R1 idle:這席最後一次自己寫事件
     st["seq"] = ev["seq"]
     st["eids"][ev["eid"]] = {"req": ev.get("req"), "seq": ev["seq"], "task": tid}
     st["rev"] += 1
@@ -480,11 +612,45 @@ def apply(st, ev):
     return st
 
 
+def _apply_budget(st, d):
+    level, dim = d.get("level"), d.get("dim")
+    if level not in BUDGET_LEVELS or dim not in BUDGET_DIMS:
+        raise MissionError("bad_event")
+    if level == "base":                              # 額度基準(第一次量到 / 視窗重設 / 新的 (引擎, 視窗))
+        base = d.get("base")
+        if dim != "quota" or not isinstance(base, dict) or not base or len(base) > 40 \
+                or any(not isinstance(k, str) or type(v) is not int or not 0 <= v <= 100 for k, v in base.items()):
+            raise MissionError("bad_event")
+        st["quota_base"] = dict(base)
+        return
+    if not _uint(d.get("used")) or not _uint(d.get("cap")) or not d["cap"]:
+        raise MissionError("bad_event")
+    marks = st["budget_marks"].setdefault(dim, [])
+    if level in marks or "halt" in marks:            # 同一維同一級只寫一次
+        raise MissionError("bad_event")
+    marks.append(level)
+    if level == "halt":
+        st["budget_block"][dim] = True
+
+
+def _over_budget(st, at):
+    """叫停後還在上限以上(分鐘 / 席數當場算;額度看有沒有還沒被改預算清掉的 halt 記號)。"""
+    b = st["budget"]
+    if b.get("minutes") and used_minutes(st, at) >= b["minutes"]:
+        return True
+    if b.get("seats_max") and used_seats(st) > b["seats_max"]:
+        return True
+    return any(st["budget_block"].values())
+
+
 # ── 寫 ──
 
-def _req_digest(typ, by, task, data):
-    """同 eid 重送比的是「要求」(不含系統產生的代號 / 收據 id)。"""
-    keep = {k: v for k, v in data.items() if k not in ("code", "receipt_id", "proved")}
+def _req_digest(typ, by, task, data, with_reset=False):
+    """同 eid 重送比的是「要求」(不含系統產生的代號 / 收據 id)。
+    reset 是事件語意版本(budget_set 新版才帶),不是要求的內容 ⇒ 不算進來,舊版成功的指令原樣重送照回原結果(#427 r4 Medium)。
+    with_reset:59fb3761 那版的算法(含 reset),比對時兩種都認(#427 r5)。"""
+    drop = ("code", "receipt_id", "proved") if with_reset else ("code", "receipt_id", "proved", "reset")
+    keep = {k: v for k, v in data.items() if k not in drop}
     raw = json.dumps([typ, by, task, keep], ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -501,16 +667,28 @@ def _machine_all(st):
 
 
 def _snapshots(d, st):
+    """快照(給畫面 / skill 讀,不當正本)。charter.json 帶 rev、最後寫 ⇒ 它的 rev 對得上 = 四個檔都寫完了;
+    中途斷掉 ⇒ 下一次 tick 看 _snap_stale 補寫(#427 r4 Low)。"""
+    _write(d / "roster.json", json.dumps({"v": V, "roster": st["roster"]}, ensure_ascii=False, sort_keys=True))
+    _write(d / "budget.json", json.dumps({"v": V, "budget": st["budget"], "marks": st["budget_marks"], "block": st["budget_block"],
+                                          "quota_base": st["quota_base"], "run_s": st["run_s"],
+                                          "run_since": st["run_since"], "throttle": st["throttle"],
+                                          "anomalies": st["anomalies"]}, ensure_ascii=False, sort_keys=True))
+    _write(d / "tasks.jsonl", "".join(json.dumps(_public_task(t), ensure_ascii=False, sort_keys=True) + "\n"
+                                      for t in sorted(st["tasks"].values(), key=lambda t: int(t["id"][1:]))))
     _write(d / "charter.json", json.dumps({"v": V, "id": st["id"], "status": st["status"], "rev": st["rev"],
                                            "ready_at": st.get("ready_at"), "hold": bool(st.get("hold")),
                                            "started_by": st.get("started_by"), "started_at": st.get("started_at"),
                                            "paused_by": st.get("paused_by"), "machine_all": _machine_all(st),
                                            "charter": st["charter"], "created_at": st["created_at"],
                                            "updated_at": st["updated_at"]}, ensure_ascii=False, sort_keys=True))
-    _write(d / "roster.json", json.dumps({"v": V, "roster": st["roster"]}, ensure_ascii=False, sort_keys=True))
-    _write(d / "budget.json", json.dumps({"v": V, "budget": st["budget"]}, ensure_ascii=False, sort_keys=True))
-    _write(d / "tasks.jsonl", "".join(json.dumps(_public_task(t), ensure_ascii=False, sort_keys=True) + "\n"
-                                      for t in sorted(st["tasks"].values(), key=lambda t: int(t["id"][1:]))))
+
+
+def _snap_stale(d, st):
+    try:
+        return json.loads((d / "charter.json").read_text(encoding="utf-8")).get("rev") != st["rev"]
+    except (OSError, ValueError, AttributeError):
+        return True
 
 
 def _append(d, ev, torn):
@@ -527,10 +705,34 @@ def _append(d, ev, torn):
     os.chmod(str(p), 0o600)
 
 
-def _expire_due(d, st, evs_torn, now):
-    """倒數滿了沒人按停 ⇒ autostart;租期過了的任務寫 expire。都是 system 寫。回寫了幾筆。"""
+def _system(d, st, typ, data, now, torn):
+    ev = {"v": V, "seq": st["seq"] + 1, "eid": "x_" + secrets.token_hex(8), "req": None, "at": now,
+          "by": "system", "type": typ, "data": data}
+    apply(st, ev)
+    _append(d, ev, torn)
+    return ev
+
+
+def _budget_gate(d, st, now, probe, torn):
+    """派工 / 進 running 之前,在團鎖內驗預算(#427 Codex r1 H1:不能只靠 tick)。
+    先把該寫的 system 事件寫掉(額度基準、超限記號;running 的團超限 ⇒ team/halt),回 (寫了幾筆, 拒絕碼 或 None)。
+    over_budget = 超限;quota_unmeasured = 設了額度上限但量不到 ⇒ 不放行(fail-close)。"""
+    import mission_monitor as MM
+    evs, why = MM.precheck(st, now, probe)
+    for typ, data in evs:
+        _system(d, st, typ, data, now, torn)
+        torn = None
+    return len(evs), why
+
+
+def _expire_due(d, st, evs_torn, now, probe=None):
+    """倒數滿了沒人按停 ⇒ autostart(預算驗過才開);租期過了的任務寫 expire。都是 system 寫。回寫了幾筆。"""
     n = 0
     if st["status"] == "ready" and not st.get("hold") and now - int(st.get("ready_at") or now) >= AUTOSTART_S:
+        n, why = _budget_gate(d, st, now, probe, evs_torn)
+        evs_torn = None if n else evs_torn
+        if why:
+            return n                                # 超限 / 額度量不到 ⇒ 不自動開始,等本人改預算或量得到
         ev = {"v": V, "seq": st["seq"] + 1, "eid": "x_" + secrets.token_hex(8), "req": None, "at": now,
               "by": "system", "type": "team", "data": {"move": "autostart"}}
         apply(st, ev)
@@ -552,26 +754,44 @@ def _expire_due(d, st, evs_torn, now):
     return n
 
 
-def commit(mid, typ, by, data, env=None, task=None, eid=None, now=None):
+def _probe(probe, env, now):
+    import mission_monitor as MM
+    return probe or PROBE or MM.Probe(env, now)
+
+
+def _to_running(st, typ, data):
+    mv = TEAM_MOVES.get((data or {}).get("move")) if typ == "team" else None
+    return bool(mv) and mv[1] == "running" and st["status"] in mv[0]
+
+
+def commit(mid, typ, by, data, env=None, task=None, eid=None, now=None, probe=None):
     """寫一筆。回 {"ok", "duplicate", "seq", "state"}。先把過期的租期處理掉(過期的回報才拒得掉)。"""
     now = int(time.time() if now is None else now)
     d = mdir(mid, env)
     if eid is not None and not EID_RE.match(str(eid)):
         raise MissionError("bad_eid")
     req = _req_digest(typ, by, task, data)
+    probe = _probe(probe, env, now)
     with _locked(d, create=typ == "created"):
         st, torn, evs = _load(d, mid)
         if typ == "created" and evs:
             raise MissionError("exists")
         if eid and eid in st["eids"]:
-            if st["eids"][eid]["req"] != req:
+            if st["eids"][eid]["req"] not in (req, _req_digest(typ, by, task, data, with_reset=True)):
                 raise MissionError("eid_conflict")
             orig = evs[st["eids"][eid]["seq"] - 1]
             return {"ok": True, "duplicate": True, "seq": orig["seq"], "state": st, "task": orig.get("task"), "event": orig}
         if typ == "task_add" and task is None:     # 編號在鎖內配(兩席同時開單不撞號)
             task = "t%d" % (len(st["tasks"]) + 1)
-        n = _expire_due(d, st, torn, now)
+        n = _expire_due(d, st, torn, now, probe)
         torn = None if n else torn
+        if typ == "dispatch" or _to_running(st, typ, data):
+            k, why = _budget_gate(d, st, now, probe, torn)
+            n, torn = n + k, None if k else torn
+            if why:
+                if n:
+                    _snapshots(d, st)
+                raise MissionError(why)
         ev = {"v": V, "seq": st["seq"] + 1, "eid": eid or ("e_" + secrets.token_hex(8)), "req": req, "at": now,
               "by": by, "type": typ, "task": task, "data": data}
         if task is None:
@@ -587,16 +807,30 @@ def commit(mid, typ, by, data, env=None, task=None, eid=None, now=None):
         return {"ok": True, "duplicate": False, "seq": ev["seq"], "state": st, "task": task, "event": ev}
 
 
-def tick(mid, env=None, now=None):
-    """aib mission tick:倒數滿了自動開始;租期過期的任務放回待做。回 [{"task","from"}]。"""
+def tick(mid, env=None, now=None, probe=None):
+    """aib mission tick:倒數滿了自動開始;租期過期的任務放回待做;再跑監看規則(預算 / 異常 / 降速,S4)。
+    回 [{"task","from"}](過期的任務);監看寫了哪些事件放在 st["_monitor"]。monitor 席每 60 秒叫一次。"""
+    import mission_monitor as MM
     now = int(time.time() if now is None else now)
     d = mdir(mid, env)
+    probe = _probe(probe, env, now)
     with _locked(d):
         st, torn, evs = _load(d, mid)
         if not evs:
             raise MissionError("no_mission")
-        if _expire_due(d, st, torn, now):
+        n = _expire_due(d, st, torn, now, probe)
+        torn = None if n else torn
+        wrote = []
+        for typ, data in MM.evaluate(st, now, probe):
+            ev = {"v": V, "seq": st["seq"] + 1, "eid": "x_" + secrets.token_hex(8), "req": None, "at": now,
+                  "by": "system", "type": typ, "data": data}
+            apply(st, ev)
+            _append(d, ev, torn)
+            torn = None
+            wrote.append(ev)
+        if n or wrote or _snap_stale(d, st):
             _snapshots(d, st)
+        st["_monitor"] = wrote
         return st.get("_expired", [])
 
 
@@ -604,6 +838,7 @@ def new(by, title, goal="", accept=(), pm=None, budget=None, env=None, eid=None,
     pm = pm or (by[5:] if str(by).startswith("seat:") else None)
     if not SEAT_RE.match(str(pm or "")):
         raise MissionError("bad_seat")
+    _budget_input(budget)                     # 預算不合先拒,不留空的團目錄(#427 r2 L3)
     if eid:                                   # 同 eid 重送 ⇒ 找回原本那團,不開第二團
         for mid in list_ids(env):
             try:
@@ -653,11 +888,14 @@ def view(st, now=None):
 
 def _human_gate(move, mid, st, env):
     """開始 / 收下:approve_gate 組字 + Touch ID(高風險類不開時間窗)。回 None = 過;否則原因碼。"""
-    import approve_gate as AG
-    site = HUMAN_SITES[move]
     live = [t for t in st["tasks"].values() if t["status"] != "cancelled"]
-    r = AG.reason(site, {"title": st["charter"].get("title") or mid, "id": mid, "n": str(len(live)),
-                         "k": str(len(st["tasks"]) - len(live))}, env=env)     # 另取消 k 件也給本人看(#414 R1 L7)
+    return _gate(HUMAN_SITES[move], {"title": st["charter"].get("title") or mid, "id": mid, "n": str(len(live)),
+                                     "k": str(len(st["tasks"]) - len(live))}, env)     # 另取消 k 件也給本人看(#414 R1 L7)
+
+
+def _gate(site, facts, env):
+    import approve_gate as AG
+    r = AG.reason(site, facts, env=env)
     if PROVE:
         return PROVE(r, env)
     off = AG.ready(env)
@@ -680,6 +918,38 @@ def team(mid, move, by, env=None, eid=None, now=None):
             raise MissionError(why)
         data["proved"] = True
     return commit(mid, "team", by, data, env=env, eid=eid, now=now)
+
+
+def _budget_text(old, new):
+    keys = [k for k in BUDGET_DIMS.values() if old.get(k) != new.get(k)]
+    return ", ".join("%s %s→%s" % (k, old.get(k, "-"), new.get(k, "-")) for k in keys) or "-"
+
+
+def budget_set(mid, by, changes, env=None, eid=None, now=None):
+    """改預算。changes:{欄位: 正整數 | 0(拿掉上限)}。提高(含拿掉上限)= 花額度 ⇒ 只有本人 + Touch ID
+    (site mission.budget,高風險一次一按、不進時間窗);調低 PM 也能寫、不用按。"""
+    st = replay(mid, env)
+    if st["status"] is None:
+        raise MissionError("no_mission")
+    new = dict(st["budget"])
+    for k, v in _budget_input(changes, allow_zero=True).items():   # 只驗這次改的欄位;舊事件留下的值照讀(r2 High)
+        if v:
+            new[k] = v
+        else:
+            new.pop(k, None)
+    new = _budget(new)
+    data = {"budget": new, "reset": "dims"}         # 帶旗標 = 新語意(只重計改了的維度);沒帶的舊事件照舊版解(r3 High)
+    if eid and eid in st["eids"]:                    # 重送 ⇒ 不再彈 Touch ID,回原結果 / eid_conflict
+        return commit(mid, "budget_set", by, dict(data, proved=True), env=env, eid=eid, now=now)
+    if _raises(st["budget"], new):
+        if by != "human":
+            raise MissionError("not_allowed")
+        why = _gate(BUDGET_SITE, {"title": st["charter"].get("title") or mid, "id": mid,
+                                  "what": _budget_text(st["budget"], new)}, env)
+        if why:
+            raise MissionError(why)
+        data["proved"] = True
+    return commit(mid, "budget_set", by, data, env=env, eid=eid, now=now)
 
 
 def load_receipt(path):
@@ -739,7 +1009,7 @@ def T(key, **kw):
 def _parser():
     p = argparse.ArgumentParser(prog="aib mission", add_help=True, description=T("help.clock"))
     sub = p.add_subparsers(dest="cmd")
-    for name in ("new", "list", "show", "roster", "team", "task", "tick", "why"):
+    for name in ("new", "list", "show", "roster", "team", "task", "tick", "why", "budget", "watch"):
         s = sub.add_parser(name)
         s.add_argument("--json", action="store_true")
         s.add_argument("--by", default=None, help=T("help.by"))
@@ -749,9 +1019,11 @@ def _parser():
             s.add_argument("--goal", default="")
             s.add_argument("--accept", action="append", default=[])
             s.add_argument("--pm", default=None, help=T("help.seat"))
+        if name in ("new", "budget"):
             s.add_argument("--minutes", type=int, default=None)
             s.add_argument("--seats-max", type=int, default=None)
-        if name in ("show", "roster", "team", "task", "tick", "why"):
+            s.add_argument("--quota-pct", type=int, default=None)
+        if name in ("show", "roster", "team", "task", "tick", "why", "budget", "watch"):
             s.add_argument("id")
         if name == "why":
             s.add_argument("task")
@@ -821,10 +1093,21 @@ def run(argv, env=None, out=None):
             return _emit(out, a, dict(res, ok=True), text.rstrip())
         if a.cmd == "tick":
             got = tick(a.id, env)
-            return _emit(out, a, {"ok": True, "expired": got, "status": replay(a.id, env)["status"]}, T("ok"))
+            st = replay(a.id, env)
+            return _emit(out, a, {"ok": True, "expired": got, "status": st["status"],
+                                  "anomalies": sorted(st["anomalies"]), "throttle": st["throttle"]}, T("ok"))
+        if a.cmd == "watch":
+            import mission_monitor as MM
+            return MM.watch_cmd(a.id, a.json, env=env, out=out)
         by = _by(a)
+        if a.cmd == "budget":
+            res = budget_set(a.id, by, {k: v for k, v in (("minutes", a.minutes), ("seats_max", a.seats_max),
+                                                          ("quota_pct", a.quota_pct)) if v is not None},
+                             env=env, eid=a.eid)
+            return _emit(out, a, {"ok": True, "duplicate": res["duplicate"], "seq": res["seq"],
+                                  "budget": res["state"]["budget"]}, T("ok"))
         if a.cmd == "new":
-            budget = {k: v for k, v in (("minutes", a.minutes), ("seats_max", a.seats_max)) if v}
+            budget = {k: v for k, v in (("minutes", a.minutes), ("seats_max", a.seats_max), ("quota_pct", a.quota_pct)) if v is not None}
             res = new(by, a.title, a.goal, a.accept, a.pm, budget, env=env, eid=a.eid)
             return _emit(out, a, {"ok": True, "id": res["id"], "duplicate": res["duplicate"]}, res["id"])
         if a.cmd == "roster":
