@@ -5881,5 +5881,10 @@
   "aib.meeting.sum.title": "会議まとめ:{topic}",
   "aib.meeting.sum.conclusions": "結論 {n} 件",
   "aib.meeting.sum.undecided": "未決 {n} 件(任務団には渡しません)",
-  "aib.meeting.sum.needs_you": "あなたの判断が必要 {n} 件"
+  "aib.meeting.sum.needs_you": "あなたの判断が必要 {n} 件",
+  "aib.mission.help.by": "実行者:seat:<5 桁の席コード>(例 seat:ee842)または human",
+  "aib.mission.help.eid": "このコマンドの一意 ID(再送しても二重実行しない):英数字または _ . : - を 8〜64 文字",
+  "aib.mission.help.seat": "5 桁の席コードそのまま(例 ee842)、seat: は付けない",
+  "aib.mission.help.code": "割り当て通知にあるコード(12 桁)。作業者が報告するときに必須",
+  "aib.mission.help.clock": "時刻は常にシステム時計を使い、コマンドで時刻は指定できません(15 分のリースは実時間で数えます)"
 }
