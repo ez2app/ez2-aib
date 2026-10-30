@@ -1526,8 +1526,10 @@ class Receiver(object):
             since = int(self.led.st.get("last_at") or time.time()) - BACKFILL
             flt = N.Filter().kind(N.Kind(1059)).pubkeys([N.PublicKey.parse(h) for h in seats]) \
                 .since(N.Timestamp.from_secs(max(0, since)))
-            await c.subscribe(N.ReqTarget.auto([flt]))
+            # 接收器要在訂閱前建好:站在 REQ 一到就回放已存的信(離線期間寄來的),那時還沒有接收器 ⇒ 通知直接丟、
+            # 補收不到。10-30 phone-pair N1 單跑三次紅兩次就是這個(@aeb40)
             stream = c.notifications()
+            await c.subscribe(N.ReqTarget.auto([flt]))
             until = time.time() + RESUB_EVERY
             while not stop.is_set():
                 if time.time() >= until:
