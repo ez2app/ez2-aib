@@ -21,7 +21,7 @@ def apply_y(state_dir, y):
     tab = "ai"
     try:
         with open(os.path.join(state_dir, "right-tab"), encoding="utf-8") as fh:
-            tab = {"1": "usage", "3": "left"}.get(fh.read().strip(), "ai")  # 右欄狀態檔:1=2.AI用量、3=3.離艙(09-30)、其他=1.AI
+            tab = {"1": "usage", "3": "left", "4": "room"}.get(fh.read().strip(), "ai")  # 右欄狀態檔:1=2.AI用量、3=3.離艙(09-30)、其他=1.AI
     except OSError:
         pass
     if isinstance(limits, dict) and tab in limits:
