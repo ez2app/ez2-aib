@@ -349,9 +349,9 @@ def _contracts(st):
 
 
 def _cross(st, by, t):
-    """組長 / 組員碰別組的任務 ⇒ cross_group(PM / 本人 / 沒分組的人不在這裡擋)"""
+    """組長 / 組員碰別組的任務 ⇒ cross_group(PM / 本人不在這裡擋;沒組的任務 = 契約 / 整合,誰能派另外擋)"""
     mine = _group_of(st, _seat_of(by))
-    if st["mode"] == "grouped" and _role(st, by) in ("lead", "worker") and mine != t.get("group"):
+    if st["mode"] == "grouped" and _role(st, by) in ("lead", "worker") and t.get("group") and mine != t["group"]:
         raise MissionError("cross_group")
 
 
