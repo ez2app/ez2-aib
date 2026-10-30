@@ -381,7 +381,8 @@ def cell_w17(t, G):
     """審查探針 P4 + P1:EZ2_AIB_STATE_ROOT 指到自己的目錄 + 種假 bin/aib-sehelper(stamp 寫真原始碼雜湊)+ 不經
     --lockwatch on 自寫 lockwatch.json ⇒ 簽單拿不到 helper(helper_not_installed)、正式路徑 ask(seat_input) 仍彈窗、
     時長選單一次都沒叫。#432 R1 L2:改成斷言(原本這台沒裝固定路徑 helper 就 skip,KH2 落刀也不會真紅)。
-    固定路徑那支的檢查換成「沒裝」、現在鎖屏換成「沒鎖」⇒ 每台機器結果一樣,不碰 Secure Enclave、不彈任何視窗。"""
+    固定路徑那支的檢查換成「沒裝」、現在鎖屏換成「沒鎖」⇒ 每台機器結果一樣,不碰 Secure Enclave、不彈任何視窗。
+    平台注入成 darwin(#441 CI:Linux 會先在平台檢查早退 ⇒ KH2 拿掉 helper 檢查也落不到)。"""
     import se_vault
     td = tempfile.mkdtemp(prefix="aib-window-p4-")
     try:
@@ -397,7 +398,8 @@ def cell_w17(t, G):
             g.write(hashlib.sha256(f.read()).hexdigest())
         seen, chose, found = [], [], []
         real_find = GR.find_valid
-        with mock.patch.object(GR.anchored_helper, "check", lambda **k: (None, "not_installed")), \
+        with mock.patch.object(G.sys, "platform", "darwin"), \
+                mock.patch.object(GR.anchored_helper, "check", lambda **k: (None, "not_installed")), \
                 mock.patch.object(GR, "find_valid", lambda *a, **k: found.append(a) or real_find(*a, **k)), \
                 mock.patch.object(GR, "screen_locked_now", lambda *a, **k: False), \
                 mock.patch.object(GR, "choose_window", lambda r, ctx, run=None: chose.append(r) or "once"), \
@@ -590,7 +592,10 @@ def cell_w24(t, M):
         e.log()
         doc, _ = M.sign(["seat_input"], "1h", e.ctx(M))
         kd = M._key_dir(e.env)
-        keep = {n: open(os.path.join(kd, n), "rb").read() for n in (M.KEY_NAME + ".sekey", "grant-kid.json")}
+        keep = {}
+        for n in (M.KEY_NAME + ".sekey", "grant-kid.json"):
+            with open(os.path.join(kd, n), "rb") as f:
+                keep[n] = f.read()
         e.t[0] = T0 + 60
         out = io.StringIO()
         M.main(["--rotate-key"], out=out, ctx=e.ctx(M))
