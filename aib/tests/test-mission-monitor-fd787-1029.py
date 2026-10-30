@@ -22,8 +22,13 @@ R1 Codex r1(10-30,@b5799 接手):
   H2 tick 寫完 budget/halt、還沒寫 team/halt 就中斷 ⇒ 下一次 tick / 派工補叫停;每個寫檔邊界都驗
   H3 調低別的維度不清額度叫停;改了額度上限、用量還在上限以上 ⇒ 開始仍拒
   M1 watch 只有異常 / 卡住也回 3
-  M2 建團 / 改預算:負數、非整數、不認得的欄位、超過上限 ⇒ bad_budget(不靜默變不限)
-刀 K1–K6(K5 封存不寫、K6 沒改內容拒);K7–K11 對 R1 五題
+  M2 建團 / 改預算:負數、0、非整數、不認得的欄位、超過上限 ⇒ bad_budget(不靜默變不限;r2 L3 CLI 的 0 同樣拒)
+R2 r2(@f5fb8 Codex 1H/1M/1L + @aeb40 L3/L5):
+  High main 合法的舊建團事件(minutes 100001 / seats_max 501)升級後照讀;改預算只驗這次改的欄位
+  Medium 額度量不到時先補已知超限 / 叫停記號的叫停;派工路徑、快照邊界中斷都能恢復
+  Low 「已通知」(budget_marks)與「仍要擋」(budget_block)分開存:調低重新通知、只有放寬那一維才解除阻擋
+  L3 CLI 建團 --minutes / --seats-max / --quota-pct 0 ⇒ bad_budget、不留空團目錄;L5 模組說明照實寫不防同帳號 AI
+刀 K1–K6(K5 封存不寫、K6 沒改內容拒);K7–K11 對 R1 五題;K12 對 r2 L3(CLI 的 0 不能變不限);K13–K16 對 r2 High / Medium / Low
 """
 import copy
 import io
@@ -577,9 +582,106 @@ class R1Codex(Base):
         for ch in ({"minutes": 10 ** 6}, {"quota_pct": 101}, {"minutes": -1}, {"bogus": 1}):
             with self.subTest(ch=ch):
                 self.bad("bad_budget", M.budget_set, self.mid, "human", ch, env=self.env, now=T0 + 1)
-        out = io.StringIO()
-        self.assertEqual(M.run(["new", "--title", "x", "--quota-pct", "-1", "--by", by(PM), "--json"], env=self.env, out=out), 2)
-        self.assertIn("bad_budget", out.getvalue())
+        for flag, val in (("--quota-pct", "-1"), ("--minutes", "0"), ("--seats-max", "0"), ("--quota-pct", "0")):
+            with self.subTest(flag=flag, val=val):                      # r2 L3:CLI 的 0 不能靜默變不限
+                out = io.StringIO()
+                self.assertEqual(M.run(["new", "--title", "x", flag, val, "--by", by(PM), "--json"], env=self.env, out=out), 2)
+                self.assertIn("bad_budget", out.getvalue())
+        self.assertEqual(M.list_ids(self.env), [self.mid], "被拒的都沒開團")
+
+
+class R2Codex(Base):
+    """#427 r2(@f5fb8 Codex 1H/1M/1L + @aeb40 L3/L5)。"""
+
+    def _legacy(self, budget):
+        """照 main bde7796a 的寫法直接寫一筆建團事件(main 只認 minutes / seats_max 正整數,不設上限的上限)。"""
+        mid = "m_" + os.urandom(6).hex()
+        d = M.mdir(mid, self.env)
+        d.mkdir(parents=True)
+        ev = {"v": 1, "seq": 1, "eid": "e_legacy_0001", "req": "x", "at": T0, "by": by(PM), "type": "created",
+              "data": {"title": "舊團", "goal": "", "accept": [], "pm": PM, "budget": budget}}
+        (d / "events.jsonl").write_text(json.dumps(ev) + "\n", encoding="utf-8")
+        return mid
+
+    def test_high_main_events_still_replay(self):
+        self.mid = self._legacy({"minutes": 100001, "seats_max": 501, "junk": -3})
+        st = self.ok(M.replay, self.mid, self.env)
+        self.assertEqual(st["budget"], {"minutes": 100001, "seats_max": 501}, "main 合法的舊值照讀,不當 corrupt")
+        self.ok(M.budget_set, self.mid, by(PM), {"minutes": 90000}, env=self.env, now=T0 + 1)
+        self.assertEqual(self.st()["budget"], {"minutes": 90000, "seats_max": 501}, "只驗這次改的欄位,舊值帶著走")
+        self.bad("bad_budget", M.budget_set, self.mid, by(PM), {"seats_max": 600}, env=self.env, now=T0 + 2)
+
+    def test_medium_unmeasured_still_halts_known_block(self):
+        self.mk({"minutes": 20, "quota_pct": 30}, usage={Q: 0}, tasks=1)
+        real, seen = M._append, []
+
+        def crash_on_team(d, ev, torn):
+            if ev.get("by") == "system" and ev["type"] == "team":
+                raise OSError("斷電")
+            seen.append(ev["type"])
+            return real(d, ev, torn)
+        with mock.patch.object(M, "_append", crash_on_team), self.assertRaises(OSError):
+            M.tick(self.mid, self.env, now=T0 + 20 * MIN, probe=self.fp)
+        self.assertEqual((self.st()["status"], self.st()["budget_block"]), ("running", {"minutes": True}))
+        self.fp.usage_v = None                                             # 這時額度量不到
+        self.bad("over_budget", self.dispatch, "t1", W1, T0 + 21 * MIN)
+        self.assertEqual((self.st()["status"], self.st()["halt_reason"]), ("halted", "budget"), "先補叫停,不是只回量不到")
+        self.mid = M.new(by(PM), "額度量不到", "g", ["a"], budget={"quota_pct": 30}, env=self.env, now=T0)["id"]
+        self.c("task_add", by(PM), {"title": "x", "accept": ["rc 0"], "deps": []})
+        self.c("team", by(PM), {"move": "submit"})
+        self.bad("quota_unmeasured", M.team, self.mid, "start", "human", env=self.env, now=T0)
+
+    def test_medium_dispatch_path_crash_recovers(self):
+        self.mk({"minutes": 1}, tasks=1)
+        real = M._append
+
+        def crash_on_team(d, ev, torn):
+            if ev.get("by") == "system" and ev["type"] == "team":
+                raise OSError("斷電")
+            return real(d, ev, torn)
+        with mock.patch.object(M, "_append", crash_on_team), self.assertRaises(OSError):
+            self.dispatch("t1", W1, T0 + MIN)                              # 派工預檢寫完 budget/halt 就斷
+        self.assertEqual((self.st()["status"], self.st()["budget_block"]), ("running", {"minutes": True}))
+        self.tick(T0 + 2 * MIN)
+        self.assertEqual((self.st()["status"], len(self.budget_evs("halt"))), ("halted", 1))
+
+    def test_medium_snapshot_crash_events_are_truth(self):
+        self.mk({"minutes": 20}, tasks=1)
+        with mock.patch.object(M, "_snapshots", side_effect=OSError("斷電")), self.assertRaises(OSError):
+            M.tick(self.mid, self.env, now=T0 + 20 * MIN, probe=self.fp)
+        self.assertEqual(self.st()["status"], "halted", "快照沒寫成也以事件檔為準")
+        self.tick(T0 + 21 * MIN)
+        self.assertEqual(len(self.budget_evs("halt")), 1)
+
+    def test_low_notified_and_blocking_kept_apart(self):
+        self.mk({"quota_pct": 30}, usage={Q: 0})
+        self.fp.usage_v = {Q: 30}
+        self.tick(T0 + MIN)
+        st = self.st()
+        self.assertEqual((st["status"], st["budget_marks"].get("quota"), st["budget_block"]), ("halted", ["halt"], {"quota": True}))
+        self.ok(M.budget_set, self.mid, by(PM), {"quota_pct": 25}, env=self.env, now=T0 + 2 * MIN)   # 調低 = PM 可寫
+        st = self.st()
+        self.assertEqual((st["budget_marks"].get("quota"), st["budget_block"]), (None, {"quota": True}),
+                         "調低:通知重計、阻擋留著")
+        self.fp.usage_v = {Q: 10}                                          # 視窗重設、用量回到上限以下
+        self.bad("over_budget", M.team, self.mid, "start", "human", env=self.env, now=T0 + 3 * MIN)
+        self.ok(M.budget_set, self.mid, "human", {"quota_pct": 40}, env=self.env, now=T0 + 4 * MIN)
+        self.assertEqual(self.st()["budget_block"], {}, "放寬那一維才解除阻擋")
+        self.ok(M.team, self.mid, "start", "human", env=self.env, now=T0 + 5 * MIN)
+
+    def test_l3_cli_zero_rejected(self):
+        for flag in ("--minutes", "--seats-max", "--quota-pct"):
+            with self.subTest(flag=flag):
+                out = io.StringIO()
+                self.assertEqual(M.run(["new", "--title", "x", flag, "0", "--by", by(PM), "--json"], env=self.env, out=out), 2)
+                self.assertIn("bad_budget", out.getvalue())
+        self.assertEqual(M.list_ids(self.env), [], "被拒的沒留空團目錄")
+
+    def test_l5_threat_model_written(self):
+        for mod in (M, MM):
+            with self.subTest(mod=mod.__name__):
+                self.assertIn("不防同帳號 AI", mod.__doc__)
+                self.assertIn("budget_set by human proved", mod.__doc__)
 
 
 MON_PY, MIS_PY = "src/cockpit/mission_monitor.py", "src/cockpit/mission.py"
@@ -603,7 +705,18 @@ KNIVES = [
      "R1Codex.test_h3_lower_other_dim_keeps_quota_block"),
     ("K10", MON_PY, '''    return 3 if w["waiting"] or w["anomalies"] or w["stuck"] else 0''', '''    return 3 if w["waiting"] else 0''',
      "R1Codex.test_m1_watch_rc_anomaly_only"),
-    ("K11", MIS_PY, '''        if type(v) is not int or not 0 < v <= BUDGET_MAX[k]:''', '''        if type(v) is not int:''',
+    ("K12", MIS_PY, '''("seats_max", a.seats_max), ("quota_pct", a.quota_pct)) if v is not None}''',
+     '''("seats_max", a.seats_max), ("quota_pct", a.quota_pct)) if v}''',
+     "R1Codex.test_m2_strict_budget_input"),
+    ("K13", MIS_PY, '''                  budget=_budget(d.get("budget")))''', '''                  budget=_budget_input(d.get("budget")))''',
+     "R2Codex.test_high_main_events_still_replay"),
+    ("K14", MON_PY, '''            unmeasured = True                       # 先處理已知的超限''',
+     '''            return out, "quota_unmeasured"  # 先處理已知的超限''', "R2Codex.test_medium_unmeasured_still_halts_known_block"),
+    ("K15", MIS_PY, '''                if key in old and (key not in new or new[key] > old[key]):''', '''                if True:''',
+     "R2Codex.test_low_notified_and_blocking_kept_apart"),
+    ("K16", MON_PY, '''        stale = sorted(dim for dim, on in st["budget_block"].items() if on)''', '''        stale = []''',
+     "R2Codex.test_medium_dispatch_path_crash_recovers"),
+    ("K11", MIS_PY, '''        if type(v) is not int or not (0 if allow_zero else 1) <= v <= BUDGET_MAX[k]:''', '''        if type(v) is not int:''',
      "R1Codex.test_m2_strict_budget_input"),
 ]
 

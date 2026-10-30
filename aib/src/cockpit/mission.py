@@ -39,7 +39,11 @@ S4 前半(SPEC-mission-monitor-fd787-1029,§8 @f5fb8 裁示):預算硬上限 + �
   quota_pct(額度:第一次量到記基準,用量 = 各 (引擎, 視窗) 現值 − 基準 取大;5h / 7d 都算;同帳號別席也算進來 ⇒ 寧可高估)。
   tick 時 80% 寫 budget/warn、100% 寫 budget/halt + team/halt(reason=budget),同一維同一級只寫一次;
   預算叫停後要本人先改預算(budget_set)再按開始。提高預算 = 花額度 ⇒ 只有本人 + Touch ID(site mission.budget,
-  高風險一次一按、不進時間窗);調低 PM 也能寫。量不到額度不當 0,寫 anomaly/quota_unmeasured。
+  高風險一次一按、不進時間窗);調低 PM 也能寫。量不到額度不當 0,寫 anomaly/quota_unmeasured;
+  設了額度上限時派工 / 開始量不到 ⇒ 拒 quota_unmeasured(#427 r1 H1);派工 / 進 running 前在團鎖內再驗一次預算。
+  照實寫(#427 r2 L5):預算上限只防失控與誤操作,不防同帳號 AI。AI 直接往 events.jsonl 補一筆
+  `budget_set by human proved:true` 就能解除叫停、不用 Touch ID;EZ2_USAGE_DIR / 用量紀錄檔也改得到。
+  Touch ID 只擋走正常 CLI 的那條路;要真的擋得住,得等 SE 簽的授權單(事件帶簽章、重放時驗)。
   監看規則在 mission_monitor.evaluate(純函式);只寫 budget / anomaly / throttle 事件(都是 system 寫),不改任務、不改計畫。
   誰定期叫 tick:monitor 席每 60 秒叫一次,核心不加常駐。
   ci / pr_merged 收據的 head 要對得上任務回報的 artifact(前綴相符);回報沒帶 artifact ⇒ 只能用 test / checklist 收據。
@@ -197,7 +201,7 @@ def _read_events(d):
 def _empty(mid):
     return {"v": V, "id": mid, "status": None, "rev": 0, "seq": 0, "charter": {}, "budget": {}, "roster": {},
             "tasks": {}, "eids": {}, "receipts": {}, "created_at": None, "updated_at": None,
-            "budget_marks": {}, "anomalies": {}, "throttle": False, "run_s": 0, "run_since": None,
+            "budget_marks": {}, "budget_block": {}, "anomalies": {}, "throttle": False, "run_s": 0, "run_since": None,
             "last_by": {}, "quota_base": None, "halt_reason": None}
 
 
@@ -252,16 +256,28 @@ def _bump(t, at, status=None):
 
 
 def _budget(raw):
-    """建團 / 改預算的上限:正整數,不超過 BUDGET_MAX(quota_pct 1–100)。
-    不認得的欄位、負數、0、非整數、超過上限 ⇒ bad_budget,不靜默丟掉(#427 Codex r1 M2:丟掉 = 變成不限)。"""
+    """重放用(事件裡的預算):照舊寬鬆解讀 ⇒ 正整數留下、其他丟掉;quota_pct > 100 拒。
+    不套 BUDGET_MAX(#427 r2 High:main 寫過的 minutes 100001 / seats_max 501 是合法舊事件,升級後要讀得回來)。
+    新輸入一律先過 _budget_input(嚴格),所以新寫的事件不會再有被丟掉的欄位。"""
+    if not isinstance(raw, dict):
+        return {}
+    out = {k: raw[k] for k in BUDGET_DIMS.values() if type(raw.get(k)) is int and raw[k] > 0}
+    if out.get("quota_pct", 0) > 100:
+        raise MissionError("bad_budget")
+    return out
+
+
+def _budget_input(raw, allow_zero=False):
+    """新輸入(建團 / 改預算):不認得的欄位、負數、非整數、超過 BUDGET_MAX ⇒ bad_budget,不靜默丟掉
+    (#427 Codex r1 M2:丟掉 = 變成不限)。0:建團不收(r2 L3);改預算 allow_zero ⇒ 0 = 拿掉上限。"""
     if raw is None:
         return {}
     if not isinstance(raw, dict) or any(k not in BUDGET_MAX for k in raw):
         raise MissionError("bad_budget")
     for k, v in raw.items():
-        if type(v) is not int or not 0 < v <= BUDGET_MAX[k]:
+        if type(v) is not int or not (0 if allow_zero else 1) <= v <= BUDGET_MAX[k]:
             raise MissionError("bad_budget")
-    return {k: raw[k] for k in BUDGET_DIMS.values() if k in raw}
+    return dict(raw)
 
 
 def _raises(old, new):
@@ -558,7 +574,9 @@ def apply(st, ev):
         old, st["budget"] = st["budget"], new
         for dim, key in BUDGET_DIMS.items():        # 只重計真的改了的那一維(#427 Codex r1 H3:調低席數不能清掉額度叫停)
             if old.get(key) != new.get(key):
-                st["budget_marks"].pop(dim, None)
+                st["budget_marks"].pop(dim, None)   # 「已通知」:改了就重新通知
+                if key in old and (key not in new or new[key] > old[key]):
+                    st["budget_block"].pop(dim, None)   # 「仍要擋」:只有放寬那一維才解除(r2 Low:兩件事分開存)
     elif typ == "anomaly":
         rule, key, end = d.get("rule"), d.get("key"), d.get("end")
         if rule not in RULES or not isinstance(key, str) or not 0 < len(key) <= 40 or type(end) is not bool:
@@ -605,6 +623,8 @@ def _apply_budget(st, d):
     if level in marks or "halt" in marks:            # 同一維同一級只寫一次
         raise MissionError("bad_event")
     marks.append(level)
+    if level == "halt":
+        st["budget_block"][dim] = True
 
 
 def _over_budget(st, at):
@@ -614,7 +634,7 @@ def _over_budget(st, at):
         return True
     if b.get("seats_max") and used_seats(st) > b["seats_max"]:
         return True
-    return any("halt" in v for v in st["budget_marks"].values())
+    return any(st["budget_block"].values())
 
 
 # ── 寫 ──
@@ -645,7 +665,7 @@ def _snapshots(d, st):
                                            "charter": st["charter"], "created_at": st["created_at"],
                                            "updated_at": st["updated_at"]}, ensure_ascii=False, sort_keys=True))
     _write(d / "roster.json", json.dumps({"v": V, "roster": st["roster"]}, ensure_ascii=False, sort_keys=True))
-    _write(d / "budget.json", json.dumps({"v": V, "budget": st["budget"], "marks": st["budget_marks"],
+    _write(d / "budget.json", json.dumps({"v": V, "budget": st["budget"], "marks": st["budget_marks"], "block": st["budget_block"],
                                           "quota_base": st["quota_base"], "run_s": st["run_s"],
                                           "run_since": st["run_since"], "throttle": st["throttle"],
                                           "anomalies": st["anomalies"]}, ensure_ascii=False, sort_keys=True))
@@ -800,6 +820,7 @@ def new(by, title, goal="", accept=(), pm=None, budget=None, env=None, eid=None,
     pm = pm or (by[5:] if str(by).startswith("seat:") else None)
     if not SEAT_RE.match(str(pm or "")):
         raise MissionError("bad_seat")
+    _budget_input(budget)                     # 預算不合先拒,不留空的團目錄(#427 r2 L3)
     if eid:                                   # 同 eid 重送 ⇒ 找回原本那團,不開第二團
         for mid in list_ids(env):
             try:
@@ -893,9 +914,7 @@ def budget_set(mid, by, changes, env=None, eid=None, now=None):
     if st["status"] is None:
         raise MissionError("no_mission")
     new = dict(st["budget"])
-    for k, v in (changes or {}).items():
-        if k not in BUDGET_DIMS.values() or type(v) is not int or v < 0:
-            raise MissionError("bad_budget")
+    for k, v in _budget_input(changes, allow_zero=True).items():   # 只驗這次改的欄位;舊事件留下的值照讀(r2 High)
         if v:
             new[k] = v
         else:
@@ -1070,7 +1089,7 @@ def run(argv, env=None, out=None):
             return _emit(out, a, {"ok": True, "duplicate": res["duplicate"], "seq": res["seq"],
                                   "budget": res["state"]["budget"]}, T("ok"))
         if a.cmd == "new":
-            budget = {k: v for k, v in (("minutes", a.minutes), ("seats_max", a.seats_max), ("quota_pct", a.quota_pct)) if v}
+            budget = {k: v for k, v in (("minutes", a.minutes), ("seats_max", a.seats_max), ("quota_pct", a.quota_pct)) if v is not None}
             res = new(by, a.title, a.goal, a.accept, a.pm, budget, env=env, eid=a.eid)
             return _emit(out, a, {"ok": True, "id": res["id"], "duplicate": res["duplicate"]}, res["id"])
         if a.cmd == "roster":

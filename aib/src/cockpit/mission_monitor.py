@@ -14,7 +14,8 @@ evaluate(st, now, probe) ⇒ [(事件類別, data)]:純函式(不碰檔、不改
         量不到(load、aib now 讀檔失敗)⇒ 那條這輪跳過,不猜、不洗版。
   監看只寫事件,不改任務、不改計畫;叫停只有預算那條自動,其他異常要不要停由 monitor 席自己 team halt。
 watch:一屏印完就結束(要持續看外面包 watch -n 10);只讀,不寫事件。退出碼 0 正常 / 3 有待人、預算叫停、異常或卡住(降速只標記不算)/ 2 沒這團。
-同帳號威脅模型:missions/ 所有 AI 都寫得到,預算叫停與監看只防誤操作與失控,不是防線;額度量測是本機檔 ⇒ 寧可高估。
+同帳號威脅模型:missions/ 所有 AI 都寫得到,預算叫停與監看只防誤操作與失控,不防同帳號 AI,不是防線;額度量測是本機檔 ⇒ 寧可高估。
+  (#427 r2 L5)AI 直接寫 events.jsonl 補一筆 budget_set by human proved:true 就能解除叫停、不用 Touch ID;EZ2_USAGE_DIR / 用量紀錄也改得到。
   不主動 probe 用量(主動 probe 會花額度),只讀 usage_probe 已經寫好的紀錄檔。
 """
 from __future__ import annotations
@@ -149,7 +150,7 @@ def evaluate(st, now, probe):
                 halting = True
                 out.append(("team", {"move": "halt", "reason": "budget", "dim": dim}))
         # 已有叫停記號、團卻還在跑 = 上一輪寫完 budget/halt、還沒寫 team/halt 就中斷(#427 Codex r1 H2)⇒ 補叫停
-        stale = sorted(dim for dim, m in st["budget_marks"].items() if "halt" in m)
+        stale = sorted(dim for dim, on in st["budget_block"].items() if on)
         if status == "running" and not halting and stale:
             halting = True
             out.append(("team", {"move": "halt", "reason": "budget", "dim": stale[0]}))
@@ -199,14 +200,16 @@ def precheck(st, now, probe):
     out = []
     b = st["budget"]
     used = {"minutes": M.used_minutes(st, now), "seats": M.used_seats(st)}
+    unmeasured = False
     if b.get("quota_pct"):
         try:
             usage = probe.usage()
         except Unmeasured:
-            return out, "quota_unmeasured"
-        base, used["quota"] = _quota(st, usage)
-        if base is not None:
-            out.append(("budget", {"level": "base", "dim": "quota", "base": base}))
+            unmeasured = True                       # 先處理已知的超限 / 叫停記號,最後才回量不到(r2 Medium)
+        else:
+            base, used["quota"] = _quota(st, usage)
+            if base is not None:
+                out.append(("budget", {"level": "base", "dim": "quota", "base": base}))
     over = []
     for dim, key in M.BUDGET_DIMS.items():
         cap, marks = b.get(key), st["budget_marks"].get(dim, [])
@@ -214,11 +217,11 @@ def precheck(st, now, probe):
             over.append(dim)
             if "halt" not in marks:
                 out.append(("budget", {"level": "halt", "dim": dim, "used": used[dim], "cap": cap}))
-        elif "halt" in marks:
+        elif st["budget_block"].get(dim):
             over.append(dim)
     if over and st["status"] == "running":
         out.append(("team", {"move": "halt", "reason": "budget", "dim": over[0]}))
-    return out, ("over_budget" if over else None)
+    return out, ("over_budget" if over else "quota_unmeasured" if unmeasured else None)
 
 
 # ── watch ──
