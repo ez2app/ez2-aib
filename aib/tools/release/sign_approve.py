@@ -208,6 +208,13 @@ def _loads(data):
         return None
 
 
+def _same_bytes(path, data):
+    try:
+        return not path.is_symlink() and path.read_bytes() == data
+    except OSError:
+        return False
+
+
 def ECLI_restore(path, data):
     """簽發途中現有授權被動過 ⇒ 用簽前那份蓋回去。回 True = 蓋回且覆讀一致。
     #449 r3:暫存名不可預測(mkstemp = O_EXCL、0600、同資料夾),失敗不吞:呼叫端看回值;換完覆讀比對。"""
@@ -252,9 +259,13 @@ def one_license(job, env=None, run=subprocess.run, touchid=None, raw_machine=Non
                                                    "addons": ", ".join(obj.get("addons") or []) or "-",
                                                    "expires": obj["expires_at"], "device": did[:8]}, env=env)
     root = Path(AG.state_root_default(env))
+    if not _same_bytes(lic_path, snap):          # #449 r4:彈窗前再對一次,被換過就不彈
+        return False, T("skip_lic_current", path=label)
     got = AG.ask(reason, root, touchid)
     if not got["ok"]:
         return False, T("busy" if got["why"] == "busy" else "denied", plugin=label, ver=ver, why=got["why"])
+    if not _same_bytes(lic_path, snap):          # #449 r4:等指紋期間被換過 ⇒ 不簽(視窗顯示的是舊那份)
+        return False, T("skip_lic_current", path=label)
     tmp = Path(tempfile.mkdtemp(prefix="sign-license."))
     logs = root / "pending" / "sign-logs"
     logs.mkdir(parents=True, exist_ok=True)

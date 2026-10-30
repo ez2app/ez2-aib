@@ -275,6 +275,31 @@ class Box(unittest.TestCase):
         self.assertEqual(asked, [])
         self.assertEqual(run.signs(), [])
 
+    def test_l14_swapped_before_window(self):
+        swapped = json.dumps(_sign(dict(CUR, note="swapped")))
+        from entitlement import device as D
+        real = D.device_id
+        def swap(*a, **k):                                      # 驗簽之後、彈窗之前被換
+            self.lic.write_text(swapped, encoding="utf-8")
+            return real(*a, **k)
+        with mock.patch.object(D, "device_id", side_effect=swap):
+            ok, line, run, asked = self.run_one()
+        self.assertFalse(ok)
+        self.assertEqual(asked, [])
+        self.assertEqual(run.signs(), [])
+        self.assertEqual(self.lic.read_text(encoding="utf-8"), swapped)
+
+    def test_l15_swapped_while_waiting_touchid(self):
+        swapped = json.dumps(_sign(dict(CUR, note="swapped")))
+        def finger(t):                                          # 等指紋期間被換
+            self.lic.write_text(swapped, encoding="utf-8")
+            return {"ok": True}
+        ok, line, run, asked = self.run_one(touchid=finger)
+        self.assertFalse(ok)
+        self.assertEqual(run.signs(), [])
+        self.assertEqual(run.calls, [])                          # 連私倉都不碰
+        self.assertEqual(self.lic.read_text(encoding="utf-8"), swapped)
+
     def test_l11_never_uses_time_window(self):
         class EvilWindow:
             def __init__(self):
