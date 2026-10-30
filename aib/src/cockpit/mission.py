@@ -646,8 +646,9 @@ def _over_budget(st, at):
 # ── 寫 ──
 
 def _req_digest(typ, by, task, data):
-    """同 eid 重送比的是「要求」(不含系統產生的代號 / 收據 id)。"""
-    keep = {k: v for k, v in data.items() if k not in ("code", "receipt_id", "proved")}
+    """同 eid 重送比的是「要求」(不含系統產生的代號 / 收據 id)。
+    reset 是事件語意版本(budget_set 新版才帶),不是要求的內容 ⇒ 不算進來,舊版成功的指令原樣重送照回原結果(#427 r4 Medium)。"""
+    keep = {k: v for k, v in data.items() if k not in ("code", "receipt_id", "proved", "reset")}
     raw = json.dumps([typ, by, task, keep], ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -664,12 +665,8 @@ def _machine_all(st):
 
 
 def _snapshots(d, st):
-    _write(d / "charter.json", json.dumps({"v": V, "id": st["id"], "status": st["status"], "rev": st["rev"],
-                                           "ready_at": st.get("ready_at"), "hold": bool(st.get("hold")),
-                                           "started_by": st.get("started_by"), "started_at": st.get("started_at"),
-                                           "paused_by": st.get("paused_by"), "machine_all": _machine_all(st),
-                                           "charter": st["charter"], "created_at": st["created_at"],
-                                           "updated_at": st["updated_at"]}, ensure_ascii=False, sort_keys=True))
+    """快照(給畫面 / skill 讀,不當正本)。charter.json 帶 rev、最後寫 ⇒ 它的 rev 對得上 = 四個檔都寫完了;
+    中途斷掉 ⇒ 下一次 tick 看 _snap_stale 補寫(#427 r4 Low)。"""
     _write(d / "roster.json", json.dumps({"v": V, "roster": st["roster"]}, ensure_ascii=False, sort_keys=True))
     _write(d / "budget.json", json.dumps({"v": V, "budget": st["budget"], "marks": st["budget_marks"], "block": st["budget_block"],
                                           "quota_base": st["quota_base"], "run_s": st["run_s"],
@@ -677,6 +674,19 @@ def _snapshots(d, st):
                                           "anomalies": st["anomalies"]}, ensure_ascii=False, sort_keys=True))
     _write(d / "tasks.jsonl", "".join(json.dumps(_public_task(t), ensure_ascii=False, sort_keys=True) + "\n"
                                       for t in sorted(st["tasks"].values(), key=lambda t: int(t["id"][1:]))))
+    _write(d / "charter.json", json.dumps({"v": V, "id": st["id"], "status": st["status"], "rev": st["rev"],
+                                           "ready_at": st.get("ready_at"), "hold": bool(st.get("hold")),
+                                           "started_by": st.get("started_by"), "started_at": st.get("started_at"),
+                                           "paused_by": st.get("paused_by"), "machine_all": _machine_all(st),
+                                           "charter": st["charter"], "created_at": st["created_at"],
+                                           "updated_at": st["updated_at"]}, ensure_ascii=False, sort_keys=True))
+
+
+def _snap_stale(d, st):
+    try:
+        return json.loads((d / "charter.json").read_text(encoding="utf-8")).get("rev") != st["rev"]
+    except (OSError, ValueError, AttributeError):
+        return True
 
 
 def _append(d, ev, torn):
@@ -816,7 +826,7 @@ def tick(mid, env=None, now=None, probe=None):
             _append(d, ev, torn)
             torn = None
             wrote.append(ev)
-        if n or wrote:
+        if n or wrote or _snap_stale(d, st):
             _snapshots(d, st)
         st["_monitor"] = wrote
         return st.get("_expired", [])

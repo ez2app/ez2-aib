@@ -30,7 +30,9 @@ R2 r2(@f5fb8 Codex 1H/1M/1L + @aeb40 L3/L5):
   L3 CLI 建團 --minutes / --seats-max / --quota-pct 0 ⇒ bad_budget、不留空團目錄;L5 模組說明照實寫不防同帳號 AI
 R3 r3(@f5fb8 Codex 1H + M1):budget_set 帶 reset:"dims" 才用新語意,沒帶的舊事件照舊版(改預算清掉記號與阻擋),
   舊版完整序列(叫停 → 調低 → 開始 → 再叫停 → 再調低)升級後照讀;不認得的旗標 ⇒ corrupt;tick 每個寫檔邊界(基準 / 記號 / 叫停 / 快照)中斷都補齊
-刀 K1–K6(K5 封存不寫、K6 沒改內容拒);K7–K11 對 R1 五題;K12 對 r2 L3(CLI 的 0 不能變不限);K13–K16 對 r2 High / Medium / Low;K17 對 r3 High
+R4 r4(@f5fb8 Codex 1M / 1L):請求摘要不含 reset(語意版本)⇒ 舊版成功的 budget_set 原樣重送同 eid 回原結果;
+  快照 charter.json(帶 rev)最後寫,四個檔逐一中斷後 tick 看 rev 對不上就補寫
+刀 K1–K6(K5 封存不寫、K6 沒改內容拒);K7–K11 對 R1 五題;K12 對 r2 L3(CLI 的 0 不能變不限);K13–K16 對 r2 High / Medium / Low;K17 對 r3 High;K18–K19 對 r4
 """
 import copy
 import io
@@ -766,6 +768,46 @@ class R3Codex(Base):
                 self.assertEqual(len(self.budget_evs("base")), 2, "開始那筆 + 新視窗那筆,不重寫")
 
 
+class R4Codex(Base):
+    """#427 r4(@f5fb8 Codex 1M / 1L):跨版本 eid 重送照回原結果;快照四個檔逐一中斷都會補寫。"""
+    _raw = R3Codex._raw
+
+    def test_m_legacy_eid_resend_same_result(self):
+        legacy = {"budget": {"minutes": 20}}                                  # 舊版 budget_set:沒有 reset
+        rows = [(T0, by(PM), "created", {"title": "舊團", "goal": "", "accept": [], "pm": PM, "budget": {"minutes": 30}}),
+                (T0 + 1, by(PM), "budget_set", legacy)]
+        self.mid = self._raw(rows)
+        evs = (M.mdir(self.mid, self.env) / "events.jsonl").read_text().splitlines()
+        ev = json.loads(evs[1])
+        ev.update(eid="e_lower_fixed01", req=M._req_digest("budget_set", by(PM), None, legacy))
+        evs[1] = json.dumps(ev)
+        (M.mdir(self.mid, self.env) / "events.jsonl").write_text("\n".join(evs) + "\n", encoding="utf-8")
+        res = self.ok(M.budget_set, self.mid, by(PM), {"minutes": 20}, env=self.env, eid="e_lower_fixed01", now=T0 + 60)
+        self.assertEqual((res["duplicate"], res["seq"]), (True, 2), "舊版成功的指令原樣重送 ⇒ 回原結果,不是 eid_conflict")
+        self.assertEqual(len(self.events("budget_set")), 1)
+        self.bad("eid_conflict", M.budget_set, self.mid, by(PM), {"minutes": 10}, env=self.env, eid="e_lower_fixed01", now=T0 + 61)
+
+    def test_l_each_snapshot_write_recovers(self):
+        for name in ("roster.json", "budget.json", "tasks.jsonl", "charter.json"):
+            with self.subTest(name=name):
+                self.mk({"minutes": 20})
+                real = M._write
+
+                def flaky(p, text):
+                    if Path(p).name == name:
+                        raise OSError("斷電")
+                    return real(p, text)
+                with mock.patch.object(M, "_write", flaky), self.assertRaises(OSError):
+                    M.tick(self.mid, self.env, now=T0 + 20 * MIN, probe=self.fp)
+                self.tick(T0 + 21 * MIN)                                        # 沒有新事件也要補寫快照
+                d, st = M.mdir(self.mid, self.env), self.st()
+                charter = json.loads((d / "charter.json").read_text())
+                budget = json.loads((d / "budget.json").read_text())
+                self.assertEqual((charter["status"], charter["rev"]), ("halted", st["rev"]), name)
+                self.assertEqual((budget["marks"], budget["block"]), (st["budget_marks"], {"minutes": True}), name)
+                self.assertEqual(len(self.budget_evs("halt")), 1, name)
+
+
 MON_PY, MIS_PY = "src/cockpit/mission_monitor.py", "src/cockpit/mission.py"
 KNIVES = [
     ("K1", MON_PY, '''            if lv is None or "halt" in marks or lv in marks:''', '''            if lv is None:''',
@@ -800,6 +842,10 @@ KNIVES = [
      "R2Codex.test_medium_dispatch_path_crash_recovers"),
     ("K17", MIS_PY, '''        if reset is None:                           # 舊事件''', '''        if False:                           # 舊事件''',
      "R3Codex.test_high_legacy_full_sequence_replays"),
+    ("K18", MIS_PY, '''if k not in ("code", "receipt_id", "proved", "reset")}''', '''if k not in ("code", "receipt_id", "proved")}''',
+     "R4Codex.test_m_legacy_eid_resend_same_result"),
+    ("K19", MIS_PY, '''        if n or wrote or _snap_stale(d, st):''', '''        if n or wrote:''',
+     "R4Codex.test_l_each_snapshot_write_recovers"),
     ("K11", MIS_PY, '''        if type(v) is not int or not (0 if allow_zero else 1) <= v <= BUDGET_MAX[k]:''', '''        if type(v) is not int:''',
      "R1Codex.test_m2_strict_budget_input"),
 ]
