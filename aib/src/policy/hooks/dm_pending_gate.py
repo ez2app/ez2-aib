@@ -9,7 +9,7 @@
 
 ## 判準(只認佇列檔的機器事實)
 待審頁(tabs_payload 的 waiting)裡,符合全部條件的才算:
-  - status 是 queued / claimed / delivered / hold_human,而且沒過期;
+  - status 是 queued / delivered / hold_human,而且沒過期(claimed = 排空器投遞中,席位結不了,不算);
   - 寄件者不是這一席自己;
   - 不是真人寄的 hold_human(那條另有規矩:走 RELAY 給真人,AI 結不了),也不是全球陌生來信 / IM;
   - 進這一席佇列(ts,本機時鐘;sent_at 是對方時鐘,dm_queue 規定不拿來判先後)超過 GRACE_S(3 分鐘)—— 剛到的信讓它先貼進框。
@@ -19,6 +19,7 @@
 
 ## 失效方向(跟 aib-now-gate 同一套)
   - 讀不到佇列 / 認不出席 / 任何例外 ⇒ 放行,留痕(呼叫端的 now-gate.log)。
+  - 佇列有檔讀不了(tabs_payload 的 errors)⇒ 放行,回一句不含路徑的原因(呼叫端用 systemMessage 顯示)。
   - stop_hook_active ⇒ 呼叫端不叫本支(每回合最多擋一次)。
   - 逃生門 AIB_DM_GATE_REASON="理由" ⇒ 放行並留痕;AIB_DM_GATE=0 ⇒ 整支關(治具)。
   - 要擋的席 = aib-now-gate 的 gate-seats.txt(同一份名單,呼叫端判)。
@@ -30,13 +31,12 @@
 from __future__ import annotations
 
 import os
-import re
 
 GRACE_S = 180
-SHOW_MAX = 5
+SHOW_MAX = 3
 TRIAGE_AT = 2
-LIVE_STATUSES = ("queued", "claimed", "delivered", "hold_human")
-_RELAY_RE = re.compile(r"(/\S*RELAY-\S+?\.txt)")
+# claimed 不算(Codex r1 M1):排空器正在投遞,dm_queue 不准席位把 claimed 結案 —— 擋了也結不掉;卡住的 claim 由租約回收
+LIVE_STATUSES = ("queued", "delivered", "hold_human")
 
 
 def pending_rows(rows, seat, now):
@@ -67,17 +67,6 @@ def pending_rows(rows, seat, now):
     return out
 
 
-def _line(r):
-    msg = " ".join(str(r.get("msg") or "").split())
-    m = _RELAY_RE.search(msg)
-    preview = msg[:60] + ("…" if len(msg) > 60 else "")
-    sender = r.get("sender_seat") and "@%s" % r["sender_seat"] or (r.get("sender") or "?")
-    s = "  %s rev=%s %s %s:%s" % (r.get("id"), r.get("rev"), r.get("when") or "", sender, preview)
-    if m:
-        s += "\n      → %s" % m.group(1)
-    return s
-
-
 def check(seat, T, note, now=None, env=None):
     """回 (should_block, message)。seat 已由呼叫端認好、也確定在要擋的名單裡。
     T = 四語取字(aib-now-gate.T);note = 留痕函式。"""
@@ -91,17 +80,24 @@ def check(seat, T, note, now=None, env=None):
     import time
     import dm_queue
     now = int(time.time() if now is None else now)
-    tabs = dm_queue.tabs_payload(seat, env=env, now=now)["tabs"]
+    payload = dm_queue.tabs_payload(seat, env=env, now=now)
+    errors = payload.get("errors") or []
+    if errors:
+        # Codex r1 M2:佇列有檔讀不了 ⇒ 判斷不完整,這回合放行(fail-open),給席位一句不含路徑的原因
+        note("DMGATE FAILOPEN @%s errors=%d" % (seat, len(errors)))
+        return False, T("aib.dmgate.degraded", code=seat, n=len(errors))
+    tabs = payload["tabs"]
     hits = pending_rows(tabs["waiting"]["rows"], seat, now)
     if not hits:
         return False, ""
     note("DMGATE BLOCK @%s n=%d ids=%s" % (seat, len(hits), ",".join(r.get("id") or "" for r in hits[:SHOW_MAX])))
-    lines = "\n".join(_line(r) for r in hits[:SHOW_MAX])
-    more = T("aib.dmgate.more", n=len(hits) - SHOW_MAX) if len(hits) > SHOW_MAX else ""
-    triage = T("aib.dmgate.triage", n=len(hits)) if len(hits) >= TRIAGE_AT else ""
+    # Codex r1 M3:只列 id / rev(不帶內文、不帶 RELAY 路徑),詳細內容照 list 指令看
+    ids = ", ".join("%s(rev %s)" % (r.get("id"), r.get("rev")) for r in hits[:SHOW_MAX])
+    if len(hits) > SHOW_MAX:
+        ids += " …+%d" % (len(hits) - SHOW_MAX)
+    extra = T("aib.dmgate.triage") if len(hits) >= TRIAGE_AT else ""
     # @557fe 10-30 18:2x:進行中(read 過、沒結案、沒寫在等什麼)不擋,但擋下時一起列總數,看得到
     inprog = sum(1 for r in tabs.get("read", {}).get("rows") or [] if not r.get("wait") and r.get("read_by") != "system")
     if inprog:
-        triage += T("aib.dmgate.inprog", n=inprog)
-    msg = T("aib.dmgate.block", code=seat, n=len(hits), lines=lines, more=more, triage=triage)
-    return True, msg
+        extra += T("aib.dmgate.inprog", n=inprog)
+    return True, T("aib.dmgate.block", code=seat, n=len(hits), ids=ids, extra=extra)

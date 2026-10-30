@@ -614,6 +614,8 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001
             _note("FAILOPEN ship-report-gate:%s" % e)
             show = ""
+        if dm_msg:   # 待審守門放行但有話說(佇列有檔讀不了):跟影子續跑說明同一則顯示
+            show = (show + "\n\n" + dm_msg) if show else dm_msg
         if show:
             sys.stdout.write(json.dumps({"systemMessage": show}, ensure_ascii=False) + "\n")
         return 0
