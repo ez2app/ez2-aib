@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """待審整理那一拍「為什麼不叫」要留痕(10-30 @aeb40:一席 32 封、叫醒紀錄停在兩天前,查不到原因)。
 
-Y1 純函式:原因第一次出現 ⇒ 寫一列;同一原因再一拍 ⇒ 不寫;換原因 ⇒ 再寫;上一拍有、這拍沒列 ⇒ 記「-」(回到門檻下)
+Y1 純函式(兩個檔都 0600):原因第一次出現 ⇒ 寫一列;同一原因再一拍 ⇒ 不寫;換原因 ⇒ 再寫;上一拍有、這拍沒列 ⇒ 記「-」(回到門檻下)
 Y2 holdnote 列不算;紀錄超過上限 ⇒ 只留後半
 Y4 同因再一拍 ⇒ observed_at 前進、since 不動(同因兩天 ≠ 兩天沒掃)
 Y5 較舊的拍子(now < observed_at)⇒ 不蓋最新狀態、不寫 .jsonl
@@ -70,6 +70,9 @@ class Pure(unittest.TestCase):
         self.assertEqual(self.log([], NOW + 240), [])
         self.assertEqual([l["why"] for l in self.lines()], ["load-high", "woke", Q.TRIAGE_WHY_IDLE])
         self.assertEqual(self.last()["aaaaa"], {"why": Q.TRIAGE_WHY_IDLE, "since": NOW + 180, "observed_at": NOW + 240})
+        root = Q.queue_root(self.env)
+        for name in (Q.TRIAGE_WHY_LAST, Q.TRIAGE_WHY_LOG):
+            self.assertEqual((root / name).stat().st_mode & 0o777, 0o600, name)
 
     def test_Y4_observed_at_moves_since_stays(self):
         self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}])

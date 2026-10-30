@@ -2849,7 +2849,9 @@ def _triage_why_log(rows, env, now):
                 last[seat] = dict(ent, observed_at=now)
         log_p = root / TRIAGE_WHY_LOG
         if changed:
-            with open(log_p, "a", encoding="utf-8") as f:
+            lfd = os.open(str(log_p), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+            os.fchmod(lfd, 0o600)            # 照佇列慣例只給自己讀(@fd787 旁審 N1)
+            with os.fdopen(lfd, "a", encoding="utf-8") as f:
                 for c in changed:
                     f.write(json.dumps(c, ensure_ascii=False, sort_keys=True) + "\n")
             try:
@@ -2857,12 +2859,14 @@ def _triage_why_log(rows, env, now):
                     lines = log_p.read_text(encoding="utf-8").splitlines(True)
                     tmp = log_p.with_name(".%s.tmp.%d" % (log_p.name, os.getpid()))
                     tmp.write_text("".join(lines[len(lines) // 2:]), encoding="utf-8")
+                    os.chmod(str(tmp), 0o600)
                     os.replace(str(tmp), str(log_p))
             except OSError:
                 pass
         if last:
             tmp = last_p.with_name(".%s.tmp.%d" % (last_p.name, os.getpid()))
             tmp.write_text(json.dumps(last, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+            os.chmod(str(tmp), 0o600)
             os.replace(str(tmp), str(last_p))
         return changed
     finally:
