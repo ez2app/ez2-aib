@@ -5877,6 +5877,7 @@
   "aib.doctor.check.grants.os_remedy": "Nothing to do; a new macOS version is added to the list in an aib update after someone locks and unlocks the screen to check it",
   "aib.doctor.check.grants.error": "Could not read time-window state: {error}",
   "aib.approve_grants.touchid_lockwatch_on": "Turn on the lock watcher (time-window auto-approve is still off; it is used once that opens)",
+  "aib.approve_grants.revoke_lock_hint": "Revocation recorded; what really cancels grants is a screen lock. aib tried to lock your screen; if it did not, lock it yourself once (one lock cancels every time-window grant signed before it)",
   "aib.meeting.ok": "Done",
   "aib.meeting.none": "No meetings yet",
   "aib.meeting.err": "Meeting command refused: {code}",

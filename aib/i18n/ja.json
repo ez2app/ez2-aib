@@ -5877,6 +5877,7 @@
   "aib.doctor.check.grants.os_remedy": "対応は不要です。新しい macOS は本人が画面ロック / 解除で確認したあと、aib の更新でリストに追加されてから有効になります",
   "aib.doctor.check.grants.error": "時間枠の状態を読めません:{error}",
   "aib.approve_grants.touchid_lockwatch_on": "ロック検知をオンにします(時間枠の自動承認はまだ止めてあり、開放後に使われます)",
+  "aib.approve_grants.revoke_lock_hint": "取り消しを記録しました。本当に無効にするのは画面ロックです。画面ロックを試みました。ロックされていなければ一度ご自分でロックしてください(一度ロックすると、それ以前に署名した時間枠の許可はすべて無効になります)",
   "aib.meeting.ok": "完了",
   "aib.meeting.none": "会議はまだありません",
   "aib.meeting.err": "会議コマンドが拒否されました:{code}",
