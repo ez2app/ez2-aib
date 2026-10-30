@@ -1951,6 +1951,12 @@ def retention_tick(env=None, now=None):
 #   (3) 叫醒那句**不進佇列**(進了會讓封數 +1、下一批又叫一次,自己叫醒自己),直接走排空器同一支投遞器。
 # ★ 絕不刪信、絕不標完成、絕不改狀態 —— 那是收件席讀過之後自己用 done --evidence 做的事。
 TRIAGE_EVERY_S = 60               # 排空器每幀都會叫到;每 60 秒最多掃一次所有席
+# 10-30 @aeb40:一席待審 32 封、叫醒紀錄停在兩天前,卻查不到這兩天每一拍為什麼不叫(load-high?忙?每日上限?)。
+#   每席最近一次的原因存 triage-why.json;原因換了才追加一列到 triage-why.jsonl(一拍 60 秒,原因不變不寫)。
+TRIAGE_WHY_LAST = "triage-why.json"
+TRIAGE_WHY_LOG = "triage-why.jsonl"
+TRIAGE_WHY_LOG_MAX = 256 * 1024    # 超過就只留後半(只是查問題用的紀錄,不是帳)
+TRIAGE_WHY_IDLE = "-"              # 上一拍有、這一拍沒列 = 回到門檻以下(_triage_seat 回 None)
 
 
 def triage_path(seat, env=None):
@@ -2789,7 +2795,55 @@ def triage_tick(env=None, now=None, hold_fn=None, deliver_fn=None, force=False):
                 out[i] = _holdnote_deliver(res["seat"], hplan, env, deliver_fn, hold_fn)
         except Exception as exc:  # noqa: BLE001
             out[i] = {"seat": res["seat"], "woke": False, "why": "error:%s" % exc.__class__.__name__}
+    try:
+        _triage_why_log(out, env, now)
+    except Exception:  # noqa: BLE001 —— 紀錄寫不進去不得擋叫醒與投遞
+        pass
     return out
+
+
+def _triage_why_log(rows, env, now):
+    """叫醒那一拍每席的結果 → 原因有變才留一列。holdnote 列不算(另一條)。回這一拍寫下的列(測試用)。"""
+    root = queue_root(env)
+    last_p = root / TRIAGE_WHY_LAST
+    try:
+        last = json.loads(last_p.read_text(encoding="utf-8"))
+        if not isinstance(last, dict):
+            last = {}
+    except (OSError, ValueError):
+        last = {}
+    seen, changed = set(), []
+    for r in rows or []:
+        seat = r.get("seat") if isinstance(r, dict) else None
+        if not seat or "holdnote" in r:
+            continue
+        seen.add(seat)
+        why = "woke" if r.get("woke") else str(r.get("why") or "?")
+        if (last.get(seat) or {}).get("why") != why:
+            changed.append({"ts": int(now), "seat": seat, "why": why})
+    for seat in sorted(set(last) - seen):
+        if (last.get(seat) or {}).get("why") != TRIAGE_WHY_IDLE:
+            changed.append({"ts": int(now), "seat": seat, "why": TRIAGE_WHY_IDLE})
+    if not changed:
+        return []
+    for c in changed:
+        last[c["seat"]] = {"why": c["why"], "since": c["ts"]}
+    log_p = root / TRIAGE_WHY_LOG
+    with open(log_p, "a", encoding="utf-8") as f:
+        for c in changed:
+            f.write(json.dumps(c, ensure_ascii=False, sort_keys=True) + "\n")
+    try:
+        if log_p.stat().st_size > TRIAGE_WHY_LOG_MAX:
+            lines = log_p.read_text(encoding="utf-8").splitlines(True)
+            tmp = log_p.with_name(".%s.tmp.%d" % (log_p.name, os.getpid()))
+            tmp.write_text("".join(lines[len(lines) // 2:]), encoding="utf-8")
+            os.replace(str(tmp), str(log_p))
+    except OSError:
+        pass
+    tmp = last_p.with_name(".%s.tmp.%d" % (last_p.name, os.getpid()))
+    tmp.write_text(json.dumps(last, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(str(tmp), str(last_p))
+    return changed
 
 
 # ── 待審區自動處理 stage-tidy(a seat × a seat 10-13,設計稿 DESIGN-dm-waiting-unify-1013 §S6)──
