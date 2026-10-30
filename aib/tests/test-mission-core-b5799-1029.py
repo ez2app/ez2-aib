@@ -660,8 +660,8 @@ KNIVES = [
     ("K6", '''    if rec.get("task") != tid or rec.get("accept_rev") != t["accept_rev"]:''', '''    if rec.get("task") != tid:''',
      "M5Pass.test_receipt_bound_to_accept_rev_and_artifact"),
     ("K7", '''        if eid and eid in st["eids"]:
-            if st["eids"][eid]["req"] != req:''', '''        if False:
-            if st["eids"][eid]["req"] != req:''', "M6Ids.test_same_eid_not_repeated"),
+            if st["eids"][eid]["req"] not in (req, _req_digest(typ, by, task, data, with_reset=True)):''', '''        if False:
+            if st["eids"][eid]["req"] not in (req, _req_digest(typ, by, task, data, with_reset=True)):''', "M6Ids.test_same_eid_not_repeated"),
     ("K8", '''                torn = pos                     # 斷電寫一半的最後一行:當沒寫
                 break''', '''                pass''', "M7Replay.test_torn_tail_ignored_and_truncated"),
     ("K9", '''            raise MissionError("corrupt:%s:%s" % (ev.get("seq"), err))
