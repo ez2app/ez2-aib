@@ -87,6 +87,13 @@ SNAPSHOT_KEEP = 10                      # 只留最近 10 次開機的快照
 SNAPSHOT_MIN_INTERVAL_S = 60            # 多艙的 watch 同一分鐘內只寫一次
 SNAPSHOT_DISABLE_ENV = "EZ2_AIB_RESTART_SNAPSHOT"   # =0 關掉 watch 的自動快照
 SNAPSHOT_BOOT_JITTER_S = 10              # 開機時間會抖 1–2 秒(kern.boottime 換算):差 10 秒內算同一次開機,不然同一次開機會寫成兩個檔、恢復時挑到舊的那份(10-31 重開機把 10-30 的 20 席全接回來)
+SNAPSHOT_LOCK_WAIT_S = 2.0   # 快照鎖最多等幾秒;拿不到這輪跳過(#464 r2)
+
+
+class SnapshotLockBusy(OSError):
+    """快照鎖被別支拿著超過 SNAPSHOT_LOCK_WAIT_S"""
+
+
 RULE = "─" * 72
 
 
@@ -261,11 +268,21 @@ def _current_boot_path(sdir, boot):
 
 @contextlib.contextmanager
 def _snap_lock(sdir):
-    """同一個快照夾一次只一支 writer(多艙的 watch 會同時寫):選檔、節流檢查、原子替換都在鎖裡,不會同一次開機寫出兩個檔。"""
+    """同一個快照夾一次只一支 writer(多艙的 watch 會同時寫):選檔、節流檢查、原子替換都在鎖裡,不會同一次開機寫出兩個檔。
+    ★ 不無限等(#464 r2):watch 是同步呼叫快照的,別支持鎖停住不能把收艙 / 心跳一起卡住 ⇒ 最多等 SNAPSHOT_LOCK_WAIT_S,
+      拿不到丟 SnapshotLockBusy(OSError),write_snapshot 當成「這輪不寫」,下一輪再來。"""
     os.makedirs(sdir, exist_ok=True)
     fd = os.open(os.path.join(sdir, ".snap.lock"), os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = time.monotonic() + SNAPSHOT_LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise SnapshotLockBusy("snapshot lock busy")
+                time.sleep(0.05)
         yield
     finally:
         try:

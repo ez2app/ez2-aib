@@ -13,8 +13,9 @@ J5 群組裡最新的那份壞掉 ⇒ 退回同一次開機的另一份
 J6 (#464 r1 M1)writer 在鎖裡才選檔:別支 writer 拿著鎖時寫出 boot-3000,放鎖後這支(boot=3001)寫回 boot-3000,不另開
 J7 (#464 r1 M2)過期檢查也認抖動檔:只有剛寫的 boot-2999、現在 boot=3000 ⇒ 不警告
 J8 (#464 r1 M3)written_at = 1e400 / NaN / 布林 ⇒ 當壞時間,不拋例外、退回同組有效檔
+J9 (#464 r2)別支一直拿著鎖 ⇒ writer 等滿上限就回 None(這輪不寫),不卡住呼叫端
 刀(複本):K1 previous_boot_snapshot 改回照檔名挑 ⇒ J1 紅;K2 write_snapshot 改回 _snap_path ⇒ J3 紅;
-           K3 拿掉鎖 ⇒ J6 紅;K4 過期檢查改回精確檔名 ⇒ J7 紅
+           K3 拿掉鎖 ⇒ J6 紅;K4 過期檢查改回精確檔名 ⇒ J7 紅;K5 改回阻塞等鎖 ⇒ J9 紅
 """
 import json
 import os
@@ -116,6 +117,23 @@ class Jitter(unittest.TestCase):
             snap = CRS.previous_boot_snapshot(state_root=self.root, boot=B_NOW)
             self.assertEqual(_codes(snap), ["f5fb8"], bad)
 
+    def test_j9_lock_busy_skips_round(self):
+        data = {"cabins": [{"cabin": "20261031-211004-559f", "seats": [{"code": "34396"}]}]}
+        out = {}
+        old = CRS.SNAPSHOT_LOCK_WAIT_S
+        CRS.SNAPSHOT_LOCK_WAIT_S = 0.3
+        try:
+            with CRS._snap_lock(self.sdir):
+                t0 = time.monotonic()
+                t = threading.Thread(target=lambda: out.setdefault("p", CRS.write_snapshot(state_root=self.root, boot=3001, now=5000, data=data, min_interval_s=0)), daemon=True)
+                t.start(); t.join(3)
+                self.assertFalse(t.is_alive(), "writer 不可無限等鎖")
+                self.assertLess(time.monotonic() - t0, 2.5)
+        finally:
+            CRS.SNAPSHOT_LOCK_WAIT_S = old
+        self.assertIsNone(out["p"])
+        self.assertEqual([x for x in os.listdir(self.sdir) if x.endswith(".json")], [])
+
 
 class Knives(unittest.TestCase):
     def _knife(self, old, new, test):
@@ -149,6 +167,11 @@ class Knives(unittest.TestCase):
     def test_k4_staleness_exact_name(self):
         self._knife("    cur = _current_boot_path(snapshot_dir(state_root), boot)", "    cur = _snap_path(snapshot_dir(state_root), boot) if os.path.exists(_snap_path(snapshot_dir(state_root), boot)) else None",
                     "Jitter.test_j7_staleness_reads_jitter_file")
+
+
+    def test_k5_blocking_lock(self):
+        self._knife("fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)", "fcntl.flock(fd, fcntl.LOCK_EX)",
+                    "Jitter.test_j9_lock_busy_skips_round")
 
 
 if __name__ == "__main__":
