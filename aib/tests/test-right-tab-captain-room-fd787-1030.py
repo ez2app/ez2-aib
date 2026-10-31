@@ -40,6 +40,12 @@ NEW_KEYS = ("aib.tabs.right_room", "aib.tabs.right_room_short", "aib.room_tab.op
             "aib.room_tab.ui_mode", "aib.room_tab.hint_ui", "aib.room_tab.version", "aib.room_tab.url",
             "aib.room_tab.url_off")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+TEST_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+# 分頁列(pane-right-tabs.sh)與切頁(pane-tab-toggle.sh → state-transition.sh)都靠 flock 拿鎖。
+# GitHub 的 macOS runner 沒裝 flock(本機與會員機由 homebrew 裝)⇒ 跑到這兩支的格在那裡改成具名跳過,
+# Ubuntu CI 與本機照常實測;不在測試裡偽造 flock,免得量到的不是真鎖。(#454 CI macos-3.12 紅 10-31)
+FLOCK = shutil.which("flock", path=TEST_PATH)
+NO_FLOCK = "這台測試 PATH 上沒有 flock(GitHub macOS runner);分頁列 / 切頁腳本要它拿鎖,Ubuntu CI 與本機照跑"
 
 
 class Base(unittest.TestCase):
@@ -71,7 +77,7 @@ class Base(unittest.TestCase):
                                                    "commands": {"room": "room.py"}}), encoding="utf-8")
 
     def env(self, **extra):
-        e = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": str(self.home),
+        e = {"PATH": TEST_PATH, "HOME": str(self.home),
              "EZ2_AIB_HOME": str(self.aibhome), "EZ2_AIB_STATE_ROOT": str(self.state),
              "EZ2_COCKPIT_STATE_DIR": str(self.cockpit), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
              "EZ2_AIB_LOCALE": "zh-TW", "AIB_UI_AIB_BIN": str(self.d / "fake-aib-status"),
@@ -86,6 +92,8 @@ class Base(unittest.TestCase):
         return r.stdout
 
     def frame(self, tab, width=44):
+        if not FLOCK:
+            self.skipTest(NO_FLOCK)
         (self.cockpit / "right-tab").write_text("%s\n" % tab, encoding="utf-8")
         r = subprocess.run([BASH, str(TABS)], env=self.env(EZ2_ONESHOT="1", EZ2_PANE_W=str(width)),
                            capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
@@ -245,6 +253,8 @@ class Mouse(Base):
 
 class Keys(Base):
     def toggle(self, side):
+        if not FLOCK:
+            self.skipTest(NO_FLOCK)
         subprocess.run([BASH, str(COCKPIT / "pane-tab-toggle.sh"), side], env=self.env(), capture_output=True,
                        text=True, timeout=30, check=True)
         return (self.cockpit / ("%s-tab" % side)).read_text(encoding="utf-8").strip()
