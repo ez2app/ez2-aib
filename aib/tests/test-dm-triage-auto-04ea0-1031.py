@@ -213,8 +213,9 @@ class H1Mode(unittest.TestCase):
             "a = put('PR 合了 ' + M, t)\n"
             "r1 = H.run(%r, 'claude', env=env, now=t + 100, ask=ask_switch('draft'), gh=lambda u: True)\n"
             "s1 = st(a)\n"
+            "b = put('PR 合了 ' + M, t + 150)\n"    # 第三張:a@rev 已被看過、不再餵 ⇒ r2 用新的一封
             "r2 = H.run(%r, 'claude', env=env, now=t + 200, ask=ask_switch('off'), gh=lambda u: True, dry=True)\n"
-            "s2 = st(a)\n"
+            "s2 = st(a) if st(b) == 'delivered' else 'b-changed'\n"
             "r3 = H.run(%r, 'claude', env=env, now=t + 300, ask=ask_switch('off'), gh=lambda u: True)\n"
             "print(json.dumps({'r1': [r1.get('dry'), r1.get('reason')], 's1': s1, 'r2': r2.get('reason'), 's2': s2,\n"
             "                  'r3': [r3.get('dry'), r3.get('reason')], 's3': st(a)}))\n") % (SEAT, SEAT, SEAT, SEAT))
@@ -672,8 +673,8 @@ KNIVES = [
      '', 'H1Mode.test_run_rereads_switch_before_apply'),
     ('K3', 'src/cockpit/dm_triage_headless.py', 'dry = bool(dry) or mode == "draft"',
      'dry = bool(dry)', 'H1Mode.test_run_rereads_switch_before_apply'),
-    ('K4', 'src/cockpit/dm_triage_headless.py', '        return "draft"\n\n\ndef run(',
-     '        return "off"\n\n\ndef run(', 'H1Mode.test_mode_unreadable_is_draft'),
+    ('K4', 'src/cockpit/dm_triage_headless.py', '        return "draft"\n\n\ndef _seen_pairs(',
+     '        return "off"\n\n\ndef _seen_pairs(', 'H1Mode.test_mode_unreadable_is_draft'),
     ('K5', 'src/cockpit/dm_queue.py', '        return TRIAGE_AUTO_DEFAULT, "%s:%s" % (layer, v)',
      '        return None', 'A1Switch.test_unreadable_seat_is_draft_not_fleet'),
     ('K6', 'src/cockpit/dm_queue.py', '        return "%s:read:%s" % (TRIAGE_AUTO_UNREADABLE, exc.__class__.__name__)',

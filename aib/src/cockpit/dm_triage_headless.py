@@ -107,11 +107,164 @@ def should_start(rec, now, lock, load1, busy_since, brand, mode):
     if busy_for < HEADLESS_AFTER_S:
         return False, "busy-short"
     try:
-        if int(now) - int((rec or {}).get("headless_at")) < TR.ACK_S:
+        if int(now) - int((rec or {}).get("headless_at")) < TR.ACK_S_OFF:
             return False, "headless-started"
     except (TypeError, ValueError):
         pass
     return True, "headless"
+
+
+# ── 1a 必定觸發(SPEC-dm-triage-auto v2 §2;第三張)──────────────────────────────────────────────
+# 叫醒後 ACK 窗(從本席上一次 Stop 起算)過了沒人接 ⇒ 不再只是再叫,直接起背景整理(第一週只擬不結)。
+HEADLESS_PER_HOUR = 2             # 每席每小時預設最多起幾次(另有 wake_log 的每日上限;可用 triage-quota 改,見 §5)
+HEADLESS_PER_HOUR_MAX = 6         # 設定值上限(設定檔寫更大 ⇒ 當讀不到、用預設)
+HEADLESS_GLOBAL_MAX = 2           # 全機同時在跑的背景整理最多幾個(同「審查子代理最多 2 個」)
+MEM_FREE_MIN_PCT = 10.0           # 可用記憶體低於這個百分比不起(量不到 ⇒ 不擋)
+AUTO_REASONS = ("rewake", "triage-stalled")   # wake_decision 這兩種 = 叫過、ACK 過了、本席沒動作
+SLOT_DIR = "headless-slots"       # <佇列根>/headless-slots/slot-<n>.json;整個目錄的增刪持 .mutex 的 flock
+SLOT_TTL_S = 2 * TIMEOUT_S + 120  # 沒記 pid 的名額最多佔這麼久(spawn 前後那幾秒;子程序當掉沒放 ⇒ 過期回收)
+SLOT_MAX_S = 3600                 # 記了 pid、行程還活著:不看 TTL,最多佔這麼久(#468 Codex r1 M1:一輪可能超過 720 秒)
+DEFER_RETRY_S = 300               # deferred 沒有更準的時間時,幾秒後再試
+
+
+def batch_key(pairs):
+    """[(id, rev), …] ⇒ 去重鍵(順序無關)。同一批同版本只起一次;有新信或新版本 = 新鍵。"""
+    import hashlib
+    norm = sorted(TR.pair(i, r) for i, r in pairs)
+    return hashlib.sha256("\n".join(norm).encode("utf-8")).hexdigest()[:16]
+
+
+def _hour_log(rec, now):
+    out = []
+    for t in (rec or {}).get("headless_log") or []:
+        if isinstance(t, int) and not isinstance(t, bool) and 0 <= int(now) - t < 3600:
+            out.append(t)
+    return out
+
+
+def should_start_auto(rec, now, lock, load1, brand, mode, key, per_hour=HEADLESS_PER_HOUR, mem_free=None):
+    """純函式 → (起?, 原因, 下次可試的時間 | None)。給「叫醒沒人接」那條用(不要求席位忙滿 30 分)。
+    原因:agent-working / load-high / mem-low / engine-unsupported / same-batch / per-hour-cap / headless。
+    全機名額(global-cap)不在這裡判:要原子保留,見 reserve_slot。不起的都寫成 deferred(SPEC §2.4)。"""
+    live, _at, _handled = TR._lock_view(lock, now)
+    if live:
+        return False, "agent-working", None
+    if load1 is not None and float(load1) > TR.TRIAGE_LOAD_MAX:
+        return False, "load-high", int(now) + 60
+    if mem_free is not None and float(mem_free) < MEM_FREE_MIN_PCT:
+        return False, "mem-low", int(now) + 60
+    if mode == "digest" or brand not in BRANDS:
+        return False, "engine-unsupported", None
+    if key and (rec or {}).get("headless_key") == key:
+        return False, "same-batch", None
+    hour = _hour_log(rec, now)
+    if len(hour) >= int(per_hour):
+        return False, "per-hour-cap", (min(hour) + 3600) if hour else int(now) + 3600
+    return True, "headless", None
+
+
+def mem_free_pct():
+    """可用記憶體 %(machine_status.mem_free_pct;memory_pressure 量不到 / 非 Mac ⇒ None,不擋)。"""
+    try:
+        import machine_status as MS
+        cell = MS.mem_free_pct()
+        return float(cell["value"]) if cell.get("state") in ("ok", "warn") and cell.get("value") is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+MEM_FN = mem_free_pct              # 測試換掉
+
+
+def _slot_dir(env):
+    return Q.queue_root(env) / SLOT_DIR
+
+
+def _slot_stale(path, now):
+    try:
+        cur = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True                        # 壞檔:佔著不放會永遠少一個名額 ⇒ 回收
+    if not isinstance(cur, dict):
+        return True
+    until, at, pid = cur.get("until"), cur.get("at"), cur.get("pid")
+    if not isinstance(until, int) or isinstance(until, bool):
+        return True
+    if TA.holder_dead(cur):
+        return True                        # 記了 pid、行程已不在 ⇒ 回收
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        # #468 Codex r1 M1:持有人還活著 ⇒ TTL 到了也不回收(不然全機 2 個的上限會被突破);只有硬上限到了才收
+        return not isinstance(at, int) or isinstance(at, bool) or now >= at + SLOT_MAX_S
+    return now >= until
+
+
+def reserve_slot(seat, key, env=None, now=None):
+    """原子保留一個全機名額(第三張 r2 M:先保留再 spawn,兩席同一拍不會都以為還有名額)。
+    持 <slot 目錄>/.mutex 的 flock 做「掃過期 → O_EXCL 建檔」。回名額檔名(slot-<n>.json);滿了 / 拿不到鎖回 None。"""
+    now = int(time.time() if now is None else now)
+    d = _slot_dir(env)
+    with TA._Mutex(d / ".mutex") as mx:
+        if mx.busy:
+            return None
+        for n in range(HEADLESS_GLOBAL_MAX):
+            p = d / ("slot-%d.json" % n)
+            if p.exists() and _slot_stale(p, now):
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
+            try:
+                fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"seat": seat, "key": key, "at": now, "until": now + SLOT_TTL_S}, fh)
+            return p.name
+    return None
+
+
+def slot_set_pid(name, pid, env=None):
+    """spawn 成功後把子程序 pid 記進名額(之後行程不在 ⇒ 名額回收)。"""
+    d = _slot_dir(env)
+    with TA._Mutex(d / ".mutex") as mx:
+        if mx.busy:
+            return False
+        p = d / name
+        try:
+            cur = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(cur, dict):
+            return False
+        cur.update({"pid": int(pid), "pid_start": Q._proc_start(pid)})
+        Q.AJ.write_json(str(p), cur)
+        return True
+
+
+def release_slot(name, seat, env=None):
+    """放掉名額(子程序做完 / spawn 失敗)。只放 seat 對得上的那一格(名稱亂給不會放到別席的)。"""
+    if not name or not re.fullmatch(r"slot-[0-9]{1,2}\.json", str(name)):
+        return False
+    d = _slot_dir(env)
+    with TA._Mutex(d / ".mutex") as mx:
+        if mx.busy:
+            return False
+        p = d / name
+        try:
+            cur = json.loads(p.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError):
+            cur = {}
+        if isinstance(cur, dict) and cur.get("seat") not in (None, seat):
+            return False
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            return False
+        return True
 
 
 def build_prompt(seat, rows, texts):
@@ -538,17 +691,41 @@ def _mode(seat, env):
         return "draft"
 
 
-def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged, dry=False):
-    """一輪:登記 → plan → 問 AI → 逐條驗套用(dry = 只擬不結)→ 寫整理檔 → 放鎖。回結果。"""
+def _seen_pairs(seat, env, now):
+    """上一輪(子代理 / 背景整理)放鎖時記的看過集合(id@rev 或舊格式 id);過了 HANDLED_TTL_S 不算。"""
+    try:
+        lock = json.loads((Q.seat_dir(seat, env) / TA.AGENT_LOCK_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return TR._lock_view(lock, now)[2]
+
+
+def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged, dry=False, actor=None, slot=None):
+    """一輪:登記 → plan → 問 AI → 逐條驗套用(dry = 只擬不結)→ 寫整理檔 → 放鎖(+ 放全機名額)。回結果。
+    actor / slot:必定觸發那條由叫醒那一拍先登記好鎖、保留好名額再起,這裡沿用同一個 actor、做完放那一格名額。"""
     now = int(time.time() if now is None else now)
-    actor = "agent:%s/headless-%s" % (seat, time.strftime("%H%M%S", time.localtime(now)))
-    lk = TA.agent_lock(seat, actor, env=env, now=now)
+    if not (actor and re.fullmatch(r"agent:%s/headless-[0-9A-Za-z-]{1,40}" % re.escape(str(seat)), str(actor))):
+        actor = "agent:%s/headless-%s" % (seat, time.strftime("%H%M%S", time.localtime(now)))
+    try:
+        return _run(seat, brand, env, now, ask, gh, dry, actor)
+    finally:
+        if slot:
+            release_slot(slot, seat, env)
+
+
+def _run(seat, brand, env, now, ask, gh, dry, actor):
+    seen = _seen_pairs(seat, env, now)
+    lk = TA.agent_lock(seat, actor, env=env, now=now, pid=os.getpid())
     if not lk.get("ok"):
         return {"ok": False, "reason": lk.get("reason"), "held": lk.get("held")}
-    handled = []
+    # #468 Codex r2 M4a:預設保留上一輪的看過集合(id@rev)—— AI 失敗 / 讀不懂 / 提前返回時 finally 照它放鎖,不清掉
+    handled = sorted(h for h in seen if "@" in str(h))
     try:
         plan = TA.plan(seat, env=env, now=now)
         rows = [r for r in plan["rows"] if "excluded" not in r]
+        if dry or _mode(seat, env) != "off":
+            # 第三張 r2 M6 / SPEC §2.2:同一封(id + rev)最多被看一次;出新版才再餵(off 回 0.1.62 舊行為)
+            rows = [r for r in rows if not TR.handled_ids(seen, [r["id"]], {r["id"]: r.get("rev")})]
         if not rows:
             return {"ok": True, "reason": "nothing", "results": []}
         loaded = {r["id"]: Q._load_item(seat, r["id"], env) or {} for r in rows}
@@ -579,7 +756,10 @@ def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged, dry=False):
         except OSError:
             pass                                 # 只是通知;寫不了不影響已套用 / 已寫的整理檔
         # ★ 審查 H1:只有 AI 真的回了、而且是餵進去的那幾封才算「看過」;失敗 / 讀不懂 / 沒餵到的不算
-        handled = [r["id"] for r in fed if r["id"] in {d["id"] for d in decisions}]
+        cur = [TR.pair(r["id"], r.get("rev")) for r in fed if r["id"] in {d["id"] for d in decisions}]
+        # #468 Codex r1 M4:上一輪看過、這輪沒餵的照樣算看過;r2 M4b:同一個 id 以本輪實際處理的那版為準(舊版不再帶)
+        cur_ids = {str(h).partition("@")[0] for h in cur}
+        handled = cur + [h for h in handled if str(h).partition("@")[0] not in cur_ids]
         return {"ok": True, "reason": "ok", "file": str(path), "results": results, "dry": bool(dry)}
     finally:
         TA.agent_lock(seat, actor, env=env, now=now, release=True, handled=handled)

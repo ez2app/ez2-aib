@@ -159,9 +159,110 @@ AGENT_LOCK_FILE = Q.TRIAGE_AGENT_LOCK_FILE
 # @abb89 22:02 自願登記會過期;Andy 22:3x 要立刻接下一批 ⇒ 縮到 20 分鐘(子代理每做一批重登記一次就會續)。
 #   子代理當掉沒放 ⇒ 最多 20 分鐘後下一拍照叫。
 AGENT_LOCK_TTL_S = 1200
+AGENT_LOCK_MUTEX = "triage-agent.lock"     # 第三張 r2 M:讀-改-寫整段持 flock(兩個同時登記只有一個拿到)
+AGENT_LOCK_WAIT_S = 5
 
 
-def agent_lock(seat, actor, env=None, now=None, release=False, status=False, handled=None):
+def holder_dead(cur):
+    """登記裡有 pid(背景整理起的時候記的)而且那個行程已不在 / 起始時刻對不上 ⇒ True(第三張 r2 M:認持有人死亡)。
+    沒記 pid(子代理自願登記)⇒ False,照 until 過期。ps 量不到 ⇒ False(不猜死)。"""
+    if not isinstance(cur, dict):
+        return False
+    pid = cur.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    want = cur.get("pid_start")
+    if not isinstance(want, str) or not want:
+        return False
+    got = Q._proc_start(pid)
+    return got is not None and got != want
+
+
+class _Mutex:
+    """<席>/triage-agent.lock 上的 flock;拿不到(AGENT_LOCK_WAIT_S 內)⇒ busy=True,呼叫端回 held。"""
+
+    def __init__(self, path):
+        self.path, self.fh, self.busy = path, None, False
+
+    def __enter__(self):
+        import fcntl
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(str(self.path), "a+")
+        end = time.monotonic() + AGENT_LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    self.busy = True
+                    return self
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        try:
+            self.fh.close()                # 關檔即放鎖
+        except OSError:
+            pass
+        return False
+
+
+def agent_lock(seat, actor, env=None, now=None, release=False, status=False, handled=None, pid=None):
+    with _Mutex(Q.seat_dir(seat, env) / AGENT_LOCK_MUTEX) as mx:
+        if mx.busy and not status:
+            return {"ok": False, "reason": "held", "held": None, "message": "整理鎖正被別的行程改寫;下一拍再試"}
+        return _agent_lock(seat, actor, env=env, now=now, release=release, status=status, handled=handled, pid=pid)
+
+
+def agent_lock_set_pid(seat, actor, pid, env=None, now=None):
+    """spawn 之後補記子程序 pid(#468 Codex r1 M2)。只動「持有人是 actor、而且還沒過期」的那把鎖;
+    子程序已經跑完放鎖(until=0)或換人了 ⇒ 不動(不重建、不清 handled_ids、不重登 1200 秒)。"""
+    now = int(time.time() if now is None else now)
+    path = Q.seat_dir(seat, env) / AGENT_LOCK_FILE
+    with _Mutex(Q.seat_dir(seat, env) / AGENT_LOCK_MUTEX) as mx:
+        if mx.busy:
+            return False
+        try:
+            cur = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        until = cur.get("until") if isinstance(cur, dict) else None
+        if (not isinstance(cur, dict) or cur.get("by") != actor or not isinstance(until, int)
+                or isinstance(until, bool) or now >= until or not isinstance(pid, int) or pid <= 0):
+            return False
+        cur = dict(cur)
+        cur["pid"], cur["pid_start"] = pid, Q._proc_start(pid)
+        Q.AJ.write_json(str(path), cur)
+        return True
+
+
+def agent_lock_restore(seat, actor, prev, env=None):
+    """把鎖檔還原成 prev(登記前讀到的原樣;None = 原本沒有檔)。只在現在的持有人還是 actor 時動(第三張 r2 M:
+    spawn 失敗不能用「放鎖」還原 —— 放鎖會留下新的登記時間,下一拍被當成「子代理接過了」改走一般叫醒)。"""
+    path = Q.seat_dir(seat, env) / AGENT_LOCK_FILE
+    with _Mutex(Q.seat_dir(seat, env) / AGENT_LOCK_MUTEX) as mx:
+        if mx.busy:
+            return False
+        try:
+            cur = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(cur, dict) or cur.get("by") != actor:
+            return False
+        if prev is None:
+            path.unlink()
+        else:
+            Q.AJ.write_json(str(path), prev)
+        return True
+
+
+def _agent_lock(seat, actor, env=None, now=None, release=False, status=False, handled=None, pid=None):
     """整理子代理開工前自願登記(每席同時 1 個;Andy 10-25 21:4x)。**只是協調,不是防線**:
     子代理與席位同帳號,誰都能刪這個檔;它只讓守規矩的第二個子代理知道「已經有人在整理」。
     status ⇒ 只看;release ⇒ 本人放掉;否則登記 / 續期(別人登記且沒過期 ⇒ held)。
@@ -180,6 +281,8 @@ def agent_lock(seat, actor, env=None, now=None, release=False, status=False, han
         live = bool(cur) and now < int(cur.get("until") or 0)
     except (TypeError, ValueError):
         live = False
+    if live and holder_dead(cur):
+        live = False                       # 背景整理行程已經不在:登記作廢,可以重新登記
     view = {"by": cur.get("by"), "at": cur.get("at"), "until": cur.get("until")} if live else None
     if status:
         return {"ok": True, "reason": "ok", "held": view}
@@ -189,6 +292,7 @@ def agent_lock(seat, actor, env=None, now=None, release=False, status=False, han
     if release:
         p = plan(seat, env=env, now=now)
         left = sorted(r["id"] for r in p["rows"] if "excluded" not in r)
+        revs = {r["id"]: r.get("rev") for r in p["rows"] if "excluded" not in r}
         if handled is None:
             # ★ 審查 M1:只算「最後一次登記 / 續期之前就到了」的信 —— 之後才到的它沒看過,下一拍要叫
             try:
@@ -198,7 +302,21 @@ def agent_lock(seat, actor, env=None, now=None, release=False, status=False, han
             ts = {it["id"]: int(it.get("ts") or 0) for it in Q._all_items(seat, env=env) if it.get("id") in left}
             handled = [i for i in left if ts.get(i, now + 1) <= seen]
         else:
-            handled = sorted(set(str(i) for i in handled) & set(left))   # 呼叫端明說看過哪些(背景整理只算餵進去的)
+            # 呼叫端明說看過哪些(背景整理只算餵進去的;給 "id@rev" 就照它的版本,只給 id 補現在的版本)
+            given = {}
+            for h in handled:
+                i, _sep, rv = str(h).partition("@")
+                rv = rv if _sep else None
+                old = given.get(i)
+                # #468 Codex r2 M4b:同一個 id 出現兩次 ⇒ 留版本較新的(數字大的);比不了就留先出現的
+                if i in given and not (old is not None and rv is not None and rv.isdigit() and old.isdigit()
+                                       and int(rv) > int(old)):
+                    continue
+                given[i] = rv
+            handled = [i for i in left if i in given]
+            revs = {i: (given[i] if given[i] is not None else revs.get(i)) for i in handled}
+        # 第三張 r2 M6:記 "id@rev" —— 同一封出新版 ⇒ 不算看過,叫醒 / 餵信都會再算它一次
+        handled = sorted(TR.pair(i, revs.get(i)) for i in handled)
         path.parent.mkdir(parents=True, exist_ok=True)
         Q.AJ.write_json(str(path), {"by": actor, "at": cur.get("at") if cur.get("by") == actor else now, "until": 0,
                                     "released_at": now, "handled_ids": handled})
@@ -206,6 +324,15 @@ def agent_lock(seat, actor, env=None, now=None, release=False, status=False, han
                 "over_threshold": p["over_threshold"]}
     path.parent.mkdir(parents=True, exist_ok=True)
     rec = {"by": actor, "at": cur.get("at") if live else now, "until": now + AGENT_LOCK_TTL_S, "seen_at": now}
+    # #468 Codex r1 M4:登記時帶著上一輪放鎖記的看過集合(背景整理子程序開工才讀;不帶 ⇒ 上一輪看過的 A@1 又被餵)
+    for k in ("handled_ids", "released_at"):
+        if k in cur:
+            rec[k] = cur[k]
+    if pid is None and live and cur.get("by") == actor:
+        pid = cur.get("pid")               # 續期不丟掉起的時候記的行程
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        rec["pid"] = pid
+        rec["pid_start"] = (cur.get("pid_start") if cur.get("pid") == pid else None) or Q._proc_start(pid)
     Q.AJ.write_json(str(path), rec)
     return {"ok": True, "reason": "ok", "held": rec}
 
