@@ -1795,9 +1795,10 @@ def _unread_still_live(facts):
         import dm_queue
         keep = []
         for u in unread:
-            it, why = dm_queue._load_item_raw(code, str(u.get("id") or ""))
+            iid = str(u.get("id") or "")
+            it, why = dm_queue._load_item_raw(code, iid)
             if it is None:
-                if why != "missing":
+                if why != "missing" or not _item_file_absent(dm_queue, code, iid):
                     keep.append(u)
                 continue
             if it.get("status") not in _UNREAD_HANDLED:
@@ -1808,6 +1809,19 @@ def _unread_still_live(facts):
 
 
 _UNREAD_HANDLED = ("read", "done", "archived", "deleted")
+
+
+def _item_file_absent(dm_queue, code, iid):
+    """讀取器回 missing 時再確認一次:_load_item_raw 把所有 OSError(含權限 / I/O 錯)都回 missing(#465 Codex r2),
+    這裡只有 lstat 明說 FileNotFoundError 才算真的不見;檔還在、或 lstat 自己也出錯 ⇒ 不算不見。
+    不改 _load_item_raw 本身(它有很多呼叫端靠 missing 這個值)。"""
+    try:
+        os.lstat(str(dm_queue.item_path(code, iid)))
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
 
 
 def _incomplete(raw, facts, checks, warns=None):

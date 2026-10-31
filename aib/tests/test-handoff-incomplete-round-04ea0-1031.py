@@ -11,6 +11,7 @@ R3 收據全都不完整 ⇒ 起點退回交接記的輪起點(rounds.jsonl)
 R4 收據之後做的整理仍算本輪;不完整收據之前做的整理也還算(不再被它推掉)
 U1 收集時列的未讀,寫第三步時已讀 / 已結 / 已收 / 確定不見 ⇒ 不再要求第二段交代;還沒讀的照要求
 U2 讀佇列出錯 ⇒ 照收集時的清單要求(不放水);U2b 真的讀取器遇壞檔(吞錯回 json)⇒ 照要求
+U2c 讀檔層注入 PermissionError / EIO(讀取器吞成 missing)⇒ 檔還在就照要求(#465 Codex r2)
 U4 claimed / hold_human / 讀檔出錯 ⇒ 照要求(不代表讀過;#465 Codex r1 M2)
 U3 走 _incomplete:已讀那封不再列「沒交代」
 """
@@ -135,6 +136,25 @@ class Unread(Base):
         p.write_text("{not json", encoding="utf-8")       # 真的讀取器會吞掉錯、回 (None, "json")
         got = aib_handoff._unread_still_live(_facts(iid, "q_gone0000000000bb"))
         self.assertEqual(self.ids(got), [iid], "壞檔 ≠ 不見;確定不存在的才拿掉")
+
+    def test_U2c_read_error_in_reader_not_missing(self):
+        """錯誤注入在讀檔那層(Path.read_text):_load_item_raw 會把 PermissionError / EIO 吞成 missing,仍要照要求。"""
+        import dm_queue
+        import errno
+        iid = "q_perm0000000000cc"
+        p = dm_queue.item_path(CODE, iid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}", encoding="utf-8")
+        real = Path.read_text
+        for exc in (PermissionError(errno.EACCES, "denied"), OSError(errno.EIO, "io")):
+            def boom(self_, *a, _exc=exc, **k):
+                if str(self_) == str(p):
+                    raise _exc
+                return real(self_, *a, **k)
+            with mock.patch.object(Path, "read_text", boom):
+                self.assertEqual(dm_queue._load_item_raw(CODE, iid)[1], "missing")   # 讀取器確實吞成 missing
+                got = aib_handoff._unread_still_live(_facts(iid, "q_gone0000000000dd"))
+            self.assertEqual(self.ids(got), [iid], repr(exc))
 
     def test_U4_claimed_and_hold_still_required(self):
         import dm_queue
