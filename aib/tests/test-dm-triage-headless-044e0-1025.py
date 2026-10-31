@@ -127,7 +127,7 @@ class H3Load(unittest.TestCase):
 
 APPLY = SETUP + (
     "import os\n"
-    "a = put('一:PR 已合的那件', t); b = put('二:PR 還開著', t); c = put('三:檔案在外面', t)\n"
+    "a = put('一:PR #101 已合的那件', t); b = put('二:PR #102 還開著', t); c = put('三:檔案在外面', t)\n"
     "d = put('四:檔案在 pending', t); e = put('五:要等 @abb89', t); f = put('六:要回信', t)\n"
     "g = put('七:回過信了', t); w = put('八:已寫等什麼', t); e2 = put('十:還沒讀就寫等什麼', t)\n"
     "Q.mark_read(%(s)r, e, 'seat:%(s)s', env=env, now=t, no_rev_check=True)\n"
@@ -180,10 +180,10 @@ class H4Apply(unittest.TestCase):
 class H5EndToEnd(unittest.TestCase):
     def test_run_writes_report_and_releases(self):
         out = HN.QBox(self).py(SETUP + (
-            "a = put('一:PR 已合的那件', t); b = put('二:要回信', t)\n"
+            "a = put('一:PR #101 已合的那件', t); b = put('二:要回信', t)\n"
             "M = 'https://github.com/ez2app/ez2-aib/pull/101'\n"
             "def ask(brand, prompt):\n"
-            "    assert a in prompt and '一:PR 已合的那件' in prompt\n"
+            "    assert a in prompt and '一:PR #101 已合的那件' in prompt\n"
             "    return ('好的,結果如下 ' + json.dumps([{'id': a, 'action': 'close', 'evidence': M, 'why': '已合'},\n"
             "            {'id': b, 'action': 'draft', 'draft': '收到,明天回'}]) + ' 以上'), 'ok'\n"
             "r = H.run(%r, 'claude', env=env, now=t + 100, ask=ask, gh=lambda u: True)\n"
@@ -284,7 +284,8 @@ class H7Gh(unittest.TestCase):
 KNIVES = [
     ("K1", "src/cockpit/dm_triage_headless.py", '    allowed = {r["id"]: r for r in plan["rows"] if "excluded" not in r}\n',
      '    allowed = {r["id"]: r for r in plan["rows"]}\n', "H4Apply.test_each_decision_verified"),
-    ("K2", "src/cockpit/dm_triage_headless.py", '            ok, why = _evidence_ok(seat, d["evidence"], env, gh)\n',
+    ("K2", "src/cockpit/dm_triage_headless.py",
+     '            ok, why = _evidence_ok(seat, d["evidence"], env, gh, item=Q._load_item(seat, d["id"], env), now=now)\n',
      '            ok, why = True, "x"\n', "H4Apply.test_each_decision_verified"),
     ("K3", "src/cockpit/dm_triage_headless.py", "            cmd = list(PA.CLAUDE_CMD)\n",
      '            cmd = ["claude", "-p", "--tools", "Bash"]\n', "H6ToolsOff.test_claude_locked_cmd_and_codex_refused"),

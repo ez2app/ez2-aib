@@ -41,13 +41,27 @@ WHY_MAX = 200
 BRANDS = ("claude", "codex")      # @abb89 23:22 ②:沿用那一席的引擎;只認驗得了關工具的家,其他不起
 ACTIONS = ("close", "wait", "draft", "leave")
 SEAT_READ_SKIP_S = 15 * 60        # 席位自己 15 分鐘內讀過的信不餵(不跟席位搶;SPEC-dm-triage-auto v2 §2.2)
-_PULL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/pull/[0-9]{1,7}/?")
+_PULL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/pull/([0-9]{1,7})/?")
+# 10-31 SPEC v2 §4.1:機器可驗的四類(證據字串固定格式;核心逐條驗,不信模型)
+_REF_RE = re.compile(r"(dup_of|superseded_by|ack_of):(q_[0-9a-f]{16})")
+EXPIRED_EVIDENCE = "expired"
+# 這些字出現就不用新四類結(只剩已合 PR 那一種、或留給本席):真人原話 / 核准 / 審查結果 / 正式站 / 錢 / 刪資料 / 對客 / 截止
+_NEVER_RE = re.compile(r"Andy|the maintainer|准|同意|High|Medium|可合|不可合|正式站|EU01|簽章|PyPI|付款|金額|刪除|刪資料|"
+                       r"對客|客戶|截止|期限|deadline", re.I)
+# 純確認不准有:請 / 要 / 半形 ? / 全形 ? / 「<時間>前回」/ 附件路徑
+_ACK_BAD_RE = re.compile(r"請|要|\?|\uff1f|前回|~/|/Users/|/tmp/|\.(md|txt|json|png|log)\b")
+ACK_MAX = 200
 
 PREAMBLE = """You are a mail-triage helper for one AI seat. You have no tools: you cannot run commands, read files, \
 send messages or change anything. You only read the messages below and return a JSON array, nothing else.
 For each message decide one action:
-- "close": it is already done because a GitHub PR was merged. Give "evidence": that merged PR URL \
-(https://github.com/ez2app/<repo>/pull/<n>). Nothing else counts as evidence; without a merged PR URL => do not close.
+- "close": only when one of these is true. Give "evidence" in exactly this form:
+  * a GitHub PR named in the message was merged: "https://github.com/ez2app/<repo>/pull/<n>"
+  * it repeats an earlier message that is already closed: "dup_of:<that q_ id>"
+  * a newer message in the same thread from the same sender replaces it: "superseded_by:<newer q_ id>"
+  * the sender's own expiry time has passed: "expired"
+  * it only acknowledges a message this seat sent (no request, no question, no deadline, no file): "ack_of:<q_ id this seat sent>"
+  Anything else, or when unsure => do not close. The system re-checks every evidence; a wrong one is ignored.
 - "wait": the seat must wait for someone or something. Give "wait": who / what (short).
 - "draft": a reply is needed. Give "draft": the reply text. You never send it; the seat reviews and sends.
 - "leave": anything else, or when unsure.
@@ -133,14 +147,118 @@ def gh_merged(url, run=subprocess.run):
         return False
 
 
-def _evidence_ok(seat, ev, env, gh):
-    """close 的證據驗證 → (可結?, 原因)。只認 ez2app PR 網址 + gh 回 MERGED(@abb89 10-26 01:20 M4 定 C);
-    commit / 檔案 / dm id 背景 AI 沒工具查不了來由,信裡寫什麼它就抄什麼 ⇒ 一律留給本席。"""
+def _evidence_ok(seat, ev, env, gh, item=None, now=None):
+    """close 的證據驗證 → (可結?, 原因)。全部由核心查,不信模型(SPEC v2 §4.2):
+      - PR 網址:gh 回 MERGED,而且信裡本來就提到這張 PR(網址或 #號)⇒ 同主題(PR 網址存在 ≠ 內容滿足)
+      - dup_of / superseded_by / expired / ack_of:先過 _new_kind_ok(長訊信封 / 真人 / 要裁、交件 / 禁字 ⇒ 不收),再各自查
+    其他(commit / 檔案 / 認不得)一律留給本席(@abb89 10-26 M4 定 C 的原則不變)。"""
     if not ev:
         return False, "no-evidence"
-    if _PULL_RE.fullmatch(ev):
+    text = _item_text(item, env)
+    m = _PULL_RE.fullmatch(ev)
+    if m:
+        if item is not None and not _mentions_pr(text, ev, m.group(1)):
+            return False, "pr-off-topic"
         return (True, "pr-merged") if gh(ev) else (False, "pr-not-merged")
-    return False, "only-merged-pr"
+    if item is None:
+        return False, "only-merged-pr"
+    ok, why = _new_kind_ok(item, text)
+    if not ok:
+        return False, why
+    if ev == EXPIRED_EVIDENCE:
+        return (True, "expired") if Q._expired(item, int(time.time() if now is None else now)) else (False, "not-expired")
+    r = _REF_RE.fullmatch(ev)
+    if not r:
+        return False, "only-merged-pr"
+    kind, oid = r.group(1), r.group(2)
+    if oid == item.get("id"):
+        return False, "self-ref"
+    if kind == "ack_of":
+        return _ack_ok(seat, item, text, oid, env)
+    other = Q._load_item(seat, oid, env)
+    if not other:
+        return False, "ref-missing"
+    if kind == "dup_of":
+        return _dup_ok(item, other, text, env)
+    return _superseded_ok(item, other)
+
+
+def _item_text(item, env):
+    if not item:
+        return ""
+    try:
+        t = Q._full_text(item, env)
+    except Exception:  # noqa: BLE001
+        t = None
+    return t if isinstance(t, str) else str(item.get("msg") or "")
+
+
+def _mentions_pr(text, url, num):
+    t = text or ""
+    return url.rstrip("/") in t or re.search(r"(?<![0-9])#%s(?![0-9])" % re.escape(num), t) is not None
+
+
+def _new_kind_ok(item, text):
+    """新四類的共同門檻:長訊信封(要讀 RELAY 全文)、真人寄的、要裁 / 交件 / 自報、禁字 ⇒ 不收(留本席)。"""
+    import dm_relay as DR
+    msg = str(item.get("msg") or "")
+    if DR.relay_path_of(msg):
+        return False, "long-relay"
+    if item.get("sender_kind") == "human" or item.get("status") == Q.HOLD_STATUS:
+        return False, "human"
+    if Q.normalize_kind(item.get("kind")) in ("decide", "deliver", "report"):
+        return False, "kind"
+    if _NEVER_RE.search(text or msg):
+        return False, "never-words"
+    return True, "ok"
+
+
+def _dup_ok(item, other, text, env):
+    """重複件:前一封已結(done / archived)、比這封早,而且同一份 RELAY 或正文相同(去抬頭、去時效、去空白)。"""
+    import dm_relay as DR
+    if other.get("status") not in ("done", "archived"):
+        return False, "dup-not-closed"
+    try:
+        if int(other.get("ts") or 0) > int(item.get("ts") or 0):
+            return False, "dup-newer"
+    except (TypeError, ValueError):
+        return False, "dup-ts"
+    rp = DR.relay_path_of(str(item.get("msg") or ""))
+    if rp and rp == DR.relay_path_of(str(other.get("msg") or "")):
+        return True, "dup"
+    a, b = TR.normalize_body(text), TR.normalize_body(_item_text(other, env))
+    return (True, "dup") if a and a == b else (False, "dup-differs")
+
+
+def _superseded_ok(item, other):
+    """承接:同 thread(非空)、同寄件席、新的那封比較晚。結案語意是「已承接」不是「已達成」。"""
+    th = item.get("thread")
+    if not th or other.get("thread") != th:
+        return False, "thread-differs"
+    if not item.get("sender_seat") or other.get("sender_seat") != item.get("sender_seat"):
+        return False, "sender-differs"
+    try:
+        if int(other.get("ts") or 0) <= int(item.get("ts") or 0):
+            return False, "not-newer"
+    except (TypeError, ValueError):
+        return False, "ts"
+    return True, "superseded"
+
+
+def _ack_ok(seat, item, text, oid, env):
+    """純確認:信裡寫了 oid、oid 真的是本席寄給這封寄件席的(在對方佇列查得到、寄件席是本席);
+    全文短、沒有請 / 要 / 問號 / 回覆期限 / 附件路徑。"""
+    if oid not in (text or ""):
+        return False, "ack-not-cited"
+    if len(text or "") > ACK_MAX or _ACK_BAD_RE.search(text or ""):
+        return False, "ack-not-pure"
+    peer = item.get("sender_seat")
+    if not peer:
+        return False, "ack-no-peer"
+    sent = Q._load_item(str(peer), oid, env)
+    if not sent or sent.get("sender_seat") != seat:
+        return False, "ack-not-ours"
+    return True, "ack"
 
 
 def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None, dry=False):
@@ -164,7 +282,7 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None, d
             out.append(res)
             continue
         if d["action"] == "close":
-            ok, why = _evidence_ok(seat, d["evidence"], env, gh)
+            ok, why = _evidence_ok(seat, d["evidence"], env, gh, item=Q._load_item(seat, d["id"], env), now=now)
             res["reason"] = why
             if ok and dry:
                 res["would"] = True
@@ -178,7 +296,7 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None, d
                 cur = Q._load_item(seat, d["id"], env) or {}
                 if cur.get("status") == "read":
                     r = Q.mark_done(seat, d["id"], actor, d["evidence"], env=env, now=now, if_rev=Q.item_rev(cur),
-                                    no_rev_check=False)
+                                    no_rev_check=False, why="背景整理驗過:%s %s" % (why, d["evidence"]))
                     res["applied"] = bool(r.get("ok"))
                     if not r.get("ok"):
                         res["reason"] = "done:%s" % r.get("reason")
