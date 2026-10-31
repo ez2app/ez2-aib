@@ -41,13 +41,39 @@ WHY_MAX = 200
 BRANDS = ("claude", "codex")      # @abb89 23:22 ②:沿用那一席的引擎;只認驗得了關工具的家,其他不起
 ACTIONS = ("close", "wait", "draft", "leave")
 SEAT_READ_SKIP_S = 15 * 60        # 席位自己 15 分鐘內讀過的信不餵(不跟席位搶;SPEC-dm-triage-auto v2 §2.2)
-_PULL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/pull/[0-9]{1,7}/?")
+_PULL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/pull/([0-9]{1,7})/?")
+# 10-31 SPEC v2 §4.1:機器可驗的四類(證據字串固定格式;核心逐條驗,不信模型)
+_REF_RE = re.compile(r"(dup_of|superseded_by|ack_of):(q_[0-9a-f]{16})")
+EXPIRED_EVIDENCE = "expired"         # 格式保留;不寫進 PREAMBLE(自報過期的信 plan 本來就排除,apply 回 not-allowed;@34d15 10-31 23:11)
+# SPEC v2 §4.3 絕不碰(所有 close 證據共用,含已合 PR;#467 Codex r1 H1 / H2)。英文字前後不黏英文字母(中文字在 \w 裡,\b 不可靠)
+_A = r"(?<![A-Za-z])"
+_Z = r"(?![A-Za-z])"
+_NEVER_RE = re.compile(
+    r"Andy|the maintainer|維護者|真人|本人|說是|准|核可|核准|授權|同意|批准|放行|"            # 真人原話 / 准 / 同意的轉述
+    + _A + r"(?:approved?|approval|LGTM|OK to merge)" + _Z + r"|"
+    r"Codex|審查|審過|" + _A + r"(?:review|High|Medium|Low)" + _Z + r"|可合|不可合|"           # 審查結果
+    r"正式站|EU01|簽章|PyPI|付款|金額|收費|退款|錢|刪除|刪資料|對客|客戶|"                     # 正式站 / 錢 / 刪資料 / 對客
+    r"截止|期限|到期|" + _A + r"(?:deadline|due|ASAP)" + _Z + r"|前回|前交|交付|交件|"         # 截止 / 交件
+    r"[0-9]{1,2}[:：][0-9]{2}\s*前|今晚|今天內|明天|明早|"
+    r"\?|\uff1f|嗎|呢|能否|是否|可否|請問|麻煩",                                             # 問句
+    re.I)
+# 純確認額外不准有:請 / 要 / 任何路徑或副檔名(保守:有斜線、反斜線、「.字母」就算)
+_ACK_BAD_RE = re.compile(r"請|要|[/\\~]|\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])")
+ACK_MAX = 200
+NOTICE_FILE = "headless-notice.json"       # 結了 / 擬了 ⇒ 下一回合注入一行(SPEC v2 §2.5;注入一次就收)
+NOTICE_SCHEMA = "aib-dm-headless-notice/v1"
+SUGGEST_SCHEMA = "aib-dm-headless-suggest/v1"   # 只擬不結的建議清單(DMTRIAGE 檔旁的 .json;triage-apply 讀它)
+NOTICE_ITEMS = 8                           # 注入那一行最多列幾封(其餘看檔)
 
 PREAMBLE = """You are a mail-triage helper for one AI seat. You have no tools: you cannot run commands, read files, \
 send messages or change anything. You only read the messages below and return a JSON array, nothing else.
 For each message decide one action:
-- "close": it is already done because a GitHub PR was merged. Give "evidence": that merged PR URL \
-(https://github.com/ez2app/<repo>/pull/<n>). Nothing else counts as evidence; without a merged PR URL => do not close.
+- "close": only when one of these is true. Give "evidence" in exactly this form:
+  * a GitHub PR named in the message was merged: "https://github.com/ez2app/<repo>/pull/<n>"
+  * it repeats an earlier message that is already closed: "dup_of:<that q_ id>"
+  * a newer message in the same thread from the same sender replaces it: "superseded_by:<newer q_ id>"
+  * it only acknowledges a message this seat sent (no request, no question, no deadline, no file): "ack_of:<q_ id this seat sent>"
+  Anything else, or when unsure => do not close. The system re-checks every evidence; a wrong one is ignored.
 - "wait": the seat must wait for someone or something. Give "wait": who / what (short).
 - "draft": a reply is needed. Give "draft": the reply text. You never send it; the seat reviews and sends.
 - "leave": anything else, or when unsure.
@@ -133,14 +159,145 @@ def gh_merged(url, run=subprocess.run):
         return False
 
 
-def _evidence_ok(seat, ev, env, gh):
-    """close 的證據驗證 → (可結?, 原因)。只認 ez2app PR 網址 + gh 回 MERGED(@abb89 10-26 01:20 M4 定 C);
-    commit / 檔案 / dm id 背景 AI 沒工具查不了來由,信裡寫什麼它就抄什麼 ⇒ 一律留給本席。"""
+def _evidence_ok(seat, ev, env, gh, item=None, now=None):
+    """close 的證據驗證 → (可結?, 原因)。全部由核心查,不信模型(SPEC v2 §4.2):
+      - 每一種證據都先過 _never_touch(§4.3 絕不碰;含已合 PR,#467 Codex r1 H1)
+      - PR 網址:gh 回 MERGED,而且信裡本來就提到這張 PR(完整網址精確比 repo + 號碼,或 #號)⇒ 同主題
+      - dup_of / superseded_by / expired / ack_of:再各自查
+    其他(commit / 檔案 / 認不得)一律留給本席(@abb89 10-26 M4 定 C 的原則不變)。"""
     if not ev:
         return False, "no-evidence"
-    if _PULL_RE.fullmatch(ev):
+    if item is None:
+        return False, "no-item"
+    text = _item_text(item, env)
+    ok, why = _never_touch(item, text)
+    if not ok:
+        return False, why
+    m = _PULL_RE.fullmatch(ev)
+    if m:
+        if not _mentions_pr(text, ev, m.group(1)):
+            return False, "pr-off-topic"
         return (True, "pr-merged") if gh(ev) else (False, "pr-not-merged")
-    return False, "only-merged-pr"
+    if ev == EXPIRED_EVIDENCE:
+        return (True, "expired") if Q._expired(item, int(time.time() if now is None else now)) else (False, "not-expired")
+    r = _REF_RE.fullmatch(ev)
+    if not r:
+        return False, "only-merged-pr"
+    kind, oid = r.group(1), r.group(2)
+    if oid == item.get("id"):
+        return False, "self-ref"
+    if kind == "ack_of":
+        return _ack_ok(seat, item, text, oid, env)
+    other = Q._load_item(seat, oid, env)
+    if not other:
+        return False, "ref-missing"
+    if kind == "dup_of":
+        return _dup_ok(item, other, text, env)
+    return _superseded_ok(item, other)
+
+
+def _item_text(item, env):
+    """全文;長訊讀不到全文 ⇒ None(不退回信封內容去驗,#467 Codex r1 H1)。"""
+    if not item:
+        return None
+    try:
+        t = Q._full_text(item, env)
+    except Exception:  # noqa: BLE001
+        t = None
+    return t if isinstance(t, str) else None
+
+
+_PULL_ANY_RE = re.compile(r"https://github\.com/ez2app/([A-Za-z0-9_.-]+)/pull/([0-9]{1,7})(?![0-9])")
+
+
+def _mentions_pr(text, url, num):
+    """信裡提到這張 PR:完整網址解析後 repo + 號碼精確相等(pull/1010 不算 pull/101,#467 Codex r1 M),
+    或 #號前後不黏數字。"""
+    t = text or ""
+    want = _PULL_ANY_RE.match(url)
+    if want and any((m.group(1), m.group(2)) == (want.group(1), want.group(2)) for m in _PULL_ANY_RE.finditer(t)):
+        return True
+    return re.search(r"(?<![0-9])#%s(?![0-9])" % re.escape(num), t) is not None
+
+
+def _never_touch(item, text):
+    """SPEC v2 §4.3 絕不碰,所有 close 證據共用(#467 Codex r1 H1 / H2)→ (可以往下驗?, 原因)。
+      長訊讀不到全文 / 真人寄的、待真人審 / 不是量到的席位寄的(全球、別的通訊軟體、系統、認不得)/
+      跨艙(寄件艙 ≠ 收件艙)/ 要裁、交件、自報類 / 禁字(准 / 同意轉述、審查結果、正式站、錢、刪資料、對客、截止、問句)⇒ 不收。
+    跨艙一律不收(SPEC 寫「跨艙第一封」;判第一封要翻歷史,保守起見全部留給本席)。"""
+    if text is None:
+        return False, "relay-unread"
+    if item.get("sender_kind") == "human" or item.get("status") == Q.HOLD_STATUS:
+        return False, "human"
+    if Q.normalize_sender_kind(item.get("sender_kind")) != "seat" or not item.get("sender_seat"):
+        return False, "sender-not-seat"
+    if item.get("sender_source") not in Q.MEASURED_SOURCES:
+        return False, "sender-unmeasured"      # 寄件席是自報的(沒量到 pane / fork 鏈)⇒ 不收(#467 Codex r2 H)
+    sh, rh = str(item.get("sender_hub") or ""), str(item.get("hub") or "")
+    if sh and rh and sh != rh:
+        return False, "cross-cabin"
+    if Q.normalize_kind(item.get("kind")) in ("decide", "deliver", "report"):
+        return False, "kind"
+    if _NEVER_RE.search(text) or _NEVER_RE.search(str(item.get("msg") or "")):
+        return False, "never-words"
+    return True, "ok"
+
+
+_REACHED = ("delivered", "read", "done", "archived")   # 真的到了收件席(queued / claimed / hold_human 不算)
+
+
+def _dup_ok(item, other, text, env):
+    """重複件:前一封已結(done / archived)、比這封早,而且同一份 RELAY 或正文相同(去抬頭、去時效、去空白)。"""
+    import dm_relay as DR
+    if other.get("status") not in ("done", "archived"):
+        return False, "dup-not-closed"
+    try:
+        if int(other.get("ts") or 0) > int(item.get("ts") or 0):
+            return False, "dup-newer"
+    except (TypeError, ValueError):
+        return False, "dup-ts"
+    rp = DR.relay_path_of(str(item.get("msg") or ""))
+    if rp and rp == DR.relay_path_of(str(other.get("msg") or "")):
+        return True, "dup"
+    a, b = TR.normalize_body(text or ""), TR.normalize_body(_item_text(other, env) or "")
+    return (True, "dup") if a and a == b else (False, "dup-differs")
+
+
+def _superseded_ok(item, other):
+    """承接:同 thread(非空)、同寄件席(兩封都要是量到的寄件席)、新的那封比較晚而且真的到了本席
+    (queued / hold_human 不算,#467 Codex r1 M)。結案語意是「已承接」不是「已達成」。"""
+    th = item.get("thread")
+    if not th or other.get("thread") != th:
+        return False, "thread-differs"
+    a, b = Q._sender_key(item), Q._sender_key(other)
+    if a is None or a != b:
+        return False, "sender-differs"
+    if other.get("status") not in _REACHED:
+        return False, "ref-not-reached"
+    try:
+        if int(other.get("ts") or 0) <= int(item.get("ts") or 0):
+            return False, "not-newer"
+    except (TypeError, ValueError):
+        return False, "ts"
+    return True, "superseded"
+
+
+def _ack_ok(seat, item, text, oid, env):
+    """純確認:信裡寫了 oid、oid 真的是本席寄給這封寄件席的(在對方佇列查得到、寄件席是本席);
+    全文短、沒有請 / 要 / 問號 / 回覆期限 / 附件路徑。"""
+    if oid not in (text or ""):
+        return False, "ack-not-cited"
+    if len(text or "") > ACK_MAX or _ACK_BAD_RE.search(text or ""):
+        return False, "ack-not-pure"
+    key = Q._sender_key(item)                 # 這封的寄件席要是量到的(不是自報)
+    if key is None:
+        return False, "ack-no-peer"
+    sent = Q._load_item(str(key[1]), oid, env)
+    if not sent or Q._sender_key(sent) != ("seat", seat):
+        return False, "ack-not-ours"
+    if sent.get("status") not in _REACHED:
+        return False, "ref-not-reached"       # 本席那封還沒送到對方(#467 Codex r1 M)
+    return True, "ack"
 
 
 def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None, dry=False):
@@ -155,6 +312,8 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None, d
     for d in decisions:
         row = allowed.get(d["id"])
         res = {"id": d["id"], "action": d["action"], "applied": False}
+        if row is not None:
+            res["rev"] = row["rev"]
         if row is None:
             res["reason"] = "not-allowed"            # hold_human / 寫了等什麼 / 別的通訊軟體 / 不是這一席的
             out.append(res)
@@ -164,7 +323,7 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None, d
             out.append(res)
             continue
         if d["action"] == "close":
-            ok, why = _evidence_ok(seat, d["evidence"], env, gh)
+            ok, why = _evidence_ok(seat, d["evidence"], env, gh, item=Q._load_item(seat, d["id"], env), now=now)
             res["reason"] = why
             if ok and dry:
                 res["would"] = True
@@ -178,7 +337,7 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None, d
                 cur = Q._load_item(seat, d["id"], env) or {}
                 if cur.get("status") == "read":
                     r = Q.mark_done(seat, d["id"], actor, d["evidence"], env=env, now=now, if_rev=Q.item_rev(cur),
-                                    no_rev_check=False)
+                                    no_rev_check=False, why="背景整理驗過:%s %s" % (why, d["evidence"]))
                     res["applied"] = bool(r.get("ok"))
                     if not r.get("ok"):
                         res["reason"] = "done:%s" % r.get("reason")
@@ -223,6 +382,101 @@ def _write_report(seat, actor, decisions, results, env, now, brand, dry=False):
             lines.append("  草稿:" + d0["draft"].replace("\n", "\n  "))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def _closes(decisions, results, dry):
+    """這一輪「結了」(dry = 驗得過、建議結)的那幾封:[{id, reason, evidence, rev}]。"""
+    by = {d["id"]: d for d in decisions}
+    out = []
+    for r in results:
+        if r.get("action") != "close" or not (r.get("would") if dry else r.get("applied")):
+            continue
+        out.append({"id": r["id"], "reason": r.get("reason") or "", "evidence": str(by.get(r["id"], {}).get("evidence") or ""),
+                    "rev": r.get("rev")})
+    return out
+
+
+def _atomic_json(path, rec):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(".%s.%d.tmp" % (path.name, os.getpid()))
+    tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def suggest_path(report_path):
+    return Path(report_path).with_suffix(".json")
+
+
+def _write_notice(seat, report_path, decisions, results, env, now, dry):
+    """結了 / 擬了 ≥1 封 ⇒ 寫通知檔(下一回合注入一行);dry 另寫建議清單 .json 給 triage-apply。沒有就不寫。
+    不另寄 dm 給本席:那封自己會變一封新未讀、再叫醒整理(迴圈);注入一行 + 整理檔就夠讓席位知道。"""
+    rows = _closes(decisions, results, dry)
+    if not rows:
+        return None
+    if dry:
+        _atomic_json(suggest_path(report_path), {"schema": SUGGEST_SCHEMA, "seat": seat, "at": int(now), "items": rows})
+    rec = {"schema": NOTICE_SCHEMA, "seat": seat, "at": int(now), "dry": bool(dry), "file": str(report_path),
+           "suggest": str(suggest_path(report_path)) if dry else None, "n": len(rows), "items": rows[:NOTICE_ITEMS]}
+    p = Q.seat_dir(seat, env) / NOTICE_FILE
+    _atomic_json(p, rec)
+    return p
+
+
+def take_notice(seat, env=None):
+    """UserPromptSubmit 用:有通知就回一行並收掉(同一份只注入一次;先改名再讀,兩個 hook 同時跑也只有一個拿到)。
+    沒有 / 讀不到 ⇒ 空字串(只是通知,hook 不准炸)。"""
+    p = Q.seat_dir(seat, env) / NOTICE_FILE
+    taken = p.with_name(".%s.taken.%d" % (p.name, os.getpid()))
+    try:
+        os.replace(p, taken)
+    except OSError:
+        return ""
+    try:
+        rec = json.loads(taken.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        rec = None
+    finally:
+        try:
+            taken.unlink()
+        except OSError:
+            pass
+    if not isinstance(rec, dict) or rec.get("schema") != NOTICE_SCHEMA or rec.get("seat") != seat:
+        return ""
+    items = [i for i in rec.get("items") or [] if isinstance(i, dict) and Q.ITEM_RE.fullmatch(str(i.get("id") or ""))]
+    listed = "、".join("%s(%s)" % (i["id"], str(i.get("reason") or "")[:24]) for i in items)
+    n = int(rec.get("n") or len(items))
+    more = "…" if n > len(items) else ""
+    if rec.get("dry"):
+        return ("🧹 背景整理擬了 %d 封結案建議(只擬不結,一封都沒改):%s%s —— 看 %s;要套用 "
+                "`python3 %s/dm_queue.py triage-apply --seat %s --file %s --yes`(逐條重驗才結)") % (
+            n, listed, more, rec.get("file"), HERE, seat, rec.get("suggest"))
+    return "🧹 背景整理結了 %d 封:%s%s —— 證據與理由看 %s;結錯了 `dm_queue.py reopen`" % (n, listed, more, rec.get("file"))
+
+
+def triage_apply(seat, file, yes=False, env=None, now=None, gh=gh_merged):
+    """本席一鍵套用只擬不結的建議(SPEC v2 §2.6):逐條照 apply 重驗(plan 算數、修訂號沒變、證據核心查),
+    yes=False 只預覽。建議檔是本機檔、不是防線 —— 驗得過才結,所以檔被改過最多是「多結了本來就驗得過的」。"""
+    try:
+        rec = json.loads(Path(file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "reason": "unreadable", "message": exc.__class__.__name__}
+    if not isinstance(rec, dict) or rec.get("schema") != SUGGEST_SCHEMA:
+        return {"ok": False, "reason": "schema"}
+    if rec.get("seat") != seat:
+        return {"ok": False, "reason": "seat-mismatch"}
+    items = [i for i in rec.get("items") or [] if isinstance(i, dict) and Q.ITEM_RE.fullmatch(str(i.get("id") or ""))]
+    if not items:
+        return {"ok": True, "reason": "nothing", "results": []}
+    # 每一條都要有有效的修訂號(#467 Codex r1 M):缺了就那一條不套用,絕不整批跳過舊輸出檢查
+    bad = [i for i in items if type(i.get("rev")) is not int]
+    good = [i for i in items if type(i.get("rev")) is int]
+    results = [{"id": i["id"], "action": "close", "applied": False, "reason": "rev-missing"} for i in bad]
+    if good:
+        decisions = [{"id": i["id"], "action": "close", "evidence": str(i.get("evidence") or ""), "wait": "", "draft": "",
+                      "why": ""} for i in good]
+        results += apply(seat, decisions, "seat:" + seat, env=env, now=now, gh=gh,
+                         revs={i["id"]: i["rev"] for i in good}, dry=not yes)
+    return {"ok": True, "reason": "ok", "dry": not yes, "results": results}
 
 
 def ask_ai(brand, prompt, run=None):
@@ -320,6 +574,10 @@ def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged, dry=False):
         dry = bool(dry) or mode == "draft"
         results = apply(seat, decisions, actor, env=env, now=now, gh=gh, revs={r["id"]: r["rev"] for r in fed}, dry=dry)
         path = _write_report(seat, actor, decisions, results, env, now, brand, dry=dry)
+        try:
+            _write_notice(seat, path, decisions, results, env, now, dry)
+        except OSError:
+            pass                                 # 只是通知;寫不了不影響已套用 / 已寫的整理檔
         # ★ 審查 H1:只有 AI 真的回了、而且是餵進去的那幾封才算「看過」;失敗 / 讀不懂 / 沒餵到的不算
         handled = [r["id"] for r in fed if r["id"] in {d["id"] for d in decisions}]
         return {"ok": True, "reason": "ok", "file": str(path), "results": results, "dry": bool(dry)}

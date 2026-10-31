@@ -130,6 +130,12 @@ def main(argv=None, stdin=None, env=None):
     if not seat:
         return 0
     line = brief_line(seat, env=env)
+    try:
+        import dm_triage_headless as H
+        note = H.take_notice(seat, env=env)      # 背景整理結了 / 擬了 ⇒ 注入一行,只一次(SPEC v2 §2.5)
+    except Exception:  # noqa: BLE001 — hook 不准炸
+        note = ""
+    line = "\n".join(x for x in (line, note) if x)
     if line:
         sys.stdout.write(line + "\n")
     return 0
