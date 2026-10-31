@@ -187,6 +187,10 @@ class Bootstrap:
             parts.append("--cabin %s" % self.cabin)
         if self.sig:
             parts.append("--actor %s" % self.sig)
+        want = str(getattr(self.args, "folder", "") or "").strip()
+        if want:                                   # #469 r1 M3:續做那一行要帶著大腦的選擇,不然重跑會變成沒綁大腦
+            import shlex
+            parts.append("--folder %s" % shlex.quote(want))
         return " ".join(parts)
 
     def refuse(self, stage: str, why: str, hint: str, rc: int = 2, next_cmd: Optional[str] = None, **extra) -> int:
@@ -294,9 +298,14 @@ class Bootstrap:
             return None
         try:
             brain_pick.create_new(self.brain_plan)
-        except (SystemExit, OSError, ValueError, KeyError) as exc:
+        except brain_pick.ReindexWarning as exc:     # 夾和代號都在了,只是 reindex 沒跑成:照常綁,提醒一句
+            self.say(self.T("aib.newproj.brain_new_reindex_warn", {"title": c["title"], "key": c["route_key"], "err": exc}), "[!]")
+        except SystemExit as exc:
+            return self.refuse("persona", "brain-create-failed", self.T("aib.newproj.brain_new_failed", {"title": c["title"], "err": exc.code}))
+        except (OSError, ValueError, KeyError) as exc:
             return self.refuse("persona", "brain-create-failed", self.T("aib.newproj.brain_new_failed", {"title": c["title"], "err": exc}))
-        self.say(self.T("aib.newproj.brain_new_made", {"title": c["title"], "key": c["route_key"]}))
+        else:
+            self.say(self.T("aib.newproj.brain_new_made", {"title": c["title"], "key": c["route_key"]}))
         self.brain_plan = None
         return None
 

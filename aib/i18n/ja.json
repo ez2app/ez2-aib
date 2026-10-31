@@ -5950,5 +5950,7 @@
   "aib.newproj.brain_seat_unbound": "{seat} はまだ第二の脳を紐付けていないので共有できません;ルートキー / フォルダか --folder new を指定してください",
   "aib.newproj.brain_new_dry": "(予行)新しい脳フォルダ「{title}」をルートキー {key} で作成します",
   "aib.newproj.brain_new_made": "新しい脳フォルダ「{title}」を作成しました(ルートキー {key})",
-  "aib.newproj.brain_new_failed": "脳フォルダ「{title}」を作成できませんでした:{err}。席は開いていますが人格は未紐付けです;直してから同じ行を(--seat 付きで)再実行してください"
+  "aib.newproj.brain_new_failed": "脳フォルダ「{title}」を作成できませんでした:{err}。席は開いていますが人格は未紐付けです;直してから同じ行を(--seat 付きで)再実行してください",
+  "aib.newproj.brain_new_bad_title": "--folder new でプロジェクト名「{title}」のフォルダを作れません:{err}。プロジェクト名を変えるか既存の脳を選んでください",
+  "aib.newproj.brain_new_reindex_warn": "脳フォルダ「{title}」は作成済み・ルートキー {key} も登録済みですが、後続の再索引に失敗しました({err});紐付けは続行します。後で Vault の再索引を実行してください"
 }

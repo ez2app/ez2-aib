@@ -30,14 +30,17 @@ from typing import Any, Optional
 
 HERE = Path(__file__).resolve().parent
 AIB = HERE.parent.parent
-for _p in (AIB / "src" / "persona_route", AIB / "src" / "identity", AIB / "tools" / "vault"):
+for _p in (AIB / "src" / "persona_route", AIB / "src" / "identity", AIB / "tools" / "vault", AIB / "src" / "cockpit"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
 #: 新建大腦掛在哪條契約路由底下(現有 19 個 proj.* 都在這裡;權限照抄它,不另給)
 NEW_PARENT_ROUTE = "product.expert.draft"
-#: 數筆記最多看幾個檔(大資料夾不拖慢頁面;超過就標 notes_capped)
-NOTE_SCAN_MAX = 5000
+#: 數筆記的總預算(#469 r1 M5):全部路由合計最多看幾個項目(檔 + 目錄都算)、最多幾秒;用完的標 notes_capped
+NOTE_SCAN_MAX = 20000
+NOTE_SCAN_SECONDS = 2.0
+#: 右欄 🤖 橋接席(pane-right-ai.sh AIBOT_PROVIDERS):不戴 👑
+AIBOT_PROVIDERS = frozenset(("sand", "grokbot", "codexbot", "claudebot", "musebot"))
 SEAT_PREFIX = "seat:"
 NEW_WORD = "new"
 _UID_HEX = re.compile(r"^proj:([0-9a-f]{12,})$")
@@ -54,29 +57,41 @@ def _vault() -> Optional[str]:
         return None
 
 
-def _note_stats(vault: Optional[str], folder: str) -> dict:
-    """資料夾底下 .md 篇數與最後修改時刻(epoch);讀不到 ⇒ notes=None(不是 0:0 是「量到了,真的沒有」)。"""
+def _budget() -> dict:
+    return {"left": NOTE_SCAN_MAX, "deadline": time.monotonic() + NOTE_SCAN_SECONDS}
+
+
+def _note_stats(vault: Optional[str], folder: str, budget: Optional[dict] = None) -> dict:
+    """資料夾底下 .md 篇數與最後修改時刻(epoch);讀不到 ⇒ notes=None(不是 0:0 是「量到了,真的沒有」)。
+    用 scandir 一層一層走,每個項目(檔或目錄)都扣 budget,時間到也停 ⇒ 大目錄 / 一堆空目錄都拖不住頁面(#469 r1 M5)。"""
+    budget = budget if budget is not None else _budget()
     if not vault or not folder:
         return {"notes": None, "updated_epoch": None, "notes_capped": False}
     base = Path(vault) / folder
     if not base.is_dir():
         return {"notes": None, "updated_epoch": None, "notes_capped": False}
-    n, latest, seen = 0, 0.0, 0
-    try:
-        for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-            for fn in filenames:
-                seen += 1
-                if seen > NOTE_SCAN_MAX:
+    n, latest, stack = 0, 0.0, [str(base)]
+    while stack:
+        d = stack.pop()
+        try:
+            it = os.scandir(d)
+        except OSError:
+            continue
+        with it:
+            for e in it:
+                budget["left"] -= 1
+                if budget["left"] < 0 or time.monotonic() > budget["deadline"]:
                     return {"notes": n, "updated_epoch": int(latest) or None, "notes_capped": True}
-                if fn.endswith(".md"):
-                    n += 1
-                    try:
-                        latest = max(latest, os.stat(os.path.join(dirpath, fn)).st_mtime)
-                    except OSError:
-                        pass
-    except OSError:
-        return {"notes": None, "updated_epoch": None, "notes_capped": False}
+                if e.name.startswith("."):
+                    continue
+                try:
+                    if e.is_dir(follow_symlinks=False):
+                        stack.append(e.path)
+                    elif e.name.endswith(".md") and e.is_file(follow_symlinks=False):
+                        n += 1
+                        latest = max(latest, e.stat(follow_symlinks=False).st_mtime)
+                except OSError:
+                    pass
     return {"notes": n, "updated_epoch": int(latest) or None, "notes_capped": False}
 
 
@@ -87,6 +102,7 @@ def list_brains(contract: Any, vault: Optional[str] = None, stats: bool = True) 
     if not isinstance(routes, list):
         return []
     vault = vault if vault is not None else _vault()
+    budget = _budget()
     out = []
     for r in routes:
         if not isinstance(r, dict):
@@ -97,13 +113,32 @@ def list_brains(contract: Any, vault: Optional[str] = None, stats: bool = True) 
         ok, _code, _detail = R.check_against_contract(key, contract)
         if not ok:
             continue
-        folder = str(r.get("folder") or "")
-        title = str(r.get("title") or "").strip() or folder.rstrip("/").split("/")[-1] or key
+        literal = str(r.get("folder") or "")
+        # #469 r1 M6:uid 版面的真路徑查 Vault 自己的索引(跟寫入端同一支);查不到才用契約字面
+        try:
+            real = R.resolve_route_folder(key, contract=contract, root=vault) if vault else None
+        except Exception:  # noqa: BLE001
+            real = None
+        folder = real or literal
+        try:
+            label = R.route_label(key, root=vault, contract=contract) if vault else ""
+        except Exception:  # noqa: BLE001
+            label = ""
+        title = (str(r.get("title") or "").strip() or (label if label and label != key else "")
+                 or literal.rstrip("/").split("/")[-1] or key)
         item = {"route_key": key, "title": title, "folder": folder, "source": r.get("source") or "contract"}
         if stats:
-            item.update(_note_stats(vault, folder))
+            item.update(_note_stats(vault, folder if real or not _uid_layout(vault) else "", budget))
         out.append(item)
     return sorted(out, key=lambda x: (x["source"] != "vault", x["title"]))
+
+
+def _uid_layout(vault: Optional[str]) -> bool:
+    try:
+        import route_register as R
+        return bool(vault) and R.vault_is_uid_layout(vault)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _captain_family(role: str) -> bool:
@@ -115,8 +150,14 @@ def _captain_family(role: str) -> bool:
 
 def seat_brains(root: Path, cabin: str = "") -> list:
     """每一席現在綁的 route。cabin 給了只列那一艙;沒給列全部艙。讀不到的席 brain_route_key=None。
-    crown = 右欄戴 👑 的那一席(艦長家族或受派、非顧問、有 session_uuid;受派優先,其次開席早的),每艙至多一席、排最前。"""
+    crown = 右欄戴 👑 的那一席,判準跟右欄同源(#469 r1 M7):艦長家族或受派、非顧問、seat_status.unassigned_reason 驗得過
+    (席位檔讀得懂 + session_uuid 形狀對)、不是 🤖 橋接引擎;受派優先,其次開席早的;每艙至多一席、排最前。
+    右欄另會用活窗 @aib_role 覆寫角色,這裡讀不到 tmux,只看席位檔。"""
     import bind_one as BO
+    try:
+        import seat_status as SS
+    except Exception:  # noqa: BLE001
+        SS = None
     root = Path(root)
     inst = root / "instances"
     cabins = [cabin] if cabin else sorted(p.name for p in inst.iterdir() if p.is_dir()) if inst.is_dir() else []
@@ -150,12 +191,23 @@ def seat_brains(root: Path, cabin: str = "") -> list:
             rows.append(({"seat": "%s/%s" % (cab_code, code), "seat_id": rec["seat_id"], "cabin": cab,
                           "window": rec.get("window_id"), "role": rec.get("role"), "captain": bool(captain), "crown": False,
                           "project_uid": rec.get("project_uid"), "brain_route_key": route},
-                         (not assigned, started), bool(rec.get("session_uuid"))))
+                         (not assigned, started), _crownable(SS, rec, f.name)))
         caps = sorted((r for r in rows if r[0]["captain"] and r[2]), key=lambda r: r[1])
         if caps:
             caps[0][0]["crown"] = True
         out.extend(sorted((r[0] for r in rows), key=lambda x: not x["crown"]))
     return out
+
+
+def _crownable(SS, rec: dict, base: str) -> bool:
+    if str(rec.get("provider") or "") in AIBOT_PROVIDERS:
+        return False
+    if SS is None:
+        return bool(rec.get("session_uuid"))
+    try:
+        return SS.unassigned_reason(rec, base) is None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def new_route_key(project_uid: str) -> Optional[str]:
@@ -189,6 +241,10 @@ def resolve_pick(np, root: Path, contract: Any, value: str, project_uid: str) ->
         for r in (contract or {}).get("routes") or []:
             if isinstance(r, dict) and r.get("routeKey") == key:      # 先前建過(或重跑):直接接
                 return key, None, None
+        import route_register as R
+        ok, code, detail = R.check_against_contract(NEW_PARENT_ROUTE, contract)   # #469 r1 H1:上層不准寫 ⇒ 開席前就擋,不建夾
+        if not ok:
+            return None, None, T("aib.newproj.folder_rejected", {"key": NEW_PARENT_ROUTE, "code": code, "detail": detail})
         vault = _vault()
         if not vault:
             return None, None, T("aib.newproj.brain_new_no_vault")
@@ -196,7 +252,16 @@ def resolve_pick(np, root: Path, contract: Any, value: str, project_uid: str) ->
         if not parent:
             return None, None, T("aib.newproj.brain_new_no_parent", {"route": NEW_PARENT_ROUTE})
         title = str((np.load_card(root, project_uid) or {}).get("title") or project_uid).replace(":", " ").strip()
-        return key, {"create": {"vault": vault, "parent": parent, "title": title, "route_key": key}}, None
+        plan = {"create": {"vault": vault, "parent": parent, "title": title, "route_key": key}}
+        # #469 r1 M2:標題不合法 / 同名夾已掛別的代號 —— folder_add 自己的預演(不寫檔)先跑一次,開席前就擋
+        try:
+            import uid_layout_convert as U
+            U.folder_add(Path(vault), parent, title, True, key)
+        except SystemExit as exc:
+            return None, None, T("aib.newproj.brain_new_bad_title", {"title": title, "err": exc.code})
+        except (OSError, ValueError, KeyError) as exc:
+            return None, None, T("aib.newproj.brain_new_bad_title", {"title": title, "err": exc})
+        return key, plan, None
     if v.lower().startswith(SEAT_PREFIX):
         addr = v[len(SEAT_PREFIX):].strip()
         seat_id, _rec, _inst, err = np._resolve_seat(root, addr)
@@ -216,13 +281,29 @@ def resolve_pick(np, root: Path, contract: Any, value: str, project_uid: str) ->
     return key, None, None
 
 
+class ReindexWarning(Exception):
+    """夾建好、代號也登記了(folder_add 自己寫索引),只是事後的 reindex 沒跑成:可以照常綁,只要提醒。"""
+
+
 def create_new(plan: dict) -> dict:
-    """照 resolve_pick 給的 plan 建夾 + reindex。回 folder_add 的結果;失敗丟 SystemExit / OSError 由呼叫端接。"""
+    """照 resolve_pick 給的 plan 建夾 + reindex。整段握 Vault 的 folder-add 鎖(flock;#469 r1 M4),兩個專案同時建
+    不會互蓋索引。folder_add 失敗丟 SystemExit / OSError;reindex 失敗丟 ReindexWarning(夾已在)。"""
+    import fcntl
     import uid_layout_convert as U
     c = plan["create"]
     vault = Path(c["vault"])
-    res = U.folder_add(vault, c["parent"], c["title"], False, c["route_key"])
-    U.reindex(vault)
+    lock_dir = vault / ".ez2" / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    with open(lock_dir / "folder-add.lock", "a+") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            res = U.folder_add(vault, c["parent"], c["title"], False, c["route_key"])
+            try:
+                U.reindex(vault)
+            except (SystemExit, OSError, ValueError) as exc:
+                raise ReindexWarning(str(getattr(exc, "code", None) or exc)) from exc
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
     return res
 
 

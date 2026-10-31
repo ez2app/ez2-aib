@@ -5950,5 +5950,7 @@
   "aib.newproj.brain_seat_unbound": "{seat}에는 아직 두뇌가 연결되지 않아 함께 쓸 수 없습니다. 라우트 키 / 폴더 또는 --folder new를 주세요",
   "aib.newproj.brain_new_dry": "(미리보기) 새 두뇌 폴더 \"{title}\"를 라우트 키 {key}로 만듭니다",
   "aib.newproj.brain_new_made": "새 두뇌 폴더 \"{title}\"를 만들었습니다(라우트 키 {key})",
-  "aib.newproj.brain_new_failed": "두뇌 폴더 \"{title}\"를 만들지 못했습니다: {err}. 좌석은 열렸지만 인격은 아직 연결되지 않았습니다. 고친 뒤 같은 줄을(--seat 포함) 다시 실행하세요"
+  "aib.newproj.brain_new_failed": "두뇌 폴더 \"{title}\"를 만들지 못했습니다: {err}. 좌석은 열렸지만 인격은 아직 연결되지 않았습니다. 고친 뒤 같은 줄을(--seat 포함) 다시 실행하세요",
+  "aib.newproj.brain_new_bad_title": "--folder new로 프로젝트 제목 \"{title}\" 폴더를 만들 수 없습니다: {err}. 프로젝트 제목을 바꾸거나 기존 두뇌를 연결하세요",
+  "aib.newproj.brain_new_reindex_warn": "두뇌 폴더 \"{title}\"는 만들어졌고 라우트 키 {key}도 등록됐지만 이후 재색인이 실패했습니다({err}). 연결은 계속하며, 나중에 Vault 재색인을 실행하세요"
 }

@@ -5950,5 +5950,7 @@
   "aib.newproj.brain_seat_unbound": "{seat} 還沒綁第二大腦,沒有可以跟著接的;改給路由代號 / 資料夾,或 --folder new",
   "aib.newproj.brain_new_dry": "(預演)會建新的大腦資料夾「{title}」,路由代號 {key}",
   "aib.newproj.brain_new_made": "已建新的大腦資料夾「{title}」(路由代號 {key})",
-  "aib.newproj.brain_new_failed": "新的大腦資料夾「{title}」沒建成:{err}。席已開、人格還沒綁;修好後重跑同一行(帶 --seat)"
+  "aib.newproj.brain_new_failed": "新的大腦資料夾「{title}」沒建成:{err}。席已開、人格還沒綁;修好後重跑同一行(帶 --seat)",
+  "aib.newproj.brain_new_bad_title": "--folder new 沒辦法用專案標題「{title}」建資料夾:{err}。改專案標題,或改接已有的大腦",
+  "aib.newproj.brain_new_reindex_warn": "大腦資料夾「{title}」已建、路由代號 {key} 已登記,但事後的 reindex 沒跑成({err});照常綁定,之後跑一次 Vault reindex 補衍生索引"
 }
