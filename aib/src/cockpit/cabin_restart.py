@@ -39,8 +39,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import glob
 import json
+import math
 import os
 import re
 import shlex
@@ -235,16 +238,40 @@ def _snap_files(sdir):
 
 def _same_boot_path(sdir, boot):
     """這次開機已經有檔(開機時間差 SNAPSHOT_BOOT_JITTER_S 內)就沿用那個檔,不另開一個。"""
-    near = [(abs(b - int(boot)), p) for b, p in _snap_files(sdir) if abs(b - int(boot)) <= SNAPSHOT_BOOT_JITTER_S]
-    return min(near)[1] if near else _snap_path(sdir, boot)
+    return _current_boot_path(sdir, boot) or _snap_path(sdir, boot)
 
 
 def _written_at(path):
+    """快照的 written_at(整數秒);讀不到 / 不是有限數字(1e400、NaN、字串)⇒ 0,不讓一個壞檔擋掉整個查詢。"""
     try:
         with open(path, encoding="utf-8") as fh:
-            return int((json.load(fh) or {}).get("written_at") or 0)
-    except (OSError, ValueError, TypeError, AttributeError):
+            v = (json.load(fh) or {}).get("written_at")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return 0
+        return int(v)
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError, RecursionError):
         return 0
+
+
+def _current_boot_path(sdir, boot):
+    """這次開機(含抖動)最後寫的那份快照路徑;一份都沒有 ⇒ None。讀端跟 write_snapshot 用同一套分組。"""
+    near = [p for b, p in _snap_files(sdir) if abs(b - int(boot)) <= SNAPSHOT_BOOT_JITTER_S]
+    return max(near, key=lambda p: (_written_at(p), p)) if near else None
+
+
+@contextlib.contextmanager
+def _snap_lock(sdir):
+    """同一個快照夾一次只一支 writer(多艙的 watch 會同時寫):選檔、節流檢查、原子替換都在鎖裡,不會同一次開機寫出兩個檔。"""
+    os.makedirs(sdir, exist_ok=True)
+    fd = os.open(os.path.join(sdir, ".snap.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def write_snapshot(*, state_root=None, boot=None, now=None, data=None, min_interval_s=SNAPSHOT_MIN_INTERVAL_S):
@@ -256,15 +283,30 @@ def write_snapshot(*, state_root=None, boot=None, now=None, data=None, min_inter
         return None
     now = time.time() if now is None else now
     sdir = snapshot_dir(state_root)
+    if min_interval_s:   # 先不加鎖看一眼節流,省一次 collect(問每個 hub);鎖裡會再看一次
+        try:
+            cur = _current_boot_path(sdir, boot)
+            if cur and now - os.path.getmtime(cur) < min_interval_s:
+                return None
+        except OSError:
+            pass
+    data = collect(state_root=state_root) if data is None else data
+    if not data.get("cabins"):
+        return None
+    try:
+        with _snap_lock(sdir):
+            return _write_snapshot_locked(sdir, boot, now, data, min_interval_s)
+    except OSError:
+        return None
+
+
+def _write_snapshot_locked(sdir, boot, now, data, min_interval_s):
     path = _same_boot_path(sdir, boot)
     try:
         if min_interval_s and now - os.path.getmtime(path) < min_interval_s:
             return None
     except OSError:
         pass
-    data = collect(state_root=state_root) if data is None else data
-    if not data.get("cabins"):
-        return None
     payload = {"schema": 1, "boot": int(boot), "written_at": int(now),
                "cabins": [{k: v for k, v in c.items() if k not in ("here", "clients")} for c in data["cabins"]]}
     os.makedirs(sdir, exist_ok=True)
@@ -505,10 +547,9 @@ def snapshot_staleness(live, *, state_root=None, boot=None, now=None):
     if not boot:
         return ""
     now = time.time() if now is None else now
-    try:
-        with open(_snap_path(snapshot_dir(state_root), boot), encoding="utf-8") as fh:
-            at = json.load(fh).get("written_at") or 0
-    except (OSError, ValueError):
+    cur = _current_boot_path(snapshot_dir(state_root), boot)   # 跟 write_snapshot 同一套抖動分組(檔名可能差 1–2 秒)
+    at = _written_at(cur) if cur else 0
+    if not at:
         return "⚠ 這次開機還沒有艙的記錄(watch 每 5 分鐘記一次;剛開機或剛更新是正常的,過 15 分鐘還這樣就是 watch 沒在記)。現在停電會救不回這些艙。"
     age = int(now - at)
     if age > SNAPSHOT_STALE_S:

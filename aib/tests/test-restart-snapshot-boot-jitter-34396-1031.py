@@ -10,13 +10,19 @@ J2 這次開機的抖動檔(比現在的開機時間早 1 秒)不算「上一次
 J3 write_snapshot:這次開機已有抖動檔 ⇒ 寫回同一個檔,不另開
 J4 兩次真的不同的開機(差一天):照舊挑最近那次
 J5 群組裡最新的那份壞掉 ⇒ 退回同一次開機的另一份
-刀(複本):K1 previous_boot_snapshot 改回照檔名挑 ⇒ J1 紅;K2 write_snapshot 改回 _snap_path ⇒ J3 紅
+J6 (#464 r1 M1)writer 在鎖裡才選檔:別支 writer 拿著鎖時寫出 boot-3000,放鎖後這支(boot=3001)寫回 boot-3000,不另開
+J7 (#464 r1 M2)過期檢查也認抖動檔:只有剛寫的 boot-2999、現在 boot=3000 ⇒ 不警告
+J8 (#464 r1 M3)written_at = 1e400 / NaN / 布林 ⇒ 當壞時間,不拋例外、退回同組有效檔
+刀(複本):K1 previous_boot_snapshot 改回照檔名挑 ⇒ J1 紅;K2 write_snapshot 改回 _snap_path ⇒ J3 紅;
+           K3 拿掉鎖 ⇒ J6 紅;K4 過期檢查改回精確檔名 ⇒ J7 紅
 """
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -69,7 +75,7 @@ class Jitter(unittest.TestCase):
         data = {"cabins": [{"cabin": "20261031-211004-559f", "seats": [{"code": "34396"}, {"code": "d5cad"}]}]}
         path = CRS.write_snapshot(state_root=self.root, boot=B_NOW, now=1793453000, data=data, min_interval_s=0)
         self.assertEqual(os.path.basename(path), "boot-%d.json" % (B_NOW - 1))
-        self.assertEqual(sorted(os.listdir(self.sdir)), ["boot-%d.json" % (B_NOW - 1)])
+        self.assertEqual(sorted(x for x in os.listdir(self.sdir) if x.endswith(".json")), ["boot-%d.json" % (B_NOW - 1)])
 
     def test_j4_distinct_boots_pick_most_recent(self):
         _put(self.sdir, B_OLD - 86400, 1792990000, ["old"])
@@ -84,6 +90,31 @@ class Jitter(unittest.TestCase):
             fh.write("{broken")
         snap = CRS.previous_boot_snapshot(state_root=self.root, boot=B_NOW)
         self.assertEqual(_codes(snap), ["b5799"])
+
+    def test_j6_writer_selects_inside_lock(self):
+        data = {"cabins": [{"cabin": "20261031-211004-559f", "seats": [{"code": "34396"}]}]}
+        out = {}
+        with CRS._snap_lock(self.sdir):
+            t = threading.Thread(target=lambda: out.setdefault("p", CRS.write_snapshot(state_root=self.root, boot=3001, now=5000, data=data, min_interval_s=0)))
+            t.start(); time.sleep(0.3)
+            self.assertTrue(t.is_alive(), "writer 要等鎖")
+            _put(self.sdir, 3000, 4999, ["other"])   # 拿著鎖的那支寫了 boot-3000
+        t.join(10)
+        self.assertEqual(os.path.basename(out["p"]), "boot-3000.json")
+        self.assertEqual(sorted(x for x in os.listdir(self.sdir) if x.endswith(".json")), ["boot-3000.json"])
+
+    def test_j7_staleness_reads_jitter_file(self):
+        _put(self.sdir, 2999, 5000, ["34396"])
+        self.assertEqual(CRS.snapshot_staleness([{"cabin": "x"}], state_root=self.root, boot=3000, now=5060), "")
+        self.assertIn("分鐘沒更新", CRS.snapshot_staleness([{"cabin": "x"}], state_root=self.root, boot=3000, now=5000 + 3600))
+
+    def test_j8_non_finite_written_at(self):
+        _put(self.sdir, B_OLD, 1793451751, ["f5fb8"])
+        for bad in ("1e400", "NaN", "true"):
+            with open(os.path.join(self.sdir, "boot-%d.json" % (B_OLD + 1)), "w") as fh:
+                fh.write('{"schema": 1, "written_at": %s, "cabins": [{"cabin": "c", "seats": [{"code": "old"}]}]}' % bad)
+            snap = CRS.previous_boot_snapshot(state_root=self.root, boot=B_NOW)
+            self.assertEqual(_codes(snap), ["f5fb8"], bad)
 
 
 class Knives(unittest.TestCase):
@@ -110,6 +141,14 @@ class Knives(unittest.TestCase):
     def test_k2_write_new_file(self):
         self._knife("path = _same_boot_path(sdir, boot)", "path = _snap_path(sdir, boot)",
                     "Jitter.test_j3_write_reuses_same_boot_file")
+
+    def test_k3_no_lock(self):
+        self._knife("        with _snap_lock(sdir):\n            return _write_snapshot_locked(", "        with contextlib.nullcontext():\n            return _write_snapshot_locked(",
+                    "Jitter.test_j6_writer_selects_inside_lock")
+
+    def test_k4_staleness_exact_name(self):
+        self._knife("    cur = _current_boot_path(snapshot_dir(state_root), boot)", "    cur = _snap_path(snapshot_dir(state_root), boot) if os.path.exists(_snap_path(snapshot_dir(state_root), boot)) else None",
+                    "Jitter.test_j7_staleness_reads_jitter_file")
 
 
 if __name__ == "__main__":
