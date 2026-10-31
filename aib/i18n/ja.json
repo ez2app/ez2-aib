@@ -650,7 +650,7 @@
   "aib.room_tab.ui_mode": "UI モード:{value}",
   "aib.room_tab.hint_ui": "変更:aib ui room|terminal",
   "aib.room_tab.version": "艦長室バージョン:{value}",
-  "aib.room_tab.url": "このキャビンの URL:{value}",
+  "aib.room_tab.url": "この端末のキャビン URL:{value}",
   "aib.room_tab.url_off": "未起動",
   "aib.memory.kind.progress": "進捗",
   "aib.memory.kind.decision": "決定",

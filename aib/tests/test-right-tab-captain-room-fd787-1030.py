@@ -117,6 +117,78 @@ def tr(locale, key):
     return json.loads((ROOT / "i18n" / ("%s.json" % locale)).read_text(encoding="utf-8"))[key]
 
 
+class AibCmdRoute(Base):
+    """10-31 Andy 點右欄第 4 頁第一列「開啟艦長艙」沒開:bash 啟動器的 room 只認同資料夾的 captain_room.py(公開版沒有)⇒ 印「還在開發中」。
+    開室要走使用者打 `aib` 的那條(PATH 上的 aib / 套件入口 cli.py),bash 啟動器只是最後退路。"""
+
+    def aib_cmd(self, path, with_fake=False):
+        e = self.env(PATH=path)
+        e.pop("AIB_ROOM_TAB_AIB", None)
+        code = "import json, sys; sys.path.insert(0, %r); import right_room_page as m; print(json.dumps(m.aib_cmd()))" % str(COCKPIT)
+        r = subprocess.run([sys.executable, "-B", "-c", code], env=e, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout.strip())
+
+    def test_d1_path_aib_wins(self):
+        bindir = self.d / "bin"
+        bindir.mkdir()
+        fake = bindir / "aib"
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        self.assertEqual(self.aib_cmd("%s:%s" % (bindir, TEST_PATH)), [str(fake)], "PATH 上的 aib 優先(跟 aib_ui._aib_bin 同)")
+
+    def test_d2_cli_entry_when_no_path_aib(self):
+        empty = self.d / "empty-bin"
+        empty.mkdir()
+        cmd = self.aib_cmd(str(empty))
+        self.assertEqual(cmd, [sys.executable, str(ROOT / "cli.py")], "沒 PATH aib ⇒ 走套件入口 cli.py(會把 room 交給外掛),不是 bash 啟動器")
+        self.assertNotEqual(cmd[0], "bash")
+
+    def test_d3_bash_launcher_cannot_open_room(self):
+        """刀 / 根因紀錄:公開版 bash 啟動器的 `room open` 只會說還在開發中(rc 2),所以不能當預設路徑。"""
+        if (COCKPIT / "captain_room.py").is_file():
+            self.skipTest("這棵樹有核心版 captain_room.py(私有倉),bash 啟動器開得了")
+        e = self.env()
+        r = subprocess.run([BASH, str(COCKPIT / "aib"), "room", "open", "--no-browser"], env=e, capture_output=True,
+                           text=True, timeout=60, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 2, (r.stdout, r.stderr))
+        self.assertIn("room", r.stdout + r.stderr)
+
+    def _layout(self, name, module_src):
+        """套件布局:<d>/<name>/aib/src/cockpit/right_room_page.py + <d>/<name>/aib/cli.py(假入口,只要存在)。"""
+        root = self.d / name / "aib"
+        cockpit = root / "src" / "cockpit"
+        cockpit.mkdir(parents=True)
+        (cockpit / "right_room_page.py").write_text(module_src, encoding="utf-8")
+        (root / "cli.py").write_text("print('fake cli')\n", encoding="utf-8")
+        if (COCKPIT / "i18n_lib.py").is_file():
+            shutil.copy(str(COCKPIT / "i18n_lib.py"), str(cockpit / "i18n_lib.py"))
+        return root
+
+    def _cmd_in(self, root):
+        empty = self.d / ("empty-" + root.parent.name)
+        empty.mkdir(exist_ok=True)
+        e = self.env(PATH=str(empty))
+        e.pop("AIB_ROOM_TAB_AIB", None)
+        code = ("import json, sys; sys.path.insert(0, %r); import right_room_page as m; print(json.dumps(m.aib_cmd()))"
+                % str(root / "src" / "cockpit"))
+        r = subprocess.run([sys.executable, "-B", "-c", code], env=e, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout.strip())
+
+    def test_d4_knife_old_route(self):
+        """刀:同一個套件布局(cli.py 在)下,原版選 cli.py;拿掉 PATH / cli.py 兩層的刀版退回 bash ⇒ D2 的斷言在刀版必紅。"""
+        src = PAGE.read_text(encoding="utf-8")
+        seg1 = "    found = shutil.which(\"aib\")\n    if found:\n        return [found]\n"
+        seg2 = "    if os.path.isfile(cli):\n        return [sys.executable, cli]\n"
+        self.assertEqual(src.count(seg1), 1, "刀要切的第一段找不到(程式改了,刀跟著改)")
+        self.assertEqual(src.count(seg2), 1, "刀要切的第二段找不到")
+        cut = src.replace(seg1, "").replace(seg2, "")
+        good = self._layout("layout-good", src)
+        bad = self._layout("layout-knife", cut)
+        self.assertEqual(self._cmd_in(good), [sys.executable, str(good / "cli.py")], "原版在同布局選 cli.py(= D2)")
+        self.assertEqual(self._cmd_in(bad)[0], "bash", "刀版在同布局退回 bash ⇒ D2 斷言紅")
+
 class TabBar(Base):
     def test_c1_four_spans_and_bar(self):
         out = self.frame(4)

@@ -650,7 +650,7 @@
   "aib.room_tab.ui_mode": "介面模式:{value}",
   "aib.room_tab.hint_ui": "改:aib ui room|terminal",
   "aib.room_tab.version": "艦長室版本:{value}",
-  "aib.room_tab.url": "本艙網址:{value}",
+  "aib.room_tab.url": "本機艙址:{value}",
   "aib.room_tab.url_off": "未啟動",
   "aib.memory.kind.progress": "進度",
   "aib.memory.kind.decision": "決定",
