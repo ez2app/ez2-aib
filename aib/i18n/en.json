@@ -650,7 +650,7 @@
   "aib.room_tab.ui_mode": "UI mode: {value}",
   "aib.room_tab.hint_ui": "Change: aib ui room|terminal",
   "aib.room_tab.version": "Captain's Room version: {value}",
-  "aib.room_tab.url": "Cabin URL: {value}",
+  "aib.room_tab.url": "Local cabin address: {value}",
   "aib.room_tab.url_off": "not running",
   "aib.memory.kind.progress": "Progress",
   "aib.memory.kind.decision": "Decision",

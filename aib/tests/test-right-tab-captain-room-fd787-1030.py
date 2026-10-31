@@ -117,6 +117,64 @@ def tr(locale, key):
     return json.loads((ROOT / "i18n" / ("%s.json" % locale)).read_text(encoding="utf-8"))[key]
 
 
+class AibCmdRoute(Base):
+    """10-31 Andy 點「開啟遊戲化艦長艙」沒開:bash 啟動器的 room 只認同資料夾的 captain_room.py(公開版沒有)⇒ 印「還在開發中」。
+    開室要走使用者打 `aib` 的那條(PATH 上的 aib / 套件入口 cli.py),bash 啟動器只是最後退路。"""
+
+    def aib_cmd(self, path, with_fake=False):
+        e = self.env(PATH=path)
+        e.pop("AIB_ROOM_TAB_AIB", None)
+        code = "import json, sys; sys.path.insert(0, %r); import right_room_page as m; print(json.dumps(m.aib_cmd()))" % str(COCKPIT)
+        r = subprocess.run([sys.executable, "-B", "-c", code], env=e, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout.strip())
+
+    def test_d1_path_aib_wins(self):
+        bindir = self.d / "bin"
+        bindir.mkdir()
+        fake = bindir / "aib"
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        self.assertEqual(self.aib_cmd("%s:%s" % (bindir, TEST_PATH)), [str(fake)], "PATH 上的 aib 優先(跟 aib_ui._aib_bin 同)")
+
+    def test_d2_cli_entry_when_no_path_aib(self):
+        empty = self.d / "empty-bin"
+        empty.mkdir()
+        cmd = self.aib_cmd(str(empty))
+        self.assertEqual(cmd, [sys.executable, str(ROOT / "cli.py")], "沒 PATH aib ⇒ 走套件入口 cli.py(會把 room 交給外掛),不是 bash 啟動器")
+        self.assertNotEqual(cmd[0], "bash")
+
+    def test_d3_bash_launcher_cannot_open_room(self):
+        """刀 / 根因紀錄:公開版 bash 啟動器的 `room open` 只會說還在開發中(rc 2),所以不能當預設路徑。"""
+        if (COCKPIT / "captain_room.py").is_file():
+            self.skipTest("這棵樹有核心版 captain_room.py(私有倉),bash 啟動器開得了")
+        e = self.env()
+        r = subprocess.run([BASH, str(COCKPIT / "aib"), "room", "open", "--no-browser"], env=e, capture_output=True,
+                           text=True, timeout=60, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 2, (r.stdout, r.stderr))
+        self.assertIn("room", r.stdout + r.stderr)
+
+    def test_d4_knife_old_route(self):
+        """拿掉 PATH / cli.py 兩層 ⇒ 退回 bash 啟動器 ⇒ d2 必紅(刀要真咬)。"""
+        src = PAGE.read_text(encoding="utf-8")
+        cut = src.replace("    found = shutil.which(\"aib\")\n    if found:\n        return [found]\n", "")
+        cut = cut.replace("    if os.path.isfile(cli):\n        return [sys.executable, cli]\n", "")
+        self.assertNotEqual(cut, src)
+        kd = self.d / "knife"
+        kd.mkdir()
+        (kd / "right_room_page.py").write_text(cut, encoding="utf-8")
+        for f in ("i18n_lib.py",):
+            if (COCKPIT / f).is_file():
+                shutil.copy(str(COCKPIT / f), str(kd / f))
+        e = self.env(PATH=str(self.d / "empty-bin-k"))
+        (self.d / "empty-bin-k").mkdir()
+        e.pop("AIB_ROOM_TAB_AIB", None)
+        code = "import json, sys; sys.path.insert(0, %r); import right_room_page as m; print(json.dumps(m.aib_cmd()))" % str(kd)
+        r = subprocess.run([sys.executable, "-B", "-c", code], env=e, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip())[0], "bash", "刀版退回 bash 啟動器 ⇒ 正式版的 d2 斷言在刀版會紅")
+
+
 class TabBar(Base):
     def test_c1_four_spans_and_bar(self):
         out = self.frame(4)

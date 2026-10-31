@@ -3,7 +3,7 @@
 """右欄第 4 頁「艦長艙」(Andy 10-30 21:1x;規格 SPEC-right-tab-captain-room-f5fb8-1030,工單 #446)。
 
 Andy 原話:「在 1.AI 2.AI用量 3.離艙 新增一個 4.艦長艙,在第 4 個裡面第一個是開啟遊戲化艦長艙,
-之後有些簡易設定可以放在裡面」。v1 只做:第一列開啟艦長室 + 三列唯讀設定(介面模式 / 外掛版本 / 本艙網址)。
+之後有些簡易設定可以放在裡面」。v1 只做:第一列開啟艦長室 + 三列唯讀設定(介面模式 / 外掛版本 / 本機艙址,值跟 aib room status 走、每台自己的)。
 
 用法(畫面層只讀快取,慢的在背景跑):
   right_room_page.py render --width W --row-offset N   第 4 頁的字;順便寫 ai-rowmap.json(第一列 = room-open)
@@ -19,6 +19,7 @@ import argparse
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -267,10 +268,20 @@ def cmd_render(width, row_offset, now=None, spawn=_spawn_produce):
 # ── 開啟 ──────────────────────────────────────────────────────────────────────────
 
 def aib_cmd():
-    """aib 入口:AIB_ROOM_TAB_AIB(治具 / 替身)> 同資料夾的 aib(mouse-ctl 叫 aib 的同一種寫法)。"""
+    """aib 入口:AIB_ROOM_TAB_AIB(治具 / 替身)> PATH 上的 aib > 套件入口 cli.py > 同資料夾的 bash 啟動器。
+
+    10-31 Andy 點「開啟遊戲化艦長艙」沒開:bash 啟動器(src/cockpit/aib)的 `room` 只認同資料夾的 captain_room.py,
+    公開版沒有那支 ⇒ 印「還在開發中」就退;把 room 交給已裝外掛的是套件入口(aib/cli.py → aib_plugins.find_command),
+    所以要走使用者自己打 `aib` 時走的那條(跟 aib_ui._aib_bin 同順序),最後才退回 bash 啟動器。"""
     alt = os.environ.get("AIB_ROOM_TAB_AIB")
     if alt:
         return [alt]
+    found = shutil.which("aib")
+    if found:
+        return [found]
+    cli = os.path.normpath(os.path.join(HERE, "..", "..", "cli.py"))
+    if os.path.isfile(cli):
+        return [sys.executable, cli]
     return ["bash", os.path.join(HERE, "aib")]
 
 

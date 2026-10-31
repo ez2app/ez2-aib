@@ -650,7 +650,7 @@
   "aib.room_tab.ui_mode": "UI 모드: {value}",
   "aib.room_tab.hint_ui": "변경: aib ui room|terminal",
   "aib.room_tab.version": "함장실 버전: {value}",
-  "aib.room_tab.url": "이 함선 URL: {value}",
+  "aib.room_tab.url": "이 기기의 함선 주소: {value}",
   "aib.room_tab.url_off": "실행 안 됨",
   "aib.memory.kind.progress": "진행",
   "aib.memory.kind.decision": "결정",
