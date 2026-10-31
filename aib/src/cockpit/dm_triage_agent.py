@@ -220,6 +220,28 @@ def agent_lock(seat, actor, env=None, now=None, release=False, status=False, han
         return _agent_lock(seat, actor, env=env, now=now, release=release, status=status, handled=handled, pid=pid)
 
 
+def agent_lock_set_pid(seat, actor, pid, env=None, now=None):
+    """spawn 之後補記子程序 pid(#468 Codex r1 M2)。只動「持有人是 actor、而且還沒過期」的那把鎖;
+    子程序已經跑完放鎖(until=0)或換人了 ⇒ 不動(不重建、不清 handled_ids、不重登 1200 秒)。"""
+    now = int(time.time() if now is None else now)
+    path = Q.seat_dir(seat, env) / AGENT_LOCK_FILE
+    with _Mutex(Q.seat_dir(seat, env) / AGENT_LOCK_MUTEX) as mx:
+        if mx.busy:
+            return False
+        try:
+            cur = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        until = cur.get("until") if isinstance(cur, dict) else None
+        if (not isinstance(cur, dict) or cur.get("by") != actor or not isinstance(until, int)
+                or isinstance(until, bool) or now >= until or not isinstance(pid, int) or pid <= 0):
+            return False
+        cur = dict(cur)
+        cur["pid"], cur["pid_start"] = pid, Q._proc_start(pid)
+        Q.AJ.write_json(str(path), cur)
+        return True
+
+
 def agent_lock_restore(seat, actor, prev, env=None):
     """把鎖檔還原成 prev(登記前讀到的原樣;None = 原本沒有檔)。只在現在的持有人還是 actor 時動(第三張 r2 M:
     spawn 失敗不能用「放鎖」還原 —— 放鎖會留下新的登記時間,下一拍被當成「子代理接過了」改走一般叫醒)。"""
@@ -296,6 +318,10 @@ def _agent_lock(seat, actor, env=None, now=None, release=False, status=False, ha
                 "over_threshold": p["over_threshold"]}
     path.parent.mkdir(parents=True, exist_ok=True)
     rec = {"by": actor, "at": cur.get("at") if live else now, "until": now + AGENT_LOCK_TTL_S, "seen_at": now}
+    # #468 Codex r1 M4:登記時帶著上一輪放鎖記的看過集合(背景整理子程序開工才讀;不帶 ⇒ 上一輪看過的 A@1 又被餵)
+    for k in ("handled_ids", "released_at"):
+        if k in cur:
+            rec[k] = cur[k]
     if pid is None and live and cur.get("by") == actor:
         pid = cur.get("pid")               # 續期不丟掉起的時候記的行程
     if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:

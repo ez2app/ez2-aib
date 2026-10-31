@@ -122,7 +122,8 @@ HEADLESS_GLOBAL_MAX = 2           # 全機同時在跑的背景整理最多幾�
 MEM_FREE_MIN_PCT = 10.0           # 可用記憶體低於這個百分比不起(量不到 ⇒ 不擋)
 AUTO_REASONS = ("rewake", "triage-stalled")   # wake_decision 這兩種 = 叫過、ACK 過了、本席沒動作
 SLOT_DIR = "headless-slots"       # <佇列根>/headless-slots/slot-<n>.json;整個目錄的增刪持 .mutex 的 flock
-SLOT_TTL_S = 2 * TIMEOUT_S + 120  # 名額最多佔這麼久(子程序當掉沒放 ⇒ 過期回收;記了 pid 的行程不在也回收)
+SLOT_TTL_S = 2 * TIMEOUT_S + 120  # 沒記 pid 的名額最多佔這麼久(spawn 前後那幾秒;子程序當掉沒放 ⇒ 過期回收)
+SLOT_MAX_S = 3600                 # 記了 pid、行程還活著:不看 TTL,最多佔這麼久(#468 Codex r1 M1:一輪可能超過 720 秒)
 DEFER_RETRY_S = 300               # deferred 沒有更準的時間時,幾秒後再試
 
 
@@ -188,10 +189,15 @@ def _slot_stale(path, now):
         return True                        # 壞檔:佔著不放會永遠少一個名額 ⇒ 回收
     if not isinstance(cur, dict):
         return True
-    until = cur.get("until")
-    if not isinstance(until, int) or isinstance(until, bool) or now >= until:
+    until, at, pid = cur.get("until"), cur.get("at"), cur.get("pid")
+    if not isinstance(until, int) or isinstance(until, bool):
         return True
-    return TA.holder_dead(cur)
+    if TA.holder_dead(cur):
+        return True                        # 記了 pid、行程已不在 ⇒ 回收
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        # #468 Codex r1 M1:持有人還活著 ⇒ TTL 到了也不回收(不然全機 2 個的上限會被突破);只有硬上限到了才收
+        return not isinstance(at, int) or isinstance(at, bool) or now >= at + SLOT_MAX_S
+    return now >= until
 
 
 def reserve_slot(seat, key, env=None, now=None):
@@ -750,6 +756,8 @@ def _run(seat, brand, env, now, ask, gh, dry, actor):
             pass                                 # 只是通知;寫不了不影響已套用 / 已寫的整理檔
         # ★ 審查 H1:只有 AI 真的回了、而且是餵進去的那幾封才算「看過」;失敗 / 讀不懂 / 沒餵到的不算
         handled = [TR.pair(r["id"], r.get("rev")) for r in fed if r["id"] in {d["id"] for d in decisions}]
+        # #468 Codex r1 M4:上一輪看過、這輪因此沒餵的(同一版)照樣算看過,不然再下一輪又會餵
+        handled += sorted(h for h in seen if "@" in str(h) and str(h) not in handled)
         return {"ok": True, "reason": "ok", "file": str(path), "results": results, "dry": bool(dry)}
     finally:
         TA.agent_lock(seat, actor, env=env, now=now, release=True, handled=handled)

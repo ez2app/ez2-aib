@@ -2324,9 +2324,7 @@ def _triage_headless_auto(seat, rec, path, env, now):
     if not gate_ok:
         day = sorted(t for t in (rec.get("wake_log") or []) if isinstance(t, int) and now - t < 86400)
         return defer(gate_why, (day[0] + 86400) if gate_why == "daily-max" and day else now + H.DEFER_RETRY_S)
-    lock = _triage_lock(seat, env)
-    if TA.holder_dead(lock):
-        lock = None                        # 登記的背景行程已不在:不當有人在做(agent_lock 也會讓重登)
+    lock = _live_triage_lock(seat, env)    # 登記的背景行程已不在:不當有人在做(agent_lock 也會讓重登)
     ok, why, next_at = H.should_start_auto(rec, now, lock, _load1(), brand, _triage_mode(brand), key,
                                            per_hour=triage_quota(seat, env)[0], mem_free=H.MEM_FN())
     if not ok:
@@ -2341,27 +2339,40 @@ def _triage_headless_auto(seat, rec, path, env, now):
     if not lk.get("ok"):
         H.release_slot(slot, seat, env)
         return defer("agent-working", now + H.DEFER_RETRY_S)
+    # #468 Codex r1 M5:先把帳(去重鍵 / 每小時 / 每日)記好才 spawn —— 記不下來就不起(否則上限可繞過);
+    #   spawn 失敗再把帳退回原樣(第三張 r2 M:失敗不能留下去重鍵,下一拍要能重試)
+    day_log = [t for t in (rec.get("wake_log") or []) if isinstance(t, int) and now - t < 86400]
+    r2 = dict(rec)
+    r2.update({"headless_at": now, "headless_key": key, "headless_log": H._hour_log(rec, now) + [now],
+               "wake_log": day_log + [now],
+               "headless": {"state": "started", "why": "auto", "at": now, "batch_key": key, "draft": True}})
+    if not TR.write(path, r2):
+        TA.agent_lock_restore(seat, actor, raw_lock, env=env)
+        H.release_slot(slot, seat, env)
+        return "headless-deferred:state-unwritable"
     try:
         proc = SPAWN_HEADLESS(seat, brand, env, draft=True, actor=actor, slot=slot)
     except OSError:
-        # 第三張 r2 M:spawn 失敗 ⇒ 鎖還原成登記前的原樣、名額放回、不記去重鍵,寫 deferred + 下次時間
+        # 第三張 r2 M:spawn 失敗 ⇒ 鎖還原成登記前的原樣、名額放回、帳退回(不留去重鍵),寫 deferred + 下次時間
         TA.agent_lock_restore(seat, actor, raw_lock, env=env)
         H.release_slot(slot, seat, env)
         return defer("spawn-failed", now + H.DEFER_RETRY_S)
     pid = getattr(proc, "pid", None)
     if isinstance(pid, int) and pid > 0:
         H.slot_set_pid(slot, pid, env=env)
-        TA.agent_lock(seat, actor, env=env, now=now, pid=pid)
-    day_log = [t for t in (rec.get("wake_log") or []) if isinstance(t, int) and now - t < 86400]
-    r2 = dict(rec)
-    r2.update({"headless_at": now, "headless_key": key, "headless_log": H._hour_log(rec, now) + [now],
-               "wake_log": day_log + [now],
-               "headless": {"state": "started", "why": "auto", "at": now, "batch_key": key, "draft": True}})
-    TR.write(path, r2)
+        # #468 Codex r1 M2:只補記到「本次、還有效」的那把鎖;子程序已經跑完放鎖 ⇒ 不重建、不清 handled_ids
+        TA.agent_lock_set_pid(seat, actor, pid, env=env)
     return "headless-started"
 
 
 DEFER_LONG_WORK_S = 300
+
+
+def _live_triage_lock(seat, env=None):
+    """同 _triage_lock,但登記的背景行程已不在(holder_dead)⇒ None(#468 Codex r1 M3:叫醒判斷不再等 20 分鐘)。"""
+    import dm_triage_agent as TA
+    lk = _triage_lock(seat, env)
+    return None if TA.holder_dead(lk) else lk
 
 
 def _triage_lock(seat, env=None):
@@ -2461,7 +2472,7 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
         except Exception:  # noqa: BLE001
             auto_on = True                 # 讀不到開關 = draft(只擬不結)
         in_turn, ack_at = ack_base(seat, env) if auto_on else (False, None)
-        normal, why, rewake = TR.wake_decision(rec, now, _triage_lock(seat, env), _load1(),
+        normal, why, rewake = TR.wake_decision(rec, now, _live_triage_lock(seat, env), _load1(),
                                                ack_at=ack_at, ack_s=TR.ACK_S if auto_on else None)
         stalled = why == "triage-stalled"
         if stalled != bool(rec.get("triage_stalled")) and why != "waiting-pickup":

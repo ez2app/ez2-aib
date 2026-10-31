@@ -17,6 +17,8 @@ M5 spawn 失敗 ⇒ 不記去重鍵、名額放回、鎖放掉、deferred spawn-
 M6 看過 / 叫醒 / 餵信都認 (id, rev):同一封出新版 ⇒ 不算看過、算新的(r2 M)
 L  每小時上限接獨立設定檔(每席 > 全艦 > 預設;壞檔 ⇒ 預設,不退下一層)(r2 L)
 TM 回合邊界:mark_turn / ack_base
+R1(#468 Codex r1):M1 持有人活著名額不因 TTL 回收(硬上限才收)/ M2 補記 pid 只動本次有效的鎖 /
+   M3 背景行程死了叫醒判斷不再當 agent-working / M4 父程序預登記不吃掉上一輪看過的 / M5 帳記不下來不 spawn
 Knife(本檔最後):每個守衛一刀,knife_copy + run_guarded,只跑目標那一格,要「那一格 FAIL」(ERROR 不算)。
    單跑刀:python3 -B tests/<本檔> Knife
 """
@@ -380,6 +382,84 @@ class TMTurn(Tmp):
         self.assertEqual(Q.ack_base("aaaaa", self.env), (False, None), "型別不對 ⇒ 不算回合中、退回叫醒時刻")
 
 
+class R1Codex(unittest.TestCase):
+    def test_m1_alive_holder_keeps_slot(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = dict(os.environ, EZ2_AIB_STATE_ROOT=td, EZ2_AIB_HOME=td, HOME=td)
+            a = H.reserve_slot("aaaaa", "k1", env=env, now=NOW)
+            b = H.reserve_slot("bbbbb", "k2", env=env, now=NOW)
+            self.assertTrue(H.slot_set_pid(a, os.getpid(), env=env))
+            later = NOW + H.SLOT_TTL_S + 5
+            got = H.reserve_slot("ccccc", "k3", env=env, now=later)
+            self.assertEqual(got, b, "沒記 pid 的那格過期回收;記了 pid、還活著的那格不收:%r" % got)
+            self.assertIsNone(H.reserve_slot("ddddd", "k4", env=env, now=later), "還活著的那格不因 TTL 被搶")
+            self.assertEqual(H.reserve_slot("ddddd", "k4", env=env, now=NOW + H.SLOT_MAX_S + 1), a, "硬上限到了才收")
+
+    def test_m2_set_pid_only_live_own_lock(self):
+        out = HN.QBox(self).py(SETUP + (
+            "class _Q: pid = os.getpid()\n"
+            "def child(seat, brand, env, draft=False, actor=None, slot=None):\n"
+            "    TA.agent_lock(seat, actor, env=env, now=t + A + 5, release=True, handled=[])\n"   # 子程序已跑完放鎖
+            "    spawned.append(actor); return _Q()\n"
+            "Q.SPAWN_HEADLESS = child\n"
+            "w0 = two()\n"
+            "w1 = whys(tick(t + A + 5))\n"
+            "lk = Q._triage_lock(%r, env)\n"
+            "print(json.dumps({'w1': w1, 'until': lk.get('until'), 'pid': lk.get('pid')}))\n") % SEAT)
+        self.assertIn("headless-started", out["w1"], out)
+        self.assertEqual((out["until"], out["pid"]), (0, None), "子程序放掉的鎖不被父程序重建 / 重登:%r" % out)
+
+    def test_m3_dead_holder_not_agent_working(self):
+        out = HN.QBox(self).py(SETUP + (
+            "w0 = two()\n"
+            "w1 = whys(tick(t + A + 5))\n"
+            "dead = __import__('subprocess').Popen([sys.executable, '-c', 'pass']); dead.wait()\n"
+            "p = Q.seat_dir(%r, env) / TA.AGENT_LOCK_FILE; lk = json.loads(p.read_text()); lk['pid'] = dead.pid\n"
+            "p.write_text(json.dumps(lk))\n"
+            "w2 = whys(tick(t + A + 30))\n"
+            "print(json.dumps({'w1': w1, 'w2': w2}))\n") % SEAT)
+        self.assertIn("headless-started", out["w1"], out)
+        self.assertNotEqual(out["w2"], ["agent-working"], "背景行程死了 ⇒ 不再當有人在做:%r" % out)
+        self.assertEqual(out["w2"], ["headless-deferred:same-batch"], out)
+
+    def test_m4_preregister_keeps_seen(self):
+        out = HN.QBox(self).py(SETUP + (
+            "fed = []\n"
+            "def ask(brand, prompt):\n"
+            "    ids = __import__('re').findall(r'q_[0-9a-f]{16}', prompt); fed.extend(ids)\n"
+            "    return json.dumps([{'id': i, 'action': 'leave'} for i in dict.fromkeys(ids)]), 'ok'\n"
+            "def child(seat, brand, env, draft=False, actor=None, slot=None):\n"
+            "    H.run(seat, brand, env=env, now=t + A + 5, ask=ask, dry=True, actor=actor, slot=slot)\n"
+            "    spawned.append(actor); return _P()\n"
+            "Q.SPAWN_HEADLESS = child\n"
+            "a = put('第一件:要你看一下', t - 50); b = put('第二件:另一個題目', t - 40)\n"
+            "ra = Q._load_item(%r, a, env)['rev']\n"
+            "p = Q.seat_dir(%r, env) / TA.AGENT_LOCK_FILE\n"
+            "p.write_text(json.dumps({'by': 'agent:x/sub', 'at': t - 100, 'until': 0, 'released_at': t - 60,\n"
+            "                         'handled_ids': [a + '@' + str(ra)]}))\n"
+            "c = put('第三件', t - 30)\n"
+            "w0 = whys(tick(t))\n"
+            "w1 = whys(tick(t + A + 5))\n"
+            "print(json.dumps({'w1': w1, 'a_fed': a in fed, 'b_fed': b in fed, 'n': len(spawned)}))\n") % (SEAT, SEAT))
+        self.assertIn("headless-started", out["w1"], out)
+        self.assertFalse(out["a_fed"], "上一輪看過的 A@rev 不再餵(父程序預登記不吃掉看過集合):%r" % out)
+        self.assertTrue(out["b_fed"], out)
+
+    def test_m5_unrecorded_no_spawn(self):
+        out = HN.QBox(self).py(SETUP + (
+            "w0 = two()\n"
+            "real = Q.TR.write\n"
+            "Q.TR.write = lambda p, r: False if (r.get('headless') or {}).get('state') == 'started' else real(p, r)\n"
+            "w1 = whys(tick(t + A + 5))\n"
+            "slots = sorted(x.name for x in (Q.queue_root(env) / H.SLOT_DIR).glob('slot-*.json'))\n"
+            "lk = TA.agent_lock(%r, 'x', env=env, now=t + A + 5, status=True)\n"
+            "print(json.dumps({'w1': w1, 'n': len(spawned), 'slots': slots, 'held': lk.get('held'),\n"
+            "                  'key': tri().get('headless_key')}))\n") % SEAT)
+        self.assertEqual(out["w1"], ["headless-deferred:state-unwritable"], out)
+        self.assertEqual((out["n"], out["slots"], out["held"], out["key"]), (0, [], None, None),
+                         "帳記不下來 ⇒ 不起、名額放回、鎖還原:%r" % out)
+
+
 KNIVES = [
     ("A1", "src/cockpit/dm_queue.py", '    if not tidy_on and auto_on and why in ("rewake", "triage-stalled"):',
      '    if False:', "T1AutoStart.test_starts_once_after_ack"),
@@ -421,6 +501,18 @@ KNIVES = [
      "            rows = rows", "M6Rev.test_run_skips_seen_pair"),
     ("A19", "src/cockpit/dm_queue.py", '            return H.HEADLESS_PER_HOUR, "%s:%s" % (layer, v)',
      "            continue", "LQuota.test_layers"),
+    ("R1", "src/cockpit/dm_triage_headless.py",
+     "        return not isinstance(at, int) or isinstance(at, bool) or now >= at + SLOT_MAX_S\n    return now >= until",
+     "        return now >= until\n    return now >= until", "R1Codex.test_m1_alive_holder_keeps_slot"),
+    ("R2", "src/cockpit/dm_queue.py", "        TA.agent_lock_set_pid(seat, actor, pid, env=env)",
+     "        TA.agent_lock(seat, actor, env=env, now=now, pid=pid)", "R1Codex.test_m2_set_pid_only_live_own_lock"),
+    ("R3", "src/cockpit/dm_queue.py", "        normal, why, rewake = TR.wake_decision(rec, now, _live_triage_lock(seat, env), _load1(),",
+     "        normal, why, rewake = TR.wake_decision(rec, now, _triage_lock(seat, env), _load1(),",
+     "R1Codex.test_m3_dead_holder_not_agent_working"),
+    ("R4", "src/cockpit/dm_triage_agent.py", '    for k in ("handled_ids", "released_at"):\n        if k in cur:\n            rec[k] = cur[k]',
+     "    pass", "R1Codex.test_m4_preregister_keeps_seen"),
+    ("R5", "src/cockpit/dm_queue.py", "    if not TR.write(path, r2):\n        TA.agent_lock_restore(",
+     "    if not (TR.write(path, r2) or True):\n        TA.agent_lock_restore(", "R1Codex.test_m5_unrecorded_no_spawn"),
     ("A20", "src/cockpit/dm_queue.py", "    in_turn = p_at is not None and (s_at is None or p_at > s_at)",
      "    in_turn = False", "TMTurn.test_mark_and_base"),
 ]
