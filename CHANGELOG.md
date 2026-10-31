@@ -4,6 +4,13 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.67
+
+- **Right pane page 4 "Captain room"**: the right pane now has four tabs (`1.AI  2.AI usage  3.Cabin log  4.Captain room`; page 4 shortens when narrow). The first row "▶ Open the captain room" (click or Enter) runs the user's own `aib room open` (no reopen within 3 seconds); three read-only rows show UI mode, captain-room add-on version and this machine's room address. If the add-on is not installed it shows the install command instead; anything it cannot measure shows "—" and never stalls the pane. The right-pane page key now cycles through four pages.
+- **Right pane page 3 renamed**: the tab label is now "Cabin log" in all four languages; the page itself is unchanged.
+- **`aib secret paste` checks the buffer is gone**: after pasting it confirms the tmux buffer was really deleted (up to 3 tries); if that cannot be confirmed it returns the new code `buffer_left` (rc 4) so the person knows the value may still be in the buffer.
+- **Time window: lockwatch retired**: `aib approve grants --lockwatch on` returns `retired` (rc 2) and no longer installs an unused lock-screen watcher; `--lockwatch off` stays as a cleanup for older machines (also removes `lockwatch.json`, reporting each step); `aib doctor` shows the cleanup command when leftovers remain.
+
 ## 0.1.66
 
 - **License requests through `aib-sign-approve`**: besides release signing scripts, it now accepts `LICENSE-*.json` requests (plan, private repo path, commit only). The core builds the license itself from the current signed license, shows plan / add-ons / expiry / bound device in the Touch ID prompt (one press per license, never a time window), signs it with the private-repo tool in an isolated temp home, and installs it only if the signed file matches what was shown and verifies against the trusted key. If the current license changes at any point, nothing is signed or installed and any tampering is reverted.
