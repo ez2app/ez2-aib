@@ -11,7 +11,7 @@ C4 純確認:引用本席真的寄給對方的 q_ id、短、沒請 / 要 / 問�
 C5 共同門檻:長訊信封(要讀 RELAY 全文)/ 真人寄的 / 禁字(Andy、准、High、可合、正式站、簽章…)⇒ 新四類一律不收
 C6 PR 網址要同主題:信裡沒提到那張 PR ⇒ pr-off-topic(PR 網址存在 ≠ 內容滿足);提到 #號 或網址 ⇒ 照 gh 查
 C7 自己指自己、格式不對 ⇒ 不收
-Knife(最後):A1–A18 每個守衛一刀;單跑 python3 -B tests/<本檔> Knife
+Knife(最後):A1–A27 每個守衛一刀;單跑 python3 -B tests/<本檔> Knife
 C8 整條 apply:新四類照常逐條驗;只擬不結時一封都不改;自報過期的信 plan 已排除(not-allowed)
 C9 只擬不結一輪 ⇒ 寫通知 + 建議 .json;下一回合 hook 注入一行、只注入一次;沒建議就不寫
 C10 triage-apply:不帶 --yes 只預覽;--yes 逐條重驗才結;建議檔席碼不對 / 修訂號變了 / 現在驗不過 ⇒ 不結
@@ -48,7 +48,7 @@ SETUP = (
     "t = int(__import__('time').time())\n"
     "S, P = %r, %r\n"
     "def put(msg, now, **kw):\n"
-    "    kw.setdefault('sender_kind', 'seat'); kw.setdefault('sender_seat', P)\n"
+    "    kw.setdefault('sender_kind', 'seat'); kw.setdefault('sender_seat', P); kw.setdefault('sender_source', 'pane_pid_chain')\n"
     "    return Q.record(S, msg, '@' + P, status='delivered', rc=0, env=env, now=now, wid='@2', provider='claude',\n"
     "                    hub='aihub-t1', **kw)['id']\n"
     "def done(i, now):\n"
@@ -90,6 +90,10 @@ class C2Superseded(unittest.TestCase):
             "d = put('進度:別人寄的', t + 30, thread='build/1', sender_seat='66666')\n"
             "e = put('進度:更早', t - 30, thread='build/1')\n"
             "n = put('沒 thread', t); n2 = put('沒 thread 新', t + 30)\n"
+            "q = Q.record(S, '進度:待真人審', '@' + P, status=Q.HOLD_STATUS, rc=3, env=env, now=t + 40, sender_kind='seat',\n"
+            "             sender_seat=P, sender_source='pane_pid_chain', thread='build/1')['id']\n"
+            "u = put('進度:自報寄件席', t + 30, thread='build/1', sender_source=None)\n"
+            "out['queued'] = ev(a, 'superseded_by:' + q); out['unmeasured'] = ev(a, 'superseded_by:' + u)\n"
             "out['ok'] = ev(a, 'superseded_by:' + b); out['thread'] = ev(a, 'superseded_by:' + c)\n"
             "out['sender'] = ev(a, 'superseded_by:' + d); out['older'] = ev(a, 'superseded_by:' + e)\n"
             "out['nothread'] = ev(n, 'superseded_by:' + n2)\n"))
@@ -98,12 +102,14 @@ class C2Superseded(unittest.TestCase):
         self.assertEqual(out["sender"], [False, "sender-differs"], out)
         self.assertEqual(out["older"], [False, "not-newer"], out)
         self.assertEqual(out["nothread"], [False, "thread-differs"], out)
+        self.assertEqual(out["queued"], [False, "ref-not-reached"], "新那封卡在待真人審(沒到本席)不算承接:%r" % out)
+        self.assertEqual(out["unmeasured"], [False, "sender-differs"], "寄件席沒量到(自報)不算同寄件席:%r" % out)
 
 
 class C3Expired(unittest.TestCase):
     def test_expired(self):
         out = box(self, (
-            "a = put('提醒:今晚維護', t, expires=t + 500); b = put('提醒:明晚維護', t, expires=t + 5000)\n"
+            "a = put('提醒:週六維護', t, expires=t + 500); b = put('提醒:週日維護', t, expires=t + 5000)\n"
             "out['ok'] = ev(a, 'expired'); out['not'] = ev(b, 'expired')\n"))
         self.assertEqual(out["ok"], [True, "expired"], out)
         self.assertEqual(out["not"], [False, "not-expired"], out)
@@ -123,33 +129,53 @@ class C4Ack(unittest.TestCase):
             "e = put('收到 ' + mine + ',見 ~/x/notes.md', t + 10)\n"
             "f = put('收到,已派審', t + 10)\n"
             "g = put('收到 ' + mine + ',請再補一張', t + 10)\n"
+            "z = put('收到 ' + mine + ',已放 /var/data/archive', t + 10)\n"
+            "z2 = put('收到 ' + mine + ',已放 archive.zip', t + 10)\n"
+            "qd = Q.record(P, '卡在對方待審', '@' + S, status=Q.HOLD_STATUS, rc=3, env=env, now=t, sender_kind='seat',\n"
+            "              sender_seat=S, sender_source='pane_pid_chain')['id']\n"
+            "y = put('收到 ' + qd + ',已派審', t + 10)\n"
+            "out['zip'] = ev(z, 'ack_of:' + mine); out['zip2'] = ev(z2, 'ack_of:' + mine); out['queued'] = ev(y, 'ack_of:' + qd)\n"
             "out['ok'] = ev(a, 'ack_of:' + mine); out['notours'] = ev(b, 'ack_of:' + other)\n"
             "out['q'] = ev(c, 'ack_of:' + mine); out['due'] = ev(d, 'ack_of:' + mine)\n"
             "out['path'] = ev(e, 'ack_of:' + mine); out['nocite'] = ev(f, 'ack_of:' + mine)\n"
             "out['ask'] = ev(g, 'ack_of:' + mine)\n"))
         self.assertEqual(out["ok"], [True, "ack"], out)
         self.assertEqual(out["notours"], [False, "ack-not-ours"], out)
-        for k in ("q", "due", "path", "ask"):
+        for k in ("path", "ask", "zip", "zip2"):
             self.assertEqual(out[k], [False, "ack-not-pure"], (k, out))
+        for k in ("q", "due"):                       # 問號 / 「前回」現在在共用的絕不碰就擋下
+            self.assertEqual(out[k], [False, "never-words"], (k, out))
+        self.assertEqual(out["queued"], [False, "ref-not-reached"], "本席那封還沒送到對方:%r" % out)
         self.assertEqual(out["nocite"], [False, "ack-not-cited"], out)
 
 
 class C5Never(unittest.TestCase):
     def test_gates(self):
         out = box(self, (
-            "a = put('提醒:今晚維護', t, expires=t + 500)\n"
+            "a = put('提醒:週六維護', t, expires=t + 500)\n"
             "r = put('長訊已落檔(800 位元組,來自 @77777),請讀:/tmp/x/RELAY-dm-aaaa-1031-120000-1.txt', t, expires=t + 500)\n"
-            "h = put('提醒:今晚維護', t, expires=t + 500, sender_kind='human', human_id='hub')\n"
+            "h = put('提醒:週六維護', t, expires=t + 500, sender_kind='human', human_id='hub')\n"
             "res = {}\n"
-            "for w in ('Andy 說可以', '已准', 'Codex High 一條', '可合', '正式站換版', '簽章時段', 'PyPI 核准'):\n"
+            "for w in ('Andy 說可以', '已准', 'Codex High 一條', '可合', '正式站換版', '簽章時段', 'PyPI 核准',\n"
+            "          '能完成嗎?', '這樣可以嗎', '今晚 23:00 前交付', '22:30 前回', 'Codex 審查結果 Low 一條', '維護者說是，已核可',\n"
+            "          'approved', '截止 10 點', 'deadline tonight'):\n"
             "    res[w] = ev(put('提醒:' + w, t, expires=t + 500), 'expired')\n"
             "out['ok'] = ev(a, 'expired'); out['relay'] = ev(r, 'expired'); out['human'] = ev(h, 'expired')\n"
-            "out['never'] = res\n"))
+            "out['never'] = res\n"
+            "xc = put('提醒:週六維護', t, expires=t + 500, sender_hub='aihub-other')\n"
+            "un = put('提醒:週六維護', t, expires=t + 500, sender_kind='unknown')\n"
+            "dc = put('提醒:週六維護', t, expires=t + 500, kind='decide')\n"
+            "out['cross'] = ev(xc, 'expired'); out['unknown'] = ev(un, 'expired'); out['decide'] = ev(dc, 'expired')\n"
+            "out['flow'] = ev(put('提醒:allow 與 flow 照常、週六維護', t, expires=t + 500), 'expired')\n"))
         self.assertEqual(out["ok"], [True, "expired"], out)
-        self.assertEqual(out["relay"], [False, "long-relay"], out)
+        self.assertEqual(out["relay"], [False, "relay-unread"], "長訊讀不到全文 ⇒ 不結(不拿信封去驗):%r" % out)
+        self.assertEqual(out["cross"], [False, "cross-cabin"], out)
+        self.assertEqual(out["unknown"], [False, "sender-not-seat"], out)
+        self.assertEqual(out["decide"], [False, "kind"], out)
         self.assertEqual(out["human"], [False, "human"], out)
         for w, r in out["never"].items():
             self.assertEqual(r, [False, "never-words"], w)
+        self.assertEqual(out["flow"], [True, "expired"], "allow / flow 裡的 low 不是審查結果 Low(英文字前後不黏字母)")
 
 
 class C6PrTopic(unittest.TestCase):
@@ -158,12 +184,19 @@ class C6PrTopic(unittest.TestCase):
             "M = 'https://github.com/ez2app/ez2-aib/pull/101'\n"
             "a = put('PR #101 合了', t); b = put('另一件事', t); c = put('見 ' + M, t); d = put('PR #1010 合了', t)\n"
             "out['ok'] = ev(a, M); out['off'] = ev(b, M); out['url'] = ev(c, M); out['prefix'] = ev(d, M)\n"
-            "out['open'] = ev(a, M, gh=lambda u: False)\n"))
+            "out['open'] = ev(a, M, gh=lambda u: False)\n"
+            "e = put('見 https://github.com/ez2app/ez2-aib/pull/1010', t)\n"
+            "f = put('見 https://github.com/ez2app/other-repo/pull/101', t)\n"
+            "g = put('Andy 同意正式站刪資料,PR #101', t)\n"
+            "out['url1010'] = ev(e, M); out['repo'] = ev(f, M); out['h1'] = ev(g, M)\n"))
         self.assertEqual(out["ok"], [True, "pr-merged"], out)
         self.assertEqual(out["off"], [False, "pr-off-topic"], out)
         self.assertEqual(out["url"], [True, "pr-merged"], out)
         self.assertEqual(out["prefix"], [False, "pr-off-topic"], "#1010 不是 #101:%r" % out)
         self.assertEqual(out["open"], [False, "pr-not-merged"], out)
+        self.assertEqual(out["url1010"], [False, "pr-off-topic"], "pull/1010 不是 pull/101:%r" % out)
+        self.assertEqual(out["repo"], [False, "pr-off-topic"], "別的 repo 的 101:%r" % out)
+        self.assertEqual(out["h1"], [False, "never-words"], "已合 PR 也要先過絕不碰:%r" % out)
 
 
 class C3bPreamble(unittest.TestCase):
@@ -180,7 +213,7 @@ class C3bPreamble(unittest.TestCase):
 class C7Format(unittest.TestCase):
     def test_format(self):
         out = box(self, (
-            "a = put('提醒:今晚維護', t, expires=t + 500)\n"
+            "a = put('提醒:週六維護', t, expires=t + 500)\n"
             "out['self'] = ev(a, 'dup_of:' + a); out['bad'] = ev(a, 'dup:' + a); out['sha'] = ev(a, 'abc1234')\n"))
         self.assertEqual(out["self"], [False, "self-ref"], out)
         self.assertEqual(out["bad"], [False, "only-merged-pr"], out)
@@ -192,7 +225,7 @@ class C8Apply(unittest.TestCase):
         out = box(self, (
             "a = put('部署排程表已更新', t); done(a, t + 5); b = put('部署排程表已更新', t + 10)\n"
             "c = put('部署排程表改了別的', t + 10)\n"
-            "x = put('提醒:今晚維護', t, expires=t + 500)\n"
+            "x = put('提醒:週六維護', t, expires=t + 500)\n"
             "dec = [{'id': b, 'action': 'close', 'evidence': 'dup_of:' + a, 'wait': '', 'draft': '', 'why': ''},\n"
             "       {'id': c, 'action': 'close', 'evidence': 'dup_of:' + a, 'wait': '', 'draft': '', 'why': ''},\n"
             "       {'id': x, 'action': 'close', 'evidence': 'expired', 'wait': '', 'draft': '', 'why': ''}]\n"
@@ -278,7 +311,13 @@ class C10TriageApply(unittest.TestCase):
             "it = dict(Q._load_item(S, e, env)); it['rev'] = 2; it['msg'] = it['msg'] + '(改)'\n"
             "Q.item_path(S, e, env).write_text(json.dumps(it))\n"
             "out['revchg'] = [[x['applied'], x.get('reason')] for x in H.triage_apply(S, str(sp), yes=True, env=env, now=t + 1300)['results']]\n"
-            "out['bad'] = H.triage_apply(S, str(Path(f).with_name('nope.json')), yes=True, env=env)['reason']\n"))
+            "out['bad'] = H.triage_apply(S, str(Path(f).with_name('nope.json')), yes=True, env=env)['reason']\n"
+            "g1 = put('第三封部署排程表已更新', t + 40); g2 = put('第三封部署排程表已更新', t + 50); done(g1, t + 45)\n"
+            "nr = Path(f).with_name('norev.json')\n"
+            "nr.write_text(json.dumps({'schema': H.SUGGEST_SCHEMA, 'seat': S, 'at': t, 'items': [\n"
+            "    {'id': g2, 'evidence': 'dup_of:' + g1}, {'id': g2, 'evidence': 'dup_of:' + g1, 'rev': '1'}]}))\n"
+            "out['norev'] = [[x['applied'], x.get('reason')] for x in H.triage_apply(S, str(nr), yes=True, env=env, now=t + 1400)['results']]\n"
+            "out['st_norev'] = (Q._load_item(S, g2, env) or {}).get('status')\n"))
         self.assertEqual(out["pv"], [True, [[True, False]]], out)
         self.assertEqual(out["st_pv"], "delivered", "預覽不改")
         self.assertEqual(out["other"], "seat-mismatch", out)
@@ -287,6 +326,8 @@ class C10TriageApply(unittest.TestCase):
         self.assertEqual(out["again"][0][0], False, "已結的不再結:%r" % out)
         self.assertEqual(out["revchg"], [[False, "rev-changed"]], out)
         self.assertEqual(out["bad"], "unreadable", out)
+        self.assertEqual(out["norev"], [[False, "rev-missing"], [False, "rev-missing"]], "缺 rev / rev 不是整數 ⇒ 那一條不套用:%r" % out)
+        self.assertEqual(out["st_norev"], "delivered", out)
 
 
 KNIVES = [
@@ -298,34 +339,52 @@ KNIVES = [
      '    return (True, "dup")', 'C1Dup.test_dup'),
     ('A4', 'src/cockpit/dm_triage_headless.py', '    if not th or other.get("thread") != th:',
      '    if False:', 'C2Superseded.test_superseded'),
-    ('A5', 'src/cockpit/dm_triage_headless.py', '    if not item.get("sender_seat") or other.get("sender_seat") != item.get("sender_seat"):',
-     '    if False:', 'C2Superseded.test_superseded'),
-    ('A6', 'src/cockpit/dm_triage_headless.py', '    if not sent or sent.get("sender_seat") != seat:',
+    ('A5', 'src/cockpit/dm_triage_headless.py', '    if a is None or a != b:\n        return False, "sender-differs"',
+     '    if False:\n        return False, "sender-differs"', 'C2Superseded.test_superseded'),
+    ('A6', 'src/cockpit/dm_triage_headless.py', '    if not sent or Q._sender_key(sent) != ("seat", seat):',
      '    if not sent:', 'C4Ack.test_ack'),
     ('A7', 'src/cockpit/dm_triage_headless.py', '    if len(text or "") > ACK_MAX or _ACK_BAD_RE.search(text or ""):',
      '    if False:', 'C4Ack.test_ack'),
-    ('A8', 'src/cockpit/dm_triage_headless.py', '    if DR.relay_path_of(msg):\n        return False, "long-relay"',
-     '    if False:\n        return False, "long-relay"', 'C5Never.test_gates'),
+    ('A8', 'src/cockpit/dm_triage_headless.py', '    return t if isinstance(t, str) else None',
+     '    return t if isinstance(t, str) else str(item.get("msg") or "")', 'C5Never.test_gates'),
     ('A9', 'src/cockpit/dm_triage_headless.py', '    if item.get("sender_kind") == "human" or item.get("status") == Q.HOLD_STATUS:',
      '    if False:', 'C5Never.test_gates'),
-    ('A10', 'src/cockpit/dm_triage_headless.py', '    if _NEVER_RE.search(text or msg):',
+    ('A10', 'src/cockpit/dm_triage_headless.py', '    if _NEVER_RE.search(text) or _NEVER_RE.search(str(item.get("msg") or "")):',
      '    if False:', 'C5Never.test_gates'),
     ('A11', 'src/cockpit/dm_triage_headless.py', '        os.replace(p, taken)\n',
      '        __import__("shutil").copy(p, taken)\n', 'C9Notice.test_dry_round_notice_once'),
     ('A12', 'src/cockpit/dm_triage_headless.py', '    if rec.get("seat") != seat:\n        return {"ok": False, "reason": "seat-mismatch"}',
      '    if False:\n        return {"ok": False, "reason": "seat-mismatch"}', 'C10TriageApply.test_apply_cli'),
-    ('A13', 'src/cockpit/dm_triage_headless.py', 'revs=revs or None, dry=not yes',
+    ('A13', 'src/cockpit/dm_triage_headless.py', 'revs={i["id"]: i["rev"] for i in good}, dry=not yes',
      'revs=None, dry=not yes', 'C10TriageApply.test_apply_cli'),
-    ('A14', 'src/cockpit/dm_triage_headless.py', 'revs=revs or None, dry=not yes',
-     'revs=revs or None, dry=False', 'C10TriageApply.test_apply_cli'),
+    ('A14', 'src/cockpit/dm_triage_headless.py', 'revs={i["id"]: i["rev"] for i in good}, dry=not yes',
+     'revs={i["id"]: i["rev"] for i in good}, dry=False', 'C10TriageApply.test_apply_cli'),
     ('A15', 'src/cockpit/dm_triage_headless.py', '    if not rows:\n        return None\n    if dry:',
      '    if False:\n        return None\n    if dry:', 'C9Notice.test_nothing_to_suggest_no_notice'),
-    ('A16', 'src/cockpit/dm_triage_headless.py', '        if item is not None and not _mentions_pr(text, ev, m.group(1)):',
+    ('A16', 'src/cockpit/dm_triage_headless.py', '        if not _mentions_pr(text, ev, m.group(1)):',
      '        if False:', 'C6PrTopic.test_pr_topic'),
     ('A17', 'src/cockpit/dm_triage_headless.py', '(?<![0-9])#%s(?![0-9])',
      '(?<![0-9])#%s', 'C6PrTopic.test_pr_topic'),
     ('A18', 'src/cockpit/dm_triage_headless.py', '  * it only acknowledges a message',
      '  * the sender\'s own expiry time has passed: "expired"\n  * it only acknowledges a message', 'C3bPreamble.test_preamble_has_no_expired'),
+    ('A19', 'src/cockpit/dm_triage_headless.py', '    ok, why = _never_touch(item, text)\n    if not ok:\n        return False, why\n',
+     '', 'C6PrTopic.test_pr_topic'),
+    ('A20', 'src/cockpit/dm_triage_headless.py', '    if sh and rh and sh != rh:',
+     '    if False:', 'C5Never.test_gates'),
+    ('A21', 'src/cockpit/dm_triage_headless.py', '    if Q.normalize_sender_kind(item.get("sender_kind")) != "seat" or not item.get("sender_seat"):',
+     '    if False:', 'C5Never.test_gates'),
+    ('A22', 'src/cockpit/dm_triage_headless.py', '    if other.get("status") not in _REACHED:\n        return False, "ref-not-reached"',
+     '    if False:\n        return False, "ref-not-reached"', 'C2Superseded.test_superseded'),
+    ('A23', 'src/cockpit/dm_triage_headless.py', '    if sent.get("status") not in _REACHED:',
+     '    if False:', 'C4Ack.test_ack'),
+    ('A24', 'src/cockpit/dm_triage_headless.py', '    if want and any((m.group(1), m.group(2)) == (want.group(1), want.group(2)) for m in _PULL_ANY_RE.finditer(t)):',
+     '    if url.rstrip("/") in t:', 'C6PrTopic.test_pr_topic'),
+    ('A25', 'src/cockpit/dm_triage_headless.py', '    bad = [i for i in items if type(i.get("rev")) is not int]\n    good = [i for i in items if type(i.get("rev")) is int]',
+     '    bad = []\n    good = items', 'C10TriageApply.test_apply_cli'),
+    ('A26', 'src/cockpit/dm_triage_headless.py', 'r"請|要|[/\\\\~]|',
+     'r"請|要|', 'C4Ack.test_ack'),
+    ('A27', 'src/cockpit/dm_triage_headless.py', 'r"Codex|審查|審過|" + _A + r"(?:review|High|Medium|Low)" + _Z + r"|',
+     'r"Codex|審查|審過|(?:review|High|Medium|Low)|', 'C5Never.test_gates'),
 ]
 
 
