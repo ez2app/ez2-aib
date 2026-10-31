@@ -4,6 +4,16 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.66
+
+- **License requests through `aib-sign-approve`**: besides release signing scripts, it now accepts `LICENSE-*.json` requests (plan, private repo path, commit only). The core builds the license itself from the current signed license, shows plan / add-ons / expiry / bound device in the Touch ID prompt (one press per license, never a time window), signs it with the private-repo tool in an isolated temp home, and installs it only if the signed file matches what was shown and verifies against the trusted key. If the current license changes at any point, nothing is signed or installed and any tampering is reverted.
+- **Time-window auto-approve, part 3**: window grants are now checked against a system-anchored record through a fixed-path root helper, with the state root pinned to the home directory. Until that helper is installed, every request keeps asking for Touch ID once, as before.
+- **Pixel Studio real image generation needs approval**: `pixel_real_gen` is registered in the approval gate; each real generation asks for Touch ID and never uses a time window.
+- **Mission teams**: budget hard caps, rule-based monitoring and `aib mission watch`; G0 grouping core (group leads, groups, contract files, integration files).
+- **dm review gate**: a turn cannot end while reviewed-but-unfinished messages are still open (`aib-dm-gate`).
+- **`aib secret paste`** types into the seat's own pane; secret collection no longer writes names it did not fill into the roster.
+- **Tests**: a temp-change test no longer expires on a fixed date; new-seat page path covers Touch ID cancel / timeout.
+
 ## 0.1.65
 
 - **Messages sent while offline are no longer lost**: the chat receiver now opens its notification stream before subscribing, so messages the relay replays from storage (sent while this machine was offline) are delivered instead of silently dropped. It also no longer cancels a pending read every second, which could drop a message arriving at that moment. Phone pairing codes sent before the receiver was ready now arrive too.
