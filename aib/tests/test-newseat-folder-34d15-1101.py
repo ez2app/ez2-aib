@@ -359,7 +359,7 @@ class Knife(unittest.TestCase):
     def test_x4_new_parent_check_removed(self):
         self._knife_mod("tools/project/brain_pick.py", "        if not ok:\n            return None, None, T(\"aib.newproj.folder_rejected\", {\"key\": NEW_PARENT_ROUTE,",
                         "        if False:\n            return None, None, T(\"aib.newproj.folder_rejected\", {\"key\": NEW_PARENT_ROUTE,",
-                        "Folder.test_f7_new_parent_not_writable", "Folder.test_f7_new_parent_not_writable")
+                        "Folder.test_f7_new_parent_not_writable", "test_f7_new_parent_not_writable")
 
     def test_x5_next_cmd_drops_folder(self):
         self._knife("        if want:                                   # #469 r1 M3", "        if False:                                   # #469 r1 M3",
@@ -370,7 +370,7 @@ class Knife(unittest.TestCase):
                         "Folder.test_f10_create_uses_vault_write_lock", "同一把鎖")
 
     def test_x3_new_folder_not_created(self):
-        self._knife("            brain_pick.create_new(self.brain_plan)\n", "            pass\n", "Folder.test_f3_new_brain", "Folder.test_f3_new_brain")
+        self._knife("            brain_pick.create_new(self.brain_plan)\n", "            pass\n", "Folder.test_f3_new_brain", "test_f3_new_brain")   # 3.9 印「test_x (__main__.Folder)」,只比函式名
 
 
 if __name__ == "__main__":
