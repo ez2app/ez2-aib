@@ -5,13 +5,13 @@
 
 C1 重複件:前一封已結 + 正文相同(去抬頭 / 空白)⇒ 可結;正文不同 / 前一封沒結 / 前一封比較晚 ⇒ 不收
 C2 承接:同 thread + 同寄件席 + 新那封較晚 ⇒ 可結;不同 thread / 不同寄件席 / 新那封較早 ⇒ 不收
-C3 自報過期:expires 已過 ⇒ 可結;還沒過 ⇒ 不收
+C3 自報過期:expires 已過 ⇒ 可結;還沒過 ⇒ 不收(格式保留;PREAMBLE 不列 expired,C3b)
 C4 純確認:引用本席真的寄給對方的 q_ id、短、沒請 / 要 / 問號 / 回覆期限 / 檔案路徑 ⇒ 可結;
    引用不是本席寄的、帶問號、帶「前回」、帶路徑、沒引用 ⇒ 不收
 C5 共同門檻:長訊信封(要讀 RELAY 全文)/ 真人寄的 / 禁字(Andy、准、High、可合、正式站、簽章…)⇒ 新四類一律不收
 C6 PR 網址要同主題:信裡沒提到那張 PR ⇒ pr-off-topic(PR 網址存在 ≠ 內容滿足);提到 #號 或網址 ⇒ 照 gh 查
 C7 自己指自己、格式不對 ⇒ 不收
-Knife(最後):A1–A17 每個守衛一刀;單跑 python3 -B tests/<本檔> Knife
+Knife(最後):A1–A18 每個守衛一刀;單跑 python3 -B tests/<本檔> Knife
 C8 整條 apply:新四類照常逐條驗;只擬不結時一封都不改;自報過期的信 plan 已排除(not-allowed)
 C9 只擬不結一輪 ⇒ 寫通知 + 建議 .json;下一回合 hook 注入一行、只注入一次;沒建議就不寫
 C10 triage-apply:不帶 --yes 只預覽;--yes 逐條重驗才結;建議檔席碼不對 / 修訂號變了 / 現在驗不過 ⇒ 不結
@@ -166,6 +166,17 @@ class C6PrTopic(unittest.TestCase):
         self.assertEqual(out["open"], [False, "pr-not-merged"], out)
 
 
+class C3bPreamble(unittest.TestCase):
+    def test_preamble_has_no_expired(self):
+        """@34d15 10-31 23:11:expired 一定被 plan 排除,不要讓模型產出一定被拒的建議。"""
+        import importlib
+        sys.path.insert(0, str(ROOT / "src" / "cockpit"))
+        H = importlib.import_module("dm_triage_headless")
+        self.assertNotIn('"expired"', H.PREAMBLE)
+        for kind in ("dup_of:", "superseded_by:", "ack_of:", "/pull/"):
+            self.assertIn(kind, H.PREAMBLE)
+
+
 class C7Format(unittest.TestCase):
     def test_format(self):
         out = box(self, (
@@ -313,6 +324,8 @@ KNIVES = [
      '        if False:', 'C6PrTopic.test_pr_topic'),
     ('A17', 'src/cockpit/dm_triage_headless.py', '(?<![0-9])#%s(?![0-9])',
      '(?<![0-9])#%s', 'C6PrTopic.test_pr_topic'),
+    ('A18', 'src/cockpit/dm_triage_headless.py', '  * it only acknowledges a message',
+     '  * the sender\'s own expiry time has passed: "expired"\n  * it only acknowledges a message', 'C3bPreamble.test_preamble_has_no_expired'),
 ]
 
 

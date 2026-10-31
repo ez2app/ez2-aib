@@ -44,7 +44,7 @@ SEAT_READ_SKIP_S = 15 * 60        # 席位自己 15 分鐘內讀過的信不餵(
 _PULL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/pull/([0-9]{1,7})/?")
 # 10-31 SPEC v2 §4.1:機器可驗的四類(證據字串固定格式;核心逐條驗,不信模型)
 _REF_RE = re.compile(r"(dup_of|superseded_by|ack_of):(q_[0-9a-f]{16})")
-EXPIRED_EVIDENCE = "expired"
+EXPIRED_EVIDENCE = "expired"         # 格式保留;不寫進 PREAMBLE(自報過期的信 plan 本來就排除,apply 回 not-allowed;@34d15 10-31 23:11)
 # 這些字出現就不用新四類結(只剩已合 PR 那一種、或留給本席):真人原話 / 核准 / 審查結果 / 正式站 / 錢 / 刪資料 / 對客 / 截止
 _NEVER_RE = re.compile(r"Andy|the maintainer|准|同意|High|Medium|可合|不可合|正式站|EU01|簽章|PyPI|付款|金額|刪除|刪資料|"
                        r"對客|客戶|截止|期限|deadline", re.I)
@@ -63,7 +63,6 @@ For each message decide one action:
   * a GitHub PR named in the message was merged: "https://github.com/ez2app/<repo>/pull/<n>"
   * it repeats an earlier message that is already closed: "dup_of:<that q_ id>"
   * a newer message in the same thread from the same sender replaces it: "superseded_by:<newer q_ id>"
-  * the sender's own expiry time has passed: "expired"
   * it only acknowledges a message this seat sent (no request, no question, no deadline, no file): "ack_of:<q_ id this seat sent>"
   Anything else, or when unsure => do not close. The system re-checks every evidence; a wrong one is ignored.
 - "wait": the seat must wait for someone or something. Give "wait": who / what (short).
