@@ -1957,6 +1957,9 @@ TRIAGE_WHY_LAST = "triage-why.json"
 TRIAGE_WHY_LOG = "triage-why.jsonl"
 TRIAGE_WHY_LOG_MAX = 256 * 1024    # 超過就只留後半(只是查問題用的紀錄,不是帳)
 TRIAGE_WHY_IDLE = "-"              # 上一拍有、這一拍沒列 = 回到門檻以下(_triage_seat 回 None)
+TRIAGE_WHY_LOCK_TRIES = 10         # Codex r2 M:留痕鎖只試這麼多次(非阻塞),拿不到就跳過這一拍留痕,不卡 triage / 排空
+TRIAGE_WHY_LOCK_SLEEP_S = 0.05
+TRIAGE_WHY_SKEW_S = 3600           # observed_at / since 比現在晚超過這麼多 = 壞值(不然正常拍永遠被當舊拍跳過)
 
 
 def triage_path(seat, env=None):
@@ -2809,21 +2812,36 @@ def _triage_why_log(rows, env, now):
       since = 這個原因的起點。檔裡沒有某席 = 開始記錄後那一席從沒到門檻;到過又回門檻下 = why「-」。
     - 整段在 triage-why.lock 裡做(Codex r1 M1):兩個排空器的拍子交錯時,較舊的拍子(now < 那席 observed_at)
       不改那席的最新狀態、也不寫 .jsonl,since 不會倒退。
-    - 每席的項目逐一驗型別(Codex r1 L1):壞項(不是 dict / why 不是字串)當沒有,這一拍重建。"""
+    - 每席的項目逐一驗型別(Codex r1 L1 / r2 Low):壞項(不是 dict / why 不是字串 / since、observed_at 不是合理的
+      整數秒)當沒有,這一拍重建。
+    - 鎖只用非阻塞試 TRIAGE_WHY_LOCK_TRIES 次(Codex r2 Medium):別的行程持鎖卡住時,這一拍不留痕、回 None,
+      triage_tick 照樣回來、排空照跑(留痕 fail-open)。"""
     root = queue_root(env)
     last_p = root / TRIAGE_WHY_LAST
+    now = int(now)
     fd = os.open(str(root / "triage-why.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    got = False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        for i in range(TRIAGE_WHY_LOCK_TRIES):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                got = True
+                break
+            except BlockingIOError:
+                if i + 1 < TRIAGE_WHY_LOCK_TRIES:
+                    time.sleep(TRIAGE_WHY_LOCK_SLEEP_S)
+        if not got:
+            return None                      # 拿不到鎖:跳過這一拍留痕
         try:
             raw = json.loads(last_p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raw = {}
         last = {}
         for seat, ent in (raw.items() if isinstance(raw, dict) else ()):
-            if isinstance(ent, dict) and isinstance(ent.get("why"), str):
+            if (isinstance(ent, dict) and isinstance(ent.get("why"), str)
+                    and _why_ts_ok(ent.get("since"), now)
+                    and (ent.get("observed_at") is None or _why_ts_ok(ent.get("observed_at"), now))):
                 last[seat] = ent
-        now = int(now)
         cur = {}
         for r in rows or []:
             seat = r.get("seat") if isinstance(r, dict) else None
@@ -2835,10 +2853,7 @@ def _triage_why_log(rows, env, now):
         changed = []
         for seat in sorted(cur):
             ent = last.get(seat) or {}
-            try:
-                seen_at = int(ent.get("observed_at") or ent.get("since") or 0)
-            except (TypeError, ValueError):
-                seen_at = 0
+            seen_at = ent.get("observed_at") or ent.get("since") or 0
             if now < seen_at:
                 continue                     # 較舊的拍子:不蓋新結果
             why = cur[seat]
@@ -2871,9 +2886,15 @@ def _triage_why_log(rows, env, now):
         return changed
     finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            if got:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
+
+
+def _why_ts_ok(v, now):
+    """留痕檔的時間欄位:要是整數秒(bool / 浮點 / 陣列都不算),> 0,且不比現在晚超過 TRIAGE_WHY_SKEW_S。"""
+    return type(v) is int and 0 < v <= int(now) + TRIAGE_WHY_SKEW_S
 
 
 # ── 待審區自動處理 stage-tidy(a seat × a seat 10-13,設計稿 DESIGN-dm-waiting-unify-1013 §S6)──

@@ -7,6 +7,9 @@ Y2 holdnote 列不算;紀錄超過上限 ⇒ 只留後半
 Y4 同因再一拍 ⇒ observed_at 前進、since 不動(同因兩天 ≠ 兩天沒掃)
 Y5 較舊的拍子(now < observed_at)⇒ 不蓋最新狀態、不寫 .jsonl
 Y6 檔是合法 JSON 但項目型別壞 ⇒ 壞項丟掉、這拍重建
+Y7 別的行程持鎖不放 ⇒ 這一拍不留痕、限時內回來(回 None),不寫檔;放鎖後下一拍照寫(Codex r2 Medium)
+Y8 時間欄位壞(陣列 / 物件 / 浮點 1e100 / 比現在晚太多)⇒ 當壞項重建,正常拍照寫(Codex r2 Low)
+Y9 從沒到過門檻的席 ⇒ 檔裡沒有那一席(不是「-」);到過又回門檻下才記「-」(Codex r2 M2 補測)
 Y3 真 triage_tick:待審到門檻、load1 太高 ⇒ triage-why.json 該席 = load-high,jsonl 一列;
    降溫後叫醒 ⇒ 換成 woke 再一列;紀錄檔壞掉 ⇒ 照樣叫醒(紀錄不得擋)
 """
@@ -92,6 +95,56 @@ class Pure(unittest.TestCase):
         got = self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}])
         self.assertEqual([(c["seat"], c["why"]) for c in got], [("aaaaa", "load-high")])
         self.assertEqual(set(self.last()), {"aaaaa"})
+
+    def test_Y7_lock_held_skips_tick(self):
+        import fcntl
+        import threading
+        import time as _t
+        lock_p = Q.queue_root(self.env) / "triage-why.lock"
+        holder = os.open(str(lock_p), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        out = {}
+
+        def run():
+            t0 = _t.monotonic()
+            out["r"] = self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}])
+            out["dt"] = _t.monotonic() - t0
+        th = threading.Thread(target=run, daemon=True)
+        try:
+            th.start()
+            th.join(timeout=5)
+            self.assertFalse(th.is_alive(), "持鎖時留痕卡住沒回來")
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+        th.join(timeout=5)
+        self.assertIsNone(out.get("r"))
+        self.assertLess(out["dt"], 3)
+        self.assertFalse((Q.queue_root(self.env) / Q.TRIAGE_WHY_LAST).exists())
+        self.assertEqual(self.lines(), [])
+        got = self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}], NOW + 60)
+        self.assertEqual([c["why"] for c in got], ["load-high"])
+
+    def test_Y8_bad_time_fields_rebuilt(self):
+        root = Q.queue_root(self.env)
+        (root / Q.TRIAGE_WHY_LAST).write_text(json.dumps({
+            "aaaaa": {"why": "busy", "since": [], "observed_at": {}},
+            "bbbbb": {"why": "busy", "since": 1, "observed_at": 1e100},
+            "ccccc": {"why": "busy", "since": NOW, "observed_at": NOW + 10 * 86400},
+            "ddddd": {"why": "busy", "since": True, "observed_at": NOW}}), encoding="utf-8")
+        rows = [{"seat": s, "woke": False, "why": "busy"} for s in ("aaaaa", "bbbbb", "ccccc", "ddddd")]
+        got = self.log(rows, NOW + 60)
+        self.assertEqual(sorted(c["seat"] for c in got), ["aaaaa", "bbbbb", "ccccc", "ddddd"])
+        for s in ("aaaaa", "bbbbb", "ccccc", "ddddd"):
+            self.assertEqual(self.last()[s], {"why": "busy", "since": NOW + 60, "observed_at": NOW + 60}, s)
+
+    def test_Y9_never_at_threshold_not_recorded(self):
+        self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}])
+        self.log([{"seat": "aaaaa", "woke": False, "why": "load-high"}], NOW + 60)
+        self.assertNotIn("bbbbb", self.last())
+        self.log([], NOW + 120)
+        self.assertEqual(self.last()["aaaaa"]["why"], Q.TRIAGE_WHY_IDLE)
+        self.assertNotIn("bbbbb", self.last())
 
     def test_Y2_holdnote_ignored_and_trim(self):
         self.assertEqual(self.log([{"seat": "aaaaa", "holdnote": False, "why": "x"}]), [])
