@@ -72,7 +72,7 @@ class Temp(Base):
         self.assertEqual(r["host"], "eu01 [31m")
 
     def test_t3_list_check(self):
-        a = self.add(until="2026-10-30")
+        a = self.add(until="2099-10-30")            # 下面 check 走真時鐘:不能寫會過期的日子(10-31 起 CI 紅)
         b = self.add(until="2026-10-22T09:00:00+08:00")
         later = NOW + datetime.timedelta(days=2)
         rows = AT.listing(self.env, now=later)
@@ -81,7 +81,7 @@ class Temp(Base):
         self.assertEqual([r["id"] for r in AT.overdue(self.env, now=later)], [b["id"]])
         self.assertEqual(AT.overdue(self.env, now=NOW), [])
         AT.done(b["id"], "拆了", by="abcde", env=self.env)
-        self.assertEqual(AT.main(["check"], out=io.StringIO(), env=self.env), 0, "真時鐘下 10-30 還沒到")
+        self.assertEqual(AT.main(["check"], out=io.StringIO(), env=self.env), 0, "真時鐘下 2099-10-30 還沒到")
         real = datetime.datetime.now().astimezone()
         c = self.add(until=(real - datetime.timedelta(hours=1)).isoformat(timespec="seconds"),
                      now=real - datetime.timedelta(days=1))

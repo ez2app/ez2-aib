@@ -15,9 +15,13 @@ P3 前綴比對:PIXEL_CLAUDE_ 開頭的一律落 pixel-claude.env,不歸到 api-
    CLAUDE_CODE_OAUTH_TOKEN 照舊落 api-key-claude.env;PIXEL_STUDIO_X / PIXEL_GROK_API_KEY / PIXEL_X 對不到(#416 R1 L1)
 P4 不補填(@aeb40 #416、#247 codex M1、#425 L2):檔不存在 / 空值 / 兩次讀中間被清空 / 前綴名 _2 ⇒ secret() 只丟 missing_*,補填待辦與請求紀錄都沒新增;
    對照組 CF_API_TOKEN 缺值照舊發補填(證明這格量得到);secret(name, fill=False) 對一般名字也不補填
+P5 補填路徑也不寫(@aeb40 #426 L1):put_secret(fill=True) 對它與前綴名 _2 丟 no_fill、檔不建;舊版留下的待填排第一 ⇒
+   apply_line_text 收掉那筆、回 None、這則文字不寫進任何檔,下一則才填下一筆(CF_API_TOKEN 對照組照填,且 put_secret 收到 fill=True);
+   aib secret ask(put_secret 預設 fill=False)照舊能寫(P1)
 刀:K1 名冊拿掉這一格 ⇒ P1 / P3 紅;K2 環境門前綴加 PIXEL_ ⇒ P2a 紅;K3 別的核心檔提到 pixel-claude.env ⇒ P2c 紅;
    K4 NO_FILL_NAMES 拿掉它(request_fill 的擋也拿掉)⇒ P4 紅;K5 NO_SEGMENT_PREFIX_FILES 拿掉它 ⇒ P3 紅;
-   K6 NO_FILL_FILES 拿掉 pixel-claude.env ⇒ P4 紅(前綴名 _2)
+   K6 NO_FILL_FILES 拿掉 pixel-claude.env ⇒ P4 紅(前綴名 _2);K7 put_secret 不看 fill ⇒ P5 紅;
+   K8 apply_line_text 不收舊待填 ⇒ P5 紅;K9 apply_line_text 呼叫 put_secret 不帶 fill=True ⇒ P5 紅
 """
 import io
 import json
@@ -27,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -170,6 +175,26 @@ class PixelClaudeSecret(unittest.TestCase):
         self.assertEqual((self.fill_traces(), self.sent), (([], 0), []))
         self.assertEqual(self.read_reason("CF_API_TOKEN"), SC.NEEDS_FILL)   # 對照:一般名字照舊發補填
         self.assertEqual(self.fill_traces(), (["CF_API_TOKEN"], 1))
+
+    def test_p5_fill_path_never_writes(self):
+        self.sec.mkdir(mode=0o700)
+        for n in (NAME, NAME + "_2"):
+            with self.assertRaises(S.SecretError) as cm:
+                SC.put_secret(n, VALUE, env=dict(self.env), fill=True)
+            self.assertEqual(cm.exception.reason, "no_fill")
+        self.assertFalse((self.sec / REL).exists())
+        SC._save_pending({"schema": SC.PENDING_SCHEMA, "items": [{"name": NAME}, {"name": "CF_API_TOKEN"}]}, dict(self.env))
+        self.assertIsNone(SC.apply_line_text(VALUE, env=dict(self.env)))   # 舊待填:收掉、不寫
+        self.assertFalse((self.sec / REL).exists())
+        self.assertEqual([r["name"] for r in SC._load_pending(dict(self.env))["items"]], ["CF_API_TOKEN"])
+        for f in self.sec.rglob("*"):
+            if f.is_file():
+                self.assertNotIn(VALUE, f.read_text(encoding="utf-8", errors="replace"), f.name)
+        real_put, seen = SC.put_secret, []
+        with mock.patch.object(SC, "put_secret", side_effect=lambda *a, **k: (seen.append(k.get("fill")), real_put(*a, **k))[1]):
+            self.assertEqual(SC.apply_line_text("cf-token-value-123", env=dict(self.env)), "CF_API_TOKEN")   # 對照:一般名字照填
+        self.assertEqual(seen, [True], "補填路徑一定要明傳 fill=True(#447 Codex r1 Low:第二層才接得上)")
+        self.assertTrue(S.load_file(S.file_for_name("CF_API_TOKEN"), dict(self.env)).get("CF_API_TOKEN"))
 
     def test_p3_prefix_goes_to_own_file(self):
         for n in (NAME, "PIXEL_CLAUDE_OAUTH_TOKEN_2", "PIXEL_CLAUDE_X"):

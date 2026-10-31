@@ -94,7 +94,7 @@ def apply(state_dir, action):
             except OSError:
                 raw = ""
             # 右欄狀態檔 1 = 第 2 頁 AI用量。沒寫或其他值是 1.AI。
-            tab = {"1": "usage", "3": "left"}.get(raw, "ai")  # 右欄狀態檔:1=2.AI用量、3=3.離艙(09-30)、其他=1.AI
+            tab = {"1": "usage", "3": "left", "4": "room"}.get(raw, "ai")  # 右欄狀態檔:1=2.AI用量、3=3.離艙(09-30)、其他=1.AI
         current = api.viewport.tab_offset(state, tab)
         limit = None
         limits = _read_json(os.path.join(state_dir, ".right-scroll-limit.json"))
@@ -130,7 +130,7 @@ def apply(state_dir, action):
                     raw = fh.read().strip()
             except OSError:
                 raw = ""
-            tab = {"1": "usage", "3": "left"}.get(raw, "ai")  # 右欄狀態檔:1=2.AI用量、3=3.離艙(09-30)、其他=1.AI
+            tab = {"1": "usage", "3": "left", "4": "room"}.get(raw, "ai")  # 右欄狀態檔:1=2.AI用量、3=3.離艙(09-30)、其他=1.AI
         current = api.viewport.tab_offset(state, tab)
         limit = None
         limits = _read_json(os.path.join(state_dir, ".right-scroll-limit.json"))

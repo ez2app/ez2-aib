@@ -1596,11 +1596,11 @@ WHEEL_ACTION="{\"action\":\"fold-scroll\",\"dir\":\"$WHEEL_DIR\",\"rows\":3}"
           CUR="$(cat "$TABF" 2>/dev/null || echo 1)"
           [ "$CUR" = "2" ] && NEXT=1 || NEXT=2
           # 09-30 右欄有第 3 頁「離艙」:點哪一格就去哪一頁(格的起訖欄由 pane-right-tabs.sh 寫成檔)。
-          # 值:2=1.AI、1=2.AI用量、3=3.離艙。檔讀不到、或點在分頁列以外(空的那一列)⇒ 照舊 1↔2 切換。
+          # 值:2=1.AI、1=2.AI用量、3=3.離艙、4=4.艦長艙(10-30 #446)。檔讀不到、或點在分頁列以外(空的那一列)⇒ 照舊 1↔2 切換。
           if [ "$PANE_ROLE" = "right" ] && [ -f "$EZ2_COCKPIT_STATE_DIR/right-tab-spans.json" ]; then
             _PICK="$("$EZ2_PY3" -c 'import json,sys
 d=json.load(open(sys.argv[1], encoding="utf-8")); x=int(sys.argv[2])
-for name, val in (("ai", "2"), ("usage", "1"), ("left", "3")):
+for name, val in (("ai", "2"), ("usage", "1"), ("left", "3"), ("room", "4")):
     a, b = d.get(name) or (0, 0)
     if a <= x < b:
         print(val); break' "$EZ2_COCKPIT_STATE_DIR/right-tab-spans.json" "${CX:-0}" 2>/dev/null || true)"
@@ -2068,6 +2068,14 @@ except Exception:
             ${MENU_POS[@]+"${MENU_POS[@]}"} \
             "取消" q "" "" "確定刪除 $SEQ" y "$CONFIRM_ACTION" \
             >>"$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" 2>&1 || true
+        fi
+        ;;
+      room-open)
+        # 10-30 右欄第 4 頁「艦長艙」第一列(#446):開艦長室。3 秒防連點與「沒裝不開」都在 right_room_page.py open。
+        if [ "$DRY" = "1" ]; then
+          run "$EZ2_PY3" "$COCKPIT/right_room_page.py" open
+        else
+          "$EZ2_PY3" "$COCKPIT/right_room_page.py" open >>"$EZ2_COCKPIT_STATE_DIR/mouse-errors.log" 2>&1 || true
         fi
         ;;
       leftover-close|leftover-close-all)

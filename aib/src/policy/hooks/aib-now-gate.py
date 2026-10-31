@@ -371,6 +371,18 @@ def decide(payload):
     return True, msg
 
 
+def dm_decide(payload):
+    """待審守門(dm_pending_gate):回 (should_block, message)。認席 / 名單 / stop_hook_active 跟 decide 同一套;
+    出錯由呼叫端 fail-open。"""
+    if payload.get("stop_hook_active"):
+        return False, ""
+    code = self_seat()
+    if not code or _nested() or not enforced(code):
+        return False, ""
+    import dm_pending_gate
+    return dm_pending_gate.check(code, T, _note)
+
+
 def session_start_text(payload):
     """開席 / clear / compact / resume:印進新對話的提醒。不在 AIB 席、關閉、出錯 ⇒ 空字串。"""
     if os.environ.get("AIB_NOW_GATE") == "0":
@@ -581,6 +593,17 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001 —— 最後一道 fail-open
             _note("FAILOPEN 未預期:%s" % e)
             block, msg = False, ""
+        # 10-30 @557fe 提案:待審框有別人寄、沒結案的信 ⇒ 同一次 Stop 一起擋(每回合最多擋一次,兩道都擋就合成一段)
+        try:
+            dm_block, dm_msg = dm_decide(payload)
+        except Exception as e:  # noqa: BLE001
+            _note("FAILOPEN dm-gate:%s" % e)
+            dm_block, dm_msg = False, ""
+        # dm 那句(擋下說明,或壞檔放行的原因)now 那道也擋時一起附上 —— rc 2 時 stdout 不顯示(Codex r2 L1)
+        if dm_msg and (block or dm_block):
+            msg = (msg + "\n\n" + dm_msg) if block else dm_msg
+            block = True
+            dm_msg = ""
         if block:
             # now 那道要擋 ⇒ 這一輪先不動影子續跑說明(rc 2 時 stdout 不會顯示);續跑那一輪 Stop 再顯示
             print(msg, file=sys.stderr)
@@ -593,6 +616,8 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001
             _note("FAILOPEN ship-report-gate:%s" % e)
             show = ""
+        if dm_msg:   # 待審守門放行但有話說(佇列有檔讀不了):跟影子續跑說明同一則顯示
+            show = (show + "\n\n" + dm_msg) if show else dm_msg
         if show:
             sys.stdout.write(json.dumps({"systemMessage": show}, ensure_ascii=False) + "\n")
         return 0

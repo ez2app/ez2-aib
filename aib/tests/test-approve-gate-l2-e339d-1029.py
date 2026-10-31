@@ -438,7 +438,7 @@ ASK_SITES = (
     ("chat_cast.issue", ("pin",)), ("release.sign_approve", ()), ("newproj.approve", ()),
     ("newproj.approve_amend", ()), ("newproj.boot_confirm", ()),
     ("chat_owner_cli.protect", ()), ("chat_owner_cli.repair", ()), ("chat_owner_cli.off_owner", ()),
-    ("approve_grants.lockwatch_on", ()), ("secret_share.copy", ()), ("secret_share.paste", ()),
+    ("secret_share.copy", ()), ("secret_share.paste", ()),
 )
 
 

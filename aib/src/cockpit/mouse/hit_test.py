@@ -30,6 +30,7 @@ FOLD_SCROLL_ACTION = "fold-scroll"
 FOLD_ALL_ACTIONS = frozenset(("fold-expand-all", "fold-collapse-all"))
 LEFTOVER_CLOSE_ACTION = "leftover-close"          # leftover_seats.CLOSE_ACTION
 LEFTOVER_CLOSE_ALL_ACTION = "leftover-close-all"  # leftover_seats.CLOSE_ALL_ACTION
+ROOM_OPEN_ACTION = "room-open"                   # right_room_page.OPEN_ACTION(10-30 右欄第 4 頁「艦長艙」第一列)
 LEFTOVER_KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}\|@\d{1,6}$")   # <艙 id>|@<窗>
 FOLD_KEY_RE = re.compile(r"^(?:[0-9a-z]{5}|fleet:[0-9]{1,4})$")
 
@@ -196,6 +197,8 @@ def hit_ai_rows(rowmap, y, x=None):
                         return {"action": LEFTOVER_CLOSE_ACTION, "key": key,
                                 "label": _safe_text(link.get("label"), 48)}
                     return PASSTHROUGH
+                if action == ROOM_OPEN_ACTION:                      # 第 4 頁「艦長艙」第一列:開艦長室
+                    return {"action": ROOM_OPEN_ACTION}
                 if action == LEFTOVER_CLOSE_ALL_ACTION:             # 同頁的 <全收>
                     try:
                         count = max(0, int(link.get("count") or 0))
@@ -714,7 +717,7 @@ def _main(argv):
         tab = "ai"
         try:
             with open("%s/right-tab" % state_dir, encoding="utf-8") as fh:
-                tab = {"1": "usage", "3": "left"}.get(fh.read().strip(), "ai")  # 右欄狀態檔:1=2.AI用量、3=3.離艙(09-30)、其他=1.AI
+                tab = {"1": "usage", "3": "left", "4": "room"}.get(fh.read().strip(), "ai")  # 右欄狀態檔:1=2.AI用量、3=3.離艙(09-30)、其他=1.AI
         except OSError:
             pass
         if isinstance(limits, dict) and tab in limits:

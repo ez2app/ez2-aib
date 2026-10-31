@@ -16,7 +16,9 @@ P10 順序(@aeb40 10-30 03:10):先查讀取開關 ⇒ Touch ID ⇒ 才讀值;開
 P9 真 tmux(有 tmux 才跑):paste 期間每次叫 tmux 都掃一次 ps -axww,掃出來沒有值;那一席的畫面打出了值、沒有送出
 刀(手動):K1 paste 改 send-keys -l 值 ⇒ P5 / P9 紅;K2 copy 拿掉 Touch ID ⇒ P3 紅;K3 清除不比雜湊 ⇒ P4 紅;
     K4 site 類別改 seat_input ⇒ P1 紅;K5 先讀值再彈指紋(拿掉 precheck)⇒ P10 紅;
-    K6 先 pbcopy 再起清除行程 ⇒ P2 紅;K7 按指紋後不重查 fresh_target ⇒ P6 紅
+    K6 先 pbcopy 再起清除行程 ⇒ P2 紅;K7 按指紋後不重查 fresh_target ⇒ P6 紅;
+    K8 paste 拿掉 not_mac ⇒ P6 test_not_mac 紅;K9 paste 改回 -t @N ⇒ P5 / P9 test_split_pane_gets_nothing 紅;
+    K10 拿掉啟動時間比對 ⇒ P6 test_pid_reused_or_unknown_start 紅;K11 不看清理結果 ⇒ P6 test_buffer_left_reported 紅
 """
 import hashlib
 import io
@@ -46,6 +48,13 @@ VALUE = "sk-ant-api03-" + "Qw7" * 20
 NAME = "ANTHROPIC_API_KEY"
 CABIN, UUID = "96e0", "e6d260cb-3c3e-4568-b9e1-5ba955c12ab3"
 CODE = UUID[-5:]
+
+
+START = 1793175645.0   # 席位檔 started_epoch;替身 ps 預設回同一刻
+
+
+def lstart(epoch):
+    return time.strftime("%a %b %d %H:%M:%S %Y", time.localtime(epoch)) + "\n"
 
 
 class Done(Exception):
@@ -100,7 +109,10 @@ class Base(unittest.TestCase):
 
     def run_ok(self, argv, **kw):
         self.calls.append((list(argv), kw.get("input"), dict(kw.get("env") or {})))
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:1] == ["ps"]:
+            return subprocess.CompletedProcess(argv, 0, lstart(getattr(self, "pstart", START)), "")
+        out = getattr(self, "panes", "%5 4242\n") if "list-panes" in argv else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
 
     def no_value_anywhere(self):
         for argv, _inp, env in self.calls:
@@ -253,7 +265,7 @@ class Seat(Base):
         d.mkdir(parents=True)
         self.rec_file = d / "w5.json"
         self.rec_file.write_text(json.dumps({"session_uuid": UUID, "socket": "aihub-" + CABIN, "window_id": "@5",
-                                             "pid": 4242, "started_epoch": 1}))
+                                             "pid": 4242, "started_epoch": START}))
         p = mock.patch.object(SPN, "pending", side_effect=lambda code, **kw: ({"at_prompt": self.at_prompt, "ask": None}, 0))
         p.start()
         self.addCleanup(p.stop)
@@ -268,9 +280,9 @@ class P5Paste(Seat):
     def test_stdin_buffer_no_enter(self):
         res, rc = self.paste()
         self.assertEqual((res, rc), ({"ok": True}, 0))
-        argvs = [a for a, _i, _e in self.calls]
-        self.assertEqual([a[3] for a in argvs], ["load-buffer", "paste-buffer", "delete-buffer"])
-        load, paste, delete = argvs
+        argvs = [a for a, _i, _e in self.calls if a[0] != "ps"]
+        self.assertEqual([a[3] for a in argvs], ["list-panes", "load-buffer", "paste-buffer", "delete-buffer", "list-buffers"])
+        _panes, load, paste, delete, _listed = argvs
         self.assertEqual(load[-1], "-")
         buf = load[load.index("-b") + 1]
         self.assertRegex(buf, r"^aib-secret-[0-9a-f]{32}$")
@@ -278,7 +290,8 @@ class P5Paste(Seat):
         self.assertIn("-p", paste)
         self.assertEqual(paste[paste.index("-b") + 1], buf)
         self.assertEqual(delete[-1], buf)
-        self.assertEqual(self.calls[0][1], VALUE, "值只走 load-buffer 的 stdin")
+        self.assertEqual(paste[paste.index("-t") + 1], "%5", "打進 pane_pid = 席位檔 pid 那一格,不是 -t @5(#435 L3)")
+        self.assertEqual([i for a, i, _e in self.calls if "load-buffer" in a][0], VALUE, "值只走 load-buffer 的 stdin")
         self.assertFalse([a for a in argvs if "send-keys" in a], "不送 Enter")
         self.no_value_anywhere()
 
@@ -327,9 +340,149 @@ class P6PasteRefused(Seat):
     def test_load_fails_still_deletes(self):
         def run(argv, **kw):
             self.calls.append((list(argv), kw.get("input"), {}))
-            return subprocess.CompletedProcess(argv, 1 if "load-buffer" in argv else 0, "", "")
+            if argv[:1] == ["ps"]:
+                return subprocess.CompletedProcess(argv, 0, lstart(START), "")
+            return subprocess.CompletedProcess(argv, 1 if "load-buffer" in argv else 0, "%5 4242\n" if "list-panes" in argv else "", "")
         self.assertEqual(self.paste(run=run)[0], {"ok": False, "why": "paste_failed"})
-        self.assertEqual([a[3] for a, _i, _e in self.calls], ["load-buffer", "delete-buffer"])
+        self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"], ["list-panes", "load-buffer", "delete-buffer", "list-buffers"])
+
+    def test_paste_raises_still_deletes(self):
+        """#442 r1 L1:paste-buffer 逾時 / 例外 ⇒ paste_failed,照樣 delete-buffer"""
+        for exc in (subprocess.TimeoutExpired("tmux", 10), OSError("boom")):
+            with self.subTest(exc=type(exc).__name__):
+                self.calls[:] = []
+                def run(argv, exc=exc, **kw):
+                    if "paste-buffer" in argv:
+                        self.calls.append((list(argv), None, {}))
+                        raise exc
+                    return self.run_ok(argv, **kw)
+                self.assertEqual(self.paste(run=run), ({"ok": False, "why": "paste_failed"}, 4))
+                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"], ["list-panes", "load-buffer", "paste-buffer", "delete-buffer", "list-buffers"])
+
+    def test_cleanup_fails_does_not_crash(self):
+        """#442 r1 L1:delete-buffer 非零 / 例外不改結果、不丟例外(殘留問題是 M2,另案)"""
+        for mode in ("rc", "raise"):
+            with self.subTest(mode=mode):
+                self.calls[:] = []
+                def run(argv, mode=mode, **kw):
+                    if "delete-buffer" in argv:
+                        self.calls.append((list(argv), None, {}))
+                        if mode == "raise":
+                            raise subprocess.TimeoutExpired("tmux", 10)
+                        return subprocess.CompletedProcess(argv, 1, "", "")
+                    return self.run_ok(argv, **kw)
+                self.assertEqual(self.paste(run=run), ({"ok": True}, 0))
+                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"][-2:], ["delete-buffer", "list-buffers"])
+
+    def test_buffer_left_reported(self):
+        """#442 r1 M2:delete-buffer 之後 list-buffers 還看得到 / 讀不到 ⇒ 重試 3 次,仍確認不了 ⇒ buffer_left(蓋過原結果)"""
+        for mode in ("still-there", "list-fails", "list-raises"):
+            for paste_ok in (True, False):
+                with self.subTest(mode=mode, paste_ok=paste_ok):
+                    self.calls[:] = []
+                    seen = {}
+                    def run(argv, mode=mode, paste_ok=paste_ok, **kw):
+                        if "load-buffer" in argv:
+                            seen["buf"] = argv[argv.index("-b") + 1]
+                        if "paste-buffer" in argv and not paste_ok:
+                            self.calls.append((list(argv), None, {}))
+                            return subprocess.CompletedProcess(argv, 1, "", "")
+                        if "list-buffers" in argv:
+                            self.calls.append((list(argv), None, {}))
+                            if mode == "list-raises":
+                                raise subprocess.TimeoutExpired("tmux", 10)
+                            return subprocess.CompletedProcess(argv, 1 if mode == "list-fails" else 0,
+                                                               seen["buf"] + "\n" if mode == "still-there" else "", "")
+                        return self.run_ok(argv, **kw)
+                    self.assertEqual(self.paste(run=run), ({"ok": False, "why": "buffer_left"}, 4))
+                    tm = [a[3] for a, _i, _e in self.calls if a[0] != "ps"]
+                    self.assertEqual((tm.count("delete-buffer"), tm.count("list-buffers")), (3, 3))
+        # 第二次才確認不在 ⇒ 照原結果;tmux 伺服器已經沒了 ⇒ 也算不在
+        for mode in ("second-try", "no-server"):
+            with self.subTest(mode=mode):
+                self.calls[:] = []
+                n = {"list": 0}
+                def run(argv, mode=mode, **kw):
+                    if "list-buffers" in argv:
+                        n["list"] += 1
+                        self.calls.append((list(argv), None, {}))
+                        if mode == "no-server":
+                            return subprocess.CompletedProcess(argv, 1, "", "no server running on /tmp/tmux-501/aihub-x")
+                        return subprocess.CompletedProcess(argv, 1 if n["list"] == 1 else 0, "", "")
+                    return self.run_ok(argv, **kw)
+                self.assertEqual(self.paste(run=run), ({"ok": True}, 0))
+
+    def test_interrupt_still_cleans(self):
+        """#444 r1 M1:load / paste 等待時被 Ctrl-C ⇒ 照樣刪 + 確認,KeyboardInterrupt 照樣往上丟"""
+        for where in ("load-buffer", "paste-buffer"):
+            with self.subTest(where=where):
+                self.calls[:] = []
+                def run(argv, where=where, **kw):
+                    if where in argv:
+                        self.calls.append((list(argv), None, {}))
+                        raise KeyboardInterrupt
+                    return self.run_ok(argv, **kw)
+                with self.assertRaises(KeyboardInterrupt):
+                    self.paste(run=run)
+                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"][-2:], ["delete-buffer", "list-buffers"])
+
+    def test_list_decode_error_is_unconfirmed(self):
+        """#444 r1 M2:list-buffers 輸出解不了碼 ⇒ 不逸出例外,算沒確認 ⇒ buffer_left;呼叫帶 errors=replace"""
+        self.calls[:] = []
+        kws = []
+        def run(argv, **kw):
+            if "list-buffers" in argv:
+                kws.append(kw.get("errors"))
+                self.calls.append((list(argv), None, {}))
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
+            return self.run_ok(argv, **kw)
+        self.assertEqual(self.paste(run=run), ({"ok": False, "why": "buffer_left"}, 4))
+        self.assertEqual(kws, ["replace"] * 3)
+
+    def test_pid_reused_or_unknown_start(self):
+        """#442 r1 M1:名冊不變、PID 數字相同但行程世代不同(啟動時間對不上)/ 查不到 / 名冊沒有 started_epoch ⇒ seat_busy,值不進 buffer"""
+        orig = self.rec_file.read_text()
+        cases = (("reused", {"pstart": START + 3600}), ("late-edge-out", {"pstart": START + 121}), ("early-edge-out", {"pstart": START - 3}), ("ps-fails", {"psfail": True}),
+                 ("no-started", {"rec": {"started_epoch": None}}), ("nan-started", {"rec": {"started_epoch": "NaN"}}),
+                 ("inf-started", {"rec": {"started_epoch": "inf"}}), ("list-rc", {"listrc": 1}), ("list-timeout", {"listexc": True}))
+        for label, c in cases:
+            with self.subTest(case=label):
+                self.calls[:] = []
+                self.pstart = c.get("pstart", START)
+                rec = json.loads(orig); rec.update(c.get("rec", {})); self.rec_file.write_text(json.dumps(rec))
+                def run(argv, c=c, **kw):
+                    if argv[:1] == ["ps"] and c.get("psfail"):
+                        self.calls.append((list(argv), None, {}))
+                        return subprocess.CompletedProcess(argv, 1, "", "")
+                    if "list-panes" in argv and c.get("listexc"):
+                        self.calls.append((list(argv), None, {}))
+                        raise subprocess.TimeoutExpired("tmux", 10)
+                    if "list-panes" in argv and c.get("listrc"):
+                        self.calls.append((list(argv), None, {}))
+                        return subprocess.CompletedProcess(argv, 1, "", "")
+                    return self.run_ok(argv, **kw)
+                self.assertEqual(self.paste(run=run), ({"ok": False, "why": "seat_busy"}, 2), label)
+                self.assertFalse([a for a, _i, _e in self.calls if "load-buffer" in a], label)
+        for ok_start in (START - 2, START + 30, START + 120):   # 開席外殼晚起 30 秒(@fd787 實測)仍要能貼
+            self.rec_file.write_text(orig); self.pstart = ok_start
+            self.calls[:] = []
+            self.assertEqual(self.paste(), ({"ok": True}, 0), ok_start - START)
+
+    def test_not_mac(self):
+        """#435 R1 L2:paste 也先擋非 Mac ⇒ not_mac,不查名冊、不彈窗、不叫 tmux"""
+        with mock.patch.object(SS, "find_seat", side_effect=AssertionError("不該查名冊")):
+            res, rc = SS.do_paste(NAME, "%s/%s" % (CABIN, CODE), env=self.env, platform="linux", touchid=self.touch(),
+                                  touchid_available=lambda: True, run=self.run_ok)
+        self.assertEqual((res, rc), ({"ok": False, "why": "not_mac"}, 2))
+        self.assertEqual((self.reasons, self.calls), ([], []))
+
+    def test_seat_pane_missing_no_buffer(self):
+        """#435 R1 L3:視窗裡找不到 pane_pid = 席位檔 pid 那一格(換了 / 兩格同 pid / list-panes 失敗)⇒ seat_busy,值不進 buffer"""
+        for panes in ("%7 999\n", "", "%5 4242\n%6 4242\n", "garbage\n"):
+            with self.subTest(panes=panes):
+                self.panes, self.calls[:] = panes, []
+                self.assertEqual(self.paste(), ({"ok": False, "why": "seat_busy"}, 2))
+                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"], ["list-panes"])
 
 
 class P7Vault(Base):
@@ -413,9 +566,11 @@ class P9RealTmux(Seat):
         subprocess.run(base + ["new-session", "-d", "-x", "200", "-y", "20", "cat"], check=True, timeout=10,
                        stdin=subprocess.DEVNULL, capture_output=True)
         self.addCleanup(subprocess.run, base + ["kill-server"], capture_output=True, timeout=10)
-        wid = subprocess.run(base + ["display-message", "-p", "#{window_id}"], capture_output=True, text=True, timeout=10).stdout.strip()
+        wid, pane, ppid = subprocess.run(base + ["display-message", "-p", "#{window_id} #{pane_id} #{pane_pid}"], capture_output=True,
+                                         text=True, timeout=10).stdout.split()
         rec = json.loads(self.rec_file.read_text())
-        rec.update(socket=self.sock, window_id=wid)
+        rec.update(socket=self.sock, window_id=wid, pid=int(ppid), started_epoch=SS.pid_started(int(ppid)))
+        self.pane = pane
         self.rec_file.write_text(json.dumps(rec))
         self.base = base
 
@@ -435,6 +590,22 @@ class P9RealTmux(Seat):
         self.assertEqual(lines, [VALUE], "打出了值、沒有按 Enter(cat 沒回顯第二份)")
         bufs = subprocess.run(self.base + ["list-buffers"], capture_output=True, text=True, timeout=10).stdout
         self.assertNotIn("aib-secret-", bufs, "buffer 用完即刪")
+
+    def test_split_pane_gets_nothing(self):
+        """#435 R1 L3:同視窗另切一格並設成作用中 ⇒ 值仍打進席位那一格,另一格沒有"""
+        subprocess.run(self.base + ["split-window", "-t", self.pane, "cat"], check=True, timeout=10, capture_output=True, stdin=subprocess.DEVNULL)
+        other = subprocess.run(self.base + ["display-message", "-p", "#{pane_id}"], capture_output=True, text=True, timeout=10).stdout.strip()
+        self.assertNotEqual(other, self.pane, "另一格是作用中")
+        res, _ = SS.do_paste(NAME, "%s/%s" % (CABIN, CODE), env=self.env, platform="darwin", touchid=self.touch(),
+                             touchid_available=lambda: True)
+        self.assertEqual(res, {"ok": True})
+        cap = lambda p: subprocess.run(self.base + ["capture-pane", "-p", "-t", p], capture_output=True, text=True, timeout=10).stdout
+        for _ in range(20):
+            if VALUE in cap(self.pane):
+                break
+            time.sleep(0.1)
+        self.assertIn(VALUE, cap(self.pane))
+        self.assertNotIn(VALUE, cap(other))
 
 
 if __name__ == "__main__":

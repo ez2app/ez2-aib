@@ -61,7 +61,7 @@ export EZ2_MODIFIER_LABEL="$MOD"
 # ★ 取不到不退中文預設 —— 印鍵名本身
 # (i18n_lib 對缺鍵回 !!key!!,python 起不來則下面自己印鍵名),讓壞掉的樣子跟正確的不同。
 load_tab_labels() {
-IFS=$'\t' read -r TAB_LOC TAB_AI TAB_USAGE TAB_LEFT <<EOF
+IFS=$'\t' read -r TAB_LOC TAB_AI TAB_USAGE TAB_LEFT TAB_ROOM TAB_ROOM_SHORT TAB_FULL_W <<EOF
 $("$EZ2_PY3" - <<'PYI18N' 2>/dev/null
 import json, os, sys
 sys.path.insert(0, os.environ["EZ2_COCKPIT_DIR"])
@@ -69,27 +69,49 @@ sys.path.insert(0, os.path.join(os.environ["EZ2_COCKPIT_DIR"], "render"))
 from i18n_lib import Translator
 tr = Translator()
 ai, us, lf = tr.t("aib.tabs.right_ai"), tr.t("aib.tabs.right_usage"), tr.t("aib.tabs.right_leftover")
+# 10-30 第 4 頁「艦長艙」(#446):寬度不夠放完整四格時第 4 格改短字(right_room_short)。
+rm, rms = tr.t("aib.tabs.right_room"), tr.t("aib.tabs.right_room_short")
+full_w = 0
 # 09-30 第 3 頁「離艙」:分頁列多一格,點哪一格要看 x。三格的起訖欄寫成檔給 mouse-ctl 讀
 # (字依語言而不同寬,不在滑鼠那邊寫死)。三種作用中的分頁列,三格的位置相同(見下方三種 printf)。
 try:
     from render_lib import visible_width as vw
     a1 = 1 + vw(ai) + 2                  # " " + " 1.AI "
     l0 = a1 + 1 + vw(us) + 1             # + " " + "2.AI用量" + " "(第 3 格從這一欄起)
+    # 第 4 格從第 3 格的終點起;寬度取長字(短字落在同一段裡,點短字右邊的空白也算第 4 格)
+    r0 = l0 + vw(lf) + 3
+    full_w = r0 + vw(rm) + 3
     d = os.environ.get("EZ2_COCKPIT_STATE_DIR") or ""
     if d:
         tmp = os.path.join(d, "right-tab-spans.json.%d" % os.getpid())
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"ai": [0, a1], "usage": [a1, l0], "left": [l0, l0 + vw(lf) + 3]}, fh)
+            json.dump({"ai": [0, a1], "usage": [a1, l0], "left": [l0, r0], "room": [r0, full_w]}, fh)
         os.replace(tmp, os.path.join(d, "right-tab-spans.json"))
 except Exception:
     pass
-print(tr.locale + "\t" + ai + "\t" + us + "\t" + lf)
+print("\t".join((tr.locale, ai, us, lf, rm, rms, str(full_w))))
 PYI18N
 )
 EOF
 [ -n "${TAB_AI:-}" ] || TAB_AI="aib.tabs.right_ai"
 [ -n "${TAB_USAGE:-}" ] || TAB_USAGE="aib.tabs.right_usage"
 [ -n "${TAB_LEFT:-}" ] || TAB_LEFT="aib.tabs.right_leftover"
+[ -n "${TAB_ROOM:-}" ] || TAB_ROOM="aib.tabs.right_room"
+[ -n "${TAB_ROOM_SHORT:-}" ] || TAB_ROOM_SHORT="$TAB_ROOM"
+case "${TAB_FULL_W:-}" in ''|*[!0-9]*) TAB_FULL_W=0 ;; esac
+}
+
+# 分頁列(四格)。四種作用中的樣子,前三格的欄位跟三格時代一樣(right-tab-spans.json 照舊對得上);
+# 第 4 格接在後面。右欄比完整四格窄 ⇒ 第 4 格用短字。值:2/0/其他=1.AI、1=2.AI用量、3=3.艙記錄(10-31 Andy 由「離艙」改名;內容仍是離艙席盤點)、4=4.艦長艙。
+tab_bar() {
+  local rm="$TAB_ROOM"
+  [ "$TAB_FULL_W" -gt 0 ] && [ "${EZ2_PANE_W:-44}" -lt "$TAB_FULL_W" ] 2>/dev/null && rm="$TAB_ROOM_SHORT"
+  case "$1" in
+    1) printf '  \033[38;5;245m%s\033[0m \033[1;7m %s \033[0m \033[38;5;245m%s  %s\033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT" "$rm" ;;
+    3) printf '  \033[38;5;245m%s  %s\033[0m \033[1;7m %s \033[0m \033[38;5;245m%s\033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT" "$rm" ;;
+    4) printf '  \033[38;5;245m%s  %s  %s\033[0m \033[1;7m %s \033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT" "$rm" ;;
+    *) printf ' \033[1;7m %s \033[0m \033[38;5;245m%s  %s  %s\033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT" "$rm" ;;
+  esac
 }
 load_tab_labels
 # 語系變了才重取頁簽字。現在是哪一種語系只問 i18n_lib.resolve_locale(語系來源只有那一處,本檔不自己猜設定檔在哪);
@@ -122,11 +144,18 @@ relabel_if_locale_changed() {
 
 render_frame() {
   local tab="$1"
-  if [ "$tab" = "3" ]; then
+  if [ "$tab" = "4" ]; then
+    # 第 4 頁「艦長艙」(Andy 10-30 21:1x,#446):第一列開艦長室、下面三列唯讀設定。
+    # 只讀快取(.right-page-room.json,10 秒過期由它自己在背景重量);點擊表(ai-rowmap.json)由它順手寫。
+    [ -n "${TMUX_PANE:-}" ] && tmux set-option -p -t "$TMUX_PANE" @aib_pane ai-list 2>/dev/null || true
+    printf ' \033[K\n'; tab_bar 4
+    "$EZ2_PY3" "$EZ2_COCKPIT_DIR/right_room_page.py" render --width "${EZ2_PANE_W:-44}" --row-offset 2 2>/dev/null \
+      | sed 's/$/\x1b[K/'
+  elif [ "$tab" = "3" ]; then
     # 第 3 頁「離艙」(the maintainer 09-30):已不在任何活艙、但還沒收乾淨的席位,每席右邊 <X>。
     # 資料在背景盤點(leftover_seats.py produce),這一幀只讀快取;點擊表(ai-rowmap.json)由它順手寫。
     [ -n "${TMUX_PANE:-}" ] && tmux set-option -p -t "$TMUX_PANE" @aib_pane ai-list 2>/dev/null || true
-    printf ' \033[K\n'; printf '  \033[38;5;245m%s  %s\033[0m \033[1;7m %s \033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT"
+    printf ' \033[K\n'; tab_bar 3
     "$EZ2_PY3" "$EZ2_COCKPIT_DIR/leftover_seats.py" render --width "${EZ2_PANE_W:-44}" --height "${EZ2_PANE_H:-30}" --row-offset 2 2>/dev/null \
       | sed 's/$/\x1b[K/'
   elif [ "$tab" = "1" ]; then
@@ -138,14 +167,14 @@ render_frame() {
     # 點擊會整頁往下錯一列：點在「用量 | Codex」上其實點到空行。
     # ★ the maintainer 09-30:分頁列上方空一列。那一列印一個空格(看得見的列,不是只有清行碼),
     #   分頁列在 y=1、內容從 y=2 起,本檔每一處 offset 都 +1(滑鼠 y<=1 仍是切分頁)。
-    printf ' \033[K\n'; printf '  \033[38;5;245m%s\033[0m \033[1;7m %s \033[0m \033[38;5;245m%s\033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT"
+    printf ' \033[K\n'; tab_bar 1
     EZ2_ONESHOT=1 EZ2_RIGHT_VIEW=usage EZ2_RIGHT_PAGE=usage \
       EZ2_H_OFFSET=2 EZ2_ROW_OFFSET=2 bash "$EZ2_COCKPIT_DIR/pane-right-ai.sh"
     # 用量頁 paint 失敗會撤 @aib_pane；這裡一律釘回，否則整頁按鍵假死
     [ -n "${TMUX_PANE:-}" ] && tmux set-option -p -t "$TMUX_PANE" @aib_pane ai-list 2>/dev/null || true
   else
     [ -n "${TMUX_PANE:-}" ] && tmux set-option -p -t "$TMUX_PANE" @aib_pane ai-list 2>/dev/null || true
-    printf ' \033[K\n'; printf ' \033[1;7m %s \033[0m \033[38;5;245m%s  %s\033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT"
+    printf ' \033[K\n'; tab_bar 2
     # 機器狀態列(the maintainer 09-04 令「接」)。三件寫在這裡,因為它們是這一格的全部風險:
     #   ★ 行數**動態**:字樣長度會隨「量到/量不到」變,寫死 offset 會讓點擊錯位一整天而沒有人會紅。
     #     所以先取行數,再把 EZ2_H_OFFSET / EZ2_ROW_OFFSET 一起 +N —— 兩個都要,漏一個就是錯位。
@@ -241,7 +270,7 @@ _blit_usage_scroll() {
   body="$(EZ2_H_OFFSET=2 EZ2_ROW_OFFSET=2 \
     "$EZ2_PY3" "$EZ2_COCKPIT_DIR/render/usage_scroll_blit.py" 2>/dev/null)" || return 1
   frame="$(
-    printf ' \033[K\n'; printf '  \033[38;5;245m%s\033[0m \033[1;7m %s \033[0m \033[38;5;245m%s\033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT"
+    printf ' \033[K\n'; tab_bar 1
     printf '%s\n' "$body" | awk '{printf "%s\033[K\n", $0} END{printf "\033[J"}'
   )"
   printf '\033[H%s\033[J' "$frame"
@@ -264,7 +293,7 @@ _blit_ai_scroll() {
   body="$(EZ2_H_OFFSET="$off" EZ2_ROW_OFFSET="$off" \
     "$EZ2_PY3" "$EZ2_COCKPIT_DIR/render/ai_scroll_blit.py" 2>/dev/null)" || return 1
   frame="$(
-    printf ' \033[K\n'; printf ' \033[1;7m %s \033[0m \033[38;5;245m%s  %s\033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT"
+    printf ' \033[K\n'; tab_bar 2
     if [ -n "$mach" ]; then
       printf '%s\n' "$mach" | sed 's/$/\x1b[K/'
     fi
@@ -274,6 +303,33 @@ _blit_ai_scroll() {
   LAST_FRAME="$frame"
   return 0
 }
+# 第 4 頁的 Enter(#446):/bin/bash 3.2 的 read 沒有「看一下有沒有字」(-t 0 有字也回 1、-t 不吃小數),
+#   拍間不能自己讀鍵盤。改成開一支背景讀鍵:擋在 read 上等鍵,收到 Enter 就把計數寫進 .right-enter(零 fork),
+#   別的鍵讀掉不理(右欄不是輸入區,順便不讓字堆在終端)。主迴圈只在第 4 頁比對這個檔。
+#   ★ 一個右欄只准一支:pid 記在 .right-enter.pid,還活著就不再起(本檔 exec 自己重跑時 pid 不變,讀鍵那支照用)。
+#   ★ 右欄關掉 ⇒ 終端斷線 ⇒ read 回 EOF ⇒ 它自己結束。stdin 不是終端(治具 / 單幀)⇒ 不起。
+ROOM_ENTER_F="$EZ2_COCKPIT_STATE_DIR/.right-enter"
+room_enter_reader_start() {
+  [ -t 0 ] || return 0
+  local pf="$EZ2_COCKPIT_STATE_DIR/.right-enter.pid" p=""
+  [ -r "$pf" ] && IFS= read -r p < "$pf" 2>/dev/null
+  case "$p" in ''|*[!0-9]*) ;; *) kill -0 "$p" 2>/dev/null && return 0 ;; esac
+  (
+    # ★ 先放掉繼承來的 fd:9 是「一個 state 只准一條繪製迴圈」的 flock —— 讀鍵這支拿著它,右欄重開時新的那條會判
+    #   「鎖被占用」整欄不畫;200 是拍間睡眠用的 fifo。
+    exec 9>&- 200<&- 2>/dev/null
+    _n=0
+    while IFS= read -r -s -n 1 _k; do
+      [ -z "$_k" ] || continue          # Enter(換行)讀進來是空字串
+      _n=$((_n + 1))
+      { printf '%s.%s\n' "$_n" "$$" > "$ROOM_ENTER_F"; } 2>/dev/null || true
+    done
+  ) <&0 &
+  { printf '%s\n' "$!" > "$pf"; } 2>/dev/null || true
+}
+[ "${EZ2_ONESHOT:-0}" = "1" ] || room_enter_reader_start
+ROOM_ENTER_SEEN=""
+ROOM_TAB_SEEN=""
 LAST_FRAME=""
 LAST_GEOMETRY=""
 REFRESH_TICKS="${EZ2_RIGHT_REFRESH_TICKS:-40}"
@@ -389,6 +445,10 @@ while true; do
   PANE_GEOM_DIRTY=0
   pane_read_file TAB "$TABF"
   pane_read_file KICK "$KICKF"
+  if [ "$TAB" = "4" ] && [ "$ROOM_TAB_SEEN" != "4" ]; then
+    pane_read_file ROOM_ENTER_SEEN "$ROOM_ENTER_F"   # 剛切進第 4 頁:別頁時按的 Enter 不算
+  fi
+  ROOM_TAB_SEEN="$TAB"
   relabel_if_locale_changed             # 語系變了 ⇒ 分頁標籤這一幀就換(語系盤查第 7 條)
   # 上一輪若是因為點了頁簽、子頁或捲了用量才醒來，這一輪直接貼預載。
   # 五秒心跳不帶原因，仍整頁重查，時鐘才會走。
@@ -484,8 +544,8 @@ EOF
       FAST_REASON=swap                               # 點了用量／Codex:下一幀貼預載
       break
     fi
-    if [ "$_scroll_busy" = 1 ] && [ "$TAB" != "3" ]; then
-      # 改位置和重切畫面同一支程式，避免每動一下連開三支。(第 3 頁沒有捲動,不走這條,免得貼上 AI 清單)
+    if [ "$_scroll_busy" = 1 ] && [ "$TAB" != "3" ] && [ "$TAB" != "4" ]; then
+      # 改位置和重切畫面同一支程式，避免每動一下連開三支。(第 3、4 頁沒有捲動,不走這條,免得貼上 AI 清單)
       if [ "$TAB" = "1" ]; then
         _body="$(EZ2_H_OFFSET=2 EZ2_ROW_OFFSET=2 \
           "$EZ2_PY3" "$EZ2_COCKPIT_DIR/render/right_scroll_follow.py" usage 2>/dev/null)"
@@ -498,12 +558,12 @@ EOF
       if [ "$_frc" -eq 0 ]; then
         if [ "$TAB" = "1" ]; then
           _frame="$(
-            printf ' \033[K\n'; printf '  \033[38;5;245m%s\033[0m \033[1;7m %s \033[0m \033[38;5;245m%s\033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT"
+            printf ' \033[K\n'; tab_bar 1
             printf '%s\n' "$_body" | awk '{printf "%s\033[K\n", $0} END{printf "\033[J"}'
           )"
         else
           _frame="$(
-            printf ' \033[K\n'; printf ' \033[1;7m %s \033[0m \033[38;5;245m%s  %s\033[0m\033[K\n' "$TAB_AI" "$TAB_USAGE" "$TAB_LEFT"
+            printf ' \033[K\n'; tab_bar 2
             printf '%s\n' "$_body" | awk '{printf "%s\033[K\n", $0} END{printf "\033[J"}'
           )"
         fi
@@ -523,7 +583,15 @@ EOF
     #  tmux 沒有這個格式,永遠回空,從沒生效,卻每秒白開 10 支 tmux。)
     _apply_scroll_drag
     _drain_scroll_nudge
-    if [ "$TAB" = "3" ]; then
+    if [ "$TAB" = "4" ]; then
+      # 4.艦長艙:沒有捲動。焦點在右欄時按 Enter = 點第一列(開艦長室;3 秒防連點在 right_room_page.py open)。
+      pane_read_file ROOM_ENTER_NOW "$ROOM_ENTER_F"
+      if [ "$ROOM_ENTER_NOW" != "$ROOM_ENTER_SEEN" ]; then
+        ROOM_ENTER_SEEN="$ROOM_ENTER_NOW"
+        "$EZ2_PY3" "$EZ2_COCKPIT_DIR/right_room_page.py" open >/dev/null 2>&1 || true
+        break
+      fi
+    elif [ "$TAB" = "3" ]; then
       # 3.離艙(09-30):沒有預切的快貼,位置一變就整頁重畫(這一頁只讀快取,很快)。
       pane_read_file SCROLL_NOW "$EZ2_COCKPIT_STATE_DIR/right-scroll.json"
       if [ "$SCROLL_NOW" != "$SCROLL" ]; then

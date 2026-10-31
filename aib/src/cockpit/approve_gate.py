@@ -40,6 +40,7 @@ H = 3600
 # 類別表:id ⇒ high_risk(不開時間窗)、max_window(秒;高風險 = 0)。四語名稱在 i18n「aib.approve_gate.cat.<id>」。
 CATEGORIES = {
     "release_sign":   {"high_risk": True,  "max_window": 0},
+    "license_sign":   {"high_risk": True,  "max_window": 0},   # 10-30 @aeb40:簽發 / 重簽 license.json(aib-sign-approve 收 LICENSE-*.json)
     "payment":        {"high_risk": True,  "max_window": 0},
     "delete_data":    {"high_risk": True,  "max_window": 0},
     "trusted_device": {"high_risk": True,  "max_window": 0},
@@ -52,6 +53,7 @@ CATEGORIES = {
     "project_ruling": {"high_risk": True,  "max_window": 0},
     "auto_update":    {"high_risk": True,  "max_window": 0},
     "window_grant":   {"high_risk": True,  "max_window": 0},   # TID-2b:簽時間窗授權單本身一次一按
+    "pixel_real_gen": {"high_risk": True,  "max_window": 0},   # aib-plugins #320:真生圖會扣外部額度;放行多久由外掛檔 until 表示
     "unregistered":   {"high_risk": True,  "max_window": 0},
     "seat_input":     {"high_risk": False, "max_window": 24 * H},
     "outbound":       {"high_risk": False, "max_window": 3 * H},
@@ -107,6 +109,9 @@ SITES = {
                             "Copy secret {name} to clipboard; any program here (AI too) can read it; cleared in 30 s"),
     "secret_share.paste": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_paste", {"seat": FULL, "name": FULL},
                              "Type secret {name} into seat {seat}, no Enter; any app here (AI too) can read that screen and log"),
+    # aib-plugins #320(@aeb40 10-30):像素工坊真生圖放行;hours 不截,本人看得到放行多久
+    "pixel_approve.real_gen": _s("cockpit/pixel_approve.py", "pixel_real_gen", "aib.pixel.touchid_real_gen", {"hours": FULL},
+                                 "Pixel Studio: allow real image generation for {hours} h (codex image calls use quota)"),
     "cf_grant.grant": _s("cockpit/cf_grant.py", "cf_token", "aib.cf.touchid_reason",
                          {"zone": 64, "perms": FULL, "ttl": FULL, "host": FULL},
                          suffix={"dns_write": ("aib.cf.touchid_risk.dns_write", {}, " "),
@@ -156,12 +161,14 @@ SITES = {
     "mission.accept": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_accept",
                          {"title": 60, "id": FULL, "n": FULL, "k": FULL},
                          "Accept and archive task team {title} ({id}, {n} tasks, {k} cancelled)"),
+    # mission.budget 提高預算 = 花額度 ⇒ 高風險一次一按、不進時間窗(S4 前半,@f5fb8 / @aeb40 10-29 裁);調低不用按
+    "mission.budget": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_budget",
+                         {"title": 60, "id": FULL, "what": FULL},
+                         "Raise the budget of task team {title} ({id}): {what} (spends more usage)"),
     # 10-29 TID-2b:時間窗授權單(se-sign 的視窗字;類別、時長不截,換鑰那句第一行標舊 → 新 kid)
     "approve_grants.sign": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign",
                               {"cats": FULL, "dur": FULL},
                               "Time window: for {dur}, every AI on this Mac is auto-approved for: {cats}"),
-    "approve_grants.lockwatch_on": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_lockwatch_on",
-                                      {}, "Turn on the lock watcher so time-window grants can take effect on this Mac"),
     "approve_grants.sign_with": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign_with",
                                    {"action": FULL, "cats": FULL, "dur": FULL},
                                    "{action} · and open a time window: for {dur}, every AI on this Mac is auto-approved "
@@ -178,6 +185,10 @@ SITES = {
     "release.sign_approve": _s("release/sign_approve.py", "release_sign", "aib.release.sign_approve_reason",
                                {"plugin": FULL, "ver": FULL, "pin": FULL},
                                "Sign and release {plugin} {ver} · head {pin}"),
+    "release.license_approve": _s("release/sign_approve.py", "license_sign", "aib.release.license_approve_reason",
+                                  {"name": FULL, "plan": FULL, "addons": FULL, "expires": FULL, "device": FULL},
+                                  "Sign license {name}: plan {plan} · add-ons {addons} · bound to this Mac only ({device}…) · "
+                                  "expires {expires}"),
 }
 
 
@@ -387,11 +398,20 @@ def window_open(r):
     return not spec["high_risk"] and spec["max_window"] > 0
 
 
-def _default_window():
-    """正式路徑的時間窗:**關著**(Andy 10-29 20:5x 裁 #428 H1)。驗單要信 helper binary 與狀態根裡的檔,
-    同帳號 AI 設 EZ2_AIB_STATE_ROOT + 種假 sehelper + 自寫 lockwatch.json 就能零指紋放行 ⇒ 等「系統錨定驗單」做完才開。
-    在那之前 ask() 不讀單、不出時長選單,一律照舊一次一按。"""
-    return None
+def _default_window(platform=None):
+    """正式路徑的時間窗(系統錨定驗單第 3 張;#428 H1 關窗的理由都已換成系統層錨點):
+      - 只在 Mac(Q4);
+      - helper 只認 root 擁有的固定路徑那支(第 1 張:root 擁有、不可寫、stamp = 原始碼、hardened runtime);沒裝 / 不對 ⇒ None;
+      - 授權單 / 鑰的狀態根固定在本人真 HOME(pwd 查,不吃 EZ2_AIB_STATE_ROOT / EZ2_AIB_HOME / HOME)⇒ 換狀態根種不了單;
+      - 鎖屏看系統日誌(第 2 張)+ macOS build 白名單(#436),在 find / choose 時查;查不到 / 逾時 ⇒ 一次一按。
+    任何一步不成立 / 拋例外 ⇒ None(ask 照舊一次一按)。platform 只給測試注入。"""
+    if (platform or sys.platform) != "darwin":
+        return None
+    import approve_grants
+    ctx = approve_grants.Ctx(env=approve_grants.pinned_env(), platform=platform)
+    if ctx.helper_exe()[1] is not None:
+        return None
+    return approve_grants.GateWindow(ctx)
 
 
 def ask(r, lock_root, touchid=None, before=None, window=None):
@@ -400,8 +420,8 @@ def ask(r, lock_root, touchid=None, before=None, window=None):
     before():拿到整台鎖之後、彈指紋之前先跑(例:全文確認窗);回的不是 {"ok": True} ⇒ 不彈指紋,
     回 {"ok": False, "why": 它的 why, "stage": "before"}。全文窗和指紋同一把鎖,中間插不進別的視窗。
     整句超過 LA_MAX ⇒ 拒(不交給視窗去截;各支不用再自己擋)。
-    TID-2c 時間窗(window = approve_grants.GateWindow):正式路徑目前**不開**(_default_window 回 None,#428 H1);
-    只有呼叫端明確傳 window 才走下面這段:
+    TID-2c 時間窗(window = approve_grants.GateWindow):正式路徑由 _default_window 決定(只在固定路徑 root helper 驗得過時開);
+    呼叫端明確傳 touchid 而沒傳 window ⇒ 不開窗。有窗時:
       - 可開窗的類別先找有效單(簽章 / 範圍 / 類別 / 到期 / 開機 / 機器 / 撤銷 / 鎖屏後作廢)⇒ 有就不彈窗,why "window",記一列;
       - 沒有 ⇒ 彈時長選單(只這次 / ≤ 該類 max_window 的時長);選了時長 ⇒ SE 簽單(同一次指紋核准這件 + 開窗),
         只這次 ⇒ 照舊 LAContext。高風險類兩處都不走窗(找單、選單都不叫)。任何一步失敗 ⇒ 一次一按,不放行。"""

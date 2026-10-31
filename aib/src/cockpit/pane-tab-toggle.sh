@@ -17,6 +17,11 @@ mkdir -p "$EZ2_COCKPIT_STATE_DIR"
 F="$EZ2_COCKPIT_STATE_DIR/$SIDE-tab"
 
 _compute() {
+  if [ "$SIDE" = "right" ]; then
+    # 10-30 右欄四頁輪切(#446):1.AI(2/0/其他)→ 2.AI用量(1)→ 3.離艙(3)→ 4.艦長艙(4)→ 1.AI
+    case "$1" in 1) printf '3\n' ;; 3) printf '4\n' ;; 4) printf '2\n' ;; *) printf '1\n' ;; esac
+    return 0
+  fi
   case "$1" in 1) printf '0\n' ;; *) printf '1\n' ;; esac
 }
 

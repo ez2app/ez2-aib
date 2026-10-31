@@ -16,7 +16,6 @@
 //   se-pub    --name N --dir D             不要指紋:**從 SE 鑰本體重算**公鑰(不讀檔裡的 public_key 欄位,那欄改得到),
 //                                          並探過這把鑰一定要本人(換成不帶 ACL 的 SE 鑰 ⇒ weak_key)。
 //   se-verify --name N --dir D --sig B64   不要指紋:stdin 資料 + DER 簽章,用重算的公鑰驗;過 ⇒ {"ok": true},不過 ⇒ bad_sig。
-//   lockwatch --name GRANT_KEY --dir D     長駐:鎖螢幕 / 螢幕保護開始 ⇒ D/lockwatch.json 的 last_lock_utc;每 30 秒心跳。
 //
 // 規矩:
 //   - 沒有任何略過生物辨識的旗標;accessControl 固定 [.privateKeyUsage, .biometryCurrentSet](換了指紋就失效,要重封);
@@ -234,6 +233,16 @@ func seCreate(_ name: String, _ dir: String, kind: String = "sekey") throws {
 }
 
 let grantKeyName = "GRANT_KEY"
+let grantMaxWindow = 7 * 3600                  // = approve_grants.WINDOW_CAP_S(日誌涵蓋得到的範圍)
+let grantDurations = ["15m": 900, "30m": 1800, "1h": 3600, "3h": 3 * 3600, "24h": 24 * 3600]   // = approve_grants.DURATIONS
+
+// kern.boottime 的秒數(= approve_grants.boot_epoch);量不到 ⇒ nil(不簽)
+func bootEpoch() -> Int64? {
+    var tv = timeval()
+    var size = MemoryLayout<timeval>.stride
+    guard sysctlbyname("kern.boottime", &tv, &size, nil, 0) == 0, tv.tv_sec > 0 else { return nil }
+    return Int64(tv.tv_sec)
+}
 
 // GRANT_KEY ⇔ kind grantkey(userPresence);其他名字只收 biometryCurrentSet 的 sekey(不讓別的鑰降級成可用密碼簽)
 func loadKeyDoc(_ name: String, _ dir: String) throws -> [String: Any] {
@@ -295,30 +304,6 @@ func seVerify(_ name: String, _ dir: String, _ sigB64: String) throws {
     print("{\"ok\": true, \"owner_acl\": \"probed\"}")
 }
 
-// lockwatch(TID-2c,D3):長駐(launchd KeepAlive)。螢幕鎖定 ⇒ 立刻寫 last_lock;每 30 秒寫一次心跳。
-// 只寫 D/lockwatch.json(600)。是本機檔 ⇒ 只防誤操作;Python 端心跳過期 / 讀不到一律當鎖過(@aeb40 Q2)。
-func lockwatch(_ dir: String) throws {
-    try secureDir(dir)
-    let path = dir + "/lockwatch.json"
-    let iso = ISO8601DateFormatter()
-    var lastLock = iso.string(from: Date())          // 剛啟動 = 當作剛鎖過(開機 / 重啟前的單一律不算)
-    func write() {
-        let doc: [String: Any] = ["v": version, "last_lock_utc": lastLock, "beat_utc": iso.string(from: Date()),
-                                  "pid": Int(getpid())]
-        if let d = try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys]) { try? writePrivate(path, d) }
-    }
-    write()
-    let center = DistributedNotificationCenter.default()
-    for n in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
-        center.addObserver(forName: Notification.Name(n), object: nil, queue: .main) { _ in
-            lastLock = iso.string(from: Date())
-            write()
-        }
-    }
-    Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in write() }
-    RunLoop.main.run()
-}
-
 func seSign(_ name: String, _ dir: String, _ reason: String) throws {
     let doc = try loadKeyDoc(name, dir)
     let data = FileHandle.standardInput.readDataToEndOfFile()
@@ -329,6 +314,23 @@ func seSign(_ name: String, _ dir: String, _ reason: String) throws {
               let want = obj["text_sha256"] as? String, cleanFull(reason) == reason else { throw Fail("reason_mismatch") }
         let got = SHA256.hash(data: Data(reason.utf8)).map { String(format: "%02x", $0) }.joined()
         guard got == want else { throw Fail("reason_mismatch") }
+        // #441 R2 H1:簽發時間 / 期限 / 開機識別由 helper 自己產生、簽進 stamp(系統時鐘 + kern.boottime,同帳號改不了);
+        // 呼叫端給的一律不收 ⇒ 「簽 → 鎖屏 → 假起算 → 用」做不出來(issued = 這一刻,彈指紋之前)。
+        guard obj["issued_utc"] == nil, obj["expires_utc"] == nil, obj["boot"] == nil else { throw Fail("bad_time") }
+        guard let dur = obj["dur"] as? String, let secs = grantDurations[dur], secs > 0, secs <= grantMaxWindow
+        else { throw Fail("bad_time") }
+        guard let boot = bootEpoch() else { throw Fail("bad_time") }
+        let issued = Int64(Date().timeIntervalSince1970)
+        let stamp = "\naib-grant-stamp v1 issued=\(issued) expires=\(issued + Int64(secs)) boot=\(boot)"
+        guard SecureEnclave.isAvailable else { throw Fail("no_se") }
+        let k = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: try b64(doc, "se_key"),
+                                                          authenticationContext: context(reason, limit: maxSignReason))
+        let sig = try k.signature(for: data + Data(stamp.utf8))       // ← 這裡 SE 要求生物辨識
+        let out: [String: Any] = ["sig": sig.derRepresentation.base64EncodedString(), "issued": issued,
+                                  "expires": issued + Int64(secs), "boot": boot]
+        let js = try JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])
+        print(String(decoding: js, as: UTF8.self))
+        return
     }
     guard SecureEnclave.isAvailable else { throw Fail("no_se") }
     let k = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: try b64(doc, "se_key"),
@@ -359,9 +361,6 @@ struct Main {
                 guard name == grantKeyName else { throw Fail("bad_name") }
                 try seCreate(name, dir, kind: "grantkey")
             case "se-pub": try sePub(name, dir)
-            case "lockwatch":
-                guard name == grantKeyName else { throw Fail("bad_name") }
-                try lockwatch(dir)
             case "se-verify":
                 guard let sig = o["sig"], !sig.isEmpty else { throw Fail("bad_arg") }
                 try seVerify(name, dir, sig)
