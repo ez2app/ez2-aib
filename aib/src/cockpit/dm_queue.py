@@ -2028,12 +2028,16 @@ def _spawn_env(env):
             if not k.startswith(_SPAWN_ENV_DROP_PREFIX) and k not in _SPAWN_ENV_DROP}
 
 
-def _spawn_headless(seat, brand, env):
-    """背景起一輪 dm_queue.py triage-headless(自成一組、不等它;輸出進那一席的 headless.log)。"""
+def _spawn_headless(seat, brand, env, draft=False):
+    """背景起一輪 dm_queue.py triage-headless(自成一組、不等它;輸出進那一席的 headless.log)。
+    draft ⇒ 只擬不結(必定觸發那條);忙滿 30 分那條(0.1.62)照原本套用。"""
     d = seat_dir(seat, env)
     d.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, str(_HERE / "dm_queue.py"), "triage-headless", "--seat", seat, "--brand", brand]
+    if draft:
+        cmd.append("--draft")
     with open(str(d / "headless.log"), "ab") as log:
-        subprocess.Popen([sys.executable, str(_HERE / "dm_queue.py"), "triage-headless", "--seat", seat, "--brand", brand],
+        subprocess.Popen(cmd,
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=_spawn_env(env), cwd=str(d))
 
@@ -2063,10 +2067,99 @@ def _triage_headless_maybe(seat, rec, path, env, now, probe):
         return False                       # 記不下來就不起(否則下一拍看不到起過,會一直起)
     if ok:
         try:
-            SPAWN_HEADLESS(seat, brand, env)
+            # #466 Codex r2 H1:這條(忙滿 30 分)也照 triage_auto 開關;draft ⇒ 只擬不結(子程序套用前還會再讀一次)
+            SPAWN_HEADLESS(seat, brand, env, draft=triage_auto_mode(seat, env)[0] == "draft")
         except OSError:
             return False
     return ok
+
+
+LONG_WORK_WORDS = ("換版", "推送", "全套", "回滾", "發版", "push", "suite", "rollback", "release")
+
+
+def _proc_start(pid):
+    """行程起始時刻字面(ps -o lstart=,LC_ALL=C;同 tools/governance/host_lease.proc_start)。量不到回 None。"""
+    try:
+        e = dict(os.environ, LC_ALL="C", LANG="C")
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True,
+                             timeout=5, stdin=subprocess.DEVNULL, env=e).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return out or None
+
+
+class LongWorkUndetermined(RuntimeError):
+    """長工作判斷要用的檔在、但讀不到 / 壞了 / ps 量不到(#466 Codex r2 M4);守門收成 UNDETERMINED 放行留痕。"""
+
+
+def _seat_long_work(seat, env, now, proc_start=None, now_rec=None):
+    """這一席正在長工作(推送 / 全套 / 換版 / 回滾)⇒ True。三件都要成立(#466 Codex r1 M3):
+      1) 機器租約(host-lease.json 結構化欄位):owner == "@席碼"、同主機、沒過期、pid 活著且 pid_start 對得上
+         (pid 會繞回;沒記 pid_start ⇒ 不算)。不拿 what 字串比(@34d15 10-31 21:45)。
+      2) aib now 狀態是忙碌(busy)
+      3) aib now 主項目含 LONG_WORK_WORDS 其中一個
+    owner / aib now 都是自報的,同帳號擋不住同帳號;這裡只用來「延後、不誤擋」,不是防線。
+    租約檔不存在 / 不是本席的 / pid 死了 ⇒ False;檔在卻讀不到、壞檔、ps 量不到、aib now 讀錯 ⇒ LongWorkUndetermined。"""
+    e = _env(env)
+    lp = (e.get("AIB_HOST_LEASE_FILE") or "").strip() or os.path.join(
+        e.get("HOME") or os.path.expanduser("~"), ".ez2-aib", "state", "host-lease.json")   # 同 host_lease.lease_path
+    try:
+        lease = json.loads(Path(lp).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError) as exc:
+        raise LongWorkUndetermined("lease:%s" % exc.__class__.__name__)
+    if not isinstance(lease, dict):
+        raise LongWorkUndetermined("lease:shape")
+
+    def _is_int(v):
+        return isinstance(v, int) and not isinstance(v, bool)
+    owner, host, pid, pid_start, exp = (lease.get(k) for k in ("owner", "host", "pid", "pid_start", "expiry_epoch"))
+    # #466 Codex r4 / r5:先驗型別(host_lease 一定寫 owner/host 字串、pid/expiry_epoch 整數,pid_start 字串);
+    #   錯了不是「不是本席 / 過期」,是判斷不了。pid_start 沒記(None)照舊 = 不算(舊租約)。
+    if (not isinstance(owner, str) or not isinstance(host, str) or not _is_int(pid)
+            or not _is_int(exp) or (pid_start is not None and not isinstance(pid_start, str))):
+        raise LongWorkUndetermined("lease:fields")
+    if owner != "@" + str(seat):
+        return False
+    try:
+        import socket
+        if host != socket.gethostname():
+            return False
+        if int(now) >= exp:
+            return False
+        if pid <= 0 or not pid_start:
+            return False
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False                       # 持有的行程已經不在
+    except OSError as exc:
+        raise LongWorkUndetermined("lease:pid:%s" % exc.__class__.__name__)
+    got = (proc_start or _proc_start)(pid)
+    if got is None:
+        raise LongWorkUndetermined("ps")
+    if got != lease.get("pid_start"):
+        return False
+    if now_rec is None:
+        try:
+            import seat_now               # 不走 seat_now.read:它把讀錯吞成 None(#466 Codex r2 M4)
+            with open(os.path.join(seat_now.now_dir(e.get("EZ2_AIB_STATE_ROOT") or None), str(seat) + ".json"),
+                      encoding="utf-8") as fh:
+                now_rec = json.load(fh)
+        except FileNotFoundError:
+            return False                   # 沒跑過 aib now ⇒ 不知道在長工作
+        except Exception as exc:  # noqa: BLE001
+            raise LongWorkUndetermined("now:%s" % exc.__class__.__name__)
+    if not isinstance(now_rec, dict):
+        raise LongWorkUndetermined("now:shape")          # #466 Codex r3 M4:[] / 字串不是「沒有長工作」
+    st, item = now_rec.get("state"), now_rec.get("item")
+    # #466 Codex r4:沒有這欄 = 舊紀錄 / 閒置紀錄(正常);明寫 null 或型別不對 = 判斷不了(seat_now 不會寫 null)
+    if ("state" in now_rec and not isinstance(st, str)) or ("item" in now_rec and not isinstance(item, str)):
+        raise LongWorkUndetermined("now:fields")
+    if now_rec.get("idle") or (st or "busy") != "busy":
+        return False                       # 沒寫 state 的舊紀錄 = busy(同 seat_now 讀端)
+    item = (item or "").lower()
+    return any(w.lower() in item for w in LONG_WORK_WORDS)
 
 
 def _triage_lock(seat, env=None):
@@ -2960,6 +3053,89 @@ def tidy_switch(value, seat=None, env=None):
         return tidy_enabled(seat, env)
     flag = _read_tidy_flag(path)
     return (TIDY_DEFAULT, "default") if flag is None else (flag, "fleet")
+
+
+# ── 待審整理必定觸發 triage_auto(Andy 10-31 15:3x「門檻到就由 hook 直接起子代理 如何必要程式化?」;
+#   SPEC-dm-triage-auto v2 §2.6 / §5,@34d15 21:45 Q1 照建議)──
+#   off   = 回到原本(只提醒 + 忙滿 30 分才起背景整理;Stop 守門照原判準)
+#   draft = 門檻到、叫醒沒人接 ⇒ 起背景整理,但只寫「建議結案清單」不改任何信(上線第一週的預設)
+#   on    = 真的套用 —— 這一版不收(要等一週誤結率 0、而且要真人核准;只擬不結是上線門檻)
+#   開關:每席 <佇列>/<席>/triage-auto.json 優先,其次全艦 <佇列>/triage-auto-policy.json,都沒有 = draft。
+#   關掉(off)是比較保守的方向,本機檔誰都改得動也沒關係;開到 on 才要真人(下一版)。
+TRIAGE_AUTO_SCHEMA = "aib-dm-triage-auto/v1"
+TRIAGE_AUTO_MODES = ("off", "draft")
+TRIAGE_AUTO_DEFAULT = "draft"
+
+
+def triage_auto_seat_path(seat, env=None):
+    return seat_dir(seat, env) / "triage-auto.json"
+
+
+def triage_auto_fleet_path(env=None):
+    return queue_root(env) / "triage-auto-policy.json"
+
+
+TRIAGE_AUTO_UNREADABLE = "unreadable"
+
+
+def _read_triage_auto(path):
+    """→ None(檔不存在)/ "off" / "draft" / "unreadable:<原因>"(檔在,但讀不到、壞檔、形狀不對、值認不得 —— 含 on)。
+    #466 Codex r3 H:讀錯不能當「沒有」退到下一層(全艦 off 會讓這一席變成直接結案)。"""
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:      # #466 Codex r4 L:UnicodeDecodeError 不是 OSError
+        return "%s:read:%s" % (TRIAGE_AUTO_UNREADABLE, exc.__class__.__name__)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return TRIAGE_AUTO_UNREADABLE + ":json"
+    if not isinstance(data, dict) or data.get("schema") != TRIAGE_AUTO_SCHEMA:
+        return TRIAGE_AUTO_UNREADABLE + ":shape"
+    if data.get("mode") not in TRIAGE_AUTO_MODES:
+        return TRIAGE_AUTO_UNREADABLE + ":mode"
+    return data["mode"]
+
+
+def _triage_auto_layer(v, layer):
+    if v is None:
+        return None
+    if v.startswith(TRIAGE_AUTO_UNREADABLE):
+        return TRIAGE_AUTO_DEFAULT, "%s:%s" % (layer, v)      # 讀不到 ⇒ draft(只擬不結),來源寫明哪一層壞了
+    return v, layer
+
+
+def triage_auto_mode(seat, env=None):
+    """(off / draft, 來源)。來源 = seat / fleet / default;那一層檔在卻讀不到 / 壞檔 / 值認不得(含 on)
+    ⇒ (draft, "<層>:unreadable:<原因>"),不再退到下一層(#466 Codex r3 H)。守門看到 unreadable 來源 ⇒ 放行留痕。"""
+    for path, layer in ((triage_auto_seat_path(seat, env), "seat"), (triage_auto_fleet_path(env), "fleet")):
+        got = _triage_auto_layer(_read_triage_auto(path), layer)
+        if got is not None:
+            return got
+    return TRIAGE_AUTO_DEFAULT, "default"
+
+
+def triage_auto_unreadable(src):
+    return TRIAGE_AUTO_UNREADABLE in str(src or "")
+
+
+def triage_auto_switch(value, seat=None, env=None):
+    """value = off / draft / default。on 這一版不收(回 ValueError)。回寫完之後那一層的 (mode, 來源)。"""
+    if value not in TRIAGE_AUTO_MODES + ("default",):
+        raise ValueError("triage_auto: %s 不收(只收 off / draft / default)" % value)
+    path = triage_auto_fleet_path(env) if seat is None else triage_auto_seat_path(seat, env)
+    if value == "default":
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        AJ.write_json(str(path), {"schema": TRIAGE_AUTO_SCHEMA, "mode": value})
+    if seat is not None:
+        return triage_auto_mode(seat, env)
+    return _triage_auto_layer(_read_triage_auto(path), "fleet") or (TRIAGE_AUTO_DEFAULT, "default")
 
 
 def _tidy_untouchable(row):
@@ -5361,6 +5537,7 @@ def main(argv=None, env=None):
     th = sub.add_parser("triage-headless")          # 0.1.62:背景整理 AI 代做一輪(通常由叫醒那一拍自動起)
     th.add_argument("--seat", required=True)
     th.add_argument("--brand", required=True)
+    th.add_argument("--draft", action="store_true", help="只擬不結(必定觸發那條起的;SPEC v2 §2.6)")
     ts_ = sub.add_parser("triage-status")           # 看板:每席叫醒 / 封數變化 / stalled / 子代理登記(唯讀)
     ts_.add_argument("--seat", default=None)
     ts_.add_argument("--json", action="store_true")
@@ -5537,6 +5714,12 @@ def main(argv=None, env=None):
     tsw_who.add_argument("--seat")
     tsw_who.add_argument("--fleet", action="store_true")
 
+    tas = sub.add_parser("triage-auto")
+    tas.add_argument("value", choices=("off", "draft", "default", "status"))
+    tas_who = tas.add_mutually_exclusive_group(required=True)
+    tas_who.add_argument("--seat")
+    tas_who.add_argument("--fleet", action="store_true")
+
     ptst = sub.add_parser("purge-test")
     ptst.add_argument("--dry-run", action="store_true")
     sub.add_parser("list-test")
@@ -5610,7 +5793,7 @@ def main(argv=None, env=None):
 
     if args.cmd == "triage-headless":
         import dm_triage_headless as H
-        out = H.run(args.seat, args.brand, env=env)
+        out = H.run(args.seat, args.brand, env=env, dry=bool(args.draft))
         _print_json(out)
         return 0 if out.get("ok") else 1
 
@@ -5945,6 +6128,21 @@ def main(argv=None, env=None):
             return 2
         on, src = tidy_switch(args.value, seat=args.seat, env=env)
         _print_json({"ok": True, "seat": args.seat, "fleet": bool(args.fleet), "auto_tidy": on, "switch": src})
+        return 0
+
+    if args.cmd == "triage-auto":
+        if args.seat is not None and not SEAT_RE.fullmatch(args.seat):
+            _print_json({"ok": False, "reason": "seat", "seat": args.seat})
+            return 2
+        if args.value == "status":
+            if args.seat is None:
+                mode, src = (_triage_auto_layer(_read_triage_auto(triage_auto_fleet_path(env)), "fleet")
+                             or (TRIAGE_AUTO_DEFAULT, "default"))
+            else:
+                mode, src = triage_auto_mode(args.seat, env)
+        else:
+            mode, src = triage_auto_switch(args.value, seat=args.seat, env=env)
+        _print_json({"ok": True, "seat": args.seat, "fleet": bool(args.fleet), "triage_auto": mode, "switch": src})
         return 0
 
     if args.cmd == "triage":

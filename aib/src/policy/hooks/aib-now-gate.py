@@ -380,7 +380,7 @@ def dm_decide(payload):
     if not code or _nested() or not enforced(code):
         return False, ""
     import dm_pending_gate
-    return dm_pending_gate.check(code, T, _note)
+    return dm_pending_gate.check(code, T, _note, transcript=payload.get("transcript_path"))
 
 
 def session_start_text(payload):

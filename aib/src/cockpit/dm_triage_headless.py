@@ -40,6 +40,7 @@ DRAFT_MAX = 1500
 WHY_MAX = 200
 BRANDS = ("claude", "codex")      # @abb89 23:22 ②:沿用那一席的引擎;只認驗得了關工具的家,其他不起
 ACTIONS = ("close", "wait", "draft", "leave")
+SEAT_READ_SKIP_S = 15 * 60        # 席位自己 15 分鐘內讀過的信不餵(不跟席位搶;SPEC-dm-triage-auto v2 §2.2)
 _PULL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/pull/[0-9]{1,7}/?")
 
 PREAMBLE = """You are a mail-triage helper for one AI seat. You have no tools: you cannot run commands, read files, \
@@ -142,9 +143,10 @@ def _evidence_ok(seat, ev, env, gh):
     return False, "only-merged-pr"
 
 
-def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None):
+def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None, dry=False):
     """逐條驗再套用;回每條結果。只動 triage-plan 裡「算數」的信(excluded 的一律 refused)。
-    revs = 餵給 AI 那一刻每封的修訂號(審查 L3):之後被改過的不套用(rev-changed)。"""
+    revs = 餵給 AI 那一刻每封的修訂號(審查 L3):之後被改過的不套用(rev-changed)。
+    dry(只擬不結,SPEC v2 §2.6):照樣逐條驗,但一封都不改;驗得過的標 would=True,寫進建議清單。"""
     import dm_take as DT
     now = int(time.time() if now is None else now)
     plan = TA.plan(seat, env=env, now=now)
@@ -164,7 +166,9 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None):
         if d["action"] == "close":
             ok, why = _evidence_ok(seat, d["evidence"], env, gh)
             res["reason"] = why
-            if ok:
+            if ok and dry:
+                res["would"] = True
+            elif ok:
                 if row["status"] != "read":
                     r = Q.mark_read(seat, d["id"], actor, env=env, now=now, if_rev=row["rev"], no_rev_check=False)
                     if not r.get("ok"):
@@ -186,6 +190,10 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None):
                 res["action"], res["reason"] = "leave", "wait-needs-read"
                 out.append(res)
                 continue
+            if dry:
+                res["would"], res["reason"] = True, "wait"
+                out.append(res)
+                continue
             r = DT.set_wait(seat, d["id"], actor, d["wait"], env=env, now=now)
             res["applied"], res["reason"] = bool(r.get("ok")), r.get("reason")
         else:
@@ -194,18 +202,23 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None):
     return out
 
 
-def _write_report(seat, actor, decisions, results, env, now, brand):
+def _write_report(seat, actor, decisions, results, env, now, brand, dry=False):
     stamp = time.strftime("%Y%m%d-%H%M", time.localtime(now))
     d = pending_dir(env)
     d.mkdir(parents=True, exist_ok=True)
     path = d / ("DMTRIAGE-%s-%s-headless.md" % (seat, stamp))
     by = {d0["id"]: d0 for d0 in decisions}
-    lines = ["# DM 背景整理 @%s(%s)" % (seat, Q.taipei_stamp(now)), "",
-             "執行者:%s(%s,不拿工具、只回 JSON;核心逐條驗才套用)。草稿沒有寄出,要回的請本席看過再寄。" % (actor, brand), ""]
+    head = ("執行者:%s(%s,不拿工具、只回 JSON;核心逐條驗)。**只擬不結**:一封都沒改,下面「建議」是驗得過的,"
+            "請本席看過自己結。草稿沒有寄出。" if dry else
+            "執行者:%s(%s,不拿工具、只回 JSON;核心逐條驗才套用)。草稿沒有寄出,要回的請本席看過再寄。") % (actor, brand)
+    lines = ["# DM 背景整理 @%s(%s)" % (seat, Q.taipei_stamp(now)), "", head, ""]
     for r in results:
         d0 = by.get(r["id"], {})
-        lines.append("- %s | %s | %s | %s%s" % (r["id"], r["action"], "已套用" if r["applied"] else "未套用",
+        state = ("建議" if r.get("would") else "不建議") if dry else ("已套用" if r["applied"] else "未套用")
+        lines.append("- %s | %s | %s | %s%s" % (r["id"], r["action"], state,
                                                 r.get("reason") or "", ("|" + d0["why"]) if d0.get("why") else ""))
+        if dry and r.get("would") and d0.get("evidence"):
+            lines.append("  證據:" + d0["evidence"])
         if d0.get("draft") and d0.get("action") == "draft":
             lines.append("  草稿:" + d0["draft"].replace("\n", "\n  "))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -252,8 +265,27 @@ def ask_ai(brand, prompt, run=None):
         shutil.rmtree(cwd, ignore_errors=True)
 
 
-def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged):
-    """一輪:登記 → plan → 問 AI → 逐條驗套用 → 寫整理檔 → 放鎖。回結果。"""
+def _seat_read_recent(it, now):
+    """席位自己 SEAT_READ_SKIP_S 內讀過(不是背景整理 / 系統代標)⇒ True:不餵,不跟席位搶(SPEC v2 §2.2)。"""
+    by = str(it.get("read_by") or "")
+    if not it.get("read_at") or by == "system" or "/headless-" in by:
+        return False
+    try:
+        return 0 <= int(now) - int(it.get("read_at")) < SEAT_READ_SKIP_S
+    except (TypeError, ValueError):
+        return False
+
+
+def _mode(seat, env):
+    """triage_auto 現在的值;讀不到當 draft(失效方向:只擬不結,不會多結)。"""
+    try:
+        return Q.triage_auto_mode(seat, env)[0]
+    except Exception:  # noqa: BLE001
+        return "draft"
+
+
+def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged, dry=False):
+    """一輪:登記 → plan → 問 AI → 逐條驗套用(dry = 只擬不結)→ 寫整理檔 → 放鎖。回結果。"""
     now = int(time.time() if now is None else now)
     actor = "agent:%s/headless-%s" % (seat, time.strftime("%H%M%S", time.localtime(now)))
     lk = TA.agent_lock(seat, actor, env=env, now=now)
@@ -265,8 +297,14 @@ def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged):
         rows = [r for r in plan["rows"] if "excluded" not in r]
         if not rows:
             return {"ok": True, "reason": "nothing", "results": []}
-        fed = rows[:MAX_ITEMS]
-        items = {r["id"]: Q._load_item(seat, r["id"], env) or {} for r in fed}
+        loaded = {r["id"]: Q._load_item(seat, r["id"], env) or {} for r in rows}
+        if not dry and _mode(seat, env) == "off":
+            fed = rows[:MAX_ITEMS]            # #466 Codex r3:off = 0.1.62 舊行為,不套「15 分內讀過不餵」
+        else:
+            fed = [r for r in rows if not _seat_read_recent(loaded[r["id"]], now)][:MAX_ITEMS]
+        if not fed:
+            return {"ok": True, "reason": "seat-reading", "results": []}
+        items = {r["id"]: loaded[r["id"]] for r in fed}
         texts = {i: (Q._full_text(it) if it else None) or it.get("msg") or "" for i, it in items.items()}
         text, why = ask(brand, build_prompt(seat, fed, texts))
         if text is None:
@@ -274,10 +312,16 @@ def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged):
         decisions = parse_decisions(text)
         if not decisions:
             return {"ok": False, "reason": "unparsable"}
-        results = apply(seat, decisions, actor, env=env, now=now, gh=gh, revs={r["id"]: r["rev"] for r in fed})
-        path = _write_report(seat, actor, decisions, results, env, now, brand)
+        # #466 Codex r2 H1:問 AI 要好幾分鐘,套用前重讀開關。現在是 draft ⇒ 一律只擬不結;
+        #   以 draft 起、途中被切 off ⇒ 這輪不套用(off 只還原舊行為給「之後」起的那幾輪,不追認這一輪)。
+        mode = _mode(seat, env)
+        if dry and mode == "off":
+            return {"ok": False, "reason": "mode-off"}
+        dry = bool(dry) or mode == "draft"
+        results = apply(seat, decisions, actor, env=env, now=now, gh=gh, revs={r["id"]: r["rev"] for r in fed}, dry=dry)
+        path = _write_report(seat, actor, decisions, results, env, now, brand, dry=dry)
         # ★ 審查 H1:只有 AI 真的回了、而且是餵進去的那幾封才算「看過」;失敗 / 讀不懂 / 沒餵到的不算
         handled = [r["id"] for r in fed if r["id"] in {d["id"] for d in decisions}]
-        return {"ok": True, "reason": "ok", "file": str(path), "results": results}
+        return {"ok": True, "reason": "ok", "file": str(path), "results": results, "dry": bool(dry)}
     finally:
         TA.agent_lock(seat, actor, env=env, now=now, release=True, handled=handled)
