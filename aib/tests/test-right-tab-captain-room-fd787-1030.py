@@ -118,7 +118,7 @@ def tr(locale, key):
 
 
 class AibCmdRoute(Base):
-    """10-31 Andy 點「開啟遊戲化艦長艙」沒開:bash 啟動器的 room 只認同資料夾的 captain_room.py(公開版沒有)⇒ 印「還在開發中」。
+    """10-31 Andy 點右欄第 4 頁第一列「開啟艦長艙」沒開:bash 啟動器的 room 只認同資料夾的 captain_room.py(公開版沒有)⇒ 印「還在開發中」。
     開室要走使用者打 `aib` 的那條(PATH 上的 aib / 套件入口 cli.py),bash 啟動器只是最後退路。"""
 
     def aib_cmd(self, path, with_fake=False):

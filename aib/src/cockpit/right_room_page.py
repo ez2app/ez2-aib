@@ -270,7 +270,7 @@ def cmd_render(width, row_offset, now=None, spawn=_spawn_produce):
 def aib_cmd():
     """aib 入口:AIB_ROOM_TAB_AIB(治具 / 替身)> PATH 上的 aib > 套件入口 cli.py > 同資料夾的 bash 啟動器。
 
-    10-31 Andy 點「開啟遊戲化艦長艙」沒開:bash 啟動器(src/cockpit/aib)的 `room` 只認同資料夾的 captain_room.py,
+    10-31 Andy 點右欄第 4 頁第一列「開啟艦長艙」沒開:bash 啟動器(src/cockpit/aib)的 `room` 只認同資料夾的 captain_room.py,
     公開版沒有那支 ⇒ 印「還在開發中」就退;把 room 交給已裝外掛的是套件入口(aib/cli.py → aib_plugins.find_command),
     所以要走使用者自己打 `aib` 時走的那條(跟 aib_ui._aib_bin 同順序),最後才退回 bash 啟動器。"""
     alt = os.environ.get("AIB_ROOM_TAB_AIB")
