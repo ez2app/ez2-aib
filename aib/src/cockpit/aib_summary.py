@@ -42,12 +42,18 @@ def summary_dir():
 
 
 def round_start(code):
-    """本輪起點 = max(交接記的這一輪起點, 這一席最後一張交接收據的時刻)。
-    沒有任何一輪紀錄的席(codex / grok 從沒 /clear)不能退成 0 —— 那樣史上任何一張整理收據都算本輪。"""
+    """本輪起點 = max(交接記的這一輪起點, 這一席最後一張**完整**交接收據的時刻)。
+    沒有任何一輪紀錄的席(codex / grok 從沒 /clear)不能退成 0 —— 那樣史上任何一張整理收據都算本輪。
+    標了不完整(incomplete 非空)的收據不算一輪的終點(10-31 T15,@557fe 一天重跑 5 次):交接補一封未讀就要重寫,
+    要是不完整的收據也推進起點,剛做的整理 / 總結就變「本輪沒做」⇒ 重整理、重收集 ⇒ 收集又抓到新信 ⇒ 又不完整。"""
     try:
         import aib_handoff
         rs = aib_handoff.current_round_start(code)
-        last = (aib_handoff._read_json(aib_handoff.receipt_path(code)) or {}).get("ts") or 0.0
+        latest = aib_handoff._read_json(aib_handoff.receipt_path(code)) or {}
+        if not latest.get("incomplete"):
+            last = latest.get("ts") or 0.0
+        else:
+            last = max([float(r["ts"]) for r in aib_handoff.receipts(code) if not r.get("incomplete")] or [0.0])
         return max(float(rs or 0.0), float(last or 0.0))
     except Exception:  # noqa: BLE001
         return 0.0

@@ -1781,6 +1781,27 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
     return out
 
 
+def _unread_still_live(facts):
+    """收集時列的未讀,寫第三步這一刻已經讀過 / 結案 / 不見的就不再要求第二段交代(10-31 T15):
+    席位處理掉那封信本身就是交代。讀不到佇列 ⇒ 照收集時的清單要求(不放水)。回新的 facts(不改原本的)。"""
+    code = ((facts.get("seat") or {}).get("code") or "")
+    unread = facts.get("unread") or []
+    if not code or not unread:
+        return facts
+    try:
+        import dm_queue
+        keep = []
+        for u in unread:
+            it = dm_queue._load_item(code, str(u.get("id") or ""))
+            if it is None:
+                continue
+            if it.get("status") in ("delivered", "queued") and not it.get("read_at"):
+                keep.append(u)
+    except Exception:  # noqa: BLE001
+        return facts
+    return dict(facts, unread=keep)
+
+
 def _incomplete(raw, facts, checks, warns=None):
     """§8e:交接哪裡不完整(固定欄位缺、機器對帳不齊、本輪沒整理)。raw = parse_draft 的原段(要欄位標題)。量不到不算缺。"""
     out = []
@@ -1788,7 +1809,7 @@ def _incomplete(raw, facts, checks, warns=None):
         import handoff_check
         secs = {k: raw.get(k, "") for k in SECTIONS}
         out += [T("aib.handoff.incomplete.field", what=x) for x in handoff_check.missing_fields(secs)]
-        out += handoff_check.reconcile(facts, secs, warnings=warns)
+        out += handoff_check.reconcile(_unread_still_live(facts), secs, warnings=warns)
     except Exception as exc:  # noqa: BLE001
         _log("incomplete_check_failed", None, why=repr(exc)[:200])
     t = str(checks.get("tidy") or "")
