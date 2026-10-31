@@ -11,7 +11,7 @@ Andy 原話:「在 1.AI 2.AI用量 3.離艙 新增一個 4.艦長艙,在第 4 �
   right_room_page.py open                              點第一列 / 按 Enter:3 秒內不重開;沒裝外掛不開
 
 ★ 每一格壞掉都只顯示「—」:外掛沒裝、aib room status 失敗、快取 JSON 壞 —— 不讓右欄迴圈死(rc 一律 0)。
-★ 開艦長室走 aib 入口(`bash <cockpit>/aib room open`,同 mouse-ctl 叫 aib 的寫法),不自己拼外掛路徑。
+★ 開艦長室走使用者的 aib 入口(PATH 上的 aib / 套件入口 cli.py,會把 room 交給已裝外掛;bash 啟動器只是最後退路),不自己拼外掛路徑。
 """
 from __future__ import annotations
 
