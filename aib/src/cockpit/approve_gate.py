@@ -169,8 +169,6 @@ SITES = {
     "approve_grants.sign": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign",
                               {"cats": FULL, "dur": FULL},
                               "Time window: for {dur}, every AI on this Mac is auto-approved for: {cats}"),
-    "approve_grants.lockwatch_on": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_lockwatch_on",
-                                      {}, "Turn on the lock watcher so time-window grants can take effect on this Mac"),
     "approve_grants.sign_with": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign_with",
                                    {"action": FULL, "cats": FULL, "dur": FULL},
                                    "{action} · and open a time window: for {dur}, every AI on this Mac is auto-approved "

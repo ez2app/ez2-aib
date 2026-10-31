@@ -35,12 +35,14 @@ W24 H2 刀:--rotate-key(換鑰 + 鎖屏)之後還原退休鑰 + grant-kid.json �
 W25 系統日誌涵蓋不到簽發 → 現在(log_uncovered)⇒ 有效單也要彈指紋、不出選單
 W26 #441 R2 H1 容差邊界重播(helper 時鐘固定慢 4 秒):helper 在 T 簽(stamp issued = T),T+0 / +1 / +2 / +5 鎖屏,T+6 使用 ⇒ locked_since;
     沒鎖屏 ⇒ 有效;改 stamp 把起算挪到鎖屏之後 ⇒ 簽章不符、不採用;叫 helper 時自帶未來 issued_utc ⇒ 不簽
-W12 --lockwatch on 要本人按一次(類別 window_grant;取消 ⇒ 不寫 plist、不叫 launchctl);--lockwatch on / off 只動給的 home + 假 launchctl;plist 是 KeepAlive 的 lockwatch;doctor_line 有單但系統日誌查不到 ⇒ note
+W12 lockwatch 退役(10-31):--lockwatch on ⇒ retired(不彈窗、不寫 plist、不叫 launchctl);舊 plist 還在 ⇒ doctor_line note
+  lockwatch_leftover、--lockwatch status 回 leftover;--lockwatch off 只動給的 home + 假 launchctl,bootout + 刪 plist + 刪 lockwatch.json;
+  doctor_line 有單但系統日誌查不到 ⇒ note
   (第 2 張起 lockwatch.json 不再參與判斷;W2 另驗自寫一份「沒鎖過」的 lockwatch.json 也不會讓單生效)
 刀(複本落刀,錨要恰好一次):KL1 lock_state 不理查詢失敗 ⇒ W2 紅;KL2 拿掉鎖屏後作廢 ⇒ W3 紅;KL3 拿掉「現在鎖著」⇒ W2 紅;
   KL10 lock_state 拿掉 build 名單 ⇒ W18 紅;KL11 os_build 不給乾淨 env ⇒ W18 紅;
   KL4 拿掉 owner_acl 檢查 ⇒ W10 紅;KL5 拿掉 find_valid 的高風險排除 ⇒ W4 紅;KL6 拿掉查不到不出選單 ⇒ W14 紅;
-  KL7 find_valid 拿掉 lock_state ⇒ W15 紅;KL9 lock_state 改回讀 lockwatch.json ⇒ W2 紅;KL8 --lockwatch on 拿掉 Touch ID ⇒ W12 紅;
+  KL7 find_valid 拿掉 lock_state ⇒ W15 紅;KL9 lock_state 改回讀 lockwatch.json ⇒ W2 紅;KL8 doctor_line 拿掉舊 plist 提示 ⇒ W12 紅;KL12 --lockwatch off 不刪 lockwatch.json ⇒ W12 紅;
   KG1 ask 拿掉高風險不走窗 ⇒ W8 紅;KG2 拿掉記帳 ⇒ W5 紅;KG3 拿掉取消 ⇒ W6 紅
   KH1 / KH2 _default_window 拿掉固定路徑 helper 檢查 ⇒ W16 / W17 紅;KH3 拿掉平台檢查 ⇒ W16 紅
   KW1 pinned_env 照收呼叫端 env(狀態根跟著 EZ2_AIB_STATE_ROOT)⇒ W20 紅;KW2 helper_exe 退回 <狀態根>/bin ⇒ W21 紅;
@@ -280,14 +282,43 @@ def cell_w14(t, M):
         e.close()
 
 
-def cell_w12_needs_touchid(t, M, e, lc, home, calls):
-    """--lockwatch on 要本人按一次;取消 ⇒ 不寫 plist、不叫 launchctl。"""
-    out = io.StringIO()
+def cell_w12_retired(t, M, e, lc, home, calls):
+    """lockwatch 退役:--lockwatch on ⇒ retired,不彈窗、不寫 plist、不叫 launchctl。
+    舊版留下的 plist / lockwatch.json ⇒ doctor 提示、status 回 leftover;--lockwatch off 全部清掉。"""
+    asked, out = [], io.StringIO()
     rc = M.main(["--lockwatch", "on"], out=out, ctx=e.ctx(M), launchctl=lc, home=home,
-                touchid=lambda r: {"ok": False, "why": "cancel"})
-    t.assertEqual((rc, json.loads(out.getvalue()).get("why")), (2, "cancel"))
+                touchid=lambda r: asked.append(r) or {"ok": True, "why": "ok"})
+    t.assertEqual((rc, json.loads(out.getvalue()).get("why")), (2, "retired"))
     t.assertFalse(os.path.exists(M.lockwatch_plist_path(home)))
-    t.assertEqual(calls, [])
+    t.assertEqual((calls, asked), ([], []))
+    t.assertEqual(M.doctor_line(e.ctx(M), home=home), ("ok", "no_grants"))
+    plist = M.lockwatch_plist_path(home)                       # 舊版裝過:plist + lockwatch.json 都還在
+    os.makedirs(os.path.dirname(plist), exist_ok=True)
+    with open(plist, "wb") as fh:
+        fh.write(b"<plist/>")
+    M._write_json(M.lockwatch_path(e.env), {"v": 1})
+    t.assertEqual(M.doctor_line(e.ctx(M), home=home), ("note", "lockwatch_leftover"))
+    out = io.StringIO()
+    M.main(["--lockwatch", "status"], out=out, ctx=e.ctx(M), launchctl=lc, home=home)
+    t.assertIs(json.loads(out.getvalue())["leftover"], True)
+    out = io.StringIO()
+    t.assertEqual(M.main(["--lockwatch", "off"], out=out, ctx=e.ctx(M), launchctl=lc, home=home), 0)
+    res = json.loads(out.getvalue())
+    t.assertEqual((res["ok"], res["removed"], res["plist"], res["json"]), (True, True, "removed", "removed"))
+    t.assertFalse(os.path.exists(plist))
+    t.assertFalse(os.path.exists(M.lockwatch_path(e.env)))
+    t.assertEqual([c[0] for c in calls], ["bootout"])
+    t.assertEqual(M.doctor_line(e.ctx(M), home=home), ("ok", "no_grants"))
+    out = io.StringIO()                                        # 再跑一次:都不在 ⇒ absent、仍 ok
+    t.assertEqual(M.main(["--lockwatch", "off"], out=out, ctx=e.ctx(M), launchctl=lc, home=home), 0)
+    res = json.loads(out.getvalue())
+    t.assertEqual((res["ok"], res["removed"], res["plist"], res["json"]), (True, False, "absent", "absent"))
+    os.makedirs(M.lockwatch_path(e.env))                       # 刪不掉(是目錄)⇒ failed、ok false、rc 2(#456 R1 L2)
+    out = io.StringIO()
+    t.assertEqual(M.main(["--lockwatch", "off"], out=out, ctx=e.ctx(M), launchctl=lc, home=home), 2)
+    res = json.loads(out.getvalue())
+    t.assertEqual((res["ok"], res["json"]), (False, "failed"))
+    os.rmdir(M.lockwatch_path(e.env))
 
 
 def cell_w12k(t, M):
@@ -295,7 +326,7 @@ def cell_w12k(t, M):
     home = tempfile.mkdtemp(prefix="aib-window-home-")
     calls = []
     try:
-        cell_w12_needs_touchid(t, M, e, lambda *a: calls.append(a) or (0, ""), home, calls)
+        cell_w12_retired(t, M, e, lambda *a: calls.append(a) or (0, ""), home, calls)
     finally:
         shutil.rmtree(home, ignore_errors=True)
         e.close()
@@ -762,6 +793,24 @@ class Cells(unittest.TestCase):
         finally:
             shutil.rmtree(td, ignore_errors=True)
 
+    def test_w12_doctor_leftover(self):
+        """舊 lockwatch 還裝著 ⇒ doctor NOTE + 清理指令(本人跑);doctor 看 env 的 HOME,不看行程的。"""
+        sys.path.insert(0, str(ROOT / "src" / "bootstrap"))
+        import aib_doctor
+        td = tempfile.mkdtemp(prefix="aib-window-doctor-")
+        try:
+            plist = GR.lockwatch_plist_path(td)
+            os.makedirs(os.path.dirname(plist))
+            with open(plist, "wb") as fh:
+                fh.write(b"<plist/>")
+            for loc in ("zh-TW", "en", "ja", "ko"):
+                r = aib_doctor.check_grants(os.path.join(td, "state"), ROOT, env={"EZ2_AIB_LOCALE": loc, "HOME": td})
+                self.assertEqual(r["status"], aib_doctor.NOTE, loc)
+                self.assertIn("lockwatch", r["detail"], loc)
+                self.assertIn("--lockwatch off", r["remedy"], loc)
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
     def test_w9_end_to_end(self):
         e = Env()
         td = tempfile.mkdtemp(prefix="aib-window-lock-")
@@ -820,47 +869,38 @@ class Cells(unittest.TestCase):
         self.assertEqual(GR.durations_for("command"), ["15m", "30m", "1h", "3h"])
         self.assertEqual(GR.durations_for("seat_input"), ["15m", "30m", "1h", "3h"])   # #441:24h 超過日誌涵蓋
 
-    def test_w12_lockwatch_install_and_doctor(self):
+    def test_w12_lockwatch_retired_and_doctor(self):
         e = Env()
         home = tempfile.mkdtemp(prefix="aib-window-home-")
         calls = []
         try:
             lc = lambda *a: calls.append(a) or (0, "")                  # noqa: E731
-            cell_w12_needs_touchid(self, GR, e, lc, home, calls)
-            asked = []
-            out = io.StringIO()
-            self.assertEqual(GR.main(["--lockwatch", "on"], out=out, ctx=e.ctx(), launchctl=lc, home=home,
-                                     touchid=lambda r: asked.append(r) or {"ok": True, "why": "ok"}), 0)
-            self.assertEqual([(a.category, a.site) for a in asked], [("window_grant", "approve_grants.lockwatch_on")])
-            path = GR.lockwatch_plist_path(home)
-            import plistlib
-            with open(path, "rb") as f:
-                pl = plistlib.load(f)
-            self.assertEqual(pl["Label"], GR.LOCKWATCH_LABEL)
-            self.assertTrue(pl["KeepAlive"])
-            self.assertEqual(pl["ProgramArguments"][1:4], ["lockwatch", "--name", GR.KEY_NAME])
-            self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
-            self.assertEqual([c[0] for c in calls], ["bootout", "bootstrap"])
-            self.assertEqual(GR.doctor_line(e.ctx()), ("ok", "no_grants"))
+            cell_w12_retired(self, GR, e, lc, home, calls)
             GR.sign(["seat_input"], "1h", e.ctx())
-            self.assertEqual(GR.doctor_line(e.ctx()), ("note", "log_failed"))
+            self.assertEqual(GR.doctor_line(e.ctx(), home=home), ("note", "log_failed"))
             e.log()
-            self.assertEqual(GR.doctor_line(e.ctx()), ("ok", "syslog_ok"))
-            out = io.StringIO()
-            GR.main(["--lockwatch", "off"], out=out, ctx=e.ctx(), launchctl=lc, home=home)
-            self.assertTrue(json.loads(out.getvalue())["removed"])
-            self.assertFalse(os.path.exists(path))
+            self.assertEqual(GR.doctor_line(e.ctx(), home=home), ("ok", "syslog_ok"))
+            plist = GR.lockwatch_plist_path(home)                   # #456 R1 L1:殘檔排在窗的問題之後
+            with open(plist, "wb") as fh:
+                fh.write(b"<plist/>")
+            self.assertEqual(GR.doctor_line(e.ctx(), home=home), ("note", "lockwatch_leftover"))
+            e.log(why="log_failed")
+            self.assertEqual(GR.doctor_line(e.ctx(), home=home), ("note", "log_failed"))
         finally:
             shutil.rmtree(home, ignore_errors=True)
             e.close()
 
     def test_w13_no_auto_install(self):
-        """簽單 / 彈窗路徑都不會順手裝 LaunchAgent(只有 --lockwatch on)。"""
+        """lockwatch 退役:沒有任何地方再裝 LaunchAgent;helper 沒有 lockwatch 子指令;彈窗沒有 lockwatch_on 那一句。"""
         src = (SRC / "approve_grants.py").read_text(encoding="utf-8")
-        self.assertEqual(src.count("install_lockwatch(ctx, lc, hm)"), 1)
-        self.assertEqual(src.count("install_lockwatch("), 2)             # 定義 + CLI 那一處
+        for gone in ("install_lockwatch", "approve_lockwatch_on", "lockwatch_plist(", "bootstrap"):
+            self.assertNotIn(gone, src)
         for name in ("approve_gate.py", "aib_approve.py"):
             self.assertNotIn("install_lockwatch", (SRC / name).read_text(encoding="utf-8"))
+        self.assertNotIn("approve_grants.lockwatch_on", AG.SITES)
+        swift = (SRC / "sehelper" / "aib-sehelper.swift").read_text(encoding="utf-8")
+        self.assertNotIn('case "lockwatch"', swift)
+        self.assertNotIn("DistributedNotificationCenter", swift)
 
 
 # ---- 刀 ----
@@ -898,7 +938,10 @@ KNIVES_GR = [
      '    try:\n        with open(lockwatch_path(ctx.env), encoding="utf-8") as fh:\n'
      '            events, why = [_parse_utc(json.load(fh)["last_lock_utc"])], None\n'
      '    except (OSError, ValueError, KeyError):\n        events, why = None, "no_lockwatch"\n', lambda t, M: cell_w22(t, AG, M)),
-    ("KL8", '            ok, why = approve_lockwatch_on(ctx, touchid)\n', '            ok, why = True, None\n', cell_w12k),
+    ("KL8", '    if st == "ok" and os.path.isfile(lockwatch_plist_path(home or os.path.expanduser("~"))):\n',
+     '    if False:\n', cell_w12k),
+    ("KL12", '            os.unlink(path)\n        except OSError:\n            return "failed"\n',
+     '            pass\n        except OSError:\n            return "failed"\n', cell_w12k),
     ("KL5", '    if not spec or spec["high_risk"] or spec["max_window"] <= 0:\n        return None, "no_window_category"\n'
      '    kid, why = current_kid(ctx)\n', '    kid, why = current_kid(ctx)\n', cell_w4),
 ]
