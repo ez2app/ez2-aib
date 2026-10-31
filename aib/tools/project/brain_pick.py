@@ -205,7 +205,8 @@ def seat_brains(root: Path, cabin: str = "") -> list:
                          (not assigned, started), _crownable(SS, rec, f.name)))
             fleets[id(rows[-1])] = fleet
         # r2 M7:跟右欄一樣先分艦隊、照組序找第一個有可戴冠艦長的組,組內受派優先、其次開席早
-        for fl in sorted({fleets[id(r)] for r in rows}, key=_fleet_key):
+        # r3 M7:dict 保留首次出現順序 + sorted 穩定 ⇒ 排序鍵相同的組("1" / "01")跟右欄一樣依出現序,跨程序穩定
+        for fl in sorted(dict.fromkeys(fleets[id(r)] for r in rows), key=_fleet_key):
             caps = sorted((r for r in rows if fleets[id(r)] == fl and r[0]["captain"] and r[2]), key=lambda r: r[1])
             if caps:
                 caps[0][0]["crown"] = True

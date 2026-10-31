@@ -289,6 +289,12 @@ class Folder(FolderBase):
         (self.seats / "w1.json").write_text(json.dumps(rec1), encoding="utf-8")
         rc, out, _ = self.run_np("--list-brains", "--cabin", BB.CABIN)
         self.assertEqual([s["seat_id"] for s in out["seats"] if s["crown"]], ["e9f8a"], "第一艦隊優先(同右欄 _grp_key)")
+        # r3:排序鍵相同的兩組("1" 與 "01")⇒ 依席位檔出現序(w1 在 w6 前),多跑幾次都一樣
+        early["fleet_id"] = "01"
+        (self.seats / "w6.json").write_text(json.dumps(early), encoding="utf-8")
+        for _ in range(3):
+            rc, out, _o = self.run_np("--list-brains", "--cabin", BB.CABIN)
+            self.assertEqual([s["seat_id"] for s in out["seats"] if s["crown"]], ["e9f8a"])
         # r2 M5:一堆空目錄也受預算管;用完之後的路由回 notes=None、capped,不是 0
         for i in range(40):
             (self.vault / CGROUP / REFINE / ("empty%02d" % i)).mkdir()
