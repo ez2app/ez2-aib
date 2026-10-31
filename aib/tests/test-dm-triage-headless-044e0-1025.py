@@ -50,7 +50,8 @@ SETUP = (
     "import dm_triage_headless as H, dm_triage_agent as TA\n"
     "def put(msg, now, seat=%r, provider='claude'):\n"
     "    return Q.record(seat, msg, '@77777', status='delivered', rc=0, env=env, now=now,\n"
-    "                    sender_kind='ai', wid='@2', provider=provider, hub='aihub-t1')['id']\n"
+    "                    sender_kind='ai', sender_seat='77777', sender_source='pane_pid_chain',\n"
+    "                    wid='@2', provider=provider, hub='aihub-t1')['id']\n"
     "spawned = []\n"
     "Q.SPAWN_HEADLESS = lambda seat, brand, env, draft=False: spawned.append([seat, brand])\n"
     "Q.triage_auto_switch('off', env=env)\n"     # 這支驗 0.1.62 舊行為(直接套用);draft 見 test-dm-triage-auto-04ea0-1031 H1

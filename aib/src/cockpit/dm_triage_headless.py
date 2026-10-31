@@ -231,6 +231,8 @@ def _never_touch(item, text):
         return False, "human"
     if Q.normalize_sender_kind(item.get("sender_kind")) != "seat" or not item.get("sender_seat"):
         return False, "sender-not-seat"
+    if item.get("sender_source") not in Q.MEASURED_SOURCES:
+        return False, "sender-unmeasured"      # 寄件席是自報的(沒量到 pane / fork 鏈)⇒ 不收(#467 Codex r2 H)
     sh, rh = str(item.get("sender_hub") or ""), str(item.get("hub") or "")
     if sh and rh and sh != rh:
         return False, "cross-cabin"

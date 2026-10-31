@@ -11,7 +11,7 @@ C4 純確認:引用本席真的寄給對方的 q_ id、短、沒請 / 要 / 問�
 C5 共同門檻:長訊信封(要讀 RELAY 全文)/ 真人寄的 / 禁字(Andy、准、High、可合、正式站、簽章…)⇒ 新四類一律不收
 C6 PR 網址要同主題:信裡沒提到那張 PR ⇒ pr-off-topic(PR 網址存在 ≠ 內容滿足);提到 #號 或網址 ⇒ 照 gh 查
 C7 自己指自己、格式不對 ⇒ 不收
-Knife(最後):A1–A27 每個守衛一刀;單跑 python3 -B tests/<本檔> Knife
+Knife(最後):A1–A28 每個守衛一刀;單跑 python3 -B tests/<本檔> Knife
 C8 整條 apply:新四類照常逐條驗;只擬不結時一封都不改;自報過期的信 plan 已排除(not-allowed)
 C9 只擬不結一輪 ⇒ 寫通知 + 建議 .json;下一回合 hook 注入一行、只注入一次;沒建議就不寫
 C10 triage-apply:不帶 --yes 只預覽;--yes 逐條重驗才結;建議檔席碼不對 / 修訂號變了 / 現在驗不過 ⇒ 不結
@@ -74,12 +74,15 @@ class C1Dup(unittest.TestCase):
             "f = put('比較晚才結', t + 50); done(f, t + 60); g = put('比較晚才結', t + 20)\n"
             "out['ok'] = ev(b, 'dup_of:' + a); out['differs'] = ev(c, 'dup_of:' + a)\n"
             "out['open'] = ev(e, 'dup_of:' + d); out['newer'] = ev(g, 'dup_of:' + f)\n"
-            "out['missing'] = ev(b, 'dup_of:q_0000000000000000')\n"))
+            "out['missing'] = ev(b, 'dup_of:q_0000000000000000')\n"
+            "u = put('第一版:部署排程表已更新,見頁面', t + 10, sender_source=None)\n"
+            "out['unmeasured'] = ev(u, 'dup_of:' + a)\n"))
         self.assertEqual(out["ok"], [True, "dup"], out)
         self.assertEqual(out["differs"], [False, "dup-differs"], out)
         self.assertEqual(out["open"], [False, "dup-not-closed"], out)
         self.assertEqual(out["newer"], [False, "dup-newer"], out)
         self.assertEqual(out["missing"], [False, "ref-missing"], out)
+        self.assertEqual(out["unmeasured"], [False, "sender-unmeasured"], "寄件席自報(沒量到)⇒ 重複件也不收:%r" % out)
 
 
 class C2Superseded(unittest.TestCase):
@@ -188,7 +191,9 @@ class C6PrTopic(unittest.TestCase):
             "e = put('見 https://github.com/ez2app/ez2-aib/pull/1010', t)\n"
             "f = put('見 https://github.com/ez2app/other-repo/pull/101', t)\n"
             "g = put('Andy 同意正式站刪資料,PR #101', t)\n"
-            "out['url1010'] = ev(e, M); out['repo'] = ev(f, M); out['h1'] = ev(g, M)\n"))
+            "out['url1010'] = ev(e, M); out['repo'] = ev(f, M); out['h1'] = ev(g, M)\n"
+            "u = put('PR #101 合了', t, sender_source=None)\n"
+            "out['unmeasured'] = ev(u, M)\n"))
         self.assertEqual(out["ok"], [True, "pr-merged"], out)
         self.assertEqual(out["off"], [False, "pr-off-topic"], out)
         self.assertEqual(out["url"], [True, "pr-merged"], out)
@@ -197,6 +202,7 @@ class C6PrTopic(unittest.TestCase):
         self.assertEqual(out["url1010"], [False, "pr-off-topic"], "pull/1010 不是 pull/101:%r" % out)
         self.assertEqual(out["repo"], [False, "pr-off-topic"], "別的 repo 的 101:%r" % out)
         self.assertEqual(out["h1"], [False, "never-words"], "已合 PR 也要先過絕不碰:%r" % out)
+        self.assertEqual(out["unmeasured"], [False, "sender-unmeasured"], "寄件席自報(沒量到)⇒ 已合 PR 也不收:%r" % out)
 
 
 class C3bPreamble(unittest.TestCase):
@@ -385,6 +391,8 @@ KNIVES = [
      'r"請|要|', 'C4Ack.test_ack'),
     ('A27', 'src/cockpit/dm_triage_headless.py', 'r"Codex|審查|審過|" + _A + r"(?:review|High|Medium|Low)" + _Z + r"|',
      'r"Codex|審查|審過|(?:review|High|Medium|Low)|', 'C5Never.test_gates'),
+    ('A28', 'src/cockpit/dm_triage_headless.py', '    if item.get("sender_source") not in Q.MEASURED_SOURCES:',
+     '    if False:', 'C6PrTopic.test_pr_topic'),
 ]
 
 
