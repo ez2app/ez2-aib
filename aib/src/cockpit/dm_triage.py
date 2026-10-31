@@ -157,8 +157,28 @@ def _age_key(row):
     return (int(row.get("ts") or 0), str(row.get("id") or ""))
 
 
+def pair(item_id, rev):
+    """(id, rev) ⇒ "id@rev"(第三張 r2 M6:看過 / 叫醒 / 批次都認版本;同一封出新版 = 新的一件)。"""
+    return "%s@%s" % (item_id, rev if rev is not None else "")
+
+
+def pair_ids(rows):
+    """列 ⇒ ["id@rev", …](批次鍵用)。"""
+    return [pair(r.get("id"), r.get("rev")) for r in rows or [] if isinstance(r, dict) and r.get("id")]
+
+
+def revs_of(rows):
+    """列 ⇒ {id: rev}(rev 不是整數的記 None:比對時當「版本不明」)。"""
+    out = {}
+    for r in rows or []:
+        if isinstance(r, dict) and r.get("id"):
+            rv = r.get("rev")
+            out[str(r["id"])] = rv if isinstance(rv, int) and not isinstance(rv, bool) else None
+    return out
+
+
 def batch_key(ids):
-    """這一批的鍵:排序後 id 串起來的 sha1 前 16 碼。同一組 id(不論順序)同一個鍵。"""
+    """這一批的鍵:排序後 id(第三張起是 id@rev)串起來的 sha1 前 16 碼。同一組(不論順序)同一個鍵。"""
     blob = "\n".join(sorted(str(i) for i in ids))
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
@@ -242,7 +262,7 @@ def classify(rows):
         "update": sum(len(g["ids"]) for g in groups["update"]),
         "pending": len(groups["pending"]),
     }
-    return {"ids": ids, "batch": batch_key(ids), "groups": groups, "tags": tags, "counts": counts,
+    return {"ids": ids, "batch": batch_key(pair_ids(rows)), "groups": groups, "tags": tags, "counts": counts,
             "unread_ids": unread_ids(rows)}
 
 
@@ -267,7 +287,9 @@ def build_record(seat, rows, prev=None, now=None):
     # screen_sha / screen_since(10-13 auto_tidy):畫面多久沒變要跨批次量,換一批信不重算
     for k in ("woke_batch", "woke_ids", "woke_inprog_ids", "woke_at", "woke_rc", "wake_log", "woke_attempts",
               "screen_sha", "screen_since", "inprog_ids", "woke_live_n", "followups", "triage_stalled", "stalled_at",
-              "busy_since", "busy_seen_at", "headless_at"):
+              "busy_since", "busy_seen_at", "headless_at",
+              # 第三張 r2 M3:背景整理的每小時帳 / 去重鍵 / 狀態要跨批次(以前換批就丟,每小時 2 次可以繞過)
+              "headless_log", "headless_key", "headless", "woke_revs"):
         if k in prev:
             rec[k] = prev[k]
     return rec
@@ -592,15 +614,28 @@ def human_lines(rec, rows):
 #     之後標 triage_stalled(看板畫「未整理」),有新信再從頭叫。
 #   · 子代理做完 triage-lock --release ⇒ 鎖檔記下它看過的 id(handled_ids);還到門檻、而且有它沒看過的 ⇒ 下一拍立刻再叫。
 #     它看過、留給本席的(要本席決定 / 等別人)不再叫 —— 不然留下的兩封會一直把子代理叫起來。
-ACK_S = 180
+ACK_S = 300                    # 10-31 SPEC v2 §2.1:從席位上一次回合結束(Stop)起算(一次工具呼叫常 3–10 分)
+ACK_S_OFF = 180                # triage_auto=off:回 0.1.62 舊行為(從叫醒時刻起算 180 秒)
 REWAKE_MAX = 2
 TRIAGE_LOAD_MAX = 12           # @abb89 22:52:load1 > 12 不叫(同「審查子代理最多 2 個、load1>12 先等」)
 HANDLED_TTL_S = 24 * 3600      # Andy 10-25 22:5x 同意:子代理看過、留給本席的信 24 小時後重新算
 FOLLOWUP_PREFIX = "【再叫一次:%d 分鐘前叫過你整理 dm,還沒看到整理子代理登記】現在先開 1 個整理子代理處理 dm,做完再回原本的工作。"
 
 
+def handled_ids(handled, ids, revs=None):
+    """看過的集合 ∩ 現在的 id(第三張 r2 M6):"id@rev" 要版本對得上(同一封出新版 ⇒ 不算看過);
+    舊格式(只有 id、沒有 @)照舊只比 id。revs 沒給 ⇒ 只認舊格式與 id 相同。"""
+    revs = revs or {}
+    out = set()
+    for i in ids:
+        i = str(i)
+        if i in handled or (i in revs and pair(i, revs[i]) in handled):
+            out.add(i)
+    return out
+
+
 def _lock_view(lock, now):
-    """triage-agent.json → (有效中?, 登記時間, 做完時看過的 id 集合)。壞檔當沒有。"""
+    """triage-agent.json → (有效中?, 登記時間, 做完時看過的集合(id 或 id@rev))。壞檔當沒有。"""
     if not isinstance(lock, dict):
         return False, None, set()
     try:
@@ -619,20 +654,22 @@ def _lock_view(lock, now):
     return live, at, handled
 
 
-def wake_decision(rec, now=None, lock=None, load1=None):
+def wake_decision(rec, now=None, lock=None, load1=None, ack_at=None, ack_s=None):
     """見 _wake_decision;另外 @abb89 22:52(從源頭擋 Pro 過熱):機器 load1 > TRIAGE_LOAD_MAX ⇒ 這一拍不叫(load-high),
     降下來的那一拍照叫。load1=None(量不到)⇒ 不擋。"""
-    ok, why, rewake = _wake_decision(rec, now, lock)
+    ok, why, rewake = _wake_decision(rec, now, lock, ack_at=ack_at, ack_s=ack_s)
     if ok and load1 is not None and float(load1) > TRIAGE_LOAD_MAX:
         return False, "load-high", False
     return ok, why, rewake
 
 
-def _wake_decision(rec, now=None, lock=None):
+def _wake_decision(rec, now=None, lock=None, ack_at=None, ack_s=None):
     """純函式 → (叫?, 原因, 是不是「再叫一次」)。原因:under-threshold / agent-working / all-handled / seat-took /
     inprog-cooldown / waiting-pickup / seat-acted / triage-stalled / over-threshold / rewake。
     「接手了」只認 triage-lock 的登記時間 ≥ 叫醒時間(DMTRIAGE 整理檔不算:沒登記就分不出還在做還是做完了,
-    算的話每一拍都會叫)。"""
+    算的話每一拍都會叫)。
+    ack_at / ack_s(第三張 r2 M):ACK 窗從哪一刻起算、多長;沒給 = 從叫醒時刻、ACK_S_OFF(0.1.62 舊行為)。
+    呼叫端(triage_auto ≠ off)給「叫醒、本席上一次 Stop、aib now 更新」三者最晚那刻 + ACK_S。"""
     if not isinstance(rec, dict):
         return False, "under-threshold", False
     unread = set(str(i) for i in (rec.get("unread_ids") or []))
@@ -646,7 +683,7 @@ def _wake_decision(rec, now=None, lock=None):
     # #374 r3 / S10:叫醒時還沒讀、之後被本席自己讀掉的 ⇒ 本席接手了,不是新工作,也不算「沒人接」
     took = woke & inprog
     cur = (unread | inprog) - took
-    if not cur - handled:
+    if not cur - handled_ids(handled, cur, rec.get("revs")):
         return False, ("seat-took" if took else "all-handled"), False
     try:
         woke_at = int(rec["woke_at"]) if rec.get("woke_at") is not None else None
@@ -660,7 +697,17 @@ def _wake_decision(rec, now=None, lock=None):
     if woke_at is None or (lock_at is not None and lock_at >= woke_at):
         return True, "over-threshold", False           # 第一次 / 上一輪子代理接過了(做完或過期)⇒ 立刻叫下一批
     fresh = cur - woke - set(str(i) for i in (rec.get("woke_inprog_ids") or []))
-    if now is not None and int(now) - woke_at < ACK_S:
+    # 第三張 r2 M6:叫過的那封出了新版本(rev 變了)也算新的(woke_revs 是叫醒當下記的;沒記 = 舊紀錄,只比 id)
+    wrevs, crevs = rec.get("woke_revs"), rec.get("revs")
+    if isinstance(wrevs, dict) and isinstance(crevs, dict):
+        fresh |= {i for i in cur if i in wrevs and i in crevs and wrevs[i] != crevs[i]}
+    base = woke_at
+    if ack_at is not None:
+        try:
+            base = max(woke_at, int(ack_at))
+        except (TypeError, ValueError):
+            pass
+    if now is not None and int(now) - base < (ACK_S_OFF if ack_s is None else int(ack_s)):
         return False, "waiting-pickup", False
     if fresh:
         return True, "over-threshold", False           # 等接手的期間又來新信 ⇒ 當新的一次叫(重新算次數)

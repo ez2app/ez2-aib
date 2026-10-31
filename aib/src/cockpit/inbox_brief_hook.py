@@ -129,6 +129,11 @@ def main(argv=None, stdin=None, env=None):
     seat = seat_of(payload.get("session_id") if isinstance(payload, dict) else None)
     if not seat:
         return 0
+    try:
+        import dm_queue
+        dm_queue.mark_turn(seat, "prompt", env=env)   # 回合開始(SPEC v2 §2.1:回合中不起背景整理)
+    except Exception:  # noqa: BLE001 — hook 不准炸
+        pass
     line = brief_line(seat, env=env)
     try:
         import dm_triage_headless as H

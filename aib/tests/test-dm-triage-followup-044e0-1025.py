@@ -275,7 +275,7 @@ KNIVES = [
      "F1NoPickupRewake.test_rewake_then_stall_then_new_mail"),
     ("K2", "src/cockpit/dm_triage.py", '    if live:\n        return False, "agent-working", False\n',
      '    if False:\n        return False, "agent-working", False\n', "F2AgentThenNextBatch.test_lock_holds_then_next_batch_immediately"),
-    ("K2b", "src/cockpit/dm_triage.py", "    if not cur - handled:\n", "    if not cur:\n",
+    ("K2b", "src/cockpit/dm_triage.py", "    if not cur - handled_ids(handled, cur, rec.get(\"revs\")):\n", "    if not cur:\n",
      "F2AgentThenNextBatch.test_only_seen_left_no_wake"),
     ("K11", "src/cockpit/dm_triage_agent.py", "            handled = [i for i in left if ts.get(i, now + 1) <= seen]\n",
      "            handled = list(left)\n", "F2AgentThenNextBatch.test_lock_holds_then_next_batch_immediately"),

@@ -608,6 +608,14 @@ def main(argv=None):
             # now 那道要擋 ⇒ 這一輪先不動影子續跑說明(rc 2 時 stdout 不會顯示);續跑那一輪 Stop 再顯示
             print(msg, file=sys.stderr)
             return 2
+        # 第三張(SPEC-dm-triage-auto v2 §2.1):放行 = 這一回合結束,記 stop_at(背景整理的 ACK 窗從這裡起算)
+        try:
+            code = None if _nested() else self_seat()
+            if code:
+                import dm_queue
+                dm_queue.mark_turn(code, "stop")
+        except Exception as e:  # noqa: BLE001
+            _note("FAILOPEN turn-mark:%s" % e)
         # 10-13 the maintainer:推包 / aib test 的影子續跑說明搭這支的 Stop(已 ensure 在每一席),不另加 settings 條目。
         # 10-14:不再擋、不要 AI 再貼(擋的訊息含整段 + AI 照貼 ⇒ 畫面兩次);hook 自己用 systemMessage 顯示一次。壞了 fail-open。
         try:

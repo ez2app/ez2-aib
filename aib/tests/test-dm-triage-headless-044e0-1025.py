@@ -196,7 +196,7 @@ class H5EndToEnd(unittest.TestCase):
         self.assertTrue(out["ok"], out)
         self.assertIn("草稿:收到,明天回", out["body"])
         self.assertIn("沒有寄出", out["body"])
-        self.assertEqual((out["lk"]["until"], out["lk"]["handled_ids"]), (0, [out["b"]]), out)
+        self.assertEqual((out["lk"]["until"], out["lk"]["handled_ids"]), (0, [out["b"] + "@1"]), out)   # 第三張:記 id@rev
         self.assertEqual([c["id"] for c in out["closed"]], [out["a"]], out)
         self.assertTrue(out["closed"][0]["by"].startswith("agent:%s/headless-" % SEAT), out)
 
@@ -218,7 +218,8 @@ class H8Handled(unittest.TestCase):
             "    return json.dumps([{'id': i, 'action': 'leave'} for i in ids if i in p]), 'ok'\n"
             "r = H.run(%r, 'claude', env=env, now=t + 100, ask=ask, gh=lambda u: False)\n"
             "lk = Q._triage_lock(%r, env)\n"
-            "print(json.dumps({'n': len(lk['handled_ids']), 'late': [i for i in ids[-2:] if i in lk['handled_ids']]}))\n")
+            "seen = [h.split('@')[0] for h in lk['handled_ids']]\n"
+            "print(json.dumps({'n': len(seen), 'late': [i for i in ids[-2:] if i in seen]}))\n")
             % (SEAT, SEAT))
         self.assertEqual((out["n"], out["late"]), (20, []), "只餵 20 封 ⇒ 只算 20 封看過:%r" % out)
 
@@ -294,7 +295,7 @@ KNIVES = [
      "        return r.returncode == 0\n", "H7Gh.test_only_merged_counts"),
     ("K5", "src/cockpit/dm_triage_headless.py", "    if busy_for < HEADLESS_AFTER_S:\n", "    if False:\n",
      "H1Trigger.test_busy_30min_starts_once"),
-    ("K6", "src/cockpit/dm_triage_headless.py", "        handled = [r[\"id\"] for r in fed if r[\"id\"] in {d[\"id\"] for d in decisions}]\n",
+    ("K6", "src/cockpit/dm_triage_headless.py", "        handled = [TR.pair(r[\"id\"], r.get(\"rev\")) for r in fed if r[\"id\"] in {d[\"id\"] for d in decisions}]\n",
      "        handled = [r[\"id\"] for r in rows]\n", "H8Handled.test_only_fed_items_seen"),
     ("K7", "src/cockpit/dm_triage_headless.py", "                res[\"action\"], res[\"reason\"] = \"leave\", \"wait-needs-read\"\n                out.append(res)\n                continue\n",
      "                pass\n", "H4Apply.test_each_decision_verified"),
