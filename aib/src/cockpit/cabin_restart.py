@@ -83,6 +83,7 @@ SNAPSHOT_SUBDIR = os.path.join("state", "cabin-snapshots")
 SNAPSHOT_KEEP = 10                      # 只留最近 10 次開機的快照
 SNAPSHOT_MIN_INTERVAL_S = 60            # 多艙的 watch 同一分鐘內只寫一次
 SNAPSHOT_DISABLE_ENV = "EZ2_AIB_RESTART_SNAPSHOT"   # =0 關掉 watch 的自動快照
+SNAPSHOT_BOOT_JITTER_S = 10              # 開機時間會抖 1–2 秒(kern.boottime 換算):差 10 秒內算同一次開機,不然同一次開機會寫成兩個檔、恢復時挑到舊的那份(10-31 重開機把 10-30 的 20 席全接回來)
 RULE = "─" * 72
 
 
@@ -222,6 +223,30 @@ def _snap_path(sdir, boot):
     return os.path.join(sdir, "boot-%d.json" % int(boot))
 
 
+def _snap_files(sdir):
+    """[(開機時間, 路徑)];檔名不對的略過。"""
+    out = []
+    for p in glob.glob(os.path.join(sdir, "boot-*.json")):
+        m = re.search(r"boot-(\d+)\.json$", p)
+        if m:
+            out.append((int(m.group(1)), p))
+    return out
+
+
+def _same_boot_path(sdir, boot):
+    """這次開機已經有檔(開機時間差 SNAPSHOT_BOOT_JITTER_S 內)就沿用那個檔,不另開一個。"""
+    near = [(abs(b - int(boot)), p) for b, p in _snap_files(sdir) if abs(b - int(boot)) <= SNAPSHOT_BOOT_JITTER_S]
+    return min(near)[1] if near else _snap_path(sdir, boot)
+
+
+def _written_at(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return int((json.load(fh) or {}).get("written_at") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
 def write_snapshot(*, state_root=None, boot=None, now=None, data=None, min_interval_s=SNAPSHOT_MIN_INTERVAL_S):
     """把在線的艙與席寫進這次開機的快照檔。回寫入的路徑;沒寫回 None。
     ★ 沒有任何在線的艙 ⇒ 不寫(不拿空的蓋掉最後一份有內容的)。
@@ -231,7 +256,7 @@ def write_snapshot(*, state_root=None, boot=None, now=None, data=None, min_inter
         return None
     now = time.time() if now is None else now
     sdir = snapshot_dir(state_root)
-    path = _snap_path(sdir, boot)
+    path = _same_boot_path(sdir, boot)
     try:
         if min_interval_s and now - os.path.getmtime(path) < min_interval_s:
             return None
@@ -266,12 +291,15 @@ def previous_boot_snapshot(*, state_root=None, boot=None):
     """上一次開機的最後一份快照(dict),沒有回 None。壞檔跳過、改用更早的那一次。"""
     boot = seat_liveness.boot_epoch() if boot is None else boot
     sdir = snapshot_dir(state_root)
-    cands = []
-    for p in glob.glob(os.path.join(sdir, "boot-*.json")):
-        m = re.search(r"boot-(\d+)\.json$", p)
-        if m and (not boot or int(m.group(1)) < int(boot)):
-            cands.append((int(m.group(1)), p))
-    for _b, p in sorted(cands, reverse=True):
+    # 這次開機的檔(含抖動那幾秒)不算「上一次」;上一次開機若因抖動分成幾個檔,挑最後寫的那份(written_at),不是檔名數字大的那份
+    cands = [(b, p) for b, p in _snap_files(sdir) if not boot or b < int(boot) - SNAPSHOT_BOOT_JITTER_S]
+    order = []
+    while cands:
+        top = max(b for b, _p in cands)
+        group = [(b, p) for b, p in cands if b >= top - SNAPSHOT_BOOT_JITTER_S]
+        order += [p for _w, _b, p in sorted(((_written_at(p), b, p) for b, p in group), reverse=True)]
+        cands = [(b, p) for b, p in cands if b < top - SNAPSHOT_BOOT_JITTER_S]
+    for p in order:
         try:
             with open(p, encoding="utf-8") as fh:
                 snap = json.load(fh)
