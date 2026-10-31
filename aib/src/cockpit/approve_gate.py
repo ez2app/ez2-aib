@@ -40,6 +40,7 @@ H = 3600
 # 類別表:id ⇒ high_risk(不開時間窗)、max_window(秒;高風險 = 0)。四語名稱在 i18n「aib.approve_gate.cat.<id>」。
 CATEGORIES = {
     "release_sign":   {"high_risk": True,  "max_window": 0},
+    "license_sign":   {"high_risk": True,  "max_window": 0},   # 10-30 @aeb40:簽發 / 重簽 license.json(aib-sign-approve 收 LICENSE-*.json)
     "payment":        {"high_risk": True,  "max_window": 0},
     "delete_data":    {"high_risk": True,  "max_window": 0},
     "trusted_device": {"high_risk": True,  "max_window": 0},
@@ -52,6 +53,7 @@ CATEGORIES = {
     "project_ruling": {"high_risk": True,  "max_window": 0},
     "auto_update":    {"high_risk": True,  "max_window": 0},
     "window_grant":   {"high_risk": True,  "max_window": 0},   # TID-2b:簽時間窗授權單本身一次一按
+    "pixel_real_gen": {"high_risk": True,  "max_window": 0},   # aib-plugins #320:真生圖會扣外部額度;放行多久由外掛檔 until 表示
     "unregistered":   {"high_risk": True,  "max_window": 0},
     "seat_input":     {"high_risk": False, "max_window": 24 * H},
     "outbound":       {"high_risk": False, "max_window": 3 * H},
@@ -107,6 +109,9 @@ SITES = {
                             "Copy secret {name} to clipboard; any program here (AI too) can read it; cleared in 30 s"),
     "secret_share.paste": _s("cockpit/secret_share.py", "secret", "aib.secret.touchid_paste", {"seat": FULL, "name": FULL},
                              "Type secret {name} into seat {seat}, no Enter; any app here (AI too) can read that screen and log"),
+    # aib-plugins #320(@aeb40 10-30):像素工坊真生圖放行;hours 不截,本人看得到放行多久
+    "pixel_approve.real_gen": _s("cockpit/pixel_approve.py", "pixel_real_gen", "aib.pixel.touchid_real_gen", {"hours": FULL},
+                                 "Pixel Studio: allow real image generation for {hours} h (codex image calls use quota)"),
     "cf_grant.grant": _s("cockpit/cf_grant.py", "cf_token", "aib.cf.touchid_reason",
                          {"zone": 64, "perms": FULL, "ttl": FULL, "host": FULL},
                          suffix={"dns_write": ("aib.cf.touchid_risk.dns_write", {}, " "),
@@ -156,6 +161,10 @@ SITES = {
     "mission.accept": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_accept",
                          {"title": 60, "id": FULL, "n": FULL, "k": FULL},
                          "Accept and archive task team {title} ({id}, {n} tasks, {k} cancelled)"),
+    # mission.budget 提高預算 = 花額度 ⇒ 高風險一次一按、不進時間窗(S4 前半,@f5fb8 / @aeb40 10-29 裁);調低不用按
+    "mission.budget": _s("cockpit/mission.py", "project_ruling", "aib.mission.touchid_budget",
+                         {"title": 60, "id": FULL, "what": FULL},
+                         "Raise the budget of task team {title} ({id}): {what} (spends more usage)"),
     # 10-29 TID-2b:時間窗授權單(se-sign 的視窗字;類別、時長不截,換鑰那句第一行標舊 → 新 kid)
     "approve_grants.sign": _s("cockpit/approve_grants.py", "window_grant", "aib.approve_grants.touchid_sign",
                               {"cats": FULL, "dur": FULL},
@@ -176,6 +185,10 @@ SITES = {
     "release.sign_approve": _s("release/sign_approve.py", "release_sign", "aib.release.sign_approve_reason",
                                {"plugin": FULL, "ver": FULL, "pin": FULL},
                                "Sign and release {plugin} {ver} · head {pin}"),
+    "release.license_approve": _s("release/sign_approve.py", "license_sign", "aib.release.license_approve_reason",
+                                  {"name": FULL, "plan": FULL, "addons": FULL, "expires": FULL, "device": FULL},
+                                  "Sign license {name}: plan {plan} · add-ons {addons} · bound to this Mac only ({device}…) · "
+                                  "expires {expires}"),
 }
 
 
