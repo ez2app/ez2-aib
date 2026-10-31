@@ -303,11 +303,22 @@ def cell_w12_retired(t, M, e, lc, home, calls):
     t.assertIs(json.loads(out.getvalue())["leftover"], True)
     out = io.StringIO()
     t.assertEqual(M.main(["--lockwatch", "off"], out=out, ctx=e.ctx(M), launchctl=lc, home=home), 0)
-    t.assertIs(json.loads(out.getvalue())["removed"], True)
+    res = json.loads(out.getvalue())
+    t.assertEqual((res["ok"], res["removed"], res["plist"], res["json"]), (True, True, "removed", "removed"))
     t.assertFalse(os.path.exists(plist))
     t.assertFalse(os.path.exists(M.lockwatch_path(e.env)))
     t.assertEqual([c[0] for c in calls], ["bootout"])
     t.assertEqual(M.doctor_line(e.ctx(M), home=home), ("ok", "no_grants"))
+    out = io.StringIO()                                        # 再跑一次:都不在 ⇒ absent、仍 ok
+    t.assertEqual(M.main(["--lockwatch", "off"], out=out, ctx=e.ctx(M), launchctl=lc, home=home), 0)
+    res = json.loads(out.getvalue())
+    t.assertEqual((res["ok"], res["removed"], res["plist"], res["json"]), (True, False, "absent", "absent"))
+    os.makedirs(M.lockwatch_path(e.env))                       # 刪不掉(是目錄)⇒ failed、ok false、rc 2(#456 R1 L2)
+    out = io.StringIO()
+    t.assertEqual(M.main(["--lockwatch", "off"], out=out, ctx=e.ctx(M), launchctl=lc, home=home), 2)
+    res = json.loads(out.getvalue())
+    t.assertEqual((res["ok"], res["json"]), (False, "failed"))
+    os.rmdir(M.lockwatch_path(e.env))
 
 
 def cell_w12k(t, M):
@@ -869,6 +880,12 @@ class Cells(unittest.TestCase):
             self.assertEqual(GR.doctor_line(e.ctx(), home=home), ("note", "log_failed"))
             e.log()
             self.assertEqual(GR.doctor_line(e.ctx(), home=home), ("ok", "syslog_ok"))
+            plist = GR.lockwatch_plist_path(home)                   # #456 R1 L1:殘檔排在窗的問題之後
+            with open(plist, "wb") as fh:
+                fh.write(b"<plist/>")
+            self.assertEqual(GR.doctor_line(e.ctx(), home=home), ("note", "lockwatch_leftover"))
+            e.log(why="log_failed")
+            self.assertEqual(GR.doctor_line(e.ctx(), home=home), ("note", "log_failed"))
         finally:
             shutil.rmtree(home, ignore_errors=True)
             e.close()
@@ -921,9 +938,10 @@ KNIVES_GR = [
      '    try:\n        with open(lockwatch_path(ctx.env), encoding="utf-8") as fh:\n'
      '            events, why = [_parse_utc(json.load(fh)["last_lock_utc"])], None\n'
      '    except (OSError, ValueError, KeyError):\n        events, why = None, "no_lockwatch"\n', lambda t, M: cell_w22(t, AG, M)),
-    ("KL8", '    if os.path.isfile(lockwatch_plist_path(home or os.path.expanduser("~"))):\n        return "note", "lockwatch_leftover"\n',
-     '', cell_w12k),
-    ("KL12", '        os.unlink(lockwatch_path(ctx.env))\n', '        pass\n', cell_w12k),
+    ("KL8", '    if st == "ok" and os.path.isfile(lockwatch_plist_path(home or os.path.expanduser("~"))):\n',
+     '    if False:\n', cell_w12k),
+    ("KL12", '            os.unlink(path)\n        except OSError:\n            return "failed"\n',
+     '            pass\n        except OSError:\n            return "failed"\n', cell_w12k),
     ("KL5", '    if not spec or spec["high_risk"] or spec["max_window"] <= 0:\n        return None, "no_window_category"\n'
      '    kid, why = current_kid(ctx)\n', '    kid, why = current_kid(ctx)\n', cell_w4),
 ]

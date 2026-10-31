@@ -751,18 +751,20 @@ def lockwatch_plist_path(home):
 
 def remove_lockwatch(ctx, launchctl, home):
     """清掉舊版裝的 lockwatch:bootout + 刪 plist + 刪 lockwatch.json(新版 helper 沒有 lockwatch 子指令,
-    留著 KeepAlive 的 plist 只會一直重啟失敗)。只由 --lockwatch off 叫,不自動跑。回是否刪了 plist。"""
+    留著 KeepAlive 的 plist 只會一直重啟失敗)。只由 --lockwatch off 叫,不自動跑。
+    回各項結果(#456 R1 L2):plist / json = removed | absent | failed;bootout = launchctl 的 rc(沒載入也非 0,只報不判)。"""
+    def rm(path):
+        if not os.path.lexists(path):
+            return "absent"
+        try:
+            os.unlink(path)
+        except OSError:
+            return "failed"
+        return "removed"
+    bootout = None
     if (ctx.platform or sys.platform) == "darwin":
-        launchctl("bootout", "gui/%d/%s" % (os.getuid(), LOCKWATCH_LABEL))
-    try:
-        os.unlink(lockwatch_path(ctx.env))
-    except OSError:
-        pass
-    path = lockwatch_plist_path(home)
-    if os.path.isfile(path):
-        os.unlink(path)
-        return True
-    return False
+        bootout = launchctl("bootout", "gui/%d/%s" % (os.getuid(), LOCKWATCH_LABEL))[0]
+    return {"bootout": bootout, "json": rm(lockwatch_path(ctx.env)), "plist": rm(lockwatch_plist_path(home))}
 
 
 def _real_launchctl(*args):
@@ -774,11 +776,17 @@ def _real_launchctl(*args):
 
 
 def doctor_line(ctx=None, home=None):
-    """(ok|note, 代碼)。aib doctor:舊 lockwatch 還裝著 ⇒ note lockwatch_leftover(請跑 --lockwatch off);
-    有單但 helper 沒好 / 系統日誌查不到 ⇒ note(窗用不到,一律一次一按)。唯讀。"""
+    """(ok|note, 代碼)。aib doctor:有單但 helper 沒好 / 系統日誌查不到 ⇒ note(窗用不到,一律一次一按);
+    其他都 ok 但舊 lockwatch 還裝著 ⇒ note lockwatch_leftover(請跑 --lockwatch off)。
+    殘檔只是清理,排在窗用不用得到之後(#456 R1 L1:不遮住 helper / 日誌的問題)。唯讀。"""
     ctx = ctx or Ctx()
-    if os.path.isfile(lockwatch_plist_path(home or os.path.expanduser("~"))):
+    st, code = _doctor_window(ctx)
+    if st == "ok" and os.path.isfile(lockwatch_plist_path(home or os.path.expanduser("~"))):
         return "note", "lockwatch_leftover"
+    return st, code
+
+
+def _doctor_window(ctx):
     if not load_all(ctx.env):
         return "ok", "no_grants"
     _, why = ctx.helper_exe()
@@ -906,7 +914,9 @@ def main(argv=None, out=None, ctx=None, launchctl=None, home=None, touchid=None)
         if o.lockwatch == "on":                  # 已退役:鎖屏判斷看系統日誌,不用再裝什麼
             return emit({"ok": False, "why": "retired", "source": "syslog"}, 2)
         if o.lockwatch == "off":
-            return emit({"ok": True, "removed": remove_lockwatch(ctx, lc, hm)}, 0)
+            res = remove_lockwatch(ctx, lc, hm)
+            bad = "failed" in (res["json"], res["plist"])
+            return emit(dict(res, ok=not bad, removed=res["plist"] == "removed"), 2 if bad else 0)
         _, why = lock_state(_probe(ctx),
                             int(ctx.now()) - 60)            # 鎖屏判斷看系統日誌(第 2 張);這裡回它查不查得到
         return emit({"ok": why is None, "why": why, "source": "syslog",
