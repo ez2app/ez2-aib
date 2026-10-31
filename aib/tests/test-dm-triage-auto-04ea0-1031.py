@@ -20,7 +20,7 @@ G2 判斷不了 ⇒ 放行留痕 FAILOPEN;triage_auto=off ⇒ 新放行條件全
 G5 形狀不吞(#466 Codex r3 M4):transcript / audit 壞行(只容許尾段切到的第一行)、同批紀錄 at / pairs 壞、
    aib now 是 [] / 欄位型別錯 ⇒ Undetermined;check 層都是 FAILOPEN;開關讀錯 ⇒ check FAILOPEN
 G6 型別先驗(#466 Codex r4):整理鎖 until 不是數字 / by 不是字串;租約 owner / host / pid_start 型別錯、pid / expiry_epoch
-   不是整數;aib now 的 state / item 明寫 null 或型別錯;開關檔不是 UTF-8 ⇒ 都是判斷不了(各一刀 K28–K31)
+   不是整數;aib now 的 state / item 明寫 null 或型別錯;開關檔不是 UTF-8 ⇒ 都是判斷不了(各一刀 K28–K31;r5 補 by=null、host=null 反例)
 H2 開關讀錯整條路徑(#466 Codex r3 H):席位檔壞 + 全艦 off ⇒ 忙滿 30 分那條帶 draft、子程序不結案
 H3 off ⇒ 回 0.1.62 餵信(不套「15 分內讀過不餵」);draft 照跳過(#466 Codex r3 M)
 Knife(本檔最後):每個守衛一刀,落在樹的複本上(knife_copy)、看門狗跑(run_guarded),只跑目標那一格,
@@ -249,6 +249,7 @@ def _hdr(code, name, when=NOW):
 
 
 LEASE_START = "Sat Oct 31 21:00:00 2026"
+HOST = __import__("socket").gethostname()
 
 
 class G1Release(Tmp):
@@ -266,7 +267,7 @@ class G1Release(Tmp):
         self.assertIsNone(self.rw())
 
     def lease(self, **over):
-        d = {"owner": "@aaaaa", "what": "推 @aaaaa 的東西", "pid": os.getpid(), "pid_start": LEASE_START,
+        d = {"owner": "@aaaaa", "what": "推 @aaaaa 的東西", "host": HOST, "pid": os.getpid(), "pid_start": LEASE_START,
              "expiry_epoch": NOW + 600}
         d.update(over)
         Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(d), encoding="utf-8")
@@ -410,7 +411,7 @@ class G4ReadErrors(Tmp):
         Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(body, encoding="utf-8")
 
     def test_long_work_unreadable(self):
-        good = json.dumps({"owner": "@aaaaa", "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600})
+        good = json.dumps({"owner": "@aaaaa", "host": HOST, "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600})
         rec = {"item": "推送 #72", "state": "busy"}
         lw = lambda **k: Q._seat_long_work("aaaaa", self.env, NOW, **k)  # noqa: E731
         self.assertFalse(lw(proc_start=lambda p: LEASE_START, now_rec=rec), "沒有租約檔 = 沒長工作")
@@ -494,7 +495,7 @@ class G5Shapes(Tmp):
 
     def test_now_shape(self):
         Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(
-            {"owner": "@aaaaa", "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600}), encoding="utf-8")
+            {"owner": "@aaaaa", "host": HOST, "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600}), encoding="utf-8")
         for rec in ([], "推送", {"item": ["推送"], "state": "busy"}, {"item": "推送", "state": 1}):
             with self.subTest(rec=rec):
                 with self.assertRaises(Q.LongWorkUndetermined):
@@ -550,7 +551,8 @@ class G6Types(Tmp):
         lp = self.d() / Q.TRIAGE_AGENT_LOCK_FILE
         for lk in ({"by": "agent:aaaaa/headless-1", "until": None}, {"by": "agent:aaaaa/headless-1", "until": str(NOW + 60)},
                    {"by": "agent:aaaaa/sub", "until": None}, {"by": "seat:aaaaa"}, {"by": 5, "until": NOW + 60},
-                   {"by": "agent:aaaaa/headless-1", "until": True}):
+                   {"by": "agent:aaaaa/headless-1", "until": True}, {"by": None, "until": NOW + 60},
+                   {"until": NOW + 60}):
             with self.subTest(lk=lk):
                 lp.write_text(json.dumps(lk), encoding="utf-8")
                 with self.assertRaises(G.Undetermined):
@@ -561,10 +563,10 @@ class G6Types(Tmp):
         self.assertTrue(G._headless_running("aaaaa", self.env, NOW))
 
     def test_lease_types(self):
-        good = {"owner": "@aaaaa", "host": None, "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600}
+        good = {"owner": "@aaaaa", "host": HOST, "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600}
         rec = {"item": "推送 #72", "state": "busy"}
         for k, v in (("owner", 17), ("expiry_epoch", None), ("expiry_epoch", "9999999999"), ("pid_start", 17),
-                     ("pid", "1"), ("pid", True), ("host", 3)):
+                     ("pid", "1"), ("pid", True), ("host", 3), ("host", None)):
             with self.subTest(k=k, v=v):
                 Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(dict(good, **{k: v})), encoding="utf-8")
                 with self.assertRaises(Q.LongWorkUndetermined):
@@ -574,7 +576,7 @@ class G6Types(Tmp):
 
     def test_now_null_fields(self):
         Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(
-            {"owner": "@aaaaa", "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600}), encoding="utf-8")
+            {"owner": "@aaaaa", "host": HOST, "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600}), encoding="utf-8")
         lw = lambda rec: Q._seat_long_work("aaaaa", self.env, NOW, proc_start=lambda p: LEASE_START, now_rec=rec)  # noqa: E731
         for rec in ({"item": "推送", "state": None}, {"item": None, "state": "busy"}):
             with self.subTest(rec=rec):
@@ -717,9 +719,9 @@ KNIVES = [
      'return True', 'G1Release.test_human_turn_by_header'),
     ('K27', 'src/policy/hooks/dm_pending_gate.py', '    if mode != "off":',
      '    if True:', 'G2Check.test_off_ignores_releases'),
-    ('K28', 'src/policy/hooks/dm_pending_gate.py', '    if (by is not None and not isinstance(by, str)) or isinstance(until, bool) or not isinstance(until, (int, float)):\n        raise Undetermined("shape:" + dm_queue.TRIAGE_AGENT_LOCK_FILE)\n    return "/headless-" in (by or "") and int(now) < until\n',
+    ('K28', 'src/policy/hooks/dm_pending_gate.py', '    if not isinstance(by, str) or isinstance(until, bool) or not isinstance(until, (int, float)):\n        raise Undetermined("shape:" + dm_queue.TRIAGE_AGENT_LOCK_FILE)   # agent_lock 一定寫 by(字串)\n    return "/headless-" in by and int(now) < until\n',
      '    return "/headless-" in str(by or "") and int(now) < int(until or 0)   # 刀:回 r3 寫法\n', 'G6Types.test_lock_types'),
-    ('K29', 'src/cockpit/dm_queue.py', '    if (not isinstance(owner, str) or (host is not None and not isinstance(host, str)) or not _is_int(pid)\n            or not _is_int(exp) or (pid_start is not None and not isinstance(pid_start, str))):\n        raise LongWorkUndetermined("lease:fields")\n',
+    ('K29', 'src/cockpit/dm_queue.py', '    if (not isinstance(owner, str) or not isinstance(host, str) or not _is_int(pid)\n            or not _is_int(exp) or (pid_start is not None and not isinstance(pid_start, str))):\n        raise LongWorkUndetermined("lease:fields")\n',
      '    owner, exp, pid = str(owner), int(exp or 0), int(pid or 0)   # 刀:回 r3 的寬鬆轉型\n', 'G6Types.test_lease_types'),
     ('K30', 'src/cockpit/dm_queue.py', '    if ("state" in now_rec and not isinstance(st, str)) or ("item" in now_rec and not isinstance(item, str)):',
      '    if (st is not None and not isinstance(st, str)) or (item is not None and not isinstance(item, str)):', 'G6Types.test_now_null_fields'),

@@ -2115,16 +2115,16 @@ def _seat_long_work(seat, env, now, proc_start=None, now_rec=None):
     def _is_int(v):
         return isinstance(v, int) and not isinstance(v, bool)
     owner, host, pid, pid_start, exp = (lease.get(k) for k in ("owner", "host", "pid", "pid_start", "expiry_epoch"))
-    # #466 Codex r4:先驗型別(host_lease 寫的形狀:owner/host/pid_start 字串、pid/expiry_epoch 整數);
+    # #466 Codex r4 / r5:先驗型別(host_lease 一定寫 owner/host 字串、pid/expiry_epoch 整數,pid_start 字串);
     #   錯了不是「不是本席 / 過期」,是判斷不了。pid_start 沒記(None)照舊 = 不算(舊租約)。
-    if (not isinstance(owner, str) or (host is not None and not isinstance(host, str)) or not _is_int(pid)
+    if (not isinstance(owner, str) or not isinstance(host, str) or not _is_int(pid)
             or not _is_int(exp) or (pid_start is not None and not isinstance(pid_start, str))):
         raise LongWorkUndetermined("lease:fields")
     if owner != "@" + str(seat):
         return False
     try:
         import socket
-        if host and host != socket.gethostname():
+        if host != socket.gethostname():
             return False
         if int(now) >= exp:
             return False

@@ -195,9 +195,9 @@ def _headless_running(seat, env, now):
         return False
     by, until = lk.get("by"), lk.get("until")
     # #466 Codex r4:先驗型別再判執行者(until=null / 數字字串 / bool 不能轉成 0 或被 by 短路略過)
-    if (by is not None and not isinstance(by, str)) or isinstance(until, bool) or not isinstance(until, (int, float)):
-        raise Undetermined("shape:" + dm_queue.TRIAGE_AGENT_LOCK_FILE)
-    return "/headless-" in (by or "") and int(now) < until
+    if not isinstance(by, str) or isinstance(until, bool) or not isinstance(until, (int, float)):
+        raise Undetermined("shape:" + dm_queue.TRIAGE_AGENT_LOCK_FILE)   # agent_lock 一定寫 by(字串)
+    return "/headless-" in by and int(now) < until
 
 
 def _gate_state(seat, env):
