@@ -5538,6 +5538,10 @@ def main(argv=None, env=None):
     th.add_argument("--seat", required=True)
     th.add_argument("--brand", required=True)
     th.add_argument("--draft", action="store_true", help="只擬不結(必定觸發那條起的;SPEC v2 §2.6)")
+    ta_ = sub.add_parser("triage-apply")           # 一鍵套用背景整理「只擬不結」的建議(逐條重驗;SPEC v2 §2.6)
+    ta_.add_argument("--seat", default=None)
+    ta_.add_argument("--file", required=True, help="DMTRIAGE-<席>-<時間>-headless.json(.md 也行,自動換 .json)")
+    ta_.add_argument("--yes", action="store_true", help="真的套用;不帶只預覽")
     ts_ = sub.add_parser("triage-status")           # 看板:每席叫醒 / 封數變化 / stalled / 子代理登記(唯讀)
     ts_.add_argument("--seat", default=None)
     ts_.add_argument("--json", action="store_true")
@@ -5794,6 +5798,18 @@ def main(argv=None, env=None):
     if args.cmd == "triage-headless":
         import dm_triage_headless as H
         out = H.run(args.seat, args.brand, env=env, dry=bool(args.draft))
+        _print_json(out)
+        return 0 if out.get("ok") else 1
+
+    if args.cmd == "triage-apply":
+        import dm_triage_headless as H
+        if not args.seat:
+            args.seat = self_seat_code()
+            if not args.seat:
+                _print_json({"ok": False, "reason": "usage", "message": CLI_NO_SEAT_HINT % {"cmd": args.cmd, "id": "-"}})
+                return 2
+        f = args.file[:-3] + ".json" if args.file.endswith(".md") else args.file
+        out = H.triage_apply(args.seat, f, yes=bool(args.yes), env=env)
         _print_json(out)
         return 0 if out.get("ok") else 1
 

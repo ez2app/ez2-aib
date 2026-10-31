@@ -12,6 +12,8 @@ C5 共同門檻:長訊信封(要讀 RELAY 全文)/ 真人寄的 / 禁字(Andy、
 C6 PR 網址要同主題:信裡沒提到那張 PR ⇒ pr-off-topic(PR 網址存在 ≠ 內容滿足);提到 #號 或網址 ⇒ 照 gh 查
 C7 自己指自己、格式不對 ⇒ 不收
 C8 整條 apply:新四類照常逐條驗;只擬不結時一封都不改;自報過期的信 plan 已排除(not-allowed)
+C9 只擬不結一輪 ⇒ 寫通知 + 建議 .json;下一回合 hook 注入一行、只注入一次;沒建議就不寫
+C10 triage-apply:不帶 --yes 只預覽;--yes 逐條重驗才結;建議檔席碼不對 / 修訂號變了 / 現在驗不過 ⇒ 不結
 """
 import importlib.util
 import sys
@@ -38,6 +40,7 @@ def tearDownModule():
 
 SETUP = (
     "import dm_triage_headless as H\n"
+    "from pathlib import Path\n"
     "t = int(__import__('time').time())\n"
     "S, P = %r, %r\n"
     "def put(msg, now, **kw):\n"
@@ -195,6 +198,80 @@ class C8Apply(unittest.TestCase):
         self.assertEqual(out["st"][0], "done", out)
         self.assertIn("背景整理驗過", out["st"][1], out)
         self.assertEqual(out["st_c"], "delivered", out)
+
+
+RUN_DRY = (
+    "import io, contextlib, inbox_brief_hook as IB\n"
+    "a = put('部署排程表已更新', t); done(a, t + 5); b = put('部署排程表已更新', t + 10)\n"
+    "c = put('另一件要做的事', t + 10)\n"
+    "def ask(brand, prompt):\n"
+    "    return json.dumps([{'id': b, 'action': 'close', 'evidence': 'dup_of:' + a, 'why': '同一封'},\n"
+    "                       {'id': c, 'action': 'close', 'evidence': 'dup_of:' + a, 'why': '亂結'}]), 'ok'\n"
+    "r = H.run(S, 'claude', env=env, now=t + 1000, ask=ask, gh=lambda u: False, dry=True)\n"
+    "def hook():\n"
+    "    buf = io.StringIO()\n"
+    "    with contextlib.redirect_stdout(buf):\n"
+    "        IB.main(stdin=io.StringIO(json.dumps({'session_id': 'x-' + S})), env=env)\n"
+    "    return [l for l in buf.getvalue().splitlines() if '背景整理' in l]\n"
+)
+
+
+class C9Notice(unittest.TestCase):
+    def test_dry_round_notice_once(self):
+        out = box(self, RUN_DRY + (
+            "out['r'] = [r['ok'], r['dry'], [x.get('would', False) for x in r['results']]]\n"
+            "sug = H.suggest_path(r['file'])\n"
+            "out['sug'] = [x['id'] == b for x in json.loads(sug.read_text())['items']]\n"
+            "out['st'] = [(Q._load_item(S, i, env) or {}).get('status') for i in (b, c)]\n"
+            "out['h1'] = hook(); out['h2'] = hook(); out['b'] = b; out['c'] = c\n"))
+        self.assertEqual(out["r"], [True, True, [True, False]], out)
+        self.assertEqual(out["sug"], [True], "建議檔只列驗得過的那封")
+        self.assertEqual(out["st"], ["delivered", "delivered"], "只擬不結")
+        self.assertEqual(len(out["h1"]), 1, out)
+        self.assertIn(out["b"], out["h1"][0])
+        self.assertNotIn(out["c"], out["h1"][0])
+        self.assertIn("triage-apply", out["h1"][0])
+        self.assertEqual(out["h2"], [], "同一份只注入一次")
+
+    def test_nothing_to_suggest_no_notice(self):
+        out = box(self, (
+            "import io, contextlib, inbox_brief_hook as IB\n"
+            "c = put('另一件要做的事', t)\n"
+            "r = H.run(S, 'claude', env=env, now=t + 1000, ask=lambda b, p: (json.dumps([{'id': c, 'action': 'leave'}]), 'ok'),\n"
+            "          gh=lambda u: False, dry=True)\n"
+            "out['notice'] = (Q.seat_dir(S, env) / H.NOTICE_FILE).exists()\n"
+            "out['sug'] = H.suggest_path(r['file']).exists()\n"))
+        self.assertEqual(out, {"notice": False, "sug": False})
+
+
+class C10TriageApply(unittest.TestCase):
+    def test_apply_cli(self):
+        out = box(self, RUN_DRY + (
+            "f = str(H.suggest_path(r['file']))\n"
+            "pv = H.triage_apply(S, f, yes=False, env=env, now=t + 1100)\n"
+            "out['pv'] = [pv['dry'], [[x.get('would', False), x['applied']] for x in pv['results']]]\n"
+            "out['st_pv'] = (Q._load_item(S, b, env) or {}).get('status')\n"
+            "out['other'] = H.triage_apply(P, f, yes=True, env=env, now=t + 1100)['reason']\n"
+            "yes = H.triage_apply(S, f, yes=True, env=env, now=t + 1100)\n"
+            "out['yes'] = [[x['applied'], x.get('reason')] for x in yes['results']]\n"
+            "out['st'] = (Q._load_item(S, b, env) or {}).get('status')\n"
+            "out['again'] = [[x['applied'], x.get('reason')] for x in H.triage_apply(S, f, yes=True, env=env, now=t + 1200)['results']]\n"
+            # 修訂號變了:另一輪建議,建議之後內容被改(rev +1)⇒ 不結
+            "d = put('又一封部署排程表已更新', t + 20); e = put('又一封部署排程表已更新', t + 30); done(d, t + 25)\n"
+            "sp = Path(f).with_name('x.json')\n"
+            "sp.write_text(json.dumps({'schema': H.SUGGEST_SCHEMA, 'seat': S, 'at': t, 'items': [{'id': e, 'evidence': 'dup_of:' + d, 'rev': 1}]}))\n"
+            "it = dict(Q._load_item(S, e, env)); it['rev'] = 2; it['msg'] = it['msg'] + '(改)'\n"
+            "Q.item_path(S, e, env).write_text(json.dumps(it))\n"
+            "out['revchg'] = [[x['applied'], x.get('reason')] for x in H.triage_apply(S, str(sp), yes=True, env=env, now=t + 1300)['results']]\n"
+            "out['bad'] = H.triage_apply(S, str(Path(f).with_name('nope.json')), yes=True, env=env)['reason']\n"))
+        self.assertEqual(out["pv"], [True, [[True, False]]], out)
+        self.assertEqual(out["st_pv"], "delivered", "預覽不改")
+        self.assertEqual(out["other"], "seat-mismatch", out)
+        self.assertEqual(out["yes"], [[True, "dup"]], out)
+        self.assertEqual(out["st"], "done", out)
+        self.assertEqual(out["again"][0][0], False, "已結的不再結:%r" % out)
+        self.assertEqual(out["revchg"], [[False, "rev-changed"]], out)
+        self.assertEqual(out["bad"], "unreadable", out)
 
 
 if __name__ == "__main__":

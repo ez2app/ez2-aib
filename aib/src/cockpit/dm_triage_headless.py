@@ -51,6 +51,10 @@ _NEVER_RE = re.compile(r"Andy|the maintainer|准|同意|High|Medium|可合|不�
 # 純確認不准有:請 / 要 / 半形 ? / 全形 ? / 「<時間>前回」/ 附件路徑
 _ACK_BAD_RE = re.compile(r"請|要|\?|\uff1f|前回|~/|/Users/|/tmp/|\.(md|txt|json|png|log)\b")
 ACK_MAX = 200
+NOTICE_FILE = "headless-notice.json"       # 結了 / 擬了 ⇒ 下一回合注入一行(SPEC v2 §2.5;注入一次就收)
+NOTICE_SCHEMA = "aib-dm-headless-notice/v1"
+SUGGEST_SCHEMA = "aib-dm-headless-suggest/v1"   # 只擬不結的建議清單(DMTRIAGE 檔旁的 .json;triage-apply 讀它)
+NOTICE_ITEMS = 8                           # 注入那一行最多列幾封(其餘看檔)
 
 PREAMBLE = """You are a mail-triage helper for one AI seat. You have no tools: you cannot run commands, read files, \
 send messages or change anything. You only read the messages below and return a JSON array, nothing else.
@@ -273,6 +277,8 @@ def apply(seat, decisions, actor, env=None, now=None, gh=gh_merged, revs=None, d
     for d in decisions:
         row = allowed.get(d["id"])
         res = {"id": d["id"], "action": d["action"], "applied": False}
+        if row is not None:
+            res["rev"] = row["rev"]
         if row is None:
             res["reason"] = "not-allowed"            # hold_human / 寫了等什麼 / 別的通訊軟體 / 不是這一席的
             out.append(res)
@@ -341,6 +347,96 @@ def _write_report(seat, actor, decisions, results, env, now, brand, dry=False):
             lines.append("  草稿:" + d0["draft"].replace("\n", "\n  "))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def _closes(decisions, results, dry):
+    """這一輪「結了」(dry = 驗得過、建議結)的那幾封:[{id, reason, evidence, rev}]。"""
+    by = {d["id"]: d for d in decisions}
+    out = []
+    for r in results:
+        if r.get("action") != "close" or not (r.get("would") if dry else r.get("applied")):
+            continue
+        out.append({"id": r["id"], "reason": r.get("reason") or "", "evidence": str(by.get(r["id"], {}).get("evidence") or ""),
+                    "rev": r.get("rev")})
+    return out
+
+
+def _atomic_json(path, rec):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(".%s.%d.tmp" % (path.name, os.getpid()))
+    tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def suggest_path(report_path):
+    return Path(report_path).with_suffix(".json")
+
+
+def _write_notice(seat, report_path, decisions, results, env, now, dry):
+    """結了 / 擬了 ≥1 封 ⇒ 寫通知檔(下一回合注入一行);dry 另寫建議清單 .json 給 triage-apply。沒有就不寫。
+    不另寄 dm 給本席:那封自己會變一封新未讀、再叫醒整理(迴圈);注入一行 + 整理檔就夠讓席位知道。"""
+    rows = _closes(decisions, results, dry)
+    if not rows:
+        return None
+    if dry:
+        _atomic_json(suggest_path(report_path), {"schema": SUGGEST_SCHEMA, "seat": seat, "at": int(now), "items": rows})
+    rec = {"schema": NOTICE_SCHEMA, "seat": seat, "at": int(now), "dry": bool(dry), "file": str(report_path),
+           "suggest": str(suggest_path(report_path)) if dry else None, "n": len(rows), "items": rows[:NOTICE_ITEMS]}
+    p = Q.seat_dir(seat, env) / NOTICE_FILE
+    _atomic_json(p, rec)
+    return p
+
+
+def take_notice(seat, env=None):
+    """UserPromptSubmit 用:有通知就回一行並收掉(同一份只注入一次;先改名再讀,兩個 hook 同時跑也只有一個拿到)。
+    沒有 / 讀不到 ⇒ 空字串(只是通知,hook 不准炸)。"""
+    p = Q.seat_dir(seat, env) / NOTICE_FILE
+    taken = p.with_name(".%s.taken.%d" % (p.name, os.getpid()))
+    try:
+        os.replace(p, taken)
+    except OSError:
+        return ""
+    try:
+        rec = json.loads(taken.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        rec = None
+    finally:
+        try:
+            taken.unlink()
+        except OSError:
+            pass
+    if not isinstance(rec, dict) or rec.get("schema") != NOTICE_SCHEMA or rec.get("seat") != seat:
+        return ""
+    items = [i for i in rec.get("items") or [] if isinstance(i, dict) and Q.ITEM_RE.fullmatch(str(i.get("id") or ""))]
+    listed = "、".join("%s(%s)" % (i["id"], str(i.get("reason") or "")[:24]) for i in items)
+    n = int(rec.get("n") or len(items))
+    more = "…" if n > len(items) else ""
+    if rec.get("dry"):
+        return ("🧹 背景整理擬了 %d 封結案建議(只擬不結,一封都沒改):%s%s —— 看 %s;要套用 "
+                "`python3 %s/dm_queue.py triage-apply --seat %s --file %s --yes`(逐條重驗才結)") % (
+            n, listed, more, rec.get("file"), HERE, seat, rec.get("suggest"))
+    return "🧹 背景整理結了 %d 封:%s%s —— 證據與理由看 %s;結錯了 `dm_queue.py reopen`" % (n, listed, more, rec.get("file"))
+
+
+def triage_apply(seat, file, yes=False, env=None, now=None, gh=gh_merged):
+    """本席一鍵套用只擬不結的建議(SPEC v2 §2.6):逐條照 apply 重驗(plan 算數、修訂號沒變、證據核心查),
+    yes=False 只預覽。建議檔是本機檔、不是防線 —— 驗得過才結,所以檔被改過最多是「多結了本來就驗得過的」。"""
+    try:
+        rec = json.loads(Path(file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "reason": "unreadable", "message": exc.__class__.__name__}
+    if not isinstance(rec, dict) or rec.get("schema") != SUGGEST_SCHEMA:
+        return {"ok": False, "reason": "schema"}
+    if rec.get("seat") != seat:
+        return {"ok": False, "reason": "seat-mismatch"}
+    items = [i for i in rec.get("items") or [] if isinstance(i, dict) and Q.ITEM_RE.fullmatch(str(i.get("id") or ""))]
+    if not items:
+        return {"ok": True, "reason": "nothing", "results": []}
+    decisions = [{"id": i["id"], "action": "close", "evidence": str(i.get("evidence") or ""), "wait": "", "draft": "",
+                  "why": ""} for i in items]
+    revs = {i["id"]: i.get("rev") for i in items if i.get("rev") is not None}
+    results = apply(seat, decisions, "seat:" + seat, env=env, now=now, gh=gh, revs=revs or None, dry=not yes)
+    return {"ok": True, "reason": "ok", "dry": not yes, "results": results}
 
 
 def ask_ai(brand, prompt, run=None):
@@ -438,6 +534,10 @@ def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged, dry=False):
         dry = bool(dry) or mode == "draft"
         results = apply(seat, decisions, actor, env=env, now=now, gh=gh, revs={r["id"]: r["rev"] for r in fed}, dry=dry)
         path = _write_report(seat, actor, decisions, results, env, now, brand, dry=dry)
+        try:
+            _write_notice(seat, path, decisions, results, env, now, dry)
+        except OSError:
+            pass                                 # 只是通知;寫不了不影響已套用 / 已寫的整理檔
         # ★ 審查 H1:只有 AI 真的回了、而且是餵進去的那幾封才算「看過」;失敗 / 讀不懂 / 沒餵到的不算
         handled = [r["id"] for r in fed if r["id"] in {d["id"] for d in decisions}]
         return {"ok": True, "reason": "ok", "file": str(path), "results": results, "dry": bool(dry)}
