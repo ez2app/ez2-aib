@@ -1951,6 +1951,15 @@ def retention_tick(env=None, now=None):
 #   (3) 叫醒那句**不進佇列**(進了會讓封數 +1、下一批又叫一次,自己叫醒自己),直接走排空器同一支投遞器。
 # ★ 絕不刪信、絕不標完成、絕不改狀態 —— 那是收件席讀過之後自己用 done --evidence 做的事。
 TRIAGE_EVERY_S = 60               # 排空器每幀都會叫到;每 60 秒最多掃一次所有席
+# 10-30 @aeb40:一席待審 32 封、叫醒紀錄停在兩天前,卻查不到這兩天每一拍為什麼不叫(load-high?忙?每日上限?)。
+#   每席最近一次的原因存 triage-why.json(why / since / observed_at);原因換了才追加一列到 triage-why.jsonl。
+TRIAGE_WHY_LAST = "triage-why.json"
+TRIAGE_WHY_LOG = "triage-why.jsonl"
+TRIAGE_WHY_LOG_MAX = 256 * 1024    # 超過就只留後半(只是查問題用的紀錄,不是帳)
+TRIAGE_WHY_IDLE = "-"              # 上一拍有、這一拍沒列 = 回到門檻以下(_triage_seat 回 None)
+TRIAGE_WHY_LOCK_TRIES = 10         # Codex r2 M:留痕鎖只試這麼多次(非阻塞),拿不到就跳過這一拍留痕,不卡 triage / 排空
+TRIAGE_WHY_LOCK_SLEEP_S = 0.05
+TRIAGE_WHY_SKEW_S = 3600           # observed_at / since 比現在晚超過這麼多 = 壞值(不然正常拍永遠被當舊拍跳過)
 
 
 def triage_path(seat, env=None):
@@ -2789,7 +2798,103 @@ def triage_tick(env=None, now=None, hold_fn=None, deliver_fn=None, force=False):
                 out[i] = _holdnote_deliver(res["seat"], hplan, env, deliver_fn, hold_fn)
         except Exception as exc:  # noqa: BLE001
             out[i] = {"seat": res["seat"], "woke": False, "why": "error:%s" % exc.__class__.__name__}
+    try:
+        _triage_why_log(out, env, now)
+    except Exception:  # noqa: BLE001 —— 紀錄寫不進去不得擋叫醒與投遞
+        pass
     return out
+
+
+def _triage_why_log(rows, env, now):
+    """叫醒那一拍每席的結果 → triage-why.json 每席 {why, since, observed_at};原因有變才追加一列到 .jsonl。
+    holdnote 列不算(另一條)。回這一拍寫進 .jsonl 的列(測試用)。
+    - observed_at 每拍都更新(Codex r1 M2):同因持續兩天 ≠ 兩天沒掃,守望看 observed_at 分得出。
+      since = 這個原因的起點。檔裡沒有某席 = 開始記錄後那一席從沒到門檻;到過又回門檻下 = why「-」。
+    - 整段在 triage-why.lock 裡做(Codex r1 M1):兩個排空器的拍子交錯時,較舊的拍子(now < 那席 observed_at)
+      不改那席的最新狀態、也不寫 .jsonl,since 不會倒退。
+    - 每席的項目逐一驗型別(Codex r1 L1 / r2 Low):壞項(不是 dict / why 不是字串 / since、observed_at 不是合理的
+      整數秒)當沒有,這一拍重建。
+    - 鎖只用非阻塞試 TRIAGE_WHY_LOCK_TRIES 次(Codex r2 Medium):別的行程持鎖卡住時,這一拍不留痕、回 None,
+      triage_tick 照樣回來、排空照跑(留痕 fail-open)。"""
+    root = queue_root(env)
+    last_p = root / TRIAGE_WHY_LAST
+    now = int(now)
+    fd = os.open(str(root / "triage-why.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    got = False
+    try:
+        for i in range(TRIAGE_WHY_LOCK_TRIES):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                got = True
+                break
+            except BlockingIOError:
+                if i + 1 < TRIAGE_WHY_LOCK_TRIES:
+                    time.sleep(TRIAGE_WHY_LOCK_SLEEP_S)
+        if not got:
+            return None                      # 拿不到鎖:跳過這一拍留痕
+        try:
+            raw = json.loads(last_p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = {}
+        last = {}
+        for seat, ent in (raw.items() if isinstance(raw, dict) else ()):
+            if (isinstance(ent, dict) and isinstance(ent.get("why"), str)
+                    and _why_ts_ok(ent.get("since"), now)
+                    and (ent.get("observed_at") is None or _why_ts_ok(ent.get("observed_at"), now))):
+                last[seat] = ent
+        cur = {}
+        for r in rows or []:
+            seat = r.get("seat") if isinstance(r, dict) else None
+            if not seat or "holdnote" in r:
+                continue
+            cur[seat] = "woke" if r.get("woke") else str(r.get("why") or "?")
+        for seat in set(last) - set(cur):
+            cur[seat] = TRIAGE_WHY_IDLE
+        changed = []
+        for seat in sorted(cur):
+            ent = last.get(seat) or {}
+            seen_at = ent.get("observed_at") or ent.get("since") or 0
+            if now < seen_at:
+                continue                     # 較舊的拍子:不蓋新結果
+            why = cur[seat]
+            if ent.get("why") != why:
+                changed.append({"ts": now, "seat": seat, "why": why})
+                last[seat] = {"why": why, "since": now, "observed_at": now}
+            else:
+                last[seat] = dict(ent, observed_at=now)
+        log_p = root / TRIAGE_WHY_LOG
+        if changed:
+            lfd = os.open(str(log_p), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+            os.fchmod(lfd, 0o600)            # 照佇列慣例只給自己讀(@fd787 旁審 N1)
+            with os.fdopen(lfd, "a", encoding="utf-8") as f:
+                for c in changed:
+                    f.write(json.dumps(c, ensure_ascii=False, sort_keys=True) + "\n")
+            try:
+                if log_p.stat().st_size > TRIAGE_WHY_LOG_MAX:
+                    lines = log_p.read_text(encoding="utf-8").splitlines(True)
+                    tmp = log_p.with_name(".%s.tmp.%d" % (log_p.name, os.getpid()))
+                    tmp.write_text("".join(lines[len(lines) // 2:]), encoding="utf-8")
+                    os.chmod(str(tmp), 0o600)
+                    os.replace(str(tmp), str(log_p))
+            except OSError:
+                pass
+        if last:
+            tmp = last_p.with_name(".%s.tmp.%d" % (last_p.name, os.getpid()))
+            tmp.write_text(json.dumps(last, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+            os.chmod(str(tmp), 0o600)
+            os.replace(str(tmp), str(last_p))
+        return changed
+    finally:
+        try:
+            if got:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _why_ts_ok(v, now):
+    """留痕檔的時間欄位:要是整數秒(bool / 浮點 / 陣列都不算),> 0,且不比現在晚超過 TRIAGE_WHY_SKEW_S。"""
+    return type(v) is int and 0 < v <= int(now) + TRIAGE_WHY_SKEW_S
 
 
 # ── 待審區自動處理 stage-tidy(a seat × a seat 10-13,設計稿 DESIGN-dm-waiting-unify-1013 §S6)──
