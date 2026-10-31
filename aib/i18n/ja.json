@@ -5942,5 +5942,15 @@
   "aib.pixel.touchid_real_gen": "ピクセル工房:実画像生成を {hours} 時間許可(codex の画像生成は枠を消費)",
   "aib.mission.help.group": "グループ ID:英小文字で始まる 16 文字以内の英数字か _ -(例 api、web)",
   "aib.mission.help.contract_path": "契約ファイルのパス(contracts/<ファイル名>、チームフォルダ missions/<id>/ からの相対パス。書けるのは総指揮のみ)",
-  "aib.mission.help.group_plan": "分組計画の JSON ファイル:groups(id / name / lead / members / quota)、contract、reserve_pct、作業中なら diff も"
+  "aib.mission.help.group_plan": "分組計画の JSON ファイル:groups(id / name / lead / members / quota)、contract、reserve_pct、作業中なら diff も",
+  "aib.newproj.help_list_brains": "読み取り専用:接続できる第二の脳(ルートキー・フォルダ・ノート数・最終更新)と各席の現在のルートを JSON で表示;--cabin で一つの艙に絞り込み",
+  "aib.newproj.brain_new_bad_uid": "--folder new はプロジェクト uid からルートキーを作りますが、{uid} は proj:<16 桁> 形式ではありません",
+  "aib.newproj.brain_new_no_vault": "--folder new で Vault が見つかりません(EZ2_VAULT_DIR 未設定、既定の場所にもなし);先に Vault を用意してください",
+  "aib.newproj.brain_new_no_parent": "--folder new は {route} の下に作りますが、そのフォルダが Vault の索引にありません;再索引するか既存の脳を選んでください",
+  "aib.newproj.brain_seat_unbound": "{seat} はまだ第二の脳を紐付けていないので共有できません;ルートキー / フォルダか --folder new を指定してください",
+  "aib.newproj.brain_new_dry": "(予行)新しい脳フォルダ「{title}」をルートキー {key} で作成します",
+  "aib.newproj.brain_new_made": "新しい脳フォルダ「{title}」を作成しました(ルートキー {key})",
+  "aib.newproj.brain_new_failed": "脳フォルダ「{title}」を作成できませんでした:{err}。席は開いていますが人格は未紐付けです;直してから同じ行を(--seat 付きで)再実行してください",
+  "aib.newproj.brain_new_bad_title": "--folder new でプロジェクト名「{title}」のフォルダを作れません:{err}。プロジェクト名を変えるか既存の脳を選んでください",
+  "aib.newproj.brain_new_reindex_warn": "脳フォルダ「{title}」は作成済み・ルートキー {key} も登録済みですが、後続の再索引に失敗しました({err});紐付けは続行します。後で Vault の再索引を実行してください"
 }

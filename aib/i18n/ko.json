@@ -5942,5 +5942,15 @@
   "aib.pixel.touchid_real_gen": "픽셀 공방: 실제 이미지 생성을 {hours}시간 허용(codex 이미지 생성은 한도 차감)",
   "aib.mission.help.group": "그룹 ID: 영문 소문자로 시작, 16자 이내 영숫자 또는 _ - (예: api, web)",
   "aib.mission.help.contract_path": "계약 파일 경로(contracts/<파일명>, 팀 폴더 missions/<id>/ 기준 상대 경로. 총지휘만 작성)",
-  "aib.mission.help.group_plan": "분조 계획 JSON 파일: groups (id / name / lead / members / quota), contract, reserve_pct, 진행 중이면 diff 포함"
+  "aib.mission.help.group_plan": "분조 계획 JSON 파일: groups (id / name / lead / members / quota), contract, reserve_pct, 진행 중이면 diff 포함",
+  "aib.newproj.help_list_brains": "읽기 전용: 연결할 수 있는 두뇌(라우트 키, 폴더, 노트 수, 최근 갱신)와 각 좌석의 현재 라우트를 JSON으로 출력; --cabin으로 한 함선만",
+  "aib.newproj.brain_new_bad_uid": "--folder new는 프로젝트 uid로 라우트 키를 만드는데, {uid}는 proj:<16자리> 형식이 아닙니다",
+  "aib.newproj.brain_new_no_vault": "--folder new가 Vault를 찾지 못했습니다(EZ2_VAULT_DIR 미설정, 기본 위치에도 없음). 먼저 Vault를 준비하세요",
+  "aib.newproj.brain_new_no_parent": "--folder new는 {route} 아래에 만드는데 그 폴더가 Vault 색인에 없습니다. 재색인하거나 기존 두뇌를 고르세요",
+  "aib.newproj.brain_seat_unbound": "{seat}에는 아직 두뇌가 연결되지 않아 함께 쓸 수 없습니다. 라우트 키 / 폴더 또는 --folder new를 주세요",
+  "aib.newproj.brain_new_dry": "(미리보기) 새 두뇌 폴더 \"{title}\"를 라우트 키 {key}로 만듭니다",
+  "aib.newproj.brain_new_made": "새 두뇌 폴더 \"{title}\"를 만들었습니다(라우트 키 {key})",
+  "aib.newproj.brain_new_failed": "두뇌 폴더 \"{title}\"를 만들지 못했습니다: {err}. 좌석은 열렸지만 인격은 아직 연결되지 않았습니다. 고친 뒤 같은 줄을(--seat 포함) 다시 실행하세요",
+  "aib.newproj.brain_new_bad_title": "--folder new로 프로젝트 제목 \"{title}\" 폴더를 만들 수 없습니다: {err}. 프로젝트 제목을 바꾸거나 기존 두뇌를 연결하세요",
+  "aib.newproj.brain_new_reindex_warn": "두뇌 폴더 \"{title}\"는 만들어졌고 라우트 키 {key}도 등록됐지만 이후 재색인이 실패했습니다({err}). 연결은 계속하며, 나중에 Vault 재색인을 실행하세요"
 }

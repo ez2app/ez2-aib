@@ -5942,5 +5942,15 @@
   "aib.pixel.touchid_real_gen": "像素工坊:放行真生圖 {hours} 小時(codex 生圖會扣額度)",
   "aib.mission.help.group": "組代號:小寫英文開頭,最多 16 個英數或 _ -(例 api、web)",
   "aib.mission.help.contract_path": "契約檔路徑(寫 contracts/<檔名>,相對於團資料夾 missions/<id>/;只有總指揮寫)",
-  "aib.mission.help.group_plan": "分組計畫 JSON 檔:groups(id / name / lead / members / quota)、contract、reserve_pct、進行中要帶 diff"
+  "aib.mission.help.group_plan": "分組計畫 JSON 檔:groups(id / name / lead / members / quota)、contract、reserve_pct、進行中要帶 diff",
+  "aib.newproj.help_list_brains": "只讀:列可接的大腦(路由代號、資料夾、筆記數、最後更新)與每一席目前綁的 route,印 JSON;可加 --cabin 只列那一艙",
+  "aib.newproj.brain_new_bad_uid": "--folder new 要用專案 uid 取路由代號,但 {uid} 不是 proj:<16 碼> 的格式",
+  "aib.newproj.brain_new_no_vault": "--folder new 找不到 Vault(EZ2_VAULT_DIR 沒設,預設位置也沒有);先設好 Vault 再開席",
+  "aib.newproj.brain_new_no_parent": "--folder new 要建在 {route} 底下,但 Vault 索引裡沒有這個資料夾;先跑 aib vault reindex 或改用已有的大腦",
+  "aib.newproj.brain_seat_unbound": "{seat} 還沒綁第二大腦,沒有可以跟著接的;改給路由代號 / 資料夾,或 --folder new",
+  "aib.newproj.brain_new_dry": "(預演)會建新的大腦資料夾「{title}」,路由代號 {key}",
+  "aib.newproj.brain_new_made": "已建新的大腦資料夾「{title}」(路由代號 {key})",
+  "aib.newproj.brain_new_failed": "新的大腦資料夾「{title}」沒建成:{err}。席已開、人格還沒綁;修好後重跑同一行(帶 --seat)",
+  "aib.newproj.brain_new_bad_title": "--folder new 沒辦法用專案標題「{title}」建資料夾:{err}。改專案標題,或改接已有的大腦",
+  "aib.newproj.brain_new_reindex_warn": "大腦資料夾「{title}」已建、路由代號 {key} 已登記,但事後的 reindex 沒跑成({err});照常綁定,之後跑一次 Vault reindex 補衍生索引"
 }
