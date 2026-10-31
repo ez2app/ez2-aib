@@ -2028,12 +2028,16 @@ def _spawn_env(env):
             if not k.startswith(_SPAWN_ENV_DROP_PREFIX) and k not in _SPAWN_ENV_DROP}
 
 
-def _spawn_headless(seat, brand, env):
-    """背景起一輪 dm_queue.py triage-headless(自成一組、不等它;輸出進那一席的 headless.log)。"""
+def _spawn_headless(seat, brand, env, draft=False):
+    """背景起一輪 dm_queue.py triage-headless(自成一組、不等它;輸出進那一席的 headless.log)。
+    draft ⇒ 只擬不結(必定觸發那條);忙滿 30 分那條(0.1.62)照原本套用。"""
     d = seat_dir(seat, env)
     d.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, str(_HERE / "dm_queue.py"), "triage-headless", "--seat", seat, "--brand", brand]
+    if draft:
+        cmd.append("--draft")
     with open(str(d / "headless.log"), "ab") as log:
-        subprocess.Popen([sys.executable, str(_HERE / "dm_queue.py"), "triage-headless", "--seat", seat, "--brand", brand],
+        subprocess.Popen(cmd,
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=_spawn_env(env), cwd=str(d))
 
@@ -2067,6 +2071,68 @@ def _triage_headless_maybe(seat, rec, path, env, now, probe):
         except OSError:
             return False
     return ok
+
+
+def _seat_long_work(seat, env, now):
+    """這一席正在長工作(推送 / 全套 / 換版):機器租約持有人是本席、pid 活著、沒過期 ⇒ True。
+    比的是 host-lease.json 的結構化欄位(owner / pid / expiry_epoch),不拿 what 字串比(@34d15 10-31 21:45)。
+    owner 是呼叫端自報的,同帳號擋不住同帳號;這裡只用來「延後、不誤起」,不是防線。量不到 ⇒ False。"""
+    e = _env(env)
+    lp = (e.get("AIB_HOST_LEASE_FILE") or "").strip() or os.path.join(
+        e.get("HOME") or os.path.expanduser("~"), ".ez2-aib", "state", "host-lease.json")   # 同 tools/governance/host_lease.lease_path
+    try:
+        lease = json.loads(Path(lp).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(lease, dict) or lease.get("owner") != "@" + str(seat):
+        return False
+    try:
+        import socket
+        if lease.get("host") and lease.get("host") != socket.gethostname():
+            return False
+        if int(now) >= int(lease.get("expiry_epoch") or 0):
+            return False
+        pid = int(lease.get("pid") or 0)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+    except (TypeError, ValueError, OSError):
+        return False
+    return True
+
+
+def _triage_headless_auto(seat, rec, path, env, now, tabs):
+    """必定觸發那條:判起不起(H.should_start_auto),起了就原子登記狀態再 spawn(draft)。
+    回這一拍的原因字串(headless-started / headless-deferred:<why>);None = 這條不適用(交回原本流程)。"""
+    import dm_triage_headless as H
+    pairs = []
+    for r in (tabs.get("waiting", {}).get("rows") or []) + (tabs.get("read", {}).get("rows") or []):
+        if str(r.get("id")) in set(str(i) for i in (rec.get("unread_ids") or []) + (rec.get("inprog_ids") or [])):
+            pairs.append((r.get("id"), r.get("rev")))
+    key = H.batch_key(pairs)
+    reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
+    brand = str(reg_prov or "")
+    if _seat_long_work(seat, env, now):
+        ok, why, next_at = False, "long-work", int(now) + 300
+    else:
+        ok, why, next_at = H.should_start_auto(rec, now, _triage_lock(seat, env), _load1(), brand, _triage_mode(brand),
+                                               key, H.live_headless_count(env, now))
+    rec = dict(rec)
+    if ok:
+        rec.update({"headless_at": now, "headless_key": key,
+                    "headless_log": H._hour_log(rec, now) + [now],
+                    "headless": {"state": "started", "why": "auto", "at": now, "batch_key": key, "draft": True}})
+    else:
+        rec["headless"] = {"state": "deferred", "why": why, "at": now, "next_at": next_at, "batch_key": key}
+    if not TR.write(path, rec):
+        return "headless-deferred:state-unwritable"   # 記不下來就不起(否則下一拍看不到起過,會一直起)
+    if not ok:
+        return "headless-deferred:%s" % why
+    try:
+        SPAWN_HEADLESS(seat, brand, env, draft=True)
+    except OSError:
+        return "headless-deferred:spawn-failed"
+    return "headless-started"
 
 
 def _triage_lock(seat, env=None):
@@ -2164,6 +2230,13 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             else:
                 rec.pop("stalled_at", None)
             TR.write(path, rec)
+        # 10-31 必定觸發(SPEC v2 §2.1):叫過、ACK 過了、本席沒動作(rewake / triage-stalled)⇒ 不再只是再叫,
+        #   起背景整理(只擬不結);起不了的寫明 deferred + 下次時間。triage_auto=off ⇒ 走原本那條。
+        import dm_triage_headless as H
+        if why in H.AUTO_REASONS and triage_auto_mode(seat, env)[0] != "off":
+            auto = _triage_headless_auto(seat, rec, path, env, now, tabs)
+            if auto is not None:
+                return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": auto, "cleaned": cleaned}
     if not normal:
         if why in ("under-threshold", "all-handled") and rec.get("busy_since") is not None:
             rec = dict(rec)
@@ -2960,6 +3033,66 @@ def tidy_switch(value, seat=None, env=None):
         return tidy_enabled(seat, env)
     flag = _read_tidy_flag(path)
     return (TIDY_DEFAULT, "default") if flag is None else (flag, "fleet")
+
+
+# ── 待審整理必定觸發 triage_auto(Andy 10-31 15:3x「門檻到就由 hook 直接起子代理 如何必要程式化?」;
+#   SPEC-dm-triage-auto v2 §2.6 / §5,@34d15 21:45 Q1 照建議)──
+#   off   = 回到原本(只提醒 + 忙滿 30 分才起背景整理;Stop 守門照原判準)
+#   draft = 門檻到、叫醒沒人接 ⇒ 起背景整理,但只寫「建議結案清單」不改任何信(上線第一週的預設)
+#   on    = 真的套用 —— 這一版不收(要等一週誤結率 0、而且要真人核准;只擬不結是上線門檻)
+#   開關:每席 <佇列>/<席>/triage-auto.json 優先,其次全艦 <佇列>/triage-auto-policy.json,都沒有 = draft。
+#   關掉(off)是比較保守的方向,本機檔誰都改得動也沒關係;開到 on 才要真人(下一版)。
+TRIAGE_AUTO_SCHEMA = "aib-dm-triage-auto/v1"
+TRIAGE_AUTO_MODES = ("off", "draft")
+TRIAGE_AUTO_DEFAULT = "draft"
+
+
+def triage_auto_seat_path(seat, env=None):
+    return seat_dir(seat, env) / "triage-auto.json"
+
+
+def triage_auto_fleet_path(env=None):
+    return queue_root(env) / "triage-auto-policy.json"
+
+
+def _read_triage_auto(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != TRIAGE_AUTO_SCHEMA or data.get("mode") not in TRIAGE_AUTO_MODES:
+        return None
+    return data["mode"]
+
+
+def triage_auto_mode(seat, env=None):
+    """(off / draft, 來源 seat / fleet / default)。壞檔、認不得的值(含 on)當沒有,交下一層。"""
+    v = _read_triage_auto(triage_auto_seat_path(seat, env))
+    if v is not None:
+        return v, "seat"
+    v = _read_triage_auto(triage_auto_fleet_path(env))
+    if v is not None:
+        return v, "fleet"
+    return TRIAGE_AUTO_DEFAULT, "default"
+
+
+def triage_auto_switch(value, seat=None, env=None):
+    """value = off / draft / default。on 這一版不收(回 ValueError)。回寫完之後那一層的 (mode, 來源)。"""
+    if value not in TRIAGE_AUTO_MODES + ("default",):
+        raise ValueError("triage_auto: %s 不收(只收 off / draft / default)" % value)
+    path = triage_auto_fleet_path(env) if seat is None else triage_auto_seat_path(seat, env)
+    if value == "default":
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        AJ.write_json(str(path), {"schema": TRIAGE_AUTO_SCHEMA, "mode": value})
+    if seat is not None:
+        return triage_auto_mode(seat, env)
+    v = _read_triage_auto(path)
+    return (TRIAGE_AUTO_DEFAULT, "default") if v is None else (v, "fleet")
 
 
 def _tidy_untouchable(row):
@@ -5361,6 +5494,7 @@ def main(argv=None, env=None):
     th = sub.add_parser("triage-headless")          # 0.1.62:背景整理 AI 代做一輪(通常由叫醒那一拍自動起)
     th.add_argument("--seat", required=True)
     th.add_argument("--brand", required=True)
+    th.add_argument("--draft", action="store_true", help="只擬不結(必定觸發那條起的;SPEC v2 §2.6)")
     ts_ = sub.add_parser("triage-status")           # 看板:每席叫醒 / 封數變化 / stalled / 子代理登記(唯讀)
     ts_.add_argument("--seat", default=None)
     ts_.add_argument("--json", action="store_true")
@@ -5537,6 +5671,12 @@ def main(argv=None, env=None):
     tsw_who.add_argument("--seat")
     tsw_who.add_argument("--fleet", action="store_true")
 
+    tas = sub.add_parser("triage-auto")
+    tas.add_argument("value", choices=("off", "draft", "default", "status"))
+    tas_who = tas.add_mutually_exclusive_group(required=True)
+    tas_who.add_argument("--seat")
+    tas_who.add_argument("--fleet", action="store_true")
+
     ptst = sub.add_parser("purge-test")
     ptst.add_argument("--dry-run", action="store_true")
     sub.add_parser("list-test")
@@ -5610,7 +5750,7 @@ def main(argv=None, env=None):
 
     if args.cmd == "triage-headless":
         import dm_triage_headless as H
-        out = H.run(args.seat, args.brand, env=env)
+        out = H.run(args.seat, args.brand, env=env, dry=bool(args.draft))
         _print_json(out)
         return 0 if out.get("ok") else 1
 
@@ -5945,6 +6085,21 @@ def main(argv=None, env=None):
             return 2
         on, src = tidy_switch(args.value, seat=args.seat, env=env)
         _print_json({"ok": True, "seat": args.seat, "fleet": bool(args.fleet), "auto_tidy": on, "switch": src})
+        return 0
+
+    if args.cmd == "triage-auto":
+        if args.seat is not None and not SEAT_RE.fullmatch(args.seat):
+            _print_json({"ok": False, "reason": "seat", "seat": args.seat})
+            return 2
+        if args.value == "status":
+            if args.seat is None:
+                v = _read_triage_auto(triage_auto_fleet_path(env))
+                mode, src = (TRIAGE_AUTO_DEFAULT, "default") if v is None else (v, "fleet")
+            else:
+                mode, src = triage_auto_mode(args.seat, env)
+        else:
+            mode, src = triage_auto_switch(args.value, seat=args.seat, env=env)
+        _print_json({"ok": True, "seat": args.seat, "fleet": bool(args.fleet), "triage_auto": mode, "switch": src})
         return 0
 
     if args.cmd == "triage":

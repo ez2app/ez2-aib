@@ -592,7 +592,7 @@ def human_lines(rec, rows):
 #     之後標 triage_stalled(看板畫「未整理」),有新信再從頭叫。
 #   · 子代理做完 triage-lock --release ⇒ 鎖檔記下它看過的 id(handled_ids);還到門檻、而且有它沒看過的 ⇒ 下一拍立刻再叫。
 #     它看過、留給本席的(要本席決定 / 等別人)不再叫 —— 不然留下的兩封會一直把子代理叫起來。
-ACK_S = 180
+ACK_S = 300                    # 10-31 SPEC v2 §2.1:180 秒太短(一次工具呼叫常 3–10 分;三席回應)
 REWAKE_MAX = 2
 TRIAGE_LOAD_MAX = 12           # @abb89 22:52:load1 > 12 不叫(同「審查子代理最多 2 個、load1>12 先等」)
 HANDLED_TTL_S = 24 * 3600      # Andy 10-25 22:5x 同意:子代理看過、留給本席的信 24 小時後重新算
