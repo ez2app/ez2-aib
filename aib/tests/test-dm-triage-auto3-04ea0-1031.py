@@ -19,6 +19,7 @@ L  每小時上限接獨立設定檔(每席 > 全艦 > 預設;壞檔 ⇒ 預設,
 TM 回合邊界:mark_turn / ack_base
 R1(#468 Codex r1):M1 持有人活著名額不因 TTL 回收(硬上限才收)/ M2 補記 pid 只動本次有效的鎖 /
    M3 背景行程死了叫醒判斷不再當 agent-working / M4 父程序預登記不吃掉上一輪看過的 / M5 帳記不下來不 spawn
+R2(#468 Codex r2 M4):a 這輪 AI 失敗 / 提前返回也保留上一輪看過的;b 同一 id 留本輪處理的新版
 Knife(本檔最後):每個守衛一刀,knife_copy + run_guarded,只跑目標那一格,要「那一格 FAIL」(ERROR 不算)。
    單跑刀:python3 -B tests/<本檔> Knife
 """
@@ -460,6 +461,34 @@ class R1Codex(unittest.TestCase):
                          "帳記不下來 ⇒ 不起、名額放回、鎖還原:%r" % out)
 
 
+class R2Seen(Tmp):
+    def _put(self, msg, now):
+        return Q.record("aaaaa", msg, "@77777", status="delivered", rc=0, env=self.env, now=now, sender_kind="ai",
+                        sender_seat="77777", sender_source="pane_pid_chain", wid="@2", provider="claude",
+                        hub="aihub-t1")["id"]
+
+    def _lock(self):
+        return json.loads((Q.seat_dir("aaaaa", self.env) / TA.AGENT_LOCK_FILE).read_text())
+
+    def test_a_failure_keeps_previous_seen(self):
+        a = self._put("第一件", NOW)
+        ra = Q._load_item("aaaaa", a, self.env)["rev"]
+        (Q.seat_dir("aaaaa", self.env) / TA.AGENT_LOCK_FILE).write_text(json.dumps(
+            {"by": "x", "until": 0, "released_at": NOW, "handled_ids": ["%s@%s" % (a, ra)]}))
+        self._put("第二件", NOW + 5)
+        r = H.run("aaaaa", "claude", env=self.env, now=NOW + 10, ask=lambda b, p: (None, "ai-failed"), dry=True)
+        self.assertEqual(r.get("reason"), "ai-failed", r)
+        self.assertIn("%s@%s" % (a, ra), self._lock().get("handled_ids") or [], "AI 失敗也不清掉上一輪的 A@rev")
+
+    def test_b_newer_rev_wins(self):
+        a = self._put("第一件", NOW)
+        ra = Q._load_item("aaaaa", a, self.env)["rev"]
+        TA.agent_lock("aaaaa", "agent:aaaaa/h", env=self.env, now=NOW + 1)
+        TA.agent_lock("aaaaa", "agent:aaaaa/h", env=self.env, now=NOW + 2, release=True,
+                      handled=["%s@%d" % (a, ra + 1), "%s@%d" % (a, ra)])
+        self.assertEqual(self._lock()["handled_ids"], ["%s@%d" % (a, ra + 1)], "同一 id 留新版,舊版不蓋掉")
+
+
 KNIVES = [
     ("A1", "src/cockpit/dm_queue.py", '    if not tidy_on and auto_on and why in ("rewake", "triage-stalled"):',
      '    if False:', "T1AutoStart.test_starts_once_after_ack"),
@@ -513,6 +542,10 @@ KNIVES = [
      "    pass", "R1Codex.test_m4_preregister_keeps_seen"),
     ("R5", "src/cockpit/dm_queue.py", "    if not TR.write(path, r2):\n        TA.agent_lock_restore(",
      "    if not (TR.write(path, r2) or True):\n        TA.agent_lock_restore(", "R1Codex.test_m5_unrecorded_no_spawn"),
+    ("R6", "src/cockpit/dm_triage_headless.py", '    handled = sorted(h for h in seen if "@" in str(h))\n    try:',
+     "    handled = []\n    try:", "R2Seen.test_a_failure_keeps_previous_seen"),
+    ("R7", "src/cockpit/dm_triage_agent.py", "                if i in given and not (old is not None",
+     "                if False and not (old is not None", "R2Seen.test_b_newer_rev_wins"),
     ("A20", "src/cockpit/dm_queue.py", "    in_turn = p_at is not None and (s_at is None or p_at > s_at)",
      "    in_turn = False", "TMTurn.test_mark_and_base"),
 ]

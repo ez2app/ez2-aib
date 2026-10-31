@@ -718,7 +718,8 @@ def _run(seat, brand, env, now, ask, gh, dry, actor):
     lk = TA.agent_lock(seat, actor, env=env, now=now, pid=os.getpid())
     if not lk.get("ok"):
         return {"ok": False, "reason": lk.get("reason"), "held": lk.get("held")}
-    handled = []
+    # #468 Codex r2 M4a:預設保留上一輪的看過集合(id@rev)—— AI 失敗 / 讀不懂 / 提前返回時 finally 照它放鎖,不清掉
+    handled = sorted(h for h in seen if "@" in str(h))
     try:
         plan = TA.plan(seat, env=env, now=now)
         rows = [r for r in plan["rows"] if "excluded" not in r]
@@ -755,9 +756,10 @@ def _run(seat, brand, env, now, ask, gh, dry, actor):
         except OSError:
             pass                                 # 只是通知;寫不了不影響已套用 / 已寫的整理檔
         # ★ 審查 H1:只有 AI 真的回了、而且是餵進去的那幾封才算「看過」;失敗 / 讀不懂 / 沒餵到的不算
-        handled = [TR.pair(r["id"], r.get("rev")) for r in fed if r["id"] in {d["id"] for d in decisions}]
-        # #468 Codex r1 M4:上一輪看過、這輪因此沒餵的(同一版)照樣算看過,不然再下一輪又會餵
-        handled += sorted(h for h in seen if "@" in str(h) and str(h) not in handled)
+        cur = [TR.pair(r["id"], r.get("rev")) for r in fed if r["id"] in {d["id"] for d in decisions}]
+        # #468 Codex r1 M4:上一輪看過、這輪沒餵的照樣算看過;r2 M4b:同一個 id 以本輪實際處理的那版為準(舊版不再帶)
+        cur_ids = {str(h).partition("@")[0] for h in cur}
+        handled = cur + [h for h in handled if str(h).partition("@")[0] not in cur_ids]
         return {"ok": True, "reason": "ok", "file": str(path), "results": results, "dry": bool(dry)}
     finally:
         TA.agent_lock(seat, actor, env=env, now=now, release=True, handled=handled)

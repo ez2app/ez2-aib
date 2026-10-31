@@ -306,7 +306,13 @@ def _agent_lock(seat, actor, env=None, now=None, release=False, status=False, ha
             given = {}
             for h in handled:
                 i, _sep, rv = str(h).partition("@")
-                given[i] = rv if _sep else None
+                rv = rv if _sep else None
+                old = given.get(i)
+                # #468 Codex r2 M4b:同一個 id 出現兩次 ⇒ 留版本較新的(數字大的);比不了就留先出現的
+                if i in given and not (old is not None and rv is not None and rv.isdigit() and old.isdigit()
+                                       and int(rv) > int(old)):
+                    continue
+                given[i] = rv
             handled = [i for i in left if i in given]
             revs = {i: (given[i] if given[i] is not None else revs.get(i)) for i in handled}
         # 第三張 r2 M6:記 "id@rev" —— 同一封出新版 ⇒ 不算看過,叫醒 / 餵信都會再算它一次
