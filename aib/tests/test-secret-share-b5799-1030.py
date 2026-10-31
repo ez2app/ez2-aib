@@ -18,7 +18,7 @@ P9 真 tmux(有 tmux 才跑):paste 期間每次叫 tmux 都掃一次 ps -axww,�
     K4 site 類別改 seat_input ⇒ P1 紅;K5 先讀值再彈指紋(拿掉 precheck)⇒ P10 紅;
     K6 先 pbcopy 再起清除行程 ⇒ P2 紅;K7 按指紋後不重查 fresh_target ⇒ P6 紅;
     K8 paste 拿掉 not_mac ⇒ P6 test_not_mac 紅;K9 paste 改回 -t @N ⇒ P5 / P9 test_split_pane_gets_nothing 紅;
-    K10 拿掉啟動時間比對 ⇒ P6 test_pid_reused_or_unknown_start 紅
+    K10 拿掉啟動時間比對 ⇒ P6 test_pid_reused_or_unknown_start 紅;K11 不看清理結果 ⇒ P6 test_buffer_left_reported 紅
 """
 import hashlib
 import io
@@ -281,8 +281,8 @@ class P5Paste(Seat):
         res, rc = self.paste()
         self.assertEqual((res, rc), ({"ok": True}, 0))
         argvs = [a for a, _i, _e in self.calls if a[0] != "ps"]
-        self.assertEqual([a[3] for a in argvs], ["list-panes", "load-buffer", "paste-buffer", "delete-buffer"])
-        _panes, load, paste, delete = argvs
+        self.assertEqual([a[3] for a in argvs], ["list-panes", "load-buffer", "paste-buffer", "delete-buffer", "list-buffers"])
+        _panes, load, paste, delete, _listed = argvs
         self.assertEqual(load[-1], "-")
         buf = load[load.index("-b") + 1]
         self.assertRegex(buf, r"^aib-secret-[0-9a-f]{32}$")
@@ -344,7 +344,7 @@ class P6PasteRefused(Seat):
                 return subprocess.CompletedProcess(argv, 0, lstart(START), "")
             return subprocess.CompletedProcess(argv, 1 if "load-buffer" in argv else 0, "%5 4242\n" if "list-panes" in argv else "", "")
         self.assertEqual(self.paste(run=run)[0], {"ok": False, "why": "paste_failed"})
-        self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"], ["list-panes", "load-buffer", "delete-buffer"])
+        self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"], ["list-panes", "load-buffer", "delete-buffer", "list-buffers"])
 
     def test_paste_raises_still_deletes(self):
         """#442 r1 L1:paste-buffer 逾時 / 例外 ⇒ paste_failed,照樣 delete-buffer"""
@@ -357,7 +357,7 @@ class P6PasteRefused(Seat):
                         raise exc
                     return self.run_ok(argv, **kw)
                 self.assertEqual(self.paste(run=run), ({"ok": False, "why": "paste_failed"}, 4))
-                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"], ["list-panes", "load-buffer", "paste-buffer", "delete-buffer"])
+                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"], ["list-panes", "load-buffer", "paste-buffer", "delete-buffer", "list-buffers"])
 
     def test_cleanup_fails_does_not_crash(self):
         """#442 r1 L1:delete-buffer 非零 / 例外不改結果、不丟例外(殘留問題是 M2,另案)"""
@@ -372,7 +372,72 @@ class P6PasteRefused(Seat):
                         return subprocess.CompletedProcess(argv, 1, "", "")
                     return self.run_ok(argv, **kw)
                 self.assertEqual(self.paste(run=run), ({"ok": True}, 0))
-                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"][-1], "delete-buffer")
+                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"][-2:], ["delete-buffer", "list-buffers"])
+
+    def test_buffer_left_reported(self):
+        """#442 r1 M2:delete-buffer 之後 list-buffers 還看得到 / 讀不到 ⇒ 重試 3 次,仍確認不了 ⇒ buffer_left(蓋過原結果)"""
+        for mode in ("still-there", "list-fails", "list-raises"):
+            for paste_ok in (True, False):
+                with self.subTest(mode=mode, paste_ok=paste_ok):
+                    self.calls[:] = []
+                    seen = {}
+                    def run(argv, mode=mode, paste_ok=paste_ok, **kw):
+                        if "load-buffer" in argv:
+                            seen["buf"] = argv[argv.index("-b") + 1]
+                        if "paste-buffer" in argv and not paste_ok:
+                            self.calls.append((list(argv), None, {}))
+                            return subprocess.CompletedProcess(argv, 1, "", "")
+                        if "list-buffers" in argv:
+                            self.calls.append((list(argv), None, {}))
+                            if mode == "list-raises":
+                                raise subprocess.TimeoutExpired("tmux", 10)
+                            return subprocess.CompletedProcess(argv, 1 if mode == "list-fails" else 0,
+                                                               seen["buf"] + "\n" if mode == "still-there" else "", "")
+                        return self.run_ok(argv, **kw)
+                    self.assertEqual(self.paste(run=run), ({"ok": False, "why": "buffer_left"}, 4))
+                    tm = [a[3] for a, _i, _e in self.calls if a[0] != "ps"]
+                    self.assertEqual((tm.count("delete-buffer"), tm.count("list-buffers")), (3, 3))
+        # 第二次才確認不在 ⇒ 照原結果;tmux 伺服器已經沒了 ⇒ 也算不在
+        for mode in ("second-try", "no-server"):
+            with self.subTest(mode=mode):
+                self.calls[:] = []
+                n = {"list": 0}
+                def run(argv, mode=mode, **kw):
+                    if "list-buffers" in argv:
+                        n["list"] += 1
+                        self.calls.append((list(argv), None, {}))
+                        if mode == "no-server":
+                            return subprocess.CompletedProcess(argv, 1, "", "no server running on /tmp/tmux-501/aihub-x")
+                        return subprocess.CompletedProcess(argv, 1 if n["list"] == 1 else 0, "", "")
+                    return self.run_ok(argv, **kw)
+                self.assertEqual(self.paste(run=run), ({"ok": True}, 0))
+
+    def test_interrupt_still_cleans(self):
+        """#444 r1 M1:load / paste 等待時被 Ctrl-C ⇒ 照樣刪 + 確認,KeyboardInterrupt 照樣往上丟"""
+        for where in ("load-buffer", "paste-buffer"):
+            with self.subTest(where=where):
+                self.calls[:] = []
+                def run(argv, where=where, **kw):
+                    if where in argv:
+                        self.calls.append((list(argv), None, {}))
+                        raise KeyboardInterrupt
+                    return self.run_ok(argv, **kw)
+                with self.assertRaises(KeyboardInterrupt):
+                    self.paste(run=run)
+                self.assertEqual([a[3] for a, _i, _e in self.calls if a[0] != "ps"][-2:], ["delete-buffer", "list-buffers"])
+
+    def test_list_decode_error_is_unconfirmed(self):
+        """#444 r1 M2:list-buffers 輸出解不了碼 ⇒ 不逸出例外,算沒確認 ⇒ buffer_left;呼叫帶 errors=replace"""
+        self.calls[:] = []
+        kws = []
+        def run(argv, **kw):
+            if "list-buffers" in argv:
+                kws.append(kw.get("errors"))
+                self.calls.append((list(argv), None, {}))
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
+            return self.run_ok(argv, **kw)
+        self.assertEqual(self.paste(run=run), ({"ok": False, "why": "buffer_left"}, 4))
+        self.assertEqual(kws, ["replace"] * 3)
 
     def test_pid_reused_or_unknown_start(self):
         """#442 r1 M1:名冊不變、PID 數字相同但行程世代不同(啟動時間對不上)/ 查不到 / 名冊沒有 started_epoch ⇒ seat_busy,值不進 buffer"""
