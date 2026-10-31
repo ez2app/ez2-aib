@@ -1781,6 +1781,49 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
     return out
 
 
+def _unread_still_live(facts):
+    """收集時列的未讀,寫第三步這一刻**確定**已讀 / 已結 / 已收 / 已刪、或確定不存在的,不再要求第二段交代(10-31 T15):
+    席位處理掉那封信本身就是交代。其他一律照收集時的清單要求(不放水,#465 Codex r1):
+      - 讀檔出錯(壞 JSON / schema / id 不符)≠ 不見 ⇒ 照要求;只有讀取器明說 missing 才算不見
+      - claimed / hold_human / queued / delivered 都不代表讀過 ⇒ 照要求
+      - 整支出錯 ⇒ 原清單。回新的 facts(不改原本的)。"""
+    code = ((facts.get("seat") or {}).get("code") or "")
+    unread = facts.get("unread") or []
+    if not code or not unread:
+        return facts
+    try:
+        import dm_queue
+        keep = []
+        for u in unread:
+            iid = str(u.get("id") or "")
+            it, why = dm_queue._load_item_raw(code, iid)
+            if it is None:
+                if why != "missing" or not _item_file_absent(dm_queue, code, iid):
+                    keep.append(u)
+                continue
+            if it.get("status") not in _UNREAD_HANDLED:
+                keep.append(u)
+    except Exception:  # noqa: BLE001
+        return facts
+    return dict(facts, unread=keep)
+
+
+_UNREAD_HANDLED = ("read", "done", "archived", "deleted")
+
+
+def _item_file_absent(dm_queue, code, iid):
+    """讀取器回 missing 時再確認一次:_load_item_raw 把所有 OSError(含權限 / I/O 錯)都回 missing(#465 Codex r2),
+    這裡只有 lstat 明說 FileNotFoundError 才算真的不見;檔還在、或 lstat 自己也出錯 ⇒ 不算不見。
+    不改 _load_item_raw 本身(它有很多呼叫端靠 missing 這個值)。"""
+    try:
+        os.lstat(str(dm_queue.item_path(code, iid)))
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
 def _incomplete(raw, facts, checks, warns=None):
     """§8e:交接哪裡不完整(固定欄位缺、機器對帳不齊、本輪沒整理)。raw = parse_draft 的原段(要欄位標題)。量不到不算缺。"""
     out = []
@@ -1788,7 +1831,7 @@ def _incomplete(raw, facts, checks, warns=None):
         import handoff_check
         secs = {k: raw.get(k, "") for k in SECTIONS}
         out += [T("aib.handoff.incomplete.field", what=x) for x in handoff_check.missing_fields(secs)]
-        out += handoff_check.reconcile(facts, secs, warnings=warns)
+        out += handoff_check.reconcile(_unread_still_live(facts), secs, warnings=warns)
     except Exception as exc:  # noqa: BLE001
         _log("incomplete_check_failed", None, why=repr(exc)[:200])
     t = str(checks.get("tidy") or "")
