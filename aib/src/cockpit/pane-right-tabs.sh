@@ -102,7 +102,7 @@ case "${TAB_FULL_W:-}" in ''|*[!0-9]*) TAB_FULL_W=0 ;; esac
 }
 
 # 分頁列(四格)。四種作用中的樣子,前三格的欄位跟三格時代一樣(right-tab-spans.json 照舊對得上);
-# 第 4 格接在後面。右欄比完整四格窄 ⇒ 第 4 格用短字。值:2/0/其他=1.AI、1=2.AI用量、3=3.離艙、4=4.艦長艙。
+# 第 4 格接在後面。右欄比完整四格窄 ⇒ 第 4 格用短字。值:2/0/其他=1.AI、1=2.AI用量、3=3.艙記錄(10-31 Andy 由「離艙」改名;內容仍是離艙席盤點)、4=4.艦長艙。
 tab_bar() {
   local rm="$TAB_ROOM"
   [ "$TAB_FULL_W" -gt 0 ] && [ "${EZ2_PANE_W:-44}" -lt "$TAB_FULL_W" ] 2>/dev/null && rm="$TAB_ROOM_SHORT"
