@@ -817,7 +817,7 @@ def run_newproj(args) -> int:
         import seat_bootstrap  # noqa: E402
         return seat_bootstrap.run(args, root, types.SimpleNamespace(
             T=T, _say=_say, load_card=load_card, _uid_refusal=_uid_refusal, _resolve_seat=_resolve_seat, run_newproj=run_newproj,
-            ensure_ledger=ensure_ledger))
+            ensure_ledger=ensure_ledger, resolve_folder=resolve_folder))
     if args.new_seat:
         if seat_arg:
             return _refuse(T("aib.newproj.seat_xor_new"), seat_arg)
@@ -1616,6 +1616,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--persona-card", default="", help=T("aib.newproj.help_persona_card"))
     ap.add_argument("--cabin", default="", help=T("aib.newproj.help_cabin"))
     ap.add_argument("--confirm", default="", help=T("aib.newproj.help_confirm"))
+    ap.add_argument("--list-brains", action="store_true", help=T("aib.newproj.help_list_brains"))
     ap.add_argument("--model", default="", help=argparse.SUPPRESS)
     ap.add_argument("--entry", default="", choices=["", "newproj"], help=argparse.SUPPRESS)
     ap.add_argument("--approve", default="", metavar="PROJECT_UID", help=T("aib.newproj.help_approve"))
@@ -1626,6 +1627,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         return approve_constitution(state_root_of(args.state_root or None), args.approve.strip())
     if args.propose_goals:                    # 10-18:只寫候選檔,其他旗標不看
         return propose_goals(state_root_of(args.state_root or None), args.propose_goals.strip(), args.goal)
+    if args.list_brains:                      # 11-01:頁面要列可接的大腦 + 每席目前綁的 route;只讀,其他旗標只看 --cabin
+        import brain_pick  # noqa: E402
+        root = state_root_of(args.state_root) if args.state_root else state_root_of()
+        out = brain_pick.cli_list(root, (args.cabin or "").strip())
+        print(json.dumps(out, ensure_ascii=False, sort_keys=True))
+        return 0 if out.get("ok") else 1
     # 選單那條路一定帶 --seat;aib newproj 不帶 ⇒ 只建卡(the maintainer 10-01),不在這裡擋
     if not args.seat and not args.new_seat and args.entry != "newproj":
         ap.error(T("aib.newproj.need_seat"))

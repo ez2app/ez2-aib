@@ -5942,5 +5942,13 @@
   "aib.pixel.touchid_real_gen": "Pixel Studio: allow real image generation for {hours} h (codex image calls use quota)",
   "aib.mission.help.group": "group id: starts with a lowercase letter, up to 16 letters, digits, _ or - (e.g. api, web)",
   "aib.mission.help.contract_path": "contract file path (contracts/<file>, relative to the team folder missions/<id>/; only the lead PM writes it)",
-  "aib.mission.help.group_plan": "grouping plan JSON file: groups (id / name / lead / members / quota), contract, reserve_pct; add diff when work is in progress"
+  "aib.mission.help.group_plan": "grouping plan JSON file: groups (id / name / lead / members / quota), contract, reserve_pct; add diff when work is in progress",
+  "aib.newproj.help_list_brains": "Read-only: list attachable brains (route key, folder, note count, last update) and each seat's current route as JSON; add --cabin to limit to one cabin",
+  "aib.newproj.brain_new_bad_uid": "--folder new derives the route key from the project uid, but {uid} is not in proj:<hex> form",
+  "aib.newproj.brain_new_no_vault": "--folder new cannot find the Vault (EZ2_VAULT_DIR unset and no default); set up the Vault first",
+  "aib.newproj.brain_new_no_parent": "--folder new creates the folder under {route}, but that folder is not in the Vault index; run the Vault reindex or pick an existing brain",
+  "aib.newproj.brain_seat_unbound": "{seat} has no second brain bound yet, so there is nothing to share; give a route key / folder, or --folder new",
+  "aib.newproj.brain_new_dry": "(dry run) would create a new brain folder \"{title}\" with route key {key}",
+  "aib.newproj.brain_new_made": "Created a new brain folder \"{title}\" (route key {key})",
+  "aib.newproj.brain_new_failed": "Could not create the brain folder \"{title}\": {err}. The seat is open but no persona is bound yet; fix it and rerun the same line (with --seat)"
 }

@@ -169,6 +169,7 @@ class Bootstrap:
         self.card = (args.persona_card or "").strip()
         self.cabin = ""
         self.seat_id, self.code, self.seat_rec = "", "", None
+        self.brain_route, self.brain_plan = "", None     # --folder 解出來的路由;plan 非空 = 要先建新夾(--folder new)
 
     # ── 回條 ──
     def cabin_code(self) -> str:
@@ -235,6 +236,9 @@ class Bootstrap:
                 return self.refuse("resolve", "cli_not_ready",
                                    T("aib.newproj.boot_cli_not_ready", {"engine": ready["engine"], "detail": "/".join(ready["failed"]), "cmd": login_cmd}),
                                    detail=ready["failed"])
+        rc = self.pick_brain()
+        if rc is not None:
+            return rc
         if a.seat:                                           # 續做:席已在,不解析艙、不開席
             seat_id, rec, instance, err = self.np._resolve_seat(root, a.seat.strip())
             if err:
@@ -251,6 +255,49 @@ class Bootstrap:
         self.cabin = cabin
         if not (root / "instances" / cabin / "seats").is_dir():
             return self.refuse("resolve", "cabin-no-seats", T("aib.newproj.boot_cabin_unresolved", {"cabin": cabin, "err": "seats/"}))
+        return None
+
+    def pick_brain(self) -> Optional[int]:
+        """--folder(11-01 Andy「直接接已有大腦,或綁目前第一席的第二大腦」):開席前就解析、驗契約,解不出來不開席。
+        寫法:路由代號 / 資料夾 / seat:<艙位碼>/<席碼>(跟那一席同一個大腦)/ new(照專案標題建新夾)。"""
+        import bind_one as BO  # noqa: E402
+        import brain_pick  # noqa: E402
+        want = str(getattr(self.args, "folder", "") or "").strip()
+        if not want:
+            return None
+        T = self.T
+        contract = BO.load_contract(BO.default_contract_spec())
+        if contract is None:
+            return self.refuse("resolve", "brain-no-contract", T("aib.newproj.no_folder_list"))
+        route, plan, err = brain_pick.resolve_pick(self.np, self.root, contract, want, self.uid)
+        if err or not route:
+            return self.refuse("resolve", "brain-unresolved", str(err or T("aib.newproj.folder_unknown", {"value": want})))
+        card_route = str((self.np.load_card(self.root, self.uid) or {}).get("route_key") or "")
+        if card_route and card_route != route:
+            # 卡已經記了別的大腦:換專案的大腦不在一步開席裡代做(跟 newproj --seat 同一條規則)
+            return self.refuse("resolve", "folder-mismatch", T("aib.newproj.folder_mismatch", {"key": card_route, "path": card_route, "value": route}))
+        if plan is None:
+            ok, code, detail = BO.check_against_contract(route, contract)
+            if not ok:
+                return self.refuse("resolve", "brain-rejected", T("aib.newproj.folder_rejected", {"key": route, "code": code, "detail": detail}))
+        self.brain_route, self.brain_plan = route, plan
+        return None
+
+    def make_brain(self) -> Optional[int]:
+        """--folder new 的建夾(folder-add --route-key + reindex)。席開好、綁人格之前做;建過的(重跑)resolve 那步就直接接了。"""
+        if not self.brain_plan:
+            return None
+        import brain_pick  # noqa: E402
+        c = self.brain_plan["create"]
+        if self.args.dry_run:
+            self.say(self.T("aib.newproj.brain_new_dry", {"title": c["title"], "key": c["route_key"]}))
+            return None
+        try:
+            brain_pick.create_new(self.brain_plan)
+        except (SystemExit, OSError, ValueError, KeyError) as exc:
+            return self.refuse("persona", "brain-create-failed", self.T("aib.newproj.brain_new_failed", {"title": c["title"], "err": exc}))
+        self.say(self.T("aib.newproj.brain_new_made", {"title": c["title"], "key": c["route_key"]}))
+        self.brain_plan = None
         return None
 
     def confirm(self) -> Optional[int]:
@@ -321,7 +368,7 @@ class Bootstrap:
         if bound:
             # 換人格是敏感動作,一步到位不代勞;要換走 newrole --rebind
             return self.refuse("persona", "persona-differs", T("aib.newproj.boot_persona_differs", {"seat": self.seat_addr(), "bound": bound, "card": self.card}))
-        route = str((self.np.load_card(root, self.uid) or {}).get("route_key") or "")
+        route = self.brain_route or str((self.np.load_card(root, self.uid) or {}).get("route_key") or "")
         try:
             plan = BO.bind_seat(root, self.seat_id, self.card, BO.actor_of(self.sig), brain=route or None,
                                 contract_spec=BO.default_contract_spec())
@@ -345,7 +392,7 @@ class Bootstrap:
         a = self.args
         ns = argparse.Namespace(**vars(a))
         ns.seat, ns.new_seat, ns.persona_card, ns.cabin, ns.confirm = self.seat_id, False, "", "", ""
-        ns.title, ns.folder, ns.persona_uid, ns.unbind = "", "", "", False
+        ns.title, ns.folder, ns.persona_uid, ns.unbind = "", self.brain_route or "", "", False   # 有 --folder ⇒ newproj 補記卡的 route_key
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = self.np.run_newproj(ns)
@@ -372,9 +419,14 @@ class Bootstrap:
             if rc is not None:
                 return rc
             if self.args.dry_run:
+                self.make_brain()
                 print(json.dumps({"ok": True, "dry_run": True, "stage": "resolve", "seat": None, "cabin": self.cabin, "role": self.role,
-                                  "persona_card": self.card, "project_uid": self.uid, "approved": False}, ensure_ascii=False, sort_keys=True))
+                                  "persona_card": self.card, "project_uid": self.uid, "route_key": self.brain_route or None,
+                                  "brain_new": bool(self.brain_plan), "approved": False}, ensure_ascii=False, sort_keys=True))
                 return 0
+        rc = self.make_brain()
+        if rc is not None:
+            return rc
         rc = self.persona()
         if rc is not None:
             return rc
