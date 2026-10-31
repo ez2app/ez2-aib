@@ -70,13 +70,21 @@ def _note_stats(vault: Optional[str], folder: str, budget: Optional[dict] = None
     base = Path(vault) / folder
     if not base.is_dir():
         return {"notes": None, "updated_epoch": None, "notes_capped": False}
-    n, latest, stack = 0, 0.0, [str(base)]
+    if budget["left"] <= 0 or time.monotonic() > budget["deadline"]:     # r2 M5:預算已用完 ⇒ 不開這條,照實說沒量
+        return {"notes": None, "updated_epoch": None, "notes_capped": True}
+    n, latest, stack, first = 0, 0.0, [str(base)], True
     while stack:
         d = stack.pop()
+        budget["left"] -= 1                         # 開目錄本身也扣(一堆空目錄也拖不住)
+        if budget["left"] < 0 or time.monotonic() > budget["deadline"]:
+            return {"notes": n, "updated_epoch": int(latest) or None, "notes_capped": True}
         try:
             it = os.scandir(d)
         except OSError:
+            if first:                               # 根目錄就開不了 ⇒ 量不到(None),不是 0
+                return {"notes": None, "updated_epoch": None, "notes_capped": False}
             continue
+        first = False
         with it:
             for e in it:
                 budget["left"] -= 1
@@ -119,7 +127,8 @@ def list_brains(contract: Any, vault: Optional[str] = None, stats: bool = True) 
             real = R.resolve_route_folder(key, contract=contract, root=vault) if vault else None
         except Exception:  # noqa: BLE001
             real = None
-        folder = real or literal
+        uid = _uid_layout(vault)
+        folder = real or ("" if uid else literal)    # r2 L6:uid 版面查不到索引 ⇒ 不給舊字面路徑(消費端會當真落點)
         try:
             label = R.route_label(key, root=vault, contract=contract) if vault else ""
         except Exception:  # noqa: BLE001
@@ -128,7 +137,7 @@ def list_brains(contract: Any, vault: Optional[str] = None, stats: bool = True) 
                  or literal.rstrip("/").split("/")[-1] or key)
         item = {"route_key": key, "title": title, "folder": folder, "source": r.get("source") or "contract"}
         if stats:
-            item.update(_note_stats(vault, folder if real or not _uid_layout(vault) else "", budget))
+            item.update(_note_stats(vault, folder, budget))
         out.append(item)
     return sorted(out, key=lambda x: (x["source"] != "vault", x["title"]))
 
@@ -167,6 +176,7 @@ def seat_brains(root: Path, cabin: str = "") -> list:
         if not sdir.is_dir():
             continue
         rows = []
+        fleets = {}
         for f in sorted(sdir.glob("w*.json")):
             try:
                 rec = json.loads(f.read_text(encoding="utf-8"))
@@ -188,15 +198,36 @@ def seat_brains(root: Path, cabin: str = "") -> list:
                 started = float(rec.get("started_epoch") or 0) or 9999999999.0
             except (TypeError, ValueError):
                 started = 9999999999.0
+            fleet = str(rec.get("fleet_id") or rec.get("provider") or "1")
             rows.append(({"seat": "%s/%s" % (cab_code, code), "seat_id": rec["seat_id"], "cabin": cab,
                           "window": rec.get("window_id"), "role": rec.get("role"), "captain": bool(captain), "crown": False,
                           "project_uid": rec.get("project_uid"), "brain_route_key": route},
                          (not assigned, started), _crownable(SS, rec, f.name)))
-        caps = sorted((r for r in rows if r[0]["captain"] and r[2]), key=lambda r: r[1])
-        if caps:
-            caps[0][0]["crown"] = True
+            fleets[id(rows[-1])] = fleet
+        # r2 M7:跟右欄一樣先分艦隊、照組序找第一個有可戴冠艦長的組,組內受派優先、其次開席早
+        for fl in sorted({fleets[id(r)] for r in rows}, key=_fleet_key):
+            caps = sorted((r for r in rows if fleets[id(r)] == fl and r[0]["captain"] and r[2]), key=lambda r: r[1])
+            if caps:
+                caps[0][0]["crown"] = True
+                break
         out.extend(sorted((r[0] for r in rows), key=lambda x: not x["crown"]))
     return out
+
+
+#: 右欄組序用的引擎序預設(pane-right-ai.sh _eng_order;EZ2_AIB_ENGINE_ORDER 可覆寫)
+ENGINE_ORDER = ("claude codex agy copilot grok deepseek nvidia openrouter typesafe openrouterjev grokbot codexbot "
+                "claudebot musebot")
+
+
+def _fleet_key(k: str) -> tuple:
+    """右欄 _grp_key 同一條:EZ2_AIB_FLEET_ORDER > 純數字艦隊(數值序)> 引擎序 > 其餘按名。"""
+    order = (os.environ.get("EZ2_AIB_FLEET_ORDER") or "").split()
+    eng = (os.environ.get("EZ2_AIB_ENGINE_ORDER") or ENGINE_ORDER).split()
+    if k in order:
+        return (0, order.index(k), "")
+    if k.isdigit():
+        return (1, int(k), "")
+    return (2, eng.index(k) if k in eng else len(eng), k)
 
 
 def _crownable(SS, rec: dict, base: str) -> bool:
@@ -286,24 +317,18 @@ class ReindexWarning(Exception):
 
 
 def create_new(plan: dict) -> dict:
-    """照 resolve_pick 給的 plan 建夾 + reindex。整段握 Vault 的 folder-add 鎖(flock;#469 r1 M4),兩個專案同時建
-    不會互蓋索引。folder_add 失敗丟 SystemExit / OSError;reindex 失敗丟 ReindexWarning(夾已在)。"""
-    import fcntl
+    """照 resolve_pick 給的 plan 建夾 + reindex。整段握 Vault 的寫入鎖(vault_cli._locked;#469 r1/r2 M4),兩個專案同時建
+    不會互蓋索引(鎖跟 aib vault 寫入端共用)。folder_add 失敗丟 SystemExit / OSError;reindex 失敗丟 ReindexWarning(夾已在)。"""
     import uid_layout_convert as U
+    import vault_cli as VC
     c = plan["create"]
     vault = Path(c["vault"])
-    lock_dir = vault / ".ez2" / "locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    with open(lock_dir / "folder-add.lock", "a+") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with VC._locked(vault):                         # r2 M4:跟 aib vault mkdir / newpost / doctor --fix 同一把 .ez2/.write.lock
+        res = U.folder_add(vault, c["parent"], c["title"], False, c["route_key"])
         try:
-            res = U.folder_add(vault, c["parent"], c["title"], False, c["route_key"])
-            try:
-                U.reindex(vault)
-            except (SystemExit, OSError, ValueError) as exc:
-                raise ReindexWarning(str(getattr(exc, "code", None) or exc)) from exc
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            U.reindex(vault)
+        except (SystemExit, OSError, ValueError) as exc:
+            raise ReindexWarning(str(getattr(exc, "code", None) or exc)) from exc
     return res
 
 

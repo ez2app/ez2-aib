@@ -17,6 +17,8 @@ F7(r1 H1)--folder new 的上層路由 AI 不可寫 ⇒ 開席前擋、不建夾
 F8(r1 M2/M3)標題建不了夾(. 開頭 / 帶 /)⇒ 開席前擋;建夾失敗 ⇒ next 帶 --folder new;reindex 失敗只提醒、照常綁完
 F9(r1 M5/M7)掃描總預算用完標 notes_capped;🤖 橋接席 / uuid 形狀不對的 root 不戴冠
 (r1 M6 併在 F5:uid 版面數索引真路徑,不數契約字面的舊夾)
+F9 續(r2 M5/M7/L6)空目錄也扣預算、用完後回 None+capped;跨艦隊時冠給第一艦隊;uid 查不到索引 folder 給空
+F10(r2 M4)建夾握 aib vault 寫入端同一把 .ez2/.write.lock;刀 X6 拿掉 ⇒ F10 紅
 刀(複本,走 run_guarded):X1 解出的路由沒記下 ⇒ F1 紅;X2 拿掉 mismatch 擋 ⇒ F4 紅;X3 不建新夾 ⇒ F3 紅;
    X4 拿掉上層路由檢查 ⇒ F7 紅;X5 續做那一行不帶 --folder ⇒ F8 紅
 """
@@ -207,7 +209,8 @@ class Folder(FolderBase):
         self.assertEqual(out["seats"][0]["seat_id"], "e9f8a", "戴冠的排最前")
         # 第二個 root 開得比較晚:也是 captain,但不戴冠;受派(captain_assigned)的贏過開席早的
         late = {"seat_id": "f0f0f", "session_uuid": str(uuid.uuid4()), "role": "root", "cabin_id": BB.CABIN,
-                "window_id": "@8", "started_epoch": 2000000000, "schema": SEAT_SCHEMA}
+                "window_id": "@8", "started_epoch": 2000000000, "schema": SEAT_SCHEMA,
+                "provider": "claude"}
         (self.seats / "w8.json").write_text(json.dumps(late), encoding="utf-8")
         old = json.loads((self.seats / "w1.json").read_text(encoding="utf-8"))
         old["started_epoch"] = 1000000000
@@ -277,6 +280,42 @@ class Folder(FolderBase):
         self.other_seat()
         rc, out, _ = self.run_np("--list-brains", "--cabin", BB.CABIN)
         self.assertEqual([s["seat_id"] for s in out["seats"] if s["crown"]], ["e9f8a"], out["seats"])
+        # r2 M7:第二艦隊的 root 開得更早,冠仍給第一艦隊(右欄組序:純數字艦隊數值序)
+        early = {"seat_id": "d0d0d", "session_uuid": str(uuid.uuid4()), "role": "root", "cabin_id": BB.CABIN, "window_id": "@6",
+                 "provider": "claude", "fleet_id": "2", "started_epoch": 5, "schema": SEAT_SCHEMA}
+        (self.seats / "w6.json").write_text(json.dumps(early), encoding="utf-8")
+        rec1 = json.loads((self.seats / "w1.json").read_text(encoding="utf-8"))
+        rec1.update({"fleet_id": "1", "started_epoch": 50})
+        (self.seats / "w1.json").write_text(json.dumps(rec1), encoding="utf-8")
+        rc, out, _ = self.run_np("--list-brains", "--cabin", BB.CABIN)
+        self.assertEqual([s["seat_id"] for s in out["seats"] if s["crown"]], ["e9f8a"], "第一艦隊優先(同右欄 _grp_key)")
+        # r2 M5:一堆空目錄也受預算管;用完之後的路由回 notes=None、capped,不是 0
+        for i in range(40):
+            (self.vault / CGROUP / REFINE / ("empty%02d" % i)).mkdir()
+        with mock.patch.object(brain_pick, "NOTE_SCAN_MAX", 20):
+            rc, out, _ = self.run_np("--list-brains")
+        by = {b["route_key"]: b for b in out["brains"]}
+        self.assertTrue(by["core.refine"]["notes_capped"], by["core.refine"])
+        with mock.patch.object(brain_pick, "NOTE_SCAN_MAX", 1):     # 第一條就用完 ⇒ 後面的 core.refine 不開
+            rc, out, _ = self.run_np("--list-brains")
+        by = {b["route_key"]: b for b in out["brains"]}
+        self.assertEqual((by["core.refine"]["notes"], by["core.refine"]["notes_capped"]), (None, True),
+                         "預算用完後的路由照實回 None + capped,不是 0")
+        # r2 L6:uid 版面查不到索引的契約路由不給舊字面路徑
+        self.assertEqual(by["core.handoff"]["folder"], "", by["core.handoff"])
+
+    def test_f10_create_uses_vault_write_lock(self):
+        import vault_cli as VC  # noqa: E402
+        calls = []
+        real = VC._locked
+
+        def spy(v):
+            calls.append(str(v))
+            return real(v)
+        with mock.patch.object(VC, "_locked", side_effect=spy):
+            rc, out, text = self.page_boot("--folder", "new")
+        self.assertEqual((rc, out["stage"]), (0, "done"), text)
+        self.assertEqual(len(calls), 1, "建夾要握 aib vault 寫入端同一把鎖")
 
     def test_f6_i18n(self):
         cjk = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
@@ -319,6 +358,10 @@ class Knife(unittest.TestCase):
     def test_x5_next_cmd_drops_folder(self):
         self._knife("        if want:                                   # #469 r1 M3", "        if False:                                   # #469 r1 M3",
                     "Folder.test_f8_new_bad_title_and_failures", "--folder new")
+
+    def test_x6_vault_lock_dropped(self):
+        self._knife_mod("tools/project/brain_pick.py", "    with VC._locked(vault):", "    if True:",
+                        "Folder.test_f10_create_uses_vault_write_lock", "同一把鎖")
 
     def test_x3_new_folder_not_created(self):
         self._knife("            brain_pick.create_new(self.brain_plan)\n", "            pass\n", "Folder.test_f3_new_brain", "Folder.test_f3_new_brain")
