@@ -11,6 +11,7 @@ C4 純確認:引用本席真的寄給對方的 q_ id、短、沒請 / 要 / 問�
 C5 共同門檻:長訊信封(要讀 RELAY 全文)/ 真人寄的 / 禁字(Andy、准、High、可合、正式站、簽章…)⇒ 新四類一律不收
 C6 PR 網址要同主題:信裡沒提到那張 PR ⇒ pr-off-topic(PR 網址存在 ≠ 內容滿足);提到 #號 或網址 ⇒ 照 gh 查
 C7 自己指自己、格式不對 ⇒ 不收
+Knife(最後):A1–A17 每個守衛一刀;單跑 python3 -B tests/<本檔> Knife
 C8 整條 apply:新四類照常逐條驗;只擬不結時一封都不改;自報過期的信 plan 已排除(not-allowed)
 C9 只擬不結一輪 ⇒ 寫通知 + 建議 .json;下一回合 hook 注入一行、只注入一次;沒建議就不寫
 C10 triage-apply:不帶 --yes 只預覽;--yes 逐條重驗才結;建議檔席碼不對 / 修訂號變了 / 現在驗不過 ⇒ 不結
@@ -22,6 +23,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+ROOT = HERE.parent
+from aib_knife_copy import knife_copy  # noqa: E402
+from aib_proc_guard import run_guarded  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("dmhold_fixture", HERE / "test-dm-hold-notify-abb89-1015.py")
 HN = importlib.util.module_from_spec(_spec)
@@ -272,6 +276,62 @@ class C10TriageApply(unittest.TestCase):
         self.assertEqual(out["again"][0][0], False, "已結的不再結:%r" % out)
         self.assertEqual(out["revchg"], [[False, "rev-changed"]], out)
         self.assertEqual(out["bad"], "unreadable", out)
+
+
+KNIVES = [
+    ('A1', 'src/cockpit/dm_triage_headless.py', '    if other.get("status") not in ("done", "archived"):\n        return False, "dup-not-closed"',
+     '    if False:\n        return False, "dup-not-closed"', 'C1Dup.test_dup'),
+    ('A2', 'src/cockpit/dm_triage_headless.py', '        if int(other.get("ts") or 0) > int(item.get("ts") or 0):\n            return False, "dup-newer"',
+     '        if False:\n            return False, "dup-newer"', 'C1Dup.test_dup'),
+    ('A3', 'src/cockpit/dm_triage_headless.py', '    return (True, "dup") if a and a == b else (False, "dup-differs")',
+     '    return (True, "dup")', 'C1Dup.test_dup'),
+    ('A4', 'src/cockpit/dm_triage_headless.py', '    if not th or other.get("thread") != th:',
+     '    if False:', 'C2Superseded.test_superseded'),
+    ('A5', 'src/cockpit/dm_triage_headless.py', '    if not item.get("sender_seat") or other.get("sender_seat") != item.get("sender_seat"):',
+     '    if False:', 'C2Superseded.test_superseded'),
+    ('A6', 'src/cockpit/dm_triage_headless.py', '    if not sent or sent.get("sender_seat") != seat:',
+     '    if not sent:', 'C4Ack.test_ack'),
+    ('A7', 'src/cockpit/dm_triage_headless.py', '    if len(text or "") > ACK_MAX or _ACK_BAD_RE.search(text or ""):',
+     '    if False:', 'C4Ack.test_ack'),
+    ('A8', 'src/cockpit/dm_triage_headless.py', '    if DR.relay_path_of(msg):\n        return False, "long-relay"',
+     '    if False:\n        return False, "long-relay"', 'C5Never.test_gates'),
+    ('A9', 'src/cockpit/dm_triage_headless.py', '    if item.get("sender_kind") == "human" or item.get("status") == Q.HOLD_STATUS:',
+     '    if False:', 'C5Never.test_gates'),
+    ('A10', 'src/cockpit/dm_triage_headless.py', '    if _NEVER_RE.search(text or msg):',
+     '    if False:', 'C5Never.test_gates'),
+    ('A11', 'src/cockpit/dm_triage_headless.py', '        os.replace(p, taken)\n',
+     '        __import__("shutil").copy(p, taken)\n', 'C9Notice.test_dry_round_notice_once'),
+    ('A12', 'src/cockpit/dm_triage_headless.py', '    if rec.get("seat") != seat:\n        return {"ok": False, "reason": "seat-mismatch"}',
+     '    if False:\n        return {"ok": False, "reason": "seat-mismatch"}', 'C10TriageApply.test_apply_cli'),
+    ('A13', 'src/cockpit/dm_triage_headless.py', 'revs=revs or None, dry=not yes',
+     'revs=None, dry=not yes', 'C10TriageApply.test_apply_cli'),
+    ('A14', 'src/cockpit/dm_triage_headless.py', 'revs=revs or None, dry=not yes',
+     'revs=revs or None, dry=False', 'C10TriageApply.test_apply_cli'),
+    ('A15', 'src/cockpit/dm_triage_headless.py', '    if not rows:\n        return None\n    if dry:',
+     '    if False:\n        return None\n    if dry:', 'C9Notice.test_nothing_to_suggest_no_notice'),
+    ('A16', 'src/cockpit/dm_triage_headless.py', '        if item is not None and not _mentions_pr(text, ev, m.group(1)):',
+     '        if False:', 'C6PrTopic.test_pr_topic'),
+    ('A17', 'src/cockpit/dm_triage_headless.py', '(?<![0-9])#%s(?![0-9])',
+     '(?<![0-9])#%s', 'C6PrTopic.test_pr_topic'),
+]
+
+
+class Knife(unittest.TestCase):
+    """每個守衛一刀,落在樹的複本(knife_copy)、看門狗跑(run_guarded),只跑目標格,要那一格 FAIL(ERROR 不算)。
+    單跑:python3 -B tests/test-dm-triage-autoclose-04ea0-1031.py Knife"""
+    def test_knives(self):
+        name = Path(__file__).name
+        for tag, rel, needle, repl, target in KNIVES:
+            with self.subTest(tag):
+                with knife_copy(ROOT, rel, needle, repl, tests=(name, "test-dm-hold-notify-abb89-1015.py",
+                                                                "test-dm-reliability-abb89-1015.py")) as root:
+                    r = run_guarded([sys.executable, "-B", str(root / "tests" / name), target], cwd=str(root),
+                                    max_procs=60, timeout=300)
+                self.assertIsNone(r.tripped, "刀測自己失控了:%s(峰值 %d)" % (r.tripped, r.peak))
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, "%s 沒砍出紅\n%s" % (tag, out))
+                self.assertIn("FAIL: " + target.split(".")[-1], out, "%s 紅的不是目標斷言\n%s" % (tag, out))
+                self.assertNotIn("ERROR: ", out, "%s 是炸掉不是斷言紅\n%s" % (tag, out))
 
 
 if __name__ == "__main__":
