@@ -9,8 +9,9 @@ R1 最新收據不完整、前一張完整 ⇒ 本輪起點 = 前一張完整收
 R2 最新收據完整 ⇒ 起點 = 它(行為不變)
 R3 收據全都不完整 ⇒ 起點退回交接記的輪起點(rounds.jsonl)
 R4 收據之後做的整理仍算本輪;不完整收據之前做的整理也還算(不再被它推掉)
-U1 收集時列的未讀,寫第三步時已讀 / 已結 / 不見 ⇒ 不再要求第二段交代;還沒讀的照要求
-U2 讀佇列出錯 ⇒ 照收集時的清單要求(不放水)
+U1 收集時列的未讀,寫第三步時已讀 / 已結 / 已收 / 確定不見 ⇒ 不再要求第二段交代;還沒讀的照要求
+U2 讀佇列出錯 ⇒ 照收集時的清單要求(不放水);U2b 真的讀取器遇壞檔(吞錯回 json)⇒ 照要求
+U4 claimed / hold_human / 讀檔出錯 ⇒ 照要求(不代表讀過;#465 Codex r1 M2)
 U3 走 _incomplete:已讀那封不再列「沒交代」
 """
 import datetime
@@ -93,35 +94,60 @@ ITEMS = {
     "q_done00000000000b": {"status": "done", "read_at": T0},
     "q_live00000000000c": {"status": "delivered"},
     "q_queu00000000000d": {"status": "queued"},
+    "q_clai00000000000f": {"status": "claimed"},
+    "q_hold00000000000g": {"status": "hold_human"},
+    "q_arch00000000000h": {"status": "archived"},
 }
 
 
-def fake_load(seat, item_id, env=None, include_deleted=False):
-    return ITEMS.get(item_id)
+def fake_raw(seat, item_id, env=None):
+    if item_id == "q_badj00000000000i":
+        return None, "json"
+    it = ITEMS.get(item_id)
+    return (it, "ok") if it else (None, "missing")
 
 
 class Unread(Base):
+    def ids(self, got):
+        return [u["id"] for u in got["unread"]]
+
     def test_U1_handled_mail_not_required(self):
         import dm_queue
-        f = _facts("q_read00000000000a", "q_done00000000000b", "q_gone00000000000e",
+        f = _facts("q_read00000000000a", "q_done00000000000b", "q_gone00000000000e", "q_arch00000000000h",
                    "q_live00000000000c", "q_queu00000000000d")
-        with mock.patch.object(dm_queue, "_load_item", side_effect=fake_load):
+        with mock.patch.object(dm_queue, "_load_item_raw", side_effect=fake_raw):
             got = aib_handoff._unread_still_live(f)
-        self.assertEqual([u["id"] for u in got["unread"]], ["q_live00000000000c", "q_queu00000000000d"])
-        self.assertEqual(len(f["unread"]), 5)            # 原本的 facts 不改
+        self.assertEqual(self.ids(got), ["q_live00000000000c", "q_queu00000000000d"])
+        self.assertEqual(len(f["unread"]), 6)            # 原本的 facts 不改
 
     def test_U2_queue_error_keeps_list(self):
         import dm_queue
         f = _facts("q_read00000000000a", "q_live00000000000c")
-        with mock.patch.object(dm_queue, "_load_item", side_effect=OSError("boom")):
+        with mock.patch.object(dm_queue, "_load_item_raw", side_effect=OSError("boom")):
             got = aib_handoff._unread_still_live(f)
-        self.assertEqual([u["id"] for u in got["unread"]], ["q_read00000000000a", "q_live00000000000c"])
+        self.assertEqual(self.ids(got), ["q_read00000000000a", "q_live00000000000c"])
+
+    def test_U2b_real_reader_bad_file_kept(self):
+        import dm_queue
+        iid = "q_badf0000000000aa"
+        p = dm_queue.item_path(CODE, iid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{not json", encoding="utf-8")       # 真的讀取器會吞掉錯、回 (None, "json")
+        got = aib_handoff._unread_still_live(_facts(iid, "q_gone0000000000bb"))
+        self.assertEqual(self.ids(got), [iid], "壞檔 ≠ 不見;確定不存在的才拿掉")
+
+    def test_U4_claimed_and_hold_still_required(self):
+        import dm_queue
+        f = _facts("q_clai00000000000f", "q_hold00000000000g", "q_badj00000000000i")
+        with mock.patch.object(dm_queue, "_load_item_raw", side_effect=fake_raw):
+            got = aib_handoff._unread_still_live(f)
+        self.assertEqual(self.ids(got), ["q_clai00000000000f", "q_hold00000000000g", "q_badj00000000000i"])
 
     def test_U3_incomplete_skips_read_mail(self):
         import dm_queue
         f = _facts("q_read00000000000a", "q_live00000000000c")
         raw = {"s1": "", "s2": "", "s3": ""}
-        with mock.patch.object(dm_queue, "_load_item", side_effect=fake_load):
+        with mock.patch.object(dm_queue, "_load_item_raw", side_effect=fake_raw):
             out = aib_handoff._incomplete(raw, f, {"tidy": "ok"})
         joined = "\n".join(out)
         self.assertIn("q_live00000000000c", joined)

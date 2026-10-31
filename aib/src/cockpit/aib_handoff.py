@@ -1782,8 +1782,11 @@ def write(seat: dict, text: str, step: int | None, seat_arg: str = "", home=None
 
 
 def _unread_still_live(facts):
-    """收集時列的未讀,寫第三步這一刻已經讀過 / 結案 / 不見的就不再要求第二段交代(10-31 T15):
-    席位處理掉那封信本身就是交代。讀不到佇列 ⇒ 照收集時的清單要求(不放水)。回新的 facts(不改原本的)。"""
+    """收集時列的未讀,寫第三步這一刻**確定**已讀 / 已結 / 已收 / 已刪、或確定不存在的,不再要求第二段交代(10-31 T15):
+    席位處理掉那封信本身就是交代。其他一律照收集時的清單要求(不放水,#465 Codex r1):
+      - 讀檔出錯(壞 JSON / schema / id 不符)≠ 不見 ⇒ 照要求;只有讀取器明說 missing 才算不見
+      - claimed / hold_human / queued / delivered 都不代表讀過 ⇒ 照要求
+      - 整支出錯 ⇒ 原清單。回新的 facts(不改原本的)。"""
     code = ((facts.get("seat") or {}).get("code") or "")
     unread = facts.get("unread") or []
     if not code or not unread:
@@ -1792,14 +1795,19 @@ def _unread_still_live(facts):
         import dm_queue
         keep = []
         for u in unread:
-            it = dm_queue._load_item(code, str(u.get("id") or ""))
+            it, why = dm_queue._load_item_raw(code, str(u.get("id") or ""))
             if it is None:
+                if why != "missing":
+                    keep.append(u)
                 continue
-            if it.get("status") in ("delivered", "queued") and not it.get("read_at"):
+            if it.get("status") not in _UNREAD_HANDLED:
                 keep.append(u)
     except Exception:  # noqa: BLE001
         return facts
     return dict(facts, unread=keep)
+
+
+_UNREAD_HANDLED = ("read", "done", "archived", "deleted")
 
 
 def _incomplete(raw, facts, checks, warns=None):
