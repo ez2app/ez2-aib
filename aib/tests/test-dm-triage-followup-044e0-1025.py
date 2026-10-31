@@ -46,6 +46,7 @@ def tearDownModule():
 
 SETUP = (
     "Q.LOAD_FN = lambda: (0.0, 0.0, 0.0)\n"      # 叫醒有 load1 ≤ 12 這道閘;測試機忙不該讓斷言變
+    "Q.triage_auto_switch('off', env=env)\n"     # 10-31:本支測 off 那條(=原本的再叫 / stalled);draft 那條見 test-dm-triage-auto-04ea0-1031
     "def put(msg, now, seat=%r, provider='claude'):\n"
     "    return Q.record(seat, msg, '@77777', status='delivered', rc=0, env=env, now=now,\n"
     "                    sender_kind='ai', wid='@2', provider=provider, hub='aihub-t1')['id']\n"

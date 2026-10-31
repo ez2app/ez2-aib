@@ -2111,6 +2111,9 @@ def _triage_headless_auto(seat, rec, path, env, now, tabs):
             pairs.append((r.get("id"), r.get("rev")))
     key = H.batch_key(pairs)
     reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
+    if not reg_prov:                       # 登記表查不到 ⇒ 退回信上蓋的 provider(同叫醒那條的 probe)
+        first = next(iter((rec.get("unread_ids") or []) + (rec.get("inprog_ids") or [])), None)
+        reg_prov = ((_load_item(seat, str(first), env) or {}).get("provider") if first else None)
     brand = str(reg_prov or "")
     if _seat_long_work(seat, env, now):
         ok, why, next_at = False, "long-work", int(now) + 300
