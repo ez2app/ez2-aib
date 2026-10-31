@@ -18,6 +18,9 @@ B10 CLI 就緒(@abb89 10-26):installed / login / model 任一不過 ⇒ resolve 
 B11 沒有帳本(aib init 沒跑成的新會員,10-28 2F 驗收 G1)⇒ 開席時補建 ledger/(0700)+ 空帳本(0600),stage=done;試跑不建;目錄在、帳本檔不見 ⇒ 補檔;ledger 是檔案 ⇒ no-ledger、0 席
 刀 K4 改回「沒帳本就擋」⇒ B11 紅
 刀(複本):K1 拿掉 no_biometry 那道 ⇒ B6 紅;K2 拿掉散熱擋 ⇒ B7 紅
+B12 頁面路徑 --confirm touchid、有生物辨識(10-31 艦長室開新席契約 §5,@ee842):本人按取消 / 逾時 ⇒ ok:false、stage=resolve、
+    why=touchid_<原因>、approved=false、0 個席被開(頁面顯示「沒開成」);按過 ⇒ 才開席,開一次
+刀 K5 拿掉「沒按過就擋」⇒ B12 紅
 """
 import contextlib
 import importlib.util
@@ -228,6 +231,29 @@ class Boot(Sandbox):
         rc, out, _ = self.boot("--confirm", "faceid")
         self.assertEqual(out["why"], "bad-confirm")
 
+    def test_b12_page_path_touchid_cancel_opens_nothing(self):
+        import approve_gate as AG  # noqa: E402
+        import touchid_approve as TA  # noqa: E402
+        asked = []
+        with mock.patch.object(TA, "available", return_value=True), \
+             mock.patch.object(AG, "ask", side_effect=lambda r, root, **kw: asked.append(r) or {"ok": False, "why": "cancelled"}):
+            rc, out, _ = self.boot("--confirm", "touchid")
+        self.assertEqual(len(asked), 1, "Touch ID 要真的問一次")
+        self.assertEqual((out.get("ok"), out.get("stage"), out.get("why"), out.get("approved")), (False, "resolve", "touchid_cancelled", False), out)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(self.opened, [])
+        self.assertEqual(self.seat_files(), [], "取消 ⇒ 0 個席被開")
+        with mock.patch.object(TA, "available", return_value=True), \
+             mock.patch.object(AG, "ask", return_value={"ok": False, "why": "timeout"}):
+            rc, out, _ = self.boot("--confirm", "touchid")
+        self.assertEqual((out["stage"], out["why"]), ("resolve", "touchid_timeout"), out)
+        self.assertEqual(self.opened, [])
+        with mock.patch.object(TA, "available", return_value=True), \
+             mock.patch.object(AG, "ask", return_value={"ok": True}):
+            rc, out, _ = self.boot("--confirm", "touchid")
+        self.assertEqual((rc, out["ok"], out["stage"]), (0, True, "done"), out)
+        self.assertEqual(len(self.opened), 1, "按過才開,而且只開一席")
+
     def test_b7_heat_and_lock(self):
         with mock.patch.object(self.RH, "measure", return_value={"level": "hot", "cells": {"load1": {"state": "hot", "text": "load 30"}}}):
             rc, out, _ = self.boot()
@@ -340,6 +366,9 @@ class Knife(unittest.TestCase):
 
     def test_k4_ledger_autocreate_removed(self):
         self._knife("        if not self.np.ensure_ledger(root, create=not a.dry_run):", "        if not (root / \"ledger\").is_dir():", "Boot.test_b11_missing_ledger_is_created", "no-ledger")
+
+    def test_k5_touchid_refusal_ignored(self):
+        self._knife('        if not r.get("ok"):\n', "        if False:\n", "Boot.test_b12_page_path_touchid_cancel_opens_nothing", "touchid_cancelled")
 
     def test_k2_heat_gate_removed(self):
         self._knife('        if heat["block"]:\n', "        if False:\n", "Boot.test_b7_heat_and_lock", "heat-high")

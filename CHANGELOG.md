@@ -4,6 +4,14 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.65
+
+- **Messages sent while offline are no longer lost**: the chat receiver now opens its notification stream before subscribing, so messages the relay replays from storage (sent while this machine was offline) are delivered instead of silently dropped. It also no longer cancels a pending read every second, which could drop a message arriving at that moment. Phone pairing codes sent before the receiver was ready now arrive too.
+- **Screen-lock check reads the system log (auto-approve still off)**: grant validity now checks loginwindow lock / unlock events in the macOS unified log instead of the local lockwatch file. Queries are split and capped at 3 seconds; any failure or timeout counts as locked. Only verified macOS builds (currently 24G830) are trusted, others report `os_unverified`; log coverage counts only Default log events. `aib doctor` explains the state in four languages.
+- **`aib secret copy` / `aib secret paste`**: copy a vault secret to the clipboard (cleared after 30 seconds if still the same) or type it into a seat's prompt without pressing Enter. The vault read switch is checked first, then each use needs one Touch ID press; the value travels only through stdin, never argv or temp files, and the log records only the operation and result.
+- **Mission team feedback**: `task qa` checks the mission and the role before reading the receipt file; new `aib mission why <id> <task>` lists a task's event chain without dispatch codes; `--help` spells out the formats; time comes only from the system clock.
+- **Tests**: the share-revoke test waits for the audit entry instead of reading it once.
+
 ## 0.1.64
 
 - **Open seats with the dm review pane**: ending a seat-open command with `dm` (or `--dm`) opens the message review pane and remembers it machine-wide, so every new cabin opens with it; cabins a human explicitly turned off are not forced open. `--no-dm` / `off` only change the preference. Timeout messages are localised.
