@@ -2067,7 +2067,8 @@ def _triage_headless_maybe(seat, rec, path, env, now, probe):
         return False                       # 記不下來就不起(否則下一拍看不到起過,會一直起)
     if ok:
         try:
-            SPAWN_HEADLESS(seat, brand, env)
+            # #466 Codex r2 H1:這條(忙滿 30 分)也照 triage_auto 開關;draft ⇒ 只擬不結(子程序套用前還會再讀一次)
+            SPAWN_HEADLESS(seat, brand, env, draft=triage_auto_mode(seat, env)[0] == "draft")
         except OSError:
             return False
     return ok
@@ -2087,21 +2088,30 @@ def _proc_start(pid):
     return out or None
 
 
+class LongWorkUndetermined(RuntimeError):
+    """長工作判斷要用的檔在、但讀不到 / 壞了 / ps 量不到(#466 Codex r2 M4);守門收成 UNDETERMINED 放行留痕。"""
+
+
 def _seat_long_work(seat, env, now, proc_start=None, now_rec=None):
     """這一席正在長工作(推送 / 全套 / 換版 / 回滾)⇒ True。三件都要成立(#466 Codex r1 M3):
       1) 機器租約(host-lease.json 結構化欄位):owner == "@席碼"、同主機、沒過期、pid 活著且 pid_start 對得上
          (pid 會繞回;沒記 pid_start ⇒ 不算)。不拿 what 字串比(@34d15 10-31 21:45)。
       2) aib now 狀態是忙碌(busy)
       3) aib now 主項目含 LONG_WORK_WORDS 其中一個
-    owner / aib now 都是自報的,同帳號擋不住同帳號;這裡只用來「延後、不誤擋」,不是防線。量不到 ⇒ False。"""
+    owner / aib now 都是自報的,同帳號擋不住同帳號;這裡只用來「延後、不誤擋」,不是防線。
+    租約檔不存在 / 不是本席的 / pid 死了 ⇒ False;檔在卻讀不到、壞檔、ps 量不到、aib now 讀錯 ⇒ LongWorkUndetermined。"""
     e = _env(env)
     lp = (e.get("AIB_HOST_LEASE_FILE") or "").strip() or os.path.join(
         e.get("HOME") or os.path.expanduser("~"), ".ez2-aib", "state", "host-lease.json")   # 同 host_lease.lease_path
     try:
         lease = json.loads(Path(lp).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return False
-    if not isinstance(lease, dict) or lease.get("owner") != "@" + str(seat):
+    except (OSError, ValueError) as exc:
+        raise LongWorkUndetermined("lease:%s" % exc.__class__.__name__)
+    if not isinstance(lease, dict):
+        raise LongWorkUndetermined("lease:shape")
+    if lease.get("owner") != "@" + str(seat):
         return False
     try:
         import socket
@@ -2113,57 +2123,31 @@ def _seat_long_work(seat, env, now, proc_start=None, now_rec=None):
         if pid <= 0 or not lease.get("pid_start"):
             return False
         os.kill(pid, 0)
-    except (TypeError, ValueError, OSError):
-        return False
-    if (proc_start or _proc_start)(pid) != lease.get("pid_start"):
+    except ProcessLookupError:
+        return False                       # 持有的行程已經不在
+    except (TypeError, ValueError):
+        raise LongWorkUndetermined("lease:fields")
+    except OSError as exc:
+        raise LongWorkUndetermined("lease:pid:%s" % exc.__class__.__name__)
+    got = (proc_start or _proc_start)(pid)
+    if got is None:
+        raise LongWorkUndetermined("ps")
+    if got != lease.get("pid_start"):
         return False
     if now_rec is None:
         try:
-            import seat_now
-            now_rec = seat_now.read(str(seat), state_root=e.get("EZ2_AIB_STATE_ROOT") or None)
-        except Exception:  # noqa: BLE001
-            now_rec = None
+            import seat_now               # 不走 seat_now.read:它把讀錯吞成 None(#466 Codex r2 M4)
+            with open(os.path.join(seat_now.now_dir(e.get("EZ2_AIB_STATE_ROOT") or None), str(seat) + ".json"),
+                      encoding="utf-8") as fh:
+                now_rec = json.load(fh)
+        except FileNotFoundError:
+            return False                   # 沒跑過 aib now ⇒ 不知道在長工作
+        except Exception as exc:  # noqa: BLE001
+            raise LongWorkUndetermined("now:%s" % exc.__class__.__name__)
     if not isinstance(now_rec, dict) or now_rec.get("idle") or (now_rec.get("state") or "busy") != "busy":
         return False                       # 沒寫 state 的舊紀錄 = busy(同 seat_now 讀端)
     item = str(now_rec.get("item") or "").lower()
     return any(w.lower() in item for w in LONG_WORK_WORDS)
-
-
-def _triage_headless_auto(seat, rec, path, env, now, tabs):
-    """必定觸發那條:判起不起(H.should_start_auto),起了就原子登記狀態再 spawn(draft)。
-    回這一拍的原因字串(headless-started / headless-deferred:<why>);None = 這條不適用(交回原本流程)。"""
-    import dm_triage_headless as H
-    pairs = []
-    for r in (tabs.get("waiting", {}).get("rows") or []) + (tabs.get("read", {}).get("rows") or []):
-        if str(r.get("id")) in set(str(i) for i in (rec.get("unread_ids") or []) + (rec.get("inprog_ids") or [])):
-            pairs.append((r.get("id"), r.get("rev")))
-    key = H.batch_key(pairs)
-    reg_prov = next((r[1] for r in _seat_records_all_cabins(seat, env) if r[1]), None)
-    if not reg_prov:                       # 登記表查不到 ⇒ 退回信上蓋的 provider(同叫醒那條的 probe)
-        first = next(iter((rec.get("unread_ids") or []) + (rec.get("inprog_ids") or [])), None)
-        reg_prov = ((_load_item(seat, str(first), env) or {}).get("provider") if first else None)
-    brand = str(reg_prov or "")
-    if _seat_long_work(seat, env, now):
-        ok, why, next_at = False, "long-work", int(now) + 300
-    else:
-        ok, why, next_at = H.should_start_auto(rec, now, _triage_lock(seat, env), _load1(), brand, _triage_mode(brand),
-                                               key, H.live_headless_count(env, now))
-    rec = dict(rec)
-    if ok:
-        rec.update({"headless_at": now, "headless_key": key,
-                    "headless_log": H._hour_log(rec, now) + [now],
-                    "headless": {"state": "started", "why": "auto", "at": now, "batch_key": key, "draft": True}})
-    else:
-        rec["headless"] = {"state": "deferred", "why": why, "at": now, "next_at": next_at, "batch_key": key}
-    if not TR.write(path, rec):
-        return "headless-deferred:state-unwritable"   # 記不下來就不起(否則下一拍看不到起過,會一直起)
-    if not ok:
-        return "headless-deferred:%s" % why
-    try:
-        SPAWN_HEADLESS(seat, brand, env, draft=True)
-    except OSError:
-        return "headless-deferred:spawn-failed"
-    return "headless-started"
 
 
 def _triage_lock(seat, env=None):
@@ -2261,13 +2245,6 @@ def _triage_seat(seat, env, now, hold_fn, deliver_fn=None):
             else:
                 rec.pop("stalled_at", None)
             TR.write(path, rec)
-        # 10-31 必定觸發(SPEC v2 §2.1):叫過、ACK 過了、本席沒動作(rewake / triage-stalled)⇒ 不再只是再叫,
-        #   起背景整理(只擬不結);起不了的寫明 deferred + 下次時間。triage_auto=off ⇒ 走原本那條。
-        import dm_triage_headless as H
-        if why in H.AUTO_REASONS and triage_auto_mode(seat, env)[0] != "off":
-            auto = _triage_headless_auto(seat, rec, path, env, now, tabs)
-            if auto is not None:
-                return {"seat": seat, "batch": rec.get("batch"), "woke": False, "why": auto, "cleaned": cleaned}
     if not normal:
         if why in ("under-threshold", "all-handled") and rec.get("busy_since") is not None:
             rec = dict(rec)

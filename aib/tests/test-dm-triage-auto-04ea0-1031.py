@@ -5,19 +5,20 @@
 起背景行程一律注入假的,不起真 AI、不連網、不碰 ~/.ez2-aib。
 
 A1 開關:預設 draft;off / draft / default 可切;on 這一版不收(切不進去、檔裡寫 on 也當沒有)
-S1 should_start_auto:可起 / 子代理登記中 / load 高(帶下次時間)/ 引擎不支援(grok、digest)/ 同批 / 每小時 2 次 / 全機 2 個
-S2 batch_key:順序無關;rev 變 = 新鍵(T7 零結案不重起要有新信)
-S3 全機計數只算 headless 登記且沒過期的
-T1 整拍:叫醒 → ACK 過了沒人接 ⇒ 起背景整理(draft=True)一次,不再塞「再叫一次」;同批不再起(T9 一次)
-T6 triage_auto=off ⇒ 走原本的再叫(不起背景整理)
-T11 起不了 ⇒ triage.json 記 deferred + 原因 + 下次時間
+(1a「叫醒沒人接 ⇒ 自動起背景整理」整段移到下一張(#466 Codex r2 拆張);這一張不起任何新的自動路徑。)
+H1 忙滿 30 分那條(0.1.62 既有)也照開關:draft ⇒ spawn 帶 draft;off ⇒ 不帶(舊行為)。
+   子程序套用前重讀開關:途中切成 draft ⇒ 只擬不結;以 draft 起、途中切 off ⇒ 這輪不套用(mode-off);讀不到 ⇒ 當 draft
 D1 只擬不結:apply(dry) 不改任何信,驗得過的標 would
 D2 席位 15 分內自己讀過的信不餵(T14)
 G1 守門放行:長工作(租約 pid_start + aib now 忙碌且主項目是長工作;pid 重用 / 缺 pid_start / 一般工作反例)/
    真人親打 10 分內(抬頭交 dm_header 判;別席 dm 引用艦長室字樣不算、艦長室網頁 / 真人抬頭算)/ 背景整理在跑;
    對話檔讀不到 = 判斷不了
 G3 同批限擋:含 rev;子集合 + 擋下後本席真的處理過才放;新信 / 新 rev / 自然過期 / 過 30 分照擋
+   「本席處理過」看 audit.jsonl:actor 正好 seat:<本席>、成功、轉到 read/done/archived、擋下之後、同一版
+   (背景整理 agent / system / human / 別席 / 舊版 / 擋下前 / 失敗的都不算;#466 Codex r2 M2)
 G2 判斷不了 ⇒ 放行留痕 FAILOPEN;triage_auto=off ⇒ 新放行條件全部不看
+G4 讀錯不吞(#466 Codex r2 M4):整理鎖 / 同批紀錄 / audit / 租約 / aib now 檔在卻讀不到或壞檔 ⇒ Undetermined
+   ⇒ check 放行留 FAILOPEN;檔不存在 = 正常(照常判)
 """
 import datetime
 import importlib.util
@@ -85,46 +86,6 @@ class A1Switch(Tmp):
         self.assertEqual(Q.triage_auto_mode("aaaaa", self.env), ("draft", "default"))
 
 
-class S1ShouldStart(unittest.TestCase):
-    def go(self, rec=None, lock=None, load1=0.0, brand="claude", mode="agent", key="k1", live=0):
-        return H.should_start_auto(rec or {}, NOW, lock, load1, brand, mode, key, live)
-
-    def test_reasons(self):
-        self.assertEqual(self.go()[:2], (True, "headless"))
-        self.assertEqual(self.go(lock={"by": "agent:x/sub", "at": NOW - 5, "until": NOW + 600})[1], "agent-working")
-        ok, why, nxt = self.go(load1=13.0)
-        self.assertEqual((ok, why, nxt), (False, "load-high", NOW + 60))
-        self.assertEqual(self.go(brand="grok")[1], "engine-unsupported")
-        self.assertEqual(self.go(mode="digest")[1], "engine-unsupported")
-        self.assertEqual(self.go(rec={"headless_key": "k1"})[1], "same-batch")
-        self.assertEqual(self.go(rec={"headless_key": "k0"})[1], "headless")
-        ok, why, nxt = self.go(rec={"headless_log": [NOW - 3000, NOW - 100]})
-        self.assertEqual((ok, why, nxt), (False, "per-hour-cap", NOW - 3000 + 3600))
-        self.assertEqual(self.go(rec={"headless_log": [NOW - 4000, NOW - 100]})[1], "headless")
-        self.assertEqual(self.go(live=2)[1], "global-cap")
-
-
-class S2Key(unittest.TestCase):
-    def test_order_and_rev(self):
-        a = H.batch_key([("q_1", 1), ("q_2", 3)])
-        self.assertEqual(a, H.batch_key([("q_2", 3), ("q_1", 1)]))
-        self.assertNotEqual(a, H.batch_key([("q_1", 2), ("q_2", 3)]))
-        self.assertNotEqual(a, H.batch_key([("q_1", 1), ("q_2", 3), ("q_3", 1)]))
-
-
-class S3Global(Tmp):
-    def test_counts_live_headless_only(self):
-        def lock(seat, by, until):
-            d = Q.seat_dir(seat, self.env)
-            d.mkdir(parents=True, exist_ok=True)
-            (d / Q.TRIAGE_AGENT_LOCK_FILE).write_text(json.dumps({"by": by, "until": until}), encoding="utf-8")
-        lock("aaaaa", "agent:aaaaa/headless-120000", NOW + 100)
-        lock("bbbbb", "agent:bbbbb/headless-120000", NOW - 1)
-        lock("ccccc", "agent:ccccc/sub", NOW + 100)
-        lock("ddddd", "agent:ddddd/headless-120100", NOW + 100)
-        self.assertEqual(H.live_headless_count(self.env, NOW), 2)
-
-
 SETUP = (
     "Q.LOAD_FN = lambda: (0.0, 0.0, 0.0)\n"
     "import dm_triage_headless as H\n"
@@ -147,43 +108,6 @@ SETUP = (
 
 def _whys(out):
     return [str((r or {}).get("why")) for r in (out or [])]
-
-
-class T1Tick(unittest.TestCase):
-    def test_no_pickup_starts_headless_draft_once(self):
-        out = HN.QBox(self).py(SETUP + (
-            "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
-            "r1 = tick(t + 10); w1 = tri().get('woke_at')\n"
-            "r2 = tick(t + 10 + A - 1)\n"
-            "r3 = tick(t + 10 + A + 1); n3 = len(spawned)\n"
-            "r4 = tick(t + 10 + A + 61); n4 = len(spawned)\n"
-            "print(json.dumps({'r': [[x.get('why') for x in (r or [])] for r in (r1, r2, r3, r4)],\n"
-            "                  'w1': w1, 'n': [n3, n4], 'sp': spawned, 'h': tri().get('headless')}))\n"))
-        self.assertIsNotNone(out["w1"], out)
-        self.assertIn("headless-started", out["r"][2], out)
-        self.assertEqual(out["n"], [1, 1], "ACK 過了起一次、同批不再起:%r" % out)
-        self.assertEqual(out["sp"][0], [SEAT, "claude", True], out)
-        self.assertEqual(out["h"]["state"], "deferred", out)          # 第二拍:同一批 ⇒ deferred same-batch
-        self.assertEqual(out["h"]["why"], "same-batch", out)
-
-    def test_off_keeps_rewake(self):
-        out = HN.QBox(self).py(SETUP + (
-            "Q.triage_auto_switch('off', env=env)\n"
-            "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
-            "tick(t + 10); r = tick(t + 10 + A + 1)\n"
-            "print(json.dumps({'r': [x.get('why') for x in (r or [])], 'sp': spawned}))\n"))
-        self.assertEqual(out["sp"], [], out)
-        self.assertNotIn("headless-started", out["r"], out)
-
-    def test_deferred_recorded(self):
-        out = HN.QBox(self).py(SETUP + (
-            "H.BRANDS = ('codex',)\n"                 # 這一席登記的是 claude;把可起的家縮掉 ⇒ engine-unsupported
-            "put('第一件:請看 PR 頁面上的說明', t); put('第二件:另一個題目要你決定', t)\n"
-            "tick(t + 10); r = tick(t + 10 + A + 1)\n"
-            "print(json.dumps({'r': [x.get('why') for x in (r or [])], 'sp': spawned, 'h': tri().get('headless')}))\n"))
-        self.assertEqual(out["sp"], [], out)
-        self.assertIn("headless-deferred:engine-unsupported", out["r"], out)
-        self.assertEqual((out["h"]["state"], out["h"]["why"]), ("deferred", "engine-unsupported"), out)
 
 
 class D1Dry(unittest.TestCase):
@@ -214,6 +138,48 @@ class D2SeatRead(unittest.TestCase):
         self.assertFalse(H._seat_read_recent(dict(it, read_by="system"), NOW))
         self.assertFalse(H._seat_read_recent(dict(it, read_by="agent:aaaaa/headless-1"), NOW))
         self.assertFalse(H._seat_read_recent({}, NOW))
+
+
+class H1Mode(unittest.TestCase):
+    def test_busy_path_spawn_follows_switch(self):
+        out = HN.QBox(self).py(SETUP + (
+            "H.should_start = lambda *a, **k: (True, 'headless')\n"
+            "p = Q.triage_path(%r, env); p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "Q._triage_headless_maybe(%r, {}, p, env, t, {'provider': 'claude'})\n"
+            "Q.triage_auto_switch('off', env=env)\n"
+            "Q._triage_headless_maybe(%r, {}, p, env, t + 1, {'provider': 'claude'})\n"
+            "print(json.dumps(spawned))\n") % (SEAT, SEAT, SEAT))
+        self.assertEqual([x[2] for x in out], [True, False], "預設 draft ⇒ 帶 draft;off ⇒ 舊行為:%r" % out)
+
+    def test_run_rereads_switch_before_apply(self):
+        out = HN.QBox(self).py(SETUP + (
+            "M = 'https://github.com/ez2app/ez2-aib/pull/1'\n"
+            "def ask_switch(to):\n"
+            "    def ask(brand, prompt):\n"
+            "        Q.triage_auto_switch(to, env=env)\n"
+            "        ids = [i for i in __import__('re').findall(r'q_[0-9a-f]{16}', prompt)]\n"
+            "        return json.dumps([{'id': i, 'action': 'close', 'evidence': M} for i in dict.fromkeys(ids)]), 'ok'\n"
+            "    return ask\n"
+            "st = lambda i: (Q._load_item(%r, i, env) or {}).get('status')\n"
+            "Q.triage_auto_switch('off', env=env)\n"
+            "a = put('PR 合了 ' + M, t)\n"
+            "r1 = H.run(%r, 'claude', env=env, now=t + 100, ask=ask_switch('draft'), gh=lambda u: True)\n"
+            "s1 = st(a)\n"
+            "r2 = H.run(%r, 'claude', env=env, now=t + 200, ask=ask_switch('off'), gh=lambda u: True, dry=True)\n"
+            "s2 = st(a)\n"
+            "r3 = H.run(%r, 'claude', env=env, now=t + 300, ask=ask_switch('off'), gh=lambda u: True)\n"
+            "print(json.dumps({'r1': [r1.get('dry'), r1.get('reason')], 's1': s1, 'r2': r2.get('reason'), 's2': s2,\n"
+            "                  'r3': [r3.get('dry'), r3.get('reason')], 's3': st(a)}))\n") % (SEAT, SEAT, SEAT, SEAT))
+        self.assertEqual(out["r1"], [True, "ok"], "途中切 draft ⇒ 只擬不結:%r" % out)
+        self.assertEqual(out["s1"], "delivered", out)
+        self.assertEqual(out["r2"], "mode-off", "以 draft 起、途中切 off ⇒ 不套用:%r" % out)
+        self.assertEqual(out["s2"], "delivered", out)
+        self.assertEqual(out["r3"], [False, "ok"], out)
+        self.assertEqual(out["s3"], "done", "off 起、off 套 = 舊行為:%r" % out)
+
+    def test_mode_unreadable_is_draft(self):
+        with mock.patch.object(Q, "triage_auto_mode", side_effect=OSError("x")):
+            self.assertEqual(H._mode("aaaaa", None), "draft")
 
 
 def _transcript(path, entries):
@@ -318,21 +284,121 @@ class G3SameBatch(Tmp):
         got, m = self.rw(H3[1:], NOW + 60, True)
         self.assertEqual(got, "seat-working")
         self.assertIsNotNone(m.call_args, "要核對本席有沒有處理")
-        self.assertEqual(m.call_args[0][1:3], (["q_a"], NOW))
+        self.assertEqual(m.call_args[0][1:3], (["q_a@1"], NOW))
         self.assertIsNone(self.rw([H3[1], dict(H3[2], rev=3)], NOW + 60, True)[0], "剩下的有新 rev ⇒ 照擋")
         self.assertIsNone(self.rw(H3[1:] + [{"id": "q_d", "rev": 1}], NOW + 60, True)[0], "有新信 ⇒ 照擋")
         self.assertIsNone(self.rw(H3[1:], NOW + G.SAME_BATCH_S + 1, True)[0], "過了 30 分 ⇒ 照擋")
 
-    def test_handled_since_reads_items(self):
-        items = {"q_a": ({"status": "read", "read_at": NOW + 10, "read_by": "seat:aaaaa"}, "ok"),
-                 "q_b": ({"status": "read", "read_at": NOW - 10, "read_by": "seat:aaaaa"}, "ok"),
-                 "q_c": ({"status": "read", "read_at": NOW + 10, "read_by": "system"}, "ok"),
-                 "q_d": ({"status": "expired_now", "read_at": NOW + 10}, "ok"),
-                 "q_e": ({"status": "done", "read_at": NOW - 99, "done_at": NOW + 5, "read_by": "seat:aaaaa"}, "ok")}
-        with mock.patch.object(Q, "_load_item_raw", side_effect=lambda s, i, e=None: items.get(i, (None, "missing"))):
-            self.assertTrue(G._handled_since("aaaaa", ["q_a"], NOW, self.env))
-            self.assertFalse(G._handled_since("aaaaa", ["q_b", "q_c", "q_d", "q_x"], NOW, self.env))
-            self.assertTrue(G._handled_since("aaaaa", ["q_e"], NOW, self.env))
+    def test_handled_since_reads_audit(self):
+        d = Q.seat_dir("aaaaa", self.env)
+        d.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {"ts": NOW + 10, "id": "q_a", "to": "read", "actor": "seat:aaaaa", "ok": True, "rev": 1},
+            {"ts": NOW + 10, "id": "q_b", "to": "read", "actor": "agent:aaaaa/headless-1", "ok": True, "rev": 1},
+            {"ts": NOW + 10, "id": "q_c", "to": "read", "actor": "system", "ok": True, "rev": 1},
+            {"ts": NOW + 10, "id": "q_d", "to": "done", "actor": "human:hub", "ok": True, "rev": 1},
+            {"ts": NOW + 10, "id": "q_e", "to": "read", "ok": True, "rev": 1},
+            {"ts": NOW - 10, "id": "q_f", "to": "read", "actor": "seat:aaaaa", "ok": True, "rev": 1},
+            {"ts": NOW + 10, "id": "q_g", "to": "read", "actor": "seat:aaaaa", "ok": False, "rev": 1},
+            {"ts": NOW + 10, "id": "q_h", "to": "read", "actor": "seat:aaaaa", "ok": True, "rev": 1},
+            {"ts": NOW + 10, "id": "q_i", "to": "done", "actor": "seat:aaaaa", "ok": True, "rev": 1},
+            {"ts": NOW + 10, "id": "q_j", "to": "read", "actor": "seat:bbbbb", "ok": True, "rev": 1},
+        ]
+        (d / Q.AUDIT_FILE).write_text("半行壞掉的\n" + "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        hs = lambda *pairs: G._handled_since("aaaaa", list(pairs), NOW, self.env)  # noqa: E731
+        self.assertTrue(hs("q_a@1"))
+        for p in ("q_b@1", "q_c@1", "q_d@1", "q_e@1", "q_f@1", "q_g@1", "q_j@1", "q_x@1"):
+            self.assertFalse(hs(p), p)
+        self.assertFalse(hs("q_h@2"), "擋下時是 rev 2,本席讀的是 rev 1 ⇒ 不算")
+        self.assertTrue(hs("q_i@1"))
+        self.assertTrue(hs("q_b@1", "q_a@1"), "任一封本席處理過就算")
+        (d / Q.AUDIT_FILE).unlink()
+        self.assertFalse(hs("q_a@1"), "沒有 audit = 沒處理過")
+
+
+class G4ReadErrors(Tmp):
+    def d(self):
+        d = Q.seat_dir("aaaaa", self.env)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def rw(self, **kw):
+        kw.setdefault("long_work", False)
+        return G.release_why("aaaaa", HITS3, NOW, env=self.env, **kw)
+
+    def test_lock_and_state_unreadable(self):
+        for name in (Q.TRIAGE_AGENT_LOCK_FILE, G.GATE_STATE_FILE):
+            with self.subTest(name=name):
+                p = self.d() / name
+                p.mkdir()                                     # 檔位上是目錄 ⇒ 讀取拋 IsADirectoryError
+                with self.assertRaises(G.Undetermined):
+                    self.rw()
+                p.rmdir()
+                p.write_text("{壞", encoding="utf-8")
+                with self.assertRaises(G.Undetermined):
+                    self.rw()
+                p.unlink()
+        self.assertIsNone(self.rw(), "都不存在 = 正常照判")
+
+    def test_lock_permission_error(self):
+        p = self.d() / Q.TRIAGE_AGENT_LOCK_FILE
+        p.write_text("{}", encoding="utf-8")
+        real = Path.read_text
+
+        def boom(self_, *a, **k):
+            if str(self_) == str(p):
+                raise PermissionError(13, "denied")
+            return real(self_, *a, **k)
+        with mock.patch.object(Path, "read_text", boom):
+            with self.assertRaises(G.Undetermined):
+                self.rw()
+
+    def test_audit_unreadable(self):
+        G._remember_block("aaaaa", H3, NOW, self.env)
+        (self.d() / Q.AUDIT_FILE).mkdir()
+        with self.assertRaises(G.Undetermined):
+            G.release_why("aaaaa", H3[1:], NOW + 60, env=self.env, long_work=False)
+
+    def lease(self, body):
+        Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(body, encoding="utf-8")
+
+    def test_long_work_unreadable(self):
+        good = json.dumps({"owner": "@aaaaa", "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600})
+        rec = {"item": "推送 #72", "state": "busy"}
+        lw = lambda **k: Q._seat_long_work("aaaaa", self.env, NOW, **k)  # noqa: E731
+        self.assertFalse(lw(proc_start=lambda p: LEASE_START, now_rec=rec), "沒有租約檔 = 沒長工作")
+        self.lease("{壞")
+        with self.assertRaises(Q.LongWorkUndetermined):
+            lw(proc_start=lambda p: LEASE_START, now_rec=rec)
+        self.lease("[]")
+        with self.assertRaises(Q.LongWorkUndetermined):
+            lw(proc_start=lambda p: LEASE_START, now_rec=rec)
+        self.lease(good)
+        with self.assertRaises(Q.LongWorkUndetermined):
+            lw(proc_start=lambda p: None, now_rec=rec)                     # ps 量不到
+        import seat_now
+        nd = Path(seat_now.now_dir(self.env["EZ2_AIB_STATE_ROOT"]))
+        nd.mkdir(parents=True, exist_ok=True)
+        self.assertFalse(lw(proc_start=lambda p: LEASE_START), "沒跑過 aib now = 不知道在長工作")
+        (nd / "aaaaa.json").write_text("{壞", encoding="utf-8")
+        with self.assertRaises(Q.LongWorkUndetermined):
+            lw(proc_start=lambda p: LEASE_START)
+        (nd / "aaaaa.json").write_text(json.dumps(rec), encoding="utf-8")
+        self.assertTrue(lw(proc_start=lambda p: LEASE_START))
+
+    def test_check_fails_open_on_undetermined(self):
+        rows = [{"id": "q_a", "status": "delivered", "sender_seat": "zzzzz", "ts": NOW - 600, "rev": 1}]
+        (self.d() / G.GATE_STATE_FILE).write_text("{壞", encoding="utf-8")
+        notes = []
+        payload = {"errors": [], "tabs": {"waiting": {"rows": rows}, "read": {"rows": []}}}
+        with mock.patch.object(Q, "tabs_payload", return_value=payload), \
+                mock.patch.object(Q, "_seat_long_work", return_value=False):
+            blk, _m = G.check("aaaaa", lambda key, **kw: key, notes.append, now=NOW, env=self.env)
+        self.assertFalse(blk)
+        self.assertTrue(any("FAILOPEN" in n and "json:" in n for n in notes), notes)
+
+
+HITS3 = [{"id": "q_a", "rev": 1}, {"id": "q_b", "rev": 1}]
 
 
 class G2Check(Tmp):

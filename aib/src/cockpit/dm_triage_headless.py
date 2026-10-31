@@ -40,11 +40,7 @@ DRAFT_MAX = 1500
 WHY_MAX = 200
 BRANDS = ("claude", "codex")      # @abb89 23:22 ②:沿用那一席的引擎;只認驗得了關工具的家,其他不起
 ACTIONS = ("close", "wait", "draft", "leave")
-# 10-31 必定觸發(SPEC-dm-triage-auto v2 §2):叫醒後 ACK 內沒人接 ⇒ 不再只是再叫,直接起背景整理(先只擬不結)
-HEADLESS_PER_HOUR = 2             # 每席每小時最多起幾次(另有 wake_log 的每日上限)
-HEADLESS_GLOBAL_MAX = 2           # 全機同時在跑的背景整理最多幾個(同「審查子代理最多 2 個」)
-SEAT_READ_SKIP_S = 15 * 60        # 席位自己 15 分鐘內讀過的信不餵(不跟席位搶)
-AUTO_REASONS = ("rewake", "triage-stalled")   # wake_decision 這兩種 = 叫過、ACK 過了、本席沒動作
+SEAT_READ_SKIP_S = 15 * 60        # 席位自己 15 分鐘內讀過的信不餵(不跟席位搶;SPEC-dm-triage-auto v2 §2.2)
 _PULL_RE = re.compile(r"https://github\.com/ez2app/[A-Za-z0-9_.-]+/pull/[0-9]{1,7}/?")
 
 PREAMBLE = """You are a mail-triage helper for one AI seat. You have no tools: you cannot run commands, read files, \
@@ -90,64 +86,6 @@ def should_start(rec, now, lock, load1, busy_since, brand, mode):
     except (TypeError, ValueError):
         pass
     return True, "headless"
-
-
-def batch_key(pairs):
-    """[(id, rev), …] ⇒ 去重鍵(順序無關)。同一批同版本只起一次;有新信或新版本 = 新鍵。"""
-    import hashlib
-    norm = sorted("%s@%s" % (str(i), str(r)) for i, r in pairs)
-    return hashlib.sha256("\n".join(norm).encode("utf-8")).hexdigest()[:16]
-
-
-def _hour_log(rec, now):
-    out = []
-    for t in (rec or {}).get("headless_log") or []:
-        try:
-            if 0 <= int(now) - int(t) < 3600:
-                out.append(int(t))
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
-def should_start_auto(rec, now, lock, load1, brand, mode, key, live_global, per_hour=HEADLESS_PER_HOUR):
-    """純函式 → (起?, 原因, 下次可試的時間 | None)。給「叫醒沒人接」那條用(不要求席位忙滿 30 分)。
-    原因:agent-working / load-high / engine-unsupported / same-batch / per-hour-cap / global-cap / headless。
-    不起的都是明確的 deferred(SPEC §2.4),呼叫端寫進 triage.json 的 headless 欄、留痕檔也看得到。"""
-    live, _at, _handled = TR._lock_view(lock, now)
-    if live:
-        return False, "agent-working", None
-    if load1 is not None and float(load1) > TR.TRIAGE_LOAD_MAX:
-        return False, "load-high", int(now) + 60
-    if mode == "digest" or brand not in BRANDS:
-        return False, "engine-unsupported", None
-    if key and (rec or {}).get("headless_key") == key:
-        return False, "same-batch", None
-    hour = _hour_log(rec, now)
-    if len(hour) >= int(per_hour):
-        return False, "per-hour-cap", min(hour) + 3600
-    if int(live_global) >= HEADLESS_GLOBAL_MAX:
-        return False, "global-cap", int(now) + 60
-    return True, "headless", None
-
-
-def live_headless_count(env=None, now=None):
-    """全機現在有幾個背景整理在跑:每席 triage-agent.json 由 headless 登記、還沒過期的。讀不到的不算。"""
-    now = int(time.time() if now is None else now)
-    n = 0
-    try:
-        root = Q.queue_root(env)
-        paths = list(root.glob("*/" + TA.AGENT_LOCK_FILE))
-    except OSError:
-        return 0
-    for p in paths:
-        try:
-            lk = json.loads(p.read_text(encoding="utf-8"))
-            if "/headless-" in str(lk.get("by") or "") and now < int(lk.get("until") or 0):
-                n += 1
-        except (OSError, ValueError, TypeError, AttributeError):
-            continue
-    return n
 
 
 def build_prompt(seat, rows, texts):
@@ -338,6 +276,14 @@ def _seat_read_recent(it, now):
         return False
 
 
+def _mode(seat, env):
+    """triage_auto 現在的值;讀不到當 draft(失效方向:只擬不結,不會多結)。"""
+    try:
+        return Q.triage_auto_mode(seat, env)[0]
+    except Exception:  # noqa: BLE001
+        return "draft"
+
+
 def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged, dry=False):
     """一輪:登記 → plan → 問 AI → 逐條驗套用(dry = 只擬不結)→ 寫整理檔 → 放鎖。回結果。"""
     now = int(time.time() if now is None else now)
@@ -363,6 +309,12 @@ def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged, dry=False):
         decisions = parse_decisions(text)
         if not decisions:
             return {"ok": False, "reason": "unparsable"}
+        # #466 Codex r2 H1:問 AI 要好幾分鐘,套用前重讀開關。現在是 draft ⇒ 一律只擬不結;
+        #   以 draft 起、途中被切 off ⇒ 這輪不套用(off 只還原舊行為給「之後」起的那幾輪,不追認這一輪)。
+        mode = _mode(seat, env)
+        if dry and mode == "off":
+            return {"ok": False, "reason": "mode-off"}
+        dry = bool(dry) or mode == "draft"
         results = apply(seat, decisions, actor, env=env, now=now, gh=gh, revs={r["id"]: r["rev"] for r in fed}, dry=dry)
         path = _write_report(seat, actor, decisions, results, env, now, brand, dry=dry)
         # ★ 審查 H1:只有 AI 真的回了、而且是餵進去的那幾封才算「看過」;失敗 / 讀不懂 / 沒餵到的不算

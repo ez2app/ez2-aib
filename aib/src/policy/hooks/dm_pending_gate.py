@@ -147,48 +147,91 @@ def last_human_at(transcript, size_max=TRANSCRIPT_TAIL_BYTES):
     return None
 
 
-def _headless_running(seat, env, now):
+class Undetermined(Exception):
+    """判斷要用的檔在、但讀不到 / 壞了(#466 Codex r2 M4)。release_why 往外拋,check 收成 UNDETERMINED 放行留痕。
+    只有「檔不存在」才當沒有(那是正常狀態)。"""
+
+
+def _read_json(path):
+    """不存在 ⇒ None;讀不到(權限 / I/O)或不是 JSON 物件 ⇒ Undetermined。"""
     import json
-    import dm_queue
     try:
-        lk = json.loads((dm_queue.seat_dir(seat, env) / dm_queue.TRIAGE_AGENT_LOCK_FILE).read_text(encoding="utf-8"))
-        return "/headless-" in str(lk.get("by") or "") and int(now) < int(lk.get("until") or 0)
-    except (OSError, ValueError, TypeError, AttributeError):
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise Undetermined("read:%s:%s" % (path.name, exc.__class__.__name__))
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        raise Undetermined("json:%s" % path.name)
+    if not isinstance(d, dict):
+        raise Undetermined("shape:%s" % path.name)
+    return d
+
+
+def _headless_running(seat, env, now):
+    import dm_queue
+    lk = _read_json(dm_queue.seat_dir(seat, env) / dm_queue.TRIAGE_AGENT_LOCK_FILE)
+    if lk is None:
         return False
+    try:
+        return "/headless-" in str(lk.get("by") or "") and int(now) < int(lk.get("until") or 0)
+    except (TypeError, ValueError):
+        raise Undetermined("shape:" + dm_queue.TRIAGE_AGENT_LOCK_FILE)
 
 
 def _gate_state(seat, env):
-    import json
     import dm_queue
     p = dm_queue.seat_dir(seat, env) / GATE_STATE_FILE
-    try:
-        d = json.loads(p.read_text(encoding="utf-8"))
-        return p, (d if isinstance(d, dict) else {})
-    except (OSError, ValueError):
-        return p, {}
+    d = _read_json(p)
+    return p, ({} if d is None else d)
 
 
 def _pairs(hits):
     return sorted("%s@%s" % (r.get("id"), r.get("rev")) for r in hits)
 
 
-def _handled_since(seat, ids, since, env):
-    """上次擋下之後,本席真的處理過其中任一封?(狀態 read / done / archived,而且讀 / 結的時刻在擋下之後,
-    不是系統代標的)。讀不到的那封不算處理過。"""
+AUDIT_TAIL_BYTES = 1024 * 1024       # 同批限擋只看 SAME_BATCH_S 內的動作,讀 audit 尾段就夠
+
+
+def _handled_since(seat, pairs, since, env):
+    """上次擋下之後,本席親手處理過其中任一封?(#466 Codex r2 M2)
+    看佇列 audit.jsonl 的成功轉移:actor 正好是 seat:<本席>(不是 system / 背景整理 agent / human / 缺 actor)、
+    轉到 read / done / archived、時刻在擋下之後、修訂號 = 擋下時那一版。audit 在但讀不到 ⇒ Undetermined。
+    --by 是字面守衛,同帳號擋不住同帳號;這裡只用來「不誤擋正在做事的席」,不是防線。"""
+    import json
     import dm_queue
-    for iid in ids:
+    want = {}
+    for x in pairs:
+        iid, _sep, rev = x.rpartition("@")
+        want[iid] = rev
+    p = dm_queue.seat_dir(seat, env) / dm_queue.AUDIT_FILE
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, 2)
+            n = f.tell()
+            f.seek(max(0, n - AUDIT_TAIL_BYTES))
+            raw = f.read(AUDIT_TAIL_BYTES).decode("utf-8", "replace")
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise Undetermined("read:audit:%s" % exc.__class__.__name__)
+    me = "seat:" + str(seat)
+    for ln in raw.splitlines():
         try:
-            it, _why = dm_queue._load_item_raw(seat, iid, env)
-        except (OSError, ValueError):
+            r = json.loads(ln)
+        except ValueError:
+            continue                          # 尾段第一行可能被切半;壞行不算本席動作
+        if not isinstance(r, dict) or r.get("ok") is not True or r.get("actor") != me:
             continue
-        if not it or it.get("status") not in ("read", "done", "archived") or it.get("read_by") == "system":
+        if r.get("to") not in ("read", "done", "archived") or r.get("id") not in want:
             continue
         try:
-            when = max(int(it.get("read_at") or 0), int(it.get("done_at") or 0))
+            if int(r.get("ts") or 0) >= int(since) and str(r.get("rev")) == want[r["id"]]:
+                return True
         except (TypeError, ValueError):
             continue
-        if when >= int(since):
-            return True
     return False
 
 
@@ -215,8 +258,7 @@ def release_why(seat, hits, now, env=None, transcript=None, long_work=None):
     prev = set(x for x in (st.get("pairs") or []) if isinstance(x, str))
     cur = set(_pairs(hits))
     if prev and 0 <= int(now) - last_at < SAME_BATCH_S and cur <= prev and (prev - cur):
-        gone = [x.rsplit("@", 1)[0] for x in prev - cur]
-        if _handled_since(seat, gone, last_at, env):
+        if _handled_since(seat, sorted(prev - cur), last_at, env):
             return "seat-working"
     return None
 
@@ -271,7 +313,7 @@ def check(seat, T, note, now=None, env=None, transcript=None):
         try:
             why = release_why(seat, hits, now, env=env, transcript=transcript)
         except Exception as exc:  # noqa: BLE001 —— 判斷不了 ⇒ 放行留痕(#466 Codex r1 M4;同本支讀不到佇列的失效方向)
-            why = "%s:%s" % (UNDETERMINED, exc.__class__.__name__)
+            why = "%s:%s" % (UNDETERMINED, exc if isinstance(exc, Undetermined) else exc.__class__.__name__)
         if why and why.startswith(UNDETERMINED):
             note("DMGATE FAILOPEN @%s %s n=%d" % (seat, why, len(hits)))
             return False, ""
