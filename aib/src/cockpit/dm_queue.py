@@ -2111,22 +2111,28 @@ def _seat_long_work(seat, env, now, proc_start=None, now_rec=None):
         raise LongWorkUndetermined("lease:%s" % exc.__class__.__name__)
     if not isinstance(lease, dict):
         raise LongWorkUndetermined("lease:shape")
-    if lease.get("owner") != "@" + str(seat):
+
+    def _is_int(v):
+        return isinstance(v, int) and not isinstance(v, bool)
+    owner, host, pid, pid_start, exp = (lease.get(k) for k in ("owner", "host", "pid", "pid_start", "expiry_epoch"))
+    # #466 Codex r4:先驗型別(host_lease 寫的形狀:owner/host/pid_start 字串、pid/expiry_epoch 整數);
+    #   錯了不是「不是本席 / 過期」,是判斷不了。pid_start 沒記(None)照舊 = 不算(舊租約)。
+    if (not isinstance(owner, str) or (host is not None and not isinstance(host, str)) or not _is_int(pid)
+            or not _is_int(exp) or (pid_start is not None and not isinstance(pid_start, str))):
+        raise LongWorkUndetermined("lease:fields")
+    if owner != "@" + str(seat):
         return False
     try:
         import socket
-        if lease.get("host") and lease.get("host") != socket.gethostname():
+        if host and host != socket.gethostname():
             return False
-        if int(now) >= int(lease.get("expiry_epoch") or 0):
+        if int(now) >= exp:
             return False
-        pid = int(lease.get("pid") or 0)
-        if pid <= 0 or not lease.get("pid_start"):
+        if pid <= 0 or not pid_start:
             return False
         os.kill(pid, 0)
     except ProcessLookupError:
         return False                       # 持有的行程已經不在
-    except (TypeError, ValueError):
-        raise LongWorkUndetermined("lease:fields")
     except OSError as exc:
         raise LongWorkUndetermined("lease:pid:%s" % exc.__class__.__name__)
     got = (proc_start or _proc_start)(pid)
@@ -2147,7 +2153,8 @@ def _seat_long_work(seat, env, now, proc_start=None, now_rec=None):
     if not isinstance(now_rec, dict):
         raise LongWorkUndetermined("now:shape")          # #466 Codex r3 M4:[] / 字串不是「沒有長工作」
     st, item = now_rec.get("state"), now_rec.get("item")
-    if (st is not None and not isinstance(st, str)) or (item is not None and not isinstance(item, str)):
+    # #466 Codex r4:沒有這欄 = 舊紀錄 / 閒置紀錄(正常);明寫 null 或型別不對 = 判斷不了(seat_now 不會寫 null)
+    if ("state" in now_rec and not isinstance(st, str)) or ("item" in now_rec and not isinstance(item, str)):
         raise LongWorkUndetermined("now:fields")
     if now_rec.get("idle") or (st or "busy") != "busy":
         return False                       # 沒寫 state 的舊紀錄 = busy(同 seat_now 讀端)
@@ -3078,7 +3085,7 @@ def _read_triage_auto(path):
         raw = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:      # #466 Codex r4 L:UnicodeDecodeError 不是 OSError
         return "%s:read:%s" % (TRIAGE_AUTO_UNREADABLE, exc.__class__.__name__)
     try:
         data = json.loads(raw)

@@ -177,7 +177,7 @@ def _read_json(path):
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise Undetermined("read:%s:%s" % (path.name, exc.__class__.__name__))
     try:
         d = json.loads(raw)
@@ -193,10 +193,11 @@ def _headless_running(seat, env, now):
     lk = _read_json(dm_queue.seat_dir(seat, env) / dm_queue.TRIAGE_AGENT_LOCK_FILE)
     if lk is None:
         return False
-    try:
-        return "/headless-" in str(lk.get("by") or "") and int(now) < int(lk.get("until") or 0)
-    except (TypeError, ValueError):
+    by, until = lk.get("by"), lk.get("until")
+    # #466 Codex r4:先驗型別再判執行者(until=null / 數字字串 / bool 不能轉成 0 或被 by 短路略過)
+    if (by is not None and not isinstance(by, str)) or isinstance(until, bool) or not isinstance(until, (int, float)):
         raise Undetermined("shape:" + dm_queue.TRIAGE_AGENT_LOCK_FILE)
+    return "/headless-" in (by or "") and int(now) < until
 
 
 def _gate_state(seat, env):

@@ -19,6 +19,8 @@ G3 同批限擋:含 rev;子集合 + 擋下後本席真的處理過才放;新信 
 G2 判斷不了 ⇒ 放行留痕 FAILOPEN;triage_auto=off ⇒ 新放行條件全部不看
 G5 形狀不吞(#466 Codex r3 M4):transcript / audit 壞行(只容許尾段切到的第一行)、同批紀錄 at / pairs 壞、
    aib now 是 [] / 欄位型別錯 ⇒ Undetermined;check 層都是 FAILOPEN;開關讀錯 ⇒ check FAILOPEN
+G6 型別先驗(#466 Codex r4):整理鎖 until 不是數字 / by 不是字串;租約 owner / host / pid_start 型別錯、pid / expiry_epoch
+   不是整數;aib now 的 state / item 明寫 null 或型別錯;開關檔不是 UTF-8 ⇒ 都是判斷不了(各一刀 K28–K31)
 H2 開關讀錯整條路徑(#466 Codex r3 H):席位檔壞 + 全艦 off ⇒ 忙滿 30 分那條帶 draft、子程序不結案
 H3 off ⇒ 回 0.1.62 餵信(不套「15 分內讀過不餵」);draft 照跳過(#466 Codex r3 M)
 Knife(本檔最後):每個守衛一刀,落在樹的複本上(knife_copy)、看門狗跑(run_guarded),只跑目標那一格,
@@ -538,6 +540,60 @@ class G5Shapes(Tmp):
         self.assertTrue(blk, "off 照原判準擋")
 
 
+class G6Types(Tmp):
+    def d(self):
+        d = Q.seat_dir("aaaaa", self.env)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_lock_types(self):
+        lp = self.d() / Q.TRIAGE_AGENT_LOCK_FILE
+        for lk in ({"by": "agent:aaaaa/headless-1", "until": None}, {"by": "agent:aaaaa/headless-1", "until": str(NOW + 60)},
+                   {"by": "agent:aaaaa/sub", "until": None}, {"by": "seat:aaaaa"}, {"by": 5, "until": NOW + 60},
+                   {"by": "agent:aaaaa/headless-1", "until": True}):
+            with self.subTest(lk=lk):
+                lp.write_text(json.dumps(lk), encoding="utf-8")
+                with self.assertRaises(G.Undetermined):
+                    G._headless_running("aaaaa", self.env, NOW)
+        lp.write_text(json.dumps({"by": "agent:aaaaa/sub", "until": NOW + 60}), encoding="utf-8")
+        self.assertFalse(G._headless_running("aaaaa", self.env, NOW))
+        lp.write_text(json.dumps({"by": "agent:aaaaa/headless-1", "until": NOW + 60}), encoding="utf-8")
+        self.assertTrue(G._headless_running("aaaaa", self.env, NOW))
+
+    def test_lease_types(self):
+        good = {"owner": "@aaaaa", "host": None, "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600}
+        rec = {"item": "推送 #72", "state": "busy"}
+        for k, v in (("owner", 17), ("expiry_epoch", None), ("expiry_epoch", "9999999999"), ("pid_start", 17),
+                     ("pid", "1"), ("pid", True), ("host", 3)):
+            with self.subTest(k=k, v=v):
+                Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(dict(good, **{k: v})), encoding="utf-8")
+                with self.assertRaises(Q.LongWorkUndetermined):
+                    Q._seat_long_work("aaaaa", self.env, NOW, proc_start=lambda p: LEASE_START, now_rec=rec)
+        Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(good), encoding="utf-8")
+        self.assertTrue(Q._seat_long_work("aaaaa", self.env, NOW, proc_start=lambda p: LEASE_START, now_rec=rec))
+
+    def test_now_null_fields(self):
+        Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(
+            {"owner": "@aaaaa", "pid": os.getpid(), "pid_start": LEASE_START, "expiry_epoch": NOW + 600}), encoding="utf-8")
+        lw = lambda rec: Q._seat_long_work("aaaaa", self.env, NOW, proc_start=lambda p: LEASE_START, now_rec=rec)  # noqa: E731
+        for rec in ({"item": "推送", "state": None}, {"item": None, "state": "busy"}):
+            with self.subTest(rec=rec):
+                with self.assertRaises(Q.LongWorkUndetermined):
+                    lw(rec)
+        self.assertTrue(lw({"item": "推送"}), "沒有 state 欄 = 舊紀錄,當忙")
+        self.assertFalse(lw({"idle": True, "at": NOW}), "閒置紀錄沒有 item / state 欄,正常")
+
+    def test_switch_not_utf8(self):
+        p = Q.triage_auto_seat_path("aaaaa", self.env)
+        self.d()
+        p.write_bytes(b"\xff\xfe{")
+        try:
+            got = Q.triage_auto_mode("aaaaa", self.env)
+        except UnicodeDecodeError as exc:
+            self.fail("UnicodeDecodeError 逸出 triage_auto_mode:%r" % exc)
+        self.assertEqual(got, ("draft", "seat:unreadable:read:UnicodeDecodeError"))
+
+
 class H2SwitchUnreadable(unittest.TestCase):
     def test_busy_path_and_run(self):
         out = HN.QBox(self).py(SETUP + (
@@ -649,7 +705,7 @@ KNIVES = [
      '        return False', 'G5Shapes.test_now_shape'),
     ('K21', 'src/policy/hooks/dm_pending_gate.py', '        if why and why.startswith(UNDETERMINED):',
      '        if False:', 'G4ReadErrors.test_check_fails_open_on_undetermined'),
-    ('K22', 'src/cockpit/dm_queue.py', '    if lease.get("owner") != "@" + str(seat):\n        return False',
+    ('K22', 'src/cockpit/dm_queue.py', '    if owner != "@" + str(seat):\n        return False',
      '    if False:\n        return False', 'G1Release.test_long_work_reads_structured_lease'),
     ('K23', 'src/policy/hooks/dm_pending_gate.py', 'and cur <= prev and (prev - cur):',
      'and (prev - cur):', 'G3SameBatch.test_rules'),
@@ -661,6 +717,14 @@ KNIVES = [
      'return True', 'G1Release.test_human_turn_by_header'),
     ('K27', 'src/policy/hooks/dm_pending_gate.py', '    if mode != "off":',
      '    if True:', 'G2Check.test_off_ignores_releases'),
+    ('K28', 'src/policy/hooks/dm_pending_gate.py', '    if (by is not None and not isinstance(by, str)) or isinstance(until, bool) or not isinstance(until, (int, float)):\n        raise Undetermined("shape:" + dm_queue.TRIAGE_AGENT_LOCK_FILE)\n    return "/headless-" in (by or "") and int(now) < until\n',
+     '    return "/headless-" in str(by or "") and int(now) < int(until or 0)   # 刀:回 r3 寫法\n', 'G6Types.test_lock_types'),
+    ('K29', 'src/cockpit/dm_queue.py', '    if (not isinstance(owner, str) or (host is not None and not isinstance(host, str)) or not _is_int(pid)\n            or not _is_int(exp) or (pid_start is not None and not isinstance(pid_start, str))):\n        raise LongWorkUndetermined("lease:fields")\n',
+     '    owner, exp, pid = str(owner), int(exp or 0), int(pid or 0)   # 刀:回 r3 的寬鬆轉型\n', 'G6Types.test_lease_types'),
+    ('K30', 'src/cockpit/dm_queue.py', '    if ("state" in now_rec and not isinstance(st, str)) or ("item" in now_rec and not isinstance(item, str)):',
+     '    if (st is not None and not isinstance(st, str)) or (item is not None and not isinstance(item, str)):', 'G6Types.test_now_null_fields'),
+    ('K31', 'src/cockpit/dm_queue.py', '    except (OSError, UnicodeDecodeError) as exc:      # #466 Codex r4 L',
+     '    except OSError as exc:      # ', 'G6Types.test_switch_not_utf8'),
 ]
 
 
