@@ -2073,13 +2073,30 @@ def _triage_headless_maybe(seat, rec, path, env, now, probe):
     return ok
 
 
-def _seat_long_work(seat, env, now):
-    """這一席正在長工作(推送 / 全套 / 換版):機器租約持有人是本席、pid 活著、沒過期 ⇒ True。
-    比的是 host-lease.json 的結構化欄位(owner / pid / expiry_epoch),不拿 what 字串比(@34d15 10-31 21:45)。
-    owner 是呼叫端自報的,同帳號擋不住同帳號;這裡只用來「延後、不誤起」,不是防線。量不到 ⇒ False。"""
+LONG_WORK_WORDS = ("換版", "推送", "全套", "回滾", "發版", "push", "suite", "rollback", "release")
+
+
+def _proc_start(pid):
+    """行程起始時刻字面(ps -o lstart=,LC_ALL=C;同 tools/governance/host_lease.proc_start)。量不到回 None。"""
+    try:
+        e = dict(os.environ, LC_ALL="C", LANG="C")
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True,
+                             timeout=5, stdin=subprocess.DEVNULL, env=e).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return out or None
+
+
+def _seat_long_work(seat, env, now, proc_start=None, now_rec=None):
+    """這一席正在長工作(推送 / 全套 / 換版 / 回滾)⇒ True。三件都要成立(#466 Codex r1 M3):
+      1) 機器租約(host-lease.json 結構化欄位):owner == "@席碼"、同主機、沒過期、pid 活著且 pid_start 對得上
+         (pid 會繞回;沒記 pid_start ⇒ 不算)。不拿 what 字串比(@34d15 10-31 21:45)。
+      2) aib now 狀態是忙碌(busy)
+      3) aib now 主項目含 LONG_WORK_WORDS 其中一個
+    owner / aib now 都是自報的,同帳號擋不住同帳號;這裡只用來「延後、不誤擋」,不是防線。量不到 ⇒ False。"""
     e = _env(env)
     lp = (e.get("AIB_HOST_LEASE_FILE") or "").strip() or os.path.join(
-        e.get("HOME") or os.path.expanduser("~"), ".ez2-aib", "state", "host-lease.json")   # 同 tools/governance/host_lease.lease_path
+        e.get("HOME") or os.path.expanduser("~"), ".ez2-aib", "state", "host-lease.json")   # 同 host_lease.lease_path
     try:
         lease = json.loads(Path(lp).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -2093,12 +2110,23 @@ def _seat_long_work(seat, env, now):
         if int(now) >= int(lease.get("expiry_epoch") or 0):
             return False
         pid = int(lease.get("pid") or 0)
-        if pid <= 0:
+        if pid <= 0 or not lease.get("pid_start"):
             return False
         os.kill(pid, 0)
     except (TypeError, ValueError, OSError):
         return False
-    return True
+    if (proc_start or _proc_start)(pid) != lease.get("pid_start"):
+        return False
+    if now_rec is None:
+        try:
+            import seat_now
+            now_rec = seat_now.read(str(seat), state_root=e.get("EZ2_AIB_STATE_ROOT") or None)
+        except Exception:  # noqa: BLE001
+            now_rec = None
+    if not isinstance(now_rec, dict) or now_rec.get("idle") or (now_rec.get("state") or "busy") != "busy":
+        return False                       # 沒寫 state 的舊紀錄 = busy(同 seat_now 讀端)
+    item = str(now_rec.get("item") or "").lower()
+    return any(w.lower() in item for w in LONG_WORK_WORDS)
 
 
 def _triage_headless_auto(seat, rec, path, env, now, tabs):

@@ -13,8 +13,11 @@ T6 triage_auto=off ⇒ 走原本的再叫(不起背景整理)
 T11 起不了 ⇒ triage.json 記 deferred + 原因 + 下次時間
 D1 只擬不結:apply(dry) 不改任何信,驗得過的標 would
 D2 席位 15 分內自己讀過的信不餵(T14)
-G1 守門放行:長工作 / 真人親打 10 分內 / 背景整理在跑 / 同批有在處理;dm 外框進來的不算真人(T4 補格)
-G2 同批沒動作 ⇒ 照擋;triage_auto=off ⇒ 新放行條件全部不看
+G1 守門放行:長工作(租約 pid_start + aib now 忙碌且主項目是長工作;pid 重用 / 缺 pid_start / 一般工作反例)/
+   真人親打 10 分內(抬頭交 dm_header 判;別席 dm 引用艦長室字樣不算、艦長室網頁 / 真人抬頭算)/ 背景整理在跑;
+   對話檔讀不到 = 判斷不了
+G3 同批限擋:含 rev;子集合 + 擋下後本席真的處理過才放;新信 / 新 rev / 自然過期 / 過 30 分照擋
+G2 判斷不了 ⇒ 放行留痕 FAILOPEN;triage_auto=off ⇒ 新放行條件全部不看
 """
 import datetime
 import importlib.util
@@ -224,53 +227,126 @@ def _transcript(path, entries):
 HITS = [{"id": "q_a"}, {"id": "q_b"}]
 
 
+import dm_header as DH  # noqa: E402
+
+
+def _hdr(code, name, when=NOW):
+    return DH.build(DH.party(code, name, addr="100.1.1.1", cabin="559f"),
+                    DH.party("aaaaa", "工程師", addr="100.1.1.1", cabin="559f"), when)
+
+
+LEASE_START = "Sat Oct 31 21:00:00 2026"
+
+
 class G1Release(Tmp):
     def tr(self, entries):
         p = os.path.join(self.tmp.name, "t.jsonl")
         _transcript(p, entries)
         return p
 
+    def rw(self, hits=HITS, now=NOW, **kw):
+        kw.setdefault("long_work", False)
+        return G.release_why("aaaaa", hits, now, env=self.env, **kw)
+
     def test_long_work(self):
-        self.assertEqual(G.release_why("aaaaa", HITS, NOW, env=self.env, long_work=True), "long-work")
-        self.assertIsNone(G.release_why("aaaaa", HITS, NOW, env=self.env, long_work=False))
+        self.assertEqual(self.rw(long_work=True), "long-work")
+        self.assertIsNone(self.rw())
+
+    def lease(self, **over):
+        d = {"owner": "@aaaaa", "what": "推 @aaaaa 的東西", "pid": os.getpid(), "pid_start": LEASE_START,
+             "expiry_epoch": NOW + 600}
+        d.update(over)
+        Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(d), encoding="utf-8")
+
+    def lw(self, seat="aaaaa", start=LEASE_START, rec=None):
+        rec = {"item": "推送 ez2-ai #72(全套)", "state": "busy"} if rec is None else rec
+        return Q._seat_long_work(seat, self.env, NOW, proc_start=lambda pid: start, now_rec=rec)
 
     def test_long_work_reads_structured_lease(self):
-        lease = {"owner": "@aaaaa", "what": "推 @aaaaa 的東西", "pid": os.getpid(), "expiry_epoch": NOW + 600}
-        Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(lease), encoding="utf-8")
-        self.assertTrue(Q._seat_long_work("aaaaa", self.env, NOW))
-        self.assertFalse(Q._seat_long_work("bbbbb", self.env, NOW))                 # what 字串有 @aaaaa 也不算
-        Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(dict(lease, owner="@bbbbb")), encoding="utf-8")
-        self.assertFalse(Q._seat_long_work("aaaaa", self.env, NOW))
-        Path(self.env["AIB_HOST_LEASE_FILE"]).write_text(json.dumps(dict(lease, expiry_epoch=NOW - 1)), encoding="utf-8")
-        self.assertFalse(Q._seat_long_work("aaaaa", self.env, NOW))
+        self.lease()
+        self.assertTrue(self.lw())
+        self.assertFalse(self.lw(seat="bbbbb"))                                     # what 字串有 @aaaaa 也不算
+        self.assertFalse(self.lw(start="Sat Oct 31 09:00:00 2026"), "pid 重用(起始時刻對不上)")
+        self.assertFalse(self.lw(rec={"item": "寫 SPEC v2", "state": "busy"}), "一般工作不算長工作")
+        self.assertFalse(self.lw(rec={"item": "推送 #72", "state": "reply"}), "等回應不算忙")
+        self.assertFalse(self.lw(rec={}), "沒有 aib now 紀錄")
+        self.lease(pid_start=None)
+        self.assertFalse(self.lw(), "租約沒記 pid_start 不算")
+        self.lease(owner="@bbbbb")
+        self.assertFalse(self.lw())
+        self.lease(expiry_epoch=NOW - 1)
+        self.assertFalse(self.lw())
 
-    def test_human_turn_only_typed(self):
-        human = self.tr([(NOW - 120, "好，那就照這樣做")])
-        self.assertEqual(G.release_why("aaaaa", HITS, NOW, env=self.env, transcript=human, long_work=False), "human-turn")
-        old = self.tr([(NOW - G.HUMAN_RECENT_S - 5, "好，那就照這樣做")])
-        self.assertIsNone(G.release_why("aaaaa", HITS, NOW, env=self.env, transcript=old, long_work=False))
+    def test_human_turn_by_header(self):
+        self.assertEqual(self.rw(transcript=self.tr([(NOW - 120, "好，那就照這樣做")])), "human-turn")
+        self.assertIsNone(self.rw(transcript=self.tr([(NOW - G.HUMAN_RECENT_S - 5, "好，那就照這樣做")])))
         dm = self.tr([(NOW - 9000, "很久以前真人講的"),
-                      (NOW - 60, "IP:100.1.1.1/559f/艦長@34396 >> IP:100.1.1.1/559f/工程師@aaaaa 10-31 12:00 收到"),
+                      (NOW - 60, _hdr("34396", "Ez2 主機艦長") + " 收到,照這樣改〔艦長室〕"),
                       (NOW - 30, [{"type": "tool_result", "content": "x"}])])
-        self.assertIsNone(G.release_why("aaaaa", HITS, NOW, env=self.env, transcript=dm, long_work=False),
-                          "別席 dm 進來不算真人親打")
-        cap = self.tr([(NOW - 60, "IP:100.1.1.1/559f/x@34396 >> y 這樣改〔艦長室〕")])
-        self.assertEqual(G.release_why("aaaaa", HITS, NOW, env=self.env, transcript=cap, long_work=False), "human-turn")
+        self.assertIsNone(self.rw(transcript=dm), "別席 dm(正文引用艦長室字樣也一樣)不算真人親打")
+        room = self.tr([(NOW - 60, _hdr(DH.ROOM_CODE, DH.ROOM_NAME) + " 這樣改")])
+        self.assertEqual(self.rw(transcript=room), "human-turn", "艦長室網頁寄的算")
+        hub = self.tr([(NOW - 60, _hdr(DH.HUMAN_CODE, DH.HUMAN_NAME) + " 好")])
+        self.assertEqual(self.rw(transcript=hub), "human-turn")
+        sysm = self.tr([(NOW - 60, "<system-reminder>x</system-reminder>")])
+        self.assertIsNone(self.rw(transcript=sysm))
+
+    def test_transcript_unreadable_undetermined(self):
+        got = self.rw(transcript=os.path.join(self.tmp.name, "nope.jsonl"))
+        self.assertTrue(str(got).startswith(G.UNDETERMINED), got)
 
     def test_headless_running(self):
         d = Q.seat_dir("aaaaa", self.env)
         d.mkdir(parents=True, exist_ok=True)
         (d / Q.TRIAGE_AGENT_LOCK_FILE).write_text(json.dumps({"by": "agent:aaaaa/headless-1", "until": NOW + 60}))
-        self.assertEqual(G.release_why("aaaaa", HITS, NOW, env=self.env, long_work=False), "headless-running")
+        self.assertEqual(self.rw(), "headless-running")
 
-    def test_same_batch_working_vs_idle(self):
-        G._remember_block("aaaaa", HITS, NOW, self.env)
-        self.assertIsNone(G.release_why("aaaaa", HITS, NOW + 60, env=self.env, long_work=False), "沒動作 ⇒ 照擋")
-        self.assertEqual(G.release_why("aaaaa", HITS[1:], NOW + 60, env=self.env, long_work=False), "seat-working")
-        self.assertIsNone(G.release_why("aaaaa", HITS[1:], NOW + G.SAME_BATCH_S + 1, env=self.env, long_work=False))
+
+H3 = [{"id": "q_a", "rev": 1}, {"id": "q_b", "rev": 1}, {"id": "q_c", "rev": 2}]
+
+
+class G3SameBatch(Tmp):
+    def rw(self, hits, now, handled):
+        with mock.patch.object(G, "_handled_since", return_value=handled) as m:
+            got = G.release_why("aaaaa", hits, now, env=self.env, long_work=False)
+        return got, m
+
+    def test_rules(self):
+        G._remember_block("aaaaa", H3, NOW, self.env)
+        self.assertIsNone(self.rw(H3, NOW + 60, True)[0], "同一批沒動作 ⇒ 照擋")
+        self.assertIsNone(self.rw(H3[1:], NOW + 60, False)[0], "離開的那封不是本席處理的(過期 / 別人收走)⇒ 照擋")
+        got, m = self.rw(H3[1:], NOW + 60, True)
+        self.assertEqual(got, "seat-working")
+        self.assertIsNotNone(m.call_args, "要核對本席有沒有處理")
+        self.assertEqual(m.call_args[0][1:3], (["q_a"], NOW))
+        self.assertIsNone(self.rw([H3[1], dict(H3[2], rev=3)], NOW + 60, True)[0], "剩下的有新 rev ⇒ 照擋")
+        self.assertIsNone(self.rw(H3[1:] + [{"id": "q_d", "rev": 1}], NOW + 60, True)[0], "有新信 ⇒ 照擋")
+        self.assertIsNone(self.rw(H3[1:], NOW + G.SAME_BATCH_S + 1, True)[0], "過了 30 分 ⇒ 照擋")
+
+    def test_handled_since_reads_items(self):
+        items = {"q_a": ({"status": "read", "read_at": NOW + 10, "read_by": "seat:aaaaa"}, "ok"),
+                 "q_b": ({"status": "read", "read_at": NOW - 10, "read_by": "seat:aaaaa"}, "ok"),
+                 "q_c": ({"status": "read", "read_at": NOW + 10, "read_by": "system"}, "ok"),
+                 "q_d": ({"status": "expired_now", "read_at": NOW + 10}, "ok"),
+                 "q_e": ({"status": "done", "read_at": NOW - 99, "done_at": NOW + 5, "read_by": "seat:aaaaa"}, "ok")}
+        with mock.patch.object(Q, "_load_item_raw", side_effect=lambda s, i, e=None: items.get(i, (None, "missing"))):
+            self.assertTrue(G._handled_since("aaaaa", ["q_a"], NOW, self.env))
+            self.assertFalse(G._handled_since("aaaaa", ["q_b", "q_c", "q_d", "q_x"], NOW, self.env))
+            self.assertTrue(G._handled_since("aaaaa", ["q_e"], NOW, self.env))
 
 
 class G2Check(Tmp):
+    def test_undetermined_fails_open_with_note(self):
+        rows = [{"id": "q_a", "status": "delivered", "sender_seat": "zzzzz", "ts": NOW - 600, "rev": 1}]
+        T = lambda key, **kw: key  # noqa: E731
+        notes = []
+        payload = {"errors": [], "tabs": {"waiting": {"rows": rows}, "read": {"rows": []}}}
+        with mock.patch.object(Q, "tabs_payload", return_value=payload), \
+                mock.patch.object(G, "release_why", side_effect=RuntimeError("x")):
+            blk, _m = G.check("aaaaa", T, notes.append, now=NOW, env=self.env)
+        self.assertFalse(blk)
+        self.assertTrue(any("FAILOPEN" in n and "RuntimeError" in n for n in notes), notes)
+
     def test_off_ignores_releases(self):
         rows = [{"id": "q_a", "status": "delivered", "sender_seat": "zzzzz", "ts": NOW - 600, "rev": 1}]
         T = lambda key, **kw: key  # noqa: E731

@@ -27,10 +27,12 @@
 ## 放行條件(10-31 SPEC-dm-triage-auto v2 §3;擋的是「沒人看」,不是「沒開子代理」)
 triage_auto 不是 off 時,下面任一成立 ⇒ 放行並留痕(off ⇒ 照上面原判準):
   - 長工作中:機器租約持有人是本席、pid 活著、沒過期(dm_queue._seat_long_work,比結構化欄位不比字串)。
-  - 這一輪在回真人:對話檔最後一則**真人親打**的輸入在 HUMAN_RECENT_S 內(dm / relay 注入的不算,@34d15 21:45)。
+  - 這一輪在回真人:對話檔最後一則**真人親打**的輸入在 HUMAN_RECENT_S 內;抬頭交 dm_header.parse 判,
+    席位 / 系統寄的不算(@34d15 21:45),真人 / 艦長室網頁寄的算。
   - 背景整理正在跑:那一席 triage-agent.json 由 headless 登記且沒過期。
-  - 同批限擋:上次擋過的那批在 SAME_BATCH_S 內有任一封已被處理(離開待審)⇒ 本席在處理,不每回合重擋;
-    沒動作 ⇒ 照擋;過了 SAME_BATCH_S 照擋。
+  - 同批限擋:上次擋的那批(含 rev)SAME_BATCH_S 內,現在這批沒有新信 / 新 rev,而且擋下之後本席真的讀 / 結過
+    其中幾封 ⇒ 不每回合重擋;沒動作、信自然過期、有新信 ⇒ 照擋。
+  - 判斷不了(對話檔讀不到、判斷出錯)⇒ 放行並留痕 DMGATE FAILOPEN(同本支其他失效方向)。
 完成定義照實寫:必定的是「門檻到了一定有人(席位或背景整理)在看,或有寫明的理由」,是有例外的約束。
 
 ## 它擋不住什麼
@@ -51,9 +53,7 @@ HUMAN_RECENT_S = 600            # 真人親打 10 分鐘內 ⇒ 先讓真人拿�
 SAME_BATCH_S = 1800             # 同批限擋 30 分(@34d15 10-31 21:45 Q2 照建議)
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 GATE_STATE_FILE = "dm-gate.json"
-# dm / relay 注入輸入框的開頭(aib dm 外框:「IP:<ip>/<艙>/<名>@<席> >> IP:…」或「(@xxxxx → @yyyyy)」)
-_RELAY_HEAD_RE = __import__("re").compile(r"^\s*(IP:\S+\s.*>>|[\(（\[【]\s*@?[0-9a-z]{5}\s*(→|->))")
-_HUMAN_MARK = "〔艦長室〕"
+UNDETERMINED = "undetermined"   # 判斷不了(讀不到 / 出錯)⇒ 呼叫端放行並留痕(失效方向同本支其他地方)
 
 
 def pending_rows(rows, seat, now):
@@ -101,19 +101,23 @@ def _user_text(entry):
 
 
 def is_human_typed(text):
-    """真人親打?dm / relay 外框開頭的不算;系統提醒(<system-reminder> 開頭)也不算;艦長室標記算。"""
+    """真人親打?抬頭一律交 dm_header.parse 判(#466 Codex r1 M1:不另寫 regex、不認正文裡的字樣):
+      - 認得出抬頭:寄件者是真人(the maintainer@hub)或艦長室網頁(艦長室@room)⇒ 是;席位 / 系統 / 其他 ⇒ 不是
+      - 認不出抬頭:系統提醒(< 開頭)不是;其他 = 終端機直接打的 ⇒ 是
+    注意:同帳號 AI 能 send-keys 打出任何字,這裡只用來避免誤擋,不是防線。"""
     if not isinstance(text, str) or not text.strip():
         return False
-    if _HUMAN_MARK in text:
-        return True
-    t = text.lstrip()
-    if t.startswith("<"):
-        return False
-    return not _RELAY_HEAD_RE.match(t)
+    import dm_header
+    h = dm_header.parse(text.lstrip())
+    if h is not None:
+        code = (h.get("sender") or {}).get("code") or ""
+        return h.get("sender_kind") == "human" or code == dm_header.ROOM_CODE
+    return not text.lstrip().startswith("<")
 
 
 def last_human_at(transcript, size_max=TRANSCRIPT_TAIL_BYTES):
-    """對話檔尾段最後一則真人親打的時刻(epoch)。讀不到 / 沒有 ⇒ None(呼叫端當「不是在回真人」,照擋)。"""
+    """對話檔尾段最後一則真人親打的時刻(epoch)。沒給路徑 / 尾段沒有真人親打 ⇒ None(不是在回真人);
+    給了路徑卻讀不到 ⇒ UNDETERMINED(判斷不了,#466 Codex r1 M4)。"""
     import datetime
     import json
     if not transcript:
@@ -125,7 +129,7 @@ def last_human_at(transcript, size_max=TRANSCRIPT_TAIL_BYTES):
             f.seek(max(0, n - int(size_max)))
             raw = f.read(int(size_max)).decode("utf-8", "replace")
     except (OSError, ValueError):
-        return None
+        return UNDETERMINED
     for ln in reversed(raw.splitlines()):
         try:
             d = json.loads(ln)
@@ -139,7 +143,7 @@ def last_human_at(transcript, size_max=TRANSCRIPT_TAIL_BYTES):
         try:
             return datetime.datetime.fromisoformat(str(d.get("timestamp")).replace("Z", "+00:00")).timestamp()
         except (TypeError, ValueError):
-            return None
+            return UNDETERMINED
     return None
 
 
@@ -164,43 +168,74 @@ def _gate_state(seat, env):
         return p, {}
 
 
+def _pairs(hits):
+    return sorted("%s@%s" % (r.get("id"), r.get("rev")) for r in hits)
+
+
+def _handled_since(seat, ids, since, env):
+    """上次擋下之後,本席真的處理過其中任一封?(狀態 read / done / archived,而且讀 / 結的時刻在擋下之後,
+    不是系統代標的)。讀不到的那封不算處理過。"""
+    import dm_queue
+    for iid in ids:
+        try:
+            it, _why = dm_queue._load_item_raw(seat, iid, env)
+        except (OSError, ValueError):
+            continue
+        if not it or it.get("status") not in ("read", "done", "archived") or it.get("read_by") == "system":
+            continue
+        try:
+            when = max(int(it.get("read_at") or 0), int(it.get("done_at") or 0))
+        except (TypeError, ValueError):
+            continue
+        if when >= int(since):
+            return True
+    return False
+
+
 def release_why(seat, hits, now, env=None, transcript=None, long_work=None):
-    """純度高的判斷 → 放行理由字串;None = 照擋。long_work 可注入(測試)。"""
+    """→ 放行理由字串 / None(照擋)/ UNDETERMINED 開頭的字串(判斷不了,呼叫端放行留痕)。long_work 可注入(測試)。"""
     import dm_queue
     lw = dm_queue._seat_long_work(seat, env, now) if long_work is None else long_work
     if lw:
         return "long-work"
     at = last_human_at(transcript)
+    if at == UNDETERMINED:
+        return UNDETERMINED + ":transcript"
     if at is not None and 0 <= int(now) - at < HUMAN_RECENT_S:
         return "human-turn"
     if _headless_running(seat, env, now):
         return "headless-running"
+    # 同批限擋(#466 Codex r1 M2):記的是含 rev 的那批 + 擋下時刻;現在這批要是那批的子集合(沒有新信、沒有新 rev),
+    #   而且擋下之後本席真的處理過離開的那幾封,才放行。舊信自然過期 / 被別人收走不算本席處理。
     _p, st = _gate_state(seat, env)
     try:
         last_at = int(st.get("at") or 0)
     except (TypeError, ValueError):
         last_at = 0
-    prev = set(str(i) for i in (st.get("ids") or []) if isinstance(i, str))
-    cur = set(str(r.get("id")) for r in hits)
-    if prev and 0 <= int(now) - last_at < SAME_BATCH_S and (prev - cur):
-        return "seat-working"
+    prev = set(x for x in (st.get("pairs") or []) if isinstance(x, str))
+    cur = set(_pairs(hits))
+    if prev and 0 <= int(now) - last_at < SAME_BATCH_S and cur <= prev and (prev - cur):
+        gone = [x.rsplit("@", 1)[0] for x in prev - cur]
+        if _handled_since(seat, gone, last_at, env):
+            return "seat-working"
     return None
 
 
 def _remember_block(seat, hits, now, env):
-    """記下這次擋的那批(同批限擋用)。同一批還在 SAME_BATCH_S 內不改起點。寫不進去不影響擋。"""
+    """記下這次擋的那批(含 rev)與擋下時刻。同一批(或它的子集合)還在 SAME_BATCH_S 內不改起點。寫不進去不影響擋。"""
     try:
         import atomic_json as AJ
         p, st = _gate_state(seat, env)
-        ids = sorted(str(r.get("id")) for r in hits)
+        pairs = _pairs(hits)
         try:
-            fresh = 0 <= int(now) - int(st.get("at") or 0) < SAME_BATCH_S and set(st.get("ids") or []) >= set(ids)
+            fresh = (0 <= int(now) - int(st.get("at") or 0) < SAME_BATCH_S
+                     and set(st.get("pairs") or []) >= set(pairs))
         except (TypeError, ValueError):
             fresh = False
         if fresh:
             return
         p.parent.mkdir(parents=True, exist_ok=True)
-        AJ.write_json(str(p), {"at": int(now), "ids": ids})
+        AJ.write_json(str(p), {"at": int(now), "pairs": pairs})
     except Exception:  # noqa: BLE001
         pass
 
@@ -235,9 +270,11 @@ def check(seat, T, note, now=None, env=None, transcript=None):
     if auto_on:
         try:
             why = release_why(seat, hits, now, env=env, transcript=transcript)
-        except Exception as exc:  # noqa: BLE001 —— 放行判斷壞了 ⇒ 照原判準擋(不因新功能放水)
-            why = None
-            note("DMGATE RELEASE-ERR @%s %s" % (seat, exc.__class__.__name__))
+        except Exception as exc:  # noqa: BLE001 —— 判斷不了 ⇒ 放行留痕(#466 Codex r1 M4;同本支讀不到佇列的失效方向)
+            why = "%s:%s" % (UNDETERMINED, exc.__class__.__name__)
+        if why and why.startswith(UNDETERMINED):
+            note("DMGATE FAILOPEN @%s %s n=%d" % (seat, why, len(hits)))
+            return False, ""
         if why:
             note("DMGATE RELEASE @%s why=%s n=%d" % (seat, why, len(hits)))
             return False, ""
