@@ -298,7 +298,10 @@ def run(seat, brand, env=None, now=None, ask=ask_ai, gh=gh_merged, dry=False):
         if not rows:
             return {"ok": True, "reason": "nothing", "results": []}
         loaded = {r["id"]: Q._load_item(seat, r["id"], env) or {} for r in rows}
-        fed = [r for r in rows if not _seat_read_recent(loaded[r["id"]], now)][:MAX_ITEMS]
+        if not dry and _mode(seat, env) == "off":
+            fed = rows[:MAX_ITEMS]            # #466 Codex r3:off = 0.1.62 舊行為,不套「15 分內讀過不餵」
+        else:
+            fed = [r for r in rows if not _seat_read_recent(loaded[r["id"]], now)][:MAX_ITEMS]
         if not fed:
             return {"ok": True, "reason": "seat-reading", "results": []}
         items = {r["id"]: loaded[r["id"]] for r in fed}

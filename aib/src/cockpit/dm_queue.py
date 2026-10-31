@@ -2144,9 +2144,14 @@ def _seat_long_work(seat, env, now, proc_start=None, now_rec=None):
             return False                   # 沒跑過 aib now ⇒ 不知道在長工作
         except Exception as exc:  # noqa: BLE001
             raise LongWorkUndetermined("now:%s" % exc.__class__.__name__)
-    if not isinstance(now_rec, dict) or now_rec.get("idle") or (now_rec.get("state") or "busy") != "busy":
+    if not isinstance(now_rec, dict):
+        raise LongWorkUndetermined("now:shape")          # #466 Codex r3 M4:[] / 字串不是「沒有長工作」
+    st, item = now_rec.get("state"), now_rec.get("item")
+    if (st is not None and not isinstance(st, str)) or (item is not None and not isinstance(item, str)):
+        raise LongWorkUndetermined("now:fields")
+    if now_rec.get("idle") or (st or "busy") != "busy":
         return False                       # 沒寫 state 的舊紀錄 = busy(同 seat_now 讀端)
-    item = str(now_rec.get("item") or "").lower()
+    item = (item or "").lower()
     return any(w.lower() in item for w in LONG_WORK_WORDS)
 
 
@@ -3063,25 +3068,49 @@ def triage_auto_fleet_path(env=None):
     return queue_root(env) / "triage-auto-policy.json"
 
 
+TRIAGE_AUTO_UNREADABLE = "unreadable"
+
+
 def _read_triage_auto(path):
+    """→ None(檔不存在)/ "off" / "draft" / "unreadable:<原因>"(檔在,但讀不到、壞檔、形狀不對、值認不得 —— 含 on)。
+    #466 Codex r3 H:讀錯不能當「沒有」退到下一層(全艦 off 會讓這一席變成直接結案)。"""
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
-    if not isinstance(data, dict) or data.get("schema") != TRIAGE_AUTO_SCHEMA or data.get("mode") not in TRIAGE_AUTO_MODES:
-        return None
+    except OSError as exc:
+        return "%s:read:%s" % (TRIAGE_AUTO_UNREADABLE, exc.__class__.__name__)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return TRIAGE_AUTO_UNREADABLE + ":json"
+    if not isinstance(data, dict) or data.get("schema") != TRIAGE_AUTO_SCHEMA:
+        return TRIAGE_AUTO_UNREADABLE + ":shape"
+    if data.get("mode") not in TRIAGE_AUTO_MODES:
+        return TRIAGE_AUTO_UNREADABLE + ":mode"
     return data["mode"]
 
 
+def _triage_auto_layer(v, layer):
+    if v is None:
+        return None
+    if v.startswith(TRIAGE_AUTO_UNREADABLE):
+        return TRIAGE_AUTO_DEFAULT, "%s:%s" % (layer, v)      # 讀不到 ⇒ draft(只擬不結),來源寫明哪一層壞了
+    return v, layer
+
+
 def triage_auto_mode(seat, env=None):
-    """(off / draft, 來源 seat / fleet / default)。壞檔、認不得的值(含 on)當沒有,交下一層。"""
-    v = _read_triage_auto(triage_auto_seat_path(seat, env))
-    if v is not None:
-        return v, "seat"
-    v = _read_triage_auto(triage_auto_fleet_path(env))
-    if v is not None:
-        return v, "fleet"
+    """(off / draft, 來源)。來源 = seat / fleet / default;那一層檔在卻讀不到 / 壞檔 / 值認不得(含 on)
+    ⇒ (draft, "<層>:unreadable:<原因>"),不再退到下一層(#466 Codex r3 H)。守門看到 unreadable 來源 ⇒ 放行留痕。"""
+    for path, layer in ((triage_auto_seat_path(seat, env), "seat"), (triage_auto_fleet_path(env), "fleet")):
+        got = _triage_auto_layer(_read_triage_auto(path), layer)
+        if got is not None:
+            return got
     return TRIAGE_AUTO_DEFAULT, "default"
+
+
+def triage_auto_unreadable(src):
+    return TRIAGE_AUTO_UNREADABLE in str(src or "")
 
 
 def triage_auto_switch(value, seat=None, env=None):
@@ -3099,8 +3128,7 @@ def triage_auto_switch(value, seat=None, env=None):
         AJ.write_json(str(path), {"schema": TRIAGE_AUTO_SCHEMA, "mode": value})
     if seat is not None:
         return triage_auto_mode(seat, env)
-    v = _read_triage_auto(path)
-    return (TRIAGE_AUTO_DEFAULT, "default") if v is None else (v, "fleet")
+    return _triage_auto_layer(_read_triage_auto(path), "fleet") or (TRIAGE_AUTO_DEFAULT, "default")
 
 
 def _tidy_untouchable(row):
@@ -6101,8 +6129,8 @@ def main(argv=None, env=None):
             return 2
         if args.value == "status":
             if args.seat is None:
-                v = _read_triage_auto(triage_auto_fleet_path(env))
-                mode, src = (TRIAGE_AUTO_DEFAULT, "default") if v is None else (v, "fleet")
+                mode, src = (_triage_auto_layer(_read_triage_auto(triage_auto_fleet_path(env)), "fleet")
+                             or (TRIAGE_AUTO_DEFAULT, "default"))
             else:
                 mode, src = triage_auto_mode(args.seat, env)
         else:

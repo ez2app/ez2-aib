@@ -115,6 +115,21 @@ def is_human_typed(text):
     return not text.lstrip().startswith("<")
 
 
+def _tail_lines(path, size_max):
+    """檔尾最多 size_max 位元組 → (行, 第一行是不是被切到的半行)。開檔 / 讀檔錯誤往外拋。"""
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        n = f.tell()
+        start = max(0, n - int(size_max))
+        cut = False
+        if start > 0:
+            f.seek(start - 1)
+            cut = f.read(1) != b"\n"         # 前一個位元組不是換行 ⇒ 第一行是半行
+        f.seek(start)
+        raw = f.read(int(size_max)).decode("utf-8", "replace")
+    return raw.splitlines(), cut
+
+
 def last_human_at(transcript, size_max=TRANSCRIPT_TAIL_BYTES):
     """對話檔尾段最後一則真人親打的時刻(epoch)。沒給路徑 / 尾段沒有真人親打 ⇒ None(不是在回真人);
     給了路徑卻讀不到 ⇒ UNDETERMINED(判斷不了,#466 Codex r1 M4)。"""
@@ -123,18 +138,21 @@ def last_human_at(transcript, size_max=TRANSCRIPT_TAIL_BYTES):
     if not transcript:
         return None
     try:
-        with open(transcript, "rb") as f:
-            f.seek(0, 2)
-            n = f.tell()
-            f.seek(max(0, n - int(size_max)))
-            raw = f.read(int(size_max)).decode("utf-8", "replace")
+        lines, _cut = _tail_lines(transcript, int(size_max))
     except (OSError, ValueError):
         return UNDETERMINED
-    for ln in reversed(raw.splitlines()):
+    for idx in range(len(lines) - 1, -1, -1):
+        ln = lines[idx]
+        if not ln.strip():
+            continue
         try:
             d = json.loads(ln)
         except ValueError:
-            continue
+            if idx == 0 and _cut:
+                continue                  # 尾段讀取切到的第一行(半行)
+            return UNDETERMINED           # #466 Codex r3 M4:壞行不是「沒有真人」
+        if not isinstance(d, dict):
+            return UNDETERMINED
         txt = _user_text(d)
         if txt is None:
             continue
@@ -185,7 +203,13 @@ def _gate_state(seat, env):
     import dm_queue
     p = dm_queue.seat_dir(seat, env) / GATE_STATE_FILE
     d = _read_json(p)
-    return p, ({} if d is None else d)
+    if d is None:
+        return p, {}
+    at, pairs = d.get("at"), d.get("pairs")
+    # #466 Codex r3 M4:欄位壞了不能轉成 0 / 空(那樣同批限擋就當沒記過、照擋)
+    if type(at) is not int or not isinstance(pairs, list) or not all(isinstance(x, str) and "@" in x for x in pairs):
+        raise Undetermined("shape:" + GATE_STATE_FILE)
+    return p, d
 
 
 def _pairs(hits):
@@ -208,30 +232,31 @@ def _handled_since(seat, pairs, since, env):
         want[iid] = rev
     p = dm_queue.seat_dir(seat, env) / dm_queue.AUDIT_FILE
     try:
-        with open(p, "rb") as f:
-            f.seek(0, 2)
-            n = f.tell()
-            f.seek(max(0, n - AUDIT_TAIL_BYTES))
-            raw = f.read(AUDIT_TAIL_BYTES).decode("utf-8", "replace")
+        lines, cut = _tail_lines(p, AUDIT_TAIL_BYTES)
     except FileNotFoundError:
         return False
     except OSError as exc:
         raise Undetermined("read:audit:%s" % exc.__class__.__name__)
     me = "seat:" + str(seat)
-    for ln in raw.splitlines():
+    for idx, ln in enumerate(lines):
+        if not ln.strip():
+            continue
         try:
             r = json.loads(ln)
         except ValueError:
-            continue                          # 尾段第一行可能被切半;壞行不算本席動作
-        if not isinstance(r, dict) or r.get("ok") is not True or r.get("actor") != me:
+            if idx == 0 and cut:
+                continue                      # 尾段讀取切到的第一行(半行)
+            raise Undetermined("json:audit")  # #466 Codex r3 M4:壞行可能正是本席那一筆,判斷不了
+        if not isinstance(r, dict):
+            raise Undetermined("shape:audit")
+        if r.get("ok") is not True or r.get("actor") != me:
             continue
         if r.get("to") not in ("read", "done", "archived") or r.get("id") not in want:
             continue
-        try:
-            if int(r.get("ts") or 0) >= int(since) and str(r.get("rev")) == want[r["id"]]:
-                return True
-        except (TypeError, ValueError):
-            continue
+        if type(r.get("ts")) is not int:
+            raise Undetermined("fields:audit")
+        if r["ts"] >= int(since) and str(r.get("rev")) == want[r["id"]]:
+            return True
     return False
 
 
@@ -251,11 +276,8 @@ def release_why(seat, hits, now, env=None, transcript=None, long_work=None):
     # 同批限擋(#466 Codex r1 M2):記的是含 rev 的那批 + 擋下時刻;現在這批要是那批的子集合(沒有新信、沒有新 rev),
     #   而且擋下之後本席真的處理過離開的那幾封,才放行。舊信自然過期 / 被別人收走不算本席處理。
     _p, st = _gate_state(seat, env)
-    try:
-        last_at = int(st.get("at") or 0)
-    except (TypeError, ValueError):
-        last_at = 0
-    prev = set(x for x in (st.get("pairs") or []) if isinstance(x, str))
+    last_at = st.get("at") or 0             # _gate_state 已驗形狀(壞了就拋 Undetermined)
+    prev = set(st.get("pairs") or [])
     cur = set(_pairs(hits))
     if prev and 0 <= int(now) - last_at < SAME_BATCH_S and cur <= prev and (prev - cur):
         if _handled_since(seat, sorted(prev - cur), last_at, env):
@@ -306,10 +328,13 @@ def check(seat, T, note, now=None, env=None, transcript=None):
     if not hits:
         return False, ""
     try:
-        auto_on = dm_queue.triage_auto_mode(seat, env)[0] != "off"
-    except Exception:  # noqa: BLE001
-        auto_on = False
-    if auto_on:
+        mode, src = dm_queue.triage_auto_mode(seat, env)
+    except Exception as exc:  # noqa: BLE001 —— #466 Codex r3 M4:開關判斷不了 ⇒ 放行留痕,不退回舊擋法
+        mode, src = "draft", "unreadable:%s" % exc.__class__.__name__
+    if dm_queue.triage_auto_unreadable(src):
+        note("DMGATE FAILOPEN @%s %s:switch:%s n=%d" % (seat, UNDETERMINED, src, len(hits)))
+        return False, ""
+    if mode != "off":
         try:
             why = release_why(seat, hits, now, env=env, transcript=transcript)
         except Exception as exc:  # noqa: BLE001 —— 判斷不了 ⇒ 放行留痕(#466 Codex r1 M4;同本支讀不到佇列的失效方向)
