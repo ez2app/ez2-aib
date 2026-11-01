@@ -4,6 +4,18 @@
 
 Versions follow the `version` in `pyproject.toml`; a release is a `v<version>` tag, created by a maintainer.
 
+## 0.1.68
+
+- **One-step seat opening can attach a second brain**: `aib newproj --new-seat --project-uid … --persona-card …` now takes `--folder` — a route key, a folder, `seat:<cabin>/<seat>` (share that seat's brain) or `new` (create a folder named after the project under the expert drafts route, route key `proj.<first 12 hex of the project uid>`; rerunning reuses it). All checks run before the seat opens: unknown, not AI-writable, the project card already records another brain, or a title that cannot be a folder — none of these open a seat. The route is written to the project card after binding.
+- **`aib newproj --list-brains [--cabin <cabin>]`**: read-only JSON listing attachable brains (route key, title, folder, note count, last update; note counting has a total budget) and the brain each seat is bound to; the 👑 seat follows the same rule as the right pane and comes first.
+- **Inbox triage always triggers**:
+  - At the end of a turn, the Stop gate blocks while the inbox has mail nobody has looked at; each seat can set `triage_auto` to off / draft.
+  - When a wake-up goes unanswered (ACK window: 300 s from the seat's last turn end), a background triage starts that drafts only and never closes mail. Before starting it checks, in order: mid-turn, long work, daily cap, load, free memory, machine-wide slots and the hourly cap.
+  - Background triage can close four machine-verifiable kinds of mail and injects one line into the seat's next turn when it does; `triage-apply` applies a triage draft in one step. Set the hourly cap with `dm_queue.py triage-quota`.
+- **Why triage did not wake is recorded**: each seat's latest reason is in `triage-why.json`; changes are appended to `triage-why.jsonl`.
+- **Handoff rewrites no longer cascade into "incomplete"**: when the latest receipt is incomplete, the round starts from the last complete receipt; unread mail listed at collection time that has since been read or closed no longer needs an explanation.
+- **`aib restart` no longer picks an old snapshot**: boot-time jitter within 10 s counts as the same boot and writes the same snapshot file; with several files for one boot, the most recently written one wins.
+
 ## 0.1.67
 
 - **Right pane page 4 "Captain's Room"**: the right pane now has four tabs (`1.AI  2.AI Usage  3.Cabin log  4.Captain's Room`; page 4 shortens to `4.Room` when narrow). The first row (open the Captain's Room; click or Enter) runs the user's own `aib room open` (no reopen within 3 seconds); three read-only rows show UI mode, Captain's Room add-on version and the local cabin address. If the add-on is not installed it shows the install command instead; anything it cannot measure shows "—" and never stalls the pane. The right-pane page key now cycles through four pages.
