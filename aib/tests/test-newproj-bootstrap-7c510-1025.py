@@ -77,7 +77,7 @@ class Sandbox(unittest.TestCase):
             "schema_version": BP.PYRAMID_VERSION,
             "cards": {CARD: {"persona_uid": CARD, "route_key": "core.handoff", "display_name": "設計助理"}}}), encoding="utf-8")
         self._saved = dict(os.environ)
-        for k in ("EZ2_VAULT_ROOT", "EZ2_ROUTE_CONTRACT", "EZ2_AIB_INSTANCE", "EZ2_AIHUB_SOCKET"):
+        for k in ("EZ2_VAULT_ROOT", "EZ2_ROUTE_CONTRACT", "EZ2_ROUTE_REGISTRY", "EZ2_AIB_INSTANCE", "EZ2_AIHUB_SOCKET"):
             os.environ.pop(k, None)
         os.environ.update({"HOME": str(self.home), "EZ2_VAULT_DIR": str(self.vault), "EZ2_AIB_STATE_ROOT": str(self.root),
                            "EZ2_AIB_HOME": str(self.root), "EZ2_AIB_LOCALE": "zh-TW", "AIB_GENES": "0", "AIB_AUTO_BIND": "0",
