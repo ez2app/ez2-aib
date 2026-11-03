@@ -411,7 +411,9 @@ def kick_session(session, dry_run=False):
 def storm_tick(run, *, path=None, window_s=STORM_CHECK_S, now=None):
     """全機一輪風暴偵測只跑一次:每艙一條守衛,各跑一支 log show 會疊出好幾支,每支約 28% CPU(11-03 andymini)。
     storm_once 本來就是踢全機的艙,一席跑就夠。拿不到鎖或別席剛跑過 ⇒ ("shared", 0)。
-    鎖 / 記號檔開不了 ⇒ 照跑:寧可多一支 log show,不能丟掉偵測。"""
+    鎖 / 記號檔開不了 ⇒ 照跑:寧可多一支 log show,不能丟掉偵測。
+    已知界線:跑的那席剛好關掉時,接手的席可能晚最多 13 秒,那段只查一次最近 15 秒,會有一小段沒查到;
+    風暴會持續,下一輪查得到。不為這個把查詢窗拉長,分格判準是照 15 秒定的。"""
     path = STORM_PROBE_STAMP if path is None else path
     now = time.time() if now is None else now
     try:
@@ -428,12 +430,14 @@ def storm_tick(run, *, path=None, window_s=STORM_CHECK_S, now=None):
             return run()
         if _stamp_fresh(path, window_s - STORM_PROBE_SLACK_S + 60, now):   # _stamp_fresh 會先扣 60 秒
             return "shared", 0
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(str(int(now)))
-        except OSError:
-            pass
-        return run()                    # 跑的時候鎖著,log show 慢也不會疊第二支
+        out = run()                     # 跑的時候鎖著,log show 慢也不會疊第二支
+        if out[0] != "unmeasurable":    # 炸掉或量不到不算跑過,別席下一拍要能重試
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(str(int(now)))
+            except OSError:
+                pass
+        return out
     finally:
         lock.close()
 

@@ -5,9 +5,9 @@
 
 C1 五艙同一刻 ⇒ 只跑一次,其他回 shared;C2 過了間隔換誰都能跑;C3 差 2 秒內不算剛跑過;
 C4 別席跑的時候(鎖被占)不疊第二支,也不寫記號;C5 五條執行緒同時搶,只跑一次;
-C6 跑到一半炸掉,鎖要放掉;C7 記號檔在未來(時鐘跳過)不算剛跑過;
-C8 鎖開不了照跑(不能丟偵測);C9 Guard 的風暴那條真的走這道。
-刀(複本):K1 不看記號;K2 不上鎖;K3 開不了就不跑;K4 Guard 直接呼叫 storm_once。每刀要指定測試 FAIL 才算,匯入失敗不算。
+C6 跑到一半炸掉,鎖要放掉、別席馬上能重試;C7 記號檔在未來(時鐘跳過)不算剛跑過;
+C8 鎖開不了照跑(不能丟偵測);C9 Guard 的風暴那條真的走這道;C10 量不到不算跑過。
+刀(複本):K1 不看記號;K2 不上鎖;K3 開不了就不跑;K4 Guard 直接呼叫 storm_once;K5 量不到也記跑過。每刀要指定測試 FAIL 才算,匯入失敗不算。
 """
 import fcntl
 import os
@@ -94,7 +94,12 @@ class Once(unittest.TestCase):
             raise RuntimeError("x")
         with self.assertRaises(RuntimeError):
             cg.storm_tick(boom, path=self.path, now=1000)
-        self.tick(1000 + cg.STORM_CHECK_S)
+        self.tick(1001)
+        self.assertEqual(self.ran, 1, "炸掉不算跑過,別席下一拍就要能重試")
+
+    def test_c10_unmeasurable_lets_next_seat_retry(self):
+        cg.storm_tick(lambda: ("unmeasurable", 0), path=self.path, now=1000)
+        self.tick(1001)
         self.assertEqual(self.ran, 1)
 
     def test_c7_future_stamp_not_fresh(self):
@@ -123,6 +128,7 @@ KNIVES = {
     "K1": ('if _stamp_fresh(path, window_s - STORM_PROBE_SLACK_S + 60, now):', 'if False:', "test_c1_five_cabins_one_probe"),
     "K2": ('fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)', 'pass', "test_c4_running_elsewhere_no_second_probe"),
     "K3": ('    except OSError:\n        return run()\n    try:\n        try:\n', '    except OSError:\n        return "shared", 0\n    try:\n        try:\n', "test_c8_cannot_open_lock_still_probes"),
+    "K5": ('if out[0] != "unmeasurable":', 'if True:', "test_c10_unmeasurable_lets_next_seat_retry"),
     "K4": ('self._storm = lambda: storm_tick(lambda: storm_once(', 'self._storm = lambda: (lambda f: f())(lambda: storm_once(', "test_c9_guard_goes_through_slot"),
 }
 
