@@ -2118,6 +2118,14 @@ def _main_run(repo, names, a, live, started, lease, mem):
     if _TMP_LEAKS:   # 10-08:跑完還在自己暫存資料夾裡留東西的測試(aib 已經替它刪了;這是告訴你哪支沒清)
         print(T("tmp_leak_summary", {"n": len(_TMP_LEAKS), "items": "、".join(
             "%s(%d)" % (t, k) for t, k in sorted(_TMP_LEAKS, key=lambda x: -x[1])[:10])}))
+    if green + len(unv) < len(res["tests"]):   # 有紅:這段時間 cooldown 收過瀏覽器就講,才分得出是被收還是真紅(11-03)
+        try:
+            import cooldown
+            reaped = cooldown.reaped_since(time.monotonic() - started)
+            if reaped:
+                print(T("cooldown_reaped", {"batches": len(reaped), "n": sum(d.get("killed") or 0 for d in reaped)}))
+        except Exception:  # noqa: BLE001 —— 這行只是提示,不影響結果
+            pass
     if unv:      # ★ 沒驗的要跟紅燈一樣顯眼:總表下一行就列,每支附原因
         print(T("unverified_summary", {"n": len(unv), "items": "、".join(
             "%s(%s)" % (r["name"], " ".join(r.get("needs") or ())) for r in unv)}))

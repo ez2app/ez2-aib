@@ -576,6 +576,12 @@ if [ "${1:-}" = "verify" ]; then
   exec "$T_PY3" "$AIB_SOURCE_ROOT/tools/verify/resume_policy.py" "$@"
 fi
 
+# aib cooldown reaped [--since 秒](11-03):最近 cooldown 收了哪些瀏覽器、為什麼;分得出測試是被收還是真紅。只讀。
+if [ "${1:-}" = "cooldown" ] && [ "${2:-}" = "reaped" ]; then
+  shift
+  exec "$T_PY3" "$HERE/cooldown.py" "$@"
+fi
+
 # aib test <測試檔…>(09-29,the maintainer「跑測試時 1 啟用暗影預載、2 確認它正式啟用,除非 1 沒啟用才用原來的」):
 #   唯一合法的跑測試入口。邏輯在 tools/verify/test_entry.py(自檢 → 沿用或追蹤實跑 → 數新紀錄),不進 tmux。
 #   設計稿 docs/DESIGN-aib-test-entry-shadow-0929.md。受測的倉 = 目前目錄所在的 git 倉(或 --repo)。
