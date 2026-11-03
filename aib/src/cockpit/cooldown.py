@@ -76,7 +76,8 @@ CPU_CRIT_C = 90.0
 LOAD_CRIT = 25.0
 # 收行程 / no-go 的權限(11-03 andymini:單一感測器瞬間 ≥ 90°C 就全收,當下全部平均才 83、macOS 熱壓力 0,正在跑的測試被收光)。
 # 面板等級照舊看瞬間最大值;動作改看「macOS 熱壓力非 0」或「全部感測器平均連續 SUSTAIN_S 秒」。
-REAP_AVG_C = 90.0
+# 門檻 11-03 兩台各 2 小時 5 秒取樣定:andymini 平均最高 84.8、82 以上最長連續 56 秒;測試負載下 Chrome 樣本少,留餘裕。
+REAP_AVG_C = 88.0
 NOGO_AVG_C = 85.0
 SUSTAIN_S = 60
 SUSTAIN_GAP_S = 120     # 兩次取樣隔太久就不算連續(面板停過)
