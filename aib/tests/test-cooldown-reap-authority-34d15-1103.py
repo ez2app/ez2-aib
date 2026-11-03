@@ -11,7 +11,7 @@ A9 平均連續 60 秒 ≥ 85 ⇒ no-go 亮、不收
 A10 動手前先落 reap_begin(原因、設定檔夾),收完那行也帶;aib cooldown reaped 看得到
 A11 load 再高都拿不到收行程的權限
 A14 多面板:鎖被占就退路、併發寫不掉樣本、慢的不蓋別人新樣本;A15 熱壓力讀不到 + 取樣接不上 ⇒ 退回瞬間值,照收
-A16 兩筆中間的空白不算連續;A17 壞歷史當算不出;A18 退路也認平均 ≥ 門檻
+A16 兩筆中間的空白不算連續,同時點的多面板算一筆;A17 壞歷史當算不出;A18 退路也認平均 ≥ 門檻
 A19 記不下原因照收、原因印 stderr;A20 收到一半被砍(只有 reap_begin)也查得到;A21 紅燈那行的彙總
 刀(複本):K1 回到看瞬間值;K2 熱壓力不算;K3 沒歷史就不收;K4 拿掉先記原因;K5 拿掉鎖;K6 拿掉 no_signal;
 K7 筆數不看;K8 壞檔當空;K9 只算收完那行。每刀要指定測試 FAIL 才算,匯入失敗不算。
@@ -191,6 +191,16 @@ class FailureModes(Base):
         self.step(95.0, 91.0, dt=30)
         self.assertEqual(len(self.reaps), 1)
 
+    def test_a16b_same_moment_panels_are_one_sample(self):
+        rows = [(0.0, 91.0), (89.0, 91.0), (89.3, 91.0)]
+        self.assertEqual(C._held_for(rows, 88.0), 0.0)
+        self.assertEqual(C._held_for(rows + [(119.0, 91.0)], 88.0), 119.0)
+
+    def test_a17b_bad_shape_or_nan_is_corrupt(self):
+        for bad in ("{}", '"x"', "[[0, 91], [30, NaN], [60, 91]]", "[[0, Infinity]]"):
+            pathlib.Path(self.hist()).write_text(bad, encoding="utf-8")
+            self.assertIsNone(C._load_history(self.hist()), bad)
+
     def test_a17_corrupt_history_is_no_history(self):
         pathlib.Path(self.hist()).write_text("{broken", encoding="utf-8")
         self.step(91.0, 80.0)
@@ -242,6 +252,27 @@ class Reason(unittest.TestCase):
             C.reap(runner=lambda cmd: self.PS, killer=killed.append, reason={"why": "pressure"})
         self.assertEqual(killed, [11])
         self.assertIn("pressure", err.getvalue())
+
+    def test_a19b_broken_stderr_still_kills(self):
+        class Broken(io.StringIO):
+            def write(self, _s):
+                raise BrokenPipeError()
+        killed = []
+        with mock.patch.object(C, "log", lambda e: False), mock.patch("sys.stderr", Broken()):
+            C.reap(runner=lambda cmd: self.PS, killer=killed.append, reason={"why": "pressure"})
+        self.assertEqual(killed, [11])
+
+    def test_a20c_dry_run_does_not_clear_orphan(self):
+        at = "2026-11-03T12:00:00"
+        rows = [{"action": "reap_begin", "by": 1, "at": at, "pids": [11]},
+                {"action": "reap_begin", "by": 1, "at": at, "dry_run": True, "pids": [11]},
+                {"action": "reap", "by": 1, "at": at, "dry_run": True, "killed": 0}]
+        f = os.path.join(self.tmp.name, "y.log")
+        pathlib.Path(f).write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        now = time.mktime(time.strptime(at, "%Y-%m-%dT%H:%M:%S")) + 5
+        got = C.reaped_since(60, path=f, now=now)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0]["incomplete"])
 
     def test_a20_orphan_begin_is_reported(self):
         def killer(pid):
@@ -324,6 +355,9 @@ class Knives(unittest.TestCase):
 """, """    except (OSError, ValueError, TypeError):
         return []
 """, "FailureModes.test_a17_corrupt_history_is_no_history")
+        self.run_knife('if t_counted - t >= SAMPLE_SPACING_S:', 'if True:', "FailureModes.test_a16b_same_moment_panels_are_one_sample")
+        self.run_knife('return rows if all(math.isfinite(t) and math.isfinite(v) for t, v in rows) else None', 'return rows', "FailureModes.test_a17b_bad_shape_or_nan_is_corrupt")
+        self.run_knife('elif action == "reap" and not d.get("dry_run"):', 'elif action == "reap":', "Reason.test_a20c_dry_run_does_not_clear_orphan")
         self.run_knife('out.extend(orphan(d) for d in open_begin.values())', 'pass', "Reason.test_a20_orphan_begin_is_reported")
 
 

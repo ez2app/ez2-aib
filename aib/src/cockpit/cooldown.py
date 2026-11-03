@@ -82,6 +82,7 @@ NOGO_AVG_C = 85.0
 SUSTAIN_S = 60
 SUSTAIN_GAP_S = 90      # 兩次取樣隔太久就不算連續(面板停過);面板最慢 30 秒一輪,容許漏兩輪
 SUSTAIN_MIN_SAMPLES = 3 # 至少真的量到這麼多筆才算連續,兩筆之間的空白不算證據
+SAMPLE_SPACING_S = 5    # 多個面板同時量算同一個時點;面板最快 5 秒一輪
 HISTORY_LOCK_WAIT_S = 1.0
 HISTORY_KEEP_S = 300
 PRESSURE_CMD = ("/usr/bin/notifyutil", "-g", "com.apple.system.thermalpressurelevel")
@@ -285,7 +286,10 @@ def _load_history(path):
     try:
         with open(path, encoding="utf-8") as fh:
             rows = json.load(fh)
-        return [(float(t), float(v)) for t, v in rows]
+        if not isinstance(rows, list):
+            return None
+        rows = [(float(t), float(v)) for t, v in rows]
+        return rows if all(math.isfinite(t) and math.isfinite(v) for t, v in rows) else None
     except FileNotFoundError:
         return []
     except (OSError, ValueError, TypeError):
@@ -339,13 +343,15 @@ def _held_for(rows, limit):
     """從最新一筆往回,連續 ≥ limit 撐了幾秒;中間斷太久就停,筆數不夠不算。"""
     if not rows or rows[-1][1] < limit:
         return 0.0
-    t_end = t_prev = rows[-1][0]
+    t_end = t_prev = t_counted = rows[-1][0]
     n = 1
     for t, v in reversed(rows[:-1]):
         if v < limit or t_prev - t > SUSTAIN_GAP_S:
             break
         t_prev = t
-        n += 1
+        if t_counted - t >= SAMPLE_SPACING_S:
+            t_counted = t
+            n += 1
     return t_end - t_prev if n >= SUSTAIN_MIN_SAMPLES else 0.0
 
 
@@ -410,7 +416,7 @@ def reaped_since(seconds, path=None, now=None):
             if by in open_begin:
                 out.append(orphan(open_begin[by]))
             open_begin[by] = d
-        elif action == "reap":
+        elif action == "reap" and not d.get("dry_run"):
             open_begin.pop(by, None)
             if d.get("killed"):
                 out.append(d)
@@ -476,7 +482,10 @@ def reap(dry_run=False, runner=None, killer=None, reason=None):
         begin = {"action": "reap_begin", "by": by, "dry_run": dry_run, "reason": reason, "matched": len(hits),
                  "pids": [pid for pid, _c in targets], "profiles": profiles}
         if not log(begin):      # 記不下來也照收(真熱優先),原因至少印出來
-            print("cooldown: %s" % json.dumps(begin, ensure_ascii=False), file=sys.stderr)
+            try:
+                print("cooldown: %s" % json.dumps(begin, ensure_ascii=False), file=sys.stderr)
+            except (OSError, ValueError):
+                pass
     if not dry_run:
         kill = killer or (lambda pid: os.kill(pid, 15))
         for pid, cmd in targets:
