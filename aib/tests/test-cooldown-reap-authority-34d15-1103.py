@@ -197,7 +197,7 @@ class FailureModes(Base):
         self.assertEqual(C._held_for(rows + [(119.0, 91.0)], 88.0), 119.0)
 
     def test_a17b_bad_shape_or_nan_is_corrupt(self):
-        for bad in ("{}", '"x"', "[[0, 91], [30, NaN], [60, 91]]", "[[0, Infinity]]"):
+        for bad in ("{}", '"x"', "[[0, 91], [30, NaN], [60, 91]]", "[[0, Infinity]]", '[{"0": 0, "91": 0}]', "[[0, 91, 5]]"):
             pathlib.Path(self.hist()).write_text(bad, encoding="utf-8")
             self.assertIsNone(C._load_history(self.hist()), bad)
 

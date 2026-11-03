@@ -286,7 +286,7 @@ def _load_history(path):
     try:
         with open(path, encoding="utf-8") as fh:
             rows = json.load(fh)
-        if not isinstance(rows, list):
+        if not isinstance(rows, list) or not all(isinstance(r, list) and len(r) == 2 for r in rows):
             return None
         rows = [(float(t), float(v)) for t, v in rows]
         return rows if all(math.isfinite(t) and math.isfinite(v) for t, v in rows) else None
