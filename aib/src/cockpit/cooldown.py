@@ -80,7 +80,9 @@ LOAD_CRIT = 25.0
 REAP_AVG_C = 88.0
 NOGO_AVG_C = 85.0
 SUSTAIN_S = 60
-SUSTAIN_GAP_S = 120     # 兩次取樣隔太久就不算連續(面板停過)
+SUSTAIN_GAP_S = 90      # 兩次取樣隔太久就不算連續(面板停過);面板最慢 30 秒一輪,容許漏兩輪
+SUSTAIN_MIN_SAMPLES = 3 # 至少真的量到這麼多筆才算連續,兩筆之間的空白不算證據
+HISTORY_LOCK_WAIT_S = 1.0
 HISTORY_KEEP_S = 300
 PRESSURE_CMD = ("/usr/bin/notifyutil", "-g", "com.apple.system.thermalpressurelevel")
 
@@ -129,16 +131,18 @@ def log_path():
 
 
 def log(event):
+    """回是否寫進去了;寫不進去不擋動作,呼叫端要留原因就自己印。"""
     path = log_path()
     if not path:
-        return
+        return False
     event = dict(event)
     event.setdefault("at", time.strftime("%Y-%m-%dT%H:%M:%S"))
     try:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+        return True
     except OSError:
-        pass
+        return False
 
 
 def _num(cell):
@@ -277,12 +281,15 @@ def _history_path():
 
 
 def _load_history(path):
+    """沒有檔 = 空;檔壞了回 None(算不出持續值,不當成「剛開始」)。"""
     try:
         with open(path, encoding="utf-8") as fh:
             rows = json.load(fh)
         return [(float(t), float(v)) for t, v in rows]
-    except (OSError, ValueError, TypeError):
+    except FileNotFoundError:
         return []
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 def _save_history(path, rows):
@@ -300,23 +307,62 @@ def _save_history(path, rows):
         return False
 
 
+def _record_sample(path, now, value):
+    """加鎖記一筆,回時間排序的歷史;鎖不到 / 讀不了 / 寫不進去回 None。
+    同一艙可能開多個面板:不加鎖,慢的那個會用舊副本蓋掉別人剛記的低溫,斷掉的高溫就被算成連續。"""
+    try:
+        import fcntl
+        with open(path + ".lock", "a", encoding="utf-8") as lk:
+            deadline = time.monotonic() + HISTORY_LOCK_WAIT_S
+            while True:
+                try:
+                    fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        return None
+                    time.sleep(0.05)
+            rows = _load_history(path)
+            if rows is None:
+                _save_history(path, [(now, value)])     # 換掉壞檔,下一輪重算
+                return None
+            # 比現在新的別人的樣本要留:我可能是拿到鎖比較慢的那個
+            rows = [r for r in rows if -SUSTAIN_GAP_S <= now - r[0] <= HISTORY_KEEP_S]
+            rows.append((now, value))
+            rows.sort(key=lambda r: r[0])
+            return rows if _save_history(path, rows) else None
+    except (OSError, ImportError):
+        return None
+
+
 def _held_for(rows, limit):
-    """從最新一筆往回,連續 ≥ limit 撐了幾秒;中間斷太久就停。"""
+    """從最新一筆往回,連續 ≥ limit 撐了幾秒;中間斷太久就停,筆數不夠不算。"""
     if not rows or rows[-1][1] < limit:
         return 0.0
     t_end = t_prev = rows[-1][0]
+    n = 1
     for t, v in reversed(rows[:-1]):
         if v < limit or t_prev - t > SUSTAIN_GAP_S:
             break
         t_prev = t
-    return t_end - t_prev
+        n += 1
+    return t_end - t_prev if n >= SUSTAIN_MIN_SAMPLES else 0.0
+
+
+def _instant_authority(cells, value, info, why):
+    """算不出持續值時的退路:寧可多收,不放掉保護。"""
+    lv, reasons = thermal_state(cells)
+    if value >= REAP_AVG_C and lv != CRIT:
+        lv, reasons = CRIT, ["CPU avg %.1f°C ≥ %.0f" % (value, REAP_AVG_C)]
+    return lv, reasons, dict(info, why=why)
 
 
 def heat_authority(cells, now=None, path=None, pressure=None):
     """動作用的熱度:回 (等級, 理由字串清單, 記錄用 dict)。
 
     只有這裡能授權收行程。真熱一定要收:熱壓力非 0 當場算 critical;
-    存不了歷史(算不出持續值)就退回瞬間值,寧可多收,不放掉保護。"""
+    算不出持續值(歷史壞 / 寫不進去 / 鎖不到),或熱壓力讀不到又接不上連續取樣,就退回瞬間值,
+    寧可多收,不放掉保護。"""
     now = time.time() if now is None else now
     mx, avg = _cpu_reading(cells)
     info = {"cpu_max": mx, "cpu_avg": avg, "pressure": pressure}
@@ -326,11 +372,11 @@ def heat_authority(cells, now=None, path=None, pressure=None):
         return UNKNOWN, [_ui("aib.cool.reason.temp_unknown")], dict(info, why="unmeasured")
     value = avg if avg is not None else mx
     path = path or _history_path()
-    rows = [r for r in _load_history(path) if 0 <= now - r[0] <= HISTORY_KEEP_S] if path else []
-    rows.append((now, value))
-    if not path or not _save_history(path, rows):
-        lv, reasons = thermal_state(cells)
-        return lv, reasons, dict(info, why="no_history")
+    rows = _record_sample(path, now, value) if path else None
+    if rows is None:
+        return _instant_authority(cells, value, info, "no_history")
+    if pressure is None and (len(rows) < 2 or rows[-1][0] - rows[-2][0] > SUSTAIN_GAP_S):
+        return _instant_authority(cells, value, info, "no_signal")
     for lv, limit in ((CRIT, REAP_AVG_C), (HOT, NOGO_AVG_C)):
         held = _held_for(rows, limit)
         if held >= SUSTAIN_S:
@@ -339,10 +385,13 @@ def heat_authority(cells, now=None, path=None, pressure=None):
 
 
 def reaped_since(seconds, path=None, now=None):
-    """最近 seconds 秒內真的收了行程的紀錄(新的在後)。給測試端認「是被收還是真紅」。"""
+    """最近 seconds 秒內真的收了行程的紀錄(新的在後)。給測試端認「是被收還是真紅」。
+    只有 reap_begin 沒有收尾那行 = 收到一半被砍:也算,標 incomplete,killed 是打算收的數(上限)。"""
     path = path or log_path()
     now = time.time() if now is None else now
-    out = []
+    out, open_begin = [], {}
+    def orphan(d):
+        return dict(d, killed=len(d.get("pids") or ()), incomplete=True)
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             lines = fh.readlines()[-2000:]
@@ -354,9 +403,26 @@ def reaped_since(seconds, path=None, now=None):
             at = time.mktime(time.strptime(d.get("at", ""), "%Y-%m-%dT%H:%M:%S"))
         except (ValueError, TypeError, AttributeError):
             continue
-        if d.get("action") == "reap" and d.get("killed") and now - at <= seconds:
-            out.append(d)
+        if now - at > seconds:
+            continue
+        action, by = d.get("action"), d.get("by")
+        if action == "reap_begin" and not d.get("dry_run"):
+            if by in open_begin:
+                out.append(orphan(open_begin[by]))
+            open_begin[by] = d
+        elif action == "reap":
+            open_begin.pop(by, None)
+            if d.get("killed"):
+                out.append(d)
+    out.extend(orphan(d) for d in open_begin.values())
+    out.sort(key=lambda d: d.get("at", ""))
     return out
+
+
+def reaped_summary(seconds, path=None, now=None):
+    """給 aib test 紅燈那行用:回 {batches, n},沒收過回 None。"""
+    rows = reaped_since(seconds, path=path, now=now)
+    return {"batches": len(rows), "n": sum(d.get("killed") or 0 for d in rows)} if rows else None
 
 
 def scan_automation_procs(runner=None):
@@ -405,9 +471,12 @@ def reap(dry_run=False, runner=None, killer=None, reason=None):
     targets = hits[keep:][:MAX_KILL_PER_ROUND]
     killed = []
     profiles = _profiles(targets)
+    by = os.getpid()
     if targets:
-        log({"action": "reap_begin", "dry_run": dry_run, "reason": reason, "matched": len(hits),
-             "pids": [pid for pid, _c in targets], "profiles": profiles})
+        begin = {"action": "reap_begin", "by": by, "dry_run": dry_run, "reason": reason, "matched": len(hits),
+                 "pids": [pid for pid, _c in targets], "profiles": profiles}
+        if not log(begin):      # 記不下來也照收(真熱優先),原因至少印出來
+            print("cooldown: %s" % json.dumps(begin, ensure_ascii=False), file=sys.stderr)
     if not dry_run:
         kill = killer or (lambda pid: os.kill(pid, 15))
         for pid, cmd in targets:
@@ -416,7 +485,7 @@ def reap(dry_run=False, runner=None, killer=None, reason=None):
                 killed.append(pid)
             except (OSError, ProcessLookupError):
                 pass
-    log({"action": "reap", "dry_run": dry_run, "scanned": scanned,
+    log({"action": "reap", "by": by, "dry_run": dry_run, "scanned": scanned,
          "matched": len(hits), "killed": len(killed), "pids": killed, "reason": reason, "profiles": profiles,
          "samples": [c[:120] for _, c in targets[:3]]})
     return {"scanned": scanned, "matched": len(hits),

@@ -2121,9 +2121,9 @@ def _main_run(repo, names, a, live, started, lease, mem):
     if green + len(unv) < len(res["tests"]):   # 有紅:這段時間 cooldown 收過瀏覽器就講,才分得出是被收還是真紅(11-03)
         try:
             import cooldown
-            reaped = cooldown.reaped_since(time.monotonic() - started)
+            reaped = cooldown.reaped_summary(time.monotonic() - started)
             if reaped:
-                print(T("cooldown_reaped", {"batches": len(reaped), "n": sum(d.get("killed") or 0 for d in reaped)}))
+                print(T("cooldown_reaped", reaped))
         except Exception:  # noqa: BLE001 —— 這行只是提示,不影響結果
             pass
     if unv:      # ★ 沒驗的要跟紅燈一樣顯眼:總表下一行就列,每支附原因

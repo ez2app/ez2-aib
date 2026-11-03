@@ -10,7 +10,11 @@ A7 歷史寫不進去 ⇒ 退回瞬間值,照收;A8 明細沒平均 ⇒ 用最�
 A9 平均連續 60 秒 ≥ 85 ⇒ no-go 亮、不收
 A10 動手前先落 reap_begin(原因、設定檔夾),收完那行也帶;aib cooldown reaped 看得到
 A11 load 再高都拿不到收行程的權限
-刀(複本):K1 回到看瞬間值 ⇒ A1 紅;K2 熱壓力不算 ⇒ A5 紅;K3 沒歷史就不收 ⇒ A7 紅;K4 拿掉先記原因 ⇒ A10 紅
+A14 多面板:鎖被占就退路、併發寫不掉樣本、慢的不蓋別人新樣本;A15 熱壓力讀不到 + 取樣接不上 ⇒ 退回瞬間值,照收
+A16 兩筆中間的空白不算連續;A17 壞歷史當算不出;A18 退路也認平均 ≥ 門檻
+A19 記不下原因照收、原因印 stderr;A20 收到一半被砍(只有 reap_begin)也查得到;A21 紅燈那行的彙總
+刀(複本):K1 回到看瞬間值;K2 熱壓力不算;K3 沒歷史就不收;K4 拿掉先記原因;K5 拿掉鎖;K6 拿掉 no_signal;
+K7 筆數不看;K8 壞檔當空;K9 只算收完那行。每刀要指定測試 FAIL 才算,匯入失敗不算。
 """
 import io
 import json
@@ -19,6 +23,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -142,6 +147,63 @@ class Authority(Base):
         self.assertTrue(self.nogo(), "load 高 no-go 照舊")
 
 
+class FailureModes(Base):
+    def hist(self):
+        return os.path.join(self.state, "cooldown-temp-history.json")
+
+    def test_a14a_lock_held_means_no_history(self):
+        import fcntl
+        with open(self.hist() + ".lock", "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            with mock.patch.object(C, "HISTORY_LOCK_WAIT_S", 0.1):
+                self.assertIsNone(C._record_sample(self.hist(), 100.0, 80.0))
+
+    def test_a14b_concurrent_writers_keep_samples(self):
+        code = ("import sys; sys.path.insert(0, %r); import cooldown as C\n"
+                "for i in range(30): assert C._record_sample(%r, 1000.0 + i, 80.0) is not None\n"
+                ) % (str(ROOT / "src" / "cockpit"), self.hist())
+        ps = [subprocess.Popen([sys.executable, "-B", "-c", code]) for _ in range(4)]
+        self.assertEqual([p.wait() for p in ps], [0, 0, 0, 0])
+        self.assertEqual(len(C._load_history(self.hist())), 120)
+
+    def test_a14c_slow_writer_keeps_newer_low_sample(self):
+        C._record_sample(self.hist(), 1000.0, 91.0)
+        C._record_sample(self.hist(), 1040.0, 70.0)
+        rows = C._record_sample(self.hist(), 1020.0, 91.0)
+        self.assertEqual([r[1] for r in rows], [91.0, 91.0, 70.0])
+        self.assertEqual(C._held_for(rows, 88.0), 0.0)
+
+    def test_a15_gap_without_pressure_falls_back(self):
+        self.pressure = None
+        self.step(95.0, 91.0, dt=SUSTAIN_GAP + 1)
+        self.assertEqual(len(self.reaps), 1)
+        self.assertEqual(self.reaps[0]["why"], "no_signal")
+
+    def test_a15b_gap_with_pressure_zero_restarts(self):
+        self.step(95.0, 91.0, dt=SUSTAIN_GAP + 1)
+        self.step(95.0, 91.0, dt=SUSTAIN_GAP + 1)
+        self.assertEqual(self.reaps, [])
+
+    def test_a16_two_samples_across_pause_not_sustained(self):
+        self.step(95.0, 91.0)
+        self.step(95.0, 91.0, dt=SUSTAIN_GAP - 1)
+        self.assertEqual(self.reaps, [], "兩筆之間的空白不算證據")
+        self.step(95.0, 91.0, dt=30)
+        self.assertEqual(len(self.reaps), 1)
+
+    def test_a17_corrupt_history_is_no_history(self):
+        pathlib.Path(self.hist()).write_text("{broken", encoding="utf-8")
+        self.step(91.0, 80.0)
+        self.assertEqual(len(self.reaps), 1)
+        self.assertEqual(self.reaps[0]["why"], "no_history")
+        self.assertEqual(len(C._load_history(self.hist())), 1, "壞檔換掉,下一輪重算")
+
+    def test_a18_fallback_honours_avg(self):
+        with mock.patch.object(C, "_save_history", lambda *a: False):
+            self.step(89.0, 88.5)
+        self.assertEqual(len(self.reaps), 1)
+
+
 SUSTAIN_GAP = C.SUSTAIN_GAP_S
 
 
@@ -160,7 +222,7 @@ class Reason(unittest.TestCase):
             seen.append([json.loads(x)["action"] for x in pathlib.Path(C.log_path()).read_text(encoding="utf-8").splitlines()])
         reason = {"why": "sustained", "reasons": ["CPU avg 91.0°C ≥ 90 for 60s"]}
         C.reap(runner=lambda cmd: ps, killer=killer, reason=reason)
-        self.assertEqual(seen[0], ["reap_begin"], "動手前原因已落檔")
+        self.assertEqual(seen[:1], [["reap_begin"]], "動手前原因已落檔")
         rows = [json.loads(x) for x in pathlib.Path(C.log_path()).read_text(encoding="utf-8").splitlines()]
         self.assertEqual(rows[0]["profiles"], ["/tmp/my-prof"])
         self.assertEqual(rows[1]["reason"], reason)
@@ -171,6 +233,44 @@ class Reason(unittest.TestCase):
             self.assertEqual(C.main(["reaped", "--since", "60"]), 0)
         self.assertIn("/tmp/my-prof", buf.getvalue())
         self.assertIn("91.0", buf.getvalue())
+
+    PS = "11 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless=new --user-data-dir=/tmp/my-prof\n"
+
+    def test_a19_log_failure_still_kills_and_prints_reason(self):
+        killed, err = [], io.StringIO()
+        with mock.patch.object(C, "log", lambda e: False), mock.patch("sys.stderr", err):
+            C.reap(runner=lambda cmd: self.PS, killer=killed.append, reason={"why": "pressure"})
+        self.assertEqual(killed, [11])
+        self.assertIn("pressure", err.getvalue())
+
+    def test_a20_orphan_begin_is_reported(self):
+        def killer(pid):
+            raise SystemExit(9)
+        with self.assertRaises(SystemExit):
+            C.reap(runner=lambda cmd: self.PS, killer=killer, reason={"why": "pressure"})
+        got = C.reaped_since(60)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0]["incomplete"])
+        self.assertEqual(got[0]["killed"], 1)
+        self.assertEqual(got[0]["reason"], {"why": "pressure"})
+
+    def test_a20b_interleaved_panels_not_double_counted(self):
+        at = "2026-11-03T12:00:00"
+        rows = [{"action": "reap_begin", "by": 1, "at": at, "pids": [11]}, {"action": "reap_begin", "by": 2, "at": at, "pids": [12]},
+                {"action": "reap", "by": 1, "at": at, "killed": 1, "pids": [11]}, {"action": "reap", "by": 2, "at": at, "killed": 1, "pids": [12]}]
+        f = os.path.join(self.tmp.name, "x.log")
+        pathlib.Path(f).write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        now = time.mktime(time.strptime(at, "%Y-%m-%dT%H:%M:%S")) + 5
+        got = C.reaped_since(60, path=f, now=now)
+        self.assertEqual(len(got), 2)
+        self.assertFalse(any(d.get("incomplete") for d in got))
+
+    def test_a21_summary(self):
+        self.assertIsNone(C.reaped_summary(60))
+        C.reap(runner=lambda cmd: self.PS, killer=lambda pid: None, reason={"why": "pressure"})
+        self.assertEqual(C.reaped_summary(60), {"batches": 1, "n": 1})
+        src = (ROOT / "tools" / "verify" / "test_entry.py").read_text(encoding="utf-8")
+        self.assertIn("cooldown.reaped_summary(", src)
 
     def test_a12_pressure_parsing(self):
         self.assertEqual(C.thermal_pressure(lambda c: "com.apple.system.thermalpressurelevel 2\n"), 2)
@@ -205,17 +305,26 @@ class Knives(unittest.TestCase):
             pathlib.Path(f).write_text(s.replace(old, new), encoding="utf-8")
             r = subprocess.run([sys.executable, "-B", me, target], capture_output=True, text=True, env=dict(os.environ, AIB_NO_KNIVES="1"))
             self.assertNotEqual(r.returncode, 0, target + "\n" + r.stderr[-600:])
+            self.assertIn("FAIL: " + target.split(".")[1], r.stderr, "要這支測試斷言紅,匯入失敗不算刀咬到")
 
     def test_knives(self):
         if os.environ.get("AIB_NO_KNIVES"):
             self.skipTest("刀內不再跑刀")
         self.run_knife('if auth_lv == CRIT:\n        out["reap"]', 'if thermal_lv == CRIT:\n        out["reap"]', "Authority.test_a1_spike_not_reaped")
         self.run_knife('    if pressure:\n        return CRIT,', '    if False:\n        return CRIT,', "Authority.test_a5_pressure_reaps_now")
-        self.run_knife('''        lv, reasons = thermal_state(cells)
-        return lv, reasons, dict(info, why="no_history")''', '''        return OK, [], dict(info, why="no_history")''', "Authority.test_a7_no_history_falls_back_to_instant")
+        self.run_knife('''        return _instant_authority(cells, value, info, "no_history")''', '''        return OK, [], dict(info, why="no_history")''', "Authority.test_a7_no_history_falls_back_to_instant")
         self.run_knife('''    if targets:
-        log({"action": "reap_begin"''', '''    if False:
-        log({"action": "reap_begin"''', "Reason.test_a10_reason_logged_before_kill")
+        begin = {"action": "reap_begin"''', '''    if False:
+        begin = {"action": "reap_begin"''', "Reason.test_a10_reason_logged_before_kill")
+        self.run_knife('fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)', 'pass', "FailureModes.test_a14a_lock_held_means_no_history")
+        self.run_knife('if pressure is None and (len(rows) < 2', 'if False and (len(rows) < 2', "FailureModes.test_a15_gap_without_pressure_falls_back")
+        self.run_knife('if n >= SUSTAIN_MIN_SAMPLES else 0.0', 'if n >= 1 else 0.0', "FailureModes.test_a16_two_samples_across_pause_not_sustained")
+        self.run_knife("""    except (OSError, ValueError, TypeError):
+        return None
+""", """    except (OSError, ValueError, TypeError):
+        return []
+""", "FailureModes.test_a17_corrupt_history_is_no_history")
+        self.run_knife('out.extend(orphan(d) for d in open_begin.values())', 'pass', "Reason.test_a20_orphan_begin_is_reported")
 
 
 if __name__ == "__main__":
