@@ -923,11 +923,11 @@ class Onboard(Sandbox):
                                                + self.onboard_args(3), **self.onboard_kw()))
         self.assertIn(NOTICE, body)
         self.assertIn("@abcde", body.split(NOTICE, 1)[1])
-        # 10-15 整合(#58 × #50):公開版開席單模板只有一份中立版(英文,不跟 EZ2_AIB_LOCALE 走),沒有私倉的「鐵則八」。
+        # 10-15 整合(#58 × #50):公開版開席單模板:中立英文版 + 11-05 起的 zh-TW 版(跟 EZ2_AIB_LOCALE 走,SO.template_rel_for()),沒有私倉的「鐵則八」。
         #   要驗的是「收尾交接那條鐵則跟著開席單送到」⇒ 從模板鐵則段取出含 aib handoff 的那一行(恰好一行),斷言它在開席單裡;
         #   不寫死任何語言的字。
         import seat_onboard as SO
-        rules = SO.apply_profile((ROOT / SO.TEMPLATE_REL).read_text(encoding="utf-8"), "rules")
+        rules = SO.apply_profile((ROOT / SO.template_rel_for()).read_text(encoding="utf-8"), "rules")
         rule = [ln for ln in rules.splitlines() if "aib handoff" in ln]
         self.assertEqual(len(rule), 1, "開席單鐵則段要恰好一行收尾交接規則:%r" % rule)
         self.assertIn("85%", rule[0])
@@ -1039,7 +1039,7 @@ class RuleLine(unittest.TestCase):
         import seat_onboard as SO
         D = importlib.import_module("aib_dm" + "_tool")
         if HAS_ONBOARD_TEMPLATE:   # 公開版缺開席單模板(見 NO_TEMPLATE_WHY):那一段先不量,其餘三層照量
-            rules = SO.apply_profile((ROOT / SO.TEMPLATE_REL).read_text(encoding="utf-8"), "rules")
+            rules = SO.apply_profile((ROOT / SO.template_rel_for()).read_text(encoding="utf-8"), "rules")
             line = [ln for ln in rules.splitlines() if "aib handoff" in ln]
             self.assertEqual(len(line), 1, "開席單鐵則段恰好一行")
             self.assertIn("85%", line[0])
@@ -1246,10 +1246,14 @@ class RestoreKnives(unittest.TestCase):
     def test_Z10_knife_template_drops_rule_reds_rule_and_onboard(self):
         claimed = {"test_H10_rule_line_everywhere", "test_H7_entry_onboard_non_claude_predecessor_missed"}
         copy = _copy_tree(self)
-        layer = copy / "docs/templates/SEAT-ONBOARD.md"
-        # 10-15 整合(#58 × #50):刀錨換成公開版中立模板裡收尾交接那條鐵則(全檔唯一)。
-        old = "3. The program watches your context use: at 80% it reminds you to hand off; at 85% it requires the three wrap-up steps (`aib memory tidy` -> `aib summary` -> `aib handoff` + verify) and holds the turn until verify passes; 95% is the red line (stop new work, hand off now). When the human says to prepare a clear, run `aib handoff` too.\n"
+        import seat_onboard as SO
+        # 10-15 整合(#58 × #50):刀錨 = 模板裡收尾交接那條鐵則(全檔唯一)。
+        # 11-05:模板跟語系走 ⇒ 刀落在這個語系實際投的那份(英文版或 zh-TW 版),錨取「含 aib handoff 的那一行」,不寫死語言。
+        layer = copy / SO.template_rel_for()
         text = layer.read_text(encoding="utf-8")
+        old = [ln + "\n" for ln in text.splitlines() if "aib handoff" in ln and ln[:2].strip(". ").isdigit()]
+        self.assertEqual(len(old), 1, "刀錨行必須恰好一行:%r" % old)
+        old = old[0]
         self.assertEqual(text.count(old), 1, "刀錨必須全檔恰好一次")
         layer.write_text(text.replace(old, ""), encoding="utf-8")
         self.assertEqual(layer.read_text(encoding="utf-8").count(old), 0, "刀沒落")

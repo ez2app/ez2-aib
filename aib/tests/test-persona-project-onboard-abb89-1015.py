@@ -90,6 +90,53 @@ class C1SeatOnboardTemplate(unittest.TestCase):
         self.assertLessEqual(left, {"{role_label}", "{seat_id}", "{window}", "{seat_file}",
                                     "{cabin_label}", "{ack_instruction}"})
 
+    # 11-05 Andy「艦長室的所有文字除了代號請都給我繁中」:語系 zh-TW ⇒ 投繁中版開席單;沒有語系版 ⇒ 退回英文。
+    def _prepare_locale(self, profile, locale):
+        env = dict(self.env, EZ2_AIB_LOCALE=locale)
+        return subprocess.run(
+            [PY, str(COCKPIT / "seat_onboard.py"), "--prepare-self-fetch", "--window", "@7",
+             "--provider", "claude", "--seats", self.seats, "--profile", profile],
+            env=env, capture_output=True, text=True, timeout=60)
+
+    def test_e_zh_tw_locale_delivers_chinese_template(self):
+        for profile in ("full", "rules"):
+            r = self._prepare_locale(profile, "zh-TW")
+            self.assertEqual(r.returncode, 0, (profile, r.stdout, r.stderr))
+            body = pathlib.Path(r.stdout.strip()).read_text(encoding="utf-8")
+            self.assertTrue(body.lstrip().startswith("[鐵則"), body[:80])
+            self.assertNotIn("Iron rules", body)
+            self.assertIn("已就緒", body, profile)
+            self.assertNotIn("aib:section", body)
+            self.assertEqual(re.findall(r"\{[a-z_]+\}", body), [], profile)
+            if profile == "rules":
+                self.assertNotIn("[席位令]", body)
+            else:
+                self.assertIn("seat_id=abcde", body)
+
+    def test_f_locale_without_template_falls_back_to_english(self):
+        sys.path.insert(0, str(COCKPIT))
+        import seat_onboard
+        self.assertEqual(seat_onboard.template_rel_for("ja"), seat_onboard.TEMPLATE_REL)
+        self.assertEqual(seat_onboard.template_rel_for("en"), seat_onboard.TEMPLATE_REL)
+        self.assertEqual(seat_onboard.template_rel_for("zh-TW"), "docs/templates/SEAT-ONBOARD.zh-TW.md")
+        r = self._prepare_locale("rules", "ja")
+        self.assertEqual(r.returncode, 0, (r.stdout, r.stderr))
+        body = pathlib.Path(r.stdout.strip()).read_text(encoding="utf-8")
+        self.assertTrue(body.lstrip().startswith("[Iron rules"), body[:80])
+
+    def test_g_zh_tw_template_matches_english_shape(self):
+        en = (ROOT / "docs" / "templates" / "SEAT-ONBOARD.md").read_text(encoding="utf-8")
+        zh = (ROOT / "docs" / "templates" / "SEAT-ONBOARD.zh-TW.md").read_text(encoding="utf-8")
+        for bad in ("Andy", "the maintainer", "/Users/", "~/.ez2-aib/seats", "艦長"):
+            self.assertNotIn(bad, zh)
+        body_en, body_zh = en.split("---", 1)[1], zh.split("---", 1)[1]
+        self.assertEqual(re.findall(r"<!-- aib:section \w+ -->", body_en),
+                         re.findall(r"<!-- aib:section \w+ -->", body_zh))
+        self.assertEqual(set(re.findall(r"\{[a-z_]+\}", body_en)),
+                         set(re.findall(r"\{[a-z_]+\}", body_zh)))
+        for pct in ("80%", "85%", "95%"):   # CTX 門檻表那一行兩版要一致
+            self.assertIn(pct, body_zh)
+
     def test_d_menu_does_not_offer_load_when_template_missing(self):
         src = (COCKPIT / "aib").read_text(encoding="utf-8")
         i = src.index("aib_open_menu_after_right() {")

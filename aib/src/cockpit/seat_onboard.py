@@ -878,7 +878,7 @@ def current_template_sha(path=None):
     ★ 路徑由本模組推導,呼叫端不各自拼一次:兩處各拼一份的路徑,今天
       等值,搬動目錄時就分岔(aib-dm.sh STATE_DIR 那個缺陷同型)。"""
     try:
-        with open(path or os.path.join(ROOT, TEMPLATE_REL), "rb") as fh:
+        with open(path or os.path.join(ROOT, template_rel_for()), "rb") as fh:
             return template_sha256(fh.read())
     except OSError:
         return None
@@ -1071,7 +1071,7 @@ def record(ledger_path, kind, seat_id, window, sha, now_ms=None, timeout_s=None)
             "summary": {"zh-TW": zh, "en": en},
             "subject": subject,
             "data_ref": {
-                "path": TEMPLATE_REL,
+                "path": template_rel_for(),
                 "sha256": sha,
                 "media_type": "text/markdown",
             },
@@ -1724,8 +1724,28 @@ def onboard_one(window, seat_id, role, template_text, sha, ledger_path,
 
 # ---- CLI -----------------------------------------------------------------
 
+def template_rel_for(locale=None):
+    """依語系挑開席單模板(11-05 Andy:「我看不懂英文」)。
+    `SEAT-ONBOARD.<語系>.md` 存在就用它;不存在(或語系量不到)退回中立英文版 TEMPLATE_REL。
+    不給語系 ⇒ 照 i18n_lib.resolve_locale() 取;取不到 ⇒ 英文版。"""
+    if locale is None:
+        try:
+            if HERE not in sys.path:
+                sys.path.insert(0, HERE)
+            import i18n_lib
+            locale = i18n_lib.resolve_locale()
+        except Exception:  # noqa: BLE001
+            locale = None
+    if locale:
+        base, ext = os.path.splitext(TEMPLATE_REL)
+        rel = "%s.%s%s" % (base, locale, ext)
+        if os.path.isfile(os.path.join(ROOT, rel)):
+            return rel
+    return TEMPLATE_REL
+
+
 def _template_path(arg):
-    return arg or os.path.join(ROOT, TEMPLATE_REL)
+    return arg or os.path.join(ROOT, template_rel_for())
 
 
 def list_missing(state_root=None, ledger_path=None, template_sha=None):
