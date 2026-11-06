@@ -201,11 +201,19 @@ if [ -z "${EZ2_ROUTE_REGISTRY:-}" ]; then
 fi
 # 10-12 新用戶:vault 預設照 route_register.default_vault(EZ2_VAULT_DIR > EZ2_VAULT_ROOT > ~/Desktop/Obsidian/Ez2 有才算
 #   > ~/.ez2-aib/vault);契約都找不到、vault 又是 aib 自己的預設 ⇒ 用套件附的預設契約(有自己 vault 的照舊不猜)。
+# 11-06:多一層 <aib 家>/vault-dir 設定檔(一行絕對路徑,是資料夾才算),與 route_register.configured_vault 同序。
+_aib_vault_setting=""
+if [ -f "${EZ2_AIB_HOME:-$HOME/.ez2-aib}/vault-dir" ]; then
+  IFS= read -r _aib_vault_setting < "${EZ2_AIB_HOME:-$HOME/.ez2-aib}/vault-dir" || true
+  case "$_aib_vault_setting" in /*) [ -d "$_aib_vault_setting" ] || _aib_vault_setting="" ;; *) _aib_vault_setting="" ;; esac
+fi
 if [ -z "${EZ2_VAULT_DIR:-}" ]; then
   if [ -n "${EZ2_VAULT_ROOT:-}" ]; then EZ2_VAULT_DIR="$EZ2_VAULT_ROOT"
+  elif [ -n "$_aib_vault_setting" ]; then EZ2_VAULT_DIR="$_aib_vault_setting"
   elif [ -d "$HOME/Desktop/Obsidian/Ez2" ]; then EZ2_VAULT_DIR="$HOME/Desktop/Obsidian/Ez2"
   else EZ2_VAULT_DIR="${EZ2_AIB_HOME:-$HOME/.ez2-aib}/vault"; fi
 fi
+unset _aib_vault_setting
 export EZ2_VAULT_DIR
 # 10-12 the maintainer「一併修正」:團隊新機(有 Ez2 知識庫、沒有 ez2-ai)⇒ 私有倉隨附的 ez2-ai 正本副本(公開版沒有這個檔)
 if [ -z "${EZ2_ROUTE_REGISTRY:-}" ] && [ -f "$COCKPIT_DIR/../persona_route/vendor/obsidian-route-registry-contract.json" ]; then

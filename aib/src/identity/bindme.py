@@ -118,7 +118,8 @@ def _suite_default_vault():
         import route_register
         return route_register.default_vault()
     except Exception:  # noqa: BLE001
-        return os.path.expanduser("~/Desktop/Obsidian/Ez2")
+        # 11-06:載不到 route_register 時不再猜舊空殼路徑,退 aib 自己的預設(與 route_register.aib_default_vault 同)
+        return os.path.join(os.environ.get("EZ2_AIB_HOME") or os.path.expanduser("~/.ez2-aib"), "vault")
 
 
 DEFAULT_VAULT = _suite_default_vault()

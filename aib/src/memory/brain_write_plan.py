@@ -121,7 +121,6 @@ class WritePlanError(Exception):
 # vault 裡,而同一支 CLI 的 stderr 還印「未寫任何 vault 檔」。**訊息自證清白而判準不存在**,
 # 比多寫一個檔更糟:沒有人會回頭查一個 rc=0 又自稱乾淨的執行。
 
-DEFAULT_VAULT = "~/Desktop/Obsidian/Ez2"   # 與 cockpit-env.sh:185 EZ2_VAULT_DIR 預設同源
 DEFAULT_STATE_ROOT = "~/.ez2-aib"
 RECEIPTS_REL = ("memory", "apply-receipts")
 
@@ -167,12 +166,11 @@ def vault_root():
     `EZ2_VAULT_DIR` 是 repo 正本名(`cockpit-env.sh:185`、`card_registry.resolve_vault`
     同源);`EZ2_VAULT_ROOT` 是艦長 12:43 令文裡的名字,repo 裡目前沒有這個變數——兩個
     都收,免得「令文指一個、程式讀另一個」變成一道指著空氣的閘。"""
-    for var in ("EZ2_VAULT_DIR", "EZ2_VAULT_ROOT"):
-        value = os.environ.get(var)
-        if value:
-            return Path(os.path.expanduser(value))
-    default = Path(os.path.expanduser(DEFAULT_VAULT))
-    return default if default.is_dir() else None
+    # 11-06:規則收斂到 route_register.configured_vault(env > vault-dir 設定檔 > 舊預設有才算);
+    #   沒人指過就回 None,不退 ~/.ez2-aib/vault(apply「不猜」照舊)。
+    import route_register as _RR
+    found = _RR.configured_vault()
+    return Path(found) if found else None
 
 
 def refuse_vault_output(path):

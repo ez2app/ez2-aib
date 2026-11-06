@@ -83,7 +83,6 @@ DIM_STATES = ("measured", "unmeasured")
 # 命名規範(ez2-ai docs/260623-命名規範.md:5):6 碼小寫 base36。fullmatch,不用 $。
 UID_RE = re.compile(r"[0-9a-z]{6}")
 DISPLAY_NAME_MAX = 24  # 與 binding_projection.DISPLAY_SCHEMA 同一個上限
-DEFAULT_VAULT = "~/Desktop/Obsidian/Ez2"  # 與 cockpit-env.sh EZ2_VAULT_DIR 預設同源
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", re.S)
 
 REASON_MISSING_UID = "missing_uid"
@@ -661,7 +660,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="card-registry")
     ap.add_argument("command", choices=["scan", "check", "show", "refresh"])
     ap.add_argument("ref", nargs="?", help="show 用:uid 或 card_ref")
-    ap.add_argument("--vault", help="vault 根(預設 EZ2_VAULT_DIR > %s)" % DEFAULT_VAULT)
+    ap.add_argument("--vault", help="vault 根(預設照 route_register.default_vault:EZ2_VAULT_DIR > <aib 家>/vault-dir > ~/.ez2-aib/vault)")
     ap.add_argument("--contract", help="路由契約(預設 EZ2_ROUTE_REGISTRY)")
     ap.add_argument("--state-root", help="狀態根(預設 EZ2_AIB_STATE_ROOT > EZ2_AIB_HOME > ~/.ez2-aib)")
     ap.add_argument("--out", help="輸出檔(預設 <state_root>/identity/cards.json)")
