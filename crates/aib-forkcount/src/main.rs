@@ -236,6 +236,22 @@ fn spawn_quiet(c: &mut Command) -> Option<std::process::Child> {
 /// Identity coverage needed per class (DECISION-4 C).
 const CAPTURE_THRESHOLD: f64 = 0.99;
 
+/// How many process creations a pattern makes for `--count n`, fixed in
+/// advance (3f312 11-08): the expected count must not come from what the
+/// generator reports, or a creation that silently failed would vanish from
+/// both sides and still read 100 %.
+fn planned_creations(pattern: &str, n: u64) -> Option<u64> {
+    let per_step = match pattern {
+        "single" | "burst" => 1,
+        // gen-one, then its child
+        "grandchild" | "mid-exit" => 2,
+        // 4 threads of "single"
+        "parallel" => 4,
+        _ => return None,
+    };
+    n.checked_mul(per_step)
+}
+
 /// One process creation, as the generator records it: (parent pid, child pid).
 type Creation = (u32, u32);
 
@@ -277,27 +293,34 @@ fn spawn_true() -> Option<Creation> {
 fn cmd_gen(args: &[String]) -> ExitCode {
     let pattern = args.first().map(String::as_str).unwrap_or("");
     let n: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20);
-    let unlisted = args.get(2).map(String::as_str) == Some("unlisted");
+    let knives: Vec<&str> = args.iter().skip(2).map(String::as_str).collect();
+    let unlisted = knives.contains(&"unlisted");
+    // knife: one step is never started and never recorded (a failed spawn)
+    let n_first = if knives.contains(&"short") {
+        n.saturating_sub(1)
+    } else {
+        n
+    };
     let gap = Duration::from_millis(50);
     let mut created: Vec<Creation> = Vec::new();
     match pattern {
         // one direct child per step
         "single" => {
-            for _ in 0..n {
+            for _ in 0..n_first {
                 created.extend(spawn_true());
                 std::thread::sleep(gap);
             }
         }
         // child that starts one grandchild and waits for it
         "grandchild" => {
-            for _ in 0..n {
+            for _ in 0..n_first {
                 created.extend(spawn_gen_one("wait"));
                 std::thread::sleep(gap);
             }
         }
         // child that starts /bin/sleep in its own group and exits at once
         "mid-exit" => {
-            for _ in 0..n {
+            for _ in 0..n_first {
                 created.extend(spawn_gen_one("detach"));
                 std::thread::sleep(gap);
             }
@@ -305,10 +328,11 @@ fn cmd_gen(args: &[String]) -> ExitCode {
         // 4 threads of "single" at once
         "parallel" => {
             let hs: Vec<_> = (0..4)
-                .map(|_| {
+                .map(|t| {
+                    let steps = if t == 0 { n_first } else { n };
                     std::thread::spawn(move || {
                         let mut v = Vec::new();
-                        for _ in 0..n {
+                        for _ in 0..steps {
                             v.extend(spawn_true());
                             std::thread::sleep(gap);
                         }
@@ -322,7 +346,7 @@ fn cmd_gen(args: &[String]) -> ExitCode {
         }
         // n children started back to back, waited for afterwards
         "burst" => {
-            let kids: Vec<_> = (0..n)
+            let kids: Vec<_> = (0..n_first)
                 .filter_map(|_| spawn_quiet(&mut Command::new("/usr/bin/true")))
                 .collect();
             let me_pid = std::process::id();
@@ -382,7 +406,10 @@ fn cmd_gen_one(args: &[String]) -> ExitCode {
 /// is marked unverified.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Attribution {
+    /// fixed in advance from pattern and --count ([`planned_creations`])
     expected: u64,
+    /// creations the generator recorded
+    recorded: u64,
     /// creations seen with their identity (child pid adopted under the
     /// recorded parent)
     identity_confirmed: u64,
@@ -411,6 +438,12 @@ impl Attribution {
         if self.duplicate_child_pids > 0 {
             r.push("duplicate_child_pids");
         }
+        if self.recorded < self.expected {
+            r.push("creations_short");
+        }
+        if self.recorded > self.expected {
+            r.push("creations_over");
+        }
         if self.identity_confirmed > self.expected {
             r.push("capture_above_expected");
         }
@@ -422,6 +455,7 @@ impl Attribution {
 /// under P (identity confirmed), F_P fork events came from P. Children and
 /// events that are not the fixture's are reported, not counted.
 fn attribute(
+    planned: u64,
     created: &[Creation],
     adopted: &BTreeMap<u32, u32>,
     forks_by_pid: &BTreeMap<u32, u64>,
@@ -436,7 +470,8 @@ fn attribute(
         }
     }
     let mut a = Attribution {
-        expected: created.len() as u64,
+        expected: planned,
+        recorded: created.len() as u64,
         duplicate_child_pids: dup,
         ..Attribution::default()
     };
@@ -453,6 +488,15 @@ fn attribute(
         .filter(|(c, p)| by_parent.contains_key(p) && !kids.contains(c))
         .count() as u64;
     a
+}
+
+/// Lines that look like records (`C …`) but do not parse.
+fn malformed_records(stdout: &str) -> u64 {
+    stdout
+        .lines()
+        .filter(|l| l.split_whitespace().next() == Some("C"))
+        .filter(|l| parse_creations(l).is_empty())
+        .count() as u64
 }
 
 fn parse_creations(stdout: &str) -> Vec<Creation> {
@@ -475,6 +519,14 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
         .first()
         .cloned()
         .unwrap_or_else(|| "40".into());
+    let Some(planned) = count
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| planned_creations(&pattern, n))
+    else {
+        eprintln!("aib-forkcount: unknown --pattern {pattern} or bad --count {count}");
+        return ExitCode::from(2);
+    };
     let w = match ForkWatch::start(&[]) {
         Ok(w) => w,
         Err(e) => {
@@ -485,6 +537,9 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
     let mut gen_args = vec!["gen-wait".to_string(), pattern.clone(), count];
     if has(args, "--inject-unlisted") {
         gen_args.push("unlisted".into());
+    }
+    if has(args, "--inject-short") {
+        gen_args.push("short".into());
     }
     // The generator waits on stdin so the watch is in place before it forks.
     let mut gen = match Command::new(me())
@@ -512,11 +567,26 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
     let tracked = w.snapshot().len();
     let adopted = w.adopted_parents();
     w.stop();
-    let created = out
-        .map(|o| parse_creations(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default();
-    let att = attribute(&created, &adopted, &stats.fork_events_by_pid);
-    let v = verdict(&att, watched, stats.list_failures, stats.register_failures);
+    let (gen_rc, stdout) = match out {
+        Ok(o) => (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        ),
+        Err(_) => (None, String::new()),
+    };
+    let created = parse_creations(&stdout);
+    let malformed = malformed_records(&stdout);
+    let att = attribute(planned, &created, &adopted, &stats.fork_events_by_pid);
+    let v = verdict(
+        &att,
+        Observed {
+            watched,
+            generator_ok: gen_rc == Some(0),
+            malformed,
+            list_failures: stats.list_failures,
+            register_failures: stats.register_failures,
+        },
+    );
     let reasons = v.reasons;
     let expected = att.expected;
     let rate = |x: u64| {
@@ -534,6 +604,10 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "pattern": pattern,
             "root_watched": watched,
             "expected_process_creations": expected,
+            "expected_definition": "fixed in advance: --count x creations per step of the pattern",
+            "recorded_process_creations": att.recorded,
+            "generator_rc": gen_rc,
+            "malformed_records": malformed,
             "status": if reasons.is_empty() { "ok" } else { "unverified" },
             "unverified_reasons": reasons,
             "capture_rate": rate(att.identity_confirmed),
@@ -573,22 +647,36 @@ struct Verdict {
     rc: u8,
 }
 
-/// A failed child listing or watch registration means the watcher may have
-/// missed processes, so the run cannot be "ok" whatever the counts say.
-fn verdict(
-    att: &Attribution,
+/// What else the run observed, besides the attribution.
+#[derive(Debug, Clone, Copy)]
+struct Observed {
     watched: bool,
+    /// the generator exited 0
+    generator_ok: bool,
+    malformed: u64,
     list_failures: u64,
     register_failures: u64,
-) -> Verdict {
+}
+
+/// A failed child listing or watch registration means the watcher may have
+/// missed processes; a generator that failed, recorded too few or too many,
+/// or wrote a bad record means the fixture is not what was planned. Either
+/// way the run cannot be "ok" whatever the counts say.
+fn verdict(att: &Attribution, o: Observed) -> Verdict {
     let mut reasons = att.unverified_reasons();
-    if !watched {
+    if !o.watched {
         reasons.push("root_not_watched");
     }
-    if list_failures > 0 {
+    if !o.generator_ok {
+        reasons.push("generator_failed");
+    }
+    if o.malformed > 0 {
+        reasons.push("malformed_records");
+    }
+    if o.list_failures > 0 {
         reasons.push("list_failures");
     }
-    if register_failures > 0 {
+    if o.register_failures > 0 {
         reasons.push("register_failures");
     }
     let meets_threshold = reasons.is_empty()
@@ -623,7 +711,7 @@ fn main() -> ExitCode {
         Some("gen-one") => cmd_gen_one(rest),
         _ => {
             eprintln!(
-                "usage: aib-forkcount run --seconds N [--tmux-socket P]... [--all-tmux] [--pid N]... [--label T]\n       aib-forkcount calibrate --pattern single|grandchild|mid-exit|parallel|burst [--count N] [--inject-unlisted]"
+                "usage: aib-forkcount run --seconds N [--tmux-socket P]... [--all-tmux] [--pid N]... [--label T]\n       aib-forkcount calibrate --pattern single|grandchild|mid-exit|parallel|burst [--count N] [--inject-unlisted] [--inject-short]"
             );
             ExitCode::from(2)
         }
@@ -637,38 +725,91 @@ mod tests {
     fn att(expected: u64, confirmed: u64) -> Attribution {
         Attribution {
             expected,
+            recorded: expected,
             identity_confirmed: confirmed,
             ..Attribution::default()
         }
     }
 
+    fn obs(watched: bool, list_failures: u64, register_failures: u64) -> Observed {
+        Observed {
+            watched,
+            generator_ok: true,
+            malformed: 0,
+            list_failures,
+            register_failures,
+        }
+    }
+
+    #[test]
+    fn the_expected_count_is_fixed_in_advance() {
+        assert_eq!(planned_creations("single", 20), Some(20));
+        assert_eq!(planned_creations("burst", 20), Some(20));
+        assert_eq!(planned_creations("grandchild", 20), Some(40));
+        assert_eq!(planned_creations("mid-exit", 20), Some(40));
+        assert_eq!(planned_creations("parallel", 20), Some(80));
+        assert_eq!(planned_creations("nope", 20), None);
+        assert_eq!(planned_creations("parallel", u64::MAX), None);
+    }
+
+    /// 3f312 11-08: 20 asked, 19 created and recorded, all 19 seen.
+    #[test]
+    fn a_creation_that_never_happened_is_not_hidden() {
+        let created: Vec<Creation> = (0..19).map(|i| (10, 100 + i)).collect();
+        let adopted = created.iter().map(|(p, c)| (*c, *p)).collect();
+        let a = attribute(20, &created, &adopted, &m(&[(10, 19)]));
+        assert_eq!((a.expected, a.recorded, a.identity_confirmed), (20, 19, 19));
+        let v = verdict(&a, obs(true, 0, 0));
+        assert_eq!(
+            (v.reasons, v.meets_threshold, v.rc),
+            (vec!["creations_short"], false, 1)
+        );
+        // one recorded more than planned
+        let created: Vec<Creation> = (0..21).map(|i| (10, 100 + i)).collect();
+        let a = attribute(20, &created, &BTreeMap::new(), &BTreeMap::new());
+        assert!(a.unverified_reasons().contains(&"creations_over"));
+    }
+
+    #[test]
+    fn a_failed_generator_or_a_bad_record_is_unverified() {
+        let mut o = obs(true, 0, 0);
+        o.generator_ok = false;
+        let v = verdict(&att(20, 20), o);
+        assert_eq!((v.reasons, v.rc), (vec!["generator_failed"], 1));
+        let mut o = obs(true, 0, 0);
+        o.malformed = 1;
+        assert_eq!(verdict(&att(20, 20), o).reasons, vec!["malformed_records"]);
+        assert_eq!(malformed_records("C 1 2\nC x 3\nC 4\nnoise\n"), 2);
+        assert_eq!(malformed_records("C 1 2\n"), 0);
+    }
+
     #[test]
     fn list_or_register_failures_make_the_run_unverified() {
         // bb7dc 11-08 mid-exit: 185/200 with 197 list failures came out "ok"
-        let v = verdict(&att(200, 200), true, 197, 0);
+        let v = verdict(&att(200, 200), obs(true, 197, 0));
         assert_eq!(
             (v.reasons.clone(), v.meets_threshold, v.rc),
             (vec!["list_failures"], false, 1)
         );
-        let v = verdict(&att(200, 200), true, 0, 1);
+        let v = verdict(&att(200, 200), obs(true, 0, 1));
         assert_eq!(
             (v.reasons.clone(), v.meets_threshold, v.rc),
             (vec!["register_failures"], false, 1)
         );
-        let v = verdict(&att(200, 200), true, 1, 1);
+        let v = verdict(&att(200, 200), obs(true, 1, 1));
         assert_eq!(v.reasons, vec!["list_failures", "register_failures"]);
     }
 
     #[test]
     fn rc_is_zero_only_when_verified_and_above_threshold() {
-        assert_eq!(verdict(&att(200, 200), true, 0, 0).rc, 0);
-        assert_eq!(verdict(&att(200, 198), true, 0, 0).rc, 0); // exactly 99 %
-        let v = verdict(&att(200, 197), true, 0, 0); // one short
+        assert_eq!(verdict(&att(200, 200), obs(true, 0, 0)).rc, 0);
+        assert_eq!(verdict(&att(200, 198), obs(true, 0, 0)).rc, 0); // exactly 99 %
+        let v = verdict(&att(200, 197), obs(true, 0, 0)); // one short
         assert_eq!((v.meets_threshold, v.rc), (false, 4));
-        let v = verdict(&att(200, 185), true, 0, 0);
+        let v = verdict(&att(200, 185), obs(true, 0, 0));
         assert_eq!((v.meets_threshold, v.rc), (false, 4));
-        assert_eq!(verdict(&att(200, 200), false, 0, 0).rc, 1);
-        assert_eq!(verdict(&att(0, 0), true, 0, 0).rc, 1);
+        assert_eq!(verdict(&att(200, 200), obs(false, 0, 0)).rc, 1);
+        assert_eq!(verdict(&att(0, 0), obs(true, 0, 0)).rc, 1);
     }
 
     fn m(v: &[(u32, u64)]) -> BTreeMap<u32, u64> {
@@ -679,7 +820,7 @@ mod tests {
     fn coalesced_events_lower_only_the_proxy() {
         let created = [(10, 11), (10, 12), (10, 13)];
         let adopted = [(11, 10), (12, 10), (13, 10)].into_iter().collect();
-        let a = attribute(&created, &adopted, &m(&[(10, 1)]));
+        let a = attribute(created.len() as u64, &created, &adopted, &m(&[(10, 1)]));
         assert_eq!(
             (a.expected, a.identity_confirmed, a.fixture_fork_events),
             (3, 3, 1)
@@ -691,7 +832,12 @@ mod tests {
     fn events_never_stand_in_for_identity() {
         // every fork event arrived, no child was adopted: coverage is 0
         let created = [(10, 11), (10, 12)];
-        let a = attribute(&created, &BTreeMap::new(), &m(&[(10, 2)]));
+        let a = attribute(
+            created.len() as u64,
+            &created,
+            &BTreeMap::new(),
+            &m(&[(10, 2)]),
+        );
         assert_eq!((a.identity_confirmed, a.fixture_fork_events), (0, 2));
     }
 
@@ -699,7 +845,7 @@ mod tests {
     fn one_missed_and_one_foreign_is_caught_although_totals_match() {
         let created = [(10, 11), (10, 12)];
         let adopted = [(11, 10), (99, 10)].into_iter().collect();
-        let a = attribute(&created, &adopted, &m(&[(10, 2)]));
+        let a = attribute(created.len() as u64, &created, &adopted, &m(&[(10, 2)]));
         assert_eq!(a.identity_confirmed, 1);
         assert_eq!(a.adopted_not_created, 1);
         assert!(a.unverified_reasons().contains(&"adopted_not_created"));
@@ -710,7 +856,7 @@ mod tests {
         // 11's watch failed, so its child 12 was never adopted
         let created = [(10, 11), (11, 12)];
         let adopted = [(11, 10)].into_iter().collect();
-        let a = attribute(&created, &adopted, &m(&[(10, 1)]));
+        let a = attribute(created.len() as u64, &created, &adopted, &m(&[(10, 1)]));
         assert_eq!((a.expected, a.identity_confirmed), (2, 1));
     }
 
@@ -720,7 +866,7 @@ mod tests {
         // the raw max would say 3/3.
         let created = [(10, 11), (10, 12), (10, 13)];
         let adopted = [(11, 10), (12, 10)].into_iter().collect();
-        let a = attribute(&created, &adopted, &m(&[(10, 4)]));
+        let a = attribute(created.len() as u64, &created, &adopted, &m(&[(10, 4)]));
         assert_eq!(a.fork_events_beyond_created, 1);
         assert!(a
             .unverified_reasons()
@@ -731,7 +877,7 @@ mod tests {
     fn unrecorded_children_are_reported_not_counted() {
         let created = [(10, 11)];
         let adopted = [(11, 10), (99, 10), (500, 7)].into_iter().collect();
-        let a = attribute(&created, &adopted, &BTreeMap::new());
+        let a = attribute(created.len() as u64, &created, &adopted, &BTreeMap::new());
         assert_eq!((a.identity_confirmed, a.adopted_not_created), (1, 1));
         assert!(a.unverified_reasons().contains(&"adopted_not_created"));
     }
@@ -741,14 +887,19 @@ mod tests {
         // pid 11 was recorded as 10's child but adopted under 77 (pid reuse)
         let created = [(10, 11)];
         let adopted = [(11, 77)].into_iter().collect();
-        let a = attribute(&created, &adopted, &BTreeMap::new());
+        let a = attribute(created.len() as u64, &created, &adopted, &BTreeMap::new());
         assert_eq!(a.identity_confirmed, 0);
     }
 
     #[test]
     fn duplicate_pids_make_identity_ambiguous() {
         let created = [(10, 11), (10, 11)];
-        let a = attribute(&created, &BTreeMap::new(), &m(&[(10, 2)]));
+        let a = attribute(
+            created.len() as u64,
+            &created,
+            &BTreeMap::new(),
+            &m(&[(10, 2)]),
+        );
         assert_eq!(a.duplicate_child_pids, 1);
         assert!(a.unverified_reasons().contains(&"duplicate_child_pids"));
     }

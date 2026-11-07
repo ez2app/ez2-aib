@@ -162,3 +162,53 @@ fn calibrate_mid_exit_never_passes_with_failures() {
         assert_eq!(v["meets_threshold"], true, "{v}");
     }
 }
+
+/// 3f312 11-08 knife: one step never started and never recorded. The
+/// expected count is fixed by --count, so the run is short, not 100 %.
+#[test]
+fn calibrate_a_missing_creation_is_unverified() {
+    for (pattern, planned) in [
+        ("single", 10),
+        ("grandchild", 20),
+        ("burst", 10),
+        ("parallel", 40),
+    ] {
+        let out = tool()
+            .args([
+                "calibrate",
+                "--pattern",
+                pattern,
+                "--count",
+                "10",
+                "--inject-short",
+            ])
+            .output()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(out.status.code(), Some(1), "{pattern}: {v}");
+        assert_eq!(v["expected_process_creations"], planned, "{pattern}: {v}");
+        assert!(
+            v["recorded_process_creations"].as_u64().unwrap() < planned,
+            "{pattern}: {v}"
+        );
+        assert_eq!(v["status"], "unverified", "{pattern}: {v}");
+        assert_eq!(v["meets_threshold"], false, "{pattern}: {v}");
+        assert!(
+            v["unverified_reasons"]
+                .to_string()
+                .contains("creations_short"),
+            "{pattern}: {v}"
+        );
+    }
+}
+
+#[test]
+fn calibrate_rejects_an_unknown_pattern_or_count() {
+    for a in [
+        ["--pattern", "nope", "--count", "5"],
+        ["--pattern", "single", "--count", "x"],
+    ] {
+        let out = tool().arg("calibrate").args(a).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{a:?}");
+    }
+}
