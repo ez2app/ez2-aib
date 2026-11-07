@@ -15,8 +15,10 @@
 11-08 加(00:34 事故:背景 job 的 `pkill -f "x" -U $(id -u) -P $(pgrep …)` 把 24 個 tmux 全砍;macOS 的 pkill / pgrep 是
 BSD getopt,遇到第一個比對字串就停止解析 ⇒ 後面的 -U / 501 / -P 全變成「比對字串」,tmux 命令列都帶 -P、路徑帶 501。
 維護者選嚴格版:「禁用 pkill -f / killall」⇒ 一律 pgrep -lf 看過再 kill <pid>):
-  pkill 帶 -f(含 -lf / -9f 這種合併寫法)       → pkill_f
+  pkill(任何寫法,含 -f / -U / -P / 名字)       → pkill(@71206 審查:沒帶 -f 的 pkill -P 1 一樣全滅)
   killall(任何目標)                            → killall
+  kill -1 / kill 0 / kill -- -<群組>              → kill_all(只准正整數 pid)
+  xargs pkill … 這類包一層的也拆開看
   pkill / pgrep 的選項寫在比對字串後面            → opt_after_pattern
   kill $(pgrep …) / kill `pgrep …` / pgrep … | xargs kill(等同 pkill -f)→ kill_subst
 放行：上面以外、引號裡的字(echo / grep)、註解。解析失敗、任何例外 ⇒ 放行(fail-open,同 worktree_path_gate)。
@@ -32,6 +34,8 @@ WRAPPERS = {"timeout", "nice", "time", "command", "exec", "nohup", "caffeinate",
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 REAL_NAME_RE = re.compile(r"^(default|aihub-\d{8}-\d{6}-[0-9a-z]{4})$")
 TMUX_OPT_ARG = {"-S", "-L", "-f", "-c", "-T"}
+XARGS_OPT_ARG = {"-I", "-J", "-L", "-n", "-P", "-s", "-E", "-R", "-S"}
+QUOTED_RE = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
 
 
 def _line_tokens(line):
@@ -66,6 +70,10 @@ def _strip_prefix(seg):
             seg = seg[1:]
             while seg and (seg[0].startswith("-") or ASSIGN_RE.match(seg[0])):
                 seg = seg[2:] if seg[0] in ("-u", "--unset", "-C", "--chdir", "-S") else seg[1:]
+        elif os.path.basename(seg[0]) == "xargs":   # xargs [-I x] [-n 1] [-P 4] … <指令>(@71206 審查 High 3)
+            seg = seg[1:]
+            while seg and seg[0].startswith("-"):
+                seg = seg[2:] if seg[0] in XARGS_OPT_ARG else seg[1:]
         elif os.path.basename(seg[0]) in WRAPPERS:
             seg = seg[1:]
             while seg and (seg[0].startswith("-") or re.fullmatch(r"\d+(\.\d+)?[smhd]?", seg[0])):
@@ -132,14 +140,20 @@ def check(cmd, home=None):
                 return why, " ".join(seg)
         elif prog == "killall":
             return "killall", " ".join(seg)
-        elif prog in ("pkill", "pgrep"):
-            why = _pkill_hit(prog, seg[1:])
+        elif prog == "pkill":   # 維護者:「禁用 pkill」⇒ pgrep -lf 看過再 kill <pid>(@71206 審查 High 1)
+            return (_opt_after_pattern(seg[1:]) or "pkill"), " ".join(seg)
+        elif prog == "pgrep":
+            why = _opt_after_pattern(seg[1:])
             if why:
                 return why, " ".join(seg)
-        elif prog == "kill" and any(re.search(r"\$\(\s*(pgrep|pidof)\b|`\s*(pgrep|pidof)\b", a) for a in seg[1:]):
-            return "kill_subst", " ".join(seg)
+        elif prog == "kill":
+            if any(re.search(r"\$\(\s*(pgrep|pidof)\b|`\s*(pgrep|pidof)\b", a) for a in seg[1:]):
+                return "kill_subst", " ".join(seg)
+            if _kill_all_targets(seg[1:]):
+                return "kill_all", " ".join(seg)
     for line in cmd.splitlines():
-        m = re.search(r"\bpgrep\b[^|;&\n]*\|\s*xargs\b[^|;&\n]*\bkill\b", line)
+        line = QUOTED_RE.sub("''", line)   # 引號裡的字(commit 訊息、grep 樣式)不算(@71206 審查 Medium)
+        m = re.search(r"\bpgrep\b[^|;&\n]*\|\s*xargs\b[^|;&\n]*\b(kill|pkill)\b", line)
         if m:
             return "kill_subst", m.group(0)
         m = re.search(r"\bkill\b[^;&|\n]*(\$\(\s*(pgrep|pidof)\b|`\s*(pgrep|pidof)\b)", line)
@@ -148,37 +162,44 @@ def check(cmd, home=None):
     return None
 
 
+def _kill_all_targets(args):
+    """kill 的目標是 -1(全部)、0(整個群組)、負數(程序群組)⇒ True;只准正整數 pid(@71206 審查 High 2)。"""
+    i, sig_seen = 0, False
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if a in ("-s", "-n"):
+            i, sig_seen = i + 2, True
+            continue
+        if a == "-l":
+            return False
+        if a.startswith("-") and not sig_seen:
+            i, sig_seen = i + 1, True   # 第一個 -X 是訊號(-9 / -KILL / -1=HUP)
+            continue
+        break
+    for a in args[i:]:
+        if re.fullmatch(r"-\d+|0+", a):
+            return True
+    return False
+
+
 PKILL_OPT_ARG = {"-U", "-u", "-G", "-g", "-P", "-s", "-t", "-F", "-d", "-J"}
 
 
-def _pkill_hit(prog, args):
-    """pkill / pgrep:選項寫在比對字串後面(BSD 會把它們當成更多比對字串)、pkill -f。"""
-    seen_pattern = False
-    flags = ""
-    pats = []
+def _opt_after_pattern(args):
+    """pkill / pgrep:比對字串後面又出現選項 ⇒ BSD 會把它們當成更多比對字串(11-08 根因)。`--` 之後全是比對字串。"""
     i = 0
     while i < len(args):
         a = args[i]
         if a == "--":
-            seen_pattern = True
-            i += 1
-            continue
+            return None
         if a.startswith("-") and len(a) > 1:
-            if seen_pattern:
-                return "opt_after_pattern"
-            if a in PKILL_OPT_ARG:
-                i += 2
-                continue
-            if not a[1:].lstrip("0123456789") == "" and not re.fullmatch(r"-[A-Z]+[0-9]*", a):
-                flags += a[1:]
-        else:
-            seen_pattern = True
-            pats.append(a)
-        i += 1
-    if prog == "pkill" and "tmux" in pats:
-        return "killall"
-    if prog == "pkill" and "f" in flags:
-        return "pkill_f"
+            i += 2 if a in PKILL_OPT_ARG else 1
+            continue
+        return "opt_after_pattern" if any(x.startswith("-") and len(x) > 1 and x != "--" for x in
+                                          args[i + 1:args.index("--", i) if "--" in args[i:] else len(args)]) else None
     return None
 
 
@@ -187,7 +208,7 @@ def pre_tool(payload, home=None):
     if payload.get("tool_name") not in (None, "Bash"):
         return None
     cmd = str((payload.get("tool_input") or {}).get("command") or "")
-    if not re.search(r"kill-server|killall|pkill|pgrep|pidof", cmd):
+    if not re.search(r"kill|pgrep|pidof", cmd):
         return None
     hit = check(cmd, home)
     if not hit:
