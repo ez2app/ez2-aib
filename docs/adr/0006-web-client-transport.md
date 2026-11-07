@@ -109,9 +109,9 @@ a new ticket for every reconnect.
   `GET /` response does not contain the token. The one exception is the pairing exchange
   page, which only a valid one-time code gets (section 7).
 
-### 7. How a browser obtains a credential: pairing, then a page credential (discussion 5)
+### 7. How a browser obtains a credential: pairing, then a page credential (discussions 5, 6, 6b)
 
-Decided (maintainers' summaries of discussions 5 and 6, 9320/a63ab, 2026-11-07). Code
+Decided (maintainers' summaries of discussions 5, 6 and 6b, 9320/a63ab, 2026-11-07). Code
 delivery has a candidate (P2) that has not passed security acceptance yet.
 
 **No cookie.** A cookie is scoped by host, not by port: a cookie for `127.0.0.1` is sent
@@ -155,13 +155,16 @@ iframes, `data:` pages and any other local file. It identifies nothing.
 
 **Pairing endpoint (specification; built once the aibd skeleton is in place):**
 - `POST /api/v1/pair/codes`: start-up token only, from `aib`.
-  - Response body: `{code, nonce, expires_in: 30}`.
-  - The code is 32 bytes from the OS secure RNG. It is single use, lives ≤ 30 s, and is
-    bound to this aibd instance. aibd stores only its hash.
-  - `nonce` is a separate random value that `aib` puts in the same file.
+  - Response body: `{code, expires_in: 15}`.
+  - The code is 32 bytes from the OS secure RNG. It is single use and bound to this aibd
+    instance. aibd stores only its hash.
+  - Its lifetime is 15 s. This is a trial value: p50 / p95 / p99 and the tail timeouts are
+    measured in the PoC. A failure fails closed and can be re-paired.
+  - A successful window-open command does not mean the legitimate page redeemed the code.
+    A silent failure is possible, and this limit is stated, not hidden.
 - `POST /api/v1/pair/redeem`:
   - Accepts **only** `application/x-www-form-urlencoded`, with a body of at most 1 KiB
-    and the fields `code` and `nonce`.
+    and the single field `code`.
   - `Origin` must be `null` or aibd's own origin. The Host allow-list still applies, so
     DNS rebinding is refused.
   - GET, JSON or any other content type is refused. `Origin: null` on any other path is
@@ -171,24 +174,46 @@ iframes, `data:` pages and any other local file. It identifies nothing.
   - Every failure returns the same fixed message.
 - Outcomes of redeem:
   - **Valid code:** `200` with the exchange page (below).
-  - **Code already used, same nonce** (the page was reloaded and the form re-sent):
-    `409` "already paired, reopen". Nothing is revoked.
-  - **Code already used, different nonce:** `409`, and **only** the credentials issued
-    from this code are revoked. Other sessions are unaffected.
-  - **Invalid, expired or malformed code:** `401`.
-- The nonce lives in the same file as the code, so whoever can read the file has both.
-  **The nonce is not an identity.** It only keeps a legitimate reload from revoking
-  itself; it cannot detect a takeover by someone who read the file. That case stays
-  undetected and is recorded as such in the tests.
-- **A first credential cannot write.** A credential from pairing can read, but writes and
-  high-risk capabilities are refused with `403 pairing_unconfirmed`. This lasts until an
-  independent confirmation channel that an attacker cannot reach has been found and proven
-  in a PoC. Candidates: confirmation through `aib`'s own start-up token, or a short code
-  compared by the person on the terminal and the page.
-  - Revoking after detection is not prevention. It cannot undo what was done inside the
-    takeover window.
-  - Until confirmation exists, writes follow the Risk levels and need Touch ID. Risk 3 needs
-    Touch ID as before.
+  - **Any second redemption of the same code:** `409`, and **every** credential issued from
+    this code is revoked: the first redeemer's and nobody else's. Other sessions are
+    unaffected.
+    - There is no nonce and no exemption for a re-sent form. The exchange page leaves
+      history with `location.replace`, so a legitimate reload does not re-send it.
+    - Revocation records are kept at least as long as a credential lives (12 h), so a
+      late re-send is still recognised.
+    - Revocation closes that credential's open streams at once.
+  - **Invalid, expired or malformed code:** `401`. A wrong guess never affects an
+    unrelated session.
+
+**A new credential is restricted until it is confirmed (discussion 6b).**
+- A countdown running out is **not** a confirmation. Expiry proves nothing about who
+  redeemed first, and an attacker could simply wait.
+- Until confirmed, the credential gets **neither writes nor sensitive reads**. The event
+  stream, snapshots, conversations, files and personal data all count as sensitive.
+- It may call only this allow-list; everything else returns `403 pairing_unconfirmed`:
+  - `GET /api/v1/pair/status` → `{state: "awaiting_confirmation" | "confirmed" |
+    "revoked", expires_in}`;
+  - `POST /api/v1/pair/revoke` (its own credential);
+  - `GET /api/v1/health`.
+- If it is not confirmed within the confirmation window (a trial value, set by the PoC),
+  it is revoked and the person pairs again.
+- While restricted, the page sends no write at all. Nothing is queued to resend
+  automatically. Later retries only cover requests the server explicitly refused and did
+  not execute, and they carry a stable idempotency key.
+- **Unlocking needs an independent channel that an attacker who read the file cannot
+  reach.** It does not count as established until a PoC proves it. Candidates:
+  - (i) a short code compared by the person on the terminal and the page. It is bound to
+    this aibd instance, this pairing request and a digest of the credential, and it is
+    never in the `0600` file;
+  - (ii) the existing Touch ID approval pop-up.
+- If both fail or time out, the result is manual pairing or an explicit "blocked". Expiry
+  never turns into confirmed.
+- Revoking after detection is not prevention: it cannot undo what was done in the
+  takeover window. That is why the restriction comes first. Risk 3 actions need Touch ID
+  as before.
+- If it is later decided to rely on the `0600` file permissions alone and accept the
+  remaining risk, that is a **risk acceptance**. It needs Andy's explicit consent and is
+  never described as authentication.
 
 **Exchange page: an exception to section 6.** The `200` response of
 `/api/v1/pair/redeem` contains the page credential. It is therefore an exception to "no
@@ -206,7 +231,7 @@ caller. Only a valid code gets this page.
 - The file is created with `O_CREAT | O_EXCL | O_NOFOLLOW`, under a random name that is
   never reused. Owner and mode are read back; if they are wrong, no window is opened
   (fail closed).
-- The file is deleted after success, failure, the 30 s expiry, or a failed window open.
+- The file is deleted after success, failure, expiry, or a failed window open.
   If it cannot be deleted, an error is reported. After a crash, the next start removes
   stale files, and only its own.
 - On Windows the file uses the same `set_owner_only` as the token file. UNVERIFIED.
@@ -231,17 +256,21 @@ is not part of this round.
 **Required tests (each with a knife that turns only its own assertion red, plus a positive
 path so "refuse everything" cannot pass):**
 - Reading the API or the stream without pairing is refused.
-- Pairing code reuse, expiry and concurrent takeover: at most one success. A second use
-  returns `409` and revokes the first credential. The same nonce re-sent does not revoke.
+- Pairing code reuse, expiry and concurrent takeover: at most one success. Any second use
+  returns `409` and revokes the first credential. Revocation closes its open streams. A
+  reload, a bfcache restore or a late re-send is recognised as a second use.
+- A second redemption racing the expiry; clock jumps never unlock.
+- A wrong guess does not affect unrelated sessions.
 - `null` origins without a code, with a random, expired or malformed code, or replaying a
   request, are refused. `null` on any other endpoint is refused. A GET carrying a code is
   refused.
 - The file is gone after use. A mode other than `0600`, a symlink, or a pre-created file of
   the same name means no window is opened.
-- A write with a not-yet-confirmed credential is refused.
-- An attacker who read the whole file redeems first, then the legitimate page re-sends
-  with the same nonce. The test records that this is **not detected**, and asserts that
-  the attacker's credential cannot write.
+- An unconfirmed credential gets `403 pairing_unconfirmed` for every call outside the
+  allow-list, both writes and sensitive reads (stream, snapshot, events).
+- An attacker who read the whole file redeems first and the legitimate page never
+  appears. After expiry, writes and sensitive reads are still refused, and the credential
+  is revoked at the end of the confirmation window.
 - A hostile page on another local port can neither read data nor change anything.
 - Wrong, `null` or missing `Origin`, a forged `Host`, DNS rebinding and preflight abuse
   are refused.
@@ -261,6 +290,8 @@ path so "refuse everything" cannot pass):**
 - Negative: a page reload without `sessionStorage`, or any aibd restart, needs a new
   pairing.
 - Open: P2 security acceptance (real `--app` window, other shells, a second OS account,
-  Windows) and the independent confirmation that unlocks writes (section 7).
+  Windows) and the independent confirmation channel that lifts the restriction (section 7).
+- Negative: until a confirmation channel is proven, a freshly paired page can only show
+  "waiting for confirmation".
 - Open: the catch-up threshold and the `must_deliver` cap are trial values until measured
   (B4).
