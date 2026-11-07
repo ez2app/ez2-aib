@@ -35,24 +35,18 @@ to make another arrangement work.
   trial value). aibd adds nothing for it.
 - No heartbeat by default (ADR 0003 update).
 
-### 3. Fallback only: one-time stream ticket (not built)
+### 3. One-time stream ticket: unapproved option (not built)
 
-Used only if a client proves it must use `EventSource`, which cannot set headers. Until
-then there is no endpoint. If it is built, it is exactly this:
+A ticket in the query string **conflicts** with the rule in section 2 ("no credential in
+a URL, no exception"): before it is redeemed it is a bearer credential that can be taken.
+It is therefore **not approved**. It may only be built after a new explicit ruling and a
+change to this ADR that removes the conflict. Until then nothing below is in force.
 
-- `POST /api/v1/stream-tickets` with the Bearer token and the usual Host / Origin checks
-  → `{ "ticket": "...", "expires_in": 30 }`.
-- 32 random bytes, base64url, unrelated to the token. aibd stores only a hash. A ticket is
-  redeemed **once**, atomically; unredeemed tickets expire after **30 s**; at most **16**
-  outstanding, further requests are refused.
-- Bound to the issuing Origin and to `GET /api/v1/events/stream` only, as the query
-  parameter `ticket`. On any other route `ticket` is a credential in a URL and is refused
-  with `token_in_url`. A redeem with another Origin is refused.
-- Every failure (used, expired, unknown, wrong Origin) returns the same code
-  `ticket_invalid`. Logs record only the route template; the ticket never appears.
-- Every reconnect asks for a new ticket.
-- Tests, each with a knife: second use refused, expired refused, other Origin refused,
-  other route refused, ticket value absent from logs.
+For that future discussion only, the option as proposed (DISCUSS-2): `POST
+/api/v1/stream-tickets` with the Bearer token → `{ticket, expires_in: 30}`; 32 random
+bytes, hash stored, single atomic use, 30 s, at most 16 outstanding, bound to the issuing
+Origin and to `GET /api/v1/events/stream`, every failure `ticket_invalid`, never logged,
+a new ticket for every reconnect.
 
 ### 4. Catch-up and the `truncated` signal
 
@@ -75,9 +69,25 @@ then there is no endpoint. If it is built, it is exactly this:
   progress (ADR 0005).
 - `must_deliver` lists every **approval request, error and terminal event** with
   `since < global_seq <= s`, in order. A snapshot can replace ordinary history, never
-  these. They are rare; if there are more than a cap, `must_deliver_truncated` is true and
-  the client pages them through `GET /api/v1/events?cursor=...&kinds=approval,error,terminal`
-  before showing the session as up to date.
+  these. If there are more than fit in one response, `must_deliver_truncated` is true and
+  the client pages the rest through the dedicated endpoint below, **not** through
+  `/api/v1/events` (whose catch-up threshold would refuse an old cursor).
+- `GET /api/v1/must-deliver?since=<old cursor>&upto=<s>&after=<continuation>&limit=<n>`:
+  - returns only approval / error / terminal events with `since < global_seq <= upto`,
+    in ascending `global_seq` order (stable: `global_seq` is unique);
+  - `upto` is fixed by the snapshot, so events written while the client pages are not
+    mixed in; they arrive through the stream that starts at `s`;
+  - `after` is the last `global_seq` of the previous page (`since` for the first page);
+    the response carries `next` (the last `global_seq` returned) or `null` at the end;
+  - it is **not** subject to the ordinary catch-up threshold; it is bounded by `limit`
+    per page (resource cap) only;
+  - retention: these events are kept for at least the retention window (a trial value,
+    configurable). If `since` is older than the oldest retained event, the response says
+    `unrecoverable: true`; the client must show that history is incomplete and must
+    **not** present the session as up to date.
+- Tests for this contract: more events than one page; a `since` beyond the ordinary
+  catch-up threshold; writes landing while the client pages (none appear before the
+  stream); pruning past `since` gives `unrecoverable`.
 - Closing a UI connection (hidden tab, closed window) never cancels or pauses authorized
   background work.
 
@@ -94,9 +104,19 @@ then there is no endpoint. If it is built, it is exactly this:
 - API responses send `Cache-Control: no-store`; static cache rules never apply to `/api/`.
 - **No page contains the token.** `index.html` and every static file are identical for
   every caller. Other OS accounts on the same machine can reach `127.0.0.1`, so a token
-  embedded in HTML would bypass the owner-only token file. A browser gets access through
-  the one-time pairing of ADR 0003 (HttpOnly cookie), a desktop shell through its own
-  forwarding. Test: an unauthenticated `GET /` response does not contain the token.
+  embedded in HTML would bypass the owner-only token file. Test: an unauthenticated
+  `GET /` response does not contain the token.
+
+### 7. Open: how a browser obtains a credential (discussion 5)
+
+Section 2 assumes the page holds a bearer credential to put in `Authorization`. How it
+gets one is **not decided here** (discussion 5, 2026-11-07). In particular this ADR does
+not claim that an HttpOnly cookie can become a bearer header: page JavaScript cannot read
+an HttpOnly cookie. Options under discussion: aibd accepts a cookie set by a one-time
+pairing (with CSRF protection); a credential held only in page memory after pairing; a
+desktop shell supplying the credential over its own channel. Also to settle there: cookies
+are scoped by host, not port, so a cookie for `127.0.0.1` is sent to every port on it.
+Until that summary, sections 2 and 4–6 describe the transport once a credential exists.
 
 ## Consequences
 
