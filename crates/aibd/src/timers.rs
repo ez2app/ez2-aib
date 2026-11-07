@@ -144,15 +144,8 @@ pub static TREE_CANCEL_WAIT: Timer = Timer::operation(
     "re-check a signalled process tree until it is gone (ADR 0004 cancel steps)",
 );
 
-pub static TREE_ROOT_WAIT: Timer = Timer::operation(
-    "tree.root_wait",
-    ms(250),
-    secs(12 * 3600),
-    "wait for the CLI process itself to exit; to be replaced by the exit event (kqueue NOTE_EXIT / Job message)",
-);
-
 /// Every timer aibd has. A test checks that nothing is declared but missing.
-pub static ALL: &[&Timer] = &[&TREE_CANCEL_WAIT, &TREE_ROOT_WAIT];
+pub static ALL: &[&Timer] = &[&TREE_CANCEL_WAIT];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sample {

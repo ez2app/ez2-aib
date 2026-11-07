@@ -14,7 +14,8 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
@@ -65,7 +66,10 @@ impl Report {
 
 pub struct TreeHandle {
     session_id: String,
-    child: Child,
+    stdout: Option<ChildStdout>,
+    /// Held (not read yet) so the CLI never gets EPIPE on stderr.
+    _stderr: Option<ChildStderr>,
+    exit: Arc<RootExit>,
     root: u32,
     known: BTreeMap<u32, u64>,
     found_by_marker: Vec<u32>,
@@ -96,6 +100,29 @@ fn running(sys: &System, pid: u32, start: u64) -> bool {
     }
 }
 
+/// Exit status of the CLI itself, set by a thread blocked in `wait()`: no
+/// polling, and our direct child is reaped the moment it exits.
+#[derive(Default)]
+struct RootExit {
+    status: Mutex<Option<ExitStatus>>,
+    cv: Condvar,
+}
+
+impl RootExit {
+    fn get(&self) -> Option<ExitStatus> {
+        *self.status.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn wait(&self, timeout: Duration) -> Option<ExitStatus> {
+        let g = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        let (g, _) = self
+            .cv
+            .wait_timeout_while(g, timeout, |s| s.is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        *g
+    }
+}
+
 pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
     let mut c = Command::new(&spec.program);
     c.args(&spec.args)
@@ -110,11 +137,26 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
         c.current_dir(d);
     }
     imp::new_group(&mut c);
-    let child = c.spawn()?;
+    let mut child = c.spawn()?;
     let root = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let exit = Arc::new(RootExit::default());
+    {
+        let exit = exit.clone();
+        std::thread::Builder::new()
+            .name("aibd-root-wait".into())
+            .spawn(move || {
+                let st = child.wait().ok();
+                *exit.status.lock().unwrap_or_else(|e| e.into_inner()) = st;
+                exit.cv.notify_all();
+            })?;
+    }
     let mut h = TreeHandle {
         session_id: spec.session_id.clone(),
-        child,
+        stdout,
+        _stderr: stderr,
+        exit,
         root,
         known: BTreeMap::new(),
         found_by_marker: Vec::new(),
@@ -142,7 +184,7 @@ impl TreeHandle {
     }
 
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.child.stdout.take()
+        self.stdout.take()
     }
 
     /// Test hook: record a process as if a scan had found it.
@@ -251,7 +293,6 @@ impl TreeHandle {
     fn wait_gone(&mut self, grace: Duration) -> std::io::Result<Vec<(u32, u64)>> {
         let op = crate::timers::TREE_CANCEL_WAIT.begin(Some(Instant::now() + grace));
         loop {
-            let _ = self.child.try_wait(); // reap our direct child as soon as it exits
             let mut sys = new_system()?;
             refresh(&mut sys, false);
             self.scan_with(&sys);
@@ -314,7 +355,7 @@ impl TreeHandle {
                 grace
             })?;
         }
-        let exit_code = self.child.try_wait().ok().flatten().and_then(|s| s.code());
+        let exit_code = self.exit.get().and_then(|s| s.code());
         let survivors = self
             .wait_gone(Duration::ZERO)?
             .into_iter()
@@ -333,15 +374,7 @@ impl TreeHandle {
 
     /// Wait for the CLI itself to exit (it may leave descendants running).
     pub fn wait_root(&mut self, timeout: Duration) -> std::io::Result<Option<i32>> {
-        let op = crate::timers::TREE_ROOT_WAIT.begin(Some(Instant::now() + timeout));
-        loop {
-            if let Some(s) = self.child.try_wait()? {
-                return Ok(Some(s.code().unwrap_or(-1)));
-            }
-            if !op.tick() {
-                return Ok(None);
-            }
-        }
+        Ok(self.exit.wait(timeout).map(|s| s.code().unwrap_or(-1)))
     }
 }
 
