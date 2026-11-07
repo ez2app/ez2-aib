@@ -2,7 +2,9 @@
 //! starts, not just a process group:
 //!
 //! 1. the CLI leads a new process group;
-//! 2. descendants are recorded as `(pid, start_time)` from parent-pid scans;
+//! 2. descendants are recorded as `(pid, start_time)`: on macOS by the
+//!    kqueue fork watcher as they appear (`fork_watch`), plus parent-pid
+//!    scans as a backstop;
 //! 3. every process inherits `AIBD_SESSION=<id>`; a sweep over same-user
 //!    processes finds ones the scans missed (double forks, re-parenting).
 //!
@@ -27,6 +29,9 @@ pub struct SpawnSpec {
     /// only `AIBD_SESSION`.
     pub env: Vec<(OsString, OsString)>,
     pub session_id: String,
+    /// Layer 2 on macOS: watch forks with kqueue (ADR 0004 update). Always
+    /// true in aibd; tests turn it off to check the other layers alone.
+    pub watch_forks: bool,
 }
 
 /// One step of a cancel / cleanup, for the `session.cancelled` event.
@@ -45,6 +50,10 @@ pub struct Report {
     pub tree_size: usize,
     /// Found only by the environment-marker sweep.
     pub found_by_marker: Vec<u32>,
+    /// First recorded by the fork watcher (macOS).
+    pub found_by_watch: Vec<u32>,
+    /// Fork events the watcher saw (proxy for the B1 descendant count).
+    pub forks_seen: u64,
     pub exit_code: Option<i32>,
 }
 
@@ -60,6 +69,9 @@ pub struct TreeHandle {
     root: u32,
     known: BTreeMap<u32, u64>,
     found_by_marker: Vec<u32>,
+    found_by_watch: Vec<u32>,
+    #[cfg(target_os = "macos")]
+    watch: Option<super::fork_watch::ForkWatch>,
 }
 
 fn new_system() -> std::io::Result<System> {
@@ -106,12 +118,21 @@ pub fn spawn_tree(spec: &SpawnSpec) -> std::io::Result<TreeHandle> {
         root,
         known: BTreeMap::new(),
         found_by_marker: Vec::new(),
+        found_by_watch: Vec::new(),
+        #[cfg(target_os = "macos")]
+        watch: None,
     };
     let mut sys = new_system()?;
     refresh(&mut sys, false);
     if let Some(p) = sys.process(Pid::from_u32(root)) {
         h.known.insert(root, p.start_time());
+        #[cfg(target_os = "macos")]
+        if spec.watch_forks {
+            h.watch = Some(super::fork_watch::ForkWatch::start(root, p.start_time())?);
+        }
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = spec.watch_forks;
     Ok(h)
 }
 
@@ -130,8 +151,30 @@ impl TreeHandle {
         self.known.insert(pid, start_time);
     }
 
-    pub fn known(&self) -> Vec<u32> {
+    pub fn known(&mut self) -> Vec<u32> {
+        self.absorb();
         self.known.keys().copied().collect()
+    }
+
+    /// Merge what the fork watcher recorded since the last call.
+    fn absorb(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(w) = &self.watch {
+            for (pid, start) in w.snapshot() {
+                if let std::collections::btree_map::Entry::Vacant(e) = self.known.entry(pid) {
+                    e.insert(start);
+                    self.found_by_watch.push(pid);
+                }
+            }
+        }
+    }
+
+    fn forks_seen(&self) -> u64 {
+        #[cfg(target_os = "macos")]
+        if let Some(w) = &self.watch {
+            return w.forks_seen();
+        }
+        0
     }
 
     /// Layer 2: add every live process whose parent is a recorded process.
@@ -144,6 +187,7 @@ impl TreeHandle {
     }
 
     fn scan_with(&mut self, sys: &System) {
+        self.absorb();
         let me = std::process::id();
         loop {
             let mut added = false;
@@ -282,6 +326,8 @@ impl TreeHandle {
             survivors,
             tree_size: self.known.len(),
             found_by_marker: self.found_by_marker.clone(),
+            found_by_watch: self.found_by_watch.clone(),
+            forks_seen: self.forks_seen(),
             exit_code,
         })
     }

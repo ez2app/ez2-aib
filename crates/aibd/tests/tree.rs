@@ -12,30 +12,53 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
+/// Path of the fixture binary, built fresh on first use. `cargo test` does not
+/// rebuild another package's binary, so a stale fixture from an earlier build
+/// would otherwise be tested silently (it happened, 11-07).
 fn fixture() -> PathBuf {
-    // target/<profile>/deps/<test-bin> -> target/<profile>/aib-fixture-tree
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    // target/<profile>/deps/<test-bin>
     let exe = std::env::current_exe().unwrap();
-    let p = exe
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("aib-fixture-tree");
-    assert!(
-        p.exists(),
-        "{} missing: run `cargo test --workspace` (builds the fixture) or `cargo build -p aib-fixture-tree`",
-        p.display()
-    );
+    let profile_dir = exe.parent().unwrap().parent().unwrap().to_path_buf();
+    let target_dir = profile_dir.parent().unwrap().to_path_buf();
+    BUILD.call_once(|| {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let mut c = Command::new(cargo);
+        c.args([
+            "build",
+            "-q",
+            "--locked",
+            "-p",
+            "aib-fixture-tree",
+            "--target-dir",
+        ])
+        .arg(&target_dir)
+        .current_dir(env!("CARGO_MANIFEST_DIR"));
+        if profile_dir.file_name().is_some_and(|n| n == "release") {
+            c.arg("--release");
+        }
+        let st = c.status().unwrap();
+        assert!(st.success(), "building aib-fixture-tree failed: {st}");
+    });
+    let p = profile_dir.join("aib-fixture-tree");
+    assert!(p.exists(), "{} missing after build", p.display());
     p
 }
 
 fn spec(mode: &str, session: &str) -> SpawnSpec {
+    spec_watch(mode, session, true)
+}
+
+/// `watch_forks = false` tests the scan and marker layers on their own; with
+/// the watcher on, it would record everything first and hide a broken layer.
+fn spec_watch(mode: &str, session: &str, watch_forks: bool) -> SpawnSpec {
     SpawnSpec {
         program: fixture(),
         args: vec![mode.into()],
         cwd: None,
         env: vec![("AIB_FIXTURE_TTL".into(), "30".into())],
         session_id: session.to_string(),
+        watch_forks,
     }
 }
 
@@ -123,7 +146,7 @@ fn exit_zero_without_completion_is_interrupted() {
 
 #[test]
 fn cancel_clears_child_escapee_and_orphan() {
-    let mut h = spawn_tree(&spec("tree", "s-tree-scanned")).unwrap();
+    let mut h = spawn_tree(&spec_watch("tree", "s-tree-scanned", false)).unwrap();
     let v = first_line(&mut h);
     let pids = ready_pids(&v);
     let main = v["pids"]["main"].as_u64().unwrap() as u32;
@@ -158,7 +181,7 @@ fn cancel_clears_child_escapee_and_orphan() {
 
 #[test]
 fn marker_sweep_finds_the_reparented_orphan_without_any_scan() {
-    let mut h = spawn_tree(&spec("tree", "s-tree-marker")).unwrap();
+    let mut h = spawn_tree(&spec_watch("tree", "s-tree-marker", false)).unwrap();
     let v = first_line(&mut h);
     let pids = ready_pids(&v);
     let orphan = v["pids"]["orphan"].as_u64().unwrap() as u32;
@@ -201,4 +224,34 @@ fn second_cancel_is_a_clean_no_op() {
     let again = h.cancel(Duration::from_millis(300)).unwrap();
     assert!(again.tree_clean());
     assert!(again.steps.is_empty(), "{:?}", again.steps);
+}
+
+/// ADR 0004 update: the shape real Claude Code leaked. A short-lived parent
+/// starts the system `/bin/sleep` in its own group and exits at once, so the
+/// sleep is re-parented to launchd before any scan, and as an Apple platform
+/// binary it hides `AIBD_SESSION` from the marker sweep. Only the kqueue fork
+/// watcher can record it.
+#[cfg(target_os = "macos")]
+#[test]
+fn fork_watcher_catches_reparented_platform_binary() {
+    let mut h = spawn_tree(&spec("tree-platform", "s-tree-platform")).unwrap();
+    let v = first_line(&mut h);
+    assert_eq!(v["type"], "ready", "{v}");
+    let main = v["pids"]["main"].as_u64().unwrap() as u32;
+    let orphan = v["pids"]["platform_orphan"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("fixture did not report the orphan: {v}"))
+        as u32;
+    // preconditions: re-parented, and really the system binary
+    assert_eq!(ps_field(orphan, "ppid"), "1");
+    assert_eq!(ps_field(orphan, "comm"), "/bin/sleep");
+    let rep = h.cancel(Duration::from_millis(500)).unwrap();
+    assert!(rep.found_by_watch.contains(&orphan), "{rep:?}");
+    assert!(
+        !rep.found_by_marker.contains(&orphan),
+        "marker layer saw it: {rep:?}"
+    );
+    assert!(rep.forks_seen >= 1, "{rep:?}");
+    assert!(rep.tree_clean(), "{rep:?}");
+    assert_eq!(still_running(&[main, orphan]), Vec::<u32>::new());
 }
