@@ -20,12 +20,16 @@ V5 戰情室主迴圈用 pane_wait_if_hidden(第一幀照畫),不再用只看附
 V6 多 client / 連結窗 / grouped session 的可見性;V6b 連結窗在別的 session 被切到能叫醒;V6c grouped 那邊切窗能叫醒
 V2e 真的重新附著(client-attached)⇒ 醒
 V7 40 個寫入者同時 append ⇒ 事件數剛好 +40;V7b 超過 4096 位元組才歸零
-V8 兩艙撞同一個鉤子下標 ⇒ 不蓋別艙、往下找空格、兩邊都收得到事件
+V8 四種鉤子任一種那一格被別人佔 ⇒ 不掛、不蓋、狀態 hook_foreign、照退避等
+V8b 障礙:兩艙都查完 show-hooks 才放行 set-hook ⇒ 內容相同(冪等),兩艙都掛上、同一次切窗兩邊都收到
+V8c 一艙撤登 ⇒ 另一艙照收、撤登的不再收、共用鉤子不拔;V8d 懸空登記(艙夾已刪)⇒ 登記時清掉、鉤子不替它建檔
 S1–S5 沙盒守門:夾消失 / socket 指預設 / 沙盒外路徑 / 清理路徑 / 交給被測 bash 的 TMUX ⇒ 一律拒跑、tmux 一次都沒執行
 刀(複本 + run_guarded):K1 量不到當看不見 ⇒ V3;K2 改回 session_attached ⇒ V1;K3 拿掉讀基準後重判 ⇒ V2c;
-K4 拿掉路徑白名單 ⇒ V4;K5 戰情室退回 pane_wait_if_detached ⇒ V5;K6 鉤子改成覆寫(不是 append)⇒ V2d;K7 不看那格是誰的就用 ⇒ V8;
+K4 拿掉路徑白名單 ⇒ V4;K5 戰情室退回 pane_wait_if_detached ⇒ V5;K6 鉤子改成覆寫(不是 append)⇒ V2d;
+K7 鉤子內容改成各艙不同(直寫自己的訊號檔,r3 寫法)⇒ V8b;K10 不查別人佔格 ⇒ V8;
 K8 守門不查夾在不在 ⇒ S1;K9 守門不擋預設 socket ⇒ S2。
-(鉤子掛全域 -g 而不是本 session:試過把它改回 -t 當刀,連結窗 / grouped 情境照樣醒,咬不到 ⇒ 不列刀;
+(r4:一個全域廣播鉤子,固定下標 4770、內容逐字固定;各艙只登記 / 撤登 <狀態根>/state/pane-vis/reg/*.reg。
+ 鉤子掛全域 -g 而不是本 session:試過把它改回 -t 當刀,連結窗 / grouped 情境照樣醒,咬不到 ⇒ 不列刀;
  -g 留著是因為事件可能發生在別的 session,寧可多收一點、不會畫錯。)
 刀一律斷言「FAIL: <目標>」且沒有 ERROR
 """
@@ -223,29 +227,97 @@ class RealTmux(Base):
         self.assertIn("hooked=1", out, out)
         self.assertLess(took, 4.0, "重新附著 %.1f 秒才醒\n%s" % (took, out))
 
-    def _base_idx(self):
-        p = self.bash(". '%s'\nb=\"$(printf '%%s' \"$PANE_VIS_SIG\" | cksum)\"; b=${b%%%% *}; echo $(( b %% 9000 + 1000 ))"
-                      % TICK)
-        return int(p.stdout.strip())
+    HOOKS = ("session-window-changed", "client-attached", "client-detached", "client-session-changed")
+    IDX = 4770
 
-    def test_v8_hook_slot_collision(self):
-        # 兩艙刻意撞同一格:別艙(另一個訊號檔)先佔了本艙算出來的下標
-        idx = self._base_idx()
-        other = self.d / "other"
-        other.mkdir()
-        foreign = "run-shell -b \"printf . >> '%s/.panevis.ev' 2>/dev/null || :\"" % other
-        self.sbx.tm("set-hook", "-g", "session-window-changed[%d]" % idx, foreign)
+    def slot(self, hook):
+        out = self.sbx.tm("show-hooks", "-g", hook).stdout
+        for ln in out.splitlines():
+            if ln.startswith("%s[%d] " % (hook, self.IDX)):
+                return ln.split(" ", 1)[1]
+        return ""
+
+    def test_v8_foreign_slot_not_taken(self):
+        # 四種鉤子任一種那一格被別人佔 ⇒ 不掛、不蓋、狀態 hook_foreign、照退避等
+        foreign = 'run-shell -b "true # 別人的"'
+        for h in self.HOOKS:
+            with self.subTest(h):
+                for x in self.HOOKS:
+                    self.sbx.tm("set-hook", "-gu", "%s[%d]" % (x, self.IDX))
+                self.sbx.tm("set-hook", "-g", "%s[%d]" % (h, self.IDX), foreign)
+                before = self.slot(h)
+                p = self.bash(". '%s'\npane_tick_init\npane_wait_if_hidden; echo \"hooked=$PANE_VIS_HOOKED\"" % TICK,
+                              self.tick_env(self.pb, {"EZ2_PANE_DETACHED_TICK": "1", "EZ2_PANE_DETACHED_TICK_MAX": "1"}))
+                self.assertIn("hooked=0", p.stdout, p.stdout + p.stderr)
+                self.assertEqual((self.state / ".panevis.state").read_text().strip(), "hook_foreign")
+                self.assertEqual(self.slot(h), before, "別人的鉤子被蓋掉")
+                for x in self.HOOKS:
+                    if x != h:
+                        self.assertEqual(self.slot(x), "", "被佔時不該先掛別種:%s" % x)
+
+    def cabin(self, name):
+        st = self.d / name
+        st.mkdir(exist_ok=True)
+        return st
+
+    def test_v8b_two_cabins_race_idempotent(self):
+        # 障礙:兩艙都查完 show-hooks(都看到空格)才放行 set-hook ⇒ 冪等:兩艙都掛上、同一次切窗兩邊都收到
         self.attach()
-        out, took = self.wait_hidden(self.pb, action=self.sel("h:b"))
-        self.assertIn("hooked=1", out, out)
-        self.assertLess(took, 3.0, "撞格後本艙沒叫醒(%.1f 秒)\n%s" % (took, out))
-        hooks = self.sbx.tm("show-hooks", "-g", "session-window-changed").stdout
-        self.assertIn("session-window-changed[%d] " % idx, hooks)
-        self.assertIn(str(other), [ln for ln in hooks.splitlines()
-                                   if ln.startswith("session-window-changed[%d] " % idx)][0], "別艙那格被蓋掉\n" + hooks)
-        self.assertIn("session-window-changed[%d] " % (idx + 1), hooks, "本艙應往下找空格\n" + hooks)
-        # 別艙的鉤子仍在作用:同一次切窗也寫進它的訊號檔
-        self.assertTrue((other / ".panevis.ev").exists(), "別艙沒收到事件")
+        bar = self.d / "bar"
+        bar.mkdir()
+        prog = (". '%s'\n"
+                "tmux() { if [ \"$1\" = set-hook ]; then : > '%s/'$ME; n=0;"
+                " while [ ! -e '%s/'$OTHER ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n+1)); done; fi; command tmux \"$@\"; }\n"
+                "pane_vis_hook; echo \"hooked=$PANE_VIS_HOOKED\"\n" % (TICK, bar, bar))
+        procs = []
+        for me, other in (("A", "B"), ("B", "A")):
+            st = self.cabin("cab" + me)
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.d),
+                   "EZ2_COCKPIT_STATE_DIR": str(st), "ME": me, "OTHER": other}
+            env.update(self.tick_env(self.pb))
+            procs.append(subprocess.Popen([BASH, "-c", prog], env=env, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, text=True))
+        outs = [p.communicate(timeout=30)[0] for p in procs]
+        self.assertTrue((bar / "A").exists() and (bar / "B").exists(), "障礙沒走到 set-hook")
+        self.assertEqual([o.strip() for o in outs], ["hooked=1", "hooked=1"], outs)
+        sigs = [self.d / "cabA" / ".panevis.ev", self.d / "cabB" / ".panevis.ev"]
+        size0 = [f.stat().st_size for f in sigs]
+        self.sbx.tm("select-window", "-t", "h:b")
+        end = time.time() + 3
+        while time.time() < end and any(f.stat().st_size == z for f, z in zip(sigs, size0)):
+            time.sleep(0.05)
+        self.assertEqual([f.stat().st_size > z for f, z in zip(sigs, size0)], [True, True], "有一艙沒收到事件")
+
+    def test_v8c_unregister_other_still_hears(self):
+        self.attach()
+        for name in ("cabA", "cabB"):
+            st = self.cabin(name)
+            p = self.bash(". '%s'\npane_vis_hook; echo \"hooked=$PANE_VIS_HOOKED\"" % TICK,
+                          self.tick_env(self.pb, {"EZ2_COCKPIT_STATE_DIR": str(st)}))
+            self.assertIn("hooked=1", p.stdout, p.stdout + p.stderr)
+        p = self.bash(". '%s'\npane_vis_unregister" % TICK, {"EZ2_COCKPIT_STATE_DIR": str(self.d / "cabA")})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        a, b = self.d / "cabA" / ".panevis.ev", self.d / "cabB" / ".panevis.ev"
+        a0, b0 = a.stat().st_size, b.stat().st_size
+        self.sbx.tm("select-window", "-t", "h:b")
+        end = time.time() + 3
+        while time.time() < end and b.stat().st_size == b0:
+            time.sleep(0.05)
+        time.sleep(0.3)
+        self.assertGreater(b.stat().st_size, b0, "撤掉 A 之後 B 收不到")
+        self.assertEqual(a.stat().st_size, a0, "撤登的 A 還在收")
+        self.assertNotEqual(self.slot("session-window-changed"), "", "撤登不該拔掉共用鉤子")
+
+    def test_v8d_dangling_registration_cleaned(self):
+        reg = self.d / ".ez2-aib" / "state" / "pane-vis" / "reg"
+        reg.mkdir(parents=True)
+        dead = reg / "_gone_.panevis.ev.reg"
+        os.symlink(str(self.d / "gone" / ".panevis.ev"), str(dead))
+        self.attach()
+        p = self.bash(". '%s'\npane_vis_hook; echo \"hooked=$PANE_VIS_HOOKED\"" % TICK, self.tick_env(self.pb))
+        self.assertIn("hooked=1", p.stdout, p.stdout + p.stderr)
+        self.assertFalse(os.path.lexists(str(dead)), "懸空的登記沒清")
+        self.assertFalse((self.d / "gone").exists(), "鉤子不該替懸空登記建檔")
 
     def test_v4_unsafe_path_no_hook(self):
         self.attach()
@@ -436,16 +508,18 @@ KNIVES = [
     ("K3", "  # 契約第 2 條:讀完基準再判一次。判看不見之後、讀基準之前的切回 / 附著在這裡接住。\n  if pane_visible; then",
      "  # 契約第 2 條:讀完基準再判一次。判看不見之後、讀基準之前的切回 / 附著在這裡接住。\n  if false; then",
      "src/cockpit/pane-tick.sh", "RealTmux.test_v2c_switch_after_hook_before_baseline"),
-    ("K4", "  case \"$PANE_VIS_SIG\" in\n    ''|[!/]*|*[!A-Za-z0-9._/+-]*) return 0 ;;",
-     "  case \"$PANE_VIS_SIG\" in\n    '') return 0 ;;",
+    ("K4", "  case \"$PANE_VIS_SIG\" in ''|[!/]*|*[!A-Za-z0-9._/+-]*) pane_vis_state no_hook_path; return 0 ;; esac",
+     "  case \"$PANE_VIS_SIG\" in '') return 0 ;; esac",
      "src/cockpit/pane-tick.sh", "RealTmux.test_v4_unsafe_path_no_hook"),
     ("K5", '  if [ "$FIRST_PAINT" != "1" ] && pane_wait_if_hidden; then continue; fi\n',
      "  pane_wait_if_detached && continue\n",
      "src/cockpit/warroom-board.sh", "Static.test_v5_warroom_uses_hidden"),
-    ("K6", '  cmd="run-shell -b \\"printf . >> $mark', '  cmd="run-shell -b \\"printf . > $mark',
+    ("K6", '&& printf . >> \\"\\$r\\"; done 2>/dev/null; :\'"', '&& printf . > \\"\\$r\\"; done 2>/dev/null; :\'"',
      "src/cockpit/pane-tick.sh", "RealTmux.test_v2d_back_and_forth_still_wakes"),
-    ("K7", '    if [ -z "$line" ] || [[ "$line" == *"$mark"* ]]; then', '    if true; then',
-     "src/cockpit/pane-tick.sh", "RealTmux.test_v8_hook_slot_collision"),
+    ("K7", '  local tgt="$PANE_VIS_REG/*.reg"', '  local tgt="$PANE_VIS_SIG"',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v8b_two_cabins_race_idempotent"),
+    ("K10", '    elif [ "$line" != "$shown" ]; then', '    elif false; then',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v8_foreign_slot_not_taken"),
     ("K8", "        if not self.root.is_dir():\n            raise SandboxRefused",
      "        if False:\n            raise SandboxRefused",
      "tests/test-pane-visible-043dd-1107.py", "Guard.test_s1_dir_gone"),

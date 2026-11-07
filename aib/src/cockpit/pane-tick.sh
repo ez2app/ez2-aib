@@ -254,54 +254,94 @@ pane_visible() {
   return 1
 }
 
-# ── 喚醒事件序號(#477 r3:append 一個位元組 = 一個事件;鉤子下標有所有權)────────
+# ── 喚醒事件序號(#477 r4:一個全域廣播鉤子 + 各艙登記;append 一個位元組 = 一個事件)──────
 # 契約:
-#   1) 事件 = tmux 全域鉤子 session-window-changed / client-attached / client-detached / client-session-changed。
-#      每個事件往訊號檔 O_APPEND 寫 1 個位元組(`printf . >>`)。序號 = 檔案大小:append 是原子的、只增不減,
-#      沒有鎖、不會回退,多個寫入者同時寫也各記一筆(V7)。
-#   2) 等待方:先讀大小當基準,**讀完基準後再判一次可見性**,看得見就不睡;看不見才等「大小 ≠ 基準」或退避到期。
-#      判看不見 → 掛鉤 → 讀基準之間的切回 / 附著由第二次判定接住(V2b / V2c);之後的事件一定讓大小變大。
-#   3) 檔超過 PANE_VIS_MAX_BYTES(4096)時,由**確認看得見**的那一方 truncate 歸零;同艙別的格正在等的話會看到
-#      大小變了而醒來重判一次(多一支 tmux,不會畫錯)。
-#   4) 鉤子下標:由訊號檔路徑 cksum 取 1000–9999;掛之前先 show-hooks 看那一格 —— 空的或就是本艙的訊號檔才用,
-#      被別艙佔了就往下找空格(最多 64 格),找不到就不掛、只靠退避輪詢(V8 兩艙刻意撞同一格)。
-#   5) 鉤子掛不上(路徑有 tmux 會解析的字元 / 不是絕對路徑 / tmux 拒絕)⇒ 只靠退避輪詢,行為同 pane_wait_if_detached。
-# run-shell 有輸出或 rc≠0 時 tmux 會把當前格切進 view-mode ⇒ 寫檔失敗一律吞。
+#   1) 事件 = tmux 全域鉤子 session-window-changed / client-attached / client-detached / client-session-changed,
+#      四種都掛在**同一個固定下標 PANE_VIS_IDX**,內容**逐字固定**(只跟登記夾路徑有關,同一使用者各艙都一樣):
+#        對登記夾 <狀態根>/state/pane-vis/reg/ 裡每個 *.reg(符號連結,指到某艙的訊號檔)append 1 個位元組。
+#      內容相同 ⇒ 多艙同時 set-hook 是冪等的,誰先誰後結果都一樣,沒有搶格的競態(V8b 障礙測試)。
+#   2) 各艙只做登記:在登記夾放一個指到自己訊號檔的符號連結(ln -s 到暫存名 + mv 原子換上),不碰別艙的。
+#      同艙多個面板共用一個訊號檔 ⇒ 共用一筆登記;已經指對了(-ef)就不動 —— 常態零 fork。
+#      艙夾刪掉後連結懸空:鉤子 [ -e ] 跳過,下一次有人登記時順手清掉。
+#   3) 掛之前一次 tmux 查四種鉤子那一格:全空 / 全是我們的 ⇒ 缺的補上(全是我們的就不寫);
+#      任一種被別的內容佔 ⇒ 不掛、不搶,這艙退回退避輪詢,狀態檔 .panevis.state 寫 hook_foreign(V8)。
+#   4) 序號 = 訊號檔大小:append 原子、只增不減、無鎖;多個寫入者同時寫各記一筆(V7)。
+#   5) 等待方:先讀大小當基準,**讀完基準後再判一次可見性**;看不見才等「大小 ≠ 基準」或退避到期(V2b / V2c)。
+#   6) 檔超過 PANE_VIS_MAX_BYTES(4096)時,由**確認看得見**的那一方 truncate 歸零(inode 不變,登記照樣有效)。
+#   7) 路徑(訊號檔 / 登記夾)有白名單外的字元或不是絕對路徑 ⇒ 不掛、只靠退避輪詢(V4)。
+# run-shell 有輸出或 rc≠0 時 tmux 會把當前格切進 view-mode ⇒ 迴圈錯誤導掉、最後 `:` 收 rc0。
 PANE_VIS_SIG="${EZ2_COCKPIT_STATE_DIR:+$EZ2_COCKPIT_STATE_DIR/.panevis.ev}"
+PANE_VIS_REG="${EZ2_AIB_STATE_ROOT:-${EZ2_AIB_HOME:-${HOME:-}/.ez2-aib}}/state/pane-vis/reg"
+PANE_VIS_IDX=4770
 PANE_VIS_MAX_BYTES=4096
 PANE_VIS_HOOKED=0
-PANE_VIS_IDX=""
+PANE_VIS_HOOKS="session-window-changed client-attached client-detached client-session-changed"
+
+# 鉤子內容(tmux 指令)與 show-hooks 印出來的樣子(tmux 會改用雙引號、把 " 和 $ 加反斜線)。
+pane_vis_hook_cmd() {
+  local tgt="$PANE_VIS_REG/*.reg"
+  printf -v "$1" '%s' "run-shell -b 'for r in $tgt; do [ -e \"\$r\" ] && printf . >> \"\$r\"; done 2>/dev/null; :'"
+  printf -v "$2" '%s' "run-shell -b \"for r in $tgt; do [ -e \\\"\\\$r\\\" ] && printf . >> \\\"\\\$r\\\"; done 2>/dev/null; :\""
+}
+
+pane_vis_state() {
+  [ -n "${EZ2_COCKPIT_STATE_DIR:-}" ] || return 0
+  printf '%s\n' "$1" > "$EZ2_COCKPIT_STATE_DIR/.panevis.state" 2>/dev/null || :
+}
+
+# 登記:<登記夾>/<訊號檔路徑把 / 換成 _>.reg → 訊號檔。
+pane_vis_register() {
+  local link r
+  link="$PANE_VIS_REG/${PANE_VIS_SIG//\//_}.reg"
+  : >> "$PANE_VIS_SIG" 2>/dev/null || return 1
+  [ "$link" -ef "$PANE_VIS_SIG" ] && return 0
+  [ -d "$PANE_VIS_REG" ] || mkdir -p "$PANE_VIS_REG" 2>/dev/null || return 1
+  for r in "$PANE_VIS_REG"/*.reg; do
+    [ -L "$r" ] && [ ! -e "$r" ] && rm -f "$r" 2>/dev/null
+  done
+  ln -s "$PANE_VIS_SIG" "$link.$$.tmp" 2>/dev/null && mv -f "$link.$$.tmp" "$link" 2>/dev/null \
+    || { rm -f "$link.$$.tmp" 2>/dev/null; return 1; }
+  [ "$link" -ef "$PANE_VIS_SIG" ]
+}
+
+# 撤登(只撤自己的;別艙的登記與鉤子都不碰)。艙收掉時呼叫;沒呼叫也只是連結懸空、被跳過。
+pane_vis_unregister() {
+  [ -n "$PANE_VIS_SIG" ] || return 0
+  rm -f "$PANE_VIS_REG/${PANE_VIS_SIG//\//_}.reg" 2>/dev/null
+  return 0
+}
+
 pane_vis_hook() {
   PANE_VIS_HOOKED=0
   [ -n "${TMUX_PANE:-}" ] || return 0
-  case "$PANE_VIS_SIG" in
-    ''|[!/]*|*[!A-Za-z0-9._/+-]*) return 0 ;;
-  esac
-  local idx base hooks line k cmd _l mark="'$PANE_VIS_SIG'"
-  base="$(printf '%s' "$PANE_VIS_SIG" | cksum 2>/dev/null)"; base="${base%% *}"
-  case "$base" in ''|*[!0-9]*) return 0 ;; esac
-  base=$(( base % 9000 + 1000 ))
-  hooks="$(tmux show-hooks -g session-window-changed 2>/dev/null)" || return 0
-  idx=""
-  for (( k = 0; k < 64; k++ )); do
+  case "$PANE_VIS_SIG" in ''|[!/]*|*[!A-Za-z0-9._/+-]*) pane_vis_state no_hook_path; return 0 ;; esac
+  case "$PANE_VIS_REG" in ''|[!/]*|*[!A-Za-z0-9._/+-]*) pane_vis_state no_hook_path; return 0 ;; esac
+  pane_vis_register || { pane_vis_state no_hook_reg; return 0; }
+  local cmd shown out h line ours=0 q=() set=() _l
+  pane_vis_hook_cmd cmd shown
+  for h in $PANE_VIS_HOOKS; do
+    [ "${#q[@]}" -gt 0 ] && q+=(";")
+    q+=(show-hooks -g "$h")
+  done
+  out="$(tmux "${q[@]}" 2>/dev/null)" || { pane_vis_state no_hook_tmux; return 0; }
+  for h in $PANE_VIS_HOOKS; do
     line=""
     while IFS= read -r _l; do
-      case "$_l" in "session-window-changed[$(( base + k ))] "*) line="$_l"; break ;; esac
-    done <<< "$hooks"
-    if [ -z "$line" ] || [[ "$line" == *"$mark"* ]]; then
-      idx=$(( base + k ))
-      break
+      case "$_l" in "$h[$PANE_VIS_IDX] "*) line="${_l#"$h[$PANE_VIS_IDX] "}"; break ;; esac
+    done <<< "$out"
+    if [ -z "$line" ]; then
+      [ "${#set[@]}" -gt 0 ] && set+=(";")
+      set+=(set-hook -g "$h[$PANE_VIS_IDX]" "$cmd")
+    elif [ "$line" != "$shown" ]; then
+      pane_vis_state hook_foreign          # 那一格是別人的:不搶,退回退避輪詢
+      return 0
     fi
   done
-  [ -n "$idx" ] || return 0
-  cmd="run-shell -b \"printf . >> $mark 2>/dev/null || :\""
-  if tmux set-hook -g "session-window-changed[$idx]" "$cmd" \; \
-         set-hook -g "client-attached[$idx]" "$cmd" \; \
-         set-hook -g "client-detached[$idx]" "$cmd" \; \
-         set-hook -g "client-session-changed[$idx]" "$cmd" >/dev/null 2>&1; then
-    PANE_VIS_HOOKED=1
-    PANE_VIS_IDX="$idx"
+  if [ "${#set[@]}" -gt 0 ]; then
+    tmux "${set[@]}" >/dev/null 2>&1 || { pane_vis_state no_hook_tmux; return 0; }
   fi
+  PANE_VIS_HOOKED=1
+  pane_vis_state hooked
   return 0
 }
 
