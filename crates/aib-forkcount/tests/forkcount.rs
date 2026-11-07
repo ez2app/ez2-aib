@@ -34,7 +34,8 @@ fn calibrate_single_is_exact() {
     assert_eq!(v["result"]["fork_events"], 20, "{v}");
     assert_eq!(v["root_watched"], true);
     assert_eq!(v["status"], "ok", "{v}");
-    assert_eq!(v["captured_by_identity"], 20, "{v}");
+    assert_eq!(v["identity_confirmed"], 20, "{v}");
+    assert_eq!(v["meets_threshold"], true, "{v}");
     assert_eq!(v["capture_rate"], 1.0, "{v}");
 }
 
@@ -57,7 +58,8 @@ fn calibrate_unlisted_fork_is_not_counted() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["expected_process_creations"], 10, "{v}");
     assert_eq!(v["raw"]["children_adopted"], 11, "{v}");
-    assert_eq!(v["captured_by_identity"], 10, "{v}");
+    assert_eq!(v["identity_confirmed"], 10, "{v}");
+    assert_eq!(v["meets_threshold"], false, "{v}");
     assert_eq!(v["status"], "unverified", "{v}");
     let reasons = v["unverified_reasons"].to_string();
     assert!(reasons.contains("adopted_not_created"), "{v}");

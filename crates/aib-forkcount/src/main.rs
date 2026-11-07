@@ -233,6 +233,9 @@ fn spawn_quiet(c: &mut Command) -> Option<std::process::Child> {
         .ok()
 }
 
+/// Identity coverage needed per class (DECISION-4 C).
+const CAPTURE_THRESHOLD: f64 = 0.99;
+
 /// One process creation, as the generator records it: (parent pid, child pid).
 type Creation = (u32, u32);
 
@@ -367,13 +370,24 @@ fn cmd_gen_one(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Capture attributed by identity (DECISION-4 C, bb7dc's objection):
-/// only creations the fixture recorded count, each at most once.
+/// Two metrics, never mixed (DECISION-4 C, bb7dc and 3f312, 2026-11-07):
+///
+/// - **identity coverage** (the only one called "capture rate", threshold
+///   99 %): recorded creations whose child was adopted under the recorded
+///   parent, each counted once, ÷ expected;
+/// - **count consistency**: fork events from fixture parents ÷ expected. A
+///   proxy only: events carry no child identity and kqueue coalesces them.
+///
+/// Passing does not rule out unknown losses; anything that cannot be checked
+/// is marked unverified.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Attribution {
     expected: u64,
-    /// lower bound of |seen by adoption ∪ seen by a fork event|, per creation
-    captured: u64,
+    /// creations seen with their identity (child pid adopted under the
+    /// recorded parent)
+    identity_confirmed: u64,
+    /// fork events of fixture parents (no identity; proxy)
+    fixture_fork_events: u64,
     /// fork events of fixture parents beyond what they created
     fork_events_beyond_created: u64,
     /// adopted children of fixture parents that the fixture did not record
@@ -397,7 +411,7 @@ impl Attribution {
         if self.duplicate_child_pids > 0 {
             r.push("duplicate_child_pids");
         }
-        if self.captured > self.expected {
+        if self.identity_confirmed > self.expected {
             r.push("capture_above_expected");
         }
         r
@@ -405,10 +419,8 @@ impl Attribution {
 }
 
 /// Per fixture parent P with C_P recorded children: A_P of them were adopted
-/// (by identity), F_P fork events came from P. Adoption and fork events can
-/// overlap, so the union is at least max(A_P, min(F_P, C_P)); summing that
-/// over fixture parents never exceeds the expected count, and events or
-/// children that are not the fixture's are reported, not counted.
+/// under P (identity confirmed), F_P fork events came from P. Children and
+/// events that are not the fixture's are reported, not counted.
 fn attribute(
     created: &[Creation],
     adopted: &BTreeMap<u32, u32>,
@@ -432,7 +444,8 @@ fn attribute(
         let c_p = cs.len() as u64;
         let a_p = cs.iter().filter(|c| adopted.get(c) == Some(p)).count() as u64;
         let f_p = forks_by_pid.get(p).copied().unwrap_or(0);
-        a.captured += a_p.max(f_p.min(c_p));
+        a.identity_confirmed += a_p;
+        a.fixture_fork_events += f_p;
         a.fork_events_beyond_created += f_p.saturating_sub(c_p);
     }
     a.adopted_not_created = adopted
@@ -525,11 +538,20 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "expected_process_creations": expected,
             "status": if reasons.is_empty() { "ok" } else { "unverified" },
             "unverified_reasons": reasons,
-            "capture_rate": rate(att.captured),
-            "captured_by_identity": att.captured,
+            "capture_rate": rate(att.identity_confirmed),
+            "capture_rate_definition": "identity coverage: recorded creations whose child was adopted under the recorded parent / expected",
+            "capture_threshold": CAPTURE_THRESHOLD,
+            "meets_threshold": reasons.is_empty() && expected > 0
+                && att.identity_confirmed as f64 >= CAPTURE_THRESHOLD * expected as f64,
+            "identity_confirmed": att.identity_confirmed,
+            "count_consistency": rate(att.fixture_fork_events),
+            "count_consistency_definition": "fork events from fixture parents / expected (proxy: no identity, coalesced)",
+            "limits": "passing does not rule out unknown losses",
             "raw": {
                 "fork_events": stats.fork_events,
                 "children_adopted": stats.children_adopted,
+                "register_failures": stats.register_failures,
+                "list_failures": stats.list_failures,
                 "capture_rate_fork_events": rate(stats.fork_events),
                 "capture_rate_children_adopted": rate(stats.children_adopted),
             },
@@ -579,12 +601,42 @@ mod tests {
     }
 
     #[test]
-    fn coalesced_events_are_covered_by_adoption() {
+    fn coalesced_events_lower_only_the_proxy() {
         let created = [(10, 11), (10, 12), (10, 13)];
         let adopted = [(11, 10), (12, 10), (13, 10)].into_iter().collect();
         let a = attribute(&created, &adopted, &m(&[(10, 1)]));
-        assert_eq!((a.expected, a.captured), (3, 3));
+        assert_eq!(
+            (a.expected, a.identity_confirmed, a.fixture_fork_events),
+            (3, 3, 1)
+        );
         assert!(a.unverified_reasons().is_empty());
+    }
+
+    #[test]
+    fn events_never_stand_in_for_identity() {
+        // every fork event arrived, no child was adopted: coverage is 0
+        let created = [(10, 11), (10, 12)];
+        let a = attribute(&created, &BTreeMap::new(), &m(&[(10, 2)]));
+        assert_eq!((a.identity_confirmed, a.fixture_fork_events), (0, 2));
+    }
+
+    #[test]
+    fn one_missed_and_one_foreign_is_caught_although_totals_match() {
+        let created = [(10, 11), (10, 12)];
+        let adopted = [(11, 10), (99, 10)].into_iter().collect();
+        let a = attribute(&created, &adopted, &m(&[(10, 2)]));
+        assert_eq!(a.identity_confirmed, 1);
+        assert_eq!(a.adopted_not_created, 1);
+        assert!(a.unverified_reasons().contains(&"adopted_not_created"));
+    }
+
+    #[test]
+    fn a_failed_registration_shows_as_missing_grandchildren() {
+        // 11's watch failed, so its child 12 was never adopted
+        let created = [(10, 11), (11, 12)];
+        let adopted = [(11, 10)].into_iter().collect();
+        let a = attribute(&created, &adopted, &m(&[(10, 1)]));
+        assert_eq!((a.expected, a.identity_confirmed), (2, 1));
     }
 
     #[test]
@@ -605,7 +657,7 @@ mod tests {
         let created = [(10, 11)];
         let adopted = [(11, 10), (99, 10), (500, 7)].into_iter().collect();
         let a = attribute(&created, &adopted, &BTreeMap::new());
-        assert_eq!((a.captured, a.adopted_not_created), (1, 1));
+        assert_eq!((a.identity_confirmed, a.adopted_not_created), (1, 1));
         assert!(a.unverified_reasons().contains(&"adopted_not_created"));
     }
 
@@ -615,7 +667,7 @@ mod tests {
         let created = [(10, 11)];
         let adopted = [(11, 77)].into_iter().collect();
         let a = attribute(&created, &adopted, &BTreeMap::new());
-        assert_eq!(a.captured, 0);
+        assert_eq!(a.identity_confirmed, 0);
     }
 
     #[test]
