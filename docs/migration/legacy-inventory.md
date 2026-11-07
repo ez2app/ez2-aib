@@ -113,10 +113,14 @@ or cosmetic, can stay macOS-only or be dropped.
 - **Risk:** H. Spec Phase 0 gate requires "cancel and clean up the process tree" on both
   OSes. A naive port leaks grandchildren on Windows.
 - **AIB 2.0 replacement:** Platform Adapter `spawn_tree(cmd) -> TreeHandle` with
-  `terminate(grace)` / `kill()`. macOS: new process group (`setsid` via `pre_exec`, or
-  `process_group(0)`), `killpg(SIGTERM)` then `SIGKILL`. Windows: assign to a Job Object
-  with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` before resuming, terminate the job. Detached
-  updater becomes an `aibd` task or OS scheduler entry, never `fork`.
+  `cancel(grace)` / `cleanup(grace)`. **On macOS a process group is only the first layer,
+  not a full replacement:** a CLI's tool can start a child in its own group (measured
+  with Codex: it survived `SIGTERM` to the CLI's group). The full strategy — group,
+  recorded `(pid, start_time)` descendants, session marker, cancel sequence and its
+  known limits — is in [ADR 0004](../adr/0004-process-tree-cancel-completion.md).
+  Windows: assign to a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and no
+  breakaway before resuming, terminate the job. Detached updater becomes an `aibd` task
+  or OS scheduler entry, never `fork`.
 
 ### 3.4 Process discovery — M
 
@@ -134,7 +138,8 @@ or cosmetic, can stay macOS-only or be dropped.
 - **AIB 2.0 replacement:** not needed for seats `aibd` launches: it holds the child handle
   and receives the provider session id from the Provider Adapter's structured output.
   For diagnostics only, use the `sysinfo` crate (process list, parent pid) behind the
-  Platform Adapter. Do not port `ps eww` env scraping.
+  Platform Adapter. Do not port `ps eww` env scraping for seat identity; the only
+  environment read AIB 2.0 keeps is the session-marker sweep used for cleanup (ADR 0004).
 
 ### 3.5 Terminal.app and AppleScript — M
 

@@ -111,3 +111,32 @@ day one, so adding Codex does not change the cancel path.
 - Negative: on macOS a process that both double-forks within one scan interval and
   clears its environment can escape. This is reported as `escaped_marker_check`, not
   hidden.
+
+## Update 2026-11-07 (first real Claude Code run, VERIFIED-mac)
+
+Measured with Claude Code 2.1.319 (`-p --output-format stream-json`), Bash tool running
+`python3 -c "subprocess.Popen(['sleep','47'], start_new_session=True)"`:
+
+- Natural finish: `result/success`, exit 0 → `COMPLETED`. Matches section 3.
+- **The detached `sleep` survived both cancel and cleanup.** Two reasons, both measured:
+  1. **Layer 3 is blind to Apple platform binaries.** `KERN_PROCARGS2` returns no
+     environment for `/bin/sleep`, `/bin/zsh` (Apple-signed, `Platform identifier`),
+     although the marker was set (the Python in between saw it in `os.environ`). It does
+     return it for our own binaries and for the Command Line Tools Python. So the marker
+     only covers non-platform programs.
+  2. **Layer 2's periodic scan is too slow** for "parent spawns and exits at once": the
+     intermediate Python exits within milliseconds, the `sleep` is re-parented to
+     launchd before a 1 s scan sees it.
+- Negative PoC: macOS "responsible pid" (`responsibility_get_pid_responsible_for_pid`
+  with a disclaimed spawn) does **not** follow descendants; `sleep` was responsible for
+  itself with or without `setsid`. Not usable.
+- Positive PoC: **kqueue `EVFILT_PROC` + `NOTE_FORK`** on every recorded pid, and on each
+  fork event listing that pid's children (`proc_listpids` by parent) and watching them
+  too, caught the re-parented `sleep` **5 of 5 runs** for this shape. One shape, five
+  runs: evidence, not proof that the race is closed.
+
+Change to the decision: on macOS, layer 2 becomes **event-driven** (kqueue fork
+watcher) with the periodic scan kept as a backstop; layer 3 stays for non-platform
+programs. The fixture gains a mode where a short-lived parent starts `/bin/sleep` in a
+new group and exits at once, so the watcher has its own test and knife. The Phase 1 gate
+still needs the real-Claude cancel smoke to come back clean.
