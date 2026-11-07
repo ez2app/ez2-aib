@@ -15,4 +15,4 @@ session / window 層(`-t`、`-w`)的 hook 不在這張表:它們只屬於自己�
 
 - 別的程式在我們寫入**之後**用同一格,會蓋掉我們的廣播。後果:各艙收不到喚醒,退回退避輪詢,最慢 10 秒才重畫。不會畫錯。下一次「看得見→看不見」時讀到不是我們的內容,就記 `hook_foreign`,不搶回來。
 - tmux 讀不了陣列格式(探針 `#{command-alias[0]}` 是空的)⇒ 一律不寫,退回輪詢(`no_hook_fmt`)。
-- 計數在各艙 `cockpit/.panevis.stat.<原因>`:`hook_foreign`、`no_hook_fmt`、`no_hook_reg`、`no_hook_path`、`no_hook_tmux`,以及每次退回輪詢的 `poll`。
+- 計數在各艙 `cockpit/.panevis.stat.<原因>`:`hook_foreign`、`no_hook_fmt`、`no_hook_reg`、`no_hook_path`、`no_hook_tmux`,以及每次退回輪詢的 `poll`;掛著鉤子時的每次等待結果另記 `wake_event`(被事件叫醒)/ `wake_timeout`(等滿退避)。掛上後才被外部蓋掉不會重查所有權,只會看到 `wake_timeout` 一直增加、`wake_event` 不動。

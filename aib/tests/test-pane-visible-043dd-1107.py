@@ -26,11 +26,12 @@ V8c 一艙撤登 ⇒ 另一艙照收、撤登的不再收、共用鉤子不拔;V
 V8e(r5)障礙:外部在我們那支 tmux 之前插入四種任一 ⇒ 外部原值完整保留、hook_foreign(檢查與寫入同一條指令串)
 V8f(r5)/x/a_b/c 與 /x/a/b_c 兩艙登記不撞名(sha256),兩邊都收到;V8g 清理改名那一刻原主重登 ⇒ 不刪
 V8h 撤登只刪指向自己的;V9 4770 保留(docs/tmux-hook-indexes.md + 掃 src);V10 hook_foreign 與退回輪詢有計數
+V10b 掛上後被外部蓋掉 ⇒ 等到逾時記 wake_timeout(不重查所有權);V10c 事件叫醒記 wake_event
 S1–S5 沙盒守門:夾消失 / socket 指預設 / 沙盒外路徑 / 清理路徑 / 交給被測 bash 的 TMUX ⇒ 一律拒跑、tmux 一次都沒執行
 刀(複本 + run_guarded):K1 量不到當看不見 ⇒ V3;K2 改回 session_attached ⇒ V1;K3 拿掉讀基準後重判 ⇒ V2c;
 K4 拿掉路徑白名單 ⇒ V4;K5 戰情室退回 pane_wait_if_detached ⇒ V5;K6 鉤子改成覆寫(不是 append)⇒ V2d;
 K7 鉤子內容改成各艙不同(直寫自己的訊號檔,r3 寫法)⇒ V8b;K10 拿掉讀回 ⇒ V8;K11 拿掉寫入條件 ⇒ V8e;
-K12 登記名退回「/ 換 _」⇒ V8f;K13 清理不再確認 ⇒ V8g;K14 撤登不確認是自己的 ⇒ V8h;K15 不記退回輪詢 ⇒ V10;
+K12 登記名退回「/ 換 _」⇒ V8f;K13 清理不再確認 ⇒ V8g;K14 撤登不確認是自己的 ⇒ V8h;K15 不記退回輪詢 ⇒ V10;K16 不記逾時 ⇒ V10b;K17 不記事件喚醒 ⇒ V10c;
 K8 守門不查夾在不在 ⇒ S1;K9 守門不擋預設 socket ⇒ S2。
 (r4:一個全域廣播鉤子,固定下標 4770、內容逐字固定;各艙只登記 / 撤登 <狀態根>/state/pane-vis/reg/*.reg。
  鉤子掛全域 -g 而不是本 session:試過把它改回 -t 當刀,連結窗 / grouped 情境照樣醒,咬不到 ⇒ 不列刀;
@@ -404,6 +405,32 @@ class RealTmux(Base):
         self.assertEqual(stat("hook_foreign"), "2")
         self.assertEqual(stat("poll"), "2")
 
+    def test_v10b_overwritten_after_hook_counts_timeout(self):
+        # 同一行程:先掛上 → 隱藏中 → 外部覆蓋 4770 格 → 沒事件 → 下一輪等滿退避 ⇒ wake_timeout +1(不重查所有權)
+        f = self.state / ".panevis.stat.wake_timeout"
+        prog = (". '%s'\npane_tick_init\n"
+                "pane_wait_if_hidden; echo \"r1=$? hooked=$PANE_VIS_HOOKED\"\n"
+                "a=$(cat '%s' 2>/dev/null || echo 0)\n"
+                "command tmux set-hook -g 'session-window-changed[%d]' 'run-shell -b true'\n"
+                "pane_wait_if_hidden; echo \"r2=$? hooked=$PANE_VIS_HOOKED\"\n"
+                "b=$(cat '%s' 2>/dev/null || echo 0)\necho \"delta=$(( b - a ))\"\n"
+                % (TICK, f, self.IDX, f))
+        p = self.bash(prog, self.tick_env(self.pb, {"EZ2_PANE_DETACHED_TICK": "1", "EZ2_PANE_DETACHED_TICK_MAX": "1"}))
+        out = p.stdout + p.stderr
+        self.assertIn("r1=0 hooked=1", out, out)
+        self.assertIn("r2=0 hooked=1", out, "這一輪仍以為掛著(不重查所有權)\n" + out)
+        self.assertEqual(self.slot("session-window-changed"), "run-shell -b true", out)
+        self.assertIn("delta=1", out, "被蓋掉後逾時醒來沒記到\n" + out)
+        g = self.state / ".panevis.stat.wake_event"
+        self.assertFalse(g.exists() and g.read_text().strip() != "0", out)
+
+    def test_v10c_event_wake_counted(self):
+        self.attach()
+        out, took = self.wait_hidden(self.pb, action=self.sel("h:b"))
+        self.assertIn("rc=0", out, out)
+        f = self.state / ".panevis.stat.wake_event"
+        self.assertEqual(f.read_text().strip() if f.exists() else "(沒有計數檔)", "1")
+
     def test_v4_unsafe_path_no_hook(self):
         self.attach()
         for st in (str(self.d / "has space"), str(self.d / "q'q"), "rel/dir"):
@@ -634,6 +661,10 @@ KNIVES = [
     ("K14", '  [ "$PANE_VIS_LINK" -ef "$PANE_VIS_SIG" ] && rm -f "$PANE_VIS_LINK" 2>/dev/null',
      '  rm -f "$PANE_VIS_LINK" 2>/dev/null',
      "src/cockpit/pane-tick.sh", "RealTmux.test_v8h_unregister_only_own"),
+    ("K16", '  pane_vis_stat wake_timeout\n', '',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v10b_overwritten_after_hook_counts_timeout"),
+    ("K17", '{ pane_vis_stat wake_event; PANE_HIDDEN_WAIT=""; return 0; }', '{ PANE_HIDDEN_WAIT=""; return 0; }',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v10c_event_wake_counted"),
     ("K15", '    pane_vis_stat poll                # 退回輪詢(登記例外):每睡一次記一筆\n', '',
      "src/cockpit/pane-tick.sh", "RealTmux.test_v10_fallback_counted"),
     ("K8", "        if not self.root.is_dir():\n            raise SandboxRefused",

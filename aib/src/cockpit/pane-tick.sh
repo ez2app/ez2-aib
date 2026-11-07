@@ -276,7 +276,9 @@ pane_visible() {
 #   6) 等待方:先讀大小當基準,**讀完基準後再判一次可見性**;看不見才等「大小 ≠ 基準」或退避到期(V2b / V2c)。
 #   7) 檔超過 PANE_VIS_MAX_BYTES(4096)時,由**確認看得見**的那一方 truncate 歸零(inode 不變,登記照樣有效)。
 #   8) 路徑(訊號檔 / 登記夾)有白名單外的字元或不是絕對路徑 ⇒ 不掛、只靠退避輪詢(V4)。
-#   9) 計數:每次沒掛上(原因)與每次退回輪詢各記一筆在 <艙狀態夾>/.panevis.stat.<原因>(數字,內建讀寫零 fork),
+#   9) 計數:每次沒掛上(原因)與每次退回輪詢各記一筆在 <艙狀態夾>/.panevis.stat.<原因>(數字,內建讀寫零 fork);
+#      掛著鉤子時的等待結果也分兩種記:wake_event(被事件叫醒)/ wake_timeout(等到退避逾時;
+#      鉤子被外部蓋掉時只會看到這個一直增加),
 #      最近一次結果在 .panevis.state —— 看得到多常發生(效能規格登記的例外)。
 # run-shell 有輸出或 rc≠0 時 tmux 會把當前格切進 view-mode ⇒ 迴圈錯誤導掉、最後 `:` 收 rc0。
 PANE_VIS_SIG="${EZ2_COCKPIT_STATE_DIR:+$EZ2_COCKPIT_STATE_DIR/.panevis.ev}"
@@ -451,7 +453,9 @@ pane_wait_if_hidden() {
   for (( i = 0; i < n; i++ )); do
     pane_tick_sleep 0.1
     pane_vis_count c
-    [ "$c" = "$c0" ] || { PANE_HIDDEN_WAIT=""; return 0; }   # 有事件:下一圈立刻重判
+    [ "$c" = "$c0" ] || { pane_vis_stat wake_event; PANE_HIDDEN_WAIT=""; return 0; }   # 有事件:下一圈立刻重判
   done
+  # 掛著鉤子卻等到逾時:沒有事件(真的沒切窗),或鉤子已被外部蓋掉(已知限制)—— 等同退回輪詢,要看得到
+  pane_vis_stat wake_timeout
   return 0
 }
