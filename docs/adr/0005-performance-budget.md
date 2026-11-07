@@ -137,6 +137,13 @@ The descendant counts on both OSes are **proxies until measured** (see ADR 0004 
   snapshot, not the token-by-token history.
 - Negative: the timer module and the clippy rule are one more thing every contributor has
   to go through; the error message must say how.
-- Negative: the Windows event path needs Win32 calls; either a vetted safe wrapper crate
-  or a small `unsafe` module confined to the Platform Adapter (to be decided in Phase 1;
-  `aib-core` stays `forbid(unsafe_code)` either way).
+- Negative: the event paths need OS calls that safe wrappers do not cover (Windows Job
+  Object messages; macOS `proc_pidinfo` flavor 17). Decided (DECISION-1, 2026-11-07): all
+  such FFI lives in one crate, `aib-sys`. Only aibd's platform module may depend on it;
+  `aib-core` and `aib-store` must not (checked on the `cargo metadata` dependency graph,
+  with knives). Every other crate stays `forbid(unsafe_code)`; `aib-sys` uses
+  `deny(unsafe_op_in_unsafe_fn)`, a SAFETY note on every unsafe block, Rust-only types at
+  its boundary, a fake implementation for other crates' tests, and positive plus
+  error-path tests with knives for every call. Its PRs carry nothing else and get a fixed
+  second reviewer. Whether each platform API is available and behaves as expected is
+  still open until measured on real machines.

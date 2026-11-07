@@ -164,17 +164,30 @@ and the "periodic scans cost CPU" consequence.
   something outside the tree), or whose membership cannot be observed, is outside that
   guarantee: the cancel result is `tree_not_clean` when it is seen still running, and
   UNVERIFIED when it cannot be observed. It is never reported as a clean cancel.
-- **macOS lineage by unique id** (*proposed*, pending the maintainers' summary of the
-  2026-11-07 discussion; it needs an FFI call, so where `unsafe` may live is decided
-  there). Measured: after a process is re-parented to launchd its
-  `p_puniqueid` (from `proc_pidinfo` `PROC_PIDUNIQIDENTIFIERINFO`) still holds the original
-  parent's `p_uniqueid` (3 of 3 runs); unique ids are 64-bit and never reused. So a
-  descendant whose parent exited at once can still be claimed exactly, **on one
-  condition: the parent's unique id was recorded while the parent was alive**. If an
-  intermediate process forks and exits before it is recorded, its children cannot be
-  linked; that gap remains and is reported as `tree_not_clean`. The fixture's
-  short-lived-parent mode missed about 1 run in 3 under a parallel test load with the
-  fork watcher alone; that is the case this closes.
+- **macOS lineage by unique id** (decided: maintainers' summary DECISION-1, 2026-11-07;
+  the call lives in the `aib-sys` crate, see ADR 0005 Consequences).
+  - Observation, not yet a guarantee: on macOS 15.7.9, after a process was re-parented to
+    launchd its `p_puniqueid` (from `proc_pidinfo` flavor `PROC_PIDUNIQIDENTIFIERINFO`)
+    still held the original parent's `p_uniqueid` in 3 of 3 PoC runs. That unique ids are
+    not reused is an XNU implementation property we rely on, **not** a documented
+    contract. Both are hypotheses until the fixture and a real-machine run confirm them,
+    and they are re-checked on every major macOS version (capability table; versions not
+    tested are UNVERIFIED).
+  - Flavor 17 is a **private SPI**: it is not in the public SDK headers (checked against
+    the macOS 15.7.9 SDK), only in XNU sources. Its availability and the size of the
+    structure are checked on every call; a size mismatch is a failure.
+  - What it may be used for: to *find* more candidates. It never on its own permits a
+    signal. Before any signal aibd re-checks identity with the public data (pid and start
+    time), and with the unique id where available. If identity cannot be read or does not
+    match, **no signal is sent** and the result is `tree_not_clean` (or UNVERIFIED when the
+    process cannot be observed).
+  - If the call fails or is unavailable, aibd falls back to the event watcher plus the
+    10 s backstop described above, marks the result `lineage_unavailable`, and counts it.
+  - Remaining blind spot: an intermediate process that forks and exits before its own
+    unique id is recorded cannot be linked to its children. The 10 s backstop does not
+    claim to find every descendant. Such misses are reported as `tree_not_clean`.
+  - Measured before this change: the fixture's short-lived-parent mode missed about 1 run
+    in 3 under a parallel test load with the fork watcher alone.
 - **Pending measurement — until measured these are proxies, not guarantees** (raised by
   @bb7dc):
   - whether `NOTE_FORK` sees every short-lived descendant: a child that forks and exits
