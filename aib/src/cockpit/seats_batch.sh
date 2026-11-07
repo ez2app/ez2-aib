@@ -45,6 +45,9 @@ _sbt() {
 AIB="${AIB_SITS_AIB_BIN:-$HERE/aib}"
 [ -x "$AIB" ] || { echo "aib sits: $(_sbt aib.sits.aib_not_exec path="$AIB")" >&2; exit 2; }
 PY3="${EZ2_PY3:-python3}"
+# gameworld 請求 ID 只給這一層收尾用:先取走再 unset,逐席呼叫的 aib 不繼承(不然每席各開一次大廳)。
+_GW_REQ="${AIB_SITS_GAMEWORLD_REQ:-}"
+unset AIB_SITS_GAMEWORLD_REQ
 ROSTER="${AIB_SEATS_ROSTER:-$HERE/rosters/default.json}"
 
 die() { echo "aib sits: $2" >&2; exit "$1"; }
@@ -378,4 +381,11 @@ done
 EZ2_AIHUB_SOCKET="$HUB" "$PY3" "$HERE/seats_report.py" --table \
   --require-new "$OPENED_BASELINE"
 RC=$?
+# gameworld(aib 已做過前景檢查):這一批真的開了席 ⇒ 開一次大廳;結果不影響這批的 rc。
+if [ -n "$_GW_REQ" ] && [ "${#OPENED[@]}" -gt 0 ]; then
+  _gw_inst="${EZ2_AIB_INSTANCE:-${HUB#aihub-}}"
+  "$PY3" "$HERE/gameworld.py" open --cabin "${_gw_inst##*-}" --req "$_GW_REQ" \
+    --home "${EZ2_AIB_INSTANCE_HOME:-$HOME/.ez2-aib/instances/$_gw_inst}" \
+    --notify-session "${EZ2_TMUX_SESSION:-aib-${HUB#aihub-}}" </dev/null >&2 || true
+fi
 exit "$RC"

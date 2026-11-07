@@ -158,7 +158,7 @@
   "aib.lang.notice": "AIB 語系已切換成 {value}:從下一句起請用這個語言回覆(介面、狀態列、mod 會自動跟)。",
   "aib.help.title": "aib — Ez2 AIB v{version} 指揮艙啟動器",
   "aib.edition.missing": "aib {cmd}:這個功能還在開發中,尚未對外開放。",
-  "aib.help.usage": "用法:aib <provider> <dgrs|safe> <role> [new] [dm] [--model MODEL] [--dry-run]",
+  "aib.help.usage": "用法:aib <provider> <dgrs|safe> <role> [new] [dm] [gameworld] [--model MODEL] [--dry-run]",
   "aib.idle.close.aborted": "已取消,沒動任何東西",
   "aib.idle.close.confirm": "確定關閉 {target}?[y/N] ",
   "aib.idle.close.done": "{target} 已關閉:送出 TERM {n} 個,存活 {survivors} 個",
@@ -5952,5 +5952,14 @@
   "aib.newproj.brain_new_made": "已建新的大腦資料夾「{title}」(路由代號 {key})",
   "aib.newproj.brain_new_failed": "新的大腦資料夾「{title}」沒建成:{err}。席已開、人格還沒綁;修好後重跑同一行(帶 --seat)",
   "aib.newproj.brain_new_bad_title": "--folder new 沒辦法用專案標題「{title}」建資料夾:{err}。改專案標題,或改接已有的大腦",
-  "aib.newproj.brain_new_reindex_warn": "大腦資料夾「{title}」已建、路由代號 {key} 已登記,但事後的 reindex 沒跑成({err});照常綁定,之後跑一次 Vault reindex 補衍生索引"
+  "aib.newproj.brain_new_reindex_warn": "大腦資料夾「{title}」已建、路由代號 {key} 已登記,但事後的 reindex 沒跑成({err});照常綁定,之後跑一次 Vault reindex 補衍生索引",
+  "aib.gameworld.missing": "遊戲化大廳需要艦長室外掛(aib plugins install <包>),這次先只開席。",
+  "aib.gameworld.too_old": "艦長室外掛太舊(沒有 --no-browser),請更新外掛;這次先只開席。",
+  "aib.gameworld.no_switch": "大廳不一定是這一艙(實際艙未知);更新艦長室外掛後會自動切到這一艙。",
+  "aib.gameworld.no_attach": "代開席位不開大廳視窗;要看大廳:aib room open",
+  "aib.gameworld.unknown_cabin": "實際艙未知",
+  "aib.gameworld.legacy_opened": "大廳已開,但不一定是這一艙(實際艙未知);更新艦長室外掛後會自動切。",
+  "aib.gameworld.open_failed": "大廳開不了視窗;請自己開:{url}",
+  "aib.gameworld.start_failed": "大廳起不來(艦長室外掛沒回正確結果);開席不受影響。",
+  "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。"
 }

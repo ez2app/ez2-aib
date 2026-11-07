@@ -1104,13 +1104,37 @@ while [ "$#" -gt 0 ]; do
 done
 
 # 10-29 Andy:開席最後一個字寫 dm ⇒ 同 --dm(第 4 個字以後才認;dm 因此保留、不能當艙名)。
-if [ "${#POS[@]}" -ge 4 ] && [ "${POS[${#POS[@]}-1]}" = "dm" ]; then
-  case " $PROVIDERS " in *" ${POS[0]} "*)
-    OPEN_DM=on
+# 11-07 gameworld(設計稿 DESIGN-gameworld v0.3):尾端保留字再多一個 gameworld = 開席後進遊戲化大廳。
+#   dm / gameworld 各最多一次、順序不拘;只在第 1 個字是 provider 時剝(`aib room … gameworld` 之類不動)。
+#   請求 ID 在這裡產生一次:批次 N 席共用,所以只開一次大廳;人再打一次 = 新 ID(去重鍵 = 請求 ID + 目標艙)。
+GAMEWORLD_REQ=""
+case " $PROVIDERS " in *" ${POS[0]-} "*)
+  _gw_dm=0
+  while [ "${#POS[@]}" -ge 4 ]; do
+    case "${POS[${#POS[@]}-1]}" in
+      dm) [ "$_gw_dm" = "0" ] || break; _gw_dm=1; OPEN_DM=on ;;
+      gameworld) [ -z "$GAMEWORLD_REQ" ] || break
+        GAMEWORLD_REQ="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+        [ -n "$GAMEWORLD_REQ" ] || GAMEWORLD_REQ="$$-$(date +%s)-$RANDOM" ;;
+      *) break ;;
+    esac
     unset "POS[${#POS[@]}-1]"
-    POS=("${POS[@]}") ;;
-  esac
-fi
+    POS=("${POS[@]}")
+  done ;;
+esac
+[ "$DRY" != "1" ] || [ -z "$GAMEWORLD_REQ" ] || echo "aib: (dry-run) gameworld=on dm=$OPEN_DM args=${POS[*]-}" >&2
+# 前景檢查(開席前,終端機還在人手上):代開不開大廳;外掛沒裝 / 太舊 ⇒ 印一行、這次不做;沒 --switch ⇒ 印一行、照做。
+# 開席 rc 一律不受影響。
+aib_gameworld_check() {
+  [ -n "$GAMEWORLD_REQ" ] && [ "$DRY" != "1" ] || return 0
+  if [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ "${AIB_NO_CLIENT_SWITCH:-0}" = "1" ]; then
+    printf 'aib: %s\n' "$(t aib.gameworld.no_attach)" >&2
+    GAMEWORLD_REQ=""
+    return 0
+  fi
+  "${T_PY3:-${EZ2_PY3:-python3}}" "$HERE/gameworld.py" check >&2 </dev/null || GAMEWORLD_REQ=""
+  return 0
+}
 
 # Owner-facing batch form: aib <provider> <mode> <root-role> <N>sits [new].
 # It enters the ordinary new-instance resolver once, then seats_batch calls the
@@ -1229,6 +1253,11 @@ if [ "${#POS[@]}" -eq 4 ]; then
     [ -z "$INSTANCE" ] || die "$(t aib.err.usage)"
     INSTANCE="${POS[3]}"
     ! aib_cabin_is_primary "$INSTANCE" || MAIN_EXPLICIT=1
+    # 尾端保留字(dm / gameworld)不能當艙名:走到這裡代表它沒被當保留字剝掉(例如寫了兩次)⇒ 明講,不去找叫這名字的艙。
+    case "$INSTANCE" in dm|gameworld)
+      printf 'aib: 「%s」是開席尾端的保留字,不能當艙名(每個保留字最多寫一次)\n' "$INSTANCE" >&2
+      exit 2 ;;
+    esac
     # fail-closed:直接吃 cabin_resolve 已有的驗證器(rc=2 且點名該值),
     # 不在這裡再寫一份近似的判斷。
     aib_cabin_check_name "instance" "$INSTANCE" || exit 2
@@ -1577,6 +1606,9 @@ if [ -n "$BATCH_COUNT" ] && [ "$OPEN_DM" != "auto" ]; then
   fi
 fi
 if [ -n "$BATCH_COUNT" ]; then
+  # gameworld:批次只在全部開完後開一次大廳(seats_batch.sh 收尾);子席不繼承這個變數。
+  aib_gameworld_check
+  [ -z "$GAMEWORLD_REQ" ] || export AIB_SITS_GAMEWORLD_REQ="$GAMEWORLD_REQ"
   export AIB_SITS_MODE_OVERRIDE="$MODE"
   export AIB_SITS_NEW_INSTANCE="$NEW"
   if [ "$DRY" = "1" ]; then
@@ -2681,6 +2713,12 @@ if [ "$DRY" != "1" ] && [ "${AIB_NO_OPEN_ATTEMPT:-0}" != "1" ] && [ -n "$ATTEMPT
   "$T_PY3" "$HERE/open_attempt.py" watch --detach --home "$EZ2_AIB_INSTANCE_HOME" --attempt "$ATTEMPT_ID" \
     --window "$WINDOW_ID" --provider "$PROVIDER" || echo "aib: 開席碼表守望起不來(不擋開席)" >&2
 fi
+# gameworld:席位紀錄已寫好(艦長室只把有席位的艙當「開著的艙」),在背景準備大廳,不擋後面的收尾。
+if [ -n "$GAMEWORLD_REQ" ] && [ "$DRY" != "1" ]; then
+  aib_pf_stamp gameworld
+  "$T_PY3" "$HERE/gameworld.py" open --cabin "${EZ2_AIB_INSTANCE##*-}" --req "$GAMEWORLD_REQ" \
+    --home "${EZ2_AIB_INSTANCE_HOME:-}" --notify-session "$S" </dev/null &
+fi
 aib_pf_stamp seat_detect     # 放 if 外面:test-ed13 會把下面這個 if 區塊抽出來單跑,區塊裡不能有本檔的助手
 if [ "$DRY" != "1" ] && [ -n "${WINDOW_ID:-}" ]; then
   "$T_PY3" "$HERE/seat-detect.py" --window "$WINDOW_ID" --apply --retry 5 || \
@@ -2842,6 +2880,7 @@ if d.get("binding") == "failed": print("aib: warning: 人格沒綁上:%s" % d.ge
 # ★ 背景輸出必須離開 tty:attach 之後再寫 stderr,字會直接蓋在座艙上
 #   (黑底暴版;人眼看到的是 seat-detect 那行「候選不唯一」+ ED.13 尚未落檔)。
 #   那些話要留在艙內日誌,不是印在畫面中間。
+aib_gameworld_check
 _pf_pid=""
 if [ "$DRY" != "1" ] && [ -n "${WINDOW_ID:-}" ]; then
   _pf_log="/dev/null"
