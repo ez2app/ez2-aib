@@ -141,7 +141,8 @@ PANE_SELF_SCRIPT="$EZ2_COCKPIT_DIR/warroom-board.sh"   # BL:碼換了自己重�
 pane_tick_init
 while true; do
   pane_reexec_if_changed                # BL:腳本換了就 exec 自己(每 ~30 秒問一次)
-  pane_wait_if_detached && continue     # 沒人看:不渲染,維持運作(§59)
+  # 看不見(沒人附著,或人在看別的窗)⇒ 不渲染(§59;11-07 省熱 2/7)。第一幀照畫:切過來時不留白。
+  if [ "$FIRST_PAINT" != "1" ] && pane_wait_if_hidden; then continue; fi
   pane_wait_if_composing && continue    # 終端機組字中:不渲染(10-10,避開 Terminal 重釘組字區的崩潰;見 pane-tick.sh)
   PANE_GEOM_DIRTY=0
   if [ -n "${TMUX_PANE:-}" ]; then
