@@ -1,0 +1,25 @@
+[package]
+name = "aib-sys"
+description = "The one crate allowed to call OS process APIs directly (ADR 0004, API list v0.2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Not `workspace = true`: the workspace forbids unsafe code and this crate is
+# the single, reviewed exception. Every other lint matches the workspace.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+unwrap_used = "warn"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+
+[dependencies]
+thiserror = "2.0.21"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.191"

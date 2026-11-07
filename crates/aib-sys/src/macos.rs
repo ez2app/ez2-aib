@@ -1,0 +1,154 @@
+//! macOS M1–M4 through libproc. Every `unsafe` block is one FFI call with
+//! its own SAFETY note (`clippy::undocumented_unsafe_blocks` and
+//! `multiple_unsafe_ops_per_block` are denied for this crate).
+
+use crate::list::read_pid_list;
+use crate::{check_struct_read, BsdInfo, ProcessInfo, SysError, UniqueIds};
+use libc::{c_int, c_void};
+use std::mem::{size_of, MaybeUninit};
+
+/// Not in any public SDK header (checked in the 13.3, 14.4, 15.5 and 26.0
+/// SDKs). Value and layout from XNU `bsd/sys/proc_info.h` (`#ifdef PRIVATE`).
+const PROC_PIDUNIQIDENTIFIERINFO: c_int = 17;
+/// `sys/proc_info.h`: `#define PROC_PPID_ONLY 6`.
+const PROC_PPID_ONLY: u32 = 6;
+
+/// XNU `struct proc_uniqidentifierinfo` (56 bytes). The size is checked
+/// against what the kernel returns on every call.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ProcUniqIdentifierInfo {
+    p_uuid: [u8; 16],
+    p_uniqueid: u64,
+    p_puniqueid: u64,
+    p_idversion: i32,
+    p_reserve2: u32,
+    p_reserve3: u64,
+    p_reserve4: u64,
+}
+
+const _: () = assert!(size_of::<ProcUniqIdentifierInfo>() == 56);
+
+fn clear_errno() {
+    // SAFETY: `__error()` has no preconditions; it returns this thread's
+    // errno slot, which lives as long as the thread.
+    let slot = unsafe { libc::__error() };
+    // SAFETY: `slot` is this thread's errno, non-null and aligned; only this
+    // thread writes it, and writing an int to it is what C does.
+    unsafe { *slot = 0 };
+}
+
+fn errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+fn pid_arg(pid: u32) -> Result<c_int, SysError> {
+    c_int::try_from(pid).map_err(|_| SysError::BadPid)
+}
+
+/// Read one fixed-size `proc_pidinfo` flavor into `T`.
+///
+/// `T` must be a plain C structure (`repr(C)`, integers and arrays only) for
+/// which every bit pattern is valid; both callers in this file are.
+fn pidinfo<T: Copy>(pid: u32, flavor: c_int) -> Result<T, SysError> {
+    let pid = pid_arg(pid)?;
+    let want = size_of::<T>();
+    let size = c_int::try_from(want).map_err(|_| SysError::Unknown)?;
+    let mut out = MaybeUninit::<T>::zeroed();
+    clear_errno();
+    // SAFETY: the buffer is `out`, `size` bytes long, alive and exclusively
+    // borrowed for the call; the kernel writes at most `size` bytes.
+    let n = unsafe { libc::proc_pidinfo(pid, flavor, 0, out.as_mut_ptr().cast::<c_void>(), size) };
+    check_struct_read(n, want, errno())?;
+    // SAFETY: the kernel filled exactly `want` bytes (checked above), the
+    // memory was zeroed before, and every bit pattern is valid for `T`.
+    Ok(unsafe { out.assume_init() })
+}
+
+fn comm(raw: &[libc::c_char]) -> String {
+    let bytes: Vec<u8> = raw
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| c.to_ne_bytes()[0])
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// The real implementation.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Macos;
+
+impl ProcessInfo for Macos {
+    fn unique_ids(&self, pid: u32) -> Result<UniqueIds, SysError> {
+        let u: ProcUniqIdentifierInfo = pidinfo(pid, PROC_PIDUNIQIDENTIFIERINFO)?;
+        Ok(UniqueIds {
+            unique: u.p_uniqueid,
+            parent_unique: u.p_puniqueid,
+        })
+    }
+
+    fn bsd_info(&self, pid: u32) -> Result<BsdInfo, SysError> {
+        let b: libc::proc_bsdinfo = pidinfo(pid, libc::PROC_PIDTBSDINFO)?;
+        Ok(BsdInfo {
+            pid: b.pbi_pid,
+            ppid: b.pbi_ppid,
+            pgid: b.pbi_pgid,
+            uid: b.pbi_uid,
+            start_sec: b.pbi_start_tvsec,
+            start_usec: b.pbi_start_tvusec,
+            comm: comm(&b.pbi_comm),
+        })
+    }
+
+    fn children(&self, ppid: u32) -> Result<Vec<u32>, SysError> {
+        list(Unit::Bytes, |buf, size| {
+            // SAFETY: `buf` is null with size 0 (size query) or a live,
+            // exclusively borrowed `size`-byte buffer.
+            unsafe { libc::proc_listpids(PROC_PPID_ONLY, ppid, buf, size) }
+        })
+    }
+
+    fn all_pids(&self) -> Result<Vec<u32>, SysError> {
+        list(Unit::Pids, |buf, size| {
+            // SAFETY: as in `children`.
+            unsafe { libc::proc_listallpids(buf, size) }
+        })
+    }
+}
+
+/// What a list call returns: `proc_listpids` counts bytes,
+/// `proc_listallpids` counts pids (libproc.c).
+#[derive(Clone, Copy)]
+enum Unit {
+    Bytes,
+    Pids,
+}
+
+impl Unit {
+    fn to_bytes(self, n: usize) -> usize {
+        match self {
+            Unit::Bytes => n,
+            Unit::Pids => n.saturating_mul(size_of::<i32>()),
+        }
+    }
+}
+
+/// Size query (an estimate), then [`read_pid_list`], which grows the buffer
+/// and refuses to return a list that may be truncated.
+fn list(unit: Unit, raw: impl Fn(*mut c_void, c_int) -> c_int) -> Result<Vec<u32>, SysError> {
+    clear_errno();
+    let need = raw(std::ptr::null_mut(), 0);
+    if need < 0 {
+        return Err(SysError::from_errno(errno()));
+    }
+    let hint = unit.to_bytes(usize::try_from(need).unwrap_or(0)) / size_of::<i32>();
+    read_pid_list(hint, |buf| {
+        let size = c_int::try_from(std::mem::size_of_val(buf)).map_err(|_| 0)?;
+        clear_errno();
+        let n = raw(buf.as_mut_ptr().cast::<c_void>(), size);
+        if n < 0 {
+            return Err(errno());
+        }
+        usize::try_from(n).map(|n| unit.to_bytes(n)).map_err(|_| 0)
+    })
+}

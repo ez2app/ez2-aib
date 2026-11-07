@@ -14,6 +14,7 @@ on:
       - "xtask/**"
       - "migrations/**"
       - "scripts/check-core-purity.sh"
+      - "scripts/check-sys-deps.sh"
       - ".github/workflows/aibd.yml"
   pull_request:
     paths:
@@ -25,6 +26,7 @@ on:
       - "xtask/**"
       - "migrations/**"
       - "scripts/check-core-purity.sh"
+      - "scripts/check-sys-deps.sh"
       - ".github/workflows/aibd.yml"
 permissions:
   contents: read
@@ -70,6 +72,11 @@ jobs:
         run: |
           ./scripts/check-core-purity.sh
           ./scripts/check-core-purity.sh --self-test
+      - name: aib-sys dependents (only aibd)
+        shell: bash
+        run: |
+          ./scripts/check-sys-deps.sh
+          ./scripts/check-sys-deps.sh --self-test
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
