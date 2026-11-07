@@ -45,6 +45,12 @@ fn m3_m4_list_a_child() {
     let _ = c.kill();
     let _ = c.wait();
     assert!(kids.contains(&c.id()), "{kids:?}");
+    // only children: neither us nor our parent
+    assert!(!kids.contains(&me()), "{kids:?}");
+    assert!(
+        !kids.contains(&std::os::unix::process::parent_id()),
+        "{kids:?}"
+    );
     assert!(all.contains(&me()) && all.contains(&c.id()));
     assert!(!kids.contains(&0) && !all.contains(&0));
 }

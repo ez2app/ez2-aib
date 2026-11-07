@@ -152,3 +152,107 @@ fn list(unit: Unit, raw: impl Fn(*mut c_void, c_int) -> c_int) -> Result<Vec<u32
         usize::try_from(n).map(|n| unit.to_bytes(n)).map_err(|_| 0)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)] // test code: a panic is the failure report
+    use super::*;
+
+    fn me() -> u32 {
+        std::process::id()
+    }
+
+    /// Measured on 15.7.9: the kernel writes the real size (56 / 136 bytes)
+    /// into a larger buffer. That must be a mismatch, never a success.
+    #[test]
+    fn m1_m2_a_larger_struct_than_the_kernels_is_a_length_mismatch() {
+        assert_eq!(
+            pidinfo::<[u8; 64]>(me(), PROC_PIDUNIQIDENTIFIERINFO).map(|_| ()),
+            Err(SysError::LengthMismatch { got: 56, want: 64 })
+        );
+        let real = size_of::<libc::proc_bsdinfo>();
+        assert_eq!(
+            pidinfo::<[u8; 144]>(me(), libc::PROC_PIDTBSDINFO).map(|_| ()),
+            Err(SysError::LengthMismatch {
+                got: real,
+                want: 144
+            })
+        );
+    }
+
+    /// A smaller buffer is refused by the kernel (ENOMEM, measured).
+    #[test]
+    fn m1_m2_a_smaller_struct_is_refused() {
+        assert_eq!(
+            pidinfo::<[u8; 48]>(me(), PROC_PIDUNIQIDENTIFIERINFO).map(|_| ()),
+            Err(SysError::Os(libc::ENOMEM))
+        );
+        assert_eq!(
+            pidinfo::<[u8; 128]>(me(), libc::PROC_PIDTBSDINFO).map(|_| ()),
+            Err(SysError::Os(libc::ENOMEM))
+        );
+    }
+
+    /// pid 0 (kernel_task), measured as a user: M1 reads, M2 is EPERM.
+    #[test]
+    fn pid_0_m1_reads_and_m2_is_permission_denied_for_a_user() {
+        assert!(Macos.unique_ids(0).is_ok());
+        // SAFETY: getuid has no preconditions.
+        if unsafe { libc::getuid() } != 0 {
+            assert_eq!(Macos.bsd_info(0), Err(SysError::PermissionDenied));
+        }
+    }
+
+    fn set_errno(e: i32) {
+        // SAFETY: as in `clear_errno`.
+        let slot = unsafe { libc::__error() };
+        // SAFETY: as in `clear_errno`.
+        unsafe { *slot = e };
+    }
+
+    /// M3 counts bytes, M4 counts pids (libproc.c): the glue converts both,
+    /// so a list longer than the first guess is still read whole.
+    #[test]
+    fn m3_m4_list_glue_counts_bytes_and_pids_right() {
+        let pids: Vec<i32> = (1..=200).collect();
+        for unit in [Unit::Bytes, Unit::Pids] {
+            let got = list(unit, |buf, size| {
+                if buf.is_null() {
+                    // size query: an estimate that is too small
+                    return match unit {
+                        Unit::Bytes => 10 * 4,
+                        Unit::Pids => 10,
+                    };
+                }
+                let cap = usize::try_from(size).unwrap() / 4;
+                let n = pids.len().min(cap);
+                // SAFETY: `buf` is the live `size`-byte buffer `list` passed.
+                let out = unsafe { std::slice::from_raw_parts_mut(buf.cast::<i32>(), cap) };
+                out[..n].copy_from_slice(&pids[..n]);
+                let n = i32::try_from(n).unwrap();
+                match unit {
+                    Unit::Bytes => n * 4,
+                    Unit::Pids => n,
+                }
+            });
+            assert_eq!(got.map(|v| v.len()), Ok(200));
+        }
+    }
+
+    #[test]
+    fn m3_m4_a_failed_call_is_classified_by_errno() {
+        let r = list(Unit::Pids, |_, _| {
+            set_errno(libc::EPERM);
+            -1
+        });
+        assert_eq!(r, Err(SysError::PermissionDenied));
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                return 64;
+            }
+            set_errno(libc::ESRCH);
+            -1
+        });
+        assert_eq!(r, Err(SysError::Gone));
+    }
+}
