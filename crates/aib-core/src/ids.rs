@@ -1,6 +1,7 @@
 //! Typed identifiers. Phase 0 only wraps strings; generation lives in the caller
 //! (the core has no randomness source of its own).
 
+use alloc::string::String;
 use serde::{Deserialize, Serialize};
 
 macro_rules! id_type {
@@ -15,8 +16,8 @@ macro_rules! id_type {
             }
         }
 
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        impl core::fmt::Display for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 f.write_str(&self.0)
             }
         }

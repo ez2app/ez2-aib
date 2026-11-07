@@ -2,9 +2,9 @@
 
 | Crate | What | Rule |
 |---|---|---|
-| `aib-core` | domain types, Seat/Session state machines, error codes, port traits | no I/O, no async runtime, no `cfg(target_os)` (`scripts/check-core-purity.sh`) |
+| `aib-core` | domain types, Seat/Session state machines, error codes, port traits | `#![no_std]` + `#![forbid(unsafe_code)]`, dependency-tree allow-list, no platform `cfg` (`scripts/check-core-purity.sh`; `--self-test` proves each rule catches a bypass) |
 | `aib-store` | SQLite (rusqlite, bundled), migrations from `/migrations`, event log | only crate with SQL |
-| `aibd` | local daemon: Axum on loopback, Host/Origin guard, bearer token, platform module | platform code only under `src/platform/` |
+| `aibd` | local daemon: Axum on loopback, Host/Origin guard, bearer token, platform module | platform code only under `src/platform/`; logs only known route templates (`<unmatched>` otherwise), never raw paths or queries |
 
 Decisions: `docs/adr/0001` (coexistence with the 1.x cockpit), `0002` (SQLite driver),
 `0003` (SSE + REST, event cursor, local API auth).

@@ -1,8 +1,9 @@
 //! Stable error codes returned by the local API. The string form is a contract:
 //! clients match on it, so a code is never renamed, only added.
 
-use std::fmt;
-use std::str::FromStr;
+use alloc::string::{String, ToString};
+use core::fmt;
+use core::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
@@ -79,7 +80,7 @@ mod tests {
 
     #[test]
     fn codes_round_trip_and_are_unique() {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = std::collections::HashSet::new(); // test-only std
         for c in ErrorCode::ALL {
             assert!(seen.insert(c.as_str()), "duplicate code {c}");
             assert_eq!(c.as_str().parse::<ErrorCode>(), Ok(c));

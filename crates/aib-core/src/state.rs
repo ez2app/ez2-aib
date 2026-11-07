@@ -31,7 +31,7 @@ pub enum SessionState {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("transition {from:?} -> {to:?} is not allowed")]
-pub struct InvalidTransition<S: std::fmt::Debug> {
+pub struct InvalidTransition<S: core::fmt::Debug> {
     pub from: S,
     pub to: S,
 }

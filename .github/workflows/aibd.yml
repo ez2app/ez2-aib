@@ -65,7 +65,9 @@ jobs:
           restore-keys: aibd-${{ matrix.os }}-
       - name: Core purity
         shell: bash
-        run: ./scripts/check-core-purity.sh
+        run: |
+          ./scripts/check-core-purity.sh
+          ./scripts/check-core-purity.sh --self-test
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy

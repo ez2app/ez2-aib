@@ -13,6 +13,11 @@ use std::sync::Arc;
 /// Paths reachable without the bearer token (Host/Origin still apply).
 const PUBLIC_PATHS: &[&str] = &["/api/v1/health"];
 
+/// Routes whose path may appear in logs. Anything else is logged as
+/// `UNMATCHED_PATH`, so a path like `/api/v1/<token>` never reaches the log.
+pub const LOGGED_ROUTES: &[&str] = &["/api/v1/health", "/api/v1/events"];
+pub const UNMATCHED_PATH: &str = "<unmatched>";
+
 /// Query parameter names that look like credentials; any of them is refused.
 const CREDENTIAL_PARAMS: &[&str] = &[
     "token",
@@ -77,12 +82,65 @@ fn single_header(h: &HeaderMap, name: header::HeaderName) -> Result<Option<&str>
     }
 }
 
+/// `application/x-www-form-urlencoded` decoding: `+` is a space, `%XX` a byte.
+/// Invalid escapes are kept literally (the check below still sees them).
+fn form_decode(s: &str) -> String {
+    fn hex(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    }
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => out.push(b' '),
+            b'%' => {
+                match (
+                    b.get(i + 1).copied().and_then(hex),
+                    b.get(i + 2).copied().and_then(hex),
+                ) {
+                    (Some(h), Some(l)) => {
+                        out.push(h * 16 + l);
+                        i += 2;
+                    }
+                    _ => out.push(b'%'),
+                }
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn query_has_credential(query: &str, token: &Token) -> bool {
-    query.split('&').any(|pair| {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        let k = k.to_ascii_lowercase();
-        CREDENTIAL_PARAMS.contains(&k.as_str()) || (!v.is_empty() && token.matches(v))
-    }) || query.contains(token.expose())
+    // Names: each key decoded twice (`%74oken`, `%2574oken`), case-insensitive.
+    let names_hit = query.split('&').any(|pair| {
+        let (k, _) = pair.split_once('=').unwrap_or((pair, ""));
+        let k = form_decode(&form_decode(k)).to_ascii_lowercase();
+        CREDENTIAL_PARAMS.contains(&k.trim())
+    });
+    // Values: the token itself, raw, encoded once or twice, anywhere.
+    let once = form_decode(query);
+    let twice = form_decode(&once);
+    let value_hit = [query, once.as_str(), twice.as_str()]
+        .iter()
+        .any(|q| q.contains(token.expose()));
+    names_hit || value_hit
+}
+
+/// The path as it may be logged: a known route, or a fixed placeholder.
+pub fn loggable_path(path: &str) -> &'static str {
+    LOGGED_ROUTES
+        .iter()
+        .find(|r| **r == path)
+        .copied()
+        .unwrap_or(UNMATCHED_PATH)
 }
 
 pub async fn guard(
@@ -92,7 +150,8 @@ pub async fn guard(
 ) -> Response {
     let rid = request_id();
     let method = req.method().clone();
-    let path = req.uri().path().to_string(); // never log the query
+    // never log the raw path or the query: either may carry a secret
+    let path = loggable_path(req.uri().path());
     let verdict = check(&cfg, &req);
     let resp = match verdict {
         Err((code, msg)) => error_response(code, msg, &rid),
@@ -127,6 +186,20 @@ fn check(cfg: &GuardConfig, req: &Request<Body>) -> Result<(), (ErrorCode, &'sta
         _ => {}
     }
 
+    let raw_path = req.uri().path();
+    if [
+        raw_path.to_string(),
+        form_decode(raw_path),
+        form_decode(&form_decode(raw_path)),
+    ]
+    .iter()
+    .any(|p| p.contains(cfg.token.expose()))
+    {
+        return Err((
+            ErrorCode::TokenInUrl,
+            "credentials must not be sent in the URL",
+        ));
+    }
     if let Some(q) = req.uri().query() {
         if query_has_credential(q, &cfg.token) {
             return Err((

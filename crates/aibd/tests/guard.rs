@@ -224,3 +224,48 @@ async fn unknown_route_still_needs_host_and_token() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert_eq!(j["code"], "not_found");
 }
+
+#[tokio::test]
+async fn encoded_or_mixed_case_credential_names_are_refused() {
+    for q in [
+        "/api/v1/events?%74oken=x",
+        "/api/v1/events?%54OKEN=x",
+        "/api/v1/events?ToKeN=x",
+        "/api/v1/events?Access_Token=x",
+        "/api/v1/events?%2574oken=x",
+        "/api/v1/events?api%5Fkey=x",
+        "/api/v1/events?cursor=0&+token+=x",
+    ] {
+        let (a, _d) = app(&[]);
+        let r = req(q)
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let (s, j, _) = send(a, r).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{q}");
+        assert_eq!(j["code"], "token_in_url", "{q}");
+    }
+}
+
+#[tokio::test]
+async fn encoded_token_value_in_query_or_path_is_refused() {
+    let enc: String = TOKEN.bytes().map(|b| format!("%{b:02X}")).collect();
+    let dbl: String = TOKEN.bytes().map(|b| format!("%25{b:02X}")).collect();
+    for u in [
+        format!("/api/v1/events?x={enc}"),
+        format!("/api/v1/events?x={dbl}"),
+        format!("/api/v1/{TOKEN}"),
+        format!("/api/v1/{enc}"),
+        format!("/api/v1/{dbl}"),
+        format!("/api/v1/health/{TOKEN}"),
+    ] {
+        let (a, _d) = app(&[]);
+        let r = req(&u)
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let (s, j, _) = send(a, r).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{u}");
+        assert_eq!(j["code"], "token_in_url", "{u}");
+    }
+}
