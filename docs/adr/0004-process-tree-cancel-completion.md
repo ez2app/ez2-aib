@@ -164,8 +164,9 @@ and the "periodic scans cost CPU" consequence.
   something outside the tree), or whose membership cannot be observed, is outside that
   guarantee: the cancel result is `tree_not_clean` when it is seen still running, and
   UNVERIFIED when it cannot be observed. It is never reported as a clean cancel.
-- **macOS lineage by unique id** (ruling 9320/a63ab 2026-11-07, implemented in the
-  Platform Adapter's FFI crate). Measured: after a process is re-parented to launchd its
+- **macOS lineage by unique id** (*proposed*, pending the maintainers' summary of the
+  2026-11-07 discussion; it needs an FFI call, so where `unsafe` may live is decided
+  there). Measured: after a process is re-parented to launchd its
   `p_puniqueid` (from `proc_pidinfo` `PROC_PIDUNIQIDENTIFIERINFO`) still holds the original
   parent's `p_uniqueid` (3 of 3 runs); unique ids are 64-bit and never reused. So a
   descendant whose parent exited at once can still be claimed exactly, **on one
