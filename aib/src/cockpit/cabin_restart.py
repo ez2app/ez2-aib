@@ -441,7 +441,25 @@ def dead_cabins(live, snap, *, home=None):
     return out
 
 
-SAME_BOOT_DEAD_REASONS = ("pid-gone", "")   # 突然不見(sweep 補的 pid-gone)或沒記到原因 ⇒ 算被關;window-gone / cli-exit / captain-close 是自己收的,不列
+SAME_BOOT_DEAD_REASONS = ("pid-gone", "")   # 突然不見(sweep 補的 pid-gone)或沒記到原因 ⇒ 算被關;window-gone / cli-exit / captain-close(idle_reaper 收艙前寫)是自己收的,不列
+
+
+def _pid_alive(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _seat_from_record(rec):
@@ -475,6 +493,8 @@ def same_boot_dead(live, unreachable, *, state_root=None, boot=None, home=None, 
                 continue
             if (rec.get("exit_reason") or "") not in SAME_BOOT_DEAD_REASONS:
                 continue
+            if not rec.get("exit_reason") and _pid_alive(rec.get("pid")):
+                continue                    # 沒記到原因、CLI 其實還活著(tmux 只是卡住沒回話)⇒ 不當斷掉,免得再開一份
             seats.append(_seat_from_record(rec))
             gone_at = max(gone_at, rec.get("exited_at_epoch") or 0)
         if seats:

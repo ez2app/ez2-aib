@@ -12,7 +12,10 @@ S2 自己收掉的席(window-gone / cli-exit / captain-close)不列;整艙都是
 S3 席位是上一次開機以前開的(殘留 socket)⇒ 不列
 S4 build_view 併進 dead、標 same_boot;上一次開機快照已經有的艙不重複;--restore 找得到
 S5 畫面有「這次開機中途被關掉的艙」那一段
-刀(複本):K1 拿掉退出原因過濾 ⇒ S2 紅;K2 拿掉開機時間過濾 ⇒ S3 紅;K3 build_view 不併 ⇒ S4 紅
+S6(#489 r1 Medium)idle_reaper 收艙(execute)前替每席寫 captain-close、已有原因的不蓋;dry-run 不寫;收過的艙不再列
+S7(#489 r1 Low)沒記到原因、pid 還活著(tmux 只是卡住)⇒ 不列,免得再開一份
+刀(複本):K1 拿掉退出原因過濾 ⇒ S2 紅;K2 拿掉開機時間過濾 ⇒ S3 紅;K3 build_view 不併 ⇒ S4 紅;
+           K4 execute 不留痕 ⇒ S6 紅;K5 拿掉 pid 判活 ⇒ S7 紅
 """
 import json
 import os
@@ -41,12 +44,14 @@ class Fixture:
         self.cwd = os.path.join(self.root, "work")
         os.makedirs(self.cwd)
 
-    def seat(self, cabin, win, uuid, *, reason="pid-gone", started=BOOT + 3600, provider="claude", role="dev"):
+    def seat(self, cabin, win, uuid, *, reason="pid-gone", started=BOOT + 3600, provider="claude", role="dev", pid=None):
         d = os.path.join(self.root, "instances", cabin, "seats")
         os.makedirs(d, exist_ok=True)
         rec = {"window_id": "@%d" % win, "provider": provider, "role": role, "mode": "dgrs",
                "cwd": self.cwd, "session_uuid": uuid, "started_epoch": started, "born_at": started,
                "seat_id": "s%d" % win, "exited_at_epoch": started + 100}
+        if pid is not None:
+            rec["pid"] = pid
         if reason is not None:
             rec["exit_reason"] = reason
         with open(os.path.join(d, "w%d.json" % win), "w", encoding="utf-8") as fh:
@@ -132,13 +137,44 @@ class SameBoot(unittest.TestCase):
         self.assertNotIn("上次開機時還在", txt)
 
 
+    def test_s6_reaper_marks_seats_closed(self):
+        import idle_reaper as IR
+        cab = "20261107-120000-beef"
+        self.f.seat(cab, 4, U1, reason=None)
+        self.f.seat(cab, 5, U2, reason="cli-exit")
+        orig = (IR.AIB_MAIN_HOME, IR.save_pane_tails)
+        IR.AIB_MAIN_HOME, IR.save_pane_tails = self.f.root, (lambda *a, **k: None)
+        tg = {"kind": "inst", "instance": cab, "id": "inst:" + cab, "steps": [], "kill_pids": [], "seats": []}
+        try:
+            IR.execute(dict(tg), dry_run=True, grace_s=0)
+            rec4 = json.load(open(os.path.join(self.f.root, "instances", cab, "seats", "w4.json")))
+            self.assertNotIn("exit_reason", rec4, "dry-run 不寫")
+            IR.execute(dict(tg), dry_run=False, grace_s=0)
+        finally:
+            IR.AIB_MAIN_HOME, IR.save_pane_tails = orig
+        d = os.path.join(self.f.root, "instances", cab, "seats")
+        self.assertEqual(json.load(open(os.path.join(d, "w4.json")))["exit_reason"], "captain-close")
+        self.assertEqual(json.load(open(os.path.join(d, "w5.json")))["exit_reason"], "cli-exit")
+        self.assertEqual(self.f.dead([cab]), [])
+
+    def test_s7_no_reason_but_pid_alive_not_listed(self):
+        cab = "20261107-120000-cafe"
+        self.f.seat(cab, 4, U1, reason=None, pid=os.getpid())
+        self.f.seat(cab, 5, U2, reason=None, pid=2 ** 22 + 12345)
+        out = self.f.dead([cab])
+        self.assertEqual([s["uuid"] for s in out[0]["seats"]], [U2])
+
+
 class Knives(unittest.TestCase):
     def _knife(self, old, new, test):
+        self._knife_file("cabin_restart.py", old, new, test)
+
+    def _knife_file(self, name, old, new, test):
         d = tempfile.mkdtemp(prefix="sameboot-knife-")
         try:
             shutil.copytree(COCKPIT, os.path.join(d, "src", "cockpit"))
             shutil.copytree(HERE, os.path.join(d, "tests"), ignore=shutil.ignore_patterns("__pycache__"))
-            p = os.path.join(d, "src", "cockpit", "cabin_restart.py")
+            p = os.path.join(d, "src", "cockpit", name)
             s = open(p, encoding="utf-8").read()
             self.assertIn(old, s)
             open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
@@ -160,6 +196,14 @@ class Knives(unittest.TestCase):
     def test_k3_build_view_not_merged(self):
         self._knife("    dead += same_boot_dead(", "    dead += [] and same_boot_dead(",
                     "SameBoot.test_s4_build_view_merges_without_dup")
+
+    def test_k4_reaper_no_mark(self):
+        self._knife_file("idle_reaper.py", "    if not dry_run:\n        mark_seats_closed(target)\n", "",
+                         "SameBoot.test_s6_reaper_marks_seats_closed")
+
+    def test_k5_no_pid_check(self):
+        self._knife('if not rec.get("exit_reason") and _pid_alive(rec.get("pid")):', "if False:",
+                    "SameBoot.test_s7_no_reason_but_pid_alive_not_listed")
 
 
 if __name__ == "__main__":

@@ -73,6 +73,7 @@ if _HERE_EH17 not in _sys_eh17.path:
     _sys_eh17.path.insert(0, _HERE_EH17)
 from seat_address import uuid_tail5  # noqa: E402
 import glob
+import pathlib
 import json
 import os
 import re
@@ -1100,12 +1101,38 @@ def save_pane_tails(target, out_dir=None, now=None):
     return None
 
 
+def mark_seats_closed(target):
+    """收艙前替這艙每一席寫退出痕 captain-close(11-07 #489 @742c2 審查)。
+    內艙 kill-server 之後 pane 尾巴的 `seat_exit.py record` 沒機會跑、別艙 watch 的 sweep 打不到 hub 只看 pid ⇒
+    原本會記成 pid-gone,`aib restart` 就把「自己收掉的艙」當成「被關掉的艙」列出來、--restore-all 還會接回。
+    已經有退出痕的席不動(不蓋掉 cli-exit 之類真正的原因)。回寫了痕的席位檔路徑。"""
+    inst = target.get("instance")
+    if target.get("kind") != "inst" or not inst:
+        return []
+    sdir = os.path.join(AIB_MAIN_HOME, "seats") if inst == "main" \
+        else os.path.join(AIB_MAIN_HOME, "instances", inst, "seats")
+    done = []
+    for path in sorted(glob.glob(os.path.join(sdir, "w*.json"))):
+        try:
+            rec = seat_exit.load_seat(pathlib.Path(path))
+            if rec.get("exit_reason"):
+                continue
+            seat_exit.atomic_write(pathlib.Path(path), seat_exit.stamp_exit(
+                rec, "captain-close", None, "idle_reaper 收艙 %s" % target.get("id"), "idle_reaper.py"))
+            done.append(path)
+        except Exception:  # noqa: BLE001  留痕失敗不能擋收艙
+            continue
+    return done
+
+
 def execute(target, dry_run=False, grace_s=1.5):
     """回 dict(steps_run, killed, survivors, argv, drafts)。只碰 target 自己盤點到的 PID。
     argv:{"<pid>": "<殺之前量到的指令列>"},dry-run 也量(讓 --dry-run 的紀錄說得出會殺到什麼)。
     drafts:真的收之前存下的窗格尾巴檔(save_pane_tails);dry-run 不存。"""
     ran, killed, argv = [], [], {}
     drafts = None if dry_run else save_pane_tails(target)
+    if not dry_run:
+        mark_seats_closed(target)
     for step in target["steps"]:
         if step[0] == "kill-server":
             cmd = [TMUX, "-S", step[1], "kill-server"]
