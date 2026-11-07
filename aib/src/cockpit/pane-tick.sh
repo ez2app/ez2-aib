@@ -238,29 +238,37 @@ pane_wait_if_detached() {
 # ── 看得見才畫(2026-11-07 @043dd,AIB 2.0 省熱七項第 2 項;艦長 @a63ab 裁示併成共用函式)────────
 # pane_attached 只看 session 有沒有人附著:人在同一艙看別的窗(例如駕駛艙窗看對話時的戰情室窗)
 # ⇒ 那個窗的面板照樣每秒整幀渲染,沒人看得到。
-# pane_visible:rc0 = 看得見(或量不到);rc1 = 看不見(session 沒人附著,或這一格所在的窗不是當前窗)。
-#   一支 tmux 同時拿 session_attached 與 window_active,成本與 pane_attached 相同。
-#   ★ 失效側同 pane_attached:tmux 失敗、輸出不是「數字 0/1」一律當看得見 —— 誤判看不見會把畫面凍住,
-#     那才是缺陷;誤判看得見只是照舊多畫(刀測 test-pane-visible-043dd-1107 V3)。
+#
+# pane_visible:rc0 = 看得見(或量不到);rc1 = 看不見。
+#   判準 = #{window_active_clients}(此刻正在看這個窗的 client 數,tmux 3.3+):
+#   一個數字同時涵蓋「沒人附著」「人在看別的窗」「多 client」「連結到別的 session 的窗」「grouped session」——
+#   不論從哪個 session、哪個 client 看到這個窗,都算一個(#477 r2 審查第 4 點;測試 V6 逐一建情境)。
+#   ★ 失效側同 pane_attached:tmux 失敗、輸出不是數字(舊 tmux 不認這個格式會印空)一律當看得見 ——
+#     誤判看不見會把畫面凍住,那才是缺陷;誤判看得見只是照舊多畫(刀 K1)。
 pane_visible() {
   [ -n "${TMUX_PANE:-}" ] || return 0
-  local a w
-  a="$(tmux display-message -p -t "$TMUX_PANE" '#{session_attached} #{window_active}' 2>/dev/null)" || return 0
-  w="${a#* }"; a="${a%% *}"
-  case "$a" in ''|*[!0-9]*) return 0 ;; esac
-  case "$w" in 0|1) ;; *) return 0 ;; esac
-  [ "$a" = "0" ] && return 1
-  [ "$w" = "0" ] && return 1
-  return 0
+  local n
+  n="$(tmux display-message -p -t "$TMUX_PANE" '#{window_active_clients}' 2>/dev/null)" || return 0
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n" -gt 0 ] && return 0
+  return 1
 }
 
-# 喚醒訊號:看不見時在這一格所在的 session 掛 session-window-changed / client-attached / client-detached
-# 鉤子,事件一來 tmux 把「窗號 附著數」寫進訊號檔;等待期間每 0.1 秒只讀檔(零 fork),內容一變當拍醒來重判。
-# 這樣切回這個窗、重新附著都是約 0.1 秒內重畫,不必等退避的 2–10 秒。
-# 鉤子掛不上(路徑有 tmux 會解析的字元 / 不是絕對路徑 / tmux 拒絕)⇒ 只靠退避輪詢(同 pane_wait_if_detached)。
-# 寫檔失敗一定要吞:run-shell 有輸出或 rc≠0 時 tmux 會把當前格切進 view-mode 顯示錯誤(右欄 H3 同理)。
-# 鉤子編號 49 固定:同一 session 的各面板掛的是同一條指令(同一個訊號檔),重掛只是覆寫。
-PANE_VIS_SIG="${EZ2_COCKPIT_STATE_DIR:+$EZ2_COCKPIT_STATE_DIR/.panevis.sig}"
+# ── 喚醒事件序號(#477 r2:共用層定義事件序號 + 重新判定契約,待審框與戰情室共用)────────
+# 契約:
+#   1) 事件 = tmux 全域鉤子 session-window-changed / client-attached / client-detached / client-session-changed
+#      (任何 session、任何 client;grouped / 連結窗的切換也在內)。每個事件由 pane-vis-bump.sh 把
+#      訊號檔的序號 +1:上鎖(mkdir)→ 讀 → 寫暫存 → rename(原子)。序號單調遞增,讀的一方只會看到完整的數字。
+#   2) 等待方:先讀序號當基準,**讀完基準後再判一次可見性**,看得見就不睡;看不見才等「序號 ≠ 基準」或退避到期。
+#      所以在「判看不見 → 掛鉤 → 讀基準」中間切回 / 重新附著,不會漏(第二次判定會看見);
+#      讀完基準之後才發生的事件一定讓序號變大(刀 K3 / 障礙測試 V2b、V2c)。
+#   3) 鉤子掛不上(路徑有 tmux 會解析的字元 / 不是絕對路徑 / tmux 拒絕)⇒ 只靠退避輪詢,行為同 pane_wait_if_detached。
+# 鉤子掛在全域(-g):grouped / 連結窗的事件發生在別的 session,掛在本 session 收不到。
+#   各艙用不同的鉤子編號(訊號檔路徑的 cksum 取 1000–9999),不互相覆蓋;別艙事件也會讓本艙序號 +1,
+#   只是多一次「重判可見性」(一支 tmux),不會畫錯。
+# 寫檔失敗一律吞:run-shell 有輸出或 rc≠0 時 tmux 會把當前格切進 view-mode 顯示錯誤。
+PANE_VIS_SIG="${EZ2_COCKPIT_STATE_DIR:+$EZ2_COCKPIT_STATE_DIR/.panevis.seq}"
+PANE_VIS_BUMP="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/pane-vis-bump.sh"
 PANE_VIS_HOOKED=0
 pane_vis_hook() {
   PANE_VIS_HOOKED=0
@@ -268,16 +276,25 @@ pane_vis_hook() {
   case "$PANE_VIS_SIG" in
     ''|[!/]*|*[!A-Za-z0-9._/+-]*) return 0 ;;
   esac
-  local cmd="run-shell -b \"echo '#{window_id} #{session_attached}' 2>/dev/null >'$PANE_VIS_SIG' || :\""
-  if tmux set-hook -t "$TMUX_PANE" 'session-window-changed[49]' "$cmd" \; \
-         set-hook -t "$TMUX_PANE" 'client-attached[49]' "$cmd" \; \
-         set-hook -t "$TMUX_PANE" 'client-detached[49]' "$cmd" >/dev/null 2>&1; then
+  case "$PANE_VIS_BUMP" in
+    ''|[!/]*|*[!A-Za-z0-9._/+-]*) return 0 ;;
+  esac
+  [ -f "$PANE_VIS_BUMP" ] || return 0
+  local idx cmd
+  idx="$(printf '%s' "$PANE_VIS_SIG" | cksum 2>/dev/null)"; idx="${idx%% *}"
+  case "$idx" in ''|*[!0-9]*) return 0 ;; esac
+  idx=$(( idx % 9000 + 1000 ))
+  cmd="run-shell -b \"sh '$PANE_VIS_BUMP' '$PANE_VIS_SIG' >/dev/null 2>&1 || :\""
+  if tmux set-hook -g "session-window-changed[$idx]" "$cmd" \; \
+         set-hook -g "client-attached[$idx]" "$cmd" \; \
+         set-hook -g "client-detached[$idx]" "$cmd" \; \
+         set-hook -g "client-session-changed[$idx]" "$cmd" >/dev/null 2>&1; then
     PANE_VIS_HOOKED=1
   fi
   return 0
 }
 
-# pane_wait_if_hidden:看不見 ⇒ 等到「訊號檔變了」或退避時間到(2→10 秒,同 pane_wait_if_detached 的
+# pane_wait_if_hidden:看不見 ⇒ 等到事件序號變了或退避時間到(2→10 秒,同 pane_wait_if_detached 的
 # EZ2_PANE_DETACHED_TICK / _MAX),回 rc0(呼叫端 `&& continue`);看得見 ⇒ 退避歸零、回 rc1。
 # 用法:取代主迴圈的 `pane_wait_if_detached && continue`。
 PANE_HIDDEN_WAIT=""
@@ -286,7 +303,7 @@ pane_wait_if_hidden() {
     PANE_HIDDEN_WAIT=""
     return 1
   fi
-  local t="${EZ2_PANE_DETACHED_TICK:-2}" tmax="${EZ2_PANE_DETACHED_TICK_MAX:-10}" sig0="" sig="" n i
+  local t="${EZ2_PANE_DETACHED_TICK:-2}" tmax="${EZ2_PANE_DETACHED_TICK_MAX:-10}" seq0="" seq="" n i
   case "$t" in ''|*[!0-9]*|0) t=2 ;; esac
   case "$tmax" in ''|*[!0-9]*|0) tmax=10 ;; esac
   if [ -z "$PANE_HIDDEN_WAIT" ]; then
@@ -300,12 +317,17 @@ pane_wait_if_hidden() {
     pane_tick_sleep "$PANE_HIDDEN_WAIT"
     return 0
   fi
-  pane_read_file sig0 "$PANE_VIS_SIG"
+  pane_read_file seq0 "$PANE_VIS_SIG"
+  # 契約第 2 條:讀完基準再判一次。判看不見之後、讀基準之前的切回 / 附著在這裡接住。
+  if pane_visible; then
+    PANE_HIDDEN_WAIT=""
+    return 1
+  fi
   n=$(( PANE_HIDDEN_WAIT * 10 ))
   for (( i = 0; i < n; i++ )); do
     pane_tick_sleep 0.1
-    pane_read_file sig "$PANE_VIS_SIG"
-    [ "$sig" = "$sig0" ] || { PANE_HIDDEN_WAIT=""; return 0; }   # 有事件:下一圈立刻重判
+    pane_read_file seq "$PANE_VIS_SIG"
+    [ "$seq" = "$seq0" ] || { PANE_HIDDEN_WAIT=""; return 0; }   # 有事件:下一圈立刻重判
   done
   return 0
 }

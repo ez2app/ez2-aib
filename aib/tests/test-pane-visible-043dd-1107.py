@@ -3,16 +3,28 @@
 """面板「看得見才畫」(11-07 @043dd,AIB 2.0 省熱七項第 2 項;艦長 @a63ab 裁示做成 pane-tick 共用函式)。
 
 pane_attached 只看 session 有沒有人附著 ⇒ 人在同一艙看別的窗時,戰情室窗照樣每秒整幀渲染。
-pane-tick.sh 新增 pane_visible / pane_wait_if_hidden:沒人附著或所在窗不是當前窗 ⇒ 不畫;
-看不見時掛 session-window-changed / client-attached / client-detached 鉤子寫訊號檔,切回來約 0.1 秒就醒。
+pane-tick.sh:pane_visible(#{window_active_clients})/ pane_wait_if_hidden(事件序號 + 讀基準後重判)。
 
-V1 真 tmux:沒 client ⇒ 兩窗都看不見;有 client 看 a ⇒ a 看得見、b 看不見;切到 b ⇒ 反過來
-V2 真 tmux:b 看不見時等待中,切到 b ⇒ 3 秒內醒來(退避設 10 秒),而且鉤子有掛上
-V3 量不到一律當看得見(誤判看不見會凍畫面):tmux 失敗 / 空 / 不是數字 / window_active 不是 0、1 ⇒ rc0
-V4 訊號檔路徑有 tmux 會解析的字元 / 不是絕對路徑 ⇒ 不掛鉤子、照退避等完(不會卡住)
+★ 沙盒(11-07 事故後的全席規則):所有 tmux 一律 `-S <本測試暫存夾內的 socket>`,每次呼叫前驗路徑在沙盒夾內
+  且夾還在;不准用 TMUX_TMPDIR / -L(夾消失時 tmux 會退回預設 socket,清理的 kill-server 就會砍到真駕駛艙)。
+  被測的 bash 拿 TMUX=<同一個 socket 路徑>(tmux 照它連,不會退回預設)。守門本身有測試 S1–S4。
+
+V1 真 tmux:沒 client ⇒ 兩窗都看不見;client 看 a ⇒ a 見 b 不見;切到 b ⇒ 反過來
+V2 等待中切到 b ⇒ 3 秒內醒(退避 10 秒),鉤子有掛
+V2b 障礙:判看不見之後、掛鉤之前切回 ⇒ 不睡滿(讀基準後重判接住)
+V2c 障礙:掛鉤之後、讀基準之前切回 ⇒ 不睡滿
+V2d 等待中 b→a 來回切(最後狀態與基準相同)⇒ 仍醒來(事件序號,不是比內容)
+V3 量不到一律當看得見:tmux 失敗 / 空 / 不是數字 ⇒ rc0
+V4 訊號檔路徑有 tmux 會解析的字元 / 不是絕對路徑 ⇒ 不掛鉤子、照退避等完
 V5 戰情室主迴圈用 pane_wait_if_hidden(第一幀照畫),不再用只看附著的 pane_wait_if_detached
-刀(複本 + run_guarded):K1 量不到當看不見 ⇒ V3 紅;K2 不看 window_active ⇒ V1 紅;
-K3 不掛鉤子 ⇒ V2 紅;K4 拿掉路徑白名單 ⇒ V4 紅;K5 戰情室退回 pane_wait_if_detached ⇒ V5 紅。
+V6 多 client / 連結窗 / grouped session 的可見性;V6b 連結窗在別的 session 被切到能叫醒;V6c grouped 那邊切窗能叫醒
+V7 序號腳本 20 個同時跑 ⇒ 序號剛好 +20、不留暫存與鎖
+S1–S4 沙盒守門:夾消失 / socket 指預設 / 沙盒外路徑 / 清理路徑 ⇒ 一律拒跑、tmux 一次都沒執行
+刀(複本 + run_guarded):K1 量不到當看不見 ⇒ V3;K2 改回 session_attached ⇒ V1;K3 拿掉讀基準後重判 ⇒ V2c;
+K4 拿掉路徑白名單 ⇒ V4;K5 戰情室退回 pane_wait_if_detached ⇒ V5;K6 序號腳本寫固定值 ⇒ V2d;
+K8 守門不查夾在不在 ⇒ S1;K9 守門不擋預設 socket ⇒ S2。
+(鉤子掛全域 -g 而不是本 session:試過把它改回 -t 當刀,連結窗 / grouped 情境照樣醒,咬不到 ⇒ 不列刀;
+ -g 留著是因為事件可能發生在別的 session,寧可多收一點、不會畫錯。)
 刀一律斷言「FAIL: <目標>」且沒有 ERROR
 """
 import os
@@ -31,14 +43,59 @@ from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 
 TICK = ROOT / "src" / "cockpit" / "pane-tick.sh"
+BUMP = ROOT / "src" / "cockpit" / "pane-vis-bump.sh"
 WARROOM = ROOT / "src" / "cockpit" / "warroom-board.sh"
 BASH = os.environ.get("AIB_TEST_BASH") or shutil.which("bash") or "/bin/bash"
 TMUX = shutil.which("tmux")
 
 
+class SandboxRefused(AssertionError):
+    pass
+
+
+class Sandbox:
+    """只准打本測試暫存夾內的 socket。每次呼叫前驗:夾還在、socket 在夾內、不是任何預設 socket。"""
+
+    def __init__(self, root, tmux_bin):
+        self.root = Path(root)
+        self.sock = self.root / "s"
+        self.tmux_bin = tmux_bin
+
+    def check(self):
+        root = os.path.realpath(str(self.root))
+        sock = os.path.realpath(str(self.sock))
+        if not self.root.is_dir():
+            raise SandboxRefused("沙盒夾不在了:%s" % self.root)
+        if not sock.startswith(root + os.sep):
+            raise SandboxRefused("socket 不在沙盒夾內:%s" % sock)
+        if os.path.basename(sock) == "default" or "/tmux-%d/" % os.getuid() in sock:
+            raise SandboxRefused("socket 像是預設位置:%s" % sock)
+
+    def env(self):
+        e = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_TMPDIR", "TMUX_PANE")}
+        return e
+
+    def tm(self, *a, **kw):
+        self.check()
+        return subprocess.run([self.tmux_bin, "-S", str(self.sock)] + list(a), env=self.env(),
+                              capture_output=True, text=True, timeout=10, **kw)
+
+    def popen(self, *a):
+        self.check()
+        return subprocess.Popen([self.tmux_bin, "-S", str(self.sock)] + list(a), env=self.env(),
+                                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def cleanup(self):
+        # 清理也走守門:夾已經不在 / 路徑不對就什麼都不做(絕不退回預設 socket 去 kill-server)
+        try:
+            self.tm("kill-server")
+        except SandboxRefused:
+            pass
+
+
 class Base(unittest.TestCase):
     def setUp(self):
-        self.d = Path(tempfile.mkdtemp())
+        self.d = Path(tempfile.mkdtemp(prefix="pv"))
         self.addCleanup(shutil.rmtree, str(self.d), True)
         self.state = self.d / "cockpit"
         self.state.mkdir()
@@ -54,81 +111,108 @@ class Base(unittest.TestCase):
 class RealTmux(Base):
     def setUp(self):
         super().setUp()
-        self.sock = "pvis%d" % os.getpid()
-        self.tmx = self.d / "t"                # 自己的 socket 夾(路徑要短:socket 路徑有長度上限)
-        self.tmx.mkdir()
-        self.tm("-f", "/dev/null", "new-session", "-d", "-s", "h", "-n", "a", "-x", "80", "-y", "20",
-                "sleep 120", ";", "new-window", "-d", "-n", "b", "sleep 120")
-        self.addCleanup(self.tm, "kill-server")
-        self.pa = self.tm("display", "-p", "-t", "h:a", "#{pane_id}").stdout.strip()
-        self.pb = self.tm("display", "-p", "-t", "h:b", "#{pane_id}").stdout.strip()
-        self.client = None
+        self.sbx = Sandbox(self.d / "t", TMUX)
+        (self.d / "t").mkdir()
+        self.clients = []
+        self.addCleanup(self.sbx.cleanup)
+        self.addCleanup(self._detach_all)
+        r = self.sbx.tm("-f", "/dev/null", "new-session", "-d", "-s", "h", "-n", "a", "-x", "80", "-y", "20",
+                        "sleep 120", ";", "new-window", "-d", "-n", "b", "sleep 120")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.pa = self.sbx.tm("display", "-p", "-t", "h:a", "#{pane_id}").stdout.strip()
+        self.pb = self.sbx.tm("display", "-p", "-t", "h:b", "#{pane_id}").stdout.strip()
 
-    def env(self):
-        e = dict(os.environ)
-        e.pop("TMUX", None)
-        e["TMUX_TMPDIR"] = str(self.tmx)
-        return e
-
-    def tm(self, *a):
-        return subprocess.run([TMUX, "-L", self.sock] + list(a), env=self.env(), capture_output=True,
-                              text=True, timeout=10)
-
-    def attach(self):
+    def attach(self, session="h"):
         # control-mode client 算一個附著的 client;stdin 留著不關它就一直掛著
-        self.client = subprocess.Popen([TMUX, "-L", self.sock, "-C", "attach", "-t", "h"], env=self.env(),
-                                       stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL)
-        self.addCleanup(self._detach)
+        c = self.sbx.popen("-C", "attach", "-t", session)
+        self.clients.append(c)
         end = time.time() + 5
         while time.time() < end:
-            if self.tm("display", "-p", "-t", "h", "#{session_attached}").stdout.strip() not in ("", "0"):
-                return
+            if self.sbx.tm("display", "-p", "-t", session, "#{session_attached}").stdout.strip() not in ("", "0"):
+                return c
             time.sleep(0.05)
         self.fail("control-mode client 沒附著上")
 
-    def _detach(self):
-        if self.client:
-            if self.client.poll() is None:
-                self.client.kill()
-                self.client.wait(5)
-            self.client.stdin.close()
+    def detach(self, c):
+        if c.poll() is None:
+            c.kill()
+            c.wait(5)
+        c.stdin.close()
+
+    def _detach_all(self):
+        for c in self.clients:
+            self.detach(c)
 
     def tick_env(self, pane, extra=None):
-        # 被測的 bash 要打到同一台私有 tmux:用 TMUX 環境變數指 socket(tmux 從 TMUX 取 socket 路徑)
-        sock_path = self.tm("display", "-p", "#{socket_path}").stdout.strip()
-        e = {"TMUX": "%s,0,0" % sock_path, "TMUX_PANE": pane, "TMUX_TMPDIR": str(self.tmx)}
+        e = {"TMUX": "%s,0,0" % self.sbx.sock, "TMUX_PANE": pane}
         e.update(extra or {})
         return e
 
     def visible(self, pane):
         return self.bash(". '%s'\npane_visible" % TICK, self.tick_env(pane)).returncode
 
+    def wait_hidden(self, pane, prelude="", action=None, at=1.0, backoff="10"):
+        """在背景跑 pane_wait_if_hidden;at 秒後做 action;回(stdout, 從 action 到結束的秒數)。"""
+        prog = (". '%s'\npane_tick_init\n%s\nt0=$SECONDS\npane_wait_if_hidden; rc=$?\n"
+                "echo \"rc=$rc hooked=$PANE_VIS_HOOKED\"\n" % (TICK, prelude))
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.d),
+               "EZ2_COCKPIT_STATE_DIR": str(self.state)}
+        env.update(self.tick_env(pane, {"EZ2_PANE_DETACHED_TICK": backoff, "EZ2_PANE_DETACHED_TICK_MAX": backoff}))
+        p = subprocess.Popen([BASH, "-c", prog], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(at)
+        t0 = time.time()
+        if action:
+            action()
+        out, err = p.communicate(timeout=40)
+        return out + err, time.time() - t0
+
+    def sel(self, target):
+        return lambda: self.sbx.tm("select-window", "-t", target)
+
     def test_v1_window_active_matters(self):
         self.assertEqual((self.visible(self.pa), self.visible(self.pb)), (1, 1), "沒 client 兩窗都該看不見")
         self.attach()
         self.assertEqual((self.visible(self.pa), self.visible(self.pb)), (0, 1), "看 a 時")
-        self.tm("select-window", "-t", "h:b")
+        self.sbx.tm("select-window", "-t", "h:b")
         self.assertEqual((self.visible(self.pa), self.visible(self.pb)), (1, 0), "切到 b 後")
 
     def test_v2_hook_wakes_on_switch(self):
         self.attach()
-        prog = (". '%s'\npane_tick_init\nt0=$SECONDS\npane_wait_if_hidden; rc=$?\n"
-                "echo \"rc=$rc hooked=$PANE_VIS_HOOKED waited=$((SECONDS - t0))\"\n" % TICK)
-        env = self.tick_env(self.pb, {"EZ2_PANE_DETACHED_TICK": "10", "EZ2_PANE_DETACHED_TICK_MAX": "10"})
-        full = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.d),
-                "EZ2_COCKPIT_STATE_DIR": str(self.state)}
-        full.update(env)
-        p = subprocess.Popen([BASH, "-c", prog], env=full, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True)
-        time.sleep(1.0)
-        t0 = time.time()
-        self.tm("select-window", "-t", "h:b")
-        out, err = p.communicate(timeout=30)
-        took = time.time() - t0
-        self.assertIn("rc=0", out, err)
-        self.assertIn("hooked=1", out, out + err)
-        self.assertLess(took, 3.0, "切回來 %.1f 秒才醒(退避 10 秒;鉤子應約 0.1 秒叫醒)\n%s" % (took, out))
+        out, took = self.wait_hidden(self.pb, action=self.sel("h:b"))
+        self.assertIn("hooked=1", out, out)
+        self.assertLess(took, 3.0, "切回來 %.1f 秒才醒(退避 10 秒)\n%s" % (took, out))
+
+    def _barrier(self, before_hook):
+        """障礙:把 pane_vis_hook 包一層,在掛鉤之前(或之後、讀基準之前)切到 b。"""
+        sw = "tmux select-window -t h:b"
+        if before_hook:
+            wrap = "%s; _orig_vis_hook" % sw
+        else:
+            wrap = "_orig_vis_hook; %s; sleep 0.5" % sw     # 等鉤子把序號寫完,再讓函式去讀基準
+        return ('eval "$(declare -f pane_vis_hook | sed \'1s/pane_vis_hook/_orig_vis_hook/\')"\n'
+                "pane_vis_hook() { %s; }\n" % wrap)
+
+    def test_v2b_switch_before_hook(self):
+        self.attach()
+        out, took = self.wait_hidden(self.pb, prelude=self._barrier(True), at=0)
+        self.assertIn("rc=1", out, "切回後應判看得見、不睡\n" + out)
+        self.assertLess(took, 3.0, "掛鉤前切回,睡了 %.1f 秒\n%s" % (took, out))
+
+    def test_v2c_switch_after_hook_before_baseline(self):
+        self.attach()
+        out, took = self.wait_hidden(self.pb, prelude=self._barrier(False), at=0)
+        self.assertIn("rc=1", out, "讀基準後重判應看見\n" + out)
+        self.assertLess(took, 3.0, "掛鉤後、讀基準前切回,睡了 %.1f 秒\n%s" % (took, out))
+
+    def test_v2d_back_and_forth_still_wakes(self):
+        self.attach()
+        (self.state / ".panevis.seq").write_text("7\n")    # 序號已經有值(不是空檔):醒來只能靠「變大」
+
+        def flip():
+            self.sbx.tm("select-window", "-t", "h:b", ";", "select-window", "-t", "h:a")
+        out, took = self.wait_hidden(self.pb, action=flip)
+        self.assertIn("rc=0", out, out)
+        self.assertLess(took, 3.0, "b→a 來回切沒叫醒(%.1f 秒)\n%s" % (took, out))
 
     def test_v4_unsafe_path_no_hook(self):
         self.attach()
@@ -136,14 +220,52 @@ class RealTmux(Base):
             with self.subTest(st):
                 if st.startswith("/"):
                     Path(st).mkdir(exist_ok=True)
-                prog = (". '%s'\npane_tick_init\npane_wait_if_hidden; rc=$?\n"
-                        "echo \"rc=$rc hooked=$PANE_VIS_HOOKED\"\n" % TICK)
-                p = self.bash(prog, self.tick_env(self.pb, {
-                    "EZ2_COCKPIT_STATE_DIR": st, "EZ2_PANE_DETACHED_TICK": "1",
-                    "EZ2_PANE_DETACHED_TICK_MAX": "1"}))
+                p = self.bash(". '%s'\npane_tick_init\npane_wait_if_hidden; rc=$?\n"
+                              "echo \"rc=$rc hooked=$PANE_VIS_HOOKED\"\n" % TICK,
+                              self.tick_env(self.pb, {"EZ2_COCKPIT_STATE_DIR": st, "EZ2_PANE_DETACHED_TICK": "1",
+                                                      "EZ2_PANE_DETACHED_TICK_MAX": "1"}))
                 self.assertIn("rc=0 hooked=0", p.stdout, p.stdout + p.stderr)
-        hooks = self.tm("show-hooks", "-t", "h").stdout
-        self.assertNotIn("panevis", hooks, hooks)
+        hooks = self.sbx.tm("show-hooks", "-g").stdout
+        self.assertNotIn("pane-vis-bump", hooks, hooks)
+
+    def test_v6_multi_client_linked_grouped(self):
+        c1 = self.attach()
+        self.attach()
+        self.detach(c1)
+        self.assertEqual(self.visible(self.pa), 0, "兩個 client、走掉一個,a 仍看得見")
+        # 連結窗:b 連進 session L;client 看 L 裡的 b ⇒ b 看得見(h 那邊目前是 a)
+        self.sbx.tm("new-session", "-d", "-s", "L", "-n", "x", "sleep 120")
+        self.sbx.tm("link-window", "-s", "h:b", "-t", "L:9")
+        self.sbx.tm("select-window", "-t", "L:9")
+        self.attach("L")
+        self.assertEqual(self.visible(self.pb), 0, "連結窗從 L 看得見")
+        self.assertEqual(self.visible(self.pa), 0, "h 的 client 仍看 a")
+        # grouped:h2 與 h 同組;只剩 h2 的 client 看 b
+        for c in list(self.clients):
+            self.detach(c)
+        self.sbx.tm("new-session", "-d", "-s", "h2", "-t", "h")
+        self.sbx.tm("select-window", "-t", "h2:b")
+        self.attach("h2")
+        self.assertEqual(self.visible(self.pb), 0, "grouped h2 在看 b")
+        self.assertEqual(self.visible(self.pa), 1, "沒有 client 在看 a")
+
+    def test_v6b_linked_switch_wakes(self):
+        # b 連進 session L;client 只看 L。L 那邊切到連結的 b ⇒ 事件發生在 L,鉤子要是全域的才叫得醒
+        self.sbx.tm("new-session", "-d", "-s", "L", "-n", "x", "sleep 120")
+        self.sbx.tm("link-window", "-d", "-s", "h:b", "-t", "L:9")   # -d:不切過去,L 仍在看 x
+        self.attach("L")
+        self.assertEqual(self.visible(self.pb), 1, "治具:等待前 b 應看不見")
+        out, took = self.wait_hidden(self.pb, action=self.sel("L:9"))
+        self.assertIn("hooked=1", out, out)
+        self.assertLess(took, 3.0, "連結窗在別的 session 被切到,沒叫醒(%.1f 秒)\n%s" % (took, out))
+
+    def test_v6c_grouped_switch_wakes(self):
+        self.sbx.tm("new-session", "-d", "-s", "h2", "-t", "h")
+        self.sbx.tm("select-window", "-t", "h2:a")
+        self.attach("h2")
+        out, took = self.wait_hidden(self.pb, action=self.sel("h2:b"))
+        self.assertIn("hooked=1", out, out)
+        self.assertLess(took, 3.0, "grouped session 那邊切窗沒叫醒(%.1f 秒)\n%s" % (took, out))
 
 
 class Fallback(Base):
@@ -158,49 +280,120 @@ class Fallback(Base):
         return {"PATH": "%s:/usr/bin:/bin" % b, "TMUX_PANE": "%9"}
 
     def test_v3_unknown_means_visible(self):
-        cases = {
-            "tmux 失敗": "exit 1",
-            "空輸出": "exit 0",
-            "不是數字": "echo 'x y'",
-            "只有一個值": "echo 1",
-            "window_active 怪值": "echo '1 2'",
-            "附著數怪值": "echo 'a 1'",
-        }
+        cases = {"tmux 失敗": "exit 1", "空輸出(舊 tmux 不認格式)": "exit 0", "不是數字": "echo x",
+                 "兩個值": "echo '1 0'", "負號": "echo -1"}
         for name, body in cases.items():
             with self.subTest(name):
                 p = self.bash(". '%s'\npane_visible" % TICK, self.fake(body))
                 self.assertEqual(p.returncode, 0, "%s 被當成看不見(會凍住畫面)" % name)
-        # 對照:量得到的兩種看不見
-        for name, body in {"沒人附著": "echo '0 1'", "不是當前窗": "echo '1 0'"}.items():
-            with self.subTest(name):
-                p = self.bash(". '%s'\npane_visible" % TICK, self.fake(body))
-                self.assertEqual(p.returncode, 1, name)
-        p = self.bash(". '%s'\npane_visible" % TICK, self.fake("echo '2 1'"))
-        self.assertEqual(p.returncode, 0, "有人看當前窗")
+        p = self.bash(". '%s'\npane_visible" % TICK, self.fake("echo 0"))
+        self.assertEqual(p.returncode, 1, "0 個 client 在看 ⇒ 看不見")
+        p = self.bash(". '%s'\npane_visible" % TICK, self.fake("echo 2"))
+        self.assertEqual(p.returncode, 0, "2 個 client 在看")
+
+
+class Bump(Base):
+    def test_v7_concurrent_bumps(self):
+        sig = self.state / ".panevis.seq"
+        sig.write_text("5\n")
+        procs = [subprocess.Popen(["sh", str(BUMP), str(sig)]) for _ in range(20)]
+        for p in procs:
+            self.assertEqual(p.wait(30), 0)
+        self.assertEqual(sig.read_text().strip(), "25")
+        self.assertEqual(sorted(x.name for x in self.state.iterdir()), [".panevis.seq"], "留下暫存或鎖")
 
 
 class Static(unittest.TestCase):
     def test_v5_warroom_uses_hidden(self):
         s = WARROOM.read_text(encoding="utf-8")
-        i = s.index("\nwhile true; do")
-        loop = s[i:]
+        loop = s[s.index("\nwhile true; do"):]
         self.assertIn('if [ "$FIRST_PAINT" != "1" ] && pane_wait_if_hidden; then continue; fi', loop)
         self.assertNotIn("pane_wait_if_detached", loop)
 
 
+class Guard(unittest.TestCase):
+    """沙盒守門:拒跑時 tmux 一次都不准執行(用會記錄的假 tmux 驗)。"""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="pg"))
+        self.addCleanup(shutil.rmtree, str(self.d), True)
+        self.calls = self.d / "calls"
+        fake = self.d / "faketmux"
+        fake.write_text("#!/bin/sh\necho \"$*\" >> '%s'\n" % self.calls)
+        fake.chmod(0o755)
+        self.fake = str(fake)
+
+    def ncalls(self):
+        return len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
+
+    def test_s1_dir_gone(self):
+        sb = Sandbox(self.d / "t", self.fake)
+        (self.d / "t").mkdir()
+        sb.tm("ls")
+        self.assertEqual(self.ncalls(), 1)
+        shutil.rmtree(str(self.d / "t"))
+        with self.assertRaises(SandboxRefused):
+            sb.tm("kill-server")
+        self.assertEqual(self.ncalls(), 1, "夾不在了還叫了 tmux")
+
+    def test_s2_default_socket(self):
+        sb = Sandbox(self.d / "t", self.fake)
+        (self.d / "t").mkdir()
+        for bad in ("/private/tmp/tmux-%d/default" % os.getuid(), "/tmp/tmux-%d/default" % os.getuid(),
+                    str(self.d / "t" / ("tmux-%d" % os.getuid()) / "x"), str(self.d / "t" / "default")):
+            with self.subTest(bad):
+                sb.sock = Path(bad)
+                with self.assertRaises(SandboxRefused):
+                    sb.tm("kill-server")
+        self.assertEqual(self.ncalls(), 0)
+
+    def test_s3_outside_sandbox(self):
+        sb = Sandbox(self.d / "t", self.fake)
+        (self.d / "t").mkdir()
+        for bad in (str(self.d / "elsewhere"), str(self.d / "t" / ".." / "x"), "/tmp/x"):
+            with self.subTest(bad):
+                sb.sock = Path(bad)
+                with self.assertRaises(SandboxRefused):
+                    sb.tm("kill-server")
+        self.assertEqual(self.ncalls(), 0)
+
+    def test_s4_cleanup_path(self):
+        sb = Sandbox(self.d / "t", self.fake)
+        (self.d / "t").mkdir()
+        shutil.rmtree(str(self.d / "t"))
+        sb.cleanup()                      # 不得丟例外、不得叫 tmux
+        sb2 = Sandbox(self.d / "t2", self.fake)
+        (self.d / "t2").mkdir()
+        sb2.sock = Path("/private/tmp/tmux-%d/default" % os.getuid())
+        sb2.cleanup()
+        self.assertEqual(self.ncalls(), 0, "清理路徑繞過守門叫了 tmux")
+
+
 KNIVES = [
-    ("K1", '  a="$(tmux display-message -p -t "$TMUX_PANE" \'#{session_attached} #{window_active}\' 2>/dev/null)" || return 0\n',
-     '  a="$(tmux display-message -p -t "$TMUX_PANE" \'#{session_attached} #{window_active}\' 2>/dev/null)" || return 1\n',
+    ("K1", "'#{window_active_clients}' 2>/dev/null)\" || return 0\n",
+     "'#{window_active_clients}' 2>/dev/null)\" || return 1\n",
      "src/cockpit/pane-tick.sh", "Fallback.test_v3_unknown_means_visible"),
-    ("K2", '  [ "$w" = "0" ] && return 1\n  return 0\n}', '  return 0\n}',
+    ("K2", "'#{window_active_clients}' 2>/dev/null)\" || return 0\n",
+     "'#{session_attached}' 2>/dev/null)\" || return 0\n",
      "src/cockpit/pane-tick.sh", "RealTmux.test_v1_window_active_matters"),
-    ("K3", '    pane_vis_hook                     # 每次', '    :                     # 每次',
-     "src/cockpit/pane-tick.sh", "RealTmux.test_v2_hook_wakes_on_switch"),
-    ("K4", "    ''|[!/]*|*[!A-Za-z0-9._/+-]*) return 0 ;;\n  esac\n  local cmd=", "    '') return 0 ;;\n  esac\n  local cmd=",
+    ("K3", "  # 契約第 2 條:讀完基準再判一次。判看不見之後、讀基準之前的切回 / 附著在這裡接住。\n  if pane_visible; then",
+     "  # 契約第 2 條:讀完基準再判一次。判看不見之後、讀基準之前的切回 / 附著在這裡接住。\n  if false; then",
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v2c_switch_after_hook_before_baseline"),
+    ("K4", "  case \"$PANE_VIS_SIG\" in\n    ''|[!/]*|*[!A-Za-z0-9._/+-]*) return 0 ;;",
+     "  case \"$PANE_VIS_SIG\" in\n    '') return 0 ;;",
      "src/cockpit/pane-tick.sh", "RealTmux.test_v4_unsafe_path_no_hook"),
     ("K5", '  if [ "$FIRST_PAINT" != "1" ] && pane_wait_if_hidden; then continue; fi\n',
      "  pane_wait_if_detached && continue\n",
      "src/cockpit/warroom-board.sh", "Static.test_v5_warroom_uses_hidden"),
+    ("K6", "if printf '%s\\n' \"$((n + 1))\" > \"$t\" 2>/dev/null; then",
+     "if printf '%s\\n' 7 > \"$t\" 2>/dev/null; then",
+     "src/cockpit/pane-vis-bump.sh", "RealTmux.test_v2d_back_and_forth_still_wakes"),
+    ("K8", "        if not self.root.is_dir():\n            raise SandboxRefused",
+     "        if False:\n            raise SandboxRefused",
+     "tests/test-pane-visible-043dd-1107.py", "Guard.test_s1_dir_gone"),
+    ("K9", "        if os.path.basename(sock) == \"default\" or \"/tmux-%d/\" % os.getuid() in sock:",
+     "        if False:",
+     "tests/test-pane-visible-043dd-1107.py", "Guard.test_s2_default_socket"),
 ]
 
 
