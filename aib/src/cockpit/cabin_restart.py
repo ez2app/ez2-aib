@@ -441,6 +441,52 @@ def dead_cabins(live, snap, *, home=None):
     return out
 
 
+SAME_BOOT_DEAD_REASONS = ("pid-gone", "")   # 突然不見(sweep 補的 pid-gone)或沒記到原因 ⇒ 算被關;window-gone / cli-exit / captain-close 是自己收的,不列
+
+
+def _seat_from_record(rec):
+    """席位檔 → 跟 collect() 同形狀的一席(給 dead_cabins / revive_cabin 用)。"""
+    win = rec.get("window_id") or ""
+    return {"window": win.lstrip("@"), "window_id": win, "window_name": "",
+            "code": seat_address.code_of(rec) or "", "provider": rec.get("provider") or "",
+            "role": rec.get("role") or "", "mode": rec.get("mode") or "",
+            "model": rec.get("model_requested") or "", "requested_source": rec.get("requested_source") or "",
+            "uuid": rec.get("session_uuid") or "", "cwd": rec.get("cwd") or "",
+            "seat_id": rec.get("seat_id") or "", "last_activity": rec.get("last_used_epoch") or 0}
+
+
+def same_boot_dead(live, unreachable, *, state_root=None, boot=None, home=None, skip=()):
+    """這次開機中途被關掉的艙(沒停電、沒重開機,tmux 伺服器被關):開機快照每分鐘只記在線的艙,
+    艙一斷、下一次快照就把它洗掉 ⇒ 上一次開機的快照沒有它、這次的也沒有,--restore 找不到(11-07 9320 / 29e7)。
+    來源改成那一艙自己的席位檔:socket 還在但 tmux 沒回話(unreachable)、席位是這次開機開的、
+    退出原因是突然不見(SAME_BOOT_DEAD_REASONS)的席才列;自己收掉的席(window-gone / cli-exit…)不列。"""
+    root = state_root or seats_dir_lib.state_root()[0]
+    boot = seat_liveness.boot_epoch() if boot is None else boot
+    if not boot:
+        return []
+    cabins = []
+    for cab in unreachable:
+        if cab in skip:
+            continue
+        recs = _seat_records(root, cab)
+        seats, gone_at = [], 0
+        for win, rec in sorted(recs.items(), key=lambda kv: int(kv[0].lstrip("@")) if kv[0].lstrip("@").isdigit() else 0):
+            if (rec.get("started_epoch") or 0) < int(boot) - SNAPSHOT_BOOT_JITTER_S:
+                continue
+            if (rec.get("exit_reason") or "") not in SAME_BOOT_DEAD_REASONS:
+                continue
+            seats.append(_seat_from_record(rec))
+            gone_at = max(gone_at, rec.get("exited_at_epoch") or 0)
+        if seats:
+            cabins.append({"cabin": cab, "session": "aib-" + cab, "seats": seats, "gone_at": gone_at})
+    out = dead_cabins(live, {"written_at": 0, "cabins": cabins}, home=home)
+    gone = {c["cabin"]: c["gone_at"] for c in cabins}
+    for c in out:
+        c["same_boot"] = True
+        c["snapshot_at"] = gone.get(c["cabin"]) or 0
+    return out
+
+
 # ───────────────────────────── 畫 ─────────────────────────────
 
 def _when(epoch, now):
@@ -533,18 +579,24 @@ def render(view, now=None):
               % (c["cabin"], len(c["seats"]), _when(c["last_activity"], now), " · ".join(tags)))
     if cabins:
         out.append(RULE)
-    if view.get("dead"):
+    prev = [c for c in view.get("dead") or [] if not c.get("same_boot")]
+    same = [c for c in view.get("dead") or [] if c.get("same_boot")]
+    if len(prev) + len(same) > 1:
         out.append("")
-        out.append("上次開機時還在、現在斷掉的艙 %d 個(停電/重開機前一刻的快照 %s)"
-                   % (len(view["dead"]), _when(view["dead"][0].get("snapshot_at"), now)))
-        if len(view["dead"]) > 1:
-            out.append("▶ 全部一次恢復:aib restart --restore-all")
-        for c in view["dead"]:
+        out.append("▶ 全部一次恢復:aib restart --restore-all")
+    for group, title in ((prev, "上次開機時還在、現在斷掉的艙 %d 個(停電/重開機前一刻的快照 %s)"
+                          % (len(prev), _when(prev[0].get("snapshot_at"), now)) if prev else ""),
+                         (same, "這次開機中途被關掉的艙 %d 個(沒重開機、tmux 被關;照席位檔接回)" % len(same))):
+        if not group:
+            continue
+        out.append("")
+        out.append(title)
+        for c in group:
             state = ("🧩 只回來一部分,還少下面 %d 席" % len(c["seats"])) if c.get("partial") else "🔌 斷掉了"
             block(c, "■ 艙 %s · %d 席 · 最後活動 %s · %s"
                   % (c["cabin"], len(c["seats"]), _when(c["last_activity"], now), state))
         out.append(RULE)
-    elif view.get("snapshot_note"):
+    if not view.get("dead") and view.get("snapshot_note"):
         out.append("")
         out.append(view["snapshot_note"])
     if view.get("unreachable"):
@@ -579,6 +631,8 @@ def build_view(*, state_root=None, boot=None, home=None):
     data = collect(state_root=state_root)
     snap = previous_boot_snapshot(state_root=state_root, boot=boot)
     dead = dead_cabins(data["cabins"], snap, home=home)
+    dead += same_boot_dead(data["cabins"], data["unreachable"], state_root=state_root, boot=boot, home=home,
+                           skip={c["cabin"] for c in dead})
     for c in dead:
         c["dead"] = True
     note = ""
