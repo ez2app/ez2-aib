@@ -12,6 +12,9 @@
 核心只叫外掛的公開指令 `aib room open --no-browser [--switch <四碼>]`,不讀外掛權杖、不打外掛 HTTP。
 外掛結果(一行 JSON):{"ok", "result": started|already|switched|not_live|timeout|error, "cabin", "url", "elapsed_ms"}。
 只有 ok 且 result 是成功三種且 cabin == 目標,才算「已切到」;其他一律不這樣說。
+**未知**(11-08,#369 bb7dc 修法意見 4):外掛回 post_unconfirmed:true(送過 POST 但沒讀回確認)、核心 12 秒硬逾時、
+JSON 壞(外掛可能已 POST)⇒ result=unknown:不報成功、不開窗、不當普通失敗;寫 <鍵>.unknown,同鍵**不自動重試**
+(之後同鍵 ⇒ unknown_kept);人再打一次指令是新請求 ID、新鍵,照常做。<鍵>.unknown 跟 .done 一樣 24 小時 / 32 筆後收。
 網址進紀錄 / 提示前只留 scheme://host:port/(將來網址帶配對資料也不會被寫出去)。
 
 去重:鍵 = (請求 ID, 目標艙),紀錄夾 <艙家>/cockpit/gameworld-req/,每鍵一個鎖檔 <鍵>.lock:
@@ -179,7 +182,7 @@ def _gc(d, now):
         return
     olds = []
     for n in names:
-        if not (n.endswith(".done") or n.endswith(".lock")):
+        if not (n.endswith(".done") or n.endswith(".lock") or n.endswith(".unknown")):
             continue
         try:
             m = os.stat(os.path.join(str(d), n)).st_mtime
@@ -192,7 +195,7 @@ def _gc(d, now):
         if not (i < extra or now - m > KEEP_S):
             continue
         p = os.path.join(str(d), n)
-        if n.endswith(".done"):
+        if n.endswith(".done") or n.endswith(".unknown"):
             try:
                 os.unlink(p)
             except OSError:
@@ -227,7 +230,7 @@ def claim(d, req, cabin, now=time.time, pause=None):
     done, lk = d / (k + ".done"), d / (k + ".lock")
     _gc(d, now())
     for _ in range(5):
-        if done.exists():
+        if _settled(done):
             return None
         if pause:
             pause("checked")
@@ -247,9 +250,9 @@ def claim(d, req, cabin, now=time.time, pause=None):
         if not same:
             os.close(fd)
             continue                                      # 拿到的是舊檔(已被收尾刪掉):重來
-        if done.exists():
+        if _settled(done):
             os.close(fd)
-            return None                                   # 空檔裡前一位做完了
+            return None                                   # 空檔裡前一位做完了(或留下未知)
         try:
             prev = os.read(fd, 256)
             os.lseek(fd, 0, os.SEEK_SET)
@@ -265,14 +268,26 @@ def claim(d, req, cabin, now=time.time, pause=None):
     return None
 
 
-def finish(cl, ok):
+def _unknown(done):
+    return Path(str(done)[:-len(".done")] + ".unknown")
+
+
+def _settled(done):
+    """這個鍵已經有結論:成功(.done)或未知(.unknown)⇒ 都不再自動做。"""
+    return done.exists() or _unknown(done).exists()
+
+
+def finish(cl, ok, unknown=False):
     """成功:先寫 .done 再放鎖(放鎖前寫好,後來的人拿到鎖一定看得到);失敗:不寫 .done,同請求可重試。
+    unknown:寫 <鍵>.unknown(不寫 .done)⇒ 同鍵不再自動重試,也不算成功。
     鎖檔在放鎖前刪掉(Windows 刪不掉就留著,_gc 之後收);刪掉後還拿著舊 fd 的人會在 inode 比對時重來。"""
     if cl is None or cl.fd is None:
         return                                            # 已收過(例外路徑再叫一次也安全)
     try:
         if ok:
             os.close(os.open(str(cl.done), os.O_CREAT | os.O_WRONLY, 0o600))
+        elif unknown:
+            os.close(os.open(str(_unknown(cl.done)), os.O_CREAT | os.O_WRONLY, 0o600))
         try:
             os.unlink(str(cl.lock))
         except OSError:
@@ -289,7 +304,8 @@ def call_plugin(cabin, switch, run=subprocess.run):
     try:
         r = run(argv, capture_output=True, text=True, timeout=PLUGIN_TIMEOUT_S, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "result": "timeout", "cabin": None, "url": None, "why": "core-timeout"}
+        # 外掛可能已經送了 POST(副作用收不回)⇒ 切艙模式下是「未知」,不是普通逾時
+        return {"ok": False, "result": "unknown" if switch else "timeout", "cabin": None, "url": None, "why": "core-timeout"}
     except (OSError, subprocess.SubprocessError):
         return {"ok": False, "result": "error", "cabin": None, "url": None, "why": "spawn"}
     try:
@@ -297,7 +313,7 @@ def call_plugin(cabin, switch, run=subprocess.run):
         if not isinstance(d, dict):
             raise ValueError
     except (ValueError, IndexError):
-        return {"ok": False, "result": "error", "cabin": None, "url": None, "why": "bad-json"}
+        return {"ok": False, "result": "unknown" if switch else "error", "cabin": None, "url": None, "why": "bad-json"}
     got = d.get("cabin")
     got = got if isinstance(got, str) and CODE4.match(got) else None
     url = d.get("url") if isinstance(d.get("url"), str) else None
@@ -309,6 +325,8 @@ def call_plugin(cabin, switch, run=subprocess.run):
                 "why": "" if ok else "legacy-failed"}
     if r.returncode != 0 and d.get("ok") is True:
         got = None                                        # 結束碼說失敗、JSON 說成功:自相矛盾,它說的艙不採信
+    if (r.returncode != 0 or d.get("ok") is not True or res not in OK_RESULTS) and d.get("post_unconfirmed") is True:
+        return {"ok": False, "result": "unknown", "cabin": got, "url": url, "why": "post-unconfirmed"}
     if r.returncode != 0 or d.get("ok") is not True or res not in OK_RESULTS:
         return {"ok": False, "result": res if res in ("not_live", "timeout", "error") else "error",
                 "cabin": got, "url": url, "why": "plugin"}
@@ -344,6 +362,9 @@ def open_lobby(cabin, req, home, session="", out=None, env=None, run=subprocess.
     switch = bool(caps["switch"] and target)
     cl = claim(Path(home) / "cockpit" / "gameworld-req", req, target or "-", pause=pause)
     if cl is None:
+        if _unknown(Path(home) / "cockpit" / "gameworld-req" / (_key(req, target or "-") + ".done")).exists():
+            out.write("AIB_GAMEWORLD result=unknown_kept cabin=%s\n" % (target or "-"))
+            return "unknown_kept"                         # 同鍵上次結果未知:不自動重試(要再試 = 人重打指令 = 新鍵)
         out.write("AIB_GAMEWORLD result=dedup cabin=%s\n" % (target or "-"))
         return "dedup"
     try:
@@ -358,6 +379,12 @@ def _with_claim(cl, target, switch, session, out, e, env, run, popen):
     r = call_plugin(target, switch, run)
     o = origin_only(r.get("url"))
     actual = r["cabin"] or T("unknown_cabin")
+    if r["result"] == "unknown":                          # 可能已切、沒確認:不開窗、不報成功、同鍵不自動重試
+        finish(cl, False, unknown=True)
+        out.write("AIB_GAMEWORLD result=unknown cabin=%s actual=%s how=- url=- why=%s\n"
+                  % (target or "-", r["cabin"] or "unknown", r["why"]))
+        notify(session, T("switch_unknown", target=target or "-"), env, run)
+        return "unknown"
     how = ""
     if r["ok"] and o:
         if e.get("AIB_NO_BROWSER") == "1":

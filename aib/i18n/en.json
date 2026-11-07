@@ -5970,5 +5970,6 @@
   "aib.gameworld.legacy_opened": "Lobby opened, but it may not show this cabin (actual cabin unknown); update the Captain Room plugin to switch automatically.",
   "aib.gameworld.open_failed": "Couldn't open the lobby window; open it yourself: {url}",
   "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
-  "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected."
+  "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected.",
+  "aib.gameworld.switch_unknown": "The lobby may have switched to {target}, but it wasn't confirmed (actual cabin unknown); no window this time and no automatic retry. Run the command again to retry; the seat is unaffected."
 }

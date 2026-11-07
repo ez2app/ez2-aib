@@ -5970,5 +5970,6 @@
   "aib.gameworld.legacy_opened": "大廳已開,但不一定是這一艙(實際艙未知);更新艦長室外掛後會自動切。",
   "aib.gameworld.open_failed": "大廳開不了視窗;請自己開:{url}",
   "aib.gameworld.start_failed": "大廳起不來(艦長室外掛沒回正確結果);開席不受影響。",
-  "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。"
+  "aib.gameworld.not_switched": "大廳沒切到 {target},目前是 {actual};開席不受影響。",
+  "aib.gameworld.switch_unknown": "大廳切到 {target} 沒收到確認,可能切過去了也可能沒有(實際艙未知);這次不開視窗、不自動重試。要再試請重打一次指令;開席不受影響。"
 }

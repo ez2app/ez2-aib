@@ -26,6 +26,8 @@
   U8c 活著的擁有者停在「外掛呼叫中」、B 嘗試 ⇒ B dedup;A 開窗收尾後只有 A 叫過
   U8d 障礙(inode):B 開了鎖檔還沒拿鎖時,A 做完把鎖檔刪掉、C 建了新鎖檔拿著 ⇒ B 拿到舊檔的鎖也不能做
   U9 12 個程序同時搶一個崩潰留下的鎖檔 ⇒ 只有一個拿到
+  U14 未知(11-08):外掛 post_unconfirmed / 核心 12 秒硬逾時 / JSON 壞 ⇒ result=unknown、不開窗、提示是「沒收到確認」、
+      寫 .unknown 不寫 .done;同鍵再來 ⇒ unknown_kept、外掛不再叫;新請求照叫;舊外掛(沒 --switch)逾時仍是普通 timeout
 其他
   U10 check:沒裝 / 太舊 ⇒ rc 3 + 對的那句;沒 --switch ⇒ rc 0 + 提示
   U11 四語字典鍵齊、用法有 [gameworld]
@@ -33,6 +35,8 @@
   U13 代開(AIB_NO_ATTACH / AIB_NO_CLIENT_SWITCH)⇒ 不叫 python、清掉請求、印代開那句
 刀(複本):KG1 3 個字也剝 ⇒ G3 紅;KG2 拿掉 cabin == 目標 ⇒ U3 紅;KG3 拿鎖後不再看 .done ⇒ U7b 紅;
   KG8 鎖換成永遠拿得到 ⇒ U8b 紅;KG9 不比 inode ⇒ U8d 紅;KG10 鎖換成永遠拿得到 ⇒ U8c 紅;
+  KG11 不看 post_unconfirmed ⇒ U14 紅;KG12 未知當普通失敗(不寫 .unknown)⇒ U14 紅;KG13 領取不看 .unknown ⇒ U14 紅;
+  KG14 核心逾時當普通逾時 ⇒ U14 紅;
   KG4 輸出完整網址 ⇒ U4 紅;KG5 快取身份不看 mtime / 大小 ⇒ U5 紅;KG6 批次不 unset ⇒ U12 紅;KG7 代開也檢查 ⇒ U13 紅
 """
 import json
@@ -260,6 +264,39 @@ class Dedup(Base):
         self.assertEqual(self.lobby(f4, req="C")[0], "switched", "失敗後同請求重試會叫")
         self.assertEqual(len(f4.opens()), 1)
 
+    def test_u14_unknown_kept(self):
+        ok_url = "http://127.0.0.1:8771/"
+        cases = [
+            ("post-unconfirmed", {"ok": False, "result": "timeout", "cabin": "1111", "url": ok_url, "post_unconfirmed": True}, 1),
+            ("core-timeout", subprocess.TimeoutExpired(["aib"], 12), 0),
+            ("bad-json", "{not json", 0),
+        ]
+        d = self.home / "cockpit" / "gameworld-req"
+        for i, (name, res, rc) in enumerate(cases):
+            with self.subTest(name):
+                req = "u14-%d" % i
+                f = Fake(result=res, rc=rc)
+                r, out = self.lobby(f, req=req)
+                self.assertEqual(r, "unknown", out)
+                self.assertIn("how=-", out, "未知不開窗")
+                self.assertIn("why=%s" % name, out)
+                n = f.notes()
+                self.assertEqual(len(n), 1, f.calls)
+                self.assertIn("沒收到確認", n[0])
+                self.assertNotIn("已切到", n[0])
+                k = G._key(req, "9320")
+                self.assertTrue((d / (k + ".unknown")).exists())
+                self.assertFalse((d / (k + ".done")).exists(), "未知不是成功")
+                again = self.ok()
+                self.assertEqual(self.lobby(again, req=req)[0], "unknown_kept", "同鍵不自動重試")
+                self.assertEqual(again.opens(), [])
+                fresh = self.ok()
+                self.assertEqual(self.lobby(fresh, req=req + "-new")[0], "switched", "人重打 = 新請求照做")
+        # 舊外掛(沒 --switch,不會 POST):核心逾時仍是普通逾時
+        (self.plug / "plugin.json").write_text(json.dumps({"version": "0.1.79"}))   # 換版本 ⇒ 能力快取重查
+        old = Fake(help_text=HELP_OLD, result=subprocess.TimeoutExpired(["aib"], 12))
+        self.assertEqual(self.lobby(old, req="u14-old")[0], "timeout")
+
     def _race(self, n, prep=None):
         d = self.home / "cockpit" / "gameworld-req"
         d.mkdir(parents=True, exist_ok=True)
@@ -427,7 +464,7 @@ class Misc(Base):
 
     def test_u11_dict(self):
         keys = ("missing", "too_old", "no_switch", "no_attach", "unknown_cabin", "legacy_opened", "open_failed",
-                "start_failed", "not_switched")
+                "start_failed", "not_switched", "switch_unknown")
         for loc in ("zh-TW", "en", "ja", "ko"):
             d = json.loads((REPO / "i18n" / ("%s.json" % loc)).read_text(encoding="utf-8"))
             for k in keys:
@@ -435,6 +472,7 @@ class Misc(Base):
             self.assertIn("{target}", d["aib.gameworld.not_switched"])
             self.assertIn("{actual}", d["aib.gameworld.not_switched"])
             self.assertIn("{url}", d["aib.gameworld.open_failed"])
+            self.assertIn("{target}", d["aib.gameworld.switch_unknown"])
             self.assertIn("[gameworld]", d["aib.help.usage"], loc)
 
     def test_u12_wiring(self):
@@ -469,7 +507,7 @@ KNIVES = [
     ("KG1", 'while [ "${#POS[@]}" -ge 4 ]; do\n    case "${POS[${#POS[@]}-1]}" in',
      'while [ "${#POS[@]}" -ge 3 ]; do\n    case "${POS[${#POS[@]}-1]}" in', "src/cockpit/aib", "Args.test_g3_three_words_not_stripped"),
     ("KG2", "    if got != cabin:\n", "    if False:\n", "src/cockpit/gameworld.py", "Interface.test_u3_no_false_success"),
-    ("KG3", "        if done.exists():\n            os.close(fd)\n            return None                                   # 空檔裡前一位做完了\n",
+    ("KG3", "        if _settled(done):\n            os.close(fd)\n            return None                                   # 空檔裡前一位做完了(或留下未知)\n",
      "", "src/cockpit/gameworld.py", "Dedup.test_u7b_gap_between_check_and_lock"),
     ("KG4", '(r["result"], target or "-", r["cabin"] or "unknown", how or "-", o or "-"))',
      '(r["result"], target or "-", r["cabin"] or "unknown", how or "-", r.get("url") or "-"))',
@@ -482,6 +520,14 @@ KNIVES = [
      "src/cockpit/gameworld.py", "Dedup.test_u8d_stale_inode"),
     ("KG10", "        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n", "        pass\n",
      "src/cockpit/gameworld.py", "Dedup.test_u8c_owner_inside_plugin_call"),
+    ('KG11', '    if (r.returncode != 0 or d.get("ok") is not True or res not in OK_RESULTS) and d.get("post_unconfirmed") is True:\n',
+     '    if False:\n', "src/cockpit/gameworld.py", "Dedup.test_u14_unknown_kept"),
+    ('KG12', '        elif unknown:\n            os.close(os.open(str(_unknown(cl.done)), os.O_CREAT | os.O_WRONLY, 0o600))\n',
+     '', "src/cockpit/gameworld.py", "Dedup.test_u14_unknown_kept"),
+    ('KG13', '    return done.exists() or _unknown(done).exists()\n',
+     '    return done.exists()\n', "src/cockpit/gameworld.py", "Dedup.test_u14_unknown_kept"),
+    ('KG14', '"result": "unknown" if switch else "timeout", "cabin": None, "url": None, "why": "core-timeout"}',
+     '"result": "timeout", "cabin": None, "url": None, "why": "core-timeout"}', "src/cockpit/gameworld.py", "Dedup.test_u14_unknown_kept"),
     ("KG6", "\nunset AIB_SITS_GAMEWORLD_REQ\n", "\n", "src/cockpit/seats_batch.sh", "Misc.test_u12_wiring"),
     ("KG7", '  if [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ "${AIB_NO_CLIENT_SWITCH:-0}" = "1" ]; then\n    printf \'aib: %s\\n\' "$(t aib.gameworld.no_attach)"',
      '  if false; then\n    printf \'aib: %s\\n\' "$(t aib.gameworld.no_attach)"', "src/cockpit/aib", "Misc.test_u13_no_attach"),
