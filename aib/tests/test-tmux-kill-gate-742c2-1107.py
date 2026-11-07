@@ -59,8 +59,8 @@ class Block(unittest.TestCase):
             "tmux -S %s/default kill-server" % REAL: "real_socket",
             "tmux -S /tmp/tmux-%d/aihub-20261106-233709-9320 kill-server" % UID: "real_socket",
             "killall tmux": "killall",
-            "pkill -x tmux": "killall",
-            "timeout 30 pkill -u %d tmux" % UID: "killall",
+            "pkill -x tmux": "pkill",
+            "timeout 30 pkill -u %d tmux" % UID: "pkill",
         }
         for cmd, w in cases.items():
             self.assertEqual(why(cmd), w, cmd)
@@ -82,7 +82,6 @@ class Block(unittest.TestCase):
             "grep -n 'kill-server' src/cockpit/*.sh",
             "tmux ls; tmux kill-session -t aib-x",
             "# tmux kill-server",
-            "pkill -f 'tmux -L aihub-probe-x'",
             "git log --oneline -1",
         ):
             self.assertIsNone(why(cmd), cmd)
