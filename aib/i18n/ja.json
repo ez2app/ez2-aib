@@ -158,7 +158,7 @@
   "aib.lang.notice": "AIB の言語を {value} に切り替えました。次の返答からこの言語で答えてください(UI・ステータスバー・mod は自動で追従)。",
   "aib.help.title": "aib - Ez2 AIB v{version} コックピットランチャー",
   "aib.edition.missing": "aib {cmd}:この機能はまだ開発中で、一般公開していません。",
-  "aib.help.usage": "使い方: aib <provider> <dgrs|safe> <role> [new] [dm] [--model MODEL] [--dry-run]",
+  "aib.help.usage": "使い方: aib <provider> <dgrs|safe> <role> [new] [dm] [gameworld] [--model MODEL] [--dry-run]",
   "aib.idle.close.aborted": "中止しました。何も変更していません",
   "aib.idle.close.confirm": "{target} を閉じますか?[y/N] ",
   "aib.idle.close.done": "{target} を閉じました:TERM {n} 件、生存 {survivors} 件",
@@ -5961,5 +5961,14 @@
   "aib.newproj.brain_new_made": "新しい脳フォルダ「{title}」を作成しました(ルートキー {key})",
   "aib.newproj.brain_new_failed": "脳フォルダ「{title}」を作成できませんでした:{err}。席は開いていますが人格は未紐付けです;直してから同じ行を(--seat 付きで)再実行してください",
   "aib.newproj.brain_new_bad_title": "--folder new でプロジェクト名「{title}」のフォルダを作れません:{err}。プロジェクト名を変えるか既存の脳を選んでください",
-  "aib.newproj.brain_new_reindex_warn": "脳フォルダ「{title}」は作成済み・ルートキー {key} も登録済みですが、後続の再索引に失敗しました({err});紐付けは続行します。後で Vault の再索引を実行してください"
+  "aib.newproj.brain_new_reindex_warn": "脳フォルダ「{title}」は作成済み・ルートキー {key} も登録済みですが、後続の再索引に失敗しました({err});紐付けは続行します。後で Vault の再索引を実行してください",
+  "aib.gameworld.missing": "ゲームロビーには艦長室プラグインが必要です(aib plugins install <パッケージ>)。今回は席だけ開きます。",
+  "aib.gameworld.too_old": "艦長室プラグインが古すぎます(--no-browser なし)。更新してください。今回は席だけ開きます。",
+  "aib.gameworld.no_switch": "ロビーがこのキャビンとは限りません(実際のキャビン不明)。艦長室プラグインを更新すると自動で切り替わります。",
+  "aib.gameworld.no_attach": "代理で開いた席ではロビーを開きません。見るには:aib room open",
+  "aib.gameworld.unknown_cabin": "実際のキャビン不明",
+  "aib.gameworld.legacy_opened": "ロビーを開きましたが、このキャビンとは限りません(実際のキャビン不明)。プラグインを更新すると自動で切り替わります。",
+  "aib.gameworld.open_failed": "ロビーのウィンドウを開けませんでした。手動で開いてください:{url}",
+  "aib.gameworld.start_failed": "ロビーを起動できませんでした(艦長室プラグインから正しい結果なし)。席には影響ありません。",
+  "aib.gameworld.not_switched": "ロビーは {target} に切り替わっていません。現在は {actual} です。席には影響ありません。"
 }

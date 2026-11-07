@@ -158,7 +158,7 @@
   "aib.lang.notice": "AIB language switched to {value}: from your next reply on, answer in this language (the interface, status bar and mods follow automatically).",
   "aib.help.title": "aib — Ez2 AIB v{version} cockpit launcher",
   "aib.edition.missing": "aib {cmd}: this feature is still in development and not open to the public yet.",
-  "aib.help.usage": "Usage: aib <provider> <dgrs|safe> <role> [new] [dm] [--model MODEL] [--dry-run]",
+  "aib.help.usage": "Usage: aib <provider> <dgrs|safe> <role> [new] [dm] [gameworld] [--model MODEL] [--dry-run]",
   "aib.idle.close.aborted": "Aborted, nothing touched",
   "aib.idle.close.confirm": "Close {target}? [y/N] ",
   "aib.idle.close.done": "{target} closed: TERM sent to {n}, {survivors} still alive",
@@ -5961,5 +5961,14 @@
   "aib.newproj.brain_new_made": "Created a new brain folder \"{title}\" (route key {key})",
   "aib.newproj.brain_new_failed": "Could not create the brain folder \"{title}\": {err}. The seat is open but no persona is bound yet; fix it and rerun the same line (with --seat)",
   "aib.newproj.brain_new_bad_title": "--folder new cannot create a folder named after the project title \"{title}\": {err}. Rename the project or attach an existing brain",
-  "aib.newproj.brain_new_reindex_warn": "Brain folder \"{title}\" was created and route key {key} registered, but the follow-up reindex failed ({err}); binding continues — run the Vault reindex later"
+  "aib.newproj.brain_new_reindex_warn": "Brain folder \"{title}\" was created and route key {key} registered, but the follow-up reindex failed ({err}); binding continues — run the Vault reindex later",
+  "aib.gameworld.missing": "The game lobby needs the Captain Room plugin (aib plugins install <pkg>); opening the seat only this time.",
+  "aib.gameworld.too_old": "The Captain Room plugin is too old (no --no-browser); please update it. Opening the seat only this time.",
+  "aib.gameworld.no_switch": "The lobby may not show this cabin (actual cabin unknown); update the Captain Room plugin to switch automatically.",
+  "aib.gameworld.no_attach": "Seats opened on someone's behalf don't open the lobby window; to view it: aib room open",
+  "aib.gameworld.unknown_cabin": "actual cabin unknown",
+  "aib.gameworld.legacy_opened": "Lobby opened, but it may not show this cabin (actual cabin unknown); update the Captain Room plugin to switch automatically.",
+  "aib.gameworld.open_failed": "Couldn't open the lobby window; open it yourself: {url}",
+  "aib.gameworld.start_failed": "The lobby couldn't start (the Captain Room plugin gave no valid result); the seat is unaffected.",
+  "aib.gameworld.not_switched": "The lobby didn't switch to {target}; it is on {actual}. The seat is unaffected."
 }

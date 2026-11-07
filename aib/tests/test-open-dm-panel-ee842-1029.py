@@ -290,7 +290,7 @@ def _knife(test, path, old, new, case):
 
 class Knife(unittest.TestCase):
     def test_k1_no_trailing_dm(self):
-        _knife(self, "src/cockpit/aib", '    OPEN_DM=on\n    unset "POS[${#POS[@]}-1]"\n', '    :\n', "Args.test_p1_args")
+        _knife(self, "src/cockpit/aib", '_gw_dm=1; OPEN_DM=on ;;', 'break ;;', "Args.test_p1_args")
 
     def test_k2_auto_forces(self):
         _knife(self, "src/cockpit/open_dm_panel.py", "    elif force or unset:\n",
