@@ -72,6 +72,7 @@ HOOK_TIMEOUT_S = {"SessionStart": 10, "Stop": 10, "PostToolUse": 10, "PreToolUse
 # PostToolUse(10-13 the maintainer 20:0x「如何程式化直接印出來」):Bash 剛跑完 aib test / 推包 ⇒ 用 systemMessage 把影子續跑說明
 #   直接顯示在畫面上(不經 AI;10-13 a seat 在隔離的 claude 2.1.296 實測:畫面出現「⎿ PostToolUse:Bash says: …」)
 # PreToolUse(10-24 the maintainer「不是提醒，是用程式必要規定」):工作樹 / clone 開在 Spotlight 會掃的地方 ⇒ 擋(worktree_path_gate)
+#   11-07 加:一行 Bash 會關掉真的 tmux 伺服器(裸 kill-server、-L default / aihub-<艙>、killall tmux)⇒ 擋(tmux_kill_gate)
 EVENT_MODE = {"SessionStart": "session-start", "Stop": "stop", "PostToolUse": "post-tool", "PreToolUse": "pre-tool"}
 EVENT_MATCHER = {"PostToolUse": "Bash", "PreToolUse": "Bash"}
 DEFAULT_SETTINGS = os.path.expanduser("~/.claude/settings.json")
@@ -640,14 +641,25 @@ def main(argv=None):
             sys.stdout.write(json.dumps({"systemMessage": out}, ensure_ascii=False) + "\n")
         return 0
     if mode == "pre-tool":
+        payload = _read_payload()   # stdin 只讀一次，兩道守門共用
         try:
             import worktree_path_gate
-            hit = worktree_path_gate.pre_tool(_read_payload())
+            hit = worktree_path_gate.pre_tool(payload)
         except Exception as e:  # noqa: BLE001 —— fail-open
             _note("FAILOPEN pre-tool:%s" % e)
             return 0
         if hit:
             print(T("aib.nowgate.wt_indexed", paths=", ".join(hit["paths"]), suggest=hit["suggest"]), file=sys.stderr)
+            return 2
+        try:
+            import tmux_kill_gate   # 11-07:沙盒腳本裸 kill-server 砍掉真座艙
+            hit = tmux_kill_gate.pre_tool(payload)
+        except Exception as e:  # noqa: BLE001 —— fail-open
+            _note("FAILOPEN pre-tool tmux:%s" % e)
+            return 0
+        if hit:
+            print(T("aib.nowgate.tmux_kill", cmd=hit["cmd"], why=T("aib.nowgate.tmux_kill." + hit["why"])),
+                  file=sys.stderr)
             return 2
         return 0
     if mode == "session-start":
