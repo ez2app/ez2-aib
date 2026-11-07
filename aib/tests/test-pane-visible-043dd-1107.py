@@ -18,10 +18,12 @@ V3 量不到一律當看得見:tmux 失敗 / 空 / 不是數字 ⇒ rc0
 V4 訊號檔路徑有 tmux 會解析的字元 / 不是絕對路徑 ⇒ 不掛鉤子、照退避等完
 V5 戰情室主迴圈用 pane_wait_if_hidden(第一幀照畫),不再用只看附著的 pane_wait_if_detached
 V6 多 client / 連結窗 / grouped session 的可見性;V6b 連結窗在別的 session 被切到能叫醒;V6c grouped 那邊切窗能叫醒
-V7 序號腳本 20 個同時跑 ⇒ 序號剛好 +20、不留暫存與鎖
-S1–S4 沙盒守門:夾消失 / socket 指預設 / 沙盒外路徑 / 清理路徑 ⇒ 一律拒跑、tmux 一次都沒執行
+V2e 真的重新附著(client-attached)⇒ 醒
+V7 40 個寫入者同時 append ⇒ 事件數剛好 +40;V7b 超過 4096 位元組才歸零
+V8 兩艙撞同一個鉤子下標 ⇒ 不蓋別艙、往下找空格、兩邊都收得到事件
+S1–S5 沙盒守門:夾消失 / socket 指預設 / 沙盒外路徑 / 清理路徑 / 交給被測 bash 的 TMUX ⇒ 一律拒跑、tmux 一次都沒執行
 刀(複本 + run_guarded):K1 量不到當看不見 ⇒ V3;K2 改回 session_attached ⇒ V1;K3 拿掉讀基準後重判 ⇒ V2c;
-K4 拿掉路徑白名單 ⇒ V4;K5 戰情室退回 pane_wait_if_detached ⇒ V5;K6 序號腳本寫固定值 ⇒ V2d;
+K4 拿掉路徑白名單 ⇒ V4;K5 戰情室退回 pane_wait_if_detached ⇒ V5;K6 鉤子改成覆寫(不是 append)⇒ V2d;K7 不看那格是誰的就用 ⇒ V8;
 K8 守門不查夾在不在 ⇒ S1;K9 守門不擋預設 socket ⇒ S2。
 (鉤子掛全域 -g 而不是本 session:試過把它改回 -t 當刀,連結窗 / grouped 情境照樣醒,咬不到 ⇒ 不列刀;
  -g 留著是因為事件可能發生在別的 session,寧可多收一點、不會畫錯。)
@@ -43,7 +45,6 @@ from aib_knife_copy import knife_copy  # noqa: E402
 from aib_proc_guard import run_guarded  # noqa: E402
 
 TICK = ROOT / "src" / "cockpit" / "pane-tick.sh"
-BUMP = ROOT / "src" / "cockpit" / "pane-vis-bump.sh"
 WARROOM = ROOT / "src" / "cockpit" / "warroom-board.sh"
 BASH = os.environ.get("AIB_TEST_BASH") or shutil.which("bash") or "/bin/bash"
 TMUX = shutil.which("tmux")
@@ -144,6 +145,8 @@ class RealTmux(Base):
             self.detach(c)
 
     def tick_env(self, pane, extra=None):
+        # 被測的 bash 用裸 tmux,靠 TMUX 指 socket:交出去之前同樣過守門(夾在、socket 在夾內、不是預設)
+        self.sbx.check()
         e = {"TMUX": "%s,0,0" % self.sbx.sock, "TMUX_PANE": pane}
         e.update(extra or {})
         return e
@@ -206,13 +209,43 @@ class RealTmux(Base):
 
     def test_v2d_back_and_forth_still_wakes(self):
         self.attach()
-        (self.state / ".panevis.seq").write_text("7\n")    # 序號已經有值(不是空檔):醒來只能靠「變大」
+        (self.state / ".panevis.ev").write_text(".")    # 已有 1 筆事件(不是空檔):醒來只能靠「變大」
 
         def flip():
             self.sbx.tm("select-window", "-t", "h:b", ";", "select-window", "-t", "h:a")
         out, took = self.wait_hidden(self.pb, action=flip)
         self.assertIn("rc=0", out, out)
         self.assertLess(took, 3.0, "b→a 來回切沒叫醒(%.1f 秒)\n%s" % (took, out))
+
+    def test_v2e_reattach_wakes(self):
+        # 真的 client-attached:沒人附著時等待,中途附著 ⇒ 3 秒內醒(退避 10 秒)
+        out, took = self.wait_hidden(self.pa, action=lambda: self.attach())
+        self.assertIn("hooked=1", out, out)
+        self.assertLess(took, 4.0, "重新附著 %.1f 秒才醒\n%s" % (took, out))
+
+    def _base_idx(self):
+        p = self.bash(". '%s'\nb=\"$(printf '%%s' \"$PANE_VIS_SIG\" | cksum)\"; b=${b%%%% *}; echo $(( b %% 9000 + 1000 ))"
+                      % TICK)
+        return int(p.stdout.strip())
+
+    def test_v8_hook_slot_collision(self):
+        # 兩艙刻意撞同一格:別艙(另一個訊號檔)先佔了本艙算出來的下標
+        idx = self._base_idx()
+        other = self.d / "other"
+        other.mkdir()
+        foreign = "run-shell -b \"printf . >> '%s/.panevis.ev' 2>/dev/null || :\"" % other
+        self.sbx.tm("set-hook", "-g", "session-window-changed[%d]" % idx, foreign)
+        self.attach()
+        out, took = self.wait_hidden(self.pb, action=self.sel("h:b"))
+        self.assertIn("hooked=1", out, out)
+        self.assertLess(took, 3.0, "撞格後本艙沒叫醒(%.1f 秒)\n%s" % (took, out))
+        hooks = self.sbx.tm("show-hooks", "-g", "session-window-changed").stdout
+        self.assertIn("session-window-changed[%d] " % idx, hooks)
+        self.assertIn(str(other), [ln for ln in hooks.splitlines()
+                                   if ln.startswith("session-window-changed[%d] " % idx)][0], "別艙那格被蓋掉\n" + hooks)
+        self.assertIn("session-window-changed[%d] " % (idx + 1), hooks, "本艙應往下找空格\n" + hooks)
+        # 別艙的鉤子仍在作用:同一次切窗也寫進它的訊號檔
+        self.assertTrue((other / ".panevis.ev").exists(), "別艙沒收到事件")
 
     def test_v4_unsafe_path_no_hook(self):
         self.attach()
@@ -226,7 +259,7 @@ class RealTmux(Base):
                                                       "EZ2_PANE_DETACHED_TICK_MAX": "1"}))
                 self.assertIn("rc=0 hooked=0", p.stdout, p.stdout + p.stderr)
         hooks = self.sbx.tm("show-hooks", "-g").stdout
-        self.assertNotIn("pane-vis-bump", hooks, hooks)
+        self.assertNotIn(".panevis.ev", hooks, hooks)
 
     def test_v6_multi_client_linked_grouped(self):
         c1 = self.attach()
@@ -293,14 +326,25 @@ class Fallback(Base):
 
 
 class Bump(Base):
-    def test_v7_concurrent_bumps(self):
-        sig = self.state / ".panevis.seq"
-        sig.write_text("5\n")
-        procs = [subprocess.Popen(["sh", str(BUMP), str(sig)]) for _ in range(20)]
+    def test_v7_concurrent_appends(self):
+        # 鉤子做的事(printf . >>)同時 40 個寫入者 ⇒ 大小剛好 +40;等待端讀到的事件數也一樣
+        sig = self.state / ".panevis.ev"
+        sig.write_text(".....")
+        procs = [subprocess.Popen(["sh", "-c", "printf . >> '%s'" % sig]) for _ in range(40)]
         for p in procs:
             self.assertEqual(p.wait(30), 0)
-        self.assertEqual(sig.read_text().strip(), "25")
-        self.assertEqual(sorted(x.name for x in self.state.iterdir()), [".panevis.seq"], "留下暫存或鎖")
+        self.assertEqual(sig.stat().st_size, 45)
+        p = self.bash(". '%s'\npane_vis_count c; echo $c" % TICK)
+        self.assertEqual(p.stdout.strip(), "45")
+
+    def test_v7b_trim_when_big(self):
+        sig = self.state / ".panevis.ev"
+        sig.write_text("." * 5000)
+        p = self.bash(". '%s'\nPANE_VIS_HOOKED=1; pane_vis_trim; pane_vis_count c; echo $c" % TICK)
+        self.assertEqual(p.stdout.strip(), "0", "超過 4096 沒歸零")
+        sig.write_text("." * 100)
+        p = self.bash(". '%s'\nPANE_VIS_HOOKED=1; pane_vis_trim; pane_vis_count c; echo $c" % TICK)
+        self.assertEqual(p.stdout.strip(), "100", "沒超過也被歸零")
 
 
 class Static(unittest.TestCase):
@@ -357,6 +401,19 @@ class Guard(unittest.TestCase):
                     sb.tm("kill-server")
         self.assertEqual(self.ncalls(), 0)
 
+    def test_s5_tmux_env_guarded(self):
+        # 交給被測 bash 的 TMUX 也要過守門:夾不在 ⇒ 不給
+        class T(RealTmux):
+            def runTest(self):
+                pass
+        t = T()
+        t.d = self.d
+        t.state = self.d
+        t.sbx = Sandbox(self.d / "t", self.fake)
+        with self.assertRaises(SandboxRefused):
+            t.tick_env("%1")
+        self.assertEqual(self.ncalls(), 0)
+
     def test_s4_cleanup_path(self):
         sb = Sandbox(self.d / "t", self.fake)
         (self.d / "t").mkdir()
@@ -385,9 +442,10 @@ KNIVES = [
     ("K5", '  if [ "$FIRST_PAINT" != "1" ] && pane_wait_if_hidden; then continue; fi\n',
      "  pane_wait_if_detached && continue\n",
      "src/cockpit/warroom-board.sh", "Static.test_v5_warroom_uses_hidden"),
-    ("K6", "if printf '%s\\n' \"$((n + 1))\" > \"$t\" 2>/dev/null; then",
-     "if printf '%s\\n' 7 > \"$t\" 2>/dev/null; then",
-     "src/cockpit/pane-vis-bump.sh", "RealTmux.test_v2d_back_and_forth_still_wakes"),
+    ("K6", '  cmd="run-shell -b \\"printf . >> $mark', '  cmd="run-shell -b \\"printf . > $mark',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v2d_back_and_forth_still_wakes"),
+    ("K7", '    if [ -z "$line" ] || [[ "$line" == *"$mark"* ]]; then', '    if true; then',
+     "src/cockpit/pane-tick.sh", "RealTmux.test_v8_hook_slot_collision"),
     ("K8", "        if not self.root.is_dir():\n            raise SandboxRefused",
      "        if False:\n            raise SandboxRefused",
      "tests/test-pane-visible-043dd-1107.py", "Guard.test_s1_dir_gone"),
