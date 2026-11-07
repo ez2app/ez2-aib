@@ -117,8 +117,8 @@ mod windows_acl_tests {
             .arg(p)
             .args(args)
             .status()
-            .unwrap();
-        assert!(st.success());
+            .unwrap_or_else(|e| panic!("icacls {}: {e}", p.display()));
+        assert!(st.success(), "icacls {} {args:?}: {st}", p.display());
     }
 
     #[test]
