@@ -5,6 +5,8 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+pub mod tree;
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]

@@ -20,6 +20,7 @@ extern crate std;
 
 pub mod error;
 pub mod ids;
+pub mod outcome;
 pub mod ports;
 pub mod state;
 

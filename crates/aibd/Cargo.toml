@@ -19,6 +19,7 @@ getrandom = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 subtle = "2.6.1"
+sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tower = "0.5.3"
@@ -29,3 +30,10 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 http-body-util = "0.1.5"
 tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }
+
+[target."cfg(unix)".dependencies]
+nix = { version = "0.31.3", features = ["signal", "process"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "0.15.0"
+nix = { version = "0.31.3", features = ["signal", "process", "event"] }
