@@ -10,6 +10,7 @@
 被測腳本的 `tmux -L <名>` 由假 tmux 轉成 -S 沙盒 socket,轉之前同樣驗(夾不在就 exit 99,絕不退回預設)。
 
 R1 等價:dev / 沒設 / 多行 / 含 | / 空字串 / qa.1 ⇒ 批次結果 = 逐窗 show-options(多行的標 !)
+R1b 尾端換行(三種語系):dev+1 換行 / dev+2 換行 / 只有換行 / dev 換行 qa 換行 / 換行換行 qa / qa.1+換行 ⇒ 跟舊版 $(…) 同語義
 R2 偽造分隔行:role 內塞「<像分隔行> @1」⇒ 那窗 !、@1 拿到自己真正的值
 R3 窗已不在(@77):照樣有一筆、值空;其他窗正確
 R4 tmux 失敗 ⇒ _HUB_ROLES 空(呼叫端逐窗照舊問)
@@ -18,7 +19,8 @@ R6 輸出被截斷(少了後面的窗)⇒ 整批作廢
 R7 整合:單輪 6 窗 tmux 呼叫 7 → 2、show-options 只出現在 1 次呼叫裡;畫面跟改前逐字相同(去色碼)
 R8 整合:髒 role 那窗照舊被拒(stderr「role rejected」),跟改前同一窗
 G1 守門:沙盒夾不見 ⇒ 假 tmux exit 99,不碰真 tmux
-刀 KA 換行不標 !(R1/R2 紅)、KB 不驗順序(R5 紅)、KC 不驗筆數(R6 紅)、KD 不接批次(R7 紅)
+刀 KA 中間換行不標 !(R2 紅)、KE 不去尾端換行(R1b 紅)、KB 不驗順序(R5 紅)、KC 不驗筆數(R6 紅)、KD 不接批次(R7 紅)
+R7 的畫面比對去掉色碼(SGR)後才比;讀不到 origin/main 時只驗呼叫數
 """
 import os
 import re
@@ -170,6 +172,21 @@ class Batch(Base):
                 want = "!"
             self.assertEqual(got[wid], want, wid)
 
+    def test_r1b_trailing_newlines(self):
+        # #482 審:舊版 $(…) 會去掉所有尾端換行(dev+換行 ⇒ dev);批次要同語義,去完中間有換行才標 !
+        vals = ["dev\n", "dev\n\n", "\n", "dev\nqa\n", "\n\nqa", "qa.1\n"]
+        for wid, v in zip(self.ids, vals):
+            self.set_role(wid, v)
+        for loc in ("C", "C.UTF-8", "en_US.UTF-8"):
+            with self.subTest(locale=loc):
+                self.locale = loc
+                _, got = self.batch("\n".join(self.ids))
+                for wid, v in zip(self.ids, vals):
+                    want = self.one_by_one(wid)
+                    if "\n" in want:
+                        want = "!"
+                    self.assertEqual(got.get(wid), want, "%s 值 %r" % (wid, v))
+
     def test_r2_forged_separator(self):
         self.set_role(self.ids[0], "dev\nr123x45 %s\nqa" % self.ids[1])
         self.set_role(self.ids[1], "sys.menu")
@@ -264,9 +281,10 @@ class Loop(Base):
 
 
 KNIVES = [
-    ("KA", 'if [ "$first" = "1" ]; then val="$line"; first=0; else val="!"; fi',
-     'if [ "$first" = "1" ]; then val="$line"; first=0; else val="${val}${nl}${line}"; fi',
-     ["test_r1_equivalent", "test_r2_forged_separator"]),
+    ("KA", '    case "$val" in *"$nl"*) val="!" ;; esac\n', '',
+     ["test_r2_forged_separator"]),
+    ("KE", '    while [ "${val%"$nl"}" != "$val" ]; do val="${val%"$nl"}"; done\n', '',
+     ["test_r1b_trailing_newlines"]),
     ("KB", '[ "$line" = "$nonce ${order[$i]:-}" ] || return 0', ':', ["test_r5_out_of_order"]),
     ("KC", '[ "$i" -eq "${#order[@]}" ] || return 0', ':', ["test_r6_truncated"]),
     ("KD", '      _hub_roles_batch "$_hub_ids"\n', '      :\n', ["test_r7_calls_and_same_screen"]),

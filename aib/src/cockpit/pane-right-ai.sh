@@ -386,20 +386,28 @@ __HUBIDS__
   [ "${#order[@]}" -gt 0 ] || return 0
   out="$(env -u TMUX tmux -L "$EZ2_AIHUB_SOCKET" "${cmd[@]}" 2>/dev/null)" || return 0
   local acc=""
+  # 每窗的值照舊版 `$(tmux show-options …)` 的語義:先去掉所有尾端換行(#482 審:dev+換行 舊版得 dev),
+  # 去完中間還有換行 ⇒ 整筆標 !(白名單照舊拒)。
+  _hub_roles_flush() {
+    [ -n "$cur" ] || return 0
+    while [ "${val%"$nl"}" != "$val" ]; do val="${val%"$nl"}"; done
+    case "$val" in *"$nl"*) val="!" ;; esac
+    acc="${acc}${cur}|${val}${nl}"
+  }
   while IFS= read -r line; do
     case "$line" in
       "$nonce "*)
         [ "$line" = "$nonce ${order[$i]:-}" ] || return 0
-        [ -n "$cur" ] && acc="${acc}${cur}|${val}${nl}"
+        _hub_roles_flush
         cur="${order[$i]}"; val=""; first=1; i=$((i + 1))
         continue ;;
     esac
     [ -n "$cur" ] || return 0
-    if [ "$first" = "1" ]; then val="$line"; first=0; else val="!"; fi
+    if [ "$first" = "1" ]; then val="$line"; first=0; else val="${val}${nl}${line}"; fi
   done <<__HUBOUT__
 $out
 __HUBOUT__
-  [ -n "$cur" ] && acc="${acc}${cur}|${val}${nl}"
+  _hub_roles_flush
   [ "$i" -eq "${#order[@]}" ] || return 0
   _HUB_ROLES="${nl}${acc}"
   return 0
