@@ -20,6 +20,9 @@
 //! Every process exits by itself after AIB_FIXTURE_TTL seconds (default 60), so
 //! a failing test cannot leave processes behind for long.
 
+// A test fixture sleeps by design; the ADR 0005 timer rule is for aibd.
+#![allow(clippy::disallowed_methods)]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

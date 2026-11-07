@@ -1,2 +1,11 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+
+# ADR 0005: every sleep / tick goes through crates/aibd/src/timers.rs
+disallowed-methods = [
+  { path = "std::thread::sleep", reason = "use a registered timer in aibd::timers (ADR 0005)" },
+  { path = "tokio::time::sleep", reason = "use a registered timer in aibd::timers (ADR 0005)", allow-invalid = true },
+  { path = "tokio::time::sleep_until", reason = "use a registered timer in aibd::timers (ADR 0005)", allow-invalid = true },
+  { path = "tokio::time::interval", reason = "use a registered timer in aibd::timers (ADR 0005)", allow-invalid = true },
+  { path = "tokio::time::interval_at", reason = "use a registered timer in aibd::timers (ADR 0005)", allow-invalid = true },
+]

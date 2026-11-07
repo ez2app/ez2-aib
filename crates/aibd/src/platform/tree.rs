@@ -249,17 +249,16 @@ impl TreeHandle {
     }
 
     fn wait_gone(&mut self, grace: Duration) -> std::io::Result<Vec<(u32, u64)>> {
-        let end = Instant::now() + grace;
+        let op = crate::timers::TREE_CANCEL_WAIT.begin(Some(Instant::now() + grace));
         loop {
             let _ = self.child.try_wait(); // reap our direct child as soon as it exits
             let mut sys = new_system()?;
             refresh(&mut sys, false);
             self.scan_with(&sys);
             let alive = self.alive(&sys);
-            if alive.is_empty() || Instant::now() >= end {
+            if alive.is_empty() || !op.tick() {
                 return Ok(alive);
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -334,15 +333,14 @@ impl TreeHandle {
 
     /// Wait for the CLI itself to exit (it may leave descendants running).
     pub fn wait_root(&mut self, timeout: Duration) -> std::io::Result<Option<i32>> {
-        let end = Instant::now() + timeout;
+        let op = crate::timers::TREE_ROOT_WAIT.begin(Some(Instant::now() + timeout));
         loop {
             if let Some(s) = self.child.try_wait()? {
                 return Ok(Some(s.code().unwrap_or(-1)));
             }
-            if Instant::now() >= end {
+            if !op.tick() {
                 return Ok(None);
             }
-            std::thread::sleep(Duration::from_millis(20));
         }
     }
 }
