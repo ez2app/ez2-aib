@@ -22,7 +22,9 @@ jobs:
         python: ["3.9", "3.12", "3.14"]
     # 沒輪到的 macOS 格子改在 ubuntu 上印說明:格子名字照矩陣(還是 smoke (macos-latest, …)),不必排 macOS 的隊。
     #   這條件跟下面 RUN_CELL 同一句(runs-on 讀不到 env),改一邊要一起改。
-    runs-on: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && matrix.os || 'ubuntu-latest' }}
+    # 11-07:ubuntu-latest 換成 26.04 後 setup-python 找不到 3.9 ⇒ 只有 (ubuntu-latest, 3.9) 這格改跑 ubuntu-24.04;
+    #   格子名字仍照矩陣(main 必過清單不變),pyproject 下限 3.9 不改。
+    runs-on: ${{ (matrix.os != 'macos-latest' || matrix.python == '3.12' || github.event_name != 'pull_request' || startsWith(github.head_ref, 'int/') || startsWith(github.head_ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os) || 'ubuntu-latest' }}
     env:
       # 10-15 維護者:一般 PR 的 macOS 只跑 3.12;macOS × 3.9/3.14 留給 main、整合(int/*)/發版(release/*)分支、
       #   或貼了 full-ci 標籤的 PR。六格仍然都會出現(main 的必過清單就是這六個名字),沒輪到的那幾格只印一行說明、直接綠。
