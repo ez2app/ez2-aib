@@ -22,6 +22,8 @@
   U7 並發:12 個程序同時搶同一鍵 ⇒ 只有一個拿到;主程序拿著時另一個程序拿不到
   U7b 障礙:第二人過了檢查(看不到第一人的領取)直接建同一代 ⇒ O_EXCL 擋下
   U8 崩潰殘留:20 秒前、擁有者已死 ⇒ 接手、reclaimed +1;3 秒前、擁有者活著 ⇒ 不接手
+  U8b(#486 P1)首擁有者活著且超過 15 秒、第二個程序嘗試 ⇒ 第二者 dedup、只有首擁有者叫外掛(兩個真程序 + 障礙)
+  U8c pid 在但啟動時間不同(pid 被重用)⇒ 接手;U8d 領取後出現更高一代 ⇒ fenced、不叫外掛;U8e 認不出身份 ⇒ 當活著
   U9 12 個程序同時接手同一個卡住的領取 ⇒ 只有一個拿到
 其他
   U10 check:沒裝 / 太舊 ⇒ rc 3 + 對的那句;沒 --switch ⇒ rc 0 + 提示
@@ -29,6 +31,7 @@
   U12 aib 的前景檢查在開窗收尾段之前、批次 exec 之前;seats_batch 在逐席呼叫前取走並 unset 請求 ID
   U13 代開(AIB_NO_ATTACH / AIB_NO_CLIENT_SWITCH)⇒ 不叫 python、清掉請求、印代開那句
 刀(複本):KG1 3 個字也剝 ⇒ G3 紅;KG2 拿掉 cabin == 目標 ⇒ U3 紅;KG3 領取不用 O_EXCL ⇒ U7b 紅;
+  KG8 超過 15 秒就接手活著的 ⇒ U8b 紅;KG9 拿掉叫外掛前的 fencing ⇒ U8d 紅;KG10 不比啟動時間 ⇒ U8c 紅;
   KG4 輸出完整網址 ⇒ U4 紅;KG5 快取身份不看 mtime / 大小 ⇒ U5 紅;KG6 批次不 unset ⇒ U12 紅;KG7 代開也檢查 ⇒ U13 紅
 """
 import json
@@ -54,6 +57,15 @@ import gameworld as G  # noqa: E402
 HELP_NEW = "usage: aib room open [--no-browser] [--switch CODE4]"
 HELP_OLD = "usage: aib room open [--cabin X] [--no-browser]"
 HELP_ANCIENT = "usage: aib room open [--cabin X]"
+
+
+def wait_until(pred, timeout):
+    t = time.time()
+    while time.time() - t < timeout:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return False
 
 
 class Fake:
@@ -309,6 +321,83 @@ class Dedup(Base):
         (d / (k2 + ".claim.1")).write_text(json.dumps({"pid": os.getpid(), "at": time.time() - 3}))
         self.assertIsNone(G.claim(str(d), "R2", "9320"), "活著、剛領的不接手")
 
+    def _child(self, who, req, held=None, go=None):
+        calls = self.d / "calls"
+        code = (
+            "import sys,os,json,time,subprocess\nsys.path.insert(0,%(c)r)\nimport gameworld as G\n"
+            "def run(argv, **kw):\n"
+            "    if argv[1:] == ['room','open','--help']:\n"
+            "        return subprocess.CompletedProcess(argv, 0, '--no-browser --switch', '')\n"
+            "    if argv[1:3] == ['room','open']:\n"
+            "        open(%(calls)r,'a').write(%(who)r + '\\n')\n"
+            "        return subprocess.CompletedProcess(argv, 0, json.dumps({'ok':True,'result':'switched','cabin':'9320',"
+            "'url':'http://127.0.0.1:8771/'}), '')\n"
+            "    return subprocess.CompletedProcess(argv, 0, '', '')\n"
+            "def pause():\n"
+            "    if %(held)r:\n"
+            "        open(%(held)r,'w').write('1')\n"
+            "        t=time.time()\n"
+            "        while not os.path.exists(%(go)r) and time.time()-t<60: time.sleep(0.01)\n"
+            "print(G.open_lobby('9320', %(req)r, %(home)r, '', env={'EZ2_AIB_STATE_ROOT': %(root)r, 'AIB_NO_BROWSER': '1'},"
+            " run=run, find=lambda c: (%(script)r,'captain-room','ok'), pause=pause))\n"
+        ) % {"c": str(COCKPIT), "calls": str(calls), "who": who, "held": str(held) if held else "", "go": str(go) if go else "",
+             "req": req, "home": str(self.home), "root": str(self.d / "root"), "script": str(self.script)}
+        return subprocess.Popen([sys.executable, "-B", "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def test_u8b_live_owner_over_15s_not_taken(self):
+        # #486 審查 P1:首擁有者活著且超過 15 秒、第二者嘗試 ⇒ 只有一方叫外掛 / 開窗
+        held, go = self.d / "held", self.d / "go"
+        a = self._child("A", "LIVE", held, go)
+        self.assertTrue(wait_until(lambda: held.exists(), 30), "A 沒拿到領取")
+        d = self.home / "cockpit" / "gameworld-req"
+        cl = list(d.glob(G._key("LIVE", "9320") + ".claim.*"))
+        self.assertEqual(len(cl), 1)
+        info = json.loads(cl[0].read_text())
+        info["at"] = time.time() - 40                   # 年紀改成 40 秒前;pid / 啟動時間照舊(A 活著)
+        cl[0].write_text(json.dumps(info))
+        old = time.time() - 40
+        os.utime(str(cl[0]), (old, old))
+        b = self._child("B", "LIVE")
+        bout, berr = b.communicate(timeout=60)
+        go.write_text("1")
+        aout, aerr = a.communicate(timeout=60)
+        calls = (self.d / "calls").read_text().split() if (self.d / "calls").exists() else []
+        self.assertEqual(bout.strip().splitlines()[-1:], ["dedup"], bout + berr)
+        self.assertEqual(aout.strip().splitlines()[-1:], ["switched"], aout + aerr)
+        self.assertEqual(calls, ["A"], "只有一方叫外掛")
+
+    def test_u8c_pid_reuse_taken(self):
+        d = self.home / "cockpit" / "gameworld-req"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / (G._key("RE", "9320") + ".claim.1")).write_text(
+            json.dumps({"pid": os.getpid(), "start": "Thu Jan  1 00:00:00 1970", "at": time.time() - 5}))
+        self.assertIsNotNone(G.claim(str(d), "RE", "9320"), "pid 在但啟動時間不同 = 被重用 ⇒ 接手")
+
+    def test_u8d_fencing_before_side_effects(self):
+        k = G._key("F", "9320")
+        d = self.home / "cockpit" / "gameworld-req"
+
+        def stolen():                                   # 領取之後、叫外掛之前,出現更高一代(例如誤判接手)
+            (d / (k + ".claim.9")).write_text(json.dumps({"pid": os.getpid(), "at": time.time()}))
+        f = Fake(result={"ok": True, "result": "switched", "cabin": "9320", "url": "http://127.0.0.1:8771/"})
+        import io
+        out = io.StringIO()
+        r = G.open_lobby("9320", "F", str(self.home), "", out=out, env=self.env, run=f, find=self.find, pause=stolen)
+        self.assertEqual(r, "fenced", out.getvalue())
+        self.assertEqual(f.opens(), [], "不是最高一代就不叫外掛")
+
+    def test_u8e_unknown_identity_is_alive(self):
+        d = self.home / "cockpit" / "gameworld-req"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / (G._key("UK", "9320") + ".claim.1")).write_text(
+            json.dumps({"pid": os.getpid(), "start": "Thu Jan  1 00:00:00 1970", "at": time.time() - 100}))
+        real = G._proc_start
+        G._proc_start = lambda pid, run=None: None
+        try:
+            self.assertIsNone(G.claim(str(d), "UK", "9320"), "認不出身份要當活著")
+        finally:
+            G._proc_start = real
+
     def test_u9_concurrent_reclaim(self):
         dead = self._dead_pid()
 
@@ -385,6 +474,11 @@ KNIVES = [
      "src/cockpit/gameworld.py", "Interface.test_u4_url_origin_only"),
     ("KG5", "st.st_ino, st.st_size, st.st_mtime_ns)", "st.st_ino, 0, 0)", "src/cockpit/gameworld.py",
      "Interface.test_u5_capability_cache"),
+    ("KG8", "            elif alive(pid, start):\n", "            elif alive(pid, start) and time.time() - st.st_mtime < STALE_S:\n",
+     "src/cockpit/gameworld.py", "Dedup.test_u8b_live_owner_over_15s_not_taken"),
+    ("KG9", "    if not still_owner(cl):                               # fencing 1", "    if False:  # fencing 1",
+     "src/cockpit/gameworld.py", "Dedup.test_u8d_fencing_before_side_effects"),
+    ("KG10", "    return now_start == start\n", "    return True\n", "src/cockpit/gameworld.py", "Dedup.test_u8c_pid_reuse_taken"),
     ("KG6", "\nunset AIB_SITS_GAMEWORLD_REQ\n", "\n", "src/cockpit/seats_batch.sh", "Misc.test_u12_wiring"),
     ("KG7", '  if [ "${AIB_NO_ATTACH:-0}" = "1" ] || [ "${AIB_NO_CLIENT_SWITCH:-0}" = "1" ]; then\n    printf \'aib: %s\\n\' "$(t aib.gameworld.no_attach)"',
      '  if false; then\n    printf \'aib: %s\\n\' "$(t aib.gameworld.no_attach)"', "src/cockpit/aib", "Misc.test_u13_no_attach"),

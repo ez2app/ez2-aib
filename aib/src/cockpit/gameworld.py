@@ -16,8 +16,11 @@
 
 去重:鍵 = (請求 ID, 目標艙),紀錄夾 <艙家>/cockpit/gameworld-req/,每鍵一個檔:
   沒有檔 → O_CREAT|O_EXCL 建 <鍵>.claim.1(建成功的那個才准叫外掛 / 開窗)→ 成功 rename 成 <鍵>.done;失敗刪領取檔。
-  最高一代卡住(領取超過 STALE_S 秒或擁有者 pid 已不在)⇒ O_EXCL 建下一代(同一代只有一個人建成),
-  記 gameworld.stat.reclaimed。做不到 exactly once:開完、rename 成 .done 之前崩潰 ⇒ STALE_S 秒後同請求重試會多開一次。
+  擁有者確定已不在(pid 不存在,或 pid 在但啟動時間不同 = pid 被重用)才 O_EXCL 建下一代接手(同一代只有一個人建成),
+  記 gameworld.stat.reclaimed。**活著就永不接手,不管多久**(慢但活著 ≠ 已死;#486 審查 P1);認不出身份(ps 讀不到)當活著。
+  做外部副作用(叫外掛、開窗)之前各驗一次「還是最高一代」(fencing),不是就不做、回 fenced。
+  做不到 exactly once:開完、rename 成 .done 之前崩潰 ⇒ 之後同請求重試會多開一次。卡住不退的活程序會一直佔著這個鍵,
+  但鍵含請求 ID,人再打一次指令是新鍵,不會被擋。
 """
 import hashlib
 import json
@@ -36,7 +39,7 @@ import aib_ui  # noqa: E402
 
 CODE4 = re.compile(r"^[0-9a-f]{4}$")
 OK_RESULTS = ("started", "already", "switched")
-STALE_S = 15            # 外掛逾時 10 秒 + 開窗餘裕
+STALE_S = 15            # 只用在「建了檔、內容還沒寫進去」的領取:超過這麼久沒寫 = 建檔者崩潰
 PLUGIN_TIMEOUT_S = 12   # 核心這端的硬逾時(外掛自己 10 秒)
 KEEP_S = 24 * 3600
 KEEP_N = 32
@@ -137,6 +140,41 @@ def _pid_alive(pid):
         return False
 
 
+def _proc_start(pid, run=subprocess.run):
+    """行程啟動時間(ps -o lstart=,固定 C 語系);拿不到回 None。只在搶同一鍵時才叫。"""
+    e = dict(os.environ, LC_ALL="C", LANG="C")
+    try:
+        r = run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True, timeout=5,
+                stdin=subprocess.DEVNULL, env=e)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return None
+    s = " ".join((r.stdout or "").split())
+    return s or None
+
+
+def _owner_alive(pid, start):
+    """True = 擁有者還在,或認不出(保守);False = 確定已不在:pid 不存在,或 pid 在但啟動時間不同(pid 被重用)。"""
+    if not _pid_alive(pid):
+        return False
+    if not start:
+        return True
+    now_start = _proc_start(pid)
+    if now_start is None:
+        return True
+    return now_start == start
+
+
+def still_owner(cl):
+    """fencing:領取檔還在,而且還是最高一代。"""
+    cl = Path(cl)
+    try:
+        k, g = cl.name.split(".claim.")
+        gens = _gens(cl.parent, k)
+        return cl.exists() and bool(gens) and gens[-1] == int(g)
+    except (ValueError, OSError):
+        return False
+
+
 def _bump(d, name):
     f = Path(d).parent / ("gameworld.stat." + name)
     try:
@@ -188,11 +226,10 @@ def _gens(d, k):
     return sorted(out)
 
 
-def claim(d, req, cabin, now=time.time, alive=_pid_alive, pause=None):
+def claim(d, req, cabin, now=time.time, alive=_owner_alive, pause=None):
     """回領取檔路徑(拿到了)或 None(已成功過 / 別人正在做)。pause:測試用障礙,在建檔成功後呼叫。
 
-    世代號:領取檔 <鍵>.claim.<N>,誰持有看最高的 N。第一次建 N=1;最高那個卡住(超過 STALE_S 秒,或擁有者 pid 已不在)
-    ⇒ 建 N+1。每一代都是 O_CREAT|O_EXCL,同一代只會有一個人建成;接手不搬別人的檔,所以不會誤拿走別人剛建的新領取。"""
+    世代號:領取檔 <鍵>.claim.<N>,誰持有看最高的 N。第一次建 N=1;最高那一代的擁有者確定已不在 ⇒ 建 N+1。每一代都是 O_CREAT|O_EXCL,同一代只會有一個人建成;接手不搬別人的檔,所以不會誤拿走別人剛建的新領取。"""
     d = Path(d)
     d.mkdir(parents=True, exist_ok=True)
     k = _key(req, cabin)
@@ -211,11 +248,13 @@ def claim(d, req, cabin, now=time.time, alive=_pid_alive, pause=None):
             except (OSError, ValueError):
                 continue                                  # 正在變動:重看一次
             pid = info.get("pid") if isinstance(info, dict) else None
-            at = info.get("at") if isinstance(info, dict) else None
-            age = now() - float(at if isinstance(at, (int, float)) else st.st_mtime)
-            # 剛建、內容還沒寫進去(沒有 pid)只看年紀,不當成擁有者已死
-            if age < STALE_S and (pid is None or alive(pid)):
-                return None
+            start = info.get("start") if isinstance(info, dict) else None
+            if pid is None:
+                # 剛建、內容還沒寫進去:年輕就等;超過 STALE_S 還是空 = 建檔者在寫之前就崩潰
+                if now() - st.st_mtime < STALE_S:
+                    return None
+            elif alive(pid, start):
+                return None                               # 活著就不接手,不管多久
         nxt = d / ("%s.claim.%d" % (k, top + 1))
         try:
             fd = os.open(str(nxt), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -224,7 +263,7 @@ def claim(d, req, cabin, now=time.time, alive=_pid_alive, pause=None):
         except OSError:
             return None
         with os.fdopen(fd, "w") as f:
-            f.write(json.dumps({"pid": os.getpid(), "at": now()}))
+            f.write(json.dumps({"pid": os.getpid(), "start": _proc_start(os.getpid()), "at": now()}))
         if top:
             _bump(d, "reclaimed")
             for g in gens:
@@ -315,11 +354,17 @@ def open_lobby(cabin, req, home, session="", out=None, env=None, run=subprocess.
     if cl is None:
         out.write("AIB_GAMEWORLD result=dedup cabin=%s\n" % (target or "-"))
         return "dedup"
+    if not still_owner(cl):                               # fencing 1:叫外掛前
+        out.write("AIB_GAMEWORLD result=fenced cabin=%s\n" % (target or "-"))
+        return "fenced"
     r = call_plugin(target, switch, run)
     o = origin_only(r.get("url"))
     actual = r["cabin"] or T("unknown_cabin")
     how = ""
     if r["ok"] and o:
+        if not still_owner(cl):                           # fencing 2:開窗前(外掛那一步已做,照實回)
+            out.write("AIB_GAMEWORLD result=fenced-after-plugin cabin=%s\n" % (target or "-"))
+            return "fenced"
         if e.get("AIB_NO_BROWSER") == "1":
             how = "skipped"
         else:
