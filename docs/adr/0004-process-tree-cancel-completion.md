@@ -32,7 +32,8 @@ available, so we use three layers:
 2. **Recorded descendants:** record every descendant as `(pid, start_time)`, never pid
    alone, so a reused PID is never signalled. Record them right after spawn and on a
    periodic scan by parent pid while the session runs (every 1 s while BUSY, 5 s while
-   IDLE; tune after the Phase 1 baseline). A child that calls `setsid` keeps its parent
+   IDLE; tune after the Phase 1 baseline). *Superseded (2026-11-07 performance update
+   below): event-driven watcher, scan only as a 10 s backstop.* A child that calls `setsid` keeps its parent
    until that parent exits, so the scan sees it as long as it lives at least one interval.
 3. **Session marker:** start the CLI with `AIBD_SESSION=<session_id>` in its environment.
    Descendants inherit it through `setsid` and re-parenting. At cancel time and at aibd
@@ -46,6 +47,8 @@ available, so we use three layers:
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and **without** `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, then
 resume it. Children cannot leave the job, so `TerminateJobObject` stops the whole tree.
 Status: CI-windows for the API calls; real CLI behaviour is UNVERIFIED-desktop.
+*Superseded in part (2026-11-07 performance update below): the guarantee covers only
+processes confirmed to be in the job and created without breakaway.*
 
 ### 2. Cancel sequence (both OSes, same events)
 
@@ -108,6 +111,7 @@ day one, so adding Codex does not change the cancel path.
   "completed" means the provider said so.
 - Negative: periodic scans cost CPU. The scan reads the process table once per tick for
   all sessions, not once per session, to stay well under the 1.x polling cost (PROBE-B).
+  *Superseded (2026-11-07 performance update): the scan is a 10 s backstop only.*
 - Negative: on macOS a process that both double-forks within one scan interval and
   clears its environment can escape. This is reported as `escaped_marker_check`, not
   hidden.
@@ -153,6 +157,23 @@ and the "periodic scans cost CPU" consequence.
 - **Windows:** the Job Object is associated with an I/O completion port; aibd learns about
   new and exited processes from `JOB_OBJECT_MSG_NEW_PROCESS` / `EXIT_PROCESS` /
   `ACTIVE_PROCESS_ZERO` without polling. Status: UNVERIFIED (not built yet).
+- **Replaces** the sentence "Children cannot leave the job, so `TerminateJobObject` stops
+  the whole tree" in section 1. New wording: `TerminateJobObject` stops the processes that
+  are **confirmed** to be in the job and were created without breakaway. A process that is
+  not in the job (for example started with breakaway allowed by an outer job, or by
+  something outside the tree), or whose membership cannot be observed, is outside that
+  guarantee: the cancel result is `tree_not_clean` when it is seen still running, and
+  UNVERIFIED when it cannot be observed. It is never reported as a clean cancel.
+- **macOS lineage by unique id** (ruling 9320/a63ab 2026-11-07, implemented in the
+  Platform Adapter's FFI crate). Measured: after a process is re-parented to launchd its
+  `p_puniqueid` (from `proc_pidinfo` `PROC_PIDUNIQIDENTIFIERINFO`) still holds the original
+  parent's `p_uniqueid` (3 of 3 runs); unique ids are 64-bit and never reused. So a
+  descendant whose parent exited at once can still be claimed exactly, **on one
+  condition: the parent's unique id was recorded while the parent was alive**. If an
+  intermediate process forks and exits before it is recorded, its children cannot be
+  linked; that gap remains and is reported as `tree_not_clean`. The fixture's
+  short-lived-parent mode missed about 1 run in 3 under a parallel test load with the
+  fork watcher alone; that is the case this closes.
 - **Pending measurement — until measured these are proxies, not guarantees** (raised by
   @bb7dc):
   - whether `NOTE_FORK` sees every short-lived descendant: a child that forks and exits

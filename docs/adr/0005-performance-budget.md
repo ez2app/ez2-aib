@@ -36,8 +36,23 @@ is registered, budgeted and stops by itself; a lost event is detected and repair
   added without passing through it. This is enforced by the compiler, not by grep.
 - The module knows every timer name at build time; CI compares that list with
   `docs/perf/timers.md` (missing or extra → red).
-- At run time each timer counts its wakeups by name. The counts feed the idle-wakeup gate
-  (B2) and say *which* timer caused a regression.
+- At run time each timer counts its wakeups by name. That count says *which* registered
+  timer caused a regression; it is one of two separate inputs to the idle-wakeup gate (B2),
+  see below.
+
+### 1a. What the idle-wakeup gate (B2) can and cannot see
+
+B2 reports two columns that are never merged into one number:
+
+| Column | Source | Covers | Does not cover |
+|---|---|---|---|
+| Registered timers | `aibd::timers` counts, by name | every wakeup of a registered timer | anything else: kernel, runtime internals, I/O readiness, other threads |
+| OS counters | macOS `proc_pid_rusage`: `ri_interrupt_wkups`, `ri_pkg_idle_wkups`; Windows: context-switch count | the wakeup classes those fields count | they are **not** all OS wakeups; each field counts specific classes only. The Windows count is a **proxy, pending measurement** |
+
+- If the OS fields cannot be read (tool missing, permission, unsupported OS version), the B2
+  result is **invalid**, never a silent pass (spec v0.2 judging order: invalid before red).
+- The OS column is the cross-check that catches wakeups outside the registry; it is a
+  partial view, not a total.
 
 ### 2. Runtime
 
@@ -60,6 +75,8 @@ is registered, budgeted and stops by itself; a lost event is detected and repair
   write-amplification gate (B9).
 - Coalescing per aggregate: trailing 50 ms, at most 250 ms (starting values, tunable after
   B4). Terminal, approval, error and cancel events are never coalesced and go out at once.
+- Streaming fragments follow ADR 0003 (update 2026-11-07): merged into one push every 50 ms.
+  The 250 ms aggregate cap above does not apply to them and does not replace that rule.
 - One transaction may carry several events; there is one writer.
 
 ### 4. Internal counters and self-monitoring (spec Q5)
@@ -110,8 +127,10 @@ The descendant counts on both OSes are **proxies until measured** (see ADR 0004 
 
 ## Consequences
 
-- Positive: idle cost is provable (B2 sees zero `Operation` timers and only the listed
-  `Resident` ones); a regression names its timer.
+- Positive: the state of the **registered** timers is provable when idle (zero `Operation`
+  timers active, only the listed `Resident` ones ticking), and a regression in them names its
+  timer. This does not prove the total idle cost: wakeups outside the registry are only
+  visible through the OS column of B2, which is itself partial (section 1a).
 - Positive: write volume drops by one to two orders of magnitude compared with persisting
   every fragment.
 - Negative: catch-up after a disconnect returns the completed message plus the latest

@@ -80,7 +80,8 @@ for that proof; no Risk 3 operation exists before it is implemented.
 - Negative: browser EventSource needs the cookie pairing flow before the web UI can run
   outside Tauri. Planned for Phase 3.
 - Negative: SSE over HTTP/1.1 counts against the browser's per-host connection limit
-  (6). The web UI keeps a single stream and multiplexes by event type.
+  (6). The web UI keeps a single stream and multiplexes by event type. *See the
+  2026-11-07 update: sharing one stream across tabs is not settled here.*
 
 ## Update 2026-11-07 (performance budget, ADR 0005)
 
@@ -98,3 +99,8 @@ for that proof; no Risk 3 operation exists before it is implemented.
   (ADR 0005).
 - Clients must use SSE for updates; periodic GET on a route that has an SSE equivalent is
   a bug, and aibd flags it in `/api/v1/metrics`.
+- **Open, not decided in this ADR (spec P4, web / lobby seat):** one SSE stream shared by
+  all tabs, catch-up when a hidden tab becomes visible again, stopping non-essential
+  network while hidden, and their exceptions. aibd's side (cursor resume, snapshot,
+  bounded buffers) is fixed here; the browser-side contract follows in a later ADR from
+  the web seat, after spec v0.2.1.
