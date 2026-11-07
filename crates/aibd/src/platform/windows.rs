@@ -89,7 +89,7 @@ pub fn verify_owner_only(path: &Path) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "{} is not owner-only ({} ACL entries)",
+                "{} is not owner-only ({} ACL entries: {e:?})",
                 path.display(),
                 e.len()
             ),
@@ -105,6 +105,20 @@ fn set_owner_only(path: &Path, inherit: bool) -> io::Result<()> {
         format!("*{sid}:F")
     };
     icacls(path, &["/inheritance:r", "/grant:r", &grant])?;
+    // A parent without inheritable ACEs makes Windows stamp the creator's
+    // default DACL (self, SYSTEM, Administrators) onto the new object as
+    // *explicit* entries; `/inheritance:r` cannot remove those and
+    // `/grant:r` only replaces our own. Remove every other principal.
+    let (_, name) = current_user()?;
+    let me = format!("{}:", name.to_ascii_lowercase());
+    for entry in acl_entries(path)? {
+        if entry.to_ascii_lowercase().starts_with(&me) {
+            continue;
+        }
+        if let Some((principal, _)) = entry.split_once(":(") {
+            icacls(path, &["/remove", principal])?;
+        }
+    }
     verify_owner_only(path)
 }
 
