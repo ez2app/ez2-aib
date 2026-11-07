@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: Apache-2.0
+# AIB 2.0 Rust workspace (aibd). Runs only when Rust paths change; the Python
+# ci.yml / release.yml are untouched (ADR 0001).
+name: aibd
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "clippy.toml"
+      - "crates/**"
+      - "xtask/**"
+      - "migrations/**"
+      - "scripts/check-core-purity.sh"
+      - ".github/workflows/aibd.yml"
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "clippy.toml"
+      - "crates/**"
+      - "xtask/**"
+      - "migrations/**"
+      - "scripts/check-core-purity.sh"
+      - ".github/workflows/aibd.yml"
+permissions:
+  contents: read
+concurrency:
+  group: aibd-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  rust:
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS Apple Silicon + Windows x64 (spec section 15). Windows results
+        # are "CI-windows" level, not desktop verification (ADR 0001).
+        # *-latest on purpose: pinned images get retired (macos-14 was refused
+        # on 2026-11-07); the first step prints what we actually got.
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          echo "runner: ${RUNNER_OS} ${RUNNER_ARCH} ($ImageOS $ImageVersion)"
+          rustup show active-toolchain || rustup toolchain install
+          rustc -vV
+          cargo --version
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: aibd-${{ matrix.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: aibd-${{ matrix.os }}-
+      - name: Core purity
+        shell: bash
+        run: |
+          ./scripts/check-core-purity.sh
+          ./scripts/check-core-purity.sh --self-test
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --workspace --locked

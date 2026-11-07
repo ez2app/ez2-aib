@@ -1,0 +1,3 @@
+
+# AIB 2.0: migration checksums must be identical on every OS
+migrations/*.sql text eol=lf

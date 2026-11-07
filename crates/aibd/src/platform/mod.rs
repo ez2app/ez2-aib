@@ -1,0 +1,152 @@
+//! Platform Adapter (spec 7). Every `cfg(target_os)` / `cfg(unix|windows)` in
+//! aibd lives under this module.
+
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as imp;
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+use windows as imp;
+
+/// OS default data dir: macOS `~/Library/Application Support/app.Ez2.AIB`,
+/// Windows `%APPDATA%\Ez2\AIB\data` (CI-windows). Never the 1.x `~/.ez2-aib`.
+pub fn default_data_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("app", "Ez2", "AIB").map(|p| p.data_dir().to_path_buf())
+}
+
+/// aibd's own data directory (never the AIB 1.x state root) and its `run/`
+/// subdirectory for files that only live while aibd runs (token, lock).
+pub struct OsDirs(pub PathBuf);
+
+impl OsDirs {
+    pub fn data_dir(&self) -> PathBuf {
+        self.0.clone()
+    }
+    pub fn run_dir(&self) -> PathBuf {
+        self.0.join("run")
+    }
+}
+
+/// Create a directory only the current user can enter, and verify it:
+/// 0700 on Unix; on Windows a protected DACL with one entry for the current
+/// user (CI-windows). Fails instead of continuing with a looser folder.
+pub fn create_private_dir(p: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(p)?;
+    imp::restrict_dir(p)
+}
+
+/// Write a file readable only by the current user, replacing any old one.
+pub fn write_private_file(p: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let tmp = p.with_extension("tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let mut o = OpenOptions::new();
+    o.write(true).create_new(true);
+    imp::private_file_options(&mut o);
+    let mut f = o.open(&tmp)?;
+    // Lock the (still empty) file down and check it before the secret goes in.
+    if let Err(e) = imp::restrict_file(&tmp) {
+        drop(f);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    f.write_all(contents)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, p)
+}
+
+/// Single-instance lock. Held for the life of the returned `File`.
+/// Uses `std::fs::File::try_lock` (flock on Unix, LockFileEx on Windows).
+pub fn instance_lock(p: &Path) -> std::io::Result<Option<File>> {
+    let f = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(p)?;
+    match f.try_lock() {
+        Ok(()) => Ok(Some(f)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_instance_lock_is_refused_then_free_after_drop() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("aibd.lock");
+        let a = instance_lock(&p).unwrap();
+        assert!(a.is_some());
+        assert!(instance_lock(&p).unwrap().is_none());
+        drop(a);
+        assert!(instance_lock(&p).unwrap().is_some());
+    }
+
+    #[test]
+    fn private_file_replaces_and_is_owner_only() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("t");
+        write_private_file(&p, b"one").unwrap();
+        write_private_file(&p, b"two").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"two");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_acl_tests {
+    use super::*;
+    use std::process::Command;
+
+    fn icacls(p: &Path, args: &[&str]) {
+        let st = Command::new(windows::acl_entries_tool())
+            .arg(p)
+            .args(args)
+            .status()
+            .unwrap_or_else(|e| panic!("icacls {}: {e}", p.display()));
+        assert!(st.success(), "icacls {} {args:?}: {st}", p.display());
+    }
+
+    #[test]
+    fn private_dir_and_file_are_owner_only_even_under_a_loose_parent() {
+        let d = tempfile::tempdir().unwrap();
+        // loose parent: Everyone (S-1-1-0) may read, inherited by children
+        icacls(d.path(), &["/grant", "*S-1-1-0:(OI)(CI)R"]);
+        let parent = windows::acl_entries(d.path()).unwrap();
+        assert!(parent.len() >= 2, "{parent:?}");
+
+        let run = d.path().join("run");
+        create_private_dir(&run).unwrap();
+        let tok = run.join("aibd.token");
+        write_private_file(&tok, b"secret").unwrap();
+        for p in [&run, &tok] {
+            let e = windows::acl_entries(p).unwrap();
+            assert_eq!(e.len(), 1, "{}: {e:?}", p.display());
+            windows::verify_owner_only(p).unwrap();
+        }
+    }
+
+    #[test]
+    fn verify_rejects_an_extra_entry() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("f");
+        write_private_file(&p, b"x").unwrap();
+        windows::verify_owner_only(&p).unwrap();
+        icacls(&p, &["/grant", "*S-1-1-0:R"]);
+        assert!(windows::verify_owner_only(&p).is_err());
+    }
+}
