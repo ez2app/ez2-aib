@@ -10,7 +10,7 @@
 //! creations is known.
 //!
 //!   aib-forkcount run --seconds 300 [--tmux-socket PATH]... [--all-tmux] [--pid PID]... [--label TEXT]
-//!   aib-forkcount calibrate --pattern single|grandchild|mid-exit|parallel|burst --count N
+//!   aib-forkcount calibrate --pattern single|grandchild|mid-exit|parallel|burst --count N [--inject-unlisted]
 //!
 //! Pacing uses plain sleeps: this is a measurement tool, not aibd, so the
 //! ADR 0005 timer rule does not apply here.
@@ -18,6 +18,7 @@
 
 use aib_procwatch::{program_name, start_time, ForkWatch, Stats};
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -232,42 +233,69 @@ fn spawn_quiet(c: &mut Command) -> Option<std::process::Child> {
         .ok()
 }
 
-/// Generator (child of `calibrate`). Prints the exact number of process
-/// creations it caused, then exits.
+/// One process creation, as the generator records it: (parent pid, child pid).
+type Creation = (u32, u32);
+
+/// Start `gen-one <mode>`, which prints the pid of the child it creates.
+/// Returns both creations (us -> gen-one, gen-one -> its child).
+fn spawn_gen_one(mode: &str) -> Vec<Creation> {
+    let me_pid = std::process::id();
+    let Ok(c) = Command::new(me())
+        .args(["gen-one", mode])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    let one = c.id();
+    let mut v = vec![(me_pid, one)];
+    if let Ok(out) = c.wait_with_output() {
+        if let Ok(k) = String::from_utf8_lossy(&out.stdout).trim().parse::<u32>() {
+            v.push((one, k));
+        }
+    }
+    v
+}
+
+fn spawn_true() -> Option<Creation> {
+    let mut c = spawn_quiet(&mut Command::new("/usr/bin/true"))?;
+    let k = c.id();
+    let _ = c.wait();
+    Some((std::process::id(), k))
+}
+
+/// Generator (child of `calibrate`). Prints one line `C <parent> <child>` for
+/// every process creation it caused (its own and its helpers'), then exits.
+/// `unlisted` adds one extra child that is deliberately not printed: the
+/// miscount knife (a fork that is not part of the fixture must not raise the
+/// capture rate).
 fn cmd_gen(args: &[String]) -> ExitCode {
     let pattern = args.first().map(String::as_str).unwrap_or("");
     let n: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20);
+    let unlisted = args.get(2).map(String::as_str) == Some("unlisted");
     let gap = Duration::from_millis(50);
-    let mut created = 0u64;
-    let true_bin = "/usr/bin/true";
+    let mut created: Vec<Creation> = Vec::new();
     match pattern {
         // one direct child per step
         "single" => {
             for _ in 0..n {
-                if let Some(mut c) = spawn_quiet(&mut Command::new(true_bin)) {
-                    created += 1;
-                    let _ = c.wait();
-                }
+                created.extend(spawn_true());
                 std::thread::sleep(gap);
             }
         }
         // child that starts one grandchild and waits for it
         "grandchild" => {
             for _ in 0..n {
-                if let Some(mut c) = spawn_quiet(Command::new(me()).args(["gen-one", "wait"])) {
-                    created += 2;
-                    let _ = c.wait();
-                }
+                created.extend(spawn_gen_one("wait"));
                 std::thread::sleep(gap);
             }
         }
         // child that starts /bin/sleep in its own group and exits at once
         "mid-exit" => {
             for _ in 0..n {
-                if let Some(mut c) = spawn_quiet(Command::new(me()).args(["gen-one", "detach"])) {
-                    created += 2;
-                    let _ = c.wait();
-                }
+                created.extend(spawn_gen_one("detach"));
                 std::thread::sleep(gap);
             }
         }
@@ -276,27 +304,27 @@ fn cmd_gen(args: &[String]) -> ExitCode {
             let hs: Vec<_> = (0..4)
                 .map(|_| {
                     std::thread::spawn(move || {
-                        let mut k = 0u64;
+                        let mut v = Vec::new();
                         for _ in 0..n {
-                            if let Some(mut c) = spawn_quiet(&mut Command::new(true_bin)) {
-                                k += 1;
-                                let _ = c.wait();
-                            }
+                            v.extend(spawn_true());
                             std::thread::sleep(gap);
                         }
-                        k
+                        v
                     })
                 })
                 .collect();
-            created = hs.into_iter().map(|h| h.join().unwrap_or(0)).sum();
+            for h in hs {
+                created.extend(h.join().unwrap_or_default());
+            }
         }
         // n children started back to back, waited for afterwards
         "burst" => {
             let kids: Vec<_> = (0..n)
-                .filter_map(|_| spawn_quiet(&mut Command::new(true_bin)))
+                .filter_map(|_| spawn_quiet(&mut Command::new("/usr/bin/true")))
                 .collect();
-            created = kids.len() as u64;
+            let me_pid = std::process::id();
             for mut k in kids {
+                created.push((me_pid, k.id()));
                 let _ = k.wait();
             }
         }
@@ -305,17 +333,22 @@ fn cmd_gen(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    println!("{created}");
+    if unlisted {
+        let _ = spawn_true();
+    }
+    for (p, c) in created {
+        println!("C {p} {c}");
+    }
     ExitCode::SUCCESS
 }
 
 fn cmd_gen_one(args: &[String]) -> ExitCode {
-    match args.first().map(String::as_str) {
-        Some("wait") => {
-            if let Some(mut c) = spawn_quiet(&mut Command::new("/usr/bin/true")) {
-                let _ = c.wait();
-            }
-        }
+    let child = match args.first().map(String::as_str) {
+        Some("wait") => spawn_quiet(&mut Command::new("/usr/bin/true")).map(|mut c| {
+            let k = c.id();
+            let _ = c.wait();
+            k
+        }),
         Some("detach") => {
             let mut c = Command::new("/bin/sleep");
             c.arg("2");
@@ -324,11 +357,100 @@ fn cmd_gen_one(args: &[String]) -> ExitCode {
                 use std::os::unix::process::CommandExt;
                 c.process_group(0);
             }
-            let _ = spawn_quiet(&mut c);
+            spawn_quiet(&mut c).map(|c| c.id())
         }
         _ => return ExitCode::from(2),
+    };
+    if let Some(k) = child {
+        println!("{k}");
     }
     ExitCode::SUCCESS
+}
+
+/// Capture attributed by identity (DECISION-4 C, bb7dc's objection):
+/// only creations the fixture recorded count, each at most once.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Attribution {
+    expected: u64,
+    /// lower bound of |seen by adoption ∪ seen by a fork event|, per creation
+    captured: u64,
+    /// fork events of fixture parents beyond what they created
+    fork_events_beyond_created: u64,
+    /// adopted children of fixture parents that the fixture did not record
+    adopted_not_created: u64,
+    /// child pids the fixture recorded more than once (identity ambiguous)
+    duplicate_child_pids: u64,
+}
+
+impl Attribution {
+    fn unverified_reasons(&self) -> Vec<&'static str> {
+        let mut r = Vec::new();
+        if self.expected == 0 {
+            r.push("no_creations_recorded");
+        }
+        if self.fork_events_beyond_created > 0 {
+            r.push("fork_events_beyond_created");
+        }
+        if self.adopted_not_created > 0 {
+            r.push("adopted_not_created");
+        }
+        if self.duplicate_child_pids > 0 {
+            r.push("duplicate_child_pids");
+        }
+        if self.captured > self.expected {
+            r.push("capture_above_expected");
+        }
+        r
+    }
+}
+
+/// Per fixture parent P with C_P recorded children: A_P of them were adopted
+/// (by identity), F_P fork events came from P. Adoption and fork events can
+/// overlap, so the union is at least max(A_P, min(F_P, C_P)); summing that
+/// over fixture parents never exceeds the expected count, and events or
+/// children that are not the fixture's are reported, not counted.
+fn attribute(
+    created: &[Creation],
+    adopted: &BTreeMap<u32, u32>,
+    forks_by_pid: &BTreeMap<u32, u64>,
+) -> Attribution {
+    let mut by_parent: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let mut kids = BTreeSet::new();
+    let mut dup = 0;
+    for (p, c) in created {
+        by_parent.entry(*p).or_default().push(*c);
+        if !kids.insert(*c) {
+            dup += 1;
+        }
+    }
+    let mut a = Attribution {
+        expected: created.len() as u64,
+        duplicate_child_pids: dup,
+        ..Attribution::default()
+    };
+    for (p, cs) in &by_parent {
+        let c_p = cs.len() as u64;
+        let a_p = cs.iter().filter(|c| adopted.get(c) == Some(p)).count() as u64;
+        let f_p = forks_by_pid.get(p).copied().unwrap_or(0);
+        a.captured += a_p.max(f_p.min(c_p));
+        a.fork_events_beyond_created += f_p.saturating_sub(c_p);
+    }
+    a.adopted_not_created = adopted
+        .iter()
+        .filter(|(c, p)| by_parent.contains_key(p) && !kids.contains(c))
+        .count() as u64;
+    a
+}
+
+fn parse_creations(stdout: &str) -> Vec<Creation> {
+    stdout
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            (it.next() == Some("C")).then_some(())?;
+            Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+        })
+        .collect()
 }
 
 fn cmd_calibrate(args: &[String]) -> ExitCode {
@@ -347,9 +469,13 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             return ExitCode::from(3);
         }
     };
+    let mut gen_args = vec!["gen-wait".to_string(), pattern.clone(), count];
+    if has(args, "--inject-unlisted") {
+        gen_args.push("unlisted".into());
+    }
     // The generator waits on stdin so the watch is in place before it forks.
     let mut gen = match Command::new(me())
-        .args(["gen-wait", &pattern, &count])
+        .args(&gen_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -371,11 +497,17 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
     let elapsed = t0.elapsed().as_secs_f64();
     let stats = w.stats();
     let tracked = w.snapshot().len();
+    let adopted = w.adopted_parents();
     w.stop();
-    let expected: u64 = out
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
-        .unwrap_or(0);
+    let created = out
+        .map(|o| parse_creations(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default();
+    let att = attribute(&created, &adopted, &stats.fork_events_by_pid);
+    let mut reasons = att.unverified_reasons();
+    if !watched {
+        reasons.push("root_not_watched");
+    }
+    let expected = att.expected;
     let rate = |x: u64| {
         if expected == 0 {
             Value::Null
@@ -391,15 +523,28 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "pattern": pattern,
             "root_watched": watched,
             "expected_process_creations": expected,
-            "capture_rate_fork_events": rate(stats.fork_events),
-            "capture_rate_children_adopted": rate(stats.children_adopted),
+            "status": if reasons.is_empty() { "ok" } else { "unverified" },
+            "unverified_reasons": reasons,
+            "capture_rate": rate(att.captured),
+            "captured_by_identity": att.captured,
+            "raw": {
+                "fork_events": stats.fork_events,
+                "children_adopted": stats.children_adopted,
+                "capture_rate_fork_events": rate(stats.fork_events),
+                "capture_rate_children_adopted": rate(stats.children_adopted),
+            },
+            "miscount_checks": {
+                "fork_events_beyond_created": att.fork_events_beyond_created,
+                "adopted_not_created": att.adopted_not_created,
+                "duplicate_child_pids": att.duplicate_child_pids,
+            },
             "result": report(&stats, elapsed, tracked),
         })
     );
-    if expected == 0 || !watched {
-        ExitCode::from(1)
-    } else {
+    if reasons.is_empty() {
         ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 
@@ -418,9 +563,74 @@ fn main() -> ExitCode {
         Some("gen-one") => cmd_gen_one(rest),
         _ => {
             eprintln!(
-                "usage: aib-forkcount run --seconds N [--tmux-socket P]... [--all-tmux] [--pid N]... [--label T]\n       aib-forkcount calibrate --pattern single|grandchild|mid-exit|parallel|burst [--count N]"
+                "usage: aib-forkcount run --seconds N [--tmux-socket P]... [--all-tmux] [--pid N]... [--label T]\n       aib-forkcount calibrate --pattern single|grandchild|mid-exit|parallel|burst [--count N] [--inject-unlisted]"
             );
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(v: &[(u32, u64)]) -> BTreeMap<u32, u64> {
+        v.iter().copied().collect()
+    }
+
+    #[test]
+    fn coalesced_events_are_covered_by_adoption() {
+        let created = [(10, 11), (10, 12), (10, 13)];
+        let adopted = [(11, 10), (12, 10), (13, 10)].into_iter().collect();
+        let a = attribute(&created, &adopted, &m(&[(10, 1)]));
+        assert_eq!((a.expected, a.captured), (3, 3));
+        assert!(a.unverified_reasons().is_empty());
+    }
+
+    #[test]
+    fn a_miss_and_an_extra_fork_do_not_cancel_out() {
+        // 3 created, one missed by both counters, one extra fork event:
+        // the raw max would say 3/3.
+        let created = [(10, 11), (10, 12), (10, 13)];
+        let adopted = [(11, 10), (12, 10)].into_iter().collect();
+        let a = attribute(&created, &adopted, &m(&[(10, 4)]));
+        assert_eq!(a.fork_events_beyond_created, 1);
+        assert!(a
+            .unverified_reasons()
+            .contains(&"fork_events_beyond_created"));
+    }
+
+    #[test]
+    fn unrecorded_children_are_reported_not_counted() {
+        let created = [(10, 11)];
+        let adopted = [(11, 10), (99, 10), (500, 7)].into_iter().collect();
+        let a = attribute(&created, &adopted, &BTreeMap::new());
+        assert_eq!((a.captured, a.adopted_not_created), (1, 1));
+        assert!(a.unverified_reasons().contains(&"adopted_not_created"));
+    }
+
+    #[test]
+    fn a_child_adopted_under_another_parent_is_not_the_fixtures() {
+        // pid 11 was recorded as 10's child but adopted under 77 (pid reuse)
+        let created = [(10, 11)];
+        let adopted = [(11, 77)].into_iter().collect();
+        let a = attribute(&created, &adopted, &BTreeMap::new());
+        assert_eq!(a.captured, 0);
+    }
+
+    #[test]
+    fn duplicate_pids_make_identity_ambiguous() {
+        let created = [(10, 11), (10, 11)];
+        let a = attribute(&created, &BTreeMap::new(), &m(&[(10, 2)]));
+        assert_eq!(a.duplicate_child_pids, 1);
+        assert!(a.unverified_reasons().contains(&"duplicate_child_pids"));
+    }
+
+    #[test]
+    fn creation_lines_parse() {
+        assert_eq!(
+            parse_creations("C 1 2\nnoise\nC 3 x\nC 4 5\n"),
+            vec![(1, 2), (4, 5)]
+        );
     }
 }

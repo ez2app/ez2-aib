@@ -33,6 +33,34 @@ fn calibrate_single_is_exact() {
     assert_eq!(v["result"]["children_adopted"], 20, "{v}");
     assert_eq!(v["result"]["fork_events"], 20, "{v}");
     assert_eq!(v["root_watched"], true);
+    assert_eq!(v["status"], "ok", "{v}");
+    assert_eq!(v["captured_by_identity"], 20, "{v}");
+    assert_eq!(v["capture_rate"], 1.0, "{v}");
+}
+
+/// The miscount knife (DECISION-4 C): one extra fork the fixture did not
+/// record must not raise the capture, and must mark the run unverified.
+#[test]
+fn calibrate_unlisted_fork_is_not_counted() {
+    let out = tool()
+        .args([
+            "calibrate",
+            "--pattern",
+            "single",
+            "--count",
+            "10",
+            "--inject-unlisted",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "unverified must not exit 0");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["expected_process_creations"], 10, "{v}");
+    assert_eq!(v["raw"]["children_adopted"], 11, "{v}");
+    assert_eq!(v["captured_by_identity"], 10, "{v}");
+    assert_eq!(v["status"], "unverified", "{v}");
+    let reasons = v["unverified_reasons"].to_string();
+    assert!(reasons.contains("adopted_not_created"), "{v}");
 }
 
 /// A child that starts a grandchild: the grandchild is only visible if the

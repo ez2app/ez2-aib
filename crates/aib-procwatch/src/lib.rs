@@ -33,6 +33,9 @@ pub struct Stats {
     pub list_failures: u64,
     /// Fork events by the parent's program name.
     pub by_parent: BTreeMap<String, u64>,
+    /// Fork events by the parent's pid (lets calibration attribute events to
+    /// the processes it created itself).
+    pub fork_events_by_pid: BTreeMap<u32, u64>,
     /// Fork events per whole second since start.
     pub per_second: BTreeMap<u64, u64>,
 }
@@ -54,6 +57,8 @@ mod imp {
 
     struct Inner {
         seen: BTreeMap<u32, u64>,
+        /// adopted child -> the parent it was listed under
+        parent_of: BTreeMap<u32, u32>,
         stats: Stats,
     }
 
@@ -111,6 +116,7 @@ mod imp {
                 let ok = watch(kq, k);
                 let mut g = lock(sh);
                 g.seen.insert(k, ks);
+                g.parent_of.insert(k, p);
                 g.stats.children_adopted += 1;
                 if !ok {
                     g.stats.register_failures += 1;
@@ -142,6 +148,7 @@ mod imp {
                 .map_err(std::io::Error::from)?;
             let sh = Arc::new(Mutex::new(Inner {
                 seen: BTreeMap::new(),
+                parent_of: BTreeMap::new(),
                 stats: Stats::default(),
             }));
             let w = {
@@ -190,6 +197,12 @@ mod imp {
         pub fn stats(&self) -> Stats {
             lock(&self.sh).stats.clone()
         }
+
+        /// Every adopted child with the parent pid it was listed under
+        /// (roots are not included).
+        pub fn adopted_parents(&self) -> BTreeMap<u32, u32> {
+            lock(&self.sh).parent_of.clone()
+        }
     }
 
     fn run(kq: &Kqueue, sh: &Shared, t0: Instant) {
@@ -219,6 +232,7 @@ mod imp {
                         {
                             let mut g = lock(sh);
                             g.stats.fork_events += 1;
+                            *g.stats.fork_events_by_pid.entry(pid).or_default() += 1;
                             *g.stats.by_parent.entry(parent).or_default() += 1;
                             *g.stats
                                 .per_second
@@ -289,6 +303,9 @@ mod imp {
         }
         pub fn stats(&self) -> Stats {
             Stats::default()
+        }
+        pub fn adopted_parents(&self) -> std::collections::BTreeMap<u32, u32> {
+            std::collections::BTreeMap::new()
         }
         /// Stop watching (nothing to stop here).
         pub fn stop(self) {}
