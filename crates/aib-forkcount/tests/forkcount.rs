@@ -141,3 +141,24 @@ fn existing_tree_is_recorded_when_the_root_is_added() {
     let n = v["result"]["tracked_processes"].as_u64().unwrap();
     assert!(n >= 4, "existing tree not walked: {v}");
 }
+
+/// bb7dc 11-08: mid-exit came out "ok" / rc 0 with 197 list failures.
+/// Whatever the run sees, failures and rc 0 never come together.
+#[test]
+fn calibrate_mid_exit_never_passes_with_failures() {
+    let out = tool()
+        .args(["calibrate", "--pattern", "mid-exit", "--count", "20"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let raw = &v["raw"];
+    let failed =
+        raw["list_failures"].as_u64().unwrap() + raw["register_failures"].as_u64().unwrap();
+    if failed > 0 {
+        assert_eq!(v["status"], "unverified", "{v}");
+        assert_eq!(out.status.code(), Some(1), "{v}");
+    }
+    if out.status.code() == Some(0) {
+        assert_eq!(v["meets_threshold"], true, "{v}");
+    }
+}

@@ -516,10 +516,8 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
         .map(|o| parse_creations(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_default();
     let att = attribute(&created, &adopted, &stats.fork_events_by_pid);
-    let mut reasons = att.unverified_reasons();
-    if !watched {
-        reasons.push("root_not_watched");
-    }
+    let v = verdict(&att, watched, stats.list_failures, stats.register_failures);
+    let reasons = v.reasons;
     let expected = att.expected;
     let rate = |x: u64| {
         if expected == 0 {
@@ -541,8 +539,7 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "capture_rate": rate(att.identity_confirmed),
             "capture_rate_definition": "identity coverage: recorded creations whose child was adopted under the recorded parent / expected",
             "capture_threshold": CAPTURE_THRESHOLD,
-            "meets_threshold": reasons.is_empty() && expected > 0
-                && att.identity_confirmed as f64 >= CAPTURE_THRESHOLD * expected as f64,
+            "meets_threshold": v.meets_threshold,
             "identity_confirmed": att.identity_confirmed,
             "count_consistency": rate(att.fixture_fork_events),
             "count_consistency_definition": "fork events from fixture parents / expected (proxy: no identity, coalesced)",
@@ -563,10 +560,51 @@ fn cmd_calibrate(args: &[String]) -> ExitCode {
             "result": report(&stats, elapsed, tracked),
         })
     );
-    if reasons.is_empty() {
-        ExitCode::SUCCESS
+    ExitCode::from(v.rc)
+}
+
+/// Outcome of one calibration run (DECISION-4 C).
+#[derive(Debug, PartialEq, Eq)]
+struct Verdict {
+    reasons: Vec<&'static str>,
+    meets_threshold: bool,
+    /// 0 = ok and above threshold, 1 = unverified, 4 = verified but below
+    /// the threshold. Never 0 unless both hold.
+    rc: u8,
+}
+
+/// A failed child listing or watch registration means the watcher may have
+/// missed processes, so the run cannot be "ok" whatever the counts say.
+fn verdict(
+    att: &Attribution,
+    watched: bool,
+    list_failures: u64,
+    register_failures: u64,
+) -> Verdict {
+    let mut reasons = att.unverified_reasons();
+    if !watched {
+        reasons.push("root_not_watched");
+    }
+    if list_failures > 0 {
+        reasons.push("list_failures");
+    }
+    if register_failures > 0 {
+        reasons.push("register_failures");
+    }
+    let meets_threshold = reasons.is_empty()
+        && att.expected > 0
+        && att.identity_confirmed as f64 >= CAPTURE_THRESHOLD * att.expected as f64;
+    let rc = if !reasons.is_empty() {
+        1
+    } else if !meets_threshold {
+        4
     } else {
-        ExitCode::from(1)
+        0
+    };
+    Verdict {
+        reasons,
+        meets_threshold,
+        rc,
     }
 }
 
@@ -595,6 +633,43 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn att(expected: u64, confirmed: u64) -> Attribution {
+        Attribution {
+            expected,
+            identity_confirmed: confirmed,
+            ..Attribution::default()
+        }
+    }
+
+    #[test]
+    fn list_or_register_failures_make_the_run_unverified() {
+        // bb7dc 11-08 mid-exit: 185/200 with 197 list failures came out "ok"
+        let v = verdict(&att(200, 200), true, 197, 0);
+        assert_eq!(
+            (v.reasons.clone(), v.meets_threshold, v.rc),
+            (vec!["list_failures"], false, 1)
+        );
+        let v = verdict(&att(200, 200), true, 0, 1);
+        assert_eq!(
+            (v.reasons.clone(), v.meets_threshold, v.rc),
+            (vec!["register_failures"], false, 1)
+        );
+        let v = verdict(&att(200, 200), true, 1, 1);
+        assert_eq!(v.reasons, vec!["list_failures", "register_failures"]);
+    }
+
+    #[test]
+    fn rc_is_zero_only_when_verified_and_above_threshold() {
+        assert_eq!(verdict(&att(200, 200), true, 0, 0).rc, 0);
+        assert_eq!(verdict(&att(200, 198), true, 0, 0).rc, 0); // exactly 99 %
+        let v = verdict(&att(200, 197), true, 0, 0); // one short
+        assert_eq!((v.meets_threshold, v.rc), (false, 4));
+        let v = verdict(&att(200, 185), true, 0, 0);
+        assert_eq!((v.meets_threshold, v.rc), (false, 4));
+        assert_eq!(verdict(&att(200, 200), false, 0, 0).rc, 1);
+        assert_eq!(verdict(&att(0, 0), true, 0, 0).rc, 1);
+    }
 
     fn m(v: &[(u32, u64)]) -> BTreeMap<u32, u64> {
         v.iter().copied().collect()
