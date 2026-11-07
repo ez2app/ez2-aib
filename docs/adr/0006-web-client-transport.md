@@ -106,12 +106,13 @@ a new ticket for every reconnect.
 - **No page contains the token.** `index.html` and every static file are identical for
   every caller. Other OS accounts on the same machine can reach `127.0.0.1`, so a token
   embedded in HTML would bypass the owner-only token file. Test: an unauthenticated
-  `GET /` response does not contain the token.
+  `GET /` response does not contain the token. The one exception is the pairing exchange
+  page, which only a valid one-time code gets (section 7).
 
 ### 7. How a browser obtains a credential: pairing, then a page credential (discussion 5)
 
-Decided (maintainers' summary of discussion 5, 9320/a63ab, 2026-11-07). The delivery of
-the pairing code to the page is still open; see the end of this section.
+Decided (maintainers' summaries of discussions 5 and 6, 9320/a63ab, 2026-11-07). Code
+delivery has a candidate (P2) that has not passed security acceptance yet.
 
 **No cookie.** A cookie is scoped by host, not by port: a cookie for `127.0.0.1` is sent
 to every port on `127.0.0.1`. `SameSite=Strict` does not help, because another port on the
@@ -120,9 +121,9 @@ server cannot use. So any web server another OS account runs on a local port cou
 the cookie. aibd therefore sets no cookie, and needs no CSRF protection.
 
 **Pairing.**
-- `aib` (authorised by the owner-only token file) asks aibd for a one-time pairing code.
-  The code is single use and short lived (≤ 30 s). aibd stores only its hash.
-- The page redeems the code with a `POST`. The page credential comes back in the
+- `aib` (authorised by the owner-only token file) asks aibd for a one-time pairing code
+  (details below).
+- The page redeems the code with a form `POST`. The page credential comes back in the
   **response body**, never in a URL or a cookie.
 - Redeeming twice, after expiry, or concurrently succeeds at most once.
 
@@ -139,20 +140,90 @@ token file) and a valid page credential. Everything else in sections 2 and 6 is
 unchanged: no credential in any path or query, no page contains a credential, logs never
 contain one.
 
-**Not decided yet: how the pairing code reaches the page.** Two proofs of concept run first
-(sandbox only); the pairing endpoint is not built until their results are reviewed.
-- P1, URL fragment `#pair=…`: the fragment is not sent to the server; the page redeems it
-  on load and clears it with `history.replaceState`. But the window's URL appears in
-  process arguments, which other accounts can read with `ps`, so P1 needs takeover
-  detection: when the legitimate page finds its code already used, every credential issued
-  for that code is revoked and the page asks to reopen. **P1 literally puts a credential
-  in a URL, which section 2 forbids.** Whether to allow an exception for fragments is a
-  separate discussion after the PoC; it is not allowed by default.
-- P2: `aib` writes a `0600` HTML file inside a `0700` owner-only folder; the file holds the
-  code and posts it to the pairing endpoint. Process arguments show only the path. To
-  verify: whether aibd can accept a `POST` from a `file://` page safely (only on the
-  pairing endpoint; how `Origin: null` is handled), and which shells support it.
-- If neither holds: the terminal shows a short code and the person types it in.
+**Delivering the code: P2 is the candidate, not yet accepted (discussion 6).** The
+proofs of concept so far ran headless against a mock server, so they are not a security
+acceptance. P2 is not enabled by default. If any check below fails, the fallback is the
+terminal short code typed in by the person, or the feature is reported as blocked. It
+never falls back silently to a code in a URL.
+- P2: `aib` writes a `0600` HTML file inside a `0700` owner-only folder. The file holds the
+  code and posts it to the pairing endpoint with a form. Process arguments show only the
+  path.
+- P1 (URL fragment `#pair=…`) is **rejected**: no exception to "no credential in a URL".
+
+**Security rests on the code, not on `Origin: null`.** `null` is also sent by sandboxed
+iframes, `data:` pages and any other local file. It identifies nothing.
+
+**Pairing endpoint (specification; built once the aibd skeleton is in place):**
+- `POST /api/v1/pair/codes`: start-up token only, from `aib`.
+  - Response body: `{code, nonce, expires_in: 30}`.
+  - The code is 32 bytes from the OS secure RNG. It is single use, lives ≤ 30 s, and is
+    bound to this aibd instance. aibd stores only its hash.
+  - `nonce` is a separate random value that `aib` puts in the same file.
+- `POST /api/v1/pair/redeem`:
+  - Accepts **only** `application/x-www-form-urlencoded`, with a body of at most 1 KiB
+    and the fields `code` and `nonce`.
+  - `Origin` must be `null` or aibd's own origin. The Host allow-list still applies, so
+    DNS rebinding is refused.
+  - GET, JSON or any other content type is refused. `Origin: null` on any other path is
+    refused.
+  - Redemption is atomic and rate limited: 10 failures a minute per aibd is a trial value;
+    above it the endpoint returns `429`.
+  - Every failure returns the same fixed message.
+- Outcomes of redeem:
+  - **Valid code:** `200` with the exchange page (below).
+  - **Code already used, same nonce** (the page was reloaded and the form re-sent):
+    `409` "already paired, reopen". Nothing is revoked.
+  - **Code already used, different nonce:** `409`, and **only** the credentials issued
+    from this code are revoked. Other sessions are unaffected.
+  - **Invalid, expired or malformed code:** `401`.
+- The nonce lives in the same file as the code, so whoever can read the file has both.
+  **The nonce is not an identity.** It only keeps a legitimate reload from revoking
+  itself; it cannot detect a takeover by someone who read the file. That case stays
+  undetected and is recorded as such in the tests.
+- **A first credential cannot write.** A credential from pairing can read, but writes and
+  high-risk capabilities are refused with `403 pairing_unconfirmed`. This lasts until an
+  independent confirmation channel that an attacker cannot reach has been found and proven
+  in a PoC. Candidates: confirmation through `aib`'s own start-up token, or a short code
+  compared by the person on the terminal and the page.
+  - Revoking after detection is not prevention. It cannot undo what was done inside the
+    takeover window.
+  - Until confirmation exists, writes follow the Risk levels and need Touch ID. Risk 3 needs
+    Touch ID as before.
+
+**Exchange page: an exception to section 6.** The `200` response of
+`/api/v1/pair/redeem` contains the page credential. It is therefore an exception to "no
+page contains a credential", which covers the static pages that are identical for every
+caller. Only a valid code gets this page.
+- Headers: `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, and a CSP that loads
+  nothing external with `frame-ancestors 'none'`.
+- It is not served from the static file path and is never logged.
+- The page stores the credential in `sessionStorage` and then calls `location.replace('/')`.
+- Back, bfcache, the disk cache and session restore must be tested not to bring the
+  credential back.
+
+**The local file.**
+- Before writing, `aib` verifies that the `0700` folder is owned by the user.
+- The file is created with `O_CREAT | O_EXCL | O_NOFOLLOW`, under a random name that is
+  never reused. Owner and mode are read back; if they are wrong, no window is opened
+  (fail closed).
+- The file is deleted after success, failure, the 30 s expiry, or a failed window open.
+  If it cannot be deleted, an error is reported. After a crash, the next start removes
+  stale files, and only its own.
+- On Windows the file uses the same `set_owner_only` as the token file. UNVERIFIED.
+
+**`sessionStorage` is copied into a new tab that keeps its opener** (measured by @3f312 in
+Chrome). Every new page is therefore opened with `noopener` / `noreferrer`. Tests cover
+`window.open`, `target` links, duplicated tabs, the same IP on another port, reload and
+restore.
+
+**Still UNVERIFIED** (stated, not hidden):
+- a real aibd with a Chrome `--app` window;
+- other desktop shells;
+- a real second OS account (waits for the test account to be chosen);
+- Windows ACLs.
+
+Threats outside local isolation are written as boundaries, per the same-user AI threat
+model guide: the same-account AI, XSS, browser extensions.
 
 A1-a (a per-install `*.localhost` host name plus a cookie) is kept as a later option and
 is not part of this round.
@@ -160,11 +231,22 @@ is not part of this round.
 **Required tests (each with a knife that turns only its own assertion red, plus a positive
 path so "refuse everything" cannot pass):**
 - Reading the API or the stream without pairing is refused.
-- Pairing code reuse, expiry and concurrent takeover: at most one success.
+- Pairing code reuse, expiry and concurrent takeover: at most one success. A second use
+  returns `409` and revokes the first credential. The same nonce re-sent does not revoke.
+- `null` origins without a code, with a random, expired or malformed code, or replaying a
+  request, are refused. `null` on any other endpoint is refused. A GET carrying a code is
+  refused.
+- The file is gone after use. A mode other than `0600`, a symlink, or a pre-created file of
+  the same name means no window is opened.
+- A write with a not-yet-confirmed credential is refused.
+- An attacker who read the whole file redeems first, then the legitimate page re-sends
+  with the same nonce. The test records that this is **not detected**, and asserts that
+  the attacker's credential cannot write.
 - A hostile page on another local port can neither read data nor change anything.
 - Wrong, `null` or missing `Origin`, a forged `Host`, DNS rebinding and preflight abuse
   are refused.
-- No credential or pairing code appears in logs, query strings, HTML or error output.
+- No credential or pairing code appears in logs, query strings, static HTML, error output
+  or browser history.
 - Testing from a real second OS account is UNVERIFIED until it has been run.
 
 ## Consequences
@@ -178,6 +260,7 @@ path so "refuse everything" cannot pass):**
 - Negative: the web UI cannot be hosted on another origin. This is intended.
 - Negative: a page reload without `sessionStorage`, or any aibd restart, needs a new
   pairing.
-- Open: how the pairing code reaches the page (section 7, P1 / P2 proofs of concept).
+- Open: P2 security acceptance (real `--app` window, other shells, a second OS account,
+  Windows) and the independent confirmation that unlocks writes (section 7).
 - Open: the catch-up threshold and the `must_deliver` cap are trial values until measured
   (B4).
