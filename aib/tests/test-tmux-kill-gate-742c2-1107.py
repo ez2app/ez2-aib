@@ -82,7 +82,6 @@ class Block(unittest.TestCase):
             "grep -n 'kill-server' src/cockpit/*.sh",
             "tmux ls; tmux kill-session -t aib-x",
             "# tmux kill-server",
-            "pkill -f 'tmux -L aihub-probe-x'",
             "git log --oneline -1",
         ):
             self.assertIsNone(why(cmd), cmd)

@@ -12,6 +12,13 @@
   tmux -S <檔> … kill-server    檔是真 socket 夾(/tmp/tmux-<uid>)裡的 default / aihub-<艙號> ⇒ 擋;
                                 帶變數的路徑放行(socket 檔不在時 tmux 報錯，不會退回預設伺服器)
   killall tmux / pkill [選項] tmux
+11-08 加(00:34 事故:背景 job 的 `pkill -f "x" -U $(id -u) -P $(pgrep …)` 把 24 個 tmux 全砍;macOS 的 pkill / pgrep 是
+BSD getopt,遇到第一個比對字串就停止解析 ⇒ 後面的 -U / 501 / -P 全變成「比對字串」,tmux 命令列都帶 -P、路徑帶 501。
+維護者選嚴格版:「禁用 pkill -f / killall」⇒ 一律 pgrep -lf 看過再 kill <pid>):
+  pkill 帶 -f(含 -lf / -9f 這種合併寫法)       → pkill_f
+  killall(任何目標)                            → killall
+  pkill / pgrep 的選項寫在比對字串後面            → opt_after_pattern
+  kill $(pgrep …) / kill `pgrep …` / pgrep … | xargs kill(等同 pkill -f)→ kill_subst
 放行：上面以外、引號裡的字(echo / grep)、註解。解析失敗、任何例外 ⇒ 放行(fail-open,同 worktree_path_gate)。
 這是防手滑，不是防線(同帳號 AI 可以用 Write 寫檔再跑;見 GUIDE-same-user-ai-threat-model)。
 Codex / Grok 席不吃 Claude hook。
@@ -123,9 +130,55 @@ def check(cmd, home=None):
             why = _tmux_hit(seg[1:], home)
             if why:
                 return why, " ".join(seg)
-        elif prog in ("killall", "pkill"):
-            if "tmux" in [a for a in seg[1:] if not a.startswith("-")]:
-                return "killall", " ".join(seg)
+        elif prog == "killall":
+            return "killall", " ".join(seg)
+        elif prog in ("pkill", "pgrep"):
+            why = _pkill_hit(prog, seg[1:])
+            if why:
+                return why, " ".join(seg)
+        elif prog == "kill" and any(re.search(r"\$\(\s*(pgrep|pidof)\b|`\s*(pgrep|pidof)\b", a) for a in seg[1:]):
+            return "kill_subst", " ".join(seg)
+    for line in cmd.splitlines():
+        m = re.search(r"\bpgrep\b[^|;&\n]*\|\s*xargs\b[^|;&\n]*\bkill\b", line)
+        if m:
+            return "kill_subst", m.group(0)
+        m = re.search(r"\bkill\b[^;&|\n]*(\$\(\s*(pgrep|pidof)\b|`\s*(pgrep|pidof)\b)", line)
+        if m:   # shlex 把 $(…) 拆開了,上面逐段比不到時用整行補
+            return "kill_subst", m.group(0)
+    return None
+
+
+PKILL_OPT_ARG = {"-U", "-u", "-G", "-g", "-P", "-s", "-t", "-F", "-d", "-J"}
+
+
+def _pkill_hit(prog, args):
+    """pkill / pgrep:選項寫在比對字串後面(BSD 會把它們當成更多比對字串)、pkill -f。"""
+    seen_pattern = False
+    flags = ""
+    pats = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            seen_pattern = True
+            i += 1
+            continue
+        if a.startswith("-") and len(a) > 1:
+            if seen_pattern:
+                return "opt_after_pattern"
+            if a in PKILL_OPT_ARG:
+                i += 2
+                continue
+            if not a[1:].lstrip("0123456789") == "" and not re.fullmatch(r"-[A-Z]+[0-9]*", a):
+                flags += a[1:]
+        else:
+            seen_pattern = True
+            pats.append(a)
+        i += 1
+    if prog == "pkill" and "tmux" in pats:
+        return "killall"
+    if prog == "pkill" and "f" in flags:
+        return "pkill_f"
     return None
 
 
@@ -134,7 +187,7 @@ def pre_tool(payload, home=None):
     if payload.get("tool_name") not in (None, "Bash"):
         return None
     cmd = str((payload.get("tool_input") or {}).get("command") or "")
-    if "tmux" not in cmd or not re.search(r"kill-server|killall|pkill", cmd):
+    if not re.search(r"kill-server|killall|pkill|pgrep|pidof", cmd):
         return None
     hit = check(cmd, home)
     if not hit:
