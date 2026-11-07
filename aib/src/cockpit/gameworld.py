@@ -14,13 +14,14 @@
 只有 ok 且 result 是成功三種且 cabin == 目標,才算「已切到」;其他一律不這樣說。
 網址進紀錄 / 提示前只留 scheme://host:port/(將來網址帶配對資料也不會被寫出去)。
 
-去重:鍵 = (請求 ID, 目標艙),紀錄夾 <艙家>/cockpit/gameworld-req/,每鍵一個檔:
-  沒有檔 → O_CREAT|O_EXCL 建 <鍵>.claim.1(建成功的那個才准叫外掛 / 開窗)→ 成功 rename 成 <鍵>.done;失敗刪領取檔。
-  擁有者確定已不在(pid 不存在,或 pid 在但啟動時間不同 = pid 被重用)才 O_EXCL 建下一代接手(同一代只有一個人建成),
-  記 gameworld.stat.reclaimed。**活著就永不接手,不管多久**(慢但活著 ≠ 已死;#486 審查 P1);認不出身份(ps 讀不到)當活著。
-  做外部副作用(叫外掛、開窗)之前各驗一次「還是最高一代」(fencing),不是就不做、回 fenced。
-  做不到 exactly once:開完、rename 成 .done 之前崩潰 ⇒ 之後同請求重試會多開一次。卡住不退的活程序會一直佔著這個鍵,
-  但鍵含請求 ID,人再打一次指令是新鍵,不會被擋。
+去重:鍵 = (請求 ID, 目標艙),紀錄夾 <艙家>/cockpit/gameworld-req/,每鍵一個鎖檔 <鍵>.lock:
+  open(O_CREAT) + flock(LOCK_EX|LOCK_NB)(Windows:LockFileEx),拿著直到叫完外掛、開完窗、寫好 <鍵>.done 才放。
+  拿不到鎖 = 擁有者還活著 ⇒ dedup,不管多久(活著但慢 ≠ 已死;#486 審查 P1);擁有者死了(含 SIGKILL)作業系統自動放鎖,
+  下一個人照常拿、記 gameworld.stat.reclaimed。不用逾時、pid、啟動時間判死活,「建檔到寫 pid」的空檔也不存在。
+  拿到鎖後再看一次 .done(檢查到拿鎖之間前一位做完了就不做),並比對 inode(拿到已被刪的舊檔就重來)。
+  做不到 exactly once:開完、寫 .done 之前崩潰 ⇒ 之後同請求重試會多開一次。卡住不退的活程序會一直佔著這個鍵,
+  但外掛有 12 秒硬逾時,而且鍵含請求 ID,人再打一次指令是新鍵,不會被擋。
+  鎖檔要在本機檔案系統(艙家都在本機);拿不到鎖的檔案系統一律當「別人拿著」⇒ 不開大廳,不會重複開。
 """
 import hashlib
 import json
@@ -39,7 +40,6 @@ import aib_ui  # noqa: E402
 
 CODE4 = re.compile(r"^[0-9a-f]{4}$")
 OK_RESULTS = ("started", "already", "switched")
-STALE_S = 15            # 只用在「建了檔、內容還沒寫進去」的領取:超過這麼久沒寫 = 建檔者崩潰
 PLUGIN_TIMEOUT_S = 12   # 核心這端的硬逾時(外掛自己 10 秒)
 KEEP_S = 24 * 3600
 KEEP_N = 32
@@ -125,54 +125,39 @@ def check(out=None, env=None, run=subprocess.run, find=None):
     return 0
 
 
-# ── 同鍵原子領取 ─────────────────────────────────────────────────────────
+# ── 同鍵領取:作業系統持有的鎖 ──────────────────────────────────────────────
 def _key(req, cabin):
     return hashlib.sha256(("%s\0%s" % (req, cabin)).encode("utf-8")).hexdigest()[:32]
 
 
-def _pid_alive(pid):
+def _try_lock(fd):
+    """不等待地拿獨佔鎖:拿到 True;別人拿著(或這台機器的檔案系統不給鎖)False。
+    鎖掛在開啟的檔上,程序結束(含 SIGKILL / 當機)由作業系統釋放,不靠逾時判死活。"""
     try:
-        os.kill(int(pid), 0)
+        import fcntl
+    except ImportError:                                   # Windows:LockFileEx(msvcrt 包的那一層)
+        try:
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except (ImportError, OSError):
+            return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
-    except PermissionError:
-        return True
-    except (OSError, ValueError, TypeError):
+    except OSError:
         return False
 
 
-def _proc_start(pid, run=subprocess.run):
-    """行程啟動時間(ps -o lstart=,固定 C 語系);拿不到回 None。只在搶同一鍵時才叫。"""
-    e = dict(os.environ, LC_ALL="C", LANG="C")
-    try:
-        r = run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True, timeout=5,
-                stdin=subprocess.DEVNULL, env=e)
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-        return None
-    s = " ".join((r.stdout or "").split())
-    return s or None
+class Claim:
+    """拿著鎖的領取。fd 不給子程序繼承(Python 預設),外掛 / 視窗子程序不會把鎖帶走。"""
 
+    def __init__(self, lock, done, fd):
+        self.lock, self.done, self.fd = lock, done, fd
 
-def _owner_alive(pid, start):
-    """True = 擁有者還在,或認不出(保守);False = 確定已不在:pid 不存在,或 pid 在但啟動時間不同(pid 被重用)。"""
-    if not _pid_alive(pid):
-        return False
-    if not start:
-        return True
-    now_start = _proc_start(pid)
-    if now_start is None:
-        return True
-    return now_start == start
-
-
-def still_owner(cl):
-    """fencing:領取檔還在,而且還是最高一代。"""
-    cl = Path(cl)
-    try:
-        k, g = cl.name.split(".claim.")
-        gens = _gens(cl.parent, k)
-        return cl.exists() and bool(gens) and gens[-1] == int(g)
-    except (ValueError, OSError):
-        return False
+    def __fspath__(self):
+        return str(self.lock)
 
 
 def _bump(d, name):
@@ -194,7 +179,7 @@ def _gc(d, now):
         return
     olds = []
     for n in names:
-        if not (n.endswith(".done") or ".stale." in n):
+        if not (n.endswith(".done") or n.endswith(".lock")):
             continue
         try:
             m = os.stat(os.path.join(str(d), n)).st_mtime
@@ -204,90 +189,97 @@ def _gc(d, now):
     olds.sort()
     extra = max(0, len(olds) - KEEP_N)
     for i, (m, n) in enumerate(olds):
-        if i < extra or now - m > KEEP_S:
+        if not (i < extra or now - m > KEEP_S):
+            continue
+        p = os.path.join(str(d), n)
+        if n.endswith(".done"):
             try:
-                os.unlink(os.path.join(str(d), n))
+                os.unlink(p)
             except OSError:
                 pass
+            continue
+        # 舊鎖檔:自己拿到鎖才刪(有人拿著 = 正在做,不動);拿鎖的人之後會比對 inode,刪掉的舊檔不算數
+        try:
+            fd = os.open(p, os.O_RDWR)
+        except OSError:
+            continue
+        try:
+            if _try_lock(fd):
+                os.unlink(p)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
 
 
-def _gens(d, k):
-    out = []
-    try:
-        names = os.listdir(str(d))
-    except OSError:
-        return out
-    for n in names:
-        if n.startswith(k + ".claim."):
-            try:
-                out.append(int(n.rsplit(".", 1)[1]))
-            except ValueError:
-                pass
-    return sorted(out)
+def claim(d, req, cabin, now=time.time, pause=None):
+    """回 Claim(拿到了,做完要 finish)或 None(已成功過 / 別人正拿著)。
 
-
-def claim(d, req, cabin, now=time.time, alive=_owner_alive, pause=None):
-    """回領取檔路徑(拿到了)或 None(已成功過 / 別人正在做)。pause:測試用障礙,在建檔成功後呼叫。
-
-    世代號:領取檔 <鍵>.claim.<N>,誰持有看最高的 N。第一次建 N=1;最高那一代的擁有者確定已不在 ⇒ 建 N+1。每一代都是 O_CREAT|O_EXCL,同一代只會有一個人建成;接手不搬別人的檔,所以不會誤拿走別人剛建的新領取。"""
+    每鍵一個鎖檔 <鍵>.lock:open(O_CREAT) + flock(LOCK_EX|LOCK_NB),一路拿到 finish。
+    - 拿不到鎖 = 擁有者還活著(作業系統保證),不管它多慢都不接手;它死了鎖自動放掉,下一個人照常拿。
+    - 拿到鎖後再看一次 .done:檢查 → 拿鎖之間前一位做完了,就不再做(#486 審查 P1 的空檔)。
+    - 拿到鎖後比對 inode:拿到的是已被刪掉 / 換掉的舊檔就重來,不會兩人各拿一個檔。
+    - 鎖檔裡留著上一位的 pid:有內容 = 上一位沒走到 finish(崩潰)⇒ gameworld.stat.reclaimed +1。
+    pause(stage):測試用障礙,stage = "checked"(看過 .done、還沒開鎖檔)/ "opened"(開了鎖檔、還沒拿鎖)/ "held"(拿到鎖、還沒叫外掛)。"""
     d = Path(d)
     d.mkdir(parents=True, exist_ok=True)
     k = _key(req, cabin)
-    done = d / (k + ".done")
+    done, lk = d / (k + ".done"), d / (k + ".lock")
     _gc(d, now())
     for _ in range(5):
         if done.exists():
             return None
-        gens = _gens(d, k)
-        top = gens[-1] if gens else 0
-        if top:
-            cur = d / ("%s.claim.%d" % (k, top))
-            try:
-                st = os.stat(str(cur))
-                info = json.loads(cur.read_text(encoding="utf-8") or "{}")
-            except (OSError, ValueError):
-                continue                                  # 正在變動:重看一次
-            pid = info.get("pid") if isinstance(info, dict) else None
-            start = info.get("start") if isinstance(info, dict) else None
-            if pid is None:
-                # 剛建、內容還沒寫進去:年輕就等;超過 STALE_S 還是空 = 建檔者在寫之前就崩潰
-                if now() - st.st_mtime < STALE_S:
-                    return None
-            elif alive(pid, start):
-                return None                               # 活著就不接手,不管多久
-        nxt = d / ("%s.claim.%d" % (k, top + 1))
+        if pause:
+            pause("checked")
         try:
-            fd = os.open(str(nxt), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            continue                                      # 這一代被別人建了:重看一次
+            fd = os.open(str(lk), os.O_CREAT | os.O_RDWR, 0o600)
         except OSError:
             return None
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps({"pid": os.getpid(), "start": _proc_start(os.getpid()), "at": now()}))
-        if top:
-            _bump(d, "reclaimed")
-            for g in gens:
-                try:
-                    os.unlink(str(d / ("%s.claim.%d" % (k, g))))
-                except OSError:
-                    pass
         if pause:
-            pause()
-        return nxt
+            pause("opened")
+        if not _try_lock(fd):
+            os.close(fd)
+            return None                                   # 有人拿著:活著就不接手,不管多久
+        try:
+            same = os.fstat(fd).st_ino == os.stat(str(lk)).st_ino
+        except OSError:
+            same = False
+        if not same:
+            os.close(fd)
+            continue                                      # 拿到的是舊檔(已被收尾刪掉):重來
+        if done.exists():
+            os.close(fd)
+            return None                                   # 空檔裡前一位做完了
+        try:
+            prev = os.read(fd, 256)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, json.dumps({"pid": os.getpid(), "at": now()}).encode("utf-8"))
+        except OSError:
+            prev = b""
+        if prev.strip():
+            _bump(d, "reclaimed")
+        if pause:
+            pause("held")
+        return Claim(lk, done, fd)
     return None
 
 
 def finish(cl, ok):
-    if cl is None:
-        return
-    cl = Path(cl)
+    """成功:先寫 .done 再放鎖(放鎖前寫好,後來的人拿到鎖一定看得到);失敗:不寫 .done,同請求可重試。
+    鎖檔在放鎖前刪掉(Windows 刪不掉就留著,_gc 之後收);刪掉後還拿著舊 fd 的人會在 inode 比對時重來。"""
+    if cl is None or cl.fd is None:
+        return                                            # 已收過(例外路徑再叫一次也安全)
     try:
         if ok:
-            os.rename(str(cl), str(cl.with_name(cl.name.split(".claim.")[0] + ".done")))
-        else:
-            os.unlink(str(cl))
-    except OSError:
-        pass
+            os.close(os.open(str(cl.done), os.O_CREAT | os.O_WRONLY, 0o600))
+        try:
+            os.unlink(str(cl.lock))
+        except OSError:
+            pass
+    finally:
+        fd, cl.fd = cl.fd, None
+        os.close(fd)
 
 
 # ── 叫外掛、驗結果 ────────────────────────────────────────────────────────
@@ -354,17 +346,20 @@ def open_lobby(cabin, req, home, session="", out=None, env=None, run=subprocess.
     if cl is None:
         out.write("AIB_GAMEWORLD result=dedup cabin=%s\n" % (target or "-"))
         return "dedup"
-    if not still_owner(cl):                               # fencing 1:叫外掛前
-        out.write("AIB_GAMEWORLD result=fenced cabin=%s\n" % (target or "-"))
-        return "fenced"
+    try:
+        return _with_claim(cl, target, switch, session, out, e, env, run, popen)
+    except BaseException:
+        finish(cl, False)
+        raise
+
+
+def _with_claim(cl, target, switch, session, out, e, env, run, popen):
+    """拿著鎖做外部副作用(叫外掛、開窗);鎖由作業系統持有到 finish,中間不用再驗。"""
     r = call_plugin(target, switch, run)
     o = origin_only(r.get("url"))
     actual = r["cabin"] or T("unknown_cabin")
     how = ""
     if r["ok"] and o:
-        if not still_owner(cl):                           # fencing 2:開窗前(外掛那一步已做,照實回)
-            out.write("AIB_GAMEWORLD result=fenced-after-plugin cabin=%s\n" % (target or "-"))
-            return "fenced"
         if e.get("AIB_NO_BROWSER") == "1":
             how = "skipped"
         else:
