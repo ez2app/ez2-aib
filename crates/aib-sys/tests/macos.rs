@@ -78,6 +78,16 @@ fn launchd_bsd_info_is_permission_denied_for_a_user() {
     assert_eq!(Macos.bsd_info(1), Err(SysError::PermissionDenied));
 }
 
+/// M1 on launchd as a user (measured on 15.7.9: readable). Whatever a
+/// later OS does, it must never read as Gone: launchd is alive.
+#[test]
+fn m1_of_launchd_reads_or_is_denied_never_gone() {
+    match Macos.unique_ids(1) {
+        Ok(u) => assert_ne!(u.unique, 0),
+        Err(e) => assert_eq!(e, SysError::PermissionDenied),
+    }
+}
+
 #[test]
 fn an_out_of_range_pid_is_refused() {
     assert_eq!(Macos.unique_ids(u32::MAX), Err(SysError::BadPid));

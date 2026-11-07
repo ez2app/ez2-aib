@@ -51,17 +51,33 @@ fn pid_arg(pid: u32) -> Result<c_int, SysError> {
 /// `T` must be a plain C structure (`repr(C)`, integers and arrays only) for
 /// which every bit pattern is valid; both callers in this file are.
 fn pidinfo<T: Copy>(pid: u32, flavor: c_int) -> Result<T, SysError> {
+    pidinfo_with(pid, |pid, buf, size| {
+        // SAFETY: `buf` is a live, exclusively borrowed `size`-byte buffer
+        // (see `pidinfo_with`); the kernel writes at most `size` bytes.
+        unsafe { libc::proc_pidinfo(pid, flavor, 0, buf, size) }
+    })
+}
+
+/// [`pidinfo`] with the raw call passed in, so the errno rules are tested
+/// without the kernel. `raw` gets `(pid, buffer, size)` and returns what
+/// `proc_pidinfo` returns.
+///
+/// errno is cleared right before the call: a failure that sets no errno is
+/// `Unknown`, never a classification left over from an earlier call (a stale
+/// ESRCH would read as `Gone`).
+fn pidinfo_with<T: Copy>(
+    pid: u32,
+    raw: impl FnOnce(c_int, *mut c_void, c_int) -> c_int,
+) -> Result<T, SysError> {
     let pid = pid_arg(pid)?;
     let want = size_of::<T>();
     let size = c_int::try_from(want).map_err(|_| SysError::Unknown)?;
     let mut out = MaybeUninit::<T>::zeroed();
     clear_errno();
-    // SAFETY: the buffer is `out`, `size` bytes long, alive and exclusively
-    // borrowed for the call; the kernel writes at most `size` bytes.
-    let n = unsafe { libc::proc_pidinfo(pid, flavor, 0, out.as_mut_ptr().cast::<c_void>(), size) };
+    let n = raw(pid, out.as_mut_ptr().cast::<c_void>(), size);
     check_struct_read(n, want, errno())?;
-    // SAFETY: the kernel filled exactly `want` bytes (checked above), the
-    // memory was zeroed before, and every bit pattern is valid for `T`.
+    // SAFETY: `out` was zeroed and every bit pattern is valid for `T`, so it
+    // is initialised whatever `raw` wrote; the length was checked above.
     Ok(unsafe { out.assume_init() })
 }
 
@@ -134,11 +150,14 @@ impl Unit {
 }
 
 /// Size query (an estimate), then [`read_pid_list`], which grows the buffer
-/// and refuses to return a list that may be truncated.
+/// and refuses to return a list that may be truncated. errno is cleared
+/// before **each** call (the size query and every fill), so a classification
+/// is always this call's own. A failed size query is an error even if a fill
+/// would work: the estimate is what the buffer is sized from.
 fn list(unit: Unit, raw: impl Fn(*mut c_void, c_int) -> c_int) -> Result<Vec<u32>, SysError> {
     clear_errno();
     let need = raw(std::ptr::null_mut(), 0);
-    if need < 0 {
+    if need < 0 || (need == 0 && errno() != 0) {
         return Err(SysError::from_errno(errno()));
     }
     let hint = unit.to_bytes(usize::try_from(need).unwrap_or(0)) / size_of::<i32>();
@@ -146,7 +165,11 @@ fn list(unit: Unit, raw: impl Fn(*mut c_void, c_int) -> c_int) -> Result<Vec<u32
         let size = c_int::try_from(std::mem::size_of_val(buf)).map_err(|_| 0)?;
         clear_errno();
         let n = raw(buf.as_mut_ptr().cast::<c_void>(), size);
-        if n < 0 {
+        // Errors: a negative return, with this call's errno. A success never
+        // touches errno (measured: a 0 keeps whatever errno was before), so a
+        // 0 that comes with an errno this very call set is not trusted as
+        // "no pids" (fail closed).
+        if n < 0 || (n == 0 && errno() != 0) {
             return Err(errno());
         }
         usize::try_from(n).map(|n| unit.to_bytes(n)).map_err(|_| 0)
@@ -254,5 +277,77 @@ mod tests {
             -1
         });
         assert_eq!(r, Err(SysError::Gone));
+    }
+    /// errno hygiene (043dd K6 / K11): a failure that sets no errno must be
+    /// `Unknown`, even when an earlier call left ESRCH behind. Without the
+    /// clear it would read as `Gone`, the most dangerous mistake.
+    #[test]
+    fn a_failure_without_errno_is_unknown_not_a_stale_gone() {
+        set_errno(libc::ESRCH);
+        let r = pidinfo_with::<[u8; 8]>(me(), |_, _, _| -1);
+        assert_eq!(r.map(|_| ()), Err(SysError::Unknown));
+        set_errno(libc::ESRCH);
+        let r = pidinfo_with::<[u8; 8]>(me(), |_, _, _| 0);
+        assert_eq!(r.map(|_| ()), Err(SysError::Unknown));
+        // the list: stale ESRCH before the size query, and again before a fill
+        set_errno(libc::ESRCH);
+        assert_eq!(list(Unit::Pids, |_, _| -1), Err(SysError::Unknown));
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                return 64;
+            }
+            set_errno(libc::ESRCH); // left by "something else" before the fill
+            -1
+        });
+        assert_eq!(r, Err(SysError::Gone), "this call's own ESRCH is Gone");
+        let first = std::cell::Cell::new(true);
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                set_errno(libc::ESRCH); // stale from the size query
+                return 64;
+            }
+            if first.replace(false) {
+                -1 // fill fails without setting errno
+            } else {
+                0
+            }
+        });
+        assert_eq!(r, Err(SysError::Unknown));
+    }
+
+    /// A stale errno never turns an empty list into an error (the libproc
+    /// crate bug seen in calibration), and an errno set by this very call
+    /// with a 0 is not trusted as empty.
+    #[test]
+    fn an_empty_list_is_empty_and_a_zero_with_errno_is_refused() {
+        set_errno(libc::ESRCH);
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                return 64;
+            }
+            0
+        });
+        assert_eq!(r, Ok(Vec::new()));
+        let r = list(Unit::Bytes, |buf, _| {
+            if buf.is_null() {
+                return 64;
+            }
+            set_errno(libc::EPERM);
+            0
+        });
+        assert_eq!(r, Err(SysError::PermissionDenied));
+    }
+
+    /// 043dd K10: a failed size query is an error even if the fill works.
+    #[test]
+    fn a_failed_size_query_is_an_error() {
+        let r = list(Unit::Pids, |buf, _| {
+            if buf.is_null() {
+                set_errno(libc::EPERM);
+                return -1;
+            }
+            0
+        });
+        assert_eq!(r, Err(SysError::PermissionDenied));
     }
 }
